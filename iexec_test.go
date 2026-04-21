@@ -86,6 +86,9 @@ const (
 	sysBootHostFS    = 40
 	sysMapIO         = 28
 	sysQuotaSetLimit = 42 // M15.6 G3: diagnostic-only limit override.
+	sysCloseLibrary  = 43
+	sysAddLibrary    = 44
+	sysOpenLibraryEx = 45
 
 	mapfRead  = 0x01
 	mapfWrite = 0x02
@@ -103,7 +106,8 @@ const (
 	quotaDefaultPages = 1024
 	quotaDefaultPorts = 32
 	// Quota error code (paired with the existing ERR_* namespace).
-	errQuota = 10
+	errQuota      = 10
+	errLibVersion = 11
 	// Grant-row grantor-pubid provenance (M15.6 G3): u32 at offset 12
 	// in the row; 0xFFFFFFFF = GRANT_GRANTOR_NONE (uncharged bootstrap
 	// row). Stored as the grantor's public task id so release-time
@@ -112,6 +116,7 @@ const (
 	grantGrantorNone    = uint32(0xFFFFFFFF)
 	// Kern-data offsets for the quota page / quota row fields.
 	kdQuotaPagePPN    = 67128 // u16 at KERN_DATA_BASE + this offset
+	kdQuotaLimitsBase = 67132 // 5 x u32 global default quota limits
 	kdQuotaCurWaiters = 4     // within a quota row, offset to WAITERS counter
 
 	dosRun       = 6
@@ -242,7 +247,8 @@ const (
 	taskStartfBoot     = 1 << 2
 
 	// Signal bit for port
-	sigfPort = 1 // SIGF_PORT = bit 0
+	sigfPort    = 1 // SIGF_PORT = bit 0
+	sigfModDead = 2
 
 	// M6: Memory allocation constants (must match iexec.inc)
 	memfAny    = 0x00000
@@ -344,9 +350,39 @@ const (
 	kdTaskPubIDBase       = 65816 // KD_TASK_PUBID_BASE
 	kdTaskPubIDStr        = 4
 	kdTaskIDNext          = 66840 // KD_TASKID_NEXT
+	kdDosLibPubID         = 49340
+	kdModuleTable         = 67152
+	kdModuleRowStride     = 80
+	kdModuleMax           = 16
+	kdModuleName          = 0
+	kdModuleState         = 32
+	kdModuleGeneration    = 36
+	kdModuleVersion       = 40
+	kdModuleRevision      = 42
+	kdModuleOwningTask    = 48
+	kdModulePublicPort    = 52
+	kdModuleOpenCount     = 56
+	kdModuleFlags         = 60
+	kdModuleWaitersHead   = 64
+	modfResident          = 0x00000001
+	kdModuleWaiterRows    = 68712
+	kdModuleWaiterStride  = 24
+	kdModuleWaiterMax     = 16
+	kdModuleWaiterTask    = 0
+	kdModuleWaiterMinVer  = 4
+	kdModuleWaiterSigBit  = 6
+	kdModuleWaiterOutcome = 8
+	kdModuleWaiterNext    = 16
+	kdModuleOpenRows      = 69096
+	kdModuleOpenRowStride = 16
+	kdModuleOpenRowMax    = 32
+	kdModuleOpenRowTask   = 0
+	kdModuleOpenRowIndex  = 4
+	kdModuleOpenRowGen    = 8
+	kdModuleOpenRowCount  = 12
 	taskPubIDFree         = 0xFFFFFFFF
 	taskPubIDUntrusted    = 0xFFFFFFFE // pub-ID sentinel: slot claimed by an untrusted caller
-	kdBootManifestBase    = 66848
+	kdBootManifestBase    = 68432
 	kdBootManifestStride  = 40
 	kdBootManifestCount   = 7
 	kdBootManifestID      = 0
@@ -364,8 +400,10 @@ const (
 	kdTaskCodePages       = 24
 	kdTaskStackPages      = 28
 	kdTaskDataPages       = 32
+	kdTaskLayoutFlags     = 36
 	kdTaskStartupBase     = 40
 	kdTaskLayoutPT        = 48
+	taskLayoutTrustedInt  = 0x00000002
 	kdGrantHdrFirst       = 0  // first chain page PPN (2 bytes)
 	kdGrantHdrTotal       = 2  // total grant rows in use (2 bytes)
 	kdGrantHdrPages       = 4  // number of chain pages (2 bytes)
@@ -389,9 +427,15 @@ const (
 	bootManifestIDGfx     = 15
 	bootManifestIDIntui   = 16
 	errExists             = 8
+	errAgain              = 6
 	errBadArg             = 3
 	errNotFound           = 4
 	errPerm               = 5
+	errFull               = 9
+	m16ModStateUnloaded   = 0
+	m16ModStateLoading    = 1
+	m16ModStateOnline     = 2
+	m16ModStateFailed     = 3
 
 	dosSegMagic      = 0x4C474553 // "SEGL" little-endian
 	dosSegMagicOff   = 8
@@ -417,6 +461,62 @@ type iexecKernel struct {
 
 func newIExecKernel() *iexecKernel {
 	return &iexecKernel{code: make([]byte, 0, 16384)}
+}
+
+func m16FindModuleRowByName(mem []byte, name string) (uint32, bool) {
+	for i := uint32(0); i < kdModuleMax; i++ {
+		base := kernDataBase + kdModuleTable + i*kdModuleRowStride
+		raw := mem[base+kdModuleName : base+kdModuleName+portNameLen]
+		got := string(bytes.TrimRight(raw, "\x00"))
+		if got == name {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func m16ModuleRowBase(index uint32) uint32 {
+	return kernDataBase + kdModuleTable + index*kdModuleRowStride
+}
+
+func m16ModuleWaiterBase(index uint32) uint32 {
+	return kernDataBase + kdModuleWaiterRows + index*kdModuleWaiterStride
+}
+
+func m16ModuleWaiterCount(mem []byte, rowBase uint32) int {
+	count := 0
+	token := binary.LittleEndian.Uint64(mem[rowBase+kdModuleWaitersHead:])
+	for token != 0 {
+		if token > uint64(kdModuleWaiterMax) {
+			return count
+		}
+		base := m16ModuleWaiterBase(uint32(token - 1))
+		count++
+		token = binary.LittleEndian.Uint64(mem[base+kdModuleWaiterNext:])
+	}
+	return count
+}
+
+func m16ActiveWaiterCountForRow(mem []byte, rowIndex uint32) int {
+	count := 0
+	for i := uint32(0); i < kdModuleWaiterMax; i++ {
+		base := m16ModuleWaiterBase(i)
+		if binary.LittleEndian.Uint32(mem[base+kdModuleWaiterOutcome:]) == 0 {
+			continue
+		}
+		if binary.LittleEndian.Uint32(mem[base+12:]) != rowIndex {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func markTrustedBootTaskLayouts(mem []byte, count uint32) {
+	for slot := uint32(0); slot < count; slot++ {
+		base := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
+		binary.LittleEndian.PutUint32(mem[base+kdTaskLayoutFlags:], taskLayoutTrustedInt)
+	}
 }
 
 func (k *iexecKernel) emit(instrs ...[]byte) uint32 {
@@ -2145,6 +2245,16 @@ func writeTaskImageLiteral(t *testing.T, mem []byte, imageCodeStart uint32, task
 	return taskCodeBase + scratchOff
 }
 
+func writeTaskDataLiteral(t *testing.T, mem []byte, taskDataBase uint32, scratchOff uint32, payload []byte) uint32 {
+	t.Helper()
+	end := taskDataBase + scratchOff + uint32(len(payload))
+	if end > uint32(len(mem)) {
+		t.Fatalf("task data literal out of bounds: base=%#x off=%#x len=%d end=%#x mem=%#x", taskDataBase, scratchOff, len(payload), end, len(mem))
+	}
+	copy(mem[taskDataBase+scratchOff:end], payload)
+	return taskDataBase + scratchOff
+}
+
 func taskSlotForPublicID(mem []byte, taskID uint64) (uint32, bool) {
 	want := uint32(taskID)
 	for slot := uint32(0); slot < maxTasks; slot++ {
@@ -2158,6 +2268,16 @@ func taskSlotForPublicID(mem []byte, taskID uint64) (uint32, bool) {
 		}
 	}
 	return 0, false
+}
+
+func countLiveTasks(mem []byte) int {
+	count := 0
+	for slot := uint32(0); slot < maxTasks; slot++ {
+		if mem[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff] != taskFree {
+			count++
+		}
+	}
+	return count
 }
 
 func taskLayoutFieldQ(mem []byte, taskID uint64, off uint32) uint64 {
@@ -2201,6 +2321,130 @@ func bootAndResetToTask0Only(t *testing.T) (*ie64TestRig, *TerminalMMIO, uint32,
 	t.Helper()
 
 	rig, term := assembleAndLoadKernel(t)
+	return bootAndResetRigToTask0Only(t, rig, term)
+}
+
+func bootAndResetToTask0OnlyWithBootstrapHostRoot(t *testing.T, hostRoot string) (*ie64TestRig, *TerminalMMIO, uint32, uint32) {
+	t.Helper()
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	return bootAndResetRigToTask0Only(t, rig, term)
+}
+
+func bootAndResetToTask0WithBootstrapHostRootPreservingServices(t *testing.T, hostRoot string) (*ie64TestRig, *TerminalMMIO, uint32, uint32) {
+	t.Helper()
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+
+	rig.cpu.running.Store(true)
+	bootDone := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(bootDone) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-bootDone
+
+	term.DrainOutput()
+
+	t0PubID := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase:])
+	t0 := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(t0PubID), kdTaskCodeBase))
+	data0 := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(t0PubID), kdTaskDataBase))
+	pt0 := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(t0PubID), kdTaskLayoutPT))
+	usp0 := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdTCBBase+tcbUSPOff:])
+	if t0 == 0 || data0 == 0 || pt0 == 0 || usp0 == 0 {
+		t.Fatalf("bootAndResetToTask0WithBootstrapHostRootPreservingServices: missing live task0 layout pubid=%#x code=%#x data=%#x pt=%#x usp=%#x", t0PubID, t0, data0, pt0, usp0)
+	}
+
+	binary.LittleEndian.PutUint64(rig.cpu.memory[kernDataBase+kdCurrentTask:], 0)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[kernDataBase+kdTCBBase+tcbPCOff:], uint64(t0))
+	binary.LittleEndian.PutUint32(rig.cpu.memory[kernDataBase+kdTCBBase+tcbSigWaitOff:], 0)
+	rig.cpu.memory[kernDataBase+kdTCBBase+tcbStateOff] = taskRunning
+	rig.cpu.memory[kernDataBase+kdTCBBase+tcbGPRSavedOff] = 0
+	rig.cpu.PC = uint64(t0)
+	rig.cpu.regs[31] = usp0
+	rig.cpu.userSP = usp0
+	rig.cpu.kernelSP = kernStackTop
+	rig.cpu.ptbr = pt0
+	rig.cpu.supervisorMode = false
+	rig.cpu.previousMode = false
+	rig.cpu.trapped = false
+	rig.cpu.faultCause = 0
+	rig.cpu.faultAddr = 0
+	rig.cpu.faultPC = 0
+	rig.cpu.timerEnabled.Store(false)
+	rig.cpu.interruptEnabled.Store(false)
+	rig.cpu.timerCount.Store(0)
+
+	return rig, term, t0, data0
+}
+
+func bootAndResetToShellTaskWithBootstrapHostRoot(t *testing.T, hostRoot string) (*ie64TestRig, *TerminalMMIO, uint32, uint32) {
+	t.Helper()
+
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	rig.cpu.running.Store(true)
+	bootDone := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(bootDone) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-bootDone
+
+	term.DrainOutput()
+
+	shellDataBase := findShellTaskDataBase(t, rig.cpu.memory)
+	var shellPubID uint32
+	for slot := uint32(0); slot < maxTasks; slot++ {
+		state := rig.cpu.memory[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff]
+		if state == taskFree {
+			continue
+		}
+		pubid := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+slot*kdTaskPubIDStr:])
+		dataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(pubid), kdTaskDataBase))
+		if dataBase == shellDataBase {
+			shellPubID = pubid
+			break
+		}
+	}
+	if shellPubID == 0 {
+		t.Fatal("bootAndResetToShellTaskWithBootstrapHostRoot: could not locate shell public ID")
+	}
+	shellSlot, ok := taskSlotForPublicID(rig.cpu.memory, uint64(shellPubID))
+	if !ok {
+		t.Fatalf("bootAndResetToShellTaskWithBootstrapHostRoot: shell pubid=%#x not live", shellPubID)
+	}
+
+	shellCode := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(shellPubID), kdTaskCodeBase))
+	shellData := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(shellPubID), kdTaskDataBase))
+	shellPT := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(shellPubID), kdTaskLayoutPT))
+	tcb := kernDataBase + kdTCBBase + shellSlot*tcbStride
+	usp := binary.LittleEndian.Uint64(rig.cpu.memory[tcb+tcbUSPOff:])
+	if shellCode == 0 || shellData == 0 || shellPT == 0 || usp == 0 {
+		t.Fatalf("bootAndResetToShellTaskWithBootstrapHostRoot: missing shell layout pubid=%#x code=%#x data=%#x pt=%#x usp=%#x", shellPubID, shellCode, shellData, shellPT, usp)
+	}
+
+	binary.LittleEndian.PutUint64(rig.cpu.memory[kernDataBase+kdCurrentTask:], uint64(shellSlot))
+	binary.LittleEndian.PutUint64(rig.cpu.memory[tcb+tcbPCOff:], uint64(shellCode))
+	binary.LittleEndian.PutUint32(rig.cpu.memory[tcb+tcbSigWaitOff:], 0)
+	rig.cpu.memory[tcb+tcbStateOff] = taskRunning
+	rig.cpu.memory[tcb+tcbGPRSavedOff] = 0
+	rig.cpu.PC = uint64(shellCode)
+	rig.cpu.regs[31] = usp
+	rig.cpu.userSP = usp
+	rig.cpu.kernelSP = kernStackTop
+	rig.cpu.ptbr = shellPT
+	rig.cpu.supervisorMode = false
+	rig.cpu.previousMode = false
+	rig.cpu.trapped = false
+	rig.cpu.faultCause = 0
+	rig.cpu.faultAddr = 0
+	rig.cpu.faultPC = 0
+	rig.cpu.timerEnabled.Store(false)
+	rig.cpu.interruptEnabled.Store(false)
+	rig.cpu.timerCount.Store(0)
+
+	return rig, term, shellCode, shellData
+}
+
+func bootAndResetRigToTask0Only(t *testing.T, rig *ie64TestRig, term *TerminalMMIO) (*ie64TestRig, *TerminalMMIO, uint32, uint32) {
+	t.Helper()
+
 	rig.cpu.running.Store(true)
 	bootDone := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(bootDone) }()
@@ -10735,6 +10979,2491 @@ func TestIExec_OpenLibrary_DispatcherCollapse(t *testing.T) {
 	t.Logf("OpenLibrary_DispatcherCollapse: slot 16 (FindPort) and slot 36 (OpenLibrary) both returned portID=%d for the just-created public port \"X\"", portA)
 }
 
+func TestIExec_M16_AddLibrary_OpenClose_OnlineRegistry(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("m16.library\x00"))
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 8))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 7))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 2))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 8))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 24))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 7))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 32))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 40))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 8))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 48))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 56))
+
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 32))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCloseLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 64))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 72))
+
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+72:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 400)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0 {
+		t.Fatalf("CreatePort err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+24:]); got != 0 {
+		t.Fatalf("AddLibrary err=%d, want 0", got)
+	}
+	token := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+32:])
+	if token == 0 {
+		t.Fatal("OpenLibraryEx returned zero token for an ONLINE library")
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+40:]); got != 0 {
+		t.Fatalf("OpenLibraryEx err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+48:]); got != 0 {
+		t.Fatalf("version-mismatch open returned token=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+56:]); got != errLibVersion {
+		t.Fatalf("version-mismatch err=%d, want LIB_ERR_VERSION (%d)", got, errLibVersion)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+64:]); got != 0 {
+		t.Fatalf("CloseLibrary err=%d, want 0", got)
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "m16.library")
+	if !ok {
+		t.Fatal("module row for m16.library not found")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
+		t.Fatalf("module state=%d, want ONLINE (%d)", got, m16ModStateOnline)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]); got != 1 {
+		t.Fatalf("module generation=%d, want 1", got)
+	}
+	if got := binary.LittleEndian.Uint16(rig.cpu.memory[row+kdModuleVersion:]); got != 7 {
+		t.Fatalf("module version=%d, want 7", got)
+	}
+	if got := binary.LittleEndian.Uint16(rig.cpu.memory[row+kdModuleRevision:]); got != 2 {
+		t.Fatalf("module revision=%d, want 2", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 0 {
+		t.Fatalf("module open_count=%d after close, want 0", got)
+	}
+}
+
+func TestIExec_M16_OwnerExitUnloadsLibraryRow(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 2)
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	name0 := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("stale.library\x00"))
+
+	pc0 := t0
+	w0 := func(instr []byte) { copy(rig.cpu.memory[pc0:], instr); pc0 += 8 }
+
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 8))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w0(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 8))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 16))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if rig.cpu.memory[kernDataBase+kdTCBBase+tcbStateOff] == taskFree {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rig.cpu.running.Store(false)
+	<-done
+
+	if rig.cpu.memory[kernDataBase+kdTCBBase+tcbStateOff] != taskFree {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 state=%d, want TASK_FREE after ExitTask output=%q", rig.cpu.memory[kernDataBase+kdTCBBase+tcbStateOff], output[:min(len(output), 400)])
+	}
+	staleToken := uint32(binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]))
+	if staleToken == 0 {
+		output := term.DrainOutput()
+		t.Fatalf("stale token was never recorded output=%q", output[:min(len(output), 400)])
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "stale.library")
+	if !ok {
+		t.Fatal("module row for stale.library not found")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]); got != 1 {
+		t.Fatalf("module generation=%d after owner exit, want 1", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateUnloaded {
+		t.Fatalf("module state=%d after owner exit, want UNLOADED (%d)", got, m16ModStateUnloaded)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 0 {
+		t.Fatalf("module open_count=%d after owner exit, want 0", got)
+	}
+}
+
+func TestIExec_M16_PerTaskOpenRowsCoalesceCount(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase:], 1)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[kernDataBase+kdTaskIDNext:], 2)
+
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("count.library\x00"))
+	clear(rig.cpu.memory[scratch0 : scratch0+128])
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 8))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 5))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 8))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 24))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 5))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 32))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 40))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 5))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 48))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 56))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 64))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	defer func() {
+		rig.cpu.running.Store(false)
+		<-done
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+64:]); got == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+64:]); got != 1 {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach double-open sentinel, got 0x%X output=%q", got, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0 {
+		t.Fatalf("CreatePort err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+24:]); got != 0 {
+		t.Fatalf("AddLibrary err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+40:]); got != 0 {
+		t.Fatalf("first OpenLibraryEx err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+56:]); got != 0 {
+		t.Fatalf("second OpenLibraryEx err=%d, want 0", got)
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "count.library")
+	if !ok {
+		t.Fatal("module row for count.library not found")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 2 {
+		t.Fatalf("module open_count after two opens=%d, want 2", got)
+	}
+	pubid := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase:])
+	openRowBase := uint32(0)
+	for i := uint32(0); i < kdModuleOpenRowMax; i++ {
+		base := kernDataBase + kdModuleOpenRows + i*kdModuleOpenRowStride
+		if binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowTask:]) != pubid {
+			continue
+		}
+		if binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowIndex:]) != rowIndex {
+			continue
+		}
+		openRowBase = base
+		break
+	}
+	if openRowBase == 0 {
+		t.Fatal("per-task open row for count.library not found after two opens")
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[openRowBase+kdModuleOpenRowCount:]); got != 2 {
+		t.Fatalf("per-task open row count after two opens=%d, want 2", got)
+	}
+}
+
+func TestIExec_M16_PerTaskFirstCloseDecrementsCoalescedOpenRow(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("closecount.library\x00"))
+	clear(rig.cpu.memory[scratch0 : scratch0+128])
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 8))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 5))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 8))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 24))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 5))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 32))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 40))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 5))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 48))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 56))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 32))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCloseLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 64))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 80))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	defer func() {
+		rig.cpu.running.Store(false)
+		<-done
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+80:]); got == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+80:]); got != 1 {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach double-close sentinel, got 0x%X output=%q", got, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0 {
+		t.Fatalf("CreatePort err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+24:]); got != 0 {
+		t.Fatalf("AddLibrary err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+40:]); got != 0 {
+		t.Fatalf("first OpenLibraryEx err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+56:]); got != 0 {
+		t.Fatalf("second OpenLibraryEx err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+64:]); got != 0 {
+		t.Fatalf("first CloseLibrary err=%d, want 0", got)
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "closecount.library")
+	if !ok {
+		t.Fatal("module row for closecount.library not found")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 1 {
+		t.Fatalf("module open_count after first close=%d, want 1", got)
+	}
+	pubid := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase:])
+	openRowBase := uint32(0)
+	for i := uint32(0); i < kdModuleOpenRowMax; i++ {
+		base := kernDataBase + kdModuleOpenRows + i*kdModuleOpenRowStride
+		if binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowCount:]) == 0 {
+			continue
+		}
+		if binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowTask:]) != pubid {
+			continue
+		}
+		if binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowIndex:]) != rowIndex {
+			continue
+		}
+		openRowBase = base
+		break
+	}
+	if openRowBase == 0 {
+		t.Fatal("per-task open row for closecount.library not found after first close")
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[openRowBase+kdModuleOpenRowCount:]); got != 1 {
+		t.Fatalf("per-task open row count after first close=%d, want 1", got)
+	}
+}
+
+func TestIExec_M16_AddLibrary_RejectsUntrustedCaller(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+	childImagePC := t0 + 0x380
+	childVA := uint32(userTask0Code + 0x380)
+	scratch0 := uint32(userTask0Stack + 0x100)
+
+	childOff := childImagePC
+	cw := func(instr []byte) { copy(rig.cpu.memory[childOff:], instr); childOff += 8 }
+	cw(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	cw(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	cw(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x2E736F64)) // "dos."
+	cw(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 29, 0, 0))
+	cw(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x7262696C)) // "libr"
+	cw(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 29, 0, 4))
+	cw(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x00797261)) // "ary\0"
+	cw(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 29, 0, 8))
+	cw(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 29, 0, 0))
+	cw(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	cw(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	cw(ie64Instr(OP_MOVE, 4, IE64_SIZE_Q, 0, 1, 0, 0))
+	cw(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 29, 0, 0))
+	cw(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 99))
+	cw(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	cw(ie64Instr(OP_MOVE, 4, IE64_SIZE_Q, 0, 4, 0, 0))
+	cw(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	cw(ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 0, 2, 0, 0))
+	cw(ie64Instr(OP_MOVE, 11, IE64_SIZE_L, 1, 0, 0, errPerm))
+	permBranch := childOff
+	cw(ie64Instr(OP_BNE, 0, 0, 0, 10, 11, 0))
+	cw(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 'P'))
+	cw(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	cw(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+	failPrint := childOff
+	cw(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 'X'))
+	cw(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
+	cw(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+	copy(rig.cpu.memory[permBranch:], ie64Instr(OP_BNE, 0, 0, 0, 10, 11, uint32(int32(failPrint)-int32(permBranch))))
+	ensureImageCodeSizeAtLeast(t, rig.cpu.memory, t0, 0x380+uint32(childOff-childImagePC))
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childVA))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(childOff-childImagePC)))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 8))
+
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+8:]); got != 0xCAFE {
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+0:]); got != 0 {
+		t.Fatalf("CreateTask err=%d, want 0", got)
+	}
+	output := term.DrainOutput()
+	if !strings.Contains(output, "P") {
+		t.Fatalf("untrusted child did not report ERR_PERM output=%q", output[:min(len(output), 400)])
+	}
+	if _, ok := m16FindModuleRowByName(rig.cpu.memory, "dos.library"); ok {
+		t.Fatal("untrusted AddLibrary should not have created a registry row for dos.library")
+	}
+}
+
+func TestIExec_M16_ClientExitReclaimsOpenRows(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+	childImagePC := t0 + 0x380
+	childVA := uint32(userTask0Code + 0x380)
+	scratch0 := uint32(userTask0Stack + 0x100)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	name0 := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("leak.library\x00"))
+
+	childOff := childImagePC
+	cw := func(instr []byte) { copy(rig.cpu.memory[childOff:], instr); childOff += 8 }
+	cw(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	cw(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	cw(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x6B61656C)) // "leak"
+	cw(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 29, 0, 0))
+	cw(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x62696C2E)) // ".lib"
+	cw(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 29, 0, 4))
+	cw(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x79726172)) // "rary"
+	cw(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 29, 0, 8))
+	cw(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	cw(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 29, 0, 12))
+	cw(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 29, 0, 0))
+	cw(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	cw(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	cw(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+	ensureImageCodeSizeAtLeast(t, rig.cpu.memory, t0, 0x380+uint32(childOff-childImagePC))
+
+	pc0 := t0
+	w0 := func(instr []byte) { copy(rig.cpu.memory[pc0:], instr); pc0 += 8 }
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 8))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w0(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 8))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childVA))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(childOff-childImagePC)))
+	w0(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 24))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 32))
+	yieldPC0 := pc0
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w0(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC0)-int32(pc0))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0 {
+		t.Fatalf("owner AddLibrary err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+24:]); got != 0 {
+		t.Fatalf("CreateTask err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+32:]); got != 0xCAFE {
+		t.Fatalf("library owner task did not reach sentinel, got 0x%X", got)
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "leak.library")
+	if !ok {
+		t.Fatal("module row for leak.library not found")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 0 {
+		t.Fatalf("module open_count=%d after client exit, want 0", got)
+	}
+	for i := uint32(0); i < kdModuleOpenRowMax; i++ {
+		base := kernDataBase + kdModuleOpenRows + i*kdModuleOpenRowStride
+		if got := binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowTask:]); got != 0 {
+			t.Fatalf("open row %d still owned by pubid=%d after client exit", i, got)
+		}
+	}
+}
+
+func TestIExec_M16_AddLibrary_RejectsDuplicateOnlineRegistration(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("dup.library\x00"))
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 8))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 2))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 8))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 24))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 32))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 9))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 9))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 8))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 40))
+
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 24))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCloseLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 48))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 56))
+
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+56:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0 {
+		t.Fatalf("first AddLibrary err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+32:]); got != 0 {
+		t.Fatalf("OpenLibraryEx err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+40:]); got != errBadArg {
+		t.Fatalf("duplicate AddLibrary err=%d, want ERR_BADARG (%d)", got, errBadArg)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+48:]); got != 0 {
+		t.Fatalf("CloseLibrary after duplicate err=%d, want 0", got)
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "dup.library")
+	if !ok {
+		t.Fatal("module row for dup.library not found")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint16(rig.cpu.memory[row+kdModuleVersion:]); got != 1 {
+		t.Fatalf("module version=%d after duplicate add, want 1", got)
+	}
+	if got := binary.LittleEndian.Uint16(rig.cpu.memory[row+kdModuleRevision:]); got != 2 {
+		t.Fatalf("module revision=%d after duplicate add, want 2", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]); got != 1 {
+		t.Fatalf("module generation=%d after duplicate add, want 1", got)
+	}
+}
+
+func TestIExec_M16_AddLibrary_ReusesUnloadedRowForNewName(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	for i := uint32(0); i < kdModuleMax; i++ {
+		base := m16ModuleRowBase(i)
+		name := fmt.Sprintf("slot%02d.library", i)
+		copy(rig.cpu.memory[base+kdModuleName:base+kdModuleName+portNameLen], make([]byte, portNameLen))
+		copy(rig.cpu.memory[base+kdModuleName:], []byte(name))
+		if i == 0 {
+			binary.LittleEndian.PutUint32(rig.cpu.memory[base+kdModuleState:], m16ModStateUnloaded)
+		} else {
+			binary.LittleEndian.PutUint32(rig.cpu.memory[base+kdModuleState:], m16ModStateOnline)
+		}
+	}
+
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("fresh.library\x00"))
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 8))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 8))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 24))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+24:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0 {
+		t.Fatalf("AddLibrary err=%d, want 0", got)
+	}
+	row := m16ModuleRowBase(0)
+	if got := string(bytes.TrimRight(rig.cpu.memory[row+kdModuleName:row+kdModuleName+portNameLen], "\x00")); got != "fresh.library" {
+		t.Fatalf("reused row name=%q, want fresh.library", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
+		t.Fatalf("reused row state=%d, want ONLINE (%d)", got, m16ModStateOnline)
+	}
+}
+
+func TestIExec_M16_StaleTokenStaysInvalidWhenUnloadedRowIsReused(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	row := m16ModuleRowBase(0)
+	clear(rig.cpu.memory[row : row+kdModuleRowStride])
+	copy(rig.cpu.memory[row+kdModuleName:], []byte("old.library"))
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleState:], m16ModStateUnloaded)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleGeneration:], 1)
+
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("new.library\x00"))
+	staleToken := uint32(1 << 8)
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 8))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 8))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 24))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 32))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 40))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, staleToken))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCloseLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 48))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 56))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+56:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0 {
+		t.Fatalf("CreatePort err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+24:]); got != 0 {
+		t.Fatalf("AddLibrary err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+40:]); got != 0 {
+		t.Fatalf("OpenLibraryEx err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+48:]); got != 2 {
+		t.Fatalf("stale CloseLibrary err=%d, want ERR_BADHANDLE (2)", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]); got != 2 {
+		t.Fatalf("reused row generation=%d, want 2", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 1 {
+		t.Fatalf("reused row open_count=%d after stale close, want 1", got)
+	}
+}
+
+func TestIExec_M16_OpenLibraryEx_AbsentLibraryStartsLoadAndSweepsFailedMiss(t *testing.T) {
+	const (
+		offSigBit   = 0x380
+		offSigErr   = 0x388
+		offToken    = 0x390
+		offOpenErr  = 0x398
+		offOutcome  = 0x3A0
+		offSentinel = 0x3E0
+		offName     = 0x500
+	)
+	hostRoot := makeM16Phase1HostRoot(t)
+	rig, term := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {})
+	t0 := findShellClientCodeStart(t, rig.cpu.memory)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	writeName := func(s string) {
+		for i, b := range append([]byte(s), 0) {
+			w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, offName+uint32(i)))
+		}
+	}
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	writeName("autoload.library")
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSigBit))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offSigErr))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offName))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offSigBit))
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_L, 1, 29, 0, offOutcome))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offToken))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offOpenErr))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSentinel))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	shellData := findShellTaskDataBase(t, rig.cpu.memory)
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offSentinel:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X faultPC=0x%X faultCause=%d faultAddr=0x%X trapDepth=%d output=%q",
+			got, rig.cpu.faultPC, rig.cpu.faultCause, rig.cpu.faultAddr, rig.cpu.trapDepth, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offSigErr:]); got != 0 {
+		t.Fatalf("AllocSignal err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offToken:]); got != 0 {
+		t.Fatalf("OpenLibraryEx returned token=%d for absent library, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offOpenErr:]); got != errAgain {
+		t.Fatalf("OpenLibraryEx err=%d for absent library, want ERR_AGAIN (%d)", got, errAgain)
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "autoload.library")
+	if !ok {
+		t.Fatal("absent OpenLibraryEx did not create a persistent registry row")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateUnloaded {
+		t.Fatalf("module state=%d after failed autoload, want UNLOADED (%d)", got, m16ModStateUnloaded)
+	}
+	if got := m16ActiveWaiterCountForRow(rig.cpu.memory, rowIndex); got != 0 {
+		t.Fatalf("active waiter count=%d after failed autoload, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]); got != 0 {
+		t.Fatalf("module generation=%d after first miss, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 0 {
+		t.Fatalf("module open_count=%d after first miss, want 0", got)
+	}
+	sigBit := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offSigBit:])
+	wantSigMask := uint32(1) << uint32(sigBit)
+	shellSlot := uint32(maxTasks)
+	for slot := uint32(0); slot < maxTasks; slot++ {
+		base := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
+		if binary.LittleEndian.Uint64(rig.cpu.memory[base+kdTaskDataBase:]) == uint64(shellData) {
+			shellSlot = slot
+			break
+		}
+	}
+	if shellSlot == maxTasks {
+		t.Fatalf("could not find shell slot for data base 0x%X", shellData)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+64+shellSlot*32+24:]); got != wantSigMask {
+		t.Fatalf("shell slot %d pending signals=0x%X, want waiter wake bit 0x%X (sigBit=%d)", shellSlot, got, wantSigMask, sigBit)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+0:]); got != dosErrNotFnd {
+		t.Fatalf("waiter status=%d after failed autoload, want DOS_ERR_NOTFOUND (%d)", got, dosErrNotFnd)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+4:]); got != 0 {
+		t.Fatalf("waiter token=%d after failed autoload, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+8:]); got != 0 {
+		t.Fatalf("waiter version=%d after failed autoload, want 0", got)
+	}
+}
+
+func TestIExec_M16_OpenLibraryEx_ImmediateAutoloadStartFailurePublishesRealStatus(t *testing.T) {
+	const (
+		offStart    = 0x370
+		offSigBit   = 0x380
+		offSigErr   = 0x388
+		offToken    = 0x390
+		offOpenErr  = 0x398
+		offOutcome  = 0x3A0
+		offSentinel = 0x3E0
+		offName     = 0x500
+	)
+	hostRoot := makeM16Phase1HostRoot(t)
+	rig, term := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {})
+	t0 := findShellClientCodeStart(t, rig.cpu.memory)
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	writeName := func(s string) {
+		for i, b := range append([]byte(s), 0) {
+			w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, offName+uint32(i)))
+		}
+	}
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	waitLoop := pc
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_B, 1, 29, 0, offStart))
+	beqStart := pc
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 1, 0, 0))
+	writeName("queuefull.library")
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSigBit))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offSigErr))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offName))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offSigBit))
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_L, 1, 29, 0, offOutcome))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offToken))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offOpenErr))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSentinel))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+	waitYield := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(waitLoop)-int32(pc))))
+	copy(rig.cpu.memory[beqStart:], ie64Instr(OP_BEQ, 0, 0, 0, 1, 0, uint32(int32(waitYield)-int32(beqStart))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(6 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	_, dosPortBase, ok := findPublicPortIDByName(rig.cpu.memory, "dos.library")
+	if !ok {
+		t.Fatal("dos.library port not found before queue-full autoload test")
+	}
+	rig.cpu.memory[dosPortBase+kdPortCount] = 4
+	shellData := findShellTaskDataBase(t, rig.cpu.memory)
+	rig.cpu.memory[shellData+offStart] = 1
+
+	rig.cpu.running.Store(true)
+	done = make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offSentinel:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X sigErr=%d openErr=%d outcome=(%d,%d,%d) faultPC=0x%X faultCause=%d faultAddr=0x%X trapDepth=%d output=%q",
+			got,
+			binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offSigErr:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offOpenErr:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+0:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+4:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+8:]),
+			rig.cpu.faultPC, rig.cpu.faultCause, rig.cpu.faultAddr, rig.cpu.trapDepth, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offOpenErr:]); got != errAgain {
+		t.Fatalf("OpenLibraryEx err=%d with full DOS port, want ERR_AGAIN (%d)", got, errAgain)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+0:]); got != errFull {
+		t.Fatalf("waiter status=%d after immediate autoload start failure, want ERR_FULL (%d)", got, errFull)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+4:]); got != 0 {
+		t.Fatalf("waiter token=%d after immediate autoload start failure, want 0", got)
+	}
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "queuefull.library")
+	if !ok {
+		t.Fatal("queue-full OpenLibraryEx did not create a persistent registry row")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateUnloaded {
+		t.Fatalf("module state=%d after immediate autoload start failure, want UNLOADED (%d)", got, m16ModStateUnloaded)
+	}
+}
+
+func TestIExec_M16_OpenLibraryEx_AutoloadsGraphicsLibraryAndCompletesWaiter(t *testing.T) {
+	const (
+		offDosPort  = 0x300
+		offReplyPrt = 0x308
+		offBufferVA = 0x310
+		offShareHdl = 0x318
+		offRunReply = 0x320
+		offHwRes    = 0x360
+		offSigBit   = 0x380
+		offSigErr   = 0x388
+		offOpenErr  = 0x390
+		offOutcome  = 0x398
+		offSentinel = 0x3D8
+		offName     = 0x500
+	)
+	hostRoot := makeM16Phase1HostRoot(t)
+	rig, term := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {})
+	t0 := findShellClientCodeStart(t, rig.cpu.memory)
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	writeName := func(s string) {
+		for i, b := range append([]byte(s), 0) {
+			w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, offName+uint32(i)))
+		}
+	}
+	writeStringAt := func(off uint32, s string) {
+		for i, b := range append([]byte(s), 0) {
+			w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, off+uint32(i)))
+		}
+	}
+	writeBufferBytes := func(data []byte) {
+		w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+		for i, b := range data {
+			w(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+		}
+	}
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	findLoop := pc
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := pc
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braFind := pc
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(braFind))))
+	foundDos := pc
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(foundDos)-int32(beqInstr))))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+	writeBufferBytes([]byte("RESOURCES/hardware.resource\x00\x00"))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, dosRun))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offRunReply))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offRunReply+8))
+	writeStringAt(offHwRes, "hardware.resource")
+	waitHwLoop := pc
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offHwRes))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqHwReady := pc
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braWaitHw := pc
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(waitHwLoop)-int32(braWaitHw))))
+	hwReady := pc
+	copy(rig.cpu.memory[beqHwReady:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(hwReady)-int32(beqHwReady))))
+	writeName("graphics.library")
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSigBit))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offSigErr))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offName))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offSigBit))
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_L, 1, 29, 0, offOutcome))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offOpenErr))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSentinel))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	shellData := findShellTaskDataBase(t, rig.cpu.memory)
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offSentinel:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offRunReply:]); got != dosOK {
+		output := term.DrainOutput()
+		t.Fatalf("DOS_RUN hardware.resource reply=%d, want dosOK (%d) data0=%d output=%q",
+			got, dosOK, binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offRunReply+8:]), output[:min(len(output), 400)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offOpenErr:]); got != errAgain {
+		t.Fatalf("OpenLibraryEx err=%d, want ERR_AGAIN (%d)", got, errAgain)
+	}
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "graphics.library")
+	if !ok {
+		t.Fatal("graphics.library row missing after autoload")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
+		output := term.DrainOutput()
+		t.Fatalf("module state=%d after autoload, want ONLINE (%d) outcome=(status=%d token=%d version=%d) row(owner=%d port=%d gen=%d open=%d) dosPub=%d output=%q",
+			got, m16ModStateOnline,
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+0:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+4:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+8:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModulePublicPort:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdDosLibPubID:]),
+			output[:min(len(output), 400)])
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 1 {
+		output := term.DrainOutput()
+		t.Fatalf("module open_count=%d after first autoload, want 1 rowIndex=%d outcome=(status=%d token=%d version=%d) activeWaiters=%d output=%q",
+			got,
+			rowIndex,
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+0:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+4:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+8:]),
+			m16ActiveWaiterCountForRow(rig.cpu.memory, rowIndex),
+			output[:min(len(output), 400)])
+	}
+	if got := m16ActiveWaiterCountForRow(rig.cpu.memory, rowIndex); got != 0 {
+		t.Fatalf("active waiter count=%d after successful autoload, want 0", got)
+	}
+	status := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+0:])
+	token := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+4:])
+	version := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+8:])
+	if status != 0 || token == 0 || version != 11 {
+		t.Fatalf("waiter outcome=(status=%d token=%d version=%d), want success/nonzero token/version 11", status, token, version)
+	}
+	output := term.DrainOutput()
+	if got := strings.Count(output, "graphics.library M11 [Task "); got != 1 {
+		t.Fatalf("graphics autoload banner count=%d, want 1 output=%q", got, output[:min(len(output), 400)])
+	}
+}
+
+func TestIExec_M16_Phase1HostRoot_DOSRunGraphicsAfterHardwareResource(t *testing.T) {
+	hostRoot := makeM16Phase1HostRoot(t)
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nRESOURCES/hardware.resource\nLIBS:graphics.library\n", 10*time.Second)
+	if !strings.Contains(output, "hardware.resource M12.5 [Task ") {
+		t.Fatalf("hardware.resource did not launch in phase1 host root output=%q", output[:min(len(output), 800)])
+	}
+	if !strings.Contains(output, "graphics.library M11 [Task ") {
+		t.Fatalf("graphics.library did not launch after hardware.resource in phase1 host root output=%q", output[:min(len(output), 800)])
+	}
+}
+
+func findPublicPortIDByName(mem []byte, name string) (uint32, uint32, bool) {
+	target := []byte(name)
+	for i := uint32(0); i < kdPortMax; i++ {
+		base := uint32(kernDataBase + kdPortBase + i*kdPortStride)
+		if mem[base+kdPortValid] == 0 {
+			continue
+		}
+		if mem[base+kdPortFlags]&pfPublic == 0 {
+			continue
+		}
+		raw := mem[base+kdPortName : base+kdPortName+portNameLen]
+		if bytes.Equal(bytes.TrimRight(raw, "\x00"), target) {
+			return i, base, true
+		}
+	}
+	return 0, 0, false
+}
+
+func enqueuePortMessage(mem []byte, portBase uint32, msgType uint32, sender uint32, data0 uint64, data1 uint64, replyPort uint16, share uint32) {
+	tail := uint32(mem[portBase+kdPortTail])
+	msgBase := portBase + kdPortMsgs + tail*kdMsgSize
+	binary.LittleEndian.PutUint32(mem[msgBase+kdMsgType:], msgType)
+	binary.LittleEndian.PutUint32(mem[msgBase+kdMsgSender:], sender)
+	binary.LittleEndian.PutUint64(mem[msgBase+kdMsgData0:], data0)
+	binary.LittleEndian.PutUint64(mem[msgBase+kdMsgData1:], data1)
+	binary.LittleEndian.PutUint16(mem[msgBase+kdMsgReplyPort:], replyPort)
+	binary.LittleEndian.PutUint32(mem[msgBase+kdMsgShareHdl:], share)
+	mem[portBase+kdPortTail] = byte((tail + 1) & 3)
+	mem[portBase+kdPortCount]++
+	owner := uint32(mem[portBase+kdPortOwner])
+	tcb := uint32(kernDataBase + kdTCBBase + owner*tcbStride)
+	pending := binary.LittleEndian.Uint32(mem[tcb+tcbSigRecvOff:])
+	pending |= sigfPort
+	binary.LittleEndian.PutUint32(mem[tcb+tcbSigRecvOff:], pending)
+	if mem[tcb+tcbStateOff] == taskWaiting {
+		waitMask := binary.LittleEndian.Uint32(mem[tcb+tcbSigWaitOff:])
+		if waitMask&sigfPort != 0 {
+			mem[tcb+tcbStateOff] = taskReady
+		}
+	}
+}
+
+func TestIExec_M16_DirectDOSLoadLibAutoloadsGraphics(t *testing.T) {
+	const dosLoadLib = 11
+
+	hostRoot := makeM16Phase1HostRoot(t)
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	for _, ch := range "\nRESOURCES/hardware.resource\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(6 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	if _, _, ok := findPublicPortIDByName(mem, "hardware.resource"); !ok {
+		output := term.DrainOutput()
+		t.Fatalf("hardware.resource not online before direct DOS_LOADLIB output=%q", output[:min(len(output), 800)])
+	}
+	if _, _, ok := findPublicPortIDByName(mem, "graphics.library"); ok {
+		t.Fatal("graphics.library unexpectedly already online before direct DOS_LOADLIB")
+	}
+
+	rowIndex := uint32(0xFFFFFFFF)
+	for i := uint32(0); i < kdModuleMax; i++ {
+		row := m16ModuleRowBase(i)
+		if mem[row+kdModuleName] == 0 {
+			rowIndex = i
+			break
+		}
+	}
+	if rowIndex == 0xFFFFFFFF {
+		t.Fatal("no free module row available for direct DOS_LOADLIB test")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	copy(mem[row+kdModuleName:row+kdModuleName+portNameLen], append([]byte("graphics.library"), make([]byte, portNameLen-len("graphics.library"))...))
+	binary.LittleEndian.PutUint32(mem[row+kdModuleState:], m16ModStateLoading)
+	binary.LittleEndian.PutUint32(mem[row+kdModuleGeneration:], 0)
+	binary.LittleEndian.PutUint32(mem[row+kdModuleOwningTask:], 0)
+	binary.LittleEndian.PutUint32(mem[row+kdModulePublicPort:], 0)
+	binary.LittleEndian.PutUint32(mem[row+kdModuleOpenCount:], 0)
+	binary.LittleEndian.PutUint32(mem[row+kdModuleFlags:], 0)
+	binary.LittleEndian.PutUint64(mem[row+kdModuleWaitersHead:], 0)
+
+	dosPortID, dosPortBase, ok := findPublicPortIDByName(mem, "dos.library")
+	if !ok {
+		t.Fatal("dos.library port not found")
+	}
+	dosPub := binary.LittleEndian.Uint32(mem[kernDataBase+kdDosLibPubID:])
+	dosData := uint32(taskLayoutFieldQ(mem, uint64(dosPub), kdTaskDataBase))
+	clear(mem[dosData+704 : dosData+704+64])
+	clear(mem[dosData+824 : dosData+824+64])
+	clear(mem[dosData+840 : dosData+840+64])
+	clear(mem[dosData+1000 : dosData+1000+32])
+	clear(mem[dosData+304 : dosData+304+16])
+	clear(mem[dosData+608 : dosData+608+24])
+	nextIDBefore := binary.LittleEndian.Uint64(mem[kernDataBase+kdTaskIDNext:])
+	enqueuePortMessage(mem, dosPortBase, dosLoadLib, dosPub, uint64(rowIndex), 0, replyPortNone, 0)
+
+	rig.cpu.running.Store(true)
+	done = make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(6 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint32(mem[row+kdModuleState:]); got != m16ModStateOnline {
+		nextIDAfter := binary.LittleEndian.Uint64(mem[kernDataBase+kdTaskIDNext:])
+		dosScratchZ := func(off uint32, n uint32) string {
+			raw := mem[dosData+off : dosData+off+n]
+			if idx := bytes.IndexByte(raw, 0); idx >= 0 {
+				raw = raw[:idx]
+			}
+			return string(raw)
+		}
+		output := term.DrainOutput()
+		t.Fatalf("direct DOS_LOADLIB row state=%d, want ONLINE (%d) row(owner=%d port=%d gen=%d open=%d) dosPort=%d nextID(before=%d after=%d) graphicsPort=%t dosScratch(name=%q path=%q saved824=%q saved840=%q hostfs608=0x%X alloc624=%d task304=%d err312=%d) output=%q",
+			got, m16ModStateOnline,
+			binary.LittleEndian.Uint32(mem[row+kdModuleOwningTask:]),
+			binary.LittleEndian.Uint32(mem[row+kdModulePublicPort:]),
+			binary.LittleEndian.Uint32(mem[row+kdModuleGeneration:]),
+			binary.LittleEndian.Uint32(mem[row+kdModuleOpenCount:]),
+			dosPortID,
+			nextIDBefore,
+			nextIDAfter,
+			func() bool {
+				_, _, ok := findPublicPortIDByName(mem, "graphics.library")
+				return ok
+			}(),
+			dosScratchZ(1000, 32),
+			dosScratchZ(704, 64),
+			dosScratchZ(824, 64),
+			dosScratchZ(840, 64),
+			binary.LittleEndian.Uint64(mem[dosData+608:]),
+			binary.LittleEndian.Uint64(mem[dosData+624:]),
+			binary.LittleEndian.Uint64(mem[dosData+304:]),
+			binary.LittleEndian.Uint64(mem[dosData+312:]),
+			output[:min(len(output), 800)])
+	}
+	if _, _, ok := findPublicPortIDByName(mem, "graphics.library"); !ok {
+		t.Fatal("graphics.library port not found after direct DOS_LOADLIB")
+	}
+}
+
+func TestIExec_M16_DOSRunLIBSPathDoesNotGrantTrustedInternal(t *testing.T) {
+	hostRoot := makeM16Phase1HostRoot(t)
+	image, err := os.ReadFile(filepath.Join(repoRootDir(t), "sdk", "intuitionos", "iexec", "boot_shell.elf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchHostShellELFWithDataMarker(t, image, 'Z')
+	writeHostRootFileBytes(t, hostRoot, "LIBS/trustcheck", image)
+
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	for _, ch := range "\nLIBS:trustcheck\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(6 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	mem := rig.cpu.memory
+	taskID, ok := findTaskByDataMarker(mem, 'Z')
+	if !ok {
+		output := term.DrainOutput()
+		t.Fatalf("LIBS DOS_RUN child marker not found, output=%q", output[:min(len(output), 800)])
+	}
+	if got := taskLayoutFieldL(mem, taskID, kdTaskLayoutFlags); got&taskLayoutTrustedInt != 0 {
+		t.Fatalf("LIBS DOS_RUN child layout.flags=%#x, trusted-internal bit must stay clear for path-launched programs", got)
+	}
+}
+
+func TestIExec_M16_OpenLibraryEx_ConcurrentAutoloadStartsExactlyOneLoad(t *testing.T) {
+	const (
+		offDosPort  = 0x300
+		offReplyPrt = 0x308
+		offBufferVA = 0x310
+		offShareHdl = 0x318
+		offRunReply = 0x320
+		offHwRes    = 0x360
+		offSigBitA  = 0x380
+		offSigErrA  = 0x388
+		offErrA     = 0x390
+		offSigBitB  = 0x398
+		offSigErrB  = 0x3A0
+		offErrB     = 0x3A8
+		offOutcomeA = 0x3B0
+		offOutcomeB = 0x3C0
+		offSentinel = 0x3D0
+		offName     = 0x500
+	)
+	hostRoot := makeM16Phase1HostRoot(t)
+	rig, term := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {})
+	t0 := findShellClientCodeStart(t, rig.cpu.memory)
+
+	pc0 := t0
+	w0 := func(instr []byte) { copy(rig.cpu.memory[pc0:], instr); pc0 += 8 }
+	writeName := func(s string) {
+		for i, b := range append([]byte(s), 0) {
+			w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w0(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, offName+uint32(i)))
+		}
+	}
+	writeStringAt := func(off uint32, s string) {
+		for i, b := range append([]byte(s), 0) {
+			w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w0(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, off+uint32(i)))
+		}
+	}
+	writeBufferBytes := func(data []byte) {
+		w0(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offBufferVA))
+		for i, b := range data {
+			w0(ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w0(ie64Instr(OP_STORE, 5, IE64_SIZE_B, 0, 4, 0, uint32(i)))
+		}
+	}
+	w0(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w0(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	findLoop := pc0
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w0(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 16))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqInstr := pc0
+	w0(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braFind := pc0
+	w0(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(braFind))))
+	foundDos := pc0
+	copy(rig.cpu.memory[beqInstr:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(foundDos)-int32(beqInstr))))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offDosPort))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 4096))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w0(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+	writeBufferBytes([]byte("RESOURCES/hardware.resource\x00\x00"))
+	w0(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offDosPort))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, dosRun))
+	w0(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w0(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
+	w0(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w0(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w0(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offRunReply))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offRunReply+8))
+	writeStringAt(offHwRes, "hardware.resource")
+	waitHwLoop := pc0
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w0(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offHwRes))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqHwReady := pc0
+	w0(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braWaitHw := pc0
+	w0(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(waitHwLoop)-int32(braWaitHw))))
+	hwReady := pc0
+	copy(rig.cpu.memory[beqHwReady:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(hwReady)-int32(beqHwReady))))
+	writeName("graphics.library")
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 16))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSigBitA))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offSigErrA))
+	w0(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offName))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w0(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offSigBitA))
+	w0(ie64Instr(OP_ADD, 4, IE64_SIZE_L, 1, 29, 0, offOutcomeA))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offErrA))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 17))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSigBitB))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offSigErrB))
+	w0(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offName))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w0(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offSigBitB))
+	w0(ie64Instr(OP_ADD, 4, IE64_SIZE_L, 1, 29, 0, offOutcomeB))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w0(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offErrB))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSentinel))
+	yieldPC0 := pc0
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w0(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC0)-int32(pc0))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	shellData := findShellTaskDataBase(t, rig.cpu.memory)
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offSentinel:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offRunReply:]); got != dosOK {
+		output := term.DrainOutput()
+		t.Fatalf("DOS_RUN hardware.resource reply=%d, want dosOK (%d) data0=%d output=%q",
+			got, dosOK, binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offRunReply+8:]), output[:min(len(output), 400)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offErrA:]); got != errAgain {
+		t.Fatalf("first OpenLibraryEx err=%d, want ERR_AGAIN (%d)", got, errAgain)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offErrB:]); got != errAgain {
+		t.Fatalf("second OpenLibraryEx err=%d, want ERR_AGAIN (%d)", got, errAgain)
+	}
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "graphics.library")
+	if !ok {
+		t.Fatal("graphics.library row missing after concurrent autoload")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
+		output := term.DrainOutput()
+		t.Fatalf("module state=%d after concurrent autoload, want ONLINE (%d) outcomeA=(%d,%d,%d) outcomeB=(%d,%d,%d) row(owner=%d port=%d gen=%d open=%d) dosPub=%d output=%q",
+			got, m16ModStateOnline,
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeA+0:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeA+4:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeA+8:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeB+0:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeB+4:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeB+8:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModulePublicPort:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdDosLibPubID:]),
+			output[:min(len(output), 400)])
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 2 {
+		t.Fatalf("module open_count=%d after concurrent autoload, want 2 rowIndex=%d outcomeA=(%d,%d,%d) outcomeB=(%d,%d,%d) activeWaiters=%d",
+			got,
+			rowIndex,
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeA+0:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeA+4:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeA+8:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeB+0:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeB+4:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeB+8:]),
+			m16ActiveWaiterCountForRow(rig.cpu.memory, rowIndex))
+	}
+	statusA := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeA+0:])
+	tokenA := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeA+4:])
+	versionA := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeA+8:])
+	statusB := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeB+0:])
+	tokenB := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeB+4:])
+	versionB := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcomeB+8:])
+	if statusA != 0 || statusB != 0 || tokenA == 0 || tokenA != tokenB || versionA != 11 || versionB != 11 {
+		t.Fatalf("concurrent waiter outcomes A=(%d,%d,%d) B=(%d,%d,%d), want shared success token/version 11", statusA, tokenA, versionA, statusB, tokenB, versionB)
+	}
+	output := term.DrainOutput()
+	if got := strings.Count(output, "graphics.library M11 [Task "); got != 1 {
+		t.Fatalf("graphics concurrent autoload banner count=%d, want 1 output=%q", got, output[:min(len(output), 400)])
+	}
+}
+
+func TestIExec_M16_OpenLibraryEx_LoadingRowQueuesConcurrentWaiters(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	t0 := images[0]
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	scratch0 := uint32(userTask0Stack + 0x100)
+	name0 := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("stampede.library\x00"))
+	row := m16ModuleRowBase(0)
+	copy(rig.cpu.memory[row+kdModuleName:row+kdModuleName+portNameLen], append([]byte("stampede.library"), make([]byte, portNameLen-len("stampede.library"))...))
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleState:], m16ModStateLoading)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleGeneration:], 9)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[row+kdModuleWaitersHead:], 0)
+
+	pc0 := t0
+	w0 := func(instr []byte) { copy(rig.cpu.memory[pc0:], instr); pc0 += 8 }
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 16))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 0))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w0(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, 0))
+	w0(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, scratch0+32))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 17))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 40))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 48))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w0(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, 40))
+	w0(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, scratch0+64))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 56))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 72))
+	yieldPC0 := pc0
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w0(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC0)-int32(pc0))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+72:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != errAgain {
+		t.Fatalf("first OpenLibraryEx err=%d, want ERR_AGAIN (%d)", got, errAgain)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+56:]); got != errAgain {
+		t.Fatalf("second OpenLibraryEx err=%d, want ERR_AGAIN (%d)", got, errAgain)
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "stampede.library")
+	if !ok {
+		t.Fatal("stampede.library row missing after concurrent OpenLibraryEx calls")
+	}
+	row = m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateLoading {
+		t.Fatalf("module state=%d, want LOADING (%d)", got, m16ModStateLoading)
+	}
+	if got := m16ActiveWaiterCountForRow(rig.cpu.memory, rowIndex); got != 2 {
+		t.Fatalf("active waiter count=%d, want 2", got)
+	}
+}
+
+func TestIExec_M16_OpenLibraryEx_BadWaiterArgsDoNotPoisonRow(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	outcome0 := scratch0 + 32
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("poison.library\x00"))
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 5)) // invalid waiter bit: not allocatable user signal
+	w(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, outcome0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 16))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(400 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0xCAFE {
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+0:]); got != 0 {
+		t.Fatalf("OpenLibraryEx token=%d with bad waiter args, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+8:]); got != errBadArg {
+		t.Fatalf("OpenLibraryEx err=%d with bad waiter args, want ERR_BADARG (%d)", got, errBadArg)
+	}
+	if _, ok := m16FindModuleRowByName(rig.cpu.memory, "poison.library"); ok {
+		t.Fatal("bad waiter args should not leave behind a persistent module row")
+	}
+}
+
+func TestIExec_M16_AddLibrary_CompletesMixedVersionWaitersIndependently(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase:], 1)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[kernDataBase+kdTaskIDNext:], 2)
+
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	outcome0A := scratch0 + 64
+	outcome0B := scratch0 + 80
+	name0 := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("mixed.library\x00"))
+	clear(rig.cpu.memory[scratch0 : scratch0+128])
+	rowIndex := uint32(0xFFFFFFFF)
+	for i := uint32(1); i < kdModuleMax; i++ {
+		row := m16ModuleRowBase(i)
+		if rig.cpu.memory[row+kdModuleName] == 0 {
+			rowIndex = i
+			break
+		}
+	}
+	if rowIndex == 0xFFFFFFFF {
+		t.Fatal("no nonzero free module row found for mixed.library")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	copy(rig.cpu.memory[row+kdModuleName:row+kdModuleName+portNameLen], append([]byte("mixed.library"), make([]byte, portNameLen-len("mixed.library"))...))
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleState:], m16ModStateLoading)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleGeneration:], 0)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleOwningTask:], 0)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModulePublicPort:], 0)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleOpenCount:], 0)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleFlags:], 0)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[row+kdModuleWaitersHead:], 0)
+
+	pc0 := t0
+	w0 := func(instr []byte) { copy(rig.cpu.memory[pc0:], instr); pc0 += 8 }
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 16))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 0))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 17))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 16))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 24))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, 0))
+	w0(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, outcome0A))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 32))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 7))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, 16))
+	w0(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, outcome0B))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 40))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 104))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 112))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 5))
+	w0(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 104))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 120))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 96))
+	yieldPC0 := pc0
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w0(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC0)-int32(pc0))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+96:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 400)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+112:]); got != 0 {
+		t.Fatalf("CreatePort err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+120:]); got != 0 {
+		t.Fatalf("AddLibrary err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+32:]); got != errAgain {
+		t.Fatalf("first OpenLibraryEx err=%d, want ERR_AGAIN (%d)", got, errAgain)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+40:]); got != errAgain {
+		t.Fatalf("second OpenLibraryEx err=%d, want ERR_AGAIN (%d)", got, errAgain)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+112:]); got != 0 {
+		t.Fatalf("CreatePort err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+120:]); got != 0 {
+		t.Fatalf("AddLibrary err=%d, want 0", got)
+	}
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "mixed.library")
+	if !ok {
+		t.Fatal("mixed.library row missing after AddLibrary")
+	}
+	row = m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
+		t.Fatalf("module state=%d, want ONLINE (%d)", got, m16ModStateOnline)
+	}
+	if got := m16ModuleWaiterCount(rig.cpu.memory, row); got != 0 {
+		t.Fatalf("waiter count=%d after completion, want 0", got)
+	}
+	statusA := binary.LittleEndian.Uint32(rig.cpu.memory[outcome0A+0:])
+	tokenA := binary.LittleEndian.Uint32(rig.cpu.memory[outcome0A+4:])
+	versionA := binary.LittleEndian.Uint32(rig.cpu.memory[outcome0A+8:])
+	statusB := binary.LittleEndian.Uint32(rig.cpu.memory[outcome0B+0:])
+	tokenB := binary.LittleEndian.Uint32(rig.cpu.memory[outcome0B+4:])
+	versionB := binary.LittleEndian.Uint32(rig.cpu.memory[outcome0B+8:])
+	waiter0 := m16ModuleWaiterBase(0)
+	waiter1 := m16ModuleWaiterBase(1)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+64+24:]); got != 0x30000 {
+		t.Fatalf("task 0 pending signals=0x%X, want both waiter bits 0x30000 rowIndex=%d rowState=%d openCount=%d outcomeA=(%d,%d,%d) outcomeB=(%d,%d,%d) waiter0=(task=%d min=%d sig=%d out=0x%X aux=%d next=%d) waiter1=(task=%d min=%d sig=%d out=0x%X aux=%d next=%d)",
+			got,
+			rowIndex,
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]),
+			statusA, tokenA, versionA,
+			statusB, tokenB, versionB,
+			binary.LittleEndian.Uint32(rig.cpu.memory[waiter0+kdModuleWaiterTask:]),
+			binary.LittleEndian.Uint16(rig.cpu.memory[waiter0+kdModuleWaiterMinVer:]),
+			binary.LittleEndian.Uint16(rig.cpu.memory[waiter0+kdModuleWaiterSigBit:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[waiter0+kdModuleWaiterOutcome:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[waiter0+12:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[waiter0+kdModuleWaiterNext:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[waiter1+kdModuleWaiterTask:]),
+			binary.LittleEndian.Uint16(rig.cpu.memory[waiter1+kdModuleWaiterMinVer:]),
+			binary.LittleEndian.Uint16(rig.cpu.memory[waiter1+kdModuleWaiterSigBit:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[waiter1+kdModuleWaiterOutcome:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[waiter1+12:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[waiter1+kdModuleWaiterNext:]))
+	}
+
+	if statusA != 0 || tokenA == 0 || versionA != 5 {
+		t.Fatalf("first waiter outcome=(status=%d token=%d version=%d), want success/nonzero token/version 5", statusA, tokenA, versionA)
+	}
+	if statusB != errLibVersion || tokenB != 0 || versionB != 5 {
+		t.Fatalf("second waiter outcome=(status=%d token=%d version=%d), want LIB_ERR_VERSION/0/version 5", statusB, tokenB, versionB)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 1 {
+		pubid := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase:])
+		openRowCount := uint32(0)
+		openRows := make([]string, 0, 4)
+		rawRows := make([]string, 0, 4)
+		for i := uint32(0); i < kdModuleOpenRowMax; i++ {
+			base := kernDataBase + kdModuleOpenRows + i*kdModuleOpenRowStride
+			count := binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowCount:])
+			if i < 4 {
+				rawRows = append(rawRows, fmt.Sprintf("[%d]=(task=%d idx=%d gen=%d count=%d)",
+					i,
+					binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowTask:]),
+					binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowIndex:]),
+					binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowGen:]),
+					count))
+			}
+			if count != 0 {
+				openRows = append(openRows, fmt.Sprintf("[%d]=(task=%d idx=%d gen=%d count=%d)",
+					i,
+					binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowTask:]),
+					binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowIndex:]),
+					binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowGen:]),
+					count))
+			}
+			if binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowTask:]) != pubid {
+				continue
+			}
+			if binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowIndex:]) != rowIndex {
+				continue
+			}
+			openRowCount = binary.LittleEndian.Uint32(rig.cpu.memory[base+kdModuleOpenRowCount:])
+			break
+		}
+		t.Fatalf("module open_count=%d, want 1 successful waiter openRowCount=%d pubid=%d rowIndex=%d openRows=%v rawRows=%v outcomeA=(%d,%d,%d) outcomeB=(%d,%d,%d)",
+			got, openRowCount, pubid, rowIndex, openRows, rawRows, statusA, tokenA, versionA, statusB, tokenB, versionB)
+	}
+}
+
+func TestIExec_M16_AddLibrary_RejectsWrongLoadingOwner(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 2)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("owned.library\x00"))
+
+	pubid1 := uint32(0x1234)
+	row := m16ModuleRowBase(0)
+	copy(rig.cpu.memory[row+kdModuleName:row+kdModuleName+portNameLen], append([]byte("owned.library"), make([]byte, portNameLen-len("owned.library"))...))
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleState:], m16ModStateLoading)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleOwningTask:], pubid1)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleGeneration:], 7)
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 5))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 24))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(400 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+24:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != errBadArg {
+		t.Fatalf("AddLibrary err=%d from wrong loading owner, want ERR_BADARG (%d)", got, errBadArg)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateLoading {
+		t.Fatalf("row state=%d after wrong-owner AddLibrary, want LOADING (%d)", got, m16ModStateLoading)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]); got != pubid1 {
+		t.Fatalf("row owner=%d after wrong-owner AddLibrary, want preserved owner %d", got, pubid1)
+	}
+}
+
+func TestIExec_M16_LoadingOwnerExitWakesWaitersAndUnloadsRow(t *testing.T) {
+	rig, _, t0, data0 := bootAndResetToTask0Only(t)
+	outcome0 := data0 + 64
+	clear(rig.cpu.memory[data0 : data0+128])
+
+	// This harness seeds rows directly, so give the live slots explicit
+	// nonzero public IDs. The waiter publication path resolves tasks by
+	// public ID, and task0's default pubid in this reset helper is 0.
+	binary.LittleEndian.PutUint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase:], 1)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+kdTaskPubIDStr:], 2)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[kernDataBase+kdTaskIDNext:], 3)
+
+	name := "failed.library"
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, name)
+	if ok {
+		t.Fatalf("unexpected preexisting row for %s", name)
+	}
+	nameAddr := writeTaskDataLiteral(t, rig.cpu.memory, data0, 0x340, []byte(name+"\x00"))
+	_ = nameAddr
+	rowIndex = 0
+	row := m16ModuleRowBase(rowIndex)
+	pubid0 := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase:])
+	pubid1 := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+kdTaskPubIDStr:])
+	pt1 := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(pubid1), kdTaskLayoutPT))
+	copy(rig.cpu.memory[row+kdModuleName:row+kdModuleName+portNameLen], append([]byte(name), make([]byte, portNameLen-len(name))...))
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleState:], m16ModStateLoading)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleGeneration:], 3)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleOwningTask:], pubid1)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[row+kdModuleWaitersHead:], 1)
+
+	waiter0 := m16ModuleWaiterBase(0)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[waiter0+kdModuleWaiterTask:], pubid0)
+	binary.LittleEndian.PutUint16(rig.cpu.memory[waiter0+kdModuleWaiterMinVer:], 3)
+	binary.LittleEndian.PutUint16(rig.cpu.memory[waiter0+kdModuleWaiterSigBit:], 16)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[waiter0+kdModuleWaiterOutcome:], outcome0)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[waiter0+12:], rowIndex)
+
+	pc0 := t0
+	w0 := func(instr []byte) { copy(rig.cpu.memory[pc0:], instr); pc0 += 8 }
+	yieldPC0 := pc0
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w0(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC0)-int32(pc0))))
+
+	pc1 := uint32(userTask1Code)
+	w1 := func(instr []byte) { copy(rig.cpu.memory[pc1:], instr); pc1 += 8 }
+	w1(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+	tcb1 := kernDataBase + kdTCBBase + tcbStride
+	binary.LittleEndian.PutUint64(rig.cpu.memory[tcb1+tcbPCOff:], uint64(userTask1Code))
+	binary.LittleEndian.PutUint64(rig.cpu.memory[tcb1+tcbUSPOff:], uint64(userTask1Stack+MMU_PAGE_SIZE))
+	binary.LittleEndian.PutUint32(rig.cpu.memory[tcb1+tcbSigWaitOff:], 0)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[tcb1+tcbSigRecvOff:], 0)
+	rig.cpu.memory[tcb1+tcbStateOff] = taskRunning
+	rig.cpu.memory[tcb1+tcbGPRSavedOff] = 0
+	binary.LittleEndian.PutUint64(rig.cpu.memory[kernDataBase+kdNumTasks:], 2)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[kernDataBase:], 1)
+	if pt1 == 0 {
+		pt1 = uint32(rig.cpu.ptbr)
+	}
+	rig.cpu.PC = uint64(userTask1Code)
+	rig.cpu.regs[31] = uint64(userTask1Stack + MMU_PAGE_SIZE)
+	rig.cpu.userSP = uint64(userTask1Stack + MMU_PAGE_SIZE)
+	rig.cpu.ptbr = pt1
+	rig.cpu.supervisorMode = false
+	rig.cpu.previousMode = false
+	rig.cpu.trapped = false
+	rig.cpu.faultCause = 0
+	rig.cpu.faultAddr = 0
+	rig.cpu.faultPC = 0
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(400 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateUnloaded {
+		t.Fatalf("row state=%d after owner exit, want UNLOADED (%d); owner pubid=%d slot1 pubid=%d slot1 state=%d",
+			got, m16ModStateUnloaded,
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+kdTaskPubIDStr:]),
+			rig.cpu.memory[tcb1+tcbStateOff])
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]); got != 0 {
+		t.Fatalf("owning_task=%d after owner exit, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModulePublicPort:]); got != 0 {
+		t.Fatalf("public_port=%d after owner exit, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 0 {
+		t.Fatalf("open_count=%d after owner exit, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]); got != 0 {
+		t.Fatalf("flags=0x%X after owner exit, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[row+kdModuleWaitersHead:]); got != 0 {
+		t.Fatalf("waiters_head=%d after owner exit, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[outcome0+0:]); got != errNotFound {
+		t.Fatalf("waiter status=%d after owner exit, want ERR_NOTFOUND (%d) row(state=%d owner=%d waiters=%d) waiter(task=%d min=%d sig=%d out=0x%X aux=%d next=%d) slot1(state=%d pubid=%d)",
+			got, errNotFound,
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[row+kdModuleWaitersHead:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[waiter0+kdModuleWaiterTask:]),
+			binary.LittleEndian.Uint16(rig.cpu.memory[waiter0+kdModuleWaiterMinVer:]),
+			binary.LittleEndian.Uint16(rig.cpu.memory[waiter0+kdModuleWaiterSigBit:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[waiter0+kdModuleWaiterOutcome:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[waiter0+12:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[waiter0+kdModuleWaiterNext:]),
+			rig.cpu.memory[tcb1+tcbStateOff],
+			binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+kdTaskPubIDStr:]))
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[outcome0+4:]); got != 0 {
+		t.Fatalf("waiter token=%d after owner exit, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[outcome0+8:]); got != 0 {
+		t.Fatalf("waiter version=%d after owner exit, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[waiter0+kdModuleWaiterTask:]); got != 0 {
+		t.Fatalf("waiter row task=%d after owner exit, want freed row", got)
+	}
+}
+
+func TestIExec_M16_OpenLibraryEx_RetriesFromUnloadedWithoutReturningFailed(t *testing.T) {
+	const (
+		offStart    = 0x370
+		offSigBit   = 0x380
+		offSigErr   = 0x388
+		offToken    = 0x390
+		offOpenErr  = 0x398
+		offOutcome  = 0x3A0
+		offSentinel = 0x3E0
+		offName     = 0x500
+	)
+	hostRoot := makeM16Phase1HostRoot(t)
+	rig, _ := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {})
+	t0 := findShellClientCodeStart(t, rig.cpu.memory)
+	name := "retry.library"
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	writeName := func(s string) {
+		for i, b := range append([]byte(s), 0) {
+			w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, offName+uint32(i)))
+		}
+	}
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	waitLoop := pc
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_B, 1, 29, 0, offStart))
+	beqStart := pc
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 1, 0, 0))
+	writeName(name)
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x1111))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSentinel))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSigBit))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offSigErr))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x2222))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSentinel))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offName))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offSigBit))
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_L, 1, 29, 0, offOutcome))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offToken))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, offOpenErr))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSentinel))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+	waitYield := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(waitLoop)-int32(pc))))
+	copy(rig.cpu.memory[beqStart:], ie64Instr(OP_BEQ, 0, 0, 0, 1, 0, uint32(int32(waitYield)-int32(beqStart))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(6 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, name)
+	if ok {
+		t.Fatalf("unexpected preexisting row for %s", name)
+	}
+	rowIndex = 0xFFFFFFFF
+	for i := uint32(0); i < kdModuleMax; i++ {
+		row := m16ModuleRowBase(i)
+		if rig.cpu.memory[row+kdModuleName] == 0 {
+			rowIndex = i
+			break
+		}
+	}
+	if rowIndex == 0xFFFFFFFF {
+		t.Fatal("no free module row found for retry.library")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	copy(rig.cpu.memory[row+kdModuleName:row+kdModuleName+portNameLen], append([]byte(name), make([]byte, portNameLen-len(name))...))
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleState:], m16ModStateUnloaded)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleGeneration:], 4)
+	binary.LittleEndian.PutUint16(rig.cpu.memory[row+kdModuleVersion:], 9)
+	binary.LittleEndian.PutUint16(rig.cpu.memory[row+kdModuleRevision:], 2)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleOwningTask:], 77)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModulePublicPort:], 55)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleOpenCount:], 6)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleFlags:], 0xDEAD)
+	if seededRowIndex, seeded := m16FindModuleRowByName(rig.cpu.memory, name); !seeded || seededRowIndex != rowIndex {
+		t.Fatalf("seeded retry row not discoverable before execution: seeded=%t rowIndex=%d foundIndex=%d", seeded, rowIndex, seededRowIndex)
+	}
+	shellData := findShellTaskDataBase(t, rig.cpu.memory)
+	rig.cpu.memory[shellData+offStart] = 1
+
+	rig.cpu.running.Store(true)
+	done = make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(1200 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offSentinel:]); got != 0xCAFE {
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X sigErr=%d openErr=%d outcome=(%d,%d,%d) faultPC=0x%X faultCause=%d faultAddr=0x%X trapDepth=%d",
+			got,
+			binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offSigErr:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offOpenErr:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+0:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+4:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+8:]),
+			rig.cpu.faultPC, rig.cpu.faultCause, rig.cpu.faultAddr, rig.cpu.trapDepth)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offSigErr:]); got != 0 {
+		t.Fatalf("AllocSignal err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offToken:]); got != 0 {
+		t.Fatalf("OpenLibraryEx token=%d from UNLOADED retry, want 0 during LOADING wait", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offOpenErr:]); got != errAgain {
+		t.Fatalf("OpenLibraryEx err=%d after failed load, want ERR_AGAIN (%d)", got, errAgain)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateUnloaded {
+		t.Fatalf("row state=%d after retry failure, want UNLOADED (%d) outcome=(status=%d token=%d version=%d) row(owner=%d port=%d gen=%d open=%d flags=0x%X)",
+			got, m16ModStateUnloaded,
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+0:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+4:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+8:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModulePublicPort:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]))
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]); got != 4 {
+		t.Fatalf("generation=%d after retry, want preserved generation 4", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]); got != 0 {
+		t.Fatalf("owning_task=%d after retry, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModulePublicPort:]); got != 0 {
+		t.Fatalf("public_port=%d after retry, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 0 {
+		t.Fatalf("open_count=%d after retry, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]); got != 0 {
+		t.Fatalf("flags=0x%X after retry, want 0", got)
+	}
+	if got := m16ActiveWaiterCountForRow(rig.cpu.memory, rowIndex); got != 0 {
+		t.Fatalf("active waiter count=%d after retry failure, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+0:]); got != dosErrNotFnd {
+		t.Fatalf("retry waiter status=%d after completion, want DOS_ERR_NOTFOUND (%d)", got, dosErrNotFnd)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+4:]); got != 0 {
+		t.Fatalf("retry waiter token=%d before completion, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[shellData+offOutcome+8:]); got != 0 {
+		t.Fatalf("retry waiter version=%d before completion, want 0", got)
+	}
+}
+
+func TestIExec_M16_OpenLibraryEx_AndAddLibrary_IgnoreCallerR13Scratch(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("scratch.library\x00"))
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 13, IE64_SIZE_L, 1, 0, 0, 7))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8))
+	w(ie64Instr(OP_MOVE, 13, IE64_SIZE_L, 1, 0, 0, 9))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 2))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 1, 29, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+	w(ie64Instr(OP_MOVE, 13, IE64_SIZE_L, 1, 0, 0, 11))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 4))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 24))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 32))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 40))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+40:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+8:]); got != 0 {
+		t.Fatalf("CreatePort err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0 {
+		t.Fatalf("AddLibrary err=%d with caller r13 scratch, want 0", got)
+	}
+	if _, ok := m16FindModuleRowByName(rig.cpu.memory, "scratch.library"); !ok {
+		t.Fatal("scratch.library row missing after successful AddLibrary")
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+24:]); got == 0 {
+		t.Fatalf("OpenLibraryEx returned zero token with caller r13 scratch err=%d", binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+32:]))
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+32:]); got != 0 {
+		t.Fatalf("OpenLibraryEx err=%d with caller r13 scratch, want 0", got)
+	}
+}
+
+func TestIExec_M16_LibraryNamesRemainCaseInsensitive(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	portNameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("Dos.Library\x00"))
+	openNameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x380, []byte("DOS.LIBRARY\x00"))
+	addNameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x3C0, []byte("dos.library\x00"))
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, portNameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addNameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 6))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 1, 29, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, openNameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 6))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 24))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 32))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 40))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+40:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+8:]); got != 0 {
+		t.Fatalf("CreatePort err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0 {
+		t.Fatalf("AddLibrary err=%d for case-insensitive name match, want 0", got)
+	}
+	if _, ok := m16FindModuleRowByName(rig.cpu.memory, "dos.library"); !ok {
+		t.Fatal("dos.library row missing after successful case-insensitive AddLibrary")
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+24:]); got == 0 {
+		t.Fatalf("OpenLibraryEx returned zero token for case-insensitive lookup err=%d", binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+32:]))
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+32:]); got != 0 {
+		t.Fatalf("OpenLibraryEx err=%d for case-insensitive lookup, want 0", got)
+	}
+}
+
+func TestIExec_M16_ModuleRegistryLayoutDoesNotOverlapQuotaState(t *testing.T) {
+	moduleTableStart := kdModuleTable
+	moduleTableEnd := kdModuleTable + kdModuleRowStride*kdModuleMax
+	waiterRowsStart := kdModuleWaiterRows
+	waiterRowsEnd := kdModuleWaiterRows + kdModuleWaiterStride*kdModuleWaiterMax
+	openRowsStart := kdModuleOpenRows
+	openRowsEnd := kdModuleOpenRows + kdModuleOpenRowStride*kdModuleOpenRowMax
+	quotaStart := kdQuotaPagePPN
+	quotaEnd := kdQuotaLimitsBase + 5*4
+	manifestStart := kdBootManifestBase
+	manifestEnd := kdBootManifestBase + kdBootManifestStride*kdBootManifestCount
+	guardStart := (kernStackTop - 2*MMU_PAGE_SIZE) - kernDataBase
+
+	if moduleTableStart < quotaEnd && quotaStart < moduleTableEnd {
+		t.Fatalf("module table [%d,%d) overlaps quota state [%d,%d)", moduleTableStart, moduleTableEnd, quotaStart, quotaEnd)
+	}
+	if waiterRowsStart < quotaEnd && quotaStart < waiterRowsEnd {
+		t.Fatalf("module waiter rows [%d,%d) overlap quota state [%d,%d)", waiterRowsStart, waiterRowsEnd, quotaStart, quotaEnd)
+	}
+	if openRowsStart < quotaEnd && quotaStart < openRowsEnd {
+		t.Fatalf("module open rows [%d,%d) overlaps quota state [%d,%d)", openRowsStart, openRowsEnd, quotaStart, quotaEnd)
+	}
+	if moduleTableStart < manifestEnd && manifestStart < moduleTableEnd {
+		t.Fatalf("module table [%d,%d) overlaps boot manifest [%d,%d)", moduleTableStart, moduleTableEnd, manifestStart, manifestEnd)
+	}
+	if waiterRowsStart < manifestEnd && manifestStart < waiterRowsEnd {
+		t.Fatalf("module waiter rows [%d,%d) overlap boot manifest [%d,%d)", waiterRowsStart, waiterRowsEnd, manifestStart, manifestEnd)
+	}
+	if openRowsStart < manifestEnd && manifestStart < openRowsEnd {
+		t.Fatalf("module open rows [%d,%d) overlaps boot manifest [%d,%d)", openRowsStart, openRowsEnd, manifestStart, manifestEnd)
+	}
+	if moduleTableEnd > guardStart {
+		t.Fatalf("module table [%d,%d) crosses kernel stack guard start %d", moduleTableStart, moduleTableEnd, guardStart)
+	}
+	if waiterRowsEnd > guardStart {
+		t.Fatalf("module waiter rows [%d,%d) cross kernel stack guard start %d", waiterRowsStart, waiterRowsEnd, guardStart)
+	}
+	if openRowsEnd > guardStart {
+		t.Fatalf("module open rows [%d,%d) cross kernel stack guard start %d", openRowsStart, openRowsEnd, guardStart)
+	}
+}
+
+func TestIExec_M16_BootstrapDosLibraryRegistersResidentRow(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "1>") {
+		t.Fatalf("boot never reached shell prompt, output=%q", output[:min(len(output), 400)])
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "dos.library")
+	if !ok {
+		t.Fatal("dos.library row missing after bootstrap")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
+		t.Fatalf("dos.library state=%d, want ONLINE (%d)", got, m16ModStateOnline)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]); got&modfResident == 0 {
+		t.Fatalf("dos.library flags=%#x, want MODF_RESIDENT set", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 1 {
+		t.Fatalf("dos.library open_count=%d, want resident bootstrap floor 1", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]); got != binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdDosLibPubID:]) {
+		t.Fatalf("dos.library owner=%d, want KD_DOSLIB_PUBID=%d", got, binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdDosLibPubID:]))
+	}
+	if got := binary.LittleEndian.Uint16(rig.cpu.memory[row+kdModuleVersion:]); got != 14 {
+		t.Fatalf("dos.library version=%d, want 14", got)
+	}
+}
+
 // TestIExec_ReadInput_RemovedReturnsBadarg pins the M11.5 contract that
 // SYS_READ_INPUT (slot 37) is no longer a kernel handler. The terminal-MMIO
 // read loop has been moved into console.handler (which now maps page 0xF0
@@ -11869,6 +14598,52 @@ func TestIExec_M14_Phase3_ExecProgram_DescriptorBasic(t *testing.T) {
 	}
 	if _, ok := findTaskByDataMarker(rig.cpu.memory, 'D'); !ok {
 		t.Fatalf("ExecProgram_DescriptorBasic: child marker not found, output=%q", output[:min(len(output), 120)])
+	}
+}
+
+func TestIExec_M16_ExecProgramChildrenAreNotTrustedInternal(t *testing.T) {
+	rig, term := bootRigWithPatchedHostShellELF(t, func(image []byte) {
+		patchHostShellELFWithExecProgramDescriptorBasic(t, image)
+	})
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	time.Sleep(2500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	taskID, ok := findTaskByDataMarker(rig.cpu.memory, 'D')
+	if !ok {
+		output := term.DrainOutput()
+		t.Fatalf("ExecProgramChildrenAreNotTrustedInternal: child marker not found, output=%q", output[:min(len(output), 120)])
+	}
+	if got := taskLayoutFieldL(rig.cpu.memory, taskID, kdTaskLayoutFlags); got&taskLayoutTrustedInt != 0 {
+		t.Fatalf("ExecProgramChildrenAreNotTrustedInternal: layout.flags=%#x, trusted-internal bit must be clear for SYS_EXEC_PROGRAM children", got)
+	}
+}
+
+func TestIExec_M16_BootManifestShellIsNotTrustedInternal(t *testing.T) {
+	rig, term := bootRigWithPatchedHostShellELF(t, func(image []byte) {
+		patchHostShellELFWithDataMarker(t, image, 'S')
+	})
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	time.Sleep(2500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	taskID, ok := findTaskByDataMarker(rig.cpu.memory, 'S')
+	if !ok {
+		output := term.DrainOutput()
+		t.Fatalf("BootManifestShellIsNotTrustedInternal: shell marker not found, output=%q", output[:min(len(output), 120)])
+	}
+	if got := taskLayoutFieldL(rig.cpu.memory, taskID, kdTaskLayoutFlags); got&taskLayoutTrustedInt != 0 {
+		t.Fatalf("BootManifestShellIsNotTrustedInternal: layout.flags=%#x, trusted-internal bit must be clear for shell manifest tasks", got)
 	}
 }
 
@@ -15563,6 +18338,22 @@ func patchHostShellELFWithExecProgramDescriptorAllowsShellLikeTargets(t *testing
 	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0xFFFFFFF8))
 }
 
+func patchHostShellELFWithDataMarker(t *testing.T, image []byte, marker byte) {
+	t.Helper()
+
+	shellCode := elfExecCodeOffset(t, image)
+	off := shellCode
+	w := func(instr []byte) { copy(image[off:], instr); off += 8 }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(marker)))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 29, 0, 64))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0xFFFFFFF8))
+}
+
 func patchHostShellELFWithExecProgramDescriptorBasic(t *testing.T, image []byte) {
 	t.Helper()
 	const (
@@ -15902,6 +18693,13 @@ func makeM152Phase5GeneratedHostRoot(t *testing.T) string {
 	t.Helper()
 	hostRoot := t.TempDir()
 	copyDirTreeForTest(t, filepath.Join(repoRootDir(t), "sdk", "intuitionos", "system", "SYS"), hostRoot)
+	return hostRoot
+}
+
+func makeM16Phase1HostRoot(t *testing.T) string {
+	t.Helper()
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	writeHostRootFileBytes(t, hostRoot, "S/Startup-Sequence", []byte("ECHO M16-PHASE1\r\n"))
 	return hostRoot
 }
 

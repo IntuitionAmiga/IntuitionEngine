@@ -28,6 +28,13 @@ prog_intui_code:
     load.q  r29, (sp)
     bnez    r2, .intui_halt
     store.q r1, 136(r29)               ; data[136] = intuition_port
+    add     r1, r29, #320
+    move.l  r2, #12
+    move.l  r3, #0
+    load.q  r4, 136(r29)
+    syscall #SYS_ADD_LIBRARY
+    load.q  r29, (sp)
+    bnez    r2, .intui_halt
 
     ; ===== CreatePort(NULL) → reply_port (anonymous) =====
     move.q  r1, r0

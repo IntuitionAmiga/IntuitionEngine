@@ -98,6 +98,17 @@ prog_gfxlib_code:
     load.q  r29, (sp)
     bnez    r2, .gfx_halt
     store.q r1, 144(r29)               ; data[144] = port_id
+    add     r1, r29, #16
+    move.l  r2, #11
+    move.l  r3, #0
+    load.q  r4, 144(r29)
+    syscall #SYS_ADD_LIBRARY
+    load.q  r29, (sp)
+    beqz    r2, .gfx_addlib_done
+    move.l  r1, #ERR_PERM
+    beq     r2, r1, .gfx_addlib_done
+    bra     .gfx_halt
+.gfx_addlib_done:
 
     ; ===== Print banner via SYS_DEBUG_PUTCHAR =====
     add     r20, r29, #48              ; r20 = &data[48] = banner (M12: shifted from 32 after PORT_NAME_LEN bump)

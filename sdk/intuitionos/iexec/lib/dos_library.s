@@ -223,6 +223,13 @@ prog_doslib_code:
     syscall #SYS_CREATE_PORT           ; R1 = port_id
     load.q  r29, (sp)
     store.q r1, 144(r29)               ; data[144] = dos_port
+    add     r1, r29, #16               ; R1 = &data[16] = "dos.library"
+    move.l  r2, #14                    ; lib_version
+    move.l  r3, #0                     ; lib_revision
+    load.q  r4, 144(r29)               ; compat public port
+    syscall #SYS_ADD_LIBRARY
+    load.q  r29, (sp)
+    bnez    r2, .dos_boot_fail
 
     ; =====================================================================
     ; M15.2 phase 5: launch the boot shell directly from the host-backed
@@ -232,6 +239,7 @@ prog_doslib_code:
     add     r23, r29, #(prog_doslib_boot_shell_relpath - prog_doslib_data)
     add     r16, r29, #(prog_doslib_empty_args - prog_doslib_data)
     move.q  r18, r0
+    move.q  r17, r0
     move.q  r30, r29
     jsr     .dos_launch_hostfs_relpath_name
     move.q  r29, r30
@@ -301,6 +309,8 @@ prog_doslib_code:
     beq     r14, r28, .dos_do_unloadseg
     move.l  r28, #DOS_RUNSEG
     beq     r14, r28, .dos_do_runseg
+    move.l  r28, #DOS_LOADLIB
+    beq     r14, r28, .dos_do_loadlib
     ; Unknown opcode → reply with error and loop
     bra     .dos_reply_err
 
@@ -3351,6 +3361,9 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     move.q  r24, r23
     move.q  r27, r24
     store.q r23, 888(r29)
+    store.q r16, 672(r29)              ; saved args_ptr
+    store.q r18, 680(r29)              ; saved args_len
+    store.q r17, 688(r29)              ; saved boot-elf flags
 .dlhrn_have_relpath:
     move.q  r1, r24
     jsr     .dos_bootfs_stat
@@ -3395,8 +3408,9 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     push    r29
     move.q  r1, r21
     move.q  r2, r23
-    move.q  r3, r16
-    move.q  r4, r18
+    load.q  r3, 672(r29)
+    load.q  r4, 680(r29)
+    load.q  r5, 688(r29)
     syscall #SYS_BOOT_ELF_EXEC
     pop     r29
     store.q r1, 304(r29)
@@ -5152,6 +5166,7 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
 .dos_do_run_retry:
     ; 1. Read command name from mapped shared buffer
     store.q r0, 632(r29)              ; host-backed direct-exec flag
+    store.q r0, 648(r29)              ; trusted-internal boot-elf flags
     load.q  r23, 168(r29)              ; r23 = caller's mapped buffer (name ptr)
     ; Propagate attempt index into lookup's scratch input.
     store.q r0, 856(r29)              ; skip_overlay = 0 (iterate instead)
@@ -5417,6 +5432,7 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     move.q  r2, r23
     move.q  r3, r16
     move.q  r4, r18
+    load.q  r5, 648(r29)
     syscall #SYS_BOOT_ELF_EXEC
     pop     r29
     store.q r1, 304(r29)
@@ -5489,6 +5505,192 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     move.q  r4, r0
     move.q  r5, r0
     syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+    ; =================================================================
+    ; DOS_LOADLIB (type=11): internal M16 runtime library autoload.
+    ; data0 = module row index. No reply message is emitted; dos.library
+    ; reports success/failure back to exec via the trusted-internal M16
+    ; load-result syscall.
+    ; =================================================================
+.dos_do_loadlib:
+    load.q  r20, 960(r29)              ; module row index
+    add     r21, r29, #1000            ; 32-byte name scratch
+    add     r22, r29, #704             ; "LIBS:<name>" buffer in dead-space scratch
+    store.q r0, 616(r29)               ; clear stale bootfs handle before any open
+    move.q  r1, r20
+    move.q  r2, r21
+    syscall #SYS_M16_COPY_MODULE_NAME
+    load.q  r29, (sp)
+    load.q  r20, 960(r29)
+    add     r21, r29, #1000
+    add     r22, r29, #704
+    bnez    r2, .dos_loadlib_fail
+
+    move.l  r11, #0x4C                 ; 'L'
+    store.b r11, 0(r22)
+    move.l  r11, #0x49                 ; 'I'
+    store.b r11, 1(r22)
+    move.l  r11, #0x42                 ; 'B'
+    store.b r11, 2(r22)
+    move.l  r11, #0x53                 ; 'S'
+    store.b r11, 3(r22)
+    move.l  r11, #0x3A                 ; ':'
+    store.b r11, 4(r22)
+    move.l  r23, #0
+.dos_loadlib_copy_name:
+    move.l  r11, #32
+    bge     r23, r11, .dos_loadlib_name_done
+    add     r24, r21, r23
+    load.b  r25, (r24)
+    add     r26, r22, r23
+    add     r26, r26, #5
+    store.b r25, (r26)
+    beqz    r25, .dos_loadlib_name_done
+    add     r23, r23, #1
+    bra     .dos_loadlib_copy_name
+.dos_loadlib_name_done:
+    add     r26, r22, r23
+    add     r26, r26, #5
+    store.b r0, (r26)
+
+    move.q  r23, r22
+    push    r20
+    push    r29
+    jsr     .dos_resolve_file
+    pop     r29
+    pop     r20
+    beqz    r22, .dos_loadlib_fail
+    move.q  r1, r23
+    move.q  r2, r0
+    push    r20
+    push    r29
+    jsr     .dos_hostfs_layered_relpath_for_resolved_name
+    pop     r29
+    pop     r20
+    beqz    r3, .dos_loadlib_fail
+    move.q  r23, r1
+    store.q r23, 608(r29)
+    move.q  r1, r23
+    push    r29
+    jsr     .dos_bootfs_stat
+    pop     r29
+    bnez    r3, .dos_loadlib_fail
+    move.q  r25, r1
+    beqz    r25, .dos_loadlib_fail
+    store.q r25, 624(r29)
+    move.q  r28, r2
+    and     r28, r28, #0xFFFFFFFF
+    move.q  r15, r0
+    add     r15, r15, #BOOT_HOSTFS_KIND_FILE
+    bne     r28, r15, .dos_loadlib_fail
+
+    load.q  r24, 608(r29)
+    beqz    r24, .dos_loadlib_fail
+    move.q  r1, r24
+    push    r29
+    jsr     .dos_bootfs_open
+    pop     r29
+    bnez    r2, .dos_loadlib_report_fail
+    move.q  r24, r1
+    store.q r24, 616(r29)
+
+    load.q  r25, 624(r29)
+    push    r29
+    move.q  r1, r25
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    pop     r29
+    bnez    r2, .dos_loadlib_nomem_close
+    store.q r1, 296(r29)
+
+    load.q  r24, 616(r29)
+    move.q  r1, r24
+    load.q  r2, 296(r29)
+    move.q  r3, r25
+    push    r29
+    jsr     .dos_bootfs_read_all
+    pop     r29
+    store.q r1, 640(r29)
+    move.q  r26, r2
+    load.q  r24, 616(r29)
+    move.q  r1, r24
+    push    r29
+    jsr     .dos_bootfs_close
+    pop     r29
+    bnez    r26, .dos_loadlib_free_tmp_readerr
+
+    load.q  r21, 296(r29)
+    load.q  r23, 640(r29)
+    load.l  r15, (r21)
+    move.l  r28, #0x464C457F
+    bne     r15, r28, .dos_loadlib_free_tmp_nonelf
+
+    add     r16, r29, #(prog_doslib_empty_args - prog_doslib_data)
+    move.q  r18, r0
+    move.l  r17, #BOOT_ELF_EXEC_FLAG_TRUSTED_INTERNAL
+    push    r29
+    move.q  r1, r21
+    move.q  r2, r23
+    move.q  r3, r16
+    move.q  r4, r18
+    move.q  r5, r17
+    syscall #SYS_BOOT_ELF_EXEC
+    pop     r29
+    store.q r1, 304(r29)
+    store.q r2, 312(r29)
+
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+
+    load.q  r24, 304(r29)
+    load.q  r2, 312(r29)
+    bnez    r2, .dos_loadlib_report_fail
+    beqz    r24, .dos_loadlib_report_fail
+    load.q  r20, 960(r29)
+    move.q  r1, r20
+    move.q  r2, r24
+    move.q  r3, #ERR_OK
+    syscall #SYS_M16_LIBRARY_LOAD_RESULT
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+.dos_loadlib_fail:
+    move.l  r2, #DOS_ERR_NOTFOUND
+.dos_loadlib_report_only:
+    bra     .dos_loadlib_report_fail
+.dos_loadlib_nomem_close:
+    load.q  r24, 616(r29)
+    move.q  r1, r24
+    push    r29
+    jsr     .dos_bootfs_close
+    pop     r29
+    bra     .dos_loadlib_report_fail
+.dos_loadlib_free_tmp_readerr:
+    push    r26
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    pop     r2
+    bra     .dos_loadlib_report_fail
+.dos_loadlib_free_tmp_nonelf:
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    move.l  r2, #DOS_ERR_BADARG
+.dos_loadlib_report_fail:
+    load.q  r20, 960(r29)
+    move.q  r1, r20
+    move.q  r3, r2
+    move.q  r2, r0
+    syscall #SYS_M16_LIBRARY_LOAD_RESULT
     load.q  r29, (sp)
     bra     .dos_main_loop
 
