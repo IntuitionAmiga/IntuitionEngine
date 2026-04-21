@@ -29,8 +29,8 @@ func main() {
 	outPath := filepath.Join(filepath.Dir(selfPath), "..", "..", "sdk", "examples", "assets", "boing_checker_64.bin")
 
 	buf := make([]byte, texW*texH*bytesPP)
-	for y := 0; y < texH; y++ {
-		for x := 0; x < texW; x++ {
+	for y := range texH {
+		for x := range texW {
 			cellX := x / cellSize
 			cellY := y / cellSize
 			color := boingWhite

@@ -301,8 +301,8 @@ func drawGlyph(raw []byte, glyph []string, startX, startY, scale int, r, g, b, a
 			if cell == ' ' {
 				continue
 			}
-			for sy := 0; sy < scale; sy++ {
-				for sx := 0; sx < scale; sx++ {
+			for sy := range scale {
+				for sx := range scale {
 					blendPixel(raw, startX+gx*scale+sx, startY+gy*scale+sy, r, g, b, a)
 				}
 			}

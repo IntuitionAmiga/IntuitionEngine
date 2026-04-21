@@ -5,3 +5,5 @@ package main
 func (cpu_6502 *CPU_6502) executeOptimizedInterpreter() {
 	cpu_6502.ExecuteFast()
 }
+
+func (cpu_6502 *CPU_6502) noteInterpTraceWrite(addr uint16) {}
