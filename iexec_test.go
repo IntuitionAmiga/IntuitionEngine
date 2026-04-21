@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"debug/elf"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -229,17 +230,18 @@ const (
 	// Reply port sentinel
 	replyPortNone = 0xFFFF
 
-	taskStartupSize       = 64
-	taskStartupVersionOff = 0x00
-	taskStartupSizeOff    = 0x04
-	taskStartupTaskIDOff  = 0x08
-	taskStartupFlagsOff   = 0x0C
-	taskStartupCodeBase   = 0x10
-	taskStartupCodePages  = 0x18
-	taskStartupDataBase   = 0x20
-	taskStartupDataPages  = 0x28
-	taskStartupStackBase  = 0x30
-	taskStartupStackPages = 0x38
+	taskStartupSize                = 96
+	taskStartupVersionOff          = 0x00
+	taskStartupSizeOff             = 0x04
+	taskStartupTaskIDOff           = 0x08
+	taskStartupFlagsOff            = 0x0C
+	taskStartupCodeBase            = 0x10
+	taskStartupCodePages           = 0x18
+	taskStartupDataBase            = 0x20
+	taskStartupDataPages           = 0x28
+	taskStartupStackBase           = 0x30
+	taskStartupStackPages          = 0x38
+	taskStartupBootDOSShellRelpath = 0x40
 
 	taskStartupVersion = 1
 	taskStartfCreate   = 1 << 0
@@ -13464,6 +13466,233 @@ func TestIExec_M16_BootstrapDosLibraryRegistersResidentRow(t *testing.T) {
 	}
 }
 
+func TestIExec_M16_BootstrapDosLibraryELFContainsLibManifest(t *testing.T) {
+	image := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_dos_library.elf")
+	manifest, err := parseM16LibManifestNote(image)
+	if err != nil {
+		t.Fatalf("parse dos.library manifest: %v", err)
+	}
+	if manifest.Magic != m16LibManifestMagic {
+		t.Fatalf("manifest magic=%#x, want %#x", manifest.Magic, m16LibManifestMagic)
+	}
+	if manifest.DescVersion != 1 {
+		t.Fatalf("manifest desc_version=%d, want 1", manifest.DescVersion)
+	}
+	if manifest.Name != "dos.library" {
+		t.Fatalf("manifest name=%q, want dos.library", manifest.Name)
+	}
+	if manifest.LibVersion != 14 {
+		t.Fatalf("manifest lib_version=%d, want 14", manifest.LibVersion)
+	}
+	if manifest.LibRevision != 0 {
+		t.Fatalf("manifest lib_revision=%d, want 0", manifest.LibRevision)
+	}
+	if manifest.Type != 1 {
+		t.Fatalf("manifest type=%d, want 1 (library)", manifest.Type)
+	}
+	if manifest.Flags != m16ModfCompatPort {
+		t.Fatalf("manifest flags=%#x, want MODF_COMPAT_PORT (%#x)", manifest.Flags, m16ModfCompatPort)
+	}
+}
+
+func TestIExec_M16_BootstrapRejectsBadDosManifest(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	dosImage := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_dos_library.elf")
+	writeHostRootFileBytes(t, hostRoot, "LIBS/dos.library", patchM16LibManifestMagic(t, dosImage, 0x0))
+
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "BOOT FAIL") {
+		t.Fatalf("expected BOOT FAIL for bad dos manifest, output=%q", output[:min(len(output), 400)])
+	}
+	for _, unwanted := range []string{"dos.library M14 [Task ", "Shell M10 [Task ", "1> "} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("bad dos manifest still reached %q output=%q", unwanted, output[:min(len(output), 400)])
+		}
+	}
+}
+
+func TestIExec_M16_BootstrapRejectsIncompatibleDosManifestVersion(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	dosImage := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_dos_library.elf")
+	dosImage = patchM16LibManifestCompatFields(t, dosImage, 15, 1, 0)
+	writeHostRootFileBytes(t, hostRoot, "LIBS/dos.library", dosImage)
+
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "BOOT FAIL") {
+		t.Fatalf("expected BOOT FAIL for incompatible dos manifest version output=%q", output[:min(len(output), 400)])
+	}
+	for _, unwanted := range []string{"dos.library M14 [Task ", "Shell M10 [Task ", "1> "} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("incompatible dos manifest version still reached %q output=%q", unwanted, output[:min(len(output), 400)])
+		}
+	}
+}
+
+func TestIExec_M16_BootstrapRejectsIncompatibleDosManifestMsgABI(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	dosImage := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_dos_library.elf")
+	dosImage = patchM16LibManifestCompatFields(t, dosImage, 14, 0, 1)
+	writeHostRootFileBytes(t, hostRoot, "LIBS/dos.library", dosImage)
+
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "BOOT FAIL") {
+		t.Fatalf("expected BOOT FAIL for incompatible dos manifest msg ABI output=%q", output[:min(len(output), 400)])
+	}
+	for _, unwanted := range []string{"dos.library M14 [Task ", "Shell M10 [Task ", "1> "} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("incompatible dos manifest msg ABI still reached %q output=%q", unwanted, output[:min(len(output), 400)])
+		}
+	}
+}
+
+func TestIExec_M16_ExecLaunchesShellFromStartupBlockBootPath(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	dosImage := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_dos_library.elf")
+	dosImage = mustPatchBytesOnce(t, dosImage, "IOSSYS/Tools/Shell", "IOSSYS/Tools/NoShh")
+	writeHostRootFileBytes(t, hostRoot, "LIBS/dos.library", dosImage)
+
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	for _, want := range []string{"dos.library M14 [Task ", "Shell M10 [Task ", "1> "} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("boot missing %q after DOS shell-path patch output=%q", want, output[:min(len(output), 600)])
+		}
+	}
+	if strings.Contains(output, "BOOT FAIL") {
+		t.Fatalf("boot failed after DOS shell-path patch output=%q", output[:min(len(output), 600)])
+	}
+
+	dosPubID := uint64(binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdDosLibPubID:]))
+	if dosPubID == 0 || dosPubID == uint64(taskPubIDFree) {
+		t.Fatalf("missing KD_DOSLIB_PUBID after boot")
+	}
+	startupBase := uint32(taskLayoutFieldQ(rig.cpu.memory, dosPubID, kdTaskStartupBase))
+	if startupBase == 0 {
+		t.Fatalf("missing startup block for dos task")
+	}
+	dosDataBase := mustTaskDataBase(t, rig.cpu.memory, dosPubID)
+	if head := binary.LittleEndian.Uint64(rig.cpu.memory[dosDataBase+176:]); head == uint64(startupBase) {
+		t.Fatalf("dos seglist head still aliases startup block: 0x%X", head)
+	}
+	bootPathStart := startupBase + taskStartupBootDOSShellRelpath
+	bootPathEnd := bootPathStart + uint32(len("IOSSYS/Tools/Shell")+1)
+	got := string(bytes.TrimRight(rig.cpu.memory[bootPathStart:bootPathEnd], "\x00"))
+	if got != "IOSSYS/Tools/Shell" {
+		t.Fatalf("dos startup-block boot relpath=%q, want %q", got, "IOSSYS/Tools/Shell")
+	}
+}
+
+func TestIExec_M16_BootstrapAcceptsDosManifestAfterEarlierNoteSection(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	dosImage := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_dos_library.elf")
+	dosImage = prependELFNoteSection(t, dosImage)
+	writeHostRootFileBytes(t, hostRoot, "LIBS/dos.library", dosImage)
+
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	for _, want := range []string{"dos.library M14 [Task ", "Shell M10 [Task ", "1> "} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("boot missing %q with earlier ELF note output=%q", want, output[:min(len(output), 600)])
+		}
+	}
+	if strings.Contains(output, "BOOT FAIL") {
+		t.Fatalf("boot failed with earlier ELF note output=%q", output[:min(len(output), 600)])
+	}
+}
+
+func TestIExec_M16_BootstrapAcceptsDosManifestAfterEarlierNoteInSameSection(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	dosImage := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_dos_library.elf")
+	dosImage = prependManifestSectionNote(t, dosImage)
+	writeHostRootFileBytes(t, hostRoot, "LIBS/dos.library", dosImage)
+
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(5 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	for _, want := range []string{"dos.library M14 [Task ", "Shell M10 [Task ", "1> "} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("boot missing %q with earlier note in manifest section output=%q", want, output[:min(len(output), 600)])
+		}
+	}
+	if strings.Contains(output, "BOOT FAIL") {
+		t.Fatalf("boot failed with earlier note in manifest section output=%q", output[:min(len(output), 600)])
+	}
+}
+
+func TestIExec_M16_BootstrapFailsWhenDosInitExitsBeforeAddLibrary(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	dosImage := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_dos_library.elf")
+	dosImage = mustPatchBytesOnce(
+		t,
+		dosImage,
+		string(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary)),
+		string(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask)),
+	)
+	writeHostRootFileBytes(t, hostRoot, "LIBS/dos.library", dosImage)
+
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(2 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "BOOT FAIL") {
+		t.Fatalf("expected BOOT FAIL when dos exits before AddLibrary output=%q", output[:min(len(output), 400)])
+	}
+	for _, unwanted := range []string{"Shell M10 [Task ", "1> "} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("dos exited before AddLibrary but boot still reached %q output=%q", unwanted, output[:min(len(output), 400)])
+		}
+	}
+}
+
 // TestIExec_ReadInput_RemovedReturnsBadarg pins the M11.5 contract that
 // SYS_READ_INPUT (slot 37) is no longer a kernel handler. The terminal-MMIO
 // read loop has been moved into console.handler (which now maps page 0xF0
@@ -18712,6 +18941,242 @@ func writeHostRootFileBytes(t *testing.T, hostRoot string, rel string, data []by
 	if err := os.WriteFile(full, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+const (
+	m16LibManifestSectionName = ".ios.libmanifest"
+	m16LibManifestNoteName    = "IOS-LIB\x00"
+	m16LibManifestNoteType    = 0x494F5331
+	m16LibManifestMagic       = 0x4C49424D
+	m16LibManifestDescSize    = 96
+	m16ModfCompatPort         = 0x00000002
+)
+
+type m16LibManifest struct {
+	Magic       uint32
+	DescVersion uint32
+	Name        string
+	LibVersion  uint16
+	LibRevision uint16
+	Type        uint32
+	Flags       uint32
+	MsgABIVer   uint32
+}
+
+func parseM16LibManifestNote(image []byte) (*m16LibManifest, error) {
+	f, err := elf.NewFile(bytes.NewReader(image))
+	if err != nil {
+		return nil, err
+	}
+	sec := f.Section(m16LibManifestSectionName)
+	if sec == nil {
+		return nil, fmt.Errorf("missing %s section", m16LibManifestSectionName)
+	}
+	if sec.Type != elf.SHT_NOTE {
+		return nil, fmt.Errorf("section %s has type %v, want SHT_NOTE", m16LibManifestSectionName, sec.Type)
+	}
+	data, err := sec.Data()
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < 12 {
+		return nil, fmt.Errorf("note too small")
+	}
+	namesz := binary.LittleEndian.Uint32(data[0:4])
+	descsz := binary.LittleEndian.Uint32(data[4:8])
+	typ := binary.LittleEndian.Uint32(data[8:12])
+	if typ != m16LibManifestNoteType {
+		return nil, fmt.Errorf("note type=%#x, want %#x", typ, m16LibManifestNoteType)
+	}
+	nameOff := 12
+	nameEnd := nameOff + int((namesz+3)&^3)
+	descOff := nameEnd
+	descEnd := descOff + int((descsz+3)&^3)
+	if nameEnd > len(data) || descEnd > len(data) {
+		return nil, fmt.Errorf("note payload out of range")
+	}
+	if string(data[nameOff:nameOff+int(namesz)]) != m16LibManifestNoteName {
+		return nil, fmt.Errorf("note name=%q, want %q", string(data[nameOff:nameOff+int(namesz)]), m16LibManifestNoteName)
+	}
+	if descsz != m16LibManifestDescSize {
+		return nil, fmt.Errorf("descriptor size=%d, want %d", descsz, m16LibManifestDescSize)
+	}
+	desc := data[descOff : descOff+int(descsz)]
+	nameBytes := desc[8:40]
+	nameNul := bytes.IndexByte(nameBytes, 0)
+	if nameNul < 0 {
+		nameNul = len(nameBytes)
+	}
+	return &m16LibManifest{
+		Magic:       binary.LittleEndian.Uint32(desc[0:4]),
+		DescVersion: binary.LittleEndian.Uint32(desc[4:8]),
+		Name:        string(nameBytes[:nameNul]),
+		LibVersion:  binary.LittleEndian.Uint16(desc[40:42]),
+		LibRevision: binary.LittleEndian.Uint16(desc[42:44]),
+		Type:        binary.LittleEndian.Uint32(desc[44:48]),
+		Flags:       binary.LittleEndian.Uint32(desc[48:52]),
+		MsgABIVer:   binary.LittleEndian.Uint32(desc[52:56]),
+	}, nil
+}
+
+func patchM16LibManifestMagic(t *testing.T, image []byte, magic uint32) []byte {
+	t.Helper()
+	f, err := elf.NewFile(bytes.NewReader(image))
+	if err != nil {
+		t.Fatalf("parse ELF: %v", err)
+	}
+	sec := f.Section(m16LibManifestSectionName)
+	if sec == nil {
+		t.Fatalf("missing %s section", m16LibManifestSectionName)
+	}
+	patched := append([]byte(nil), image...)
+	descOff := int(sec.Offset) + 12 + len(m16LibManifestNoteName)
+	binary.LittleEndian.PutUint32(patched[descOff:], magic)
+	return patched
+}
+
+func patchM16LibManifestCompatFields(t *testing.T, image []byte, version uint16, revision uint16, msgABIVer uint32) []byte {
+	t.Helper()
+	f, err := elf.NewFile(bytes.NewReader(image))
+	if err != nil {
+		t.Fatalf("parse ELF: %v", err)
+	}
+	sec := f.Section(m16LibManifestSectionName)
+	if sec == nil {
+		t.Fatalf("missing %s section", m16LibManifestSectionName)
+	}
+	patched := append([]byte(nil), image...)
+	descOff := int(sec.Offset) + 12 + len(m16LibManifestNoteName)
+	binary.LittleEndian.PutUint16(patched[descOff+40:], version)
+	binary.LittleEndian.PutUint16(patched[descOff+42:], revision)
+	binary.LittleEndian.PutUint32(patched[descOff+52:], msgABIVer)
+	return patched
+}
+
+func prependELFNoteSection(t *testing.T, image []byte) []byte {
+	t.Helper()
+	f, err := elf.NewFile(bytes.NewReader(image))
+	if err != nil {
+		t.Fatalf("parse ELF: %v", err)
+	}
+	manifest := f.Section(m16LibManifestSectionName)
+	if manifest == nil {
+		t.Fatalf("missing %s", m16LibManifestSectionName)
+	}
+
+	extraNote := []byte{
+		0x04, 0x00, 0x00, 0x00, // namesz = 4
+		0x04, 0x00, 0x00, 0x00, // descsz = 4
+		0x03, 0x00, 0x00, 0x00, // type = NT_GNU_BUILD_ID-like
+		'G', 'N', 'U', 0x00,
+		'T', 'E', 'S', 'T',
+	}
+	shstrtab := []byte("\x00.note.test\x00.ios.libmanifest\x00.shstrtab\x00")
+	noteNameOff := uint32(bytes.Index(shstrtab, []byte(".note.test")))
+	manifestNameOff := uint32(bytes.Index(shstrtab, []byte(m16LibManifestSectionName)))
+	shstrtabNameOff := uint32(bytes.Index(shstrtab, []byte(".shstrtab")))
+	if noteNameOff == ^uint32(0) || manifestNameOff == ^uint32(0) || shstrtabNameOff == ^uint32(0) {
+		t.Fatal("failed to build section-string table")
+	}
+
+	patched := append([]byte(nil), image...)
+	extraNoteOff := uint64(len(patched))
+	patched = append(patched, extraNote...)
+	shstrtabOff := uint64(len(patched))
+	patched = append(patched, shstrtab...)
+	for len(patched)%8 != 0 {
+		patched = append(patched, 0)
+	}
+	shoff := uint64(len(patched))
+	patched = append(patched, make([]byte, 4*64)...)
+
+	binary.LittleEndian.PutUint64(patched[40:48], shoff)
+	binary.LittleEndian.PutUint16(patched[60:62], 4)
+	binary.LittleEndian.PutUint16(patched[62:64], 3)
+
+	writeELFSectionHeader := func(idx int, name uint32, typ uint32, off uint64, size uint64, align uint64) {
+		base := int(shoff) + idx*64
+		binary.LittleEndian.PutUint32(patched[base+0:base+4], name)
+		binary.LittleEndian.PutUint32(patched[base+4:base+8], typ)
+		binary.LittleEndian.PutUint64(patched[base+24:base+32], off)
+		binary.LittleEndian.PutUint64(patched[base+32:base+40], size)
+		binary.LittleEndian.PutUint64(patched[base+48:base+56], align)
+	}
+
+	writeELFSectionHeader(1, noteNameOff, uint32(elf.SHT_NOTE), extraNoteOff, uint64(len(extraNote)), 4)
+	writeELFSectionHeader(2, manifestNameOff, uint32(manifest.Type), manifest.Offset, manifest.Size, 4)
+	writeELFSectionHeader(3, shstrtabNameOff, uint32(elf.SHT_STRTAB), shstrtabOff, uint64(len(shstrtab)), 1)
+	return patched
+}
+
+func prependManifestSectionNote(t *testing.T, image []byte) []byte {
+	t.Helper()
+	f, err := elf.NewFile(bytes.NewReader(image))
+	if err != nil {
+		t.Fatalf("parse ELF: %v", err)
+	}
+	manifest := f.Section(m16LibManifestSectionName)
+	if manifest == nil {
+		t.Fatalf("missing %s", m16LibManifestSectionName)
+	}
+	manifestData, err := manifest.Data()
+	if err != nil {
+		t.Fatalf("read manifest section: %v", err)
+	}
+
+	extraNote := []byte{
+		0x04, 0x00, 0x00, 0x00, // namesz = 4
+		0x04, 0x00, 0x00, 0x00, // descsz = 4
+		0x03, 0x00, 0x00, 0x00, // arbitrary non-IOS note type
+		'G', 'N', 'U', 0x00,
+		'T', 'E', 'S', 'T',
+	}
+
+	patched := append([]byte(nil), image...)
+	newManifest := append(append([]byte(nil), extraNote...), manifestData...)
+	start := int(manifest.Offset)
+	end := start + int(manifest.Size)
+	patched = append(patched[:start], append(newManifest, patched[end:]...)...)
+
+	delta := uint64(len(newManifest)) - manifest.Size
+	if delta == 0 {
+		return patched
+	}
+	shoff := binary.LittleEndian.Uint64(patched[40:48])
+	newShoff := shoff
+	if shoff > manifest.Offset {
+		newShoff += delta
+	}
+	binary.LittleEndian.PutUint64(patched[40:48], newShoff)
+
+	for i := 0; i < len(f.Sections); i++ {
+		base := int(newShoff) + i*64
+		off := binary.LittleEndian.Uint64(patched[base+24 : base+32])
+		if off == manifest.Offset {
+			binary.LittleEndian.PutUint64(patched[base+32:base+40], uint64(len(newManifest)))
+			continue
+		}
+		if off > manifest.Offset {
+			binary.LittleEndian.PutUint64(patched[base+24:base+32], off+delta)
+		}
+	}
+
+	patchedFile, err := elf.NewFile(bytes.NewReader(patched))
+	if err != nil {
+		t.Fatalf("reparse patched ELF: %v", err)
+	}
+	patchedManifest := patchedFile.Section(m16LibManifestSectionName)
+	if patchedManifest == nil {
+		t.Fatalf("patched ELF missing %s", m16LibManifestSectionName)
+	}
+	patchedManifestData, err := patchedManifest.Data()
+	if err != nil {
+		t.Fatalf("read patched manifest section: %v", err)
+	}
+	if !bytes.HasPrefix(patchedManifestData, extraNote) {
+		t.Fatalf("patched manifest section missing prepended note")
+	}
+	return patched
 }
 
 func mustPatchBytesOnce(t *testing.T, data []byte, old string, new string) []byte {

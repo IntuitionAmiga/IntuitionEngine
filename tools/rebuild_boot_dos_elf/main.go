@@ -16,9 +16,57 @@ const (
 	pageSize       = 0x1000
 	baseVA         = 0x600000
 	listingBias    = 0x1000
+
+	elfSectionHeaderSize = 64
+	elfSHTNull           = 0
+	elfSHTProgBits       = 1
+	elfSHTStrTab         = 3
+	elfSHTNote           = 7
+
+	m16LibManifestMagic       = 0x4C49424D
+	m16LibManifestDescVersion = 1
+	m16LibManifestNoteType    = 0x494F5331
+	m16LibManifestTypeLibrary = 1
+	m16ModfCompatPort         = 0x00000002
 )
 
 var labelRe = regexp.MustCompile(`^([0-9A-F]{8})\s+.*$`)
+
+type libManifestSpec struct {
+	Name          string
+	Version       uint16
+	Revision      uint16
+	Type          uint32
+	Flags         uint32
+	MsgABIVersion uint32
+}
+
+var manifestSpecsByLabel = map[string]libManifestSpec{
+	"prog_doslib": {
+		Name:          "dos.library",
+		Version:       14,
+		Revision:      0,
+		Type:          m16LibManifestTypeLibrary,
+		Flags:         m16ModfCompatPort,
+		MsgABIVersion: 0,
+	},
+	"prog_graphics_library": {
+		Name:          "graphics.library",
+		Version:       11,
+		Revision:      0,
+		Type:          m16LibManifestTypeLibrary,
+		Flags:         m16ModfCompatPort,
+		MsgABIVersion: 0,
+	},
+	"prog_intuition_library": {
+		Name:          "intuition.library",
+		Version:       12,
+		Revision:      0,
+		Type:          m16LibManifestTypeLibrary,
+		Flags:         m16ModfCompatPort,
+		MsgABIVersion: 0,
+	},
+}
 
 func main() {
 	listingPath := flag.String("listing", "", "path to ie64asm listing file")
@@ -61,7 +109,8 @@ func main() {
 
 	code := image[codeStart:codeEnd]
 	data := image[dataStart:dataEnd]
-	elf := buildELF(code, data)
+	spec, hasManifest := manifestSpecsByLabel[*label]
+	elf := buildELF(code, data, spec, hasManifest)
 
 	if err := os.WriteFile(*outPath, elf, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "write output: %v\n", err)
@@ -100,7 +149,7 @@ func parseNextAddress(lines [][]byte, start int) (uint64, error) {
 	return 0, fmt.Errorf("could not find next address in listing")
 }
 
-func buildELF(code []byte, data []byte) []byte {
+func buildELF(code []byte, data []byte, manifest libManifestSpec, withManifest bool) []byte {
 	codeFileOff := uint64(pageSize)
 	codeFileSize := uint64(len(code))
 	codeMemSize := roundUp(codeFileSize, pageSize)
@@ -109,9 +158,33 @@ func buildELF(code []byte, data []byte) []byte {
 	dataFileSize := uint64(len(data))
 	dataMemSize := roundUp(dataFileSize, pageSize)
 
-	out := make([]byte, dataFileOff+dataFileSize)
+	manifestBytes := []byte(nil)
+	shstrtab := []byte(nil)
+	manifestFileOff := dataFileOff + dataFileSize
+	shstrtabFileOff := manifestFileOff
+	shoff := uint64(0)
+	shnum := uint16(0)
+	shstrndx := uint16(0)
+	if withManifest {
+		manifestBytes = buildManifestNote(manifest)
+		shstrtab = []byte("\x00.ios.libmanifest\x00.shstrtab\x00")
+		shstrtabFileOff = manifestFileOff + uint64(len(manifestBytes))
+		shoff = roundUp(shstrtabFileOff+uint64(len(shstrtab)), 8)
+		shnum = 3
+		shstrndx = 2
+	}
+
+	outLen := dataFileOff + dataFileSize
+	if withManifest {
+		outLen = shoff + uint64(shnum)*elfSectionHeaderSize
+	}
+	out := make([]byte, outLen)
 	copy(out[codeFileOff:], code)
 	copy(out[dataFileOff:], data)
+	if withManifest {
+		copy(out[manifestFileOff:], manifestBytes)
+		copy(out[shstrtabFileOff:], shstrtab)
+	}
 
 	copy(out[0:16], []byte{0x7F, 'E', 'L', 'F', 2, 1, 1})
 	binary.LittleEndian.PutUint16(out[16:18], 2)
@@ -119,14 +192,14 @@ func buildELF(code []byte, data []byte) []byte {
 	binary.LittleEndian.PutUint32(out[20:24], 1)
 	binary.LittleEndian.PutUint64(out[24:32], baseVA)
 	binary.LittleEndian.PutUint64(out[32:40], 64)
-	binary.LittleEndian.PutUint64(out[40:48], 0)
+	binary.LittleEndian.PutUint64(out[40:48], shoff)
 	binary.LittleEndian.PutUint32(out[48:52], 0)
 	binary.LittleEndian.PutUint16(out[52:54], 64)
 	binary.LittleEndian.PutUint16(out[54:56], 56)
 	binary.LittleEndian.PutUint16(out[56:58], 2)
-	binary.LittleEndian.PutUint16(out[58:60], 0)
-	binary.LittleEndian.PutUint16(out[60:62], 0)
-	binary.LittleEndian.PutUint16(out[62:64], 0)
+	binary.LittleEndian.PutUint16(out[58:60], elfSectionHeaderSize)
+	binary.LittleEndian.PutUint16(out[60:62], shnum)
+	binary.LittleEndian.PutUint16(out[62:64], shstrndx)
 
 	ph0 := 64
 	binary.LittleEndian.PutUint32(out[ph0+0:ph0+4], 1)
@@ -148,6 +221,43 @@ func buildELF(code []byte, data []byte) []byte {
 	binary.LittleEndian.PutUint64(out[ph1+40:ph1+48], dataMemSize)
 	binary.LittleEndian.PutUint64(out[ph1+48:ph1+56], pageSize)
 
+	if withManifest {
+		sh1 := shoff + elfSectionHeaderSize
+		binary.LittleEndian.PutUint32(out[sh1+0:sh1+4], 1)
+		binary.LittleEndian.PutUint32(out[sh1+4:sh1+8], elfSHTNote)
+		binary.LittleEndian.PutUint64(out[sh1+24:sh1+32], manifestFileOff)
+		binary.LittleEndian.PutUint64(out[sh1+32:sh1+40], uint64(len(manifestBytes)))
+		binary.LittleEndian.PutUint64(out[sh1+48:sh1+56], 4)
+
+		sh2 := shoff + 2*elfSectionHeaderSize
+		binary.LittleEndian.PutUint32(out[sh2+0:sh2+4], uint32(len("\x00.ios.libmanifest\x00")))
+		binary.LittleEndian.PutUint32(out[sh2+4:sh2+8], elfSHTStrTab)
+		binary.LittleEndian.PutUint64(out[sh2+24:sh2+32], shstrtabFileOff)
+		binary.LittleEndian.PutUint64(out[sh2+32:sh2+40], uint64(len(shstrtab)))
+		binary.LittleEndian.PutUint64(out[sh2+48:sh2+56], 1)
+	}
+
+	return out
+}
+
+func buildManifestNote(spec libManifestSpec) []byte {
+	noteName := []byte("IOS-LIB\x00")
+	desc := make([]byte, 96)
+	binary.LittleEndian.PutUint32(desc[0:4], m16LibManifestMagic)
+	binary.LittleEndian.PutUint32(desc[4:8], m16LibManifestDescVersion)
+	copy(desc[8:40], []byte(spec.Name))
+	binary.LittleEndian.PutUint16(desc[40:42], spec.Version)
+	binary.LittleEndian.PutUint16(desc[42:44], spec.Revision)
+	binary.LittleEndian.PutUint32(desc[44:48], spec.Type)
+	binary.LittleEndian.PutUint32(desc[48:52], spec.Flags)
+	binary.LittleEndian.PutUint32(desc[52:56], spec.MsgABIVersion)
+
+	out := make([]byte, 12+len(noteName)+len(desc))
+	binary.LittleEndian.PutUint32(out[0:4], uint32(len(noteName)))
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(desc)))
+	binary.LittleEndian.PutUint32(out[8:12], m16LibManifestNoteType)
+	copy(out[12:12+len(noteName)], noteName)
+	copy(out[12+len(noteName):], desc)
 	return out
 }
 

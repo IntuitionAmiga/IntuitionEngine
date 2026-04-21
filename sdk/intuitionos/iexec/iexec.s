@@ -484,6 +484,11 @@ endif
     pop     r30
     pop     r29
     bnez    r2, .boot_load_fail
+    load.l  r11, KD_BOOT_MANIFEST_ID(r30)
+    move.l  r12, #BOOT_MANIFEST_ID_DOSLIB
+    bne     r11, r12, .boot_manifest_next
+    move.q  r1, r18                    ; child slot for dos.library
+    jsr     kern_seed_dos_boot_shell_relpath_tasksb
 .boot_manifest_next:
     add     r29, r29, #1
     bra     .boot_manifest_loop
@@ -784,6 +789,10 @@ write_startup_block:
     store.q r0, 40(r1)
     store.q r0, 48(r1)
     store.q r0, 56(r1)
+    store.q r0, 64(r1)
+    store.q r0, 72(r1)
+    store.q r0, 80(r1)
+    store.q r0, 88(r1)
     move.l  r10, #TASK_STARTUP_VERSION
     store.l r10, TASKSB_VERSION(r1)
     move.l  r10, #TASK_STARTUP_SIZE
@@ -2572,6 +2581,15 @@ kern_boot_load_host_doslib:
     add     r21, r21, #KD_BOOT_MANIFEST_STRIDE ; row 1 = dos.library
     bra     kern_boot_load_host_manifest_elf
 
+kern_boot_load_host_shell:
+    move.q  r19, r1
+    la      r20, boot_host_relpath_shell
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_BOOT_MANIFEST_BASE
+    add     r21, r21, #KD_BOOT_MANIFEST_STRIDE
+    add     r21, r21, #KD_BOOT_MANIFEST_STRIDE ; row 2 = Shell
+    bra     kern_boot_load_host_manifest_elf
+
 kern_boot_load_host_manifest_elf:
     sub     sp, sp, #80
     store.q r19, 0(sp)                 ; startup flags
@@ -2642,6 +2660,19 @@ kern_boot_load_host_manifest_elf:
     load.l  r2, BOOT_HOSTFS_ERR-BOOT_HOSTFS_BASE(r24)
     bnez    r2, .kbhd_free_pages_fail
 
+    load.q  r11, 32(sp)
+    beqz    r11, .kbhd_validate_done
+    load.l  r12, KD_BOOT_MANIFEST_ID(r11)
+    move.l  r14, #BOOT_MANIFEST_ID_DOSLIB
+    bne     r12, r14, .kbhd_validate_done
+    load.q  r1, 24(sp)
+    lsl     r1, r1, #12
+    load.q  r2, 8(sp)
+    load.q  r3, KD_BOOT_MANIFEST_NAME(r11)
+    jsr     kern_boot_validate_library_manifest
+    bnez    r2, .kbhd_free_pages_fail
+.kbhd_validate_done:
+
     load.q  r1, 24(sp)
     lsl     r1, r1, #12
     load.q  r2, 8(sp)
@@ -2705,6 +2736,256 @@ kern_boot_load_host_manifest_elf:
 .kbhd_badarg:
     move.q  r2, #ERR_BADARG
     bra     .kbhd_fail
+
+; R1 = ELF ptr, R2 = ELF size, R3 = expected NUL-terminated library name.
+; Returns R2 = ERR_OK or ERR_BADARG.
+kern_boot_validate_library_manifest:
+    move.q  r20, r1
+    move.q  r21, r2
+    move.q  r22, r3
+    move.q  r2, #ERR_BADARG
+    move.l  r11, #64
+    blt     r21, r11, .kbvlm_done
+    load.q  r18, 40(r20)               ; e_shoff
+    beqz    r18, .kbvlm_done
+    load.w  r24, 58(r20)               ; e_shentsize
+    move.l  r11, #64
+    bne     r24, r11, .kbvlm_done
+    load.w  r25, 60(r20)               ; e_shnum
+    beqz    r25, .kbvlm_done
+    load.w  r26, 62(r20)               ; e_shstrndx
+    bge     r26, r25, .kbvlm_done
+    move.q  r27, r25
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    bgt     r27, r21, .kbvlm_done
+
+    move.q  r27, r26
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    add     r27, r20, r27              ; section header for shstrtab
+    load.q  r28, 24(r27)               ; sh_offset
+    load.q  r29, 32(r27)               ; sh_size
+    beqz    r29, .kbvlm_done
+    add     r30, r28, r29
+    bgt     r30, r21, .kbvlm_done
+
+    move.l  r19, #0
+.kbvlm_sh_loop:
+    bge     r19, r25, .kbvlm_done
+    move.q  r27, r19
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    add     r27, r20, r27
+    load.l  r11, 4(r27)                ; sh_type
+    move.l  r12, #7
+    bne     r11, r12, .kbvlm_next_sh
+    load.l  r11, (r27)                 ; sh_name
+    bge     r11, r29, .kbvlm_next_sh
+    add     r14, r20, r28
+    add     r14, r14, r11              ; section name ptr
+    la      r15, kbvlm_manifest_section_name
+    jsr     kern_boot_validate_string_eq
+    bnez    r23, .kbvlm_next_sh
+    load.q  r11, 24(r27)               ; sh_offset
+    load.q  r12, 32(r27)               ; sh_size
+    add     r13, r11, r12
+    bgt     r13, r21, .kbvlm_done
+    add     r27, r20, r11              ; note ptr
+    add     r30, r27, r12              ; section end ptr
+.kbvlm_note_loop:
+    move.q  r13, r27
+    add     r13, r13, #12
+    bgt     r13, r30, .kbvlm_done
+    load.l  r11, (r27)                 ; namesz
+    load.l  r11, 4(r27)                ; descsz
+    move.q  r24, r11
+    load.l  r11, (r27)                 ; namesz
+    move.q  r25, r11
+    add     r25, r25, #3
+    and     r25, r25, #0xFFFFFFFC
+    move.q  r26, r24
+    add     r26, r26, #3
+    and     r26, r26, #0xFFFFFFFC
+    move.q  r13, r27
+    add     r13, r13, #12
+    add     r13, r13, r25
+    add     r13, r13, r26
+    bgt     r13, r30, .kbvlm_done
+    move.q  r29, r13                   ; next note ptr
+    move.l  r12, #8
+    bne     r11, r12, .kbvlm_note_next
+    load.l  r11, 8(r27)                ; note type
+    move.l  r12, #0x494F5331
+    bne     r11, r12, .kbvlm_note_next
+    add     r14, r27, #12
+    la      r15, kbvlm_manifest_note_name
+    jsr     kern_boot_validate_string_eq
+    bnez    r23, .kbvlm_note_next
+    move.l  r12, #96
+    bne     r24, r12, .kbvlm_note_next
+    add     r27, r27, #12
+    add     r27, r27, r25              ; descriptor base
+    load.l  r11, (r27)
+    move.l  r12, #0x4C49424D
+    bne     r11, r12, .kbvlm_note_next
+    load.l  r11, 4(r27)
+    move.l  r12, #1
+    bne     r11, r12, .kbvlm_note_next
+    add     r14, r27, #8               ; desc.name[32]
+    move.q  r15, r22
+    jsr     kern_boot_validate_name32_eq
+    bnez    r23, .kbvlm_note_next
+    load.w  r11, 40(r27)               ; lib_version
+    move.l  r12, #14
+    bne     r11, r12, .kbvlm_note_next
+    load.w  r11, 42(r27)               ; lib_revision
+    bnez    r11, .kbvlm_note_next
+    load.l  r11, 44(r27)               ; type
+    move.l  r12, #1
+    bne     r11, r12, .kbvlm_note_next
+    load.l  r11, 48(r27)               ; flags
+    move.l  r12, #MODF_COMPAT_PORT
+    bne     r11, r12, .kbvlm_note_next
+    load.l  r11, 52(r27)               ; compat message ABI version
+    bnez    r11, .kbvlm_note_next
+    move.q  r2, #ERR_OK
+    rts
+.kbvlm_note_next:
+    move.q  r27, r29
+    blt     r27, r30, .kbvlm_note_loop
+    bra     .kbvlm_done
+.kbvlm_next_sh:
+    add     r19, r19, #1
+    bra     .kbvlm_sh_loop
+.kbvlm_done:
+    rts
+
+; R14 = actual NUL-terminated string, R15 = expected NUL-terminated string.
+; Returns R23 = 0 on match, 1 on mismatch.
+kern_boot_validate_string_eq:
+.kbvse_loop:
+    load.b  r16, (r14)
+    load.b  r17, (r15)
+    bne     r16, r17, .kbvse_mismatch
+    beqz    r16, .kbvse_match
+    add     r14, r14, #1
+    add     r15, r15, #1
+    bra     .kbvse_loop
+.kbvse_match:
+    move.q  r23, #0
+    rts
+.kbvse_mismatch:
+    move.q  r23, #1
+    rts
+
+; R14 = 32-byte manifest name field, R15 = expected NUL-terminated string.
+; Returns R23 = 0 on match, 1 on mismatch.
+kern_boot_validate_name32_eq:
+    move.l  r16, #0
+.kbvn32_loop:
+    move.l  r17, #32
+    bge     r16, r17, .kbvn32_match
+    add     r18, r14, r16
+    load.b  r18, (r18)
+    add     r19, r15, r16
+    load.b  r19, (r19)
+    bne     r18, r19, .kbvn32_mismatch
+    beqz    r19, .kbvn32_tail
+    add     r16, r16, #1
+    bra     .kbvn32_loop
+.kbvn32_tail:
+    add     r16, r16, #1
+.kbvn32_zero_loop:
+    move.l  r17, #32
+    bge     r16, r17, .kbvn32_match
+    add     r18, r14, r16
+    load.b  r18, (r18)
+    bnez    r18, .kbvn32_mismatch
+    add     r16, r16, #1
+    bra     .kbvn32_zero_loop
+.kbvn32_match:
+    move.q  r23, #0
+    rts
+.kbvn32_mismatch:
+    move.q  r23, #1
+    rts
+
+kbvlm_manifest_section_name:
+    dc.b    ".ios.libmanifest", 0
+    align   4
+
+kbvlm_manifest_note_name:
+    dc.b    "IOS-LIB", 0
+    align   4
+
+; R1 = dos.library child slot. Seeds the stable startup-block relpath field
+; consumed by dos.library boot so bootstrap never mutates DOS-private data.
+kern_seed_dos_boot_shell_relpath_tasksb:
+    push    r20
+    push    r21
+    push    r22
+    move.q  r20, r1
+    jsr     kern_task_layout_addr
+    load.q  r20, KD_TASK_LAYOUT_STARTUP(r1)
+    add     r21, r20, #TASKSB_BOOT_DOS_SHELL_RELPATH
+    la      r22, boot_host_relpath_shell
+    jsr     kern_copy_nul_string
+    pop     r22
+    pop     r21
+    pop     r20
+    move.q  r2, #ERR_OK
+    rts
+
+; R1 = public task ID. Returns R1 = 1 iff dos.library reached an ONLINE M16 row
+; for this owning task, else 0. This distinguishes "bootstrap completed" from
+; "task died before AddLibrary" without penalizing later shell-less boots.
+kern_dos_bootstrap_completed:
+    push    r20
+    push    r21
+    push    r22
+    move.q  r20, r1
+    move.l  r21, #0
+.kdbc_scan:
+    move.l  r22, #KD_MODULE_MAX
+    bge     r21, r22, .kdbc_no
+    move.q  r1, r21
+    push    r21
+    jsr     m16_module_row_addr_for_index
+    pop     r21
+    move.q  r22, r1
+    beqz    r22, .kdbc_next
+    load.l  r14, KD_MODULE_STATE(r22)
+    move.l  r11, #M16_MODSTATE_ONLINE
+    bne     r14, r11, .kdbc_next
+    load.l  r14, KD_MODULE_OWNING_TASK(r22)
+    bne     r14, r20, .kdbc_next
+    add     r14, r22, #KD_MODULE_NAME
+    la      r15, boot_manifest_name_doslib
+    jsr     kern_boot_validate_name32_eq
+    bnez    r23, .kdbc_next
+    move.q  r1, #1
+    bra     .kdbc_done
+.kdbc_next:
+    add     r21, r21, #1
+    bra     .kdbc_scan
+.kdbc_no:
+    move.q  r1, #0
+.kdbc_done:
+    pop     r22
+    pop     r21
+    pop     r20
+    rts
+
+; R21 = destination, R22 = source. Copies the source string including NUL.
+kern_copy_nul_string:
+.kcns_loop:
+    load.b  r23, (r22)
+    store.b r23, (r21)
+    add     r22, r22, #1
+    add     r21, r21, #1
+    bnez    r23, .kcns_loop
+    rts
 
 ; boot_load_elf_image:
 ;   Launch one strict-M14 ELF image in kernel context by validating it and
@@ -10923,6 +11204,20 @@ kill_task_cleanup:
     move.q  r1, r13
     jsr     kern_task_pubid_addr
     load.l  r15, (r1)                   ; r15 = exiting public task ID
+    move.l  r12, #KERN_DATA_BASE
+    load.l  r14, KD_DOSLIB_PUBID(r12)
+    bne     r14, r15, .ktc_skip_dos_bootstrap_check
+    move.q  r1, r15
+    push    r15
+    push    r13
+    jsr     kern_dos_bootstrap_completed
+    pop     r13
+    pop     r15
+    bnez    r1, .ktc_skip_dos_bootstrap_check
+    la      r8, boot_fail_msg
+    jsr     kern_puts
+    halt
+.ktc_skip_dos_bootstrap_check:
     move.q  r1, r15
     push    r15
     push    r13

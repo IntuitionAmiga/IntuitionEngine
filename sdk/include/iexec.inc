@@ -396,6 +396,8 @@ M16_MODSTATE_EXPUNGING   equ 4
 
 MODF_RESIDENT           equ 0x00000001 ; runtime pin: CloseLibrary-to-zero keeps
                                        ; the row ONLINE at the resident floor
+MODF_COMPAT_PORT        equ 0x00000002 ; manifest contract: module publishes a
+                                       ; FindPort-visible public compat port
 
 KD_MODULE_WAITER_ROWS    equ 68712 ; 16 rows × 24 bytes = 384 bytes
 KD_MODULE_WAITER_STRIDE  equ 24
@@ -689,7 +691,7 @@ USER_DYN_PAGES    equ 768         ; max pages per single AllocMem call
 ;   0(sp) = startup_block_base
 ;   8(sp) = data_base
 ; Services can then read both without deriving addresses from task_id.
-TASK_STARTUP_SIZE        equ 64
+TASK_STARTUP_SIZE        equ 96
 TASK_STARTUP_VERSION     equ 1
 TASK_STARTUP_FLAG_CREATE equ 0x1
 TASK_STARTUP_FLAG_EXEC   equ 0x2
@@ -706,6 +708,8 @@ TASKSB_DATA_BASE    equ 0x20      ; u64
 TASKSB_DATA_PAGES   equ 0x28      ; u32
 TASKSB_STACK_BASE   equ 0x30      ; u64
 TASKSB_STACK_PAGES  equ 0x38      ; u32
+TASKSB_BOOT_DOS_SHELL_RELPATH equ 0x40 ; 32-byte NUL-terminated fallback boot path
+TASKSB_BOOT_DOS_SHELL_RELPATH_MAX equ 32
 
 ; ---------------------------------------------------------------------------
 ; Page Bitmap — 800 bytes at kernel data offset 1664

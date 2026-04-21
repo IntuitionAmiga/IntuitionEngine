@@ -26,6 +26,7 @@ prog_doslib_code:
     store.q r29, (sp)
     load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)               ; data[128] = task_id
+    store.q r30, 192(r29)              ; data[192] = startup_base (boot-only scratch)
 
     ; =====================================================================
     ; OpenLibrary("console.handler", 0) with retry until found
@@ -232,11 +233,19 @@ prog_doslib_code:
     bnez    r2, .dos_boot_fail
 
     ; =====================================================================
-    ; M15.2 phase 5: launch the boot shell directly from the host-backed
-    ; IOSSYS tree. If it is absent, continue without a shell rather than
-    ; falling back to an embedded manifest copy.
+    ; Launch the boot shell from the startup-block relpath when present.
+    ; Older images can still fall back to the baked private literal.
     ; =====================================================================
+    load.q  r30, 192(r29)              ; startup_base
+    load.l  r11, TASKSB_SIZE(r30)
+    move.l  r12, #TASK_STARTUP_SIZE
+    blt     r11, r12, .dos_boot_shell_use_private
+    add     r23, r30, #TASKSB_BOOT_DOS_SHELL_RELPATH
+    load.b  r11, (r23)
+    bnez    r11, .dos_boot_shell_path_ready
+.dos_boot_shell_use_private:
     add     r23, r29, #(prog_doslib_boot_shell_relpath - prog_doslib_data)
+.dos_boot_shell_path_ready:
     add     r16, r29, #(prog_doslib_empty_args - prog_doslib_data)
     move.q  r18, r0
     move.q  r17, r0
