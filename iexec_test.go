@@ -1596,10 +1596,14 @@ func assembleAndLoadKernelWithBootstrapHostRoot(t *testing.T, hostRoot string) (
 }
 
 func assembleAndLoadKernelWithBootstrapHostRootOptions(t *testing.T, hostRoot string, useSpecialBootServices bool) (*ie64TestRig, *TerminalMMIO) {
-	return assembleAndLoadKernelWithBootstrapHostRootDefines(t, hostRoot, useSpecialBootServices, nil)
+	return assembleAndLoadKernelWithBootstrapHostRootDefinesAndMutator(t, hostRoot, useSpecialBootServices, nil, nil)
 }
 
 func assembleAndLoadKernelWithBootstrapHostRootDefines(t *testing.T, hostRoot string, useSpecialBootServices bool, defines []string) (*ie64TestRig, *TerminalMMIO) {
+	return assembleAndLoadKernelWithBootstrapHostRootDefinesAndMutator(t, hostRoot, useSpecialBootServices, defines, nil)
+}
+
+func assembleAndLoadKernelWithBootstrapHostRootDefinesAndMutator(t *testing.T, hostRoot string, useSpecialBootServices bool, defines []string, mutate func(*BootstrapHostFSDevice, []byte)) (*ie64TestRig, *TerminalMMIO) {
 	t.Helper()
 	asmBin := buildAssembler(t)
 	tmpDir := t.TempDir()
@@ -1630,6 +1634,9 @@ func assembleAndLoadKernelWithBootstrapHostRootDefines(t *testing.T, hostRoot st
 	installSyntheticCommandImages(t, rig.cpu.memory)
 	if useSpecialBootServices {
 		installBootServiceSpecials(t, hostfs, rig.cpu.memory)
+	}
+	if mutate != nil {
+		mutate(hostfs, rig.cpu.memory)
 	}
 	rig.bus.MapIO(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END, hostfs.HandleRead, hostfs.HandleWrite)
 	copy(rig.cpu.memory[PROG_START:], data)
@@ -12206,6 +12213,406 @@ func TestIExec_M16_Phase1HostRoot_DOSRunGraphicsAfterHardwareResource(t *testing
 	}
 }
 
+func TestIExec_M16_IntuitionLibraryAutoloadsGraphicsOnFirstWindowDemand(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	writeHostRootFileBytes(t, hostRoot, "S/Startup-Sequence", []byte(
+		"RESOURCES/hardware.resource\r\n"+
+			"DEVS/input.device\r\n"+
+			"VERSION\r\n"+
+			"ECHO Type HELP for commands and ASSIGN for layout\r\n",
+	))
+	rig, term := assembleAndLoadKernelWithBootstrapHostRootDefinesAndMutator(t, hostRoot, false, nil, func(hostfs *BootstrapHostFSDevice, _ []byte) {
+		hostfs.SetSpecialFileLive("IOSSYS/LIBS/intuition.library", mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_intuition_library.elf"))
+	})
+	runAboutAppEndToEndWithRig(t, rig, term)
+}
+
+func TestIExec_M16_UntrustedPathLaunchDoesNotKeepIntuitionCompatPortAlive(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	writeHostRootFileBytes(t, hostRoot, "S/Startup-Sequence", []byte(
+		"RESOURCES/hardware.resource\r\n"+
+			"DEVS/input.device\r\n"+
+			"VERSION\r\n",
+	))
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	for _, ch := range "\nLIBS:intuition.library\nVERSION\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	runRigForDuration(rig, 10*time.Second)
+
+	if _, _, ok := findPublicPortIDByName(rig.cpu.memory, "intuition.library"); ok {
+		output := term.DrainOutput()
+		t.Fatalf("untrusted LIBS:intuition.library launch left compat port online output=%q", output[:min(len(output), 600)])
+	}
+	output := term.DrainOutput()
+	if strings.Count(output, "intuition.library M12 [Task ") != 0 {
+		t.Fatalf("untrusted LIBS:intuition.library launch printed ONLINE banner output=%q", output[:min(len(output), 600)])
+	}
+	if !strings.Contains(output, "IntuitionOS 0.18") {
+		t.Fatalf("shell did not stay responsive after rejected untrusted intuition launch output=%q", output[:min(len(output), 600)])
+	}
+}
+
+type intuitionOpenWindowRetryClientOffsets struct {
+	start1    uint32
+	replyErr1 uint32
+	handle1   uint32
+	sentinel1 uint32
+	start2    uint32
+	replyErr2 uint32
+	handle2   uint32
+	sentinel2 uint32
+}
+
+func patchHostShellELFWithIntuitionOpenWindowRetryClient(t *testing.T, image []byte) intuitionOpenWindowRetryClientOffsets {
+	t.Helper()
+
+	const (
+		offIntuiPort = 0x300
+		offReplyPrt  = 0x308
+		offIDCMPPrt  = 0x310
+		offBufferVA  = 0x318
+		offShareHdl  = 0x320
+		offStart1    = 0x328
+		offReplyErr1 = 0x330
+		offHandle1   = 0x338
+		offSentinel1 = 0x340
+		offStart2    = 0x348
+		offReplyErr2 = 0x350
+		offHandle2   = 0x358
+		offSentinel2 = 0x360
+		offSigBit    = 0x368
+		offOutcome   = 0x370
+		offName      = 0x500
+	)
+
+	shellCode := elfExecCodeOffset(t, image)
+	off := shellCode
+	w := func(instr []byte) { copy(image[off:], instr); off += 8 }
+	writeStringAt := func(off uint32, s string) {
+		for i, b := range append([]byte(s), 0) {
+			w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+			w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, off+uint32(i)))
+		}
+	}
+	emitOpenWindow := func(replyErrOff uint32, handleOff uint32, sentinelOff uint32, sentinelVal uint32) {
+		w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offIntuiPort))
+		w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x300))
+		w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 320))
+		w(ie64Instr(OP_LSL, 3, IE64_SIZE_Q, 1, 3, 0, 48))
+		w(ie64Instr(OP_MOVE, 14, IE64_SIZE_L, 1, 0, 0, 200))
+		w(ie64Instr(OP_LSL, 14, IE64_SIZE_Q, 1, 14, 0, 32))
+		w(ie64Instr(OP_OR64, 3, IE64_SIZE_Q, 0, 3, 14, 0))
+		w(ie64Instr(OP_MOVE, 14, IE64_SIZE_L, 1, 0, 0, 240))
+		w(ie64Instr(OP_LSL, 14, IE64_SIZE_Q, 1, 14, 0, 16))
+		w(ie64Instr(OP_OR64, 3, IE64_SIZE_Q, 0, 3, 14, 0))
+		w(ie64Instr(OP_OR64, 3, IE64_SIZE_Q, 1, 3, 0, 200))
+		w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offIDCMPPrt))
+		w(ie64Instr(OP_LOAD, 5, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+		w(ie64Instr(OP_LOAD, 6, IE64_SIZE_L, 0, 29, 0, offShareHdl))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysPutMsg))
+		w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+		w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offReplyPrt))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+		w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+		w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, replyErrOff))
+		w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, handleOff))
+		w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sentinelVal))
+		w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, sentinelOff))
+	}
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32('I')))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 29, 0, 64))
+	writeStringAt(offName, "intuition.library")
+
+	findLoop := off
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offName))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqFound := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offSigBit))
+	openRetry := off
+	w(ie64Instr(OP_MOVE, 14, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF))
+	w(ie64Instr(OP_STORE, 14, IE64_SIZE_L, 1, 29, 0, offOutcome+0))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 1, 29, 0, offOutcome+4))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 1, 29, 0, offOutcome+8))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 1, 29, 0, offOutcome+12))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offName))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offSigBit))
+	w(ie64Instr(OP_ADD, 4, IE64_SIZE_L, 1, 29, 0, offOutcome))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	beqOpenOK := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_MOVE, 14, IE64_SIZE_L, 1, 0, 0, errAgain))
+	bneAgain := off
+	w(ie64Instr(OP_BNE, 0, 0, 0, 2, 14, 0))
+	w(ie64Instr(OP_LOAD, 14, IE64_SIZE_L, 1, 29, 0, offOutcome+0))
+	w(ie64Instr(OP_MOVE, 15, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF))
+	bneSentinel := off
+	w(ie64Instr(OP_BNE, 0, 0, 0, 14, 15, 0))
+	w(ie64Instr(OP_LOAD, 14, IE64_SIZE_Q, 0, 29, 0, offSigBit))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_LSL, 1, IE64_SIZE_Q, 0, 1, 14, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWait))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	bneWait := off
+	w(ie64Instr(OP_BNE, 0, 0, 0, 2, 0, 0))
+	w(ie64Instr(OP_LOAD, 14, IE64_SIZE_L, 1, 29, 0, offOutcome+0))
+	w(ie64Instr(OP_MOVE, 15, IE64_SIZE_L, 1, 0, 0, 0xFFFFFFFF))
+	beqYield := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 14, 15, 0))
+	openDone := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 14, 0, 0))
+	freeSigFail := off
+	w(ie64Instr(OP_LOAD, 14, IE64_SIZE_Q, 0, 29, 0, offSigBit))
+	beqFailHalt := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 14, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 14, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeSignal))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 1, 29, 0, offSigBit))
+	haltLoop := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braHalt := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(haltLoop)-int32(braHalt))))
+	yieldOpen := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braRetry := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(openRetry)-int32(braRetry))))
+	copy(image[bneAgain:], ie64Instr(OP_BNE, 0, 0, 0, 2, 14, uint32(int32(freeSigFail)-int32(bneAgain))))
+	copy(image[bneSentinel:], ie64Instr(OP_BNE, 0, 0, 0, 14, 15, uint32(int32(openDone)-int32(bneSentinel))))
+	copy(image[bneWait:], ie64Instr(OP_BNE, 0, 0, 0, 2, 0, uint32(int32(yieldOpen)-int32(bneWait))))
+	copy(image[beqYield:], ie64Instr(OP_BEQ, 0, 0, 0, 14, 15, uint32(int32(yieldOpen)-int32(beqYield))))
+	copy(image[beqFailHalt:], ie64Instr(OP_BEQ, 0, 0, 0, 14, 0, uint32(int32(haltLoop)-int32(beqFailHalt))))
+	openSuccess := off
+	copy(image[beqOpenOK:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(openSuccess)-int32(beqOpenOK))))
+	copy(image[openDone:], ie64Instr(OP_BEQ, 0, 0, 0, 14, 0, uint32(int32(openSuccess)-int32(openDone))))
+	w(ie64Instr(OP_LOAD, 14, IE64_SIZE_Q, 0, 29, 0, offSigBit))
+	beqFindNoFree := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 14, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 0, 14, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFreeSignal))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 0, IE64_SIZE_Q, 1, 29, 0, offSigBit))
+	findYield := off
+	copy(image[beqFindNoFree:], ie64Instr(OP_BEQ, 0, 0, 0, 14, 0, uint32(int32(findYield)-int32(beqFindNoFree))))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braFind := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(findLoop)-int32(braFind))))
+	foundIntui := off
+	copy(image[beqFound:], ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(foundIntui)-int32(beqFound))))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offIntuiPort))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offReplyPrt))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offIDCMPPrt))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 256000))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0x10001))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocMem))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, offBufferVA))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 1, 29, 0, offShareHdl))
+
+	waitStart1 := off
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_B, 1, 29, 0, offStart1))
+	beqStart1 := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 1, 0, 0))
+	emitOpenWindow(offReplyErr1, offHandle1, offSentinel1, 0x1111)
+	waitStart2 := off
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_B, 1, 29, 0, offStart2))
+	beqStart2 := off
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 1, 0, 0))
+	emitOpenWindow(offReplyErr2, offHandle2, offSentinel2, 0x2222)
+	yieldLoop := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braYield := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldLoop)-int32(braYield))))
+	yieldStart1 := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braStart1 := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(waitStart1)-int32(braStart1))))
+	yieldStart2 := off
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	braStart2 := off
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(waitStart2)-int32(braStart2))))
+	copy(image[beqStart1:], ie64Instr(OP_BEQ, 0, 0, 0, 1, 0, uint32(int32(yieldStart1)-int32(beqStart1))))
+	copy(image[beqStart2:], ie64Instr(OP_BEQ, 0, 0, 0, 1, 0, uint32(int32(yieldStart2)-int32(beqStart2))))
+
+	return intuitionOpenWindowRetryClientOffsets{
+		start1:    offStart1,
+		replyErr1: offReplyErr1,
+		handle1:   offHandle1,
+		sentinel1: offSentinel1,
+		start2:    offStart2,
+		replyErr2: offReplyErr2,
+		handle2:   offHandle2,
+		sentinel2: offSentinel2,
+	}
+}
+
+func TestIExec_M16_IntuitionOpenWindow_PermanentGraphicsAutoloadFailureReplies(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	writeHostRootFileBytes(t, hostRoot, "S/Startup-Sequence", []byte(
+		"RESOURCES/hardware.resource\r\n"+
+			"DEVS/input.device\r\n"+
+			"LIBS/intuition.library\r\n"+
+			"VERSION\r\n",
+	))
+	image := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_shell.elf")
+	offsets := patchHostShellELFWithIntuitionOpenWindowRetryClient(t, image)
+	writeHostRootFileBytes(t, hostRoot, "C/openretry", image)
+
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	for _, ch := range "C:openretry\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	runRigForDuration(rig, 6*time.Second)
+
+	taskID, ok := findTaskByDataMarker(rig.cpu.memory, 'I')
+	if !ok {
+		output := term.DrainOutput()
+		t.Fatalf("openretry task marker not found after launch output=%q", output[:min(len(output), 400)])
+	}
+	shellData := uint32(taskLayoutFieldQ(rig.cpu.memory, taskID, kdTaskDataBase))
+
+	_, dosPortBase, ok := findPublicPortIDByName(rig.cpu.memory, "dos.library")
+	if !ok {
+		t.Fatal("dos.library port not found before intuition autoload failure test")
+	}
+	rig.cpu.memory[dosPortBase+kdPortCount] = 4
+	rig.cpu.memory[shellData+offsets.start1] = 1
+
+	runRigForDuration(rig, 1500*time.Millisecond)
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.sentinel1:]); got != 0x1111 {
+		output := term.DrainOutput()
+		t.Fatalf("first INTUITION_OPEN_WINDOW did not complete after permanent graphics autoload failure; sentinel=0x%X replyErr=%d handle=%d output=%q",
+			got,
+			binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.replyErr1:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.handle1:]),
+			output[:min(len(output), 400)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.replyErr1:]); got != 4 {
+		t.Fatalf("first INTUITION_OPEN_WINDOW reply err=%d, want INTUI_ERR_NOMEM (4)", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.handle1:]); got != 0 {
+		t.Fatalf("first INTUITION_OPEN_WINDOW handle=%d after permanent autoload failure, want 0", got)
+	}
+}
+
+func TestIExec_M16_IntuitionOpenWindow_RetryAfterPermanentGraphicsAutoloadFailureReleasesSignal(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	writeHostRootFileBytes(t, hostRoot, "S/Startup-Sequence", []byte(
+		"RESOURCES/hardware.resource\r\n"+
+			"DEVS/input.device\r\n"+
+			"LIBS/intuition.library\r\n"+
+			"VERSION\r\n",
+	))
+	image := mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_shell.elf")
+	offsets := patchHostShellELFWithIntuitionOpenWindowRetryClient(t, image)
+	writeHostRootFileBytes(t, hostRoot, "C/openretry", image)
+
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	for _, ch := range "C:openretry\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	runRigForDuration(rig, 6*time.Second)
+
+	taskID, ok := findTaskByDataMarker(rig.cpu.memory, 'I')
+	if !ok {
+		output := term.DrainOutput()
+		t.Fatalf("openretry task marker not found after launch output=%q", output[:min(len(output), 400)])
+	}
+	shellData := uint32(taskLayoutFieldQ(rig.cpu.memory, taskID, kdTaskDataBase))
+
+	_, dosPortBase, ok := findPublicPortIDByName(rig.cpu.memory, "dos.library")
+	if !ok {
+		t.Fatal("dos.library port not found before intuition autoload retry test")
+	}
+	rig.cpu.memory[dosPortBase+kdPortCount] = 4
+	rig.cpu.memory[shellData+offsets.start1] = 1
+
+	runRigForDuration(rig, 1500*time.Millisecond)
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.sentinel1:]); got != 0x1111 {
+		output := term.DrainOutput()
+		t.Fatalf("first INTUITION_OPEN_WINDOW did not reach retry point; sentinel=0x%X replyErr=%d handle=%d output=%q",
+			got,
+			binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.replyErr1:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.handle1:]),
+			output[:min(len(output), 400)])
+	}
+	intuiPortID, intuiPortBase, ok := findPublicPortIDByName(rig.cpu.memory, "intuition.library")
+	if !ok {
+		t.Fatal("intuition.library port not found after first open failure")
+	}
+	intuiData := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(rig.cpu.memory[intuiPortBase+kdPortOwner]), kdTaskDataBase))
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[intuiData+312:]); got != 0 {
+		t.Fatalf("intuition graphics_open_sigbit=%d after failed open, want 0", got)
+	}
+	intuiTask := uint32(rig.cpu.memory[intuiPortBase+kdPortOwner])
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTCBBase+intuiTask*tcbStride+tcbSigAllocOff:]); got&(1<<16) != 0 {
+		t.Fatalf("intuition task %d still has signal bit 16 allocated after failed open (sigAlloc=0x%X, portID=%d)",
+			intuiTask,
+			got,
+			intuiPortID)
+	}
+
+	rig.cpu.memory[dosPortBase+kdPortCount] = 0
+	rig.cpu.memory[shellData+offsets.start2] = 1
+
+	runRigForDuration(rig, 8*time.Second)
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.sentinel2:]); got != 0x2222 {
+		output := term.DrainOutput()
+		t.Fatalf("second INTUITION_OPEN_WINDOW did not complete after clearing DOS port pressure; sentinel=0x%X replyErr=%d handle=%d output=%q",
+			got,
+			binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.replyErr2:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.handle2:]),
+			output[:min(len(output), 400)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.replyErr2:]); got != 0 {
+		t.Fatalf("second INTUITION_OPEN_WINDOW reply err=%d, want INTUI_ERR_OK (0)", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[shellData+offsets.handle2:]); got != 1 {
+		t.Fatalf("second INTUITION_OPEN_WINDOW handle=%d, want 1", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[intuiData+312:]); got != 0 {
+		t.Fatalf("intuition graphics_open_sigbit=%d after successful graphics autoload, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTCBBase+intuiTask*tcbStride+tcbSigAllocOff:]); got&(1<<16) != 0 {
+		t.Fatalf("intuition task %d still has signal bit 16 allocated after successful autoload (sigAlloc=0x%X)",
+			intuiTask,
+			got)
+	}
+}
+
 func findPublicPortIDByName(mem []byte, name string) (uint32, uint32, bool) {
 	target := []byte(name)
 	for i := uint32(0); i < kdPortMax; i++ {
@@ -12900,6 +13307,133 @@ func TestIExec_M16_AddLibrary_CompletesMixedVersionWaitersIndependently(t *testi
 		}
 		t.Fatalf("module open_count=%d, want 1 successful waiter openRowCount=%d pubid=%d rowIndex=%d openRows=%v rawRows=%v outcomeA=(%d,%d,%d) outcomeB=(%d,%d,%d)",
 			got, openRowCount, pubid, rowIndex, openRows, rawRows, statusA, tokenA, versionA, statusB, tokenB, versionB)
+	}
+}
+
+func TestIExec_M16_AddLibrary_FreesDeadWaitersWhileCompletingLiveWaiters(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase:], 1)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[kernDataBase+kdTaskIDNext:], 2)
+
+	t0 := images[0]
+	scratch0 := uint32(userTask0Stack + 0x100)
+	outcome0 := scratch0 + 64
+	name0 := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("deadwait.library\x00"))
+	clear(rig.cpu.memory[scratch0 : scratch0+160])
+
+	rowIndex := uint32(0xFFFFFFFF)
+	for i := uint32(1); i < kdModuleMax; i++ {
+		row := m16ModuleRowBase(i)
+		if rig.cpu.memory[row+kdModuleName] == 0 {
+			rowIndex = i
+			break
+		}
+	}
+	if rowIndex == 0xFFFFFFFF {
+		t.Fatal("no nonzero free module row found for deadwait.library")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	copy(rig.cpu.memory[row+kdModuleName:row+kdModuleName+portNameLen], append([]byte("deadwait.library"), make([]byte, portNameLen-len("deadwait.library"))...))
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleState:], m16ModStateLoading)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleGeneration:], 0)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[row+kdModuleWaitersHead:], 1)
+
+	waiter0 := m16ModuleWaiterBase(0)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[waiter0+kdModuleWaiterTask:], 0xDEAD)
+	binary.LittleEndian.PutUint16(rig.cpu.memory[waiter0+kdModuleWaiterMinVer:], 1)
+	binary.LittleEndian.PutUint16(rig.cpu.memory[waiter0+kdModuleWaiterSigBit:], 16)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[waiter0+kdModuleWaiterOutcome:], 0x4000)
+	binary.LittleEndian.PutUint32(rig.cpu.memory[waiter0+12:], rowIndex)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[waiter0+kdModuleWaiterNext:], 0)
+
+	pc0 := t0
+	w0 := func(instr []byte) { copy(rig.cpu.memory[pc0:], instr); pc0 += 8 }
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 16))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAllocSignal))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 0))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, 0))
+	w0(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, outcome0))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 24))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 32))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, name0))
+	w0(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 5))
+	w0(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 24))
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w0(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch0))
+	w0(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 40))
+	w0(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0xCAFE))
+	w0(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 48))
+	yieldPC0 := pc0
+	w0(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w0(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC0)-int32(pc0))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(500 * time.Millisecond)
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+48:]); got != 0xCAFE {
+		output := term.DrainOutput()
+		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 400)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+8:]); got != 0 {
+		t.Fatalf("AllocSignal err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != errAgain {
+		t.Fatalf("OpenLibraryEx err=%d, want ERR_AGAIN (%d)", got, errAgain)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+32:]); got != 0 {
+		t.Fatalf("CreatePort err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+40:]); got != 0 {
+		t.Fatalf("AddLibrary err=%d, want 0", got)
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "deadwait.library")
+	if !ok {
+		t.Fatal("deadwait.library row missing after AddLibrary")
+	}
+	row = m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
+		t.Fatalf("module state=%d, want ONLINE (%d)", got, m16ModStateOnline)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 1 {
+		t.Fatalf("module open_count=%d, want 1 after dead waiter skip", got)
+	}
+	if got := m16ModuleWaiterCount(rig.cpu.memory, row); got != 0 {
+		t.Fatalf("waiter count=%d after completion, want 0", got)
+	}
+	status0 := binary.LittleEndian.Uint32(rig.cpu.memory[outcome0+0:])
+	token0 := binary.LittleEndian.Uint32(rig.cpu.memory[outcome0+4:])
+	version0 := binary.LittleEndian.Uint32(rig.cpu.memory[outcome0+8:])
+	if status0 != 0 || token0 == 0 || version0 != 5 {
+		t.Fatalf("live waiter outcome=(status=%d token=%d version=%d), want success/nonzero token/version 5", status0, token0, version0)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[waiter0+kdModuleWaiterTask:]); got != 0 {
+		t.Fatalf("dead waiter task=%d after completion, want freed row", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[waiter0+kdModuleWaiterOutcome:]); got != 0 {
+		t.Fatalf("dead waiter outcome slot=%d after completion, want freed row", got)
 	}
 }
 
@@ -23895,6 +24429,15 @@ func TestIExec_GfxDemoEndToEnd(t *testing.T) {
 // blit reached VRAM via GFX_PRESENT).
 func runAboutAppEndToEnd(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
+	runAboutAppEndToEndWithRig(t, rig, term)
+}
+
+func runAboutAppEndToEndOnHostRoot(t *testing.T, hostRoot string) {
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	runAboutAppEndToEndWithRig(t, rig, term)
+}
+
+func runAboutAppEndToEndWithRig(t *testing.T, rig *ie64TestRig, term *TerminalMMIO) {
 
 	// graphics.library + intuition.library compositor needs a real chip
 	// instance for VRAM scanout, same as TestIExec_GfxDemo_ChipFrontBuffer.
@@ -23909,8 +24452,8 @@ func runAboutAppEndToEnd(t *testing.T) {
 	// default MMIO64PolicyFault would silently drop those writes.
 	rig.bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 
-	// S:Startup-Sequence already auto-starts input.device, graphics.library,
-	// and intuition.library. We just need to launch C:About from the shell.
+	// The host-root Startup-Sequence brings up the services needed for About.
+	// The test itself only needs to launch C:About from the shell.
 	for _, ch := range "C:About\n" {
 		term.EnqueueByte(byte(ch))
 	}
@@ -23920,9 +24463,9 @@ func runAboutAppEndToEnd(t *testing.T) {
 
 	// Give the About app time to spawn, open its window, and present at
 	// least one frame to VRAM. The lazy display open path is the slowest
-	// part — intuition.library has to FindPort graphics.library, allocate
-	// its screen surface, OPEN_DISPLAY + REGISTER_SURFACE + INPUT_OPEN
-	// before the first DAMAGE can complete.
+	// part — intuition.library has to OpenLibrary/FindPort graphics.library,
+	// allocate its screen surface, OPEN_DISPLAY + REGISTER_SURFACE +
+	// INPUT_OPEN before the first DAMAGE can complete.
 	time.Sleep(15 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
@@ -23931,6 +24474,7 @@ func runAboutAppEndToEnd(t *testing.T) {
 	// "About M12 ready" marker (placed at offset 224 of prog_about_data).
 	mem := rig.cpu.memory
 	aboutTaskID := -1
+	var aboutDataBase uint32
 	var windowHandle uint64
 	for taskID := 0; taskID < maxTasks; taskID++ {
 		state := mem[kernDataBase+kdTCBBase+uint32(taskID)*tcbStride+tcbStateOff]
@@ -23947,6 +24491,7 @@ func runAboutAppEndToEnd(t *testing.T) {
 			continue
 		}
 		aboutTaskID = taskID
+		aboutDataBase = dataBase
 		// window_handle is at offset 176 (8 bytes)
 		windowHandle = binary.LittleEndian.Uint64(mem[dataBase+176 : dataBase+184])
 		t.Logf("M12 About: task slot %d, window_handle=%d", taskID, windowHandle)
@@ -23957,7 +24502,38 @@ func runAboutAppEndToEnd(t *testing.T) {
 		t.Fatalf("About app did not spawn. Terminal output:\n%s", output[:min(len(output), 800)])
 	}
 	if windowHandle != 1 {
-		t.Fatalf("About: INTUITION_OPEN_WINDOW returned handle=%d, want 1 (single-window M12)", windowHandle)
+		output := term.DrainOutput()
+		rowState := uint32(0xFFFFFFFF)
+		rowOpen := uint32(0xFFFFFFFF)
+		rowPort := uint32(0)
+		if rowIndex, ok := m16FindModuleRowByName(mem, "graphics.library"); ok {
+			row := m16ModuleRowBase(rowIndex)
+			rowState = binary.LittleEndian.Uint32(mem[row+kdModuleState:])
+			rowOpen = binary.LittleEndian.Uint32(mem[row+kdModuleOpenCount:])
+			rowPort = binary.LittleEndian.Uint32(mem[row+kdModulePublicPort:])
+		}
+		_, _, gfxPortOnline := findPublicPortIDByName(mem, "graphics.library")
+		intuiPortID, intuiPortBase, intuiPortOnline := findPublicPortIDByName(mem, "intuition.library")
+		intuiDbgErr := uint32(0xFFFFFFFF)
+		intuiDbgStatus := uint32(0xFFFFFFFF)
+		intuiPortCount := byte(0xFF)
+		intuiOwnerSlot := uint32(0xFFFFFFFF)
+		if intuiPortOnline {
+			intuiOwnerSlot = uint32(mem[intuiPortBase+kdPortOwner])
+			layoutBase := kernDataBase + kdTaskLayoutBase + intuiOwnerSlot*kdTaskLayoutStr
+			dataBase := uint32(binary.LittleEndian.Uint64(mem[layoutBase+kdTaskDataBase:]))
+			if dataBase != 0 {
+				intuiDbgErr = binary.LittleEndian.Uint32(mem[dataBase+24:])
+				intuiDbgStatus = binary.LittleEndian.Uint32(mem[dataBase+28:])
+			}
+			intuiPortCount = mem[intuiPortBase+kdPortCount]
+		}
+		aboutIntuiPort := binary.LittleEndian.Uint64(mem[aboutDataBase+136:])
+		aboutReplyPort := binary.LittleEndian.Uint64(mem[aboutDataBase+144:])
+		aboutIDCMPPort := binary.LittleEndian.Uint64(mem[aboutDataBase+152:])
+		aboutShare := binary.LittleEndian.Uint32(mem[aboutDataBase+168:])
+		t.Fatalf("About: INTUITION_OPEN_WINDOW returned handle=%d, want 1 (single-window M12) graphicsRow(state=%d open=%d port=%d online=%v) intuition(port=%d online=%v owner=%d count=%d dbgErr=%d dbgStatus=%d) about(intui=%d reply=%d idcmp=%d share=%d) output=%q",
+			windowHandle, rowState, rowOpen, rowPort, gfxPortOnline, intuiPortID, intuiPortOnline, intuiOwnerSlot, intuiPortCount, intuiDbgErr, intuiDbgStatus, aboutIntuiPort, aboutReplyPort, aboutIDCMPPort, aboutShare, output[:min(len(output), 800)])
 	}
 
 	// Verify intuition.library's compositor reached VRAM. M12 redesign

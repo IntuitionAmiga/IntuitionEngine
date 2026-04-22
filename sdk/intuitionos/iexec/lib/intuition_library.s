@@ -34,7 +34,11 @@ prog_intui_code:
     load.q  r4, 136(r29)
     syscall #SYS_ADD_LIBRARY
     load.q  r29, (sp)
-    bnez    r2, .intui_halt
+    beqz    r2, .intui_addlib_done
+    move.l  r1, #ERR_PERM
+    beq     r2, r1, .intui_exit
+    bra     .intui_halt
+.intui_addlib_done:
 
     ; ===== CreatePort(NULL) → reply_port (anonymous) =====
     move.q  r1, r0
@@ -154,7 +158,65 @@ prog_intui_code:
     load.b  r14, 176(r29)              ; display_open
     bnez    r14, .intui_skip_display_init
 
-    ; FindPort("graphics.library")
+    ; Migration compatibility: if a startup-sequence-launched compat-port
+    ; instance is already online, reuse it directly. Otherwise fall back to
+    ; OpenLibrary-driven autoload and then resolve the compat port.
+    load.q  r29, (sp)
+    add     r1, r29, #352              ; "graphics.library"
+    move.l  r2, #0
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    beqz    r2, .intui_findgfx_ok
+
+    ; OpenLibrary("graphics.library", 0) first so exec/dos owns the
+    ; lifecycle and autoload, then resolve the compat port transport.
+    move.l  r1, #16
+    syscall #SYS_ALLOC_SIGNAL
+    load.q  r29, (sp)
+    bnez    r2, .intui_reply_nomem
+    store.q r1, 312(r29)               ; graphics_open_sigbit
+.intui_open_gfx_retry:
+    load.q  r29, (sp)
+    move.l  r14, #0xFFFFFFFF
+    store.l r14, 0(r29)               ; waiter status sentinel
+    store.l r0, 4(r29)
+    store.l r0, 8(r29)
+    store.l r0, 12(r29)
+    add     r1, r29, #352              ; "graphics.library"
+    move.q  r2, r0
+    load.q  r3, 312(r29)               ; waiter-owned signal bit
+    add     r4, r29, #0                ; 16-byte outcome scratch
+    syscall #SYS_OPEN_LIBRARY_EX
+    load.q  r29, (sp)
+    beqz    r2, .intui_findgfx
+    move.l  r14, #ERR_AGAIN
+    bne     r2, r14, .intui_open_gfx_fail
+    load.l  r14, 0(r29)                ; waiter status
+    move.l  r15, #0xFFFFFFFF
+    bne     r14, r15, .intui_open_gfx_done
+    load.q  r14, 312(r29)
+    move.q  r1, #1
+    lsl     r1, r1, r14
+    syscall #SYS_WAIT
+    load.q  r29, (sp)
+    bnez    r2, .intui_open_gfx_yield
+    load.l  r14, 0(r29)                ; waiter status
+    move.l  r15, #0xFFFFFFFF
+    beq     r14, r15, .intui_open_gfx_yield
+    ; fall through once waiter status is real
+.intui_open_gfx_done:
+    beqz    r14, .intui_findgfx
+.intui_open_gfx_fail:
+    load.q  r14, 312(r29)              ; graphics_open_sigbit
+    beqz    r14, .intui_reply_nomem
+    move.q  r1, r14
+    syscall #SYS_FREE_SIGNAL
+    load.q  r29, (sp)
+    store.q r0, 312(r29)
+    bra     .intui_reply_nomem
+.intui_open_gfx_yield:
+    syscall #SYS_YIELD
+    bra     .intui_open_gfx_retry
 .intui_findgfx:
     load.q  r29, (sp)
     add     r1, r29, #352              ; "graphics.library"
@@ -166,6 +228,13 @@ prog_intui_code:
     bra     .intui_findgfx
 .intui_findgfx_ok:
     store.q r1, 144(r29)               ; graphics_port
+    load.q  r14, 312(r29)              ; graphics_open_sigbit
+    beqz    r14, .intui_findgfx_sigfree_done
+    move.q  r1, r14
+    syscall #SYS_FREE_SIGNAL
+    load.q  r29, (sp)
+    store.q r0, 312(r29)
+.intui_findgfx_sigfree_done:
 
     ; FindPort("input.device")
 .intui_findin:
@@ -187,7 +256,7 @@ prog_intui_code:
     move.l  r2, #0x10001
     syscall #SYS_ALLOC_MEM             ; R1=va R2=err R3=share
     load.q  r29, (sp)
-    bnez    r2, .intui_reply_nomem
+    bnez    r2, .intui_display_init_fail
     store.q r1, 200(r29)               ; screen_va
     store.l r3, 208(r29)               ; screen_share
 
@@ -214,12 +283,12 @@ prog_intui_code:
     move.q  r6, r0
     syscall #SYS_PUT_MSG
     load.q  r29, (sp)
-    bnez    r2, .intui_reply_nomem
+    bnez    r2, .intui_display_init_fail
     load.q  r1, 160(r29)
     syscall #SYS_WAIT_PORT
     load.q  r29, (sp)
-    bnez    r3, .intui_reply_nomem
-    bnez    r1, .intui_reply_nomem     ; r1 = err code from gfx
+    bnez    r3, .intui_display_init_fail
+    bnez    r1, .intui_display_init_fail ; r1 = err code from gfx
     store.q r2, 184(r29)               ; display_handle
 
     ; GFX_REGISTER_SURFACE — width=800, height=600, format=RGBA32, stride=3200
@@ -239,12 +308,12 @@ prog_intui_code:
     load.l  r6, 208(r29)               ; share = own screen_share
     syscall #SYS_PUT_MSG
     load.q  r29, (sp)
-    bnez    r2, .intui_reply_nomem
+    bnez    r2, .intui_display_init_fail
     load.q  r1, 160(r29)
     syscall #SYS_WAIT_PORT
     load.q  r29, (sp)
-    bnez    r3, .intui_reply_nomem
-    bnez    r1, .intui_reply_nomem
+    bnez    r3, .intui_display_init_fail
+    bnez    r1, .intui_display_init_fail
     store.q r2, 192(r29)               ; surface_handle
 
     ; INPUT_OPEN(my_input_port). M12 fix: input.device is single-subscriber,
@@ -260,11 +329,11 @@ prog_intui_code:
     move.q  r6, r0
     syscall #SYS_PUT_MSG
     load.q  r29, (sp)
-    bnez    r2, .intui_reply_nomem     ; kernel-level PutMsg failure
+    bnez    r2, .intui_display_init_fail ; kernel-level PutMsg failure
     load.q  r1, 160(r29)
     syscall #SYS_WAIT_PORT
     load.q  r29, (sp)
-    bnez    r3, .intui_reply_nomem     ; kernel-level WaitPort failure
+    bnez    r3, .intui_display_init_fail ; kernel-level WaitPort failure
     ; r1 = mn_Type from input.device's reply: 0 = INPUT_ERR_OK, non-0 = busy/badarg.
     ; We default input_subscribed to 0, then set to 1 only on confirmed OK.
     store.b r0, 177(r29)               ; input_subscribed = 0 (defensive)
@@ -800,6 +869,14 @@ prog_intui_code:
     move.q  r5, r0
     syscall #SYS_REPLY_MSG
     bra     .intui_main
+.intui_display_init_fail:
+    load.q  r14, 312(r29)              ; graphics_open_sigbit
+    beqz    r14, .intui_reply_nomem
+    move.q  r1, r14
+    syscall #SYS_FREE_SIGNAL
+    load.q  r29, (sp)
+    store.q r0, 312(r29)
+    bra     .intui_reply_nomem
 .intui_reply_nomem:
     load.q  r1, 296(r29)
     move.l  r2, #INTUI_ERR_NOMEM
@@ -969,6 +1046,10 @@ prog_intui_code:
     syscall #SYS_YIELD
     bra     .intui_halt
 
+.intui_exit:
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
 ; ----------------------------------------------------------------
 ; .intui_fillrect — fill a screen-space rectangle with a color
 ; ----------------------------------------------------------------
@@ -1132,7 +1213,7 @@ prog_intui_data:
     ds.b    8                           ; 288: msg_data1
     ds.b    8                           ; 296: msg_reply
     ds.b    8                           ; 304: msg_share
-    ds.b    8                           ; 312: pad
+    ds.b    8                           ; 312: graphics_open_sigbit
     ; Strings (32-byte slots, PORT_NAME_LEN-aligned)
     ; offset 320: "intuition.library" + pad to 32 — own port name
     dc.b    "intuition.library", 0

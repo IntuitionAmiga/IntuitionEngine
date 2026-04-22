@@ -13,18 +13,71 @@ prog_about_code:
     load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)
 
-    ; FindPort("intuition.library") with retry
+    ; FindPort("intuition.library") first. If absent, use OpenLibraryEx so
+    ; exec/dos owns autoload and then resolve the compat port transport.
 .ab_findi:
     load.q  r29, (sp)
-    add     r1, r29, #192
+    add     r1, r29, #256
     move.l  r2, #0
     syscall #SYS_FIND_PORT
     load.q  r29, (sp)
     beqz    r2, .ab_findi_ok
+
+    move.l  r1, #16
+    syscall #SYS_ALLOC_SIGNAL
+    load.q  r29, (sp)
+    bnez    r2, .ab_halt
+    store.q r1, 184(r29)               ; intuition_open_sigbit
+.ab_openi_retry:
+    load.q  r29, (sp)
+    move.l  r14, #0xFFFFFFFF
+    store.l r14, 192(r29)              ; waiter status sentinel
+    store.l r0, 196(r29)
+    store.l r0, 200(r29)
+    store.l r0, 204(r29)
+    add     r1, r29, #256              ; "intuition.library"
+    move.q  r2, r0
+    load.q  r3, 184(r29)               ; waiter-owned signal bit
+    add     r4, r29, #192              ; 16-byte outcome scratch
+    syscall #SYS_OPEN_LIBRARY_EX
+    load.q  r29, (sp)
+    beqz    r2, .ab_findi
+    move.l  r14, #ERR_AGAIN
+    bne     r2, r14, .ab_openi_fail
+    load.l  r14, 192(r29)              ; waiter status
+    move.l  r15, #0xFFFFFFFF
+    bne     r14, r15, .ab_openi_done
+    load.q  r14, 184(r29)
+    move.q  r1, #1
+    lsl     r1, r1, r14
+    syscall #SYS_WAIT
+    load.q  r29, (sp)
+    bnez    r2, .ab_openi_yield
+    load.l  r14, 192(r29)              ; waiter status
+    move.l  r15, #0xFFFFFFFF
+    beq     r14, r15, .ab_openi_yield
+.ab_openi_done:
+    beqz    r14, .ab_findi
+.ab_openi_fail:
+    load.q  r14, 184(r29)              ; intuition_open_sigbit
+    beqz    r14, .ab_halt
+    move.q  r1, r14
+    syscall #SYS_FREE_SIGNAL
+    load.q  r29, (sp)
+    store.q r0, 184(r29)
+    bra     .ab_halt
+.ab_openi_yield:
     syscall #SYS_YIELD
-    bra     .ab_findi
+    bra     .ab_openi_retry
 .ab_findi_ok:
     store.q r1, 136(r29)               ; intuition_port
+    load.q  r14, 184(r29)              ; intuition_open_sigbit
+    beqz    r14, .ab_findi_sigfree_done
+    move.q  r1, r14
+    syscall #SYS_FREE_SIGNAL
+    load.q  r29, (sp)
+    store.q r0, 184(r29)
+.ab_findi_sigfree_done:
 
     ; CreatePort(NULL) → reply_port
     move.q  r1, r0
@@ -83,27 +136,27 @@ prog_about_code:
     ; Line 1 (y=32): "About IntuitionOS"
     move.l  r10, #16                   ; x
     move.l  r11, #32                   ; y
-    add     r12, r29, #256             ; r12 = string ptr (data offset 256)
+    add     r12, r29, #288             ; r12 = string ptr (data offset 288)
     jsr     .ab_draw_string
     ; Line 2 (y=56): "Protected Exec-inspired kernel"
     move.l  r10, #16
     move.l  r11, #56
-    add     r12, r29, #288             ; data offset 288
+    add     r12, r29, #320             ; data offset 320
     jsr     .ab_draw_string
     ; Line 3 (y=80): "intuition.library demonstration"
     move.l  r10, #16
     move.l  r11, #80
-    add     r12, r29, #320             ; data offset 320
+    add     r12, r29, #352             ; data offset 352
     jsr     .ab_draw_string
     ; Line 4 (y=104): "All services run in user space"
     move.l  r10, #16
     move.l  r11, #104
-    add     r12, r29, #352             ; data offset 352
+    add     r12, r29, #384             ; data offset 384
     jsr     .ab_draw_string
     ; Line 5 (y=152): "Press Esc to close"
     move.l  r10, #16
     move.l  r11, #152
-    add     r12, r29, #384             ; data offset 384
+    add     r12, r29, #416             ; data offset 416
     jsr     .ab_draw_string
 
     ; Send INTUITION_OPEN_WINDOW
@@ -285,30 +338,32 @@ prog_about_data:
     ds.b    8                            ; 160: surface_va
     ds.b    8                            ; 168: surface_share
     ds.b    8                            ; 176: window_handle
-    ds.b    8                            ; 184: pad
-    ; offset 192: "intuition.library" + pad to 32 (port name for FindPort)
-    dc.b    "intuition.library", 0
-    ds.b    14
+    ds.b    8                            ; 184: intuition_open_sigbit
+    ds.b    16                           ; 192: OpenLibraryEx waiter outcome scratch
+    ds.b    16                           ; 208: pad
     ; offset 224: "About M12 ready" + pad to 32 (test marker)
     dc.b    "About M12 ready", 0
     ds.b    16
-    ; offset 256: line 1 — "About IntuitionOS" + pad to 32
+    ; offset 256: "intuition.library" + pad to 32 (port name for FindPort/OpenLibraryEx)
+    dc.b    "intuition.library", 0
+    ds.b    14
+    ; offset 288: line 1 — "About IntuitionOS" + pad to 32
     dc.b    "About IntuitionOS", 0
     ds.b    14
-    ; offset 288: line 2 — "Protected Exec-inspired kernel" + pad to 32
+    ; offset 320: line 2 — "Protected Exec-inspired kernel" + pad to 32
     dc.b    "Protected Exec-inspired kernel", 0
     ds.b    1
-    ; offset 320: line 3 — "intuition.library demonstration" + pad to 32
+    ; offset 352: line 3 — "intuition.library demonstration" + pad to 32
     dc.b    "intuition.library demonstration", 0
-    ; offset 352: line 4 — "All visible services run in user space" — too long
+    ; offset 384: line 4 — "All visible services run in user space" — too long
     ; for a 32-byte slot; truncate to fit. Use a 64-byte slot here.
     dc.b    "All services run in user space", 0
     ds.b    1
-    ; offset 384: line 5 — "Press Esc to close" + pad to 32
+    ; offset 416: line 5 — "Press Esc to close" + pad to 32
     dc.b    "Press Esc to close", 0
     ds.b    13
-    ; offset 416: pad to 1024 (font lives at 1024 for round offsets)
-    ds.b    608
+    ; offset 448: pad to 1024 (font lives at 1024 for round offsets)
+    ds.b    576
     ; offset 1024: embedded Topaz 8x16 font (256 glyphs × 16 bytes = 4096 bytes)
     incbin  "topaz.raw"
 prog_about_data_end:
