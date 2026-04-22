@@ -63,7 +63,7 @@ M14.1 phase 5 shipped state:
 
 - the kernel prepares staged strict-M14 ELF rows for the internal embedded boot manifest
 - `console.handler` and `dos.library` boot from that staged manifest source
-- once DOS is online, `dos.library` launches `Shell`, then resolves the `S:Startup-Sequence` service-name lines through the same internal embedded-manifest path to launch `hardware.resource`, `input.device`, `graphics.library`, and `intuition.library`
+- once DOS is online, `dos.library` launches `Shell`; the current M16 phase-5 startup script launches `hardware.resource` and `input.device`, while `graphics.library` and `intuition.library` are demand-loaded later through `OpenLibrary`
 - shipped service files under `LIBS:`, `DEVS:`, and `RESOURCES:` are now emitted as strict M14 ELF too
 - that service boot path is still internal-only; the public DOS surface remains the file-backed `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG` API
 - the visible runtime is locked by explicit M14.1 phase-5 regressions for boot census, shell command dispatch, unknown-command handling, and the retained GUI demos

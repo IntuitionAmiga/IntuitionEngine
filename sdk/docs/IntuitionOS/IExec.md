@@ -44,7 +44,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
   - the kernel now prepares staged strict-M14 ELF rows for the internal embedded boot manifest and keeps bootstrap grants keyed by internal manifest entry ID
   - `console.handler` and `dos.library` boot from that staged manifest source as the minimum pre-DOS bootstrap chain
   - once DOS is online, `dos.library` launches `Shell` from the internal embedded manifest, and `Shell` then drives `S:Startup-Sequence`
-  - DOS resolves the service-name lines in `S:Startup-Sequence` through its internal embedded-manifest path to launch `hardware.resource`, `input.device`, `graphics.library`, and `intuition.library`
+  - the current M16 phase-5 runtime keeps `S:Startup-Sequence` command-only for libraries: it launches `hardware.resource` and `input.device`, while `graphics.library` and `intuition.library` are demand-loaded through `OpenLibrary`
   - shipped service binaries under `LIBS:`, `DEVS:`, and `RESOURCES:` are now shipped as strict M14 ELF too
   - the public DOS loader API is unchanged; the embedded-manifest service source remains internal-only
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
@@ -599,7 +599,7 @@ M14.1 target:
 - the kernel data page now carries a small internal boot-manifest table for `console.handler` and `dos.library`
 - those rows are the source of bootstrap-grant identity, but first-service launch still uses the stable bundled boot loader after the staged ELF validation step
 
-**5.12.6 hardware.resource user-space service.** Bundled program `prog_hwres` shipped in the RAM filesystem as `RESOURCES:hardware.resource`. `S/Startup-Sequence` launches it BEFORE `input.device` and `graphics.library` so it has its public port `hardware.resource` registered before any client calls `FindPort`. Service body:
+**5.12.6 hardware.resource user-space service.** Bundled program `prog_hwres` shipped in the RAM filesystem as `RESOURCES:hardware.resource`. `S/Startup-Sequence` launches it before `input.device`, and before any later demand-loaded `graphics.library` client path, so it has its public port `hardware.resource` registered before any client calls `FindPort`. Service body:
 
 1. `SYS_HWRES_OP`/`HWRES_BECOME` — claim broker identity.
 2. `CreatePort("hardware.resource", PF_PUBLIC)` — register the public port.

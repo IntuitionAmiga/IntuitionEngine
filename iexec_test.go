@@ -13883,6 +13883,62 @@ func TestIExec_M16_Phase1HostRoot_DOSRunGraphicsAfterHardwareResource(t *testing
 	}
 }
 
+func TestIExec_M16_StartupSequenceContainsOnlyCommandsAndConfiguration(t *testing.T) {
+	output := bootAndInjectCommandWithBootstrapHostRoot(t, makeM152Phase5GeneratedHostRoot(t), "\nTYPE S:Startup-Sequence\n", 10*time.Second)
+	for _, want := range []string{
+		"RESOURCES/hardware.resource",
+		"DEVS/input.device",
+		"VERSION",
+		"ECHO Type HELP for commands and ASSIGN for layout",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("startup-sequence missing %q output=%q", want, output[:min(len(output), 1200)])
+		}
+	}
+	for _, unwanted := range []string{
+		"LIBS/graphics.library",
+		"LIBS/intuition.library",
+	} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("startup-sequence still contains library entry %q output=%q", unwanted, output[:min(len(output), 1200)])
+		}
+	}
+}
+
+func TestIExec_M16_TextModeBootRequiresOnlyDOSAndShell(t *testing.T) {
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	runRigForDuration(rig, 8*time.Second)
+
+	if _, _, ok := findPublicPortIDByName(rig.cpu.memory, "graphics.library"); ok {
+		output := term.DrainOutput()
+		t.Fatalf("graphics.library unexpectedly online during text-mode boot output=%q", output[:min(len(output), 1200)])
+	}
+	if _, _, ok := findPublicPortIDByName(rig.cpu.memory, "intuition.library"); ok {
+		output := term.DrainOutput()
+		t.Fatalf("intuition.library unexpectedly online during text-mode boot output=%q", output[:min(len(output), 1200)])
+	}
+	output := term.DrainOutput()
+	for _, want := range []string{
+		"dos.library M14 [Task ",
+		"Shell M10 [Task ",
+		"IntuitionOS 0.18",
+		"Type HELP for commands and ASSIGN for layout",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("text-mode boot missing %q output=%q", want, output[:min(len(output), 1200)])
+		}
+	}
+	for _, unwanted := range []string{
+		"graphics.library M11 [Task ",
+		"intuition.library M12 [Task ",
+	} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("text-mode boot unexpectedly launched %q output=%q", unwanted, output[:min(len(output), 1200)])
+		}
+	}
+}
+
 func TestIExec_M16_IntuitionLibraryAutoloadsGraphicsOnFirstWindowDemand(t *testing.T) {
 	hostRoot := makeM152Phase5GeneratedHostRoot(t)
 	writeHostRootFileBytes(t, hostRoot, "S/Startup-Sequence", []byte(
@@ -13895,6 +13951,13 @@ func TestIExec_M16_IntuitionLibraryAutoloadsGraphicsOnFirstWindowDemand(t *testi
 		hostfs.SetSpecialFileLive("IOSSYS/LIBS/intuition.library", mustReadRepoBytes(t, "sdk/intuitionos/iexec/boot_intuition_library.elf"))
 	})
 	runAboutAppEndToEndWithRig(t, rig, term)
+	output := term.DrainOutput()
+	if got := strings.Count(output, "intuition.library M12 [Task "); got != 1 {
+		t.Fatalf("intuition autoload banner count=%d, want 1 output=%q", got, output[:min(len(output), 1200)])
+	}
+	if got := strings.Count(output, "graphics.library M11 [Task "); got != 1 {
+		t.Fatalf("graphics autoload banner count=%d, want 1 output=%q", got, output[:min(len(output), 1200)])
+	}
 }
 
 func TestIExec_M16_UntrustedPathLaunchDoesNotKeepIntuitionCompatPortAlive(t *testing.T) {
@@ -24851,25 +24914,19 @@ func assertFullBootStackServiceCensus(t *testing.T) {
 		"dos.library",
 		"hardware.resource",
 		"input.device",
-		"graphics.library",
-		"intuition.library",
 	}
 	for _, want := range wantPorts {
 		if !testPortTableHasPublicName(mem, want) {
 			t.Fatalf("Phase5_FullBootStack_ServiceCensus: missing public port %q", want)
 		}
 	}
-
-	for _, name := range []string{
-		"C/Version",
-		"C/Avail",
-		"C/Dir",
-		"C/Type",
-		"C/Echo",
-		"C/GfxDemo",
-		"C/About",
+	for _, unwanted := range []string{
+		"graphics.library",
+		"intuition.library",
 	} {
-		assertDosFileIsELF(t, mem, name)
+		if testPortTableHasPublicName(mem, unwanted) {
+			t.Fatalf("Phase5_FullBootStack_ServiceCensus: unexpected public port %q during text-mode boot", unwanted)
+		}
 	}
 }
 
@@ -24921,9 +24978,10 @@ func TestIExec_M141_Phase5_CommandPathRegression(t *testing.T) {
 		"IntuitionOS 0.18",
 		"Phys: 32768 KB  Alloc:",
 		"C/Version",
-		"LIBS/graphics.library",
 		"DEVS/input.device",
 		"RESOURCES/hardware.resource",
+		"VERSION",
+		"ECHO Type HELP for commands and ASSIGN for layout",
 		"hello",
 	} {
 		if !strings.Contains(output, want) {
@@ -24990,9 +25048,10 @@ func TestIExec_M142_Phase6_CommandRegression(t *testing.T) {
 		"IntuitionOS 0.18",
 		"Phys: 32768 KB  Alloc:",
 		"C/Version",
-		"LIBS/graphics.library",
 		"DEVS/input.device",
 		"RESOURCES/hardware.resource",
+		"VERSION",
+		"ECHO Type HELP for commands and ASSIGN for layout",
 		"hello",
 	} {
 		if !strings.Contains(output, want) {
@@ -26123,8 +26182,10 @@ func runAboutAppEndToEndWithRig(t *testing.T, rig *ie64TestRig, term *TerminalMM
 	// default MMIO64PolicyFault would silently drop those writes.
 	rig.bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 
-	// The host-root Startup-Sequence brings up the services needed for About.
-	// The test itself only needs to launch C:About from the shell.
+	// Phase 5 keeps Startup-Sequence to command/configuration plus
+	// hardware.resource + input.device. About itself now provides the first
+	// GUI demand that autoloads intuition.library, which then autoloads
+	// graphics.library on first window open.
 	for _, ch := range "C:About\n" {
 		term.EnqueueByte(byte(ch))
 	}
