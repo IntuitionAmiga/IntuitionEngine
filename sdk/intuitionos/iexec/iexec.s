@@ -10963,7 +10963,6 @@ m16_module_signal_openers_dead:
     load.l  r24, KD_MODULE_OPEN_ROW_INDEX(r22)
     bne     r24, r20, .m16_msod_next
     load.l  r24, KD_MODULE_OPEN_ROW_TASK(r22)
-    beqz    r24, .m16_msod_next
     move.q  r1, r24
     push    r20
     push    r21
