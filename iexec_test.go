@@ -90,6 +90,8 @@ const (
 	sysCloseLibrary  = 43
 	sysAddLibrary    = 44
 	sysOpenLibraryEx = 45
+	sysSetResident   = 48
+	sysExpungeResult = 49
 
 	mapfRead  = 0x01
 	mapfWrite = 0x02
@@ -366,6 +368,7 @@ const (
 	kdModuleOpenCount     = 56
 	kdModuleFlags         = 60
 	kdModuleWaitersHead   = 64
+	kdModuleDeadlineTick  = 72
 	modfResident          = 0x00000001
 	kdModuleWaiterRows    = 68712
 	kdModuleWaiterStride  = 24
@@ -438,6 +441,8 @@ const (
 	m16ModStateLoading    = 1
 	m16ModStateOnline     = 2
 	m16ModStateFailed     = 3
+	m16ModStateExpunging  = 4
+	m16LibOpExpunge       = 0x4D313645
 
 	dosSegMagic      = 0x4C474553 // "SEGL" little-endian
 	dosSegMagicOff   = 8
@@ -512,6 +517,485 @@ func m16ActiveWaiterCountForRow(mem []byte, rowIndex uint32) int {
 		count++
 	}
 	return count
+}
+
+const (
+	m16Phase4OwnerAccept = iota
+	m16Phase4OwnerRefuse
+	m16Phase4OwnerHang
+)
+
+func buildM16Phase4OwnerTask(mem []byte, taskPC, nameAddr, scratch uint32, version uint32, mode int) {
+	pc := taskPC
+	w := func(instr []byte) { copy(mem[pc:], instr); pc += 8 }
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, version))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 24))
+
+	loopPC := pc
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 32))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 48))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, 56))
+	errBranch := pc
+	w(ie64Instr(OP_BNE, 0, 0, 0, 3, 0, uint32(int32(loopPC)-int32(errBranch))))
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, m16LibOpExpunge))
+	typeBranch := pc
+	w(ie64Instr(OP_BNE, 0, 0, 0, 1, 28, uint32(int32(loopPC)-int32(typeBranch))))
+
+	if mode == m16Phase4OwnerHang {
+		hangBranch := pc
+		w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopPC)-int32(hangBranch))))
+		return
+	}
+
+	result := uint32(1)
+	if mode == m16Phase4OwnerRefuse {
+		result = 0
+	}
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, result))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_LOAD, 2, IE64_SIZE_Q, 0, 29, 0, 48))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, 56))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExpungeResult))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 40))
+	if mode == m16Phase4OwnerAccept {
+		retryBranch := pc
+		w(ie64Instr(OP_BNE, 0, 0, 0, 2, 0, uint32(int32(loopPC)-int32(retryBranch))))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+	}
+	backBranch := pc
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopPC)-int32(backBranch))))
+}
+
+func buildM16Phase4OwnerDynamicTask(mem []byte, taskPC uint32, name string, version uint32, mode int) {
+	pc := taskPC
+	w := func(instr []byte) { copy(mem[pc:], instr); pc += 8 }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	for i, b := range append([]byte(name), 0) {
+		w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+		w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, 0x180+uint32(i)))
+	}
+	gatePC := pc
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0x1F0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	gateDone := pc + 24
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 1, 2, uint32(int32(gateDone)-int32(pc))))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(gatePC)-int32(pc))))
+
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 0x180))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0x100))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x108))
+
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 0x180))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, version))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 0x100))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x110))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0x118))
+
+	loopPC := pc
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0x100))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0x120))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x130))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 0, 29, 0, 0x138))
+	errBranch := pc
+	w(ie64Instr(OP_BNE, 0, 0, 0, 3, 0, uint32(int32(loopPC)-int32(errBranch))))
+	w(ie64Instr(OP_MOVE, 28, IE64_SIZE_L, 1, 0, 0, m16LibOpExpunge))
+	typeBranch := pc
+	w(ie64Instr(OP_BNE, 0, 0, 0, 1, 28, uint32(int32(loopPC)-int32(typeBranch))))
+
+	if mode == m16Phase4OwnerHang {
+		hangBranch := pc
+		w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopPC)-int32(hangBranch))))
+		return
+	}
+
+	result := uint32(1)
+	if mode == m16Phase4OwnerRefuse {
+		result = 0
+	}
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, result))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 2, IE64_SIZE_Q, 0, 29, 0, 0x130))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, 0x138))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExpungeResult))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x128))
+	if mode == m16Phase4OwnerAccept {
+		retryBranch := pc
+		w(ie64Instr(OP_BNE, 0, 0, 0, 2, 0, uint32(int32(loopPC)-int32(retryBranch))))
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+	}
+	backBranch := pc
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(loopPC)-int32(backBranch))))
+}
+
+func buildM16Phase4GraceClientDynamicTask(mem []byte, taskPC uint32, name string, version uint32) {
+	pc := taskPC
+	w := func(instr []byte) { copy(mem[pc:], instr); pc += 8 }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	for i, b := range append([]byte(name), 0) {
+		w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+		w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, 0x180+uint32(i)))
+	}
+	gatePC := pc
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0x1F0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	gateDone := pc + 24
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 1, 2, uint32(int32(gateDone)-int32(pc))))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(gatePC)-int32(pc))))
+	for i := 0; i < 32; i++ {
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	}
+
+	openRetry := pc
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 0x180))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, version))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0x100))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x108))
+	openOK := pc + 24
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(openOK)-int32(pc))))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(openRetry)-int32(pc))))
+
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0x100))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCloseLibrary))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x110))
+
+	reopenRetry := pc
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 0x180))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, version))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0x118))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x120))
+	reopenOK := pc + 24
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, uint32(int32(reopenOK)-int32(pc))))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(reopenRetry)-int32(pc))))
+
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0x128))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+}
+
+func buildM16Phase4DeadlineOwnerDynamicTask(mem []byte, taskPC uint32, name string, version uint32) {
+	pc := taskPC
+	w := func(instr []byte) { copy(mem[pc:], instr); pc += 8 }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	for i, b := range append([]byte(name), 0) {
+		w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+		w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, 0x180+uint32(i)))
+	}
+	gatePC := pc
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0x1F0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	gateDone := pc + 24
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 1, 2, uint32(int32(gateDone)-int32(pc))))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(gatePC)-int32(pc))))
+
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 0x180))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0x100))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x108))
+
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 0x180))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, version))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 0x100))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x110))
+
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 0x180))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, version))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0x118))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x120))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCloseLibrary))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x128))
+
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0x100))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0x130))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+}
+
+func buildM16Phase4ResidentDynamicTask(mem []byte, taskPC uint32, name string, version uint32, remove bool) {
+	pc := taskPC
+	w := func(instr []byte) { copy(mem[pc:], instr); pc += 8 }
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	for i, b := range append([]byte(name), 0) {
+		w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+		w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, 0x180+uint32(i)))
+	}
+	gatePC := pc
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0x1F0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	gateDone := pc + 24
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 1, 2, uint32(int32(gateDone)-int32(pc))))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(gatePC)-int32(pc))))
+
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 0x180))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0x100))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x108))
+
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 0x180))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, version))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 0x100))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x110))
+
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 0x180))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, version))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0x118))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x120))
+
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 0x180))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysSetResident))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x128))
+
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0x118))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCloseLibrary))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x130))
+
+	if !remove {
+		w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+		w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 56))
+		yieldPC := pc
+		w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+		w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+		return
+	}
+
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, 0x180))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 0, 0, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x160))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0xAB))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 29, 0, 0x150))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysSetResident))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x138))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0xCD))
+	w(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 29, 0, 0x158))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0x100))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0x140))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x168))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 0, 29, 0, 0x170))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_LOAD, 2, IE64_SIZE_Q, 0, 29, 0, 0x168))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, 0x170))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExpungeResult))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 0x148))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+}
+
+func buildM16Phase4DualOwnerDynamicTask(mem []byte, taskPC uint32, nameA, nameB string, version uint32) {
+	pc := taskPC
+	w := func(instr []byte) { copy(mem[pc:], instr); pc += 8 }
+
+	const (
+		offPortA      = 0x100
+		offCreateErrA = 0x108
+		offAddErrA    = 0x110
+		offPortB      = 0x118
+		offCreateErrB = 0x120
+		offAddErrB    = 0x128
+		offReady      = 0x130
+		offTypeA      = 0x138
+		offRowA       = 0x140
+		offGenA       = 0x148
+		offSeenA      = 0x150
+		offTypeB      = 0x158
+		offRowB       = 0x160
+		offGenB       = 0x168
+		offSeenB      = 0x170
+		offReplyErr   = 0x178
+		offAfterReply = 0x180
+		offNameA      = 0x280
+		offNameB      = 0x2A0
+	)
+
+	w(ie64Instr(OP_SUB, 31, IE64_SIZE_L, 1, 31, 0, 16))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 8))
+	w(ie64Instr(OP_STORE, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	for i, b := range append([]byte(nameA), 0) {
+		w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+		w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, offNameA+uint32(i)))
+	}
+	for i, b := range append([]byte(nameB), 0) {
+		w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(b)))
+		w(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 1, 29, 0, offNameB+uint32(i)))
+	}
+	gatePC := pc
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0x1F0))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	gateDone := pc + 24
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 1, 2, uint32(int32(gateDone)-int32(pc))))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(gatePC)-int32(pc))))
+
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offNameA))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, offPortA))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, offCreateErrA))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offNameA))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, version))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offPortA))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, offAddErrA))
+
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offNameB))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, offPortB))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, offCreateErrB))
+	w(ie64Instr(OP_ADD, 1, IE64_SIZE_L, 1, 29, 0, offNameB))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, version))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, offPortB))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, offAddErrB))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, offReady))
+
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offPortA))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, offTypeA))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, offRowA))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 0, 29, 0, offGenA))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, offSeenA))
+
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, offPortB))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, offTypeB))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, offRowB))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 0, 29, 0, offGenB))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, offSeenB))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 2, IE64_SIZE_Q, 0, 29, 0, offRowA))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, offGenA))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExpungeResult))
+	w(ie64Instr(OP_LOAD, 29, IE64_SIZE_Q, 0, 31, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, offReplyErr))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, offAfterReply))
+
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+}
+
+func buildCreateTaskFromTask0(mem []byte, task0PC, childVA, childSize, scratch uint32, sentinel uint32) {
+	pc := task0PC
+	w := func(instr []byte) { copy(mem[pc:], instr); pc += 8 }
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childVA))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, childSize))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, sentinel))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 16))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
 }
 
 func markTrustedBootTaskLayouts(mem []byte, count uint32) {
@@ -1831,6 +2315,7 @@ var cmdELFPaths = []string{
 	"sdk/intuitionos/iexec/cmd_dir.elf",
 	"sdk/intuitionos/iexec/cmd_type.elf",
 	"sdk/intuitionos/iexec/cmd_echo.elf",
+	"sdk/intuitionos/iexec/cmd_resident.elf",
 	"sdk/intuitionos/iexec/cmd_assign.elf",
 	"sdk/intuitionos/iexec/cmd_list.elf",
 	"sdk/intuitionos/iexec/cmd_which.elf",
@@ -2216,14 +2701,26 @@ func ensureImageCodeSizeAtLeast(t *testing.T, mem []byte, imageCodeStart uint32,
 	headerStart, isELF := imageHeaderStartForCodeStart(t, mem, imageCodeStart)
 	if isELF {
 		phoff := binary.LittleEndian.Uint64(mem[headerStart+32:])
-		codeEntry := headerStart + uint32(phoff)
-		if got := uint32(binary.LittleEndian.Uint64(mem[codeEntry+32:])); got < minCodeBytes {
-			binary.LittleEndian.PutUint64(mem[codeEntry+32:], uint64(minCodeBytes))
+		phentsize := binary.LittleEndian.Uint16(mem[headerStart+54:])
+		phnum := binary.LittleEndian.Uint16(mem[headerStart+56:])
+		for i := uint16(0); i < phnum; i++ {
+			codeEntry := headerStart + uint32(phoff) + uint32(i)*uint32(phentsize)
+			if binary.LittleEndian.Uint32(mem[codeEntry:]) != 1 {
+				continue
+			}
+			flags := binary.LittleEndian.Uint32(mem[codeEntry+4:])
+			if flags&m14ELFSegFlagX == 0 {
+				continue
+			}
+			if got := uint32(binary.LittleEndian.Uint64(mem[codeEntry+32:])); got < minCodeBytes {
+				binary.LittleEndian.PutUint64(mem[codeEntry+32:], uint64(minCodeBytes))
+			}
+			if got := uint32(binary.LittleEndian.Uint64(mem[codeEntry+40:])); got < minCodeBytes {
+				binary.LittleEndian.PutUint64(mem[codeEntry+40:], uint64(minCodeBytes))
+			}
+			return
 		}
-		if got := uint32(binary.LittleEndian.Uint64(mem[codeEntry+40:])); got < minCodeBytes {
-			binary.LittleEndian.PutUint64(mem[codeEntry+40:], uint64(minCodeBytes))
-		}
-		return
+		t.Fatalf("ensureImageCodeSizeAtLeast: executable PT_LOAD not found at 0x%X", imageCodeStart)
 	}
 	if got := binary.LittleEndian.Uint32(mem[headerStart+8:]); got < minCodeBytes {
 		binary.LittleEndian.PutUint32(mem[headerStart+8:], minCodeBytes)
@@ -2457,7 +2954,7 @@ func bootAndResetRigToTask0Only(t *testing.T, rig *ie64TestRig, term *TerminalMM
 	rig.cpu.running.Store(true)
 	bootDone := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(bootDone) }()
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	rig.cpu.running.Store(false)
 	<-bootDone
 
@@ -3574,24 +4071,23 @@ func TestIExec_M13_StartupBlock_BootTaskPresent(t *testing.T) {
 }
 
 func TestIExec_M13_StartupBlock_CreateTaskPresent(t *testing.T) {
-	rig, _ := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	t0Start := images[0]
-	overrideExtraTasks(rig.cpu.memory, images, 1)
+	rig, _, t0Start, data0 := bootAndResetToTask0Only(t)
+	scratch0 := data0 + 0x100
+	clear(rig.cpu.memory[scratch0 : scratch0+32])
+	childPC := writeLiveTaskCodeScratch(t, rig.cpu.memory, t0Start, 0x300, append(
+		ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield),
+		ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(-8&0xFFFFFFFF))...,
+	))
 	pc := t0Start
 
-	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, userTask0Stack+96))
+	copy(rig.cpu.memory[pc:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childPC))
 	copy(rig.cpu.memory[pc+8:], ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 16))
 	copy(rig.cpu.memory[pc+16:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
 	copy(rig.cpu.memory[pc+24:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
-	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[pc+32:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, scratch0))
 	copy(rig.cpu.memory[pc+40:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
 	copy(rig.cpu.memory[pc+48:], ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8))
 	copy(rig.cpu.memory[pc+56:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
-
-	childPC := uint32(userTask0Stack + 96)
-	copy(rig.cpu.memory[childPC:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
-	copy(rig.cpu.memory[childPC+8:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
@@ -3600,13 +4096,23 @@ func TestIExec_M13_StartupBlock_CreateTaskPresent(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
-	childID := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
-	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	childID := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0:])
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+8:])
 	if errCode != 0 {
-		t.Fatalf("CreateTask err = %d, want 0", errCode)
+		t.Fatalf("CreateTask err = %d, want 0 slot0_state=%d slot1_state=%d slot1_pub=%d slot1_code=0x%X slot1_data=0x%X",
+			errCode,
+			rig.cpu.memory[kernDataBase+kdTCBBase+tcbStateOff],
+			rig.cpu.memory[kernDataBase+kdTCBBase+tcbStride+tcbStateOff],
+			binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+kdTaskPubIDStr:]),
+			taskLayoutFieldQ(rig.cpu.memory, uint64(binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+kdTaskPubIDStr:])), kdTaskCodeBase),
+			taskLayoutFieldQ(rig.cpu.memory, uint64(binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+kdTaskPubIDStr:])), kdTaskDataBase),
+		)
 	}
-	if childID == 0 || childID >= maxTasks {
-		t.Fatalf("CreateTask childID = %d, want 1..%d", childID, maxTasks-1)
+	if childID == taskPubIDFree {
+		t.Fatalf("CreateTask childID = %d, want live pubid", childID)
+	}
+	if _, ok := taskSlotForPublicID(rig.cpu.memory, childID); !ok {
+		t.Fatalf("CreateTask childID = %d, want live pubid", childID)
 	}
 
 	childDataBase := taskLayoutFieldQ(rig.cpu.memory, childID, kdTaskDataBase)
@@ -5677,10 +6183,7 @@ func TestIExec_M156_G4_GrantorExitRevokesGrants(t *testing.T) {
 //	live task's PT may hold a non-zero PTE at VPN(0xA00000) — the VA
 //	a first-time MapIO in a fresh grantee resolves to.
 func TestIExec_M156_G4_GrantorExitUnmapsGranteeIO(t *testing.T) {
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	t0 := images[0]
-	overrideExtraTasks(rig.cpu.memory, images, 1)
+	rig, term, t0, _ := bootAndResetToTask0Only(t)
 
 	// Child: SYS_MAP_IO(0x100, 1), print err digit, yield forever.
 	childBuf := make([]byte, 7*8)
@@ -5779,10 +6282,7 @@ func TestIExec_M156_G4_GrantorExitUnmapsGranteeIO(t *testing.T) {
 // lands in overflow, exits the broker, and asserts all 9 rows (and
 // all 9 PTEs) are gone.
 func TestIExec_M156_G4_GrantorExitUnmapsGranteeIO_OverflowRow(t *testing.T) {
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	t0 := images[0]
-	overrideExtraTasks(rig.cpu.memory, images, 1)
+	rig, term, t0, _ := bootAndResetToTask0Only(t)
 
 	// Child: SYS_MAP_IO(basePPN+i, 1) for i=0..8 (unrolled — SYSCALL
 	// does not guarantee preservation of general-purpose registers,
@@ -5926,10 +6426,7 @@ func TestIExec_M156_G4_GrantorExitUnmapsGranteeIO_OverflowRow(t *testing.T) {
 // starts at 0, task 0 takes pubid 0, the first sysCreateTask
 // consumes pubid 1 for the child.
 func TestIExec_M156_G4_GrantorExitKeepsDoubleCoveredMapping(t *testing.T) {
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	t0 := images[0]
-	overrideExtraTasks(rig.cpu.memory, images, 1)
+	rig, term, t0, _ := bootAndResetToTask0Only(t)
 
 	// Child: SYS_MAP_IO(0x100, 1), print 'M' on success, yield forever.
 	childBuf := make([]byte, 9*8)
@@ -6132,10 +6629,7 @@ func TestIExec_M156_G4_GrantorExitKeepsDoubleCoveredMapping(t *testing.T) {
 // value — leaving the broker's slot dangling and some innocent slot
 // wiped.
 func TestIExec_M156_G4_GrantorExitPreservesKillCleanupRegs(t *testing.T) {
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	t0 := images[0]
-	overrideExtraTasks(rig.cpu.memory, images, 1)
+	rig, term, t0, _ := bootAndResetToTask0Only(t)
 
 	// Child: SYS_MAP_IO(0x100, 1), print '@' on success, yield forever.
 	childBuf := make([]byte, 9*8)
@@ -6391,10 +6885,7 @@ func TestIExec_M156_G4_GranteeExitLeavesSiblingGrantorQuota(t *testing.T) {
 // port, HWRES_BECOME + HWRES_CREATE to self) and then exits. After
 // it exits, the audit assertions run.
 func TestIExec_M156_G4_ExitSweepAuditAllStructures(t *testing.T) {
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	t0 := images[0]
-	overrideExtraTasks(rig.cpu.memory, images, 1)
+	rig, term, t0, _ := bootAndResetToTask0Only(t)
 
 	// Child code: CreatePort("CHL"), HWRES_BECOME (may fail if already
 	// claimed — ignored), HWRES_CREATE self-grant, SYS_EXIT_TASK.
@@ -8006,10 +8497,7 @@ func TestIExec_AllocSignal(t *testing.T) {
 }
 
 func TestIExec_WaitBlocks(t *testing.T) {
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	t0 := images[0]
-	overrideExtraTasks(rig.cpu.memory, images, 1)
+	rig, term, t0, _ := bootAndResetToTask0Only(t)
 
 	signalerCode := make([]byte, 48)
 	copy(signalerCode[0:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x53))
@@ -8269,10 +8757,7 @@ func TestIExec_AllocSignalExhausted(t *testing.T) {
 }
 
 func TestIExec_WaitImmediate(t *testing.T) {
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	t0 := images[0]
-	overrideExtraTasks(rig.cpu.memory, images, 1)
+	rig, term, t0, _ := bootAndResetToTask0Only(t)
 
 	// Task 0: Signal self(bit 16), Wait(bit 16) → immediate, print 'Y'
 	off := t0
@@ -8306,10 +8791,7 @@ func TestIExec_WaitImmediate(t *testing.T) {
 }
 
 func TestIExec_SignalWakes(t *testing.T) {
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	t0 := images[0]
-	overrideExtraTasks(rig.cpu.memory, images, 1)
+	rig, term, t0, _ := bootAndResetToTask0Only(t)
 
 	signalerCode := make([]byte, 48)
 	copy(signalerCode[0:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
@@ -8424,11 +8906,7 @@ func TestIExec_SignalMaskFiltering(t *testing.T) {
 
 func TestIExec_CreatePort(t *testing.T) {
 	// Task 0 creates a port, stores portID to data page
-	rig, term := assembleAndLoadKernel(t)
-
-	cpImages := findAllProgramImages(t, rig.cpu.memory)
-	base := cpImages[0]
-	overrideExtraTasks(rig.cpu.memory, cpImages, 1)
+	rig, term, base, dataBase := bootAndResetToTask0Only(t)
 	off := base
 	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVEQ, 1, 0, 1, 0, 0, 0)) // R1=0 (anonymous)
 	off += 8
@@ -8437,7 +8915,7 @@ func TestIExec_CreatePort(t *testing.T) {
 	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
 	off += 8
 	// R1 = portID, R2 = err. Store both to data page.
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data+512))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, dataBase+512))
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
 	off += 8 // [data] = portID
@@ -8453,8 +8931,8 @@ func TestIExec_CreatePort(t *testing.T) {
 	<-done
 
 	_ = term
-	portID := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data:])
-	portErr := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+8:])
+	portID := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+512:])
+	portErr := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+520:])
 	if portErr != 0 {
 		t.Fatalf("CreatePort err = %d, want 0", portErr)
 	}
@@ -8466,10 +8944,7 @@ func TestIExec_CreatePort(t *testing.T) {
 
 func TestIExec_PutGetMsg(t *testing.T) {
 	// Task 0 creates port, sends itself a message, then gets it back
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	t0 := images[0]
-	overrideExtraTasks(rig.cpu.memory, images, 1)
+	rig, term, t0, _ := bootAndResetToTask0Only(t)
 
 	base := t0
 	off := base
@@ -8978,17 +9453,16 @@ func TestIExec_CreateTask_Basic(t *testing.T) {
 	// Verify CreateTask succeeds, publishes a live child layout row, and the
 	// parent keeps running. Phase 2 moved child placement off task_id*stride,
 	// so this test no longer relies on observing the child at a fixed address.
-	rig, term := assembleAndLoadKernel(t)
-	images := findAllProgramImages(t, rig.cpu.memory)
-	t0 := images[0]
-	overrideExtraTasks(rig.cpu.memory, images, 1)
+	rig, term, t0, data0 := bootAndResetToTask0Only(t)
+	scratch0 := data0 + 0x100
+	clear(rig.cpu.memory[scratch0 : scratch0+32])
 
 	childCode := make([]byte, 32)
 	copy(childCode[0:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x43))
 	copy(childCode[8:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysDebugPutChar))
 	copy(childCode[16:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
 	copy(childCode[24:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(-8&0xFFFFFFFF)))
-	childVA := writeTask0CodeScratch(t, rig.cpu.memory, t0, 0x240, childCode)
+	childVA := writeLiveTaskCodeScratch(t, rig.cpu.memory, t0, 0x240, childCode)
 	childCodeSize := uint32(32) // 4 instructions
 
 	// Patch task 0: CreateTask(source=code scratch, size=32, arg0=0), store
@@ -9006,7 +9480,7 @@ func TestIExec_CreateTask_Basic(t *testing.T) {
 	// syscall CreateTask
 	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
 	off += 8
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data+512))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, scratch0))
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
 	off += 8
@@ -9032,13 +9506,21 @@ func TestIExec_CreateTask_Basic(t *testing.T) {
 	if !strings.Contains(output, "P") {
 		t.Fatalf("CreateTask: parent did not print 'P': %q", output[:min(len(output), 100)])
 	}
-	childID := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+512:])
-	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+520:])
+	childID := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0:])
+	errCode := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+8:])
 	if errCode != 0 {
 		t.Fatalf("CreateTask err = %d, want 0; output=%q", errCode, output[:min(len(output), 100)])
 	}
-	if childID == 0 || childID >= maxTasks {
-		t.Fatalf("CreateTask childID = %d, want 1..%d", childID, maxTasks-1)
+	if childID == taskPubIDFree {
+		t.Fatalf("CreateTask childID = %d, want non-zero live pubid output=%q slot0_state=%d slot1_state=%d slot1_pub=%d slot1_code=0x%X slot1_data=0x%X",
+			childID,
+			output[:min(len(output), 100)],
+			rig.cpu.memory[kernDataBase+kdTCBBase+tcbStateOff],
+			rig.cpu.memory[kernDataBase+kdTCBBase+tcbStride+tcbStateOff],
+			binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+kdTaskPubIDStr:]),
+			taskLayoutFieldQ(rig.cpu.memory, uint64(binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+kdTaskPubIDStr:])), kdTaskCodeBase),
+			taskLayoutFieldQ(rig.cpu.memory, uint64(binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+kdTaskPubIDStr:])), kdTaskDataBase),
+		)
 	}
 	codeBase := taskLayoutFieldQ(rig.cpu.memory, childID, kdTaskCodeBase)
 	if codeBase == 0 {
@@ -9659,6 +10141,7 @@ func TestIExec_CreatePort_Named(t *testing.T) {
 	images := findAllProgramImages(t, rig.cpu.memory)
 	t0 := images[0]
 	overrideExtraTasks(rig.cpu.memory, images, 1)
+	task0Data := uint32(userTask0Data)
 
 	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("ECHO\x00"))
 
@@ -9674,7 +10157,7 @@ func TestIExec_CreatePort_Named(t *testing.T) {
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
 	off += 8
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, task0Data))
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 3, 0, 16))
 	off += 8
@@ -9689,8 +10172,8 @@ func TestIExec_CreatePort_Named(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
-	portID := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+16:])
-	portErr := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+24:])
+	portID := binary.LittleEndian.Uint64(rig.cpu.memory[task0Data+16:])
+	portErr := binary.LittleEndian.Uint64(rig.cpu.memory[task0Data+24:])
 	if portErr != 0 {
 		t.Fatalf("CreatePort_Named err = %d, want 0", portErr)
 	}
@@ -9722,11 +10205,13 @@ func TestIExec_FindPort_Basic(t *testing.T) {
 	images := findAllProgramImages(t, rig.cpu.memory)
 	t0, t1 := images[0], images[1]
 	overrideExtraTasks(rig.cpu.memory, images, 2)
-	// M10: dos.library has 2 code pages, force task 1 back to 1-page layout
-	patchImageToSinglePage(rig.cpu.memory, t1, 64)
+	task0Code := uint32(taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskCodeBase))
+	task0Data := uint32(taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskDataBase))
+	task1Code := uint32(taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskCodeBase))
+	task1Data := uint32(taskLayoutFieldQ(rig.cpu.memory, 1, kdTaskDataBase))
 
-	name0Addr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("ECHO\x00"))
-	name1Addr := writeTaskImageLiteral(t, rig.cpu.memory, t1, userTask1Code, 0x340, []byte("ECHO\x00"))
+	name0Addr := writeTaskImageLiteral(t, rig.cpu.memory, t0, task0Code, 0x340, []byte("ECHO\x00"))
+	name1Addr := writeTaskImageLiteral(t, rig.cpu.memory, t1, task1Code, 0x340, []byte("ECHO\x00"))
 
 	// Task 0: CreatePort(name=data_addr, flags=PF_PUBLIC), store portID at data+16, yield loop
 	off := t0
@@ -9736,7 +10221,7 @@ func TestIExec_FindPort_Basic(t *testing.T) {
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
 	off += 8
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask0Data))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, task0Data))
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 3, 0, 16))
 	off += 8 // save portID at data+16
@@ -9751,7 +10236,7 @@ func TestIExec_FindPort_Basic(t *testing.T) {
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysFindPort))
 	off += 8
-	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, userTask1Data))
+	copy(rig.cpu.memory[off:], ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, task1Data))
 	off += 8
 	copy(rig.cpu.memory[off:], ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 3, 0, 16))
 	off += 8 // portID at data+16
@@ -9766,9 +10251,9 @@ func TestIExec_FindPort_Basic(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
-	t0PortID := binary.LittleEndian.Uint64(rig.cpu.memory[userTask0Data+16:])
-	t1PortID := binary.LittleEndian.Uint64(rig.cpu.memory[userTask1Data+16:])
-	t1Err := binary.LittleEndian.Uint64(rig.cpu.memory[userTask1Data+24:])
+	t0PortID := binary.LittleEndian.Uint64(rig.cpu.memory[task0Data+16:])
+	t1PortID := binary.LittleEndian.Uint64(rig.cpu.memory[task1Data+16:])
+	t1Err := binary.LittleEndian.Uint64(rig.cpu.memory[task1Data+24:])
 
 	if t1Err != 0 {
 		t.Fatalf("FindPort err = %d, want 0", t1Err)
@@ -11082,8 +11567,8 @@ func TestIExec_M16_AddLibrary_OpenClose_OnlineRegistry(t *testing.T) {
 		t.Fatal("module row for m16.library not found")
 	}
 	row := m16ModuleRowBase(rowIndex)
-	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
-		t.Fatalf("module state=%d, want ONLINE (%d)", got, m16ModStateOnline)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateExpunging {
+		t.Fatalf("module state=%d after CloseLibrary-to-zero, want EXPUNGING (%d)", got, m16ModStateExpunging)
 	}
 	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]); got != 1 {
 		t.Fatalf("module generation=%d, want 1", got)
@@ -11096,6 +11581,9 @@ func TestIExec_M16_AddLibrary_OpenClose_OnlineRegistry(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 0 {
 		t.Fatalf("module open_count=%d after close, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleDeadlineTick:]); got == 0 {
+		t.Fatal("module expunge deadline not armed after CloseLibrary-to-zero on a non-resident library")
 	}
 }
 
@@ -11392,6 +11880,1188 @@ func TestIExec_M16_PerTaskFirstCloseDecrementsCoalescedOpenRow(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint32(rig.cpu.memory[openRowBase+kdModuleOpenRowCount:]); got != 1 {
 		t.Fatalf("per-task open row count after first close=%d, want 1", got)
+	}
+}
+
+func TestIExec_M16_CloseLibraryToZeroExpungesAcceptingLibrary(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	t0 := images[0]
+	ensureImageCodeSizeAtLeast(t, rig.cpu.memory, t0, 0x500)
+	scratch := uint32(userTask0Stack + 0x100)
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("expunge.library\x00"))
+	clear(rig.cpu.memory[scratch : scratch+96])
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 3))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 24))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 32))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 24))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCloseLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 40))
+
+	waitPC := pc
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 48))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 64))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, 72))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_LOAD, 2, IE64_SIZE_Q, 0, 29, 0, 64))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, 72))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExpungeResult))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 56))
+	retryPC := pc + 16
+	w(ie64Instr(OP_BNE, 0, 0, 0, 2, 0, uint32(int32(retryPC)-int32(pc))))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExitTask))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(waitPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if rig.cpu.memory[kernDataBase+kdTCBBase+tcbStateOff] == taskFree {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rig.cpu.running.Store(false)
+	<-done
+
+	if rig.cpu.memory[kernDataBase+kdTCBBase+tcbStateOff] != taskFree {
+		output := term.DrainOutput()
+		rowIndex, _ := m16FindModuleRowByName(rig.cpu.memory, "expunge.library")
+		row := m16ModuleRowBase(rowIndex)
+		t.Fatalf(
+			"owner task still live after accepting expunge row=(state=%d gen=%d ver=%d owner=%d port=%d open=%d flags=%d deadline=%d) owner=(port=%d createErr=%d addErr=%d ready=%d lastType=%d expungeErr=%d) client=(state=%d pc=%d token=%d openErr=%d closeErr=%d done=%d) output=%q",
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]),
+			binary.LittleEndian.Uint16(rig.cpu.memory[row+kdModuleVersion:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModulePublicPort:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleDeadlineTick:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+0:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+8:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+16:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+24:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+48:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+56:]),
+			rig.cpu.memory[kernDataBase+kdTCBBase+tcbStride+tcbStateOff],
+			binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdTCBBase+tcbStride+tcbPCOff:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+24:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+32:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+40:]),
+			uint64(0),
+			output[:min(len(output), 200)],
+		)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+32:]); got != 0 {
+		t.Fatalf("OpenLibraryEx err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+40:]); got != 0 {
+		t.Fatalf("CloseLibrary err=%d, want 0", got)
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "expunge.library")
+	if !ok {
+		t.Fatal("module row missing after expunge")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateUnloaded {
+		t.Fatalf("row state=%d after accepting expunge, want UNLOADED (%d)", got, m16ModStateUnloaded)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 0 {
+		t.Fatalf("open_count=%d after accepting expunge, want 0", got)
+	}
+}
+
+func TestIExec_M16_CloseLibraryToZeroRefusedReturnsOnline(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	t0 := images[0]
+	ensureImageCodeSizeAtLeast(t, rig.cpu.memory, t0, 0x500)
+	scratch := uint32(userTask0Stack + 0x100)
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("refuse.library\x00"))
+	clear(rig.cpu.memory[scratch : scratch+96])
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 5))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_LOAD, 4, IE64_SIZE_Q, 0, 29, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysAddLibrary))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 16))
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 5))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 24))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 32))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCloseLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 40))
+
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysWaitPort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 48))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 72))
+	w(ie64Instr(OP_STORE, 4, IE64_SIZE_Q, 1, 29, 0, 80))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_LOAD, 2, IE64_SIZE_Q, 0, 29, 0, 72))
+	w(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 29, 0, 80))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysExpungeResult))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 56))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 64))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "refuse.library")
+		if ok {
+			row := m16ModuleRowBase(rowIndex)
+			if binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]) == m16ModStateOnline &&
+				binary.LittleEndian.Uint64(rig.cpu.memory[scratch+64:]) == 1 {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rig.cpu.running.Store(false)
+	<-done
+
+	if rig.cpu.memory[kernDataBase+kdTCBBase+tcbStateOff] == taskFree {
+		output := term.DrainOutput()
+		t.Fatalf("owner task exited after refusing expunge output=%q", output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+8:]); got != 0 {
+		t.Fatalf("CreatePort err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+16:]); got != 0 {
+		t.Fatalf("AddLibrary err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+32:]); got != 0 {
+		t.Fatalf("OpenLibraryEx err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+40:]); got != 0 {
+		t.Fatalf("CloseLibrary err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+56:]); got != 0 {
+		t.Fatalf("ExpungeResult err=%d, want 0", got)
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "refuse.library")
+	if !ok {
+		t.Fatal("refuse.library row missing")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
+		t.Fatalf("row state=%d after refusing expunge, want ONLINE (%d)", got, m16ModStateOnline)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 0 {
+		t.Fatalf("open_count=%d after refusing expunge, want 0", got)
+	}
+}
+
+func TestIExec_M16_ExpungeResultMatchesSpecificRowAndGeneration(t *testing.T) {
+	src := string(mustReadRepoBytes(t, "sdk/intuitionos/iexec/iexec.s"))
+	start := strings.Index(src, ".do_m16_expunge_result:")
+	if start < 0 {
+		t.Fatal("do_m16_expunge_result label not found")
+	}
+	end := strings.Index(src[start:], ".m16er_again:")
+	if end < 0 {
+		t.Fatal("m16er_again label not found after do_m16_expunge_result")
+	}
+	body := src[start : start+end]
+	for _, want := range []string{
+		"move.q  r25, r2",
+		"move.q  r26, r3",
+		"move.q  r1, r25",
+		"load.l  r11, KD_MODULE_GENERATION(r22)",
+		"bne     r11, r26, .m16er_again",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("do_m16_expunge_result missing %q", want)
+		}
+	}
+	if strings.Contains(body, ".m16er_scan:") || strings.Contains(body, "add     r21, r21, #1") {
+		t.Fatal("do_m16_expunge_result still scans expunging rows instead of matching the specific row index")
+	}
+}
+
+func TestIExec_M16_RuntimeReplyDoesNotSatisfySiblingExpungeRow(t *testing.T) {
+	const (
+		ownerOffPortA      = 0x100
+		ownerOffCreateErrA = 0x108
+		ownerOffAddErrA    = 0x110
+		ownerOffPortB      = 0x118
+		ownerOffCreateErrB = 0x120
+		ownerOffAddErrB    = 0x128
+		ownerOffReady      = 0x130
+		ownerOffTypeA      = 0x138
+		ownerOffRowA       = 0x140
+		ownerOffGenA       = 0x148
+		ownerOffSeenA      = 0x150
+		ownerOffTypeB      = 0x158
+		ownerOffRowB       = 0x160
+		ownerOffGenB       = 0x168
+		ownerOffSeenB      = 0x170
+		ownerOffReplyErr   = 0x178
+		ownerOffAfterReply = 0x180
+	)
+
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+	t0 := images[0]
+	parentScratch := uint32(userTask0Stack + 0x100)
+	clear(rig.cpu.memory[parentScratch : parentScratch+88])
+	nameA := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("rowa.library\x00"))
+	nameB := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x380, []byte("rowb.library\x00"))
+	ownerCode := make([]byte, 0x500)
+	buildM16Phase4DualOwnerDynamicTask(ownerCode, 0, "rowa.library", "rowb.library", 7)
+	ownerVA := writeTask0CodeScratch(t, rig.cpu.memory, t0, 0x500, ownerCode)
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, ownerVA))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(len(ownerCode))))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, parentScratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 8))
+	waitReadyPC := pc
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 72))
+	w(ie64Instr(OP_BEQ, 0, 0, 0, 1, 0, uint32(int32(waitReadyPC)-int32(pc))))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameA))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 7))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, parentScratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 16))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 24))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 16))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCloseLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, parentScratch))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 32))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameB))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 7))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysOpenLibraryEx))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, parentScratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 40))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 48))
+	w(ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 29, 0, 40))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCloseLibrary))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, parentScratch))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 56))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 64))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	var ownerPub uint64
+	creationDeadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(creationDeadline) {
+		ownerPub = binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+0:])
+		if ownerPub != 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+8:]); got != 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("CreateTask owner err=%d, want 0", got)
+	}
+	task0Pub := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase:])
+	if ownerPub == 0 || uint32(ownerPub) == task0Pub {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("CreateTask returned invalid owner pubid=%d (task0 pubid=%d)", ownerPub, task0Pub)
+	}
+	slot, ok := taskSlotForPublicID(rig.cpu.memory, ownerPub)
+	if !ok {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("created owner task pubid=%d is not live", ownerPub)
+	}
+	layout := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
+	binary.LittleEndian.PutUint32(rig.cpu.memory[layout+kdTaskLayoutFlags:], taskLayoutTrustedInt)
+	ownerBase := mustTaskDataBase(t, rig.cpu.memory, ownerPub)
+	binary.LittleEndian.PutUint64(rig.cpu.memory[ownerBase+0x1F0:], 1)
+	readyDeadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(readyDeadline) {
+		if binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffReady:]) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffReady:]); got != 1 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf(
+			"owner ready=%d, want 1 (portA=%d createErrA=%d addErrA=%d portB=%d createErrB=%d addErrB=%d)",
+			got,
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffPortA:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffCreateErrA:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffAddErrA:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffPortB:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffCreateErrB:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffAddErrB:]),
+		)
+	}
+	binary.LittleEndian.PutUint64(rig.cpu.memory[parentScratch+72:], 1)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffAfterReply:]) == 1 &&
+			binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+64:]) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rig.cpu.running.Store(false)
+	<-done
+
+	for off, label := range map[uint32]string{
+		8:  "CreateTask",
+		24: "OpenLibraryEx A",
+		32: "CloseLibrary A",
+		48: "OpenLibraryEx B",
+		56: "CloseLibrary B",
+	} {
+		if got := binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+off:]); got != 0 {
+			t.Fatalf("%s err=%d, want 0", label, got)
+		}
+	}
+	for off, label := range map[uint32]string{
+		ownerOffCreateErrA: "CreatePort A",
+		ownerOffAddErrA:    "AddLibrary A",
+		ownerOffCreateErrB: "CreatePort B",
+		ownerOffAddErrB:    "AddLibrary B",
+		ownerOffReplyErr:   "ExpungeResult A",
+	} {
+		if got := binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+off:]); got != 0 {
+			t.Fatalf("%s err=%d, want 0", label, got)
+		}
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffTypeA:]); got != uint64(m16LibOpExpunge) {
+		ownerState := uint64(rig.cpu.memory[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff])
+		ownerPC := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdTCBBase+slot*tcbStride+tcbPCOff:])
+		t.Fatalf(
+			"owner typeA=%d, want LIB_OP_EXPUNGE (%d) owner=(state=%d pc=%#x portA=%d createErrA=%d addErrA=%d portB=%d createErrB=%d addErrB=%d ready=%d seenA=%d rowA=%d genA=%d seenB=%d rowB=%d genB=%d replyErr=%d afterReply=%d) parent=(openAErr=%d closeAErr=%d openBErr=%d closeBErr=%d done=%d)",
+			got,
+			uint64(m16LibOpExpunge),
+			ownerState,
+			ownerPC,
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffPortA:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffCreateErrA:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffAddErrA:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffPortB:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffCreateErrB:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffAddErrB:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffReady:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffSeenA:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffRowA:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffGenA:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffSeenB:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffRowB:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffGenB:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffReplyErr:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffAfterReply:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+24:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+32:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+48:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+56:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+64:]),
+		)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffTypeB:]); got != uint64(m16LibOpExpunge) {
+		t.Fatalf("owner typeB=%d, want LIB_OP_EXPUNGE (%d)", got, uint64(m16LibOpExpunge))
+	}
+	rowAIndex := uint32(binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffRowA:]))
+	rowAGen := uint32(binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffGenA:]))
+	rowA := m16ModuleRowBase(rowAIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[rowA+kdModuleGeneration:]); got != rowAGen {
+		t.Fatalf("row A generation=%d, want captured %d", got, rowAGen)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[rowA+kdModuleState:]); got != m16ModStateOnline {
+		t.Fatalf("row A state=%d after targeted reply, want ONLINE (%d)", got, m16ModStateOnline)
+	}
+	rowBIndex := uint32(binary.LittleEndian.Uint64(rig.cpu.memory[ownerBase+ownerOffRowB:]))
+	rowB := m16ModuleRowBase(rowBIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[rowB+kdModuleState:]); got != m16ModStateExpunging {
+		t.Fatalf("row B state=%d after targeted reply for row A, want EXPUNGING (%d)", got, m16ModStateExpunging)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[rowB+kdModuleDeadlineTick:]); got == 0 {
+		t.Fatal("row B deadline cleared after targeted reply for row A, want still armed")
+	}
+}
+
+func TestIExec_M16_OpenLibraryExDuringExpungeGraceCancelsExpunge(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+	t0 := images[0]
+	parentScratch := uint32(userTask0Stack + 0x100)
+	clear(rig.cpu.memory[parentScratch : parentScratch+64])
+
+	ownerCode := make([]byte, 0x400)
+	buildM16Phase4OwnerDynamicTask(ownerCode, 0, "grace.library", 6, m16Phase4OwnerAccept)
+	clientCode := make([]byte, 0x500)
+	buildM16Phase4GraceClientDynamicTask(clientCode, 0, "grace.library", 6)
+
+	ownerVA := writeTask0CodeScratch(t, rig.cpu.memory, t0, 0x200, ownerCode)
+	clientVA := writeTask0CodeScratch(t, rig.cpu.memory, t0, 0x700, clientCode)
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, ownerVA))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(len(ownerCode))))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, parentScratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 8))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, clientVA))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(len(clientCode))))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, parentScratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 29, 0, 16))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 29, 0, 24))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	creationDeadline := time.Now().Add(1 * time.Second)
+	var ownerPub, clientPub uint64
+	for time.Now().Before(creationDeadline) {
+		ownerPub = binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+0:])
+		clientPub = binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+16:])
+		if ownerPub != 0 && clientPub != 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+8:]); got != 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("CreateTask owner err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+24:]); got != 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("CreateTask client err=%d, want 0", got)
+	}
+	if ownerPub == 0 || clientPub == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		output := term.DrainOutput()
+		t.Fatalf("CreateTask returned zero pubid owner=%d client=%d output=%q", ownerPub, clientPub, output[:min(len(output), 200)])
+	}
+	for _, pub := range []uint64{ownerPub, clientPub} {
+		slot, ok := taskSlotForPublicID(rig.cpu.memory, pub)
+		if !ok {
+			rig.cpu.running.Store(false)
+			<-done
+			t.Fatalf("created task pubid=%d is not live", pub)
+		}
+		layout := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
+		binary.LittleEndian.PutUint32(rig.cpu.memory[layout+kdTaskLayoutFlags:], taskLayoutTrustedInt)
+		dataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, pub, kdTaskDataBase))
+		binary.LittleEndian.PutUint64(rig.cpu.memory[dataBase+0x1F0:], 1)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "grace.library")
+		if ok {
+			row := m16ModuleRowBase(rowIndex)
+			if binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]) == m16ModStateOnline &&
+				binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]) == 1 {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rig.cpu.running.Store(false)
+	<-done
+	ownerScratch := mustTaskDataBase(t, rig.cpu.memory, ownerPub) + 0x100
+	clientScratch := mustTaskDataBase(t, rig.cpu.memory, clientPub) + 0x100
+
+	if slot, ok := taskSlotForPublicID(rig.cpu.memory, ownerPub); !ok || rig.cpu.memory[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff] == taskFree {
+		output := term.DrainOutput()
+		t.Fatalf("owner task exited after expunge grace reopen ownerPub=%d output=%q", ownerPub, output[:min(len(output), 200)])
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[clientScratch+32:]); got != 0 {
+		rowIndex, _ := m16FindModuleRowByName(rig.cpu.memory, "grace.library")
+		row := m16ModuleRowBase(rowIndex)
+		t.Fatalf(
+			"reopen err=%d, want 0 row=(state=%d gen=%d ver=%d owner=%d port=%d open=%d flags=%d deadline=%d) owner=(port=%d createErr=%d addErr=%d ready=%d lastType=%d expungeErr=%d) client=(token1=%d closeErr=%d token2=%d)",
+			got,
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]),
+			binary.LittleEndian.Uint16(rig.cpu.memory[row+kdModuleVersion:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModulePublicPort:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleDeadlineTick:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerScratch+0:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerScratch+8:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerScratch+16:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerScratch+24:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerScratch+32:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerScratch+40:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[clientScratch+0:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[clientScratch+16:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[clientScratch+24:]),
+		)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[clientScratch+24:]); got == 0 {
+		rowIndex, _ := m16FindModuleRowByName(rig.cpu.memory, "grace.library")
+		row := m16ModuleRowBase(rowIndex)
+		t.Fatalf(
+			"reopen token is zero after cancelling expunge row=(state=%d gen=%d ver=%d owner=%d port=%d open=%d flags=%d deadline=%d) owner=(port=%d createErr=%d addErr=%d ready=%d lastType=%d expungeErr=%d) client=(token1=%d openErr=%d closeErr=%d token2=%d reopenErr=%d done=%d)",
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]),
+			binary.LittleEndian.Uint16(rig.cpu.memory[row+kdModuleVersion:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModulePublicPort:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleDeadlineTick:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerScratch+0:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerScratch+8:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerScratch+16:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerScratch+24:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerScratch+32:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[ownerScratch+40:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[clientScratch+0:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[clientScratch+8:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[clientScratch+16:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[clientScratch+24:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[clientScratch+32:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[clientScratch+40:]),
+		)
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "grace.library")
+	if !ok {
+		t.Fatal("grace.library row missing")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
+		t.Fatalf("row state=%d after reopen, want ONLINE (%d)", got, m16ModStateOnline)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 1 {
+		t.Fatalf("open_count=%d after reopen, want 1", got)
+	}
+}
+
+func TestIExec_M16_SyscallDispatchDoesNotScanExpungeTimeouts(t *testing.T) {
+	src := string(mustReadRepoBytes(t, "sdk/intuitionos/iexec/iexec.s"))
+	start := strings.Index(src, ".syscall_dispatch:")
+	if start < 0 {
+		t.Fatal("syscall_dispatch label not found")
+	}
+	end := strings.Index(src[start:], ".do_yield")
+	if end < 0 {
+		t.Fatal("do_yield label not found after syscall_dispatch")
+	}
+	dispatch := src[start : start+end]
+	if strings.Contains(dispatch, "m16_module_timeout_scan") {
+		t.Fatal("syscall_dispatch still runs m16_module_timeout_scan before selecting a syscall handler")
+	}
+}
+
+func TestIExec_M16_ExpungeDeadlineKillsHungLibrary(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	t0 := images[0]
+	parentScratch := uint32(userTask0Stack + 0x100)
+	clear(rig.cpu.memory[parentScratch : parentScratch+32])
+
+	childCode := make([]byte, 0x400)
+	buildM16Phase4DeadlineOwnerDynamicTask(childCode, 0, "hung.library", 9)
+	childVA := writeTask0CodeScratch(t, rig.cpu.memory, t0, 0x200, childCode)
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childVA))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(len(childCode))))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, parentScratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	var ownerPub uint64
+	creationDeadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(creationDeadline) {
+		ownerPub = binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+0:])
+		if ownerPub != 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+8:]); got != 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("CreateTask err=%d, want 0", got)
+	}
+	if ownerPub == 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		output := term.DrainOutput()
+		t.Fatalf("CreateTask returned zero pubid output=%q", output[:min(len(output), 200)])
+	}
+	slot, ok := taskSlotForPublicID(rig.cpu.memory, ownerPub)
+	if !ok {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("created task pubid=%d is not live", ownerPub)
+	}
+	layout := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
+	binary.LittleEndian.PutUint32(rig.cpu.memory[layout+kdTaskLayoutFlags:], taskLayoutTrustedInt)
+	scratch := mustTaskDataBase(t, rig.cpu.memory, ownerPub) + 0x100
+	binary.LittleEndian.PutUint64(rig.cpu.memory[scratch+0xF0:], 1)
+
+	wallDeadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(wallDeadline) {
+		rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "hung.library")
+		if ok {
+			row := m16ModuleRowBase(rowIndex)
+			deadlineTick := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleDeadlineTick:])
+			curTick := uint32(binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdTickCount:]))
+			if deadlineTick != 0 && curTick >= deadlineTick {
+				if ownerSlot, live := taskSlotForPublicID(rig.cpu.memory, ownerPub); !live || rig.cpu.memory[kernDataBase+kdTCBBase+ownerSlot*tcbStride+tcbStateOff] == taskFree {
+					break
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rig.cpu.running.Store(false)
+	<-done
+
+	if ownerSlot, live := taskSlotForPublicID(rig.cpu.memory, ownerPub); live && rig.cpu.memory[kernDataBase+kdTCBBase+ownerSlot*tcbStride+tcbStateOff] != taskFree {
+		output := term.DrainOutput()
+		rowIndex, _ := m16FindModuleRowByName(rig.cpu.memory, "hung.library")
+		row := m16ModuleRowBase(rowIndex)
+		t.Fatalf(
+			"hung library owner still alive after deadline tick=%d row=(state=%d gen=%d ver=%d owner=%d port=%d open=%d flags=%d deadline=%d) owner=(port=%d createErr=%d addErr=%d openErr=%d closeErr=%d lastType=%d) output=%q",
+			uint32(binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdTickCount:])),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]),
+			binary.LittleEndian.Uint16(rig.cpu.memory[row+kdModuleVersion:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModulePublicPort:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleDeadlineTick:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+0:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+8:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+16:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+32:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+40:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+48:]),
+			output[:min(len(output), 200)],
+		)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+8:]); got != 0 {
+		t.Fatalf("CreatePort err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+16:]); got != 0 {
+		t.Fatalf("AddLibrary err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+32:]); got != 0 {
+		t.Fatalf("OpenLibraryEx err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+40:]); got != 0 {
+		t.Fatalf("CloseLibrary err=%d, want 0", got)
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "hung.library")
+	if !ok {
+		t.Fatal("hung.library row missing")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateUnloaded {
+		t.Fatalf("row state=%d after deadline kill, want UNLOADED (%d)", got, m16ModStateUnloaded)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 0 {
+		t.Fatalf("open_count=%d after deadline kill, want 0", got)
+	}
+}
+
+func TestIExec_M16_BeginExpungeArmsOnlyAfterQueueingControlMessage(t *testing.T) {
+	src := string(mustReadRepoBytes(t, "sdk/intuitionos/iexec/iexec.s"))
+	start := strings.Index(src, "m16_module_begin_expunge:")
+	if start < 0 {
+		t.Fatal("m16_module_begin_expunge label not found")
+	}
+	end := strings.Index(src[start:], ".m16_mbe_done:")
+	if end < 0 {
+		t.Fatal("m16_mbe_done label not found after m16_module_begin_expunge")
+	}
+	body := src[start : start+end]
+	stateIdx := strings.Index(body, "store.l r11, KD_MODULE_STATE(r20)")
+	deadlineIdx := strings.Index(body, "store.l r11, KD_MODULE_DEADLINE_TICK(r20)")
+	queueIdx := strings.Index(body, "store.b r24, KD_PORT_COUNT(r23)")
+	if stateIdx < 0 || deadlineIdx < 0 || queueIdx < 0 {
+		t.Fatal("expunge begin body missing expected state/deadline/queue writes")
+	}
+	if stateIdx < queueIdx || deadlineIdx < queueIdx {
+		t.Fatal("m16_module_begin_expunge still arms EXPUNGING/deadline before the control message is queued")
+	}
+}
+
+func TestIExec_M16_LibraryExpungeHandlersPassMessageIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		path    string
+		handler string
+		rowLoad string
+		genLoad string
+	}{
+		{
+			path:    "sdk/intuitionos/iexec/lib/graphics_library.s",
+			handler: ".gfx_h_expunge:",
+			rowLoad: "load.q  r2, 208(r29)",
+			genLoad: "load.q  r3, 216(r29)",
+		},
+		{
+			path:    "sdk/intuitionos/iexec/lib/intuition_library.s",
+			handler: ".intui_do_expunge:",
+			rowLoad: "load.q  r2, 280(r29)",
+			genLoad: "load.q  r3, 288(r29)",
+		},
+	} {
+		src := string(mustReadRepoBytes(t, tc.path))
+		start := strings.Index(src, tc.handler)
+		if start < 0 {
+			t.Fatalf("%s handler %q not found", tc.path, tc.handler)
+		}
+		end := strings.Index(src[start:], "syscall #SYS_M16_EXPUNGE_RESULT")
+		if end < 0 {
+			t.Fatalf("%s missing SYS_M16_EXPUNGE_RESULT call in %s", tc.path, tc.handler)
+		}
+		body := src[start : start+end]
+		if !strings.Contains(body, tc.rowLoad) || !strings.Contains(body, tc.genLoad) {
+			t.Fatalf("%s expunge handler does not pass both row index and generation into SYS_M16_EXPUNGE_RESULT", tc.path)
+		}
+	}
+}
+
+func TestIExec_M16_SetResidentAddKeepsCloseToZeroLibraryOnline(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	t0 := images[0]
+	parentScratch := uint32(userTask0Stack + 0x100)
+	clear(rig.cpu.memory[parentScratch : parentScratch+32])
+	childCode := make([]byte, 0x500)
+	buildM16Phase4ResidentDynamicTask(childCode, 0, "resident.library", 10, false)
+	childVA := writeTask0CodeScratch(t, rig.cpu.memory, t0, 0x200, childCode)
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childVA))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(len(childCode))))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, parentScratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	var ownerPub uint64
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		ownerPub = binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+0:])
+		if ownerPub != 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+8:]); got != 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("CreateTask err=%d, want 0", got)
+	}
+	slot, ok := taskSlotForPublicID(rig.cpu.memory, ownerPub)
+	if !ok {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("created task pubid=%d is not live", ownerPub)
+	}
+	layout := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
+	binary.LittleEndian.PutUint32(rig.cpu.memory[layout+kdTaskLayoutFlags:], taskLayoutTrustedInt)
+	scratch := mustTaskDataBase(t, rig.cpu.memory, ownerPub) + 0x100
+	binary.LittleEndian.PutUint64(rig.cpu.memory[scratch+0xF0:], 1)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "resident.library")
+		if ok {
+			row := m16ModuleRowBase(rowIndex)
+			if binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]) == m16ModStateOnline &&
+				binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]) == 1 &&
+				binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:])&modfResident != 0 &&
+				binary.LittleEndian.Uint64(rig.cpu.memory[scratch+56:]) == 1 {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rig.cpu.running.Store(false)
+	<-done
+
+	for off, label := range map[uint32]string{
+		8:  "CreatePort",
+		16: "AddLibrary",
+		32: "OpenLibraryEx",
+		40: "SetResident",
+		48: "CloseLibrary",
+	} {
+		if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+off:]); got != 0 {
+			t.Fatalf("%s err=%d, want 0", label, got)
+		}
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "resident.library")
+	if !ok {
+		t.Fatal("resident.library row missing")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
+		t.Fatalf("row state=%d after resident ADD close-to-zero, want ONLINE (%d)", got, m16ModStateOnline)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 1 {
+		t.Fatalf("open_count=%d after resident ADD close-to-zero, want 1", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]); got&modfResident == 0 {
+		t.Fatalf("flags=%#x after resident ADD, want MODF_RESIDENT set", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleDeadlineTick:]); got != 0 {
+		t.Fatalf("deadline=%d after resident ADD close-to-zero, want 0", got)
+	}
+}
+
+func TestIExec_M16_SetResidentRemoveUnpinsAndExpunges(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	t0 := images[0]
+	parentScratch := uint32(userTask0Stack + 0x100)
+	clear(rig.cpu.memory[parentScratch : parentScratch+32])
+	childCode := make([]byte, 0x600)
+	buildM16Phase4ResidentDynamicTask(childCode, 0, "unresident.library", 11, true)
+	childVA := writeTask0CodeScratch(t, rig.cpu.memory, t0, 0x200, childCode)
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, childVA))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, uint32(len(childCode))))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreateTask))
+	w(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, parentScratch))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 0, 3, 0, 8))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+
+	var ownerPub uint64
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		ownerPub = binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+0:])
+		if ownerPub != 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[parentScratch+8:]); got != 0 {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("CreateTask err=%d, want 0", got)
+	}
+	slot, ok := taskSlotForPublicID(rig.cpu.memory, ownerPub)
+	if !ok {
+		rig.cpu.running.Store(false)
+		<-done
+		t.Fatalf("created task pubid=%d is not live", ownerPub)
+	}
+	layout := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
+	binary.LittleEndian.PutUint32(rig.cpu.memory[layout+kdTaskLayoutFlags:], taskLayoutTrustedInt)
+	scratch := mustTaskDataBase(t, rig.cpu.memory, ownerPub) + 0x100
+	binary.LittleEndian.PutUint64(rig.cpu.memory[scratch+0xF0:], 1)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "unresident.library")
+		if ok {
+			row := m16ModuleRowBase(rowIndex)
+			if binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]) == m16ModStateUnloaded {
+				if ownerSlot, live := taskSlotForPublicID(rig.cpu.memory, ownerPub); !live || rig.cpu.memory[kernDataBase+kdTCBBase+ownerSlot*tcbStride+tcbStateOff] == taskFree {
+					break
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rig.cpu.running.Store(false)
+	<-done
+	if ownerSlot, live := taskSlotForPublicID(rig.cpu.memory, ownerPub); live && rig.cpu.memory[kernDataBase+kdTCBBase+ownerSlot*tcbStride+tcbStateOff] != taskFree {
+		output := term.DrainOutput()
+		rowIndex, _ := m16FindModuleRowByName(rig.cpu.memory, "unresident.library")
+		row := m16ModuleRowBase(rowIndex)
+		t.Fatalf(
+			"owner task still alive after resident REMOVE expunge row=(state=%d owner=%d open=%d flags=%d deadline=%d port=%d) scratch=(port=%d createErr=%d addErr=%d openTok=%d openErr=%d addResidentErr=%d closeErr=%d removeResidentErr=%d waitType=%d expungeErr=%d beforeRemove=%d afterRemove=%d removeArg=%d) output=%q",
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleDeadlineTick:]),
+			binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModulePublicPort:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+0:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+8:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+16:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+24:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+32:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+40:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+48:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+56:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+64:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+72:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+80:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+88:]),
+			binary.LittleEndian.Uint64(rig.cpu.memory[scratch+96:]),
+			output[:min(len(output), 200)],
+		)
+	}
+	for off, label := range map[uint32]string{
+		8:  "CreatePort",
+		16: "AddLibrary",
+		32: "OpenLibraryEx",
+		40: "SetResident(ADD)",
+		48: "CloseLibrary",
+		56: "SetResident(REMOVE)",
+		72: "ExpungeResult",
+	} {
+		if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+off:]); got != 0 {
+			t.Fatalf("%s err=%d, want 0", label, got)
+		}
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+64:]); got != uint64(m16LibOpExpunge) {
+		t.Fatalf("expunge message type=%d, want LIB_OP_EXPUNGE (%d)", got, uint64(m16LibOpExpunge))
+	}
+
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "unresident.library")
+	if !ok {
+		t.Fatal("unresident.library row missing")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateUnloaded {
+		t.Fatalf("row state=%d after resident REMOVE expunge, want UNLOADED (%d)", got, m16ModStateUnloaded)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]); got&modfResident != 0 {
+		t.Fatalf("flags=%#x after resident REMOVE expunge, want MODF_RESIDENT clear", got)
+	}
+}
+
+func TestIExec_M16_SetResidentRejectsNonLibraryClass(t *testing.T) {
+	rig, _ := assembleAndLoadKernel(t)
+	images := findAllProgramImages(t, rig.cpu.memory)
+	overrideExtraTasks(rig.cpu.memory, images, 1)
+	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
+
+	t0 := images[0]
+	ensureImageCodeSizeAtLeast(t, rig.cpu.memory, t0, 0x500)
+	scratch := uint32(userTask0Stack + 0x100)
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("plain.port\x00"))
+	clear(rig.cpu.memory[scratch : scratch+64])
+
+	pc := t0
+	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
+
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, pfPublic))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysCreatePort))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 0))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, nameAddr))
+	w(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysSetResident))
+	w(ie64Instr(OP_MOVE, 29, IE64_SIZE_L, 1, 0, 0, scratch))
+	w(ie64Instr(OP_STORE, 2, IE64_SIZE_Q, 1, 29, 0, 8))
+	w(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
+	w(ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 1, 29, 0, 16))
+	yieldPC := pc
+	w(ie64Instr(OP_SYSCALL, 0, 0, 1, 0, 0, sysYield))
+	w(ie64Instr(OP_BRA, 0, 0, 0, 0, 0, uint32(int32(yieldPC)-int32(pc))))
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if binary.LittleEndian.Uint64(rig.cpu.memory[scratch+16:]) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rig.cpu.running.Store(false)
+	<-done
+
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+0:]); got != 0 {
+		t.Fatalf("CreatePort err=%d, want 0", got)
+	}
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+8:]); got != errBadArg {
+		t.Fatalf("SetResident non-library err=%d, want ERR_BADARG (%d)", got, errBadArg)
+	}
+}
+
+func TestIExec_M16_SetResidentRemoveRejectsBootstrapDosLibrary(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	for _, ch := range "Resident dos.library REMOVE\n" {
+		term.EnqueueByte(byte(ch))
+	}
+	rig.cpu.running.Store(true)
+	bootDone := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(bootDone) }()
+	time.Sleep(8 * time.Second)
+	rig.cpu.running.Store(false)
+	<-bootDone
+
+	output := term.DrainOutput()
+	if !strings.Contains(output, "1>") {
+		t.Fatalf("boot never reached shell prompt, output=%q", output[:min(len(output), 400)])
+	}
+	if !strings.Contains(output, "usage: Resident <name> ADD|REMOVE") {
+		t.Fatalf("Resident dos.library REMOVE did not reject through the command surface output=%q", output[:min(len(output), 400)])
+	}
+	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "dos.library")
+	if !ok {
+		t.Fatal("dos.library row missing after rejected resident REMOVE")
+	}
+	row := m16ModuleRowBase(rowIndex)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
+		t.Fatalf("dos.library state=%d after rejected REMOVE, want ONLINE (%d)", got, m16ModStateOnline)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]); got&modfResident == 0 {
+		t.Fatalf("dos.library flags=%#x after rejected REMOVE, want MODF_RESIDENT set", got)
+	}
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 1 {
+		t.Fatalf("dos.library open_count=%d after rejected REMOVE, want 1", got)
+	}
+}
+
+func TestIExec_M16_ShellResidentCommandSurface(t *testing.T) {
+	rig, term := assembleAndLoadKernel(t)
+	for _, ch := range "Resident\n" {
+		term.EnqueueByte(byte(ch))
+	}
+
+	rig.cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() { rig.cpu.Execute(); close(done) }()
+	time.Sleep(8 * time.Second)
+	rig.cpu.running.Store(false)
+	<-done
+
+	output := term.DrainOutput()
+	if strings.Contains(output, "Unknown command") {
+		t.Fatalf("Resident command was not resolved by the shell output=%q", output[:min(len(output), 300)])
+	}
+	if !strings.Contains(output, "usage: Resident <name> ADD|REMOVE") {
+		t.Fatalf("Resident command did not run its usage path output=%q", output[:min(len(output), 300)])
 	}
 }
 
@@ -20402,6 +22072,7 @@ func TestIExec_M151_Phase1_CommandSourcesSplitFromIExecRoot(t *testing.T) {
 		{`include "../cmd/type.s"`, "prog_type:", "sdk/intuitionos/iexec/cmd/type.s"},
 		{`include "../cmd/echo.s"`, "prog_echo_cmd:", "sdk/intuitionos/iexec/cmd/echo.s"},
 		{`include "../cmd/help.s"`, "prog_help_app:", "sdk/intuitionos/iexec/cmd/help.s"},
+		{`include "../cmd/resident.s"`, "prog_resident_cmd:", "sdk/intuitionos/iexec/cmd/resident.s"},
 		{`include "../cmd/list.s"`, "prog_list_cmd:", "sdk/intuitionos/iexec/cmd/list.s"},
 		{`include "../cmd/which.s"`, "prog_which_cmd:", "sdk/intuitionos/iexec/cmd/which.s"},
 		{`include "../cmd/assign.s"`, "prog_assign_cmd:", "sdk/intuitionos/iexec/cmd/assign.s"},

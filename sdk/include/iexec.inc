@@ -86,6 +86,8 @@ SYS_ADD_LIBRARY   equ 44           ; trusted-internal — M16 library self-regis
 SYS_OPEN_LIBRARY_EX equ 45         ; nucleus — M16 registry-backed OpenLibrary for ONLINE libraries
 SYS_M16_COPY_MODULE_NAME equ 46    ; trusted-internal — dos.library copies a pending M16 module row name
 SYS_M16_LIBRARY_LOAD_RESULT equ 47 ; trusted-internal — dos.library publishes M16 launch success/failure
+SYS_SET_RESIDENT equ 48            ; nucleus — toggles MODF_RESIDENT on a library row by name
+SYS_M16_EXPUNGE_RESULT equ 49      ; trusted-internal — library replies accept/refuse to a specific exec-managed expunge row
 
 ; ===========================================================================
 ; Error Codes
@@ -387,6 +389,7 @@ KD_MODULE_PUBLIC_PORT    equ 52    ; u32 compat public port ID
 KD_MODULE_OPEN_COUNT     equ 56    ; u32
 KD_MODULE_FLAGS          equ 60    ; u32 manifest/runtime flags (reserved in this slice)
 KD_MODULE_WAITERS_HEAD   equ 64    ; u64 waiter-row token head (0 = none)
+KD_MODULE_DEADLINE_TICK  equ 72    ; u32 expunge grace deadline tick (0 = none)
 
 M16_MODSTATE_UNLOADED    equ 0
 M16_MODSTATE_LOADING     equ 1
@@ -394,10 +397,14 @@ M16_MODSTATE_ONLINE      equ 2
 M16_MODSTATE_FAILED      equ 3
 M16_MODSTATE_EXPUNGING   equ 4
 
+M16_EXPUNGE_GRACE_TICKS  equ 32
+
 MODF_RESIDENT           equ 0x00000001 ; runtime pin: CloseLibrary-to-zero keeps
                                        ; the row ONLINE at the resident floor
 MODF_COMPAT_PORT        equ 0x00000002 ; manifest contract: module publishes a
                                        ; FindPort-visible public compat port
+
+LIB_OP_EXPUNGE          equ 0x4D313645
 
 KD_MODULE_WAITER_ROWS    equ 68712 ; 16 rows × 24 bytes = 384 bytes
 KD_MODULE_WAITER_STRIDE  equ 24

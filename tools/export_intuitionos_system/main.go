@@ -27,6 +27,7 @@ var systemExports = []exportSpec{
 	{src: "cmd_dir.elf", dst: "C/Dir"},
 	{src: "cmd_type.elf", dst: "C/Type"},
 	{src: "cmd_echo.elf", dst: "C/Echo"},
+	{src: "cmd_resident.elf", dst: "C/Resident"},
 	{src: "cmd_assign.elf", dst: "C/Assign"},
 	{src: "cmd_list.elf", dst: "C/List"},
 	{src: "cmd_which.elf", dst: "C/Which"},

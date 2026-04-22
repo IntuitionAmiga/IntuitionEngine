@@ -96,6 +96,8 @@ prog_intui_code:
     store.q r5, 296(r29)               ; reply_port
     store.q r6, 304(r29)               ; share_handle
 
+    move.l  r28, #LIB_OP_EXPUNGE
+    beq     r1, r28, .intui_do_expunge
     move.l  r28, #INTUITION_OPEN_WINDOW
     beq     r1, r28, .intui_do_open
     move.l  r28, #INTUITION_DAMAGE
@@ -884,6 +886,26 @@ prog_intui_code:
     move.q  r4, r0
     move.q  r5, r0
     syscall #SYS_REPLY_MSG
+    bra     .intui_main
+
+.intui_do_expunge:
+    load.b  r14, 176(r29)              ; display_open
+    bnez    r14, .intui_expunge_refuse
+    load.b  r14, 216(r29)              ; win_in_use
+    bnez    r14, .intui_expunge_refuse
+    move.l  r1, #1
+    load.q  r2, 280(r29)               ; expunge row index
+    load.q  r3, 288(r29)               ; expunge generation
+    syscall #SYS_M16_EXPUNGE_RESULT
+    load.q  r29, (sp)
+    bnez    r2, .intui_main
+    syscall #SYS_EXIT_TASK
+.intui_expunge_refuse:
+    move.q  r1, r0
+    load.q  r2, 280(r29)               ; expunge row index
+    load.q  r3, 288(r29)               ; expunge generation
+    syscall #SYS_M16_EXPUNGE_RESULT
+    load.q  r29, (sp)
     bra     .intui_main
 
     ; --- Poll input.device for raw events; route as IDCMP-* to idcmp_port ---

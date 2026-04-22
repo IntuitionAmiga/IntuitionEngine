@@ -6642,6 +6642,8 @@ prog_doslib_seed_name_which:
     dc.b    "C/Which", 0
 prog_doslib_seed_name_help_cmd:
     dc.b    "C/Help", 0
+prog_doslib_seed_name_resident:
+    dc.b    "C/Resident", 0
 prog_doslib_seed_name_help_text:
     dc.b    "S/Help", 0
 prog_doslib_seed_name_loader_info:
@@ -6805,6 +6807,7 @@ include "../cmd/dir.s"
 include "../cmd/type.s"
 include "../cmd/echo.s"
 include "../cmd/help.s"
+include "../cmd/resident.s"
 include "../cmd/list.s"
 include "../cmd/which.s"
 include "../cmd/assign.s"

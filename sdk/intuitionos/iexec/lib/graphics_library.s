@@ -149,6 +149,8 @@ prog_gfxlib_code:
     store.q r6, 232(r29)               ; share_handle
 
     ; Dispatch
+    move.l  r28, #LIB_OP_EXPUNGE
+    beq     r1, r28, .gfx_h_expunge
     move.l  r28, #GFX_ENUMERATE_ADAPTERS
     beq     r1, r28, .gfx_h_enum_adapt
     move.l  r28, #GFX_GET_ADAPTER_INFO
@@ -390,6 +392,26 @@ prog_gfxlib_code:
     move.q  r3, r0
     move.q  r4, r0
     bra     .gfx_reply
+
+.gfx_h_expunge:
+    load.b  r14, 168(r29)              ; display_open
+    bnez    r14, .gfx_expunge_refuse
+    load.b  r14, 176(r29)              ; surface_in_use
+    bnez    r14, .gfx_expunge_refuse
+    move.l  r1, #1
+    load.q  r2, 208(r29)               ; expunge row index
+    load.q  r3, 216(r29)               ; expunge generation
+    syscall #SYS_M16_EXPUNGE_RESULT
+    load.q  r29, (sp)
+    bnez    r2, .gfx_main
+    syscall #SYS_EXIT_TASK
+.gfx_expunge_refuse:
+    move.q  r1, r0
+    load.q  r2, 208(r29)               ; expunge row index
+    load.q  r3, 216(r29)               ; expunge generation
+    syscall #SYS_M16_EXPUNGE_RESULT
+    load.q  r29, (sp)
+    bra     .gfx_main
 
 .gfx_reply:
     ; R2 = err code (used as msg_type per project convention)

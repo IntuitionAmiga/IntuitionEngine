@@ -632,9 +632,27 @@ find_next_runnable:
     move.l  r13, #0                     ; wrap
     bra     .fnr_check
 .fnr_deadlock:
+    push    r16
+    jsr     m16_module_has_pending_deadline
+    pop     r16
+    bnez    r1, .fnr_idle
     la      r8, deadlock_msg
     jsr     kern_puts
     halt
+.fnr_idle:
+    load.q  r11, KD_TICK_COUNT(r12)
+    add     r11, r11, #1
+    store.q r11, KD_TICK_COUNT(r12)
+    push    r16
+    jsr     m16_module_timeout_scan
+    pop     r16
+    move.q  r13, r16
+    move.l  r17, #0
+    add     r13, r13, #1
+    move.l  r18, #MAX_TASKS
+    blt     r13, r18, .fnr_check
+    move.l  r13, #0
+    bra     .fnr_check
 
 ; ============================================================================
 ; Page Table Builder (used by boot init and CreateTask)
@@ -6284,6 +6302,12 @@ endif
     move.l  r11, #SYS_M16_LIBRARY_LOAD_RESULT
     beq     r10, r11, .do_m16_library_load_result
 
+    move.l  r11, #SYS_SET_RESIDENT
+    beq     r10, r11, .do_set_resident
+
+    move.l  r11, #SYS_M16_EXPUNGE_RESULT
+    beq     r10, r11, .do_m16_expunge_result
+
     ; M11.5: SYS_READ_INPUT (slot 37) removed. Terminal MMIO is now mapped
     ; into console.handler via SYS_MAP_IO and the read loop is inlined in
     ; console.handler's CON_MSG_READLINE handler. Slot 37 falls through to
@@ -6670,6 +6694,7 @@ endif
 .create_named:
     ; 3. Validate user pointer and copy name to scratch buffer
     move.q  r1, r7                  ; R1 = name_ptr for safe_copy_user_name
+    push    r7
     push    r20
     push    r21
     push    r8
@@ -6677,6 +6702,7 @@ endif
     pop     r8
     pop     r21
     pop     r20
+    pop     r7
     bnez    r23, .create_badarg
 
     ; 4. If PF_PUBLIC, check name uniqueness.
@@ -8066,6 +8092,18 @@ endif
     load.l  r23, KD_MODULE_STATE(r21)
     move.l  r11, #M16_MODSTATE_ONLINE
     beq     r23, r11, .openlibex_online
+    move.l  r11, #M16_MODSTATE_EXPUNGING
+    bne     r23, r11, .openlibex_not_expunging
+    push    r24
+    push    r25
+    push    r26
+    move.q  r1, r21
+    jsr     m16_module_cancel_expunge
+    pop     r26
+    pop     r25
+    pop     r24
+    bra     .openlibex_online
+.openlibex_not_expunging:
     push    r26
     push    r25
     push    r24
@@ -8242,6 +8280,22 @@ endif
     beqz    r26, .closelib_badhandle
     sub     r26, r26, #1
     store.l r26, KD_MODULE_OPEN_COUNT(r23)
+    bnez    r25, .closelib_nonzero_open_row
+    load.l  r11, KD_MODULE_FLAGS(r23)
+    and     r11, r11, #MODF_RESIDENT
+    beqz    r11, .closelib_nonresident_last
+    move.l  r26, #1
+    store.l r26, KD_MODULE_OPEN_COUNT(r23)
+    bra     .closelib_ok
+.closelib_nonresident_last:
+    beqz    r26, .closelib_begin_expunge
+    bra     .closelib_ok
+.closelib_nonzero_open_row:
+    bnez    r26, .closelib_ok
+.closelib_begin_expunge:
+    move.q  r1, r23
+    move.q  r2, r21
+    jsr     m16_module_begin_expunge
     bnez    r25, .closelib_ok
     store.l r0, KD_MODULE_OPEN_ROW_TASK(r24)
     store.l r0, KD_MODULE_OPEN_ROW_INDEX(r24)
@@ -8338,6 +8392,7 @@ endif
     store.l r26, KD_MODULE_PUBLIC_PORT(r21)
     store.l r0, KD_MODULE_OPEN_COUNT(r21)
     store.l r0, KD_MODULE_FLAGS(r21)
+    store.l r0, KD_MODULE_DEADLINE_TICK(r21)
     move.l  r11, #KERN_DATA_BASE
     load.l  r12, KD_DOSLIB_PUBID(r11)
     bne     r12, r23, .addlib_runtime_flags_done
@@ -8478,6 +8533,128 @@ endif
     eret
 .m16lr_perm:
     move.q  r2, #ERR_PERM
+    eret
+
+; SYS_SET_RESIDENT:
+;   R1 = name_ptr
+;   R2 = 1 => ADD, 0 => REMOVE
+;   Returns: R2 = err
+.do_set_resident:
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)
+    move.q  r24, r2
+    and     r24, r24, #1
+    push    r24
+    push    r1
+    jsr     safe_copy_user_name
+    pop     r1
+    pop     r24
+    bnez    r23, .m16sr_badarg
+    push    r24
+    jsr     m16_module_find_row_by_name
+    pop     r24
+    beqz    r1, .m16sr_badarg
+    move.q  r21, r1
+    move.q  r22, r2
+    load.l  r23, KD_MODULE_CLASS(r21)
+    move.l  r11, #1
+    bne     r23, r11, .m16sr_badarg
+    load.l  r23, KD_MODULE_STATE(r21)
+    move.l  r11, #M16_MODSTATE_UNLOADED
+    beq     r23, r11, .m16sr_badarg
+    move.q  r1, r22
+    push    r24
+    push    r21
+    push    r22
+    jsr     m16_module_sum_open_rows
+    pop     r22
+    pop     r21
+    pop     r24
+    move.q  r23, r1
+    bnez    r24, .m16sr_add
+.m16sr_remove:
+    ; dos.library is bootstrap-resident today but still never handles
+    ; LIB_OP_EXPUNGE / SYS_M16_EXPUNGE_RESULT. Reject REMOVE until the DOS
+    ; service participates in the protocol, otherwise a later close-to-zero
+    ; could tear it down asynchronously.
+    move.l  r11, #KERN_DATA_BASE
+    load.l  r12, KD_DOSLIB_PUBID(r11)
+    beqz    r12, .m16sr_remove_mutate
+    load.l  r11, KD_MODULE_OWNING_TASK(r21)
+    beq     r11, r12, .m16sr_badarg
+.m16sr_remove_mutate:
+    load.l  r11, KD_MODULE_FLAGS(r21)
+    and     r11, r11, #0xFFFFFFFE
+    store.l r11, KD_MODULE_FLAGS(r21)
+    store.l r23, KD_MODULE_OPEN_COUNT(r21)
+    load.l  r11, KD_MODULE_STATE(r21)
+    move.l  r14, #M16_MODSTATE_ONLINE
+    bne     r11, r14, .m16sr_ok
+    bnez    r23, .m16sr_ok
+    move.q  r1, r21
+    move.q  r2, r22
+    jsr     m16_module_begin_expunge
+    bra     .m16sr_ok
+.m16sr_add:
+    load.l  r11, KD_MODULE_FLAGS(r21)
+    or      r11, r11, #MODF_RESIDENT
+    store.l r11, KD_MODULE_FLAGS(r21)
+    load.l  r11, KD_MODULE_STATE(r21)
+    move.l  r14, #M16_MODSTATE_EXPUNGING
+    bne     r11, r14, .m16sr_add_floor
+    move.q  r1, r21
+    jsr     m16_module_cancel_expunge
+.m16sr_add_floor:
+    bnez    r23, .m16sr_ok
+    move.l  r11, #1
+    store.l r11, KD_MODULE_OPEN_COUNT(r21)
+.m16sr_ok:
+    move.q  r2, #ERR_OK
+    eret
+.m16sr_badarg:
+    move.q  r2, #ERR_BADARG
+    eret
+
+; SYS_M16_EXPUNGE_RESULT:
+;   R1 = 0 => refuse, nonzero => accept and exit
+;   R2 = module row index, R3 = expected generation
+;   Returns: R2 = ERR_OK when that exact row was still expunging, ERR_AGAIN when stale
+.do_m16_expunge_result:
+    move.q  r24, r1
+    move.q  r25, r2
+    move.q  r26, r3
+    jsr     kern_current_public_task_id
+    move.q  r20, r1
+    move.l  r11, #KD_MODULE_MAX
+    bge     r25, r11, .m16er_again
+    move.q  r1, r25
+    push    r20
+    push    r24
+    push    r25
+    push    r26
+    jsr     m16_module_row_addr_for_index
+    pop     r26
+    pop     r25
+    pop     r24
+    pop     r20
+    move.q  r22, r1
+    load.l  r11, KD_MODULE_STATE(r22)
+    move.l  r14, #M16_MODSTATE_EXPUNGING
+    bne     r11, r14, .m16er_again
+    load.l  r11, KD_MODULE_OWNING_TASK(r22)
+    bne     r11, r20, .m16er_again
+    load.l  r11, KD_MODULE_GENERATION(r22)
+    bne     r11, r26, .m16er_again
+    bnez    r24, .m16er_accept
+    move.q  r1, r22
+    jsr     m16_module_cancel_expunge
+    move.q  r2, #ERR_OK
+    eret
+.m16er_accept:
+    move.q  r2, #ERR_OK
+    eret
+.m16er_again:
+    move.q  r2, #ERR_AGAIN
     eret
 
 ; ============================================================================
@@ -10060,6 +10237,7 @@ m16_module_find_or_alloc_row:
     store.l r0, KD_MODULE_OPEN_COUNT(r4)
     store.l r0, KD_MODULE_FLAGS(r4)
     store.q r0, KD_MODULE_WAITERS_HEAD(r4)
+    store.l r0, KD_MODULE_DEADLINE_TICK(r4)
     move.q  r1, r4
 .m16_mfoar_done:
     rts
@@ -10082,11 +10260,35 @@ m16_module_prepare_loading_row:
     store.l r0, KD_MODULE_OPEN_COUNT(r20)
     store.l r0, KD_MODULE_FLAGS(r20)
     store.q r0, KD_MODULE_WAITERS_HEAD(r20)
+    store.l r0, KD_MODULE_DEADLINE_TICK(r20)
     move.l  r11, #M16_MODSTATE_LOADING
     store.l r11, KD_MODULE_STATE(r20)
     move.q  r1, r21
     jsr     m16_clear_open_rows_for_module
     move.q  r1, r20
+    rts
+
+; Inputs: R1 = module row index. Returns R1 = sum of live opener counts.
+m16_module_sum_open_rows:
+    move.q  r20, r1
+    move.l  r21, #0
+    move.l  r22, #0
+    move.l  r23, #KERN_DATA_BASE
+    add     r23, r23, #KD_MODULE_OPEN_ROWS
+.m16_msor_scan:
+    move.l  r24, #KD_MODULE_OPEN_ROW_MAX
+    bge     r21, r24, .m16_msor_done
+    load.l  r24, KD_MODULE_OPEN_ROW_COUNT(r23)
+    beqz    r24, .m16_msor_next
+    load.l  r25, KD_MODULE_OPEN_ROW_INDEX(r23)
+    bne     r25, r20, .m16_msor_next
+    add     r22, r22, r24
+.m16_msor_next:
+    add     r23, r23, #KD_MODULE_OPEN_ROW_STRIDE
+    add     r21, r21, #1
+    bra     .m16_msor_scan
+.m16_msor_done:
+    move.q  r1, r22
     rts
 
 ; Inputs: R1 = module row index
@@ -10192,6 +10394,108 @@ m16_start_autoload_request:
     rts
 .m16_sar_full:
     move.q  r2, #ERR_FULL
+    rts
+
+; Inputs: R1 = module row addr. Returns R1 = row addr.
+m16_module_cancel_expunge:
+    move.q  r20, r1
+    move.l  r11, #M16_MODSTATE_ONLINE
+    store.l r11, KD_MODULE_STATE(r20)
+    store.l r0, KD_MODULE_DEADLINE_TICK(r20)
+    move.q  r1, r20
+    rts
+
+; Inputs: R1 = module row addr, R2 = module row index. Queue the
+; LIB_OP_EXPUNGE control message to the compat port and only then arm the
+; timeout/state transition. If the port cannot accept the message, leave the
+; row unchanged so a healthy library is not timed out after a dropped request.
+m16_module_begin_expunge:
+    move.q  r20, r1
+    move.q  r21, r2
+    load.l  r22, KD_MODULE_PUBLIC_PORT(r20)
+    move.q  r1, r22
+    push    r20
+    push    r21
+    push    r22
+    jsr     kern_port_addr_for_id
+    pop     r22
+    pop     r21
+    pop     r20
+    beqz    r1, .m16_mbe_done
+    move.q  r23, r1
+    load.b  r11, KD_PORT_VALID(r23)
+    beqz    r11, .m16_mbe_done
+    load.b  r24, KD_PORT_COUNT(r23)
+    move.l  r11, #KD_PORT_FIFO_SIZE
+    bge     r24, r11, .m16_mbe_done
+    load.b  r25, KD_PORT_TAIL(r23)
+    move.l  r26, #KD_MSG_SIZE
+    mulu    r26, r25, r26
+    add     r26, r26, r23
+    add     r26, r26, #KD_PORT_MSGS
+    move.l  r11, #LIB_OP_EXPUNGE
+    store.l r11, KD_MSG_TYPE(r26)
+    store.l r0, KD_MSG_SRC(r26)
+    store.q r21, KD_MSG_DATA0(r26)
+    load.l  r11, KD_MODULE_GENERATION(r20)
+    store.q r11, KD_MSG_DATA1(r26)
+    move.l  r11, #REPLY_PORT_NONE
+    store.w r11, KD_MSG_REPLY_PORT(r26)
+    store.l r0, KD_MSG_SHARE_HDL(r26)
+    add     r25, r25, #1
+    and     r25, r25, #3
+    store.b r25, KD_PORT_TAIL(r23)
+    add     r24, r24, #1
+    store.b r24, KD_PORT_COUNT(r23)
+    move.l  r11, #M16_MODSTATE_EXPUNGING
+    store.l r11, KD_MODULE_STATE(r20)
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r11, KD_TICK_COUNT(r12)
+    add     r11, r11, #M16_EXPUNGE_GRACE_TICKS
+    store.l r11, KD_MODULE_DEADLINE_TICK(r20)
+    load.b  r27, KD_PORT_OWNER(r23)
+    lsl     r28, r27, #5
+    add     r28, r28, #KD_TASK_BASE
+    add     r28, r28, r12
+    load.l  r29, KD_TASK_SIG_RECV(r28)
+    or      r29, r29, #SIGF_PORT
+    store.l r29, KD_TASK_SIG_RECV(r28)
+    load.b  r30, KD_TASK_STATE(r28)
+    move.l  r11, #TASK_WAITING
+    bne     r30, r11, .m16_mbe_done
+    load.l  r11, KD_TASK_SIG_WAIT(r28)
+    and     r11, r11, #SIGF_PORT
+    beqz    r11, .m16_mbe_done
+    move.b  r30, #TASK_READY
+    store.b r30, KD_TASK_STATE(r28)
+.m16_mbe_done:
+    move.q  r1, r20
+    rts
+
+; Returns R1 = 1 when any expunging module still has a non-zero deadline.
+m16_module_has_pending_deadline:
+    move.l  r20, #0
+.m16_mhpd_scan:
+    move.l  r11, #KD_MODULE_MAX
+    bge     r20, r11, .m16_mhpd_none
+    move.q  r1, r20
+    push    r20
+    jsr     m16_module_row_addr_for_index
+    move.q  r21, r1
+    pop     r20
+    load.l  r11, KD_MODULE_STATE(r21)
+    move.l  r14, #M16_MODSTATE_EXPUNGING
+    bne     r11, r14, .m16_mhpd_next
+    load.l  r11, KD_MODULE_DEADLINE_TICK(r21)
+    bnez    r11, .m16_mhpd_yes
+.m16_mhpd_next:
+    add     r20, r20, #1
+    bra     .m16_mhpd_scan
+.m16_mhpd_yes:
+    move.q  r1, #1
+    rts
+.m16_mhpd_none:
+    move.q  r1, #0
     rts
 
 ; R1 = waiter token (1..KD_MODULE_WAITER_MAX)
@@ -10636,6 +10940,7 @@ m16_module_fail_to_unloaded:
     store.l r0, KD_MODULE_OPEN_COUNT(r20)
     store.l r0, KD_MODULE_FLAGS(r20)
     store.q r0, KD_MODULE_WAITERS_HEAD(r20)
+    store.l r0, KD_MODULE_DEADLINE_TICK(r20)
     move.q  r1, r21
     push    r20
     jsr     m16_clear_open_rows_for_module
@@ -10895,6 +11200,7 @@ m16_module_sweep_failed_rows:
     store.l r0, KD_MODULE_OPEN_COUNT(r21)
     store.l r0, KD_MODULE_FLAGS(r21)
     store.q r0, KD_MODULE_WAITERS_HEAD(r21)
+    store.l r0, KD_MODULE_DEADLINE_TICK(r21)
     move.q  r1, r2
     push    r2
     push    r21
@@ -10906,6 +11212,74 @@ m16_module_sweep_failed_rows:
     add     r2, r2, #1
     bra     .m16_msfr_scan
 .m16_msfr_done:
+    rts
+
+; Best-effort timeout enforcement for expunging libraries. Runs on the kernel
+; timer path while the kernel PT is active.
+m16_module_timeout_scan:
+    move.l  r20, #KERN_DATA_BASE
+    load.q  r24, KD_TICK_COUNT(r20)
+    move.l  r21, #0
+.m16_mts_scan:
+    move.l  r11, #KD_MODULE_MAX
+    bge     r21, r11, .m16_mts_done
+    move.q  r1, r21
+    push    r20
+    push    r21
+    push    r24
+    jsr     m16_module_row_addr_for_index
+    move.q  r22, r1
+    pop     r24
+    pop     r21
+    pop     r20
+    load.l  r11, KD_MODULE_STATE(r22)
+    move.l  r14, #M16_MODSTATE_EXPUNGING
+    bne     r11, r14, .m16_mts_next
+    load.l  r23, KD_MODULE_DEADLINE_TICK(r22)
+    beqz    r23, .m16_mts_next
+    bgt     r23, r24, .m16_mts_next
+    load.l  r1, KD_MODULE_OWNING_TASK(r22)
+    beqz    r1, .m16_mts_force_unload
+    push    r20
+    push    r21
+    push    r22
+    push    r24
+    jsr     kern_find_slot_for_public_id
+    move.q  r25, r1
+    pop     r24
+    pop     r22
+    pop     r21
+    pop     r20
+    beqz    r2, .m16_mts_force_unload
+    move.q  r13, r25
+    move.l  r14, #TASK_EXIT_REASON_INTERNAL
+    push    r20
+    push    r21
+    push    r22
+    push    r24
+    jsr     kill_task_cleanup
+    pop     r24
+    pop     r22
+    pop     r21
+    pop     r20
+    bra     .m16_mts_next
+.m16_mts_force_unload:
+    move.q  r1, r22
+    move.q  r2, r21
+    move.q  r3, #ERR_NOTFOUND
+    push    r20
+    push    r21
+    push    r22
+    push    r24
+    jsr     m16_module_fail_to_unloaded
+    pop     r24
+    pop     r22
+    pop     r21
+    pop     r20
+.m16_mts_next:
+    add     r21, r21, #1
+    bra     .m16_mts_scan
+.m16_mts_done:
     rts
 
 ; Inputs: R1 = row index, R2 = generation. Returns R1 = 32-bit token in low bits.
@@ -11590,6 +11964,7 @@ endif
     load.q  r10, KD_TICK_COUNT(r12)
     add     r10, r10, #1
     store.q r10, KD_TICK_COUNT(r12)
+    jsr     m16_module_timeout_scan
 
     ; Context switch
     load.q  r13, (r12)              ; current_task

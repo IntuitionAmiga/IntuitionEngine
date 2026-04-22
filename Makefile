@@ -36,6 +36,7 @@ IEXEC_RUNTIME_ELF_TARGETS := \
 	cmd_dir.elf:prog_dir \
 	cmd_type.elf:prog_type \
 	cmd_echo.elf:prog_echo_cmd \
+	cmd_resident.elf:prog_resident_cmd \
 	cmd_assign.elf:prog_assign_cmd \
 	cmd_list.elf:prog_list_cmd \
 	cmd_which.elf:prog_which_cmd \
