@@ -265,6 +265,93 @@ func assertLen(t *testing.T, got []byte, want int, label string) {
 	}
 }
 
+func TestLibmanifestDirectiveCapturesManifestMetadata(t *testing.T) {
+	src := `
+start:
+    .libmanifest name="graphics.library", version=11, revision=2, type=1, flags=2, msg_abi=7
+    nop
+`
+
+	asm := NewIE64Assembler()
+	asm.SetListingMode(true)
+	got, err := asm.Assemble(src)
+	if err != nil {
+		t.Fatalf("assembly failed: %v", err)
+	}
+	assertLen(t, got, 8, ".libmanifest must not emit flat-image bytes")
+
+	manifest := asm.GetLibManifest()
+	if manifest == nil {
+		t.Fatal("GetLibManifest() returned nil")
+	}
+	if manifest.Name != "graphics.library" {
+		t.Fatalf("manifest name=%q, want graphics.library", manifest.Name)
+	}
+	if manifest.Version != 11 {
+		t.Fatalf("manifest version=%d, want 11", manifest.Version)
+	}
+	if manifest.Revision != 2 {
+		t.Fatalf("manifest revision=%d, want 2", manifest.Revision)
+	}
+	if manifest.Type != 1 {
+		t.Fatalf("manifest type=%d, want 1", manifest.Type)
+	}
+	if manifest.Flags != 2 {
+		t.Fatalf("manifest flags=%d, want 2", manifest.Flags)
+	}
+	if manifest.MsgABIVersion != 7 {
+		t.Fatalf("manifest msg_abi=%d, want 7", manifest.MsgABIVersion)
+	}
+
+	listing := strings.Join(asm.GetListing(), "\n")
+	if !strings.Contains(listing, `.libmanifest name="graphics.library", version=11, revision=2, type=1, flags=2, msg_abi=7`) {
+		t.Fatalf("listing missing .libmanifest directive, listing=%q", listing)
+	}
+}
+
+func TestLibmanifestDirectiveRejectsUnknownKeys(t *testing.T) {
+	err := assembleExpectError(t, `
+start:
+    .libmanifest name="graphics.library", bogus=1
+    nop
+`)
+	if !strings.Contains(err.Error(), "unknown .libmanifest key") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLibmanifestDirectiveRejectsOverflow(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "version",
+			src: `
+start:
+    .libmanifest name="graphics.library", version=70000, revision=0, type=1, flags=2, msg_abi=0
+    nop
+`,
+			want: ".libmanifest version out of range",
+		},
+		{
+			name: "flags",
+			src: `
+start:
+    .libmanifest name="graphics.library", version=11, revision=0, type=1, flags=1<<40, msg_abi=0
+    nop
+`,
+			want: ".libmanifest flags out of range",
+		},
+	} {
+		err := assembleExpectError(t, tc.src)
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: unexpected error %v", tc.name, err)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Step 3a: Core assembler structure + directives
 // ---------------------------------------------------------------------------

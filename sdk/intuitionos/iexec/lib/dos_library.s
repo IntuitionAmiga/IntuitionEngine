@@ -1,4 +1,5 @@
 prog_doslib:
+    .libmanifest name="dos.library", version=14, revision=0, type=1, flags=2, msg_abi=0
     ; Header
     dc.l    0, 0
     dc.l    prog_doslib_code_end - prog_doslib_code

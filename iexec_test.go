@@ -12718,18 +12718,21 @@ func TestIExec_M16_LibraryExpungeHandlersPassMessageIdentity(t *testing.T) {
 		handler string
 		rowLoad string
 		genLoad string
+		macro   string
 	}{
 		{
 			path:    "sdk/intuitionos/iexec/lib/graphics_library.s",
 			handler: ".gfx_h_expunge:",
 			rowLoad: "load.q  r2, 208(r29)",
 			genLoad: "load.q  r3, 216(r29)",
+			macro:   "m16_lib_accept_expunge 208, 216, .gfx_main",
 		},
 		{
 			path:    "sdk/intuitionos/iexec/lib/intuition_library.s",
 			handler: ".intui_do_expunge:",
 			rowLoad: "load.q  r2, 280(r29)",
 			genLoad: "load.q  r3, 288(r29)",
+			macro:   "m16_lib_accept_expunge 280, 288, .intui_main",
 		},
 	} {
 		src := string(mustReadRepoBytes(t, tc.path))
@@ -12739,11 +12742,75 @@ func TestIExec_M16_LibraryExpungeHandlersPassMessageIdentity(t *testing.T) {
 		}
 		end := strings.Index(src[start:], "syscall #SYS_M16_EXPUNGE_RESULT")
 		if end < 0 {
-			t.Fatalf("%s missing SYS_M16_EXPUNGE_RESULT call in %s", tc.path, tc.handler)
+			end = strings.Index(src[start:], tc.macro)
+		}
+		if end < 0 {
+			t.Fatalf("%s missing SYS_M16_EXPUNGE_RESULT call or template macro in %s", tc.path, tc.handler)
 		}
 		body := src[start : start+end]
+		if strings.Contains(src[start:], tc.macro) {
+			continue
+		}
 		if !strings.Contains(body, tc.rowLoad) || !strings.Contains(body, tc.genLoad) {
 			t.Fatalf("%s expunge handler does not pass both row index and generation into SYS_M16_EXPUNGE_RESULT", tc.path)
+		}
+	}
+}
+
+func TestIExec_M16_LibraryTemplateBoilerplateIsShared(t *testing.T) {
+	template := mustReadRepoFile(t, "sdk/intuitionos/iexec/lib/template.s")
+	for _, want := range []string{
+		"m16_lib_preamble macro",
+		"m16_lib_register macro",
+		"m16_lib_print_banner macro",
+		"m16_lib_accept_expunge macro",
+		"m16_lib_refuse_expunge macro",
+	} {
+		if !strings.Contains(template, want) {
+			t.Fatalf("template.s missing %q", want)
+		}
+	}
+
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{
+			path: "sdk/intuitionos/iexec/lib/graphics_library.s",
+			want: []string{
+				`include "template.s"`,
+				`.libmanifest name="graphics.library", version=11, revision=0, type=1, flags=2, msg_abi=0`,
+				"m16_lib_preamble 128",
+				"m16_lib_register 16, 11, 0, 144, .gfx_addlib_done, .gfx_addlib_done, .gfx_halt",
+				"m16_lib_print_banner 48, 128, .gfx_ban_loop, .gfx_ban_id",
+				"m16_lib_accept_expunge 208, 216, .gfx_main",
+				"m16_lib_refuse_expunge 208, 216, .gfx_main",
+			},
+		},
+		{
+			path: "sdk/intuitionos/iexec/lib/intuition_library.s",
+			want: []string{
+				`include "template.s"`,
+				`.libmanifest name="intuition.library", version=12, revision=0, type=1, flags=2, msg_abi=0`,
+				"m16_lib_preamble 128",
+				"m16_lib_register 320, 12, 0, 136, .intui_addlib_done, .intui_exit, .intui_halt",
+				"m16_lib_print_banner 416, 128, .intui_ban_loop, .intui_ban_id",
+				"m16_lib_accept_expunge 280, 288, .intui_main",
+				"m16_lib_refuse_expunge 280, 288, .intui_main",
+			},
+		},
+		{
+			path: "sdk/intuitionos/iexec/lib/dos_library.s",
+			want: []string{
+				`.libmanifest name="dos.library", version=14, revision=0, type=1, flags=2, msg_abi=0`,
+			},
+		},
+	} {
+		body := mustReadRepoFile(t, tc.path)
+		for _, want := range tc.want {
+			if !strings.Contains(body, want) {
+				t.Fatalf("%s missing %q", tc.path, want)
+			}
 		}
 	}
 }

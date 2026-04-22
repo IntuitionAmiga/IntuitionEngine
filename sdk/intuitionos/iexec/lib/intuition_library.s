@@ -1,4 +1,7 @@
+include "template.s"
+
 prog_intuition_library:
+    .libmanifest name="intuition.library", version=12, revision=0, type=1, flags=2, msg_abi=0
     dc.l    0, 0
     dc.l    prog_intui_code_end - prog_intui_code
     dc.l    prog_intui_data_end - prog_intui_data
@@ -13,31 +16,10 @@ prog_intui_code:
     ; * 4096 = code_base + 0x3000 for 2 code pages, NOT at USER_DATA_BASE
     ; (which is code_base + 0x2000 — only correct for 1 code page).
     ; This matches dos.library's 2-code-page preamble pattern.
-    sub     sp, sp, #16
-.intui_preamble:
-    load.q  r30, (sp)
-    load.q  r29, 8(sp)
-    store.q r29, (sp)
-    load.l  r1, TASKSB_TASK_ID(r30)
-    store.q r1, 128(r29)               ; data[128] = task_id
+    m16_lib_preamble 128
 
-    ; ===== CreatePort("intuition.library") =====
-    add     r1, r29, #320
-    move.l  r2, #PF_PUBLIC
-    syscall #SYS_CREATE_PORT
-    load.q  r29, (sp)
-    bnez    r2, .intui_halt
-    store.q r1, 136(r29)               ; data[136] = intuition_port
-    add     r1, r29, #320
-    move.l  r2, #12
-    move.l  r3, #0
-    load.q  r4, 136(r29)
-    syscall #SYS_ADD_LIBRARY
-    load.q  r29, (sp)
-    beqz    r2, .intui_addlib_done
-    move.l  r1, #ERR_PERM
-    beq     r2, r1, .intui_exit
-    bra     .intui_halt
+    ; ===== CreatePort("intuition.library") + AddLibrary =====
+    m16_lib_register 320, 12, 0, 136, .intui_addlib_done, .intui_exit, .intui_halt
 .intui_addlib_done:
 
     ; ===== CreatePort(NULL) → reply_port (anonymous) =====
@@ -57,27 +39,7 @@ prog_intui_code:
     store.q r1, 168(r29)               ; data[168] = my_input_port
 
     ; ===== Print banner =====
-    add     r20, r29, #416             ; r20 = &data[416] = banner
-.intui_ban_loop:
-    load.b  r1, (r20)
-    beqz    r1, .intui_ban_id
-    store.q r20, 8(sp)
-    syscall #SYS_DEBUG_PUTCHAR
-    load.q  r29, (sp)
-    load.q  r20, 8(sp)
-    add     r20, r20, #1
-    bra     .intui_ban_loop
-.intui_ban_id:
-    load.q  r29, (sp)
-    load.q  r1, 128(r29)
-    add     r1, r1, #0x30
-    syscall #SYS_DEBUG_PUTCHAR
-    move.l  r1, #0x5D                  ; ']'
-    syscall #SYS_DEBUG_PUTCHAR
-    move.l  r1, #0x0D
-    syscall #SYS_DEBUG_PUTCHAR
-    move.l  r1, #0x0A
-    syscall #SYS_DEBUG_PUTCHAR
+    m16_lib_print_banner 416, 128, .intui_ban_loop, .intui_ban_id
 
     ; ===== Main loop =====
 .intui_main:
@@ -893,20 +855,9 @@ prog_intui_code:
     bnez    r14, .intui_expunge_refuse
     load.b  r14, 216(r29)              ; win_in_use
     bnez    r14, .intui_expunge_refuse
-    move.l  r1, #1
-    load.q  r2, 280(r29)               ; expunge row index
-    load.q  r3, 288(r29)               ; expunge generation
-    syscall #SYS_M16_EXPUNGE_RESULT
-    load.q  r29, (sp)
-    bnez    r2, .intui_main
-    syscall #SYS_EXIT_TASK
+    m16_lib_accept_expunge 280, 288, .intui_main
 .intui_expunge_refuse:
-    move.q  r1, r0
-    load.q  r2, 280(r29)               ; expunge row index
-    load.q  r3, 288(r29)               ; expunge generation
-    syscall #SYS_M16_EXPUNGE_RESULT
-    load.q  r29, (sp)
-    bra     .intui_main
+    m16_lib_refuse_expunge 280, 288, .intui_main
 
     ; --- Poll input.device for raw events; route as IDCMP-* to idcmp_port ---
 .intui_poll_input:

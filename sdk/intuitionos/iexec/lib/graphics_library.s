@@ -1,4 +1,7 @@
+include "template.s"
+
 prog_graphics_library:
+    .libmanifest name="graphics.library", version=11, revision=0, type=1, flags=2, msg_abi=0
     dc.l    0, 0
     dc.l    prog_gfxlib_code_end - prog_gfxlib_code
     dc.l    prog_gfxlib_data_end - prog_gfxlib_data
@@ -7,13 +10,7 @@ prog_graphics_library:
 prog_gfxlib_code:
 
     ; ===== Preamble =====
-    sub     sp, sp, #16
-.gfx_preamble:
-    load.q  r30, (sp)                  ; r30 = startup_base
-    load.q  r29, 8(sp)                 ; r29 = data_base
-    store.q r29, (sp)
-    load.l  r1, TASKSB_TASK_ID(r30)
-    store.q r1, 128(r29)               ; data[128] = task_id
+    m16_lib_preamble 128
 
     ; ===== M12.5: request CHIP and VRAM grants from hardware.resource =====
     ; Both SYS_MAP_IO calls below are now gated by the kernel grant table.
@@ -91,47 +88,12 @@ prog_gfxlib_code:
     bnez    r2, .gfx_halt
     store.q r1, 160(r29)               ; data[160] = vram_va
 
-    ; ===== CreatePort("graphics.library") =====
-    add     r1, r29, #16
-    move.l  r2, #PF_PUBLIC
-    syscall #SYS_CREATE_PORT
-    load.q  r29, (sp)
-    bnez    r2, .gfx_halt
-    store.q r1, 144(r29)               ; data[144] = port_id
-    add     r1, r29, #16
-    move.l  r2, #11
-    move.l  r3, #0
-    load.q  r4, 144(r29)
-    syscall #SYS_ADD_LIBRARY
-    load.q  r29, (sp)
-    beqz    r2, .gfx_addlib_done
-    move.l  r1, #ERR_PERM
-    beq     r2, r1, .gfx_addlib_done
-    bra     .gfx_halt
+    ; ===== CreatePort("graphics.library") + AddLibrary =====
+    m16_lib_register 16, 11, 0, 144, .gfx_addlib_done, .gfx_addlib_done, .gfx_halt
 .gfx_addlib_done:
 
     ; ===== Print banner via SYS_DEBUG_PUTCHAR =====
-    add     r20, r29, #48              ; r20 = &data[48] = banner (M12: shifted from 32 after PORT_NAME_LEN bump)
-.gfx_ban_loop:
-    load.b  r1, (r20)
-    beqz    r1, .gfx_ban_id
-    store.q r20, 8(sp)
-    syscall #SYS_DEBUG_PUTCHAR
-    load.q  r29, (sp)
-    load.q  r20, 8(sp)
-    add     r20, r20, #1
-    bra     .gfx_ban_loop
-.gfx_ban_id:
-    load.q  r29, (sp)
-    load.q  r1, 128(r29)
-    add     r1, r1, #0x30
-    syscall #SYS_DEBUG_PUTCHAR
-    move.l  r1, #0x5D                  ; ']'
-    syscall #SYS_DEBUG_PUTCHAR
-    move.l  r1, #0x0D
-    syscall #SYS_DEBUG_PUTCHAR
-    move.l  r1, #0x0A
-    syscall #SYS_DEBUG_PUTCHAR
+    m16_lib_print_banner 48, 128, .gfx_ban_loop, .gfx_ban_id
 
     ; ===== Main loop: WaitPort + dispatch =====
 .gfx_main:
@@ -398,20 +360,9 @@ prog_gfxlib_code:
     bnez    r14, .gfx_expunge_refuse
     load.b  r14, 176(r29)              ; surface_in_use
     bnez    r14, .gfx_expunge_refuse
-    move.l  r1, #1
-    load.q  r2, 208(r29)               ; expunge row index
-    load.q  r3, 216(r29)               ; expunge generation
-    syscall #SYS_M16_EXPUNGE_RESULT
-    load.q  r29, (sp)
-    bnez    r2, .gfx_main
-    syscall #SYS_EXIT_TASK
+    m16_lib_accept_expunge 208, 216, .gfx_main
 .gfx_expunge_refuse:
-    move.q  r1, r0
-    load.q  r2, 208(r29)               ; expunge row index
-    load.q  r3, 216(r29)               ; expunge generation
-    syscall #SYS_M16_EXPUNGE_RESULT
-    load.q  r29, (sp)
-    bra     .gfx_main
+    m16_lib_refuse_expunge 208, 216, .gfx_main
 
 .gfx_reply:
     ; R2 = err code (used as msg_type per project convention)
