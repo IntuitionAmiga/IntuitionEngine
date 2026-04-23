@@ -127,3 +127,15 @@ boot_host_relpath_doslib:
 boot_host_relpath_console:
     dc.b    "IOSSYS/L/console.handler", 0
     align   4
+
+boot_host_relpath_shell:
+    dc.b    "IOSSYS/Tools/Shell", 0
+    align   4
+
+boot_shell_path_full:
+    dc.b    "IOSSYS:Tools/Shell", 0
+    align   4
+
+boot_shell_path_resolved:
+    dc.b    "SYS/IOSSYS/Tools/Shell", 0
+    align   4

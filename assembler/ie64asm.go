@@ -259,6 +259,7 @@ type IE64Assembler struct {
 	equates         map[string]uint64
 	sets            map[string]uint64
 	macros          map[string]*Macro
+	libManifest     *IE64LibManifest
 	baseAddr        uint32
 	lastGlobalLabel string
 	listingMode     bool
@@ -272,6 +273,15 @@ type IE64Assembler struct {
 	pass         int
 	basePath     string
 	includePaths []string
+}
+
+type IE64LibManifest struct {
+	Name          string
+	Version       uint16
+	Revision      uint16
+	Type          uint32
+	Flags         uint32
+	MsgABIVersion uint32
 }
 
 // resolveFile searches for filename relative to basePath first, then each
@@ -340,6 +350,14 @@ func (a *IE64Assembler) addInfo(format string, args ...interface{}) {
 // GetInfos returns any informational messages generated during assembly.
 func (a *IE64Assembler) GetInfos() []string {
 	return a.infos
+}
+
+func (a *IE64Assembler) GetLibManifest() *IE64LibManifest {
+	if a.libManifest == nil {
+		return nil
+	}
+	manifest := *a.libManifest
+	return &manifest
 }
 
 func (a *IE64Assembler) addError(format string, args ...interface{}) {
@@ -984,9 +1002,11 @@ func (a *IE64Assembler) preprocess(source string, basePath string, included map[
 			included[absPath] = true
 			data, err := os.ReadFile(includePath)
 			if err != nil {
+				delete(included, absPath)
 				return nil, fmt.Errorf("line %d: failed to include %s: %v", i+1, includePath, err)
 			}
 			subLines, err := a.preprocess(string(data), filepath.Dir(includePath), included)
+			delete(included, absPath)
 			if err != nil {
 				return nil, err
 			}
@@ -1554,6 +1574,7 @@ func (a *IE64Assembler) Assemble(source string) ([]byte, error) {
 	a.errors = nil
 	a.warnings = nil
 	a.listing = nil
+	a.libManifest = nil
 
 	// Pass 0: preprocessing
 	preprocessed, err := a.preprocess(source, a.basePath, nil)
@@ -1789,6 +1810,7 @@ func (a *IE64Assembler) lineSize(trimmed string) (uint32, error) {
 func isDirective(lower string) bool {
 	return strings.HasPrefix(lower, "dc.") ||
 		strings.HasPrefix(lower, "ds.") ||
+		lower == ".libmanifest" ||
 		lower == "align" ||
 		lower == "incbin" ||
 		lower == "org"
@@ -1828,6 +1850,8 @@ func (a *IE64Assembler) assembleDirective(trimmed string, program []byte) error 
 		return a.assembleDC(trimmed, program, startOffset)
 	case strings.HasPrefix(lower, "ds."):
 		return a.assembleDS(trimmed, program, startOffset)
+	case lower == ".libmanifest":
+		return a.assembleLibManifest(trimmed, startOffset)
 	case lower == "align":
 		return a.assembleAlign(trimmed, program, startOffset)
 	case lower == "incbin":
@@ -1835,6 +1859,126 @@ func (a *IE64Assembler) assembleDirective(trimmed string, program []byte) error 
 	default:
 		return nil
 	}
+}
+
+func (a *IE64Assembler) assembleLibManifest(line string, startOffset uint32) error {
+	manifest, err := a.parseLibManifest(line)
+	if err != nil {
+		return err
+	}
+	a.libManifest = manifest
+	if a.listingMode {
+		a.addListing(a.baseAddr+startOffset, nil, line)
+	}
+	return nil
+}
+
+func (a *IE64Assembler) parseLibManifest(line string) (*IE64LibManifest, error) {
+	rest := strings.TrimSpace(line[len(".libmanifest"):])
+	if rest == "" {
+		return nil, fmt.Errorf(".libmanifest requires key=value fields")
+	}
+	parts := splitOperands(rest)
+	manifest := &IE64LibManifest{}
+	seen := map[string]bool{}
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		eq := strings.Index(part, "=")
+		if eq <= 0 || eq == len(part)-1 {
+			return nil, fmt.Errorf("invalid .libmanifest field %q", part)
+		}
+		key := strings.ToLower(strings.TrimSpace(part[:eq]))
+		val := strings.TrimSpace(part[eq+1:])
+		if seen[key] {
+			return nil, fmt.Errorf("duplicate .libmanifest key %q", key)
+		}
+		seen[key] = true
+		switch key {
+		case "name":
+			name, err := parseLibManifestName(val)
+			if err != nil {
+				return nil, err
+			}
+			manifest.Name = name
+		case "version":
+			n, err := a.evalExprUint64(val)
+			if err != nil {
+				return nil, fmt.Errorf(".libmanifest version: %v", err)
+			}
+			if n > math.MaxUint16 {
+				return nil, fmt.Errorf(".libmanifest version out of range: %d", n)
+			}
+			manifest.Version = uint16(n)
+		case "revision":
+			n, err := a.evalExprUint64(val)
+			if err != nil {
+				return nil, fmt.Errorf(".libmanifest revision: %v", err)
+			}
+			if n > math.MaxUint16 {
+				return nil, fmt.Errorf(".libmanifest revision out of range: %d", n)
+			}
+			manifest.Revision = uint16(n)
+		case "type":
+			n, err := a.evalExprUint64(val)
+			if err != nil {
+				return nil, fmt.Errorf(".libmanifest type: %v", err)
+			}
+			if n > math.MaxUint32 {
+				return nil, fmt.Errorf(".libmanifest type out of range: %d", n)
+			}
+			manifest.Type = uint32(n)
+		case "flags":
+			n, err := a.evalExprUint64(val)
+			if err != nil {
+				return nil, fmt.Errorf(".libmanifest flags: %v", err)
+			}
+			if n > math.MaxUint32 {
+				return nil, fmt.Errorf(".libmanifest flags out of range: %d", n)
+			}
+			manifest.Flags = uint32(n)
+		case "msg_abi":
+			n, err := a.evalExprUint64(val)
+			if err != nil {
+				return nil, fmt.Errorf(".libmanifest msg_abi: %v", err)
+			}
+			if n > math.MaxUint32 {
+				return nil, fmt.Errorf(".libmanifest msg_abi out of range: %d", n)
+			}
+			manifest.MsgABIVersion = uint32(n)
+		default:
+			return nil, fmt.Errorf("unknown .libmanifest key %q", key)
+		}
+	}
+	required := []string{"name", "version", "revision", "type", "flags", "msg_abi"}
+	for _, key := range required {
+		if !seen[key] {
+			return nil, fmt.Errorf("missing .libmanifest key %q", key)
+		}
+	}
+	return manifest, nil
+}
+
+func parseLibManifestName(val string) (string, error) {
+	if len(val) < 2 || val[0] != '"' || val[len(val)-1] != '"' {
+		return "", fmt.Errorf(".libmanifest name must be a quoted string")
+	}
+	var b strings.Builder
+	body := val[1 : len(val)-1]
+	for i := 0; i < len(body); i++ {
+		if body[i] == '\\' {
+			if i+1 >= len(body) {
+				return "", fmt.Errorf("invalid escape in .libmanifest name")
+			}
+			b.WriteByte(unescapeChar(body[i+1]))
+			i++
+			continue
+		}
+		b.WriteByte(body[i])
+	}
+	return b.String(), nil
 }
 
 func (a *IE64Assembler) assembleDC(line string, program []byte, startOffset uint32) error {

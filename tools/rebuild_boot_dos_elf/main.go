@@ -16,9 +16,37 @@ const (
 	pageSize       = 0x1000
 	baseVA         = 0x600000
 	listingBias    = 0x1000
+
+	elfSectionHeaderSize = 64
+	elfSHTNull           = 0
+	elfSHTProgBits       = 1
+	elfSHTStrTab         = 3
+	elfSHTNote           = 7
+
+	m16LibManifestMagic       = 0x4C49424D
+	m16LibManifestDescVersion = 1
+	m16LibManifestNoteType    = 0x494F5331
+	m16LibManifestTypeLibrary = 1
+	m16ModfCompatPort         = 0x00000002
 )
 
 var labelRe = regexp.MustCompile(`^([0-9A-F]{8})\s+.*$`)
+
+type libManifestSpec struct {
+	Name          string
+	Version       uint16
+	Revision      uint16
+	Type          uint32
+	Flags         uint32
+	MsgABIVersion uint32
+}
+
+type manifestExprParser struct {
+	input   string
+	pos     int
+	symbols map[string]uint64
+	global  string
+}
 
 func main() {
 	listingPath := flag.String("listing", "", "path to ie64asm listing file")
@@ -32,7 +60,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	progStart, err := parseProgramStart(*listingPath, *label)
+	listing, err := os.ReadFile(*listingPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read listing: %v\n", err)
+		os.Exit(1)
+	}
+
+	progStart, err := parseProgramStartFromListing(listing, *label)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -61,7 +95,12 @@ func main() {
 
 	code := image[codeStart:codeEnd]
 	data := image[dataStart:dataEnd]
-	elf := buildELF(code, data)
+	spec, hasManifest, err := parseLibManifestSpecFromListing(listing, *label)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	elf := buildELF(code, data, spec, hasManifest)
 
 	if err := os.WriteFile(*outPath, elf, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "write output: %v\n", err)
@@ -69,11 +108,7 @@ func main() {
 	}
 }
 
-func parseProgramStart(path string, label string) (uint64, error) {
-	body, err := os.ReadFile(path)
-	if err != nil {
-		return 0, fmt.Errorf("read listing: %w", err)
-	}
+func parseProgramStartFromListing(body []byte, label string) (uint64, error) {
 	lines := bytes.Split(body, []byte{'\n'})
 	for i, raw := range lines {
 		line := string(raw)
@@ -82,6 +117,587 @@ func parseProgramStart(path string, label string) (uint64, error) {
 		}
 	}
 	return 0, fmt.Errorf("missing %s start in listing", label)
+}
+
+func parseLibManifestSpecFromListing(body []byte, label string) (libManifestSpec, bool, error) {
+	lines := bytes.Split(body, []byte{'\n'})
+	symbols := parseListingSymbols(lines)
+	inLabel := false
+	for _, raw := range lines {
+		line := string(raw)
+		trimmed := strings.TrimSpace(line)
+		if !inLabel {
+			if trimmed == label+":" {
+				inLabel = true
+			}
+			continue
+		}
+		if trimmed == "" {
+			continue
+		}
+		if idx := strings.Index(trimmed, ".libmanifest"); idx >= 0 {
+			spec, err := parseLibManifestDirective(trimmed[idx+len(".libmanifest"):], symbols, label)
+			if err != nil {
+				return libManifestSpec{}, false, fmt.Errorf("parse %s .libmanifest: %w", label, err)
+			}
+			return spec, true, nil
+		}
+		if strings.HasSuffix(trimmed, ":") && !strings.HasPrefix(strings.TrimSuffix(trimmed, ":"), ".") {
+			break
+		}
+	}
+	return libManifestSpec{}, false, nil
+}
+
+func parseListingSymbols(lines [][]byte) map[string]uint64 {
+	symbols := make(map[string]uint64)
+	var pendingLabels []string
+	var lastGlobal string
+	for _, raw := range lines {
+		line := string(raw)
+		trimmed := strings.TrimSpace(line)
+		fields := strings.Fields(trimmed)
+		if len(fields) >= 4 && fields[0] == "=" && (strings.EqualFold(fields[3], "equ") || strings.EqualFold(fields[3], "set")) {
+			val, err := strconv.ParseUint(fields[1], 16, 64)
+			if err == nil {
+				symbols[fields[2]] = val
+			}
+		}
+		if strings.HasSuffix(trimmed, ":") {
+			label := strings.TrimSuffix(trimmed, ":")
+			if strings.HasPrefix(label, ".") {
+				if lastGlobal != "" {
+					pendingLabels = append(pendingLabels, lastGlobal+label)
+				} else {
+					pendingLabels = append(pendingLabels, label)
+				}
+			} else {
+				lastGlobal = label
+				pendingLabels = append(pendingLabels, label)
+			}
+			continue
+		}
+		if len(pendingLabels) > 0 {
+			if m := labelRe.FindSubmatch(raw); m != nil {
+				addr, err := strconv.ParseUint(string(m[1]), 16, 64)
+				if err == nil && addr >= listingBias {
+					for _, label := range pendingLabels {
+						symbols[label] = addr - listingBias
+					}
+				}
+				pendingLabels = pendingLabels[:0]
+			}
+		}
+	}
+	return symbols
+}
+
+func parseLibManifestDirective(rest string, symbols map[string]uint64, global string) (libManifestSpec, error) {
+	parts := splitDirectiveOperands(rest)
+	spec := libManifestSpec{}
+	seen := map[string]bool{}
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		eq := strings.Index(part, "=")
+		if eq <= 0 || eq == len(part)-1 {
+			return libManifestSpec{}, fmt.Errorf("invalid field %q", part)
+		}
+		key := strings.ToLower(strings.TrimSpace(part[:eq]))
+		val := strings.TrimSpace(part[eq+1:])
+		if seen[key] {
+			return libManifestSpec{}, fmt.Errorf("duplicate key %q", key)
+		}
+		seen[key] = true
+		switch key {
+		case "name":
+			name, err := parseQuotedDirectiveString(val)
+			if err != nil {
+				return libManifestSpec{}, err
+			}
+			spec.Name = name
+		case "version":
+			n, err := evalManifestDirectiveExpr(val, symbols, global)
+			if err != nil {
+				return libManifestSpec{}, fmt.Errorf("version: %w", err)
+			}
+			spec.Version = uint16(n)
+		case "revision":
+			n, err := evalManifestDirectiveExpr(val, symbols, global)
+			if err != nil {
+				return libManifestSpec{}, fmt.Errorf("revision: %w", err)
+			}
+			spec.Revision = uint16(n)
+		case "type":
+			n, err := evalManifestDirectiveExpr(val, symbols, global)
+			if err != nil {
+				return libManifestSpec{}, fmt.Errorf("type: %w", err)
+			}
+			spec.Type = uint32(n)
+		case "flags":
+			n, err := evalManifestDirectiveExpr(val, symbols, global)
+			if err != nil {
+				return libManifestSpec{}, fmt.Errorf("flags: %w", err)
+			}
+			spec.Flags = uint32(n)
+		case "msg_abi":
+			n, err := evalManifestDirectiveExpr(val, symbols, global)
+			if err != nil {
+				return libManifestSpec{}, fmt.Errorf("msg_abi: %w", err)
+			}
+			spec.MsgABIVersion = uint32(n)
+		default:
+			return libManifestSpec{}, fmt.Errorf("unknown key %q", key)
+		}
+	}
+	required := []string{"name", "version", "revision", "type", "flags", "msg_abi"}
+	for _, key := range required {
+		if !seen[key] {
+			return libManifestSpec{}, fmt.Errorf("missing key %q", key)
+		}
+	}
+	return spec, nil
+}
+
+func splitDirectiveOperands(rest string) []string {
+	var parts []string
+	var current strings.Builder
+	inString := false
+	for i := 0; i < len(rest); i++ {
+		ch := rest[i]
+		switch ch {
+		case '"':
+			current.WriteByte(ch)
+			if i == 0 || rest[i-1] != '\\' {
+				inString = !inString
+			}
+		case ',':
+			if inString {
+				current.WriteByte(ch)
+				continue
+			}
+			parts = append(parts, current.String())
+			current.Reset()
+		default:
+			current.WriteByte(ch)
+		}
+	}
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+	return parts
+}
+
+func parseQuotedDirectiveString(val string) (string, error) {
+	if len(val) < 2 || val[0] != '"' || val[len(val)-1] != '"' {
+		return "", fmt.Errorf("name must be a quoted string")
+	}
+	var b strings.Builder
+	body := val[1 : len(val)-1]
+	for i := 0; i < len(body); i++ {
+		if body[i] == '\\' {
+			if i+1 >= len(body) {
+				return "", fmt.Errorf("invalid escape")
+			}
+			b.WriteByte(unescapeDirectiveChar(body[i+1]))
+			i++
+			continue
+		}
+		b.WriteByte(body[i])
+	}
+	return b.String(), nil
+}
+
+func unescapeDirectiveChar(ch byte) byte {
+	switch ch {
+	case 'n':
+		return '\n'
+	case 'r':
+		return '\r'
+	case 't':
+		return '\t'
+	case '\\':
+		return '\\'
+	case '"':
+		return '"'
+	case '0':
+		return 0
+	default:
+		return ch
+	}
+}
+
+func evalManifestDirectiveExpr(val string, symbols map[string]uint64, global string) (uint64, error) {
+	p := &manifestExprParser{
+		input:   strings.TrimSpace(val),
+		symbols: symbols,
+		global:  global,
+	}
+	n, err := p.parseExprCompare()
+	if err != nil {
+		return 0, err
+	}
+	p.skipSpaces()
+	if p.pos < len(p.input) {
+		return 0, fmt.Errorf("unexpected character %q", p.input[p.pos])
+	}
+	return uint64(n), nil
+}
+
+func (p *manifestExprParser) skipSpaces() {
+	for p.pos < len(p.input) && (p.input[p.pos] == ' ' || p.input[p.pos] == '\t') {
+		p.pos++
+	}
+}
+
+func (p *manifestExprParser) peek() byte {
+	p.skipSpaces()
+	if p.pos < len(p.input) {
+		return p.input[p.pos]
+	}
+	return 0
+}
+
+func (p *manifestExprParser) peekTwo() string {
+	p.skipSpaces()
+	if p.pos+1 < len(p.input) {
+		return p.input[p.pos : p.pos+2]
+	}
+	return ""
+}
+
+func (p *manifestExprParser) parseExprCompare() (int64, error) {
+	left, err := p.parseExprOr()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		tw := p.peekTwo()
+		switch tw {
+		case "==":
+			p.pos += 2
+			right, err := p.parseExprOr()
+			if err != nil {
+				return 0, err
+			}
+			if left == right {
+				left = 1
+			} else {
+				left = 0
+			}
+		case "!=":
+			p.pos += 2
+			right, err := p.parseExprOr()
+			if err != nil {
+				return 0, err
+			}
+			if left != right {
+				left = 1
+			} else {
+				left = 0
+			}
+		case "<=":
+			p.pos += 2
+			right, err := p.parseExprOr()
+			if err != nil {
+				return 0, err
+			}
+			if left <= right {
+				left = 1
+			} else {
+				left = 0
+			}
+		case ">=":
+			p.pos += 2
+			right, err := p.parseExprOr()
+			if err != nil {
+				return 0, err
+			}
+			if left >= right {
+				left = 1
+			} else {
+				left = 0
+			}
+		default:
+			ch := p.peek()
+			if ch == '<' && tw != "<<" {
+				p.pos++
+				right, err := p.parseExprOr()
+				if err != nil {
+					return 0, err
+				}
+				if left < right {
+					left = 1
+				} else {
+					left = 0
+				}
+				continue
+			}
+			if ch == '>' && tw != ">>" {
+				p.pos++
+				right, err := p.parseExprOr()
+				if err != nil {
+					return 0, err
+				}
+				if left > right {
+					left = 1
+				} else {
+					left = 0
+				}
+				continue
+			}
+			return left, nil
+		}
+	}
+}
+
+func (p *manifestExprParser) parseExprOr() (int64, error) {
+	left, err := p.parseExprXor()
+	if err != nil {
+		return 0, err
+	}
+	for p.peek() == '|' {
+		p.pos++
+		right, err := p.parseExprXor()
+		if err != nil {
+			return 0, err
+		}
+		left = left | right
+	}
+	return left, nil
+}
+
+func (p *manifestExprParser) parseExprXor() (int64, error) {
+	left, err := p.parseExprAnd()
+	if err != nil {
+		return 0, err
+	}
+	for p.peek() == '^' {
+		p.pos++
+		right, err := p.parseExprAnd()
+		if err != nil {
+			return 0, err
+		}
+		left = left ^ right
+	}
+	return left, nil
+}
+
+func (p *manifestExprParser) parseExprAnd() (int64, error) {
+	left, err := p.parseExprShift()
+	if err != nil {
+		return 0, err
+	}
+	for p.peek() == '&' {
+		p.pos++
+		right, err := p.parseExprShift()
+		if err != nil {
+			return 0, err
+		}
+		left = left & right
+	}
+	return left, nil
+}
+
+func (p *manifestExprParser) parseExprShift() (int64, error) {
+	left, err := p.parseExprAdd()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		switch p.peekTwo() {
+		case "<<":
+			p.pos += 2
+			right, err := p.parseExprAdd()
+			if err != nil {
+				return 0, err
+			}
+			left = left << uint(right)
+		case ">>":
+			p.pos += 2
+			right, err := p.parseExprAdd()
+			if err != nil {
+				return 0, err
+			}
+			left = left >> uint(right)
+		default:
+			return left, nil
+		}
+	}
+}
+
+func (p *manifestExprParser) parseExprAdd() (int64, error) {
+	left, err := p.parseExprMul()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		switch p.peek() {
+		case '+':
+			p.pos++
+			right, err := p.parseExprMul()
+			if err != nil {
+				return 0, err
+			}
+			left = left + right
+		case '-':
+			p.pos++
+			right, err := p.parseExprMul()
+			if err != nil {
+				return 0, err
+			}
+			left = left - right
+		default:
+			return left, nil
+		}
+	}
+}
+
+func (p *manifestExprParser) parseExprMul() (int64, error) {
+	left, err := p.parseExprUnary()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		switch p.peek() {
+		case '*':
+			p.pos++
+			right, err := p.parseExprUnary()
+			if err != nil {
+				return 0, err
+			}
+			left = left * right
+		case '/':
+			p.pos++
+			right, err := p.parseExprUnary()
+			if err != nil {
+				return 0, err
+			}
+			if right == 0 {
+				return 0, fmt.Errorf("division by zero")
+			}
+			left = left / right
+		default:
+			return left, nil
+		}
+	}
+}
+
+func (p *manifestExprParser) parseExprUnary() (int64, error) {
+	p.skipSpaces()
+	if p.pos < len(p.input) {
+		switch p.input[p.pos] {
+		case '-':
+			p.pos++
+			val, err := p.parseExprUnary()
+			if err != nil {
+				return 0, err
+			}
+			return -val, nil
+		case '+':
+			p.pos++
+			return p.parseExprUnary()
+		case '~':
+			p.pos++
+			val, err := p.parseExprUnary()
+			if err != nil {
+				return 0, err
+			}
+			return ^val, nil
+		}
+	}
+	return p.parseExprAtom()
+}
+
+func (p *manifestExprParser) parseExprAtom() (int64, error) {
+	p.skipSpaces()
+	if p.pos >= len(p.input) {
+		return 0, fmt.Errorf("unexpected end of expression")
+	}
+	ch := p.input[p.pos]
+	if ch == '(' {
+		p.pos++
+		val, err := p.parseExprCompare()
+		if err != nil {
+			return 0, err
+		}
+		p.skipSpaces()
+		if p.pos >= len(p.input) || p.input[p.pos] != ')' {
+			return 0, fmt.Errorf("missing closing parenthesis")
+		}
+		p.pos++
+		return val, nil
+	}
+	if ch == '$' {
+		p.pos++
+		start := p.pos
+		for p.pos < len(p.input) && (isHexDigit(p.input[p.pos]) || p.input[p.pos] == '_') {
+			p.pos++
+		}
+		numStr := strings.ReplaceAll(p.input[start:p.pos], "_", "")
+		val, err := strconv.ParseUint(numStr, 16, 64)
+		if err != nil {
+			return 0, err
+		}
+		return int64(val), nil
+	}
+	if ch == '0' && p.pos+1 < len(p.input) && (p.input[p.pos+1] == 'x' || p.input[p.pos+1] == 'X') {
+		p.pos += 2
+		start := p.pos
+		for p.pos < len(p.input) && (isHexDigit(p.input[p.pos]) || p.input[p.pos] == '_') {
+			p.pos++
+		}
+		numStr := strings.ReplaceAll(p.input[start:p.pos], "_", "")
+		val, err := strconv.ParseUint(numStr, 16, 64)
+		if err != nil {
+			return 0, err
+		}
+		return int64(val), nil
+	}
+	if ch >= '0' && ch <= '9' {
+		start := p.pos
+		for p.pos < len(p.input) && ((p.input[p.pos] >= '0' && p.input[p.pos] <= '9') || p.input[p.pos] == '_') {
+			p.pos++
+		}
+		numStr := strings.ReplaceAll(p.input[start:p.pos], "_", "")
+		val, err := strconv.ParseInt(numStr, 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return val, nil
+	}
+	if isIdentStart(ch) || ch == '.' {
+		start := p.pos
+		for p.pos < len(p.input) && (isIdentChar(p.input[p.pos]) || p.input[p.pos] == '.') {
+			p.pos++
+		}
+		name := p.input[start:p.pos]
+		if strings.HasPrefix(name, ".") && p.global != "" {
+			if val, ok := p.symbols[p.global+name]; ok {
+				return int64(val), nil
+			}
+		}
+		val, ok := p.symbols[name]
+		if !ok {
+			return 0, fmt.Errorf("undefined symbol: %s", name)
+		}
+		return int64(val), nil
+	}
+	return 0, fmt.Errorf("unexpected character %q in expression", ch)
+}
+
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func isIdentStart(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+func isIdentChar(c byte) bool {
+	return isIdentStart(c) || (c >= '0' && c <= '9')
 }
 
 func parseNextAddress(lines [][]byte, start int) (uint64, error) {
@@ -100,7 +716,7 @@ func parseNextAddress(lines [][]byte, start int) (uint64, error) {
 	return 0, fmt.Errorf("could not find next address in listing")
 }
 
-func buildELF(code []byte, data []byte) []byte {
+func buildELF(code []byte, data []byte, manifest libManifestSpec, withManifest bool) []byte {
 	codeFileOff := uint64(pageSize)
 	codeFileSize := uint64(len(code))
 	codeMemSize := roundUp(codeFileSize, pageSize)
@@ -109,9 +725,33 @@ func buildELF(code []byte, data []byte) []byte {
 	dataFileSize := uint64(len(data))
 	dataMemSize := roundUp(dataFileSize, pageSize)
 
-	out := make([]byte, dataFileOff+dataFileSize)
+	manifestBytes := []byte(nil)
+	shstrtab := []byte(nil)
+	manifestFileOff := dataFileOff + dataFileSize
+	shstrtabFileOff := manifestFileOff
+	shoff := uint64(0)
+	shnum := uint16(0)
+	shstrndx := uint16(0)
+	if withManifest {
+		manifestBytes = buildManifestNote(manifest)
+		shstrtab = []byte("\x00.ios.libmanifest\x00.shstrtab\x00")
+		shstrtabFileOff = manifestFileOff + uint64(len(manifestBytes))
+		shoff = roundUp(shstrtabFileOff+uint64(len(shstrtab)), 8)
+		shnum = 3
+		shstrndx = 2
+	}
+
+	outLen := dataFileOff + dataFileSize
+	if withManifest {
+		outLen = shoff + uint64(shnum)*elfSectionHeaderSize
+	}
+	out := make([]byte, outLen)
 	copy(out[codeFileOff:], code)
 	copy(out[dataFileOff:], data)
+	if withManifest {
+		copy(out[manifestFileOff:], manifestBytes)
+		copy(out[shstrtabFileOff:], shstrtab)
+	}
 
 	copy(out[0:16], []byte{0x7F, 'E', 'L', 'F', 2, 1, 1})
 	binary.LittleEndian.PutUint16(out[16:18], 2)
@@ -119,14 +759,14 @@ func buildELF(code []byte, data []byte) []byte {
 	binary.LittleEndian.PutUint32(out[20:24], 1)
 	binary.LittleEndian.PutUint64(out[24:32], baseVA)
 	binary.LittleEndian.PutUint64(out[32:40], 64)
-	binary.LittleEndian.PutUint64(out[40:48], 0)
+	binary.LittleEndian.PutUint64(out[40:48], shoff)
 	binary.LittleEndian.PutUint32(out[48:52], 0)
 	binary.LittleEndian.PutUint16(out[52:54], 64)
 	binary.LittleEndian.PutUint16(out[54:56], 56)
 	binary.LittleEndian.PutUint16(out[56:58], 2)
-	binary.LittleEndian.PutUint16(out[58:60], 0)
-	binary.LittleEndian.PutUint16(out[60:62], 0)
-	binary.LittleEndian.PutUint16(out[62:64], 0)
+	binary.LittleEndian.PutUint16(out[58:60], elfSectionHeaderSize)
+	binary.LittleEndian.PutUint16(out[60:62], shnum)
+	binary.LittleEndian.PutUint16(out[62:64], shstrndx)
 
 	ph0 := 64
 	binary.LittleEndian.PutUint32(out[ph0+0:ph0+4], 1)
@@ -148,6 +788,43 @@ func buildELF(code []byte, data []byte) []byte {
 	binary.LittleEndian.PutUint64(out[ph1+40:ph1+48], dataMemSize)
 	binary.LittleEndian.PutUint64(out[ph1+48:ph1+56], pageSize)
 
+	if withManifest {
+		sh1 := shoff + elfSectionHeaderSize
+		binary.LittleEndian.PutUint32(out[sh1+0:sh1+4], 1)
+		binary.LittleEndian.PutUint32(out[sh1+4:sh1+8], elfSHTNote)
+		binary.LittleEndian.PutUint64(out[sh1+24:sh1+32], manifestFileOff)
+		binary.LittleEndian.PutUint64(out[sh1+32:sh1+40], uint64(len(manifestBytes)))
+		binary.LittleEndian.PutUint64(out[sh1+48:sh1+56], 4)
+
+		sh2 := shoff + 2*elfSectionHeaderSize
+		binary.LittleEndian.PutUint32(out[sh2+0:sh2+4], uint32(len("\x00.ios.libmanifest\x00")))
+		binary.LittleEndian.PutUint32(out[sh2+4:sh2+8], elfSHTStrTab)
+		binary.LittleEndian.PutUint64(out[sh2+24:sh2+32], shstrtabFileOff)
+		binary.LittleEndian.PutUint64(out[sh2+32:sh2+40], uint64(len(shstrtab)))
+		binary.LittleEndian.PutUint64(out[sh2+48:sh2+56], 1)
+	}
+
+	return out
+}
+
+func buildManifestNote(spec libManifestSpec) []byte {
+	noteName := []byte("IOS-LIB\x00")
+	desc := make([]byte, 96)
+	binary.LittleEndian.PutUint32(desc[0:4], m16LibManifestMagic)
+	binary.LittleEndian.PutUint32(desc[4:8], m16LibManifestDescVersion)
+	copy(desc[8:40], []byte(spec.Name))
+	binary.LittleEndian.PutUint16(desc[40:42], spec.Version)
+	binary.LittleEndian.PutUint16(desc[42:44], spec.Revision)
+	binary.LittleEndian.PutUint32(desc[44:48], spec.Type)
+	binary.LittleEndian.PutUint32(desc[48:52], spec.Flags)
+	binary.LittleEndian.PutUint32(desc[52:56], spec.MsgABIVersion)
+
+	out := make([]byte, 12+len(noteName)+len(desc))
+	binary.LittleEndian.PutUint32(out[0:4], uint32(len(noteName)))
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(desc)))
+	binary.LittleEndian.PutUint32(out[8:12], m16LibManifestNoteType)
+	copy(out[12:12+len(noteName)], noteName)
+	copy(out[12+len(noteName):], desc)
 	return out
 }
 

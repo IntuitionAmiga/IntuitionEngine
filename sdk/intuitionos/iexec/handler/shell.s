@@ -35,20 +35,73 @@ prog_shell_code:
     store.q r1, 136(r29)               ; data[136] = console_port
 
     ; =====================================================================
-    ; OpenLibrary("dos.library", 0) with retry
+    ; Acquire dos.library through OpenLibraryEx, then resolve the compat port
     ; =====================================================================
+.sh_open_dos_alloc:
+    move.l  r1, #16
+    syscall #SYS_ALLOC_SIGNAL
+    load.q  r29, (sp)
+    bnez    r2, .sh_open_dos_alloc_wait
+    store.q r1, 192(r29)               ; dos_open_sigbit
 .sh_open_dos_retry:
+    load.q  r29, (sp)
+    move.l  r14, #0xFFFFFFFF
+    store.l r14, 200(r29)              ; waiter status sentinel
+    store.l r0, 204(r29)
+    store.l r0, 208(r29)
+    store.l r0, 212(r29)
+    add     r1, r29, #16                ; R1 = &data[16] = "dos.library"
+    move.q  r2, r0
+    load.q  r3, 192(r29)               ; waiter-owned signal bit
+    add     r4, r29, #200              ; 16-byte outcome scratch
+    syscall #SYS_OPEN_LIBRARY_EX
+    load.q  r29, (sp)
+    beqz    r2, .sh_find_dos
+    move.l  r14, #ERR_AGAIN
+    bne     r2, r14, .sh_open_dos_wait
+    load.l  r14, 200(r29)              ; waiter status
+    move.l  r15, #0xFFFFFFFF
+    bne     r14, r15, .sh_open_dos_done
+    load.q  r14, 192(r29)
+    move.q  r1, #1
+    lsl     r1, r1, r14
+    syscall #SYS_WAIT
+    load.q  r29, (sp)
+    bnez    r2, .sh_open_dos_wait
+    load.l  r14, 200(r29)              ; waiter status
+    move.l  r15, #0xFFFFFFFF
+    beq     r14, r15, .sh_open_dos_wait
+.sh_open_dos_done:
+    store.q r1, 216(r29)               ; dos_library_token
+    bnez    r14, .sh_open_dos_wait
+.sh_find_dos:
     load.q  r29, (sp)
     add     r1, r29, #16                ; R1 = &data[16] = "dos.library"
     move.q  r2, r0
     syscall #SYS_FIND_PORT
     load.q  r29, (sp)
-    beqz    r2, .sh_open_dos_ok
+    bnez    r2, .sh_open_dos_wait
+.sh_open_dos_ok:
+    store.q r1, 144(r29)               ; data[144] = dos_port
+    load.q  r14, 192(r29)
+    beqz    r14, .sh_open_dos_sigfree_done
+    move.q  r1, r14
+    syscall #SYS_FREE_SIGNAL
+    load.q  r29, (sp)
+    store.q r0, 192(r29)
+.sh_open_dos_sigfree_done:
+    bra     .sh_open_dos_ready
+
+.sh_open_dos_wait:
     syscall #SYS_YIELD
     load.q  r29, (sp)
     bra     .sh_open_dos_retry
-.sh_open_dos_ok:
-    store.q r1, 144(r29)               ; data[144] = dos_port
+.sh_open_dos_alloc_wait:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .sh_open_dos_alloc
+
+.sh_open_dos_ready:
 
     ; =====================================================================
     ; CreatePort(anonymous, flags=0)
@@ -878,8 +931,11 @@ prog_shell_data:
     ds.b    8
     ; --- Offset 184: script_pos (4 bytes) + script_len (4 bytes) ---
     ds.b    8
-    ; --- Offset 192: (M10: command table removed, space available) ---
-    ds.b    48                          ; pad to offset 240
+    ; --- Offset 192: M16 DOS-open waiter scratch/state ---
+    ds.b    8                           ; dos_open_sigbit
+    ds.b    16                          ; dos_open outcome scratch
+    ds.b    8                           ; 216: dos_library_token
+    ds.b    16                          ; pad to offset 240
     ; --- Offset 240: line buffer (128 bytes) ---
     ds.b    128
     ; --- Offset 368: script buffer (512 bytes for Startup-Sequence —

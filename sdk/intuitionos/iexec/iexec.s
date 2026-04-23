@@ -432,7 +432,7 @@ endif
     beq     r11, r12, .boot_manifest_done
     move.l  r12, #BOOT_MANIFEST_ID_CONSOLE
     bne     r11, r12, .boot_manifest_check_dos
-    move.l  r1, #TASK_STARTUP_FLAG_BOOT
+    move.l  r1, #(TASK_STARTUP_FLAG_BOOT | TASK_STARTUP_FLAG_TRUSTED_INTERNAL)
     push    r29
     push    r30
     jsr     kern_boot_load_host_console ; R1=task_id R2=err R3=slot
@@ -443,7 +443,7 @@ endif
 .boot_manifest_check_dos:
     move.l  r12, #BOOT_MANIFEST_ID_DOSLIB
     bne     r11, r12, .boot_manifest_regular
-    move.l  r1, #TASK_STARTUP_FLAG_BOOT
+    move.l  r1, #(TASK_STARTUP_FLAG_BOOT | TASK_STARTUP_FLAG_TRUSTED_INTERNAL)
     push    r29
     push    r30
     jsr     kern_boot_load_host_doslib ; R1=task_id R2=err R3=slot
@@ -457,6 +457,11 @@ endif
     load.q  r2, KD_BOOT_MANIFEST_SIZE(r30)
     beqz    r2, .boot_load_fail
     move.l  r3, #TASK_STARTUP_FLAG_BOOT
+    load.l  r11, KD_BOOT_MANIFEST_FLAGS(r30)
+    and     r11, r11, #BOOT_MANIFEST_FLAG_TRUSTED_INTERNAL
+    beqz    r11, .boot_manifest_regular_flags_ready
+    or      r3, r3, #TASK_STARTUP_FLAG_TRUSTED_INTERNAL
+.boot_manifest_regular_flags_ready:
     push    r29
     push    r30
     jsr     boot_load_elf_image        ; R1=task_id R2=err R3=slot
@@ -479,6 +484,11 @@ endif
     pop     r30
     pop     r29
     bnez    r2, .boot_load_fail
+    load.l  r11, KD_BOOT_MANIFEST_ID(r30)
+    move.l  r12, #BOOT_MANIFEST_ID_DOSLIB
+    bne     r11, r12, .boot_manifest_next
+    move.q  r1, r18                    ; child slot for dos.library
+    jsr     kern_seed_dos_boot_shell_relpath_tasksb
 .boot_manifest_next:
     add     r29, r29, #1
     bra     .boot_manifest_loop
@@ -622,9 +632,27 @@ find_next_runnable:
     move.l  r13, #0                     ; wrap
     bra     .fnr_check
 .fnr_deadlock:
+    push    r16
+    jsr     m16_module_has_pending_deadline
+    pop     r16
+    bnez    r1, .fnr_idle
     la      r8, deadlock_msg
     jsr     kern_puts
     halt
+.fnr_idle:
+    load.q  r11, KD_TICK_COUNT(r12)
+    add     r11, r11, #1
+    store.q r11, KD_TICK_COUNT(r12)
+    push    r16
+    jsr     m16_module_timeout_scan
+    pop     r16
+    move.q  r13, r16
+    move.l  r17, #0
+    add     r13, r13, #1
+    move.l  r18, #MAX_TASKS
+    blt     r13, r18, .fnr_check
+    move.l  r13, #0
+    bra     .fnr_check
 
 ; ============================================================================
 ; Page Table Builder (used by boot init and CreateTask)
@@ -779,6 +807,10 @@ write_startup_block:
     store.q r0, 40(r1)
     store.q r0, 48(r1)
     store.q r0, 56(r1)
+    store.q r0, 64(r1)
+    store.q r0, 72(r1)
+    store.q r0, 80(r1)
+    store.q r0, 88(r1)
     move.l  r10, #TASK_STARTUP_VERSION
     store.l r10, TASKSB_VERSION(r1)
     move.l  r10, #TASK_STARTUP_SIZE
@@ -2446,7 +2478,7 @@ kern_boot_manifest_prepare:
     ; Row 0: console.handler (host-backed in M15.2 phase 6)
     move.l  r1, #BOOT_MANIFEST_ID_CONSOLE
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
-    move.l  r1, #1
+    move.l  r1, #BOOT_MANIFEST_FLAG_TRUSTED_INTERNAL
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
     store.q r0, KD_BOOT_MANIFEST_PTR(r20)
     store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
@@ -2463,7 +2495,7 @@ kern_boot_manifest_prepare:
     add     r20, r20, #KD_BOOT_MANIFEST_STRIDE
     move.l  r1, #BOOT_MANIFEST_ID_DOSLIB
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
-    move.l  r1, #1
+    move.l  r1, #BOOT_MANIFEST_FLAG_TRUSTED_INTERNAL
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
     store.q r0, KD_BOOT_MANIFEST_PTR(r20)
     store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
@@ -2477,7 +2509,7 @@ kern_boot_manifest_prepare:
     add     r20, r20, #KD_BOOT_MANIFEST_STRIDE
     move.l  r1, #BOOT_MANIFEST_ID_SHELL
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
-    move.l  r1, #1
+    move.l  r1, #0
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
     store.q r0, KD_BOOT_MANIFEST_PTR(r20)
     store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
@@ -2491,7 +2523,7 @@ kern_boot_manifest_prepare:
     add     r20, r20, #KD_BOOT_MANIFEST_STRIDE
     move.l  r1, #BOOT_MANIFEST_ID_HWRES
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
-    move.l  r1, #1
+    move.l  r1, #BOOT_MANIFEST_FLAG_TRUSTED_INTERNAL
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
     store.q r0, KD_BOOT_MANIFEST_PTR(r20)
     store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
@@ -2505,7 +2537,7 @@ kern_boot_manifest_prepare:
     add     r20, r20, #KD_BOOT_MANIFEST_STRIDE
     move.l  r1, #BOOT_MANIFEST_ID_INPUT
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
-    move.l  r1, #1
+    move.l  r1, #BOOT_MANIFEST_FLAG_TRUSTED_INTERNAL
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
     store.q r0, KD_BOOT_MANIFEST_PTR(r20)
     store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
@@ -2519,7 +2551,7 @@ kern_boot_manifest_prepare:
     add     r20, r20, #KD_BOOT_MANIFEST_STRIDE
     move.l  r1, #BOOT_MANIFEST_ID_GRAPHICS
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
-    move.l  r1, #1
+    move.l  r1, #BOOT_MANIFEST_FLAG_TRUSTED_INTERNAL
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
     store.q r0, KD_BOOT_MANIFEST_PTR(r20)
     store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
@@ -2533,7 +2565,7 @@ kern_boot_manifest_prepare:
     add     r20, r20, #KD_BOOT_MANIFEST_STRIDE
     move.l  r1, #BOOT_MANIFEST_ID_INTUITION
     store.l r1, KD_BOOT_MANIFEST_ID(r20)
-    move.l  r1, #1
+    move.l  r1, #BOOT_MANIFEST_FLAG_TRUSTED_INTERNAL
     store.l r1, KD_BOOT_MANIFEST_FLAGS(r20)
     store.q r0, KD_BOOT_MANIFEST_PTR(r20)
     store.q r0, KD_BOOT_MANIFEST_SIZE(r20)
@@ -2565,6 +2597,15 @@ kern_boot_load_host_doslib:
     move.l  r21, #KERN_DATA_BASE
     add     r21, r21, #KD_BOOT_MANIFEST_BASE
     add     r21, r21, #KD_BOOT_MANIFEST_STRIDE ; row 1 = dos.library
+    bra     kern_boot_load_host_manifest_elf
+
+kern_boot_load_host_shell:
+    move.q  r19, r1
+    la      r20, boot_host_relpath_shell
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_BOOT_MANIFEST_BASE
+    add     r21, r21, #KD_BOOT_MANIFEST_STRIDE
+    add     r21, r21, #KD_BOOT_MANIFEST_STRIDE ; row 2 = Shell
     bra     kern_boot_load_host_manifest_elf
 
 kern_boot_load_host_manifest_elf:
@@ -2637,6 +2678,19 @@ kern_boot_load_host_manifest_elf:
     load.l  r2, BOOT_HOSTFS_ERR-BOOT_HOSTFS_BASE(r24)
     bnez    r2, .kbhd_free_pages_fail
 
+    load.q  r11, 32(sp)
+    beqz    r11, .kbhd_validate_done
+    load.l  r12, KD_BOOT_MANIFEST_ID(r11)
+    move.l  r14, #BOOT_MANIFEST_ID_DOSLIB
+    bne     r12, r14, .kbhd_validate_done
+    load.q  r1, 24(sp)
+    lsl     r1, r1, #12
+    load.q  r2, 8(sp)
+    load.q  r3, KD_BOOT_MANIFEST_NAME(r11)
+    jsr     kern_boot_validate_library_manifest
+    bnez    r2, .kbhd_free_pages_fail
+.kbhd_validate_done:
+
     load.q  r1, 24(sp)
     lsl     r1, r1, #12
     load.q  r2, 8(sp)
@@ -2648,12 +2702,14 @@ kern_boot_load_host_manifest_elf:
     bnez    r29, .kbhd_free_pages_return
 
     load.q  r11, 32(sp)
+    beqz    r11, .kbhd_success
     load.q  r12, 24(sp)
     lsl     r12, r12, #12
     store.q r12, KD_BOOT_MANIFEST_PTR(r11)
     load.q  r12, 8(sp)
     store.q r12, KD_BOOT_MANIFEST_SIZE(r11)
 
+.kbhd_success:
     move.q  r1, r28
     move.q  r2, r29
     move.q  r3, r30
@@ -2698,6 +2754,256 @@ kern_boot_load_host_manifest_elf:
 .kbhd_badarg:
     move.q  r2, #ERR_BADARG
     bra     .kbhd_fail
+
+; R1 = ELF ptr, R2 = ELF size, R3 = expected NUL-terminated library name.
+; Returns R2 = ERR_OK or ERR_BADARG.
+kern_boot_validate_library_manifest:
+    move.q  r20, r1
+    move.q  r21, r2
+    move.q  r22, r3
+    move.q  r2, #ERR_BADARG
+    move.l  r11, #64
+    blt     r21, r11, .kbvlm_done
+    load.q  r18, 40(r20)               ; e_shoff
+    beqz    r18, .kbvlm_done
+    load.w  r24, 58(r20)               ; e_shentsize
+    move.l  r11, #64
+    bne     r24, r11, .kbvlm_done
+    load.w  r25, 60(r20)               ; e_shnum
+    beqz    r25, .kbvlm_done
+    load.w  r26, 62(r20)               ; e_shstrndx
+    bge     r26, r25, .kbvlm_done
+    move.q  r27, r25
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    bgt     r27, r21, .kbvlm_done
+
+    move.q  r27, r26
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    add     r27, r20, r27              ; section header for shstrtab
+    load.q  r28, 24(r27)               ; sh_offset
+    load.q  r29, 32(r27)               ; sh_size
+    beqz    r29, .kbvlm_done
+    add     r30, r28, r29
+    bgt     r30, r21, .kbvlm_done
+
+    move.l  r19, #0
+.kbvlm_sh_loop:
+    bge     r19, r25, .kbvlm_done
+    move.q  r27, r19
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    add     r27, r20, r27
+    load.l  r11, 4(r27)                ; sh_type
+    move.l  r12, #7
+    bne     r11, r12, .kbvlm_next_sh
+    load.l  r11, (r27)                 ; sh_name
+    bge     r11, r29, .kbvlm_next_sh
+    add     r14, r20, r28
+    add     r14, r14, r11              ; section name ptr
+    la      r15, kbvlm_manifest_section_name
+    jsr     kern_boot_validate_string_eq
+    bnez    r23, .kbvlm_next_sh
+    load.q  r11, 24(r27)               ; sh_offset
+    load.q  r12, 32(r27)               ; sh_size
+    add     r13, r11, r12
+    bgt     r13, r21, .kbvlm_done
+    add     r27, r20, r11              ; note ptr
+    add     r30, r27, r12              ; section end ptr
+.kbvlm_note_loop:
+    move.q  r13, r27
+    add     r13, r13, #12
+    bgt     r13, r30, .kbvlm_done
+    load.l  r11, (r27)                 ; namesz
+    load.l  r11, 4(r27)                ; descsz
+    move.q  r24, r11
+    load.l  r11, (r27)                 ; namesz
+    move.q  r25, r11
+    add     r25, r25, #3
+    and     r25, r25, #0xFFFFFFFC
+    move.q  r26, r24
+    add     r26, r26, #3
+    and     r26, r26, #0xFFFFFFFC
+    move.q  r13, r27
+    add     r13, r13, #12
+    add     r13, r13, r25
+    add     r13, r13, r26
+    bgt     r13, r30, .kbvlm_done
+    move.q  r29, r13                   ; next note ptr
+    move.l  r12, #8
+    bne     r11, r12, .kbvlm_note_next
+    load.l  r11, 8(r27)                ; note type
+    move.l  r12, #0x494F5331
+    bne     r11, r12, .kbvlm_note_next
+    add     r14, r27, #12
+    la      r15, kbvlm_manifest_note_name
+    jsr     kern_boot_validate_string_eq
+    bnez    r23, .kbvlm_note_next
+    move.l  r12, #96
+    bne     r24, r12, .kbvlm_note_next
+    add     r27, r27, #12
+    add     r27, r27, r25              ; descriptor base
+    load.l  r11, (r27)
+    move.l  r12, #0x4C49424D
+    bne     r11, r12, .kbvlm_note_next
+    load.l  r11, 4(r27)
+    move.l  r12, #1
+    bne     r11, r12, .kbvlm_note_next
+    add     r14, r27, #8               ; desc.name[32]
+    move.q  r15, r22
+    jsr     kern_boot_validate_name32_eq
+    bnez    r23, .kbvlm_note_next
+    load.w  r11, 40(r27)               ; lib_version
+    move.l  r12, #14
+    bne     r11, r12, .kbvlm_note_next
+    load.w  r11, 42(r27)               ; lib_revision
+    bnez    r11, .kbvlm_note_next
+    load.l  r11, 44(r27)               ; type
+    move.l  r12, #1
+    bne     r11, r12, .kbvlm_note_next
+    load.l  r11, 48(r27)               ; flags
+    move.l  r12, #MODF_COMPAT_PORT
+    bne     r11, r12, .kbvlm_note_next
+    load.l  r11, 52(r27)               ; compat message ABI version
+    bnez    r11, .kbvlm_note_next
+    move.q  r2, #ERR_OK
+    rts
+.kbvlm_note_next:
+    move.q  r27, r29
+    blt     r27, r30, .kbvlm_note_loop
+    bra     .kbvlm_done
+.kbvlm_next_sh:
+    add     r19, r19, #1
+    bra     .kbvlm_sh_loop
+.kbvlm_done:
+    rts
+
+; R14 = actual NUL-terminated string, R15 = expected NUL-terminated string.
+; Returns R23 = 0 on match, 1 on mismatch.
+kern_boot_validate_string_eq:
+.kbvse_loop:
+    load.b  r16, (r14)
+    load.b  r17, (r15)
+    bne     r16, r17, .kbvse_mismatch
+    beqz    r16, .kbvse_match
+    add     r14, r14, #1
+    add     r15, r15, #1
+    bra     .kbvse_loop
+.kbvse_match:
+    move.q  r23, #0
+    rts
+.kbvse_mismatch:
+    move.q  r23, #1
+    rts
+
+; R14 = 32-byte manifest name field, R15 = expected NUL-terminated string.
+; Returns R23 = 0 on match, 1 on mismatch.
+kern_boot_validate_name32_eq:
+    move.l  r16, #0
+.kbvn32_loop:
+    move.l  r17, #32
+    bge     r16, r17, .kbvn32_match
+    add     r18, r14, r16
+    load.b  r18, (r18)
+    add     r19, r15, r16
+    load.b  r19, (r19)
+    bne     r18, r19, .kbvn32_mismatch
+    beqz    r19, .kbvn32_tail
+    add     r16, r16, #1
+    bra     .kbvn32_loop
+.kbvn32_tail:
+    add     r16, r16, #1
+.kbvn32_zero_loop:
+    move.l  r17, #32
+    bge     r16, r17, .kbvn32_match
+    add     r18, r14, r16
+    load.b  r18, (r18)
+    bnez    r18, .kbvn32_mismatch
+    add     r16, r16, #1
+    bra     .kbvn32_zero_loop
+.kbvn32_match:
+    move.q  r23, #0
+    rts
+.kbvn32_mismatch:
+    move.q  r23, #1
+    rts
+
+kbvlm_manifest_section_name:
+    dc.b    ".ios.libmanifest", 0
+    align   4
+
+kbvlm_manifest_note_name:
+    dc.b    "IOS-LIB", 0
+    align   4
+
+; R1 = dos.library child slot. Seeds the stable startup-block relpath field
+; consumed by dos.library boot so bootstrap never mutates DOS-private data.
+kern_seed_dos_boot_shell_relpath_tasksb:
+    push    r20
+    push    r21
+    push    r22
+    move.q  r20, r1
+    jsr     kern_task_layout_addr
+    load.q  r20, KD_TASK_LAYOUT_STARTUP(r1)
+    add     r21, r20, #TASKSB_BOOT_DOS_SHELL_RELPATH
+    la      r22, boot_host_relpath_shell
+    jsr     kern_copy_nul_string
+    pop     r22
+    pop     r21
+    pop     r20
+    move.q  r2, #ERR_OK
+    rts
+
+; R1 = public task ID. Returns R1 = 1 iff dos.library reached an ONLINE M16 row
+; for this owning task, else 0. This distinguishes "bootstrap completed" from
+; "task died before AddLibrary" without penalizing later shell-less boots.
+kern_dos_bootstrap_completed:
+    push    r20
+    push    r21
+    push    r22
+    move.q  r20, r1
+    move.l  r21, #0
+.kdbc_scan:
+    move.l  r22, #KD_MODULE_MAX
+    bge     r21, r22, .kdbc_no
+    move.q  r1, r21
+    push    r21
+    jsr     m16_module_row_addr_for_index
+    pop     r21
+    move.q  r22, r1
+    beqz    r22, .kdbc_next
+    load.l  r14, KD_MODULE_STATE(r22)
+    move.l  r11, #M16_MODSTATE_ONLINE
+    bne     r14, r11, .kdbc_next
+    load.l  r14, KD_MODULE_OWNING_TASK(r22)
+    bne     r14, r20, .kdbc_next
+    add     r14, r22, #KD_MODULE_NAME
+    la      r15, boot_manifest_name_doslib
+    jsr     kern_boot_validate_name32_eq
+    bnez    r23, .kdbc_next
+    move.q  r1, #1
+    bra     .kdbc_done
+.kdbc_next:
+    add     r21, r21, #1
+    bra     .kdbc_scan
+.kdbc_no:
+    move.q  r1, #0
+.kdbc_done:
+    pop     r22
+    pop     r21
+    pop     r20
+    rts
+
+; R21 = destination, R22 = source. Copies the source string including NUL.
+kern_copy_nul_string:
+.kcns_loop:
+    load.b  r23, (r22)
+    store.b r23, (r21)
+    add     r22, r22, #1
+    add     r21, r21, #1
+    bnez    r23, .kcns_loop
+    rts
 
 ; boot_load_elf_image:
 ;   Launch one strict-M14 ELF image in kernel context by validating it and
@@ -2768,7 +3074,7 @@ boot_load_elf_image:
     store.q r0, 40(sp)                 ; entry covered
     move.q  r23, r1
     add     r23, r23, r20              ; ph0 ptr
-    move.l  r24, #0
+    move.q  r24, #0
 .blei_ph_loop:
     bge     r24, r21, .blei_ph_done
     load.l  r4, (r23)
@@ -3169,7 +3475,7 @@ load_program:
     move.l  r14, #1
     store.l r14, KD_TASK_STACK_PAGES(r1)
     store.l r27, KD_TASK_DATA_PAGES(r1)
-    move.l  r14, #TASK_LAYOUT_FLAG_STACK_GUARD
+    move.l  r14, #(TASK_LAYOUT_FLAG_STACK_GUARD | TASK_LAYOUT_FLAG_TRUSTED_INTERNAL)
     store.l r14, KD_TASK_LAYOUT_FLAGS(r1)
     store.q r28, KD_TASK_LAYOUT_STARTUP(r1)
     store.q r30, KD_TASK_LAYOUT_PT_BASE(r1)
@@ -3719,6 +4025,11 @@ exec_desc_launch_task:
     store.l r23, KD_TASK_STACK_PAGES(r1)
     store.l r17, KD_TASK_DATA_PAGES(r1)
     move.l  r11, #TASK_LAYOUT_FLAG_STACK_GUARD
+    load.q  r12, 72(sp)
+    and     r12, r12, #TASK_STARTUP_FLAG_TRUSTED_INTERNAL
+    beqz    r12, .edlt_flags_ready
+    or      r11, r11, #TASK_LAYOUT_FLAG_TRUSTED_INTERNAL
+.edlt_flags_ready:
     store.l r11, KD_TASK_LAYOUT_FLAGS(r1)
     store.q r24, KD_TASK_LAYOUT_STARTUP(r1)
     store.q r25, KD_TASK_LAYOUT_PT_BASE(r1)
@@ -5976,6 +6287,27 @@ endif
     move.l  r11, #SYS_QUOTA_SET_LIMIT
     beq     r10, r11, .do_quota_set_limit
 
+    move.l  r11, #SYS_CLOSE_LIBRARY
+    beq     r10, r11, .do_close_library
+
+    move.l  r11, #SYS_ADD_LIBRARY
+    beq     r10, r11, .do_add_library
+
+    move.l  r11, #SYS_OPEN_LIBRARY_EX
+    beq     r10, r11, .do_open_library_ex
+
+    move.l  r11, #SYS_M16_COPY_MODULE_NAME
+    beq     r10, r11, .do_m16_copy_module_name
+
+    move.l  r11, #SYS_M16_LIBRARY_LOAD_RESULT
+    beq     r10, r11, .do_m16_library_load_result
+
+    move.l  r11, #SYS_SET_RESIDENT
+    beq     r10, r11, .do_set_resident
+
+    move.l  r11, #SYS_M16_EXPUNGE_RESULT
+    beq     r10, r11, .do_m16_expunge_result
+
     ; M11.5: SYS_READ_INPUT (slot 37) removed. Terminal MMIO is now mapped
     ; into console.handler via SYS_MAP_IO and the read loop is inlined in
     ; console.handler's CON_MSG_READLINE handler. Slot 37 falls through to
@@ -6362,6 +6694,7 @@ endif
 .create_named:
     ; 3. Validate user pointer and copy name to scratch buffer
     move.q  r1, r7                  ; R1 = name_ptr for safe_copy_user_name
+    push    r7
     push    r20
     push    r21
     push    r8
@@ -6369,6 +6702,7 @@ endif
     pop     r8
     pop     r21
     pop     r20
+    pop     r7
     bnez    r23, .create_badarg
 
     ; 4. If PF_PUBLIC, check name uniqueness.
@@ -7723,6 +8057,606 @@ endif
 .do_open_library:
     bra     .do_find_port               ; binary-compat redirect, version in R2 ignored
 
+; --- M16 managed OpenLibrary/CloseLibrary/AddLibrary (phase-1 registry slice) ---
+; SYS_OPEN_LIBRARY_EX:
+;   R1 = name_ptr, R2 = minVersion, R3 = waiter-owned signal bit, R4 = 16-byte outcome slot
+;   Returns: R1 = opaque LibraryBase token, R2 = err
+;            ONLINE hit: R1 = token, R2 = ERR_OK
+;            LOADING path: R1 = 0, R2 = ERR_AGAIN after parking the waiter
+.do_open_library_ex:
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)              ; current_task for safe_copy_user_name
+    move.q  r24, r2
+    move.q  r25, r3
+    move.q  r26, r4
+    push    r26
+    push    r25
+    push    r24
+    push    r1
+    jsr     safe_copy_user_name
+    pop     r1
+    pop     r24
+    pop     r25
+    pop     r26
+    bnez    r23, .openlibex_badarg
+    push    r26
+    push    r25
+    push    r24
+    jsr     m16_module_find_row_by_name ; R1 = row addr, R2 = row index
+    pop     r24
+    pop     r25
+    pop     r26
+    beqz    r1, .openlibex_begin_load
+    move.q  r21, r1
+    move.l  r22, r2
+    load.l  r23, KD_MODULE_STATE(r21)
+    move.l  r11, #M16_MODSTATE_ONLINE
+    beq     r23, r11, .openlibex_online
+    move.l  r11, #M16_MODSTATE_EXPUNGING
+    bne     r23, r11, .openlibex_not_expunging
+    push    r24
+    push    r25
+    push    r26
+    move.q  r1, r21
+    jsr     m16_module_cancel_expunge
+    pop     r26
+    pop     r25
+    pop     r24
+    bra     .openlibex_online
+.openlibex_not_expunging:
+    push    r26
+    push    r25
+    push    r24
+    jsr     m16_openlibex_validate_waiter_args
+    pop     r24
+    pop     r25
+    pop     r26
+    bnez    r1, .openlibex_badarg
+    load.l  r23, KD_MODULE_STATE(r21)
+    move.l  r11, #M16_MODSTATE_LOADING
+    beq     r23, r11, .openlibex_queue_waiter_current
+    push    r26
+    push    r25
+    push    r24
+    push    r22
+    move.q  r1, r21
+    move.q  r2, r22
+    jsr     m16_module_prepare_loading_row
+    move.q  r21, r1
+    pop     r22
+    pop     r24
+    pop     r25
+    pop     r26
+    bra     .openlibex_queue_waiter_and_start
+.openlibex_online:
+    load.w  r23, KD_MODULE_VERSION(r21)
+    blt     r23, r24, .openlibex_version
+    push    r22
+    jsr     kern_current_public_task_id ; R1 = current public task ID
+    move.q  r24, r1
+    pop     r22
+    load.l  r23, KD_MODULE_GENERATION(r21)
+    move.q  r1, r24
+    move.q  r2, r22
+    move.q  r3, r23
+    jsr     m16_open_row_find_or_alloc  ; R1 = row addr (or 0)
+    beqz    r1, .openlibex_full
+    move.q  r24, r1
+    load.l  r25, KD_MODULE_OPEN_ROW_COUNT(r24)
+    add     r25, r25, #1
+    store.l r25, KD_MODULE_OPEN_ROW_COUNT(r24)
+    load.l  r25, KD_MODULE_OPEN_COUNT(r21)
+    add     r25, r25, #1
+    store.l r25, KD_MODULE_OPEN_COUNT(r21)
+    move.q  r1, r22
+    move.q  r2, r23
+    jsr     m16_make_library_token
+    move.q  r2, #ERR_OK
+    eret
+.openlibex_badarg:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    eret
+.openlibex_begin_load:
+    push    r26
+    push    r25
+    push    r24
+    jsr     m16_openlibex_validate_waiter_args
+    pop     r24
+    pop     r25
+    pop     r26
+    bnez    r1, .openlibex_badarg
+    push    r26
+    push    r25
+    push    r24
+    jsr     m16_module_find_or_alloc_row ; R1 = row addr, R2 = row index
+    pop     r24
+    pop     r25
+    pop     r26
+    beqz    r1, .openlibex_full
+    move.q  r21, r1
+    move.l  r22, r2
+    push    r26
+    push    r25
+    push    r24
+    push    r22
+    move.q  r1, r21
+    move.q  r2, r22
+    jsr     m16_module_prepare_loading_row
+    move.q  r21, r1
+    pop     r22
+    pop     r24
+    pop     r25
+    pop     r26
+.openlibex_queue_waiter_and_start:
+    jsr     kern_current_public_task_id ; R1 = current public task ID
+    move.q  r27, r1
+    move.q  r1, r21
+    move.q  r2, r22
+    move.q  r3, r27
+    move.q  r4, r24
+    move.q  r5, r25
+    move.q  r6, r26
+    push    r21
+    push    r22
+    jsr     m16_waiter_enqueue_on_row    ; R1 = waiter addr (or 0)
+    pop     r22
+    pop     r21
+    beqz    r1, .openlibex_full
+    move.q  r1, r22
+    push    r21
+    push    r22
+    jsr     m16_start_autoload_request
+    pop     r22
+    pop     r21
+    beqz    r2, .openlibex_waiting
+    move.q  r3, r2
+    move.q  r1, r21
+    move.q  r2, r22
+    jsr     m16_module_fail_to_unloaded
+.openlibex_waiting:
+    move.q  r1, #0
+    move.q  r2, #ERR_AGAIN
+    eret
+.openlibex_queue_waiter_current:
+    jsr     kern_current_public_task_id ; R1 = current public task ID
+    move.q  r27, r1
+    move.q  r1, r21
+    move.q  r2, r22
+    move.q  r3, r27
+    move.q  r4, r24
+    move.q  r5, r25
+    move.q  r6, r26
+    jsr     m16_waiter_enqueue_on_row    ; R1 = waiter addr (or 0)
+    beqz    r1, .openlibex_full
+    move.q  r1, #0
+    move.q  r2, #ERR_AGAIN
+    eret
+.openlibex_version:
+    move.q  r1, #0
+    move.q  r2, #ERR_LIB_VERSION
+    eret
+.openlibex_full:
+    move.q  r1, #0
+    move.q  r2, #ERR_FULL
+    eret
+
+; SYS_CLOSE_LIBRARY:
+;   R1 = opaque LibraryBase token
+;   Returns: R2 = err
+.do_close_library:
+    beqz    r1, .closelib_badhandle
+    jsr     m16_decode_library_token    ; R1 = row index, R2 = generation
+    move.q  r21, r1
+    move.q  r22, r2
+    move.l  r11, #KD_MODULE_MAX
+    bge     r21, r11, .closelib_badhandle
+    move.q  r1, r21
+    jsr     m16_module_row_addr_for_index
+    move.q  r23, r1
+    beqz    r23, .closelib_badhandle
+    load.l  r24, KD_MODULE_STATE(r23)
+    move.l  r11, #M16_MODSTATE_ONLINE
+    bne     r24, r11, .closelib_badhandle
+    load.l  r24, KD_MODULE_GENERATION(r23)
+    bne     r24, r22, .closelib_badhandle
+    push    r21
+    push    r22
+    jsr     kern_current_public_task_id ; R1 = current public task ID
+    move.q  r24, r1
+    pop     r22
+    pop     r21
+    move.q  r1, r24
+    move.q  r2, r21
+    move.q  r3, r22
+    jsr     m16_open_row_find
+    beqz    r1, .closelib_badhandle
+    move.q  r24, r1
+    load.l  r25, KD_MODULE_OPEN_ROW_COUNT(r24)
+    beqz    r25, .closelib_badhandle
+    sub     r25, r25, #1
+    store.l r25, KD_MODULE_OPEN_ROW_COUNT(r24)
+    load.l  r26, KD_MODULE_OPEN_COUNT(r23)
+    beqz    r26, .closelib_badhandle
+    sub     r26, r26, #1
+    store.l r26, KD_MODULE_OPEN_COUNT(r23)
+    bnez    r25, .closelib_nonzero_open_row
+    load.l  r11, KD_MODULE_FLAGS(r23)
+    and     r11, r11, #MODF_RESIDENT
+    beqz    r11, .closelib_nonresident_last
+    move.l  r26, #1
+    store.l r26, KD_MODULE_OPEN_COUNT(r23)
+    bra     .closelib_ok
+.closelib_nonresident_last:
+    beqz    r26, .closelib_begin_expunge
+    bra     .closelib_ok
+.closelib_nonzero_open_row:
+    bnez    r26, .closelib_ok
+.closelib_begin_expunge:
+    move.q  r1, r23
+    move.q  r2, r21
+    jsr     m16_module_begin_expunge
+    bnez    r25, .closelib_ok
+    store.l r0, KD_MODULE_OPEN_ROW_TASK(r24)
+    store.l r0, KD_MODULE_OPEN_ROW_INDEX(r24)
+    store.l r0, KD_MODULE_OPEN_ROW_GEN(r24)
+.closelib_ok:
+    move.q  r2, #ERR_OK
+    eret
+.closelib_badhandle:
+    move.q  r2, #ERR_BADHANDLE
+    eret
+
+; SYS_ADD_LIBRARY:
+;   R1 = name_ptr, R2 = lib_version, R3 = lib_revision, R4 = compat public port
+;   Returns: R2 = err
+.do_add_library:
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)              ; current_task for safe_copy_user_name
+    move.q  r24, r2
+    move.q  r25, r3
+    move.q  r26, r4
+    push    r26
+    push    r25
+    push    r24
+    push    r1
+    jsr     safe_copy_user_name
+    pop     r1
+    pop     r24
+    pop     r25
+    pop     r26
+    bnez    r23, .addlib_badarg
+    move.q  r1, r13
+    jsr     kern_task_layout_addr
+    load.l  r23, KD_TASK_LAYOUT_FLAGS(r1)
+    and     r23, r23, #TASK_LAYOUT_FLAG_TRUSTED_INTERNAL
+    beqz    r23, .addlib_perm
+    move.q  r1, r26
+    jsr     kern_port_addr_for_id       ; R1 = port addr (or 0)
+    beqz    r1, .addlib_badarg
+    move.q  r21, r1
+    load.b  r23, KD_PORT_VALID(r21)
+    beqz    r23, .addlib_badarg
+    load.b  r23, KD_PORT_OWNER(r21)
+    bne     r23, r13, .addlib_badarg
+    load.b  r23, KD_PORT_FLAGS(r21)
+    and     r23, r23, #PF_PUBLIC
+    beqz    r23, .addlib_badarg
+    move.q  r1, r21
+    add     r1, r1, #KD_PORT_NAME
+    push    r26
+    push    r25
+    push    r24
+    jsr     m16_name_matches_addr       ; R1 = 1 if port name == scratch
+    pop     r24
+    pop     r25
+    pop     r26
+    beqz    r1, .addlib_badarg
+    push    r26
+    push    r25
+    push    r24
+    jsr     m16_module_find_or_alloc_row ; R1 = row addr, R2 = row index
+    pop     r24
+    pop     r25
+    pop     r26
+    beqz    r1, .addlib_full
+    move.q  r21, r1
+    move.l  r22, r2
+    load.l  r27, KD_MODULE_STATE(r21)
+    move.l  r11, #M16_MODSTATE_ONLINE
+    beq     r27, r11, .addlib_badarg
+    push    r26
+    push    r25
+    push    r24
+    push    r22
+    jsr     kern_current_public_task_id ; R1 = current public task ID
+    move.q  r23, r1
+    pop     r22
+    pop     r24
+    pop     r25
+    pop     r26
+    move.l  r11, #M16_MODSTATE_LOADING
+    bne     r27, r11, .addlib_owner_ok
+    load.l  r11, KD_MODULE_OWNING_TASK(r21)
+    beqz    r11, .addlib_owner_ok
+    bne     r11, r23, .addlib_badarg
+.addlib_owner_ok:
+    load.l  r27, KD_MODULE_GENERATION(r21)
+    add     r27, r27, #1
+    store.l r27, KD_MODULE_GENERATION(r21)
+    store.w r24, KD_MODULE_VERSION(r21)
+    store.w r25, KD_MODULE_REVISION(r21)
+    move.l  r11, #1
+    store.l r11, KD_MODULE_CLASS(r21)
+    store.l r23, KD_MODULE_OWNING_TASK(r21)
+    store.l r26, KD_MODULE_PUBLIC_PORT(r21)
+    store.l r0, KD_MODULE_OPEN_COUNT(r21)
+    store.l r0, KD_MODULE_FLAGS(r21)
+    store.l r0, KD_MODULE_DEADLINE_TICK(r21)
+    move.l  r11, #KERN_DATA_BASE
+    load.l  r12, KD_DOSLIB_PUBID(r11)
+    bne     r12, r23, .addlib_runtime_flags_done
+    move.l  r11, #MODF_RESIDENT
+    store.l r11, KD_MODULE_FLAGS(r21)
+.addlib_runtime_flags_done:
+    move.l  r11, #M16_MODSTATE_ONLINE
+    store.l r11, KD_MODULE_STATE(r21)
+    push    r21
+    push    r22
+    move.q  r1, r22
+    jsr     m16_clear_open_rows_for_module ; clear stale opener rows on reload
+    pop     r22
+    pop     r21
+    push    r21
+    push    r22
+    move.q  r1, r21
+    move.q  r2, r22
+    jsr     m16_module_complete_waiters_online ; R1 = successful waiter count
+    move.q  r27, r1
+    pop     r22
+    pop     r21
+    load.l  r27, KD_MODULE_OPEN_COUNT(r21)
+    load.l  r11, KD_MODULE_FLAGS(r21)
+    and     r11, r11, #MODF_RESIDENT
+    beqz    r11, .addlib_done
+    bnez    r27, .addlib_done
+    move.l  r11, #1
+    store.l r11, KD_MODULE_OPEN_COUNT(r21)
+.addlib_done:
+    move.q  r2, #ERR_OK
+    eret
+.addlib_badarg:
+    move.q  r2, #ERR_BADARG
+    eret
+.addlib_perm:
+    move.q  r2, #ERR_PERM
+    eret
+.addlib_full:
+    move.q  r2, #ERR_FULL
+    eret
+
+; SYS_M16_COPY_MODULE_NAME:
+;   R1 = module row index
+;   R2 = caller destination ptr (32-byte buffer)
+;   Returns: R2 = err
+.do_m16_copy_module_name:
+    move.q  r24, r1
+    move.q  r25, r2
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, KD_CURRENT_TASK(r12)
+    load.l  r11, KD_DOSLIB_PUBID(r12)
+    move.l  r14, #TASK_PUBID_FREE
+    beq     r11, r14, .m16cmn_perm
+    move.q  r1, r11
+    jsr     kern_find_slot_for_public_id
+    beqz    r2, .m16cmn_perm
+    bne     r1, r13, .m16cmn_perm
+    move.q  r1, r24
+    jsr     m16_module_row_addr_for_index
+    beqz    r1, .m16cmn_badarg
+    move.q  r21, r1
+    lsl     r11, r13, #3
+    add     r11, r11, #KD_PTBR_BASE
+    add     r11, r11, r12
+    load.q  r4, (r11)
+    move.q  r1, r25
+    move.l  r2, #32
+    move.q  r3, r4
+    jsr     validate_user_write_range
+    bnez    r1, .m16cmn_badarg
+    move.q  r23, r25
+    add     r24, r21, #KD_MODULE_NAME
+    move.l  r26, #32
+.m16cmn_copy_loop:
+    beqz    r26, .m16cmn_copy_done
+    load.b  r27, (r24)
+    suaen
+    store.b r27, (r23)
+    suadis
+    add     r24, r24, #1
+    add     r23, r23, #1
+    sub     r26, r26, #1
+    bra     .m16cmn_copy_loop
+.m16cmn_copy_done:
+    move.q  r2, #ERR_OK
+    eret
+.m16cmn_badarg:
+    move.q  r2, #ERR_BADARG
+    eret
+.m16cmn_perm:
+    move.q  r2, #ERR_PERM
+    eret
+
+; SYS_M16_LIBRARY_LOAD_RESULT:
+;   R1 = module row index
+;   R2 = launched task public ID (0 on failure)
+;   R3 = status (ERR_OK on successful launch, loader error otherwise)
+;   Returns: R2 = err
+.do_m16_library_load_result:
+    move.q  r24, r1
+    move.q  r25, r2
+    move.q  r26, r3
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, KD_CURRENT_TASK(r12)
+    load.l  r11, KD_DOSLIB_PUBID(r12)
+    move.l  r14, #TASK_PUBID_FREE
+    beq     r11, r14, .m16lr_perm
+    move.q  r1, r11
+    jsr     kern_find_slot_for_public_id
+    beqz    r2, .m16lr_perm
+    bne     r1, r13, .m16lr_perm
+    move.q  r1, r24
+    jsr     m16_module_row_addr_for_index
+    beqz    r1, .m16lr_badarg
+    move.q  r21, r1
+    load.l  r11, KD_MODULE_STATE(r21)
+    move.l  r14, #M16_MODSTATE_LOADING
+    bne     r11, r14, .m16lr_badarg
+    beqz    r25, .m16lr_fail
+    bnez    r26, .m16lr_fail
+    load.l  r11, KD_MODULE_OWNING_TASK(r21)
+    beqz    r11, .m16lr_stamp_owner
+    bne     r11, r25, .m16lr_badarg
+.m16lr_stamp_owner:
+    store.l r25, KD_MODULE_OWNING_TASK(r21)
+    move.q  r2, #ERR_OK
+    eret
+.m16lr_fail:
+    move.q  r1, r21
+    move.q  r2, r24
+    move.q  r3, r26
+    jsr     m16_module_fail_to_unloaded
+    move.q  r2, #ERR_OK
+    eret
+.m16lr_badarg:
+    move.q  r2, #ERR_BADARG
+    eret
+.m16lr_perm:
+    move.q  r2, #ERR_PERM
+    eret
+
+; SYS_SET_RESIDENT:
+;   R1 = name_ptr
+;   R2 = 1 => ADD, 0 => REMOVE
+;   Returns: R2 = err
+.do_set_resident:
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)
+    move.q  r24, r2
+    and     r24, r24, #1
+    push    r24
+    push    r1
+    jsr     safe_copy_user_name
+    pop     r1
+    pop     r24
+    bnez    r23, .m16sr_badarg
+    push    r24
+    jsr     m16_module_find_row_by_name
+    pop     r24
+    beqz    r1, .m16sr_badarg
+    move.q  r21, r1
+    move.q  r22, r2
+    load.l  r23, KD_MODULE_CLASS(r21)
+    move.l  r11, #1
+    bne     r23, r11, .m16sr_badarg
+    load.l  r23, KD_MODULE_STATE(r21)
+    move.l  r11, #M16_MODSTATE_UNLOADED
+    beq     r23, r11, .m16sr_badarg
+    move.q  r1, r22
+    push    r24
+    push    r21
+    push    r22
+    jsr     m16_module_sum_open_rows
+    pop     r22
+    pop     r21
+    pop     r24
+    move.q  r23, r1
+    bnez    r24, .m16sr_add
+.m16sr_remove:
+    ; dos.library is bootstrap-resident today but still never handles
+    ; LIB_OP_EXPUNGE / SYS_M16_EXPUNGE_RESULT. Reject REMOVE until the DOS
+    ; service participates in the protocol, otherwise a later close-to-zero
+    ; could tear it down asynchronously.
+    move.l  r11, #KERN_DATA_BASE
+    load.l  r12, KD_DOSLIB_PUBID(r11)
+    beqz    r12, .m16sr_remove_mutate
+    load.l  r11, KD_MODULE_OWNING_TASK(r21)
+    beq     r11, r12, .m16sr_badarg
+.m16sr_remove_mutate:
+    load.l  r11, KD_MODULE_FLAGS(r21)
+    and     r11, r11, #0xFFFFFFFE
+    store.l r11, KD_MODULE_FLAGS(r21)
+    store.l r23, KD_MODULE_OPEN_COUNT(r21)
+    load.l  r11, KD_MODULE_STATE(r21)
+    move.l  r14, #M16_MODSTATE_ONLINE
+    bne     r11, r14, .m16sr_ok
+    bnez    r23, .m16sr_ok
+    move.q  r1, r21
+    move.q  r2, r22
+    jsr     m16_module_begin_expunge
+    bra     .m16sr_ok
+.m16sr_add:
+    load.l  r11, KD_MODULE_FLAGS(r21)
+    or      r11, r11, #MODF_RESIDENT
+    store.l r11, KD_MODULE_FLAGS(r21)
+    load.l  r11, KD_MODULE_STATE(r21)
+    move.l  r14, #M16_MODSTATE_EXPUNGING
+    bne     r11, r14, .m16sr_add_floor
+    move.q  r1, r21
+    jsr     m16_module_cancel_expunge
+.m16sr_add_floor:
+    bnez    r23, .m16sr_ok
+    move.l  r11, #1
+    store.l r11, KD_MODULE_OPEN_COUNT(r21)
+.m16sr_ok:
+    move.q  r2, #ERR_OK
+    eret
+.m16sr_badarg:
+    move.q  r2, #ERR_BADARG
+    eret
+
+; SYS_M16_EXPUNGE_RESULT:
+;   R1 = 0 => refuse, nonzero => accept and exit
+;   R2 = module row index, R3 = expected generation
+;   Returns: R2 = ERR_OK when that exact row was still expunging, ERR_AGAIN when stale
+.do_m16_expunge_result:
+    move.q  r24, r1
+    move.q  r25, r2
+    move.q  r26, r3
+    jsr     kern_current_public_task_id
+    move.q  r20, r1
+    move.l  r11, #KD_MODULE_MAX
+    bge     r25, r11, .m16er_again
+    move.q  r1, r25
+    push    r20
+    push    r24
+    push    r25
+    push    r26
+    jsr     m16_module_row_addr_for_index
+    pop     r26
+    pop     r25
+    pop     r24
+    pop     r20
+    move.q  r22, r1
+    load.l  r11, KD_MODULE_STATE(r22)
+    move.l  r14, #M16_MODSTATE_EXPUNGING
+    bne     r11, r14, .m16er_again
+    load.l  r11, KD_MODULE_OWNING_TASK(r22)
+    bne     r11, r20, .m16er_again
+    load.l  r11, KD_MODULE_GENERATION(r22)
+    bne     r11, r26, .m16er_again
+    bnez    r24, .m16er_accept
+    move.q  r1, r22
+    jsr     m16_module_cancel_expunge
+    move.q  r2, #ERR_OK
+    eret
+.m16er_accept:
+    move.q  r2, #ERR_OK
+    eret
+.m16er_again:
+    move.q  r2, #ERR_AGAIN
+    eret
+
 ; ============================================================================
 ; SYS_MAP_IO (M9, extended in M11, gated by grant table in M12.5)
 ; ============================================================================
@@ -8123,6 +9057,7 @@ endif
     move.q  r25, r2
     move.q  r26, r3
     move.q  r27, r4
+    move.q  r30, r5
     move.l  r12, #KERN_DATA_BASE
     load.q  r13, KD_CURRENT_TASK(r12)
     load.l  r11, KD_DOSLIB_PUBID(r12)
@@ -8218,6 +9153,10 @@ endif
     lsl     r1, r1, #12                ; kernel ptr to copied image
     move.q  r2, r25
     move.l  r3, #TASK_STARTUP_FLAG_EXEC
+    and     r11, r30, #BOOT_ELF_EXEC_FLAG_TRUSTED_INTERNAL
+    beqz    r11, .dbefe_launch_flags_ready
+    or      r3, r3, #TASK_STARTUP_FLAG_TRUSTED_INTERNAL
+.dbefe_launch_flags_ready:
     jsr     boot_load_elf_image        ; R1=task_id R2=err R3=slot
     move.q  r22, r1
     move.q  r23, r3
@@ -8244,21 +9183,27 @@ endif
     jsr     kern_task_layout_addr
     load.q  r15, KD_TASK_DATA_BASE(r1)
     add     r15, r15, #DATA_ARGS_OFFSET
-    ; M15.6 G2 Phase 2c-2: copy args into child data page via helper.
-    ; Range already validated at line ~7451. cr0 = caller PTBR here.
-    ; The child has ALREADY been created by boot_load_elf_image above
-    ; (r22=task_id, r23=child slot), so a re-validate race here must
-    ; tear the child down before reporting the error — a plain
-    ; .dbefe_badarg return would leave a live task running after the
-    ; syscall reports failure to the caller.
-    ;   r15 = kern_dst, r26 = user_src, r27 = args_len
-    move.q  r1, r15
+    load.q  r17, KD_TASK_LAYOUT_PT_BASE(r1)
+    ; Resolve the child data VA to its backing kernel page through the
+    ; child PT, then copy the caller args directly into that backing
+    ; page. The child data offset is bounded to a single page
+    ; (DATA_ARGS_OFFSET + DATA_ARGS_MAX < 4096), so one PTE lookup is
+    ; sufficient here.
+    lsr     r16, r15, #12
+    lsl     r16, r16, #3
+    add     r16, r16, r17
+    load.q  r18, (r16)
+    lsr     r18, r18, #13
+    lsl     r18, r18, #12
+    and     r16, r15, #0xFFF
+    add     r18, r18, r16
+    move.q  r1, r18
     move.q  r2, r26
     move.q  r3, r27
     mfcr    r4, cr0
     jsr     copy_from_user
     bnez    r1, .dbefe_args_fail_kill
-    add     r5, r15, r27
+    add     r5, r18, r27
     store.b r0, (r5)
 .dbefe_ok:
     move.q  r1, r22
@@ -8389,6 +9334,11 @@ endif
     move.q  r1, r7
     move.q  r2, r8
     move.l  r3, #TASK_STARTUP_FLAG_BOOT
+    load.l  r11, KD_BOOT_MANIFEST_FLAGS(r23)
+    and     r11, r11, #BOOT_MANIFEST_FLAG_TRUSTED_INTERNAL
+    beqz    r11, .dbml_flags_ready
+    or      r3, r3, #TASK_STARTUP_FLAG_TRUSTED_INTERNAL
+.dbml_flags_ready:
     jsr     boot_load_elf_image        ; R1=task_id R2=err R3=slot
     bra     .dbml_done
 .dbml_next:
@@ -8414,22 +9364,24 @@ endif
     jsr     kern_task_layout_addr
     load.q  r15, KD_TASK_DATA_BASE(r1)
     add     r15, r15, #DATA_ARGS_OFFSET
-    ; M15.6 G2 Phase 2c-2: copy args into child data page via helper.
-    ; Range validated above (line ~7619). We switched back to caller PT
-    ; at line ~7667, so cr0 is the caller PTBR.
-    ; The manifest child was already launched by this point (r22 is
-    ; its task_id), so a re-validate race here must tear the child
-    ; down and report ERR_BADARG — returning success with silently
-    ; missing args would hand the caller a non-deterministic launch
-    ; state. See .dbml_args_fail_kill below.
-    ;   r15 = kern_dst, r26 = user_src, r27 = args_len
-    move.q  r1, r15
+    load.q  r17, KD_TASK_LAYOUT_PT_BASE(r1)
+    ; Resolve the child data args VA to its backing kernel page and copy
+    ; directly there, matching the flat boot-exec path above.
+    lsr     r16, r15, #12
+    lsl     r16, r16, #3
+    add     r16, r16, r17
+    load.q  r18, (r16)
+    lsr     r18, r18, #13
+    lsl     r18, r18, #12
+    and     r16, r15, #0xFFF
+    add     r18, r18, r16
+    move.q  r1, r18
     move.q  r2, r26
     move.q  r3, r27
     mfcr    r4, cr0
     jsr     copy_from_user
     bnez    r1, .dbml_args_fail_kill
-    add     r5, r15, r27
+    add     r5, r18, r27
     store.b r0, (r5)
 .dbml_ret:
     move.q  r1, r22
@@ -8570,20 +9522,25 @@ endif
     jsr     kern_task_layout_addr
     load.q  r15, KD_TASK_DATA_BASE(r1)
     add     r15, r15, #DATA_ARGS_OFFSET
-    ; M15.6 G2 Phase 2c-2: copy args via copy_from_user. Range already
-    ; validated above (line ~7744). Helper brackets user access in
-    ; SUAEN/SUADIS — correct once SKAC is flipped on at boot.
-    ;   r15 = kernel_dst (child data page + args offset)
-    ;   r26 = user_src
-    ;   r27 = args_len
-    move.q  r1, r15
+    load.q  r17, KD_TASK_LAYOUT_PT_BASE(r1)
+    ; Resolve the child data args VA to its backing kernel page and copy
+    ; the caller args there directly.
+    lsr     r16, r15, #12
+    lsl     r16, r16, #3
+    add     r16, r16, r17
+    load.q  r18, (r16)
+    lsr     r18, r18, #13
+    lsl     r18, r18, #12
+    and     r16, r15, #0xFFF
+    add     r18, r18, r16
+    move.q  r1, r18
     move.q  r2, r26
     move.q  r3, r27
     move.q  r4, r28                     ; caller PTBR (loaded at 7700)
     jsr     copy_from_user
     bnez    r1, .ep_desc_cleanup_badarg
-    ; NUL-terminate at the kernel-side buffer (no SUA needed).
-    add     r5, r15, r27
+    ; NUL-terminate in the backing page.
+    add     r5, r18, r27
     store.b r0, (r5)
     bra     .ep_desc_no_args
 
@@ -9174,6 +10131,1169 @@ m16_atomic_list_detach_all:
     move.q  r1, r2
     rts
 
+; ----------------------------------------------------------------------------
+; M16 phase-1 registry helpers
+; ----------------------------------------------------------------------------
+
+; m16_name_matches_addr:
+;   R1 = address of 32-byte name field
+; Returns:
+;   R1 = 1 if the field matches KD_NAME_SCRATCH case-insensitively, else 0
+; Clobbers: R23-R26
+m16_name_matches_addr:
+    move.q  r24, r1
+    move.l  r25, #KERN_DATA_BASE
+    add     r25, r25, #KD_NAME_SCRATCH
+    jsr     case_insensitive_cmp
+    move.q  r1, #0
+    bnez    r23, .m16_nma_done
+    move.q  r1, #1
+.m16_nma_done:
+    rts
+
+; R1 = module row index -> R1 = row addr (or 0 if out of range)
+m16_module_row_addr_for_index:
+    move.l  r2, #KD_MODULE_MAX
+    bge     r1, r2, .m16_mrai_bad
+    move.l  r2, #KD_MODULE_ROW_STRIDE
+    mulu    r2, r1, r2
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_MODULE_TABLE
+    add     r1, r3, r2
+    rts
+.m16_mrai_bad:
+    move.q  r1, #0
+    rts
+
+; Uses KD_NAME_SCRATCH.
+; Returns: R1 = row addr (0 if none), R2 = row index (0xFFFFFFFF if none)
+m16_module_find_row_by_name:
+    move.l  r2, #0
+.m16_mfrbn_scan:
+    move.l  r3, #KD_MODULE_MAX
+    bge     r2, r3, .m16_mfrbn_none
+    move.q  r1, r2
+    push    r2
+    jsr     m16_module_row_addr_for_index
+    pop     r2
+    move.q  r4, r1
+    add     r1, r4, #KD_MODULE_NAME
+    push    r2
+    push    r4
+    jsr     m16_name_matches_addr
+    move.q  r5, r1
+    pop     r4
+    pop     r2
+    bnez    r5, .m16_mfrbn_found
+    add     r2, r2, #1
+    bra     .m16_mfrbn_scan
+.m16_mfrbn_found:
+    move.q  r1, r4
+    rts
+.m16_mfrbn_none:
+    move.q  r1, #0
+    move.l  r2, #0xFFFFFFFF
+    rts
+
+; Uses KD_NAME_SCRATCH.
+; Returns: R1 = row addr (0 if full), R2 = row index
+m16_module_find_or_alloc_row:
+    jsr     m16_module_find_row_by_name
+    bnez    r1, .m16_mfoar_done
+    move.l  r2, #0
+.m16_mfoar_scan:
+    move.l  r3, #KD_MODULE_MAX
+    bge     r2, r3, .m16_mfoar_full
+    move.q  r1, r2
+    push    r2
+    jsr     m16_module_row_addr_for_index
+    pop     r2
+    move.q  r4, r1
+    load.l  r5, KD_MODULE_STATE(r4)
+    beqz    r5, .m16_mfoar_alloc
+    add     r2, r2, #1
+    bra     .m16_mfoar_scan
+.m16_mfoar_alloc:
+    store.q r0, KD_MODULE_NAME(r4)
+    store.q r0, KD_MODULE_NAME+8(r4)
+    store.q r0, KD_MODULE_NAME+16(r4)
+    store.q r0, KD_MODULE_NAME+24(r4)
+    move.l  r5, #KERN_DATA_BASE
+    add     r5, r5, #KD_NAME_SCRATCH
+    load.q  r6, (r5)
+    store.q r6, KD_MODULE_NAME(r4)
+    load.q  r6, 8(r5)
+    store.q r6, KD_MODULE_NAME+8(r4)
+    load.q  r6, 16(r5)
+    store.q r6, KD_MODULE_NAME+16(r4)
+    load.q  r6, 24(r5)
+    store.q r6, KD_MODULE_NAME+24(r4)
+    store.l r0, KD_MODULE_STATE(r4)
+    store.w r0, KD_MODULE_VERSION(r4)
+    store.w r0, KD_MODULE_REVISION(r4)
+    store.l r0, KD_MODULE_CLASS(r4)
+    store.l r0, KD_MODULE_OWNING_TASK(r4)
+    store.l r0, KD_MODULE_PUBLIC_PORT(r4)
+    store.l r0, KD_MODULE_OPEN_COUNT(r4)
+    store.l r0, KD_MODULE_FLAGS(r4)
+    store.q r0, KD_MODULE_WAITERS_HEAD(r4)
+    store.l r0, KD_MODULE_DEADLINE_TICK(r4)
+    move.q  r1, r4
+.m16_mfoar_done:
+    rts
+.m16_mfoar_full:
+    move.q  r1, #0
+    rts
+
+; R1 = module row addr, R2 = module row index
+; Clears transient runtime fields and re-enters LOADING without touching name
+; or generation.
+m16_module_prepare_loading_row:
+    move.q  r20, r1
+    move.q  r21, r2
+    store.w r0, KD_MODULE_VERSION(r20)
+    store.w r0, KD_MODULE_REVISION(r20)
+    move.l  r11, #1
+    store.l r11, KD_MODULE_CLASS(r20)
+    store.l r0, KD_MODULE_OWNING_TASK(r20)
+    store.l r0, KD_MODULE_PUBLIC_PORT(r20)
+    store.l r0, KD_MODULE_OPEN_COUNT(r20)
+    store.l r0, KD_MODULE_FLAGS(r20)
+    store.q r0, KD_MODULE_WAITERS_HEAD(r20)
+    store.l r0, KD_MODULE_DEADLINE_TICK(r20)
+    move.l  r11, #M16_MODSTATE_LOADING
+    store.l r11, KD_MODULE_STATE(r20)
+    move.q  r1, r21
+    jsr     m16_clear_open_rows_for_module
+    move.q  r1, r20
+    rts
+
+; Inputs: R1 = module row index. Returns R1 = sum of live opener counts.
+m16_module_sum_open_rows:
+    move.q  r20, r1
+    move.l  r21, #0
+    move.l  r22, #0
+    move.l  r23, #KERN_DATA_BASE
+    add     r23, r23, #KD_MODULE_OPEN_ROWS
+.m16_msor_scan:
+    move.l  r24, #KD_MODULE_OPEN_ROW_MAX
+    bge     r21, r24, .m16_msor_done
+    load.l  r24, KD_MODULE_OPEN_ROW_COUNT(r23)
+    beqz    r24, .m16_msor_next
+    load.l  r25, KD_MODULE_OPEN_ROW_INDEX(r23)
+    bne     r25, r20, .m16_msor_next
+    add     r22, r22, r24
+.m16_msor_next:
+    add     r23, r23, #KD_MODULE_OPEN_ROW_STRIDE
+    add     r21, r21, #1
+    bra     .m16_msor_scan
+.m16_msor_done:
+    move.q  r1, r22
+    rts
+
+; Inputs: R1 = module row index
+; Returns: R2 = ERR_OK / ERR_NOTFOUND / ERR_FULL / ERR_BADARG
+m16_start_autoload_request:
+    move.q  r20, r1
+    move.l  r12, #KERN_DATA_BASE
+    load.l  r23, KD_DOSLIB_PUBID(r12)
+    move.l  r11, #TASK_PUBID_FREE
+    beq     r23, r11, .m16_sar_notfound
+    move.l  r21, #0
+.m16_sar_find_dos_row:
+    move.l  r11, #KD_MODULE_MAX
+    bge     r21, r11, .m16_sar_notfound
+    move.q  r1, r21
+    push    r20
+    push    r21
+    jsr     m16_module_row_addr_for_index
+    pop     r21
+    pop     r20
+    move.q  r22, r1
+    load.l  r11, KD_MODULE_STATE(r22)
+    move.l  r14, #M16_MODSTATE_ONLINE
+    bne     r11, r14, .m16_sar_next_row
+    load.l  r11, KD_MODULE_OWNING_TASK(r22)
+    bne     r11, r23, .m16_sar_next_row
+    load.l  r24, KD_MODULE_PUBLIC_PORT(r22)
+    beqz    r24, .m16_sar_notfound
+    bra     .m16_sar_have_port
+.m16_sar_next_row:
+    add     r21, r21, #1
+    bra     .m16_sar_find_dos_row
+.m16_sar_have_port:
+    move.q  r1, r24
+    push    r20
+    push    r23
+    push    r24
+    jsr     kern_port_addr_for_id
+    pop     r24
+    pop     r23
+    pop     r20
+    beqz    r1, .m16_sar_badarg
+    move.q  r21, r1
+    load.b  r11, KD_PORT_VALID(r21)
+    beqz    r11, .m16_sar_badarg
+    load.b  r22, KD_PORT_COUNT(r21)
+    move.l  r11, #KD_PORT_FIFO_SIZE
+    bge     r22, r11, .m16_sar_full
+    load.b  r25, KD_PORT_TAIL(r21)
+    move.l  r26, #KD_MSG_SIZE
+    mulu    r26, r25, r26
+    add     r26, r26, r21
+    add     r26, r26, #KD_PORT_MSGS
+    move.l  r11, #DOS_LOADLIB
+    store.l r11, KD_MSG_TYPE(r26)
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    push    r24
+    push    r25
+    jsr     kern_current_public_task_id
+    pop     r25
+    pop     r24
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
+    store.l r1, KD_MSG_SRC(r26)
+    store.q r20, KD_MSG_DATA0(r26)
+    store.q r0, KD_MSG_DATA1(r26)
+    move.l  r11, #REPLY_PORT_NONE
+    store.w r11, KD_MSG_REPLY_PORT(r26)
+    store.l r0, KD_MSG_SHARE_HDL(r26)
+    add     r25, r25, #1
+    and     r25, r25, #3
+    store.b r25, KD_PORT_TAIL(r21)
+    add     r22, r22, #1
+    store.b r22, KD_PORT_COUNT(r21)
+    load.b  r27, KD_PORT_OWNER(r21)
+    lsl     r28, r27, #5
+    add     r28, r28, #KD_TASK_BASE
+    add     r28, r28, r12
+    load.l  r29, KD_TASK_SIG_RECV(r28)
+    or      r29, r29, #SIGF_PORT
+    store.l r29, KD_TASK_SIG_RECV(r28)
+    load.b  r30, KD_TASK_STATE(r28)
+    move.l  r11, #TASK_WAITING
+    bne     r30, r11, .m16_sar_ok
+    load.l  r11, KD_TASK_SIG_WAIT(r28)
+    and     r11, r11, #SIGF_PORT
+    beqz    r11, .m16_sar_ok
+    move.b  r30, #TASK_READY
+    store.b r30, KD_TASK_STATE(r28)
+.m16_sar_ok:
+    move.q  r2, #ERR_OK
+    rts
+.m16_sar_notfound:
+    move.q  r2, #ERR_NOTFOUND
+    rts
+.m16_sar_badarg:
+    move.q  r2, #ERR_BADARG
+    rts
+.m16_sar_full:
+    move.q  r2, #ERR_FULL
+    rts
+
+; Inputs: R1 = module row addr. Returns R1 = row addr.
+m16_module_cancel_expunge:
+    move.q  r20, r1
+    move.l  r11, #M16_MODSTATE_ONLINE
+    store.l r11, KD_MODULE_STATE(r20)
+    store.l r0, KD_MODULE_DEADLINE_TICK(r20)
+    move.q  r1, r20
+    rts
+
+; Inputs: R1 = module row addr, R2 = module row index. Queue the
+; LIB_OP_EXPUNGE control message to the compat port and only then arm the
+; timeout/state transition. If the port cannot accept the message, leave the
+; row unchanged so a healthy library is not timed out after a dropped request.
+m16_module_begin_expunge:
+    move.q  r20, r1
+    move.q  r21, r2
+    load.l  r22, KD_MODULE_PUBLIC_PORT(r20)
+    move.q  r1, r22
+    push    r20
+    push    r21
+    push    r22
+    jsr     kern_port_addr_for_id
+    pop     r22
+    pop     r21
+    pop     r20
+    beqz    r1, .m16_mbe_done
+    move.q  r23, r1
+    load.b  r11, KD_PORT_VALID(r23)
+    beqz    r11, .m16_mbe_done
+    load.b  r24, KD_PORT_COUNT(r23)
+    move.l  r11, #KD_PORT_FIFO_SIZE
+    bge     r24, r11, .m16_mbe_done
+    load.b  r25, KD_PORT_TAIL(r23)
+    move.l  r26, #KD_MSG_SIZE
+    mulu    r26, r25, r26
+    add     r26, r26, r23
+    add     r26, r26, #KD_PORT_MSGS
+    move.l  r11, #LIB_OP_EXPUNGE
+    store.l r11, KD_MSG_TYPE(r26)
+    store.l r0, KD_MSG_SRC(r26)
+    store.q r21, KD_MSG_DATA0(r26)
+    load.l  r11, KD_MODULE_GENERATION(r20)
+    store.q r11, KD_MSG_DATA1(r26)
+    move.l  r11, #REPLY_PORT_NONE
+    store.w r11, KD_MSG_REPLY_PORT(r26)
+    store.l r0, KD_MSG_SHARE_HDL(r26)
+    add     r25, r25, #1
+    and     r25, r25, #3
+    store.b r25, KD_PORT_TAIL(r23)
+    add     r24, r24, #1
+    store.b r24, KD_PORT_COUNT(r23)
+    move.l  r11, #M16_MODSTATE_EXPUNGING
+    store.l r11, KD_MODULE_STATE(r20)
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r11, KD_TICK_COUNT(r12)
+    add     r11, r11, #M16_EXPUNGE_GRACE_TICKS
+    store.l r11, KD_MODULE_DEADLINE_TICK(r20)
+    load.b  r27, KD_PORT_OWNER(r23)
+    lsl     r28, r27, #5
+    add     r28, r28, #KD_TASK_BASE
+    add     r28, r28, r12
+    load.l  r29, KD_TASK_SIG_RECV(r28)
+    or      r29, r29, #SIGF_PORT
+    store.l r29, KD_TASK_SIG_RECV(r28)
+    load.b  r30, KD_TASK_STATE(r28)
+    move.l  r11, #TASK_WAITING
+    bne     r30, r11, .m16_mbe_done
+    load.l  r11, KD_TASK_SIG_WAIT(r28)
+    and     r11, r11, #SIGF_PORT
+    beqz    r11, .m16_mbe_done
+    move.b  r30, #TASK_READY
+    store.b r30, KD_TASK_STATE(r28)
+.m16_mbe_done:
+    move.q  r1, r20
+    rts
+
+; Returns R1 = 1 when any expunging module still has a non-zero deadline.
+m16_module_has_pending_deadline:
+    move.l  r20, #0
+.m16_mhpd_scan:
+    move.l  r11, #KD_MODULE_MAX
+    bge     r20, r11, .m16_mhpd_none
+    move.q  r1, r20
+    push    r20
+    jsr     m16_module_row_addr_for_index
+    move.q  r21, r1
+    pop     r20
+    load.l  r11, KD_MODULE_STATE(r21)
+    move.l  r14, #M16_MODSTATE_EXPUNGING
+    bne     r11, r14, .m16_mhpd_next
+    load.l  r11, KD_MODULE_DEADLINE_TICK(r21)
+    bnez    r11, .m16_mhpd_yes
+.m16_mhpd_next:
+    add     r20, r20, #1
+    bra     .m16_mhpd_scan
+.m16_mhpd_yes:
+    move.q  r1, #1
+    rts
+.m16_mhpd_none:
+    move.q  r1, #0
+    rts
+
+; R1 = waiter token (1..KD_MODULE_WAITER_MAX)
+; Returns: R1 = waiter row addr or 0
+m16_waiter_row_addr_for_token:
+    beqz    r1, .m16_mwrat_bad
+    sub     r1, r1, #1
+    move.l  r2, #KD_MODULE_WAITER_MAX
+    bge     r1, r2, .m16_mwrat_bad
+    move.l  r2, #KD_MODULE_WAITER_STRIDE
+    mulu    r2, r1, r2
+    move.l  r3, #KERN_DATA_BASE
+    add     r3, r3, #KD_MODULE_WAITER_ROWS
+    add     r1, r3, r2
+    rts
+.m16_mwrat_bad:
+    move.q  r1, #0
+    rts
+
+; Inputs: R1 = waiter task pubid, R2 = minVersion, R3 = sig_bit, R4 = outcome_slot,
+;         R5 = aux
+; Returns: R1 = waiter row addr or 0, R2 = waiter token
+m16_waiter_alloc:
+    move.q  r20, r1
+    move.q  r21, r2
+    move.q  r22, r3
+    move.q  r23, r4
+    move.q  r24, r5
+    move.l  r5, #0
+    move.l  r6, #KERN_DATA_BASE
+    add     r6, r6, #KD_MODULE_WAITER_ROWS
+.m16_mwa_scan:
+    move.l  r7, #KD_MODULE_WAITER_MAX
+    bge     r5, r7, .m16_mwa_full
+    load.l  r7, KD_MODULE_WAITER_OUTCOME(r6)
+    beqz    r7, .m16_mwa_alloc
+    add     r6, r6, #KD_MODULE_WAITER_STRIDE
+    add     r5, r5, #1
+    bra     .m16_mwa_scan
+.m16_mwa_alloc:
+    store.l r20, KD_MODULE_WAITER_TASK(r6)
+    store.w r21, KD_MODULE_WAITER_MINVER(r6)
+    store.w r22, KD_MODULE_WAITER_SIGBIT(r6)
+    store.l r23, KD_MODULE_WAITER_OUTCOME(r6)
+    store.l r24, KD_MODULE_WAITER_AUX(r6)
+    store.q r0, KD_MODULE_WAITER_NEXT(r6)
+    move.q  r1, r6
+    add     r5, r5, #1
+    move.q  r2, r5
+    rts
+.m16_mwa_full:
+    move.q  r1, #0
+    move.q  r2, #0
+    rts
+
+; Inputs: R1 = waiter row addr
+m16_waiter_free:
+    store.l r0, KD_MODULE_WAITER_TASK(r1)
+    store.w r0, KD_MODULE_WAITER_MINVER(r1)
+    store.w r0, KD_MODULE_WAITER_SIGBIT(r1)
+    store.l r0, KD_MODULE_WAITER_OUTCOME(r1)
+    store.l r0, KD_MODULE_WAITER_AUX(r1)
+    store.q r0, KD_MODULE_WAITER_NEXT(r1)
+    rts
+
+; Inputs: R1 = module row addr, R2 = module row index, R3 = waiter task pubid,
+;         R4 = minVersion, R5 = sig_bit, R6 = outcome slot
+; Returns: R1 = waiter row addr or 0
+m16_waiter_enqueue_on_row:
+    move.q  r20, r1
+    move.q  r24, r2
+    push    r20
+    move.q  r1, r3
+    move.q  r2, r4
+    move.q  r3, r5
+    move.q  r4, r6
+    move.q  r5, r24
+    jsr     m16_waiter_alloc
+    pop     r20
+    beqz    r1, .m16_mweor_done
+    move.q  r21, r1
+    move.q  r22, r2
+    add     r1, r20, #KD_MODULE_WAITERS_HEAD
+    move.q  r2, r22
+    add     r3, r21, #KD_MODULE_WAITER_NEXT
+    jsr     m16_atomic_list_push_head
+    move.q  r1, r21
+.m16_mweor_done:
+    rts
+
+; Inputs: R1 = live task slot, R2 = signal mask
+m16_signal_task_slot_mask:
+    move.l  r12, #KERN_DATA_BASE
+    lsl     r15, r1, #5
+    add     r15, r15, #KD_TASK_BASE
+    add     r15, r15, r12
+    load.l  r20, KD_TASK_SIG_RECV(r15)
+    or      r20, r20, r2
+    store.l r20, KD_TASK_SIG_RECV(r15)
+    load.b  r21, KD_TASK_STATE(r15)
+    move.l  r22, #TASK_WAITING
+    bne     r21, r22, .m16_mstsm_done
+    load.l  r23, KD_TASK_SIG_WAIT(r15)
+    and     r24, r20, r23
+    beqz    r24, .m16_mstsm_done
+    move.b  r21, #TASK_READY
+    store.b r21, KD_TASK_STATE(r15)
+.m16_mstsm_done:
+    rts
+
+; Inputs: R1 = waiter row addr, R2 = status, R3 = library token, R4 = granted version
+; Returns: R1 = 1 if the waiter task was still live, else 0
+m16_waiter_publish_result:
+    move.q  r20, r1
+    move.q  r21, r2
+    move.q  r22, r3
+    move.q  r23, r4
+    load.l  r1, KD_MODULE_WAITER_TASK(r20)
+    jsr     kern_find_slot_for_public_id ; R1 = slot, R2 = found?
+    beqz    r2, .m16_mwpr_dead
+    move.q  r24, r1
+    move.q  r1, r24
+    push    r20
+    push    r24
+    jsr     kern_task_layout_addr
+    move.q  r25, r1
+    load.q  r26, KD_TASK_LAYOUT_PT_BASE(r25)
+    load.l  r27, KD_MODULE_WAITER_OUTCOME(r20)
+    move.q  r1, r27
+    move.q  r2, #16
+    move.q  r3, r26
+    jsr     validate_user_write_range
+    bnez    r1, .m16_mwpr_dead_pop
+    mfcr    r28, cr0
+    mtcr    cr0, r26
+    tlbflush
+    suaen
+    store.l r21, 0(r27)
+    store.l r22, 4(r27)
+    store.l r23, 8(r27)
+    store.l r0, 12(r27)
+    suadis
+    mtcr    cr0, r28
+    tlbflush
+    pop     r24
+    pop     r20
+    load.w  r28, KD_MODULE_WAITER_SIGBIT(r20)
+    and     r28, r28, #0xFFFF
+    move.q  r2, #1
+    lsl     r2, r2, r28
+    move.q  r1, r24
+    jsr     m16_signal_task_slot_mask
+    move.q  r1, #1
+    rts
+.m16_mwpr_dead_pop:
+    pop     r24
+    pop     r20
+.m16_mwpr_dead:
+    move.q  r1, #0
+    rts
+
+; Validates the waiter args currently held in:
+;   r25 = signal bit, r26 = outcome slot
+; Returns:
+;   r1 = 0 on success, nonzero on bad args
+; Preserves:
+;   r24-r26
+m16_openlibex_validate_waiter_args:
+    move.q  r1, #1
+    move.l  r11, #16
+    blt     r25, r11, .m16_olva_done
+    move.l  r11, #32
+    bge     r25, r11, .m16_olva_done
+    beqz    r26, .m16_olva_done
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r13, (r12)
+    lsl     r27, r13, #5
+    add     r27, r27, #KD_TASK_BASE
+    add     r27, r27, r12
+    load.l  r23, KD_TASK_SIG_ALLOC(r27)
+    move.q  r28, #1
+    lsl     r28, r28, r25
+    and     r23, r23, r28
+    beqz    r23, .m16_olva_done
+    lsl     r27, r13, #3
+    add     r27, r27, #KD_PTBR_BASE
+    add     r27, r27, r12
+    load.q  r3, (r27)
+    move.q  r1, r26
+    move.l  r2, #16
+    jsr     validate_user_write_range
+    bnez    r1, .m16_olva_done
+    move.q  r1, #0
+.m16_olva_done:
+    rts
+
+; Inputs: R1 = module row addr, R2 = module row index
+; Returns: R1 = successful waiter count
+m16_module_complete_waiters_online:
+    move.q  r20, r1
+    move.q  r21, r2
+    and     r21, r21, #0xFFFFFFFF
+    store.l r0, KD_MODULE_OPEN_COUNT(r20)
+    add     r1, r20, #KD_MODULE_WAITERS_HEAD
+    push    r20
+    push    r21
+    jsr     m16_atomic_list_detach_all   ; detach linked head; completion scans rows by AUX
+    pop     r21
+    pop     r20
+    move.l  r24, #0
+    move.l  r19, #KERN_DATA_BASE
+    add     r19, r19, #KD_MODULE_WAITER_ROWS
+.m16_mcwo_loop:
+    move.q  r30, #KD_MODULE_WAITER_MAX
+    bge     r24, r30, .m16_mcwo_done
+    move.q  r25, r19
+    load.l  r30, KD_MODULE_WAITER_OUTCOME(r25)
+    beqz    r30, .m16_mcwo_next
+    load.l  r30, KD_MODULE_WAITER_AUX(r25)
+    and     r30, r30, #0xFFFFFFFF
+    bne     r30, r21, .m16_mcwo_next
+    load.l  r26, KD_MODULE_WAITER_TASK(r25)
+    move.q  r1, r26
+    push    r19
+    push    r24
+    push    r20
+    push    r21
+    push    r25
+    jsr     kern_find_slot_for_public_id ; R1 = slot, R2 = found?
+    pop     r25
+    pop     r21
+    pop     r20
+    pop     r24
+    pop     r19
+    beqz    r2, .m16_mcwo_free
+    move.q  r27, r1
+    load.w  r28, KD_MODULE_VERSION(r20)
+    and     r28, r28, #0xFFFF
+    load.w  r23, KD_MODULE_WAITER_MINVER(r25)
+    and     r23, r23, #0xFFFF
+    blt     r28, r23, .m16_mcwo_version
+    load.l  r23, KD_MODULE_GENERATION(r20)
+    move.q  r1, r26
+    move.q  r2, r21
+    move.q  r3, r23
+    push    r19
+    push    r24
+    push    r20
+    push    r21
+    push    r25
+    push    r26
+    push    r28
+    push    r23
+    jsr     m16_open_row_find_or_alloc
+    move.q  r30, r1
+    pop     r23
+    pop     r28
+    pop     r26
+    pop     r25
+    pop     r21
+    pop     r20
+    pop     r24
+    pop     r19
+    beqz    r30, .m16_mcwo_full
+    load.l  r16, KD_MODULE_OPEN_ROW_COUNT(r30)
+    add     r16, r16, #1
+    store.l r16, KD_MODULE_OPEN_ROW_COUNT(r30)
+    load.l  r16, KD_MODULE_OPEN_COUNT(r20)
+    add     r16, r16, #1
+    store.l r16, KD_MODULE_OPEN_COUNT(r20)
+    move.q  r1, r21
+    move.q  r2, r23
+    push    r19
+    push    r24
+    push    r20
+    push    r21
+    push    r23
+    push    r25
+    push    r26
+    push    r28
+    jsr     m16_make_library_token
+    pop     r28
+    pop     r26
+    pop     r25
+    pop     r23
+    pop     r21
+    pop     r20
+    pop     r24
+    pop     r19
+    move.q  r3, r1
+    push    r19
+    push    r24
+    push    r25
+    push    r21
+    push    r20
+    move.q  r1, r25
+    move.q  r2, #ERR_OK
+    move.q  r4, r28
+    jsr     m16_waiter_publish_result
+    pop     r20
+    pop     r21
+    pop     r25
+    pop     r24
+    pop     r19
+    bra     .m16_mcwo_free
+.m16_mcwo_version:
+    push    r19
+    push    r24
+    push    r25
+    push    r21
+    push    r20
+    move.q  r1, r25
+    move.q  r2, #ERR_LIB_VERSION
+    move.q  r3, #0
+    move.q  r4, r28
+    jsr     m16_waiter_publish_result
+    pop     r20
+    pop     r21
+    pop     r25
+    pop     r24
+    pop     r19
+    bra     .m16_mcwo_free
+.m16_mcwo_full:
+    push    r19
+    push    r24
+    push    r25
+    push    r21
+    push    r20
+    move.q  r1, r25
+    move.q  r2, #ERR_FULL
+    move.q  r3, #0
+    move.q  r4, r28
+    jsr     m16_waiter_publish_result
+    pop     r20
+    pop     r21
+    pop     r25
+    pop     r24
+    pop     r19
+.m16_mcwo_free:
+    move.q  r1, r25
+    push    r19
+    push    r24
+    push    r20
+    push    r25
+    jsr     m16_waiter_free
+    pop     r25
+    pop     r20
+    pop     r24
+    pop     r19
+    bra     .m16_mcwo_next
+.m16_mcwo_next:
+    add     r19, r19, #KD_MODULE_WAITER_STRIDE
+    add     r24, r24, #1
+    bra     .m16_mcwo_loop
+.m16_mcwo_done:
+    store.q r0, KD_MODULE_WAITERS_HEAD(r20)
+    load.l  r1, KD_MODULE_OPEN_COUNT(r20)
+    rts
+
+; Inputs: R1 = module row addr, R2 = module row index, R3 = failure status code
+m16_module_complete_waiters_error:
+    move.q  r20, r1
+    move.q  r21, r2
+    move.q  r22, r3
+    and     r21, r21, #0xFFFFFFFF
+    add     r1, r20, #KD_MODULE_WAITERS_HEAD
+    push    r20
+    push    r21
+    push    r22
+    jsr     m16_atomic_list_detach_all   ; detach linked head; failure wake scans rows by AUX
+    pop     r22
+    pop     r21
+    pop     r20
+    move.q  r24, #0
+    move.l  r19, #KERN_DATA_BASE
+    add     r19, r19, #KD_MODULE_WAITER_ROWS
+.m16_mcwe_loop:
+    move.q  r30, #KD_MODULE_WAITER_MAX
+    bge     r24, r30, .m16_mcwe_done
+    move.q  r25, r19
+    load.l  r30, KD_MODULE_WAITER_OUTCOME(r25)
+    beqz    r30, .m16_mcwe_next
+    load.l  r30, KD_MODULE_WAITER_AUX(r25)
+    and     r30, r30, #0xFFFFFFFF
+    bne     r30, r21, .m16_mcwe_next
+    move.q  r1, r25
+    move.q  r2, r22
+    move.q  r3, #0
+    move.q  r4, #0
+    push    r20
+    push    r21
+    push    r22
+    push    r25
+    jsr     m16_waiter_publish_result
+    pop     r25
+    pop     r22
+    pop     r21
+    pop     r20
+    move.q  r1, r25
+    push    r20
+    push    r25
+    jsr     m16_waiter_free
+    pop     r25
+    pop     r20
+    bra     .m16_mcwe_next
+.m16_mcwe_next:
+    add     r19, r19, #KD_MODULE_WAITER_STRIDE
+    add     r24, r24, #1
+    bra     .m16_mcwe_loop
+.m16_mcwe_done:
+    store.q r0, KD_MODULE_WAITERS_HEAD(r20)
+    rts
+
+; Inputs: R1 = module row addr, R2 = module row index, R3 = failure status
+; Clears transient runtime fields after a failed load / owner death while
+; preserving the persistent row identity and generation.
+m16_module_fail_to_unloaded:
+    move.q  r20, r1
+    move.q  r21, r2
+    move.q  r22, r3
+    move.l  r11, #M16_MODSTATE_FAILED
+    store.l r11, KD_MODULE_STATE(r20)
+    push    r20
+    push    r21
+    move.q  r1, r20
+    move.q  r2, r21
+    move.q  r3, r22
+    jsr     m16_module_complete_waiters_error
+    pop     r21
+    pop     r20
+    push    r20
+    push    r21
+    move.q  r1, r21
+    jsr     m16_module_signal_openers_dead
+    pop     r21
+    pop     r20
+    store.w r0, KD_MODULE_VERSION(r20)
+    store.w r0, KD_MODULE_REVISION(r20)
+    store.l r0, KD_MODULE_CLASS(r20)
+    store.l r0, KD_MODULE_OWNING_TASK(r20)
+    store.l r0, KD_MODULE_PUBLIC_PORT(r20)
+    store.l r0, KD_MODULE_OPEN_COUNT(r20)
+    store.l r0, KD_MODULE_FLAGS(r20)
+    store.q r0, KD_MODULE_WAITERS_HEAD(r20)
+    store.l r0, KD_MODULE_DEADLINE_TICK(r20)
+    move.q  r1, r21
+    push    r20
+    jsr     m16_clear_open_rows_for_module
+    pop     r20
+    store.l r0, KD_MODULE_STATE(r20)
+    move.q  r1, r20
+    rts
+
+; R1 = row index. Signals all current opener tasks with SIGF_MODDEAD.
+m16_module_signal_openers_dead:
+    move.q  r20, r1
+    move.l  r21, #0
+    move.l  r22, #KERN_DATA_BASE
+    add     r22, r22, #KD_MODULE_OPEN_ROWS
+.m16_msod_scan:
+    move.l  r23, #KD_MODULE_OPEN_ROW_MAX
+    bge     r21, r23, .m16_msod_done
+    load.l  r23, KD_MODULE_OPEN_ROW_COUNT(r22)
+    beqz    r23, .m16_msod_next
+    load.l  r24, KD_MODULE_OPEN_ROW_INDEX(r22)
+    bne     r24, r20, .m16_msod_next
+    load.l  r24, KD_MODULE_OPEN_ROW_TASK(r22)
+    move.q  r1, r24
+    push    r20
+    push    r21
+    push    r22
+    jsr     kern_find_slot_for_public_id
+    pop     r22
+    pop     r21
+    pop     r20
+    beqz    r2, .m16_msod_next
+    move.q  r1, r1
+    move.q  r2, #SIGF_MODDEAD
+    jsr     m16_signal_task_slot_mask
+.m16_msod_next:
+    add     r22, r22, #KD_MODULE_OPEN_ROW_STRIDE
+    add     r21, r21, #1
+    bra     .m16_msod_scan
+.m16_msod_done:
+    rts
+
+; Inputs: R1 = opener public task ID, R2 = module row index, R3 = generation
+; Returns: R1 = open-row addr or 0
+m16_open_row_find:
+    move.l  r4, #0
+    move.l  r5, #KERN_DATA_BASE
+    add     r5, r5, #KD_MODULE_OPEN_ROWS
+.m16_orf_scan:
+    move.l  r6, #KD_MODULE_OPEN_ROW_MAX
+    bge     r4, r6, .m16_orf_none
+    load.l  r6, KD_MODULE_OPEN_ROW_COUNT(r5)
+    beqz    r6, .m16_orf_next
+    load.l  r6, KD_MODULE_OPEN_ROW_TASK(r5)
+    bne     r6, r1, .m16_orf_next
+    load.l  r6, KD_MODULE_OPEN_ROW_INDEX(r5)
+    bne     r6, r2, .m16_orf_next
+    load.l  r6, KD_MODULE_OPEN_ROW_GEN(r5)
+    bne     r6, r3, .m16_orf_next
+    move.q  r1, r5
+    rts
+.m16_orf_next:
+    add     r5, r5, #KD_MODULE_OPEN_ROW_STRIDE
+    add     r4, r4, #1
+    bra     .m16_orf_scan
+.m16_orf_none:
+    move.q  r1, #0
+    rts
+
+; Inputs: R1 = opener public task ID, R2 = module row index, R3 = generation
+; Returns: R1 = open-row addr or 0
+m16_open_row_find_or_alloc:
+    push    r1
+    push    r2
+    push    r3
+    jsr     m16_open_row_find
+    bnez    r1, .m16_orfoa_found
+    pop     r3
+    pop     r2
+    pop     r1
+    move.l  r4, #0
+    move.l  r5, #KERN_DATA_BASE
+    add     r5, r5, #KD_MODULE_OPEN_ROWS
+.m16_orfoa_scan:
+    move.l  r6, #KD_MODULE_OPEN_ROW_MAX
+    bge     r4, r6, .m16_orfoa_none
+    load.l  r6, KD_MODULE_OPEN_ROW_COUNT(r5)
+    beqz    r6, .m16_orfoa_alloc
+    add     r5, r5, #KD_MODULE_OPEN_ROW_STRIDE
+    add     r4, r4, #1
+    bra     .m16_orfoa_scan
+.m16_orfoa_alloc:
+    store.l r1, KD_MODULE_OPEN_ROW_TASK(r5)
+    store.l r2, KD_MODULE_OPEN_ROW_INDEX(r5)
+    store.l r3, KD_MODULE_OPEN_ROW_GEN(r5)
+    store.l r0, KD_MODULE_OPEN_ROW_COUNT(r5)
+    move.q  r1, r5
+    rts
+.m16_orfoa_found:
+    move.q  r4, r1
+    pop     r3
+    pop     r2
+    pop     r1
+    move.q  r1, r4
+    rts
+.m16_orfoa_none:
+    move.q  r1, #0
+    rts
+
+; R1 = module row index. Clears all opener rows for that module.
+m16_clear_open_rows_for_module:
+    move.q  r2, r1
+    move.l  r3, #0
+    move.l  r4, #KERN_DATA_BASE
+    add     r4, r4, #KD_MODULE_OPEN_ROWS
+.m16_corm_scan:
+    move.l  r5, #KD_MODULE_OPEN_ROW_MAX
+    bge     r3, r5, .m16_corm_done
+    load.l  r5, KD_MODULE_OPEN_ROW_COUNT(r4)
+    beqz    r5, .m16_corm_next
+    load.l  r5, KD_MODULE_OPEN_ROW_INDEX(r4)
+    bne     r5, r2, .m16_corm_next
+    store.l r0, KD_MODULE_OPEN_ROW_TASK(r4)
+    store.l r0, KD_MODULE_OPEN_ROW_INDEX(r4)
+    store.l r0, KD_MODULE_OPEN_ROW_GEN(r4)
+    store.l r0, KD_MODULE_OPEN_ROW_COUNT(r4)
+.m16_corm_next:
+    add     r4, r4, #KD_MODULE_OPEN_ROW_STRIDE
+    add     r3, r3, #1
+    bra     .m16_corm_scan
+.m16_corm_done:
+    rts
+
+; R1 = opener public task ID. Clears leaked opener rows owned by that task and
+; decrements the matching module open_count only when the row generation still
+; matches the live registry row.
+m16_module_opener_exit_cleanup:
+    move.q  r20, r1
+    move.l  r2, #0
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_MODULE_OPEN_ROWS
+.m16_mopec_scan:
+    move.l  r3, #KD_MODULE_OPEN_ROW_MAX
+    bge     r2, r3, .m16_mopec_done
+    load.l  r3, KD_MODULE_OPEN_ROW_COUNT(r21)
+    beqz    r3, .m16_mopec_next
+    load.l  r4, KD_MODULE_OPEN_ROW_TASK(r21)
+    bne     r4, r20, .m16_mopec_next
+    load.l  r5, KD_MODULE_OPEN_ROW_INDEX(r21)
+    load.l  r6, KD_MODULE_OPEN_ROW_GEN(r21)
+    move.q  r1, r5
+    push    r2
+    push    r20
+    push    r21
+    push    r3
+    push    r5
+    push    r6
+    jsr     m16_module_row_addr_for_index
+    move.q  r22, r1
+    pop     r6
+    pop     r5
+    pop     r3
+    pop     r21
+    pop     r20
+    pop     r2
+    beqz    r22, .m16_mopec_clear
+    load.l  r4, KD_MODULE_GENERATION(r22)
+    bne     r4, r6, .m16_mopec_clear
+    load.l  r4, KD_MODULE_OPEN_COUNT(r22)
+    beqz    r4, .m16_mopec_clear
+    bgt     r3, r4, .m16_mopec_zero_count
+    sub     r4, r4, r3
+    store.l r4, KD_MODULE_OPEN_COUNT(r22)
+    bra     .m16_mopec_clear
+.m16_mopec_zero_count:
+    store.l r0, KD_MODULE_OPEN_COUNT(r22)
+.m16_mopec_clear:
+    store.l r0, KD_MODULE_OPEN_ROW_TASK(r21)
+    store.l r0, KD_MODULE_OPEN_ROW_INDEX(r21)
+    store.l r0, KD_MODULE_OPEN_ROW_GEN(r21)
+    store.l r0, KD_MODULE_OPEN_ROW_COUNT(r21)
+.m16_mopec_next:
+    add     r21, r21, #KD_MODULE_OPEN_ROW_STRIDE
+    add     r2, r2, #1
+    bra     .m16_mopec_scan
+.m16_mopec_done:
+    rts
+
+; R1 = owning public task ID. Marks owned modules UNLOADED and clears open rows.
+m16_module_owner_exit_cleanup:
+    move.q  r20, r1
+    move.l  r2, #0
+.m16_moec_scan:
+    move.q  r22, r2
+    move.l  r3, #KD_MODULE_MAX
+    bge     r2, r3, .m16_moec_done
+    move.q  r1, r2
+    push    r2
+    jsr     m16_module_row_addr_for_index
+    pop     r2
+    move.q  r21, r1
+    load.l  r3, KD_MODULE_STATE(r21)
+    beqz    r3, .m16_moec_next
+    move.q  r23, r3
+    load.l  r3, KD_MODULE_OWNING_TASK(r21)
+    bne     r3, r20, .m16_moec_next
+    move.l  r11, #M16_MODSTATE_LOADING
+    beq     r23, r11, .m16_moec_fail_loading
+    move.q  r1, r21
+    move.q  r2, r22
+    move.q  r3, #ERR_NOTFOUND
+    push    r22
+    jsr     m16_module_fail_to_unloaded
+    move.q  r21, r1
+    pop     r22
+    store.l r0, KD_MODULE_STATE(r21)
+    bra     .m16_moec_next
+.m16_moec_fail_loading:
+    move.q  r1, r21
+    move.q  r2, r22
+    move.q  r3, #ERR_NOTFOUND
+    push    r22
+    jsr     m16_module_fail_to_unloaded
+    move.q  r21, r1
+    pop     r22
+    store.l r0, KD_MODULE_STATE(r21)
+.m16_moec_next:
+    move.q  r2, r22
+    add     r2, r2, #1
+    bra     .m16_moec_scan
+.m16_moec_done:
+    jsr     m16_module_sweep_failed_rows
+    move.q  r1, r20
+    rts
+
+; Final belt-and-braces sweep: FAILED is internal/transient only. If an owner
+; exit path left any row behind in FAILED, collapse it back to UNLOADED while
+; clearing remaining transient runtime fields.
+m16_module_sweep_failed_rows:
+    move.l  r2, #0
+.m16_msfr_scan:
+    move.l  r3, #KD_MODULE_MAX
+    bge     r2, r3, .m16_msfr_done
+    move.q  r1, r2
+    push    r2
+    jsr     m16_module_row_addr_for_index
+    pop     r2
+    move.q  r21, r1
+    load.l  r3, KD_MODULE_STATE(r21)
+    move.l  r11, #M16_MODSTATE_FAILED
+    bne     r3, r11, .m16_msfr_next
+    store.w r0, KD_MODULE_VERSION(r21)
+    store.w r0, KD_MODULE_REVISION(r21)
+    store.l r0, KD_MODULE_CLASS(r21)
+    store.l r0, KD_MODULE_OWNING_TASK(r21)
+    store.l r0, KD_MODULE_PUBLIC_PORT(r21)
+    store.l r0, KD_MODULE_OPEN_COUNT(r21)
+    store.l r0, KD_MODULE_FLAGS(r21)
+    store.q r0, KD_MODULE_WAITERS_HEAD(r21)
+    store.l r0, KD_MODULE_DEADLINE_TICK(r21)
+    move.q  r1, r2
+    push    r2
+    push    r21
+    jsr     m16_clear_open_rows_for_module
+    pop     r21
+    pop     r2
+    store.l r0, KD_MODULE_STATE(r21)
+.m16_msfr_next:
+    add     r2, r2, #1
+    bra     .m16_msfr_scan
+.m16_msfr_done:
+    rts
+
+; Best-effort timeout enforcement for expunging libraries. Runs on the kernel
+; timer path while the kernel PT is active.
+m16_module_timeout_scan:
+    move.l  r20, #KERN_DATA_BASE
+    load.q  r24, KD_TICK_COUNT(r20)
+    move.l  r21, #0
+.m16_mts_scan:
+    move.l  r11, #KD_MODULE_MAX
+    bge     r21, r11, .m16_mts_done
+    move.q  r1, r21
+    push    r20
+    push    r21
+    push    r24
+    jsr     m16_module_row_addr_for_index
+    move.q  r22, r1
+    pop     r24
+    pop     r21
+    pop     r20
+    load.l  r11, KD_MODULE_STATE(r22)
+    move.l  r14, #M16_MODSTATE_EXPUNGING
+    bne     r11, r14, .m16_mts_next
+    load.l  r23, KD_MODULE_DEADLINE_TICK(r22)
+    beqz    r23, .m16_mts_next
+    bgt     r23, r24, .m16_mts_next
+    load.l  r1, KD_MODULE_OWNING_TASK(r22)
+    beqz    r1, .m16_mts_force_unload
+    push    r20
+    push    r21
+    push    r22
+    push    r24
+    jsr     kern_find_slot_for_public_id
+    move.q  r25, r1
+    pop     r24
+    pop     r22
+    pop     r21
+    pop     r20
+    beqz    r2, .m16_mts_force_unload
+    move.q  r13, r25
+    move.l  r14, #TASK_EXIT_REASON_INTERNAL
+    push    r20
+    push    r21
+    push    r22
+    push    r24
+    jsr     kill_task_cleanup
+    pop     r24
+    pop     r22
+    pop     r21
+    pop     r20
+    bra     .m16_mts_next
+.m16_mts_force_unload:
+    move.q  r1, r22
+    move.q  r2, r21
+    move.q  r3, #ERR_NOTFOUND
+    push    r20
+    push    r21
+    push    r22
+    push    r24
+    jsr     m16_module_fail_to_unloaded
+    pop     r24
+    pop     r22
+    pop     r21
+    pop     r20
+.m16_mts_next:
+    add     r21, r21, #1
+    bra     .m16_mts_scan
+.m16_mts_done:
+    rts
+
+; Inputs: R1 = row index, R2 = generation. Returns R1 = 32-bit token in low bits.
+m16_make_library_token:
+    and     r1, r1, #0xFF
+    lsl     r2, r2, #8
+    or      r1, r2, r1
+    rts
+
+; Input: R1 = token. Returns R1 = row index, R2 = generation.
+m16_decode_library_token:
+    lsr     r2, r1, #8
+    and     r1, r1, #0xFF
+    rts
+
 ; ============================================================================
 ; kill_task_cleanup: clean up task R13, mark FREE.
 ; Input: R13 = task to kill, R12 = KERN_DATA_BASE, R14 = TASK_EXIT_REASON_*
@@ -9183,7 +11303,6 @@ m16_atomic_list_detach_all:
 kill_task_cleanup:
     push    r19
     jsr     kern_task_exit_hooks_run
-    pop     r19
     lsl     r15, r13, #5
     add     r15, r15, #KD_TASK_BASE
     add     r15, r15, r12
@@ -9458,10 +11577,44 @@ kill_task_cleanup:
     move.q  r1, r13
     jsr     kern_task_pubid_addr
     load.l  r15, (r1)                   ; r15 = exiting public task ID
+    move.l  r12, #KERN_DATA_BASE
+    load.l  r14, KD_DOSLIB_PUBID(r12)
+    bne     r14, r15, .ktc_skip_dos_bootstrap_check
     move.q  r1, r15
+    push    r15
+    push    r13
+    jsr     kern_dos_bootstrap_completed
+    pop     r13
+    pop     r15
+    bnez    r1, .ktc_skip_dos_bootstrap_check
+    la      r8, boot_fail_msg
+    jsr     kern_puts
+    halt
+.ktc_skip_dos_bootstrap_check:
+    move.q  r1, r15
+    push    r15
+    push    r13
+    jsr     m16_module_opener_exit_cleanup
+    pop     r13
+    pop     r15
+    move.q  r1, r15
+    push    r15
+    push    r13
+    jsr     m16_module_owner_exit_cleanup
+    pop     r13
+    pop     r15
+    move.q  r1, r15
+    push    r15
+    push    r13
     jsr     kern_grant_release_for_grantor
+    pop     r13
+    pop     r15
     move.q  r1, r15
+    push    r15
+    push    r13
     jsr     kern_grant_release_for_task
+    pop     r13
+    pop     r15
     ;
     ; (b) If the exiting task IS the broker (KD_HWRES_TASK == public_id),
     ;     clear the broker identity. After this, a fresh task can claim
@@ -9529,6 +11682,7 @@ kill_task_cleanup:
     ; inherit stale counts. Safe if the quota page was never allocated.
     move.q  r1, r13
     jsr     quota_zero_row
+    pop     r19
     rts
 
 ; ============================================================================
@@ -9809,6 +11963,7 @@ endif
     load.q  r10, KD_TICK_COUNT(r12)
     add     r10, r10, #1
     store.q r10, KD_TICK_COUNT(r12)
+    jsr     m16_module_timeout_scan
 
     ; Context switch
     load.q  r13, (r12)              ; current_task

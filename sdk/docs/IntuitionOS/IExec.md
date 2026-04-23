@@ -44,7 +44,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
   - the kernel now prepares staged strict-M14 ELF rows for the internal embedded boot manifest and keeps bootstrap grants keyed by internal manifest entry ID
   - `console.handler` and `dos.library` boot from that staged manifest source as the minimum pre-DOS bootstrap chain
   - once DOS is online, `dos.library` launches `Shell` from the internal embedded manifest, and `Shell` then drives `S:Startup-Sequence`
-  - DOS resolves the service-name lines in `S:Startup-Sequence` through its internal embedded-manifest path to launch `hardware.resource`, `input.device`, `graphics.library`, and `intuition.library`
+  - the current M16 phase-5 runtime keeps `S:Startup-Sequence` command-only for libraries: it launches `hardware.resource` and `input.device`, while `graphics.library` and `intuition.library` are demand-loaded through `OpenLibrary`
   - shipped service binaries under `LIBS:`, `DEVS:`, and `RESOURCES:` are now shipped as strict M14 ELF too
   - the public DOS loader API is unchanged; the embedded-manifest service source remains internal-only
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
@@ -138,14 +138,27 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - the runtime loader contract remains strict `ET_EXEC`; M15.5 does not add `ET_DYN`, runtime relocation, ASLR, or KASLR
 - the canonical PIE-capable codegen rules now live in [Toolchain.md](/home/zayn/GolandProjects/IntuitionEngine/sdk/docs/IntuitionOS/Toolchain.md)
 
-**M16 planned protected module subsystem:**
+**M16 protected module subsystem current runtime:**
 
-- `OpenLibrary` / `CloseLibrary` become the canonical programmer-facing lifecycle for runtime libraries
-- exec owns the protected module registry and lifecycle; `dos.library` owns normal file/path/loading policy
-- the ABI/data model is module-shaped (`library`, `device`, `handler`, `resource`) while the public v1 implementation remains library-first
-- `FindPort`-based compatibility transport stays valid during migration so existing clients do not break all at once
-- ordinary libraries stop being launched from `S:Startup-Sequence` as fake commands once demand-loading is complete
-- see [M16-plan.md](/home/zayn/GolandProjects/IntuitionEngine/sdk/docs/IntuitionOS/M16-plan.md) for the M16 milestone spec
+- `OpenLibrary` / `CloseLibrary` are the canonical programmer-facing lifecycle for runtime libraries
+- exec owns the protected module registry and lifecycle; `dos.library` owns normal file/path/loading policy and protected task launch
+- module-class framework (`library` first; `device`/`handler`/`resource` reserved) is now the runtime-facing data model even though the shipped public implementation remains library-first
+- `RegisterModule` / `AddLibrary` are the internal exec-owned registration path used by trusted library tasks after init succeeds
+- `FindPort`-based compat ports remain published as the internal transport bridge, but shipped library clients acquire runtime libraries through `OpenLibrary` first so module open-count / `SIGF_MODDEAD` tracking remains exec-owned
+- `graphics.library` and `intuition.library` are no longer launched from `S:Startup-Sequence`; they autoload on first `OpenLibrary`
+- `RESIDENT` pins or unpins library rows through the registry without reintroducing startup-script lifecycle hacks
+- library crash teardown signals openers with `SIGF_MODDEAD`, sweeps transient row state, and allows a later `OpenLibrary` to start a clean reload
+- see [M16-plan.md](/home/zayn/GolandProjects/IntuitionEngine/sdk/docs/IntuitionOS/M16-plan.md) for the full milestone/addendum spec
+
+**M16 registry summary:**
+
+- registry row layout: name, class, state, generation, version/revision, owning task, compat public port, open count, flags, waiter head, and expunge deadline
+- state machine: `UNLOADED -> LOADING -> ONLINE -> EXPUNGING/FAILED -> UNLOADED`, with stale-token `CloseLibrary` treated as a safe no-op
+- expunge protocol: exec queues `LIB_OP_EXPUNGE`, waits for `SYS_M16_EXPUNGE_RESULT`, and either unloads the library generation or cancels the expunge if a reopen/resident pin revives the row
+- bootstrap path: exec loads `dos.library` directly from `IOSSYS:LIBS/dos.library`, marks it resident in the registry, and leaves later runtime libraries to `OpenLibrary` autoload
+- panic contract: a library that dies before `AddLibrary` or while ONLINE never leaves a callable half-online row; waiters/openers see failure or `SIGF_MODDEAD`, and the next open retries from `UNLOADED`
+- `MODF_RESIDENT`, `MODF_COMPAT_PORT`, and `SIGF_MODDEAD` are the currently shipped public constants; `MODF_ASLR_CAPABLE` remains a design-level note tied to PIE-capable codegen direction rather than a widened runtime loader contract today
+- per-task open tracking remains v1 bookkeeping; M16 tracks opener task/count rows for correctness and crash signaling, while deeper automatic task-owned-handle sweep remains future work
 
 IExec runs on the IE64 CPU core only. It requires the IE64 MMU (4 KiB paged virtual memory, software TLB, control registers) and the hardware timer for preemption.
 
@@ -599,7 +612,7 @@ M14.1 target:
 - the kernel data page now carries a small internal boot-manifest table for `console.handler` and `dos.library`
 - those rows are the source of bootstrap-grant identity, but first-service launch still uses the stable bundled boot loader after the staged ELF validation step
 
-**5.12.6 hardware.resource user-space service.** Bundled program `prog_hwres` shipped in the RAM filesystem as `RESOURCES:hardware.resource`. `S/Startup-Sequence` launches it BEFORE `input.device` and `graphics.library` so it has its public port `hardware.resource` registered before any client calls `FindPort`. Service body:
+**5.12.6 hardware.resource user-space service.** Bundled program `prog_hwres` shipped in the RAM filesystem as `RESOURCES:hardware.resource`. `S/Startup-Sequence` launches it before `input.device`, and before any later demand-loaded `graphics.library` client path, so it has its public port `hardware.resource` registered before any client calls `FindPort`. Service body:
 
 1. `SYS_HWRES_OP`/`HWRES_BECOME` — claim broker identity.
 2. `CreatePort("hardware.resource", PF_PUBLIC)` — register the public port.

@@ -81,6 +81,20 @@ The same header now exports the M15.6 shared-memory permission bits used by `SYS
 - `BOOT_HOSTFS_CREATE_WRITE` (6) — `arg1 = path ptr`. Opens (or creates+truncates) the file for writing; returns a host handle in `res1`. The host device rejects any path whose first component is `IOSSYS` (case-insensitive), enforcing the read-only IOSSYS namespace.
 - `BOOT_HOSTFS_WRITE` (7) — `arg1 = handle, arg2 = src ptr, arg3 = byte_count`. Writes bytes to an open hostfs handle; returns the byte count actually written in `res1`.
 
+As of **M16**, `iexec.inc` also exports the protected-module/library lifecycle ABI used by shipped IntuitionOS libraries:
+
+- `SYS_OPEN_LIBRARY_EX` — registry-backed `OpenLibrary` for online/loading libraries with waiter completion
+- `SYS_CLOSE_LIBRARY` — generation-checked `CloseLibrary` for opaque library-base tokens
+- `SYS_ADD_LIBRARY` — trusted internal library registration path (`RegisterModule`/`AddLibrary` for class `library`)
+- `SYS_SET_RESIDENT` — toggle `MODF_RESIDENT` on a library row by name (`RESIDENT` shell command uses this)
+- `SYS_M16_EXPUNGE_RESULT` — trusted internal reply path for library accept/refuse of an exec-managed expunge
+- `SIGF_MODDEAD` — signal bit delivered to opener tasks when an online library owner dies
+- `MODF_RESIDENT` — runtime pin bit; close-to-zero keeps the row online at the resident floor
+- `MODF_COMPAT_PORT` — manifest/runtime bit indicating the library publishes a FindPort-visible compat public port
+- `LIB_OP_EXPUNGE` — control opcode queued by exec when a non-resident close-to-zero enters expunge
+
+This M16 surface is intentionally narrow. `iexec.inc` documents the shipped ABI constants; the larger manifest/schema/state-machine discussion lives in `sdk/docs/IntuitionOS/IExec.md` and `sdk/docs/IntuitionOS/M16-plan.md`. The M14.2 `ET_EXEC` loader boundary remains unchanged while the module subsystem sits on top of it.
+
 As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level kernel image/layout source, while `sdk/intuitionos/iexec/runtime_builder.s` assembles the standalone hostfs runtime artifacts. Command bodies live under `sdk/intuitionos/iexec/cmd/`, the non-DOS boot services now live under `sdk/intuitionos/iexec/handler/`, `sdk/intuitionos/iexec/dev/`, `sdk/intuitionos/iexec/resource/`, and `sdk/intuitionos/iexec/lib/`, the interactive shell itself lives in `sdk/intuitionos/iexec/handler/shell.s`, and the DOS-owned block lives under `sdk/intuitionos/iexec/lib/dos_library.s`. The remaining subordinate runtime files now include `sdk/intuitionos/iexec/assets/elfseg_fixture.s`, `sdk/intuitionos/iexec/cmd/gfxdemo.s`, and `sdk/intuitionos/iexec/cmd/about.s`. The last root boot/image wiring blocks now live in `sdk/intuitionos/iexec/boot/bootstrap.s` and `sdk/intuitionos/iexec/boot/strings.s`. This does not change the role of `iexec.inc`: it remains the shared contract include for both the kernel image source and the split IntuitionOS component files.
 
 ### Video Registers

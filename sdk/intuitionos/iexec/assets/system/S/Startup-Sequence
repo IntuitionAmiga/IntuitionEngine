@@ -1,6 +1,4 @@
 RESOURCES/hardware.resource
 DEVS/input.device
-LIBS/graphics.library
-LIBS/intuition.library
 VERSION
 ECHO Type HELP for commands and ASSIGN for layout

@@ -6078,6 +6078,14 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 - **strict `ET_EXEC` runtime contract remains unchanged.** M15.5 does not add `ET_DYN`, runtime relocation, ASLR, or KASLR; it tightens substrate and diagnostics without widening the executable format boundary.
 - **Internal teardown and fault substrate are now explicit.** Exec now has ordered internal task-exit hooks, richer hardening diagnostics, and documented MMIO carve-outs/grant-path assumptions as groundwork for M16 rather than user-visible module behavior.
 
+**M16 protected module subsystem status** - the protected library lifecycle is now shipped, documented, and test-covered:
+
+- **`OpenLibrary` / `CloseLibrary` are now the canonical programmer-facing library lifecycle.** Shipped library clients acquire runtime libraries through the registry-backed path first and only resolve compat ports afterward as internal transport, so module open-count and death-notification tracking stays exec-owned.
+- **`graphics.library` and `intuition.library` are no longer launched from `S:Startup-Sequence`.** `dos.library` remains the first disk-backed bootstrap library opened by exec; `graphics.library` and `intuition.library` now demand-load on first `OpenLibrary`.
+- **Exec owns the protected module registry.** Library rows track identity, state, version, generation, owner task, compat port, open count, flags, waiter queue, and expunge deadline so crash/expunge/reload cycles stay generation-safe.
+- **Library registration and expunge are explicit.** Library tasks self-register through `AddLibrary`, exec drives `LIB_OP_EXPUNGE`, and `RESIDENT` shell command pin/unpin flows toggle `MODF_RESIDENT` without turning libraries back into startup-sequence commands.
+- **Crash handling is observable to clients.** If an online library task dies, exec tears the row down, releases the loader bookkeeping, and signals openers with `SIGF_MODDEAD` before the next `OpenLibrary` triggers a clean reload.
+
 **M15.1 source layout status** - the IntuitionOS sources are no longer forced to live in one monolithic assembly body, and the hostfs runtime now builds separately from the kernel image:
 
 - `sdk/intuitionos/iexec/iexec.s` remains the kernel assembly entrypoint and the top-level `exec.library` image/layout file.

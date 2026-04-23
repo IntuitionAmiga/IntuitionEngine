@@ -81,6 +81,13 @@ SYS_QUOTA_SET_LIMIT equ 42         ; diagnostic / test-only — overrides a per-
                                    ; R1 = QUOTA_KIND_*, R2 = new u32 limit. Not a stable ABI;
                                    ; exists so tests can drive boundary behavior without
                                    ; having to exhaust 32 MB of real resources.
+SYS_CLOSE_LIBRARY equ 43           ; nucleus — M16 managed library close by opaque LibraryBase token
+SYS_ADD_LIBRARY   equ 44           ; trusted-internal — M16 library self-registration into exec registry
+SYS_OPEN_LIBRARY_EX equ 45         ; nucleus — M16 registry-backed OpenLibrary for ONLINE libraries
+SYS_M16_COPY_MODULE_NAME equ 46    ; trusted-internal — dos.library copies a pending M16 module row name
+SYS_M16_LIBRARY_LOAD_RESULT equ 47 ; trusted-internal — dos.library publishes M16 launch success/failure
+SYS_SET_RESIDENT equ 48            ; nucleus — toggles MODF_RESIDENT on a library row by name
+SYS_M16_EXPUNGE_RESULT equ 49      ; trusted-internal — library replies accept/refuse to a specific exec-managed expunge row
 
 ; ===========================================================================
 ; Error Codes
@@ -99,6 +106,9 @@ ERR_FULL          equ 9          ; global resource pool exhausted (e.g., no free
 ERR_QUOTA         equ 10         ; M15.6 G3: caller's per-task quota reached its limit. Distinct from
                                  ; ERR_FULL so tests and diagnostics can distinguish "this task is out
                                  ; of budget" from "the whole kernel is out of <resource>".
+ERR_LIB_VERSION   equ 11         ; M16: library exists but lib_version < minVersion
+
+BOOT_ELF_EXEC_FLAG_TRUSTED_INTERNAL equ 0x1
 
 ; ===========================================================================
 ; MapShared Permission Bits (M15.6 G6)
@@ -265,6 +275,7 @@ TASK_FREE         equ 3           ; slot is unused and reusable
 
 ; Signal bit constants
 SIGF_PORT         equ 1           ; Bit 0: message arrived at a port
+SIGF_MODDEAD      equ 2           ; Bit 1: opened module/library owner died
 ; WaitPort sentinel
 WAITPORT_NONE     equ 0xFF        ; not blocked in WaitPort
 
@@ -344,6 +355,9 @@ KD_TASK_LAYOUT_PT_BASE   equ 48    ; u64
 
 TASK_LAYOUT_FLAG_STACK_GUARD equ 0x00000001 ; stack allocation reserves one extra
                                             ; non-present page below the mapped stack
+TASK_LAYOUT_FLAG_TRUSTED_INTERNAL equ 0x00000002 ; task was spawned by an exec-owned
+                                                 ; trusted-internal loader path and may
+                                                 ; use internal-only registration syscalls
 
 KD_TASK_IMG_BITMAP       equ 65688 ; 512 bits = 64 bytes
 KD_TASK_IMG_BITMAP_SZ    equ 64
@@ -354,11 +368,68 @@ KD_TASK_PUBID_STRIDE     equ 4
 KD_TASKID_NEXT           equ 66840 ; u64 monotonic next public task ID
 TASK_PUBID_FREE          equ 0xFFFFFFFF
 
+; M16 phase-1 foundation: exec-owned library registry rows and per-task open
+; bookkeeping. Fixed-size in v1 bring-up; enough for the current boot/runtime
+; library set and focused regression coverage.
+;
+; Layout note: quota bookkeeping occupies 67128..67151 and the kernel stack
+; guard page begins at VA 0x09E000, so the M16 fixed tables must stay below
+; that guard page without overlapping the quota bookkeeping.
+KD_MODULE_TABLE          equ 67152 ; 16 rows × 80 bytes = 1280 bytes
+KD_MODULE_ROW_STRIDE     equ 80
+KD_MODULE_MAX            equ 16
+KD_MODULE_NAME           equ 0     ; char[32] NUL-padded
+KD_MODULE_STATE          equ 32    ; u32
+KD_MODULE_GENERATION     equ 36    ; u32
+KD_MODULE_VERSION        equ 40    ; u16
+KD_MODULE_REVISION       equ 42    ; u16
+KD_MODULE_CLASS          equ 44    ; u32 (reserved, 1 = library in v1)
+KD_MODULE_OWNING_TASK    equ 48    ; u32 owning public task ID
+KD_MODULE_PUBLIC_PORT    equ 52    ; u32 compat public port ID
+KD_MODULE_OPEN_COUNT     equ 56    ; u32
+KD_MODULE_FLAGS          equ 60    ; u32 manifest/runtime flags (reserved in this slice)
+KD_MODULE_WAITERS_HEAD   equ 64    ; u64 waiter-row token head (0 = none)
+KD_MODULE_DEADLINE_TICK  equ 72    ; u32 expunge grace deadline tick (0 = none)
+
+M16_MODSTATE_UNLOADED    equ 0
+M16_MODSTATE_LOADING     equ 1
+M16_MODSTATE_ONLINE      equ 2
+M16_MODSTATE_FAILED      equ 3
+M16_MODSTATE_EXPUNGING   equ 4
+
+M16_EXPUNGE_GRACE_TICKS  equ 32
+
+MODF_RESIDENT           equ 0x00000001 ; runtime pin: CloseLibrary-to-zero keeps
+                                       ; the row ONLINE at the resident floor
+MODF_COMPAT_PORT        equ 0x00000002 ; manifest contract: module publishes a
+                                       ; FindPort-visible public compat port
+
+LIB_OP_EXPUNGE          equ 0x4D313645
+
+KD_MODULE_WAITER_ROWS    equ 68712 ; 16 rows × 24 bytes = 384 bytes
+KD_MODULE_WAITER_STRIDE  equ 24
+KD_MODULE_WAITER_MAX     equ 16
+KD_MODULE_WAITER_TASK    equ 0     ; u32 waiter public task ID
+KD_MODULE_WAITER_MINVER  equ 4     ; u16 requested min version
+KD_MODULE_WAITER_SIGBIT  equ 6     ; u16 waiter-owned signal bit
+KD_MODULE_WAITER_OUTCOME equ 8     ; u32 user VA of 16-byte outcome slot
+KD_MODULE_WAITER_AUX     equ 12    ; u32 reserved
+KD_MODULE_WAITER_NEXT    equ 16    ; u64 next waiter token (0 = none)
+
+KD_MODULE_OPEN_ROWS      equ 69096 ; 32 rows × 16 bytes = 512 bytes
+KD_MODULE_OPEN_ROW_STRIDE equ 16
+KD_MODULE_OPEN_ROW_MAX   equ 32
+KD_MODULE_OPEN_ROW_TASK  equ 0     ; u32 opener public task ID
+KD_MODULE_OPEN_ROW_INDEX equ 4     ; u32 module row index
+KD_MODULE_OPEN_ROW_GEN   equ 8     ; u32 generation
+KD_MODULE_OPEN_ROW_COUNT equ 12    ; u32 per-task open count
+KD_MODULE_PATH_SCRATCH   equ 69608 ; 80-byte transient host path buffer/save area for M16 autoload
+
 ; M14.1: runtime boot manifest rows for the internal embedded-ELF service
 ; path. Phase 2 boots the first two rows (console.handler, dos.library);
 ; phase 3 lets dos.library launch the remaining rows after DOS is online.
 KD_DOSLIB_PUBID          equ 49340 ; u32 public task ID of launched dos.library
-KD_BOOT_MANIFEST_BASE       equ 66848
+KD_BOOT_MANIFEST_BASE       equ 68432
 KD_BOOT_MANIFEST_STRIDE     equ 40
 KD_BOOT_MANIFEST_COUNT      equ 7
 KD_BOOT_MANIFEST_BOOT_COUNT equ 2
@@ -378,6 +449,7 @@ BOOT_MANIFEST_ID_HWRES      equ 13
 BOOT_MANIFEST_ID_INPUT      equ 14
 BOOT_MANIFEST_ID_GRAPHICS   equ 15
 BOOT_MANIFEST_ID_INTUITION  equ 16
+BOOT_MANIFEST_FLAG_TRUSTED_INTERNAL equ 0x1
 
 ; ===========================================================================
 ; M15.6 G3: per-task resource quotas
@@ -626,11 +698,12 @@ USER_DYN_PAGES    equ 768         ; max pages per single AllocMem call
 ;   0(sp) = startup_block_base
 ;   8(sp) = data_base
 ; Services can then read both without deriving addresses from task_id.
-TASK_STARTUP_SIZE        equ 64
+TASK_STARTUP_SIZE        equ 96
 TASK_STARTUP_VERSION     equ 1
 TASK_STARTUP_FLAG_CREATE equ 0x1
 TASK_STARTUP_FLAG_EXEC   equ 0x2
 TASK_STARTUP_FLAG_BOOT   equ 0x4
+TASK_STARTUP_FLAG_TRUSTED_INTERNAL equ 0x8
 
 TASKSB_VERSION      equ 0x00      ; u32
 TASKSB_SIZE         equ 0x04      ; u32
@@ -642,6 +715,8 @@ TASKSB_DATA_BASE    equ 0x20      ; u64
 TASKSB_DATA_PAGES   equ 0x28      ; u32
 TASKSB_STACK_BASE   equ 0x30      ; u64
 TASKSB_STACK_PAGES  equ 0x38      ; u32
+TASKSB_BOOT_DOS_SHELL_RELPATH equ 0x40 ; 32-byte NUL-terminated fallback boot path
+TASKSB_BOOT_DOS_SHELL_RELPATH_MAX equ 32
 
 ; ---------------------------------------------------------------------------
 ; Page Bitmap — 800 bytes at kernel data offset 1664
@@ -819,6 +894,7 @@ DOS_LOADSEG       equ 7           ; Load executable into DOS-owned seglist (shar
 DOS_UNLOADSEG     equ 8           ; Free DOS-owned seglist (data0=seglist VA)
 DOS_RUNSEG        equ 9           ; Run a loaded seglist (data0=seglist VA, share=args)
 DOS_ASSIGN        equ 10          ; Assign list/query/set (share=assign row buffer)
+DOS_LOADLIB       equ 11          ; Internal: autoload one M16 library row through LIBS:
 
 ; DOS_ASSIGN sub-ops (data0)
 DOS_ASSIGN_LIST          equ 0    ; reply.data0 = row count, share = rows[name[16],target[16]]

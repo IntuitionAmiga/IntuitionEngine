@@ -69,18 +69,71 @@ prog_type_code:
 .typ_open_con_ok:
     store.q r1, 64(r29)
 
+.typ_open_dos_alloc:
+    move.l  r1, #16
+    syscall #SYS_ALLOC_SIGNAL
+    load.q  r29, (sp)
+    bnez    r2, .typ_open_dos_alloc_wait
+    store.q r1, 120(r29)               ; dos_open_sigbit
 .typ_open_dos_retry:
+    load.q  r29, (sp)
+    move.l  r14, #0xFFFFFFFF
+    store.l r14, 128(r29)              ; waiter status sentinel
+    store.l r0, 132(r29)
+    store.l r0, 136(r29)
+    store.l r0, 140(r29)
+    add     r1, r29, #16
+    move.l  r2, #0
+    load.q  r3, 120(r29)
+    add     r4, r29, #128
+    syscall #SYS_OPEN_LIBRARY_EX
+    load.q  r29, (sp)
+    beqz    r2, .typ_find_dos
+    move.l  r14, #ERR_AGAIN
+    bne     r2, r14, .typ_open_dos_wait
+    load.l  r14, 128(r29)
+    move.l  r15, #0xFFFFFFFF
+    bne     r14, r15, .typ_open_dos_done
+    load.q  r14, 120(r29)
+    move.q  r1, #1
+    lsl     r1, r1, r14
+    syscall #SYS_WAIT
+    load.q  r29, (sp)
+    bnez    r2, .typ_open_dos_wait
+    load.l  r14, 128(r29)
+    move.l  r15, #0xFFFFFFFF
+    beq     r14, r15, .typ_open_dos_wait
+.typ_open_dos_done:
+    store.q r1, 144(r29)               ; dos_library_token
+    bnez    r14, .typ_open_dos_wait
+.typ_find_dos:
     load.q  r29, (sp)
     add     r1, r29, #16
     move.l  r2, #0
     syscall #SYS_FIND_PORT
     load.q  r29, (sp)
-    beqz    r2, .typ_open_dos_ok
+    bnez    r2, .typ_open_dos_wait
+.typ_open_dos_ok:
+    store.q r1, 72(r29)
+    load.q  r14, 120(r29)
+    beqz    r14, .typ_open_dos_sigfree_done
+    move.q  r1, r14
+    syscall #SYS_FREE_SIGNAL
+    load.q  r29, (sp)
+    store.q r0, 120(r29)
+.typ_open_dos_sigfree_done:
+    bra     .typ_open_dos_ready
+
+.typ_open_dos_wait:
     syscall #SYS_YIELD
     load.q  r29, (sp)
     bra     .typ_open_dos_retry
-.typ_open_dos_ok:
-    store.q r1, 72(r29)
+.typ_open_dos_alloc_wait:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .typ_open_dos_alloc
+
+.typ_open_dos_ready:
 
     move.q  r1, r0
     move.q  r2, r0
@@ -187,17 +240,21 @@ prog_type_code:
     syscall #SYS_WAIT_PORT
     load.q  r29, (sp)
 
-    move.q  r1, r0
-    syscall #SYS_EXIT_TASK
+    bra     .typ_cleanup_exit
 
 .typ_not_found:
     load.q  r29, (sp)
     add     r20, r29, #40
     jsr     .typ_send_string
-    move.q  r1, r0
-    syscall #SYS_EXIT_TASK
+    bra     .typ_cleanup_exit
 
-.typ_no_file:
+.typ_cleanup_exit:
+    load.q  r1, 144(r29)               ; dos_library_token
+    beqz    r1, .typ_exit_task
+    syscall #SYS_CLOSE_LIBRARY
+    load.q  r29, (sp)
+    store.q r0, 144(r29)
+.typ_exit_task:
     move.q  r1, r0
     syscall #SYS_EXIT_TASK
 
@@ -248,6 +305,9 @@ prog_type_data:
     ds.b    8
     ds.b    8
     ds.b    8
+    ds.b    8                           ; 120: dos_open_sigbit
+    ds.b    16                          ; 128: dos_open outcome scratch
+    ds.b    8                           ; 144: dos_library_token
 prog_type_data_end:
     align   8
 prog_type_end:

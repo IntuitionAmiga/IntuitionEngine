@@ -15,19 +15,65 @@ prog_gfxdemo_code:
     load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)               ; data[128] = task_id
 
-    ; ===== OpenLibrary("graphics.library") with retry =====
-.gd_open_gfx:
+    ; ===== Acquire graphics.library through OpenLibraryEx, then resolve
+    ;       the compat port transport =====
+    move.l  r1, #16
+    syscall #SYS_ALLOC_SIGNAL
+    load.q  r29, (sp)
+    bnez    r2, .gd_halt
+    store.q r1, 240(r29)               ; graphics_open_sigbit
+.gd_open_gfx_retry:
+    load.q  r29, (sp)
+    move.l  r14, #0xFFFFFFFF
+    store.l r14, 248(r29)              ; waiter status sentinel
+    store.l r0, 252(r29)
+    store.l r0, 256(r29)
+    store.l r0, 260(r29)
+    add     r1, r29, #16               ; "graphics.library"
+    move.q  r2, r0
+    load.q  r3, 240(r29)               ; waiter-owned signal bit
+    add     r4, r29, #248              ; 16-byte outcome scratch
+    syscall #SYS_OPEN_LIBRARY_EX
+    load.q  r29, (sp)
+    beqz    r2, .gd_find_gfx
+    move.l  r14, #ERR_AGAIN
+    bne     r2, r14, .gd_open_gfx_yield
+    load.l  r14, 248(r29)              ; waiter status
+    move.l  r15, #0xFFFFFFFF
+    bne     r14, r15, .gd_open_gfx_done
+    load.q  r14, 240(r29)
+    move.q  r1, #1
+    lsl     r1, r1, r14
+    syscall #SYS_WAIT
+    load.q  r29, (sp)
+    bnez    r2, .gd_open_gfx_yield
+    load.l  r14, 248(r29)
+    move.l  r15, #0xFFFFFFFF
+    beq     r14, r15, .gd_open_gfx_yield
+.gd_open_gfx_done:
+    store.q r1, 232(r29)               ; graphics_library_token
+    bnez    r14, .gd_open_gfx_yield
+.gd_find_gfx:
     load.q  r29, (sp)
     add     r1, r29, #16               ; "graphics.library"
     move.l  r2, #0
-    syscall #SYS_FIND_PORT  
+    syscall #SYS_FIND_PORT
     load.q  r29, (sp)
-    beqz    r2, .gd_gfx_ok
-    syscall #SYS_YIELD
-    bra     .gd_open_gfx
+    bnez    r2, .gd_open_gfx_yield
 .gd_gfx_ok:
     store.q r1, 136(r29)               ; data[136] = graphics_port
+    load.q  r14, 240(r29)
+    beqz    r14, .gd_open_gfx_sigfree_done
+    move.q  r1, r14
+    syscall #SYS_FREE_SIGNAL
+    load.q  r29, (sp)
+    store.q r0, 240(r29)
+.gd_open_gfx_sigfree_done:
+    bra     .gd_open_in
 
+.gd_open_gfx_yield:
+    syscall #SYS_YIELD
+    bra     .gd_open_gfx_retry
     ; ===== OpenLibrary("input.device") with retry =====
 .gd_open_in:
     load.q  r29, (sp)
@@ -363,12 +409,18 @@ prog_gfxdemo_code:
     load.q  r1, 168(r29)
     syscall #SYS_WAIT_PORT
 
+.gd_cleanup_exit:
+    load.q  r1, 232(r29)               ; graphics_library_token
+    beqz    r1, .gd_exit_task
+    syscall #SYS_CLOSE_LIBRARY
+    load.q  r29, (sp)
+    store.q r0, 232(r29)
+.gd_exit_task:
     move.q  r1, r0
     syscall #SYS_EXIT_TASK
 
 .gd_halt:
-    syscall #SYS_YIELD
-    bra     .gd_halt
+    bra     .gd_cleanup_exit
 prog_gfxdemo_code_end:
 
 prog_gfxdemo_data:
@@ -400,7 +452,9 @@ prog_gfxdemo_data:
     ds.b    4                           ; 220: rect_vy
     ds.b    4                           ; 224: mouse_x
     ds.b    4                           ; 228: mouse_y
-    ds.b    8                           ; 232: pad to 8-byte
+    ds.b    8                           ; 232: graphics_library_token
+    ds.b    8                           ; 240: graphics_open_sigbit
+    ds.b    16                          ; 248: graphics_open outcome scratch
 prog_gfxdemo_data_end:
     align   8
 prog_gfxdemo_end:
