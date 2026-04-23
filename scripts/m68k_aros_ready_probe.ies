@@ -1,0 +1,110 @@
+-- m68k_aros_ready_probe.ies
+-- Boot AROS and poll the same machine-checkable state used by the Go boot
+-- harness: SysBase, ThisTask, task name, and ready/wait list visibility.
+
+local MAX_WAIT_MS = 15000
+local SAMPLE_MS = 100
+
+local THISTASK_OFF  = 0x114
+local TASKREADY_OFF = 0x196
+local TASKWAIT_OFF  = 0x1A4
+
+local floor = math.floor
+
+local function be32(v)
+    local b0 = v % 256; v = floor(v / 256)
+    local b1 = v % 256; v = floor(v / 256)
+    local b2 = v % 256; v = floor(v / 256)
+    local b3 = v % 256
+    return b0 * 16777216 + b1 * 65536 + b2 * 256 + b3
+end
+
+local function valid_ptr(v)
+    return v >= 0x1000 and v < 0x2000000
+end
+
+local function mread32(addr)
+    return be32(mem.read32(addr))
+end
+
+local function readstr(addr, maxlen)
+    local chars = {}
+    maxlen = maxlen or 48
+    for i = 0, maxlen - 1 do
+        local b = mem.read8(addr + i)
+        if b == 0 then break end
+        if b >= 32 and b < 127 then
+            chars[#chars + 1] = string.char(b)
+        end
+    end
+    return table.concat(chars)
+end
+
+local function count_list(addr)
+    local node = mread32(addr)
+    if not valid_ptr(node) then
+        return 0
+    end
+    local count = 0
+    for _ = 1, 128 do
+        if not valid_ptr(node) then break end
+        count = count + 1
+        local succ = mread32(node)
+        if succ == 0 or succ == node then break end
+        node = succ
+    end
+    return count
+end
+
+local function probe()
+    dbg.freeze()
+    local pc = dbg.get_pc()
+    local sysbase = mread32(4)
+    local thistask = 0
+    local taskname = ""
+    local ready_count = 0
+    local wait_count = 0
+    if valid_ptr(sysbase) then
+        thistask = mread32(sysbase + THISTASK_OFF)
+        ready_count = count_list(sysbase + TASKREADY_OFF)
+        wait_count = count_list(sysbase + TASKWAIT_OFF)
+        if valid_ptr(thistask) then
+            local name_ptr = mread32(thistask + 10)
+            if valid_ptr(name_ptr) then
+                taskname = readstr(name_ptr, 48)
+            end
+        end
+    end
+    dbg.resume()
+    return {
+        pc = pc,
+        sysbase = sysbase,
+        thistask = thistask,
+        taskname = taskname,
+        ready_count = ready_count,
+        wait_count = wait_count,
+        ready = valid_ptr(sysbase) and valid_ptr(thistask) and taskname ~= "",
+    }
+end
+
+sys.print("[aros-ready] booting AROS")
+cpu.load("AROS")
+dbg.open()
+
+local started = sys.time_ms()
+while sys.time_ms() - started < MAX_WAIT_MS do
+    local s = probe()
+    sys.print(string.format("[aros-ready] pc=%08X sysbase=%08X thistask=%08X task=%s ready=%d wait=%d",
+        s.pc, s.sysbase, s.thistask, s.taskname, s.ready_count, s.wait_count))
+    if s.ready then
+        sys.print("[aros-ready] READY")
+        dbg.close()
+        return
+    end
+    sys.wait_ms(SAMPLE_MS)
+end
+
+local s = probe()
+sys.print(string.format("[aros-ready] TIMEOUT pc=%08X sysbase=%08X thistask=%08X task=%s ready=%d wait=%d",
+    s.pc, s.sysbase, s.thistask, s.taskname, s.ready_count, s.wait_count))
+dbg.close()
