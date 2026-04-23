@@ -13128,8 +13128,8 @@ func TestIExec_M16_SetResidentRemoveRejectsBootstrapDosLibrary(t *testing.T) {
 	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]); got&modfResident == 0 {
 		t.Fatalf("dos.library flags=%#x after rejected REMOVE, want MODF_RESIDENT set", got)
 	}
-	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 1 {
-		t.Fatalf("dos.library open_count=%d after rejected REMOVE, want 1", got)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 2 {
+		t.Fatalf("dos.library open_count=%d after rejected REMOVE, want bootstrap floor + shell opener = 2", got)
 	}
 }
 
@@ -16124,8 +16124,8 @@ func TestIExec_M16_BootstrapDosLibraryRegistersResidentRow(t *testing.T) {
 	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleFlags:]); got&modfResident == 0 {
 		t.Fatalf("dos.library flags=%#x, want MODF_RESIDENT set", got)
 	}
-	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 1 {
-		t.Fatalf("dos.library open_count=%d, want resident bootstrap floor 1", got)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 2 {
+		t.Fatalf("dos.library open_count=%d, want resident bootstrap floor + shell opener = 2", got)
 	}
 	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOwningTask:]); got != binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdDosLibPubID:]) {
 		t.Fatalf("dos.library owner=%d, want KD_DOSLIB_PUBID=%d", got, binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdDosLibPubID:]))
@@ -24148,6 +24148,183 @@ func TestIExec_M152_Phase7_DocsNoLongerDescribeM152AsFuture(t *testing.T) {
 	requireNoSubstrings(t, roadmap,
 		"a hostfs-backed bootstrap path that can later load `dos.library`, shell, commands, libraries, devices, and resources from disk-backed paths",
 		"later phases can boot `dos.library` and `IOSSYS:Tools/Shell` from a host-backed system tree instead of the ROM image",
+	)
+}
+
+func TestIExec_M16_Phase8_DocsDescribeShippedProtectedModuleSubsystem(t *testing.T) {
+	readme := mustReadRepoFile(t, "README.md")
+	requireAllSubstrings(t, readme,
+		"M16 protected module subsystem status",
+		"`OpenLibrary` / `CloseLibrary` are now the canonical programmer-facing library lifecycle",
+		"`graphics.library` and `intuition.library` are no longer launched from `S:Startup-Sequence`",
+		"`dos.library` remains the first disk-backed bootstrap library opened by exec",
+		"`RESIDENT` shell command",
+	)
+
+	iexecDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/IExec.md")
+	requireAllSubstrings(t, iexecDoc,
+		"**M16 protected module subsystem current runtime:**",
+		"module-class framework (`library` first; `device`/`handler`/`resource` reserved)",
+		"`OpenLibrary` / `CloseLibrary` are the canonical programmer-facing lifecycle",
+		"`RegisterModule` / `AddLibrary` are the internal exec-owned registration path",
+		"registry row layout",
+		"state machine",
+		"expunge protocol",
+		"bootstrap path",
+		"panic contract",
+		"`MODF_RESIDENT`, `MODF_COMPAT_PORT`, and `SIGF_MODDEAD`",
+		"per-task open tracking remains v1 bookkeeping",
+		"shipped library clients acquire runtime libraries through `OpenLibrary` first",
+	)
+	requireNoSubstrings(t, iexecDoc,
+		"**M16 planned protected module subsystem:**",
+	)
+
+	elfDoc := mustReadRepoFile(t, "sdk/docs/IntuitionOS/ELF.md")
+	requireAllSubstrings(t, elfDoc,
+		"## M16 Protected Module Notes",
+		"M16 does not change the public M14.2 `ET_EXEC` contract",
+		"module manifest note section",
+		"`.ios.libmanifest`",
+		"`MODF_ASLR_CAPABLE` remains informational in v1",
+	)
+
+	includeDoc := mustReadRepoFile(t, "sdk/docs/include-files.md")
+	requireAllSubstrings(t, includeDoc,
+		"As of **M16**",
+		"`SYS_OPEN_LIBRARY_EX`",
+		"`SYS_CLOSE_LIBRARY`",
+		"`SYS_ADD_LIBRARY`",
+		"`SYS_SET_RESIDENT`",
+		"`SYS_M16_EXPUNGE_RESULT`",
+		"`SIGF_MODDEAD`",
+		"`MODF_RESIDENT`",
+		"`MODF_COMPAT_PORT`",
+		"`LIB_OP_EXPUNGE`",
+	)
+
+}
+
+func TestIExec_M16_ShippedLibraryClientsUseOpenLibraryLifecycle(t *testing.T) {
+	testCases := []struct {
+		path string
+		want []string
+		no   []string
+	}{
+		{
+			path: "sdk/intuitionos/iexec/cmd/about.s",
+			want: []string{
+				"syscall #SYS_OPEN_LIBRARY_EX",
+				`"intuition.library"`,
+			},
+			no: []string{
+				`FindPort("intuition.library") first`,
+			},
+		},
+		{
+			path: "sdk/intuitionos/iexec/cmd/gfxdemo.s",
+			want: []string{
+				"syscall #SYS_OPEN_LIBRARY_EX",
+				`"graphics.library"`,
+			},
+			no: []string{
+				`; ===== OpenLibrary("graphics.library") with retry =====`,
+			},
+		},
+		{
+			path: "sdk/intuitionos/iexec/handler/shell.s",
+			want: []string{
+				"syscall #SYS_OPEN_LIBRARY_EX",
+				`"dos.library"`,
+			},
+			no: []string{
+				"; OpenLibrary(\"dos.library\", 0) with retry",
+			},
+		},
+		{
+			path: "sdk/intuitionos/iexec/cmd/assign.s",
+			want: []string{
+				"syscall #SYS_OPEN_LIBRARY_EX",
+				`dc.b    "dos.library"`,
+			},
+		},
+		{
+			path: "sdk/intuitionos/iexec/cmd/dir.s",
+			want: []string{
+				"syscall #SYS_OPEN_LIBRARY_EX",
+				`dc.b    "dos.library"`,
+			},
+		},
+		{
+			path: "sdk/intuitionos/iexec/cmd/list.s",
+			want: []string{
+				"syscall #SYS_OPEN_LIBRARY_EX",
+				`dc.b    "dos.library"`,
+			},
+		},
+		{
+			path: "sdk/intuitionos/iexec/cmd/type.s",
+			want: []string{
+				"syscall #SYS_OPEN_LIBRARY_EX",
+				`dc.b    "dos.library"`,
+			},
+		},
+		{
+			path: "sdk/intuitionos/iexec/cmd/which.s",
+			want: []string{
+				"syscall #SYS_OPEN_LIBRARY_EX",
+				`dc.b    "dos.library"`,
+			},
+		},
+		{
+			path: "sdk/intuitionos/iexec/lib/intuition_library.s",
+			want: []string{
+				"syscall #SYS_OPEN_LIBRARY_EX",
+				"; OpenLibrary(\"graphics.library\", 0) first so exec/dos owns the",
+			},
+			no: []string{
+				"Migration compatibility: if a startup-sequence-launched compat-port",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		body := mustReadRepoFile(t, tc.path)
+		requireAllSubstrings(t, body, tc.want...)
+		if len(tc.no) > 0 {
+			requireNoSubstrings(t, body, tc.no...)
+		}
+	}
+}
+
+func TestIExec_M16_OpenLibraryClientsCloseTrackedTokens(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+	}{
+		{"sdk/intuitionos/iexec/cmd/about.s"},
+		{"sdk/intuitionos/iexec/cmd/gfxdemo.s"},
+		{"sdk/intuitionos/iexec/cmd/assign.s"},
+		{"sdk/intuitionos/iexec/cmd/dir.s"},
+		{"sdk/intuitionos/iexec/cmd/list.s"},
+		{"sdk/intuitionos/iexec/cmd/type.s"},
+		{"sdk/intuitionos/iexec/cmd/which.s"},
+		{"sdk/intuitionos/iexec/lib/intuition_library.s"},
+	} {
+		body := mustReadRepoFile(t, tc.path)
+		requireAllSubstrings(t, body,
+			"syscall #SYS_OPEN_LIBRARY_EX",
+			"syscall #SYS_CLOSE_LIBRARY",
+		)
+	}
+
+	about := mustReadRepoFile(t, "sdk/intuitionos/iexec/cmd/about.s")
+	requireAllSubstrings(t, about,
+		"bne     r2, r14, .ab_openi_fail",
+		".ab_openi_fail:",
+		"syscall #SYS_EXIT_TASK",
+	)
+	requireNoSubstrings(t, about,
+		"bne     r2, r14, .ab_openi_retry_yield",
 	)
 }
 

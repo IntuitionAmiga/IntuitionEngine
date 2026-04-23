@@ -28,18 +28,71 @@ prog_dir_code:
 .dir_open_con_ok:
     store.q r1, 64(r29)
 
+.dir_open_dos_alloc:
+    move.l  r1, #16
+    syscall #SYS_ALLOC_SIGNAL
+    load.q  r29, (sp)
+    bnez    r2, .dir_open_dos_alloc_wait
+    store.q r1, 160(r29)               ; dos_open_sigbit
 .dir_open_dos_retry:
+    load.q  r29, (sp)
+    move.l  r14, #0xFFFFFFFF
+    store.l r14, 168(r29)              ; waiter status sentinel
+    store.l r0, 172(r29)
+    store.l r0, 176(r29)
+    store.l r0, 180(r29)
+    add     r1, r29, #16
+    move.l  r2, #0
+    load.q  r3, 160(r29)               ; waiter-owned signal bit
+    add     r4, r29, #168              ; 16-byte outcome scratch
+    syscall #SYS_OPEN_LIBRARY_EX
+    load.q  r29, (sp)
+    beqz    r2, .dir_find_dos
+    move.l  r14, #ERR_AGAIN
+    bne     r2, r14, .dir_open_dos_wait
+    load.l  r14, 168(r29)
+    move.l  r15, #0xFFFFFFFF
+    bne     r14, r15, .dir_open_dos_done
+    load.q  r14, 160(r29)
+    move.q  r1, #1
+    lsl     r1, r1, r14
+    syscall #SYS_WAIT
+    load.q  r29, (sp)
+    bnez    r2, .dir_open_dos_wait
+    load.l  r14, 168(r29)
+    move.l  r15, #0xFFFFFFFF
+    beq     r14, r15, .dir_open_dos_wait
+.dir_open_dos_done:
+    store.q r1, 184(r29)               ; dos_library_token
+    bnez    r14, .dir_open_dos_wait
+.dir_find_dos:
     load.q  r29, (sp)
     add     r1, r29, #16
     move.l  r2, #0
     syscall #SYS_FIND_PORT
     load.q  r29, (sp)
-    beqz    r2, .dir_open_dos_ok
+    bnez    r2, .dir_open_dos_wait
+.dir_open_dos_ok:
+    store.q r1, 72(r29)
+    load.q  r14, 160(r29)
+    beqz    r14, .dir_open_dos_sigfree_done
+    move.q  r1, r14
+    syscall #SYS_FREE_SIGNAL
+    load.q  r29, (sp)
+    store.q r0, 160(r29)
+.dir_open_dos_sigfree_done:
+    bra     .dir_open_dos_ready
+
+.dir_open_dos_wait:
     syscall #SYS_YIELD
     load.q  r29, (sp)
     bra     .dir_open_dos_retry
-.dir_open_dos_ok:
-    store.q r1, 72(r29)
+.dir_open_dos_alloc_wait:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .dir_open_dos_alloc
+
+.dir_open_dos_ready:
 
     move.q  r1, r0
     move.q  r2, r0
@@ -423,8 +476,7 @@ prog_dir_code:
     bra     .dir_done
 
 .dir_done:
-    move.q  r1, r0
-    syscall #SYS_EXIT_TASK
+    bra     .dir_cleanup_exit
 
 .dir_send_string:
     sub     sp, sp, #16
@@ -472,6 +524,16 @@ prog_dir_code:
     move.q  r1, r21
     rts
 
+.dir_cleanup_exit:
+    load.q  r1, 184(r29)               ; dos_library_token
+    beqz    r1, .dir_exit_task
+    syscall #SYS_CLOSE_LIBRARY
+    load.q  r29, (sp)
+    store.q r0, 184(r29)
+.dir_exit_task:
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
 prog_dir_code_end:
 
 prog_dir_data:
@@ -491,6 +553,9 @@ prog_dir_data:
     ds.b    8
     ds.b    8
     ds.b    256
+    ds.b    8                           ; 160: dos_open_sigbit
+    ds.b    16                          ; 168: dos_open outcome scratch
+    ds.b    8                           ; 184: dos_library_token
 prog_dir_data_end:
     align   8
 prog_dir_end:

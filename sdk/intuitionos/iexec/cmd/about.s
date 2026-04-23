@@ -13,16 +13,8 @@ prog_about_code:
     load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)
 
-    ; FindPort("intuition.library") first. If absent, use OpenLibraryEx so
-    ; exec/dos owns autoload and then resolve the compat port transport.
-.ab_findi:
-    load.q  r29, (sp)
-    add     r1, r29, #256
-    move.l  r2, #0
-    syscall #SYS_FIND_PORT
-    load.q  r29, (sp)
-    beqz    r2, .ab_findi_ok
-
+    ; OpenLibrary("intuition.library", 0) first so exec owns the lifecycle,
+    ; then resolve the compat port transport.
     move.l  r1, #16
     syscall #SYS_ALLOC_SIGNAL
     load.q  r29, (sp)
@@ -57,18 +49,29 @@ prog_about_code:
     move.l  r15, #0xFFFFFFFF
     beq     r14, r15, .ab_openi_yield
 .ab_openi_done:
+    store.q r1, 208(r29)               ; intuition_library_token
     beqz    r14, .ab_findi
 .ab_openi_fail:
     load.q  r14, 184(r29)              ; intuition_open_sigbit
-    beqz    r14, .ab_halt
+    beqz    r14, .ab_cleanup_exit
     move.q  r1, r14
     syscall #SYS_FREE_SIGNAL
     load.q  r29, (sp)
     store.q r0, 184(r29)
-    bra     .ab_halt
+    bra     .ab_cleanup_exit
+.ab_openi_retry_yield:
+    syscall #SYS_YIELD
+    bra     .ab_openi_retry
 .ab_openi_yield:
     syscall #SYS_YIELD
     bra     .ab_openi_retry
+.ab_findi:
+    load.q  r29, (sp)
+    add     r1, r29, #256
+    move.l  r2, #0
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    bnez    r2, .ab_openi_retry_yield
 .ab_findi_ok:
     store.q r1, 136(r29)               ; intuition_port
     load.q  r14, 184(r29)              ; intuition_open_sigbit
@@ -224,12 +227,18 @@ prog_about_code:
     syscall #SYS_WAIT_PORT
     load.q  r29, (sp)
 
+.ab_cleanup_exit:
+    load.q  r1, 208(r29)               ; intuition_library_token
+    beqz    r1, .ab_exit
+    syscall #SYS_CLOSE_LIBRARY
+    load.q  r29, (sp)
+    store.q r0, 208(r29)
+.ab_exit:
     move.q  r1, r0
     syscall #SYS_EXIT_TASK
 
 .ab_halt:
-    syscall #SYS_YIELD
-    bra     .ab_halt
+    bra     .ab_cleanup_exit
 
 ; ----------------------------------------------------------------
 ; .ab_draw_char — render a single 8x16 topaz glyph into the surface
@@ -340,7 +349,8 @@ prog_about_data:
     ds.b    8                            ; 176: window_handle
     ds.b    8                            ; 184: intuition_open_sigbit
     ds.b    16                           ; 192: OpenLibraryEx waiter outcome scratch
-    ds.b    16                           ; 208: pad
+    ds.b    8                            ; 208: intuition_library_token
+    ds.b    8                            ; 216: pad
     ; offset 224: "About M12 ready" + pad to 32 (test marker)
     dc.b    "About M12 ready", 0
     ds.b    16

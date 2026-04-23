@@ -68,6 +68,21 @@ M14.1 phase 5 shipped state:
 - that service boot path is still internal-only; the public DOS surface remains the file-backed `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG` API
 - the visible runtime is locked by explicit M14.1 phase-5 regressions for boot census, shell command dispatch, unknown-command handling, and the retained GUI demos
 
+## M16 Protected Module Notes
+
+M16 does not change the public M14.2 `ET_EXEC` contract.
+
+- runtime commands/apps still use the strict M14.2 `ET_EXEC` subset
+- `LoadSeg` / `UnLoadSeg` / `RunSeg` semantics are unchanged
+- M16 adds protected-module lifecycle around trusted library tasks; it does not widen the public executable ABI to `ET_DYN`, runtime relocation, or shared-library mapping
+
+What M16 adds on top of the existing loader boundary:
+
+- a module manifest note section for protected libraries: `.ios.libmanifest`
+- exec/dos use that manifest to validate module identity, class, version, flags, and message ABI before a library becomes discoverable through `OpenLibrary`
+- the internal module registry and `module_load_handle` lifecycle are separate from the public DOS seglist contract
+- PIE-capable codegen remains the direction of travel, but `MODF_ASLR_CAPABLE` remains informational in v1 and does not change current placement or validation rules
+
 ## Design Goal
 
 Use a modern binary file format without adopting a POSIX-shaped process model.

@@ -122,16 +122,6 @@ prog_intui_code:
     load.b  r14, 176(r29)              ; display_open
     bnez    r14, .intui_skip_display_init
 
-    ; Migration compatibility: if a startup-sequence-launched compat-port
-    ; instance is already online, reuse it directly. Otherwise fall back to
-    ; OpenLibrary-driven autoload and then resolve the compat port.
-    load.q  r29, (sp)
-    add     r1, r29, #352              ; "graphics.library"
-    move.l  r2, #0
-    syscall #SYS_FIND_PORT
-    load.q  r29, (sp)
-    beqz    r2, .intui_findgfx_ok
-
     ; OpenLibrary("graphics.library", 0) first so exec/dos owns the
     ; lifecycle and autoload, then resolve the compat port transport.
     move.l  r1, #16
@@ -169,6 +159,7 @@ prog_intui_code:
     beq     r14, r15, .intui_open_gfx_yield
     ; fall through once waiter status is real
 .intui_open_gfx_done:
+    store.q r1, 264(r29)               ; graphics_library_token
     beqz    r14, .intui_findgfx
 .intui_open_gfx_fail:
     load.q  r14, 312(r29)              ; graphics_open_sigbit
@@ -780,7 +771,15 @@ prog_intui_code:
     syscall #SYS_WAIT_PORT
     load.q  r29, (sp)
 
-    ; --- 5. FreeMem our own screen surface ---
+    ; --- 5. Close tracked graphics.library opener ---
+    load.q  r1, 264(r29)               ; graphics_library_token
+    beqz    r1, .intui_close_graphics_done
+    syscall #SYS_CLOSE_LIBRARY
+    load.q  r29, (sp)
+    store.q r0, 264(r29)
+.intui_close_graphics_done:
+
+    ; --- 6. FreeMem our own screen surface ---
     ; The screen surface was AllocMem(1920000, MEMF_PUBLIC|MEMF_CLEAR) so
     ; it lives in the SHARED region table. FreeMem decrements the shared
     ; object refcount; if graphics.library has already released its
@@ -840,6 +839,11 @@ prog_intui_code:
     syscall #SYS_FREE_SIGNAL
     load.q  r29, (sp)
     store.q r0, 312(r29)
+    load.q  r1, 264(r29)               ; graphics_library_token
+    beqz    r1, .intui_reply_nomem
+    syscall #SYS_CLOSE_LIBRARY
+    load.q  r29, (sp)
+    store.q r0, 264(r29)
     bra     .intui_reply_nomem
 .intui_reply_nomem:
     load.q  r1, 296(r29)
@@ -1180,7 +1184,7 @@ prog_intui_data:
     ds.b    8                           ; 240: win_share (4) + pad
     ds.b    8                           ; 248: win_mapped_va
     ds.b    8                           ; 256: idcmp_port
-    ds.b    8                           ; 264: event_seq (4) + pad
+    ds.b    8                           ; 264: graphics_library_token
     ds.b    8                           ; 272: msg_type
     ds.b    8                           ; 280: msg_data0
     ds.b    8                           ; 288: msg_data1

@@ -39,18 +39,71 @@ prog_assign_cmd_code:
 .asn_open_con_ok:
     store.q r1, 48(r29)
 
+.asn_open_dos_alloc:
+    move.l  r1, #16
+    syscall #SYS_ALLOC_SIGNAL
+    load.q  r29, (sp)
+    bnez    r2, .asn_open_dos_alloc_wait
+    store.q r1, 144(r29)               ; dos_open_sigbit
 .asn_open_dos_retry:
+    load.q  r29, (sp)
+    move.l  r14, #0xFFFFFFFF
+    store.l r14, 152(r29)              ; waiter status sentinel
+    store.l r0, 156(r29)
+    store.l r0, 160(r29)
+    store.l r0, 164(r29)
+    add     r1, r29, #16
+    move.q  r2, r0
+    load.q  r3, 144(r29)               ; waiter-owned signal bit
+    add     r4, r29, #152              ; 16-byte outcome scratch
+    syscall #SYS_OPEN_LIBRARY_EX
+    load.q  r29, (sp)
+    beqz    r2, .asn_find_dos
+    move.l  r14, #ERR_AGAIN
+    bne     r2, r14, .asn_open_dos_wait
+    load.l  r14, 152(r29)
+    move.l  r15, #0xFFFFFFFF
+    bne     r14, r15, .asn_open_dos_done
+    load.q  r14, 144(r29)
+    move.q  r1, #1
+    lsl     r1, r1, r14
+    syscall #SYS_WAIT
+    load.q  r29, (sp)
+    bnez    r2, .asn_open_dos_wait
+    load.l  r14, 152(r29)
+    move.l  r15, #0xFFFFFFFF
+    beq     r14, r15, .asn_open_dos_wait
+.asn_open_dos_done:
+    store.q r1, 168(r29)               ; dos_library_token
+    bnez    r14, .asn_open_dos_wait
+.asn_find_dos:
     load.q  r29, (sp)
     add     r1, r29, #16
     move.l  r2, #0
     syscall #SYS_FIND_PORT
     load.q  r29, (sp)
-    beqz    r2, .asn_open_dos_ok
+    bnez    r2, .asn_open_dos_wait
+.asn_open_dos_ok:
+    store.q r1, 56(r29)
+    load.q  r14, 144(r29)
+    beqz    r14, .asn_open_dos_sigfree_done
+    move.q  r1, r14
+    syscall #SYS_FREE_SIGNAL
+    load.q  r29, (sp)
+    store.q r0, 144(r29)
+.asn_open_dos_sigfree_done:
+    bra     .asn_open_dos_ready
+
+.asn_open_dos_wait:
     syscall #SYS_YIELD
     load.q  r29, (sp)
     bra     .asn_open_dos_retry
-.asn_open_dos_ok:
-    store.q r1, 56(r29)
+.asn_open_dos_alloc_wait:
+    syscall #SYS_YIELD
+    load.q  r29, (sp)
+    bra     .asn_open_dos_alloc
+
+.asn_open_dos_ready:
 
     move.q  r1, r0
     move.q  r2, r0
@@ -413,8 +466,7 @@ prog_assign_cmd_code:
     jsr     .asn_send_string
 
 .asn_exit:
-    move.q  r1, r0
-    syscall #SYS_EXIT_TASK
+    bra     .asn_cleanup_exit
 
 .asn_putc:
     sub     sp, sp, #16
@@ -472,6 +524,16 @@ prog_assign_cmd_code:
     add     sp, sp, #16
     rts
 
+.asn_cleanup_exit:
+    load.q  r1, 168(r29)               ; dos_library_token
+    beqz    r1, .asn_exit_task
+    syscall #SYS_CLOSE_LIBRARY
+    load.q  r29, (sp)
+    store.q r0, 168(r29)
+.asn_exit_task:
+    move.q  r1, r0
+    syscall #SYS_EXIT_TASK
+
 prog_assign_cmd_code_end:
 
 prog_assign_cmd_data:
@@ -490,6 +552,9 @@ prog_assign_cmd_data:
     ds.b    8
     ds.b    8
     ds.b    8
+    ds.b    8                           ; 144: dos_open_sigbit
+    ds.b    16                          ; 152: dos_open outcome scratch
+    ds.b    8                           ; 168: dos_library_token
 prog_assign_cmd_data_end:
     align   8
 prog_assign_cmd_end:
