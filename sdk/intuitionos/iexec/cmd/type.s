@@ -248,6 +248,7 @@ prog_type_code:
     jsr     .typ_send_string
     bra     .typ_cleanup_exit
 
+.typ_no_file:
 .typ_cleanup_exit:
     load.q  r1, 144(r29)               ; dos_library_token
     beqz    r1, .typ_exit_task
