@@ -292,6 +292,263 @@ func TestM68KJIT_AMD64_NOT_L(t *testing.T) {
 	}
 }
 
+func TestM68KJIT_AMD64_NOT_B(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.DataRegs[5] = 0x0000007F
+
+	// NOT.B D5 (0x4605) should only invert the low byte and set byte-sized flags.
+	r.compileAndRun(t, 0x1000, 0x4605)
+
+	if r.ctx.NeedIOFallback != 0 {
+		t.Fatalf("NeedIOFallback = %d, want 0", r.ctx.NeedIOFallback)
+	}
+	if got, want := r.cpu.DataRegs[5], uint32(0x00000080); got != want {
+		t.Fatalf("D5 after JIT NOT.B = 0x%08X, want 0x%08X", got, want)
+	}
+	if r.cpu.SR&M68K_SR_N == 0 {
+		t.Fatal("NOT.B should set N for 0x80")
+	}
+	if r.cpu.SR&M68K_SR_Z != 0 {
+		t.Fatal("NOT.B should clear Z for 0x80")
+	}
+	if r.cpu.SR&(M68K_SR_V|M68K_SR_C) != 0 {
+		t.Fatal("NOT.B should clear V and C")
+	}
+}
+
+func TestM68KJIT_AMD64_NOT_W(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.DataRegs[1] = 0x1234FFFF
+
+	// NOT.W D1 (0x4641) should preserve the upper word and zero the lower word.
+	r.compileAndRun(t, 0x1000, 0x4641)
+
+	if r.ctx.NeedIOFallback != 0 {
+		t.Fatalf("NeedIOFallback = %d, want 0", r.ctx.NeedIOFallback)
+	}
+	if got, want := r.cpu.DataRegs[1], uint32(0x12340000); got != want {
+		t.Fatalf("D1 after JIT NOT.W = 0x%08X, want 0x%08X", got, want)
+	}
+	if r.cpu.SR&M68K_SR_Z == 0 {
+		t.Fatal("NOT.W should set Z for zero low word")
+	}
+	if r.cpu.SR&(M68K_SR_N|M68K_SR_V|M68K_SR_C) != 0 {
+		t.Fatal("NOT.W zero result should clear N, V, and C")
+	}
+}
+
+func TestM68KJIT_AMD64_NOT_B_Memory_FallsBackToInterpreter(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.AddrRegs[0] = 0x2000
+	r.cpu.memory[0x2000] = 0x55
+
+	// Memory NOT still belongs to the interpreter path for now.
+	r.compileAndRun(t, 0x1000, 0x4610)
+
+	if r.ctx.NeedIOFallback != 1 {
+		t.Fatalf("NeedIOFallback = %d, want 1", r.ctx.NeedIOFallback)
+	}
+	if got, want := r.cpu.memory[0x2000], byte(0x55); got != want {
+		t.Fatalf("memory changed during JIT bail: got 0x%02X, want 0x%02X", got, want)
+	}
+}
+
+func TestM68KJIT_AMD64_MullLongPostincrement_Native(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.DataRegs[0] = 3
+	r.cpu.AddrRegs[2] = 0x2000
+	r.writeLong(0x2000, 14)
+
+	// MULL.L (A2)+,<ext=0x0800> => D0 = D0 * [A2]+
+	r.compileAndRun(t, 0x1000, 0x4C1A, 0x0800)
+
+	if r.ctx.NeedIOFallback != 0 {
+		t.Fatalf("NeedIOFallback = %d, want 0", r.ctx.NeedIOFallback)
+	}
+	if got, want := r.cpu.DataRegs[0], uint32(42); got != want {
+		t.Fatalf("D0 after JIT MULL.L (A2)+ = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := r.cpu.AddrRegs[2], uint32(0x2004); got != want {
+		t.Fatalf("A2 after JIT MULL.L (A2)+ = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestM68KJIT_AMD64_MullLongRegister_Native32Bit(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.SR = M68K_SR_X
+	r.cpu.DataRegs[3] = 7
+	r.cpu.DataRegs[2] = 6
+
+	// MULL.L D3,D2 (unsigned 32-bit result).
+	r.compileAndRun(t, 0x1000, 0x4C03, 0x2000)
+
+	if r.ctx.NeedIOFallback != 0 {
+		t.Fatalf("NeedIOFallback = %d, want 0", r.ctx.NeedIOFallback)
+	}
+	if got, want := r.cpu.DataRegs[2], uint32(42); got != want {
+		t.Fatalf("D2 after JIT MULL.L = 0x%08X, want 0x%08X", got, want)
+	}
+	if r.cpu.SR&M68K_SR_X == 0 {
+		t.Fatal("MULL.L should preserve X")
+	}
+	if r.cpu.SR&(M68K_SR_N|M68K_SR_Z|M68K_SR_V|M68K_SR_C) != 0 {
+		t.Fatal("MULL.L 42 should clear N, Z, V, and C")
+	}
+}
+
+func TestM68KJIT_AMD64_MullLongRegister_Native64BitSigned(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.DataRegs[0] = 0xFFFFFFFD // -3
+	r.cpu.DataRegs[1] = 7
+
+	// MULL.L D0,D2:D1 (signed 64-bit result).
+	r.compileAndRun(t, 0x1000, 0x4C00, 0x1C02)
+
+	if r.ctx.NeedIOFallback != 0 {
+		t.Fatalf("NeedIOFallback = %d, want 0", r.ctx.NeedIOFallback)
+	}
+	if got, want := r.cpu.DataRegs[2], uint32(0xFFFFFFFF); got != want {
+		t.Fatalf("Dh after signed 64-bit MULL.L = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := r.cpu.DataRegs[1], uint32(0xFFFFFFEB); got != want {
+		t.Fatalf("Dl after signed 64-bit MULL.L = 0x%08X, want 0x%08X", got, want)
+	}
+	if r.cpu.SR&M68K_SR_N == 0 {
+		t.Fatal("signed 64-bit MULL.L should set N for a negative 64-bit result")
+	}
+	if r.cpu.SR&(M68K_SR_Z|M68K_SR_V|M68K_SR_C) != 0 {
+		t.Fatal("signed 64-bit MULL.L should clear Z, V, and C for -21")
+	}
+}
+
+func TestM68KJIT_AMD64_DivLongRegister_Native32Bit(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.SR = M68K_SR_X
+	r.cpu.DataRegs[0] = 4
+	r.cpu.DataRegs[1] = 0x11111111
+	r.cpu.DataRegs[2] = 14
+
+	// DIVL.L D0,D1:D2 (unsigned 32-bit dividend in D2, quotient->D2 remainder->D1).
+	r.compileAndRun(t, 0x1000, 0x4C40, 0x2001)
+
+	if r.ctx.NeedIOFallback != 0 {
+		t.Fatalf("NeedIOFallback = %d, want 0", r.ctx.NeedIOFallback)
+	}
+	if got, want := r.cpu.DataRegs[2], uint32(3); got != want {
+		t.Fatalf("D2 after JIT DIVL.L = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := r.cpu.DataRegs[1], uint32(2); got != want {
+		t.Fatalf("D1 remainder after JIT DIVL.L = 0x%08X, want 0x%08X", got, want)
+	}
+	if r.cpu.SR&M68K_SR_X == 0 {
+		t.Fatal("DIVL.L should preserve X")
+	}
+	if r.cpu.SR&(M68K_SR_N|M68K_SR_Z|M68K_SR_V|M68K_SR_C) != 0 {
+		t.Fatal("DIVL.L 14/4 should clear N, Z, V, and C")
+	}
+}
+
+func TestM68KJIT_AMD64_DivLongRegister_Native64BitSigned(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.DataRegs[0] = 3
+	r.cpu.DataRegs[2] = 0xFFFFFFFF
+	r.cpu.DataRegs[1] = 0xFFFFFFEB // -21 as 64-bit dividend D2:D1
+
+	// DIVL.L D0,D2:D1 (signed 64-bit dividend, quotient->D1 remainder->D2).
+	r.compileAndRun(t, 0x1000, 0x4C40, 0x1C02)
+
+	if r.ctx.NeedIOFallback != 0 {
+		t.Fatalf("NeedIOFallback = %d, want 0", r.ctx.NeedIOFallback)
+	}
+	if got, want := r.cpu.DataRegs[1], uint32(0xFFFFFFF9); got != want {
+		t.Fatalf("D1 quotient after signed 64-bit DIVL.L = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := r.cpu.DataRegs[2], uint32(0); got != want {
+		t.Fatalf("D2 remainder after signed 64-bit DIVL.L = 0x%08X, want 0x%08X", got, want)
+	}
+	if r.cpu.SR&M68K_SR_N == 0 {
+		t.Fatal("signed 64-bit DIVL.L should set N for negative quotient")
+	}
+	if r.cpu.SR&(M68K_SR_Z|M68K_SR_V|M68K_SR_C) != 0 {
+		t.Fatal("signed 64-bit DIVL.L should clear Z, V, and C for -7")
+	}
+}
+
+func TestM68KJIT_AMD64_DivLongRegister_ZeroDiv_BailsToInterpreter(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.DataRegs[0] = 0
+	r.cpu.DataRegs[1] = 0xAAAAAAAA
+	r.cpu.DataRegs[2] = 0x55555555
+
+	r.compileAndRun(t, 0x1000, 0x4C40, 0x2001)
+
+	if r.ctx.NeedIOFallback != 1 {
+		t.Fatalf("NeedIOFallback = %d, want 1", r.ctx.NeedIOFallback)
+	}
+	if r.cpu.PC != 0x1000 {
+		t.Fatalf("PC after JIT bail = 0x%08X, want 0x00001000", r.cpu.PC)
+	}
+	if got, want := r.cpu.DataRegs[1], uint32(0xAAAAAAAA); got != want {
+		t.Fatalf("D1 changed during DIVL zero-divide bail: got 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := r.cpu.DataRegs[2], uint32(0x55555555); got != want {
+		t.Fatalf("D2 changed during DIVL zero-divide bail: got 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestM68KJIT_AMD64_DivLongRegister_Overflow_SetsVWithoutMutation(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.SR = M68K_SR_X | M68K_SR_N | M68K_SR_Z
+	r.cpu.DataRegs[0] = 3
+	r.cpu.DataRegs[2] = 3
+	r.cpu.DataRegs[1] = 0
+
+	// Unsigned 64-bit dividend 0x00000003_00000000 / 3 => quotient 0x1_00000000 (overflow).
+	r.compileAndRun(t, 0x1000, 0x4C40, 0x1402)
+
+	if r.ctx.NeedIOFallback != 0 {
+		t.Fatalf("NeedIOFallback = %d, want 0", r.ctx.NeedIOFallback)
+	}
+	if got, want := r.cpu.DataRegs[2], uint32(3); got != want {
+		t.Fatalf("D2 changed during DIVL overflow: got 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := r.cpu.DataRegs[1], uint32(0); got != want {
+		t.Fatalf("D1 changed during DIVL overflow: got 0x%08X, want 0x%08X", got, want)
+	}
+	if r.cpu.SR&M68K_SR_V == 0 {
+		t.Fatal("DIVL overflow should set V")
+	}
+	if r.cpu.SR&(M68K_SR_N|M68K_SR_Z|M68K_SR_C) != 0 {
+		t.Fatal("DIVL overflow should clear N, Z, and C")
+	}
+	if r.cpu.SR&M68K_SR_X == 0 {
+		t.Fatal("DIVL overflow should preserve X")
+	}
+}
+
+func TestM68KJIT_AMD64_DivLongPostincrement_Native(t *testing.T) {
+	r := newM68KJITTestRig(t)
+	r.cpu.DataRegs[2] = 14
+	r.cpu.AddrRegs[0] = 0x2000
+	r.writeLong(0x2000, 4)
+
+	// DIVL.L (A0)+,D1:D2 (unsigned 32-bit dividend in D2).
+	r.compileAndRun(t, 0x1000, 0x4C58, 0x2001)
+
+	if r.ctx.NeedIOFallback != 0 {
+		t.Fatalf("NeedIOFallback = %d, want 0", r.ctx.NeedIOFallback)
+	}
+	if got, want := r.cpu.DataRegs[2], uint32(3); got != want {
+		t.Fatalf("D2 after JIT DIVL.L (A0)+ = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := r.cpu.DataRegs[1], uint32(2); got != want {
+		t.Fatalf("D1 remainder after JIT DIVL.L (A0)+ = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := r.cpu.AddrRegs[0], uint32(0x2004); got != want {
+		t.Fatalf("A0 after JIT DIVL.L (A0)+ = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
 // ===========================================================================
 // NEG Tests
 // ===========================================================================

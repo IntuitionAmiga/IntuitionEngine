@@ -230,6 +230,64 @@ func TestM68KAudit_ExecBitManip_PrePost(t *testing.T) {
 	})
 }
 
+func TestM68KAudit_ExecMove_SourcePredecrementLong_ToIndirectEvenMisaligned(t *testing.T) {
+	cpu := newAuditM68KCPU()
+
+	const (
+		srcEnd  = 0x00100020
+		dest    = 0x0010000A // even but not 4-byte aligned
+		srcWord = 0x11223344
+	)
+
+	cpu.AddrRegs[2] = dest
+	cpu.AddrRegs[3] = srcEnd
+	cpu.Write32(srcEnd-4, srcWord)
+
+	cpu.ExecMove(M68K_AM_AR_PRE, 3, M68K_AM_AR_IND, 2, M68K_SIZE_LONG)
+
+	if got := cpu.AddrRegs[3]; got != srcEnd-4 {
+		t.Fatalf("A3=0x%08X want 0x%08X", got, srcEnd-4)
+	}
+	if got := cpu.AddrRegs[2]; got != dest {
+		t.Fatalf("A2=0x%08X want 0x%08X", got, dest)
+	}
+	if got := cpu.Read32(dest); got != srcWord {
+		t.Fatalf("mem[0x%08X]=0x%08X want 0x%08X", dest, got, srcWord)
+	}
+}
+
+func TestM68KAudit_ExecMove_BackwardLongCopyLoop_ToIndirectEvenMisaligned(t *testing.T) {
+	cpu := newAuditM68KCPU()
+
+	const (
+		srcBase = 0x00100100
+		destTop = 0x0010001A // even but not 4-byte aligned
+	)
+	srcVals := []uint32{0xAAAABBBB, 0xCCCCDDDD, 0xEEEEFFFF}
+
+	for i, v := range srcVals {
+		cpu.Write32(srcBase+uint32(i*4), v)
+	}
+
+	cpu.AddrRegs[2] = destTop
+	cpu.AddrRegs[3] = srcBase + uint32(len(srcVals))*4
+
+	for range srcVals {
+		cpu.ExecMove(M68K_AM_AR_PRE, 3, M68K_AM_AR_IND, 2, M68K_SIZE_LONG)
+		cpu.AddrRegs[2] -= 4
+	}
+
+	for i, want := range []uint32{srcVals[2], srcVals[1], srcVals[0]} {
+		addr := destTop - uint32(i*4)
+		if got := cpu.Read32(addr); got != want {
+			t.Fatalf("mem[0x%08X]=0x%08X want 0x%08X", addr, got, want)
+		}
+	}
+	if got := cpu.AddrRegs[3]; got != srcBase {
+		t.Fatalf("A3=0x%08X want 0x%08X", got, srcBase)
+	}
+}
+
 func TestM68KAudit_ExecBitManipImm_PrePost(t *testing.T) {
 	t.Run("predecrement", func(t *testing.T) {
 		cpu := newAuditM68KCPU()

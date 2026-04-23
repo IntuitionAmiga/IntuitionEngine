@@ -691,6 +691,14 @@ func m68kNeedsFallback(instrs []M68KJITInstr) bool {
 		return true
 	case opcode&0xFFFE == 0x4E7A: // MOVEC
 		return true
+	case opcode&0xFF80 == 0x4C00: // MULL/DIVL (68020)
+		// Native coverage owns the common MULL/DIVL source-EA forms.
+		// Unsupported indexed-full variants still self-bail in the emitter.
+	case opcode&0xFF00 == 0x4600: // NOT
+		// Only direct-register byte/word/long NOT is emitted natively today.
+		if ((opcode>>3)&7) != 0 || (opcode>>6)&3 == 3 {
+			return true
+		}
 	}
 
 	// Exception-control blocks are correctness-sensitive. Do not partially JIT a

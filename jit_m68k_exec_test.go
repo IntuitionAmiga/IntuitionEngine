@@ -15,6 +15,10 @@ import (
 // runM68KJITProgram loads M68K opcodes at startPC, runs ExecuteJIT with a timeout,
 // and returns the CPU for result inspection.
 func runM68KJITProgram(t *testing.T, startPC uint32, opcodes ...uint16) *M68KCPU {
+	return runM68KJITProgramWithSetup(t, startPC, nil, false, opcodes...)
+}
+
+func runM68KJITProgramWithSetup(t *testing.T, startPC uint32, setup func(*M68KCPU), forceNative bool, opcodes ...uint16) *M68KCPU {
 	t.Helper()
 
 	bus := NewMachineBus()
@@ -24,8 +28,12 @@ func runM68KJITProgram(t *testing.T, startPC uint32, opcodes ...uint16) *M68KCPU
 	bus.Write32(4, startPC)    // reset vector → our code
 	cpu := NewM68KCPU(bus)
 	cpu.m68kJitEnabled = true
+	cpu.m68kJitForceNative = forceNative
 	cpu.PC = startPC
 	cpu.SR = M68K_SR_S // supervisor mode
+	if setup != nil {
+		setup(cpu)
+	}
 
 	// Write opcodes in big-endian
 	pc := startPC
@@ -2695,6 +2703,10 @@ func TestM68KJIT_Exec_SUBWordThenBGEByteTaken(t *testing.T) {
 
 // runM68KJITStopProgram runs a program followed by STOP, waits for it to halt.
 func runM68KJITStopProgram(t *testing.T, startPC uint32, opcodes ...uint16) *M68KCPU {
+	return runM68KJITStopProgramWithSetup(t, startPC, nil, false, opcodes...)
+}
+
+func runM68KJITStopProgramWithSetup(t *testing.T, startPC uint32, setup func(*M68KCPU), forceNative bool, opcodes ...uint16) *M68KCPU {
 	t.Helper()
 
 	bus := NewMachineBus()
@@ -2704,8 +2716,12 @@ func runM68KJITStopProgram(t *testing.T, startPC uint32, opcodes ...uint16) *M68
 	bus.Write32(4, startPC)
 	cpu := NewM68KCPU(bus)
 	cpu.m68kJitEnabled = true
+	cpu.m68kJitForceNative = forceNative
 	cpu.PC = startPC
 	cpu.SR = M68K_SR_S
+	if setup != nil {
+		setup(cpu)
+	}
 
 	// Write opcodes
 	pc := startPC
@@ -2756,6 +2772,146 @@ func TestM68KJIT_Exec_DBRA_Loop(t *testing.T) {
 
 	if cpu.DataRegs[1] != 4 {
 		t.Errorf("DBRA loop: D1 = %d, want 4", cpu.DataRegs[1])
+	}
+}
+
+func TestM68KJIT_Exec_NOT_B_NativeDispatcher(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	cpu := runM68KJITStopProgramWithSetup(t, 0x1000, func(cpu *M68KCPU) {
+		cpu.DataRegs[5] = 0x0000007F
+	}, true,
+		0x4605, // NOT.B D5
+	)
+
+	if got, want := cpu.DataRegs[5], uint32(0x00000080); got != want {
+		t.Fatalf("D5 = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestM68KJIT_Exec_MullLongPostincrement_NativeDispatcher(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	cpu := runM68KJITStopProgramWithSetup(t, 0x1000, func(cpu *M68KCPU) {
+		cpu.DataRegs[0] = 3
+		cpu.AddrRegs[2] = 0x2000
+		cpu.Write32(0x2000, 14)
+	}, true,
+		0x4C1A, 0x0800, // MULL.L (A2)+,<ext=0x0800>
+	)
+
+	if got, want := cpu.AddrRegs[2], uint32(0x2004); got != want {
+		t.Fatalf("A2 = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := cpu.DataRegs[0], uint32(42); got != want {
+		t.Fatalf("D0 = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestM68KJIT_Exec_MullLongRegister_NativeDispatcher(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	cpu := runM68KJITStopProgramWithSetup(t, 0x1000, func(cpu *M68KCPU) {
+		cpu.DataRegs[3] = 7
+		cpu.DataRegs[2] = 6
+	}, true,
+		0x4C03, 0x2000, // MULL.L D3,D2
+	)
+
+	if got, want := cpu.DataRegs[2], uint32(42); got != want {
+		t.Fatalf("D2 = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestM68KJIT_Exec_MullLongRegisterSigned64_NativeDispatcher(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	cpu := runM68KJITStopProgramWithSetup(t, 0x1000, func(cpu *M68KCPU) {
+		cpu.DataRegs[0] = 0xFFFFFFFD // -3
+		cpu.DataRegs[1] = 7
+	}, true,
+		0x4C00, 0x1C02, // MULL.L D0,D2:D1 (signed 64-bit result)
+	)
+
+	if got, want := cpu.DataRegs[2], uint32(0xFFFFFFFF); got != want {
+		t.Fatalf("D2 = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := cpu.DataRegs[1], uint32(0xFFFFFFEB); got != want {
+		t.Fatalf("D1 = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestM68KJIT_Exec_DivLongRegister_NativeDispatcher(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	cpu := runM68KJITStopProgramWithSetup(t, 0x1000, func(cpu *M68KCPU) {
+		cpu.DataRegs[0] = 4
+		cpu.DataRegs[2] = 14
+		cpu.DataRegs[1] = 0x11111111
+	}, true,
+		0x4C40, 0x2001, // DIVL.L D0,D1:D2
+	)
+
+	if got, want := cpu.DataRegs[2], uint32(3); got != want {
+		t.Fatalf("D2 = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := cpu.DataRegs[1], uint32(2); got != want {
+		t.Fatalf("D1 = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestM68KJIT_Exec_DivLongRegisterSigned64_NativeDispatcher(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	cpu := runM68KJITStopProgramWithSetup(t, 0x1000, func(cpu *M68KCPU) {
+		cpu.DataRegs[0] = 3
+		cpu.DataRegs[2] = 0xFFFFFFFF
+		cpu.DataRegs[1] = 0xFFFFFFEB
+	}, true,
+		0x4C40, 0x1C02, // DIVL.L D0,D2:D1 (signed 64-bit)
+	)
+
+	if got, want := cpu.DataRegs[1], uint32(0xFFFFFFF9); got != want {
+		t.Fatalf("D1 = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := cpu.DataRegs[2], uint32(0); got != want {
+		t.Fatalf("D2 = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestM68KJIT_Exec_DivLongPostincrement_NativeDispatcher(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	cpu := runM68KJITStopProgramWithSetup(t, 0x1000, func(cpu *M68KCPU) {
+		cpu.DataRegs[2] = 14
+		cpu.AddrRegs[0] = 0x2000
+		cpu.Write32(0x2000, 4)
+	}, true,
+		0x4C58, 0x2001, // DIVL.L (A0)+,D1:D2
+	)
+
+	if got, want := cpu.DataRegs[2], uint32(3); got != want {
+		t.Fatalf("D2 = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := cpu.DataRegs[1], uint32(2); got != want {
+		t.Fatalf("D1 = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := cpu.AddrRegs[0], uint32(0x2004); got != want {
+		t.Fatalf("A0 = 0x%08X, want 0x%08X", got, want)
 	}
 }
 

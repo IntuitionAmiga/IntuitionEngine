@@ -1,0 +1,157 @@
+-- m68k_aros_fault_capture.ies
+-- Boot AROS via cpu.load("AROS"), wait for a fault-like stall, then dump
+-- registers, ExecBase/task state, nearby disassembly, and a short backtrace.
+
+local MAX_WAIT_MS = 15000
+local SAMPLE_MS = 100
+local STUCK_PC_SAMPLES = 20
+
+local THISTASK_OFF  = 0x114
+local TASKREADY_OFF = 0x196
+local TASKWAIT_OFF  = 0x1A4
+
+local band   = bit32.band
+local rshift = bit32.rshift
+local floor  = math.floor
+
+local function be32(v)
+    local b0 = v % 256; v = floor(v / 256)
+    local b1 = v % 256; v = floor(v / 256)
+    local b2 = v % 256; v = floor(v / 256)
+    local b3 = v % 256
+    return b0 * 16777216 + b1 * 65536 + b2 * 256 + b3
+end
+
+local function be16(v)
+    return band(v, 0xFF) * 256 + rshift(v, 8)
+end
+
+local function valid_ptr(v)
+    return v >= 0x1000 and v < 0x2000000
+end
+
+local function mread32(addr)
+    return be32(mem.read32(addr))
+end
+
+local function readstr(addr, maxlen)
+    local chars = {}
+    maxlen = maxlen or 48
+    for i = 0, maxlen - 1 do
+        local b = mem.read8(addr + i)
+        if b == 0 then break end
+        if b >= 32 and b < 127 then
+            chars[#chars + 1] = string.char(b)
+        end
+    end
+    return table.concat(chars)
+end
+
+local function count_list(addr)
+    local node = mread32(addr)
+    if not valid_ptr(node) then
+        return 0
+    end
+    local count = 0
+    for _ = 1, 128 do
+        if not valid_ptr(node) then break end
+        count = count + 1
+        local succ = mread32(node)
+        if succ == 0 or succ == node then break end
+        node = succ
+    end
+    return count
+end
+
+local function sample_state()
+    dbg.freeze()
+    local pc = dbg.get_pc()
+    local sr = dbg.get_reg("sr")
+    local sp = dbg.get_reg("a7")
+    local opcode = 0
+    if pc >= 0x1000 and pc < 0x2000000 then
+        opcode = be16(mem.read16(pc))
+    end
+
+    local sysbase = mread32(4)
+    local thistask = 0
+    local taskname = ""
+    local ready_count = 0
+    local wait_count = 0
+    if valid_ptr(sysbase) then
+        thistask = mread32(sysbase + THISTASK_OFF)
+        ready_count = count_list(sysbase + TASKREADY_OFF)
+        wait_count = count_list(sysbase + TASKWAIT_OFF)
+        if valid_ptr(thistask) then
+            local name_ptr = mread32(thistask + 10)
+            if valid_ptr(name_ptr) then
+                taskname = readstr(name_ptr, 48)
+            end
+        end
+    end
+
+    local dis = dbg.disasm(pc > 16 and pc - 16 or 0, 12)
+    local bt = dbg.backtrace(8)
+    local regs = dbg.get_regs()
+    dbg.resume()
+
+    return {
+        pc = pc,
+        sr = sr,
+        sp = sp,
+        opcode = opcode,
+        sysbase = sysbase,
+        thistask = thistask,
+        taskname = taskname,
+        ready_count = ready_count,
+        wait_count = wait_count,
+        dis = dis,
+        bt = bt,
+        regs = regs,
+    }
+end
+
+local function dump_state(tag, s)
+    sys.print(string.format("[aros-fault] %s", tag))
+    sys.print(string.format("[aros-fault] pc=%08X sr=%04X sp=%08X opcode=%04X", s.pc, s.sr, s.sp, s.opcode))
+    sys.print(string.format("[aros-fault] sysbase=%08X thistask=%08X task=%s ready=%d wait=%d",
+        s.sysbase, s.thistask, s.taskname, s.ready_count, s.wait_count))
+    sys.print(string.format("[aros-fault] d0=%08X d1=%08X d2=%08X d3=%08X",
+        s.regs.D0 or 0, s.regs.D1 or 0, s.regs.D2 or 0, s.regs.D3 or 0))
+end
+
+sys.print("[aros-fault] booting AROS")
+cpu.load("AROS")
+dbg.open()
+
+local started = sys.time_ms()
+local last_pc = nil
+local same_pc = 0
+
+while sys.time_ms() - started < MAX_WAIT_MS do
+    local s = sample_state()
+    if last_pc ~= nil and s.pc == last_pc then
+        same_pc = same_pc + 1
+    else
+        same_pc = 0
+        last_pc = s.pc
+    end
+
+    if s.pc < 0x1000 or same_pc >= STUCK_PC_SAMPLES then
+        dump_state("stop reason=" .. (s.pc < 0x1000 and "low-pc" or "stuck-pc"), s)
+        for i, entry in ipairs(s.dis or {}) do
+            sys.print(string.format("[aros-fault] dis[%d] %s", i, entry.text or tostring(entry)))
+        end
+        for i, frame in ipairs(s.bt or {}) do
+            sys.print(string.format("[aros-fault] bt[%d] %s", i, tostring(frame)))
+        end
+        dbg.close()
+        return
+    end
+
+    sys.wait_ms(SAMPLE_MS)
+end
+
+local s = sample_state()
+dump_state("timeout without a ready/fault verdict", s)
+dbg.close()

@@ -184,6 +184,18 @@ CPU lifecycle and mode.
 
 `cpu.load(path)` — Load a program binary from `path` into the active CPU. The file format must match the active CPU mode. The special values `"EMUTOS"` and `"AROS"` trigger OS boot without a file path (ROM resolved via CLI flags or embedded image). Returns: nothing. Raises on error.
 
+For M68K AROS interpreter triage, the repo includes two ready-made debugger scripts built around `cpu.load("AROS")` plus `dbg.*` control:
+
+- `scripts/m68k_aros_ready_probe.ies` boots AROS and polls the same ready-state signal used by the Go boot harness (`SysBase`, `ThisTask`, and task-list visibility).
+- `scripts/m68k_aros_fault_capture.ies` boots AROS, detects a fault-like stall, and dumps registers, disassembly, backtrace, and Exec/task state for the first failing site.
+
+Typical bring-up commands:
+
+```bash
+./bin/IntuitionEngine -aros -nojit -script scripts/m68k_aros_ready_probe.ies
+./bin/IntuitionEngine -aros -nojit -script scripts/m68k_aros_fault_capture.ies
+```
+
 `cpu.reset()` — Perform a hard reset of the emulator (all CPUs and devices). Returns: nothing. Raises on error.
 
 `cpu.freeze()` — Increment the global freeze counter, pausing CPU execution for safe memory access. Returns: nothing.

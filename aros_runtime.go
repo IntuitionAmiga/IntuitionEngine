@@ -16,8 +16,12 @@ func resolveAROSDrivePath(explicit, exePath string) string {
 	}
 
 	for _, candidate := range arosDriveCandidates(exePath) {
-		if isAROSDrivePath(candidate) {
-			return candidate
+		absCandidate, err := filepath.Abs(candidate)
+		if err != nil {
+			continue
+		}
+		if isAROSDrivePath(absCandidate) {
+			return absCandidate
 		}
 	}
 
@@ -39,11 +43,16 @@ func arosDriveCandidates(exePath string) []string {
 	}
 
 	exeDir := filepath.Dir(exePath)
-	candidates = append(candidates,
-		filepath.Join(exeDir, "AROS"),
-		filepath.Join(exeDir, "AROS", "bin", "ie-m68k", "bin", "ie-m68k", "AROS"),
-		filepath.Join(exeDir, "..", "AROS", "bin", "ie-m68k", "bin", "ie-m68k", "AROS"),
-	)
+	for _, base := range []string{
+		exeDir,
+		filepath.Dir(exeDir),
+		filepath.Dir(filepath.Dir(exeDir)),
+	} {
+		candidates = append(candidates,
+			filepath.Join(base, "AROS"),
+			filepath.Join(base, "AROS", "bin", "ie-m68k", "bin", "ie-m68k", "AROS"),
+		)
+	}
 	return candidates
 }
 

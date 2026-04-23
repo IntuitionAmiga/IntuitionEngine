@@ -412,6 +412,12 @@ func amd64SHR_imm(cb *CodeBuffer, dst byte, imm8 byte) {
 	cb.EmitBytes(0xC1, modRM(3, 5, dst), imm8)
 }
 
+// amd64SAR_imm emits SAR dst, imm8 (64-bit arithmetic right shift).
+func amd64SAR_imm(cb *CodeBuffer, dst byte, imm8 byte) {
+	emitREX(cb, true, 0, dst)
+	cb.EmitBytes(0xC1, modRM(3, 7, dst), imm8)
+}
+
 // amd64SHL_CL32 emits SHL dst32, CL (32-bit).
 func amd64SHL_CL32(cb *CodeBuffer, dst byte) {
 	emitREX(cb, false, 0, dst)
