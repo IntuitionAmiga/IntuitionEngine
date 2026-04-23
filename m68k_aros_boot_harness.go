@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +79,135 @@ func (m *M68KFaultManifest) Records() []M68KFaultRecord {
 	out := make([]M68KFaultRecord, len(m.records))
 	copy(out, m.records)
 	return out
+}
+
+func NormalizeM68KFaultRecord(cpu *M68KCPU, record M68KFaultRecord) M68KFaultRecord {
+	if cpu == nil {
+		return record
+	}
+	mem := cpu.bus.GetMemory()
+	if record.Opcode == 0 && record.FaultPC < DEFAULT_MEMORY_SIZE-1 {
+		record.Opcode = cpu.Read16(record.FaultPC)
+	}
+	if record.FaultPC >= DEFAULT_MEMORY_SIZE {
+		return record
+	}
+
+	lines := disassembleM68K(func(addr uint64, size int) []byte {
+		start := uint32(addr)
+		end := start + uint32(size)
+		if end > uint32(len(mem)) || end < start {
+			return nil
+		}
+		out := make([]byte, size)
+		copy(out, mem[start:end])
+		return out
+	}, uint64(record.FaultPC), 1)
+	if len(lines) == 0 {
+		return record
+	}
+
+	family, mode := normalizeM68KFaultMnemonic(lines[0].Mnemonic)
+	if record.MnemonicFamily == "" {
+		record.MnemonicFamily = family
+	}
+	if record.AddressingMode == "" {
+		record.AddressingMode = mode
+	}
+	return record
+}
+
+func normalizeM68KFaultMnemonic(mnemonic string) (family, mode string) {
+	mnemonic = strings.TrimSpace(mnemonic)
+	if mnemonic == "" {
+		return "", ""
+	}
+	if strings.HasPrefix(mnemonic, "dc.w") {
+		switch {
+		case strings.Contains(mnemonic, "Line-F"):
+			return "FPU", ""
+		case strings.Contains(mnemonic, "Line-A"):
+			return "LINEA", ""
+		default:
+			return "DC", ""
+		}
+	}
+
+	op, rest, found := strings.Cut(mnemonic, " ")
+	family = strings.ToUpper(strings.TrimSuffix(op, ".B"))
+	family = strings.TrimSuffix(family, ".W")
+	family = strings.TrimSuffix(family, ".L")
+	if !found {
+		return family, ""
+	}
+
+	operands := splitM68KOperands(rest)
+	if len(operands) == 0 {
+		return family, ""
+	}
+	return family, normalizeM68KOperandMode(operands[0])
+}
+
+func splitM68KOperands(s string) []string {
+	var out []string
+	start := 0
+	depth := 0
+	for i, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				part := strings.TrimSpace(s[start:i])
+				if part != "" {
+					out = append(out, part)
+				}
+				start = i + 1
+			}
+		}
+	}
+	if tail := strings.TrimSpace(s[start:]); tail != "" {
+		out = append(out, tail)
+	}
+	return out
+}
+
+func normalizeM68KOperandMode(operand string) string {
+	operand = strings.TrimSpace(operand)
+	switch {
+	case operand == "":
+		return ""
+	case strings.HasPrefix(operand, "#"):
+		return "#<data>"
+	case len(operand) == 2 && operand[0] == 'D' && operand[1] >= '0' && operand[1] <= '7':
+		return "Dn"
+	case len(operand) == 2 && operand[0] == 'A' && operand[1] >= '0' && operand[1] <= '7':
+		return "An"
+	case strings.HasPrefix(operand, "-(A") && strings.HasSuffix(operand, ")"):
+		return "-(An)"
+	case strings.HasPrefix(operand, "(A") && strings.HasSuffix(operand, ")+"):
+		return "(An)+"
+	case strings.HasPrefix(operand, "(A") && strings.HasSuffix(operand, ")"):
+		return "(An)"
+	case strings.Contains(operand, "(PC,"):
+		return "(d8,PC,Xn)"
+	case strings.HasSuffix(operand, "(PC)"):
+		return "(d16,PC)"
+	case strings.Contains(operand, "(A") && strings.Contains(operand, ","):
+		return "(d8,An,Xn)"
+	case strings.Contains(operand, "(A"):
+		return "(d16,An)"
+	case strings.HasSuffix(operand, ".W"):
+		return "(xxx).W"
+	case strings.HasPrefix(operand, "$"):
+		return "(xxx).L"
+	default:
+		return operand
+	}
 }
 
 const (
@@ -214,6 +344,28 @@ func (cpu *M68KCPU) emitStructuredFault(vector uint8, faultPC uint32) {
 	})
 }
 
+func MissingAROSBootRegressionCoverage(records []M68KFaultRecord) []string {
+	inventory := KnownAROSBootRegressionInventory()
+	seen := make(map[string]struct{})
+	var missing []string
+	for _, record := range records {
+		sig := record.Signature()
+		if sig == "" {
+			continue
+		}
+		if _, ok := inventory[sig]; ok {
+			continue
+		}
+		if _, ok := seen[sig]; ok {
+			continue
+		}
+		seen[sig] = struct{}{}
+		missing = append(missing, sig)
+	}
+	sort.Strings(missing)
+	return missing
+}
+
 type AROSBootHarness struct {
 	CPU          *M68KCPU
 	Loader       *AROSLoader
@@ -262,6 +414,7 @@ func (h AROSBootHarness) Run(ctx context.Context) AROSBootResult {
 	manifest := NewM68KFaultManifest()
 	prevHook := h.CPU.FaultHook
 	h.CPU.FaultHook = func(record M68KFaultRecord) {
+		record = NormalizeM68KFaultRecord(h.CPU, record)
 		manifest.Add(record)
 		if prevHook != nil {
 			prevHook(record)
