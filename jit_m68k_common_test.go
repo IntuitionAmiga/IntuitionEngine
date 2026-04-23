@@ -585,9 +585,16 @@ func TestM68KJIT_NeedsFallback(t *testing.T) {
 		{0x4E40, true, "TRAP #0"},
 		{0x4E76, true, "TRAPV"},
 		{0x4E7A, true, "MOVEC"},
-		// NOT fallback:
+		{0x4C03, false, "MULL.L D3"},
+		{0x4C1A, false, "MULL.L (A2)+"},
+		{0x4C40, false, "DIVL.L D0"},
+		{0x4C5A, false, "DIVL.L (A2)+"},
+		{0x4605, false, "NOT.B D5"},
+		{0x4641, false, "NOT.W D1"},
+		{0x4610, true, "NOT.B (A0)"},
 		{0x702A, false, "MOVEQ"},
 		{0xD081, false, "ADD.L"},
+		{0x4680, false, "NOT.L D0"},
 		{0x4E75, false, "RTS"},
 		{0x6008, false, "BRA.B"},
 	}

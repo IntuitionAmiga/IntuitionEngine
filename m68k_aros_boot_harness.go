@@ -388,6 +388,8 @@ type AROSInterpreterBootEnvironment struct {
 	Harness  AROSBootHarness
 	Video    *VideoChip
 	Sound    *SoundChip
+	Terminal *TerminalMMIO
+	Coproc   *CoprocessorManager
 	hostRoot string
 }
 
@@ -451,6 +453,14 @@ func (h AROSBootHarness) Run(ctx context.Context) AROSBootResult {
 }
 
 func NewAROSInterpreterBootEnvironment(rom []byte, hostRoot string) (*AROSInterpreterBootEnvironment, error) {
+	return newAROSInterpreterBootEnvironment(rom, hostRoot, false)
+}
+
+func NewAROSInterpreterBootEnvironmentWithCoprocessor(rom []byte, hostRoot string) (*AROSInterpreterBootEnvironment, error) {
+	return newAROSInterpreterBootEnvironment(rom, hostRoot, true)
+}
+
+func newAROSInterpreterBootEnvironment(rom []byte, hostRoot string, withCoprocessor bool) (*AROSInterpreterBootEnvironment, error) {
 	bus := NewMachineBus()
 
 	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
@@ -469,6 +479,10 @@ func NewAROSInterpreterBootEnvironment(rom []byte, hostRoot string) (*AROSInterp
 		return nil, fmt.Errorf("new sound chip: %w", err)
 	}
 	sound.AttachBusMemory(bus.GetMemory())
+
+	term := NewTerminalMMIO()
+	term.amigaScancodeMode.Store(true)
+	bus.MapIO(TERM_OUT, TERMINAL_REGION_END, term.HandleRead, term.HandleWrite)
 
 	cpu := NewM68KCPU(bus)
 	cpu.m68kJitEnabled = false
@@ -497,6 +511,15 @@ func NewAROSInterpreterBootEnvironment(rom []byte, hostRoot string) (*AROSInterp
 
 	loader.MapIRQDiagnostics()
 
+	var coproc *CoprocessorManager
+	if withCoprocessor {
+		coproc = NewCoprocessorManager(bus, ".")
+		bus.MapIO(COPROC_BASE, COPROC_END, coproc.HandleRead, coproc.HandleWrite)
+		bus.MapIO(COPROC_EXT_BASE, COPROC_EXT_END, coproc.HandleRead, coproc.HandleWrite)
+		coproc.SetIRQTarget(cpu)
+		coproc.StartCompletionWatcher()
+	}
+
 	video.Start()
 	sound.Start()
 
@@ -507,6 +530,8 @@ func NewAROSInterpreterBootEnvironment(rom []byte, hostRoot string) (*AROSInterp
 		Loader:   loader,
 		Video:    video,
 		Sound:    sound,
+		Terminal: term,
+		Coproc:   coproc,
 		hostRoot: hostRoot,
 	}
 	env.Harness = AROSBootHarness{
@@ -537,6 +562,10 @@ func (env *AROSInterpreterBootEnvironment) Close() {
 	}
 	if env.Loader != nil {
 		env.Loader.Stop()
+	}
+	if env.Coproc != nil {
+		env.Coproc.StopCompletionWatcher()
+		env.Coproc.StopAll()
 	}
 	if env.Sound != nil {
 		env.Sound.Stop()

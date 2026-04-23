@@ -46,6 +46,34 @@ const bfTestAddr = 0x2000 // Address for test data
 
 // === Bug 1: Memory Bit Field Extraction Shift ===
 
+func TestBitField_Register_BFTST_LowThreeBits(t *testing.T) {
+	tests := []M68KTestCase{
+		{
+			Name:          "BFTST_D2_29_3_zero_low_bits_sets_Z",
+			DataRegs:      [8]uint32{0, 0, 0x12345678},
+			Opcodes:       []uint16{bfOp_BFTST | 2, bfExt(0, 29, 3)},
+			ExpectedRegs:  Reg("D2", 0x12345678),
+			ExpectedFlags: FlagsNZVC(0, 1, 0, 0),
+		},
+		{
+			Name:          "BFTST_D2_29_3_nonzero_low_bits_clears_Z",
+			DataRegs:      [8]uint32{0, 0, 0x1234567B},
+			Opcodes:       []uint16{bfOp_BFTST | 2, bfExt(0, 29, 3)},
+			ExpectedRegs:  Reg("D2", 0x1234567B),
+			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
+		},
+		{
+			Name:          "BFTST_D2_29_3_negative_field_sets_N",
+			DataRegs:      [8]uint32{0, 0, 0x00000004},
+			Opcodes:       []uint16{bfOp_BFTST | 2, bfExt(0, 29, 3)},
+			ExpectedRegs:  Reg("D2", 0x00000004),
+			ExpectedFlags: FlagsNZVC(1, 0, 0, 0),
+		},
+	}
+
+	RunM68KTests(t, tests)
+}
+
 func TestBitField_Memory_BFEXTU(t *testing.T) {
 	tests := []M68KTestCase{
 		{

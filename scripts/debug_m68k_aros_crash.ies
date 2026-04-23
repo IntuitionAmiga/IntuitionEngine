@@ -1,0 +1,71 @@
+local function hex32(v)
+  return string.format("$%08X", v)
+end
+
+local function dump_regs()
+  local regs = dbg.get_regs()
+  local names = {"PC","SR","D0","D1","D2","D3","D4","D5","D6","D7","A0","A1","A2","A3","A4","A5","A6","A7"}
+  for _, name in ipairs(names) do
+    local v = regs[name]
+    if v ~= nil then
+      sys.print(name .. "=" .. hex32(v))
+    end
+  end
+end
+
+local function dump_mem(addr, len)
+  local raw = dbg.read_mem(addr, len)
+  local out = {}
+  for i = 1, #raw do
+    out[#out + 1] = string.format("%02X", string.byte(raw, i))
+  end
+  sys.print(string.format("mem[%s..+%d]=%s", hex32(addr), len, table.concat(out, " ")))
+end
+
+local function dump_disasm(addr, count)
+  local lines = dbg.disasm(addr, count)
+  for _, entry in ipairs(lines) do
+    sys.print(string.format("%s  %-12s %s", hex32(entry.addr), entry.hex, entry.mnemonic))
+  end
+end
+
+sys.print("waiting for AROS boot")
+sys.wait_frames(240)
+
+dbg.open()
+local cpus = dbg.cpu_list()
+for _, entry in ipairs(cpus) do
+  sys.print(string.format("cpu id=%d label=%s name=%s running=%s",
+    entry.id, entry.label, entry.cpu_name, tostring(entry.is_running)))
+  if entry.cpu_name == "M68K" or entry.label == "M68K" then
+    dbg.cpu_focus(entry.id)
+  end
+end
+
+dbg.clear_all_bp()
+dbg.set_bp(0x009E4D80)
+dbg.set_bp(0x0064F3E6)
+dbg.continue()
+
+local pc = dbg.get_pc()
+sys.print("stopped at " .. hex32(pc))
+dump_regs()
+dump_disasm(pc, 8)
+dump_mem(pc, 32)
+
+local regs = dbg.get_regs()
+if regs["A2"] ~= nil then
+  local a2 = regs["A2"]
+  sys.print("A2 window")
+  dump_mem(a2 + 64, 24)
+end
+
+if pc == 0x0064F3E6 then
+  dbg.step(1)
+  sys.print("after single-step from thunk")
+  dump_regs()
+  dump_disasm(dbg.get_pc(), 6)
+end
+
+dbg.clear_all_bp()
+dbg.close()

@@ -703,14 +703,16 @@ type M68KCPU struct {
 	DebugTraceEnabled bool
 	debugTraceBuffer  [256]debugTraceEntry
 	debugTraceIdx     uint8
+	InstructionHook   func(*M68KCPU)
 
 	// JIT compiler state
-	m68kJitEnabled    bool
-	m68kJitPersist    bool // keep code cache alive across benchmark iterations
-	m68kJitExecMem    any  // *ExecMem (typed via accessor)
-	m68kJitCache      *CodeCache
-	m68kJitCtx        *M68KJITContext
-	m68kJitCodeBitmap []byte // code page bitmap for self-mod detection
+	m68kJitEnabled     bool
+	m68kJitForceNative bool // tests only: bypass runtime interpreter-only gate
+	m68kJitPersist     bool // keep code cache alive across benchmark iterations
+	m68kJitExecMem     any  // *ExecMem (typed via accessor)
+	m68kJitCache       *CodeCache
+	m68kJitCtx         *M68KJITContext
+	m68kJitCodeBitmap  []byte // code page bitmap for self-mod detection
 }
 
 type debugTraceEntry struct {
@@ -2441,6 +2443,10 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 			cpu.PC += M68K_WORD_SIZE
 			cpu.lastExecPC = execPC
 			cpu.lastExecOpcode = cpu.currentIR
+
+			if cpu.InstructionHook != nil {
+				cpu.InstructionHook(cpu)
+			}
 
 			if cpu.DebugTraceEnabled {
 				idx := cpu.debugTraceIdx
@@ -7999,8 +8005,11 @@ func (cpu *M68KCPU) ExecMulL(mode, xreg uint16) {
 		source = cpu.Fetch32()
 		cpu.cycleCounter += M68K_CYCLE_MEM_READ
 	} else {
-		addr := cpu.GetEffectiveAddress(mode, xreg)
+		addr, postIncrement := cpu.resolveEAWithPrePost(mode, xreg, M68K_SIZE_LONG)
 		source = cpu.Read32(addr)
+		if postIncrement != 0 {
+			cpu.AddrRegs[xreg] += postIncrement
+		}
 		cpu.cycleCounter += M68K_CYCLE_MEM_READ
 	}
 
@@ -8254,8 +8263,11 @@ func (cpu *M68KCPU) ExecDIVL(mode, xreg uint16) {
 		divisor = cpu.Fetch32()
 		cpu.cycleCounter += M68K_CYCLE_MEM_READ
 	} else {
-		addr := cpu.GetEffectiveAddress(mode, xreg)
+		addr, postIncrement := cpu.resolveEAWithPrePost(mode, xreg, M68K_SIZE_LONG)
 		divisor = cpu.Read32(addr)
+		if postIncrement != 0 {
+			cpu.AddrRegs[xreg] += postIncrement
+		}
 		cpu.cycleCounter += M68K_CYCLE_MEM_READ
 	}
 
@@ -9157,8 +9169,8 @@ func (cpu *M68KCPU) ExecNot(mode, reg uint16, size int) {
 		cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_MEM_WRITE + cpu.GetEACycles(mode, reg)
 	}
 
-	// Set condition codes
-	cpu.SetFlags(cpu.DataRegs[reg], M68K_SIZE_LONG)
+	// NOT sets N/Z from the operation size and always clears V/C.
+	cpu.SetFlagsNZ(result, size)
 }
 
 // CCR/SR operations

@@ -225,6 +225,12 @@ func m68kInstrMaySetGenericIOFallback(ji *M68KJITInstr) bool {
 		if group == 0x8 {
 			return srcMode != 0 && opmode <= 2 && m68kEAMayUseMemHelper(srcMode, srcReg, false)
 		}
+	case 0x4: // Misc family
+		if opcode&0xFF80 == 0x4C00 { // MULL/DIVL
+			srcMode := (opcode >> 3) & 7
+			srcReg := opcode & 7
+			return m68kEAMayUseMemHelper(srcMode, srcReg, false)
+		}
 	}
 	return false
 }
@@ -952,19 +958,307 @@ func m68kEmitEOR_Dn_Dn(cb *CodeBuffer, opcode uint16) {
 	}
 }
 
-// m68kEmitNOT emits NOT.L Dn.
+// m68kEmitNOT emits NOT.B/W/L Dn.
 func m68kEmitNOT(cb *CodeBuffer, opcode uint16) {
+	size := (opcode >> 6) & 3
 	mode := (opcode >> 3) & 7
 	reg := opcode & 7
 
 	if mode == 0 { // Data register direct
 		r := m68kResolveDataReg(cb, reg, amd64RAX)
-		// NOT in x86 doesn't affect flags, so we need TEST after
-		emitREX(cb, false, 0, r)
-		cb.EmitBytes(0xF7, modRM(3, 2, r)) // NOT r32
-		amd64TEST_reg_reg32(cb, r, r)
+		switch size {
+		case 0: // NOT.B
+			amd64ALU_reg_imm32_32bit(cb, 6, r, 0xFF) // XOR low byte bits only
+			m68kStoreDataReg(cb, reg, r)
+			scratch := byte(amd64RAX)
+			if r == scratch {
+				scratch = byte(amd64RCX)
+			}
+			amd64MOV_reg_reg32(cb, scratch, r)
+			amd64MOVZX_B(cb, scratch, scratch)
+			amd64SHL_imm32(cb, scratch, 24) // promote bit 7 to 32-bit sign flag
+		case 1: // NOT.W
+			amd64ALU_reg_imm32_32bit(cb, 6, r, 0xFFFF) // XOR low word bits only
+			m68kStoreDataReg(cb, reg, r)
+			scratch := byte(amd64RAX)
+			if r == scratch {
+				scratch = byte(amd64RCX)
+			}
+			amd64MOV_reg_reg32(cb, scratch, r)
+			amd64MOVZX_W(cb, scratch, scratch)
+			amd64SHL_imm32(cb, scratch, 16) // promote bit 15 to 32-bit sign flag
+		case 2: // NOT.L
+			// NOT in x86 doesn't affect flags, so we need TEST after.
+			emitREX(cb, false, 0, r)
+			cb.EmitBytes(0xF7, modRM(3, 2, r)) // NOT r32
+			m68kStoreDataReg(cb, reg, r)
+			amd64TEST_reg_reg32(cb, r, r)
+		default:
+			return
+		}
 		emitCCR_Logic(cb)
-		m68kStoreDataReg(cb, reg, r)
+	}
+}
+
+// m68kEmitMULL emits native MULL.L Dn,Dl / Dn,Dh:Dl.
+// Only direct-register source forms are owned here; other shapes stay on the interpreter path.
+func m68kEmitMULL(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32, br *m68kBlockRegs, instrIdx int) {
+	instrPC := startPC + ji.pcOffset
+	extPC := instrPC + 2
+	extWord := uint16(memory[extPC])<<8 | uint16(memory[extPC+1])
+	srcMode := (ji.opcode >> 3) & 7
+	srcReg := ji.opcode & 0x7
+	signed := (extWord & 0x0800) != 0
+	resultHigh := (extWord & 0x0400) != 0
+	dlReg := (extWord >> 12) & 0x7
+	dhReg := dlReg
+	if resultHigh {
+		dhReg = extWord & 0x7
+	}
+
+	// Full 68020 indexed source forms still belong to the interpreter path.
+	if srcMode == 6 || (srcMode == 7 && srcReg == 3) {
+		eaExtPC := instrPC + 4
+		if eaExtPC+2 <= uint32(len(memory)) {
+			eaExtWord := uint16(memory[eaExtPC])<<8 | uint16(memory[eaExtPC+1])
+			if eaExtWord&0x0100 != 0 {
+				amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
+				m68kEmitRetPC(cb, instrPC, uint32(instrIdx))
+				m68kEmitEpilogue(cb, br)
+				return
+			}
+		}
+	}
+
+	if cs := m68kCurrentCS; cs != nil && cs.flagState != flagsMaterialized {
+		m68kMaterializeCCR(cb, cs)
+	}
+
+	m68kEmitReadSourceEA(cb, srcMode, srcReg, M68K_SIZE_LONG, memory, instrPC+4, instrPC, amd64R11)
+	mul := m68kResolveDataReg(cb, dlReg, amd64RCX)
+
+	if signed {
+		amd64MOVSXD(cb, amd64RAX, mul)
+		amd64MOVSXD(cb, amd64RCX, amd64R11)
+	} else {
+		amd64MOV_reg_reg32(cb, amd64RAX, mul)
+		amd64MOV_reg_reg32(cb, amd64RCX, amd64R11)
+	}
+	amd64IMUL_reg_reg(cb, amd64RAX, amd64RCX)
+
+	amd64MOV_reg_reg32(cb, amd64R10, amd64RAX) // low 32 bits
+	amd64MOV_reg_reg(cb, amd64R11, amd64RAX)   // full 64-bit product copy
+	if signed {
+		amd64SAR_imm(cb, amd64R11, 32)
+	} else {
+		amd64SHR_imm(cb, amd64R11, 32)
+	}
+
+	amd64ALU_reg_imm32(cb, 4, m68kAMD64RegCCR, m68kCCR_X) // preserve X only
+
+	if resultHigh {
+		m68kStoreDataReg(cb, dhReg, amd64R11)
+		m68kStoreDataReg(cb, dlReg, amd64R10)
+
+		amd64MOV_reg_reg32(cb, amd64RDX, amd64R10)
+		amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64R11) // OR for Z test
+		amd64TEST_reg_reg32(cb, amd64RDX, amd64RDX)
+		skipZOff := amd64Jcc_rel32(cb, amd64CondNE)
+		amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_Z)
+		patchRel32(cb, skipZOff, cb.Len())
+
+		amd64TEST_reg_reg32(cb, amd64R11, amd64R11)
+		skipNOff := amd64Jcc_rel32(cb, 0x9) // JNS
+		amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_N)
+		patchRel32(cb, skipNOff, cb.Len())
+	} else {
+		m68kStoreDataReg(cb, dlReg, amd64R10)
+
+		amd64TEST_reg_reg32(cb, amd64R10, amd64R10)
+		skipZOff := amd64Jcc_rel32(cb, amd64CondNE)
+		amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_Z)
+		patchRel32(cb, skipZOff, cb.Len())
+
+		skipNOff := amd64Jcc_rel32(cb, 0x9) // JNS
+		amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_N)
+		patchRel32(cb, skipNOff, cb.Len())
+
+		if signed {
+			amd64MOVSXD(cb, amd64RDX, amd64R10)
+			amd64SAR_imm(cb, amd64RDX, 32)
+			amd64ALU_reg_reg32(cb, 0x39, amd64R11, amd64RDX) // CMP hi, signext(low)
+			skipVOff := amd64Jcc_rel32(cb, amd64CondE)
+			amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_V)
+			patchRel32(cb, skipVOff, cb.Len())
+		} else {
+			amd64TEST_reg_reg32(cb, amd64R11, amd64R11)
+			skipVOff := amd64Jcc_rel32(cb, amd64CondE)
+			amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_V)
+			patchRel32(cb, skipVOff, cb.Len())
+		}
+	}
+
+	if cs := m68kCurrentCS; cs != nil {
+		cs.flagState = flagsMaterialized
+	}
+}
+
+// m68kEmitDIVL emits native DIVL.L Dn,Dq / Dn,Dr:Dq.
+// Only direct-register source forms are owned here; other shapes stay on the interpreter path.
+// Zero-divide still bails back to the interpreter so exception delivery remains exact.
+func m68kEmitDIVL(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32, br *m68kBlockRegs, instrIdx int) {
+	instrPC := startPC + ji.pcOffset
+	extPC := instrPC + 2
+	extWord := uint16(memory[extPC])<<8 | uint16(memory[extPC+1])
+	srcMode := (ji.opcode >> 3) & 7
+	srcReg := ji.opcode & 0x7
+	signed := (extWord & 0x0800) != 0
+	longDiv := (extWord & 0x0400) != 0
+	dqReg := (extWord >> 12) & 0x7
+	drReg := extWord & 0x7
+
+	// Full 68020 indexed source forms still belong to the interpreter path.
+	if srcMode == 6 || (srcMode == 7 && srcReg == 3) {
+		eaExtPC := instrPC + 4
+		if eaExtPC+2 <= uint32(len(memory)) {
+			eaExtWord := uint16(memory[eaExtPC])<<8 | uint16(memory[eaExtPC+1])
+			if eaExtWord&0x0100 != 0 {
+				amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
+				m68kEmitRetPC(cb, instrPC, uint32(instrIdx))
+				m68kEmitEpilogue(cb, br)
+				return
+			}
+		}
+	}
+
+	if cs := m68kCurrentCS; cs != nil && cs.flagState != flagsMaterialized {
+		m68kMaterializeCCR(cb, cs)
+	}
+
+	m68kEmitReadSourceEA(cb, srcMode, srcReg, M68K_SIZE_LONG, memory, instrPC+4, instrPC, amd64R11)
+	amd64MOV_reg_reg32(cb, amd64RCX, amd64R11)
+	amd64TEST_reg_reg32(cb, amd64RCX, amd64RCX)
+	divZeroOff := amd64Jcc_rel32(cb, amd64CondE)
+
+	if longDiv {
+		dividendHi := m68kResolveDataReg(cb, drReg, amd64R10)
+		dividendLo := m68kResolveDataReg(cb, dqReg, amd64R11)
+
+		if signed {
+			amd64MOV_reg_reg32(cb, amd64RAX, dividendHi)
+			amd64SHL_imm(cb, amd64RAX, 32)
+			amd64MOV_reg_reg32(cb, amd64RDX, dividendLo)
+			amd64ALU_reg_reg(cb, 0x09, amd64RAX, amd64RDX)
+			amd64CQO(cb)
+			amd64MOVSXD(cb, amd64RCX, amd64RCX)
+			amd64IDIV(cb, amd64RCX)
+			amd64MOVSXD(cb, amd64R10, amd64RAX)
+			amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64R10)
+			overflowOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+			m68kStoreDataReg(cb, dqReg, amd64RAX)
+			m68kStoreDataReg(cb, drReg, amd64RDX)
+
+			amd64ALU_reg_imm32(cb, 4, m68kAMD64RegCCR, m68kCCR_X)
+			amd64TEST_reg_reg32(cb, amd64RAX, amd64RAX)
+			skipZOff := amd64Jcc_rel32(cb, amd64CondNE)
+			amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_Z)
+			patchRel32(cb, skipZOff, cb.Len())
+			skipNOff := amd64Jcc_rel32(cb, 0x9) // JNS
+			amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_N)
+			patchRel32(cb, skipNOff, cb.Len())
+			doneOff := amd64JMP_rel32(cb)
+
+			patchRel32(cb, overflowOff, cb.Len())
+			amd64ALU_reg_imm32(cb, 4, m68kAMD64RegCCR, m68kCCR_X)
+			amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_V)
+			patchRel32(cb, doneOff, cb.Len())
+		} else {
+			amd64MOV_reg_reg32(cb, amd64RAX, dividendHi)
+			amd64SHL_imm(cb, amd64RAX, 32)
+			amd64MOV_reg_reg32(cb, amd64RDX, dividendLo)
+			amd64ALU_reg_reg(cb, 0x09, amd64RAX, amd64RDX)
+			amd64XOR_reg_reg(cb, amd64RDX, amd64RDX)
+			amd64DIV(cb, amd64RCX)
+			amd64MOV_reg_reg(cb, amd64R10, amd64RAX)
+			amd64SHR_imm(cb, amd64R10, 32)
+			overflowOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+			m68kStoreDataReg(cb, dqReg, amd64RAX)
+			m68kStoreDataReg(cb, drReg, amd64RDX)
+
+			amd64ALU_reg_imm32(cb, 4, m68kAMD64RegCCR, m68kCCR_X)
+			amd64TEST_reg_reg32(cb, amd64RAX, amd64RAX)
+			skipZOff := amd64Jcc_rel32(cb, amd64CondNE)
+			amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_Z)
+			patchRel32(cb, skipZOff, cb.Len())
+			doneOff := amd64JMP_rel32(cb)
+
+			patchRel32(cb, overflowOff, cb.Len())
+			amd64ALU_reg_imm32(cb, 4, m68kAMD64RegCCR, m68kCCR_X)
+			amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_V)
+			patchRel32(cb, doneOff, cb.Len())
+		}
+	} else {
+		dividend := m68kResolveDataReg(cb, dqReg, amd64R10)
+
+		if signed {
+			amd64MOVSXD(cb, amd64RAX, dividend)
+			amd64CQO(cb)
+			amd64MOVSXD(cb, amd64RCX, amd64RCX)
+			amd64IDIV(cb, amd64RCX)
+			amd64MOVSXD(cb, amd64R10, amd64RAX)
+			amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64R10)
+			overflowOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+			m68kStoreDataReg(cb, dqReg, amd64RAX)
+			if drReg != dqReg {
+				m68kStoreDataReg(cb, drReg, amd64RDX)
+			}
+
+			amd64ALU_reg_imm32(cb, 4, m68kAMD64RegCCR, m68kCCR_X)
+			amd64TEST_reg_reg32(cb, amd64RAX, amd64RAX)
+			skipZOff := amd64Jcc_rel32(cb, amd64CondNE)
+			amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_Z)
+			patchRel32(cb, skipZOff, cb.Len())
+			skipNOff := amd64Jcc_rel32(cb, 0x9) // JNS
+			amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_N)
+			patchRel32(cb, skipNOff, cb.Len())
+			doneOff := amd64JMP_rel32(cb)
+
+			patchRel32(cb, overflowOff, cb.Len())
+			amd64ALU_reg_imm32(cb, 4, m68kAMD64RegCCR, m68kCCR_X)
+			amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_V)
+			patchRel32(cb, doneOff, cb.Len())
+		} else {
+			amd64MOV_reg_reg32(cb, amd64RAX, dividend)
+			amd64XOR_reg_reg(cb, amd64RDX, amd64RDX)
+			amd64DIV(cb, amd64RCX)
+
+			m68kStoreDataReg(cb, dqReg, amd64RAX)
+			if drReg != dqReg {
+				m68kStoreDataReg(cb, drReg, amd64RDX)
+			}
+
+			amd64ALU_reg_imm32(cb, 4, m68kAMD64RegCCR, m68kCCR_X)
+			amd64TEST_reg_reg32(cb, amd64RAX, amd64RAX)
+			skipZOff := amd64Jcc_rel32(cb, amd64CondNE)
+			amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, m68kCCR_Z)
+			patchRel32(cb, skipZOff, cb.Len())
+		}
+	}
+
+	finalDoneOff := amd64JMP_rel32(cb)
+
+	// Zero-divide re-executes through the interpreter for exact exception handling.
+	patchRel32(cb, divZeroOff, cb.Len())
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
+	m68kEmitRetPC(cb, instrPC, uint32(instrIdx))
+	m68kEmitEpilogue(cb, br)
+	patchRel32(cb, finalDoneOff, cb.Len())
+
+	if cs := m68kCurrentCS; cs != nil {
+		cs.flagState = flagsMaterialized
 	}
 }
 
@@ -2990,6 +3284,19 @@ func m68kEmitInstructionFull(cb *CodeBuffer, ji *M68KJITInstr, blockStartPC uint
 		}
 
 	case 0x4: // Misc
+		// MULL/DIVL (68020)
+		if opcode&0xFF80 == 0x4C00 {
+			// Native coverage currently owns direct-register MULL.L and DIVL.L only.
+			// Memory/immediate forms still bail to the interpreter.
+			if memory != nil {
+				if opcode&0x0040 == 0 {
+					m68kEmitMULL(cb, ji, memory, blockStartPC, br, instrIdx)
+				} else {
+					m68kEmitDIVL(cb, ji, memory, blockStartPC, br, instrIdx)
+				}
+				return
+			}
+		}
 		// CLR
 		if opcode&0xFF00 == 0x4200 {
 			m68kEmitCLR(cb, opcode)
@@ -2997,8 +3304,12 @@ func m68kEmitInstructionFull(cb *CodeBuffer, ji *M68KJITInstr, blockStartPC uint
 		}
 		// NOT
 		if opcode&0xFF00 == 0x4600 {
-			m68kEmitNOT(cb, opcode)
-			return
+			// Native coverage currently owns direct-register byte/word/long NOT.
+			// Memory forms still bail to the interpreter.
+			if ((opcode>>3)&7) == 0 && ((opcode>>6)&3) != 3 {
+				m68kEmitNOT(cb, opcode)
+				return
+			}
 		}
 		// NEG
 		if opcode&0xFF00 == 0x4400 {

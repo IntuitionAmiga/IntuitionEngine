@@ -66,8 +66,10 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 	// Correctness-first temporary mode: when M68K JIT is enabled, route runtime
 	// execution through the interpreter until native block coverage is rebuilt
 	// behind the full M68K test matrix.
-	cpu.ExecuteInstruction()
-	return
+	if !cpu.m68kJitForceNative {
+		cpu.ExecuteInstruction()
+		return
+	}
 
 	if err := cpu.initM68KJIT(); err != nil {
 		fmt.Printf("M68K JIT: %v, falling back to interpreter\n", err)
@@ -168,7 +170,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			}
 
 			// Check if this block should stay in the interpreter.
-			if m68kNeedsFallback(instrs) || m68kNeedsConservativeFallback(cpu.memory, pc, instrs) {
+			if m68kNeedsFallback(instrs) || (!cpu.m68kJitForceNative && m68kNeedsConservativeFallback(cpu.memory, pc, instrs)) {
 				cpu.m68kInterpretOne()
 				instructionCount++
 				diagFallbackInstr++
