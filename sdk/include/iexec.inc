@@ -4,6 +4,37 @@
 ; Include with: include "iexec.inc"
 
 ; ===========================================================================
+; IntuitionOS Version (M16.1 single source of truth)
+; ===========================================================================
+
+IOS_VERSION_MAJOR  equ 1
+IOS_VERSION_MINOR  equ 16
+IOS_VERSION_PATCH  equ 1
+
+; ===========================================================================
+; Current module manifest note ABI (M16 library note)
+; ===========================================================================
+
+IOSM_MAGIC               equ 0x4C49424D
+IOSM_SCHEMA_VERSION      equ 1
+IOSM_KIND_LIBRARY        equ 1
+IOSM_KIND_DEVICE         equ 2
+IOSM_KIND_HANDLER        equ 3
+IOSM_KIND_RESOURCE       equ 4
+IOSM_KIND_COMMAND        equ 5
+IOSM_OFF_MAGIC           equ 0
+IOSM_OFF_SCHEMA_VERSION  equ 4
+IOSM_OFF_NAME            equ 8
+IOSM_OFF_VERSION         equ 40
+IOSM_OFF_REVISION        equ 42
+IOSM_OFF_TYPE            equ 44
+IOSM_OFF_FLAGS           equ 48
+IOSM_OFF_MSG_ABI_VERSION equ 52
+IOSM_NAME_SIZE           equ 32
+IOSM_SIZE                equ 96
+IOSM_NOTE_TYPE           equ 0x494F5331
+
+; ===========================================================================
 ; Syscall Numbers (IExec contract)
 ; ===========================================================================
 ;
@@ -174,6 +205,7 @@ SYSINFO_QUOTA_CURRENT equ 4        ; M15.6 G3: R1=query, R2=QUOTA_KIND_*, R3=tas
 SYSINFO_QUOTA_LIMIT   equ 5        ; M15.6 G3: R1=query, R2=QUOTA_KIND_*. Returns global
                                    ; default limit in R1. Limit is currently global, not
                                    ; per-task, so R3 is ignored. Diagnostic only.
+SYSINFO_PORT_NAME_BY_INDEX equ 6   ; M16.1: write i-th public port name to caller buffer
 
 ; ===========================================================================
 ; Kernel Memory Layout
@@ -878,6 +910,8 @@ DATA_ARGS_MAX     equ 256         ; Max arg string length (bytes)
 ; console.handler message types
 CON_MSG_CHAR      equ 0           ; Print single char (data0 low byte)
 CON_MSG_READLINE  equ 2           ; Request line input (reply_port, share_handle)
+MSG_GET_IOSM      equ 0x120       ; caller-allocates shared IOSM reply buffer
+MSG_LIST_RESIDENTS equ 0x121      ; exec.library public-port enumeration
 
 ; dos.library protocol opcodes
 DOS_OPEN          equ 1           ; Open file (data0=mode, share=name)
@@ -895,6 +929,11 @@ DOS_UNLOADSEG     equ 8           ; Free DOS-owned seglist (data0=seglist VA)
 DOS_RUNSEG        equ 9           ; Run a loaded seglist (data0=seglist VA, share=args)
 DOS_ASSIGN        equ 10          ; Assign list/query/set (share=assign row buffer)
 DOS_LOADLIB       equ 11          ; Internal: autoload one M16 library row through LIBS:
+DOS_OP_PARSE_MANIFEST equ 0x320   ; caller-allocates shared path+IOSM page
+DOS_PMP_PATH_OFF      equ 0
+DOS_PMP_PATH_MAX      equ 260
+DOS_PMP_IOSM_OFF      equ 272
+DOS_PMP_RC_OFF        equ 400
 
 ; DOS_ASSIGN sub-ops (data0)
 DOS_ASSIGN_LIST          equ 0    ; reply.data0 = row count, share = rows[name[16],target[16]]

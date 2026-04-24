@@ -23,19 +23,35 @@ const (
 	elfSHTStrTab         = 3
 	elfSHTNote           = 7
 
-	m16LibManifestMagic       = 0x4C49424D
-	m16LibManifestDescVersion = 1
-	m16LibManifestNoteType    = 0x494F5331
-	m16LibManifestTypeLibrary = 1
-	m16ModfCompatPort         = 0x00000002
+	iosmMagic          = 0x4C49424D
+	iosmSchemaVersion  = 1
+	iosmNoteType       = 0x494F5331
+	iosmKindLibrary    = 1
+	iosmKindDevice     = 2
+	iosmKindHandler    = 3
+	iosmKindResource   = 4
+	iosmKindCommand    = 5
+	iosmModfCompatPort = 0x00000002
+	iosmSize           = 96
+
+	iosmSectionName = ".ios.libmanifest"
+	iosmNoteName    = "IOS-LIB"
+
+	m16LibManifestMagic       = iosmMagic
+	m16LibManifestDescVersion = iosmSchemaVersion
+	m16LibManifestNoteType    = iosmNoteType
+	m16LibManifestTypeLibrary = iosmKindLibrary
+	m16ModfCompatPort         = iosmModfCompatPort
 )
 
 var labelRe = regexp.MustCompile(`^([0-9A-F]{8})\s+.*$`)
 
 type libManifestSpec struct {
 	Name          string
+	Kind          uint8
 	Version       uint16
 	Revision      uint16
+	Patch         uint16
 	Type          uint32
 	Flags         uint32
 	MsgABIVersion uint32
@@ -95,7 +111,7 @@ func main() {
 
 	code := image[codeStart:codeEnd]
 	data := image[dataStart:dataEnd]
-	spec, hasManifest, err := parseLibManifestSpecFromListing(listing, *label)
+	spec, hasManifest, err := manifestSpecForLabel(listing, *label)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -236,6 +252,7 @@ func parseLibManifestDirective(rest string, symbols map[string]uint64, global st
 				return libManifestSpec{}, fmt.Errorf("type: %w", err)
 			}
 			spec.Type = uint32(n)
+			spec.Kind = uint8(n)
 		case "flags":
 			n, err := evalManifestDirectiveExpr(val, symbols, global)
 			if err != nil {
@@ -259,6 +276,65 @@ func parseLibManifestDirective(rest string, symbols map[string]uint64, global st
 		}
 	}
 	return spec, nil
+}
+
+func manifestSpecForLabel(listing []byte, label string) (libManifestSpec, bool, error) {
+	spec, ok, err := parseLibManifestSpecFromListing(listing, label)
+	if err != nil {
+		return libManifestSpec{}, false, err
+	}
+	if ok {
+		if spec.Kind == 0 {
+			spec.Kind = uint8(spec.Type)
+		}
+		return spec, ok, nil
+	}
+	if requiresSourceManifest(label) {
+		return libManifestSpec{}, false, fmt.Errorf("missing %s .libmanifest in source listing", label)
+	}
+	if spec, ok := manifestSpecsByLabel[buildLabelAlias(label)]; ok {
+		if spec.Type == 0 {
+			spec.Type = uint32(spec.Kind)
+		}
+		return spec, true, nil
+	}
+	return spec, ok, nil
+}
+
+func buildLabelAlias(label string) string {
+	if strings.HasPrefix(label, "prog_") {
+		return label
+	}
+	return "prog_" + label
+}
+
+func requiresSourceManifest(label string) bool {
+	switch buildLabelAlias(label) {
+	case "prog_doslib", "prog_graphics_library", "prog_intuition_library":
+		return true
+	default:
+		return false
+	}
+}
+
+var manifestSpecsByLabel = map[string]libManifestSpec{
+	"prog_console":      {Name: "console.handler", Kind: iosmKindHandler, Version: 1, Revision: 0, Flags: iosmModfCompatPort},
+	"prog_shell":        {Name: "Shell", Kind: iosmKindHandler, Version: 1, Revision: 0},
+	"prog_hwres":        {Name: "hardware.resource", Kind: iosmKindResource, Version: 1, Revision: 0, Flags: iosmModfCompatPort},
+	"prog_input_device": {Name: "input.device", Kind: iosmKindDevice, Version: 1, Revision: 0, Flags: iosmModfCompatPort},
+	"prog_version":      {Name: "Version", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_avail":        {Name: "Avail", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_dir":          {Name: "Dir", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_type":         {Name: "Type", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_echo_cmd":     {Name: "Echo", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_resident_cmd": {Name: "Resident", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_assign_cmd":   {Name: "Assign", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_list_cmd":     {Name: "List", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_which_cmd":    {Name: "Which", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_help_app":     {Name: "Help", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_gfxdemo":      {Name: "GfxDemo", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_about":        {Name: "About", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_elfseg":       {Name: "ElfSeg", Kind: iosmKindCommand, Version: 1, Revision: 0},
 }
 
 func splitDirectiveOperands(rest string) []string {
@@ -734,7 +810,7 @@ func buildELF(code []byte, data []byte, manifest libManifestSpec, withManifest b
 	shstrndx := uint16(0)
 	if withManifest {
 		manifestBytes = buildManifestNote(manifest)
-		shstrtab = []byte("\x00.ios.libmanifest\x00.shstrtab\x00")
+		shstrtab = []byte("\x00" + iosmSectionName + "\x00.shstrtab\x00")
 		shstrtabFileOff = manifestFileOff + uint64(len(manifestBytes))
 		shoff = roundUp(shstrtabFileOff+uint64(len(shstrtab)), 8)
 		shnum = 3
@@ -797,7 +873,7 @@ func buildELF(code []byte, data []byte, manifest libManifestSpec, withManifest b
 		binary.LittleEndian.PutUint64(out[sh1+48:sh1+56], 4)
 
 		sh2 := shoff + 2*elfSectionHeaderSize
-		binary.LittleEndian.PutUint32(out[sh2+0:sh2+4], uint32(len("\x00.ios.libmanifest\x00")))
+		binary.LittleEndian.PutUint32(out[sh2+0:sh2+4], uint32(len("\x00"+iosmSectionName+"\x00")))
 		binary.LittleEndian.PutUint32(out[sh2+4:sh2+8], elfSHTStrTab)
 		binary.LittleEndian.PutUint64(out[sh2+24:sh2+32], shstrtabFileOff)
 		binary.LittleEndian.PutUint64(out[sh2+32:sh2+40], uint64(len(shstrtab)))
@@ -808,23 +884,29 @@ func buildELF(code []byte, data []byte, manifest libManifestSpec, withManifest b
 }
 
 func buildManifestNote(spec libManifestSpec) []byte {
-	noteName := []byte("IOS-LIB\x00")
-	desc := make([]byte, 96)
-	binary.LittleEndian.PutUint32(desc[0:4], m16LibManifestMagic)
-	binary.LittleEndian.PutUint32(desc[4:8], m16LibManifestDescVersion)
+	noteName := []byte(iosmNoteName + "\x00")
+	desc := make([]byte, iosmSize)
+	typ := spec.Type
+	if typ == 0 {
+		typ = uint32(spec.Kind)
+	}
+	binary.LittleEndian.PutUint32(desc[0:4], iosmMagic)
+	binary.LittleEndian.PutUint32(desc[4:8], iosmSchemaVersion)
 	copy(desc[8:40], []byte(spec.Name))
 	binary.LittleEndian.PutUint16(desc[40:42], spec.Version)
 	binary.LittleEndian.PutUint16(desc[42:44], spec.Revision)
-	binary.LittleEndian.PutUint32(desc[44:48], spec.Type)
+	binary.LittleEndian.PutUint32(desc[44:48], typ)
 	binary.LittleEndian.PutUint32(desc[48:52], spec.Flags)
 	binary.LittleEndian.PutUint32(desc[52:56], spec.MsgABIVersion)
 
-	out := make([]byte, 12+len(noteName)+len(desc))
+	namePaddedLen := roundUp(uint64(len(noteName)), 4)
+	descPaddedLen := roundUp(uint64(len(desc)), 4)
+	out := make([]byte, 12+namePaddedLen+descPaddedLen)
 	binary.LittleEndian.PutUint32(out[0:4], uint32(len(noteName)))
 	binary.LittleEndian.PutUint32(out[4:8], uint32(len(desc)))
-	binary.LittleEndian.PutUint32(out[8:12], m16LibManifestNoteType)
+	binary.LittleEndian.PutUint32(out[8:12], iosmNoteType)
 	copy(out[12:12+len(noteName)], noteName)
-	copy(out[12+len(noteName):], desc)
+	copy(out[12+namePaddedLen:], desc)
 	return out
 }
 
