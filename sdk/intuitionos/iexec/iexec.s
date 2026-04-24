@@ -6370,6 +6370,8 @@ endif
     beq     r1, r11, .info_quota_current
     move.l  r11, #SYSINFO_QUOTA_LIMIT
     beq     r1, r11, .info_quota_limit
+    move.l  r11, #SYSINFO_PORT_NAME_BY_INDEX
+    beq     r1, r11, .info_port_name_by_index
     move.q  r1, #0
     move.q  r2, #ERR_OK
     eret
@@ -6421,6 +6423,115 @@ endif
     move.q  r2, #ERR_OK
     eret
 .info_quota_bad:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    eret
+
+; M16.1: enumerate public port names by stable port-table index.
+; In:  R1=SYSINFO_PORT_NAME_BY_INDEX, R2=index, R3=user buffer (32 bytes)
+; Out: R1=owner token (public task id + 1) or 0 sentinel, R2=ERR_*
+.info_port_name_by_index:
+    move.q  r24, r2                     ; target public-port index
+    move.q  r25, r3                     ; caller's 32-byte output buffer
+    mfcr    r23, cr0                    ; caller PTBR
+
+    move.q  r1, r25
+    move.l  r2, #PORT_NAME_LEN
+    move.q  r3, r23
+    jsr     validate_user_write_range
+    bnez    r1, .info_port_name_badarg
+
+    ; Clear scratch so the end-of-list sentinel returns a zeroed name.
+    move.l  r12, #KERN_DATA_BASE
+    add     r12, r12, #KD_NAME_SCRATCH
+    store.q r0, (r12)
+    add     r12, r12, #8
+    store.q r0, (r12)
+    add     r12, r12, #8
+    store.q r0, (r12)
+    add     r12, r12, #8
+    store.q r0, (r12)
+
+    move.l  r26, #0                     ; count of public ports seen
+    move.l  r12, #KERN_DATA_BASE
+    add     r12, r12, #KD_PORT_BASE
+    move.l  r13, #0
+.ipn_inline_loop:
+    move.l  r11, #KD_PORT_INLINE_MAX
+    bge     r13, r11, .ipn_overflow_start
+    move.l  r14, #KD_PORT_STRIDE
+    mulu    r14, r13, r14
+    add     r15, r12, r14               ; r15 = port row
+    load.b  r16, KD_PORT_VALID(r15)
+    beqz    r16, .ipn_inline_next
+    load.b  r16, KD_PORT_FLAGS(r15)
+    and     r16, r16, #PF_PUBLIC
+    beqz    r16, .ipn_inline_next
+    beq     r26, r24, .ipn_found
+    add     r26, r26, #1
+.ipn_inline_next:
+    add     r13, r13, #1
+    bra     .ipn_inline_loop
+
+.ipn_overflow_start:
+    move.l  r12, #KERN_DATA_BASE
+    add     r12, r12, #KD_PORT_OFLOW_HDR
+    load.w  r13, KD_PORT_OFLOW_FIRST_PPN(r12)
+    beqz    r13, .ipn_sentinel
+.ipn_overflow_page:
+    lsl     r14, r13, #12
+    move.q  r17, r14                    ; r17 = page base
+    add     r15, r14, #KD_PORT_PAGE_HDR_SZ
+    move.l  r18, #0
+.ipn_overflow_row:
+    move.l  r11, #KD_PORT_ROWS_PER_PG
+    bge     r18, r11, .ipn_overflow_next_page
+    load.b  r16, KD_PORT_VALID(r15)
+    beqz    r16, .ipn_overflow_next_row
+    load.b  r16, KD_PORT_FLAGS(r15)
+    and     r16, r16, #PF_PUBLIC
+    beqz    r16, .ipn_overflow_next_row
+    beq     r26, r24, .ipn_found
+    add     r26, r26, #1
+.ipn_overflow_next_row:
+    add     r15, r15, #KD_PORT_STRIDE
+    add     r18, r18, #1
+    bra     .ipn_overflow_row
+.ipn_overflow_next_page:
+    load.w  r13, KD_PORT_PAGE_NEXT(r17)
+    bnez    r13, .ipn_overflow_page
+    bra     .ipn_sentinel
+
+.ipn_found:
+    move.q  r1, r25
+    add     r2, r15, #KD_PORT_NAME
+    move.l  r3, #PORT_NAME_LEN
+    move.q  r4, r23
+    jsr     copy_to_user
+    bnez    r1, .info_port_name_badarg
+
+    load.b  r13, KD_PORT_OWNER(r15)      ; owner slot
+    lsl     r14, r13, #2
+    move.l  r12, #KERN_DATA_BASE
+    add     r12, r12, #KD_TASK_PUBID_BASE
+    add     r12, r12, r14
+    load.l  r1, (r12)                   ; public task id
+    add     r1, r1, #1                  ; reserve 0 for end-of-list sentinel
+    move.q  r2, #ERR_OK
+    eret
+
+.ipn_sentinel:
+    move.q  r1, r25
+    move.l  r2, #KERN_DATA_BASE
+    add     r2, r2, #KD_NAME_SCRATCH
+    move.l  r3, #PORT_NAME_LEN
+    move.q  r4, r23
+    jsr     copy_to_user
+    bnez    r1, .info_port_name_badarg
+    move.q  r1, #0
+    move.q  r2, #ERR_OK
+    eret
+.info_port_name_badarg:
     move.q  r1, #0
     move.q  r2, #ERR_BADARG
     eret
