@@ -4352,7 +4352,7 @@ func TestIExec_TwoTasksVisibleOutput(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	hasBanner := strings.Contains(output, "exec.library M11 boot")
+	hasBanner := strings.Contains(output, "exec.library 1.16.1 boot")
 	hasTaskBanner := strings.Contains(output, "[Task ")
 	if !hasBanner || !hasTaskBanner {
 		t.Fatalf("visible output: hasBanner=%v hasTaskBanner=%v, output=%q", hasBanner, hasTaskBanner, output[:min(len(output), 100)])
@@ -4390,7 +4390,7 @@ func TestIExec_TwoTasksVisibleOutput_WithVRAM(t *testing.T) {
 
 	output := term.DrainOutput()
 	t.Logf("VRAM output (first 100 chars): %q", output[:min(len(output), 100)])
-	hasBanner := strings.Contains(output, "exec.library M11 boot")
+	hasBanner := strings.Contains(output, "exec.library 1.16.1 boot")
 	if !hasBanner {
 		t.Fatalf("visible output with VRAM mapped: hasBanner=%v, output=%q", hasBanner, output[:min(len(output), 100)])
 	}
@@ -4507,7 +4507,7 @@ func TestIExec_BootBanner_NoArtifact(t *testing.T) {
 	// Sanity check: the kernel actually printed banners through TERM_OUT
 	// (which means processChar fired and rendered into chip.frontBuffer).
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library M11 boot") {
+	if !strings.Contains(output, "exec.library 1.16.1 boot") {
 		t.Fatalf("kernel did not print boot banner; output=%q", output[:min(len(output), 100)])
 	}
 	if !strings.Contains(output, "[Task ") {
@@ -4573,8 +4573,8 @@ func TestIExec_M152_BootVisibleTerminalStartsWithExecBannerThenConsole(t *testin
 	output := term.DrainOutput()
 	row0 := vt.screen.ReadLine(0)
 	row1 := vt.screen.ReadLine(1)
-	if !strings.HasPrefix(row0, "exec.library M11 boot") {
-		t.Fatalf("M152_BootVisibleTerminalStartsWithExecBannerThenConsole: row0=%q row1=%q output=%q, want prefix %q", row0, row1, output[:min(len(output), 200)], "exec.library M11 boot")
+	if !strings.HasPrefix(row0, "exec.library 1.16.1 boot") {
+		t.Fatalf("M152_BootVisibleTerminalStartsWithExecBannerThenConsole: row0=%q row1=%q output=%q, want prefix %q", row0, row1, output[:min(len(output), 200)], "exec.library 1.16.1 boot")
 	}
 	if len(row0) > 0 && row0[0] == '\'' {
 		t.Fatalf("M152_BootVisibleTerminalStartsWithExecBannerThenConsole: row0 has leading garbage=%q", row0)
@@ -4669,7 +4669,7 @@ func TestIExec_M152_BootFirstTerminalWritesBeginWithExecBanner(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if strings.HasPrefix(output, "exec.library M11 boot\r\n") {
+	if strings.HasPrefix(output, "exec.library 1.16.1 boot\r\n") {
 		return
 	}
 	t.Fatalf("M152_BootFirstTerminalWritesBeginWithExecBanner: output=%q bootBytes=%v firstWrites=%+v", output[:min(len(output), 80)], append([]byte(nil), rig.cpu.memory[0x78798:0x7879C]...), samples)
@@ -11042,7 +11042,7 @@ func TestIExec_ImageHeaderValidation(t *testing.T) {
 
 			output := term.DrainOutput()
 			// Kernel should still boot (banner printed) — corrupt image is outside boot set
-			if !strings.Contains(output, "exec.library M11 boot") {
+			if !strings.Contains(output, "exec.library 1.16.1 boot") {
 				t.Fatalf("kernel failed to boot after corrupting non-boot image: output=%q", output[:min(len(output), 100)])
 			}
 			if strings.Contains(output, "PANIC") {
@@ -11190,7 +11190,7 @@ func TestIExec_LoaderRejectsInvalid(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library M11 boot") {
+	if !strings.Contains(output, "exec.library 1.16.1 boot") {
 		t.Fatalf("kernel didn't boot, output=%q", output[:min(len(output), 100)])
 	}
 	if strings.Contains(output, "PANIC") {
@@ -11260,7 +11260,7 @@ func TestIExec_LoaderSkipsFailure(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library M11 boot") {
+	if !strings.Contains(output, "exec.library 1.16.1 boot") {
 		t.Fatalf("kernel didn't boot")
 	}
 	if strings.Contains(output, "PANIC") {
@@ -14324,7 +14324,7 @@ func TestIExec_M16_TextModeBootRequiresOnlyDOSAndShell(t *testing.T) {
 	for _, want := range []string{
 		"dos.library M14 [Task ",
 		"Shell M10 [Task ",
-		"IntuitionOS 0.18",
+		"IntuitionOS 1.16.1",
 		"Type HELP for commands and ASSIGN for layout",
 	} {
 		if !strings.Contains(output, want) {
@@ -14383,7 +14383,7 @@ func TestIExec_M16_UntrustedPathLaunchDoesNotKeepIntuitionCompatPortAlive(t *tes
 	if strings.Count(output, "intuition.library M12 [Task ") != 0 {
 		t.Fatalf("untrusted LIBS:intuition.library launch printed ONLINE banner output=%q", output[:min(len(output), 600)])
 	}
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("shell did not stay responsive after rejected untrusted intuition launch output=%q", output[:min(len(output), 600)])
 	}
 }
@@ -16565,7 +16565,7 @@ func TestIExec_M10Boot(t *testing.T) {
 		substr string
 		desc   string
 	}{
-		{"exec.library M11 boot", "kernel boot banner"},
+		{"exec.library 1.16.1 boot", "kernel boot banner"},
 		{"console.handler M11.5 [Task ", "console.handler service"},
 		{"dos.library M14 [Task ", "dos.library service"},
 		{"Shell M10 [Task ", "Shell service"},
@@ -16598,7 +16598,7 @@ func TestIExec_M152_HostBackedBootWithJIT(t *testing.T) {
 
 	output := term.DrainOutput()
 	for _, substr := range []string{
-		"exec.library M11 boot",
+		"exec.library 1.16.1 boot",
 		"console.handler M11.5 [Task ",
 		"dos.library M14 [Task ",
 		"Shell M10 [Task ",
@@ -17312,7 +17312,7 @@ func TestIExec_DosResolve_LongName(t *testing.T) {
 	output := bootAndInjectCommand(t, cmd, 8*time.Second)
 	// Must not crash: the shell should survive the oversized qualified name
 	// and still execute the following VERSION command.
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("shell did not survive long qualified name, output=%q", output[:min(len(output), 800)])
 	}
 	// Must reach a NOT_FOUND-class error path, not a memory corruption
@@ -17837,8 +17837,8 @@ func TestIExec_VersionCommand(t *testing.T) {
 	// Inject "\nVERSION\n". The leading empty line gives dos.library time to
 	// finish initialization before the shell sends DOS_RUN for VERSION.
 	output := bootAndInjectCommand(t, "\nVERSION\n", 5*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.18") {
-		t.Fatalf("VersionCommand: expected 'IntuitionOS 0.18' in output, got=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
+		t.Fatalf("VersionCommand: expected 'IntuitionOS 1.16.1' in output, got=%q", output[:min(len(output), 300)])
 	}
 	if strings.Contains(output, "task model M13") || strings.Contains(output, "dos storage M12.8") || strings.Contains(output, "cap sweep M12.6") {
 		t.Fatalf("VersionCommand: stale long milestone banner text still present, got=%q", output[:min(len(output), 300)])
@@ -19178,7 +19178,7 @@ func TestIExec_M13_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
 		"dos.library M14 [Task ",
 		"Shell M10 [Task ",
 		"hardware.resource M12.5 [Task ",
-		"IntuitionOS 0.18",
+		"IntuitionOS 1.16.1",
 		"Type HELP for commands and ASSIGN for layout",
 		"1>",
 	}
@@ -22694,7 +22694,7 @@ func TestIExec_M152_Phase1_AssignCommandStillRejectsAddSyntax(t *testing.T) {
 	if strings.Contains(output, "ADD: ") {
 		t.Fatalf("M152_Phase1_AssignCommandStillRejectsAddSyntax: ADD must not become a visible user assign output=%q", output[:min(len(output), 1200)])
 	}
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M152_Phase1_AssignCommandStillRejectsAddSyntax: shell did not recover after layered ADD output=%q", output[:min(len(output), 1200)])
 	}
 }
@@ -23416,7 +23416,7 @@ func TestIExec_M152_Phase5_BootUsesHostBackedIOSSYSToolsShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "", 8*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M152_Phase5_BootUsesHostBackedIOSSYSToolsShell: missing host-backed shell payload output=%q", output[:min(len(output), 1200)])
 	}
 	if strings.Contains(output, "Shell M10 [Task ") {
@@ -23488,7 +23488,7 @@ func TestIExec_M152_Phase5_DOSRunCanLaunchHostBackedIOSSYSToolsShell(t *testing.
 	hostRoot := makeM152Phase5GeneratedHostRoot(t)
 	copyRepoFileToHostRoot(t, hostRoot, "Tools/Shell", "sdk/intuitionos/iexec/cmd_version.elf")
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nIOSSYS:Tools/Shell\n", 10*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M152_Phase5_DOSRunCanLaunchHostBackedIOSSYSToolsShell: missing host-backed shell payload output=%q", output[:min(len(output), 1200)])
 	}
 	if strings.Contains(output, "Unknown command") || strings.Contains(output, "GURU MEDITATION") {
@@ -23520,7 +23520,7 @@ func TestIExec_M152_Phase5_DOSRunHostBackedCommandDoesNotLeakAllocatorPages(t *t
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M152_Phase5_DOSRunHostBackedCommandDoesNotLeakAllocatorPages: missing VERSION output=%q", output[:min(len(output), 1200)])
 	}
 	freePages := allocPoolFreePagesFromBitmap(rig.cpu.memory)
@@ -23578,8 +23578,8 @@ func TestIExec_M152_Phase5_BootUsesHostBackedStartupCommandsAndServices(t *testi
 	for _, want := range []string{
 		"Shell M10 [Task ",
 		"phase5-host-startup",
-		"M15 help surface:",
-		"IntuitionOS 0.18",
+		"IntuitionOS 1.16.1 help",
+		"IntuitionOS 1.16.1",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("M152_Phase5_BootUsesHostBackedStartupCommandsAndServices: missing %q output=%q", want, output[:min(len(output), 1600)])
@@ -23621,13 +23621,13 @@ func TestIExec_M152_Phase5_GeneratedHostTreeStillSupportsExistingM15Flows(t *tes
 	hostRoot := makeM152Phase5GeneratedHostRoot(t)
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nVERSION\nAVAIL\nDIR RAM:\nTYPE S:Startup-Sequence\nASSIGN\nLIST\nWHICH version\nHELP\n", 15*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 0.18",
+		"IntuitionOS 1.16.1",
 		"Phys: 32768 KB  Alloc:",
 		"C/Version",
 		"VERSION",
 		"RAM:",
 		"C:version",
-		"M15 help surface:",
+		"IntuitionOS 1.16.1 help",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("M152_Phase5_GeneratedHostTreeStillSupportsExistingM15Flows: missing %q output=%q", want, output[:min(len(output), 2000)])
@@ -23649,7 +23649,7 @@ func TestIExec_M152_Phase6_BootLoadsHostBackedDosLibrary(t *testing.T) {
 
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "", 10*time.Second)
 	for _, want := range []string{
-		"exec.library M11 boot",
+		"exec.library 1.16.1 boot",
 		"console.handler M11.5 [Task ",
 		"dos.library P16 [Task ",
 		"Shell M10 [Task ",
@@ -23861,7 +23861,7 @@ func TestIExec_M152_TYPESupportsQualifiedIOSSYSSubdirectoryFilePath(t *testing.T
 	} {
 		t.Run(strings.TrimSpace(cmd), func(t *testing.T) {
 			output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, cmd, 10*time.Second)
-			if !strings.Contains(output, "IntuitionOS 0.18") {
+			if !strings.Contains(output, "IntuitionOS 1.16.1") {
 				t.Fatalf("M152_TYPESupportsQualifiedIOSSYSSubdirectoryFilePath: missing version output for %q output=%q", strings.TrimSpace(cmd), output[:min(len(output), 1600)])
 			}
 			if strings.Contains(output, "Unknown command") || strings.Contains(output, "Bad arguments") {
@@ -23999,7 +23999,7 @@ func TestIExec_M152_Phase6_BootDoesNotFallbackWhenHostDosLibraryMissing(t *testi
 	}
 
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "", 8*time.Second)
-	if !strings.Contains(output, "exec.library M11 boot") {
+	if !strings.Contains(output, "exec.library 1.16.1 boot") {
 		t.Fatalf("M152_Phase6_BootDoesNotFallbackWhenHostDosLibraryMissing: missing exec boot banner output=%q", output[:min(len(output), 1200)])
 	}
 	for _, unwanted := range []string{
@@ -24052,7 +24052,7 @@ func TestIExec_M152_Phase6_BootDoesNotFallbackWhenHostShellMissing(t *testing.T)
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library M11 boot") || !strings.Contains(output, "dos.library M14 [Task ") {
+	if !strings.Contains(output, "exec.library 1.16.1 boot") || !strings.Contains(output, "dos.library M14 [Task ") {
 		t.Fatalf("M152_Phase6_BootDoesNotFallbackWhenHostShellMissing: missing early boot banners output=%q", output[:min(len(output), 1200)])
 	}
 	for _, unwanted := range []string{
@@ -24084,7 +24084,7 @@ func TestIExec_M152_Phase6_SpecialFileShellBootDoesNotRequireDiscover(t *testing
 
 	output := term.DrainOutput()
 	for _, substr := range []string{
-		"exec.library M11 boot",
+		"exec.library 1.16.1 boot",
 		"dos.library M14 [Task ",
 		"Shell M10 [Task ",
 	} {
@@ -24910,7 +24910,7 @@ func TestIExec_M141_Phase3_DOSLaunchesShellAndRemainingServicesFromManifest(t *t
 
 	output := term.DrainOutput()
 	for _, want := range []string{
-		"exec.library M11 boot",
+		"exec.library 1.16.1 boot",
 		"console.handler M11.5 [Task ",
 		"dos.library M14 [Task ",
 		"1>",
@@ -25478,7 +25478,7 @@ func assertFullBootStackServiceCensus(t *testing.T) {
 		"dos.library M14 [Task ",
 		"Shell M10 [Task ",
 		"hardware.resource M12.5 [Task ",
-		"IntuitionOS 0.18",
+		"IntuitionOS 1.16.1",
 		"Type HELP for commands and ASSIGN for layout",
 		"1>",
 	} {
@@ -25554,7 +25554,7 @@ func TestIExec_M141_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
 func TestIExec_M141_Phase5_CommandPathRegression(t *testing.T) {
 	output := bootAndInjectCommand(t, "version\navail\ndir ram:\ntype s:startup-sequence\necho hello\n", 8*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 0.18",
+		"IntuitionOS 1.16.1",
 		"Phys: 32768 KB  Alloc:",
 		"C/Version",
 		"DEVS/input.device",
@@ -25624,7 +25624,7 @@ func TestIExec_M142_Phase6_FullBootStack_ServiceCensus(t *testing.T) {
 func TestIExec_M142_Phase6_CommandRegression(t *testing.T) {
 	output := bootAndInjectCommand(t, "version\navail\ndir ram:\ntype s:startup-sequence\necho hello\n", 8*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 0.18",
+		"IntuitionOS 1.16.1",
 		"Phys: 32768 KB  Alloc:",
 		"C/Version",
 		"DEVS/input.device",
@@ -25732,7 +25732,7 @@ func TestIExec_M15_Phase1_HelperCommandsBootAndRespond(t *testing.T) {
 		"RAM:",
 		"readme",
 		"not found",
-		"M15 help surface:",
+		"IntuitionOS 1.16.1 help",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("M15_Phase1_HelperCommandsBootAndRespond: missing %q output=%q", want, output[:min(len(output), 1200)])
@@ -25807,7 +25807,7 @@ func TestIExec_M15_Phase1_CommandSearchStillPrefersC(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M15_Phase1_CommandSearchStillPrefersC: missing VERSION output, got=%q", output[:min(len(output), 400)])
 	}
 	if strings.Contains(output, "Phys: 32768 KB") {
@@ -25850,8 +25850,8 @@ func TestIExec_M15_Phase1_DOSRunRemainsELFOnly(t *testing.T) {
 func TestIExec_M15_Phase2_AssignResolution_AllCanonicalVolumes(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION\nTYPE S:Help\nTYPE L:Loader-Info\nTYPE LIBS:graphics.library\nTYPE DEVS:input.device\nTYPE RESOURCES:hardware.resource\n", 10*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 0.18",
-		"M15 help surface:",
+		"IntuitionOS 1.16.1",
+		"IntuitionOS 1.16.1 help",
 		"L: contains DOS helper assets",
 	} {
 		if !strings.Contains(output, want) {
@@ -25873,7 +25873,7 @@ func TestIExec_M15_Phase2_RAMRootCompatibility(t *testing.T) {
 func TestIExec_M15_Phase2_AssignMatchingIsCaseInsensitive(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nTYPE s:help\nTYPE l:loader-info\nTYPE libs:graphics.library\nTYPE devs:input.device\nTYPE resources:hardware.resource\n", 10*time.Second)
 	for _, want := range []string{
-		"M15 help surface:",
+		"IntuitionOS 1.16.1 help",
 		"L: contains DOS helper assets",
 	} {
 		if !strings.Contains(output, want) {
@@ -25890,7 +25890,7 @@ func TestIExec_M15_Phase2_UnknownVolumeFailsCleanly(t *testing.T) {
 	if !strings.Contains(output, "not found") {
 		t.Fatalf("M15_Phase2_UnknownVolumeFailsCleanly: expected unknown-volume failure, output=%q", output[:min(len(output), 600)])
 	}
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M15_Phase2_UnknownVolumeFailsCleanly: shell did not recover after unknown-volume lookup, output=%q", output[:min(len(output), 600)])
 	}
 }
@@ -25898,7 +25898,7 @@ func TestIExec_M15_Phase2_UnknownVolumeFailsCleanly(t *testing.T) {
 func TestIExec_M15_Phase2_BoundedLongNameHandlingStaysSafe(t *testing.T) {
 	longName := "TYPE T:" + strings.Repeat("A", 80) + "\nVERSION\n"
 	output := bootAndInjectCommand(t, "\n"+longName, 8*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M15_Phase2_BoundedLongNameHandlingStaysSafe: shell did not survive long qualified name, output=%q", output[:min(len(output), 800)])
 	}
 }
@@ -26119,7 +26119,7 @@ func TestIExec_M15_Phase4_NewCommandsProduceStableOutput(t *testing.T) {
 		"RAM:",
 		"C/Assign",
 		"C:version",
-		"M15 help surface:",
+		"IntuitionOS 1.16.1 help",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("M15_Phase4_NewCommandsProduceStableOutput: missing %q output=%q", want, output[:min(len(output), 1600)])
@@ -26307,11 +26307,11 @@ func TestIExec_M15_Phase5_CleanBootToPrompt(t *testing.T) {
 
 	output := term.DrainOutput()
 	for _, want := range []string{
-		"exec.library M11 boot",
+		"exec.library 1.16.1 boot",
 		"console.handler M11.5 [Task ",
 		"dos.library M14 [Task ",
 		"Shell M10 [Task ",
-		"IntuitionOS 0.18",
+		"IntuitionOS 1.16.1",
 		"Type HELP for commands and ASSIGN for layout",
 		"1>",
 	} {
@@ -26324,13 +26324,13 @@ func TestIExec_M15_Phase5_CleanBootToPrompt(t *testing.T) {
 func TestIExec_M15_Phase5_CommandDemoBootPath(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION\nAVAIL\nDIR RAM:\nTYPE S:Startup-Sequence\nASSIGN\nLIST\nWHICH version\nHELP\n", 15*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 0.18",
+		"IntuitionOS 1.16.1",
 		"Phys: 32768 KB  Alloc:",
 		"C/Version",
 		"ECHO Type HELP for commands and ASSIGN for layout",
 		"RAM:",
 		"C:version",
-		"M15 help surface:",
+		"IntuitionOS 1.16.1 help",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("M15_Phase5_CommandDemoBootPath: missing %q output=%q", want, output[:min(len(output), 2000)])
@@ -26344,8 +26344,8 @@ func TestIExec_M15_Phase5_CommandDemoBootPath(t *testing.T) {
 func TestIExec_M15_Phase5_QualifiedAndCompatibilityPathCoverage(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nC:Version\nTYPE S:Help\nTYPE L:Loader-Info\nTYPE RAM:readme\nTYPE readme\n", 15*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 0.18",
-		"M15 help surface:",
+		"IntuitionOS 1.16.1",
+		"IntuitionOS 1.16.1 help",
 		"L: contains DOS helper assets",
 		"Welcome to IntuitionOS",
 	} {
@@ -26393,7 +26393,7 @@ func TestIExec_M15_Phase5_TemporaryFileFlowUnderT(t *testing.T) {
 // is "C/Version" but the user types "version" — the resolver must match.
 func TestIExec_CaseInsensitiveCommand(t *testing.T) {
 	output := bootAndInjectCommand(t, "version\n", 5*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("CaseInsensitiveCommand: lowercase 'version' did not match 'C/Version', got=%q", output[:min(len(output), 300)])
 	}
 	if strings.Contains(output, "task model M13") || strings.Contains(output, "dos storage M12.8") || strings.Contains(output, "cap sweep M12.6") {
@@ -27229,7 +27229,7 @@ func TestIExec_M10Demo(t *testing.T) {
 		substr string
 		desc   string
 	}{
-		{"IntuitionOS 0.18", "VERSION command output"},
+		{"IntuitionOS 1.16.1", "VERSION command output"},
 		{"Phys:", "AVAIL command output (Phys:)"},
 		{"Alloc:", "AVAIL command output (Alloc:)"},
 		{"readme", "DIR command output (readme file)"},
@@ -28750,7 +28750,7 @@ func TestIExec_M153_Phase1_SetOnCanonicalReplacesOverlay(t *testing.T) {
 func TestIExec_M153_Phase4_ShellBareCommandRunsAcrossLayeredC(t *testing.T) {
 	hostRoot := makeM152Phase5GeneratedHostRoot(t)
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nVERSION\n", 8*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M153_Phase4_ShellBareCommandRunsAcrossLayeredC: VERSION did not run output=%q", output[:min(len(output), 600)])
 	}
 }
@@ -28797,7 +28797,7 @@ func TestIExec_M153_Phase4_LayeredReadFallsBackFromSYSToIOSSYS(t *testing.T) {
 	// layered relpath helper the resolver should still find it via the
 	// read-only fallback after probing hostRoot/C/Version.
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nVERSION\n", 8*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M153_Phase4_LayeredReadFallsBackFromSYSToIOSSYS: VERSION did not run via IOSSYS fallback output=%q", output[:min(len(output), 600)])
 	}
 }
@@ -28819,7 +28819,7 @@ func TestIExec_M153_Phase4_LayeredReadPrefersWritableSYSOverlay(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nVERSION\n", 8*time.Second)
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M153_Phase4_LayeredReadPrefersWritableSYSOverlay: VERSION via writable overlay produced no banner output=%q", output[:min(len(output), 600)])
 	}
 }
@@ -29054,7 +29054,7 @@ func TestIExec_M153_Shell_AssignAddListsLayeredOverlay(t *testing.T) {
 	if !strings.Contains(output, "T/") {
 		t.Fatalf("M153_Shell_AssignAddListsLayeredOverlay: overlay target T/ missing from layered output output=%q", output[:min(len(output), 1200)])
 	}
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M153_Shell_AssignAddListsLayeredOverlay: shell did not recover output=%q", output[:min(len(output), 1200)])
 	}
 }
@@ -29349,7 +29349,7 @@ func TestIExec_M153_Shell_AssignAddTwoOverlaysFallthroughToBase(t *testing.T) {
 		t.Fatalf("M153_Shell_AssignAddTwoOverlaysFallthroughToBase: VERSION rejected after two overlay ADDs — multi-entry iteration missed the base target output=%q",
 			output[:min(len(output), 1400)])
 	}
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M153_Shell_AssignAddTwoOverlaysFallthroughToBase: VERSION did not print version output=%q",
 			output[:min(len(output), 1400)])
 	}
@@ -29368,7 +29368,7 @@ func TestIExec_M153_Shell_AssignRemoveRestoresBaseList(t *testing.T) {
 		idx := strings.Index(output, "T/")
 		t.Fatalf("M153_Shell_AssignRemoveRestoresBaseList: T/ still in layered output near %d output=%q", idx, output[:min(len(output), 1200)])
 	}
-	if !strings.Contains(output, "IntuitionOS 0.18") {
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
 		t.Fatalf("M153_Shell_AssignRemoveRestoresBaseList: shell did not recover output=%q", output[:min(len(output), 1200)])
 	}
 }
@@ -30206,7 +30206,7 @@ func TestIExec_M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF(
 	if strings.Contains(output, "BOOT FAIL") {
 		t.Fatalf("M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF: boot failed while consuming supervisor-mapped staged ELF, output=%q", output[:min(len(output), 300)])
 	}
-	if !strings.Contains(output, "exec.library M11 boot") || !strings.Contains(output, "console.handler M11.5 [Task ") {
+	if !strings.Contains(output, "exec.library 1.16.1 boot") || !strings.Contains(output, "console.handler M11.5 [Task ") {
 		t.Fatalf("M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF: boot did not reach normal banners, output=%q", output[:min(len(output), 300)])
 	}
 }

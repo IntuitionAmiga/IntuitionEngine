@@ -1,4 +1,4 @@
-Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
+Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70308 bytes)
 
 --- Listing ---
          = 0000000000000001  IOS_VERSION_MAJOR  equ 1
@@ -1700,7 +1700,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
                          .boot_manifest_done:
 00001970  40 06 00 00 20 00 00 00... bra     .boot_load_done
                          .boot_load_fail:
-00001978  04 47 00 00 00 22 01 00... lea r8, boot_fail_msg(r0)
+00001978  04 47 00 00 04 22 01 00... lea r8, boot_fail_msg(r0)
 00001980  50 06 00 00 F0 00 00 00... jsr     kern_puts
 00001988  E1 00 00 00 00 00 00 00... halt
                          .boot_load_done:
@@ -1727,7 +1727,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
 00001A30  E9 00 00 00 00 00 00 00... tlbflush
 00001A38  E8 00 00 00 00 00 00 00... eret
                          .boot_no_tasks:
-00001A40  04 47 00 00 E4 21 01 00... lea r8, no_tasks_msg(r0)
+00001A40  04 47 00 00 E8 21 01 00... lea r8, no_tasks_msg(r0)
 00001A48  50 06 00 00 28 00 00 00... jsr     kern_puts
 00001A50  E1 00 00 00 00 00 00 00... halt
                          kern_put_char:
@@ -1802,7 +1802,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
 00001C20  50 06 00 00 54 DD 00 00... jsr     m16_module_has_pending_deadline
 00001C28  53 86 00 00 00 00 00 00... pop     r16
 00001C30  42 06 08 00 20 00 00 00... bne r1, r0, .fnr_idle
-00001C38  04 47 00 00 C8 20 01 00... lea r8, deadlock_msg(r0)
+00001C38  04 47 00 00 CC 20 01 00... lea r8, deadlock_msg(r0)
 00001C40  50 06 00 00 30 FE FF FF... jsr     kern_puts
 00001C48  E1 00 00 00 00 00 00 00... halt
                          .fnr_idle:
@@ -3560,20 +3560,20 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
 00004F88  51 00 00 00 00 00 00 00... rts
                          kern_boot_load_host_console:
 00004F90  01 9E 08 00 00 00 00 00... move.q  r19, r1
-00004F98  04 A7 00 00 24 22 01 00... lea r20, boot_host_relpath_console(r0)
+00004F98  04 A7 00 00 28 22 01 00... lea r20, boot_host_relpath_console(r0)
 00004FA0  01 AD 00 00 00 D0 08 00... move.l  r21, #KERN_DATA_BASE
 00004FA8  20 AF A8 00 50 0B 01 00... add     r21, r21, #KD_BOOT_MANIFEST_BASE
 00004FB0  40 06 00 00 70 00 00 00... bra     kern_boot_load_host_manifest_elf
                          kern_boot_load_host_doslib:
 00004FB8  01 9E 08 00 00 00 00 00... move.q  r19, r1
-00004FC0  04 A7 00 00 0C 22 01 00... lea r20, boot_host_relpath_doslib(r0)
+00004FC0  04 A7 00 00 10 22 01 00... lea r20, boot_host_relpath_doslib(r0)
 00004FC8  01 AD 00 00 00 D0 08 00... move.l  r21, #KERN_DATA_BASE
 00004FD0  20 AF A8 00 50 0B 01 00... add     r21, r21, #KD_BOOT_MANIFEST_BASE
 00004FD8  20 AF A8 00 28 00 00 00... add     r21, r21, #KD_BOOT_MANIFEST_STRIDE
 00004FE0  40 06 00 00 40 00 00 00... bra     kern_boot_load_host_manifest_elf
                          kern_boot_load_host_shell:
 00004FE8  01 9E 08 00 00 00 00 00... move.q  r19, r1
-00004FF0  04 A7 00 00 40 22 01 00... lea r20, boot_host_relpath_shell(r0)
+00004FF0  04 A7 00 00 44 22 01 00... lea r20, boot_host_relpath_shell(r0)
 00004FF8  01 AD 00 00 00 D0 08 00... move.l  r21, #KERN_DATA_BASE
 00005000  20 AF A8 00 50 0B 01 00... add     r21, r21, #KD_BOOT_MANIFEST_BASE
 00005008  20 AF A8 00 28 00 00 00... add     r21, r21, #KD_BOOT_MANIFEST_STRIDE
@@ -3890,7 +3890,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
 000058CC  50 06 00 00 6C C7 FF FF... jsr     kern_task_layout_addr
 000058D4  10 A7 08 00 28 00 00 00... load.q  r20, KD_TASK_LAYOUT_STARTUP(r1)
 000058DC  20 AF A0 00 40 00 00 00... add     r21, r20, #TASKSB_BOOT_DOS_SHELL_RELPATH
-000058E4  04 B7 00 00 40 22 01 00... lea r22, boot_host_relpath_shell(r0)
+000058E4  04 B7 00 00 44 22 01 00... lea r22, boot_host_relpath_shell(r0)
 000058EC  50 06 00 00 28 01 00 00... jsr     kern_copy_nul_string
 000058F4  53 B6 00 00 00 00 00 00... pop     r22
 000058FC  53 AE 00 00 00 00 00 00... pop     r21
@@ -6098,11 +6098,11 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
 000095EC  51 00 00 00 00 00 00 00... rts
                          kern_put_fault_mode:
 000095F4  41 06 08 00 20 00 00 00... beq r1, r0, .kpfm_user
-000095FC  04 47 00 00 1C 21 01 00... lea r8, fault_mode_supervisor(r0)
+000095FC  04 47 00 00 20 21 01 00... lea r8, fault_mode_supervisor(r0)
 00009604  50 06 00 00 6C 84 FF FF... jsr     kern_puts
 0000960C  51 00 00 00 00 00 00 00... rts
                          .kpfm_user:
-00009614  04 47 00 00 14 21 01 00... lea r8, fault_mode_user(r0)
+00009614  04 47 00 00 18 21 01 00... lea r8, fault_mode_user(r0)
 0000961C  50 06 00 00 54 84 FF FF... jsr     kern_puts
 00009624  51 00 00 00 00 00 00 00... rts
                          kern_put_fault_access:
@@ -6112,19 +6112,19 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
 00009644  41 06 08 10 48 00 00 00... beq     r1, r2, .kpfa_write
 0000964C  01 15 00 00 03 00 00 00... move.l  r2, #FAULT_EXEC_DENIED
 00009654  41 06 08 10 50 00 00 00... beq     r1, r2, .kpfa_exec
-0000965C  04 47 00 00 28 21 01 00... lea r8, fault_access_unknown(r0)
+0000965C  04 47 00 00 2C 21 01 00... lea r8, fault_access_unknown(r0)
 00009664  50 06 00 00 0C 84 FF FF... jsr     kern_puts
 0000966C  51 00 00 00 00 00 00 00... rts
                          .kpfa_read:
-00009674  04 47 00 00 30 21 01 00... lea r8, fault_access_read(r0)
+00009674  04 47 00 00 34 21 01 00... lea r8, fault_access_read(r0)
 0000967C  50 06 00 00 F4 83 FF FF... jsr     kern_puts
 00009684  51 00 00 00 00 00 00 00... rts
                          .kpfa_write:
-0000968C  04 47 00 00 38 21 01 00... lea r8, fault_access_write(r0)
+0000968C  04 47 00 00 3C 21 01 00... lea r8, fault_access_write(r0)
 00009694  50 06 00 00 DC 83 FF FF... jsr     kern_puts
 0000969C  51 00 00 00 00 00 00 00... rts
                          .kpfa_exec:
-000096A4  04 47 00 00 40 21 01 00... lea r8, fault_access_exec(r0)
+000096A4  04 47 00 00 44 21 01 00... lea r8, fault_access_exec(r0)
 000096AC  50 06 00 00 C4 83 FF FF... jsr     kern_puts
 000096B4  51 00 00 00 00 00 00 00... rts
                          kern_put_fault_class:
@@ -6146,43 +6146,43 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
 00009734  41 06 08 10 D8 00 00 00... beq     r1, r2, .kpfc_timer
 0000973C  01 15 00 00 06 00 00 00... move.l  r2, #FAULT_SYSCALL
 00009744  41 06 08 10 E0 00 00 00... beq     r1, r2, .kpfc_syscall
-0000974C  04 47 00 00 48 21 01 00... lea r8, fault_class_unknown(r0)
+0000974C  04 47 00 00 4C 21 01 00... lea r8, fault_class_unknown(r0)
 00009754  50 06 00 00 1C 83 FF FF... jsr     kern_puts
 0000975C  51 00 00 00 00 00 00 00... rts
                          .kpfc_not_present:
-00009764  04 47 00 00 50 21 01 00... lea r8, fault_class_not_present(r0)
+00009764  04 47 00 00 54 21 01 00... lea r8, fault_class_not_present(r0)
 0000976C  50 06 00 00 04 83 FF FF... jsr     kern_puts
 00009774  51 00 00 00 00 00 00 00... rts
                          .kpfc_read:
-0000977C  04 47 00 00 5C 21 01 00... lea r8, fault_class_read(r0)
+0000977C  04 47 00 00 60 21 01 00... lea r8, fault_class_read(r0)
 00009784  50 06 00 00 EC 82 FF FF... jsr     kern_puts
 0000978C  51 00 00 00 00 00 00 00... rts
                          .kpfc_write:
-00009794  04 47 00 00 68 21 01 00... lea r8, fault_class_write(r0)
+00009794  04 47 00 00 6C 21 01 00... lea r8, fault_class_write(r0)
 0000979C  50 06 00 00 D4 82 FF FF... jsr     kern_puts
 000097A4  51 00 00 00 00 00 00 00... rts
                          .kpfc_exec:
-000097AC  04 47 00 00 78 21 01 00... lea r8, fault_class_exec(r0)
+000097AC  04 47 00 00 7C 21 01 00... lea r8, fault_class_exec(r0)
 000097B4  50 06 00 00 BC 82 FF FF... jsr     kern_puts
 000097BC  51 00 00 00 00 00 00 00... rts
                          .kpfc_user_super:
-000097C4  04 47 00 00 84 21 01 00... lea r8, fault_class_user_super(r0)
+000097C4  04 47 00 00 88 21 01 00... lea r8, fault_class_user_super(r0)
 000097CC  50 06 00 00 A4 82 FF FF... jsr     kern_puts
 000097D4  51 00 00 00 00 00 00 00... rts
                          .kpfc_priv:
-000097DC  04 47 00 00 94 21 01 00... lea r8, fault_class_priv(r0)
+000097DC  04 47 00 00 98 21 01 00... lea r8, fault_class_priv(r0)
 000097E4  50 06 00 00 8C 82 FF FF... jsr     kern_puts
 000097EC  51 00 00 00 00 00 00 00... rts
                          .kpfc_misaligned:
-000097F4  04 47 00 00 A0 21 01 00... lea r8, fault_class_misaligned(r0)
+000097F4  04 47 00 00 A4 21 01 00... lea r8, fault_class_misaligned(r0)
 000097FC  50 06 00 00 74 82 FF FF... jsr     kern_puts
 00009804  51 00 00 00 00 00 00 00... rts
                          .kpfc_timer:
-0000980C  04 47 00 00 AC 21 01 00... lea r8, fault_class_timer(r0)
+0000980C  04 47 00 00 B0 21 01 00... lea r8, fault_class_timer(r0)
 00009814  50 06 00 00 5C 82 FF FF... jsr     kern_puts
 0000981C  51 00 00 00 00 00 00 00... rts
                          .kpfc_syscall:
-00009824  04 47 00 00 B4 21 01 00... lea r8, fault_class_syscall(r0)
+00009824  04 47 00 00 B8 21 01 00... lea r8, fault_class_syscall(r0)
 0000982C  50 06 00 00 44 82 FF FF... jsr     kern_puts
 00009834  51 00 00 00 00 00 00 00... rts
                          kern_put_fault_pte_flags:
@@ -6259,36 +6259,36 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
 00009A24  E7 B0 18 00 00 00 00 00... mfcr    r22, cr3
 00009A2C  E7 B8 08 00 00 00 00 00... mfcr    r23, cr1
 00009A34  42 06 A8 00 90 01 00 00... bne r21, r0, .fault_supervisor
-00009A3C  04 47 00 00 A0 20 01 00... lea r8, fault_msg_prefix(r0)
+00009A3C  04 47 00 00 A4 20 01 00... lea r8, fault_msg_prefix(r0)
 00009A44  50 06 00 00 2C 80 FF FF... jsr     kern_puts
 00009A4C  01 46 A0 00 00 00 00 00... move.q  r8, r20
 00009A54  50 06 00 00 64 80 FF FF... jsr     kern_put_hex
-00009A5C  04 47 00 00 B8 20 01 00... lea r8, fault_msg_pc(r0)
+00009A5C  04 47 00 00 BC 20 01 00... lea r8, fault_msg_pc(r0)
 00009A64  50 06 00 00 0C 80 FF FF... jsr     kern_puts
 00009A6C  01 46 B0 00 00 00 00 00... move.q  r8, r22
 00009A74  50 06 00 00 44 80 FF FF... jsr     kern_put_hex
-00009A7C  04 47 00 00 C0 20 01 00... lea r8, fault_msg_addr(r0)
+00009A7C  04 47 00 00 C4 20 01 00... lea r8, fault_msg_addr(r0)
 00009A84  50 06 00 00 EC 7F FF FF... jsr     kern_puts
 00009A8C  01 46 B8 00 00 00 00 00... move.q  r8, r23
 00009A94  50 06 00 00 24 80 FF FF... jsr     kern_put_hex
-00009A9C  04 47 00 00 E8 20 01 00... lea r8, fault_msg_task(r0)
+00009A9C  04 47 00 00 EC 20 01 00... lea r8, fault_msg_task(r0)
 00009AA4  50 06 00 00 CC 7F FF FF... jsr     kern_puts
 00009AAC  01 65 00 00 00 D0 08 00... move.l  r12, #KERN_DATA_BASE
 00009AB4  10 46 60 00 00 00 00 00... load.q  r8, (r12)
 00009ABC  50 06 00 00 FC 7F FF FF... jsr     kern_put_hex
-00009AC4  04 47 00 00 F0 20 01 00... lea r8, fault_msg_access(r0)
+00009AC4  04 47 00 00 F4 20 01 00... lea r8, fault_msg_access(r0)
 00009ACC  50 06 00 00 A4 7F FF FF... jsr     kern_puts
 00009AD4  01 0E A0 00 00 00 00 00... move.q  r1, r20
 00009ADC  50 06 00 00 50 FB FF FF... jsr     kern_put_fault_access
-00009AE4  04 47 00 00 FC 20 01 00... lea r8, fault_msg_mode(r0)
+00009AE4  04 47 00 00 00 21 01 00... lea r8, fault_msg_mode(r0)
 00009AEC  50 06 00 00 84 7F FF FF... jsr     kern_puts
 00009AF4  01 0E A8 00 00 00 00 00... move.q  r1, r21
 00009AFC  50 06 00 00 F8 FA FF FF... jsr     kern_put_fault_mode
-00009B04  04 47 00 00 04 21 01 00... lea r8, fault_msg_class(r0)
+00009B04  04 47 00 00 08 21 01 00... lea r8, fault_msg_class(r0)
 00009B0C  50 06 00 00 64 7F FF FF... jsr     kern_puts
 00009B14  01 0E A0 00 00 00 00 00... move.q  r1, r20
 00009B1C  50 06 00 00 A0 FB FF FF... jsr     kern_put_fault_class
-00009B24  04 47 00 00 0C 21 01 00... lea r8, fault_msg_pte(r0)
+00009B24  04 47 00 00 10 21 01 00... lea r8, fault_msg_pte(r0)
 00009B2C  50 06 00 00 44 7F FF FF... jsr     kern_puts
 00009B34  01 0E B8 00 00 00 00 00... move.q  r1, r23
 00009B3C  50 06 00 00 58 FE FF FF... jsr     kern_put_fault_pte_for_addr
@@ -6309,33 +6309,33 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
 00009BB4  11 6E 60 00 00 00 00 00... store.q r13, (r12)
 00009BBC  40 06 00 00 30 7C 00 00... bra     restore_task
                          .fault_supervisor:
-00009BC4  04 47 00 00 BC 21 01 00... lea r8, panic_msg(r0)
+00009BC4  04 47 00 00 C0 21 01 00... lea r8, panic_msg(r0)
 00009BCC  50 06 00 00 A4 7E FF FF... jsr     kern_puts
-00009BD4  04 47 00 00 A0 20 01 00... lea r8, fault_msg_prefix(r0)
+00009BD4  04 47 00 00 A4 20 01 00... lea r8, fault_msg_prefix(r0)
 00009BDC  50 06 00 00 94 7E FF FF... jsr     kern_puts
 00009BE4  01 46 A0 00 00 00 00 00... move.q  r8, r20
 00009BEC  50 06 00 00 CC 7E FF FF... jsr     kern_put_hex
-00009BF4  04 47 00 00 B8 20 01 00... lea r8, fault_msg_pc(r0)
+00009BF4  04 47 00 00 BC 20 01 00... lea r8, fault_msg_pc(r0)
 00009BFC  50 06 00 00 74 7E FF FF... jsr     kern_puts
 00009C04  01 46 B0 00 00 00 00 00... move.q  r8, r22
 00009C0C  50 06 00 00 AC 7E FF FF... jsr     kern_put_hex
-00009C14  04 47 00 00 C0 20 01 00... lea r8, fault_msg_addr(r0)
+00009C14  04 47 00 00 C4 20 01 00... lea r8, fault_msg_addr(r0)
 00009C1C  50 06 00 00 54 7E FF FF... jsr     kern_puts
 00009C24  01 46 B8 00 00 00 00 00... move.q  r8, r23
 00009C2C  50 06 00 00 8C 7E FF FF... jsr     kern_put_hex
-00009C34  04 47 00 00 F0 20 01 00... lea r8, fault_msg_access(r0)
+00009C34  04 47 00 00 F4 20 01 00... lea r8, fault_msg_access(r0)
 00009C3C  50 06 00 00 34 7E FF FF... jsr     kern_puts
 00009C44  01 0E A0 00 00 00 00 00... move.q  r1, r20
 00009C4C  50 06 00 00 E0 F9 FF FF... jsr     kern_put_fault_access
-00009C54  04 47 00 00 FC 20 01 00... lea r8, fault_msg_mode(r0)
+00009C54  04 47 00 00 00 21 01 00... lea r8, fault_msg_mode(r0)
 00009C5C  50 06 00 00 14 7E FF FF... jsr     kern_puts
 00009C64  01 0E A8 00 00 00 00 00... move.q  r1, r21
 00009C6C  50 06 00 00 88 F9 FF FF... jsr     kern_put_fault_mode
-00009C74  04 47 00 00 04 21 01 00... lea r8, fault_msg_class(r0)
+00009C74  04 47 00 00 08 21 01 00... lea r8, fault_msg_class(r0)
 00009C7C  50 06 00 00 F4 7D FF FF... jsr     kern_puts
 00009C84  01 0E A0 00 00 00 00 00... move.q  r1, r20
 00009C8C  50 06 00 00 30 FA FF FF... jsr     kern_put_fault_class
-00009C94  04 47 00 00 0C 21 01 00... lea r8, fault_msg_pte(r0)
+00009C94  04 47 00 00 10 21 01 00... lea r8, fault_msg_pte(r0)
 00009C9C  50 06 00 00 D4 7D FF FF... jsr     kern_puts
 00009CA4  01 0E B8 00 00 00 00 00... move.q  r1, r23
 00009CAC  50 06 00 00 E8 FC FF FF... jsr     kern_put_fault_pte_for_addr
@@ -10608,7 +10608,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
 00011554  53 6E 00 00 00 00 00 00... pop     r13
 0001155C  53 7E 00 00 00 00 00 00... pop     r15
 00011564  42 06 08 00 20 00 00 00... bne r1, r0, .ktc_skip_dos_bootstrap_check
-0001156C  04 47 00 00 00 22 01 00... lea r8, boot_fail_msg(r0)
+0001156C  04 47 00 00 04 22 01 00... lea r8, boot_fail_msg(r0)
 00011574  50 06 00 00 FC 04 FF FF... jsr     kern_puts
 0001157C  E1 00 00 00 00 00 00 00... halt
                          .ktc_skip_dos_bootstrap_check:
@@ -11005,96 +11005,97 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (70304 bytes)
 00012084  00 00                    dc.w    0
 00012086  00 00                    dc.w    0
                          boot_banner:
-00012088  65 78 65 63 2E 6C 69 62... dc.b    "exec.library M11 boot", 0x0D, 0x0A, 0
+00012088  65 78 65 63 2E 6C 69 62... dc.b    "exec.library 1.16.1 boot", 0x0D, 0x0A, 0
+                         align   4  ; 1 bytes padding
                          fault_msg_prefix:
-000120A0  47 55 52 55 20 4D 45 44... dc.b    "GURU MEDITATION cause=", 0
+000120A4  47 55 52 55 20 4D 45 44... dc.b    "GURU MEDITATION cause=", 0
                          align   4  ; 1 bytes padding
                          fault_msg_pc:
-000120B8  20 50 43 3D 00           dc.b    " PC=", 0
+000120BC  20 50 43 3D 00           dc.b    " PC=", 0
                          align   4  ; 3 bytes padding
                          fault_msg_addr:
-000120C0  20 41 44 44 52 3D 00     dc.b    " ADDR=", 0
+000120C4  20 41 44 44 52 3D 00     dc.b    " ADDR=", 0
                          align   4  ; 1 bytes padding
                          deadlock_msg:
-000120C8  44 45 41 44 4C 4F 43 4B... dc.b    "DEADLOCK: no runnable tasks", 0x0D, 0x0A, 0
+000120CC  44 45 41 44 4C 4F 43 4B... dc.b    "DEADLOCK: no runnable tasks", 0x0D, 0x0A, 0
                          align   4  ; 2 bytes padding
                          fault_msg_task:
-000120E8  20 74 61 73 6B 3D 00     dc.b    " task=", 0
+000120EC  20 74 61 73 6B 3D 00     dc.b    " task=", 0
                          align   4  ; 1 bytes padding
                          fault_msg_access:
-000120F0  20 41 43 43 45 53 53 3D... dc.b    " ACCESS=", 0
+000120F4  20 41 43 43 45 53 53 3D... dc.b    " ACCESS=", 0
                          align   4  ; 3 bytes padding
                          fault_msg_mode:
-000120FC  20 4D 4F 44 45 3D 00     dc.b    " MODE=", 0
+00012100  20 4D 4F 44 45 3D 00     dc.b    " MODE=", 0
                          align   4  ; 1 bytes padding
                          fault_msg_class:
-00012104  20 43 4C 41 53 53 3D 00... dc.b    " CLASS=", 0
+00012108  20 43 4C 41 53 53 3D 00... dc.b    " CLASS=", 0
                          fault_msg_pte:
-0001210C  20 50 54 45 3D 00        dc.b    " PTE=", 0
+00012110  20 50 54 45 3D 00        dc.b    " PTE=", 0
                          align   4  ; 2 bytes padding
                          fault_mode_user:
-00012114  75 73 65 72 00           dc.b    "user", 0
+00012118  75 73 65 72 00           dc.b    "user", 0
                          align   4  ; 3 bytes padding
                          fault_mode_supervisor:
-0001211C  73 75 70 65 72 76 69 73... dc.b    "supervisor", 0
+00012120  73 75 70 65 72 76 69 73... dc.b    "supervisor", 0
                          align   4  ; 1 bytes padding
                          fault_access_unknown:
-00012128  75 6E 6B 6E 6F 77 6E 00... dc.b    "unknown", 0
+0001212C  75 6E 6B 6E 6F 77 6E 00... dc.b    "unknown", 0
                          fault_access_read:
-00012130  72 65 61 64 00           dc.b    "read", 0
+00012134  72 65 61 64 00           dc.b    "read", 0
                          align   4  ; 3 bytes padding
                          fault_access_write:
-00012138  77 72 69 74 65 00        dc.b    "write", 0
+0001213C  77 72 69 74 65 00        dc.b    "write", 0
                          align   4  ; 2 bytes padding
                          fault_access_exec:
-00012140  65 78 65 63 75 74 65 00... dc.b    "execute", 0
+00012144  65 78 65 63 75 74 65 00... dc.b    "execute", 0
                          fault_class_unknown:
-00012148  75 6E 6B 6E 6F 77 6E 00... dc.b    "unknown", 0
+0001214C  75 6E 6B 6E 6F 77 6E 00... dc.b    "unknown", 0
                          fault_class_not_present:
-00012150  6E 6F 74 2D 70 72 65 73... dc.b    "not-present", 0
+00012154  6E 6F 74 2D 70 72 65 73... dc.b    "not-present", 0
                          fault_class_read:
-0001215C  72 65 61 64 2D 64 65 6E... dc.b    "read-denied", 0
+00012160  72 65 61 64 2D 64 65 6E... dc.b    "read-denied", 0
                          fault_class_write:
-00012168  77 72 69 74 65 2D 64 65... dc.b    "write-denied", 0
+0001216C  77 72 69 74 65 2D 64 65... dc.b    "write-denied", 0
                          align   4  ; 3 bytes padding
                          fault_class_exec:
-00012178  65 78 65 63 2D 64 65 6E... dc.b    "exec-denied", 0
+0001217C  65 78 65 63 2D 64 65 6E... dc.b    "exec-denied", 0
                          fault_class_user_super:
-00012184  75 73 65 72 2D 73 75 70... dc.b    "user-supervisor", 0
+00012188  75 73 65 72 2D 73 75 70... dc.b    "user-supervisor", 0
                          fault_class_priv:
-00012194  70 72 69 76 69 6C 65 67... dc.b    "privileged", 0
+00012198  70 72 69 76 69 6C 65 67... dc.b    "privileged", 0
                          align   4  ; 1 bytes padding
                          fault_class_misaligned:
-000121A0  6D 69 73 61 6C 69 67 6E... dc.b    "misaligned", 0
+000121A4  6D 69 73 61 6C 69 67 6E... dc.b    "misaligned", 0
                          align   4  ; 1 bytes padding
                          fault_class_timer:
-000121AC  74 69 6D 65 72 00        dc.b    "timer", 0
+000121B0  74 69 6D 65 72 00        dc.b    "timer", 0
                          align   4  ; 2 bytes padding
                          fault_class_syscall:
-000121B4  73 79 73 63 61 6C 6C 00... dc.b    "syscall", 0
+000121B8  73 79 73 63 61 6C 6C 00... dc.b    "syscall", 0
                          panic_msg:
-000121BC  4B 45 52 4E 45 4C 20 50... dc.b    "KERNEL PANIC: ", 0
+000121C0  4B 45 52 4E 45 4C 20 50... dc.b    "KERNEL PANIC: ", 0
                          align   4  ; 1 bytes padding
                          panic_stack_canary_msg:
-000121CC  6B 65 72 6E 65 6C 20 73... dc.b    "kernel stack canary", 0x0D, 0x0A, 0
+000121D0  6B 65 72 6E 65 6C 20 73... dc.b    "kernel stack canary", 0x0D, 0x0A, 0
                          align   4  ; 2 bytes padding
                          no_tasks_msg:
-000121E4  50 41 4E 49 43 3A 20 6E... dc.b    "PANIC: no programs loaded", 0x0D, 0x0A, 0
+000121E8  50 41 4E 49 43 3A 20 6E... dc.b    "PANIC: no programs loaded", 0x0D, 0x0A, 0
                          boot_fail_msg:
-00012200  42 4F 4F 54 20 46 41 49... dc.b    "BOOT FAIL", 0x0D, 0x0A, 0
+00012204  42 4F 4F 54 20 46 41 49... dc.b    "BOOT FAIL", 0x0D, 0x0A, 0
                          boot_host_relpath_doslib:
-0001220C  49 4F 53 53 59 53 2F 4C... dc.b    "IOSSYS/LIBS/dos.library", 0
+00012210  49 4F 53 53 59 53 2F 4C... dc.b    "IOSSYS/LIBS/dos.library", 0
                          boot_host_relpath_console:
-00012224  49 4F 53 53 59 53 2F 4C... dc.b    "IOSSYS/L/console.handler", 0
+00012228  49 4F 53 53 59 53 2F 4C... dc.b    "IOSSYS/L/console.handler", 0
                          align   4  ; 3 bytes padding
                          boot_host_relpath_shell:
-00012240  49 4F 53 53 59 53 2F 54... dc.b    "IOSSYS/Tools/Shell", 0
+00012244  49 4F 53 53 59 53 2F 54... dc.b    "IOSSYS/Tools/Shell", 0
                          align   4  ; 1 bytes padding
                          boot_shell_path_full:
-00012254  49 4F 53 53 59 53 3A 54... dc.b    "IOSSYS:Tools/Shell", 0
+00012258  49 4F 53 53 59 53 3A 54... dc.b    "IOSSYS:Tools/Shell", 0
                          align   4  ; 1 bytes padding
                          boot_shell_path_resolved:
-00012268  53 59 53 2F 49 4F 53 53... dc.b    "SYS/IOSSYS/Tools/Shell", 0
+0001226C  53 59 53 2F 49 4F 53 53... dc.b    "SYS/IOSSYS/Tools/Shell", 0
                          align   4  ; 1 bytes padding
-00012280  50 41 4E 49 43 3A 20 62... dc.b    "PANIC: boot program failed", 0x0D, 0x0A, 0
+00012284  50 41 4E 49 43 3A 20 62... dc.b    "PANIC: boot program failed", 0x0D, 0x0A, 0
                          align   4  ; 3 bytes padding

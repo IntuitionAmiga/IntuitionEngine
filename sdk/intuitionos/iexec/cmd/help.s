@@ -73,7 +73,7 @@ prog_help_app_data:
     dc.b    "console.handler", 0
     ds.b    8
     ds.b    8
-    dc.b    "M15 help surface:", 0x0D, 0x0A
+    dc.b    "IntuitionOS 1.16.1 help", 0x0D, 0x0A
     dc.b    "Commands: VERSION AVAIL DIR TYPE ECHO ASSIGN LIST WHICH HELP", 0x0D, 0x0A
     dc.b    "Assigns: RAM: C: L: LIBS: DEVS: T: S: RESOURCES:", 0x0D, 0x0A, 0
 prog_help_app_data_end:

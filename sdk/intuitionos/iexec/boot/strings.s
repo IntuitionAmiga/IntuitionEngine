@@ -1,7 +1,7 @@
 ; ============================================================================
 
 boot_banner:
-    dc.b    "exec.library M11 boot", 0x0D, 0x0A, 0
+    dc.b    "exec.library 1.16.1 boot", 0x0D, 0x0A, 0
     align   4
 
 fault_msg_prefix:
