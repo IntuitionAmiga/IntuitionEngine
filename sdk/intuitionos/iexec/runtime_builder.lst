@@ -1,6 +1,27 @@
 Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (102488 bytes)
 
 --- Listing ---
+         = 0000000000000001  IOS_VERSION_MAJOR  equ 1
+         = 0000000000000010  IOS_VERSION_MINOR  equ 16
+         = 0000000000000001  IOS_VERSION_PATCH  equ 1
+         = 000000004C49424D  IOSM_MAGIC               equ 0x4C49424D
+         = 0000000000000001  IOSM_SCHEMA_VERSION      equ 1
+         = 0000000000000001  IOSM_KIND_LIBRARY        equ 1
+         = 0000000000000002  IOSM_KIND_DEVICE         equ 2
+         = 0000000000000003  IOSM_KIND_HANDLER        equ 3
+         = 0000000000000004  IOSM_KIND_RESOURCE       equ 4
+         = 0000000000000005  IOSM_KIND_COMMAND        equ 5
+         = 0000000000000000  IOSM_OFF_MAGIC           equ 0
+         = 0000000000000004  IOSM_OFF_SCHEMA_VERSION  equ 4
+         = 0000000000000008  IOSM_OFF_NAME            equ 8
+         = 0000000000000028  IOSM_OFF_VERSION         equ 40
+         = 000000000000002A  IOSM_OFF_REVISION        equ 42
+         = 000000000000002C  IOSM_OFF_TYPE            equ 44
+         = 0000000000000030  IOSM_OFF_FLAGS           equ 48
+         = 0000000000000034  IOSM_OFF_MSG_ABI_VERSION equ 52
+         = 0000000000000020  IOSM_NAME_SIZE           equ 32
+         = 0000000000000060  IOSM_SIZE                equ 96
+         = 00000000494F5331  IOSM_NOTE_TYPE           equ 0x494F5331
          = 0000000000000001  SYS_ALLOC_MEM     equ 1
          = 0000000000000002  SYS_FREE_MEM      equ 2
          = 0000000000000004  SYS_MAP_SHARED    equ 4
@@ -71,6 +92,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (102488 b
          = 0000000000000003  SYSINFO_CURRENT_TASK equ 3
          = 0000000000000004  SYSINFO_QUOTA_CURRENT equ 4
          = 0000000000000005  SYSINFO_QUOTA_LIMIT   equ 5
+         = 0000000000000006  SYSINFO_PORT_NAME_BY_INDEX equ 6
          = 000000000007D000  KERN_PAGE_TABLE   equ 0x07D000
          = 000000000008D000  KERN_DATA_BASE    equ 0x08D000
          = 00000000000A0000  KERN_STACK_TOP    equ 0x0A0000
@@ -384,6 +406,8 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (102488 b
          = 0000000000000100  DATA_ARGS_MAX     equ 256
          = 0000000000000000  CON_MSG_CHAR      equ 0
          = 0000000000000002  CON_MSG_READLINE  equ 2
+         = 0000000000000120  MSG_GET_IOSM      equ 0x120
+         = 0000000000000121  MSG_LIST_RESIDENTS equ 0x121
          = 0000000000000001  DOS_OPEN          equ 1
          = 0000000000000002  DOS_READ          equ 2
          = 0000000000000003  DOS_WRITE         equ 3
@@ -395,6 +419,11 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (102488 b
          = 0000000000000009  DOS_RUNSEG        equ 9
          = 000000000000000A  DOS_ASSIGN        equ 10
          = 000000000000000B  DOS_LOADLIB       equ 11
+         = 0000000000000320  DOS_OP_PARSE_MANIFEST equ 0x320
+         = 0000000000000000  DOS_PMP_PATH_OFF      equ 0
+         = 0000000000000104  DOS_PMP_PATH_MAX      equ 260
+         = 0000000000000110  DOS_PMP_IOSM_OFF      equ 272
+         = 0000000000000190  DOS_PMP_RC_OFF        equ 400
          = 0000000000000000  DOS_ASSIGN_LIST          equ 0
          = 0000000000000001  DOS_ASSIGN_QUERY         equ 1
          = 0000000000000002  DOS_ASSIGN_SET           equ 2
