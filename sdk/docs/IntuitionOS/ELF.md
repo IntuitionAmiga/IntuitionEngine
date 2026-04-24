@@ -112,6 +112,20 @@ What M16 adds on top of the existing loader boundary:
 - the internal module registry and `module_load_handle` lifecycle are separate from the public DOS seglist contract
 - PIE-capable codegen remains the direction of travel, but `MODF_ASLR_CAPABLE` remains informational in v1 and does not change current placement or validation rules
 
+M16.2 extends the internal protected-module lifecycle to handlers, devices,
+and resources using the existing `IOSM.kind` values and class-specific path
+policy (`L:`, `DEVS:`, and `RESOURCES:`). `console.handler`,
+`hardware.resource`, and `input.device` now register as protected module rows;
+`dos.library` runs the eager post-DOS policy for the resource and device before
+Shell, and `S:Startup-Sequence` no longer launches module files as commands.
+It remains a strict lifecycle and boot-policy milestone: module class
+validation may reject the wrong kind for a path, but public non-library
+acquisition APIs are deferred to M16.2.1, and it must not introduce
+variable-base placement, relocation processing, `ET_DYN`, or ASLR. The intended
+split is M16.2 for internal non-library module semantics, M16.2.1 for public
+acquisition APIs, M16.3 for consistently PIE-capable shipped ELFs, and M16.4
+for real relocation plus randomized placement.
+
 ## Design Goal
 
 Use a modern binary file format without adopting a POSIX-shaped process model.

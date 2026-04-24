@@ -15,12 +15,6 @@ prog_hwres_code:
     load.l  r1, TASKSB_TASK_ID(r30)
     store.q r1, 128(r29)               ; data[128] = task_id
 
-    ; ===== SYS_HWRES_OP / HWRES_BECOME =====
-    move.l  r6, #HWRES_BECOME
-    syscall #SYS_HWRES_OP              ; R2 = err
-    load.q  r29, (sp)
-    bnez    r2, .hwres_halt            ; can't claim broker → give up
-
     ; ===== CreatePort("hardware.resource", PF_PUBLIC) =====
     move.q  r1, r29                    ; r1 = &data[0] = port name
     move.l  r2, #PF_PUBLIC
@@ -28,6 +22,19 @@ prog_hwres_code:
     load.q  r29, (sp)
     bnez    r2, .hwres_halt
     store.q r1, 136(r29)               ; data[136] = hwres_port
+    move.q  r4, r1
+    move.q  r1, r29
+    move.l  r2, #1
+    move.l  r3, #0
+    syscall #SYS_ADD_RESOURCE
+    load.q  r29, (sp)
+    bnez    r2, .hwres_halt
+
+    ; ===== SYS_HWRES_OP / HWRES_BECOME =====
+    move.l  r6, #HWRES_BECOME
+    syscall #SYS_HWRES_OP              ; R2 = err
+    load.q  r29, (sp)
+    bnez    r2, .hwres_halt            ; can't claim broker → give up
 
     bra     .hwres_main
 

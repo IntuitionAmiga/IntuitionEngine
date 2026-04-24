@@ -126,6 +126,9 @@ SYS_M16_COPY_MODULE_NAME equ 46    ; trusted-internal — dos.library copies a p
 SYS_M16_LIBRARY_LOAD_RESULT equ 47 ; trusted-internal — dos.library publishes M16 launch success/failure
 SYS_SET_RESIDENT equ 48            ; nucleus — toggles MODF_RESIDENT on a library row by name
 SYS_M16_EXPUNGE_RESULT equ 49      ; trusted-internal — library replies accept/refuse to a specific exec-managed expunge row
+SYS_ADD_HANDLER  equ 50            ; trusted-internal — M16.2 handler self-registration alias
+SYS_ADD_DEVICE   equ 51            ; trusted-internal — M16.2 device self-registration alias
+SYS_ADD_RESOURCE equ 52            ; trusted-internal — M16.2 resource self-registration alias
 
 ; ===========================================================================
 ; Error Codes
@@ -145,8 +148,14 @@ ERR_QUOTA         equ 10         ; M15.6 G3: caller's per-task quota reached its
                                  ; ERR_FULL so tests and diagnostics can distinguish "this task is out
                                  ; of budget" from "the whole kernel is out of <resource>".
 ERR_LIB_VERSION   equ 11         ; M16: library exists but lib_version < minVersion
+ERR_UNSUPPORTED   equ 12         ; operation is known but rejected by class/policy
 
 BOOT_ELF_EXEC_FLAG_TRUSTED_INTERNAL equ 0x1
+
+MODCLASS_LIBRARY  equ 1
+MODCLASS_DEVICE   equ 2
+MODCLASS_HANDLER  equ 3
+MODCLASS_RESOURCE equ 4
 
 ; ===========================================================================
 ; MapShared Permission Bits (M15.6 G6)

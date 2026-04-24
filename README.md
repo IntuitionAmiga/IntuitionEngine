@@ -6092,6 +6092,14 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 - **Resident version queries use existing IPC.** Persistent services answer `MSG_GET_IOSM` through caller-allocated shared memory, and `exec.library` exposes a public port for its own IOSM plus resident public-port enumeration.
 - **`VERSION` no longer reports stale milestone text.** The default command output is `IntuitionOS 1.16.1`, `exec.library 1.16.1 (2026-04-22)`, and `Copyright © 2026 Zayn Otley`.
 
+**M16.2 protected non-library module status** - handlers, devices, and resources now use the protected-module lifecycle internally without absorbing PIE/ASLR work:
+
+- **Handlers, devices, and resources are first-class protected module classes internally.** `console.handler`, `input.device`, and `hardware.resource` self-register through class-correct `AddHandler`, `AddDevice`, and `AddResource` aliases on the same exec-owned registry and state machine used by libraries.
+- **Boot policy replaces startup-script module launches.** `console.handler` remains the only early-launch source exception, while `dos.library` runs the eager post-DOS policy for `hardware.resource` and `input.device` before Shell. `S:Startup-Sequence` is command/configuration-only.
+- **Module semantics come before public API and loader relocation work.** M16.2 owns internal registration, naming, ownership, eager policy, hardware-resource broker generation checks, compat-port policy, and registry transitions for non-library classes; public `AttachHandler` / `OpenDevice` / `OpenResource` acquisition APIs are reserved for M16.2.1.
+- **PIE and ASLR stay separate.** M16.3 is reserved for making the shipped ELF surface consistently PIE-capable; M16.4 is reserved for real relocation and ASLR/randomized placement. M16.2 keeps the M14.2 `ET_EXEC` placement contract unchanged.
+- See `sdk/docs/IntuitionOS/M16.2-plan.md` for the full TDD milestone plan and handoff notes.
+
 **M15.1 source layout status** - the IntuitionOS sources are no longer forced to live in one monolithic assembly body, and the hostfs runtime now builds separately from the kernel image:
 
 - `sdk/intuitionos/iexec/iexec.s` remains the kernel assembly entrypoint and the top-level `exec.library` image/layout file.

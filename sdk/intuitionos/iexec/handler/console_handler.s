@@ -41,6 +41,13 @@ prog_console_code:
     syscall #SYS_CREATE_PORT            ; R1 = port_id
     load.q  r29, (sp)
     store.q r1, 136(r29)                ; data[136] = console_port
+    move.q  r4, r1
+    move.q  r1, r29
+    move.l  r2, #1
+    move.l  r3, #0
+    syscall #SYS_ADD_HANDLER
+    load.q  r29, (sp)
+    bnez    r2, .con_mapio_failed
 
     ; === Clear readline_pending flag ===
     store.b r0, 176(r29)

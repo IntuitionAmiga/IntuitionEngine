@@ -43,8 +43,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - M14.1 phase 5 shipped state:
   - the kernel now prepares staged strict-M14 ELF rows for the internal embedded boot manifest and keeps bootstrap grants keyed by internal manifest entry ID
   - `console.handler` and `dos.library` boot from that staged manifest source as the minimum pre-DOS bootstrap chain
-  - once DOS is online, `dos.library` launches `Shell` from the internal embedded manifest, and `Shell` then drives `S:Startup-Sequence`
-  - the current M16 phase-5 runtime keeps `S:Startup-Sequence` command-only for libraries: it launches `hardware.resource` and `input.device`, while `graphics.library` and `intuition.library` are demand-loaded through `OpenLibrary`
+  - once DOS is online, `dos.library` runs the fixed eager-module policy for `hardware.resource` and `input.device`, then launches `Shell` from the internal embedded manifest; `Shell` drives a command/configuration-only `S:Startup-Sequence`
   - shipped service binaries under `LIBS:`, `DEVS:`, and `RESOURCES:` are now shipped as strict M14 ELF too
   - the public DOS loader API is unchanged; the embedded-manifest service source remains internal-only
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol — **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
@@ -169,6 +168,16 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - `SYS_GET_SYS_INFO(SYSINFO_PORT_NAME_BY_INDEX)` enumerates public ports without adding a new syscall slot. The kernel validates the caller's 32-byte output buffer and returns a zero task id as the end sentinel.
 - The default `VERSION` command output is canonicalized to `IntuitionOS 1.16.1`, `exec.library 1.16.1 (DATE)`, and the IOSM copyright string.
 - No new syscall slots are introduced for M16.1; the design reuses ports, shared-memory handles, explicit `MAPF_*` permissions, and bounded fixed-size buffers.
+
+**M16.2 protected non-library module runtime:**
+
+- M16.2 extends the M16 registry/lifecycle from libraries to handler, device, and resource classes. `console.handler`, `input.device`, and `hardware.resource` now publish class-correct ONLINE registry rows.
+- The same row state, registration validation, resident policy, and generation rules apply across migrated classes. `console.handler` self-registers as the early handler exception; `dos.library` owns the post-DOS eager policy for `hardware.resource` and `input.device`.
+- `S:Startup-Sequence` no longer launches module files as commands. It remains for user-visible commands and configuration.
+- `hardware.resource` broker syscalls now require both the current broker task id and the current ONLINE resource-class registry generation, so stale broker identity cannot mint new grants.
+- Public class-specific acquisition APIs (`AttachHandler`, `OpenDevice`, `OpenResource`) are deferred to M16.2.1 after the internal lifecycle and boot policy are proven.
+- M16.2 keeps the current `ET_EXEC` placement contract. PIE-capable shipped ELF consistency is reserved for M16.3; relocation and ASLR/randomized placement are reserved for M16.4.
+- see [M16.2-plan.md](/home/zayn/GolandProjects/IntuitionEngine/sdk/docs/IntuitionOS/M16.2-plan.md) for the full TDD milestone spec
 
 IExec runs on the IE64 CPU core only. It requires the IE64 MMU (4 KiB paged virtual memory, software TLB, control registers) and the hardware timer for preemption.
 

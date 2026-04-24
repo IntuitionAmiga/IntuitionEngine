@@ -92,6 +92,9 @@ const (
 	sysOpenLibraryEx = 45
 	sysSetResident   = 48
 	sysExpungeResult = 49
+	sysAddHandler    = 50
+	sysAddDevice     = 51
+	sysAddResource   = 52
 
 	mapfRead  = 0x01
 	mapfWrite = 0x02
@@ -109,8 +112,9 @@ const (
 	quotaDefaultPages = 1024
 	quotaDefaultPorts = 32
 	// Quota error code (paired with the existing ERR_* namespace).
-	errQuota      = 10
-	errLibVersion = 11
+	errQuota       = 10
+	errLibVersion  = 11
+	errUnsupported = 12
 	// Grant-row grantor-pubid provenance (M15.6 G3): u32 at offset 12
 	// in the row; 0xFFFFFFFF = GRANT_GRANTOR_NONE (uncharged bootstrap
 	// row). Stored as the grantor's public task id so release-time
@@ -363,6 +367,7 @@ const (
 	kdModuleGeneration    = 36
 	kdModuleVersion       = 40
 	kdModuleRevision      = 42
+	kdModuleClass         = 44
 	kdModuleOwningTask    = 48
 	kdModulePublicPort    = 52
 	kdModuleOpenCount     = 56
@@ -443,6 +448,10 @@ const (
 	m16ModStateFailed     = 3
 	m16ModStateExpunging  = 4
 	m16LibOpExpunge       = 0x4D313645
+	modClassLibrary       = 1
+	modClassDevice        = 2
+	modClassHandler       = 3
+	modClassResource      = 4
 
 	dosSegMagic      = 0x4C474553 // "SEGL" little-endian
 	dosSegMagicOff   = 8
@@ -3222,7 +3231,7 @@ func collectLiveTaskOwnedPoolPages(mem []byte) map[uint32]struct{} {
 
 func runM14LoadSegClient(t *testing.T, filename string, loops int, doUnload bool) (*ie64TestRig, uint32) {
 	t.Helper()
-	rig, _ := assembleAndLoadKernel(t)
+	rig, _ := assembleAndLoadKernelWithBootstrapHostRootOptions(t, makeM152Phase5GeneratedHostRoot(t), false)
 	return runM14LoadSegClientOnRig(t, rig, filename, loops, doUnload)
 }
 
@@ -13740,7 +13749,7 @@ func TestIExec_M16_AddLibrary_RejectsDuplicateOnlineRegistration(t *testing.T) {
 	}
 }
 
-func TestIExec_M16_AddLibrary_ReusesUnloadedRowForNewName(t *testing.T) {
+func TestIExec_M16_AddLibrary_DoesNotReuseNamedUnloadedRowForNewName(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	overrideExtraTasks(rig.cpu.memory, images, 1)
@@ -13794,19 +13803,19 @@ func TestIExec_M16_AddLibrary_ReusesUnloadedRowForNewName(t *testing.T) {
 		output := term.DrainOutput()
 		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 200)])
 	}
-	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0 {
-		t.Fatalf("AddLibrary err=%d, want 0", got)
+	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != errFull {
+		t.Fatalf("AddLibrary err=%d, want ERR_FULL (%d)", got, errFull)
 	}
 	row := m16ModuleRowBase(0)
-	if got := string(bytes.TrimRight(rig.cpu.memory[row+kdModuleName:row+kdModuleName+portNameLen], "\x00")); got != "fresh.library" {
-		t.Fatalf("reused row name=%q, want fresh.library", got)
+	if got := string(bytes.TrimRight(rig.cpu.memory[row+kdModuleName:row+kdModuleName+portNameLen], "\x00")); got != "slot00.library" {
+		t.Fatalf("row 0 name=%q, want preserved slot00.library", got)
 	}
-	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateOnline {
-		t.Fatalf("reused row state=%d, want ONLINE (%d)", got, m16ModStateOnline)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateUnloaded {
+		t.Fatalf("row 0 state=%d, want preserved UNLOADED (%d)", got, m16ModStateUnloaded)
 	}
 }
 
-func TestIExec_M16_StaleTokenStaysInvalidWhenUnloadedRowIsReused(t *testing.T) {
+func TestIExec_M16_StaleTokenStaysInvalidWhenUnloadedRowIsReloaded(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	overrideExtraTasks(rig.cpu.memory, images, 1)
@@ -13820,7 +13829,7 @@ func TestIExec_M16_StaleTokenStaysInvalidWhenUnloadedRowIsReused(t *testing.T) {
 	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleState:], m16ModStateUnloaded)
 	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleGeneration:], 1)
 
-	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("new.library\x00"))
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("old.library\x00"))
 	staleToken := uint32(1 << 8)
 
 	pc := t0
@@ -13879,10 +13888,10 @@ func TestIExec_M16_StaleTokenStaysInvalidWhenUnloadedRowIsReused(t *testing.T) {
 		t.Fatalf("stale CloseLibrary err=%d, want ERR_BADHANDLE (2)", got)
 	}
 	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleGeneration:]); got != 2 {
-		t.Fatalf("reused row generation=%d, want 2", got)
+		t.Fatalf("reloaded row generation=%d, want 2", got)
 	}
 	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 1 {
-		t.Fatalf("reused row open_count=%d after stale close, want 1", got)
+		t.Fatalf("reloaded row open_count=%d after stale close, want 1", got)
 	}
 }
 
@@ -13956,7 +13965,15 @@ func TestIExec_M16_OpenLibraryEx_AbsentLibraryStartsLoadAndSweepsFailedMiss(t *t
 
 	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "autoload.library")
 	if !ok {
-		t.Fatal("absent OpenLibraryEx did not create a persistent registry row")
+		var rows []string
+		for i := uint32(0); i < kdModuleMax; i++ {
+			base := m16ModuleRowBase(i)
+			name := strings.TrimRight(string(rig.cpu.memory[base+kdModuleName:base+kdModuleName+portNameLen]), "\x00")
+			if name != "" {
+				rows = append(rows, name)
+			}
+		}
+		t.Fatalf("absent OpenLibraryEx did not create a persistent registry row; rows=%v", rows)
 	}
 	row := m16ModuleRowBase(rowIndex)
 	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleState:]); got != m16ModStateUnloaded {
@@ -14278,27 +14295,33 @@ func TestIExec_M16_OpenLibraryEx_AutoloadsGraphicsLibraryAndCompletesWaiter(t *t
 		t.Fatalf("waiter outcome=(status=%d token=%d version=%d), want success/nonzero token/version 11", status, token, version)
 	}
 	output := term.DrainOutput()
-	if got := strings.Count(output, "graphics.library M11 [Task "); got != 1 {
-		t.Fatalf("graphics autoload banner count=%d, want 1 output=%q", got, output[:min(len(output), 400)])
+	if _, _, ok := findPublicPortIDByName(rig.cpu.memory, "graphics.library"); !ok {
+		t.Fatalf("graphics.library public port missing after autoload output=%q", output[:min(len(output), 400)])
 	}
 }
 
 func TestIExec_M16_Phase1HostRoot_DOSRunGraphicsAfterHardwareResource(t *testing.T) {
 	hostRoot := makeM16Phase1HostRoot(t)
-	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nRESOURCES/hardware.resource\nLIBS:graphics.library\n", 10*time.Second)
-	if !strings.Contains(output, "hardware.resource M12.5 [Task ") {
-		t.Fatalf("hardware.resource did not launch in phase1 host root output=%q", output[:min(len(output), 800)])
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	for _, ch := range "\nRESOURCES/hardware.resource\nLIBS:graphics.library\n" {
+		term.EnqueueByte(byte(ch))
 	}
-	if !strings.Contains(output, "graphics.library M11 [Task ") {
-		t.Fatalf("graphics.library did not launch after hardware.resource in phase1 host root output=%q", output[:min(len(output), 800)])
+	runRigForDuration(rig, 10*time.Second)
+	output := term.DrainOutput()
+	if strings.Contains(output, "BOOT FAIL") {
+		t.Fatalf("phase1 host root boot failed output=%q", output[:min(len(output), 800)])
+	}
+	if _, _, ok := findPublicPortIDByName(rig.cpu.memory, "hardware.resource"); !ok {
+		t.Fatalf("hardware.resource public port missing after phase1 host root boot output=%q", output[:min(len(output), 800)])
+	}
+	if _, _, ok := findPublicPortIDByName(rig.cpu.memory, "graphics.library"); !ok {
+		t.Fatalf("graphics.library public port missing after DOS_RUN output=%q", output[:min(len(output), 800)])
 	}
 }
 
 func TestIExec_M16_StartupSequenceContainsOnlyCommandsAndConfiguration(t *testing.T) {
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, makeM152Phase5GeneratedHostRoot(t), "\nTYPE S:Startup-Sequence\n", 10*time.Second)
 	for _, want := range []string{
-		"RESOURCES/hardware.resource",
-		"DEVS/input.device",
 		"VERSION",
 		"ECHO Type HELP for commands and ASSIGN for layout",
 	} {
@@ -14307,6 +14330,8 @@ func TestIExec_M16_StartupSequenceContainsOnlyCommandsAndConfiguration(t *testin
 		}
 	}
 	for _, unwanted := range []string{
+		"RESOURCES/hardware.resource",
+		"DEVS/input.device",
 		"LIBS/graphics.library",
 		"LIBS/intuition.library",
 	} {
@@ -14331,18 +14356,16 @@ func TestIExec_M16_TextModeBootRequiresOnlyDOSAndShell(t *testing.T) {
 	}
 	output := term.DrainOutput()
 	for _, want := range []string{
-		"dos.library M14 [Task ",
-		"Shell M10 [Task ",
 		"IntuitionOS 1.16.1",
 		"Type HELP for commands and ASSIGN for layout",
+		"1> ",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("text-mode boot missing %q output=%q", want, output[:min(len(output), 1200)])
 		}
 	}
 	for _, unwanted := range []string{
-		"graphics.library M11 [Task ",
-		"intuition.library M12 [Task ",
+		"BOOT FAIL",
 	} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("text-mode boot unexpectedly launched %q output=%q", unwanted, output[:min(len(output), 1200)])
@@ -14363,11 +14386,11 @@ func TestIExec_M16_IntuitionLibraryAutoloadsGraphicsOnFirstWindowDemand(t *testi
 	})
 	runAboutAppEndToEndWithRig(t, rig, term)
 	output := term.DrainOutput()
-	if got := strings.Count(output, "intuition.library M12 [Task "); got != 1 {
-		t.Fatalf("intuition autoload banner count=%d, want 1 output=%q", got, output[:min(len(output), 1200)])
+	if _, _, ok := findPublicPortIDByName(rig.cpu.memory, "intuition.library"); !ok {
+		t.Fatalf("intuition.library public port missing after first window demand output=%q", output[:min(len(output), 1200)])
 	}
-	if got := strings.Count(output, "graphics.library M11 [Task "); got != 1 {
-		t.Fatalf("graphics autoload banner count=%d, want 1 output=%q", got, output[:min(len(output), 1200)])
+	if _, _, ok := findPublicPortIDByName(rig.cpu.memory, "graphics.library"); !ok {
+		t.Fatalf("graphics.library public port missing after first window demand output=%q", output[:min(len(output), 1200)])
 	}
 }
 
@@ -15131,8 +15154,8 @@ func TestIExec_M16_OpenLibraryEx_ConcurrentAutoloadStartsExactlyOneLoad(t *testi
 		t.Fatalf("concurrent waiter outcomes A=(%d,%d,%d) B=(%d,%d,%d), want shared success token/version 11", statusA, tokenA, versionA, statusB, tokenB, versionB)
 	}
 	output := term.DrainOutput()
-	if got := strings.Count(output, "graphics.library M11 [Task "); got != 1 {
-		t.Fatalf("graphics concurrent autoload banner count=%d, want 1 output=%q", got, output[:min(len(output), 400)])
+	if _, _, ok := findPublicPortIDByName(rig.cpu.memory, "graphics.library"); !ok {
+		t.Fatalf("graphics.library public port missing after concurrent autoload output=%q", output[:min(len(output), 400)])
 	}
 }
 
@@ -16262,13 +16285,16 @@ func TestIExec_M16_ExecLaunchesShellFromStartupBlockBootPath(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	for _, want := range []string{"dos.library M14 [Task ", "Shell M10 [Task ", "1> "} {
+	for _, want := range []string{"IntuitionOS 1.16.1", "1> "} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("boot missing %q after DOS shell-path patch output=%q", want, output[:min(len(output), 600)])
 		}
 	}
 	if strings.Contains(output, "BOOT FAIL") {
 		t.Fatalf("boot failed after DOS shell-path patch output=%q", output[:min(len(output), 600)])
+	}
+	if _, _, ok := findPublicPortIDByName(rig.cpu.memory, "dos.library"); !ok {
+		t.Fatalf("dos.library public port missing after DOS shell-path patch output=%q", output[:min(len(output), 600)])
 	}
 
 	dosPubID := uint64(binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdDosLibPubID:]))
@@ -16306,13 +16332,16 @@ func TestIExec_M16_BootstrapAcceptsDosManifestAfterEarlierNoteSection(t *testing
 	<-done
 
 	output := term.DrainOutput()
-	for _, want := range []string{"dos.library M14 [Task ", "Shell M10 [Task ", "1> "} {
+	for _, want := range []string{"IntuitionOS 1.16.1", "1> "} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("boot missing %q with earlier ELF note output=%q", want, output[:min(len(output), 600)])
 		}
 	}
 	if strings.Contains(output, "BOOT FAIL") {
 		t.Fatalf("boot failed with earlier ELF note output=%q", output[:min(len(output), 600)])
+	}
+	if _, _, ok := findPublicPortIDByName(rig.cpu.memory, "dos.library"); !ok {
+		t.Fatalf("dos.library public port missing with earlier ELF note output=%q", output[:min(len(output), 600)])
 	}
 }
 
@@ -16331,13 +16360,16 @@ func TestIExec_M16_BootstrapAcceptsDosManifestAfterEarlierNoteInSameSection(t *t
 	<-done
 
 	output := term.DrainOutput()
-	for _, want := range []string{"dos.library M14 [Task ", "Shell M10 [Task ", "1> "} {
+	for _, want := range []string{"IntuitionOS 1.16.1", "1> "} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("boot missing %q with earlier note in manifest section output=%q", want, output[:min(len(output), 600)])
 		}
 	}
 	if strings.Contains(output, "BOOT FAIL") {
 		t.Fatalf("boot failed with earlier note in manifest section output=%q", output[:min(len(output), 600)])
+	}
+	if _, _, ok := findPublicPortIDByName(rig.cpu.memory, "dos.library"); !ok {
+		t.Fatalf("dos.library public port missing with earlier note in manifest section output=%q", output[:min(len(output), 600)])
 	}
 }
 

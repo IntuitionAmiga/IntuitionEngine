@@ -132,6 +132,14 @@ boot_host_relpath_shell:
     dc.b    "IOSSYS/Tools/Shell", 0
     align   4
 
+boot_host_relpath_hwres:
+    dc.b    "IOSSYS/RESOURCES/hardware.resource", 0
+    align   4
+
+boot_host_relpath_input:
+    dc.b    "IOSSYS/DEVS/input.device", 0
+    align   4
+
 boot_shell_path_full:
     dc.b    "IOSSYS:Tools/Shell", 0
     align   4

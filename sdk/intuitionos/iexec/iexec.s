@@ -2605,6 +2605,22 @@ kern_boot_load_host_shell:
     add     r21, r21, #KD_BOOT_MANIFEST_STRIDE ; row 2 = Shell
     bra     kern_boot_load_host_manifest_elf
 
+kern_boot_load_host_hwres:
+    move.q  r19, r1
+    la      r20, boot_host_relpath_hwres
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_BOOT_MANIFEST_BASE
+    add     r21, r21, #(KD_BOOT_MANIFEST_STRIDE * 3) ; row 3 = hardware.resource
+    bra     kern_boot_load_host_manifest_elf
+
+kern_boot_load_host_input:
+    move.q  r19, r1
+    la      r20, boot_host_relpath_input
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_BOOT_MANIFEST_BASE
+    add     r21, r21, #(KD_BOOT_MANIFEST_STRIDE * 4) ; row 4 = input.device
+    bra     kern_boot_load_host_manifest_elf
+
 kern_boot_load_host_manifest_elf:
     sub     sp, sp, #80
     store.q r19, 0(sp)                 ; startup flags
@@ -6519,6 +6535,15 @@ endif
     move.l  r11, #SYS_M16_EXPUNGE_RESULT
     beq     r10, r11, .do_m16_expunge_result
 
+    move.l  r11, #SYS_ADD_HANDLER
+    beq     r10, r11, .do_add_handler
+
+    move.l  r11, #SYS_ADD_DEVICE
+    beq     r10, r11, .do_add_device
+
+    move.l  r11, #SYS_ADD_RESOURCE
+    beq     r10, r11, .do_add_resource
+
     ; M11.5: SYS_READ_INPUT (slot 37) removed. Terminal MMIO is now mapped
     ; into console.handler via SYS_MAP_IO and the read loop is inlined in
     ; console.handler's CON_MSG_READLINE handler. Slot 37 falls through to
@@ -8501,6 +8526,11 @@ endif
     beqz    r1, .openlibex_begin_load
     move.q  r21, r1
     move.l  r22, r2
+    load.l  r23, KD_MODULE_CLASS(r21)
+    beqz    r23, .openlibex_class_ok
+    move.l  r11, #MODCLASS_LIBRARY
+    bne     r23, r11, .openlibex_badarg
+.openlibex_class_ok:
     load.l  r23, KD_MODULE_STATE(r21)
     move.l  r11, #M16_MODSTATE_ONLINE
     beq     r23, r11, .openlibex_online
@@ -8723,7 +8753,20 @@ endif
 ;   R1 = name_ptr, R2 = lib_version, R3 = lib_revision, R4 = compat public port
 ;   Returns: R2 = err
 .do_add_library:
+    move.l  r20, #MODCLASS_LIBRARY
+    bra     .do_add_module_common
+.do_add_handler:
+    move.l  r20, #MODCLASS_HANDLER
+    bra     .do_add_module_common
+.do_add_device:
+    move.l  r20, #MODCLASS_DEVICE
+    bra     .do_add_module_common
+.do_add_resource:
+    move.l  r20, #MODCLASS_RESOURCE
+    bra     .do_add_module_common
+.do_add_module_common:
     move.l  r12, #KERN_DATA_BASE
+    store.l r20, KD_MODULE_PATH_SCRATCH(r12)
     load.q  r13, (r12)              ; current_task for safe_copy_user_name
     move.q  r24, r2
     move.q  r25, r3
@@ -8774,6 +8817,12 @@ endif
     beqz    r1, .addlib_full
     move.q  r21, r1
     move.l  r22, r2
+    move.l  r11, #KERN_DATA_BASE
+    load.l  r20, KD_MODULE_PATH_SCRATCH(r11)
+    load.l  r11, KD_MODULE_CLASS(r21)
+    beqz    r11, .addlib_class_ok
+    bne     r11, r20, .addlib_badarg
+.addlib_class_ok:
     load.l  r27, KD_MODULE_STATE(r21)
     move.l  r11, #M16_MODSTATE_ONLINE
     beq     r27, r11, .addlib_badarg
@@ -8798,17 +8847,23 @@ endif
     store.l r27, KD_MODULE_GENERATION(r21)
     store.w r24, KD_MODULE_VERSION(r21)
     store.w r25, KD_MODULE_REVISION(r21)
-    move.l  r11, #1
-    store.l r11, KD_MODULE_CLASS(r21)
+    store.l r20, KD_MODULE_CLASS(r21)
     store.l r23, KD_MODULE_OWNING_TASK(r21)
     store.l r26, KD_MODULE_PUBLIC_PORT(r21)
     store.l r0, KD_MODULE_OPEN_COUNT(r21)
-    store.l r0, KD_MODULE_FLAGS(r21)
+    move.l  r11, #MODF_COMPAT_PORT
+    store.l r11, KD_MODULE_FLAGS(r21)
     store.l r0, KD_MODULE_DEADLINE_TICK(r21)
+    move.l  r11, #MODCLASS_LIBRARY
+    bne     r20, r11, .addlib_nonlibrary_resident
     move.l  r11, #KERN_DATA_BASE
     load.l  r12, KD_DOSLIB_PUBID(r11)
     bne     r12, r23, .addlib_runtime_flags_done
-    move.l  r11, #MODF_RESIDENT
+    move.l  r11, #(MODF_RESIDENT | MODF_COMPAT_PORT)
+    store.l r11, KD_MODULE_FLAGS(r21)
+    bra     .addlib_runtime_flags_done
+.addlib_nonlibrary_resident:
+    move.l  r11, #(MODF_RESIDENT | MODF_COMPAT_PORT)
     store.l r11, KD_MODULE_FLAGS(r21)
 .addlib_runtime_flags_done:
     move.l  r11, #M16_MODSTATE_ONLINE
@@ -9284,8 +9339,9 @@ endif
     bra     .hwres_badarg
 
 .hwres_become:
-    ; If KD_HWRES_TASK is still the unclaimed sentinel, set it to the
-    ; current public task ID and return OK. Otherwise return EXISTS.
+    ; Preserve the original M12.5 claim-once semantics: if KD_HWRES_TASK is
+    ; still the unclaimed sentinel, set it to the current public task ID and
+    ; return OK. Follow-up broker verbs perform the M16.2 generation check.
     move.l  r12, #KERN_DATA_BASE
     load.l  r13, KD_HWRES_TASK(r12)
     move.l  r14, #HWRES_TASK_FREE
@@ -9307,6 +9363,16 @@ endif
     move.q  r13, r1
     load.l  r14, KD_HWRES_TASK(r12)
     bne     r13, r14, .hwres_perm
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    jsr     m162_hwres_current_generation_check
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
+    beqz    r1, .hwres_perm
     ; Sanity-check inputs lightly:
     ;   target public task id must resolve to a live slot
     ;   ppn_lo, ppn_hi must satisfy ppn_lo <= ppn_hi
@@ -9372,6 +9438,10 @@ endif
     move.q  r13, r1
     load.l  r14, KD_HWRES_TASK(r12)
     bne     r13, r14, .hwres_perm
+    push    r20
+    jsr     m162_hwres_current_generation_check
+    pop     r20
+    beqz    r1, .hwres_perm
     move.q  r1, r20
     jsr     kern_find_slot_for_public_id
     beqz    r2, .hwres_alive_no
@@ -9741,7 +9811,7 @@ endif
     bne     r24, r20, .dbml_next
     load.q  r7, KD_BOOT_MANIFEST_PTR(r23)
     load.q  r8, KD_BOOT_MANIFEST_SIZE(r23)
-    beqz    r7, .dbml_badarg
+    beqz    r7, .dbml_hostbacked
     beqz    r8, .dbml_badarg
     move.q  r1, r7
     move.q  r2, r8
@@ -9752,6 +9822,20 @@ endif
     or      r3, r3, #TASK_STARTUP_FLAG_TRUSTED_INTERNAL
 .dbml_flags_ready:
     jsr     boot_load_elf_image        ; R1=task_id R2=err R3=slot
+    bra     .dbml_done
+.dbml_hostbacked:
+    move.l  r11, #BOOT_MANIFEST_ID_HWRES
+    beq     r20, r11, .dbml_host_hwres
+    move.l  r11, #BOOT_MANIFEST_ID_INPUT
+    beq     r20, r11, .dbml_host_input
+    bra     .dbml_badarg
+.dbml_host_hwres:
+    move.l  r1, #(TASK_STARTUP_FLAG_BOOT | TASK_STARTUP_FLAG_TRUSTED_INTERNAL)
+    jsr     kern_boot_load_host_hwres
+    bra     .dbml_done
+.dbml_host_input:
+    move.l  r1, #(TASK_STARTUP_FLAG_BOOT | TASK_STARTUP_FLAG_TRUSTED_INTERNAL)
+    jsr     kern_boot_load_host_input
     bra     .dbml_done
 .dbml_next:
     add     r21, r21, #1
@@ -10621,7 +10705,7 @@ m16_module_find_or_alloc_row:
     jsr     m16_module_row_addr_for_index
     pop     r2
     move.q  r4, r1
-    load.l  r5, KD_MODULE_STATE(r4)
+    load.q  r5, KD_MODULE_NAME(r4)
     beqz    r5, .m16_mfoar_alloc
     add     r2, r2, #1
     bra     .m16_mfoar_scan
@@ -11346,7 +11430,6 @@ m16_module_fail_to_unloaded:
     pop     r20
     store.w r0, KD_MODULE_VERSION(r20)
     store.w r0, KD_MODULE_REVISION(r20)
-    store.l r0, KD_MODULE_CLASS(r20)
     store.l r0, KD_MODULE_OWNING_TASK(r20)
     store.l r0, KD_MODULE_PUBLIC_PORT(r20)
     store.l r0, KD_MODULE_OPEN_COUNT(r20)
@@ -11623,6 +11706,49 @@ m16_module_sweep_failed_rows:
     add     r2, r2, #1
     bra     .m16_msfr_scan
 .m16_msfr_done:
+    rts
+
+; Returns R1 = 1 when either:
+;   - no resource-class registry row exists yet (legacy synthetic broker path), or
+;   - the current public task owns an ONLINE resource-class registry row.
+; Once any resource row exists, SYS_HWRES_OP requires the current ONLINE owner
+; so stale KD_HWRES_TASK identity cannot survive a hardware.resource generation
+; transition.
+m162_hwres_current_generation_check:
+    jsr     kern_current_public_task_id
+    move.q  r20, r1
+    move.l  r21, #0
+    move.l  r23, #0
+.m162_hwcg_scan:
+    move.l  r11, #KD_MODULE_MAX
+    bge     r21, r11, .m162_hwcg_no
+    move.q  r1, r21
+    push    r20
+    push    r21
+    jsr     m16_module_row_addr_for_index
+    move.q  r22, r1
+    pop     r21
+    pop     r20
+    load.l  r11, KD_MODULE_CLASS(r22)
+    move.l  r14, #MODCLASS_RESOURCE
+    bne     r11, r14, .m162_hwcg_next
+    move.l  r23, #1
+    load.l  r11, KD_MODULE_STATE(r22)
+    move.l  r14, #M16_MODSTATE_ONLINE
+    bne     r11, r14, .m162_hwcg_next
+    load.l  r11, KD_MODULE_OWNING_TASK(r22)
+    bne     r11, r20, .m162_hwcg_next
+    move.q  r1, #1
+    rts
+.m162_hwcg_next:
+    add     r21, r21, #1
+    bra     .m162_hwcg_scan
+.m162_hwcg_no:
+    beqz    r23, .m162_hwcg_legacy_ok
+    move.q  r1, #0
+    rts
+.m162_hwcg_legacy_ok:
+    move.q  r1, #1
     rts
 
 ; Best-effort timeout enforcement for expunging libraries. Runs on the kernel

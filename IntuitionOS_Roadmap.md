@@ -173,14 +173,19 @@ Visible shipped M16 outcome:
 
 Post-M16 note:
 
-- the likely next systems milestone after M16 is task/process lifecycle
-  hardening rather than UI expansion
-- that follow-on work should finish the ownership model M16 starts:
-  task-exit sweeps for module opens, automatic cleanup of task-owned library
-  handles/resources on exit or crash, reliable dead-waiter/death-notification
-  cleanup, and stronger process-owned resource tracking
-- the exact `M17` plan is intentionally deferred until M16 has been fully
-  implemented; do not treat this note as a frozen milestone contract
+- `M16.1` adds universal `IOSM` metadata and resident version discovery
+- `M16.2` extends the protected-module model from libraries to handlers,
+  devices, and resources as an internal lifecycle and boot-policy milestone:
+  `console.handler`, `hardware.resource`, and `input.device` are class-correct
+  registry rows, `dos.library` owns the eager post-DOS resource/device policy,
+  and `S:Startup-Sequence` no longer launches module files as commands. Public
+  `AttachHandler`, `OpenDevice`, and `OpenResource` acquisition APIs are
+  deferred to `M16.2.1`
+- `M16.3` should make the whole shipped ELF surface consistently PIE-capable
+  and enforce the codegen/tooling contract where appropriate
+- `M16.4` should implement real relocation plus ASLR/randomized placement
+- task/process lifecycle hardening remains important follow-on work, especially
+  automatic cleanup of task-owned module handles and resources on exit or crash
 
 ## M18: Default Graphical Shell
 
@@ -411,9 +416,14 @@ Why later:
 4. `M15.5` substrate groundwork before protected modules
 5. `M15.6` pre-M16 hardening: JIT W^X, SMEP/SMAP, trap-stack, quotas, exit sweep, zero-on-free, permission-preserving `MapShared`
 6. `M16` protected module subsystem
-7. `M18` default graphical shell / Workbench-like boot
-8. later: scheduler refinement
-9. later: serious toolchain bring-up
+7. `M16.1` universal `IOSM` metadata and VERSION
+8. `M16.2` protected handlers/devices/resources internal lifecycle
+9. `M16.2.1` public non-library acquisition APIs
+10. `M16.3` consistently PIE-capable shipped ELF surface
+11. `M16.4` relocation and ASLR/randomized placement
+12. `M18` default graphical shell / Workbench-like boot
+13. later: scheduler refinement
+14. later: serious toolchain bring-up
 
 ## Recommended Next Demo Path
 
@@ -424,7 +434,11 @@ If the goal is an impressive near-term demo, do this sequence:
 3. `M15.4`: harden the kernel and loader contract before higher-level runtime changes
 4. `M15.5` + `M15.6`: substrate groundwork and pre-M16 hardening
 5. `M16`: replace startup-script-launched libraries with the protected module subsystem
-6. `M18`: boot to the graphical shell by default when no `S:Startup-Sequence` is present
+6. `M16.2`: bring handlers, devices, and resources onto the same internal protected-module lifecycle
+7. `M16.2.1`: freeze public `AttachHandler`, `OpenDevice`, and `OpenResource` acquisition APIs
+8. `M16.3`: make shipped ELFs consistently PIE-capable
+9. `M16.4`: add relocation and ASLR/randomized placement
+10. `M18`: boot to the graphical shell by default when no `S:Startup-Sequence` is present
 
 That path keeps IntuitionOS feeling like a secure AmigaOS:
 

@@ -260,7 +260,7 @@ Runtime Go constants/handlers are the implementation source of truth, and shared
 
 ## IntuitionOS VERSION / IOSM
 
-IntuitionOS runtime ELFs carry `.ios.manifest` / `IOSM` notes with 128-byte module descriptors. The `VERSION` command and resident discovery path query metadata through ports and caller-allocated shared memory rather than scanning kernel internals. See `docs/IntuitionOS/IExec.md`, `docs/IntuitionOS/ELF.md`, and `docs/IntuitionOS/M16.1-plan.md`.
+IntuitionOS runtime ELFs carry `.ios.manifest` / `IOSM` notes with 128-byte module descriptors. The `VERSION` command and resident discovery path query metadata through ports and caller-allocated shared memory rather than scanning kernel internals. M16.2 extends the internal protected-module lifecycle from libraries to handlers, devices, and resources without changing the strict `ET_EXEC` placement contract; `console.handler`, `hardware.resource`, and `input.device` register as class-correct protected rows, while public non-library acquisition APIs remain M16.2.1 work and PIE enforcement/ASLR are later tracks. See `docs/IntuitionOS/IExec.md`, `docs/IntuitionOS/ELF.md`, `docs/IntuitionOS/M16.1-plan.md`, and `docs/IntuitionOS/M16.2-plan.md`.
 
 ## Further Documentation
 

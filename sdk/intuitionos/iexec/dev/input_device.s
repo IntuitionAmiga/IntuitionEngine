@@ -77,6 +77,13 @@ prog_input_device_code:
     load.q  r29, (sp)
     bnez    r2, .idev_halt
     store.q r1, 144(r29)               ; data[144] = input_port
+    move.q  r4, r1
+    add     r1, r29, #16
+    move.l  r2, #1
+    move.l  r3, #0
+    syscall #SYS_ADD_DEVICE
+    load.q  r29, (sp)
+    bnez    r2, .idev_halt
 
     bra     .idev_main
 

@@ -233,6 +233,24 @@ prog_doslib_code:
     load.q  r29, (sp)
     bnez    r2, .dos_boot_fail
 
+    ; M16.2: dos.library owns the eager non-library module boot policy.
+    add     r16, r29, #(prog_doslib_empty_args - prog_doslib_data)
+    move.q  r18, r0
+    move.l  r1, #BOOT_MANIFEST_ID_HWRES
+    move.q  r2, r16
+    move.q  r3, r18
+    jsr     .dos_manifest_launch_by_id
+    load.q  r29, (sp)
+    bnez    r2, .dos_boot_fail
+    add     r16, r29, #(prog_doslib_empty_args - prog_doslib_data)
+    move.q  r18, r0
+    move.l  r1, #BOOT_MANIFEST_ID_INPUT
+    move.q  r2, r16
+    move.q  r3, r18
+    jsr     .dos_manifest_launch_by_id
+    load.q  r29, (sp)
+    bnez    r2, .dos_boot_fail
+
     ; =====================================================================
     ; Launch the boot shell from the startup-block relpath when present.
     ; Older images can still fall back to the baked private literal.
