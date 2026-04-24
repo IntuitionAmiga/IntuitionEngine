@@ -158,15 +158,29 @@ func bootM161Phase3Task0ClientRig(t *testing.T) *m161Task0ClientRig {
 func m161InstallClientScratch(t *testing.T, mem []byte, slot uint32, dataBase uint32) (uint32, uint64) {
 	t.Helper()
 	codeVA := userCodeBase + slot*userSlotStride
-	stackVA := userStackBase + slot*userSlotStride
 	pt := uint32(binary.LittleEndian.Uint64(mem[kernDataBase+kdTaskLayoutBase+slot*kdTaskLayoutStr+kdTaskLayoutPT:]))
 	if pt == 0 {
 		t.Fatalf("m161InstallClientScratch: slot %d has no page table", slot)
 	}
+	layout := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
+	stackBase := uint32(binary.LittleEndian.Uint64(mem[layout+kdTaskStackBase:]))
+	stackPages := binary.LittleEndian.Uint32(mem[layout+kdTaskStackPages:])
+	if stackBase == 0 || stackPages == 0 {
+		t.Fatalf("m161InstallClientScratch: slot %d has no stack layout", slot)
+	}
 	mapUserPage(mem, pt, uint16(codeVA>>MMU_PAGE_SHIFT), uint16(codeVA>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
-	mapUserPage(mem, pt, uint16(stackVA>>MMU_PAGE_SHIFT), uint16(stackVA>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
 	mapUserPage(mem, pt, uint16(dataBase>>MMU_PAGE_SHIFT), uint16(dataBase>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
-	return codeVA, uint64(stackVA + MMU_PAGE_SIZE)
+	markM161ScratchPageUsed(mem, codeVA>>MMU_PAGE_SHIFT)
+	markM161ScratchPageUsed(mem, dataBase>>MMU_PAGE_SHIFT)
+	return codeVA, uint64(stackBase + stackPages*MMU_PAGE_SIZE)
+}
+
+func markM161ScratchPageUsed(mem []byte, ppn uint32) {
+	if ppn < allocPoolBase || ppn >= allocPoolBase+allocPoolPages {
+		return
+	}
+	bit := ppn - allocPoolBase
+	mem[kernDataBase+kdPageBitmap+bit/8] |= byte(1 << (bit % 8))
 }
 
 func runM161GetIOSMClient(t *testing.T, client *m161Task0ClientRig, portName string, useShare bool) m161GetIOSMResult {
@@ -286,6 +300,13 @@ func resetM161Task0ClientState(client *m161Task0ClientRig) {
 	binary.LittleEndian.PutUint64(mem[tcb+tcbPCOff:], uint64(client.t0))
 	binary.LittleEndian.PutUint64(mem[tcb+tcbUSPOff:], client.usp)
 	binary.LittleEndian.PutUint32(mem[tcb+tcbSigWaitOff:], 0)
+	binary.LittleEndian.PutUint32(mem[tcb+tcbSigRecvOff:], 0)
+	binary.LittleEndian.PutUint64(mem[kernDataBase+kdPTBRBase+client.slot*8:], uint64(client.pt))
+	binary.LittleEndian.PutUint64(mem[kernDataBase+kdTaskLayoutBase+client.slot*kdTaskLayoutStr+kdTaskLayoutPT:], uint64(client.pt))
+	stackBase := uint32(client.usp) - MMU_PAGE_SIZE
+	mapUserPage(mem, client.pt, uint16(client.t0>>MMU_PAGE_SHIFT), uint16(client.t0>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
+	mapUserPage(mem, client.pt, uint16(stackBase>>MMU_PAGE_SHIFT), uint16(stackBase>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
+	mapUserPage(mem, client.pt, uint16(client.data>>MMU_PAGE_SHIFT), uint16(client.data>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
 	client.rig.cpu.memory[tcb+tcbStateOff] = taskRunning
 	client.rig.cpu.memory[tcb+tcbGPRSavedOff] = 0
 	client.rig.cpu.PC = uint64(client.t0)
@@ -333,7 +354,7 @@ func mustReadM16ManifestDescBytes(t *testing.T, rel string) []byte {
 	return append([]byte(nil), data[nameEnd:descEnd]...)
 }
 
-func TestIExec_M161_Phase3_GetIOSM_ManifestFixturesAreLegacyM16WireFormat(t *testing.T) {
+func TestIExec_M161_Phase3_GetIOSM_ManifestFixturesUseIOSMWireFormat(t *testing.T) {
 	for _, rel := range []string{
 		"sdk/intuitionos/iexec/boot_console_handler.elf",
 		"sdk/intuitionos/iexec/boot_dos_library.elf",
@@ -358,7 +379,7 @@ func TestIExec_M161_Phase3_GetIOSM_ManifestFixturesAreLegacyM16WireFormat(t *tes
 }
 
 func TestIExec_M161_Phase3_HelperSanity(t *testing.T) {
-	if got := fmt.Sprintf("%d", m16LibManifestDescSize); got != "96" {
+	if got := fmt.Sprintf("%d", m16LibManifestDescSize); got != "128" {
 		t.Fatalf("unexpected manifest desc size helper=%s", got)
 	}
 }

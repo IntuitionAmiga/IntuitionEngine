@@ -31,27 +31,8 @@ m16_lib_register macro
 endm
 
 m16_lib_print_banner macro
-    add     r20, r29, #\1
 \3:
-    load.b  r1, (r20)
-    beqz    r1, \4
-    store.q r20, 8(sp)
-    syscall #SYS_DEBUG_PUTCHAR
-    load.q  r29, (sp)
-    load.q  r20, 8(sp)
-    add     r20, r20, #1
-    bra     \3
 \4:
-    load.q  r29, (sp)
-    load.q  r1, \2(r29)
-    add     r1, r1, #0x30
-    syscall #SYS_DEBUG_PUTCHAR
-    move.l  r1, #0x5D
-    syscall #SYS_DEBUG_PUTCHAR
-    move.l  r1, #0x0D
-    syscall #SYS_DEBUG_PUTCHAR
-    move.l  r1, #0x0A
-    syscall #SYS_DEBUG_PUTCHAR
 endm
 
 m16_lib_accept_expunge macro

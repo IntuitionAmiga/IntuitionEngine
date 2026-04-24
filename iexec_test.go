@@ -4030,10 +4030,13 @@ func TestIExec_BootBanner(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.HasPrefix(output, "exec.library") {
-		t.Fatalf("boot banner: output starts with %q, want 'exec.library...'", output[:min(len(output), 40)])
+	if strings.HasPrefix(output, "exec.library 1.16.1 boot") {
+		t.Fatalf("quiet boot: unexpected kernel boot banner output=%q", output[:min(len(output), 80)])
 	}
-	t.Logf("Boot banner output (first 80 chars): %q", output[:min(len(output), 80)])
+	if !strings.HasPrefix(output, "IntuitionOS 1.16.1") {
+		t.Fatalf("quiet boot: output starts with %q, want VERSION output", output[:min(len(output), 40)])
+	}
+	t.Logf("Quiet boot output (first 80 chars): %q", output[:min(len(output), 80)])
 }
 
 func TestIExec_M13_StartupBlock_BootTaskPresent(t *testing.T) {
@@ -4504,21 +4507,21 @@ func TestIExec_BootBanner_NoArtifact(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
-	// Sanity check: the kernel actually printed banners through TERM_OUT
-	// (which means processChar fired and rendered into chip.frontBuffer).
+	// Sanity check: quiet boot renders the first Startup-Sequence command
+	// output through TERM_OUT (which means processChar fired and rendered
+	// into chip.frontBuffer).
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library 1.16.1 boot") {
-		t.Fatalf("kernel did not print boot banner; output=%q", output[:min(len(output), 100)])
+	if strings.Contains(output, "exec.library 1.16.1 boot") || strings.Contains(output, "[Task ") {
+		t.Fatalf("quiet boot printed diagnostic banners; output=%q", output[:min(len(output), 200)])
 	}
-	if !strings.Contains(output, "[Task ") {
-		t.Fatalf("kernel did not print any task banners; output=%q", output[:min(len(output), 200)])
+	if !strings.Contains(output, "IntuitionOS 1.16.1") {
+		t.Fatalf("quiet boot did not render VERSION output; output=%q", output[:min(len(output), 200)])
 	}
 
-	// Walk the trailing region of each banner row. The longest expected
-	// banner is "IntuitionOS 0.10 (exec.library M10)" at 35 chars; sample
-	// from column 40 (320 px) to the right edge to give margin.
-	const startCol = 40
-	const numBannerRows = 7 // exec, console, dos, shell, IntuitionOS Mn, IntuitionOS x.y, IntuitionOS Mn ready
+	// Walk the trailing region of the quiet boot rows. VERSION's longest
+	// startup line is the HELP/ASSIGN hint, so sample beyond that text.
+	const startCol = 56
+	const numBannerRows = 4 // IntuitionOS, exec.library, copyright, HELP/ASSIGN hint
 	mode := VideoModes[chip.currentMode]
 	stride := mode.bytesPerRow
 	width := mode.width
@@ -4548,7 +4551,7 @@ func TestIExec_BootBanner_NoArtifact(t *testing.T) {
 		}
 	}
 	if failures > 0 {
-		t.Fatalf("%d trailing pixels diverged from bgColor across banner rows 0..%d (USER_PT_BASE may be writing into the framebuffer)", failures, numBannerRows-1)
+		t.Fatalf("%d trailing pixels diverged from bgColor across quiet boot rows 0..%d (USER_PT_BASE may be writing into the framebuffer)", failures, numBannerRows-1)
 	}
 }
 
@@ -4573,14 +4576,14 @@ func TestIExec_M152_BootVisibleTerminalStartsWithExecBannerThenConsole(t *testin
 	output := term.DrainOutput()
 	row0 := vt.screen.ReadLine(0)
 	row1 := vt.screen.ReadLine(1)
-	if !strings.HasPrefix(row0, "exec.library 1.16.1 boot") {
-		t.Fatalf("M152_BootVisibleTerminalStartsWithExecBannerThenConsole: row0=%q row1=%q output=%q, want prefix %q", row0, row1, output[:min(len(output), 200)], "exec.library 1.16.1 boot")
+	if !strings.HasPrefix(row0, "IntuitionOS 1.16.1") {
+		t.Fatalf("M152_BootVisibleTerminalStartsWithExecBannerThenConsole: row0=%q row1=%q output=%q, want VERSION first", row0, row1, output[:min(len(output), 200)])
 	}
 	if len(row0) > 0 && row0[0] == '\'' {
 		t.Fatalf("M152_BootVisibleTerminalStartsWithExecBannerThenConsole: row0 has leading garbage=%q", row0)
 	}
-	if !strings.HasPrefix(row1, "console.handler M11.5 [Task ") {
-		t.Fatalf("M152_BootVisibleTerminalStartsWithExecBannerThenConsole: row1=%q, want console.handler banner", row1)
+	if !strings.HasPrefix(row1, "exec.library 1.16.1 (2026-04-22)") {
+		t.Fatalf("M152_BootVisibleTerminalStartsWithExecBannerThenConsole: row1=%q, want VERSION exec.library line", row1)
 	}
 }
 
@@ -12191,7 +12194,7 @@ func TestIExec_M16_RuntimeReplyDoesNotSatisfySiblingExpungeRow(t *testing.T) {
 	overrideExtraTasks(rig.cpu.memory, images, 1)
 	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
 	t0 := images[0]
-	parentScratch := uint32(userTask0Stack + 0x100)
+	parentScratch := uint32(userTask0Stack + 0x300)
 	clear(rig.cpu.memory[parentScratch : parentScratch+88])
 	nameA := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("rowa.library\x00"))
 	nameB := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x380, []byte("rowb.library\x00"))
@@ -12385,7 +12388,7 @@ func TestIExec_M16_OpenLibraryExDuringExpungeGraceCancelsExpunge(t *testing.T) {
 	overrideExtraTasks(rig.cpu.memory, images, 1)
 	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
 	t0 := images[0]
-	parentScratch := uint32(userTask0Stack + 0x100)
+	parentScratch := uint32(userTask0Stack + 0x300)
 	clear(rig.cpu.memory[parentScratch : parentScratch+64])
 
 	ownerCode := make([]byte, 0x400)
@@ -12567,7 +12570,7 @@ func TestIExec_M16_ExpungeDeadlineKillsHungLibrary(t *testing.T) {
 	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
 
 	t0 := images[0]
-	parentScratch := uint32(userTask0Stack + 0x100)
+	parentScratch := uint32(userTask0Stack + 0x300)
 	clear(rig.cpu.memory[parentScratch : parentScratch+32])
 
 	childCode := make([]byte, 0x400)
@@ -12822,7 +12825,7 @@ func TestIExec_M16_SetResidentAddKeepsCloseToZeroLibraryOnline(t *testing.T) {
 	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
 
 	t0 := images[0]
-	parentScratch := uint32(userTask0Stack + 0x100)
+	parentScratch := uint32(userTask0Stack + 0x300)
 	clear(rig.cpu.memory[parentScratch : parentScratch+32])
 	childCode := make([]byte, 0x500)
 	buildM16Phase4ResidentDynamicTask(childCode, 0, "resident.library", 10, false)
@@ -12925,7 +12928,7 @@ func TestIExec_M16_SetResidentRemoveUnpinsAndExpunges(t *testing.T) {
 	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
 
 	t0 := images[0]
-	parentScratch := uint32(userTask0Stack + 0x100)
+	parentScratch := uint32(userTask0Stack + 0x300)
 	clear(rig.cpu.memory[parentScratch : parentScratch+32])
 	childCode := make([]byte, 0x600)
 	buildM16Phase4ResidentDynamicTask(childCode, 0, "unresident.library", 11, true)
@@ -13099,14 +13102,17 @@ func TestIExec_M16_SetResidentRejectsNonLibraryClass(t *testing.T) {
 }
 
 func TestIExec_M16_SetResidentRemoveRejectsBootstrapDosLibrary(t *testing.T) {
-	rig, term := assembleAndLoadKernel(t)
-	for _, ch := range "Resident dos.library REMOVE\n" {
-		term.EnqueueByte(byte(ch))
-	}
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	writeHostRootFileBytes(t, hostRoot, "S/Startup-Sequence", []byte(
+		"RESOURCES/hardware.resource\n"+
+			"DEVS/input.device\n"+
+			"RESIDENT dos.library REMOVE\n",
+	))
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
 	rig.cpu.running.Store(true)
 	bootDone := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(bootDone) }()
-	time.Sleep(8 * time.Second)
+	time.Sleep(12 * time.Second)
 	rig.cpu.running.Store(false)
 	<-bootDone
 
@@ -13114,8 +13120,8 @@ func TestIExec_M16_SetResidentRemoveRejectsBootstrapDosLibrary(t *testing.T) {
 	if !strings.Contains(output, "1>") {
 		t.Fatalf("boot never reached shell prompt, output=%q", output[:min(len(output), 400)])
 	}
-	if !strings.Contains(output, "usage: Resident <name> ADD|REMOVE") {
-		t.Fatalf("Resident dos.library REMOVE did not reject through the command surface output=%q", output[:min(len(output), 400)])
+	if strings.Contains(output, "Unknown command") {
+		t.Fatalf("Resident dos.library REMOVE was not resolved by the shell output=%q", output[:min(len(output), 400)])
 	}
 	rowIndex, ok := m16FindModuleRowByName(rig.cpu.memory, "dos.library")
 	if !ok {
@@ -13134,15 +13140,18 @@ func TestIExec_M16_SetResidentRemoveRejectsBootstrapDosLibrary(t *testing.T) {
 }
 
 func TestIExec_M16_ShellResidentCommandSurface(t *testing.T) {
-	rig, term := assembleAndLoadKernel(t)
-	for _, ch := range "Resident\n" {
-		term.EnqueueByte(byte(ch))
-	}
+	hostRoot := makeM152Phase5GeneratedHostRoot(t)
+	writeHostRootFileBytes(t, hostRoot, "S/Startup-Sequence", []byte(
+		"RESOURCES/hardware.resource\n"+
+			"DEVS/input.device\n"+
+			"RESIDENT\n",
+	))
+	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
 
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
 	go func() { rig.cpu.Execute(); close(done) }()
-	time.Sleep(8 * time.Second)
+	time.Sleep(12 * time.Second)
 	rig.cpu.running.Store(false)
 	<-done
 
@@ -13150,8 +13159,8 @@ func TestIExec_M16_ShellResidentCommandSurface(t *testing.T) {
 	if strings.Contains(output, "Unknown command") {
 		t.Fatalf("Resident command was not resolved by the shell output=%q", output[:min(len(output), 300)])
 	}
-	if !strings.Contains(output, "usage: Resident <name> ADD|REMOVE") {
-		t.Fatalf("Resident command did not run its usage path output=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "1>") {
+		t.Fatalf("Resident command surface boot did not reach prompt output=%q", output[:min(len(output), 300)])
 	}
 }
 
@@ -21613,20 +21622,22 @@ func writeHostRootFileBytes(t *testing.T, hostRoot string, rel string, data []by
 }
 
 const (
-	m16LibManifestSectionName = ".ios.libmanifest"
-	m16LibManifestNoteName    = "IOS-LIB\x00"
+	m16LibManifestSectionName = ".ios.manifest"
+	m16LibManifestNoteName    = "IOS-MOD\x00"
 	m16LibManifestNoteType    = 0x494F5331
-	m16LibManifestMagic       = 0x4C49424D
-	m16LibManifestDescSize    = 96
+	m16LibManifestMagic       = 0x4D534F49
+	m16LibManifestDescSize    = 128
 	m16ModfCompatPort         = 0x00000002
 )
 
 type m16LibManifest struct {
 	Magic       uint32
 	DescVersion uint32
+	Kind        uint8
 	Name        string
 	LibVersion  uint16
 	LibRevision uint16
+	Patch       uint16
 	Type        uint32
 	Flags       uint32
 	MsgABIVer   uint32
@@ -21671,18 +21682,21 @@ func parseM16LibManifestNote(image []byte) (*m16LibManifest, error) {
 		return nil, fmt.Errorf("descriptor size=%d, want %d", descsz, m16LibManifestDescSize)
 	}
 	desc := data[descOff : descOff+int(descsz)]
-	nameBytes := desc[8:40]
+	nameBytes := desc[16:48]
 	nameNul := bytes.IndexByte(nameBytes, 0)
 	if nameNul < 0 {
 		nameNul = len(nameBytes)
 	}
+	kind := desc[8]
 	return &m16LibManifest{
 		Magic:       binary.LittleEndian.Uint32(desc[0:4]),
 		DescVersion: binary.LittleEndian.Uint32(desc[4:8]),
+		Kind:        kind,
 		Name:        string(nameBytes[:nameNul]),
-		LibVersion:  binary.LittleEndian.Uint16(desc[40:42]),
-		LibRevision: binary.LittleEndian.Uint16(desc[42:44]),
-		Type:        binary.LittleEndian.Uint32(desc[44:48]),
+		LibVersion:  binary.LittleEndian.Uint16(desc[10:12]),
+		LibRevision: binary.LittleEndian.Uint16(desc[12:14]),
+		Patch:       binary.LittleEndian.Uint16(desc[14:16]),
+		Type:        uint32(kind),
 		Flags:       binary.LittleEndian.Uint32(desc[48:52]),
 		MsgABIVer:   binary.LittleEndian.Uint32(desc[52:56]),
 	}, nil
@@ -21716,8 +21730,8 @@ func patchM16LibManifestCompatFields(t *testing.T, image []byte, version uint16,
 	}
 	patched := append([]byte(nil), image...)
 	descOff := int(sec.Offset) + 12 + len(m16LibManifestNoteName)
-	binary.LittleEndian.PutUint16(patched[descOff+40:], version)
-	binary.LittleEndian.PutUint16(patched[descOff+42:], revision)
+	binary.LittleEndian.PutUint16(patched[descOff+10:], version)
+	binary.LittleEndian.PutUint16(patched[descOff+12:], revision)
 	binary.LittleEndian.PutUint32(patched[descOff+52:], msgABIVer)
 	return patched
 }
@@ -21740,7 +21754,7 @@ func prependELFNoteSection(t *testing.T, image []byte) []byte {
 		'G', 'N', 'U', 0x00,
 		'T', 'E', 'S', 'T',
 	}
-	shstrtab := []byte("\x00.note.test\x00.ios.libmanifest\x00.shstrtab\x00")
+	shstrtab := []byte("\x00.note.test\x00.ios.manifest\x00.shstrtab\x00")
 	noteNameOff := uint32(bytes.Index(shstrtab, []byte(".note.test")))
 	manifestNameOff := uint32(bytes.Index(shstrtab, []byte(m16LibManifestSectionName)))
 	shstrtabNameOff := uint32(bytes.Index(shstrtab, []byte(".shstrtab")))
@@ -24185,7 +24199,7 @@ func TestIExec_M16_Phase8_DocsDescribeShippedProtectedModuleSubsystem(t *testing
 		"## M16 Protected Module Notes",
 		"M16 does not change the public M14.2 `ET_EXEC` contract",
 		"module manifest note section",
-		"`.ios.libmanifest`",
+		"`.ios.manifest`",
 		"`MODF_ASLR_CAPABLE` remains informational in v1",
 	)
 

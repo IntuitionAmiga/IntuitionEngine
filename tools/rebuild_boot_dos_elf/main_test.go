@@ -149,6 +149,8 @@ func TestBuildELFUsesListingManifestMetadata(t *testing.T) {
 		Type:          m16LibManifestTypeLibrary,
 		Flags:         m16ModfCompatPort,
 		MsgABIVersion: 9,
+		BuildDate:     "2026-04-22",
+		Copyright:     iosmCopyright,
 	}
 
 	image := buildELF([]byte{0xE0, 0, 0, 0, 0, 0, 0, 0}, []byte{1, 2, 3, 4}, spec, true)
@@ -156,9 +158,9 @@ func TestBuildELFUsesListingManifestMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("elf.NewFile: %v", err)
 	}
-	sec := f.Section(".ios.libmanifest")
+	sec := f.Section(".ios.manifest")
 	if sec == nil {
-		t.Fatal("missing .ios.libmanifest section")
+		t.Fatal("missing .ios.manifest section")
 	}
 	if sec.Type != elf.SHT_NOTE {
 		t.Fatalf("section type=%v, want SHT_NOTE", sec.Type)
@@ -170,17 +172,17 @@ func TestBuildELFUsesListingManifestMetadata(t *testing.T) {
 	if got := binary.LittleEndian.Uint32(data[8:12]); got != m16LibManifestNoteType {
 		t.Fatalf("note type=%#x, want %#x", got, m16LibManifestNoteType)
 	}
-	desc := data[12+len("IOS-LIB\x00"):]
+	desc := data[12+len("IOS-MOD\x00"):]
 	if got := binary.LittleEndian.Uint32(desc[0:4]); got != m16LibManifestMagic {
 		t.Fatalf("magic=%#x, want %#x", got, m16LibManifestMagic)
 	}
-	if got := string(bytes.TrimRight(desc[8:40], "\x00")); got != "template.library" {
+	if got := string(bytes.TrimRight(desc[16:48], "\x00")); got != "template.library" {
 		t.Fatalf("name=%q, want template.library", got)
 	}
-	if got := binary.LittleEndian.Uint16(desc[40:42]); got != 23 {
+	if got := binary.LittleEndian.Uint16(desc[10:12]); got != 23 {
 		t.Fatalf("version=%d, want 23", got)
 	}
-	if got := binary.LittleEndian.Uint16(desc[42:44]); got != 4 {
+	if got := binary.LittleEndian.Uint16(desc[12:14]); got != 4 {
 		t.Fatalf("revision=%d, want 4", got)
 	}
 	if got := binary.LittleEndian.Uint32(desc[52:56]); got != 9 {

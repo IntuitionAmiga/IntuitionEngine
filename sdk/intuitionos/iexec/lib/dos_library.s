@@ -40,14 +40,14 @@ prog_doslib_code:
     load.q  r29, (sp)
     bnez    r2, .dos_openlib_wait
     store.q r1, 136(r29)               ; data[136] = console_port
-    bra     .dos_send_banner
+    bra     .dos_banner_done
 .dos_openlib_wait:
     syscall #SYS_YIELD
     load.q  r29, (sp)
     bra     .dos_openlib_retry
 
     ; =====================================================================
-    ; Send "dos.library ONLINE [Taskn]\r\n" banner to console.handler
+    ; Legacy boot banner disabled.
     ; =====================================================================
 .dos_send_banner:
     add     r20, r29, #32              ; r20 = &data[32] = banner string
@@ -301,6 +301,8 @@ prog_doslib_code:
     load.q  r14, 952(r29)              ; r14 = opcode
     move.l  r28, #MSG_GET_IOSM
     beq     r14, r28, .dos_do_get_iosm
+    move.l  r28, #DOS_OP_PARSE_MANIFEST
+    beq     r14, r28, .dos_do_parse_manifest
     move.l  r28, #DOS_DIR
     beq     r14, r28, .dos_do_dir
     move.l  r28, #DOS_OPEN
@@ -363,6 +365,67 @@ prog_doslib_code:
     load.q  r29, (sp)
     bra     .dos_get_iosm_reply_badarg
 .dos_get_iosm_reply_badarg:
+    load.q  r1, 944(r29)
+    move.l  r2, #ERR_BADARG
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+.dos_do_parse_manifest:
+    load.l  r21, 976(r29)
+    beqz    r21, .dos_pmp_reply_badarg
+    load.q  r24, 184(r29)
+    move.l  r11, #1
+    bne     r24, r11, .dos_pmp_badarg_free
+    load.q  r23, 168(r29)              ; mapped 4 KiB parse page
+
+    ; Path must be NUL-terminated within DOS_PMP_PATH_MAX bytes.
+    move.l  r14, #0
+.dos_pmp_scan_nul:
+    move.l  r11, #DOS_PMP_PATH_MAX
+    bge     r14, r11, .dos_pmp_badarg_write
+    add     r15, r23, r14
+    load.b  r16, (r15)
+    beqz    r16, .dos_pmp_have_path
+    add     r14, r14, #1
+    bra     .dos_pmp_scan_nul
+
+.dos_pmp_have_path:
+    move.q  r1, r23
+    add     r2, r23, #DOS_PMP_IOSM_OFF
+    jsr     .dos_pmp_parse_file_iosm    ; R20=rc
+    load.q  r29, (sp)
+    load.q  r23, 168(r29)
+    bra     .dos_pmp_write_rc
+.dos_pmp_badarg_write:
+    move.l  r20, #ERR_BADARG
+.dos_pmp_write_rc:
+    add     r15, r23, #DOS_PMP_RC_OFF
+    store.l r20, (r15)
+    store.q r20, 656(r29)
+    load.q  r1, 168(r29)
+    move.l  r2, #4096
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+    load.q  r20, 656(r29)
+    load.q  r1, 944(r29)
+    move.q  r2, r20
+    move.q  r3, r20
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+.dos_pmp_badarg_free:
+    load.q  r1, 168(r29)
+    move.q  r2, r24
+    lsl     r2, r2, #12
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+.dos_pmp_reply_badarg:
     load.q  r1, 944(r29)
     move.l  r2, #ERR_BADARG
     move.q  r3, r0
@@ -4457,6 +4520,355 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     move.l  r23, #1
     rts
 
+    ; .dos_pmp_parse_file_iosm
+    ; In:  r1 = caller path ptr, r2 = destination IOSM descriptor ptr
+    ; Out: r20 = ERR_OK, ERR_NOTFOUND, ERR_NOMEM, or ERR_BADARG.
+    ; Resolves the real DOS path, reads the ELF, and copies the on-disk
+    ; .ios.manifest/IOS-MOD descriptor. No shipped filename table is consulted.
+.dos_pmp_parse_file_iosm:
+    push    r29
+    move.l  r10, #(prog_doslib_pmp_desc_dst - prog_doslib_data)
+    add     r10, r29, r10
+    store.q r2, (r10)                   ; descriptor destination
+    move.q  r23, r1
+    jsr     .dos_resolve_file
+    load.q  r29, (sp)
+    beqz    r22, .dpmf_notfound
+
+    move.q  r1, r23
+    move.q  r2, r0                      ; read mode
+    jsr     .dos_hostfs_layered_relpath_for_resolved_name
+    load.q  r29, (sp)
+    beqz    r3, .dpmf_notfound
+    store.q r1, 608(r29)                ; hostfs relative path
+
+    jsr     .dos_bootfs_stat
+    load.q  r29, (sp)
+    bnez    r3, .dpmf_notfound
+    beqz    r1, .dpmf_badarg
+    store.q r1, 624(r29)                ; file size
+    move.q  r28, r2
+    and     r28, r28, #0xFFFFFFFF
+    move.q  r15, r0
+    add     r15, r15, #BOOT_HOSTFS_KIND_FILE
+    bne     r28, r15, .dpmf_notfound
+
+    load.q  r1, 608(r29)
+    jsr     .dos_bootfs_open
+    load.q  r29, (sp)
+    bnez    r2, .dpmf_notfound
+    store.q r1, 616(r29)                ; host handle
+
+    load.q  r1, 624(r29)
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    load.q  r29, (sp)
+    bnez    r2, .dpmf_nomem_close
+    store.q r1, 296(r29)                ; temp ELF buffer
+
+    load.q  r1, 616(r29)
+    load.q  r2, 296(r29)
+    load.q  r3, 624(r29)
+    jsr     .dos_bootfs_read_all
+    load.q  r29, (sp)
+    store.q r1, 640(r29)                ; bytes read
+    store.q r2, 648(r29)                ; read err
+
+    load.q  r1, 616(r29)
+    jsr     .dos_bootfs_close
+    load.q  r29, (sp)
+
+    load.q  r2, 648(r29)
+    bnez    r2, .dpmf_free_notfound
+    load.q  r1, 640(r29)
+    load.q  r2, 624(r29)
+    bne     r1, r2, .dpmf_free_badarg
+
+    load.q  r1, 296(r29)                ; ELF ptr
+    load.q  r2, 624(r29)                ; ELF size
+    move.l  r10, #(prog_doslib_pmp_desc_dst - prog_doslib_data)
+    add     r10, r29, r10
+    load.q  r3, (r10)                   ; descriptor destination
+    jsr     .dos_pmp_copy_iosm_from_elf
+    load.q  r29, (sp)
+    store.q r20, 656(r29)
+
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+    load.q  r20, 656(r29)
+    pop     r29
+    rts
+.dpmf_nomem_close:
+    load.q  r1, 616(r29)
+    jsr     .dos_bootfs_close
+    load.q  r29, (sp)
+    move.l  r20, #ERR_NOMEM
+    pop     r29
+    rts
+.dpmf_free_notfound:
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+.dpmf_notfound:
+    move.l  r20, #ERR_NOTFOUND
+    pop     r29
+    rts
+.dpmf_free_badarg:
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+.dpmf_badarg:
+    move.l  r20, #ERR_BADARG
+    pop     r29
+    rts
+.dpmf_known_done:
+    pop     r29
+    rts
+
+    ; .dos_pmp_copy_iosm_from_elf
+    ; In:  r1 = ELF ptr, r2 = ELF size, r3 = destination IOSM descriptor ptr
+    ; Out: r20 = ERR_OK / ERR_NOTFOUND / ERR_BADARG.
+.dos_pmp_copy_iosm_from_elf:
+    move.q  r20, #ERR_BADARG
+    move.q  r21, r1                      ; ELF base
+    move.q  r22, r2                      ; ELF size
+    store.q r3, 664(r29)                 ; descriptor destination
+    move.l  r11, #64
+    blt     r22, r11, .dpcife_done
+    load.l  r11, (r21)
+    move.l  r12, #0x464C457F
+    bne     r11, r12, .dpcife_done
+    load.b  r11, 4(r21)
+    move.l  r12, #2                      ; ELFCLASS64
+    bne     r11, r12, .dpcife_done
+    load.b  r11, 5(r21)
+    move.l  r12, #1                      ; little-endian
+    bne     r11, r12, .dpcife_done
+    load.b  r11, 6(r21)
+    move.l  r12, #1
+    bne     r11, r12, .dpcife_done
+
+    load.q  r18, 40(r21)                 ; e_shoff
+    beqz    r18, .dpcife_notfound
+    store.q r18, 672(r29)
+    load.w  r24, 58(r21)                 ; e_shentsize
+    move.l  r11, #64
+    bne     r24, r11, .dpcife_done
+    store.q r24, 680(r29)
+    load.w  r25, 60(r21)                 ; e_shnum
+    beqz    r25, .dpcife_notfound
+    store.q r25, 688(r29)
+    load.w  r26, 62(r21)                 ; e_shstrndx
+    bge     r26, r25, .dpcife_done
+    move.q  r27, r25
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    bgt     r27, r22, .dpcife_done
+
+    move.q  r27, r26
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    add     r27, r21, r27                ; shstrtab section header
+    load.q  r28, 24(r27)                 ; shstr offset
+    load.q  r30, 32(r27)                 ; shstr size
+    beqz    r30, .dpcife_done
+    store.q r28, 696(r29)
+    store.q r30, 704(r29)
+    add     r11, r28, r30
+    bgt     r11, r22, .dpcife_done
+
+    move.l  r19, #0
+.dpcife_sh_loop:
+    load.q  r25, 688(r29)                ; e_shnum
+    load.q  r24, 680(r29)                ; e_shentsize
+    load.q  r18, 672(r29)                ; e_shoff
+    load.q  r28, 696(r29)                ; shstr offset
+    load.q  r30, 704(r29)                ; shstr size
+    bge     r19, r25, .dpcife_notfound
+    move.q  r27, r19
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    add     r27, r21, r27
+    load.l  r11, 4(r27)                  ; sh_type
+    move.l  r12, #7                      ; SHT_NOTE
+    bne     r11, r12, .dpcife_next_sh
+    load.l  r11, (r27)                   ; sh_name
+    bge     r11, r30, .dpcife_next_sh
+    move.q  r12, r11
+    add     r12, r12, #14                 ; len(".ios.manifest\0")
+    bgt     r12, r30, .dpcife_next_sh
+    add     r14, r21, r28
+    add     r14, r14, r11
+    jsr     .dos_pmp_is_iosm_section_name
+    bnez    r23, .dpcife_next_sh
+    load.q  r11, 24(r27)                 ; note section offset
+    load.q  r12, 32(r27)                 ; note section size
+    beqz    r12, .dpcife_done
+    add     r13, r11, r12
+    bgt     r13, r22, .dpcife_done
+    add     r27, r21, r11                ; note ptr
+    add     r30, r27, r12                ; note section end
+    store.q r30, 712(r29)
+.dpcife_note_loop:
+    load.q  r30, 712(r29)                ; note section end
+    move.q  r13, r27
+    add     r13, r13, #12
+    bgt     r13, r30, .dpcife_done
+    load.l  r11, (r27)                   ; namesz
+    move.q  r25, r11
+    load.l  r12, 4(r27)                  ; descsz
+    move.q  r24, r12
+    move.q  r13, r25
+    add     r13, r13, #3
+    and     r13, r13, #0xFFFFFFFC
+    move.q  r26, r24
+    add     r26, r26, #3
+    and     r26, r26, #0xFFFFFFFC
+    move.q  r17, r27
+    add     r17, r17, #12
+    add     r17, r17, r13
+    add     r17, r17, r26                ; next note ptr
+    store.q r17, 720(r29)
+    bgt     r17, r30, .dpcife_done
+    move.l  r12, #8
+    bne     r25, r12, .dpcife_note_next
+    load.l  r12, 8(r27)
+    move.l  r11, #IOSM_NOTE_TYPE
+    bne     r12, r11, .dpcife_note_next
+    add     r14, r27, #12
+    jsr     .dos_pmp_is_iosm_note_name
+    bnez    r23, .dpcife_note_next
+    move.l  r11, #IOSM_SIZE
+    bne     r24, r11, .dpcife_note_next
+    add     r27, r27, #12
+    add     r27, r27, r13                ; descriptor ptr
+    load.l  r11, IOSM_OFF_MAGIC(r27)
+    move.l  r12, #IOSM_MAGIC
+    bne     r11, r12, .dpcife_note_next
+    load.l  r11, IOSM_OFF_SCHEMA_VERSION(r27)
+    move.l  r12, #IOSM_SCHEMA_VERSION
+    bne     r11, r12, .dpcife_note_next
+    load.b  r11, IOSM_OFF_RESERVED0(r27)
+    bnez    r11, .dpcife_note_next
+    move.l  r11, #0
+.dpcife_reserved2_loop:
+    move.l  r12, #8
+    bge     r11, r12, .dpcife_copy_desc
+    add     r13, r27, #IOSM_OFF_RESERVED2
+    add     r13, r13, r11
+    load.b  r13, (r13)
+    bnez    r13, .dpcife_note_next
+    add     r11, r11, #1
+    bra     .dpcife_reserved2_loop
+.dpcife_copy_desc:
+    load.q  r14, 664(r29)                ; destination
+    move.l  r15, #(IOSM_SIZE / 8)
+.dpcife_copy_loop:
+    load.q  r16, (r27)
+    store.q r16, (r14)
+    add     r27, r27, #8
+    add     r14, r14, #8
+    sub     r15, r15, #1
+    bnez    r15, .dpcife_copy_loop
+    move.q  r20, #ERR_OK
+    rts
+.dpcife_note_next:
+    load.q  r27, 720(r29)
+    load.q  r30, 712(r29)
+    blt     r27, r30, .dpcife_note_loop
+    bra     .dpcife_notfound
+.dpcife_next_sh:
+    add     r19, r19, #1
+    bra     .dpcife_sh_loop
+.dpcife_notfound:
+    move.q  r20, #ERR_NOTFOUND
+.dpcife_done:
+    rts
+
+    ; R14 = NUL-terminated candidate. R23 = 0 on exact ".ios.manifest".
+.dos_pmp_is_iosm_section_name:
+    load.b  r11, 0(r14)
+    move.l  r12, #0x2E
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 1(r14)
+    move.l  r12, #0x69
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 2(r14)
+    move.l  r12, #0x6F
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 3(r14)
+    move.l  r12, #0x73
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 4(r14)
+    move.l  r12, #0x2E
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 5(r14)
+    move.l  r12, #0x6D
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 6(r14)
+    move.l  r12, #0x61
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 7(r14)
+    move.l  r12, #0x6E
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 8(r14)
+    move.l  r12, #0x69
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 9(r14)
+    move.l  r12, #0x66
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 10(r14)
+    move.l  r12, #0x65
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 11(r14)
+    move.l  r12, #0x73
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 12(r14)
+    move.l  r12, #0x74
+    bne     r11, r12, .dpiis_no
+    load.b  r11, 13(r14)
+    bnez    r11, .dpiis_no
+    move.q  r23, r0
+    rts
+.dpiis_no:
+    move.l  r23, #1
+    rts
+
+    ; R14 = note name. R23 = 0 on exact "IOS-MOD\0".
+.dos_pmp_is_iosm_note_name:
+    load.b  r11, 0(r14)
+    move.l  r12, #0x49
+    bne     r11, r12, .dpiin_no
+    load.b  r11, 1(r14)
+    move.l  r12, #0x4F
+    bne     r11, r12, .dpiin_no
+    load.b  r11, 2(r14)
+    move.l  r12, #0x53
+    bne     r11, r12, .dpiin_no
+    load.b  r11, 3(r14)
+    move.l  r12, #0x2D
+    bne     r11, r12, .dpiin_no
+    load.b  r11, 4(r14)
+    move.l  r12, #0x4D
+    bne     r11, r12, .dpiin_no
+    load.b  r11, 5(r14)
+    move.l  r12, #0x4F
+    bne     r11, r12, .dpiin_no
+    load.b  r11, 6(r14)
+    move.l  r12, #0x44
+    bne     r11, r12, .dpiin_no
+    load.b  r11, 7(r14)
+    bnez    r11, .dpiin_no
+    move.q  r23, r0
+    rts
+.dpiin_no:
+    move.l  r23, #1
+    rts
+
     ; .dos_copy_zstr
     ; In: r1 = src ptr, r2 = dst ptr
     ; Out: r1 = dst end ptr (points at terminating NUL)
@@ -6844,7 +7256,7 @@ prog_doslib_assign_base_table:
     dc.q    (prog_doslib_hostfs_public_resources - prog_doslib_data)
     dc.q    (prog_doslib_hostfs_rel_resources - prog_doslib_data)
 
-    align   4096
+    align   8
 
 ; ---------------------------------------------------------------------------
 ; Per-command source files under `../cmd/`.
@@ -7031,6 +7443,9 @@ include "../cmd/about.s"
 include "../assets/elfseg_fixture.s"
     align   8
 
+prog_doslib_pmp_desc_dst:
+    ds.b    8
+
 ; ---------------------------------------------------------------------------
 ; SHELL — interactive command shell (M10)
 ; ---------------------------------------------------------------------------
@@ -7059,14 +7474,20 @@ include "../assets/elfseg_fixture.s"
 prog_doslib_iosm:
     dc.l    IOSM_MAGIC
     dc.l    IOSM_SCHEMA_VERSION
-    dc.b    "dos.library", 0
-    ds.b    IOSM_NAME_SIZE - 12
+    dc.b    IOSM_KIND_LIBRARY
+    dc.b    0
     dc.w    14
     dc.w    0
-    dc.l    IOSM_KIND_LIBRARY
+    dc.w    0
+    dc.b    "dos.library", 0
+    ds.b    IOSM_NAME_SIZE - 12
     dc.l    MODF_COMPAT_PORT
     dc.l    0
-    ds.b    IOSM_SIZE - 56
+    dc.b    "2026-04-22", 0
+    ds.b    IOSM_BUILD_DATE_SIZE - 11
+    dc.b    0x43, 0x6F, 0x70, 0x79, 0x72, 0x69, 0x67, 0x68, 0x74, 0x20, 0xA9, 0x20, 0x32, 0x30, 0x32, 0x36, 0x20, 0x5A, 0x61, 0x79, 0x6E, 0x20, 0x4F, 0x74, 0x6C, 0x65, 0x79, 0
+    ds.b    IOSM_COPYRIGHT_SIZE - 28
+    ds.b    8
 
 include "../handler/shell.s"
 

@@ -258,6 +258,10 @@ Environment variables for custom tool paths:
 The `sdk/include/` headers are the compatibility-facing register/macro surface for SDK users.
 Runtime Go constants/handlers are the implementation source of truth, and shared include/runtime constants are guarded by repository consistency tests (`sdk_include_consistency_test.go`).
 
+## IntuitionOS VERSION / IOSM
+
+IntuitionOS runtime ELFs carry `.ios.manifest` / `IOSM` notes with 128-byte module descriptors. The `VERSION` command and resident discovery path query metadata through ports and caller-allocated shared memory rather than scanning kernel internals. See `docs/IntuitionOS/IExec.md`, `docs/IntuitionOS/ELF.md`, and `docs/IntuitionOS/M16.1-plan.md`.
+
 ## Further Documentation
 
 - [IE64 Instruction Set Reference](docs/IE64_ISA.md)

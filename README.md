@@ -6086,6 +6086,12 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 - **Library registration and expunge are explicit.** Library tasks self-register through `AddLibrary`, exec drives `LIB_OP_EXPUNGE`, and `RESIDENT` shell command pin/unpin flows toggle `MODF_RESIDENT` without turning libraries back into startup-sequence commands.
 - **Crash handling is observable to clients.** If an online library task dies, exec tears the row down, releases the loader bookkeeping, and signals openers with `SIGF_MODDEAD` before the next `OpenLibrary` triggers a clean reload.
 
+**M16.1 IOSM / VERSION status** - version metadata is now universal and queryable:
+
+- **Every rebuilt runtime ELF carries `.ios.manifest`.** The 128-byte `IOSM` descriptor records kind, public name, version/revision/patch, flags, message ABI, build date, and the fixed copyright string.
+- **Resident version queries use existing IPC.** Persistent services answer `MSG_GET_IOSM` through caller-allocated shared memory, and `exec.library` exposes a public port for its own IOSM plus resident public-port enumeration.
+- **`VERSION` no longer reports stale milestone text.** The default command output is `IntuitionOS 1.16.1`, `exec.library 1.16.1 (2026-04-22)`, and `Copyright © 2026 Zayn Otley`.
+
 **M15.1 source layout status** - the IntuitionOS sources are no longer forced to live in one monolithic assembly body, and the hostfs runtime now builds separately from the kernel image:
 
 - `sdk/intuitionos/iexec/iexec.s` remains the kernel assembly entrypoint and the top-level `exec.library` image/layout file.

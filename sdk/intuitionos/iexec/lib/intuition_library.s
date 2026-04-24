@@ -1269,17 +1269,24 @@ prog_intui_data:
     ; = 4096 bytes) — used by .intui_draw_char to render title text
     incbin  "topaz.raw"
     align   8
+prog_intuition_library_iosm:
 prog_intui_iosm:
     dc.l    IOSM_MAGIC
     dc.l    IOSM_SCHEMA_VERSION
-    dc.b    "intuition.library", 0
-    ds.b    IOSM_NAME_SIZE - 18
+    dc.b    IOSM_KIND_LIBRARY
+    dc.b    0
     dc.w    12
     dc.w    0
-    dc.l    IOSM_KIND_LIBRARY
+    dc.w    0
+    dc.b    "intuition.library", 0
+    ds.b    IOSM_NAME_SIZE - 18
     dc.l    MODF_COMPAT_PORT
     dc.l    0
-    ds.b    IOSM_SIZE - 56
+    dc.b    "2026-04-22", 0
+    ds.b    IOSM_BUILD_DATE_SIZE - 11
+    dc.b    0x43, 0x6F, 0x70, 0x79, 0x72, 0x69, 0x67, 0x68, 0x74, 0x20, 0xA9, 0x20, 0x32, 0x30, 0x32, 0x36, 0x20, 0x5A, 0x61, 0x79, 0x6E, 0x20, 0x4F, 0x74, 0x6C, 0x65, 0x79, 0
+    ds.b    IOSM_COPYRIGHT_SIZE - 28
+    ds.b    8
 prog_intui_data_end:
     align   8
 prog_intui_end:

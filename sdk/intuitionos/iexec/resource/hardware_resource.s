@@ -29,7 +29,9 @@ prog_hwres_code:
     bnez    r2, .hwres_halt
     store.q r1, 136(r29)               ; data[136] = hwres_port
 
-    ; ===== Print banner =====
+    bra     .hwres_main
+
+    ; ===== Legacy boot banner disabled =====
     add     r20, r29, #32              ; r20 = &data[32] = banner
 .hwres_ban_loop:
     load.b  r1, (r20)
@@ -53,6 +55,7 @@ prog_hwres_code:
     syscall #SYS_DEBUG_PUTCHAR
 
     ; ===== Main loop: WaitPort + dispatch =====
+.hwres_main:
     ; SYS_WAIT_PORT atomically blocks AND fetches the message — it returns
     ; (R1=type, R2=data0, R3=err, R4=data1, R5=reply_port, R6=share_handle,
     ; R7=sender_task_id). M12.5 enriches the return with R7 so the broker
@@ -303,14 +306,20 @@ prog_hwres_data:
 prog_hwres_iosm:
     dc.l    IOSM_MAGIC
     dc.l    IOSM_SCHEMA_VERSION
-    dc.b    "hardware.resource", 0
-    ds.b    IOSM_NAME_SIZE - 18
+    dc.b    IOSM_KIND_RESOURCE
+    dc.b    0
     dc.w    1
     dc.w    0
-    dc.l    IOSM_KIND_RESOURCE
+    dc.w    0
+    dc.b    "hardware.resource", 0
+    ds.b    IOSM_NAME_SIZE - 18
     dc.l    MODF_COMPAT_PORT
     dc.l    0
-    ds.b    IOSM_SIZE - 56
+    dc.b    "2026-04-22", 0
+    ds.b    IOSM_BUILD_DATE_SIZE - 11
+    dc.b    0x43, 0x6F, 0x70, 0x79, 0x72, 0x69, 0x67, 0x68, 0x74, 0x20, 0xA9, 0x20, 0x32, 0x30, 0x32, 0x36, 0x20, 0x5A, 0x61, 0x79, 0x6E, 0x20, 0x4F, 0x74, 0x6C, 0x65, 0x79, 0
+    ds.b    IOSM_COPYRIGHT_SIZE - 28
+    ds.b    8
 prog_hwres_data_end:
     align   8
 prog_hwres_end:

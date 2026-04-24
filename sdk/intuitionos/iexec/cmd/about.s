@@ -376,6 +376,24 @@ prog_about_data:
     ds.b    576
     ; offset 1024: embedded Topaz 8x16 font (256 glyphs × 16 bytes = 4096 bytes)
     incbin  "topaz.raw"
+    align   8
+prog_about_iosm:
+    dc.l    IOSM_MAGIC
+    dc.l    IOSM_SCHEMA_VERSION
+    dc.b    IOSM_KIND_COMMAND
+    dc.b    0
+    dc.w    1
+    dc.w    0
+    dc.w    0
+    dc.b    "About", 0
+    ds.b    IOSM_NAME_SIZE - 7
+    dc.l    0
+    dc.l    0
+    dc.b    "2026-04-22", 0
+    ds.b    IOSM_BUILD_DATE_SIZE - 11
+    dc.b    0x43, 0x6F, 0x70, 0x79, 0x72, 0x69, 0x67, 0x68, 0x74, 0x20, 0xA9, 0x20, 0x32, 0x30, 0x32, 0x36, 0x20, 0x5A, 0x61, 0x79, 0x6E, 0x20, 0x4F, 0x74, 0x6C, 0x65, 0x79, 0
+    ds.b    IOSM_COPYRIGHT_SIZE - 28
+    ds.b    8
 prog_about_data_end:
     align   8
 prog_about_end:

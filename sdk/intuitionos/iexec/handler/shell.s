@@ -122,8 +122,10 @@ prog_shell_code:
     store.q r1, 160(r29)               ; data[160] = shared_buf_va
     store.l r3, 168(r29)               ; data[168] = shared_buf_handle
 
+    bra     .sh_ban_done
+
     ; =====================================================================
-    ; Send "Shell ONLINE [Taskn]\r\n" banner
+    ; Legacy boot banner disabled.
     ; =====================================================================
     add     r20, r29, #32              ; &data[32] = "Shell ONLINE [Task"
     jsr     .sh_send_string
@@ -282,14 +284,13 @@ prog_shell_code:
     move.q  r17, r2                     ; r17 = file handle (save)
     store.q r17, 8(sp)                 ; save handle to scratch
 
-    ; Send DOS_READ(handle, max=512). The script buffer at data[368] is
-    ; 512 bytes (M12.8: bumped from 256 to absorb the new boot ECHO line
-    ; without truncating earlier startup commands). The shell's share is
-    ; 4 KiB so the share clamp doesn't kick in.
+    ; Send DOS_READ(handle, max=320). Startup-Sequence remains command-only
+    ; and fits in this buffer; keeping it small leaves headroom for DOS's
+    ; embedded command images inside the 64 KiB task data window.
     load.q  r29, (sp)
     move.l  r2, #DOS_READ              ; type
     load.q  r3, 8(sp)                  ; data0 = handle
-    move.l  r4, #512                   ; data1 = max bytes
+    move.l  r4, #320                   ; data1 = max bytes
     load.q  r5, 152(r29)
     load.l  r6, 168(r29)
     load.q  r1, 144(r29)
@@ -938,9 +939,9 @@ prog_shell_data:
     ds.b    16                          ; pad to offset 240
     ; --- Offset 240: line buffer (128 bytes) ---
     ds.b    128
-    ; --- Offset 368: script buffer (512 bytes for Startup-Sequence —
-    ;     M12.8: bumped from 256 to absorb new boot ECHO line) ---
-    ds.b    512
+    ; --- Offset 368: script buffer (320 bytes for Startup-Sequence) ---
+    ds.b    320
+prog_shell_iosm:
 prog_shell_data_end:
     align   8
 prog_shell_end:

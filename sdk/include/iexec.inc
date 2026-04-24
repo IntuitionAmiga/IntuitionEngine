@@ -12,10 +12,10 @@ IOS_VERSION_MINOR  equ 16
 IOS_VERSION_PATCH  equ 1
 
 ; ===========================================================================
-; Current module manifest note ABI (M16 library note)
+; Current module manifest note ABI (M16.1 universal IOSM note)
 ; ===========================================================================
 
-IOSM_MAGIC               equ 0x4C49424D
+IOSM_MAGIC               equ 0x4D534F49
 IOSM_SCHEMA_VERSION      equ 1
 IOSM_KIND_LIBRARY        equ 1
 IOSM_KIND_DEVICE         equ 2
@@ -24,14 +24,21 @@ IOSM_KIND_RESOURCE       equ 4
 IOSM_KIND_COMMAND        equ 5
 IOSM_OFF_MAGIC           equ 0
 IOSM_OFF_SCHEMA_VERSION  equ 4
-IOSM_OFF_NAME            equ 8
-IOSM_OFF_VERSION         equ 40
-IOSM_OFF_REVISION        equ 42
-IOSM_OFF_TYPE            equ 44
+IOSM_OFF_KIND            equ 8
+IOSM_OFF_RESERVED0       equ 9
+IOSM_OFF_VERSION         equ 10
+IOSM_OFF_REVISION        equ 12
+IOSM_OFF_PATCH           equ 14
+IOSM_OFF_NAME            equ 16
 IOSM_OFF_FLAGS           equ 48
 IOSM_OFF_MSG_ABI_VERSION equ 52
+IOSM_OFF_BUILD_DATE      equ 56
+IOSM_OFF_COPYRIGHT       equ 72
+IOSM_OFF_RESERVED2       equ 120
 IOSM_NAME_SIZE           equ 32
-IOSM_SIZE                equ 96
+IOSM_BUILD_DATE_SIZE     equ 16
+IOSM_COPYRIGHT_SIZE      equ 48
+IOSM_SIZE                equ 128
 IOSM_NOTE_TYPE           equ 0x494F5331
 
 ; ===========================================================================

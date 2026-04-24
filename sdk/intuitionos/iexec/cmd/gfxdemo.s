@@ -455,6 +455,24 @@ prog_gfxdemo_data:
     ds.b    8                           ; 232: graphics_library_token
     ds.b    8                           ; 240: graphics_open_sigbit
     ds.b    16                          ; 248: graphics_open outcome scratch
+    align   8
+prog_gfxdemo_iosm:
+    dc.l    IOSM_MAGIC
+    dc.l    IOSM_SCHEMA_VERSION
+    dc.b    IOSM_KIND_COMMAND
+    dc.b    0
+    dc.w    1
+    dc.w    0
+    dc.w    0
+    dc.b    "GfxDemo", 0
+    ds.b    IOSM_NAME_SIZE - 9
+    dc.l    0
+    dc.l    0
+    dc.b    "2026-04-22", 0
+    ds.b    IOSM_BUILD_DATE_SIZE - 11
+    dc.b    0x43, 0x6F, 0x70, 0x79, 0x72, 0x69, 0x67, 0x68, 0x74, 0x20, 0xA9, 0x20, 0x32, 0x30, 0x32, 0x36, 0x20, 0x5A, 0x61, 0x79, 0x6E, 0x20, 0x4F, 0x74, 0x6C, 0x65, 0x79, 0
+    ds.b    IOSM_COPYRIGHT_SIZE - 28
+    ds.b    8
 prog_gfxdemo_data_end:
     align   8
 prog_gfxdemo_end:

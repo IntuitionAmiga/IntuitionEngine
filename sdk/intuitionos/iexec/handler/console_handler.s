@@ -45,7 +45,9 @@ prog_console_code:
     ; === Clear readline_pending flag ===
     store.b r0, 176(r29)
 
-    ; === Print "console.handler ONLINE [Taskn]\r\n" via DebugPutChar ===
+    bra     .con_poll_loop
+
+    ; === Legacy boot banner disabled ===
     add     r20, r29, #16               ; r20 = &data[16] = banner string
 .con_banner_loop:
     load.b  r1, (r20)
@@ -278,18 +280,25 @@ prog_console_data:
     dc.b    "console.handler", 0       ; offset 0: port name (16 bytes exactly)
     dc.b    "console.handler M11.5 [Task ", 0  ; offset 16: banner string
     ; offset 128+ is scratch (task_id, port_id, etc.) — zeroed by loader
+    ds.b    160
     align   8
 prog_console_iosm:
     dc.l    IOSM_MAGIC
     dc.l    IOSM_SCHEMA_VERSION
-    dc.b    "console.handler", 0
-    ds.b    IOSM_NAME_SIZE - 16
+    dc.b    IOSM_KIND_HANDLER
+    dc.b    0
     dc.w    1
     dc.w    0
-    dc.l    IOSM_KIND_HANDLER
+    dc.w    0
+    dc.b    "console.handler", 0
+    ds.b    IOSM_NAME_SIZE - 16
     dc.l    MODF_COMPAT_PORT
     dc.l    0
-    ds.b    IOSM_SIZE - 56
+    dc.b    "2026-04-22", 0
+    ds.b    IOSM_BUILD_DATE_SIZE - 11
+    dc.b    0x43, 0x6F, 0x70, 0x79, 0x72, 0x69, 0x67, 0x68, 0x74, 0x20, 0xA9, 0x20, 0x32, 0x30, 0x32, 0x36, 0x20, 0x5A, 0x61, 0x79, 0x6E, 0x20, 0x4F, 0x74, 0x6C, 0x65, 0x79, 0
+    ds.b    IOSM_COPYRIGHT_SIZE - 28
+    ds.b    8
 prog_console_data_end:
     align   8
 prog_console_end:

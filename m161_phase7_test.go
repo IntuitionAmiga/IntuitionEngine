@@ -6,13 +6,13 @@ import (
 	"testing"
 )
 
-func TestIExec_M161_Phase7_BootBannerUsesIOSVersion(t *testing.T) {
+func TestIExec_M161_Phase7_BootBannerDisabled(t *testing.T) {
 	body := string(mustReadRepoBytes(t, filepath.Join("sdk", "intuitionos", "iexec", "boot", "strings.s")))
-	if !bytes.Contains([]byte(body), []byte(`"exec.library 1.16.1 boot"`)) {
-		t.Fatalf("boot banner must use IOS version 1.16.1, got:\n%s", body)
+	if !bytes.Contains([]byte(body), []byte("boot_banner:\n    dc.b    0")) {
+		t.Fatalf("boot banner must remain disabled, got:\n%s", body)
 	}
-	if bytes.Contains([]byte(body), []byte(`"exec.library M11 boot"`)) {
-		t.Fatalf("boot banner still contains stale M11 label")
+	if bytes.Contains([]byte(body), []byte(`"exec.library `)) {
+		t.Fatalf("boot banner still contains printable exec.library text")
 	}
 }
 

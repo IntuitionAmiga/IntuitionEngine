@@ -68,6 +68,35 @@ M14.1 phase 5 shipped state:
 - that service boot path is still internal-only; the public DOS surface remains the file-backed `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG` API
 - the visible runtime is locked by explicit M14.1 phase-5 regressions for boot census, shell command dispatch, unknown-command handling, and the retained GUI demos
 
+## M16.1 Module Manifest (.ios.manifest, IOSM)
+
+M16.1 supersedes the M16 library-only `LIBM` note with a universal
+128-byte `IOSM` descriptor. Every rebuilt runtime ELF carries one
+`.ios.manifest` SHT_NOTE named `IOS-MOD` with note type `0x494F5331`.
+
+Descriptor layout:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | u32 | magic `0x4D534F49` (`IOSM`) |
+| 4 | u32 | schema version, currently `1` |
+| 8 | u8 | kind: library=1, device=2, handler=3, resource=4, command=5 |
+| 9 | u8 | reserved, must be zero |
+| 10 | u16 | version |
+| 12 | u16 | revision |
+| 14 | u16 | patch |
+| 16 | 32 | NUL-padded public name |
+| 48 | u32 | `MODF_*` flags |
+| 52 | u32 | message ABI version |
+| 56 | 16 | build date, `YYYY-MM-DD` |
+| 72 | 48 | UTF-8 copyright string |
+| 120 | 8 | reserved, must be zero |
+
+Rendering uses `name version.revision.patch` when patch is non-zero,
+otherwise `name version.revision`. The manifest is file-format universal;
+registry semantics remain library-specific unless a later milestone widens
+the protected module lifecycle.
+
 ## M16 Protected Module Notes
 
 M16 does not change the public M14.2 `ET_EXEC` contract.
@@ -78,7 +107,7 @@ M16 does not change the public M14.2 `ET_EXEC` contract.
 
 What M16 adds on top of the existing loader boundary:
 
-- a module manifest note section for protected libraries: `.ios.libmanifest`
+- a module manifest note section: `.ios.manifest` / `IOSM`
 - exec/dos use that manifest to validate module identity, class, version, flags, and message ABI before a library becomes discoverable through `OpenLibrary`
 - the internal module registry and `module_load_handle` lifecycle are separate from the public DOS seglist contract
 - PIE-capable codegen remains the direction of travel, but `MODF_ASLR_CAPABLE` remains informational in v1 and does not change current placement or validation rules

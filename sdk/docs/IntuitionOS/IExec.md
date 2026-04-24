@@ -160,6 +160,16 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - `MODF_RESIDENT`, `MODF_COMPAT_PORT`, and `SIGF_MODDEAD` are the currently shipped public constants; `MODF_ASLR_CAPABLE` remains a design-level note tied to PIE-capable codegen direction rather than a widened runtime loader contract today
 - per-task open tracking remains v1 bookkeeping; M16 tracks opener task/count rows for correctness and crash signaling, while deeper automatic task-owned-handle sweep remains future work
 
+**M16.1 IOSM / VERSION summary:**
+
+- `IOS_VERSION_*` in `sdk/include/iexec.inc` is the single source of truth for the OS-wide version, currently `1.16.1`.
+- Every runtime ELF carries a 128-byte `.ios.manifest` / `IOSM` note. The descriptor records module kind, version/revision/patch, public name, flags, message ABI, build date, and fixed copyright.
+- Resident metadata is queried through ports using caller-allocated shared memory. `MSG_GET_IOSM` copies one 128-byte descriptor into the caller's `MEMF_PUBLIC` buffer; servers reject missing handles and wrong page counts.
+- `exec.library` publishes a discoverable `exec.library` port for IOSM and resident-list queries. `MSG_LIST_RESIDENTS` writes a 4 KiB caller buffer containing a count at offset 0 and 32-byte public-port names starting at offset 32.
+- `SYS_GET_SYS_INFO(SYSINFO_PORT_NAME_BY_INDEX)` enumerates public ports without adding a new syscall slot. The kernel validates the caller's 32-byte output buffer and returns a zero task id as the end sentinel.
+- The default `VERSION` command output is canonicalized to `IntuitionOS 1.16.1`, `exec.library 1.16.1 (DATE)`, and the IOSM copyright string.
+- No new syscall slots are introduced for M16.1; the design reuses ports, shared-memory handles, explicit `MAPF_*` permissions, and bounded fixed-size buffers.
+
 IExec runs on the IE64 CPU core only. It requires the IE64 MMU (4 KiB paged virtual memory, software TLB, control registers) and the hardware timer for preemption.
 
 ---

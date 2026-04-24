@@ -404,18 +404,15 @@ endif
     mtcr    cr5, r1
 
     ; ---------------------------------------------------------------
-    ; 8. Print boot banner (TERM_OUT at page 0xF0 is within kernel PT)
-    ; ---------------------------------------------------------------
-    move.l  r8, #boot_banner
-    jsr     kern_puts
-
-    ; ---------------------------------------------------------------
-    ; 9. M15.2 phase 6: prepare and launch the minimal host-backed bootstrap
+    ; 8. M15.2 phase 6: prepare and launch the minimal host-backed bootstrap
     ;    manifest. The kernel boots only console.handler and dos.library here,
     ;    both from the host-backed IOSSYS tree. dos.library takes over the
     ;    remaining service launches after DOS is online.
     ; ---------------------------------------------------------------
     jsr     kern_boot_manifest_prepare  ; R2 = err
+    bnez    r2, .boot_load_fail
+
+    jsr     kern_create_exec_library_port ; R2 = err
     bnez    r2, .boot_load_fail
 
     move.l  r29, #0
@@ -2840,33 +2837,48 @@ kern_boot_validate_library_manifest:
     la      r15, kbvlm_manifest_note_name
     jsr     kern_boot_validate_string_eq
     bnez    r23, .kbvlm_note_next
-    move.l  r12, #96
+    move.l  r12, #IOSM_SIZE
     bne     r24, r12, .kbvlm_note_next
     add     r27, r27, #12
     add     r27, r27, r25              ; descriptor base
     load.l  r11, (r27)
-    move.l  r12, #0x4C49424D
+    move.l  r12, #IOSM_MAGIC
     bne     r11, r12, .kbvlm_note_next
     load.l  r11, 4(r27)
     move.l  r12, #1
     bne     r11, r12, .kbvlm_note_next
-    add     r14, r27, #8               ; desc.name[32]
+    load.b  r11, IOSM_OFF_KIND(r27)
+    move.l  r12, #IOSM_KIND_LIBRARY
+    bne     r11, r12, .kbvlm_note_next
+    load.b  r11, IOSM_OFF_RESERVED0(r27)
+    bnez    r11, .kbvlm_note_next
+    add     r14, r27, #IOSM_OFF_NAME   ; desc.name[32]
     move.q  r15, r22
     jsr     kern_boot_validate_name32_eq
     bnez    r23, .kbvlm_note_next
-    load.w  r11, 40(r27)               ; lib_version
+    load.w  r11, IOSM_OFF_VERSION(r27) ; lib_version
     move.l  r12, #14
     bne     r11, r12, .kbvlm_note_next
-    load.w  r11, 42(r27)               ; lib_revision
+    load.w  r11, IOSM_OFF_REVISION(r27) ; lib_revision
     bnez    r11, .kbvlm_note_next
-    load.l  r11, 44(r27)               ; type
-    move.l  r12, #1
-    bne     r11, r12, .kbvlm_note_next
-    load.l  r11, 48(r27)               ; flags
+    load.w  r11, IOSM_OFF_PATCH(r27)   ; patch
+    bnez    r11, .kbvlm_note_next
+    load.l  r11, IOSM_OFF_FLAGS(r27)   ; flags
     move.l  r12, #MODF_COMPAT_PORT
     bne     r11, r12, .kbvlm_note_next
-    load.l  r11, 52(r27)               ; compat message ABI version
+    load.l  r11, IOSM_OFF_MSG_ABI_VERSION(r27) ; compat message ABI version
     bnez    r11, .kbvlm_note_next
+    move.l  r11, #0
+.kbvlm_reserved2_loop:
+    move.l  r12, #8
+    bge     r11, r12, .kbvlm_valid
+    add     r13, r27, #IOSM_OFF_RESERVED2
+    add     r13, r13, r11
+    load.b  r13, (r13)
+    bnez    r13, .kbvlm_note_next
+    add     r11, r11, #1
+    bra     .kbvlm_reserved2_loop
+.kbvlm_valid:
     move.q  r2, #ERR_OK
     rts
 .kbvlm_note_next:
@@ -2930,11 +2942,11 @@ kern_boot_validate_name32_eq:
     rts
 
 kbvlm_manifest_section_name:
-    dc.b    ".ios.libmanifest", 0
+    dc.b    ".ios.manifest", 0
     align   4
 
 kbvlm_manifest_note_name:
-    dc.b    "IOS-LIB", 0
+    dc.b    "IOS-MOD", 0
     align   4
 
 ; R1 = dos.library child slot. Seeds the stable startup-block relpath field
@@ -5314,6 +5326,205 @@ kern_shmem_addr_for_id:
     rts
 
 ; ============================================================================
+; M16.1 exec.library IOSM and resident enumeration helpers
+; ============================================================================
+
+; kern_create_exec_library_port: publish the kernel nucleus as exec.library.
+; The port is kernel-serviced in .do_put_msg, so it has no FIFO consumer.
+; Owner 0xFF marks this as kernel-owned: live task slots are 0..254, and
+; kill_task_cleanup invalidates ports by exact owner-slot match.
+kern_create_exec_library_port:
+    jsr     kern_port_alloc_slot        ; R1 = row, R2 = port id
+    beqz    r1, .kcelp_nomem
+    move.q  r20, r1
+    move.b  r11, #1
+    store.b r11, KD_PORT_VALID(r20)
+    move.b  r11, #0xFF
+    store.b r11, KD_PORT_OWNER(r20)
+    store.b r0, KD_PORT_COUNT(r20)
+    store.b r0, KD_PORT_HEAD(r20)
+    store.b r0, KD_PORT_TAIL(r20)
+    move.b  r11, #PF_PUBLIC
+    store.b r11, KD_PORT_FLAGS(r20)
+    add     r21, r20, #KD_PORT_NAME
+    la      r22, kern_exec_port_name
+    move.l  r23, #0
+.kcelp_copy_name:
+    move.l  r11, #PORT_NAME_LEN
+    bge     r23, r11, .kcelp_ok
+    add     r24, r22, r23
+    load.b  r25, (r24)
+    add     r26, r21, r23
+    store.b r25, (r26)
+    add     r23, r23, #1
+    bra     .kcelp_copy_name
+.kcelp_ok:
+    move.q  r2, #ERR_OK
+    rts
+.kcelp_nomem:
+    move.q  r2, #ERR_NOMEM
+    rts
+
+; kern_port_is_exec_library: exact-match the kernel-owned exec.library row.
+; In: R1=port row. Out: R1=1 if match, 0 otherwise.
+kern_port_is_exec_library:
+    load.b  r20, KD_PORT_OWNER(r1)
+    move.l  r11, #0xFF
+    bne     r20, r11, .kpiel_no
+    add     r20, r1, #KD_PORT_NAME
+    la      r21, kern_exec_port_name
+    move.l  r22, #0
+.kpiel_loop:
+    move.l  r11, #PORT_NAME_LEN
+    bge     r22, r11, .kpiel_match
+    add     r23, r20, r22
+    add     r24, r21, r22
+    load.b  r25, (r23)
+    load.b  r26, (r24)
+    bne     r25, r26, .kpiel_no
+    add     r22, r22, #1
+    bra     .kpiel_loop
+.kpiel_match:
+    move.l  r1, #1
+    rts
+.kpiel_no:
+    move.q  r1, r0
+    rts
+
+; kern_share_backing_for_handle:
+; In: R1=share_handle, R2=required_pages.
+; Out: R1=backing kernel VA, R2=ERR_*, R3=actual_pages.
+; This writes through the shared object's backing pages, not through a
+; caller user VA, so it does not need supervisor user-access windows.
+kern_share_backing_for_handle:
+    move.q  r20, r1
+    move.q  r21, r2
+    beqz    r20, .ksbf_badarg
+    and     r22, r20, #0xFF
+    move.l  r11, #0xFF
+    beq     r22, r11, .ksbf_badhandle
+    lsr     r23, r20, #8
+    move.q  r1, r22
+    jsr     kern_shmem_addr_for_id
+    beqz    r1, .ksbf_badhandle
+    move.q  r24, r1
+    load.b  r11, KD_SHM_VALID(r24)
+    beqz    r11, .ksbf_badhandle
+    load.l  r11, KD_SHM_NONCE(r24)
+    and     r11, r11, #0xFFFFFF
+    bne     r11, r23, .ksbf_badhandle
+    load.w  r3, KD_SHM_PAGES(r24)
+    bne     r3, r21, .ksbf_badarg
+    load.w  r1, KD_SHM_PPN(r24)
+    lsl     r1, r1, #12
+    move.q  r2, #ERR_OK
+    rts
+.ksbf_badhandle:
+    move.q  r1, r0
+    move.q  r2, #ERR_BADHANDLE
+    move.q  r3, r0
+    rts
+.ksbf_badarg:
+    move.q  r1, r0
+    move.q  r2, #ERR_BADARG
+    move.q  r3, r0
+    rts
+
+; In: R1=destination backing VA. Copies the canonical exec.library IOSM.
+kern_copy_exec_iosm:
+    move.q  r20, r1
+    la      r21, kern_iosm_descriptor
+    move.l  r22, #0
+.kcei_loop:
+    move.l  r11, #IOSM_SIZE
+    bge     r22, r11, .kcei_done
+    add     r23, r21, r22
+    load.q  r24, (r23)
+    add     r25, r20, r22
+    store.q r24, (r25)
+    add     r22, r22, #8
+    bra     .kcei_loop
+.kcei_done:
+    rts
+
+; In: R1=destination backing VA. Writes count + NUL-padded public names.
+; Cap is 127 names after the 32-byte header slot.
+kern_write_resident_list:
+    move.q  r30, r1                     ; destination page
+    store.q r0, (r30)
+    store.q r0, 8(r30)
+    store.q r0, 16(r30)
+    store.q r0, 24(r30)
+    move.l  r26, #0                     ; emitted count
+    move.l  r12, #KERN_DATA_BASE
+    add     r12, r12, #KD_PORT_BASE
+    move.l  r13, #0
+.kwrl_inline_loop:
+    move.l  r11, #KD_PORT_INLINE_MAX
+    bge     r13, r11, .kwrl_overflow_start
+    move.l  r14, #KD_PORT_STRIDE
+    mulu    r14, r13, r14
+    add     r15, r12, r14
+    jsr     kern_write_resident_list_maybe_row
+    add     r13, r13, #1
+    bra     .kwrl_inline_loop
+.kwrl_overflow_start:
+    move.l  r12, #KERN_DATA_BASE
+    add     r12, r12, #KD_PORT_OFLOW_HDR
+    load.w  r13, KD_PORT_OFLOW_FIRST_PPN(r12)
+    beqz    r13, .kwrl_done
+.kwrl_overflow_page:
+    lsl     r14, r13, #12
+    move.q  r17, r14
+    add     r15, r14, #KD_PORT_PAGE_HDR_SZ
+    move.l  r18, #0
+.kwrl_overflow_row:
+    move.l  r11, #KD_PORT_ROWS_PER_PG
+    bge     r18, r11, .kwrl_overflow_next
+    jsr     kern_write_resident_list_maybe_row
+    add     r15, r15, #KD_PORT_STRIDE
+    add     r18, r18, #1
+    bra     .kwrl_overflow_row
+.kwrl_overflow_next:
+    load.w  r13, KD_PORT_PAGE_NEXT(r17)
+    bnez    r13, .kwrl_overflow_page
+.kwrl_done:
+    store.l r26, (r30)
+    move.q  r1, r26
+    move.q  r2, r26
+    add     r2, r2, #1
+    lsl     r2, r2, #5
+    rts
+
+kern_write_resident_list_maybe_row:
+    move.l  r11, #127
+    bge     r26, r11, .kwrlmr_done
+    load.b  r16, KD_PORT_VALID(r15)
+    beqz    r16, .kwrlmr_done
+    load.b  r16, KD_PORT_FLAGS(r15)
+    and     r16, r16, #PF_PUBLIC
+    beqz    r16, .kwrlmr_done
+    move.q  r20, r26
+    add     r20, r20, #1
+    lsl     r20, r20, #5                ; 32-byte header + count*32
+    add     r20, r30, r20
+    add     r21, r15, #KD_PORT_NAME
+    move.l  r22, #0
+.kwrlmr_copy:
+    move.l  r11, #PORT_NAME_LEN
+    bge     r22, r11, .kwrlmr_count
+    add     r23, r21, r22
+    load.b  r24, (r23)
+    add     r25, r20, r22
+    store.b r24, (r25)
+    add     r22, r22, #1
+    bra     .kwrlmr_copy
+.kwrlmr_count:
+    add     r26, r26, #1
+.kwrlmr_done:
+    rts
+
+; ============================================================================
 ; M12.6 Phase C: port overflow chain helpers
 ; ============================================================================
 ; Same chain pattern as the M12.5 region overflow chain and M12.6 Phase B
@@ -6511,12 +6722,18 @@ endif
     bnez    r1, .info_port_name_badarg
 
     load.b  r13, KD_PORT_OWNER(r15)      ; owner slot
+    move.l  r11, #0xFF
+    beq     r13, r11, .ipn_kernel_owner
     lsl     r14, r13, #2
     move.l  r12, #KERN_DATA_BASE
     add     r12, r12, #KD_TASK_PUBID_BASE
     add     r12, r12, r14
     load.l  r1, (r12)                   ; public task id
     add     r1, r1, #1                  ; reserve 0 for end-of-list sentinel
+    move.q  r2, #ERR_OK
+    eret
+.ipn_kernel_owner:
+    move.q  r1, #1                      ; nonzero kernel-owner token
     move.q  r2, #ERR_OK
     eret
 
@@ -6958,6 +7175,21 @@ endif
     ; Check valid
     load.b  r23, KD_PORT_VALID(r21)
     beqz    r23, .putmsg_badarg
+    push    r2
+    push    r3
+    push    r4
+    push    r5
+    push    r6
+    push    r21
+    move.q  r1, r21
+    jsr     kern_port_is_exec_library
+    pop     r21
+    pop     r6
+    pop     r5
+    pop     r4
+    pop     r3
+    pop     r2
+    bnez    r1, .putmsg_exec_library
     ; Check FIFO not full (count < 4)
     load.b  r24, KD_PORT_COUNT(r21)
     move.l  r25, #KD_PORT_FIFO_SIZE
@@ -7028,6 +7260,65 @@ endif
 .putmsg_full:
     move.q  r2, #ERR_FULL
     eret
+
+.putmsg_exec_library:
+    move.l  r11, #REPLY_PORT_NONE
+    beq     r5, r11, .putmsg_badarg
+    move.l  r11, #MSG_GET_IOSM
+    beq     r2, r11, .putmsg_exec_get_iosm
+    move.l  r11, #MSG_LIST_RESIDENTS
+    beq     r2, r11, .putmsg_exec_list_residents
+    move.q  r3, #ERR_BADARG
+    move.q  r4, r0
+    move.q  r1, r5
+    move.q  r2, #ERR_BADARG
+    move.q  r5, r0
+    bra     .do_reply_msg
+.putmsg_exec_get_iosm:
+    push    r2
+    push    r5
+    move.q  r1, r6
+    move.l  r2, #1
+    jsr     kern_share_backing_for_handle
+    move.q  r20, r1
+    move.q  r21, r2
+    pop     r5
+    pop     r2
+    bnez    r21, .putmsg_exec_reply_err
+    move.q  r1, r20
+    jsr     kern_copy_exec_iosm
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r1, r5
+    move.q  r2, #ERR_OK
+    move.q  r5, r0
+    bra     .do_reply_msg
+.putmsg_exec_list_residents:
+    push    r2
+    push    r5
+    move.q  r1, r6
+    move.l  r2, #1
+    jsr     kern_share_backing_for_handle
+    move.q  r20, r1
+    move.q  r21, r2
+    pop     r5
+    pop     r2
+    bnez    r21, .putmsg_exec_reply_err
+    move.q  r1, r20
+    jsr     kern_write_resident_list     ; R1=count R2=bytes_used
+    move.q  r3, r1
+    move.q  r4, r2
+    move.q  r1, r5
+    move.l  r2, #MSG_LIST_RESIDENTS
+    move.q  r5, r0
+    bra     .do_reply_msg
+.putmsg_exec_reply_err:
+    move.q  r2, r21
+    move.q  r3, r21
+    move.q  r4, r0
+    move.q  r1, r5
+    move.q  r5, r0
+    bra     .do_reply_msg
 
 ; --- GetMsg ---
 ; R1=portID → R1=msg_type, R2=data0, R3=err, R4=data1, R5=reply_port, R6=share_handle
@@ -7125,7 +7416,17 @@ endif
     add     r15, r15, r12
     move.l  r22, #SIGF_PORT
     store.l r22, KD_TASK_SIG_WAIT(r15)
-    store.b r5, KD_TASK_WAITPORT(r15)      ; mark as WaitPort (portID in R5)
+    ; KD_TASK_WAITPORT is an 8-bit marker; overflow-chain ports need the full
+    ; ID. Preserve low task-layout flags and stash waitport_id in high 16 bits.
+    move.q  r1, r13
+    jsr     kern_task_layout_addr
+    load.l  r16, KD_TASK_LAYOUT_FLAGS(r1)
+    and     r16, r16, #0x0000FFFF
+    move.q  r17, r5
+    lsl     r17, r17, #16
+    or      r16, r16, r17
+    store.l r16, KD_TASK_LAYOUT_FLAGS(r1)
+    store.b r0, KD_TASK_WAITPORT(r15)
     move.b  r22, #TASK_WAITING
     store.b r22, KD_TASK_STATE(r15)
     mfcr    r14, cr3
@@ -11830,7 +12131,7 @@ restore_task:
     ; Check if this was a WaitPort block (waitport_id != WAITPORT_NONE)
     load.b  r23, KD_TASK_WAITPORT(r15)
     move.l  r24, #WAITPORT_NONE
-    bne     r23, r24, .restore_waitport
+    bne     r23, r24, .restore_waitport_load_full
 
     ; Plain Wait delivery: compute matched signals
     load.l  r20, KD_TASK_SIG_RECV(r15)
@@ -11920,6 +12221,11 @@ restore_task:
     eret
 
 ; --- WaitPort resume: dequeue message from port r23 ---
+.restore_waitport_load_full:
+    move.q  r1, r13
+    jsr     kern_task_layout_addr
+    load.l  r23, KD_TASK_LAYOUT_FLAGS(r1)
+    lsr     r23, r23, #16
 .restore_waitport:
     ; M12.6 Phase C: chain-aware lookup. r23 holds the saved waitport id.
     ; The helper clobbers r3..r9; r23 is preserved (high register).
@@ -12177,6 +12483,33 @@ include "boot/bootstrap.s"
 ; ============================================================================
 ; Data: Strings
 include "boot/strings.s"
+kern_exec_port_name:
+    dc.b    "exec.library", 0
+    ds.b    PORT_NAME_LEN - 13
+    align   4
+
+kern_iosm_descriptor:
+    dc.l    IOSM_MAGIC
+    dc.l    IOSM_SCHEMA_VERSION
+    dc.b    IOSM_KIND_LIBRARY
+    dc.b    0
+    dc.w    IOS_VERSION_MAJOR
+    dc.w    IOS_VERSION_MINOR
+    dc.w    IOS_VERSION_PATCH
+    dc.b    "exec.library", 0
+    ds.b    IOSM_NAME_SIZE - 13
+    dc.l    MODF_RESIDENT | MODF_COMPAT_PORT
+    dc.l    0
+    dc.b    "2026-04-22", 0
+    ds.b    IOSM_BUILD_DATE_SIZE - 11
+    dc.b    0x43, 0x6F, 0x70, 0x79, 0x72, 0x69, 0x67, 0x68
+    dc.b    0x74, 0x20, 0xA9, 0x20, 0x32, 0x30, 0x32
+    dc.b    0x36, 0x20, 0x5A, 0x61, 0x79, 0x6E, 0x20, 0x4F
+    dc.b    0x74, 0x6C, 0x65, 0x79, 0
+    ds.b    IOSM_COPYRIGHT_SIZE - 28
+    ds.b    8
+    align   4
+
     dc.b    "PANIC: boot program failed", 0x0D, 0x0A, 0
     align   4
 

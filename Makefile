@@ -23,6 +23,7 @@ IEXEC_RUNTIME_LST := $(IEXEC_DIR)/runtime_builder.lst
 IEXEC_ELF_REBUILDER := ./tools/rebuild_boot_dos_elf
 IEXEC_SYSTEM_EXPORTER := ./tools/export_intuitionos_system
 IEXEC_SYSTEM_DIR := ./sdk/intuitionos/system/SYS/IOSSYS
+IEXEC_BUILD_DATE ?= 2026-04-22
 IEXEC_RUNTIME_ELF_TARGETS := \
 	boot_dos_library.elf:prog_doslib \
 	boot_console_handler.elf:prog_console \
@@ -129,6 +130,7 @@ endif
 # Version metadata
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+IEXEC_BUILD_DATE ?=
 
 # Go build flags with version injection
 GO_FLAGS := -ldflags "-s -w -X main.Version=$(APP_VERSION) -X main.Commit=$(COMMIT) -X main.BuildDate=$(BUILD_DATE)"
@@ -351,7 +353,7 @@ intuitionos: ie64asm
 	@for spec in $(IEXEC_RUNTIME_ELF_TARGETS); do \
 		out=$${spec%%:*}; \
 		label=$${spec##*:}; \
-		$(SDK_BIN_DIR)/iexec-elf-rebuilder -listing $(IEXEC_RUNTIME_LST) -image $(IEXEC_RUNTIME_IMG) -out $(IEXEC_DIR)/$$out -label $$label; \
+		$(SDK_BIN_DIR)/iexec-elf-rebuilder -listing $(IEXEC_RUNTIME_LST) -image $(IEXEC_RUNTIME_IMG) -out $(IEXEC_DIR)/$$out -label $$label -build-date "$(IEXEC_BUILD_DATE)"; \
 	done
 	@$(SDK_BIN_DIR)/ie64asm -list -I sdk/include -I $(IEXEC_DIR) $(IEXEC_SRC) > $(IEXEC_LST)
 	@$(SDK_BIN_DIR)/iexec-system-exporter -repo-root . -iexec-dir $(IEXEC_DIR) -out-root $(IEXEC_SYSTEM_DIR)

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -23,7 +24,7 @@ const (
 	elfSHTStrTab         = 3
 	elfSHTNote           = 7
 
-	iosmMagic          = 0x4C49424D
+	iosmMagic          = 0x4D534F49
 	iosmSchemaVersion  = 1
 	iosmNoteType       = 0x494F5331
 	iosmKindLibrary    = 1
@@ -32,10 +33,11 @@ const (
 	iosmKindResource   = 4
 	iosmKindCommand    = 5
 	iosmModfCompatPort = 0x00000002
-	iosmSize           = 96
+	iosmSize           = 128
+	iosmCopyright      = "Copyright \xA9 2026 Zayn Otley"
 
-	iosmSectionName = ".ios.libmanifest"
-	iosmNoteName    = "IOS-LIB"
+	iosmSectionName = ".ios.manifest"
+	iosmNoteName    = "IOS-MOD"
 
 	m16LibManifestMagic       = iosmMagic
 	m16LibManifestDescVersion = iosmSchemaVersion
@@ -55,6 +57,8 @@ type libManifestSpec struct {
 	Type          uint32
 	Flags         uint32
 	MsgABIVersion uint32
+	BuildDate     string
+	Copyright     string
 }
 
 type manifestExprParser struct {
@@ -69,6 +73,7 @@ func main() {
 	imagePath := flag.String("image", "", "path to assembled iexec.ie64 image")
 	outPath := flag.String("out", "", "output path for boot_dos_library.elf")
 	label := flag.String("label", "prog_doslib", "flat program label to export as ELF")
+	buildDate := flag.String("build-date", "", "manifest build date (YYYY-MM-DD); defaults to SOURCE_DATE_EPOCH or current UTC date")
 	flag.Parse()
 
 	if *listingPath == "" || *imagePath == "" || *outPath == "" {
@@ -116,12 +121,36 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	resolvedBuildDate, err := resolveBuildDate(*buildDate)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve build date: %v\n", err)
+		os.Exit(1)
+	}
+	spec.BuildDate = resolvedBuildDate
+	spec.Copyright = iosmCopyright
 	elf := buildELF(code, data, spec, hasManifest)
 
 	if err := os.WriteFile(*outPath, elf, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "write output: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func resolveBuildDate(explicit string) (string, error) {
+	if explicit != "" {
+		if _, err := time.Parse("2006-01-02", explicit); err != nil {
+			return "", fmt.Errorf("invalid -build-date %q: %w", explicit, err)
+		}
+		return explicit, nil
+	}
+	if epoch := os.Getenv("SOURCE_DATE_EPOCH"); epoch != "" {
+		seconds, err := strconv.ParseInt(epoch, 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("invalid SOURCE_DATE_EPOCH %q: %w", epoch, err)
+		}
+		return time.Unix(seconds, 0).UTC().Format("2006-01-02"), nil
+	}
+	return time.Now().UTC().Format("2006-01-02"), nil
 }
 
 func parseProgramStartFromListing(body []byte, label string) (uint64, error) {
@@ -892,12 +921,15 @@ func buildManifestNote(spec libManifestSpec) []byte {
 	}
 	binary.LittleEndian.PutUint32(desc[0:4], iosmMagic)
 	binary.LittleEndian.PutUint32(desc[4:8], iosmSchemaVersion)
-	copy(desc[8:40], []byte(spec.Name))
-	binary.LittleEndian.PutUint16(desc[40:42], spec.Version)
-	binary.LittleEndian.PutUint16(desc[42:44], spec.Revision)
-	binary.LittleEndian.PutUint32(desc[44:48], typ)
+	desc[8] = uint8(typ)
+	binary.LittleEndian.PutUint16(desc[10:12], spec.Version)
+	binary.LittleEndian.PutUint16(desc[12:14], spec.Revision)
+	binary.LittleEndian.PutUint16(desc[14:16], spec.Patch)
+	copy(desc[16:48], []byte(spec.Name))
 	binary.LittleEndian.PutUint32(desc[48:52], spec.Flags)
 	binary.LittleEndian.PutUint32(desc[52:56], spec.MsgABIVersion)
+	copy(desc[56:72], []byte(spec.BuildDate))
+	copy(desc[72:120], []byte(spec.Copyright))
 
 	namePaddedLen := roundUp(uint64(len(noteName)), 4)
 	descPaddedLen := roundUp(uint64(len(desc)), 4)

@@ -41,4 +41,5 @@ prog_elfseg:
     ; Pad from 0x1004 to 0x2000
     ds.b    4092
     dc.b    0x55, 0x66, 0x77, 0x88
+prog_elfseg_iosm:
 prog_elfseg_end:
