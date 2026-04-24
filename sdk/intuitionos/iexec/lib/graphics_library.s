@@ -111,6 +111,8 @@ prog_gfxlib_code:
     store.q r6, 232(r29)               ; share_handle
 
     ; Dispatch
+    move.l  r28, #MSG_GET_IOSM
+    beq     r1, r28, .gfx_h_get_iosm
     move.l  r28, #LIB_OP_EXPUNGE
     beq     r1, r28, .gfx_h_expunge
     move.l  r28, #GFX_ENUMERATE_ADAPTERS
@@ -364,6 +366,60 @@ prog_gfxlib_code:
 .gfx_expunge_refuse:
     m16_lib_refuse_expunge 208, 216, .gfx_main
 
+.gfx_h_get_iosm:
+    load.q  r14, 232(r29)
+    beqz    r14, .gfx_get_iosm_badarg
+    move.q  r25, r14                   ; share_handle
+    load.q  r26, 224(r29)              ; reply_port
+    move.q  r1, r25
+    move.l  r2, #MAPF_WRITE
+    syscall #SYS_MAP_SHARED
+    load.q  r29, (sp)
+    bnez    r2, .gfx_get_iosm_maperr
+    move.q  r23, r1
+    move.q  r24, r1
+    move.l  r28, #1
+    bne     r3, r28, .gfx_get_iosm_badarg_free
+    add     r14, r29, #(prog_gfxlib_iosm - prog_gfxlib_data)
+    move.l  r15, #(IOSM_SIZE / 8)
+.gfx_get_iosm_copy:
+    load.q  r16, (r14)
+    store.q r16, (r24)
+    add     r14, r14, #8
+    add     r24, r24, #8
+    sub     r15, r15, #1
+    bnez    r15, .gfx_get_iosm_copy
+    move.q  r1, r23
+    move.l  r2, #IOSM_SIZE
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+    move.q  r1, r26
+    move.q  r2, r0
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .gfx_main
+.gfx_get_iosm_badarg_free:
+    move.q  r1, r23
+    move.q  r2, r3
+    lsl     r2, r2, #12
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+.gfx_get_iosm_badarg:
+    load.q  r1, 224(r29)
+    move.l  r2, #ERR_BADARG
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .gfx_main
+.gfx_get_iosm_maperr:
+    load.q  r1, 224(r29)
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .gfx_main
+
 .gfx_reply:
     ; R2 = err code (used as msg_type per project convention)
     ; R3 = data0, R4 = data1
@@ -413,6 +469,18 @@ prog_gfxlib_data:
     ds.b    14                          ; pad to offset 288 (256+32)
     ds.b    8                           ; 288: hwres_port
     ds.b    8                           ; 296: reply_port
+    align   8
+prog_gfxlib_iosm:
+    dc.l    IOSM_MAGIC
+    dc.l    IOSM_SCHEMA_VERSION
+    dc.b    "graphics.library", 0
+    ds.b    IOSM_NAME_SIZE - 17
+    dc.w    11
+    dc.w    0
+    dc.l    IOSM_KIND_LIBRARY
+    dc.l    MODF_COMPAT_PORT
+    dc.l    0
+    ds.b    IOSM_SIZE - 56
 prog_gfxlib_data_end:
     align   8
 prog_gfxlib_end:

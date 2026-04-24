@@ -299,6 +299,8 @@ prog_doslib_code:
 
 .dos_dispatch:
     load.q  r14, 952(r29)              ; r14 = opcode
+    move.l  r28, #MSG_GET_IOSM
+    beq     r14, r28, .dos_do_get_iosm
     move.l  r28, #DOS_DIR
     beq     r14, r28, .dos_do_dir
     move.l  r28, #DOS_OPEN
@@ -323,6 +325,52 @@ prog_doslib_code:
     beq     r14, r28, .dos_do_loadlib
     ; Unknown opcode → reply with error and loop
     bra     .dos_reply_err
+
+.dos_do_get_iosm:
+    load.l  r21, 976(r29)              ; incoming share_handle required
+    beqz    r21, .dos_get_iosm_reply_badarg
+    load.q  r24, 184(r29)              ; cached share_pages
+    move.l  r11, #1
+    bne     r24, r11, .dos_get_iosm_badarg_free
+    load.q  r23, 168(r29)              ; mapped caller buffer
+    add     r14, r29, #(prog_doslib_iosm - prog_doslib_data)
+    move.l  r15, #(IOSM_SIZE / 8)
+.dos_get_iosm_copy:
+    load.q  r16, (r14)
+    store.q r16, (r23)
+    add     r14, r14, #8
+    add     r23, r23, #8
+    sub     r15, r15, #1
+    bnez    r15, .dos_get_iosm_copy
+    load.q  r1, 168(r29)
+    move.q  r2, r24
+    lsl     r2, r2, #12
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+    load.q  r1, 944(r29)
+    move.q  r2, r0
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+.dos_get_iosm_badarg_free:
+    load.q  r1, 168(r29)
+    move.q  r2, r24
+    lsl     r2, r2, #12
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+    bra     .dos_get_iosm_reply_badarg
+.dos_get_iosm_reply_badarg:
+    load.q  r1, 944(r29)
+    move.l  r2, #ERR_BADARG
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
 
     ; =================================================================
     ; DOS_DIR (type=5): format directory listing into caller's buffer
@@ -7006,6 +7054,19 @@ include "../assets/elfseg_fixture.s"
 ;   192: command name table    (5 x 8 bytes = 40 bytes)
 ;   232: command index table   (5 bytes)
 ;   240: line buffer           (128 bytes)
+
+    align   8
+prog_doslib_iosm:
+    dc.l    IOSM_MAGIC
+    dc.l    IOSM_SCHEMA_VERSION
+    dc.b    "dos.library", 0
+    ds.b    IOSM_NAME_SIZE - 12
+    dc.w    14
+    dc.w    0
+    dc.l    IOSM_KIND_LIBRARY
+    dc.l    MODF_COMPAT_PORT
+    dc.l    0
+    ds.b    IOSM_SIZE - 56
 
 include "../handler/shell.s"
 

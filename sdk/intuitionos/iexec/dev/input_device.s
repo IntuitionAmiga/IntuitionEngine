@@ -114,6 +114,8 @@ prog_input_device_code:
     move.q  r24, r2                    ; r24 = data0 (subscriber port for OPEN)
     move.q  r25, r5                    ; r25 = reply_port
 
+    move.l  r28, #MSG_GET_IOSM
+    beq     r1, r28, .idev_get_iosm
     move.l  r28, #INPUT_OPEN
     beq     r1, r28, .idev_do_open
     move.l  r28, #INPUT_CLOSE
@@ -149,6 +151,58 @@ prog_input_device_code:
     move.l  r2, #INPUT_ERR_OK
     move.q  r3, r0
     move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .idev_main
+
+.idev_get_iosm:
+    store.q r5, 8(sp)
+    beqz    r6, .idev_get_iosm_badarg
+    move.q  r1, r6
+    move.l  r2, #MAPF_WRITE
+    syscall #SYS_MAP_SHARED
+    load.q  r29, (sp)
+    bnez    r2, .idev_get_iosm_maperr
+    move.q  r23, r1
+    move.q  r24, r1
+    move.l  r28, #1
+    bne     r3, r28, .idev_get_iosm_badarg_free
+    add     r14, r29, #(prog_input_device_iosm - prog_input_device_data)
+    move.l  r15, #(IOSM_SIZE / 8)
+.idev_get_iosm_copy:
+    load.q  r16, (r14)
+    store.q r16, (r24)
+    add     r14, r14, #8
+    add     r24, r24, #8
+    sub     r15, r15, #1
+    bnez    r15, .idev_get_iosm_copy
+    move.q  r1, r23
+    move.l  r2, #IOSM_SIZE
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+    load.q  r1, 8(sp)
+    move.l  r2, #INPUT_ERR_OK
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .idev_main
+.idev_get_iosm_badarg_free:
+    move.q  r1, r23
+    move.q  r2, r3
+    lsl     r2, r2, #12
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+.idev_get_iosm_badarg:
+    load.q  r1, 8(sp)
+    move.l  r2, #ERR_BADARG
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .idev_main
+.idev_get_iosm_maperr:
+    load.q  r1, 8(sp)
     move.q  r5, r0
     syscall #SYS_REPLY_MSG
     bra     .idev_main
@@ -322,6 +376,18 @@ prog_input_device_data:
     ds.b    14                          ; pad to offset 224 (192+32)
     ds.b    8                           ; 224: hwres_port
     ds.b    8                           ; 232: reply_port
+    align   8
+prog_input_device_iosm:
+    dc.l    IOSM_MAGIC
+    dc.l    IOSM_SCHEMA_VERSION
+    dc.b    "input.device", 0
+    ds.b    IOSM_NAME_SIZE - 13
+    dc.w    1
+    dc.w    0
+    dc.l    IOSM_KIND_DEVICE
+    dc.l    MODF_COMPAT_PORT
+    dc.l    0
+    ds.b    IOSM_SIZE - 56
 prog_input_device_data_end:
     align   8
 prog_input_device_end:

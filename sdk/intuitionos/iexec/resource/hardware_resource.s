@@ -70,6 +70,8 @@ prog_hwres_code:
     move.q  r25, r7                    ; r25 = sender public task ID (TRUSTED)
     move.q  r26, r5                    ; r26 = reply_port
 
+    move.l  r28, #MSG_GET_IOSM
+    beq     r1, r28, .hwres_get_iosm
     move.l  r28, #HWRES_MSG_REQUEST
     bne     r1, r28, .hwres_main       ; ignore unknown message types
 
@@ -216,6 +218,60 @@ prog_hwres_code:
     syscall #SYS_REPLY_MSG
     bra     .hwres_main
 
+.hwres_get_iosm:
+    beqz    r6, .hwres_get_iosm_badarg
+    move.q  r1, r6
+    move.l  r2, #MAPF_WRITE
+    syscall #SYS_MAP_SHARED
+    load.q  r29, (sp)
+    bnez    r2, .hwres_get_iosm_maperr
+    move.q  r23, r1
+    move.q  r24, r1
+    move.l  r28, #1
+    bne     r3, r28, .hwres_get_iosm_badarg_free
+    add     r14, r29, #(prog_hwres_iosm - prog_hwres_data)
+    move.l  r15, #(IOSM_SIZE / 8)
+.hwres_get_iosm_copy:
+    load.q  r16, (r14)
+    store.q r16, (r24)
+    add     r14, r14, #8
+    add     r24, r24, #8
+    sub     r15, r15, #1
+    bnez    r15, .hwres_get_iosm_copy
+    move.q  r1, r23
+    move.l  r2, #IOSM_SIZE
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+    move.q  r1, r26
+    move.q  r2, r0
+    move.q  r3, r0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_REPLY_MSG
+    bra     .hwres_main
+.hwres_get_iosm_badarg_free:
+    move.q  r1, r23
+    move.q  r2, r3
+    lsl     r2, r2, #12
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+.hwres_get_iosm_badarg:
+    move.q  r1, r26
+    move.l  r2, #ERR_BADARG
+    move.q  r3, r0
+    move.q  r4, r0
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_REPLY_MSG
+    bra     .hwres_main
+.hwres_get_iosm_maperr:
+    move.q  r1, r26
+    move.l  r5, #REPLY_PORT_NONE
+    move.q  r6, r0
+    syscall #SYS_REPLY_MSG
+    bra     .hwres_main
+
 .hwres_halt:
     syscall #SYS_YIELD
     bra     .hwres_halt
@@ -243,6 +299,18 @@ prog_hwres_data:
     dc.l    0xFFFFFFFF, 0xFFFFFFFF      ; 152..159: CHIP owner list[2..3]
     dc.l    0xFFFFFFFF                  ; 160..163: VRAM owner
     ds.b    4                           ; 164..167: pad
+    align   8
+prog_hwres_iosm:
+    dc.l    IOSM_MAGIC
+    dc.l    IOSM_SCHEMA_VERSION
+    dc.b    "hardware.resource", 0
+    ds.b    IOSM_NAME_SIZE - 18
+    dc.w    1
+    dc.w    0
+    dc.l    IOSM_KIND_RESOURCE
+    dc.l    MODF_COMPAT_PORT
+    dc.l    0
+    ds.b    IOSM_SIZE - 56
 prog_hwres_data_end:
     align   8
 prog_hwres_end:

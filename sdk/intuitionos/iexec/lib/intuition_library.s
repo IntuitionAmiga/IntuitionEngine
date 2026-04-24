@@ -58,6 +58,8 @@ prog_intui_code:
     store.q r5, 296(r29)               ; reply_port
     store.q r6, 304(r29)               ; share_handle
 
+    move.l  r28, #MSG_GET_IOSM
+    beq     r1, r28, .intui_do_get_iosm
     move.l  r28, #LIB_OP_EXPUNGE
     beq     r1, r28, .intui_do_expunge
     move.l  r28, #INTUITION_OPEN_WINDOW
@@ -863,6 +865,61 @@ prog_intui_code:
 .intui_expunge_refuse:
     m16_lib_refuse_expunge 280, 288, .intui_main
 
+.intui_do_get_iosm:
+    load.q  r14, 304(r29)
+    beqz    r14, .intui_get_iosm_reply_badarg
+    move.q  r25, r14
+    load.q  r26, 296(r29)
+    move.q  r1, r25
+    move.l  r2, #MAPF_WRITE
+    syscall #SYS_MAP_SHARED
+    load.q  r29, (sp)
+    bnez    r2, .intui_get_iosm_maperr
+    move.q  r23, r1
+    move.q  r24, r1
+    move.l  r28, #1
+    bne     r3, r28, .intui_get_iosm_badarg_free
+    add     r14, r29, #(prog_intui_iosm - prog_intui_data)
+    move.l  r15, #(IOSM_SIZE / 8)
+.intui_get_iosm_copy:
+    load.q  r16, (r14)
+    store.q r16, (r24)
+    add     r14, r14, #8
+    add     r24, r24, #8
+    sub     r15, r15, #1
+    bnez    r15, .intui_get_iosm_copy
+    move.q  r1, r23
+    move.l  r2, #IOSM_SIZE
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+    load.q  r1, 296(r29)
+    move.q  r2, r0
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .intui_main
+.intui_get_iosm_badarg_free:
+    move.q  r1, r23
+    move.q  r2, r3
+    lsl     r2, r2, #12
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+    bra     .intui_get_iosm_reply_badarg
+.intui_get_iosm_reply_badarg:
+    load.q  r1, 296(r29)
+    move.l  r2, #ERR_BADARG
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .intui_main
+.intui_get_iosm_maperr:
+    load.q  r1, 296(r29)
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    bra     .intui_main
+
     ; --- Poll input.device for raw events; route as IDCMP-* to idcmp_port ---
 .intui_poll_input:
     load.q  r29, (sp)
@@ -1211,6 +1268,18 @@ prog_intui_data:
     ; offset 768: embedded Topaz 8x16 bitmap font (256 glyphs x 16 bytes
     ; = 4096 bytes) — used by .intui_draw_char to render title text
     incbin  "topaz.raw"
+    align   8
+prog_intui_iosm:
+    dc.l    IOSM_MAGIC
+    dc.l    IOSM_SCHEMA_VERSION
+    dc.b    "intuition.library", 0
+    ds.b    IOSM_NAME_SIZE - 18
+    dc.w    12
+    dc.w    0
+    dc.l    IOSM_KIND_LIBRARY
+    dc.l    MODF_COMPAT_PORT
+    dc.l    0
+    ds.b    IOSM_SIZE - 56
 prog_intui_data_end:
     align   8
 prog_intui_end:

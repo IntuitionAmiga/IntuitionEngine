@@ -83,6 +83,8 @@ prog_console_code:
 
     move.l  r11, #CON_MSG_READLINE
     beq     r1, r11, .con_readline_req
+    move.l  r11, #MSG_GET_IOSM
+    beq     r1, r11, .con_get_iosm
 
     ; Unknown type — ignore, loop back
     bra     .con_poll_loop
@@ -136,6 +138,62 @@ prog_console_code:
     move.q  r3, r0                     ; R3 = data0 = 0
     move.q  r4, r0                     ; R4 = data1 = 0
     move.q  r5, r0                     ; R5 = share_handle = 0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .con_poll_loop
+
+.con_get_iosm:
+    move.q  r25, r5
+    store.q r5, 8(sp)
+    beqz    r6, .con_get_iosm_badarg
+    move.q  r1, r6
+    move.l  r2, #MAPF_WRITE
+    syscall #SYS_MAP_SHARED
+    load.q  r29, (sp)
+    bnez    r2, .con_get_iosm_maperr
+    move.q  r23, r1
+    move.q  r24, r1
+    move.l  r11, #1
+    bne     r3, r11, .con_get_iosm_badarg_free
+    add     r14, r29, #(prog_console_iosm - prog_console_data)
+    move.l  r15, #(IOSM_SIZE / 8)
+.con_get_iosm_copy:
+    load.q  r16, (r14)
+    store.q r16, (r24)
+    add     r14, r14, #8
+    add     r24, r24, #8
+    sub     r15, r15, #1
+    bnez    r15, .con_get_iosm_copy
+    move.q  r1, r23
+    move.l  r2, #IOSM_SIZE
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+    load.q  r1, 8(sp)
+    move.q  r2, r0
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .con_poll_loop
+.con_get_iosm_badarg_free:
+    move.q  r1, r23
+    move.q  r2, r3
+    lsl     r2, r2, #12
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+.con_get_iosm_badarg:
+    load.q  r1, 8(sp)
+    move.l  r2, #ERR_BADARG
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .con_poll_loop
+.con_get_iosm_maperr:
+    load.q  r1, 8(sp)
+    move.q  r5, r0
     syscall #SYS_REPLY_MSG
     load.q  r29, (sp)
     bra     .con_poll_loop
@@ -220,6 +278,18 @@ prog_console_data:
     dc.b    "console.handler", 0       ; offset 0: port name (16 bytes exactly)
     dc.b    "console.handler M11.5 [Task ", 0  ; offset 16: banner string
     ; offset 128+ is scratch (task_id, port_id, etc.) — zeroed by loader
+    align   8
+prog_console_iosm:
+    dc.l    IOSM_MAGIC
+    dc.l    IOSM_SCHEMA_VERSION
+    dc.b    "console.handler", 0
+    ds.b    IOSM_NAME_SIZE - 16
+    dc.w    1
+    dc.w    0
+    dc.l    IOSM_KIND_HANDLER
+    dc.l    MODF_COMPAT_PORT
+    dc.l    0
+    ds.b    IOSM_SIZE - 56
 prog_console_data_end:
     align   8
 prog_console_end:
