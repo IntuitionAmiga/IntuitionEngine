@@ -320,7 +320,7 @@ prog_type_iosm:
     dc.w    0
     dc.b    "Type", 0
     ds.b    IOSM_NAME_SIZE - 6
-    dc.l    0
+    dc.l    MODF_ASLR_CAPABLE
     dc.l    0
     dc.b    "2026-04-22", 0
     ds.b    IOSM_BUILD_DATE_SIZE - 11

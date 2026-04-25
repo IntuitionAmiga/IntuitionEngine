@@ -24,17 +24,18 @@ const (
 	elfSHTStrTab         = 3
 	elfSHTNote           = 7
 
-	iosmMagic          = 0x4D534F49
-	iosmSchemaVersion  = 1
-	iosmNoteType       = 0x494F5331
-	iosmKindLibrary    = 1
-	iosmKindDevice     = 2
-	iosmKindHandler    = 3
-	iosmKindResource   = 4
-	iosmKindCommand    = 5
-	iosmModfCompatPort = 0x00000002
-	iosmSize           = 128
-	iosmCopyright      = "Copyright \xA9 2026 Zayn Otley"
+	iosmMagic           = 0x4D534F49
+	iosmSchemaVersion   = 1
+	iosmNoteType        = 0x494F5331
+	iosmKindLibrary     = 1
+	iosmKindDevice      = 2
+	iosmKindHandler     = 3
+	iosmKindResource    = 4
+	iosmKindCommand     = 5
+	iosmModfCompatPort  = 0x00000002
+	iosmModfASLRCapable = 0x00000004
+	iosmSize            = 128
+	iosmCopyright       = "Copyright \xA9 2026 Zayn Otley"
 
 	iosmSectionName = ".ios.manifest"
 	iosmNoteName    = "IOS-MOD"
@@ -347,23 +348,23 @@ func requiresSourceManifest(label string) bool {
 }
 
 var manifestSpecsByLabel = map[string]libManifestSpec{
-	"prog_console":      {Name: "console.handler", Kind: iosmKindHandler, Version: 1, Revision: 0, Flags: iosmModfCompatPort},
-	"prog_shell":        {Name: "Shell", Kind: iosmKindHandler, Version: 1, Revision: 0},
-	"prog_hwres":        {Name: "hardware.resource", Kind: iosmKindResource, Version: 1, Revision: 0, Flags: iosmModfCompatPort},
-	"prog_input_device": {Name: "input.device", Kind: iosmKindDevice, Version: 1, Revision: 0, Flags: iosmModfCompatPort},
-	"prog_version":      {Name: "Version", Kind: iosmKindCommand, Version: 1, Revision: 0},
-	"prog_avail":        {Name: "Avail", Kind: iosmKindCommand, Version: 1, Revision: 0},
-	"prog_dir":          {Name: "Dir", Kind: iosmKindCommand, Version: 1, Revision: 0},
-	"prog_type":         {Name: "Type", Kind: iosmKindCommand, Version: 1, Revision: 0},
-	"prog_echo_cmd":     {Name: "Echo", Kind: iosmKindCommand, Version: 1, Revision: 0},
-	"prog_resident_cmd": {Name: "Resident", Kind: iosmKindCommand, Version: 1, Revision: 0},
-	"prog_assign_cmd":   {Name: "Assign", Kind: iosmKindCommand, Version: 1, Revision: 0},
-	"prog_list_cmd":     {Name: "List", Kind: iosmKindCommand, Version: 1, Revision: 0},
-	"prog_which_cmd":    {Name: "Which", Kind: iosmKindCommand, Version: 1, Revision: 0},
-	"prog_help_app":     {Name: "Help", Kind: iosmKindCommand, Version: 1, Revision: 0},
-	"prog_gfxdemo":      {Name: "GfxDemo", Kind: iosmKindCommand, Version: 1, Revision: 0},
-	"prog_about":        {Name: "About", Kind: iosmKindCommand, Version: 1, Revision: 0},
-	"prog_elfseg":       {Name: "ElfSeg", Kind: iosmKindCommand, Version: 1, Revision: 0},
+	"prog_console":      {Name: "console.handler", Kind: iosmKindHandler, Version: 1, Revision: 0, Flags: iosmModfCompatPort | iosmModfASLRCapable},
+	"prog_shell":        {Name: "Shell", Kind: iosmKindHandler, Version: 1, Revision: 0, Flags: iosmModfCompatPort | iosmModfASLRCapable},
+	"prog_hwres":        {Name: "hardware.resource", Kind: iosmKindResource, Version: 1, Revision: 0, Flags: iosmModfCompatPort | iosmModfASLRCapable},
+	"prog_input_device": {Name: "input.device", Kind: iosmKindDevice, Version: 1, Revision: 0, Flags: iosmModfCompatPort | iosmModfASLRCapable},
+	"prog_version":      {Name: "Version", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_avail":        {Name: "Avail", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_dir":          {Name: "Dir", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_type":         {Name: "Type", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_echo_cmd":     {Name: "Echo", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_resident_cmd": {Name: "Resident", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_assign_cmd":   {Name: "Assign", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_list_cmd":     {Name: "List", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_which_cmd":    {Name: "Which", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_help_app":     {Name: "Help", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_gfxdemo":      {Name: "GfxDemo", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_about":        {Name: "About", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_elfseg":       {Name: "ElfSeg", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
 }
 
 func splitDirectiveOperands(rest string) []string {

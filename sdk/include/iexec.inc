@@ -451,6 +451,8 @@ MODF_RESIDENT           equ 0x00000001 ; runtime pin: CloseLibrary-to-zero keeps
                                        ; the row ONLINE at the resident floor
 MODF_COMPAT_PORT        equ 0x00000002 ; manifest contract: module publishes a
                                        ; FindPort-visible public compat port
+MODF_ASLR_CAPABLE       equ 0x00000004 ; manifest contract: DOS-loadable ELF was
+                                       ; built to IOS PIE-capable codegen rules
 
 LIB_OP_EXPUNGE          equ 0x4D313645
 

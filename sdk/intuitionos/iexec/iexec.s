@@ -2880,7 +2880,7 @@ kern_boot_validate_library_manifest:
     load.w  r11, IOSM_OFF_PATCH(r27)   ; patch
     bnez    r11, .kbvlm_note_next
     load.l  r11, IOSM_OFF_FLAGS(r27)   ; flags
-    move.l  r12, #MODF_COMPAT_PORT
+    move.l  r12, #(MODF_COMPAT_PORT | MODF_ASLR_CAPABLE)
     bne     r11, r12, .kbvlm_note_next
     load.l  r11, IOSM_OFF_MSG_ABI_VERSION(r27) ; compat message ABI version
     bnez    r11, .kbvlm_note_next
@@ -9003,7 +9003,7 @@ endif
     store.l r23, KD_MODULE_OWNING_TASK(r21)
     store.l r26, KD_MODULE_PUBLIC_PORT(r21)
     store.l r0, KD_MODULE_OPEN_COUNT(r21)
-    move.l  r11, #MODF_COMPAT_PORT
+    move.l  r11, #(MODF_COMPAT_PORT | MODF_ASLR_CAPABLE)
     store.l r11, KD_MODULE_FLAGS(r21)
     store.l r0, KD_MODULE_DEADLINE_TICK(r21)
     move.l  r11, #MODCLASS_LIBRARY
@@ -9011,11 +9011,11 @@ endif
     move.l  r11, #KERN_DATA_BASE
     load.l  r12, KD_DOSLIB_PUBID(r11)
     bne     r12, r23, .addlib_runtime_flags_done
-    move.l  r11, #(MODF_RESIDENT | MODF_COMPAT_PORT)
+    move.l  r11, #(MODF_RESIDENT | MODF_COMPAT_PORT | MODF_ASLR_CAPABLE)
     store.l r11, KD_MODULE_FLAGS(r21)
     bra     .addlib_runtime_flags_done
 .addlib_nonlibrary_resident:
-    move.l  r11, #(MODF_RESIDENT | MODF_COMPAT_PORT)
+    move.l  r11, #(MODF_RESIDENT | MODF_COMPAT_PORT | MODF_ASLR_CAPABLE)
     store.l r11, KD_MODULE_FLAGS(r21)
 .addlib_runtime_flags_done:
     move.l  r11, #M16_MODSTATE_ONLINE
@@ -13005,7 +13005,7 @@ kern_iosm_descriptor:
     dc.w    IOS_VERSION_PATCH
     dc.b    "exec.library", 0
     ds.b    IOSM_NAME_SIZE - 13
-    dc.l    MODF_RESIDENT | MODF_COMPAT_PORT
+    dc.l    MODF_RESIDENT | MODF_COMPAT_PORT | MODF_ASLR_CAPABLE
     dc.l    0
     dc.b    "2026-04-22", 0
     ds.b    IOSM_BUILD_DATE_SIZE - 11

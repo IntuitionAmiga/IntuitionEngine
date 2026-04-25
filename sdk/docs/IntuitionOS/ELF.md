@@ -110,7 +110,9 @@ What M16 adds on top of the existing loader boundary:
 - a module manifest note section: `.ios.manifest` / `IOSM`
 - exec/dos use that manifest to validate module identity, class, version, flags, and message ABI before a library becomes discoverable through `OpenLibrary`
 - the internal module registry and `module_load_handle` lifecycle are separate from the public DOS seglist contract
-- PIE-capable codegen remains the direction of travel, but `MODF_ASLR_CAPABLE` remains informational in v1 and does not change current placement or validation rules
+- M16.3 makes `MODF_ASLR_CAPABLE` mandatory for all DOS-loaded ELFs. Commands must carry exactly `MODF_ASLR_CAPABLE`; libraries, devices, handlers, and resources must carry exactly `MODF_COMPAT_PORT | MODF_ASLR_CAPABLE`.
+- M16.3 keeps the strict `ET_EXEC` placement contract. M16.4, not M16.3, owns relocation and ASLR, including `ET_DYN`, randomized placement, ASLR, and KASLR.
+- W^X, SKEF/SKAC/SUA discipline, bounded IOSM/path inputs, and shared-memory `MAPF_READ` / `MAPF_WRITE` rules remain mandatory.
 
 M16.2 extends the internal protected-module lifecycle to handlers, devices,
 and resources using the existing `IOSM.kind` values and class-specific path

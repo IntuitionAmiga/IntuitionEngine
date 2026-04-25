@@ -396,7 +396,7 @@ prog_input_device_iosm:
     dc.w    0
     dc.b    "input.device", 0
     ds.b    IOSM_NAME_SIZE - 13
-    dc.l    MODF_COMPAT_PORT
+    dc.l    MODF_COMPAT_PORT | MODF_ASLR_CAPABLE
     dc.l    0
     dc.b    "2026-04-22", 0
     ds.b    IOSM_BUILD_DATE_SIZE - 11

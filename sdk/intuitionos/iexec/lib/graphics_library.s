@@ -1,7 +1,7 @@
 include "template.s"
 
 prog_graphics_library:
-    .libmanifest name="graphics.library", version=11, revision=0, type=1, flags=2, msg_abi=0
+    .libmanifest name="graphics.library", version=11, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0
     dc.l    0, 0
     dc.l    prog_gfxlib_code_end - prog_gfxlib_code
     dc.l    prog_gfxlib_data_end - prog_gfxlib_data
@@ -481,7 +481,7 @@ prog_gfxlib_iosm:
     dc.w    0
     dc.b    "graphics.library", 0
     ds.b    IOSM_NAME_SIZE - 17
-    dc.l    MODF_COMPAT_PORT
+    dc.l    MODF_COMPAT_PORT | MODF_ASLR_CAPABLE
     dc.l    0
     dc.b    "2026-04-22", 0
     ds.b    IOSM_BUILD_DATE_SIZE - 11

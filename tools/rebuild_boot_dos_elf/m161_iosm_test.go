@@ -15,7 +15,7 @@ func TestBuildManifestNoteUsesIOSMSchema(t *testing.T) {
 		Version:       23,
 		Revision:      4,
 		Patch:         5,
-		Flags:         iosmModfCompatPort,
+		Flags:         iosmModfCompatPort | iosmModfASLRCapable,
 		MsgABIVersion: 9,
 		BuildDate:     "2026-04-22",
 		Copyright:     iosmCopyright,
@@ -59,8 +59,8 @@ func TestBuildManifestNoteUsesIOSMSchema(t *testing.T) {
 	if got := string(bytes.TrimRight(desc[16:48], "\x00")); got != "template.library" {
 		t.Fatalf("name=%q, want template.library", got)
 	}
-	if got := binary.LittleEndian.Uint32(desc[48:52]); got != iosmModfCompatPort {
-		t.Fatalf("flags=%#x, want %#x", got, iosmModfCompatPort)
+	if got := binary.LittleEndian.Uint32(desc[48:52]); got != iosmModfCompatPort|iosmModfASLRCapable {
+		t.Fatalf("flags=%#x, want %#x", got, iosmModfCompatPort|iosmModfASLRCapable)
 	}
 	if got := binary.LittleEndian.Uint32(desc[52:56]); got != 9 {
 		t.Fatalf("msg_abi=%d, want 9", got)
@@ -82,7 +82,7 @@ func TestBuildELFUsesIOSMManifestMetadata(t *testing.T) {
 		Kind:          iosmKindLibrary,
 		Version:       23,
 		Revision:      4,
-		Flags:         iosmModfCompatPort,
+		Flags:         iosmModfCompatPort | iosmModfASLRCapable,
 		MsgABIVersion: 9,
 		BuildDate:     "2026-04-22",
 		Copyright:     iosmCopyright,

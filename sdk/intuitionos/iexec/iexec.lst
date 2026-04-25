@@ -191,6 +191,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (75964 bytes)
          = 0000000000000020  M16_EXPUNGE_GRACE_TICKS  equ 32
          = 0000000000000001  MODF_RESIDENT           equ 0x00000001
          = 0000000000000002  MODF_COMPAT_PORT        equ 0x00000002
+         = 0000000000000004  MODF_ASLR_CAPABLE       equ 0x00000004
          = 000000004D313645  LIB_OP_EXPUNGE          equ 0x4D313645
          = 0000000000010C68  KD_MODULE_WAITER_ROWS    equ 68712
          = 0000000000000018  KD_MODULE_WAITER_STRIDE  equ 24
@@ -3858,7 +3859,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (75964 bytes)
 00005788  10 5B D8 00 0E 00 00 00... load.w  r11, IOSM_OFF_PATCH(r27)
 00005790  42 06 58 00 88 00 00 00... bne r11, r0, .kbvlm_note_next
 00005798  10 5D D8 00 30 00 00 00... load.l  r11, IOSM_OFF_FLAGS(r27)
-000057A0  01 65 00 00 02 00 00 00... move.l  r12, #MODF_COMPAT_PORT
+000057A0  01 65 00 00 06 00 00 00... move.l  r12, #(MODF_COMPAT_PORT | MODF_ASLR_CAPABLE)
 000057A8  42 06 58 60 70 00 00 00... bne     r11, r12, .kbvlm_note_next
 000057B0  10 5D D8 00 34 00 00 00... load.l  r11, IOSM_OFF_MSG_ABI_VERSION(r27)
 000057B8  42 06 58 00 60 00 00 00... bne r11, r0, .kbvlm_note_next
@@ -8555,7 +8556,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (75964 bytes)
 0000DB30  11 BD A8 00 30 00 00 00... store.l r23, KD_MODULE_OWNING_TASK(r21)
 0000DB38  11 D5 A8 00 34 00 00 00... store.l r26, KD_MODULE_PUBLIC_PORT(r21)
 0000DB40  11 05 A8 00 38 00 00 00... store.l r0, KD_MODULE_OPEN_COUNT(r21)
-0000DB48  01 5D 00 00 02 00 00 00... move.l  r11, #MODF_COMPAT_PORT
+0000DB48  01 5D 00 00 06 00 00 00... move.l  r11, #(MODF_COMPAT_PORT | MODF_ASLR_CAPABLE)
 0000DB50  11 5D A8 00 3C 00 00 00... store.l r11, KD_MODULE_FLAGS(r21)
 0000DB58  11 05 A8 00 48 00 00 00... store.l r0, KD_MODULE_DEADLINE_TICK(r21)
 0000DB60  01 5D 00 00 01 00 00 00... move.l  r11, #MODCLASS_LIBRARY
@@ -8563,11 +8564,11 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (75964 bytes)
 0000DB70  01 5D 00 00 00 D0 08 00... move.l  r11, #KERN_DATA_BASE
 0000DB78  10 65 58 00 BC C0 00 00... load.l  r12, KD_DOSLIB_PUBID(r11)
 0000DB80  42 06 60 B8 30 00 00 00... bne     r12, r23, .addlib_runtime_flags_done
-0000DB88  01 5D 00 00 03 00 00 00... move.l  r11, #(MODF_RESIDENT | MODF_COMPAT_PORT)
+0000DB88  01 5D 00 00 07 00 00 00... move.l  r11, #(MODF_RESIDENT | MODF_COMPAT_PORT | MODF_ASLR_CAPABLE)
 0000DB90  11 5D A8 00 3C 00 00 00... store.l r11, KD_MODULE_FLAGS(r21)
 0000DB98  40 06 00 00 18 00 00 00... bra     .addlib_runtime_flags_done
                          .addlib_nonlibrary_resident:
-0000DBA0  01 5D 00 00 03 00 00 00... move.l  r11, #(MODF_RESIDENT | MODF_COMPAT_PORT)
+0000DBA0  01 5D 00 00 07 00 00 00... move.l  r11, #(MODF_RESIDENT | MODF_COMPAT_PORT | MODF_ASLR_CAPABLE)
 0000DBA8  11 5D A8 00 3C 00 00 00... store.l r11, KD_MODULE_FLAGS(r21)
                          .addlib_runtime_flags_done:
 0000DBB0  01 5D 00 00 02 00 00 00... move.l  r11, #M16_MODSTATE_ONLINE
@@ -11899,7 +11900,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (75964 bytes)
 0001382A  01 00                    dc.w    IOS_VERSION_PATCH
 0001382C  65 78 65 63 2E 6C 69 62... dc.b    "exec.library", 0
                          ds.b    IOSM_NAME_SIZE - 13  ; 19 bytes reserved
-0001384C  03 00 00 00              dc.l    MODF_RESIDENT | MODF_COMPAT_PORT
+0001384C  07 00 00 00              dc.l    MODF_RESIDENT | MODF_COMPAT_PORT | MODF_ASLR_CAPABLE
 00013850  00 00 00 00              dc.l    0
 00013854  32 30 32 36 2D 30 34 2D... dc.b    "2026-04-22", 0
                          ds.b    IOSM_BUILD_DATE_SIZE - 11  ; 5 bytes reserved

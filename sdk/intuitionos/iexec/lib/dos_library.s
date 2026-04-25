@@ -1,5 +1,5 @@
 prog_doslib:
-    .libmanifest name="dos.library", version=14, revision=0, type=1, flags=2, msg_abi=0
+    .libmanifest name="dos.library", version=14, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0
     ; Header
     dc.l    0, 0
     dc.l    prog_doslib_code_end - prog_doslib_code
@@ -2788,6 +2788,12 @@ prog_doslib_code:
 
     load.q  r1, 336(r29)
     move.q  r2, r24
+    push    r24
+    jsr     .dos_validate_loaded_elf_aslr_contract
+    pop     r24
+    bnez    r20, .dos_loadseg_host_badarg_free_tmp
+    load.q  r1, 336(r29)
+    move.q  r2, r24
     move.q  r30, r29
     jsr     .dos_elf_build_seglist
     move.q  r29, r30
@@ -2827,6 +2833,15 @@ prog_doslib_code:
 .dos_loadseg_host_free_done_err:
     pop     r29
     bra     .dos_reply_err
+.dos_loadseg_host_badarg_free_tmp:
+    push    r29
+    load.q  r1, 336(r29)
+    beqz    r1, .dos_loadseg_host_badarg_free_done
+    load.q  r2, 328(r29)
+    syscall #SYS_FREE_MEM
+.dos_loadseg_host_badarg_free_done:
+    pop     r29
+    bra     .dos_reply_badarg
 
 .dos_loadseg_meta_lookup:
     load.q  r23, 320(r29)
@@ -2866,6 +2881,10 @@ prog_doslib_code:
 
     load.q  r1, 336(r29)               ; temp file VA
     load.q  r2, 328(r29)               ; file size
+    jsr     .dos_validate_loaded_elf_aslr_contract
+    bnez    r20, .dos_loadseg_meta_badarg_free
+    load.q  r1, 336(r29)               ; temp file VA
+    load.q  r2, 328(r29)               ; file size
     move.q  r30, r29
     jsr     .dos_elf_build_seglist
     move.q  r29, r30
@@ -2886,6 +2905,14 @@ prog_doslib_code:
     syscall #SYS_REPLY_MSG
     load.q  r29, (sp)
     bra     .dos_main_loop
+
+.dos_loadseg_meta_badarg_free:
+    push    r29
+    load.q  r1, 336(r29)
+    load.q  r2, 328(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    bra     .dos_reply_badarg
 
     ; =================================================================
     ; DOS_UNLOADSEG (type=8): free a DOS-owned seglist.
@@ -3543,6 +3570,26 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     load.l  r15, (r21)
     move.l  r28, #0x464C457F
     bne     r15, r28, .dlhrn_free_tmp_nonelf
+    move.q  r1, r21
+    move.q  r2, r23
+    load.q  r14, 672(r29)
+    load.q  r15, 680(r29)
+    load.q  r16, 688(r29)
+    push    r16
+    push    r15
+    push    r14
+    push    r23
+    push    r21
+    jsr     .dos_validate_loaded_elf_aslr_contract
+    pop     r21
+    pop     r23
+    pop     r14
+    pop     r15
+    pop     r16
+    store.q r14, 672(r29)
+    store.q r15, 680(r29)
+    store.q r16, 688(r29)
+    bnez    r20, .dlhrn_free_tmp_badarg
 
     push    r29
     move.q  r1, r21
@@ -4783,6 +4830,8 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     add     r11, r11, #1
     bra     .dpcife_reserved2_loop
 .dpcife_copy_desc:
+    jsr     .dos_validate_iosm_aslr_contract
+    bnez    r20, .dpcife_note_next
     load.q  r14, 664(r29)                ; destination
     move.l  r15, #(IOSM_SIZE / 8)
 .dpcife_copy_loop:
@@ -4805,6 +4854,48 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
 .dpcife_notfound:
     move.q  r20, #ERR_NOTFOUND
 .dpcife_done:
+    rts
+
+    ; .dos_validate_loaded_elf_aslr_contract
+    ; In:  r1 = ELF ptr, r2 = ELF size
+    ; Out: r20 = ERR_OK / ERR_NOTFOUND / ERR_BADARG.
+.dos_validate_loaded_elf_aslr_contract:
+    move.l  r3, #(prog_doslib_pmp_desc_dst - prog_doslib_data)
+    add     r3, r29, r3
+    jsr     .dos_pmp_copy_iosm_from_elf
+    rts
+
+    ; .dos_validate_iosm_aslr_contract
+    ; In:  r27 = IOSM descriptor ptr
+    ; Out: r20 = ERR_OK or ERR_BADARG.
+.dos_validate_iosm_aslr_contract:
+    move.q  r20, #ERR_BADARG
+    load.b  r11, IOSM_OFF_KIND(r27)
+    move.l  r12, #IOSM_KIND_COMMAND
+    beq     r11, r12, .dviac_command
+    move.l  r12, #IOSM_KIND_LIBRARY
+    beq     r11, r12, .dviac_module
+    move.l  r12, #IOSM_KIND_DEVICE
+    beq     r11, r12, .dviac_module
+    move.l  r12, #IOSM_KIND_HANDLER
+    beq     r11, r12, .dviac_module
+    move.l  r12, #IOSM_KIND_RESOURCE
+    beq     r11, r12, .dviac_module
+    rts
+.dviac_command:
+    load.l  r11, IOSM_OFF_FLAGS(r27)
+    move.l  r12, #MODF_ASLR_CAPABLE
+    bne     r11, r12, .dviac_done
+    move.q  r20, #ERR_OK
+    rts
+.dviac_module:
+    load.l  r11, IOSM_OFF_FLAGS(r27)
+    and     r12, r11, #MODF_ASLR_CAPABLE
+    beqz    r12, .dviac_done
+    move.l  r12, #(MODF_COMPAT_PORT | MODF_ASLR_CAPABLE)
+    bne     r11, r12, .dviac_done
+    move.q  r20, #ERR_OK
+.dviac_done:
     rts
 
     ; R14 = NUL-terminated candidate. R23 = 0 on exact ".ios.manifest".
@@ -5888,6 +5979,11 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
 
     move.q  r1, r21                    ; temp contiguous ELF image
     move.q  r2, r23                    ; image_size
+    jsr     .dos_validate_loaded_elf_aslr_contract
+    bnez    r20, .dos_run_meta_reject_badarg
+
+    move.q  r1, r21                    ; temp contiguous ELF image
+    move.q  r2, r23                    ; image_size
     move.q  r30, r29
     jsr     .dos_elf_build_seglist
     move.q  r29, r30
@@ -5911,10 +6007,37 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     load.q  r29, (sp)
     bra     .dos_main_loop
 
+.dos_run_meta_reject_badarg:
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 288(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    load.q  r1, 944(r29)
+    move.l  r2, #DOS_ERR_BADARG
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
 .dos_run_launch_hostfs_elf:
     load.l  r15, (r21)
     move.l  r28, #0x464C457F
     bne     r15, r28, .dos_run_reject_flat
+    push    r18
+    push    r16
+    push    r23
+    push    r21
+    move.q  r1, r21
+    move.q  r2, r23
+    jsr     .dos_validate_loaded_elf_aslr_contract
+    pop     r21
+    pop     r23
+    pop     r16
+    pop     r18
+    bnez    r20, .dos_run_hostfs_reject_badarg
     push    r29
     move.q  r1, r21
     move.q  r2, r23
@@ -5930,6 +6053,26 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     load.q  r2, 624(r29)
     syscall #SYS_FREE_MEM
     pop     r29
+    load.q  r1, 944(r29)
+    load.q  r2, 312(r29)
+    load.q  r3, 304(r29)
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+.dos_run_hostfs_reject_badarg:
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    load.q  r29, (sp)
+    store.q r0, 304(r29)
+    move.l  r15, #DOS_ERR_BADARG
+    store.q r15, 312(r29)
+    store.q r29, (sp)
     load.q  r1, 944(r29)
     load.q  r2, 312(r29)
     load.q  r3, 304(r29)
@@ -6115,6 +6258,15 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     move.l  r28, #0x464C457F
     bne     r15, r28, .dos_loadlib_free_tmp_nonelf
 
+    push    r23
+    push    r21
+    move.q  r1, r21
+    move.q  r2, r23
+    jsr     .dos_validate_loaded_elf_aslr_contract
+    pop     r21
+    pop     r23
+    bnez    r20, .dos_loadlib_free_tmp_badarg
+
     add     r16, r29, #(prog_doslib_empty_args - prog_doslib_data)
     move.q  r18, r0
     move.l  r17, #BOOT_ELF_EXEC_FLAG_TRUSTED_INTERNAL
@@ -6167,6 +6319,8 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     pop     r2
     bra     .dos_loadlib_report_fail
 .dos_loadlib_free_tmp_nonelf:
+.dos_loadlib_free_tmp_badarg:
+    move.l  r2, #DOS_ERR_BADARG
     push    r29
     load.q  r1, 296(r29)
     load.q  r2, 624(r29)
@@ -7462,7 +7616,7 @@ include "../assets/elfseg_fixture.s"
     align   8
 
 prog_doslib_pmp_desc_dst:
-    ds.b    8
+    ds.b    IOSM_SIZE
 
 ; ---------------------------------------------------------------------------
 ; SHELL — interactive command shell (M10)
@@ -7499,7 +7653,7 @@ prog_doslib_iosm:
     dc.w    0
     dc.b    "dos.library", 0
     ds.b    IOSM_NAME_SIZE - 12
-    dc.l    MODF_COMPAT_PORT
+    dc.l    MODF_COMPAT_PORT | MODF_ASLR_CAPABLE
     dc.l    0
     dc.b    "2026-04-22", 0
     ds.b    IOSM_BUILD_DATE_SIZE - 11

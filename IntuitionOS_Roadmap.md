@@ -183,6 +183,10 @@ Post-M16 note:
   deferred to `M16.2.1`
 - `M16.2.1` freezes public non-library acquisition as messages to the
   kernel-serviced public `exec.library` port, not as new public syscalls.
+- `M16.3` makes `MODF_ASLR_CAPABLE` mandatory for all DOS-loaded ELFs and
+  audits/marks shipped commands, libraries, devices, handlers, and resources.
+  The strict `ET_EXEC` placement contract remains; `ET_DYN`, relocation,
+  randomized placement, ASLR, and KASLR stay in `M16.4`.
   SDK wrappers send `EXEC_MSG_ATTACH_HANDLER`, `EXEC_MSG_OPEN_DEVICE`, or
   `EXEC_MSG_OPEN_RESOURCE` with a one-page shared request object, and release
   opaque generation-aware tokens through the matching close/detach opcodes.

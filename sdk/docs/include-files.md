@@ -48,6 +48,15 @@ The compatibility ops (`DOS_ASSIGN_LIST`, `DOS_ASSIGN_QUERY`, `DOS_ASSIGN_SET`) 
 
 `sdk/docs/IntuitionOS/Toolchain.md` is the canonical IOS-native codegen contract. `iexec.inc` remains the ABI/include contract, not the full loader/toolchain spec.
 
+As of **M16.3**, `iexec.inc` exports `MODF_ASLR_CAPABLE` (`0x00000004`).
+DOS-loaded ELFs must carry it in IOSM: commands use exactly
+`MODF_ASLR_CAPABLE`, while libraries, devices, handlers, and resources use
+exactly `MODF_COMPAT_PORT | MODF_ASLR_CAPABLE`. This marks the shipped ELF
+surface as PIE-capable without changing the strict `ET_EXEC` placement
+contract; `ET_DYN`, relocation, randomized placement, ASLR, and KASLR remain
+M16.4 scope. W^X, SKEF/SKAC/SUA discipline, bounded inputs, and shared-memory
+`MAPF_READ` / `MAPF_WRITE` rules remain mandatory.
+
 As of **M15.6**, `iexec.inc` adds the CPU-level SMEP/SMAP-equivalent controls and the supervisor-user-access latch opcodes so kernel-side assembly can reference them symbolically:
 
 - `MMU_CTRL_ENABLE` (bit 0) — MMU translation enable (already established).

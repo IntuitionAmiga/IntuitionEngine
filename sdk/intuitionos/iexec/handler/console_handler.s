@@ -299,7 +299,7 @@ prog_console_iosm:
     dc.w    0
     dc.b    "console.handler", 0
     ds.b    IOSM_NAME_SIZE - 16
-    dc.l    MODF_COMPAT_PORT
+    dc.l    MODF_COMPAT_PORT | MODF_ASLR_CAPABLE
     dc.l    0
     dc.b    "2026-04-22", 0
     ds.b    IOSM_BUILD_DATE_SIZE - 11

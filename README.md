@@ -6102,6 +6102,12 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 - **PIE and ASLR stay separate.** M16.3 is reserved for making the shipped ELF surface consistently PIE-capable; M16.4 is reserved for real relocation and ASLR/randomized placement. M16.2 keeps the M14.2 `ET_EXEC` placement contract unchanged.
 - See `sdk/docs/IntuitionOS/M16.2-plan.md` for the full TDD milestone plan and handoff notes.
 
+**M16.3 PIE-capable ELF surface status** - `MODF_ASLR_CAPABLE` is now load-bearing:
+
+- **All DOS-loaded ELFs require ASLR-capable metadata.** Commands carry exactly `MODF_ASLR_CAPABLE`; libraries, devices, handlers, and resources carry exactly `MODF_COMPAT_PORT | MODF_ASLR_CAPABLE`.
+- **Placement remains strict `ET_EXEC`.** M16.3 does not add `ET_DYN`, runtime relocation, randomized placement, ASLR, or KASLR; that handoff remains M16.4.
+- **Hardening rules stay intact.** W^X, SKEF/SKAC/SUA discipline, bounded inputs, and non-executable shared-memory `MAPF_READ` / `MAPF_WRITE` transfers remain mandatory.
+
 **M15.1 source layout status** - the IntuitionOS sources are no longer forced to live in one monolithic assembly body, and the hostfs runtime now builds separately from the kernel image:
 
 - `sdk/intuitionos/iexec/iexec.s` remains the kernel assembly entrypoint and the top-level `exec.library` image/layout file.

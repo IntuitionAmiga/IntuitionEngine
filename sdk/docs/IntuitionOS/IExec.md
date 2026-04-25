@@ -165,7 +165,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - expunge protocol: exec queues `LIB_OP_EXPUNGE`, waits for `SYS_M16_EXPUNGE_RESULT`, and either unloads the library generation or cancels the expunge if a reopen/resident pin revives the row
 - bootstrap path: exec loads `dos.library` directly from `IOSSYS:LIBS/dos.library`, marks it resident in the registry, and leaves later runtime libraries to `OpenLibrary` autoload
 - panic contract: a library that dies before `AddLibrary` or while ONLINE never leaves a callable half-online row; waiters/openers see failure or `SIGF_MODDEAD`, and the next open retries from `UNLOADED`
-- `MODF_RESIDENT`, `MODF_COMPAT_PORT`, and `SIGF_MODDEAD` are the currently shipped public constants; `MODF_ASLR_CAPABLE` remains a design-level note tied to PIE-capable codegen direction rather than a widened runtime loader contract today
+- `MODF_RESIDENT`, `MODF_COMPAT_PORT`, `MODF_ASLR_CAPABLE`, and `SIGF_MODDEAD` are the currently shipped public constants. M16.3 makes `MODF_ASLR_CAPABLE` mandatory for all DOS-loaded ELFs while keeping strict `ET_EXEC`; M16.4, not M16.3, owns relocation and ASLR.
 - per-task open tracking remains v1 bookkeeping; M16 tracks opener task/count rows for correctness and crash signaling, while deeper automatic task-owned-handle sweep remains future work
 
 **M16.1 IOSM / VERSION summary:**

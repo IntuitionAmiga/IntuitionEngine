@@ -1,7 +1,7 @@
 include "template.s"
 
 prog_intuition_library:
-    .libmanifest name="intuition.library", version=12, revision=0, type=1, flags=2, msg_abi=0
+    .libmanifest name="intuition.library", version=12, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0
     dc.l    0, 0
     dc.l    prog_intui_code_end - prog_intui_code
     dc.l    prog_intui_data_end - prog_intui_data
@@ -1280,7 +1280,7 @@ prog_intui_iosm:
     dc.w    0
     dc.b    "intuition.library", 0
     ds.b    IOSM_NAME_SIZE - 18
-    dc.l    MODF_COMPAT_PORT
+    dc.l    MODF_COMPAT_PORT | MODF_ASLR_CAPABLE
     dc.l    0
     dc.b    "2026-04-22", 0
     ds.b    IOSM_BUILD_DATE_SIZE - 11

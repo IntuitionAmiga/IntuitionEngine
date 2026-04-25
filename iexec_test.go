@@ -12791,7 +12791,7 @@ func TestIExec_M16_LibraryTemplateBoilerplateIsShared(t *testing.T) {
 			path: "sdk/intuitionos/iexec/lib/graphics_library.s",
 			want: []string{
 				`include "template.s"`,
-				`.libmanifest name="graphics.library", version=11, revision=0, type=1, flags=2, msg_abi=0`,
+				`.libmanifest name="graphics.library", version=11, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0`,
 				"m16_lib_preamble 128",
 				"m16_lib_register 16, 11, 0, 144, .gfx_addlib_done, .gfx_addlib_done, .gfx_halt",
 				"m16_lib_print_banner 48, 128, .gfx_ban_loop, .gfx_ban_id",
@@ -12803,7 +12803,7 @@ func TestIExec_M16_LibraryTemplateBoilerplateIsShared(t *testing.T) {
 			path: "sdk/intuitionos/iexec/lib/intuition_library.s",
 			want: []string{
 				`include "template.s"`,
-				`.libmanifest name="intuition.library", version=12, revision=0, type=1, flags=2, msg_abi=0`,
+				`.libmanifest name="intuition.library", version=12, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0`,
 				"m16_lib_preamble 128",
 				"m16_lib_register 320, 12, 0, 136, .intui_addlib_done, .intui_exit, .intui_halt",
 				"m16_lib_print_banner 416, 128, .intui_ban_loop, .intui_ban_id",
@@ -12814,7 +12814,7 @@ func TestIExec_M16_LibraryTemplateBoilerplateIsShared(t *testing.T) {
 		{
 			path: "sdk/intuitionos/iexec/lib/dos_library.s",
 			want: []string{
-				`.libmanifest name="dos.library", version=14, revision=0, type=1, flags=2, msg_abi=0`,
+				`.libmanifest name="dos.library", version=14, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0`,
 			},
 		},
 	} {
@@ -16191,8 +16191,8 @@ func TestIExec_M16_BootstrapDosLibraryELFContainsLibManifest(t *testing.T) {
 	if manifest.Type != 1 {
 		t.Fatalf("manifest type=%d, want 1 (library)", manifest.Type)
 	}
-	if manifest.Flags != m16ModfCompatPort {
-		t.Fatalf("manifest flags=%#x, want MODF_COMPAT_PORT (%#x)", manifest.Flags, m16ModfCompatPort)
+	if manifest.Flags != m16ModfCompatPort|m16ModfASLRCapable {
+		t.Fatalf("manifest flags=%#x, want MODF_COMPAT_PORT|MODF_ASLR_CAPABLE (%#x)", manifest.Flags, m16ModfCompatPort|m16ModfASLRCapable)
 	}
 }
 
@@ -21660,6 +21660,7 @@ const (
 	m16LibManifestMagic       = 0x4D534F49
 	m16LibManifestDescSize    = 128
 	m16ModfCompatPort         = 0x00000002
+	m16ModfASLRCapable        = 0x00000004
 )
 
 type m16LibManifest struct {
@@ -24218,7 +24219,7 @@ func TestIExec_M16_Phase8_DocsDescribeShippedProtectedModuleSubsystem(t *testing
 		"expunge protocol",
 		"bootstrap path",
 		"panic contract",
-		"`MODF_RESIDENT`, `MODF_COMPAT_PORT`, and `SIGF_MODDEAD`",
+		"`MODF_RESIDENT`, `MODF_COMPAT_PORT`, `MODF_ASLR_CAPABLE`, and `SIGF_MODDEAD`",
 		"per-task open tracking remains v1 bookkeeping",
 		"shipped library clients acquire runtime libraries through `OpenLibrary` first",
 	)
@@ -24232,7 +24233,7 @@ func TestIExec_M16_Phase8_DocsDescribeShippedProtectedModuleSubsystem(t *testing
 		"M16 does not change the public M14.2 `ET_EXEC` contract",
 		"module manifest note section",
 		"`.ios.manifest`",
-		"`MODF_ASLR_CAPABLE` remains informational in v1",
+		"M16.3 makes `MODF_ASLR_CAPABLE` mandatory for all DOS-loaded ELFs",
 	)
 
 	includeDoc := mustReadRepoFile(t, "sdk/docs/include-files.md")
