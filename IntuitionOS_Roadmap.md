@@ -181,6 +181,14 @@ Post-M16 note:
   and `S:Startup-Sequence` no longer launches module files as commands. Public
   `AttachHandler`, `OpenDevice`, and `OpenResource` acquisition APIs are
   deferred to `M16.2.1`
+- `M16.2.1` freezes public non-library acquisition as messages to the
+  kernel-serviced public `exec.library` port, not as new public syscalls.
+  SDK wrappers send `EXEC_MSG_ATTACH_HANDLER`, `EXEC_MSG_OPEN_DEVICE`, or
+  `EXEC_MSG_OPEN_RESOURCE` with a one-page shared request object, and release
+  opaque generation-aware tokens through the matching close/detach opcodes.
+  This slice is ONLINE-only for non-library rows, keeps compat-port-only use as
+  legacy transport, and does not add demand-load, PIE, relocation, ASLR, or
+  third-party install policy.
 - `M16.3` should make the whole shipped ELF surface consistently PIE-capable
   and enforce the codegen/tooling contract where appropriate
 - `M16.4` should implement real relocation plus ASLR/randomized placement

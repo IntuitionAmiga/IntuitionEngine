@@ -19,6 +19,8 @@
 
 **See also: [TUTORIAL.md](sdk/docs/TUTORIAL.md)** - Step-by-step guide to building a complete demoscene intro with multiple CPU architectures.
 
+**IntuitionOS M16.2.1 note:** public handler, device, and resource acquisition is now frozen as IPC through the kernel-serviced public `exec.library` port. SDK-facing `AttachHandler`, `OpenDevice`, and `OpenResource` wrappers use `EXEC_MSG_*` request/reply messages with one-page shared request buffers and opaque generation-aware tokens. This is ONLINE-only for non-library rows; it does not add public acquisition syscalls, non-library demand-load, PIE, relocation, ASLR, or third-party install policy.
+
 ### Quick Links
 
 | Document | Description |

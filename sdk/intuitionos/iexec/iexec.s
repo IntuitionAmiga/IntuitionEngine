@@ -7293,6 +7293,18 @@ endif
     beq     r2, r11, .putmsg_exec_get_iosm
     move.l  r11, #MSG_LIST_RESIDENTS
     beq     r2, r11, .putmsg_exec_list_residents
+    move.l  r11, #EXEC_MSG_ATTACH_HANDLER
+    beq     r2, r11, .putmsg_exec_attach_handler
+    move.l  r11, #EXEC_MSG_DETACH_HANDLER
+    beq     r2, r11, .putmsg_exec_detach_handler
+    move.l  r11, #EXEC_MSG_OPEN_DEVICE
+    beq     r2, r11, .putmsg_exec_open_device
+    move.l  r11, #EXEC_MSG_CLOSE_DEVICE
+    beq     r2, r11, .putmsg_exec_close_device
+    move.l  r11, #EXEC_MSG_OPEN_RESOURCE
+    beq     r2, r11, .putmsg_exec_open_resource
+    move.l  r11, #EXEC_MSG_CLOSE_RESOURCE
+    beq     r2, r11, .putmsg_exec_close_resource
     move.q  r3, #ERR_BADARG
     move.q  r4, r0
     move.q  r1, r5
@@ -7335,6 +7347,146 @@ endif
     move.q  r4, r2
     move.q  r1, r5
     move.l  r2, #MSG_LIST_RESIDENTS
+    move.q  r5, r0
+    bra     .do_reply_msg
+.putmsg_exec_attach_handler:
+    move.q  r20, r2
+    move.q  r21, r3
+    move.q  r22, r4
+    move.q  r23, r5
+    move.q  r1, r6
+    move.l  r2, #1
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    jsr     m1621_parse_module_request
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
+    bnez    r2, .putmsg_exec_module_reply_saved
+    bnez    r22, .putmsg_exec_badarg_saved
+    bnez    r21, .putmsg_exec_unsupported_saved
+    move.l  r1, #MODCLASS_HANDLER
+    move.q  r2, #0
+    push    r20
+    push    r23
+    jsr     m1621_acquire_module_handle
+    pop     r23
+    pop     r20
+    bra     .putmsg_exec_module_reply_saved
+.putmsg_exec_open_device:
+    move.q  r20, r2
+    move.q  r21, r3
+    move.q  r22, r4
+    move.q  r23, r5
+    move.q  r1, r6
+    move.l  r2, #1
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    jsr     m1621_parse_module_request
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
+    bnez    r2, .putmsg_exec_module_reply_saved
+    bnez    r21, .putmsg_exec_unsupported_saved
+    bnez    r22, .putmsg_exec_unsupported_saved
+    move.l  r1, #MODCLASS_DEVICE
+    move.q  r2, #0
+    push    r20
+    push    r23
+    jsr     m1621_acquire_module_handle
+    pop     r23
+    pop     r20
+    bra     .putmsg_exec_module_reply_saved
+.putmsg_exec_open_resource:
+    move.q  r20, r2
+    move.q  r21, r3
+    move.q  r22, r4
+    move.q  r23, r5
+    move.q  r1, r6
+    move.l  r2, #1
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    jsr     m1621_parse_module_request
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
+    bnez    r2, .putmsg_exec_module_reply_saved
+    bnez    r22, .putmsg_exec_badarg_saved
+    move.l  r1, #MODCLASS_RESOURCE
+    move.q  r2, r21
+    push    r20
+    push    r23
+    jsr     m1621_acquire_module_handle
+    pop     r23
+    pop     r20
+    bra     .putmsg_exec_module_reply_saved
+.putmsg_exec_detach_handler:
+    move.q  r20, r2
+    move.q  r21, r3
+    move.q  r22, r4
+    move.q  r23, r5
+    bnez    r22, .putmsg_exec_badarg_saved
+    bnez    r6, .putmsg_exec_badarg_saved
+    move.q  r1, r21
+    move.l  r2, #MODCLASS_HANDLER
+    push    r20
+    push    r23
+    jsr     m1621_release_module_handle
+    pop     r23
+    pop     r20
+    bra     .putmsg_exec_module_reply_saved
+.putmsg_exec_close_device:
+    move.q  r20, r2
+    move.q  r21, r3
+    move.q  r22, r4
+    move.q  r23, r5
+    bnez    r22, .putmsg_exec_badarg_saved
+    bnez    r6, .putmsg_exec_badarg_saved
+    move.q  r1, r21
+    move.l  r2, #MODCLASS_DEVICE
+    push    r20
+    push    r23
+    jsr     m1621_release_module_handle
+    pop     r23
+    pop     r20
+    bra     .putmsg_exec_module_reply_saved
+.putmsg_exec_close_resource:
+    move.q  r20, r2
+    move.q  r21, r3
+    move.q  r22, r4
+    move.q  r23, r5
+    bnez    r22, .putmsg_exec_badarg_saved
+    bnez    r6, .putmsg_exec_badarg_saved
+    move.q  r1, r21
+    move.l  r2, #MODCLASS_RESOURCE
+    push    r20
+    push    r23
+    jsr     m1621_release_module_handle
+    pop     r23
+    pop     r20
+    bra     .putmsg_exec_module_reply_saved
+.putmsg_exec_badarg_saved:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    bra     .putmsg_exec_module_reply_saved
+.putmsg_exec_unsupported_saved:
+    move.q  r1, #0
+    move.q  r2, #ERR_UNSUPPORTED
+.putmsg_exec_module_reply_saved:
+    move.q  r3, r1
+    move.q  r4, r2
+    move.q  r1, r23
+    move.q  r2, r20
+    or      r2, r2, #EXEC_REPLY_FLAG
     move.q  r5, r0
     bra     .do_reply_msg
 .putmsg_exec_reply_err:
@@ -11817,6 +11969,235 @@ m16_module_timeout_scan:
     add     r21, r21, #1
     bra     .m16_mts_scan
 .m16_mts_done:
+    rts
+
+; M16.2.1 exec.library non-library request parser.
+; Inputs: R1 = share handle, R2 = required pages (must be 1)
+; Returns: R2 = ERR_*. On success KD_NAME_SCRATCH contains the zero-padded name.
+m1621_parse_module_request:
+    jsr     kern_share_backing_for_handle
+    bnez    r2, .m1621_pmr_done
+    move.q  r20, r1
+    load.l  r11, 0(r20)
+    move.l  r12, #1
+    bne     r11, r12, .m1621_pmr_badarg
+    load.l  r11, 4(r20)
+    bnez    r11, .m1621_pmr_badarg
+    load.q  r11, 8(r20)
+    bnez    r11, .m1621_pmr_badarg
+    load.q  r11, 48(r20)
+    bnez    r11, .m1621_pmr_badarg
+    load.q  r11, 56(r20)
+    bnez    r11, .m1621_pmr_badarg
+    move.l  r21, #KERN_DATA_BASE
+    add     r21, r21, #KD_NAME_SCRATCH
+    store.q r0, 0(r21)
+    store.q r0, 8(r21)
+    store.q r0, 16(r21)
+    store.q r0, 24(r21)
+    move.l  r22, #0
+    move.l  r23, #0
+.m1621_pmr_name_loop:
+    move.l  r11, #32
+    bge     r22, r11, .m1621_pmr_badarg
+    add     r24, r20, #16
+    add     r24, r24, r22
+    load.b  r25, (r24)
+    beqz    r25, .m1621_pmr_name_done
+    add     r26, r21, r22
+    store.b r25, (r26)
+    add     r22, r22, #1
+    move.l  r23, #1
+    bra     .m1621_pmr_name_loop
+.m1621_pmr_name_done:
+    beqz    r23, .m1621_pmr_badarg
+    add     r22, r22, #1
+.m1621_pmr_name_pad_loop:
+    move.l  r11, #32
+    bge     r22, r11, .m1621_pmr_name_pad_done
+    add     r24, r20, #16
+    add     r24, r24, r22
+    load.b  r25, (r24)
+    bnez    r25, .m1621_pmr_badarg
+    add     r22, r22, #1
+    bra     .m1621_pmr_name_pad_loop
+.m1621_pmr_name_pad_done:
+    move.q  r2, #ERR_OK
+    rts
+.m1621_pmr_badarg:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+.m1621_pmr_done:
+    rts
+
+; Inputs: R1 = expected module class, R2 = minVersion.
+; Name is read from KD_NAME_SCRATCH.
+; Returns: R1 = class-aware token or 0, R2 = ERR_*.
+m1621_acquire_module_handle:
+    move.q  r20, r1
+    move.q  r21, r2
+    jsr     m16_module_find_row_by_name ; R1 = row addr, R2 = row index
+    beqz    r1, .m1621_amh_notfound
+    move.q  r22, r1
+    move.q  r23, r2
+    load.l  r24, KD_MODULE_CLASS(r22)
+    bne     r24, r20, .m1621_amh_badarg
+    load.l  r24, KD_MODULE_STATE(r22)
+    move.l  r11, #M16_MODSTATE_ONLINE
+    beq     r24, r11, .m1621_amh_online
+    move.l  r11, #M16_MODSTATE_LOADING
+    beq     r24, r11, .m1621_amh_again
+    move.l  r11, #M16_MODSTATE_EXPUNGING
+    beq     r24, r11, .m1621_amh_again
+    bra     .m1621_amh_notfound
+.m1621_amh_online:
+    move.l  r11, #MODCLASS_RESOURCE
+    bne     r20, r11, .m1621_amh_version_ok
+    load.w  r24, KD_MODULE_VERSION(r22)
+    blt     r24, r21, .m1621_amh_version
+.m1621_amh_version_ok:
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    jsr     kern_current_public_task_id
+    move.q  r24, r1
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
+    load.l  r25, KD_MODULE_GENERATION(r22)
+    move.q  r1, r24
+    move.q  r2, r23
+    move.q  r3, r25
+    push    r20
+    push    r22
+    push    r23
+    push    r25
+    jsr     m16_open_row_find_or_alloc
+    move.q  r26, r1
+    pop     r25
+    pop     r23
+    pop     r22
+    pop     r20
+    beqz    r26, .m1621_amh_full
+    load.l  r27, KD_MODULE_OPEN_ROW_COUNT(r26)
+    add     r27, r27, #1
+    store.l r27, KD_MODULE_OPEN_ROW_COUNT(r26)
+    load.l  r27, KD_MODULE_OPEN_COUNT(r22)
+    add     r27, r27, #1
+    store.l r27, KD_MODULE_OPEN_COUNT(r22)
+    move.q  r1, r20
+    move.q  r2, r23
+    move.q  r3, r25
+    jsr     m1621_make_module_token
+    move.q  r2, #ERR_OK
+    rts
+.m1621_amh_badarg:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADARG
+    rts
+.m1621_amh_notfound:
+    move.q  r1, #0
+    move.q  r2, #ERR_NOTFOUND
+    rts
+.m1621_amh_again:
+    move.q  r1, #0
+    move.q  r2, #ERR_AGAIN
+    rts
+.m1621_amh_version:
+    move.q  r1, #0
+    move.q  r2, #ERR_LIB_VERSION
+    rts
+.m1621_amh_full:
+    move.q  r1, #0
+    move.q  r2, #ERR_FULL
+    rts
+
+; Inputs: R1 = token, R2 = expected class. Returns R1 = 0, R2 = ERR_*.
+m1621_release_module_handle:
+    beqz    r1, .m1621_rmh_badhandle
+    move.q  r20, r2
+    jsr     m1621_decode_module_token ; R1=class R2=row index R3=generation
+    bne     r1, r20, .m1621_rmh_badhandle
+    move.q  r21, r2
+    move.q  r22, r3
+    move.l  r11, #KD_MODULE_MAX
+    bge     r21, r11, .m1621_rmh_badhandle
+    move.q  r1, r21
+    push    r20
+    push    r21
+    push    r22
+    jsr     m16_module_row_addr_for_index
+    move.q  r23, r1
+    pop     r22
+    pop     r21
+    pop     r20
+    beqz    r23, .m1621_rmh_badhandle
+    load.l  r24, KD_MODULE_CLASS(r23)
+    bne     r24, r20, .m1621_rmh_badhandle
+    load.l  r24, KD_MODULE_STATE(r23)
+    move.l  r11, #M16_MODSTATE_ONLINE
+    bne     r24, r11, .m1621_rmh_badhandle
+    load.l  r24, KD_MODULE_GENERATION(r23)
+    bne     r24, r22, .m1621_rmh_badhandle
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    jsr     kern_current_public_task_id
+    move.q  r24, r1
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
+    move.q  r1, r24
+    move.q  r2, r21
+    move.q  r3, r22
+    jsr     m16_open_row_find
+    beqz    r1, .m1621_rmh_badhandle
+    move.q  r25, r1
+    load.l  r26, KD_MODULE_OPEN_ROW_COUNT(r25)
+    beqz    r26, .m1621_rmh_badhandle
+    sub     r26, r26, #1
+    store.l r26, KD_MODULE_OPEN_ROW_COUNT(r25)
+    load.l  r27, KD_MODULE_OPEN_COUNT(r23)
+    beqz    r27, .m1621_rmh_badhandle
+    sub     r27, r27, #1
+    store.l r27, KD_MODULE_OPEN_COUNT(r23)
+    bnez    r26, .m1621_rmh_ok
+    store.l r0, KD_MODULE_OPEN_ROW_TASK(r25)
+    store.l r0, KD_MODULE_OPEN_ROW_INDEX(r25)
+    store.l r0, KD_MODULE_OPEN_ROW_GEN(r25)
+    store.l r0, KD_MODULE_OPEN_ROW_COUNT(r25)
+.m1621_rmh_ok:
+    move.q  r1, #0
+    move.q  r2, #ERR_OK
+    rts
+.m1621_rmh_badhandle:
+    move.q  r1, #0
+    move.q  r2, #ERR_BADHANDLE
+    rts
+
+; Inputs: R1 = class, R2 = row index, R3 = generation.
+; Returns R1 = class-aware opaque token.
+m1621_make_module_token:
+    and     r1, r1, #0xFF
+    lsl     r1, r1, #56
+    and     r2, r2, #0xFF
+    and     r3, r3, #0xFFFFFFFF
+    lsl     r3, r3, #8
+    or      r1, r1, r3
+    or      r1, r1, r2
+    rts
+
+; Input: R1 = token. Returns R1 = class, R2 = row index, R3 = generation.
+m1621_decode_module_token:
+    move.q  r4, r1
+    lsr     r1, r1, #56
+    and     r2, r4, #0xFF
+    lsr     r3, r4, #8
+    and     r3, r3, #0xFFFFFFFF
     rts
 
 ; Inputs: R1 = row index, R2 = generation. Returns R1 = 32-bit token in low bits.

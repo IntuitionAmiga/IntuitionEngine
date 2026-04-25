@@ -81,6 +81,15 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
   - `Type HELP for commands and ASSIGN for layout`
   - `1>`
 
+**M16.2.1 protected non-library acquisition:**
+
+- Public handler/device/resource acquisition is `exec.library` IPC, not a public nucleus syscall. The public port is still kernel-serviced synchronously inside `PutMsg`; M16.2.1 does not create a real `exec.library` task or use FIFO message rows for these operations.
+- SDK wrappers use `EXEC_MSG_ATTACH_HANDLER`, `EXEC_MSG_OPEN_DEVICE`, and `EXEC_MSG_OPEN_RESOURCE` with `R5 = reply_port` and `R6 = share_handle` for a one-page request object. The first 64 bytes are `abi_version=1`, reserved zero fields, `name[32]` NUL-terminated within the field, and trailing reserved zero fields.
+- Replies use `opcode | EXEC_REPLY_FLAG`; `data0` is the opaque generation-aware token on success or zero on failure, `data1` carries low-32-bit `ERR_*`, and the reply share handle is zero.
+- Close/detach opcodes validate the token class, registry row identity, generation, opener public task ID, current row state, and per-task open row before decrementing counts. Wrong-class, stale, forged, cross-task, and already-closed tokens return `ERR_BADHANDLE`.
+- M16.2.1 is ONLINE-only for non-library classes. Absent rows return `ERR_NOTFOUND`; LOADING/EXPUNGING rows return `ERR_AGAIN`; FAILED/UNLOADED rows return `ERR_NOTFOUND`. Compat-port-only use remains legacy transport unless the caller acquired a public module handle.
+- This milestone does not add demand-load for non-library rows, PIE, relocation, `ET_DYN`, ASLR, or third-party install policy.
+
 **M15.1 source layout:**
 
 - `sdk/intuitionos/iexec/iexec.s` remains the kernel image/layout file and the only assembly entrypoint for `exec.library`. `iexec.s` remains the kernel image/layout file at the new per-component boundary.

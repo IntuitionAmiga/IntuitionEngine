@@ -118,13 +118,16 @@ policy (`L:`, `DEVS:`, and `RESOURCES:`). `console.handler`,
 `hardware.resource`, and `input.device` now register as protected module rows;
 `dos.library` runs the eager post-DOS policy for the resource and device before
 Shell, and `S:Startup-Sequence` no longer launches module files as commands.
-It remains a strict lifecycle and boot-policy milestone: module class
-validation may reject the wrong kind for a path, but public non-library
-acquisition APIs are deferred to M16.2.1, and it must not introduce
-variable-base placement, relocation processing, `ET_DYN`, or ASLR. The intended
-split is M16.2 for internal non-library module semantics, M16.2.1 for public
-acquisition APIs, M16.3 for consistently PIE-capable shipped ELFs, and M16.4
-for real relocation plus randomized placement.
+M16.2.1 freezes public non-library acquisition without changing the executable
+format contract: `AttachHandler`, `OpenDevice`, and `OpenResource` are SDK
+wrappers over the kernel-serviced public `exec.library` port, using
+`EXEC_MSG_*` request/reply IPC and opaque generation-aware tokens. It is
+ONLINE-only for non-library rows and does not demand-load absent handlers,
+devices, or resources. It also does not introduce variable-base placement,
+relocation processing, `ET_DYN`, PIE enforcement, ASLR, or third-party install
+policy. The intended split is M16.2 for internal non-library module semantics,
+M16.2.1 for public acquisition APIs, M16.3 for consistently PIE-capable shipped
+ELFs, and M16.4 for real relocation plus randomized placement.
 
 ## Design Goal
 

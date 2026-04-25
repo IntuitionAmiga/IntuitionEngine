@@ -928,6 +928,20 @@ CON_MSG_CHAR      equ 0           ; Print single char (data0 low byte)
 CON_MSG_READLINE  equ 2           ; Request line input (reply_port, share_handle)
 MSG_GET_IOSM      equ 0x120       ; caller-allocates shared IOSM reply buffer
 MSG_LIST_RESIDENTS equ 0x121      ; exec.library public-port enumeration
+EXEC_MSG_ATTACH_HANDLER equ 0x122 ; M16.2.1 non-library acquire via exec.library
+EXEC_MSG_DETACH_HANDLER equ 0x123 ; M16.2.1 non-library release via exec.library
+EXEC_MSG_OPEN_DEVICE    equ 0x124 ; M16.2.1 non-library acquire via exec.library
+EXEC_MSG_CLOSE_DEVICE   equ 0x125 ; M16.2.1 non-library release via exec.library
+EXEC_MSG_OPEN_RESOURCE  equ 0x126 ; M16.2.1 non-library acquire via exec.library
+EXEC_MSG_CLOSE_RESOURCE equ 0x127 ; M16.2.1 non-library release via exec.library
+EXEC_REPLY_FLAG         equ 0x80000000
+; M16.2.1 acquire/open requests use PutMsg to the public exec.library port:
+; R3/R4 are operation arguments, R5 is a required reply port, and R6 is a
+; one-page shared object handle. The first 64 bytes of that object are:
+;   u32 abi_version (=1), u32 reserved0 (=0), u64 reserved1 (=0),
+;   u8 name[32] (NUL-terminated), u64 reserved2 (=0), u64 reserved3 (=0).
+; Replies use type = request_opcode | EXEC_REPLY_FLAG, data0 = token or 0,
+; data1 low 32 bits = ERR_*, and reply share handle = 0.
 
 ; dos.library protocol opcodes
 DOS_OPEN          equ 1           ; Open file (data0=mode, share=name)
