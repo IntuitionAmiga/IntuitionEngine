@@ -1,5 +1,6 @@
 prog_doslib:
     .libmanifest name="dos.library", version=14, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0
+SYSINFO_ASLR_IMAGE_BASE equ 7      ; private exec/dos.library selector
     ; Header
     dc.l    0, 0
     dc.l    prog_doslib_code_end - prog_doslib_code
@@ -6946,7 +6947,7 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     bnez    r3, .debs_badarg
     load.l  r3, 16(r1)
     and     r3, r3, #0xFFFF
-    move.l  r4, #2
+    move.l  r4, #3
     bne     r3, r4, .debs_badarg
     load.l  r3, 18(r1)
     and     r3, r3, #0xFFFF
@@ -6957,8 +6958,7 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     bne     r3, r4, .debs_badarg
     load.l  r3, 28(r1)
     bnez    r3, .debs_badarg
-    load.l  r3, 24(r1)
-    beqz    r3, .debs_badarg
+    load.l  r3, 24(r1)                 ; e_entry (image-relative; zero is valid)
     store.q r3, 440(r29)
     load.l  r3, 36(r1)
     bnez    r3, .debs_badarg
@@ -6982,6 +6982,47 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     blt     r23, r20, .debs_badarg
     load.q  r4, 368(r29)
     blt     r4, r23, .debs_badarg
+
+    ; M16.4: choose one per-LoadSeg image base for the whole placed image
+    ; span, not just the first page. The private exec selector performs
+    ; bounded collision retry and returns DOS_ERR_NOMEM on exhaustion.
+    store.q r0, 488(r29)               ; max image-relative segment end
+    load.q  r5, 360(r29)
+    load.q  r20, 504(r29)
+    add     r24, r5, r20
+    move.l  r18, #0
+.debs_span_loop:
+    bge     r18, r21, .debs_span_done
+    load.l  r3, (r24)
+    move.l  r4, #1
+    bne     r3, r4, .debs_badarg
+    load.l  r3, 20(r24)                ; vaddr hi
+    bnez    r3, .debs_badarg
+    load.l  r3, 44(r24)                ; memsz hi
+    bnez    r3, .debs_badarg
+    load.l  r6, 16(r24)                ; vaddr low
+    load.l  r7, 40(r24)                ; memsz low
+    beqz    r7, .debs_badarg
+    add     r9, r6, r7
+    blt     r9, r6, .debs_badarg
+    load.q  r10, 488(r29)
+    bge     r10, r9, .debs_span_next
+    store.q r9, 488(r29)
+.debs_span_next:
+    add     r24, r24, #56
+    add     r18, r18, #1
+    bra     .debs_span_loop
+.debs_span_done:
+    load.q  r2, 488(r29)
+    add     r2, r2, #4095
+    lsr     r2, r2, #12
+    move.l  r1, #SYSINFO_ASLR_IMAGE_BASE
+    syscall #SYS_GET_SYS_INFO
+    bnez    r2, .debs_nomem_noobj
+    store.q r1, 536(r29)               ; chosen image base
+    load.q  r3, 440(r29)
+    add     r3, r3, r1
+    store.q r3, 440(r29)
 
     move.l  r3, #2
     store.q r3, 472(r29)
@@ -7075,10 +7116,12 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
 
     add     r9, r6, r7
     blt     r9, r6, .debs_badarg_free
-    move.l  r10, #USER_CODE_BASE
-    blt     r6, r10, .debs_badarg_free
+    load.q  r10, 536(r29)
+    add     r9, r9, r10                ; placed segment end
     move.l  r10, #0x02000000
     blt     r10, r9, .debs_badarg_free
+    load.q  r10, 536(r29)
+    add     r6, r6, r10
 
     ; overlap check against earlier segments already stored in seglist
     load.l  r12, DOS_SEGLIST_OFF_COUNT(r26)
@@ -7186,6 +7229,11 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
 .debs_done_parse:
     load.q  r3, 464(r29)
     beqz    r3, .debs_badarg_free
+    load.q  r1, 360(r29)
+    load.q  r2, 368(r29)
+    load.q  r3, 376(r29)
+    jsr     .dos_elf_apply_relocations
+    bnez    r2, .debs_badarg_free
     load.q  r1, 376(r29)
     load.q  r3, 176(r29)
     store.q r3, DOS_SEGLIST_NEXT(r1)
@@ -7208,6 +7256,190 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     jsr     .dos_seglist_free_unlinked
 .debs_badarg:
     move.q  r1, r0
+    move.l  r2, #DOS_ERR_BADARG
+    rts
+
+    ; .dos_elf_apply_relocations: apply the sealed M16.4 self-relocation
+    ; subset to the copied DOS segments before publishing the seglist.
+    ; In:  r1 = file VA, r2 = file size, r3 = seglist VA
+    ; Out: r2 = DOS_OK / DOS_ERR_BADARG
+    ; Scratch in data page:
+    ;   544 shoff       552 shentsize   560 shnum       568 sh_index
+    ;   576 rela_ptr    584 rela_end    592 rela_count  600 rela_index
+    ;   608 seg_index   624 placed_dst  632 placed_value
+    ;   640 store_va    648 dst_found   656 value_found
+.dos_elf_apply_relocations:
+    store.q r1, 360(r29)
+    store.q r2, 368(r29)
+    store.q r3, 376(r29)
+    move.l  r2, #DOS_ERR_BADARG
+
+    load.q  r18, 40(r1)                 ; e_shoff
+    beqz    r18, .dear_badarg
+    store.q r18, 544(r29)
+    load.w  r19, 58(r1)                 ; e_shentsize
+    move.l  r11, #64
+    bne     r19, r11, .dear_badarg
+    store.q r19, 552(r29)
+    load.w  r20, 60(r1)                 ; e_shnum
+    beqz    r20, .dear_badarg
+    store.q r20, 560(r29)
+    move.q  r21, r20
+    mulu    r21, r19, r21
+    add     r21, r18, r21
+    blt     r21, r18, .dear_badarg
+    load.q  r22, 368(r29)
+    bgt     r21, r22, .dear_badarg
+
+    move.l  r21, #0
+    store.q r21, 568(r29)
+.dear_sh_loop:
+    load.q  r20, 560(r29)
+    load.q  r21, 568(r29)
+    bge     r21, r20, .dear_ok
+    load.q  r18, 544(r29)
+    load.q  r19, 552(r29)
+    move.q  r22, r21
+    mulu    r22, r19, r22
+    add     r22, r18, r22
+    load.q  r1, 360(r29)
+    add     r22, r1, r22                ; section header ptr
+
+    load.l  r11, 4(r22)                 ; sh_type
+    move.l  r12, #4                     ; SHT_RELA
+    bne     r11, r12, .dear_next_sh
+
+    load.q  r23, 24(r22)                ; sh_offset
+    load.q  r24, 32(r22)                ; sh_size
+    load.q  r25, 56(r22)                ; sh_entsize
+    move.l  r11, #24
+    bne     r25, r11, .dear_badarg
+    beqz    r24, .dear_next_sh
+    move.q  r26, r24
+    divu    r26, r26, r11
+    move.q  r27, r26
+    mulu    r27, r11, r27
+    bne     r27, r24, .dear_badarg
+    add     r28, r23, r24
+    blt     r28, r23, .dear_badarg
+    load.q  r11, 368(r29)
+    bgt     r28, r11, .dear_badarg
+    load.q  r1, 360(r29)
+    add     r23, r1, r23
+    add     r28, r1, r28
+    store.q r23, 576(r29)
+    store.q r28, 584(r29)
+    store.q r26, 592(r29)
+    store.q r0, 600(r29)
+
+.dear_rela_loop:
+    load.q  r26, 592(r29)
+    load.q  r27, 600(r29)
+    bge     r27, r26, .dear_next_sh
+    load.q  r23, 576(r29)               ; current RELA ptr
+
+    load.l  r11, 4(r23)                 ; r_offset high
+    bnez    r11, .dear_badarg
+    load.l  r11, 12(r23)                ; symbol index
+    bnez    r11, .dear_badarg
+    load.l  r11, 8(r23)                 ; relocation type
+    move.l  r12, #1                     ; R_IE64_RELATIVE64
+    bne     r11, r12, .dear_badarg
+    load.l  r11, 20(r23)                ; addend high: reject negative/huge
+    bnez    r11, .dear_badarg
+
+    load.l  r11, 0(r23)                 ; r_offset low
+    and     r12, r11, #7
+    bnez    r12, .dear_badarg
+    load.q  r12, 536(r29)
+    add     r13, r11, r12               ; placed relocation target
+    blt     r13, r12, .dear_badarg
+    store.q r13, 624(r29)
+
+    load.l  r11, 16(r23)                ; addend low
+    load.q  r12, 536(r29)
+    add     r13, r11, r12               ; relocated value
+    blt     r13, r12, .dear_badarg
+    store.q r13, 632(r29)
+
+    store.q r0, 648(r29)
+    store.q r0, 656(r29)
+    store.q r0, 608(r29)
+.dear_seg_loop:
+    load.q  r3, 376(r29)
+    load.l  r14, DOS_SEGLIST_OFF_COUNT(r3)
+    load.q  r15, 608(r29)
+    bge     r15, r14, .dear_seg_done
+    move.l  r16, #DOS_SEG_ENTRY_SZ
+    mulu    r17, r15, r16
+    add     r17, r17, #DOS_SEGLIST_HDR_SZ
+    add     r17, r17, r3                ; segment entry
+
+    load.q  r18, DOS_SEG_OFF_TARGET(r17)
+    load.q  r19, DOS_SEG_OFF_MEMSZ(r17)
+    add     r20, r18, r19               ; segment end
+    blt     r20, r18, .dear_badarg
+
+    ; The relocated value must point into one loaded segment.
+    load.q  r21, 656(r29)
+    bnez    r21, .dear_chk_dst
+    load.q  r22, 632(r29)
+    blt     r22, r18, .dear_chk_dst
+    bge     r22, r20, .dear_chk_dst
+    move.l  r21, #1
+    store.q r21, 656(r29)
+
+.dear_chk_dst:
+    load.q  r21, 648(r29)
+    bnez    r21, .dear_next_seg
+    load.q  r22, 624(r29)
+    blt     r22, r18, .dear_next_seg
+    move.q  r23, r22
+    add     r23, r23, #8
+    bgt     r23, r20, .dear_next_seg
+    load.l  r24, DOS_SEG_OFF_FLAGS(r17)
+    and     r25, r24, #2                ; writable
+    beqz    r25, .dear_badarg
+    and     r25, r24, #1                ; executable
+    bnez    r25, .dear_badarg
+    load.q  r26, DOS_SEG_OFF_MEMVA(r17)
+    sub     r22, r22, r18
+    add     r26, r26, r22
+    store.q r26, 640(r29)
+    move.l  r21, #1
+    store.q r21, 648(r29)
+
+.dear_next_seg:
+    load.q  r15, 608(r29)
+    add     r15, r15, #1
+    store.q r15, 608(r29)
+    bra     .dear_seg_loop
+.dear_seg_done:
+    load.q  r21, 648(r29)
+    beqz    r21, .dear_badarg
+    load.q  r21, 656(r29)
+    beqz    r21, .dear_badarg
+    load.q  r22, 640(r29)
+    load.q  r23, 632(r29)
+    store.q r23, (r22)
+
+    load.q  r23, 576(r29)
+    add     r23, r23, #24
+    store.q r23, 576(r29)
+    load.q  r27, 600(r29)
+    add     r27, r27, #1
+    store.q r27, 600(r29)
+    bra     .dear_rela_loop
+
+.dear_next_sh:
+    load.q  r21, 568(r29)
+    add     r21, r21, #1
+    store.q r21, 568(r29)
+    bra     .dear_sh_loop
+.dear_ok:
+    move.q  r2, r0
+    rts
+.dear_badarg:
     move.l  r2, #DOS_ERR_BADARG
     rts
 
@@ -7655,7 +7887,7 @@ prog_doslib_iosm:
     ds.b    IOSM_NAME_SIZE - 12
     dc.l    MODF_COMPAT_PORT | MODF_ASLR_CAPABLE
     dc.l    0
-    dc.b    "2026-04-22", 0
+    dc.b    "2026-04-25", 0
     ds.b    IOSM_BUILD_DATE_SIZE - 11
     dc.b    0x43, 0x6F, 0x70, 0x79, 0x72, 0x69, 0x67, 0x68, 0x74, 0x20, 0xA9, 0x20, 0x32, 0x30, 0x32, 0x36, 0x20, 0x5A, 0x61, 0x79, 0x6E, 0x20, 0x4F, 0x74, 0x6C, 0x65, 0x79, 0
     ds.b    IOSM_COPYRIGHT_SIZE - 28

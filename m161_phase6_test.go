@@ -9,8 +9,8 @@ import (
 func TestIExec_M161_Phase6_VERSION_NoArgs(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION\n", 8*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 1.16.1\r\n",
-		"exec.library 1.16.1 (2026-04-22)\r\n",
+		"IntuitionOS 1.16.4\r\n",
+		"exec.library 1.16.4 (2026-04-25)\r\n",
 		"Copyright \xA9 2026 Zayn Otley\r\n",
 	} {
 		if !strings.Contains(output, want) {
@@ -74,7 +74,7 @@ func TestIExec_M161_Phase6_VERSION_ByPath_Command(t *testing.T) {
 func TestIExec_M161_Phase6_VERSION_ALL_ResidentOnly(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION ALL\n", 8*time.Second)
 	for _, want := range []string{
-		"exec.library 1.16.1",
+		"exec.library 1.16.4",
 		"console.handler 1.0",
 		"dos.library 14.0",
 		"hardware.resource 1.0",

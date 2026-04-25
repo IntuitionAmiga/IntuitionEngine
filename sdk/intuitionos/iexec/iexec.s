@@ -14,6 +14,11 @@
 include "iexec.inc"
 include "ie64.inc"
 
+; M16.4 internal GetSysInfo selector. This is intentionally not exported from
+; sdk/include/iexec.inc; only the trusted dos.library task may request a new
+; runtime image base from the kernel placement PRNG.
+SYSINFO_ASLR_IMAGE_BASE equ 7
+
 ; ============================================================================
 ; Entry Point ($1000)
 ; ============================================================================
@@ -122,7 +127,14 @@ endif
     store.q r0, (r12)                   ; current_task = 0
     store.q r0, KD_TICK_COUNT(r12)
     store.q r0, KD_NUM_TASKS(r12)       ; 0 tasks (loader increments)
-    store.q r0, KD_NONCE_COUNTER(r12)   ; nonce counter = 0
+    ; M16.4: preserve a nonzero test-installed ASLR seed; otherwise install
+    ; a deterministic boot seed that the PRNG will mix on first use.
+    ; ASLR state is separate from the public shared-memory nonce counter.
+    load.q  r11, KD_ASLR_STATE(r12)
+    bnez    r11, .init_aslr_seed_ready
+    move.l  r11, #0x1A2B3C4D
+    store.q r11, KD_ASLR_STATE(r12)
+.init_aslr_seed_ready:
 
     ; --- Init all task slots as FREE ---
     move.l  r4, #0
@@ -887,6 +899,74 @@ kern_find_slot_for_public_id:
 .kfspid_notfound:
     move.q  r1, #0
     move.q  r2, #0
+    rts
+
+; kern_aslr_next_base: advance the M16.4 placement PRNG and return a
+; page-aligned user image base. The state lives in KD_ASLR_STATE so tests can
+; preinstall a deterministic nonzero seed before boot. The selected range
+; is the lower half of USER_IMAGE_BASE..USER_IMAGE_END, which keeps current
+; shipped ET_DYN images inside the user image window without falling back to
+; legacy fixed placement.
+; Out: R1 = chosen image base
+; Clobbers: R2-R5
+kern_aslr_next_base:
+    move.l  r5, #KERN_DATA_BASE
+    load.q  r1, KD_ASLR_STATE(r5)
+    move.l  r2, #1664525
+    mulu    r1, r1, r2
+    add     r1, r1, #1013904223
+    store.q r1, KD_ASLR_STATE(r5)
+    lsr     r3, r1, #16
+    and     r3, r3, #0xFF
+    lsl     r3, r3, #12
+    add     r1, r3, #USER_IMAGE_BASE
+    rts
+
+; kern_aslr_choose_image_base: choose a PRNG image base with bounded collision
+; retry against the current global image bitmap. The bitmap is not reserved
+; here; callers still commit backing pages through the normal allocators.
+; Input:  R1 = image pages requested
+; Output: R1 = base VA, R2 = ERR_OK / ERR_NOMEM
+; Clobbers: R3-R12
+kern_aslr_choose_image_base:
+    move.q  r12, r1                    ; pages requested
+    beqz    r12, .kaslrci_nomem
+    move.l  r6, #16                    ; bounded collision retry budget
+.kaslrci_retry:
+    beqz    r6, .kaslrci_nomem
+    sub     r6, r6, #1
+    jsr     kern_aslr_next_base
+    move.q  r7, r1                     ; candidate base
+    move.l  r8, #USER_IMAGE_BASE
+    blt     r7, r8, .kaslrci_collision
+    sub     r8, r7, r8                 ; byte offset from user image base
+    lsr     r8, r8, #12                ; first image bit
+    add     r9, r8, r12                ; end bit
+    move.l  r10, #USER_IMAGE_PAGES
+    bgt     r9, r10, .kaslrci_collision
+    move.l  r10, #KERN_DATA_BASE
+    add     r10, r10, #KD_TASK_IMG_BITMAP
+    move.q  r11, r8
+.kaslrci_check:
+    bge     r11, r9, .kaslrci_ok
+    lsr     r3, r11, #3
+    add     r3, r3, r10
+    load.b  r4, (r3)
+    and     r5, r11, #7
+    lsr     r4, r4, r5
+    and     r4, r4, #1
+    bnez    r4, .kaslrci_collision
+    add     r11, r11, #1
+    bra     .kaslrci_check
+.kaslrci_collision:
+    bra     .kaslrci_retry
+.kaslrci_ok:
+    move.q  r1, r7
+    move.q  r2, #ERR_OK
+    rts
+.kaslrci_nomem:
+    move.q  r1, r0
+    move.q  r2, #ERR_NOMEM
     rts
 
 ; alloc_task_image_pages: allocate N contiguous pages from USER_IMAGE_BASE..USER_IMAGE_END.
@@ -3063,7 +3143,7 @@ boot_load_elf_image:
     bnez    r4, .blei_badarg
     load.l  r4, 16(r1)
     and     r4, r4, #0xFFFF
-    move.l  r5, #2
+    move.l  r5, #3
     bne     r4, r5, .blei_badarg
     load.l  r4, 18(r1)
     and     r4, r4, #0xFFFF
@@ -3074,8 +3154,7 @@ boot_load_elf_image:
     bne     r4, r5, .blei_badarg
     load.l  r4, 28(r1)
     bnez    r4, .blei_badarg
-    load.l  r22, 24(r1)                ; e_entry
-    beqz    r22, .blei_badarg
+    load.l  r22, 24(r1)                ; e_entry (image-relative; zero is valid)
     load.l  r20, 32(r1)                ; e_phoff
     load.l  r4, 36(r1)
     bnez    r4, .blei_badarg
@@ -3097,9 +3176,12 @@ boot_load_elf_image:
     load.q  r7, 8(sp)
     blt     r7, r6, .blei_badarg
 
+    load.q  r1, 0(sp)                  ; restore ELF ptr
+
     store.q r0, 24(sp)                 ; code ph ptr
     store.q r0, 32(sp)                 ; data ph ptr
     store.q r0, 40(sp)                 ; entry covered
+    store.q r0, 56(sp)                 ; max image-relative segment end
     move.q  r23, r1
     add     r23, r23, r20              ; ph0 ptr
     move.q  r24, #0
@@ -3151,10 +3233,10 @@ boot_load_elf_image:
     blt     r10, r9, .blei_badarg
     add     r9, r6, r8
     blt     r9, r6, .blei_badarg
-    move.l  r10, #USER_IMAGE_BASE
-    blt     r6, r10, .blei_badarg
-    move.l  r10, #USER_IMAGE_END
-    bgt     r9, r10, .blei_badarg
+    load.q  r10, 56(sp)
+    bge     r10, r9, .blei_span_ready
+    store.q r9, 56(sp)
+.blei_span_ready:
 
     and     r10, r4, #1
     beqz    r10, .blei_data_seg
@@ -3182,6 +3264,12 @@ boot_load_elf_image:
     beqz    r24, .blei_badarg
     load.q  r4, 40(sp)
     beqz    r4, .blei_badarg
+    load.q  r1, 56(sp)
+    add     r1, r1, #4095
+    lsr     r1, r1, #12
+    jsr     kern_aslr_choose_image_base
+    bnez    r2, .blei_nomem
+    store.q r1, 48(sp)                 ; chosen image base
     load.l  r25, 32(r23)               ; code filesz
     load.l  r26, 40(r23)               ; code memsz
     load.l  r19, 4(r23)                ; code flags (preserve X-only intent)
@@ -3189,9 +3277,42 @@ boot_load_elf_image:
     lsr     r26, r26, #12              ; code pages
     load.l  r27, 32(r24)               ; data filesz
     load.l  r28, 40(r24)               ; data memsz
+    store.q r28, 64(sp)                ; data memsz before page rounding
     load.l  r18, 4(r24)                ; data flags
     add     r28, r28, #4095
     lsr     r28, r28, #12              ; data pages
+    move.q  r1, r28
+    jsr     alloc_pages
+    bnez    r2, .blei_nomem
+    store.q r1, 72(sp)                 ; temporary data image PPN
+    store.q r28, 88(sp)                ; temporary data image pages
+    lsl     r1, r1, #12
+    store.q r1, 80(sp)                 ; temporary data image VA
+
+    move.q  r13, r1
+    move.q  r14, r28
+    lsl     r14, r14, #12
+    add     r14, r14, r13
+.blei_zero_temp_data:
+    bge     r13, r14, .blei_copy_temp_data
+    store.q r0, (r13)
+    add     r13, r13, #8
+    bra     .blei_zero_temp_data
+.blei_copy_temp_data:
+    load.l  r4, 8(r24)
+    load.q  r5, 0(sp)
+    add     r5, r5, r4                 ; source file data
+    load.q  r6, 80(sp)                 ; temporary data image
+    move.q  r7, r27                    ; data filesz
+.blei_copy_temp_data_loop:
+    beqz    r7, .blei_temp_data_ready
+    load.b  r8, (r5)
+    store.b r8, (r6)
+    add     r5, r5, #1
+    add     r6, r6, #1
+    sub     r7, r7, #1
+    bra     .blei_copy_temp_data_loop
+.blei_temp_data_ready:
 
     add     r29, sp, #96
     move.l  r4, #M14_LDESC_MAGIC
@@ -3202,7 +3323,10 @@ boot_load_elf_image:
     store.l r4, M14_LDESC_OFF_SIZE(r29)
     move.l  r4, #2
     store.l r4, M14_LDESC_OFF_SEGCNT(r29)
-    store.q r22, M14_LDESC_OFF_ENTRY(r29)
+    move.q  r4, r22
+    load.q  r5, 48(sp)
+    add     r4, r4, r5
+    store.q r4, M14_LDESC_OFF_ENTRY(r29)
     move.l  r4, #1
     store.l r4, M14_LDESC_OFF_STACKPG(r29)
     add     r4, sp, #144
@@ -3214,32 +3338,61 @@ boot_load_elf_image:
     add     r5, r5, r4                 ; code src
     store.q r5, M14_LDSEG_OFF_SRCPTR(r30)
     store.q r25, M14_LDSEG_OFF_SRCSZ(r30)
-    load.q  r5, 16(r23)                ; code vaddr
+    load.q  r5, 16(r23)                ; code image-relative vaddr
+    load.q  r6, 48(sp)
+    add     r5, r5, r6
     store.q r5, M14_LDSEG_OFF_TARGET(r30)
     store.l r26, M14_LDSEG_OFF_PAGES(r30)
     move.q  r5, r19
     store.l r5, M14_LDSEG_OFF_FLAGS(r30)
 
     add     r30, sp, #176
-    load.l  r4, 8(r24)                 ; data p_offset
-    load.q  r5, 0(sp)
-    add     r5, r5, r4                 ; data src
+    load.q  r5, 80(sp)                 ; data src temp image, including BSS
     store.q r5, M14_LDSEG_OFF_SRCPTR(r30)
-    store.q r27, M14_LDSEG_OFF_SRCSZ(r30)
-    load.q  r5, 16(r24)                ; data vaddr
+    load.q  r5, 64(sp)
+    store.q r5, M14_LDSEG_OFF_SRCSZ(r30)
+    load.q  r5, 16(r24)                ; data image-relative vaddr
+    load.q  r6, 48(sp)
+    add     r5, r5, r6
     store.q r5, M14_LDSEG_OFF_TARGET(r30)
     store.l r28, M14_LDSEG_OFF_PAGES(r30)
     move.q  r5, r18
     store.l r5, M14_LDSEG_OFF_FLAGS(r30)
+
+    load.q  r1, 0(sp)
+    load.q  r2, 8(sp)
+    add     r3, sp, #96
+    load.q  r4, 48(sp)
+    jsr     boot_elf_apply_relocations
+    bnez    r2, .blei_badarg_free_temp
 
     add     r1, sp, #96
     move.l  r2, #M14_LDESC_SIZE
     move.l  r3, #KERN_PAGE_TABLE
     load.q  r4, 16(sp)
     jsr     exec_desc_launch_task      ; R1=task_id R2=slot R3=err
-    move.q  r5, r2
-    move.q  r2, r3
-    move.q  r3, r5
+    move.q  r11, r1
+    move.q  r12, r2
+    move.q  r13, r3
+    load.q  r1, 72(sp)
+    load.q  r2, 88(sp)
+    jsr     free_pages
+    move.q  r1, r11
+    move.q  r2, r13
+    move.q  r3, r12
+    add     sp, sp, #256
+    rts
+
+.blei_badarg_free_temp:
+    load.q  r1, 72(sp)
+    load.q  r2, 88(sp)
+    jsr     free_pages
+    bra     .blei_badarg
+
+.blei_nomem:
+    move.q  r1, r0
+    move.q  r2, #ERR_NOMEM
+    move.q  r3, r0
     add     sp, sp, #256
     rts
 
@@ -3248,6 +3401,189 @@ boot_load_elf_image:
     move.q  r2, #ERR_BADARG
     move.q  r3, r0
     add     sp, sp, #256
+    rts
+
+; boot_elf_apply_relocations: apply the M16.4 sealed local relocation ABI
+; for boot/protected-module ET_DYN images before descriptor launch.
+; In:  R1 = ELF ptr, R2 = ELF size, R3 = launch descriptor, R4 = image base
+; Out: R2 = ERR_OK / ERR_BADARG
+; Clobbers: R5-R31
+boot_elf_apply_relocations:
+    sub     sp, sp, #128
+    store.q r1, 0(sp)                  ; ELF ptr
+    store.q r2, 8(sp)                  ; ELF size
+    store.q r3, 16(sp)                 ; launch descriptor
+    store.q r4, 24(sp)                 ; image base
+
+    load.q  r18, 40(r1)                ; e_shoff
+    beqz    r18, .bear_badarg
+    store.q r18, 32(sp)
+    load.w  r19, 58(r1)                ; e_shentsize
+    move.l  r11, #64
+    bne     r19, r11, .bear_badarg
+    store.q r19, 40(sp)
+    load.w  r20, 60(r1)                ; e_shnum
+    beqz    r20, .bear_badarg
+    store.q r20, 48(sp)
+    move.q  r21, r20
+    mulu    r21, r19, r21
+    add     r21, r18, r21
+    blt     r21, r18, .bear_badarg
+    load.q  r22, 8(sp)
+    bgt     r21, r22, .bear_badarg
+
+    store.q r0, 56(sp)                 ; section index
+.bear_sh_loop:
+    load.q  r20, 48(sp)
+    load.q  r21, 56(sp)
+    bge     r21, r20, .bear_ok
+    load.q  r18, 32(sp)
+    load.q  r19, 40(sp)
+    move.q  r22, r21
+    mulu    r22, r19, r22
+    add     r22, r18, r22
+    load.q  r1, 0(sp)
+    add     r22, r1, r22               ; section header ptr
+
+    load.l  r11, 4(r22)                ; sh_type
+    move.l  r12, #4                    ; SHT_RELA
+    bne     r11, r12, .bear_next_sh
+
+    load.q  r23, 24(r22)               ; sh_offset
+    load.q  r24, 32(r22)               ; sh_size
+    load.q  r25, 56(r22)               ; sh_entsize
+    move.l  r11, #24
+    bne     r25, r11, .bear_badarg
+    beqz    r24, .bear_next_sh
+    move.q  r26, r24
+    divu    r26, r26, r11
+    move.q  r27, r26
+    mulu    r27, r11, r27
+    bne     r27, r24, .bear_badarg
+    add     r28, r23, r24
+    blt     r28, r23, .bear_badarg
+    load.q  r11, 8(sp)
+    bgt     r28, r11, .bear_badarg
+    load.q  r1, 0(sp)
+    add     r23, r1, r23
+    add     r28, r1, r28
+    store.q r23, 64(sp)                ; rela ptr
+    store.q r28, 72(sp)                ; rela end
+    store.q r26, 80(sp)                ; rela count
+    store.q r0, 88(sp)                 ; rela index
+
+.bear_rela_loop:
+    load.q  r26, 80(sp)
+    load.q  r27, 88(sp)
+    bge     r27, r26, .bear_next_sh
+    load.q  r23, 64(sp)
+
+    load.l  r11, 4(r23)                ; r_offset high
+    bnez    r11, .bear_badarg
+    load.l  r11, 12(r23)               ; symbol index
+    bnez    r11, .bear_badarg
+    load.l  r11, 8(r23)                ; relocation type
+    move.l  r12, #1                    ; R_IE64_RELATIVE64
+    bne     r11, r12, .bear_badarg
+    load.l  r11, 20(r23)               ; addend high
+    bnez    r11, .bear_badarg
+
+    load.l  r11, 0(r23)                ; r_offset low
+    and     r12, r11, #7
+    bnez    r12, .bear_badarg
+    load.q  r12, 24(sp)
+    add     r13, r11, r12              ; placed relocation target
+    blt     r13, r12, .bear_badarg
+    store.q r13, 96(sp)
+
+    load.l  r11, 16(r23)               ; addend low
+    load.q  r12, 24(sp)
+    add     r13, r11, r12              ; relocated value
+    blt     r13, r12, .bear_badarg
+    store.q r13, 104(sp)
+
+    store.q r0, 112(sp)                ; dst_found
+    store.q r0, 120(sp)                ; value_found
+    load.q  r3, 16(sp)
+    load.l  r14, M14_LDESC_OFF_SEGCNT(r3)
+    load.q  r15, M14_LDESC_OFF_SEGTBL(r3)
+    move.l  r16, #0
+.bear_seg_loop:
+    bge     r16, r14, .bear_seg_done
+    move.l  r17, #M14_LDESC_SEG_SIZE
+    mulu    r18, r16, r17
+    add     r18, r18, r15              ; segment entry
+
+    load.q  r19, M14_LDSEG_OFF_TARGET(r18)
+    load.l  r20, M14_LDSEG_OFF_PAGES(r18)
+    lsl     r20, r20, #12
+    add     r21, r19, r20              ; segment end
+    blt     r21, r19, .bear_badarg
+
+    load.q  r22, 120(sp)
+    bnez    r22, .bear_chk_dst
+    load.q  r23, 104(sp)
+    blt     r23, r19, .bear_chk_dst
+    bge     r23, r21, .bear_chk_dst
+    move.l  r22, #1
+    store.q r22, 120(sp)
+
+.bear_chk_dst:
+    load.q  r22, 112(sp)
+    bnez    r22, .bear_next_seg
+    load.q  r23, 96(sp)
+    blt     r23, r19, .bear_next_seg
+    move.q  r24, r23
+    add     r24, r24, #8
+    bgt     r24, r21, .bear_next_seg
+    load.l  r25, M14_LDSEG_OFF_FLAGS(r18)
+    and     r26, r25, #2               ; writable
+    beqz    r26, .bear_badarg
+    and     r26, r25, #1               ; executable
+    bnez    r26, .bear_badarg
+    load.q  r27, M14_LDSEG_OFF_SRCPTR(r18)
+    load.q  r28, M14_LDSEG_OFF_SRCSZ(r18)
+    sub     r23, r23, r19              ; segment-relative dst offset
+    move.q  r29, r23
+    add     r29, r29, #8
+    bgt     r29, r28, .bear_badarg
+    add     r27, r27, r23
+    store.q r27, 72(sp)                ; store ptr, rela end no longer needed
+    move.l  r22, #1
+    store.q r22, 112(sp)
+
+.bear_next_seg:
+    add     r16, r16, #1
+    bra     .bear_seg_loop
+.bear_seg_done:
+    load.q  r22, 112(sp)
+    beqz    r22, .bear_badarg
+    load.q  r22, 120(sp)
+    beqz    r22, .bear_badarg
+    load.q  r23, 72(sp)
+    load.q  r24, 104(sp)
+    store.q r24, (r23)
+
+    load.q  r23, 64(sp)
+    add     r23, r23, #24
+    store.q r23, 64(sp)
+    load.q  r27, 88(sp)
+    add     r27, r27, #1
+    store.q r27, 88(sp)
+    bra     .bear_rela_loop
+
+.bear_next_sh:
+    load.q  r21, 56(sp)
+    add     r21, r21, #1
+    store.q r21, 56(sp)
+    bra     .bear_sh_loop
+.bear_ok:
+    move.q  r2, #ERR_OK
+    add     sp, sp, #128
+    rts
+.bear_badarg:
+    move.q  r2, #ERR_BADARG
+    add     sp, sp, #128
     rts
 
 ; ============================================================================
@@ -6608,6 +6944,8 @@ endif
     beq     r1, r11, .info_quota_limit
     move.l  r11, #SYSINFO_PORT_NAME_BY_INDEX
     beq     r1, r11, .info_port_name_by_index
+    move.l  r11, #SYSINFO_ASLR_IMAGE_BASE
+    beq     r1, r11, .info_aslr_image_base
     move.q  r1, #0
     move.q  r2, #ERR_OK
     eret
@@ -6627,6 +6965,19 @@ endif
     move.l  r11, #KERN_DATA_BASE
     load.q  r1, KD_TICK_COUNT(r11)
     move.q  r2, #ERR_OK
+    eret
+.info_aslr_image_base:
+    move.q  r13, r2
+    jsr     kern_current_public_task_id
+    move.l  r11, #KERN_DATA_BASE
+    load.l  r12, KD_DOSLIB_PUBID(r11)
+    bne     r1, r12, .info_aslr_denied
+    move.q  r1, r13
+    jsr     kern_aslr_choose_image_base
+    eret
+.info_aslr_denied:
+    move.q  r1, #0
+    move.q  r2, #ERR_PERM
     eret
 ; M15.6 G3: quota-inspection sub-queries.
 ;   R1 = SYSINFO_QUOTA_CURRENT, R2 = QUOTA_KIND_*, R3 = task slot
@@ -13007,7 +13358,7 @@ kern_iosm_descriptor:
     ds.b    IOSM_NAME_SIZE - 13
     dc.l    MODF_RESIDENT | MODF_COMPAT_PORT | MODF_ASLR_CAPABLE
     dc.l    0
-    dc.b    "2026-04-22", 0
+    dc.b    "2026-04-25", 0
     ds.b    IOSM_BUILD_DATE_SIZE - 11
     dc.b    0x43, 0x6F, 0x70, 0x79, 0x72, 0x69, 0x67, 0x68
     dc.b    0x74, 0x20, 0xA9, 0x20, 0x32, 0x30, 0x32

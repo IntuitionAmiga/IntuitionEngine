@@ -15,12 +15,14 @@ type m161Task0ClientRig struct {
 	rig  *ie64TestRig
 	term *TerminalMMIO
 
-	t0   uint32
-	data uint32
-	pt   uint32
-	usp  uint64
-	slot uint32
-	pub  uint64
+	t0    uint32
+	t0p   uint32
+	data  uint32
+	datap uint32
+	pt    uint32
+	usp   uint64
+	slot  uint32
+	pub   uint64
 }
 
 func TestIExec_M161_Phase3_GetIOSM_PersistentModules(t *testing.T) {
@@ -122,65 +124,36 @@ func bootM161Phase3Task0ClientRig(t *testing.T) *m161Task0ClientRig {
 		}
 	}
 
-	var shellPubID uint32
-	var shellSlot uint32
-	for slot := uint32(0); slot < maxTasks; slot++ {
-		state := rig.cpu.memory[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff]
-		if state == taskFree {
-			continue
-		}
-		pubid := binary.LittleEndian.Uint32(rig.cpu.memory[kernDataBase+kdTaskPubIDBase+slot*kdTaskPubIDStr:])
-		dataBase := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(pubid), kdTaskDataBase))
-		if dataBase == shellData {
-			shellPubID = pubid
-			shellSlot = slot
-			break
-		}
+	layout, ok := tryFindShellTaskLayout(rig.cpu.memory)
+	if !ok || layout.codeVA != shellCode || layout.dataVA != shellData {
+		t.Fatalf("bootM161Phase3Task0ClientRig: could not locate live shell layout code=%#x data=%#x", shellCode, shellData)
 	}
-	shellCode, usp0 := m161InstallClientScratch(t, rig.cpu.memory, shellSlot, shellData)
-	pt0 := uint32(taskLayoutFieldQ(rig.cpu.memory, uint64(shellPubID), kdTaskLayoutPT))
+	usp0 := m161InstallClientScratch(t, layout)
+	pt0 := layout.pt
 	if shellCode == 0 || shellData == 0 || pt0 == 0 || usp0 == 0 {
 		t.Fatalf("bootM161Phase3Task0ClientRig: missing shell layout code=%#x data=%#x pt=%#x usp=%#x", shellCode, shellData, pt0, usp0)
 	}
 
 	return &m161Task0ClientRig{
-		rig:  rig,
-		term: term,
-		t0:   shellCode,
-		data: shellData,
-		pt:   pt0,
-		usp:  usp0,
-		slot: shellSlot,
-		pub:  uint64(shellPubID),
+		rig:   rig,
+		term:  term,
+		t0:    shellCode,
+		t0p:   layout.codePhys,
+		data:  shellData,
+		datap: layout.dataPhys,
+		pt:    pt0,
+		usp:   usp0,
+		slot:  layout.slot,
+		pub:   uint64(layout.pubid),
 	}
 }
 
-func m161InstallClientScratch(t *testing.T, mem []byte, slot uint32, dataBase uint32) (uint32, uint64) {
+func m161InstallClientScratch(t *testing.T, layout shellTaskLayout) uint64 {
 	t.Helper()
-	codeVA := userCodeBase + slot*userSlotStride
-	pt := uint32(binary.LittleEndian.Uint64(mem[kernDataBase+kdTaskLayoutBase+slot*kdTaskLayoutStr+kdTaskLayoutPT:]))
-	if pt == 0 {
-		t.Fatalf("m161InstallClientScratch: slot %d has no page table", slot)
+	if layout.codeVA == 0 || layout.codePhys == 0 || layout.dataVA == 0 || layout.dataPhys == 0 || layout.pt == 0 || layout.usp == 0 {
+		t.Fatalf("m161InstallClientScratch: incomplete shell layout: %+v", layout)
 	}
-	layout := kernDataBase + kdTaskLayoutBase + slot*kdTaskLayoutStr
-	stackBase := uint32(binary.LittleEndian.Uint64(mem[layout+kdTaskStackBase:]))
-	stackPages := binary.LittleEndian.Uint32(mem[layout+kdTaskStackPages:])
-	if stackBase == 0 || stackPages == 0 {
-		t.Fatalf("m161InstallClientScratch: slot %d has no stack layout", slot)
-	}
-	mapUserPage(mem, pt, uint16(codeVA>>MMU_PAGE_SHIFT), uint16(codeVA>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
-	mapUserPage(mem, pt, uint16(dataBase>>MMU_PAGE_SHIFT), uint16(dataBase>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
-	markM161ScratchPageUsed(mem, codeVA>>MMU_PAGE_SHIFT)
-	markM161ScratchPageUsed(mem, dataBase>>MMU_PAGE_SHIFT)
-	return codeVA, uint64(stackBase + stackPages*MMU_PAGE_SIZE)
-}
-
-func markM161ScratchPageUsed(mem []byte, ppn uint32) {
-	if ppn < allocPoolBase || ppn >= allocPoolBase+allocPoolPages {
-		return
-	}
-	bit := ppn - allocPoolBase
-	mem[kernDataBase+kdPageBitmap+bit/8] |= byte(1 << (bit % 8))
+	return layout.usp
 }
 
 func runM161GetIOSMClient(t *testing.T, client *m161Task0ClientRig, portName string, useShare bool) m161GetIOSMResult {
@@ -200,12 +173,12 @@ func runM161GetIOSMClient(t *testing.T, client *m161Task0ClientRig, portName str
 	)
 
 	mem := client.rig.cpu.memory
-	clear(mem[client.data+offName : client.data+offName+0x180])
-	copy(mem[client.data+offName:], append([]byte(portName), 0))
+	clear(mem[client.datap+offName : client.datap+offName+0x180])
+	copy(mem[client.datap+offName:], append([]byte(portName), 0))
 
-	pc := client.t0
+	pc := client.t0p
 	w := func(instr []byte) {
-		if pc+uint32(len(instr)) > client.t0+MMU_PAGE_SIZE {
+		if pc+uint32(len(instr)) > client.t0p+MMU_PAGE_SIZE {
 			t.Fatalf("GET_IOSM client exceeds executable scratch page: pc=%#x base=%#x", pc, client.t0)
 		}
 		copy(mem[pc:], instr)
@@ -263,27 +236,27 @@ func runM161GetIOSMClient(t *testing.T, client *m161Task0ClientRig, portName str
 	resetM161Task0ClientState(client)
 	runRigForDuration(client.rig, 300*time.Millisecond)
 
-	if got := binary.LittleEndian.Uint64(mem[client.data+offSentinel:]); got != 0xCAFE {
+	if got := binary.LittleEndian.Uint64(mem[client.datap+offSentinel:]); got != 0xCAFE {
 		output := client.term.DrainOutput()
 		t.Fatalf("runM161GetIOSMClient(%q): sentinel=%#x, want 0xCAFE findErr=%d allocErr=%d replyErr=%d waitErr=%d bufferVA=%#x share=%#x output=%q",
 			portName,
 			got,
-			binary.LittleEndian.Uint64(mem[client.data+offFindErr:]),
-			binary.LittleEndian.Uint64(mem[client.data+offAllocErr:]),
-			binary.LittleEndian.Uint64(mem[client.data+offReplyErr:]),
-			binary.LittleEndian.Uint64(mem[client.data+offWaitErr:]),
-			binary.LittleEndian.Uint64(mem[client.data+offBufferVA:]),
-			binary.LittleEndian.Uint64(mem[client.data+offShareHdl:]),
+			binary.LittleEndian.Uint64(mem[client.datap+offFindErr:]),
+			binary.LittleEndian.Uint64(mem[client.datap+offAllocErr:]),
+			binary.LittleEndian.Uint64(mem[client.datap+offReplyErr:]),
+			binary.LittleEndian.Uint64(mem[client.datap+offWaitErr:]),
+			binary.LittleEndian.Uint64(mem[client.datap+offBufferVA:]),
+			binary.LittleEndian.Uint64(mem[client.datap+offShareHdl:]),
 			output[:min(len(output), 800)])
 	}
 
 	var res m161GetIOSMResult
-	res.findErr = binary.LittleEndian.Uint64(mem[client.data+offFindErr:])
-	res.allocErr = binary.LittleEndian.Uint64(mem[client.data+offAllocErr:])
-	res.replyErr = binary.LittleEndian.Uint64(mem[client.data+offReplyErr:])
-	res.waitErr = binary.LittleEndian.Uint64(mem[client.data+offWaitErr:])
+	res.findErr = binary.LittleEndian.Uint64(mem[client.datap+offFindErr:])
+	res.allocErr = binary.LittleEndian.Uint64(mem[client.datap+offAllocErr:])
+	res.replyErr = binary.LittleEndian.Uint64(mem[client.datap+offReplyErr:])
+	res.waitErr = binary.LittleEndian.Uint64(mem[client.datap+offWaitErr:])
 	if useShare {
-		bufVA := uint32(binary.LittleEndian.Uint64(mem[client.data+offBufferVA:]))
+		bufVA := uint32(binary.LittleEndian.Uint64(mem[client.datap+offBufferVA:]))
 		bufPhys, ok := taskVAToPhys(mem, client.pub, uint64(bufVA))
 		if !ok {
 			t.Fatalf("runM161GetIOSMClient(%q): buffer VA %#x is not mapped", portName, bufVA)
@@ -303,10 +276,6 @@ func resetM161Task0ClientState(client *m161Task0ClientRig) {
 	binary.LittleEndian.PutUint32(mem[tcb+tcbSigRecvOff:], 0)
 	binary.LittleEndian.PutUint64(mem[kernDataBase+kdPTBRBase+client.slot*8:], uint64(client.pt))
 	binary.LittleEndian.PutUint64(mem[kernDataBase+kdTaskLayoutBase+client.slot*kdTaskLayoutStr+kdTaskLayoutPT:], uint64(client.pt))
-	stackBase := uint32(client.usp) - MMU_PAGE_SIZE
-	mapUserPage(mem, client.pt, uint16(client.t0>>MMU_PAGE_SHIFT), uint16(client.t0>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
-	mapUserPage(mem, client.pt, uint16(stackBase>>MMU_PAGE_SHIFT), uint16(stackBase>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
-	mapUserPage(mem, client.pt, uint16(client.data>>MMU_PAGE_SHIFT), uint16(client.data>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
 	client.rig.cpu.memory[tcb+tcbStateOff] = taskRunning
 	client.rig.cpu.memory[tcb+tcbGPRSavedOff] = 0
 	client.rig.cpu.PC = uint64(client.t0)

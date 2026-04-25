@@ -181,7 +181,7 @@ func TestIExec_M163_HostFSDOSRunRejectsInvalidASLRManifestAsBadArg(t *testing.T)
 }
 
 func TestIExec_M163_MetaDOSRunRejectsInvalidASLRManifestAsBadArg(t *testing.T) {
-	rig, term, dataBase := m163RunDosRunRAMMetaFixture(t, m163MinimalELFWithoutIOSM(), "M163Bad")
+	rig, term, dataBase := m163RunDosRunRAMMetaFixture(t, m163MinimalELFWithoutIOSM(t), "M163Bad")
 	got := binary.LittleEndian.Uint64(rig.cpu.memory[dataBase+160:])
 	if got != dosErrBadArg {
 		t.Fatalf("meta-backed DOS_RUN reply.type=%d, want DOS_ERR_BADARG (%d), task_id=%d output=%q",
@@ -445,14 +445,8 @@ func m163RunDosRunHostFixture(t *testing.T, image []byte, command string, args s
 func m163RunDosRunRAMMetaFixture(t *testing.T, image []byte, command string) (*ie64TestRig, *TerminalMMIO, uint32) {
 	t.Helper()
 	hostRoot := makeM152Phase5GeneratedHostRoot(t)
-	rig, term := bootRigWithPatchedHostShellELFOnHostRoot(t, hostRoot, func(image []byte) {})
-
-	rig.cpu.running.Store(true)
-	done := make(chan struct{})
-	go func() { rig.cpu.Execute(); close(done) }()
+	rig, term, _, _ := bootAndResetToShellTaskWithBootstrapHostRoot(t, hostRoot)
 	fileVA, _, ok := waitForDosFileMeta(rig.cpu.memory, "readme", 8*time.Second)
-	rig.cpu.running.Store(false)
-	<-done
 	if !ok {
 		t.Fatalf("readme metadata never published, output=%q", term.DrainOutput())
 	}
@@ -463,13 +457,39 @@ func m163RunDosRunRAMMetaFixture(t *testing.T, image []byte, command string) (*i
 	return rig, term, dataBase
 }
 
-func m163MinimalELFWithoutIOSM() []byte {
-	image := make([]byte, 64)
-	copy(image, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1})
-	binary.LittleEndian.PutUint16(image[16:], 2)
-	binary.LittleEndian.PutUint16(image[18:], 0x4945)
-	binary.LittleEndian.PutUint32(image[20:], 1)
-	binary.LittleEndian.PutUint16(image[52:], 64)
+func m163MinimalELFWithoutIOSM(t *testing.T) []byte {
+	t.Helper()
+	image := make([]byte, 1024)
+	copy(image[0:16], []byte{0x7f, 'E', 'L', 'F', 2, 1, 1})
+	binary.LittleEndian.PutUint16(image[16:18], m164ELFTypeDyn)
+	binary.LittleEndian.PutUint16(image[18:20], m14ELFMachineIE64)
+	binary.LittleEndian.PutUint32(image[20:24], 1)
+	binary.LittleEndian.PutUint64(image[24:32], 0)
+	binary.LittleEndian.PutUint64(image[32:40], 64)
+	binary.LittleEndian.PutUint64(image[40:48], 0x200)
+	binary.LittleEndian.PutUint16(image[52:54], 64)
+	binary.LittleEndian.PutUint16(image[54:56], 56)
+	binary.LittleEndian.PutUint16(image[56:58], 1)
+	binary.LittleEndian.PutUint16(image[58:60], 64)
+	binary.LittleEndian.PutUint16(image[60:62], 2)
+	binary.LittleEndian.PutUint16(image[62:64], 1)
+
+	binary.LittleEndian.PutUint32(image[64:68], m14ELFPTLoad)
+	binary.LittleEndian.PutUint32(image[68:72], m14ELFSegFlagR|m14ELFSegFlagX)
+	binary.LittleEndian.PutUint64(image[72:80], 0)
+	binary.LittleEndian.PutUint64(image[80:88], 0)
+	binary.LittleEndian.PutUint64(image[88:96], 0)
+	binary.LittleEndian.PutUint64(image[96:104], 0x100)
+	binary.LittleEndian.PutUint64(image[104:112], 0x1000)
+	binary.LittleEndian.PutUint64(image[112:120], 0x1000)
+
+	copy(image[0x180:], []byte("\x00.shstrtab\x00"))
+	sh1 := 0x200 + 64
+	binary.LittleEndian.PutUint32(image[sh1:sh1+4], 1)
+	binary.LittleEndian.PutUint32(image[sh1+4:sh1+8], 3)
+	binary.LittleEndian.PutUint64(image[sh1+24:sh1+32], 0x180)
+	binary.LittleEndian.PutUint64(image[sh1+32:sh1+40], 11)
+	binary.LittleEndian.PutUint64(image[sh1+48:sh1+56], 1)
 	return image
 }
 

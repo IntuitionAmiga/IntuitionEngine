@@ -23,7 +23,7 @@ IEXEC_RUNTIME_LST := $(IEXEC_DIR)/runtime_builder.lst
 IEXEC_ELF_REBUILDER := ./tools/rebuild_boot_dos_elf
 IEXEC_SYSTEM_EXPORTER := ./tools/export_intuitionos_system
 IEXEC_SYSTEM_DIR := ./sdk/intuitionos/system/SYS/IOSSYS
-IEXEC_BUILD_DATE ?= 2026-04-22
+IEXEC_BUILD_DATE ?= 2026-04-25
 IEXEC_RUNTIME_ELF_TARGETS := \
 	boot_dos_library.elf:prog_doslib \
 	boot_console_handler.elf:prog_console \

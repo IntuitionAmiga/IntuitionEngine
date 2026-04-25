@@ -9,7 +9,7 @@
 
 IOS_VERSION_MAJOR  equ 1
 IOS_VERSION_MINOR  equ 16
-IOS_VERSION_PATCH  equ 1
+IOS_VERSION_PATCH  equ 4
 
 ; ===========================================================================
 ; Current module manifest note ABI (M16.1 universal IOSM note)
@@ -287,7 +287,7 @@ KERN_STACK_TOP    equ 0x0A0000    ; Kernel stack top (grows downward below I/O b
 KD_CURRENT_TASK   equ 0           ; uint64: current task index
 KD_TICK_COUNT     equ 8           ; uint64: tick counter
 KD_NUM_TASKS      equ 16          ; uint64: number of active tasks
-KD_NONCE_COUNTER  equ 24          ; uint64: monotonic counter for share handle nonces
+KD_NONCE_COUNTER  equ 24          ; uint64: monotonic shared-memory nonce counter
 KD_NAME_SCRATCH   equ 32          ; 32-byte scratch buffer for port name operations (M12: was 16)
 
 ; ---------------------------------------------------------------------------
@@ -414,6 +414,7 @@ KD_TASK_PT_BITMAP_SZ     equ 64
 KD_TASK_PUBID_BASE       equ 65816 ; 255 x u32 public task IDs (slot -> public id)
 KD_TASK_PUBID_STRIDE     equ 4
 KD_TASKID_NEXT           equ 66840 ; u64 monotonic next public task ID
+KD_ASLR_STATE            equ 66848 ; u64 private M16.4 ASLR PRNG seed/state
 TASK_PUBID_FREE          equ 0xFFFFFFFF
 
 ; M16 phase-1 foundation: exec-owned library registry rows and per-task open

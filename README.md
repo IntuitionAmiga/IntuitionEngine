@@ -6092,7 +6092,7 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 
 - **Every rebuilt runtime ELF carries `.ios.manifest`.** The 128-byte `IOSM` descriptor records kind, public name, version/revision/patch, flags, message ABI, build date, and the fixed copyright string.
 - **Resident version queries use existing IPC.** Persistent services answer `MSG_GET_IOSM` through caller-allocated shared memory, and `exec.library` exposes a public port for its own IOSM plus resident public-port enumeration.
-- **`VERSION` no longer reports stale milestone text.** The default command output is `IntuitionOS 1.16.1`, `exec.library 1.16.1 (2026-04-22)`, and `Copyright © 2026 Zayn Otley`.
+- **`VERSION` no longer reports stale milestone text.** The default command output is `IntuitionOS 1.16.4`, `exec.library 1.16.4 (2026-04-25)`, and `Copyright © 2026 Zayn Otley`.
 
 **M16.2 protected non-library module status** - handlers, devices, and resources now use the protected-module lifecycle internally without absorbing PIE/ASLR work:
 
@@ -6102,10 +6102,11 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 - **PIE and ASLR stay separate.** M16.3 is reserved for making the shipped ELF surface consistently PIE-capable; M16.4 is reserved for real relocation and ASLR/randomized placement. M16.2 keeps the M14.2 `ET_EXEC` placement contract unchanged.
 - See `sdk/docs/IntuitionOS/M16.2-plan.md` for the full TDD milestone plan and handoff notes.
 
-**M16.3 PIE-capable ELF surface status** - `MODF_ASLR_CAPABLE` is now load-bearing:
+**M16.4 runtime ELF / ASLR status** - `MODF_ASLR_CAPABLE` is now operational:
 
-- **All DOS-loaded ELFs require ASLR-capable metadata.** Commands carry exactly `MODF_ASLR_CAPABLE`; libraries, devices, handlers, and resources carry exactly `MODF_COMPAT_PORT | MODF_ASLR_CAPABLE`.
-- **Placement remains strict `ET_EXEC`.** M16.3 does not add `ET_DYN`, runtime relocation, randomized placement, ASLR, or KASLR; that handoff remains M16.4.
+- **All runtime ELFs are self-contained `ET_DYN`.** Shipped commands, libraries, devices, handlers, resources, host-provided DOS ELFs, and third-party DOS-loadable runtime ELFs use zero-relative `PT_LOAD` addresses and mandatory section headers.
+- **Relocation is local and bounded.** IntuitionOS accepts local runtime relocation metadata without adding dynamic linking, `PT_INTERP`, `PT_DYNAMIC`, `DT_NEEDED`, imported-symbol lookup, PLT/GOT binding, lazy binding, or a shared-object namespace.
+- **Userland ASLR is enabled.** Runtime images load at chosen user image bases; KASLR is deferred to a later milestone.
 - **Hardening rules stay intact.** W^X, SKEF/SKAC/SUA discipline, bounded inputs, and non-executable shared-memory `MAPF_READ` / `MAPF_WRITE` transfers remain mandatory.
 
 **M15.1 source layout status** - the IntuitionOS sources are no longer forced to live in one monolithic assembly body, and the hostfs runtime now builds separately from the kernel image:

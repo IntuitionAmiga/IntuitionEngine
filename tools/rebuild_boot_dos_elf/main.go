@@ -14,6 +14,7 @@ import (
 
 const (
 	elfMachineIE64 = 0x4945
+	elfTypeDyn     = 3
 	pageSize       = 0x1000
 	baseVA         = 0x600000
 	listingBias    = 0x1000
@@ -826,10 +827,16 @@ func buildELF(code []byte, data []byte, manifest libManifestSpec, withManifest b
 	codeFileOff := uint64(pageSize)
 	codeFileSize := uint64(len(code))
 	codeMemSize := roundUp(codeFileSize, pageSize)
-	dataVA := baseVA + codeMemSize
+	if codeMemSize == 0 {
+		codeMemSize = pageSize
+	}
+	dataVA := codeMemSize
 	dataFileOff := codeFileOff + codeMemSize
 	dataFileSize := uint64(len(data))
 	dataMemSize := roundUp(dataFileSize, pageSize)
+	if dataMemSize == 0 {
+		dataMemSize = pageSize
+	}
 
 	manifestBytes := []byte(nil)
 	shstrtab := []byte(nil)
@@ -860,10 +867,10 @@ func buildELF(code []byte, data []byte, manifest libManifestSpec, withManifest b
 	}
 
 	copy(out[0:16], []byte{0x7F, 'E', 'L', 'F', 2, 1, 1})
-	binary.LittleEndian.PutUint16(out[16:18], 2)
+	binary.LittleEndian.PutUint16(out[16:18], elfTypeDyn)
 	binary.LittleEndian.PutUint16(out[18:20], elfMachineIE64)
 	binary.LittleEndian.PutUint32(out[20:24], 1)
-	binary.LittleEndian.PutUint64(out[24:32], baseVA)
+	binary.LittleEndian.PutUint64(out[24:32], 0)
 	binary.LittleEndian.PutUint64(out[32:40], 64)
 	binary.LittleEndian.PutUint64(out[40:48], shoff)
 	binary.LittleEndian.PutUint32(out[48:52], 0)
@@ -878,8 +885,8 @@ func buildELF(code []byte, data []byte, manifest libManifestSpec, withManifest b
 	binary.LittleEndian.PutUint32(out[ph0+0:ph0+4], 1)
 	binary.LittleEndian.PutUint32(out[ph0+4:ph0+8], 5)
 	binary.LittleEndian.PutUint64(out[ph0+8:ph0+16], codeFileOff)
-	binary.LittleEndian.PutUint64(out[ph0+16:ph0+24], baseVA)
-	binary.LittleEndian.PutUint64(out[ph0+24:ph0+32], baseVA)
+	binary.LittleEndian.PutUint64(out[ph0+16:ph0+24], 0)
+	binary.LittleEndian.PutUint64(out[ph0+24:ph0+32], 0)
 	binary.LittleEndian.PutUint64(out[ph0+32:ph0+40], codeFileSize)
 	binary.LittleEndian.PutUint64(out[ph0+40:ph0+48], codeMemSize)
 	binary.LittleEndian.PutUint64(out[ph0+48:ph0+56], pageSize)

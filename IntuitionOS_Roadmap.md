@@ -21,7 +21,7 @@ remain Amiga-shaped:
 `HUNK` is out of scope for the native OS roadmap. A future compatibility subsystem for
 68K binaries may exist one day, but it should not distort the native design.
 
-## Current State: M13 Complete
+## Current State: M16.4 Runtime ELF / Userland ASLR
 
 Implemented:
 
@@ -32,16 +32,15 @@ Implemented:
 - `console.handler`, `dos.library`, and `Shell`
 - `hardware.resource` with trusted MMIO grant brokering
 - `input.device`, `graphics.library`, and `intuition.library`
-- DOS-loaded commands in `C:` (`Version`, `Avail`, `Dir`, `Type`, `Echo`, `About`, `GfxDemo`)
-- `S:Startup-Sequence` boot, Intuition windows, and retained GUI demos
+- DOS-loaded commands in `C:` (`Version`, `Avail`, `Dir`, `Type`, `Echo`, `Assign`, `List`, `Which`, `Help`, `Resident`, `About`, `GfxDemo`, `ElfSeg`)
+- `S:Startup-Sequence` boot, Intuition windows, retained GUI demos, and generated host-backed system roots
+- strict runtime ELF loading: self-contained IE64 `ET_DYN`, zero-relative `PT_LOAD`, IOSM metadata, local `R_IE64_RELATIVE64`, W^X, and userland ASLR placement
 
 What is still missing for a real OS feel:
 
-- a real long-term executable and loader model (`ELF` + `LoadSeg`)
-- fuller `dos.library` semantics and a more complete system layout
 - more commands and utilities so the system feels self-hosting rather than a demo
 - default graphical shell / desktop boot
-- later scheduler refinement and serious toolchain bring-up
+- later scheduler refinement, serious toolchain bring-up, and automatic cleanup of task-owned module handles/resources
 
 ## M14: ELF Executable Format + LoadSeg
 
@@ -185,17 +184,21 @@ Post-M16 note:
   kernel-serviced public `exec.library` port, not as new public syscalls.
 - `M16.3` makes `MODF_ASLR_CAPABLE` mandatory for all DOS-loaded ELFs and
   audits/marks shipped commands, libraries, devices, handlers, and resources.
-  The strict `ET_EXEC` placement contract remains; `ET_DYN`, relocation,
-  randomized placement, ASLR, and KASLR stay in `M16.4`.
-  SDK wrappers send `EXEC_MSG_ATTACH_HANDLER`, `EXEC_MSG_OPEN_DEVICE`, or
+- `M16.4` cuts runtime ELFs over to self-contained IE64 `ET_DYN`: shipped
+  commands, libraries, devices, handlers, resources, host-provided DOS ELFs,
+  and third-party DOS-loadable runtime ELFs use zero-relative `PT_LOAD`
+  addresses, mandatory section headers, bounded local relocation metadata, and
+  userland ASLR placement. Dynamic linking remains absent, `ET_EXEC` has no
+  post-cutover runtime compatibility exception, and KASLR is deferred.
+- `M16.2.1` SDK wrappers send `EXEC_MSG_ATTACH_HANDLER`, `EXEC_MSG_OPEN_DEVICE`, or
   `EXEC_MSG_OPEN_RESOURCE` with a one-page shared request object, and release
   opaque generation-aware tokens through the matching close/detach opcodes.
-  This slice is ONLINE-only for non-library rows, keeps compat-port-only use as
-  legacy transport, and does not add demand-load, PIE, relocation, ASLR, or
-  third-party install policy.
-- `M16.3` should make the whole shipped ELF surface consistently PIE-capable
-  and enforce the codegen/tooling contract where appropriate
-- `M16.4` should implement real relocation plus ASLR/randomized placement
+  That slice is ONLINE-only for non-library rows and keeps compat-port-only use
+  as legacy transport.
+- `M16.3` made the whole shipped ELF surface consistently PIE-capable and
+  enforced the codegen/tooling contract where appropriate
+- `M16.4` implements the runtime `ET_DYN` relocation and ASLR/randomized
+  placement contract for userland images
 - task/process lifecycle hardening remains important follow-on work, especially
   automatic cleanup of task-owned module handles and resources on exit or crash
 

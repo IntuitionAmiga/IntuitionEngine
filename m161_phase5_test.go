@@ -151,13 +151,14 @@ func runM161ParseManifestClient(t *testing.T, client *m161Task0ClientRig, path s
 	)
 
 	mem := client.rig.cpu.memory
-	stateBase := uint32(client.usp) - MMU_PAGE_SIZE
-	clear(mem[stateBase+offName : stateBase+offName+0x180])
-	copy(mem[stateBase+offName:], []byte("dos.library\x00"))
+	stateBase := client.data
+	statePhys := client.datap
+	clear(mem[statePhys+offName : statePhys+offName+0x180])
+	copy(mem[statePhys+offName:], []byte("dos.library\x00"))
 
-	pc := client.t0
+	pc := client.t0p
 	w := func(instr []byte) {
-		if pc+uint32(len(instr)) > client.t0+MMU_PAGE_SIZE {
+		if pc+uint32(len(instr)) > client.t0p+MMU_PAGE_SIZE {
 			t.Fatalf("PARSE_MANIFEST client exceeds executable scratch page: pc=%#x base=%#x", pc, client.t0)
 		}
 		copy(mem[pc:], instr)
@@ -216,12 +217,12 @@ func runM161ParseManifestClient(t *testing.T, client *m161Task0ClientRig, path s
 	runRigForDuration(client.rig, 1200*time.Millisecond)
 
 	var res m161ParseManifestResult
-	res.findErr = binary.LittleEndian.Uint64(mem[stateBase+offFindErr:])
-	res.allocErr = binary.LittleEndian.Uint64(mem[stateBase+offAllocErr:])
-	res.reply = binary.LittleEndian.Uint64(mem[stateBase+offReply:])
-	res.replyD0 = binary.LittleEndian.Uint64(mem[stateBase+offReplyD0:])
-	res.waitErr = binary.LittleEndian.Uint64(mem[stateBase+offWaitErr:])
-	bufVA := uint32(binary.LittleEndian.Uint64(mem[stateBase+offBufferVA:]))
+	res.findErr = binary.LittleEndian.Uint64(mem[statePhys+offFindErr:])
+	res.allocErr = binary.LittleEndian.Uint64(mem[statePhys+offAllocErr:])
+	res.reply = binary.LittleEndian.Uint64(mem[statePhys+offReply:])
+	res.replyD0 = binary.LittleEndian.Uint64(mem[statePhys+offReplyD0:])
+	res.waitErr = binary.LittleEndian.Uint64(mem[statePhys+offWaitErr:])
+	bufVA := uint32(binary.LittleEndian.Uint64(mem[statePhys+offBufferVA:]))
 	bufPhys, ok := taskVAToPhys(mem, client.pub, uint64(bufVA))
 	if !ok {
 		t.Fatalf("runM161ParseManifestClient(%q): buffer VA %#x is not mapped", path, bufVA)
@@ -299,12 +300,12 @@ func runM161ListResidentsClient(t *testing.T, client *m161Task0ClientRig) m161Li
 	)
 
 	mem := client.rig.cpu.memory
-	clear(mem[client.data+offName : client.data+offName+0x500])
-	copy(mem[client.data+offName:], []byte("exec.library\x00"))
+	clear(mem[client.datap+offName : client.datap+offName+0x500])
+	copy(mem[client.datap+offName:], []byte("exec.library\x00"))
 
-	pc := client.t0
+	pc := client.t0p
 	w := func(instr []byte) {
-		if pc+uint32(len(instr)) > client.t0+MMU_PAGE_SIZE {
+		if pc+uint32(len(instr)) > client.t0p+MMU_PAGE_SIZE {
 			t.Fatalf("LIST_RESIDENTS client exceeds executable scratch page: pc=%#x base=%#x", pc, client.t0)
 		}
 		copy(mem[pc:], instr)
@@ -354,23 +355,23 @@ func runM161ListResidentsClient(t *testing.T, client *m161Task0ClientRig) m161Li
 	resetM161Task0ClientState(client)
 	runRigForDuration(client.rig, 300*time.Millisecond)
 
-	if got := binary.LittleEndian.Uint64(mem[client.data+offSentinel:]); got != 0xCAFE {
+	if got := binary.LittleEndian.Uint64(mem[client.datap+offSentinel:]); got != 0xCAFE {
 		output := client.term.DrainOutput()
 		t.Fatalf("runM161ListResidentsClient: sentinel=%#x findErr=%d allocErr=%d waitErr=%d output=%q",
 			got,
-			binary.LittleEndian.Uint64(mem[client.data+offFindErr:]),
-			binary.LittleEndian.Uint64(mem[client.data+offAllocErr:]),
-			binary.LittleEndian.Uint64(mem[client.data+offWaitErr:]),
+			binary.LittleEndian.Uint64(mem[client.datap+offFindErr:]),
+			binary.LittleEndian.Uint64(mem[client.datap+offAllocErr:]),
+			binary.LittleEndian.Uint64(mem[client.datap+offWaitErr:]),
 			output[:min(len(output), 800)])
 	}
 
 	var res m161ListResidentsResult
-	res.findErr = binary.LittleEndian.Uint64(mem[client.data+offFindErr:])
-	res.allocErr = binary.LittleEndian.Uint64(mem[client.data+offAllocErr:])
-	res.waitErr = binary.LittleEndian.Uint64(mem[client.data+offWaitErr:])
-	res.count = binary.LittleEndian.Uint64(mem[client.data+offCount:])
-	res.bytes = binary.LittleEndian.Uint64(mem[client.data+offBytes:])
-	bufVA := uint32(binary.LittleEndian.Uint64(mem[client.data+offBufferVA:]))
+	res.findErr = binary.LittleEndian.Uint64(mem[client.datap+offFindErr:])
+	res.allocErr = binary.LittleEndian.Uint64(mem[client.datap+offAllocErr:])
+	res.waitErr = binary.LittleEndian.Uint64(mem[client.datap+offWaitErr:])
+	res.count = binary.LittleEndian.Uint64(mem[client.datap+offCount:])
+	res.bytes = binary.LittleEndian.Uint64(mem[client.datap+offBytes:])
+	bufVA := uint32(binary.LittleEndian.Uint64(mem[client.datap+offBufferVA:]))
 	bufPhys, ok := taskVAToPhys(mem, client.pub, uint64(bufVA))
 	if !ok {
 		t.Fatalf("runM161ListResidentsClient: buffer VA %#x is not mapped", bufVA)
@@ -394,11 +395,11 @@ func runM161PortNameByIndexClient(t *testing.T, client *m161Task0ClientRig, inde
 	)
 
 	mem := client.rig.cpu.memory
-	clear(mem[client.data+offName : client.data+offName+0x40])
+	clear(mem[client.datap+offName : client.datap+offName+0x40])
 
-	pc := client.t0
+	pc := client.t0p
 	w := func(instr []byte) {
-		if pc+uint32(len(instr)) > client.t0+MMU_PAGE_SIZE {
+		if pc+uint32(len(instr)) > client.t0p+MMU_PAGE_SIZE {
 			t.Fatalf("PORT_NAME_BY_INDEX client exceeds executable scratch page: pc=%#x base=%#x", pc, client.t0)
 		}
 		copy(mem[pc:], instr)
@@ -428,20 +429,20 @@ func runM161PortNameByIndexClient(t *testing.T, client *m161Task0ClientRig, inde
 	resetM161Task0ClientState(client)
 	runRigForDuration(client.rig, 300*time.Millisecond)
 
-	if got := binary.LittleEndian.Uint64(mem[client.data+offSentinel:]); got != 0xCAFE {
+	if got := binary.LittleEndian.Uint64(mem[client.datap+offSentinel:]); got != 0xCAFE {
 		output := client.term.DrainOutput()
 		t.Fatalf("runM161PortNameByIndexClient(%d): sentinel=%#x err=%d taskID=%d output=%q",
 			index,
 			got,
-			binary.LittleEndian.Uint64(mem[client.data+offErr:]),
-			binary.LittleEndian.Uint64(mem[client.data+offTaskID:]),
+			binary.LittleEndian.Uint64(mem[client.datap+offErr:]),
+			binary.LittleEndian.Uint64(mem[client.datap+offTaskID:]),
 			output[:min(len(output), 800)])
 	}
 
 	var res m161PortNameByIndexResult
-	res.taskID = binary.LittleEndian.Uint64(mem[client.data+offTaskID:])
-	res.err = binary.LittleEndian.Uint64(mem[client.data+offErr:])
-	copy(res.name[:], mem[client.data+offName:client.data+offName+32])
+	res.taskID = binary.LittleEndian.Uint64(mem[client.datap+offTaskID:])
+	res.err = binary.LittleEndian.Uint64(mem[client.datap+offErr:])
+	copy(res.name[:], mem[client.datap+offName:client.datap+offName+32])
 	return res
 }
 

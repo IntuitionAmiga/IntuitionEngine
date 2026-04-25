@@ -50,10 +50,11 @@ func TestIExec_M1621_ABIFrozenConstantsAndNoPublicSyscalls(t *testing.T) {
 
 func TestIExec_M1621_OpenDeviceCloseDeviceViaExecLibraryIPC(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
+	m164InstallLegacyTask0Seed(rig.cpu.memory)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	overrideExtraTasks(rig.cpu.memory, images, 1)
 	t0 := images[0]
-	scratch := uint32(userTask0Stack + 0x100)
+	scratch := uint32(m164TestTask0StackTarget + 0x100)
 
 	row := m16ModuleRowBase(0)
 	clear(rig.cpu.memory[row : row+kdModuleRowStride])
@@ -65,8 +66,8 @@ func TestIExec_M1621_OpenDeviceCloseDeviceViaExecLibraryIPC(t *testing.T) {
 	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleOwningTask:], 1)
 	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModulePublicPort:], 1)
 
-	execName := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("exec.library\x00"))
-	replyName := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x360, []byte("m1621.reply\x00"))
+	execName := writeTaskImageLiteral(t, rig.cpu.memory, t0, m164TestTask0CodeTarget, 0x340, []byte("exec.library\x00"))
+	replyName := writeTaskImageLiteral(t, rig.cpu.memory, t0, m164TestTask0CodeTarget, 0x360, []byte("m1621.reply\x00"))
 
 	pc := t0
 	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
@@ -150,6 +151,7 @@ func TestIExec_M1621_OpenDeviceCloseDeviceViaExecLibraryIPC(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
+	scratch = uint32(taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStackBase) + 0x100)
 	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+56:]); got != 0xCAFE {
 		output := term.DrainOutput()
 		var dbg []uint64
@@ -187,10 +189,11 @@ func TestIExec_M1621_OpenDeviceCloseDeviceViaExecLibraryIPC(t *testing.T) {
 
 func TestIExec_M1621_OpenDeviceRejectsNonZeroNamePadding(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
+	m164InstallLegacyTask0Seed(rig.cpu.memory)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	overrideExtraTasks(rig.cpu.memory, images, 1)
 	t0 := images[0]
-	scratch := uint32(userTask0Stack + 0x180)
+	scratch := uint32(m164TestTask0StackTarget + 0x180)
 
 	row := m16ModuleRowBase(0)
 	clear(rig.cpu.memory[row : row+kdModuleRowStride])
@@ -202,8 +205,8 @@ func TestIExec_M1621_OpenDeviceRejectsNonZeroNamePadding(t *testing.T) {
 	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleOwningTask:], 1)
 	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModulePublicPort:], 1)
 
-	execName := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x3A0, []byte("exec.library\x00"))
-	replyName := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x3C0, []byte("m1621.badpad\x00"))
+	execName := writeTaskImageLiteral(t, rig.cpu.memory, t0, m164TestTask0CodeTarget, 0x3A0, []byte("exec.library\x00"))
+	replyName := writeTaskImageLiteral(t, rig.cpu.memory, t0, m164TestTask0CodeTarget, 0x3C0, []byte("m1621.badpad\x00"))
 
 	pc := t0
 	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
@@ -259,6 +262,7 @@ func TestIExec_M1621_OpenDeviceRejectsNonZeroNamePadding(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
+	scratch = uint32(taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStackBase) + 0x180)
 	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+24:]); got != 0xCAFE {
 		output := term.DrainOutput()
 		t.Fatalf("task did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 400)])

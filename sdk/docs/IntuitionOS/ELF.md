@@ -1,8 +1,36 @@
-# IntuitionOS Native ELF Contract (M14.2 Phase 1)
+# IntuitionOS Native ELF Contract (M16.4)
 
 ## Status
 
-This document freezes the executable-format contract through M14.2 phase 1 and records the historical transition from M14 to the current ELF-only execution contract.
+This document records the historical transition from M14 to the current
+ELF-only execution contract. As of M16.4, every accepted DOS-loadable or
+protected runtime ELF is a self-contained `ET_DYN` IE64 image with
+zero-relative `PT_LOAD` addresses, local bounded relocation metadata, and
+userland ASLR placement.
+
+M16.4 changes the live runtime executable contract from fixed `ET_EXEC` to
+self-contained `ET_DYN`. This applies to shipped commands, libraries, devices,
+handlers, resources, host-provided DOS ELFs, and third-party DOS-loadable
+runtime ELFs after the cutover. There is no implicit `ET_EXEC` compatibility
+exception.
+
+The IntuitionOS model still has no dynamic linking. There is no `PT_INTERP`,
+`PT_DYNAMIC`, `DT_NEEDED`, PLT/GOT binding, imported-symbol lookup, lazy
+binding, or shared-object namespace. Relocation is local and self-contained:
+the initial ABI accepts bounded `SHT_RELA` records using
+`R_IE64_RELATIVE64`, where symbol index must be zero and the loader writes
+`chosen_image_base + r_addend` to a writable non-executable target. Section
+headers are mandatory runtime metadata in M16.4, so stripped runtime ELFs are
+rejected.
+In short, section headers are mandatory for every accepted M16.4 runtime ELF.
+
+`.library` and class-specific module acquisition remain the service boundary:
+`OpenLibrary`, `CloseLibrary`, handler/device/resource acquisition IPC, ports,
+and message ABI remain the programmer-facing model. Userland ASLR is enabled;
+KASLR is deferred to M16.4.x. W^X means no page may be writable and executable
+at the same time. SKEF/SKAC/SUA discipline, explicit shared-memory `MAPF_*`
+masks, bounded inputs, and the rule against raw cross-task pointers remain
+mandatory.
 
 What M14 phase 1 did:
 

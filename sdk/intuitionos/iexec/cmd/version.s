@@ -689,7 +689,7 @@ prog_version_code:
 prog_version_code_end:
 
 prog_version_data:
-    ; Source-level OS version marker for M16.1 audits: IntuitionOS 1.16.1
+    ; Source-level OS version marker for M16.1 audits: IntuitionOS 1.16.4
 prog_version_name_console:
     dc.b    "console.handler", 0
     ds.b    16
@@ -740,7 +740,7 @@ prog_version_token_scratch:
 prog_version_path_scratch:
     ds.b    256
 prog_version_build_suffix:
-    dc.b    " (2026-04-22)", 0x0D, 0x0A, 0
+    dc.b    " (2026-04-25)", 0x0D, 0x0A, 0
     ds.b    18
 prog_version_copyright_line:
     dc.b    0x43, 0x6F, 0x70, 0x79, 0x72, 0x69, 0x67, 0x68
@@ -760,7 +760,7 @@ prog_version_iosm:
     ds.b    IOSM_NAME_SIZE - 8
     dc.l    MODF_ASLR_CAPABLE
     dc.l    0
-    dc.b    "2026-04-22", 0
+    dc.b    "2026-04-25", 0
     ds.b    IOSM_BUILD_DATE_SIZE - 11
     dc.b    0x43, 0x6F, 0x70, 0x79, 0x72, 0x69, 0x67, 0x68, 0x74, 0x20, 0xA9, 0x20, 0x32, 0x30, 0x32, 0x36, 0x20, 0x5A, 0x61, 0x79, 0x6E, 0x20, 0x4F, 0x74, 0x6C, 0x65, 0x79, 0
     ds.b    IOSM_COPYRIGHT_SIZE - 28

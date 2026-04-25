@@ -98,10 +98,11 @@ func TestIExec_M162_BootPublishesNonLibraryRegistryRows(t *testing.T) {
 
 func TestIExec_M162_OpenLibraryExRejectsOnlineNonLibraryRows(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
+	m164InstallLegacyTask0Seed(rig.cpu.memory)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	overrideExtraTasks(rig.cpu.memory, images, 1)
 	t0 := images[0]
-	scratch0 := uint32(userTask0Stack + 0x100)
+	scratch0 := uint32(m164TestTask0StackTarget + 0x100)
 
 	row := m16ModuleRowBase(0)
 	clear(rig.cpu.memory[row : row+kdModuleRowStride])
@@ -113,7 +114,7 @@ func TestIExec_M162_OpenLibraryExRejectsOnlineNonLibraryRows(t *testing.T) {
 	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModuleOwningTask:], 1)
 	binary.LittleEndian.PutUint32(rig.cpu.memory[row+kdModulePublicPort:], 1)
 
-	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte("input.device\x00"))
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, m164TestTask0CodeTarget, 0x340, []byte("input.device\x00"))
 
 	pc := t0
 	w := func(instr []byte) { copy(rig.cpu.memory[pc:], instr); pc += 8 }
@@ -136,6 +137,7 @@ func TestIExec_M162_OpenLibraryExRejectsOnlineNonLibraryRows(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
+	scratch0 = uint32(taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStackBase) + 0x100)
 	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0xCAFE {
 		output := term.DrainOutput()
 		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 400)])
@@ -153,13 +155,14 @@ func TestIExec_M162_OpenLibraryExRejectsOnlineNonLibraryRows(t *testing.T) {
 
 func TestIExec_M162_AddDeviceRejectsLibraryLoadingRowWithWaiters(t *testing.T) {
 	rig, term := assembleAndLoadKernel(t)
+	m164InstallLegacyTask0Seed(rig.cpu.memory)
 	images := findAllProgramImages(t, rig.cpu.memory)
 	overrideExtraTasks(rig.cpu.memory, images, 1)
 	markTrustedBootTaskLayouts(rig.cpu.memory, maxTasks)
 	t0 := images[0]
-	scratch0 := uint32(userTask0Stack + 0x100)
+	scratch0 := uint32(m164TestTask0StackTarget + 0x100)
 	name := "rogue.device"
-	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, userTask0Code, 0x340, []byte(name+"\x00"))
+	nameAddr := writeTaskImageLiteral(t, rig.cpu.memory, t0, m164TestTask0CodeTarget, 0x340, []byte(name+"\x00"))
 
 	rowIndex := uint32(0xFFFFFFFF)
 	for i := uint32(0); i < kdModuleMax; i++ {
@@ -217,6 +220,7 @@ func TestIExec_M162_AddDeviceRejectsLibraryLoadingRowWithWaiters(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
+	scratch0 = uint32(taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStackBase) + 0x100)
 	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+32:]); got != 0xCAFE {
 		output := term.DrainOutput()
 		t.Fatalf("task 0 did not reach sentinel, got 0x%X output=%q", got, output[:min(len(output), 400)])
@@ -236,8 +240,8 @@ func TestIExec_M162_AddDeviceRejectsLibraryLoadingRowWithWaiters(t *testing.T) {
 	if got := binary.LittleEndian.Uint64(rig.cpu.memory[row+kdModuleWaitersHead:]); got != 1 {
 		t.Fatalf("waiter head=%d after rejected AddDevice, want preserved token 1", got)
 	}
-	if got := binary.LittleEndian.Uint32(rig.cpu.memory[waiter0+kdModuleWaiterOutcome:]); got != scratch0+64 {
-		t.Fatalf("waiter outcome=0x%X after rejected AddDevice, want preserved 0x%X", got, scratch0+64)
+	if got := binary.LittleEndian.Uint32(rig.cpu.memory[waiter0+kdModuleWaiterOutcome:]); got != uint32(m164TestTask0StackTarget+0x100+64) {
+		t.Fatalf("waiter outcome=0x%X after rejected AddDevice, want preserved target 0x%X", got, uint32(m164TestTask0StackTarget+0x100+64))
 	}
 	if got := binary.LittleEndian.Uint32(rig.cpu.memory[row+kdModuleOpenCount:]); got != 0 {
 		t.Fatalf("row open_count=%d after rejected AddDevice, want 0", got)
