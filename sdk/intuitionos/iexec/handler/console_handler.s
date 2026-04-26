@@ -296,7 +296,7 @@ prog_console_iosm:
     dc.b    0
     dc.w    1
     dc.w    0
-    dc.w    0
+    dc.w    1
     dc.b    "console.handler", 0
     ds.b    IOSM_NAME_SIZE - 16
     dc.l    MODF_COMPAT_PORT | MODF_ASLR_CAPABLE

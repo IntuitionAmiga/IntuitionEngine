@@ -250,7 +250,7 @@ prog_which_cmd_iosm:
     dc.b    0
     dc.w    1
     dc.w    0
-    dc.w    0
+    dc.w    1
     dc.b    "Which", 0
     ds.b    IOSM_NAME_SIZE - 7
     dc.l    MODF_ASLR_CAPABLE

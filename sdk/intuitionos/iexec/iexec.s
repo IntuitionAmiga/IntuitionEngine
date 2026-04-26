@@ -2857,6 +2857,43 @@ kern_boot_validate_library_manifest:
     move.q  r2, #ERR_BADARG
     move.l  r11, #64
     blt     r21, r11, .kbvlm_done
+
+    load.l  r18, 32(r20)               ; e_phoff
+    load.l  r11, 36(r20)
+    bnez    r11, .kbvlm_done
+    load.w  r24, 54(r20)               ; e_phentsize
+    move.l  r11, #56
+    bne     r24, r11, .kbvlm_done
+    load.w  r25, 56(r20)               ; e_phnum
+    beqz    r25, .kbvlm_done
+    move.q  r27, r25
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    blt     r27, r18, .kbvlm_done
+    bgt     r27, r21, .kbvlm_done
+    move.l  r19, #0
+.kbvlm_ph_loop:
+    bge     r19, r25, .kbvlm_no_ptnote
+    move.q  r27, r19
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    add     r27, r20, r27              ; program header
+    load.l  r11, (r27)
+    move.l  r12, #4                    ; PT_NOTE
+    bne     r11, r12, .kbvlm_next_ph
+    load.q  r11, 8(r27)                ; p_offset
+    load.q  r12, 32(r27)               ; p_filesz
+    add     r13, r11, r12
+    blt     r13, r11, .kbvlm_done
+    bgt     r13, r21, .kbvlm_done
+    add     r27, r20, r11              ; note ptr
+    add     r30, r27, r12              ; PT_NOTE end ptr
+    bra     .kbvlm_note_loop
+.kbvlm_next_ph:
+    add     r19, r19, #1
+    bra     .kbvlm_ph_loop
+.kbvlm_no_ptnote:
+
     load.q  r18, 40(r20)               ; e_shoff
     beqz    r18, .kbvlm_done
     load.w  r24, 58(r20)               ; e_shentsize
@@ -2939,31 +2976,31 @@ kern_boot_validate_library_manifest:
     add     r27, r27, r25              ; descriptor base
     load.l  r11, (r27)
     move.l  r12, #IOSM_MAGIC
-    bne     r11, r12, .kbvlm_note_next
+    bne     r11, r12, .kbvlm_done
     load.l  r11, 4(r27)
     move.l  r12, #1
-    bne     r11, r12, .kbvlm_note_next
+    bne     r11, r12, .kbvlm_done
     load.b  r11, IOSM_OFF_KIND(r27)
     move.l  r12, #IOSM_KIND_LIBRARY
-    bne     r11, r12, .kbvlm_note_next
+    bne     r11, r12, .kbvlm_done
     load.b  r11, IOSM_OFF_RESERVED0(r27)
-    bnez    r11, .kbvlm_note_next
+    bnez    r11, .kbvlm_done
     add     r14, r27, #IOSM_OFF_NAME   ; desc.name[32]
     move.q  r15, r22
     jsr     kern_boot_validate_name32_eq
-    bnez    r23, .kbvlm_note_next
+    bnez    r23, .kbvlm_done
     load.w  r11, IOSM_OFF_VERSION(r27) ; lib_version
-    move.l  r12, #14
-    bne     r11, r12, .kbvlm_note_next
+    move.l  r12, #15
+    bne     r11, r12, .kbvlm_done
     load.w  r11, IOSM_OFF_REVISION(r27) ; lib_revision
-    bnez    r11, .kbvlm_note_next
+    bnez    r11, .kbvlm_done
     load.w  r11, IOSM_OFF_PATCH(r27)   ; patch
-    bnez    r11, .kbvlm_note_next
+    bnez    r11, .kbvlm_done
     load.l  r11, IOSM_OFF_FLAGS(r27)   ; flags
     move.l  r12, #(MODF_COMPAT_PORT | MODF_ASLR_CAPABLE)
-    bne     r11, r12, .kbvlm_note_next
+    bne     r11, r12, .kbvlm_done
     load.l  r11, IOSM_OFF_MSG_ABI_VERSION(r27) ; compat message ABI version
-    bnez    r11, .kbvlm_note_next
+    bnez    r11, .kbvlm_done
     move.l  r11, #0
 .kbvlm_reserved2_loop:
     move.l  r12, #8
@@ -2971,13 +3008,51 @@ kern_boot_validate_library_manifest:
     add     r13, r27, #IOSM_OFF_RESERVED2
     add     r13, r13, r11
     load.b  r13, (r13)
-    bnez    r13, .kbvlm_note_next
+    bnez    r13, .kbvlm_done
     add     r11, r11, #1
     bra     .kbvlm_reserved2_loop
 .kbvlm_valid:
     move.q  r2, #ERR_OK
     rts
 .kbvlm_note_next:
+    load.l  r11, (r27)                 ; namesz
+    move.l  r12, #8
+    bne     r11, r12, .kbvlm_done
+    load.l  r11, 8(r27)                ; note type
+    move.l  r12, #0x494F5231           ; IOS-REL note type
+    bne     r11, r12, .kbvlm_done
+    add     r14, r27, #12
+    la      r15, kbvlm_reloc_note_name
+    jsr     kern_boot_validate_string_eq
+    bnez    r23, .kbvlm_done
+    move.l  r11, #32
+    blt     r24, r11, .kbvlm_done
+    move.q  r28, r27
+    add     r28, r28, #12
+    add     r28, r28, r25              ; IOS-REL descriptor base
+    load.l  r11, (r28)
+    move.l  r12, #0x52534F49           ; IOSR
+    bne     r11, r12, .kbvlm_done
+    load.w  r11, 4(r28)
+    move.l  r12, #1
+    bne     r11, r12, .kbvlm_done
+    load.w  r11, 6(r28)
+    move.l  r12, #32
+    bne     r11, r12, .kbvlm_done
+    load.w  r11, 8(r28)
+    move.l  r12, #24
+    bne     r11, r12, .kbvlm_done
+    load.w  r11, 10(r28)
+    bnez    r11, .kbvlm_done
+    load.q  r11, 16(r28)
+    bnez    r11, .kbvlm_done
+    load.q  r11, 24(r28)
+    bnez    r11, .kbvlm_done
+    load.l  r26, 12(r28)               ; record_count
+    move.q  r11, r26
+    mulu    r11, r12, r11              ; record_count * 24
+    add     r11, r11, #32
+    bne     r11, r24, .kbvlm_done
     move.q  r27, r29
     blt     r27, r30, .kbvlm_note_loop
     bra     .kbvlm_done
@@ -3043,6 +3118,10 @@ kbvlm_manifest_section_name:
 
 kbvlm_manifest_note_name:
     dc.b    "IOS-MOD", 0
+    align   4
+
+kbvlm_reloc_note_name:
+    dc.b    "IOS-REL", 0
     align   4
 
 ; R1 = dos.library child slot. Seeds the stable startup-block relpath field
@@ -3169,9 +3248,10 @@ boot_load_elf_image:
     load.l  r21, 56(r1)
     and     r21, r21, #0xFFFF
     move.l  r5, #2
-    bne     r21, r5, .blei_badarg
-    move.l  r5, #112
-    add     r6, r20, r5
+    blt     r21, r5, .blei_badarg
+    move.l  r5, #56
+    mulu    r6, r21, r5
+    add     r6, r20, r6
     blt     r6, r20, .blei_badarg
     load.q  r7, 8(sp)
     blt     r7, r6, .blei_badarg
@@ -3189,7 +3269,23 @@ boot_load_elf_image:
     bge     r24, r21, .blei_ph_done
     load.l  r4, (r23)
     move.l  r5, #1
-    bne     r4, r5, .blei_badarg
+    beq     r4, r5, .blei_load_ph
+    move.l  r5, #4
+    beq     r4, r5, .blei_note_ph
+    bra     .blei_badarg
+.blei_note_ph:
+    load.l  r5, 12(r23)
+    bnez    r5, .blei_badarg
+    load.l  r5, 36(r23)
+    bnez    r5, .blei_badarg
+    load.l  r11, 8(r23)                ; note file offset
+    load.l  r7, 32(r23)                ; note filesz
+    add     r9, r11, r7
+    blt     r9, r11, .blei_badarg
+    load.q  r10, 8(sp)
+    blt     r10, r9, .blei_badarg
+    bra     .blei_next
+.blei_load_ph:
     load.l  r4, 4(r23)                 ; flags
     move.q  r5, r4
     and     r5, r5, #0xFFFFFFF8
@@ -3409,14 +3505,15 @@ boot_load_elf_image:
 ; Out: R2 = ERR_OK / ERR_BADARG
 ; Clobbers: R5-R31
 boot_elf_apply_relocations:
-    sub     sp, sp, #128
+    sub     sp, sp, #144
     store.q r1, 0(sp)                  ; ELF ptr
     store.q r2, 8(sp)                  ; ELF size
     store.q r3, 16(sp)                 ; launch descriptor
     store.q r4, 24(sp)                 ; image base
 
     load.q  r18, 40(r1)                ; e_shoff
-    beqz    r18, .bear_badarg
+    beqz    r18, .bear_ptnote_relocs
+    store.q r0, 128(sp)                ; relocation source: section headers
     store.q r18, 32(sp)
     load.w  r19, 58(r1)                ; e_shentsize
     move.l  r11, #64
@@ -3475,7 +3572,7 @@ boot_elf_apply_relocations:
 .bear_rela_loop:
     load.q  r26, 80(sp)
     load.q  r27, 88(sp)
-    bge     r27, r26, .bear_next_sh
+    bge     r27, r26, .bear_rela_done
     load.q  r23, 64(sp)
 
     load.l  r11, 4(r23)                ; r_offset high
@@ -3572,18 +3669,151 @@ boot_elf_apply_relocations:
     store.q r27, 88(sp)
     bra     .bear_rela_loop
 
+.bear_rela_done:
+    load.q  r11, 128(sp)
+    bnez    r11, .bear_ok
+    bra     .bear_next_sh
+
 .bear_next_sh:
     load.q  r21, 56(sp)
     add     r21, r21, #1
     store.q r21, 56(sp)
     bra     .bear_sh_loop
+
+.bear_ptnote_relocs:
+    move.l  r11, #1
+    store.q r11, 128(sp)               ; relocation source: IOS-REL PT_NOTE
+    load.q  r18, 32(r1)                ; e_phoff
+    store.q r18, 32(sp)
+    load.w  r19, 54(r1)                ; e_phentsize
+    move.l  r11, #56
+    bne     r19, r11, .bear_badarg
+    store.q r19, 40(sp)
+    load.w  r20, 56(r1)                ; e_phnum
+    beqz    r20, .bear_badarg
+    store.q r20, 48(sp)
+    move.q  r21, r20
+    mulu    r21, r19, r21
+    add     r21, r18, r21
+    blt     r21, r18, .bear_badarg
+    load.q  r22, 8(sp)
+    bgt     r21, r22, .bear_badarg
+
+    store.q r0, 56(sp)                 ; program header index
+    store.q r0, 64(sp)                 ; PT_NOTE count
+.bear_ph_loop:
+    load.q  r20, 48(sp)
+    load.q  r21, 56(sp)
+    bge     r21, r20, .bear_no_ptnote_rela
+    load.q  r18, 32(sp)
+    load.q  r19, 40(sp)
+    move.q  r22, r21
+    mulu    r22, r19, r22
+    add     r22, r18, r22
+    load.q  r1, 0(sp)
+    add     r22, r1, r22               ; program header ptr
+    load.l  r11, (r22)
+    move.l  r12, #4                    ; PT_NOTE
+    bne     r11, r12, .bear_next_ph
+    load.q  r23, 64(sp)
+    add     r23, r23, #1
+    store.q r23, 64(sp)
+    move.l  r11, #1
+    bgt     r23, r11, .bear_badarg
+    load.q  r23, 8(r22)                ; p_offset
+    load.q  r24, 32(r22)               ; p_filesz
+    move.l  r11, #148                  ; IOS-MOD-only PT_NOTE has no relocations
+    bgt     r24, r11, .bear_ptnote_maybe_rela
+    bra     .bear_ok
+.bear_ptnote_maybe_rela:
+    add     r25, r23, r24
+    blt     r25, r23, .bear_badarg
+    load.q  r11, 8(sp)
+    bgt     r25, r11, .bear_badarg
+    load.q  r1, 0(sp)
+    add     r23, r1, r23               ; note ptr
+    add     r25, r1, r25               ; note end
+    store.q r23, 72(sp)
+    store.q r25, 80(sp)
+.bear_next_ph:
+    load.q  r21, 56(sp)
+    add     r21, r21, #1
+    store.q r21, 56(sp)
+    bra     .bear_ph_loop
+.bear_no_ptnote_rela:
+    load.q  r23, 64(sp)
+    beqz    r23, .bear_ok
+    load.q  r27, 72(sp)                ; note ptr
+    load.q  r30, 80(sp)                ; note end
+.bear_note_loop:
+    bge     r27, r30, .bear_ok
+    move.q  r13, r27
+    add     r13, r13, #12
+    bgt     r13, r30, .bear_ok
+    load.l  r25, (r27)                 ; namesz
+    load.l  r24, 4(r27)                ; descsz
+    move.q  r13, r25
+    add     r13, r13, #3
+    and     r13, r13, #0xFFFFFFFC      ; padded name size
+    move.q  r26, r24
+    add     r26, r26, #3
+    and     r26, r26, #0xFFFFFFFC      ; padded desc size
+    move.q  r28, r27
+    add     r28, r28, #12
+    add     r28, r28, r13              ; descriptor ptr
+    move.q  r29, r28
+    add     r29, r29, r26              ; next note ptr
+    bgt     r29, r30, .bear_ok
+    move.l  r12, #8
+    bne     r25, r12, .bear_note_next
+    load.l  r11, 8(r27)
+    move.l  r12, #0x494F5231           ; IOS-REL note type
+    bne     r11, r12, .bear_note_next
+    add     r14, r27, #12
+    la      r15, kbvlm_reloc_note_name
+    jsr     kern_boot_validate_string_eq
+    bnez    r23, .bear_note_next
+    move.l  r11, #32
+    blt     r24, r11, .bear_badarg
+    load.l  r11, (r28)
+    move.l  r12, #0x52534F49           ; IOSR
+    bne     r11, r12, .bear_badarg
+    load.w  r11, 4(r28)
+    move.l  r12, #1
+    bne     r11, r12, .bear_badarg
+    load.w  r11, 6(r28)
+    move.l  r12, #32
+    bne     r11, r12, .bear_badarg
+    load.w  r11, 8(r28)
+    move.l  r12, #24
+    bne     r11, r12, .bear_badarg
+    load.w  r11, 10(r28)
+    bnez    r11, .bear_badarg
+    load.q  r11, 16(r28)
+    bnez    r11, .bear_badarg
+    load.q  r11, 24(r28)
+    bnez    r11, .bear_badarg
+    load.l  r26, 12(r28)               ; record_count
+    move.q  r11, r26
+    mulu    r11, r12, r11              ; record_count * 24
+    add     r11, r11, #32
+    bne     r11, r24, .bear_badarg
+    beqz    r26, .bear_ok
+    add     r28, r28, #32
+    store.q r28, 64(sp)                ; rela ptr
+    store.q r26, 80(sp)                ; rela count
+    store.q r0, 88(sp)                 ; rela index
+    bra     .bear_rela_loop
+.bear_note_next:
+    move.q  r27, r29
+    bra     .bear_note_loop
 .bear_ok:
     move.q  r2, #ERR_OK
-    add     sp, sp, #128
+    add     sp, sp, #144
     rts
 .bear_badarg:
     move.q  r2, #ERR_BADARG
-    add     sp, sp, #128
+    add     sp, sp, #144
     rts
 
 ; ============================================================================

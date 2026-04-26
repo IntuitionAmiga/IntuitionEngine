@@ -393,7 +393,7 @@ prog_input_device_iosm:
     dc.b    0
     dc.w    1
     dc.w    0
-    dc.w    0
+    dc.w    1
     dc.b    "input.device", 0
     ds.b    IOSM_NAME_SIZE - 13
     dc.l    MODF_COMPAT_PORT | MODF_ASLR_CAPABLE

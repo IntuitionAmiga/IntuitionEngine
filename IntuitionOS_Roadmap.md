@@ -21,7 +21,7 @@ remain Amiga-shaped:
 `HUNK` is out of scope for the native OS roadmap. A future compatibility subsystem for
 68K binaries may exist one day, but it should not distort the native design.
 
-## Current State: M16.4 Runtime ELF / Userland ASLR
+## Current State: M16.4.1 PT_NOTE Runtime ELF / Userland ASLR
 
 Implemented:
 
@@ -34,7 +34,10 @@ Implemented:
 - `input.device`, `graphics.library`, and `intuition.library`
 - DOS-loaded commands in `C:` (`Version`, `Avail`, `Dir`, `Type`, `Echo`, `Assign`, `List`, `Which`, `Help`, `Resident`, `About`, `GfxDemo`, `ElfSeg`)
 - `S:Startup-Sequence` boot, Intuition windows, retained GUI demos, and generated host-backed system roots
-- strict runtime ELF loading: self-contained IE64 `ET_DYN`, zero-relative `PT_LOAD`, IOSM metadata, local `R_IE64_RELATIVE64`, W^X, and userland ASLR placement
+- strict runtime ELF loading: stripped, section-header-free self-contained IE64 `ET_DYN`, zero-relative `PT_LOAD`, one `PT_NOTE` carrying `IOS-MOD` plus optional `IOS-REL`, no section header table, local `R_IE64_RELATIVE64`, W^X, and userland ASLR placement
+- section-header-only metadata is rejected after the M16.4.1 cutover; dynamic linking remains absent (`PT_DYNAMIC`, `DT_NEEDED`, PLT/GOT binding, imported-symbol lookup, and lazy binding are out of scope)
+- protected `.library` use remains message/port based, and trusted-internal protected-module launch requires trusted read-only system source provenance plus validated IOSM metadata rather than a writable overlay filename
+- M16.4.1 only readies the system for KASLR. M16.5 still owns fixed kernel VA blockers including `KERN_PAGE_TABLE`, `KERN_DATA_BASE`, `KERN_STACK_TOP`, supervisor identity mapping, trap/fault paths, scheduler state access, panic/debug paths, and task page-table copying of kernel mappings
 
 What is still missing for a real OS feel:
 
@@ -190,6 +193,14 @@ Post-M16 note:
   addresses, mandatory section headers, bounded local relocation metadata, and
   userland ASLR placement. Dynamic linking remains absent, `ET_EXEC` has no
   post-cutover runtime compatibility exception, and KASLR is deferred.
+- `M16.4.2` should revisit the `C:Resident` command surface. The current command
+  only toggles `MODF_RESIDENT` on existing library registry rows and is silent
+  on success; users reasonably expect AmigaOS-like behavior such as listing
+  resident entries with no arguments, visible ADD/REMOVE status, and clear
+  diagnostics for unsupported targets. The eventual design must stay
+  IntuitionOS-shaped: no startup-script lifecycle hacks, no raw cross-task code
+  sharing, and no broad command-resident cache unless it is explicitly modeled
+  against the protected task/module system.
 - `M16.2.1` SDK wrappers send `EXEC_MSG_ATTACH_HANDLER`, `EXEC_MSG_OPEN_DEVICE`, or
   `EXEC_MSG_OPEN_RESOURCE` with a one-page shared request object, and release
   opaque generation-aware tokens through the matching close/detach opcodes.

@@ -12,10 +12,7 @@ import (
 
 const (
 	m161IOSMSectionName = ".ios.manifest"
-	m161IOSMNoteName    = "IOS-MOD\x00"
-	m161IOSMNoteType    = 0x494F5331
 	m161IOSMMagic       = 0x4D534F49
-	m161IOSMSize        = 128
 	m161Copyright       = "Copyright \xA9 2026 Zayn Otley"
 )
 
@@ -35,26 +32,26 @@ type m161RuntimeELFManifest struct {
 
 func m161RuntimeELFManifests() []m161RuntimeELFManifest {
 	return []m161RuntimeELFManifest{
-		{path: "sdk/intuitionos/iexec/boot_dos_library.elf", label: "prog_doslib", name: "dos.library", kind: 1, version: 14, sourceBacked: true, flags: 6, compatPort: true},
-		{path: "sdk/intuitionos/iexec/boot_console_handler.elf", label: "prog_console", name: "console.handler", kind: 3, version: 1, flags: 6, compatPort: true},
-		{path: "sdk/intuitionos/iexec/boot_shell.elf", label: "prog_shell", name: "Shell", kind: 3, version: 1, flags: 6, compatPort: true},
-		{path: "sdk/intuitionos/iexec/boot_hardware_resource.elf", label: "prog_hwres", name: "hardware.resource", kind: 4, version: 1, flags: 6, compatPort: true},
-		{path: "sdk/intuitionos/iexec/boot_input_device.elf", label: "prog_input_device", name: "input.device", kind: 2, version: 1, flags: 6, compatPort: true},
-		{path: "sdk/intuitionos/iexec/boot_graphics_library.elf", label: "prog_graphics_library", name: "graphics.library", kind: 1, version: 11, sourceBacked: true, flags: 6, compatPort: true},
-		{path: "sdk/intuitionos/iexec/boot_intuition_library.elf", label: "prog_intuition_library", name: "intuition.library", kind: 1, version: 12, sourceBacked: true, flags: 6, compatPort: true},
-		{path: "sdk/intuitionos/iexec/cmd_version.elf", label: "prog_version", name: "Version", kind: 5, version: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_avail.elf", label: "prog_avail", name: "Avail", kind: 5, version: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_dir.elf", label: "prog_dir", name: "Dir", kind: 5, version: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_type.elf", label: "prog_type", name: "Type", kind: 5, version: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_echo.elf", label: "prog_echo_cmd", name: "Echo", kind: 5, version: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_resident.elf", label: "prog_resident_cmd", name: "Resident", kind: 5, version: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_assign.elf", label: "prog_assign_cmd", name: "Assign", kind: 5, version: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_list.elf", label: "prog_list_cmd", name: "List", kind: 5, version: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_which.elf", label: "prog_which_cmd", name: "Which", kind: 5, version: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_help.elf", label: "prog_help_app", name: "Help", kind: 5, version: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_gfxdemo.elf", label: "prog_gfxdemo", name: "GfxDemo", kind: 5, version: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_about.elf", label: "prog_about", name: "About", kind: 5, version: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/elfseg_fixture.elf", label: "prog_elfseg", name: "ElfSeg", kind: 5, version: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/boot_dos_library.elf", label: "prog_doslib", name: "dos.library", kind: 1, version: 15, sourceBacked: true, flags: 6, compatPort: true},
+		{path: "sdk/intuitionos/iexec/boot_console_handler.elf", label: "prog_console", name: "console.handler", kind: 3, version: 1, patch: 1, flags: 6, compatPort: true},
+		{path: "sdk/intuitionos/iexec/boot_shell.elf", label: "prog_shell", name: "Shell", kind: 3, version: 1, patch: 1, flags: 6, compatPort: true},
+		{path: "sdk/intuitionos/iexec/boot_hardware_resource.elf", label: "prog_hwres", name: "hardware.resource", kind: 4, version: 1, patch: 1, flags: 6, compatPort: true},
+		{path: "sdk/intuitionos/iexec/boot_input_device.elf", label: "prog_input_device", name: "input.device", kind: 2, version: 1, patch: 1, flags: 6, compatPort: true},
+		{path: "sdk/intuitionos/iexec/boot_graphics_library.elf", label: "prog_graphics_library", name: "graphics.library", kind: 1, version: 11, patch: 1, sourceBacked: true, flags: 6, compatPort: true},
+		{path: "sdk/intuitionos/iexec/boot_intuition_library.elf", label: "prog_intuition_library", name: "intuition.library", kind: 1, version: 12, patch: 1, sourceBacked: true, flags: 6, compatPort: true},
+		{path: "sdk/intuitionos/iexec/cmd_version.elf", label: "prog_version", name: "Version", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_avail.elf", label: "prog_avail", name: "Avail", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_dir.elf", label: "prog_dir", name: "Dir", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_type.elf", label: "prog_type", name: "Type", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_echo.elf", label: "prog_echo_cmd", name: "Echo", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_resident.elf", label: "prog_resident_cmd", name: "Resident", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_assign.elf", label: "prog_assign_cmd", name: "Assign", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_list.elf", label: "prog_list_cmd", name: "List", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_which.elf", label: "prog_which_cmd", name: "Which", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_help.elf", label: "prog_help_app", name: "Help", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_gfxdemo.elf", label: "prog_gfxdemo", name: "GfxDemo", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_about.elf", label: "prog_about", name: "About", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/elfseg_fixture.elf", label: "prog_elfseg", name: "ElfSeg", kind: 5, version: 1, patch: 1, flags: 4},
 	}
 }
 
@@ -150,34 +147,14 @@ func mustReadM161IOSMDesc(t *testing.T, rel string) []byte {
 	if err != nil {
 		t.Fatalf("parse %s: %v", rel, err)
 	}
-	sec := f.Section(m161IOSMSectionName)
-	if sec == nil {
-		t.Fatalf("%s missing %s", rel, m161IOSMSectionName)
+	if f.Section(m161IOSMSectionName) != nil {
+		t.Fatalf("%s still carries legacy %s section metadata", rel, m161IOSMSectionName)
 	}
-	data, err := sec.Data()
+	data, err := m16FindIOSMDescriptor(image)
 	if err != nil {
-		t.Fatalf("read %s manifest: %v", rel, err)
+		t.Fatalf("read %s PT_NOTE IOSM descriptor: %v", rel, err)
 	}
-	if len(data) < 12 {
-		t.Fatalf("%s manifest note too small", rel)
-	}
-	namesz := binary.LittleEndian.Uint32(data[0:4])
-	descsz := binary.LittleEndian.Uint32(data[4:8])
-	typ := binary.LittleEndian.Uint32(data[8:12])
-	nameOff := 12
-	nameEnd := nameOff + int(namesz)
-	descOff := 12 + int((namesz+3)&^3)
-	descEnd := descOff + int(descsz)
-	if typ != m161IOSMNoteType {
-		t.Fatalf("%s note type=%#x, want %#x", rel, typ, m161IOSMNoteType)
-	}
-	if nameEnd > len(data) || string(data[nameOff:nameEnd]) != m161IOSMNoteName {
-		t.Fatalf("%s note name=%q, want %q", rel, string(data[nameOff:min(nameEnd, len(data))]), m161IOSMNoteName)
-	}
-	if descsz != m161IOSMSize || descEnd > len(data) {
-		t.Fatalf("%s descsz=%d descEnd=%d len=%d", rel, descsz, descEnd, len(data))
-	}
-	return append([]byte(nil), data[descOff:descEnd]...)
+	return append([]byte(nil), data...)
 }
 
 func cString(b []byte) string {

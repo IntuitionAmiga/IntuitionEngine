@@ -279,6 +279,7 @@ type IE64LibManifest struct {
 	Name          string
 	Version       uint16
 	Revision      uint16
+	Patch         uint16
 	Type          uint32
 	Flags         uint32
 	MsgABIVersion uint32
@@ -1921,6 +1922,15 @@ func (a *IE64Assembler) parseLibManifest(line string) (*IE64LibManifest, error) 
 				return nil, fmt.Errorf(".libmanifest revision out of range: %d", n)
 			}
 			manifest.Revision = uint16(n)
+		case "patch":
+			n, err := a.evalExprUint64(val)
+			if err != nil {
+				return nil, fmt.Errorf(".libmanifest patch: %v", err)
+			}
+			if n > math.MaxUint16 {
+				return nil, fmt.Errorf(".libmanifest patch out of range: %d", n)
+			}
+			manifest.Patch = uint16(n)
 		case "type":
 			n, err := a.evalExprUint64(val)
 			if err != nil {

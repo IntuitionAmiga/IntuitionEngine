@@ -6090,9 +6090,9 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 
 **M16.1 IOSM / VERSION status** - version metadata is now universal and queryable:
 
-- **Every rebuilt runtime ELF carries `.ios.manifest`.** The 128-byte `IOSM` descriptor records kind, public name, version/revision/patch, flags, message ABI, build date, and the fixed copyright string.
+- **Every rebuilt runtime ELF carries IOS `PT_NOTE` metadata.** The stripped, section-header-free runtime images carry a 128-byte `IOS-MOD` / `IOSM` descriptor that records kind, public name, version/revision/patch, flags, message ABI, build date, and the fixed copyright string.
 - **Resident version queries use existing IPC.** Persistent services answer `MSG_GET_IOSM` through caller-allocated shared memory, and `exec.library` exposes a public port for its own IOSM plus resident public-port enumeration.
-- **`VERSION` no longer reports stale milestone text.** The default command output is `IntuitionOS 1.16.4`, `exec.library 1.16.4 (2026-04-25)`, and `Copyright © 2026 Zayn Otley`.
+- **`VERSION` no longer reports stale milestone text.** The default command output is `IntuitionOS 1.16.5`, `exec.library 1.16.5 (2026-04-25)`, and `Copyright © 2026 Zayn Otley`.
 
 **M16.2 protected non-library module status** - handlers, devices, and resources now use the protected-module lifecycle internally without absorbing PIE/ASLR work:
 
@@ -6102,11 +6102,12 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 - **PIE and ASLR stay separate.** M16.3 is reserved for making the shipped ELF surface consistently PIE-capable; M16.4 is reserved for real relocation and ASLR/randomized placement. M16.2 keeps the M14.2 `ET_EXEC` placement contract unchanged.
 - See `sdk/docs/IntuitionOS/M16.2-plan.md` for the full TDD milestone plan and handoff notes.
 
-**M16.4 runtime ELF / ASLR status** - `MODF_ASLR_CAPABLE` is now operational:
+**M16.4.1 PT_NOTE runtime ELF / ASLR status** - `MODF_ASLR_CAPABLE` is now operational:
 
-- **All runtime ELFs are self-contained `ET_DYN`.** Shipped commands, libraries, devices, handlers, resources, host-provided DOS ELFs, and third-party DOS-loadable runtime ELFs use zero-relative `PT_LOAD` addresses and mandatory section headers.
-- **Relocation is local and bounded.** IntuitionOS accepts local runtime relocation metadata without adding dynamic linking, `PT_INTERP`, `PT_DYNAMIC`, `DT_NEEDED`, imported-symbol lookup, PLT/GOT binding, lazy binding, or a shared-object namespace.
-- **Userland ASLR is enabled.** Runtime images load at chosen user image bases; KASLR is deferred to a later milestone.
+- **All runtime ELFs are stripped self-contained `ET_DYN`.** Shipped commands, libraries, devices, handlers, resources, host-provided DOS ELFs, and third-party DOS-loadable runtime ELFs use zero-relative `PT_LOAD` addresses, one `PT_NOTE` carrying `IOS-MOD` plus optional `IOS-REL`, and no section header table. Section-header-only metadata is rejected.
+- **Relocation is local and bounded.** IntuitionOS accepts local runtime relocation metadata without adding dynamic linking, `PT_INTERP`, `PT_DYNAMIC`, `DT_NEEDED`, imported-symbol lookup, PLT/GOT binding, lazy binding, or a shared-object namespace. Protected `.library` use remains port/message based.
+- **Userland ASLR is enabled.** Runtime images load at chosen user image bases; M16.4.1 only readies the system for KASLR. M16.5 still owns fixed kernel VA blockers including `KERN_PAGE_TABLE`, `KERN_DATA_BASE`, `KERN_STACK_TOP`, supervisor identity mapping, trap/fault paths, scheduler state access, panic/debug paths, and task page-table copying of kernel mappings.
+- **Trusted protected-module autoload is provenance-bound.** Trusted-internal launch authority requires trusted read-only system source provenance plus validated IOSM metadata, not a writable overlay filename.
 - **Hardening rules stay intact.** W^X, SKEF/SKAC/SUA discipline, bounded inputs, and non-executable shared-memory `MAPF_READ` / `MAPF_WRITE` transfers remain mandatory.
 
 **M15.1 source layout status** - the IntuitionOS sources are no longer forced to live in one monolithic assembly body, and the hostfs runtime now builds separately from the kernel image:

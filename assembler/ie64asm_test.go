@@ -268,7 +268,7 @@ func assertLen(t *testing.T, got []byte, want int, label string) {
 func TestLibmanifestDirectiveCapturesManifestMetadata(t *testing.T) {
 	src := `
 start:
-    .libmanifest name="graphics.library", version=11, revision=2, type=1, flags=2, msg_abi=7
+    .libmanifest name="graphics.library", version=11, revision=2, patch=3, type=1, flags=2, msg_abi=7
     nop
 `
 
@@ -293,6 +293,9 @@ start:
 	if manifest.Revision != 2 {
 		t.Fatalf("manifest revision=%d, want 2", manifest.Revision)
 	}
+	if manifest.Patch != 3 {
+		t.Fatalf("manifest patch=%d, want 3", manifest.Patch)
+	}
 	if manifest.Type != 1 {
 		t.Fatalf("manifest type=%d, want 1", manifest.Type)
 	}
@@ -304,7 +307,7 @@ start:
 	}
 
 	listing := strings.Join(asm.GetListing(), "\n")
-	if !strings.Contains(listing, `.libmanifest name="graphics.library", version=11, revision=2, type=1, flags=2, msg_abi=7`) {
+	if !strings.Contains(listing, `.libmanifest name="graphics.library", version=11, revision=2, patch=3, type=1, flags=2, msg_abi=7`) {
 		t.Fatalf("listing missing .libmanifest directive, listing=%q", listing)
 	}
 }

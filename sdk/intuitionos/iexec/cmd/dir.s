@@ -564,7 +564,7 @@ prog_dir_iosm:
     dc.b    0
     dc.w    1
     dc.w    0
-    dc.w    0
+    dc.w    1
     dc.b    "Dir", 0
     ds.b    IOSM_NAME_SIZE - 5
     dc.l    MODF_ASLR_CAPABLE

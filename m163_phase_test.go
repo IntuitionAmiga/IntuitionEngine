@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"debug/elf"
 	"encoding/binary"
 	"os"
 	"regexp"
@@ -66,8 +64,9 @@ func TestIExec_M163_ShippedRuntimeELFsHaveExactASLRFlagMasks(t *testing.T) {
 		if manifest.Flags != want {
 			t.Fatalf("%s %s kind=%d flags=%#x, want exact %#x", target.elfName, manifest.Name, manifest.Kind, manifest.Flags, want)
 		}
-		if manifest.Patch != 0 {
-			t.Fatalf("%s patch=%d, want 0", target.elfName, manifest.Patch)
+		wantPatch := m163ExpectedPatchForPath(t, "sdk/intuitionos/iexec/"+target.elfName)
+		if manifest.Patch != wantPatch {
+			t.Fatalf("%s patch=%d, want %d", target.elfName, manifest.Patch, wantPatch)
 		}
 	}
 }
@@ -327,18 +326,24 @@ func m163SourceAuditFilesUnder(t *testing.T, root string) []string {
 
 func patchM163ManifestFlags(t *testing.T, image []byte, flags uint32) []byte {
 	t.Helper()
-	f, err := elf.NewFile(bytes.NewReader(image))
-	if err != nil {
-		t.Fatalf("parse ELF: %v", err)
-	}
-	sec := f.Section(m16LibManifestSectionName)
-	if sec == nil {
-		t.Fatalf("missing %s section", m16LibManifestSectionName)
-	}
 	patched := append([]byte(nil), image...)
-	descOff := int(sec.Offset) + 12 + len(m16LibManifestNoteName)
+	descOff, err := m16FindIOSMDescriptorOffset(patched)
+	if err != nil {
+		t.Fatalf("find IOSM descriptor: %v", err)
+	}
 	binary.LittleEndian.PutUint32(patched[descOff+48:], flags)
 	return patched
+}
+
+func m163ExpectedPatchForPath(t *testing.T, path string) uint16 {
+	t.Helper()
+	for _, manifest := range m161RuntimeELFManifests() {
+		if manifest.path == path {
+			return manifest.patch
+		}
+	}
+	t.Fatalf("no expected manifest version row for %s", path)
+	return 0
 }
 
 func m163RunLoadSegHostFixture(t *testing.T, image []byte) (*ie64TestRig, uint32) {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"debug/elf"
 	"encoding/binary"
 	"testing"
 	"time"
@@ -76,7 +75,7 @@ func TestBuildManifestNoteUsesIOSMSchema(t *testing.T) {
 	}
 }
 
-func TestBuildELFUsesIOSMManifestMetadata(t *testing.T) {
+func TestBuildELFUsesPTNoteIOSMManifestMetadata(t *testing.T) {
 	spec := libManifestSpec{
 		Name:          "template.library",
 		Kind:          iosmKindLibrary,
@@ -89,17 +88,37 @@ func TestBuildELFUsesIOSMManifestMetadata(t *testing.T) {
 	}
 
 	image := buildELF([]byte{0xE0, 0, 0, 0, 0, 0, 0, 0}, []byte{1, 2, 3, 4}, spec, true)
-	f, err := elf.NewFile(bytes.NewReader(image))
-	if err != nil {
-		t.Fatalf("elf.NewFile: %v", err)
+	if got := binary.LittleEndian.Uint64(image[40:48]); got != 0 {
+		t.Fatalf("e_shoff=%#x, want stripped section-header-free ELF", got)
 	}
-	sec := f.Section(".ios.manifest")
-	if sec == nil {
-		t.Fatal("missing .ios.manifest section")
+	if got := binary.LittleEndian.Uint16(image[60:62]); got != 0 {
+		t.Fatalf("e_shnum=%d, want 0", got)
 	}
-	if sec.Type != elf.SHT_NOTE {
-		t.Fatalf("section type=%v, want SHT_NOTE", sec.Type)
+	if got := binary.LittleEndian.Uint16(image[62:64]); got != 0 {
+		t.Fatalf("e_shstrndx=%d, want 0", got)
 	}
+	note := mustBuildELFPTNote(t, image)
+	if got := binary.LittleEndian.Uint32(note[8:12]); got != iosmNoteType {
+		t.Fatalf("note type=%#x, want %#x", got, iosmNoteType)
+	}
+}
+
+func mustBuildELFPTNote(t *testing.T, image []byte) []byte {
+	t.Helper()
+	phoff := binary.LittleEndian.Uint64(image[32:40])
+	phentsize := binary.LittleEndian.Uint16(image[54:56])
+	phnum := binary.LittleEndian.Uint16(image[56:58])
+	for i := uint16(0); i < phnum; i++ {
+		off := phoff + uint64(i)*uint64(phentsize)
+		if binary.LittleEndian.Uint32(image[off:off+4]) != elfPTNote {
+			continue
+		}
+		fileOff := binary.LittleEndian.Uint64(image[off+8 : off+16])
+		filesz := binary.LittleEndian.Uint64(image[off+32 : off+40])
+		return image[fileOff : fileOff+filesz]
+	}
+	t.Fatal("missing PT_NOTE")
+	return nil
 }
 
 func TestResolveBuildDate(t *testing.T) {

@@ -1,7 +1,7 @@
 include "template.s"
 
 prog_graphics_library:
-    .libmanifest name="graphics.library", version=11, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0
+    .libmanifest name="graphics.library", version=11, revision=0, patch=1, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0
     dc.l    0, 0
     dc.l    prog_gfxlib_code_end - prog_gfxlib_code
     dc.l    prog_gfxlib_data_end - prog_gfxlib_data

@@ -196,7 +196,7 @@ func TestIExec_M164_DocsFreezeRuntimeETDYNContract(t *testing.T) {
 		for _, fragment := range []string{
 			"self-contained `ET_DYN`",
 			"dynamic linking",
-			"section headers are mandatory",
+			"PT_NOTE",
 			"W^X",
 			"KASLR",
 		} {
@@ -208,14 +208,14 @@ func TestIExec_M164_DocsFreezeRuntimeETDYNContract(t *testing.T) {
 }
 
 func TestIExec_M164_RuntimeELFValidatorAcceptsZeroRelocationETDYN(t *testing.T) {
-	image := makeM164ELFFixture(t, nil)
+	image := makeM1641ELFFixture(t, nil, false)
 	if err := validateM164RuntimeELFContract(image, m164Placement{Base: 0x00640000}); err != nil {
 		t.Fatalf("valid zero-relocation ET_DYN rejected: %v", err)
 	}
 }
 
 func TestIExec_M164_RuntimeELFValidatorAppliesRelative64Relocation(t *testing.T) {
-	image := makeM164ELFFixture(t, []m164RelaSpec{{Offset: 0x2000, Type: m164RelRelative64, Addend: 0x2000}})
+	image := makeM1641ELFFixture(t, []m164RelaSpec{{Offset: 0x2000, Type: m164RelRelative64, Addend: 0x2000}}, false)
 	mapped := make([]byte, 0x3000)
 	_, entry, err := m164LoadRuntimeELF(image, m164Placement{Base: 0x00650000}, mapped)
 	if err != nil {
@@ -230,7 +230,7 @@ func TestIExec_M164_RuntimeELFValidatorAppliesRelative64Relocation(t *testing.T)
 }
 
 func TestIExec_M164_RuntimeELFValidatorAppliesBSSRelative64Relocation(t *testing.T) {
-	image := makeM164ELFFixture(t, []m164RelaSpec{{Offset: 0x2008, Type: m164RelRelative64, Addend: 0x2000}})
+	image := makeM1641ELFFixture(t, []m164RelaSpec{{Offset: 0x2008, Type: m164RelRelative64, Addend: 0x2000}}, false)
 	mapped := make([]byte, 0x3000)
 	_, _, err := m164LoadRuntimeELF(image, m164Placement{Base: 0x00650000}, mapped)
 	if err != nil {
@@ -249,14 +249,14 @@ func TestIExec_M164_RuntimeELFValidatorRejectsForbiddenInputs(t *testing.T) {
 		{"ET_EXEC", func(img []byte) { binary.LittleEndian.PutUint16(img[16:18], m14ELFTypeExec) }},
 		{"nonzero lowest PT_LOAD", func(img []byte) { binary.LittleEndian.PutUint64(img[64+16:64+24], 0x600000) }},
 		{"entry outside text", func(img []byte) { binary.LittleEndian.PutUint64(img[24:32], 0x2000) }},
-		{"missing section headers", func(img []byte) { binary.LittleEndian.PutUint16(img[60:62], 0) }},
+		{"nonzero section headers", func(img []byte) { binary.LittleEndian.PutUint16(img[60:62], 1) }},
 		{"dynamic header", func(img []byte) { binary.LittleEndian.PutUint32(img[64:68], m14ELFPTDynamic) }},
 		{"WX segment", func(img []byte) {
 			binary.LittleEndian.PutUint32(img[64+56+4:64+56+8], m14ELFSegFlagR|m14ELFSegFlagW|m14ELFSegFlagX)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			image := makeM164ELFFixture(t, nil)
+			image := makeM1641ELFFixture(t, nil, false)
 			tc.patch(image)
 			if err := validateM164RuntimeELFContract(image, m164Placement{Base: 0x00640000}); err == nil {
 				t.Fatalf("%s accepted", tc.name)
@@ -278,7 +278,7 @@ func TestIExec_M164_RuntimeELFValidatorRejectsBadRelocations(t *testing.T) {
 		{"gap addend", m164RelaSpec{Offset: 0x2000, Type: m164RelRelative64, Addend: 0x1800}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			image := makeM164ELFFixture(t, []m164RelaSpec{tc.rel})
+			image := makeM1641ELFFixture(t, []m164RelaSpec{tc.rel}, false)
 			if err := validateM164RuntimeELFContract(image, m164Placement{Base: 0x00640000}); err == nil {
 				t.Fatalf("%s accepted", tc.name)
 			}
@@ -351,8 +351,8 @@ func TestIExec_M164_ASLRPlacementUsesKernelPRNGContract(t *testing.T) {
 func TestIExec_M164_RoadmapCurrentStateMatchesRuntimeELFASLR(t *testing.T) {
 	roadmap := mustReadRepoFile(t, "IntuitionOS_Roadmap.md")
 	requireAllSubstrings(t, roadmap,
-		"## Current State: M16.4 Runtime ELF / Userland ASLR",
-		"strict runtime ELF loading: self-contained IE64 `ET_DYN`",
+		"## Current State: M16.4.1 PT_NOTE Runtime ELF / Userland ASLR",
+		"strict runtime ELF loading: stripped, section-header-free self-contained IE64 `ET_DYN`",
 		"userland ASLR placement",
 		"automatic cleanup of task-owned module handles/resources",
 	)
@@ -456,7 +456,7 @@ func TestIExec_M164_BootRuntimeTasksUseChosenImageBases(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "IntuitionOS 1.16.4") {
+	if !strings.Contains(output, "IntuitionOS 1.16.5") {
 		t.Fatalf("boot did not reach VERSION output: %q", output[:min(len(output), 200)])
 	}
 	code0 := m164StartupCodeBase(t, rig.cpu.memory, 0)

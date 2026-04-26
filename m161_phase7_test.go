@@ -22,8 +22,8 @@ func TestIExec_M161_Phase7_HelpHeaderUsesIOSVersion(t *testing.T) {
 		filepath.Join("sdk", "intuitionos", "iexec", "assets", "system", "S", "Help"),
 	} {
 		body := string(mustReadRepoBytes(t, rel))
-		if !bytes.Contains([]byte(body), []byte("IntuitionOS 1.16.4 help")) {
-			t.Fatalf("%s help header must use IOS version 1.16.4, got:\n%s", rel, body)
+		if !bytes.Contains([]byte(body), []byte("IntuitionOS 1.16.5 help")) {
+			t.Fatalf("%s help header must use IOS version 1.16.5, got:\n%s", rel, body)
 		}
 		if bytes.Contains([]byte(body), []byte("M15 help surface")) {
 			t.Fatalf("%s help header still contains stale M15 label", rel)
@@ -33,8 +33,8 @@ func TestIExec_M161_Phase7_HelpHeaderUsesIOSVersion(t *testing.T) {
 
 func TestIExec_M161_Phase7_VERSIONUsesIOSVersion(t *testing.T) {
 	body := string(mustReadRepoBytes(t, filepath.Join("sdk", "intuitionos", "iexec", "cmd", "version.s")))
-	if !bytes.Contains([]byte(body), []byte("IntuitionOS 1.16.4")) {
-		t.Fatalf("VERSION command must use IOS version 1.16.4, got:\n%s", body)
+	if !bytes.Contains([]byte(body), []byte("IntuitionOS 1.16.5")) {
+		t.Fatalf("VERSION command must use IOS version 1.16.5, got:\n%s", body)
 	}
 	if bytes.Contains([]byte(body), []byte("IntuitionOS 0.18")) {
 		t.Fatalf("VERSION command still contains stale 0.18 label")

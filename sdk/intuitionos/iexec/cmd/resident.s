@@ -195,7 +195,7 @@ prog_resident_cmd_iosm:
     dc.b    0
     dc.w    1
     dc.w    0
-    dc.w    0
+    dc.w    1
     dc.b    "Resident", 0
     ds.b    IOSM_NAME_SIZE - 10
     dc.l    MODF_ASLR_CAPABLE

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"debug/elf"
 	"encoding/binary"
 	"testing"
 )
@@ -154,21 +153,13 @@ func TestBuildELFUsesListingManifestMetadata(t *testing.T) {
 	}
 
 	image := buildELF([]byte{0xE0, 0, 0, 0, 0, 0, 0, 0}, []byte{1, 2, 3, 4}, spec, true)
-	f, err := elf.NewFile(bytes.NewReader(image))
-	if err != nil {
-		t.Fatalf("elf.NewFile: %v", err)
+	if got := binary.LittleEndian.Uint64(image[40:48]); got != 0 {
+		t.Fatalf("e_shoff=%#x, want stripped section-header-free ELF", got)
 	}
-	sec := f.Section(".ios.manifest")
-	if sec == nil {
-		t.Fatal("missing .ios.manifest section")
+	if got := binary.LittleEndian.Uint16(image[60:62]); got != 0 {
+		t.Fatalf("e_shnum=%d, want 0", got)
 	}
-	if sec.Type != elf.SHT_NOTE {
-		t.Fatalf("section type=%v, want SHT_NOTE", sec.Type)
-	}
-	data, err := sec.Data()
-	if err != nil {
-		t.Fatalf("sec.Data: %v", err)
-	}
+	data := mustBuildELFPTNote(t, image)
 	if got := binary.LittleEndian.Uint32(data[8:12]); got != m16LibManifestNoteType {
 		t.Fatalf("note type=%#x, want %#x", got, m16LibManifestNoteType)
 	}

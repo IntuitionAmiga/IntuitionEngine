@@ -9,7 +9,7 @@
 
 IOS_VERSION_MAJOR  equ 1
 IOS_VERSION_MINOR  equ 16
-IOS_VERSION_PATCH  equ 4
+IOS_VERSION_PATCH  equ 5
 
 ; ===========================================================================
 ; Current module manifest note ABI (M16.1 universal IOSM note)

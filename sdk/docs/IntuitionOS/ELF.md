@@ -1,12 +1,14 @@
-# IntuitionOS Native ELF Contract (M16.4)
+# IntuitionOS Native ELF Contract (M16.4.1)
 
 ## Status
 
 This document records the historical transition from M14 to the current
-ELF-only execution contract. As of M16.4, every accepted DOS-loadable or
+ELF-only execution contract. As of M16.4.1, every accepted DOS-loadable or
 protected runtime ELF is a self-contained `ET_DYN` IE64 image with
-zero-relative `PT_LOAD` addresses, local bounded relocation metadata, and
-userland ASLR placement.
+zero-relative `PT_LOAD` addresses, IOS runtime metadata in one `PT_NOTE`,
+optional local bounded `IOS-REL` relocation metadata, no section header table,
+and userland ASLR placement. These stripped, section-header-free runtime ELFs are the accepted form:
+`e_shoff == 0`, `e_shnum == 0`, and `e_shstrndx == 0`.
 
 M16.4 changes the live runtime executable contract from fixed `ET_EXEC` to
 self-contained `ET_DYN`. This applies to shipped commands, libraries, devices,
@@ -17,20 +19,24 @@ exception.
 The IntuitionOS model still has no dynamic linking. There is no `PT_INTERP`,
 `PT_DYNAMIC`, `DT_NEEDED`, PLT/GOT binding, imported-symbol lookup, lazy
 binding, or shared-object namespace. Relocation is local and self-contained:
-the initial ABI accepts bounded `SHT_RELA` records using
+the M16.4.1 ABI accepts bounded `IOS-REL` note records using
 `R_IE64_RELATIVE64`, where symbol index must be zero and the loader writes
-`chosen_image_base + r_addend` to a writable non-executable target. Section
-headers are mandatory runtime metadata in M16.4, so stripped runtime ELFs are
-rejected.
-In short, section headers are mandatory for every accepted M16.4 runtime ELF.
+`chosen_image_base + r_addend` to a writable non-executable target.
+`section-header-only` metadata is rejected after the M16.4.1 cutover.
 
 `.library` and class-specific module acquisition remain the service boundary:
 `OpenLibrary`, `CloseLibrary`, handler/device/resource acquisition IPC, ports,
-and message ABI remain the programmer-facing model. Userland ASLR is enabled;
-KASLR is deferred to M16.4.x. W^X means no page may be writable and executable
-at the same time. SKEF/SKAC/SUA discipline, explicit shared-memory `MAPF_*`
-masks, bounded inputs, and the rule against raw cross-task pointers remain
-mandatory.
+and message ABI remain the programmer-facing model. Trusted-internal module
+launch authority comes from trusted read-only system source provenance
+(`IOSSYS:L`, `IOSSYS:LIBS`, `IOSSYS:DEVS`, `IOSSYS:RESOURCES`) plus validated
+IOSM name/class metadata, not from an arbitrary filename in a writable overlay.
+Userland ASLR is enabled; M16.4.1 only readies the code for KASLR and does not
+implement kernel randomization. The M16.5 blocker inventory is fixed kernel
+page-table/data/stack placement, supervisor identity mapping, trap/fault paths,
+scheduler state access, panic/debug paths, and task page-table copying of
+kernel mappings. W^X means no page may be writable and executable at the same
+time. SKEF/SKAC/SUA discipline, explicit shared-memory `MAPF_*` masks, bounded
+inputs, and the rule against raw cross-task pointers remain mandatory.
 
 What M14 phase 1 did:
 

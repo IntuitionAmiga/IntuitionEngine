@@ -44,7 +44,7 @@ func TestIExec_M161_Phase4_GetIOSM_ExecLibrary(t *testing.T) {
 		t.Fatalf("exec IOSM name=%q", name)
 	}
 	if major, minor, patch := binary.LittleEndian.Uint16(got.manifest[10:12]), binary.LittleEndian.Uint16(got.manifest[12:14]), binary.LittleEndian.Uint16(got.manifest[14:16]); major != 1 || minor != 16 || patch != 4 {
-		t.Fatalf("exec IOSM version=%d.%d.%d, want 1.16.4", major, minor, patch)
+		t.Fatalf("exec IOSM version=%d.%d.%d, want 1.16.5", major, minor, patch)
 	}
 	if copyright := cStringFromFixed(got.manifest[72:120]); copyright != "Copyright \xA9 2026 Zayn Otley" {
 		t.Fatalf("exec IOSM copyright=%q", copyright)

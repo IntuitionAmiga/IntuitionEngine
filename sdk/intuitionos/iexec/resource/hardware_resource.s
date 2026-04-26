@@ -317,7 +317,7 @@ prog_hwres_iosm:
     dc.b    0
     dc.w    1
     dc.w    0
-    dc.w    0
+    dc.w    1
     dc.b    "hardware.resource", 0
     ds.b    IOSM_NAME_SIZE - 18
     dc.l    MODF_COMPAT_PORT | MODF_ASLR_CAPABLE

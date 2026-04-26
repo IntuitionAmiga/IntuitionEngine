@@ -1,7 +1,7 @@
 include "template.s"
 
 prog_intuition_library:
-    .libmanifest name="intuition.library", version=12, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0
+    .libmanifest name="intuition.library", version=12, revision=0, patch=1, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0
     dc.l    0, 0
     dc.l    prog_intui_code_end - prog_intui_code
     dc.l    prog_intui_data_end - prog_intui_data

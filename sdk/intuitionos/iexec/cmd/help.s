@@ -73,7 +73,7 @@ prog_help_app_data:
     dc.b    "console.handler", 0
     ds.b    8
     ds.b    8
-    dc.b    "IntuitionOS 1.16.4 help", 0x0D, 0x0A
+    dc.b    "IntuitionOS 1.16.5 help", 0x0D, 0x0A
     dc.b    "Commands: VERSION AVAIL DIR TYPE ECHO ASSIGN LIST WHICH HELP", 0x0D, 0x0A
     dc.b    "Assigns: RAM: C: L: LIBS: DEVS: T: S: RESOURCES:", 0x0D, 0x0A, 0
     align   8
@@ -84,7 +84,7 @@ prog_help_app_iosm:
     dc.b    0
     dc.w    1
     dc.w    0
-    dc.w    0
+    dc.w    1
     dc.b    "Help", 0
     ds.b    IOSM_NAME_SIZE - 6
     dc.l    MODF_ASLR_CAPABLE

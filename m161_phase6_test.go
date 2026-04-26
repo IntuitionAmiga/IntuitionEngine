@@ -9,8 +9,8 @@ import (
 func TestIExec_M161_Phase6_VERSION_NoArgs(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION\n", 8*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 1.16.4\r\n",
-		"exec.library 1.16.4 (2026-04-25)\r\n",
+		"IntuitionOS 1.16.5\r\n",
+		"exec.library 1.16.5 (2026-04-25)\r\n",
 		"Copyright \xA9 2026 Zayn Otley\r\n",
 	} {
 		if !strings.Contains(output, want) {
@@ -24,49 +24,49 @@ func TestIExec_M161_Phase6_VERSION_NoArgs(t *testing.T) {
 
 func TestIExec_M161_Phase6_VERSION_ByName_Library(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION dos.library\n", 8*time.Second)
-	if !strings.Contains(output, "dos.library 14.0") {
+	if !strings.Contains(output, "dos.library 15.0") {
 		t.Fatalf("VERSION dos.library missing resident manifest output\noutput=%q", output[:min(len(output), 1200)])
 	}
 }
 
 func TestIExec_M161_Phase6_VERSION_ByName_LibraryFallthrough(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION intuition.library\n", 8*time.Second)
-	if !strings.Contains(output, "intuition.library 12.0") {
+	if !strings.Contains(output, "intuition.library 12.0.1") {
 		t.Fatalf("VERSION intuition.library missing file-fallback manifest output\noutput=%q", output[:min(len(output), 1200)])
 	}
 }
 
 func TestIExec_M161_Phase6_VERSION_ByPath_Library(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION LIBS:intuition.library\n", 8*time.Second)
-	if !strings.Contains(output, "intuition.library 12.0") {
+	if !strings.Contains(output, "intuition.library 12.0.1") {
 		t.Fatalf("VERSION LIBS:intuition.library missing path manifest output\noutput=%q", output[:min(len(output), 1200)])
 	}
 }
 
 func TestIExec_M161_Phase6_VERSION_ByName_Service(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION console.handler\n", 8*time.Second)
-	if !strings.Contains(output, "console.handler 1.0") {
+	if !strings.Contains(output, "console.handler 1.0.1") {
 		t.Fatalf("VERSION console.handler missing resident manifest output\noutput=%q", output[:min(len(output), 1200)])
 	}
 }
 
 func TestIExec_M161_Phase6_VERSION_ByPath_Handler(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION L:console.handler\n", 8*time.Second)
-	if !strings.Contains(output, "console.handler 1.0") {
+	if !strings.Contains(output, "console.handler 1.0.1") {
 		t.Fatalf("VERSION L:console.handler missing path manifest output\noutput=%q", output[:min(len(output), 1200)])
 	}
 }
 
 func TestIExec_M161_Phase6_VERSION_ByName_Command_Fallthrough(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION Dir\n", 8*time.Second)
-	if !strings.Contains(output, "Dir 1.0") {
+	if !strings.Contains(output, "Dir 1.0.1") {
 		t.Fatalf("VERSION Dir missing file-fallback manifest output\noutput=%q", output[:min(len(output), 1200)])
 	}
 }
 
 func TestIExec_M161_Phase6_VERSION_ByPath_Command(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION C:Dir\n", 8*time.Second)
-	if !strings.Contains(output, "Dir 1.0") {
+	if !strings.Contains(output, "Dir 1.0.1") {
 		t.Fatalf("VERSION C:Dir missing path manifest output\noutput=%q", output[:min(len(output), 1200)])
 	}
 }
@@ -74,20 +74,20 @@ func TestIExec_M161_Phase6_VERSION_ByPath_Command(t *testing.T) {
 func TestIExec_M161_Phase6_VERSION_ALL_ResidentOnly(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION ALL\n", 8*time.Second)
 	for _, want := range []string{
-		"exec.library 1.16.4",
-		"console.handler 1.0",
-		"dos.library 14.0",
-		"hardware.resource 1.0",
-		"input.device 1.0",
+		"exec.library 1.16.5",
+		"console.handler 1.0.1",
+		"dos.library 15.0",
+		"hardware.resource 1.0.1",
+		"input.device 1.0.1",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("VERSION ALL missing %q\noutput=%q", want, output[:min(len(output), 1600)])
 		}
 	}
-	if strings.Contains(output, "Dir 1.0") {
+	if strings.Contains(output, "Dir 1.0.1") {
 		t.Fatalf("VERSION ALL must be resident-only, but included command output=%q", output[:min(len(output), 1600)])
 	}
-	if strings.Contains(output, "graphics.library 11.0") {
+	if strings.Contains(output, "graphics.library 11.0.1") {
 		t.Fatalf("VERSION ALL must not synthesize non-resident graphics output=%q", output[:min(len(output), 1600)])
 	}
 }

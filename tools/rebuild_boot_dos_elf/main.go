@@ -15,15 +15,13 @@ import (
 const (
 	elfMachineIE64 = 0x4945
 	elfTypeDyn     = 3
+	elfPTLoad      = 1
+	elfPTNote      = 4
 	pageSize       = 0x1000
 	baseVA         = 0x600000
 	listingBias    = 0x1000
 
 	elfSectionHeaderSize = 64
-	elfSHTNull           = 0
-	elfSHTProgBits       = 1
-	elfSHTStrTab         = 3
-	elfSHTNote           = 7
 
 	iosmMagic           = 0x4D534F49
 	iosmSchemaVersion   = 1
@@ -277,6 +275,12 @@ func parseLibManifestDirective(rest string, symbols map[string]uint64, global st
 				return libManifestSpec{}, fmt.Errorf("revision: %w", err)
 			}
 			spec.Revision = uint16(n)
+		case "patch":
+			n, err := evalManifestDirectiveExpr(val, symbols, global)
+			if err != nil {
+				return libManifestSpec{}, fmt.Errorf("patch: %w", err)
+			}
+			spec.Patch = uint16(n)
 		case "type":
 			n, err := evalManifestDirectiveExpr(val, symbols, global)
 			if err != nil {
@@ -349,23 +353,23 @@ func requiresSourceManifest(label string) bool {
 }
 
 var manifestSpecsByLabel = map[string]libManifestSpec{
-	"prog_console":      {Name: "console.handler", Kind: iosmKindHandler, Version: 1, Revision: 0, Flags: iosmModfCompatPort | iosmModfASLRCapable},
-	"prog_shell":        {Name: "Shell", Kind: iosmKindHandler, Version: 1, Revision: 0, Flags: iosmModfCompatPort | iosmModfASLRCapable},
-	"prog_hwres":        {Name: "hardware.resource", Kind: iosmKindResource, Version: 1, Revision: 0, Flags: iosmModfCompatPort | iosmModfASLRCapable},
-	"prog_input_device": {Name: "input.device", Kind: iosmKindDevice, Version: 1, Revision: 0, Flags: iosmModfCompatPort | iosmModfASLRCapable},
-	"prog_version":      {Name: "Version", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
-	"prog_avail":        {Name: "Avail", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
-	"prog_dir":          {Name: "Dir", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
-	"prog_type":         {Name: "Type", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
-	"prog_echo_cmd":     {Name: "Echo", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
-	"prog_resident_cmd": {Name: "Resident", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
-	"prog_assign_cmd":   {Name: "Assign", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
-	"prog_list_cmd":     {Name: "List", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
-	"prog_which_cmd":    {Name: "Which", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
-	"prog_help_app":     {Name: "Help", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
-	"prog_gfxdemo":      {Name: "GfxDemo", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
-	"prog_about":        {Name: "About", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
-	"prog_elfseg":       {Name: "ElfSeg", Kind: iosmKindCommand, Version: 1, Revision: 0, Flags: iosmModfASLRCapable},
+	"prog_console":      {Name: "console.handler", Kind: iosmKindHandler, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfCompatPort | iosmModfASLRCapable},
+	"prog_shell":        {Name: "Shell", Kind: iosmKindHandler, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfCompatPort | iosmModfASLRCapable},
+	"prog_hwres":        {Name: "hardware.resource", Kind: iosmKindResource, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfCompatPort | iosmModfASLRCapable},
+	"prog_input_device": {Name: "input.device", Kind: iosmKindDevice, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfCompatPort | iosmModfASLRCapable},
+	"prog_version":      {Name: "Version", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_avail":        {Name: "Avail", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_dir":          {Name: "Dir", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_type":         {Name: "Type", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_echo_cmd":     {Name: "Echo", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_resident_cmd": {Name: "Resident", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_assign_cmd":   {Name: "Assign", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_list_cmd":     {Name: "List", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_which_cmd":    {Name: "Which", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_help_app":     {Name: "Help", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_gfxdemo":      {Name: "GfxDemo", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_about":        {Name: "About", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_elfseg":       {Name: "ElfSeg", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
 }
 
 func splitDirectiveOperands(rest string) []string {
@@ -839,31 +843,20 @@ func buildELF(code []byte, data []byte, manifest libManifestSpec, withManifest b
 	}
 
 	manifestBytes := []byte(nil)
-	shstrtab := []byte(nil)
 	manifestFileOff := dataFileOff + dataFileSize
-	shstrtabFileOff := manifestFileOff
-	shoff := uint64(0)
-	shnum := uint16(0)
-	shstrndx := uint16(0)
 	if withManifest {
 		manifestBytes = buildManifestNote(manifest)
-		shstrtab = []byte("\x00" + iosmSectionName + "\x00.shstrtab\x00")
-		shstrtabFileOff = manifestFileOff + uint64(len(manifestBytes))
-		shoff = roundUp(shstrtabFileOff+uint64(len(shstrtab)), 8)
-		shnum = 3
-		shstrndx = 2
 	}
 
 	outLen := dataFileOff + dataFileSize
 	if withManifest {
-		outLen = shoff + uint64(shnum)*elfSectionHeaderSize
+		outLen = manifestFileOff + uint64(len(manifestBytes))
 	}
 	out := make([]byte, outLen)
 	copy(out[codeFileOff:], code)
 	copy(out[dataFileOff:], data)
 	if withManifest {
 		copy(out[manifestFileOff:], manifestBytes)
-		copy(out[shstrtabFileOff:], shstrtab)
 	}
 
 	copy(out[0:16], []byte{0x7F, 'E', 'L', 'F', 2, 1, 1})
@@ -872,17 +865,21 @@ func buildELF(code []byte, data []byte, manifest libManifestSpec, withManifest b
 	binary.LittleEndian.PutUint32(out[20:24], 1)
 	binary.LittleEndian.PutUint64(out[24:32], 0)
 	binary.LittleEndian.PutUint64(out[32:40], 64)
-	binary.LittleEndian.PutUint64(out[40:48], shoff)
+	binary.LittleEndian.PutUint64(out[40:48], 0)
 	binary.LittleEndian.PutUint32(out[48:52], 0)
 	binary.LittleEndian.PutUint16(out[52:54], 64)
 	binary.LittleEndian.PutUint16(out[54:56], 56)
-	binary.LittleEndian.PutUint16(out[56:58], 2)
-	binary.LittleEndian.PutUint16(out[58:60], elfSectionHeaderSize)
-	binary.LittleEndian.PutUint16(out[60:62], shnum)
-	binary.LittleEndian.PutUint16(out[62:64], shstrndx)
+	phnum := uint16(2)
+	if withManifest {
+		phnum = 3
+	}
+	binary.LittleEndian.PutUint16(out[56:58], phnum)
+	binary.LittleEndian.PutUint16(out[58:60], 0)
+	binary.LittleEndian.PutUint16(out[60:62], 0)
+	binary.LittleEndian.PutUint16(out[62:64], 0)
 
 	ph0 := 64
-	binary.LittleEndian.PutUint32(out[ph0+0:ph0+4], 1)
+	binary.LittleEndian.PutUint32(out[ph0+0:ph0+4], elfPTLoad)
 	binary.LittleEndian.PutUint32(out[ph0+4:ph0+8], 5)
 	binary.LittleEndian.PutUint64(out[ph0+8:ph0+16], codeFileOff)
 	binary.LittleEndian.PutUint64(out[ph0+16:ph0+24], 0)
@@ -892,7 +889,7 @@ func buildELF(code []byte, data []byte, manifest libManifestSpec, withManifest b
 	binary.LittleEndian.PutUint64(out[ph0+48:ph0+56], pageSize)
 
 	ph1 := ph0 + 56
-	binary.LittleEndian.PutUint32(out[ph1+0:ph1+4], 1)
+	binary.LittleEndian.PutUint32(out[ph1+0:ph1+4], elfPTLoad)
 	binary.LittleEndian.PutUint32(out[ph1+4:ph1+8], 6)
 	binary.LittleEndian.PutUint64(out[ph1+8:ph1+16], dataFileOff)
 	binary.LittleEndian.PutUint64(out[ph1+16:ph1+24], dataVA)
@@ -902,19 +899,15 @@ func buildELF(code []byte, data []byte, manifest libManifestSpec, withManifest b
 	binary.LittleEndian.PutUint64(out[ph1+48:ph1+56], pageSize)
 
 	if withManifest {
-		sh1 := shoff + elfSectionHeaderSize
-		binary.LittleEndian.PutUint32(out[sh1+0:sh1+4], 1)
-		binary.LittleEndian.PutUint32(out[sh1+4:sh1+8], elfSHTNote)
-		binary.LittleEndian.PutUint64(out[sh1+24:sh1+32], manifestFileOff)
-		binary.LittleEndian.PutUint64(out[sh1+32:sh1+40], uint64(len(manifestBytes)))
-		binary.LittleEndian.PutUint64(out[sh1+48:sh1+56], 4)
-
-		sh2 := shoff + 2*elfSectionHeaderSize
-		binary.LittleEndian.PutUint32(out[sh2+0:sh2+4], uint32(len("\x00"+iosmSectionName+"\x00")))
-		binary.LittleEndian.PutUint32(out[sh2+4:sh2+8], elfSHTStrTab)
-		binary.LittleEndian.PutUint64(out[sh2+24:sh2+32], shstrtabFileOff)
-		binary.LittleEndian.PutUint64(out[sh2+32:sh2+40], uint64(len(shstrtab)))
-		binary.LittleEndian.PutUint64(out[sh2+48:sh2+56], 1)
+		ph2 := ph1 + 56
+		binary.LittleEndian.PutUint32(out[ph2+0:ph2+4], elfPTNote)
+		binary.LittleEndian.PutUint32(out[ph2+4:ph2+8], 4)
+		binary.LittleEndian.PutUint64(out[ph2+8:ph2+16], manifestFileOff)
+		binary.LittleEndian.PutUint64(out[ph2+16:ph2+24], 0)
+		binary.LittleEndian.PutUint64(out[ph2+24:ph2+32], 0)
+		binary.LittleEndian.PutUint64(out[ph2+32:ph2+40], uint64(len(manifestBytes)))
+		binary.LittleEndian.PutUint64(out[ph2+40:ph2+48], uint64(len(manifestBytes)))
+		binary.LittleEndian.PutUint64(out[ph2+48:ph2+56], 4)
 	}
 
 	return out

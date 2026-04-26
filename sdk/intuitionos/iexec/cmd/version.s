@@ -689,7 +689,7 @@ prog_version_code:
 prog_version_code_end:
 
 prog_version_data:
-    ; Source-level OS version marker for M16.1 audits: IntuitionOS 1.16.4
+    ; Source-level OS version marker for M16.1 audits: IntuitionOS 1.16.5 / exec.library 1.16.5
 prog_version_name_console:
     dc.b    "console.handler", 0
     ds.b    16
@@ -755,7 +755,7 @@ prog_version_iosm:
     dc.b    0
     dc.w    1
     dc.w    0
-    dc.w    0
+    dc.w    1
     dc.b    "Version", 0
     ds.b    IOSM_NAME_SIZE - 8
     dc.l    MODF_ASLR_CAPABLE

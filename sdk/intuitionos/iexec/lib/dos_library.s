@@ -1,5 +1,5 @@
 prog_doslib:
-    .libmanifest name="dos.library", version=14, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0
+    .libmanifest name="dos.library", version=15, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0
 SYSINFO_ASLR_IMAGE_BASE equ 7      ; private exec/dos.library selector
     ; Header
     dc.l    0, 0
@@ -227,7 +227,7 @@ prog_doslib_code:
     load.q  r29, (sp)
     store.q r1, 144(r29)               ; data[144] = dos_port
     add     r1, r29, #16               ; R1 = &data[16] = "dos.library"
-    move.l  r2, #14                    ; lib_version
+    move.l  r2, #15                    ; lib_version
     move.l  r3, #0                     ; lib_revision
     load.q  r4, 144(r29)               ; compat public port
     syscall #SYS_ADD_LIBRARY
@@ -4718,6 +4718,44 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     move.l  r12, #1
     bne     r11, r12, .dpcife_done
 
+    load.l  r18, 32(r21)                 ; e_phoff
+    load.l  r11, 36(r21)
+    bnez    r11, .dpcife_done
+    load.w  r24, 54(r21)                 ; e_phentsize
+    move.l  r11, #56
+    bne     r24, r11, .dpcife_done
+    load.w  r25, 56(r21)                 ; e_phnum
+    beqz    r25, .dpcife_done
+    move.q  r27, r25
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    blt     r27, r18, .dpcife_done
+    bgt     r27, r22, .dpcife_done
+    move.l  r19, #0
+.dpcife_ph_loop:
+    bge     r19, r25, .dpcife_no_ptnote
+    move.q  r27, r19
+    mulu    r27, r24, r27
+    add     r27, r18, r27
+    add     r27, r21, r27                ; program header
+    load.l  r11, (r27)
+    move.l  r12, #4                      ; PT_NOTE
+    bne     r11, r12, .dpcife_next_ph
+    load.q  r11, 8(r27)                  ; p_offset
+    load.q  r12, 32(r27)                 ; p_filesz
+    beqz    r12, .dpcife_done
+    add     r13, r11, r12
+    blt     r13, r11, .dpcife_done
+    bgt     r13, r22, .dpcife_done
+    add     r27, r21, r11                ; note ptr
+    add     r30, r27, r12                ; note section end
+    store.q r30, 712(r29)
+    bra     .dpcife_note_loop
+.dpcife_next_ph:
+    add     r19, r19, #1
+    bra     .dpcife_ph_loop
+.dpcife_no_ptnote:
+
     load.q  r18, 40(r21)                 ; e_shoff
     beqz    r18, .dpcife_notfound
     store.q r18, 672(r29)
@@ -4976,6 +5014,37 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     move.q  r23, r0
     rts
 .dpiin_no:
+    move.l  r23, #1
+    rts
+
+    ; R14 = note name. R23 = 0 on exact "IOS-REL\0".
+.dos_pmp_is_iosrel_note_name:
+    load.b  r11, 0(r14)
+    move.l  r12, #0x49
+    bne     r11, r12, .dpiir_no
+    load.b  r11, 1(r14)
+    move.l  r12, #0x4F
+    bne     r11, r12, .dpiir_no
+    load.b  r11, 2(r14)
+    move.l  r12, #0x53
+    bne     r11, r12, .dpiir_no
+    load.b  r11, 3(r14)
+    move.l  r12, #0x2D
+    bne     r11, r12, .dpiir_no
+    load.b  r11, 4(r14)
+    move.l  r12, #0x52
+    bne     r11, r12, .dpiir_no
+    load.b  r11, 5(r14)
+    move.l  r12, #0x45
+    bne     r11, r12, .dpiir_no
+    load.b  r11, 6(r14)
+    move.l  r12, #0x4C
+    bne     r11, r12, .dpiir_no
+    load.b  r11, 7(r14)
+    bnez    r11, .dpiir_no
+    move.q  r23, r0
+    rts
+.dpiir_no:
     move.l  r23, #1
     rts
 
@@ -6203,6 +6272,9 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     pop     r20
     beqz    r3, .dos_loadlib_fail
     move.q  r23, r1
+    move.q  r1, r23
+    jsr     .dos_resolved_is_iossys
+    beqz    r3, .dos_loadlib_fail
     store.q r23, 608(r29)
     move.q  r1, r23
     push    r29
@@ -6995,7 +7067,23 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     bge     r18, r21, .debs_span_done
     load.l  r3, (r24)
     move.l  r4, #1
-    bne     r3, r4, .debs_badarg
+    beq     r3, r4, .debs_span_load
+    move.l  r4, #4
+    beq     r3, r4, .debs_span_note
+    bra     .debs_badarg
+.debs_span_note:
+    load.l  r3, 12(r24)                ; note offset high
+    bnez    r3, .debs_badarg
+    load.l  r3, 36(r24)                ; note filesz high
+    bnez    r3, .debs_badarg
+    load.l  r6, 8(r24)
+    load.l  r7, 32(r24)
+    add     r9, r6, r7
+    blt     r9, r6, .debs_badarg
+    load.q  r10, 368(r29)
+    blt     r10, r9, .debs_badarg
+    bra     .debs_span_next
+.debs_span_load:
     load.l  r3, 20(r24)                ; vaddr hi
     bnez    r3, .debs_badarg
     load.l  r3, 44(r24)                ; memsz hi
@@ -7055,7 +7143,17 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     lsr     r3, r3, #32
     move.q  r4, r0
     add     r4, r4, #1
-    bne     r3, r4, .debs_badarg_free
+    beq     r3, r4, .debs_load_ph
+    move.q  r4, r0
+    add     r4, r4, #4
+    beq     r3, r4, .debs_skip_ph
+    bra     .debs_badarg_free
+.debs_skip_ph:
+    add     r18, r18, #1
+    add     r24, r24, #56
+    store.q r24, 520(r29)
+    bra     .debs_ph_loop
+.debs_load_ph:
     load.l  r8, 4(r24)                 ; flags
     lsl     r8, r8, #32
     lsr     r8, r8, #32
@@ -7275,7 +7373,7 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     move.l  r2, #DOS_ERR_BADARG
 
     load.q  r18, 40(r1)                 ; e_shoff
-    beqz    r18, .dear_badarg
+    beqz    r18, .dear_ptnote_relocs
     store.q r18, 544(r29)
     load.w  r19, 58(r1)                 ; e_shentsize
     move.l  r11, #64
@@ -7335,7 +7433,7 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
 .dear_rela_loop:
     load.q  r26, 592(r29)
     load.q  r27, 600(r29)
-    bge     r27, r26, .dear_next_sh
+    bge     r27, r26, .dear_rela_done
     load.q  r23, 576(r29)               ; current RELA ptr
 
     load.l  r11, 4(r23)                 ; r_offset high
@@ -7431,11 +7529,142 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     store.q r27, 600(r29)
     bra     .dear_rela_loop
 
+.dear_rela_done:
+    load.q  r1, 360(r29)
+    load.q  r11, 40(r1)                 ; e_shoff
+    beqz    r11, .dear_ok
+    bra     .dear_next_sh
+
 .dear_next_sh:
     load.q  r21, 568(r29)
     add     r21, r21, #1
     store.q r21, 568(r29)
     bra     .dear_sh_loop
+
+.dear_ptnote_relocs:
+    load.q  r18, 32(r1)                 ; e_phoff
+    store.q r18, 544(r29)
+    load.w  r19, 54(r1)                 ; e_phentsize
+    move.l  r11, #56
+    bne     r19, r11, .dear_badarg
+    store.q r19, 552(r29)
+    load.w  r20, 56(r1)                 ; e_phnum
+    beqz    r20, .dear_badarg
+    store.q r20, 560(r29)
+    move.q  r21, r20
+    mulu    r21, r19, r21
+    add     r21, r18, r21
+    blt     r21, r18, .dear_badarg
+    load.q  r22, 368(r29)
+    bgt     r21, r22, .dear_badarg
+
+    store.q r0, 568(r29)                ; program header index
+    store.q r0, 576(r29)                ; PT_NOTE count
+.dear_ph_loop:
+    load.q  r20, 560(r29)
+    load.q  r21, 568(r29)
+    bge     r21, r20, .dear_no_ptnote_rela
+    load.q  r18, 544(r29)
+    load.q  r19, 552(r29)
+    move.q  r22, r21
+    mulu    r22, r19, r22
+    add     r22, r18, r22
+    load.q  r1, 360(r29)
+    add     r22, r1, r22                ; program header ptr
+    load.l  r11, (r22)
+    move.l  r12, #4                     ; PT_NOTE
+    bne     r11, r12, .dear_next_ph
+    load.q  r23, 576(r29)
+    add     r23, r23, #1
+    store.q r23, 576(r29)
+    move.l  r11, #1
+    bgt     r23, r11, .dear_badarg
+    load.q  r23, 8(r22)                 ; p_offset
+    load.q  r24, 32(r22)                ; p_filesz
+    move.l  r11, #148                   ; IOS-MOD-only PT_NOTE has no relocations
+    bgt     r24, r11, .dear_ptnote_maybe_rela
+    bra     .dear_ok
+.dear_ptnote_maybe_rela:
+    add     r25, r23, r24
+    blt     r25, r23, .dear_badarg
+    load.q  r11, 368(r29)
+    bgt     r25, r11, .dear_badarg
+    load.q  r1, 360(r29)
+    add     r23, r1, r23                ; note ptr
+    add     r25, r1, r25                ; note end
+    store.q r23, 584(r29)
+    store.q r25, 592(r29)
+.dear_next_ph:
+    load.q  r21, 568(r29)
+    add     r21, r21, #1
+    store.q r21, 568(r29)
+    bra     .dear_ph_loop
+.dear_no_ptnote_rela:
+    load.q  r23, 576(r29)
+    beqz    r23, .dear_ok
+    load.q  r27, 584(r29)               ; note ptr
+    load.q  r30, 592(r29)               ; note end
+.dear_note_loop:
+    bge     r27, r30, .dear_ok
+    move.q  r13, r27
+    add     r13, r13, #12
+    bgt     r13, r30, .dear_ok
+    load.l  r25, (r27)                  ; namesz
+    load.l  r24, 4(r27)                 ; descsz
+    move.q  r13, r25
+    add     r13, r13, #3
+    and     r13, r13, #0xFFFFFFFC       ; padded name size
+    move.q  r26, r24
+    add     r26, r26, #3
+    and     r26, r26, #0xFFFFFFFC       ; padded desc size
+    move.q  r28, r27
+    add     r28, r28, #12
+    add     r28, r28, r13               ; descriptor ptr
+    move.q  r18, r28
+    add     r18, r18, r26               ; next note ptr
+    bgt     r18, r30, .dear_ok
+    move.l  r12, #8
+    bne     r25, r12, .dear_note_next
+    load.l  r11, 8(r27)
+    move.l  r12, #0x494F5231            ; IOS-REL note type
+    bne     r11, r12, .dear_note_next
+    add     r14, r27, #12
+    jsr     .dos_pmp_is_iosrel_note_name
+    bnez    r23, .dear_note_next
+    move.l  r11, #32
+    blt     r24, r11, .dear_badarg
+    load.l  r11, (r28)
+    move.l  r12, #0x52534F49            ; IOSR
+    bne     r11, r12, .dear_badarg
+    load.w  r11, 4(r28)
+    move.l  r12, #1
+    bne     r11, r12, .dear_badarg
+    load.w  r11, 6(r28)
+    move.l  r12, #32
+    bne     r11, r12, .dear_badarg
+    load.w  r11, 8(r28)
+    move.l  r12, #24
+    bne     r11, r12, .dear_badarg
+    load.w  r11, 10(r28)
+    bnez    r11, .dear_badarg
+    load.q  r11, 16(r28)
+    bnez    r11, .dear_badarg
+    load.q  r11, 24(r28)
+    bnez    r11, .dear_badarg
+    load.l  r26, 12(r28)                ; record_count
+    move.q  r11, r26
+    mulu    r11, r12, r11               ; record_count * 24
+    add     r11, r11, #32
+    bne     r11, r24, .dear_badarg
+    beqz    r26, .dear_ok
+    add     r28, r28, #32
+    store.q r28, 576(r29)               ; rela ptr
+    store.q r26, 592(r29)               ; rela count
+    store.q r0, 600(r29)                ; rela index
+    bra     .dear_rela_loop
+.dear_note_next:
+    move.q  r27, r18
+    bra     .dear_note_loop
 .dear_ok:
     move.q  r2, r0
     rts
@@ -7880,7 +8109,7 @@ prog_doslib_iosm:
     dc.l    IOSM_SCHEMA_VERSION
     dc.b    IOSM_KIND_LIBRARY
     dc.b    0
-    dc.w    14
+    dc.w    15
     dc.w    0
     dc.w    0
     dc.b    "dos.library", 0

@@ -168,24 +168,31 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - `MODF_RESIDENT`, `MODF_COMPAT_PORT`, `MODF_ASLR_CAPABLE`, and `SIGF_MODDEAD` are the currently shipped public constants. M16.3 makes `MODF_ASLR_CAPABLE` mandatory for all DOS-loaded ELFs while keeping strict `ET_EXEC`; M16.4, not M16.3, owns relocation and ASLR.
 - per-task open tracking remains v1 bookkeeping; M16 tracks opener task/count rows for correctness and crash signaling, while deeper automatic task-owned-handle sweep remains future work
 
-**M16.4 runtime ELF / ASLR summary:**
+**M16.4.1 PT_NOTE runtime ELF / ASLR summary:**
 
 - The live runtime executable contract is now self-contained `ET_DYN`, not fixed-base `ET_EXEC`, for all shipped commands, libraries, devices, handlers, resources, host-provided DOS ELFs, and third-party DOS-loadable runtime ELFs accepted after the cutover.
-- `PT_LOAD.p_vaddr` values are zero-relative image offsets; section headers are mandatory runtime metadata and stripped runtime ELFs are rejected.
-- Relocation is bounded, local, and self-contained. The initial ABI accepts `R_IE64_RELATIVE64` in `SHT_RELA` only; nonzero symbol indexes, external-symbol relocation, unknown relocation types, text relocations, and dynamic-linker metadata are rejected.
+- `PT_LOAD.p_vaddr` values are zero-relative image offsets; one `PT_NOTE` carries `IOS-MOD` and optional `IOS-REL`; stripped, section-header-free images with no section header table are accepted; section-header-only metadata is rejected.
+- Relocation is bounded, local, and self-contained. The M16.4.1 ABI accepts `R_IE64_RELATIVE64` records only in `IOS-REL`; nonzero symbol indexes, external-symbol relocation, unknown relocation types, text relocations, and dynamic-linker metadata are rejected.
 - Dynamic linking does not exist in the IntuitionOS service model. `.library` and class-specific acquisition IPC remain the boundary; ports/messages remain the programmer-facing interface.
 - The phrase dynamic linking remains an explicit rejection rule for runtime ELFs.
-- Userland ASLR is enabled. KASLR is deferred to M16.4.x.
+- Trusted-internal protected-module launch authority comes from trusted read-only system source provenance plus validated IOSM name/class metadata, not from an arbitrary `.library`, `.device`, `.handler`, or `.resource` filename in a writable `SYS:` overlay.
+- Userland ASLR is enabled. M16.4.1 only readies the code for KASLR; M16.5 owns fixed `KERN_PAGE_TABLE`, `KERN_DATA_BASE`, `KERN_STACK_TOP`, supervisor identity mapping, trap/fault paths, scheduler state access, panic/debug paths, and task page-table copying of kernel mappings.
 - W^X, SKEF/SKAC/SUA discipline, explicit `MAPF_*` masks for shared mappings, bounded loader inputs, and the ban on raw cross-task pointers remain mandatory.
+
+**M16.4.2 Resident command follow-on:**
+
+- `C:Resident` currently exposes only the M16 registry pin/unpin path: `Resident <name> ADD|REMOVE` toggles `MODF_RESIDENT` for existing library rows and exits silently on success.
+- M16.4.2 should make the command surface feel closer to AmigaOS: no-argument listing, visible ADD/REMOVE status, and clear diagnostics for unsupported or missing targets.
+- The follow-on must preserve the IntuitionOS protected-module model. It should not reintroduce startup-sequence lifecycle hacks, raw cross-task code sharing, or an implicit command-resident cache unless that behavior is explicitly designed for protected tasks.
 
 **M16.1 IOSM / VERSION summary:**
 
-- `IOS_VERSION_*` in `sdk/include/iexec.inc` is the single source of truth for the OS-wide version, currently `1.16.4`.
-- Every runtime ELF carries a 128-byte `.ios.manifest` / `IOSM` note. The descriptor records module kind, version/revision/patch, public name, flags, message ABI, build date, and fixed copyright.
+- `IOS_VERSION_*` in `sdk/include/iexec.inc` is the single source of truth for the OS-wide version, currently `1.16.5`.
+- Every runtime ELF carries a 128-byte `IOS-MOD` / `IOSM` note. M16.1/M16.4 used `.ios.manifest` section metadata; M16.4.1 carries the same descriptor through `PT_NOTE`. The descriptor records module kind, version/revision/patch, public name, flags, message ABI, build date, and fixed copyright.
 - Resident metadata is queried through ports using caller-allocated shared memory. `MSG_GET_IOSM` copies one 128-byte descriptor into the caller's `MEMF_PUBLIC` buffer; servers reject missing handles and wrong page counts.
 - `exec.library` publishes a discoverable `exec.library` port for IOSM and resident-list queries. `MSG_LIST_RESIDENTS` writes a 4 KiB caller buffer containing a count at offset 0 and 32-byte public-port names starting at offset 32.
 - `SYS_GET_SYS_INFO(SYSINFO_PORT_NAME_BY_INDEX)` enumerates public ports without adding a new syscall slot. The kernel validates the caller's 32-byte output buffer and returns a zero task id as the end sentinel.
-- The default `VERSION` command output is canonicalized to `IntuitionOS 1.16.4`, `exec.library 1.16.4 (DATE)`, and the IOSM copyright string.
+- The default `VERSION` command output is canonicalized to `IntuitionOS 1.16.5`, `exec.library 1.16.5 (DATE)`, and the IOSM copyright string.
 - No new syscall slots are introduced for M16.1; the design reuses ports, shared-memory handles, explicit `MAPF_*` permissions, and bounded fixed-size buffers.
 
 **M16.2 protected non-library module runtime:**

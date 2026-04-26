@@ -463,7 +463,7 @@ prog_gfxdemo_iosm:
     dc.b    0
     dc.w    1
     dc.w    0
-    dc.w    0
+    dc.w    1
     dc.b    "GfxDemo", 0
     ds.b    IOSM_NAME_SIZE - 9
     dc.l    MODF_ASLR_CAPABLE
