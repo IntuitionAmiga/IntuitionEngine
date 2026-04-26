@@ -334,6 +334,15 @@ M14.1 changes that boundary by moving shipped services to an embedded boot manif
 
 The surviving `ExecProgram` contract is the M14 launch-descriptor path used by DOS `RunSeg`. The descriptor preserves each segment's target virtual address, `R/W/X` flags, and the original ELF `e_entry`, so launched children execute as linked rather than as a reflatted `IE64PROG`.
 
+## M16.4.3 Universal Userland Residency
+
+Universal Userland Residency does not create shared executable mappings.
+`DOS_RESIDENT_ADD` validates an `IOSM_KIND_COMMAND` ELF, requires
+`MODF_ASLR_CAPABLE`, and stores private bytes in the dos.library resident
+command cache. `DOS_RESIDENT_REMOVE` drops that cache row, and
+`DOS_RESIDENT_LIST` exports resident command cache rows in the RSIV-compatible
+record shape.
+
 ## Why No HUNK
 
 IntuitionOS is not targeting classic Amiga binary compatibility in this milestone.

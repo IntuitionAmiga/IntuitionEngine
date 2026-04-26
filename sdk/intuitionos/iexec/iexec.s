@@ -2990,7 +2990,7 @@ kern_boot_validate_library_manifest:
     jsr     kern_boot_validate_name32_eq
     bnez    r23, .kbvlm_done
     load.w  r11, IOSM_OFF_VERSION(r27) ; lib_version
-    move.l  r12, #15
+    move.l  r12, #16
     bne     r11, r12, .kbvlm_done
     load.w  r11, IOSM_OFF_REVISION(r27) ; lib_revision
     bnez    r11, .kbvlm_done

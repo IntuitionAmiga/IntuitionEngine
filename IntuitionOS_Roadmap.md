@@ -447,9 +447,11 @@ Why later:
 9. `M16.2.1` public non-library acquisition APIs
 10. `M16.3` consistently PIE-capable shipped ELF surface
 11. `M16.4` relocation and ASLR/randomized placement
-12. `M18` default graphical shell / Workbench-like boot
-13. later: scheduler refinement
-14. later: serious toolchain bring-up
+12. `M16.4.3` Universal Userland Residency with the dos.library resident command cache (`DOS_RESIDENT_ADD`, `DOS_RESIDENT_REMOVE`,
+    `DOS_RESIDENT_LIST`)
+13. `M18` default graphical shell / Workbench-like boot
+14. later: scheduler refinement
+15. later: serious toolchain bring-up
 
 ## Recommended Next Demo Path
 

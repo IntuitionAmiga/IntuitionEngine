@@ -1,6 +1,14 @@
 prog_doslib:
-    .libmanifest name="dos.library", version=15, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0
+    .libmanifest name="dos.library", version=16, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0
 SYSINFO_ASLR_IMAGE_BASE equ 7      ; private exec/dos.library selector
+DOS_RCMD_CACHE_MAX     equ 16
+DOS_RCMD_CACHE_NAME    equ 0
+DOS_RCMD_CACHE_PATH    equ 32
+DOS_RCMD_CACHE_IMAGE   equ 64
+DOS_RCMD_CACHE_SIZE    equ 72
+DOS_RCMD_CACHE_GEN     equ 80
+DOS_RCMD_CACHE_IOSM    equ 88
+DOS_RCMD_CACHE_ROW_SZ  equ 216
     ; Header
     dc.l    0, 0
     dc.l    prog_doslib_code_end - prog_doslib_code
@@ -227,7 +235,7 @@ prog_doslib_code:
     load.q  r29, (sp)
     store.q r1, 144(r29)               ; data[144] = dos_port
     add     r1, r29, #16               ; R1 = &data[16] = "dos.library"
-    move.l  r2, #15                    ; lib_version
+    move.l  r2, #16                    ; lib_version
     move.l  r3, #0                     ; lib_revision
     load.q  r4, 144(r29)               ; compat public port
     syscall #SYS_ADD_LIBRARY
@@ -322,6 +330,12 @@ prog_doslib_code:
     beq     r14, r28, .dos_do_get_iosm
     move.l  r28, #DOS_OP_PARSE_MANIFEST
     beq     r14, r28, .dos_do_parse_manifest
+    move.l  r28, #DOS_RESIDENT_ADD
+    beq     r14, r28, .dos_do_resident_add
+    move.l  r28, #DOS_RESIDENT_REMOVE
+    beq     r14, r28, .dos_do_resident_remove
+    move.l  r28, #DOS_RESIDENT_LIST
+    beq     r14, r28, .dos_do_resident_list
     move.l  r28, #DOS_DIR
     beq     r14, r28, .dos_do_dir
     move.l  r28, #DOS_OPEN
@@ -3412,9 +3426,10 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     ; In:  r1 = ptr_a, r2 = ptr_b
     ; Out: r23 = 0 if equal, 1 if mismatch
 .dos_name_eq_ci32:
-    move.l  r20, #0
+    move.q  r20, r0
 .dne_loop:
-    move.l  r21, #32
+    move.q  r21, r0
+    add     r21, r21, #32
     bge     r20, r21, .dne_match
     add     r22, r1, r20
     load.b  r22, (r22)
@@ -3453,19 +3468,19 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     ; In:  r1 = resolved DOS name ptr
     ; Out: r1 = manifest entry ID (or 0), r2 = 1 if found, 0 if not found
 .dos_manifest_find_row_by_name:
-    move.q  r20, r1
+    move.q  r26, r1
     add     r2, r29, #(prog_doslib_seed_name_hwres - prog_doslib_data)
     jsr     .dos_name_eq_ci32
     beqz    r23, .dmfrn_hwres
-    move.q  r1, r20
+    move.q  r1, r26
     add     r2, r29, #(prog_doslib_seed_name_input - prog_doslib_data)
     jsr     .dos_name_eq_ci32
     beqz    r23, .dmfrn_input
-    move.q  r1, r20
+    move.q  r1, r26
     add     r2, r29, #(prog_doslib_seed_name_graphics - prog_doslib_data)
     jsr     .dos_name_eq_ci32
     beqz    r23, .dmfrn_graphics
-    move.q  r1, r20
+    move.q  r1, r26
     add     r2, r29, #(prog_doslib_seed_name_intuition - prog_doslib_data)
     jsr     .dos_name_eq_ci32
     beqz    r23, .dmfrn_intuition
@@ -5829,6 +5844,10 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     ; never resolvable) — terminate iteration without another retry.
     beqz    r22, .dos_run_reply_notfound_final
     store.q r23, 336(r29)
+    move.q  r1, r23
+    jsr     .dos_resident_find_by_command
+    load.q  r29, (sp)
+    bnez    r3, .dos_run_launch_resident_elf
 
     ; Prefer a host-backed file when the resolved DOS name maps into the
     ; mounted system tree. M15.3: route through the layered helper so the
@@ -6132,6 +6151,55 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     load.q  r29, (sp)
     bra     .dos_main_loop
 
+.dos_run_launch_resident_elf:
+    ; M16.4.3 resident command cache launch. R1=image bytes, R2=image size
+    ; from .dos_resident_find_by_command. The bytes are private DOS-owned
+    ; data; SYS_BOOT_ELF_EXEC still performs the normal validated task load,
+    ; ASLR, guard-page and W^X mapping path for every launch.
+    store.q r1, 296(r29)
+    store.q r2, 624(r29)
+    load.q  r20, 168(r29)
+    move.q  r16, r20
+    move.l  r18, #0
+.drlre_skip_cmd:
+    load.b  r15, (r16)
+    beqz    r15, .drlre_args_start
+    add     r16, r16, #1
+    add     r18, r18, #1
+    move.l  r28, #DATA_ARGS_MAX
+    blt     r18, r28, .drlre_skip_cmd
+    bra     .dos_run_reply_notfound_final
+.drlre_args_start:
+    add     r16, r16, #1
+    move.q  r17, r16
+    move.l  r18, #0
+.drlre_arglen:
+    load.b  r15, (r17)
+    beqz    r15, .drlre_exec
+    add     r17, r17, #1
+    add     r18, r18, #1
+    move.l  r28, #DATA_ARGS_MAX
+    blt     r18, r28, .drlre_arglen
+.drlre_exec:
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    move.q  r3, r16
+    move.q  r4, r18
+    move.q  r5, r0
+    syscall #SYS_BOOT_ELF_EXEC
+    pop     r29
+    store.q r1, 304(r29)
+    store.q r2, 312(r29)
+    load.q  r1, 944(r29)
+    load.q  r2, 312(r29)
+    load.q  r3, 304(r29)
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
 .dos_run_hostfs_reject_badarg:
     push    r29
     load.q  r1, 296(r29)
@@ -6408,6 +6476,441 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     syscall #SYS_M16_LIBRARY_LOAD_RESULT
     load.q  r29, (sp)
     bra     .dos_main_loop
+
+    ; =================================================================
+    ; M16.4.3 DOS resident command cache IPC.
+    ; Command rows snapshot validated ELF bytes into DOS-owned memory, expose
+    ; RCLI inventory rows, and are launched by DOS_RUN before filesystem lookup.
+    ; =================================================================
+.dos_do_resident_add:
+    load.l  r21, 976(r29)
+    beqz    r21, .dos_resident_reply_badarg
+    load.q  r24, 184(r29)
+    move.l  r11, #1
+    bne     r24, r11, .dos_resident_reply_badarg
+    load.q  r23, 168(r29)
+    move.q  r24, r0
+.ddra_name_scan:
+    move.l  r11, #DOS_RCMD_NAME_MAX
+    bge     r24, r11, .dos_resident_reply_badarg
+    add     r12, r23, r24
+    load.b  r13, (r12)
+    beqz    r13, .ddra_name_ok
+    add     r24, r24, #1
+    bra     .ddra_name_scan
+.ddra_name_ok:
+    beqz    r24, .dos_resident_reply_badarg
+    store.q r0, 856(r29)
+    store.q r0, 880(r29)
+    move.q  r23, r23
+    jsr     .dos_resolve_cmd
+    load.q  r29, (sp)
+    beqz    r22, .dos_resident_reply_notfound
+    store.q r23, 752(r29)              ; resident-add resolved command path
+    move.q  r1, r23
+    move.l  r2, #0
+    jsr     .dos_hostfs_layered_relpath_for_resolved_name
+    load.q  r29, (sp)
+    beqz    r3, .dos_resident_reply_notfound
+    store.q r1, 608(r29)               ; hostfs relpath
+    push    r29
+    jsr     .dos_bootfs_stat
+    pop     r29
+    bnez    r3, .dos_resident_reply_notfound
+    move.q  r28, r2
+    and     r28, r28, #0xFFFFFFFF
+    move.q  r15, r0
+    add     r15, r15, #BOOT_HOSTFS_KIND_FILE
+    bne     r28, r15, .dos_resident_reply_badarg
+    beqz    r1, .dos_resident_reply_badarg
+    store.q r1, 624(r29)               ; alloc/read size
+    load.q  r1, 608(r29)
+    push    r29
+    jsr     .dos_bootfs_open
+    pop     r29
+    bnez    r2, .dos_resident_reply_notfound
+    store.q r1, 616(r29)               ; host handle
+    load.q  r1, 624(r29)
+    move.l  r2, #MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    load.q  r29, (sp)
+    bnez    r2, .ddra_close_nomem
+    store.q r1, 296(r29)               ; DOS-owned image copy
+    load.q  r1, 616(r29)
+    load.q  r2, 296(r29)
+    load.q  r3, 624(r29)
+    push    r29
+    jsr     .dos_bootfs_read_all
+    pop     r29
+    store.q r1, 640(r29)               ; bytes read
+    store.q r2, 648(r29)               ; read err
+    load.q  r1, 616(r29)
+    push    r29
+    jsr     .dos_bootfs_close
+    pop     r29
+    load.q  r2, 648(r29)
+    bnez    r2, .ddra_free_notfound
+    load.q  r1, 640(r29)
+    load.q  r2, 624(r29)
+    bne     r1, r2, .ddra_free_badarg
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    jsr     .dos_validate_loaded_elf_aslr_contract
+    load.q  r29, (sp)
+    bnez    r20, .ddra_free_badarg
+    add     r27, r29, #(prog_doslib_pmp_desc_dst - prog_doslib_data)
+    load.b  r11, IOSM_OFF_KIND(r27)
+    move.l  r12, #IOSM_KIND_COMMAND
+    bne     r11, r12, .ddra_free_badarg
+    load.q  r1, 752(r29)
+    jsr     .dos_resident_cache_find_free_or_match
+    load.q  r29, (sp)
+    beqz    r3, .ddra_free_full
+    store.q r1, 760(r29)               ; resident-add cache row
+    jsr     .dos_resident_cache_free_row
+    load.q  r29, (sp)
+    load.q  r14, 760(r29)
+    add     r1, r29, #(prog_doslib_pmp_desc_dst - prog_doslib_data)
+    add     r1, r1, #IOSM_OFF_NAME
+    add     r2, r14, #DOS_RCMD_CACHE_NAME
+    jsr     .dos_resident_cache_copy_32
+    load.q  r29, (sp)
+    load.q  r14, 760(r29)
+    load.q  r1, 752(r29)
+    add     r2, r14, #DOS_RCMD_CACHE_PATH
+    jsr     .dos_resident_cache_copy_32
+    load.q  r29, (sp)
+    load.q  r14, 760(r29)
+    load.q  r1, 296(r29)
+    store.q r1, DOS_RCMD_CACHE_IMAGE(r14)
+    load.q  r1, 624(r29)
+    store.q r1, DOS_RCMD_CACHE_SIZE(r14)
+    load.q  r1, DOS_RCMD_CACHE_GEN(r14)
+    add     r1, r1, #1
+    store.q r1, DOS_RCMD_CACHE_GEN(r14)
+    add     r1, r29, #(prog_doslib_pmp_desc_dst - prog_doslib_data)
+    add     r2, r14, #DOS_RCMD_CACHE_IOSM
+    jsr     .dos_resident_cache_copy_iosm
+    load.q  r29, (sp)
+    load.q  r23, 168(r29)
+    add     r1, r29, #(prog_doslib_pmp_desc_dst - prog_doslib_data)
+    add     r2, r23, #DOS_RCMD_IOSM_OFF
+    jsr     .dos_resident_cache_copy_iosm
+    move.q  r20, #ERR_OK
+    bra     .dos_resident_reply_exec_err
+.ddra_close_nomem:
+    load.q  r1, 616(r29)
+    push    r29
+    jsr     .dos_bootfs_close
+    pop     r29
+    move.q  r20, #ERR_NOMEM
+    bra     .dos_resident_reply_exec_err
+.ddra_free_notfound:
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    bra     .dos_resident_reply_notfound
+.ddra_free_badarg:
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    bra     .dos_resident_reply_badarg
+.ddra_free_full:
+    push    r29
+    load.q  r1, 296(r29)
+    load.q  r2, 624(r29)
+    syscall #SYS_FREE_MEM
+    pop     r29
+    move.q  r20, #ERR_FULL
+    bra     .dos_resident_reply_exec_err
+
+.dos_do_resident_remove:
+    load.l  r21, 976(r29)
+    beqz    r21, .dos_resident_reply_badarg
+    load.q  r24, 184(r29)
+    move.l  r11, #1
+    bne     r24, r11, .dos_resident_reply_badarg
+    load.q  r23, 168(r29)
+    move.q  r24, r0
+.ddrr_name_scan:
+    move.l  r11, #DOS_RCMD_NAME_MAX
+    bge     r24, r11, .dos_resident_reply_badarg
+    add     r12, r23, r24
+    load.b  r13, (r12)
+    beqz    r13, .ddrr_name_ok
+    add     r24, r24, #1
+    bra     .ddrr_name_scan
+.ddrr_name_ok:
+    beqz    r24, .dos_resident_reply_badarg
+    store.q r0, 856(r29)
+    store.q r0, 880(r29)
+    jsr     .dos_resolve_cmd
+    load.q  r29, (sp)
+    beqz    r22, .dos_resident_reply_notfound
+    move.q  r1, r23
+    jsr     .dos_resident_cache_find_match
+    load.q  r29, (sp)
+    beqz    r3, .dos_resident_reply_notfound
+    jsr     .dos_resident_cache_free_row
+    move.q  r20, #ERR_OK
+    bra     .dos_resident_reply_exec_err
+
+.dos_do_resident_list:
+    move.q  r30, r29
+    load.l  r21, 976(r29)
+    beqz    r21, .dos_resident_reply_badarg
+    load.q  r24, 184(r29)
+    move.l  r11, #1
+    bne     r24, r11, .dos_resident_reply_badarg
+    load.q  r23, 168(r29)
+    move.q  r28, r23
+    move.l  r11, #DOS_RCLI_MAGIC
+    store.l r11, 0(r23)
+    move.w  r11, #DOS_RCLI_VERSION
+    store.w r11, 4(r23)
+    move.w  r11, #DOS_RCLI_HDR_SIZE
+    store.w r11, 6(r23)
+    move.w  r11, #DOS_RCLI_REC_SIZE
+    store.w r11, 8(r23)
+    store.w r0, 10(r23)
+    store.l r0, 12(r23)
+    move.q  r11, r0
+    add     r11, r11, #DOS_RCLI_HDR_SIZE
+    store.l r11, 16(r23)
+    store.l r0, 20(r23)                ; flags, #DOS_RCLI_FLAG_TRUNCATED when needed
+    store.q r0, 24(r23)
+    move.q  r24, r0                    ; record_count
+    add     r14, r29, #(prog_doslib_resident_cmd_cache - prog_doslib_data)
+    move.q  r15, r0
+.ddrl_loop:
+    move.q  r11, r0
+    add     r11, r11, #DOS_RCMD_CACHE_MAX
+    bge     r15, r11, .ddrl_done
+    load.b  r11, DOS_RCMD_CACHE_NAME(r14)
+    beqz    r11, .ddrl_next
+    move.q  r11, r0
+    add     r11, r11, #DOS_RCLI_HDR_SIZE
+    move.q  r12, r24
+    lsl     r12, r12, #6
+    add     r11, r11, r12
+    add     r22, r23, r11
+    move.q  r13, r24
+    add     r13, r13, #1
+    store.l r13, 12(r23)
+    move.q  r11, r0
+    add     r11, r11, #DOS_RCLI_HDR_SIZE
+    move.q  r12, r13
+    lsl     r12, r12, #6
+    add     r11, r11, r12
+    store.l r11, 16(r23)
+    add     r27, r14, #DOS_RCMD_CACHE_IOSM
+    load.q  r11, IOSM_OFF_NAME(r27)
+    store.q r11, 0(r22)
+    load.q  r11, IOSM_OFF_NAME+8(r27)
+    store.q r11, 8(r22)
+    load.q  r11, IOSM_OFF_NAME+16(r27)
+    store.q r11, 16(r22)
+    load.q  r11, IOSM_OFF_NAME+24(r27)
+    store.q r11, 24(r22)
+    load.b  r11, IOSM_OFF_KIND(r27)
+    store.b r11, 32(r22)
+    store.b r0, 33(r22)                ; module_class: command
+    move.l  r11, #1
+    store.b r11, 34(r22)               ; online
+    move.l  r11, #5                    ; resident | non-registry provider
+    store.b r11, 35(r22)
+    load.w  r11, IOSM_OFF_VERSION(r27)
+    store.w r11, 36(r22)
+    load.w  r11, IOSM_OFF_REVISION(r27)
+    store.w r11, 38(r22)
+    load.w  r11, IOSM_OFF_PATCH(r27)
+    store.w r11, 40(r22)
+    store.w r0, 42(r22)
+    load.l  r11, IOSM_OFF_FLAGS(r27)
+    store.l r11, 44(r22)
+    store.l r0, 48(r22)
+    load.q  r11, DOS_RCMD_CACHE_GEN(r14)
+    store.l r11, 52(r22)
+    store.q r0, 56(r22)
+    add     r24, r24, #1
+.ddrl_next:
+    add     r14, r14, #DOS_RCMD_CACHE_ROW_SZ
+    add     r15, r15, #1
+    bra     .ddrl_loop
+.ddrl_done:
+    load.q  r1, 944(r29)
+    move.q  r2, r0
+    move.q  r3, r0
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+.dos_resident_reply_badarg:
+    move.q  r20, #ERR_BADARG
+    bra     .dos_resident_reply_exec_err
+.dos_resident_reply_notfound:
+    move.q  r20, #ERR_NOTFOUND
+.dos_resident_reply_exec_err:
+    load.q  r23, 168(r29)
+    beqz    r23, .drree_skip_store
+    store.l r20, DOS_RCMD_RC_OFF(r23)
+.drree_skip_store:
+    load.q  r1, 944(r29)
+    move.q  r2, r20
+    move.q  r3, r20
+    move.q  r4, r0
+    move.q  r5, r0
+    syscall #SYS_REPLY_MSG
+    load.q  r29, (sp)
+    bra     .dos_main_loop
+
+.dos_resident_find_by_command:
+    ; In: R1=resolved command name. Out: R3=1, R1=image, R2=size on hit.
+    ; The fixed RCLI/RSIV record shape encodes command rows with
+    ; IOSM_KIND_COMMAND, module_class=0, resident bit set, and bit 2 for
+    ; a non-registry resident provider.
+    beqz    r1, .drfbc_miss
+    move.q  r11, r0
+    add     r11, r11, #4096
+    blt     r1, r11, .drfbc_miss
+    push    r23
+    jsr     .dos_resident_cache_find_match
+    beqz    r3, .drfbc_miss_pop
+    pop     r23
+    load.q  r2, DOS_RCMD_CACHE_SIZE(r1)
+    load.q  r1, DOS_RCMD_CACHE_IMAGE(r1)
+    move.q  r3, r0
+    add     r3, r3, #1
+    rts
+.drfbc_miss_pop:
+    pop     r23
+.drfbc_miss:
+    move.q  r1, r0
+    move.q  r2, r0
+    move.q  r3, r0
+    rts
+
+.dos_resident_cache_find_match:
+    move.q  r26, r1
+    add     r14, r29, #(prog_doslib_resident_cmd_cache - prog_doslib_data)
+    move.q  r15, r0
+.drcfm_loop:
+    move.q  r11, r0
+    add     r11, r11, #DOS_RCMD_CACHE_MAX
+    bge     r15, r11, .drcfm_notfound
+    load.b  r11, DOS_RCMD_CACHE_NAME(r14)
+    beqz    r11, .drcfm_next
+    move.q  r1, r26
+    add     r2, r14, #DOS_RCMD_CACHE_PATH
+    jsr     .dos_name_eq_ci32
+    beqz    r23, .drcfm_found
+.drcfm_next:
+    add     r14, r14, #DOS_RCMD_CACHE_ROW_SZ
+    add     r15, r15, #1
+    bra     .drcfm_loop
+.drcfm_found:
+    move.q  r1, r14
+    move.l  r3, #1
+    rts
+.drcfm_notfound:
+    move.q  r1, r0
+    move.q  r3, r0
+    rts
+
+.dos_resident_cache_find_free_or_match:
+    move.q  r26, r1
+    move.q  r16, r0
+    add     r14, r29, #(prog_doslib_resident_cmd_cache - prog_doslib_data)
+    move.q  r15, r0
+.drcffom_loop:
+    move.q  r11, r0
+    add     r11, r11, #DOS_RCMD_CACHE_MAX
+    bge     r15, r11, .drcffom_done
+    load.b  r11, DOS_RCMD_CACHE_NAME(r14)
+    beqz    r11, .drcffom_free
+    move.q  r1, r26
+    add     r2, r14, #DOS_RCMD_CACHE_PATH
+    jsr     .dos_name_eq_ci32
+    beqz    r23, .drcffom_found
+    bra     .drcffom_next
+.drcffom_free:
+    bnez    r16, .drcffom_next
+    move.q  r16, r14
+.drcffom_next:
+    add     r14, r14, #DOS_RCMD_CACHE_ROW_SZ
+    add     r15, r15, #1
+    bra     .drcffom_loop
+.drcffom_done:
+    beqz    r16, .drcffom_full
+    move.q  r1, r16
+    move.l  r3, #1
+    rts
+.drcffom_found:
+    move.q  r1, r14
+    move.l  r3, #1
+    rts
+.drcffom_full:
+    move.q  r1, r0
+    move.q  r3, r0
+    rts
+
+.dos_resident_cache_free_row:
+    move.q  r14, r1
+    load.q  r1, DOS_RCMD_CACHE_IMAGE(r14)
+    beqz    r1, .drcfr_clear
+    load.q  r2, DOS_RCMD_CACHE_SIZE(r14)
+    push    r14
+    push    r29
+    syscall #SYS_FREE_MEM
+    pop     r29
+    pop     r14
+.drcfr_clear:
+    store.b r0, DOS_RCMD_CACHE_NAME(r14)
+    store.b r0, DOS_RCMD_CACHE_PATH(r14)
+    store.q r0, DOS_RCMD_CACHE_IMAGE(r14)
+    store.q r0, DOS_RCMD_CACHE_SIZE(r14)
+    rts
+
+.dos_resident_cache_copy_32:
+    move.q  r3, r0
+    move.q  r4, r0
+.drcc32_loop:
+    move.q  r5, r0
+    add     r5, r5, #32
+    bge     r3, r5, .drcc32_done
+    bnez    r4, .drcc32_zero
+    add     r6, r1, r3
+    load.b  r7, (r6)
+    store.b r7, (r2)
+    bnez    r7, .drcc32_next
+    move.l  r4, #1
+    bra     .drcc32_next
+.drcc32_zero:
+    store.b r0, (r2)
+.drcc32_next:
+    add     r2, r2, #1
+    add     r3, r3, #1
+    bra     .drcc32_loop
+.drcc32_done:
+    rts
+
+.dos_resident_cache_copy_iosm:
+    move.q  r3, r0
+    add     r3, r3, #(IOSM_SIZE / 8)
+.drcciosm_loop:
+    load.q  r4, (r1)
+    store.q r4, (r2)
+    add     r1, r1, #8
+    add     r2, r2, #8
+    sub     r3, r3, #1
+    bnez    r3, .drcciosm_loop
+    rts
 
     ; =================================================================
     ; Shared reply blocks (saves code space by consolidating duplicates)
@@ -8079,6 +8582,10 @@ include "../assets/elfseg_fixture.s"
 prog_doslib_pmp_desc_dst:
     ds.b    IOSM_SIZE
 
+    align   8
+prog_doslib_resident_cmd_cache:
+    ds.b    (DOS_RCMD_CACHE_ROW_SZ * DOS_RCMD_CACHE_MAX)
+
 ; ---------------------------------------------------------------------------
 ; SHELL — interactive command shell (M10)
 ; ---------------------------------------------------------------------------
@@ -8109,7 +8616,7 @@ prog_doslib_iosm:
     dc.l    IOSM_SCHEMA_VERSION
     dc.b    IOSM_KIND_LIBRARY
     dc.b    0
-    dc.w    15
+    dc.w    16
     dc.w    0
     dc.w    0
     dc.b    "dos.library", 0

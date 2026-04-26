@@ -32,7 +32,7 @@ type m161RuntimeELFManifest struct {
 
 func m161RuntimeELFManifests() []m161RuntimeELFManifest {
 	return []m161RuntimeELFManifest{
-		{path: "sdk/intuitionos/iexec/boot_dos_library.elf", label: "prog_doslib", name: "dos.library", kind: 1, version: 15, sourceBacked: true, flags: 6, compatPort: true},
+		{path: "sdk/intuitionos/iexec/boot_dos_library.elf", label: "prog_doslib", name: "dos.library", kind: 1, version: 16, sourceBacked: true, flags: 6, compatPort: true},
 		{path: "sdk/intuitionos/iexec/boot_console_handler.elf", label: "prog_console", name: "console.handler", kind: 3, version: 1, patch: 1, flags: 6, compatPort: true},
 		{path: "sdk/intuitionos/iexec/boot_shell.elf", label: "prog_shell", name: "Shell", kind: 3, version: 1, patch: 1, flags: 6, compatPort: true},
 		{path: "sdk/intuitionos/iexec/boot_hardware_resource.elf", label: "prog_hwres", name: "hardware.resource", kind: 4, version: 1, patch: 1, flags: 6, compatPort: true},
@@ -44,7 +44,7 @@ func m161RuntimeELFManifests() []m161RuntimeELFManifest {
 		{path: "sdk/intuitionos/iexec/cmd_dir.elf", label: "prog_dir", name: "Dir", kind: 5, version: 1, patch: 1, flags: 4},
 		{path: "sdk/intuitionos/iexec/cmd_type.elf", label: "prog_type", name: "Type", kind: 5, version: 1, patch: 1, flags: 4},
 		{path: "sdk/intuitionos/iexec/cmd_echo.elf", label: "prog_echo_cmd", name: "Echo", kind: 5, version: 1, patch: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_resident.elf", label: "prog_resident_cmd", name: "Resident", kind: 5, version: 1, revision: 1, patch: 0, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_resident.elf", label: "prog_resident_cmd", name: "Resident", kind: 5, version: 1, revision: 2, patch: 0, flags: 4},
 		{path: "sdk/intuitionos/iexec/cmd_assign.elf", label: "prog_assign_cmd", name: "Assign", kind: 5, version: 1, patch: 1, flags: 4},
 		{path: "sdk/intuitionos/iexec/cmd_list.elf", label: "prog_list_cmd", name: "List", kind: 5, version: 1, patch: 1, flags: 4},
 		{path: "sdk/intuitionos/iexec/cmd_which.elf", label: "prog_which_cmd", name: "Which", kind: 5, version: 1, patch: 1, flags: 4},

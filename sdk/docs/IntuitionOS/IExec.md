@@ -1635,3 +1635,15 @@ Test coverage:
 - `TestIExec_M141_Phase5_ShellUnknownRegression`
 - `TestIExec_M141_Phase5_GfxDemoRegression`
 - `TestIExec_M141_Phase5_AboutRegression`
+
+## M16.4.3 Universal Userland Residency
+
+M16.4.3 introduces Universal Userland Residency. Protected libraries,
+handlers, devices, and resources remain exec registry rows mutated through
+`SYS_SET_RESIDENT`; command residency is owned by dos.library as a resident
+command cache.
+
+The DOS resident command cache is controlled by `DOS_RESIDENT_ADD`,
+`DOS_RESIDENT_REMOVE`, and `DOS_RESIDENT_LIST`. Cached command entries store
+validated IOSM metadata and private executable bytes; every launch still uses
+the normal ELF loader path with ASLR and W^X task mappings.

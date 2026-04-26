@@ -689,7 +689,7 @@ prog_version_code:
 prog_version_code_end:
 
 prog_version_data:
-    ; Source-level OS version marker for M16.1 audits: IntuitionOS 1.16.6 / exec.library 1.16.6
+    ; Source-level OS version marker for M16.1 audits: IntuitionOS 1.16.7 / exec.library 1.16.7
 prog_version_name_console:
     dc.b    "console.handler", 0
     ds.b    16

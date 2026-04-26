@@ -1,3 +1,4 @@
-IntuitionOS 1.16.6 help
+IntuitionOS 1.16.7 help
 Commands: VERSION AVAIL DIR TYPE ECHO ASSIGN LIST WHICH HELP
 Assigns: RAM: C: L: LIBS: DEVS: T: S: RESOURCES:
+Universal Userland Residency: Resident uses the dos.library resident command cache via DOS_RESIDENT_ADD, DOS_RESIDENT_REMOVE, and DOS_RESIDENT_LIST.

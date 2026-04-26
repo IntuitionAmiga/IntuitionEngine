@@ -1,6 +1,9 @@
 ; ---------------------------------------------------------------------------
-; RESIDENT — list resident inventory or toggle MODF_RESIDENT on a library row
+; RESIDENT — list resident inventory or toggle universal userland residency.
 ; Usage: Resident [<name> ADD|REMOVE]
+; M16.4.3 command residency is DOS-owned through #DOS_RESIDENT_ADD,
+; #DOS_RESIDENT_REMOVE, and #DOS_RESIDENT_LIST; protected service rows keep
+; using SYS_SET_RESIDENT.
 ; ---------------------------------------------------------------------------
 
 prog_resident_cmd:
@@ -113,9 +116,18 @@ prog_resident_cmd_code:
     add     r20, r20, #6
     jsr     .resident_require_eol
     bnez    r21, .resident_usage
+    load.q  r29, (sp)
+    load.q  r1, 32(r29)
+    jsr     .resident_name_is_all
+    bnez    r1, .resident_all_remove_unsupported
 
 .resident_do_remove:
     move.q  r2, r0
+    load.q  r29, (sp)
+    store.l r2, 80(r29)                ; resident mutation direction
+    load.q  r1, 32(r29)
+    jsr     .resident_name_has_dot
+    beqz    r1, .resident_do_dos_remove
     bra     .resident_do_call
 .resident_do_add:
     move.l  r2, #1
@@ -123,7 +135,7 @@ prog_resident_cmd_code:
     store.l r2, 80(r29)                ; resident mutation direction
     load.q  r1, 32(r29)
     jsr     .resident_name_has_dot
-    beqz    r1, .resident_do_call
+    beqz    r1, .resident_do_dos_add
     jsr     .resident_autoload_library
 .resident_do_call:
     load.q  r29, (sp)
@@ -218,7 +230,7 @@ prog_resident_cmd_code:
     load.q  r25, 40(r29)
     load.l  r26, 64(r29)
     load.l  r27, 72(r29)
-    bge     r27, r26, .resident_exit
+    bge     r27, r26, .resident_list_dos
     move.q  r20, r27
     lsl     r20, r20, #6
     add     r20, r20, #32
@@ -232,6 +244,54 @@ prog_resident_cmd_code:
     add     r27, r27, #1
     store.l r27, 72(r29)
     bra     .resident_list_loop
+
+.resident_list_dos:
+    load.q  r29, (sp)
+    add     r1, r29, #(resident_dos_name - prog_resident_cmd_data)
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    bnez    r2, .resident_exit
+    store.q r1, 120(r29)               ; dos.library port
+    load.q  r1, 120(r29)
+    move.l  r2, #DOS_RESIDENT_LIST
+    move.q  r3, r0
+    move.q  r4, r0
+    load.q  r5, 24(r29)
+    load.q  r6, 48(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    bnez    r2, .resident_exit
+    load.q  r1, 24(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r3, .resident_exit
+    bnez    r4, .resident_exit
+    load.q  r25, 40(r29)
+    load.l  r26, 0(r25)
+    move.l  r27, #DOS_RCLI_MAGIC
+    bne     r26, r27, .resident_exit
+    load.l  r26, 12(r25)
+    store.l r26, 64(r29)
+    store.l r0, 72(r29)
+.resident_list_dos_loop:
+    load.q  r29, (sp)
+    load.q  r25, 40(r29)
+    load.l  r26, 64(r29)
+    load.l  r27, 72(r29)
+    bge     r27, r26, .resident_exit
+    move.q  r20, r27
+    lsl     r20, r20, #6
+    add     r20, r20, #DOS_RCLI_HDR_SIZE
+    add     r20, r25, r20
+    jsr     .resident_send_string
+    load.q  r29, (sp)
+    add     r20, r29, #(resident_msg_crlf - prog_resident_cmd_data)
+    jsr     .resident_send_string
+    load.q  r29, (sp)
+    load.l  r27, 72(r29)
+    add     r27, r27, #1
+    store.l r27, 72(r29)
+    bra     .resident_list_dos_loop
 .resident_inventory_err:
     load.q  r29, (sp)
     add     r20, r29, #(resident_msg_inventory_err - prog_resident_cmd_data)
@@ -244,6 +304,12 @@ prog_resident_cmd_code:
     jsr     .resident_send_string
 
 .resident_exit:
+    load.q  r29, (sp)
+    load.q  r1, 40(r29)
+    beqz    r1, .resident_exit_now
+    move.l  r2, #4096
+    syscall #SYS_FREE_MEM
+.resident_exit_now:
     move.q  r1, r0
     syscall #SYS_EXIT_TASK
 
@@ -267,6 +333,73 @@ prog_resident_cmd_code:
     load.b  r21, (r20)
     beqz    r21, .resident_list
     bra     .resident_after_all_check
+
+.resident_all_remove_unsupported:
+    load.q  r29, (sp)
+    add     r20, r29, #(resident_msg_all_remove_unsupported - prog_resident_cmd_data)
+    jsr     .resident_send_string
+    bra     .resident_exit
+
+.resident_do_dos_add:
+    move.l  r2, #DOS_RESIDENT_ADD
+    bra     .resident_do_dos_mutation
+.resident_do_dos_remove:
+    move.l  r2, #DOS_RESIDENT_REMOVE
+.resident_do_dos_mutation:
+    load.q  r29, (sp)
+    store.l r2, 112(r29)
+    add     r1, r29, #(resident_dos_name - prog_resident_cmd_data)
+    syscall #SYS_FIND_PORT
+    load.q  r29, (sp)
+    bnez    r2, .resident_not_found
+    store.q r1, 120(r29)
+    move.q  r1, r0
+    move.q  r2, r0
+    syscall #SYS_CREATE_PORT
+    load.q  r29, (sp)
+    bnez    r2, .resident_not_found
+    store.q r1, 24(r29)
+    move.l  r1, #4096
+    move.l  r2, #0x10001               ; MEMF_PUBLIC | MEMF_CLEAR
+    syscall #SYS_ALLOC_MEM
+    load.q  r29, (sp)
+    bnez    r2, .resident_not_found
+    store.q r1, 40(r29)
+    store.q r3, 48(r29)
+    load.q  r20, 32(r29)
+    load.q  r21, 40(r29)
+    move.l  r22, #0
+.resident_dos_copy_name:
+    move.l  r23, #DOS_RCMD_NAME_MAX
+    sub     r23, r23, #1
+    bge     r22, r23, .resident_usage
+    load.b  r24, (r20)
+    store.b r24, (r21)
+    beqz    r24, .resident_dos_send
+    add     r20, r20, #1
+    add     r21, r21, #1
+    add     r22, r22, #1
+    bra     .resident_dos_copy_name
+.resident_dos_send:
+    load.q  r1, 120(r29)
+    load.l  r2, 112(r29)
+    move.q  r3, r0
+    move.q  r4, r0
+    load.q  r5, 24(r29)
+    load.q  r6, 48(r29)
+    syscall #SYS_PUT_MSG
+    load.q  r29, (sp)
+    bnez    r2, .resident_not_found
+    load.q  r1, 24(r29)
+    syscall #SYS_WAIT_PORT
+    load.q  r29, (sp)
+    bnez    r3, .resident_not_found
+    load.q  r25, 40(r29)
+    load.l  r2, DOS_RCMD_RC_OFF(r25)
+    beqz    r2, .resident_mutation_ok
+    move.l  r23, #ERR_NOTFOUND
+    beq     r2, r23, .resident_not_found
+    bra     .resident_unsupported
 
 .resident_name_is_all:
     load.b  r21, (r1)
@@ -421,6 +554,9 @@ resident_console_name:
 resident_exec_name:
     dc.b    "exec.library", 0
     align   8
+resident_dos_name:
+    dc.b    "dos.library", 0
+    align   8
 resident_msg_usage:
     dc.b    "Resident usage: Resident [<name> ADD|REMOVE]", 0x0D, 0x0A, 0
     align   8
@@ -439,6 +575,9 @@ resident_msg_not_found:
 resident_msg_unsupported:
     dc.b    "Resident: unsupported target", 0x0D, 0x0A, 0
     align   8
+resident_msg_all_remove_unsupported:
+    dc.b    "Resident: all remove unsupported", 0x0D, 0x0A, 0
+    align   8
 resident_msg_inventory_err:
     dc.b    "Resident: inventory unavailable", 0x0D, 0x0A, 0
     align   8
@@ -448,7 +587,7 @@ prog_resident_cmd_iosm:
     dc.b    IOSM_KIND_COMMAND
     dc.b    0
     dc.w    1
-    dc.w    1
+    dc.w    2
     dc.w    0
     dc.b    "Resident", 0
     ds.b    IOSM_NAME_SIZE - 10

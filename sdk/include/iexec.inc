@@ -9,7 +9,7 @@
 
 IOS_VERSION_MAJOR  equ 1
 IOS_VERSION_MINOR  equ 16
-IOS_VERSION_PATCH  equ 6
+IOS_VERSION_PATCH  equ 7
 
 ; ===========================================================================
 ; Current module manifest note ABI (M16.1 universal IOSM note)
@@ -975,6 +975,18 @@ DOS_PMP_PATH_OFF      equ 0
 DOS_PMP_PATH_MAX      equ 260
 DOS_PMP_IOSM_OFF      equ 272
 DOS_PMP_RC_OFF        equ 400
+DOS_RESIDENT_ADD    equ 0x321
+DOS_RESIDENT_REMOVE equ 0x322
+DOS_RESIDENT_LIST   equ 0x323
+DOS_RCMD_NAME_OFF   equ 0
+DOS_RCMD_NAME_MAX   equ 260
+DOS_RCMD_RC_OFF     equ 260
+DOS_RCMD_IOSM_OFF   equ 272
+DOS_RCLI_MAGIC      equ 0x494C4352
+DOS_RCLI_VERSION    equ 1
+DOS_RCLI_HDR_SIZE   equ 32
+DOS_RCLI_REC_SIZE   equ 64
+DOS_RCLI_FLAG_TRUNCATED equ 0x00000001
 
 ; DOS_ASSIGN sub-ops (data0)
 DOS_ASSIGN_LIST          equ 0    ; reply.data0 = row count, share = rows[name[16],target[16]]

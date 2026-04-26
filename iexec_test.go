@@ -12970,7 +12970,7 @@ func TestIExec_M16_LibraryTemplateBoilerplateIsShared(t *testing.T) {
 		{
 			path: "sdk/intuitionos/iexec/lib/dos_library.s",
 			want: []string{
-				`.libmanifest name="dos.library", version=15, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0`,
+				`.libmanifest name="dos.library", version=16, revision=0, type=1, flags=MODF_COMPAT_PORT|MODF_ASLR_CAPABLE, msg_abi=0`,
 			},
 		},
 	} {

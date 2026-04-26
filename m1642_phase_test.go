@@ -39,7 +39,7 @@ type m1642InventoryRecord struct {
 func TestIExec_M1642_ABIConstantsAndVersionBump(t *testing.T) {
 	vals := parseIncConstants(t, filepath.Join("sdk", "include", "iexec.inc"))
 	want := map[string]uint32{
-		"IOS_VERSION_PATCH":                6,
+		"IOS_VERSION_PATCH":                7,
 		"EXEC_MSG_LIST_RESIDENT_INVENTORY": execMsgListResidentInventory,
 		"RSIV_MAGIC":                       rsivMagic,
 		"RSIV_VERSION":                     rsivVersion,
@@ -162,7 +162,7 @@ func TestIExec_M1642_ResidentCommandSurfaceWiredToInventoryIPC(t *testing.T) {
 		"Resident: not found",
 		"Resident: unsupported target",
 		"Resident usage: Resident [<name> ADD|REMOVE]",
-		"dc.w    1\n    dc.w    1\n    dc.w    0",
+		"dc.w    1\n    dc.w    2\n    dc.w    0",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("Resident command source missing %q", want)
@@ -243,8 +243,8 @@ func TestIExec_M1642_ShellResidentCommandListsInventoryAndShowsUsage(t *testing.
 	if !strings.Contains(output, "Resident: added") {
 		t.Fatalf("Resident ADD did not print status output=%q", output[:min(len(output), 500)])
 	}
-	if !strings.Contains(output, "Resident: unsupported target") {
-		t.Fatalf("Resident command-file ADD did not print unsupported target output=%q", output[:min(len(output), 500)])
+	if strings.Count(output, "Resident: added") < 2 {
+		t.Fatalf("Resident protected row and command ADD did not both print added output=%q", output[:min(len(output), 500)])
 	}
 	if !strings.Contains(output, "dos.library") || !strings.Contains(output, "intuition.library") {
 		t.Fatalf("Resident did not list resident inventory output=%q", output[:min(len(output), 500)])
