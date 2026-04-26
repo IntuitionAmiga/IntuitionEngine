@@ -6106,6 +6106,100 @@ kern_write_resident_list_maybe_row:
 .kwrlmr_done:
     rts
 
+; In: R1=destination backing VA. Writes an M16.4.2 RSIV resident inventory page.
+; Out: R1=emitted record_count, R2=bytes_used.
+kern_write_resident_inventory:
+    move.q  r30, r1                     ; destination page
+    move.l  r20, #0
+.kwri_clear:
+    move.l  r11, #4096
+    bge     r20, r11, .kwri_header
+    add     r21, r30, r20
+    store.q r0, (r21)
+    add     r20, r20, #8
+    bra     .kwri_clear
+.kwri_header:
+    move.l  r11, #RSIV_MAGIC
+    store.l r11, (r30)
+    move.l  r11, #RSIV_VERSION
+    store.w r11, 4(r30)
+    move.l  r11, #RSIV_HEADER_SIZE
+    store.w r11, 6(r30)
+    move.l  r11, #RSIV_RECORD_SIZE
+    store.w r11, 8(r30)
+    move.l  r26, #0                     ; emitted count
+    move.l  r27, #0                     ; header flags
+    move.l  r12, #KERN_DATA_BASE
+    add     r12, r12, #KD_MODULE_TABLE
+    move.l  r13, #0
+.kwri_loop:
+    move.l  r11, #KD_MODULE_MAX
+    bge     r13, r11, .kwri_done
+    move.l  r14, #KD_MODULE_ROW_STRIDE
+    mulu    r14, r13, r14
+    add     r15, r12, r14
+    jsr     kern_write_resident_inventory_maybe_row
+    add     r13, r13, #1
+    bra     .kwri_loop
+.kwri_done:
+    store.l r26, 12(r30)
+    move.q  r2, r26
+    lsl     r2, r2, #6
+    add     r2, r2, #RSIV_HEADER_SIZE
+    store.l r2, 16(r30)
+    store.l r27, 20(r30)
+    move.q  r1, r26
+    rts
+
+kern_write_resident_inventory_maybe_row:
+    load.l  r16, KD_MODULE_STATE(r15)
+    move.l  r11, #M16_MODSTATE_UNLOADED
+    beq     r16, r11, .kwrimr_done
+    load.l  r17, KD_MODULE_FLAGS(r15)
+    move.q  r18, r17
+    and     r18, r18, #MODF_RESIDENT
+    beqz    r18, .kwrimr_done
+    move.l  r11, #63
+    blt     r26, r11, .kwrimr_emit
+    or      r27, r27, #RSIV_FLAG_TRUNCATED
+    bra     .kwrimr_done
+.kwrimr_emit:
+    move.q  r20, r26
+    lsl     r20, r20, #6
+    add     r20, r20, #RSIV_HEADER_SIZE
+    add     r20, r30, r20
+    add     r21, r15, #KD_MODULE_NAME
+    move.l  r22, #0
+.kwrimr_copy_name:
+    move.l  r11, #32
+    bge     r22, r11, .kwrimr_fields
+    add     r23, r21, r22
+    load.b  r24, (r23)
+    add     r25, r20, r22
+    store.b r24, (r25)
+    add     r22, r22, #1
+    bra     .kwrimr_copy_name
+.kwrimr_fields:
+    load.l  r18, KD_MODULE_CLASS(r15)
+    store.b r18, 32(r20)                ; iosm_kind currently mirrors module class
+    store.b r18, 33(r20)                ; module_class
+    store.b r16, 34(r20)                ; state
+    move.l  r19, #3                     ; resident + protected registry row
+    store.b r19, 35(r20)
+    load.w  r19, KD_MODULE_VERSION(r15)
+    store.w r19, 36(r20)
+    load.w  r19, KD_MODULE_REVISION(r15)
+    store.w r19, 38(r20)
+    store.w r0, 40(r20)                 ; patch is not tracked in registry rows yet
+    store.l r17, 44(r20)
+    load.l  r19, KD_MODULE_OPEN_COUNT(r15)
+    store.l r19, 48(r20)
+    load.l  r19, KD_MODULE_GENERATION(r15)
+    store.l r19, 52(r20)
+    add     r26, r26, #1
+.kwrimr_done:
+    rts
+
 ; ============================================================================
 ; M12.6 Phase C: port overflow chain helpers
 ; ============================================================================
@@ -7886,6 +7980,8 @@ endif
     beq     r2, r11, .putmsg_exec_open_resource
     move.l  r11, #EXEC_MSG_CLOSE_RESOURCE
     beq     r2, r11, .putmsg_exec_close_resource
+    move.l  r11, #EXEC_MSG_LIST_RESIDENT_INVENTORY
+    beq     r2, r11, .putmsg_exec_list_resident_inventory
     move.q  r3, #ERR_BADARG
     move.q  r4, r0
     move.q  r1, r5
@@ -7928,6 +8024,40 @@ endif
     move.q  r4, r2
     move.q  r1, r5
     move.l  r2, #MSG_LIST_RESIDENTS
+    move.q  r5, r0
+    bra     .do_reply_msg
+.putmsg_exec_list_resident_inventory:
+    move.q  r20, r2
+    move.q  r23, r5
+    move.q  r1, r6
+    move.l  r2, #1
+    push    r20
+    push    r23
+    jsr     kern_share_backing_for_handle
+    move.q  r21, r1
+    move.q  r22, r2
+    pop     r23
+    pop     r20
+    bnez    r22, .putmsg_exec_inventory_reply_err
+    move.q  r1, r21
+    push    r20
+    push    r23
+    jsr     kern_write_resident_inventory ; R1=count R2=bytes_used
+    pop     r23
+    pop     r20
+    move.q  r3, r1
+    move.q  r4, #ERR_OK
+    move.q  r1, r23
+    move.q  r2, r20
+    or      r2, r2, #EXEC_REPLY_FLAG
+    move.q  r5, r0
+    bra     .do_reply_msg
+.putmsg_exec_inventory_reply_err:
+    move.q  r3, r0
+    move.q  r4, r22
+    move.q  r1, r23
+    move.q  r2, r20
+    or      r2, r2, #EXEC_REPLY_FLAG
     move.q  r5, r0
     bra     .do_reply_msg
 .putmsg_exec_attach_handler:
@@ -9753,12 +9883,12 @@ endif
     push    r24
     jsr     m16_module_find_row_by_name
     pop     r24
-    beqz    r1, .m16sr_badarg
+    beqz    r1, .m16sr_notfound
     move.q  r21, r1
     move.q  r22, r2
     load.l  r23, KD_MODULE_CLASS(r21)
     move.l  r11, #1
-    bne     r23, r11, .m16sr_badarg
+    bne     r23, r11, .m16sr_unsupported
     load.l  r23, KD_MODULE_STATE(r21)
     move.l  r11, #M16_MODSTATE_UNLOADED
     beq     r23, r11, .m16sr_badarg
@@ -9781,7 +9911,7 @@ endif
     load.l  r12, KD_DOSLIB_PUBID(r11)
     beqz    r12, .m16sr_remove_mutate
     load.l  r11, KD_MODULE_OWNING_TASK(r21)
-    beq     r11, r12, .m16sr_badarg
+    beq     r11, r12, .m16sr_unsupported
 .m16sr_remove_mutate:
     load.l  r11, KD_MODULE_FLAGS(r21)
     and     r11, r11, #0xFFFFFFFE
@@ -9813,6 +9943,12 @@ endif
     eret
 .m16sr_badarg:
     move.q  r2, #ERR_BADARG
+    eret
+.m16sr_notfound:
+    move.q  r2, #ERR_NOTFOUND
+    eret
+.m16sr_unsupported:
+    move.q  r2, #ERR_UNSUPPORTED
     eret
 
 ; SYS_M16_EXPUNGE_RESULT:

@@ -9,7 +9,7 @@
 
 IOS_VERSION_MAJOR  equ 1
 IOS_VERSION_MINOR  equ 16
-IOS_VERSION_PATCH  equ 5
+IOS_VERSION_PATCH  equ 6
 
 ; ===========================================================================
 ; Current module manifest note ABI (M16.1 universal IOSM note)
@@ -937,6 +937,7 @@ EXEC_MSG_OPEN_DEVICE    equ 0x124 ; M16.2.1 non-library acquire via exec.library
 EXEC_MSG_CLOSE_DEVICE   equ 0x125 ; M16.2.1 non-library release via exec.library
 EXEC_MSG_OPEN_RESOURCE  equ 0x126 ; M16.2.1 non-library acquire via exec.library
 EXEC_MSG_CLOSE_RESOURCE equ 0x127 ; M16.2.1 non-library release via exec.library
+EXEC_MSG_LIST_RESIDENT_INVENTORY equ 0x128 ; M16.4.2 resident inventory via exec.library
 EXEC_REPLY_FLAG         equ 0x80000000
 ; M16.2.1 acquire/open requests use PutMsg to the public exec.library port:
 ; R3/R4 are operation arguments, R5 is a required reply port, and R6 is a
@@ -945,6 +946,13 @@ EXEC_REPLY_FLAG         equ 0x80000000
 ;   u8 name[32] (NUL-terminated), u64 reserved2 (=0), u64 reserved3 (=0).
 ; Replies use type = request_opcode | EXEC_REPLY_FLAG, data0 = token or 0,
 ; data1 low 32 bits = ERR_*, and reply share handle = 0.
+
+; M16.4.2 resident inventory response page.
+RSIV_MAGIC              equ 0x56495352
+RSIV_VERSION            equ 1
+RSIV_HEADER_SIZE        equ 32
+RSIV_RECORD_SIZE        equ 64
+RSIV_FLAG_TRUNCATED     equ 0x00000001
 
 ; dos.library protocol opcodes
 DOS_OPEN          equ 1           ; Open file (data0=mode, share=name)

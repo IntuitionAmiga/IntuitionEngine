@@ -211,7 +211,22 @@ prog_about_code:
     bnez    r3, .ab_idcmp
     move.l  r28, #IDCMP_CLOSEWINDOW
     beq     r1, r28, .ab_close
-    bra     .ab_idcmp                  ; ignore other classes for M12 demo
+    move.l  r28, #IDCMP_RAWKEY
+    bne     r1, r28, .ab_idcmp         ; ignore other classes for M12 demo
+
+    ; IDCMP_RAWKEY data0 = (scancode<<8)|modifiers. Depending on host path,
+    ; Esc can arrive as PC set-1 scancode 0x01, terminal ESC byte 0x1B,
+    ; or Amiga rawkey 0x45 depending on the active host frontend mode.
+    move.q  r14, r2
+    lsr     r14, r14, #8
+    and     r14, r14, #0xFF
+    move.l  r28, #0x01
+    beq     r14, r28, .ab_close
+    move.l  r28, #0x1B
+    beq     r14, r28, .ab_close
+    move.l  r28, #0x45
+    beq     r14, r28, .ab_close
+    bra     .ab_idcmp
 
 .ab_close:
     ; Send INTUITION_CLOSE_WINDOW

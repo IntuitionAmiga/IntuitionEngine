@@ -44,7 +44,7 @@ func m161RuntimeELFManifests() []m161RuntimeELFManifest {
 		{path: "sdk/intuitionos/iexec/cmd_dir.elf", label: "prog_dir", name: "Dir", kind: 5, version: 1, patch: 1, flags: 4},
 		{path: "sdk/intuitionos/iexec/cmd_type.elf", label: "prog_type", name: "Type", kind: 5, version: 1, patch: 1, flags: 4},
 		{path: "sdk/intuitionos/iexec/cmd_echo.elf", label: "prog_echo_cmd", name: "Echo", kind: 5, version: 1, patch: 1, flags: 4},
-		{path: "sdk/intuitionos/iexec/cmd_resident.elf", label: "prog_resident_cmd", name: "Resident", kind: 5, version: 1, patch: 1, flags: 4},
+		{path: "sdk/intuitionos/iexec/cmd_resident.elf", label: "prog_resident_cmd", name: "Resident", kind: 5, version: 1, revision: 1, patch: 0, flags: 4},
 		{path: "sdk/intuitionos/iexec/cmd_assign.elf", label: "prog_assign_cmd", name: "Assign", kind: 5, version: 1, patch: 1, flags: 4},
 		{path: "sdk/intuitionos/iexec/cmd_list.elf", label: "prog_list_cmd", name: "List", kind: 5, version: 1, patch: 1, flags: 4},
 		{path: "sdk/intuitionos/iexec/cmd_which.elf", label: "prog_which_cmd", name: "Which", kind: 5, version: 1, patch: 1, flags: 4},

@@ -955,8 +955,13 @@ prog_intui_code:
     move.q  r14, r2
     lsr     r14, r14, #16
     and     r14, r14, #0xFF
-    ; If scancode == 0x01 (Esc): IDCMP_CLOSEWINDOW
+    ; If scancode == 0x01 (PC Esc), 0x1B (terminal Esc), or 0x45
+    ; (Amiga rawkey Esc): IDCMP_CLOSEWINDOW
     move.l  r28, #1
+    beq     r14, r28, .intui_ev_close
+    move.l  r28, #0x1B
+    beq     r14, r28, .intui_ev_close
+    move.l  r28, #0x45
     beq     r14, r28, .intui_ev_close
 
     ; Else IDCMP_RAWKEY: data0 = (scancode<<8)|mods, data1 = seq32
@@ -976,6 +981,7 @@ prog_intui_code:
     bra     .intui_yield
 
 .intui_ev_close:
+.intui_ev_close_retry:
     load.q  r29, (sp)
     load.q  r1, 256(r29)
     move.l  r2, #IDCMP_CLOSEWINDOW
@@ -984,7 +990,11 @@ prog_intui_code:
     move.l  r5, #REPLY_PORT_NONE
     move.q  r6, r0
     syscall #SYS_PUT_MSG
+    bnez    r2, .intui_ev_close_wait
     bra     .intui_yield
+.intui_ev_close_wait:
+    syscall #SYS_YIELD
+    bra     .intui_ev_close_retry
 
 .intui_ev_move:
     ; data1 contains (mx<<48)|(my<<32)|seq
@@ -1046,6 +1056,8 @@ prog_intui_code:
     move.l  r28, #INTUI_WIN_TITLE_H
     bge     r16, r28, .intui_ev_btn_send
     ; Inside close gadget
+.intui_ev_btn_close_retry:
+    load.q  r29, (sp)
     load.q  r1, 256(r29)
     move.l  r2, #IDCMP_CLOSEWINDOW
     move.l  r3, #1
@@ -1053,7 +1065,11 @@ prog_intui_code:
     move.l  r5, #REPLY_PORT_NONE
     move.q  r6, r0
     syscall #SYS_PUT_MSG
+    bnez    r2, .intui_ev_btn_close_wait
     bra     .intui_yield
+.intui_ev_btn_close_wait:
+    syscall #SYS_YIELD
+    bra     .intui_ev_btn_close_retry
 
 .intui_ev_btn_send:
     ; data0 = (buttons<<32)|(state) — keep simple: state = buttons (no edge tracking)

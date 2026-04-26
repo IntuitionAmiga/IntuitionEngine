@@ -456,7 +456,7 @@ func TestIExec_M164_BootRuntimeTasksUseChosenImageBases(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "IntuitionOS 1.16.5") {
+	if !strings.Contains(output, "IntuitionOS 1.16.6") {
 		t.Fatalf("boot did not reach VERSION output: %q", output[:min(len(output), 200)])
 	}
 	code0 := m164StartupCodeBase(t, rig.cpu.memory, 0)

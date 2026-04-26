@@ -181,18 +181,20 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 
 **M16.4.2 Resident command follow-on:**
 
-- `C:Resident` currently exposes only the M16 registry pin/unpin path: `Resident <name> ADD|REMOVE` toggles `MODF_RESIDENT` for existing library rows and exits silently on success.
-- M16.4.2 should make the command surface feel closer to AmigaOS: no-argument listing, visible ADD/REMOVE status, and clear diagnostics for unsupported or missing targets.
-- The follow-on must preserve the IntuitionOS protected-module model. It should not reintroduce startup-sequence lifecycle hacks, raw cross-task code sharing, or an implicit command-resident cache unless that behavior is explicitly designed for protected tasks.
+- `C:Resident` now has a visible command surface: no arguments lists the exec-owned resident inventory, successful `ADD`/`REMOVE` prints status, missing rows print `not found`, and class/policy rejections print `unsupported target`.
+- The resident inventory is `exec.library` IPC, not a syscall. `EXEC_MSG_LIST_RESIDENT_INVENTORY` (`0x128`) takes a one-page `AllocMem(MEMF_PUBLIC)` share handle, validates it through the backing-page lookup path, and replies with `EXEC_MSG_LIST_RESIDENT_INVENTORY | EXEC_REPLY_FLAG`.
+- The response page uses the `RSIV` v1 layout: a 32-byte header followed by 64-byte records carrying name, IOSM kind, protected-module class, state, resident/protected status bits, version fields, module flags, open count, and generation.
+- `SYS_SET_RESIDENT` remains the narrow registry mutation primitive. It returns `ERR_NOTFOUND` for absent rows, `ERR_UNSUPPORTED` for unsupported class/policy rows, and `ERR_BADARG` for bad pointers, malformed names, unloaded rows, or invalid arguments.
+- M16.4.2 preserves the protected-module model. It does not add command-resident executable caching, startup-sequence lifecycle hacks, raw cross-task code sharing, or a new public syscall slot.
 
 **M16.1 IOSM / VERSION summary:**
 
-- `IOS_VERSION_*` in `sdk/include/iexec.inc` is the single source of truth for the OS-wide version, currently `1.16.5`.
+- `IOS_VERSION_*` in `sdk/include/iexec.inc` is the single source of truth for the OS-wide version, currently `1.16.6`.
 - Every runtime ELF carries a 128-byte `IOS-MOD` / `IOSM` note. M16.1/M16.4 used `.ios.manifest` section metadata; M16.4.1 carries the same descriptor through `PT_NOTE`. The descriptor records module kind, version/revision/patch, public name, flags, message ABI, build date, and fixed copyright.
 - Resident metadata is queried through ports using caller-allocated shared memory. `MSG_GET_IOSM` copies one 128-byte descriptor into the caller's `MEMF_PUBLIC` buffer; servers reject missing handles and wrong page counts.
-- `exec.library` publishes a discoverable `exec.library` port for IOSM and resident-list queries. `MSG_LIST_RESIDENTS` writes a 4 KiB caller buffer containing a count at offset 0 and 32-byte public-port names starting at offset 32.
+- `exec.library` publishes a discoverable `exec.library` port for IOSM and resident-list queries. `MSG_LIST_RESIDENTS` remains public-port enumeration and writes a 4 KiB caller buffer containing a count at offset 0 and 32-byte public-port names starting at offset 32. M16.4.2 adds `EXEC_MSG_LIST_RESIDENT_INVENTORY` for registry-backed resident inventory records.
 - `SYS_GET_SYS_INFO(SYSINFO_PORT_NAME_BY_INDEX)` enumerates public ports without adding a new syscall slot. The kernel validates the caller's 32-byte output buffer and returns a zero task id as the end sentinel.
-- The default `VERSION` command output is canonicalized to `IntuitionOS 1.16.5`, `exec.library 1.16.5 (DATE)`, and the IOSM copyright string.
+- The default `VERSION` command output is canonicalized to `IntuitionOS 1.16.6`, `exec.library 1.16.6 (DATE)`, and the IOSM copyright string.
 - No new syscall slots are introduced for M16.1; the design reuses ports, shared-memory handles, explicit `MAPF_*` permissions, and bounded fixed-size buffers.
 
 **M16.2 protected non-library module runtime:**
@@ -225,6 +227,26 @@ The IE64 addresses a 32 MB physical address space. IExec partitions it as follow
 **Kernel page table**: M15.4 hardens the old broad supervisor identity map into explicit permission classes. Pages 0-383 (`$000000-$17FFFF`) remain supervisor-only and identity-mapped, but not all as `P|R|W|X`. The assembled kernel image below `KERN_PAGE_TABLE` is supervisor `P|R|X`; the kernel page table, kernel data, kernel stack, terminal/low-I/O page `0xF0`, and the currently mapped low VRAM/high-I/O slice remain supervisor `P|R|W` and non-executable. Regions above `$17FFFF` are not mapped by the kernel PT. User pages are only mapped in per-task page tables, not the kernel PT.
 
 **M15.5 MMIO carve-out table**: the current supervisor carve-outs are explicit: page `0xF0` (`$0F0000-$0F0FFF`) for terminal/low-I/O bootstrap text MMIO, the low VRAM/high-I/O slice already mapped by the kernel PT inside `$100000-$17FFFF`, the task page-table window `$800000-$9FFFFF`, and the allocator pool `$1200000-$1FFFFFF` as supervisor `P|R|W`. User tasks reach MMIO only through `SYS_MAP_IO` plus the hardware.resource/bootstrap grant path; there is no broad user MMIO mapping.
+
+### 2.1.1 Planned MAX RAM ABI Migration
+
+The 32 MB layout above is the current M16-era IExec ABI. It is not compatible with the planned MAX RAM appliance profile without an ABI migration.
+
+The MAX RAM profile makes Intuition Engine choose effective guest RAM at boot from usable host memory minus a reserved system margin. IE64 is the only CPU required to address RAM above 4 GiB. IExec must treat that as a kernel/user ABI revision, not as a constants-only update.
+
+Required IExec changes for MAX RAM:
+
+- Discover effective IE64-visible RAM during kernel initialization through the new IE64 `CR_RAM_SIZE_BYTES` control register and boot/system information block.
+- Expose effective physical RAM and allocator availability through an IExec sysinfo query; user programs should use that query rather than reading emulator MMIO directly.
+- Replace the fixed `MMU_NUM_PAGES = 8192` physical-memory model with a value derived from effective RAM and page size.
+- Replace the fixed 64 KiB / 8192-entry user page-table contract with a selected large-address strategy. A multi-level or sparse page-table ABI is preferred for host-scale RAM; a widened flat table must be justified if chosen.
+- Derive allocator pool sizing from effective RAM while excluding kernel, MMIO, device, reserved, and bootstrap ranges.
+- Widen page identifiers anywhere IExec stores PPN/VPN values in 16-bit fields, including region metadata, shared-memory descriptors, grant chains, overflow-chain headers, bootstrap manifests, tests, and generated artifacts.
+- Preserve fault addresses and sysinfo values above 4 GiB without truncating through 32-bit fields.
+- Update `Avail` so it reports effective physical memory and allocator state instead of deriving total memory from fixed `MMU_NUM_PAGES`.
+- Regenerate all affected in-tree IntuitionOS binaries/artifacts when their sources change.
+
+`RAM:` remains a DOS volume concept. MAX RAM expands the physical allocator and virtual-memory model first; `RAM:` capacity changes only if dos.library is explicitly taught to back files from the larger allocator.
 
 ### 2.2 Kernel Memory Layout (Detail)
 
@@ -692,7 +714,7 @@ The honest summary: fixed product limits were removed where practical. Remaining
 |---|---|---|---|---|
 | `MMU_PAGE_SIZE` | `iexec.inc:374` | 4096 | A | MMU page size — part of the page-table format. |
 | `MMU_PAGE_SHIFT` | `iexec.inc:375` | 12 | A | log2 of `MMU_PAGE_SIZE`. |
-| `MMU_NUM_PAGES` | `iexec.inc:376` | 8192 | A | Total physical RAM pages on the IntuitionEngine target. Hardware-bound. |
+| `MMU_NUM_PAGES` | `iexec.inc:376` | 8192 | A | Current M16-era total physical RAM pages on the 32 MB IExec target. The planned MAX RAM ABI migration replaces this fixed value with a value derived from effective IE64 RAM. |
 | `KERN_PAGES` | `iexec.inc:377` | 384 | A | Kernel reserved page range. Bounded by the layout of `KERN_PAGE_TABLE` / `KERN_DATA_BASE` / kernel binary / kernel stack. |
 | `KERN_PAGE_TABLE` | `iexec.inc:190` | 0x07D000 | A | Fixed kernel page-table location, shifted down in M15.6 R1 so the kernel stack can have a dedicated guard page. |
 | `KERN_DATA_BASE` | `iexec.inc:192` | 0x08D000 | A | Fixed kernel data-page base. |
@@ -714,7 +736,7 @@ The honest summary: fixed product limits were removed where practical. Remaining
 | `USER_DYN_BASE` / `USER_DYN_END` | `iexec.inc:419–420` | 0xA00000 / 0x1200000 | A | Dynamic VA range — **M12.6 Phase E security fix**: split from the allocator pool into a disjoint VPN range. Previously the user-dyn window aliased the entire allocator pool (`0xA00000..0x2000000`), which let unprivileged tasks overwrite the supervisor-only pool PTEs that `build_user_pt` copies into every user PT and pivot the kernel chain walkers (running on the user PT) into attacker-controlled memory. The fix gives user-dyn the bottom half (`0xA00000..0x1200000`, 8 MiB, VPN `0xA00..0x11FF`) and the allocator pool the top half (PPN `0x1200..0x1FFF`, 14 MiB). The two ranges are now disjoint at the layout level — see `TestIExec_PortChain_DisjointFromUserDyn`. |
 | `USER_DYN_PAGES` | `iexec.inc:421` | 768 | B | Per-allocation cap for `AllocMem`, not per-task. Documents the largest single chunk a task can ask for. Replaceable. |
 | `ALLOC_POOL_BASE` | `iexec.inc:401` | 0x1200 | A | First allocable physical page — **M12.6 Phase E security fix**: was 0xA00 (split user-dyn and pool into disjoint VPN ranges so user `SYS_ALLOC_MEM` calls cannot ever overwrite the supervisor-only pool PTEs in user PTs). Pool now starts at PPN 0x1200, immediately above the user-dyn VA window which ends at `USER_DYN_END = 0x1200000`. M12.6 Phase D had earlier bumped this from 0x800 to 0xA00 to make room for the doubled `USER_PT_BASE` region. |
-| `ALLOC_POOL_PAGES` | `iexec.inc:402` | 3584 | A | **M12.6 Phase E security fix**: was 5632 (lost 2048 pages = 8 MiB to the user-dyn VA window so user-dyn and the allocator pool are now disjoint at the layout level). Pool spans pages `0x1200..0x1FFF` = 14 MiB. Bounded by `MMU_NUM_PAGES − ALLOC_POOL_BASE`. M12.6 Phase D had earlier shrunk this from 6144 to 5632 for the user PT region. |
+| `ALLOC_POOL_PAGES` | `iexec.inc:402` | 3584 | A | **M12.6 Phase E security fix**: was 5632 (lost 2048 pages = 8 MiB to the user-dyn VA window so user-dyn and the allocator pool are now disjoint at the layout level). Pool spans pages `0x1200..0x1FFF` = 14 MiB. Bounded by `MMU_NUM_PAGES - ALLOC_POOL_BASE` in the current 32 MB ABI. MAX RAM must derive this from effective RAM minus reserved ranges. M12.6 Phase D had earlier shrunk this from 6144 to 5632 for the user PT region. |
 | `KD_PAGE_BITMAP` / `KD_PAGE_BITMAP_SZ` | `iexec.inc:416–417` | 6720 / 800 bytes | A | Bitmap size derived from `ALLOC_POOL_PAGES` rounded to whole bytes. Layout-derived, not arbitrary. |
 | `KD_REGION_INLINE_MAX` | `iexec.inc:436` | 8 | A | Number of region rows kept inline per task for fast-path access (M12.5). The actual cap on regions per task is the allocator pool, reached via the overflow chain. |
 | `KD_REGION_TASK_SZ` | `iexec.inc:437` | 128 | A | Inline byte stride per task (8 × 16). With M12.5's overflow chain this is now the inline range size, not a cap on regions per task. |
@@ -762,7 +784,7 @@ The remaining bucket-B rows (`KD_PORT_FIFO_SIZE = 4`, `USER_DYN_PAGES = 768`, `D
 2. **Lower blast radius than `KD_PORT_MAX`.** Region-table walkers are confined to the AllocMem / FreeMem / MapShared / SYS_MAP_IO / task-teardown paths. Port-table walkers reach into every IPC operation, including `FindPort` / `PutMsg` / `GetMsg` / `WaitPort` / `ReplyMsg`, which is wider than M12.5 should touch in one milestone.
 3. **`hardware.resource` itself benefits.** The broker holds at least two MMIO regions (`'CHIP'` + `'VRAM'` PPN ranges) and may add more later. Without this removal, `KD_REGION_MAX = 8` would silently cap how many distinct hardware regions M12.5 can ever broker per task — which would defeat the milestone's own architectural objective.
 
-**5.13.3 What the rule does not say.** "Dynamic where practical" is the discipline, not "no caps anywhere." The audit table documents that `MMU_NUM_PAGES`, `KD_MSG_SIZE`, `PORT_NAME_LEN`, hardware MMIO addresses, page-table format constants, and ABI field widths all stay fixed. Bucket A is large and that is correct — the policy is about removing *arbitrary product-demo ceilings*, not pretending to be a userland scripting language. M12.6 must keep that distinction visible: bucket-C removals should justify themselves against the audit, not become a treadmill.
+**5.13.3 What the rule does not say.** "Dynamic where practical" is the discipline, not "no caps anywhere." For the current 32 MB ABI, the audit table documents that `MMU_NUM_PAGES`, `KD_MSG_SIZE`, `PORT_NAME_LEN`, hardware MMIO addresses, page-table format constants, and ABI field widths all stay fixed. Bucket A is large and that is correct — the policy is about removing *arbitrary product-demo ceilings*, not pretending to be a userland scripting language. The planned MAX RAM profile is different: it is an explicit ABI migration that replaces the fixed `MMU_NUM_PAGES` model rather than a bucket-C cleanup inside the old ABI. M12.6 must keep that distinction visible: bucket-C removals should justify themselves against the audit, not become a treadmill.
 
 ---
 

@@ -6092,7 +6092,8 @@ IExec.library is an Amiga Exec-inspired protected microkernel for the IE64 CPU. 
 
 - **Every rebuilt runtime ELF carries IOS `PT_NOTE` metadata.** The stripped, section-header-free runtime images carry a 128-byte `IOS-MOD` / `IOSM` descriptor that records kind, public name, version/revision/patch, flags, message ABI, build date, and the fixed copyright string.
 - **Resident version queries use existing IPC.** Persistent services answer `MSG_GET_IOSM` through caller-allocated shared memory, and `exec.library` exposes a public port for its own IOSM plus resident public-port enumeration.
-- **`VERSION` no longer reports stale milestone text.** The default command output is `IntuitionOS 1.16.5`, `exec.library 1.16.5 (2026-04-25)`, and `Copyright © 2026 Zayn Otley`.
+- **Resident inventory is explicit IPC.** `C:Resident` lists exec-owned resident inventory through `EXEC_MSG_LIST_RESIDENT_INVENTORY` on the public `exec.library` port, and `ADD`/`REMOVE` now print visible status or diagnostics while preserving `SYS_SET_RESIDENT` as the narrow mutation primitive.
+- **`VERSION` no longer reports stale milestone text.** The default command output is `IntuitionOS 1.16.6`, `exec.library 1.16.6 (2026-04-25)`, and `Copyright © 2026 Zayn Otley`.
 
 **M16.2 protected non-library module status** - handlers, devices, and resources now use the protected-module lifecycle internally without absorbing PIE/ASLR work:
 

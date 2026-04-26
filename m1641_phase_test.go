@@ -305,9 +305,9 @@ func TestIExec_M1641_VersionBumpSourceAudit(t *testing.T) {
 	version := mustReadRepoFile(t, "sdk/intuitionos/iexec/cmd/version.s")
 	help := mustReadRepoFile(t, "sdk/intuitionos/iexec/assets/system/S/Help")
 
-	requireAllSubstrings(t, inc, "IOS_VERSION_PATCH  equ 5")
-	requireAllSubstrings(t, version, "IntuitionOS 1.16.5", "exec.library 1.16.5")
-	requireAllSubstrings(t, help, "IntuitionOS 1.16.5 help")
+	requireAllSubstrings(t, inc, "IOS_VERSION_PATCH  equ 6")
+	requireAllSubstrings(t, version, "IntuitionOS 1.16.6", "exec.library 1.16.6")
+	requireAllSubstrings(t, help, "IntuitionOS 1.16.6 help")
 	requireAllSubstrings(t, iexec, "move.l  r12, #15")
 	requireAllSubstrings(t, doslib,
 		`.libmanifest name="dos.library", version=15, revision=0`,

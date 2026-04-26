@@ -362,7 +362,7 @@ var manifestSpecsByLabel = map[string]libManifestSpec{
 	"prog_dir":          {Name: "Dir", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
 	"prog_type":         {Name: "Type", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
 	"prog_echo_cmd":     {Name: "Echo", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
-	"prog_resident_cmd": {Name: "Resident", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
+	"prog_resident_cmd": {Name: "Resident", Kind: iosmKindCommand, Version: 1, Revision: 1, Patch: 0, Flags: iosmModfASLRCapable},
 	"prog_assign_cmd":   {Name: "Assign", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
 	"prog_list_cmd":     {Name: "List", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
 	"prog_which_cmd":    {Name: "Which", Kind: iosmKindCommand, Version: 1, Revision: 0, Patch: 1, Flags: iosmModfASLRCapable},
