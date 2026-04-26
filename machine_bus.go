@@ -135,6 +135,13 @@ type MachineBus struct {
 	// When strict MMIO windows are configured, accesses inside these ranges
 	// must hit a mapped IO region or fault via *WithFault methods.
 	strictMMIOWindows []AddrRange
+
+	// Single source of truth for guest RAM sizing (PLAN_MAX_RAM.md slice 2).
+	// Populated via SetSizing once ComputeMemorySizing has resolved the
+	// detected/override-driven sizing decision and any AllocateGuestRAM
+	// retry has settled. Sysinfo MMIO and any future guest discovery paths
+	// must read from here so they all report the same final values.
+	sizing MemorySizing
 }
 
 // AddrRange defines an inclusive address range.
@@ -651,6 +658,37 @@ func NewMachineBus() *MachineBus {
 // accesses must fault in *WithFault operations.
 func (bus *MachineBus) SetStrictMMIOWindows(windows []AddrRange) {
 	bus.strictMMIOWindows = append([]AddrRange(nil), windows...)
+}
+
+// SetSizing publishes the resolved guest RAM sizing on this bus. Called once
+// after ComputeMemorySizing and any AllocateGuestRAM retry has settled. All
+// guest discovery paths (sysinfo MMIO, future IE64 CR_RAM_SIZE_BYTES, IExec
+// sysinfo) must read from these accessors so they agree on the final values.
+func (bus *MachineBus) SetSizing(ms MemorySizing) {
+	bus.sizing = ms
+}
+
+// Sizing returns the published guest RAM sizing decision.
+func (bus *MachineBus) Sizing() MemorySizing {
+	return bus.sizing
+}
+
+// TotalGuestRAM returns the resolved backed total guest RAM in bytes.
+func (bus *MachineBus) TotalGuestRAM() uint64 {
+	return bus.sizing.TotalGuestRAM
+}
+
+// ActiveVisibleRAM returns the resolved active CPU/profile visible RAM in
+// bytes. 32-bit, banked, EmuTOS, and AROS profiles must use this value or
+// their documented profile-specific bounds, not the IE64/host-scale total.
+func (bus *MachineBus) ActiveVisibleRAM() uint64 {
+	return bus.sizing.ActiveVisibleRAM
+}
+
+// VisibleCeiling returns the per-CPU/profile visible-RAM ceiling that was
+// active when the sizing was published.
+func (bus *MachineBus) VisibleCeiling() uint64 {
+	return bus.sizing.VisibleCeiling
 }
 
 func (bus *MachineBus) normalizeFaultAddr(addr uint32) uint32 {

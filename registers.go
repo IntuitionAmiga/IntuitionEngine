@@ -244,6 +244,17 @@ const (
 	IRQ_DIAG_STOP_SPINS  = 0xF23D8 // Consecutive STOP iterations without wake (R)
 	IRQ_DIAG_WATCHDOG    = 0xF23DC // Latched watchdog event count (R)
 
+	// System information block (RAM-size discovery)
+	// PLAN_MAX_RAM.md: low-MMIO RAM-size ABI lives in the gap between the
+	// IRQ diagnostics / bootstrap HostFS regions (ending at 0xF23FF) and
+	// Voodoo (starting at 0xF4000).
+	SYSINFO_REGION_BASE   = 0xF2400
+	SYSINFO_REGION_END    = 0xF24FF
+	SYSINFO_TOTAL_RAM_LO  = 0xF2400 // low 32 bits of total guest RAM (bytes, LE)
+	SYSINFO_TOTAL_RAM_HI  = 0xF2404 // high 32 bits of total guest RAM
+	SYSINFO_ACTIVE_RAM_LO = 0xF2408 // low 32 bits of active CPU/profile visible RAM
+	SYSINFO_ACTIVE_RAM_HI = 0xF240C // high 32 bits of active CPU/profile visible RAM
+
 	// Voodoo 3D graphics region
 	VOODOO_REGION_BASE = 0xF4000
 	VOODOO_REGION_END  = 0xF43FF
@@ -368,6 +379,8 @@ func GetIORegion(addr uint32) string {
 		return "ClipboardBridge"
 	case addr >= COPROC_EXT_REGION_BASE && addr <= COPROC_EXT_REGION_END:
 		return "Coprocessor"
+	case addr >= SYSINFO_REGION_BASE && addr <= SYSINFO_REGION_END:
+		return "SysInfo"
 	case addr >= VOODOO_REGION_BASE && addr <= VOODOO_REGION_END:
 		return "Voodoo"
 	default:
