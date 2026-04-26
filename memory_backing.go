@@ -342,6 +342,7 @@ func AllocateGuestRAM(bus *MachineBus, requested MemorySizing, allocator func(si
 			ErrGuestRAMBelowMinimum, final.ActiveVisibleRAM)
 	}
 	bus.SetSizing(final)
+	bus.SetBacking(backing)
 	RegisterSysInfoMMIOFromBus(bus)
 	return backing, final, nil
 }

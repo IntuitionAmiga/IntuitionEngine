@@ -142,6 +142,11 @@ type MachineBus struct {
 	// retry has settled. Sysinfo MMIO and any future guest discovery paths
 	// must read from here so they all report the same final values.
 	sizing MemorySizing
+
+	// IE64 large-address Backing (PLAN_MAX_RAM.md slice 3). Bound by
+	// AllocateGuestRAM after a successful allocation; tests may set it
+	// directly via SetBacking. Routing rules live in machine_bus_phys.go.
+	backing Backing
 }
 
 // AddrRange defines an inclusive address range.
@@ -1842,5 +1847,8 @@ func (bus *MachineBus) Reset() {
 
 	for i := range bus.memory {
 		bus.memory[i] = 0
+	}
+	if bus.backing != nil {
+		bus.backing.Reset()
 	}
 }
