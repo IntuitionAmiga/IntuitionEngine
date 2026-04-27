@@ -74,6 +74,54 @@ func TestEmuTOSLoader_VectorSetup(t *testing.T) {
 	}
 }
 
+func TestEmuTOSLoader_LoadROM_InstallsProfileTopOfRAM(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	loader := NewEmuTOSLoader(bus, cpu, nil)
+	rom := buildTestROM(emutosROM192K, 0x00120000, emutosBase192+0x100)
+
+	if err := loader.LoadROM(rom); err != nil {
+		t.Fatalf("LoadROM failed: %v", err)
+	}
+	if got := cpu.ProfileTopOfRAM(); got != EmuTOS_PROFILE_TOP {
+		t.Fatalf("cpu profile top = 0x%X, want 0x%X (EmuTOS_PROFILE_TOP)",
+			got, EmuTOS_PROFILE_TOP)
+	}
+	if got := cpu.stackUpperBound; got != EmuTOS_PROFILE_TOP {
+		t.Fatalf("stackUpperBound = 0x%X, want 0x%X", got, EmuTOS_PROFILE_TOP)
+	}
+	if loader.profile.Name != "EmuTOS" {
+		t.Fatalf("loader.profile.Name = %q, want EmuTOS", loader.profile.Name)
+	}
+}
+
+func TestEmuTOSLoader_VectorValidityHonoursProfileTop(t *testing.T) {
+	// Even if the loader were wired against a larger architectural ceiling,
+	// vector validity must reject PCs at or above the EmuTOS profile top.
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	loader := NewEmuTOSLoader(bus, cpu, nil)
+	rom := buildTestROM(emutosROM192K, 0x00120000, emutosBase192+0x100)
+	if err := loader.LoadROM(rom); err != nil {
+		t.Fatalf("LoadROM failed: %v", err)
+	}
+	if loader.isValidVector(EmuTOS_PROFILE_TOP) {
+		t.Fatalf("vector at EmuTOS_PROFILE_TOP=0x%X should be rejected", EmuTOS_PROFILE_TOP)
+	}
+	if loader.isValidVector(EmuTOS_PROFILE_TOP + 0x100) {
+		t.Fatalf("vector above EmuTOS_PROFILE_TOP should be rejected")
+	}
+	if !loader.isValidVector(emutosBaseStd) {
+		t.Fatalf("ROM base 0x%X should be a valid vector", emutosBaseStd)
+	}
+	if !loader.isValidVector(0x1000) {
+		t.Fatalf("0x1000 should be a valid RAM vector")
+	}
+	if loader.isValidVector(0) || loader.isValidVector(0xFFFFFFFF) {
+		t.Fatalf("sentinel vectors must be rejected")
+	}
+}
+
 func TestEmuTOSLoader_ROMPageNoIOCollision(t *testing.T) {
 	bus := NewMachineBus()
 	cpu := NewM68KCPU(bus)

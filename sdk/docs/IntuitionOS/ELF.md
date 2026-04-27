@@ -1,5 +1,9 @@
 # IntuitionOS Native ELF Contract (M16.4.1)
 
+## Memory Model (PLAN_MAX_RAM.md)
+
+IE64 ELF images run against the autodetected guest RAM. Total guest RAM is selected at boot from host `/proc/meminfo` minus a per-platform reserve; IE64 sees the full active visible RAM and reports it through `CR_RAM_SIZE_BYTES` and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair (total guest RAM is `SYSINFO_TOTAL_RAM_LO/HI`). Loaders must size the runtime image and userland ASLR placement against active visible RAM, not against the retired fixed 32 MB IExec model. PLAN_MAX_RAM.md slice 4 retired the flat `MMU_NUM_PAGES = 8192` page-count constant; M16.4 ELF segment bounds checks consult the per-task page table installed via `kern_pt_install_leaf` and the multi-level walker rather than a fixed pages-per-task ceiling.
+
 ## Status
 
 This document records the historical transition from M14 to the current

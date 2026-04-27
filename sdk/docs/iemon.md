@@ -166,7 +166,7 @@ Load a raw binary file into memory at the specified address.
 Loaded 4096 bytes at $2000
 ```
 
-File size is capped at 32MB for safety.
+File size is capped for safety; `iemon` rejects files larger than the active visible RAM reported by the bus, ensuring loads cannot exceed the autodetected guest memory window.
 
 ### Memory Tools
 

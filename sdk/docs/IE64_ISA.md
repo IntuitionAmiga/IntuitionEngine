@@ -42,7 +42,7 @@ The IE64 is a 64-bit RISC load-store CPU designed for the Intuition Engine platf
 - **Architecture class**: Load-store (all computation on registers; memory accessed only via LOAD/STORE)
 - **Condition model**: Compare-and-branch (no flags register)
 - **Register file**: 32 general-purpose 64-bit registers (R0 hardwired to zero)
-- **Address space**: 32MB physical, masked via `PC & 0x1FFFFFF`
+- **Address space**: 64-bit physical/virtual (PLAN_MAX_RAM.md slice 3 widened the bus to `uint64`); IE64 sees the full active visible RAM. The legacy 25-bit PC mask was retired in slice 3. Active visible RAM is reported through `CR_RAM_SIZE_BYTES` and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair; total guest RAM is reported through `SYSINFO_TOTAL_RAM_LO/HI`.
 - **Stack**: Full-descending, R31 serves as stack pointer. Hardware enforces 8-byte granularity for PUSH/POP; the IntuitionOS ABI requires 16-byte alignment at call boundaries (see [`IE64_ABI.md`](IE64_ABI.md))
 - **Interrupt model**: Single vector, maskable, with timer support
 
@@ -65,7 +65,7 @@ The IE64 has 32 general-purpose 64-bit registers, addressed by a 5-bit field (0-
 
 **Program Counter (PC)**:
 - 64-bit internal register, not directly addressable.
-- Masked to 25 bits (`PC & 0x1FFFFFF`) before every fetch, limiting the effective address space to 32MB.
+- Full 64-bit PC. The historical 25-bit `PC & 0x1FFFFFF` mask was retired in PLAN_MAX_RAM.md slice 3 along with the rest of the IE64 `uint32` plumbing; the CPU now reaches the full active visible RAM, which may exceed 4 GiB on hosts with sufficient memory.
 - Initialized to `0x1000` (PROG_START) on reset.
 - Advanced by 8 after each non-branch instruction.
 
@@ -736,7 +736,7 @@ Note: For unsigned "greater than or equal" and "less than", use the complementar
 
 ### 8.1 Address Space Overview
 
-The IE64 uses the same memory map as the Intuition Engine platform. The PC is masked to 25 bits (32MB), but the full address space accessible via LOAD/STORE extends to 32-bit addresses for I/O and VRAM access.
+The IE64 uses the same memory map as the Intuition Engine platform. PC and LOAD/STORE addresses are full 64-bit; IE64 reaches the full active visible RAM (which may exceed 4 GiB on hosts with sufficient memory) and reports it via `CR_RAM_SIZE_BYTES` and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair. Total guest RAM is reported through `SYSINFO_TOTAL_RAM_LO/HI`. The historical 25-bit/32 MB mask was retired in PLAN_MAX_RAM.md slice 3.
 
 | Address Range | Size | Description |
 |---------------|------|-------------|
@@ -1250,11 +1250,15 @@ Bit:  24                    12  11                 0
      +-----------------------+---------------------+
 ```
 
-- **VPN** (bits 24:12): Index into the page table. 13 bits = 8192 pages.
-- **Offset** (bits 11:0): Byte offset within the 4 KiB page. Passed through untranslated.
-- Physical address = `(PTE.PPN << 12) | (VA & 0xFFF)`.
+PLAN_MAX_RAM.md slice 4 widened the MMU to 64-bit virtual + 64-bit physical addressing with a 6-level sparse radix page table:
 
-The 25-bit virtual address space covers 32 MB, matching the IE64 physical address space.
+- Top level: 7 bits, 128 entries.
+- Levels 1..5: 9 bits each, 512 entries × 8 bytes per intermediate/leaf table.
+- Total VPN width: 52 bits (top 7 + 5 × 9 = 52); page size remains 4 KiB.
+- PTE format: bits 0..6 are flags (P/R/W/X/U/A/D), bits 7..11 reserved, bits 12..63 are PPN (`PTE_PPN_SHIFT = 12`, `PTE_PPN_BITS = 52`).
+- Page count is no longer a fixed `MMU_NUM_PAGES = 8192`; it derives from active visible RAM (queried via `CR_RAM_SIZE_BYTES` or the SYSINFO MMIO pair).
+
+Historical: prior to slice 4 the IE64 used a single-level 8192-entry flat page table over a 25-bit / 32 MB virtual address space. That format is retired; old IE64/IExec binaries are not supported across the migration.
 
 ### 12.6 MMU Instructions
 

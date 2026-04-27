@@ -690,6 +690,19 @@ func (bus *MachineBus) ActiveVisibleRAM() uint64 {
 	return bus.sizing.ActiveVisibleRAM
 }
 
+// ProfileMemoryCap returns the upper bound a source-owned firmware/runtime
+// profile (EmuTOS, AROS, EhBASIC) must respect on this bus. Prefers the
+// published ActiveVisibleRAM after the autodetect sizing layer has wired
+// SetSizing; falls back to len(memory) for tests and early-boot paths that
+// run before sizing has been published. Avoids forcing every test rig that
+// constructs a NewMachineBus() to hand-roll a SizingOverrides call.
+func (bus *MachineBus) ProfileMemoryCap() uint64 {
+	if bus.sizing.ActiveVisibleRAM != 0 {
+		return bus.sizing.ActiveVisibleRAM
+	}
+	return uint64(len(bus.memory))
+}
+
 // VisibleCeiling returns the per-CPU/profile visible-RAM ceiling that was
 // active when the sizing was published.
 func (bus *MachineBus) VisibleCeiling() uint64 {

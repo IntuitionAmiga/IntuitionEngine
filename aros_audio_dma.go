@@ -17,6 +17,11 @@ type ArosAudioDMA struct {
 	cpu       *M68KCPU
 	memBase   unsafe.Pointer // cached bus memory base for fast byte reads
 
+	profileTop uint32 // AROS profile top-of-RAM; cached at construction so the
+	// per-sample fetch hot path skips a bus accessor call. The Paula DMA
+	// fetch is bounded by this rather than the underlying CPU's full
+	// architectural visible range.
+
 	channels [4]arosAudDMACh
 
 	dmacon uint32 // DMA enable bitmask (bits 0–3)
@@ -39,11 +44,20 @@ type arosAudDMACh struct {
 // NewArosAudioDMA creates a DMA engine wired to the given bus, SoundChip,
 // and M68K CPU. Call MapIO afterwards to register the MMIO handlers.
 func NewArosAudioDMA(bus *MachineBus, sc *SoundChip, cpu *M68KCPU) *ArosAudioDMA {
+	pb := AROSProfileBounds(bus)
+	top := pb.TopOfRAM
+	if top == 0 {
+		// AROSProfileBounds rejected the bus sizing (e.g. test rig with no
+		// sizing wired and tiny memory). Fall back to len(memory) so the DMA
+		// still bounds-checks against something sane rather than zero.
+		top = uint32(len(bus.memory))
+	}
 	return &ArosAudioDMA{
-		bus:       bus,
-		soundChip: sc,
-		cpu:       cpu,
-		memBase:   unsafe.Pointer(&bus.memory[0]),
+		bus:        bus,
+		soundChip:  sc,
+		cpu:        cpu,
+		memBase:    unsafe.Pointer(&bus.memory[0]),
+		profileTop: top,
 	}
 }
 
@@ -89,8 +103,10 @@ func (dma *ArosAudioDMA) TickSample() {
 		}
 
 		// Read sample byte directly from bus memory (big-endian byte order).
+		// Bounded by the AROS profile top, not DEFAULT_MEMORY_SIZE, so future
+		// profile changes do not silently widen Paula DMA.
 		addr := c.ptr + c.pos
-		if addr < DEFAULT_MEMORY_SIZE {
+		if addr < dma.profileTop {
 			sample := *(*byte)(unsafe.Pointer(uintptr(dma.memBase) + uintptr(addr)))
 
 			// Write to flex channel DAC and volume.

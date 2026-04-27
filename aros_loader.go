@@ -31,6 +31,8 @@ type AROSLoader struct {
 	cpu       *M68KCPU
 	videoChip *VideoChip
 
+	profile ProfileBounds // AROS M68K memory-map contract; populated in NewAROSLoader and re-evaluated in LoadROM.
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -46,11 +48,16 @@ type AROSLoader struct {
 }
 
 func NewAROSLoader(bus *MachineBus, cpu *M68KCPU, videoChip *VideoChip) *AROSLoader {
-	return &AROSLoader{
+	l := &AROSLoader{
 		bus:       bus,
 		cpu:       cpu,
 		videoChip: videoChip,
 	}
+	// Populate the profile so vector validity checks work in tests that
+	// construct a loader without calling LoadROM. LoadROM re-evaluates
+	// the bounds against the current bus sizing.
+	l.profile = AROSProfileBounds(bus)
+	return l
 }
 
 // LoadROM loads an AROS ROM image into bus memory with big-endian byte swapping,
@@ -60,10 +67,16 @@ func (l *AROSLoader) LoadROM(data []byte) error {
 		return fmt.Errorf("AROS ROM too small: %d bytes", len(data))
 	}
 
+	pb := AROSProfileBounds(l.bus)
+	if pb.Err != nil {
+		return fmt.Errorf("AROS profile bounds: %w", pb.Err)
+	}
+	l.profile = pb
 	base := uint32(arosROMBase)
 	end := base + uint32(len(data))
-	if end > DEFAULT_MEMORY_SIZE {
-		return fmt.Errorf("AROS ROM range 0x%08X-0x%08X outside memory", base, end-1)
+	if end > pb.TopOfRAM {
+		return fmt.Errorf("AROS ROM range 0x%08X-0x%08X outside AROS profile (top=0x%08X)",
+			base, end-1, pb.TopOfRAM)
 	}
 
 	// Verify ROM pages don't overlap with I/O regions.
@@ -92,8 +105,11 @@ func (l *AROSLoader) LoadROM(data []byte) error {
 
 	// AROS moves SP throughout boot (initial→supervisor→user stacks).
 	// Disable the stack bounds check which is designed for simple programs.
+	// The M68K core also clamps PC-fetch and prefetch to the profile top so
+	// AROS never inherits the architectural 4 GiB visible range by default.
+	l.cpu.SetProfileTopOfRAM(pb.TopOfRAM)
 	l.cpu.stackLowerBound = 0
-	l.cpu.stackUpperBound = DEFAULT_MEMORY_SIZE
+	l.cpu.stackUpperBound = pb.TopOfRAM
 
 	// Enable Amiga INTENA emulation. AROS kernel_cpu.c uses
 	// move.w #$4000/$C000, $DFF09A to disable/enable the interrupt master
@@ -209,33 +225,40 @@ func (l *AROSLoader) refreshIRQArming() {
 	base := l.cpu.VBR
 	if !l.l2Armed {
 		vec2 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL2)*4)
-		l.l2Armed = isValidAROSVector(vec2)
+		l.l2Armed = l.isValidVector(vec2)
 	}
 	if !l.l3Armed {
 		vec3 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL3)*4)
-		l.l3Armed = isValidAROSVector(vec3)
+		l.l3Armed = l.isValidVector(vec3)
 	}
 	if !l.l4Armed {
 		vec4 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL4)*4)
-		l.l4Armed = isValidAROSVector(vec4)
+		l.l4Armed = l.isValidVector(vec4)
 	}
 	if !l.l5Armed {
 		vec5 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL5)*4)
-		l.l5Armed = isValidAROSVector(vec5)
+		l.l5Armed = l.isValidVector(vec5)
 	}
 }
 
-// isValidAROSVector returns true if the given PC value looks like a valid
-// interrupt handler address (not zero, not 0xFFFFFFFF, within bus memory).
-func isValidAROSVector(pc uint32) bool {
+// isValidVector applies the AROS profile bound to a candidate handler PC.
+// Accepts ROM-resident handlers and RAM vectors above the low vector base
+// up to the profile top of RAM. Rejects sentinel zero/all-ones values.
+func (l *AROSLoader) isValidVector(pc uint32) bool {
+	return isValidAROSVectorBound(pc, l.profile.ROMBase, l.profile.LowVecBase, l.profile.TopOfRAM)
+}
+
+// isValidAROSVectorBound applies the explicit AROS profile bounds to a
+// candidate handler PC. Pure helper so tests can sweep boundaries without
+// constructing a full loader.
+func isValidAROSVectorBound(pc, romBase, lowVecBase, topOfRAM uint32) bool {
 	if pc == 0 || pc == 0xFFFFFFFF {
 		return false
 	}
-	// Accept ROM handler addresses and valid RAM vectors.
-	if pc >= arosROMBase && pc < DEFAULT_MEMORY_SIZE {
+	if pc >= romBase && pc < topOfRAM {
 		return true
 	}
-	return pc >= 0x00001000 && pc < DEFAULT_MEMORY_SIZE
+	return pc >= lowVecBase && pc < topOfRAM
 }
 
 // stopTimers stops the timer and vblank goroutines.

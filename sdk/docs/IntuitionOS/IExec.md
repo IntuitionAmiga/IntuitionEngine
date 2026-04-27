@@ -215,7 +215,7 @@ IExec runs on the IE64 CPU core only. It requires the IE64 MMU (4 KiB paged virt
 
 ### 2.1 Address Space Layout
 
-The IE64 addresses a 32 MB physical address space. IExec partitions it as follows:
+The IE64 addresses the autodetected active visible RAM (PLAN_MAX_RAM.md slice 4 widened the IE64 to 64-bit physical/virtual addressing). The supervisor low-memory layout is stable; the upper bound moves with the active visible RAM that the kernel reads from `CR_RAM_SIZE_BYTES` and `SYSINFO_ACTIVE_RAM_LO/HI` at boot. The historical fixed 32 MB partition is documented as a snapshot of the pre-MAX-RAM ABI:
 
 | Region | Address Range | Size | Access | Purpose |
 |--------|---------------|------|--------|---------|

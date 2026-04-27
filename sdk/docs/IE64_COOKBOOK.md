@@ -7,6 +7,8 @@ fixed 8-byte instructions, and compare-and-branch semantics (no flags register).
 Assembly uses 68K-flavored lowercase syntax with `.b`/`.w`/`.l`/`.q` size suffixes
 (default `.q` for 64-bit).
 
+**Memory model (PLAN_MAX_RAM.md):** the IE64 is the platform's large-memory CPU. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve; IE64 sees the full active visible RAM. Examples in this cookbook discover RAM size via the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair (or `CR_RAM_SIZE_BYTES` from supervisor mode); never hardcode `0x2000000` (32 MB) or any other fixed total.
+
 ---
 
 ## Register Conventions

@@ -1,5 +1,9 @@
 # IntuitionOS IE64 ABI v0
 
+## 0. Memory Model (PLAN_MAX_RAM.md)
+
+The IE64 is the platform's large-memory CPU. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve; IE64 sees the full active visible RAM (which may exceed 4 GiB on hosts with sufficient memory). Guest software must not hardcode the RAM size — it discovers IE64 active visible RAM via `CR_RAM_SIZE_BYTES` (read-only control register) and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair. Total guest RAM is read via `SYSINFO_TOTAL_RAM_LO/HI`. Each MMIO pair is a little-endian 64-bit byte value assembled from the low/high 32-bit halves. Old IE64/IExec binaries from before the MAX RAM migration are not supported.
+
 ## 1. Scope and Status
 
 This document defines the application binary interface for IE64 code running

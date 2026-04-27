@@ -1331,6 +1331,10 @@ func main() {
 		progExec.SetCPU(ie64CPU)
 
 		if modeBasic {
+			if err := EnforceEhBASICProfile(sysBus); err != nil {
+				fmt.Printf("Error: EhBASIC profile bounds: %v\n", err)
+				os.Exit(1)
+			}
 			if basicImage != "" {
 				if err := ie64CPU.LoadProgram(basicImage); err != nil {
 					fmt.Printf("Error loading BASIC image %s: %v\n", basicImage, err)

@@ -256,9 +256,20 @@ All include files provide:
 
 The `sdk/include/` directory is the canonical location for all include files.
 
+### Guest RAM Model
+
+Total guest RAM is autodetected from host `/proc/meminfo` minus a per-platform reserve at boot (`memory_sizing.go`). Each CPU/profile sees an active visible RAM bounded by its own ceiling:
+
+- **IE64**: large addressable; sees the full active visible RAM, which may exceed 4 GiB on hosts with sufficient memory. Discovers size via `CR_RAM_SIZE_BYTES` and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair.
+- **IE32 / x86 / M68K**: flat 32-bit guests; visible RAM is bounded by the 32-bit ceiling regardless of total guest RAM.
+- **6502 / Z80**: banked guests; banked window translates against the banked-CPU visible ceiling.
+- **EmuTOS / AROS / EhBASIC**: source-owned profiles (`profile_bounds.go`) declare explicit memory-map contracts independent of the underlying CPU's architectural visible range.
+
+Guest software discovers RAM via the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI` for total guest RAM, `SYSINFO_ACTIVE_RAM_LO/HI` for active visible RAM). Each pair is a little-endian 64-bit byte value assembled from the low/high 32-bit registers. Do not hardcode the appliance RAM size.
+
 ### 8-Bit CPU Banking
 
-The 6502 and Z80 use a banking system to access the full 32MB address space:
+The 6502 and Z80 use a banking system to access the active visible RAM:
 
 | Window | Address Range | Purpose | Bank Register |
 |--------|---------------|---------|---------------|

@@ -2,7 +2,7 @@
 
 *Last updated: 2026-03-01*
 
-Intuition Engine is a multi-CPU retro hardware emulator with 6 heterogeneous CPU cores, 6 video chips, 6 audio engines, a copper coprocessor, DMA blitter, and extensive I/O peripherals — all connected through a unified 32MB memory bus. This document describes the system architecture with diagrams showing all chips, buses, internal functional units, and data flow paths.
+Intuition Engine is a multi-CPU retro hardware emulator with 6 heterogeneous CPU cores, 6 video chips, 6 audio engines, a copper coprocessor, DMA blitter, and extensive I/O peripherals — all connected through a unified MachineBus. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve (see `memory_sizing.go`); each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing all chips, buses, internal functional units, and data flow paths.
 
 ## Platform JIT Matrix
 
@@ -32,7 +32,7 @@ graph TB
         X86["x86<br/>EAX-EDI"]
     end
 
-    BUS["32MB System Bus (MachineBus)<br/>MMIO Dispatch via ioPageBitmap"]
+    BUS["MachineBus (autodetected guest RAM)<br/>MMIO Dispatch via ioPageBitmap"]
 
     IE32 --> BUS
     IE64 --> BUS
@@ -235,13 +235,13 @@ There is no stable bus/MMIO timer control ABI at present. Legacy include symbols
 
 | Extension | CPU | Address Space | Notes |
 |-----------|-----|---------------|-------|
-| `.iex` / `.ie32` | IE32 | 32-bit (32MB) | Native RISC, 8-byte fixed instructions |
-| `.ie64` | IE64 | 32-bit (32MB) | 64-bit RISC, R0=zero, JIT on ARM64 + x86-64 |
-| `.ie68` | M68K | 24-bit (16MB) | 68020, big-endian with LE bus adapter |
-| `.ie65` | 6502 | 16-bit (64KB) | Bank windows for 32MB bus access |
-| `.ie80` | Z80 | 16-bit (64KB) | Bank windows + port I/O bridge |
-| `.ie86` | x86 | 32-bit (32MB) | Flat model, port I/O bridge |
-| `.tos` / `.img` | M68K | 24-bit (16MB) | EmuTOS boot with GEMDOS intercept |
+| `.iex` / `.ie32` | IE32 | 32-bit flat (clamped to active visible RAM) | Native RISC, 8-byte fixed instructions |
+| `.ie64` | IE64 | 64-bit (sees full active visible RAM) | 64-bit RISC, R0=zero, JIT on ARM64 + x86-64 |
+| `.ie68` | M68K | 32-bit flat (clamped to M68K profile bound) | 68020, big-endian with LE bus adapter |
+| `.ie65` | 6502 | 16-bit + bank windows | Bank windows reach the banked-CPU visible ceiling |
+| `.ie80` | Z80 | 16-bit + bank windows + port I/O bridge | Bank windows reach the banked-CPU visible ceiling |
+| `.ie86` | x86 | 32-bit flat (clamped to active visible RAM) | Flat model, port I/O bridge |
+| `.tos` / `.img` | M68K | EmuTOS profile (`EmuTOS_PROFILE_TOP`) | EmuTOS boot with GEMDOS intercept |
 | `.ies` | Script | N/A | Lua scripting engine (IE Script) |
 
 AROS boot is selected by CLI mode (`-aros`, optional `-aros-image`), not file extension.
@@ -296,7 +296,7 @@ x86 also directly accesses VGA VRAM at `$A0000-$AFFFF` in the memory path (no po
 
 ### Bank Windows (Z80 / 6502 / x86)
 
-All three 8/16-bit CPUs share identical bank window architecture for accessing the 32MB bus from a 16-bit address space:
+All three 8/16-bit CPUs share identical bank window architecture for accessing the active visible RAM from a 16-bit address space; bank translation rejects addresses above the banked-CPU visible ceiling:
 
 | CPU Address | Size | Purpose | Bank Select Register |
 |-------------|------|---------|---------------------|
@@ -852,7 +852,9 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 | File | Role |
 |------|------|
 | `registers.go` | Master I/O address map — all region boundaries |
-| `machine_bus.go` | MachineBus: 32MB memory, MapIO, ioPageBitmap, Read/Write |
+| `machine_bus.go` | MachineBus: autodetected guest RAM, MapIO, ioPageBitmap, Read/Write, SYSINFO accessors |
+| `memory_sizing.go` | Boot-time guest RAM autodetection: total guest RAM + active visible RAM with platform reserves |
+| `profile_bounds.go` | Source-owned profile bounds for EmuTOS, AROS, EhBASIC |
 | `emulator_cpu.go` | EmulatorCPU interface definition |
 | `video_interface.go` | VideoSource, VideoOutput, ScanlineAware interfaces |
 | `video_compositor.go` | Compositor pipeline, Z-order blending |

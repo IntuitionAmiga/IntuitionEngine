@@ -1388,7 +1388,7 @@ The complete source files are located in the `sdk/examples/asm/` directory:
 ## Key Differences Between Ports
 
 ### IE32 and M68K (32-bit)
-- Direct access to full 32MB address space
+- 32-bit flat address space; visible RAM is the 32-bit profile ceiling clamped against the autodetected active visible RAM (queried via the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair). Source-owned profiles such as EmuTOS and AROS impose tighter explicit bounds.
 - Native 32-bit register operations
 - Data embedded directly in program memory
 

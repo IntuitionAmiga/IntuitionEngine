@@ -4,6 +4,8 @@
 
 The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 386 32-bit extensions) into native x86-64 instructions at runtime. It follows the same architecture as the IE64 and M68K JITs: scan a block of instructions, compile to native code, cache the result, and dispatch via `callNative()`. Includes x87 FPU support via SSE2, self-loop native compilation, and multi-block region compilation.
 
+**Memory model (PLAN_MAX_RAM.md):** the x86 CPU is a flat 32-bit guest. Visible RAM is the x86 32-bit profile ceiling clamped against the autodetected active visible RAM (queried via the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair). The JIT's address-mask emission must not retain the historical 25-bit / 32 MB mask; bounds checks read the active visible RAM through the bus accessor rather than a hardcoded constant.
+
 **Platform support:** amd64/linux, amd64/darwin, and amd64/windows. ARM64 backend deferred.
 
 **Activation:** Set `cpu.x86JitEnabled = true` and call `cpu.X86ExecuteJIT()` or `cpu.x86JitExecute()`. The dispatch function `x86JitExecute()` routes to the JIT when enabled, otherwise to the interpreter.

@@ -625,6 +625,7 @@ type M68KCPU struct {
 	inException        atomic.Bool   // Prevents double-fault situations (atomic for lock-free access)
 	stackLowerBound    uint32        // Detects stack corruption early
 	stackUpperBound    uint32        // Detects stack corruption early
+	profileTopOfRAM    uint32        // Profile-specific top-of-RAM (EmuTOS, AROS, or default len(memory)); replaces fixed M68K_MEMORY_SIZE for PC/SP bounds
 	interruptInService uint32        // Diagnostic only: tracks which levels have been entered (not used for gating)
 	_padding2          [33]byte      // Cache line alignment reduces false sharing
 
@@ -781,13 +782,18 @@ type faultingBus interface {
 
 func NewM68KCPU(bus Bus32) *M68KCPU {
 	mem := bus.GetMemory()
+	defaultTop := uint32(len(mem))
+	if defaultTop == 0 {
+		defaultTop = M68K_MEMORY_SIZE
+	}
 	cpu := &M68KCPU{
 		SR:              M68K_SR_S | M68K_SR_IPL, // Hardware powers up in supervisor mode with all interrupts masked
 		bus:             bus,
 		memory:          mem,                     // Direct memory access for lock-free reads
 		memBase:         unsafe.Pointer(&mem[0]), // Unsafe base pointer for bounds-check-free access
 		stackLowerBound: 0x00002000,              // Reserves space for exception vectors
-		stackUpperBound: M68K_MEMORY_SIZE,
+		stackUpperBound: defaultTop,
+		profileTopOfRAM: defaultTop,
 		FPU:             NewM68881FPU(), // Initialize 68881 FPU coprocessor
 		// The IE EmuTOS build targets 68020 (`-m68020`) and expects
 		// 68010/68020 exception frame formats (incl. format/vector word).
@@ -858,8 +864,31 @@ func (cpu *M68KCPU) Reset() {
 	cpu.running.Store(true)
 }
 
+// SetProfileTopOfRAM installs an explicit profile-specific top-of-RAM that
+// PC-fetch, prefetch, branch-target, and stack-tune checks consult instead
+// of the fixed M68K_MEMORY_SIZE constant. Source-owned firmware/runtime
+// profiles (EmuTOS, AROS) call this from their loader so the M68K core
+// honours their explicit memory-map contract rather than the underlying
+// CPU's full architectural visible range.
+func (cpu *M68KCPU) SetProfileTopOfRAM(top uint32) {
+	if top == 0 {
+		top = uint32(len(cpu.memory))
+	}
+	cpu.profileTopOfRAM = top
+}
+
+// ProfileTopOfRAM returns the configured profile top-of-RAM. Defaults to
+// len(memory) when no profile has been installed.
+func (cpu *M68KCPU) ProfileTopOfRAM() uint32 {
+	if cpu.profileTopOfRAM == 0 {
+		return uint32(len(cpu.memory))
+	}
+	return cpu.profileTopOfRAM
+}
+
 func (cpu *M68KCPU) tuneStackBounds(sp uint32) {
 	const stackWindow = 0x10000
+	top := cpu.ProfileTopOfRAM()
 
 	var lower uint32
 	if sp > stackWindow {
@@ -867,13 +896,13 @@ func (cpu *M68KCPU) tuneStackBounds(sp uint32) {
 	}
 
 	upper := sp + stackWindow
-	if upper < sp || upper > M68K_MEMORY_SIZE {
-		upper = M68K_MEMORY_SIZE
+	if upper < sp || upper > top {
+		upper = top
 	}
 
 	if upper <= lower {
 		cpu.stackLowerBound = 0
-		cpu.stackUpperBound = M68K_MEMORY_SIZE
+		cpu.stackUpperBound = top
 		return
 	}
 
@@ -1766,7 +1795,7 @@ func (cpu *M68KCPU) decodeGroup6(opcode uint16) {
 		}
 		if take {
 			targetPC := cpu.PC + uint32(int32(displacement))
-			if targetPC >= M68K_MEMORY_SIZE-M68K_WORD_SIZE {
+			if targetPC >= cpu.ProfileTopOfRAM()-M68K_WORD_SIZE {
 				cpu.running.Store(false)
 				return
 			}
@@ -1798,7 +1827,7 @@ func (cpu *M68KCPU) decodeGroup6(opcode uint16) {
 		}
 		if take {
 			targetPC := cpu.PC - M68K_WORD_SIZE + uint32(effectiveDisp)
-			if targetPC >= M68K_MEMORY_SIZE-M68K_WORD_SIZE {
+			if targetPC >= cpu.ProfileTopOfRAM()-M68K_WORD_SIZE {
 				cpu.running.Store(false)
 				return
 			}
@@ -2422,7 +2451,7 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 				cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
 				continue
 			}
-			if cpu.PC >= M68K_MEMORY_SIZE-M68K_WORD_SIZE {
+			if cpu.PC >= cpu.ProfileTopOfRAM()-M68K_WORD_SIZE {
 				cpu.recordFault(cpu.PC, 2, false, 0)
 				cpu.ProcessException(M68K_VEC_BUS_ERROR)
 				continue
@@ -2544,14 +2573,14 @@ func (cpu *M68KCPU) FillPrefetch() {
 		prefetchAddr := cpu.PC + uint32(cpu.prefetchSize*M68K_WORD_SIZE)
 
 		// Check if prefetching would go beyond memory bounds
-		if prefetchAddr >= M68K_MEMORY_SIZE-M68K_WORD_SIZE {
+		if prefetchAddr >= cpu.ProfileTopOfRAM()-M68K_WORD_SIZE {
 			fmt.Printf("Warning: Prefetch beyond memory bounds: addr=0x%08X\n", prefetchAddr)
 			cpu.running.Store(false)
 			return
 		}
 
 		for i := cpu.prefetchSize; i < M68K_PREFETCH_SIZE; i++ {
-			if prefetchAddr >= M68K_MEMORY_SIZE-M68K_WORD_SIZE {
+			if prefetchAddr >= cpu.ProfileTopOfRAM()-M68K_WORD_SIZE {
 				break
 			}
 			cpu.prefetchQueue[i] = cpu.Read16(prefetchAddr)
@@ -3028,7 +3057,7 @@ func (cpu *M68KCPU) Fetch16() uint16 {
 		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
 		return 0
 	}
-	if cpu.PC >= M68K_MEMORY_SIZE-M68K_WORD_SIZE {
+	if cpu.PC >= cpu.ProfileTopOfRAM()-M68K_WORD_SIZE {
 		cpu.recordFault(cpu.PC, 2, false, 0)
 		cpu.ProcessException(M68K_VEC_BUS_ERROR)
 		return 0
@@ -3621,10 +3650,11 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 			opcode := cpu.lastExecOpcode
 			next0 := uint16(0)
 			next1 := uint16(0)
-			if opPC+2 < M68K_MEMORY_SIZE {
+			top := cpu.ProfileTopOfRAM()
+			if opPC+2 < top {
 				next0 = cpu.Read16(opPC + 2)
 			}
-			if opPC+4 < M68K_MEMORY_SIZE {
+			if opPC+4 < top {
 				next1 = cpu.Read16(opPC + 4)
 			}
 			fmt.Printf("M68K: LINE F (#%d) at PC=%08X opcode=%04X next=%04X %04X SR=%04X SP=%08X\n",
@@ -3659,12 +3689,13 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 			fmt.Printf("  A0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X\n",
 				cpu.AddrRegs[0], cpu.AddrRegs[1], cpu.AddrRegs[2], cpu.AddrRegs[3],
 				cpu.AddrRegs[4], cpu.AddrRegs[5], cpu.AddrRegs[6], cpu.AddrRegs[7])
-			if cpu.PC >= 8 && cpu.PC+8 < M68K_MEMORY_SIZE {
+			top := cpu.ProfileTopOfRAM()
+			if cpu.PC >= 8 && cpu.PC+8 < top {
 				fmt.Printf("  around PC: %04X %04X %04X %04X %04X\n",
 					cpu.Read16(cpu.PC-8), cpu.Read16(cpu.PC-4), cpu.Read16(cpu.PC),
 					cpu.Read16(cpu.PC+4), cpu.Read16(cpu.PC+8))
 			}
-			if cpu.AddrRegs[7]+12 < M68K_MEMORY_SIZE {
+			if cpu.AddrRegs[7]+12 < top {
 				fmt.Printf("  stack top: %08X %08X %08X %08X\n",
 					cpu.Read32(cpu.AddrRegs[7]), cpu.Read32(cpu.AddrRegs[7]+4),
 					cpu.Read32(cpu.AddrRegs[7]+8), cpu.Read32(cpu.AddrRegs[7]+12))
@@ -10512,7 +10543,7 @@ func (cpu *M68KCPU) ExecBRA(opcode uint16) {
 
 		// Only halt on truly out-of-bounds addresses (above memory size)
 		// Branches to low memory (vector table area) are valid on real hardware
-		if targetPC >= M68K_MEMORY_SIZE-M68K_WORD_SIZE {
+		if targetPC >= cpu.ProfileTopOfRAM()-M68K_WORD_SIZE {
 			cpu.running.Store(false)
 			return
 		}

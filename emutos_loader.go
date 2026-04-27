@@ -20,6 +20,8 @@ type EmuTOSLoader struct {
 	cpu       *M68KCPU
 	videoChip *VideoChip
 
+	profile ProfileBounds // EmuTOS M68K memory-map contract; populated in LoadROM.
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -41,11 +43,16 @@ type EmuTOSLoader struct {
 }
 
 func NewEmuTOSLoader(bus *MachineBus, cpu *M68KCPU, videoChip *VideoChip) *EmuTOSLoader {
-	return &EmuTOSLoader{
+	l := &EmuTOSLoader{
 		bus:       bus,
 		cpu:       cpu,
 		videoChip: videoChip,
 	}
+	// Pre-populate the profile so vector validity / IRQ arming checks work
+	// in tests that exercise the loader without calling LoadROM. LoadROM
+	// re-evaluates the bounds against the current bus sizing.
+	l.profile = EmuTOSProfileBounds(bus)
+	return l
 }
 
 func emutosROMBase(size int) uint32 {
@@ -66,10 +73,16 @@ func (l *EmuTOSLoader) LoadROM(data []byte) error {
 	if len(data) < 8 {
 		return fmt.Errorf("ROM too small: %d bytes", len(data))
 	}
+	pb := EmuTOSProfileBounds(l.bus)
+	if pb.Err != nil {
+		return fmt.Errorf("EmuTOS profile bounds: %w", pb.Err)
+	}
+	l.profile = pb
 	base := emutosROMBase(len(data))
 	end := base + uint32(len(data))
-	if end > DEFAULT_MEMORY_SIZE {
-		return fmt.Errorf("ROM range 0x%08X-0x%08X outside memory", base, end-1)
+	if end > pb.TopOfRAM {
+		return fmt.Errorf("ROM range 0x%08X-0x%08X outside EmuTOS profile (top=0x%08X)",
+			base, end-1, pb.TopOfRAM)
 	}
 
 	startPage := base >> 8
@@ -95,8 +108,11 @@ func (l *EmuTOSLoader) LoadROM(data []byte) error {
 	l.cpu.Reset()
 	// EmuTOS moves SP throughout boot (initial→_stktop→supervisor→user stacks).
 	// Disable the stack bounds check which is designed for simple programs.
+	// The M68K core also clamps PC-fetch and prefetch to the profile top so
+	// EmuTOS never inherits the architectural 4 GiB visible range by default.
+	l.cpu.SetProfileTopOfRAM(pb.TopOfRAM)
 	l.cpu.stackLowerBound = 0
-	l.cpu.stackUpperBound = DEFAULT_MEMORY_SIZE
+	l.cpu.stackUpperBound = pb.TopOfRAM
 	fmt.Printf("EmuTOS vectors: mem[0]=%08X mem[4]=%08X a7=%08X pc=%08X\r\n",
 		l.cpu.Read32(0), l.cpu.Read32(M68K_RESET_VECTOR), l.cpu.AddrRegs[7], l.cpu.PC)
 
@@ -171,12 +187,19 @@ func (l *EmuTOSLoader) refreshIRQArming() {
 	base := l.cpu.VBR
 	if !l.l4Armed {
 		vec4 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL4)*4)
-		l.l4Armed = isValidEmuTOSVector(vec4)
+		l.l4Armed = l.isValidVector(vec4)
 	}
 	if !l.l5Armed {
 		vec5 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL5)*4)
-		l.l5Armed = isValidEmuTOSVector(vec5)
+		l.l5Armed = l.isValidVector(vec5)
 	}
+}
+
+// isValidVector applies the EmuTOS profile bound to a candidate handler PC.
+// Accepts ROM-resident handlers and RAM vectors above the low vector base
+// up to the profile top of RAM. Rejects sentinel zero/all-ones values.
+func (l *EmuTOSLoader) isValidVector(pc uint32) bool {
+	return isValidEmuTOSVectorBound(pc, l.profile.ROMBase, l.profile.LowVecBase, l.profile.TopOfRAM)
 }
 
 // scanForIORECPush scans the ROM data for the IOREC push function pattern
@@ -278,15 +301,17 @@ func (l *EmuTOSLoader) fixIORECIfNeeded() {
 	fmt.Printf("EmuTOS IOREC: initialized keyboard buffer at $%06X (size=%d)\n", kbdBufAddr, kbdBufSize)
 }
 
-func isValidEmuTOSVector(pc uint32) bool {
+// isValidEmuTOSVectorBound applies the explicit EmuTOS profile bounds to a
+// candidate handler PC. Pure helper so tests can sweep boundaries without
+// constructing a full loader.
+func isValidEmuTOSVectorBound(pc, romBase, lowVecBase, topOfRAM uint32) bool {
 	if pc == 0 || pc == 0xFFFFFFFF {
 		return false
 	}
-	// Accept ROM handler addresses and valid RAM vectors once boot code installs them.
-	if pc >= emutosBaseStd && pc < DEFAULT_MEMORY_SIZE {
+	if pc >= romBase && pc < topOfRAM {
 		return true
 	}
-	return pc >= 0x00001000 && pc < DEFAULT_MEMORY_SIZE
+	return pc >= lowVecBase && pc < topOfRAM
 }
 
 // SetupGemdos creates a GEMDOS interceptor mapping hostPath as the given drive number.

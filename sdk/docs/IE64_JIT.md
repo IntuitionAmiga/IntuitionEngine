@@ -8,6 +8,8 @@ Technical reference for the IE64 Just-In-Time compiler. Covers the shared infras
 
 The IE64 JIT compiler translates blocks of IE64 machine code into native ARM64 or x86-64 instructions at runtime, executing them directly on the host CPU. This bypasses the Go interpreter loop and yields significant performance improvements for compute-heavy workloads.
 
+PLAN_MAX_RAM.md slice 3 widened IE64 address plumbing to 64-bit. The JIT currently bails to the interpreter on any block containing LOAD/STORE/FLOAD/FSTORE/DLOAD/DSTORE/JMP/JSR_IND while the AMD64/ARM64 emitters are widened; correctness is preserved against the autodetected guest RAM (active visible RAM, reported via `CR_RAM_SIZE_BYTES` and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair). Re-enabling JIT for those ops with `uint64` address emission is tracked separately.
+
 **Supported platforms:** ARM64/Linux, ARM64/macOS, ARM64/Windows, x86-64/Linux, x86-64/macOS, x86-64/Windows
 
 **Activation:** JIT is enabled by default on supported platforms. Disable with the `-nojit` flag.

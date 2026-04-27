@@ -177,8 +177,8 @@ func TestAROSLoader_StackBoundsDisabled(t *testing.T) {
 	if cpu.stackLowerBound != 0 {
 		t.Errorf("stackLowerBound: got 0x%X, want 0", cpu.stackLowerBound)
 	}
-	if cpu.stackUpperBound != DEFAULT_MEMORY_SIZE {
-		t.Errorf("stackUpperBound: got 0x%X, want 0x%X", cpu.stackUpperBound, DEFAULT_MEMORY_SIZE)
+	if cpu.stackUpperBound != AROS_PROFILE_TOP {
+		t.Errorf("stackUpperBound: got 0x%X, want 0x%X", cpu.stackUpperBound, AROS_PROFILE_TOP)
 	}
 }
 
@@ -281,6 +281,9 @@ func TestAROSLoader_TimerPausedWhileCPUStopped(t *testing.T) {
 }
 
 func TestAROSLoader_IsValidVector(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	loader := NewAROSLoader(bus, cpu, nil)
 	tests := []struct {
 		pc   uint32
 		want bool
@@ -290,12 +293,41 @@ func TestAROSLoader_IsValidVector(t *testing.T) {
 		{0x00001000, true}, // Valid RAM address
 		{arosROMBase + 100, true},
 		{0x00000FFF, false}, // Below 0x1000
-		{DEFAULT_MEMORY_SIZE, false},
+		{AROS_PROFILE_TOP, false},
+		{AROS_PROFILE_TOP + 0x1000, false},
 	}
 	for _, tt := range tests {
-		got := isValidAROSVector(tt.pc)
+		got := loader.isValidVector(tt.pc)
 		if got != tt.want {
-			t.Errorf("isValidAROSVector(0x%08X) = %v, want %v", tt.pc, got, tt.want)
+			t.Errorf("loader.isValidVector(0x%08X) = %v, want %v", tt.pc, got, tt.want)
 		}
+	}
+}
+
+func TestAROSLoader_LoadROM_InstallsProfileTopOfRAM(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	loader := NewAROSLoader(bus, cpu, nil)
+	// Tiny synthetic ROM so the test never depends on a live image.
+	rom := make([]byte, 16)
+	rom[0], rom[1], rom[2], rom[3] = 0x00, 0x02, 0x00, 0x00 // SP = 0x00020000
+	rom[4], rom[5], rom[6], rom[7] = 0x00, 0x60, 0x00, 0x10 // PC = arosROMBase + 0x10
+	if err := loader.LoadROM(rom); err != nil {
+		t.Fatalf("LoadROM failed: %v", err)
+	}
+	if got := cpu.ProfileTopOfRAM(); got != AROS_PROFILE_TOP {
+		t.Fatalf("cpu profile top = 0x%X, want 0x%X (AROS_PROFILE_TOP)",
+			got, AROS_PROFILE_TOP)
+	}
+	if got := cpu.stackUpperBound; got != AROS_PROFILE_TOP {
+		t.Fatalf("stackUpperBound = 0x%X, want 0x%X", got, AROS_PROFILE_TOP)
+	}
+	if loader.profile.VRAMBase != arosDirectVRAMBase {
+		t.Fatalf("loader profile VRAMBase = 0x%X, want 0x%X (direct VRAM contract)",
+			loader.profile.VRAMBase, arosDirectVRAMBase)
+	}
+	if loader.profile.VRAMEnd != arosDirectVRAMBase+arosDirectVRAMSize {
+		t.Fatalf("loader profile VRAMEnd = 0x%X, want 0x%X",
+			loader.profile.VRAMEnd, arosDirectVRAMBase+arosDirectVRAMSize)
 	}
 }

@@ -392,7 +392,7 @@ All CPU cores (IE32, IE64, M68K, Z80, 6502, x86) share the same memory space thr
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                       MachineBus Memory                         │
-│                          (32MB Shared)                          │
+│                  (autodetected guest RAM)                       │
 ├─────────────────────────────────────────────────────────────────┤
 │  0x000000 - 0x000FFF  │  System Vectors                         │
 │  0x001000 - 0x09FFFF  │  Program Space (code + data)            │
@@ -400,8 +400,9 @@ All CPU cores (IE32, IE64, M68K, Z80, 6502, x86) share the same memory space thr
 │  0x0B8000 - 0x0BFFFF  │  VGA Text Buffer (32KB)                 │
 │  0x0F0000 - 0x0F0FFF  │  Video/Audio I/O Registers              │
 │  0x0F1000 - 0x0F13FF  │  VGA Registers                          │
+│  0x0F2400 - 0x0F240F  │  SYSINFO RAM-size MMIO (total+active)   │
 │  0x100000 - 0x5FFFFF  │  Video RAM (5MB, chunky RGBA)           │
-│  0x600000 - 0x1FFFFFF │  Extended RAM                           │
+│  0x600000 - top       │  Extended RAM (sized per profile/CPU)   │
 └─────────────────────────────────────────────────────────────────┘
         │                       │                      │
         ▼                       ▼                      ▼
@@ -422,7 +423,7 @@ The custom audio synthesizer is the core of the sound system. PSG, POKEY, and SI
 
 ### Bus Layers
 
-- **MachineBus** (`Bus32`/`Bus64` interfaces): The global 32MB RAM + MMIO backbone shared by all CPUs and peripherals.
+- **MachineBus** (`Bus32`/`Bus64` interfaces): The global RAM + MMIO backbone shared by all CPUs and peripherals. Total guest RAM is autodetected from the host at boot (host `/proc/meminfo` minus a per-platform reserve, see `memory_sizing.go`); each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes via the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`.
 - **CPU bus interfaces** (`Z80Bus`, `X86Bus`, `Bus6502`): Per-CPU contract shapes that define the read/write/port operations each CPU core expects.
 - **CPU bus adapters** (`Z80BusAdapter`, `X86BusAdapter`, `Bus6502Adapter`): Translate 8/16-bit CPU address spaces and port I/O into MachineBus calls, handling bank switching and sign extension.
 - **Playback buses** (`SAPPlaybackBus6502`, `SIDPlaybackBus6502`, `TEDPlaybackBus6502`, `sndhPlaybackBus68K`, `ayPlaybackBusZ80`): Standalone lightweight bus implementations for music file playback - provide just enough memory and I/O to run embedded CPU code that drives audio register writes.
@@ -2593,7 +2594,7 @@ HALT (0xFF) ; Stop execution
 
 ## 4.6 Memory and I/O Integration
 
-- The IE32 uses the shared 32MB system bus
+- The IE32 uses the shared MachineBus; visible RAM is the 32-bit profile ceiling clamped against the autodetected active visible RAM
 - All memory-mapped devices (video, audio, PSG/POKEY/SID, terminal) are accessible
 - I/O region: 0x0F0000 - 0x0FFFFF
 - VRAM access: 0x100000 - 0x5FFFFF (direct 32-bit addressing)
@@ -3059,8 +3060,8 @@ The FPU provides built-in constants:
 
 ## 7.6 Memory and I/O Integration
 
-- Uses shared 32MB system bus
-- 32-bit address bus (full 4GB addressable)
+- Uses the shared MachineBus; visible RAM is the M68K 32-bit profile ceiling clamped against the autodetected active visible RAM (EmuTOS and AROS profiles further restrict via `EmuTOS_PROFILE_TOP` / `AROS_PROFILE_TOP` in `profile_bounds.go`)
+- 32-bit address bus (full 4 GiB architectural visible range; profile bounds may expose less)
 - Big-endian byte order
 - I/O region: 0x00F00000 - 0x00FFFFFF
 - VRAM: 0x00100000 - 0x004FFFFF (direct access)
@@ -3199,7 +3200,7 @@ The x86 core implements the 8086 instruction set with 32-bit register support:
 
 ## 8.5 Memory and I/O Integration
 
-- Full 32-bit flat address space (32MB system RAM)
+- Full 32-bit flat address space; visible RAM is the x86 32-bit profile ceiling clamped against the autodetected active visible RAM
 - VGA VRAM at standard PC address 0xA0000-0xAFFFF
 - Hardware registers memory-mapped at 0xF0000+
 - Separate I/O port space for audio chips
@@ -3270,7 +3271,7 @@ The IE64 is a custom 64-bit RISC processor designed for the Intuition Engine. It
 | R0 | 64-bit | Hardwired zero (writes ignored) |
 | R1–R30 | 64-bit | General-purpose |
 | R31 (SP) | 64-bit | Stack pointer |
-| PC | 64-bit | Program counter (masked to 25 bits / 32MB) |
+| PC | 64-bit | Program counter (full 64-bit IE64 address; legacy 25-bit/32 MB mask retired in PLAN_MAX_RAM.md slice 3 — historical note) |
 
 **No flags register.** Conditional branches embed a register comparison directly (e.g., `BEQ Rs, Rt, offset`).
 
@@ -3485,7 +3486,7 @@ occupies an even-odd register pair.
 
 ## 9.6 Memory and I/O Integration
 
-The IE64 shares the same 32MB system bus and memory-mapped device address space as all other Intuition Engine CPUs:
+The IE64 shares the same MachineBus and memory-mapped device address space as all other Intuition Engine CPUs. IE64 sees the full active visible RAM (which may exceed 4 GiB on hosts with sufficient memory) — discoverable via `CR_RAM_SIZE_BYTES` and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair:
 
 - All hardware registers at `$F0000–$FFFFF` are accessible via `LOAD`/`STORE`
 - VGA VRAM at `$A0000–$AFFFF`, Video RAM at `$100000+`
@@ -5747,7 +5748,7 @@ Execution: JIT compiles basic blocks to native ARM64, caches them, and re-execut
 
 ### Unified Memory Bus
 
-All CPUs share a unified 32MB address space through the MachineBus:
+All CPUs share the autodetected guest RAM through the MachineBus. Total guest RAM is selected at boot from host `/proc/meminfo` minus a per-platform reserve (`memory_sizing.go`); each CPU/profile then sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes via the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI` for total guest RAM, `SYSINFO_ACTIVE_RAM_LO/HI` for active visible RAM). IE64 also reports its active visible RAM through `CR_RAM_SIZE_BYTES`.
 
 - **Direct memory array**: Fast non-I/O access via cached pointer
 - **Page-based I/O callbacks**: Handlers for memory-mapped registers
