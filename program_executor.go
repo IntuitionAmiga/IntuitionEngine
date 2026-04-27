@@ -422,8 +422,9 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 			VoodooEngine: e.voodooEngine,
 		})
 		e.bus.Reset()
-		if uint32(len(data)) > DEFAULT_MEMORY_SIZE {
-			return fmt.Errorf("program too large")
+		limit := uint32(e.bus.BankedVisibleCeiling())
+		if uint32(len(data)) > limit {
+			return fmt.Errorf("program too large: size=0x%X, banked-ceiling=0x%X", uint32(len(data)), limit)
 		}
 		for i, b := range data {
 			e.bus.Write8(uint32(i), b)

@@ -1819,8 +1819,9 @@ func emitJMP_AMD64(cb *CodeBuffer, ji *JITInstr, br *blockRegs, instrCount uint3
 	amd64MOV_reg_reg(cb, amd64RegIE64PC, rsReg)
 	amd64ALU_reg_reg(cb, 0x01, amd64RegIE64PC, amd64RCX)
 
-	emitLoadImm64AMD64(cb, amd64RAX, IE64_ADDR_MASK)
-	amd64ALU_reg_reg(cb, 0x21, amd64RegIE64PC, amd64RAX)
+	// PLAN_MAX_RAM.md slice 8 phase 8 retired the IE64_ADDR_MASK AND
+	// here. The PC widened to 64-bit in slice 3; clamping to 25 bits
+	// silently aliased high targets into low memory.
 
 	if br.hasBackwardBranch {
 		emitDynamicCountAMD64(cb, instrCount)
@@ -1897,8 +1898,7 @@ func emitJSR_IND_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRe
 	amd64MOV_reg_reg(cb, amd64RegIE64PC, rsReg)
 	amd64ALU_reg_reg(cb, 0x01, amd64RegIE64PC, amd64RCX)
 
-	emitLoadImm64AMD64(cb, amd64RAX, IE64_ADDR_MASK)
-	amd64ALU_reg_reg(cb, 0x21, amd64RegIE64PC, amd64RAX)
+	// PLAN_MAX_RAM.md slice 8 phase 8 retired the IE64_ADDR_MASK AND.
 
 	if br.hasBackwardBranch {
 		emitDynamicCountAMD64(cb, instrCount)

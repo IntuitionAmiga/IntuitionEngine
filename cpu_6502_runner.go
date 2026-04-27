@@ -56,8 +56,9 @@ func (r *CPU6502Runner) LoadProgram(filename string) error {
 	}
 
 	endAddr := uint32(r.loadAddr) + uint32(len(program))
-	if endAddr > DEFAULT_MEMORY_SIZE {
-		return fmt.Errorf("6502 program too large: end=0x%X, limit=0x%X", endAddr, DEFAULT_MEMORY_SIZE)
+	limit := uint32(r.bus.BankedVisibleCeiling())
+	if endAddr > limit {
+		return fmt.Errorf("6502 program too large: end=0x%X, banked-ceiling=0x%X", endAddr, limit)
 	}
 
 	for i, value := range program {

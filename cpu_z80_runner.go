@@ -220,12 +220,28 @@ func (b *Z80BusAdapter) Write(addr uint16, value byte) {
 // Each bank window maps to:
 // base_address = bank_number * 8KB
 // actual_address = base_address + (addr - window_base)
+// resolveBankedCeiling returns the uint32-clamped banked visible ceiling
+// the bus exposes (PLAN_MAX_RAM.md slice 8). Z80 always wraps a
+// *MachineBus today; the type assertion guards future stub buses.
+func (b *Z80BusAdapter) resolveBankedCeiling() uint32 {
+	if b.bus != nil {
+		c := b.bus.BankedVisibleCeiling()
+		if c > 0xFFFFFFFF {
+			return 0xFFFFFFFF
+		}
+		return uint32(c)
+	}
+	return DEFAULT_MEMORY_SIZE
+}
+
 func (b *Z80BusAdapter) translateExtendedBank(addr uint16) (uint32, bool) {
+	ceiling := b.resolveBankedCeiling()
+
 	// Check Bank 1 window ($2000-$3FFF)
 	if b.bank1Enable && addr >= Z80_BANK1_WINDOW_BASE && addr < Z80_BANK1_WINDOW_BASE+Z80_BANK_WINDOW_SIZE {
 		offset := uint32(addr - Z80_BANK1_WINDOW_BASE)
 		translated := (b.bank1 * Z80_BANK_WINDOW_SIZE) + offset
-		if translated < DEFAULT_MEMORY_SIZE {
+		if translated < ceiling {
 			return translated, true
 		}
 	}
@@ -234,7 +250,7 @@ func (b *Z80BusAdapter) translateExtendedBank(addr uint16) (uint32, bool) {
 	if b.bank2Enable && addr >= Z80_BANK2_WINDOW_BASE && addr < Z80_BANK2_WINDOW_BASE+Z80_BANK_WINDOW_SIZE {
 		offset := uint32(addr - Z80_BANK2_WINDOW_BASE)
 		translated := (b.bank2 * Z80_BANK_WINDOW_SIZE) + offset
-		if translated < DEFAULT_MEMORY_SIZE {
+		if translated < ceiling {
 			return translated, true
 		}
 	}
@@ -243,7 +259,7 @@ func (b *Z80BusAdapter) translateExtendedBank(addr uint16) (uint32, bool) {
 	if b.bank3Enable && addr >= Z80_BANK3_WINDOW_BASE && addr < Z80_BANK3_WINDOW_BASE+Z80_BANK_WINDOW_SIZE {
 		offset := uint32(addr - Z80_BANK3_WINDOW_BASE)
 		translated := (b.bank3 * Z80_BANK_WINDOW_SIZE) + offset
-		if translated < DEFAULT_MEMORY_SIZE {
+		if translated < ceiling {
 			return translated, true
 		}
 	}
@@ -661,8 +677,9 @@ func (r *CPUZ80Runner) LoadProgram(filename string) error {
 	// Allow loading larger binaries with embedded data for DMA devices (blitter, audio).
 	// The Z80 CPU can only address 64KB, but embedded data beyond that is accessed
 	// by hardware peripherals through the full 16MB bus.
-	if endAddr > DEFAULT_MEMORY_SIZE {
-		return fmt.Errorf("z80 program too large: end=0x%X, limit=0x%X", endAddr, DEFAULT_MEMORY_SIZE)
+	limit := uint32(r.bus.BankedVisibleCeiling())
+	if endAddr > limit {
+		return fmt.Errorf("z80 program too large: end=0x%X, banked-ceiling=0x%X", endAddr, limit)
 	}
 
 	for i, value := range program {

@@ -651,10 +651,11 @@ func NewMachineBus() *MachineBus {
 		the I/O mapping table.
 	*/
 
+	memSize := uint32(DEFAULT_MEMORY_SIZE)
 	return &MachineBus{
-		memory:       make([]byte, DEFAULT_MEMORY_SIZE),
+		memory:       make([]byte, memSize),
 		mapping:      make(map[uint32][]IORegion),
-		ioPageBitmap: make([]bool, DEFAULT_MEMORY_SIZE/PAGE_SIZE),
+		ioPageBitmap: make([]bool, memSize/PAGE_SIZE),
 		mapping64:    make(map[uint32][]IORegion64),
 	}
 }
@@ -701,6 +702,18 @@ func (bus *MachineBus) ProfileMemoryCap() uint64 {
 		return bus.sizing.ActiveVisibleRAM
 	}
 	return uint64(len(bus.memory))
+}
+
+// BankedVisibleCeiling returns the ceiling banked CPUs (6502, Z80) must
+// reject above. PLAN_MAX_RAM.md "Banking ABI Policy" requires bank
+// translation to gate against the banked CPU's configured visible
+// ceiling rather than IE64's full RAM ceiling. Slice 8 phase 1 keeps
+// the banked visible ceiling equal to the published active visible RAM
+// so the appliance default behaviour (32 MiB) is preserved while the
+// configured ceiling can be overridden via SetSizing for test harnesses
+// or future explicit-banking ABI changes.
+func (bus *MachineBus) BankedVisibleCeiling() uint64 {
+	return bus.ProfileMemoryCap()
 }
 
 // VisibleCeiling returns the per-CPU/profile visible-RAM ceiling that was

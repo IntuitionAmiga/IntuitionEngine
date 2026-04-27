@@ -191,14 +191,13 @@ func (d *DebugIE64) trapLoop() {
 			return
 		}
 
-		// Check watchpoints
+		// Check watchpoints. PLAN_MAX_RAM.md slice 3 widened IE64 to
+		// 64-bit physical addressing; route reads through the bus so a
+		// watchpoint set above the legacy 32-bit window is observed in
+		// the bound Backing rather than aliasing into low memory.
 		d.bpMu.RLock()
 		for _, wp := range d.watchpoints {
-			a := uint32(wp.Address & IE64_ADDR_MASK)
-			var cur byte
-			if int(a) < len(d.cpu.memory) {
-				cur = d.cpu.memory[a]
-			}
+			cur := d.readByte(wp.Address)
 			if cur != wp.LastValue {
 				old := wp.LastValue
 				wp.LastValue = cur
@@ -301,13 +300,23 @@ func (d *DebugIE64) GetConditionalBreakpoint(addr uint64) *ConditionalBreakpoint
 func (d *DebugIE64) SetWatchpoint(addr uint64) bool {
 	d.bpMu.Lock()
 	defer d.bpMu.Unlock()
-	a := uint32(addr & IE64_ADDR_MASK)
-	var val byte
-	if int(a) < len(d.cpu.memory) {
-		val = d.cpu.memory[a]
-	}
-	d.watchpoints[addr] = &Watchpoint{Address: addr, LastValue: val}
+	d.watchpoints[addr] = &Watchpoint{Address: addr, LastValue: d.readByte(addr)}
 	return true
+}
+
+// readByte fetches one byte at the full 64-bit physical address. Routes
+// through the bus so high-address Backing reads work; falls back to the
+// legacy bus.memory slice when the address lies in the low window.
+func (d *DebugIE64) readByte(addr uint64) byte {
+	if addr <= 0xFFFFFFFF {
+		if a := uint32(addr); int(a) < len(d.cpu.memory) {
+			return d.cpu.memory[a]
+		}
+	}
+	if d.cpu.bus == nil {
+		return 0
+	}
+	return d.cpu.bus.ReadPhys8(addr)
 }
 
 func (d *DebugIE64) ClearWatchpoint(addr uint64) bool {
@@ -337,25 +346,37 @@ func (d *DebugIE64) ListWatchpoints() []uint64 {
 }
 
 func (d *DebugIE64) ReadMemory(addr uint64, size int) []byte {
-	mem := d.cpu.memory
-	start := uint32(addr & IE64_ADDR_MASK)
-	if int(start)+size > len(mem) {
-		end := len(mem)
-		if int(start) >= end {
-			return nil
-		}
-		return append([]byte{}, mem[start:end]...)
+	if size <= 0 {
+		return nil
 	}
-	return append([]byte{}, mem[start:int(start)+size]...)
+	// Fast path: span fits inside the legacy bus.memory window.
+	if addr <= 0xFFFFFFFF && addr+uint64(size) <= uint64(len(d.cpu.memory)) {
+		start := uint32(addr)
+		return append([]byte{}, d.cpu.memory[start:int(start)+size]...)
+	}
+	// Slow path: route per-byte through the bus so high-address Backing
+	// reads work. Preserves the full 64-bit address (PLAN_MAX_RAM.md
+	// slice 3 retired the IE64_ADDR_MASK 25-bit truncation).
+	out := make([]byte, size)
+	for i := 0; i < size; i++ {
+		out[i] = d.readByte(addr + uint64(i))
+	}
+	return out
 }
 
 func (d *DebugIE64) WriteMemory(addr uint64, data []byte) {
-	mem := d.cpu.memory
-	start := uint32(addr & IE64_ADDR_MASK)
-	if int(start)+len(data) > len(mem) {
+	// Fast path: span fits inside the legacy bus.memory window.
+	if addr <= 0xFFFFFFFF && addr+uint64(len(data)) <= uint64(len(d.cpu.memory)) {
+		copy(d.cpu.memory[uint32(addr):], data)
 		return
 	}
-	copy(mem[start:], data)
+	// Slow path: route per-byte through the bus.
+	if d.cpu.bus == nil {
+		return
+	}
+	for i, b := range data {
+		d.cpu.bus.WritePhys8(addr+uint64(i), b)
+	}
 }
 
 func (d *DebugIE64) SetBreakpointChannel(ch chan<- BreakpointEvent, cpuID int) {

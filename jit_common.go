@@ -210,20 +210,26 @@ func needsFallback(instrs []JITInstr) bool {
 	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 		return true
 	}
-	// Full-block scan for slice 4 hazards: any memory op or dynamic
-	// indirect control-flow op forces interpreter dispatch for the
-	// whole block. Heavy-handed but correct: the JIT memory emitters
-	// truncate addr to uint32 (e.g. jit_emit_amd64.go:1578) and the
-	// JIT JMP/JSR_IND emitters AND the target with the legacy 32 MB
-	// IE64_ADDR_MASK (jit_emit_amd64.go:1822). Either path silently
-	// aliases high-VA / high-phys accesses. Bail until the JIT widens.
+	// Full-block scan for opcodes the JIT memory/branch emitters do not
+	// handle yet:
+	//
+	// - DLOAD / DSTORE: 64-bit memory access not implemented in the
+	//   AMD64 or ARM64 emitters; emitter would fall through. Bail the
+	//   whole block to keep dispatch state consistent.
+	//
+	// LOAD / STORE / FLOAD / FSTORE were re-enabled by PLAN_MAX_RAM.md
+	// slice 8 phase 7: with MMU off the emitters use uint32 addressing,
+	// which is correct for the legacy 32-bit window; with MMU on
+	// compileBlockMMU sets mmuBail per-instruction so each access bails
+	// individually back to the interpreter.
+	//
+	// JMP / JSR_IND were re-enabled by PLAN_MAX_RAM.md slice 8 phase 8:
+	// emitJMP / emitJSR_IND no longer AND the target with the legacy
+	// IE64_ADDR_MASK so jumps reach the full uint32 PC. With MMU on,
+	// compileBlockMMU still bails JSR_IND per-instruction.
 	for i := range instrs {
 		switch instrs[i].opcode {
-		case OP_LOAD, OP_STORE,
-			OP_FLOAD, OP_FSTORE,
-			OP_DLOAD, OP_DSTORE:
-			return true
-		case OP_JMP, OP_JSR_IND:
+		case OP_DLOAD, OP_DSTORE:
 			return true
 		}
 	}

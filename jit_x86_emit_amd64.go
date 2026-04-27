@@ -278,7 +278,6 @@ func x86EmitComputeEA(cb *CodeBuffer, ji *X86JITInstr, memory []byte, dstReg byt
 	}
 
 	// Mask to 25-bit address space
-	amd64ALU_reg_imm32_32bit(cb, 4, dstReg, int32(x86AddressMask)) // AND dst, mask
 
 	return true
 }
@@ -399,7 +398,7 @@ func x86TryConstantEA(ji *X86JITInstr, memory []byte) (uint32, bool) {
 		modrmPC := ji.opcodePC + uint32(ji.length) - x86ModRMBodyLen(ji)
 		dispPC := modrmPC + 1 // past ModR/M byte
 		if dispPC+4 <= uint32(len(memory)) {
-			addr := readLE32(memory, dispPC) & x86AddressMask
+			addr := readLE32(memory, dispPC)
 			return addr, true
 		}
 	}
@@ -434,7 +433,7 @@ func x86IsPageSafeAtCompileTime(addr uint32) bool {
 	if cs == nil || cs.ioBitmap == nil {
 		return false
 	}
-	page := (addr & x86AddressMask) >> 8
+	page := addr >> 8
 	if page < uint32(len(cs.ioBitmap)) {
 		return cs.ioBitmap[page] == 0
 	}
@@ -447,7 +446,7 @@ func x86IsCodePageAtCompileTime(addr uint32) bool {
 	if cs == nil || cs.codeBitmap == nil {
 		return false // conservative: assume it might be code
 	}
-	page := (addr & x86AddressMask) >> 8
+	page := addr >> 8
 	if page < uint32(len(cs.codeBitmap)) {
 		return cs.codeBitmap[page] != 0
 	}
@@ -1022,7 +1021,7 @@ func x86EmitMOV_EAX_moffs32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, inst
 	if ji.length < 5 {
 		return false
 	}
-	addr := readLE32(memory, ji.opcodePC+1) & x86AddressMask
+	addr := readLE32(memory, ji.opcodePC+1)
 	amd64MOV_reg_imm32(cb, amd64R10, addr)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	x86EmitMemLoad32(cb, amd64R8, amd64R10)
@@ -1034,7 +1033,7 @@ func x86EmitMOV_moffs32_EAX(cb *CodeBuffer, ji *X86JITInstr, memory []byte, inst
 	if ji.length < 5 {
 		return false
 	}
-	addr := readLE32(memory, ji.opcodePC+1) & x86AddressMask
+	addr := readLE32(memory, ji.opcodePC+1)
 	amd64MOV_reg_imm32(cb, amd64R10, addr)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64R8, 0) // EAX
@@ -1681,7 +1680,6 @@ func x86EmitPUSH_r32(cb *CodeBuffer, ji *X86JITInstr) bool {
 
 	// Write to [memory + ESP]
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R10, int32(x86AddressMask)) // AND
 
 	// MOV [RSI + R10], R8d
 	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
@@ -1696,7 +1694,6 @@ func x86EmitPOP_r32(cb *CodeBuffer, ji *X86JITInstr) bool {
 
 	// Read from [memory + ESP]
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R10, int32(x86AddressMask))
 
 	// MOV R8d, [RSI + R10]
 	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
@@ -1721,7 +1718,6 @@ func x86EmitPUSH_imm32(cb *CodeBuffer, ji *X86JITInstr, memory []byte) bool {
 
 	// Write imm32 to [memory + ESP]
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R10, int32(x86AddressMask))
 
 	// MOV DWORD [RSI + R10], imm32
 	amd64MOV_reg_imm32(cb, amd64R8, imm)
@@ -1738,7 +1734,6 @@ func x86EmitPUSH_imm8(cb *CodeBuffer, ji *X86JITInstr, memory []byte) bool {
 
 	amd64ALU_reg_imm32_32bit(cb, 5, x86AMD64RegGuestESP, 4)
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R10, int32(x86AddressMask))
 
 	amd64MOV_reg_imm32(cb, amd64R8, imm)
 	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
@@ -1954,7 +1949,6 @@ func x86EmitPUSHF(cb *CodeBuffer, ji *X86JITInstr) bool {
 
 	// Write to [memory + ESP]
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R10, int32(x86AddressMask))
 
 	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
 	cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
@@ -1975,7 +1969,6 @@ func x86EmitLEAVE(cb *CodeBuffer, ji *X86JITInstr) bool {
 
 	// POP EBP: read [memory + ESP], ESP += 4
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R10, int32(x86AddressMask))
 
 	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
 	cb.EmitBytes(0x8B, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
@@ -2732,7 +2725,6 @@ func x86EmitREP_MOVSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 
 		// RSI = memBase + masked_src
 		amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
-		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 		amd64MOV_reg_reg(cb, x86AMD64RegMemBase, x86AMD64RegMemBase) // keep RSI as 64-bit
 		// Actually need: host RSI = memBase + masked_src_offset
 		amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, 24)   // RDX = original RSI (memBase)
@@ -2741,7 +2733,6 @@ func x86EmitREP_MOVSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 
 		// RDI = memBase + masked_dst
 		amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 		amd64MOV_reg_reg(cb, amd64RDI, amd64RDX)       // RDI = memBase
 		amd64ALU_reg_reg(cb, 0x01, amd64RDI, amd64R11) // RDI += masked_dst
 
@@ -2765,9 +2756,7 @@ func x86EmitREP_MOVSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	} else {
 		// Scalar fast path: no per-iteration masking
 		amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
-		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 		amd64MOV_reg_reg32(cb, amd64RDX, amd64R10)
-		amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, int32(x86AddressMask))
 		fastLoopLabel := cb.Len()
 		x86EmitMemLoad8(cb, amd64RAX, amd64R11)
 		x86EmitMemStore8(cb, amd64RDX, amd64RAX)
@@ -2790,10 +2779,8 @@ func x86EmitREP_MOVSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, 0) // restore src from stack
 	slowLoopLabel := cb.Len()
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 	x86EmitMemLoad8(cb, amd64RAX, amd64R11)
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 	x86EmitMemStore8(cb, amd64R11, amd64RAX)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64R8, 1)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 1)
@@ -2833,9 +2820,7 @@ func x86EmitREP_MOVSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 
 	// Fast path
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 	amd64MOV_reg_reg32(cb, amd64RDX, amd64R10)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, int32(x86AddressMask))
 	fastLoopLabel := cb.Len()
 	x86EmitMemLoad32(cb, amd64RAX, amd64R11)
 	x86EmitMemStore32(cb, amd64RDX, amd64RAX)
@@ -2855,10 +2840,8 @@ func x86EmitREP_MOVSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, 0) // restore src
 	slowLoopLabel := cb.Len()
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 	x86EmitMemLoad32(cb, amd64RAX, amd64R11)
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 	x86EmitMemStore32(cb, amd64R11, amd64RAX)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64R8, 4)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 4)
@@ -2907,7 +2890,6 @@ func x86EmitDFCheck(cb *CodeBuffer, retPC uint32, instrIdx int) {
 func x86EmitRangePageCheck(cb *CodeBuffer, baseReg byte, countReg byte, stride int) {
 	// startPage = (base & mask) >> 8
 	amd64MOV_reg_reg32(cb, amd64R8, baseReg)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, int32(x86AddressMask))
 	amd64SHR_imm32(cb, amd64R8, 8)
 
 	// endPage = ((base + count*stride - 1) & mask) >> 8
@@ -2923,8 +2905,7 @@ func x86EmitRangePageCheck(cb *CodeBuffer, baseReg byte, countReg byte, stride i
 	}
 	amd64ALU_reg_reg32(cb, 0x01, amd64R11, baseReg) // R11 = base + count*stride
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64R11, 1)    // -1
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
-	amd64SHR_imm32(cb, amd64R11, 8) // endPage
+	amd64SHR_imm32(cb, amd64R11, 8)                 // endPage
 
 	// Scan: for p = startPage; p <= endPage; p++ if bitmap[p] → set NE
 	scanLabel := cb.Len()
@@ -2974,16 +2955,14 @@ func x86EmitREP_STOSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	// Range-safety check: verify all pages in [EDI, EDI+ECX) are non-I/O
 	// Start page = (EDI & mask) >> 8, End page = ((EDI + ECX - 1) & mask) >> 8
 	// Scan all pages from start to end in the IO bitmap
-	amd64MOV_reg_reg32(cb, amd64R8, amd64R10)                       // R8 = EDI
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, int32(x86AddressMask)) // mask
-	amd64SHR_imm32(cb, amd64R8, 8)                                  // start page
+	amd64MOV_reg_reg32(cb, amd64R8, amd64R10) // R8 = EDI
+	amd64SHR_imm32(cb, amd64R8, 8)            // start page
 
 	// R11 = end page = ((EDI + ECX - 1) & mask) >> 8
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
 	amd64ALU_reg_reg32(cb, 0x01, amd64R11, amd64RCX) // R11 = EDI + ECX
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64R11, 1)     // -1
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
-	amd64SHR_imm32(cb, amd64R11, 8) // end page
+	amd64SHR_imm32(cb, amd64R11, 8)                  // end page
 
 	// Scan pages: for p = startPage; p <= endPage; p++ { if bitmap[p] { goto slow } }
 	scanLabel := cb.Len()
@@ -3001,7 +2980,6 @@ func x86EmitREP_STOSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 
 	// All pages safe → mask base once, then fast loop
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask)) // R11 = masked base
 
 	// Hardware REP STOSB fast path: when ERMS available and DF=0, use native REP STOSB
 	if x86CurrentCS != nil && x86CurrentCS.host.HasERMS {
@@ -3036,7 +3014,6 @@ func x86EmitREP_STOSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 		patchRel32(cb, slowJmp, slowLabel)
 		slowLoopLabel := cb.Len()
 		amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 		x86EmitMemStore8(cb, amd64R11, amd64RAX)
 		amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 1)
 		amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
@@ -3069,7 +3046,6 @@ func x86EmitREP_STOSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	// Reload count (it was not modified by the scan)
 	slowLoopLabel := cb.Len()
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 	x86EmitMemStore8(cb, amd64R11, amd64RAX)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 1)
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
@@ -3103,7 +3079,6 @@ func x86EmitREP_STOSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 
 	// Fast path
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 	fastLoopLabel := cb.Len()
 	x86EmitMemStore32(cb, amd64R11, amd64RAX)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64R11, 4)
@@ -3118,7 +3093,6 @@ func x86EmitREP_STOSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	patchRel32(cb, slowJmp, slowLabel)
 	slowLoopLabel := cb.Len()
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 	x86EmitMemStore32(cb, amd64R11, amd64RAX)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 4)
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
@@ -3155,11 +3129,9 @@ func x86EmitREP_CMPSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86Comp
 
 	// Load [ESI] and [EDI], compare
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 	x86EmitMemLoad8(cb, amd64RAX, amd64R11) // AL = [ESI]
 
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 	x86EmitMemLoad8(cb, amd64RDX, amd64R11) // DL = [EDI]
 
 	// CMP AL, DL
@@ -3227,7 +3199,6 @@ func x86EmitREP_SCASB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86Comp
 
 	// Load [EDI], compare with AL
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, int32(x86AddressMask))
 	x86EmitMemLoad8(cb, amd64RDX, amd64R11) // DL = [EDI]
 
 	// CMP AL, DL
@@ -3755,7 +3726,6 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 					// Write return address to [memory + ESP]
 					amd64MOV_reg_reg32(cb, amd64R8, espHost)
 					// Mask address
-					amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, int32(x86AddressMask)) // AND
 					// MOV DWORD [RSI + R8], retAddr
 					emitMemOpSIB(cb, false, 0xC7, 0, x86AMD64RegMemBase, amd64R8, 0)
 					cb.Emit32(retAddr)

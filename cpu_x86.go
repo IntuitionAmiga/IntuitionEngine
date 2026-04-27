@@ -185,10 +185,11 @@ const (
 	x86SegGS = 5
 )
 
-// Memory size constants
+// Memory size constants. PLAN_MAX_RAM.md slice 8 retired the historical
+// 25-bit / 32 MB address mask; x86 is a flat 32-bit guest and consults
+// the bus accessors / runtime ceilings rather than a fixed mask.
 const (
-	x86MemorySize  = 32 * 1024 * 1024 // 32MB address space
-	x86AddressMask = 0x01FFFFFF       // 25-bit address mask (32MB)
+	x86MemorySize = 32 * 1024 * 1024 // legacy alias of DEFAULT_MEMORY_SIZE; retained for tests/comments
 )
 
 // NewCPU_X86 creates a new x86 CPU instance
@@ -785,84 +786,82 @@ func (c *CPU_X86) setFlagsLogic32(result uint32) {
 
 // fetch8 fetches a byte at EIP and increments EIP
 func (c *CPU_X86) fetch8() byte {
-	v := c.bus.Read(c.EIP & x86AddressMask)
+	v := c.bus.Read(c.EIP)
 	c.EIP++
 	return v
 }
 
 // fetch16 fetches a 16-bit word at EIP (little-endian) and increments EIP
 func (c *CPU_X86) fetch16() uint16 {
-	lo := c.bus.Read(c.EIP & x86AddressMask)
+	lo := c.bus.Read(c.EIP)
 	c.EIP++
-	hi := c.bus.Read(c.EIP & x86AddressMask)
+	hi := c.bus.Read(c.EIP)
 	c.EIP++
 	return uint16(lo) | (uint16(hi) << 8)
 }
 
 // fetch32 fetches a 32-bit dword at EIP (little-endian) and increments EIP
 func (c *CPU_X86) fetch32() uint32 {
-	b0 := c.bus.Read(c.EIP & x86AddressMask)
+	b0 := c.bus.Read(c.EIP)
 	c.EIP++
-	b1 := c.bus.Read(c.EIP & x86AddressMask)
+	b1 := c.bus.Read(c.EIP)
 	c.EIP++
-	b2 := c.bus.Read(c.EIP & x86AddressMask)
+	b2 := c.bus.Read(c.EIP)
 	c.EIP++
-	b3 := c.bus.Read(c.EIP & x86AddressMask)
+	b3 := c.bus.Read(c.EIP)
 	c.EIP++
 	return uint32(b0) | (uint32(b1) << 8) | (uint32(b2) << 16) | (uint32(b3) << 24)
 }
 
 // read8 reads a byte from memory
 func (c *CPU_X86) read8(addr uint32) byte {
-	return c.bus.Read(addr & x86AddressMask)
+	return c.bus.Read(addr)
 }
 
 // read16 reads a 16-bit word from memory (little-endian)
 func (c *CPU_X86) read16(addr uint32) uint16 {
-	lo := c.bus.Read(addr & x86AddressMask)
-	hi := c.bus.Read((addr + 1) & x86AddressMask)
+	lo := c.bus.Read(addr)
+	hi := c.bus.Read(addr + 1)
 	return uint16(lo) | (uint16(hi) << 8)
 }
 
 // read32 reads a 32-bit dword from memory (little-endian)
 func (c *CPU_X86) read32(addr uint32) uint32 {
 	if adapter, ok := c.bus.(*X86BusAdapter); ok {
-		addr &= x86AddressMask
 		if addr >= 0xF000 && addr < 0x10000 {
 			return adapter.bus.Read32(adapter.translateIO(addr))
 		}
 	}
-	b0 := c.bus.Read(addr & x86AddressMask)
-	b1 := c.bus.Read((addr + 1) & x86AddressMask)
-	b2 := c.bus.Read((addr + 2) & x86AddressMask)
-	b3 := c.bus.Read((addr + 3) & x86AddressMask)
+	b0 := c.bus.Read(addr)
+	b1 := c.bus.Read(addr + 1)
+	b2 := c.bus.Read(addr + 2)
+	b3 := c.bus.Read(addr + 3)
 	return uint32(b0) | (uint32(b1) << 8) | (uint32(b2) << 16) | (uint32(b3) << 24)
 }
 
 // write8 writes a byte to memory
 func (c *CPU_X86) write8(addr uint32, v byte) {
-	c.bus.Write(addr&x86AddressMask, v)
+	c.bus.Write(addr, v)
 }
 
 // write16 writes a 16-bit word to memory (little-endian)
 func (c *CPU_X86) write16(addr uint32, v uint16) {
-	c.bus.Write(addr&x86AddressMask, byte(v))
-	c.bus.Write((addr+1)&x86AddressMask, byte(v>>8))
+	c.bus.Write(addr, byte(v))
+	c.bus.Write((addr + 1), byte(v>>8))
 }
 
 // write32 writes a 32-bit dword to memory (little-endian)
 func (c *CPU_X86) write32(addr uint32, v uint32) {
 	if adapter, ok := c.bus.(*X86BusAdapter); ok {
-		addr &= x86AddressMask
 		if addr >= 0xF000 && addr < 0x10000 {
 			adapter.bus.Write32(adapter.translateIO(addr), v)
 			return
 		}
 	}
-	c.bus.Write(addr&x86AddressMask, byte(v))
-	c.bus.Write((addr+1)&x86AddressMask, byte(v>>8))
-	c.bus.Write((addr+2)&x86AddressMask, byte(v>>16))
-	c.bus.Write((addr+3)&x86AddressMask, byte(v>>24))
+	c.bus.Write(addr, byte(v))
+	c.bus.Write((addr + 1), byte(v>>8))
+	c.bus.Write((addr + 2), byte(v>>16))
+	c.bus.Write((addr + 3), byte(v>>24))
 }
 
 func x86ReadLE32(memory []byte, pc uint32) uint32 {
@@ -1027,7 +1026,7 @@ func (c *CPU_X86) tryFastMMIOPollLoop() bool {
 		return false
 	}
 
-	addr := x86ReadLE32(c.memory, pc+1) & x86AddressMask
+	addr := x86ReadLE32(c.memory, pc+1)
 	mask := x86ReadLE32(c.memory, pc+6)
 
 	adapter, ok := c.bus.(*X86BusAdapter)

@@ -1881,8 +1881,9 @@ func emitJMP(cb *CodeBuffer, ji *JITInstr, br *blockRegs, instrCount uint32) {
 	cb.Emit32(arm64SXTW(1, 1))
 	cb.Emit32(arm64ADD(arm64RegIE64PC, rsReg, 1))
 
-	emitLoadImm64(cb, 1, IE64_ADDR_MASK)
-	cb.Emit32(arm64AND(arm64RegIE64PC, arm64RegIE64PC, 1))
+	// PLAN_MAX_RAM.md slice 8 phase 8 retired the IE64_ADDR_MASK AND
+	// here. The PC widened to 64-bit in slice 3; clamping to 25 bits
+	// silently aliased high targets into low memory.
 
 	// Pack instruction count into upper 32 bits of X28
 	if br.hasBackwardBranch {
@@ -1992,8 +1993,7 @@ func emitJSR_IND(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, in
 	cb.Emit32(arm64SXTW(1, 1))
 	cb.Emit32(arm64ADD(arm64RegIE64PC, rsReg, 1))
 
-	emitLoadImm64(cb, 1, IE64_ADDR_MASK)
-	cb.Emit32(arm64AND(arm64RegIE64PC, arm64RegIE64PC, 1))
+	// PLAN_MAX_RAM.md slice 8 phase 8 retired the IE64_ADDR_MASK AND.
 
 	// Pack instruction count into upper 32 bits of X28
 	if br.hasBackwardBranch {

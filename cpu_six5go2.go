@@ -3321,6 +3321,28 @@ func (adapter *Bus6502Adapter) ResetBank() {
 	adapter.bank3Enable = false
 }
 
+// bankedCeilingProvider is the minimum interface a Bus32 implementation
+// must expose for banked CPUs to gate translation against the configured
+// banked-CPU visible ceiling (PLAN_MAX_RAM.md "Banking ABI Policy").
+type bankedCeilingProvider interface {
+	BankedVisibleCeiling() uint64
+}
+
+// resolveBankedCeiling returns the uint32-clamped banked visible ceiling
+// for the wrapped bus. Falls back to len(GetMemory()) for stub buses that
+// do not implement bankedCeilingProvider so playback rigs and lightweight
+// test buses keep their historical behaviour.
+func (adapter *Bus6502Adapter) resolveBankedCeiling() uint32 {
+	if p, ok := adapter.bus.(bankedCeilingProvider); ok {
+		c := p.BankedVisibleCeiling()
+		if c > 0xFFFFFFFF {
+			return 0xFFFFFFFF
+		}
+		return uint32(c)
+	}
+	return uint32(len(adapter.bus.GetMemory()))
+}
+
 func (adapter *Bus6502Adapter) translateExtendedBank(addr uint16) (uint32, bool) {
 	/*
 	   translateExtendedBank translates addresses in the extended bank windows
@@ -3334,13 +3356,19 @@ func (adapter *Bus6502Adapter) translateExtendedBank(addr uint16) (uint32, bool)
 	   Each bank window maps to:
 	   base_address = bank_number * 8KB
 	   actual_address = base_address + (addr - window_base)
+
+	   Translated addresses are gated on the banked-CPU visible ceiling
+	   (PLAN_MAX_RAM.md slice 8) rather than the legacy fixed
+	   DEFAULT_MEMORY_SIZE constant.
 	*/
+
+	ceiling := adapter.resolveBankedCeiling()
 
 	// Check Bank 1 window ($2000-$3FFF)
 	if adapter.bank1Enable && addr >= BANK1_WINDOW_BASE && addr < BANK1_WINDOW_BASE+BANK_WINDOW_SIZE {
 		offset := uint32(addr - BANK1_WINDOW_BASE)
 		translated := (adapter.bank1 * BANK_WINDOW_SIZE) + offset
-		if translated < DEFAULT_MEMORY_SIZE {
+		if translated < ceiling {
 			return translated, true
 		}
 	}
@@ -3349,7 +3377,7 @@ func (adapter *Bus6502Adapter) translateExtendedBank(addr uint16) (uint32, bool)
 	if adapter.bank2Enable && addr >= BANK2_WINDOW_BASE && addr < BANK2_WINDOW_BASE+BANK_WINDOW_SIZE {
 		offset := uint32(addr - BANK2_WINDOW_BASE)
 		translated := (adapter.bank2 * BANK_WINDOW_SIZE) + offset
-		if translated < DEFAULT_MEMORY_SIZE {
+		if translated < ceiling {
 			return translated, true
 		}
 	}
@@ -3358,7 +3386,7 @@ func (adapter *Bus6502Adapter) translateExtendedBank(addr uint16) (uint32, bool)
 	if adapter.bank3Enable && addr >= BANK3_WINDOW_BASE && addr < BANK3_WINDOW_BASE+BANK_WINDOW_SIZE {
 		offset := uint32(addr - BANK3_WINDOW_BASE)
 		translated := (adapter.bank3 * BANK_WINDOW_SIZE) + offset
-		if translated < DEFAULT_MEMORY_SIZE {
+		if translated < ceiling {
 			return translated, true
 		}
 	}

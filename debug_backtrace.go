@@ -24,7 +24,10 @@ func backtrace(cpu DebuggableCPU, depth int) []uint64 {
 	}
 }
 
-// backtraceIE64 walks 8-byte stack slots, masking to IE64_ADDR_MASK.
+// backtraceIE64 walks 8-byte stack slots and reports each frame's full
+// 64-bit return address. The legacy IE64_ADDR_MASK 25-bit/32 MB mask was
+// retired by PLAN_MAX_RAM.md slice 3; debug formatting now preserves the
+// full virtual/physical address so traces above 4 GiB are readable.
 func backtraceIE64(cpu DebuggableCPU, depth int) []uint64 {
 	sp, _ := cpu.GetRegister("SP")
 	var result []uint64
@@ -33,7 +36,7 @@ func backtraceIE64(cpu DebuggableCPU, depth int) []uint64 {
 		if len(data) < 8 {
 			break
 		}
-		addr := binary.LittleEndian.Uint64(data) & IE64_ADDR_MASK
+		addr := binary.LittleEndian.Uint64(data)
 		result = append(result, addr)
 		sp += 8
 	}
