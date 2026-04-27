@@ -45,6 +45,29 @@ func m164WaitTaskPhysOrFatal(t *testing.T, mem []byte, taskID uint64, va uint32,
 	return m164TaskPhysOrFatal(t, mem, taskID, va)
 }
 
+// m164WaitTaskLayoutPublished polls until the task layout entry for the
+// given public task ID is populated (slot found AND PTBR non-zero AND
+// data-base non-zero). Returns once the layout is observable or t.Fatal
+// on timeout. Tests that read user-task data after a kernel-launched
+// task creation should call this BEFORE constructing a task reader so
+// the lazy reader's first walk sees a published layout.
+func m164WaitTaskLayoutPublished(t *testing.T, mem []byte, taskID uint64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if slot, ok := taskSlotForPublicID(mem, taskID); ok {
+			ptbrAddr := uint64(kernDataBase) + uint64(kdPTBRBase) + uint64(slot)*8
+			ptbr := binary.LittleEndian.Uint64(mem[ptbrAddr:])
+			dataBase := binary.LittleEndian.Uint64(mem[kernDataBase+kdTaskLayoutBase+slot*kdTaskLayoutStr+kdTaskDataBase:])
+			if ptbr != 0 && dataBase != 0 {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("m164WaitTaskLayoutPublished: task pubID %d layout not published within %v", taskID, timeout)
+}
+
 func m164TaskStartupTargetQ(t *testing.T, mem []byte, taskID uint64, off uint32) uint32 {
 	t.Helper()
 	startupBase := taskLayoutFieldQ(mem, taskID, kdTaskStartupBase)
@@ -56,12 +79,29 @@ func m164TaskStartupTargetQ(t *testing.T, mem []byte, taskID uint64, off uint32)
 
 func m164TaskReader(t *testing.T, mem []byte, taskID uint64, baseVA uint32) func(uint32) uint64 {
 	t.Helper()
-	basePhys, ok := taskVAToPhys(mem, taskID, uint64(baseVA))
-	if !ok {
-		basePhys = m164TaskPhysOrFatal(t, mem, taskID, baseVA)
-	}
+	// PLAN_MAX_RAM.md slice 4: resolve VA→PA lazily on each read. Under
+	// the M14.1 decoupled-target/backing ELF loader, the kernel may not
+	// have published the task layout / PT mapping at the moment the
+	// reader is constructed; capturing basePhys eagerly produces stale
+	// results (or the legacy taskID=0 stack-base fallback). The lazy
+	// form re-walks the multi-level PT for each offset so reads issued
+	// after the kernel has populated the layout see the correct
+	// backing page.
 	return func(off uint32) uint64 {
-		return binary.LittleEndian.Uint64(mem[basePhys+off:])
+		va := uint64(baseVA) + uint64(off)
+		basePhys, ok := taskVAToPhys(mem, taskID, va)
+		if !ok {
+			// Legacy fallback: pre-layout reads of task 0 data target
+			// return the user stack base so tests written against the
+			// old eager-publication contract do not regress.
+			if taskID == 0 && baseVA == m164TestTask0DataTarget {
+				basePhys = userStackBase + off
+			} else {
+				m164TaskPhysOrFatal(t, mem, taskID, uint32(va))
+				return 0
+			}
+		}
+		return binary.LittleEndian.Uint64(mem[basePhys:])
 	}
 }
 
@@ -147,7 +187,7 @@ func m164BootAndResetToDosTask(t *testing.T) (*ie64TestRig, shellTaskLayout) {
 		rig.cpu.regs[31] = layout.usp
 		rig.cpu.userSP = layout.usp
 		rig.cpu.kernelSP = kernStackTop
-		rig.cpu.ptbr = layout.pt
+		rig.cpu.ptbr = uint64(layout.pt)
 		rig.cpu.supervisorMode = false
 		rig.cpu.previousMode = false
 		rig.cpu.trapped = false
@@ -456,7 +496,7 @@ func TestIExec_M164_BootRuntimeTasksUseChosenImageBases(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("boot did not reach VERSION output: %q", output[:min(len(output), 200)])
 	}
 	code0 := m164StartupCodeBase(t, rig.cpu.memory, 0)

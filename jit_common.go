@@ -184,38 +184,48 @@ func scanBlockWithLimit(memory []byte, startPC, maxPC uint32) []JITInstr {
 	return instrs
 }
 
-// needsFallback returns true if the block's first instruction requires
-// the interpreter (FPU, WAIT, HALT, etc.) and can't be JIT-compiled.
+// needsFallback returns true if the block contains any instruction that
+// the JIT cannot safely compile. The first-instruction-only opcodes
+// (HALT/WAIT/RTI/MMU privileged) preserve legacy block-entry behavior;
+// the new full-block scan catches PLAN_MAX_RAM.md slice 4 hazards where
+// the JIT memory emitters and dynamic-JMP target masking still operate
+// in 32-bit address space — a LOAD/STORE to a high-phys backing page or
+// a JMP/JSR_IND to a high VA would either alias or wrap. Forcing those
+// blocks through the interpreter is correct until the JIT emitters
+// widen to 64-bit addressing.
 func needsFallback(instrs []JITInstr) bool {
 	if len(instrs) == 0 {
 		return true
 	}
+	// Block-entry-only checks (legacy behavior).
 	op := instrs[0].opcode
-	// Transcendentals as sole instruction need interpreter (no native ARM64 equivalent)
 	switch op {
 	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW, OP_DMOD:
 		return true
-	}
-	// HALT and WAIT need interpreter (they block/sleep)
-	if op == OP_HALT64 || op == OP_WAIT64 {
+	case OP_HALT64, OP_WAIT64, OP_RTI64:
 		return true
-	}
-	// RTI needs interpreter (complex interrupt state management)
-	if op == OP_RTI64 {
-		return true
-	}
-	// MMU/privilege opcodes need interpreter (they mutate CPU state)
-	switch op {
 	case OP_SYSCALL, OP_ERET, OP_MTCR, OP_MFCR, OP_TLBFLUSH, OP_TLBINVAL, OP_SMODE,
 		OP_SUAEN, OP_SUADIS:
 		return true
-	}
-	// Atomic RMW always interpreted. The interpreter path owns the
-	// sequentially-consistent atomicRMW64 contract; the JIT must not
-	// silently grow a weaker or partial inline implementation.
-	switch op {
 	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 		return true
+	}
+	// Full-block scan for slice 4 hazards: any memory op or dynamic
+	// indirect control-flow op forces interpreter dispatch for the
+	// whole block. Heavy-handed but correct: the JIT memory emitters
+	// truncate addr to uint32 (e.g. jit_emit_amd64.go:1578) and the
+	// JIT JMP/JSR_IND emitters AND the target with the legacy 32 MB
+	// IE64_ADDR_MASK (jit_emit_amd64.go:1822). Either path silently
+	// aliases high-VA / high-phys accesses. Bail until the JIT widens.
+	for i := range instrs {
+		switch instrs[i].opcode {
+		case OP_LOAD, OP_STORE,
+			OP_FLOAD, OP_FSTORE,
+			OP_DLOAD, OP_DSTORE:
+			return true
+		case OP_JMP, OP_JSR_IND:
+			return true
+		}
 	}
 	return false
 }

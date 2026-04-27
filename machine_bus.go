@@ -696,6 +696,18 @@ func (bus *MachineBus) VisibleCeiling() uint64 {
 	return bus.sizing.VisibleCeiling
 }
 
+// ActiveVisiblePages returns the IE64 MMU page count derived from
+// active_visible_ram and MMU_PAGE_SIZE. PLAN_MAX_RAM.md slice 4c replaces
+// the fixed MMU_NUM_PAGES = 8192 (32 MB / 4 KiB) ABI constant with this
+// runtime accessor; allocator sizing, guest sysinfo, and the future IE64
+// CR_RAM_SIZE_BYTES path all read from this single source of truth.
+//
+// The result is rounded down to whole pages so a stale or hand-built sizing
+// cannot bleed a partial page through to the kernel allocator.
+func (bus *MachineBus) ActiveVisiblePages() uint64 {
+	return bus.sizing.ActiveVisibleRAM / uint64(MMU_PAGE_SIZE)
+}
+
 func (bus *MachineBus) normalizeFaultAddr(addr uint32) uint32 {
 	if addr >= 0xFFFF0000 {
 		mapped := addr & 0x0000FFFF

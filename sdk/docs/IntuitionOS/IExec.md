@@ -260,24 +260,25 @@ Within the supervisor region:
 | Kernel data | `$08D000-$09DFFF` | 68 KB window | Scheduler state, TCB array, PTBR array, ports, manifests, quota metadata |
 | Kernel stack guard | `$09E000-$09EFFF` | 4 KB | Non-present guard page below the kernel stack floor |
 | Kernel stack | `$09F000-$09FFFF` | 4 KB | Grows downward; top = `$0A0000` |
-| Task page tables | `$800000-$9FFFFF` | 2 MB | Fixed 64 KiB PT window (`USER_PT_BASE`) before allocator spillover |
+| Task page tables | `$800000-$9FFFFF` | 2 MB | Fixed PT window (`USER_PT_BASE`); 16 slots × 128 KiB each (`USER_PT_STRIDE`, slice 4: bumped from 64 KiB to hold the multi-level radix walk's top + intermediates + leaves). Spillover into allocator pool covers tasks beyond the fixed window. |
 
 ### 2.3 Per-Task Page Tables
 
-Each task has its own single-level page table (8192 entries, 64 KB). The kernel identity-maps supervisor pages (0-383, covering `$000000-$17FFFF`) as supervisor-only (no U bit) in every task's page table. User pages are mapped with the U (user-accessible) bit set, and only for pages belonging to that task.
+Each task has its own multi-level sparse-radix page table (PLAN_MAX_RAM.md slice 4). The walker is a 6-level tree: top 7 bits of VPN + 5 × 9-bit interior nodes = 52-bit VPN, supporting full 64-bit virtual addresses. The 1 KiB top-level table sits at `PTBR + 0..0x3FF`; the per-PT intermediate-table allocator cursor (`u64`) lives at `PTBR + PT_CURSOR_OFFSET` (0x400); intermediate and leaf tables (4 KiB each, 512 entries) grow from `PTBR + 0x1000` upward inside the task's `USER_PT_STRIDE` region (128 KiB per slot — `USER_PT_SLOT_PAGES = 32`, decoupled from the 64 KiB `USER_SLOT_STRIDE` that still spaces user code/stack/data slots). The kernel identity-maps supervisor pages (0-383, covering `$000000-$17FFFF`) as supervisor-only (no U bit) in every task's page table via `kern_install_kern_mappings` (full leaf replication v0; alloc-pool, USER_CODE region, USER_PT region also replicated). User pages are mapped with the U (user-accessible) bit set, and only for pages belonging to that task.
 
 Page table entry format (64-bit):
 
 | Bits | Field | Description |
 |------|-------|-------------|
-| 63:13 | PPN | Physical page number (PPN << 13 = physical address) |
-| 7 | D | Dirty (hardware-maintained) |
-| 6 | A | Accessed (hardware-maintained) |
-| 5 | U | User-accessible (0 = supervisor only) |
+| 63:12 | PPN | Physical page number (PPN << 12 = physical address; 52-bit field) |
+| 11:7 | reserved | Must be zero; reserved for future PTE metadata |
+| 6 | D | Dirty (software-maintained) |
+| 5 | A | Accessed (software-maintained) |
+| 4 | U | User-accessible (0 = supervisor only) |
 | 3 | X | Execute permission |
 | 2 | W | Write permission |
 | 1 | R | Read permission |
-| 0 | P | Present |
+| 0 | P | Present (also used in interior nodes to mark "table present"; PPN points at the next-level table's physical page) |
 
 ### 2.4 W^X Enforcement
 

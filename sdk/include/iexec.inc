@@ -222,6 +222,11 @@ SYSINFO_QUOTA_LIMIT   equ 5        ; M15.6 G3: R1=query, R2=QUOTA_KIND_*. Return
                                    ; default limit in R1. Limit is currently global, not
                                    ; per-task, so R3 is ignored. Diagnostic only.
 SYSINFO_PORT_NAME_BY_INDEX equ 6   ; M16.1: write i-th public port name to caller buffer
+; PLAN_MAX_RAM.md slice 4: total guest RAM in 4 KiB pages, derived from
+; the SYSINFO low-MMIO block. User-mode callers can only reach the MMIO
+; via this syscall; the kernel reads SYSINFO_TOTAL_RAM_LO/HI directly
+; through its identity-mapped low-MMIO window.
+SYSINFO_GUEST_RAM_PAGES equ 8
 
 ; ===========================================================================
 ; Kernel Memory Layout
@@ -625,13 +630,14 @@ REPLY_PORT_NONE   equ 0xFFFF      ; no reply port
 ;
 ; M12: USER_PT_BASE shifted from 0x680000 to 0x700000 because MAX_TASKS
 ; doubled from 8 to 16 (slot region grew from 0x80000 to 0x100000).
-USER_PT_BASE      equ 0x800000    ; Task page tables (each 64 KiB) — M12.6 Phase D: was 0x700000.
-                                  ; Moved up by 1 MiB (one slot region width) to make
-                                  ; room for the doubled USER_CODE_BASE region. The PT
-                                  ; region now occupies pages 0x800..0xA00 (32 slots ×
-                                  ; 16 pages). The allocator pool was shifted from
-                                  ; page 0x800 to page 0xA00 to make room — see
-                                  ; ALLOC_POOL_BASE / ALLOC_POOL_PAGES below.
+USER_PT_BASE      equ 0x800000    ; Task page tables — M12.6 Phase D: was 0x700000;
+                                  ; PLAN_MAX_RAM.md slice 4: per-task PT slot grew from
+                                  ; 64 KiB (flat 8192-entry table) to 128 KiB to hold the
+                                  ; multi-level radix-walk intermediates and leaves.
+                                  ; Region still spans pages 0x800..0xA00 (2 MiB) so it
+                                  ; now holds 16 fixed slots × 32 pages instead of 32
+                                  ; slots × 16 pages; spillover into allocator pool
+                                  ; covers tasks beyond the fixed window.
 USER_CODE_BASE    equ 0x600000    ; Task code pages (physical)
 USER_STACK_BASE   equ 0x601000    ; Task stack pages
 USER_DATA_BASE    equ 0x602000    ; Task data pages
@@ -646,8 +652,17 @@ USER_VPN_STRIDE     equ 0x10     ; 0x10000 >> 12
 ; and MAX_TASKS * USER_SLOT_STRIDE so the kernel boot can extend the kernel
 ; PT to cover this region (see iexec.s phase 3b' kern_userpt_map).
 USER_PT_PAGE_BASE   equ 0x800    ; USER_PT_BASE >> MMU_PAGE_SHIFT — M12.6 Phase D: was 0x700
-USER_PT_PAGE_END    equ 0xA00    ; (USER_PT_BASE + MAX_TASKS * USER_SLOT_STRIDE) >> MMU_PAGE_SHIFT — M12.6 Phase D: was 0x800
-USER_PT_SLOT_PAGES  equ 16       ; one task PT consumes 16 pages (64 KiB)
+USER_PT_PAGE_END    equ 0xA00    ; (USER_PT_BASE + 2 MiB) >> MMU_PAGE_SHIFT — region size unchanged
+                                 ; under slice 4 (16 slots × 32 pages = 512 pages = 2 MiB).
+USER_PT_SLOT_PAGES  equ 32       ; one task PT consumes 32 pages (128 KiB) — PLAN_MAX_RAM.md
+                                 ; slice 4: bumped from 16 to hold the multi-level radix-
+                                 ; walk top + intermediates + leaves. Worst-case footprint
+                                 ; per task is ~88 KiB (4 intermediate tables + ~17 leaves
+                                 ; covering kernel ranges, USER_DYN, and grant MMIO),
+                                 ; rounded up to 128 KiB for headroom.
+USER_PT_STRIDE      equ 0x20000  ; USER_PT_SLOT_PAGES * MMU_PAGE_SIZE — slice 4: decoupled
+                                 ; from USER_SLOT_STRIDE (which still spaces user code/
+                                 ; stack/data slots at 64 KiB).
 
 ; M13 phase 2: dynamic task images/PTs are allocated inside the existing
 ; reserved windows instead of from task_id * USER_SLOT_STRIDE. The image
@@ -672,12 +687,68 @@ PTE_D             equ 0x40        ; Dirty
 
 ; ===========================================================================
 ; MMU Constants
+;
+; PLAN_MAX_RAM.md slice 4 design (phase 1 — additive constants only):
+;   - 64-bit virtual and physical addresses; 52-bit PPN field at PTE bits
+;     12..63 (PTE_PPN_SHIFT = 12, PTE_PPN_BITS = 52).
+;   - Page table is a 6-level sparse radix tree:
+;       level 0 (top)  : VPN bits 51..45 (7 bits, 128 entries × 8 = 1 KiB)
+;       levels 1..5    : 9 bits each (512 entries × 8 = 4 KiB per table)
+;   - Intermediate entries use the same PTE format. P bit signals
+;     "table present"; PPN points to next-level table physical page.
+;
+; The legacy MMU_NUM_PAGES constant is retained until phase 5 retires its
+; consumers (cmd/avail.s, kernel sysinfo); new code must derive page
+; counts from active visible RAM via SYSINFO MMIO, not this constant.
 ; ===========================================================================
 
-MMU_PAGE_SIZE     equ 0x1000      ; 4 KiB
-MMU_PAGE_SHIFT    equ 12
-MMU_NUM_PAGES     equ 8192
-KERN_PAGES        equ 384         ; Pages 0-383 are kernel-mapped
+MMU_PAGE_SIZE      equ 0x1000     ; 4 KiB
+MMU_PAGE_SHIFT     equ 12
+PTE_PPN_SHIFT      equ 12         ; PPN starts at PTE bit 12
+PTE_PPN_BITS       equ 52         ; PPN field width (bits 12..63)
+PT_LEVELS          equ 6          ; 6-level radix
+PT_TOP_BITS        equ 7          ; top level: 128 entries
+PT_NODE_BITS       equ 9          ; levels 1..5: 512 entries each
+PT_TOP_INDEX_MASK  equ 0x7F
+PT_NODE_INDEX_MASK equ 0x1FF
+PT_NODE_SIZE_BYTES equ 0x1000     ; 4 KiB per intermediate/leaf table
+;
+; PLAN_MAX_RAM.md slice 2 / slice 4 SYSINFO low-MMIO. The guest reads
+; total guest RAM and active visible RAM as little-endian uint64 values
+; assembled from low/high 32-bit register pairs. Reads are stable for
+; the lifetime of the emulator process; writes are accepted but ignored.
+SYSINFO_TOTAL_RAM_LO   equ 0xF2400
+SYSINFO_TOTAL_RAM_HI   equ 0xF2404
+SYSINFO_ACTIVE_RAM_LO  equ 0xF2408
+SYSINFO_ACTIVE_RAM_HI  equ 0xF240C
+;
+; Per-PT allocator cursor: the multi-level walker stores the next-free
+; intermediate-table physical address at PTBR + PT_CURSOR_OFFSET. The
+; cursor is colocated with the top-level table inside the PT region
+; (the 1 KiB top occupies offsets 0..0x3FF; the cursor lives at the
+; next aligned u64 slot past it). Each PTBR carries its own cursor —
+; kernel and user-task page tables do not share an allocator pool.
+PT_CURSOR_OFFSET   equ 0x400      ; offset of u64 pool cursor relative to PTBR
+PT_SLOT_END_OFFSET equ 0x408      ; offset of u64 slot-end (PTBR + slot_size_bytes)
+                                  ; relative to PTBR. install_leaf consults this on
+                                  ; every cursor bump and panics via
+                                  ; kern_guru_meditation if a new intermediate or
+                                  ; leaf table allocation would push the cursor past
+                                  ; the slot end (slice 4 hardening: prevents one
+                                  ; task's PT slot from corrupting the adjacent slot
+                                  ; if more leaves are demanded than the slot can
+                                  ; hold). kern_pt_zero_and_seed seeds this from
+                                  ; its R2 input.
+KERN_PT_STRIDE     equ 0x10000    ; 64 KiB kernel PT slot — KERN_PAGE_TABLE region.
+                                  ; Smaller than USER_PT_STRIDE (128 KiB) because
+                                  ; kernel PT only needs to hold the supervisor
+                                  ; identity mappings installed by
+                                  ; kern_install_kern_mappings (worst case ~60 KiB),
+                                  ; not the user-dyn / grant-installed leaves a
+                                  ; user task accumulates at runtime. Bounded above
+                                  ; by KERN_DATA_BASE - KERN_PAGE_TABLE.
+MMU_NUM_PAGES      equ 8192       ; legacy 32 MB ABI; retained until phase 5
+KERN_PAGES         equ 384        ; Pages 0-383 are kernel-mapped
 KERN_IMAGE_PAGE_END equ (KERN_PAGE_TABLE >> MMU_PAGE_SHIFT)
 KERN_PT_PAGE_BASE equ (KERN_PAGE_TABLE >> MMU_PAGE_SHIFT)
 KERN_PT_PAGE_END  equ (KERN_DATA_BASE >> MMU_PAGE_SHIFT)

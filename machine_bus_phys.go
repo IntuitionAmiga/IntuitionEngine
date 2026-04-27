@@ -88,6 +88,15 @@ func (bus *MachineBus) addrInBacking(addr, length uint64) bool {
 	return end <= bus.backing.Size()
 }
 
+// PhysMapped reports whether [addr, addr+length) is fully mapped through
+// the legacy low memory window or the bound Backing. PLAN_MAX_RAM.md
+// slice 4 callers use this to fault on data accesses that translate to
+// physical addresses outside both windows, instead of accepting the
+// non-fault Read/Write helpers' silent zero/no-op behavior.
+func (bus *MachineBus) PhysMapped(addr, length uint64) bool {
+	return bus.addrInLowMemory(addr, length) || bus.addrInBacking(addr, length)
+}
+
 // ReadPhys8 reads a byte at the given uint64 physical address.
 func (bus *MachineBus) ReadPhys8(addr uint64) byte {
 	if bus.addrInLowMemory(addr, 1) {

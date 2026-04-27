@@ -113,7 +113,7 @@ func TestJIT_MMUEnabled_FetchFault(t *testing.T) {
 	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	// Make PROG_START page non-executable
-	progPage := uint16(PROG_START >> MMU_PAGE_SHIFT)
+	progPage := uint64(PROG_START >> MMU_PAGE_SHIFT)
 	writePTE(cpu, progPage, makePTE(progPage, PTE_P|PTE_R|PTE_W|PTE_U)) // no X
 
 	rig.loadInstructions(ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0))
@@ -136,16 +136,19 @@ func TestJIT_MMUEnabled_CacheIsScopedByPTBR(t *testing.T) {
 	}()
 
 	const (
-		pt1       = uint32(0x80000)
-		pt2       = uint32(0x90000)
-		virtPage  = uint16(PROG_START >> MMU_PAGE_SHIFT)
-		physPage1 = uint16(0x40)
-		physPage2 = uint16(0x50)
+		pt1       = uint64(0x80000)
+		pt2       = uint64(0x100000)
+		virtPage  = uint64(PROG_START >> MMU_PAGE_SHIFT)
+		physPage1 = uint64(0x40)
+		physPage2 = uint64(0x50)
 	)
 
 	cpu.mmuEnabled = true
-	binary.LittleEndian.PutUint64(cpu.memory[pt1+uint32(virtPage)*8:], makePTE(physPage1, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
-	binary.LittleEndian.PutUint64(cpu.memory[pt2+uint32(virtPage)*8:], makePTE(physPage2, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+	flags := byte(PTE_P | PTE_R | PTE_W | PTE_X | PTE_U)
+	cpu.ptbr = pt1
+	mmuMap(cpu, virtPage<<MMU_PAGE_SHIFT, physPage1, flags)
+	cpu.ptbr = pt2
+	mmuMap(cpu, virtPage<<MMU_PAGE_SHIFT, physPage2, flags)
 
 	copy(cpu.memory[uint32(physPage1)<<MMU_PAGE_SHIFT:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x1111))
 	copy(cpu.memory[(uint32(physPage1)<<MMU_PAGE_SHIFT)+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
@@ -310,7 +313,7 @@ func TestJIT_MMU_StackFaultUnderJIT(t *testing.T) {
 	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	// Make stack page read-only
-	stackPage := uint16((STACK_START - 8) >> MMU_PAGE_SHIFT)
+	stackPage := uint64((STACK_START - 8) >> MMU_PAGE_SHIFT)
 	writePTE(cpu, stackPage, makePTE(stackPage, PTE_P|PTE_R|PTE_X|PTE_U))
 
 	rig.loadInstructions(
@@ -331,9 +334,18 @@ func TestJIT_MMU_KernelBootstrap(t *testing.T) {
 	cpu.jitEnabled = true
 
 	ptBase := uint32(0x80000)
+	cpu.ptbr = uint64(ptBase)
 	for i := 0; i < 160; i++ {
-		pte := makePTE(uint16(i), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U)
-		binary.LittleEndian.PutUint64(cpu.memory[ptBase+uint32(i)*8:], pte)
+		mmuMap(cpu, uint64(i)<<MMU_PAGE_SHIFT, uint64(i), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U)
+	}
+	// Identity-map the PT region (top + intermediates) so the bootstrap
+	// program running in the legacy 32 MB space can reach the table.
+	poolEnd := mmuTestState[cpu.ptbr]
+	if poolEnd == 0 {
+		poolEnd = cpu.ptbr + mmuTestPoolBaseOffset
+	}
+	for p := cpu.ptbr >> MMU_PAGE_SHIFT; p <= (poolEnd-1)>>MMU_PAGE_SHIFT; p++ {
+		mmuMap(cpu, p<<MMU_PAGE_SHIFT, p, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U)
 	}
 
 	trapAddr := uint64(0x9000)
@@ -808,11 +820,11 @@ func TestJIT_MMU_HighVA_DosBootfsStatPrepPreservesRelpathPointer(t *testing.T) {
 
 	codeVirt := uint32(0x600000)
 	codePhys := uint32(0x100000)
-	writePTE(cpu, uint16(codeVirt>>MMU_PAGE_SHIFT), makePTE(uint16(codePhys>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+	writePTE(cpu, uint64(codeVirt>>MMU_PAGE_SHIFT), makePTE(uint64(codePhys>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
 
 	dataVirt := uint32(0x60A000)
 	dataPhys := uint32(0x110000)
-	writePTE(cpu, uint16(dataVirt>>MMU_PAGE_SHIFT), makePTE(uint16(dataPhys>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+	writePTE(cpu, uint64(dataVirt>>MMU_PAGE_SHIFT), makePTE(uint64(dataPhys>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
 
 	cpu.PC = uint64(codeVirt)
 	cpu.regs[29] = uint64(dataVirt)
@@ -855,11 +867,11 @@ func TestJIT_MMU_HighVA_JsrIntoHostfsStyleHelperPreservesR1Argument(t *testing.T
 
 	codeVirt := uint32(0x600000)
 	codePhys := uint32(0x120000)
-	writePTE(cpu, uint16(codeVirt>>MMU_PAGE_SHIFT), makePTE(uint16(codePhys>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+	writePTE(cpu, uint64(codeVirt>>MMU_PAGE_SHIFT), makePTE(uint64(codePhys>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
 
 	dataVirt := uint32(0x60A000)
 	dataPhys := uint32(0x121000)
-	writePTE(cpu, uint16(dataVirt>>MMU_PAGE_SHIFT), makePTE(uint16(dataPhys>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+	writePTE(cpu, uint64(dataVirt>>MMU_PAGE_SHIFT), makePTE(uint64(dataPhys>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
 
 	cpu.PC = uint64(codeVirt)
 	cpu.regs[29] = uint64(dataVirt)

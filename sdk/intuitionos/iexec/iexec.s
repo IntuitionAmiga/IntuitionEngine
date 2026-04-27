@@ -44,81 +44,16 @@ if KERNEL_STACK_CANARY_ENABLED
 endif
 
     ; ---------------------------------------------------------------
-    ; 3. Build kernel page table with explicit permission classes.
-    ;    Start from supervisor R/W for the low kernel-mapped window, then
-    ;    tighten the immutable kernel image pages to supervisor R/X.
+    ; 3. Build kernel page table.
+    ;    PLAN_MAX_RAM.md slice 4: install all kernel/supervisor leaves
+    ;    via the multi-level walker. The boot path and build_user_pt
+    ;    share kern_install_kern_mappings so each task's PT replicates
+    ;    the kernel mappings (full leaf replication, v0 design).
     ; ---------------------------------------------------------------
-    move.l  r2, #KERN_PAGE_TABLE
-    move.l  r4, #0
-.kern_pt_loop:
-    lsl     r3, r4, #13
-    or      r3, r3, #(PTE_P | PTE_R | PTE_W)
-    lsl     r5, r4, #3
-    add     r5, r5, r2
-    store.q r3, (r5)
-    add     r4, r4, #1
-    move.l  r6, #KERN_PAGES
-    blt     r4, r6, .kern_pt_loop
-
-    ; Tighten the assembled kernel image below KERN_PAGE_TABLE to supervisor
-    ; R/X. This covers kernel text, rodata, and immutable embedded assets.
-    move.l  r2, #KERN_PAGE_TABLE
-    move.l  r4, #0
-.kern_image_rx_map:
-    move.l  r6, #KERN_IMAGE_PAGE_END
-    bge     r4, r6, .kern_image_rx_done
-    lsl     r3, r4, #13
-    or      r3, r3, #(PTE_P | PTE_R | PTE_X)
-    lsl     r5, r4, #3
-    add     r5, r5, r2
-    store.q r3, (r5)
-    add     r4, r4, #1
-    bra     .kern_image_rx_map
-.kern_image_rx_done:
-    ; R1: leave one non-present supervisor page below the kernel stack so a
-    ; downward overflow faults as FAULT_NOT_PRESENT instead of scribbling into
-    ; kernel data.
-    move.l  r3, #0
-    move.l  r4, #KERN_STACK_GUARD_PAGE
-    lsl     r5, r4, #3
-    add     r5, r5, r2
-    store.q r3, (r5)
-
-    ; 3b. Add supervisor-only mappings for the entire dynamic task-image
-    ; window (USER_IMAGE_BASE..USER_PT_BASE). M13 phase 2 no longer derives
-    ; code/stack/data placement from task_id * USER_SLOT_STRIDE, so the
-    ; kernel maps the whole image window once instead of per-slot ranges.
-    move.l  r4, #USER_CODE_VPN_BASE
-    move.l  r6, #USER_PT_PAGE_BASE
-.kern_user_map:
-    bge     r4, r6, .kern_user_map_done
-    lsl     r3, r4, #13
-    or      r3, r3, #(PTE_P | PTE_R | PTE_W)
-    lsl     r5, r4, #3
-    add     r5, r5, r2
-    store.q r3, (r5)
-    add     r4, r4, #1
-    bra     .kern_user_map
-.kern_user_map_done:
-
-    ; 3b'. Extend kernel PT: identity-map task PT region
-    ;      (USER_PT_BASE .. USER_PT_BASE + MAX_TASKS * USER_SLOT_STRIDE)
-    ;      as supervisor P|R|W. Required because USER_PT_BASE = $680000 is
-    ;      outside the kernel-mapped range (pages 0..KERN_PAGES-1, phase 3a)
-    ;      AND outside the user-slot range (pages USER_CODE_VPN_BASE..,
-    ;      phase 3b), so it must be mapped explicitly here so the kernel
-    ;      can read/write task page tables after the MMU is enabled.
-    move.l  r2, #KERN_PAGE_TABLE
-    move.l  r4, #USER_PT_PAGE_BASE       ; start page (= USER_PT_BASE >> 12)
-    move.l  r6, #USER_PT_PAGE_END        ; end page exclusive
-.kern_userpt_map:
-    lsl     r3, r4, #13                  ; PPN << 13
-    or      r3, r3, #(PTE_P | PTE_R | PTE_W)
-    lsl     r5, r4, #3                   ; offset in PT = page * 8
-    add     r5, r5, r2
-    store.q r3, (r5)
-    add     r4, r4, #1
-    blt     r4, r6, .kern_userpt_map
+    move.l  r1, #KERN_PAGE_TABLE
+    move.l  r2, #KERN_PT_STRIDE          ; slice 4 hardening: 64 KiB kernel PT slot
+    jsr     kern_pt_zero_and_seed        ; pre-zero + cursor at R1+0x400 + slot end at R1+0x408
+    jsr     kern_install_kern_mappings   ; populate all kernel leaves
 
     ; ---------------------------------------------------------------
     ; 4. Initialize kernel data (MMU still off)
@@ -378,23 +313,9 @@ endif
     move.l  r3, #QUOTA_DEFAULT_GRANTS
     store.l r3, 16(r2)
 
-    ; ---------------------------------------------------------------
-    ; 6d. Extend kernel PT: map allocation pool pages (0x700-0x1FFF)
-    ;     as supervisor P|R|W for MEMF_CLEAR zeroing
-    ; ---------------------------------------------------------------
-    move.l  r2, #KERN_PAGE_TABLE
-    move.l  r4, #ALLOC_POOL_BASE        ; start page = 0x700
-    move.l  r6, #ALLOC_POOL_BASE
-    move.l  r7, #ALLOC_POOL_PAGES
-    add     r6, r6, r7                  ; end page = 0x700 + 6400 = 0x2000
-.kern_pool_map:
-    lsl     r3, r4, #13                 ; PPN << 13
-    or      r3, r3, #(PTE_P | PTE_R | PTE_W)
-    lsl     r5, r4, #3                  ; offset in PT = page * 8
-    add     r5, r5, r2
-    store.q r3, (r5)
-    add     r4, r4, #1
-    blt     r4, r6, .kern_pool_map
+    ; PLAN_MAX_RAM.md slice 4: alloc-pool mapping was folded into the
+    ; main kern_install_kern_mappings call earlier in boot — no separate
+    ; loop needed here.
 
     ; ---------------------------------------------------------------
     ; 7. Enable MMU + M15.6 G2 supervisor guards (SKEF, SKAC).
@@ -602,6 +523,348 @@ kern_put_hex:
     rts
 
 ; ============================================================================
+; Multi-level Page Table Helper (PLAN_MAX_RAM.md slice 4)
+; ============================================================================
+;
+; kern_pt_install_leaf: install a leaf PTE at the multi-level walk
+; location for a given virtual page number.
+;
+; Layout: 6-level sparse radix (top 7 bits + 5 × 9 bits = 52-bit VPN).
+;   Level 0 (top)  : VPN bits 51..45, 7 bits, 128 entries × 8 = 1 KiB.
+;   Levels 1..5    : 9 bits each, 512 entries × 8 = 4 KiB per table.
+; Intermediate entries are PTE-format with P bit set; PPN points at the
+; next-level table (page-aligned phys address >> MMU_PAGE_SHIFT).
+;
+; Inputs:
+;   R1 = PTBR (top-level table physical address; preserved)
+;   R2 = VPN  (52-bit virtual page number; preserved)
+;   R3 = leaf PTE value (already constructed: PPN<<12 | flags; preserved)
+; Side effect: per-PT pool cursor at R1+PT_CURSOR_OFFSET is advanced
+; when an intermediate or leaf table is allocated.
+;
+; PLAN_MAX_RAM.md slice 4 design: the routine uses R5-R12 as caller-
+; saved scratch per ABI v0, but to keep callers oblivious to its
+; register usage (so we can drop install_leaf calls into existing
+; flat-PT loops that already use R4-R11 for state) we save and restore
+; R5-R12 around the body. Inputs R1-R3 are read-only.
+;
+; Internal register map (after the entry preservation block):
+;   R5  = current table addr (running pointer; updated by .pti_descend)
+;   R6  = per-level idx
+;   R7  = PTE address (current_table + idx*8)
+;   R8  = PTE value or freshly constructed intermediate-table PTE
+;   R9  = scratch (KERN_DATA_BASE / zero-loop pointer)
+;   R10 = pool cursor / zero-loop counter
+;   R11 = new intermediate table base
+;   R12 = present-bit test
+kern_pt_install_leaf:
+    push    r5
+    push    r6
+    push    r7
+    push    r8
+    push    r9
+    push    r10
+    push    r11
+    push    r12
+    move.q  r5, r1                              ; r5 = current table = PTBR
+    ; Level 0: idx = (vpn >> 45) & PT_TOP_INDEX_MASK
+    lsr     r6, r2, #45
+    and     r6, r6, #PT_TOP_INDEX_MASK
+    jsr     .pti_descend
+    ; Level 1: idx = (vpn >> 36) & PT_NODE_INDEX_MASK
+    lsr     r6, r2, #36
+    and     r6, r6, #PT_NODE_INDEX_MASK
+    jsr     .pti_descend
+    ; Level 2: idx = (vpn >> 27) & PT_NODE_INDEX_MASK
+    lsr     r6, r2, #27
+    and     r6, r6, #PT_NODE_INDEX_MASK
+    jsr     .pti_descend
+    ; Level 3: idx = (vpn >> 18) & PT_NODE_INDEX_MASK
+    lsr     r6, r2, #18
+    and     r6, r6, #PT_NODE_INDEX_MASK
+    jsr     .pti_descend
+    ; Level 4: idx = (vpn >> 9) & PT_NODE_INDEX_MASK
+    lsr     r6, r2, #9
+    and     r6, r6, #PT_NODE_INDEX_MASK
+    jsr     .pti_descend
+    ; Leaf level 5: idx = vpn & PT_NODE_INDEX_MASK; write R3 at r5+idx*8.
+    and     r6, r2, #PT_NODE_INDEX_MASK
+    lsl     r7, r6, #3
+    add     r7, r7, r5
+    store.q r3, (r7)
+    pop     r12
+    pop     r11
+    pop     r10
+    pop     r9
+    pop     r8
+    pop     r7
+    pop     r6
+    pop     r5
+    rts
+
+; .pti_descend: read PTE at r5+r6*8. If P set, descend r5 into next-
+; level table (r5 <- (pte>>12)<<12). If not present, allocate a new
+; intermediate table from the per-PT pool cursor at r1+0x400, zero it,
+; link it via the parent slot with P=1, and descend r5 into it.
+;
+; The cursor is colocated with the top-level table inside the PT
+; region (top occupies offsets 0..0x3FF = 1 KiB; cursor lives at
+; offset 0x400 — first 8 bytes past the top). Each PTBR carries its
+; own pool, so kernel and user-task page tables do not share an
+; intermediate-table allocator.
+.pti_descend:
+    lsl     r7, r6, #3
+    add     r7, r7, r5
+    load.q  r8, (r7)
+    move.q  r12, r8
+    and     r12, r12, #PTE_P
+    bnez    r12, .pti_present
+    ; Allocate path: cursor at r1+0x400 holds next free phys.
+    load.q  r10, PT_CURSOR_OFFSET(r1)           ; r10 = current free
+    move.q  r11, r10                            ; r11 = new table base
+    add     r10, r10, #PT_NODE_SIZE_BYTES
+    ; Slice 4 hardening: bounds-check the bumped cursor against the per-PT slot end
+    ; stored at r1+PT_SLOT_END_OFFSET. If the next allocation would push past slot
+    ; end, panic via kern_guru_meditation rather than silently corrupting the
+    ; adjacent PT slot. Reserved bit pattern matches FAULT_NOT_PRESENT cause for
+    ; the meditation banner.
+    load.q  r12, PT_SLOT_END_OFFSET(r1)
+    bgt     r10, r12, .pti_slot_overflow
+    store.q r10, PT_CURSOR_OFFSET(r1)           ; bump cursor
+    ; Zero the new table (r11 .. r11+PT_NODE_SIZE_BYTES, 8 bytes at a time).
+    move.q  r9, r11
+    move.l  r10, #PT_NODE_SIZE_BYTES
+.pti_zero_loop:
+    store.q r0, (r9)
+    add     r9, r9, #8
+    sub     r10, r10, #8
+    bnez    r10, .pti_zero_loop
+    ; Link new table into parent slot: PTE = base | PTE_P. base is page-
+    ; aligned (4 KiB), so base == ppn<<12 already; OR with PTE_P sets bit 0.
+    move.q  r8, r11
+    or      r8, r8, #PTE_P
+    store.q r8, (r7)
+    move.q  r5, r11                             ; descend into new table
+    rts
+.pti_present:
+    ; r5 = (r8 >> 12) << 12  ≡  r8 & ~MMU_PAGE_MASK (clear flag bits)
+    lsr     r5, r8, #12
+    lsl     r5, r5, #12
+    rts
+.pti_slot_overflow:
+    ; Slice 4 hardening: cursor would advance past the per-PT slot end.
+    ; The kernel cannot safely install another intermediate or leaf table
+    ; without corrupting the adjacent PT slot, so emit a panic banner and
+    ; halt rather than continuing.
+    la      r8, pt_slot_overflow_msg
+    jsr     kern_puts
+    halt
+
+; ============================================================================
+; Kernel-Mapping Installer (PLAN_MAX_RAM.md slice 4)
+; ============================================================================
+;
+; kern_install_kern_mappings: install the standard kernel/supervisor
+; leaves into the page table at R1 (the PTBR). Each user task PT calls
+; this during build_user_pt to replicate the kernel's mappings into its
+; own PT region (full leaf replication, v0 design — sharing supervisor
+; branches across PTs would alias intermediate-table allocations and
+; was rejected for v0).
+;
+; Mappings installed:
+;   - pages 0..KERN_PAGES-1 supervisor R/W
+;   - pages 0..KERN_IMAGE_PAGE_END supervisor R/X (tightens kernel image)
+;   - KERN_STACK_GUARD_PAGE non-present
+;   - USER_CODE_VPN_BASE..USER_PT_PAGE_BASE supervisor R/W
+;   - USER_PT_PAGE_BASE..USER_PT_PAGE_END supervisor R/W
+;   - ALLOC_POOL_BASE..ALLOC_POOL_BASE+ALLOC_POOL_PAGES supervisor R/W
+;
+; Inputs: R1 = PTBR (top-level table phys; preserved). Caller must have
+; pre-zeroed the first 4 KiB of the PT region and seeded the cursor at
+; R1+0x400 to R1+0x1000.
+; Clobbers: R2, R3, R4, R6, R7 (caller-saved per ABI v0).
+; install_leaf preserves R1-R3 internally and saves/restores R5..R12.
+kern_install_kern_mappings:
+    push    r4
+    push    r6
+    push    r7
+    ; Kernel R/W identity 0..KERN_PAGES.
+    move.l  r4, #0
+.kim_kern_rw:
+    move.l  r6, #KERN_PAGES
+    bge     r4, r6, .kim_kern_rx
+    move.q  r2, r4
+    lsl     r3, r4, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W)
+    jsr     kern_pt_install_leaf
+    add     r4, r4, #1
+    bra     .kim_kern_rw
+.kim_kern_rx:
+    ; Kernel image R/X tightening (overwrites the R/W leaves above).
+    move.l  r4, #0
+.kim_kern_rx_loop:
+    move.l  r6, #KERN_IMAGE_PAGE_END
+    bge     r4, r6, .kim_stack_guard
+    move.q  r2, r4
+    lsl     r3, r4, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_X)
+    jsr     kern_pt_install_leaf
+    add     r4, r4, #1
+    bra     .kim_kern_rx_loop
+.kim_stack_guard:
+    ; Kernel stack guard non-present.
+    move.l  r2, #KERN_STACK_GUARD_PAGE
+    move.q  r3, r0
+    jsr     kern_pt_install_leaf
+    ; USER_CODE_VPN_BASE..USER_PT_PAGE_BASE supervisor R/W.
+    move.l  r4, #USER_CODE_VPN_BASE
+.kim_user_code:
+    move.l  r6, #USER_PT_PAGE_BASE
+    bge     r4, r6, .kim_user_pt
+    move.q  r2, r4
+    lsl     r3, r4, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W)
+    jsr     kern_pt_install_leaf
+    add     r4, r4, #1
+    bra     .kim_user_code
+.kim_user_pt:
+    move.l  r4, #USER_PT_PAGE_BASE
+.kim_user_pt_loop:
+    move.l  r6, #USER_PT_PAGE_END
+    bge     r4, r6, .kim_alloc_pool
+    move.q  r2, r4
+    lsl     r3, r4, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W)
+    jsr     kern_pt_install_leaf
+    add     r4, r4, #1
+    bra     .kim_user_pt_loop
+.kim_alloc_pool:
+    move.l  r4, #ALLOC_POOL_BASE
+    move.l  r6, #ALLOC_POOL_BASE
+    move.l  r7, #ALLOC_POOL_PAGES
+    add     r6, r6, r7
+.kim_alloc_pool_loop:
+    bge     r4, r6, .kim_done
+    move.q  r2, r4
+    lsl     r3, r4, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W)
+    jsr     kern_pt_install_leaf
+    add     r4, r4, #1
+    bra     .kim_alloc_pool_loop
+.kim_done:
+    pop     r7
+    pop     r6
+    pop     r4
+    rts
+
+; kern_pt_lookup_leaf: walk the multi-level page table and return the
+; leaf PTE for VPN R2. Returns 0 in R1 if any intermediate is missing.
+; Inputs:
+;   R1 = PTBR (preserved on output as the result; aliased)
+;   R2 = VPN (preserved)
+; Output:
+;   R1 = leaf PTE (or 0 if walk faults at any level)
+; Clobbers (per ABI v0): R5..R12 (caller-saves around the call as needed).
+kern_pt_lookup_leaf:
+    push    r5
+    push    r6
+    push    r7
+    push    r8
+    push    r12
+    move.q  r5, r1                              ; r5 = current table = PTBR
+    ; Level 0 (top, 7 bits at VPN[51:45])
+    lsr     r6, r2, #45
+    and     r6, r6, #PT_TOP_INDEX_MASK
+    jsr     .ptl_descend
+    beqz    r5, .ptl_miss
+    ; Level 1
+    lsr     r6, r2, #36
+    and     r6, r6, #PT_NODE_INDEX_MASK
+    jsr     .ptl_descend
+    beqz    r5, .ptl_miss
+    ; Level 2
+    lsr     r6, r2, #27
+    and     r6, r6, #PT_NODE_INDEX_MASK
+    jsr     .ptl_descend
+    beqz    r5, .ptl_miss
+    ; Level 3
+    lsr     r6, r2, #18
+    and     r6, r6, #PT_NODE_INDEX_MASK
+    jsr     .ptl_descend
+    beqz    r5, .ptl_miss
+    ; Level 4
+    lsr     r6, r2, #9
+    and     r6, r6, #PT_NODE_INDEX_MASK
+    jsr     .ptl_descend
+    beqz    r5, .ptl_miss
+    ; Level 5 leaf: read PTE at r5 + (vpn & MASK)*8.
+    and     r6, r2, #PT_NODE_INDEX_MASK
+    lsl     r7, r6, #3
+    add     r7, r7, r5
+    load.q  r1, (r7)
+    pop     r12
+    pop     r8
+    pop     r7
+    pop     r6
+    pop     r5
+    rts
+.ptl_miss:
+    move.q  r1, r0
+    pop     r12
+    pop     r8
+    pop     r7
+    pop     r6
+    pop     r5
+    rts
+
+; .ptl_descend: read PTE at r5+r6*8. If P set, set r5 to next-level
+; table phys and rts. Otherwise set r5 to 0 (signals miss to caller).
+.ptl_descend:
+    lsl     r7, r6, #3
+    add     r7, r7, r5
+    load.q  r8, (r7)
+    move.q  r12, r8
+    and     r12, r12, #PTE_P
+    bnez    r12, .ptl_present
+    move.q  r5, r0
+    rts
+.ptl_present:
+    lsr     r5, r8, #12
+    lsl     r5, r5, #12
+    rts
+
+; kern_pt_zero_and_seed: pre-zero the first 4 KiB of the PT region at R1
+; and seed the per-PT cursor at R1+PT_CURSOR_OFFSET to R1+PT_NODE_SIZE_BYTES.
+; Slice 4 hardening: also seed the slot-end metadata at R1+PT_SLOT_END_OFFSET
+; to R1 + slot_size_bytes (R2) so install_leaf can bounds-check every cursor
+; bump and panic via kern_guru_meditation if the per-PT pool would overflow.
+; Inputs:
+;   R1 = PTBR (preserved)
+;   R2 = slot_size_bytes (preserved; KERN_PT_STRIDE for the kernel PT,
+;        USER_PT_STRIDE for user task PTs)
+; Clobbers: R9, R10.
+kern_pt_zero_and_seed:
+    move.q  r9, r1
+    move.l  r10, #PT_NODE_SIZE_BYTES
+.kpzs_loop:
+    store.q r0, (r9)
+    add     r9, r9, #8
+    sub     r10, r10, #8
+    bnez    r10, .kpzs_loop
+    move.q  r9, r1
+    add     r9, r9, #PT_NODE_SIZE_BYTES
+    move.q  r10, r1
+    add     r10, r10, #PT_CURSOR_OFFSET
+    store.q r9, (r10)
+    ; Seed slot-end metadata for install_leaf bounds checks.
+    move.q  r9, r1
+    add     r9, r9, r2
+    move.q  r10, r1
+    add     r10, r10, #PT_SLOT_END_OFFSET
+    store.q r9, (r10)
+    rts
+
+; ============================================================================
 ; Round-Robin Scheduler
 ; ============================================================================
 ; find_next_runnable: scan for the next task that is not WAITING or FREE.
@@ -674,125 +937,88 @@ build_user_pt:
     push    r10
     push    r9
     push    r11
-    ; Compute PT base address: USER_PT_BASE + task_id * USER_SLOT_STRIDE
-    move.l  r7, #USER_SLOT_STRIDE
+    push    r13
+    push    r14
+    push    r15
+    ; Compute PT base address: USER_PT_BASE + task_id * USER_PT_STRIDE.
+    ; PLAN_MAX_RAM.md slice 4: PT stride is decoupled from USER_SLOT_STRIDE
+    ; because the multi-level radix walk needs 128 KiB per task PT to hold
+    ; top + intermediates + leaves (worst-case ~88 KiB).
+    ; Stash inputs in callee-saved registers so install_leaf calls do not
+    ; clobber them (R5..R12 are caller-saved per ABI v0).
+    move.l  r7, #USER_PT_STRIDE
     mulu    r7, r10, r7
-    add     r7, r7, #USER_PT_BASE      ; r7 = this task's PT base
+    add     r7, r7, #USER_PT_BASE
+    move.q  r13, r7                     ; r13 = task_pt_base = PTBR
+    move.q  r14, r10                    ; r14 = task_id
+    move.q  r15, r11                    ; r15 = data_pages
 
-    ; Copy kernel PT entries for pages 0..KERN_PAGES-1
-    move.l  r2, #KERN_PAGE_TABLE
-    move.l  r4, #0
-.bup_copy_kern:
-    move.l  r6, #KERN_PAGES
-    bge     r4, r6, .bup_copy_pool
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r7
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bup_copy_kern
+    ; PLAN_MAX_RAM.md slice 4: zero+seed the new PT region, then
+    ; replicate the kernel/supervisor mappings via the multi-level
+    ; walker. The bupd_copy_* byte-copy approach no longer applies.
+    move.q  r1, r13
+    move.l  r2, #USER_PT_STRIDE          ; slice 4 hardening: 128 KiB user PT slot
+    jsr     kern_pt_zero_and_seed
+    move.q  r1, r13
+    jsr     kern_install_kern_mappings
 
-    ; M12.6 Phase C: copy allocator pool entries (supervisor-only) so the
-    ; kernel can access chain pages from a user PT without switching to the
-    ; kernel PT for every chain walker invocation. The pool entries were
-    ; written to the kernel PT at boot by kern_init's kern_pool_map loop;
-    ; here we copy them across into this task's PT so the supervisor-only
-    ; flag is preserved (user code still cannot read them).
-.bup_copy_pool:
-    move.l  r4, #ALLOC_POOL_BASE
-    move.l  r6, #ALLOC_POOL_PAGES
-    add     r6, r6, r4                  ; r6 = pool end VPN (exclusive)
-.bup_copy_pool_loop:
-    bge     r4, r6, .bup_copy_user
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r7
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bup_copy_pool_loop
-
-.bup_copy_user:
-    ; Copy supervisor-only user page entries (VPN 0x600..0x600+MAX_TASKS*0x10)
-    move.l  r4, #USER_CODE_VPN_BASE
-    move.l  r6, #USER_CODE_VPN_BASE
-    move.l  r9, #MAX_TASKS
-    move.l  r8, #USER_VPN_STRIDE
-    mulu    r9, r9, r8
-    add     r6, r6, r9                  ; end VPN
-.bup_copy_user_loop:
-    bge     r4, r6, .bup_copy_userpt
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r7
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bup_copy_user_loop
-
-.bup_copy_userpt:
-    ; Copy supervisor-only user-PT region entries (VPN USER_PT_PAGE_BASE..
-    ; USER_PT_PAGE_END). Required because the kernel walks each task's PT
-    ; from kernel-supervisor mode while running on the task's own PTBR
-    ; (e.g. safe_copy_user_name does load.q on PTBR + VPN*8). Without
-    ; copying these mappings, the kernel faults the moment it touches a
-    ; task PT after the user-PT region was relocated to $680000.
-    move.l  r4, #USER_PT_PAGE_BASE
-    move.l  r6, #USER_PT_PAGE_END
-.bup_copy_userpt_loop:
-    bge     r4, r6, .bup_add_user_pages
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r7
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bup_copy_userpt_loop
-
-.bup_add_user_pages:
-    ; Add user-accessible entries for THIS task's pages
+    ; Add user-accessible entries for THIS task's pages.
+    pop     r15                         ; original r15 we just clobbered above
+    pop     r14
+    pop     r13
     pop     r11                         ; restore data_pages
     pop     r9                          ; restore code_pages
     pop     r10                         ; restore task_id
+    push    r10
+    push    r9
+    push    r11
+    push    r13
+    push    r14
+    push    r15
+    move.q  r13, r7                     ; refresh callee-saved snapshot
+    move.q  r14, r10
+    move.q  r15, r11
     move.l  r8, #USER_VPN_STRIDE
-    mulu    r8, r10, r8
+    mulu    r8, r14, r8
     add     r8, r8, #USER_CODE_VPN_BASE ; r8 = base code VPN
     ; Code pages: P|R|X|U
     move.l  r4, #0
 .bup_code_loop:
     bge     r4, r9, .bup_code_done
-    add     r6, r8, r4                  ; VPN = base + i
-    lsl     r3, r6, #13
+    move.q  r1, r13                     ; PTBR
+    add     r2, r8, r4                  ; VPN = base + i
+    lsl     r3, r2, #PTE_PPN_SHIFT
     or      r3, r3, #(PTE_P | PTE_R | PTE_X | PTE_U)
-    lsl     r5, r6, #3
-    add     r5, r5, r7
-    store.q r3, (r5)
+    jsr     kern_pt_install_leaf
     add     r4, r4, #1
     bra     .bup_code_loop
 .bup_code_done:
     ; Stack page (VPN = base + code_pages): P|R|W|U
-    add     r6, r8, r9                  ; VPN = base + code_pages
-    lsl     r3, r6, #13
+    move.q  r1, r13
+    add     r2, r8, r9                  ; VPN = base + code_pages
+    lsl     r3, r2, #PTE_PPN_SHIFT
     or      r3, r3, #(PTE_P | PTE_R | PTE_W | PTE_U)
-    lsl     r5, r6, #3
-    add     r5, r5, r7
-    store.q r3, (r5)
-    ; Data pages: P|R|W|U
+    jsr     kern_pt_install_leaf
+    ; Data pages: P|R|W|U starting at VPN = base + code_pages + 1
     add     r6, r8, r9
-    add     r6, r6, #1                  ; VPN = base + code_pages + 1
+    add     r6, r6, #1                  ; r6 = data_base_vpn
     move.l  r4, #0
 .bup_data_loop:
-    bge     r4, r11, .bup_data_done
+    bge     r4, r15, .bup_data_done
+    move.q  r1, r13
     add     r2, r6, r4                  ; VPN = data_base_vpn + i
-    lsl     r3, r2, #13
+    lsl     r3, r2, #PTE_PPN_SHIFT
     or      r3, r3, #(PTE_P | PTE_R | PTE_W | PTE_U)
-    lsl     r5, r2, #3
-    add     r5, r5, r7
-    store.q r3, (r5)
+    jsr     kern_pt_install_leaf
     add     r4, r4, #1
     bra     .bup_data_loop
 .bup_data_done:
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r11
+    pop     r9
+    pop     r10
     rts
 
 ; write_startup_block: populate the M13 startup block in its dedicated page.
@@ -1156,9 +1382,10 @@ free_task_image_pages:
 .ftip_done:
     rts
 
-; alloc_task_pt_block: allocate one 64 KiB PT block.
-; Fast path: fixed USER_PT_BASE window (32 blocks).
-; Overflow path: allocator-pool pages (16 contiguous pages), supervisor-only.
+; alloc_task_pt_block: allocate one 128 KiB PT block (slice 4: was 64 KiB).
+; Fast path: fixed USER_PT_BASE window (16 blocks × 32 pages each).
+; Overflow path: allocator-pool pages (USER_PT_SLOT_PAGES contiguous pages),
+; supervisor-only.
 ; Output: R1 = pt_base, R2 = ERR_OK / ERR_NOMEM
 alloc_task_pt_block:
     move.l  r1, #USER_PT_SLOT_PAGES
@@ -1235,7 +1462,7 @@ alloc_task_pt_block:
     move.q  r2, #ERR_NOMEM
     rts
 
-; free_task_pt_block: release one 64 KiB PT block.
+; free_task_pt_block: release one 128 KiB PT block (slice 4: was 64 KiB).
 ; Input: R1 = pt_base
 free_task_pt_block:
     beqz    r1, .ftpt_done
@@ -1283,132 +1510,99 @@ free_task_pt_block:
 ;   R7 = data_pages
 ;   R8 = startup_base
 build_user_pt_dynamic:
-    push    r1
-    push    r2
-    push    r3
-    push    r4
-    push    r5
-    push    r6
-    push    r7
-    push    r8
-    move.q  r20, r1
+    ; PLAN_MAX_RAM.md slice 4: replace the bupd_copy_* byte-copy blocks
+    ; with the multi-level kern_install_kern_mappings call (full leaf
+    ; replication). User-task code/stack/data leaves install via
+    ; kern_pt_install_leaf. Inputs are stashed in callee-saved registers
+    ; (R20-R26) so install_leaf cannot clobber them across calls.
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    push    r24
+    push    r25
+    push    r26
+    move.q  r20, r1                     ; PTBR (user PT base)
+    move.q  r21, r2                     ; code_base
+    move.q  r22, r3                     ; code_pages
+    move.q  r23, r4                     ; stack_base
+    move.q  r24, r5                     ; stack_pages
+    move.q  r25, r6                     ; data_base
+    move.q  r26, r7                     ; data_pages
+    push    r8                          ; startup_base (leaf state)
 
-    move.l  r2, #KERN_PAGE_TABLE
-    move.l  r4, #0
-.bupd_copy_kern:
-    move.l  r6, #KERN_PAGES
-    bge     r4, r6, .bupd_copy_pool
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r20
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bupd_copy_kern
-.bupd_copy_pool:
-    move.l  r4, #ALLOC_POOL_BASE
-    move.l  r6, #ALLOC_POOL_PAGES
-    add     r6, r6, r4
-.bupd_copy_pool_loop:
-    bge     r4, r6, .bupd_copy_user
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r20
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bupd_copy_pool_loop
-.bupd_copy_user:
-    move.l  r4, #USER_CODE_VPN_BASE
-    move.l  r6, #USER_PT_PAGE_BASE
-.bupd_copy_user_loop:
-    bge     r4, r6, .bupd_copy_userpt
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r20
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bupd_copy_user_loop
-.bupd_copy_userpt:
-    move.l  r4, #USER_PT_PAGE_BASE
-    move.l  r6, #USER_PT_PAGE_END
-.bupd_copy_userpt_loop:
-    bge     r4, r6, .bupd_add_pages
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r20
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bupd_copy_userpt_loop
-.bupd_add_pages:
-    pop     r8
-    pop     r7
-    pop     r6
-    pop     r5
-    pop     r4
-    pop     r3
-    pop     r2
-    pop     r1
-    move.q  r12, r8                     ; preserve startup_base
+    ; Zero+seed the new PT region; install kernel mappings.
+    move.q  r1, r20
+    move.l  r2, #USER_PT_STRIDE          ; slice 4 hardening: 128 KiB user PT slot
+    jsr     kern_pt_zero_and_seed
+    move.q  r1, r20
+    jsr     kern_install_kern_mappings
 
-    ; Code: P|R|X|U
+    ; Code: P|R|X|U over [code_base..code_base+code_pages).
     move.l  r8, #0
 .bupd_code_loop:
-    bge     r8, r3, .bupd_code_done
-    lsr     r9, r2, #12
+    bge     r8, r22, .bupd_code_done
+    lsr     r9, r21, #12
     add     r9, r9, r8
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_X | PTE_U)
-    lsl     r11, r9, #3
-    add     r11, r11, r1
-    store.q r10, (r11)
+    move.q  r1, r20
+    move.q  r2, r9
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_X | PTE_U)
+    jsr     kern_pt_install_leaf
     add     r8, r8, #1
     bra     .bupd_code_loop
 .bupd_code_done:
-    ; Stack: P|R|W|U
+    ; Stack: P|R|W|U over [stack_base..stack_base+stack_pages).
     move.l  r8, #0
 .bupd_stack_loop:
-    bge     r8, r5, .bupd_stack_done
-    lsr     r9, r4, #12
+    bge     r8, r24, .bupd_stack_done
+    lsr     r9, r23, #12
     add     r9, r9, r8
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
-    lsl     r11, r9, #3
-    add     r11, r11, r1
-    store.q r10, (r11)
+    move.q  r1, r20
+    move.q  r2, r9
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W | PTE_U)
+    jsr     kern_pt_install_leaf
     add     r8, r8, #1
     bra     .bupd_stack_loop
 .bupd_stack_done:
-    ; R1: clear the guard page immediately below the user stack floor.
-    lsr     r9, r4, #12
+    ; Stack guard: leaf PTE = 0 (non-present) immediately below stack floor.
+    lsr     r9, r23, #12
     sub     r9, r9, #STACK_GUARD_PAGES
-    lsl     r11, r9, #3
-    add     r11, r11, r1
-    store.q r0, (r11)
-    ; Data: P|R|W|U
+    move.q  r1, r20
+    move.q  r2, r9
+    move.q  r3, r0
+    jsr     kern_pt_install_leaf
+    ; Data: P|R|W|U over [data_base..data_base+data_pages).
     move.l  r8, #0
 .bupd_data_loop:
-    bge     r8, r7, .bupd_data_done
-    lsr     r9, r6, #12
+    bge     r8, r26, .bupd_data_done
+    lsr     r9, r25, #12
     add     r9, r9, r8
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
-    lsl     r11, r9, #3
-    add     r11, r11, r1
-    store.q r10, (r11)
+    move.q  r1, r20
+    move.q  r2, r9
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W | PTE_U)
+    jsr     kern_pt_install_leaf
     add     r8, r8, #1
     bra     .bupd_data_loop
 .bupd_data_done:
-    ; Startup block page: P|R|U
-    lsr     r9, r12, #12
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_U)
-    lsl     r11, r9, #3
-    add     r11, r11, r1
-    store.q r10, (r11)
+    ; Startup block page: P|R|U.
+    pop     r8                          ; startup_base
+    lsr     r9, r8, #12
+    move.q  r1, r20
+    move.q  r2, r9
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_U)
+    jsr     kern_pt_install_leaf
 .bupd_done:
+    pop     r26
+    pop     r25
+    pop     r24
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
     rts
 
 ; build_user_pt_dynamic_desc: Build a user PT for descriptor-launched tasks.
@@ -1429,958 +1623,129 @@ build_user_pt_dynamic:
 ;   R8 = data_target_base
 ;   [SP+0] = startup_base (backing == target)
 ;   [SP+8] = data_pages
+; build_user_pt_dynamic_desc: Build a user PT for descriptor-launched tasks.
+; PLAN_MAX_RAM.md slice 4 rewrite: full leaf replication for kernel
+; mappings + install_leaf for user pages (no flat byte-copy). The
+; "decoupled target VPN -> backing PPN" semantics for code/data
+; translate to passing the target VPN into install_leaf with a leaf
+; PTE built from the backing PPN.
+;
+; Input:
+;   R1 = PT base
+;   R2 = code_backing_base
+;   R3 = code_target_base
+;   R4 = code_pages
+;   R5 = stack_base (backing == target)
+;   R6 = stack_pages
+;   R7 = data_backing_base
+;   R8 = data_target_base
+;   [SP+0] = startup_base (backing == target)
+;   [SP+8] = data_pages
 build_user_pt_dynamic_desc:
     load.q  r12, (sp)                  ; startup_base
     load.q  r13, 8(sp)                 ; data_pages
-    push    r1
-    push    r2
-    push    r3
-    push    r4
-    push    r5
-    push    r6
-    push    r7
-    push    r8
-    move.q  r20, r1
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    push    r24
+    push    r25
+    push    r26
+    push    r27
+    push    r28
+    push    r29
+    push    r30
+    move.q  r20, r1                    ; PTBR
+    move.q  r21, r2                    ; code_backing_base
+    move.q  r22, r3                    ; code_target_base
+    move.q  r23, r4                    ; code_pages
+    move.q  r24, r5                    ; stack_base
+    move.q  r25, r6                    ; stack_pages
+    move.q  r26, r7                    ; data_backing_base
+    move.q  r27, r8                    ; data_target_base
+    move.q  r28, r12                   ; startup_base
+    move.q  r29, r13                   ; data_pages
 
-    move.l  r2, #KERN_PAGE_TABLE
-    move.l  r4, #0
-.bupdd_copy_kern:
-    move.l  r6, #KERN_PAGES
-    bge     r4, r6, .bupdd_copy_pool
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r20
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bupdd_copy_kern
-.bupdd_copy_pool:
-    move.l  r4, #ALLOC_POOL_BASE
-    move.l  r6, #ALLOC_POOL_PAGES
-    add     r6, r6, r4
-.bupdd_copy_pool_loop:
-    bge     r4, r6, .bupdd_copy_user
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r20
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bupdd_copy_pool_loop
-.bupdd_copy_user:
-    move.l  r4, #USER_CODE_VPN_BASE
-    move.l  r6, #USER_PT_PAGE_BASE
-.bupdd_copy_user_loop:
-    bge     r4, r6, .bupdd_copy_userpt
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r20
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bupdd_copy_user_loop
-.bupdd_copy_userpt:
-    move.l  r4, #USER_PT_PAGE_BASE
-    move.l  r6, #USER_PT_PAGE_END
-.bupdd_copy_userpt_loop:
-    bge     r4, r6, .bupdd_add_pages
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r20
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bupdd_copy_userpt_loop
-.bupdd_add_pages:
-    pop     r8
-    pop     r7
-    pop     r6
-    pop     r5
-    pop     r4
-    pop     r3
-    pop     r2
-    pop     r1
+    ; Zero+seed PT region; replicate kernel mappings.
+    move.q  r1, r20
+    move.l  r2, #USER_PT_STRIDE          ; slice 4 hardening: 128 KiB user PT slot
+    jsr     kern_pt_zero_and_seed
+    move.q  r1, r20
+    jsr     kern_install_kern_mappings
 
-    ; Code: target VPN -> backing PPN, P|R|X|U
+    ; Code: target_vpn[i] -> backing_ppn[i], P|R|X|U.
     move.l  r8, #0
 .bupdd_code_loop:
-    bge     r8, r4, .bupdd_code_done
-    lsr     r9, r2, #12                ; backing PPN
-    add     r9, r9, r8
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_X | PTE_U)
-    lsr     r11, r3, #12               ; target VPN
-    add     r11, r11, r8
-    lsl     r11, r11, #3
-    add     r11, r11, r1
-    store.q r10, (r11)
+    bge     r8, r23, .bupdd_code_done
+    lsr     r9, r21, #12                ; backing PPN base
+    add     r9, r9, r8                  ; backing PPN for this leaf
+    lsr     r30, r22, #12               ; target VPN base
+    add     r30, r30, r8                ; target VPN for this leaf
+    move.q  r1, r20
+    move.q  r2, r30
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_X | PTE_U)
+    jsr     kern_pt_install_leaf
     add     r8, r8, #1
     bra     .bupdd_code_loop
 .bupdd_code_done:
-    ; Stack: backing == target, P|R|W|U
+    ; Stack: backing == target, P|R|W|U.
     move.l  r8, #0
 .bupdd_stack_loop:
-    bge     r8, r6, .bupdd_stack_done
-    lsr     r9, r5, #12
+    bge     r8, r25, .bupdd_stack_done
+    lsr     r9, r24, #12
     add     r9, r9, r8
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
-    lsl     r11, r9, #3
-    add     r11, r11, r1
-    store.q r10, (r11)
+    move.q  r1, r20
+    move.q  r2, r9
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W | PTE_U)
+    jsr     kern_pt_install_leaf
     add     r8, r8, #1
     bra     .bupdd_stack_loop
 .bupdd_stack_done:
-    ; R1: clear the guard page immediately below the user stack floor.
-    lsr     r9, r5, #12
+    ; Stack guard: leaf PTE = 0 (non-present).
+    lsr     r9, r24, #12
     sub     r9, r9, #STACK_GUARD_PAGES
-    lsl     r11, r9, #3
-    add     r11, r11, r1
-    store.q r0, (r11)
-    ; Data: target VPN -> backing PPN, P|R|W|U
+    move.q  r1, r20
+    move.q  r2, r9
+    move.q  r3, r0
+    jsr     kern_pt_install_leaf
+    ; Data: target_vpn[i] -> backing_ppn[i], P|R|W|U.
     move.l  r8, #0
 .bupdd_data_loop:
-    bge     r8, r13, .bupdd_data_done
-    lsr     r9, r7, #12                ; backing PPN
+    bge     r8, r29, .bupdd_data_done
+    lsr     r9, r26, #12                ; backing PPN
     add     r9, r9, r8
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
-    lsr     r11, r8, #0                ; keep r8 live for assembler
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12
-    add     r11, r8, r8                ; overwritten next, keeps assembler happy
-    lsr     r11, r8, #12
-    add     r11, r8, r8
-    lsr     r11, r8, #12
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12
-    add     r11, r8, r8
-    lsr     r11, r8, #12
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12
-    add     r11, r8, r8
-    lsr     r14, r8, #12
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #12
-    lsr     r11, r8, #12
-    add     r11, r8, r8                ; overwritten immediately below
-    lsr     r11, r8, #12
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12
-    add     r11, r8, r8                ; overwritten next
-    lsr     r11, r8, #12
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r14, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #12               ; dummy overwritten next
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r11, r8, #0
-    lsr     r14, r8, #12
-    add     r14, r8, r8                ; overwritten next
-    lsr     r14, r8, #12               ; target VPN
-    add     r14, r14, r8
-    lsl     r14, r14, #3
-    add     r14, r14, r1
-    store.q r10, (r14)
+    lsr     r30, r27, #12               ; target VPN
+    add     r30, r30, r8
+    move.q  r1, r20
+    move.q  r2, r30
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W | PTE_U)
+    jsr     kern_pt_install_leaf
     add     r8, r8, #1
     bra     .bupdd_data_loop
 .bupdd_data_done:
-    ; Startup page: backing == target, P|R|U
-    lsr     r9, r12, #12
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_U)
-    lsl     r11, r9, #3
-    add     r11, r11, r1
-    store.q r10, (r11)
+    ; Startup page: backing == target, P|R|U.
+    lsr     r9, r28, #12
+    move.q  r1, r20
+    move.q  r2, r9
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_U)
+    jsr     kern_pt_install_leaf
+    pop     r30
+    pop     r29
+    pop     r28
+    pop     r27
+    pop     r26
+    pop     r25
+    pop     r24
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
     rts
+
 
 ; build_user_pt_dynamic_targets: clean descriptor-launch PT builder.
 ; Unlike build_user_pt_dynamic, code/data target VAs are decoupled from
@@ -2407,6 +1772,9 @@ build_user_pt_dynamic_targets:
     push    r25
     push    r26
     push    r27
+    push    r28
+    push    r29
+    push    r30
     move.q  r20, r1                    ; pt base
     move.q  r21, r2                    ; code backing
     move.q  r22, r3                    ; code target
@@ -2415,70 +1783,30 @@ build_user_pt_dynamic_targets:
     move.q  r25, r6                    ; stack pages
     move.q  r26, r7                    ; data backing
     move.q  r27, r8                    ; data target
+    move.q  r28, r12                   ; startup base
+    move.q  r29, r13                   ; data pages
 
-    move.l  r2, #KERN_PAGE_TABLE
-    move.l  r4, #0
-.bupt_copy_kern:
-    move.l  r6, #KERN_PAGES
-    bge     r4, r6, .bupt_copy_pool
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r20
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bupt_copy_kern
-.bupt_copy_pool:
-    move.l  r4, #ALLOC_POOL_BASE
-    move.l  r6, #ALLOC_POOL_PAGES
-    add     r6, r6, r4
-.bupt_copy_pool_loop:
-    bge     r4, r6, .bupt_copy_user
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r20
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bupt_copy_pool_loop
-.bupt_copy_user:
-    move.l  r4, #USER_CODE_VPN_BASE
-    move.l  r6, #USER_PT_PAGE_BASE
-.bupt_copy_user_loop:
-    bge     r4, r6, .bupt_copy_userpt
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r20
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bupt_copy_user_loop
-.bupt_copy_userpt:
-    move.l  r4, #USER_PT_PAGE_BASE
-    move.l  r6, #USER_PT_PAGE_END
-.bupt_copy_userpt_loop:
-    bge     r4, r6, .bupt_map_code
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r20
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .bupt_copy_userpt_loop
+    ; PLAN_MAX_RAM.md slice 4: zero+seed PT region; full leaf
+    ; replication for kernel mappings; install_leaf for user pages.
+    move.q  r1, r20
+    move.l  r2, #USER_PT_STRIDE          ; slice 4 hardening: 128 KiB user PT slot
+    jsr     kern_pt_zero_and_seed
+    move.q  r1, r20
+    jsr     kern_install_kern_mappings
 
 .bupt_map_code:
     move.l  r8, #0
 .bupt_code_loop:
     bge     r8, r23, .bupt_map_stack
-    lsr     r9, r21, #12
+    lsr     r9, r21, #12                ; backing PPN
     add     r9, r9, r8
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_X | PTE_U)
-    lsr     r11, r22, #12
-    add     r11, r11, r8
-    lsl     r11, r11, #3
-    add     r11, r11, r20
-    store.q r10, (r11)
+    lsr     r30, r22, #12               ; target VPN
+    add     r30, r30, r8
+    move.q  r1, r20
+    move.q  r2, r30
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_X | PTE_U)
+    jsr     kern_pt_install_leaf
     add     r8, r8, #1
     bra     .bupt_code_loop
 
@@ -2488,43 +1816,47 @@ build_user_pt_dynamic_targets:
     bge     r8, r25, .bupt_map_data
     lsr     r9, r24, #12
     add     r9, r9, r8
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
-    lsl     r11, r9, #3
-    add     r11, r11, r20
-    store.q r10, (r11)
+    move.q  r1, r20
+    move.q  r2, r9
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W | PTE_U)
+    jsr     kern_pt_install_leaf
     add     r8, r8, #1
     bra     .bupt_stack_loop
 
 .bupt_map_data:
-    ; R1: clear the guard page immediately below the user stack floor.
+    ; Stack guard: leaf PTE = 0 below the user stack floor.
     lsr     r9, r24, #12
     sub     r9, r9, #STACK_GUARD_PAGES
-    lsl     r11, r9, #3
-    add     r11, r11, r20
-    store.q r0, (r11)
+    move.q  r1, r20
+    move.q  r2, r9
+    move.q  r3, r0
+    jsr     kern_pt_install_leaf
     move.l  r8, #0
 .bupt_data_loop:
-    bge     r8, r13, .bupt_map_startup
-    lsr     r9, r26, #12
+    bge     r8, r29, .bupt_map_startup
+    lsr     r9, r26, #12                ; backing PPN
     add     r9, r9, r8
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
-    lsr     r11, r27, #12
-    add     r11, r11, r8
-    lsl     r11, r11, #3
-    add     r11, r11, r20
-    store.q r10, (r11)
+    lsr     r30, r27, #12               ; target VPN
+    add     r30, r30, r8
+    move.q  r1, r20
+    move.q  r2, r30
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W | PTE_U)
+    jsr     kern_pt_install_leaf
     add     r8, r8, #1
     bra     .bupt_data_loop
 
 .bupt_map_startup:
-    lsr     r9, r12, #12
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_U)
-    lsl     r11, r9, #3
-    add     r11, r11, r20
-    store.q r10, (r11)
+    lsr     r9, r28, #12
+    move.q  r1, r20
+    move.q  r2, r9
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_U)
+    jsr     kern_pt_install_leaf
+    pop     r30
+    pop     r29
+    pop     r28
     pop     r27
     pop     r26
     pop     r25
@@ -4435,135 +3767,92 @@ exec_desc_launch_task:
     jsr     copy_from_user
     bnez    r1, .edlt_copy_fail_free_all
 .edlt_map:
-    move.l  r2, #KERN_PAGE_TABLE
-    move.l  r4, #0
-.edlt_pt_copy_kern:
-    move.l  r6, #KERN_PAGES
-    bge     r4, r6, .edlt_pt_copy_pool
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r25
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .edlt_pt_copy_kern
-.edlt_pt_copy_pool:
-    move.l  r4, #ALLOC_POOL_BASE
-    move.l  r6, #ALLOC_POOL_PAGES
-    add     r6, r6, r4
-.edlt_pt_copy_pool_loop:
-    bge     r4, r6, .edlt_pt_copy_user
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r25
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .edlt_pt_copy_pool_loop
-.edlt_pt_copy_user:
-    move.l  r4, #USER_CODE_VPN_BASE
-    move.l  r6, #USER_PT_PAGE_BASE
-.edlt_pt_copy_user_loop:
-    bge     r4, r6, .edlt_pt_copy_userpt
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r25
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .edlt_pt_copy_user_loop
-.edlt_pt_copy_userpt:
-    move.l  r4, #USER_PT_PAGE_BASE
-    move.l  r6, #USER_PT_PAGE_END
-.edlt_pt_copy_userpt_loop:
-    bge     r4, r6, .edlt_pt_map_code
-    lsl     r5, r4, #3
-    add     r8, r5, r2
-    load.q  r3, (r8)
-    add     r9, r5, r25
-    store.q r3, (r9)
-    add     r4, r4, #1
-    bra     .edlt_pt_copy_userpt_loop
+    ; PLAN_MAX_RAM.md slice 4: zero+seed PT region, full leaf
+    ; replication for kernel mappings, install_leaf for user pages.
+    move.q  r1, r25
+    move.l  r2, #USER_PT_STRIDE          ; slice 4 hardening: 128 KiB user PT slot
+    jsr     kern_pt_zero_and_seed
+    move.q  r1, r25
+    jsr     kern_install_kern_mappings
 
 .edlt_pt_map_code:
     load.q  r12, 192(sp)                 ; code exec-only flag
     move.l  r8, #0
 .edlt_pt_code_loop:
     bge     r8, r30, .edlt_pt_map_stack
-    lsr     r9, r14, #12
+    lsr     r9, r14, #12                  ; backing PPN
     add     r9, r9, r8
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_X | PTE_U)
+    lsr     r2, r29, #12                  ; target VPN
+    add     r2, r2, r8
+    move.q  r1, r25                       ; PTBR
+    push    r12                           ; preserve exec-only flag
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_X | PTE_U)
     beqz    r12, .edlt_pt_code_store
     move.l  r6, #PTE_R
     not     r6, r6
-    and     r10, r10, r6
+    and     r3, r3, r6
 .edlt_pt_code_store:
-    lsr     r11, r29, #12
-    add     r11, r11, r8
-    lsl     r11, r11, #3
-    add     r11, r11, r25
-    store.q r10, (r11)
+    jsr     kern_pt_install_leaf
+    pop     r12
     add     r8, r8, #1
     bra     .edlt_pt_code_loop
 .edlt_pt_map_stack:
     move.l  r8, #0
 .edlt_pt_stack_loop:
     bge     r8, r23, .edlt_pt_map_data
-    lsr     r9, r16, #12
+    lsr     r9, r16, #12                  ; backing PPN
     add     r9, r9, r8
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_W | PTE_U)
-    load.q  r12, 80(sp)
-    lsr     r11, r12, #12
-    add     r11, r11, r8
-    lsl     r11, r11, #3
-    add     r11, r11, r25
-    store.q r10, (r11)
+    load.q  r12, 80(sp)                   ; stack target base
+    lsr     r2, r12, #12
+    add     r2, r2, r8
+    move.q  r1, r25
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_W | PTE_U)
+    jsr     kern_pt_install_leaf
     add     r8, r8, #1
     bra     .edlt_pt_stack_loop
 
 .edlt_pt_map_data:
-    ; R1: clear the guard page immediately below the user stack floor.
+    ; Stack guard: leaf PTE = 0 below the user stack floor.
     load.q  r12, 80(sp)
-    lsr     r11, r12, #12
-    sub     r11, r11, #STACK_GUARD_PAGES
-    lsl     r11, r11, #3
-    add     r11, r11, r25
-    store.q r0, (r11)
+    lsr     r2, r12, #12
+    sub     r2, r2, #STACK_GUARD_PAGES
+    move.q  r1, r25
+    move.q  r3, r0
+    jsr     kern_pt_install_leaf
     move.l  r8, #0
 .edlt_pt_data_loop:
     bge     r8, r17, .edlt_pt_map_startup
-    lsr     r9, r13, #12
+    lsr     r9, r13, #12                  ; backing PPN
     add     r9, r9, r8
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_U)
-    load.q  r12, 200(sp)                ; data segment flags
+    lsr     r2, r19, #12                  ; target VPN
+    add     r2, r2, r8
+    move.q  r1, r25
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_U)
+    load.q  r12, 200(sp)                  ; data segment flags
     move.q  r6, r12
     and     r6, r6, #4
     beqz    r6, .edlt_pt_data_no_read
-    or      r10, r10, #PTE_R
+    or      r3, r3, #PTE_R
 .edlt_pt_data_no_read:
     move.q  r6, r12
     and     r6, r6, #2
     beqz    r6, .edlt_pt_data_store
-    or      r10, r10, #PTE_W
+    or      r3, r3, #PTE_W
 .edlt_pt_data_store:
-    lsr     r11, r19, #12
-    add     r11, r11, r8
-    lsl     r11, r11, #3
-    add     r11, r11, r25
-    store.q r10, (r11)
+    jsr     kern_pt_install_leaf
     add     r8, r8, #1
     bra     .edlt_pt_data_loop
 
 .edlt_pt_map_startup:
     lsr     r9, r24, #12
-    lsl     r10, r9, #13
-    or      r10, r10, #(PTE_P | PTE_R | PTE_U)
-    lsl     r11, r9, #3
-    add     r11, r11, r25
-    store.q r10, (r11)
+    move.q  r1, r25
+    move.q  r2, r9
+    lsl     r3, r9, #PTE_PPN_SHIFT
+    or      r3, r3, #(PTE_P | PTE_R | PTE_U)
+    jsr     kern_pt_install_leaf
 
     move.q  r1, r24
     move.q  r2, r21
@@ -6499,48 +5788,81 @@ kern_port_find_public:
 ; ============================================================================
 
 ; map_pages: write PTEs for contiguous pages into a task's page table.
-; Input:  R1 = PT base address (physical)
-;         R2 = VA of first page
-;         R3 = PPN of first physical page
-;         R4 = number of pages
-;         R5 = PTE flags (e.g. P|R|W|U = 0x17)
-; Clobbers: R6-R9
+; Input:  R1 = PT base address (physical, preserved)
+;         R2 = VA of first page (preserved across iterations)
+;         R3 = PPN of first physical page (preserved across iterations)
+;         R4 = number of pages (preserved)
+;         R5 = PTE flags (e.g. P|R|W|U = 0x17, preserved)
+; PLAN_MAX_RAM.md slice 4: install via the multi-level walker. Inputs
+; are stashed in callee-saved R20-R24 so install_leaf calls do not
+; clobber them across iterations.
+; Clobbers (visible to caller): R6-R12 (caller-saved scratch).
 map_pages:
-    move.l  r6, #0                     ; counter
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    push    r24
+    push    r25
+    move.q  r20, r1                    ; PTBR
+    move.q  r21, r2                    ; VA of first page
+    move.q  r22, r3                    ; PPN of first phys page
+    move.q  r23, r4                    ; page count
+    move.q  r24, r5                    ; flags
+    move.l  r25, #0                    ; counter
 .mp_loop:
-    bge     r6, r4, .mp_done
-    ; Compute VPN = VA >> 12
-    add     r7, r3, r6                 ; r7 = PPN + i
-    lsl     r8, r7, #13               ; PPN << 13
-    or      r8, r8, r5                 ; PTE = (PPN << 13) | flags
-    ; Compute PTE offset: (VA >> 12 + i) * 8
-    lsr     r9, r2, #12               ; base VPN
-    add     r9, r9, r6                 ; VPN + i
-    lsl     r9, r9, #3                ; * 8
-    add     r9, r9, r1                 ; &PT[VPN+i]
-    store.q r8, (r9)
-    add     r6, r6, #1
+    bge     r25, r23, .mp_done
+    add     r6, r22, r25               ; ppn = base_ppn + i
+    lsr     r2, r21, #12               ; base VPN
+    add     r2, r2, r25                ; vpn = base_vpn + i
+    move.q  r1, r20
+    lsl     r3, r6, #PTE_PPN_SHIFT     ; PPN << 12
+    or      r3, r3, r24                ; PTE = (PPN << 12) | flags
+    jsr     kern_pt_install_leaf
+    add     r25, r25, #1
     bra     .mp_loop
 .mp_done:
+    pop     r25
+    pop     r24
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
     rts
 
-; unmap_pages: clear PTEs for contiguous pages in a task's page table.
-; Input:  R1 = PT base address (physical)
-;         R2 = VA of first page
-;         R3 = number of pages
-; Clobbers: R4-R6
+; unmap_pages: clear leaf PTEs for contiguous pages in a task's page table.
+; Input:  R1 = PT base address (physical, preserved)
+;         R2 = VA of first page (preserved)
+;         R3 = number of pages (preserved)
+; PLAN_MAX_RAM.md slice 4: clear via the multi-level walker. install_leaf
+; with leaf PTE = 0 marks the entry not-present without disturbing the
+; surrounding intermediate-table structure. Loop state stashed in
+; callee-saved R20-R23 because install_leaf clobbers R5-R12.
+; Clobbers (visible to caller): R4-R12.
 unmap_pages:
-    move.l  r4, #0                     ; counter
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    move.q  r20, r1                    ; PTBR
+    move.q  r21, r2                    ; base VA
+    move.q  r22, r3                    ; page count
+    move.l  r23, #0                    ; counter
 .ump_loop:
-    bge     r4, r3, .ump_done
-    lsr     r5, r2, #12               ; base VPN
-    add     r5, r5, r4                 ; VPN + i
-    lsl     r5, r5, #3                ; * 8
-    add     r5, r5, r1                 ; &PT[VPN+i]
-    store.q r0, (r5)                   ; clear PTE
-    add     r4, r4, #1
+    bge     r23, r22, .ump_done
+    lsr     r4, r21, #12                ; base VPN
+    add     r4, r4, r23                 ; VPN + i
+    move.q  r1, r20
+    move.q  r2, r4
+    move.q  r3, r0                      ; leaf PTE = 0 (non-present)
+    jsr     kern_pt_install_leaf
+    add     r23, r23, #1
     bra     .ump_loop
 .ump_done:
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
     rts
 
 ; find_free_va: find a gap in the task's dynamic VA window for N pages.
@@ -6680,32 +6002,35 @@ find_free_va:
 ; Clobbers: R14, R16, R17, R18, R19, R23, R24, R25, R26
 safe_copy_user_name:
     push    r1
-    ; --- Validate PTE for first page ---
-    ; Compute VPN = VA >> 12
-    lsr     r14, r1, #12               ; R14 = VPN of name_ptr
-    ; Load caller's PTBR from PTBR array
+    ; PLAN_MAX_RAM.md slice 4: walk multi-level PT for first and last
+    ; page of the name range. Permissions required: P|R|U (0x13).
+    ; Load caller's PTBR from KD PTBR array.
     move.l  r16, #KERN_DATA_BASE
     lsl     r17, r13, #3               ; task_id * 8
     add     r17, r17, #KD_PTBR_BASE
     add     r17, r17, r16
     load.q  r17, (r17)                 ; R17 = caller's PT base address
-    ; Load PTE at PT[VPN]
-    lsl     r18, r14, #3               ; VPN * 8 (PTE offset)
-    add     r18, r18, r17
-    load.q  r18, (r18)                 ; R18 = PTE
-    ; Check P|R|U (0x13)
+    ; First page: VPN of name_ptr.
+    move.q  r1, r17
+    lsr     r2, r1, #12                ; intermediate scratch
+    ; Recompute from saved R1 (top of stack): we want VPN of original VA.
+    load.q  r14, (sp)                  ; original name_ptr
+    lsr     r14, r14, #12              ; VPN of name_ptr
+    move.q  r1, r17
+    move.q  r2, r14
+    jsr     kern_pt_lookup_leaf        ; R1 = leaf PTE (0 if missing)
+    move.q  r18, r1
     and     r19, r18, #0x13
     move.l  r24, #0x13
     bne     r19, r24, .scun_bad
-
-    ; --- Validate PTE for last byte's page (name_ptr + PORT_NAME_LEN-1) ---
-    pop     r1
-    push    r1
-    add     r14, r1, #(PORT_NAME_LEN-1)
-    lsr     r14, r14, #12               ; VPN of name_ptr+(NAMELEN-1)
-    lsl     r18, r14, #3
-    add     r18, r18, r17
-    load.q  r18, (r18)
+    ; Last page: VPN of name_ptr + PORT_NAME_LEN - 1.
+    load.q  r14, (sp)
+    add     r14, r14, #(PORT_NAME_LEN-1)
+    lsr     r14, r14, #12              ; VPN of name_ptr+(NAMELEN-1)
+    move.q  r1, r17
+    move.q  r2, r14
+    jsr     kern_pt_lookup_leaf
+    move.q  r18, r1
     and     r19, r18, #0x13
     bne     r19, r24, .scun_bad
 
@@ -7270,11 +6595,25 @@ endif
     beq     r1, r11, .info_port_name_by_index
     move.l  r11, #SYSINFO_ASLR_IMAGE_BASE
     beq     r1, r11, .info_aslr_image_base
+    move.l  r11, #SYSINFO_GUEST_RAM_PAGES
+    beq     r1, r11, .info_guest_ram_pages
     move.q  r1, #0
     move.q  r2, #ERR_OK
     eret
 .info_total_pages:
     move.l  r1, #ALLOC_POOL_PAGES
+    move.q  r2, #ERR_OK
+    eret
+.info_guest_ram_pages:
+    ; Read SYSINFO low-MMIO total-guest-RAM bytes and divide by 4 KiB.
+    ; The MMIO pair is little-endian (lo, hi) at 0xF2400 / 0xF2404.
+    move.l  r11, #SYSINFO_TOTAL_RAM_LO
+    load.l  r12, (r11)
+    move.l  r11, #SYSINFO_TOTAL_RAM_HI
+    load.l  r13, (r11)
+    lsl     r13, r13, #32
+    or      r1, r12, r13
+    lsr     r1, r1, #MMU_PAGE_SHIFT     ; bytes -> pages
     move.q  r2, #ERR_OK
     eret
 .info_free_pages:
@@ -10540,12 +9879,16 @@ endif
     ; page. The child data offset is bounded to a single page
     ; (DATA_ARGS_OFFSET + DATA_ARGS_MAX < 4096), so one PTE lookup is
     ; sufficient here.
-    lsr     r16, r15, #12
-    lsl     r16, r16, #3
-    add     r16, r16, r17
-    load.q  r18, (r16)
-    lsr     r18, r18, #13
-    lsl     r18, r18, #12
+    ; PLAN_MAX_RAM.md slice 4: walk multi-level PT instead of flat lookup.
+    move.q  r1, r17                     ; PTBR
+    lsr     r2, r15, #12                ; VPN
+    jsr     kern_pt_lookup_leaf
+    move.q  r18, r1                     ; leaf PTE
+    move.q  r19, r18
+    and     r19, r19, #PTE_P
+    beqz    r19, .dbefe_args_fail_kill
+    lsr     r18, r18, #12               ; PPN (new format)
+    lsl     r18, r18, #12               ; phys page base
     and     r16, r15, #0xFFF
     add     r18, r18, r16
     move.q  r1, r18
@@ -10732,12 +10075,16 @@ endif
     load.q  r17, KD_TASK_LAYOUT_PT_BASE(r1)
     ; Resolve the child data args VA to its backing kernel page and copy
     ; directly there, matching the flat boot-exec path above.
-    lsr     r16, r15, #12
-    lsl     r16, r16, #3
-    add     r16, r16, r17
-    load.q  r18, (r16)
-    lsr     r18, r18, #13
-    lsl     r18, r18, #12
+    ; PLAN_MAX_RAM.md slice 4: walk multi-level PT instead of flat lookup.
+    move.q  r1, r17                     ; PTBR
+    lsr     r2, r15, #12                ; VPN
+    jsr     kern_pt_lookup_leaf
+    move.q  r18, r1                     ; leaf PTE
+    move.q  r19, r18
+    and     r19, r19, #PTE_P
+    beqz    r19, .dbml_args_fail_kill
+    lsr     r18, r18, #12               ; PPN (new format)
+    lsl     r18, r18, #12               ; phys page base
     and     r16, r15, #0xFFF
     add     r18, r18, r16
     move.q  r1, r18
@@ -10890,12 +10237,16 @@ endif
     load.q  r17, KD_TASK_LAYOUT_PT_BASE(r1)
     ; Resolve the child data args VA to its backing kernel page and copy
     ; the caller args there directly.
-    lsr     r16, r15, #12
-    lsl     r16, r16, #3
-    add     r16, r16, r17
-    load.q  r18, (r16)
-    lsr     r18, r18, #13
-    lsl     r18, r18, #12
+    ; PLAN_MAX_RAM.md slice 4: walk multi-level PT instead of flat lookup.
+    move.q  r1, r17                     ; PTBR
+    lsr     r2, r15, #12                ; VPN
+    jsr     kern_pt_lookup_leaf
+    move.q  r18, r1                     ; leaf PTE
+    move.q  r19, r18
+    and     r19, r19, #PTE_P
+    beqz    r19, .ep_desc_cleanup_badarg
+    lsr     r18, r18, #12               ; PPN (new format)
+    lsl     r18, r18, #12               ; phys page base
     and     r16, r15, #0xFFF
     add     r18, r18, r16
     move.q  r1, r18
@@ -10996,22 +10347,42 @@ validate_user_range_mask:
     not     r6, r6
     and     r4, r4, r6                 ; kernel PT bootstrap ranges are supervisor-mapped
 .vur_user_pt:
-    lsr     r5, r1, #12                 ; start VPN
+    ; PLAN_MAX_RAM.md slice 4: walk the multi-level page table for each
+    ; VPN in the range. R3 (PTBR), R4 (perm mask), and the loop
+    ; cursor/end-VPN are stashed in callee-saved R20-R23 so
+    ; kern_pt_lookup_leaf's R5-R12 scratch use cannot clobber them.
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    move.q  r20, r3                    ; PTBR
+    move.q  r21, r4                    ; perm mask
+    lsr     r22, r1, #12                ; current VPN
     add     r6, r1, r2
     sub     r6, r6, #1
-    lsr     r6, r6, #12                 ; end VPN (inclusive)
+    lsr     r23, r6, #12                ; end VPN (inclusive)
 .vur_check:
-    bgt     r5, r6, .vur_ok
-    lsl     r1, r5, #3
-    add     r1, r1, r3
-    load.q  r1, (r1)                    ; PTE
-    and     r1, r1, r4
-    bne     r1, r4, .vur_fail
-    add     r5, r5, #1
+    bgt     r22, r23, .vur_ok_unwind
+    move.q  r1, r20
+    move.q  r2, r22
+    jsr     kern_pt_lookup_leaf         ; R1 = leaf PTE (0 if missing)
+    and     r1, r1, r21
+    bne     r1, r21, .vur_fail_unwind
+    add     r22, r22, #1
     bra     .vur_check
+.vur_ok_unwind:
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
 .vur_ok:
     move.q  r1, #0
     rts
+.vur_fail_unwind:
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
 .vur_fail:
     move.q  r1, #1
     rts

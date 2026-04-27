@@ -90,11 +90,16 @@ const (
 // ------------------------------------------------------------------------------
 // IE64 MMU Constants
 // ------------------------------------------------------------------------------
+//
+// PLAN_MAX_RAM.md slice 4c: the fixed MMU_NUM_PAGES = 8192 constant (which
+// encoded the old 32 MB ABI) has been removed. Code that needs the IE64 MMU
+// page count must call MachineBus.ActiveVisiblePages(), which derives the
+// count from active_visible_ram and MMU_PAGE_SIZE so it tracks the runtime
+// guest RAM sizing decision.
 const (
-	MMU_PAGE_SIZE  = 0x1000                               // 4 KiB virtual pages
-	MMU_PAGE_SHIFT = 12                                   // log2(MMU_PAGE_SIZE)
-	MMU_PAGE_MASK  = MMU_PAGE_SIZE - 1                    // offset mask within page
-	MMU_NUM_PAGES  = (IE64_ADDR_MASK + 1) / MMU_PAGE_SIZE // 8192 pages in 32MB
+	MMU_PAGE_SIZE  = 0x1000            // 4 KiB virtual pages
+	MMU_PAGE_SHIFT = 12                // log2(MMU_PAGE_SIZE)
+	MMU_PAGE_MASK  = MMU_PAGE_SIZE - 1 // offset mask within page
 )
 
 // PTE permission bits (64-bit page table entry)
@@ -109,9 +114,60 @@ const (
 )
 
 // PTE physical page number field
+//
+// PLAN_MAX_RAM.md slice 4 design (per design review): PPN is 52 bits wide
+// (PTE bits 12..63). Bits 0..6 are P/R/W/X/U/A/D flags; bits 7..11 are
+// reserved for future PTE metadata. With 4 KiB pages (12-bit offset) the
+// 52-bit PPN gives a full 64-bit physical address range, matching the
+// architectural decision to use full uint64 phys/virt plumbing.
 const (
-	PTE_PPN_SHIFT = 13     // PPN starts at bit 13
-	PTE_PPN_MASK  = 0x1FFF // 13-bit PPN (8192 pages)
+	PTE_PPN_SHIFT       = 12                              // PPN starts at bit 12
+	PTE_PPN_BITS        = 52                              // bits in the PPN field
+	PTE_PPN_MASK        = (uint64(1) << PTE_PPN_BITS) - 1 // 52-bit PPN
+	IE64_PHYS_ADDR_BITS = PTE_PPN_BITS + MMU_PAGE_SHIFT   // 64-bit physical address
+)
+
+// IE64 virtual address space.
+//
+// Architectural decision: full 64-bit virtual addresses. With 52-bit VPNs
+// (= virt addr bits 12..63) and 4 KiB pages, the architectural maximum is
+// math.MaxUint64. There are no reserved/unused high bits so nothing has to
+// be rejected before the walk; every uint64 is a valid VA. The constant
+// is exposed so debug/disassembler/loader code can reference the ABI
+// ceiling explicitly instead of hard-coding ^uint64(0).
+const IE64_VIRT_ADDR_MAX uint64 = ^uint64(0)
+
+// IE64 multi-level sparse radix page table layout.
+//
+// PLAN_MAX_RAM.md slice 4 design pick #2: 6 levels, top is 7 bits of VPN
+// (128 entries × 8 bytes = 1 KiB), levels 1..5 are 9 bits each (512
+// entries × 8 bytes = 4 KiB per intermediate/leaf table). Total VPN
+// width = 7 + 5*9 = 52 bits, matching PTE_PPN_BITS.
+//
+// VPN bit layout (level 0 is the top, level 5 is the leaf):
+//
+//	level 0 (top)  : VPN bits 51..45 (7 bits)
+//	level 1        : VPN bits 44..36 (9 bits)
+//	level 2        : VPN bits 35..27 (9 bits)
+//	level 3        : VPN bits 26..18 (9 bits)
+//	level 4        : VPN bits 17..9  (9 bits)
+//	level 5 (leaf) : VPN bits  8..0  (9 bits)
+//
+// Intermediate entries use the same PTE format as leaves: the P bit
+// signals "table present" and the PPN field holds the physical page
+// number of the next-level table. Permission/A/D bits in non-leaf
+// entries are reserved (currently ignored by the walk) so the leaf
+// entry alone determines effective permissions.
+const (
+	PT_LEVELS          = 6
+	PT_TOP_BITS        = 7
+	PT_NODE_BITS       = 9
+	PT_TOP_ENTRIES     = 1 << PT_TOP_BITS  // 128
+	PT_NODE_ENTRIES    = 1 << PT_NODE_BITS // 512
+	PT_TOP_SIZE_BYTES  = PT_TOP_ENTRIES * 8
+	PT_NODE_SIZE_BYTES = PT_NODE_ENTRIES * 8 // 4 KiB; equals MMU_PAGE_SIZE
+	PT_TOP_INDEX_MASK  = (1 << PT_TOP_BITS) - 1
+	PT_NODE_INDEX_MASK = (1 << PT_NODE_BITS) - 1
 )
 
 // Control register indices for MTCR/MFCR
@@ -393,11 +449,11 @@ type CPU64 struct {
 	mmuEnabled     bool         // MMU translation active
 	supervisorMode bool         // true = supervisor, false = user
 	previousMode   bool         // privilege level before last trap/interrupt entry
-	ptbr           uint32       // Page Table Base Register (physical address)
+	ptbr           uint64       // Page Table Base Register (physical address; PLAN_MAX_RAM.md slice 4b)
 	trapVector     uint64       // Trap handler entry point
 	intrVector     uint64       // Interrupt vector (CR_INTR_VEC, for MMU-mode interrupts)
 	faultPC        uint64       // PC saved at trap entry
-	faultAddr      uint32       // Virtual address that caused fault
+	faultAddr      uint64       // Virtual address that caused fault (PLAN_MAX_RAM.md slice 4b)
 	faultCause     uint32       // Fault cause code
 	trapped        bool         // Set by memory helpers on MMU fault; checked by Execute/StepOne
 	jitNeedInval   bool         // Set by MMU ops; consumed by JIT dispatcher
@@ -453,7 +509,7 @@ type CPU64 struct {
 // CR_FAULT_CAUSE / CR_PREV_MODE / CR_SAVED_SUA interface.
 type trapFrame struct {
 	faultPC    uint64
-	faultAddr  uint32
+	faultAddr  uint64
 	faultCause uint32
 	prevMode   bool
 	savedSUA   bool
@@ -581,7 +637,7 @@ func (cpu *CPU64) popTrapFrame() {
 // trap-frame stack overflow returns early with the CPU halted; the
 // active fields and PC are left untouched so the interpreter/JIT
 // main loops do not jump into a trap handler on top of a halted CPU.
-func (cpu *CPU64) trapFault(cause uint32, addr uint32) {
+func (cpu *CPU64) trapFault(cause uint32, addr uint64) {
 	if !cpu.trapEntry() {
 		return
 	}
@@ -600,7 +656,7 @@ func (cpu *CPU64) trapSyscall(syscallNum uint32) {
 		return
 	}
 	cpu.faultPC = cpu.PC + IE64_INSTR_SIZE // skip SYSCALL on ERET
-	cpu.faultAddr = syscallNum             // handler reads via MFCR CR_FAULT_ADDR
+	cpu.faultAddr = uint64(syscallNum)     // handler reads via MFCR CR_FAULT_ADDR
 	cpu.faultCause = FAULT_SYSCALL
 	cpu.PC = cpu.trapVector
 }
@@ -652,40 +708,54 @@ func atomicRMW64(ptr *uint64, rdVal, rtVal uint64, op byte) uint64 {
 // execAtomic performs an atomic read-modify-write on a 64-bit aligned address.
 // op selects the operation: OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR.
 // Sets cpu.trapped on fault (misalignment, MMU, I/O region).
+//
+// PLAN_MAX_RAM.md slice 4: vaddr is uint64. Truncating cpu.regs[31] to
+// uint32 before MMU translation aliased above-4-GiB VAs onto low-32-bit
+// pages, so the walker would resolve the wrong VPN; keep the effective
+// address full-width through translation, then fault if the resulting
+// physical address falls outside the legacy bus.memory[] window
+// (atomicRMW64 requires *uint64 in host RAM; backing-page atomics are
+// not yet wired).
 func (cpu *CPU64) execAtomic(rd, rs, rt byte, imm32 uint32, op byte) {
-	addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+	vaddr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 
 	// Alignment check (must be 8-byte aligned)
-	if addr&7 != 0 {
-		cpu.trapFault(FAULT_MISALIGNED, addr)
+	if vaddr&7 != 0 {
+		cpu.trapFault(FAULT_MISALIGNED, vaddr)
 		cpu.trapped = true
 		return
 	}
 
-	// Reject I/O region (atomics are only meaningful on RAM)
-	if addr >= IO_REGION_START {
-		cpu.trapFault(FAULT_MISALIGNED, addr)
+	// Reject I/O region (atomics are only meaningful on RAM). MMIO is a
+	// low-32-bit window; high VAs are subject to MMU translation rather
+	// than the MMIO gate.
+	if vaddr>>32 == 0 && uint32(vaddr) >= IO_REGION_START {
+		cpu.trapFault(FAULT_MISALIGNED, vaddr)
 		cpu.trapped = true
 		return
 	}
 
 	// MMU translation
+	physWide := vaddr
 	if cpu.mmuEnabled {
-		phys, fault, cause := cpu.translateAddr(addr, ACCESS_WRITE)
+		phys, fault, cause := cpu.translateAddr(vaddr, ACCESS_WRITE)
 		if fault {
-			cpu.trapFault(cause, addr)
+			cpu.trapFault(cause, vaddr)
 			cpu.trapped = true
 			return
 		}
-		addr = phys
+		physWide = phys
 	}
 
-	// Bounds check
-	if uint64(addr)+8 > uint64(len(cpu.memory)) {
-		cpu.trapFault(FAULT_MISALIGNED, addr)
+	// Bounds check: atomic RMW must land entirely inside the legacy
+	// bus.memory[] window.
+	memLen := uint64(len(cpu.memory))
+	if memLen < 8 || physWide > memLen-8 {
+		cpu.trapFault(FAULT_NOT_PRESENT, vaddr)
 		cpu.trapped = true
 		return
 	}
+	addr := uint32(physWide)
 
 	word := (*uint64)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
 	old := atomicRMW64(word, cpu.regs[rd], cpu.regs[rt], op)
@@ -785,17 +855,56 @@ func isValidDPairReg(idx byte) bool {
 // Memory Access
 // ------------------------------------------------------------------------------
 
-func (cpu *CPU64) loadMem(addr uint32, size byte) uint64 {
-	// MMU translation
+func (cpu *CPU64) loadMem(vaddr uint64, size byte) uint64 {
+	// MMU translation. PLAN_MAX_RAM.md slice 4 design: vaddr is uint64;
+	// translateAddr returns uint64 phys; high-phys results route through
+	// the bus phys helpers without truncating back to uint32.
+	physWide := vaddr
 	if cpu.mmuEnabled {
-		phys, fault, cause := cpu.translateAddr(addr, ACCESS_READ)
+		phys, fault, cause := cpu.translateAddr(vaddr, ACCESS_READ)
 		if fault {
-			cpu.trapFault(cause, addr)
+			cpu.trapFault(cause, vaddr)
 			cpu.trapped = true
 			return 0
 		}
-		addr = phys
+		physWide = phys
 	}
+
+	// High-phys path: physical address above the legacy bus.memory[] window.
+	// PLAN_MAX_RAM.md slice 4 fault-on-unmapped: data accesses to a
+	// translated phys outside the bound backing must fault, not silently
+	// return zero. The non-fault ReadPhys* helpers are only safe when
+	// the address is inside the low window or the backing's range.
+	if physWide >= uint64(len(cpu.memory)) {
+		var sizeBytes uint64
+		switch size {
+		case IE64_SIZE_B:
+			sizeBytes = 1
+		case IE64_SIZE_W:
+			sizeBytes = 2
+		case IE64_SIZE_L:
+			sizeBytes = 4
+		case IE64_SIZE_Q:
+			sizeBytes = 8
+		}
+		if !cpu.bus.PhysMapped(physWide, sizeBytes) {
+			cpu.trapFault(FAULT_NOT_PRESENT, vaddr)
+			cpu.trapped = true
+			return 0
+		}
+		switch size {
+		case IE64_SIZE_B:
+			return uint64(cpu.bus.ReadPhys8(physWide))
+		case IE64_SIZE_W:
+			return uint64(cpu.bus.ReadPhys16(physWide))
+		case IE64_SIZE_L:
+			return uint64(cpu.bus.ReadPhys32(physWide))
+		case IE64_SIZE_Q:
+			return cpu.bus.ReadPhys64(physWide)
+		}
+		return 0
+	}
+	addr := uint32(physWide)
 
 	// VRAM direct read fast path (VRAM addresses are above IO_REGION_START)
 	if cpu.vramDirect != nil && addr >= cpu.vramStart && addr < cpu.vramEnd {
@@ -842,17 +951,54 @@ func (cpu *CPU64) loadMem(addr uint32, size byte) uint64 {
 	return 0
 }
 
-func (cpu *CPU64) storeMem(addr uint32, val uint64, size byte) {
-	// MMU translation
+func (cpu *CPU64) storeMem(vaddr uint64, val uint64, size byte) {
+	// MMU translation. PLAN_MAX_RAM.md slice 4 design: vaddr is uint64.
+	physWide := vaddr
 	if cpu.mmuEnabled {
-		phys, fault, cause := cpu.translateAddr(addr, ACCESS_WRITE)
+		phys, fault, cause := cpu.translateAddr(vaddr, ACCESS_WRITE)
 		if fault {
-			cpu.trapFault(cause, addr)
+			cpu.trapFault(cause, vaddr)
 			cpu.trapped = true
 			return
 		}
-		addr = phys
+		physWide = phys
 	}
+
+	// High-phys path: physical address above the legacy bus.memory[] window.
+	// PLAN_MAX_RAM.md slice 4 fault-on-unmapped: WritePhys* helpers
+	// silently no-op outside the backing window; gate them on
+	// PhysMapped so a translated phys outside the backing faults
+	// loudly instead of accepting the write into the void.
+	if physWide >= uint64(len(cpu.memory)) {
+		var sizeBytes uint64
+		switch size {
+		case IE64_SIZE_B:
+			sizeBytes = 1
+		case IE64_SIZE_W:
+			sizeBytes = 2
+		case IE64_SIZE_L:
+			sizeBytes = 4
+		case IE64_SIZE_Q:
+			sizeBytes = 8
+		}
+		if !cpu.bus.PhysMapped(physWide, sizeBytes) {
+			cpu.trapFault(FAULT_NOT_PRESENT, vaddr)
+			cpu.trapped = true
+			return
+		}
+		switch size {
+		case IE64_SIZE_B:
+			cpu.bus.WritePhys8(physWide, byte(val))
+		case IE64_SIZE_W:
+			cpu.bus.WritePhys16(physWide, uint16(val))
+		case IE64_SIZE_L:
+			cpu.bus.WritePhys32(physWide, uint32(val))
+		case IE64_SIZE_Q:
+			cpu.bus.WritePhys64(physWide, val)
+		}
+		return
+	}
+	addr := uint32(physWide)
 
 	// VRAM direct write fast path (VRAM addresses are above IO_REGION_START)
 	if cpu.vramDirect != nil && addr >= cpu.vramStart && addr < cpu.vramEnd {
@@ -1077,27 +1223,45 @@ func (cpu *CPU64) Execute() {
 			}
 		}
 
-		// Mask PC to 32MB address space
-		pc32 := uint32(cpu.PC & IE64_ADDR_MASK)
-
-		// MMU translation for instruction fetch
+		// PLAN_MAX_RAM.md slice 4 design: full 64-bit virtual PC. The
+		// legacy IE64_ADDR_MASK truncation aliased high VAs into the low
+		// 32 MB window and made high-VA execution impossible regardless
+		// of how wide the MMU walk became. The mask is gone here; the
+		// MMU walk receives cpu.PC directly. After translation, high
+		// physical addresses (above the legacy bus.memory[] window)
+		// fetch the 8-byte instruction word through bus.ReadPhys64
+		// instead of indexing cpu.memory.
+		pcVirt := cpu.PC
+		var pcPhys uint64 = pcVirt
 		if cpu.mmuEnabled {
-			phys, fault, cause := cpu.translateAddr(pc32, ACCESS_EXEC)
+			phys, fault, cause := cpu.translateAddr(pcVirt, ACCESS_EXEC)
 			if fault {
-				cpu.trapFault(cause, pc32)
+				cpu.trapFault(cause, pcVirt)
 				continue
 			}
-			pc32 = phys
+			pcPhys = phys
 		}
 
-		if uint64(pc32)+8 > memSize {
-			fmt.Printf("IE64: PC out of bounds during fetch: PC=0x%08X mem=%d\n", pc32, memSize)
-			cpu.running.Store(false)
-			break
+		var instr uint64
+		// Subtraction form avoids the pcPhys+8 wrap near MaxUint64 that
+		// would falsely admit a high physical address into the unsafe
+		// cpu.memory fast path. memSize is always >= IE64_INSTR_SIZE
+		// (legacy memory[] is 32 MB) so memSize-IE64_INSTR_SIZE never
+		// underflows.
+		if pcPhys <= memSize-IE64_INSTR_SIZE {
+			// Legacy fast path: physical address inside the bus.memory[] window.
+			instr = *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(pcPhys)))
+		} else {
+			// High-phys path: route through the bus phys helper. Unmapped
+			// addresses fault rather than wrapping into low memory.
+			fetched, ok := cpu.bus.ReadPhys64WithFault(pcPhys)
+			if !ok {
+				fmt.Printf("IE64: PC out of bounds during fetch: virt=0x%016X phys=0x%016X mem=%d\n", pcVirt, pcPhys, memSize)
+				cpu.running.Store(false)
+				break
+			}
+			instr = fetched
 		}
-
-		// Fetch entire 8-byte instruction in one read (LE platform enforced by le_check.go)
-		instr := *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(pc32)))
 		opcode := byte(instr)
 		byte1 := byte(instr >> 8)
 		byte2 := byte(instr >> 16)
@@ -1153,7 +1317,7 @@ func (cpu *CPU64) Execute() {
 							// Legacy push-PC/RTI model (MMU off or INTR_VEC not set)
 							cpu.inInterrupt.Store(true)
 							cpu.regs[31] -= 8
-							sp := uint32(cpu.regs[31])
+							sp := cpu.regs[31]
 							if !cpu.mmuStackWrite(sp, cpu.PC, memBase, memSize) {
 								if cpu.trapped {
 									cpu.trapped = false
@@ -1209,7 +1373,7 @@ func (cpu *CPU64) Execute() {
 
 		case OP_LOAD:
 			if rd != 0 {
-				addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+				addr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 				cpu.regs[rd] = cpu.loadMem(addr, size)
 				if cpu.trapped {
 					cpu.trapped = false
@@ -1218,7 +1382,7 @@ func (cpu *CPU64) Execute() {
 			}
 
 		case OP_STORE:
-			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			addr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.storeMem(addr, maskToSize(cpu.regs[rd], size), size)
 			if cpu.trapped {
 				cpu.trapped = false
@@ -1456,12 +1620,12 @@ func (cpu *CPU64) Execute() {
 
 		case OP_JMP:
 			target := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
-			cpu.PC = target & IE64_ADDR_MASK
+			cpu.PC = target
 			continue
 
 		case OP_JSR64:
 			cpu.regs[31] -= 8
-			sp := uint32(cpu.regs[31])
+			sp := cpu.regs[31]
 			if !cpu.mmuStackWrite(sp, cpu.PC+IE64_INSTR_SIZE, memBase, memSize) {
 				if cpu.trapped {
 					cpu.trapped = false
@@ -1476,7 +1640,7 @@ func (cpu *CPU64) Execute() {
 			continue
 
 		case OP_RTS64:
-			sp := uint32(cpu.regs[31])
+			sp := cpu.regs[31]
 			val, ok := cpu.mmuStackRead(sp, memBase, memSize)
 			if !ok {
 				if cpu.trapped {
@@ -1493,7 +1657,7 @@ func (cpu *CPU64) Execute() {
 
 		case OP_PUSH64:
 			cpu.regs[31] -= 8
-			sp := uint32(cpu.regs[31])
+			sp := cpu.regs[31]
 			if !cpu.mmuStackWrite(sp, cpu.regs[rs], memBase, memSize) {
 				if cpu.trapped {
 					cpu.trapped = false
@@ -1506,7 +1670,7 @@ func (cpu *CPU64) Execute() {
 			}
 
 		case OP_POP64:
-			sp := uint32(cpu.regs[31])
+			sp := cpu.regs[31]
 			val, ok := cpu.mmuStackRead(sp, memBase, memSize)
 			if !ok {
 				if cpu.trapped {
@@ -1524,7 +1688,7 @@ func (cpu *CPU64) Execute() {
 
 		case OP_JSR_IND:
 			cpu.regs[31] -= 8
-			sp := uint32(cpu.regs[31])
+			sp := cpu.regs[31]
 			if !cpu.mmuStackWrite(sp, cpu.PC+IE64_INSTR_SIZE, memBase, memSize) {
 				if cpu.trapped {
 					cpu.trapped = false
@@ -1536,7 +1700,7 @@ func (cpu *CPU64) Execute() {
 				continue
 			}
 			target := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
-			cpu.PC = target & IE64_ADDR_MASK
+			cpu.PC = target
 			continue
 
 		// ----------------------------------------------------------------------
@@ -1560,7 +1724,7 @@ func (cpu *CPU64) Execute() {
 				goto invalid_freg
 			}
 			{
-				addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+				addr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 				val := uint32(cpu.loadMem(addr, IE64_SIZE_L))
 				if cpu.trapped {
 					cpu.trapped = false
@@ -1577,7 +1741,7 @@ func (cpu *CPU64) Execute() {
 			if rd > 15 {
 				goto invalid_freg
 			}
-			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			addr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.storeMem(addr, uint64(cpu.FPU.FPRegs[rd]), IE64_SIZE_L)
 			if cpu.trapped {
 				cpu.trapped = false
@@ -1839,7 +2003,7 @@ func (cpu *CPU64) Execute() {
 			if !isValidDPairReg(rd) {
 				goto invalid_freg
 			}
-			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			addr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			val := cpu.loadMem(addr, IE64_SIZE_Q)
 			if cpu.trapped {
 				cpu.trapped = false
@@ -1855,7 +2019,7 @@ func (cpu *CPU64) Execute() {
 			if !isValidDPairReg(rd) {
 				goto invalid_freg
 			}
-			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			addr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.storeMem(addr, math.Float64bits(cpu.FPU.getDPair(rd)), IE64_SIZE_Q)
 			if cpu.trapped {
 				cpu.trapped = false
@@ -1994,7 +2158,7 @@ func (cpu *CPU64) Execute() {
 			cpu.interruptEnabled.Store(false)
 
 		case OP_RTI64:
-			sp := uint32(cpu.regs[31])
+			sp := cpu.regs[31]
 			val, ok := cpu.mmuStackRead(sp, memBase, memSize)
 			if !ok {
 				if cpu.trapped {
@@ -2027,11 +2191,11 @@ func (cpu *CPU64) Execute() {
 			val := cpu.regs[rs]
 			switch crIdx {
 			case CR_PTBR:
-				cpu.ptbr = uint32(val)
+				cpu.ptbr = val
 				cpu.tlbFlush()
 				cpu.jitNeedInval = true
 			case CR_FAULT_ADDR:
-				cpu.faultAddr = uint32(val)
+				cpu.faultAddr = val
 			case CR_FAULT_CAUSE:
 				cpu.faultCause = uint32(val)
 			case CR_FAULT_PC:
@@ -2081,9 +2245,9 @@ func (cpu *CPU64) Execute() {
 			var val uint64
 			switch crIdx {
 			case CR_PTBR:
-				val = uint64(cpu.ptbr)
+				val = cpu.ptbr
 			case CR_FAULT_ADDR:
-				val = uint64(cpu.faultAddr)
+				val = cpu.faultAddr
 			case CR_FAULT_CAUSE:
 				val = uint64(cpu.faultCause)
 			case CR_FAULT_PC:
@@ -2180,7 +2344,7 @@ func (cpu *CPU64) Execute() {
 			if !cpu.requireSupervisor() {
 				continue
 			}
-			vpn := uint16(cpu.regs[rs] >> MMU_PAGE_SHIFT)
+			vpn := cpu.regs[rs] >> MMU_PAGE_SHIFT
 			cpu.tlbInvalidate(vpn)
 			cpu.jitNeedInval = true
 
@@ -2286,23 +2450,29 @@ func (cpu *CPU64) StepOne() int {
 	memSize := uint64(len(cpu.memory))
 	memBase := unsafe.Pointer(&cpu.memory[0])
 
-	pc32 := uint32(cpu.PC & IE64_ADDR_MASK)
-
-	// MMU translation for instruction fetch
+	pcVirt := cpu.PC
+	var pcPhys uint64 = pcVirt
 	if cpu.mmuEnabled {
-		phys, fault, cause := cpu.translateAddr(pc32, ACCESS_EXEC)
+		phys, fault, cause := cpu.translateAddr(pcVirt, ACCESS_EXEC)
 		if fault {
-			cpu.trapFault(cause, pc32)
+			cpu.trapFault(cause, pcVirt)
 			return 1 // trap consumed a cycle
 		}
-		pc32 = phys
+		pcPhys = phys
 	}
 
-	if uint64(pc32)+8 > memSize {
-		return 0
+	var instr uint64
+	// Subtraction form avoids pcPhys+8 wrap near MaxUint64 that would
+	// admit a high physical address into the unsafe fast path.
+	if pcPhys <= memSize-IE64_INSTR_SIZE {
+		instr = *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(pcPhys)))
+	} else {
+		fetched, ok := cpu.bus.ReadPhys64WithFault(pcPhys)
+		if !ok {
+			return 0
+		}
+		instr = fetched
 	}
-
-	instr := *(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(pc32)))
 	opcode := byte(instr)
 	byte1 := byte(instr >> 8)
 	byte2 := byte(instr >> 16)
@@ -2350,7 +2520,7 @@ func (cpu *CPU64) StepOne() int {
 		}
 	case OP_LOAD:
 		if rd != 0 {
-			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			addr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.regs[rd] = cpu.loadMem(addr, size)
 			if cpu.trapped {
 				cpu.trapped = false
@@ -2358,7 +2528,7 @@ func (cpu *CPU64) StepOne() int {
 			}
 		}
 	case OP_STORE:
-		addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+		addr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 		cpu.storeMem(addr, maskToSize(cpu.regs[rd], size), size)
 		if cpu.trapped {
 			cpu.trapped = false
@@ -2561,11 +2731,11 @@ func (cpu *CPU64) StepOne() int {
 		pcAdvanced = true
 	case OP_JMP:
 		target := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
-		cpu.PC = target & IE64_ADDR_MASK
+		cpu.PC = target
 		pcAdvanced = true
 	case OP_JSR64:
 		cpu.regs[31] -= 8
-		sp := uint32(cpu.regs[31])
+		sp := cpu.regs[31]
 		if !cpu.mmuStackWrite(sp, cpu.PC+IE64_INSTR_SIZE, memBase, memSize) {
 			if cpu.trapped {
 				cpu.trapped = false
@@ -2577,7 +2747,7 @@ func (cpu *CPU64) StepOne() int {
 			pcAdvanced = true
 		}
 	case OP_RTS64:
-		sp := uint32(cpu.regs[31])
+		sp := cpu.regs[31]
 		val, ok := cpu.mmuStackRead(sp, memBase, memSize)
 		if ok {
 			cpu.PC = val
@@ -2588,7 +2758,7 @@ func (cpu *CPU64) StepOne() int {
 		pcAdvanced = true
 	case OP_PUSH64:
 		cpu.regs[31] -= 8
-		sp := uint32(cpu.regs[31])
+		sp := cpu.regs[31]
 		if !cpu.mmuStackWrite(sp, cpu.regs[rs], memBase, memSize) {
 			if cpu.trapped {
 				cpu.trapped = false
@@ -2597,7 +2767,7 @@ func (cpu *CPU64) StepOne() int {
 			}
 		}
 	case OP_POP64:
-		sp := uint32(cpu.regs[31])
+		sp := cpu.regs[31]
 		val, ok := cpu.mmuStackRead(sp, memBase, memSize)
 		if ok {
 			if rd != 0 {
@@ -2610,7 +2780,7 @@ func (cpu *CPU64) StepOne() int {
 		}
 	case OP_JSR_IND:
 		cpu.regs[31] -= 8
-		sp := uint32(cpu.regs[31])
+		sp := cpu.regs[31]
 		if !cpu.mmuStackWrite(sp, cpu.PC+IE64_INSTR_SIZE, memBase, memSize) {
 			if cpu.trapped {
 				cpu.trapped = false
@@ -2619,7 +2789,7 @@ func (cpu *CPU64) StepOne() int {
 			pcAdvanced = true
 		} else {
 			target := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
-			cpu.PC = target & IE64_ADDR_MASK
+			cpu.PC = target
 			pcAdvanced = true
 		}
 	case OP_FMOV:
@@ -2628,7 +2798,7 @@ func (cpu *CPU64) StepOne() int {
 		}
 	case OP_FLOAD:
 		if cpu.FPU != nil && rd <= 15 {
-			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			addr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			val := uint32(cpu.loadMem(addr, IE64_SIZE_L))
 			if cpu.trapped {
 				cpu.trapped = false
@@ -2640,7 +2810,7 @@ func (cpu *CPU64) StepOne() int {
 		}
 	case OP_FSTORE:
 		if cpu.FPU != nil && rd <= 15 {
-			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			addr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.storeMem(addr, uint64(cpu.FPU.FPRegs[rd]), IE64_SIZE_L)
 			if cpu.trapped {
 				cpu.trapped = false
@@ -2770,7 +2940,7 @@ func (cpu *CPU64) StepOne() int {
 		}
 	case OP_DLOAD:
 		if cpu.FPU != nil && isValidDPairReg(rd) {
-			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			addr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			val := cpu.loadMem(addr, IE64_SIZE_Q)
 			if cpu.trapped {
 				cpu.trapped = false
@@ -2782,7 +2952,7 @@ func (cpu *CPU64) StepOne() int {
 		}
 	case OP_DSTORE:
 		if cpu.FPU != nil && isValidDPairReg(rd) {
-			addr := uint32(int64(cpu.regs[rs]) + int64(int32(imm32)))
+			addr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 			cpu.storeMem(addr, math.Float64bits(cpu.FPU.getDPair(rd)), IE64_SIZE_Q)
 			if cpu.trapped {
 				cpu.trapped = false
@@ -2855,7 +3025,7 @@ func (cpu *CPU64) StepOne() int {
 	case OP_CLI64:
 		cpu.interruptEnabled.Store(false)
 	case OP_RTI64:
-		sp := uint32(cpu.regs[31])
+		sp := cpu.regs[31]
 		val, ok := cpu.mmuStackRead(sp, memBase, memSize)
 		if ok {
 			cpu.PC = val
@@ -2877,11 +3047,11 @@ func (cpu *CPU64) StepOne() int {
 			val := cpu.regs[rs]
 			switch crIdx {
 			case CR_PTBR:
-				cpu.ptbr = uint32(val)
+				cpu.ptbr = val
 				cpu.tlbFlush()
 				cpu.jitNeedInval = true
 			case CR_FAULT_ADDR:
-				cpu.faultAddr = uint32(val)
+				cpu.faultAddr = val
 			case CR_FAULT_CAUSE:
 				cpu.faultCause = uint32(val)
 			case CR_FAULT_PC:
@@ -2929,9 +3099,9 @@ func (cpu *CPU64) StepOne() int {
 			var val uint64
 			switch crIdx {
 			case CR_PTBR:
-				val = uint64(cpu.ptbr)
+				val = cpu.ptbr
 			case CR_FAULT_ADDR:
-				val = uint64(cpu.faultAddr)
+				val = cpu.faultAddr
 			case CR_FAULT_CAUSE:
 				val = uint64(cpu.faultCause)
 			case CR_FAULT_PC:
@@ -3023,7 +3193,7 @@ func (cpu *CPU64) StepOne() int {
 		if !cpu.requireSupervisor() {
 			pcAdvanced = true
 		} else {
-			vpn := uint16(cpu.regs[rs] >> MMU_PAGE_SHIFT)
+			vpn := cpu.regs[rs] >> MMU_PAGE_SHIFT
 			cpu.tlbInvalidate(vpn)
 			cpu.jitNeedInval = true
 		}

@@ -782,6 +782,32 @@ func main() {
 
 	// Create system bus
 	sysBus := NewMachineBus()
+
+	// PLAN_MAX_RAM.md slice 1+2: detect host RAM and publish guest RAM
+	// sizing on the bus so SYSINFO MMIO (and the GetSysInfo syscall) can
+	// report meaningful values. Active visible RAM is clamped to the
+	// legacy bus.memory[] window (DEFAULT_MEMORY_SIZE) since the IE32
+	// surface still uses the 32 MB ABI; total guest RAM reflects the
+	// host autodetection result so AVAIL "Phys" prints actual host RAM.
+	// On detection failure (tests, non-Linux, missing /proc/meminfo),
+	// fall back to a sizing where total = active = DEFAULT_MEMORY_SIZE
+	// so SYSINFO is at least non-zero.
+	{
+		// First try autodetection. If platform classification or
+		// /proc/meminfo parsing fails, fall back to publishing the
+		// legacy 32 MB sizing so SYSINFO is at least non-zero.
+		ms, err := ComputeMemorySizing(uint64(DEFAULT_MEMORY_SIZE), SizingOverrides{})
+		if err != nil {
+			ms = MemorySizing{
+				DetectedUsableRAM: uint64(DEFAULT_MEMORY_SIZE),
+				TotalGuestRAM:     uint64(DEFAULT_MEMORY_SIZE),
+				ActiveVisibleRAM:  uint64(DEFAULT_MEMORY_SIZE),
+				VisibleCeiling:    uint64(DEFAULT_MEMORY_SIZE),
+			}
+		}
+		sysBus.SetSizing(ms)
+		RegisterSysInfoMMIOFromBus(sysBus)
+	}
 	psgPlayer.AttachBus(sysBus)
 	sidPlayer.AttachBus(sysBus)
 

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -661,7 +660,13 @@ func (d *BootstrapHostFSDevice) currentTaskPTBR() (uint32, bool) {
 	return 0, true
 }
 
-func (d *BootstrapHostFSDevice) translateGuestVA(ptr uint32, write bool) (uint32, bool) {
+// translateGuestVA walks the current task's multi-level page table for
+// a guest virtual pointer and returns the resolved physical address.
+// PLAN_MAX_RAM.md slice 4: returns uint64 so a leaf PPN above the
+// uint32 ceiling is preserved verbatim — the caller routes through
+// bus.ReadPhys*/WritePhys* helpers and handles backing-resident pages
+// without truncating to a low-memory alias.
+func (d *BootstrapHostFSDevice) translateGuestVA(ptr uint32, write bool) (uint64, bool) {
 	if d.bus == nil {
 		return 0, false
 	}
@@ -670,15 +675,33 @@ func (d *BootstrapHostFSDevice) translateGuestVA(ptr uint32, write bool) (uint32
 		return 0, false
 	}
 	if ptBase == 0 {
-		return ptr, true
+		return uint64(ptr), true
 	}
-	vpn := (ptr >> MMU_PAGE_SHIFT) & PTE_PPN_MASK
-	pteAddr := ptBase + vpn*8
-	if int(pteAddr+8) > len(d.bus.memory) {
-		return 0, false
+	vpn := (uint64(ptr) >> MMU_PAGE_SHIFT) & PTE_PPN_MASK
+	tableAddr := uint64(ptBase)
+	var ppn uint64
+	var flags byte
+	for level := 0; level < PT_LEVELS; level++ {
+		idx := ptLevelIndex(vpn, level)
+		pteAddr := tableAddr + idx*8
+		if pteAddr < tableAddr {
+			return 0, false // overflow
+		}
+		pte, ok := d.bus.ReadPhys64WithFault(pteAddr)
+		if !ok {
+			return 0, false
+		}
+		entryPPN, entryFlags := parsePTE(pte)
+		if level == PT_LEVELS-1 {
+			ppn = entryPPN
+			flags = entryFlags
+			break
+		}
+		if entryFlags&PTE_P == 0 {
+			return 0, false
+		}
+		tableAddr = entryPPN << MMU_PAGE_SHIFT
 	}
-	pte := binary.LittleEndian.Uint64(d.bus.memory[pteAddr:])
-	ppn, flags := parsePTE(pte)
 	if flags&PTE_P == 0 {
 		return 0, false
 	}
@@ -692,7 +715,7 @@ func (d *BootstrapHostFSDevice) translateGuestVA(ptr uint32, write bool) (uint32
 	} else if flags&PTE_R == 0 {
 		return 0, false
 	}
-	return (uint32(ppn) << MMU_PAGE_SHIFT) | (ptr & MMU_PAGE_MASK), true
+	return (ppn << MMU_PAGE_SHIFT) | uint64(ptr&MMU_PAGE_MASK), true
 }
 
 func (d *BootstrapHostFSDevice) readGuest8(ptr uint32) (byte, bool) {
@@ -700,7 +723,17 @@ func (d *BootstrapHostFSDevice) readGuest8(ptr uint32) (byte, bool) {
 	if !ok {
 		return 0, false
 	}
-	return d.bus.Read8(phys), true
+	// PLAN_MAX_RAM.md slice 4: route through bus.ReadPhys8 so a leaf
+	// PPN above the uint32 ceiling reads from the bound backing
+	// instead of aliasing to the low-32-bit window via bus.Read8.
+	// Gate with PhysMapped so a PTE whose PPN points outside both the
+	// low-memory window and the bound backing fails the access instead
+	// of returning a silent zero — matches the widened CPU load/store
+	// fault behavior.
+	if !d.bus.PhysMapped(phys, 1) {
+		return 0, false
+	}
+	return d.bus.ReadPhys8(phys), true
 }
 
 func (d *BootstrapHostFSDevice) writeGuest8(ptr uint32, value byte) bool {
@@ -708,7 +741,10 @@ func (d *BootstrapHostFSDevice) writeGuest8(ptr uint32, value byte) bool {
 	if !ok {
 		return false
 	}
-	d.bus.Write8(phys, value)
+	if !d.bus.PhysMapped(phys, 1) {
+		return false
+	}
+	d.bus.WritePhys8(phys, value)
 	return true
 }
 

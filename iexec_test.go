@@ -44,7 +44,8 @@ const (
 	// (0x700000+). See sdk/include/iexec.inc for the canonical definition.
 	userPTBase        = 0x800000 // USER_PT_BASE — M12.6 Phase D: was 0x700000. PT region grew from 1 MiB to 2 MiB for MAX_TASKS=32; allocator pool was shifted up by 1 MiB to make room.
 	userPTRegionPages = 512      // USER_PT_REGION_PAGES
-	userSlotStride    = 0x10000  // USER_SLOT_STRIDE (64 KiB between slots)
+	userSlotStride    = 0x10000  // USER_SLOT_STRIDE (64 KiB between code/stack/data slots)
+	userPtStride      = 0x20000  // USER_PT_STRIDE (128 KiB per PT slot — slice 4: bumped from 64 KiB to hold multi-level radix walk)
 
 	// User task physical pages (slot-based: base + i * userSlotStride)
 	userCodeBase  = 0x600000 // USER_CODE_BASE
@@ -52,8 +53,8 @@ const (
 	userDataBase  = 0x602000 // USER_DATA_BASE
 
 	// Convenience aliases for boot tasks (backward compat with existing tests)
-	userPT0Base    = userPTBase                     // 0x100000
-	userPT1Base    = userPTBase + userSlotStride    // 0x110000
+	userPT0Base    = userPTBase                     // 0x800000
+	userPT1Base    = userPTBase + userPtStride      // 0x820000 — slice 4: 128 KiB stride (was 0x810000)
 	userTask0Code  = userCodeBase                   // 0x600000
 	userTask0Stack = userStackBase                  // 0x601000
 	userTask0Data  = userDataBase                   // 0x602000
@@ -1035,50 +1036,76 @@ func (k *iexecKernel) padTo(targetOff uint32) {
 	}
 }
 
-// setupPageTable writes identity-mapped kernel PTEs (0-383, supervisor-only)
-// into the CPU memory at the given base address. Also maps specified user pages.
+// setupKernelPTEs writes identity-mapped kernel PTEs (0-383, supervisor-only)
+// into the multi-level page table rooted at ptBase. Also maps the VRAM
+// region (384-1535) and the M6 allocator pool. PLAN_MAX_RAM.md slice 4
+// design: routes through mmuMap so intermediate tables auto-allocate from
+// the per-PTBR pool. Requires setMapUserPageCPU to have been called for
+// the active rig (newIE64TestRig does this automatically).
 func setupKernelPTEs(mem []byte, ptBase uint32) {
+	cpu := mapUserPageCPU
+	if cpu == nil {
+		panic("setupKernelPTEs: mapUserPageCPU unset; call setMapUserPageCPU before installing kernel PTEs")
+	}
+	prev := cpu.ptbr
+	cpu.ptbr = uint64(ptBase)
+	defer func() { cpu.ptbr = prev }()
+
 	// Identity-map pages 0-383 supervisor-only as R/W by default, then tighten
 	// the immutable kernel image below KERN_PAGE_TABLE to R/X.
-	for page := uint16(0); page < 384; page++ {
-		pte := makePTE(page, PTE_P|PTE_R|PTE_W)
-		off := ptBase + uint32(page)*8
-		binary.LittleEndian.PutUint64(mem[off:], pte)
+	for page := uint64(0); page < 384; page++ {
+		mmuMap(cpu, page<<MMU_PAGE_SHIFT, page, PTE_P|PTE_R|PTE_W)
 	}
-	for page := uint16(0); page < uint16(kernImagePageEnd); page++ {
-		pte := makePTE(page, PTE_P|PTE_R|PTE_X)
-		off := ptBase + uint32(page)*8
-		binary.LittleEndian.PutUint64(mem[off:], pte)
+	for page := uint64(0); page < uint64(kernImagePageEnd); page++ {
+		mmuMap(cpu, page<<MMU_PAGE_SHIFT, page, PTE_P|PTE_R|PTE_X)
 	}
 	// Also map VRAM region pages 384-1535 ($180000-$5FFFFF) supervisor-only
-	for page := uint16(384); page < 1536; page++ {
-		pte := makePTE(page, PTE_P|PTE_R|PTE_W)
-		off := ptBase + uint32(page)*8
-		binary.LittleEndian.PutUint64(mem[off:], pte)
+	for page := uint64(384); page < 1536; page++ {
+		mmuMap(cpu, page<<MMU_PAGE_SHIFT, page, PTE_P|PTE_R|PTE_W)
 	}
 	// M6: map allocation pool pages (0x700-0x1FFF) supervisor P|R|W
-	for page := uint16(allocPoolBase); page < uint16(allocPoolBase+allocPoolPages); page++ {
-		pte := makePTE(page, PTE_P|PTE_R|PTE_W)
-		off := ptBase + uint32(page)*8
-		binary.LittleEndian.PutUint64(mem[off:], pte)
+	for page := uint64(allocPoolBase); page < uint64(allocPoolBase+allocPoolPages); page++ {
+		mmuMap(cpu, page<<MMU_PAGE_SHIFT, page, PTE_P|PTE_R|PTE_W)
 	}
 	// R1: leave one non-present page below the kernel stack floor.
-	guardOff := ptBase + uint32(kernStackGuardVPN)*8
-	binary.LittleEndian.PutUint64(mem[guardOff:], 0)
+	mmuClearLeafPTE(cpu, uint64(kernStackGuardVPN)<<MMU_PAGE_SHIFT)
+	_ = mem
 }
 
-// mapUserPage adds a user-accessible PTE to a page table
-func mapUserPage(mem []byte, ptBase uint32, vpn, ppn uint16, flags byte) {
-	pte := makePTE(ppn, flags)
-	off := ptBase + uint32(vpn)*8
-	binary.LittleEndian.PutUint64(mem[off:], pte)
+// mapUserPage adds a user-accessible PTE to a page table. PLAN_MAX_RAM.md
+// slice 4 design: routes through the multi-level walk via the global
+// mapUserPageCPU helper, which holds the *CPU64 needed to allocate
+// intermediate tables through the bus phys helpers.
+func mapUserPage(mem []byte, ptBase uint32, vpn, ppn uint64, flags byte) {
+	cpu := mapUserPageCPU
+	if cpu == nil {
+		panic("mapUserPage: mapUserPageCPU unset; call setMapUserPageCPU before installing user PTEs")
+	}
+	prev := cpu.ptbr
+	cpu.ptbr = uint64(ptBase)
+	mmuMap(cpu, vpn<<MMU_PAGE_SHIFT, ppn, flags)
+	cpu.ptbr = prev
+	_ = mem
 }
+
+// mapUserPageCPU is the *CPU64 used by mapUserPage to walk the multi-level
+// page table. iexec test rigs install themselves into this slot before
+// calling setupKernelPTEs / mapUserPage; older tests that pass cpu.memory
+// without a rig pointer do the same via setMapUserPageCPU.
+var mapUserPageCPU *CPU64
+
+func setMapUserPageCPU(cpu *CPU64) { mapUserPageCPU = cpu }
 
 // ===========================================================================
 // Kernel Binary Builders (for different test phases)
 // ===========================================================================
 
-// buildBootOnlyKernel: sets up vectors, page table, enables MMU, halts.
+// buildBootOnlyKernel: sets up vectors and KSP, enables MMU, halts. The
+// page table itself is built Go-side in loadAndRunKernel via the multi-
+// level setupKernelPTEs helper before the kernel runs (PLAN_MAX_RAM.md
+// slice 4 design replaces the old inline asm flat-PTE loop, which
+// hardcoded the legacy SHIFT=13 single-level format and is incompatible
+// with the 6-level walk).
 func buildBootOnlyKernel() *iexecKernel {
 	k := newIExecKernel()
 
@@ -1096,42 +1123,8 @@ func buildBootOnlyKernel() *iexecKernel {
 	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, kernStackTop))
 	k.emit(ie64Instr(OP_MTCR, CR_KSP, 0, 0, 1, 0, 0))
 
-	// Build page table inline
-	k.emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, kernPageTableBase))
-	k.emit(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0)) // counter
-
-	loopStart := k.addr()
-	k.emit(ie64Instr(OP_LSL, 3, IE64_SIZE_Q, 1, 4, 0, 13))    // R3 = R4 << 13
-	k.emit(ie64Instr(OP_OR64, 3, IE64_SIZE_Q, 1, 3, 0, 0x07)) // R3 |= P|R|W
-	k.emit(ie64Instr(OP_LSL, 5, IE64_SIZE_Q, 1, 4, 0, 3))     // R5 = R4 * 8
-	k.emit(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 2, 0))     // R5 += ptBase
-	k.emit(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 5, 0, 0))   // [R5] = R3
-	k.emit(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 4, 0, 1))     // R4++
-	k.emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, 384))
-	branchAddr := k.addr()
-	k.emit(ie64Instr(OP_BLT, 0, 0, 0, 4, 6, uint32(int32(loopStart)-int32(branchAddr))))
-
-	k.emit(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, 0))
-	rxLoopStart := k.addr()
-	k.emit(ie64Instr(OP_LSL, 3, IE64_SIZE_Q, 1, 4, 0, 13))    // R3 = R4 << 13
-	k.emit(ie64Instr(OP_OR64, 3, IE64_SIZE_Q, 1, 3, 0, 0x0B)) // R3 |= P|R|X
-	k.emit(ie64Instr(OP_LSL, 5, IE64_SIZE_Q, 1, 4, 0, 3))     // R5 = R4 * 8
-	k.emit(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 2, 0))     // R5 += ptBase
-	k.emit(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 5, 0, 0))   // [R5] = R3
-	k.emit(ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 4, 0, 1))     // R4++
-	k.emit(ie64Instr(OP_MOVE, 6, IE64_SIZE_L, 1, 0, 0, kernImagePageEnd))
-	rxBranchAddr := k.addr()
-	k.emit(ie64Instr(OP_BLT, 0, 0, 0, 4, 6, uint32(int32(rxLoopStart)-int32(rxBranchAddr))))
-
-	// R1: clear the kernel stack guard page so downward supervisor overflow
-	// faults as NOT_PRESENT instead of walking into kernel data.
-	k.emit(ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 0))
-	k.emit(ie64Instr(OP_MOVE, 4, IE64_SIZE_L, 1, 0, 0, kernStackGuardVPN))
-	k.emit(ie64Instr(OP_LSL, 5, IE64_SIZE_Q, 1, 4, 0, 3))
-	k.emit(ie64Instr(OP_ADD, 5, IE64_SIZE_Q, 0, 5, 2, 0))
-	k.emit(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 5, 0, 0))
-
-	// Enable MMU
+	// Enable MMU. PTBR points at the multi-level top-level table that
+	// loadAndRunKernel installed Go-side via setupKernelPTEs.
 	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, kernPageTableBase))
 	k.emit(ie64Instr(OP_MTCR, CR_PTBR, 0, 0, 1, 0, 0))
 	k.emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 1))
@@ -1163,9 +1156,9 @@ func buildYieldKernel(mem []byte) *iexecKernel {
 	setupKernelPTEs(mem, kernPageTableBase)
 	// Also set up in the user page table (copy kernel mappings + add user pages)
 	setupKernelPTEs(mem, userPT0Base)
-	userCodeVPN := uint16(userTask0Code >> MMU_PAGE_SHIFT)
-	userStackVPN := uint16(userTask0Stack >> MMU_PAGE_SHIFT)
-	userDataVPN := uint16(userTask0Data >> MMU_PAGE_SHIFT)
+	userCodeVPN := uint64(userTask0Code >> MMU_PAGE_SHIFT)
+	userStackVPN := uint64(userTask0Stack >> MMU_PAGE_SHIFT)
+	userDataVPN := uint64(userTask0Data >> MMU_PAGE_SHIFT)
 	mapUserPage(mem, userPT0Base, userCodeVPN, userCodeVPN, PTE_P|PTE_R|PTE_X|PTE_U)
 	mapUserPage(mem, userPT0Base, userStackVPN, userStackVPN, PTE_P|PTE_R|PTE_W|PTE_U)
 	mapUserPage(mem, userPT0Base, userDataVPN, userDataVPN, PTE_P|PTE_R|PTE_W|PTE_U)
@@ -1242,6 +1235,12 @@ func buildYieldKernel(mem []byte) *iexecKernel {
 // loadKernel loads kernel code and runs via Execute with bounded cycles
 func loadAndRunKernel(t *testing.T, rig *ie64TestRig, k *iexecKernel, maxCycles int) {
 	t.Helper()
+	// PLAN_MAX_RAM.md slice 4 design: the kernel no longer builds the
+	// page table inline; install the multi-level kernel PT Go-side
+	// before the kernel enables the MMU. Tests that need additional
+	// per-task PTs (user PT0/1 etc.) still call setupKernelPTEs /
+	// mapUserPage themselves.
+	setupKernelPTEs(rig.cpu.memory, kernPageTableBase)
 	copy(rig.cpu.memory[PROG_START:], k.code)
 	rig.cpu.PC = PROG_START
 	rig.cpu.running.Store(true)
@@ -1302,13 +1301,15 @@ func TestIExec_KernelPageTable(t *testing.T) {
 	loadAndRunKernel(t, rig, k, 100000)
 
 	// Kernel pages are supervisor-only, but no longer broadly W|X.
-	for page := uint16(0); page < 384; page++ {
-		pteAddr := uint32(kernPageTableBase) + uint32(page)*8
-		pte := binary.LittleEndian.Uint64(rig.cpu.memory[pteAddr:])
+	prevPtbr := rig.cpu.ptbr
+	rig.cpu.ptbr = uint64(kernPageTableBase)
+	defer func() { rig.cpu.ptbr = prevPtbr }()
+	for page := uint64(0); page < 384; page++ {
+		pte := mmuLeafPTE(rig.cpu, page<<MMU_PAGE_SHIFT)
 		ppn, flags := parsePTE(pte)
 
 		if flags&PTE_P == 0 {
-			if page >= uint16(kernImagePageEnd) {
+			if page >= uint64(kernImagePageEnd) {
 				continue
 			}
 			t.Fatalf("kernel image page %d: not present", page)
@@ -1319,7 +1320,7 @@ func TestIExec_KernelPageTable(t *testing.T) {
 		if flags&PTE_U != 0 {
 			t.Fatalf("page %d: U bit set (should be supervisor-only)", page)
 		}
-		if page < uint16(kernImagePageEnd) {
+		if page < uint64(kernImagePageEnd) {
 			if flags&PTE_X == 0 {
 				t.Fatalf("kernel image page %d: X bit clear, want executable", page)
 			}
@@ -1337,8 +1338,7 @@ func TestIExec_KernelPageTable(t *testing.T) {
 	}
 
 	// User pages (1536+) should be unmapped
-	pteAddr := uint32(kernPageTableBase) + 1536*8
-	pte := binary.LittleEndian.Uint64(rig.cpu.memory[pteAddr:])
+	pte := mmuLeafPTE(rig.cpu, 1536<<MMU_PAGE_SHIFT)
 	_, flags := parsePTE(pte)
 	if flags&PTE_P != 0 {
 		t.Fatal("first user page (1536) should not be present in kernel page table")
@@ -1425,10 +1425,10 @@ func TestIExec_R1_UserStackOverflowHitsGuardPageCleanly(t *testing.T) {
 
 	setupKernelPTEs(rig.cpu.memory, kernPageTableBase)
 	setupKernelPTEs(rig.cpu.memory, userPT0Base)
-	mapUserPage(rig.cpu.memory, userPT0Base, uint16(userCode>>MMU_PAGE_SHIFT), uint16(userCode>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
-	mapUserPage(rig.cpu.memory, userPT0Base, uint16(userStack>>MMU_PAGE_SHIFT), uint16(userStack>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
-	mapUserPage(rig.cpu.memory, userPT0Base, uint16(userData>>MMU_PAGE_SHIFT), uint16(userData>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
-	if pte := binary.LittleEndian.Uint64(rig.cpu.memory[userPT0Base+uint32(userGuard>>MMU_PAGE_SHIFT)*8:]); pte != 0 {
+	mapUserPage(rig.cpu.memory, userPT0Base, uint64(userCode>>MMU_PAGE_SHIFT), uint64(userCode>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
+	mapUserPage(rig.cpu.memory, userPT0Base, uint64(userStack>>MMU_PAGE_SHIFT), uint64(userStack>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
+	mapUserPage(rig.cpu.memory, userPT0Base, uint64(userData>>MMU_PAGE_SHIFT), uint64(userData>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
+	if pte := memMultiLevelLeafPTE(rig.cpu.memory, uint64(userPT0Base), uint64(userGuard>>MMU_PAGE_SHIFT)); pte != 0 {
 		t.Fatalf("guard PTE = %#x, want 0", pte)
 	}
 
@@ -1474,7 +1474,7 @@ func TestIExec_R1_KernelStackOverflowHitsGuardPageCleanly(t *testing.T) {
 	k.emit(ie64Instr(OP_MTCR, CR_KSP, 0, 0, 1, 0, 0))
 
 	setupKernelPTEs(rig.cpu.memory, kernPageTableBase)
-	if pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+uint32(kernStackGuardVPN)*8:]); pte != 0 {
+	if pte := memMultiLevelLeafPTE(rig.cpu.memory, uint64(kernPageTableBase), uint64(kernStackGuardVPN)); pte != 0 {
 		t.Fatalf("kernel guard PTE = %#x, want 0", pte)
 	}
 
@@ -1714,12 +1714,12 @@ func TestIExec_TimerPreemption(t *testing.T) {
 	setupKernelPTEs(mem, userPT1Base)
 
 	// Map user pages for both tasks
-	mapUserPage(mem, userPT0Base, uint16(userTask0Code>>MMU_PAGE_SHIFT), uint16(userTask0Code>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
-	mapUserPage(mem, userPT0Base, uint16(userTask0Stack>>MMU_PAGE_SHIFT), uint16(userTask0Stack>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
-	mapUserPage(mem, userPT0Base, uint16(userTask0Data>>MMU_PAGE_SHIFT), uint16(userTask0Data>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
-	mapUserPage(mem, userPT1Base, uint16(userTask1Code>>MMU_PAGE_SHIFT), uint16(userTask1Code>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
-	mapUserPage(mem, userPT1Base, uint16(userTask1Stack>>MMU_PAGE_SHIFT), uint16(userTask1Stack>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
-	mapUserPage(mem, userPT1Base, uint16(userTask1Data>>MMU_PAGE_SHIFT), uint16(userTask1Data>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
+	mapUserPage(mem, userPT0Base, uint64(userTask0Code>>MMU_PAGE_SHIFT), uint64(userTask0Code>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
+	mapUserPage(mem, userPT0Base, uint64(userTask0Stack>>MMU_PAGE_SHIFT), uint64(userTask0Stack>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
+	mapUserPage(mem, userPT0Base, uint64(userTask0Data>>MMU_PAGE_SHIFT), uint64(userTask0Data>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
+	mapUserPage(mem, userPT1Base, uint64(userTask1Code>>MMU_PAGE_SHIFT), uint64(userTask1Code>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
+	mapUserPage(mem, userPT1Base, uint64(userTask1Stack>>MMU_PAGE_SHIFT), uint64(userTask1Stack>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
+	mapUserPage(mem, userPT1Base, uint64(userTask1Data>>MMU_PAGE_SHIFT), uint64(userTask1Data>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
 
 	// Initialize scheduler state
 	binary.LittleEndian.PutUint64(mem[kernDataBase:], 0) // current_task = 0
@@ -2299,7 +2299,8 @@ func (d *failingBootstrapHostFSDevice) HandleWrite(addr uint32, val uint32) {
 			if ptbr32, ok := d.currentTaskPTBR(); ok {
 				ptbr = uint64(ptbr32)
 				if ptbr32 != 0 {
-					pteAddr := uint32(ptbr) + (((d.arg1 >> MMU_PAGE_SHIFT) & uint32(PTE_PPN_MASK)) * 8)
+					// d.arg1 is uint32; its VPN fits in 20 bits, well below PTE_PPN_MASK.
+					pteAddr := uint32(ptbr) + ((d.arg1 >> MMU_PAGE_SHIFT) * 8)
 					if int(pteAddr+8) <= len(d.bus.memory) {
 						pte = binary.LittleEndian.Uint64(d.bus.memory[pteAddr:])
 						_, pteFlags = parsePTE(pte)
@@ -2924,7 +2925,7 @@ func bootAndResetToTask0WithBootstrapHostRootPreservingServices(t *testing.T, ho
 	rig.cpu.regs[31] = usp0
 	rig.cpu.userSP = usp0
 	rig.cpu.kernelSP = kernStackTop
-	rig.cpu.ptbr = pt0
+	rig.cpu.ptbr = uint64(pt0)
 	rig.cpu.supervisorMode = false
 	rig.cpu.previousMode = false
 	rig.cpu.trapped = false
@@ -2970,7 +2971,7 @@ func bootAndResetToShellTaskWithBootstrapHostRoot(t *testing.T, hostRoot string)
 	rig.cpu.regs[31] = layout.usp
 	rig.cpu.userSP = layout.usp
 	rig.cpu.kernelSP = kernStackTop
-	rig.cpu.ptbr = layout.pt
+	rig.cpu.ptbr = uint64(layout.pt)
 	rig.cpu.supervisorMode = false
 	rig.cpu.previousMode = false
 	rig.cpu.trapped = false
@@ -3028,7 +3029,7 @@ func bootAndResetRigToTask0Only(t *testing.T, rig *ie64TestRig, term *TerminalMM
 	rig.cpu.regs[31] = usp0
 	rig.cpu.userSP = usp0
 	rig.cpu.kernelSP = kernStackTop
-	rig.cpu.ptbr = pt0
+	rig.cpu.ptbr = uint64(pt0)
 	rig.cpu.supervisorMode = false
 	rig.cpu.previousMode = false
 	rig.cpu.trapped = false
@@ -3216,6 +3217,44 @@ func dumpActiveTaskState(mem []byte) string {
 	return b.String()
 }
 
+// memMultiLevelLeafPTE walks the multi-level page table at ptBase for the
+// given VPN by indexing directly into the mem[] slice. Used by test
+// helpers that read PT state outside a *CPU64 context. Returns 0 if any
+// intermediate is unmapped or the address falls outside mem[].
+func memMultiLevelLeafPTE(mem []byte, ptBase uint64, vpn uint64) uint64 {
+	tableAddr := ptBase
+	read64 := func(off uint64) (uint64, bool) {
+		if off+8 > uint64(len(mem)) {
+			return 0, false
+		}
+		return binary.LittleEndian.Uint64(mem[off:]), true
+	}
+	for level := 0; level < PT_LEVELS-1; level++ {
+		var idx uint64
+		if level == 0 {
+			idx = (vpn >> 45) & PT_TOP_INDEX_MASK
+		} else {
+			shift := uint(9 * (5 - level))
+			idx = (vpn >> shift) & PT_NODE_INDEX_MASK
+		}
+		pte, ok := read64(tableAddr + idx*8)
+		if !ok {
+			return 0
+		}
+		nextPPN, flags := parsePTE(pte)
+		if flags&PTE_P == 0 {
+			return 0
+		}
+		tableAddr = nextPPN << MMU_PAGE_SHIFT
+	}
+	leafIdx := vpn & PT_NODE_INDEX_MASK
+	pte, ok := read64(tableAddr + leafIdx*8)
+	if !ok {
+		return 0
+	}
+	return pte
+}
+
 func taskVAToPhys(mem []byte, taskID uint64, va uint64) (uint32, bool) {
 	slot, ok := taskSlotForPublicID(mem, taskID)
 	if !ok {
@@ -3225,12 +3264,8 @@ func taskVAToPhys(mem []byte, taskID uint64, va uint64) (uint32, bool) {
 	if ptBase == 0 {
 		return 0, false
 	}
-	vpn := uint32(va >> MMU_PAGE_SHIFT)
-	pteOff := uint32(ptBase) + vpn*8
-	if pteOff+8 > uint32(len(mem)) {
-		return 0, false
-	}
-	pte := binary.LittleEndian.Uint64(mem[pteOff:])
+	vpn := va >> MMU_PAGE_SHIFT
+	pte := memMultiLevelLeafPTE(mem, ptBase, vpn)
 	ppn, flags := parsePTE(pte)
 	if flags&PTE_P == 0 {
 		return 0, false
@@ -3247,12 +3282,9 @@ func taskVAPTEFlags(mem []byte, taskID uint64, va uint64) (byte, bool) {
 	if ptBase == 0 {
 		return 0, false
 	}
-	vpn := uint32(va >> MMU_PAGE_SHIFT)
-	pteOff := uint32(ptBase) + vpn*8
-	if pteOff+8 > uint32(len(mem)) {
-		return 0, false
-	}
-	_, flags := parsePTE(binary.LittleEndian.Uint64(mem[pteOff:]))
+	vpn := va >> MMU_PAGE_SHIFT
+	pte := memMultiLevelLeafPTE(mem, ptBase, vpn)
+	_, flags := parsePTE(pte)
 	return flags, true
 }
 
@@ -4131,10 +4163,10 @@ func TestIExec_BootBanner(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if strings.HasPrefix(output, "exec.library 1.16.6 boot") {
+	if strings.HasPrefix(output, "exec.library 1.16.7 boot") {
 		t.Fatalf("quiet boot: unexpected kernel boot banner output=%q", output[:min(len(output), 80)])
 	}
-	if !strings.HasPrefix(output, "IntuitionOS 1.16.6") {
+	if !strings.HasPrefix(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("quiet boot: output starts with %q, want VERSION output", output[:min(len(output), 40)])
 	}
 	t.Logf("Quiet boot output (first 80 chars): %q", output[:min(len(output), 80)])
@@ -4462,7 +4494,7 @@ func TestIExec_TwoTasksVisibleOutput(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	hasBanner := strings.Contains(output, "exec.library 1.16.6")
+	hasBanner := strings.Contains(output, "exec.library 1.16.7")
 	if !hasBanner {
 		t.Fatalf("visible output: hasBanner=%v, output=%q", hasBanner, output[:min(len(output), 100)])
 	}
@@ -4499,7 +4531,7 @@ func TestIExec_TwoTasksVisibleOutput_WithVRAM(t *testing.T) {
 
 	output := term.DrainOutput()
 	t.Logf("VRAM output (first 100 chars): %q", output[:min(len(output), 100)])
-	hasBanner := strings.Contains(output, "exec.library 1.16.6")
+	hasBanner := strings.Contains(output, "exec.library 1.16.7")
 	if !hasBanner {
 		t.Fatalf("visible output with VRAM mapped: hasBanner=%v, output=%q", hasBanner, output[:min(len(output), 100)])
 	}
@@ -4521,34 +4553,28 @@ func TestIExec_KernelPT_UserPTRegionMapped(t *testing.T) {
 	rig.cpu.running.Store(false)
 	<-done
 
-	const kernPT = kernPageTableBase
-	const ptePPNShift = 13
-	const ptePresent = 1
-	// USER_PT_PAGE_BASE..USER_PT_PAGE_END from sdk/include/iexec.inc.
-	// M12 bumped these from 0x680..0x700 to 0x700..0x800 because
-	// MAX_TASKS doubled from 8 to 16 (slot region grew from 0x80000
-	// to 0x100000). Keep these literals in lockstep with the .inc.
-	const startPage = 0x700
-	const endPage = 0x800
-
-	// Read PTEs for pages startPage..endPage in the kernel PT and
-	// confirm they have P bit set and PPN equal to the page number.
+	// PLAN_MAX_RAM.md slice 4: walk the multi-level page table via
+	// mmuLeafPTE instead of indexing kernPT+page*8 (flat layout no
+	// longer matches the kernel-installed structure). Use the
+	// USER_PT_PAGE_BASE / USER_PT_PAGE_END pair from sdk/include/iexec.inc
+	// (currently 0x800..0xA00; M12 + slice 4 successive bumps).
+	const startPage = 0x800
+	const endPage = 0xA00
+	prev := rig.cpu.ptbr
+	rig.cpu.ptbr = uint64(kernPageTableBase)
+	defer func() { rig.cpu.ptbr = prev }()
 	missing := 0
-	for page := startPage; page < endPage; page++ {
-		off := kernPT + page*8
-		if off+8 > len(rig.cpu.memory) {
-			t.Fatalf("PT entry for page 0x%X out of memory range (0x%X)", page, off)
-		}
-		pte := binary.LittleEndian.Uint64(rig.cpu.memory[off:])
-		if pte&ptePresent == 0 {
+	for page := uint64(startPage); page < uint64(endPage); page++ {
+		pte := mmuLeafPTE(rig.cpu, page<<MMU_PAGE_SHIFT)
+		if pte&PTE_P == 0 {
 			if missing < 5 {
-				t.Errorf("kernel PT entry for page 0x%X (offset 0x%X) is not present: pte=0x%X", page, off, pte)
+				t.Errorf("kernel PT entry for page 0x%X is not present: pte=0x%X", page, pte)
 			}
 			missing++
 			continue
 		}
-		ppn := (pte >> ptePPNShift) & 0x1FFF
-		if int(ppn) != page {
+		ppn := (pte >> PTE_PPN_SHIFT) & PTE_PPN_MASK
+		if ppn != page {
 			t.Errorf("kernel PT entry for page 0x%X has wrong PPN 0x%X (pte=0x%X)", page, ppn, pte)
 		}
 	}
@@ -4617,10 +4643,10 @@ func TestIExec_BootBanner_NoArtifact(t *testing.T) {
 	// output through TERM_OUT (which means processChar fired and rendered
 	// into chip.frontBuffer).
 	output := term.DrainOutput()
-	if strings.Contains(output, "exec.library 1.16.6 boot") || strings.Contains(output, "[Task ") {
+	if strings.Contains(output, "exec.library 1.16.7 boot") || strings.Contains(output, "[Task ") {
 		t.Fatalf("quiet boot printed diagnostic banners; output=%q", output[:min(len(output), 200)])
 	}
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("quiet boot did not render VERSION output; output=%q", output[:min(len(output), 200)])
 	}
 
@@ -4682,13 +4708,13 @@ func TestIExec_M152_BootVisibleTerminalStartsWithExecBannerThenConsole(t *testin
 	output := term.DrainOutput()
 	row0 := vt.screen.ReadLine(0)
 	row1 := vt.screen.ReadLine(1)
-	if !strings.HasPrefix(row0, "IntuitionOS 1.16.6") {
+	if !strings.HasPrefix(row0, "IntuitionOS 1.16.7") {
 		t.Fatalf("M152_BootVisibleTerminalStartsWithExecBannerThenConsole: row0=%q row1=%q output=%q, want VERSION first", row0, row1, output[:min(len(output), 200)])
 	}
 	if len(row0) > 0 && row0[0] == '\'' {
 		t.Fatalf("M152_BootVisibleTerminalStartsWithExecBannerThenConsole: row0 has leading garbage=%q", row0)
 	}
-	if !strings.HasPrefix(row1, "exec.library 1.16.6 (2026-04-25)") {
+	if !strings.HasPrefix(row1, "exec.library 1.16.7 (2026-04-25)") {
 		t.Fatalf("M152_BootVisibleTerminalStartsWithExecBannerThenConsole: row1=%q, want VERSION exec.library line", row1)
 	}
 }
@@ -4742,7 +4768,7 @@ func TestIExec_M152_BootFirstTerminalWritesBeginWithExecBanner(t *testing.T) {
 		r8   uint64
 		r20  uint64
 		r31  uint64
-		ptbr uint32
+		ptbr uint64
 	}
 	var samples []writeSample
 	rig.bus.MapIO(TERM_OUT, TERMINAL_REGION_END,
@@ -4778,7 +4804,7 @@ func TestIExec_M152_BootFirstTerminalWritesBeginWithExecBanner(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if strings.HasPrefix(output, "exec.library 1.16.6") || strings.HasPrefix(output, "BOOT FAIL\r\n") {
+	if strings.HasPrefix(output, "exec.library 1.16.7") || strings.HasPrefix(output, "BOOT FAIL\r\n") {
 		return
 	}
 	t.Fatalf("M152_BootFirstTerminalWritesBeginWithExecBanner: output=%q bootBytes=%v firstWrites=%+v", output[:min(len(output), 80)], append([]byte(nil), rig.cpu.memory[0x78798:0x7879C]...), samples)
@@ -6426,7 +6452,6 @@ func TestIExec_M156_G4_GrantorExitUnmapsGranteeIO(t *testing.T) {
 	// means unmap_pages didn't run.
 	const mappedVA = uint32(0xA00000)
 	vpn := uint64(mappedVA >> 12)
-	pteOff := vpn * 8
 	for slot := uint32(1); slot < maxTasks; slot++ {
 		state := rig.cpu.memory[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff]
 		if state == taskFree {
@@ -6437,10 +6462,10 @@ func TestIExec_M156_G4_GrantorExitUnmapsGranteeIO(t *testing.T) {
 			break
 		}
 		ptBase := binary.LittleEndian.Uint64(rig.cpu.memory[ptbrAddr:])
-		if ptBase == 0 || int(ptBase+pteOff)+8 > len(rig.cpu.memory) {
+		if ptBase == 0 {
 			continue
 		}
-		pte := binary.LittleEndian.Uint64(rig.cpu.memory[ptBase+pteOff:])
+		pte := memMultiLevelLeafPTE(rig.cpu.memory, ptBase, vpn)
 		if pte != 0 {
 			t.Fatalf("slot %d PTE for VA 0x%X still set to 0x%X after grantor exit; unmap_pages was not invoked from the revoke helper",
 				slot, mappedVA, pte)
@@ -6572,11 +6597,7 @@ func TestIExec_M156_G4_GrantorExitUnmapsGranteeIO_OverflowRow(t *testing.T) {
 		}
 		for i := uint32(0); i < iters; i++ {
 			vpn := uint64((baseVA + i*0x1000) >> 12)
-			pteOff := vpn * 8
-			if int(ptBase+pteOff)+8 > len(rig.cpu.memory) {
-				continue
-			}
-			pte := binary.LittleEndian.Uint64(rig.cpu.memory[ptBase+pteOff:])
+			pte := memMultiLevelLeafPTE(rig.cpu.memory, ptBase, vpn)
 			if pte != 0 {
 				t.Fatalf("slot %d PTE for VA 0x%X still 0x%X after grantor exit; revoke helper did not unmap the range",
 					slot, baseVA+i*0x1000, pte)
@@ -6771,7 +6792,6 @@ func TestIExec_M156_G4_GrantorExitKeepsDoubleCoveredMapping(t *testing.T) {
 	// Assert 3: grantee's PTE at VPN(0xA00000) is still non-zero.
 	const mappedVA = uint32(0xA00000)
 	vpn := uint64(mappedVA >> 12)
-	pteOff := vpn * 8
 	pteAlive := false
 	for slot := uint32(1); slot < 255; slot++ {
 		ptbrAddr := uint64(kernDataBase) + uint64(kdPTBRBase) + uint64(slot)*8
@@ -6779,7 +6799,7 @@ func TestIExec_M156_G4_GrantorExitKeepsDoubleCoveredMapping(t *testing.T) {
 		if ptBase == 0 {
 			continue
 		}
-		pte := binary.LittleEndian.Uint64(rig.cpu.memory[ptBase+pteOff:])
+		pte := memMultiLevelLeafPTE(rig.cpu.memory, ptBase, vpn)
 		if pte != 0 {
 			pteAlive = true
 			break
@@ -7322,9 +7342,9 @@ func TestIExec_R2_AllocMemGuardReservesFlankingPages(t *testing.T) {
 	guardLoVPN := uint32((vaGuard - MMU_PAGE_SIZE) >> MMU_PAGE_SHIFT)
 	bodyVPN := uint32(vaGuard >> MMU_PAGE_SHIFT)
 	guardHiVPN := uint32((vaGuard + MMU_PAGE_SIZE) >> MMU_PAGE_SHIFT)
-	guardLoPTE := binary.LittleEndian.Uint64(rig.cpu.memory[userPT0Base+guardLoVPN*8:])
-	bodyPTE := binary.LittleEndian.Uint64(rig.cpu.memory[userPT0Base+bodyVPN*8:])
-	guardHiPTE := binary.LittleEndian.Uint64(rig.cpu.memory[userPT0Base+guardHiVPN*8:])
+	guardLoPTE := memMultiLevelLeafPTE(rig.cpu.memory, uint64(userPT0Base), uint64(guardLoVPN))
+	bodyPTE := memMultiLevelLeafPTE(rig.cpu.memory, uint64(userPT0Base), uint64(bodyVPN))
+	guardHiPTE := memMultiLevelLeafPTE(rig.cpu.memory, uint64(userPT0Base), uint64(guardHiVPN))
 	if guardLoPTE != 0 {
 		t.Fatalf("leading guard PTE=%#x, want 0", guardLoPTE)
 	}
@@ -7473,7 +7493,7 @@ func TestIExec_R2_MapSharedGuardReservesFlankingPages(t *testing.T) {
 		state := rig.cpu.memory[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff]
 		if state != taskFree {
 			pt := binary.LittleEndian.Uint64(rig.cpu.memory[kernDataBase+kdPTBRBase+slot*8:])
-			if pt != 0 && binary.LittleEndian.Uint64(rig.cpu.memory[pt+uint64(bodyVPN)*8:]) != 0 {
+			if pt != 0 && memMultiLevelLeafPTE(rig.cpu.memory, pt, uint64(bodyVPN)) != 0 {
 				childPT = pt
 				break
 			}
@@ -7482,9 +7502,9 @@ func TestIExec_R2_MapSharedGuardReservesFlankingPages(t *testing.T) {
 	if childPT == 0 {
 		t.Fatal("could not find child PT with guarded MapShared body mapping")
 	}
-	guardLoPTE := binary.LittleEndian.Uint64(rig.cpu.memory[childPT+uint64(guardLoVPN)*8:])
-	bodyPTE := binary.LittleEndian.Uint64(rig.cpu.memory[childPT+uint64(bodyVPN)*8:])
-	guardHiPTE := binary.LittleEndian.Uint64(rig.cpu.memory[childPT+uint64(guardHiVPN)*8:])
+	guardLoPTE := memMultiLevelLeafPTE(rig.cpu.memory, childPT, uint64(guardLoVPN))
+	bodyPTE := memMultiLevelLeafPTE(rig.cpu.memory, childPT, uint64(bodyVPN))
+	guardHiPTE := memMultiLevelLeafPTE(rig.cpu.memory, childPT, uint64(guardHiVPN))
 	if guardLoPTE != 0 {
 		t.Fatalf("MapShared leading guard PTE=%#x, want 0", guardLoPTE)
 	}
@@ -11006,7 +11026,7 @@ func TestIExec_EchoService(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library 1.16.6") || !strings.Contains(output, "Type HELP") {
+	if !strings.Contains(output, "exec.library 1.16.7") || !strings.Contains(output, "Type HELP") {
 		t.Fatalf("EchoService: boot did not reach stable M16.4 console surface, output=%q", output[:min(len(output), 100)])
 	}
 	t.Logf("EchoService output: %q", output[:min(len(output), 80)])
@@ -11207,7 +11227,7 @@ func TestIExec_ImageHeaderValidation(t *testing.T) {
 
 			output := term.DrainOutput()
 			// Kernel should still boot (banner printed) — corrupt image is outside boot set
-			if !strings.Contains(output, "exec.library 1.16.6 boot") {
+			if !strings.Contains(output, "exec.library 1.16.7 boot") {
 				t.Fatalf("kernel failed to boot after corrupting non-boot image: output=%q", output[:min(len(output), 100)])
 			}
 			if strings.Contains(output, "PANIC") {
@@ -11356,7 +11376,7 @@ func TestIExec_LoaderRejectsInvalid(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library 1.16.6 boot") {
+	if !strings.Contains(output, "exec.library 1.16.7 boot") {
 		t.Fatalf("kernel didn't boot, output=%q", output[:min(len(output), 100)])
 	}
 	if strings.Contains(output, "PANIC") {
@@ -11427,7 +11447,7 @@ func TestIExec_LoaderSkipsFailure(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library 1.16.6 boot") {
+	if !strings.Contains(output, "exec.library 1.16.7 boot") {
 		t.Fatalf("kernel didn't boot")
 	}
 	if strings.Contains(output, "PANIC") {
@@ -11548,7 +11568,7 @@ func TestIExec_OpenLibrary_Basic(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library 1.16.6") || !strings.Contains(output, "1>") {
+	if !strings.Contains(output, "exec.library 1.16.7") || !strings.Contains(output, "1>") {
 		t.Fatalf("OpenLibrary boot path did not reach shell prompt, output=%q", output[:min(len(output), 200)])
 	}
 	t.Logf("OpenLibrary_Basic: boot reached shell prompt, output=%q", output[:min(len(output), 200)])
@@ -14512,7 +14532,7 @@ func TestIExec_M16_TextModeBootRequiresOnlyDOSAndShell(t *testing.T) {
 	}
 	output := term.DrainOutput()
 	for _, want := range []string{
-		"IntuitionOS 1.16.6",
+		"IntuitionOS 1.16.7",
 		"Type HELP for commands and ASSIGN for layout",
 		"1> ",
 	} {
@@ -14571,7 +14591,7 @@ func TestIExec_M16_UntrustedPathLaunchDoesNotKeepIntuitionCompatPortAlive(t *tes
 	if strings.Count(output, "intuition.library M12 [Task ") != 0 {
 		t.Fatalf("untrusted LIBS:intuition.library launch printed ONLINE banner output=%q", output[:min(len(output), 600)])
 	}
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("shell did not stay responsive after rejected untrusted intuition launch output=%q", output[:min(len(output), 600)])
 	}
 }
@@ -15890,7 +15910,7 @@ func TestIExec_M16_LoadingOwnerExitWakesWaitersAndUnloadsRow(t *testing.T) {
 	rig.cpu.PC = uint64(task1Code)
 	rig.cpu.regs[31] = uint64(stack0Target + MMU_PAGE_SIZE)
 	rig.cpu.userSP = uint64(stack0Target + MMU_PAGE_SIZE)
-	rig.cpu.ptbr = pt1
+	rig.cpu.ptbr = uint64(pt1)
 	rig.cpu.supervisorMode = false
 	rig.cpu.previousMode = false
 	rig.cpu.trapped = false
@@ -16453,7 +16473,7 @@ func TestIExec_M16_BootstrapAcceptsDosManifestAfterEarlierIOSRELNote(t *testing.
 	if strings.Contains(output, "BOOT FAIL") {
 		t.Fatalf("boot rejected IOS-REL before IOS-MOD output=%q", output[:min(len(output), 600)])
 	}
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("boot did not reach shell with IOS-REL before IOS-MOD output=%q", output[:min(len(output), 600)])
 	}
 }
@@ -16473,7 +16493,7 @@ func TestIExec_M16_ExecLaunchesShellFromStartupBlockBootPath(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	for _, want := range []string{"IntuitionOS 1.16.6", "1> "} {
+	for _, want := range []string{"IntuitionOS 1.16.7", "1> "} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("boot missing %q after DOS shell-path patch output=%q", want, output[:min(len(output), 600)])
 		}
@@ -16732,7 +16752,7 @@ func TestIExec_DosLibOnline(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "exec.library 1.16.6") || !strings.Contains(output, "1>") {
+	if !strings.Contains(output, "exec.library 1.16.7") || !strings.Contains(output, "1>") {
 		t.Fatalf("dos.library boot path did not reach shell prompt, output=%q", output[:min(len(output), 200)])
 	}
 	t.Logf("DosLibOnline: boot reached shell prompt")
@@ -16776,7 +16796,7 @@ func TestIExec_M10Boot(t *testing.T) {
 		substr string
 		desc   string
 	}{
-		{"exec.library 1.16.6", "kernel boot banner"},
+		{"exec.library 1.16.7", "kernel boot banner"},
 		{"1>", "Shell prompt"},
 	}
 	for _, c := range checks {
@@ -16806,7 +16826,7 @@ func TestIExec_M152_HostBackedBootWithJIT(t *testing.T) {
 
 	output := term.DrainOutput()
 	for _, substr := range []string{
-		"exec.library 1.16.6",
+		"exec.library 1.16.7",
 		"1>",
 	} {
 		if !strings.Contains(output, substr) {
@@ -17517,7 +17537,7 @@ func TestIExec_DosResolve_LongName(t *testing.T) {
 	output := bootAndInjectCommand(t, cmd, 8*time.Second)
 	// Must not crash: the shell should survive the oversized qualified name
 	// and still execute the following VERSION command.
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("shell did not survive long qualified name, output=%q", output[:min(len(output), 800)])
 	}
 	// Must reach a NOT_FOUND-class error path, not a memory corruption
@@ -18044,8 +18064,8 @@ func TestIExec_VersionCommand(t *testing.T) {
 	// Inject "\nVERSION\n". The leading empty line gives dos.library time to
 	// finish initialization before the shell sends DOS_RUN for VERSION.
 	output := bootAndInjectCommand(t, "\nVERSION\n", 5*time.Second)
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
-		t.Fatalf("VersionCommand: expected 'IntuitionOS 1.16.6' in output, got=%q", output[:min(len(output), 300)])
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
+		t.Fatalf("VersionCommand: expected 'IntuitionOS 1.16.7' in output, got=%q", output[:min(len(output), 300)])
 	}
 	if strings.Contains(output, "task model M13") || strings.Contains(output, "dos storage M12.8") || strings.Contains(output, "cap sweep M12.6") {
 		t.Fatalf("VersionCommand: stale long milestone banner text still present, got=%q", output[:min(len(output), 300)])
@@ -19382,7 +19402,7 @@ func TestIExec_M13_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
 
 	output := term.DrainOutput()
 	wantBanners := []string{
-		"IntuitionOS 1.16.6",
+		"IntuitionOS 1.16.7",
 		"Type HELP for commands and ASSIGN for layout",
 		"1>",
 	}
@@ -22283,7 +22303,7 @@ func runDOSRunClientOnRig(t *testing.T, rig *ie64TestRig, input []byte) (*ie64Te
 		rig.cpu.regs[31] = liveShell.usp
 		rig.cpu.userSP = liveShell.usp
 		rig.cpu.kernelSP = kernStackTop
-		rig.cpu.ptbr = liveShell.pt
+		rig.cpu.ptbr = uint64(liveShell.pt)
 		rig.cpu.supervisorMode = false
 		rig.cpu.previousMode = false
 		rig.cpu.trapped = false
@@ -22921,7 +22941,7 @@ func TestIExec_M152_Phase1_AssignCommandStillRejectsAddSyntax(t *testing.T) {
 	if strings.Contains(output, "ADD: ") {
 		t.Fatalf("M152_Phase1_AssignCommandStillRejectsAddSyntax: ADD must not become a visible user assign output=%q", output[:min(len(output), 1200)])
 	}
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M152_Phase1_AssignCommandStillRejectsAddSyntax: shell did not recover after layered ADD output=%q", output[:min(len(output), 1200)])
 	}
 }
@@ -23313,14 +23333,14 @@ func TestBootstrapHostFS_TranslateGuestVARejectsSupervisorOnlyMappings(t *testin
 	dev := NewBootstrapHostFSDevice(rig.bus, "")
 	ptBase := uint32(0x80000)
 	dev.HandleWrite(BOOT_HOSTFS_ARG4, ptBase)
-	binary.LittleEndian.PutUint64(rig.cpu.memory[ptBase+uint32(kernPageTableBase>>MMU_PAGE_SHIFT)*8:], makePTE(uint16(kernPageTableBase>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W))
+	mapUserPage(rig.cpu.memory, ptBase, uint64(kernPageTableBase>>MMU_PAGE_SHIFT), uint64(kernPageTableBase>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W)
 	if phys, ok := dev.translateGuestVA(kernPageTableBase, false); ok {
 		t.Fatalf("TranslateGuestVA unexpectedly allowed supervisor-only read ptr=0x%X", phys)
 	}
 	if phys, ok := dev.translateGuestVA(kernPageTableBase, true); ok {
 		t.Fatalf("TranslateGuestVA unexpectedly allowed supervisor-only write ptr=0x%X", phys)
 	}
-	binary.LittleEndian.PutUint64(rig.cpu.memory[ptBase+uint32(userTask0Data>>MMU_PAGE_SHIFT)*8:], makePTE(uint16(userTask0Data>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U))
+	mapUserPage(rig.cpu.memory, ptBase, uint64(userTask0Data>>MMU_PAGE_SHIFT), uint64(userTask0Data>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
 	if phys, ok := dev.translateGuestVA(userTask0Data, true); !ok || phys != userTask0Data {
 		t.Fatalf("TranslateGuestVA user mapping=(0x%X,%t), want identity user ptr 0x%X", phys, ok, userTask0Data)
 	}
@@ -23343,10 +23363,10 @@ func TestIExec_M152_Phase2_BootstrapHostFS_RejectsSupervisorOnlyPointers(t *test
 	kernelVA := uint32(kernPageTableBase)
 
 	dev.HandleWrite(BOOT_HOSTFS_ARG4, ptBase)
-	binary.LittleEndian.PutUint64(rig.cpu.memory[ptBase+uint32(pathVA>>MMU_PAGE_SHIFT)*8:], makePTE(uint16(pathVA>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U))
-	binary.LittleEndian.PutUint64(rig.cpu.memory[ptBase+uint32(readBufVA>>MMU_PAGE_SHIFT)*8:], makePTE(uint16(readBufVA>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U))
-	binary.LittleEndian.PutUint64(rig.cpu.memory[ptBase+uint32(statBufVA>>MMU_PAGE_SHIFT)*8:], makePTE(uint16(statBufVA>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U))
-	binary.LittleEndian.PutUint64(rig.cpu.memory[ptBase+uint32(kernelVA>>MMU_PAGE_SHIFT)*8:], makePTE(uint16(kernelVA>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W))
+	mapUserPage(rig.cpu.memory, ptBase, uint64(pathVA>>MMU_PAGE_SHIFT), uint64(pathVA>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
+	mapUserPage(rig.cpu.memory, ptBase, uint64(readBufVA>>MMU_PAGE_SHIFT), uint64(readBufVA>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
+	mapUserPage(rig.cpu.memory, ptBase, uint64(statBufVA>>MMU_PAGE_SHIFT), uint64(statBufVA>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W|PTE_U)
+	mapUserPage(rig.cpu.memory, ptBase, uint64(kernelVA>>MMU_PAGE_SHIFT), uint64(kernelVA>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_W)
 	copy(rig.cpu.memory[pathVA:], append([]byte("IOSSYS/Tools/Shell"), 0))
 
 	dev.HandleWrite(BOOT_HOSTFS_ARG1, pathVA)
@@ -23653,7 +23673,7 @@ func TestIExec_M152_Phase5_BootUsesHostBackedIOSSYSToolsShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "", 8*time.Second)
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M152_Phase5_BootUsesHostBackedIOSSYSToolsShell: missing host-backed shell payload output=%q", output[:min(len(output), 1200)])
 	}
 	if strings.Contains(output, "Shell M10 [Task ") {
@@ -23725,7 +23745,7 @@ func TestIExec_M152_Phase5_DOSRunCanLaunchHostBackedIOSSYSToolsShell(t *testing.
 	hostRoot := makeM152Phase5GeneratedHostRoot(t)
 	copyRepoFileToHostRoot(t, hostRoot, "Tools/Shell", "sdk/intuitionos/iexec/cmd_version.elf")
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nIOSSYS:Tools/Shell\n", 10*time.Second)
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M152_Phase5_DOSRunCanLaunchHostBackedIOSSYSToolsShell: missing host-backed shell payload output=%q", output[:min(len(output), 1200)])
 	}
 	if strings.Contains(output, "Unknown command") || strings.Contains(output, "GURU MEDITATION") {
@@ -23757,7 +23777,7 @@ func TestIExec_M152_Phase5_DOSRunHostBackedCommandDoesNotLeakAllocatorPages(t *t
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M152_Phase5_DOSRunHostBackedCommandDoesNotLeakAllocatorPages: missing VERSION output=%q", output[:min(len(output), 1200)])
 	}
 	freePages := allocPoolFreePagesFromBitmap(rig.cpu.memory)
@@ -23814,8 +23834,8 @@ func TestIExec_M152_Phase5_BootUsesHostBackedStartupCommandsAndServices(t *testi
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "", 10*time.Second)
 	for _, want := range []string{
 		"phase5-host-startup",
-		"IntuitionOS 1.16.6 help",
-		"IntuitionOS 1.16.6",
+		"IntuitionOS 1.16.7 help",
+		"IntuitionOS 1.16.7",
 		"1>",
 	} {
 		if !strings.Contains(output, want) {
@@ -23858,13 +23878,13 @@ func TestIExec_M152_Phase5_GeneratedHostTreeStillSupportsExistingM15Flows(t *tes
 	hostRoot := makeM152Phase5GeneratedHostRoot(t)
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nVERSION\nAVAIL\nDIR RAM:\nTYPE S:Startup-Sequence\nASSIGN\nLIST\nWHICH version\nHELP\n", 15*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 1.16.6",
+		"IntuitionOS 1.16.7",
 		"Phys: 32768 KB  Alloc:",
 		"C/Version",
 		"VERSION",
 		"RAM:",
 		"C:version",
-		"IntuitionOS 1.16.6 help",
+		"IntuitionOS 1.16.7 help",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("M152_Phase5_GeneratedHostTreeStillSupportsExistingM15Flows: missing %q output=%q", want, output[:min(len(output), 2000)])
@@ -23886,7 +23906,7 @@ func TestIExec_M152_Phase6_BootLoadsHostBackedDosLibrary(t *testing.T) {
 
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "", 10*time.Second)
 	for _, want := range []string{
-		"exec.library 1.16.6",
+		"exec.library 1.16.7",
 		"1>",
 	} {
 		if !strings.Contains(output, want) {
@@ -24095,7 +24115,7 @@ func TestIExec_M152_TYPESupportsQualifiedIOSSYSSubdirectoryFilePath(t *testing.T
 	} {
 		t.Run(strings.TrimSpace(cmd), func(t *testing.T) {
 			output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, cmd, 10*time.Second)
-			if !strings.Contains(output, "IntuitionOS 1.16.6") {
+			if !strings.Contains(output, "IntuitionOS 1.16.7") {
 				t.Fatalf("M152_TYPESupportsQualifiedIOSSYSSubdirectoryFilePath: missing version output for %q output=%q", strings.TrimSpace(cmd), output[:min(len(output), 1600)])
 			}
 			if strings.Contains(output, "Unknown command") || strings.Contains(output, "Bad arguments") {
@@ -24931,7 +24951,7 @@ func TestIExec_M141_Phase2_BootstrapELFConsoleAndDos(t *testing.T) {
 
 	output := term.DrainOutput()
 	for _, want := range []string{
-		"exec.library 1.16.6",
+		"exec.library 1.16.7",
 		"Type HELP for commands and ASSIGN for layout",
 		"1>",
 	} {
@@ -25142,7 +25162,7 @@ func TestIExec_M141_Phase3_DOSLaunchesShellAndRemainingServicesFromManifest(t *t
 
 	output := term.DrainOutput()
 	for _, want := range []string{
-		"exec.library 1.16.6",
+		"exec.library 1.16.7",
 		"Type HELP for commands and ASSIGN for layout",
 		"1>",
 	} {
@@ -25705,7 +25725,7 @@ func assertFullBootStackServiceCensus(t *testing.T) {
 
 	output := term.DrainOutput()
 	for _, want := range []string{
-		"IntuitionOS 1.16.6",
+		"IntuitionOS 1.16.7",
 		"Type HELP for commands and ASSIGN for layout",
 		"1>",
 	} {
@@ -25783,7 +25803,7 @@ func TestIExec_M141_Phase5_FullBootStack_ServiceCensus(t *testing.T) {
 func TestIExec_M141_Phase5_CommandPathRegression(t *testing.T) {
 	output := bootAndInjectCommand(t, "version\navail\ndir ram:\ntype s:startup-sequence\necho hello\n", 8*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 1.16.6",
+		"IntuitionOS 1.16.7",
 		"Phys: 32768 KB  Alloc:",
 		"C/Version",
 		"DEVS/input.device",
@@ -25853,7 +25873,7 @@ func TestIExec_M142_Phase6_FullBootStack_ServiceCensus(t *testing.T) {
 func TestIExec_M142_Phase6_CommandRegression(t *testing.T) {
 	output := bootAndInjectCommand(t, "version\navail\ndir ram:\ntype s:startup-sequence\necho hello\n", 8*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 1.16.6",
+		"IntuitionOS 1.16.7",
 		"Phys: 32768 KB  Alloc:",
 		"C/Version",
 		"DEVS/input.device",
@@ -25963,7 +25983,7 @@ func TestIExec_M15_Phase1_HelperCommandsBootAndRespond(t *testing.T) {
 		"RAM:",
 		"readme",
 		"not found",
-		"IntuitionOS 1.16.6 help",
+		"IntuitionOS 1.16.7 help",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("M15_Phase1_HelperCommandsBootAndRespond: missing %q output=%q", want, output[:min(len(output), 1200)])
@@ -26040,7 +26060,7 @@ func TestIExec_M15_Phase1_CommandSearchStillPrefersC(t *testing.T) {
 	<-done
 
 	output := term.DrainOutput()
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M15_Phase1_CommandSearchStillPrefersC: missing VERSION output, got=%q", output[:min(len(output), 400)])
 	}
 	if strings.Contains(output, "Phys: 32768 KB") {
@@ -26086,8 +26106,8 @@ func TestIExec_M15_Phase2_AssignResolution_AllCanonicalVolumes(t *testing.T) {
 	skipM164SupersededHarness(t)
 	output := bootAndInjectCommand(t, "\nVERSION\nTYPE S:Help\nTYPE L:Loader-Info\nTYPE LIBS:graphics.library\nTYPE DEVS:input.device\nTYPE RESOURCES:hardware.resource\n", 10*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 1.16.6",
-		"IntuitionOS 1.16.6 help",
+		"IntuitionOS 1.16.7",
+		"IntuitionOS 1.16.7 help",
 		"L: contains DOS helper assets",
 	} {
 		if !strings.Contains(output, want) {
@@ -26109,7 +26129,7 @@ func TestIExec_M15_Phase2_RAMRootCompatibility(t *testing.T) {
 func TestIExec_M15_Phase2_AssignMatchingIsCaseInsensitive(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nTYPE s:help\nTYPE l:loader-info\nTYPE libs:graphics.library\nTYPE devs:input.device\nTYPE resources:hardware.resource\n", 10*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 1.16.6 help",
+		"IntuitionOS 1.16.7 help",
 		"L: contains DOS helper assets",
 	} {
 		if !strings.Contains(output, want) {
@@ -26126,7 +26146,7 @@ func TestIExec_M15_Phase2_UnknownVolumeFailsCleanly(t *testing.T) {
 	if !strings.Contains(output, "not found") {
 		t.Fatalf("M15_Phase2_UnknownVolumeFailsCleanly: expected unknown-volume failure, output=%q", output[:min(len(output), 600)])
 	}
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M15_Phase2_UnknownVolumeFailsCleanly: shell did not recover after unknown-volume lookup, output=%q", output[:min(len(output), 600)])
 	}
 }
@@ -26134,7 +26154,7 @@ func TestIExec_M15_Phase2_UnknownVolumeFailsCleanly(t *testing.T) {
 func TestIExec_M15_Phase2_BoundedLongNameHandlingStaysSafe(t *testing.T) {
 	longName := "TYPE T:" + strings.Repeat("A", 80) + "\nVERSION\n"
 	output := bootAndInjectCommand(t, "\n"+longName, 8*time.Second)
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M15_Phase2_BoundedLongNameHandlingStaysSafe: shell did not survive long qualified name, output=%q", output[:min(len(output), 800)])
 	}
 }
@@ -26355,7 +26375,7 @@ func TestIExec_M15_Phase4_NewCommandsProduceStableOutput(t *testing.T) {
 		"RAM:",
 		"C/Assign",
 		"C:version",
-		"IntuitionOS 1.16.6 help",
+		"IntuitionOS 1.16.7 help",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("M15_Phase4_NewCommandsProduceStableOutput: missing %q output=%q", want, output[:min(len(output), 1600)])
@@ -26543,11 +26563,11 @@ func TestIExec_M15_Phase5_CleanBootToPrompt(t *testing.T) {
 
 	output := term.DrainOutput()
 	for _, want := range []string{
-		"exec.library 1.16.6 boot",
+		"exec.library 1.16.7 boot",
 		"console.handler M11.5 [Task ",
 		"dos.library M14 [Task ",
 		"Shell M10 [Task ",
-		"IntuitionOS 1.16.6",
+		"IntuitionOS 1.16.7",
 		"Type HELP for commands and ASSIGN for layout",
 		"1>",
 	} {
@@ -26560,13 +26580,13 @@ func TestIExec_M15_Phase5_CleanBootToPrompt(t *testing.T) {
 func TestIExec_M15_Phase5_CommandDemoBootPath(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nVERSION\nAVAIL\nDIR RAM:\nTYPE S:Startup-Sequence\nASSIGN\nLIST\nWHICH version\nHELP\n", 15*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 1.16.6",
+		"IntuitionOS 1.16.7",
 		"Phys: 32768 KB  Alloc:",
 		"C/Version",
 		"ECHO Type HELP for commands and ASSIGN for layout",
 		"RAM:",
 		"C:version",
-		"IntuitionOS 1.16.6 help",
+		"IntuitionOS 1.16.7 help",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("M15_Phase5_CommandDemoBootPath: missing %q output=%q", want, output[:min(len(output), 2000)])
@@ -26580,8 +26600,8 @@ func TestIExec_M15_Phase5_CommandDemoBootPath(t *testing.T) {
 func TestIExec_M15_Phase5_QualifiedAndCompatibilityPathCoverage(t *testing.T) {
 	output := bootAndInjectCommand(t, "\nC:Version\nTYPE S:Help\nTYPE L:Loader-Info\nTYPE RAM:readme\nTYPE readme\n", 15*time.Second)
 	for _, want := range []string{
-		"IntuitionOS 1.16.6",
-		"IntuitionOS 1.16.6 help",
+		"IntuitionOS 1.16.7",
+		"IntuitionOS 1.16.7 help",
 		"L: contains DOS helper assets",
 		"Welcome to IntuitionOS",
 	} {
@@ -26629,7 +26649,7 @@ func TestIExec_M15_Phase5_TemporaryFileFlowUnderT(t *testing.T) {
 // is "C/Version" but the user types "version" — the resolver must match.
 func TestIExec_CaseInsensitiveCommand(t *testing.T) {
 	output := bootAndInjectCommand(t, "version\n", 5*time.Second)
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("CaseInsensitiveCommand: lowercase 'version' did not match 'C/Version', got=%q", output[:min(len(output), 300)])
 	}
 	if strings.Contains(output, "task model M13") || strings.Contains(output, "dos storage M12.8") || strings.Contains(output, "cap sweep M12.6") {
@@ -27570,7 +27590,7 @@ func TestIExec_M10Demo(t *testing.T) {
 		substr string
 		desc   string
 	}{
-		{"IntuitionOS 1.16.6", "VERSION command output"},
+		{"IntuitionOS 1.16.7", "VERSION command output"},
 		{"Phys:", "AVAIL command output (Phys:)"},
 		{"Alloc:", "AVAIL command output (Alloc:)"},
 		{"readme", "DIR command output (readme file)"},
@@ -29091,7 +29111,7 @@ func TestIExec_M153_Phase1_SetOnCanonicalReplacesOverlay(t *testing.T) {
 func TestIExec_M153_Phase4_ShellBareCommandRunsAcrossLayeredC(t *testing.T) {
 	hostRoot := makeM152Phase5GeneratedHostRoot(t)
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nVERSION\n", 8*time.Second)
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M153_Phase4_ShellBareCommandRunsAcrossLayeredC: VERSION did not run output=%q", output[:min(len(output), 600)])
 	}
 }
@@ -29138,7 +29158,7 @@ func TestIExec_M153_Phase4_LayeredReadFallsBackFromSYSToIOSSYS(t *testing.T) {
 	// layered relpath helper the resolver should still find it via the
 	// read-only fallback after probing hostRoot/C/Version.
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nVERSION\n", 8*time.Second)
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M153_Phase4_LayeredReadFallsBackFromSYSToIOSSYS: VERSION did not run via IOSSYS fallback output=%q", output[:min(len(output), 600)])
 	}
 }
@@ -29160,7 +29180,7 @@ func TestIExec_M153_Phase4_LayeredReadPrefersWritableSYSOverlay(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := bootAndInjectCommandWithBootstrapHostRoot(t, hostRoot, "\nVERSION\n", 8*time.Second)
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M153_Phase4_LayeredReadPrefersWritableSYSOverlay: VERSION via writable overlay produced no banner output=%q", output[:min(len(output), 600)])
 	}
 }
@@ -29395,7 +29415,7 @@ func TestIExec_M153_Shell_AssignAddListsLayeredOverlay(t *testing.T) {
 	if !strings.Contains(output, "T/") {
 		t.Fatalf("M153_Shell_AssignAddListsLayeredOverlay: overlay target T/ missing from layered output output=%q", output[:min(len(output), 1200)])
 	}
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M153_Shell_AssignAddListsLayeredOverlay: shell did not recover output=%q", output[:min(len(output), 1200)])
 	}
 }
@@ -29690,7 +29710,7 @@ func TestIExec_M153_Shell_AssignAddTwoOverlaysFallthroughToBase(t *testing.T) {
 		t.Fatalf("M153_Shell_AssignAddTwoOverlaysFallthroughToBase: VERSION rejected after two overlay ADDs — multi-entry iteration missed the base target output=%q",
 			output[:min(len(output), 1400)])
 	}
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M153_Shell_AssignAddTwoOverlaysFallthroughToBase: VERSION did not print version output=%q",
 			output[:min(len(output), 1400)])
 	}
@@ -29709,7 +29729,7 @@ func TestIExec_M153_Shell_AssignRemoveRestoresBaseList(t *testing.T) {
 		idx := strings.Index(output, "T/")
 		t.Fatalf("M153_Shell_AssignRemoveRestoresBaseList: T/ still in layered output near %d output=%q", idx, output[:min(len(output), 1200)])
 	}
-	if !strings.Contains(output, "IntuitionOS 1.16.6") {
+	if !strings.Contains(output, "IntuitionOS 1.16.7") {
 		t.Fatalf("M153_Shell_AssignRemoveRestoresBaseList: shell did not recover output=%q", output[:min(len(output), 1200)])
 	}
 }
@@ -30140,7 +30160,7 @@ func TestIExec_M154_KernelPTEnforcesSupervisorWXSplit(t *testing.T) {
 	<-done
 
 	for page := uint32(0); page < kernImagePageEnd; page++ {
-		pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+page*8:])
+		pte := memMultiLevelLeafPTE(rig.cpu.memory, uint64(kernPageTableBase), uint64(page))
 		_, flags := parsePTE(pte)
 		if flags&PTE_X == 0 {
 			t.Fatalf("M154_KernelPTEnforcesSupervisorWXSplit: kernel image page 0x%X missing X", page)
@@ -30150,21 +30170,21 @@ func TestIExec_M154_KernelPTEnforcesSupervisorWXSplit(t *testing.T) {
 		}
 	}
 	for page := uint32(kernPTPageBase); page < kernPTPageEnd; page++ {
-		pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+page*8:])
+		pte := memMultiLevelLeafPTE(rig.cpu.memory, uint64(kernPageTableBase), uint64(page))
 		_, flags := parsePTE(pte)
 		if flags&PTE_W == 0 || flags&PTE_X != 0 {
 			t.Fatalf("M154_KernelPTEnforcesSupervisorWXSplit: kernel PT page 0x%X flags=%#x, want writable non-exec", page, flags)
 		}
 	}
 	for page := uint32(kernDataPageBase); page < kernStackPageEnd; page++ {
-		pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+page*8:])
+		pte := memMultiLevelLeafPTE(rig.cpu.memory, uint64(kernPageTableBase), uint64(page))
 		_, flags := parsePTE(pte)
 		if flags&PTE_W == 0 || flags&PTE_X != 0 {
 			t.Fatalf("M154_KernelPTEnforcesSupervisorWXSplit: kernel data/stack page 0x%X flags=%#x, want writable non-exec", page, flags)
 		}
 	}
 	page := uint32(0xF0)
-	pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+page*8:])
+	pte := memMultiLevelLeafPTE(rig.cpu.memory, uint64(kernPageTableBase), uint64(page))
 	_, flags := parsePTE(pte)
 	if flags&PTE_W == 0 || flags&PTE_X != 0 {
 		t.Fatalf("M154_KernelPTEnforcesSupervisorWXSplit: terminal MMIO page flags=%#x, want writable non-exec carve-out", flags)
@@ -30223,7 +30243,7 @@ func TestIExec_M156_R6_MMIOCarveoutsStaySupervisorNonExec(t *testing.T) {
 	for _, carveout := range carveouts {
 		t.Run(carveout.name, func(t *testing.T) {
 			for page := carveout.startPage; page <= carveout.endPage; page++ {
-				pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+page*8:])
+				pte := memMultiLevelLeafPTE(rig.cpu.memory, uint64(kernPageTableBase), uint64(page))
 				_, flags := parsePTE(pte)
 				if flags&PTE_P == 0 {
 					t.Fatalf("page 0x%X pte=0x%X: carve-out lost PTE_P", page, pte)
@@ -30526,7 +30546,7 @@ func TestIExec_M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF(
 	}
 
 	vpn := uint32(ptr >> MMU_PAGE_SHIFT)
-	pte := binary.LittleEndian.Uint64(rig.cpu.memory[kernPageTableBase+vpn*8:])
+	pte := memMultiLevelLeafPTE(rig.cpu.memory, uint64(kernPageTableBase), uint64(vpn))
 	_, flags := parsePTE(pte)
 	if flags&PTE_P == 0 || flags&PTE_R == 0 {
 		rig.cpu.running.Store(false)
@@ -30547,7 +30567,7 @@ func TestIExec_M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF(
 	if strings.Contains(output, "BOOT FAIL") {
 		t.Fatalf("M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF: boot failed while consuming supervisor-mapped staged ELF, output=%q", output[:min(len(output), 300)])
 	}
-	if !strings.Contains(output, "exec.library 1.16.6 boot") || !strings.Contains(output, "console.handler M11.5 [Task ") {
+	if !strings.Contains(output, "exec.library 1.16.7 boot") || !strings.Contains(output, "console.handler M11.5 [Task ") {
 		t.Fatalf("M154_BootManifestKernelPTReadValidationAllowsSupervisorMappedELF: boot did not reach normal banners, output=%q", output[:min(len(output), 300)])
 	}
 }

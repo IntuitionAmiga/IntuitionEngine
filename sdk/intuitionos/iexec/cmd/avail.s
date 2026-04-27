@@ -31,7 +31,12 @@ prog_avail_code:
     add     r20, r29, #16
     jsr     .av_send_string
 
-    move.l  r1, #MMU_NUM_PAGES
+    ; PLAN_MAX_RAM.md slice 4: query total guest RAM in pages via the
+    ; SYSINFO MMIO bridge instead of the legacy fixed MMU_NUM_PAGES
+    ; constant, then convert pages to KB (×4).
+    move.l  r1, #SYSINFO_GUEST_RAM_PAGES
+    syscall #SYS_GET_SYS_INFO
+    load.q  r29, (sp)
     lsl     r1, r1, #2
     store.q r1, 8(sp)
     jsr     .av_print_number

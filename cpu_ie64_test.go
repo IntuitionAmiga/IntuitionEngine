@@ -22,7 +22,27 @@ type ie64TestRig struct {
 
 func newIE64TestRig() *ie64TestRig {
 	bus := NewMachineBus()
+	// PLAN_MAX_RAM.md slice 4: publish a fixed 32 MiB sizing so SYSINFO
+	// MMIO returns non-zero guest-RAM pages. Without this, the avail
+	// command (which now reads SYSINFO_GUEST_RAM_PAGES instead of the
+	// retired flat MMU_NUM_PAGES constant) reports "Phys: 0 KB" in test
+	// boots. Live VMs publish via main.go ComputeMemorySizing/SetSizing.
+	bus.SetSizing(MemorySizing{
+		DetectedUsableRAM: uint64(DEFAULT_MEMORY_SIZE),
+		TotalGuestRAM:     uint64(DEFAULT_MEMORY_SIZE),
+		ActiveVisibleRAM:  uint64(DEFAULT_MEMORY_SIZE),
+		VisibleCeiling:    uint64(DEFAULT_MEMORY_SIZE),
+	})
+	RegisterSysInfoMMIOFromBus(bus)
 	cpu := NewCPU64(bus)
+	// PLAN_MAX_RAM.md slice 4 design: install this rig's CPU as the
+	// multi-level test mapper target so mapUserPage / setupKernelPTEs
+	// route through bus.WritePhys64 instead of indexing a flat single-
+	// level PT layout that no longer matches the production walk. Also
+	// reset the per-PTBR pool cursors so a previous test's allocator
+	// state does not leak in.
+	setMapUserPageCPU(cpu)
+	mmuTestResetPools()
 	return &ie64TestRig{bus: bus, cpu: cpu}
 }
 
@@ -1711,12 +1731,16 @@ func TestIE64_JMP_NegativeDisplacement(t *testing.T) {
 	}
 }
 
-func TestIE64_JMP_AddrMask(t *testing.T) {
-	// Address above 32MB should be masked to 25-bit range
+func TestIE64_JMP_NoAddrMask(t *testing.T) {
+	// PLAN_MAX_RAM.md slice 4: full 64-bit VA. The legacy 32 MB
+	// IE64_ADDR_MASK no longer truncates jump targets, so a JMP to
+	// 0x2000000 + PROG_START + 24 lands at the high address and does
+	// NOT alias back to PROG_START + 24. The high target is unmapped
+	// and out-of-bounds, so execution stops cleanly without the
+	// aliased target running.
 	r := newIE64TestRig()
-	// Set R5 directly to an address with bit 25 set; when masked it gives PROG_START+24
-	targetAddr := uint64(0x2000000 + PROG_START + 24) // bit 25 set
-	r.cpu.regs[5] = targetAddr
+	highTarget := uint64(0x2000000 + PROG_START + 24) // bit 25 set
+	r.cpu.regs[5] = highTarget
 	jmp := ie64Instr(OP_JMP, 0, 0, 0, 5, 0, 0)
 	halt1 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
 	halt2 := ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)
@@ -1727,8 +1751,11 @@ func TestIE64_JMP_AddrMask(t *testing.T) {
 	r.cpu.running.Store(true)
 	r.cpu.Execute()
 
-	if r.cpu.regs[1] != 88 {
-		t.Fatalf("R1 = %d, want 88 (address mask should wrap)", r.cpu.regs[1])
+	if r.cpu.regs[1] == 88 {
+		t.Fatalf("R1 = 88: legacy 32 MB JMP mask still active (expected high VA preserved, no aliased target run)")
+	}
+	if r.cpu.PC != highTarget {
+		t.Fatalf("cpu.PC = 0x%X after JMP; want high target 0x%X preserved verbatim", r.cpu.PC, highTarget)
 	}
 }
 
@@ -1896,8 +1923,10 @@ func TestIE64_JSR_Indirect_Nested(t *testing.T) {
 	}
 }
 
-func TestIE64_JSR_Indirect_AddrMask(t *testing.T) {
-	// Target address should be masked to 32MB
+func TestIE64_JSR_Indirect_NoAddrMask(t *testing.T) {
+	// PLAN_MAX_RAM.md slice 4: JSR_IND targets are not masked by the
+	// legacy 32 MB IE64_ADDR_MASK. The high target is preserved and the
+	// fetch fails out-of-bounds rather than aliasing back to low memory.
 	r := newIE64TestRig()
 	bigAddr := uint64(0x2000000 + PROG_START + 24) // bit 25 set
 	loadR5 := ie64Instr(OP_MOVE, 5, IE64_SIZE_L, 1, 0, 0, uint32(bigAddr))
@@ -1910,8 +1939,11 @@ func TestIE64_JSR_Indirect_AddrMask(t *testing.T) {
 	r.cpu.running.Store(true)
 	r.cpu.Execute()
 
-	if r.cpu.regs[1] != 88 {
-		t.Fatalf("R1 = %d, want 88", r.cpu.regs[1])
+	if r.cpu.regs[1] == 88 {
+		t.Fatalf("R1 = 88: legacy 32 MB JSR_IND mask still active")
+	}
+	if r.cpu.PC != bigAddr {
+		t.Fatalf("cpu.PC = 0x%X after JSR_IND; want high target 0x%X preserved", r.cpu.PC, bigAddr)
 	}
 }
 
@@ -3020,7 +3052,7 @@ func TestIE64_TimerInterrupt_ERETModel(t *testing.T) {
 
 	// User task: busy-loop
 	userPC := uint32(userTask0Code)
-	mapUserPage(cpu.memory, cpu.ptbr, uint16(userPC>>MMU_PAGE_SHIFT), uint16(userPC>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
+	mapUserPage(cpu.memory, uint32(cpu.ptbr), uint64(userPC>>MMU_PAGE_SHIFT), uint64(userPC>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
 	copy(cpu.memory[userPC:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0)) // infinite loop
 
 	// Program timer: fire after 100 instructions
@@ -3119,7 +3151,7 @@ func TestIE64_FAULT_TIMER_CauseCode(t *testing.T) {
 	copy(cpu.memory[intrAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	userPC := uint32(userTask0Code)
-	mapUserPage(cpu.memory, cpu.ptbr, uint16(userPC>>MMU_PAGE_SHIFT), uint16(userPC>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
+	mapUserPage(cpu.memory, uint32(cpu.ptbr), uint64(userPC>>MMU_PAGE_SHIFT), uint64(userPC>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
 	copy(cpu.memory[userPC:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0))
 
 	cpu.timerPeriod.Store(50)
@@ -3199,7 +3231,7 @@ func TestIE64_USP_SavedOnTrap(t *testing.T) {
 
 	// User code at PROG_START+8: set SP to 0x88000 then SYSCALL
 	userCodePC := uint32(PROG_START + IE64_INSTR_SIZE)
-	mapUserPage(cpu.memory, cpu.ptbr, uint16(userCodePC>>MMU_PAGE_SHIFT), uint16(userCodePC>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
+	mapUserPage(cpu.memory, uint32(cpu.ptbr), uint64(userCodePC>>MMU_PAGE_SHIFT), uint64(userCodePC>>MMU_PAGE_SHIFT), PTE_P|PTE_R|PTE_X|PTE_U)
 
 	rig.loadInstructions(
 		ie64Instr(OP_ERET, 0, 0, 0, 0, 0, 0),

@@ -22,8 +22,8 @@ func TestIExec_M161_Phase1_IOSVersionConstants(t *testing.T) {
 	if got := vals["IOS_VERSION_PATCH"]; got != 6 {
 		t.Fatalf("IOS_VERSION_PATCH=%d, want 6", got)
 	}
-	if got := fmt.Sprintf("%d.%d.%d", vals["IOS_VERSION_MAJOR"], vals["IOS_VERSION_MINOR"], vals["IOS_VERSION_PATCH"]); got != "1.16.6" {
-		t.Fatalf("IOS_VERSION_STRING=%q, want %q", got, "1.16.6")
+	if got := fmt.Sprintf("%d.%d.%d", vals["IOS_VERSION_MAJOR"], vals["IOS_VERSION_MINOR"], vals["IOS_VERSION_PATCH"]); got != "1.16.7" {
+		t.Fatalf("IOS_VERSION_STRING=%q, want %q", got, "1.16.7")
 	}
 }
 

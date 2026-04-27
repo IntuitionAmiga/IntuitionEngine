@@ -20,6 +20,10 @@ deadlock_msg:
     dc.b    "DEADLOCK: no runnable tasks", 0x0D, 0x0A, 0
     align   4
 
+pt_slot_overflow_msg:
+    dc.b    "PANIC: page-table slot overflow", 0x0D, 0x0A, 0
+    align   4
+
 fault_msg_task:
     dc.b    " task=", 0
     align   4

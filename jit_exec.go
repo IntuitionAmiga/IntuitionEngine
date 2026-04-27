@@ -133,24 +133,68 @@ func (cpu *CPU64) ExecuteJIT() {
 			cpu.jitNeedInval = false
 		}
 
-		pcVirt := uint32(cpu.PC & IE64_ADDR_MASK)
+		// PLAN_MAX_RAM.md slice 4 design: drop the legacy IE64_ADDR_MASK
+		// truncation so fault reporting and the MMU walk see the full
+		// 64-bit VA. The JIT compiler still works in uint32 VA / phys
+		// space; falls back to the interpreter for any VA or translated
+		// physical address that does not fit in the legacy 32 MB window.
+		// JIT-side widening to uint64 PC and high-phys block fetch is a
+		// later phase; this change just removes the aliasing hazard.
+		if cpu.PC > 0xFFFFFFFF {
+			cpu.interpretOne()
+			cpu.InstructionCount++
+			diagFallbackInstr++
+			if !cpu.running.Load() {
+				break
+			}
+			continue
+		}
+		pcVirt := uint32(cpu.PC)
 
 		// MMU: translate virtual PC to physical for block fetch
 		pcPhys := pcVirt
 		if cpu.mmuEnabled {
-			phys, fault, cause := cpu.translateAddr(pcVirt, ACCESS_EXEC)
+			phys, fault, cause := cpu.translateAddr(uint64(pcVirt), ACCESS_EXEC)
 			if fault {
-				cpu.trapFault(cause, pcVirt)
+				cpu.trapFault(cause, uint64(pcVirt))
 				continue // re-enter loop at trap handler PC
 			}
-			pcPhys = phys
+			memLen := uint64(len(cpu.memory))
+			// Subtraction form: phys+8 wraps near MaxUint64 and would
+			// admit a high physical address into the cpu.memory fast
+			// path. memLen is always >= IE64_INSTR_SIZE so the
+			// subtraction never underflows.
+			if phys > memLen-IE64_INSTR_SIZE {
+				// High-phys executable page: fall back to the interpreter,
+				// whose fetch path routes through bus.ReadPhys64. The JIT
+				// block builder is not yet wired for high-phys fetch.
+				cpu.interpretOne()
+				cpu.InstructionCount++
+				diagFallbackInstr++
+				if !cpu.running.Load() {
+					break
+				}
+				continue
+			}
+			pcPhys = uint32(phys)
 		}
 
-		// Bounds check (on physical address)
+		// Bounds check (on physical address). PLAN_MAX_RAM.md slice 4:
+		// when the MMU is disabled and pcPhys lands above the legacy
+		// bus.memory[] window, fall back to the interpreter rather
+		// than halting. The interpreter fetch path routes high-phys
+		// reads through bus.ReadPhys64WithFault and can execute code
+		// placed in backed RAM above 32 MB; the JIT block builder
+		// scans cpu.memory[] directly and is not yet wired for high
+		// phys.
 		if uint64(pcPhys)+IE64_INSTR_SIZE > uint64(len(cpu.memory)) {
-			fmt.Printf("IE64 JIT: PC out of bounds: 0x%08X\n", pcPhys)
-			cpu.running.Store(false)
-			break
+			cpu.interpretOne()
+			cpu.InstructionCount++
+			diagFallbackInstr++
+			if !cpu.running.Load() {
+				break
+			}
+			continue
 		}
 
 		// Check for HALT at current PC (physical)
@@ -163,9 +207,15 @@ func (cpu *CPU64) ExecuteJIT() {
 		// Under MMU, different address spaces can execute different physical
 		// code at the same virtual PC. Scope cache entries by PTBR to avoid
 		// cross-task aliasing when the OS switches page tables.
+		// PLAN_MAX_RAM.md slice 4: cpu.ptbr is uint64; the legacy
+		// `(ptbr<<32) | pcVirt` packing dropped any PTBR bits above bit 31
+		// and aliased two tasks whose page tables share the low 32 bits
+		// of their physical address. Mix the full 64-bit PTBR via a
+		// golden-ratio multiplicative hash so high-memory PTBRs produce
+		// distinct cache keys.
 		cacheKey := uint64(pcVirt)
 		if cpu.mmuEnabled {
-			cacheKey = (uint64(cpu.ptbr) << 32) | uint64(pcVirt)
+			cacheKey = (cpu.ptbr * 0x9E3779B97F4A7C15) ^ uint64(pcVirt)
 		}
 		block := cpu.jitCache.GetKey(cacheKey)
 		if block == nil {

@@ -9,23 +9,20 @@ import (
 // MMU Phase 2: Page Table Walk
 // ===========================================================================
 
-// Helper: write a PTE into the page table at the given VPN
-func writePTE(cpu *CPU64, vpn uint16, pte uint64) {
-	off := uint32(cpu.ptbr) + uint32(vpn)*8
-	cpu.memory[off+0] = byte(pte)
-	cpu.memory[off+1] = byte(pte >> 8)
-	cpu.memory[off+2] = byte(pte >> 16)
-	cpu.memory[off+3] = byte(pte >> 24)
-	cpu.memory[off+4] = byte(pte >> 32)
-	cpu.memory[off+5] = byte(pte >> 40)
-	cpu.memory[off+6] = byte(pte >> 48)
-	cpu.memory[off+7] = byte(pte >> 56)
+// writePTE installs a leaf PTE for VPN through the multi-level walk.
+// PLAN_MAX_RAM.md slice 4 design: the page table is a 6-level sparse
+// radix tree, so single-level pokes no longer reach the walk's leaf.
+// Decode pte → (ppn, flags) and route through mmuMap so intermediate
+// tables are auto-allocated from the per-PTBR pool.
+func writePTE(cpu *CPU64, vpn uint64, pte uint64) {
+	ppn, flags := parsePTE(pte)
+	mmuMap(cpu, vpn<<MMU_PAGE_SHIFT, ppn, flags)
 }
 
 func TestMMU_PTEEncodeDecode(t *testing.T) {
 	// Test round-trip of PTE encode/decode
 	testCases := []struct {
-		ppn   uint16
+		ppn   uint64
 		flags byte
 	}{
 		{0, PTE_P | PTE_R},
@@ -53,7 +50,7 @@ func TestMMU_WalkValid(t *testing.T) {
 	writePTE(cpu, 1, makePTE(5, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
 
 	// Translate virtual address 0x1ABC (page 1, offset 0xABC)
-	vaddr := uint32(0x1ABC)
+	vaddr := uint64(0x1ABC)
 	phys, fault, _ := cpu.translateAddr(vaddr, ACCESS_READ)
 	if fault {
 		t.Fatal("translateAddr returned fault for valid page")
@@ -181,8 +178,8 @@ func TestMMU_WalkAddressCalc(t *testing.T) {
 	cpu.ptbr = 0x20000
 
 	tests := []struct {
-		vpn    uint16
-		ppn    uint16
+		vpn    uint64
+		ppn    uint64
 		offset uint32
 	}{
 		{0, 0, 0},
@@ -194,8 +191,8 @@ func TestMMU_WalkAddressCalc(t *testing.T) {
 
 	for _, tt := range tests {
 		writePTE(cpu, tt.vpn, makePTE(tt.ppn, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
-		vaddr := (uint32(tt.vpn) << MMU_PAGE_SHIFT) | tt.offset
-		expectedPhys := (uint32(tt.ppn) << MMU_PAGE_SHIFT) | tt.offset
+		vaddr := (tt.vpn << MMU_PAGE_SHIFT) | uint64(tt.offset)
+		expectedPhys := (tt.ppn << MMU_PAGE_SHIFT) | uint64(tt.offset)
 
 		phys, fault, _ := cpu.translateAddr(vaddr, ACCESS_READ)
 		if fault {
@@ -212,26 +209,33 @@ func TestMMU_WalkAddressCalc(t *testing.T) {
 // MMU Phase 3: Interpreter Integration
 // ===========================================================================
 
-// setupIdentityMMU sets up an identity-mapped page table covering the first N pages.
-// Page table is placed at physical 0x80000. Code/stack pages get R+W+X+U.
+// setupIdentityMMU sets up an identity-mapped page table covering the first
+// N pages. Page table is placed at physical 0x80000. Code/stack pages get
+// R+W+X+U. PLAN_MAX_RAM.md slice 4 design: builds the multi-level walk
+// structure via mmuMap; intermediate tables auto-allocate from the
+// per-PTBR pool. After identity-mapping the data pages, the PT region
+// itself (top table + all allocated intermediates) is identity-mapped so
+// guest code that observes VA == PA inside the PT region still works.
 func setupIdentityMMU(cpu *CPU64, numPages int) {
-	ptBase := uint32(0x80000) // well above PROG_START, below IO_REGION_START
-	cpu.ptbr = ptBase
+	cpu.ptbr = uint64(0x80000) // well above PROG_START, below IO_REGION_START
 	cpu.mmuEnabled = true
+	flags := byte(PTE_P | PTE_R | PTE_W | PTE_X | PTE_U)
 
 	for i := 0; i < numPages; i++ {
-		pte := makePTE(uint16(i), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U)
-		off := ptBase + uint32(i)*8
-		binary.LittleEndian.PutUint64(cpu.memory[off:], pte)
+		mmuMap(cpu, uint64(i)<<MMU_PAGE_SHIFT, uint64(i), flags)
 	}
 
-	// Also map the page table itself (it lives at 0x80000, page 128)
-	ptPage := ptBase >> MMU_PAGE_SHIFT
-	ptEndPage := (ptBase + uint32(numPages)*8 + MMU_PAGE_SIZE - 1) >> MMU_PAGE_SHIFT
-	for p := ptPage; p <= ptEndPage; p++ {
-		pte := makePTE(uint16(p), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U)
-		off := ptBase + p*8
-		binary.LittleEndian.PutUint64(cpu.memory[off:], pte)
+	// Identity-map the actual PT region (top table + every intermediate
+	// allocated above). The pool cursor recorded by mmuTestNextTable is
+	// the next free physical address; the in-use range is [ptbr, cursor).
+	poolEnd := mmuTestState[cpu.ptbr]
+	if poolEnd == 0 {
+		poolEnd = cpu.ptbr + mmuTestPoolBaseOffset
+	}
+	ptStartPage := cpu.ptbr >> MMU_PAGE_SHIFT
+	ptEndPage := (poolEnd - 1) >> MMU_PAGE_SHIFT
+	for p := ptStartPage; p <= ptEndPage; p++ {
+		mmuMap(cpu, p<<MMU_PAGE_SHIFT, p, flags)
 	}
 }
 
@@ -365,7 +369,7 @@ func TestMMU_FetchExecFault(t *testing.T) {
 	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	// Map PROG_START page as non-executable (R+W but no X)
-	progPage := uint16(PROG_START >> MMU_PAGE_SHIFT)
+	progPage := uint64(PROG_START >> MMU_PAGE_SHIFT)
 	writePTE(cpu, progPage, makePTE(progPage, PTE_P|PTE_R|PTE_W|PTE_U)) // no X
 
 	rig.loadInstructions(ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0))
@@ -404,7 +408,7 @@ func TestMMU_StackIsNonExecutable(t *testing.T) {
 	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	// Map stack page as non-executable (R+W only)
-	stackPage := uint16(0x9E000 >> MMU_PAGE_SHIFT)                        // near STACK_START
+	stackPage := uint64(0x9E000 >> MMU_PAGE_SHIFT)                        // near STACK_START
 	writePTE(cpu, stackPage, makePTE(stackPage, PTE_P|PTE_R|PTE_W|PTE_U)) // no X
 
 	// Jump to the stack page - should fault
@@ -604,13 +608,12 @@ func TestMMU_KernelBootstrap(t *testing.T) {
 	rig := newIE64TestRig()
 	cpu := rig.cpu
 
-	// Place page table at 0x80000
+	// Place page table at 0x80000 and identity-map the first 160 pages
+	// (covers code, stack, page table region) via the multi-level walk.
 	ptBase := uint32(0x80000)
-
-	// Identity-map the first 160 pages (covers code, stack, page table)
+	cpu.ptbr = uint64(ptBase)
 	for i := 0; i < 160; i++ {
-		pte := makePTE(uint16(i), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U)
-		binary.LittleEndian.PutUint64(cpu.memory[ptBase+uint32(i)*8:], pte)
+		mmuMap(cpu, uint64(i)<<MMU_PAGE_SHIFT, uint64(i), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U)
 	}
 
 	// Trap handler at 0x9000
@@ -686,8 +689,10 @@ func TestMMU_PageFaultHandlerRestart(t *testing.T) {
 	cpu := rig.cpu
 	setupIdentityMMU(cpu, 160)
 
-	// Unmap page 4
-	writePTE(cpu, 4, 0)
+	// Unmap page 4 by clearing its leaf PTE. The intermediate tables
+	// stay in place so the trap handler can walk to the same leaf
+	// physical address and re-install the entry.
+	mmuClearLeafPTE(cpu, 4<<MMU_PAGE_SHIFT)
 
 	// Write a known value at physical page 4 address
 	binary.LittleEndian.PutUint32(cpu.memory[0x4100:], 0xBEEFCAFE)
@@ -695,27 +700,25 @@ func TestMMU_PageFaultHandlerRestart(t *testing.T) {
 	trapAddr := uint64(0x9000)
 	cpu.trapVector = trapAddr
 
-	// Trap handler: map page 4 with identity mapping, then ERET
-	// Handler needs to:
-	// 1. Read FAULT_ADDR (MFCR)
-	// 2. Calculate VPN
-	// 3. Create PTE and write to page table
-	// 4. TLBINVAL
-	// 5. ERET
-	// This is complex in IE64 assembly, so we'll cheat: pre-program the handler
-	// to just map page 4 directly.
+	// Trap handler: map page 4 with identity mapping, then ERET. The
+	// PT format is multi-level, so the handler must store the PTE at
+	// the leaf entry's physical address (computed Go-side from the
+	// pre-built intermediate chain) rather than at ptbr + vpn*8.
 	handlerOff := uint32(trapAddr)
 
 	// R20 = page table entry value for page 4 (identity mapped, PRWXU)
 	pte4 := makePTE(4, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U)
-	// R21 = address in page table for VPN 4 = ptbr + 4*8 = 0x80000 + 32 = 0x80020
-	ptEntryAddr := cpu.ptbr + 4*8
+	// R21 = leaf PTE address, walked from ptbr through the existing multi-level chain.
+	ptEntryAddr := mmuLeafAddress(cpu, 4<<MMU_PAGE_SHIFT)
+	if ptEntryAddr == 0 {
+		t.Fatalf("leaf address for VPN 4 not reachable; intermediate chain missing")
+	}
 
 	copy(cpu.memory[handlerOff:], ie64Instr(OP_MOVE, 20, IE64_SIZE_L, 1, 0, 0, uint32(pte4)))
 	handlerOff += 8
 	copy(cpu.memory[handlerOff:], ie64Instr(OP_MOVT, 20, 0, 1, 0, 0, uint32(pte4>>32)))
 	handlerOff += 8
-	copy(cpu.memory[handlerOff:], ie64Instr(OP_MOVE, 21, IE64_SIZE_L, 1, 0, 0, ptEntryAddr))
+	copy(cpu.memory[handlerOff:], ie64Instr(OP_MOVE, 21, IE64_SIZE_L, 1, 0, 0, uint32(ptEntryAddr)))
 	handlerOff += 8
 	copy(cpu.memory[handlerOff:], ie64Instr(OP_STORE, 20, IE64_SIZE_Q, 0, 21, 0, 0))
 	handlerOff += 8
@@ -745,25 +748,30 @@ func TestMMU_UserProcessIsolation(t *testing.T) {
 	rig := newIE64TestRig()
 	cpu := rig.cpu
 
-	// Process 1 page table at 0x80000
-	pt1 := uint32(0x80000)
-	// Process 2 page table at 0x84000
-	pt2 := uint32(0x84000)
+	// Process 1 page table at 0x80000, process 2 at 0x90000. The pools that
+	// hold each process's intermediate-level tables grow 64 KiB beyond the
+	// top-level base, so the PTBRs must be at least 64 KiB apart.
+	pt1 := uint64(0x80000)
+	pt2 := uint64(0x90000)
 
-	// Identity map pages for code and stack in both page tables
+	// Identity-map the first 160 pages in each process via the multi-level
+	// walk; mmuMap allocates intermediate tables from the per-PTBR pool.
+	flags := byte(PTE_P | PTE_R | PTE_W | PTE_X | PTE_U)
+	cpu.ptbr = pt1
 	for i := 0; i < 160; i++ {
-		pte := makePTE(uint16(i), PTE_P|PTE_R|PTE_W|PTE_X|PTE_U)
-		binary.LittleEndian.PutUint64(cpu.memory[pt1+uint32(i)*8:], pte)
-		binary.LittleEndian.PutUint64(cpu.memory[pt2+uint32(i)*8:], pte)
+		mmuMap(cpu, uint64(i)<<MMU_PAGE_SHIFT, uint64(i), flags)
+	}
+	cpu.ptbr = pt2
+	for i := 0; i < 160; i++ {
+		mmuMap(cpu, uint64(i)<<MMU_PAGE_SHIFT, uint64(i), flags)
 	}
 
-	// But map virtual page 10 differently:
-	// Process 1: virtual page 10 -> physical page 20
-	// Process 2: virtual page 10 -> physical page 30
-	pte1 := makePTE(20, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U)
-	pte2 := makePTE(30, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U)
-	binary.LittleEndian.PutUint64(cpu.memory[pt1+10*8:], pte1)
-	binary.LittleEndian.PutUint64(cpu.memory[pt2+10*8:], pte2)
+	// Override virtual page 10 so each process sees a different physical
+	// page: process 1 → physical 20, process 2 → physical 30.
+	cpu.ptbr = pt1
+	mmuMap(cpu, 10<<MMU_PAGE_SHIFT, 20, flags)
+	cpu.ptbr = pt2
+	mmuMap(cpu, 10<<MMU_PAGE_SHIFT, 30, flags)
 
 	// Write different values at physical pages 20 and 30
 	binary.LittleEndian.PutUint32(cpu.memory[20*MMU_PAGE_SIZE:], 0xAAAA)
@@ -910,7 +918,7 @@ func TestMMU_StackFault(t *testing.T) {
 	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	// Make the stack page read-only (no write)
-	stackPage := uint16((STACK_START - 8) >> MMU_PAGE_SHIFT)
+	stackPage := uint64((STACK_START - 8) >> MMU_PAGE_SHIFT)
 	writePTE(cpu, stackPage, makePTE(stackPage, PTE_P|PTE_R|PTE_X|PTE_U)) // no W
 
 	// PUSH should fault on stack write
@@ -1095,7 +1103,7 @@ func TestMMU_StackProtection(t *testing.T) {
 	copy(cpu.memory[trapAddr:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	// Make stack page supervisor-only (no U bit)
-	stackPage := uint16((STACK_START - 8) >> MMU_PAGE_SHIFT)
+	stackPage := uint64((STACK_START - 8) >> MMU_PAGE_SHIFT)
 	writePTE(cpu, stackPage, makePTE(stackPage, PTE_P|PTE_R|PTE_W|PTE_X)) // no U
 
 	// Switch to user mode with SP pointing at the supervisor-only stack page.
@@ -1290,10 +1298,10 @@ func TestIE64_CR_TP_OtherCR_StillDenied(t *testing.T) {
 // A/D Bits in Page Table Entries
 // ===========================================================================
 
-// readPTEFlags reads the PTE flags byte for a given VPN from the page table.
-func readPTEFlags(cpu *CPU64, vpn uint16) byte {
-	pteAddr := cpu.ptbr + uint32(vpn)*8
-	pte := binary.LittleEndian.Uint64(cpu.memory[pteAddr:])
+// readPTEFlags reads the PTE flags byte for a given VPN by walking the
+// multi-level page table. Returns 0 if any level is unmapped.
+func readPTEFlags(cpu *CPU64, vpn uint64) byte {
+	pte := mmuLeafPTE(cpu, vpn<<MMU_PAGE_SHIFT)
 	_, flags := parsePTE(pte)
 	return flags
 }
@@ -1318,7 +1326,7 @@ func TestMMU_AD_AccessedOnRead(t *testing.T) {
 	cpu := rig.cpu
 	setupIdentityMMU(cpu, 160)
 
-	vpn := uint16(3)
+	vpn := uint64(3)
 	// Verify A is not set initially
 	flags := readPTEFlags(cpu, vpn)
 	if flags&PTE_A != 0 {
@@ -1343,7 +1351,7 @@ func TestMMU_AD_AccessedOnExec(t *testing.T) {
 	setupIdentityMMU(cpu, 160)
 
 	// The PROG_START page should get A set during instruction fetch
-	progVPN := uint16(PROG_START >> MMU_PAGE_SHIFT)
+	progVPN := uint64(PROG_START >> MMU_PAGE_SHIFT)
 
 	rig.executeOne(ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0))
 
@@ -1358,7 +1366,7 @@ func TestMMU_AD_DirtyOnWrite(t *testing.T) {
 	cpu := rig.cpu
 	setupIdentityMMU(cpu, 160)
 
-	vpn := uint16(3)
+	vpn := uint64(3)
 
 	rig.executeN(
 		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(vpn)<<MMU_PAGE_SHIFT),
@@ -1380,7 +1388,7 @@ func TestMMU_AD_ReadDoesNotSetDirty(t *testing.T) {
 	cpu := rig.cpu
 	setupIdentityMMU(cpu, 160)
 
-	vpn := uint16(3)
+	vpn := uint64(3)
 
 	rig.executeN(
 		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, uint32(vpn)<<MMU_PAGE_SHIFT),
@@ -1401,12 +1409,12 @@ func TestMMU_AD_AlreadySet(t *testing.T) {
 	cpu := rig.cpu
 	setupIdentityMMU(cpu, 160)
 
-	vpn := uint16(3)
+	vpn := uint64(3)
 	// Pre-set A|D in PTE
 	writePTE(cpu, vpn, makePTE(vpn, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U|PTE_A|PTE_D))
 
 	// Save original PTE
-	pteAddr := cpu.ptbr + uint32(vpn)*8
+	pteAddr := cpu.ptbr + vpn*8
 	origPTE := binary.LittleEndian.Uint64(cpu.memory[pteAddr:])
 
 	// Access the page
@@ -1428,7 +1436,7 @@ func TestMMU_AD_TLBHitUpdates(t *testing.T) {
 	cpu := rig.cpu
 	setupIdentityMMU(cpu, 160)
 
-	vpn := uint16(3)
+	vpn := uint64(3)
 
 	// First access: TLB miss, fills TLB, sets A
 	rig.executeN(
@@ -1465,7 +1473,7 @@ func TestMMU_AD_KernelClearsAD(t *testing.T) {
 	cpu := rig.cpu
 	setupIdentityMMU(cpu, 160)
 
-	vpn := uint16(3)
+	vpn := uint64(3)
 
 	// Access to set A|D
 	rig.executeN(
@@ -1888,7 +1896,7 @@ func TestIE64_UserCopyPattern_SUAENGatedLoadStore(t *testing.T) {
 	writePTE(cpu, 3, makePTE(6, PTE_P|PTE_R|PTE_W))
 	// Map VPN 1 (PROG_START / 4K) RX+U so instruction fetch works
 	// while SKEF is off (SKEF not enabled for this test).
-	writePTE(cpu, uint16(PROG_START>>MMU_PAGE_SHIFT), makePTE(1, PTE_P|PTE_R|PTE_X|PTE_U))
+	writePTE(cpu, uint64(PROG_START>>MMU_PAGE_SHIFT), makePTE(1, PTE_P|PTE_R|PTE_X|PTE_U))
 
 	// Seed user page byte.
 	cpu.memory[(5<<MMU_PAGE_SHIFT)+0x10] = 0xA5
@@ -1930,7 +1938,7 @@ func TestIE64_UserCopyPattern_WithoutSUAENFaultsSKAC(t *testing.T) {
 	cpu.trapVector = PROG_START + 0x200
 
 	writePTE(cpu, 2, makePTE(5, PTE_P|PTE_R|PTE_W|PTE_U))
-	writePTE(cpu, uint16(PROG_START>>MMU_PAGE_SHIFT), makePTE(1, PTE_P|PTE_R|PTE_X|PTE_U))
+	writePTE(cpu, uint64(PROG_START>>MMU_PAGE_SHIFT), makePTE(1, PTE_P|PTE_R|PTE_X|PTE_U))
 
 	const userAddr = uint32(2<<MMU_PAGE_SHIFT) | 0x10
 

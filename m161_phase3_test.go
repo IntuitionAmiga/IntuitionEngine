@@ -282,7 +282,7 @@ func resetM161Task0ClientState(client *m161Task0ClientRig) {
 	client.rig.cpu.regs[31] = client.usp
 	client.rig.cpu.userSP = client.usp
 	client.rig.cpu.kernelSP = kernStackTop
-	client.rig.cpu.ptbr = client.pt
+	client.rig.cpu.ptbr = uint64(client.pt)
 	client.rig.cpu.supervisorMode = false
 	client.rig.cpu.previousMode = false
 	client.rig.cpu.trapped = false
