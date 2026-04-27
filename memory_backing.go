@@ -341,8 +341,12 @@ func AllocateGuestRAM(bus *MachineBus, requested MemorySizing, allocator func(si
 		return nil, MemorySizing{}, fmt.Errorf("%w: post-retry active=%d",
 			ErrGuestRAMBelowMinimum, final.ActiveVisibleRAM)
 	}
-	bus.SetSizing(final)
+	// Bind the Backing before publishing sizing: SetSizing's plan-9 clamp
+	// reads bus.backing.Size() to honour the backed-RAM invariant, so
+	// the larger total advertised by `final` survives the clamp only if
+	// the Backing is already in place.
 	bus.SetBacking(backing)
+	bus.SetSizing(final)
 	RegisterSysInfoMMIOFromBus(bus)
 	return backing, final, nil
 }

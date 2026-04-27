@@ -670,7 +670,37 @@ func (bus *MachineBus) SetStrictMMIOWindows(windows []AddrRange) {
 // after ComputeMemorySizing and any AllocateGuestRAM retry has settled. All
 // guest discovery paths (sysinfo MMIO, future IE64 CR_RAM_SIZE_BYTES, IExec
 // sysinfo) must read from these accessors so they agree on the final values.
+//
+// PLAN_MAX_RAM.md slice 9 invariant: production discovery must never report
+// unbacked RAM as TotalGuestRAM. SetSizing clamps a host-scale candidate
+// down to the actual backed window the bus can serve.
+//
+// The backed window is the union of the legacy bus.memory[] window and
+// the bound Backing. Backing.Size() is the absolute upper bound of the
+// backing-mapped range (matching addrInBacking's `end <= backing.Size()`
+// check), so the backed total is max(len(bus.memory), backing.Size())
+// — adding the two would advertise unbacked RAM in the [backing.Size(),
+// len(memory)+backing.Size()) gap.
+//
+// ActiveVisibleRAM is clamped to TotalGuestRAM when both are set so the
+// active value never exceeds the (already-backed) total. Active-only
+// callers — hand-built MemorySizing inputs that leave TotalGuestRAM at
+// zero — retain their ActiveVisibleRAM verbatim. The production path
+// from main.go always sets both, so the production-honesty invariant
+// is satisfied via the total-clamp + active<=total chain.
 func (bus *MachineBus) SetSizing(ms MemorySizing) {
+	backed := uint64(len(bus.memory))
+	if bus.backing != nil {
+		if bs := bus.backing.Size(); bs > backed {
+			backed = bs
+		}
+	}
+	if ms.TotalGuestRAM > backed {
+		ms.TotalGuestRAM = backed
+	}
+	if ms.TotalGuestRAM > 0 && ms.ActiveVisibleRAM > ms.TotalGuestRAM {
+		ms.ActiveVisibleRAM = ms.TotalGuestRAM
+	}
 	bus.sizing = ms
 }
 

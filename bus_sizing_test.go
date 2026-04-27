@@ -21,6 +21,10 @@ func TestBus_SizingDefaultsAreZeroBeforeSet(t *testing.T) {
 
 func TestBus_SetSizingExposesValues(t *testing.T) {
 	bus := NewMachineBus()
+	// Plan slice 9: SetSizing clamps TotalGuestRAM to backed RAM (legacy
+	// memory + bound Backing). Install a sparse Backing so the test's
+	// 8 GiB sizing passes the clamp untouched.
+	bus.SetBacking(NewSparseBacking(8 * bGiB))
 	ms := MemorySizing{
 		Platform:         PlatformX64PC,
 		VisibleCeiling:   4 * bGiB,
@@ -44,6 +48,9 @@ func TestBus_SetSizingExposesValues(t *testing.T) {
 
 func TestSysInfo_FromBusReportsBusSizing(t *testing.T) {
 	bus := NewMachineBus()
+	// Plan slice 9: install Backing so the 16 GiB total passes the
+	// SetSizing clamp untouched and SYSINFO faithfully echoes it.
+	bus.SetBacking(NewSparseBacking(16 * bGiB))
 	bus.SetSizing(MemorySizing{
 		TotalGuestRAM:    16 * bGiB,
 		ActiveVisibleRAM: 4 * bGiB,

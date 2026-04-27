@@ -13,6 +13,11 @@ import (
 
 func TestPhase4c_ActiveVisiblePages_DerivedFromSizing(t *testing.T) {
 	bus := NewMachineBus()
+	// Slice 9 SetSizing clamps TotalGuestRAM to backed RAM. Install a
+	// sparse Backing covering the largest case so each TotalGuestRAM
+	// value survives the clamp; the test's intent is verifying the
+	// active->page-count derivation, not the production-honesty clamp.
+	bus.SetBacking(NewSparseBacking(8 * uint64(1024*1024*1024)))
 	cases := []struct {
 		name      string
 		active    uint64
