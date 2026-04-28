@@ -173,6 +173,106 @@ func TestBootMode_IE32_AllocatesUpTo4GiBPage_NoBacking(t *testing.T) {
 	}
 }
 
+// TestBootMode_X86_AllocatesUpTo4GiBPage_NoBacking mirrors the IE32 case:
+// x86 is a flat 32-bit guest. bus.memory uses mmap-lazy on linux/darwin
+// up to busMemMaxBytes; non-mmap platforms clamp at busMemBootClamp.
+// Backing must remain nil — Bus32 has no high-range routing.
+func TestBootMode_X86_AllocatesUpTo4GiBPage_NoBacking(t *testing.T) {
+	bus := bootSimulate(t, modeX86, eightGiB, mmapFaithfulSparseAllocator)
+	want := busMemMaxBytes
+	if want > busMemBootClamp {
+		want = busMemBootClamp
+	}
+	if got := uint64(len(bus.GetMemory())); got != want {
+		t.Fatalf("len(bus.memory) = %d, want %d (x86 cap = min(busMemMaxBytes, busMemBootClamp))", got, want)
+	}
+	if bus.Backing() != nil {
+		t.Fatal("x86 should not allocate a high-range backing (Bus32 has no high-range path)")
+	}
+}
+
+// TestBootMode_BareM68K_AllocatesUpTo4GiBPage_NoBacking: bare M68K is
+// also a flat 32-bit guest (no EmuTOS/AROS profile cap). Same Bus32-only
+// invariant as IE32/x86.
+func TestBootMode_BareM68K_AllocatesUpTo4GiBPage_NoBacking(t *testing.T) {
+	bus := bootSimulate(t, modeM68KBare, eightGiB, mmapFaithfulSparseAllocator)
+	want := busMemMaxBytes
+	if want > busMemBootClamp {
+		want = busMemBootClamp
+	}
+	if got := uint64(len(bus.GetMemory())); got != want {
+		t.Fatalf("len(bus.memory) = %d, want %d (bare-M68K cap = min(busMemMaxBytes, busMemBootClamp))", got, want)
+	}
+	if bus.Backing() != nil {
+		t.Fatal("bare-M68K should not allocate a high-range backing (Bus32 has no high-range path)")
+	}
+}
+
+// ===========================================================================
+// 32-bit discovery: SYSINFO + ActiveVisibleRAM agree at busMemCap when
+// host total exceeds the 32-bit window. Pins the slice 10 §A6 row for
+// IE32/x86/bare-M68K end-to-end.
+// ===========================================================================
+
+func discovery32BitClampedTotal() uint64 {
+	want := busMemMaxBytes
+	if want > busMemBootClamp {
+		want = busMemBootClamp
+	}
+	return want
+}
+
+func TestDiscovery_IE32_AllPathsAgreeClampedToBusMemCap(t *testing.T) {
+	bus := bootSimulate(t, modeIE32, eightGiB, mmapFaithfulSparseAllocator)
+	want := discovery32BitClampedTotal()
+	if got := bus.TotalGuestRAM(); got != want {
+		t.Errorf("TotalGuestRAM = %d, want %d", got, want)
+	}
+	if got := bus.ActiveVisibleRAM(); got != want {
+		t.Errorf("ActiveVisibleRAM = %d, want %d", got, want)
+	}
+	if got := sysinfoTotalRAM(bus); got != want {
+		t.Errorf("SYSINFO_TOTAL_RAM = %d, want %d", got, want)
+	}
+	if got := sysinfoActiveRAM(bus); got != want {
+		t.Errorf("SYSINFO_ACTIVE_RAM = %d, want %d", got, want)
+	}
+}
+
+func TestDiscovery_X86_AllPathsAgreeClampedToBusMemCap(t *testing.T) {
+	bus := bootSimulate(t, modeX86, eightGiB, mmapFaithfulSparseAllocator)
+	want := discovery32BitClampedTotal()
+	if got := bus.TotalGuestRAM(); got != want {
+		t.Errorf("TotalGuestRAM = %d, want %d", got, want)
+	}
+	if got := bus.ActiveVisibleRAM(); got != want {
+		t.Errorf("ActiveVisibleRAM = %d, want %d", got, want)
+	}
+	if got := sysinfoTotalRAM(bus); got != want {
+		t.Errorf("SYSINFO_TOTAL_RAM = %d, want %d", got, want)
+	}
+	if got := sysinfoActiveRAM(bus); got != want {
+		t.Errorf("SYSINFO_ACTIVE_RAM = %d, want %d", got, want)
+	}
+}
+
+func TestDiscovery_BareM68K_AllPathsAgreeClampedToBusMemCap(t *testing.T) {
+	bus := bootSimulate(t, modeM68KBare, eightGiB, mmapFaithfulSparseAllocator)
+	want := discovery32BitClampedTotal()
+	if got := bus.TotalGuestRAM(); got != want {
+		t.Errorf("TotalGuestRAM = %d, want %d", got, want)
+	}
+	if got := bus.ActiveVisibleRAM(); got != want {
+		t.Errorf("ActiveVisibleRAM = %d, want %d", got, want)
+	}
+	if got := sysinfoTotalRAM(bus); got != want {
+		t.Errorf("SYSINFO_TOTAL_RAM = %d, want %d", got, want)
+	}
+	if got := sysinfoActiveRAM(bus); got != want {
+		t.Errorf("SYSINFO_ACTIVE_RAM = %d, want %d", got, want)
+	}
+}
+
 // TestBootMode_IE64_Above4GiBTotal_SmallLowWindow_BackingForFullTotal pins
 // the slice 10 reviewer P1 fix: bus.memory stays at the small low-mem
 // compatibility window (lowMemWindowBytes) regardless of total advertised
