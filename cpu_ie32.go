@@ -448,13 +448,32 @@ func (cpu *CPU) LoadProgram(filename string) error {
 	if err != nil {
 		return err
 	}
-	// Clear program area with bounds check
-	for i := PROG_START; i < len(cpu.memory) && i < STACK_START; i++ {
+	cpu.LoadProgramBytes(program)
+	return nil
+}
+
+// LoadProgramBytes loads raw machine code bytes at PROG_START and resets PC.
+// Touches only the fixed program load window [PROG_START, STACK_START); never
+// the open-ended slice tail. PLAN_MAX_RAM slice 10 invariant: no boot/reload
+// path may touch advertised guest RAM, only the legacy program staging area.
+func (cpu *CPU) LoadProgramBytes(program []byte) {
+	progEnd := STACK_START
+	if progEnd > len(cpu.memory) {
+		progEnd = len(cpu.memory)
+	}
+	for i := PROG_START; i < progEnd; i++ {
 		cpu.memory[i] = 0
 	}
-	copy(cpu.memory[PROG_START:], program)
+	maxCopy := progEnd - PROG_START
+	if maxCopy < 0 {
+		maxCopy = 0
+	}
+	src := program
+	if len(src) > maxCopy {
+		src = src[:maxCopy]
+	}
+	copy(cpu.memory[PROG_START:progEnd], src)
 	cpu.PC = PROG_START
-	return nil
 }
 
 func (cpu *CPU) Write32(addr uint32, value uint32) {
@@ -837,13 +856,10 @@ func (cpu *CPU) Reset() {
 
 	time.Sleep(RESET_DELAY)
 
-	// Clear memory in chunks for better cache utilization
-	for i := PROG_START; i < len(cpu.memory); i += CACHE_LINE_SIZE {
-		end := min(i+CACHE_LINE_SIZE, len(cpu.memory))
-		for j := i; j < end; j++ {
-			cpu.memory[j] = 0
-		}
-	}
+	// PLAN_MAX_RAM slice 10 reviewer P2: CPU reset MUST NOT iterate over
+	// guest RAM. Mmap-backed bus.memory at multi-GiB sizes would commit
+	// every page on F10/reload. Memory zeroing belongs to MachineBus.
+	// Reset, which routes through madvise on mmap-allocated slices.
 
 	if activeVideoChip != nil {
 		video := activeVideoChip

@@ -17,7 +17,6 @@ import (
 
 const (
 	defaultX86LoadAddr  = 0x00000000
-	x86AddressSpace     = 0x02000000 // 32MB address space
 	x86RotozoomerSHA256 = "af4fc796268536fc69045fe2f36d88c7645fa0d1fc04c7ce50101412ad12edea"
 
 	// x86 Bank Windows (same as Z80/6502 for compatibility)
@@ -656,7 +655,11 @@ func NewCPUX86Runner(bus *MachineBus, config *CPUX86Config) *CPUX86Runner {
 
 // LoadProgramData loads a binary program from bytes into memory
 func (r *CPUX86Runner) LoadProgramData(data []byte) error {
-	if uint32(len(data))+r.loadAddr > x86AddressSpace {
+	// PLAN_MAX_RAM slice 10g: bus-driven address space cap; the legacy
+	// 32 MiB constant has been retired. The sized bus.memory[] window is
+	// the active cap.
+	addressSpace := uint32(len(r.bus.bus.GetMemory()))
+	if uint32(len(data))+r.loadAddr > addressSpace {
 		return fmt.Errorf("program too large: %d bytes", len(data))
 	}
 

@@ -1640,6 +1640,10 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writt
 	slowPathPC := cb.Len()
 	cb.PatchUint32(slowPathOffset, arm64Bcond(arm64CondHS, int32(slowPathPC-slowPathOffset)))
 
+	// PLAN_MAX_RAM slice 10b: bail to interpreter if addr >= MemSize. The
+	// bitmap index below is OOB for addresses that escape the backed window.
+	emitHighAddrBailCheckARM64(cb, instrPC, ji.pcOffset, br, writtenSoFar)
+
 	// Check ioPageBitmap[addr >> 8] — X5 holds IOBitmapPtr (loaded in prologue)
 	cb.Emit32(arm64LSR_imm(1, 0, 8))                 // X1 = addr >> 8
 	cb.Emit32(arm64LDRB_reg(1, arm64RegIOBitmap, 1)) // W1 = ioPageBitmap[page]
@@ -1676,6 +1680,26 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writt
 	// Patch done branch
 	donePC := cb.Len()
 	cb.PatchUint32(doneOffset, arm64B(int32(donePC-doneOffset)))
+}
+
+// emitHighAddrBailCheckARM64 emits a `if W0 >= ctx.MemSize → bail` check
+// at the top of an IE64 LOAD/STORE slow path. W0 holds the computed
+// address; X1 is used as scratch to load the ctx pointer and MemSize.
+func emitHighAddrBailCheckARM64(cb *CodeBuffer, instrPC uint32, pcOffset uint32, br *blockRegs, writtenSoFar uint32) {
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                        // X1 = JITContext ptr (from [SP, #96])
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4))) // W1 = ctx.MemSize
+	cb.Emit32(arm64CMP_W(0, 1))                                 // CMP W0, W1
+	inRangeOff := cb.Len()
+	cb.Emit32(0) // placeholder for B.LO in_range
+	// bail body
+	cb.Emit32(arm64LDR_imm(0, 31, 96/8))                               // X0 = JITContext ptr
+	emitLoadImm32(cb, 1, 1)                                            // W1 = 1
+	cb.Emit32(arm64STR_W_imm(1, 0, uint32(jitCtxOffNeedIOFallback/4))) // NeedIOFallback = 1
+	bailCount := uint32(pcOffset / IE64_INSTR_SIZE)
+	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
+	inRangePC := cb.Len()
+	cb.PatchUint32(inRangeOff, arm64Bcond(arm64CondLO, int32(inRangePC-inRangeOff)))
 }
 
 // emitSTORE handles STORE rd, disp(rs)
@@ -1723,6 +1747,9 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writ
 	// Slow path: addr >= IO_REGION_START
 	slowPathPC := cb.Len()
 	cb.PatchUint32(slowPathOffset, arm64Bcond(arm64CondHS, int32(slowPathPC-slowPathOffset)))
+
+	// PLAN_MAX_RAM slice 10b: see emitLOAD for the rationale.
+	emitHighAddrBailCheckARM64(cb, instrPC, ji.pcOffset, br, writtenSoFar)
 
 	// Check ioPageBitmap[addr >> 8] — X5 holds IOBitmapPtr (loaded in prologue)
 	cb.Emit32(arm64LSR_imm(1, 0, 8))                 // X1 = addr >> 8

@@ -47,8 +47,14 @@ func (cpu *CPU_X86) initX86JIT() error {
 	// We need the adapter to build the bitmap. If we can't get it,
 	// mark everything above a safe threshold as I/O.
 	if cpu.x86JitIOBitmap == nil {
-		// Default conservative bitmap: mark 0xF000+ and 0xA0000+ as I/O
-		bitmapSize := int(x86AddressSpace) >> 8
+		// Default conservative bitmap: mark 0xF000+ and 0xA0000+ as I/O.
+		// PLAN_MAX_RAM slice 10g: bus-driven sizing replaces the retired
+		// 32 MiB x86AddressSpace constant. cpu.memory is the bus-allocated
+		// slice, so its length is the active address space cap.
+		bitmapSize := len(cpu.memory) >> 8
+		if bitmapSize == 0 {
+			bitmapSize = 1
+		}
 		cpu.x86JitIOBitmap = make([]byte, bitmapSize)
 		// Mark translateIO region: 0xF000-0xFFFF
 		for addr := uint32(0xF000); addr < 0x10000; addr += 0x100 {

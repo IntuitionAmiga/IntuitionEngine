@@ -27,12 +27,15 @@ const (
 	EmuTOS_PROFILE_TOP uint32 = 32 * 1024 * 1024
 
 	// AROS_PROFILE_TOP is the explicit top-of-RAM the AROS M68K profile
-	// exposes. Preserves the historical 32 MiB low-memory layout, the direct
-	// VRAM window at 0x1E00000..0x2000000, and the Paula DMA fetch guard.
-	// Any deliberate move requires source-coordinated updates to
-	// aros_loader.go, aros_runtime.go, aros_audio_dma.go, the AROS source
-	// tree, and the AROS profile docs.
-	AROS_PROFILE_TOP uint32 = 32 * 1024 * 1024
+	// exposes. PLAN_MAX_RAM slice 10h raised this from 32 MiB to 2 GiB.
+	// The direct VRAM window at 0x1E00000..0x2000000 (30 MiB) and the
+	// Paula DMA fetch guard are well inside the new ceiling. 2 GiB
+	// (= 0x80000000) still fits in uint32 — the value is the largest
+	// page-aligned quantity that survives the M68K profile's uint32
+	// representation. Any deliberate move requires source-coordinated
+	// updates to aros_loader.go, aros_runtime.go, aros_audio_dma.go,
+	// the AROS source tree, and the AROS profile docs.
+	AROS_PROFILE_TOP uint32 = 2 * 1024 * 1024 * 1024
 
 	// ehbasicMinRequiredRAM is the smallest active visible RAM that can
 	// host the EhBASIC IE64 source layout. STACK_TOP sits at 0x9F000;
@@ -46,6 +49,13 @@ const (
 	// via sysinfo MMIO; this constant keeps the low-memory profile bound
 	// representable in a uint32 without truncating a larger active visible.
 	ehbasicMaxTopOfRAM uint32 = 0xFFFFF000
+
+	// arosMinRequiredRAM is the historical AROS runtime floor — 32 MiB.
+	// AROS_PROFILE_TOP raised to 2 GiB in slice 10h is the maximum, not
+	// the minimum: a 32 MiB test bus still satisfies the AROS profile
+	// gate, and clampM68KProfileToBus pulls TopOfRAM down to the bus
+	// size when smaller than the cap.
+	arosMinRequiredRAM uint32 = 32 * 1024 * 1024
 )
 
 // ProfileBounds is the explicit memory-map contract a source-owned
@@ -88,6 +98,12 @@ func EmuTOSProfileBounds(bus profileBoundsBus) ProfileBounds {
 }
 
 // AROSProfileBounds returns the explicit M68K AROS memory-map contract.
+//
+// PLAN_MAX_RAM slice 10h: TopOfRAM was raised from 32 MiB to 2 GiB so AROS
+// guests can address more RAM. MinRequired stays at the historical 32 MiB
+// runtime minimum so legacy 32 MiB test rigs and embedded boots still pass
+// the gate; clampM68KProfileToBus reduces TopOfRAM to the bus's active
+// visible RAM when the bus is smaller than the profile cap.
 func AROSProfileBounds(bus profileBoundsBus) ProfileBounds {
 	pb := ProfileBounds{
 		Name:        "AROS",
@@ -96,7 +112,7 @@ func AROSProfileBounds(bus profileBoundsBus) ProfileBounds {
 		ROMBase:     arosROMBase,
 		VRAMBase:    arosDirectVRAMBase,
 		VRAMEnd:     arosDirectVRAMBase + arosDirectVRAMSize,
-		MinRequired: AROS_PROFILE_TOP,
+		MinRequired: arosMinRequiredRAM,
 	}
 	return clampM68KProfileToBus(pb, bus)
 }

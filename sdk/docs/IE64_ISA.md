@@ -1136,7 +1136,7 @@ On reset the CPU is in supervisor mode. Transitioning to user mode is done via E
 
 ### 12.2 Control Registers
 
-Fifteen control registers manage the MMU, thread state, timer, stack switching, and trap state. They are accessed via MTCR (write) and MFCR (read).
+Sixteen control registers manage the MMU, thread state, timer, stack switching, trap state, and the live RAM-size discovery slot added by PLAN_MAX_RAM slice 10. They are accessed via MTCR (write) and MFCR (read).
 
 | CR | Name | R/W | Description |
 |----|------|-----|-------------|
@@ -1155,6 +1155,7 @@ Fifteen control registers manage the MMU, thread state, timer, stack switching, 
 | CR12 | USP | RW | Saved User Stack Pointer. Readable/writable in supervisor mode for context switch. Set automatically on user-to-supervisor transition. Supervisor-only. |
 | CR13 | PREV_MODE | RO | Previous privilege mode saved by `trapEntry`: 0 = trap came from user mode, 1 = trap came from supervisor mode. Read-only; set automatically on any trap/interrupt entry. Used by fault handlers to distinguish user faults (kill task) from kernel faults (panic). See 12.14 for the trap-stack semantics. |
 | CR14 | SAVED_SUA | RW | SUA latch snapshot taken on trap entry and consumed on ERET. Readable by kernel handlers that observe the interrupted code path's SUA state; writable so handlers can stage a custom value before ERET. See 12.2.1 and 12.14. Supervisor-only. |
+| CR15 | RAM_SIZE_BYTES | RO | **Read-only, live read** of the active CPU/profile-visible guest RAM in bytes (`bus.ActiveVisibleRAM()`). Every MFCR observes the current value, so a later `ApplyProfileVisibleCeiling` is immediately visible to subsequent reads — no boot-time snapshot is taken. MTCR to CR15 raises `FAULT_ILLEGAL_INSTRUCTION` (cause 11). Supervisor-only. PLAN_MAX_RAM slice 10. |
 
 **PTBR** must point to the start of the page table in physical memory. The page table is 64 KiB (8192 entries x 8 bytes) and must be naturally aligned.
 
@@ -1378,6 +1379,7 @@ This distinction means trap handlers do not need to adjust the return address; E
 | 8 | Timer Interrupt | Timer interrupt (delivered via INTR_VEC when MMU enabled). |
 | 9 | SKEF | Supervisor instruction fetch from a page with `PTE_U==1` while `MMU_CTRL.SKEF` is set. |
 | 10 | SKAC | Supervisor data read or write on a page with `PTE_U==1` while `MMU_CTRL.SKAC` is set and `MMU_CTRL.SUA` is clear. |
+| 11 | Illegal Instruction | Opcode-level invariants the CPU cannot otherwise enforce. Currently raised only by `MTCR Rs, CR_RAM_SIZE_BYTES` (the CR is read-only — see 12.2). |
 
 ### 12.9 Translation Lookaside Buffer (TLB)
 

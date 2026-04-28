@@ -187,7 +187,12 @@ const (
 	CR_USP          = 12 // Saved User Stack Pointer (for context switch)
 	CR_PREV_MODE    = 13 // Previous privilege mode (0=user, 1=supervisor) saved by trapEntry
 	CR_SAVED_SUA    = 14 // Saved SUA latch (stashed on trap entry; mirrors FAULT_PC for save/restore discipline)
-	CR_COUNT        = 15 // Number of control registers
+	// CR_RAM_SIZE_BYTES is read-only and live-read from
+	// cpu.bus.ActiveVisibleRAM(). MTCR raises FAULT_ILLEGAL_INSTRUCTION.
+	// Guests use this to discover the active CPU/profile visible RAM
+	// without going through the SYSINFO MMIO window.
+	CR_RAM_SIZE_BYTES = 15 // PLAN_MAX_RAM slice 10e2: live read of ActiveVisibleRAM
+	CR_COUNT          = 16 // Number of control registers
 )
 
 // Fault cause codes
@@ -203,6 +208,10 @@ const (
 	FAULT_TIMER        = 8  // Timer interrupt (via INTR_VEC)
 	FAULT_SKEF         = 9  // Supervisor instruction fetch from user page (SKEF set, PTE_U=1)
 	FAULT_SKAC         = 10 // Supervisor data access to user page outside SUA region (SKAC set, PTE_U=1, SUA=0)
+	// FAULT_ILLEGAL_INSTRUCTION is raised for opcode-level invariants the
+	// CPU cannot otherwise enforce — currently only MTCR to a read-only
+	// control register (e.g. CR_RAM_SIZE_BYTES).
+	FAULT_ILLEGAL_INSTRUCTION = 11
 )
 
 // CR_MMU_CTRL bit constants.
@@ -1060,12 +1069,26 @@ func (cpu *CPU64) LoadProgram(filename string) error {
 }
 
 // LoadProgramBytes loads raw machine code bytes at PROG_START and resets PC.
+// Touches only the fixed program load window [PROG_START, STACK_START); never
+// the open-ended slice tail. PLAN_MAX_RAM slice 10 invariant: no boot path may
+// touch advertised guest RAM, only the legacy program staging area.
 func (cpu *CPU64) LoadProgramBytes(program []byte) {
-	// Clear program area
-	for i := PROG_START; i < len(cpu.memory) && i < STACK_START; i++ {
+	progEnd := STACK_START
+	if progEnd > len(cpu.memory) {
+		progEnd = len(cpu.memory)
+	}
+	for i := PROG_START; i < progEnd; i++ {
 		cpu.memory[i] = 0
 	}
-	copy(cpu.memory[PROG_START:], program)
+	maxCopy := progEnd - PROG_START
+	if maxCopy < 0 {
+		maxCopy = 0
+	}
+	src := program
+	if len(src) > maxCopy {
+		src = src[:maxCopy]
+	}
+	copy(cpu.memory[PROG_START:progEnd], src)
 	cpu.PC = PROG_START
 }
 
@@ -1143,13 +1166,11 @@ func (cpu *CPU64) Reset() {
 		}
 	}
 
-	// Clear memory in chunks for better cache utilization
-	for i := PROG_START; i < len(cpu.memory); i += CACHE_LINE_SIZE {
-		end := min(i+CACHE_LINE_SIZE, len(cpu.memory))
-		for j := i; j < end; j++ {
-			cpu.memory[j] = 0
-		}
-	}
+	// PLAN_MAX_RAM slice 10 invariant: CPU reset MUST NOT iterate over
+	// guest RAM. With mmap-backed bus.memory at multi-GiB sizes the loop
+	// would touch every page and eagerly commit RSS for the whole bus
+	// window. Memory zeroing belongs to MachineBus.Reset, which routes
+	// through madvise on mmap-allocated slices.
 
 	cpu.running.Store(true)
 }
@@ -2188,6 +2209,10 @@ func (cpu *CPU64) Execute() {
 				continue // trap was fired, PC is now at trap handler
 			}
 			crIdx := rd
+			if crIdx == CR_RAM_SIZE_BYTES {
+				cpu.trapFault(FAULT_ILLEGAL_INSTRUCTION, 0)
+				continue
+			}
 			val := cpu.regs[rs]
 			switch crIdx {
 			case CR_PTBR:
@@ -2298,6 +2323,10 @@ func (cpu *CPU64) Execute() {
 			case CR_SAVED_SUA:
 				if cpu.savedSUA {
 					val = 1
+				}
+			case CR_RAM_SIZE_BYTES:
+				if cpu.bus != nil {
+					val = cpu.bus.ActiveVisibleRAM()
 				}
 			}
 			if rd != 0 {
@@ -3042,6 +3071,9 @@ func (cpu *CPU64) StepOne() int {
 	case OP_MTCR:
 		if !cpu.requireSupervisor() {
 			pcAdvanced = true // trap set PC
+		} else if rd == CR_RAM_SIZE_BYTES {
+			cpu.trapFault(FAULT_ILLEGAL_INSTRUCTION, 0)
+			pcAdvanced = true
 		} else {
 			crIdx := rd
 			val := cpu.regs[rs]
@@ -3152,6 +3184,10 @@ func (cpu *CPU64) StepOne() int {
 			case CR_SAVED_SUA:
 				if cpu.savedSUA {
 					val = 1
+				}
+			case CR_RAM_SIZE_BYTES:
+				if cpu.bus != nil {
+					val = cpu.bus.ActiveVisibleRAM()
 				}
 			}
 			if rd != 0 {

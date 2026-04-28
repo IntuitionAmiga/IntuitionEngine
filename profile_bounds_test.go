@@ -69,7 +69,9 @@ func TestEmuTOSProfileBounds_ROMRangeFitsTopOfRAM(t *testing.T) {
 }
 
 func TestAROSProfileBounds_HasExplicitContract(t *testing.T) {
-	bus := fakeProfileBus{activeVisible: 32 * 1024 * 1024}
+	// PLAN_MAX_RAM slice 10h: AROS profile cap is 2 GiB. Use a fake bus
+	// with at least the profile cap so TopOfRAM survives the clamp.
+	bus := fakeProfileBus{activeVisible: uint64(AROS_PROFILE_TOP)}
 	pb := AROSProfileBounds(bus)
 	if pb.Err != nil {
 		t.Fatalf("unexpected err: %v", pb.Err)

@@ -9,6 +9,7 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 )
 
@@ -33,6 +34,10 @@ type Backing interface {
 	// Reset zeroes all backed memory and frees lazily-allocated pages where
 	// applicable.
 	Reset()
+
+	// Close releases any non-Go resources (mmap regions, file descriptors).
+	// Safe to call on Go-heap-only backings (no-op).
+	Close() error
 }
 
 // ContiguousBacking is a flat []byte backing store. Used for legacy/low-memory
@@ -128,6 +133,8 @@ func (b *ContiguousBacking) Reset() {
 		b.mem[i] = 0
 	}
 }
+
+func (b *ContiguousBacking) Close() error { return nil }
 
 // SparseBacking is a page-keyed sparse backing store. Pages are allocated on
 // first write; reads of unwritten pages return zero. The advertised Size()
@@ -271,14 +278,23 @@ func (b *SparseBacking) Reset() {
 	b.pages = make(map[uint64][]byte)
 }
 
+func (b *SparseBacking) Close() error { return nil }
+
 // AllocateBacking calls allocator with the requested page-aligned size. On
 // allocation failure the size is halved (rounded down to MMU_PAGE_SIZE) and
 // retried until either an allocator call succeeds or the candidate size
 // drops below MIN_GUEST_RAM. Returns the backing, the size that was
 // successfully allocated, and any error.
 //
-// The retry policy is deterministic so any final reported total/active value
-// matches what the bus and guest discovery paths see.
+// ErrHighRangeBackingUnsupported is treated as non-retryable: the allocator
+// is declaring the operation unsupported on this platform, not a transient
+// allocation failure, so halving down to a Go-heap allocation would change
+// behaviour (commit gigabytes of heap that the caller never asked for).
+// The error is returned verbatim so callers can detect it via errors.Is and
+// soft-fall back to bus.memory.
+//
+// The retry policy is otherwise deterministic so any final reported
+// total/active value matches what the bus and guest discovery paths see.
 func AllocateBacking(requested uint64, allocator func(size uint64) (Backing, error)) (Backing, uint64, error) {
 	if requested == 0 {
 		return nil, 0, fmt.Errorf("%w: requested=0", ErrInvalidSizeArg)
@@ -298,6 +314,9 @@ func AllocateBacking(requested uint64, allocator func(size uint64) (Backing, err
 		b, err := allocator(size)
 		if err == nil {
 			return b, size, nil
+		}
+		if errors.Is(err, ErrHighRangeBackingUnsupported) {
+			return nil, 0, err
 		}
 		lastErr = err
 		next := (size / 2) &^ pageMask

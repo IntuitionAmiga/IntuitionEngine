@@ -1644,6 +1644,13 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs,
 	slowPathPC := cb.Len()
 	patchRel32(cb, slowPathOff, slowPathPC)
 
+	// PLAN_MAX_RAM slice 10b: bail to interpreter if addr >= MemSize. The
+	// existing slow path below indexes ioPageBitmap[addr>>8] without a
+	// bounds check; for addr >= len(bus.memory) that index is OOB on the
+	// bitmap. Compare addr against ctx.MemSize and bail cleanly when the
+	// access escapes the backed window.
+	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar)
+
 	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX)
 	amd64SHR_imm(cb, amd64RCX, 8)
 	emitREX_SIB(cb, false, amd64RCX, amd64RCX, amd64RegIOBitmap)
@@ -1665,6 +1672,21 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs,
 	patchRel32(cb, doneOff, donePC)
 }
 
+// emitHighAddrBailCheckAMD64 emits a `if EAX >= ctx.MemSize → bail` check
+// at the top of an IE64 LOAD/STORE slow path. EAX holds the computed
+// address; RCX is used as scratch to load the ctx pointer and MemSize.
+// The bail follow-up reuses emitIOBail so NeedIOFallback is set and the
+// epilogue restores guest state cleanly.
+func emitHighAddrBailCheckAMD64(cb *CodeBuffer, instrPC uint32, pcOffset uint32, br *blockRegs, writtenSoFar uint32) {
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))     // RCX = ctx ptr
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize)) // ECX = ctx.MemSize
+	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, amd64RCX)                    // CMP EAX, ECX
+	inRangeOff := amd64Jcc_rel32(cb, 0x2)                               // JB in_range (B = below)
+	emitIOBail(cb, instrPC, pcOffset, br, writtenSoFar)
+	inRangePC := cb.Len()
+	patchRel32(cb, inRangeOff, inRangePC)
+}
+
 func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
 	emitMemAddr(cb, ji)
 
@@ -1683,6 +1705,9 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs
 
 	slowPathPC := cb.Len()
 	patchRel32(cb, slowPathOff, slowPathPC)
+
+	// PLAN_MAX_RAM slice 10b: see emitLOAD_AMD64 for the rationale.
+	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar)
 
 	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX)
 	amd64SHR_imm(cb, amd64RCX, 8)

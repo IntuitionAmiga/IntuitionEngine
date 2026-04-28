@@ -1270,8 +1270,9 @@ func x86InstrWritesFlags(ji *X86JITInstr) bool {
 // buildX86IOBitmap creates the JIT I/O page bitmap (256-byte page granularity,
 // indexed by addr >> 8). Merges MachineBus.ioPageBitmap with adapter-specific regions.
 func buildX86IOBitmap(adapter *X86BusAdapter, bus *MachineBus) []byte {
-	// Bitmap size: total address space / 256 bytes per page
-	bitmapSize := int(x86AddressSpace) >> 8
+	// Bitmap size: total address space / 256 bytes per page. PLAN_MAX_RAM
+	// slice 10g: bus-driven, replaces the retired 32 MiB constant.
+	bitmapSize := len(bus.GetMemory()) >> 8
 	if bitmapSize == 0 {
 		bitmapSize = 1
 	}

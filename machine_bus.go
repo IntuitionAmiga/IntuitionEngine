@@ -147,6 +147,12 @@ type MachineBus struct {
 	// AllocateGuestRAM after a successful allocation; tests may set it
 	// directly via SetBacking. Routing rules live in machine_bus_phys.go.
 	backing Backing
+
+	// memReset is the platform/allocator-specific reset hook for
+	// bus.memory. nil falls back to a plain byte-loop zero. mmap-allocated
+	// buses install a madvise(MADV_DONTNEED)-based reset so a guest reset
+	// does not eagerly commit every page of a multi-GiB advertised range.
+	memReset func()
 }
 
 // AddrRange defines an inclusive address range.
@@ -643,22 +649,79 @@ func (bus *MachineBus) Read8WithFault(addr uint32) (uint8, bool) {
 	return result, true
 }
 
+// busMemMaxBytes is the upper bound for len(bus.memory). Capped just
+// below the M68K sign-extended low-16-bit alias window which begins at
+// 0xFFFF0000: every Read/Write path unconditionally aliases addresses
+// >= 0xFFFF0000 to low memory, so any guest write into the [0xFFFF0000,
+// 0xFFFFF000) range would silently clobber low RAM instead of the high
+// page the guest was told existed. The cap is page-aligned and keeps
+// every uint32(len(bus.memory)) cast valid in fast-path bounds checks.
+const busMemMaxBytes uint64 = 0xFFFF0000
+
+// NewMachineBus returns a MachineBus with the legacy 32 MiB bus.memory.
+// Used by tests and by callers that have not been migrated to the
+// autodetect sizing pipeline (PLAN_MAX_RAM.md slice 10).
 func NewMachineBus() *MachineBus {
-	/*
-		NewMachineBus initialises and returns a new MachineBus instance.
-
-		The function allocates a 32MB block of main memory and initialises
-		the I/O mapping table.
-	*/
-
-	memSize := uint32(DEFAULT_MEMORY_SIZE)
-	return &MachineBus{
-		memory:       make([]byte, memSize),
-		mapping:      make(map[uint32][]IORegion),
-		ioPageBitmap: make([]bool, memSize/PAGE_SIZE),
-		mapping64:    make(map[uint32][]IORegion64),
+	bus, err := NewMachineBusSized(uint64(DEFAULT_MEMORY_SIZE))
+	if err != nil {
+		// 32 MiB is page-aligned, non-zero, and below the 4 GiB-page cap;
+		// validation always passes. Panic surfaces a programmer mistake
+		// (e.g. someone changed DEFAULT_MEMORY_SIZE to an invalid value).
+		panic(fmt.Sprintf("NewMachineBus: legacy default failed validation: %v", err))
 	}
+	return bus
 }
+
+// NewMachineBusSized allocates a MachineBus with bus.memory of memSize
+// bytes and ioPageBitmap proportional to it. Returns ErrInvalidSizeArg-
+// wrapped errors for invalid input (zero, unaligned, above
+// busMemMaxBytes). Underlying make([]byte, memSize) failure is NOT
+// caught — Go runtime OOM is fatal per PLAN_MAX_RAM slice 10 A1b.
+//
+// The recovery layer for "host doesn't have enough memory" lives in
+// ComputeMemorySizing's reserve policy and SizingOverrides fallback,
+// not here.
+func NewMachineBusSized(memSize uint64) (*MachineBus, error) {
+	return newMachineBusSizedWithAllocator(memSize, defaultBusMemAllocator)
+}
+
+// newMachineBusSizedWithAllocator is a strictly-internal/test-only helper
+// that injects a memory allocator. Production code MUST go through
+// NewMachineBusSized; a stub allocator that returns a smaller-than-
+// requested slice produces a MachineBus whose len(bus.memory) lies about
+// its sizing contract. The injection point exists solely so validation
+// logic can be exercised without committing real heap.
+func newMachineBusSizedWithAllocator(memSize uint64, allocator func(size uint64) []byte) (*MachineBus, error) {
+	if memSize == 0 {
+		return nil, fmt.Errorf("%w: memSize=0", ErrInvalidSizeArg)
+	}
+	if memSize%uint64(MMU_PAGE_SIZE) != 0 {
+		return nil, fmt.Errorf("%w: memSize %d not aligned to MMU_PAGE_SIZE=%d",
+			ErrInvalidSizeArg, memSize, MMU_PAGE_SIZE)
+	}
+	if memSize > busMemMaxBytes {
+		return nil, fmt.Errorf("%w: memSize %d exceeds bus.memory cap (below sign-extension alias zone = %d)",
+			ErrInvalidSizeArg, memSize, busMemMaxBytes)
+	}
+	mem, reset := allocateBusMemory(memSize, allocator)
+	if mem == nil {
+		return nil, fmt.Errorf("%w: bus.memory allocator returned nil for memSize=%d (mmap rejected, no heap fallback)",
+			ErrInvalidSizeArg, memSize)
+	}
+	return &MachineBus{
+		memory:       mem,
+		mapping:      make(map[uint32][]IORegion),
+		ioPageBitmap: make([]bool, len(mem)/int(PAGE_SIZE)),
+		mapping64:    make(map[uint32][]IORegion64),
+		memReset:     reset,
+	}, nil
+}
+
+// defaultBusMemAllocator is provided per-platform: Linux/darwin use an
+// anonymous mmap so a multi-hundred-MiB bus.memory does not eagerly
+// commit Go heap (only touched pages back real RAM). Other platforms
+// fall through to make([]byte) and rely on the boot-time clamp in
+// main.go to keep len(bus.memory) within sensible bounds.
 
 // SetStrictMMIOWindows configures inclusive address windows where unmapped
 // accesses must fault in *WithFault operations.
@@ -702,6 +765,26 @@ func (bus *MachineBus) SetSizing(ms MemorySizing) {
 		ms.ActiveVisibleRAM = ms.TotalGuestRAM
 	}
 	bus.sizing = ms
+}
+
+// ApplyProfileVisibleCeiling clamps and re-publishes the active visible RAM
+// to the per-mode visible ceiling. Called from main.go after
+// bootGuestRAMFromComputed so source-owned profiles (EmuTOS at 32 MiB,
+// AROS at 2 GiB), banked CPUs (6502/Z80 at 32 MiB), and capped 32-bit
+// runtimes (IE32/x86/bare-M68K at 4 GiB-page) advertise their profile
+// ceiling instead of the IE64-family backed total.
+//
+// The ceiling is also clamped down to the published TotalGuestRAM so a
+// runaway ceiling cannot advertise unbacked RAM as visible. Visible-
+// ceiling is recorded too so VisibleCeiling() reflects the active value.
+func (bus *MachineBus) ApplyProfileVisibleCeiling(visibleCeiling uint64) {
+	ms := bus.sizing
+	if ms.TotalGuestRAM != 0 && visibleCeiling > ms.TotalGuestRAM {
+		visibleCeiling = ms.TotalGuestRAM
+	}
+	ms.ActiveVisibleRAM = visibleCeiling
+	ms.VisibleCeiling = visibleCeiling
+	bus.SetSizing(ms)
 }
 
 // Sizing returns the published guest RAM sizing decision.
@@ -1913,8 +1996,12 @@ func (bus *MachineBus) Reset() {
 		block to set every byte to zero.
 	*/
 
-	for i := range bus.memory {
-		bus.memory[i] = 0
+	if bus.memReset != nil {
+		bus.memReset()
+	} else {
+		for i := range bus.memory {
+			bus.memory[i] = 0
+		}
 	}
 	if bus.backing != nil {
 		bus.backing.Reset()

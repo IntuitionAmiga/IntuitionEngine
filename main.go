@@ -780,34 +780,72 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Create system bus
-	sysBus := NewMachineBus()
+	// PLAN_MAX_RAM.md slice 10f: mode-aware boot. Resolve the runtime
+	// mode from the parsed flags BEFORE allocating the bus so capped
+	// modes (EmuTOS/AROS/banked) only commit a small bus.memory rather
+	// than a 4 GiB-page mapping that the host would otherwise pressure.
+	bootMode := determineRuntimeMode(bootModeFlags{
+		IE32: modeIE32, IE64: modeIE64, M68K: modeM68K,
+		EmuTOS: modeEmuTOS, AROS: modeAROS, Basic: modeBasic,
+		Z80: modeZ80, X86: modeX86, M6502: modeM6502,
+	})
 
-	// PLAN_MAX_RAM.md slice 1+2: detect host RAM and publish guest RAM
-	// sizing on the bus so SYSINFO MMIO (and the GetSysInfo syscall) can
-	// report meaningful values. Active visible RAM is clamped to the
-	// legacy bus.memory[] window (DEFAULT_MEMORY_SIZE) since the IE32
-	// surface still uses the 32 MB ABI; total guest RAM reflects the
-	// host autodetection result so AVAIL "Phys" prints actual host RAM.
-	// On detection failure (tests, non-Linux, missing /proc/meminfo),
-	// fall back to a sizing where total = active = DEFAULT_MEMORY_SIZE
-	// so SYSINFO is at least non-zero.
-	{
-		// First try autodetection. If platform classification or
-		// /proc/meminfo parsing fails, fall back to publishing the
-		// legacy 32 MB sizing so SYSINFO is at least non-zero.
-		ms, err := ComputeMemorySizing(uint64(DEFAULT_MEMORY_SIZE), SizingOverrides{})
+	ms, err := ComputeMemorySizing(^uint64(0), SizingOverrides{})
+	if err != nil {
+		// Fallback: synthesise a 256 MiB total so SYSINFO is at least
+		// non-zero on hosts where /proc/meminfo is unavailable (CI,
+		// non-Linux, embedded test rigs). 1 GiB - 768 MiB reserve.
+		ms, err = ComputeMemorySizing(^uint64(0), SizingOverrides{
+			SkipPlatformCheck:   true,
+			DetectedUsableRAM:   1 << 30,
+			HostReserveBytes:    768 * 1024 * 1024,
+			HostReserveExplicit: true,
+		})
 		if err != nil {
-			ms = MemorySizing{
-				DetectedUsableRAM: uint64(DEFAULT_MEMORY_SIZE),
-				TotalGuestRAM:     uint64(DEFAULT_MEMORY_SIZE),
-				ActiveVisibleRAM:  uint64(DEFAULT_MEMORY_SIZE),
-				VisibleCeiling:    uint64(DEFAULT_MEMORY_SIZE),
-			}
+			fmt.Printf("ComputeMemorySizing fatal: %v\n", err)
+			os.Exit(1)
 		}
-		sysBus.SetSizing(ms)
-		RegisterSysInfoMMIOFromBus(sysBus)
 	}
+
+	busMemCap, backingMaxSize := resolveModeCaps(bootMode, ms.TotalGuestRAM)
+
+	memSize := ms.TotalGuestRAM
+	if busMemCap < memSize {
+		memSize = busMemCap
+	}
+	if memSize > busMemMaxBytes {
+		memSize = busMemMaxBytes
+	}
+	// Platform-specific clamp: mmap-capable hosts can lazy-page the full
+	// busMemMaxBytes window, so busMemBootClamp == busMemMaxBytes there.
+	// Non-mmap hosts cap memSize at a Go-heap-sized value; high-range RAM
+	// is unreachable on those platforms via the legacy Bus32 path anyway.
+	if memSize > busMemBootClamp {
+		memSize = busMemBootClamp
+	}
+
+	sysBus, err := NewMachineBusSized(memSize)
+	if err != nil {
+		fmt.Printf("NewMachineBusSized invalid input: %v\n", err)
+		os.Exit(1)
+	}
+
+	if _, err := bootGuestRAMFromComputed(sysBus, ms, backingMaxSize, NewMmapBacking); err != nil {
+		fmt.Printf("bootGuestRAMFromComputed fatal: %v\n", err)
+		os.Exit(1)
+	}
+
+	// activeVisibleCeiling is resolved AFTER bootGuestRAMFromComputed
+	// because IE64 family modes want the full backed total, including
+	// any high-range Backing that survived allocation.
+	activeVisibleCeiling := resolveActiveVisibleCeiling(bootMode, sysBus.TotalGuestRAM())
+	sysBus.ApplyProfileVisibleCeiling(activeVisibleCeiling)
+
+	// SYSINFO snapshots sizing at registration time; register AFTER
+	// ApplyProfileVisibleCeiling so the snapshot picks up the final
+	// active value, not the zero placeholder bootGuestRAMFromComputed
+	// publishes during backing allocation.
+	RegisterSysInfoMMIOFromBus(sysBus)
 	psgPlayer.AttachBus(sysBus)
 	sidPlayer.AttachBus(sysBus)
 

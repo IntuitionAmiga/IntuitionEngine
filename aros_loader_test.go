@@ -174,11 +174,16 @@ func TestAROSLoader_StackBoundsDisabled(t *testing.T) {
 	}
 
 	// AROS moves SP throughout boot — stack bounds should be wide open.
+	// PLAN_MAX_RAM slice 10h: AROS_PROFILE_TOP raised to 2 GiB; on a 32
+	// MiB legacy test bus the profile clamp pulls the cap down to the
+	// bus size, so the loader installs the clamped value.
 	if cpu.stackLowerBound != 0 {
 		t.Errorf("stackLowerBound: got 0x%X, want 0", cpu.stackLowerBound)
 	}
-	if cpu.stackUpperBound != AROS_PROFILE_TOP {
-		t.Errorf("stackUpperBound: got 0x%X, want 0x%X", cpu.stackUpperBound, AROS_PROFILE_TOP)
+	want := uint32(len(bus.GetMemory()))
+	if cpu.stackUpperBound != want {
+		t.Errorf("stackUpperBound: got 0x%X, want 0x%X (clamped to bus.memory)",
+			cpu.stackUpperBound, want)
 	}
 }
 
@@ -315,12 +320,16 @@ func TestAROSLoader_LoadROM_InstallsProfileTopOfRAM(t *testing.T) {
 	if err := loader.LoadROM(rom); err != nil {
 		t.Fatalf("LoadROM failed: %v", err)
 	}
-	if got := cpu.ProfileTopOfRAM(); got != AROS_PROFILE_TOP {
-		t.Fatalf("cpu profile top = 0x%X, want 0x%X (AROS_PROFILE_TOP)",
-			got, AROS_PROFILE_TOP)
+	// PLAN_MAX_RAM slice 10h: AROS_PROFILE_TOP raised to 2 GiB; on a
+	// legacy 32 MiB test bus the profile clamp pulls TopOfRAM down to
+	// len(bus.memory). Assert the loader installs the clamped value.
+	wantTop := uint32(len(bus.GetMemory()))
+	if got := cpu.ProfileTopOfRAM(); got != wantTop {
+		t.Fatalf("cpu profile top = 0x%X, want 0x%X (clamped to bus.memory)",
+			got, wantTop)
 	}
-	if got := cpu.stackUpperBound; got != AROS_PROFILE_TOP {
-		t.Fatalf("stackUpperBound = 0x%X, want 0x%X", got, AROS_PROFILE_TOP)
+	if got := cpu.stackUpperBound; got != wantTop {
+		t.Fatalf("stackUpperBound = 0x%X, want 0x%X", got, wantTop)
 	}
 	if loader.profile.VRAMBase != arosDirectVRAMBase {
 		t.Fatalf("loader profile VRAMBase = 0x%X, want 0x%X (direct VRAM contract)",

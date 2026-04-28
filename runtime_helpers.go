@@ -93,7 +93,7 @@ func buildReloadClosure(mode string, runner EmulatorCPU, bytes []byte, bus *Mach
 		return func() {
 			cpu := runner.(*CPU)
 			cpu.Reset()
-			copy(cpu.memory[PROG_START:], bytes)
+			cpu.LoadProgramBytes(bytes)
 		}
 	case "ie64":
 		return func() {
