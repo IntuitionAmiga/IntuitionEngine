@@ -922,14 +922,27 @@ func (cpu *M68KCPU) LoadProgram(filename string) error {
 	return nil
 }
 
-// LoadProgramBytes loads a program from a byte slice into memory at M68K_ENTRY_POINT
+// LoadProgramBytes loads a program from a byte slice into memory at
+// M68K_ENTRY_POINT, clamped to M68K_STACK_START. PLAN_MAX_RAM
+// reload-hardening slice: F10/reload of an oversize cached program
+// must not spill past the program window into the stack region or
+// MMIO that lives above it.
 func (cpu *M68KCPU) LoadProgramBytes(program []byte) {
 	entryPoint := uint32(M68K_ENTRY_POINT)
-	for i := 0; i < len(program) && i+(M68K_WORD_SIZE-1) < len(program); i += M68K_WORD_SIZE {
+	progEnd := uint32(M68K_STACK_START)
+	maxLen := 0
+	if progEnd > entryPoint {
+		maxLen = int(progEnd - entryPoint)
+	}
+	src := program
+	if len(src) > maxLen {
+		src = src[:maxLen]
+	}
+	for i := 0; i+(M68K_WORD_SIZE-1) < len(src); i += M68K_WORD_SIZE {
 		addr := entryPoint + uint32(i)
 
 		// Programme files are big-endian per 68K conventions
-		beValue := binary.BigEndian.Uint16(program[i : i+M68K_WORD_SIZE])
+		beValue := binary.BigEndian.Uint16(src[i : i+M68K_WORD_SIZE])
 
 		// Write16 handles endian conversion to host format
 		cpu.Write16(addr, beValue)

@@ -653,33 +653,51 @@ func NewCPUX86Runner(bus *MachineBus, config *CPUX86Config) *CPUX86Runner {
 	}
 }
 
-// LoadProgramData loads a binary program from bytes into memory
+// LoadProgramData loads a binary program from bytes into memory.
+// Returns an error if data + loadAddr exceeds ProfileMemoryCap; this
+// is the strict path used by initial program load (file-backed) so
+// malformed oversize input is reported.
 func (r *CPUX86Runner) LoadProgramData(data []byte) error {
-	// PLAN_MAX_RAM slice 10g: bus-driven address space cap; the legacy
-	// 32 MiB constant has been retired. The sized bus.memory[] window is
-	// the active cap.
-	addressSpace := uint32(len(r.bus.bus.GetMemory()))
-	if uint32(len(data))+r.loadAddr > addressSpace {
+	cap := uint32(r.bus.bus.ProfileMemoryCap())
+	if uint32(len(data))+r.loadAddr > cap {
 		return fmt.Errorf("program too large: %d bytes", len(data))
 	}
+	r.LoadProgramBytes(data)
+	return nil
+}
 
-	// Load program into memory
-	for i, b := range data {
+// LoadProgramBytes is the reload-hardening entry point: clamps writes
+// to [loadAddr, ProfileMemoryCap) so oversize cached reload bytes
+// cannot spill past the published visible ceiling and never silently
+// no-ops the reload. Mirrors the Z80/6502 LoadProgramBytes contract:
+// strict file-load via LoadProgramData errors on oversize; reload
+// routes here and clamps to the safe in-bounds portion.
+func (r *CPUX86Runner) LoadProgramBytes(data []byte) {
+	cap := uint32(r.bus.bus.ProfileMemoryCap())
+	maxLen := uint32(0)
+	if cap > r.loadAddr {
+		maxLen = cap - r.loadAddr
+	}
+	src := data
+	if uint32(len(src)) > maxLen {
+		src = src[:maxLen]
+	}
+	for i, b := range src {
 		r.bus.bus.Write8(r.loadAddr+uint32(i), b)
 	}
 
-	// Set entry point
 	r.cpu.EIP = r.entry
 	r.cpu.x86DemoAccel = x86DemoAccelNone
 	r.cpu.x86DemoAccelSteps.Store(0)
 	if r.jit {
+		// Demo-accel SHA matches against the original (pre-clamp) data
+		// so a truncated reload of the canonical rotozoomer still
+		// trips the accelerator.
 		sum := sha256.Sum256(data)
 		if fmt.Sprintf("%x", sum) == x86RotozoomerSHA256 {
 			r.cpu.x86DemoAccel = x86DemoAccelRotozoomer
 		}
 	}
-
-	return nil
 }
 
 // LoadProgram loads a binary program from a file (implements EmulatorCPU interface)

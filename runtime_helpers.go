@@ -108,45 +108,22 @@ func buildReloadClosure(mode string, runner EmulatorCPU, bytes []byte, bus *Mach
 		}
 	case "z80":
 		return func() {
-			r := runner.(*CPUZ80Runner)
-			r.cpu.Reset()
-			for i, b := range bytes {
-				bus.Write8(uint32(r.loadAddr)+uint32(i), b)
-			}
-			entry := r.entry
-			if entry == 0 {
-				entry = r.loadAddr
-			}
-			r.cpu.PC = entry
+			runner.(*CPUZ80Runner).LoadProgramBytes(bytes)
 		}
 	case "6502":
 		return func() {
-			r := runner.(*CPU6502Runner)
-			for i, b := range bytes {
-				bus.Write8(uint32(r.loadAddr)+uint32(i), b)
-			}
-			entry := r.entry
-			if entry == 0 {
-				entry = r.loadAddr
-			}
-			bus.Write8(RESET_VECTOR, uint8(entry&0x00FF))
-			bus.Write8(RESET_VECTOR+1, uint8(entry>>8))
-			bus.Write8(NMI_VECTOR, uint8(entry&0x00FF))
-			bus.Write8(NMI_VECTOR+1, uint8(entry>>8))
-			bus.Write8(IRQ_VECTOR, uint8(entry&0x00FF))
-			bus.Write8(IRQ_VECTOR+1, uint8(entry>>8))
-			r.cpu.Reset()
-			r.cpu.SetRDYLine(true)
+			runner.(*CPU6502Runner).LoadProgramBytes(bytes)
 		}
 	case "x86":
 		return func() {
 			r := runner.(*CPUX86Runner)
 			r.cpu.Reset()
-			r.cpu.EIP = r.entry
-			// Copy program into bus memory via the adapter
-			for i, b := range bytes {
-				r.bus.Write(uint32(i), b)
-			}
+			// Reload-hardening slice: route through LoadProgramBytes
+			// (clamps to ProfileMemoryCap, never errors). The legacy
+			// Write(i, b) loop ignored both loadAddr and the cap;
+			// LoadProgramData (strict-error variant) is reserved for
+			// the file-backed initial-load path.
+			r.LoadProgramBytes(bytes)
 		}
 	default:
 		return func() {}

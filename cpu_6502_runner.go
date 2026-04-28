@@ -50,22 +50,38 @@ func (r *CPU6502Runner) LoadProgram(filename string) error {
 
 	r.bus.Reset()
 
-	entry := r.entry
-	if entry == 0 {
-		entry = r.loadAddr
-	}
-
 	endAddr := uint32(r.loadAddr) + uint32(len(program))
 	limit := uint32(r.bus.BankedVisibleCeiling())
 	if endAddr > limit {
 		return fmt.Errorf("6502 program too large: end=0x%X, banked-ceiling=0x%X", endAddr, limit)
 	}
 
-	for i, value := range program {
+	r.LoadProgramBytes(program)
+	return nil
+}
+
+// LoadProgramBytes loads program bytes at loadAddr clamped to
+// BankedVisibleCeiling, writes the reset/NMI/IRQ vectors to entry, and
+// resets the CPU. PLAN_MAX_RAM reload-hardening slice: oversize cached
+// reload must not spill past the banked ceiling into MMIO or vectors.
+func (r *CPU6502Runner) LoadProgramBytes(program []byte) {
+	limit := uint32(r.bus.BankedVisibleCeiling())
+	maxLen := uint32(0)
+	if limit > uint32(r.loadAddr) {
+		maxLen = limit - uint32(r.loadAddr)
+	}
+	src := program
+	if uint32(len(src)) > maxLen {
+		src = src[:maxLen]
+	}
+	for i, value := range src {
 		r.bus.Write8(uint32(r.loadAddr)+uint32(i), value)
 	}
 
-	// Reset/NMI/IRQ vectors point at entry by default.
+	entry := r.entry
+	if entry == 0 {
+		entry = r.loadAddr
+	}
 	r.bus.Write8(RESET_VECTOR, uint8(entry&0x00FF))
 	r.bus.Write8(RESET_VECTOR+1, uint8(entry>>8))
 	r.bus.Write8(NMI_VECTOR, uint8(entry&0x00FF))
@@ -75,7 +91,6 @@ func (r *CPU6502Runner) LoadProgram(filename string) error {
 
 	r.cpu.Reset()
 	r.cpu.SetRDYLine(true)
-	return nil
 }
 
 func (r *CPU6502Runner) Reset() {

@@ -667,28 +667,40 @@ func (r *CPUZ80Runner) LoadProgram(filename string) error {
 
 	r.bus.Reset()
 
-	entry := r.entry
-	if entry == 0 {
-		entry = r.loadAddr
-	}
-
 	endAddr := uint32(r.loadAddr) + uint32(len(program))
-
-	// Allow loading larger binaries with embedded data for DMA devices (blitter, audio).
-	// The Z80 CPU can only address 64KB, but embedded data beyond that is accessed
-	// by hardware peripherals through the full 16MB bus.
 	limit := uint32(r.bus.BankedVisibleCeiling())
 	if endAddr > limit {
 		return fmt.Errorf("z80 program too large: end=0x%X, banked-ceiling=0x%X", endAddr, limit)
 	}
 
-	for i, value := range program {
+	r.LoadProgramBytes(program)
+	return nil
+}
+
+// LoadProgramBytes loads program bytes into the bus starting at the
+// configured loadAddr, clamped to BankedVisibleCeiling. PLAN_MAX_RAM
+// reload-hardening slice: F10/reload of an oversize cached program must
+// not spill past the banked ceiling into MMIO or RAM beyond the
+// CPU-visible window.
+func (r *CPUZ80Runner) LoadProgramBytes(program []byte) {
+	limit := uint32(r.bus.BankedVisibleCeiling())
+	maxLen := uint32(0)
+	if limit > uint32(r.loadAddr) {
+		maxLen = limit - uint32(r.loadAddr)
+	}
+	src := program
+	if uint32(len(src)) > maxLen {
+		src = src[:maxLen]
+	}
+	for i, value := range src {
 		r.bus.Write8(uint32(r.loadAddr)+uint32(i), value)
 	}
-
+	entry := r.entry
+	if entry == 0 {
+		entry = r.loadAddr
+	}
 	r.cpu.Reset()
 	r.cpu.PC = entry
-	return nil
 }
 
 func (r *CPUZ80Runner) Reset() {
