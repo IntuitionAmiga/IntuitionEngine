@@ -87,6 +87,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		return
 	}
 	defer cpu.freeM68KJIT()
+	defer m68kTurboReport()
 
 	enableM68KPollWiring(cpu)
 
@@ -171,6 +172,11 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 
 		if matched, retired := cpu.tryFastM68KMMIOPollLoop(); matched {
 			instructionCount += uint64(retired)
+			continue
+		}
+
+		if retired, matched := cpu.tryM68KTurboTrace(); matched {
+			instructionCount += retired
 			continue
 		}
 
