@@ -1,0 +1,106 @@
+# Phase 0 baseline — forensic record
+#
+# Closure-plan G.1 deliverable. This file is the canonical pre-summit
+# reference for Metric 2's per-backend "no regression vs Phase 0" gate.
+# It is committed (gitignore relaxed) so the audit trail survives
+# rebases. The companion live-measurement file is metric2.txt; this
+# phase0.txt is read by humans and by the per-record `phase0=` field
+# in metric2.txt — not parsed by any test.
+#
+# ============================================================================
+# Pre-summit SHA
+# ============================================================================
+#
+#   canonical: 11b8a53  bus32: pin high-backing contract for IE32/x86/bare-M68K
+#   selection: first parent of c6f324c (the JIT-summit consolidation
+#              commit), per the closure-plan G.1 procedure step 1.
+#   verified: `git log --oneline --first-parent c6f324c~1` resolves to
+#             11b8a53 on the JITparity branch as of 2026-05-01.
+#
+# ============================================================================
+# Instrumentation audit at pre-summit
+# ============================================================================
+#
+# Plan G.1 step 4 required verifying whether pre-summit jit_*_exec.go
+# carry the JIT-bound timing hooks (perfAcct.AddJit / AddInterp) used
+# by Metric 2's condition 3 ("≥10% improvement on JIT-bound time vs
+# Phase 0"). Audit on 2026-05-01:
+#
+#   pre-summit (11b8a53):
+#     git show 11b8a53:cpu_x86.go    | grep perfAcct  →  0 matches
+#     git show 11b8a53:jit_*_exec.go | grep perfAcct  →  0 matches
+#     Only perf-reporting MIPS print loop present (time.Now usage is
+#     for the once-per-second instructions/sec print, not JIT-bound
+#     accounting).
+#
+#   post-summit (HEAD):
+#     perfAcct.AddJit / AddInterp / AddInstrs wired across all five
+#     CPU exec loops; condition-3 measurable.
+#
+# Plan-documented consequence: every Metric 2 record waives condition
+# 3 with reason `pre-summit-no-instrumentation` (closure-plan G.1
+# step 4 fallback, "Backporting hooks into pre-summit is explicitly
+# out of scope"). Conditions 1 (no regression vs Phase 0 wall-clock)
+# and 2 (reaches real-time) remain measurable and binding.
+#
+# ============================================================================
+# Per-workload Phase-0 availability registry
+# ============================================================================
+#
+# Plan G.1 step 3 required that each Metric 2 workload run from a
+# binary present at the pre-summit SHA, else it gates under a per-
+# backend waiver ("where a backend has no canonical real workload
+# in-tree, Phase 1 selects one").
+#
+#   x86       : rotozoomer_gem.prg PRESENT at 11b8a53
+#               (sdk/examples/prebuilt/rotozoomer_gem.prg). Note: the
+#               pre-summit binary executes on the M68K profile under
+#               EmuTOS; the post-summit x86-native rotozoomer JIT
+#               path landed in c6f324c. Cross-profile comparison is
+#               apples-to-oranges — the x86 record below waives
+#               Phase-0 wall-clock with reason
+#               `no-pre-summit-x86-native-workload`.
+#
+#   m68k      : aros-ie.rom + rotozoomer_gem.prg PRESENT at 11b8a53.
+#               Canonical workload candidate: AROS boot to first idle
+#               frame (per plan §1). Real wall-clock measurable on
+#               both SHAs.
+#
+#   z80       : NO canonical Spectrum demo binary at 11b8a53. The
+#               sdk/ tree at pre-summit has zero .tap / .sna / Z80
+#               native binaries. Z80 record waives condition 1 with
+#               reason `no-pre-summit-z80-workload-binary`.
+#
+#   6502      : NO canonical diag binary at 11b8a53. The 6502 bench
+#               infrastructure (build_6502_benchmarks.sh and friends)
+#               post-dates pre-summit. 6502 record waives condition 1
+#               with reason `no-pre-summit-6502-workload-binary`.
+#
+#   ie64      : ie_product_demo.ies PRESENT at 11b8a53. Real wall-clock
+#               measurable on both SHAs but only via the IEScript
+#               driver — no ie64-native JIT path at pre-summit (IE64
+#               JIT widening landed mid-summit per the cb5a16a series).
+#               IE64 record measures wall-clock end-to-end across the
+#               script driver, which captures the user-visible cost
+#               and is gate-meaningful even without per-backend native
+#               JIT bound timing.
+#
+# ============================================================================
+# Reconstruction status (2026-05-01)
+# ============================================================================
+#
+# The Phase-0 reconstruction worktree (`git worktree add /tmp/ie-phase0
+# 11b8a53`) and the 3×30s wall-clock capture per workload remain user-
+# driven. The closure-plan addendum records this as the documented
+# manual step — the bench harness cannot run autonomously inside a
+# write-bound CI agent without a clean mains-power machine and a
+# headless Vulkan/Ebiten stack. Live measurements drop into
+# metric2.txt (gitignored relax: now committed) under the per-record
+# `phase0=` field, with `io_bound_waiver=true` +
+# `waiver_reason=pre-summit-no-instrumentation` on every record per
+# the audit above.
+#
+# Until those measurements land, TestBenchUniformity_Metric2 skips
+# (gate test contract: `metric2.txt absent → skip`). On a clean clone
+# the gate cannot perf-fail, which matches the reviewer-proof contract
+# documented in README.md.

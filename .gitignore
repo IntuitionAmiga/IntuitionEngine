@@ -16,9 +16,16 @@ testdata/external/opl/*
 testdata/bench-uniformity/*
 !testdata/bench-uniformity/baseline.txt
 !testdata/bench-uniformity/README.md
+!testdata/bench-uniformity/phase0.txt
+!testdata/bench-uniformity/metric2.txt
 # current.txt is the local Phase 9 bench-sweep artifact. Never committed;
 # the gate test skips when it is absent so default `go test` does not
 # require local benchmark generation.
+#
+# phase0.txt + metric2.txt ARE committed (closure-plan G.1): phase0.txt
+# encodes the pre-summit baseline + per-workload waivers (forensically
+# auditable via the recorded SHA); metric2.txt encodes the current
+# measurement matched against it. Reviewer-gated updates only.
 untracked/
 assembler/untracked/
 .go*

@@ -83,3 +83,41 @@ Per-backend gate (all three conditions):
   3. ≥10% improvement on JIT-bound time vs Phase 0
      (`jit_bound_current ≤ 0.90 × jit_bound_phase0`). Waivable when
      `io_bound_waiver=true` with `waiver_reason` recorded.
+
+## `phase0.txt` (committed forensic record)
+
+Closure-plan G.1 deliverable. Documents the canonical pre-summit SHA
+(`11b8a53`, first parent of `c6f324c`), the per-workload availability
+audit at that SHA, and the per-backend waiver registry covering
+condition 3 (no `perfAcct` instrumentation at pre-summit ⇒
+`pre-summit-no-instrumentation` reason on every record).
+`phase0.txt` is read by humans only — the test harness consumes the
+`phase0=` field on each `metric2.txt` record, not this file.
+
+## Phase-0 reconstruction procedure
+
+The full reconstruction is user-driven (write-bound CI agents cannot
+run a 3×30s wall-clock sweep across five workloads on two SHAs
+without a clean mains-power machine + headless Vulkan/Ebiten stack).
+Procedure:
+
+1. Verify pre-summit SHA: `git log --oneline --first-parent c6f324c~1`
+   → `11b8a53`.
+2. Worktree: `git worktree add /tmp/ie-phase0 11b8a53` and build
+   with the same toolchain (`go build -tags headless`).
+3. Per workload (see `phase0.txt` registry — three of five backends
+   have no canonical pre-summit workload binary and waive condition 1
+   with the recorded reason): 3 runs × 30 seconds wall-clock; take
+   the geomean. Drop into the `phase0=` field of the matching
+   `metric2.txt` record.
+4. Cleanup: `git worktree remove /tmp/ie-phase0`.
+5. Repeat (3) on `HEAD`, drop into the `current=` field.
+6. Set `io_bound_waiver=true` and
+   `waiver_reason=pre-summit-no-instrumentation` on every record
+   (condition 3 unmeasurable per the `phase0.txt` audit).
+
+Worst-case fallback per closure-plan G.1: every workload waives all
+conditions for which pre-summit lacks a canonical workload or
+instrumentation; Metric 2 reduces to "reaches real-time" (condition
+2) on the workloads that have a HEAD binary but no pre-summit
+binary.
