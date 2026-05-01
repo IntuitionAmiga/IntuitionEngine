@@ -282,3 +282,82 @@ func TestIE64CompileRegion_PopulatesCoveredRanges_NonMonotonic(t *testing.T) {
 		t.Error("region survived InvalidateRange(0x5000,0x5008) — SMC gap not closed")
 	}
 }
+
+func TestIE64TurboEnabled_KillSwitch(t *testing.T) {
+	t.Setenv("IE64_JIT_TURBO", "0")
+	if ie64TurboEnabled() {
+		t.Fatal("IE64_JIT_TURBO=0 should disable turbo promotion")
+	}
+	t.Setenv("IE64_JIT_TURBO", "1")
+	if !ie64TurboEnabled() {
+		t.Fatal("IE64_JIT_TURBO=1 should enable turbo promotion")
+	}
+}
+
+func TestIE64TurboPlanner_WeightsHotSpilledRegs(t *testing.T) {
+	mem := make([]byte, 0x1000)
+	// R10 is a hot accumulator, R8 is a hot address base, and both are
+	// spilled in Tier 1. The planner should select them before cold regs.
+	putIE64Instr(mem, 0x100, OP_ADD, 10, 10, 11, 0)
+	putIE64Instr(mem, 0x108, OP_ADD, 10, 10, 11, 0)
+	putIE64Instr(mem, 0x110, OP_LOAD, 12, 8, 0, 0)
+	putIE64BRA(mem, 0x118, 0x200)
+	putIE64Instr(mem, 0x200, OP_STORE, 12, 8, 0, 0)
+	putIE64RTS(mem, 0x208)
+
+	region := ie64FormRegion(0x100, mem)
+	if region == nil {
+		t.Fatal("expected region")
+	}
+	plan := ie64PlanTurboRegion(region)
+	if len(plan.residentGuestRegs) == 0 {
+		t.Fatal("planner chose no resident guest registers")
+	}
+	hasR10 := false
+	hasR8 := false
+	for _, reg := range plan.residentGuestRegs {
+		if reg == 10 {
+			hasR10 = true
+		}
+		if reg == 8 {
+			hasR8 = true
+		}
+		if reg == 31 {
+			t.Fatal("planner must not remap SP/R31 away from R14")
+		}
+	}
+	if !hasR10 || !hasR8 {
+		t.Fatalf("residentGuestRegs=%v, want hot spilled R10 and R8", plan.residentGuestRegs)
+	}
+	if plan.spillOps == 0 {
+		t.Fatal("expected non-zero estimated spill pressure")
+	}
+}
+
+func TestIE64CompileRegion_TurboStats(t *testing.T) {
+	mem := make([]byte, 0x1000)
+	putIE64Instr(mem, 0x100, OP_ADD, 10, 10, 11, 0)
+	putIE64BRA(mem, 0x108, 0x200)
+	putIE64Instr(mem, 0x200, OP_ADD, 10, 10, 11, 0)
+	putIE64RTS(mem, 0x208)
+
+	region := ie64FormRegion(0x100, mem)
+	if region == nil {
+		t.Fatal("expected region")
+	}
+
+	execMem, err := AllocExecMem(64 * 1024)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+
+	before := ie64TurboStatsLoad()
+	if _, err := ie64CompileRegion(region, execMem, mem); err != nil {
+		t.Fatalf("ie64CompileRegion: %v", err)
+	}
+	after := ie64TurboStatsLoad().Sub(before)
+	if after.spills == 0 {
+		t.Fatalf("spills delta = 0, want planner spill estimate; stats=%+v", after)
+	}
+}

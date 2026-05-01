@@ -835,6 +835,10 @@ func emitEpilogue(cb *CodeBuffer, storeRegs uint32, _ uint32) {
 
 // compileBlock compiles a scanned block of IE64 instructions to x86-64 machine code.
 func compileBlock(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITBlock, error) {
+	if n := ie64CountFusedLeafCalls(instrs); n != 0 {
+		globalIE64TurboStats.inlinedCalls.Add(uint64(n))
+	}
+
 	cb := NewCodeBuffer(len(instrs) * 384) // x86-64 instructions are variable length
 
 	br := analyzeBlockRegs(instrs)
@@ -970,6 +974,10 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 	if region == nil || len(region.blocks) < 2 {
 		return nil, errIE64RegionTooSmall
 	}
+
+	plan := ie64PlanTurboRegion(region)
+	globalIE64TurboStats.spills.Add(uint64(plan.spillOps))
+	globalIE64TurboStats.fpuSpills.Add(uint64(plan.fpuSpillOps))
 
 	var allInstrs []JITInstr
 	for _, blk := range region.blocks {

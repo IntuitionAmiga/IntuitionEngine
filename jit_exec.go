@@ -28,11 +28,9 @@ const (
 // to IE64's reference RegPressureProfile. Exec-loop cache-hit gate
 // delegates to ShouldPromote so threshold tweaks apply uniformly.
 //
-// B.2.b uses this controller to drive region promotion only — IE64
-// Tier-2 reg-map promotion (B.2.c) is retired with the same
-// architectural blocker as M68K's B.1.c (no spare host scratch for
-// per-block pinning of additional spilled regs without an emit-path
-// refactor exceeding the slice budget).
+// IE64 uses this controller to drive the turbo region tier. Single-block
+// promotion remains retired; hot non-MMU code promotes at region granularity
+// where the planner can reason across loops and static control-flow edges.
 var ie64TierController = NewTierController(IE64RegProfile)
 
 // jitExecMem returns the typed *ExecMem from the cpu's any field.
@@ -127,6 +125,8 @@ func (cpu *CPU64) ExecuteJIT() {
 	var diagCacheMisses uint64   // block compiled (cache miss)
 	var diagFallbackInstr uint64 // instructions via interpretOne
 	var diagIOBails uint64       // I/O fallback bail count
+	statsEnabled := ie64TurboStatsEnabled()
+	statsBase := ie64TurboStatsLoad()
 
 	// Use local running flag to avoid atomic load every iteration
 	running := true
@@ -154,6 +154,7 @@ func (cpu *CPU64) ExecuteJIT() {
 			cpu.jitCache.Invalidate()
 			execMem.Reset()
 			cpu.jitNeedInval = false
+			globalIE64TurboStats.invalidations.Add(1)
 			cpu.jitCtx.RTSCache0PC = 0
 			cpu.jitCtx.RTSCache0Addr = 0
 			cpu.jitCtx.RTSCache1PC = 0
@@ -295,6 +296,7 @@ func (cpu *CPU64) ExecuteJIT() {
 				}
 				continue
 			}
+			globalIE64TurboStats.tier1Blocks.Add(1)
 			// Tag the block with its compile-time PTBR so the chain
 			// patcher can keep cross-address-space blocks isolated. Non-
 			// MMU mode uses ptbr=0 implicitly, which preserves the
@@ -352,14 +354,16 @@ func (cpu *CPU64) ExecuteJIT() {
 			// different physical page) or silently disable valid
 			// regions. Keep region promotion to non-MMU mode until the
 			// scanner gains MMU awareness.
-			if !cpu.mmuEnabled && block.tier == 0 && ie64TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
+			if !cpu.mmuEnabled && block.tier == ie64JITTier1 && ie64TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
+				globalIE64TurboStats.turboCandidates.Add(1)
 				block.lastPromoteAt = block.execCount
-				region := ie64FormRegion(pcPhys, cpu.memory)
-				if region != nil && len(region.blocks) >= 2 {
+				if !ie64TurboEnabled() {
+					globalIE64TurboStats.turboRejected.Add(1)
+				} else if region := ie64FormRegion(pcPhys, cpu.memory); region != nil && len(region.blocks) >= 2 {
 					newBlock, err := ie64CompileRegion(region, execMem, cpu.memory)
 					if err == nil {
 						newBlock.execCount = block.execCount
-						newBlock.tier = 1
+						newBlock.tier = ie64JITTierTurbo
 						if cpu.mmuEnabled {
 							newBlock.ptbr = cpu.ptbr
 						}
@@ -382,7 +386,12 @@ func (cpu *CPU64) ExecuteJIT() {
 							}
 						}
 						block = newBlock
+						globalIE64TurboStats.turboRegions.Add(1)
+					} else {
+						globalIE64TurboStats.turboRejected.Add(1)
 					}
+				} else {
+					globalIE64TurboStats.turboRejected.Add(1)
 				}
 			}
 		}
@@ -426,6 +435,7 @@ func (cpu *CPU64) ExecuteJIT() {
 		ioBail := cpu.jitCtx.NeedIOFallback != 0
 		if ioBail {
 			diagIOBails++
+			globalIE64TurboStats.ioBails.Add(1)
 		}
 		diagBlocksExec++
 		diagBlockInstrs += uint64(block.instrCount)
@@ -435,6 +445,7 @@ func (cpu *CPU64) ExecuteJIT() {
 			cpu.jitCache.Invalidate()
 			execMem.Reset()
 			cpu.jitCtx.NeedInval = 0
+			globalIE64TurboStats.invalidations.Add(1)
 			cpu.jitCtx.RTSCache0PC = 0
 			cpu.jitCtx.RTSCache0Addr = 0
 			cpu.jitCtx.RTSCache1PC = 0
@@ -495,6 +506,9 @@ func (cpu *CPU64) ExecuteJIT() {
 				cpu.lastPerfReport = now
 			}
 		}
+	}
+	if statsEnabled {
+		ie64TurboStatsLoad().Sub(statsBase).Print()
 	}
 }
 

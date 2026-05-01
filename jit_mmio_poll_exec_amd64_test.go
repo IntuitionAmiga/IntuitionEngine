@@ -40,6 +40,23 @@ func TestIE64JITFastMMIOPollLoop_AND_BNE(t *testing.T) {
 	}
 }
 
+func TestIE64JITFastMMIOPollLoopRejectsRegisterAND(t *testing.T) {
+	bus := NewMachineBus()
+	bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 { return 0x80 }, nil)
+	cpu := NewCPU64(bus)
+	cpu.PC = PROG_START
+	cpu.regs[1] = 0xF0008
+	cpu.running.Store(true)
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_LOAD, 2, IE64_SIZE_L, 0, 1, 0, 0))
+	copy(cpu.memory[PROG_START+8:], ie64Instr(OP_AND64, 2, IE64_SIZE_L, 0, 2, 3, 0))
+	copy(cpu.memory[PROG_START+16:], ie64Instr(OP_BNE, 0, IE64_SIZE_Q, 0, 2, 0, 0xFFFFFFF0))
+
+	matched, _ := cpu.tryFastIE64MMIOPollLoop()
+	if matched {
+		t.Fatal("register-form IE64 AND must not match immediate-mask MMIO poll fast path")
+	}
+}
+
 func TestM68KJITFastMMIOPollLoop_TST_BNE(t *testing.T) {
 	bus := NewMachineBus()
 	reads := 0
@@ -71,6 +88,42 @@ func TestM68KJITFastMMIOPollLoop_TST_BNE(t *testing.T) {
 	}
 	if retired != 12 {
 		t.Fatalf("retired = %d, want 12", retired)
+	}
+}
+
+func TestM68KJITFastMMIOPollLoopPreservesUpperBitsForByteAndWord(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		moveOp   uint16
+		tstOp    uint16
+		read     uint32
+		initial  uint32
+		expected uint32
+	}{
+		{name: "byte", moveOp: 0x1039, tstOp: 0x4A00, read: 0x34, initial: 0xAABBCCDD, expected: 0xAABBCC34},
+		{name: "word", moveOp: 0x3039, tstOp: 0x4A40, read: 0x3456, initial: 0xAABBCCDD, expected: 0xAABB3456},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := NewMachineBus()
+			bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 { return tc.read }, nil)
+			cpu := NewM68KCPU(bus)
+			cpu.PC = 0x1000
+			cpu.DataRegs[0] = tc.initial
+			cpu.running.Store(true)
+			mem := bus.GetMemory()
+			binary.BigEndian.PutUint16(mem[0x1000:], tc.moveOp)
+			binary.BigEndian.PutUint32(mem[0x1002:], 0x000F0008)
+			binary.BigEndian.PutUint16(mem[0x1006:], tc.tstOp)
+			binary.BigEndian.PutUint16(mem[0x1008:], 0x67F6) // BEQ $1000, not taken for non-zero read
+
+			matched, _ := cpu.tryFastM68KMMIOPollLoop()
+			if !matched {
+				t.Fatal("expected M68K MMIO poll loop to match")
+			}
+			if cpu.DataRegs[0] != tc.expected {
+				t.Fatalf("D0 = 0x%08X, want 0x%08X", cpu.DataRegs[0], tc.expected)
+			}
+		})
 	}
 }
 
@@ -109,6 +162,31 @@ func Test6502JITFastMMIOPollLoop_AND_BNE(t *testing.T) {
 	}
 	if retired != 9 {
 		t.Fatalf("retired = %d, want 9", retired)
+	}
+}
+
+func Test6502JITFastMMIOPollLoopStoresMaskedAccumulator(t *testing.T) {
+	bus := NewMachineBus()
+	bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 { return 0x81 }, nil)
+	cpu := NewCPU_6502(bus)
+	adapter, ok := cpu.memory.(*Bus6502Adapter)
+	if !ok {
+		t.Fatal("6502 CPU did not install Bus6502Adapter")
+	}
+	cpu.PC = 0x0600
+	cpu.running.Store(true)
+	copy(cpu.fastAdapter.memDirect[0x0600:], []byte{
+		0xAD, 0x08, 0xF0, // LDA $F008
+		0x29, 0x80, // AND #$80
+		0xF0, 0xF9, // BEQ $0600, not taken
+	})
+
+	matched, _ := cpu.tryFast6502MMIOPollLoop(adapter)
+	if !matched {
+		t.Fatal("expected 6502 MMIO poll loop to match")
+	}
+	if cpu.A != 0x80 {
+		t.Fatalf("A = 0x%02X, want masked value 0x80", cpu.A)
 	}
 }
 

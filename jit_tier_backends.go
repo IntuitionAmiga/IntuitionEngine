@@ -1,11 +1,11 @@
 // jit_tier_backends.go - per-backend Tier-2 allocator dispositions
 // (Phase 3 of the six-CPU JIT unification plan).
 //
-// The closure pass retired per-block register-map promotion for IE64, M68K,
-// Z80, and 6502. IE64/M68K take their remaining payoff through region
-// promotion in the exec loops; Z80/6502 keep their existing chain-patching
-// and pinned-register designs. x86 single-block promotion was also retired;
-// x86 region promotion remains implemented in the x86-specific path.
+// The closure pass retired per-block register-map promotion for M68K, Z80,
+// and 6502. IE64 now takes its high-tier payoff through the turbo region
+// path in the exec loop; Z80/6502 keep their existing chain-patching and
+// pinned-register designs. x86 single-block promotion was also retired; x86
+// region promotion remains implemented in the x86-specific path.
 //
 // These no-op allocators are retained only to keep the shared TierAllocator
 // registry total over the backend set. A false return is the permanent
@@ -16,15 +16,11 @@
 package main
 
 // IE64TierAllocator implements TierAllocator for the IE64 backend.
-// Closure-plan B.2.c disposition (RETIRED with architectural blocker):
-// Pinning additional spilled IE64 regs (R5-R30) into a host scratch
-// slot collides with R10/R11/RAX/RCX/RDX heavy use across the IE64
-// emitter (load/store address computation, CCR-style flag staging,
-// MULL/DIVL split paths). The refactor budget exceeds the slice;
-// B.2.b's region compile (in-region BRA/JMP direct-JMP rel32 + chain
-// elimination) already captures the BranchDense win without per-block
-// pinning. PromoteBlock stays a permanent no-op for API uniformity.
-// IE64 Tier-2 lives at region granularity only.
+// IE64's aggressive tier is region-level turbo compilation rather than
+// single-block replacement. The exec loop drives promotion directly through
+// ie64FormRegion/ie64CompileRegion so it can reject MMU, I/O-heavy, and
+// unsupported region shapes before compiling. PromoteBlock remains a no-op
+// because there is no standalone per-block IE64 tier-2 entry point.
 type IE64TierAllocator struct{}
 
 func (IE64TierAllocator) PromoteBlock(pc uint32) bool { return false }
