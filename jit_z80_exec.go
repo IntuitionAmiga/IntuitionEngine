@@ -1,4 +1,19 @@
 // jit_z80_exec.go - Z80 JIT dispatcher loop and CPU integration
+//
+// Closure-plan B.3.b: Z80 region promotion is intentionally absent.
+// The existing chain-patching layer (z80EmitChainExit's patchable JMP
+// rel32 → next block's chainEntry, with ChainCycles / ChainCount /
+// ChainRIncrements accumulating across the chain and merging at the
+// shared exit) already provides the runtime equivalent of
+// region-fused execution. Single-JITBlock region fusion would add
+// only marginal cache-locality wins (~2-3% on linear hot loops)
+// against significant emit-pipeline cost: per-block invariants
+// (cs.loopInfo / DJNZ pre-check, cs.djnzDeferredFlags peephole,
+// hasBackwardBranch chainEntry mode, per-block flagsNeeded) do not
+// compose across blocks without either a deep refactor or strict
+// rejection of the DJNZ-loop blocks that dominate Z80 demos. The
+// retire matches the precedent set by 6502 (B.4) — chain-patching
+// covers it; revisit only if Phase 9 gate flags Z80 lagging.
 
 //go:build (amd64 && (linux || windows || darwin)) || (arm64 && linux)
 

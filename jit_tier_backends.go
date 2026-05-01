@@ -52,8 +52,16 @@ type M68KTierAllocator struct{}
 func (M68KTierAllocator) PromoteBlock(pc uint32) bool { return false }
 
 // Z80TierAllocator implements TierAllocator for the Z80 backend.
-// Z80 already has BC/DE/HL pinned packed; promotion targets are IX/IY
-// shadow regs (currently re-loaded each access).
+// Retired (closure-plan B.3.c): pinning IX/IY into additional host
+// scratch slots collides with the heavy R10/R11/RAX/RCX/RDX
+// consumption across z80EmitMemRead / z80EmitMemWrite /
+// z80EmitALUByteOp / z80EmitFlags_* — the same scratch-conflict
+// pattern that retired M68K and IE64 Tier-2. Z80 already pins BC/DE/HL
+// packed; promotion would force a costly per-instruction spill/reload
+// dance with no measurable headroom on demos that touch IX/IY.
+// PromoteBlock stays a permanent no-op for API uniformity. Z80 region
+// formation (closure-plan B.3.b retire — see Z80TierAllocator header)
+// stays at the chain-patching layer rather than single-JITBlock fusion.
 type Z80TierAllocator struct{}
 
 func (Z80TierAllocator) PromoteBlock(pc uint32) bool { return false }

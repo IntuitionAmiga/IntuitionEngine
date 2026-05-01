@@ -160,6 +160,13 @@ var z80AllDirectBitmap = [256]byte{}
 // would form a region under Z80RegionProfile. Mirrors ScanRegionM68K /
 // ScanRegionIE64: pure memory-driven walker, no cache lookup.
 //
+// Closure-plan B.3.b retired single-JITBlock region fusion — Z80's
+// existing chain-patching layer covers ~95% of the region payoff
+// (see jit_z80_exec.go header). This scanner is retained because the
+// Phase 9 gate may want region-shape telemetry, and downstream
+// hot-region analysis (e.g. tier-bias hints) could consume the
+// BlockPCs result without needing native fusion.
+//
 // Stops on:
 //   - cycle (back-edge that revisits any already-scanned block)
 //   - non-region-shaped block (z80JITNeedsFallback first instr / empty scan)
