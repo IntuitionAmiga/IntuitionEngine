@@ -28,6 +28,20 @@ import "unsafe"
 //go:linkname runtime_asmcgocall runtime.asmcgocall
 func runtime_asmcgocall(fn unsafe.Pointer, arg unsafe.Pointer) int32
 
+// noescape hides a pointer from Go's escape analysis. Identity function
+// that obscures the source so the compiler cannot prove the pointer
+// outlives the call. Used to keep jitCallArgs on the stack instead of
+// heap-allocating one per native-code invocation. The asmcgocall
+// trampoline is well-defined to not retain its argument past the call,
+// so this is sound. Pattern lifted verbatim from runtime/cgo.
+//
+//go:nosplit
+//go:nocheckptr
+func noescape(p unsafe.Pointer) unsafe.Pointer {
+	x := uintptr(p)
+	return unsafe.Pointer(x ^ 0) //nolint:staticcheck // intentional escape-analysis defeat
+}
+
 // jitCallArgs is the argument block passed through runtime.asmcgocall to
 // the assembly trampoline (jitCall). The trampoline reads fn and arg,
 // calls the native code, and stores the return value in ret.
@@ -48,7 +62,7 @@ func callNative(fn uintptr, arg uintptr) {
 	args := jitCallArgs{fn: fn, arg: arg}
 	jitPrepareForExec()
 	defer jitFinishExec()
-	runtime_asmcgocall(unsafe.Pointer(jitCallABI0), unsafe.Pointer(&args))
+	runtime_asmcgocall(unsafe.Pointer(jitCallABI0), noescape(unsafe.Pointer(&args)))
 }
 
 // callNativeRet calls a native function at fn that takes no arguments and
@@ -58,6 +72,6 @@ func callNativeRet(fn uintptr) uintptr {
 	args := jitCallArgs{fn: fn}
 	jitPrepareForExec()
 	defer jitFinishExec()
-	runtime_asmcgocall(unsafe.Pointer(jitCallABI0), unsafe.Pointer(&args))
+	runtime_asmcgocall(unsafe.Pointer(jitCallABI0), noescape(unsafe.Pointer(&args)))
 	return args.ret
 }

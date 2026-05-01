@@ -302,6 +302,7 @@ func setupJITBench(b *testing.B, cpu *CPU64, instrs [][]byte, resetState func())
 func reportMIPS(b *testing.B, totalInstrs int) {
 	b.Helper()
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 	// MIPS = (totalInstrs * N) / elapsed_seconds / 1e6
 	// Go's benchmark framework provides ns/op; MIPS = instructions/op / (ns/op) * 1000
 	// We report instructions/op and let the user derive MIPS, or we can approximate
@@ -335,6 +336,7 @@ func BenchmarkIE64_ALU_Interpreter(b *testing.B) {
 		cpu.Execute()
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // BenchmarkIE64_ALU_JIT measures the same integer ALU workload compiled to
@@ -366,6 +368,7 @@ func BenchmarkIE64_ALU_JIT(b *testing.B) {
 		cpu.jitExecute()
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // ===========================================================================
@@ -393,6 +396,7 @@ func BenchmarkIE64_FPU_Interpreter(b *testing.B) {
 		cpu.Execute()
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // BenchmarkIE64_FPU_JIT measures floating-point throughput compiled to native
@@ -421,6 +425,7 @@ func BenchmarkIE64_FPU_JIT(b *testing.B) {
 		cpu.jitExecute()
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // ===========================================================================
@@ -446,6 +451,7 @@ func BenchmarkIE64_Memory_Interpreter(b *testing.B) {
 		cpu.Execute()
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // BenchmarkIE64_Memory_JIT measures LOAD/STORE throughput compiled to native
@@ -476,6 +482,7 @@ func BenchmarkIE64_Memory_JIT(b *testing.B) {
 		cpu.jitExecute()
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // ===========================================================================
@@ -503,6 +510,7 @@ func BenchmarkIE64_Mixed_Interpreter(b *testing.B) {
 		cpu.Execute()
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // BenchmarkIE64_Mixed_JIT measures the same mixed workload through the JIT.
@@ -531,6 +539,7 @@ func BenchmarkIE64_Mixed_JIT(b *testing.B) {
 		cpu.jitExecute()
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // ===========================================================================
@@ -557,6 +566,7 @@ func BenchmarkIE64_Call_Interpreter(b *testing.B) {
 		cpu.Execute()
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // BenchmarkIE64_Call_JIT measures subroutine call/return overhead through the
@@ -591,4 +601,5 @@ func BenchmarkIE64_Call_JIT(b *testing.B) {
 		cpu.jitExecute()
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }

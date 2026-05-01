@@ -607,7 +607,14 @@ func emitDynamicCountAMD64(cb *CodeBuffer, staticCount uint32) {
 // Block Prologue / Epilogue
 // ===========================================================================
 
-func emitPrologue(cb *CodeBuffer, blockPC uint32, br *blockRegs) {
+// emitPrologue emits the block entry sequence and returns the byte offset
+// of the chainEntry label. chainEntry is the alternate entry point used by
+// chained block transitions: it skips Part A (callee-save + frame alloc +
+// JITContext stash) and re-executes Part B (load base pointers + IE64 reg
+// file). Chained transitions reach chainEntry by JMP from the source
+// block's lightweight epilogue, with RDI = JITContext on entry.
+func emitPrologue(cb *CodeBuffer, blockPC uint32, br *blockRegs) int {
+	// ── Part A — entry from Go dispatcher only ──
 	// Save callee-saved registers
 	amd64PUSH(cb, amd64RBX)
 	amd64PUSH(cb, amd64RBP)
@@ -621,6 +628,31 @@ func emitPrologue(cb *CodeBuffer, blockPC uint32, br *blockRegs) {
 
 	// Save JITContext pointer
 	amd64MOV_mem_reg(cb, amd64RSP, int32(amd64OffCtxPtr), amd64RDI) // [RSP+0] = RDI
+
+	// Zero R15 on the Part A entry path so the chainEntry's
+	// "ChainCount += R15>>32" fold-in is a no-op when invoked from Go.
+	// On chained entry R15 holds the source block's packed PC + count.
+	amd64XOR_reg_reg(cb, amd64RegIE64PC, amd64RegIE64PC)
+
+	// ── chainEntry — alternate entry used by native-to-native chains ──
+	chainEntryOff := cb.Len()
+
+	// Reload JITContext from [RSP+0]. Idempotent on Part A path (RDI was
+	// already JITContext); needed on chained-entry path where the source
+	// block left RDI = its RegsPtr at chain-exit time.
+	amd64MOV_reg_mem(cb, amd64RDI, amd64RSP, int32(amd64OffCtxPtr))
+
+	// Fold the source block's retired count (upper 32 bits of R15) into
+	// ChainCount. Source chain-exits load R15 with packed(targetPC |
+	// instrCount<<32) before the chain JMP and never touch ChainCount
+	// themselves; the target's chainEntry pulls the count out here so
+	// bails leave ChainCount consistent with whatever R15-packed count
+	// the source left behind.
+	amd64MOV_reg_reg(cb, amd64R10, amd64RegIE64PC) // R10 = R15
+	amd64SHR_imm(cb, amd64R10, 32)                 // R10 = source count
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RDI, int32(jitCtxOffChainCount))
+	amd64ALU_reg_reg32(cb, 0x01, amd64RAX, amd64R10) // ADD EAX, R10d
+	amd64MOV_mem_reg32(cb, amd64RDI, int32(jitCtxOffChainCount), amd64RAX)
 
 	// Load base pointers from JITContext (RDI = *JITContext)
 	amd64MOV_reg_mem(cb, amd64RegMemBase, amd64RDI, int32(jitCtxOffMemPtr))       // RSI = MemPtr
@@ -636,7 +668,9 @@ func emitPrologue(cb *CodeBuffer, blockPC uint32, br *blockRegs) {
 		amd64MOV_mem_reg(cb, amd64RSP, int32(amd64OffFPUPtr), amd64RCX) // [RSP+8] = FPUPtr
 	}
 
-	// Zero loop counter if needed
+	// Zero loop counter if needed. Chain transitions can reach a target
+	// block whose previous occupant left a stale loop count; reset it on
+	// every chainEntry pass to keep budget arithmetic correct.
 	if br.hasBackwardBranch {
 		amd64MOV_mem_imm32(cb, amd64RSP, int32(amd64OffLoopCount), 0) // [RSP+16] = 0
 	}
@@ -654,6 +688,100 @@ func emitPrologue(cb *CodeBuffer, blockPC uint32, br *blockRegs) {
 
 	// Now overwrite RDI with RegsPtr (base for register file access)
 	amd64MOV_reg_reg(cb, amd64RegBase, amd64RAX)
+
+	return chainEntryOff
+}
+
+// emitLightweightStoreRegs stores the resident IE64 register file back to
+// memory. Used at chain-exit time so the chained target block can re-load
+// regs through its own chainEntry path. Mirrors the first half of
+// emitEpilogue but does not pop the stack frame or restore callee-saved.
+// On entry RDI = RegsPtr (current convention inside the JIT body).
+func emitLightweightStoreRegs(cb *CodeBuffer) {
+	amd64MOV_mem_reg(cb, amd64RegBase, 1*8, amd64RegIE64R1)
+	amd64MOV_mem_reg(cb, amd64RegBase, 2*8, amd64RegIE64R2)
+	amd64MOV_mem_reg(cb, amd64RegBase, 3*8, amd64RegIE64R3)
+	amd64MOV_mem_reg(cb, amd64RegBase, 4*8, amd64RegIE64R4)
+	amd64MOV_mem_reg(cb, amd64RegBase, 31*8, amd64RegIE64SP)
+}
+
+// emitChainExit emits a chainable block-exit sequence for a block
+// terminator with a static target PC.
+//
+//   - On entry: RDI = RegsPtr, R15 already holds the packed PC + count for
+//     the unchained fallback path (caller is responsible for emitting that
+//     packing before calling this helper).
+//   - Behaviour: store IE64 regs back, advance ChainCount by instrCount,
+//     decrement ChainBudget. If budget exhausted or NeedInval set, fall
+//     through to the unchained full epilogue. Otherwise reload RDI =
+//     JITContext and JMP rel32 to the target chainEntry. The rel32 starts
+//     out as a self-relative no-op (jumps to the next instruction); the
+//     dispatcher patches it once the target block is compiled and added to
+//     the cache.
+//
+// Returns a pending chain slot (cb-relative) — the caller converts to a
+// final chainSlot once ExecMem.Write returns the block's exec address.
+type ie64PendingChainSlot struct {
+	targetPC uint32
+	cbOffset int // offset in CodeBuffer of the rel32 field for the chain JMP
+}
+
+func emitChainExit(cb *CodeBuffer, br *blockRegs, targetPC uint32, instrCount uint32) ie64PendingChainSlot {
+	// Store IE64 regs back via current RDI = RegsPtr.
+	emitLightweightStoreRegs(cb)
+
+	// Reload RDI = JITContext from [RSP+0] so we can probe ChainBudget /
+	// NeedInval through the canonical context offsets.
+	amd64MOV_reg_mem(cb, amd64RDI, amd64RSP, int32(amd64OffCtxPtr))
+
+	// DEC dword [RDI + ChainBudget]; JLE budget_exhausted. Done BEFORE
+	// the ChainCount update so a bail leaves ChainCount unchanged —
+	// the bailing block's instrCount stays packed in R15 and the
+	// dispatcher reads it from there without double-counting.
+	emitREX(cb, false, 0, amd64RDI)
+	cb.EmitBytes(0xFF, 0x8F)
+	cb.EmitBytes(byte(jitCtxOffChainBudget), byte(jitCtxOffChainBudget>>8),
+		byte(jitCtxOffChainBudget>>16), byte(jitCtxOffChainBudget>>24))
+	budgetExitOff := amd64Jcc_rel32(cb, amd64CondLE)
+
+	// CMP dword [RDI + NeedInval], 0; JNE inval_bail
+	emitREX(cb, false, 0, amd64RDI)
+	cb.EmitBytes(0x83, 0xBF)
+	cb.EmitBytes(byte(jitCtxOffNeedInval), byte(jitCtxOffNeedInval>>8),
+		byte(jitCtxOffNeedInval>>16), byte(jitCtxOffNeedInval>>24))
+	cb.EmitBytes(0x00)
+	invalExitOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+	// ChainCount is updated only on the receiving side: the target
+	// block's chainEntry folds R15's upper-32-bit packed count into
+	// ChainCount. This source side leaves ChainCount alone so any bail
+	// (budget exhausted, inval pending, or no chain installed) gives
+	// the dispatcher a consistent (R15-packed-count + ChainCount) sum.
+
+	// Patchable JMP rel32 to the target's chainEntry. Initial target =
+	// next instruction (the unchained fallback below) — equivalent to
+	// "no chain installed yet". Dispatcher overwrites this rel32 once
+	// the target is compiled.
+	jmpOff := amd64JMP_rel32(cb)
+	patchRel32(cb, jmpOff, cb.Len()) // self-relative no-op
+
+	// ── unchained fallback: budget exhausted, inval, or no chain target ──
+	patchRel32(cb, budgetExitOff, cb.Len())
+	patchRel32(cb, invalExitOff, cb.Len())
+
+	// Restore RDI = RegsPtr so the upcoming full epilogue can write back
+	// regs in the canonical layout (no-op since regs were already stored,
+	// but emitEpilogue's first phase repeats the stores; that is harmless).
+	amd64MOV_reg_mem(cb, amd64RDI, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_reg_mem(cb, amd64RDI, amd64RDI, int32(jitCtxOffRegsPtr))
+
+	// Caller has already loaded R15 with packed PC + count.
+	emitEpilogue(cb, br.written, br.used)
+
+	return ie64PendingChainSlot{
+		targetPC: targetPC,
+		cbOffset: jmpOff,
+	}
 }
 
 // emitEpilogue emits the block exit sequence.
@@ -698,22 +826,37 @@ func compileBlock(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITBloc
 
 	br := analyzeBlockRegs(instrs)
 	br.hasBackwardBranch = detectBackwardBranches(instrs, startPC)
-	emitPrologue(cb, startPC, &br)
+	chainEntryOffset := emitPrologue(cb, startPC, &br)
 
 	instrOffsets := make([]int, len(instrs))
 	writtenSoFar := uint32(0)
+	var pendingChains []ie64PendingChainSlot
 
 	for i := range instrs {
 		instrOffsets[i] = cb.Len()
 		ji := &instrs[i]
-		emitInstruction(cb, ji, startPC, i == len(instrs)-1, &br, writtenSoFar, i, instrOffsets)
+		emitInstruction(cb, ji, startPC, i == len(instrs)-1, &br, writtenSoFar, i, instrOffsets, &pendingChains)
 		writtenSoFar |= instrWrittenRegs(ji)
 	}
 
-	// Emit final epilogue if last instruction doesn't have its own
-	lastOp := instrs[len(instrs)-1].opcode
-	if !isBlockTerminator(lastOp) {
-		endPC := startPC + uint32(len(instrs))*IE64_INSTR_SIZE
+	// Find the last non-fused instr — fused-leaf markers share the JSR
+	// site's pcOffset and are no-ops at emit time, so they must be
+	// excluded from terminator and end-PC computation.
+	lastRealIdx := len(instrs) - 1
+	for lastRealIdx >= 0 && instrs[lastRealIdx].fusedFlag&(ie64FusedJSRLeafCall|ie64FusedRTSLeafReturn) != 0 {
+		lastRealIdx--
+	}
+
+	// Real guest end PC = byte after the last non-fused IE64 instr.
+	var endPC uint32
+	if lastRealIdx >= 0 {
+		endPC = startPC + instrs[lastRealIdx].pcOffset + IE64_INSTR_SIZE
+	} else {
+		endPC = startPC
+	}
+
+	// Emit final epilogue if the last real instruction is not a terminator.
+	if lastRealIdx < 0 || !isBlockTerminator(instrs[lastRealIdx].opcode) {
 		emitPackedPCAndCount(cb, uint64(endPC), uint32(len(instrs)), &br)
 		emitEpilogue(cb, br.written, br.used)
 	}
@@ -724,17 +867,59 @@ func compileBlock(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITBloc
 		return nil, err
 	}
 
+	chainSlots := make([]chainSlot, 0, len(pendingChains))
+	for _, p := range pendingChains {
+		chainSlots = append(chainSlots, chainSlot{
+			targetPC:  p.targetPC,
+			patchAddr: addr + uintptr(p.cbOffset),
+		})
+	}
+
 	return &JITBlock{
 		startPC:    startPC,
-		endPC:      startPC + uint32(len(instrs))*IE64_INSTR_SIZE,
+		endPC:      endPC,
 		instrCount: len(instrs),
 		execAddr:   addr,
 		execSize:   len(code),
+		chainEntry: addr + uintptr(chainEntryOffset),
+		chainSlots: chainSlots,
 	}, nil
 }
 
 // emitInstruction emits x86-64 code for a single IE64 instruction.
-func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast bool, br *blockRegs, writtenSoFar uint32, instrIdx int, instrOffsets []int) {
+func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast bool, br *blockRegs, writtenSoFar uint32, instrIdx int, instrOffsets []int, pendingChains *[]ie64PendingChainSlot) {
+	// Fused-leaf markers preserve the architectural stack push/pop that
+	// the unfused JSR/RTS pair would have executed. Only the chain-
+	// dispatch overhead (call/return block transitions, RTS cache
+	// probe) is elided — the actual SP -= 8 / Write64 / Read64 / SP +=
+	// 8 sequence still runs so any caller observing the return-address
+	// slot, faulting stack page, or matching unfused interpreter trace
+	// sees identical guest-visible memory traffic.
+	//
+	// MMU correctness gate: when compileBlockMMU has flagged this
+	// instruction with mmuBail=true (Phase 4d safety boundary — every
+	// memory-touching op must route through the interpreter under MMU
+	// for full uint64 VA translation + fault handling), the raw
+	// [MemBase+SP] stack accesses below would bypass the MMU walk and
+	// silently truncate or alias high-VA stacks. Skip the fast path so
+	// the normal OP_JSR64 / OP_RTS64 case below honors the bail.
+	if ji.fusedFlag&ie64FusedJSRLeafCall != 0 && !ji.mmuBail {
+		instrPC := blockStartPC + ji.pcOffset
+		retAddr := uint64(instrPC + IE64_INSTR_SIZE)
+		amd64ALU_reg_imm32(cb, 5, amd64RegIE64SP, 8) // SUB R14, 8
+		emitLoadImm64AMD64(cb, amd64RAX, retAddr)
+		emitMemOpSIB(cb, true, 0x89, amd64RAX, amd64RegMemBase, amd64RegIE64SP, 0) // MOV [RSI+R14], RAX
+		return
+	}
+	if ji.fusedFlag&ie64FusedRTSLeafReturn != 0 && !ji.mmuBail {
+		// Read return PC into scratch RAX (discarded — control falls
+		// through to the JSR's returnPC, which is the next scanned instr
+		// in this block). ADD R14, 8 restores SP. Mirrors the unfused
+		// emitRTS_AMD64 memory-traffic sequence.
+		emitMemOpSIB(cb, true, 0x8B, amd64RAX, amd64RegMemBase, amd64RegIE64SP, 0) // MOV RAX, [RSI+R14]
+		amd64ALU_reg_imm32(cb, 0, amd64RegIE64SP, 8)                               // ADD R14, 8
+		return
+	}
 	instrPC := blockStartPC + ji.pcOffset
 
 	switch ji.opcode {
@@ -822,25 +1007,25 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 	// Branches
 	// ======================================================================
 	case OP_BRA:
-		emitBRA_AMD64(cb, ji, instrPC, br, instrIdx, instrOffsets, blockStartPC)
+		emitBRA_AMD64(cb, ji, instrPC, br, instrIdx, instrOffsets, blockStartPC, pendingChains)
 	case OP_BEQ:
-		emitBcc_AMD64(cb, ji, instrPC, amd64CondE, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets)
+		emitBcc_AMD64(cb, ji, instrPC, amd64CondE, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets, pendingChains)
 	case OP_BNE:
-		emitBcc_AMD64(cb, ji, instrPC, amd64CondNE, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets)
+		emitBcc_AMD64(cb, ji, instrPC, amd64CondNE, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets, pendingChains)
 	case OP_BLT:
-		emitBcc_AMD64(cb, ji, instrPC, amd64CondL, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets)
+		emitBcc_AMD64(cb, ji, instrPC, amd64CondL, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets, pendingChains)
 	case OP_BGE:
-		emitBcc_AMD64(cb, ji, instrPC, amd64CondGE, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets)
+		emitBcc_AMD64(cb, ji, instrPC, amd64CondGE, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets, pendingChains)
 	case OP_BGT:
-		emitBcc_AMD64(cb, ji, instrPC, amd64CondG, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets)
+		emitBcc_AMD64(cb, ji, instrPC, amd64CondG, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets, pendingChains)
 	case OP_BLE:
-		emitBcc_AMD64(cb, ji, instrPC, amd64CondLE, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets)
+		emitBcc_AMD64(cb, ji, instrPC, amd64CondLE, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets, pendingChains)
 	case OP_BHI:
-		emitBcc_AMD64(cb, ji, instrPC, amd64CondA, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets)
+		emitBcc_AMD64(cb, ji, instrPC, amd64CondA, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets, pendingChains)
 	case OP_BLS:
-		emitBcc_AMD64(cb, ji, instrPC, amd64CondBE, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets)
+		emitBcc_AMD64(cb, ji, instrPC, amd64CondBE, br, writtenSoFar, blockStartPC, instrIdx, instrOffsets, pendingChains)
 	case OP_JMP:
-		emitJMP_AMD64(cb, ji, br, ji.pcOffset/IE64_INSTR_SIZE+1)
+		emitJMP_AMD64(cb, ji, instrPC, br, ji.pcOffset/IE64_INSTR_SIZE+1, pendingChains)
 
 	// ======================================================================
 	// Subroutine / Stack
@@ -850,7 +1035,7 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast b
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 			return
 		}
-		emitJSR_AMD64(cb, ji, instrPC, br)
+		emitJSR_AMD64(cb, ji, instrPC, br, pendingChains)
 	case OP_RTS64:
 		if ji.mmuBail {
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
@@ -1745,7 +1930,7 @@ func emitBailToInterpreter(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blo
 // Branch Emitters
 // ===========================================================================
 
-func emitBRA_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, instrIdx int, instrOffsets []int, blockStartPC uint32) {
+func emitBRA_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, instrIdx int, instrOffsets []int, blockStartPC uint32, pendingChains *[]ie64PendingChainSlot) {
 	targetPC := uint32(int64(instrPC) + int64(int32(ji.imm32)))
 	staticCount := uint32(instrIdx + 1)
 
@@ -1777,14 +1962,17 @@ func emitBRA_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, 
 	}
 
 	emitPackedPCAndCount(cb, uint64(targetPC), staticCount, br)
-	emitEpilogue(cb, br.written, br.used)
+	slot := emitChainExit(cb, br, targetPC, staticCount)
+	if pendingChains != nil {
+		*pendingChains = append(*pendingChains, slot)
+	}
 }
 
 func invertCond(cond byte) byte {
 	return cond ^ 1
 }
 
-func emitBcc_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, cond byte, br *blockRegs, writtenSoFar uint32, blockStartPC uint32, instrIdx int, instrOffsets []int) {
+func emitBcc_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, cond byte, br *blockRegs, writtenSoFar uint32, blockStartPC uint32, instrIdx int, instrOffsets []int, pendingChains *[]ie64PendingChainSlot) {
 	targetPC := uint32(int64(instrPC) + int64(int32(ji.imm32)))
 	staticCount := uint32(instrIdx + 1)
 
@@ -1828,16 +2016,32 @@ func emitBcc_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, cond byte, br *
 	if br.hasBackwardBranch {
 		emitLoadImm64AMD64(cb, amd64RegIE64PC, uint64(targetPC))
 		emitDynamicCountAMD64(cb, staticCount)
+		emitEpilogue(cb, br.written, br.used)
 	} else {
 		emitPackedPCAndCount(cb, uint64(targetPC), staticCount, br)
+		slot := emitChainExit(cb, br, targetPC, staticCount)
+		if pendingChains != nil {
+			*pendingChains = append(*pendingChains, slot)
+		}
 	}
-	emitEpilogue(cb, br.written, br.used)
 
 	skipPC := cb.Len()
 	patchRel32(cb, skipOff, skipPC)
 }
 
-func emitJMP_AMD64(cb *CodeBuffer, ji *JITInstr, br *blockRegs, instrCount uint32) {
+func emitJMP_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, instrCount uint32, pendingChains *[]ie64PendingChainSlot) {
+	// JMP rs, +imm32: target = rs + sign_extend(imm32). When rs == 0 (R0/XZR)
+	// the target is statically known and we can install a chain slot.
+	if ji.rs == 0 && !br.hasBackwardBranch {
+		targetPC := uint32(int64(int32(ji.imm32)))
+		emitLoadImm64AMD64(cb, amd64RegIE64PC, uint64(targetPC)|(uint64(instrCount)<<32))
+		slot := emitChainExit(cb, br, targetPC, instrCount)
+		if pendingChains != nil {
+			*pendingChains = append(*pendingChains, slot)
+		}
+		return
+	}
+
 	rsReg := resolveRegAMD64(cb, ji.rs, amd64RAX)
 	amd64MOV_reg_imm32(cb, amd64RCX, ji.imm32)
 	amd64MOVSXD(cb, amd64RCX, amd64RCX)
@@ -1855,6 +2059,7 @@ func emitJMP_AMD64(cb *CodeBuffer, ji *JITInstr, br *blockRegs, instrCount uint3
 		amd64ALU_reg_reg(cb, 0x09, amd64RegIE64PC, amd64RAX)
 	}
 	emitEpilogue(cb, br.written, br.used)
+	_ = instrPC
 }
 
 // ===========================================================================
@@ -1883,31 +2088,153 @@ func emitPOP_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	}
 }
 
-func emitJSR_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs) {
+func emitJSR_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, pendingChains *[]ie64PendingChainSlot) {
 	amd64ALU_reg_imm32(cb, 5, amd64RegIE64SP, 8)
 	retAddr := uint64(instrPC + IE64_INSTR_SIZE)
 	emitLoadImm64AMD64(cb, amd64RAX, retAddr)
 	emitMemOpSIB(cb, true, 0x89, amd64RAX, amd64RegMemBase, amd64RegIE64SP, 0)
 
-	targetPC := uint64(int64(instrPC) + int64(int32(ji.imm32)))
+	targetPC := uint32(int64(instrPC) + int64(int32(ji.imm32)))
 	instrCount := uint32(ji.pcOffset/IE64_INSTR_SIZE + 1)
-	emitPackedPCAndCount(cb, targetPC, instrCount, br)
-	emitEpilogue(cb, br.written, br.used)
+	emitPackedPCAndCount(cb, uint64(targetPC), instrCount, br)
+	slot := emitChainExit(cb, br, targetPC, instrCount)
+	if pendingChains != nil {
+		*pendingChains = append(*pendingChains, slot)
+	}
 }
 
+// emitRTS_AMD64 emits RTS (return from subroutine).
+//
+// Hot path: pops the return PC off the stack and probes the 4-entry RTS
+// inline cache (RTSCache0..3 in JITContext). On hit, R10 = cached chain
+// entry address; the block performs the chain bookkeeping (lightweight
+// reg store, ChainCount, DEC ChainBudget, NeedInval check) and JMPs
+// directly into the caller's continuation block. On miss, the unchained
+// full epilogue runs with the popped PC packed into R15.
 func emitRTS_AMD64(cb *CodeBuffer, br *blockRegs, instrCount uint32) {
-	emitMemOpSIB(cb, true, 0x8B, amd64RegIE64PC, amd64RegMemBase, amd64RegIE64SP, 0)
+	if br.hasBackwardBranch {
+		// Backward-branch blocks need dynamic count; fall back to the
+		// simple unchained epilogue path. (Block-level RTSes inside a
+		// loop are unusual; RET cache is not worth the special-casing.)
+		emitMemOpSIB(cb, true, 0x8B, amd64RegIE64PC, amd64RegMemBase, amd64RegIE64SP, 0)
+		amd64ALU_reg_imm32(cb, 0, amd64RegIE64SP, 8)
+		emitDynamicCountAMD64(cb, instrCount)
+		emitEpilogue(cb, br.written, br.used)
+		return
+	}
+
+	// Pop popped retAddr into RAX (low 32 bits used for cache compare).
+	emitMemOpSIB(cb, true, 0x8B, amd64RAX, amd64RegMemBase, amd64RegIE64SP, 0)
 	amd64ALU_reg_imm32(cb, 0, amd64RegIE64SP, 8)
 
-	emitLoadImm64AMD64(cb, amd64RAX, IE64_ADDR_MASK)
-	amd64ALU_reg_reg(cb, 0x21, amd64RegIE64PC, amd64RAX)
+	// Load JITContext into R10 so we can probe the cache offsets.
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(amd64OffCtxPtr))
 
-	if br.hasBackwardBranch {
-		emitDynamicCountAMD64(cb, instrCount)
-	} else {
+	// Empty-slot guard: an unset RTSCacheN slot has both PC and Addr
+	// zero-initialized, so a popped retAddr of 0 (stack underflow,
+	// guest returning to address 0) would otherwise compare-equal
+	// against an empty PC slot and the hit path would JMP to null.
+	// Skip the cache entirely for retAddr == 0 and let the unchained
+	// epilogue handle it. RAX is the popped low-32 retAddr.
+	cb.EmitBytes(0x85, modRM(3, amd64RAX, amd64RAX)) // TEST EAX, EAX
+	zeroPCMissOff := amd64Jcc_rel32(cb, amd64CondE)
+
+	// 4-entry MRU probe. Each comparison is on the low 32 bits (return
+	// PCs are uint32 in the IE64 stack frame). On hit, R11 = cache
+	// chainEntry. On miss after entry 3, fall through to unchained.
+	amd64ALU_reg_mem32_cmp(cb, amd64RAX, amd64R10, int32(jitCtxOffRTSCache0PC))
+	miss0Off := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64MOV_reg_mem(cb, amd64R11, amd64R10, int32(jitCtxOffRTSCache0Addr))
+	hit0Off := amd64JMP_rel32(cb)
+
+	patchRel32(cb, miss0Off, cb.Len())
+	amd64ALU_reg_mem32_cmp(cb, amd64RAX, amd64R10, int32(jitCtxOffRTSCache1PC))
+	miss1Off := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64MOV_reg_mem(cb, amd64R11, amd64R10, int32(jitCtxOffRTSCache1Addr))
+	hit1Off := amd64JMP_rel32(cb)
+
+	patchRel32(cb, miss1Off, cb.Len())
+	amd64ALU_reg_mem32_cmp(cb, amd64RAX, amd64R10, int32(jitCtxOffRTSCache2PC))
+	miss2Off := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64MOV_reg_mem(cb, amd64R11, amd64R10, int32(jitCtxOffRTSCache2Addr))
+	hit2Off := amd64JMP_rel32(cb)
+
+	patchRel32(cb, miss2Off, cb.Len())
+	amd64ALU_reg_mem32_cmp(cb, amd64RAX, amd64R10, int32(jitCtxOffRTSCache3PC))
+	missOff := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64MOV_reg_mem(cb, amd64R11, amd64R10, int32(jitCtxOffRTSCache3Addr))
+
+	// .chain_hit: R11 = chainEntry. Stash R11 in scratch slot since the
+	// upcoming light-store + ChainCount path can clobber R11 indirectly.
+	patchRel32(cb, hit0Off, cb.Len())
+	patchRel32(cb, hit1Off, cb.Len())
+	patchRel32(cb, hit2Off, cb.Len())
+
+	// Set R15 to the popped retAddr so any chained-fallback branches
+	// (budget exhausted, inval) return the correct PC. RAX still holds
+	// the popped value.
+	amd64MOV_reg_reg(cb, amd64RegIE64PC, amd64RAX)
+	if instrCount > 0 {
 		emitLoadImm64AMD64(cb, amd64RAX, uint64(instrCount)<<32)
 		amd64ALU_reg_reg(cb, 0x09, amd64RegIE64PC, amd64RAX)
 	}
+
+	// Stash chainEntry on the stack — the lightweight store sequence
+	// only clobbers RAX/R10 indirectly via emitChainExit prologue, but
+	// to keep R11 alive across reg-stores we save it.
+	amd64MOV_mem_reg(cb, amd64RSP, int32(amd64FrameSize-8), amd64R11)
+
+	// Lightweight reg store back to RegsPtr (RDI is RegsPtr at this point).
+	emitLightweightStoreRegs(cb)
+
+	// Reload RDI = JITContext for budget/inval bookkeeping.
+	amd64MOV_reg_mem(cb, amd64RDI, amd64RSP, int32(amd64OffCtxPtr))
+
+	// ChainCount is updated by the chained target's chainEntry — it
+	// reads R15>>32 (which we set to instrCount above) and folds it in.
+	// Bails leave ChainCount untouched so dispatcher accounting stays
+	// consistent.
+
+	// DEC dword [RDI + ChainBudget]
+	emitREX(cb, false, 0, amd64RDI)
+	cb.EmitBytes(0xFF, 0x8F)
+	cb.EmitBytes(byte(jitCtxOffChainBudget), byte(jitCtxOffChainBudget>>8),
+		byte(jitCtxOffChainBudget>>16), byte(jitCtxOffChainBudget>>24))
+	rtsBudgetOff := amd64Jcc_rel32(cb, amd64CondLE)
+
+	// CMP dword [RDI + NeedInval], 0
+	emitREX(cb, false, 0, amd64RDI)
+	cb.EmitBytes(0x83, 0xBF)
+	cb.EmitBytes(byte(jitCtxOffNeedInval), byte(jitCtxOffNeedInval>>8),
+		byte(jitCtxOffNeedInval>>16), byte(jitCtxOffNeedInval>>24))
+	cb.EmitBytes(0x00)
+	rtsInvalOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+	// Reload chainEntry from stash and JMP to it (indirect JMP).
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64FrameSize-8))
+	emitREX(cb, false, 0, amd64R11)
+	cb.EmitBytes(0xFF, 0xE0|byte(amd64R11&7))
+
+	// ── unchained fallback paths ──
+	// Cache miss / budget exhausted / inval pending: emit packed PC
+	// (already in R15 for hit path; for miss we still need to compute).
+	patchRel32(cb, missOff, cb.Len())
+	patchRel32(cb, zeroPCMissOff, cb.Len())
+	// On miss, R15 has not been set yet. Set it from popped RAX.
+	amd64MOV_reg_reg(cb, amd64RegIE64PC, amd64RAX)
+	if instrCount > 0 {
+		emitLoadImm64AMD64(cb, amd64RAX, uint64(instrCount)<<32)
+		amd64ALU_reg_reg(cb, 0x09, amd64RegIE64PC, amd64RAX)
+	}
+
+	// Common epilogue tail (also reached by budget/inval bails). RDI is
+	// either still RegsPtr (miss path) or JITContext (bail paths). We
+	// canonicalize: ensure RDI = RegsPtr for emitEpilogue.
+	commonExit := cb.Len()
+	patchRel32(cb, rtsBudgetOff, commonExit)
+	patchRel32(cb, rtsInvalOff, commonExit)
+	amd64MOV_reg_mem(cb, amd64RDI, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_reg_mem(cb, amd64RDI, amd64RDI, int32(jitCtxOffRegsPtr))
 	emitEpilogue(cb, br.written, br.used)
 }
 

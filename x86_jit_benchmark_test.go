@@ -183,19 +183,19 @@ func buildX86CallProgram(iterations uint32) (code []byte, totalInstrs int) {
 	sa := le32(x86BenchStackAddr)
 	it := le32(iterations)
 	code = []byte{
-		0xBC, sa[0], sa[1], sa[2], sa[3], // MOV ESP, stackAddr
-		0xB9, it[0], it[1], it[2], it[3], // MOV ECX, iter
-		0xB8, 0x00, 0x00, 0x00, 0x00, // MOV EAX, 0
+		0xBC, sa[0], sa[1], sa[2], sa[3], // MOV ESP, stackAddr      offsets 0..4
+		0xB9, it[0], it[1], it[2], it[3], // MOV ECX, iter           offsets 5..9
+		0xB8, 0x00, 0x00, 0x00, 0x00, // MOV EAX, 0                  offsets 10..14
 		// loop: (offset 15)
-		0xE8, 0x04, 0x00, 0x00, 0x00, // CALL sub (rel32 = +4, nextPC=20, target=24) (5)
-		0x49,       // DEC ECX  (1)
-		0x75, 0xF8, // JNZ -8 (back to offset 15) (2)
-		0xEB, 0x01, // JMP +1 (skip sub, to HLT at offset 26) (2)
-		// sub: (offset 24)
-		0x40, // INC EAX  (1)
-		0xC3, // RET      (1)
-		// end: (offset 26)
-		0xF4, // HLT
+		0xE8, 0x05, 0x00, 0x00, 0x00, // CALL sub (rel32=+5, nextPC=20, target=25) (5)
+		0x49,       // DEC ECX                                       offset 20
+		0x75, 0xF8, // JNZ -8 (back to offset 15)                    offsets 21..22
+		0xEB, 0x02, // JMP +2 (skip sub, to HLT at offset 27)        offsets 23..24
+		// sub: (offset 25)
+		0x40, // INC EAX                                             offset 25
+		0xC3, // RET                                                 offset 26
+		// end: (offset 27)
+		0xF4, // HLT                                                 offset 27
 	}
 	// 3 setup + iter*(CALL+INC+RET+DEC+JNZ=5) + JMP + HLT
 	totalInstrs = 3 + int(iterations)*5 + 2
@@ -252,6 +252,7 @@ func BenchmarkX86JIT_ALU_Interpreter(b *testing.B) {
 		runX86BenchInterpreter(cpu)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 func BenchmarkX86JIT_ALU_JIT(b *testing.B) {
@@ -281,6 +282,7 @@ func BenchmarkX86JIT_ALU_JIT(b *testing.B) {
 		runX86BenchJIT(cpu)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // ===========================================================================
@@ -298,6 +300,7 @@ func BenchmarkX86JIT_Memory_Interpreter(b *testing.B) {
 		runX86BenchInterpreter(cpu)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 func BenchmarkX86JIT_Memory_JIT(b *testing.B) {
@@ -326,6 +329,7 @@ func BenchmarkX86JIT_Memory_JIT(b *testing.B) {
 		runX86BenchJIT(cpu)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // ===========================================================================
@@ -343,6 +347,7 @@ func BenchmarkX86JIT_Mixed_Interpreter(b *testing.B) {
 		runX86BenchInterpreter(cpu)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 func BenchmarkX86JIT_Mixed_JIT(b *testing.B) {
@@ -371,6 +376,7 @@ func BenchmarkX86JIT_Mixed_JIT(b *testing.B) {
 		runX86BenchJIT(cpu)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // ===========================================================================
@@ -389,6 +395,7 @@ func BenchmarkX86JIT_Call_Interpreter(b *testing.B) {
 		runX86BenchInterpreter(cpu)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 func BenchmarkX86JIT_Call_JIT(b *testing.B) {
@@ -419,6 +426,7 @@ func BenchmarkX86JIT_Call_JIT(b *testing.B) {
 		runX86BenchJIT(cpu)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // ===========================================================================
@@ -452,6 +460,7 @@ func BenchmarkX86JIT_String_Interpreter(b *testing.B) {
 		runX86BenchInterpreter(cpu)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 func BenchmarkX86JIT_String_JIT(b *testing.B) {
@@ -480,6 +489,7 @@ func BenchmarkX86JIT_String_JIT(b *testing.B) {
 		runX86BenchJIT(cpu)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // ===========================================================================

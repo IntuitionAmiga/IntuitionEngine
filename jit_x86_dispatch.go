@@ -2,18 +2,22 @@
 //
 // (c) 2024-2026 Zayn Otley - GPLv3 or later
 
-//go:build (amd64 && (linux || windows || darwin)) || (arm64 && linux)
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 
-// x86JitExecute runs the JIT execution loop if JIT is enabled,
-// otherwise falls back to the interpreter.
+// x86JitExecute always runs the native x86 JIT. Phase 8 of the JIT-unification
+// plan retired the interpreter dispatch gate after the shadow-parity harness
+// confirmed the rotozoomer demo binary runs byte-equivalent on the general
+// JIT path. There is no runtime fallback to the interpreter loop: any path
+// that cannot be JIT-emitted (initialization failure, scan/compile error)
+// surfaces as a panic so the gap is fixed at its source.
+//
+// Single-instruction bail-and-resume into cpu.Step() (used by MMIO writes
+// and the rare unsupported-opcode bail) is part of the JIT↔host-device
+// protocol, not an interpreter fallback. It is preserved.
 func (cpu *CPU_X86) x86JitExecute() {
-	// Correctness-first fallback: the native x86 JIT is not yet trustworthy on
-	// full demo workloads such as the x86 rotozoomer. Keep the JIT plumbing and
-	// emitter tests intact, but route runtime execution through the interpreter
-	// until the real workload path is covered tightly enough to re-enable it.
-	cpu.x86RunInterpreter()
+	cpu.X86ExecuteJIT()
 }
 
 func init() {

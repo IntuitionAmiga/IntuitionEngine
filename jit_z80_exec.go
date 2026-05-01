@@ -108,6 +108,8 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 	}
 	defer cpu.freeZ80JIT()
 
+	enableZ80PollWiring(adapter)
+
 	execMem := cpu.getZ80JITExecMem()
 	ctx := cpu.jitCtx.(*Z80JITContext)
 	mem := adapter.bus.GetMemory()
@@ -264,11 +266,11 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 
 		// Initialize chain state for this entry into native code.
 		// All chain accumulators start at 0; native code ADDs to them.
-		ctx.ChainBudget = 64
+		ctx.ChainBudget = 256
 		ctx.ChainCount = 0
 		ctx.ChainCycles = 0
 		ctx.ChainRIncrements = 0
-		ctx.CycleBudget = 200 // ~50us at 4MHz — interrupt responsiveness budget
+		ctx.CycleBudget = 2000 // ~500us at 4MHz — interrupt responsiveness budget
 
 		// Execute the native code block (may chain across multiple blocks)
 		callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))

@@ -714,9 +714,12 @@ func (r *CPUX86Runner) LoadProgramFromFile(filename string) error {
 	return r.LoadProgram(filename)
 }
 
-// Run executes the program until halted
+// Run executes the program until halted. Honors CPUX86Config.JITEnabled:
+// when explicitly disabled by the caller, runs the interpreter loop. The
+// internal JIT-side per-block compile-error fallbacks are gone (Phase 8),
+// but this runtime opt-out is an external configuration contract, not an
+// internal fallback, and must be preserved.
 func (r *CPUX86Runner) Run() {
-	// Initialize perf counters if enabled
 	if r.PerfEnabled {
 		r.perfStartTime = time.Now()
 		r.lastPerfReport = r.perfStartTime
@@ -726,7 +729,6 @@ func (r *CPUX86Runner) Run() {
 		r.cpu.x86JitExecute()
 		return
 	}
-
 	r.cpu.x86RunInterpreter()
 }
 
@@ -746,7 +748,8 @@ func (r *CPUX86Runner) Reset() {
 	r.cpu.EIP = r.entry
 }
 
-// Execute runs the CPU in a loop until halted (for GUI integration)
+// Execute runs the CPU in a loop until halted (for GUI integration).
+// Mirrors Run's JITEnabled gate — see Run for rationale.
 func (r *CPUX86Runner) Execute() {
 	if r.PerfEnabled {
 		r.perfStartTime = time.Now()

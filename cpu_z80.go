@@ -46,8 +46,14 @@ type CPU_Z80 struct {
 	IFF1 bool
 	IFF2 bool
 
-	Halted  bool
-	running atomic.Bool // Atomic for lock-free access (was: Running bool)
+	Halted bool
+	// Phase 7d: running atomic gets cache-line isolation via
+	// CacheLineIsolatedBool. The wrapper carries 64 bytes of padding
+	// on each side so the cache line containing the atomic is fully
+	// covered by padding regardless of the enclosing struct's base
+	// alignment (Go aligns to 8 bytes, not 64). Plain inline padding
+	// is insufficient — see cache_line.go.
+	running CacheLineIsolatedBool
 	Cycles  uint64
 
 	irqLine    atomic.Bool

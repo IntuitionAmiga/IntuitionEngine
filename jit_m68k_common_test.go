@@ -693,6 +693,10 @@ func TestM68KJIT_ContextChainOffsets(t *testing.T) {
 		{"RTSCache0Addr", uintptr(unsafe.Pointer(&ctx.RTSCache0Addr)) - base, m68kCtxOffRTSCache0Addr},
 		{"RTSCache1PC", uintptr(unsafe.Pointer(&ctx.RTSCache1PC)) - base, m68kCtxOffRTSCache1PC},
 		{"RTSCache1Addr", uintptr(unsafe.Pointer(&ctx.RTSCache1Addr)) - base, m68kCtxOffRTSCache1Addr},
+		{"RTSCache2PC", uintptr(unsafe.Pointer(&ctx.RTSCache2PC)) - base, m68kCtxOffRTSCache2PC},
+		{"RTSCache2Addr", uintptr(unsafe.Pointer(&ctx.RTSCache2Addr)) - base, m68kCtxOffRTSCache2Addr},
+		{"RTSCache3PC", uintptr(unsafe.Pointer(&ctx.RTSCache3PC)) - base, m68kCtxOffRTSCache3PC},
+		{"RTSCache3Addr", uintptr(unsafe.Pointer(&ctx.RTSCache3Addr)) - base, m68kCtxOffRTSCache3Addr},
 	}
 	for _, tc := range tests {
 		if tc.field != tc.expect {

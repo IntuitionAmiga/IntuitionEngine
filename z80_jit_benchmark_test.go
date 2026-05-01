@@ -122,6 +122,7 @@ func BenchmarkZ80_ALU_Interpreter(b *testing.B) {
 		cpu.SetRunning(false)
 	}
 	b.ReportMetric(float64(2307), "instrs/op")
+	ReportMIPSHostNormalized(b, 2307)
 }
 
 func BenchmarkZ80_ALU_JIT(b *testing.B) {
@@ -147,6 +148,7 @@ func BenchmarkZ80_ALU_JIT(b *testing.B) {
 		cpu.ExecuteJITZ80() // returns on HALT
 	}
 	b.ReportMetric(float64(2307), "instrs/op")
+	ReportMIPSHostNormalized(b, 2307)
 }
 
 // ===========================================================================
@@ -193,6 +195,7 @@ func BenchmarkZ80_Memory_Interpreter(b *testing.B) {
 		cpu.SetRunning(false)
 	}
 	b.ReportMetric(float64(1539), "instrs/op")
+	ReportMIPSHostNormalized(b, 1539)
 }
 
 func BenchmarkZ80_Memory_JIT(b *testing.B) {
@@ -214,6 +217,7 @@ func BenchmarkZ80_Memory_JIT(b *testing.B) {
 		cpu.ExecuteJITZ80()
 	}
 	b.ReportMetric(float64(1539), "instrs/op")
+	ReportMIPSHostNormalized(b, 1539)
 }
 
 // ===========================================================================
@@ -251,6 +255,7 @@ func BenchmarkZ80_Mixed_Interpreter(b *testing.B) {
 		cpu.SetRunning(false)
 	}
 	b.ReportMetric(float64(2051), "instrs/op")
+	ReportMIPSHostNormalized(b, 2051)
 }
 
 func BenchmarkZ80_Mixed_JIT(b *testing.B) {
@@ -274,6 +279,7 @@ func BenchmarkZ80_Mixed_JIT(b *testing.B) {
 		cpu.ExecuteJITZ80()
 	}
 	b.ReportMetric(float64(2051), "instrs/op")
+	ReportMIPSHostNormalized(b, 2051)
 }
 
 // ===========================================================================
@@ -316,6 +322,7 @@ func BenchmarkZ80_Call_Interpreter(b *testing.B) {
 		cpu.SetRunning(false)
 	}
 	b.ReportMetric(float64(1027), "instrs/op")
+	ReportMIPSHostNormalized(b, 1027)
 }
 
 func BenchmarkZ80_Call_JIT(b *testing.B) {
@@ -341,4 +348,5 @@ func BenchmarkZ80_Call_JIT(b *testing.B) {
 		cpu.ExecuteJITZ80()
 	}
 	b.ReportMetric(float64(1027), "instrs/op")
+	ReportMIPSHostNormalized(b, 1027)
 }

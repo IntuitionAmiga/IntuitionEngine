@@ -35,9 +35,11 @@ type X86JITContext struct {
 	RTSCache0PC       uint32  // 104: MRU RET target cache entry 0 - guest PC
 	_pad1             uint32  // 108: alignment
 	RTSCache0Addr     uintptr // 112: MRU entry 0 - chain entry address
-	RTSCache1PC       uint32  // 120: MRU entry 1 - guest PC
-	_pad2             uint32  // 124: alignment
-	RTSCache1Addr     uintptr // 128: MRU entry 1 - chain entry address
+	RTSCache0RegMap   uint64  // 120: MRU entry 0 - target block's regMap (8 bytes packed as uint64)
+	RTSCache1PC       uint32  // 128: MRU entry 1 - guest PC
+	_pad2             uint32  // 132: alignment
+	RTSCache1Addr     uintptr // 136: MRU entry 1 - chain entry address
+	RTSCache1RegMap   uint64  // 144: MRU entry 1 - target block's regMap
 }
 
 // X86JITContext field offsets (must match struct layout above)
@@ -60,8 +62,10 @@ const (
 	x86CtxOffChainCount        = 100
 	x86CtxOffRTSCache0PC       = 104
 	x86CtxOffRTSCache0Addr     = 112
-	x86CtxOffRTSCache1PC       = 120
-	x86CtxOffRTSCache1Addr     = 128
+	x86CtxOffRTSCache0RegMap   = 120
+	x86CtxOffRTSCache1PC       = 128
+	x86CtxOffRTSCache1Addr     = 136
+	x86CtxOffRTSCache1RegMap   = 144
 )
 
 // x86JitAvailable is set to true at init time on platforms that support x86 JIT.
@@ -744,6 +748,15 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 		return true
 	}
 
+	// Segment-override-prefixed first instruction: the compile loop bails
+	// at the segment-prefix gate without emitting anything, which post
+	// Phase-8 surfaces as a "no instructions compiled" panic. Route to
+	// single-instruction Step bail instead so the fast-path stays correct
+	// without growing per-segment native-emit support.
+	if instrs[0].prefixes&x86PrefSeg != 0 {
+		return true
+	}
+
 	opcode := instrs[0].opcode
 
 	switch opcode {
@@ -787,6 +800,15 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 	case 0xE4, 0xE5, 0xE6, 0xE7: // IN/OUT imm8
 		return true
 	case 0xEC, 0xED, 0xEE, 0xEF: // IN/OUT DX
+		return true
+
+	// HLT — bail to single-instruction Step so cpu.Halted is set
+	// through the canonical interpreter path. The exec loop's Halted
+	// check then exits cleanly. Native HLT emit would need its own
+	// epilogue + Halted-set, while the per-instruction bail-and-resume
+	// protocol already exists for MMIO / unsupported-op cases; reusing
+	// it costs nothing on real workloads (HLT runs once per program).
+	case 0xF4: // HLT
 		return true
 	}
 
@@ -1020,6 +1042,12 @@ func x86AnalyzeBlockRegs(instrs []X86JITInstr, memory []byte, startPC uint32) x8
 // ===========================================================================
 
 const x86Tier2Threshold = 64 // execution count before recompilation
+
+// x86TierController declaration lives in jit_x86_tier_amd64.go so it
+// stays gated behind the same `amd64 && (linux||windows||darwin)`
+// build tag as NewTierController / X86RegProfile (jit_tier_common.go).
+// jit_x86_common.go itself is untagged and must compile on
+// arm64/non-Linux test builds, where those symbols are absent.
 
 // x86Tier2RegAlloc computes an optimal register mapping for a specific block.
 // Returns a mapping: guestReg -> hostReg (0 if spilled).

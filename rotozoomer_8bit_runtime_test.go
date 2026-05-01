@@ -256,8 +256,12 @@ func TestX86RotozoomerRuntimeProducesVideo(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	runner.Stop()
 
-	if got := runner.GetCPU().x86DemoAccelSteps.Load(); got == 0 {
-		t.Fatalf("x86 demo accelerator steps = %d, want > 0", got)
+	// Slice 4 retired tryDemoAccelFrame: the JIT path now runs the
+	// rotozoomer through general native dispatch instead of the
+	// hand-coded frame shortcut, so demo-accel steps are expected to
+	// stay 0. Video content verifies the JIT correctly produced frames.
+	if got := runner.GetCPU().x86DemoAccelSteps.Load(); got != 0 {
+		t.Errorf("x86 demo accelerator steps = %d, want 0 after slice-4 retire", got)
 	}
 	requireVideoContent(t, rig.video, 6)
 }

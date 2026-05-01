@@ -186,6 +186,7 @@ func Benchmark6502_ALU_Interpreter(b *testing.B) {
 		cpu.Execute()
 	}
 	b.ReportMetric(float64(bench6502ALUInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, bench6502ALUInstrs)
 }
 
 func Benchmark6502_ALU_JIT(b *testing.B) {
@@ -208,6 +209,7 @@ func Benchmark6502_ALU_JIT(b *testing.B) {
 		cpu.ExecuteJIT6502()
 	}
 	b.ReportMetric(float64(bench6502ALUInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, bench6502ALUInstrs)
 }
 
 // ===========================================================================
@@ -255,6 +257,7 @@ func Benchmark6502_Memory_Interpreter(b *testing.B) {
 		cpu.Execute()
 	}
 	b.ReportMetric(float64(bench6502MemInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, bench6502MemInstrs)
 }
 
 func Benchmark6502_Memory_JIT(b *testing.B) {
@@ -275,6 +278,7 @@ func Benchmark6502_Memory_JIT(b *testing.B) {
 		cpu.ExecuteJIT6502()
 	}
 	b.ReportMetric(float64(bench6502MemInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, bench6502MemInstrs)
 }
 
 // ===========================================================================
@@ -330,6 +334,7 @@ func Benchmark6502_Call_Interpreter(b *testing.B) {
 		cpu.Execute()
 	}
 	b.ReportMetric(float64(bench6502CallInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, bench6502CallInstrs)
 }
 
 func Benchmark6502_Call_JIT(b *testing.B) {
@@ -352,6 +357,7 @@ func Benchmark6502_Call_JIT(b *testing.B) {
 		cpu.ExecuteJIT6502()
 	}
 	b.ReportMetric(float64(bench6502CallInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, bench6502CallInstrs)
 }
 
 // ===========================================================================
@@ -414,6 +420,7 @@ func Benchmark6502_Branch_Interpreter(b *testing.B) {
 		cpu.Execute()
 	}
 	b.ReportMetric(float64(bench6502BranchInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, bench6502BranchInstrs)
 }
 
 func Benchmark6502_Branch_JIT(b *testing.B) {
@@ -436,6 +443,7 @@ func Benchmark6502_Branch_JIT(b *testing.B) {
 		cpu.ExecuteJIT6502()
 	}
 	b.ReportMetric(float64(bench6502BranchInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, bench6502BranchInstrs)
 }
 
 // ===========================================================================
@@ -499,6 +507,7 @@ func Benchmark6502_Mixed_Interpreter(b *testing.B) {
 		cpu.Execute()
 	}
 	b.ReportMetric(float64(bench6502MixedInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, bench6502MixedInstrs)
 }
 
 func Benchmark6502_Mixed_JIT(b *testing.B) {
@@ -522,4 +531,5 @@ func Benchmark6502_Mixed_JIT(b *testing.B) {
 		cpu.ExecuteJIT6502()
 	}
 	b.ReportMetric(float64(bench6502MixedInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, bench6502MixedInstrs)
 }

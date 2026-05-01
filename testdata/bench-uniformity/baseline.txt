@@ -1,0 +1,30 @@
+goos: linux
+goarch: amd64
+pkg: github.com/intuitionamiga/IntuitionEngine
+cpu: Intel(R) Xeon(R) W-11955M CPU @ 2.60GHz
+BenchmarkIE64_ALU_JIT-16                	  150817	     23984 ns/op	      3753 MIPS_host	     90004 instructions/op
+BenchmarkIE64_FPU_JIT-16                	   35000	    103054 ns/op	       679.3 MIPS_host	     70005 instructions/op
+BenchmarkIE64_Memory_JIT-16             	  233442	     15917 ns/op	      3770 MIPS_host	     60004 instructions/op
+BenchmarkIE64_Mixed_JIT-16              	   69980	     50996 ns/op	      1569 MIPS_host	     80006 instructions/op
+BenchmarkIE64_Call_JIT-16               	  371817	      9670 ns/op	      5171 MIPS_host	     50005 instructions/op
+Benchmark6502_ALU_JIT-16                	 2943192	      1229 ns/op	      1877 MIPS_host	      2306 instructions/op
+Benchmark6502_Memory_JIT-16             	 4079553	       875.6 ns/op	      1171 MIPS_host	      1025 instructions/op
+Benchmark6502_Call_JIT-16               	 2000732	      1795 ns/op	       713.5 MIPS_host	      1281 instructions/op
+Benchmark6502_Branch_JIT-16             	 2161866	      1665 ns/op	       923.2 MIPS_host	      1537 instructions/op
+Benchmark6502_Mixed_JIT-16              	 4225407	       846.0 ns/op	      2423 MIPS_host	      2050 instructions/op
+BenchmarkM68K_ALU_JIT-16                	  143743	     25136 ns/op	      3581 MIPS_host	     90000 instructions/op
+BenchmarkM68K_MemCopy_JIT-16            	  371089	      9914 ns/op	      2017 MIPS_host	     20000 instructions/op
+BenchmarkM68K_Call_JIT-16               	  152002	     23573 ns/op	      1697 MIPS_host	     40000 instructions/op
+BenchmarkM68K_Chain_BRA_JIT-16          	  184942	     19015 ns/op	      1578 MIPS_host	     30000 instructions/op
+BenchmarkM68K_LazyCCR_CMP_Bcc_JIT-16    	  286370	     12319 ns/op	      4059 MIPS_host	     50000 instructions/op
+BenchmarkX86JIT_ALU_JIT-16              	  207556	     17288 ns/op	      5206 MIPS_host	     90004 instructions/op
+BenchmarkX86JIT_Memory_JIT-16           	  133267	     26693 ns/op	      2248 MIPS_host	     60004 instructions/op
+BenchmarkX86JIT_Mixed_JIT-16            	  127713	     28931 ns/op	      3111 MIPS_host	     90005 instructions/op
+BenchmarkX86JIT_Call_JIT-16             	   29338	    116229 ns/op	       430.2 MIPS_host	     50005 instructions/op
+BenchmarkX86JIT_String_JIT-16           	28050207	       128.0 ns/op	        39.05 MIPS_host	         5.000 instructions/op
+BenchmarkZ80_ALU_JIT-16                 	 3868381	       946.3 ns/op	      2438 MIPS_host	      2307 instrs/op
+BenchmarkZ80_Memory_JIT-16              	 5384396	       667.1 ns/op	      2307 MIPS_host	      1539 instrs/op
+BenchmarkZ80_Mixed_JIT-16               	 1852959	      1922 ns/op	      1067 MIPS_host	      2051 instrs/op
+BenchmarkZ80_Call_JIT-16                	 2007439	      1788 ns/op	       574.5 MIPS_host	      1027 instrs/op
+PASS
+ok  	github.com/intuitionamiga/IntuitionEngine	97.043s

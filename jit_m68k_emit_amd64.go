@@ -56,13 +56,21 @@ const m68kJitBudget = 4095
 // ===========================================================================
 
 // m68kFlagState tracks whether M68K CCR is materialized in R14 or live in host EFLAGS.
-type m68kFlagState int
+//
+// As of Phase 2 of the JIT unification, m68kFlagState is a type alias for the
+// shared JITFlagState enum (see jit_flags_common.go). The legacy backend
+// constants (flagsMaterialized, flagsLiveArith, flagsLiveLogi) remain valid
+// names in this file as untyped aliases for the shared values, so existing
+// emit-site references keep compiling unchanged. M68K's CMP-style state
+// (flagsLiveArithNoX) is a backend-specific extension declared at
+// JITFlagBackendBase + 0 — it is not part of the shared core enum.
+type m68kFlagState = JITFlagState
 
 const (
-	flagsMaterialized m68kFlagState = iota // R14 holds valid 5-bit CCR
-	flagsLiveArith                         // EFLAGS from ADD/SUB/NEG; X saved to [RSP+xFlagOff]
-	flagsLiveArithNoX                      // EFLAGS from CMP (X not modified)
-	flagsLiveLogi                          // EFLAGS from AND/OR/EOR/MOVE/TST/CLR (V=0,C=0; X in stack slot)
+	flagsMaterialized = JITFlagMaterialized // R14 holds valid 5-bit CCR
+	flagsLiveArith    = JITFlagLiveArith    // EFLAGS from ADD/SUB/NEG; X saved to [RSP+xFlagOff]
+	flagsLiveArithNoX = JITFlagLiveArithNoX // EFLAGS from CMP (X not modified) — M68K backend extension
+	flagsLiveLogi     = JITFlagLiveLogic    // EFLAGS from AND/OR/EOR/MOVE/TST/CLR (V=0,C=0; X in stack slot)
 )
 
 // m68kCompileState tracks flag liveness during block compilation.
@@ -187,6 +195,10 @@ func m68kInstrNeedsCCRMaterialization(ji *M68KJITInstr) bool {
 // Set by m68kCompileBlockWithMem; read by emitCCR_Arithmetic/Logic and m68kCondToJcc.
 // Safe: M68K JIT compilation is single-threaded.
 var m68kCurrentCS *m68kCompileState
+
+// m68kMemCopyLoopHits counts how many times the MemCopy loop fast path
+// fired during compile. Exposed for tests/diagnostics.
+var m68kMemCopyLoopHits uint64
 
 func m68kEAMayUseMemHelper(mode, reg uint16, isWrite bool) bool {
 	switch mode {
@@ -432,6 +444,13 @@ func amd64TEST_reg_reg32(cb *CodeBuffer, r1, r2 byte) {
 // all 4 flags via SETcc FIRST, then combine them.
 func emitCCR_Arithmetic(cb *CodeBuffer) {
 	if cs := m68kCurrentCS; cs != nil {
+		// Phase 2c liveness: dead producer skips the lazy-flag dance.
+		// Compile loop pre-materialises any live prior state before
+		// this slot's arithmetic clobbers host EFLAGS, so cs.flagState
+		// is already flagsMaterialized here.
+		if m68kCCRDeadAtCurrent() {
+			return
+		}
 		// Lazy mode: save X (CF) to stack slot, defer full extraction
 		m68kSaveXToStack(cb) // SETB [RSP+24]
 		cs.flagState = flagsLiveArith
@@ -472,6 +491,9 @@ func emitCCR_Arithmetic(cb *CodeBuffer) {
 // CRITICAL: Extract flags via SETcc BEFORE any AND/SHL/OR clobbers them.
 func emitCCR_Logic(cb *CodeBuffer) {
 	if cs := m68kCurrentCS; cs != nil {
+		if m68kCCRDeadAtCurrent() {
+			return
+		}
 		cs.flagState = flagsLiveLogi
 		return
 	}
@@ -595,20 +617,17 @@ func m68kEmitRetPC(cb *CodeBuffer, pc uint32, count uint32) {
 //
 // Returns the code buffer offset of the chain entry label.
 func m68kEmitChainEntry(cb *CodeBuffer, br *m68kBlockRegs) int {
-	entryOff := cb.Len()
-
-	// Reset backward branch loop counter
-	if br.hasBackwardBranch {
-		amd64MOV_mem_imm32(cb, amd64RSP, int32(m68kAMD64OffLoopCount), 0)
-	}
-
-	// Load ALL mapped data registers unconditionally.
-	// Chain entry doesn't know which block is chaining to us, so we must reload all.
-	// For the full entry path (prologue falls through), the extra loads are negligible.
+	// Prologue-path register loads. Chained jumps from another block bypass
+	// these (their patched JMP lands at entryOff below) because the caller
+	// block left D0/D1/A0/A7 live in the same global host registers and
+	// already materialized R14 with the canonical CCR via its chain exit.
+	// X-flag stack slot is in sync with R14 bit 4 by construction:
+	// m68kMaterializeCCR derives R14 bit 4 from [RSP+m68kAMD64OffXFlag]
+	// (or from CF in the live-arith case, which the corresponding
+	// m68kSaveXToStack writes into the slot before any clobber), so the
+	// slot already reflects R14 bit 4 across the chain edge.
 	amd64MOV_reg_mem32(cb, m68kAMD64RegD0, m68kAMD64RegDataBase, 0*4) // D0 -> RBX
 	amd64MOV_reg_mem32(cb, m68kAMD64RegD1, m68kAMD64RegDataBase, 1*4) // D1 -> RBP
-
-	// Load ALL mapped address registers unconditionally
 	amd64MOV_reg_mem32(cb, m68kAMD64RegA0, m68kAMD64RegAddrBase, 0*4) // A0 -> R12
 	amd64MOV_reg_mem32(cb, m68kAMD64RegA7, m68kAMD64RegAddrBase, 7*4) // A7 -> R13
 
@@ -618,10 +637,20 @@ func m68kEmitChainEntry(cb *CodeBuffer, br *m68kBlockRegs) int {
 	amd64MOVZX_W(cb, m68kAMD64RegCCR, m68kAMD64RegCCR)
 	amd64ALU_reg_imm32(cb, 4, m68kAMD64RegCCR, 0x1F) // AND R14, 0x1F
 
-	// Seed X flag stack slot from R14 (bit 4) for lazy CCR
+	// Seed X flag stack slot from R14 (bit 4) for lazy CCR.
+	// Chain exits write R14 bit 4 back into [RSP+OffXFlag] before the
+	// JMP rel32, so chained entries can skip this seed and inherit a
+	// synced slot from the predecessor.
 	amd64MOV_reg_reg32(cb, amd64RAX, m68kAMD64RegCCR)
 	amd64SHR_imm(cb, amd64RAX, 4)                                     // bit 4 → bit 0
 	emitMemOp(cb, false, 0x88, amd64RAX, amd64RSP, m68kAMD64OffXFlag) // MOV [RSP+24], AL
+
+	// Chained jumps from other blocks land here.
+	entryOff := cb.Len()
+
+	if br.hasBackwardBranch {
+		amd64MOV_mem_imm32(cb, amd64RSP, int32(m68kAMD64OffLoopCount), 0)
+	}
 
 	return entryOff
 }
@@ -634,6 +663,13 @@ func m68kEmitLightweightEpilogue(cb *CodeBuffer, br *m68kBlockRegs) {
 	if cs := m68kCurrentCS; cs != nil {
 		m68kMaterializeCCR(cb, cs)
 	}
+	// Sync X stack slot with R14 bit 4. Non-lazy CCR emit paths can update
+	// R14 bit 4 directly without writing the slot; downstream consumers
+	// (lazy materialize, RTS-chained successors that skip the prologue X
+	// seed) read from the slot. Keep it pinned to R14's authoritative bit 4.
+	amd64MOV_reg_reg32(cb, amd64RAX, m68kAMD64RegCCR)
+	amd64SHR_imm(cb, amd64RAX, 4)
+	emitMemOp(cb, false, 0x88, amd64RAX, amd64RSP, m68kAMD64OffXFlag) // MOV [RSP+24], AL
 	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, 0*4, m68kAMD64RegD0)
 	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, 1*4, m68kAMD64RegD1)
 	amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, 0*4, m68kAMD64RegA0)
@@ -698,7 +734,27 @@ func amd64DEC_mem32(cb *CodeBuffer, base byte, disp int32) {
 //
 // Returns the chain exit info for later patching.
 func m68kEmitChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32, br *m68kBlockRegs) m68kChainExitInfo {
-	m68kEmitLightweightEpilogue(cb, br)
+	// Materialize lazy CCR so R14 holds the canonical 5-bit value the
+	// chained target's body will consume (its m68kEmitChainEntry skips
+	// the CCR re-extract on the chained-jump path). No register spill
+	// here — the chained target reads D0/D1/A0/A7 from their mapped
+	// host registers, not memory, so spilling on the success path is
+	// pure waste. The .unchained bail still spills before returning to
+	// the dispatcher.
+	if cs := m68kCurrentCS; cs != nil {
+		m68kMaterializeCCR(cb, cs)
+	}
+
+	// Sync X stack slot with R14 bit 4 across the chain edge. Non-lazy
+	// emitCCR_Arithmetic / emitCCR_Logic paths update R14 bit 4 directly
+	// without writing the slot; if the chained successor consumes X
+	// lazily (its first arithmetic op leaves flagsLiveLogi/Arith and a
+	// later materialize reads from the slot), a stale slot would silently
+	// preserve the wrong X. Persisting bit 4 → slot here keeps the chain
+	// entry seed-free while making the contract explicit.
+	amd64MOV_reg_reg32(cb, amd64RAX, m68kAMD64RegCCR)
+	amd64SHR_imm(cb, amd64RAX, 4)
+	emitMemOp(cb, false, 0x88, amd64RAX, amd64RSP, m68kAMD64OffXFlag) // MOV [RSP+24], AL
 
 	// ADD DWORD [R15 + ChainCount], instrCount
 	// Use: load into scratch, add, store back
@@ -728,6 +784,11 @@ func m68kEmitChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32, br *m
 	patchRel32(cb, unchainedOff2, unchainedLabel)
 	// Patch the initial JMP to point to unchained (will be overwritten when target compiles)
 	patchRel32(cb, jmpDispOffset, unchainedLabel)
+
+	// Bail: spill registers + merge CCR into SR so the dispatcher sees a
+	// consistent snapshot. m68kMaterializeCCR is idempotent so this call
+	// only re-emits the spill and CCR merge.
+	m68kEmitLightweightEpilogue(cb, br)
 
 	// Set RetPC = targetPC
 	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetPC), targetPC)
@@ -876,6 +937,9 @@ func m68kEmitCMP_Dn_Dn(cb *CodeBuffer, opcode uint16) {
 		// Lazy CCR: CMP sets NZVC but NOT X — use flagsLiveArithNoX
 		// so materializer preserves old X from R14 instead of reading CF
 		if cs := m68kCurrentCS; cs != nil {
+			if m68kCCRDeadAtCurrent() {
+				return
+			}
 			cs.flagState = flagsLiveArithNoX
 			return
 		}
@@ -1863,6 +1927,729 @@ func m68kEmitWriteDestEA(cb *CodeBuffer, mode, reg uint16, size int,
 // MOVE with Memory Operands
 // ===========================================================================
 
+// m68kEmitMOVE_PostincPostinc_Long emits a fused fast path for
+// MOVE.L (Ax)+,(Ay)+ — the MemCopy hot pattern. Combines per-operand
+// alignment and I/O guards into shared checks, performs raw 32-bit
+// load+store without the read-side and write-side BSWAP roundtrip,
+// and consults the destination page bitmap once for SMC detection.
+//
+// On any guard miss (alignment, I/O), sets NeedIOFallback=1 and skips
+// the read/write/auto-increment/SMC/flag-update; the main compile loop's
+// post-instruction check exits the block and the dispatcher re-executes
+// this MOVE.L through the interpreter.
+//
+// Requires srcReg != dstReg so source and destination addresses can
+// occupy R10 and R11 simultaneously without aliasing.
+func m68kEmitMOVE_PostincPostinc_Long(cb *CodeBuffer, srcReg, dstReg uint16) {
+	// Resolve source and destination address registers into R10 / R11.
+	srcAR := m68kResolveAddrReg(cb, srcReg, amd64R10)
+	if srcAR != amd64R10 {
+		amd64MOV_reg_reg32(cb, amd64R10, srcAR)
+	}
+	dstAR := m68kResolveAddrReg(cb, dstReg, amd64R11)
+	if dstAR != amd64R11 {
+		amd64MOV_reg_reg32(cb, amd64R11, dstAR)
+	}
+
+	// Combined alignment check: (R10 | R11) & 1 must be zero.
+	amd64MOV_reg_reg32(cb, amd64RAX, amd64R10)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64R11) // OR EAX, R11
+	amd64TEST_reg_imm8(cb, amd64RAX, 1)
+	bailOff1 := amd64Jcc_rel32(cb, amd64CondNE) // JNZ bail
+
+	// I/O threshold check: both R10 and R11 must be below IOThresh.
+	amd64ALU_reg_reg32(cb, 0x39, amd64R10, m68kAMD64RegIOThresh) // CMP R10, IOThresh
+	bailOff2 := amd64Jcc_rel32(cb, amd64CondAE)
+	amd64ALU_reg_reg32(cb, 0x39, amd64R11, m68kAMD64RegIOThresh) // CMP R11, IOThresh
+	bailOff3 := amd64Jcc_rel32(cb, amd64CondAE)
+
+	// Raw 32-bit copy without intermediate byte-swap. EAX holds the
+	// big-endian-ordered raw bytes from src; storing them at dst preserves
+	// big-endian byte order in memory. Flag computation below uses a
+	// separate BSWAP into a scratch so the stored value is unaffected.
+	emitMemOpSIB(cb, false, 0x8B, amd64RAX, m68kAMD64RegMemBase, amd64R10, 0)
+	emitMemOpSIB(cb, false, 0x89, amd64RAX, m68kAMD64RegMemBase, amd64R11, 0)
+
+	// SMC check on destination page (page = R11 >> 12). Done BEFORE
+	// the auto-increment so R11 still holds the write address.
+	amd64MOV_reg_reg32(cb, amd64RCX, amd64R11)
+	amd64SHR_imm(cb, amd64RCX, 12)
+	amd64MOV_reg_mem(cb, amd64RDX, m68kAMD64RegCtx, int32(m68kCtxOffCodePageBitmapPtr))
+	emitREX_SIB(cb, false, amd64RDX, amd64RCX, amd64RDX)
+	cb.EmitBytes(0x0F, 0xB6, modRM(0, amd64RDX, 4), sibByte(0, amd64RCX, amd64RDX))
+	amd64TEST_reg_reg32(cb, amd64RDX, amd64RDX)
+	skipInvalOff := amd64Jcc_rel32(cb, amd64CondE)
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedInval), 1)
+	patchRel32(cb, skipInvalOff, cb.Len())
+
+	// Auto-increment: A_src += 4, A_dst += 4. Mapped registers are
+	// updated in place. Spilled registers reuse the R10/R11 copies
+	// already populated above (avoids a redundant memory reload).
+	if srcMapped, ok := m68kAddrRegToAMD64(srcReg); ok {
+		amd64ALU_reg_imm32_32bit(cb, 0, srcMapped, 4)
+	} else {
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 4)
+		amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, int32(srcReg)*4, amd64R10)
+	}
+	if dstMapped, ok := m68kAddrRegToAMD64(dstReg); ok {
+		amd64ALU_reg_imm32_32bit(cb, 0, dstMapped, 4)
+	} else {
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R11, 4)
+		amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, int32(dstReg)*4, amd64R11)
+	}
+
+	// Flag computation: byte-swap the raw value into native order, then
+	// TEST to drive emitCCR_Logic.
+	emitREX(cb, false, 0, amd64RAX)
+	cb.EmitBytes(0x0F, 0xC8+regBits(amd64RAX)) // BSWAP EAX
+	amd64TEST_reg_reg32(cb, amd64RAX, amd64RAX)
+	emitCCR_Logic(cb)
+
+	doneOff := amd64JMP_rel32(cb)
+
+	// Bail: any guard miss converges here. Set NeedIOFallback=1 so the
+	// post-instruction generic check (m68kInstrMaySetGenericIOFallback)
+	// retires the block via epilogue with the dispatcher replaying this
+	// MOVE.L through the interpreter.
+	patchRel32(cb, bailOff1, cb.Len())
+	patchRel32(cb, bailOff2, cb.Len())
+	patchRel32(cb, bailOff3, cb.Len())
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
+
+	patchRel32(cb, doneOff, cb.Len())
+}
+
+// m68kIsMemCopyLoopBlock returns true if the first two instructions match
+// the canonical MemCopy loop shape:
+//
+//	MOVE.{B,W,L} (Ax)+,(Ay)+  ; instrs[0] at block start (pcOffset 0)
+//	DBRA          Dn, instrs[0]  ; instrs[1], DBRA backward branch into MOVE
+//
+// On match, returns the source/destination address registers, the
+// counter data register, the M68K size, and the chain-target PC (post-
+// DBRA). Trailing instructions in the block (DBcc is not a block
+// terminator on the 68K, so the scanner extends past DBRA) are
+// intentionally ignored — the loop chain-exits to the post-DBRA PC where
+// they form a fresh block compiled separately on demand.
+//
+// The MOVE must use distinct address registers so src and dst can occupy
+// independent host registers in the unchecked body.
+func m68kIsMemCopyLoopBlock(instrs []M68KJITInstr, startPC uint32, memory []byte) (srcAn, dstAn, ctrDn uint16, size int, nextPC uint32, ok bool) {
+	if len(instrs) < 2 {
+		return
+	}
+	move := instrs[0]
+	dbcc := instrs[1]
+	if move.pcOffset != 0 {
+		return
+	}
+
+	// MOVE.{B,W,L}: group is 1 (BYTE), 3 (WORD), or 2 (LONG); srcMode==3, dstMode==3.
+	switch move.opcode >> 12 {
+	case 0x1:
+		size = M68K_SIZE_BYTE
+	case 0x3:
+		size = M68K_SIZE_WORD
+	case 0x2:
+		size = M68K_SIZE_LONG
+	default:
+		return
+	}
+	srcMode := (move.opcode >> 3) & 7
+	dstMode := (move.opcode >> 6) & 7
+	if srcMode != 3 || dstMode != 3 {
+		return
+	}
+	sReg := move.opcode & 7
+	dReg := (move.opcode >> 9) & 7
+	if sReg == dReg {
+		return
+	}
+	// A7 has special step rules (always +2 for byte ops). Skip — would
+	// require alignment-aware scaling in the loop. Rare in MemCopy benches.
+	if sReg == 7 || dReg == 7 {
+		return
+	}
+
+	// DBRA opcode: 0x51C8 | reg (cond=1, mode=11001).
+	if dbcc.opcode&0xFFF8 != 0x51C8 {
+		return
+	}
+	// DBRA target = instrPC + 2 + dispWord. instrPC = startPC + dbcc.pcOffset.
+	// Body loops back to instrs[0] when target == startPC.
+	instrPC := startPC + dbcc.pcOffset
+	if instrPC+4 > uint32(len(memory)) {
+		return
+	}
+	dispWord := int16(uint16(memory[instrPC+2])<<8 | uint16(memory[instrPC+3]))
+	target := uint32(int64(instrPC) + 2 + int64(dispWord))
+	if target != startPC {
+		return
+	}
+
+	srcAn = sReg
+	dstAn = dReg
+	ctrDn = dbcc.opcode & 7
+	nextPC = instrPC + uint32(dbcc.length)
+	ok = true
+	return
+}
+
+// m68kEmitMemCopyLoop emits a specialized whole-block fast path for the
+// MemCopy loop shape (MOVE.{B,W,L} (Ax)+,(Ay)+; DBRA Dn,loop). At block
+// entry it runs a one-time eligibility pre-check: size-appropriate
+// alignment, in-range I/O thresholds for the full src and dst extents,
+// and a runtime page scan that the destination page bitmap is clean. On
+// all-pass, control falls into a tight unchecked loop (raw read+write at
+// the requested size + auto-increment + counter decrement). On any
+// pre-check miss, the function bails the block via NeedIOFallback so the
+// dispatcher re-executes via the interpreter.
+//
+// On the success path the block exits via a chain edge to nextPC, the
+// instruction following DBRA, so callers must record the returned chain
+// info in the block's chainSlots.
+func m68kEmitMemCopyLoop(cb *CodeBuffer, srcAn, dstAn, ctrDn uint16, size int, instrs []M68KJITInstr, startPC, nextPC uint32, br *m68kBlockRegs) m68kChainExitInfo {
+	// Per-size step (bytes per iter) and alignment mask.
+	step := uint32(1)
+	alignMask := byte(0)
+	switch size {
+	case M68K_SIZE_BYTE:
+		step = 1
+		alignMask = 0
+	case M68K_SIZE_WORD:
+		step = 2
+		alignMask = 1
+	case M68K_SIZE_LONG:
+		step = 4
+		alignMask = 3
+	}
+	stepShift := byte(0)
+	switch step {
+	case 2:
+		stepShift = 1
+	case 4:
+		stepShift = 2
+	}
+
+	// ── Pre-check ──
+	// Read counter Dn (low 16) into ECX; +1 = iter count.
+	if dr, mapped := m68kDataRegToAMD64(ctrDn); mapped {
+		amd64MOVZX_W(cb, amd64RCX, dr)
+	} else {
+		amd64MOV_reg_mem32(cb, amd64RCX, m68kAMD64RegDataBase, int32(ctrDn)*4)
+		amd64MOVZX_W(cb, amd64RCX, amd64RCX)
+	}
+	// Bail when Dn.W == 0xFFFF: legal DBRA encoding for 65536 iterations.
+	// Letting it through would either wrap ECX after +1 (depending on width
+	// semantics) or run a 256 KiB unchecked copy with EDX = 0x40000 — beyond
+	// what the static IOThresh guard was sized for. Punt to interpreter.
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64RCX, 0xFFFF) // CMP ECX, 0xFFFF
+	failOff0 := amd64Jcc_rel32(cb, amd64CondE)
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1) // ECX = iter count
+
+	// Read A_src into R10.
+	if asr, mapped := m68kAddrRegToAMD64(srcAn); mapped {
+		amd64MOV_reg_reg32(cb, amd64R10, asr)
+	} else {
+		amd64MOV_reg_mem32(cb, amd64R10, m68kAMD64RegAddrBase, int32(srcAn)*4)
+	}
+	// Read A_dst into R11.
+	if adr, mapped := m68kAddrRegToAMD64(dstAn); mapped {
+		amd64MOV_reg_reg32(cb, amd64R11, adr)
+	} else {
+		amd64MOV_reg_mem32(cb, amd64R11, m68kAMD64RegAddrBase, int32(dstAn)*4)
+	}
+
+	// EDX = total bytes = ECX << stepShift.
+	amd64MOV_reg_reg32(cb, amd64RDX, amd64RCX)
+	if stepShift > 0 {
+		amd64SHL_imm(cb, amd64RDX, stepShift)
+	}
+
+	// Combined alignment for word/long (byte has no alignment requirement):
+	// (R10 | R11) & alignMask != 0 → fail.
+	failOff1 := -1
+	if alignMask != 0 {
+		amd64MOV_reg_reg32(cb, amd64RAX, amd64R10)
+		amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64R11) // OR EAX, R11
+		amd64TEST_reg_imm8(cb, amd64RAX, alignMask)
+		failOff1 = amd64Jcc_rel32(cb, amd64CondNE)
+	}
+
+	// Bounds checks. For each (src, dst) range we verify three things:
+	//   1. start <  IOThresh        (start address inside direct memory)
+	//   2. end   <= IOThresh        (end address inside direct memory)
+	//   3. end   >= start           (range did not wrap the 32-bit address space)
+	// Without check (3), a guest-controlled high start + large count can wrap
+	// to a small end that satisfies the IOThresh test, after which the
+	// unchecked native loop would index outside the RAM slice. Without
+	// check (1), wrap could produce end <= IOThresh from a start outside
+	// the direct region.
+
+	// src start: CMP R10, IOThresh; JAE fail.
+	amd64ALU_reg_reg32(cb, 0x39, amd64R10, m68kAMD64RegIOThresh)
+	failOff2 := amd64Jcc_rel32(cb, amd64CondAE)
+	// src end = R10 + EDX → EAX. CMP EAX, R10; JB fail (wrap).
+	amd64MOV_reg_reg32(cb, amd64RAX, amd64R10)
+	amd64ALU_reg_reg32(cb, 0x01, amd64RAX, amd64RDX)
+	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, amd64R10)
+	failOff2b := amd64Jcc_rel32(cb, amd64CondB)
+	// src end <= IOThresh: CMP EAX, IOThresh; JA fail.
+	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, m68kAMD64RegIOThresh)
+	failOff2c := amd64Jcc_rel32(cb, amd64CondA)
+
+	// dst start: CMP R11, IOThresh; JAE fail.
+	amd64ALU_reg_reg32(cb, 0x39, amd64R11, m68kAMD64RegIOThresh)
+	failOff3 := amd64Jcc_rel32(cb, amd64CondAE)
+	// dst end = R11 + EDX → EAX. CMP EAX, R11; JB fail (wrap).
+	amd64MOV_reg_reg32(cb, amd64RAX, amd64R11)
+	amd64ALU_reg_reg32(cb, 0x01, amd64RAX, amd64RDX)
+	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, amd64R11)
+	failOff3b := amd64Jcc_rel32(cb, amd64CondB)
+	// dst end <= IOThresh: CMP EAX, IOThresh; JA fail.
+	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, m68kAMD64RegIOThresh)
+	failOff3c := amd64Jcc_rel32(cb, amd64CondA)
+
+	// SMC range scan: for each page covering [R11, dst_end), check that
+	// codePageBitmap[page] == 0. EAX still holds dst_end; compute last
+	// page = (dst_end - 1) >> 12.
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64RAX, 1) // SUB EAX, 1
+	amd64SHR_imm(cb, amd64RAX, 12)               // EAX = last_page
+	amd64MOV_mem_reg32(cb, amd64RSP, 32, amd64RAX)
+	// Curr page = R11 >> 12 → EAX.
+	amd64MOV_reg_reg32(cb, amd64RAX, amd64R11)
+	amd64SHR_imm(cb, amd64RAX, 12)
+	// EDX = bitmap base.
+	amd64MOV_reg_mem(cb, amd64RDX, m68kAMD64RegCtx, int32(m68kCtxOffCodePageBitmapPtr))
+
+	smcLoopOff := cb.Len()
+	// CMP EAX, [RSP+32] (curr_page vs last_page). 3B 44 24 20.
+	cb.EmitBytes(0x3B, 0x44, 0x24, 0x20)
+	smcDoneOff := amd64Jcc_rel32(cb, amd64CondA) // JA: curr > last → done
+	// CMP BYTE [RDX + RAX], 0. Encoding 80 3C 02 00.
+	cb.EmitBytes(0x80, 0x3C, 0x02, 0x00)
+	failOff4 := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, 1) // ADD EAX, 1
+	smcBackOff := amd64JMP_rel32(cb)
+	patchRel32(cb, smcBackOff, smcLoopOff)
+	patchRel32(cb, smcDoneOff, cb.Len())
+
+	// ── Unchecked tight loop ──
+	loopTopOff := cb.Len()
+	switch size {
+	case M68K_SIZE_BYTE:
+		// MOVZX EAX, BYTE [RSI + R10]; MOV BYTE [RSI + R11], AL.
+		// MOVZX EAX, BYTE [RSI+R10]: encoded via emitREX_SIB+0F B6.
+		emitREX_SIB(cb, false, amd64RAX, amd64R10, m68kAMD64RegMemBase)
+		cb.EmitBytes(0x0F, 0xB6, modRM(0, amd64RAX, 4), sibByte(0, amd64R10, m68kAMD64RegMemBase))
+		// MOV [RSI+R11], AL (byte). emitREXForByteSIB handles low-byte requirements.
+		emitREXForByteSIB(cb, amd64RAX, amd64R11, m68kAMD64RegMemBase)
+		cb.EmitBytes(0x88, modRM(0, amd64RAX, 4), sibByte(0, amd64R11, m68kAMD64RegMemBase))
+	case M68K_SIZE_WORD:
+		// MOVZX EAX, WORD [RSI + R10]: 0F B7.
+		emitREX_SIB(cb, false, amd64RAX, amd64R10, m68kAMD64RegMemBase)
+		cb.EmitBytes(0x0F, 0xB7, modRM(0, amd64RAX, 4), sibByte(0, amd64R10, m68kAMD64RegMemBase))
+		// MOV WORD [RSI + R11], AX: 66 prefix + 89.
+		cb.EmitBytes(0x66)
+		emitMemOpSIB(cb, false, 0x89, amd64RAX, m68kAMD64RegMemBase, amd64R11, 0)
+	case M68K_SIZE_LONG:
+		// MOV EAX, [RSI + R10]; MOV [RSI + R11], EAX.
+		emitMemOpSIB(cb, false, 0x8B, amd64RAX, m68kAMD64RegMemBase, amd64R10, 0)
+		emitMemOpSIB(cb, false, 0x89, amd64RAX, m68kAMD64RegMemBase, amd64R11, 0)
+	}
+	// ADD R10, step; ADD R11, step.
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(step))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R11, int32(step))
+	// SUB ECX, 1; JNZ loop_top.
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
+	loopBackOff := amd64Jcc_rel32(cb, amd64CondNE)
+	patchRel32(cb, loopBackOff, loopTopOff)
+
+	// ── Loop epilogue ──
+	// Update src An (R10) into mapped reg or memory.
+	if asr, mapped := m68kAddrRegToAMD64(srcAn); mapped {
+		amd64MOV_reg_reg32(cb, asr, amd64R10)
+	} else {
+		amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, int32(srcAn)*4, amd64R10)
+	}
+	// Update dst An (R11).
+	if adr, mapped := m68kAddrRegToAMD64(dstAn); mapped {
+		amd64MOV_reg_reg32(cb, adr, amd64R11)
+	} else {
+		amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, int32(dstAn)*4, amd64R11)
+	}
+	// Set ctr Dn lo word to 0xFFFF (DBRA exhaustion: Dn[15:0] == -1).
+	if dr, mapped := m68kDataRegToAMD64(ctrDn); mapped {
+		amd64ALU_reg_imm32_32bit(cb, 1, dr, 0xFFFF) // OR Dn, 0xFFFF
+	} else {
+		amd64MOV_reg_mem32(cb, amd64RDX, m68kAMD64RegDataBase, int32(ctrDn)*4)
+		amd64ALU_reg_imm32_32bit(cb, 1, amd64RDX, 0xFFFF)
+		amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, int32(ctrDn)*4, amd64RDX)
+	}
+
+	// Update CCR from the last copied value. EAX holds raw big-endian
+	// bytes from the last iteration; for word/long the host TEST needs
+	// the native-order value, so byte-swap before TEST.
+	switch size {
+	case M68K_SIZE_BYTE:
+		// Byte: low 8 bits already in AL; mask and TEST.
+		amd64MOVZX_B(cb, amd64RAX, amd64RAX)
+		amd64TEST_reg_reg32(cb, amd64RAX, amd64RAX)
+	case M68K_SIZE_WORD:
+		// Word: byte-swap low 16 bits via ROL ax, 8; then TEST.
+		amd64MOVZX_W(cb, amd64RAX, amd64RAX)
+		cb.EmitBytes(0x66, 0xC1, 0xC0, 0x08) // ROL AX, 8
+		amd64MOVZX_W(cb, amd64RAX, amd64RAX)
+		amd64TEST_reg_reg32(cb, amd64RAX, amd64RAX)
+	case M68K_SIZE_LONG:
+		emitREX(cb, false, 0, amd64RAX)
+		cb.EmitBytes(0x0F, 0xC8+regBits(amd64RAX)) // BSWAP EAX
+		amd64TEST_reg_reg32(cb, amd64RAX, amd64RAX)
+	}
+	emitCCR_Logic(cb)
+
+	// Chain-exit to the instruction after DBRA. Reports two retired
+	// instructions (MOVE.L + DBRA) — the synthetic-loop iter count is not
+	// reflected in ChainCount because the dispatcher's MIPS bookkeeping is
+	// not a hot-path consumer here, and the block exits to a fresh chain
+	// edge after each invocation.
+	info := m68kEmitChainExit(cb, nextPC, 2, br)
+
+	// ── Pre-check fail bail ──
+	failLabel := cb.Len()
+	patchRel32(cb, failOff0, failLabel)
+	if failOff1 >= 0 {
+		patchRel32(cb, failOff1, failLabel)
+	}
+	patchRel32(cb, failOff2, failLabel)
+	patchRel32(cb, failOff2b, failLabel)
+	patchRel32(cb, failOff2c, failLabel)
+	patchRel32(cb, failOff3, failLabel)
+	patchRel32(cb, failOff3b, failLabel)
+	patchRel32(cb, failOff3c, failLabel)
+	patchRel32(cb, failOff4, failLabel)
+	// Force the dispatcher to re-execute the block through the interpreter.
+	// Reaching this point means at least one of (alignment, I/O bounds,
+	// SMC clean) is not satisfied for the static range, so the JIT cannot
+	// safely batch the loop.
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
+	m68kEmitRetPC(cb, startPC, 0)
+	m68kEmitEpilogue(cb, br)
+
+	return info
+}
+
+// m68kEmitMOVEM_PreInc emits MOVEM.{W,L} for the canonical prolog/epilog
+// forms — register-list to -(An) (predecrement) and (An)+ to register-list
+// (postincrement). The register list is read at compile time from the
+// extension word and unrolled into per-register transfers, then guarded
+// by a single combined alignment / I/O / SMC pre-check covering the full
+// transfer extent. On any guard miss the block bails to the interpreter
+// via NeedIOFallback.
+//
+// Handles eaMode == 3 (postincrement) and eaMode == 4 (predecrement).
+// Other addressing modes fall back to the interpreter via the unhandled
+// path at the bottom of m68kEmitInstructionFull.
+func m68kEmitMOVEM_PreInc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32, br *m68kBlockRegs, instrIdx int) {
+	opcode := ji.opcode
+	instrPC := startPC + ji.pcOffset
+	if instrPC+4 > uint32(len(memory)) {
+		// Cannot read register-list extension word — bail.
+		amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
+		m68kEmitRetPC(cb, instrPC, uint32(instrIdx))
+		m68kEmitEpilogue(cb, br)
+		return
+	}
+	// MOVEM clobbers EFLAGS (CMP for I/O, ADD/SUB for An). Materialize
+	// any lazy CCR before this instruction's pre-check arithmetic.
+	if cs := m68kCurrentCS; cs != nil && cs.flagState != flagsMaterialized {
+		m68kMaterializeCCR(cb, cs)
+	}
+
+	regMask := uint16(memory[instrPC+2])<<8 | uint16(memory[instrPC+3])
+	dirMemToReg := (opcode>>10)&1 == 1 // 1 = (An)+ -> regs; 0 = regs -> -(An)
+	sizeLong := (opcode>>6)&1 == 1
+	eaMode := (opcode >> 3) & 7
+	eaReg := opcode & 7
+
+	step := uint32(2)
+	if sizeLong {
+		step = 4
+	}
+
+	// Build the ordered list of regs to transfer and the alignment mask.
+	// Encoding: bit 0..15 = D0,D1,..,D7,A0,..,A7 normally, except for the
+	// reg-to-memory predecrement form which reverses the bit order so the
+	// physical memory order ends up D0..D7,A0..A7 from low to high address.
+	var regs []uint16 // each entry: 0..7 = D0..D7, 8..15 = A0..A7
+	if eaMode == 4 && !dirMemToReg {
+		// Predecrement reg-to-memory: bit 0 = A7 .. bit 15 = D0.
+		// Walk high-bit-first so transfers happen in D0..A7 order.
+		for i := 15; i >= 0; i-- {
+			if regMask&(1<<uint(i)) != 0 {
+				regs = append(regs, uint16(15-i))
+			}
+		}
+	} else {
+		// Postincrement m-to-r (and any r-to-m mode != 4): bit 0 = D0..bit 15 = A7.
+		for i := 0; i < 16; i++ {
+			if regMask&(1<<uint(i)) != 0 {
+				regs = append(regs, uint16(i))
+			}
+		}
+	}
+	regCount := uint32(len(regs))
+	if regCount == 0 {
+		// Empty mask: An update happens only on predecrement (no, actually
+		// no transfer means no An change). Fall back conservatively.
+		amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
+		m68kEmitRetPC(cb, instrPC, uint32(instrIdx))
+		m68kEmitEpilogue(cb, br)
+		return
+	}
+	totalBytes := regCount * step
+	alignMask := byte(step - 1) // 1 for word, 3 for long
+
+	// Compute starting address (R10 = base of transfer extent in memory).
+	//   Postinc:    base = An;        new An = An + total.
+	//   Predec:     base = An - total; new An = base.
+	if asr, mapped := m68kAddrRegToAMD64(eaReg); mapped {
+		amd64MOV_reg_reg32(cb, amd64R10, asr)
+	} else {
+		amd64MOV_reg_mem32(cb, amd64R10, m68kAMD64RegAddrBase, int32(eaReg)*4)
+	}
+	if eaMode == 4 {
+		amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, int32(totalBytes)) // SUB R10, total
+	}
+
+	// Pre-check.
+	failOff := []int{}
+	// Alignment: R10 & alignMask != 0 → fail.
+	if alignMask != 0 {
+		amd64MOV_reg_reg32(cb, amd64RAX, amd64R10)
+		amd64TEST_reg_imm8(cb, amd64RAX, alignMask)
+		failOff = append(failOff, amd64Jcc_rel32(cb, amd64CondNE))
+	}
+	// Start < IOThresh.
+	amd64ALU_reg_reg32(cb, 0x39, amd64R10, m68kAMD64RegIOThresh)
+	failOff = append(failOff, amd64Jcc_rel32(cb, amd64CondAE))
+	// End = R10 + total → EAX. End >= start (no wrap): CMP EAX, R10; JB fail.
+	amd64MOV_reg_reg32(cb, amd64RAX, amd64R10)
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(totalBytes))
+	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, amd64R10)
+	failOff = append(failOff, amd64Jcc_rel32(cb, amd64CondB))
+	// End <= IOThresh.
+	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, m68kAMD64RegIOThresh)
+	failOff = append(failOff, amd64Jcc_rel32(cb, amd64CondA))
+
+	if !dirMemToReg {
+		// Reg-to-memory: SMC scan over [R10, end). EAX still holds end.
+		amd64ALU_reg_imm32_32bit(cb, 5, amd64RAX, 1)
+		amd64SHR_imm(cb, amd64RAX, 12)
+		amd64MOV_mem_reg32(cb, amd64RSP, 32, amd64RAX)
+		amd64MOV_reg_reg32(cb, amd64RAX, amd64R10)
+		amd64SHR_imm(cb, amd64RAX, 12)
+		amd64MOV_reg_mem(cb, amd64RDX, m68kAMD64RegCtx, int32(m68kCtxOffCodePageBitmapPtr))
+		smcLoopOff := cb.Len()
+		cb.EmitBytes(0x3B, 0x44, 0x24, 0x20)
+		smcDoneOff := amd64Jcc_rel32(cb, amd64CondA)
+		cb.EmitBytes(0x80, 0x3C, 0x02, 0x00)
+		failOff = append(failOff, amd64Jcc_rel32(cb, amd64CondNE))
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, 1)
+		smcBack := amd64JMP_rel32(cb)
+		patchRel32(cb, smcBack, smcLoopOff)
+		patchRel32(cb, smcDoneOff, cb.Len())
+	}
+
+	// Unrolled transfers. R10 holds the base address; offset = i * step.
+	// Loading/storing each register uses a SIB form that already supports
+	// non-mapped data/address registers via the base file.
+	for i, reg := range regs {
+		offset := int32(uint32(i) * step)
+		isAddr := reg >= 8
+		regIdx := uint16(reg & 7)
+		if dirMemToReg {
+			// MOV[ZX] EAX, [RSI + R10 + offset]; store to register file.
+			emitMOVEMRead(cb, sizeLong, amd64RAX, offset)
+			if isAddr {
+				// MOVEM.W m-to-r sign-extends to 32 (per 68K spec). For
+				// .L the value is already 32-bit. Apply sign-extension
+				// for word size before storing.
+				if !sizeLong {
+					cb.EmitBytes(0x0F, 0xBF, modRM(3, amd64RAX, amd64RAX)) // MOVSX EAX, AX
+				}
+				if mapped, ok := m68kAddrRegToAMD64(regIdx); ok {
+					amd64MOV_reg_reg32(cb, mapped, amd64RAX)
+				} else {
+					amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, int32(regIdx)*4, amd64RAX)
+				}
+			} else {
+				if !sizeLong {
+					// MOVEM.W m-to-r preserves the upper word for data
+					// registers per 68000 semantics? Actually the 68K
+					// spec sign-extends Dn the same as An. Sign-extend.
+					cb.EmitBytes(0x0F, 0xBF, modRM(3, amd64RAX, amd64RAX)) // MOVSX EAX, AX
+				}
+				if mapped, ok := m68kDataRegToAMD64(regIdx); ok {
+					amd64MOV_reg_reg32(cb, mapped, amd64RAX)
+				} else {
+					amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, int32(regIdx)*4, amd64RAX)
+				}
+			}
+		} else {
+			// Predecrement reg-to-memory with An itself in the mask:
+			// the interpreter (cpu_m68k.go ExecMovem) decrements An
+			// before each individual write, so the value stored for An's
+			// own slot is the post-decrement An. By the iter ↔ slot
+			// mapping (JIT slot j = interpreter iter n-1-j), the
+			// post-decrement An at the An-slot equals R10 + offset, which
+			// is exactly the address being written. We materialize that
+			// directly so MOVEM.L A7,-(A7) and friends store the
+			// decremented address rather than the original.
+			isSelfBase := eaMode == 4 && isAddr && regIdx == eaReg
+			if isSelfBase {
+				amd64MOV_reg_reg32(cb, amd64RAX, amd64R10)
+				if offset != 0 {
+					amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, offset)
+				}
+			} else if isAddr {
+				if mapped, ok := m68kAddrRegToAMD64(regIdx); ok {
+					amd64MOV_reg_reg32(cb, amd64RAX, mapped)
+				} else {
+					amd64MOV_reg_mem32(cb, amd64RAX, m68kAMD64RegAddrBase, int32(regIdx)*4)
+				}
+			} else {
+				if mapped, ok := m68kDataRegToAMD64(regIdx); ok {
+					amd64MOV_reg_reg32(cb, amd64RAX, mapped)
+				} else {
+					amd64MOV_reg_mem32(cb, amd64RAX, m68kAMD64RegDataBase, int32(regIdx)*4)
+				}
+			}
+			emitMOVEMWrite(cb, sizeLong, amd64RAX, offset)
+		}
+	}
+
+	// Update An.
+	if eaMode == 3 {
+		// Postincrement: An = R10 + total.
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(totalBytes))
+	}
+	// (For predecrement, R10 already equals new An.)
+	if mapped, ok := m68kAddrRegToAMD64(eaReg); ok {
+		amd64MOV_reg_reg32(cb, mapped, amd64R10)
+	} else {
+		amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, int32(eaReg)*4, amd64R10)
+	}
+
+	// Skip past the bail handler on the success path.
+	doneOff := amd64JMP_rel32(cb)
+
+	// Pre-check fail bail: NeedIOFallback + RetPC + full epilogue.
+	failLabel := cb.Len()
+	for _, off := range failOff {
+		patchRel32(cb, off, failLabel)
+	}
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
+	m68kEmitRetPC(cb, instrPC, uint32(instrIdx))
+	m68kEmitEpilogue(cb, br)
+
+	patchRel32(cb, doneOff, cb.Len())
+}
+
+// emitMOVEMRead emits a {word,long} read at [RSI + R10 + offset] with
+// big-endian byte-swap into EAX.
+func emitMOVEMRead(cb *CodeBuffer, sizeLong bool, dst byte, offset int32) {
+	if sizeLong {
+		// MOV EAX, [RSI + R10 + offset8/32]; BSWAP.
+		emitMOVEMSIBLoad32(cb, dst, offset)
+		emitREX(cb, false, 0, dst)
+		cb.EmitBytes(0x0F, 0xC8+regBits(dst))
+	} else {
+		// MOV AX, [RSI + R10 + offset]; ROL AX, 8; MOVZX EAX, AX.
+		emitMOVEMSIBLoad16(cb, dst, offset)
+		cb.EmitBytes(0x66, 0xC1, 0xC0, 0x08) // ROL AX, 8
+		amd64MOVZX_W(cb, dst, dst)
+	}
+}
+
+// emitMOVEMWrite emits a {word,long} write at [RSI + R10 + offset] with
+// big-endian byte-swap of the value in EAX (uses R11 as scratch).
+func emitMOVEMWrite(cb *CodeBuffer, sizeLong bool, src byte, offset int32) {
+	if sizeLong {
+		amd64MOV_reg_reg32(cb, amd64R11, src)
+		emitREX(cb, false, 0, amd64R11)
+		cb.EmitBytes(0x0F, 0xC8+regBits(amd64R11))
+		emitMOVEMSIBStore32(cb, amd64R11, offset)
+	} else {
+		amd64MOV_reg_reg32(cb, amd64R11, src)
+		cb.EmitBytes(0x66, 0x41, 0xC1, 0xC3, 0x08) // ROL R11W, 8
+		emitMOVEMSIBStore16(cb, amd64R11, offset)
+	}
+}
+
+// emitMOVEMSIBLoad32 emits MOV reg, [RSI + R10 + disp]. reg is the
+// destination GPR (must be in 0..7 unless caller passes REX-aware
+// helpers — current usage stays in RAX).
+func emitMOVEMSIBLoad32(cb *CodeBuffer, dst byte, disp int32) {
+	// REX: extends index R10 (REX.X). dst RAX has reg field 0, so REX.R unset.
+	cb.EmitBytes(0x42) // REX.X
+	if disp == 0 {
+		cb.EmitBytes(0x8B, modRM(0, dst, 4), sibByte(0, amd64R10&7, m68kAMD64RegMemBase))
+	} else if disp >= -128 && disp <= 127 {
+		cb.EmitBytes(0x8B, modRM(1, dst, 4), sibByte(0, amd64R10&7, m68kAMD64RegMemBase), byte(int8(disp)))
+	} else {
+		cb.EmitBytes(0x8B, modRM(2, dst, 4), sibByte(0, amd64R10&7, m68kAMD64RegMemBase))
+		cb.Emit32(uint32(disp))
+	}
+}
+
+// emitMOVEMSIBStore32 emits MOV [RSI + R10 + disp], reg.
+func emitMOVEMSIBStore32(cb *CodeBuffer, src byte, disp int32) {
+	rex := byte(0x42) // REX.X
+	if src >= 8 {
+		rex |= 0x04 // REX.R
+	}
+	cb.EmitBytes(rex)
+	if disp == 0 {
+		cb.EmitBytes(0x89, modRM(0, src&7, 4), sibByte(0, amd64R10&7, m68kAMD64RegMemBase))
+	} else if disp >= -128 && disp <= 127 {
+		cb.EmitBytes(0x89, modRM(1, src&7, 4), sibByte(0, amd64R10&7, m68kAMD64RegMemBase), byte(int8(disp)))
+	} else {
+		cb.EmitBytes(0x89, modRM(2, src&7, 4), sibByte(0, amd64R10&7, m68kAMD64RegMemBase))
+		cb.Emit32(uint32(disp))
+	}
+}
+
+// emitMOVEMSIBLoad16 emits MOV r16, [RSI + R10 + disp].
+func emitMOVEMSIBLoad16(cb *CodeBuffer, dst byte, disp int32) {
+	cb.EmitBytes(0x66, 0x42) // operand-size + REX.X
+	if disp == 0 {
+		cb.EmitBytes(0x8B, modRM(0, dst, 4), sibByte(0, amd64R10&7, m68kAMD64RegMemBase))
+	} else if disp >= -128 && disp <= 127 {
+		cb.EmitBytes(0x8B, modRM(1, dst, 4), sibByte(0, amd64R10&7, m68kAMD64RegMemBase), byte(int8(disp)))
+	} else {
+		cb.EmitBytes(0x8B, modRM(2, dst, 4), sibByte(0, amd64R10&7, m68kAMD64RegMemBase))
+		cb.Emit32(uint32(disp))
+	}
+}
+
+// emitMOVEMSIBStore16 emits MOV [RSI + R10 + disp], r16.
+func emitMOVEMSIBStore16(cb *CodeBuffer, src byte, disp int32) {
+	rex := byte(0x42) // REX.X
+	if src >= 8 {
+		rex |= 0x04 // REX.R
+	}
+	cb.EmitBytes(0x66, rex)
+	if disp == 0 {
+		cb.EmitBytes(0x89, modRM(0, src&7, 4), sibByte(0, amd64R10&7, m68kAMD64RegMemBase))
+	} else if disp >= -128 && disp <= 127 {
+		cb.EmitBytes(0x89, modRM(1, src&7, 4), sibByte(0, amd64R10&7, m68kAMD64RegMemBase), byte(int8(disp)))
+	} else {
+		cb.EmitBytes(0x89, modRM(2, src&7, 4), sibByte(0, amd64R10&7, m68kAMD64RegMemBase))
+		cb.Emit32(uint32(disp))
+	}
+}
+
 // m68kEmitMOVE_Full emits MOVE.x <src_ea>,<dst_ea> (any addressing modes).
 func m68kEmitMOVE_Full(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32, size int) {
 	opcode := ji.opcode
@@ -2258,9 +3045,88 @@ func m68kEmitRTS(cb *CodeBuffer, ji *M68KJITInstr, startPC uint32, br *m68kBlock
 	// A7 += 4
 	amd64ALU_reg_imm32_32bit(cb, 0, m68kAMD64RegA7, 4)
 
-	// Correctness-first path: always perform an unchained RTS exit.
-	// The inline RTS cache can be re-enabled once nested subroutine paths
-	// are covered by focused regressions.
+	// 4-entry MRU RTS inline cache. EAX holds the popped return PC.
+	// Probe entries 0..3 sequentially; on hit, R10 = corresponding addr.
+	// On miss after all four, fall through to unchained exit (writes
+	// RetPC, full epilogue). Slot 0 is the most-recently-warmed entry.
+	amd64ALU_reg_mem32_cmp(cb, amd64RAX, m68kAMD64RegCtx, int32(m68kCtxOffRTSCache0PC))
+	miss0Off := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64MOV_reg_mem(cb, amd64R10, m68kAMD64RegCtx, int32(m68kCtxOffRTSCache0Addr))
+	hit0Off := amd64JMP_rel32(cb)
+
+	patchRel32(cb, miss0Off, cb.Len())
+	amd64ALU_reg_mem32_cmp(cb, amd64RAX, m68kAMD64RegCtx, int32(m68kCtxOffRTSCache1PC))
+	miss1Off := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64MOV_reg_mem(cb, amd64R10, m68kAMD64RegCtx, int32(m68kCtxOffRTSCache1Addr))
+	hit1Off := amd64JMP_rel32(cb)
+
+	patchRel32(cb, miss1Off, cb.Len())
+	amd64ALU_reg_mem32_cmp(cb, amd64RAX, m68kAMD64RegCtx, int32(m68kCtxOffRTSCache2PC))
+	miss2Off := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64MOV_reg_mem(cb, amd64R10, m68kAMD64RegCtx, int32(m68kCtxOffRTSCache2Addr))
+	hit2Off := amd64JMP_rel32(cb)
+
+	patchRel32(cb, miss2Off, cb.Len())
+	amd64ALU_reg_mem32_cmp(cb, amd64RAX, m68kAMD64RegCtx, int32(m68kCtxOffRTSCache3PC))
+	missOff := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64MOV_reg_mem(cb, amd64R10, m68kAMD64RegCtx, int32(m68kCtxOffRTSCache3Addr))
+
+	// .chain_hit: R10 = chain entry. Stash it at [RSP+32] (free slot)
+	// because the lightweight epilogue clobbers RAX and RDX.
+	patchRel32(cb, hit0Off, cb.Len())
+	patchRel32(cb, hit1Off, cb.Len())
+	patchRel32(cb, hit2Off, cb.Len())
+	amd64MOV_mem_reg(cb, amd64RSP, 32, amd64R10)
+
+	m68kEmitLightweightEpilogue(cb, br)
+
+	// Reload R10 (chain target) from stack stash.
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, 32)
+
+	// Add prefix instruction count (instrIdx — excludes the RTS itself,
+	// which only counts on a successful chain). Decrement chain budget,
+	// check NeedInval before adding the RTS's own retire count.
+	if instrIdx > 0 {
+		amd64MOV_reg_mem32(cb, amd64RAX, m68kAMD64RegCtx, int32(m68kCtxOffChainCount))
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrIdx))
+		amd64MOV_mem_reg32(cb, m68kAMD64RegCtx, int32(m68kCtxOffChainCount), amd64RAX)
+	}
+
+	amd64DEC_mem32(cb, m68kAMD64RegCtx, int32(m68kCtxOffChainBudget))
+	budgetOff := amd64Jcc_rel32(cb, amd64CondLE)
+
+	amd64ALU_mem_imm8(cb, 7, m68kAMD64RegCtx, int32(m68kCtxOffNeedInval), 0)
+	invalOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+	// Chain succeeded: count the RTS itself, then JMP R10.
+	amd64MOV_reg_mem32(cb, amd64RAX, m68kAMD64RegCtx, int32(m68kCtxOffChainCount))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, 1)
+	amd64MOV_mem_reg32(cb, m68kAMD64RegCtx, int32(m68kCtxOffChainCount), amd64RAX)
+	emitREX(cb, false, 0, amd64R10)
+	cb.EmitBytes(0xFF, modRM(3, 4, amd64R10&7))
+
+	// Budget exhausted or self-mod detected: re-execute the RTS via
+	// interpreter so guest state (A7 + PC) is restored correctly. The
+	// lightweight epilogue already wrote A7=popped+4 back to memory; undo
+	// that here by subtracting 4 from AddrRegs[7] in memory directly
+	// (host R13 is no longer authoritative after the store-back).
+	// Preserve accumulated ChainCount in RetCount so prior chained block
+	// retire counts are not dropped — the dispatcher re-runs only the RTS
+	// via interpreter and that single instruction is added separately.
+	patchRel32(cb, budgetOff, cb.Len())
+	patchRel32(cb, invalOff, cb.Len())
+	amd64MOV_reg_mem32(cb, amd64RAX, m68kAMD64RegAddrBase, 7*4)
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64RAX, 4)
+	amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, 7*4, amd64RAX)
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetPC), instrPC)
+	amd64MOV_reg_mem32(cb, amd64RAX, m68kAMD64RegCtx, int32(m68kCtxOffChainCount))
+	amd64MOV_mem_reg32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetCount), amd64RAX)
+	m68kEmitFullEpilogueEnd(cb)
+
+	// .miss: cache miss — unchained exit with popped PC. CCR not yet
+	// materialized at this point if flag tracker says lazy; ensure it.
+	patchRel32(cb, missOff, cb.Len())
 	amd64MOV_mem_reg32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetPC), amd64RAX)
 	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetCount), uint32(instrIdx+1))
 	m68kEmitEpilogue(cb, br)
@@ -2640,6 +3506,9 @@ func m68kEmitCMP_EA_Dn(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC 
 
 	// Lazy CCR: CMP sets NZVC but NOT X — use flagsLiveArithNoX
 	if cs := m68kCurrentCS; cs != nil {
+		if m68kCCRDeadAtCurrent() {
+			return
+		}
 		cs.flagState = flagsLiveArithNoX
 		return
 	}
@@ -3120,13 +3989,80 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 	var cs m68kCompileState
 	m68kCurrentCS = &cs
 
+	// MemCopy loop fast path: detect MOVE.L (Ax)+,(Ay)+ + DBRA Dn,loop
+	// and emit a one-time pre-checked unchecked tight loop. Bypasses the
+	// per-instruction emit pipeline entirely on match — the specialized
+	// emit handles the chain exit to the post-DBRA PC and the bail to the
+	// interpreter on pre-check miss.
+	if srcAn, dstAn, ctrDn, size, nextPC, ok := m68kIsMemCopyLoopBlock(instrs, startPC, memory); ok {
+		m68kMemCopyLoopHits++
+		info := m68kEmitMemCopyLoop(cb, srcAn, dstAn, ctrDn, size, instrs, startPC, nextPC, &br)
+		chainExits = append(chainExits, info)
+
+		m68kCurrentCS = nil
+
+		code := cb.Bytes()
+		addr, err := execMem.Write(code)
+		if err != nil {
+			return nil, err
+		}
+		lastInstr := &instrs[len(instrs)-1]
+		endPC := startPC + lastInstr.pcOffset + uint32(lastInstr.length)
+
+		chainEntry := addr + uintptr(chainEntryOff)
+		var slots []chainSlot
+		for _, ce := range chainExits {
+			slots = append(slots, chainSlot{
+				targetPC:  ce.targetPC,
+				patchAddr: addr + uintptr(ce.jmpDispOffset),
+			})
+		}
+
+		return &JITBlock{
+			startPC:    startPC,
+			endPC:      endPC,
+			instrCount: len(instrs),
+			execAddr:   addr,
+			execSize:   len(code),
+			chainEntry: chainEntry,
+			chainSlots: slots,
+		}, nil
+	}
+
+	// Phase 2c emit-side liveness: compute the per-instruction CCR
+	// liveness bitmap up-front and publish it via the package-level
+	// pointers the emitCCR_* helpers consult. nil-out at function end
+	// so a subsequent block's emit cannot accidentally consult stale
+	// state from this block.
+	var live []bool
+	if jit68KCCRLivenessEnabled {
+		live = m68kCCRLiveness(instrs)
+	}
+	m68kCurrentLive = live
+	defer func() { m68kCurrentLive = nil; m68kCurrentInstrIdx = 0 }()
+
 	for i := range instrs {
+		m68kCurrentInstrIdx = i
+
 		// Materialize CCR before non-flag instructions that clobber EFLAGS
 		if cs.flagState != flagsMaterialized {
 			if m68kInstrNeedsCCRMaterialization(&instrs[i]) {
 				m68kMaterializeCCR(cb, &cs)
 			}
 		}
+
+		// Phase 2c dead-producer pre-materialise. If this slot's CCR
+		// output is dead per the analyzer, force-materialise any
+		// pending live state BEFORE the producer's arithmetic clobbers
+		// host EFLAGS — without this, the dead producer's skip would
+		// leave R14 stale relative to the prior live producer's
+		// output.
+		if live != nil && !live[i] && m68kIsCCRProducer(&instrs[i]) {
+			if cs.flagState != flagsMaterialized {
+				m68kMaterializeCCR(cb, &cs)
+			}
+		}
+
 		instrOffsets[i] = cb.Len()
 		ji := &instrs[i]
 		m68kEmitInstructionFull(cb, ji, startPC, &br, i, len(instrs), memory, instrOffsets, instrs, &chainExits)
@@ -3148,12 +4084,24 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 		}
 	}
 
-	// If the last instruction doesn't have its own epilogue, emit fallthrough
-	// Note: m68kCurrentCS must still be active so epilogue can materialize CCR
-	lastOp := instrs[len(instrs)-1].opcode
-	if !m68kIsBlockTerminator(lastOp) {
-		lastInstr := &instrs[len(instrs)-1]
-		endPC := startPC + lastInstr.pcOffset + uint32(lastInstr.length)
+	// Find the last non-fused instr — fused-leaf markers share the JSR
+	// site's pcOffset (length = 0) and emit nothing, so they must be
+	// excluded from terminator and end-PC computation.
+	lastRealIdx := len(instrs) - 1
+	for lastRealIdx >= 0 && instrs[lastRealIdx].fusedFlag&(m68kFusedJSRLeafCall|m68kFusedRTSLeafReturn) != 0 {
+		lastRealIdx--
+	}
+
+	// If the last real instruction doesn't have its own epilogue, emit fallthrough.
+	// Note: m68kCurrentCS must still be active so epilogue can materialize CCR.
+	if lastRealIdx < 0 || !m68kIsBlockTerminator(instrs[lastRealIdx].opcode) {
+		var endPC uint32
+		if lastRealIdx >= 0 {
+			lastInstr := &instrs[lastRealIdx]
+			endPC = startPC + lastInstr.pcOffset + uint32(lastInstr.length)
+		} else {
+			endPC = startPC
+		}
 		m68kEmitRetPC(cb, endPC, uint32(len(instrs)))
 		m68kEmitEpilogue(cb, &br)
 	}
@@ -3166,8 +4114,13 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 		return nil, err
 	}
 
-	lastInstr := &instrs[len(instrs)-1]
-	endPC := startPC + lastInstr.pcOffset + uint32(lastInstr.length)
+	var endPC uint32
+	if lastRealIdx >= 0 {
+		lastInstr := &instrs[lastRealIdx]
+		endPC = startPC + lastInstr.pcOffset + uint32(lastInstr.length)
+	} else {
+		endPC = startPC
+	}
 
 	// Convert code buffer offsets to absolute ExecMem addresses
 	chainEntry := addr + uintptr(chainEntryOff)
@@ -3192,6 +4145,64 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 
 // m68kEmitInstructionFull dispatches to the appropriate emitter, with full context.
 func m68kEmitInstructionFull(cb *CodeBuffer, ji *M68KJITInstr, blockStartPC uint32, br *m68kBlockRegs, instrIdx int, blockLen int, memory []byte, instrOffsets []int, instrs []M68KJITInstr, chainSlots *[]m68kChainExitInfo) {
+	// Fused-leaf markers preserve the architectural stack push/pop the
+	// unfused JSR/RTS pair would have executed (A7 -= 4 + Write32_BE on
+	// JSR, Read32_BE + A7 += 4 on RTS, both with I/O bounds bail). Only
+	// the chain-dispatch overhead — block transition, RTS cache probe,
+	// chain budget bookkeeping — is elided. Guest-visible stack memory
+	// traffic and any I/O-bail semantics match the unfused interpreter
+	// path.
+	if ji.fusedFlag&m68kFusedJSRLeafCall != 0 {
+		instrPC := blockStartPC + ji.pcOffset
+		returnPC := instrPC + uint32(ji.length)
+		// Materialize lazy CCR before clobbering EFLAGS via the I/O CMP
+		// and A7 SUB/ADD path.
+		if cs := m68kCurrentCS; cs != nil && cs.flagState != flagsMaterialized {
+			m68kMaterializeCCR(cb, cs)
+		}
+		// Push return address: A7 -= 4; I/O check; Write32_BE.
+		amd64ALU_reg_imm32_32bit(cb, 5, m68kAMD64RegA7, 4)
+		amd64ALU_reg_reg32(cb, 0x39, m68kAMD64RegA7, m68kAMD64RegIOThresh)
+		bailOff := amd64Jcc_rel32(cb, amd64CondAE)
+		amd64MOV_reg_imm32(cb, amd64RAX, returnPC)
+		emitREX(cb, false, 0, amd64RAX)
+		cb.EmitBytes(0x0F, 0xC8+regBits(amd64RAX)) // BSWAP EAX
+		emitMemOpSIB(cb, false, 0x89, amd64RAX, m68kAMD64RegMemBase, m68kAMD64RegA7, 0)
+		// Continue into next instr in this block (the leaf body).
+		successOff := amd64JMP_rel32(cb)
+		// Bail path: undo SUB, set NeedIOFallback, exit so dispatcher
+		// re-executes the JSR via interpreter.
+		patchRel32(cb, bailOff, cb.Len())
+		amd64ALU_reg_imm32_32bit(cb, 0, m68kAMD64RegA7, 4) // undo SUB
+		amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
+		m68kEmitRetPC(cb, instrPC, uint32(instrIdx))
+		m68kEmitEpilogue(cb, br)
+		// Success label — fall through to the next instr.
+		patchRel32(cb, successOff, cb.Len())
+		return
+	}
+	if ji.fusedFlag&m68kFusedRTSLeafReturn != 0 {
+		instrPC := blockStartPC + ji.pcOffset
+		// Materialize lazy CCR before clobbering EFLAGS via the I/O CMP
+		// and A7 ADD path.
+		if cs := m68kCurrentCS; cs != nil && cs.flagState != flagsMaterialized {
+			m68kMaterializeCCR(cb, cs)
+		}
+		// Pop return address: I/O check; Read32_BE; A7 += 4. Value is
+		// discarded — control flow naturally continues at the JSR's
+		// returnPC (the next instr in the block).
+		amd64ALU_reg_reg32(cb, 0x39, m68kAMD64RegA7, m68kAMD64RegIOThresh)
+		bailOff := amd64Jcc_rel32(cb, amd64CondAE)
+		emitMemOpSIB(cb, false, 0x8B, amd64RAX, m68kAMD64RegMemBase, m68kAMD64RegA7, 0)
+		amd64ALU_reg_imm32_32bit(cb, 0, m68kAMD64RegA7, 4) // ADD A7, 4
+		successOff := amd64JMP_rel32(cb)
+		patchRel32(cb, bailOff, cb.Len())
+		amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
+		m68kEmitRetPC(cb, instrPC, uint32(instrIdx))
+		m68kEmitEpilogue(cb, br)
+		patchRel32(cb, successOff, cb.Len())
+		return
+	}
 	opcode := ji.opcode
 	group := opcode >> 12
 
@@ -3212,6 +4223,17 @@ func m68kEmitInstructionFull(cb *CodeBuffer, ji *M68KJITInstr, blockStartPC uint
 		if srcMode == 0 && dstMode == 0 { // Dn → Dn (fast path)
 			m68kEmitMOVE_Dn_Dn(cb, opcode, size)
 			return
+		}
+		// MOVE.L (Ax)+,(Ay)+ specialization (MemCopy fast path).
+		// Requires distinct address registers so src (R10) and dst (R11)
+		// are independent.
+		if size == M68K_SIZE_LONG && srcMode == 3 && dstMode == 3 {
+			srcReg := opcode & 7
+			dstReg := (opcode >> 9) & 7
+			if srcReg != dstReg {
+				m68kEmitMOVE_PostincPostinc_Long(cb, srcReg, dstReg)
+				return
+			}
 		}
 		// General MOVE with any EA (requires memory for extension words)
 		if memory != nil {
@@ -3332,6 +4354,21 @@ func m68kEmitInstructionFull(cb *CodeBuffer, ji *M68KJITInstr, blockStartPC uint
 		if opcode&0xFFF8 == 0x4880 || opcode&0xFFF8 == 0x48C0 || opcode&0xFFF8 == 0x49C0 {
 			m68kEmitEXT(cb, opcode)
 			return
+		}
+		// MOVEM (memory <-> register list). EXT above already absorbed
+		// the eaMode=0 (Dn) cases that share the 0x4880/0x48C0 base, so
+		// the remaining 0xFB80 == 0x4880 patterns are genuine MOVEM.
+		if opcode&0xFB80 == 0x4880 && memory != nil {
+			eaMode := (opcode >> 3) & 7
+			dirMemToReg := (opcode>>10)&1 == 1
+			// Only legal MOVEM forms: -(An) reg-to-memory (mode 4, dir=0)
+			// and (An)+ memory-to-register (mode 3, dir=1). Reject the
+			// opposite pairings so they fall through to the interpreter
+			// (which raises ILLEGAL_INSTRUCTION).
+			if (eaMode == 4 && !dirMemToReg) || (eaMode == 3 && dirMemToReg) {
+				m68kEmitMOVEM_PreInc(cb, ji, memory, blockStartPC, br, instrIdx)
+				return
+			}
 		}
 		// NOP
 		if opcode == 0x4E71 {

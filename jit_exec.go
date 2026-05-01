@@ -6,9 +6,18 @@ package main
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
+
+// compileBlockMMUInvocations counts how many times compileBlockMMU has
+// been called. Used by the Phase 4d dispatch test
+// (TestPhase4d_DispatchActuallyRoutesMMUWorkloadThroughMMUCompiler) to
+// prove that ExecuteJIT routes MMU-on workloads through compileBlockMMU
+// at runtime, not just structurally. Increments are atomic so the
+// counter can be read concurrently with JIT execution without races.
+var compileBlockMMUInvocations atomic.Uint64
 
 // JIT configuration constants
 const (
@@ -55,6 +64,7 @@ func (cpu *CPU64) freeJIT() {
 // compileBlockMMU wraps compileBlock, marking all guest-memory-touching
 // instructions for interpreter bail. Used when MMU is enabled.
 func compileBlockMMU(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITBlock, error) {
+	compileBlockMMUInvocations.Add(1)
 	for i := range instrs {
 		switch instrs[i].opcode {
 		case OP_LOAD, OP_STORE, OP_FLOAD, OP_FSTORE, OP_DLOAD, OP_DSTORE,
@@ -88,6 +98,8 @@ func (cpu *CPU64) ExecuteJIT() {
 		return
 	}
 	defer cpu.freeJIT()
+
+	enableIE64PollWiring(cpu)
 
 	execMem := cpu.getJITExecMem()
 
@@ -131,6 +143,14 @@ func (cpu *CPU64) ExecuteJIT() {
 			cpu.jitCache.Invalidate()
 			execMem.Reset()
 			cpu.jitNeedInval = false
+			cpu.jitCtx.RTSCache0PC = 0
+			cpu.jitCtx.RTSCache0Addr = 0
+			cpu.jitCtx.RTSCache1PC = 0
+			cpu.jitCtx.RTSCache1Addr = 0
+			cpu.jitCtx.RTSCache2PC = 0
+			cpu.jitCtx.RTSCache2Addr = 0
+			cpu.jitCtx.RTSCache3PC = 0
+			cpu.jitCtx.RTSCache3Addr = 0
 		}
 
 		// PLAN_MAX_RAM.md slice 4 design: drop the legacy IE64_ADDR_MASK
@@ -257,10 +277,62 @@ func (cpu *CPU64) ExecuteJIT() {
 				}
 				continue
 			}
+			// Tag the block with its compile-time PTBR so the chain
+			// patcher can keep cross-address-space blocks isolated. Non-
+			// MMU mode uses ptbr=0 implicitly, which preserves the
+			// pre-MMU behavior.
+			if cpu.mmuEnabled {
+				block.ptbr = cpu.ptbr
+			}
 			cpu.jitCache.PutKey(cacheKey, block)
+
+			// Bidirectional chain patching, scoped by MMU PTBR when
+			// enabled. Two address spaces can share a virtual PC; without
+			// scoping, a block compiled in one PTBR could chain into
+			// physical code from another PTBR.
+			//   1. Existing blocks holding chain slots that target this
+			//      block get their JMP rel32 patched to our chainEntry.
+			//   2. Our own outbound chain slots that target already-cached
+			//      blocks get patched here.
+			if block.chainEntry != 0 {
+				if cpu.mmuEnabled {
+					cpu.jitCache.PatchChainsToScoped(block.startPC, block.chainEntry, cpu.ptbr)
+				} else {
+					cpu.jitCache.PatchChainsTo(block.startPC, block.chainEntry)
+				}
+			}
+			for i := range block.chainSlots {
+				slot := &block.chainSlots[i]
+				targetKey := uint64(slot.targetPC)
+				if cpu.mmuEnabled {
+					targetKey = (cpu.ptbr * 0x9E3779B97F4A7C15) ^ uint64(slot.targetPC)
+				}
+				if target := cpu.jitCache.GetKey(targetKey); target != nil && target.chainEntry != 0 {
+					PatchRel32At(slot.patchAddr, target.chainEntry)
+				}
+			}
+
 			diagCacheMisses++
 		} else {
 			diagCacheHits++
+		}
+
+		// Reset per-callNative chain dispatch state.
+		cpu.jitCtx.ChainBudget = ie64ChainBudget
+		cpu.jitCtx.ChainCount = 0
+
+		// Update 4-entry MRU RTS cache: shift entries down and write the
+		// just-resolved block at slot 0. RTS in chained-running blocks
+		// probes these slots for fast unchained-RET avoidance.
+		if block.chainEntry != 0 {
+			cpu.jitCtx.RTSCache3PC = cpu.jitCtx.RTSCache2PC
+			cpu.jitCtx.RTSCache3Addr = cpu.jitCtx.RTSCache2Addr
+			cpu.jitCtx.RTSCache2PC = cpu.jitCtx.RTSCache1PC
+			cpu.jitCtx.RTSCache2Addr = cpu.jitCtx.RTSCache1Addr
+			cpu.jitCtx.RTSCache1PC = cpu.jitCtx.RTSCache0PC
+			cpu.jitCtx.RTSCache1Addr = cpu.jitCtx.RTSCache0Addr
+			cpu.jitCtx.RTSCache0PC = block.startPC
+			cpu.jitCtx.RTSCache0Addr = block.chainEntry
 		}
 
 		// Execute the native code block
@@ -272,6 +344,11 @@ func (cpu *CPU64) ExecuteJIT() {
 		cpu.regs[0] = 0
 		cpu.PC = uint64(uint32(combined))
 		executed := combined >> 32
+		// ChainCount accumulates instruction counts retired by chained
+		// predecessor blocks. Add it so retired-instruction accounting is
+		// uniform with interpreter mode.
+		executed += uint64(cpu.jitCtx.ChainCount)
+		cpu.jitCtx.ChainCount = 0
 		if executed == 0 {
 			executed = uint64(block.instrCount) // safety fallback
 		}
@@ -288,6 +365,14 @@ func (cpu *CPU64) ExecuteJIT() {
 			cpu.jitCache.Invalidate()
 			execMem.Reset()
 			cpu.jitCtx.NeedInval = 0
+			cpu.jitCtx.RTSCache0PC = 0
+			cpu.jitCtx.RTSCache0Addr = 0
+			cpu.jitCtx.RTSCache1PC = 0
+			cpu.jitCtx.RTSCache1Addr = 0
+			cpu.jitCtx.RTSCache2PC = 0
+			cpu.jitCtx.RTSCache2Addr = 0
+			cpu.jitCtx.RTSCache3PC = 0
+			cpu.jitCtx.RTSCache3Addr = 0
 		}
 
 		// I/O fallback: re-execute the bailing instruction via interpreter

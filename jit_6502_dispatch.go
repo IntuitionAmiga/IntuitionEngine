@@ -1,6 +1,9 @@
 // jit_6502_dispatch.go - 6502 JIT platform dispatch (JIT-capable platforms)
+//
+// 6502 JIT is amd64-only (per CLAUDE.md: only IE64 has arm64 JIT).
+// Non-amd64 builds get the stub in jit_6502_dispatch_stub.go.
 
-//go:build (amd64 && (linux || windows || darwin)) || (arm64 && linux)
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 

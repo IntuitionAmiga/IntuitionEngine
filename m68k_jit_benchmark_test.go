@@ -144,6 +144,7 @@ func BenchmarkM68K_ALU_Interpreter(b *testing.B) {
 		runM68KBenchInterpreter(cpu, startPC)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 func BenchmarkM68K_ALU_JIT(b *testing.B) {
@@ -155,6 +156,7 @@ func BenchmarkM68K_ALU_JIT(b *testing.B) {
 	totalInstrs := (m68kBenchIterations) * instrPerIter
 
 	cpu.m68kJitEnabled = true
+	cpu.m68kJitForceNative = true
 	cpu.m68kJitPersist = true
 
 	// Warm-up
@@ -165,6 +167,7 @@ func BenchmarkM68K_ALU_JIT(b *testing.B) {
 		runM68KBenchJIT(cpu, startPC)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // ===========================================================================
@@ -220,6 +223,7 @@ func BenchmarkM68K_MemCopy_Interpreter(b *testing.B) {
 		runM68KBenchInterpreter(cpu, startPC)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 func BenchmarkM68K_MemCopy_JIT(b *testing.B) {
@@ -231,6 +235,7 @@ func BenchmarkM68K_MemCopy_JIT(b *testing.B) {
 	totalInstrs := m68kBenchIterations * instrPerIter
 
 	cpu.m68kJitEnabled = true
+	cpu.m68kJitForceNative = true
 	cpu.m68kJitPersist = true
 	runM68KBenchJIT(cpu, startPC)
 
@@ -239,6 +244,7 @@ func BenchmarkM68K_MemCopy_JIT(b *testing.B) {
 		runM68KBenchJIT(cpu, startPC)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // ===========================================================================
@@ -290,6 +296,7 @@ func BenchmarkM68K_Call_Interpreter(b *testing.B) {
 		runM68KBenchInterpreter(cpu, startPC)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 func BenchmarkM68K_Call_JIT(b *testing.B) {
@@ -301,6 +308,7 @@ func BenchmarkM68K_Call_JIT(b *testing.B) {
 	totalInstrs := m68kBenchIterations * instrPerIter
 
 	cpu.m68kJitEnabled = true
+	cpu.m68kJitForceNative = true
 	cpu.m68kJitPersist = true
 	cpu.AddrRegs[7] = 0x10000
 	runM68KBenchJIT(cpu, startPC)
@@ -311,6 +319,7 @@ func BenchmarkM68K_Call_JIT(b *testing.B) {
 		runM68KBenchJIT(cpu, startPC)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // ===========================================================================
@@ -360,6 +369,7 @@ func BenchmarkM68K_Chain_BRA_JIT(b *testing.B) {
 	totalInstrs := m68kBenchIterations * instrPerIter
 
 	cpu.m68kJitEnabled = true
+	cpu.m68kJitForceNative = true
 	cpu.m68kJitPersist = true
 	runM68KBenchJIT(cpu, startPC)
 
@@ -369,6 +379,7 @@ func BenchmarkM68K_Chain_BRA_JIT(b *testing.B) {
 		runM68KBenchJIT(cpu, startPC)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 func BenchmarkM68K_Chain_BRA_Interpreter(b *testing.B) {
@@ -382,6 +393,7 @@ func BenchmarkM68K_Chain_BRA_Interpreter(b *testing.B) {
 		runM68KBenchInterpreter(cpu, startPC)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 // BenchmarkM68K_LazyCCR_CMP_Bcc benchmarks CMP+BEQ in a tight loop,
@@ -427,6 +439,7 @@ func BenchmarkM68K_LazyCCR_CMP_Bcc_JIT(b *testing.B) {
 	totalInstrs := m68kBenchIterations * instrPerIter
 
 	cpu.m68kJitEnabled = true
+	cpu.m68kJitForceNative = true
 	cpu.m68kJitPersist = true
 	runM68KBenchJIT(cpu, startPC)
 
@@ -437,6 +450,7 @@ func BenchmarkM68K_LazyCCR_CMP_Bcc_JIT(b *testing.B) {
 		runM68KBenchJIT(cpu, startPC)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
 func BenchmarkM68K_LazyCCR_CMP_Bcc_Interpreter(b *testing.B) {
@@ -451,4 +465,5 @@ func BenchmarkM68K_LazyCCR_CMP_Bcc_Interpreter(b *testing.B) {
 		runM68KBenchInterpreter(cpu, startPC)
 	}
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
 }

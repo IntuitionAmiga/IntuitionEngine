@@ -89,6 +89,104 @@ func z80EmitReadReg8(buf *CodeBuffer, z80Reg byte) {
 	}
 }
 
+// z80LowByteHost reports whether the Z80 register encoding maps to a host
+// byte register that is directly addressable (no shift/mask needed). The
+// Z80 low-half registers C/E/L map to R12B/R13B/R14B and A maps to BL.
+// B, D, H live in the high half of R12W/R13W/R14W and require shift/mask;
+// (HL) is memory-indirect and not handled here.
+func z80LowByteHost(z80Reg byte) (host byte, ok bool) {
+	switch z80Reg {
+	case 1: // C
+		return z80RegBC, true // R12B
+	case 3: // E
+		return z80RegDE, true // R13B
+	case 5: // L
+		return z80RegHL, true // R14B
+	case 7: // A
+		return z80RegA, true // BL
+	}
+	return 0, false
+}
+
+// z80TryEmitLDByte emits MOV dstHost, srcHost as a single byte op when
+// both Z80 registers are low-byte-addressable (C/E/L/A). Returns false
+// for high-half regs (B/D/H) or (HL) — caller must fall back to the
+// generic read+write path. Same-register case (e.g. LD B,B) is the
+// caller's responsibility to short-circuit before calling this.
+func z80TryEmitLDByte(buf *CodeBuffer, dstZ80, srcZ80 byte) bool {
+	dstHost, dstOK := z80LowByteHost(dstZ80)
+	srcHost, srcOK := z80LowByteHost(srcZ80)
+	if !dstOK || !srcOK {
+		return false
+	}
+	// MOV r/m8, r8 — opcode 0x88, modrm = 11 (src) (dst).
+	// REX.R extends src reg field; REX.B extends r/m (dst) field.
+	rex := byte(0)
+	if srcHost >= 8 {
+		rex |= 0x44 // REX.R
+	}
+	if dstHost >= 8 {
+		rex |= 0x41 // REX.B
+	}
+	if rex != 0 {
+		// Force the REX-prefix encoding for legacy low-8 regs to avoid
+		// AH/CH/DH/BH aliasing. Set REX even when only one side is
+		// extended (the other side stays in the low-8 set unchanged).
+		buf.EmitBytes(rex)
+	}
+	buf.EmitBytes(0x88, modRM(3, srcHost&7, dstHost&7))
+	return true
+}
+
+// z80AluFastSrcByte returns the host byte register for low-byte-
+// addressable Z80 8-bit source regs used by the ALU A,r fast path:
+// C→R12B, E→R13B, L→R14B, A→BL. Returns ok=false for B/D/H (high
+// half — need shift+mask) and (HL) (memory). Phase 7b unroll: when
+// ok, the ALU emit can encode the op directly against the host byte
+// register, skipping the MOVZX-to-AL read.
+func z80AluFastSrcByte(z80Reg byte) (host byte, ok bool) {
+	switch z80Reg {
+	case 1: // C
+		return z80RegBC, true
+	case 3: // E
+		return z80RegDE, true
+	case 5: // L
+		return z80RegHL, true
+	case 7: // A
+		return z80RegA, true
+	}
+	return 0, false
+}
+
+// z80EmitMovHostByteToCL emits MOV CL, hostByte. Used by the ALU A,r
+// fast path to snapshot the operand into CL when flag emission needs
+// it, without going through AL.
+func z80EmitMovHostByteToCL(buf *CodeBuffer, hostSrc byte) {
+	rex := byte(0)
+	if hostSrc >= 8 {
+		rex |= 0x44 // REX.R for hostSrc in {R8..R15}
+	}
+	if rex != 0 {
+		buf.EmitBytes(rex)
+	}
+	buf.EmitBytes(0x88, modRM(3, hostSrc&7, z80Scratch2&7))
+}
+
+// z80EmitALUByteOp emits "op BL, hostSrc" — an 8-bit ALU op against
+// the A register with the operand sourced directly from a host byte
+// register. opcode is the standard r/m8,r8 form base: 0x00=ADD,
+// 0x08=OR, 0x20=AND, 0x28=SUB, 0x30=XOR.
+func z80EmitALUByteOp(buf *CodeBuffer, opcode, hostSrc byte) {
+	rex := byte(0)
+	if hostSrc >= 8 {
+		rex |= 0x44 // REX.R
+	}
+	if rex != 0 {
+		buf.EmitBytes(rex)
+	}
+	buf.EmitBytes(opcode, modRM(3, hostSrc&7, z80RegA&7))
+}
+
 // z80EmitWriteReg8 emits code to write the low byte of RAX to a Z80 8-bit register.
 func z80EmitWriteReg8(buf *CodeBuffer, z80Reg byte) {
 	switch z80Reg {
@@ -957,7 +1055,37 @@ func z80EmitDJNZ(buf *CodeBuffer, cs *z80CompileState, target, nextPC uint16, in
 func z80EmitRET(buf *CodeBuffer, instrPC uint16, instrCount int, totalCycles uint32, blockRIncrements int) {
 	bailLabel := fmt.Sprintf("ret_bail_%d", buf.Len())
 	doneLabel := fmt.Sprintf("ret_done_%d", buf.Len())
+	fastSlowLabel := fmt.Sprintf("ret_fast_slow_%d", buf.Len())
+	fastDoneLabel := fmt.Sprintf("ret_fast_done_%d", buf.Len())
 
+	// ── Fast path: 16-bit fused read when both bytes share one direct page ──
+	amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))   // R10 = CpuPtr
+	amd64MOVZX_W_mem(buf, z80Scratch2, z80Scratch4, int32(cpuZ80OffSP)) // ECX = oldSP
+	// (oldSP & 0xFF) == 0xFF → SP+1 crosses page, slow path.
+	buf.EmitBytes(0x80, 0xF9, 0xFF) // CMP CL, 0xFF
+	buf.EmitBytes(0x0F, 0x84)       // JE fastSlow
+	buf.FixupRel32(fastSlowLabel, buf.Len()+4)
+	// Page = oldSP >> 8 → EDX.
+	buf.EmitBytes(0x89, 0xCA)       // MOV EDX, ECX
+	buf.EmitBytes(0xC1, 0xEA, 0x08) // SHR EDX, 8
+	// directPageBitmap[page] != 0 → non-direct, slow path.
+	amd64MOVZX_B_memSIB(buf, z80Scratch5, z80RegDPB, z80Scratch3) // R11D = DPB[page]
+	emitREX(buf, false, z80Scratch5, z80Scratch5)
+	buf.EmitBytes(0x85, modRM(3, z80Scratch5, z80Scratch5))
+	buf.EmitBytes(0x0F, 0x85) // JNZ fastSlow
+	buf.FixupRel32(fastSlowLabel, buf.Len()+4)
+	// 16-bit read: MOVZX EAX, WORD [RSI + RCX] (RAX = return PC).
+	buf.EmitBytes(0x0F, 0xB7, 0x04, 0x0E)
+	// Commit SP = (oldSP + 2) & 0xFFFF.
+	buf.EmitBytes(0x66, 0x83, 0xC1, 0x02) // ADD CX, 2
+	buf.EmitBytes(0x66)
+	emitMemOp(buf, false, 0x89, z80Scratch2, z80Scratch4, int32(cpuZ80OffSP))
+	// JMP fastDone — fall through to chain logic with EAX = return PC.
+	buf.EmitBytes(0xE9)
+	buf.FixupRel32(fastDoneLabel, buf.Len()+4)
+
+	// ── Slow path (original bytewise RET) ──
+	buf.Label(fastSlowLabel)
 	// Read SP from CPU struct
 	amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))   // R10 = CpuPtr
 	amd64MOVZX_W_mem(buf, z80Scratch2, z80Scratch4, int32(cpuZ80OffSP)) // ECX = SP
@@ -982,6 +1110,8 @@ func z80EmitRET(buf *CodeBuffer, instrPC uint16, instrCount int, totalCycles uin
 	buf.EmitBytes(0x83, 0xC1, 0x02) // ADD ECX, 2
 	buf.EmitBytes(0x66)
 	emitMemOp(buf, false, 0x89, z80Scratch2, z80Scratch4, int32(cpuZ80OffSP))
+
+	buf.Label(fastDoneLabel)
 
 	// EAX = return address (dynamic PC).
 	// Try RTS cache for native chaining before falling back to Go dispatch.
@@ -1051,7 +1181,51 @@ func z80EmitCALL(buf *CodeBuffer, cs *z80CompileState, target, returnAddr, instr
 	selfModLabel := fmt.Sprintf("call_smod_%d", buf.Len())
 	doneWrite1 := fmt.Sprintf("cw1_%d", buf.Len())
 	doneWrite2 := fmt.Sprintf("cw2_%d", buf.Len())
+	fastSlowLabel := fmt.Sprintf("call_fast_slow_%d", buf.Len())
+	fastSelfModLabel := fmt.Sprintf("call_fast_smod_%d", buf.Len())
+	fastDoneLabel := fmt.Sprintf("call_fast_done_%d", buf.Len())
 
+	// ── Fast path: 16-bit fused write of return address to [newSP..newSP+1] ──
+	// z80EmitSelfModExit reads InvalPage from ECX, so the page number must
+	// live in ECX (not EDX) before the SMC-check JNZ branches there.
+	amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))   // RAX = CpuPtr
+	amd64MOVZX_W_mem(buf, z80Scratch2, z80Scratch1, int32(cpuZ80OffSP)) // ECX = oldSP
+	buf.EmitBytes(0x8D, 0x41, 0xFE)                                     // LEA EAX, [RCX-2]
+	buf.EmitBytes(0x0F, 0xB7, 0xC0)                                     // MOVZX EAX, AX (newSP, 16-bit)
+	buf.EmitBytes(0x3C, 0xFF)                                           // CMP AL, 0xFF
+	buf.EmitBytes(0x0F, 0x84)                                           // JE fastSlow
+	buf.FixupRel32(fastSlowLabel, buf.Len()+4)
+	// Page = newSP >> 8 → ECX (clobbers oldSP, no longer needed).
+	buf.EmitBytes(0x89, 0xC1)       // MOV ECX, EAX
+	buf.EmitBytes(0xC1, 0xE9, 0x08) // SHR ECX, 8
+	// directPageBitmap[page]
+	amd64MOVZX_B_memSIB(buf, z80Scratch4, z80RegDPB, z80Scratch2) // R10D = DPB[ECX]
+	emitREX(buf, false, z80Scratch4, z80Scratch4)
+	buf.EmitBytes(0x85, modRM(3, z80Scratch4, z80Scratch4))
+	buf.EmitBytes(0x0F, 0x85) // JNZ fastSlow
+	buf.FixupRel32(fastSlowLabel, buf.Len()+4)
+	// Load returnAddr (16-bit) into R11D, then 16-bit write at [RSI + RAX].
+	amd64MOV_reg_imm32(buf, z80Scratch5, uint32(returnAddr))
+	buf.EmitBytes(0x66, 0x44, 0x89, 0x1C, 0x06) // MOV WORD [RSI+RAX], R11W
+	// Commit SP = newSP. Re-read CpuPtr (page in ECX preserved for SMC).
+	amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))
+	buf.EmitBytes(0x66)
+	emitMemOp(buf, false, 0x89, z80Scratch1, z80Scratch4, int32(cpuZ80OffSP))
+	// SMC check on the page. Page in ECX → CPB[ECX].
+	amd64MOVZX_B_memSIB(buf, z80Scratch4, z80RegCPB, z80Scratch2) // R10D = CPB[ECX]
+	emitREX(buf, false, z80Scratch4, z80Scratch4)
+	buf.EmitBytes(0x85, modRM(3, z80Scratch4, z80Scratch4))
+	buf.EmitBytes(0x0F, 0x85) // JNZ fastSelfMod
+	buf.FixupRel32(fastSelfModLabel, buf.Len()+4)
+	// JMP fastDone
+	buf.EmitBytes(0xE9)
+	buf.FixupRel32(fastDoneLabel, buf.Len()+4)
+	// Fast self-mod path (write committed; signal NeedInval).
+	// ECX holds the invalidated page number, as z80EmitSelfModExit expects.
+	z80EmitSelfModExit(buf, fastSelfModLabel, target, instrCount, totalCycles, blockRIncrements)
+
+	// ── Slow path (original bytewise CALL) ──
+	buf.Label(fastSlowLabel)
 	// SP -= 2 (reload CpuPtr from stack each time — z80EmitMemWrite clobbers R10)
 	amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))   // RAX = CpuPtr
 	amd64MOVZX_W_mem(buf, z80Scratch2, z80Scratch1, int32(cpuZ80OffSP)) // ECX = SP
@@ -1090,6 +1264,7 @@ func z80EmitCALL(buf *CodeBuffer, cs *z80CompileState, target, returnAddr, instr
 	z80EmitSelfModExit(buf, selfModLabel2, target, instrCount, totalCycles, blockRIncrements)
 	buf.Label(doneWrite2)
 
+	buf.Label(fastDoneLabel)
 	// Jump to target — chain exit (static target known)
 	z80EmitChainExit(buf, cs, target, instrCount, totalCycles, blockRIncrements)
 }
@@ -1615,7 +1790,11 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 			z80EmitLD_r_HL(buf, dst, instrPC, instrIdx, cyclesAccum, rIncAccum)
 		} else if dst == 6 { // LD (HL),r
 			z80EmitLD_HL_r(buf, src, instrPC, instrIdx, cyclesAccum, nextInstrPC, blockStartPC, rIncAccum, rIncAccum+int(instr.rIncrements))
-		} else { // LD r,r'
+		} else if dst == src {
+			// LD r,r same — semantic NOP. Real hardware uses LD B,B as a
+			// debugger marker on some emulators, but no F-side effects.
+		} else if !z80TryEmitLDByte(buf, dst, src) {
+			// Fallback: high-half (B/D/H) endpoints need shift/mask.
 			z80EmitReadReg8(buf, src)
 			z80EmitWriteReg8(buf, dst)
 		}
@@ -1649,6 +1828,20 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 	// ADD A,r (0x80-0x87) — includes (HL) operand
 	case op >= 0x80 && op <= 0x87:
 		src := op & 0x07
+		if hostSrc, ok := z80AluFastSrcByte(src); ok {
+			// Phase 7b fast path: ADD BL, hostSrc directly, skip MOVZX read.
+			if emitFlags != 0 {
+				buf.EmitBytes(0x88, 0xDA) // MOV DL, BL (oldA snapshot)
+				z80EmitMovHostByteToCL(buf, hostSrc)
+			}
+			z80EmitALUByteOp(buf, 0x00, hostSrc) // ADD BL, hostSrc
+			if emitFlags != 0 {
+				z80EmitCarryCapture(buf)
+				amd64MOVZX_B(buf, z80Scratch1, z80RegA) // result to AL for flags
+				z80EmitFlags_ADD(buf, emitFlags)
+			}
+			break
+		}
 		z80EmitReadReg8OrHL(buf, src, instrPC, instrIdx, cyclesAccum, rIncAccum)
 		if emitFlags != 0 {
 			buf.EmitBytes(0x88, 0xDA) // MOV DL, BL (oldA — only for flags)
@@ -1683,6 +1876,19 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 	// SUB r (0x90-0x97) — includes (HL) operand
 	case op >= 0x90 && op <= 0x97:
 		src := op & 0x07
+		if hostSrc, ok := z80AluFastSrcByte(src); ok {
+			if emitFlags != 0 {
+				buf.EmitBytes(0x88, 0xDA) // MOV DL, BL (oldA)
+				z80EmitMovHostByteToCL(buf, hostSrc)
+			}
+			z80EmitALUByteOp(buf, 0x28, hostSrc) // SUB BL, hostSrc
+			if emitFlags != 0 {
+				z80EmitBorrowCapture(buf)
+				amd64MOVZX_B(buf, z80Scratch1, z80RegA)
+				z80EmitFlags_SUB(buf, emitFlags)
+			}
+			break
+		}
 		z80EmitReadReg8OrHL(buf, src, instrPC, instrIdx, cyclesAccum, rIncAccum)
 		if emitFlags != 0 {
 			buf.EmitBytes(0x88, 0xDA) // MOV DL, BL (oldA)
@@ -1716,6 +1922,14 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 	// AND r (0xA0-0xA7) — includes (HL) operand
 	case op >= 0xA0 && op <= 0xA7:
 		src := op & 0x07
+		if hostSrc, ok := z80AluFastSrcByte(src); ok {
+			z80EmitALUByteOp(buf, 0x20, hostSrc) // AND BL, hostSrc
+			if emitFlags != 0 {
+				amd64MOVZX_B(buf, z80Scratch1, z80RegA)
+				z80EmitFlags_Logic(buf, true, emitFlags)
+			}
+			break
+		}
 		z80EmitReadReg8OrHL(buf, src, instrPC, instrIdx, cyclesAccum, rIncAccum)
 		buf.EmitBytes(0x20, modRM(3, z80Scratch1, z80RegA))
 		if emitFlags != 0 {
@@ -1726,6 +1940,14 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 	// XOR r (0xA8-0xAF) — includes (HL) operand
 	case op >= 0xA8 && op <= 0xAF:
 		src := op & 0x07
+		if hostSrc, ok := z80AluFastSrcByte(src); ok {
+			z80EmitALUByteOp(buf, 0x30, hostSrc) // XOR BL, hostSrc
+			if emitFlags != 0 {
+				amd64MOVZX_B(buf, z80Scratch1, z80RegA)
+				z80EmitFlags_Logic(buf, false, emitFlags)
+			}
+			break
+		}
 		z80EmitReadReg8OrHL(buf, src, instrPC, instrIdx, cyclesAccum, rIncAccum)
 		buf.EmitBytes(0x30, modRM(3, z80Scratch1, z80RegA))
 		if emitFlags != 0 {
@@ -1736,6 +1958,14 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 	// OR r (0xB0-0xB7) — includes (HL) operand
 	case op >= 0xB0 && op <= 0xB7:
 		src := op & 0x07
+		if hostSrc, ok := z80AluFastSrcByte(src); ok {
+			z80EmitALUByteOp(buf, 0x08, hostSrc) // OR BL, hostSrc
+			if emitFlags != 0 {
+				amd64MOVZX_B(buf, z80Scratch1, z80RegA)
+				z80EmitFlags_Logic(buf, false, emitFlags)
+			}
+			break
+		}
 		z80EmitReadReg8OrHL(buf, src, instrPC, instrIdx, cyclesAccum, rIncAccum)
 		buf.EmitBytes(0x08, modRM(3, z80Scratch1, z80RegA))
 		if emitFlags != 0 {
@@ -2390,6 +2620,11 @@ func z80EmitRotateA(buf *CodeBuffer, op byte) {
 }
 
 // z80EmitPUSH emits Z80 PUSH rp: SP-=2, [SP]=low, [SP+1]=high.
+//
+// Fast path: when the post-decrement SP and SP+1 lie on the same direct
+// page (i.e. (newSP & 0xFF) != 0xFF), perform a single 16-bit write with
+// one direct-page check and one SMC check. Falls through to the original
+// bytewise path on any guard miss.
 func z80EmitPUSH(buf *CodeBuffer, pair byte, instrPC uint16, instrIdx int, cyclesAccum uint32, rIncAccum int, rIncComplete int) {
 	bailLabel := fmt.Sprintf("push_bail_%04X", instrPC)
 	selfModLabel := fmt.Sprintf("push_smod_%04X", instrPC)
@@ -2397,6 +2632,9 @@ func z80EmitPUSH(buf *CodeBuffer, pair byte, instrPC uint16, instrIdx int, cycle
 	bailLabel2 := fmt.Sprintf("push_bail2_%04X", instrPC)
 	selfModLabel2 := fmt.Sprintf("push_smod2_%04X", instrPC)
 	doneLabel2 := fmt.Sprintf("push_d2_%04X", instrPC)
+	fastSlowLabel := fmt.Sprintf("push_fast_slow_%04X", instrPC)
+	fastSelfModLabel := fmt.Sprintf("push_fast_smod_%04X", instrPC)
+	fastDoneLabel := fmt.Sprintf("push_fast_done_%04X", instrPC)
 
 	// Read pair value into R11 (preserved across memWrite)
 	switch pair {
@@ -2413,7 +2651,49 @@ func z80EmitPUSH(buf *CodeBuffer, pair byte, instrPC uint16, instrIdx int, cycle
 		buf.EmitBytes(0x41, 0x09, 0xC3)         // OR R11D, EAX
 	}
 
-	// SP -= 2
+	// ── Fast path: 16-bit fused write when both bytes share one direct page ──
+	// Read CpuPtr → RAX, oldSP → ECX. Compute newSP = (oldSP-2) & 0xFFFF in EAX.
+	// Note: z80EmitSelfModExit reads InvalPage from ECX, so the page number
+	// must live in ECX (not EDX) before the SMC-check JNZ branches there.
+	amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))   // RAX = CpuPtr
+	amd64MOVZX_W_mem(buf, z80Scratch2, z80Scratch1, int32(cpuZ80OffSP)) // ECX = oldSP
+	buf.EmitBytes(0x8D, 0x41, 0xFE)                                     // LEA EAX, [RCX-2]
+	buf.EmitBytes(0x0F, 0xB7, 0xC0)                                     // MOVZX EAX, AX (wrap to 16-bit)
+	// (newSP & 0xFF) == 0xFF → SP+1 crosses page boundary; take slow path.
+	buf.EmitBytes(0x3C, 0xFF) // CMP AL, 0xFF
+	buf.EmitBytes(0x0F, 0x84) // JE fastSlow
+	buf.FixupRel32(fastSlowLabel, buf.Len()+4)
+	// Page = newSP >> 8 → ECX (clobbers oldSP, no longer needed). The
+	// fastSelfMod exit path expects the invalidated page in ECX.
+	buf.EmitBytes(0x89, 0xC1)       // MOV ECX, EAX
+	buf.EmitBytes(0xC1, 0xE9, 0x08) // SHR ECX, 8
+	// directPageBitmap[page] != 0 → non-direct, slow path.
+	amd64MOVZX_B_memSIB(buf, z80Scratch4, z80RegDPB, z80Scratch2) // R10D = DPB[ECX]
+	emitREX(buf, false, z80Scratch4, z80Scratch4)
+	buf.EmitBytes(0x85, modRM(3, z80Scratch4, z80Scratch4)) // TEST R10D,R10D
+	buf.EmitBytes(0x0F, 0x85)                               // JNZ fastSlow
+	buf.FixupRel32(fastSlowLabel, buf.Len()+4)
+	// 16-bit write: MOV WORD [RSI + RAX], R11W
+	buf.EmitBytes(0x66, 0x44, 0x89, 0x1C, 0x06)
+	// Commit SP = newSP. Re-read CpuPtr into R10 (page in ECX preserved for SMC).
+	amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))
+	buf.EmitBytes(0x66) // operand size 16
+	emitMemOp(buf, false, 0x89, z80Scratch1, z80Scratch4, int32(cpuZ80OffSP))
+	// SMC check on the page (covers both bytes). Page in ECX → CPB[ECX].
+	amd64MOVZX_B_memSIB(buf, z80Scratch4, z80RegCPB, z80Scratch2) // R10D = CPB[ECX]
+	emitREX(buf, false, z80Scratch4, z80Scratch4)
+	buf.EmitBytes(0x85, modRM(3, z80Scratch4, z80Scratch4))
+	buf.EmitBytes(0x0F, 0x85) // JNZ fastSelfMod
+	buf.FixupRel32(fastSelfModLabel, buf.Len()+4)
+	// JMP fastDone — fast path success.
+	buf.EmitBytes(0xE9)
+	buf.FixupRel32(fastDoneLabel, buf.Len()+4)
+	// Fast self-mod exit (write already committed; signal NeedInval).
+	// ECX holds the invalidated page number, as z80EmitSelfModExit expects.
+	z80EmitSelfModExit(buf, fastSelfModLabel, instrPC+1, instrIdx+1, cyclesAccum+11, rIncComplete)
+
+	// ── Slow path (original bytewise PUSH): SP -= 2, write low, write high ──
+	buf.Label(fastSlowLabel)
 	amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))   // RAX = CpuPtr
 	amd64MOVZX_W_mem(buf, z80Scratch2, z80Scratch1, int32(cpuZ80OffSP)) // ECX = SP
 	buf.EmitBytes(0x83, 0xE9, 0x02)                                     // SUB ECX, 2
@@ -2443,13 +2723,64 @@ func z80EmitPUSH(buf *CodeBuffer, pair byte, instrPC uint16, instrIdx int, cycle
 	z80EmitBailExit(buf, bailLabel2, instrPC, instrIdx, cyclesAccum, rIncAccum)
 	z80EmitSelfModExit(buf, selfModLabel2, instrPC+1, instrIdx+1, cyclesAccum+11, rIncComplete)
 	buf.Label(doneLabel2)
+
+	buf.Label(fastDoneLabel)
 }
 
 // z80EmitPOP emits Z80 POP rp.
+//
+// Fast path: when oldSP and oldSP+1 lie on the same direct page (i.e.
+// (oldSP & 0xFF) != 0xFF), perform a single 16-bit read with one direct-
+// page check. Falls through to the original bytewise path on any guard
+// miss. POP does not write memory, so no SMC check.
 func z80EmitPOP(buf *CodeBuffer, pair byte, instrPC uint16, instrIdx int, cyclesAccum uint32, rIncAccum int) {
 	bailLabel := fmt.Sprintf("bail_%04X", instrPC)
 	doneLabel := fmt.Sprintf("done_%04X", instrPC)
+	fastSlowLabel := fmt.Sprintf("pop_fast_slow_%04X", instrPC)
+	fastDoneLabel := fmt.Sprintf("pop_fast_done_%04X", instrPC)
 
+	// ── Fast path: 16-bit fused read when both bytes share one direct page ──
+	amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))   // R10 = CpuPtr
+	amd64MOVZX_W_mem(buf, z80Scratch2, z80Scratch4, int32(cpuZ80OffSP)) // ECX = oldSP
+	// (oldSP & 0xFF) == 0xFF → SP+1 crosses page, slow path.
+	buf.EmitBytes(0x80, 0xF9, 0xFF) // CMP CL, 0xFF
+	buf.EmitBytes(0x0F, 0x84)       // JE fastSlow
+	buf.FixupRel32(fastSlowLabel, buf.Len()+4)
+	// Page = oldSP >> 8 → EDX.
+	buf.EmitBytes(0x89, 0xCA)       // MOV EDX, ECX
+	buf.EmitBytes(0xC1, 0xEA, 0x08) // SHR EDX, 8
+	// directPageBitmap[page] != 0 → non-direct, slow path.
+	amd64MOVZX_B_memSIB(buf, z80Scratch5, z80RegDPB, z80Scratch3) // R11D = DPB[page]
+	emitREX(buf, false, z80Scratch5, z80Scratch5)
+	buf.EmitBytes(0x85, modRM(3, z80Scratch5, z80Scratch5))
+	buf.EmitBytes(0x0F, 0x85) // JNZ fastSlow
+	buf.FixupRel32(fastSlowLabel, buf.Len()+4)
+	// 16-bit read: MOVZX EAX, WORD [RSI + RCX]
+	buf.EmitBytes(0x0F, 0xB7, 0x04, 0x0E)
+	// Commit SP = (oldSP + 2) & 0xFFFF.
+	buf.EmitBytes(0x66, 0x83, 0xC1, 0x02) // ADD CX, 2 (16-bit, wraps)
+	buf.EmitBytes(0x66)                   // operand size 16
+	emitMemOp(buf, false, 0x89, z80Scratch2, z80Scratch4, int32(cpuZ80OffSP))
+	// Write popped value to destination pair.
+	switch pair {
+	case 0: // BC
+		buf.EmitBytes(0x66, 0x41, 0x89, modRM(3, z80Scratch1, z80RegBC&0x07))
+	case 1: // DE
+		buf.EmitBytes(0x66, 0x41, 0x89, modRM(3, z80Scratch1, z80RegDE&0x07))
+	case 2: // HL
+		buf.EmitBytes(0x66, 0x41, 0x89, modRM(3, z80Scratch1, z80RegHL&0x07))
+	case 3: // AF
+		buf.EmitBytes(0x88, 0xC1)                           // MOV CL, AL (F)
+		buf.EmitBytes(0xC1, 0xE8, 0x08)                     // SHR EAX, 8 (A)
+		buf.EmitBytes(0x88, modRM(3, z80Scratch1, z80RegA)) // MOV BL, AL (A)
+		buf.EmitBytes(0x40, 0x88, 0xCD)                     // MOV BPL, CL (F)
+	}
+	// JMP fastDone — fast path success.
+	buf.EmitBytes(0xE9)
+	buf.FixupRel32(fastDoneLabel, buf.Len()+4)
+
+	// ── Slow path (original bytewise POP) ──
+	buf.Label(fastSlowLabel)
 	// Read SP
 	amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))
 	amd64MOVZX_W_mem(buf, z80Scratch2, z80Scratch4, int32(cpuZ80OffSP))
@@ -2496,6 +2827,8 @@ func z80EmitPOP(buf *CodeBuffer, pair byte, instrPC uint16, instrIdx int, cycles
 	buf.FixupRel32(doneLabel, buf.Len()+4)
 	z80EmitBailExit(buf, bailLabel, instrPC, instrIdx, cyclesAccum, rIncAccum)
 	buf.Label(doneLabel)
+
+	buf.Label(fastDoneLabel)
 }
 
 // z80EmitPUSHValue pushes the 16-bit value in R11D to the Z80 stack.

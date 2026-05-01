@@ -34,6 +34,12 @@ type M68KJITContext struct {
 	RTSCache1PC       uint32  // 96: MRU entry 1 - M68K PC
 	_pad1             uint32  // 100: padding for alignment
 	RTSCache1Addr     uintptr // 104: MRU entry 1 - chain entry address
+	RTSCache2PC       uint32  // 112: MRU entry 2 - M68K PC
+	_pad2             uint32  // 116: padding for alignment
+	RTSCache2Addr     uintptr // 120: MRU entry 2 - chain entry address
+	RTSCache3PC       uint32  // 128: MRU entry 3 - M68K PC
+	_pad3             uint32  // 132: padding for alignment
+	RTSCache3Addr     uintptr // 136: MRU entry 3 - chain entry address
 }
 
 // M68KJITContext field offsets (must match struct layout above)
@@ -56,6 +62,10 @@ const (
 	m68kCtxOffRTSCache0Addr     = 88 // MRU entry 0
 	m68kCtxOffRTSCache1PC       = 96
 	m68kCtxOffRTSCache1Addr     = 104 // MRU entry 1
+	m68kCtxOffRTSCache2PC       = 112
+	m68kCtxOffRTSCache2Addr     = 120 // MRU entry 2
+	m68kCtxOffRTSCache3PC       = 128
+	m68kCtxOffRTSCache3Addr     = 136 // MRU entry 3
 )
 
 // m68kJitAvailable is set to true at init time on platforms that support JIT.
@@ -84,11 +94,18 @@ func newM68KJITContext(cpu *M68KCPU, codePageBitmap []byte) *M68KJITContext {
 // M68KJITInstr represents one M68K instruction scanned from a basic block.
 // Fields are pre-decoded during scanning to avoid re-parsing during emission.
 type M68KJITInstr struct {
-	opcode   uint16 // first word of instruction
-	pcOffset uint32 // byte offset from block start
-	length   uint16 // total instruction length in bytes (2-10+)
-	group    uint8  // opcode >> 12
+	opcode    uint16 // first word of instruction
+	pcOffset  uint32 // byte offset from block start
+	length    uint16 // total instruction length in bytes (2-10+)
+	group     uint8  // opcode >> 12
+	fusedFlag uint8  // see m68kFused* constants
 }
+
+// Fusion flags for M68KJITInstr.fusedFlag.
+const (
+	m68kFusedJSRLeafCall   uint8 = 1 << 0 // JSR replaced by inlined leaf body — emit nothing
+	m68kFusedRTSLeafReturn uint8 = 1 << 1 // synthetic RTS marker for fused leaf — emit nothing
+)
 
 // ===========================================================================
 // Instruction Length Calculator
@@ -858,6 +875,47 @@ func m68kScanBlock(memory []byte, startPC uint32) []M68KJITInstr {
 			length:   uint16(length),
 			group:    uint8(opcode >> 12),
 		}
+
+		// JSR <abs.L> with fusable leaf: inline the leaf body in place of
+		// the JSR (no stack push, no chain). The block continues past the
+		// JSR's returnPC instead of terminating. All inlined leaf instrs
+		// adopt the JSR's pcOffset so any bail re-executes via interpreter
+		// from the JSR (which restores stack semantics correctly).
+		if opcode&0xFFC0 == 0x4E80 && (opcode&0x3F) == 0x39 && pc+6 <= memSize {
+			targetAddr := uint32(memory[pc+2])<<24 | uint32(memory[pc+3])<<16 |
+				uint32(memory[pc+4])<<8 | uint32(memory[pc+5])
+			if leafBody, ok := m68kAnalyzeJSRLeafFusion(memory, targetAddr); ok {
+				// Skip fusion if the resulting fused sequence (JSR
+				// marker + body + synthetic RTS marker) plus at least
+				// one slot for the still-to-scan post-JSR continuation
+				// or terminator would exceed the block-size cap. This
+				// guarantees the synthetic RTS marker is never the last
+				// scanned entry, so m68kCompileBlock's
+				// last-instruction-based final-epilogue check and end-PC
+				// computation remain correct.
+				expandedLen := len(instrs) + 1 + len(leafBody) + 1
+				if expandedLen+1 <= m68kJitMaxBlockSize {
+					jsrInstr := ji
+					jsrInstr.fusedFlag |= m68kFusedJSRLeafCall
+					instrs = append(instrs, jsrInstr)
+					for _, lji := range leafBody {
+						lji.pcOffset = ji.pcOffset
+						instrs = append(instrs, lji)
+					}
+					rtsMarker := M68KJITInstr{
+						opcode:    0x4E75,
+						pcOffset:  ji.pcOffset,
+						length:    0,
+						group:     0x4,
+						fusedFlag: m68kFusedRTSLeafReturn,
+					}
+					instrs = append(instrs, rtsMarker)
+					pc += uint32(length)
+					continue
+				}
+			}
+		}
+
 		instrs = append(instrs, ji)
 
 		if m68kIsBlockTerminator(opcode) {
@@ -868,6 +926,110 @@ func m68kScanBlock(memory []byte, startPC uint32) []M68KJITInstr {
 	}
 
 	return instrs
+}
+
+// m68kAnalyzeJSRLeafFusion validates whether a JSR target is a register-only
+// leaf (≤ 4 body instructions terminated by RTS, no memory access, no A7
+// manipulation, no embedded control flow). On success it returns the leaf's
+// body instructions (excluding the trailing RTS), each with pcOffset = 0 and
+// length = the source instruction length. Caller is responsible for adopting
+// the JSR's pcOffset on each body instr.
+//
+// Restricting to register-only ops keeps bail semantics simple: none of the
+// emitted instructions can fail mid-block, so the dispatcher never has to
+// re-execute the leaf — only the JSR (which never executed in JIT) gets
+// re-issued by the interpreter on full-block restart.
+func m68kAnalyzeJSRLeafFusion(memory []byte, targetPC uint32) ([]M68KJITInstr, bool) {
+	const maxBodyInstrs = 4
+	memSize := uint32(len(memory))
+	pc := targetPC
+	body := make([]M68KJITInstr, 0, maxBodyInstrs)
+
+	for i := 0; i < maxBodyInstrs+1; i++ {
+		if pc+2 > memSize {
+			return nil, false
+		}
+		opcode := uint16(memory[pc])<<8 | uint16(memory[pc+1])
+		if opcode == 0x4E75 { // RTS — leaf complete
+			return body, true
+		}
+		if !m68kIsLeafFusionSafe(opcode) {
+			return nil, false
+		}
+		length := m68kInstrLength(memory, pc)
+		body = append(body, M68KJITInstr{
+			opcode:   opcode,
+			pcOffset: 0,
+			length:   uint16(length),
+			group:    uint8(opcode >> 12),
+		})
+		pc += uint32(length)
+	}
+	return nil, false
+}
+
+// m68kIsLeafFusionSafe returns true iff the opcode is a register-only
+// instruction safe to inline at a JSR site: no memory access, no A7
+// manipulation, no control flow, no exception side effects.
+func m68kIsLeafFusionSafe(opcode uint16) bool {
+	if opcode == 0x4E71 { // NOP
+		return true
+	}
+	group := opcode >> 12
+	switch group {
+	case 0x7: // MOVEQ #imm,Dn
+		return opcode&0x0100 == 0
+	case 0x1, 0x2, 0x3: // MOVE
+		srcMode := (opcode >> 3) & 7
+		dstMode := (opcode >> 6) & 7
+		dstReg := (opcode >> 9) & 7
+		// Allow Dn → Dn / Dn → An / An → Dn / An → An. Any An destination
+		// of A7 is rejected (writes A7).
+		if srcMode > 1 || dstMode > 1 {
+			return false
+		}
+		if dstMode == 1 && dstReg == 7 {
+			return false
+		}
+		return true
+	case 0x5: // ADDQ/SUBQ/Scc/DBcc
+		// Only ADDQ/SUBQ to Dn, size != byte/word/long-on-mem.
+		if opcode&0x00C0 == 0x00C0 { // Scc/DBcc
+			return false
+		}
+		// destination EA: bits 5..3 = mode, 2..0 = reg
+		if (opcode>>3)&7 != 0 { // not Dn
+			return false
+		}
+		return true
+	case 0x4: // misc — allow SWAP, EXT only
+		switch {
+		case opcode&0xFFF8 == 0x4840: // SWAP Dn
+			return true
+		case opcode&0xFFF8 == 0x4880: // EXT.W Dn
+			return true
+		case opcode&0xFFF8 == 0x48C0: // EXT.L Dn
+			return true
+		case opcode&0xFFF8 == 0x49C0: // EXTB.L Dn (68020)
+			return true
+		}
+		return false
+	case 0x8, 0x9, 0xB, 0xC, 0xD: // OR/SUB/CMP/EOR/AND/MUL/ADD
+		// Allow only register-direct source AND register destination forms.
+		srcMode := (opcode >> 3) & 7
+		opmode := (opcode >> 6) & 7
+		if srcMode != 0 { // need Dn source
+			return false
+		}
+		// Disallow EA-destination forms (opmode 4,5,6 = Dn → EA mem).
+		// Disallow ADDA/SUBA/CMPA (opmode 3 or 7) — writes An, including
+		// possibly A7. Restrict to Dn ← op(Dn, Dn).
+		if opmode == 3 || opmode == 7 || opmode >= 4 {
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 // ===========================================================================

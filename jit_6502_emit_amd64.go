@@ -685,6 +685,34 @@ func j65SetNZPending(nz *j65NZState, reg byte) {
 	nz.nzReg = reg
 }
 
+// jit6502NZLivenessEnabled gates the Phase 2c liveness wiring at compile
+// time. When true, j65MaybeSetNZPending consults the per-instruction
+// liveness bitmap from p65PeepholeFlags and skips the SetNZPending call
+// for slots whose NZ output is dead (no downstream consumer in the same
+// block). Default true; flip to false to revert to the always-set-pending
+// path in case of a regression.
+var jit6502NZLivenessEnabled = true
+
+// j65MaybeSetNZPending is the liveness-aware wrapper around
+// j65SetNZPending. When the analyzer reports live[idx]==false (dead
+// producer), the call is a no-op — R15.nz remains canonical and no
+// future consumer will read this producer's NZ. When live==nil (gate
+// disabled or analyzer skipped) or live[idx]==true, falls through to
+// j65SetNZPending as before.
+//
+// Correctness: depends on p65PeepholeFlags being a sound under-
+// approximation of liveness (every truly-consumed slot must report
+// true). The analyzer is conservative — non-producers and unrecognized
+// opcodes default to live, so the only way live=false can be wrong is
+// if a producer table miss the consumer table. Both tables are audited
+// in jit_6502_flags_liveness_test.go.
+func j65MaybeSetNZPending(nz *j65NZState, reg byte, live []bool, idx int) {
+	if live != nil && idx >= 0 && idx < len(live) && !live[idx] {
+		return
+	}
+	j65SetNZPending(nz, reg)
+}
+
 // j65MaterializeNZ emits code to flush deferred N/Z into R15.
 // If no flags are pending, emits nothing.
 func j65MaterializeNZ(cb *CodeBuffer, nz *j65NZState) {
@@ -1700,7 +1728,7 @@ func emit6502PLA(cb *CodeBuffer) {
 	amd64OR_reg_imm32_32bit(cb, amd64RAX, 0x0100)
 	// Load A = BYTE [RSI + RAX]
 	amd64MOVZX_B_memSIB(cb, j65RegA, j65RegMem, amd64RAX)
-	// N/Z deferred — caller sets j65SetNZPending(&nz, j65RegA)
+	// N/Z deferred — caller sets j65MaybeSetNZPending(&nz, j65RegA, live, i)
 }
 
 // emit6502PHP emits PHP (push processor status with B and U set).
@@ -1837,7 +1865,7 @@ func emit6502ADCFlags(cb *CodeBuffer) {
 	emitREX(cb, false, amd64RDX, j65RegSR)
 	cb.EmitBytes(0x09, modRM(3, amd64RDX, j65RegSR)) // OR R15D, EDX
 
-	// N/Z deferred — caller sets j65SetNZPending(&nz, j65RegA)
+	// N/Z deferred — caller sets j65MaybeSetNZPending(&nz, j65RegA, live, i)
 }
 
 // emit6502DecimalBailCheck emits a check for decimal mode (D flag).
@@ -1889,7 +1917,7 @@ func emit6502SBCFlags(cb *CodeBuffer) {
 	emitREX(cb, false, amd64RDX, j65RegSR)
 	cb.EmitBytes(0x09, modRM(3, amd64RDX, j65RegSR))
 
-	// N/Z deferred — caller sets j65SetNZPending(&nz, j65RegA)
+	// N/Z deferred — caller sets j65MaybeSetNZPending(&nz, j65RegA, live, i)
 }
 
 // ===========================================================================
@@ -1941,7 +1969,7 @@ func emit6502LogicOp(cb *CodeBuffer, aluOpcode byte) {
 	// Perform 32-bit operation (both zero-extended, result stays zero-extended)
 	emitREX(cb, false, amd64RAX, j65RegA)
 	cb.EmitBytes(aluOpcode, modRM(3, amd64RAX, j65RegA)) // OP EBX, EAX
-	// N/Z deferred — caller sets j65SetNZPending(&nz, j65RegA)
+	// N/Z deferred — caller sets j65MaybeSetNZPending(&nz, j65RegA, live, i)
 }
 
 // ===========================================================================
@@ -2013,6 +2041,16 @@ func emit6502BITFlags(cb *CodeBuffer) {
 func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, codePageBitmap *[256]byte) (*JITBlock, error) {
 	cb := NewCodeBuffer(len(instrs) * 64) // 6502 emits ~10-60 bytes per instruction
 
+	// Phase 2c: per-instruction NZ liveness. live[i]==false → producer's
+	// NZ output has no downstream consumer in this block, so the
+	// j65MaybeSetNZPending call below skips marking NZ pending. R15.nz
+	// stays canonical and the eventual exit/bail paths emit no
+	// MaterializeNZ for the dead slot.
+	var live []bool
+	if jit6502NZLivenessEnabled {
+		live = p65PeepholeFlags(instrs)
+	}
+
 	hasBackward := jit6502DetectBackwardBranches(instrs, startPC)
 	emit6502Prologue(cb, hasBackward)
 
@@ -2079,7 +2117,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			isPageCross := ji.opcode == 0xBD || ji.opcode == 0xB9 || ji.opcode == 0xB1
 			emit6502Load(cb, j65RegA, ji.opcode, ji.operand,
 				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2089,7 +2127,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			isPageCross := ji.opcode == 0xBE
 			emit6502Load(cb, j65RegX, ji.opcode, ji.operand,
 				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
-			j65SetNZPending(&nz, j65RegX)
+			j65MaybeSetNZPending(&nz, j65RegX, live, i)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2099,7 +2137,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			isPageCross := ji.opcode == 0xBC
 			emit6502Load(cb, j65RegY, ji.opcode, ji.operand,
 				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
-			j65SetNZPending(&nz, j65RegY)
+			j65MaybeSetNZPending(&nz, j65RegY, live, i)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2136,7 +2174,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
 				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
 			emit6502ADCFlags(cb)
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2149,7 +2187,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
 				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
 			emit6502SBCFlags(cb)
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2160,7 +2198,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
 				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
 			emit6502LogicOp(cb, 0x21) // AND
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2171,7 +2209,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
 				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
 			emit6502LogicOp(cb, 0x09) // OR
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2182,7 +2220,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
 				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
 			emit6502LogicOp(cb, 0x31) // XOR
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2300,22 +2338,22 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		case 0xE8: // INX
 			amd64ALU_reg_imm32_32bit(cb, 0, j65RegX, 1) // ADD EBP, 1
 			amd64AND_reg_imm32_32bit(cb, j65RegX, 0xFF)
-			j65SetNZPending(&nz, j65RegX)
+			j65MaybeSetNZPending(&nz, j65RegX, live, i)
 			pendingCycles += baseCycles
 		case 0xC8: // INY
 			amd64ALU_reg_imm32_32bit(cb, 0, j65RegY, 1)
 			amd64AND_reg_imm32_32bit(cb, j65RegY, 0xFF)
-			j65SetNZPending(&nz, j65RegY)
+			j65MaybeSetNZPending(&nz, j65RegY, live, i)
 			pendingCycles += baseCycles
 		case 0xCA: // DEX
 			amd64ALU_reg_imm32_32bit(cb, 5, j65RegX, 1) // SUB EBP, 1
 			amd64AND_reg_imm32_32bit(cb, j65RegX, 0xFF)
-			j65SetNZPending(&nz, j65RegX)
+			j65MaybeSetNZPending(&nz, j65RegX, live, i)
 			pendingCycles += baseCycles
 		case 0x88: // DEY
 			amd64ALU_reg_imm32_32bit(cb, 5, j65RegY, 1)
 			amd64AND_reg_imm32_32bit(cb, j65RegY, 0xFF)
-			j65SetNZPending(&nz, j65RegY)
+			j65MaybeSetNZPending(&nz, j65RegY, live, i)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2343,7 +2381,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x0A: // ASL A
 			emit6502ASL_A(cb)
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 		case 0x06, 0x16, 0x0E, 0x1E: // ASL memory
 			switch ji.opcode {
@@ -2375,7 +2413,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x4A: // LSR A
 			emit6502LSR_A(cb)
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 		case 0x46, 0x56, 0x4E, 0x5E: // LSR memory
 			switch ji.opcode {
@@ -2407,7 +2445,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x2A: // ROL A
 			emit6502ROL_A(cb)
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 		case 0x26, 0x36, 0x2E, 0x3E: // ROL memory
 			switch ji.opcode {
@@ -2439,7 +2477,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0x6A: // ROR A
 			emit6502ROR_A(cb)
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 		case 0x66, 0x76, 0x6E, 0x7E: // ROR memory
 			switch ji.opcode {
@@ -2474,7 +2512,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			pendingCycles += baseCycles
 		case 0x68: // PLA
 			emit6502PLA(cb)
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 		case 0x08: // PHP
 			j65MaterializeNZ(cb, &nz) // PHP reads full SR
@@ -2565,23 +2603,23 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 		// ================================================================
 		case 0xAA: // TAX
 			emit6502Transfer(cb, j65RegX, j65RegA, false)
-			j65SetNZPending(&nz, j65RegX)
+			j65MaybeSetNZPending(&nz, j65RegX, live, i)
 			pendingCycles += baseCycles
 		case 0x8A: // TXA
 			emit6502Transfer(cb, j65RegA, j65RegX, false)
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 		case 0xA8: // TAY
 			emit6502Transfer(cb, j65RegY, j65RegA, false)
-			j65SetNZPending(&nz, j65RegY)
+			j65MaybeSetNZPending(&nz, j65RegY, live, i)
 			pendingCycles += baseCycles
 		case 0x98: // TYA
 			emit6502Transfer(cb, j65RegA, j65RegY, false)
-			j65SetNZPending(&nz, j65RegA)
+			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 		case 0xBA: // TSX
 			emit6502Transfer(cb, j65RegX, j65RegSP, false)
-			j65SetNZPending(&nz, j65RegX)
+			j65MaybeSetNZPending(&nz, j65RegX, live, i)
 			pendingCycles += baseCycles
 		case 0x9A: // TXS (no flag update)
 			emit6502Transfer(cb, j65RegSP, j65RegX, false)

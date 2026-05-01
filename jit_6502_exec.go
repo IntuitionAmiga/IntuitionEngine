@@ -1,6 +1,12 @@
 // jit_6502_exec.go - 6502 JIT dispatcher loop and CPU integration
 
-//go:build (amd64 && (linux || windows || darwin)) || (arm64 && linux)
+// 6502 JIT is amd64-only (per CLAUDE.md: only IE64 has arm64 JIT).
+// The aspirational `arm64 && linux` tag from earlier wiring rounds was
+// never followed by an arm64 emit/compile implementation, so cross-
+// builds fail with "undefined: compileBlock6502". Narrow to amd64-only
+// until the arm64 emitter actually lands.
+
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 
@@ -87,6 +93,10 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		return
 	}
 	defer cpu.freeJIT6502()
+
+	if adapter, ok := cpu.memory.(*Bus6502Adapter); ok {
+		enable6502PollWiring(adapter)
+	}
 
 	execMem := cpu.getJIT6502ExecMem()
 	ctx := cpu.jitCtx
@@ -221,8 +231,11 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			ctx.RTSCache0Addr = block.chainEntry
 		}
 
-		// Initialize chain budget and count for this entry into native code
-		ctx.ChainBudget = 64
+		// Initialize chain budget and count for this entry into native code.
+		// Matched to IE64/M68K/Z80 (256) — the prior 64 forced 4× more
+		// callNative round-trips per JSR/RTS chain than peer backends and
+		// dominated CallChurn host overhead.
+		ctx.ChainBudget = 256
 		ctx.ChainCount = 0
 
 		// Execute the native code block

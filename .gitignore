@@ -12,6 +12,13 @@ testdata/external/*
 !testdata/external/opl/
 testdata/external/opl/*
 !testdata/external/opl/.gitkeep
+!testdata/bench-uniformity/
+testdata/bench-uniformity/*
+!testdata/bench-uniformity/baseline.txt
+!testdata/bench-uniformity/README.md
+# current.txt is the local Phase 9 bench-sweep artifact. Never committed;
+# the gate test skips when it is absent so default `go test` does not
+# require local benchmark generation.
 untracked/
 assembler/untracked/
 .go*

@@ -587,6 +587,69 @@ func TestZ80JIT_PeepholeFlags_AllNeeded(t *testing.T) {
 	}
 }
 
+func TestZ80JIT_PeepholeFlags_PartialPreservesCarry(t *testing.T) {
+	// Block: SCF; INC B; JR C,e
+	// INC B is a partial producer (writes S/Z/H/PV/N, preserves C).
+	// JR C reads carry → demand for C must propagate past INC B back to SCF,
+	// so SCF's flagsNeeded must contain C.
+	instrs := []JITZ80Instr{
+		{prefix: z80JITPrefixNone, opcode: 0x37, length: 1},                // SCF
+		{prefix: z80JITPrefixNone, opcode: 0x04, length: 1},                // INC B
+		{prefix: z80JITPrefixNone, opcode: 0x38, operand: 0x05, length: 2}, // JR C,e
+	}
+
+	flagsNeeded := z80PeepholeFlags(instrs)
+
+	if flagsNeeded[0]&z80FlagC == 0 {
+		t.Errorf("SCF flagsNeeded must include C (consumed by JR C past INC B); got 0x%02X", flagsNeeded[0])
+	}
+	if flagsNeeded[1]&z80FlagZ == 0 {
+		// INC B writes Z; not consumed downstream, but it is a producer slot —
+		// flagsNeeded[1] is the mask of bits demanded after INC B, which only
+		// includes C (from JR C). INC B does not write C so its flagsNeeded[1]
+		// should be C-only — bits S/Z/H/PV/N here are not demanded.
+		// (No assert on Z here; this branch documents intent.)
+		_ = flagsNeeded[1]
+	}
+	if flagsNeeded[1]&z80FlagC == 0 {
+		t.Errorf("INC B flagsNeeded must include C (downstream JR C); got 0x%02X", flagsNeeded[1])
+	}
+}
+
+func TestZ80JIT_PeepholeFlags_PartialPreservesNonCarry(t *testing.T) {
+	// Block: ADD A,B; CPL; JR Z,e
+	// CPL is a partial producer (writes only H/N). JR Z reads Z → demand for
+	// Z must propagate past CPL back to ADD A,B.
+	instrs := []JITZ80Instr{
+		{prefix: z80JITPrefixNone, opcode: 0x80, length: 1},                // ADD A,B
+		{prefix: z80JITPrefixNone, opcode: 0x2F, length: 1},                // CPL
+		{prefix: z80JITPrefixNone, opcode: 0x28, operand: 0x05, length: 2}, // JR Z,e
+	}
+
+	flagsNeeded := z80PeepholeFlags(instrs)
+
+	if flagsNeeded[0]&z80FlagZ == 0 {
+		t.Errorf("ADD A,B flagsNeeded must include Z (consumed by JR Z past CPL); got 0x%02X", flagsNeeded[0])
+	}
+}
+
+func TestZ80JIT_PeepholeFlags_FullProducerClobbers(t *testing.T) {
+	// Block: SCF; ADD A,B; JR C,e
+	// ADD A,B is a full producer — overwrites C. Demand from JR C must NOT
+	// reach SCF.
+	instrs := []JITZ80Instr{
+		{prefix: z80JITPrefixNone, opcode: 0x37, length: 1},                // SCF
+		{prefix: z80JITPrefixNone, opcode: 0x80, length: 1},                // ADD A,B
+		{prefix: z80JITPrefixNone, opcode: 0x38, operand: 0x05, length: 2}, // JR C,e
+	}
+
+	flagsNeeded := z80PeepholeFlags(instrs)
+
+	if flagsNeeded[0] != 0 {
+		t.Errorf("SCF flagsNeeded must be 0 (ADD A,B clobbers all bits); got 0x%02X", flagsNeeded[0])
+	}
+}
+
 func TestZ80JIT_PeepholeFlags_NoneNeeded(t *testing.T) {
 	// Block: ADD A,B; LD C,D; XOR A — all flags from ADD are dead (XOR overwrites)
 	instrs := []JITZ80Instr{

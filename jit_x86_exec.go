@@ -2,7 +2,13 @@
 //
 // (c) 2024-2026 Zayn Otley - GPLv3 or later
 
-//go:build (amd64 && (linux || windows || darwin)) || (arm64 && linux)
+// x86 JIT is amd64-only (per CLAUDE.md: only IE64 has arm64 JIT).
+// The aspirational `arm64 && linux` tag from earlier wiring rounds was
+// never followed by an arm64 emit/compile implementation, so cross-
+// builds fail with "undefined: x86CompileBlock" / "x86CompileRegion".
+// Narrow to amd64-only until the arm64 emitter actually lands.
+
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 
@@ -76,6 +82,7 @@ func (cpu *CPU_X86) initX86JIT() error {
 	cpu.x86JitCodeBM = make([]byte, len(cpu.x86JitIOBitmap))
 
 	cpu.x86JitCtx = newX86JITContext(cpu, cpu.x86JitCodeBM, cpu.x86JitIOBitmap)
+	enableX86PollWiring(cpu)
 	return nil
 }
 
@@ -96,9 +103,7 @@ func (cpu *CPU_X86) freeX86JIT() {
 // X86ExecuteJIT is the main JIT execution loop for the x86 CPU.
 func (cpu *CPU_X86) X86ExecuteJIT() {
 	if err := cpu.initX86JIT(); err != nil {
-		fmt.Printf("x86 JIT: %v, falling back to interpreter\n", err)
-		cpu.x86RunInterpreter()
-		return
+		panic(fmt.Sprintf("x86 JIT init failed: %v", err))
 	}
 	defer cpu.freeX86JIT()
 
@@ -163,9 +168,19 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			if len(instrs) == 0 {
 				// Interpreter fallback: sync jitRegs -> named, step, sync back
 				cpu.syncJITRegsToNamed()
+				var stepT0 time.Time
+				if perfAcctOn {
+					stepT0 = time.Now()
+				}
 				cpu.Step()
+				if perfAcctOn {
+					cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
+				}
 				cpu.syncJITRegsFromNamed()
 				instructionCount++
+				if perfAcctOn {
+					cpu.perfAcct.AddInstrs(1)
+				}
 				diagFallbackInstr++
 				continue
 			}
@@ -173,9 +188,19 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			// Check if first instruction needs interpreter
 			if x86NeedsFallback(instrs) {
 				cpu.syncJITRegsToNamed()
+				var stepT0 time.Time
+				if perfAcctOn {
+					stepT0 = time.Now()
+				}
 				cpu.Step()
+				if perfAcctOn {
+					cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
+				}
 				cpu.syncJITRegsFromNamed()
 				instructionCount++
+				if perfAcctOn {
+					cpu.perfAcct.AddInstrs(1)
+				}
 				diagFallbackInstr++
 				if cpu.Halted || !cpu.Running() {
 					break
@@ -189,15 +214,37 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			var err error
 			block, err = x86CompileBlock(instrs, pc, execMem, cpu.memory)
 			if err != nil {
-				cpu.syncJITRegsToNamed()
-				cpu.Step()
-				cpu.syncJITRegsFromNamed()
-				instructionCount++
-				diagFallbackInstr++
-				if cpu.Halted || !cpu.Running() {
-					break
+				// "no instructions compiled" means the first scanned instr
+				// fell through every emit case — equivalent to an
+				// x86NeedsFallback hit that the static list missed. Treat
+				// as a per-instruction Step bail (the same protocol as
+				// MMIO bail). Any other compile error is a real JIT bug
+				// and panics so the gap is fixed at its source.
+				if err.Error() == "no instructions compiled" {
+					cpu.syncJITRegsToNamed()
+					var stepT0 time.Time
+					if perfAcctOn {
+						stepT0 = time.Now()
+					}
+					cpu.Step()
+					if perfAcctOn {
+						cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
+					}
+					cpu.syncJITRegsFromNamed()
+					instructionCount++
+					if perfAcctOn {
+						cpu.perfAcct.AddInstrs(1)
+					}
+					diagFallbackInstr++
+					if cpu.Halted || !cpu.Running() {
+						break
+					}
+					continue
 				}
-				continue
+				panic(fmt.Sprintf("x86 JIT: compile failed at PC=0x%08X: %v "+
+					"(scanned %d instrs starting %02X %02X %02X %02X)",
+					pc, err, len(instrs), cpu.memory[pc], cpu.memory[pc+1],
+					cpu.memory[pc+2], cpu.memory[pc+3]))
 			}
 
 			// Cache block and mark code pages
@@ -229,18 +276,11 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		} else {
 			diagCacheHits++
 
-			// Hot-block detection with profile-guided promotion
+			// Hot-block detection via shared Phase 3 TierController.
+			// Equivalent arithmetic to the prior inline gate (execCount >=
+			// 64 && lastPromoteAt == 0 && ioBails*4 < execCount).
 			block.execCount++
-			shouldPromote := false
-			if block.tier == 0 && block.execCount >= x86Tier2Threshold {
-				// Only promote if: genuinely hot, not recently promoted, and not I/O heavy
-				if block.lastPromoteAt == 0 { // never promoted
-					if block.ioBails*4 < block.execCount { // less than 25% I/O bail rate
-						shouldPromote = true
-					}
-				}
-			}
-			if shouldPromote {
+			if x86TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
 				block.lastPromoteAt = block.execCount
 				// Try multi-block region compilation first (only for 3+ block regions)
 				x86CompileIOBitmap = cpu.x86JitIOBitmap
@@ -256,47 +296,43 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 						}
 						block = newBlock
 					}
-				} else {
-					// Fall back to single-block Tier 2
-					instrs := x86ScanBlock(cpu.memory, pc)
-					if len(instrs) > 0 && !x86NeedsFallback(instrs) {
-						newBlock, err := x86CompileBlock(instrs, pc, execMem, cpu.memory, 1)
-						if err == nil {
-							newBlock.execCount = block.execCount
-							newBlock.tier = 1
-							cpu.x86JitCache.Put(newBlock)
-							if newBlock.chainEntry != 0 {
-								x86PatchCompatibleChainsTo(cpu.x86JitCache, newBlock)
-							}
-							for i := range newBlock.chainSlots {
-								slot := &newBlock.chainSlots[i]
-								if target := cpu.x86JitCache.Get(slot.targetPC); target != nil && target.chainEntry != 0 {
-									if target.regMap == newBlock.regMap {
-										PatchRel32At(slot.patchAddr, target.chainEntry)
-									}
-								}
-							}
-							block = newBlock
-						}
-					}
 				}
+				// Single-block Tier-2 recompile is a no-op while
+				// per-block regalloc is forced to default; the
+				// recompiled block would be byte-identical to the
+				// original. Region promotion (above) still runs for
+				// 3+ block hot regions.
 			}
 		}
 
-		// Update RTS cache: shift entry 0 → 1, write new entry 0
+		// Update RTS cache: shift entry 0 → 1, write new entry 0. Each
+		// slot carries the target block's regMap so the native RET
+		// probe can reject hits whose host-register layout differs from
+		// the running block — without that gate, a Tier-2 callee could
+		// chain back into a Tier-1 caller (or vice versa) with mapped
+		// guest registers reading the wrong host registers.
 		if block.chainEntry != 0 {
 			ctx.RTSCache1PC = ctx.RTSCache0PC
 			ctx.RTSCache1Addr = ctx.RTSCache0Addr
+			ctx.RTSCache1RegMap = ctx.RTSCache0RegMap
 			ctx.RTSCache0PC = block.startPC
 			ctx.RTSCache0Addr = block.chainEntry
+			ctx.RTSCache0RegMap = x86RegMapToUint64(block.regMap)
 		}
 
 		// Execute native code block -- jitRegs is already canonical, no sync needed
 		ctx.NeedInval = 0
 		ctx.NeedIOFallback = 0
-		ctx.ChainBudget = 64
+		ctx.ChainBudget = 65536
 		ctx.ChainCount = 0
+		var jitT0 time.Time
+		if perfAcctOn {
+			jitT0 = time.Now()
+		}
 		callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
+		if perfAcctOn {
+			cpu.perfAcct.AddJit(time.Since(jitT0).Nanoseconds())
+		}
 
 		// Read return values from context (jitRegs updated by native code)
 		cpu.EIP = ctx.RetPC
@@ -335,7 +371,14 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			ctx.NeedIOFallback = 0
 			block.ioBails++ // profile counter for promotion decisions
 			cpu.syncJITRegsToNamed()
+			var stepT0 time.Time
+			if perfAcctOn {
+				stepT0 = time.Now()
+			}
 			cpu.Step()
+			if perfAcctOn {
+				cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
+			}
 			cpu.syncJITRegsFromNamed()
 			executed++
 			diagIOBails++
@@ -346,6 +389,9 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		}
 
 		instructionCount += executed
+		if perfAcctOn {
+			cpu.perfAcct.AddInstrs(executed)
+		}
 
 		// Performance monitoring
 		if perfEnabled {
@@ -373,6 +419,20 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 	cpu.syncJITSegRegsToNamed()
 }
 
+// x86RegMapToUint64 packs a [8]byte regMap into a uint64 for runtime
+// equality compares. Layout: byte i ↔ uint64 byte i. Two regMaps are
+// compatible iff their packed forms are bitwise-equal.
+func x86RegMapToUint64(rm [8]byte) uint64 {
+	return uint64(rm[0]) |
+		uint64(rm[1])<<8 |
+		uint64(rm[2])<<16 |
+		uint64(rm[3])<<24 |
+		uint64(rm[4])<<32 |
+		uint64(rm[5])<<40 |
+		uint64(rm[6])<<48 |
+		uint64(rm[7])<<56
+}
+
 // x86PatchCompatibleChainsTo patches chain slots in cached blocks that target
 // the given block's startPC, but ONLY when the source block has a compatible
 // (identical) register mapping. This prevents corrupting guest state when
@@ -390,12 +450,14 @@ func x86PatchCompatibleChainsTo(cache *CodeCache, target *JITBlock) {
 	}
 }
 
-// x86RunInterpreter is the fallback interpreter loop.
+// x86RunInterpreter is the fallback interpreter loop. Used when JIT is
+// disabled (CPUX86Runner.JITEnabled=false). Slice 4 retired the
+// tryDemoAccelFrame rotozoomer-specific shortcut here — the general
+// native JIT now drives that workload via x86JitExecute → X86ExecuteJIT.
+// The interp-only path keeps only the workload-agnostic
+// tryFastMMIOPollLoop fast match for status-poll loops.
 func (cpu *CPU_X86) x86RunInterpreter() {
 	for cpu.Running() && !cpu.Halted {
-		if cpu.x86JitEnabled && cpu.tryDemoAccelFrame() {
-			continue
-		}
 		if cpu.tryFastMMIOPollLoop() {
 			continue
 		}

@@ -741,13 +741,110 @@ func z80PeepholeFlags(instrs []JITZ80Instr) []uint8 {
 			needFlags |= consumed
 		}
 
-		if z80InstrProducesFlags(instr) {
+		producedMask := z80InstrProducedFlagMask(instr)
+		if producedMask != 0 {
 			flagsNeeded[i] = needFlags
-			needFlags = 0 // this instruction's output replaces all prior flags
+			// Only clear demand for bits this instruction actually writes.
+			// Partial producers (INC/DEC r preserve C; CPL preserves S/Z/PV/C;
+			// SCF/CCF preserve S/Z/PV; rotate accumulator preserves S/Z/PV;
+			// DAA preserves N; ADD HL,rp preserves S/Z/PV; LDI/LDD/CPI/CPD/
+			// LD A,I/R preserve C; CB BIT preserves C) keep upstream demand
+			// for the preserved bits.
+			needFlags &^= producedMask
 		}
 	}
 
 	return flagsNeeded
+}
+
+// z80InstrProducedFlagMask returns a bitmask of which Z80 flag bits the
+// instruction writes. 0 = no flag effect; 0xFF = all flags clobbered;
+// partial values mark partial producers that preserve the unset bits.
+// Used by z80PeepholeFlags so demand for preserved bits propagates
+// upstream past partial producers.
+func z80InstrProducedFlagMask(instr *JITZ80Instr) uint8 {
+	// Full producers also overwrite undocumented Y/X copies of result bits.
+	const fullMask uint8 = 0xFF
+	// Partial: writes S/Z/H/PV/N, preserves C.
+	const partialNoCarry = z80FlagS | z80FlagZ | z80FlagH | z80FlagPV | z80FlagN
+	// Partial: writes H/N/C, preserves S/Z/PV (rotates, SCF, CCF, ADD HL,rp).
+	const partialCarryOnly = z80FlagH | z80FlagN | z80FlagC
+	// Partial: writes H/N, preserves S/Z/PV/C (CPL).
+	const partialHN = z80FlagH | z80FlagN
+	// Partial: writes S/Z/H/PV/C, preserves N (DAA).
+	const partialNoN = z80FlagS | z80FlagZ | z80FlagH | z80FlagPV | z80FlagC
+	// Partial: writes H/PV/N, preserves S/Z/C (LDI/LDD).
+	const partialBlockMove = z80FlagH | z80FlagPV | z80FlagN
+
+	switch instr.prefix {
+	case z80JITPrefixNone:
+		op := instr.opcode
+		// 8-bit ALU A,r block (full).
+		if op >= 0x80 && op <= 0xBF {
+			return fullMask
+		}
+		if op&0xC7 == 0xC6 { // ALU A,n (full)
+			return fullMask
+		}
+		// INC/DEC r — preserve C.
+		if op&0xC7 == 0x04 || op&0xC7 == 0x05 {
+			return partialNoCarry
+		}
+		switch op {
+		case 0x07, 0x0F, 0x17, 0x1F: // RLCA/RRCA/RLA/RRA
+			return partialCarryOnly
+		case 0x27: // DAA — preserves N
+			return partialNoN
+		case 0x2F: // CPL — H/N
+			return partialHN
+		case 0x37, 0x3F: // SCF, CCF
+			return partialCarryOnly
+		case 0x09, 0x19, 0x29, 0x39: // ADD HL,rp
+			return partialCarryOnly
+		}
+	case z80JITPrefixCB:
+		op := instr.opcode
+		// 00..3F: rotate/shift — full update.
+		if op <= 0x3F {
+			return fullMask
+		}
+		// 40..7F: BIT n,r — writes S/Z/H/PV/N, preserves C.
+		if op <= 0x7F {
+			return partialNoCarry
+		}
+		// 80..FF: RES/SET — no flag effect.
+		return 0
+	case z80JITPrefixED:
+		op := instr.opcode
+		switch {
+		case op == 0x44: // NEG (full)
+			return fullMask
+		case op == 0x42 || op == 0x52 || op == 0x62 || op == 0x72: // SBC HL,ss
+			return fullMask
+		case op == 0x4A || op == 0x5A || op == 0x6A || op == 0x7A: // ADC HL,ss
+			return fullMask
+		case op == 0xA0 || op == 0xA8 || op == 0xB0 || op == 0xB8: // LDI/LDD/LDIR/LDDR
+			return partialBlockMove
+		case op == 0xA1 || op == 0xA9 || op == 0xB1 || op == 0xB9: // CPI/CPD/CPIR/CPDR
+			return partialNoCarry
+		case op == 0x57 || op == 0x5F: // LD A,I / LD A,R
+			return partialNoCarry
+		case op == 0x67 || op == 0x6F: // RRD / RLD
+			return partialNoCarry
+		}
+	case z80JITPrefixDD, z80JITPrefixFD:
+		op := instr.opcode
+		if op&0xC7 == 0x86 { // ALU A,(IX+d)
+			return fullMask
+		}
+		if op == 0x34 || op == 0x35 { // INC/DEC (IX+d)
+			return partialNoCarry
+		}
+		if op == 0x09 || op == 0x19 || op == 0x29 || op == 0x39 { // ADD IX,rp
+			return partialCarryOnly
+		}
+	}
+	return 0
 }
 
 // z80InstrConsumedFlagMask returns a bitmask of which Z80 flag bits the

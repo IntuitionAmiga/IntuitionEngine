@@ -447,44 +447,6 @@ func TestX86JIT_Dispatch_Enabled(t *testing.T) {
 	}
 }
 
-func TestX86JIT_Dispatch_Disabled(t *testing.T) {
-	bus := NewMachineBus()
-	adapter := NewX86BusAdapter(bus)
-	cpu := NewCPU_X86(adapter)
-	cpu.memory = adapter.GetMemory()
-
-	// Write MOV EAX, 77; HLT
-	cpu.memory[0x1000] = 0xB8
-	cpu.memory[0x1001] = 0x4D
-	cpu.memory[0x1002] = 0x00
-	cpu.memory[0x1003] = 0x00
-	cpu.memory[0x1004] = 0x00
-	cpu.memory[0x1005] = 0xF4
-
-	cpu.EIP = 0x1000
-	cpu.x86JitEnabled = false // JIT disabled, should use interpreter
-	cpu.Halted = false
-	cpu.running.Store(true)
-
-	done := make(chan struct{})
-	go func() {
-		cpu.x86JitExecute()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		cpu.running.Store(false)
-		<-done
-		t.Fatal("dispatch timed out")
-	}
-
-	if cpu.EAX != 77 {
-		t.Errorf("EAX = %d, want 77", cpu.EAX)
-	}
-}
-
 // ===========================================================================
 // Block Chaining Tests
 // ===========================================================================

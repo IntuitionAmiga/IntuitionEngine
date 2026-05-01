@@ -50,10 +50,23 @@ const (
 	x86AMD64OffLoopBudget  = 0  // [RSP+0]:  loop budget counter (int32)
 	x86AMD64OffLoopRetired = 8  // [RSP+8]:  loop retired instruction counter (int32)
 	x86AMD64OffLoopStartPC = 16 // [RSP+16]: loop start PC for budget-exhaustion exit
-	// [RSP+24..39]: reserved / alignment
+	x86AMD64OffSavedEFlags = 24 // [RSP+24]: captured host EFLAGS after last guest flag-modifying instr
+	// [RSP+32..39]: reserved / alignment
 )
 
-const x86LoopBudget = 4095 // iterations before returning to Go
+// x86VisibleFlagsMask is the EFLAGS subset that maps 1:1 to guest x86 Flags
+// for the slice-1 / slice-2 ISA cut: CF, PF, AF, ZF, SF, OF. Reserved and
+// system bits (TF, IF, DF, IOPL, NT, RF, VM, AC, VIF, VIP, ID) are
+// preserved unchanged on the guest side because slice 1 does not yet
+// emit instructions that modify them through native paths.
+const x86VisibleFlagsMask = uint32(0x0000_08D5)
+
+// x86InvVisibleFlagsMaskI32 is ^x86VisibleFlagsMask reinterpreted as
+// int32 (necessary because amd64ALU_reg_imm32_32bit takes a signed imm
+// and the bitwise complement overflows int32 as an untyped constant).
+var x86InvVisibleFlagsMaskI32 = -int32(x86VisibleFlagsMask) - 1
+
+const x86LoopBudget = 65535 // iterations before returning to Go
 
 // x86CurrentCS is the active compile state. Set during block compilation.
 var x86CurrentCS *x86CompileState
@@ -93,14 +106,18 @@ func x86GuestRegToHost(guestReg byte) (byte, bool) {
 // EFLAGS State Tracking
 // ===========================================================================
 
-type x86FlagState int
+// x86FlagState is a type alias for the shared JITFlagState (jit_flags_common.go,
+// introduced in Phase 2 of the JIT unification). The legacy backend constants
+// remain as untyped aliases so existing emit-site references keep compiling
+// unchanged.
+type x86FlagState = JITFlagState
 
 const (
-	x86FlagsDead         x86FlagState = iota // no valid flag state
-	x86FlagsLiveArith                        // host EFLAGS from ADD/SUB/CMP/ADC/SBB
-	x86FlagsLiveLogic                        // host EFLAGS from AND/OR/XOR/TEST (CF=OF=0)
-	x86FlagsLiveInc                          // host EFLAGS from INC/DEC (CF preserved)
-	x86FlagsMaterialized                     // guest Flags word is up-to-date
+	x86FlagsDead         = JITFlagDead         // no valid flag state
+	x86FlagsLiveArith    = JITFlagLiveArith    // host EFLAGS from ADD/SUB/CMP/ADC/SBB
+	x86FlagsLiveLogic    = JITFlagLiveLogic    // host EFLAGS from AND/OR/XOR/TEST (CF=OF=0)
+	x86FlagsLiveInc      = JITFlagLiveInc      // host EFLAGS from INC/DEC (CF preserved)
+	x86FlagsMaterialized = JITFlagMaterialized // guest Flags word is up-to-date
 )
 
 type x86CompileState struct {
@@ -115,6 +132,37 @@ type x86CompileState struct {
 	ioBitmap       []byte          // I/O bitmap for compile-time page checks (nil if unavailable)
 	codeBitmap     []byte          // code page bitmap for compile-time self-mod elision
 	host           x86HostFeatures // detected host CPU features for optimal encoding selection
+	// hasNonSelfLoopJcc is set when the block contains any conditional
+	// branch whose target is not the block's own startPC. Such branches
+	// create internal control-flow splits that invalidate the linear
+	// peephole flag-liveness analysis; flag-capture skipping is disabled
+	// when this is true.
+	hasNonSelfLoopJcc bool
+	// flagShadowed[i] is true when instruction i's host-EFLAGS effects
+	// are fully shadowed by a downstream same-block instruction whose
+	// capture path overwrites every visible bit (an x86FlagOpArith
+	// producer reachable with no in-between flag consumer). Logic-kind
+	// producers preserve prior AF, so they do NOT fully shadow upstream
+	// arith producers. The flag-capture skip uses this to avoid eliding
+	// a SUB whose AF a downstream AND would otherwise read back from
+	// the captured slot's stale prologue-init value.
+	flagShadowed []bool
+
+	// flagCaptureDone is set by an emitter that has already captured
+	// guest EFLAGS into the savedEFlags slot before some flag-clobbering
+	// bookkeeping (e.g. the post-store self-mod check on memory-dest
+	// ALU), so the compile loop's post-instr generic capture must skip
+	// this instruction — running it would overwrite the correct
+	// guest flags with the bookkeeping-clobbered host EFLAGS. Reset by
+	// the compile loop after each instruction.
+	flagCaptureDone bool
+
+	// chainExits points at the block compiler's chain-exit list so that
+	// emitters which produce a chain exit from inside the block (notably
+	// non-self-loop Jcc rel8) can register a patchable slot. nil outside
+	// the compile loop. Patched bidirectionally by x86PatchCompatibleChainsTo
+	// once the target block is in the cache.
+	chainExits *[]x86ChainExitInfo
 }
 
 // x86DefaultRegMap returns the Tier 1 fixed register mapping.
@@ -586,6 +634,225 @@ func x86EmitMemLoad16(cb *CodeBuffer, dstReg byte, addrReg byte) {
 // Prologue / Epilogue
 // ===========================================================================
 
+// x86EmitInitFlagsSlot loads the guest cpu.Flags into the captured-EFLAGS
+// stack slot at prologue time. If no flag-modifying guest instruction
+// runs before block exit, the slot still holds the original value and
+// the exit-time merge writes it back unchanged. Caller must have set up
+// the stack frame (RSP -= frameSize) and have RDI / R15 = JITContext.
+func x86EmitInitFlagsSlot(cb *CodeBuffer) {
+	// RAX = FlagsPtr; EAX = *FlagsPtr; [RSP+slot] = EAX.
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFlagsPtr))
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RAX, 0)
+	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RAX)
+}
+
+// x86FlagOpKind classifies how an x86 instruction updates the visible
+// EFLAGS subset. Drives whether the per-instruction capture path
+// preserves AF (Intel-undefined for logic / shift / rotate ops) or
+// adopts the host's computed AF (well-defined for arith ops).
+type x86FlagOpKind int
+
+const (
+	x86FlagOpNone  x86FlagOpKind = iota // does not modify visible flags
+	x86FlagOpArith                      // ADD/SUB/CMP/NEG/INC/DEC/MUL/DIV — AF defined
+	x86FlagOpLogic                      // AND/OR/XOR/TEST/SHL/SHR/SAR/ROL/ROR — AF undefined; preserve guest's prior AF
+	x86FlagOpManip                      // CLC/STC/CMC/CLD/STD — direct manipulation; full host EFLAGS captured
+)
+
+// x86EmitCaptureFlagsArith emits the per-instruction capture for an
+// arithmetic op that has well-defined effects on every visible flag
+// (AF included). Sequence: PUSHFQ; POP RAX; MOV [RSP+slot], EAX. Must
+// be emitted immediately after the guest instruction so host EFLAGS
+// still reflects that instruction's outputs.
+func x86EmitCaptureFlagsArith(cb *CodeBuffer) {
+	cb.EmitBytes(0x9C) // PUSHFQ
+	amd64POP(cb, amd64RAX)
+	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RAX)
+}
+
+// x86EmitCaptureFlagsLogic emits the capture sequence for an op whose
+// AF is Intel-undefined (AND/OR/XOR/TEST and the shift/rotate family).
+// The interpreter leaves guest AF unchanged for these ops, so the JIT
+// must do the same: copy guest's prior AF (carried in the existing
+// savedEFlags slot) into the new capture, then store.
+//
+// The AND/OR/AND sequence used to merge AF clobbers host EFLAGS, which
+// breaks downstream Jcc / SETcc / CMOVcc consumers that expect the
+// host's logic-op flag output to still be live. The capture restores
+// host EFLAGS via PUSH/POPFQ at the end, with AF replaced by the guest's
+// prior value — that matches the IE x86 interpreter's "AF preserved
+// after AND/OR/XOR/SHL/SHR/ROL/ROR" policy and keeps the live-flag
+// fast path correct.
+func x86EmitCaptureFlagsLogic(cb *CodeBuffer) {
+	const afBit = int32(0x10)
+	cb.EmitBytes(0x9C)     // PUSHFQ
+	amd64POP(cb, amd64RAX) // RAX = host EFLAGS (AF undefined)
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RSP, int32(x86AMD64OffSavedEFlags))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^afBit) // AND EAX, ~AF
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, afBit)  // AND ECX, AF
+	amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64RCX)  // OR EAX, ECX (preserve prior AF)
+	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RAX)
+	// Restore host EFLAGS so the live-flag fast path (Jcc/SETcc/CMOVcc
+	// chained off this logic op) still sees the right ZF/SF/PF/CF/OF.
+	// AF in the restored state reflects the guest's prior value, which
+	// matches what a Jcc-on-AF (e.g. JP after TEST) would expect under
+	// the IE interpreter's preserve-AF policy.
+	amd64PUSH(cb, amd64RAX)
+	cb.EmitBytes(0x9D) // POPFQ
+}
+
+// x86EmitMergeFlagsToGuest writes the captured-EFLAGS stack slot into
+// guest cpu.Flags, preserving non-visible bits (system flags). Called at
+// the top of every block-exit path BEFORE any host ALU teardown that
+// would clobber EFLAGS or RAX/RCX/RDX. The merge sequence itself
+// clobbers host EFLAGS via AND/OR — that is fine because the merge
+// runs strictly after the last guest flag-consumer in the block.
+func x86EmitMergeFlagsToGuest(cb *CodeBuffer) {
+	// EAX = captured visible bits.
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(x86AMD64OffSavedEFlags))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, int32(x86VisibleFlagsMask)) // AND EAX, mask
+	// RDX = &cpu.Flags; ECX = current Flags; ECX &= ~mask; ECX |= EAX; *Flags = ECX.
+	amd64MOV_reg_mem(cb, amd64RDX, x86AMD64RegCtx, int32(x86CtxOffFlagsPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RDX, 0)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, x86InvVisibleFlagsMaskI32) // AND ECX, ~mask
+	amd64ALU_reg_reg32(cb, 0x09, amd64RCX, amd64RAX)                     // OR ECX, EAX
+	amd64MOV_mem_reg32(cb, amd64RDX, 0, amd64RCX)
+}
+
+// x86EmitRestoreGuestCF installs the guest CF (bit 0 of the savedEFlags
+// stack slot) into host RFLAGS' CF, leaving other host flags clobbered
+// (BT loads CF only; ZF/SF/PF/AF/OF undefined per Intel SDM). Called
+// before flag-consuming arith ops (ADC, SBB, RCL, RCR) whose only
+// EFLAGS input is CF: the JIT bookkeeping between the previous flag-
+// producer and the consumer (chain-budget DEC, NeedInval CMP, the flag-
+// capture sequence itself, etc.) clobbers host RFLAGS, so the live
+// host CF is stale by the time ADC/SBB/RCL/RCR runs. Without this
+// restore, the operation reads arbitrary host CF and the guest's
+// architectural CF input is silently lost.
+//
+// Encoding: BT DWORD PTR [RSP+slot], 0  =  0x0F 0xBA /4 [SIB+disp32] imm8.
+//
+//	ModRM = 0x84 (mod=10, reg=4 (/4), r/m=100 → SIB),
+//	SIB   = 0x24 (scale=00, index=100 (none), base=100 (RSP)),
+//	disp32 = OffSavedEFlags (little-endian),
+//	imm8 = 0 (bit index for CF).
+func x86EmitRestoreGuestCF(cb *CodeBuffer) {
+	cb.EmitBytes(0x0F, 0xBA, 0x84, 0x24)
+	cb.Emit32(uint32(x86AMD64OffSavedEFlags))
+	cb.EmitBytes(0x00)
+}
+
+// x86InstrFlagOpKind classifies which capture variant the per-
+// instruction flag-capture sequence should emit. Returns x86FlagOpNone
+// for ops that do not modify the visible EFLAGS subset.
+//
+// AF semantics (Intel SDM Vol 1 §3.4.3.1):
+//   - Arith ops (ADD/SUB/CMP/NEG/INC/DEC/MUL/DIV): AF defined.
+//   - Logic ops (AND/OR/XOR/TEST/SHL/SHR/SAR/ROL/ROR/RCL/RCR): AF
+//     undefined — the IE x86 interpreter preserves prior AF, so the
+//     JIT capture must too (x86FlagOpLogic).
+//   - Direct manipulation (CLC/STC/CMC/CLD/STD): manipulate specific
+//     bits; full host EFLAGS capture is correct.
+//
+// Group-encoded ops (Grp1 0x80/0x81/0x82/0x83, Grp2 0xC0/0xC1/0xD*,
+// Grp3 0xF6/0xF7, Grp4/5 0xFE/0xFF) carry the actual op kind in the
+// ModR/M reg field. The decoded modrm is required for accurate
+// classification; callers pass it via the modrm parameter.
+func x86InstrFlagOpKind(opcode uint16, modrm byte) x86FlagOpKind {
+	if opcode >= 0x0F00 {
+		op2 := byte(opcode)
+		switch {
+		case op2 == 0xAF: // IMUL Gv, Ev — defined for CF/OF; AF undefined
+			return x86FlagOpLogic
+		case op2 >= 0xBC && op2 <= 0xBD: // BSF, BSR — only ZF defined
+			return x86FlagOpLogic
+		}
+		return x86FlagOpNone
+	}
+	op := byte(opcode)
+	switch op {
+	// ADD/OR/AND/SUB/XOR/CMP r/m, r and r, r/m
+	case 0x01, 0x03, 0x29, 0x2B, 0x39, 0x3B:
+		return x86FlagOpArith // ADD/SUB/CMP
+	case 0x09, 0x0B, 0x21, 0x23, 0x31, 0x33:
+		return x86FlagOpLogic // OR/AND/XOR
+	// ADC/SBB r/m forms — arith with carry-in. They read CF and define
+	// every visible flag, so the post-instr capture must run; without
+	// it the epilogue merges stale guest EFLAGS and any downstream
+	// flag consumer (in this block or a chained continuation) sees
+	// pre-ADC/SBB flags.
+	case 0x10, 0x11, 0x12, 0x13: // ADC
+		return x86FlagOpArith
+	case 0x18, 0x19, 0x1A, 0x1B: // SBB
+		return x86FlagOpArith
+	// ALU EAX, imm32 / AL, imm8
+	case 0x05, 0x2D, 0x3D, 0x04, 0x2C, 0x3C:
+		return x86FlagOpArith // ADD/SUB/CMP imm
+	// ADC/SBB AL,Ib (0x14, 0x1C) and EAX,Iv (0x15, 0x1D) — arith
+	// flag producers. Same rationale as the r/m forms above.
+	case 0x14, 0x15: // ADC AL/EAX, imm
+		return x86FlagOpArith
+	case 0x1C, 0x1D: // SBB AL/EAX, imm
+		return x86FlagOpArith
+	case 0x0D, 0x25, 0x35, 0x0C, 0x24, 0x34:
+		return x86FlagOpLogic // OR/AND/XOR imm
+	// INC/DEC r32 — AF defined.
+	case 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+		0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F:
+		return x86FlagOpArith
+	// TEST — logic semantics.
+	case 0x84, 0x85, 0xA8, 0xA9:
+		return x86FlagOpLogic
+	// String-op compares with REP/REPE/REPNE prefix (CMPSB/CMPSD/SCASB/SCASD).
+	// Each iteration's CMP defines the visible flags arith-style.
+	case 0xA6, 0xA7, 0xAE, 0xAF:
+		return x86FlagOpArith
+	// POPF / SAHF — direct manipulation, full host EFLAGS capture works.
+	case 0x9D, 0x9E:
+		return x86FlagOpManip
+	// CMC/CLC/STC/CLD/STD — direct flag bits.
+	case 0xF5, 0xF8, 0xF9, 0xFC, 0xFD:
+		return x86FlagOpManip
+	// Grp1 r/m, imm — sub-op selects ADD(0)/OR(1)/ADC(2)/SBB(3)/AND(4)/SUB(5)/XOR(6)/CMP(7).
+	case 0x80, 0x81, 0x82, 0x83:
+		sub := (modrm >> 3) & 7
+		switch sub {
+		case 0, 2, 3, 5, 7: // ADD, ADC, SBB, SUB, CMP
+			return x86FlagOpArith
+		case 1, 4, 6: // OR, AND, XOR
+			return x86FlagOpLogic
+		}
+		return x86FlagOpArith
+	// Grp2 shifts — ROL(0)/ROR(1)/RCL(2)/RCR(3)/SHL(4)/SHR(5)/SAR(7).
+	// All have undefined AF; treat as logic (preserve prior AF).
+	case 0xC0, 0xC1, 0xD0, 0xD1, 0xD2, 0xD3:
+		return x86FlagOpLogic
+	// Grp3 — TEST(0/1) / NOT(2) / NEG(3) / MUL(4) / IMUL(5) / DIV(6) / IDIV(7).
+	case 0xF6, 0xF7:
+		sub := (modrm >> 3) & 7
+		switch sub {
+		case 0, 1: // TEST
+			return x86FlagOpLogic
+		case 2: // NOT — does not modify flags
+			return x86FlagOpNone
+		case 3: // NEG — arith
+			return x86FlagOpArith
+		case 4, 5, 6, 7: // MUL/IMUL/DIV/IDIV — defined CF/OF; AF undefined
+			return x86FlagOpLogic
+		}
+		return x86FlagOpArith
+	// Grp4/5 — INC(0)/DEC(1)/CALL/JMP/PUSH variants. INC/DEC are arith.
+	case 0xFE, 0xFF:
+		sub := (modrm >> 3) & 7
+		switch sub {
+		case 0, 1:
+			return x86FlagOpArith
+		}
+		return x86FlagOpNone
+	}
+	return x86FlagOpNone
+}
+
 func x86EmitPrologue(cb *CodeBuffer, cs *x86CompileState) {
 	// Save callee-saved registers
 	amd64PUSH(cb, amd64RBX)
@@ -618,9 +885,20 @@ func x86EmitPrologue(cb *CodeBuffer, cs *x86CompileState) {
 		amd64MOV_mem_imm32(cb, amd64RSP, int32(x86AMD64OffLoopBudget), x86LoopBudget)
 		amd64MOV_mem_imm32(cb, amd64RSP, int32(x86AMD64OffLoopRetired), 0)
 	}
+
+	// Seed the captured-EFLAGS stack slot with the current guest Flags so
+	// blocks that exit before any flag-modifying instruction runs round-
+	// trip the value unchanged through x86EmitMergeFlagsToGuest.
+	x86EmitInitFlagsSlot(cb)
 }
 
 func x86EmitEpilogue(cb *CodeBuffer, cs *x86CompileState) {
+	// Materialize captured guest Flags before any teardown ALU clobbers
+	// EFLAGS / RAX / RCX / RDX. The merge writes the visible-bits subset
+	// (CF/PF/AF/ZF/SF/OF) from the per-instr capture stack slot into
+	// *cpu.Flags, preserving non-visible system bits.
+	x86EmitMergeFlagsToGuest(cb)
+
 	// Store only dirty mapped guest registers back to jitRegs
 	dirty := cs.dirtyMask
 	needStore := false
@@ -870,7 +1148,7 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 
 	// PUSHF (0x9C) / POPF (0x9D)
 	case op == 0x9C:
-		return x86EmitPUSHF(cb, ji)
+		return x86EmitPUSHF(cb, ji, cs, instrIdx)
 
 	// SAHF (0x9E) / LAHF (0x9F)
 	case op == 0x9E || op == 0x9F:
@@ -1109,6 +1387,25 @@ func x86EmitALU_Ev_Gv(cb *CodeBuffer, ji *X86JITInstr, hostOpcode byte, cs *x86C
 	if mod == 3 {
 		// Register-register
 		dstReg := ji.modrm & 7
+		// Fast path: both guest regs mapped to host regs — emit op directly,
+		// skip the load-into-scratch-and-store-back roundtrip.
+		if hostDst, dstMapped := x86GuestRegToHost(dstReg); dstMapped {
+			if hostSrc, srcMapped := x86GuestRegToHost(srcReg); srcMapped {
+				emitREX(cb, false, hostSrc, hostDst)
+				cb.EmitBytes(hostOpcode, modRM(3, hostSrc, hostDst))
+				switch hostOpcode {
+				case 0x01, 0x29:
+					cs.flagState = x86FlagsLiveArith
+				case 0x09, 0x21, 0x31:
+					cs.flagState = x86FlagsLiveLogic
+				case 0x39:
+					cs.flagState = x86FlagsLiveArith
+					return true
+				}
+				x86MarkDirty(dstReg)
+				return true
+			}
+		}
 		x86EmitLoadGuestReg32(cb, amd64R8, dstReg)
 		x86EmitLoadGuestReg32(cb, amd64R10, srcReg)
 		emitREX(cb, false, amd64R10, amd64R8)
@@ -1150,8 +1447,24 @@ func x86EmitALU_Ev_Gv(cb *CodeBuffer, ji *X86JITInstr, hostOpcode byte, cs *x86C
 		cs.flagState = x86FlagsLiveArith
 		return true // CMP doesn't store
 	}
-	// Store result back to memory
+	// Store result back to memory (MOV — does not modify EFLAGS).
 	x86EmitMemStore32(cb, amd64R10, amd64R8)
+
+	// Capture guest EFLAGS NOW, before the SMC check below clobbers
+	// them via SHR/TEST. The compile loop's post-instr generic capture
+	// runs after this emitter returns and would otherwise record the
+	// SMC check's flags instead of the guest ALU's. flagCaptureDone
+	// tells the compile loop to skip the generic capture for this
+	// instruction.
+	switch hostOpcode {
+	case 0x01, 0x29: // ADD/SUB
+		x86EmitCaptureFlagsArith(cb)
+		cs.flagCaptureDone = true
+	case 0x09, 0x21, 0x31: // OR/AND/XOR
+		x86EmitCaptureFlagsLogic(cb)
+		cs.flagCaptureDone = true
+	}
+
 	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
 	return true
 }
@@ -1170,6 +1483,24 @@ func x86EmitALU_Gv_Ev(cb *CodeBuffer, ji *X86JITInstr, aluOp byte, cs *x86Compil
 
 	if mod == 3 {
 		srcReg := ji.modrm & 7
+		// Fast path: both guest regs mapped — emit op directly between host regs.
+		if hostDst, dstMapped := x86GuestRegToHost(dstReg); dstMapped {
+			if hostSrc, srcMapped := x86GuestRegToHost(srcReg); srcMapped {
+				emitREX(cb, false, hostDst, hostSrc)
+				cb.EmitBytes(nativeOp, modRM(3, hostDst, hostSrc))
+				switch aluOp {
+				case 0, 5:
+					cs.flagState = x86FlagsLiveArith
+				case 1, 4, 6:
+					cs.flagState = x86FlagsLiveLogic
+				case 7:
+					cs.flagState = x86FlagsLiveArith
+					return true
+				}
+				x86MarkDirty(dstReg)
+				return true
+			}
+		}
 		x86EmitLoadGuestReg32(cb, amd64R8, dstReg)
 		x86EmitLoadGuestReg32(cb, amd64R10, srcReg)
 		emitREX(cb, false, amd64R8, amd64R10)
@@ -1256,6 +1587,10 @@ func x86EmitGrp1_Ev_Iv(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Co
 	imm := int32(int32(memory[immPC]) | int32(memory[immPC+1])<<8 | int32(memory[immPC+2])<<16 | int32(memory[immPC+3])<<24)
 
 	x86EmitLoadGuestReg32(cb, amd64R8, dstReg)
+	// ADC/SBB read host CF; reinstall guest CF before the ALU.
+	if aluOp == 2 || aluOp == 3 {
+		x86EmitRestoreGuestCF(cb)
+	}
 	amd64ALU_reg_imm32_32bit(cb, aluOp, amd64R8, imm)
 
 	switch aluOp {
@@ -1288,6 +1623,10 @@ func x86EmitGrp1_Ev_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Co
 	imm := int32(int8(memory[immPC])) // sign-extend imm8
 
 	x86EmitLoadGuestReg32(cb, amd64R8, dstReg)
+	// ADC/SBB read host CF; reinstall guest CF before the ALU.
+	if aluOp == 2 || aluOp == 3 {
+		x86EmitRestoreGuestCF(cb)
+	}
 	amd64ALU_reg_imm32_32bit(cb, aluOp, amd64R8, imm)
 
 	switch aluOp {
@@ -1311,6 +1650,15 @@ func x86EmitGrp1_Ev_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Co
 func x86EmitINC_r32(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState) bool {
 	guestReg := byte(ji.opcode) - 0x40
 
+	// Fast path: guest reg mapped — INC the host reg directly.
+	if hostReg, mapped := x86GuestRegToHost(guestReg); mapped {
+		emitREX(cb, false, 0, hostReg)
+		cb.EmitBytes(0xFF, modRM(3, 0, hostReg))
+		cs.flagState = x86FlagsLiveInc
+		x86MarkDirty(guestReg)
+		return true
+	}
+
 	x86EmitLoadGuestReg32(cb, amd64R8, guestReg)
 
 	// INC R8d
@@ -1325,6 +1673,15 @@ func x86EmitINC_r32(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState) bool {
 
 func x86EmitDEC_r32(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState) bool {
 	guestReg := byte(ji.opcode) - 0x48
+
+	// Fast path: guest reg mapped — DEC the host reg directly.
+	if hostReg, mapped := x86GuestRegToHost(guestReg); mapped {
+		emitREX(cb, false, 0, hostReg)
+		cb.EmitBytes(0xFF, modRM(3, 1, hostReg))
+		cs.flagState = x86FlagsLiveInc
+		x86MarkDirty(guestReg)
+		return true
+	}
 
 	x86EmitLoadGuestReg32(cb, amd64R8, guestReg)
 
@@ -1418,7 +1775,13 @@ func x86EmitGrp2_Ev_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Co
 		return true
 	}
 
-	// Standard path: flags-affecting shift
+	// Standard path: flags-affecting shift.
+	// RCL/RCR (shiftOp 2/3) consume host CF; restore guest CF first since
+	// JIT bookkeeping between the prior flag-producer and this rotate
+	// clobbers host RFLAGS.
+	if shiftOp == 2 || shiftOp == 3 {
+		x86EmitRestoreGuestCF(cb)
+	}
 	emitREX(cb, false, 0, amd64R8)
 	cb.EmitBytes(0xC1, modRM(3, shiftOp, amd64R8), imm)
 
@@ -1434,6 +1797,19 @@ func x86EmitGrp2_Ev_1(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState, inst
 	}
 	shiftOp := (ji.modrm >> 3) & 7
 	dstReg := ji.modrm & 7
+
+	// Fast path: dst mapped — shift the host reg in place.
+	if hostReg, mapped := x86GuestRegToHost(dstReg); mapped {
+		// RCL/RCR consume host CF; restore guest CF first.
+		if shiftOp == 2 || shiftOp == 3 {
+			x86EmitRestoreGuestCF(cb)
+		}
+		emitREX(cb, false, 0, hostReg)
+		cb.EmitBytes(0xD1, modRM(3, shiftOp, hostReg))
+		cs.flagState = x86FlagsLiveArith
+		x86MarkDirty(dstReg)
+		return true
+	}
 
 	x86EmitLoadGuestReg32(cb, amd64R8, dstReg)
 
@@ -1455,6 +1831,10 @@ func x86EmitGrp2_Ev_1(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState, inst
 		return true
 	}
 
+	// RCL/RCR consume host CF; restore guest CF first.
+	if shiftOp == 2 || shiftOp == 3 {
+		x86EmitRestoreGuestCF(cb)
+	}
 	emitREX(cb, false, 0, amd64R8)
 	cb.EmitBytes(0xD1, modRM(3, shiftOp, amd64R8))
 
@@ -1491,6 +1871,10 @@ func x86EmitGrp2_Ev_CL(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState, ins
 		return true
 	}
 
+	// RCL/RCR consume host CF; restore guest CF first.
+	if shiftOp == 2 || shiftOp == 3 {
+		x86EmitRestoreGuestCF(cb)
+	}
 	emitREX(cb, false, 0, amd64R8)
 	cb.EmitBytes(0xD3, modRM(3, shiftOp, amd64R8))
 
@@ -1646,6 +2030,15 @@ func x86EmitALU_AL_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Com
 
 	// Load guest EAX into scratch, extract AL, operate, merge back
 	x86EmitLoadGuestReg32(cb, amd64RAX, 0)
+
+	// ADC/SBB read host CF as input. Bookkeeping between the previous
+	// flag producer and this op (chain-budget DEC, NeedInval CMP, the
+	// per-instr capture sequence, etc.) clobbers host RFLAGS, so we
+	// must reinstall guest CF from the captured slot first. ADD/OR/
+	// AND/SUB/XOR/CMP do not read flags, no restore needed.
+	if aluOp == 2 || aluOp == 3 { // ADC, SBB
+		x86EmitRestoreGuestCF(cb)
+	}
 
 	// Emit ALU AL, imm8 directly (opcode is op itself)
 	cb.EmitBytes(op, imm)
@@ -1870,9 +2263,28 @@ func x86EmitGrp1_Eb_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Co
 		amd64MOV_reg_reg32(cb, amd64R8, amd64RAX)
 		amd64SHR_imm32(cb, amd64R8, 8)
 
-		// ALU R8b, imm8
+		// ADC/SBB read host CF; reinstall guest CF before the byte ALU.
+		if aluOp == 2 || aluOp == 3 {
+			x86EmitRestoreGuestCF(cb)
+		}
+
+		// ALU R8b, imm8 — sets host EFLAGS based on byte result.
 		emitREX(cb, false, 0, amd64R8)
 		cb.EmitBytes(0x80, modRM(3, aluOp, amd64R8), imm)
+
+		// Capture guest EFLAGS NOW, before the merge-back AND/SHL/OR
+		// sequence below clobbers them. The compile loop's generic
+		// post-instr capture would otherwise record the merge
+		// bookkeeping flags instead of the guest ALU output. Mark
+		// flagCaptureDone so the loop skips the generic capture.
+		switch aluOp {
+		case 0, 2, 3, 5, 7: // ADD, ADC, SBB, SUB, CMP — arith
+			x86EmitCaptureFlagsArith(cb)
+			cs.flagCaptureDone = true
+		case 1, 4, 6: // OR, AND, XOR — logic (preserve guest's prior AF)
+			x86EmitCaptureFlagsLogic(cb)
+			cs.flagCaptureDone = true
+		}
 
 		if aluOp != 7 { // not CMP
 			// Merge back: clear bits 15:8 of EAX, insert R8 << 8
@@ -1885,6 +2297,10 @@ func x86EmitGrp1_Eb_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Co
 			x86EmitStoreGuestReg32(cb, guestReg, amd64RAX)
 		}
 	} else {
+		// ADC/SBB read host CF; reinstall guest CF before the byte ALU.
+		if aluOp == 2 || aluOp == 3 {
+			x86EmitRestoreGuestCF(cb)
+		}
 		// ALU AL, imm8
 		cb.EmitBytes(0x80, modRM(3, aluOp, amd64RAX), imm)
 		if aluOp != 7 {
@@ -1937,7 +2353,29 @@ func x86EmitMOV_Ev_Sw(cb *CodeBuffer, ji *X86JITInstr) bool {
 // PUSHF Emitter
 // ===========================================================================
 
-func x86EmitPUSHF(cb *CodeBuffer, ji *X86JITInstr) bool {
+func x86EmitPUSHF(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState, instrIdx int) bool {
+	// PUSHF reads cpu.Flags directly. cpu.Flags is materialized only at
+	// unchained exit (x86EmitFullEpilogueEnd → x86EmitMergeFlagsToGuest);
+	// chained transitions skip the merge, leaving cpu.Flags potentially
+	// stale relative to a producer in the source block whose host-EFLAGS
+	// were captured into the savedEFlags slot but never folded into
+	// cpu.Flags. If PUSHF is the first instruction of a block, the block
+	// can be entered via a chain JMP from another block's terminator
+	// (CALL/JMP/Jcc) — at which point cpu.Flags reflects the *previous*
+	// merge boundary, not the live guest state. Bail compile so the
+	// dispatcher's full-epilogue-then-reentry path runs and merges flags
+	// before this instruction observes them. Subsequent in-block PUSHF
+	// (instrIdx > 0) is safe: the prior in-block flag-producer's merge is
+	// not load-bearing for the cpu.Flags read either, but in practice the
+	// peephole flag-capture also doesn't touch cpu.Flags, and PUSHF after
+	// any in-block instruction is rare enough that this narrow gate is
+	// the right scope. The gate is stricter than necessary at instrIdx==0
+	// (it bails even when flagState happens to be live from an inline
+	// fallback path), but the over-bail is harmless: PUSHF as first
+	// instruction is uncommon in hot paths.
+	if instrIdx == 0 && cs.flagState == x86FlagsDead {
+		return false
+	}
 	x86MarkDirty(4) // ESP modified
 	// Push guest Flags register to guest stack
 	// Load Flags from context
@@ -3134,14 +3572,18 @@ func x86EmitREP_CMPSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86Comp
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
 	x86EmitMemLoad8(cb, amd64RDX, amd64R11) // DL = [EDI]
 
-	// CMP AL, DL
+	// CMP AL, DL — sets the comparison flags REPE/REPNE will branch on.
 	cb.EmitBytes(0x38, modRM(3, amd64RDX, amd64RAX)) // CMP AL, DL
 
-	// ESI++, EDI++, ECX--
+	// LAHF immediately to capture the comparison flags before any host
+	// arithmetic clobbers them. The INC ESI/EDI and DEC ECX below modify
+	// host EFLAGS; without this capture, the JE/JNE later in the loop
+	// would test those instead of the CMP and exit after one iteration.
+	cb.EmitBytes(0x9F) // LAHF
+
+	// ESI++, EDI++, ECX-- (clobber EFLAGS — fine, captured value sits in AH).
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64R8, 1)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 1)
-	// Save flags before DEC ECX
-	cb.EmitBytes(0x9F) // LAHF
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 
 	// Check termination: ECX == 0 → done
@@ -3201,12 +3643,15 @@ func x86EmitREP_SCASB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86Comp
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
 	x86EmitMemLoad8(cb, amd64RDX, amd64R11) // DL = [EDI]
 
-	// CMP AL, DL
+	// CMP AL, DL — sets the comparison flags REPE/REPNE will branch on.
 	cb.EmitBytes(0x38, modRM(3, amd64RDX, amd64RAX))
 
-	// EDI++, ECX--
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 1)
+	// LAHF immediately to capture the comparison flags before any host
+	// arithmetic clobbers them. Same fix as REP_CMPSB.
 	cb.EmitBytes(0x9F) // LAHF
+
+	// EDI++, ECX-- (clobber EFLAGS — fine, captured value sits in AH).
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 1)
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 
 	emitREX(cb, false, amd64RCX, amd64RCX)
@@ -3389,15 +3834,23 @@ func x86EmitJcc_rel8(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC uin
 		return true
 	}
 
-	// Non-self-loop Jcc: emit as conditional block exit (existing behavior)
+	// Non-self-loop Jcc: emit as conditional CHAIN exit. Taken branch
+	// runs the full chain-exit sequence (lightweight epilog, ChainCount
+	// accum, ChainBudget DEC, NeedInval check, patchable JMP rel32 to
+	// target.chainEntry — initial JMP goes to the unchained-exit blob).
+	// The chain slot is registered with the block compiler so
+	// x86PatchCompatibleChainsTo wires it once target is cached.
+	// Fall-through skips the entire chain+unchained blob (which
+	// terminates with RET and is therefore unreachable by fall-through).
 	exitOff := amd64Jcc_rel32(cb, cond)
 	fallThroughJmp := amd64JMP_rel32(cb)
 
 	exitLabel := cb.Len()
 	patchRel32(cb, exitOff, exitLabel)
-	x86EmitRetPC(cb, targetPC, uint32(instrIdx+1))
-	x86EmitLightweightEpilogue(cb)
-	x86EmitFullEpilogueEnd(cb)
+	info := x86EmitChainExit(cb, targetPC, uint32(instrIdx+1))
+	if cs.chainExits != nil {
+		*cs.chainExits = append(*cs.chainExits, info)
+	}
 
 	fallThroughLabel := cb.Len()
 	patchRel32(cb, fallThroughJmp, fallThroughLabel)
@@ -3560,7 +4013,11 @@ func x86EmitLightweightEpilogue(cb *CodeBuffer) {
 }
 
 // x86EmitFullEpilogueEnd emits the stack frame dealloc + callee-saved pop + RET.
+// Also runs the deferred Flags-to-guest merge so chain-exit unchained paths
+// (which reach this through x86EmitChainExit's tail) restore guest Flags
+// alongside the regs-to-jitRegs writeback.
 func x86EmitFullEpilogueEnd(cb *CodeBuffer) {
+	x86EmitMergeFlagsToGuest(cb)
 	amd64ALU_reg_imm32(cb, 0, amd64RSP, int32(x86AMD64FrameSize)) // ADD RSP, 40
 	amd64POP(cb, amd64R15)
 	amd64POP(cb, amd64R14)
@@ -3571,6 +4028,154 @@ func x86EmitFullEpilogueEnd(cb *CodeBuffer) {
 	amd64RET(cb)
 }
 
+// x86CmpReg64Mem emits CMP reg64, qword [base + disp]. 64-bit form
+// (REX.W=1 + opcode 0x3B). Used by the RTS cache probe to compare a
+// regMap (packed uint64) against a context slot.
+func x86CmpReg64Mem(cb *CodeBuffer, reg, base byte, disp int32) {
+	emitMemOp(cb, true, 0x3B, reg, base, disp)
+}
+
+// x86EmitRET emits a native RET (0xC3) terminator with a 2-entry RTS
+// inline cache. On hit, the block transfers directly to the cached
+// caller's chainEntry via an indirect JMP; on miss it falls back to the
+// unchained-exit path which writes the popped return PC into RetPC and
+// returns to the Go dispatcher. The cache is populated by the dispatcher
+// (jit_x86_exec.go) on every native block invocation, so any caller
+// block that has previously been Go-dispatched is reachable on the next
+// RET to its return address.
+//
+// Intended for slice-3 cross-block CALL/RET chaining: a caller block
+// ending in CALL chains forward to the callee's chainEntry; the callee's
+// RET probes the cache for the caller's continuation block (whose PC is
+// the byte after the CALL) and JMPs to it on hit. Without the cache, RET
+// always falls through to the dispatcher and pays the Go round-trip per
+// return.
+func x86EmitRET(cb *CodeBuffer, instrCount uint32) {
+	// Pop return address: R11d = [memBase + ESP]; ESP += 4.
+	espHost, _ := x86GuestRegToHost(4)
+	x86MarkDirty(4)
+	amd64MOV_reg_reg32(cb, amd64R10, espHost)
+	emitREX_SIB(cb, false, amd64R11, amd64R10, x86AMD64RegMemBase)
+	cb.EmitBytes(0x8B, modRM(0, amd64R11, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	amd64ALU_reg_imm32_32bit(cb, 0, espHost, 4) // ADD ESP, 4
+
+	// 2-entry MRU cache probe by guest PC only. The RTSCacheNRegMap
+	// fields remain in JITContext (still written by the exec loop's
+	// promotion path) but are not consulted at probe time — Tier-2
+	// per-block regalloc is currently disabled, so all blocks share
+	// the default regMap and the gate would always trivially pass at
+	// the cost of ~2 CMP+Jcc per probe + a 10-byte 64-bit imm load.
+	// When Tier-2 single-block recompile is re-enabled, the regMap
+	// gate must come back in lockstep.
+
+	// Slot 0: cmp PC; jne miss0; load addr.
+	amd64ALU_reg_mem32_cmp(cb, amd64R11, x86AMD64RegCtx, int32(x86CtxOffRTSCache0PC))
+	miss0PCOff := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64MOV_reg_mem(cb, amd64R10, x86AMD64RegCtx, int32(x86CtxOffRTSCache0Addr))
+	hit0Off := amd64JMP_rel32(cb)
+
+	// Slot 1.
+	patchRel32(cb, miss0PCOff, cb.Len())
+	amd64ALU_reg_mem32_cmp(cb, amd64R11, x86AMD64RegCtx, int32(x86CtxOffRTSCache1PC))
+	miss1PCOff := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64MOV_reg_mem(cb, amd64R10, x86AMD64RegCtx, int32(x86CtxOffRTSCache1Addr))
+
+	// Empty-slot guard. The RTS cache is zero-initialized; an unused
+	// slot has both PC=0 and Addr=0. If the guest legitimately RETs to
+	// PC=0 (rare but legal: e.g. a program that JSRs from address 0
+	// before initializing its stack, or one that deliberately pushes 0
+	// as a sentinel return), the PC compare above matches the empty
+	// slot, R10 loads the empty Addr=0, and the JMP R10 below would
+	// transfer to host address 0 → SIGSEGV. Detect the empty-slot hit
+	// by testing R10 nonzero; on zero, fall through to the miss path.
+	// A real promoted entry's chainEntry pointer is the JIT code-cache
+	// page address, which is never 0.
+	patchRel32(cb, hit0Off, cb.Len())
+	amd64TEST_reg_reg(cb, amd64R10, amd64R10)
+	emptySlotMissOff := amd64Jcc_rel32(cb, amd64CondE)
+
+	// Hit path: R10 = caller's chainEntry. ChainCount += instrCount
+	// (counts RET itself plus prior body of this block). Then verify
+	// chain-budget / NeedInval before committing the indirect JMP; bail
+	// out to the common-exit path if either fails — RetCount still
+	// reflects the bumped ChainCount so the dispatcher accounts for the
+	// instrs retired up to and including the bailing RET.
+	amd64MOV_reg_mem32(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffChainCount))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount))
+	amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffChainCount), amd64RAX)
+
+	amd64DEC_mem32(cb, x86AMD64RegCtx, int32(x86CtxOffChainBudget))
+	budgetOff := amd64Jcc_rel32(cb, amd64CondLE)
+
+	amd64ALU_mem_imm8(cb, 7, x86AMD64RegCtx, int32(x86CtxOffNeedInval), 0)
+	invalOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+	// Lightweight reg store + indirect JMP to caller's chainEntry.
+	// Stash R10 across lightweight-epilogue clobber on RAX.
+	amd64MOV_mem_reg(cb, amd64RSP, int32(x86AMD64FrameSize-8), amd64R10)
+	x86EmitLightweightEpilogue(cb)
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(x86AMD64FrameSize-8))
+
+	// Restore guest condition bits into host RFLAGS before chaining to
+	// the caller's continuation. x86 CALL/RET preserve EFLAGS
+	// architecturally, so a caller continuation with a flag consumer
+	// (e.g. JZ following a callee that set flags) must observe the
+	// callee's last guest flag state. The chain-hit bookkeeping above
+	// (ChainCount accumulation, DEC ChainBudget, CMP NeedInval) and
+	// the lightweight-epilogue MOV-into-RAX clobbered host EFLAGS.
+	//
+	// Only the visible condition subset (CF/PF/AF/ZF/SF/OF =
+	// x86VisibleFlagsMask) is restored from the captured slot;
+	// non-visible / system bits (DF, TF, IOPL, IF, etc.) are taken
+	// from the host's current RFLAGS and re-applied unchanged.
+	// Without that mask, a guest STD/POPF that set DF=1 in the saved
+	// slot would flip the host's direction flag during the JMP, which
+	// violates the Go runtime / host ABI and can break MOVS/STOS/etc.
+	// in subsequent native code. Same concern for TF (single-step) —
+	// a guest TF=1 would trap the host on the next instruction.
+	//
+	// Sequence:
+	//   PUSHFQ; POP RAX        ; RAX = host RFLAGS
+	//   AND EAX, ~visible      ; clear visible bits in host
+	//   MOV ECX, [slot]        ; ECX = saved guest flags
+	//   AND ECX, visible       ; isolate guest visible bits
+	//   OR EAX, ECX            ; merge: host system + guest visible
+	//   PUSH RAX; POPFQ        ; install
+	cb.EmitBytes(0x9C) // PUSHFQ
+	amd64POP(cb, amd64RAX)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, x86InvVisibleFlagsMaskI32) // AND EAX, ~mask
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RSP, int32(x86AMD64OffSavedEFlags))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, int32(x86VisibleFlagsMask)) // AND ECX, mask
+	amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64RCX)                      // OR EAX, ECX
+	amd64PUSH(cb, amd64RAX)
+	cb.EmitBytes(0x9D) // POPFQ
+
+	emitREX(cb, false, 0, amd64R10)
+	cb.EmitBytes(0xFF, 0xE0|byte(amd64R10&7)) // JMP R10
+
+	// Miss path: ChainCount += instrCount (mirroring the hit-path
+	// increment so the dispatcher sees the same retired-instruction
+	// total whether or not the RET chained natively). PC misses (slot
+	// 0's was redirected through slot 1's probe; slot 1 is the final
+	// miss) and the empty-slot guard's JZ both converge here.
+	patchRel32(cb, miss1PCOff, cb.Len())
+	patchRel32(cb, emptySlotMissOff, cb.Len())
+	amd64MOV_reg_mem32(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffChainCount))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount))
+	amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffChainCount), amd64RAX)
+
+	// Common exit (miss + budget/inval bail). RetPC = popped retAddr,
+	// RetCount = ChainCount. Full epilogue merges Flags to guest, stores
+	// dirty regs, pops frame, RET.
+	patchRel32(cb, budgetOff, cb.Len())
+	patchRel32(cb, invalOff, cb.Len())
+	amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffRetPC), amd64R11)
+	amd64MOV_reg_mem32(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffChainCount))
+	amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffRetCount), amd64RAX)
+	x86EmitLightweightEpilogue(cb)
+	x86EmitFullEpilogueEnd(cb)
+}
+
 // x86EmitChainExit emits a chain exit sequence for a block terminator.
 //  1. Lightweight epilogue (store mapped registers)
 //  2. Accumulate instruction count into ChainCount
@@ -3579,8 +4184,15 @@ func x86EmitFullEpilogueEnd(cb *CodeBuffer) {
 //  5. Patchable JMP rel32 (initially to unchained exit)
 //  6. Unchained exit: set RetPC/RetCount, full pop/ret
 func x86EmitChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32) x86ChainExitInfo {
-	// Skip lightweight epilogue for chain exits -- mapped registers stay live
-	// in host callee-saved registers. Only store back to jitRegs on unchained exit.
+	// Store this block's dirty mapped guest registers back to jitRegs
+	// before chaining forward. Chained blocks share the host stack frame
+	// but each block tracks its own dirtyMask — regs modified in the
+	// source block won't appear in the target's dirtyMask, so the
+	// target's eventual unchained exit would skip them. Flushing here
+	// makes cross-block register writes durable. Host regs themselves
+	// keep the same values, so the chained target still reads them
+	// directly without reloading.
+	x86EmitLightweightEpilogue(cb)
 
 	// Accumulate instruction count: ChainCount += instrCount
 	amd64MOV_reg_mem32(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffChainCount))
@@ -3651,15 +4263,170 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 	cs.codeBitmap = x86CompileCodeBitmap
 	cs.host = x86Host
 
-	// Set up register mapping based on tier
-	if compileTier >= 1 {
-		cs.regMap = x86Tier2RegAlloc(instrs, memory, startPC)
-	} else {
-		cs.regMap = x86DefaultRegMap()
-	}
+	// Tier-2 per-block regalloc remains disabled. Re-enable attempts
+	// (with regMap gate restored + RTS cache invalidation on promotion)
+	// still hang on RET-heavy benchmarks; the cross-block coherence
+	// problem is wider than just the RTS cache (chain slots in OTHER
+	// blocks targeting the promoted block's startPC remain pointed at
+	// the OLD chainEntry whenever the regMap-compatibility check rejects
+	// re-patching, and the OLD block's native code stays alive in
+	// execMem). Closing this requires execMem reclamation +
+	// chain-slot-rewrite-or-invalidate-on-promotion at minimum.
+	cs.regMap = x86DefaultRegMap()
+	_ = compileTier // see comment above
 
 	// Run peephole optimizer for flag analysis (all tiers benefit)
 	cs.flagsNeeded = x86PeepholeFlags(instrs)
+
+	// The peephole walk is linear and unsafe for blocks with internal
+	// control-flow splits: a forward Jcc that branches over a flag
+	// producer means the not-taken path retires the producer (whose
+	// flags may be observed downstream), but the taken path skips it
+	// and observes flags from BEFORE the Jcc — peephole can't represent
+	// that and may flag a producer dead when one path actually needs it.
+	// Detect any non-self-loop Jcc and disable the per-instruction flag
+	// capture skip in that case (force every producer to capture). The
+	// startPC self-loop case is safe because the Jcc target is the loop
+	// head and the loop body is straight-line.
+	cs.hasNonSelfLoopJcc = false
+	for i := range instrs {
+		ji := &instrs[i]
+		// 1-byte Jcc rel8 (0x70-0x7F).
+		if ji.opcode >= 0x70 && ji.opcode <= 0x7F && ji.length >= 2 {
+			immPC := ji.opcodePC + uint32(ji.length) - 1
+			if immPC < uint32(len(memory)) {
+				rel := int32(int8(memory[immPC]))
+				targetPC := uint32(int32(ji.opcodePC+uint32(ji.length)) + rel)
+				if targetPC != startPC {
+					cs.hasNonSelfLoopJcc = true
+					break
+				}
+			}
+			continue
+		}
+		// 2-byte Jcc rel32 (0x0F 0x80-0x8F).
+		if ji.opcode >= 0x0F80 && ji.opcode <= 0x0F8F && ji.length >= 6 {
+			immPC := ji.opcodePC + uint32(ji.length) - 4
+			if immPC+4 <= uint32(len(memory)) {
+				rel := int32(uint32(memory[immPC]) |
+					uint32(memory[immPC+1])<<8 |
+					uint32(memory[immPC+2])<<16 |
+					uint32(memory[immPC+3])<<24)
+				targetPC := uint32(int32(ji.opcodePC+uint32(ji.length)) + rel)
+				if targetPC != startPC {
+					cs.hasNonSelfLoopJcc = true
+					break
+				}
+			}
+			continue
+		}
+		// LOOP/LOOPE/LOOPNE/JECXZ — also intra-block branches.
+		if ji.opcode == 0xE0 || ji.opcode == 0xE1 || ji.opcode == 0xE2 || ji.opcode == 0xE3 {
+			cs.hasNonSelfLoopJcc = true
+			break
+		}
+	}
+
+	// Force the last flag-emitting instruction in the block to keep its
+	// capture live, because block exit must leave guest cpu.Flags coherent
+	// for downstream chained blocks / IRQ handlers / Go observers. The
+	// peephole's backward demand walk assumes no exit consumer and would
+	// otherwise mark the final producer dead. Uses x86InstrFlagOpKind so
+	// the predicate matches the per-instr capture decision exactly
+	// (POPF/SAHF/CLC/STC/CLD/STD/Grp4-5 INC-DEC included).
+	for i := len(instrs) - 1; i >= 0; i-- {
+		if x86InstrFlagOpKind(instrs[i].opcode, instrs[i].modrm) != x86FlagOpNone {
+			if i < len(cs.flagsNeeded) {
+				cs.flagsNeeded[i] = true
+			}
+			break
+		}
+	}
+
+	// Compute flagShadowed[i]: is instruction i's flag-capture fully
+	// redundant because a downstream same-block instruction overwrites
+	// every bit i contributed to the captured-EFLAGS slot, with no
+	// in-between flag READ?
+	//
+	// Per-kind rules (writes to slot):
+	//   - x86FlagOpArith / x86FlagOpManip: writes ALL 6 visible bits
+	//     (CF, PF, AF, ZF, SF, OF). Shadowable only by another arith /
+	//     manip producer (logic preserves AF, would blend in slot's
+	//     stale value).
+	//   - x86FlagOpLogic: writes 5 bits (CF, PF, ZF, SF, OF) and READS
+	//     AF from the slot (preserving guest AF across logic ops).
+	//     Shadowable by arith/manip (overwrites all) or logic
+	//     (overwrites the 5 bits, AF passes through unchanged).
+	//
+	// A flag-READ between position i and any downstream producer breaks
+	// the shadow chain.
+	cs.flagShadowed = make([]bool, len(instrs))
+	const (
+		shadowNone  = 0 // no downstream overwriter / chain broken by reader
+		shadowArith = 1 // downstream arith/manip — overwrites all 6 visible bits
+		shadowLogic = 2 // downstream logic — overwrites 5 bits (preserves AF)
+	)
+	downstream := shadowNone
+	for i := len(instrs) - 1; i >= 0; i-- {
+		ji := &instrs[i]
+		op := byte(ji.opcode)
+		readsFlags := false
+		if ji.opcode < 0x0F00 {
+			switch {
+			case op >= 0x70 && op <= 0x7F:
+				readsFlags = true
+			case op == 0x9C, op == 0x9F:
+				readsFlags = true
+			case op == 0x10, op == 0x11, op == 0x12, op == 0x13,
+				op == 0x14, op == 0x15:
+				readsFlags = true
+			case op == 0x18, op == 0x19, op == 0x1A, op == 0x1B,
+				op == 0x1C, op == 0x1D:
+				readsFlags = true
+			case op == 0xD0, op == 0xD1, op == 0xD2, op == 0xD3:
+				if ji.hasModRM {
+					sub := (ji.modrm >> 3) & 7
+					if sub == 2 || sub == 3 {
+						readsFlags = true
+					}
+				}
+			}
+		} else {
+			if ji.opcode >= 0x0F80 && ji.opcode <= 0x0F8F {
+				readsFlags = true
+			}
+		}
+		if readsFlags {
+			downstream = shadowNone
+			continue
+		}
+		kind := x86InstrFlagOpKind(ji.opcode, ji.modrm)
+		if kind == x86FlagOpNone {
+			continue
+		}
+		// Decide shadowability based on producer kind and downstream.
+		switch kind {
+		case x86FlagOpArith, x86FlagOpManip:
+			// Arith needs a downstream arith/manip overwrite; logic
+			// preserves AF and is not sufficient.
+			if downstream == shadowArith {
+				cs.flagShadowed[i] = true
+			}
+			downstream = shadowArith
+		case x86FlagOpLogic:
+			// Logic shadowable by either kind (both overwrite the 5
+			// bits logic writes; AF is preserved through both anyway).
+			if downstream == shadowArith || downstream == shadowLogic {
+				cs.flagShadowed[i] = true
+			}
+			// Logic preserves AF, so for upstream-arith purposes the
+			// arith's AF is still needed downstream; treat the running
+			// downstream tag as logic (does NOT overwrite AF).
+			if downstream != shadowArith {
+				downstream = shadowLogic
+			}
+		}
+	}
 
 	// Detect self-loops: backward Jcc targeting startPC
 	for i := range instrs {
@@ -3702,10 +4469,35 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 
 	// Emit instructions
 	var chainExits []x86ChainExitInfo
+	cs.chainExits = &chainExits
 	instrCount := 0
 	lastPC := startPC
 	for i := range instrs {
 		ji := &instrs[i]
+
+		// Segment-override prefix (FS/GS/DS/ES/CS/SS) bails to interp.
+		// The current native emitters compute effective addresses as
+		// flat offsets and do not add a segment base; running a
+		// prefixed instr through them would produce different memory
+		// addresses than the interpreter (which honors prefixSeg via
+		// readSegBase). End the block here so the dispatcher steps the
+		// prefixed instr via cpu.Step(), which correctly applies the
+		// segment base. Slice 3+ may add native segment-base support
+		// for FS:/GS: TLS-style access.
+		if ji.prefixes&x86PrefSeg != 0 {
+			break
+		}
+
+		// RET (0xC3): native emit with 2-entry RTS inline cache. Closes
+		// the cross-block CALL/RET chain — caller's CALL chains forward
+		// to the callee, callee's RET hits the cache on caller's
+		// continuation block on the next return.
+		if byte(ji.opcode) == 0xC3 && ji.opcode < 0x100 {
+			instrCount++
+			lastPC = ji.opcodePC + uint32(ji.length)
+			x86EmitRET(cb, uint32(instrCount))
+			goto done
+		}
 
 		// Check if this is a block terminator that can use a chain exit
 		if x86IsBlockTerminator(ji.opcode) && ji.opcode != 0x00F4 { // Not HLT
@@ -3740,6 +4532,32 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 		if !x86EmitInstruction(cb, ji, memory, startPC, cs, instrCount) {
 			break
 		}
+		// Eager-capture the host EFLAGS state immediately after any
+		// flag-modifying guest instruction. The capture stack slot is
+		// merged into *cpu.Flags at every block-exit point, so the
+		// guest sees correct flag state even if subsequent JIT scratch
+		// arithmetic or the epilogue itself clobbers host EFLAGS.
+		// Logic / shift / rotate ops use a separate capture path that
+		// preserves the guest's prior AF (Intel-undefined for those
+		// kinds; the IE interpreter leaves AF untouched).
+		// Skip the capture when the peephole has determined this
+		// instruction's flag output is dead (overwritten by a later
+		// in-block flag producer with no intervening consumer), or
+		// when the emitter already captured pre-bookkeeping (e.g.
+		// memory-dest ALU emitting capture before its post-store SMC
+		// check clobbers EFLAGS).
+		flagsLive := cs.hasNonSelfLoopJcc ||
+			i >= len(cs.flagsNeeded) || cs.flagsNeeded[i] ||
+			i >= len(cs.flagShadowed) || !cs.flagShadowed[i]
+		if flagsLive && !cs.flagCaptureDone {
+			switch x86InstrFlagOpKind(ji.opcode, ji.modrm) {
+			case x86FlagOpArith, x86FlagOpManip:
+				x86EmitCaptureFlagsArith(cb)
+			case x86FlagOpLogic:
+				x86EmitCaptureFlagsLogic(cb)
+			}
+		}
+		cs.flagCaptureDone = false
 		instrCount++
 		lastPC = ji.opcodePC + uint32(ji.length)
 	}
@@ -3748,15 +4566,28 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 		return nil, fmt.Errorf("no instructions compiled")
 	}
 
-	// Non-terminator exit: emit RetPC/RetCount + full epilogue
+	// Non-terminator exit: emit RetPC/RetCount + full epilogue. The
+	// dispatcher accounting reads RetCount when nonzero and ignores
+	// ChainCount in that case, so any predecessor chain accumulation
+	// must be folded in here — without the add, a chained sequence
+	// that exits through this fallthrough path would drop every
+	// predecessor's retired-instruction count.
 	if cs.isLoop {
-		// For self-loops, RetCount comes from the loop retired counter + final iteration
+		// For self-loops, RetCount = loopRetired + final iteration + ChainCount.
 		x86EmitRetPC(cb, lastPC, 0) // placeholder
 		amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(x86AMD64OffLoopRetired))
-		amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount)) // ADD final iteration
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount))
+		amd64MOV_reg_mem32(cb, amd64RDX, x86AMD64RegCtx, int32(x86CtxOffChainCount))
+		amd64ALU_reg_reg32(cb, 0x01, amd64RAX, amd64RDX) // ADD EAX, EDX
 		amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffRetCount), amd64RAX)
 	} else {
 		x86EmitRetPC(cb, lastPC, uint32(instrCount))
+		// Fold ChainCount into RetCount so chained predecessors are
+		// counted alongside this block's local instrCount.
+		amd64MOV_reg_mem32(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffChainCount))
+		amd64MOV_reg_mem32(cb, amd64RDX, x86AMD64RegCtx, int32(x86CtxOffRetCount))
+		amd64ALU_reg_reg32(cb, 0x01, amd64RDX, amd64RAX) // ADD EDX, EAX
+		amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffRetCount), amd64RDX)
 	}
 	x86EmitEpilogue(cb, cs)
 
@@ -3932,17 +4763,26 @@ func x86CompileRegion(region *x86Region, execMem *ExecMem, memory []byte) (*JITB
 		patchRel32(cb, fix.jmpDispOff, blockLabels[fix.targetBlock])
 	}
 
-	// Default exit (fall-through from last block)
+	// Default exit (fall-through from last block). Same ChainCount
+	// fold as the per-block compiler: if this region was reached via a
+	// chained predecessor, RetCount must include that prior count or
+	// the dispatcher will undercount retired instructions.
 	if hasBackEdge {
 		x86EmitRetPC(cb, region.blockPCs[len(region.blocks)-1], 0)
 		amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(x86AMD64OffLoopRetired))
 		amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(totalInstrCount))
+		amd64MOV_reg_mem32(cb, amd64RDX, x86AMD64RegCtx, int32(x86CtxOffChainCount))
+		amd64ALU_reg_reg32(cb, 0x01, amd64RAX, amd64RDX) // ADD EAX, EDX
 		amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffRetCount), amd64RAX)
 	} else {
 		lastBlock := region.blocks[len(region.blocks)-1]
 		lastInstr := &lastBlock[len(lastBlock)-1]
 		lastPC := lastInstr.opcodePC + uint32(lastInstr.length)
 		x86EmitRetPC(cb, lastPC, uint32(totalInstrCount))
+		amd64MOV_reg_mem32(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffChainCount))
+		amd64MOV_reg_mem32(cb, amd64RDX, x86AMD64RegCtx, int32(x86CtxOffRetCount))
+		amd64ALU_reg_reg32(cb, 0x01, amd64RDX, amd64RAX) // ADD EDX, EAX
+		amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffRetCount), amd64RDX)
 	}
 	x86EmitEpilogue(cb, cs)
 

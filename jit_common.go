@@ -26,6 +26,20 @@ type JITContext struct {
 	NeedIOFallback uint32  // 60: set to 1 when LOAD/STORE hits I/O page
 	IOBitmapPtr    uintptr // 64: &cpu.bus.ioPageBitmap[0]
 	FPUPtr         uintptr // 72: &cpu.FPU (pointer to IE64FPU struct)
+	ChainBudget    uint32  // 80: blocks remaining before returning to Go
+	ChainCount     uint32  // 84: accumulated instruction count during chaining
+	RTSCache0PC    uint32  // 88: MRU entry 0 - return PC
+	_pad0          uint32  // 92: padding for alignment
+	RTSCache0Addr  uintptr // 96: MRU entry 0 - chain entry address
+	RTSCache1PC    uint32  // 104: MRU entry 1 - return PC
+	_pad1          uint32  // 108: padding for alignment
+	RTSCache1Addr  uintptr // 112: MRU entry 1 - chain entry address
+	RTSCache2PC    uint32  // 120: MRU entry 2 - return PC
+	_pad2          uint32  // 124: padding for alignment
+	RTSCache2Addr  uintptr // 128: MRU entry 2 - chain entry address
+	RTSCache3PC    uint32  // 136: MRU entry 3 - return PC
+	_pad3          uint32  // 140: padding for alignment
+	RTSCache3Addr  uintptr // 144: MRU entry 3 - chain entry address
 }
 
 // JITContext field offsets (must match struct layout above)
@@ -42,7 +56,22 @@ const (
 	jitCtxOffNeedIOFallback = 60
 	jitCtxOffIOBitmapPtr    = 64
 	jitCtxOffFPUPtr         = 72
+	jitCtxOffChainBudget    = 80
+	jitCtxOffChainCount     = 84
+	jitCtxOffRTSCache0PC    = 88
+	jitCtxOffRTSCache0Addr  = 96
+	jitCtxOffRTSCache1PC    = 104
+	jitCtxOffRTSCache1Addr  = 112
+	jitCtxOffRTSCache2PC    = 120
+	jitCtxOffRTSCache2Addr  = 128
+	jitCtxOffRTSCache3PC    = 136
+	jitCtxOffRTSCache3Addr  = 144
 )
+
+// ie64ChainBudget is the per-callNative chain dispatch budget (number of
+// chained block transitions before falling back to the Go dispatcher for
+// interrupt/timer polls). Aligned with the M68K backend's value.
+const ie64ChainBudget = 256
 
 // jitAvailable is set to true at init time on platforms that support JIT.
 var jitAvailable bool
@@ -70,16 +99,23 @@ func newJITContext(cpu *CPU64) *JITContext {
 // ===========================================================================
 
 type JITInstr struct {
-	opcode   byte
-	rd       byte
-	size     byte
-	xbit     byte
-	rs       byte
-	rt       byte
-	mmuBail  bool // when true, emit bail-to-interpreter instead of native memory access
-	imm32    uint32
-	pcOffset uint32 // byte offset from block start
+	opcode    byte
+	rd        byte
+	size      byte
+	xbit      byte
+	rs        byte
+	rt        byte
+	mmuBail   bool  // when true, emit bail-to-interpreter instead of native memory access
+	fusedFlag uint8 // see ie64Fused* constants
+	imm32     uint32
+	pcOffset  uint32 // byte offset from block start
 }
+
+// Fusion flags for JITInstr.fusedFlag.
+const (
+	ie64FusedJSRLeafCall   uint8 = 1 << 0 // JSR replaced by inlined leaf body — emit nothing
+	ie64FusedRTSLeafReturn uint8 = 1 << 1 // synthetic RTS marker for fused leaf — emit nothing
+)
 
 // ===========================================================================
 // Block Scanner
@@ -134,6 +170,53 @@ func scanBlock(memory []byte, startPC uint32) []JITInstr {
 			imm32:    imm32,
 			pcOffset: pc - startPC,
 		}
+
+		// JSR with fusable register-only leaf: inline leaf body in place
+		// of the JSR (no stack push, no chain). The block continues past
+		// the JSR's returnPC. All inlined leaf instrs adopt the JSR's
+		// pcOffset so any bail re-executes via interpreter from the JSR
+		// (which restores correct stack semantics). instrCount accounting
+		// stays interpreter-equivalent because JSR + body + RTS marker
+		// all occupy slots in the instrs array.
+		//
+		// Gated by ie64ScanJSRLeafFusionEnabled because the fused
+		// markers (ie64FusedJSRLeafCall / ie64FusedRTSLeafReturn) are
+		// only honored by the AMD64 IE64 emitter. The ARM64 IE64 emitter
+		// in jit_emit_arm64.go treats them as plain JSR/RTS and would
+		// emit a real call+inlined-body+real-return, corrupting stack
+		// semantics. Set per-arch in jit_common_{amd64,arm64}.go.
+		if opcode == OP_JSR64 && ie64ScanJSRLeafFusionEnabled {
+			targetPC := uint32(int64(pc) + int64(int32(imm32)))
+			if leafBody, ok := analyzeJSRLeafFusion(memory, targetPC); ok {
+				// Skip fusion if the resulting fused sequence (JSR
+				// marker + body + synthetic RTS marker) plus at least
+				// one slot for the still-to-scan post-JSR continuation
+				// or terminator would exceed the block-size cap. This
+				// guarantees a fused-RTS marker is never the last
+				// instruction in instrs, so compileBlock's
+				// last-instruction-based fallthrough PC + final
+				// epilogue checks remain correct.
+				expandedLen := len(instrs) + 1 + len(leafBody) + 1
+				if expandedLen+1 <= jitMaxBlockSize {
+					jsrInstr := ji
+					jsrInstr.fusedFlag |= ie64FusedJSRLeafCall
+					instrs = append(instrs, jsrInstr)
+					for _, lji := range leafBody {
+						lji.pcOffset = ji.pcOffset
+						instrs = append(instrs, lji)
+					}
+					rtsMarker := JITInstr{
+						opcode:    OP_RTS64,
+						pcOffset:  ji.pcOffset,
+						fusedFlag: ie64FusedRTSLeafReturn,
+					}
+					instrs = append(instrs, rtsMarker)
+					pc += IE64_INSTR_SIZE
+					continue
+				}
+			}
+		}
+
 		instrs = append(instrs, ji)
 
 		if isBlockTerminator(opcode) {
@@ -143,6 +226,73 @@ func scanBlock(memory []byte, startPC uint32) []JITInstr {
 	}
 
 	return instrs
+}
+
+// analyzeJSRLeafFusion validates whether a JSR target is a fusable
+// register-only leaf: ≤ 4 body instructions terminated by RTS, no memory
+// access, no R31 (SP) manipulation, no embedded control flow. Returns
+// the leaf body (excluding the trailing RTS) on success.
+//
+// Restricting to register-only ops keeps bail semantics simple — none of
+// the inlined instructions can fault mid-block, so the dispatcher never
+// has to re-execute the leaf, only the JSR (which never executed in JIT).
+func analyzeJSRLeafFusion(memory []byte, targetPC uint32) ([]JITInstr, bool) {
+	const maxBodyInstrs = 4
+	memSize := uint32(len(memory))
+	pc := targetPC
+	body := make([]JITInstr, 0, maxBodyInstrs)
+
+	for i := 0; i < maxBodyInstrs+1; i++ {
+		if pc+IE64_INSTR_SIZE > memSize {
+			return nil, false
+		}
+		instr := binary.LittleEndian.Uint64(memory[pc:])
+		opcode := byte(instr)
+		if opcode == OP_RTS64 {
+			return body, true
+		}
+		if !isLeafFusionSafe(opcode, instr) {
+			return nil, false
+		}
+		byte1 := byte(instr >> 8)
+		byte2 := byte(instr >> 16)
+		byte3 := byte(instr >> 24)
+		imm32 := uint32(instr >> 32)
+		body = append(body, JITInstr{
+			opcode:   opcode,
+			rd:       byte1 >> 3,
+			size:     (byte1 >> 1) & 0x03,
+			xbit:     byte1 & 1,
+			rs:       byte2 >> 3,
+			rt:       byte3 >> 3,
+			imm32:    imm32,
+			pcOffset: 0,
+		})
+		pc += IE64_INSTR_SIZE
+	}
+	return nil, false
+}
+
+// isLeafFusionSafe returns true iff the opcode is a register-only
+// instruction safe to inline at a JSR site: no memory access, no R31
+// (SP) destination, no control flow, no FPU/atomic side effects.
+func isLeafFusionSafe(opcode byte, instr uint64) bool {
+	rd := byte(instr>>8) >> 3
+	if rd == 31 {
+		return false
+	}
+	switch opcode {
+	case OP_NOP64:
+		return true
+	case OP_MOVE, OP_MOVT, OP_MOVEQ, OP_LEA:
+		return true
+	case OP_ADD, OP_SUB, OP_AND64, OP_OR64, OP_EOR,
+		OP_MULU, OP_MULS, OP_DIVU, OP_DIVS, OP_MOD64,
+		OP_NEG, OP_NOT64, OP_CLZ, OP_SEXT,
+		OP_LSL, OP_LSR, OP_ASR:
+		return true
+	}
+	return false
 }
 
 // scanBlockWithLimit is like scanBlock but stops at maxPC (exclusive).
@@ -227,6 +377,17 @@ func needsFallback(instrs []JITInstr) bool {
 	// emitJMP / emitJSR_IND no longer AND the target with the legacy
 	// IE64_ADDR_MASK so jumps reach the full uint32 PC. With MMU on,
 	// compileBlockMMU still bails JSR_IND per-instruction.
+	//
+	// Phase4d safety boundary (mmu_ie64_phase4b_test.go):
+	//   (a) MMU-off uint32 window — direct emit, asserted parity vs
+	//       interpreter via TestPhase4d_NonMMU_AllowsMemOps_NoBlockBail
+	//       and the broader ExecuteJIT memory tests.
+	//   (b) MMU-on — compileBlockMMU sets mmuBail per memory op, asserted
+	//       by TestPhase4d_MMU_BailsAllMemOps + TestPhase4d_MMU_BailsAllAtomics.
+	//   (c) Dispatch — exec.go selects compileBlockMMU vs compileBlock
+	//       on cpu.mmuEnabled, asserted by TestPhase4d_DispatchSelectsMMUCompiler.
+	// Only DLOAD/DSTORE remain block-bail because the 64-bit memory
+	// emitter has not landed yet.
 	for i := range instrs {
 		switch instrs[i].opcode {
 		case OP_DLOAD, OP_DSTORE:
@@ -547,6 +708,12 @@ type JITBlock struct {
 	ioBails        uint32      // times this block triggered I/O fallback
 	lastPromoteAt  uint32      // exec count when last promoted (hysteresis)
 	rIncrements    int         // Z80: total R register increments for this block
+	// ptbr is the MMU page-table-base address active when this block was
+	// compiled, or 0 for non-MMU backends. Used by IE64's chain patcher
+	// to scope inbound/outbound chain links to a single address space —
+	// without this filter, two address spaces sharing a virtual PC could
+	// cross-link native blocks and execute the wrong physical code.
+	ptbr uint64
 }
 
 type CodeCache struct {
@@ -593,6 +760,26 @@ func (cc *CodeCache) InvalidateRange(lo, hi uint32) {
 // and patches their JMP rel32 to jump to chainEntry.
 func (cc *CodeCache) PatchChainsTo(targetPC uint32, chainEntry uintptr) {
 	for _, block := range cc.blocks {
+		for _, slot := range block.chainSlots {
+			if slot.targetPC == targetPC && slot.patchAddr != 0 {
+				PatchRel32At(slot.patchAddr, chainEntry)
+			}
+		}
+	}
+}
+
+// PatchChainsToScoped is the MMU-aware variant of PatchChainsTo: only
+// patches chain slots in source blocks whose ptbr matches the supplied
+// scopePtbr. IE64 backends call this when MMU is enabled — without
+// the ptbr filter, a block compiled in one address space would cross-
+// link to chain slots from another address space sharing the same
+// virtual PC, executing the wrong physical code on the next chained
+// transition.
+func (cc *CodeCache) PatchChainsToScoped(targetPC uint32, chainEntry uintptr, scopePtbr uint64) {
+	for _, block := range cc.blocks {
+		if block.ptbr != scopePtbr {
+			continue
+		}
 		for _, slot := range block.chainSlots {
 			if slot.targetPC == targetPC && slot.patchAddr != 0 {
 				PatchRel32At(slot.patchAddr, chainEntry)

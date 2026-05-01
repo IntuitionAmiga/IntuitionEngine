@@ -52,8 +52,14 @@ type CPU_X86 struct {
 	Flags uint32
 
 	// Execution state
-	Halted  bool
-	running atomic.Bool // Atomic for lock-free access (was: Running bool)
+	Halted bool
+	// Phase 7d: running atomic gets cache-line isolation via
+	// CacheLineIsolatedBool. The wrapper carries 64 bytes of padding
+	// on each side so the cache line containing the atomic is fully
+	// covered by padding regardless of the enclosing struct's base
+	// alignment (Go aligns to 8 bytes, not 64). Plain inline padding
+	// is insufficient — see cache_line.go.
+	running CacheLineIsolatedBool
 	Cycles  uint64
 
 	// Interrupt state
@@ -102,6 +108,12 @@ type CPU_X86 struct {
 	// Demo-specific acceleration for known shipped binaries.
 	x86DemoAccel      x86DemoAccelMode
 	x86DemoAccelSteps atomic.Uint64
+
+	// Perf accounting for Metric 2 (real-workload acceptance gate).
+	// Counters increment only when IE_PERF_ACCT=1 at process start;
+	// otherwise the AddJit/AddInterp helpers fast-fall to no-op.
+	// Snapshot/Reset are called by the harness, not by hot paths.
+	perfAcct PerfAcct
 }
 
 type x86DemoAccelMode uint8

@@ -78,6 +78,8 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 	}
 	defer cpu.freeM68KJIT()
 
+	enableM68KPollWiring(cpu)
+
 	execMem := cpu.m68kGetJITExecMem()
 	ctx := cpu.m68kJitCtx
 
@@ -222,9 +224,14 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			diagCacheHits++
 		}
 
-		// Update 2-entry MRU RTS cache: shift entry 0 → entry 1, write new to entry 0.
-		// When RTS pops a return address, it checks both entries for a chain hit.
+		// Update 4-entry MRU RTS cache: shift entries down and write new
+		// to entry 0. When RTS pops a return address, it probes all four
+		// entries for a chain hit before bailing to the Go dispatcher.
 		if block.chainEntry != 0 {
+			ctx.RTSCache3PC = ctx.RTSCache2PC
+			ctx.RTSCache3Addr = ctx.RTSCache2Addr
+			ctx.RTSCache2PC = ctx.RTSCache1PC
+			ctx.RTSCache2Addr = ctx.RTSCache1Addr
 			ctx.RTSCache1PC = ctx.RTSCache0PC
 			ctx.RTSCache1Addr = ctx.RTSCache0Addr
 			ctx.RTSCache0PC = block.startPC
@@ -234,7 +241,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		// Execute native code block
 		ctx.NeedInval = 0
 		ctx.NeedIOFallback = 0
-		ctx.ChainBudget = 64 // blocks before returning to Go for interrupt check
+		ctx.ChainBudget = 256 // blocks before returning to Go for interrupt check
 		ctx.ChainCount = 0
 		callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
 
@@ -262,6 +269,10 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			ctx.RTSCache0Addr = 0
 			ctx.RTSCache1PC = 0
 			ctx.RTSCache1Addr = 0
+			ctx.RTSCache2PC = 0
+			ctx.RTSCache2Addr = 0
+			ctx.RTSCache3PC = 0
+			ctx.RTSCache3Addr = 0
 		}
 
 		// I/O fallback: re-execute the bailing instruction via interpreter

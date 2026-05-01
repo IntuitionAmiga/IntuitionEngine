@@ -242,6 +242,74 @@ func TestZ80JIT_Exec_LD_RegReg(t *testing.T) {
 	}
 }
 
+func TestZ80JIT_Exec_LD_RR_SameReg(t *testing.T) {
+	r := newZ80JITTestRig()
+	// LD A, 0x55; LD A, A; LD B, 0x77; LD B, B; HALT
+	// LD A,A and LD B,B should be NOPs but must preserve register values
+	// (and must not corrupt A=0x55 or B=0x77).
+	program := []byte{
+		0x3E, 0x55, // LD A, 0x55
+		0x7F,       // LD A, A
+		0x06, 0x77, // LD B, 0x77
+		0x40, // LD B, B
+		0x76, // HALT
+	}
+	r.loadAndRun(t, 0x0100, program, 500*time.Millisecond)
+	if r.cpu.A != 0x55 {
+		t.Errorf("A = 0x%02X, want 0x55 (LD A,A is NOP)", r.cpu.A)
+	}
+	if r.cpu.B != 0x77 {
+		t.Errorf("B = 0x%02X, want 0x77 (LD B,B is NOP)", r.cpu.B)
+	}
+}
+
+func TestZ80JIT_Exec_LD_RR_LowHalves(t *testing.T) {
+	r := newZ80JITTestRig()
+	// LD A,0x11; LD C,A; LD E,C; LD L,E; LD A,L; HALT
+	// Tests fast path: A→C (BL→R12B), C→E (R12B→R13B), E→L (R13B→R14B),
+	// L→A (R14B→BL). All should propagate 0x11.
+	program := []byte{
+		0x3E, 0x11, // LD A, 0x11
+		0x4F, // LD C, A
+		0x59, // LD E, C
+		0x6B, // LD L, E
+		0x7D, // LD A, L
+		0x76, // HALT
+	}
+	r.loadAndRun(t, 0x0100, program, 500*time.Millisecond)
+	if r.cpu.A != 0x11 {
+		t.Errorf("A = 0x%02X, want 0x11 (chained LD via low halves)", r.cpu.A)
+	}
+	if r.cpu.C != 0x11 {
+		t.Errorf("C = 0x%02X, want 0x11", r.cpu.C)
+	}
+	if r.cpu.E != 0x11 {
+		t.Errorf("E = 0x%02X, want 0x11", r.cpu.E)
+	}
+	if r.cpu.L != 0x11 {
+		t.Errorf("L = 0x%02X, want 0x11", r.cpu.L)
+	}
+}
+
+func TestZ80JIT_Exec_LD_RR_LowHalvesPreservePair(t *testing.T) {
+	r := newZ80JITTestRig()
+	// Verify LD C,E only touches the low byte of BC (not B).
+	// LD BC,0xAA00; LD DE,0x0033; LD C,E; HALT → BC must be 0xAA33.
+	program := []byte{
+		0x01, 0x00, 0xAA, // LD BC, 0xAA00
+		0x11, 0x33, 0x00, // LD DE, 0x0033
+		0x4B, // LD C, E
+		0x76, // HALT
+	}
+	r.loadAndRun(t, 0x0100, program, 500*time.Millisecond)
+	if r.cpu.B != 0xAA {
+		t.Errorf("B = 0x%02X, want 0xAA (LD C,E must not clobber B)", r.cpu.B)
+	}
+	if r.cpu.C != 0x33 {
+		t.Errorf("C = 0x%02X, want 0x33", r.cpu.C)
+	}
+}
+
 func TestZ80JIT_Exec_ADD_A_r(t *testing.T) {
 	r := newZ80JITTestRig()
 

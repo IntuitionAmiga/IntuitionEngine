@@ -785,6 +785,53 @@ func TestM68KJIT_AMD64_RTS(t *testing.T) {
 	}
 }
 
+func TestM68KJIT_AMD64_RTSCacheFallbackPreservesChainCount(t *testing.T) {
+	r := newM68KJITTestRig(t)
+
+	r.cpu.AddrRegs[7] = 0x10000
+	r.writeLong(0x10000, 0x00002000)
+	r.writeWord(0x1000, 0x4E75) // RTS
+	r.writeWord(0x1002, 0x4E40) // TRAP #0 terminator for scanner
+
+	instrs := m68kScanBlock(r.cpu.memory, 0x1000)
+	if len(instrs) == 0 {
+		t.Fatal("m68kScanBlock returned 0 instructions")
+	}
+	compilable := instrs
+	if compilable[len(compilable)-1].opcode&0xFFF0 == 0x4E40 {
+		compilable = compilable[:len(compilable)-1]
+	}
+
+	block, err := m68kCompileBlockWithMem(compilable, 0x1000, r.execMem, r.cpu.memory)
+	if err != nil {
+		t.Fatalf("m68kCompileBlockWithMem: %v", err)
+	}
+
+	r.ctx.DataRegsPtr = uintptr(unsafe.Pointer(&r.cpu.DataRegs[0]))
+	r.ctx.AddrRegsPtr = uintptr(unsafe.Pointer(&r.cpu.AddrRegs[0]))
+	r.ctx.MemPtr = uintptr(unsafe.Pointer(&r.cpu.memory[0]))
+	r.ctx.SRPtr = uintptr(unsafe.Pointer(&r.cpu.SR))
+	r.ctx.ChainCount = 7
+	r.ctx.ChainBudget = 0
+	r.ctx.RTSCache0PC = 0x2000
+	r.ctx.RTSCache0Addr = block.chainEntry
+
+	callNative(block.execAddr, uintptr(unsafe.Pointer(r.ctx)))
+
+	if r.ctx.NeedIOFallback != 1 {
+		t.Fatalf("NeedIOFallback = %d, want 1", r.ctx.NeedIOFallback)
+	}
+	if r.ctx.RetPC != 0x1000 {
+		t.Fatalf("RetPC = 0x%08X, want 0x1000", r.ctx.RetPC)
+	}
+	if r.ctx.RetCount != 7 {
+		t.Fatalf("RetCount = %d, want preserved ChainCount 7", r.ctx.RetCount)
+	}
+	if r.cpu.AddrRegs[7] != 0x10000 {
+		t.Fatalf("A7 = 0x%08X, want restored 0x10000 before interpreter RTS fallback", r.cpu.AddrRegs[7])
+	}
+}
+
 func TestM68KJIT_AMD64_JSR_AbsLong(t *testing.T) {
 	r := newM68KJITTestRig(t)
 	// A7 = 0x10004 (stack pointer)
