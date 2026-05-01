@@ -175,7 +175,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			continue
 		}
 
-		if retired, matched := cpu.tryM68KTurboTrace(); matched {
+		if retired, matched := cpu.tryM68KTurboTrace(execMem); matched {
 			instructionCount += retired
 			continue
 		}

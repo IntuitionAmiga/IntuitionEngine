@@ -108,6 +108,42 @@ func TestM68KTurboFocusedBenchParity(t *testing.T) {
 	}
 }
 
+func TestM68KTurboNativeCallKeepsMappedD1Live(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available on this platform")
+	}
+	interp := setupM68KJITBenchCPU()
+	jitTurbo := setupM68KJITBenchCPU()
+
+	startPC, _ := buildM68KCallProgram(interp)
+	buildM68KCallProgram(jitTurbo)
+	for _, cpu := range []*M68KCPU{interp, jitTurbo} {
+		cpu.memory[0x2000] = 0x72 // MOVEQ #1,D1 instead of D0
+		cpu.memory[0x2001] = 0x01
+		cpu.AddrRegs[7] = 0x10000
+	}
+
+	runM68KTurboParityInterpreter(interp, startPC)
+	runM68KTurboParityJIT(jitTurbo, startPC, true)
+	if diff := m68kTurboStateDiff("interp", interp, "jitTurbo", jitTurbo); diff != "" {
+		t.Fatalf("native call D1 mismatch: %s", diff)
+	}
+}
+
+func TestM68KTurboNativeMemCopyRejectsCodePageDestination(t *testing.T) {
+	cpu := setupM68KJITBenchCPU()
+	if err := cpu.initM68KJIT(); err != nil {
+		t.Fatalf("init M68K JIT: %v", err)
+	}
+	defer cpu.freeM68KJIT()
+	startPC, _ := buildM68KMemCopyProgram(cpu)
+	destAddr := m68kBenchDataAddr + uint32(m68kBenchIterations)*4
+	cpu.m68kJitCodeBitmap[destAddr>>12] = 1
+	if _, ok := m68kCompileNativeTurboMemCopyProgram(cpu, startPC, cpu.m68kGetJITExecMem()); ok {
+		t.Fatalf("native memcopy accepted destination overlapping code page")
+	}
+}
+
 func TestM68KTurboRejectsMemCopyMMIO(t *testing.T) {
 	cpu := setupM68KJITBenchCPU()
 	startPC, _ := buildM68KMemCopyProgram(cpu)
@@ -115,7 +151,7 @@ func TestM68KTurboRejectsMemCopyMMIO(t *testing.T) {
 	cpu.AddrRegs[0] = 0xA0000
 	cpu.AddrRegs[1] = m68kBenchDataAddr
 	cpu.DataRegs[7] = 3
-	if _, ok := cpu.tryM68KTurboTrace(); ok {
+	if _, ok := cpu.tryM68KTurboTrace(nil); ok {
 		t.Fatalf("turbo accepted MMIO source range")
 	}
 }
@@ -128,7 +164,7 @@ func TestM68KTurboRejectsMemCopyOverlap(t *testing.T) {
 	cpu.AddrRegs[1] = m68kBenchDataAddr + 4
 	cpu.DataRegs[7] = 3
 	before := append([]byte(nil), cpu.memory[m68kBenchDataAddr:m68kBenchDataAddr+32]...)
-	if _, ok := cpu.tryM68KTurboTrace(); ok {
+	if _, ok := cpu.tryM68KTurboTrace(nil); ok {
 		t.Fatalf("turbo accepted overlapping memcopy ranges")
 	}
 	if !bytes.Equal(before, cpu.memory[m68kBenchDataAddr:m68kBenchDataAddr+32]) {
@@ -192,7 +228,7 @@ func TestM68KTurboProgramRejectRestoresState(t *testing.T) {
 			cpu.AddrRegs[1] = 0x33334444
 			cpu.stopped.Store(true)
 			snap := cpu.m68kTurboSnapshot()
-			if _, ok := cpu.tryM68KTurboTrace(); ok {
+			if _, ok := cpu.tryM68KTurboTrace(nil); ok {
 				t.Fatalf("turbo accepted intentionally rejected trace")
 			}
 			if diff := m68kTurboSnapshotDiff(snap, cpu.m68kTurboSnapshot()); diff != "" {
@@ -230,7 +266,7 @@ func TestM68KTurboRejectsLazyCCRTakenBEQ(t *testing.T) {
 	cpu.DataRegs[0] = 0
 	cpu.DataRegs[1] = 1
 	cpu.DataRegs[7] = 3
-	if _, ok := cpu.tryM68KTurboTrace(); ok {
+	if _, ok := cpu.tryM68KTurboTrace(nil); ok {
 		t.Fatalf("turbo accepted LazyCCR loop with reachable BEQ")
 	}
 }
