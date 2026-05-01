@@ -545,6 +545,31 @@ func z80JITIsTerminator(instr *JITZ80Instr) bool {
 	return false
 }
 
+// z80ResolveTerminatorTarget returns the static branch target for a
+// region-eligible Z80 terminator. Only unconditional, statically-known
+// transfers qualify:
+//   - JP nn (0xC3, unprefixed): target = operand (16-bit absolute)
+//   - JR e  (0x18, unprefixed): target = instrPC + 2 + sign_extend(disp)
+//
+// Conditional jumps (JP cc/JR cc/DJNZ) have two successors and are not
+// followed by region formation. CALL/RET/RST + indirect transfers
+// (JP (HL), JP (IX), JP (IY)) are unresolvable. EI/DI/HALT and the
+// ED-prefixed RETI/RETN/LDIR/LDDR/CPIR/CPDR terminators all return
+// (0, false). instrPC is the PC of the terminating instruction itself.
+func z80ResolveTerminatorTarget(instr *JITZ80Instr, instrPC uint16) (uint16, bool) {
+	if instr.prefix != z80JITPrefixNone {
+		return 0, false
+	}
+	switch instr.opcode {
+	case 0xC3: // JP nn
+		return instr.operand, true
+	case 0x18: // JR e
+		disp := int8(instr.operand & 0xFF)
+		return instrPC + 2 + uint16(int16(disp)), true
+	}
+	return 0, false
+}
+
 // z80JITNeedsFallback returns true if the instruction cannot be JIT-compiled.
 func z80JITNeedsFallback(instr *JITZ80Instr) bool {
 	switch instr.prefix {

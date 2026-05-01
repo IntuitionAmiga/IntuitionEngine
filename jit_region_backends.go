@@ -149,9 +149,79 @@ func ScanRegionIE64(memory []byte, startPC uint32) RegionScanResult {
 	return res
 }
 
-// ScanRegionZ80 is the Z80 region walker. Sub-phase 4c.
+// z80AllDirectBitmap is a sentinel direct-page bitmap (all entries 0 =
+// direct) used by the pure-memory region walker. The production exec
+// path supplies the live CPU bitmap when actually compiling; the
+// scanner only needs to walk shape.
+var z80AllDirectBitmap = [256]byte{}
+
+// ScanRegionZ80 walks forward from startPC following statically-known
+// JP nn / JR e targets and returns the list of block start PCs that
+// would form a region under Z80RegionProfile. Mirrors ScanRegionM68K /
+// ScanRegionIE64: pure memory-driven walker, no cache lookup.
+//
+// Stops on:
+//   - cycle (back-edge that revisits any already-scanned block)
+//   - non-region-shaped block (z80JITNeedsFallback first instr / empty scan)
+//   - non-resolvable terminator (CALL/RET/RST/JP cc/JR cc/DJNZ/JP (HL/IX/IY)/
+//     RETI/RETN/LDIR/LDDR/CPIR/CPDR/EI/DI/HALT)
+//   - max blocks / max instructions reached (Z80RegionProfile bounds)
+//   - cross-page boundary into a non-direct page (handled by z80JITScanBlock)
+//
+// Returns an empty BlockPCs when fewer than 2 blocks form (single-block
+// start has no region payoff).
 func ScanRegionZ80(memory []byte, startPC uint32) RegionScanResult {
-	return RegionScanResult{Profile: Z80RegionProfile}
+	res := RegionScanResult{Profile: Z80RegionProfile, Terminator: Z80RegionProfile.Terminator}
+	// Z80 PC is 16-bit. The shared scanner API uses uint32 for
+	// uniformity; reject anything outside the Z80 address space
+	// before the cast so callers don't accidentally alias a
+	// high-range start (e.g. 0x10000 → 0x0000) into low memory and
+	// scan unrelated code.
+	if startPC > 0xFFFF {
+		return res
+	}
+	pc := uint16(startPC)
+	totalInstrs := 0
+	visited := map[uint16]struct{}{}
+	for len(res.BlockPCs) < Z80RegionProfile.MaxBlocks && totalInstrs < Z80RegionProfile.MaxInstructions {
+		if _, seen := visited[pc]; seen {
+			break
+		}
+		if int(pc) >= len(memory) {
+			break
+		}
+		instrs := z80JITScanBlock(memory, pc, len(memory), &z80AllDirectBitmap)
+		if len(instrs) == 0 {
+			break
+		}
+		// Cap before append: prevent a long terminal block from
+		// pushing the region past MaxInstructions. First block always
+		// admitted.
+		if len(res.BlockPCs) > 0 && totalInstrs+len(instrs) > Z80RegionProfile.MaxInstructions {
+			break
+		}
+		visited[pc] = struct{}{}
+		res.BlockPCs = append(res.BlockPCs, uint32(pc))
+		totalInstrs += len(instrs)
+
+		last := &instrs[len(instrs)-1]
+		if !z80JITIsTerminator(last) {
+			// Block ran to size cap without a terminator — region
+			// cannot confidently extend across the implicit
+			// fallthrough since the scan stopped mid-stream.
+			break
+		}
+		instrPC := pc + last.pcOffset
+		target, ok := z80ResolveTerminatorTarget(last, instrPC)
+		if !ok {
+			break
+		}
+		pc = target
+	}
+	if len(res.BlockPCs) < 2 {
+		res.BlockPCs = nil
+	}
+	return res
 }
 
 // ScanRegionP65 is intentionally empty. Closure-plan B.4 retired the
