@@ -504,17 +504,10 @@ func x86IsCodePageAtCompileTime(addr uint32) bool {
 // x86EmitIOCheck emits an I/O bitmap check for the address in addrReg.
 // If the page is marked as I/O, jumps to a deferred bail stub (emitted later).
 func x86EmitIOCheck(cb *CodeBuffer, addrReg byte, retPC uint32, instrCount int) {
-	// SHR scratch, 8 to get page index
-	amd64MOV_reg_reg32(cb, amd64RCX, addrReg)
-	amd64SHR_imm32(cb, amd64RCX, 8) // page = addr >> 8
-
-	// TEST BYTE [R9 + RCX], 1
-	emitREX_SIB(cb, false, 0, amd64RCX, x86AMD64RegIOBM)
-	cb.EmitBytes(0xF6, modRM(0, 0, 4), sibByte(0, amd64RCX, x86AMD64RegIOBM))
-	cb.EmitBytes(0x01) // imm8 = 1
-
-	// JNZ to deferred bail stub (patched later)
-	jccOff := amd64Jcc_rel32(cb, amd64CondNE)
+	jccOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapMMIO, x86AMD64RegIOBM, addrReg, amd64RCX, amd64RCX, true)
+	if !ok {
+		panic("x86 I/O bitmap probe unavailable")
+	}
 
 	// Record deferred bail for later resolution
 	if x86CurrentBails != nil {

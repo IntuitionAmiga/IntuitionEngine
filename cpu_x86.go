@@ -910,26 +910,38 @@ func (c *CPU_X86) tryFastMMIOPollLoop() bool {
 		c.EAX = adapter.bus.Read32(hostAddr)
 		c.bus.Tick(1)
 		iterations++
-
-		// One simulated iteration retires 3 guest instructions (MOV/TEST/Jcc).
-		// Account against the deterministic-step budget so the shadow-parity
-		// harness can exit even when the polled MMIO never satisfies the
-		// not-taken condition.
 		if bounded {
-			c.x86InstrBudget -= 3
+			c.x86InstrBudget--
 			if c.x86InstrBudget <= 0 {
-				c.EIP = pc
+				c.EIP = pc + 5
 				return true
 			}
 		}
 
-		branchTaken := (c.EAX & mask) == 0
+		testResult := c.EAX & mask
+		c.setFlagsLogic32(testResult)
+		if bounded {
+			c.x86InstrBudget--
+			if c.x86InstrBudget <= 0 {
+				c.EIP = pc + 10
+				return true
+			}
+		}
+
+		branchTaken := testResult == 0
 		if jcc == 0x75 {
 			branchTaken = !branchTaken
 		}
 		if !branchTaken {
 			c.EIP = pc + 12
 			return true
+		}
+		c.EIP = pc
+		if bounded {
+			c.x86InstrBudget--
+			if c.x86InstrBudget <= 0 {
+				return true
+			}
 		}
 		if !bounded && iterations >= iterCap {
 			c.EIP = pc

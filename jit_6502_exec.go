@@ -155,6 +155,14 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			cpu.running.Store(false)
 			break
 		}
+		if adapter, ok := cpu.memory.(*Bus6502Adapter); ok {
+			if matched, retired := cpu.tryFast6502MMIOPollLoop(adapter); matched {
+				if perfEnabled {
+					cpu.InstructionCount += uint64(retired)
+				}
+				continue
+			}
+		}
 
 		// Try cached block
 		block := cpu.jitCache.Get(uint32(pc))

@@ -156,35 +156,38 @@ function fmt_ratio(g, j) {
     return sprintf("%.2fx", j / g)
 }
 
-function rule(left, mid, right, sep,    out, i) {
-    # Build a horizontal rule using box-drawing chars.
-    out = left
-    for (i = 1; i <= 8;  i++) out = out sep
-    out = out mid
-    for (i = 1; i <= 22; i++) out = out sep
-    out = out mid
-    for (i = 1; i <= 14; i++) out = out sep
-    out = out mid
-    for (i = 1; i <= 14; i++) out = out sep
-    out = out mid
-    for (i = 1; i <= 14; i++) out = out sep
-    out = out mid
-    for (i = 1; i <= 12; i++) out = out sep
-    out = out right
+function repeat(ch, n,    out, i) {
+    out = ""
+    for (i = 1; i <= n; i++) out = out ch
+    return out
+}
+
+function rule(sep,    out) {
+    out = "+"
+    out = out repeat(sep, cpu_w + 2) "+"
+    out = out repeat(sep, workload_w + 2) "+"
+    out = out repeat(sep, mips_w + 2) "+"
+    out = out repeat(sep, mips_w + 2) "+"
+    out = out repeat(sep, mips_w + 2) "+"
+    out = out repeat(sep, ratio_w + 2) "+"
     return out
 }
 
 END {
-    BAR  = "│"
-    TOP  = rule("┌", "┬", "┐", "─")
-    MID  = rule("├", "┼", "┤", "─")
-    SEP  = rule("├", "┼", "┤", "╌")  # dotted: between CPU groups
-    BOT  = rule("└", "┴", "┘", "─")
+    cpu_w = 6
+    workload_w = 20
+    mips_w = 12
+    ratio_w = 10
+    TOP = rule("-")
+    MID = TOP
+    SEP = rule(".")
+    BOT = TOP
 
     printf "\n"
     printf "%s\n", TOP
-    printf "%s %-7s %s %-21s %s %13s %s %13s %s %13s %s %11s %s\n", \
-        BAR, " CPU",   BAR, " Workload",     BAR, "Interp(Go)  ", BAR, "Interp(asm) ", BAR, "    JIT     ", BAR, "JIT/Interp ", BAR
+    printf "| %-*s | %-*s | %*s | %*s | %*s | %*s |\n", \
+        cpu_w, "CPU", workload_w, "Workload", mips_w, "Interp(Go)", \
+        mips_w, "Interp(asm)", mips_w, "JIT", ratio_w, "JIT/Interp"
     printf "%s\n", MID
 
     nCPU = split("6502 Z80 M68K IE32 IE64 X86JIT", cpu_order, " ")
@@ -219,14 +222,9 @@ END {
 
             cpu_label = (wi == 1) ? c : ""
 
-            printf "%s %-7s %s %-21s %s %13s %s %13s %s %13s %s %11s %s\n", \
-                BAR, " " cpu_label, \
-                BAR, " " w, \
-                BAR, fmt_mips(gi) "  ", \
-                BAR, fmt_mips(ai) "  ", \
-                BAR, fmt_mips(jv) "  ", \
-                BAR, ratio "  ", \
-                BAR
+            printf "| %-*s | %-*s | %*s | %*s | %*s | %*s |\n", \
+                cpu_w, cpu_label, workload_w, w, mips_w, fmt_mips(gi), \
+                mips_w, fmt_mips(ai), mips_w, fmt_mips(jv), ratio_w, ratio
         }
     }
     printf "%s\n", BOT

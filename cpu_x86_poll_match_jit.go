@@ -7,7 +7,7 @@ func (c *CPU_X86) trySharedX86MMIOPollMatch(adapter *X86BusAdapter, addr uint32)
 	pattern.AddressIsMMIOPredicate = func(addr uint32) bool {
 		hostAddr := adapter.translateIO(addr)
 		return adapter.bus.IsIOAddress(hostAddr) ||
-			(hostAddr == 0xF0008 && adapter.bus.videoStatusReader != nil)
+			hostAddr == 0xF0008
 	}
 	match := TryFastMMIOPoll([]PollInstr{
 		{Kind: PollInstrLoad, LoadShape: PollLoad32, LoadAddr: addr},

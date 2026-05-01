@@ -5,11 +5,12 @@
 // All Phase-5 hook functions are retired. The actual production fast paths
 // live in the emitters where the relevant address-register and bail-label
 // state already exists:
-//   - 6502: jit_6502_emit_amd64.go consults DirectPageBitmap inline.
-//   - Z80: jit_z80_emit_amd64.go tests directPageBitmap/codePageBitmap inline.
-//   - x86: jit_x86_emit_amd64.go uses x86CompileIOBitmap at compile time.
-//   - IE64: jit_emit_amd64.go keeps R9 as ioPageBitmap and probes it in
-//     emitLOAD_AMD64 / emitSTORE_AMD64.
+//   - 6502: jit_6502_emit_amd64.go uses the shared direct/code-page probes.
+//   - Z80: jit_z80_emit_amd64.go uses the shared direct/code-page probes.
+//   - x86: jit_x86_emit_amd64.go uses the shared I/O bitmap probe, with
+//     x86CompileIOBitmap still eliding provably-RAM pages at compile time.
+//   - IE64: jit_emit_amd64.go keeps R9 as ioPageBitmap and uses the shared
+//     probe in emitLOAD_AMD64 / emitSTORE_AMD64 / FLOAD / FSTORE.
 //   - M68K: jit_m68k_emit_amd64.go already specializes the hot MemCopy path
 //     and keeps generic memory ops behind the bus/SMC bail protocol.
 //

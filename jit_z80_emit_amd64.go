@@ -268,19 +268,11 @@ func z80EmitWritePair16(buf *CodeBuffer, pairCode byte) {
 // bail label. addrReg must be z80Scratch1 (RAX).
 // After call: AL = byte read, addrReg preserved in ECX.
 func z80EmitMemRead(buf *CodeBuffer, bailLabel string) {
-	// Save address in ECX for bail path
-	// MOV ECX, EAX
-	buf.EmitBytes(0x89, 0xC1)
-	// Page = addr >> 8
-	// SHR ECX, 8 (now ECX = page)
-	buf.EmitBytes(0xC1, 0xE9, 0x08)
-	// MOVZX EDX, BYTE [R8 + RCX] (directPageBitmap[page])
-	amd64MOVZX_B_memSIB(buf, z80Scratch3, z80RegDPB, z80Scratch2)
-	// TEST EDX, EDX
-	buf.EmitBytes(0x85, 0xD2)
-	// JNZ bailLabel
-	buf.EmitBytes(0x0F, 0x85)
-	buf.FixupRel32(bailLabel, buf.Len()+4)
+	off, ok := emitAMD64FastPathBitmapProbe(buf, FPBitmapZeroPageStyle, z80RegDPB, z80Scratch1, z80Scratch2, z80Scratch3, false)
+	if !ok {
+		panic("z80 direct-page bitmap probe unavailable")
+	}
+	buf.FixupExistingRel32(bailLabel, off)
 	// MOVZX EAX, BYTE [RSI + RAX] (direct memory read)
 	amd64MOVZX_B_memSIB(buf, z80Scratch1, z80RegMem, z80Scratch1)
 }
@@ -288,32 +280,21 @@ func z80EmitMemRead(buf *CodeBuffer, bailLabel string) {
 // z80EmitMemWrite emits code to write DL to Z80 address in AX,
 // with direct page check and self-mod detection.
 func z80EmitMemWrite(buf *CodeBuffer, bailLabel, selfModLabel string) {
-	// Save address
-	// MOV ECX, EAX
-	buf.EmitBytes(0x89, 0xC1)
-	// Page = addr >> 8
-	buf.EmitBytes(0xC1, 0xE9, 0x08) // SHR ECX, 8
-	// Check direct page
-	// MOVZX R10D, BYTE [R8 + RCX]
-	amd64MOVZX_B_memSIB(buf, z80Scratch4, z80RegDPB, z80Scratch2)
-	// TEST R10D, R10D
-	emitREX(buf, false, z80Scratch4, z80Scratch4)
-	buf.EmitBytes(0x85, modRM(3, z80Scratch4, z80Scratch4))
-	// JNZ bailLabel
-	buf.EmitBytes(0x0F, 0x85)
-	buf.FixupRel32(bailLabel, buf.Len()+4)
+	off, ok := emitAMD64FastPathBitmapProbe(buf, FPBitmapZeroPageStyle, z80RegDPB, z80Scratch1, z80Scratch2, z80Scratch4, false)
+	if !ok {
+		panic("z80 direct-page bitmap probe unavailable")
+	}
+	buf.FixupExistingRel32(bailLabel, off)
 	// Direct write FIRST (always — even if self-mod detected)
 	// MOV [RSI + RAX], DL
 	emitREXForByteSIB(buf, z80Scratch3, z80Scratch1, z80RegMem)
 	buf.EmitBytes(0x88, modRM(0, z80Scratch3, 4), sibByte(0, z80Scratch1, z80RegMem))
 	// Check code page (self-mod detection) AFTER write
-	// MOVZX R10D, BYTE [R9 + RCX]
-	amd64MOVZX_B_memSIB(buf, z80Scratch4, z80RegCPB, z80Scratch2)
-	emitREX(buf, false, z80Scratch4, z80Scratch4)
-	buf.EmitBytes(0x85, modRM(3, z80Scratch4, z80Scratch4))
-	// JNZ selfModLabel (write already completed, just need to invalidate)
-	buf.EmitBytes(0x0F, 0x85)
-	buf.FixupRel32(selfModLabel, buf.Len()+4)
+	off, ok = emitAMD64FastPathBitmapProbe(buf, FPBitmapCodePageDirty, z80RegCPB, z80Scratch1, z80Scratch2, z80Scratch4, false)
+	if !ok {
+		panic("z80 code-page bitmap probe unavailable")
+	}
+	buf.FixupExistingRel32(selfModLabel, off)
 }
 
 // z80EmitLoopPreCheck emits runtime page validation for a qualifying DJNZ loop.

@@ -197,6 +197,16 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 		// Fall back to interpreter for this instruction.
 		pc := cpu.PC
 		if cpu.directPageBitmap[pc>>8] != 0 {
+			if matched, retired, rInc := cpu.tryFastZ80MMIOPollLoop(adapter); matched {
+				if rInc > 0 {
+					r := cpu.R
+					cpu.R = (r & 0x80) | ((r + byte(rInc)) & 0x7F)
+				}
+				if perfEnabled {
+					cpu.InstructionCount += uint64(retired)
+				}
+				continue
+			}
 			cpu.interpretZ80One()
 			diagFallbackInstr++
 			if perfEnabled {

@@ -654,6 +654,18 @@ func (cb *CodeBuffer) FixupRel32(name string, pcBase int) {
 	cb.buf = append(cb.buf, 0, 0, 0, 0)
 }
 
+// FixupExistingRel32 records a PC-relative fixup for an already-emitted rel32
+// placeholder. Use this with helpers that emit a Jcc/JMP placeholder and return
+// the offset of its rel32 field.
+func (cb *CodeBuffer) FixupExistingRel32(name string, rel32Off int) {
+	cb.fixups = append(cb.fixups, fixup{
+		name:   name,
+		offset: rel32Off,
+		size:   4,
+		pcBase: rel32Off + 4,
+	})
+}
+
 // Resolve patches all forward-reference fixups with actual label offsets.
 func (cb *CodeBuffer) Resolve() {
 	for _, f := range cb.fixups {
