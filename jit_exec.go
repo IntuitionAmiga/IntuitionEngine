@@ -24,6 +24,17 @@ const (
 	jitExecMemSize = 16 * 1024 * 1024 // 16MB executable memory pool
 )
 
+// ie64TierController is the shared Phase 3 promotion controller bound
+// to IE64's reference RegPressureProfile. Exec-loop cache-hit gate
+// delegates to ShouldPromote so threshold tweaks apply uniformly.
+//
+// B.2.b uses this controller to drive region promotion only — IE64
+// Tier-2 reg-map promotion (B.2.c) is retired with the same
+// architectural blocker as M68K's B.1.c (no spare host scratch for
+// per-block pinning of additional spilled regs without an emit-path
+// refactor exceeding the slice budget).
+var ie64TierController = NewTierController(IE64RegProfile)
+
 // jitExecMem returns the typed *ExecMem from the cpu's any field.
 func (cpu *CPU64) getJITExecMem() *ExecMem {
 	if cpu.jitExecMem == nil {
@@ -315,6 +326,58 @@ func (cpu *CPU64) ExecuteJIT() {
 			diagCacheMisses++
 		} else {
 			diagCacheHits++
+
+			// Hot-block detection — when execCount crosses the shared
+			// TierController threshold, attempt multi-block region
+			// compilation. Region promotion overwrites the entry-PC
+			// cache slot with a single JITBlock spanning the whole
+			// region; in-region BRA/JMP targets become direct JMP
+			// rel32 jumps (skipping chain-exit reg-spill on the hot
+			// intra-region branch).
+			block.execCount++
+			// Region promotion is currently MMU-disabled: ie64FormRegion
+			// scans cpu.memory at flat physical indices and the in-region
+			// successor walker assumes virtual==physical. Under MMU each
+			// scanned block's virtual successor PC would need a separate
+			// page-table walk to resolve to its physical address; that
+			// machinery is not in place yet, and naively passing pcVirt
+			// would scan unrelated bytes (when the virtual PC maps to a
+			// different physical page) or silently disable valid
+			// regions. Keep region promotion to non-MMU mode until the
+			// scanner gains MMU awareness.
+			if !cpu.mmuEnabled && block.tier == 0 && ie64TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
+				block.lastPromoteAt = block.execCount
+				region := ie64FormRegion(pcPhys, cpu.memory)
+				if region != nil && len(region.blocks) >= 2 {
+					newBlock, err := ie64CompileRegion(region, execMem, cpu.memory)
+					if err == nil {
+						newBlock.execCount = block.execCount
+						newBlock.tier = 1
+						if cpu.mmuEnabled {
+							newBlock.ptbr = cpu.ptbr
+						}
+						cpu.jitCache.PutKey(cacheKey, newBlock)
+						if newBlock.chainEntry != 0 {
+							if cpu.mmuEnabled {
+								cpu.jitCache.PatchChainsToScoped(newBlock.startPC, newBlock.chainEntry, cpu.ptbr)
+							} else {
+								cpu.jitCache.PatchChainsTo(newBlock.startPC, newBlock.chainEntry)
+							}
+						}
+						for i := range newBlock.chainSlots {
+							slot := &newBlock.chainSlots[i]
+							targetKey := uint64(slot.targetPC)
+							if cpu.mmuEnabled {
+								targetKey = (cpu.ptbr * 0x9E3779B97F4A7C15) ^ uint64(slot.targetPC)
+							}
+							if target := cpu.jitCache.GetKey(targetKey); target != nil && target.chainEntry != 0 {
+								PatchRel32At(slot.patchAddr, target.chainEntry)
+							}
+						}
+						block = newBlock
+					}
+				}
+			}
 		}
 
 		// Reset per-callNative chain dispatch state.

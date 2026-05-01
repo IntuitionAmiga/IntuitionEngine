@@ -4,6 +4,8 @@
 
 package main
 
+import "errors"
+
 // ===========================================================================
 // ARM64 Register Mapping
 // ===========================================================================
@@ -2531,3 +2533,33 @@ func emitFPUBail(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, wr
 func emitBailToInterpreter(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
 	emitFPUBail(cb, ji, instrPC, br, writtenSoFar)
 }
+
+// ===========================================================================
+// IE64 Region Compilation — arm64 stubs
+// ===========================================================================
+//
+// Region promotion (closure-plan B.2.b) is amd64-only today: the
+// in-region direct-JMP rel32 + chain-exit interception live in
+// jit_emit_amd64.go. The arm64 backend keeps these symbols as stubs so
+// jit_exec.go (built for both architectures) compiles cleanly. The
+// exec-loop promotion path consults ie64FormRegion which returns nil
+// here, so the promotion branch is statically disabled on arm64 with
+// no behavioral change.
+
+type ie64Region struct {
+	blocks   [][]JITInstr
+	blockPCs []uint32
+	entryPC  uint32
+}
+
+var ie64CurrentInstrCountBase uint32
+
+func ie64FormRegion(hotPC uint32, memory []byte) *ie64Region {
+	return nil
+}
+
+func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JITBlock, error) {
+	return nil, errIE64RegionNotSupportedARM64
+}
+
+var errIE64RegionNotSupportedARM64 = errors.New("ie64CompileRegion: arm64 backend has no region compile yet")

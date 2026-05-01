@@ -4,6 +4,8 @@
 
 package main
 
+import "errors"
+
 // ===========================================================================
 // x86-64 Register Mapping
 // ===========================================================================
@@ -577,10 +579,21 @@ func emitSizeMaskAMD64(cb *CodeBuffer, rd byte, size byte) {
 // Packed PC + Count Helpers (Return Channel Contract)
 // ===========================================================================
 
+// ie64CurrentInstrCountBase is the per-region cumulative instruction
+// count of all blocks emitted before the currently-active block. Mirrors
+// m68kCurrentInstrCountBase. emitPackedPCAndCount adds this base to its
+// staticCount so every region exit (chain exit, IO bail, dynamic JSR/
+// RTS, mid-block bail) reports cumulative-across-region retired
+// instructions — not just the current block's count. Default 0 leaves
+// per-block compilation unchanged. ie64CompileRegion sets it before
+// each block emit and clears after the region completes.
+var ie64CurrentInstrCountBase uint32
+
 // emitPackedPCAndCount loads targetPC into R15 and packs instruction count.
 // For backward-branch blocks: dynamic count via [RSP+16] loop counter.
 // For normal blocks: static count packed into upper 32 bits of immediate.
 func emitPackedPCAndCount(cb *CodeBuffer, targetPC uint64, staticCount uint32, br *blockRegs) {
+	staticCount += ie64CurrentInstrCountBase
 	if br.hasBackwardBranch {
 		emitLoadImm64AMD64(cb, amd64RegIE64PC, targetPC)
 		emitDynamicCountAMD64(cb, staticCount)
@@ -885,6 +898,247 @@ func compileBlock(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITBloc
 		chainSlots: chainSlots,
 	}, nil
 }
+
+// ===========================================================================
+// Region Compilation (Phase 4 sub-phase B.2.b)
+// ===========================================================================
+
+// ie64Region is the compiled-region descriptor produced by ie64FormRegion.
+// blocks[i] is the pre-scanned instruction list for block i; blockPCs[i]
+// is the guest start PC of that block. entryPC == blockPCs[0].
+type ie64Region struct {
+	blocks   [][]JITInstr
+	blockPCs []uint32
+	entryPC  uint32
+}
+
+// ie64FormRegion is the cache-aware region builder consumed by the IE64
+// JIT exec loop. Walks the static control-flow graph from hotPC via
+// ScanRegionIE64's per-backend rules; refuses any region whose
+// constituent blocks are not safe for region compile (fused-leaf
+// markers, fallback-required first instruction, scan failure).
+// Returns nil for single-block "regions" — caller falls back to
+// per-block compile.
+func ie64FormRegion(hotPC uint32, memory []byte) *ie64Region {
+	res := ScanRegionIE64(memory, hotPC)
+	if len(res.BlockPCs) < 2 {
+		return nil
+	}
+	region := &ie64Region{entryPC: hotPC, blockPCs: res.BlockPCs}
+	for _, pc := range res.BlockPCs {
+		instrs := scanBlock(memory, pc)
+		if len(instrs) == 0 || needsFallback(instrs) {
+			return nil
+		}
+		// Reject region if any instr is fused — region compile path
+		// does not handle the synthetic fused-leaf bookkeeping.
+		for _, ji := range instrs {
+			if ji.fusedFlag != 0 {
+				return nil
+			}
+		}
+		region.blocks = append(region.blocks, instrs)
+	}
+	return region
+}
+
+// ie64CompileRegion compiles a multi-block IE64 region as a single
+// native JITBlock. Mirrors x86CompileRegion / m68kCompileRegion: shared
+// prologue/chain entry, per-block emit with the per-block startPC
+// passed to emitInstruction.
+//
+// Internal in-region BRA/JMP terminators bypass the standard chain-exit
+// machinery — IE64's chain exit spills the resident register file
+// before the patchable JMP, which would force every internal branch to
+// reload regs at the destination. Instead, the region path detects
+// in-region terminator targets and emits a direct JMP rel32 to the
+// destination block's body label, leaving host registers live across
+// the internal jump. Forward-target jumps are recorded as fixups and
+// patched after all blocks are emitted. Back-edges resolve immediately
+// against the previously-emitted block label.
+//
+// External chain exits (targets outside the region) flow through the
+// standard chain-exit path inside emitInstruction and end up in
+// pendingChains as in the per-block compiler.
+//
+// Per-region cumulative retire-count tracking via
+// ie64CurrentInstrCountBase: every emitPackedPCAndCount call (chain
+// exit, IO bail, dynamic JSR/RTS, mid-block bail) adds the base so
+// late-block exits report cumulative-across-region instructions
+// retired, not just the current block's count.
+func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JITBlock, error) {
+	if region == nil || len(region.blocks) < 2 {
+		return nil, errIE64RegionTooSmall
+	}
+
+	var allInstrs []JITInstr
+	for _, blk := range region.blocks {
+		allInstrs = append(allInstrs, blk...)
+	}
+	br := analyzeBlockRegs(allInstrs)
+	// Conservative: cross-block back-edge detection is per-block today.
+	// Force-true so the prologue + counter machinery handles intra-region
+	// back-edges correctly.
+	br.hasBackwardBranch = true
+
+	cb := NewCodeBuffer(len(allInstrs) * 384)
+	chainEntryOff := emitPrologue(cb, region.entryPC, &br)
+
+	// In-region target lookup — guest startPC → block index.
+	pcToBlock := make(map[uint32]int, len(region.blocks))
+	for i, pc := range region.blockPCs {
+		pcToBlock[pc] = i
+	}
+
+	blockLabels := make([]int, len(region.blocks))
+	instrCountAtBlock := make([]int, len(region.blocks))
+	type fwdFixup struct {
+		jmpDispOff  int
+		targetBlock int
+	}
+	var fwdFixups []fwdFixup
+	var pendingChains []ie64PendingChainSlot
+
+	prevBase := ie64CurrentInstrCountBase
+	defer func() { ie64CurrentInstrCountBase = prevBase }()
+
+	totalInstrCount := 0
+	for bi, blk := range region.blocks {
+		blockLabels[bi] = cb.Len()
+		instrCountAtBlock[bi] = totalInstrCount
+		ie64CurrentInstrCountBase = uint32(totalInstrCount)
+		instrOffsets := make([]int, len(blk))
+		writtenSoFar := uint32(0)
+
+		for i := range blk {
+			ji := &blk[i]
+			isLast := i == len(blk)-1
+
+			// Intercept terminating BRA/JMP whose static target lands
+			// inside this region. Emit a direct JMP rel32 to the
+			// destination block's body label instead of routing through
+			// chain exit (which would spill regs first).
+			//
+			// Back-edges (target block earlier in the region than the
+			// current block, OR a self-loop where target == current
+			// block start) MUST keep the loop counter / jitBudget
+			// machinery so a hot guest loop returns to the dispatcher
+			// for interrupt + accounting checks. Without this, a raw
+			// JMP rel32 back-edge could spin forever in native code.
+			if isLast && (ji.opcode == OP_BRA || ji.opcode == OP_JMP) {
+				instrPC := region.blockPCs[bi] + ji.pcOffset
+				if target, ok := ie64ResolveTerminatorTarget(ji.opcode, ji.rs, ji.imm32, instrPC); ok {
+					if targetBI, in := pcToBlock[target]; in {
+						instrOffsets[i] = cb.Len()
+						staticCount := uint32(i + 1)
+						if targetBI <= bi {
+							// Back-edge — emit budget-checked native loop.
+							// bodySize = instructions retired per iteration =
+							// every instruction from target block start
+							// through the current BRA/JMP (inclusive).
+							bodySize := uint32(totalInstrCount + i + 1 - instrCountAtBlock[targetBI])
+
+							amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(amd64OffLoopCount))
+							amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(bodySize))
+							amd64MOV_mem_reg32(cb, amd64RSP, int32(amd64OffLoopCount), amd64RAX)
+							amd64ALU_reg_imm32_32bit(cb, 7, amd64RAX, int32(jitBudget))
+							budgetExitOff := amd64Jcc_rel32(cb, amd64CondAE)
+							backOff := amd64JMP_rel32(cb)
+							patchRel32(cb, backOff, blockLabels[targetBI])
+
+							// Budget exhausted: subtract the bodySize we
+							// just added (we are exiting before this
+							// iteration's body re-runs) and return to
+							// dispatcher with target PC packed.
+							budgetExitPC := cb.Len()
+							patchRel32(cb, budgetExitOff, budgetExitPC)
+							amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(amd64OffLoopCount))
+							amd64ALU_reg_imm32_32bit(cb, 5, amd64RAX, int32(bodySize))
+							amd64MOV_mem_reg32(cb, amd64RSP, int32(amd64OffLoopCount), amd64RAX)
+							emitPackedPCAndCount(cb, uint64(target), staticCount, &br)
+							emitEpilogue(cb, br.written, br.used)
+						} else {
+							// Forward edge: defer patch until target emits.
+							jmpOff := amd64JMP_rel32(cb)
+							fwdFixups = append(fwdFixups, fwdFixup{jmpDispOff: jmpOff, targetBlock: targetBI})
+						}
+						writtenSoFar |= instrWrittenRegs(ji)
+						continue
+					}
+				}
+			}
+
+			instrOffsets[i] = cb.Len()
+			emitInstruction(cb, ji, region.blockPCs[bi], isLast, &br, writtenSoFar, i, instrOffsets, &pendingChains)
+			writtenSoFar |= instrWrittenRegs(ji)
+		}
+		totalInstrCount += len(blk)
+	}
+
+	// Patch forward fixups now that every block label is known.
+	for _, fix := range fwdFixups {
+		patchRel32(cb, fix.jmpDispOff, blockLabels[fix.targetBlock])
+	}
+
+	// Defensive fall-through epilogue if the last real instruction is
+	// not a terminator (region scanner stops at terminators, so this
+	// should not normally fire). Clear base so the explicit count value
+	// lands as RetCount unmodified.
+	ie64CurrentInstrCountBase = 0
+	lastBlock := region.blocks[len(region.blocks)-1]
+	lastInstr := &lastBlock[len(lastBlock)-1]
+	if !isBlockTerminator(lastInstr.opcode) {
+		lastBlockPC := region.blockPCs[len(region.blocks)-1]
+		endPC := lastBlockPC + lastInstr.pcOffset + IE64_INSTR_SIZE
+		emitPackedPCAndCount(cb, uint64(endPC), uint32(totalInstrCount), &br)
+		emitEpilogue(cb, br.written, br.used)
+	}
+
+	code := cb.Bytes()
+	addr, err := execMem.Write(code)
+	if err != nil {
+		return nil, err
+	}
+
+	chainSlots := make([]chainSlot, 0, len(pendingChains))
+	for _, p := range pendingChains {
+		// External-only: scanner already excluded fused-leaf, and our
+		// in-region direct-JMP intercept handled in-region BRA/JMP. Any
+		// pending chain whose targetPC maps to an in-region block must
+		// be a non-terminator (Bcc inside a block) targeting an
+		// in-region PC — leave it as a chain slot (will patch to the
+		// per-block JITBlock at that PC if/when promoted into cache).
+		chainSlots = append(chainSlots, chainSlot{
+			targetPC:  p.targetPC,
+			patchAddr: addr + uintptr(p.cbOffset),
+		})
+	}
+
+	covered := make([][2]uint32, 0, len(region.blocks))
+	for bi, blk := range region.blocks {
+		if len(blk) == 0 {
+			continue
+		}
+		blockStart := region.blockPCs[bi]
+		lastJI := &blk[len(blk)-1]
+		blockEnd := blockStart + lastJI.pcOffset + IE64_INSTR_SIZE
+		covered = append(covered, [2]uint32{blockStart, blockEnd})
+	}
+
+	endPC := region.blockPCs[len(region.blocks)-1] + lastInstr.pcOffset + IE64_INSTR_SIZE
+	return &JITBlock{
+		startPC:       region.entryPC,
+		endPC:         endPC,
+		instrCount:    totalInstrCount,
+		execAddr:      addr,
+		execSize:      len(code),
+		chainEntry:    addr + uintptr(chainEntryOff),
+		chainSlots:    chainSlots,
+		coveredRanges: covered,
+	}, nil
+}
+
+var errIE64RegionTooSmall = errors.New("ie64CompileRegion: region has fewer than 2 blocks")
 
 // emitInstruction emits x86-64 code for a single IE64 instruction.
 func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast bool, br *blockRegs, writtenSoFar uint32, instrIdx int, instrOffsets []int, pendingChains *[]ie64PendingChainSlot) {

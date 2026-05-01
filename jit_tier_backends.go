@@ -21,15 +21,17 @@
 package main
 
 // IE64TierAllocator implements TierAllocator for the IE64 backend.
-// IE64 has 5 mapped regs (R1-R4, R31) plus headroom in R5-R30 (spilled),
-// so Tier-2 promotion can pin a small set of frequently-used spilled
-// regs into RAX/RCX/RDX/R10/R11 scratch slots for the duration of a
-// hot block.
+// Closure-plan B.2.c disposition (RETIRED with architectural blocker):
+// Pinning additional spilled IE64 regs (R5-R30) into a host scratch
+// slot collides with R10/R11/RAX/RCX/RDX heavy use across the IE64
+// emitter (load/store address computation, CCR-style flag staging,
+// MULL/DIVL split paths). The refactor budget exceeds the slice;
+// B.2.b's region compile (in-region BRA/JMP direct-JMP rel32 + chain
+// elimination) already captures the BranchDense win without per-block
+// pinning. PromoteBlock stays a permanent no-op for API uniformity.
+// IE64 Tier-2 lives at region granularity only.
 type IE64TierAllocator struct{}
 
-// PromoteBlock recompiles the block at the given guest PC at Tier 2.
-// Scaffold: always false (no behavior change). Phase 3b real impl
-// inspects block instr histogram for spilled-reg use density.
 func (IE64TierAllocator) PromoteBlock(pc uint32) bool { return false }
 
 // M68KTierAllocator implements TierAllocator for the M68K backend.

@@ -90,9 +90,63 @@ func ScanRegionM68K(memory []byte, startPC uint32) RegionScanResult {
 	return res
 }
 
-// ScanRegionIE64 is the IE64 region walker. Sub-phase 4b.
+// ScanRegionIE64 walks forward from startPC following statically-known
+// BRA/JMP targets and returns the list of block start PCs that would
+// form a region under IE64RegionProfile. Mirrors ScanRegionX86 /
+// ScanRegionM68K: pure memory-driven walker, no cache lookup.
+//
+// Stops on:
+//   - cycle (back-edge that revisits an already-scanned block)
+//   - non-region-shaped block (needsFallback / empty scan)
+//   - non-resolvable terminator (RTS/JSR/JSR_IND/HALT/RTI/WAIT/SYSCALL/...)
+//   - max blocks / max instructions reached (IE64RegionProfile bounds)
+//
+// Returns an empty BlockPCs when fewer than 2 blocks form (single-block
+// start has no region payoff).
 func ScanRegionIE64(memory []byte, startPC uint32) RegionScanResult {
-	return RegionScanResult{Profile: IE64RegionProfile}
+	res := RegionScanResult{Profile: IE64RegionProfile, Terminator: IE64RegionProfile.Terminator}
+	pc := startPC
+	totalInstrs := 0
+	visited := map[uint32]struct{}{}
+	for len(res.BlockPCs) < IE64RegionProfile.MaxBlocks && totalInstrs < IE64RegionProfile.MaxInstructions {
+		if _, seen := visited[pc]; seen {
+			break
+		}
+		if pc >= uint32(len(memory)) {
+			break
+		}
+		instrs := scanBlock(memory, pc)
+		if len(instrs) == 0 || needsFallback(instrs) {
+			break
+		}
+		// Cap check before append: a long final block must not push
+		// the region past MaxInstructions. First block always admitted.
+		if len(res.BlockPCs) > 0 && totalInstrs+len(instrs) > IE64RegionProfile.MaxInstructions {
+			break
+		}
+		visited[pc] = struct{}{}
+		res.BlockPCs = append(res.BlockPCs, pc)
+		totalInstrs += len(instrs)
+
+		last := &instrs[len(instrs)-1]
+		if !isBlockTerminator(last.opcode) {
+			break
+		}
+		// Skip synthetic fused RTS markers — not real terminators.
+		if last.fusedFlag&ie64FusedRTSLeafReturn != 0 {
+			break
+		}
+		instrPC := pc + last.pcOffset
+		target, ok := ie64ResolveTerminatorTarget(last.opcode, last.rs, last.imm32, instrPC)
+		if !ok {
+			break
+		}
+		pc = target
+	}
+	if len(res.BlockPCs) < 2 {
+		res.BlockPCs = nil
+	}
+	return res
 }
 
 // ScanRegionZ80 is the Z80 region walker. Sub-phase 4c.

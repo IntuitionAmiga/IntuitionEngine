@@ -738,6 +738,29 @@ func JITBlockCoveredRanges(b *JITBlock) [][2]uint32 {
 	return [][2]uint32{{b.startPC, b.endPC}}
 }
 
+// ie64ResolveTerminatorTarget computes the static branch target for a
+// region-eligible IE64 terminator. Returns (targetPC, true) for BRA
+// (PC-relative imm32) and JMP with rs == 0 (absolute imm32, since the
+// target is rs + sign_extend(imm32) and rs == R0/XZR resolves to a
+// statically known target). Calls (JSR64, JSR_IND) and indirect/system
+// terminators (RTS64, RTI64, HALT64, WAIT64, SYSCALL, ERET, MTCR/MFCR,
+// TLBFLUSH/INVAL, SMODE, SUAEN/SUADIS, atomic RMWs) return (0, false)
+// — region formation does not follow them.
+//
+// instrPC is the PC of the terminating instruction itself.
+func ie64ResolveTerminatorTarget(opcode byte, rs byte, imm32 uint32, instrPC uint32) (uint32, bool) {
+	switch opcode {
+	case OP_BRA:
+		return uint32(int64(instrPC) + int64(int32(imm32))), true
+	case OP_JMP:
+		if rs != 0 {
+			return 0, false
+		}
+		return uint32(int64(int32(imm32))), true
+	}
+	return 0, false
+}
+
 type CodeCache struct {
 	blocks map[uint64]*JITBlock
 }
