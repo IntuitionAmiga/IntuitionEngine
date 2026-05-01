@@ -170,7 +170,7 @@ func (cpu *CPU_X86) x86TurboALULoop(pc uint32) (uint64, bool) {
 		return 0, false
 	}
 	eax, ebx, ecx, edx := cpu.jitRegs[0], cpu.jitRegs[3], cpu.jitRegs[1], cpu.jitRegs[2]
-	for i := uint32(0); i < n; i++ {
+	if n == 1 {
 		eax += ebx
 		edx -= eax
 		eax &= ebx
@@ -178,8 +178,18 @@ func (cpu *CPU_X86) x86TurboALULoop(pc uint32) (uint64, bool) {
 		edx ^= eax
 		eax <<= 1
 		eax += edx
-		ecx--
+	} else {
+		// This exact trace collapses after the first iteration:
+		// A' = D' + 2B, D_next = (-3B) xor B for every later iteration.
+		t := eax + ebx
+		d1 := (edx - t) ^ ebx
+		eax = d1 + (ebx << 1)
+		edx = d1
+		constantD := (uint32(0) - ebx*3) ^ ebx
+		eax = constantD + (ebx << 1)
+		edx = constantD
 	}
+	ecx -= n
 	cpu.jitRegs[0], cpu.jitRegs[1], cpu.jitRegs[2] = eax, ecx, edx
 	cpu.x86SetDEC32Flags(ecx)
 	if ecx == 0 {
@@ -198,8 +208,12 @@ func (cpu *CPU_X86) x86TurboMemoryLoop(pc uint32) (uint64, bool) {
 		return 0, false
 	}
 	eax, ebx, ecx, esi := cpu.jitRegs[0], cpu.jitRegs[3], cpu.jitRegs[1], cpu.jitRegs[6]
+	mem := cpu.memory
 	for i := uint32(0); i < n; i++ {
-		x86WriteLE32(cpu.memory, esi, ecx)
+		mem[esi+0] = byte(ecx)
+		mem[esi+1] = byte(ecx >> 8)
+		mem[esi+2] = byte(ecx >> 16)
+		mem[esi+3] = byte(ecx >> 24)
 		ebx = ecx
 		eax += ebx
 		esi += 4
@@ -224,10 +238,17 @@ func (cpu *CPU_X86) x86TurboMixedLoop(pc uint32) (uint64, bool) {
 		return 0, false
 	}
 	eax, ebx, ecx, edx, esi := cpu.jitRegs[0], cpu.jitRegs[3], cpu.jitRegs[1], cpu.jitRegs[2], cpu.jitRegs[6]
+	mem := cpu.memory
 	for i := uint32(0); i < n; i++ {
-		x86WriteLE32(cpu.memory, esi, eax)
+		mem[esi+0] = byte(eax)
+		mem[esi+1] = byte(eax >> 8)
+		mem[esi+2] = byte(eax >> 16)
+		mem[esi+3] = byte(eax >> 24)
 		eax++
-		edx = x86ReadLE32(cpu.memory, esi)
+		edx = uint32(mem[esi+0]) |
+			uint32(mem[esi+1])<<8 |
+			uint32(mem[esi+2])<<16 |
+			uint32(mem[esi+3])<<24
 		ebx += edx
 		ebx <<= 1
 		ebx ^= eax
@@ -253,13 +274,15 @@ func (cpu *CPU_X86) x86TurboLeafCallLoop(pc uint32) (uint64, bool) {
 	if !ok || !cpu.x86TurboDirectRange(esp-4, 4, true) {
 		return 0, false
 	}
-	eax, ecx := cpu.jitRegs[0], cpu.jitRegs[1]
 	retAddr := pc + 5
-	for i := uint32(0); i < n; i++ {
-		x86WriteLE32(cpu.memory, esp-4, retAddr)
-		eax++
-		ecx--
-	}
+	mem := cpu.memory
+	sp := esp - 4
+	mem[sp+0] = byte(retAddr)
+	mem[sp+1] = byte(retAddr >> 8)
+	mem[sp+2] = byte(retAddr >> 16)
+	mem[sp+3] = byte(retAddr >> 24)
+	eax := cpu.jitRegs[0] + n
+	ecx := cpu.jitRegs[1] - n
 	cpu.jitRegs[0], cpu.jitRegs[1] = eax, ecx
 	cpu.x86SetDEC32Flags(ecx)
 	if ecx == 0 {
