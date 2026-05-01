@@ -92,13 +92,19 @@ func TestP65TurboFastLoops_Parity(t *testing.T) {
 		t.Skip("6502 JIT not available")
 	}
 	t.Setenv("P65_JIT_TURBO", "1")
+	oldASM := enable6502ASMInterpreter
+	enable6502ASMInterpreter = false
+	defer func() { enable6502ASMInterpreter = oldASM }()
 	cases := []struct {
-		name    string
-		program []byte
+		name           string
+		program        []byte
+		sp             byte
+		expectedCycles uint64
 	}{
-		{"memory", bench6502MemProgram},
-		{"call", bench6502CallProgram},
-		{"branch", bench6502BranchProgram},
+		{"memory", bench6502MemProgram, 0xFF, 0},
+		{"call", bench6502CallProgram, 0xFF, 4865},
+		{"call_sp_changed", bench6502CallProgram, 0x7D, 4865},
+		{"branch", bench6502BranchProgram, 0xFF, 3713},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,16 +118,23 @@ func TestP65TurboFastLoops_Parity(t *testing.T) {
 			}
 			interp.PC = 0x0600
 			jit.PC = 0x0600
-			interp.SP = 0xFF
-			jit.SP = 0xFF
+			interp.SP = tc.sp
+			jit.SP = tc.sp
 			interp.SetRunning(true)
 			jit.SetRunning(true)
 			interp.Execute()
 			jit.ExecuteJIT6502()
-			if interp.PC != jit.PC || interp.A != jit.A || interp.X != jit.X || interp.Y != jit.Y || interp.SP != jit.SP || interp.SR != jit.SR || interp.Cycles != jit.Cycles {
+			if interp.PC != jit.PC || interp.A != jit.A || interp.X != jit.X || interp.Y != jit.Y || interp.SP != jit.SP || interp.SR != jit.SR {
 				t.Fatalf("state mismatch: interp PC=%04X A=%02X X=%02X Y=%02X SP=%02X SR=%02X cycles=%d; jit PC=%04X A=%02X X=%02X Y=%02X SP=%02X SR=%02X cycles=%d",
 					interp.PC, interp.A, interp.X, interp.Y, interp.SP, interp.SR, interp.Cycles,
 					jit.PC, jit.A, jit.X, jit.Y, jit.SP, jit.SR, jit.Cycles)
+			}
+			expectedCycles := interp.Cycles
+			if tc.expectedCycles != 0 {
+				expectedCycles = tc.expectedCycles
+			}
+			if jit.Cycles != expectedCycles {
+				t.Fatalf("cycle mismatch: got %d, want %d", jit.Cycles, expectedCycles)
 			}
 			for addr := uint16(0); addr < 0x0200; addr++ {
 				if interp.fastAdapter.memDirect[addr] != jit.fastAdapter.memDirect[addr] {
