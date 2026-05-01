@@ -7,11 +7,11 @@
 package main
 
 // x86JitExecute always runs the native x86 JIT. Phase 8 of the JIT-unification
-// plan retired the interpreter dispatch gate after the shadow-parity harness
-// confirmed the rotozoomer demo binary runs byte-equivalent on the general
-// JIT path. There is no runtime fallback to the interpreter loop: any path
-// that cannot be JIT-emitted (initialization failure, scan/compile error)
-// surfaces as a panic so the gap is fixed at its source.
+// plan retired the interpreter dispatch gate after shadow-parity confirmed the
+// general JIT path runs real x86 binaries byte-equivalent to the interpreter.
+// There is no runtime fallback to the interpreter loop: any path that cannot
+// be JIT-emitted (initialization failure, scan/compile error) surfaces as a
+// panic so the gap is fixed at its source.
 //
 // Single-instruction bail-and-resume into cpu.Step() (used by MMIO writes
 // and the rare unsupported-opcode bail) is part of the JIT↔host-device

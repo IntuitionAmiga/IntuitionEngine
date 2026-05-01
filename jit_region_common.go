@@ -61,9 +61,9 @@ type RegionProfile struct {
 
 	// AllowBackwardChain reports whether the region may include a block
 	// whose terminator chains backward into an earlier region member (a
-	// loop). x86 sets true so the rotozoomer's tight loop body becomes a
-	// single region; 6502 sets true; Z80 sets true with R-register-tracking
-	// safety; M68K sets true; IE64 sets true.
+	// loop). x86 sets true so tight inner loops fold into a single region;
+	// 6502 sets true; Z80 sets true with R-register-tracking safety;
+	// M68K sets true; IE64 sets true.
 	AllowBackwardChain bool
 }
 

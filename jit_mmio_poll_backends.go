@@ -11,8 +11,8 @@
 
 package main
 
-// X86PollPattern - rotozoomer-shaped MMIO poll on x86 (the existing
-// tryFastMMIOPollLoop matcher). MOV r,[mem]; TEST/CMP r,imm; Jcc back.
+// X86PollPattern - canonical x86 MMIO poll shape recognized by
+// tryFastMMIOPollLoop: MOV r,[mem]; TEST/CMP r,imm; Jcc back.
 var X86PollPattern = PollPattern{
 	Load:         PollLoad32,
 	Test:         PollTestCMPImm,

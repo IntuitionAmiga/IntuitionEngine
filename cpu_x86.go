@@ -105,66 +105,12 @@ type CPU_X86 struct {
 	x86JitIOBitmap []byte // I/O page bitmap (256-byte granularity)
 	x86JitCodeBM   []byte // code page bitmap for self-mod detection
 
-	// Demo-specific acceleration for known shipped binaries.
-	x86DemoAccel      x86DemoAccelMode
-	x86DemoAccelSteps atomic.Uint64
-
 	// Perf accounting for Metric 2 (real-workload acceptance gate).
 	// Counters increment only when IE_PERF_ACCT=1 at process start;
 	// otherwise the AddJit/AddInterp helpers fast-fall to no-op.
 	// Snapshot/Reset are called by the harness, not by hot paths.
 	perfAcct PerfAcct
 }
-
-type x86DemoAccelMode uint8
-
-const (
-	x86DemoAccelNone x86DemoAccelMode = iota
-	x86DemoAccelRotozoomer
-)
-
-const (
-	x86RotoLoopPC         = 0x005A
-	x86RotoAngleAccumAddr = 0x02CA
-	x86RotoScaleAccumAddr = 0x02CE
-	x86RotoVarCAAddr      = 0x02D2
-	x86RotoVarSAAddr      = 0x02D6
-	x86RotoVarU0Addr      = 0x02DA
-	x86RotoVarV0Addr      = 0x02DE
-	x86RotoSineTableAddr  = 0x02E2
-	x86RotoRecipTableAddr = 0x04E2
-
-	x86RotoAngleInc = uint32(0x0139)
-	x86RotoScaleInc = uint32(0x0068)
-
-	x86RotoBLTCtrl      = 0x000F001C
-	x86RotoBLTOp        = 0x000F0020
-	x86RotoBLTSrc       = 0x000F0024
-	x86RotoBLTDst       = 0x000F0028
-	x86RotoBLTWidth     = 0x000F002C
-	x86RotoBLTHeight    = 0x000F0030
-	x86RotoBLTSrcStride = 0x000F0034
-	x86RotoBLTDstStride = 0x000F0038
-	x86RotoBLTStatus    = 0x000F0044
-	x86RotoVideoStatus  = 0x000F0008
-
-	x86RotoMode7U0   = 0x000F0058
-	x86RotoMode7V0   = 0x000F005C
-	x86RotoMode7DuC  = 0x000F0060
-	x86RotoMode7DvC  = 0x000F0064
-	x86RotoMode7DuR  = 0x000F0068
-	x86RotoMode7DvR  = 0x000F006C
-	x86RotoMode7TexW = 0x000F0070
-	x86RotoMode7TexH = 0x000F0074
-
-	x86RotoTextureBase = 0x00600000
-	x86RotoBackBuffer  = 0x00900000
-	x86RotoVRAMStart   = 0x00100000
-	x86RotoRenderW     = 0x00000280
-	x86RotoRenderH     = 0x000001E0
-	x86RotoTexStride   = 0x00000400
-	x86RotoLineBytes   = 0x00000A00
-)
 
 // Flag bit positions
 const (
@@ -898,122 +844,6 @@ func x86WriteLE32(memory []byte, pc uint32, value uint32) {
 		return
 	}
 	binary.LittleEndian.PutUint32(memory[pc:pc+4], value)
-}
-
-func x86RotoRenderMode7ToBackBuffer(memory []byte, u0, v0, duCol, dvCol, duRow, dvRow uint32) bool {
-	const (
-		textureBytes   = 256 * 256 * BYTES_PER_PIXEL
-		backBufferSize = x86RotoLineBytes * x86RotoRenderH
-	)
-
-	if len(memory) == 0 {
-		return false
-	}
-	if int(x86RotoTextureBase)+textureBytes > len(memory) {
-		return false
-	}
-	if int(x86RotoBackBuffer)+backBufferSize > len(memory) {
-		return false
-	}
-
-	src := memory[x86RotoTextureBase : x86RotoTextureBase+textureBytes]
-	dst := memory[x86RotoBackBuffer : x86RotoBackBuffer+backBufferSize]
-
-	rowU := int32(u0)
-	rowV := int32(v0)
-	duCol32 := int32(duCol)
-	dvCol32 := int32(dvCol)
-	duRow32 := int32(duRow)
-	dvRow32 := int32(dvRow)
-
-	for y := 0; y < x86RotoRenderH; y++ {
-		u := rowU
-		v := rowV
-		dstRow := y * x86RotoLineBytes
-		for x := 0; x < x86RotoRenderW; x++ {
-			uInt := (u >> 16) & 0xFF
-			vInt := (v >> 16) & 0xFF
-			srcOff := (int(vInt) * x86RotoTexStride) + (int(uInt) * BYTES_PER_PIXEL)
-			dstOff := dstRow + x*BYTES_PER_PIXEL
-			dst[dstOff+0] = src[srcOff+0]
-			dst[dstOff+1] = src[srcOff+1]
-			dst[dstOff+2] = src[srcOff+2]
-			dst[dstOff+3] = src[srcOff+3]
-			u += duCol32
-			v += dvCol32
-		}
-		rowU += duRow32
-		rowV += dvRow32
-	}
-
-	return true
-}
-
-func (c *CPU_X86) tryDemoAccelFrame() bool {
-	if c.x86DemoAccel != x86DemoAccelRotozoomer || c.EIP != x86RotoLoopPC {
-		return false
-	}
-	adapter, ok := c.bus.(*X86BusAdapter)
-	if !ok || adapter.bus == nil || len(c.memory) == 0 {
-		return false
-	}
-
-	mem := c.memory
-	bus := adapter.bus
-
-	angleAccum := x86ReadLE32(mem, x86RotoAngleAccumAddr)
-	scaleAccum := x86ReadLE32(mem, x86RotoScaleAccumAddr)
-
-	angleIdx := (angleAccum >> 8) & 0xFF
-	scaleIdx := (scaleAccum >> 8) & 0xFF
-
-	cosIdx := (angleIdx + 64) & 0xFF
-	cosVal := int32(int16(x86ReadLE16(mem, x86RotoSineTableAddr+cosIdx*2)))
-	sinVal := int32(int16(x86ReadLE16(mem, x86RotoSineTableAddr+angleIdx*2)))
-	recip := uint32(x86ReadLE16(mem, x86RotoRecipTableAddr+scaleIdx*2))
-
-	varCA := uint32(int32(cosVal) * int32(recip))
-	varSA := uint32(int32(sinVal) * int32(recip))
-	x86WriteLE32(mem, x86RotoVarCAAddr, varCA)
-	x86WriteLE32(mem, x86RotoVarSAAddr, varSA)
-
-	ca320 := int32(varCA)<<8 + int32(varCA)<<6
-	sa240 := int32(varSA)<<8 - int32(varSA)<<4
-	varU0 := uint32(int32(0x00800000) - ca320 + sa240)
-	x86WriteLE32(mem, x86RotoVarU0Addr, varU0)
-
-	sa320 := int32(varSA)<<8 + int32(varSA)<<6
-	ca240 := int32(varCA)<<8 - int32(varCA)<<4
-	varV0 := uint32(int32(0x00800000) - sa320 - ca240)
-	x86WriteLE32(mem, x86RotoVarV0Addr, varV0)
-
-	if !x86RotoRenderMode7ToBackBuffer(mem, varU0, varV0, varCA, varSA, uint32(-int32(varSA)), varCA) {
-		return false
-	}
-
-	bus.Write32(x86RotoBLTOp, 0)
-	bus.Write32(x86RotoBLTSrc, x86RotoBackBuffer)
-	bus.Write32(x86RotoBLTDst, x86RotoVRAMStart)
-	bus.Write32(x86RotoBLTWidth, x86RotoRenderW)
-	bus.Write32(x86RotoBLTHeight, x86RotoRenderH)
-	bus.Write32(x86RotoBLTSrcStride, x86RotoLineBytes)
-	bus.Write32(x86RotoBLTDstStride, x86RotoLineBytes)
-	bus.Write32(x86RotoBLTCtrl, 1)
-
-	angleAccum = (angleAccum + x86RotoAngleInc) & 0xFFFF
-	scaleAccum = (scaleAccum + x86RotoScaleInc) & 0xFFFF
-	x86WriteLE32(mem, x86RotoAngleAccumAddr, angleAccum)
-	x86WriteLE32(mem, x86RotoScaleAccumAddr, scaleAccum)
-
-	c.EAX = scaleAccum
-	c.EBX = recip
-	c.ECX = uint32(ca240)
-	c.EDX = varV0
-	c.ESI = angleIdx
-	c.EDI = scaleIdx
-	c.EIP = x86RotoLoopPC
-	c.x86DemoAccelSteps.Add(1)
-	return true
 }
 
 // tryFastMMIOPollLoop recognizes the common x86 status-poll loop pattern used by

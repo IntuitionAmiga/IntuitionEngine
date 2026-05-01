@@ -25,9 +25,9 @@
 //     tryFastMMIOPollLoop, M68K's GEMDOS intercept, IE64's MMIO bails).
 //     Mixing them in one counter loses meaning. Add per-backend in
 //     a follow-up slice.
-//   - Cross-backend wiring: only the first Metric2 workload's CPU
-//     (rotozoomer → x86) is wired here. Other backends get the field
-//     hookup when their workload is recorded.
+//   - Cross-backend wiring: only the x86 CPU is wired here today.
+//     Other backends get the field hookup when their Metric 2 workload
+//     is recorded.
 
 package main
 

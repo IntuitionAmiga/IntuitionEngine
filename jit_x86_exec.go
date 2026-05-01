@@ -185,7 +185,6 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				continue
 			}
 
-			// Check if first instruction needs interpreter
 			if x86NeedsFallback(instrs) {
 				cpu.syncJITRegsToNamed()
 				var stepT0 time.Time
@@ -451,11 +450,9 @@ func x86PatchCompatibleChainsTo(cache *CodeCache, target *JITBlock) {
 }
 
 // x86RunInterpreter is the fallback interpreter loop. Used when JIT is
-// disabled (CPUX86Runner.JITEnabled=false). Slice 4 retired the
-// tryDemoAccelFrame rotozoomer-specific shortcut here — the general
-// native JIT now drives that workload via x86JitExecute → X86ExecuteJIT.
-// The interp-only path keeps only the workload-agnostic
-// tryFastMMIOPollLoop fast match for status-poll loops.
+// disabled (CPUX86Runner.JITEnabled=false). Keeps only the
+// workload-agnostic tryFastMMIOPollLoop fast match for status-poll
+// loops; no per-program shortcuts.
 func (cpu *CPU_X86) x86RunInterpreter() {
 	for cpu.Running() && !cpu.Halted {
 		if cpu.tryFastMMIOPollLoop() {

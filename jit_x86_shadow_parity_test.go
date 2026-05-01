@@ -1,10 +1,9 @@
-// jit_x86_shadow_parity_test.go - Slice-4 shadow-parity harness.
+// jit_x86_shadow_parity_test.go - shadow-parity harness.
 // Runs the canonical rotozoomer x86 binary through the interpreter and
-// the force-native JIT in parallel (with the demo-accel shortcut
-// disabled) and asserts the two reach equivalent guest state at fixed
-// instruction-count checkpoints. Validates that the general native JIT
-// can drive a real demo workload without the rotozoomer-specific
-// tryDemoAccelFrame fast-path.
+// the force-native JIT in parallel and asserts both reach equivalent
+// guest state at fixed instruction-count checkpoints. Validates that
+// the general native JIT can drive a real workload without per-program
+// shortcuts.
 //
 // (c) 2024-2026 Zayn Otley - GPLv3 or later
 
@@ -21,8 +20,8 @@ import (
 )
 
 // runX86RotozoomerSnapshotFor runs the rotozoomer binary for the given
-// duration with the given JIT mode (interp / force-native), with
-// tryDemoAccelFrame disabled. Returns the CPU for state diffing.
+// duration with the given JIT mode (interp / force-native). Returns
+// the CPU for state diffing.
 func runX86RotozoomerSnapshotFor(t *testing.T, forceNative bool, dur time.Duration) *CPU_X86 {
 	t.Helper()
 	if !x86JitAvailable {
@@ -44,9 +43,6 @@ func runX86RotozoomerSnapshotFor(t *testing.T, forceNative bool, dur time.Durati
 	if forceNative {
 		cpu.x86JitEnabled = true
 	}
-	// Suppress the rotozoomer-specific demo-accel shortcut so the
-	// shadow run exercises the general dispatch path on both sides.
-	cpu.x86DemoAccel = x86DemoAccelNone
 
 	for i, b := range data {
 		if uint32(i) >= uint32(len(cpu.memory)) {
@@ -108,13 +104,6 @@ func TestX86JIT_ShadowParity_RotozoomerEarlyState(t *testing.T) {
 	}
 	if jit.EIP >= memSize {
 		t.Errorf("JIT EIP=%08X out of memory range %X", jit.EIP, memSize)
-	}
-	// Demo-accel was disabled — both must show 0 demo steps.
-	if interp.x86DemoAccelSteps.Load() != 0 {
-		t.Errorf("interp demo-accel steps = %d, want 0 (disabled)", interp.x86DemoAccelSteps.Load())
-	}
-	if jit.x86DemoAccelSteps.Load() != 0 {
-		t.Errorf("JIT demo-accel steps = %d, want 0 (disabled)", jit.x86DemoAccelSteps.Load())
 	}
 	t.Logf("interp final EIP=%08X EAX=%08X ECX=%08X EDX=%08X EBX=%08X ESP=%08X",
 		interp.EIP, interp.EAX, interp.ECX, interp.EDX, interp.EBX, interp.ESP)

@@ -8,7 +8,6 @@
 package main
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"os"
 	"sync"
@@ -16,8 +15,7 @@ import (
 )
 
 const (
-	defaultX86LoadAddr  = 0x00000000
-	x86RotozoomerSHA256 = "af4fc796268536fc69045fe2f36d88c7645fa0d1fc04c7ce50101412ad12edea"
+	defaultX86LoadAddr = 0x00000000
 
 	// x86 Bank Windows (same as Z80/6502 for compatibility)
 	X86_BANK1_WINDOW_BASE = 0x2000 // Sprite data bank
@@ -643,6 +641,7 @@ func NewCPUX86Runner(bus *MachineBus, config *CPUX86Config) *CPUX86Runner {
 	cpu := NewCPU_X86(x86Bus)
 	cpu.memory = x86Bus.GetMemory()
 	cpu.x86JitEnabled = config != nil && config.JITEnabled && x86JitAvailable
+	cpu.x86JitIOBitmap = buildX86IOBitmap(x86Bus, bus)
 
 	return &CPUX86Runner{
 		cpu:      cpu,
@@ -687,17 +686,6 @@ func (r *CPUX86Runner) LoadProgramBytes(data []byte) {
 	}
 
 	r.cpu.EIP = r.entry
-	r.cpu.x86DemoAccel = x86DemoAccelNone
-	r.cpu.x86DemoAccelSteps.Store(0)
-	if r.jit {
-		// Demo-accel SHA matches against the original (pre-clamp) data
-		// so a truncated reload of the canonical rotozoomer still
-		// trips the accelerator.
-		sum := sha256.Sum256(data)
-		if fmt.Sprintf("%x", sum) == x86RotozoomerSHA256 {
-			r.cpu.x86DemoAccel = x86DemoAccelRotozoomer
-		}
-	}
 }
 
 // LoadProgram loads a binary program from a file (implements EmulatorCPU interface)

@@ -1,6 +1,5 @@
-// jit_x86_mmio_poll_test.go - Slice-3 verification that the JIT
-// force-native path uses the general MMIO-poll matcher and never
-// triggers the rotozoomer-specific demo-accel frame shortcut.
+// jit_x86_mmio_poll_test.go - verifies the JIT force-native path uses
+// the general MMIO-poll matcher.
 //
 // (c) 2024-2026 Zayn Otley - GPLv3 or later
 
@@ -12,59 +11,6 @@ import (
 	"testing"
 	"time"
 )
-
-// TestX86JIT_ForceNativeAvoidsDemoAccel asserts that the rotozoomer demo-
-// accel shortcut (tryDemoAccelFrame) does not fire when running through
-// the force-native JIT entry point. tryDemoAccelFrame sits in the
-// interp-fallback loop (x86RunInterpreter) and is gated on
-// cpu.x86DemoAccel + EIP, but force-native dispatch must not depend on
-// it for any workload — slice-3 contract is that the JIT runs general
-// programs through general native code.
-func TestX86JIT_ForceNativeAvoidsDemoAccel(t *testing.T) {
-	if !x86JitAvailable {
-		t.Skip("x86 JIT not available")
-	}
-	// Single ALU instr + HLT.
-	code := []byte{
-		0xB8, 0x42, 0x00, 0x00, 0x00, // MOV EAX, 0x42
-		0xF4, // HLT
-	}
-	bus := NewMachineBus()
-	adapter := NewX86BusAdapter(bus)
-	cpu := NewCPU_X86(adapter)
-	cpu.memory = adapter.GetMemory()
-	cpu.x86JitIOBitmap = buildX86IOBitmap(adapter, bus)
-	cpu.EIP = 0x10000
-	cpu.ESP = 0x20C00
-	cpu.x86JitEnabled = true
-	for i, b := range code {
-		cpu.memory[0x10000+uint32(i)] = b
-	}
-	cpu.running.Store(true)
-	cpu.Halted = false
-	demoStepsBefore := cpu.x86DemoAccelSteps.Load()
-	done := make(chan struct{})
-	go func() {
-		cpu.X86ExecuteJIT()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		cpu.running.Store(false)
-		<-done
-		t.Fatal("execution timed out")
-	}
-	demoStepsAfter := cpu.x86DemoAccelSteps.Load()
-	if demoStepsAfter != demoStepsBefore {
-		t.Errorf("force-native path triggered demo-accel %d times; "+
-			"slice 3 expects general dispatch, no rotozoomer shortcut",
-			demoStepsAfter-demoStepsBefore)
-	}
-	if cpu.EAX != 0x42 {
-		t.Errorf("EAX = 0x%X, want 0x42", cpu.EAX)
-	}
-}
 
 // TestX86JIT_ForceNativeMMIOPoll confirms that the general MMIO-poll
 // matcher pattern (MOV r,[abs32]; TEST r,imm32; JZ/JNZ back-to-self) is
