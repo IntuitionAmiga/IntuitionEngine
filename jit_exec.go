@@ -228,6 +228,13 @@ func (cpu *CPU64) ExecuteJIT() {
 			continue
 		}
 
+		if matched, retired := cpu.tryFastIE64MMIOPollLoop(); matched {
+			if perfEnabled {
+				cpu.InstructionCount += uint64(retired)
+			}
+			continue
+		}
+
 		// Check for HALT at current PC (physical)
 		opcode := cpu.memory[pcPhys]
 		if opcode == OP_HALT64 {

@@ -2,7 +2,77 @@
 
 package main
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
+
+func TestIE64JITFastMMIOPollLoop_AND_BNE(t *testing.T) {
+	bus := NewMachineBus()
+	reads := 0
+	bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 {
+		reads++
+		if reads < 3 {
+			return 0x80
+		}
+		return 0
+	}, nil)
+	cpu := NewCPU64(bus)
+	cpu.PC = PROG_START
+	cpu.regs[1] = 0xF0008
+	cpu.running.Store(true)
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_LOAD, 2, IE64_SIZE_L, 0, 1, 0, 0))
+	copy(cpu.memory[PROG_START+8:], ie64Instr(OP_AND64, 2, IE64_SIZE_L, 1, 2, 0, 0x80))
+	copy(cpu.memory[PROG_START+16:], ie64Instr(OP_BNE, 0, IE64_SIZE_Q, 0, 2, 0, 0xFFFFFFF0))
+
+	matched, retired := cpu.tryFastIE64MMIOPollLoop()
+	if !matched {
+		t.Fatal("expected IE64 MMIO poll loop to match")
+	}
+	if cpu.PC != PROG_START+24 {
+		t.Fatalf("PC = 0x%08X, want 0x%08X", cpu.PC, uint64(PROG_START+24))
+	}
+	if reads != 3 {
+		t.Fatalf("reads = %d, want 3", reads)
+	}
+	if retired != 9 {
+		t.Fatalf("retired = %d, want 9", retired)
+	}
+}
+
+func TestM68KJITFastMMIOPollLoop_TST_BNE(t *testing.T) {
+	bus := NewMachineBus()
+	reads := 0
+	bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 {
+		reads++
+		if reads < 4 {
+			return 0x80
+		}
+		return 0
+	}, nil)
+	cpu := NewM68KCPU(bus)
+	cpu.PC = 0x1000
+	cpu.running.Store(true)
+	mem := bus.GetMemory()
+	binary.BigEndian.PutUint16(mem[0x1000:], 0x1039)     // MOVE.B abs.l,D0
+	binary.BigEndian.PutUint32(mem[0x1002:], 0x000F0008) // VIDEO_STATUS
+	binary.BigEndian.PutUint16(mem[0x1006:], 0x4A00)     // TST.B D0
+	binary.BigEndian.PutUint16(mem[0x1008:], 0x66F6)     // BNE $1000
+
+	matched, retired := cpu.tryFastM68KMMIOPollLoop()
+	if !matched {
+		t.Fatal("expected M68K MMIO poll loop to match")
+	}
+	if cpu.PC != 0x100A {
+		t.Fatalf("PC = 0x%08X, want 0x0000100A", cpu.PC)
+	}
+	if reads != 4 {
+		t.Fatalf("reads = %d, want 4", reads)
+	}
+	if retired != 12 {
+		t.Fatalf("retired = %d, want 12", retired)
+	}
+}
 
 func Test6502JITFastMMIOPollLoop_AND_BNE(t *testing.T) {
 	bus := NewMachineBus()

@@ -169,6 +169,11 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			continue
 		}
 
+		if matched, retired := cpu.tryFastM68KMMIOPollLoop(); matched {
+			instructionCount += uint64(retired)
+			continue
+		}
+
 		// Try cache lookup
 		block := cpu.m68kJitCache.Get(pc)
 		if block == nil {

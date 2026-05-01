@@ -180,7 +180,7 @@ END {
     ratio_w = 10
     TOP = rule("-")
     MID = TOP
-    SEP = rule(".")
+    SEP = TOP
     BOT = TOP
 
     printf "\n"
