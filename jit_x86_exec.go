@@ -106,6 +106,9 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		panic(fmt.Sprintf("x86 JIT init failed: %v", err))
 	}
 	defer cpu.freeX86JIT()
+	if x86TurboStatsOn {
+		defer x86TurboReport()
+	}
 
 	execMem := cpu.x86GetJITExecMem()
 	ctx := cpu.x86JitCtx
@@ -260,6 +263,9 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 
 			// Cache block and mark code pages
 			cpu.x86JitCache.Put(block)
+			if x86TurboStatsOn {
+				x86TurboStats.tier1Blocks.Add(1)
+			}
 			if cpu.x86JitCodeBM != nil {
 				startPage := block.startPC >> 8
 				endPage := (block.endPC - 1) >> 8
@@ -296,6 +302,9 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				// Try multi-block region compilation first (only for 3+ block regions)
 				x86CompileIOBitmap = cpu.x86JitIOBitmap
 				x86CompileCodeBitmap = cpu.x86JitCodeBM
+				if x86TurboStatsOn {
+					x86TurboStats.regionCandidates.Add(1)
+				}
 				region := x86FormRegion(pc, cpu.x86JitCache, cpu.memory)
 				if region != nil && len(region.blocks) >= 3 {
 					newBlock, err := x86CompileRegion(region, execMem, cpu.memory)
@@ -372,15 +381,23 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// Profile counters
 		if ctx.ChainCount > 0 {
 			block.chainHits++
+			if x86TurboStatsOn {
+				x86TurboStats.chainExits.Add(1)
+			}
 		}
 		if ctx.ChainBudget <= 0 {
 			block.unchainedExits++ // budget exhausted = unchained exit
 		}
 
 		// Self-modifying code: invalidate cache
+		invalidated := false
 		if ctx.NeedInval != 0 {
 			cpu.x86JitCache.Invalidate()
 			execMem.Reset()
+			if x86TurboStatsOn {
+				x86TurboStats.invalidations.Add(1)
+			}
+			invalidated = true
 			ctx.NeedInval = 0
 			clear(cpu.x86JitCodeBM)
 			// Clear RTS cache (old chain entry addresses invalid)
@@ -391,7 +408,9 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		}
 
 		// I/O fallback: sync to named, interpreter step, sync back
+		ioFallback := false
 		if ctx.NeedIOFallback != 0 {
+			ioFallback = true
 			ctx.NeedIOFallback = 0
 			block.ioBails++ // profile counter for promotion decisions
 			cpu.syncJITRegsToNamed()
@@ -409,6 +428,15 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			diagFallbackInstr++
 			if cpu.Halted || !cpu.Running() {
 				break
+			}
+		}
+
+		if !invalidated && !ioFallback && !cpu.Halted && cpu.Running() && !x86TurboDisabled && cpu.EIP < uint32(len(cpu.memory)) {
+			op := cpu.memory[cpu.EIP]
+			if op == 0x01 || op == 0x89 || op == 0xE8 {
+				if turboExecuted, ok := cpu.tryX86TurboTrace(); ok {
+					executed += turboExecuted
+				}
 			}
 		}
 
