@@ -115,6 +115,15 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 	var diagCacheHits uint64
 	var diagCacheMisses uint64
 	var diagFallbackInstr uint64
+	p65Stats := p65TurboStatsEnabled()
+	p65Turbo := p65TurboEnabled()
+	p65StatsBase := p65TurboStatsSnapshot{}
+	if p65Stats {
+		p65StatsBase = p65TurboStatsLoad()
+		defer func() {
+			p65TurboStatsLoad().Sub(p65StatsBase).Print()
+		}()
+	}
 
 	cpu.executing.Store(true)
 	defer cpu.executing.Store(false)
@@ -212,6 +221,9 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 				}
 			}
 			cpu.jitCache.Put(block)
+			if p65Stats {
+				globalP65TurboStats.tier1Blocks.Add(1)
+			}
 
 			// Bidirectional chain patching:
 			// 1. Existing blocks exiting to this block → patch their slots
@@ -229,6 +241,55 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			diagCacheMisses++
 		} else {
 			diagCacheHits++
+		}
+
+		block.execCount++
+		if p65Turbo && p65TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
+			block.lastPromoteAt = block.execCount
+			if p65Stats {
+				globalP65TurboStats.turboCandidates.Add(1)
+			}
+			instrs := jit6502ScanBlock(mem, pc, memSize)
+			if jit6502NeedsFallback(instrs) {
+				if p65Stats {
+					p65RecordTurboReject(p65TurboRejectUnsupported)
+				}
+			} else {
+				newBlock, plan, reason, err := compileBlock6502Turbo(cpu, instrs, pc, execMem, &cpu.codePageBitmap)
+				if err != nil {
+					// ExecMem pressure is handled by the normal tier-1 compile path.
+					if p65Stats {
+						p65RecordTurboReject(p65TurboRejectUnsupported)
+					}
+				} else if reason != p65TurboRejectNone {
+					if p65Stats {
+						p65RecordTurboReject(reason)
+					}
+				} else if newBlock != nil {
+					newBlock.execCount = block.execCount
+					newBlock.lastPromoteAt = block.lastPromoteAt
+					cpu.jitCache.Put(newBlock)
+					block = newBlock
+					if p65Stats {
+						globalP65TurboStats.turboRegions.Add(1)
+						if plan.directMemoryProofs > 0 {
+							globalP65TurboStats.directMemoryProofs.Add(uint64(plan.directMemoryProofs))
+						}
+						if plan.loopSpecialized {
+							globalP65TurboStats.loopSpecializations.Add(1)
+						}
+					}
+					if block.chainEntry != 0 {
+						cpu.jitCache.PatchChainsTo(block.startPC, block.chainEntry)
+					}
+					for i := range block.chainSlots {
+						slot := &block.chainSlots[i]
+						if target := cpu.jitCache.Get(slot.targetPC); target != nil && target.chainEntry != 0 {
+							PatchRel32At(slot.patchAddr, target.chainEntry)
+						}
+					}
+				}
+			}
 		}
 
 		// Update 2-entry MRU RTS cache before execution
@@ -257,10 +318,16 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		if executed == 0 && ctx.ChainCount > 0 {
 			executed = ctx.ChainCount
 		}
+		if p65Stats && ctx.ChainCount > 0 {
+			globalP65TurboStats.chainExits.Add(1)
+		}
 		ctx.RetCount = 0
 
 		// ── Handle NeedInval (self-mod: page-granular invalidation) ──
 		if ctx.NeedInval != 0 {
+			if p65Stats {
+				globalP65TurboStats.invalidations.Add(1)
+			}
 			page := ctx.InvalPage
 			lo := page << 8
 			hi := lo + 256
@@ -280,6 +347,10 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		// ── Handle NeedBail (re-execute current instruction via interpreter) ──
 		if ctx.NeedBail != 0 {
 			ctx.NeedBail = 0
+			block.ioBails++
+			if p65Stats {
+				globalP65TurboStats.bails.Add(1)
+			}
 			cpu.interpret6502One()
 			executed++
 			if !cpu.running.Load() {

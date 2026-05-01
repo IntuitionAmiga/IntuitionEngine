@@ -213,6 +213,17 @@ func p65WritesY(op byte) bool {
 	}
 }
 
+func p65CanSkipCounterUpdate(op byte) bool {
+	switch op {
+	case 0x10, 0x30, 0x50, 0x70, 0x90, 0xB0, 0xD0, 0xF0, // conditional branches
+		0x4C, 0x6C, // JMP abs/indirect
+		0x20, 0x60: // JSR/RTS
+		return true
+	default:
+		return false
+	}
+}
+
 // p65IsBoundedCounterBranch recognizes counted 8-bit Y loops whose final
 // instruction updates Y and whose BNE exits when that register wraps to zero.
 // If the loop body does not otherwise write Y, the taken edge can execute at
@@ -236,7 +247,8 @@ func p65IsBoundedCounterBranch(instrs []JIT6502Instr, branchIdx, targetIdx int) 
 		return false
 	}
 	for i := targetIdx; i < branchIdx-1; i++ {
-		if writesCounter(instrs[i].opcode) {
+		op := instrs[i].opcode
+		if p65CanSkipCounterUpdate(op) || writesCounter(op) {
 			return false
 		}
 	}

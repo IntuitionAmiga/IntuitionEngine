@@ -1180,12 +1180,17 @@ func findInstrByPC(instrs []JIT6502Instr, targetOffset uint16) int {
 	return -1
 }
 
+type p65CompileOptions struct {
+	tier              int
+	turboCounterLoops bool
+}
+
 // emit6502ConditionalBranch emits a conditional branch instruction.
 // Returns branchFixup for internal forward, branchExit for external, or handles backward inline.
 func emit6502ConditionalBranch(cb *CodeBuffer, ji *JIT6502Instr, startPC uint16,
 	instrIdx int, pendingCycles uint32, instrs []JIT6502Instr, instrOffsets []int,
 	hasBackward bool, fwdFixups *[]branchFixup, extExits *[]branchExit,
-	nz *j65NZState) {
+	nz *j65NZState, opts p65CompileOptions) {
 
 	bi := j65BranchTable[ji.opcode]
 	instrPC := startPC + ji.pcOffset
@@ -1250,7 +1255,11 @@ func emit6502ConditionalBranch(cb *CodeBuffer, ji *JIT6502Instr, startPC uint16,
 		// INTERNAL branch
 		isBackward := targetIdx <= instrIdx
 
-		if isBackward && hasBackward && !p65IsBoundedCounterBranch(instrs, instrIdx, targetIdx) {
+		boundedCounter := p65IsBoundedCounterBranch(instrs, instrIdx, targetIdx)
+		if !boundedCounter && opts.turboCounterLoops {
+			boundedCounter = p65IsBoundedCounterBranchTurbo(instrs, instrIdx, targetIdx)
+		}
+		if isBackward && hasBackward && !boundedCounter {
 			// Budget check
 			amd64INC_mem32(cb, amd64RSP, int32(j65OffLoopCount))
 			// CMP DWORD [RSP+loopCount], budget
@@ -2031,6 +2040,10 @@ func emit6502BITFlags(cb *CodeBuffer) {
 
 // compileBlock6502 compiles a scanned block of 6502 instructions to x86-64 machine code.
 func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, codePageBitmap *[256]byte) (*JITBlock, error) {
+	return compileBlock6502WithOptions(instrs, startPC, execMem, codePageBitmap, p65CompileOptions{tier: p65JITTier1})
+}
+
+func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, codePageBitmap *[256]byte, opts p65CompileOptions) (*JITBlock, error) {
 	cb := NewCodeBuffer(len(instrs) * 64) // 6502 emits ~10-60 bytes per instruction
 
 	// Phase 2c: per-instruction NZ liveness. live[i]==false → producer's
@@ -2550,7 +2563,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 			// the branch adds its taken penalty and jumps back.
 			flushPendingCycles(cb, &pendingCycles)
 			emit6502ConditionalBranch(cb, ji, startPC, i, pendingCycles,
-				instrs, instrOffsets, hasBackward, &fwdFixups, &extExits, &nz)
+				instrs, instrOffsets, hasBackward, &fwdFixups, &extExits, &nz, opts)
 			// No pendingCycles += baseCycles (baseCycles is 0 for branches)
 
 		// ================================================================
@@ -2698,5 +2711,6 @@ done:
 		execSize:   len(code),
 		chainEntry: addr + uintptr(chainEntryOff),
 		chainSlots: slots,
+		tier:       opts.tier,
 	}, nil
 }

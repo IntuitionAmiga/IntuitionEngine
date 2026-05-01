@@ -182,6 +182,18 @@ func TestP65IsBoundedCounterBranch_RejectsBodyCounterWrite(t *testing.T) {
 	}
 }
 
+func TestP65IsBoundedCounterBranch_RejectsBranchAroundCounter(t *testing.T) {
+	instrs := []JIT6502Instr{
+		mkInstr(0xA9), // LDA #imm
+		mkInstr(0xD0), // BNE skip
+		mkInstr(0x88), // DEY
+		mkInstr(0xD0), // BNE loop
+	}
+	if p65IsBoundedCounterBranch(instrs, 3, 0) {
+		t.Fatal("loop with an internal branch that can skip DEY must keep the budget check")
+	}
+}
+
 func TestP65IsBoundedCounterBranch_RejectsXCountedLoop(t *testing.T) {
 	instrs := []JIT6502Instr{
 		mkInstr(0xCA), // DEX
