@@ -64,25 +64,31 @@ with `#` and blank lines are ignored. Unknown keys cause a parse error.
 backend=<6502|z80|m68k|ie64|x86>
 workload=<short-name>
 metric=<frames_per_sec|wallclock_ms_to_milestone>
-phase0=<float>
+phase0=<float>                    ; required when phase0_waiver=false
 current=<float>
-real_time_target=<float>      ; units match `metric` (Hz or ms)
-jit_bound_phase0=<float>      ; ns spent in JIT during Phase 0 sample
-jit_bound_current=<float>     ; ns spent in JIT during current sample
-io_bound_waiver=<true|false>  ; if true, condition (3) is waived
-waiver_reason=<text>          ; required when io_bound_waiver=true
+real_time_target=<float>          ; units match `metric` (Hz or ms)
+jit_bound_phase0=<float>          ; required when io_bound_waiver=false
+jit_bound_current=<float>         ; required when io_bound_waiver=false
+phase0_waiver=<true|false>        ; if true, condition (1) is waived
+phase0_waiver_reason=<text>       ; required when phase0_waiver=true
+io_bound_waiver=<true|false>      ; if true, condition (3) is waived
+io_bound_waiver_reason=<text>     ; required when io_bound_waiver=true
 ---
 ```
 
 Per-backend gate (all three conditions):
 
-  1. No regression vs Phase 0 (within ±5% of `phase0`).
+  1. No regression vs Phase 0 (within ±5% of `phase0`). Waivable when
+     `phase0_waiver=true` with `phase0_waiver_reason` recorded
+     (e.g. backend has no canonical pre-summit workload binary at the
+     recorded Phase-0 SHA).
   2. Reaches real-time. Direction depends on `metric`:
      - `frames_per_sec`: `current ≥ real_time_target`.
      - `wallclock_ms_to_milestone`: `current ≤ real_time_target`.
+     **Unwaivable** — every Metric 2 record must satisfy this.
   3. ≥10% improvement on JIT-bound time vs Phase 0
      (`jit_bound_current ≤ 0.90 × jit_bound_phase0`). Waivable when
-     `io_bound_waiver=true` with `waiver_reason` recorded.
+     `io_bound_waiver=true` with `io_bound_waiver_reason` recorded.
 
 ## `phase0.txt` (committed forensic record)
 
@@ -112,9 +118,16 @@ Procedure:
    `metric2.txt` record.
 4. Cleanup: `git worktree remove /tmp/ie-phase0`.
 5. Repeat (3) on `HEAD`, drop into the `current=` field.
-6. Set `io_bound_waiver=true` and
-   `waiver_reason=pre-summit-no-instrumentation` on every record
-   (condition 3 unmeasurable per the `phase0.txt` audit).
+6. Set `io_bound_waiver=true` +
+   `io_bound_waiver_reason=pre-summit-no-instrumentation` on every
+   record (condition 3 unmeasurable per the `phase0.txt` audit).
+7. For backends whose `phase0.txt` registry shows no canonical
+   pre-summit workload binary (currently x86, z80, 6502 — see
+   `phase0.txt`), set `phase0_waiver=true` +
+   `phase0_waiver_reason=<recorded reason from phase0.txt>` and omit
+   the `phase0=` field (parser allows it under the waiver).
+   Condition 2 (reaches real-time) remains binding; condition 1
+   (regression vs Phase 0) is waived; condition 3 reverts to step 6.
 
 Worst-case fallback per closure-plan G.1: every workload waives all
 conditions for which pre-summit lacks a canonical workload or

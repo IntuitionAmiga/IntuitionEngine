@@ -71,10 +71,18 @@
 #               native binaries. Z80 record waives condition 1 with
 #               reason `no-pre-summit-z80-workload-binary`.
 #
-#   6502      : NO canonical diag binary at 11b8a53. The 6502 bench
-#               infrastructure (build_6502_benchmarks.sh and friends)
-#               post-dates pre-summit. 6502 record waives condition 1
-#               with reason `no-pre-summit-6502-workload-binary`.
+#   6502      : `build_6502_benchmarks.sh` + `6502_bench.test` PRESENT
+#               at 11b8a53 (verified via
+#               `git ls-tree -r --name-only 11b8a53 | grep 6502`).
+#               Those are the JIT microbenchmark harness (per-opcode
+#               throughput sweep), NOT a Phase-1 "representative
+#               C64/NES diag program" workload — plan §1 explicitly
+#               distinguishes "real workload" from microbench. The
+#               6502 record waives condition 1 with reason
+#               `no-pre-summit-6502-real-workload` (microbench
+#               present, but no canonical user-facing demo binary
+#               that exercises the full bus + chip wiring path
+#               Metric 2 measures).
 #
 #   ie64      : ie_product_demo.ies PRESENT at 11b8a53. Real wall-clock
 #               measurable on both SHAs but only via the IEScript
