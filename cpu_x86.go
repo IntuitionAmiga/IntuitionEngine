@@ -110,6 +110,17 @@ type CPU_X86 struct {
 	// otherwise the AddJit/AddInterp helpers fast-fall to no-op.
 	// Snapshot/Reset are called by the harness, not by hot paths.
 	perfAcct PerfAcct
+
+	// Deterministic-step budget for the shadow-parity harness. The
+	// harness sets x86BudgetActive=true and primes x86InstrBudget with
+	// the retire-count window. The interp and JIT exec loops, plus
+	// tryFastMMIOPollLoop, decrement by retired guest instructions and
+	// exit cleanly when the budget reaches 0. Default (Active=false)
+	// means unbounded — production behavior unchanged. The Active flag
+	// is checked rather than budget>0 so re-entry after exhaustion does
+	// not silently disable bounded mode.
+	x86InstrBudget  int64
+	x86BudgetActive bool
 }
 
 // Flag bit positions
@@ -876,6 +887,11 @@ func (c *CPU_X86) tryFastMMIOPollLoop() bool {
 		return false
 	}
 
+	bounded := c.x86BudgetActive
+	if bounded && c.x86InstrBudget <= 0 {
+		c.EIP = pc
+		return true
+	}
 	for c.Running() && !c.Halted {
 		if c.irqPending.Load() && c.IF() {
 			c.handleInterrupt(byte(c.irqVector.Load()))
@@ -884,6 +900,18 @@ func (c *CPU_X86) tryFastMMIOPollLoop() bool {
 
 		c.EAX = adapter.bus.Read32(adapter.translateIO(addr))
 		c.bus.Tick(1)
+
+		// One simulated iteration retires 3 guest instructions (MOV/TEST/Jcc).
+		// Account against the deterministic-step budget so the shadow-parity
+		// harness can exit even when the polled MMIO never satisfies the
+		// not-taken condition.
+		if bounded {
+			c.x86InstrBudget -= 3
+			if c.x86InstrBudget <= 0 {
+				c.EIP = pc
+				return true
+			}
+		}
 
 		branchTaken := (c.EAX & mask) == 0
 		if jcc == 0x75 {

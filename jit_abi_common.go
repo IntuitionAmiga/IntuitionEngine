@@ -1,27 +1,19 @@
-// jit_abi_common.go - per-backend canonical JIT↔interp register ABI
-// (Phase 7g of the six-CPU JIT unification plan).
+// jit_abi_common.go - per-backend canonical JIT register ABI registry.
 //
-// Today, 6502 JIT pins (A→RBX, X→RBP, Y→R12, SP→R13, PC→R14, SR→R15) but
-// the 6502 goasm interpreter pins a different layout
-// (PC→R8, A→R10, X→R11, Y→R12, SP→DX, SR→R13, mem→SI, cycles→R9).
-// Every JIT→interp bail therefore spills JIT-mapped registers to the CPU
-// struct, calls into Go, then re-spills on return. This dominates
-// I/O-bail-heavy code — exactly the workload tryFastMMIOPollLoop was added
-// to rescue.
+// Closure-plan F.2 disposition (RETIRED): the original Phase 7g plan
+// was to converge the JIT and goasm-interp register layouts so a
+// JIT→interp bail no longer spilled+reloaded the mapped GPR set.
+// After Phase 7f generalized the MMIO poll matcher, bail rate on real
+// workloads dropped sharply and the spill cost the convergence would
+// save is small. The asm-interpreter ABI is therefore deliberately kept
+// separate; bail-through-cpu.Step() is the supported path.
 //
-// Phase 7g picks one canonical register layout per backend, used by both
-// the JIT emitter and the asm interpreter handlers. This file is the
-// registry of those choices so a future audit ("does the 6502 JIT and
-// goasm-interp agree?") is a single-file read.
-//
-// The actual ABI for each backend is enforced by:
-//
-//   - The JIT emitter's register-allocation table (jit_<cpu>_emit_amd64.go).
-//   - The asm-interpreter prologue/epilogue (cpu_<cpu>_interp_amd64.s).
-//   - This file's BackendCanonicalABI table (cross-check at test time).
-//
-// If a future edit changes one without the other, the layout-test in this
-// file fails.
+// This file remains as documentation of the JIT's canonical layout per
+// backend. The constants in jit_<cpu>_abi.go pin those exact host
+// registers on the JIT side, and jit_abi_consistency_test.go asserts
+// that the per-backend constants match the entries below — the only
+// invariant still enforced. No promise is made about the asm-interpreter
+// matching this layout.
 
 //go:build amd64 && (linux || windows || darwin)
 

@@ -132,7 +132,19 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 	cpu.syncJITRegsFromNamed()
 	cpu.syncJITSegRegsFromNamed()
 
+	bounded := cpu.x86BudgetActive
+	var budgetPrevCount uint64
 	for cpu.Running() && !cpu.Halted {
+		if bounded {
+			delta := instructionCount - budgetPrevCount
+			budgetPrevCount = instructionCount
+			cpu.x86InstrBudget -= int64(delta)
+			if cpu.x86InstrBudget <= 0 {
+				cpu.syncJITRegsToNamed()
+				cpu.syncJITSegRegsToNamed()
+				return
+			}
+		}
 		// Check for pending interrupt (named fields are stale; sync first)
 		if cpu.irqPending.Load() && cpu.IF() {
 			cpu.syncJITRegsToNamed()
@@ -322,7 +334,20 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// Execute native code block -- jitRegs is already canonical, no sync needed
 		ctx.NeedInval = 0
 		ctx.NeedIOFallback = 0
-		ctx.ChainBudget = 65536
+		// In bounded mode (deterministic-step harness), force the native
+		// dispatch to return after a single block by setting ChainBudget=1.
+		// Otherwise a chained run could retire many thousands of guest
+		// instructions before the outer loop revisits the budget check,
+		// blowing past the harness's per-checkpoint window. ChainBudget=1
+		// still allows the block itself to retire its full instrCount
+		// (block granularity is the irreducible overshoot — documented
+		// in jit_x86_shadow_parity_test.go); the outer-loop budget
+		// subtraction then catches up on the next iteration.
+		if bounded {
+			ctx.ChainBudget = 1
+		} else {
+			ctx.ChainBudget = 65536
+		}
 		ctx.ChainCount = 0
 		var jitT0 time.Time
 		if perfAcctOn {
@@ -454,10 +479,20 @@ func x86PatchCompatibleChainsTo(cache *CodeCache, target *JITBlock) {
 // workload-agnostic tryFastMMIOPollLoop fast match for status-poll
 // loops; no per-program shortcuts.
 func (cpu *CPU_X86) x86RunInterpreter() {
+	bounded := cpu.x86BudgetActive
 	for cpu.Running() && !cpu.Halted {
+		if bounded && cpu.x86InstrBudget <= 0 {
+			return
+		}
 		if cpu.tryFastMMIOPollLoop() {
 			continue
 		}
 		cpu.Step()
+		if bounded {
+			cpu.x86InstrBudget--
+			if cpu.x86InstrBudget <= 0 {
+				return
+			}
+		}
 	}
 }

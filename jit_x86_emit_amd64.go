@@ -4242,38 +4242,22 @@ func x86EmitChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32) x86Cha
 // ===========================================================================
 
 // x86CompileBlock compiles a slice of pre-decoded x86 instructions into native code.
-// tier: 0 = Tier 1 (fixed reg alloc), 1 = Tier 2 (per-block reg alloc + peephole)
-func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, memory []byte, tier ...int) (*JITBlock, error) {
+// Single-block Tier-2 promotion is retired; region-only Tier-2 (see
+// x86CompileRegion) is the sole per-block-regalloc promotion path.
+func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, memory []byte) (*JITBlock, error) {
 	if len(instrs) == 0 {
 		return nil, fmt.Errorf("empty instruction list")
 	}
 
-	compileTier := 0
-	if len(tier) > 0 {
-		compileTier = tier[0]
-	}
-
 	cb := &CodeBuffer{}
 	br := x86AnalyzeBlockRegs(instrs, memory, startPC)
-	cs := &x86CompileState{flagState: x86FlagsDead, tier: compileTier, dirtyMask: br.written}
+	cs := &x86CompileState{flagState: x86FlagsDead, tier: 0, dirtyMask: br.written}
 
-	// Pass bitmaps for compile-time page safety checks (if available from CPU)
-	// Pass bitmaps and host features for compile-time optimizations
 	cs.ioBitmap = x86CompileIOBitmap
 	cs.codeBitmap = x86CompileCodeBitmap
 	cs.host = x86Host
 
-	// Tier-2 per-block regalloc remains disabled. Re-enable attempts
-	// (with regMap gate restored + RTS cache invalidation on promotion)
-	// still hang on RET-heavy benchmarks; the cross-block coherence
-	// problem is wider than just the RTS cache (chain slots in OTHER
-	// blocks targeting the promoted block's startPC remain pointed at
-	// the OLD chainEntry whenever the regMap-compatibility check rejects
-	// re-patching, and the OLD block's native code stays alive in
-	// execMem). Closing this requires execMem reclamation +
-	// chain-slot-rewrite-or-invalidate-on-promotion at minimum.
 	cs.regMap = x86DefaultRegMap()
-	_ = compileTier // see comment above
 
 	// Run peephole optimizer for flag analysis (all tiers benefit)
 	cs.flagsNeeded = x86PeepholeFlags(instrs)

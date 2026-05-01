@@ -15,6 +15,14 @@
 //
 // This file is the scaffold: it declares the memo type and a builder.
 // Wiring into jit_x86_emit_amd64.go is the follow-up patch.
+//
+// Closure-plan F.1 disposition (DEFERRED): wiring + the ≥3% MemStream
+// gate require bench measurement infrastructure that did not land in
+// this slice. The memo type stays as the recorded shape of the
+// optimisation; if a future bench shows ≥3% MemStream improvement after
+// wiring, this file is the canonical place to land the cached decoder.
+// If the eventual measurement comes back <2% the entire file should be
+// deleted.
 
 //go:build amd64 && (linux || windows || darwin)
 

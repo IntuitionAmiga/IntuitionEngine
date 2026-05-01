@@ -1,11 +1,11 @@
-// jit_6502_abi.go - canonical 6502 JIT register ABI scaffold
-// (Phase 7g of the six-CPU JIT unification plan).
+// jit_6502_abi.go - canonical 6502 JIT register ABI.
 //
-// The 6502 already has an asm interpreter (cpu_6502_interp_amd64.s, gated
-// behind interp6502full). Today the JIT and goasm-interp pin different
-// host registers; Phase 7g picks the JIT's existing layout as canonical
-// and brings the asm-interp onto it in a follow-up. Mirrors
-// BackendCanonicalABI["6502"] and jit_6502_emit_amd64.go:31-36.
+// Closure-plan F.2: ABI convergence with cpu_6502_interp_amd64.s is
+// retired. The interp ABI is deliberately separate; the supported bail
+// path is JIT→cpu.Step() through Go (with mapped registers spilled
+// across the call). Constants below are the JIT's canonical register
+// pinning and must match jit_6502_emit_amd64.go and the
+// BackendCanonicalABI["6502"] entry in jit_abi_common.go.
 
 //go:build amd64 && (linux || windows || darwin)
 

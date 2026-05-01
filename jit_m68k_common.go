@@ -1292,6 +1292,78 @@ func m68kDetectBackwardBranchesWithMem(instrs []M68KJITInstr, startPC uint32, me
 	return false
 }
 
+// m68kResolveTerminatorTarget computes the static branch target for a
+// region-eligible terminator. Returns (targetPC, true) for BRA (8/16/32-bit
+// displacement), JMP <abs.W>, JMP <abs.L>, and JMP (PC,d16). Calls (BSR,
+// JSR) and indirect transfers (RTS, RTE, RTR, JMP via Dn/An, JMP indexed,
+// TRAP, Line A/F) return (0, false) — region formation does not follow them.
+//
+// instrPC is the PC of the terminating instruction itself. memory must
+// span the full instruction including any displacement / EA extension words.
+func m68kResolveTerminatorTarget(opcode uint16, instrPC uint32, memory []byte) (uint32, bool) {
+	memSize := uint32(len(memory))
+	group := opcode >> 12
+
+	if group == 0x6 { // Branch group
+		cond := (opcode >> 8) & 0xF
+		if cond > 1 {
+			return 0, false // Bcc — handled inline by emitter, not a region terminator
+		}
+		if cond == 1 {
+			return 0, false // BSR — call, do not follow into region
+		}
+		// BRA
+		disp := opcode & 0xFF
+		switch disp {
+		case 0x00: // 16-bit displacement
+			if instrPC+4 > memSize {
+				return 0, false
+			}
+			w := int16(uint16(memory[instrPC+2])<<8 | uint16(memory[instrPC+3]))
+			return uint32(int64(instrPC) + 2 + int64(w)), true
+		case 0xFF: // 32-bit displacement (68020+)
+			if instrPC+6 > memSize {
+				return 0, false
+			}
+			l := int32(uint32(memory[instrPC+2])<<24 | uint32(memory[instrPC+3])<<16 |
+				uint32(memory[instrPC+4])<<8 | uint32(memory[instrPC+5]))
+			return uint32(int64(instrPC) + 2 + int64(l)), true
+		default: // 8-bit displacement embedded in opcode low byte
+			return uint32(int64(instrPC) + 2 + int64(int8(disp))), true
+		}
+	}
+
+	// JMP — opcode 0100 1110 11_mmmreg, where mmmreg encodes the EA mode.
+	if opcode&0xFFC0 == 0x4EC0 {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		switch {
+		case mode == 7 && reg == 0: // <abs.W>
+			if instrPC+4 > memSize {
+				return 0, false
+			}
+			w := int16(uint16(memory[instrPC+2])<<8 | uint16(memory[instrPC+3]))
+			return uint32(int32(w)), true
+		case mode == 7 && reg == 1: // <abs.L>
+			if instrPC+6 > memSize {
+				return 0, false
+			}
+			return uint32(memory[instrPC+2])<<24 | uint32(memory[instrPC+3])<<16 |
+				uint32(memory[instrPC+4])<<8 | uint32(memory[instrPC+5]), true
+		case mode == 7 && reg == 2: // (d16,PC)
+			if instrPC+4 > memSize {
+				return 0, false
+			}
+			w := int16(uint16(memory[instrPC+2])<<8 | uint16(memory[instrPC+3]))
+			return uint32(int64(instrPC) + 2 + int64(w)), true
+		}
+		// (An), (PC,d8,Xn), other indirect — not statically resolvable.
+		return 0, false
+	}
+
+	return 0, false
+}
+
 // Suppress unused import warnings
 var _ = bits.Len
 var _ = unsafe.Pointer(nil)

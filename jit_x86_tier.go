@@ -16,4 +16,11 @@ package main
 // tweak applies uniformly across backends. Threshold defaults
 // (DefaultTierThresholds: 64 execs, <25% I/O bail rate) match the
 // preexisting x86Tier2Threshold + 1/4 ratio bit-for-bit.
+//
+// Promotion mechanism: region-only. x86CompileRegion (3+ block hot
+// regions) consumes ShouldPromote and recompiles with x86Tier2RegAlloc.
+// Single-block Tier-2 was retired (see x86CompileBlock comment);
+// reviving it would require execMem reclamation +
+// chain-slot-rewrite-on-promotion infrastructure that no measured
+// workload currently justifies.
 var x86TierController = NewTierController(X86RegProfile)

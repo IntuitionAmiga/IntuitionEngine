@@ -1,16 +1,12 @@
-// gen_interp_z80 - generator scaffold for the Z80 threaded-dispatch
-// interpreter (Phase 7h of the six-CPU JIT unification plan).
-//
-// Mirrors cmd/gen_interp6502 — emits a 256-entry dispatch table plus
-// per-opcode NOSPLIT asm handlers using the canonical Z80 ABI declared
-// in jit_z80_abi.go. Phase-7h initial wiring is gated by build tag
-// `interpz80full`; once parity is green and the bench delta meets the
-// ≥5% target the dispatch is moved to the default amd64 build.
-//
-// Scaffold body: prints a status banner explaining the generator is not
-// yet wired. Phase-7h sub-phase 7h-z80 fills in the real generator using
-// gen_interp6502 as the template.
-
+// Closure-plan F.3 disposition (DEFERRED): the original Phase 7h plan
+// was to ship a full threaded-dispatch interpreter per backend so JIT
+// bails would land on a fast asm handler instead of cpu.Step(). Cost is
+// high (four generators, four sets of asm handlers, build-tag policy
+// plus default-build promotion); benefit shrinks once Slice B regions
+// land and JIT-bail frequency drops further. Per plan §7h escape
+// hatch, this generator stays a scaffold (exit 2) until the Phase 9
+// gate identifies a backend whose JIT-bail cost dominates real-workload
+// time. cmd/gen_interp6502 is the working template.
 package main
 
 import (

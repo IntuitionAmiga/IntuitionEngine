@@ -48,9 +48,12 @@ type Z80TierAllocator struct{}
 func (Z80TierAllocator) PromoteBlock(pc uint32) bool { return false }
 
 // P65TierAllocator implements TierAllocator for the 6502 backend.
-// Plan: 6502 is "already nearly fully pinned, mostly for API uniformity."
-// The promotion the controller can grant is bench-kernel-style fusion
-// of zero-page accesses.
+// Retired (closure-plan B.4): 6502 region scope is deliberately
+// vacant — the existing JIT already pins A/X/Y/P aggressively, and the
+// 4-block region cap dictated by 256-byte page semantics leaves no
+// regalloc surface that justifies the chain-rewrite cost. PromoteBlock
+// stays a permanent no-op for API uniformity. Revisit only if the
+// Phase 9 gate shows 6502 lagging.
 type P65TierAllocator struct{}
 
 func (P65TierAllocator) PromoteBlock(pc uint32) bool { return false }

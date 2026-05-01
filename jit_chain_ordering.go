@@ -29,6 +29,18 @@
 // This file does not emit code — backends do. It records the policy as
 // constants + a helper that decides whether a candidate emit position is a
 // legal chain-slot landing.
+//
+// Closure-plan Slice E disposition (DEFERRED): the per-backend audit
+// — reading every emit_amd64.go's chain-slot emission and verifying
+// no flag-producer/consumer pair is clobbered by the chain TEST/JZ —
+// is not yet completed. ChainSlotPolicyFor remains advisory; the
+// six-CPU summit's flag-state machine has not had a regression
+// attributable to chain-slot ordering since landing, but no emit-site
+// audit has been run to confirm the invariant holds end-to-end. Slice
+// E follow-up either (a) adds emit-site regression tests at each
+// backend's chain-slot emit point and demonstrates the policy is
+// satisfied, or (b) deletes ChainSlotPolicyFor and converts this file
+// to pure documentation of the invariant.
 
 //go:build amd64 && (linux || windows || darwin)
 

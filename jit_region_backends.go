@@ -24,10 +24,70 @@ type RegionScanResult struct {
 	Terminator RegionTerminatorClass
 }
 
-// ScanRegionM68K is the M68K region walker. Today returns an empty result
-// (no region formation); Phase 4 sub-phase 4a replaces with a real walk.
+// ScanRegionM68K walks forward from startPC following statically-known
+// BRA/JMP targets and returns the list of block start PCs that would
+// form a region under M68KRegionProfile. Mirrors ScanRegionX86: pure
+// memory-driven walker that does not consult the JIT cache.
+//
+// Stops on:
+//   - cycle (back-edge that revisits any already-scanned block)
+//   - non-region-shaped block (m68kNeedsFallback / empty scan)
+//   - non-resolvable terminator (RTS/RTE/JSR/BSR/JMP-indirect/TRAP)
+//   - max blocks / max instructions reached (M68KRegionProfile bounds)
+//
+// Returns an empty BlockPCs when fewer than 2 blocks are formed
+// (single-block start has no region payoff).
 func ScanRegionM68K(memory []byte, startPC uint32) RegionScanResult {
-	return RegionScanResult{Profile: M68KRegionProfile}
+	res := RegionScanResult{Profile: M68KRegionProfile, Terminator: M68KRegionProfile.Terminator}
+	pc := startPC
+	totalInstrs := 0
+	visited := map[uint32]struct{}{}
+	for len(res.BlockPCs) < M68KRegionProfile.MaxBlocks && totalInstrs < M68KRegionProfile.MaxInstructions {
+		if _, seen := visited[pc]; seen {
+			break
+		}
+		if pc >= uint32(len(memory)) {
+			break
+		}
+		instrs := m68kScanBlock(memory, pc)
+		if len(instrs) == 0 || m68kNeedsFallback(instrs) {
+			break
+		}
+		// Cap check BEFORE append: if this block would push the region
+		// past MaxInstructions, stop without including it. Otherwise a
+		// large terminal block could overshoot the advertised cap and
+		// downstream region compilation would receive more instructions
+		// than the profile permits. The first block is always admitted
+		// (an empty region is the unhelpful alternative).
+		if len(res.BlockPCs) > 0 && totalInstrs+len(instrs) > M68KRegionProfile.MaxInstructions {
+			break
+		}
+		visited[pc] = struct{}{}
+		res.BlockPCs = append(res.BlockPCs, pc)
+		totalInstrs += len(instrs)
+
+		last := &instrs[len(instrs)-1]
+		if !m68kIsBlockTerminator(last.opcode) {
+			// Block ran to size cap without a terminator — region cannot
+			// confidently extend across the implicit fallthrough since the
+			// scan stopped mid-stream.
+			break
+		}
+		// Skip synthetic fused RTS markers — not real terminators.
+		if last.fusedFlag&m68kFusedRTSLeafReturn != 0 {
+			break
+		}
+		instrPC := pc + last.pcOffset
+		target, ok := m68kResolveTerminatorTarget(last.opcode, instrPC, memory)
+		if !ok {
+			break
+		}
+		pc = target
+	}
+	if len(res.BlockPCs) < 2 {
+		res.BlockPCs = nil
+	}
+	return res
 }
 
 // ScanRegionIE64 is the IE64 region walker. Sub-phase 4b.
@@ -40,9 +100,12 @@ func ScanRegionZ80(memory []byte, startPC uint32) RegionScanResult {
 	return RegionScanResult{Profile: Z80RegionProfile}
 }
 
-// ScanRegionP65 is the 6502 region walker. Sub-phase 4d. 6502 caps at 4
-// blocks because of 256-byte page semantics (the existing JIT chain
-// patcher cannot cross a page boundary cheaply).
+// ScanRegionP65 is intentionally empty. Closure-plan B.4 retired the
+// 6502 region scope: page-boundary back-edges make region formation
+// risky, and the 4-block cap dictated by 256-byte page semantics
+// leaves no expected speedup that justifies the chain-rewrite cost.
+// Revisit only if the Phase 9 gate identifies 6502 as the lagging
+// backend.
 func ScanRegionP65(memory []byte, startPC uint32) RegionScanResult {
 	return RegionScanResult{Profile: P65RegionProfile}
 }

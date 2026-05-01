@@ -1,13 +1,12 @@
-// gen_interp_x86 - generator scaffold for the x86 threaded-dispatch
-// interpreter (Phase 7h of the six-CPU JIT unification plan).
-//
-// Plan note: x86 has prefix-byte combinatorics that make full coverage
-// expensive. Phase 7h's "scoped variant" rule applies: this generator
-// initially covers only the dense common-case 1-byte opcode subset; rare
-// or prefix-heavy opcodes still go through the existing Go path.
-//
-// Scaffold today.
-
+// Closure-plan F.3 disposition (DEFERRED): the original Phase 7h plan
+// was to ship a full threaded-dispatch interpreter per backend so JIT
+// bails would land on a fast asm handler instead of cpu.Step(). Cost is
+// high (four generators, four sets of asm handlers, build-tag policy
+// plus default-build promotion); benefit shrinks once Slice B regions
+// land and JIT-bail frequency drops further. Per plan §7h escape
+// hatch, this generator stays a scaffold (exit 2) until the Phase 9
+// gate identifies a backend whose JIT-bail cost dominates real-workload
+// time. cmd/gen_interp6502 is the working template.
 package main
 
 import (

@@ -18,6 +18,16 @@
 //
 // Wiring into per-backend exec loops is the second-half deliverable of
 // Phase 7c; this file is the policy + a tested helper.
+//
+// Closure-plan Slice D disposition (DEFERRED): the helper remains the
+// canonical batched-poll API but is not yet adopted by any of the six
+// exec loops. Adoption requires per-backend insertion points that
+// account for retired-instruction count (IE64 fixed-8-byte vs M68K
+// variable-length vs Z80 prefix-stack), plus revalidation of the
+// "stop-within-cadence" worst-case test (plan §7c). IE64's existing
+// hand-coded `checkCounter&0xFFF` (jit_exec.go:135) is the closest
+// thing to a wired user. A Slice-D follow-up should swap that in first
+// and measure CallChurn before touching the other five loops.
 
 //go:build amd64 && (linux || windows || darwin)
 

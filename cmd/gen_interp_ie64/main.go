@@ -1,12 +1,12 @@
-// gen_interp_ie64 - generator scaffold for the IE64 threaded-dispatch
-// interpreter (Phase 7h of the six-CPU JIT unification plan).
-//
-// Mirrors cmd/gen_interp6502 + the canonical IE64 ABI in jit_ie64_abi.go.
-// IE64 has a fixed 32-bit instruction encoding so the dispatch table
-// keys on the primary opcode field.
-//
-// Scaffold today.
-
+// Closure-plan F.3 disposition (DEFERRED): the original Phase 7h plan
+// was to ship a full threaded-dispatch interpreter per backend so JIT
+// bails would land on a fast asm handler instead of cpu.Step(). Cost is
+// high (four generators, four sets of asm handlers, build-tag policy
+// plus default-build promotion); benefit shrinks once Slice B regions
+// land and JIT-bail frequency drops further. Per plan §7h escape
+// hatch, this generator stays a scaffold (exit 2) until the Phase 9
+// gate identifies a backend whose JIT-bail cost dominates real-workload
+// time. cmd/gen_interp6502 is the working template.
 package main
 
 import (
