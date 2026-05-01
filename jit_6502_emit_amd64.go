@@ -733,21 +733,13 @@ func j65MaterializeNZ(cb *CodeBuffer, nz *j65NZState) {
 // Returns a single offset that needs to be patched to the bail target.
 // Clobbers: ECX, R9. Does NOT clobber RDX (preserved for page-cross checks).
 func emit6502FullFastPathCheck(cb *CodeBuffer) int {
-	// ECX = addr >> 8 (page number)
-	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX)
-	amd64SHR_imm32(cb, amd64RCX, 8)
-
 	// R9 = directPageBitmap pointer (from stack). R9 is free since FastPathLimit was removed.
 	amd64MOV_reg_mem(cb, amd64R9, amd64RSP, int32(j65OffDirectPage))
-
-	// MOVZX ECX, BYTE [R9 + RCX]
-	amd64MOVZX_B_memSIB(cb, amd64RCX, amd64R9, amd64RCX)
-
-	// TEST ECX, ECX
-	amd64TEST_reg_reg32(cb, amd64RCX, amd64RCX)
-
-	// JNZ bail
-	return amd64Jcc_rel32(cb, amd64CondNE)
+	off, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapZeroPageStyle, amd64R9, amd64RAX, amd64RCX, amd64RCX, false)
+	if !ok {
+		panic("missing FPBitmapZeroPageStyle shape")
+	}
+	return off
 }
 
 // emit6502ZPPageCheck emits the ioPageBitmap check for a specific ZP page (0).
@@ -886,11 +878,11 @@ func emit6502SelfModCheck(cb *CodeBuffer) int {
 	// Load CodePageBitmapPtr from stack
 	amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, int32(j65OffCodePage)) // RDX = bitmap ptr
 
-	// CMP BYTE [RDX + RCX], 0
-	amd64CMP_memSIB8_imm8(cb, amd64RDX, amd64RCX, 0)
-
-	// JNE .inval  — if page has code, invalidate
-	return amd64Jcc_rel32(cb, amd64CondNE)
+	off, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapCodePageDirty, amd64RDX, amd64RAX, amd64RCX, amd64RCX, false)
+	if !ok {
+		panic("missing FPBitmapCodePageDirty shape")
+	}
+	return off
 }
 
 // ===========================================================================

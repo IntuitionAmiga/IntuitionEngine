@@ -2090,13 +2090,10 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs,
 	// access escapes the backed window.
 	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar)
 
-	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX)
-	amd64SHR_imm(cb, amd64RCX, 8)
-	emitREX_SIB(cb, false, amd64RCX, amd64RCX, amd64RegIOBitmap)
-	cb.EmitBytes(0x0F, 0xB6, modRM(0, amd64RCX, 4), sibByte(0, amd64RCX, amd64RegIOBitmap))
-	emitREX(cb, false, amd64RCX, amd64RCX)
-	cb.EmitBytes(0x85, modRM(3, amd64RCX, amd64RCX))
-	nonIOOff := amd64Jcc_rel32(cb, amd64CondE)
+	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
+	if !ok {
+		panic("missing FPBitmapDenseRAM shape")
+	}
 
 	emitIOBail(cb, instrPC, ji.pcOffset, br, writtenSoFar)
 
@@ -2148,13 +2145,10 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs
 	// PLAN_MAX_RAM slice 10b: see emitLOAD_AMD64 for the rationale.
 	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar)
 
-	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX)
-	amd64SHR_imm(cb, amd64RCX, 8)
-	emitREX_SIB(cb, false, amd64RCX, amd64RCX, amd64RegIOBitmap)
-	cb.EmitBytes(0x0F, 0xB6, modRM(0, amd64RCX, 4), sibByte(0, amd64RCX, amd64RegIOBitmap))
-	emitREX(cb, false, amd64RCX, amd64RCX)
-	cb.EmitBytes(0x85, modRM(3, amd64RCX, amd64RCX))
-	nonIOOff := amd64Jcc_rel32(cb, amd64CondE)
+	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
+	if !ok {
+		panic("missing FPBitmapDenseRAM shape")
+	}
 
 	emitIOBail(cb, instrPC, ji.pcOffset, br, writtenSoFar)
 
@@ -2866,13 +2860,10 @@ func emitFLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs
 	slowPathPC := cb.Len()
 	patchRel32(cb, slowPathOff, slowPathPC)
 
-	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX)
-	amd64SHR_imm(cb, amd64RCX, 8)
-	emitREX_SIB(cb, false, amd64RCX, amd64RCX, amd64RegIOBitmap)
-	cb.EmitBytes(0x0F, 0xB6, modRM(0, amd64RCX, 4), sibByte(0, amd64RCX, amd64RegIOBitmap))
-	emitREX(cb, false, amd64RCX, amd64RCX)
-	cb.EmitBytes(0x85, modRM(3, amd64RCX, amd64RCX))
-	nonIOOff := amd64Jcc_rel32(cb, amd64CondE)
+	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
+	if !ok {
+		panic("missing FPBitmapDenseRAM shape")
+	}
 
 	emitIOBail(cb, instrPC, ji.pcOffset, br, writtenSoFar)
 
@@ -2907,13 +2898,10 @@ func emitFSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockReg
 	slowPathPC := cb.Len()
 	patchRel32(cb, slowPathOff, slowPathPC)
 
-	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX)
-	amd64SHR_imm(cb, amd64RCX, 8)
-	emitREX_SIB(cb, false, amd64RCX, amd64RCX, amd64RegIOBitmap)
-	cb.EmitBytes(0x0F, 0xB6, modRM(0, amd64RCX, 4), sibByte(0, amd64RCX, amd64RegIOBitmap))
-	emitREX(cb, false, amd64RCX, amd64RCX)
-	cb.EmitBytes(0x85, modRM(3, amd64RCX, amd64RCX))
-	nonIOOff := amd64Jcc_rel32(cb, amd64CondE)
+	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
+	if !ok {
+		panic("missing FPBitmapDenseRAM shape")
+	}
 
 	emitIOBail(cb, instrPC, ji.pcOffset, br, writtenSoFar)
 

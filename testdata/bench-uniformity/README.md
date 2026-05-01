@@ -35,10 +35,11 @@ The gate has three tests covering two metrics:
 ## `current.txt` (local measurement, gitignored)
 
 Standard `go test -bench` output. The gate scans for lines beginning with
-`Benchmark` and a side metric `<value> MIPS_host`. Run from the repo root:
+`Benchmark` and a side metric `<value> MIPS_host`. The canonical producer is
+the unified CPU benchmark harness; run from the repo root:
 
 ```
-go test -tags headless -run='^$' -bench='Benchmark.*_JIT$' -benchtime 3s ./... \
+BENCH_TIME=3s BENCH_COUNT=3 SKIP_ASM_INTERP=1 RAW=1 ./run_all_cpu_benches.sh \
   | tee testdata/bench-uniformity/current.txt
 ```
 

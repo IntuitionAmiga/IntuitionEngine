@@ -886,20 +886,30 @@ func (c *CPU_X86) tryFastMMIOPollLoop() bool {
 	if !ok || adapter.bus == nil {
 		return false
 	}
+	matched, iterCap := c.trySharedX86MMIOPollMatch(adapter, addr)
+	if !matched {
+		return false
+	}
+	if iterCap <= 0 {
+		iterCap = 4096
+	}
 
 	bounded := c.x86BudgetActive
 	if bounded && c.x86InstrBudget <= 0 {
 		c.EIP = pc
 		return true
 	}
+	hostAddr := adapter.translateIO(addr)
+	iterations := 0
 	for c.Running() && !c.Halted {
 		if c.irqPending.Load() && c.IF() {
 			c.handleInterrupt(byte(c.irqVector.Load()))
 			c.irqPending.Store(false)
 		}
 
-		c.EAX = adapter.bus.Read32(adapter.translateIO(addr))
+		c.EAX = adapter.bus.Read32(hostAddr)
 		c.bus.Tick(1)
+		iterations++
 
 		// One simulated iteration retires 3 guest instructions (MOV/TEST/Jcc).
 		// Account against the deterministic-step budget so the shadow-parity
@@ -919,6 +929,10 @@ func (c *CPU_X86) tryFastMMIOPollLoop() bool {
 		}
 		if !branchTaken {
 			c.EIP = pc + 12
+			return true
+		}
+		if !bounded && iterations >= iterCap {
+			c.EIP = pc
 			return true
 		}
 	}

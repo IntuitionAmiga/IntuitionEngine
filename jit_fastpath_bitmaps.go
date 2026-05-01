@@ -41,29 +41,30 @@ const (
 	FPBitmapZeroPageStyle
 )
 
-// FastPathBitmapShape describes the per-kind page-size shift and bit-index
+// FastPathBitmapShape describes the per-kind page-size shift and byte probe
 // mask used by the probe. Backends emit:
 //
-//	shr   addrReg, PageShift          ; addrReg now indexes a byte of bitmap
-//	mov   r10, [bitmapPtr + addrReg/8]
-//	test  r10, 1 << (addrReg & 7)
-//	jcc   fallthroughLabel             ; fast path taken
+//	mov   indexReg, addrReg
+//	shr   indexReg, PageShift          ; indexReg now indexes a bitmap byte
+//	movzx valueReg, byte [bitmapPtr + indexReg]
+//	test  valueReg, valueReg
+//	jcc   targetLabel
 //
 // where the choice of jcc (jz vs jnz) is encoded in BitMeansFastPath.
 type FastPathBitmapShape struct {
 	// PageShift is the right-shift count that turns a guest address into a
 	// page-bit index for this bitmap. Reference shifts used in-tree:
 	//
-	//   FPBitmapDenseRAM      → 12  (4 KiB pages)
-	//   FPBitmapMMIO          → 12
+	//   FPBitmapDenseRAM      →  8  (256-byte MachineBus pages)
+	//   FPBitmapMMIO          →  8
 	//   FPBitmapCodePageDirty →  8  (256-byte pages, matches 6502)
-	//   FPBitmapZeroPageStyle →  0  (every byte)
+	//   FPBitmapZeroPageStyle →  8  (256-byte pages)
 	PageShift uint8
 
-	// BitMeansFastPath reports the polarity of the bitmap bit. true means
-	// the bit being SET indicates the fast path is safe to take; false means
-	// the bit being CLEAR indicates fast path. Code-page-dirty uses
-	// false (clear=clean=skip self-mod check).
+	// BitMeansFastPath reports the polarity of the bitmap byte. true means
+	// the byte being non-zero indicates the fast path is safe to take; false
+	// means zero indicates the fast path. MachineBus IO, code-page dirty,
+	// and direct-page bail bitmaps all use false (clear=RAM/clean/direct).
 	BitMeansFastPath bool
 }
 
@@ -71,10 +72,10 @@ type FastPathBitmapShape struct {
 // emitters consult this so a future shift adjustment (e.g. 4 KiB → 16 KiB
 // pages on a different host) updates every callsite uniformly.
 var FastPathBitmapShapes = map[FastPathBitmapKind]FastPathBitmapShape{
-	FPBitmapDenseRAM:      {PageShift: 12, BitMeansFastPath: true},
-	FPBitmapMMIO:          {PageShift: 12, BitMeansFastPath: false},
+	FPBitmapDenseRAM:      {PageShift: 8, BitMeansFastPath: false},
+	FPBitmapMMIO:          {PageShift: 8, BitMeansFastPath: true},
 	FPBitmapCodePageDirty: {PageShift: 8, BitMeansFastPath: false},
-	FPBitmapZeroPageStyle: {PageShift: 0, BitMeansFastPath: true},
+	FPBitmapZeroPageStyle: {PageShift: 8, BitMeansFastPath: false},
 }
 
 // LookupFastPathBitmapShape returns the FastPathBitmapShape for a kind, or
@@ -83,4 +84,35 @@ var FastPathBitmapShapes = map[FastPathBitmapKind]FastPathBitmapShape{
 func LookupFastPathBitmapShape(k FastPathBitmapKind) (FastPathBitmapShape, bool) {
 	shape, ok := FastPathBitmapShapes[k]
 	return shape, ok
+}
+
+// emitAMD64FastPathBitmapProbe emits the shared byte-bitmap probe used by
+// amd64 JIT backends. addrReg is preserved; indexReg and valueReg are clobbered.
+// The returned rel32 offset branches either when the bitmap says "fast" or when
+// it says "slow", depending on branchWhenFast.
+func emitAMD64FastPathBitmapProbe(cb *CodeBuffer, kind FastPathBitmapKind, bitmapBase, addrReg, indexReg, valueReg byte, branchWhenFast bool) (int, bool) {
+	shape, ok := LookupFastPathBitmapShape(kind)
+	if !ok {
+		return 0, false
+	}
+
+	amd64MOV_reg_reg32(cb, indexReg, addrReg)
+	if shape.PageShift != 0 {
+		amd64SHR_imm32(cb, indexReg, shape.PageShift)
+	}
+	amd64MOVZX_B_memSIB(cb, valueReg, bitmapBase, indexReg)
+	amd64TEST_reg_reg32(cb, valueReg, valueReg)
+
+	cond := byte(amd64CondNE)
+	if !shape.BitMeansFastPath {
+		cond = amd64CondE
+	}
+	if !branchWhenFast {
+		if cond == amd64CondE {
+			cond = amd64CondNE
+		} else {
+			cond = amd64CondE
+		}
+	}
+	return amd64Jcc_rel32(cb, cond), true
 }
