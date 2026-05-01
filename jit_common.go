@@ -714,6 +714,28 @@ type JITBlock struct {
 	// without this filter, two address spaces sharing a virtual PC could
 	// cross-link native blocks and execute the wrong physical code.
 	ptbr uint64
+
+	// coveredRanges optionally enumerates every guest [start, end) span
+	// the block's native code was compiled from. Non-nil only for
+	// region blocks whose constituent guest blocks are non-contiguous
+	// in the address space — a region 0x100→0x5000→0x200 cannot be
+	// described by a single [startPC, endPC) span and would silently
+	// miss SMC invalidation for the 0x5000 block. Nil means the
+	// canonical [startPC, endPC) span is exact.
+	coveredRanges [][2]uint32
+}
+
+// JITBlockCoveredRanges returns the guest PC ranges the block's native
+// code was compiled from. For per-block compiles this is just the
+// canonical [startPC, endPC) span; for region compiles whose
+// constituent blocks are non-contiguous it is the explicit list set
+// at compile time. SMC invalidation and code-page bitmap marking must
+// iterate this slice rather than [startPC, endPC) directly.
+func JITBlockCoveredRanges(b *JITBlock) [][2]uint32 {
+	if b.coveredRanges != nil {
+		return b.coveredRanges
+	}
+	return [][2]uint32{{b.startPC, b.endPC}}
 }
 
 type CodeCache struct {
@@ -747,11 +769,18 @@ func (cc *CodeCache) Invalidate() {
 	clear(cc.blocks)
 }
 
-// InvalidateRange removes any blocks whose [startPC, endPC) overlaps [lo, hi).
+// InvalidateRange removes any blocks whose covered guest PC ranges
+// overlap [lo, hi). Region blocks may have multiple non-contiguous
+// covered ranges; iterating JITBlockCoveredRanges catches an SMC write
+// to a region's middle block that the canonical [startPC, endPC)
+// span would miss.
 func (cc *CodeCache) InvalidateRange(lo, hi uint32) {
 	for key, block := range cc.blocks {
-		if block.endPC > lo && block.startPC < hi {
-			delete(cc.blocks, key)
+		for _, r := range JITBlockCoveredRanges(block) {
+			if r[1] > lo && r[0] < hi {
+				delete(cc.blocks, key)
+				break
+			}
 		}
 	}
 }

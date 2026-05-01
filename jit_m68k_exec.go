@@ -16,6 +16,16 @@ const (
 	m68kJitExecMemSize = 16 * 1024 * 1024 // 16MB executable memory pool
 )
 
+// m68kTierController is the shared Phase 3 promotion controller bound
+// to M68K's reference RegPressureProfile. Cache-hit gate in the exec
+// loop delegates to ShouldPromote so threshold tweaks apply uniformly.
+//
+// B.1.b uses this controller to drive region promotion only — no
+// per-block Tier-2 reg-map promotion lands until B.1.c. The
+// PromoteBlock allocator stub stays a no-op for now (see
+// jit_tier_backends.go).
+var m68kTierController = NewTierController(M68KRegProfile)
+
 // m68kGetJITExecMem returns the typed *ExecMem from the cpu's any field.
 func (cpu *M68KCPU) m68kGetJITExecMem() *ExecMem {
 	if cpu.m68kJitExecMem == nil {
@@ -222,6 +232,53 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			diagCacheMisses++
 		} else {
 			diagCacheHits++
+
+			// Hot-block detection — when execCount crosses the shared
+			// TierController threshold, attempt multi-block region
+			// compilation. Region promotion overwrites the entry-PC cache
+			// slot with a single JITBlock spanning the whole region;
+			// in-region chain exits become internal jumps eliminating
+			// dispatcher round-trips on the hot path.
+			block.execCount++
+			if block.tier == 0 && m68kTierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
+				block.lastPromoteAt = block.execCount
+				region := m68kFormRegion(pc, cpu.memory)
+				if region != nil && len(region.blocks) >= 2 {
+					newBlock, err := m68kCompileRegion(region, execMem, cpu.memory)
+					if err == nil {
+						newBlock.execCount = block.execCount
+						newBlock.tier = 1
+						cpu.m68kJitCache.Put(newBlock)
+						if newBlock.chainEntry != 0 {
+							cpu.m68kJitCache.PatchChainsTo(newBlock.startPC, newBlock.chainEntry)
+						}
+						// Patch the region's outgoing chain slots against
+						// already-cached external successors.
+						for i := range newBlock.chainSlots {
+							slot := &newBlock.chainSlots[i]
+							if target := cpu.m68kJitCache.Get(slot.targetPC); target != nil && target.chainEntry != 0 {
+								PatchRel32At(slot.patchAddr, target.chainEntry)
+							}
+						}
+						// Mark every page covered by the region's constituent
+						// blocks so SMC invalidation fires for non-monotonic
+						// regions (e.g. 0x100→0x5000→0x200) whose canonical
+						// [startPC, endPC) span would skip middle blocks.
+						if cpu.m68kJitCodeBitmap != nil {
+							for _, r := range JITBlockCoveredRanges(newBlock) {
+								startPage := r[0] >> 12
+								endPage := (r[1] - 1) >> 12
+								for p := startPage; p <= endPage; p++ {
+									if p < uint32(len(cpu.m68kJitCodeBitmap)) {
+										cpu.m68kJitCodeBitmap[p] = 1
+									}
+								}
+							}
+						}
+						block = newBlock
+					}
+				}
+			}
 		}
 
 		// Update 4-entry MRU RTS cache: shift entries down and write new

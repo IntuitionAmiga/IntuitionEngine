@@ -33,9 +33,18 @@ type IE64TierAllocator struct{}
 func (IE64TierAllocator) PromoteBlock(pc uint32) bool { return false }
 
 // M68KTierAllocator implements TierAllocator for the M68K backend.
-// M68K's biggest single-backend win: A1-A6 (currently spilled into the
-// AddrRegs[] array) get pinned during a hot block. Plan Phase 3c
-// estimates +25% on Mixed.
+// Closure-plan B.1.c disposition (RETIRED with architectural blocker):
+// Pinning A1-A6 into a dedicated host register requires a free scratch
+// slot. Both R10 and R11 are heavily used by the existing emitter for
+// CCR-build sequences (SETcc result staging) and 64-bit MULL split
+// paths — pinning either would require a 30-site emit-path refactor
+// to route those scratch uses through RAX/RCX/RDX. The refactor
+// exceeds the B.1.c slice budget; B.1.b's region compile (chain-exit
+// internalisation) already captures the BranchDense win without
+// register pinning. PromoteBlock stays a permanent no-op for API
+// uniformity. M68K Tier-2 lives at region granularity only — see the
+// plan's note "M68K Tier-2 lives at region granularity only, no
+// single-block promotion."
 type M68KTierAllocator struct{}
 
 func (M68KTierAllocator) PromoteBlock(pc uint32) bool { return false }

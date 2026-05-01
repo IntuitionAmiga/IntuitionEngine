@@ -4,6 +4,8 @@
 
 package main
 
+import "errors"
+
 // ===========================================================================
 // x86-64 Register Mapping for M68K JIT
 // ===========================================================================
@@ -597,10 +599,20 @@ func m68kEmitEpilogue(cb *CodeBuffer, br *m68kBlockRegs) {
 	amd64RET(cb)
 }
 
+// m68kCurrentInstrCountBase is the per-region cumulative instruction
+// count of all blocks emitted before the currently-active block.
+// m68kEmitRetPC adds this base to the per-block `count` argument so
+// every exit path inside a region (IO bail, RTS-cache miss, dynamic
+// JMP/JSR exit) reports the cumulative instructions retired across
+// the whole region — not just the current block. Default 0 leaves
+// per-block compilation unchanged. m68kCompileRegion sets it before
+// each block emit and clears after the region completes.
+var m68kCurrentInstrCountBase uint32
+
 // m68kEmitRetPC writes RetPC and RetCount to the JITContext before epilogue.
 func m68kEmitRetPC(cb *CodeBuffer, pc uint32, count uint32) {
 	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetPC), pc)
-	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetCount), count)
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetCount), m68kCurrentInstrCountBase+count)
 }
 
 // ===========================================================================
@@ -4140,6 +4152,239 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 		execSize:   len(code),
 		chainEntry: chainEntry,
 		chainSlots: slots,
+	}, nil
+}
+
+// ===========================================================================
+// Region Compilation (Phase 4 sub-phase B.1.b)
+// ===========================================================================
+
+// m68kRegion is the compiled-region descriptor produced by m68kFormRegion.
+// blocks[i] is the pre-scanned instruction list for block i; blockPCs[i]
+// is the guest start PC of that block. entryPC == blockPCs[0].
+type m68kRegion struct {
+	blocks   [][]M68KJITInstr
+	blockPCs []uint32
+	entryPC  uint32
+}
+
+// m68kFormRegion is the cache-aware region builder consumed by the M68K
+// JIT exec loop. It walks the static control-flow graph from hotPC via
+// ScanRegionM68K's per-backend rules, then refuses any region whose
+// constituent blocks are not safe for region compile (fused-leaf
+// markers, fallback-required first instruction, scan failure). Returns
+// nil for single-block "regions" — caller falls back to per-block
+// compile.
+//
+// Unlike x86FormRegion this implementation does not gate on cache
+// presence: the region is built directly from memory. Cache-presence
+// gating can be layered on later if region recompile thrash becomes a
+// measured problem.
+func m68kFormRegion(hotPC uint32, memory []byte) *m68kRegion {
+	res := ScanRegionM68K(memory, hotPC)
+	if len(res.BlockPCs) < 2 {
+		return nil
+	}
+	region := &m68kRegion{entryPC: hotPC, blockPCs: res.BlockPCs}
+	for _, pc := range res.BlockPCs {
+		instrs := m68kScanBlock(memory, pc)
+		if len(instrs) == 0 || m68kNeedsFallback(instrs) {
+			return nil
+		}
+		// Reject region if the block contains fused-leaf markers — the
+		// region path does not handle the synthetic-RTS bookkeeping that
+		// fused-leaf compile depends on.
+		for _, ji := range instrs {
+			if ji.fusedFlag != 0 {
+				return nil
+			}
+		}
+		region.blocks = append(region.blocks, instrs)
+	}
+	return region
+}
+
+// m68kCompileRegion compiles a multi-block region as a single native
+// JITBlock. Mirrors x86CompileRegion's structure but without Tier-2 reg
+// alloc (B.1.b is region-compile-only; reg-map promotion is B.1.c).
+//
+// Internal jumps (chain exits whose targetPC matches an in-region
+// block start) are post-processed: the chain exit's patchable JMP is
+// rewritten to jump to the in-region block's local label, eliminating
+// the dispatcher round-trip. The chain exit's CCR-materialise +
+// ChainCount-accum + ChainBudget-decrement still runs, so the harness's
+// per-block instruction accounting and SMC budget remain correct.
+//
+// External chain exits (targetPC outside the region) are exposed via
+// chainSlots as in the per-block compiler. Region SMC invalidation is
+// inherited from the per-block path: when the code-page bitmap fires
+// inside any region page, the entire JIT cache is invalidated by the
+// exec loop's NeedInval handler — no region-specific bookkeeping
+// required because the region is itself a single cache entry that
+// gets dropped along with the rest.
+//
+// CCR liveness analysis is conservative across the region (every CCR
+// producer materialises). A future B.1.c-level pass can wire a
+// region-aware liveness once the cross-block analyzer lands.
+func m68kCompileRegion(region *m68kRegion, execMem *ExecMem, memory []byte) (*JITBlock, error) {
+	if region == nil || len(region.blocks) < 2 {
+		return nil, errors.New("m68kCompileRegion: region has fewer than 2 blocks")
+	}
+
+	// Concatenate instructions for whole-region register analysis.
+	var allInstrs []M68KJITInstr
+	for _, blk := range region.blocks {
+		allInstrs = append(allInstrs, blk...)
+	}
+	br := m68kAnalyzeBlockRegs(allInstrs)
+	// Conservative: cross-block back-edge detection is not yet
+	// region-aware (m68kDetectBackwardBranchesWithMem is per-block-PC).
+	// Force-true so the prologue emits the full backward-branch
+	// scaffolding; the small extra cost is bounded and correct.
+	br.hasBackwardBranch = true
+
+	cb := NewCodeBuffer(len(allInstrs) * 512)
+	m68kEmitPrologue(cb, region.entryPC, &br)
+	chainEntryOff := m68kEmitChainEntry(cb, &br)
+
+	var cs m68kCompileState
+	m68kCurrentCS = &cs
+	defer func() { m68kCurrentCS = nil }()
+
+	// Disable per-instruction CCR liveness for the region path —
+	// m68kCCRLiveness operates per-block and would mis-classify producers
+	// whose consumers live in a later region block. Conservative
+	// materialise on every consumer.
+	prevLive := m68kCurrentLive
+	m68kCurrentLive = nil
+	defer func() {
+		m68kCurrentLive = prevLive
+		m68kCurrentInstrIdx = 0
+	}()
+
+	var allChainExits []m68kChainExitInfo
+	blockLabels := make([]int, len(region.blocks))
+	totalInstrCount := 0
+
+	prevBase := m68kCurrentInstrCountBase
+	defer func() { m68kCurrentInstrCountBase = prevBase }()
+
+	for bi, blk := range region.blocks {
+		blockLabels[bi] = cb.Len()
+		// Set the per-block instruction-count base so every emit-site
+		// RetPC write (IO bail, RTS-cache miss, dynamic JMP/JSR exit,
+		// etc.) reports cumulative-across-region instructions retired —
+		// not just the current block's count. Without this, a late-block
+		// exit would write a small RetCount and the dispatcher would
+		// undercount executed instructions (it ignores ChainCount when
+		// RetCount is nonzero).
+		m68kCurrentInstrCountBase = uint32(totalInstrCount)
+
+		instrOffsets := make([]int, len(blk))
+		for i := range blk {
+			m68kCurrentInstrIdx = i
+
+			if cs.flagState != flagsMaterialized {
+				if m68kInstrNeedsCCRMaterialization(&blk[i]) {
+					m68kMaterializeCCR(cb, &cs)
+				}
+			}
+
+			instrOffsets[i] = cb.Len()
+			ji := &blk[i]
+			m68kEmitInstructionFull(cb, ji, region.blockPCs[bi], &br, i, len(blk), memory, instrOffsets, blk, &allChainExits)
+
+			if !m68kIsBlockTerminator(ji.opcode) && m68kInstrMaySetGenericIOFallback(ji) {
+				instrPC := region.blockPCs[bi] + ji.pcOffset
+				if cs.flagState != flagsMaterialized {
+					m68kMaterializeCCR(cb, &cs)
+				}
+				amd64ALU_mem_imm8(cb, 7, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 0)
+				noIOBailOff := amd64Jcc_rel32(cb, amd64CondE)
+				// Per-block i passes through to the emit-base machinery
+				// (m68kCurrentInstrCountBase + i = global retire count).
+				m68kEmitRetPC(cb, instrPC, uint32(i))
+				m68kEmitEpilogue(cb, &br)
+				patchRel32(cb, noIOBailOff, cb.Len())
+			}
+		}
+		totalInstrCount += len(blk)
+	}
+
+	// Patch in-region chain exits to internal block labels. Mark the
+	// jmpDispOffset as -1 so the post-write chainSlots loop skips them.
+	for i := range allChainExits {
+		ce := &allChainExits[i]
+		for bi, bpc := range region.blockPCs {
+			if bpc == ce.targetPC {
+				patchRel32(cb, ce.jmpDispOffset, blockLabels[bi])
+				allChainExits[i].jmpDispOffset = -1
+				break
+			}
+		}
+	}
+
+	// Defensive fall-through epilogue if the last real instruction is
+	// not a terminator (region scanner stops at terminators, so this
+	// should not normally fire — included as a safety net for any
+	// future scanner change that admits fall-through tails).
+	// Clear the per-block base before this emit so the explicit
+	// totalInstrCount value lands as RetCount unmodified.
+	m68kCurrentInstrCountBase = 0
+	lastBlock := region.blocks[len(region.blocks)-1]
+	lastInstr := &lastBlock[len(lastBlock)-1]
+	if !m68kIsBlockTerminator(lastInstr.opcode) {
+		endPC := region.blockPCs[len(region.blocks)-1] + lastInstr.pcOffset + uint32(lastInstr.length)
+		m68kEmitRetPC(cb, endPC, uint32(totalInstrCount))
+		m68kEmitEpilogue(cb, &br)
+	}
+
+	code := cb.Bytes()
+	addr, err := execMem.Write(code)
+	if err != nil {
+		return nil, err
+	}
+
+	var slots []chainSlot
+	for _, ce := range allChainExits {
+		if ce.jmpDispOffset < 0 {
+			continue
+		}
+		slots = append(slots, chainSlot{
+			targetPC:  ce.targetPC,
+			patchAddr: addr + uintptr(ce.jmpDispOffset),
+		})
+	}
+
+	endPC := region.blockPCs[len(region.blocks)-1] + lastInstr.pcOffset + uint32(lastInstr.length)
+
+	// coveredRanges enumerates every guest [start, end) span the
+	// region's native code was compiled from. Required for SMC
+	// invalidation correctness when the region follows non-monotonic
+	// static targets — e.g. 0x100→0x5000→0x200 has a canonical
+	// [startPC, endPC) of [0x100, 0x202) which would silently miss
+	// guest writes to 0x5000. CodeCache.InvalidateRange and the
+	// exec-loop code-page bitmap walk consult this list.
+	covered := make([][2]uint32, 0, len(region.blocks))
+	for bi, blk := range region.blocks {
+		if len(blk) == 0 {
+			continue
+		}
+		blockStart := region.blockPCs[bi]
+		lastJI := &blk[len(blk)-1]
+		blockEnd := blockStart + lastJI.pcOffset + uint32(lastJI.length)
+		covered = append(covered, [2]uint32{blockStart, blockEnd})
+	}
+
+	return &JITBlock{
+		startPC:       region.entryPC,
+		endPC:         endPC,
+		instrCount:    totalInstrCount,
+		execAddr:      addr,
+		execSize:      len(code),
+		chainEntry:    addr + uintptr(chainEntryOff),
+		chainSlots:    slots,
+		coveredRanges: covered,
 	}, nil
 }
 
