@@ -3,9 +3,22 @@
 package main
 
 import (
+	"os"
 	"time"
 	"unsafe"
 )
+
+// init honors the IE6502_ASM_INTERP env var so the bench harness can
+// flip between the asm interpreter (default) and the pure-Go interpreter
+// for side-by-side comparisons. Values: "0"|"false"|"off" disable the
+// asm path; anything else (including unset) leaves the asm path enabled.
+// Read once at process start; not safe to flip mid-run.
+func init() {
+	switch os.Getenv("IE6502_ASM_INTERP") {
+	case "0", "false", "off", "FALSE", "OFF":
+		enable6502ASMInterpreter = false
+	}
+}
 
 const (
 	interp6502ExitBudget      = 0
