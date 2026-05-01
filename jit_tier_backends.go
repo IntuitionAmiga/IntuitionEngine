@@ -1,20 +1,15 @@
-// jit_tier_backends.go - per-backend Tier-2 allocator scaffolds
-// (Phase 3 sub-phases 3b/3c/3d/3e of the six-CPU JIT unification plan).
+// jit_tier_backends.go - per-backend Tier-2 allocator dispositions
+// (Phase 3 of the six-CPU JIT unification plan).
 //
-// Phase 3a migrates x86's existing Tier-2 promoter (jit_x86_exec.go:233-266
-// + x86Tier2RegAlloc) to the shared TierController. Phase 3b-3e roll the
-// same controller out to IE64, M68K, Z80, 6502, in order of expected
-// payoff.
+// The closure pass retired per-block register-map promotion for IE64, M68K,
+// Z80, and 6502. IE64/M68K take their remaining payoff through region
+// promotion in the exec loops; Z80/6502 keep their existing chain-patching
+// and pinned-register designs. x86 single-block promotion was also retired;
+// x86 region promotion remains implemented in the x86-specific path.
 //
-// Each backend's TierAllocator implementation lives below as a scaffold
-// — it returns a static decision today (no Tier-2 promotion) so existing
-// behavior is preserved. The follow-up patch per backend replaces
-// PromoteBlock / PreserveAcrossInvalidation with the real regalloc.
-//
-// Wiring: each backend's exec loop (jit_<cpu>_exec.go) calls
-// TierController.ShouldPromote(block) once execCount crosses its
-// per-backend threshold. The controller delegates to the backend's
-// allocator below.
+// These no-op allocators are retained only to keep the shared TierAllocator
+// registry total over the backend set. A false return is the permanent
+// disposition, not an unfinished implementation hook.
 
 //go:build (amd64 && (linux || windows || darwin)) || (arm64 && linux)
 
@@ -77,18 +72,17 @@ type P65TierAllocator struct{}
 
 func (P65TierAllocator) PromoteBlock(pc uint32) bool { return false }
 
-// X86TierAllocator wraps the existing x86 Tier-2 promoter
-// (x86Tier2RegAlloc) under the shared TierAllocator interface. Phase 3a
-// completion replaces this stub with a thin delegation.
+// X86TierAllocator is a permanent no-op. x86 region promotion is driven by
+// x86FormRegion/x86CompileRegion in the x86 exec path; the abandoned
+// single-block promotion path was removed during closure.
 type X86TierAllocator struct{}
 
 func (X86TierAllocator) PromoteBlock(pc uint32) bool { return false }
 
-// BackendTierAllocators is the registry consumed by per-backend exec
-// loops to look up their allocator. Keyed by backend tag string (matches
-// BackendCanonicalABI).
-//
-// Initialised here, consumed by the per-backend exec loop's wiring patch.
+// BackendTierAllocators is audit metadata keyed by backend tag string
+// (matching BackendCanonicalABI). Exec loops that do region promotion call
+// TierController.ShouldPromote directly and intentionally do not delegate to
+// these retired allocators.
 var BackendTierAllocators = map[string]TierAllocator{
 	"ie64": IE64TierAllocator{},
 	"m68k": M68KTierAllocator{},

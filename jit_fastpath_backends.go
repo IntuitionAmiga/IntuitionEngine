@@ -1,19 +1,20 @@
-// jit_fastpath_backends.go - per-backend fast-path bitmap probe wiring
-// scaffold (Phase 5 of the six-CPU JIT unification plan).
+// jit_fastpath_backends.go - per-backend fast-path bitmap registry
+// (Phase 5 of the six-CPU JIT unification plan).
 //
 // Closure-plan Slice C disposition:
-//   - 6502, Z80, x86: bespoke fast paths already live in those backends'
-//     emitters (DirectPageBitmap probe / inline bitmap test /
-//     compile-time ioBitmap respectively). The EmitFastPathProbe* hooks
-//     here are deliberately retired no-ops — wiring them would
-//     duplicate working code without observable speedup. See each
-//     hook's per-backend comment for the production callsite.
-//   - M68K (C.1) and IE64 (C.2) need real wiring; those entry points
-//     are the only ones the Phase-5b plan still gates on.
+// All Phase-5 hook functions are retired. The actual production fast paths
+// live in the emitters where the relevant address-register and bail-label
+// state already exists:
+//   - 6502: jit_6502_emit_amd64.go consults DirectPageBitmap inline.
+//   - Z80: jit_z80_emit_amd64.go tests directPageBitmap/codePageBitmap inline.
+//   - x86: jit_x86_emit_amd64.go uses x86CompileIOBitmap at compile time.
+//   - IE64: jit_emit_amd64.go keeps R9 as ioPageBitmap and probes it in
+//     emitLOAD_AMD64 / emitSTORE_AMD64.
+//   - M68K: jit_m68k_emit_amd64.go already specializes the hot MemCopy path
+//     and keeps generic memory ops behind the bus/SMC bail protocol.
 //
-// EmitFastPathProbe* signatures stay so any future audit that wants a
-// uniform shape can iterate the registry without per-backend
-// dispatches.
+// Keeping callable no-op EmitFastPathProbe* hooks made the phase look wired
+// when it was not. The registry below remains only as audit metadata.
 
 //go:build amd64 && (linux || windows || darwin)
 
@@ -28,28 +29,5 @@ var BackendFastPathKinds = map[string][]FastPathBitmapKind{
 	"z80":  {FPBitmapDenseRAM, FPBitmapCodePageDirty},
 	"ie64": {FPBitmapDenseRAM, FPBitmapMMIO},
 	"x86":  {FPBitmapDenseRAM, FPBitmapMMIO},
-	"m68k": {FPBitmapDenseRAM}, // Phase 5b adds low-mem TPA
+	"m68k": {FPBitmapDenseRAM},
 }
-
-// EmitFastPathProbeM68K is the M68K emit-side hook the Phase-5b patch
-// fills in. Today returns false (no fast path emitted, fall through to
-// the existing slow-path).
-func EmitFastPathProbeM68K(kind FastPathBitmapKind, addr uint32) bool { return false }
-
-// EmitFastPathProbeIE64 is the IE64 emit-side hook the Slice C.2 patch
-// fills in. Today returns false.
-func EmitFastPathProbeIE64(kind FastPathBitmapKind, addr uint32) bool { return false }
-
-// EmitFastPathProbeZ80 stays a retired no-op: the Z80 emitter
-// (jit_z80_emit_amd64.go) already issues an inline bitmap test on every
-// memory access. Wiring this hook would duplicate that work.
-func EmitFastPathProbeZ80(kind FastPathBitmapKind, addr uint32) bool { return false }
-
-// EmitFastPathProbeP65 stays a retired no-op: the 6502 emitter
-// (jit_6502_emit_amd64.go) already consults DirectPageBitmap inline.
-func EmitFastPathProbeP65(kind FastPathBitmapKind, addr uint32) bool { return false }
-
-// EmitFastPathProbeX86 stays a retired no-op: the x86 emitter
-// (jit_x86_emit_amd64.go) already keys on the compile-time x86CompileIOBitmap
-// to decide between fast/slow load/store paths.
-func EmitFastPathProbeX86(kind FastPathBitmapKind, addr uint32) bool { return false }
