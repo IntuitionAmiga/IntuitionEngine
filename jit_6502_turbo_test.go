@@ -86,3 +86,48 @@ func TestP65TurboAnalyze_RejectsIndirectJump(t *testing.T) {
 		t.Fatalf("reject reason=%v, want dynamic jump", reason)
 	}
 }
+
+func TestP65TurboFastLoops_Parity(t *testing.T) {
+	if !jit6502Available {
+		t.Skip("6502 JIT not available")
+	}
+	t.Setenv("P65_JIT_TURBO", "1")
+	cases := []struct {
+		name    string
+		program []byte
+	}{
+		{"memory", bench6502MemProgram},
+		{"call", bench6502CallProgram},
+		{"branch", bench6502BranchProgram},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			interpBus := NewMachineBus()
+			interp := NewCPU_6502(interpBus)
+			jitBus := NewMachineBus()
+			jit := NewCPU_6502(jitBus)
+			for i, b := range tc.program {
+				interpBus.Write8(0x0600+uint32(i), b)
+				jitBus.Write8(0x0600+uint32(i), b)
+			}
+			interp.PC = 0x0600
+			jit.PC = 0x0600
+			interp.SP = 0xFF
+			jit.SP = 0xFF
+			interp.SetRunning(true)
+			jit.SetRunning(true)
+			interp.Execute()
+			jit.ExecuteJIT6502()
+			if interp.PC != jit.PC || interp.A != jit.A || interp.X != jit.X || interp.Y != jit.Y || interp.SP != jit.SP || interp.SR != jit.SR || interp.Cycles != jit.Cycles {
+				t.Fatalf("state mismatch: interp PC=%04X A=%02X X=%02X Y=%02X SP=%02X SR=%02X cycles=%d; jit PC=%04X A=%02X X=%02X Y=%02X SP=%02X SR=%02X cycles=%d",
+					interp.PC, interp.A, interp.X, interp.Y, interp.SP, interp.SR, interp.Cycles,
+					jit.PC, jit.A, jit.X, jit.Y, jit.SP, jit.SR, jit.Cycles)
+			}
+			for addr := uint16(0); addr < 0x0200; addr++ {
+				if interp.fastAdapter.memDirect[addr] != jit.fastAdapter.memDirect[addr] {
+					t.Fatalf("memory mismatch at %04X: interp=%02X jit=%02X", addr, interp.fastAdapter.memDirect[addr], jit.fastAdapter.memDirect[addr])
+				}
+			}
+		})
+	}
+}

@@ -916,7 +916,7 @@ type invalInfo struct {
 func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 	instrPC uint32, instrIdx int, pendingCycles uint32,
 	bails *[]bailInfo, isLoadWithPageCross bool,
-	nzPending bool, nzReg byte) {
+	nzPending bool, nzReg byte, opts p65CompileOptions) {
 
 	switch opcode {
 	// === Immediate ===
@@ -926,46 +926,56 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 	// === Zero Page ===
 	case 0xA5, 0xA6, 0xA4: // LDA/LDX/LDY zp
 		emit6502AddrZP(cb, byte(operand))
-		bailOff := emit6502ZPPageCheck(cb, 0)
-		*bails = append(*bails, bailInfo{
-			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
-		})
+		if !opts.turboDirectMemory {
+			bailOff := emit6502ZPPageCheck(cb, 0)
+			*bails = append(*bails, bailInfo{
+				offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
+			})
+		}
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
 	// === Zero Page,X ===
 	case 0xB5, 0xB4: // LDA/LDY zp,X
 		emit6502AddrZPX(cb, byte(operand))
-		bailOff := emit6502ZPPageCheck(cb, 0)
-		*bails = append(*bails, bailInfo{
-			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
-		})
+		if !opts.turboDirectMemory {
+			bailOff := emit6502ZPPageCheck(cb, 0)
+			*bails = append(*bails, bailInfo{
+				offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
+			})
+		}
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
 	// === Zero Page,Y ===
 	case 0xB6: // LDX zp,Y
 		emit6502AddrZPY(cb, byte(operand))
-		bailOff := emit6502ZPPageCheck(cb, 0)
-		*bails = append(*bails, bailInfo{
-			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
-		})
+		if !opts.turboDirectMemory {
+			bailOff := emit6502ZPPageCheck(cb, 0)
+			*bails = append(*bails, bailInfo{
+				offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
+			})
+		}
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
 	// === Absolute ===
 	case 0xAD, 0xAE, 0xAC: // LDA/LDX/LDY abs
 		emit6502AddrAbs(cb, operand)
-		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
-		})
+		if !opts.turboDirectMemory {
+			fpOff := emit6502FullFastPathCheck(cb)
+			*bails = append(*bails, bailInfo{
+				offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
+			})
+		}
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
 	// === Absolute,X ===
 	case 0xBD, 0xBC: // LDA/LDY abs,X
 		emit6502AddrAbsX(cb, operand)
-		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
-		})
+		if !opts.turboDirectMemory {
+			fpOff := emit6502FullFastPathCheck(cb)
+			*bails = append(*bails, bailInfo{
+				offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
+			})
+		}
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 		if isLoadWithPageCross {
 			emit6502PageCrossCheck(cb)
@@ -974,10 +984,12 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 	// === Absolute,Y ===
 	case 0xB9, 0xBE: // LDA/LDX abs,Y
 		emit6502AddrAbsY(cb, operand)
-		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
-		})
+		if !opts.turboDirectMemory {
+			fpOff := emit6502FullFastPathCheck(cb)
+			*bails = append(*bails, bailInfo{
+				offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
+			})
+		}
 		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 		if isLoadWithPageCross {
 			emit6502PageCrossCheck(cb)
@@ -1011,16 +1023,18 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 	instrPC uint32, instrIdx int, pendingCycles uint32, instrCycles uint32,
 	bails *[]bailInfo, invals *[]invalInfo, nextPC uint32,
-	nzPending bool, nzReg byte) {
+	nzPending bool, nzReg byte, opts p65CompileOptions) {
 
 	switch opcode {
 	// === Zero Page ===
 	case 0x85, 0x86, 0x84: // STA/STX/STY zp
 		emit6502AddrZP(cb, byte(operand))
-		bailOff := emit6502ZPPageCheck(cb, 0)
-		*bails = append(*bails, bailInfo{
-			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
-		})
+		if !opts.turboDirectMemory {
+			bailOff := emit6502ZPPageCheck(cb, 0)
+			*bails = append(*bails, bailInfo{
+				offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
+			})
+		}
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
@@ -1030,10 +1044,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 	// === Zero Page,X ===
 	case 0x95, 0x94: // STA/STY zp,X
 		emit6502AddrZPX(cb, byte(operand))
-		bailOff := emit6502ZPPageCheck(cb, 0)
-		*bails = append(*bails, bailInfo{
-			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
-		})
+		if !opts.turboDirectMemory {
+			bailOff := emit6502ZPPageCheck(cb, 0)
+			*bails = append(*bails, bailInfo{
+				offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
+			})
+		}
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
@@ -1043,10 +1059,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 	// === Zero Page,Y ===
 	case 0x96: // STX zp,Y
 		emit6502AddrZPY(cb, byte(operand))
-		bailOff := emit6502ZPPageCheck(cb, 0)
-		*bails = append(*bails, bailInfo{
-			offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
-		})
+		if !opts.turboDirectMemory {
+			bailOff := emit6502ZPPageCheck(cb, 0)
+			*bails = append(*bails, bailInfo{
+				offsets: []int{bailOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
+			})
+		}
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
@@ -1056,10 +1074,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 	// === Absolute ===
 	case 0x8D, 0x8E, 0x8C: // STA/STX/STY abs
 		emit6502AddrAbs(cb, operand)
-		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
-		})
+		if !opts.turboDirectMemory {
+			fpOff := emit6502FullFastPathCheck(cb)
+			*bails = append(*bails, bailInfo{
+				offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
+			})
+		}
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
@@ -1069,10 +1089,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 	// === Absolute,X ===
 	case 0x9D: // STA abs,X
 		emit6502AddrAbsX(cb, operand)
-		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
-		})
+		if !opts.turboDirectMemory {
+			fpOff := emit6502FullFastPathCheck(cb)
+			*bails = append(*bails, bailInfo{
+				offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
+			})
+		}
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
@@ -1082,10 +1104,12 @@ func emit6502Store(cb *CodeBuffer, srcReg byte, opcode byte, operand uint16,
 	// === Absolute,Y ===
 	case 0x99: // STA abs,Y
 		emit6502AddrAbsY(cb, operand)
-		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{
-			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
-		})
+		if !opts.turboDirectMemory {
+			fpOff := emit6502FullFastPathCheck(cb)
+			*bails = append(*bails, bailInfo{
+				offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
+			})
+		}
 		amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, srcReg)
 		invalOff := emit6502SelfModCheck(cb)
 		*invals = append(*invals, invalInfo{
@@ -1183,6 +1207,7 @@ func findInstrByPC(instrs []JIT6502Instr, targetOffset uint16) int {
 type p65CompileOptions struct {
 	tier              int
 	turboCounterLoops bool
+	turboDirectMemory bool
 }
 
 // emit6502ConditionalBranch emits a conditional branch instruction.
@@ -1773,7 +1798,7 @@ func emit6502PLP(cb *CodeBuffer) {
 func emit6502LoadOperandToEAX(cb *CodeBuffer, opcode byte, operand uint16,
 	instrPC uint32, instrIdx int, pendingCycles uint32,
 	bails *[]bailInfo, emitPageCross bool,
-	nzPending bool, nzReg byte) {
+	nzPending bool, nzReg byte, opts p65CompileOptions) {
 
 	mode := (opcode >> 2) & 7
 	switch mode {
@@ -1781,31 +1806,41 @@ func emit6502LoadOperandToEAX(cb *CodeBuffer, opcode byte, operand uint16,
 		amd64MOV_reg_imm32(cb, amd64RAX, uint32(operand&0xFF))
 	case 1: // Zero Page
 		emit6502AddrZP(cb, byte(operand))
-		bailOff := emit6502ZPPageCheck(cb, 0)
-		*bails = append(*bails, bailInfo{[]int{bailOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
+		if !opts.turboDirectMemory {
+			bailOff := emit6502ZPPageCheck(cb, 0)
+			*bails = append(*bails, bailInfo{[]int{bailOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
+		}
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	case 5: // Zero Page,X
 		emit6502AddrZPX(cb, byte(operand))
-		bailOff := emit6502ZPPageCheck(cb, 0)
-		*bails = append(*bails, bailInfo{[]int{bailOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
+		if !opts.turboDirectMemory {
+			bailOff := emit6502ZPPageCheck(cb, 0)
+			*bails = append(*bails, bailInfo{[]int{bailOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
+		}
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	case 3: // Absolute
 		emit6502AddrAbs(cb, operand)
-		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
+		if !opts.turboDirectMemory {
+			fpOff := emit6502FullFastPathCheck(cb)
+			*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
+		}
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	case 7: // Absolute,X
 		emit6502AddrAbsX(cb, operand)
-		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
+		if !opts.turboDirectMemory {
+			fpOff := emit6502FullFastPathCheck(cb)
+			*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
+		}
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 		if emitPageCross {
 			emit6502PageCrossCheck(cb)
 		}
 	case 6: // Absolute,Y
 		emit6502AddrAbsY(cb, operand)
-		fpOff := emit6502FullFastPathCheck(cb)
-		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
+		if !opts.turboDirectMemory {
+			fpOff := emit6502FullFastPathCheck(cb)
+			*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
+		}
 		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 		if emitPageCross {
 			emit6502PageCrossCheck(cb)
@@ -2121,7 +2156,7 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		case 0xA9, 0xA5, 0xB5, 0xAD, 0xBD, 0xB9, 0xA1, 0xB1:
 			isPageCross := ji.opcode == 0xBD || ji.opcode == 0xB9 || ji.opcode == 0xB1
 			emit6502Load(cb, j65RegA, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg, opts)
 			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
 
@@ -2131,7 +2166,7 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		case 0xA2, 0xA6, 0xB6, 0xAE, 0xBE:
 			isPageCross := ji.opcode == 0xBE
 			emit6502Load(cb, j65RegX, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg, opts)
 			j65MaybeSetNZPending(&nz, j65RegX, live, i)
 			pendingCycles += baseCycles
 
@@ -2141,7 +2176,7 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		case 0xA0, 0xA4, 0xB4, 0xAC, 0xBC:
 			isPageCross := ji.opcode == 0xBC
 			emit6502Load(cb, j65RegY, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg, opts)
 			j65MaybeSetNZPending(&nz, j65RegY, live, i)
 			pendingCycles += baseCycles
 
@@ -2150,7 +2185,7 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		// ================================================================
 		case 0x85, 0x95, 0x8D, 0x9D, 0x99, 0x81, 0x91:
 			emit6502Store(cb, j65RegA, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, baseCycles, &bails, &invals, nextPC, nz.nzPending, nz.nzReg)
+				uint32(instrPC), i, pendingCycles, baseCycles, &bails, &invals, nextPC, nz.nzPending, nz.nzReg, opts)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2158,7 +2193,7 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		// ================================================================
 		case 0x86, 0x96, 0x8E:
 			emit6502Store(cb, j65RegX, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, baseCycles, &bails, &invals, nextPC, nz.nzPending, nz.nzReg)
+				uint32(instrPC), i, pendingCycles, baseCycles, &bails, &invals, nextPC, nz.nzPending, nz.nzReg, opts)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2166,7 +2201,7 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		// ================================================================
 		case 0x84, 0x94, 0x8C:
 			emit6502Store(cb, j65RegY, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, baseCycles, &bails, &invals, nextPC, nz.nzPending, nz.nzReg)
+				uint32(instrPC), i, pendingCycles, baseCycles, &bails, &invals, nextPC, nz.nzPending, nz.nzReg, opts)
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2177,7 +2212,7 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 			decBailOff := emit6502DecimalBailCheck(cb)
 			bails = append(bails, bailInfo{[]int{decBailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg, opts)
 			emit6502ADCFlags(cb)
 			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
@@ -2190,7 +2225,7 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 			decBailOff := emit6502DecimalBailCheck(cb)
 			bails = append(bails, bailInfo{[]int{decBailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg, opts)
 			emit6502SBCFlags(cb)
 			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
@@ -2201,7 +2236,7 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		case 0x29, 0x25, 0x35, 0x2D, 0x3D, 0x39, 0x21, 0x31:
 			isPageCross := ji.opcode == 0x3D || ji.opcode == 0x39 || ji.opcode == 0x31
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg, opts)
 			emit6502LogicOp(cb, 0x21) // AND
 			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
@@ -2212,7 +2247,7 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		case 0x09, 0x05, 0x15, 0x0D, 0x1D, 0x19, 0x01, 0x11:
 			isPageCross := ji.opcode == 0x1D || ji.opcode == 0x19 || ji.opcode == 0x11
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg, opts)
 			emit6502LogicOp(cb, 0x09) // OR
 			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
@@ -2223,7 +2258,7 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		case 0x49, 0x45, 0x55, 0x4D, 0x5D, 0x59, 0x41, 0x51:
 			isPageCross := ji.opcode == 0x5D || ji.opcode == 0x59 || ji.opcode == 0x51
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg, opts)
 			emit6502LogicOp(cb, 0x31) // XOR
 			j65MaybeSetNZPending(&nz, j65RegA, live, i)
 			pendingCycles += baseCycles
@@ -2234,7 +2269,7 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		case 0xC9, 0xC5, 0xD5, 0xCD, 0xDD, 0xD9, 0xC1, 0xD1:
 			isPageCross := ji.opcode == 0xDD || ji.opcode == 0xD9 || ji.opcode == 0xD1
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
-				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg)
+				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg, opts)
 			emit6502CompareFlags(cb, j65RegA)
 			nz.nzPending = false // CMP eagerly sets N/Z in R15
 			pendingCycles += baseCycles
@@ -2590,6 +2625,9 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		// ================================================================
 		case 0x20:
 			pendingCycles += baseCycles
+			if ji.fused&p65FusedJSRLeafCall != 0 {
+				continue
+			}
 			returnAddr := instrPC + 2 // address of last byte of JSR instruction
 			ce := emit6502JSR(cb, ji.operand, returnAddr, uint32(i+1), &pendingCycles, nz.nzPending, nz.nzReg)
 			chainExits = append(chainExits, ce)
@@ -2600,6 +2638,9 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		// ================================================================
 		case 0x60:
 			pendingCycles += baseCycles
+			if ji.fused&p65FusedRTSLeafReturn != 0 {
+				continue
+			}
 			emit6502RTS(cb, uint32(i+1), &pendingCycles, nz.nzPending, nz.nzReg)
 			goto done
 
@@ -2689,7 +2730,13 @@ done:
 
 	// Mark code pages in bitmap. Use lastByte (inclusive) to avoid marking
 	// the next page when the block ends exactly on a page boundary.
-	lastByte := startPC + instrs[len(instrs)-1].pcOffset + uint16(instrs[len(instrs)-1].length) - 1
+	lastByte := startPC
+	for i := range instrs {
+		jiLast := startPC + instrs[i].pcOffset + uint16(instrs[i].length) - 1
+		if jiLast > lastByte {
+			lastByte = jiLast
+		}
+	}
 	for page := startPC >> 8; page <= lastByte>>8; page++ {
 		codePageBitmap[page&0xFF] = 1
 	}

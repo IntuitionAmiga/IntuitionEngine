@@ -164,6 +164,12 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			cpu.running.Store(false)
 			break
 		}
+		if matched, retired := cpu.tryFast6502TurboLoop(mem, pc, p65Turbo); matched {
+			if perfEnabled {
+				cpu.InstructionCount += uint64(retired)
+			}
+			continue
+		}
 		if adapter, ok := cpu.memory.(*Bus6502Adapter); ok {
 			if matched, retired := cpu.tryFast6502MMIOPollLoop(adapter); matched {
 				if perfEnabled {
@@ -177,7 +183,7 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		block := cpu.jitCache.Get(uint32(pc))
 		if block == nil {
 			// Scan and potentially compile a new block
-			instrs := jit6502ScanBlock(mem, pc, memSize)
+			instrs := p65ScanTurboBlock(cpu, mem, pc, memSize)
 			if jit6502NeedsFallback(instrs) {
 				// BRK, RTI, KIL, undocumented — use interpreter for single instruction
 				cpu.interpret6502One()
@@ -244,7 +250,7 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		}
 
 		block.execCount++
-		if p65Turbo && p65TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
+		if p65TurboRegionPromotion && p65Turbo && p65TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
 			block.lastPromoteAt = block.execCount
 			if p65Stats {
 				globalP65TurboStats.turboCandidates.Add(1)
@@ -277,6 +283,9 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 						}
 						if plan.loopSpecialized {
 							globalP65TurboStats.loopSpecializations.Add(1)
+						}
+						if plan.inlinedCalls > 0 {
+							globalP65TurboStats.inlinedCalls.Add(uint64(plan.inlinedCalls))
 						}
 					}
 					if block.chainEntry != 0 {

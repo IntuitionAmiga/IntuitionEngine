@@ -14,6 +14,11 @@ import (
 const (
 	p65JITTier1     = 0
 	p65JITTierTurbo = 1
+
+	// The current generic promoted-block emitter is kept for diagnostics and
+	// follow-up region work, but the measured wins in this pass come from the
+	// bounded-loop fast tier. Leave generic promotion off until it beats tier 1.
+	p65TurboRegionPromotion = false
 )
 
 var p65TierController = func() *TierController {
@@ -172,6 +177,7 @@ func p65RecordTurboReject(reason p65TurboRejectReason) {
 type p65TurboPlan struct {
 	directMemoryProofs int
 	loopSpecialized    bool
+	inlinedCalls       int
 }
 
 func p65AnalyzeTurboRegion(cpu *CPU_6502, instrs []JIT6502Instr, startPC uint16) (p65TurboPlan, p65TurboRejectReason) {
@@ -192,7 +198,15 @@ func p65AnalyzeTurboRegion(cpu *CPU_6502, instrs []JIT6502Instr, startPC uint16)
 			return p65TurboPlan{}, p65TurboRejectTrap
 		case 0x6C:
 			return p65TurboPlan{}, p65TurboRejectDynamicJump
-		case 0x20, 0x60:
+		case 0x20:
+			if ji.fused&p65FusedJSRLeafCall == 0 {
+				return p65TurboPlan{}, p65TurboRejectCall
+			}
+			plan.inlinedCalls++
+		case 0x60:
+			if ji.fused&p65FusedRTSLeafReturn == 0 {
+				return p65TurboPlan{}, p65TurboRejectCall
+			}
 			return p65TurboPlan{}, p65TurboRejectCall
 		case 0xF8:
 			decimalKnownClear = false
@@ -360,14 +374,112 @@ func p65IsBoundedCounterBranchTurbo(instrs []JIT6502Instr, branchIdx, targetIdx 
 	return true
 }
 
+func p65ScanTurboBlock(cpu *CPU_6502, mem []byte, startPC uint16, memSize int) []JIT6502Instr {
+	instrs := make([]JIT6502Instr, 0, 64)
+	pc := startPC
+	for len(instrs) < jit6502MaxBlockSize {
+		if int(pc) >= memSize {
+			break
+		}
+		opcode := mem[pc]
+		length := jit6502InstrLengths[opcode]
+		if int(pc)+int(length) > memSize {
+			break
+		}
+		if p65TurboTrapOpcode(opcode) && len(instrs) > 0 {
+			break
+		}
+		if !jit6502IsCompilable[opcode] && !jit6502IsBlockTerminator(opcode) {
+			break
+		}
+		ji := JIT6502Instr{opcode: opcode, length: length, pcOffset: pc - startPC}
+		switch length {
+		case 2:
+			ji.operand = uint16(mem[pc+1])
+		case 3:
+			ji.operand = uint16(mem[pc+1]) | uint16(mem[pc+2])<<8
+		}
+		if opcode == 0x20 {
+			returnPC := pc + 3
+			if leaf, ok := p65AnalyzeLeafCall(cpu, mem, ji.operand, startPC, memSize); ok && len(instrs)+len(leaf)+1 < jit6502MaxBlockSize {
+				ji.fused = p65FusedJSRLeafCall
+				instrs = append(instrs, ji)
+				instrs = append(instrs, leaf...)
+				pc = returnPC
+				continue
+			}
+		}
+		instrs = append(instrs, ji)
+		pc += uint16(length)
+		if jit6502IsBlockTerminator(opcode) {
+			break
+		}
+	}
+	return instrs
+}
+
+func p65TurboTrapOpcode(opcode byte) bool {
+	switch opcode {
+	case 0x00, 0x40,
+		0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2:
+		return true
+	default:
+		return false
+	}
+}
+
+func p65AnalyzeLeafCall(cpu *CPU_6502, mem []byte, targetPC uint16, regionStart uint16, memSize int) ([]JIT6502Instr, bool) {
+	if int(targetPC) >= memSize {
+		return nil, false
+	}
+	leaf := make([]JIT6502Instr, 0, 8)
+	pc := targetPC
+	for len(leaf) < 8 {
+		if int(pc) >= memSize {
+			return nil, false
+		}
+		opcode := mem[pc]
+		length := jit6502InstrLengths[opcode]
+		if int(pc)+int(length) > memSize || !jit6502IsCompilable[opcode] {
+			return nil, false
+		}
+		ji := JIT6502Instr{opcode: opcode, length: length, pcOffset: pc - regionStart}
+		switch length {
+		case 2:
+			ji.operand = uint16(mem[pc+1])
+		case 3:
+			ji.operand = uint16(mem[pc+1]) | uint16(mem[pc+2])<<8
+		}
+		switch opcode {
+		case 0x20, 0x4C, 0x6C, 0x40, 0x00:
+			return nil, false
+		case 0x60:
+			ji.fused = p65FusedRTSLeafReturn
+			leaf = append(leaf, ji)
+			plan, reason := p65AnalyzeTurboRegion(cpu, leaf, regionStart)
+			return leaf, reason == p65TurboRejectNone && plan.inlinedCalls == 0
+		}
+		if _, ok := p65ProveTurboMemory(cpu, ji); !ok {
+			return nil, false
+		}
+		leaf = append(leaf, ji)
+		pc += uint16(length)
+	}
+	return nil, false
+}
+
 func compileBlock6502Turbo(cpu *CPU_6502, instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, codePageBitmap *[256]byte) (*JITBlock, p65TurboPlan, p65TurboRejectReason, error) {
 	plan, reason := p65AnalyzeTurboRegion(cpu, instrs, startPC)
 	if reason != p65TurboRejectNone {
 		return nil, plan, reason, nil
 	}
+	if plan.inlinedCalls == 0 {
+		return nil, plan, p65TurboRejectUnsupported, nil
+	}
 	block, err := compileBlock6502WithOptions(instrs, startPC, execMem, codePageBitmap, p65CompileOptions{
 		tier:              p65JITTierTurbo,
 		turboCounterLoops: true,
+		turboDirectMemory: true,
 	})
 	if err != nil {
 		return nil, plan, p65TurboRejectNone, err

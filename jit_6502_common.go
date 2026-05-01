@@ -135,7 +135,13 @@ type JIT6502Instr struct {
 	operand  uint16 // 0, 1, or 2 byte operand (zero-extended)
 	length   byte   // 1, 2, or 3
 	pcOffset uint16 // byte offset from block start
+	fused    uint8  // turbo-only synthetic behavior markers
 }
+
+const (
+	p65FusedJSRLeafCall uint8 = 1 << iota
+	p65FusedRTSLeafReturn
+)
 
 // ===========================================================================
 // Instruction Length Table
