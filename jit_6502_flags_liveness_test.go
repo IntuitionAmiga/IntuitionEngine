@@ -158,3 +158,46 @@ func TestP65NZConsumers_TrueForBranchesAndPHP(t *testing.T) {
 		t.Errorf("LDA should not be consumer")
 	}
 }
+
+func TestP65IsBoundedCounterBranch_AcceptsYCountedLoop(t *testing.T) {
+	instrs := []JIT6502Instr{
+		mkInstr(0xA9), // LDA #imm
+		mkInstr(0x29), // AND #imm
+		mkInstr(0x88), // DEY
+		mkInstr(0xD0), // BNE
+	}
+	if !p65IsBoundedCounterBranch(instrs, 3, 0) {
+		t.Fatal("DEY/BNE loop with no other Y writes should be bounded")
+	}
+}
+
+func TestP65IsBoundedCounterBranch_RejectsBodyCounterWrite(t *testing.T) {
+	instrs := []JIT6502Instr{
+		mkInstr(0xC8), // INY in body
+		mkInstr(0x88), // DEY
+		mkInstr(0xD0), // BNE
+	}
+	if p65IsBoundedCounterBranch(instrs, 2, 0) {
+		t.Fatal("loop with another Y write in the body is not a simple bounded counter")
+	}
+}
+
+func TestP65IsBoundedCounterBranch_RejectsXCountedLoop(t *testing.T) {
+	instrs := []JIT6502Instr{
+		mkInstr(0xCA), // DEX
+		mkInstr(0xD0), // BNE
+	}
+	if p65IsBoundedCounterBranch(instrs, 1, 0) {
+		t.Fatal("X-counted loops stay on the generic budget path")
+	}
+}
+
+func TestP65IsBoundedCounterBranch_RejectsNonBNE(t *testing.T) {
+	instrs := []JIT6502Instr{
+		mkInstr(0xCA), // DEX
+		mkInstr(0xF0), // BEQ
+	}
+	if p65IsBoundedCounterBranch(instrs, 1, 0) {
+		t.Fatal("only BNE counted loops are recognized")
+	}
+}

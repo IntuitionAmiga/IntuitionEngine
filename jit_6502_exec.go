@@ -240,10 +240,10 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		}
 
 		// Initialize chain budget and count for this entry into native code.
-		// Matched to IE64/M68K/Z80 (256) — the prior 64 forced 4× more
-		// callNative round-trips per JSR/RTS chain than peer backends and
-		// dominated CallChurn host overhead.
-		ctx.ChainBudget = 256
+		// 6502 blocks are tiny and call-heavy code pays heavily for every
+		// callNative round trip, so allow longer patched chains while still
+		// returning well below jitBudget for interrupt/reset polling.
+		ctx.ChainBudget = 1024
 		ctx.ChainCount = 0
 
 		// Execute the native code block

@@ -1250,7 +1250,7 @@ func emit6502ConditionalBranch(cb *CodeBuffer, ji *JIT6502Instr, startPC uint16,
 		// INTERNAL branch
 		isBackward := targetIdx <= instrIdx
 
-		if isBackward && hasBackward {
+		if isBackward && hasBackward && !p65IsBoundedCounterBranch(instrs, instrIdx, targetIdx) {
 			// Budget check
 			amd64INC_mem32(cb, amd64RSP, int32(j65OffLoopCount))
 			// CMP DWORD [RSP+loopCount], budget
@@ -2080,7 +2080,7 @@ func compileBlock6502(instrs []JIT6502Instr, startPC uint16, execMem *ExecMem, c
 
 	for i := range instrs {
 		// Flush pending cycles and materialize deferred N/Z at branch targets
-		// so forward/backward branches land with accurate state
+		// so forward/backward branches land with accurate state.
 		if branchTargets[i] {
 			j65MaterializeNZ(cb, &nz)
 			flushPendingCycles(cb, &pendingCycles)

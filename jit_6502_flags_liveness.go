@@ -201,3 +201,44 @@ func p65NZConsumers(instrs []JIT6502Instr, i int) bool {
 	}
 	return p65ConsumesNZ[instrs[i].opcode]
 }
+
+func p65WritesY(op byte) bool {
+	switch op {
+	case 0xA0, 0xA4, 0xB4, 0xAC, 0xBC, // LDY
+		0xA8,       // TAY
+		0xC8, 0x88: // INY, DEY
+		return true
+	default:
+		return false
+	}
+}
+
+// p65IsBoundedCounterBranch recognizes counted 8-bit Y loops whose final
+// instruction updates Y and whose BNE exits when that register wraps to zero.
+// If the loop body does not otherwise write Y, the taken edge can execute at
+// most 255 times before falling through, which is below jitBudget. The
+// backward-branch budget probe is therefore unnecessary. X loops are left on
+// the generic path: on current amd64 measurements the altered loop layout hurts
+// ALU-heavy X loops more than the removed budget probe helps.
+func p65IsBoundedCounterBranch(instrs []JIT6502Instr, branchIdx, targetIdx int) bool {
+	if branchIdx <= 0 || branchIdx >= len(instrs) || targetIdx < 0 || targetIdx >= branchIdx {
+		return false
+	}
+	if instrs[branchIdx].opcode != 0xD0 { // BNE
+		return false
+	}
+	counterOp := instrs[branchIdx-1].opcode
+	var writesCounter func(byte) bool
+	switch counterOp {
+	case 0xC8, 0x88: // INY, DEY
+		writesCounter = p65WritesY
+	default:
+		return false
+	}
+	for i := targetIdx; i < branchIdx-1; i++ {
+		if writesCounter(instrs[i].opcode) {
+			return false
+		}
+	}
+	return true
+}
