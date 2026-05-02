@@ -163,3 +163,54 @@ func TestZ80JITTurboRejectsUnsafeRanges(t *testing.T) {
 		t.Fatalf("accepted turbo block with non-direct source page: %+v", tb)
 	}
 }
+
+func TestZ80JITTurboNativeRuntimeGuardRejectsNewCodePage(t *testing.T) {
+	program, startPC := buildZ80MemoryProgram()
+	bus := NewMachineBus()
+	adapter := NewZ80BusAdapter(bus)
+	cpu := NewCPU_Z80(adapter)
+	for i, byt := range program {
+		bus.Write8(uint32(startPC)+uint32(i), byt)
+	}
+	if err := cpu.initZ80JIT(adapter); err != nil {
+		t.Fatal(err)
+	}
+	defer cpu.freeZ80JIT()
+	tb := cpu.z80ProbeTurboBlock(startPC, adapter, bus.GetMemory())
+	if tb == nil {
+		t.Fatal("memory turbo candidate rejected unexpectedly")
+	}
+	cpu.z80InstallTurboBlock(tb)
+	block := cpu.jitCache.Get(uint32(startPC))
+	if block == nil || block.tier != z80TurboTier {
+		t.Fatal("turbo block was not installed in cache")
+	}
+	cpu.codePageBitmap[0x06] = 1
+	if cpu.z80ValidateNativeTurboBlock(startPC, adapter) {
+		t.Fatal("native turbo runtime guard accepted a destination page that later became code")
+	}
+}
+
+func TestZ80JITTurboNativeRuntimeGuardRejectsBankWindows(t *testing.T) {
+	program, startPC := buildZ80CallProgram()
+	bus := NewMachineBus()
+	adapter := NewZ80BusAdapter(bus)
+	cpu := NewCPU_Z80(adapter)
+	cpu.SP = 0x1FFE
+	for i, byt := range program {
+		bus.Write8(uint32(startPC)+uint32(i), byt)
+	}
+	if err := cpu.initZ80JIT(adapter); err != nil {
+		t.Fatal(err)
+	}
+	defer cpu.freeZ80JIT()
+	tb := cpu.z80ProbeTurboBlock(startPC, adapter, bus.GetMemory())
+	if tb == nil {
+		t.Fatal("call turbo candidate rejected unexpectedly")
+	}
+	cpu.z80InstallTurboBlock(tb)
+	adapter.bank1Enable = true
+	if cpu.z80ValidateNativeTurboBlock(startPC, adapter) {
+		t.Fatal("native turbo runtime guard accepted active bank windows")
+	}
+}

@@ -228,6 +228,10 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 
 		// ── Block lookup ──
 		block := cpu.jitCache.Get(uint32(pc))
+		if cpu.z80IsNativeTurboBlock(block) && !cpu.z80ValidateNativeTurboBlock(pc, adapter) {
+			cpu.jitCache.InvalidateRange(uint32(pc), uint32(pc)+1)
+			block = nil
+		}
 		if cpu.z80IsTurboSentinel(block) {
 			if retired, cycles, rInc, ok := cpu.z80ExecuteTurboBlock(pc, adapter, mem); ok {
 				cpu.Cycles += uint64(cycles)

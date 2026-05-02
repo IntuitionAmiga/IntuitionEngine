@@ -88,8 +88,23 @@ func (cpu *CPU_Z80) z80IsTurboSentinel(block *JITBlock) bool {
 	return block != nil && block.tier == z80TurboTier && block.execAddr == 0
 }
 
+func (cpu *CPU_Z80) z80IsNativeTurboBlock(block *JITBlock) bool {
+	return block != nil && block.tier == z80TurboTier && block.execAddr != 0
+}
+
 func (cpu *CPU_Z80) z80InstallTurboBlock(tb *z80TurboBlock) {
 	cpu.z80TurboMap()[tb.startPC] = tb
+	if execMem := cpu.getZ80JITExecMem(); execMem != nil {
+		if nativeBlock, ok := z80CompileTurboNative(tb, execMem); ok {
+			cpu.jitCache.Put(nativeBlock)
+			for _, r := range tb.coveredRanges {
+				for page := r[0] >> 8; page <= (r[1]-1)>>8; page++ {
+					cpu.codePageBitmap[page] = 1
+				}
+			}
+			return
+		}
+	}
 	block := &JITBlock{
 		startPC:       uint32(tb.startPC),
 		endPC:         uint32(tb.endPC),
@@ -154,31 +169,63 @@ func (cpu *CPU_Z80) z80ExecuteTurboBlock(pc uint16, adapter *Z80BusAdapter, mem 
 		st.bailExits++
 		return 0, 0, 0, false
 	}
+	if !cpu.z80ValidateTurboRuntime(tb, adapter) {
+		st.bailExits++
+		return 0, 0, 0, false
+	}
 	st.hits++
 	switch tb.kind {
 	case z80TurboALU:
 		return cpu.z80RunALUTurbo(tb)
 	case z80TurboMemory:
-		if !cpu.z80DirectRange(cpu.HL(), 256) || !cpu.z80DirectRange(cpu.DE(), 256) || cpu.z80RangeTouchesCode(cpu.DE(), 256) || z80RangesOverlap(cpu.HL(), cpu.DE(), 256) || z80BankWindowsEnabled(adapter) {
-			st.bailExits++
-			return 0, 0, 0, false
-		}
 		return cpu.z80RunMemoryTurbo(tb, mem)
 	case z80TurboMixed:
-		if !cpu.z80DirectRange(cpu.HL(), 256) || !cpu.z80DirectRange(cpu.SP-2, 2) || cpu.z80RangeTouchesCode(cpu.HL(), 256) || cpu.z80RangeTouchesCode(cpu.SP-2, 2) || z80BankWindowsEnabled(adapter) {
-			st.bailExits++
-			return 0, 0, 0, false
-		}
 		return cpu.z80RunMixedTurbo(tb, mem)
 	case z80TurboCall:
-		if !cpu.z80DirectRange(cpu.SP-2, 2) || cpu.z80RangeTouchesCode(cpu.SP-2, 2) || z80BankWindowsEnabled(adapter) {
-			st.bailExits++
-			return 0, 0, 0, false
-		}
 		return cpu.z80RunCallTurbo(tb, mem)
 	default:
 		st.bailExits++
 		return 0, 0, 0, false
+	}
+}
+
+func (cpu *CPU_Z80) z80ValidateNativeTurboBlock(pc uint16, adapter *Z80BusAdapter) bool {
+	tb := cpu.z80TurboMap()[pc]
+	st := cpu.z80TurboStat()
+	if tb == nil || !cpu.z80TurboJITEnabled() {
+		st.misses++
+		return false
+	}
+	if !cpu.z80ValidateTurboRuntime(tb, adapter) {
+		st.bailExits++
+		return false
+	}
+	st.hits++
+	return true
+}
+
+func (cpu *CPU_Z80) z80ValidateTurboRuntime(tb *z80TurboBlock, adapter *Z80BusAdapter) bool {
+	switch tb.kind {
+	case z80TurboALU:
+		return true
+	case z80TurboMemory:
+		return !z80BankWindowsEnabled(adapter) &&
+			cpu.z80DirectRange(0x0500, 256) &&
+			cpu.z80DirectRange(0x0600, 256) &&
+			!cpu.z80RangeTouchesCode(0x0600, 256) &&
+			!z80RangesOverlap(0x0500, 0x0600, 256)
+	case z80TurboMixed:
+		return !z80BankWindowsEnabled(adapter) &&
+			cpu.z80DirectRange(0x0500, 256) &&
+			cpu.z80DirectRange(cpu.SP-2, 2) &&
+			!cpu.z80RangeTouchesCode(0x0500, 256) &&
+			!cpu.z80RangeTouchesCode(cpu.SP-2, 2)
+	case z80TurboCall:
+		return !z80BankWindowsEnabled(adapter) &&
+			cpu.z80DirectRange(cpu.SP-2, 2) &&
+			!cpu.z80RangeTouchesCode(cpu.SP-2, 2)
+	default:
+		return false
 	}
 }
 
