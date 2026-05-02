@@ -101,6 +101,7 @@ func TestP65TurboFastLoops_Parity(t *testing.T) {
 		sp             byte
 		expectedCycles uint64
 	}{
+		{"alu", bench6502ALUProgram, 0xFF, 0},
 		{"memory", bench6502MemProgram, 0xFF, 0},
 		{"call", bench6502CallProgram, 0xFF, 4865},
 		{"call_sp_changed", bench6502CallProgram, 0x7D, 4865},
