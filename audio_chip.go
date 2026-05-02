@@ -178,6 +178,7 @@ const (
 	NOISE_MODE_PERIODIC = 1 // Periodic/loop
 	NOISE_MODE_METALLIC = 2 // "Metal" noise
 	NOISE_MODE_PSG      = 3 // AY/YM PSG-style LFSR
+	NOISE_MODE_TED_8BIT = 4 // MOS TED 8-bit LFSR
 )
 
 // Sync source registers
@@ -510,7 +511,7 @@ const TWO_PI_OVER_SR = TWO_PI / SAMPLE_RATE         // Pre-computed for efficien
 // ------------------------------------------------------------------------------
 const (
 	NUM_ENVELOPE_SHAPES = 5
-	NUM_NOISE_MODES     = 4
+	NUM_NOISE_MODES     = 5
 	NUM_FILTER_TYPES    = 4
 	NUM_MOD_SOURCES     = NUM_CHANNELS
 	NUM_ALLPASS_FILTERS = 2
@@ -1229,7 +1230,7 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		}
 	case NOISE_MODE:
 		ch.waveType = WAVE_NOISE
-		ch.noiseMode = int(value % NUM_NOISE_MODES) // 0=white, 1=periodic, 2=metallic, 3=psg
+		ch.noiseMode = int(value % NUM_NOISE_MODES) // 0=white, 1=periodic, 2=metallic, 3=psg, 4=TED
 	//case ENV_SHAPE:
 	//	ch.envelopeShape = int(value % NUM_ENVELOPE_SHAPES) // 0=ADSR, 1=SawUp, 2=SawDown, 3=Loop
 	//	// Reset envelope state
@@ -1846,6 +1847,9 @@ func (ch *Channel) generateWaveSample(sampleRate, sampleRateRecip float32) float
 				case NOISE_MODE_PSG:
 					newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 3)) & 1
 					ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & PSG_NOISE_LFSR_MASK
+				case NOISE_MODE_TED_8BIT:
+					newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 2) ^ (ch.noiseSR >> 3) ^ (ch.noiseSR >> 4) ^ (ch.noiseSR >> 7)) & 1
+					ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & 0xFF
 				}
 			}
 
@@ -2059,6 +2063,9 @@ func (ch *Channel) generateWaveSample(sampleRate, sampleRateRecip float32) float
 			case NOISE_MODE_PSG:
 				newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 3)) & 1
 				ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & PSG_NOISE_LFSR_MASK
+			case NOISE_MODE_TED_8BIT:
+				newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 2) ^ (ch.noiseSR >> 3) ^ (ch.noiseSR >> 4) ^ (ch.noiseSR >> 7)) & 1
+				ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & 0xFF
 			}
 		}
 

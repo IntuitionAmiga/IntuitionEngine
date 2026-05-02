@@ -78,7 +78,10 @@ type TEDVideoEngine struct {
 	vblankActive atomic.Bool // VBlank flag
 
 	// Current raster line (for copper/raster effects)
-	rasterLine uint16
+	rasterLine           uint16
+	rasterCompare        uint16
+	rasterComparePending bool
+	baseFallbackCount    uint64
 
 	// Cursor state
 	cursorVisible bool // Current cursor visibility
@@ -118,6 +121,9 @@ func NewTEDVideoEngine(bus *MachineBus) *TEDVideoEngine {
 		bus:           bus,
 		cursorVisible: true, // Cursor starts visible
 		frameBuffer:   make([]byte, TED_V_FRAME_WIDTH*TED_V_FRAME_HEIGHT*4),
+		ctrl1:         TED_V_CTRL1_RSEL,
+		ctrl2:         TED_V_CTRL2_CSEL,
+		charBase:      0x20,
 	}
 	// enabled defaults to false (atomic.Bool zero value)
 
@@ -195,6 +201,15 @@ func (t *TEDVideoEngine) HandleRead(addr uint32) uint32 {
 			return TED_V_STATUS_VBLANK
 		}
 		return 0
+	case TED_V_RASTER_CMP_LO:
+		return uint32(t.rasterCompare & 0xFF)
+	case TED_V_RASTER_CMP_HI:
+		return uint32((t.rasterCompare >> 8) & 0x01)
+	case TED_V_RASTER_STATUS:
+		if t.rasterComparePending {
+			return TED_V_RASTER_STATUS_PENDING
+		}
+		return 0
 	default:
 		return 0
 	}
@@ -233,6 +248,14 @@ func (t *TEDVideoEngine) HandleWrite(addr uint32, value uint32) {
 	case TED_V_ENABLE:
 		t.enabled.Store((value & TED_V_ENABLE_VIDEO) != 0)
 		// Note: RASTER registers are read-only, writes are ignored
+	case TED_V_RASTER_CMP_LO:
+		t.rasterCompare = (t.rasterCompare & 0x100) | uint16(value&0xFF)
+	case TED_V_RASTER_CMP_HI:
+		t.rasterCompare = (t.rasterCompare & 0x0FF) | (uint16(value&0x01) << 8)
+	case TED_V_RASTER_STATUS:
+		if value&TED_V_RASTER_STATUS_PENDING != 0 {
+			t.rasterComparePending = false
+		}
 	}
 }
 
@@ -264,14 +287,20 @@ func (t *TEDVideoEngine) HandleVRAMWrite(offset uint16, value uint8) {
 
 // HandleBusVRAMRead handles VRAM reads from the system bus (uint32 addresses)
 func (t *TEDVideoEngine) HandleBusVRAMRead(addr uint32) uint32 {
-	offset := uint16(addr - TED_V_VRAM_BASE)
-	return uint32(t.HandleVRAMRead(offset))
+	offset := addr - TED_V_VRAM_BASE
+	if offset > 0xFFFF {
+		return 0
+	}
+	return uint32(t.HandleVRAMRead(uint16(offset)))
 }
 
 // HandleBusVRAMWrite handles VRAM writes from the system bus (uint32 addresses)
 func (t *TEDVideoEngine) HandleBusVRAMWrite(addr uint32, value uint32) {
-	offset := uint16(addr - TED_V_VRAM_BASE)
-	t.HandleVRAMWrite(offset, uint8(value))
+	offset := addr - TED_V_VRAM_BASE
+	if offset > 0xFFFF {
+		return
+	}
+	t.HandleVRAMWrite(uint16(offset), uint8(value))
 }
 
 // =============================================================================
@@ -293,6 +322,26 @@ func (t *TEDVideoEngine) GetCharsetAddress(charCode uint8) int {
 	return TED_V_MATRIX_SIZE + TED_V_COLOR_SIZE + int(charCode)*8
 }
 
+func decodeCharsetBase(reg uint8) uint32 {
+	return uint32(reg>>4) << 10
+}
+
+func decodeMatrixBase(reg uint8) uint32 {
+	return uint32(reg>>3) << 10
+}
+
+func decodeBitmapBase(reg uint8) uint32 {
+	return uint32(reg&0x0F) << 10
+}
+
+func (t *TEDVideoEngine) mapBaseToVRAM(logical uint32, requiredBytes uint32, defaultBase uint32) (uint32, bool) {
+	if logical+requiredBytes <= uint32(len(t.snapVram)) {
+		return logical, true
+	}
+	t.baseFallbackCount++
+	return defaultBase, false
+}
+
 // =============================================================================
 // Rendering
 // =============================================================================
@@ -307,90 +356,185 @@ func (t *TEDVideoEngine) RenderFrameTo(dst []byte) {
 
 // RenderFrame renders the complete display including border
 func (t *TEDVideoEngine) RenderFrame() []byte {
+	t.StartFrame()
+	for y := 0; y < TED_V_FRAME_HEIGHT; y++ {
+		t.ProcessScanline(y)
+	}
+	return t.FinishFrame()
+}
+
+// StartFrame prepares TED video for scanline rendering.
+func (t *TEDVideoEngine) StartFrame() {
 	// Snapshot VRAM and registers under lock, then render lock-free
 	t.mu.Lock()
 	t.snapVram = t.vram
 	t.snapBorder = t.border
 	t.snapBgColor = t.bgColor
-	snapCursorVisible := t.cursorVisible
-	snapCursorPos := t.cursorPos
-	snapCursorColor := t.cursorColor
+	t.rasterLine = 0
+	t.mu.Unlock()
+}
+
+// ProcessScanline renders one frame scanline and updates visible-region raster state.
+func (t *TEDVideoEngine) ProcessScanline(y int) {
+	if y < 0 || y >= TED_V_FRAME_HEIGHT {
+		return
+	}
+	t.mu.Lock()
+	t.rasterLine = uint16(y)
+	if t.rasterLine == t.rasterCompare {
+		t.rasterComparePending = true
+	}
+	ctrl1 := t.ctrl1
+	ctrl2 := t.ctrl2
+	charBaseReg := t.charBase
+	videoBaseReg := t.videoBase
 	t.mu.Unlock()
 
-	// Pack border color as uint32
 	borderIdx := t.snapBorder & 0x7F
 	borderC := TEDPalette[borderIdx]
 	borderU32 := uint32(borderC[0]) | uint32(borderC[1])<<8 | uint32(borderC[2])<<16 | 0xFF000000
 
-	// Fill entire frame with border color using uint32 writes
-	for i := 0; i < len(t.frameBuffer); i += 4 {
-		*(*uint32)(unsafe.Pointer(&t.frameBuffer[i])) = borderU32
+	rowOffset := y * TED_V_FRAME_WIDTH * 4
+	for x := 0; x < TED_V_FRAME_WIDTH; x++ {
+		*(*uint32)(unsafe.Pointer(&t.frameBuffer[rowOffset+x*4])) = borderU32
 	}
 
-	// Pack background color as uint32
-	bgIdx := t.snapBgColor[0] & 0x7F
-	bgC := TEDPalette[bgIdx]
-	bgU32 := uint32(bgC[0]) | uint32(bgC[1])<<8 | uint32(bgC[2])<<16 | 0xFF000000
+	screenY := y - TED_V_BORDER_TOP
+	if screenY < 0 || screenY >= TED_V_DISPLAY_HEIGHT {
+		return
+	}
 
-	// Pre-compute address offsets for character rendering
-	charsetBase := TED_V_MATRIX_SIZE + TED_V_COLOR_SIZE
+	xscroll := int(ctrl2 & TED_V_CTRL2_XSCROLL)
+	yscroll := int(ctrl1 & TED_V_CTRL1_YSCROLL)
+	srcY := screenY - yscroll
+	if srcY < 0 || srcY >= TED_V_DISPLAY_HEIGHT {
+		return
+	}
+	cellY := srcY / TED_V_CELL_HEIGHT
+	if ctrl1&TED_V_CTRL1_RSEL == 0 && (cellY == 0 || cellY == TED_V_CELLS_Y-1) {
+		return
+	}
 
-	// Render the 320x200 display area (40x25 characters)
-	for cellY := range TED_V_CELLS_Y {
-		// Pre-compute row base addresses
-		matrixRowBase := cellY * TED_V_CELLS_X
-		colorRowBase := TED_V_MATRIX_SIZE + cellY*TED_V_CELLS_X
+	defaultMatrixBase := uint32(0)
+	defaultCharsetBase := uint32(TED_V_MATRIX_SIZE + TED_V_COLOR_SIZE)
+	matrixBase, _ := t.mapBaseToVRAM(decodeMatrixBase(videoBaseReg), TED_V_MATRIX_SIZE+TED_V_COLOR_SIZE, defaultMatrixBase)
+	colorBase := matrixBase + TED_V_MATRIX_SIZE
+	charsetBase, _ := t.mapBaseToVRAM(decodeCharsetBase(charBaseReg), TED_V_CHARSET_SIZE, defaultCharsetBase)
+	bitmapBase, _ := t.mapBaseToVRAM(decodeBitmapBase(charBaseReg), 8000, 0)
 
-		// Pre-compute frame buffer base for this character row
-		screenYBase := cellY * TED_V_CELL_HEIGHT
-		frameYBase := (TED_V_BORDER_TOP + screenYBase) * TED_V_FRAME_WIDTH
-
-		for cellX := range TED_V_CELLS_X {
-			// Get character code from video matrix
-			charCode := t.snapVram[matrixRowBase+cellX]
-
-			// Get foreground color from color RAM - pack as uint32
-			fgColorByte := t.snapVram[colorRowBase+cellX]
-			fgIdx := fgColorByte & 0x7F
-			fgC := TEDPalette[fgIdx]
-			fgU32 := uint32(fgC[0]) | uint32(fgC[1])<<8 | uint32(fgC[2])<<16 | 0xFF000000
-
-			// Get character bitmap offset
-			charsetOffset := charsetBase + int(charCode)*8
-
-			// Pre-compute X base for frame buffer
-			frameXBase := TED_V_BORDER_LEFT + cellX*TED_V_CELL_WIDTH
-
-			// Render 8x8 pixel character
-			for row := range TED_V_CELL_HEIGHT {
-				// Get bitmap row (if charset offset is valid)
-				var bitmapByte uint8
-				if charsetOffset+row < len(t.snapVram) {
-					bitmapByte = t.snapVram[charsetOffset+row]
-				}
-
-				// Frame buffer row offset
-				frameRowOffset := (frameYBase + row*TED_V_FRAME_WIDTH + frameXBase) * 4
-
-				// Render 8 pixels with uint32 writes
-				for col := range TED_V_CELL_WIDTH {
-					offset := frameRowOffset + col*4
-					if (bitmapByte>>(7-col))&1 != 0 {
-						*(*uint32)(unsafe.Pointer(&t.frameBuffer[offset])) = fgU32
-					} else {
-						*(*uint32)(unsafe.Pointer(&t.frameBuffer[offset])) = bgU32
-					}
-				}
-			}
+	for x := 0; x < TED_V_DISPLAY_WIDTH; x++ {
+		srcX := x - xscroll
+		if srcX < 0 || srcX >= TED_V_DISPLAY_WIDTH {
+			continue
 		}
-	}
+		cellX := srcX / TED_V_CELL_WIDTH
+		if ctrl2&TED_V_CTRL2_CSEL == 0 && (cellX == 0 || cellX == TED_V_CELLS_X-1) {
+			continue
+		}
 
-	// Render cursor if visible (using snapshot)
+		var color uint32
+		if ctrl1&TED_V_CTRL1_BMM != 0 {
+			color = t.renderBitmapPixel(ctrl2, matrixBase, colorBase, bitmapBase, srcX, srcY)
+		} else {
+			color = t.renderTextPixel(ctrl1, ctrl2, matrixBase, colorBase, charsetBase, srcX, srcY)
+		}
+		offset := rowOffset + (TED_V_BORDER_LEFT+x)*4
+		*(*uint32)(unsafe.Pointer(&t.frameBuffer[offset])) = color
+	}
+}
+
+// FinishFrame completes scanline rendering and returns the frame.
+func (t *TEDVideoEngine) FinishFrame() []byte {
+	t.mu.Lock()
+	snapCursorVisible := t.cursorVisible
+	snapCursorPos := t.cursorPos
+	snapCursorColor := t.cursorColor
+	t.mu.Unlock()
 	if snapCursorVisible && snapCursorPos < TED_V_CELLS_X*TED_V_CELLS_Y {
 		t.renderCursorSnapshot(snapCursorPos, snapCursorColor)
 	}
 
 	return t.frameBuffer
+}
+
+func tedPackColor(colorByte uint8) uint32 {
+	c := TEDPalette[colorByte&0x7F]
+	return uint32(c[0]) | uint32(c[1])<<8 | uint32(c[2])<<16 | 0xFF000000
+}
+
+func (t *TEDVideoEngine) renderTextPixel(ctrl1, ctrl2 uint8, matrixBase, colorBase, charsetBase uint32, srcX, srcY int) uint32 {
+	cellX := srcX / TED_V_CELL_WIDTH
+	cellY := srcY / TED_V_CELL_HEIGHT
+	row := srcY & 7
+	col := srcX & 7
+	cellOffset := uint32(cellY*TED_V_CELLS_X + cellX)
+	charCode := t.snapVram[matrixBase+cellOffset]
+	colorByte := t.snapVram[colorBase+cellOffset]
+
+	if ctrl1&TED_V_CTRL1_ECM != 0 {
+		bgIndex := (charCode >> 6) & 0x03
+		charCode &= 0x3F
+		bitmapByte := t.snapVram[charsetBase+uint32(charCode)*8+uint32(row)]
+		if (bitmapByte>>(7-col))&1 != 0 {
+			return tedPackColor(colorByte)
+		}
+		return tedPackColor(t.snapBgColor[bgIndex])
+	}
+
+	bitmapByte := t.snapVram[charsetBase+uint32(charCode)*8+uint32(row)]
+	if ctrl2&TED_V_CTRL2_MCM != 0 {
+		pair := (bitmapByte >> (6 - 2*(col/2))) & 0x03
+		switch pair {
+		case 0:
+			return tedPackColor(t.snapBgColor[0])
+		case 1:
+			return tedPackColor(t.snapBgColor[1])
+		case 2:
+			return tedPackColor(t.snapBgColor[2])
+		default:
+			return tedPackColor(colorByte)
+		}
+	}
+
+	pixelSet := (bitmapByte>>(7-col))&1 != 0
+	if colorByte&0x80 != 0 {
+		pixelSet = !pixelSet
+	}
+	if pixelSet {
+		return tedPackColor(colorByte)
+	}
+	return tedPackColor(t.snapBgColor[0])
+}
+
+func (t *TEDVideoEngine) renderBitmapPixel(ctrl2 uint8, matrixBase, colorBase, bitmapBase uint32, srcX, srcY int) uint32 {
+	cellX := srcX / TED_V_CELL_WIDTH
+	cellY := srcY / TED_V_CELL_HEIGHT
+	row := srcY & 7
+	col := srcX & 7
+	cellOffset := uint32(cellY*TED_V_CELLS_X + cellX)
+	bitmapOffset := bitmapBase + uint32(cellY*TED_V_CELLS_X*8+row*TED_V_CELLS_X+cellX)
+	bitmapByte := t.snapVram[bitmapOffset]
+	matrixByte := t.snapVram[matrixBase+cellOffset]
+	colorByte := t.snapVram[colorBase+cellOffset]
+
+	if ctrl2&TED_V_CTRL2_MCM != 0 {
+		pair := (bitmapByte >> (6 - 2*(col/2))) & 0x03
+		switch pair {
+		case 0:
+			return tedPackColor(t.snapBgColor[0])
+		case 1:
+			return tedPackColor(matrixByte >> 4)
+		case 2:
+			return tedPackColor(matrixByte & 0x0F)
+		default:
+			return tedPackColor(colorByte)
+		}
+	}
+
+	if (bitmapByte>>(7-col))&1 != 0 {
+		return tedPackColor(matrixByte >> 4)
+	}
+	return tedPackColor(matrixByte & 0x0F)
 }
 
 // renderCharacter renders a single character cell (legacy function for compatibility)
@@ -514,8 +658,7 @@ func (t *TEDVideoEngine) SignalVSync() {
 		t.cursorVisible = !t.cursorVisible
 	}
 
-	// Reset raster line at VSync
-	t.rasterLine = 0
+	// Raster ownership is scanline-driven; pending compare is sticky until acked.
 }
 
 // =============================================================================

@@ -43,18 +43,23 @@ func TestTEDFrequencyCalculation(t *testing.T) {
 	tests := []struct {
 		name     string
 		regValue uint16
+		wantHz   float64
 	}{
-		{"mid-range register 512", 512},
-		{"low register 100", 100},
-		{"high register 900", 900},
-		{"register 0 (lowest)", 0},
-		{"register 1023 (very high)", 1023},
+		{"mid-range register 512", 512, 0},
+		{"low register 100", 100, 0},
+		{"high register 900", 900, 0},
+		{"register 0 (lowest)", 0, 0},
+		{"register 1023 (very high)", 1023, 0},
+		{"PAL reg 1017 is clock/8/7", 1017, 15834.36}, // 886724 / 8 / 7
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			freq := engine.tedFrequencyHz(tt.regValue)
 			expected := float64(TED_SOUND_CLOCK_PAL) / float64(1024-int(tt.regValue))
+			if tt.wantHz != 0 {
+				expected = tt.wantHz
+			}
 			// Allow 1% tolerance for rounding
 			tolerance := expected * 0.01
 			if freq < expected-tolerance || freq > expected+tolerance {

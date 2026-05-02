@@ -141,7 +141,9 @@ start:
     move.b  #$08,TED_V_CTRL2
 
     ; --- Set character and video base addresses ---
-    move.b  #$00,TED_V_CHAR_BASE
+    ; Bits 4-7 select the charset base in 1 KiB steps. The default charset
+    ; lives at VRAM offset $0800, so use $20 rather than the legacy ignored $00.
+    move.b  #$20,TED_V_CHAR_BASE
     move.b  #$00,TED_V_VIDEO_BASE
 
     ; --- Set initial colours ---

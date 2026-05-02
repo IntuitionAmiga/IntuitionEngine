@@ -19,6 +19,7 @@ License: GPLv3 or later
 package main
 
 import (
+	"bytes"
 	"testing"
 )
 
@@ -845,5 +846,258 @@ func TestTEDVideo_RegisterAlignmentForCopper(t *testing.T) {
 		if offset%4 != 0 {
 			t.Errorf("Register %s (0x%X) is not 4-byte aligned from base", reg.name, reg.addr)
 		}
+	}
+}
+
+func tedFramePixel(frame []byte, x, y int) [3]byte {
+	offset := (y*TED_V_FRAME_WIDTH + x) * 4
+	return [3]byte{frame[offset], frame[offset+1], frame[offset+2]}
+}
+
+func tedColorRGB(color uint8) [3]byte {
+	r, g, b := GetTEDColor(color)
+	return [3]byte{r, g, b}
+}
+
+func TestTED_VRAMSize(t *testing.T) {
+	if TED_V_VRAM_SIZE < 16*1024 {
+		t.Fatalf("TED_V_VRAM_SIZE = %d, want at least 16384", TED_V_VRAM_SIZE)
+	}
+}
+
+func TestTED_VRAMRead_AboveOldBoundary(t *testing.T) {
+	ted := NewTEDVideoEngine(nil)
+	ted.HandleVRAMWrite(0x1500, 0xA5)
+	if got := ted.HandleVRAMRead(0x1500); got != 0xA5 {
+		t.Fatalf("VRAM[0x1500] = 0x%02X, want 0xA5", got)
+	}
+}
+
+func TestTED_BaseDecode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		reg  uint8
+		want uint32
+		fn   func(uint8) uint32
+	}{
+		{"char 0x20", 0x20, 0x0800, decodeCharsetBase},
+		{"char 0x40", 0x40, 0x1000, decodeCharsetBase},
+		{"char 0xF0", 0xF0, 0x3C00, decodeCharsetBase},
+		{"matrix 0x08", 0x08, 0x0400, decodeMatrixBase},
+		{"bitmap 0x08", 0x08, 0x2000, decodeBitmapBase},
+		{"bitmap 0x0F", 0x0F, 0x3C00, decodeBitmapBase},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.fn(tc.reg); got != tc.want {
+				t.Fatalf("decode = 0x%X, want 0x%X", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTED_BaseRegRelocates_Text(t *testing.T) {
+	ted := NewTEDVideoEngine(nil)
+	ted.HandleWrite(TED_V_CTRL1, TED_V_CTRL1_RSEL)
+	ted.HandleWrite(TED_V_CTRL2, TED_V_CTRL2_CSEL)
+	ted.HandleWrite(TED_V_CHAR_BASE, 0x30)
+	ted.HandleWrite(TED_V_VIDEO_BASE, 0x20)
+	ted.HandleWrite(TED_V_BG_COLOR0, 0)
+	matrixBase := decodeMatrixBase(0x20)
+	charBase := decodeCharsetBase(0x30)
+	fg := TEDColorByte(TED_HUE_WHITE, 7)
+	ted.HandleVRAMWrite(uint16(matrixBase), 1)
+	ted.HandleVRAMWrite(uint16(matrixBase+TED_V_MATRIX_SIZE), fg)
+	ted.HandleVRAMWrite(uint16(charBase+8), 0x80)
+
+	frame := ted.RenderFrame()
+	got := tedFramePixel(frame, TED_V_BORDER_LEFT, TED_V_BORDER_TOP)
+	if want := tedColorRGB(fg); got != want {
+		t.Fatalf("relocated text pixel = %v, want %v", got, want)
+	}
+}
+
+func TestTED_BaseRegOutOfRange_FallsBackSafely(t *testing.T) {
+	ted := NewTEDVideoEngine(nil)
+	ted.HandleWrite(TED_V_CTRL1, TED_V_CTRL1_RSEL)
+	ted.HandleWrite(TED_V_CTRL2, TED_V_CTRL2_CSEL)
+	ted.HandleWrite(TED_V_CHAR_BASE, 0xF0)
+	ted.HandleVRAMWrite(0, 1)
+	fg := TEDColorByte(TED_HUE_WHITE, 7)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE, fg)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE+TED_V_COLOR_SIZE+8, 0x80)
+
+	before := ted.baseFallbackCount
+	frame := ted.RenderFrame()
+	if ted.baseFallbackCount <= before {
+		t.Fatal("expected baseFallbackCount to increment")
+	}
+	got := tedFramePixel(frame, TED_V_BORDER_LEFT, TED_V_BORDER_TOP)
+	if want := tedColorRGB(fg); got != want {
+		t.Fatalf("fallback text pixel = %v, want %v", got, want)
+	}
+}
+
+func TestTED_XScrollAndYScroll(t *testing.T) {
+	ted := NewTEDVideoEngine(nil)
+	ted.HandleWrite(TED_V_CTRL1, TED_V_CTRL1_RSEL|3)
+	ted.HandleWrite(TED_V_CTRL2, TED_V_CTRL2_CSEL|3)
+	fg := TEDColorByte(TED_HUE_WHITE, 7)
+	ted.HandleVRAMWrite(0, 1)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE, fg)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE+TED_V_COLOR_SIZE+8, 0x80)
+
+	frame := ted.RenderFrame()
+	if got := tedFramePixel(frame, TED_V_BORDER_LEFT+2, TED_V_BORDER_TOP+3); got == tedColorRGB(fg) {
+		t.Fatalf("pixel before X scroll start unexpectedly foreground: %v", got)
+	}
+	if got, want := tedFramePixel(frame, TED_V_BORDER_LEFT+3, TED_V_BORDER_TOP+3), tedColorRGB(fg); got != want {
+		t.Fatalf("scrolled pixel = %v, want %v", got, want)
+	}
+}
+
+func TestTED_RSEL24Row_CSEL38Col(t *testing.T) {
+	ted := NewTEDVideoEngine(nil)
+	ted.HandleWrite(TED_V_CTRL1, 0)
+	ted.HandleWrite(TED_V_CTRL2, 0)
+	fg := TEDColorByte(TED_HUE_WHITE, 7)
+	ted.HandleVRAMWrite(0, 1)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE, fg)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE+TED_V_COLOR_SIZE+8, 0xFF)
+
+	frame := ted.RenderFrame()
+	bg := tedColorRGB(0)
+	for _, xy := range [][2]int{
+		{TED_V_BORDER_LEFT + 0, TED_V_BORDER_TOP + 8},
+		{TED_V_BORDER_LEFT + 39*8, TED_V_BORDER_TOP + 8},
+		{TED_V_BORDER_LEFT + 8, TED_V_BORDER_TOP + 0},
+		{TED_V_BORDER_LEFT + 8, TED_V_BORDER_TOP + 24*8},
+	} {
+		if got := tedFramePixel(frame, xy[0], xy[1]); got != bg {
+			t.Fatalf("blanked edge pixel at %v = %v, want %v", xy, got, bg)
+		}
+	}
+}
+
+func TestTED_ReverseVideo(t *testing.T) {
+	ted := NewTEDVideoEngine(nil)
+	ted.HandleWrite(TED_V_CTRL1, TED_V_CTRL1_RSEL)
+	ted.HandleWrite(TED_V_CTRL2, TED_V_CTRL2_CSEL)
+	fg := TEDColorByte(TED_HUE_WHITE, 7) | 0x80
+	ted.HandleVRAMWrite(0, 1)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE, fg)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE+TED_V_COLOR_SIZE+8, 0x00)
+	frame := ted.RenderFrame()
+	if got, want := tedFramePixel(frame, TED_V_BORDER_LEFT, TED_V_BORDER_TOP), tedColorRGB(fg); got != want {
+		t.Fatalf("reverse pixel = %v, want %v", got, want)
+	}
+}
+
+func TestTED_TextMCMAndECM(t *testing.T) {
+	ted := NewTEDVideoEngine(nil)
+	ted.HandleWrite(TED_V_CTRL1, TED_V_CTRL1_RSEL)
+	ted.HandleWrite(TED_V_CTRL2, TED_V_CTRL2_CSEL|TED_V_CTRL2_MCM)
+	bg1 := TEDColorByte(TED_HUE_RED, 7)
+	bg2 := TEDColorByte(TED_HUE_GREEN, 7)
+	fg := TEDColorByte(TED_HUE_WHITE, 7)
+	ted.HandleWrite(TED_V_BG_COLOR1, uint32(bg1))
+	ted.HandleWrite(TED_V_BG_COLOR2, uint32(bg2))
+	ted.HandleVRAMWrite(0, 1)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE, fg)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE+TED_V_COLOR_SIZE+8, 0x1B) // 00,01,10,11
+	frame := ted.RenderFrame()
+	for _, tc := range []struct {
+		x    int
+		want uint8
+	}{
+		{0, 0}, {2, bg1}, {4, bg2}, {6, fg},
+	} {
+		if got, want := tedFramePixel(frame, TED_V_BORDER_LEFT+tc.x, TED_V_BORDER_TOP), tedColorRGB(tc.want); got != want {
+			t.Fatalf("MCM x=%d = %v, want %v", tc.x, got, want)
+		}
+	}
+
+	ted = NewTEDVideoEngine(nil)
+	ted.HandleWrite(TED_V_CTRL1, TED_V_CTRL1_RSEL|TED_V_CTRL1_ECM)
+	ted.HandleWrite(TED_V_CTRL2, TED_V_CTRL2_CSEL)
+	bg3 := TEDColorByte(TED_HUE_BLUE, 7)
+	ted.HandleWrite(TED_V_BG_COLOR3, uint32(bg3))
+	ted.HandleVRAMWrite(0, 0xC1)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE, fg)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE+TED_V_COLOR_SIZE+8, 0x00)
+	frame = ted.RenderFrame()
+	if got, want := tedFramePixel(frame, TED_V_BORDER_LEFT, TED_V_BORDER_TOP), tedColorRGB(bg3); got != want {
+		t.Fatalf("ECM background = %v, want %v", got, want)
+	}
+}
+
+func TestTED_BitmapModes(t *testing.T) {
+	ted := NewTEDVideoEngine(nil)
+	ted.HandleWrite(TED_V_CTRL1, TED_V_CTRL1_RSEL|TED_V_CTRL1_BMM)
+	ted.HandleWrite(TED_V_CTRL2, TED_V_CTRL2_CSEL)
+	ted.HandleWrite(TED_V_CHAR_BASE, 0x08)
+	fg := uint8(TED_HUE_WHITE)
+	bg := uint8(TED_HUE_RED)
+	ted.HandleVRAMWrite(0, (fg<<4)|bg)
+	ted.HandleVRAMWrite(0x2000, 0x80)
+	frame := ted.RenderFrame()
+	if got, want := tedFramePixel(frame, TED_V_BORDER_LEFT, TED_V_BORDER_TOP), tedColorRGB(fg); got != want {
+		t.Fatalf("bitmap hires pixel = %v, want %v", got, want)
+	}
+
+	ted.HandleWrite(TED_V_CHAR_BASE, 0x0F)
+	before := ted.baseFallbackCount
+	ted.RenderFrame()
+	if ted.baseFallbackCount <= before {
+		t.Fatal("expected bitmap fallback for out-of-range base")
+	}
+}
+
+func TestTED_ScanlineParityAndRasterCompare(t *testing.T) {
+	ted := NewTEDVideoEngine(nil)
+	ted.HandleWrite(TED_V_CTRL1, TED_V_CTRL1_RSEL)
+	ted.HandleWrite(TED_V_CTRL2, TED_V_CTRL2_CSEL)
+	ted.HandleVRAMWrite(0, 1)
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE, TEDColorByte(TED_HUE_WHITE, 7))
+	ted.HandleVRAMWrite(TED_V_MATRIX_SIZE+TED_V_COLOR_SIZE+8, 0x80)
+
+	full := append([]byte(nil), ted.RenderFrame()...)
+	scanline := make([]byte, len(full))
+	ted.RenderFrameTo(scanline)
+	if !bytes.Equal(full, scanline) {
+		t.Fatal("RenderFrame and scanline path differ")
+	}
+
+	ted.StartFrame()
+	ted.ProcessScanline(100)
+	if got := ted.HandleRead(TED_V_RASTER_LO); got != 100 {
+		t.Fatalf("raster line = %d, want 100", got)
+	}
+	ted.HandleWrite(TED_V_RASTER_CMP_LO, 100)
+	ted.ProcessScanline(100)
+	if got := ted.HandleRead(TED_V_RASTER_STATUS); got&TED_V_RASTER_STATUS_PENDING == 0 {
+		t.Fatalf("raster pending not set, status=0x%02X", got)
+	}
+	ted.StartFrame()
+	if got := ted.HandleRead(TED_V_RASTER_STATUS); got&TED_V_RASTER_STATUS_PENDING == 0 {
+		t.Fatal("raster pending should be sticky across frames")
+	}
+	ted.HandleWrite(TED_V_RASTER_STATUS, TED_V_RASTER_STATUS_PENDING)
+	if got := ted.HandleRead(TED_V_RASTER_STATUS); got&TED_V_RASTER_STATUS_PENDING != 0 {
+		t.Fatal("raster pending should clear on write-1 ack")
+	}
+}
+
+func TestTED_RasterCompare_HiddenRegion_DeferredV1(t *testing.T) {
+	ted := NewTEDVideoEngine(nil)
+	ted.HandleWrite(TED_V_RASTER_CMP_LO, 290&0xFF)
+	ted.HandleWrite(TED_V_RASTER_CMP_HI, 1)
+	for y := 0; y < TED_V_FRAME_HEIGHT; y++ {
+		ted.ProcessScanline(y)
+	}
+	if got := ted.HandleRead(TED_V_RASTER_STATUS); got&TED_V_RASTER_STATUS_PENDING != 0 {
+		t.Fatalf("hidden-region compare is deferred in v1, status=0x%02X", got)
+	}
+	if lo, hi := ted.HandleRead(TED_V_RASTER_CMP_LO), ted.HandleRead(TED_V_RASTER_CMP_HI); lo != 0x22 || hi != 1 {
+		t.Fatalf("compare round trip got hi=%d lo=0x%02X", hi, lo)
 	}
 }

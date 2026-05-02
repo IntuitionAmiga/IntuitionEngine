@@ -683,6 +683,8 @@ Noise Modes:
 NOISE_MODE_WHITE    = 0 // Standard LFSR noise
 NOISE_MODE_PERIODIC = 1 // Periodic/looping noise
 NOISE_MODE_METALLIC = 2 // "Metallic" noise variant
+NOISE_MODE_PSG      = 3 // AY/YM-style 17-bit noise
+NOISE_MODE_TED_8BIT = 4 // MOS TED 8-bit LFSR noise
 ```
 
 #### Sawtooth Wave Channel (0x0F0A20 - 0x0F0A3F)
@@ -909,7 +911,7 @@ TED Sound Registers (0x0F0F00 - 0x0F0F05):
 
 TED_SND_CTRL bits:
   Bit 7: D/A mode
-  Bit 6: Voice 2 noise enable (replaces square wave with white noise)
+  Bit 6: Voice 2 noise enable (replaces square wave with TED 8-bit LFSR noise)
   Bit 5: Voice 2 enable
   Bit 4: Voice 1 enable
   Bits 0-3: Volume (0-8, where 8 is maximum)
@@ -926,7 +928,7 @@ Clock rates: 886724 Hz (PAL), 894886 Hz (NTSC)
 
 These registers allow CPU code to trigger .TED file playback from RAM. The embedded 6502 code in the TED file is executed by the internal 6502 emulator at 50Hz (PAL).
 
-## 3.10 TED Video Chip Registers (0x0F0F20 - 0x0F0F5F)
+## 3.10 TED Video Chip Registers (0x0F0F20 - 0x0F0F6B)
 
 The TED chip also provides video capabilities from the Commodore Plus/4:
 
@@ -934,12 +936,13 @@ The TED chip also provides video capabilities from the Commodore Plus/4:
 - 320x200 pixel resolution (384x272 with border)
 - 121 colors (16 hues × 8 luminances)
 - Hardware cursor support
+- Standard text, multicolor text, extended-color text, high-resolution bitmap, and multicolor bitmap rendering
+- X/Y smooth scroll, 24/38 row/column windows, reverse video, and relocatable matrix/charset/bitmap bases
+- Pollable raster counter with compare/pending status
 - Compositor layer 12 (between VGA=10 and ULA=15)
 
-**Current limitations:** Only text mode is implemented. Control register bits for bitmap mode (BMM), extended color mode (ECM), multicolor mode (MCM), fine scrolling (XSCROLL/YSCROLL), row/column select (RSEL/CSEL), and character/video base address registers are accepted but have no effect on rendering.
-
 ```
-TED Video Registers (0x0F0F20 - 0x0F0F5F, 4-byte aligned for copper):
+TED Video Registers (0x0F0F20 - 0x0F0F6B, 4-byte aligned for copper):
 0x0F0F20: TED_V_CTRL1      - Control 1 (ECM/BMM/DEN/RSEL/YSCROLL)
 0x0F0F24: TED_V_CTRL2      - Control 2 (RES/MCM/CSEL/XSCROLL)
 0x0F0F28: TED_V_CHAR_BASE  - Character/bitmap base address
@@ -956,6 +959,9 @@ TED Video Registers (0x0F0F20 - 0x0F0F5F, 4-byte aligned for copper):
 0x0F0F54: TED_V_RASTER_HI  - Raster line high (read-only)
 0x0F0F58: TED_V_ENABLE     - Video enable (bit 0)
 0x0F0F5C: TED_V_STATUS     - Status (bit 0 = VBlank)
+0x0F0F60: TED_V_RASTER_CMP_LO - Raster compare low byte
+0x0F0F64: TED_V_RASTER_CMP_HI - Raster compare bit 8
+0x0F0F68: TED_V_RASTER_STATUS - Bit 7 = compare pending, write 1 to clear
 
 TED_V_CTRL1 bits:
   Bit 6: ECM - Extended Color Mode
@@ -974,9 +980,9 @@ Color byte format: Bits 4-6 = luminance (0-7), Bits 0-3 = hue (0-15)
 ```
 
 TED Video CPU Mappings:
-- IE32/IE64/M68K: Direct access at 0x0F0F20-0x0F0F5F
-- 6502: Memory-mapped at $D620-$D62F
-- Z80: Port I/O via 0xF2/0xF3, indices 0x20-0x2F
+- IE32/IE64/M68K: Direct access at 0x0F0F20-0x0F0F6B
+- 6502: Memory-mapped at $D620-$D632
+- Z80: Port I/O via 0xF2/0xF3, indices 0x20-0x32
 
 ## 3.11 AHX Module Player Registers (0x0F0B80 - 0x0F0B91)
 
@@ -1065,7 +1071,7 @@ Z80 and x86 access the custom synth and player control registers via memory-mapp
 | Chip      | IE32/IE64/M68K         | Z80   | x86     | 6502        | Notes |
 |-----------|-------------------|-------|---------|-------------|-------|
 | VideoChip | 0x0F0000-0x0F0077 | Memory $F000-$F077 | Memory | $F000-$F077 | Custom copper/blitter |
-| TED Video | 0x0F0F20-0x0F0F5F | Ports 0xF2/0xF3   | Ports 0xF2/0xF3 | $D620-$D62F | Plus/4 (idx 0x20-0x2F) |
+| TED Video | 0x0F0F20-0x0F0F6B | Ports 0xF2/0xF3   | Ports 0xF2/0xF3 | $D620-$D632 | Plus/4-inspired (idx 0x20-0x32) |
 | VGA       | 0x0F1000-0x0F13FF | Ports 0xA0-0xAC   | Ports 0x3C4-0x3DA | $D700-$D70A | IBM VGA compatible |
 | Voodoo    | 0x0F4000-0x0F43FF | Ports 0xB0-0xB7   | Memory | Memory | 3DFX SST-1 3D accelerator |
 | ANTIC     | 0x0F2100-0x0F213F | Ports 0xD4/0xD5 | Ports 0xD4/0xD5 | $D400-$D40F | Atari 8-bit video |
@@ -2842,7 +2848,7 @@ The Z80 implements a comprehensive instruction set including:
 | PSG    | 0xF0-0xF1   | Register select, data |
 | POKEY  | 0xD0-0xD1   | Register select, data |
 | SID    | 0xE0-0xE1   | Register select, data |
-| TED    | 0xF2-0xF3   | Register select, data (audio + video indices 0x20-0x2F) |
+| TED    | 0xF2-0xF3   | Register select, data (audio + video indices 0x20-0x32) |
 | ANTIC  | 0xD4-0xD5   | Register select, data |
 | GTIA   | 0xD6-0xD7   | Register select, data |
 | ULA    | 0xFE        | Border color / key status |
@@ -3945,10 +3951,12 @@ Features:
 ### Noise Channel
 
 Features:
-- Three noise types:
+- Five noise types:
     - White noise (LFSR-based)
     - Periodic noise
     - Metallic noise
+    - AY/YM PSG-style noise
+    - TED 8-bit LFSR noise
 - Frequency sweep
 - ADSR envelope
 
@@ -4841,21 +4849,21 @@ The TED (Text Editing Device) chip emulates the sound capabilities of the Commod
 ### Features:
 - Two independent square wave voices
 - 10-bit frequency control per voice (0-1023)
-- Voice 2 can optionally produce white noise
+- Voice 2 can optionally produce TED 8-bit LFSR noise
 - Global 4-bit volume control (0-8)
 - TED+ enhanced audio processing mode
 - .TED file playback with embedded 6502 code execution
 
 ### Voice Configuration:
 Each voice outputs a square wave with 10-bit frequency resolution:
-- **Frequency range**: ~107 Hz to ~110 kHz (at PAL clock)
+- **Frequency range**: ~108 Hz to ~110.8 kHz (at PAL clock)
 - **Formula**: `freq_hz = clock/8 / (1024 - register_value)`
 - **Clock**: 886724 Hz (PAL), 894886 Hz (NTSC)
 
 ### Control Register:
 The TED_SND_CTRL register controls all audio output:
 - **Bit 7**: D/A mode (direct audio output)
-- **Bit 6**: Voice 2 noise enable (white noise instead of square)
+- **Bit 6**: Voice 2 noise enable (TED 8-bit LFSR noise instead of square)
 - **Bit 5**: Voice 2 enable
 - **Bit 4**: Voice 1 enable
 - **Bits 0-3**: Volume (0-8, where 8 is maximum)

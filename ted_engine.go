@@ -8,16 +8,16 @@ accessible from all CPUs (M68K, IE32, Z80, 6502).
 Features:
 - 2 audio voices mapped to SoundChip channels 0-1
 - 10-bit frequency registers (split across two bytes per voice)
-- Voice 2 can optionally produce white noise instead of square wave
+- Voice 2 can optionally produce TED 8-bit LFSR noise instead of square wave
 - 4-bit master volume (0-8, values above 8 are clamped to max)
 - TED+ enhanced mode with logarithmic volume curve and filtering
 
 The engine translates TED register writes to SoundChip channel parameters.
 Synthesis is performed by SoundChip - this module handles only the mapping.
 
-TED frequency formula: freq_hz = clock/4 / (1024 - register_value)
+TED frequency formula: freq_hz = clock/8 / (1024 - register_value)
 Where register_value is the 10-bit combined frequency value.
-The TED sound clock is main_clock/4 (221680 Hz for PAL), not main_clock/8.
+The TED sound clock is main_clock/8 (about 110840 Hz for PAL).
 */
 
 package main
@@ -322,7 +322,7 @@ func (e *TEDEngine) applyWaveforms() {
 	// Voice 2 can be square or noise
 	if noise {
 		e.writeChannel(1, FLEX_OFF_WAVE_TYPE, WAVE_NOISE)
-		e.writeChannel(1, FLEX_OFF_NOISEMODE, NOISE_MODE_WHITE)
+		e.writeChannel(1, FLEX_OFF_NOISEMODE, NOISE_MODE_TED_8BIT)
 	} else {
 		e.writeChannel(1, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
 	}

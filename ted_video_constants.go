@@ -125,12 +125,22 @@ const (
 	// Bit 0: Video enable (1=active, 0=disabled)
 	TED_V_ENABLE = 0xF0F58
 
-	// TED_V_STATUS - Status register (read-only)
+	// TED_V_STATUS - Status register (read-only for VBlank)
 	// Bit 0: VBlank active
 	TED_V_STATUS = 0xF0F5C
 
+	// TED_V_RASTER_CMP_LO - Raster compare low byte
+	TED_V_RASTER_CMP_LO = 0xF0F60
+
+	// TED_V_RASTER_CMP_HI - Raster compare high bit in bit 0
+	TED_V_RASTER_CMP_HI = 0xF0F64
+
+	// TED_V_RASTER_STATUS - Raster compare status
+	// Bit 7: compare pending; write 1 to clear
+	TED_V_RASTER_STATUS = 0xF0F68
+
 	// TED video register region end
-	TED_VIDEO_END = 0xF0F5F
+	TED_VIDEO_END = 0xF0F6B
 )
 
 // =============================================================================
@@ -138,23 +148,26 @@ const (
 // =============================================================================
 
 const (
-	TED_V_REG_CTRL1      = 0  // Control register 1
-	TED_V_REG_CTRL2      = 1  // Control register 2
-	TED_V_REG_CHAR_BASE  = 2  // Character/bitmap base
-	TED_V_REG_VIDEO_BASE = 3  // Video matrix base
-	TED_V_REG_BG_COLOR0  = 4  // Background color 0
-	TED_V_REG_BG_COLOR1  = 5  // Background color 1
-	TED_V_REG_BG_COLOR2  = 6  // Background color 2
-	TED_V_REG_BG_COLOR3  = 7  // Background color 3
-	TED_V_REG_BORDER     = 8  // Border color
-	TED_V_REG_CURSOR_HI  = 9  // Cursor position high
-	TED_V_REG_CURSOR_LO  = 10 // Cursor position low
-	TED_V_REG_CURSOR_CLR = 11 // Cursor color
-	TED_V_REG_RASTER_LO  = 12 // Raster line low (read-only)
-	TED_V_REG_RASTER_HI  = 13 // Raster high (read-only)
-	TED_V_REG_ENABLE     = 14 // Enable register
-	TED_V_REG_STATUS     = 15 // Status register (read-only)
-	TED_V_REG_COUNT      = 16 // Total register count
+	TED_V_REG_CTRL1         = 0  // Control register 1
+	TED_V_REG_CTRL2         = 1  // Control register 2
+	TED_V_REG_CHAR_BASE     = 2  // Character/bitmap base
+	TED_V_REG_VIDEO_BASE    = 3  // Video matrix base
+	TED_V_REG_BG_COLOR0     = 4  // Background color 0
+	TED_V_REG_BG_COLOR1     = 5  // Background color 1
+	TED_V_REG_BG_COLOR2     = 6  // Background color 2
+	TED_V_REG_BG_COLOR3     = 7  // Background color 3
+	TED_V_REG_BORDER        = 8  // Border color
+	TED_V_REG_CURSOR_HI     = 9  // Cursor position high
+	TED_V_REG_CURSOR_LO     = 10 // Cursor position low
+	TED_V_REG_CURSOR_CLR    = 11 // Cursor color
+	TED_V_REG_RASTER_LO     = 12 // Raster line low (read-only)
+	TED_V_REG_RASTER_HI     = 13 // Raster high (read-only)
+	TED_V_REG_ENABLE        = 14 // Enable register
+	TED_V_REG_STATUS        = 15 // Status register (read-only)
+	TED_V_REG_RASTER_CMP_LO = 16 // Raster compare low
+	TED_V_REG_RASTER_CMP_HI = 17 // Raster compare high bit
+	TED_V_REG_RASTER_STATUS = 18 // Raster pending latch
+	TED_V_REG_COUNT         = 19 // Total register count
 )
 
 // =============================================================================
@@ -185,7 +198,8 @@ const (
 
 // Status register bits
 const (
-	TED_V_STATUS_VBLANK = 0x01 // Bit 0: VBlank active
+	TED_V_STATUS_VBLANK         = 0x01 // Bit 0: VBlank active
+	TED_V_RASTER_STATUS_PENDING = 0x80 // Bit 7: raster compare pending
 )
 
 // =============================================================================
@@ -234,8 +248,9 @@ const (
 	// Character ROM/RAM size (256 chars × 8 bytes each)
 	TED_V_CHARSET_SIZE = 2048
 
-	// Total VRAM allocation for TED video
-	TED_V_VRAM_SIZE = TED_V_MATRIX_SIZE + TED_V_COLOR_SIZE + TED_V_CHARSET_SIZE
+	// Total VRAM allocation for TED video.
+	// IE exposes the TED chip as a self-contained device with 16 KiB private VRAM.
+	TED_V_VRAM_SIZE = 16 * 1024
 )
 
 // =============================================================================
@@ -256,24 +271,27 @@ const (
 
 const (
 	// 6502: TED video registers at 0xD620-0xD65F
-	C6502_TED_V_BASE      = 0xD620
-	C6502_TED_V_CTRL1     = 0xD620
-	C6502_TED_V_CTRL2     = 0xD621
-	C6502_TED_V_CHAR_BASE = 0xD622
-	C6502_TED_V_VID_BASE  = 0xD623
-	C6502_TED_V_BG0       = 0xD624
-	C6502_TED_V_BG1       = 0xD625
-	C6502_TED_V_BG2       = 0xD626
-	C6502_TED_V_BG3       = 0xD627
-	C6502_TED_V_BORDER    = 0xD628
-	C6502_TED_V_CURSOR_HI = 0xD629
-	C6502_TED_V_CURSOR_LO = 0xD62A
-	C6502_TED_V_CURSOR_C  = 0xD62B
-	C6502_TED_V_RASTER_LO = 0xD62C
-	C6502_TED_V_RASTER_HI = 0xD62D
-	C6502_TED_V_ENABLE    = 0xD62E
-	C6502_TED_V_STATUS    = 0xD62F
-	C6502_TED_V_END       = 0xD62F
+	C6502_TED_V_BASE          = 0xD620
+	C6502_TED_V_CTRL1         = 0xD620
+	C6502_TED_V_CTRL2         = 0xD621
+	C6502_TED_V_CHAR_BASE     = 0xD622
+	C6502_TED_V_VID_BASE      = 0xD623
+	C6502_TED_V_BG0           = 0xD624
+	C6502_TED_V_BG1           = 0xD625
+	C6502_TED_V_BG2           = 0xD626
+	C6502_TED_V_BG3           = 0xD627
+	C6502_TED_V_BORDER        = 0xD628
+	C6502_TED_V_CURSOR_HI     = 0xD629
+	C6502_TED_V_CURSOR_LO     = 0xD62A
+	C6502_TED_V_CURSOR_C      = 0xD62B
+	C6502_TED_V_RASTER_LO     = 0xD62C
+	C6502_TED_V_RASTER_HI     = 0xD62D
+	C6502_TED_V_ENABLE        = 0xD62E
+	C6502_TED_V_STATUS        = 0xD62F
+	C6502_TED_V_RASTER_CMP_LO = 0xD630
+	C6502_TED_V_RASTER_CMP_HI = 0xD631
+	C6502_TED_V_RASTER_STATUS = 0xD632
+	C6502_TED_V_END           = 0xD632
 )
 
 // =============================================================================
@@ -284,7 +302,7 @@ const (
 	// Z80: Uses same port select/data pair as TED audio (0xF2/0xF3)
 	// Register indices 0x20-0x2F select TED video registers
 	Z80_TED_V_INDEX_BASE = 0x20
-	Z80_TED_V_INDEX_END  = 0x2F
+	Z80_TED_V_INDEX_END  = 0x32
 )
 
 // =============================================================================

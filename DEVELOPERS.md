@@ -355,6 +355,8 @@ The `RUN` command auto-detects the CPU core from the file extension.
 ./bin/IntuitionEngine -ahx+ module.ahx   # Enhanced with stereo spread
 ```
 
+TED audio uses the Plus/4 `/8` sound clock divider and routes voice 2 noise to the SoundChip TED 8-bit LFSR mode. TED video exposes a 16 KiB private VRAM device with text, ECM, multicolor text, high-resolution bitmap, multicolor bitmap, scroll/window controls, base relocation, and pollable raster compare/status registers.
+
 ### Enhanced Audio Modes (PLUS)
 
 The `+` variants (PSG+, SID+, POKEY+, TED+, AHX+) provide:
