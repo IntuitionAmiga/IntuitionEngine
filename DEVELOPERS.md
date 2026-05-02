@@ -321,11 +321,11 @@ The `RUN` command auto-detects the CPU core from the file extension.
 ### Music Playback
 
 ```bash
-# PSG (AY-3-8910/YM2149; VGM also supports SN76489)
+# PSG (AY-3-8910/YM2149; VGM SN76489 writes route to native SN)
 ./bin/IntuitionEngine -psg track.ym       # Atari ST YM format
 ./bin/IntuitionEngine -psg track.ay       # ZXAYEMUL (ZX Spectrum/Amstrad CPC/MSX auto-detected)
-./bin/IntuitionEngine -psg track.vgm      # VGM stream (AY-3-8910 + SN76489)
-./bin/IntuitionEngine -psg track.vgz      # VGM compressed (AY-3-8910 + SN76489)
+./bin/IntuitionEngine -psg track.vgm      # VGM stream (AY-3-8910 + native SN76489)
+./bin/IntuitionEngine -psg track.vgz      # VGM compressed (AY-3-8910 + native SN76489)
 ./bin/IntuitionEngine -psg track.sndh     # Atari ST SNDH (with embedded M68K code)
 ./bin/IntuitionEngine -psg track.vtx      # Vortex Tracker (LHA-compressed YM)
 ./bin/IntuitionEngine -psg track.pt3      # ProTracker 3 (Z80 tracker)

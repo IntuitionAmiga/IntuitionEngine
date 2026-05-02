@@ -169,6 +169,9 @@ func (chip *SoundChip) Reset() {
 		ch.plusBqA1 = 0
 		ch.plusBqA2 = 0
 	}
+	for i := range chip.snVoices {
+		chip.initSNVoice(&chip.snVoices[i], i)
+	}
 
 	// Reset reverb buffers in-place
 	for i := range chip.preDelayBuf {
@@ -193,8 +196,8 @@ func (chip *SoundChip) Reset() {
 	// Clear byte accumulation shadow buffer
 	chip.flexShadow = [4 * FLEX_CH_STRIDE]byte{}
 
-	// Clear sample ticker and tap so stale playback engines don't survive reset
-	chip.sampleTicker.Store(&sampleTickerHolder{})
+	// Preserve registered sample tickers across reset; engines re-establish
+	// their internal state and should keep advancing afterwards.
 	chip.sampleTap.Store(&sampleTapHolder{})
 	chip.resetMasterNormalizerLocked()
 
@@ -221,6 +224,9 @@ func (e *PSGEngine) Reset() {
 
 	e.events = nil
 	e.eventIndex = 0
+	e.snEvents = nil
+	e.snEventIndex = 0
+	e.snLoopEventIndex = 0
 	e.currentSample = 0
 	e.totalSamples = 0
 	e.loop = false

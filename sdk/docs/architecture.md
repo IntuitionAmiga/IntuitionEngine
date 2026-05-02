@@ -644,6 +644,8 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xF0BD8-0xF0BEB` | 20B | WAV Player |
 | `0xF0C00-0xF0C0F` | 16B | PSG Engine (AY-3-8910/YM2149 registers) |
 | `0xF0C20` | 1B | PSG+ control |
+| `0xF0C30-0xF0C3F` | 16B | Native SN76489 latch/data, ready, and LFSR mode registers |
+| `0xF0C40-0xF0C4F` | 16B | Reserved for future SN76489 extensions |
 | `0xF0C10-0xF0C1F` | 16B | PSG / AY Player |
 | `0xF0D00-0xF0D09` | 10B | POKEY Engine |
 | `0xF0D10-0xF0D1D` | 14B | SAP Player |

@@ -463,6 +463,8 @@ func main() {
 
 	psgEngine := NewPSGEngine(soundChip, SAMPLE_RATE)
 	psgPlayer := NewPSGPlayer(psgEngine)
+	snChip := NewSN76489Chip(soundChip)
+	psgPlayer.SetSNChip(snChip)
 	if psgPlus {
 		psgEngine.SetPSGPlusEnabled(true)
 	}
@@ -921,6 +923,12 @@ func main() {
 	sysBus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3,
 		psgPlayer.HandlePlayRead,
 		psgPlayer.HandlePlayWrite)
+
+	// Map native SN76489 registers
+	sysBus.MapIO(SN_BASE, SN_END,
+		snChip.HandleRead,
+		snChip.HandleWrite)
+	sysBus.MapIOByte(SN_BASE, SN_END, snChip.HandleWrite8)
 
 	// Map SID registers
 	sysBus.MapIO(SID_BASE, SID_END,
@@ -2025,6 +2033,7 @@ func main() {
 		tedPlayer.Reset()
 		pokeyPlayer.Reset()
 		soundChip.Reset()
+		snChip.Reset()
 
 		// 7. Reset memory
 		sysBus.Reset()

@@ -54,6 +54,7 @@ import (
 	"log"
 	"math"
 	"math/bits"
+	"sort"
 	"sync"
 	"sync/atomic"
 )
@@ -166,19 +167,23 @@ const (
 // ------------------------------------------------------------------------------
 // Basic oscillator control
 const (
-	NOISE_FREQ          = 0xF09C0
-	NOISE_VOL           = 0xF09C4
-	NOISE_CTRL          = 0xF09C8
-	NOISE_ATK           = 0xF09D0
-	NOISE_DEC           = 0xF09D4
-	NOISE_SUS           = 0xF09D8
-	NOISE_REL           = 0xF09DC
-	NOISE_MODE          = 0xF09E0
-	NOISE_MODE_WHITE    = 0 // Default (existing LFSR)
-	NOISE_MODE_PERIODIC = 1 // Periodic/loop
-	NOISE_MODE_METALLIC = 2 // "Metal" noise
-	NOISE_MODE_PSG      = 3 // AY/YM PSG-style LFSR
-	NOISE_MODE_TED_8BIT = 4 // MOS TED 8-bit LFSR
+	NOISE_FREQ               = 0xF09C0
+	NOISE_VOL                = 0xF09C4
+	NOISE_CTRL               = 0xF09C8
+	NOISE_ATK                = 0xF09D0
+	NOISE_DEC                = 0xF09D4
+	NOISE_SUS                = 0xF09D8
+	NOISE_REL                = 0xF09DC
+	NOISE_MODE               = 0xF09E0
+	NOISE_MODE_WHITE         = 0 // Default (existing LFSR)
+	NOISE_MODE_PERIODIC      = 1 // Periodic/loop
+	NOISE_MODE_METALLIC      = 2 // "Metal" noise
+	NOISE_MODE_PSG           = 3 // AY/YM PSG-style LFSR
+	NOISE_MODE_TED_8BIT      = 4 // MOS TED 8-bit LFSR
+	NOISE_MODE_SN15_WHITE    = 5 // SN76489 15-bit white noise
+	NOISE_MODE_SN15_PERIODIC = 6 // SN76489 15-bit periodic noise
+	NOISE_MODE_SN16_WHITE    = 7 // SN76489 16-bit white noise
+	NOISE_MODE_SN16_PERIODIC = 8 // SN76489 16-bit periodic noise
 )
 
 // Sync source registers
@@ -467,9 +472,13 @@ const (
 const NOISE_LFSR_BITS = 23 // Noise LFSR bit width
 
 const (
-	PSG_NOISE_LFSR_BITS = 17
-	PSG_NOISE_LFSR_MASK = (1 << PSG_NOISE_LFSR_BITS) - 1
-	PSG_NOISE_LFSR_SEED = PSG_NOISE_LFSR_MASK
+	PSG_NOISE_LFSR_BITS  = 17
+	PSG_NOISE_LFSR_MASK  = (1 << PSG_NOISE_LFSR_BITS) - 1
+	PSG_NOISE_LFSR_SEED  = PSG_NOISE_LFSR_MASK
+	SN15_NOISE_LFSR_BITS = 15
+	SN15_NOISE_LFSR_MASK = (1 << SN15_NOISE_LFSR_BITS) - 1
+	SN16_NOISE_LFSR_BITS = 16
+	SN16_NOISE_LFSR_MASK = (1 << SN16_NOISE_LFSR_BITS) - 1
 )
 
 // ------------------------------------------------------------------------------
@@ -511,7 +520,7 @@ const TWO_PI_OVER_SR = TWO_PI / SAMPLE_RATE         // Pre-computed for efficien
 // ------------------------------------------------------------------------------
 const (
 	NUM_ENVELOPE_SHAPES = 5
-	NUM_NOISE_MODES     = 5
+	NUM_NOISE_MODES     = 9
 	NUM_FILTER_TYPES    = 4
 	NUM_MOD_SOURCES     = NUM_CHANNELS
 	NUM_ALLPASS_FILTERS = 2
@@ -876,8 +885,8 @@ type SampleTicker interface {
 	TickSample()
 }
 
-type sampleTickerHolder struct {
-	ticker SampleTicker
+type sampleTickerListHolder struct {
+	tickers []SampleTicker
 }
 
 type sampleTapHolder struct {
@@ -914,9 +923,12 @@ type SoundChip struct {
 	mu              sync.Mutex                // Concurrency control for parameter updates
 	_pad2           [SOUNDCHIP_PAD2_SIZE]byte // Align to 64-byte cache line boundary
 
-	sampleTicker atomic.Value // Optional per-sample ticker (SampleTicker)
-	sampleTap    atomic.Value // Optional tap callback fed with each generated sample
-	audioFrozen  atomic.Bool  // When true, ReadSample returns 0 (hard pause)
+	sampleTicker  atomic.Value // Optional per-sample tickers ([]SampleTicker)
+	sampleTickers map[string]SampleTicker
+	sampleTap     atomic.Value // Optional tap callback fed with each generated sample
+	audioFrozen   atomic.Bool  // When true, ReadSample returns 0 (hard pause)
+
+	snVoices [4]Channel // Native SN76489 voices, independent from flex channels.
 
 	// Cache line 3+ - Reverb state (cold path)
 	preDelayPos     int                            // Current position in pre-delay buffer
@@ -980,8 +992,9 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 		preDelayBuf:      make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
 		sampleRateRecip:  1.0 / float32(SAMPLE_RATE),
 		masterGainLinear: 1.0,
+		sampleTickers:    make(map[string]SampleTicker),
 	}
-	chip.sampleTicker.Store(&sampleTickerHolder{})
+	chip.sampleTicker.Store(&sampleTickerListHolder{})
 	chip.sampleTap.Store(&sampleTapHolder{})
 
 	// Initialise channels (4 base + 6 SID2/SID3 channels)
@@ -1011,6 +1024,9 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 			pokeyPlusOversample: 1,
 		}
 	}
+	for i := range chip.snVoices {
+		chip.initSNVoice(&chip.snVoices[i], i)
+	}
 
 	// Initialise audio output
 	output, err := NewAudioOutput(backend, SAMPLE_RATE, chip)
@@ -1037,6 +1053,63 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 	}
 
 	return chip, nil
+}
+
+func (chip *SoundChip) initSNVoice(ch *Channel, index int) {
+	waveType := WAVE_SQUARE
+	if index == 3 {
+		waveType = WAVE_NOISE
+	}
+	*ch = Channel{
+		waveType:      waveType,
+		attackTime:    0,
+		decayTime:     0,
+		sustainLevel:  MAX_LEVEL,
+		releaseTime:   0,
+		attackRecip:   0,
+		decayRecip:    0,
+		releaseRecip:  0,
+		envelopePhase: ENV_SUSTAIN,
+		envelopeLevel: MAX_LEVEL,
+		noiseSR:       NOISE_LFSR_SEED,
+		dutyCycle:     DEFAULT_DUTY_CYCLE,
+		phase:         MIN_PHASE,
+		volume:        MIN_VOLUME,
+	}
+}
+
+func stepNoiseLFSR(mode int, sr uint32) uint32 {
+	if sr == 0 {
+		sr = 1
+	}
+	switch mode {
+	case NOISE_MODE_WHITE:
+		newBit := ((sr >> NOISE_TAP1) ^ (sr >> NOISE_TAP2)) & 1
+		return ((sr << LSB_MASK) | newBit) & NOISE_LFSR_MASK
+	case NOISE_MODE_PERIODIC:
+		return ((sr >> LSB_MASK) | ((sr & 1) << (NOISE_LFSR_BITS - 1))) & NOISE_LFSR_MASK
+	case NOISE_MODE_METALLIC:
+		newBit := ((sr >> METAL_TAP1) ^ (sr >> METAL_TAP2)) & 1
+		return ((sr << LSB_MASK) | newBit) & NOISE_LFSR_MASK
+	case NOISE_MODE_PSG:
+		newBit := ((sr >> 0) ^ (sr >> 3)) & 1
+		return ((sr << LSB_MASK) | newBit) & PSG_NOISE_LFSR_MASK
+	case NOISE_MODE_TED_8BIT:
+		newBit := ((sr >> 0) ^ (sr >> 2) ^ (sr >> 3) ^ (sr >> 4) ^ (sr >> 7)) & 1
+		return ((sr << LSB_MASK) | newBit) & 0xFF
+	case NOISE_MODE_SN15_WHITE:
+		newBit := (sr ^ (sr >> 1)) & 1
+		return ((sr >> 1) | (newBit << (SN15_NOISE_LFSR_BITS - 1))) & SN15_NOISE_LFSR_MASK
+	case NOISE_MODE_SN15_PERIODIC:
+		return ((sr >> 1) | ((sr & 1) << (SN15_NOISE_LFSR_BITS - 1))) & SN15_NOISE_LFSR_MASK
+	case NOISE_MODE_SN16_WHITE:
+		newBit := (sr ^ (sr >> 2) ^ (sr >> 3) ^ (sr >> 5)) & 1
+		return ((sr >> 1) | (newBit << (SN16_NOISE_LFSR_BITS - 1))) & SN16_NOISE_LFSR_MASK
+	case NOISE_MODE_SN16_PERIODIC:
+		return ((sr >> 1) | ((sr & 1) << (SN16_NOISE_LFSR_BITS - 1))) & SN16_NOISE_LFSR_MASK
+	default:
+		return sr
+	}
 }
 
 // HandleRegisterRead handles reads from audio registers
@@ -1832,22 +1905,7 @@ func (ch *Channel) generateWaveSample(sampleRate, sampleRateRecip float32) float
 			ch.noisePhase -= float32(steps)
 
 			for range steps {
-				switch ch.noiseMode {
-				case NOISE_MODE_WHITE:
-					newBit := ((ch.noiseSR >> NOISE_TAP1) ^ (ch.noiseSR >> NOISE_TAP2)) & 1
-					ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
-				case NOISE_MODE_PERIODIC:
-					ch.noiseSR = ((ch.noiseSR >> LSB_MASK) | ((ch.noiseSR & 1) << (NOISE_LFSR_BITS - 1))) & NOISE_LFSR_MASK
-				case NOISE_MODE_METALLIC:
-					newBit := ((ch.noiseSR >> METAL_TAP1) ^ (ch.noiseSR >> METAL_TAP2)) & 1
-					ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
-				case NOISE_MODE_PSG:
-					newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 3)) & 1
-					ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & PSG_NOISE_LFSR_MASK
-				case NOISE_MODE_TED_8BIT:
-					newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 2) ^ (ch.noiseSR >> 3) ^ (ch.noiseSR >> 4) ^ (ch.noiseSR >> 7)) & 1
-					ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & 0xFF
-				}
+				ch.noiseSR = stepNoiseLFSR(ch.noiseMode, ch.noiseSR)
 			}
 
 			ch.noiseValue = float32(ch.noiseSR&LSB_MASK)*NOISE_BIT_SCALE - NOISE_BIAS
@@ -2048,22 +2106,7 @@ func (ch *Channel) generateWaveSample(sampleRate, sampleRateRecip float32) float
 		}
 
 		if shouldClock {
-			switch ch.noiseMode {
-			case NOISE_MODE_WHITE:
-				newBit := ((ch.noiseSR >> NOISE_TAP1) ^ (ch.noiseSR >> NOISE_TAP2)) & 1
-				ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
-			case NOISE_MODE_PERIODIC:
-				ch.noiseSR = ((ch.noiseSR >> LSB_MASK) | ((ch.noiseSR & 1) << (NOISE_LFSR_BITS - 1))) & NOISE_LFSR_MASK
-			case NOISE_MODE_METALLIC:
-				newBit := ((ch.noiseSR >> METAL_TAP1) ^ (ch.noiseSR >> METAL_TAP2)) & 1
-				ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
-			case NOISE_MODE_PSG:
-				newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 3)) & 1
-				ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & PSG_NOISE_LFSR_MASK
-			case NOISE_MODE_TED_8BIT:
-				newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 2) ^ (ch.noiseSR >> 3) ^ (ch.noiseSR >> 4) ^ (ch.noiseSR >> 7)) & 1
-				ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & 0xFF
-			}
+			ch.noiseSR = stepNoiseLFSR(ch.noiseMode, ch.noiseSR)
 		}
 
 		ch.noiseValue = float32(ch.noiseSR&LSB_MASK)*NOISE_BIT_SCALE - NOISE_BIAS
@@ -2473,22 +2516,7 @@ func (ch *Channel) generateNoiseMixSample(sampleRateRecip float32) float32 {
 	ch.noisePhase -= float32(steps)
 
 	for range steps {
-		switch ch.noiseMode {
-		case NOISE_MODE_WHITE:
-			newBit := ((ch.noiseSR >> NOISE_TAP1) ^ (ch.noiseSR >> NOISE_TAP2)) & 1
-			ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
-		case NOISE_MODE_PERIODIC:
-			ch.noiseSR = ((ch.noiseSR >> LSB_MASK) | ((ch.noiseSR & 1) << (NOISE_LFSR_BITS - 1))) & NOISE_LFSR_MASK
-		case NOISE_MODE_METALLIC:
-			newBit := ((ch.noiseSR >> METAL_TAP1) ^ (ch.noiseSR >> METAL_TAP2)) & 1
-			ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
-		case NOISE_MODE_PSG:
-			newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 3)) & 1
-			ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & PSG_NOISE_LFSR_MASK
-		case NOISE_MODE_TED_8BIT:
-			newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 2) ^ (ch.noiseSR >> 3) ^ (ch.noiseSR >> 4) ^ (ch.noiseSR >> 7)) & 1
-			ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & 0xFF
-		}
+		ch.noiseSR = stepNoiseLFSR(ch.noiseMode, ch.noiseSR)
 	}
 
 	ch.noiseValue = float32(ch.noiseSR&LSB_MASK)*NOISE_BIT_SCALE - NOISE_BIAS
@@ -2554,6 +2582,13 @@ func (chip *SoundChip) GenerateSample() float32 {
 	var primaryType uint32 = 0 // Store the wave type of first active channel
 	for i := range NUM_CHANNELS {
 		ch := chip.channels[i]
+		if ch.enabled {
+			sum += ch.generateSample()
+			activeCount++
+		}
+	}
+	for i := range chip.snVoices {
+		ch := &chip.snVoices[i]
 		if ch.enabled {
 			sum += ch.generateSample()
 			activeCount++
@@ -2736,9 +2771,11 @@ func (chip *SoundChip) ReadSample() float32 {
 	if chip.audioFrozen.Load() {
 		return 0
 	}
-	if holder, ok := chip.sampleTicker.Load().(*sampleTickerHolder); ok {
-		if holder.ticker != nil {
-			holder.ticker.TickSample()
+	if holder, ok := chip.sampleTicker.Load().(*sampleTickerListHolder); ok {
+		for _, ticker := range holder.tickers {
+			if ticker != nil {
+				ticker.TickSample()
+			}
 		}
 	}
 	sample := chip.GenerateSample()
@@ -2751,7 +2788,49 @@ func (chip *SoundChip) ReadSample() float32 {
 }
 
 func (chip *SoundChip) SetSampleTicker(ticker SampleTicker) {
-	chip.sampleTicker.Store(&sampleTickerHolder{ticker: ticker})
+	chip.RegisterSampleTicker("default", ticker)
+}
+
+func (chip *SoundChip) RegisterSampleTicker(key string, ticker SampleTicker) {
+	if key == "" {
+		key = "default"
+	}
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	if chip.sampleTickers == nil {
+		chip.sampleTickers = make(map[string]SampleTicker)
+	}
+	if ticker == nil {
+		delete(chip.sampleTickers, key)
+	} else {
+		chip.sampleTickers[key] = ticker
+	}
+	chip.rebuildSampleTickerCacheLocked()
+}
+
+func (chip *SoundChip) UnregisterSampleTicker(key string) {
+	if key == "" {
+		key = "default"
+	}
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	delete(chip.sampleTickers, key)
+	chip.rebuildSampleTickerCacheLocked()
+}
+
+func (chip *SoundChip) rebuildSampleTickerCacheLocked() {
+	keys := make([]string, 0, len(chip.sampleTickers))
+	for key := range chip.sampleTickers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	tickers := make([]SampleTicker, 0, len(keys))
+	for _, key := range keys {
+		if ticker := chip.sampleTickers[key]; ticker != nil {
+			tickers = append(tickers, ticker)
+		}
+	}
+	chip.sampleTicker.Store(&sampleTickerListHolder{tickers: tickers})
 }
 
 func (chip *SoundChip) SetSampleTap(tap func(float32)) {

@@ -1,5 +1,11 @@
 # Changelog
 
+## Native SN76489
+
+- Added a native IE bus SN76489 chip at `0xF0C30-0xF0C3F` with byte-oriented latch/data writes, ready status, and selectable 15-bit/16-bit LFSR mode.
+- VGM/VGZ SN76489 command `0x50` is preserved as raw SN events and routed to the native SN chip. Mixed SN + AY VGMs drive both chips.
+- Removed SN-to-AY conversion from the VGM parser path; `-psg+` remains AY/YM-only.
+
 All notable changes to Intuition Engine are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

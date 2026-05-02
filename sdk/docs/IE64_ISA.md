@@ -749,6 +749,7 @@ The IE64 uses the same memory map as the Intuition Engine platform. PC and LOAD/
 | `$F0700-$F07FF` | 256 B | Terminal/serial registers |
 | `$F0800-$F0B3F` | 832 B | Audio chip registers |
 | `$F0C00-$F0C20` | 33 B | PSG (AY-3-8910/YM2149) registers, playback helper, and PSG+ control |
+| `$F0C30-$F0C3F` | 16 B | Native SN76489 latch/data, ready, and LFSR mode registers |
 | `$F0D00-$F0D1D` | 29 B | POKEY registers |
 | `$F0E00-$F0E2D` | 45 B | SID (6581/8580) registers |
 | `$F0F00-$F0F5F` | 96 B | TED registers |

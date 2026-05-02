@@ -1023,7 +1023,7 @@ PRINT "A", "B", "C"
 
 ### PSG
 
-Control the PSG (AY-3-8910/YM2149) programmable sound generator. VGM data containing SN76489 writes is automatically converted to AY registers during playback.
+Control the PSG (AY-3-8910/YM2149) programmable sound generator. VGM/VGZ data containing SN76489 writes is played natively on the IE bus SN76489 chip; mixed SN + AY VGMs drive both chips.
 
 ```
 PSG channel, freq, vol           Set channel frequency and volume

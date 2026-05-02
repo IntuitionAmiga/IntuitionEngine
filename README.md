@@ -190,7 +190,7 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 - 44.1kHz, 32-bit floating-point processing
 
 **Classic Sound Chips (register-mapped to custom synth):**
-- **AY/YM/PSG** (AY-3-8910/YM2149) - Supports .ym, .ay, .vgm, .vgz, .vtx, .sndh, .pt3, .pt2, .pt1, .stc, .sqt, .asc, .ftc playback (VGM includes SN76489 conversion; tracker formats use Z80 emulation)
+- **AY/YM/PSG** (AY-3-8910/YM2149) - Supports .ym, .ay, .vgm, .vgz, .vtx, .sndh, .pt3, .pt2, .pt1, .stc, .sqt, .asc, .ftc playback. VGM/VGZ SN76489 writes play natively on the IE bus SN76489 chip.
 - **POKEY** (Atari) - Supports .sap playback
 - **SID** (6581/8580) - Supports .sid playback
 - **TED** (Commodore Plus/4) - Supports .ted playback
@@ -419,7 +419,7 @@ All CPU cores (IE32, IE64, M68K, Z80, 6502, x86) share the same memory space thr
 
 The video compositor blends output from all enabled video sources (VideoChip=0, VGA=10, TED=12, ANTIC/GTIA=13, ULA=15, Voodoo=20) into a single display using layer ordering. The copper coprocessor can target any video system via SETBASE for per-scanline raster effects.
 
-The custom audio synthesizer is the core of the sound system. PSG, POKEY, and SID registers are mapped to the custom synth, providing authentic register-level compatibility with high-quality 44.1kHz output. File players drive the synth via register writes: some formats (.ay, .sndh, .sid, .sap, .ted, tracker modules) execute embedded CPU code (Z80, M68K, or 6502), while others (.ym, .vgm/vgz) are rendered from parsed register events in Go. VGM files containing SN76489 data (Sega Master System, Game Gear) are automatically converted to AY register writes during parsing.
+The custom audio synthesizer is the core of the sound system. PSG, POKEY, SID, and SN76489 registers are mapped to native chip paths, providing register-level compatibility with high-quality 44.1kHz output. File players drive the synth via register writes: some formats (.ay, .sndh, .sid, .sap, .ted, tracker modules) execute embedded CPU code (Z80, M68K, or 6502), while others (.ym, .vgm/vgz) are rendered from parsed register events in Go. VGM/VGZ files containing SN76489 (`0x50`) writes play natively on the IE bus SN76489 chip at `0xF0C30-0xF0C3F`; `0xF0C40-0xF0C4F` is reserved.
 
 ### Bus Layers
 
@@ -481,7 +481,7 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0BD8 - 0x0F0BEB: WAV player registers (PCM .wav playback)
 0x0F0C00 - 0x0F0C0F: PSG registers (AY/YM synthesis)
 0x0F0C20:            PSG+ control register
-0x0F0C10 - 0x0F0C1F: PSG playback control (AY/YM/VGM/SNDH; VGM includes SN76489)
+0x0F0C10 - 0x0F0C1F: PSG playback control (AY/YM/VGM/SNDH; SN VGM drives native SN76489)
 0x0F0D00 - 0x0F0D08: POKEY registers (Atari 8-bit audio)
 0x0F0D09:            POKEY+ control register
 0x0F0D10 - 0x0F0D1D: SAP playback control
@@ -781,7 +781,7 @@ PSG Playback Control (supports .ym, .ay, .vgm, .vgz, .vtx, .sndh, .pt3, .pt2, .p
 0x0F0C1C: PSG_PLAY_STATUS - Status (bit0=busy, bit1=error)
 ```
 
-Embed the file data in your program, set PTR/LEN, then write to CTRL. Format is auto-detected from file headers. Formats using embedded CPU code (.ay, .sndh, tracker modules) execute via internal Z80 or M68K emulation. Register-dump formats (.ym) and timed-event formats (.vgm/.vgz) are rendered natively. VGM files containing SN76489 data are automatically converted to AY register writes.
+Embed the file data in your program, set PTR/LEN, then write to CTRL. Format is auto-detected from file headers. Formats using embedded CPU code (.ay, .sndh, tracker modules) execute via internal Z80 or M68K emulation. Register-dump formats (.ym) and timed-event formats (.vgm/.vgz) are rendered natively. VGM/VGZ files containing SN76489 (`0x50`) writes play on the native SN76489 chip; mixed SN + AY VGMs drive both chips simultaneously. `-psg+` enhanced processing applies only to AY/YM, not SN.
 
 ## 3.7 POKEY Sound Chip Registers (0x0F0D00 - 0x0F0D1D)
 
@@ -4262,7 +4262,7 @@ Stereo reverb with adjustable mix and decay time.
 
 ## 11.4 PSG Sound Chip (AY-3-8910/YM2149)
 
-The PSG chip emulates the General Instrument AY-3-8910 and Yamaha YM2149, providing three channels of square wave synthesis with noise and envelope capabilities. This chip powered the sound in countless 8-bit computers including the ZX Spectrum 128, Amstrad CPC, Atari ST, and MSX. VGM files targeting the Texas Instruments SN76489 (Sega Master System, Game Gear, BBC Micro, ColecoVision) are also supported via automatic conversion to AY register writes during VGM parsing.
+The PSG chip emulates the General Instrument AY-3-8910 and Yamaha YM2149, providing three channels of square wave synthesis with noise and envelope capabilities. This chip powered the sound in countless 8-bit computers including the ZX Spectrum 128, Amstrad CPC, Atari ST, and MSX. VGM files targeting the Texas Instruments SN76489 (Sega Master System, Game Gear, BBC Micro, ColecoVision) drive the native IE bus SN76489 chip.
 
 ### Features:
 - Three independent square wave tone generators
@@ -4410,7 +4410,7 @@ The PSG player supports multiple music file formats with automatic detection:
 - **.ym** - YM2149 register dump frames (50Hz playback)
 - **.ay** - ZXAYEMUL format with embedded Z80 code (ZX Spectrum 1.77 MHz, Amstrad CPC 1.0 MHz, MSX 1.79 MHz auto-detected)
 - **.sndh** - Atari ST format with embedded M68K code
-- **.vgm** - Video Game Music format with timed PSG events (AY-3-8910 native; SN76489 auto-converted to AY registers)
+- **.vgm** - Video Game Music format with timed PSG events (AY-3-8910 native; SN76489 `0x50` writes route to the native SN76489 chip)
 
 To play a file, embed the data in your program and set the player registers:
 
@@ -5813,7 +5813,7 @@ The classic sound chips are implemented via register mapping to the custom audio
 - **POKEY**: Registers at `$F0D00-$F0D09` map to channels with polynomial counter and distortion emulation
 - **SID (6581/8580)**: Registers at `$F0E00-$F0E1C` map to channels with filter, ring mod, and sync
 
-This approach provides accurate register-level compatibility while leveraging the custom synth's high-quality output (44.1kHz, anti-aliased waveforms, 32-bit processing). VGM playback also supports SN76489 data via automatic conversion to these AY registers.
+This approach provides accurate register-level compatibility while leveraging the custom synth's high-quality output (44.1kHz, anti-aliased waveforms, 32-bit processing). VGM/VGZ playback supports SN76489 data through the native IE bus SN76489 chip at `0xF0C30-0xF0C3F`.
 
 File playback (.ym, .ay, .sndh, .vgm, .sap, .sid) executes embedded CPU code that writes to the mapped registers, driving the synthesis in real-time.
 

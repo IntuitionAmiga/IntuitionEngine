@@ -180,7 +180,7 @@ The VGM (Video Game Music) parser supports playback of `.vgm` and `.vgz` (gzip-c
 | Chip | VGM Command | Notes |
 |------|-------------|-------|
 | AY-3-8910 / YM2149 | `0xA0` | Direct register mapping to PSG engine |
-| SN76489 / SN76496 | `0x50` | Converted to AY-equivalent register writes with clock-accurate frequency scaling |
+| SN76489 / SN76496 | `0x50` | Native SN76489 writes routed to the IE bus chip at `0xF0C30-0xF0C3F` |
 
 **Ignored chips** (commands gracefully skipped):
 | Chip | VGM Command | Notes |
@@ -195,7 +195,7 @@ The VGM (Video Game Music) parser supports playback of `.vgm` and `.vgz` (gzip-c
 | Sega PCM | `0xC0`+ | Arcade PCM |
 | DAC stream | `0x90`-`0x95` | PCM streaming |
 
-SN76489 conversion maps tone channels 0-2 to AY channels A/B/C with frequency divider scaling based on chip clocks. Attenuation is inverted (SN: 0=max, 15=off → AY: 15=max, 0=off). The SN76489 noise channel maps to the AY noise generator with the mixer register controlling noise enable on channel C. Noise rate 3 (which uses channel 2's tone output as the noise clock on real hardware) is dynamically tracked - updating channel 2's tone divider automatically re-emits the noise period with clock-scaled frequency conversion.
+SN76489 playback is native. VGM/VGZ files containing SN76489 (`0x50`) writes drive the IE bus SN76489 chip at `0xF0C30-0xF0C3F`; `0xF0C40-0xF0C4F` is reserved. Mixed VGMs containing both SN and AY writes drive both the SN76489 and AY/YM PSG simultaneously. `-psg+` enhanced processing applies only to AY/YM, not SN.
 
 ### Tracker Format Support
 

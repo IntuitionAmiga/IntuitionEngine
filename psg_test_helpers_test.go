@@ -10,7 +10,7 @@ func newTestSoundChip() *SoundChip {
 		preDelayBuf: make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
 	}
 	chip.enabled.Store(true)
-	chip.sampleTicker.Store(&sampleTickerHolder{})
+	chip.sampleTicker.Store(&sampleTickerListHolder{})
 
 	// Initialize reverb buffers (required by GenerateSample → applyReverb)
 	combDelays := []int{COMB_DELAY_1, COMB_DELAY_2, COMB_DELAY_3, COMB_DELAY_4}

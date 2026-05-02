@@ -116,6 +116,13 @@
 .equ PSG_PLAY_CTRL     0xF0C18          ; Play control
 .equ PSG_PLAY_STATUS   0xF0C1C          ; Play status
 
+; SN76489 native chip (byte-oriented latch/data port)
+.equ SN_PORT_WRITE        0xF0C30       ; SN76489 latch/data byte write
+.equ SN_PORT_READY        0xF0C31       ; Ready status (bit 0 = ready)
+.equ SN_PORT_MODE         0xF0C32       ; LFSR mode (0=TI 15-bit, 1=Sega 16-bit)
+.equ SN76489_MODE_LFSR_15 0             ; TI 15-bit LFSR
+.equ SN76489_MODE_LFSR_16 1             ; Sega 16-bit LFSR
+
 ; ============================================================================
 ; POKEY AUDIO REGISTERS (Atari style)
 ; ============================================================================

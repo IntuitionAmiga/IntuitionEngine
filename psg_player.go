@@ -13,6 +13,7 @@ import (
 
 type PSGPlayer struct {
 	engine     *PSGEngine
+	snChip     *SN76489Chip
 	bus        Bus32
 	metadata   PSGMetadata
 	frameRate  uint16
@@ -46,7 +47,14 @@ func (p *PSGPlayer) AttachBus(bus Bus32) {
 	p.bus = bus
 }
 
+func (p *PSGPlayer) SetSNChip(chip *SN76489Chip) {
+	p.snChip = chip
+}
+
 func (p *PSGPlayer) Load(path string) error {
+	if p.engine != nil {
+		p.engine.SetSNStream(nil, nil, 0)
+	}
 	p.renderInstructions = 0
 	p.renderCPU = ""
 	p.renderExecNanos = 0
@@ -109,6 +117,7 @@ func (p *PSGPlayer) Load(path string) error {
 		p.loopSample = file.LoopSample
 		p.engine.SetClockHz(file.ClockHz)
 		p.engine.SetEvents(file.Events, file.TotalSamples, p.loop, p.loopSample)
+		p.engine.SetSNStream(file.SNEvents, p.snChip, file.SNClockHz)
 		return nil
 	case ".snd", ".sndh":
 		data, err := os.ReadFile(path)
@@ -148,6 +157,9 @@ func (p *PSGPlayer) LoadDataWithHint(data []byte, ext string) error {
 }
 
 func (p *PSGPlayer) LoadData(data []byte) error {
+	if p.engine != nil {
+		p.engine.SetSNStream(nil, nil, 0)
+	}
 	p.renderInstructions = 0
 	p.renderCPU = ""
 	p.renderExecNanos = 0
@@ -169,6 +181,7 @@ func (p *PSGPlayer) LoadData(data []byte) error {
 		p.loopSample = file.LoopSample
 		p.engine.SetClockHz(file.ClockHz)
 		p.engine.SetEvents(file.Events, file.TotalSamples, p.loop, p.loopSample)
+		p.engine.SetSNStream(file.SNEvents, p.snChip, file.SNClockHz)
 		return nil
 	}
 	if len(data) >= 2 && data[0] == 0x1F && data[1] == 0x8B {
@@ -186,6 +199,7 @@ func (p *PSGPlayer) LoadData(data []byte) error {
 		p.loopSample = file.LoopSample
 		p.engine.SetClockHz(file.ClockHz)
 		p.engine.SetEvents(file.Events, file.TotalSamples, p.loop, p.loopSample)
+		p.engine.SetSNStream(file.SNEvents, p.snChip, file.SNClockHz)
 		return nil
 	}
 	if len(data) >= 4 && (string(data[:4]) == "YM5!" || string(data[:4]) == "YM6!") {
@@ -475,6 +489,8 @@ type psgRenderResult struct {
 	loop               bool
 	loopSample         uint64
 	events             []PSGEvent
+	snEvents           []SNEvent
+	snClockHz          uint32
 	totalSamples       uint64
 	renderInstructions uint64
 	renderCPU          string
@@ -539,6 +555,8 @@ func renderPSGData(data []byte, sampleRate int) (psgRenderResult, error) {
 		res.loop = file.LoopSample > 0
 		res.loopSample = file.LoopSample
 		res.events = file.Events
+		res.snEvents = file.SNEvents
+		res.snClockHz = file.SNClockHz
 		res.totalSamples = file.TotalSamples
 		return res, nil
 	}
@@ -555,6 +573,8 @@ func renderPSGData(data []byte, sampleRate int) (psgRenderResult, error) {
 		res.loop = file.LoopSample > 0
 		res.loopSample = file.LoopSample
 		res.events = file.Events
+		res.snEvents = file.SNEvents
+		res.snClockHz = file.SNClockHz
 		res.totalSamples = file.TotalSamples
 		return res, nil
 	}
@@ -649,6 +669,7 @@ func (p *PSGPlayer) applyRenderResult(res psgRenderResult) {
 	p.renderExecNanos = res.renderExecNanos
 	p.engine.SetClockHz(res.clockHz)
 	p.engine.SetEvents(res.events, res.totalSamples, res.loop, res.loopSample)
+	p.engine.SetSNStream(res.snEvents, p.snChip, res.snClockHz)
 }
 
 type psgAsyncStartRequest struct {
@@ -717,6 +738,9 @@ func (p *PSGPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		}
 		if p.playBusy {
 			break
+		}
+		if p.engine != nil {
+			p.engine.SetSNStream(nil, nil, 0)
 		}
 		p.playPtr = p.playPtrStaged
 		p.playLen = p.playLenStaged

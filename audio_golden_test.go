@@ -42,7 +42,7 @@ func createGoldenChip() *SoundChip {
 		preDelayBuf: make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
 	}
 	chip.enabled.Store(true)
-	chip.sampleTicker.Store(&sampleTickerHolder{})
+	chip.sampleTicker.Store(&sampleTickerListHolder{})
 
 	// Initialize channels with deterministic state
 	waveTypes := []int{

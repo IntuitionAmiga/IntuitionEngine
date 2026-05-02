@@ -191,6 +191,13 @@ PSG_PLAY_LEN_3  = $FC17         ; Play length byte 3
 PSG_PLAY_CTRL   = $FC18         ; Play control (IE32 $F0C18)
 PSG_PLAY_STATUS = $FC1C         ; Play status (IE32 $F0C1C)
 
+; SN76489 native chip (6502 $FCxx aliases for IE32 $F0Cxx)
+SN_PORT_WRITE        = $FC30     ; SN76489 latch/data byte write
+SN_PORT_READY        = $FC31     ; Ready status (bit 0 = ready)
+SN_PORT_MODE         = $FC32     ; LFSR mode (0=TI 15-bit, 1=Sega 16-bit)
+SN76489_MODE_LFSR_15 = 0         ; TI 15-bit LFSR
+SN76489_MODE_LFSR_16 = 1         ; Sega 16-bit LFSR
+
 ; ============================================================================
 ; POKEY AUDIO REGISTERS (Atari-style addresses $D200-$D209)
 ; ============================================================================

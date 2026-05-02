@@ -222,6 +222,14 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"SUBSONG", 0xF0B91, 1, "RW"},
 		},
 	},
+	"sn76489": {
+		Name: "SN76489",
+		Registers: []IORegisterDesc{
+			{"SN_PORT_WRITE", SN_PORT_WRITE, 1, "WO"},
+			{"SN_PORT_READY", SN_PORT_READY, 1, "RO"},
+			{"SN_PORT_MODE", SN_PORT_MODE, 1, "RW"},
+		},
+	},
 	"psg": {
 		Name: "PSG",
 		Registers: []IORegisterDesc{

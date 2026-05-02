@@ -385,6 +385,28 @@ func TestComponentReset_PSGEngine(t *testing.T) {
 	}
 }
 
+// TestComponentReset_SN76489 tests SN76489Chip.Reset() restores power-on state.
+func TestComponentReset_SN76489(t *testing.T) {
+	chip, err := NewSoundChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Skipf("NewSoundChip failed (expected in headless): %v", err)
+	}
+	sn := NewSN76489Chip(chip)
+	sn.HandleWrite8(SN_PORT_WRITE, 0x90)
+	sn.HandleWrite8(SN_PORT_MODE, SN76489_MODE_LFSR_16)
+
+	sn.Reset()
+
+	if got := sn.HandleRead(SN_PORT_MODE); got != SN76489_MODE_LFSR_15 {
+		t.Fatalf("SN mode after reset: got %d, want 15-bit", got)
+	}
+	for ch := range 4 {
+		if snAtten(sn, ch) != 15 {
+			t.Fatalf("SN atten[%d] after reset: got %d, want 15", ch, snAtten(sn, ch))
+		}
+	}
+}
+
 // TestComponentReset_VideoChip tests VideoChip.Reset() doesn't panic.
 func TestComponentReset_VideoChip(t *testing.T) {
 	vc, err := NewVideoChip(VIDEO_BACKEND_EBITEN)

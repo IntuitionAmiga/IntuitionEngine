@@ -82,14 +82,19 @@ func parseNum(raw string) (uint32, bool) {
 
 func TestSDKInclude_32BitConstantParity(t *testing.T) {
 	expected := map[string]uint32{
-		"PSG_PLUS_CTRL":   PSG_PLUS_CTRL,
-		"POKEY_PLUS_CTRL": POKEY_PLUS_CTRL,
-		"SID_PLUS_CTRL":   SID_PLUS_CTRL,
-		"TED_PLUS_CTRL":   TED_PLUS_CTRL,
-		"AHX_PLUS_CTRL":   AHX_PLUS_CTRL,
-		"FLEX_CH_BASE":    FLEX_CH_BASE,
-		"FLEX_CH_STRIDE":  FLEX_CH_STRIDE,
-		"FLEX_CH3_BASE":   FLEX_CH3_BASE,
+		"PSG_PLUS_CTRL":        PSG_PLUS_CTRL,
+		"POKEY_PLUS_CTRL":      POKEY_PLUS_CTRL,
+		"SID_PLUS_CTRL":        SID_PLUS_CTRL,
+		"TED_PLUS_CTRL":        TED_PLUS_CTRL,
+		"AHX_PLUS_CTRL":        AHX_PLUS_CTRL,
+		"FLEX_CH_BASE":         FLEX_CH_BASE,
+		"FLEX_CH_STRIDE":       FLEX_CH_STRIDE,
+		"FLEX_CH3_BASE":        FLEX_CH3_BASE,
+		"SN_PORT_WRITE":        SN_PORT_WRITE,
+		"SN_PORT_READY":        SN_PORT_READY,
+		"SN_PORT_MODE":         SN_PORT_MODE,
+		"SN76489_MODE_LFSR_15": SN76489_MODE_LFSR_15,
+		"SN76489_MODE_LFSR_16": SN76489_MODE_LFSR_16,
 	}
 
 	incFiles := []string{
@@ -109,6 +114,36 @@ func TestSDKInclude_32BitConstantParity(t *testing.T) {
 			if got != want {
 				t.Fatalf("%s: %s mismatch: got 0x%X want 0x%X", path, key, got, want)
 			}
+		}
+	}
+}
+
+func TestSDKInclude_SN8BitAliases(t *testing.T) {
+	ie65 := parseIncConstants(t, filepath.Join("sdk", "include", "ie65.inc"))
+	for key, want := range map[string]uint32{
+		"SN_PORT_WRITE":        0xFC30,
+		"SN_PORT_READY":        0xFC31,
+		"SN_PORT_MODE":         0xFC32,
+		"SN76489_MODE_LFSR_15": SN76489_MODE_LFSR_15,
+		"SN76489_MODE_LFSR_16": SN76489_MODE_LFSR_16,
+	} {
+		if got := ie65[key]; got != want {
+			t.Fatalf("ie65.inc: %s got 0x%X want 0x%X", key, got, want)
+		}
+	}
+
+	ie80 := parseIncConstants(t, filepath.Join("sdk", "include", "ie80.inc"))
+	for key, want := range map[string]uint32{
+		"SN_PORT_WRITE":        0xFC30,
+		"SN_PORT_READY":        0xFC31,
+		"SN_PORT_MODE":         0xFC32,
+		"SN76489_MODE_LFSR_15": SN76489_MODE_LFSR_15,
+		"SN76489_MODE_LFSR_16": SN76489_MODE_LFSR_16,
+		"Z80_SN_PORT_DATA":     Z80_SN_PORT_DATA,
+		"Z80_SN_PORT_STATUS":   Z80_SN_PORT_STATUS,
+	} {
+		if got := ie80[key]; got != want {
+			t.Fatalf("ie80.inc: %s got 0x%X want 0x%X", key, got, want)
 		}
 	}
 }

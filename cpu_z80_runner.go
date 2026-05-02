@@ -59,6 +59,7 @@ type Z80BusAdapter struct {
 	sidRegSelect   byte       // Currently selected SID register for port I/O
 	pokeyRegSelect byte       // Currently selected POKEY register for port I/O
 	tedRegSelect   byte       // Currently selected TED register for port I/O
+	snLastWritten  byte       // Last SN76489 byte written through the data port
 	anticRegSelect byte       // Currently selected ANTIC register for port I/O
 	gtiaRegSelect  byte       // Currently selected GTIA register for port I/O
 	vgaEngine      *VGAEngine // VGA engine for port I/O access
@@ -394,6 +395,14 @@ func (b *Z80BusAdapter) In(port uint16) byte {
 		return 0
 	}
 
+	// Handle SN76489 port I/O (0xE4-0xE5)
+	switch lowPort {
+	case Z80_SN_PORT_DATA:
+		return b.snLastWritten
+	case Z80_SN_PORT_STATUS:
+		return b.bus.Read8(SN_PORT_READY)
+	}
+
 	// Handle ANTIC port I/O (0xD4-0xD5)
 	switch lowPort {
 	case Z80_ANTIC_PORT_SELECT:
@@ -539,6 +548,16 @@ func (b *Z80BusAdapter) Out(port uint16, value byte) {
 			vidReg := uint32(b.tedRegSelect - Z80_TED_V_INDEX_BASE)
 			b.bus.Write8(TED_VIDEO_BASE+(vidReg*4), value)
 		}
+		return
+	}
+
+	// Handle SN76489 port I/O (0xE4-0xE5)
+	switch lowPort {
+	case Z80_SN_PORT_DATA:
+		b.snLastWritten = value
+		b.bus.Write8(SN_PORT_WRITE, value)
+		return
+	case Z80_SN_PORT_STATUS:
 		return
 	}
 

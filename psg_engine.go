@@ -44,6 +44,11 @@ type PSGEngine struct {
 
 	channelsInit bool
 	busMemory    []byte // mirror register writes for Machine Monitor visibility
+
+	snEvents         []SNEvent
+	snEventIndex     int
+	snLoopEventIndex int
+	snChip           *SN76489Chip
 }
 
 func NewPSGEngine(sound *SoundChip, sampleRate int) *PSGEngine {
@@ -210,6 +215,23 @@ func (e *PSGEngine) SetEvents(events []PSGEvent, totalSamples uint64, loop bool,
 	}
 }
 
+func (e *PSGEngine) SetSNStream(snEvents []SNEvent, chip *SN76489Chip, clockHz uint32) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	e.snEvents = snEvents
+	e.snEventIndex = 0
+	e.snLoopEventIndex = 0
+	e.snChip = chip
+	if chip != nil && clockHz != 0 {
+		chip.SetClockHz(clockHz)
+	}
+	if e.loop {
+		e.snLoopEventIndex = sort.Search(len(snEvents), func(i int) bool {
+			return snEvents[i].Sample >= e.loopSample
+		})
+	}
+}
+
 func (e *PSGEngine) SetPlaying(playing bool) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
@@ -228,6 +250,7 @@ func (e *PSGEngine) SetForceLoop(enable bool) {
 		e.loop = true
 		e.loopSample = 0
 		e.loopEventIndex = 0
+		e.snLoopEventIndex = 0
 	}
 }
 
@@ -249,8 +272,12 @@ func (e *PSGEngine) StopPlayback() {
 	e.playing = false
 	e.events = nil
 	e.eventIndex = 0
+	e.snEvents = nil
+	e.snEventIndex = 0
+	e.snLoopEventIndex = 0
 	e.currentSample = 0
 	e.totalSamples = 0
+	e.silenceSNLocked()
 	e.silenceChannels()
 	// Reset channelsInit so the next song triggers fresh channel initialization.
 	// Without this, stale SoundChip channel state (gate, envelope, sidEnvelope)
@@ -289,6 +316,13 @@ func (e *PSGEngine) TickSample() {
 		}
 		e.eventIndex++
 	}
+	for e.snEventIndex < len(e.snEvents) && e.snEvents[e.snEventIndex].Sample <= e.currentSample {
+		ev := e.snEvents[e.snEventIndex]
+		if e.snChip != nil {
+			e.snChip.HandleWrite8(SN_PORT_WRITE, ev.Byte)
+		}
+		e.snEventIndex++
+	}
 
 	e.currentSample++
 
@@ -296,11 +330,23 @@ func (e *PSGEngine) TickSample() {
 		if e.loop {
 			e.currentSample = e.loopSample
 			e.eventIndex = e.loopEventIndex
+			e.snEventIndex = e.snLoopEventIndex
 		} else {
 			e.playing = false
+			e.silenceSNLocked()
 			e.silenceChannels()
 		}
 	}
+}
+
+func (e *PSGEngine) silenceSNLocked() {
+	if e.snChip == nil {
+		return
+	}
+	e.snChip.HandleWrite8(SN_PORT_WRITE, 0x9F)
+	e.snChip.HandleWrite8(SN_PORT_WRITE, 0xBF)
+	e.snChip.HandleWrite8(SN_PORT_WRITE, 0xDF)
+	e.snChip.HandleWrite8(SN_PORT_WRITE, 0xFF)
 }
 
 func (e *PSGEngine) silenceChannels() {
