@@ -50,6 +50,7 @@ func (cpu *CPU_Z80) initZ80JIT(adapter *Z80BusAdapter) error {
 	cpu.jitExecMem = execMem
 	cpu.jitCache = NewCodeCache()
 	cpu.jitCtx = newZ80JITContext(cpu, adapter)
+	cpu.z80InitTurboJIT()
 	return nil
 }
 
@@ -67,6 +68,8 @@ func (cpu *CPU_Z80) freeZ80JIT() {
 	}
 	cpu.jitCache = nil
 	cpu.jitCtx = nil
+	cpu.jitTurboCache = nil
+	cpu.jitTurboStats = nil
 }
 
 // interpretZ80One executes one Z80 instruction at cpu.PC using the interpreter.
@@ -91,6 +94,7 @@ func (cpu *CPU_Z80) z80JITFlushAll(ctx *Z80JITContext) {
 	ctx.RTSCache0Addr = 0
 	ctx.RTSCache1PC = 0
 	ctx.RTSCache1Addr = 0
+	cpu.jitTurboCache = nil
 	for i := range cpu.codePageBitmap {
 		cpu.codePageBitmap[i] = 0
 	}
@@ -129,6 +133,7 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 	ctx := cpu.jitCtx.(*Z80JITContext)
 	mem := adapter.bus.GetMemory()
 	memSize := len(mem)
+	defer cpu.z80MaybePrintTurboStats()
 
 	// Performance measurement
 	perfEnabled := cpu.PerfEnabled
@@ -223,7 +228,42 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 
 		// ── Block lookup ──
 		block := cpu.jitCache.Get(uint32(pc))
+		if cpu.z80IsTurboSentinel(block) {
+			if retired, cycles, rInc, ok := cpu.z80ExecuteTurboBlock(pc, adapter, mem); ok {
+				cpu.Cycles += uint64(cycles)
+				cpu.bus.Tick(cycles)
+				if rInc > 0 {
+					r := cpu.R
+					cpu.R = (r & 0x80) | ((r + byte(rInc)) & 0x7F)
+				}
+				if perfEnabled {
+					cpu.InstructionCount += uint64(retired)
+				}
+				continue
+			}
+			cpu.jitCache.InvalidateRange(uint32(pc), uint32(pc)+1)
+			block = nil
+		}
 		if block == nil {
+			if cpu.z80TurboJITEnabled() {
+				if turboBlock := cpu.z80ProbeTurboBlock(pc, adapter, mem); turboBlock != nil {
+					cpu.z80InstallTurboBlock(turboBlock)
+					if retired, cycles, rInc, ok := cpu.z80ExecuteTurboBlock(pc, adapter, mem); ok {
+						cpu.Cycles += uint64(cycles)
+						cpu.bus.Tick(cycles)
+						if rInc > 0 {
+							r := cpu.R
+							cpu.R = (r & 0x80) | ((r + byte(rInc)) & 0x7F)
+						}
+						if perfEnabled {
+							cpu.InstructionCount += uint64(retired)
+						}
+						diagCacheMisses++
+						continue
+					}
+				}
+			}
+
 			// Scan block from raw memory (safe: PC is on a direct page)
 			instrs := z80JITScanBlock(mem, pc, memSize, &cpu.directPageBitmap)
 
@@ -320,6 +360,10 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 			// Unpatch chain slots targeting invalidated range, then remove blocks
 			cpu.jitCache.UnpatchChainsInRange(lo, hi)
 			cpu.jitCache.InvalidateRange(lo, hi)
+			cpu.jitTurboCache = nil
+			if st, ok := cpu.jitTurboStats.(*z80TurboStats); ok {
+				st.selfModInvalid++
+			}
 			ctx.NeedInval = 0
 			// Clear RTS cache (invalidated blocks may have had chain entries)
 			ctx.RTSCache0PC = 0
