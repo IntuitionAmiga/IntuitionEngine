@@ -51,6 +51,34 @@ func Test6502_SID_Access(t *testing.T) {
 	}
 }
 
+func Test6502_MultiSID_Access(t *testing.T) {
+	bus := NewMachineBus()
+	adapter := NewBus6502Adapter(bus)
+
+	tests := []struct {
+		name    string
+		cpuAddr uint16
+		busAddr uint32
+		value   byte
+	}{
+		{name: "SID1", cpuAddr: 0xD500, busAddr: SID_BASE, value: 0x11},
+		{name: "SID2", cpuAddr: 0xD520, busAddr: SID2_BASE, value: 0x22},
+		{name: "SID3", cpuAddr: 0xD540, busAddr: SID3_BASE, value: 0x33},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter.Write(tt.cpuAddr+0x04, tt.value)
+			if got := bus.Read8(tt.busAddr + 0x04); got != tt.value {
+				t.Fatalf("bus read 0x%X got 0x%02X, want 0x%02X", tt.busAddr+0x04, got, tt.value)
+			}
+			if got := adapter.Read(tt.cpuAddr + 0x04); got != tt.value {
+				t.Fatalf("adapter read 0x%04X got 0x%02X, want 0x%02X", tt.cpuAddr+0x04, got, tt.value)
+			}
+		})
+	}
+}
+
 func Test6502_POKEY_Access(t *testing.T) {
 	bus := NewMachineBus()
 	adapter := NewBus6502Adapter(bus)
@@ -169,6 +197,35 @@ func TestZ80_SID_PortIO(t *testing.T) {
 	z80Bus.Out(Z80_SID_PORT_SELECT, 0)
 	if z80Bus.In(Z80_SID_PORT_DATA) != 0xBC {
 		t.Errorf("Z80 SID port read: got 0x%02X, want 0xBC", z80Bus.In(Z80_SID_PORT_DATA))
+	}
+}
+
+func TestZ80_MultiSID_PortIO(t *testing.T) {
+	bus := NewMachineBus()
+	z80Bus := NewZ80BusAdapter(bus)
+
+	tests := []struct {
+		name  string
+		sel   byte
+		addr  uint32
+		value byte
+	}{
+		{name: "SID1", sel: 0x04, addr: SID_BASE + 0x04, value: 0x41},
+		{name: "SID2", sel: 0x20 | 0x04, addr: SID2_BASE + 0x04, value: 0x42},
+		{name: "SID3", sel: 0x40 | 0x04, addr: SID3_BASE + 0x04, value: 0x43},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			z80Bus.Out(Z80_SID_PORT_SELECT, tt.sel)
+			z80Bus.Out(Z80_SID_PORT_DATA, tt.value)
+			if got := bus.Read8(tt.addr); got != tt.value {
+				t.Fatalf("bus read 0x%X got 0x%02X, want 0x%02X", tt.addr, got, tt.value)
+			}
+			if got := z80Bus.In(Z80_SID_PORT_DATA); got != tt.value {
+				t.Fatalf("port read got 0x%02X, want 0x%02X", got, tt.value)
+			}
+		})
 	}
 }
 
@@ -500,6 +557,35 @@ func TestX86_SID_PortIO(t *testing.T) {
 	x86Bus.Out(X86_PORT_SID_SELECT, 0)
 	if x86Bus.In(X86_PORT_SID_DATA) != 0xBC {
 		t.Errorf("x86 SID port read: got 0x%02X, want 0xBC", x86Bus.In(X86_PORT_SID_DATA))
+	}
+}
+
+func TestX86_MultiSID_PortIO(t *testing.T) {
+	bus := NewMachineBus()
+	x86Bus := NewX86BusAdapter(bus)
+
+	tests := []struct {
+		name  string
+		sel   byte
+		addr  uint32
+		value byte
+	}{
+		{name: "SID1", sel: 0x04, addr: SID_BASE + 0x04, value: 0x51},
+		{name: "SID2", sel: 0x20 | 0x04, addr: SID2_BASE + 0x04, value: 0x52},
+		{name: "SID3", sel: 0x40 | 0x04, addr: SID3_BASE + 0x04, value: 0x53},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			x86Bus.Out(X86_PORT_SID_SELECT, tt.sel)
+			x86Bus.Out(X86_PORT_SID_DATA, tt.value)
+			if got := bus.Read8(tt.addr); got != tt.value {
+				t.Fatalf("bus read 0x%X got 0x%02X, want 0x%02X", tt.addr, got, tt.value)
+			}
+			if got := x86Bus.In(X86_PORT_SID_DATA); got != tt.value {
+				t.Fatalf("port read got 0x%02X, want 0x%02X", got, tt.value)
+			}
+		})
 	}
 }
 

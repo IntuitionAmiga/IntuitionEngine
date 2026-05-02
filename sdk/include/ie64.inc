@@ -225,6 +225,8 @@ POKEY_DIST_POLY17_PULSE  equ 0xE0           ; 17-bit + pulse
 ; ============================================================================
 
 SID_BASE          equ 0xF0E00               ; SID base address
+SID2_BASE         equ 0xF0E30               ; SID2 base address
+SID3_BASE         equ 0xF0E50               ; SID3 base address
 
 ; Voice 1 registers
 SID_V1_FREQ_LO    equ 0xF0E00               ; Voice 1 frequency low byte

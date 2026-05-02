@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -76,8 +77,11 @@ func newSID6502Player(file *SIDFile, subsong, sampleRate int) (*SID6502Player, e
 
 	if file.Header.InitAddress != 0 {
 		player.bus.StartFrame()
-		if err := player.callRoutine(file.Header.InitAddress, uint8(subsong)); err != nil {
+		if err := player.callRoutine(file.Header.InitAddress, uint8(subsong-1)); err != nil {
 			return nil, fmt.Errorf("INIT routine failed: %v", err)
+		}
+		if latch := player.bus.CIATimerALatch(); latch != 0 {
+			player.recomputeCyclesPerTickFromLatch(latch)
 		}
 		player.initEvents = player.bus.CollectEvents()
 	}
@@ -107,7 +111,7 @@ func sidCyclesPerTick(clockHz uint32, ntsc bool, interruptMode bool, speed uint3
 	if tickHz == 0 {
 		return 0
 	}
-	return int(clockHz / uint32(tickHz))
+	return int(math.Round(float64(clockHz) / float64(tickHz)))
 }
 
 func sidTickHz(clockHz uint32, ntsc bool, interruptMode bool, speed uint32, subsong int) int {
@@ -147,6 +151,25 @@ func (p *SID6502Player) createCPU() *CPU_6502 {
 	cpu.rdyLine.Store(true)
 	cpu.running.Store(true)
 	return cpu
+}
+
+func (p *SID6502Player) recomputeCyclesPerTickFromLatch(latch uint16) {
+	if latch != 0 {
+		p.cyclesPerTick = int(latch)
+	}
+}
+
+func (p *SID6502Player) recomputeCyclesPerTickFromHz(tickHz float64) {
+	if tickHz > 0 {
+		p.cyclesPerTick = int(math.Round(float64(p.clockHz) / tickHz))
+	}
+}
+
+func (p *SID6502Player) TickHz() float64 {
+	if p == nil || p.cyclesPerTick <= 0 {
+		return 0
+	}
+	return float64(p.clockHz) / float64(p.cyclesPerTick)
 }
 
 func (p *SID6502Player) callRoutine(addr uint16, aReg uint8) error {
@@ -205,6 +228,7 @@ func (p *SID6502Player) RenderFrames(numFrames int) ([]SIDEvent, uint64) {
 				Sample: sample,
 				Reg:    p.initEvents[i].Reg,
 				Value:  p.initEvents[i].Value,
+				Chip:   p.initEvents[i].Chip,
 			})
 		}
 		p.initEmitted = true
@@ -230,6 +254,7 @@ func (p *SID6502Player) RenderFrames(numFrames int) ([]SIDEvent, uint64) {
 				Sample: sample,
 				Reg:    frameEvents[i].Reg,
 				Value:  frameEvents[i].Value,
+				Chip:   frameEvents[i].Chip,
 			})
 		}
 		p.bus.ClearEvents()
@@ -280,7 +305,10 @@ func (p *SID6502Player) Reset() {
 	p.cpu = p.createCPU()
 	if p.file.Header.InitAddress != 0 {
 		p.bus.StartFrame()
-		_ = p.callRoutine(p.file.Header.InitAddress, uint8(p.subsong))
+		_ = p.callRoutine(p.file.Header.InitAddress, uint8(p.subsong-1))
+		if latch := p.bus.CIATimerALatch(); latch != 0 {
+			p.recomputeCyclesPerTickFromLatch(latch)
+		}
 		p.initEvents = p.bus.CollectEvents()
 	}
 }

@@ -4,6 +4,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 func TestSIDEngine_NewEngine(t *testing.T) {
@@ -58,6 +59,51 @@ func TestSIDEngine_WriteRegister(t *testing.T) {
 	// Out of bounds register should be ignored
 	engine.WriteRegister(50, 0xFF)
 	// Should not panic
+}
+
+func TestSIDEngine_BusMemoryMirrorWriteOutOfRangeDoesNotPanic(t *testing.T) {
+	engine := NewSIDEngineMulti(nil, 44100, 0, SID_BASE, SID_END)
+	engine.AttachBusMemory(make([]byte, 8))
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("WriteRegister panicked with short bus mirror: %v", r)
+		}
+	}()
+	engine.WriteRegister(0, 0xAA)
+}
+
+func TestSIDEngine_WriteRegisterDoesNotHoldSIDLockWhileWaitingForSoundChip(t *testing.T) {
+	chip := newSIDRoutingTestSoundChip()
+	engine := NewSIDEngine(chip, 44100)
+
+	chip.mu.Lock()
+	writeStarted := make(chan struct{})
+	writeDone := make(chan struct{})
+	go func() {
+		close(writeStarted)
+		engine.WriteRegister(0x04, SID_CTRL_TRIANGLE|SID_CTRL_GATE)
+		close(writeDone)
+	}()
+	<-writeStarted
+	time.Sleep(10 * time.Millisecond)
+
+	modelDone := make(chan struct{})
+	go func() {
+		_ = engine.GetModel()
+		close(modelDone)
+	}()
+
+	select {
+	case <-modelDone:
+	case <-time.After(100 * time.Millisecond):
+		chip.mu.Unlock()
+		<-writeDone
+		t.Fatal("GetModel blocked behind WriteRegister while SoundChip mutex was held")
+	}
+
+	chip.mu.Unlock()
+	<-writeDone
 }
 
 func TestSIDEngine_HandleIO(t *testing.T) {
@@ -188,6 +234,45 @@ func TestSIDEngine_PulseWidth(t *testing.T) {
 				t.Errorf("pulse width %f not close to expected %f", pw, tt.expected)
 			}
 		})
+	}
+}
+
+func TestSIDEngine_PulseWidthZeroIsSilentSquare(t *testing.T) {
+	engine := NewSIDEngine(nil, 44100)
+
+	engine.regs[0x02] = 0x00
+	engine.regs[0x03] = 0x00
+
+	if got := engine.calcPulseWidth(0); got != 0 {
+		t.Fatalf("PW=0 duty=%f, want 0", got)
+	}
+}
+
+func TestSIDEngine_Voice3DisconnectPreservesFilterRoutedVoice3(t *testing.T) {
+	chip := newSIDRoutingTestSoundChip()
+	engine := NewSIDEngine(chip, 44100)
+
+	engine.WriteRegister(0x12, SID_CTRL_TRIANGLE|SID_CTRL_GATE)
+	engine.WriteRegister(0x17, SID_FILT_V3)
+	engine.WriteRegister(0x18, SID_MODE_3OFF|SID_MODE_LP|0x0F)
+
+	if got := chip.channels[2].volume; got == 0 {
+		t.Fatalf("filter-routed voice 3 volume=0 with MODE_3OFF set, want audible modulator path")
+	}
+}
+
+func TestSIDEngine_RingmodRequiresTriangleOnModulatedVoice(t *testing.T) {
+	chip := newSIDRoutingTestSoundChip()
+	engine := NewSIDEngine(chip, 44100)
+
+	engine.WriteRegister(0x04, SID_CTRL_PULSE|SID_CTRL_RINGMOD|SID_CTRL_GATE)
+	if chip.channels[0].ringModSource != nil {
+		t.Fatalf("pulse-only voice ringModSource=%p, want nil", chip.channels[0].ringModSource)
+	}
+
+	engine.WriteRegister(0x04, SID_CTRL_TRIANGLE|SID_CTRL_RINGMOD|SID_CTRL_GATE)
+	if chip.channels[0].ringModSource != chip.channels[2] {
+		t.Fatalf("triangle voice ringModSource=%p, want channel 2 %p", chip.channels[0].ringModSource, chip.channels[2])
 	}
 }
 

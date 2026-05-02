@@ -257,7 +257,7 @@ Z80 `IN`/`OUT` instructions are translated to bus MMIO accesses by the `Z80BusAd
 | `$D0/$D1` | POKEY | `0xF0D00` | Register select / data |
 | `$D4/$D5` | ANTIC | `0xF2100` | Register select / data (x4 stride) |
 | `$D6/$D7` | GTIA | `0xF2140` | Register select / data (x4 stride) |
-| `$E0/$E1` | SID | `0xF0E00` | Register select / data |
+| `$E0/$E1` | SID | `0xF0E00/0xF0E30/0xF0E50` | Register select / data; select bits 5-6 choose SID1/SID2/SID3 |
 | `$F0/$F1` | PSG | `0xF0C00` | Register select / data |
 | `$F2/$F3` | TED | `0xF0F00` / `0xF0F20` | Register select / data (audio / video x4 stride) |
 | `$FE` | ULA | `0xF2000` | Border colour (bits 0-2). Bits 3-4 currently ignored. |
@@ -285,7 +285,7 @@ x86 shares the Z80 Voodoo port mapping (`$B0-$B7`) and most sound-chip port mapp
 | `$D4/$D5` | ANTIC | `0xF2100` | Register select / data (x4 stride) |
 | `$D6/$D7` | GTIA | `0xF2140` | Register select / data (x4 stride) |
 | `$D8-$DF` | POKEY | `0xF0D00+(port-0xD0)` | **Direct** — same formula, ANTIC/GTIA punched out |
-| `$E0/$E1` | SID | `0xF0E00` | Register select / data |
+| `$E0/$E1` | SID | `0xF0E00/0xF0E30/0xF0E50` | Register select / data; select bits 5-6 choose SID1/SID2/SID3 |
 | `$F0/$F1` | PSG | `0xF0C00` | Register select / data |
 | `$F2/$F3` | TED | `0xF0F00` / `0xF0F20` | Register select / data (audio / video x4 stride) |
 | `$FE` | ULA | `0xF2000` | Border colour (bits 0-2) |
@@ -316,7 +316,9 @@ The 6502 uses `ioTable[page]` to route memory-mapped I/O through the bus:
 |--------------|------|------------|-------|
 | `$D200-$D209` | POKEY | `0xF0D00+offset` | |
 | `$D400-$D40D` | PSG | `0xF0C00+offset` | |
-| `$D500-$D51C` | SID | `0xF0E00+offset` | |
+| `$D500-$D51F` | SID1 | `0xF0E00+offset` | 32-byte window |
+| `$D520-$D53F` | SID2 | `0xF0E30+offset` | 32-byte window |
+| `$D540-$D55F` | SID3 | `0xF0E50+offset` | 32-byte window |
 | `$D600-$D605` | TED Audio | `0xF0F00+offset` | |
 | `$D620-$D62F` | TED Video | `0xF0F20+offset x4` | Stride-4 register mapping |
 | `$D700-$D70A` | VGA | `0xF1000` | Direct handler call |
@@ -621,6 +623,8 @@ When Plus mode is enabled, the engine retains full backward compatibility with t
 ### Subsong Selection
 
 SID, SAP, and AHX players support subsong selection for multi-tune files. Each player has a subsong register that selects which tune to play from a multi-song file.
+
+SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-zero, the player uses that latch as `cyclesPerTick`, so multispeed tunes run at `clockHz / latch`. SID MMIO opts into wide-write fanout: 16-bit and 32-bit writes are decomposed into little-endian byte register writes.
 
 ## 5. Memory Map
 

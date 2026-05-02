@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,8 @@ type SIDPlayer struct {
 	forceLoop     bool
 	subsong       uint8
 	playGen       uint64
+	startOnce     sync.Once
+	startCh       chan sidAsyncStartRequest
 
 	mu sync.Mutex
 
@@ -184,7 +187,7 @@ func renderSIDWithLimit(data []byte, sampleRate int, maxFrames int, subsong int,
 		return SIDMetadata{}, nil, 0, 0, 0, false, 0, 0, 0, fmt.Errorf("create player: %w", err)
 	}
 
-	frameRate := sidTickHz(player.clockHz, sidIsNTSC(file.Header), player.interruptMode, file.Header.Speed, subsong)
+	frameRate := uint16(math.Round(player.TickHz()))
 
 	frameCount := sidDefaultLoopFrames
 	loop := true
@@ -301,7 +304,7 @@ func (p *SIDPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		p.engine.StopPlayback()
 	}
 	if startReq != nil {
-		go p.startAsync(*startReq)
+		p.enqueueStart(*startReq)
 	}
 }
 
@@ -310,6 +313,25 @@ type sidAsyncStartRequest struct {
 	data      []byte
 	subsong   int
 	forceLoop bool
+}
+
+func (p *SIDPlayer) enqueueStart(req sidAsyncStartRequest) {
+	p.startOnce.Do(func() {
+		p.startCh = make(chan sidAsyncStartRequest, 4)
+		go func() {
+			for queued := range p.startCh {
+				p.startAsync(queued)
+			}
+		}()
+	})
+	select {
+	case p.startCh <- req:
+	default:
+		p.mu.Lock()
+		p.playErr = true
+		p.playBusy = false
+		p.mu.Unlock()
+	}
 }
 
 func (p *SIDPlayer) startAsync(req sidAsyncStartRequest) {

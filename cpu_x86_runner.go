@@ -330,7 +330,10 @@ func (b *X86BusAdapter) In(port uint16) byte {
 		return b.sidRegSelect
 	}
 	if port == X86_PORT_SID_DATA {
-		return b.bus.Read8(0xF0E00 + uint32(b.sidRegSelect))
+		if addr, _, ok := sidPortTarget(b.sidRegSelect); ok {
+			return b.bus.Read8(addr)
+		}
+		return 0
 	}
 
 	// ANTIC port I/O (0xD4-0xD5) - check before POKEY range
@@ -462,7 +465,9 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 		return
 	}
 	if port == X86_PORT_SID_DATA {
-		b.bus.Write8(0xF0E00+uint32(b.sidRegSelect), value)
+		if addr, _, ok := sidPortTarget(b.sidRegSelect); ok {
+			b.bus.Write8(addr, value)
+		}
 		return
 	}
 

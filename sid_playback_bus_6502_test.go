@@ -29,13 +29,17 @@ func TestSIDPlaybackBus6502_SIDReadsStub(t *testing.T) {
 	if got := bus.Read(0xD410); got != 0x34 {
 		t.Fatalf("expected 0x34, got 0x%02X", got)
 	}
-	bus.Write(0xD41B, 0xFF)
-	if got := bus.Read(0xD41B); got != 0x00 {
-		t.Fatalf("expected 0x00 for OSC3, got 0x%02X", got)
+	bus.Write(0xD40E, 0x34)
+	bus.Write(0xD40F, 0x12)
+	bus.Write(0xD413, 0xF0)
+	bus.Write(0xD414, 0xF0)
+	bus.Write(0xD412, SID_CTRL_NOISE|SID_CTRL_GATE)
+	bus.AddCycles(128)
+	if got := bus.Read(0xD41B); got == 0x00 {
+		t.Fatalf("expected non-zero OSC3 readback")
 	}
-	bus.Write(0xD41C, 0xFF)
-	if got := bus.Read(0xD41C); got != 0x00 {
-		t.Fatalf("expected 0x00 for ENV3, got 0x%02X", got)
+	if got := bus.Read(0xD41C); got == 0x00 {
+		t.Fatalf("expected non-zero ENV3 readback")
 	}
 }
 
@@ -62,6 +66,14 @@ func TestSIDPlaybackBus6502_IRQVectorStub(t *testing.T) {
 	}
 	if bus.ram[0xFFFE] != 0x00 || bus.ram[0xFFFF] != 0xFF {
 		t.Fatalf("IRQ vector not pointing to stub")
+	}
+	for _, vec := range []uint16{0xFFFA, 0xFFFC, 0x0314} {
+		if lo, hi := bus.ram[vec], bus.ram[vec+1]; lo != 0xF6 || hi != 0xFF {
+			t.Fatalf("vector 0x%04X points to 0x%02X%02X, want 0xFFF6", vec, hi, lo)
+		}
+	}
+	if bus.ram[0xFFF6] != 0x40 {
+		t.Fatalf("RTI stub byte at 0xFFF6=0x%02X, want 0x40", bus.ram[0xFFF6])
 	}
 }
 

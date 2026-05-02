@@ -170,6 +170,8 @@
 ; - Room ambience effect
 ; ----------------------------------------------------------------------------
 .equ SID_BASE          0xF0E00          ; SID base address
+.equ SID2_BASE         0xF0E30          ; SID2 base address
+.equ SID3_BASE         0xF0E50          ; SID3 base address
 
 ; Voice 1 registers
 .equ SID_V1_FREQ_LO    0xF0E00          ; Voice 1 frequency low byte

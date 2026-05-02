@@ -170,11 +170,12 @@ type IORegion struct {
 		These callbacks are invoked when a memory access falls within the
 		region's boundaries.
 	*/
-	start    uint32
-	end      uint32
-	onRead   func(addr uint32) uint32
-	onWrite  func(addr uint32, value uint32)
-	onWrite8 func(addr uint32, value uint8) // Optional: byte-level write handler
+	start           uint32
+	end             uint32
+	onRead          func(addr uint32) uint32
+	onWrite         func(addr uint32, value uint32)
+	onWrite8        func(addr uint32, value uint8) // Optional: byte-level write handler
+	wideWriteFanout bool
 }
 
 // IORegion64 represents a 64-bit-capable memory-mapped I/O region.
@@ -233,8 +234,10 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 			// Check for I/O regions with the mapped address
 			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
 				for _, region := range regions {
-					if mapped >= region.start && mapped <= region.end && region.onWrite != nil {
-						region.onWrite(mapped, value)
+					if mapped >= region.start && mapped <= region.end && (region.onWrite != nil || region.wideWriteFanout) {
+						if !write32Fanout8(region, mapped, value) && region.onWrite != nil {
+							region.onWrite(mapped, value)
+						}
 						if mapped+4 <= uint32(len(bus.memory)) {
 							binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
 						}
@@ -261,8 +264,10 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 	// Process I/O regions
 	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
 		for _, region := range regions {
-			if addr >= region.start && addr <= region.end && region.onWrite != nil {
-				region.onWrite(addr, value)
+			if addr >= region.start && addr <= region.end && (region.onWrite != nil || region.wideWriteFanout) {
+				if !write32Fanout8(region, addr, value) && region.onWrite != nil {
+					region.onWrite(addr, value)
+				}
 				binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
 				return true
 			}
@@ -271,6 +276,17 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 
 	// Regular memory write
 	binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+	return true
+}
+
+func write32Fanout8(region IORegion, addr uint32, value uint32) bool {
+	if !region.wideWriteFanout || region.onWrite8 == nil {
+		return false
+	}
+	region.onWrite8(addr, uint8(value))
+	region.onWrite8(addr+1, uint8(value>>8))
+	region.onWrite8(addr+2, uint8(value>>16))
+	region.onWrite8(addr+3, uint8(value>>24))
 	return true
 }
 
@@ -1021,6 +1037,43 @@ func (bus *MachineBus) MapIOByte(start, end uint32, onWrite8 func(addr uint32, v
 	}
 }
 
+// MapIOWideWriteFanout opts an existing I/O region into decomposing 32-bit
+// writes into four byte writes when a byte-level handler is registered.
+// Existing regions keep the compatibility path unless this is set.
+func (bus *MachineBus) MapIOWideWriteFanout(start, end uint32) {
+	if bus.sealed.Load() {
+		panic(fmt.Sprintf("MapIOWideWriteFanout called after execution started (mapping range $%05X-$%05X)", start, end))
+	}
+
+	firstPage := start & PAGE_MASK
+	lastPage := end & PAGE_MASK
+	for page := firstPage; page <= lastPage; page += PAGE_SIZE {
+		regions := bus.mapping[page]
+		for i := range regions {
+			if regions[i].end >= start && regions[i].start <= end {
+				regions[i].wideWriteFanout = true
+			}
+		}
+		bus.mapping[page] = regions
+	}
+
+	if start >= 0x8000 && start <= 0xFFFF {
+		signExtStart := start | 0xFFFF0000
+		signExtEnd := end | 0xFFFF0000
+		firstSignExtPage := signExtStart & PAGE_MASK
+		lastSignExtPage := signExtEnd & PAGE_MASK
+		for page := firstSignExtPage; page <= lastSignExtPage; page += PAGE_SIZE {
+			regions := bus.mapping[page]
+			for i := range regions {
+				if regions[i].end >= start && regions[i].start <= end {
+					regions[i].wideWriteFanout = true
+				}
+			}
+			bus.mapping[page] = regions
+		}
+	}
+}
+
 // UnmapIO removes all I/O region mappings that overlap the given address range,
 // restoring those pages to plain bus RAM access. This is used by the EmuTOS loader
 // to reclaim the VRAM address range (0x100000-0x5FFFFF) as normal M68K RAM.
@@ -1085,8 +1138,10 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 			// This is a valid sign-extended address, handle normally but with mapped address
 			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
 				for _, region := range regions {
-					if mapped >= region.start && mapped <= region.end && region.onWrite != nil {
-						region.onWrite(mapped, value)
+					if mapped >= region.start && mapped <= region.end && (region.onWrite != nil || region.wideWriteFanout) {
+						if !write32Fanout8(region, mapped, value) && region.onWrite != nil {
+							region.onWrite(mapped, value)
+						}
 						// Still store in memory if within bounds
 						if mapped+4 <= uint32(len(bus.memory)) {
 							binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
@@ -1131,8 +1186,10 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 	// Process I/O regions
 	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
 		for _, region := range regions {
-			if addr >= region.start && addr <= region.end && region.onWrite != nil {
-				region.onWrite(addr, value)
+			if addr >= region.start && addr <= region.end && (region.onWrite != nil || region.wideWriteFanout) {
+				if !write32Fanout8(region, addr, value) && region.onWrite != nil {
+					region.onWrite(addr, value)
+				}
 				binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
 				return
 			}

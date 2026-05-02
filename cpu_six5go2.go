@@ -463,16 +463,30 @@ func writePSGPage(a *Bus6502Adapter, addr uint16, value byte) {
 	a.bus.Write8(translateIO8Bit_6502(addr), value)
 }
 
+func c6502SIDTarget(addr uint16) (uint32, bool) {
+	if addr < C6502_SID_BASE || addr > C6502_SID_END {
+		return 0, false
+	}
+	offset := addr - C6502_SID_BASE
+	chip := offset / 0x20
+	reg := offset & 0x1F
+	if chip > 2 || reg >= SID_REG_COUNT {
+		return 0, false
+	}
+	bases := [3]uint32{SID_BASE, SID2_BASE, SID3_BASE}
+	return bases[chip] + uint32(reg), true
+}
+
 func readSIDPage(a *Bus6502Adapter, addr uint16) byte {
-	if addr >= C6502_SID_BASE && addr <= C6502_SID_END {
-		return a.bus.Read8(SID_BASE + uint32(addr-C6502_SID_BASE))
+	if busAddr, ok := c6502SIDTarget(addr); ok {
+		return a.bus.Read8(busAddr)
 	}
 	return a.bus.Read8(translateIO8Bit_6502(addr))
 }
 
 func writeSIDPage(a *Bus6502Adapter, addr uint16, value byte) {
-	if addr >= C6502_SID_BASE && addr <= C6502_SID_END {
-		a.bus.Write8(SID_BASE+uint32(addr-C6502_SID_BASE), value)
+	if busAddr, ok := c6502SIDTarget(addr); ok {
+		a.bus.Write8(busAddr, value)
 		return
 	}
 	a.bus.Write8(translateIO8Bit_6502(addr), value)
@@ -3069,10 +3083,9 @@ func (adapter *Bus6502Adapter) Read(addr uint16) byte {
 		return adapter.bus.Read8(PSG_BASE + psgReg)
 	}
 
-	// Handle SID register reads ($D500-$D51C)
-	if addr >= C6502_SID_BASE && addr <= C6502_SID_END {
-		sidReg := uint32(addr - C6502_SID_BASE)
-		return adapter.bus.Read8(SID_BASE + sidReg)
+	// Handle SID register reads ($D500-$D55F: SID1/SID2/SID3)
+	if busAddr, ok := c6502SIDTarget(addr); ok {
+		return adapter.bus.Read8(busAddr)
 	}
 
 	// Handle POKEY register reads ($D200-$D209)
@@ -3211,10 +3224,9 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 		return
 	}
 
-	// Handle SID register writes ($D500-$D51C)
-	if addr >= C6502_SID_BASE && addr <= C6502_SID_END {
-		sidReg := uint32(addr - C6502_SID_BASE)
-		adapter.bus.Write8(SID_BASE+sidReg, value)
+	// Handle SID register writes ($D500-$D55F: SID1/SID2/SID3)
+	if busAddr, ok := c6502SIDTarget(addr); ok {
+		adapter.bus.Write8(busAddr, value)
 		return
 	}
 

@@ -22,7 +22,7 @@ func buildSIDHeader(magic string, version uint16, loadAddr, initAddr, playAddr, 
 	copy(data[0x56:0x76], "2024\x00")
 	binary.BigEndian.PutUint16(data[0x76:], flags)
 	// startPage, pageLength at 0x78, 0x79
-	// sid2addr, sid3addr at 0x7A-0x7D (zero = single SID)
+	// sid2addr, sid3addr page bytes at 0x7A-0x7B (zero = single SID)
 	// dummy program data at 0x7C
 	for i := 0x7C; i < len(data); i++ {
 		data[i] = 0x60 // RTS opcodes
@@ -146,13 +146,11 @@ func TestSIDParse_CIATimerSpeed(t *testing.T) {
 }
 
 func TestSIDParse_MultiSIDAccepted(t *testing.T) {
-	// Multi-SID (v3/v4 with sid2addr != 0) should now be accepted.
-	// Playback uses single-SID (chip 0) with graceful degradation.
-	// Sid2Addr is read when DataOffset >= 0x80, stored at 0x7C-0x7E
-	data := make([]byte, 0x80+16)
+	// PSID v3 stores SID2 as a page byte at 0x7A. V3 has no SID3 field.
+	data := make([]byte, 0x7C+16)
 	copy(data[0x00:], "PSID")
 	binary.BigEndian.PutUint16(data[0x04:], 3)      // version 3
-	binary.BigEndian.PutUint16(data[0x06:], 0x80)   // data offset
+	binary.BigEndian.PutUint16(data[0x06:], 0x7C)   // data offset
 	binary.BigEndian.PutUint16(data[0x08:], 0x1000) // loadAddress
 	binary.BigEndian.PutUint16(data[0x0A:], 0x1000) // initAddress
 	binary.BigEndian.PutUint16(data[0x0C:], 0x1003) // playAddress
@@ -161,9 +159,9 @@ func TestSIDParse_MultiSIDAccepted(t *testing.T) {
 	copy(data[0x16:0x36], "MultiSID\x00")
 	copy(data[0x36:0x56], "Author\x00")
 	copy(data[0x56:0x76], "2024\x00")
-	binary.BigEndian.PutUint16(data[0x7C:], 0xD500) // sid2addr
-	binary.BigEndian.PutUint16(data[0x7E:], 0xD600) // sid3addr
-	for i := 0x80; i < len(data); i++ {
+	data[0x7A] = 0x42 // SID2 at $D420
+	data[0x7B] = 0xE0 // Ignored for v3
+	for i := 0x7C; i < len(data); i++ {
 		data[i] = 0x60 // RTS
 	}
 
@@ -171,20 +169,20 @@ func TestSIDParse_MultiSIDAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSIDData(multi-SID) should succeed, got error: %v", err)
 	}
-	if sid.Header.Sid2Addr != 0xD500 {
-		t.Errorf("expected Sid2Addr=0xD500, got 0x%04X", sid.Header.Sid2Addr)
+	if sid.Header.Sid2Addr != 0xD420 {
+		t.Errorf("expected Sid2Addr=0xD420, got 0x%04X", sid.Header.Sid2Addr)
 	}
-	if sid.Header.Sid3Addr != 0xD600 {
-		t.Errorf("expected Sid3Addr=0xD600, got 0x%04X", sid.Header.Sid3Addr)
+	if sid.Header.Sid3Addr != 0 {
+		t.Errorf("expected Sid3Addr=0 for v3, got 0x%04X", sid.Header.Sid3Addr)
 	}
 }
 
 func TestSIDParse_MultiSID_DualSIDOnly(t *testing.T) {
-	// Dual-SID (sid2addr set, sid3addr zero) should parse correctly.
-	data := make([]byte, 0x80+16)
+	// PSID v4 supports SID2 and SID3 page bytes at 0x7A and 0x7B.
+	data := make([]byte, 0x7C+16)
 	copy(data[0x00:], "PSID")
-	binary.BigEndian.PutUint16(data[0x04:], 3)
-	binary.BigEndian.PutUint16(data[0x06:], 0x80)
+	binary.BigEndian.PutUint16(data[0x04:], 4)
+	binary.BigEndian.PutUint16(data[0x06:], 0x7C)
 	binary.BigEndian.PutUint16(data[0x08:], 0x1000)
 	binary.BigEndian.PutUint16(data[0x0A:], 0x1000)
 	binary.BigEndian.PutUint16(data[0x0C:], 0x1003)
@@ -193,9 +191,9 @@ func TestSIDParse_MultiSID_DualSIDOnly(t *testing.T) {
 	copy(data[0x16:0x36], "DualSID\x00")
 	copy(data[0x36:0x56], "Author\x00")
 	copy(data[0x56:0x76], "2024\x00")
-	binary.BigEndian.PutUint16(data[0x7C:], 0xD420) // sid2addr at $D420 (common)
-	// sid3addr left as 0
-	for i := 0x80; i < len(data); i++ {
+	data[0x7A] = 0x42 // SID2 at $D420
+	data[0x7B] = 0xE0 // SID3 at $DE00
+	for i := 0x7C; i < len(data); i++ {
 		data[i] = 0x60
 	}
 
@@ -206,8 +204,38 @@ func TestSIDParse_MultiSID_DualSIDOnly(t *testing.T) {
 	if sid.Header.Sid2Addr != 0xD420 {
 		t.Errorf("expected Sid2Addr=0xD420, got 0x%04X", sid.Header.Sid2Addr)
 	}
-	if sid.Header.Sid3Addr != 0 {
-		t.Errorf("expected Sid3Addr=0, got 0x%04X", sid.Header.Sid3Addr)
+	if sid.Header.Sid3Addr != 0xDE00 {
+		t.Errorf("expected Sid3Addr=0xDE00, got 0x%04X", sid.Header.Sid3Addr)
+	}
+}
+
+func TestSIDParse_MultiSIDPageValidity(t *testing.T) {
+	tests := []struct {
+		name string
+		page byte
+		want uint16
+	}{
+		{name: "zero", page: 0x00, want: 0},
+		{name: "low valid", page: 0x42, want: 0xD420},
+		{name: "high valid", page: 0xFE, want: 0xDFE0},
+		{name: "odd invalid", page: 0x43, want: 0},
+		{name: "middle range invalid", page: 0x80, want: 0},
+		{name: "below range invalid", page: 0x40, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := buildSIDHeader("PSID", 4, 0x1000, 0x1000, 0x1003, 1, 1, 0, 0)
+			data[0x7A] = tt.page
+
+			sid, err := ParseSIDData(data)
+			if err != nil {
+				t.Fatalf("ParseSIDData failed: %v", err)
+			}
+			if sid.Header.Sid2Addr != tt.want {
+				t.Fatalf("Sid2Addr=0x%04X, want 0x%04X", sid.Header.Sid2Addr, tt.want)
+			}
+		})
 	}
 }
 

@@ -141,7 +141,7 @@ As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level kernel image/
 
 ### Audio Registers
 - PSG: `PSG_REG_*`, `PSG_PLAY_*`
-- SID: `SID_*`, `SID_PLAY_*`
+- SID: `SID_*`, `SID2_BASE`, `SID3_BASE`, `SID_PLAY_*`; Z80/x86 also define `SID_CHIP_SID1`, `SID_CHIP_SID2`, `SID_CHIP_SID3`
 - POKEY: `POKEY_*`, `SAP_PLAY_*`
 - TED: `TED_*`
 - AHX: `AHX_*`

@@ -295,7 +295,7 @@ func init() {
 // For Intuition Engine 6502 mode, SID is mapped at $D500-$D51C
 const (
 	C6502_SID_BASE = 0xD500
-	C6502_SID_END  = 0xD51C
+	C6502_SID_END  = 0xD55F
 )
 
 // SID Player registers (memory-mapped at 0xF0E20-0xF0E2D)

@@ -309,6 +309,19 @@ func (b *Z80BusAdapter) ResetBank() {
 	b.bank3Enable = false
 }
 
+func sidPortTarget(selectValue byte) (uint32, uint8, bool) {
+	reg := selectValue & 0x1F
+	if reg >= SID_REG_COUNT {
+		return 0, 0, false
+	}
+	chip := (selectValue >> 5) & 0x03
+	if chip > 2 {
+		chip = 2
+	}
+	bases := [3]uint32{SID_BASE, SID2_BASE, SID3_BASE}
+	return bases[chip] + uint32(reg), reg, true
+}
+
 func (b *Z80BusAdapter) In(port uint16) byte {
 	lowPort := byte(port)
 
@@ -330,8 +343,8 @@ func (b *Z80BusAdapter) In(port uint16) byte {
 	case Z80_SID_PORT_SELECT:
 		return b.sidRegSelect
 	case Z80_SID_PORT_DATA:
-		if b.sidRegSelect < SID_REG_COUNT {
-			return b.bus.Read8(SID_BASE + uint32(b.sidRegSelect))
+		if addr, _, ok := sidPortTarget(b.sidRegSelect); ok {
+			return b.bus.Read8(addr)
 		}
 		return 0
 	}
@@ -467,11 +480,11 @@ func (b *Z80BusAdapter) Out(port uint16, value byte) {
 	// Handle SID port I/O (0xE0-0xE1)
 	switch lowPort {
 	case Z80_SID_PORT_SELECT:
-		b.sidRegSelect = value & 0x1F // SID has ~26 registers
+		b.sidRegSelect = value
 		return
 	case Z80_SID_PORT_DATA:
-		if b.sidRegSelect < SID_REG_COUNT {
-			b.bus.Write8(SID_BASE+uint32(b.sidRegSelect), value)
+		if addr, _, ok := sidPortTarget(b.sidRegSelect); ok {
+			b.bus.Write8(addr, value)
 		}
 		return
 	}

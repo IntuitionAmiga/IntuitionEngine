@@ -273,6 +273,12 @@
 .set SID_MODE_VOL,0x18                  ; Volume (bits 0-3) + filter mode (bits 4-7)
 .set SID_PLUS_CTRL,0x19                 ; SID+ mode (0=standard, 1=enhanced)
 
+; SID port select: bits 0-4 = register, bits 5-6 = chip select
+.set SID_CHIP_SHIFT,5
+.set SID_CHIP_SID1,0x00
+.set SID_CHIP_SID2,0x20
+.set SID_CHIP_SID3,0x40
+
 ; Voice control register bits (SID_Vx_CTRL)
 .set SID_CTRL_GATE,0x01                 ; Gate bit (trigger envelope)
 .set SID_CTRL_SYNC,0x02                 ; Sync with previous voice

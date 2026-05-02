@@ -153,9 +153,15 @@ SAP_SUBSONG     equ 0xF0D1D              ; Subsong selection (0-255)
 ; Port I/O for SID access (x86 specific)
 SID_PORT_SELECT equ 0xE0                 ; Port to select SID register
 SID_PORT_DATA   equ 0xE1                 ; Port to read/write SID data
+SID_CHIP_SHIFT  equ 5                    ; Select bits in SID_PORT_SELECT
+SID_CHIP_SID1   equ 0x00                 ; SID1 chip select
+SID_CHIP_SID2   equ 0x20                 ; SID2 chip select
+SID_CHIP_SID3   equ 0x40                 ; SID3 chip select
 
 ; Memory-mapped SID registers
 SID_BASE        equ 0xF0E00              ; SID base address
+SID2_BASE       equ 0xF0E30              ; SID2 base address
+SID3_BASE       equ 0xF0E50              ; SID3 base address
 
 ; Voice 1 registers
 SID_V1_FREQ_LO  equ 0xF0E00              ; Voice 1 frequency low byte

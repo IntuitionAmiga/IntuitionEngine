@@ -27,6 +27,85 @@ func TestBus32GetMemory(t *testing.T) {
 	}
 }
 
+func TestMachineBusWrite32WideFanoutOptIn(t *testing.T) {
+	bus := NewMachineBus()
+	var byteWrites []struct {
+		addr  uint32
+		value uint8
+	}
+	var wordWrites int
+
+	bus.MapIO(0xF1000, 0xF1003, nil, func(addr uint32, value uint32) {
+		wordWrites++
+	})
+	bus.MapIOByte(0xF1000, 0xF1003, func(addr uint32, value uint8) {
+		byteWrites = append(byteWrites, struct {
+			addr  uint32
+			value uint8
+		}{addr: addr, value: value})
+	})
+	bus.MapIOWideWriteFanout(0xF1000, 0xF1003)
+
+	bus.Write32(0xF1000, 0x44332211)
+
+	if wordWrites != 0 {
+		t.Fatalf("onWrite called %d times, want 0", wordWrites)
+	}
+	if len(byteWrites) != 4 {
+		t.Fatalf("onWrite8 calls=%d, want 4", len(byteWrites))
+	}
+	for i, want := range []uint8{0x11, 0x22, 0x33, 0x44} {
+		if byteWrites[i].addr != 0xF1000+uint32(i) || byteWrites[i].value != want {
+			t.Fatalf("byte write %d=(0x%X,0x%02X), want (0x%X,0x%02X)",
+				i, byteWrites[i].addr, byteWrites[i].value, 0xF1000+uint32(i), want)
+		}
+	}
+}
+
+func TestMachineBusWrite32WideFanoutDefaultCompatibility(t *testing.T) {
+	bus := NewMachineBus()
+	var byteWrites int
+	var wordWrites []uint32
+
+	bus.MapIO(0xF1100, 0xF1103, nil, func(addr uint32, value uint32) {
+		wordWrites = append(wordWrites, value)
+	})
+	bus.MapIOByte(0xF1100, 0xF1103, func(addr uint32, value uint8) {
+		byteWrites++
+	})
+
+	bus.Write32(0xF1100, 0x44332211)
+
+	if byteWrites != 0 {
+		t.Fatalf("onWrite8 calls=%d, want 0 without opt-in", byteWrites)
+	}
+	if len(wordWrites) != 1 || wordWrites[0] != 0x44332211 {
+		t.Fatalf("onWrite calls=%v, want [0x44332211]", wordWrites)
+	}
+}
+
+func TestMachineBusWrite16StillFansOutWithByteHandler(t *testing.T) {
+	bus := NewMachineBus()
+	var byteWrites []uint8
+	var wordWrites int
+
+	bus.MapIO(0xF1200, 0xF1201, nil, func(addr uint32, value uint32) {
+		wordWrites++
+	})
+	bus.MapIOByte(0xF1200, 0xF1201, func(addr uint32, value uint8) {
+		byteWrites = append(byteWrites, value)
+	})
+
+	bus.Write16(0xF1200, 0x2211)
+
+	if wordWrites != 0 {
+		t.Fatalf("onWrite called %d times, want 0", wordWrites)
+	}
+	if len(byteWrites) != 2 || byteWrites[0] != 0x11 || byteWrites[1] != 0x22 {
+		t.Fatalf("onWrite8 values=%v, want [0x11 0x22]", byteWrites)
+	}
+}
+
 // TestCPUMemoryVisibleToBus verifies that data written by the CPU
 // is visible when read through the MachineBus (as peripherals would).
 func TestCPUMemoryVisibleToBus(t *testing.T) {

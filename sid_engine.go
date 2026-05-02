@@ -73,6 +73,57 @@ type SIDEngine struct {
 	busMemory []byte // mirror register writes for Machine Monitor visibility
 }
 
+type sidChannelWrite struct {
+	ch     int
+	offset uint32
+	value  uint32
+}
+
+type sidBoolSetting struct {
+	ch      int
+	enabled bool
+}
+
+type sidWaveMaskSetting struct {
+	ch   int
+	mask uint8
+}
+
+type sidRateCounterSetting struct {
+	ch                     int
+	enabled                bool
+	sampleRate             int
+	clockHz                uint32
+	attack, decay, release uint8
+}
+
+type sidADSRSetting struct {
+	ch           int
+	attackMs     float32
+	decayMs      float32
+	releaseMs    float32
+	sustainLevel float32
+}
+
+type sidFilterSetting struct {
+	ch                int
+	modeMask          uint8
+	cutoff, resonance float32
+}
+
+type sidSyncPlan struct {
+	baseChannel  int
+	writes       []sidChannelWrite
+	envelopeMode []sidBoolSetting
+	filterMode   []sidBoolSetting
+	dac          []sidBoolSetting
+	waveMasks    []sidWaveMaskSetting
+	testBits     []sidBoolSetting
+	rateCounters []sidRateCounterSetting
+	adsr         []sidADSRSetting
+	filters      []sidFilterSetting
+}
+
 // SID+ logarithmic volume curve (2dB per step)
 var sidPlusVolumeCurve = func() [16]float32 {
 	var curve [16]float32
@@ -151,30 +202,34 @@ func (e *SIDEngine) SetClockHz(clock uint32) {
 // SetModel sets the SID chip model (6581 or 8580)
 func (e *SIDEngine) SetModel(model int) {
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
-	if model == SID_MODEL_6581 || model == SID_MODEL_8580 {
-		e.model = model
-		// Configure all model-specific features
-		if e.sound != nil {
-			for ch := range 3 {
-				idx := e.baseChannel + ch
-				if model == SID_MODEL_6581 {
-					e.sound.SetChannelSIDADSRBugs(idx, true)
-					e.sound.SetChannelSID6581FilterDistort(idx, true)
-					e.sound.SetChannelSIDNoisePhaseLocked(idx, true)
-				} else {
-					e.sound.SetChannelSIDADSRBugs(idx, false)
-					e.sound.SetChannelSID6581FilterDistort(idx, false)
-					e.sound.SetChannelSIDNoisePhaseLocked(idx, true) // 8580 also has phase-locked noise
-				}
-			}
-			// Configure mixer mode
-			if model == SID_MODEL_6581 {
-				e.sound.SetSIDMixerMode(true, SID_6581_DC_OFFSET, true)
-			} else {
-				e.sound.SetSIDMixerMode(true, SID_8580_DC_OFFSET, false)
-			}
+	if model != SID_MODEL_6581 && model != SID_MODEL_8580 {
+		e.mutex.Unlock()
+		return
+	}
+	e.model = model
+	sound := e.sound
+	baseChannel := e.baseChannel
+	e.mutex.Unlock()
+
+	if sound == nil {
+		return
+	}
+	for ch := range 3 {
+		idx := baseChannel + ch
+		if model == SID_MODEL_6581 {
+			sound.SetChannelSIDADSRBugs(idx, true)
+			sound.SetChannelSID6581FilterDistort(idx, true)
+			sound.SetChannelSIDNoisePhaseLocked(idx, true)
+		} else {
+			sound.SetChannelSIDADSRBugs(idx, false)
+			sound.SetChannelSID6581FilterDistort(idx, false)
+			sound.SetChannelSIDNoisePhaseLocked(idx, true)
 		}
+	}
+	if model == SID_MODEL_6581 {
+		sound.SetSIDMixerMode(true, SID_6581_DC_OFFSET, true)
+	} else {
+		sound.SetSIDMixerMode(true, SID_8580_DC_OFFSET, false)
 	}
 }
 
@@ -192,6 +247,14 @@ func (e *SIDEngine) HandleWrite(addr uint32, value uint32) {
 	}
 	reg := uint8(addr - e.regBase)
 	e.WriteRegister(reg, uint8(value))
+}
+
+func (e *SIDEngine) HandleWrite8(addr uint32, value uint8) {
+	if addr < e.regBase || addr > e.regEnd {
+		return
+	}
+	reg := uint8(addr - e.regBase)
+	e.WriteRegister(reg, value)
 }
 
 // HandleRead processes a read from a SID register
@@ -223,18 +286,24 @@ func (e *SIDEngine) HandleRead(addr uint32) uint32 {
 // WriteRegister writes a value to a SID register
 func (e *SIDEngine) WriteRegister(reg uint8, value uint8) {
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
+	plusChanged, sidPlusEnabled, sound, baseChannel := e.writeRegisterStateLocked(reg, value)
+	e.mutex.Unlock()
 
-	e.writeRegisterLocked(reg, value)
+	if plusChanged && sound != nil {
+		sound.SetSIDPlusEnabledForRange(sidPlusEnabled, baseChannel, 3)
+	}
+	e.syncToChip()
 }
 
 // SetSIDPlusEnabled enables/disables SID+ enhanced mode
 func (e *SIDEngine) SetSIDPlusEnabled(enabled bool) {
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
 	e.sidPlusEnabled = enabled
-	if e.sound != nil {
-		e.sound.SetSIDPlusEnabled(enabled)
+	sound := e.sound
+	e.mutex.Unlock()
+
+	if sound != nil {
+		sound.SetSIDPlusEnabled(enabled)
 	}
 	e.syncToChip()
 }
@@ -273,17 +342,251 @@ func (e *SIDEngine) ensureChannelsInitialized() {
 
 // syncToChip updates the SoundChip based on current SID register state
 func (e *SIDEngine) syncToChip() {
-	if e.sound == nil {
+	e.mutex.Lock()
+	sound := e.sound
+	if sound == nil {
+		e.mutex.Unlock()
 		return
 	}
+	plan := e.buildSyncPlanLocked()
+	e.mutex.Unlock()
 
-	e.ensureChannelsInitialized()
-	e.applyFrequencies()
-	e.applyWaveforms()
-	e.applyEnvelopes()
-	e.applyVolumes()
-	e.applyModulation()
-	e.applyFilter()
+	for _, w := range plan.writes {
+		base := FLEX_CH_BASE + uint32(w.ch)*FLEX_CH_STRIDE
+		sound.HandleRegisterWrite(base+w.offset, w.value)
+	}
+	for _, s := range plan.envelopeMode {
+		sound.SetChannelEnvelopeMode(s.ch, s.enabled)
+	}
+	for _, s := range plan.filterMode {
+		sound.SetChannelSIDFilterMode(s.ch, s.enabled)
+	}
+	for _, s := range plan.dac {
+		sound.SetChannelSIDDAC(s.ch, s.enabled)
+	}
+	for _, s := range plan.waveMasks {
+		sound.SetChannelSIDWaveMask(s.ch, s.mask)
+	}
+	for _, s := range plan.testBits {
+		sound.SetChannelSIDTest(s.ch, s.enabled)
+	}
+	for _, s := range plan.rateCounters {
+		sound.SetChannelSIDRateCounter(s.ch, s.enabled, s.sampleRate, s.clockHz, s.attack, s.decay, s.release)
+	}
+	for _, s := range plan.adsr {
+		sound.SetChannelADSR(s.ch, s.attackMs, s.decayMs, s.releaseMs, s.sustainLevel)
+	}
+	for _, s := range plan.filters {
+		sound.SetChannelFilter(s.ch, s.modeMask, s.cutoff, s.resonance)
+	}
+}
+
+func (e *SIDEngine) buildSyncPlanLocked() sidSyncPlan {
+	plan := sidSyncPlan{baseChannel: e.baseChannel}
+	if !e.channelsInit {
+		for ch := range 3 {
+			idx := e.baseChannel + ch
+			plan.write(ch, FLEX_OFF_WAVE_TYPE, WAVE_TRIANGLE)
+			plan.write(ch, FLEX_OFF_DUTY, 0x0080)
+			plan.write(ch, FLEX_OFF_PWM_CTRL, 0)
+			plan.write(ch, FLEX_OFF_ATK, 0)
+			plan.write(ch, FLEX_OFF_DEC, 0)
+			plan.write(ch, FLEX_OFF_SUS, 255)
+			plan.write(ch, FLEX_OFF_REL, 0)
+			plan.write(ch, FLEX_OFF_VOL, 0)
+			plan.write(ch, FLEX_OFF_CTRL, 0)
+			plan.envelopeMode = append(plan.envelopeMode, sidBoolSetting{ch: idx, enabled: true})
+			plan.filterMode = append(plan.filterMode, sidBoolSetting{ch: idx, enabled: false})
+			plan.dac = append(plan.dac, sidBoolSetting{ch: idx, enabled: true})
+		}
+		e.channelsInit = true
+	}
+
+	e.planFrequenciesLocked(&plan)
+	e.planWaveformsLocked(&plan)
+	e.planEnvelopesLocked(&plan)
+	e.planVolumesLocked(&plan)
+	e.planModulationLocked(&plan)
+	e.planFilterLocked(&plan)
+	return plan
+}
+
+func (p *sidSyncPlan) write(ch int, offset uint32, value uint32) {
+	p.writes = append(p.writes, sidChannelWrite{ch: p.baseChannel + ch, offset: offset, value: value})
+}
+
+func (e *SIDEngine) planFrequenciesLocked(plan *sidSyncPlan) {
+	for voice := range 3 {
+		freq := e.calcFrequency(voice)
+		if freq > 0 && freq <= 20000 {
+			plan.write(voice, FLEX_OFF_FREQ, uint32(freq*256))
+		} else {
+			plan.write(voice, FLEX_OFF_FREQ, 0)
+		}
+	}
+}
+
+func (e *SIDEngine) planWaveformsLocked(plan *sidSyncPlan) {
+	for voice := range 3 {
+		base := voice * 7
+		ctrl := e.regs[base+4]
+		mask := ctrl & (SID_CTRL_TRIANGLE | SID_CTRL_SAWTOOTH | SID_CTRL_PULSE | SID_CTRL_NOISE)
+
+		var waveType int
+		if ctrl&SID_CTRL_NOISE != 0 {
+			waveType = WAVE_NOISE
+		} else if ctrl&SID_CTRL_PULSE != 0 {
+			waveType = WAVE_SQUARE
+		} else if ctrl&SID_CTRL_SAWTOOTH != 0 {
+			waveType = WAVE_SAWTOOTH
+		} else if ctrl&SID_CTRL_TRIANGLE != 0 {
+			waveType = WAVE_TRIANGLE
+		} else {
+			waveType = WAVE_SQUARE
+		}
+
+		if mask&SID_CTRL_PULSE != 0 {
+			pw := e.calcPulseWidth(voice)
+			plan.write(voice, FLEX_OFF_DUTY, uint32(pw*255))
+		}
+		plan.write(voice, FLEX_OFF_WAVE_TYPE, uint32(waveType))
+		e.voiceWave[voice] = mask != 0
+		plan.waveMasks = append(plan.waveMasks, sidWaveMaskSetting{ch: e.baseChannel + voice, mask: mask})
+
+		gate := (ctrl & SID_CTRL_GATE) != 0
+		testBit := (ctrl & SID_CTRL_TEST) != 0
+		effectiveGate := gate && e.voiceWave[voice] && !testBit
+		prevGate := e.voiceGate[voice]
+
+		switch {
+		case effectiveGate && !prevGate:
+			plan.write(voice, FLEX_OFF_CTRL, 3)
+		case !effectiveGate && prevGate:
+			plan.write(voice, FLEX_OFF_CTRL, 1)
+		case effectiveGate:
+			plan.write(voice, FLEX_OFF_CTRL, 3)
+		default:
+			plan.write(voice, FLEX_OFF_CTRL, 1)
+		}
+		e.voiceGate[voice] = effectiveGate
+
+		if testBit {
+			plan.write(voice, FLEX_OFF_PHASE, 0)
+		}
+		plan.testBits = append(plan.testBits, sidBoolSetting{ch: e.baseChannel + voice, enabled: testBit})
+	}
+}
+
+func (e *SIDEngine) planEnvelopesLocked(plan *sidSyncPlan) {
+	for voice := range 3 {
+		base := voice * 7
+		ad := e.regs[base+5]
+		sr := e.regs[base+6]
+		attack := (ad >> 4) & 0x0F
+		decay := ad & 0x0F
+		sustain := (sr >> 4) & 0x0F
+		release := sr & 0x0F
+
+		plan.rateCounters = append(plan.rateCounters, sidRateCounterSetting{
+			ch:         e.baseChannel + voice,
+			enabled:    false,
+			sampleRate: e.sampleRate,
+			clockHz:    e.clockHz,
+			attack:     attack,
+			decay:      decay,
+			release:    release,
+		})
+		plan.adsr = append(plan.adsr, sidADSRSetting{
+			ch:           e.baseChannel + voice,
+			attackMs:     sidAttackMs[attack],
+			decayMs:      sidDecayReleaseMs[decay],
+			releaseMs:    sidDecayReleaseMs[release],
+			sustainLevel: float32(sustain) / 15.0,
+		})
+	}
+}
+
+func (e *SIDEngine) planVolumesLocked(plan *sidSyncPlan) {
+	modeVol := e.regs[0x18]
+	masterVol := modeVol & SID_MODE_VOL_MASK
+	voice3Off := (modeVol & SID_MODE_3OFF) != 0
+	filterRoutedV3 := (e.regs[0x17] & SID_FILT_V3) != 0
+	masterGain := sidVolumeGain(masterVol, e.sidPlusEnabled)
+
+	for voice := range 3 {
+		if voice == 2 && voice3Off && !filterRoutedV3 {
+			plan.write(voice, FLEX_OFF_VOL, 0)
+			continue
+		}
+		if !e.voiceWave[voice] {
+			plan.write(voice, FLEX_OFF_VOL, 0)
+			continue
+		}
+		plan.write(voice, FLEX_OFF_VOL, uint32(sidGainToDAC(masterGain)))
+	}
+}
+
+func (e *SIDEngine) planModulationLocked(plan *sidSyncPlan) {
+	for voice := range 3 {
+		base := voice * 7
+		ctrl := e.regs[base+4]
+		ringMod := (ctrl&SID_CTRL_RINGMOD) != 0 && (ctrl&SID_CTRL_TRIANGLE) != 0
+		sync := (ctrl & SID_CTRL_SYNC) != 0
+		srcVoice := e.baseChannel + ((voice + 2) % 3)
+		if ringMod {
+			plan.write(voice, FLEX_OFF_RINGMOD, uint32(0x80|srcVoice))
+		} else {
+			plan.write(voice, FLEX_OFF_RINGMOD, 0)
+		}
+		if sync {
+			plan.write(voice, FLEX_OFF_SYNC, uint32(0x80|srcVoice))
+		} else {
+			plan.write(voice, FLEX_OFF_SYNC, 0)
+		}
+	}
+}
+
+func (e *SIDEngine) planFilterLocked(plan *sidSyncPlan) {
+	fcLo := e.regs[0x15] & 0x07
+	fcHi := e.regs[0x16]
+	cutoff := uint16(fcLo) | (uint16(fcHi) << 3)
+	resFilt := e.regs[0x17]
+	resonance := (resFilt & SID_FILT_RES) >> 4
+	routing := resFilt & 0x0F
+	modeVol := e.regs[0x18]
+
+	var cutoffNorm float32
+	if e.model == SID_MODEL_8580 {
+		cutoffNorm = sidFilterNorm8580Table[cutoff]
+	} else {
+		cutoffNorm = sidFilterNorm6581Table[cutoff]
+	}
+	var resNorm float32
+	if e.model == SID_MODEL_8580 {
+		resNorm = sid8580ResonanceTable[resonance] / 12.0
+	} else {
+		resNorm = sid6581ResonanceTable[resonance] / 12.0
+	}
+
+	modeMask := uint8(0)
+	if modeVol&SID_MODE_LP != 0 {
+		modeMask |= 0x01
+	}
+	if modeVol&SID_MODE_BP != 0 {
+		modeMask |= 0x02
+	}
+	if modeVol&SID_MODE_HP != 0 {
+		modeMask |= 0x04
+	}
+
+	for voice := range 3 {
+		mask := uint8(1 << voice)
+		if routing&mask != 0 && modeMask != 0 {
+			plan.filters = append(plan.filters, sidFilterSetting{ch: e.baseChannel + voice, modeMask: modeMask, cutoff: cutoffNorm, resonance: resNorm})
+		} else {
+			plan.filters = append(plan.filters, sidFilterSetting{ch: e.baseChannel + voice})
+		}
+	}
 }
 
 // calcFrequency calculates the output frequency for a voice
@@ -313,9 +616,7 @@ func (e *SIDEngine) calcPulseWidth(voice int) float32 {
 	pw := uint16(e.regs[base+2]) | (uint16(e.regs[base+3]&0x0F) << 8)
 	// PW ranges from 0-4095, convert to duty cycle
 	// 0 = 0% duty (silent), 2048 = 50% duty, 4095 = ~100% duty
-	if pw == 0 {
-		pw = 1
-	} else if pw >= 4095 {
+	if pw >= 4095 {
 		pw = 4094
 	}
 	return float32(pw) / 4095.0
@@ -371,7 +672,7 @@ func (e *SIDEngine) applyWaveforms() {
 
 		e.writeChannel(voice, FLEX_OFF_WAVE_TYPE, uint32(waveType))
 		e.voiceWave[voice] = mask != 0
-		e.sound.SetChannelSIDWaveMask(voice, mask)
+		e.sound.SetChannelSIDWaveMask(e.baseChannel+voice, mask)
 
 		// Handle gate bit
 		gate := (ctrl & SID_CTRL_GATE) != 0
@@ -396,9 +697,9 @@ func (e *SIDEngine) applyWaveforms() {
 		// Handle test bit (resets oscillator, mutes output)
 		if testBit {
 			e.writeChannel(voice, FLEX_OFF_PHASE, 0)
-			e.sound.SetChannelSIDTest(voice, true)
+			e.sound.SetChannelSIDTest(e.baseChannel+voice, true)
 		} else {
-			e.sound.SetChannelSIDTest(voice, false)
+			e.sound.SetChannelSIDTest(e.baseChannel+voice, false)
 		}
 	}
 }
@@ -422,13 +723,13 @@ func (e *SIDEngine) applyEnvelopes() {
 		sustainLevel := float32(sustain) / 15.0
 
 		// Use authentic SID rate counter for ADSR timing
-		e.sound.SetChannelSIDRateCounter(voice, false, e.sampleRate, e.clockHz, attack, decay, release)
+		e.sound.SetChannelSIDRateCounter(e.baseChannel+voice, false, e.sampleRate, e.clockHz, attack, decay, release)
 
 		// Also set time-based ADSR as fallback and for sustain level
 		attackMs := sidAttackMs[attack]
 		decayMs := sidDecayReleaseMs[decay]
 		releaseMs := sidDecayReleaseMs[release]
-		e.sound.SetChannelADSR(voice, attackMs, decayMs, releaseMs, sustainLevel)
+		e.sound.SetChannelADSR(e.baseChannel+voice, attackMs, decayMs, releaseMs, sustainLevel)
 	}
 }
 
@@ -444,11 +745,12 @@ func (e *SIDEngine) applyVolumes() {
 
 	// Check if voice 3 is disconnected
 	voice3Off := (modeVol & SID_MODE_3OFF) != 0
+	filterRoutedV3 := (e.regs[0x17] & SID_FILT_V3) != 0
 
 	masterGain := sidVolumeGain(masterVol, e.sidPlusEnabled)
 
 	for voice := range 3 {
-		if voice == 2 && voice3Off {
+		if voice == 2 && voice3Off && !filterRoutedV3 {
 			e.writeChannel(voice, FLEX_OFF_VOL, 0)
 			continue
 		}
@@ -475,11 +777,11 @@ func (e *SIDEngine) applyModulation() {
 		ctrl := e.regs[base+4]
 
 		// Ring modulation: voice N is modulated by voice N-1 (wraps: voice 0 by voice 2)
-		ringMod := (ctrl & SID_CTRL_RINGMOD) != 0
+		ringMod := (ctrl&SID_CTRL_RINGMOD) != 0 && (ctrl&SID_CTRL_TRIANGLE) != 0
 		sync := (ctrl & SID_CTRL_SYNC) != 0
 
 		// Source voice for modulation (voice 0 uses voice 2, others use voice-1)
-		srcVoice := (voice + 2) % 3
+		srcVoice := e.baseChannel + ((voice + 2) % 3)
 
 		// Ring modulation - enable bit 7, source in bits 0-1
 		if ringMod {
@@ -552,9 +854,9 @@ func (e *SIDEngine) applyFilter() {
 	for voice := range 3 {
 		mask := uint8(1 << voice)
 		if routing&mask != 0 && modeMask != 0 {
-			e.sound.SetChannelFilter(voice, modeMask, cutoffNorm, resNorm)
+			e.sound.SetChannelFilter(e.baseChannel+voice, modeMask, cutoffNorm, resNorm)
 		} else {
-			e.sound.SetChannelFilter(voice, 0, 0, 0)
+			e.sound.SetChannelFilter(e.baseChannel+voice, 0, 0, 0)
 		}
 	}
 }
@@ -628,7 +930,11 @@ func (e *SIDEngine) SetEvents(events []SIDEvent, totalSamples uint64, loop bool,
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
-	e.events = make([]SIDEvent, len(events))
+	if cap(e.events) < len(events) {
+		e.events = make([]SIDEvent, len(events))
+	} else {
+		e.events = e.events[:len(events)]
+	}
 	copy(e.events, events)
 	e.eventIndex = 0
 	e.currentSample = 0
@@ -664,8 +970,8 @@ func (e *SIDEngine) EnableDebugLogging(seconds int) {
 
 func (e *SIDEngine) SetPlaying(playing bool) {
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
 	e.playing = playing
+	e.mutex.Unlock()
 	if !playing {
 		e.silenceChannels()
 	}
@@ -692,7 +998,6 @@ func (e *SIDEngine) SetForceLoop(enable bool) {
 
 func (e *SIDEngine) StopPlayback() {
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
 	e.playing = false
 	e.events = nil
 	e.eventIndex = 0
@@ -701,6 +1006,7 @@ func (e *SIDEngine) StopPlayback() {
 	e.loop = false
 	e.loopSample = 0
 	e.loopEventIndex = 0
+	e.mutex.Unlock()
 	e.silenceChannels()
 }
 
@@ -710,21 +1016,34 @@ func (e *SIDEngine) TickSample() {
 	}
 
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
 
 	if !e.playing {
+		e.mutex.Unlock()
 		return
 	}
 
+	needsSync := false
+	var plusChanged bool
+	var sidPlusEnabled bool
+	var plusSound *SoundChip
+	var plusBase int
+	var secondaryEvents []SIDEvent
 	for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample == e.currentSample {
 		ev := e.events[e.eventIndex]
 		switch {
 		case ev.Chip == 0:
-			e.writeRegisterLocked(ev.Reg, ev.Value)
+			changed, enabled, sound, base := e.writeRegisterStateLocked(ev.Reg, ev.Value)
+			if changed {
+				plusChanged = true
+				sidPlusEnabled = enabled
+				plusSound = sound
+				plusBase = base
+			}
+			needsSync = true
 		case ev.Chip == 1 && e.sid2 != nil:
-			e.sid2.writeRegisterLocked(ev.Reg, ev.Value)
+			secondaryEvents = append(secondaryEvents, ev)
 		case ev.Chip == 2 && e.sid3 != nil:
-			e.sid3.writeRegisterLocked(ev.Reg, ev.Value)
+			secondaryEvents = append(secondaryEvents, ev)
 		}
 		e.eventIndex++
 	}
@@ -743,7 +1062,37 @@ func (e *SIDEngine) TickSample() {
 			e.eventIndex = e.loopEventIndex
 		} else {
 			e.playing = false
+			needsSync = false
+			e.mutex.Unlock()
+			if plusChanged && plusSound != nil {
+				plusSound.SetSIDPlusEnabledForRange(sidPlusEnabled, plusBase, 3)
+			}
+			for _, ev := range secondaryEvents {
+				switch {
+				case ev.Chip == 1 && e.sid2 != nil:
+					e.sid2.WriteRegister(ev.Reg, ev.Value)
+				case ev.Chip == 2 && e.sid3 != nil:
+					e.sid3.WriteRegister(ev.Reg, ev.Value)
+				}
+			}
 			e.silenceChannels()
+			return
+		}
+	}
+	e.mutex.Unlock()
+
+	if plusChanged && plusSound != nil {
+		plusSound.SetSIDPlusEnabledForRange(sidPlusEnabled, plusBase, 3)
+	}
+	if needsSync {
+		e.syncToChip()
+	}
+	for _, ev := range secondaryEvents {
+		switch {
+		case ev.Chip == 1 && e.sid2 != nil:
+			e.sid2.WriteRegister(ev.Reg, ev.Value)
+		case ev.Chip == 2 && e.sid3 != nil:
+			e.sid3.WriteRegister(ev.Reg, ev.Value)
 		}
 	}
 }
@@ -757,9 +1106,9 @@ func (e *SIDEngine) silenceChannels() {
 	}
 }
 
-func (e *SIDEngine) writeRegisterLocked(reg uint8, value uint8) {
+func (e *SIDEngine) writeRegisterStateLocked(reg uint8, value uint8) (bool, bool, *SoundChip, int) {
 	if reg >= SID_REG_COUNT {
-		return
+		return false, false, nil, 0
 	}
 
 	if e.debugEnabled && e.currentSample < e.debugUntil {
@@ -769,18 +1118,18 @@ func (e *SIDEngine) writeRegisterLocked(reg uint8, value uint8) {
 	e.enabled.Store(true)
 	e.regs[reg] = value
 	if mem := e.busMemory; mem != nil {
-		mem[e.regBase+uint32(reg)] = value
+		if idx := e.regBase + uint32(reg); idx < uint32(len(mem)) {
+			mem[idx] = value
+		}
 	}
 
 	// Handle SID+ control register (scoped to this engine's channels only)
 	if reg == 0x19 { // SID_PLUS_CTRL offset
 		e.sidPlusEnabled = (value & 1) != 0
-		if e.sound != nil {
-			e.sound.SetSIDPlusEnabledForRange(e.sidPlusEnabled, e.baseChannel, 3)
-		}
+		return true, e.sidPlusEnabled, e.sound, e.baseChannel
 	}
 
-	e.syncToChip()
+	return false, false, nil, 0
 }
 
 func (e *SIDEngine) debugRegisterWrite(reg uint8, value uint8) {

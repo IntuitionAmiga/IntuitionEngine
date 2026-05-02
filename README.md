@@ -849,9 +849,10 @@ Filter and Volume:
 0x0F0E17: SID_RES_FILT    - Resonance (bits 4-7) + routing (bits 0-3)
 0x0F0E18: SID_MODE_VOL    - Volume (bits 0-3) + filter mode (bits 4-7)
 0x0F0E19: SID_PLUS_CTRL   - SID+ mode (0=standard, 1=enhanced)
-0x0F0E1A: SID_OSC3        - Voice 3 oscillator output (read-only)
-0x0F0E1B: SID_ENV3        - Voice 3 envelope output (read-only)
-0x0F0E1C: (reserved)
+0x0F0E19: SID_POT_X       - Overlaps SID_PLUS_CTRL; paddle input is not implemented
+0x0F0E1A: SID_POT_Y       - Not implemented
+0x0F0E1B: SID_OSC3        - Voice 3 oscillator output (read-only)
+0x0F0E1C: SID_ENV3        - Voice 3 envelope output (read-only)
 
 Voice Control Register Bits:
 bit 0: Gate (trigger envelope)
@@ -878,6 +879,7 @@ SID Player Registers (0x0F0E20 - 0x0F0E2D, supports .sid C64 music):
 ```
 
 These registers allow CPU code to trigger .SID file playback from RAM, similar to the PSG and SAP player registers. The embedded 6502 code in the SID file is executed by the internal 6502 emulator at the correct frame rate (50Hz PAL or ~60Hz NTSC).
+CIA1 timer-A multispeed PSIDs are supported by deriving tempo from the latch written to `$DC04/$DC05` during INIT. SID 16-bit and 32-bit MMIO writes fan out to byte register writes.
 
 ### Multi-SID Registers (SID2/SID3)
 
@@ -887,6 +889,10 @@ For .SID files with Sid2Addr/Sid3Addr in PSID v3/v4 headers, the engine instanti
 SID2 Registers (0x0F0E30 - 0x0F0E4C): Same layout as primary SID (voices 4-6)
 SID3 Registers (0x0F0E50 - 0x0F0E6C): Same layout as primary SID (voices 7-9)
 ```
+
+CPU access: M68K/IE32/IE64 use direct MMIO at `0xF0E00`, `0xF0E30`, and `0xF0E50`; 6502 uses `$D500`, `$D520`, and `$D540`; Z80/x86 use SID select port `$E0` with bits 5-6 selecting SID1/SID2/SID3 and data port `$E1`.
+
+Intuition Engine is not a C64 emulator: it does not implement the `$D400-$D7FF` mirror, analog SID die variants, or POT_X/POT_Y paddle input. Combined waveforms, V3-as-filtered-modulator patches, OSC3/ENV3 readback, and ringmod/sync routing are supported.
 
 ## 3.9 TED Sound Chip Registers (0x0F0F00 - 0x0F0F1F)
 

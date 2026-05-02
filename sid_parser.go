@@ -79,9 +79,11 @@ func ParseSIDData(data []byte) (*SIDFile, error) {
 		header.StartPage = data[0x78]
 		header.PageLength = data[0x79]
 	}
-	if header.DataOffset >= 0x80 && len(data) >= 0x80 {
-		header.Sid2Addr = binary.BigEndian.Uint16(data[0x7C:0x7E])
-		header.Sid3Addr = binary.BigEndian.Uint16(data[0x7E:0x80])
+	if header.Version >= 3 && header.DataOffset >= 0x7C && len(data) >= 0x7B {
+		header.Sid2Addr = sidPageByteToAddress(data[0x7A])
+		if header.Version >= 4 && len(data) >= 0x7C {
+			header.Sid3Addr = sidPageByteToAddress(data[0x7B])
+		}
 	}
 
 	if header.DataOffset == 0 || int(header.DataOffset) > len(data) {
@@ -111,4 +113,17 @@ func ParseSIDData(data []byte) (*SIDFile, error) {
 	}
 
 	return file, nil
+}
+
+func sidPageByteToAddress(page byte) uint16 {
+	if page == 0 {
+		return 0
+	}
+	if page&1 != 0 {
+		return 0
+	}
+	if !((page >= 0x42 && page <= 0x7E) || (page >= 0xE0 && page <= 0xFE)) {
+		return 0
+	}
+	return 0xD000 | (uint16(page) << 4)
 }

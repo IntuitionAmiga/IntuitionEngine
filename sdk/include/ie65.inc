@@ -238,12 +238,14 @@ POKEY_DIST_POLY17_PULSE = $E0   ; 17-bit + pulse
 ; - Ring modulation and hard sync
 ; - Programmable resonant filter (LP/BP/HP)
 ;
-; For 6502: SID is memory-mapped at $D500-$D51C
+; For 6502: SID is memory-mapped at $D500/$D520/$D540
 ; Note: C64's original SID was at $D400, but PSG uses that range.
 ;
 ; SID+ mode (write 1 to SID_PLUS_CTRL) enables enhanced audio
 ; ----------------------------------------------------------------------------
 SID_BASE        = $D500         ; SID base address
+SID2_BASE       = $D520         ; SID2 base address
+SID3_BASE       = $D540         ; SID3 base address
 
 ; Voice 1 registers
 SID_V1_FREQ_LO  = $D500         ; Voice 1 frequency low byte

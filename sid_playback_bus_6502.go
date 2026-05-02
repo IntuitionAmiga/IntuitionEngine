@@ -57,7 +57,9 @@ type SIDPlaybackBus6502 struct {
 	ciaICR     uint8
 	ciaIRQMask uint8
 
-	raster uint16
+	raster  uint16
+	sidOsc3 byte
+	sidEnv3 byte
 }
 
 func newSIDPlaybackBus6502(ntsc bool) *SIDPlaybackBus6502 {
@@ -120,7 +122,11 @@ func (b *SIDPlaybackBus6502) readSID(addr uint16) byte {
 		return 0xFF
 	}
 	if reg == 0x1B || reg == 0x1C {
-		return 0x00
+		b.advanceSID3Readback(1)
+		if reg == 0x1B {
+			return b.sidOsc3
+		}
+		return b.sidEnv3
 	}
 	return b.sidRegs[reg]
 }
@@ -251,6 +257,14 @@ func (b *SIDPlaybackBus6502) installIRQStub() {
 	b.ram[0xFF00] = 0x6C // JMP ($0314)
 	b.ram[0xFF01] = 0x14
 	b.ram[0xFF02] = 0x03
+	b.ram[0xFFF6] = 0x40 // RTI
+	// IRQ → $FFFE/F → $FF00: JMP ($0314) → $FFF6: RTI.
+	b.ram[0x0314] = 0xF6
+	b.ram[0x0315] = 0xFF
+	b.ram[0xFFFA] = 0xF6
+	b.ram[0xFFFB] = 0xFF
+	b.ram[0xFFFC] = 0xF6
+	b.ram[0xFFFD] = 0xFF
 	b.ram[0xFFFE] = 0x00
 	b.ram[0xFFFF] = 0xFF
 }
@@ -261,12 +275,37 @@ func (b *SIDPlaybackBus6502) AddCycles(cycles int) {
 		return
 	}
 	b.cycles += uint64(cycles)
+	b.advanceSID3Readback(cycles)
 
 	if (b.ciaCtrlA & 0x01) != 0 {
 		b.advanceTimer(&b.ciaTimerA, b.ciaLatchA, cycles, 0x01)
 	}
 	if (b.ciaCtrlB & 0x01) != 0 {
 		b.advanceTimer(&b.ciaTimerB, b.ciaLatchB, cycles, 0x02)
+	}
+}
+
+func (b *SIDPlaybackBus6502) advanceSID3Readback(cycles int) {
+	ctrl := b.sidRegs[0x12]
+	if ctrl&(SID_CTRL_TRIANGLE|SID_CTRL_SAWTOOTH|SID_CTRL_PULSE|SID_CTRL_NOISE) != 0 {
+		freq := uint16(b.sidRegs[0x0E]) | uint16(b.sidRegs[0x0F])<<8
+		step := byte((uint32(freq) + uint32(cycles)) | 1)
+		b.sidOsc3 = b.sidOsc3*33 + step
+	}
+	if ctrl&SID_CTRL_GATE != 0 {
+		inc := byte(max(cycles/4, 1))
+		if 255-b.sidEnv3 < inc {
+			b.sidEnv3 = 255
+		} else {
+			b.sidEnv3 += inc
+		}
+	} else if b.sidEnv3 > 0 {
+		dec := byte(max(cycles/8, 1))
+		if b.sidEnv3 < dec {
+			b.sidEnv3 = 0
+		} else {
+			b.sidEnv3 -= dec
+		}
 	}
 }
 
@@ -356,6 +395,8 @@ func (b *SIDPlaybackBus6502) Reset() {
 	b.ciaICR = 0
 	b.ciaIRQMask = 0
 	b.irqPending = false
+	b.sidOsc3 = 0
+	b.sidEnv3 = 0
 	b.installIRQStub()
 	for i := range b.sidRegs {
 		b.sidRegs[i] = 0
@@ -378,6 +419,10 @@ func (b *SIDPlaybackBus6502) GetCycles() uint64 {
 
 func (b *SIDPlaybackBus6502) GetFrameCycles() uint64 {
 	return b.cycles - b.frameCycle
+}
+
+func (b *SIDPlaybackBus6502) CIATimerALatch() uint16 {
+	return b.ciaLatchA
 }
 
 func (b *SIDPlaybackBus6502) SetRaster(raster uint16) {

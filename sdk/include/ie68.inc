@@ -172,6 +172,8 @@ POKEY_DIST_POLY17_PULSE equ $E0         ; 17-bit + pulse
 ; - Room ambience effect
 ; ----------------------------------------------------------------------------
 SID_BASE        equ $F0E00              ; SID base address
+SID2_BASE       equ $F0E30              ; SID2 base address
+SID3_BASE       equ $F0E50              ; SID3 base address
 
 ; Voice 1 registers
 SID_V1_FREQ_LO  equ $F0E00              ; Voice 1 frequency low byte

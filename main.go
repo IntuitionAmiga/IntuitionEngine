@@ -924,6 +924,8 @@ func main() {
 	sysBus.MapIO(SID_BASE, SID_END,
 		sidEngine.HandleRead,
 		sidEngine.HandleWrite)
+	sysBus.MapIOByte(SID_BASE, SID_END, sidEngine.HandleWrite8)
+	sysBus.MapIOWideWriteFanout(SID_BASE, SID_END)
 	sysBus.MapIO(SID_PLAY_PTR, SID_SUBSONG,
 		sidPlayer.HandlePlayRead,
 		sidPlayer.HandlePlayWrite)
@@ -932,9 +934,13 @@ func main() {
 	sysBus.MapIO(SID2_BASE, SID2_END,
 		sid2Engine.HandleRead,
 		sid2Engine.HandleWrite)
+	sysBus.MapIOByte(SID2_BASE, SID2_END, sid2Engine.HandleWrite8)
+	sysBus.MapIOWideWriteFanout(SID2_BASE, SID2_END)
 	sysBus.MapIO(SID3_BASE, SID3_END,
 		sid3Engine.HandleRead,
 		sid3Engine.HandleWrite)
+	sysBus.MapIOByte(SID3_BASE, SID3_END, sid3Engine.HandleWrite8)
+	sysBus.MapIOWideWriteFanout(SID3_BASE, SID3_END)
 
 	// Map TED audio registers
 	tedEngine := NewTEDEngine(soundChip, SAMPLE_RATE)
