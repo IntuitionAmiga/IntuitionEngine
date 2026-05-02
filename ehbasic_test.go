@@ -3348,7 +3348,7 @@ func TestHW_PSG_Envelope(t *testing.T) {
 func TestHW_PSG_PlusOn(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 PSG PLUS ON")
-	plus := readBusMem8(h, 0xF0C0E) // PSG_PLUS_CTRL
+	plus := readBusMem8(h, PSG_PLUS_CTRL)
 	if plus != 1 {
 		t.Fatalf("PSG PLUS ON: expected 1, got %d", plus)
 	}
@@ -3820,7 +3820,7 @@ func TestHW_Texture_Base(t *testing.T) {
 func TestHW_PSG_PlusOff(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 PSG PLUS ON\n20 PSG PLUS OFF")
-	ctrl := readBusMem8(h, 0xF0C0E) // PSG_PLUS_CTRL
+	ctrl := readBusMem8(h, PSG_PLUS_CTRL)
 	if ctrl != 0 {
 		t.Fatalf("PSG PLUS OFF: expected 0, got %d", ctrl)
 	}
@@ -4871,6 +4871,8 @@ func TestHW_Sound_Play_SID_EndToEnd(t *testing.T) {
 			sidPlayer.AttachBus(h.bus)
 
 			h.bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
+			h.bus.MapIOByte(PSG_BASE, PSG_END, psgEngine.HandleWrite8)
+			h.bus.MapIOWideWriteFanout(PSG_BASE, PSG_END)
 			h.bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
 			h.bus.MapIO(SID_BASE, SID_END, sidEngine.HandleRead, sidEngine.HandleWrite)
 			h.bus.MapIO(SID_PLAY_PTR, SID_PLAY_STATUS+3, sidPlayer.HandlePlayRead, sidPlayer.HandlePlayWrite)

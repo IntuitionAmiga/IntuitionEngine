@@ -87,7 +87,7 @@ VIDEO_RASTER_CTRL    equ $F0054         ; Raster control
 ; PSG/AUDIO REGISTERS (AY-3-8910 style)
 ; ============================================================================
 
-PSG_PLUS_CTRL   equ $F0C0E              ; PSG+ mode control
+PSG_PLUS_CTRL   equ $F0C20              ; PSG+ mode control
 
 ; ----------------------------------------------------------------------------
 ; PSG Player Registers

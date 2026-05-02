@@ -154,7 +154,7 @@ VIDEO_RASTER_CTRL     = $F054   ; Raster control
 ; Translation: 6502 $FCxx -> IE32 $F0Cxx via formula $F0000 + (addr - $F000)
 ; ============================================================================
 
-PSG_PLUS_CTRL   = $FC0E         ; PSG+ mode control (IE32 $F0C0E)
+PSG_PLUS_CTRL   = $FC20         ; PSG+ mode control (IE32 $F0C20)
 
 ; ----------------------------------------------------------------------------
 ; PSG Player Registers

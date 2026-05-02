@@ -715,6 +715,8 @@ type Channel struct {
 	dutyCycle        float32 // Square wave duty cycle (0.0-1.0)
 	noisePhase       float32 // Phase accumulator for noise timing
 	noiseValue       float32 // Current noise generator output
+	noiseMix         float32 // Optional per-channel noise source mix (0.0-1.0)
+	noiseFrequency   float32 // Optional per-channel mixed-noise clock; falls back to frequency
 	dacValue         float32 // DAC mode sample value [-1.0, +0.992]
 	noiseFilter      float32 // Noise filter coefficient
 	noiseFilterState float32 // Noise filter state variable
@@ -1348,12 +1350,7 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 	switch offset {
 	case FLEX_OFF_FREQ:
 		// 16.8 fixed-point: divide by 256 to get Hz
-		// Clamp frequency to prevent ultrasonic aliasing
-		// Frequencies above Nyquist (sampleRate/2) cause severe aliasing artifacts
 		freq := float32(value) / 256.0
-		if freq > MAX_FREQ {
-			freq = 0 // Mute ultrasonic frequencies (as real YM2149 would be inaudible)
-		}
 		ch.frequency = freq
 	case FLEX_OFF_VOL:
 		ch.volume = float32(value&BYTE_MASK) / NORMALISE_8BIT
@@ -2194,6 +2191,9 @@ func (ch *Channel) processEnhancedSample(
 
 	// Apply volume, envelope, and gain
 	scaledSample := rawSample * ch.volume * envLevel * gain
+	if ch.noiseMix > 0 && ch.waveType != WAVE_NOISE {
+		scaledSample += ch.generateNoiseMixSample(1.0/sampleRate) * ch.noiseMix * envLevel * gain
+	}
 
 	// Drive/saturation effect using fast tanh
 	if drive > 0 {
@@ -2310,7 +2310,7 @@ func (ch *Channel) generateSample() float32 {
 	if ch.dacMode {
 		return clampF32(ch.dacValue*ch.volume, MIN_SAMPLE, MAX_SAMPLE)
 	}
-	if ch.frequency == 0 {
+	if ch.frequency == 0 && ch.noiseMix == 0 {
 		return 0
 	}
 
@@ -2448,14 +2448,52 @@ func (ch *Channel) generateSample() float32 {
 		return sample
 	}
 
-	rawSample := ch.generateWaveSample(float32(SAMPLE_RATE), 1.0/float32(SAMPLE_RATE))
+	sampleRateRecip := float32(1.0 / SAMPLE_RATE)
+	rawSample := ch.generateWaveSample(float32(SAMPLE_RATE), sampleRateRecip)
 	scaledSample := rawSample * ch.volume * envLevel
+	if ch.noiseMix > 0 && ch.waveType != WAVE_NOISE {
+		scaledSample += ch.generateNoiseMixSample(sampleRateRecip) * ch.noiseMix * envLevel
+	}
 
 	// Per-channel filter (state-variable with multi-mode mix)
 	scaledSample = ch.applyChannelFilter(scaledSample)
 
 	// Clamp before returning
 	return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
+}
+
+func (ch *Channel) generateNoiseMixSample(sampleRateRecip float32) float32 {
+	frequency := ch.noiseFrequency
+	if frequency == 0 {
+		frequency = ch.frequency
+	}
+	noisePhaseInc := frequency * sampleRateRecip
+	ch.noisePhase += noisePhaseInc
+	steps := int(ch.noisePhase)
+	ch.noisePhase -= float32(steps)
+
+	for range steps {
+		switch ch.noiseMode {
+		case NOISE_MODE_WHITE:
+			newBit := ((ch.noiseSR >> NOISE_TAP1) ^ (ch.noiseSR >> NOISE_TAP2)) & 1
+			ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
+		case NOISE_MODE_PERIODIC:
+			ch.noiseSR = ((ch.noiseSR >> LSB_MASK) | ((ch.noiseSR & 1) << (NOISE_LFSR_BITS - 1))) & NOISE_LFSR_MASK
+		case NOISE_MODE_METALLIC:
+			newBit := ((ch.noiseSR >> METAL_TAP1) ^ (ch.noiseSR >> METAL_TAP2)) & 1
+			ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & NOISE_LFSR_MASK
+		case NOISE_MODE_PSG:
+			newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 3)) & 1
+			ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & PSG_NOISE_LFSR_MASK
+		case NOISE_MODE_TED_8BIT:
+			newBit := ((ch.noiseSR >> 0) ^ (ch.noiseSR >> 2) ^ (ch.noiseSR >> 3) ^ (ch.noiseSR >> 4) ^ (ch.noiseSR >> 7)) & 1
+			ch.noiseSR = ((ch.noiseSR << LSB_MASK) | newBit) & 0xFF
+		}
+	}
+
+	ch.noiseValue = float32(ch.noiseSR&LSB_MASK)*NOISE_BIT_SCALE - NOISE_BIAS
+	ch.noiseFilterState = NOISE_FILTER_OLD*ch.noiseFilterState + NOISE_FILTER_NEW*ch.noiseValue
+	return ch.noiseFilterState * NOISE_NORM
 }
 
 func (chip *SoundChip) GenerateSample() float32 {

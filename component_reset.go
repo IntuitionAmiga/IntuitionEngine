@@ -229,6 +229,7 @@ func (e *PSGEngine) Reset() {
 	e.playing = false
 	e.enabled.Store(false)
 	e.channelsInit = false
+	e.silenceChannels()
 	e.updateEnvPeriodSamples()
 }
 

@@ -85,7 +85,7 @@
 ; PSG/AUDIO REGISTERS (AY-3-8910 style)
 ; ============================================================================
 
-.equ PSG_PLUS_CTRL     0xF0C0E          ; PSG+ mode control
+.equ PSG_PLUS_CTRL     0xF0C20          ; PSG+ mode control
 
 ; ----------------------------------------------------------------------------
 ; PSG Player Registers

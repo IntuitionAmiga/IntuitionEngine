@@ -436,7 +436,7 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 |-----------|---------------|-------------|
 | Video | `$F0000-$F049B` | Display control, copper, blitter, raster, CLUT8 palette, extended blitter |
 | Custom Audio | `$F0800-$F0B7F` | Audio control, envelope shape, filter, legacy channels, flex synth |
-| PSG | `$F0C00-$F0C1C` | AY-3-8910 registers and file playback |
+| PSG | `$F0C00-$F0C20` | AY-3-8910/YM2149 registers and file playback |
 | POKEY | `$F0D00-$F0D1D` | Atari POKEY registers and SAP playback |
 | SID | `$F0E00-$F0E2D` | MOS 6581 registers and SID playback |
 | MOD | `$F0BC0-$F0BD7` | ProTracker .mod player with Amiga filters |
@@ -479,9 +479,9 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0B80 - 0x0F0B91: AHX module player registers
 0x0F0BC0 - 0x0F0BD7: MOD player registers (ProTracker .mod playback)
 0x0F0BD8 - 0x0F0BEB: WAV player registers (PCM .wav playback)
-0x0F0C00 - 0x0F0C0D: PSG registers (AY/YM synthesis)
-0x0F0C0E:            PSG+ control register
-0x0F0C10 - 0x0F0C1C: PSG playback control (AY/YM/VGM/SNDH; VGM includes SN76489)
+0x0F0C00 - 0x0F0C0F: PSG registers (AY/YM synthesis)
+0x0F0C20:            PSG+ control register
+0x0F0C10 - 0x0F0C1F: PSG playback control (AY/YM/VGM/SNDH; VGM includes SN76489)
 0x0F0D00 - 0x0F0D08: POKEY registers (Atari 8-bit audio)
 0x0F0D09:            POKEY+ control register
 0x0F0D10 - 0x0F0D1D: SAP playback control
@@ -766,13 +766,13 @@ LOAD A, #1
 STORE A, @0x0F0AB8      ; CH1 CTRL = enable
 ```
 
-## 3.6 PSG Sound Chip Registers (0x0F0C00 - 0x0F0C1C)
+## 3.6 PSG Sound Chip Registers (0x0F0C00 - 0x0F0C20)
 
 ```
 0x0F0C00: PSG_REG_SELECT   - Register select
 0x0F0C01: PSG_REG_DATA     - Register data
-0x0F0C02-0x0F0C0D: PSG registers (direct access)
-0x0F0C0E: PSG_PLUS_CTRL    - PSG+ mode (0=standard, 1=enhanced)
+0x0F0C02-0x0F0C0F: PSG registers (direct access; R14/R15 IO ports are storage-only on IE)
+0x0F0C20: PSG_PLUS_CTRL    - PSG+ mode (0=standard, 1=enhanced)
 
 PSG Playback Control (supports .ym, .ay, .vgm, .vgz, .vtx, .sndh, .pt3, .pt2, .pt1, .stc, .sqt, .asc, .ftc):
 0x0F0C10: PSG_PLAY_PTR    - Pointer to music file data in bus memory (32-bit)
@@ -1057,7 +1057,7 @@ All sound and video chips are accessible from all CPU architectures at different
 | AHX   | 0x0F0B80-0x0F0B91 | Memory $FB80-$FB91 | Memory | $FB80-$FB91 | .ahx module player |
 | MOD   | 0x0F0BC0-0x0F0BD7 | Memory $FBC0-$FBD7 | Memory | $FBC0-$FBD7 | .mod ProTracker player |
 | WAV   | 0x0F0BD8-0x0F0BEB | Memory $FBD8-$FBEB | Memory | $FBD8-$FBEB | .wav PCM player |
-| PSG   | 0x0F0C00-0x0F0C1C | Ports 0xF0/0xF1 + Memory $FC10-$FC1C | Ports 0xF0/0xF1 | $D400-$D41C | Synth + .ym/.ay/.vgm/.vgz/.vtx/.sndh/.pt3/.pt2/.pt1/.stc/.sqt/.asc/.ftc player |
+| PSG   | 0x0F0C00-0x0F0C20 | Ports 0xF0/0xF1 + Memory $FC10-$FC20 | Ports 0xF0/0xF1 | $D400-$D40F | Synth + .ym/.ay/.vgm/.vgz/.vtx/.sndh/.pt3/.pt2/.pt1/.stc/.sqt/.asc/.ftc player |
 | POKEY | 0x0F0D00-0x0F0D1D | Ports 0xD0/0xD1 + Memory $FD10-$FD1D | Ports 0xD0-0xD3* | $D200-$D21D | Synth + .sap player |
 | SID   | 0x0F0E00-0x0F0E6C | Ports 0xE0/0xE1 + Memory $FE20-$FE6C | Ports 0xE0/0xE1 | $D500-$D56C | Synth + .sid player + SID2/SID3 multi-SID |
 | TED   | 0x0F0F00-0x0F0F1C | Ports 0xF2/0xF3 + Memory $FF10-$FF1C | Ports 0xF2/0xF3 | $D600-$D61C | Synth + .ted/.prg player |
@@ -2726,7 +2726,7 @@ The 6502 implements all 56 documented NMOS instructions plus unofficial opcodes:
 **Audio Chip Access (6502 native addresses):**
 | Chip  | Address Range |
 |-------|---------------|
-| PSG   | $D400-$D40D   |
+| PSG   | $D400-$D40F   |
 | POKEY | $D200-$D209   |
 | SID   | $D500-$D51C   |
 
@@ -4387,7 +4387,7 @@ STORE A, @0x0F0C0D     ; Register 13: Envelope shape
 **6502:**
 ```assembly
 ; Configure PSG channel A for a 440Hz tone with envelope
-; 6502 uses memory-mapped I/O at $D400-$D40D
+; 6502 uses memory-mapped I/O at $D400-$D40F
     lda  #$FE
     sta  $D400             ; Register 0: Channel A fine tune
     lda  #$00
@@ -5809,7 +5809,7 @@ PolyBLEP (polynomial bandlimited step) anti-aliasing is applied to square and sa
 
 The classic sound chips are implemented via register mapping to the custom audio synthesizer:
 
-- **PSG (AY-3-8910)**: Registers at `$F0C00-$F0C0D` map to square wave channels with hardware envelope emulation
+- **PSG (AY-3-8910/YM2149)**: Registers at `$F0C00-$F0C0F` map to square wave channels with hardware envelope emulation; R14/R15 are storage-only on IE
 - **POKEY**: Registers at `$F0D00-$F0D09` map to channels with polynomial counter and distortion emulation
 - **SID (6581/8580)**: Registers at `$F0E00-$F0E1C` map to channels with filter, ring mod, and sync
 

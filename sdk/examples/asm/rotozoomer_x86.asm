@@ -887,7 +887,7 @@ recip_table:
 ;   - Intellivision (AY-3-8914)
 ;
 ; The .ym file format stores register dumps of the PSG chip at 50Hz (PAL)
-; or 60Hz (NTSC). Each frame contains the values for all 14 PSG registers.
+; or 60Hz (NTSC). Each frame contains the PSG register values supplied by the source stream.
 ; The data is typically LHA-compressed; the IntuitionEngine decompresses it
 ; transparently when loading.
 ;

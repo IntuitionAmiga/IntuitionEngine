@@ -176,7 +176,7 @@ VIDEO_RASTER_CTRL    equ 0xF0054            ; Raster control
 ; ============================================================================
 
 PSG_BASE          equ 0xF0C00               ; PSG base address (AY-3-8910 registers)
-PSG_PLUS_CTRL     equ 0xF0C0E               ; PSG+ mode control
+PSG_PLUS_CTRL     equ 0xF0C20               ; PSG+ mode control
 
 ; PSG Player Registers
 PSG_PLAY_PTR      equ 0xF0C10               ; Play pointer (32-bit)

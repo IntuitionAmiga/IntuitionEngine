@@ -3093,7 +3093,7 @@ func (adapter *Bus6502Adapter) Read(addr uint16) byte {
 		return byte((adapter.bank3 >> 8) & 0xFF)
 	}
 
-	// Handle PSG register reads (C64 SID-style mapping at $D400-$D40D)
+	// Handle PSG register reads (C64 SID-style mapping at $D400-$D40F)
 	if addr >= C6502_PSG_BASE && addr <= C6502_PSG_END {
 		psgReg := uint32(addr - C6502_PSG_BASE)
 		return adapter.bus.Read8(PSG_BASE + psgReg)
@@ -3236,7 +3236,7 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 		return
 	}
 
-	// Handle PSG register writes (C64 SID-style mapping at $D400-$D40D)
+	// Handle PSG register writes (C64 SID-style mapping at $D400-$D40F)
 	if addr >= C6502_PSG_BASE && addr <= C6502_PSG_END {
 		psgReg := uint32(addr - C6502_PSG_BASE)
 		adapter.bus.Write8(PSG_BASE+psgReg, value)

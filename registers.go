@@ -38,7 +38,7 @@ Address Range       Size    Device              Constants File
 0xF0800-0xF0B3F     832B    Audio Chip          audio_chip.go
 0xF0BC0-0xF0BD7     24B     MOD Player          mod_constants.go
 0xF0BD8-0xF0BEB     20B     WAV Player          wav_constants.go
-0xF0C00-0xF0C1C     28B     PSG (AY-3-8910)     psg_constants.go
+0xF0C00-0xF0C20     33B     PSG (AY-3-8910/YM2149) psg_constants.go
 0xF0D00-0xF0D1D     29B     POKEY               pokey_constants.go
 0xF0E00-0xF0E2D     45B     SID (6581/8580)     sid_constants.go
 0xF0F00-0xF0F5F     96B     TED (audio+video)   ted_constants.go, ted_video_constants.go
@@ -79,8 +79,9 @@ Audio Chip (0xF0800-0xF0B3F) - audio_chip.go
   0xF0A20-0xF0A6F: Sawtooth wave (SAW_*)
   0xF0A80-0xF0B3F: Flexible 4-channel block (FLEX_CH*)
 
-PSG - AY-3-8910/YM2149 (0xF0C00-0xF0C1C) - psg_constants.go
-  PSG_BASE through PSG_END
+PSG - AY-3-8910/YM2149 (0xF0C00-0xF0C20) - psg_constants.go
+  PSG_BASE through PSG_END (R0-R15)
+  PSG_PLUS_CTRL
   PSG_PLAY_* (Player registers)
 
 POKEY (0xF0D00-0xF0D1D) - pokey_constants.go
@@ -170,7 +171,7 @@ const (
 
 	// PSG region (AY-3-8910/YM2149)
 	PSG_REGION_BASE = 0xF0C00
-	PSG_REGION_END  = 0xF0C1C
+	PSG_REGION_END  = 0xF0C20
 
 	// POKEY region
 	POKEY_REGION_BASE = 0xF0D00

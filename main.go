@@ -913,6 +913,8 @@ func main() {
 	sysBus.MapIO(PSG_BASE, PSG_END,
 		psgEngine.HandleRead,
 		psgEngine.HandleWrite)
+	sysBus.MapIOByte(PSG_BASE, PSG_END, psgEngine.HandleWrite8)
+	sysBus.MapIOWideWriteFanout(PSG_BASE, PSG_END)
 	sysBus.MapIO(PSG_PLUS_CTRL, PSG_PLUS_CTRL,
 		psgEngine.HandlePSGPlusRead,
 		psgEngine.HandlePSGPlusWrite)

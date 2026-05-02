@@ -2238,7 +2238,7 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 | `&HF0700`-`&HF07FF` | Terminal MMIO |
 | `&HF0800`-`&HF0B7F` | Audio Chip (SoundChip) |
 | `&HF0B80`-`&HF0B91` | AHX Player |
-| `&HF0C00`-`&HF0C1C` | PSG (AY-3-8910) |
+| `&HF0C00`-`&HF0C20` | PSG (AY-3-8910/YM2149) |
 | `&HF0D00`-`&HF0D1D` | POKEY |
 | `&HF0E00`-`&HF0E2D` | SID (MOS 6581) |
 | `&HF0F00`-`&HF0F5F` | TED (audio + video) |
@@ -2397,12 +2397,12 @@ Offsets from channel base:
 | `&HF0A50` | REVERB_MIX | Dry/wet mix (0-255) |
 | `&HF0A54` | REVERB_DECAY | Decay time (0-255) |
 
-### 9.5 PSG Registers (`&HF0C00`-`&HF0C1C`)
+### 9.5 PSG Registers (`&HF0C00`-`&HF0C20`)
 
 | Address | Name | Description |
 |---------|------|-------------|
-| `&HF0C00`-`&HF0C0D` | PSG_BASE | AY-3-8910 register array (14 registers) |
-| `&HF0C0E` | PSG_PLUS_CTRL | Enhanced mode (0=standard, 1=enhanced) |
+| `&HF0C00`-`&HF0C0F` | PSG_BASE | AY-3-8910/YM2149 register array (16 registers; IOA/IOB storage-only on IE) |
+| `&HF0C20` | PSG_PLUS_CTRL | Enhanced mode (0=standard, 1=enhanced) |
 | `&HF0C10` | PSG_PLAY_PTR | Player pointer |
 | `&HF0C14` | PSG_PLAY_LEN | Player length |
 | `&HF0C18` | PSG_PLAY_CTRL | 1=start, 2=stop |

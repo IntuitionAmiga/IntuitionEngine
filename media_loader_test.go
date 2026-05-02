@@ -278,6 +278,8 @@ func TestMediaLoader_SIDPlayback(t *testing.T) {
 	sidPlayer.AttachBus(bus)
 
 	bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
+	bus.MapIOByte(PSG_BASE, PSG_END, psgEngine.HandleWrite8)
+	bus.MapIOWideWriteFanout(PSG_BASE, PSG_END)
 	bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
 	bus.MapIO(SID_BASE, SID_END, sidEngine.HandleRead, sidEngine.HandleWrite)
 	bus.MapIO(SID_PLAY_PTR, SID_PLAY_STATUS+3, sidPlayer.HandlePlayRead, sidPlayer.HandlePlayWrite)
@@ -337,6 +339,8 @@ func TestMediaLoader_PSGTrackerPlayback(t *testing.T) {
 	psgPlayer.AttachBus(bus)
 
 	bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
+	bus.MapIOByte(PSG_BASE, PSG_END, psgEngine.HandleWrite8)
+	bus.MapIOWideWriteFanout(PSG_BASE, PSG_END)
 	bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
 
 	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, nil, nil, nil, nil, nil, nil)
@@ -393,6 +397,8 @@ func TestMediaLoader_BusPath_SIDPlayback(t *testing.T) {
 	sidPlayer.AttachBus(bus)
 
 	bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
+	bus.MapIOByte(PSG_BASE, PSG_END, psgEngine.HandleWrite8)
+	bus.MapIOWideWriteFanout(PSG_BASE, PSG_END)
 	bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
 	bus.MapIO(SID_BASE, SID_END, sidEngine.HandleRead, sidEngine.HandleWrite)
 	bus.MapIO(SID_PLAY_PTR, SID_PLAY_STATUS+3, sidPlayer.HandlePlayRead, sidPlayer.HandlePlayWrite)
@@ -453,6 +459,8 @@ func TestMediaLoader_AudioPipeline_PSG(t *testing.T) {
 	psgPlayer.AttachBus(bus)
 
 	bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
+	bus.MapIOByte(PSG_BASE, PSG_END, psgEngine.HandleWrite8)
+	bus.MapIOWideWriteFanout(PSG_BASE, PSG_END)
 	bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
 
 	loader := NewMediaLoader(bus, soundChip, ".", psgPlayer, nil, nil, nil, nil, nil, nil)

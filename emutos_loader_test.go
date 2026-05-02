@@ -755,7 +755,7 @@ func TestMMIO_Mouse_FullIOSetup(t *testing.T) {
 	bus.MapIO(TERM_OUT, TERMINAL_REGION_END, tm.HandleRead, tm.HandleWrite)
 
 	// Stub PSG region for test (minimal bus setup)
-	bus.MapIO(PSG_BASE, PSG_PLUS_CTRL+1,
+	bus.MapIO(PSG_BASE, PSG_END,
 		func(addr uint32) uint32 { return 0 },
 		func(addr uint32, value uint32) {})
 

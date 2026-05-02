@@ -749,7 +749,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
          = 00000000000F0050  VIDEO_RASTER_COLOR   equ 0xF0050
          = 00000000000F0054  VIDEO_RASTER_CTRL    equ 0xF0054
          = 00000000000F0C00  PSG_BASE          equ 0xF0C00
-         = 00000000000F0C0E  PSG_PLUS_CTRL     equ 0xF0C0E
+         = 00000000000F0C20  PSG_PLUS_CTRL     equ 0xF0C20
          = 00000000000F0C10  PSG_PLAY_PTR      equ 0xF0C10
          = 00000000000F0C14  PSG_PLAY_LEN      equ 0xF0C14
          = 00000000000F0C18  PSG_PLAY_CTRL     equ 0xF0C18

@@ -30,16 +30,17 @@ type PSGEngine struct {
 	envHoldRequest   bool
 	envHoldActive    bool
 
-	events         []PSGEvent
-	eventIndex     int
-	currentSample  uint64
-	totalSamples   uint64
-	loop           bool
-	loopSample     uint64
-	loopEventIndex int
-	playing        bool
-	enabled        atomic.Bool
-	psgPlusEnabled bool
+	events          []PSGEvent
+	eventIndex      int
+	currentSample   uint64
+	totalSamples    uint64
+	loop            bool
+	loopSample      uint64
+	loopEventIndex  int
+	playing         bool
+	enabled         atomic.Bool
+	psgPlusEnabled  bool
+	useLegacyLinear bool
 
 	channelsInit bool
 	busMemory    []byte // mirror register writes for Machine Monitor visibility
@@ -72,6 +73,13 @@ func (e *PSGEngine) SetPSGPlusEnabled(enabled bool) {
 		e.sound.SetPSGPlusEnabled(enabled)
 		e.syncToChip()
 	}
+}
+
+func (e *PSGEngine) SetLegacyLinearVolume(enabled bool) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	e.useLegacyLinear = enabled
+	e.syncToChip()
 }
 
 func (e *PSGEngine) PSGPlusEnabled() bool {
@@ -115,6 +123,14 @@ func (e *PSGEngine) HandleWrite(addr uint32, value uint32) {
 	e.WriteRegister(reg, uint8(value))
 }
 
+func (e *PSGEngine) HandleWrite8(addr uint32, value uint8) {
+	if addr < PSG_BASE || addr > PSG_END {
+		return
+	}
+	reg := uint8(addr - PSG_BASE)
+	e.WriteRegister(reg, value)
+}
+
 func (e *PSGEngine) HandleRead(addr uint32) uint32 {
 	if addr < PSG_BASE || addr > PSG_END {
 		return 0
@@ -134,6 +150,9 @@ func (e *PSGEngine) WriteRegister(reg uint8, value uint8) {
 
 	e.enabled.Store(true)
 	e.regs[reg] = value
+	if mem := e.busMemory; mem != nil {
+		mem[PSG_BASE+uint32(reg)] = value
+	}
 	if reg == 11 || reg == 12 {
 		e.updateEnvPeriodSamples()
 	}
@@ -218,6 +237,12 @@ func (e *PSGEngine) IsPlaying() bool {
 	return e.playing
 }
 
+func (e *PSGEngine) PlaybackComplete() bool {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	return !e.playing && e.totalSamples > 0 && e.currentSample >= e.totalSamples
+}
+
 func (e *PSGEngine) StopPlayback() {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
@@ -226,6 +251,7 @@ func (e *PSGEngine) StopPlayback() {
 	e.eventIndex = 0
 	e.currentSample = 0
 	e.totalSamples = 0
+	e.silenceChannels()
 	// Reset channelsInit so the next song triggers fresh channel initialization.
 	// Without this, stale SoundChip channel state (gate, envelope, sidEnvelope)
 	// from the current song persists into the next one, causing silence.
@@ -284,6 +310,11 @@ func (e *PSGEngine) silenceChannels() {
 	for ch := range 4 {
 		e.writeChannel(ch, FLEX_OFF_VOL, 0)
 	}
+	for ch := range 3 {
+		if sndCh := e.sound.channels[ch]; sndCh != nil {
+			sndCh.noiseMix = 0
+		}
+	}
 }
 
 func (e *PSGEngine) updateEnvPeriodSamples() {
@@ -311,6 +342,7 @@ func (e *PSGEngine) resetEnvelope() {
 		e.envLevel = 15
 		e.envDirection = -1
 	}
+	e.envSampleCounter = 0
 }
 
 func (e *PSGEngine) advanceEnvelope() {
@@ -389,6 +421,9 @@ func (e *PSGEngine) ensureChannelsInitialized() {
 		// Clear SID envelope mode so standard ADSR is used
 		if sndCh := e.sound.channels[ch]; sndCh != nil {
 			sndCh.sidEnvelope = false
+			sndCh.noiseMix = 0
+			sndCh.noiseMode = NOISE_MODE_PSG
+			sndCh.noiseFrequency = 0
 		}
 		e.writeChannel(ch, FLEX_OFF_CTRL, 3)
 	}
@@ -425,8 +460,7 @@ func (e *PSGEngine) applyFrequencies() {
 		high := uint16(e.regs[ch*2+1] & 0x0F)
 		period := (high << 8) | low
 		if period == 0 {
-			e.writeChannel(ch, FLEX_OFF_FREQ, 0)
-			continue
+			period = 1
 		}
 		freq := float64(e.clockHz) / (16.0 * float64(period))
 		e.writeChannel(ch, FLEX_OFF_FREQ, uint32(freq*256)) // 16.8 fixed-point
@@ -438,6 +472,11 @@ func (e *PSGEngine) applyFrequencies() {
 	}
 	noiseFreq := float64(e.clockHz) / (16.0 * float64(noisePeriod))
 	e.writeChannel(3, FLEX_OFF_FREQ, uint32(noiseFreq*256)) // 16.8 fixed-point
+	for ch := range 3 {
+		if sndCh := e.sound.channels[ch]; sndCh != nil {
+			sndCh.noiseFrequency = float32(noiseFreq)
+		}
+	}
 }
 
 func (e *PSGEngine) applyVolumes() {
@@ -457,7 +496,6 @@ func (e *PSGEngine) applyVolumes() {
 		(mixer & 0x20) == 0,
 	}
 
-	var noiseSum float32
 	for ch := range 3 {
 		vol := e.regs[8+ch]
 		useEnv := (vol & 0x10) != 0
@@ -469,26 +507,38 @@ func (e *PSGEngine) applyVolumes() {
 		if !toneEnable[ch] {
 			toneLevel = 0
 		}
-		toneGain := psgVolumeGain(toneLevel, e.psgPlusEnabled)
+		toneGain := e.volumeGain(toneLevel)
+		if e.psgPlusEnabled {
+			toneGain *= psgPlusMixGain[ch]
+			if toneGain > 1.0 {
+				toneGain = 1.0
+			}
+		}
 		e.writeChannel(ch, FLEX_OFF_VOL, uint32(psgGainToDAC(toneGain)))
 
 		noiseLevel := level
 		if !noiseEnable[ch] {
 			noiseLevel = 0
 		}
-		if noiseLevel > 0 {
-			noiseSum += psgVolumeGain(noiseLevel, e.psgPlusEnabled)
+		if sndCh := e.sound.channels[ch]; sndCh != nil {
+			sndCh.noiseMix = e.volumeGain(noiseLevel)
+			if e.psgPlusEnabled {
+				sndCh.noiseMix *= psgPlusMixGain[ch]
+				if sndCh.noiseMix > 1.0 {
+					sndCh.noiseMix = 1.0
+				}
+			}
 		}
 	}
 
-	if noiseSum <= 0 {
-		e.writeChannel(3, FLEX_OFF_VOL, 0)
-		return
+	e.writeChannel(3, FLEX_OFF_VOL, 0)
+}
+
+func (e *PSGEngine) volumeGain(level uint8) float32 {
+	if e.useLegacyLinear {
+		return psgLegacyLinearVolumeCurve[level&0x0F]
 	}
-	if noiseSum > 1.0 {
-		noiseSum = 1.0
-	}
-	e.writeChannel(3, FLEX_OFF_VOL, uint32(psgGainToDAC(noiseSum)))
+	return psgVolumeGain(level, e.psgPlusEnabled)
 }
 
 func (e *PSGEngine) writeChannel(ch int, offset uint32, value uint32) {
@@ -498,19 +548,26 @@ func (e *PSGEngine) writeChannel(ch int, offset uint32, value uint32) {
 
 var psgPlusMixGain = [3]float32{1.05, 1.0, 0.95}
 
-var psgPlusVolumeCurve = func() [16]float32 {
-	var curve [16]float32
-	curve[0] = 0
-	for i := 1; i < len(curve); i++ {
-		db := float64(i-15) * 2.0
-		curve[i] = float32(math.Pow(10.0, db/20.0))
-	}
-	curve[15] = 1.0
-	return curve
-}()
+var psgLogVolumeCurve = [16]float32{
+	0.000000,
+	0.004654,
+	0.007721,
+	0.010955,
+	0.016998,
+	0.025085,
+	0.036926,
+	0.051636,
+	0.077637,
+	0.112671,
+	0.163055,
+	0.230682,
+	0.330017,
+	0.468689,
+	0.664581,
+	1.000000,
+}
 
-// PSG linear volume curve - pre-computed lookup table (0-15 range)
-var psgLinearVolumeCurve = [16]float32{
+var psgLegacyLinearVolumeCurve = [16]float32{
 	0.0 / 15.0,  // 0
 	1.0 / 15.0,  // 1
 	2.0 / 15.0,  // 2
@@ -536,10 +593,9 @@ func psgVolumeGain(level uint8, psgPlus bool) float32 {
 		level = 15
 	}
 	if psgPlus {
-		return psgPlusVolumeCurve[level]
+		return psgLogVolumeCurve[level]
 	}
-	// Linear volume curve from lookup table
-	return psgLinearVolumeCurve[level]
+	return psgLogVolumeCurve[level]
 }
 
 func psgGainToDAC(gain float32) uint8 {

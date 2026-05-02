@@ -37,6 +37,8 @@ func newEightBitRotoRig(t *testing.T) *eightBitRotoRig {
 	psgPlayer := NewPSGPlayer(psgEngine)
 	psgPlayer.AttachBus(bus)
 	bus.MapIO(PSG_BASE, PSG_END, psgEngine.HandleRead, psgEngine.HandleWrite)
+	bus.MapIOByte(PSG_BASE, PSG_END, psgEngine.HandleWrite8)
+	bus.MapIOWideWriteFanout(PSG_BASE, PSG_END)
 	bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, psgPlayer.HandlePlayWrite)
 
 	fileIO := NewFileIODevice(bus, ".")

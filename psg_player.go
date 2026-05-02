@@ -413,7 +413,11 @@ func (p *PSGPlayer) loadFrames(frames [][]uint8, frameRate uint16, clockHz uint3
 		if uint32(frameIndex) == loopFrame {
 			loopSample = samplePos
 		}
-		for reg := range PSG_REG_COUNT {
+		regCount := len(frame)
+		if regCount > PSG_REG_COUNT {
+			regCount = PSG_REG_COUNT
+		}
+		for reg := range regCount {
 			// R13=0xFF is a sentinel meaning "don't write" (used by native tracker players).
 			// Writing R13 resets the envelope generator, so we must skip these.
 			if reg == 13 && frame[reg] == 0xFF {
@@ -492,7 +496,11 @@ func buildPSGEventsFromFrames(frames [][]uint8, frameRate uint16, sampleRate int
 		if uint32(frameIndex) == loopFrame {
 			loopSample = samplePos
 		}
-		for reg := range PSG_REG_COUNT {
+		regCount := len(frame)
+		if regCount > PSG_REG_COUNT {
+			regCount = PSG_REG_COUNT
+		}
+		for reg := range regCount {
 			if reg == 13 && frame[reg] == 0xFF {
 				continue
 			}
@@ -794,13 +802,14 @@ func (p *PSGPlayer) HandlePlayRead(addr uint32) uint32 {
 
 func (p *PSGPlayer) playCtrlStatus() uint32 {
 	ctrl := uint32(0)
-	busy := p.playBusy
-	if p.engine != nil && p.engine.IsPlaying() {
-		busy = true
-	} else if !busy {
-		p.playBusy = false
+	if p.engine != nil {
+		if p.engine.IsPlaying() {
+			p.playBusy = true
+		} else if p.engine.PlaybackComplete() {
+			p.playBusy = false
+		}
 	}
-	if busy {
+	if p.playBusy {
 		ctrl |= 1
 	}
 	if p.playErr {

@@ -90,7 +90,7 @@ VIDEO_RASTER_CTRL    equ 0xF0054         ; Raster control
 PSG_PORT_SELECT equ 0xF0                 ; Port to select PSG register
 PSG_PORT_DATA   equ 0xF1                 ; Port to read/write PSG data
 
-PSG_PLUS_CTRL   equ 0xF0C0E              ; PSG+ mode control
+PSG_PLUS_CTRL   equ 0xF0C20              ; PSG+ mode control
 
 ; PSG Player Registers (memory-mapped)
 PSG_PLAY_PTR    equ 0xF0C10              ; Play pointer (32-bit)

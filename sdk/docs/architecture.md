@@ -315,7 +315,7 @@ The 6502 uses `ioTable[page]` to route memory-mapped I/O through the bus:
 | 6502 Address | Chip | Bus Target | Notes |
 |--------------|------|------------|-------|
 | `$D200-$D209` | POKEY | `0xF0D00+offset` | |
-| `$D400-$D40D` | PSG | `0xF0C00+offset` | |
+| `$D400-$D40F` | PSG | `0xF0C00+offset` | |
 | `$D500-$D51F` | SID1 | `0xF0E00+offset` | 32-byte window |
 | `$D520-$D53F` | SID2 | `0xF0E30+offset` | 32-byte window |
 | `$D540-$D55F` | SID3 | `0xF0E50+offset` | 32-byte window |
@@ -560,7 +560,7 @@ The SoundChip's global resonant filter (`0xF0A00-0xF0A30`) supports low-pass, ba
 ```mermaid
 graph LR
     subgraph ENGINES["Sound Engines"]
-        PSG_E["PSG / AY-3-8910<br/>0xF0C00-0xF0C0E<br/>3 Tone + Noise + Envelope"]
+        PSG_E["PSG / AY-3-8910<br/>0xF0C00-0xF0C0F<br/>3 Tone + Noise + Envelope"]
         SID_E["SID 6581/8580 x3<br/>0xF0E00-0xF0E6C<br/>3 Voices x 3 Chips = 9 Voices"]
         POK_E["POKEY<br/>0xF0D00-0xF0D09<br/>4 Channels + Poly Counters"]
         TED_E["TED Audio<br/>0xF0F00-0xF0F05<br/>2 Voices (square + noise)"]
@@ -612,7 +612,9 @@ All five retro sound engines have a "Plus" enhanced mode, activated by writing `
 
 | Engine | PLUS_CTRL Address | Enhancements |
 |--------|------------------|--------------|
-| PSG+ | `0xF0C0E` | Enhanced render path: oversampling, filtering, drive/room shaping, stereo voicing |
+| PSG+ | `0xF0C20` | Enhanced render path: oversampling, filtering, drive/room shaping, stereo voicing |
+
+The PSG uses the AY/YM logarithmic 16-step volume curve by default. A legacy linear curve is retained only for compatibility audits.
 | SID+ | `0xF0E19` | Enhanced render path for SID voices (oversampling/filter/drive/room shaping) |
 | POKEY+ | `0xF0D09` | Enhanced render path (oversampling/filter/drive/room shaping) |
 | TED+ | `0xF0F05` | Enhanced render path plus TED-specific response shaping |
@@ -640,8 +642,9 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xF0B80-0xF0B91` | 18B | AHX Engine / Player |
 | `0xF0BC0-0xF0BD7` | 24B | MOD Player |
 | `0xF0BD8-0xF0BEB` | 20B | WAV Player |
-| `0xF0C00-0xF0C0E` | 15B | PSG Engine (AY-3-8910) |
-| `0xF0C10-0xF0C1C` | 13B | PSG / AY Player |
+| `0xF0C00-0xF0C0F` | 16B | PSG Engine (AY-3-8910/YM2149 registers) |
+| `0xF0C20` | 1B | PSG+ control |
+| `0xF0C10-0xF0C1F` | 16B | PSG / AY Player |
 | `0xF0D00-0xF0D09` | 10B | POKEY Engine |
 | `0xF0D10-0xF0D1D` | 14B | SAP Player |
 | `0xF0E00-0xF0E19` | 26B | SID1 Engine (6581/8580) |

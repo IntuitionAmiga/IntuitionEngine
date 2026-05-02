@@ -5,9 +5,9 @@ package main
 
 const (
 	PSG_BASE      = 0xF0C00
-	PSG_END       = 0xF0C0D
-	PSG_PLUS_CTRL = 0xF0C0E
-	PSG_REG_COUNT = 14
+	PSG_END       = 0xF0C0F
+	PSG_PLUS_CTRL = 0xF0C20
+	PSG_REG_COUNT = 16
 
 	PSG_PLAY_PTR    = 0xF0C10
 	PSG_PLAY_LEN    = 0xF0C14
@@ -30,7 +30,7 @@ const (
 	Z80_PSG_PORT_DATA   = 0xF1
 
 	// 6502 PSG memory mapping (C64 SID-style address range)
-	// Maps $D400-$D40D to PSG registers 0-13
+	// Maps $D400-$D40F to PSG registers 0-15
 	C6502_PSG_BASE = 0xD400
-	C6502_PSG_END  = 0xD40D
+	C6502_PSG_END  = 0xD40F
 )
