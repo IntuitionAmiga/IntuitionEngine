@@ -41,13 +41,21 @@ type TEDPlaybackBus6502 struct {
 	timer1Counter    uint16 // Current counter value
 	timer1Running    bool   // Timer is active
 	timer1LastUpdate uint64 // Cycles when timer was last updated
-	irqFlags         uint8  // $FF09 interrupt flags (bit 3 = timer 1)
-	irqMask          uint8  // $FF0A interrupt mask
-	irqPending       bool   // Signal to CPU that IRQ should fire
+	timer2Latch      uint16
+	timer2Counter    uint16
+	timer2Running    bool
+	timer3Latch      uint16
+	timer3Counter    uint16
+	timer3Running    bool
+	irqFlags         uint8 // $FF09 interrupt source flags
+	irqMask          uint8 // $FF0A interrupt mask
+	irqPending       bool  // Signal to CPU that IRQ should fire
 
 	// Raster interrupt control
-	rasterIRQEnabled bool // Set to true after init to enable per-frame raster IRQs
-	frameCount       int  // Frame counter
+	rasterIRQEnabled    bool // Legacy compatibility flag; does not synthesize IRQs.
+	rasterCmp           uint16
+	cmpLatchedThisFrame bool
+	frameCount          int // Frame counter
 
 	ntsc bool
 }
@@ -116,16 +124,17 @@ func (b *TEDPlaybackBus6502) Write(addr uint16, value byte) {
 
 // TED video/timing registers
 const (
-	PLUS4_TED_TIMER1_LO = 0xFF00 // Timer 1 latch low byte
-	PLUS4_TED_TIMER1_HI = 0xFF01 // Timer 1 latch high byte
-	PLUS4_TED_TIMER2_LO = 0xFF02 // Timer 2 latch low byte
-	PLUS4_TED_TIMER2_HI = 0xFF03 // Timer 2 latch high byte
-	PLUS4_TED_TIMER3_LO = 0xFF04 // Timer 3 latch low byte
-	PLUS4_TED_TIMER3_HI = 0xFF05 // Timer 3 latch high byte
-	PLUS4_TED_IRQ_FLAGS = 0xFF09 // Interrupt flag register
-	PLUS4_TED_IRQ_MASK  = 0xFF0A // Interrupt mask register
-	PLUS4_TED_RASTER_LO = 0xFF1C // Raster line low byte
-	PLUS4_TED_RASTER_HI = 0xFF1D // Raster line high bit + flags
+	PLUS4_TED_TIMER1_LO     = 0xFF00 // Timer 1 latch low byte
+	PLUS4_TED_TIMER1_HI     = 0xFF01 // Timer 1 latch high byte
+	PLUS4_TED_TIMER2_LO     = 0xFF02 // Timer 2 latch low byte
+	PLUS4_TED_TIMER2_HI     = 0xFF03 // Timer 2 latch high byte
+	PLUS4_TED_TIMER3_LO     = 0xFF04 // Timer 3 latch low byte
+	PLUS4_TED_TIMER3_HI     = 0xFF05 // Timer 3 latch high byte
+	PLUS4_TED_IRQ_FLAGS     = 0xFF09 // Interrupt flag register
+	PLUS4_TED_IRQ_MASK      = 0xFF0A // Interrupt mask register
+	PLUS4_TED_RASTER_CMP_LO = 0xFF0B // Raster compare low byte
+	PLUS4_TED_RASTER_LO     = 0xFF1C // Raster line low byte
+	PLUS4_TED_RASTER_HI     = 0xFF1D // Raster line high bit + flags
 )
 
 // TED IRQ flag bits
@@ -167,18 +176,20 @@ func (b *TEDPlaybackBus6502) readTED(addr uint16) byte {
 	case PLUS4_TED_TIMER1_HI:
 		// Return current counter high byte
 		return byte(b.timer1Counter >> 8)
+	case PLUS4_TED_TIMER2_LO:
+		return byte(b.timer2Counter & 0xFF)
+	case PLUS4_TED_TIMER2_HI:
+		return byte(b.timer2Counter >> 8)
+	case PLUS4_TED_TIMER3_LO:
+		return byte(b.timer3Counter & 0xFF)
+	case PLUS4_TED_TIMER3_HI:
+		return byte(b.timer3Counter >> 8)
 
 	case PLUS4_TED_IRQ_FLAGS:
-		// Return IRQ flags - reading clears them (active-low on real hardware)
-		// Bit 3 = Timer 1 interrupt flag
-		flags := b.irqFlags
-		// Note: On real TED, writing 1s to $FF09 clears the corresponding flags
-		// For polling, we just return current state
-		return flags
+		return b.irqFlagsWithSummary()
 
 	case PLUS4_TED_IRQ_MASK:
-		// Return IRQ mask register
-		return b.ram[addr]
+		return b.irqMask
 
 	case PLUS4_TED_RASTER_LO:
 		// $FF1C: Raster line low byte (bits 0-7)
@@ -216,6 +227,72 @@ func (b *TEDPlaybackBus6502) updateRasterPosition() {
 	b.rasterLine = uint16(frameCycles/TED_CYCLES_PER_LINE) % maxLines
 }
 
+func (b *TEDPlaybackBus6502) maxRasterLines() uint16 {
+	if b.ntsc {
+		return TED_NTSC_LINES
+	}
+	return TED_PAL_LINES
+}
+
+func (b *TEDPlaybackBus6502) rasterLineAt(cycles uint64) uint16 {
+	frameCycles := cycles - b.frameCycle
+	return uint16(frameCycles/TED_CYCLES_PER_LINE) % b.maxRasterLines()
+}
+
+func (b *TEDPlaybackBus6502) irqFlagsWithSummary() uint8 {
+	flags := b.irqFlags & 0x7F
+	active := flags & b.irqMask & (TED_IRQ_RASTER | TED_IRQ_TIMER1 | TED_IRQ_TIMER2 | TED_IRQ_TIMER3)
+	if active != 0 {
+		flags |= 0x80
+	}
+	return flags
+}
+
+func (b *TEDPlaybackBus6502) setIRQFlag(flag uint8) {
+	b.irqFlags |= flag
+	if b.irqMask&flag != 0 {
+		b.irqPending = true
+	}
+}
+
+func (b *TEDPlaybackBus6502) refreshIRQPending() {
+	active := b.irqFlags & b.irqMask & (TED_IRQ_RASTER | TED_IRQ_TIMER1 | TED_IRQ_TIMER2 | TED_IRQ_TIMER3)
+	if active != 0 {
+		b.irqPending = true
+	}
+}
+
+func (b *TEDPlaybackBus6502) rasterCrossed(prevLine, newLine uint16, wrapped bool) bool {
+	maxLines := b.maxRasterLines()
+	if b.rasterCmp >= maxLines {
+		return false
+	}
+
+	target := b.rasterCmp
+	if wrapped {
+		return target > prevLine || target <= newLine
+	}
+	return target > prevLine && target <= newLine
+}
+
+func (b *TEDPlaybackBus6502) advanceRaster(prevCycles, newCycles uint64) {
+	prevLine := b.rasterLineAt(prevCycles)
+	newLine := b.rasterLineAt(newCycles)
+	linesPerFrame := uint64(b.maxRasterLines())
+	prevFrameCycles := prevCycles - b.frameCycle
+	newFrameCycles := newCycles - b.frameCycle
+	wrapped := newFrameCycles/TED_CYCLES_PER_LINE/linesPerFrame != prevFrameCycles/TED_CYCLES_PER_LINE/linesPerFrame
+
+	if wrapped {
+		b.cmpLatchedThisFrame = false
+	}
+	if !b.cmpLatchedThisFrame && b.rasterCrossed(prevLine, newLine, wrapped) {
+		b.setIRQFlag(TED_IRQ_RASTER)
+		b.cmpLatchedThisFrame = true
+	}
+	b.rasterLine = newLine
+}
+
 // writeTED writes to a TED register and captures events for sound registers
 func (b *TEDPlaybackBus6502) writeTED(addr uint16, value byte) {
 	// Store in RAM too (for non-sound registers)
@@ -236,18 +313,35 @@ func (b *TEDPlaybackBus6502) writeTED(addr uint16, value byte) {
 		b.timer1Running = true
 		return
 	case PLUS4_TED_TIMER2_LO, PLUS4_TED_TIMER2_HI:
-		// Timer 2 - not implemented yet, just store in RAM
+		if addr == PLUS4_TED_TIMER2_LO {
+			b.timer2Latch = (b.timer2Latch & 0xFF00) | uint16(value)
+		} else {
+			b.timer2Latch = (b.timer2Latch & 0x00FF) | (uint16(value) << 8)
+		}
+		b.timer2Counter = b.timer2Latch
+		b.timer2Running = true
 		return
 	case PLUS4_TED_TIMER3_LO, PLUS4_TED_TIMER3_HI:
-		// Timer 3 - not implemented yet, just store in RAM
+		if addr == PLUS4_TED_TIMER3_LO {
+			b.timer3Latch = (b.timer3Latch & 0xFF00) | uint16(value)
+		} else {
+			b.timer3Latch = (b.timer3Latch & 0x00FF) | (uint16(value) << 8)
+		}
+		b.timer3Counter = b.timer3Latch
+		b.timer3Running = true
 		return
 	case PLUS4_TED_IRQ_FLAGS:
 		// Writing 1s to $FF09 clears the corresponding interrupt flags
-		b.irqFlags &= ^value
+		b.irqFlags &^= value & 0x7E
 		return
 	case PLUS4_TED_IRQ_MASK:
 		// IRQ mask register - controls which interrupts can fire
 		b.irqMask = value
+		b.rasterCmp = (b.rasterCmp & 0x0FF) | (uint16(value&0x01) << 8)
+		b.refreshIRQPending()
+		return
+	case PLUS4_TED_RASTER_CMP_LO:
+		b.rasterCmp = (b.rasterCmp & 0x100) | uint16(value)
 		return
 	}
 
@@ -348,7 +442,9 @@ func (b *TEDPlaybackBus6502) AddCycles(cycles int) {
 	if cycles <= 0 {
 		return
 	}
+	prevCycles := b.cycles
 	b.cycles += uint64(cycles)
+	b.advanceRaster(prevCycles, b.cycles)
 
 	// Update Timer 1 - counts down every cycle when enabled
 	// (TED actually counts every other cycle, but we simplify)
@@ -356,17 +452,28 @@ func (b *TEDPlaybackBus6502) AddCycles(cycles int) {
 		for range cycles {
 			if b.timer1Counter == 0 {
 				// Timer underflowed - set IRQ flag bit 3
-				b.irqFlags |= TED_IRQ_TIMER1
-				// If mask bit 3 is set, also set bit 7 (indicates active interrupt)
-				if (b.irqMask & TED_IRQ_TIMER1) != 0 {
-					b.irqFlags |= 0x80
-					b.irqPending = true
-				}
+				b.setIRQFlag(TED_IRQ_TIMER1)
 				// Reload from latch (tedplay uses t1start-1)
 				b.timer1Counter = b.timer1Latch
 			} else {
 				b.timer1Counter--
 			}
+		}
+	}
+	b.advanceTimer(cycles, &b.timer2Counter, b.timer2Latch, b.timer2Running, TED_IRQ_TIMER2)
+	b.advanceTimer(cycles, &b.timer3Counter, b.timer3Latch, b.timer3Running, TED_IRQ_TIMER3)
+}
+
+func (b *TEDPlaybackBus6502) advanceTimer(cycles int, counter *uint16, latch uint16, running bool, flag uint8) {
+	if !running {
+		return
+	}
+	for range cycles {
+		if *counter == 0 {
+			b.setIRQFlag(flag)
+			*counter = latch
+		} else {
+			*counter--
 		}
 	}
 }
@@ -377,15 +484,8 @@ func (b *TEDPlaybackBus6502) StartFrame() {
 	b.frameCycle = b.cycles
 	b.events = b.events[:0]
 	b.rasterLine = 0
+	b.cmpLatchedThisFrame = false
 	b.frameCount++
-
-	// Generate raster interrupt at frame start (simulates VBlank IRQ)
-	// Only after raster IRQs are enabled (skip first frame which is init)
-	if b.rasterIRQEnabled {
-		b.irqFlags |= TED_IRQ_RASTER
-		b.irqFlags |= 0x80 // Set bit 7 to indicate active interrupt
-		b.irqPending = true
-	}
 }
 
 // EnableRasterIRQ enables per-frame raster interrupts
@@ -423,9 +523,17 @@ func (b *TEDPlaybackBus6502) Reset() {
 	b.timer1Counter = 0
 	b.timer1Running = false
 	b.timer1LastUpdate = 0
+	b.timer2Latch = 0
+	b.timer2Counter = 0
+	b.timer2Running = false
+	b.timer3Latch = 0
+	b.timer3Counter = 0
+	b.timer3Running = false
 	b.irqFlags = 0
 	b.irqMask = 0
 	b.irqPending = false
+	b.rasterCmp = 0
+	b.cmpLatchedThisFrame = false
 
 	for i := range b.tedRegs {
 		b.tedRegs[i] = 0

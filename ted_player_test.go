@@ -3,6 +3,10 @@
 package main
 
 import (
+	"encoding/binary"
+	"hash/crc32"
+	"math"
+	"os"
 	"testing"
 )
 
@@ -140,5 +144,46 @@ func TestTEDPlayerAttachBus(t *testing.T) {
 	status := player.HandlePlayRead(TED_PLAY_STATUS)
 	if status&0x02 == 0 {
 		t.Error("error bit should be set when bus is nil")
+	}
+}
+
+func TestTED_PlayerCorpusSmoke(t *testing.T) {
+	data, err := os.ReadFile("sdk/examples/assets/music/chromatic_admiration.ted")
+	if err != nil {
+		t.Fatalf("read corpus TED: %v", err)
+	}
+
+	_, events, totalSamples, clockHz, loop, loopSample, _, _, err := renderTEDWithLimit(data, SAMPLE_RATE, 4)
+	if err != nil {
+		t.Fatalf("render corpus TED: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatalf("corpus TED produced no register events")
+	}
+	if totalSamples == 0 {
+		t.Fatalf("corpus TED produced no samples")
+	}
+	if clockHz != TED_CLOCK_PAL && clockHz != TED_CLOCK_NTSC {
+		t.Fatalf("unexpected TED clock: %d", clockHz)
+	}
+
+	sound, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	if err != nil {
+		t.Fatalf("NewSoundChip failed: %v", err)
+	}
+	engine := NewTEDEngine(sound, SAMPLE_RATE)
+	engine.SetClockHz(clockHz)
+	engine.SetEvents(events, totalSamples, loop, loopSample)
+	sound.SetSampleTicker(engine)
+
+	h := crc32.NewIEEE()
+	var buf [4]byte
+	for range min(int(totalSamples), SAMPLE_RATE/10) {
+		binary.LittleEndian.PutUint32(buf[:], math.Float32bits(sound.ReadSample()))
+		_, _ = h.Write(buf[:])
+	}
+	const wantChecksum = 0xC260FF9F
+	if got := h.Sum32(); got != wantChecksum {
+		t.Fatalf("audio checksum = %#08x, want %#08x", got, uint32(wantChecksum))
 	}
 }

@@ -220,3 +220,392 @@ func TestTEDPlaybackBus6502VectorSetup(t *testing.T) {
 		t.Error("IRQ vector should be non-zero")
 	}
 }
+
+func advanceTEDBusToLine(bus *TEDPlaybackBus6502, line uint16) {
+	bus.AddCycles(int(line)*TED_CYCLES_PER_LINE + 1)
+}
+
+func TestTEDBus_RasterCompareSetsIRQFlag_Low8(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0xCD)
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_RASTER)
+
+	advanceTEDBusToLine(bus, 0xCD)
+
+	if bus.irqFlags&TED_IRQ_RASTER == 0 {
+		t.Fatalf("raster flag not set")
+	}
+	if !bus.CheckIRQ() {
+		t.Fatalf("raster compare should set pending IRQ when enabled")
+	}
+}
+
+func TestTEDBus_RasterCompareSetsIRQFlag_Bit8(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0x2C)
+	bus.Write(PLUS4_TED_IRQ_MASK, 0x01|TED_IRQ_RASTER)
+
+	advanceTEDBusToLine(bus, 0x12C)
+
+	if bus.irqFlags&TED_IRQ_RASTER == 0 {
+		t.Fatalf("9-bit raster compare did not match line 300")
+	}
+}
+
+func TestTEDBus_RasterCompareGatedByMask(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0x40)
+	bus.Write(PLUS4_TED_IRQ_MASK, 0x00)
+
+	advanceTEDBusToLine(bus, 0x40)
+
+	if bus.irqFlags&TED_IRQ_RASTER == 0 {
+		t.Fatalf("raster flag should latch even when masked")
+	}
+	if bus.CheckIRQ() {
+		t.Fatalf("masked raster compare should not set pending IRQ")
+	}
+}
+
+func TestTEDBus_RasterCompareAckClearsFlag(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0x20)
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_RASTER)
+	advanceTEDBusToLine(bus, 0x20)
+
+	bus.Write(PLUS4_TED_IRQ_FLAGS, TED_IRQ_RASTER)
+
+	if bus.irqFlags&TED_IRQ_RASTER != 0 {
+		t.Fatalf("raster flag not cleared by write-1 ack")
+	}
+}
+
+func TestTEDBus_FF0A_PreservesT1Enable(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+
+	bus.Write(PLUS4_TED_IRQ_MASK, 0x0A)
+	if got := bus.Read(PLUS4_TED_IRQ_MASK); got != 0x0A {
+		t.Fatalf("$FF0A read = %#02x, want 0x0A", got)
+	}
+	if bus.irqMask&TED_IRQ_TIMER1 == 0 {
+		t.Fatalf("Timer 1 mask bit not preserved")
+	}
+
+	bus.Write(PLUS4_TED_IRQ_MASK, 0x03)
+	if got := bus.Read(PLUS4_TED_IRQ_MASK); got != 0x03 {
+		t.Fatalf("$FF0A read = %#02x, want 0x03", got)
+	}
+	if bus.irqMask&TED_IRQ_TIMER1 != 0 {
+		t.Fatalf("Timer 1 mask bit should be cleared by full-byte write")
+	}
+}
+
+func TestTEDBus_FF0A_CmpHi_DoesNotClobberMask(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.irqMask = 0x0A
+
+	bus.Write(PLUS4_TED_IRQ_MASK, 0x01)
+	if bus.irqMask != 0x01 {
+		t.Fatalf("irqMask = %#02x, want 0x01", bus.irqMask)
+	}
+	if bus.rasterCmp&0x100 == 0 {
+		t.Fatalf("raster compare high bit not set")
+	}
+
+	bus.Write(PLUS4_TED_IRQ_MASK, 0x09)
+	if bus.irqMask != 0x09 {
+		t.Fatalf("irqMask = %#02x, want 0x09", bus.irqMask)
+	}
+	if bus.irqMask&TED_IRQ_TIMER1 == 0 {
+		t.Fatalf("Timer 1 enable should be preserved")
+	}
+}
+
+func TestTEDBus_FF09_SummaryBit_Raster(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0x10)
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_RASTER)
+	advanceTEDBusToLine(bus, 0x10)
+
+	if got := bus.Read(PLUS4_TED_IRQ_FLAGS); got&0x80 == 0 {
+		t.Fatalf("$FF09 summary bit not set for enabled raster flag: %#02x", got)
+	}
+}
+
+func TestTEDBus_FF09_SummaryBit_Timer1(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.timer1Latch = 1
+	bus.timer1Counter = 0
+	bus.timer1Running = true
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_TIMER1)
+	bus.AddCycles(1)
+
+	if got := bus.Read(PLUS4_TED_IRQ_FLAGS); got&0x80 == 0 {
+		t.Fatalf("$FF09 summary bit not set for enabled Timer 1 flag: %#02x", got)
+	}
+}
+
+func TestTEDBus_FF09_SummaryBit_GatedByEnable_Raster(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0x10)
+	bus.Write(PLUS4_TED_IRQ_MASK, 0x00)
+	advanceTEDBusToLine(bus, 0x10)
+
+	if got := bus.Read(PLUS4_TED_IRQ_FLAGS); got&0x80 != 0 {
+		t.Fatalf("$FF09 summary should be clear for masked raster flag: %#02x", got)
+	}
+}
+
+func TestTEDBus_FF09_SummaryBit_GatedByEnable_T1(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.irqFlags = TED_IRQ_TIMER1
+	bus.Write(PLUS4_TED_IRQ_MASK, 0x00)
+
+	if got := bus.Read(PLUS4_TED_IRQ_FLAGS); got&0x80 != 0 {
+		t.Fatalf("$FF09 summary should be clear for masked Timer 1 flag: %#02x", got)
+	}
+}
+
+func TestTEDBus_FF09_SummaryBit_DerivedNotStored(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.irqFlags = TED_IRQ_TIMER1
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_TIMER1)
+	if got := bus.Read(PLUS4_TED_IRQ_FLAGS); got&0x80 == 0 {
+		t.Fatalf("precondition failed: summary not set")
+	}
+
+	bus.Write(PLUS4_TED_IRQ_FLAGS, TED_IRQ_TIMER1)
+
+	if got := bus.Read(PLUS4_TED_IRQ_FLAGS); got&0x80 != 0 {
+		t.Fatalf("summary should clear after source ack: %#02x", got)
+	}
+}
+
+func TestTEDBus_FF09_SummaryBit_NotDirectlyClearable(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.irqFlags = TED_IRQ_TIMER1
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_TIMER1)
+
+	bus.Write(PLUS4_TED_IRQ_FLAGS, 0x80)
+
+	if got := bus.Read(PLUS4_TED_IRQ_FLAGS); got&0x80 == 0 {
+		t.Fatalf("summary bit should ignore direct clear while source is active: %#02x", got)
+	}
+}
+
+func TestTEDBus_RasterCompare_LatchesOnAddCycles(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0x30)
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_RASTER)
+
+	bus.AddCycles(0x31 * TED_CYCLES_PER_LINE)
+
+	if bus.irqFlags&TED_IRQ_RASTER == 0 {
+		t.Fatalf("raster compare did not latch during AddCycles")
+	}
+}
+
+func TestTEDBus_RasterCompare_LatchesAcrossSkippedLines(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0x40)
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_RASTER)
+
+	bus.AddCycles(0x45 * TED_CYCLES_PER_LINE)
+
+	if bus.irqFlags&TED_IRQ_RASTER == 0 {
+		t.Fatalf("raster compare did not latch when AddCycles skipped over the line")
+	}
+}
+
+func TestTEDBus_RasterCompare_OnePerFrame(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0x20)
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_RASTER)
+	advanceTEDBusToLine(bus, 0x20)
+	bus.Write(PLUS4_TED_IRQ_FLAGS, TED_IRQ_RASTER)
+
+	bus.AddCycles(10 * TED_CYCLES_PER_LINE)
+	if bus.irqFlags&TED_IRQ_RASTER != 0 {
+		t.Fatalf("raster compare re-latched within same frame")
+	}
+
+	bus.AddCycles((TED_PAL_LINES - 0x2A + 0x21) * TED_CYCLES_PER_LINE)
+	if bus.irqFlags&TED_IRQ_RASTER == 0 {
+		t.Fatalf("raster compare did not re-latch after frame wrap")
+	}
+}
+
+func TestTEDBus_RasterCompare_WrapUsesFrameRelativeCycles(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0x06)
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_RASTER)
+
+	bus.AddCycles(int((uint64(TED_CLOCK_PAL) / 50) - 1))
+	bus.Write(PLUS4_TED_IRQ_FLAGS, TED_IRQ_RASTER)
+	_ = bus.CheckIRQ()
+	bus.StartFrame()
+	bus.AddCycles(TED_CYCLES_PER_LINE + 1)
+
+	if bus.irqFlags&TED_IRQ_RASTER != 0 {
+		t.Fatalf("raster compare fired early after StartFrame at line %d", bus.rasterLine)
+	}
+	if bus.CheckIRQ() {
+		t.Fatalf("early raster compare should not assert IRQ")
+	}
+
+	bus.AddCycles(5 * TED_CYCLES_PER_LINE)
+	if bus.irqFlags&TED_IRQ_RASTER == 0 {
+		t.Fatalf("raster compare did not fire at frame-relative line 6")
+	}
+}
+
+func TestTEDBus_IRQMaskWriteAssertsPendingForLatchedRaster(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0x10)
+	bus.Write(PLUS4_TED_IRQ_MASK, 0x00)
+	advanceTEDBusToLine(bus, 0x10)
+
+	if bus.irqFlags&TED_IRQ_RASTER == 0 {
+		t.Fatalf("precondition failed: raster flag did not latch while masked")
+	}
+	if bus.CheckIRQ() {
+		t.Fatalf("masked raster flag should not assert IRQ before unmask")
+	}
+
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_RASTER)
+	if !bus.CheckIRQ() {
+		t.Fatalf("unmasking latched raster flag should assert pending IRQ")
+	}
+}
+
+func TestTEDBus_IRQMaskWriteAssertsPendingForLatchedTimer(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.timer1Latch = 1
+	bus.timer1Counter = 0
+	bus.timer1Running = true
+	bus.Write(PLUS4_TED_IRQ_MASK, 0x00)
+	bus.AddCycles(1)
+
+	if bus.irqFlags&TED_IRQ_TIMER1 == 0 {
+		t.Fatalf("precondition failed: Timer 1 flag did not latch while masked")
+	}
+	if bus.CheckIRQ() {
+		t.Fatalf("masked Timer 1 flag should not assert IRQ before unmask")
+	}
+
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_TIMER1)
+	if !bus.CheckIRQ() {
+		t.Fatalf("unmasking latched Timer 1 flag should assert pending IRQ")
+	}
+}
+
+func TestTEDBus_StartFrame_DoesNotSetRasterFlag(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_IRQ_MASK, 0x00)
+	bus.rasterIRQEnabled = true
+
+	bus.StartFrame()
+
+	if bus.irqFlags&TED_IRQ_RASTER != 0 {
+		t.Fatalf("StartFrame should not synthesize raster flags")
+	}
+	if bus.irqPending {
+		t.Fatalf("StartFrame should not synthesize pending IRQs")
+	}
+}
+
+func TestTEDBus_SyntheticFrameIRQ_Retired(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0xFF)
+	bus.Write(PLUS4_TED_IRQ_MASK, 0x01)
+	bus.rasterIRQEnabled = true
+
+	bus.AddCycles(TED_PAL_LINES * TED_CYCLES_PER_LINE)
+
+	if bus.irqFlags&TED_IRQ_RASTER != 0 {
+		t.Fatalf("out-of-range compare should not latch raster flag")
+	}
+	if bus.irqPending {
+		t.Fatalf("masked/out-of-range compare should not set pending IRQ")
+	}
+}
+
+func TestTEDBus_RasterCompare_OutOfRange_NeverMatches(t *testing.T) {
+	for _, cmp := range []uint16{TED_PAL_LINES, 0x1FF} {
+		bus := newTEDPlaybackBus6502(false)
+		bus.Write(PLUS4_TED_RASTER_CMP_LO, byte(cmp))
+		bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_RASTER|byte((cmp>>8)&1))
+
+		bus.AddCycles(TED_PAL_LINES * TED_CYCLES_PER_LINE)
+
+		if bus.irqFlags&TED_IRQ_RASTER != 0 {
+			t.Fatalf("out-of-range compare %#03x latched raster flag", cmp)
+		}
+	}
+}
+
+func TestTEDBus_RasterCompare_AtLineZero(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_RASTER_CMP_LO, 0)
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_RASTER)
+
+	bus.AddCycles(TED_PAL_LINES * TED_CYCLES_PER_LINE)
+
+	if bus.irqFlags&TED_IRQ_RASTER == 0 {
+		t.Fatalf("line zero compare should latch once per frame")
+	}
+}
+
+func TestTEDBus_Timer2UnderflowSetsIRQFlag(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_TIMER2_LO, 0x01)
+	bus.Write(PLUS4_TED_TIMER2_HI, 0x00)
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_TIMER2)
+
+	bus.AddCycles(2)
+
+	if bus.irqFlags&TED_IRQ_TIMER2 == 0 {
+		t.Fatalf("Timer 2 underflow flag not set")
+	}
+	if !bus.CheckIRQ() {
+		t.Fatalf("Timer 2 underflow should set pending IRQ when enabled")
+	}
+	if got := bus.Read(PLUS4_TED_IRQ_FLAGS); got&0x80 == 0 {
+		t.Fatalf("$FF09 summary bit not set for Timer 2: %#02x", got)
+	}
+}
+
+func TestTEDBus_Timer3UnderflowSetsIRQFlag(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_TIMER3_LO, 0x01)
+	bus.Write(PLUS4_TED_TIMER3_HI, 0x00)
+	bus.Write(PLUS4_TED_IRQ_MASK, TED_IRQ_TIMER3)
+
+	bus.AddCycles(2)
+
+	if bus.irqFlags&TED_IRQ_TIMER3 == 0 {
+		t.Fatalf("Timer 3 underflow flag not set")
+	}
+	if !bus.CheckIRQ() {
+		t.Fatalf("Timer 3 underflow should set pending IRQ when enabled")
+	}
+	if got := bus.Read(PLUS4_TED_IRQ_FLAGS); got&0x80 == 0 {
+		t.Fatalf("$FF09 summary bit not set for Timer 3: %#02x", got)
+	}
+}
+
+func TestTEDBus_Timer2And3Readback(t *testing.T) {
+	bus := newTEDPlaybackBus6502(false)
+	bus.Write(PLUS4_TED_TIMER2_LO, 0x34)
+	bus.Write(PLUS4_TED_TIMER2_HI, 0x12)
+	bus.Write(PLUS4_TED_TIMER3_LO, 0x78)
+	bus.Write(PLUS4_TED_TIMER3_HI, 0x56)
+	bus.AddCycles(2)
+
+	if got := uint16(bus.Read(PLUS4_TED_TIMER2_LO)) | uint16(bus.Read(PLUS4_TED_TIMER2_HI))<<8; got != 0x1232 {
+		t.Fatalf("Timer 2 readback = %#04x, want 0x1232", got)
+	}
+	if got := uint16(bus.Read(PLUS4_TED_TIMER3_LO)) | uint16(bus.Read(PLUS4_TED_TIMER3_HI))<<8; got != 0x5676 {
+		t.Fatalf("Timer 3 readback = %#04x, want 0x5676", got)
+	}
+}

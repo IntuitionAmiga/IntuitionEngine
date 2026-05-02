@@ -470,10 +470,6 @@ func (p *TED6502Player) Reset() {
 func (p *TED6502Player) initRealTEDMode() error {
 	p.continuousMode = true
 
-	// Enable raster timer IRQ for RealTED mode
-	// This simulates the Plus/4 raster interrupt system
-	p.bus.EnableKERNALTimer()
-
 	// Set the CPU to start execution from InitAddr
 	if p.file.InitAddr != 0 {
 		p.cpu.PC = p.file.InitAddr
