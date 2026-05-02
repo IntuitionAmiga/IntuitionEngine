@@ -306,12 +306,14 @@ type Bus6502Adapter struct {
 	   space through three additional 8KB bank windows at $2000, $4000, $6000.
 	*/
 
-	bus         Bus32
-	vramBank    uint32
-	vramEnabled bool
-	vgaVramBank byte
-	vgaEngine   *VGAEngine // VGA engine for memory-mapped I/O access
-	ownerCPU    *CPU_6502
+	bus            Bus32
+	vramBank       uint32
+	vramEnabled    bool
+	vgaVramBank    byte
+	vgaEngine      *VGAEngine // VGA engine for memory-mapped I/O access
+	voodooEngine   *VoodooEngine
+	voodooBankPage uint16
+	ownerCPU       *CPU_6502
 
 	// Extended bank windows for IE65 support
 	bank1       uint32 // Bank number for $2000-$3FFF window
@@ -350,7 +352,17 @@ func NewCPU_6502(bus Bus32) *CPU_6502 {
 	   Thread Safety:
 	   Initial state setup requires no locks as object is not yet shared.
 	*/
-	adapter := NewBus6502Adapter(bus)
+	return newCPU6502WithAdapter(NewBus6502Adapter(bus))
+}
+
+func NewCPU_6502WithVoodoo(bus Bus32, voodoo *VoodooEngine) *CPU_6502 {
+	if voodoo == nil {
+		return NewCPU_6502(bus)
+	}
+	return newCPU6502WithAdapter(NewBus6502AdapterWithVoodoo(bus, nil, voodoo))
+}
+
+func newCPU6502WithAdapter(adapter *Bus6502Adapter) *CPU_6502 {
 	cpu := &CPU_6502{
 		memory:        adapter,
 		fastAdapter:   adapter, // Set fastAdapter since we just created it
@@ -424,6 +436,16 @@ func NewBus6502AdapterWithVGA(bus Bus32, vga *VGAEngine) *Bus6502Adapter {
 	return a
 }
 
+func NewBus6502AdapterWithVoodoo(bus Bus32, vga *VGAEngine, voodoo *VoodooEngine) *Bus6502Adapter {
+	a := &Bus6502Adapter{bus: bus, vgaEngine: vga, voodooEngine: voodoo}
+	a.memDirect = bus.GetMemory()
+	if mb, ok := bus.(*MachineBus); ok {
+		a.ioPageBitmap = mb.ioPageBitmap
+	}
+	a.initIOTable()
+	return a
+}
+
 func (a *Bus6502Adapter) initIOTable() {
 	a.ioTable[0xD2] = ioHandler{read: readPOKEYPage, write: writePOKEYPage}
 	a.ioTable[0xD4] = ioHandler{read: readPSGPage, write: writePSGPage}
@@ -431,6 +453,22 @@ func (a *Bus6502Adapter) initIOTable() {
 	a.ioTable[0xD6] = ioHandler{read: readTEDPage, write: writeTEDPage}
 	a.ioTable[0xD7] = ioHandler{read: readVGAPage, write: writeVGAPage}
 	a.ioTable[0xD8] = ioHandler{read: readULAPage, write: writeULAPage}
+	a.ioTable[0xE0] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xE1] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xE2] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xE3] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xE4] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xE5] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xE6] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xE7] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xE8] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xE9] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xEA] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xEB] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xEC] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xED] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xEE] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
+	a.ioTable[0xEF] = ioHandler{read: readVoodooWindowPage, write: writeVoodooWindowPage}
 	a.ioTable[0xF7] = ioHandler{read: readBankRegPage, write: writeBankRegPage}
 }
 
@@ -615,6 +653,28 @@ func writeULAPage(a *Bus6502Adapter, addr uint16, value byte) {
 	a.bus.Write8(translateIO8Bit_6502(addr), value)
 }
 
+func (a *Bus6502Adapter) translateVoodooWindow(addr uint16) (uint32, bool) {
+	if a.voodooEngine == nil || addr < VOODOO_6502_WINDOW_BASE || addr >= VOODOO_6502_WINDOW_BASE+VOODOO_6502_WINDOW_SIZE {
+		return 0, false
+	}
+	return uint32(a.voodooBankPage)*VOODOO_6502_WINDOW_SIZE + uint32(addr-VOODOO_6502_WINDOW_BASE), true
+}
+
+func readVoodooWindowPage(a *Bus6502Adapter, addr uint16) byte {
+	if translated, ok := a.translateVoodooWindow(addr); ok {
+		return a.bus.Read8(translated)
+	}
+	return a.bus.Read8(translateIO8Bit_6502(addr))
+}
+
+func writeVoodooWindowPage(a *Bus6502Adapter, addr uint16, value byte) {
+	if translated, ok := a.translateVoodooWindow(addr); ok {
+		a.bus.Write8(translated, value)
+		return
+	}
+	a.bus.Write8(translateIO8Bit_6502(addr), value)
+}
+
 func readBankRegPage(a *Bus6502Adapter, addr uint16) byte {
 	switch addr {
 	case VRAM_BANK_REG:
@@ -633,6 +693,10 @@ func readBankRegPage(a *Bus6502Adapter, addr uint16) byte {
 		return byte(a.bank3 & 0xFF)
 	case BANK3_REG_HI:
 		return byte((a.bank3 >> 8) & 0xFF)
+	case VOODOO_6502_BANK_HI:
+		return byte(a.voodooBankPage & 0xFF)
+	case VOODOO_6502_BANK_PAGE_HI:
+		return byte((a.voodooBankPage >> 8) & 0xFF)
 	default:
 		return a.bus.Read8(translateIO8Bit_6502(addr))
 	}
@@ -669,6 +733,12 @@ func writeBankRegPage(a *Bus6502Adapter, addr uint16, value byte) {
 	case BANK3_REG_HI:
 		a.bank3 = (a.bank3 & 0x00FF) | (uint32(value) << 8)
 		a.bank3Enable = true
+		return
+	case VOODOO_6502_BANK_HI:
+		a.voodooBankPage = (a.voodooBankPage & 0xFF00) | uint16(value)
+		return
+	case VOODOO_6502_BANK_PAGE_HI:
+		a.voodooBankPage = (a.voodooBankPage & 0x00FF) | (uint16(value) << 8)
 		return
 	default:
 		a.bus.Write8(translateIO8Bit_6502(addr), value)
@@ -3355,6 +3425,7 @@ func (adapter *Bus6502Adapter) ResetBank() {
 	adapter.bank1Enable = false
 	adapter.bank2Enable = false
 	adapter.bank3Enable = false
+	adapter.voodooBankPage = 0
 }
 
 // bankedCeilingProvider is the minimum interface a Bus32 implementation

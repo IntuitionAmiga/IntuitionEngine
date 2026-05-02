@@ -56,7 +56,8 @@ Address Range       Size    Device              Constants File
 0xF23B0-0xF23BF     16B     Coprocessor Monitor coprocessor_constants.go
 0xF23C0-0xF23DF     32B     IRQ Diagnostics     registers.go
 0xF23E0-0xF23FF     32B     Bootstrap HostFS    bootstrap_hostfs_constants.go
-0xF4000-0xF43FF     1KB     Voodoo 3D Graphics  voodoo_constants.go
+0xD0000-0xDFFFF     64KB    Voodoo Texture Memory voodoo_constants.go
+0xF8000-0xF87FF     2KB     Voodoo 3D Graphics  voodoo_constants.go
 
 0x100000-0x5FFFFF   5MB     Video RAM           video_chip.go (VRAM_START)
 
@@ -120,7 +121,7 @@ GTIA (0xF2140-0xF21B7) - antic_constants.go
 Coprocessor (0xF2340-0xF237F) - coprocessor_constants.go
   COPROC_CTRL, COPROC_STATUS, COPROC_PROGRAM_ADDR, COPROC_DATA_ADDR
 
-Voodoo 3D Graphics (0xF4000-0xF43FF) - voodoo_constants.go
+Voodoo 3D Graphics (0xF8000-0xF87FF) - voodoo_constants.go
   VOODOO_STATUS, VOODOO_FB*, VOODOO_CLIP_*, VOODOO_TRI_*
   VOODOO_TEXTURE_*, VOODOO_FOG_*, VOODOO_ALPHA_*
   VOODOO_CHROMAKEY_*, VOODOO_ZBUFFER_*
@@ -248,7 +249,7 @@ const (
 	// System information block (RAM-size discovery)
 	// PLAN_MAX_RAM.md: low-MMIO RAM-size ABI lives in the gap between the
 	// IRQ diagnostics / bootstrap HostFS regions (ending at 0xF23FF) and
-	// Voodoo (starting at 0xF4000).
+	// Voodoo registers (starting at 0xF8000).
 	SYSINFO_REGION_BASE   = 0xF2400
 	SYSINFO_REGION_END    = 0xF24FF
 	SYSINFO_TOTAL_RAM_LO  = 0xF2400 // low 32 bits of total guest RAM (bytes, LE)
@@ -257,8 +258,8 @@ const (
 	SYSINFO_ACTIVE_RAM_HI = 0xF240C // high 32 bits of active CPU/profile visible RAM
 
 	// Voodoo 3D graphics region
-	VOODOO_REGION_BASE = 0xF4000
-	VOODOO_REGION_END  = 0xF43FF
+	VOODOO_REGION_BASE = 0xF8000
+	VOODOO_REGION_END  = 0xF87FF
 )
 
 // =============================================================================

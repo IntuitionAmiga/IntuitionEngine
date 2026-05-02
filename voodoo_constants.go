@@ -35,8 +35,8 @@ package main
 
 // Voodoo memory map
 const (
-	VOODOO_BASE = 0xF4000 // Voodoo register base address
-	VOODOO_END  = 0xF43FF // End of Voodoo register space
+	VOODOO_BASE = 0xF8000 // Voodoo register base address
+	VOODOO_END  = 0xF87FF // End of Voodoo register space, including palette entries
 )
 
 // Voodoo compositor layer (renders on top of VGA)
@@ -177,10 +177,25 @@ const (
 	VOODOO_PALETTE_BASE = VOODOO_BASE + 0x400 // Texture palette (256 entries)
 )
 
+const (
+	VOODOO_PALETTE_SIZE = 256
+	VOODOO_REG_COUNT    = ((VOODOO_PALETTE_BASE - VOODOO_BASE) / 4) + VOODOO_PALETTE_SIZE
+)
+
 // Texture memory base for texture uploads
 const (
-	VOODOO_TEXMEM_BASE = 0xF5000 // Texture memory base (separate from registers)
+	VOODOO_TEXMEM_BASE = 0xD0000 // Texture memory base (separate from registers)
 	VOODOO_TEXMEM_SIZE = 0x10000 // 64KB texture memory
+)
+
+// 6502 banked Voodoo aperture. The 6502 writes VOODOO_6502_BANK_HI with the
+// 4KB page number (0xF8 for registers, 0xD0..0xDF for texture memory), then
+// accesses VOODOO_6502_WINDOW_BASE+offset.
+const (
+	VOODOO_6502_WINDOW_BASE  = 0xE000
+	VOODOO_6502_WINDOW_SIZE  = 0x1000
+	VOODOO_6502_BANK_HI      = 0xF7F2
+	VOODOO_6502_BANK_PAGE_HI = 0xF7F3
 )
 
 // fbzMode bit fields
@@ -363,7 +378,7 @@ const (
 // clipLeftRight: bits 0-9 = right, bits 16-25 = left
 // clipLowYHigh: bits 0-9 = bottom, bits 16-25 = top
 const (
-	VOODOO_CLIP_MASK = 0x3FF // 10-bit clip value mask
+	VOODOO_CLIP_MASK = 0xFFFF // 16-bit clip value mask
 )
 
 // swapbufferCMD bits
@@ -381,7 +396,7 @@ const (
 )
 
 // Z80 Voodoo I/O ports (allows 8-bit CPUs to access 32-bit Voodoo registers)
-// The Z80 cannot directly address Voodoo (0xF4000+) due to 16-bit address space.
+// The Z80 cannot directly address Voodoo (0xF8000+) due to 16-bit address space.
 // These ports provide an address/data interface with 32-bit accumulation:
 //  1. Write register offset (from VOODOO_BASE) to ADDR_LO/HI ports
 //  2. Write 4 data bytes to DATA0-DATA3 (little-endian)

@@ -1052,6 +1052,18 @@ func main() {
 		sysBus.MapIO(VOODOO_BASE, VOODOO_END,
 			voodooEngine.HandleRead,
 			voodooEngine.HandleWrite)
+		sysBus.MapIOByteRead(VOODOO_BASE, VOODOO_END, voodooEngine.HandleRead8)
+		sysBus.MapIOByte(VOODOO_BASE, VOODOO_END, voodooEngine.HandleWrite8)
+		sysBus.MapIO64(VOODOO_BASE, VOODOO_END,
+			voodooEngine.HandleRead64,
+			voodooEngine.HandleWrite64)
+		sysBus.MapIO(VOODOO_TEXMEM_BASE, VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE-1,
+			voodooEngine.HandleTexMemRead,
+			voodooEngine.HandleTexMemWrite)
+		sysBus.MapIOByteRead(VOODOO_TEXMEM_BASE, VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE-1,
+			voodooEngine.HandleTexMemRead8)
+		sysBus.MapIOByte(VOODOO_TEXMEM_BASE, VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE-1,
+			voodooEngine.HandleTexMemWrite8)
 	}
 
 	// Create video compositor - owns the display output and blends video sources
@@ -1236,8 +1248,9 @@ func main() {
 		case "6502":
 			videoChip.SetBigEndianMode(false)
 			runner := NewCPU6502Runner(sysBus, CPU6502Config{
-				LoadAddr: cpu6502LoadAddr,
-				Entry:    cpu6502Entry,
+				LoadAddr:     cpu6502LoadAddr,
+				Entry:        cpu6502Entry,
+				VoodooEngine: voodooEngine,
 			})
 			runner.PerfEnabled = perfMode
 			return runner, nil
@@ -1737,8 +1750,9 @@ func main() {
 		cpu6502Entry = parsedEntry
 
 		cpu6502 := NewCPU6502Runner(sysBus, CPU6502Config{
-			LoadAddr: parsedLoadAddr,
-			Entry:    parsedEntry,
+			LoadAddr:     parsedLoadAddr,
+			Entry:        parsedEntry,
+			VoodooEngine: voodooEngine,
 		})
 		cpu6502.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPU6502, nil, nil, nil, nil, nil, cpu6502)

@@ -55,8 +55,17 @@ type VoodooSoftwareBackend struct {
 	fbzMode      uint32
 	alphaMode    uint32
 	chromaKey    uint32 // Chroma key color (RGB packed)
+	chromaRange  uint32 // Chroma max color when non-zero; chromaKey is min
 	fbzColorPath uint32 // Color combine mode
 	colorPathSet bool   // Track if color path was explicitly set
+	stipple      uint32
+	lfbMode      uint32
+	tlod         uint32
+	texBase      [9]uint32
+	slopes       VoodooSlopes
+	slopesValid  bool
+	fogTable     [VOODOO_FOG_TABLE_SIZE]uint32
+	palette      [VOODOO_PALETTE_SIZE]uint32
 
 	// Cached pipeline state (parsed from registers)
 	pipelineKey PipelineKey
@@ -75,6 +84,7 @@ type VoodooSoftwareBackend struct {
 	textureWidth   int
 	textureHeight  int
 	textureFormat  int
+	textureMode    uint32
 	textureEnabled bool
 	textureClampS  bool
 	textureClampT  bool
@@ -122,6 +132,60 @@ func (b *VoodooSoftwareBackend) Init(width, height int) error {
 	return nil
 }
 
+func (b *VoodooSoftwareBackend) Resize(width, height int) error {
+	return b.Init(width, height)
+}
+
+func (b *VoodooSoftwareBackend) Reset() {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	for i := range b.colorBuffer {
+		b.colorBuffer[i] = 0
+	}
+	for i := range b.frontBuffer {
+		b.frontBuffer[i] = 0
+	}
+	for i := range b.backBuffer {
+		b.backBuffer[i] = 0
+	}
+	for i := range b.depthBuffer {
+		b.depthBuffer[i] = math.MaxFloat32
+	}
+
+	b.fbzMode = VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_WRITE |
+		(VOODOO_DEPTH_LESS << 5)
+	b.alphaMode = 0
+	b.chromaKey = 0
+	b.chromaRange = 0
+	b.fbzColorPath = 0
+	b.colorPathSet = false
+	b.stipple = 0
+	b.lfbMode = 0
+	b.tlod = 0
+	b.texBase = [9]uint32{}
+	b.slopes = VoodooSlopes{}
+	b.slopesValid = false
+	b.fogTable = [VOODOO_FOG_TABLE_SIZE]uint32{}
+	b.palette = [VOODOO_PALETTE_SIZE]uint32{}
+	b.pipelineKey = PipelineKeyFromRegisters(b.fbzMode, b.alphaMode)
+	b.scissorLeft = 0
+	b.scissorTop = 0
+	b.scissorRight = b.width
+	b.scissorBottom = b.height
+	b.isBackBuf = false
+	b.textureData = nil
+	b.textureWidth = 0
+	b.textureHeight = 0
+	b.textureFormat = 0
+	b.textureMode = 0
+	b.textureEnabled = false
+	b.textureClampS = false
+	b.textureClampT = false
+	b.fogMode = 0
+	b.fogColor = 0
+}
+
 // UpdatePipelineState updates the rendering state
 func (b *VoodooSoftwareBackend) UpdatePipelineState(fbzMode, alphaMode uint32) error {
 	b.mutex.Lock()
@@ -151,6 +215,61 @@ func (b *VoodooSoftwareBackend) SetChromaKey(chromaKey uint32) {
 	b.chromaKey = chromaKey
 }
 
+func (b *VoodooSoftwareBackend) SetChromaRange(chromaRange uint32) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.chromaRange = chromaRange
+}
+
+func (b *VoodooSoftwareBackend) SetStipple(stipple uint32) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.stipple = stipple
+}
+
+func (b *VoodooSoftwareBackend) SetLFBMode(lfbMode uint32) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.lfbMode = lfbMode
+}
+
+func (b *VoodooSoftwareBackend) SetTexBase(level int, addr uint32) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	if level >= 0 && level < len(b.texBase) {
+		b.texBase[level] = addr
+	}
+}
+
+func (b *VoodooSoftwareBackend) SetTLOD(tlod uint32) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.tlod = tlod
+}
+
+func (b *VoodooSoftwareBackend) SetSlopes(slopes VoodooSlopes, valid bool) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.slopes = slopes
+	b.slopesValid = valid
+}
+
+func (b *VoodooSoftwareBackend) SetFogTableEntry(index int, value uint32) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	if index >= 0 && index < len(b.fogTable) {
+		b.fogTable[index] = value
+	}
+}
+
+func (b *VoodooSoftwareBackend) SetPaletteEntry(index int, value uint32) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	if index >= 0 && index < len(b.palette) {
+		b.palette[index] = value
+	}
+}
+
 // SetTextureData uploads texture data for texture mapping
 func (b *VoodooSoftwareBackend) SetTextureData(width, height int, data []byte, format int) {
 	b.mutex.Lock()
@@ -163,6 +282,12 @@ func (b *VoodooSoftwareBackend) SetTextureData(width, height int, data []byte, f
 	// Copy texture data (assuming ARGB8888 format for now)
 	b.textureData = make([]byte, len(data))
 	copy(b.textureData, data)
+}
+
+func (b *VoodooSoftwareBackend) SetTextureMode(textureMode uint32) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.textureMode = textureMode
 }
 
 // SetTextureEnabled enables or disables texture mapping
@@ -272,26 +397,34 @@ func (b *VoodooSoftwareBackend) combineColors(vertR, vertG, vertB, vertA, texR, 
 
 	// Extract color combine mode from fbzColorPath
 	rgbSelect := b.fbzColorPath & VOODOO_FCP_RGB_SELECT_MASK
+	ccMode := (b.fbzColorPath >> VOODOO_FCP_CC_MSELECT_SHIFT) & 0x7
 
 	switch rgbSelect {
 	case VOODOO_CC_ITERATED:
 		return vertR, vertG, vertB, vertA
 	case VOODOO_CC_TEXTURE:
 		return texR, texG, texB, texA
+	}
+
+	switch ccMode {
+	case VOODOO_CC_ZERO:
+		return 0, 0, 0, 0
+	case VOODOO_CC_CSUB_CL:
+		return texR - vertR, texG - vertG, texB - vertB, texA - vertA
+	case VOODOO_CC_ALOCAL:
+		return vertR * vertA, vertG * vertA, vertB * vertA, vertA * vertA
+	case VOODOO_CC_AOTHER:
+		return vertR * texA, vertG * texA, vertB * texA, vertA * texA
+	case VOODOO_CC_CLOCAL:
+		return vertR, vertG, vertB, vertA
+	case VOODOO_CC_ALOCAL_T:
+		return texR * vertA, texG * vertA, texB * vertA, texA * vertA
+	case VOODOO_CC_CLOC_MUL:
+		return vertR * texR, vertG * texG, vertB * texB, vertA * texA
+	case VOODOO_CC_AOTHER_T:
+		return texR * texA, texG * texA, texB * texA, texA * texA
 	default:
-		ccMode := (b.fbzColorPath >> VOODOO_FCP_CC_MSELECT_SHIFT) & 0x7
-		switch ccMode {
-		case VOODOO_CC_ZERO:
-			return 0, 0, 0, 0
-		case VOODOO_CC_CSUB_CL:
-			return texR - vertR, texG - vertG, texB - vertB, texA - vertA
-		case VOODOO_CC_CLOCAL:
-			return vertR, vertG, vertB, vertA
-		case VOODOO_CC_CLOC_MUL:
-			return vertR * texR, vertG * texG, vertB * texB, vertA * texA
-		default:
-			return vertR * texR, vertG * texG, vertB * texB, vertA * texA
-		}
+		return vertR * texR, vertG * texG, vertB * texB, vertA * texA
 	}
 }
 
@@ -459,10 +592,10 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 	// Check dithering settings
 	ditherEnable := (b.fbzMode & VOODOO_FBZ_DITHER) != 0
 	dither2x2 := (b.fbzMode & VOODOO_FBZ_DITHER_2X2) != 0
+	stippleEnable := (b.fbzMode & VOODOO_FBZ_STIPPLE) != 0
 
-	// Rasterize - optimized with row base precomputation
+	// Rasterize
 	for y := minY; y < maxY; y++ {
-		rowBase := y * b.width
 		py := float32(y) + 0.5
 
 		for x := minX; x < maxX; x++ {
@@ -475,16 +608,23 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 
 			// Check if pixel is inside triangle
 			if w0 >= 0 && w1 >= 0 && w2 >= 0 {
+				if stippleEnable && !b.stippleAllowsPixel(x, y) {
+					continue
+				}
+
 				// Normalize barycentric coordinates
 				w0 *= invArea
 				w1 *= invArea
 				w2 *= invArea
 
-				// Interpolate Z
-				z := w0*v0.Z + w1*v1.Z + w2*v2.Z
+				r, g, bVal, a, z, s, texT := b.interpolateFragment(x, y, w0, w1, w2, v0, v1, v2)
 
 				// Depth test
-				pixelIndex := rowBase + x
+				dstY := y
+				if b.fbzMode&VOODOO_FBZ_Y_ORIGIN != 0 {
+					dstY = b.height - 1 - y
+				}
+				pixelIndex := dstY*b.width + x
 				if depthEnable {
 					oldZ := b.depthBuffer[pixelIndex]
 					if !b.depthTest(z, oldZ, depthFunc) {
@@ -492,18 +632,9 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 					}
 				}
 
-				// Interpolate color (Gouraud shading)
-				r := w0*v0.R + w1*v1.R + w2*v2.R
-				g := w0*v0.G + w1*v1.G + w2*v2.G
-				bVal := w0*v0.B + w1*v1.B + w2*v2.B
-				a := w0*v0.A + w1*v1.A + w2*v2.A
-
 				// Texture mapping with color combine
 				if b.textureEnabled && b.textureData != nil {
-					s := w0*v0.S + w1*v1.S + w2*v2.S
-					t := w0*v0.T + w1*v1.T + w2*v2.T
-
-					texR, texG, texB, texA := b.sampleTexture(s, t)
+					texR, texG, texB, texA := b.sampleTexture(s, texT)
 					r, g, bVal, a = b.combineColors(r, g, bVal, a, texR, texG, texB, texA)
 				}
 
@@ -549,27 +680,35 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 				// Write pixel
 				if rgbWrite {
 					bufIdx := pixelIndex * 4
+					targets := b.drawTargets()
+					if b.fbzMode&VOODOO_FBZ_ALPHA_PLANES == 0 {
+						a = 1.0
+					}
 					if alphaBlendEnable {
 						srcR, srcG, srcB, srcA := r, g, bVal, a
 						const inv255 = float32(1.0 / 255.0)
-						dstR := float32(b.colorBuffer[bufIdx+0]) * inv255
-						dstG := float32(b.colorBuffer[bufIdx+1]) * inv255
-						dstB := float32(b.colorBuffer[bufIdx+2]) * inv255
-						dstA := float32(b.colorBuffer[bufIdx+3]) * inv255
+						for _, target := range targets {
+							dstR := float32(target[bufIdx+0]) * inv255
+							dstG := float32(target[bufIdx+1]) * inv255
+							dstB := float32(target[bufIdx+2]) * inv255
+							dstA := float32(target[bufIdx+3]) * inv255
 
-						srcFactor := b.getBlendFactor(b.pipelineKey.SrcBlendFactor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
-						dstFactor := b.getBlendFactor(b.pipelineKey.DstBlendFactor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
+							srcFactor := b.getBlendFactor(b.pipelineKey.SrcBlendFactor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
+							dstFactor := b.getBlendFactor(b.pipelineKey.DstBlendFactor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
 
-						outR := clampf(srcR*srcFactor+dstR*dstFactor, 0, 1)
-						outG := clampf(srcG*srcFactor+dstG*dstFactor, 0, 1)
-						outB := clampf(srcB*srcFactor+dstB*dstFactor, 0, 1)
-						outA := clampf(srcA*srcFactor+dstA*dstFactor, 0, 1)
+							outR := clampf(srcR*srcFactor+dstR*dstFactor, 0, 1)
+							outG := clampf(srcG*srcFactor+dstG*dstFactor, 0, 1)
+							outB := clampf(srcB*srcFactor+dstB*dstFactor, 0, 1)
+							outA := clampf(srcA*srcFactor+dstA*dstFactor, 0, 1)
 
-						packed := uint32(outR*255) | uint32(outG*255)<<8 | uint32(outB*255)<<16 | uint32(outA*255)<<24
-						*(*uint32)(unsafe.Pointer(&b.colorBuffer[bufIdx])) = packed
+							packed := uint32(outR*255) | uint32(outG*255)<<8 | uint32(outB*255)<<16 | uint32(outA*255)<<24
+							*(*uint32)(unsafe.Pointer(&target[bufIdx])) = packed
+						}
 					} else {
 						packed := uint32(r*255) | uint32(g*255)<<8 | uint32(bVal*255)<<16 | uint32(a*255)<<24
-						*(*uint32)(unsafe.Pointer(&b.colorBuffer[bufIdx])) = packed
+						for _, target := range targets {
+							*(*uint32)(unsafe.Pointer(&target[bufIdx])) = packed
+						}
 					}
 				}
 
@@ -579,6 +718,57 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 				}
 			}
 		}
+	}
+}
+
+func (b *VoodooSoftwareBackend) interpolateTextureCoords(w0, w1, w2 float32, v0, v1, v2 *VoodooVertex) (float32, float32) {
+	if b.textureMode&VOODOO_TEX_PERSPECTIVE == 0 {
+		return w0*v0.S + w1*v1.S + w2*v2.S,
+			w0*v0.T + w1*v1.T + w2*v2.T
+	}
+
+	denom := w0*v0.W + w1*v1.W + w2*v2.W
+	if denom == 0 {
+		return 0, 0
+	}
+	s := (w0*v0.S*v0.W + w1*v1.S*v1.W + w2*v2.S*v2.W) / denom
+	t := (w0*v0.T*v0.W + w1*v1.T*v1.W + w2*v2.T*v2.W) / denom
+	return s, t
+}
+
+func (b *VoodooSoftwareBackend) interpolateFragment(x, y int, w0, w1, w2 float32, v0, v1, v2 *VoodooVertex) (r, g, bVal, a, z, s, t float32) {
+	if !b.slopesValid {
+		r = w0*v0.R + w1*v1.R + w2*v2.R
+		g = w0*v0.G + w1*v1.G + w2*v2.G
+		bVal = w0*v0.B + w1*v1.B + w2*v2.B
+		a = w0*v0.A + w1*v1.A + w2*v2.A
+		z = w0*v0.Z + w1*v1.Z + w2*v2.Z
+		s, t = b.interpolateTextureCoords(w0, w1, w2, v0, v1, v2)
+		return
+	}
+
+	dx := float32(x) + 0.5 - v0.X
+	dy := float32(y) + 0.5 - v0.Y
+	r = v0.R + dx*fixed12_12ToFloat(b.slopes.DRDX) + dy*fixed12_12ToFloat(b.slopes.DRDY)
+	g = v0.G + dx*fixed12_12ToFloat(b.slopes.DGDX) + dy*fixed12_12ToFloat(b.slopes.DGDY)
+	bVal = v0.B + dx*fixed12_12ToFloat(b.slopes.DBDX) + dy*fixed12_12ToFloat(b.slopes.DBDY)
+	a = v0.A + dx*fixed12_12ToFloat(b.slopes.DADX) + dy*fixed12_12ToFloat(b.slopes.DADY)
+	z = v0.Z + dx*fixed20_12ToFloat(b.slopes.DZDX) + dy*fixed20_12ToFloat(b.slopes.DZDY)
+	s = v0.S + dx*fixed14_18ToFloat(b.slopes.DSDX) + dy*fixed14_18ToFloat(b.slopes.DSDY)
+	t = v0.T + dx*fixed14_18ToFloat(b.slopes.DTDX) + dy*fixed14_18ToFloat(b.slopes.DTDY)
+	return
+}
+
+func (b *VoodooSoftwareBackend) drawTargets() [][]byte {
+	drawFront := b.fbzMode&VOODOO_FBZ_DRAW_FRONT != 0
+	drawBack := b.fbzMode&VOODOO_FBZ_DRAW_BACK != 0
+	switch {
+	case drawFront && drawBack:
+		return [][]byte{b.colorBuffer, b.frontBuffer}
+	case drawFront:
+		return [][]byte{b.frontBuffer}
+	default:
+		return [][]byte{b.colorBuffer}
 	}
 }
 
@@ -638,6 +828,22 @@ func abs32(x float32) float32 {
 
 // chromaKeyTest checks if a color matches the chroma key (returns true if should discard)
 func (b *VoodooSoftwareBackend) chromaKeyTest(r, g, bVal float32) bool {
+	if b.chromaRange != 0 {
+		r8 := int(clampf(r, 0, 1)*255 + 0.5)
+		g8 := int(clampf(g, 0, 1)*255 + 0.5)
+		b8 := int(clampf(bVal, 0, 1)*255 + 0.5)
+
+		minR := int((b.chromaKey >> 16) & 0xFF)
+		minG := int((b.chromaKey >> 8) & 0xFF)
+		minB := int(b.chromaKey & 0xFF)
+		maxR := int((b.chromaRange >> 16) & 0xFF)
+		maxG := int((b.chromaRange >> 8) & 0xFF)
+		maxB := int(b.chromaRange & 0xFF)
+		return r8 >= minR && r8 <= maxR &&
+			g8 >= minG && g8 <= maxG &&
+			b8 >= minB && b8 <= maxB
+	}
+
 	const inv255 = float32(1.0 / 255.0)
 	keyR := float32((b.chromaKey>>16)&0xFF) * inv255
 	keyG := float32((b.chromaKey>>8)&0xFF) * inv255
@@ -650,6 +856,14 @@ func (b *VoodooSoftwareBackend) chromaKeyTest(r, g, bVal float32) bool {
 	bMatch := abs32(bVal-keyB) <= tolerance
 
 	return rMatch && gMatch && bMatch
+}
+
+func (b *VoodooSoftwareBackend) stippleAllowsPixel(x, y int) bool {
+	if b.stipple == 0 {
+		return true
+	}
+	bit := uint((y&3)*8 + (x & 7))
+	return (b.stipple & (1 << bit)) != 0
 }
 
 // bayer4x4Flat is a flattened 4x4 Bayer ordered dither matrix (normalized 0.0-1.0)

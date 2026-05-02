@@ -1074,7 +1074,7 @@ Z80 and x86 access the custom synth and player control registers via memory-mapp
 | VideoChip | 0x0F0000-0x0F0077 | Memory $F000-$F077 | Memory | $F000-$F077 | Custom copper/blitter |
 | TED Video | 0x0F0F20-0x0F0F6B | Ports 0xF2/0xF3   | Ports 0xF2/0xF3 | $D620-$D632 | Plus/4-inspired (idx 0x20-0x32) |
 | VGA       | 0x0F1000-0x0F13FF | Ports 0xA0-0xAC   | Ports 0x3C4-0x3DA | $D700-$D70A | IBM VGA compatible |
-| Voodoo    | 0x0F4000-0x0F43FF | Ports 0xB0-0xB7   | Memory | Memory | 3DFX SST-1 3D accelerator |
+| Voodoo    | 0x0F8000-0x0F87FF + texmem 0x0D0000-0xDFFFF | Ports 0xB0-0xB7 | Memory | $E000 banked window | IE-native Voodoo HLE accelerator |
 | ANTIC     | 0x0F2100-0x0F213F | Ports 0xD4/0xD5 | Ports 0xD4/0xD5 | $D400-$D40F | Atari 8-bit video |
 | GTIA      | 0x0F2140-0x0F21B7 | Ports 0xD6/0xD7 | Ports 0xD6/0xD7 | $D000-$D01F | Atari 8-bit color + P/M |
 | ULA       | 0x0F2000-0x0F200B | Port 0xFE       | Port 0xFE       | $D800-$D80B | ZX Spectrum compatible |
@@ -1823,11 +1823,13 @@ The clipboard bridge provides host OS clipboard access for AROS applications.
 | `$F23A0` | `CLIP_RESULT_LEN` | R | Bytes actually read/written |
 | `$F23A4` | `CLIP_FORMAT` | W | Format: 0=text, 1=IFF (currently text-only; IFF format accepted but not honored) |
 
-## 3.20 Voodoo 3D Graphics (0x0F4000 - 0x0F43FF)
+## 3.20 Voodoo 3D Graphics (0x0F8000 - 0x0F87FF)
 
 The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emulation (HLE). Instead of software rasterization, register writes are translated to GPU draw calls for hardware-accelerated 3D rendering with Vulkan (or software fallback).
 
-**Important:** The Voodoo is disabled by default to allow per-scanline rendering for copper effects. Programs must explicitly enable it by writing 1 to `VOODOO_ENABLE` (0x0F4004) before using the 3D accelerator.
+The authoritative IE-native ABI is documented in [sdk/docs/ie_voodoo_abi.md](sdk/docs/ie_voodoo_abi.md). Byte and word writes update register shadows and trigger side effects only when the full dword has been completed.
+
+**Important:** The Voodoo is disabled by default to allow per-scanline rendering for copper effects. Programs must explicitly enable it by writing 1 to `VOODOO_ENABLE` (0x0F8004) before using the 3D accelerator.
 
 ### Features
 
@@ -1851,73 +1853,76 @@ The Voodoo chip emulates a 3DFX SST-1 graphics accelerator using High-Level Emul
 ### Register Map
 
 ```
-Status/Control (0x0F4000 - 0x0F4007):
-0x0F4000: VOODOO_STATUS      - Status (busy, vsync, fifo state) [read-only]
-0x0F4004: VOODOO_ENABLE      - Write 1 to enable, 0 to disable (disabled by default)
+Status/Control (0x0F8000 - 0x0F8007):
+0x0F8000: VOODOO_STATUS      - Status (busy, vsync, fifo state) [read-only]
+0x0F8004: VOODOO_ENABLE      - Write 1 to enable, 0 to disable (disabled by default)
 
-Vertex Coordinates (0x0F4008 - 0x0F401F, 12.4 fixed-point):
-0x0F4008: VOODOO_VERTEX_AX   - Vertex A X coordinate
-0x0F400C: VOODOO_VERTEX_AY   - Vertex A Y coordinate
-0x0F4010: VOODOO_VERTEX_BX   - Vertex B X coordinate
-0x0F4014: VOODOO_VERTEX_BY   - Vertex B Y coordinate
-0x0F4018: VOODOO_VERTEX_CX   - Vertex C X coordinate
-0x0F401C: VOODOO_VERTEX_CY   - Vertex C Y coordinate
+Vertex Coordinates (0x0F8008 - 0x0F801F, 12.4 fixed-point):
+0x0F8008: VOODOO_VERTEX_AX   - Vertex A X coordinate
+0x0F800C: VOODOO_VERTEX_AY   - Vertex A Y coordinate
+0x0F8010: VOODOO_VERTEX_BX   - Vertex B X coordinate
+0x0F8014: VOODOO_VERTEX_BY   - Vertex B Y coordinate
+0x0F8018: VOODOO_VERTEX_CX   - Vertex C X coordinate
+0x0F801C: VOODOO_VERTEX_CY   - Vertex C Y coordinate
 
-Vertex Attributes (0x0F4020 - 0x0F403F, 12.12 fixed-point):
-0x0F4020: VOODOO_START_R     - Start red (1.0 = 0x1000)
-0x0F4024: VOODOO_START_G     - Start green
-0x0F4028: VOODOO_START_B     - Start blue
-0x0F402C: VOODOO_START_Z     - Start Z depth (20.12 fixed-point)
-0x0F4030: VOODOO_START_A     - Start alpha
-0x0F4034: VOODOO_START_S     - Start S texture coord (14.18)
-0x0F4038: VOODOO_START_T     - Start T texture coord (14.18)
-0x0F403C: VOODOO_START_W     - Start W (perspective, 2.30)
+Vertex Attributes (0x0F8020 - 0x0F803F, 12.12 fixed-point):
+0x0F8020: VOODOO_START_R     - Start red (1.0 = 0x1000)
+0x0F8024: VOODOO_START_G     - Start green
+0x0F8028: VOODOO_START_B     - Start blue
+0x0F802C: VOODOO_START_Z     - Start Z depth (20.12 fixed-point)
+0x0F8030: VOODOO_START_A     - Start alpha
+0x0F8034: VOODOO_START_S     - Start S texture coord (14.18)
+0x0F8038: VOODOO_START_T     - Start T texture coord (14.18)
+0x0F803C: VOODOO_START_W     - Start W (perspective, 2.30)
 
 Command Registers:
-0x0F4080: VOODOO_TRIANGLE_CMD    - Submit triangle for rendering
-0x0F4088: VOODOO_COLOR_SELECT    - Select vertex (0/1/2) for Gouraud shading
-0x0F4104: VOODOO_FBZCOLOR_PATH   - Color combine mode configuration
-0x0F4108: VOODOO_FOG_MODE        - Fog mode configuration
-0x0F410C: VOODOO_ALPHA_MODE      - Alpha test/blend configuration
-0x0F4110: VOODOO_FBZ_MODE        - Depth test/write/dither configuration
-0x0F4118: VOODOO_CLIP_LEFT_RIGHT - Scissor rectangle X bounds
-0x0F411C: VOODOO_CLIP_LOW_Y_HIGH - Scissor rectangle Y bounds
-0x0F4120: VOODOO_NOP_CMD         - No operation (synchronization)
-0x0F4124: VOODOO_FAST_FILL_CMD   - Clear framebuffer with COLOR0
-0x0F4128: VOODOO_SWAP_BUFFER_CMD - Swap front/back buffers
+0x0F8080: VOODOO_TRIANGLE_CMD    - Submit triangle for rendering
+0x0F8088: VOODOO_COLOR_SELECT    - Select vertex (0/1/2) for Gouraud shading
+0x0F8104: VOODOO_FBZCOLOR_PATH   - Color combine mode configuration
+0x0F8108: VOODOO_FOG_MODE        - Fog mode configuration
+0x0F810C: VOODOO_ALPHA_MODE      - Alpha test/blend configuration
+0x0F8110: VOODOO_FBZ_MODE        - Depth test/write/dither configuration
+0x0F8118: VOODOO_CLIP_LEFT_RIGHT - Scissor rectangle X bounds
+0x0F811C: VOODOO_CLIP_LOW_Y_HIGH - Scissor rectangle Y bounds
+0x0F8120: VOODOO_NOP_CMD         - No operation (synchronization)
+0x0F8124: VOODOO_FAST_FILL_CMD   - Clear framebuffer with COLOR0
+0x0F8128: VOODOO_SWAP_BUFFER_CMD - Swap front/back buffers
 
 Configuration:
-0x0F41C4: VOODOO_FOG_COLOR   - Fog color (0x00RRGGBB)
-0x0F41C8: VOODOO_ZA_COLOR    - Z/A constant color
-0x0F41CC: VOODOO_CHROMA_KEY  - Chroma key color (0x00RRGGBB)
-0x0F41D8: VOODOO_COLOR0      - Fill color for FAST_FILL_CMD (ARGB)
-0x0F41DC: VOODOO_COLOR1      - Constant color 1
-0x0F4214: VOODOO_VIDEO_DIM   - Video dimensions (width<<16 | height)
+0x0F81C4: VOODOO_FOG_COLOR   - Fog color (0x00RRGGBB)
+0x0F81C8: VOODOO_ZA_COLOR    - Z/A constant color
+0x0F81CC: VOODOO_CHROMA_KEY  - Chroma key color (0x00RRGGBB)
+0x0F81D8: VOODOO_COLOR0      - Fill color for FAST_FILL_CMD (ARGB)
+0x0F81DC: VOODOO_COLOR1      - Constant color 1
+0x0F8214: VOODOO_VIDEO_DIM   - Video dimensions (width<<16 | height)
 
-Texture Mapping (0x0F4300 - 0x0F433F):
-0x0F4300: VOODOO_TEXTURE_MODE - Texture mode configuration
-0x0F430C: VOODOO_TEX_BASE0    - Texture base address (LOD 0)
-0x0F4330: VOODOO_TEX_WIDTH    - Texture width for upload (IE extension)
-0x0F4334: VOODOO_TEX_HEIGHT   - Texture height for upload (IE extension)
-0x0F4338: VOODOO_TEX_UPLOAD   - Write to trigger texture upload (IE extension, RGBA data)
+Texture Mapping (0x0F8300 - 0x0F833F):
+0x0F8300: VOODOO_TEXTURE_MODE - Texture mode configuration
+0x0F830C: VOODOO_TEX_BASE0    - Texture base address (LOD 0)
+0x0F8330: VOODOO_TEX_WIDTH    - Texture width for upload (IE extension)
+0x0F8334: VOODOO_TEX_HEIGHT   - Texture height for upload (IE extension)
+0x0F8338: VOODOO_TEX_UPLOAD   - Write to trigger texture upload (IE extension, RGBA data)
+0x0F8400: VOODOO_PALETTE_BASE - 256-entry texture palette
 
-Texture Memory (0x0F5000 - 0x0F5FFF):
-0x0F5000: VOODOO_TEXMEM_BASE  - Texture memory base (64KB)
+Texture Memory (0x0D0000 - 0xDFFFF):
+0x0D0000: VOODOO_TEXMEM_BASE  - Texture memory base (64KB)
                               Write RGBA pixel data here, then trigger upload
 ```
 
+The authoritative register contract is [sdk/docs/ie_voodoo_abi.md](sdk/docs/ie_voodoo_abi.md). Byte and word writes use a partial-write commit model: they update the 32-bit shadow register first, and side effects fire only when the full dword is completed by a write to byte offset 3 or by an aligned 32/64-bit write.
+
 ### Voodoo Access by CPU Type
 
-**x86 32-bit flat mode:** Direct memory access to 0xF4000-0xF43FF works:
+**x86 32-bit flat mode:** Direct memory access to 0xF8000-0xF87FF works:
 
 ```nasm
 ; x86 32-bit - direct access to Voodoo registers
-mov dword [0xF4214], (640 << 16) | 480    ; VOODOO_VIDEO_DIM
-mov dword [0xF4110], 0x0310               ; VOODOO_FBZ_MODE
-mov dword [0xF4080], 0                    ; VOODOO_TRIANGLE_CMD
+mov dword [0xF8214], (640 << 16) | 480    ; VOODOO_VIDEO_DIM
+mov dword [0xF8110], 0x0310               ; VOODOO_FBZ_MODE
+mov dword [0xF8080], 0                    ; VOODOO_TRIANGLE_CMD
 ```
 
-**Z80 / x86 real mode:** Cannot directly address 0xF4xxx. Use I/O ports 0xB0-0xB7:
+**Z80 / x86 real mode:** Cannot directly address 0xF8xxx. Use I/O ports 0xB0-0xB7:
 
 | Port | Name | Description |
 |------|------|-------------|
@@ -1931,7 +1936,7 @@ mov dword [0xF4080], 0                    ; VOODOO_TRIANGLE_CMD
 | 0xB7 | TEXSRC_HI | Texture source address high (RAM) |
 
 **I/O Port Usage:**
-1. Set register offset (from 0xF4000) via ports 0xB0-0xB1
+1. Set register offset (from 0xF8000) via ports 0xB0-0xB1
 2. Write 4 data bytes to ports 0xB2-0xB5 (little-endian)
 3. Writing to port 0xB5 triggers the 32-bit write to Voodoo
 
@@ -1955,6 +1960,16 @@ mov dword [0xF4080], 0                    ; VOODOO_TRIANGLE_CMD
     ld a, 0x02
     out (0xB5), a           ; Width high - triggers write
 ```
+
+**6502:** Cannot directly address 0xF8xxx. Use the banked Voodoo window:
+
+| Address | Name | Description |
+|---------|------|-------------|
+| $F7F2 | VOODOO_6502_BANK_HI | Low byte of the 4KB Voodoo page selector |
+| $F7F3 | VOODOO_6502_BANK_PAGE_HI | High byte of the 4KB Voodoo page selector |
+| $E000-$EFFF | VOODOO_6502_WINDOW | Banked Voodoo access window |
+
+Complete 32-bit register writes by storing all four bytes little-endian through the $E000 window. See `sdk/examples/asm/voodoo_smoketest_6502.asm`.
 
 ### Fixed-Point Formats
 
@@ -2098,7 +2113,7 @@ Per-vertex texture coordinates work like per-vertex colors: use `VOODOO_COLOR_SE
 
 ### fbzColorPath (Color Combine)
 
-The `VOODOO_FBZCOLOR_PATH` register (0x0F4104) controls how texture and vertex (iterated) colors are combined. This allows for various rendering effects from simple flat colors to complex texture blending.
+The `VOODOO_FBZCOLOR_PATH` register (0x0F8104) controls how texture and vertex (iterated) colors are combined. This allows for various rendering effects from simple flat colors to complex texture blending.
 
 #### fbzColorPath Bits
 
@@ -2151,7 +2166,7 @@ Example: Enable texture modulation (texture color multiplied by vertex color):
 
 ### fogMode (Depth-Based Fog)
 
-The `VOODOO_FOG_MODE` register (0x0F4108) enables depth-based fog blending. When enabled, fragment colors are linearly blended with the fog color based on the vertex Z coordinate (depth). Objects further from the camera appear more "fogged".
+The `VOODOO_FOG_MODE` register (0x0F8108) enables depth-based fog blending. When enabled, fragment colors are linearly blended with the fog color based on the vertex Z coordinate (depth). Objects further from the camera appear more "fogged".
 
 #### fogMode Bits
 
@@ -2165,7 +2180,7 @@ The `VOODOO_FOG_MODE` register (0x0F4108) enables depth-based fog blending. When
 | 5 | FOG_DITHER | Apply dithering to fog |
 | 6 | FOG_ZONES | Enable fog zones (table-based fog) |
 
-The fog color is set in `VOODOO_FOG_COLOR` (0x0F41C4) using the format 0x00RRGGBB.
+The fog color is set in `VOODOO_FOG_COLOR` (0x0F81C4) using the format 0x00RRGGBB.
 
 Fog blending formula: `output.rgb = mix(color.rgb, fogColor.rgb, fogFactor)`
 

@@ -49,6 +49,7 @@ Reference: MAME voodoo.cpp for register-level compatibility
 package main
 
 import (
+	"encoding/binary"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,6 +65,11 @@ type VoodooVertex struct {
 // VoodooTriangle represents a triangle with three vertices
 type VoodooTriangle struct {
 	Vertices [3]VoodooVertex
+}
+
+type VoodooSlopes struct {
+	DRDX, DGDX, DBDX, DZDX, DADX, DSDX, DTDX, DWDX uint32
+	DRDY, DGDY, DBDY, DZDY, DADY, DSDY, DTDY, DWDY uint32
 }
 
 // VoodooEngine implements 3DFX Voodoo SST-1 graphics emulation
@@ -82,7 +88,7 @@ type VoodooEngine struct {
 	onResolutionChange func(w, h int)
 
 	// Shadow registers (CPU-written values)
-	regs [256]uint32
+	regs []uint32
 
 	// Current vertex being assembled (cycling 0, 1, 2)
 	currentVertex VoodooVertex
@@ -103,6 +109,13 @@ type VoodooEngine struct {
 	fbzColorPath  uint32
 	textureMode   uint32
 	fogMode       uint32
+	lfbMode       uint32
+	tlod          uint32
+	texBase       [9]uint32
+	stipple       uint32
+	chromaRange   uint32
+	slopes        VoodooSlopes
+	slopesValid   bool
 	pipelineDirty bool
 
 	// Clipping rectangle
@@ -120,6 +133,10 @@ type VoodooEngine struct {
 	busy        bool
 	vretrace    atomic.Int64 // Frame start time (UnixNano) for time-based vretrace
 	swapPending bool
+
+	OnVBlank       func()
+	OnSwapComplete func()
+	OnFIFOEmpty    func()
 
 	// Triple-buffered frame output for lock-free GetFrame()
 	// Protocol: producer owns writeIdx, consumer owns readIdx (via readingIdx),
@@ -139,14 +156,24 @@ type VoodooEngine struct {
 type VoodooBackend interface {
 	// Initialize the backend
 	Init(width, height int) error
+	Resize(width, height int) error
 
 	// Pipeline state
 	UpdatePipelineState(fbzMode, alphaMode uint32) error
 	SetScissor(left, top, right, bottom int)
 	SetChromaKey(chromaKey uint32) // Phase 3: Chroma key support
+	SetChromaRange(chromaRange uint32)
+	SetStipple(stipple uint32)
+	SetLFBMode(lfbMode uint32)
+	SetTexBase(level int, addr uint32)
+	SetTLOD(tlod uint32)
+	SetSlopes(slopes VoodooSlopes, valid bool)
+	SetFogTableEntry(index int, value uint32)
+	SetPaletteEntry(index int, value uint32)
 
 	// Phase 4: Texture mapping
 	SetTextureData(width, height int, data []byte, format int)
+	SetTextureMode(textureMode uint32)
 	SetTextureEnabled(enabled bool)
 	SetTextureWrapMode(clampS, clampT bool)
 
@@ -164,6 +191,9 @@ type VoodooBackend interface {
 	// Frame retrieval
 	GetFrame() []byte
 
+	// Reset volatile backend state
+	Reset()
+
 	// Cleanup
 	Destroy()
 }
@@ -173,6 +203,7 @@ func NewVoodooEngine(bus *MachineBus) (*VoodooEngine, error) {
 	v := &VoodooEngine{
 		bus:           bus,
 		layer:         VOODOO_LAYER,
+		regs:          make([]uint32, VOODOO_REG_COUNT),
 		triangleBatch: make([]VoodooTriangle, 0, VOODOO_MAX_BATCH_TRIANGLES),
 		textureMemory: make([]byte, VOODOO_TEXMEM_SIZE),
 		clipRight:     VOODOO_DEFAULT_WIDTH,
@@ -210,6 +241,14 @@ func NewVoodooEngine(bus *MachineBus) (*VoodooEngine, error) {
 
 // initDefaultState sets up initial register values
 func (v *VoodooEngine) initDefaultState() {
+	v.currentVertex.W = 1.0
+	for i := range v.vertexColors {
+		v.vertexColors[i].W = 1.0
+	}
+	for i := range v.vertices {
+		v.vertices[i].W = 1.0
+	}
+
 	// Default fbzMode: depth test enabled, depth write enabled, RGB write enabled
 	v.fbzMode = VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_WRITE |
 		(VOODOO_DEPTH_LESS << 5) // depth function = LESS
@@ -241,14 +280,17 @@ func (v *VoodooEngine) initDefaultState() {
 func (v *VoodooEngine) HandleRead(addr uint32) uint32 {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	return v.readReg32Locked(addr)
+}
 
+func (v *VoodooEngine) readReg32Locked(addr uint32) uint32 {
 	switch addr {
 	case VOODOO_STATUS:
 		return v.getStatus()
 	default:
 		// Return shadow register value
 		regIndex := (addr - VOODOO_BASE) / 4
-		if regIndex < 256 {
+		if regIndex < uint32(len(v.regs)) {
 			return v.regs[regIndex]
 		}
 	}
@@ -259,24 +301,19 @@ func (v *VoodooEngine) HandleRead(addr uint32) uint32 {
 func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	v.writeReg32Locked(addr, value)
+}
 
+func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 	// Handle texture memory writes (separate address range)
 	if addr >= VOODOO_TEXMEM_BASE && addr < VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE {
-		offset := addr - VOODOO_TEXMEM_BASE
-		// Bounds check for 4-byte write
-		if offset+4 <= VOODOO_TEXMEM_SIZE {
-			// Store as little-endian
-			v.textureMemory[offset] = byte(value)
-			v.textureMemory[offset+1] = byte(value >> 8)
-			v.textureMemory[offset+2] = byte(value >> 16)
-			v.textureMemory[offset+3] = byte(value >> 24)
-		}
+		v.writeTexMem32Locked(addr, value)
 		return
 	}
 
 	// Store in shadow register
 	regIndex := (addr - VOODOO_BASE) / 4
-	if regIndex < 256 {
+	if regIndex < uint32(len(v.regs)) {
 		v.regs[regIndex] = value
 	}
 
@@ -375,6 +412,14 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 		}
 	case VOODOO_FBZCOLOR_PATH:
 		v.fbzColorPath = value
+		if v.backend != nil {
+			v.backend.SetColorPath(value)
+		}
+	case VOODOO_LFB_MODE:
+		v.lfbMode = value
+		if v.backend != nil {
+			v.backend.SetLFBMode(value)
+		}
 	case VOODOO_TEXTURE_MODE:
 		v.textureMode = value
 		// Phase 4: Update backend texture state
@@ -382,6 +427,7 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 			enabled := (value & VOODOO_TEX_ENABLE) != 0
 			clampS := (value & VOODOO_TEX_CLAMP_S) != 0
 			clampT := (value & VOODOO_TEX_CLAMP_T) != 0
+			v.backend.SetTextureMode(value)
 			v.backend.SetTextureEnabled(enabled)
 			v.backend.SetTextureWrapMode(clampS, clampT)
 		}
@@ -389,6 +435,20 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 		v.textureWidth = int(value)
 	case VOODOO_TEX_HEIGHT:
 		v.textureHeight = int(value)
+	case VOODOO_TLOD:
+		v.tlod = value
+		if v.backend != nil {
+			v.backend.SetTLOD(value)
+		}
+	case VOODOO_TEX_BASE0, VOODOO_TEX_BASE1, VOODOO_TEX_BASE2, VOODOO_TEX_BASE3,
+		VOODOO_TEX_BASE4, VOODOO_TEX_BASE5, VOODOO_TEX_BASE6, VOODOO_TEX_BASE7, VOODOO_TEX_BASE8:
+		level := int((addr - VOODOO_TEX_BASE0) / 4)
+		if level >= 0 && level < len(v.texBase) {
+			v.texBase[level] = value
+			if v.backend != nil {
+				v.backend.SetTexBase(level, value)
+			}
+		}
 	case VOODOO_TEX_UPLOAD:
 		// Trigger texture upload to backend
 		if v.textureWidth > 0 && v.textureHeight > 0 && v.backend != nil {
@@ -401,6 +461,9 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 		}
 	case VOODOO_FOG_MODE:
 		v.fogMode = value
+		if v.backend != nil {
+			v.backend.SetFogState(v.fogMode, v.fogColor)
+		}
 
 	// Clipping
 	case VOODOO_CLIP_LEFT_RIGHT:
@@ -423,6 +486,9 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 		v.color1 = value
 	case VOODOO_FOG_COLOR:
 		v.fogColor = value
+		if v.backend != nil {
+			v.backend.SetFogState(v.fogMode, v.fogColor)
+		}
 	case VOODOO_ZA_COLOR:
 		v.zaColor = value
 	case VOODOO_CHROMA_KEY:
@@ -430,12 +496,42 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 		if v.backend != nil {
 			v.backend.SetChromaKey(value)
 		}
+	case VOODOO_CHROMA_RANGE:
+		v.chromaRange = value
+		if v.backend != nil {
+			v.backend.SetChromaRange(value)
+		}
+	case VOODOO_STIPPLE:
+		v.stipple = value
+		if v.backend != nil {
+			v.backend.SetStipple(value)
+		}
+	case VOODOO_DRDX, VOODOO_DGDX, VOODOO_DBDX, VOODOO_DZDX, VOODOO_DADX, VOODOO_DSDX, VOODOO_DTDX, VOODOO_DWDX,
+		VOODOO_DRDY, VOODOO_DGDY, VOODOO_DBDY, VOODOO_DZDY, VOODOO_DADY, VOODOO_DSDY, VOODOO_DTDY, VOODOO_DWDY:
+		v.setSlope(addr, value)
+	default:
+		if addr >= VOODOO_FOG_TABLE_BASE && addr < VOODOO_FOG_TABLE_END {
+			if v.backend != nil {
+				v.backend.SetFogTableEntry(int((addr-VOODOO_FOG_TABLE_BASE)/VOODOO_FOG_TABLE_STRIDE), value)
+			}
+		}
+		if addr >= VOODOO_PALETTE_BASE && addr < VOODOO_PALETTE_BASE+VOODOO_PALETTE_SIZE*4 {
+			if v.backend != nil {
+				v.backend.SetPaletteEntry(int((addr-VOODOO_PALETTE_BASE)/4), value)
+			}
+		}
 
 		// Video dimensions
 	case VOODOO_VIDEO_DIM:
 		newWidth := int((value >> 16) & 0xFFFF)
 		newHeight := int(value & 0xFFFF)
 		if newWidth > 0 && newHeight > 0 && newWidth <= VOODOO_MAX_WIDTH && newHeight <= VOODOO_MAX_HEIGHT {
+			if int(v.width.Load()) == newWidth && int(v.height.Load()) == newHeight {
+				if v.onResolutionChange != nil {
+					v.onResolutionChange(newWidth, newHeight)
+				}
+				break
+			}
 			v.width.Store(int32(newWidth))
 			v.height.Store(int32(newHeight))
 			// Reallocate triple-buffer for new dimensions
@@ -447,7 +543,7 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 			v.sharedIdx.Store(1)  // Buffer 1 in shared slot
 			v.readingIdx.Store(2) // Consumer takes buffer 2
 			if v.backend != nil {
-				v.backend.Init(newWidth, newHeight)
+				v.backend.Resize(newWidth, newHeight)
 			}
 			if v.onResolutionChange != nil {
 				v.onResolutionChange(newWidth, newHeight)
@@ -455,7 +551,7 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 		}
 
 	// Command registers
-	case VOODOO_TRIANGLE_CMD:
+	case VOODOO_TRIANGLE_CMD, VOODOO_FTRIANGLECMD:
 		v.executeTriangleCmd()
 	case VOODOO_FAST_FILL_CMD:
 		v.executeFastFillCmd()
@@ -466,8 +562,151 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 	}
 }
 
+func (v *VoodooEngine) setSlope(addr uint32, value uint32) {
+	switch addr {
+	case VOODOO_DRDX:
+		v.slopes.DRDX = value
+	case VOODOO_DGDX:
+		v.slopes.DGDX = value
+	case VOODOO_DBDX:
+		v.slopes.DBDX = value
+	case VOODOO_DZDX:
+		v.slopes.DZDX = value
+	case VOODOO_DADX:
+		v.slopes.DADX = value
+	case VOODOO_DSDX:
+		v.slopes.DSDX = value
+	case VOODOO_DTDX:
+		v.slopes.DTDX = value
+	case VOODOO_DWDX:
+		v.slopes.DWDX = value
+	case VOODOO_DRDY:
+		v.slopes.DRDY = value
+	case VOODOO_DGDY:
+		v.slopes.DGDY = value
+	case VOODOO_DBDY:
+		v.slopes.DBDY = value
+	case VOODOO_DZDY:
+		v.slopes.DZDY = value
+	case VOODOO_DADY:
+		v.slopes.DADY = value
+	case VOODOO_DSDY:
+		v.slopes.DSDY = value
+	case VOODOO_DTDY:
+		v.slopes.DTDY = value
+	case VOODOO_DWDY:
+		v.slopes.DWDY = value
+	}
+	v.slopesValid = true
+	if v.backend != nil {
+		v.backend.SetSlopes(v.slopes, true)
+	}
+}
+
+func (v *VoodooEngine) HandleRead8(addr uint32) uint8 {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	base := addr &^ 3
+	shift := (addr & 3) * 8
+	return uint8(v.readReg32Locked(base) >> shift)
+}
+
+func (v *VoodooEngine) HandleWrite8(addr uint32, value uint8) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if addr >= VOODOO_TEXMEM_BASE && addr < VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE {
+		v.writeTexMem8Locked(addr, value)
+		return
+	}
+
+	base := addr &^ 3
+	regIndex := (base - VOODOO_BASE) / 4
+	if regIndex >= uint32(len(v.regs)) {
+		return
+	}
+
+	shift := (addr & 3) * 8
+	mask := uint32(0xFF) << shift
+	next := (v.regs[regIndex] &^ mask) | (uint32(value) << shift)
+	v.regs[regIndex] = next
+	if addr&3 == 3 {
+		v.writeReg32Locked(base, next)
+	}
+}
+
+func (v *VoodooEngine) HandleRead64(addr uint32) uint64 {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	low := v.readReg32Locked(addr)
+	high := v.readReg32Locked(addr + 4)
+	return uint64(low) | (uint64(high) << 32)
+}
+
+func (v *VoodooEngine) HandleWrite64(addr uint32, value uint64) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	v.writeReg32Locked(addr, uint32(value))
+	v.writeReg32Locked(addr+4, uint32(value>>32))
+}
+
+func (v *VoodooEngine) HandleTexMemRead(addr uint32) uint32 {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	offset := addr - VOODOO_TEXMEM_BASE
+	if offset+4 > VOODOO_TEXMEM_SIZE {
+		return 0
+	}
+	return binary.LittleEndian.Uint32(v.textureMemory[offset : offset+4])
+}
+
+func (v *VoodooEngine) HandleTexMemRead8(addr uint32) uint8 {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	offset := addr - VOODOO_TEXMEM_BASE
+	if offset >= VOODOO_TEXMEM_SIZE {
+		return 0
+	}
+	return v.textureMemory[offset]
+}
+
+func (v *VoodooEngine) HandleTexMemWrite(addr uint32, value uint32) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.writeTexMem32Locked(addr, value)
+}
+
+func (v *VoodooEngine) HandleTexMemWrite8(addr uint32, value uint8) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.writeTexMem8Locked(addr, value)
+}
+
+func (v *VoodooEngine) writeTexMem8Locked(addr uint32, value uint8) {
+	offset := addr - VOODOO_TEXMEM_BASE
+	if offset < VOODOO_TEXMEM_SIZE {
+		v.textureMemory[offset] = value
+	}
+}
+
+func (v *VoodooEngine) writeTexMem32Locked(addr uint32, value uint32) {
+	offset := addr - VOODOO_TEXMEM_BASE
+	if offset+4 <= VOODOO_TEXMEM_SIZE {
+		binary.LittleEndian.PutUint32(v.textureMemory[offset:offset+4], value)
+	}
+}
+
 // executeTriangleCmd adds the current triangle to the batch
 func (v *VoodooEngine) executeTriangleCmd() {
+	if v.backend != nil && v.slopesValid {
+		v.backend.SetSlopes(v.slopes, true)
+	}
+
 	// Apply vertex attributes based on shading mode
 	if v.gouraudEnabled {
 		// Gouraud shading: use per-vertex colors from vertexColors[]
@@ -522,6 +761,11 @@ func (v *VoodooEngine) executeFastFillCmd() {
 // executeSwapBufferCmd flushes triangles and swaps buffers
 func (v *VoodooEngine) executeSwapBufferCmd(value uint32) {
 	if v.backend != nil {
+		v.busy = true
+		defer func() {
+			v.busy = false
+		}()
+
 		// Update pipeline state if needed
 		if v.pipelineDirty {
 			v.backend.UpdatePipelineState(v.fbzMode, v.alphaMode)
@@ -529,8 +773,12 @@ func (v *VoodooEngine) executeSwapBufferCmd(value uint32) {
 		}
 
 		// Always flush triangles (even if empty, this triggers the clear)
+		hadTriangles := len(v.triangleBatch) > 0
 		v.backend.FlushTriangles(v.triangleBatch)
 		v.triangleBatch = v.triangleBatch[:0] // Clear batch
+		if hadTriangles && v.OnFIFOEmpty != nil {
+			v.OnFIFOEmpty()
+		}
 
 		// Swap buffers
 		waitVSync := (value & VOODOO_SWAP_VSYNC) != 0
@@ -546,9 +794,16 @@ func (v *VoodooEngine) executeSwapBufferCmd(value uint32) {
 		// Swap our write buffer into the shared slot, get back the old shared buffer.
 		// The old shared buffer is now ours to write to next frame.
 		v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
+
+		if value&VOODOO_SWAP_CLEAR != 0 {
+			v.backend.ClearFramebuffer(v.color0)
+		}
 	}
 
 	v.swapPending = false
+	if v.OnSwapComplete != nil {
+		v.OnSwapComplete()
+	}
 }
 
 // getStatus builds the status register value
@@ -576,8 +831,9 @@ func (v *VoodooEngine) getStatus() uint32 {
 		status |= VOODOO_STATUS_SWAPBUF
 	}
 
-	// Report some FIFO entries available
-	status |= (0x3F << 12) // memfifo
+	if len(v.triangleBatch) < VOODOO_MAX_BATCH_TRIANGLES {
+		status |= (0x3F << 12) // memfifo
+	}
 	status |= (0x1F << 20) // pcififo
 
 	return status
@@ -666,6 +922,9 @@ func (v *VoodooEngine) GetDimensions() (int, int) {
 // SignalVSync signals vertical retrace to the Voodoo (lock-free)
 func (v *VoodooEngine) SignalVSync() {
 	v.vretrace.Store(time.Now().UnixNano())
+	if v.OnVBlank != nil {
+		v.OnVBlank()
+	}
 }
 
 // SetEnabled enables or disables the Voodoo (lock-free)

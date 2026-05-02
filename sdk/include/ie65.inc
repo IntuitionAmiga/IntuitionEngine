@@ -2506,53 +2506,64 @@ GTIA_GRACTL_LATCH  = $04        ; Latch trigger inputs
 ; Note: 6502 cannot directly address 32-bit registers, use indirect addressing.
 
 ; Base address (high byte only for bank switching)
-VOODOO_BASE_HI      = $F4
+VOODOO_BASE_HI      = $F8
+VOODOO_END_HI       = $F8
 
 ; Status register (read-only)
-VOODOO_STATUS       = $F400
+VOODOO_STATUS       = $F800
 
 ; Enable register (write-only) - enables the Voodoo engine for rendering
-VOODOO_ENABLE       = $F400         ; Page offset $04 - Write 1 to enable, 0 to disable
+VOODOO_ENABLE       = $F800         ; Page offset $04 - Write 1 to enable, 0 to disable
 
 ; Vertex coordinate registers (12.4 fixed-point)
 ; For 6502, these require 32-bit writes via indirect addressing
-VOODOO_VERTEX_AX    = $F400         ; Page offset $08
-VOODOO_VERTEX_AY    = $F400         ; Page offset $0C
-VOODOO_VERTEX_BX    = $F401         ; Page offset $10
-VOODOO_VERTEX_BY    = $F401         ; Page offset $14
-VOODOO_VERTEX_CX    = $F401         ; Page offset $18
-VOODOO_VERTEX_CY    = $F401         ; Page offset $1C
+VOODOO_VERTEX_AX    = $F800         ; Page offset $08
+VOODOO_VERTEX_AY    = $F800         ; Page offset $0C
+VOODOO_VERTEX_BX    = $F801         ; Page offset $10
+VOODOO_VERTEX_BY    = $F801         ; Page offset $14
+VOODOO_VERTEX_CX    = $F801         ; Page offset $18
+VOODOO_VERTEX_CY    = $F801         ; Page offset $1C
 
 ; Vertex attribute start values (12.12 fixed-point)
-VOODOO_START_R      = $F402         ; Page offset $20
-VOODOO_START_G      = $F402         ; Page offset $24
-VOODOO_START_B      = $F402         ; Page offset $28
-VOODOO_START_Z      = $F402         ; Page offset $2C
-VOODOO_START_A      = $F403         ; Page offset $30
-VOODOO_START_S      = $F403         ; Page offset $34
-VOODOO_START_T      = $F403         ; Page offset $38
-VOODOO_START_W      = $F403         ; Page offset $3C
+VOODOO_START_R      = $F802         ; Page offset $20
+VOODOO_START_G      = $F802         ; Page offset $24
+VOODOO_START_B      = $F802         ; Page offset $28
+VOODOO_START_Z      = $F802         ; Page offset $2C
+VOODOO_START_A      = $F803         ; Page offset $30
+VOODOO_START_S      = $F803         ; Page offset $34
+VOODOO_START_T      = $F803         ; Page offset $38
+VOODOO_START_W      = $F803         ; Page offset $3C
 
 ; Command registers
-VOODOO_TRIANGLE_CMD = $F408         ; Page offset $80
-VOODOO_COLOR_SELECT = $F408         ; Page offset $88 - Select vertex (0/1/2) for Gouraud shading
-VOODOO_ALPHA_MODE   = $F410         ; Page offset $0C
-VOODOO_FBZ_MODE     = $F411         ; Page offset $10
-VOODOO_FAST_FILL_CMD = $F412        ; Page offset $24
-VOODOO_SWAP_BUFFER_CMD = $F412      ; Page offset $28
+VOODOO_TRIANGLE_CMD = $F808         ; Page offset $80
+VOODOO_COLOR_SELECT = $F808         ; Page offset $88 - Select vertex (0/1/2) for Gouraud shading
+VOODOO_ALPHA_MODE   = $F810         ; Page offset $0C
+VOODOO_FBZ_MODE     = $F811         ; Page offset $10
+VOODOO_FAST_FILL_CMD = $F812        ; Page offset $24
+VOODOO_SWAP_BUFFER_CMD = $F812      ; Page offset $28
 
 ; Configuration registers
-VOODOO_COLOR0       = $F41D         ; Page offset $D8
-VOODOO_VIDEO_DIM    = $F421         ; Page offset $14
+VOODOO_COLOR0       = $F81D         ; Page offset $D8
+VOODOO_VIDEO_DIM    = $F821         ; Page offset $14
 
 ; Texture registers
-VOODOO_TEXTURE_MODE = $F430         ; Texture mode configuration
-VOODOO_TEX_BASE0    = $F430         ; Page offset $0C - Texture base address
-VOODOO_TEX_WIDTH    = $F433         ; Page offset $30 - Texture width for upload (IE extension)
-VOODOO_TEX_HEIGHT   = $F433         ; Page offset $34 - Texture height for upload (IE extension)
-VOODOO_TEX_UPLOAD   = $F433         ; Page offset $38 - Write to trigger texture upload (IE extension)
-VOODOO_TEXMEM_BASE  = $F500         ; Texture memory base (64KB)
-VOODOO_FBZCOLOR_PATH = $F410        ; Page offset $04 - Color combine mode
+VOODOO_TEXTURE_MODE = $F830         ; Texture mode configuration
+VOODOO_TEX_BASE0    = $F830         ; Page offset $0C - Texture base address
+VOODOO_TEX_WIDTH    = $F833         ; Page offset $30 - Texture width for upload (IE extension)
+VOODOO_TEX_HEIGHT   = $F833         ; Page offset $34 - Texture height for upload (IE extension)
+VOODOO_TEX_UPLOAD   = $F833         ; Page offset $38 - Write to trigger texture upload (IE extension)
+VOODOO_TEXMEM_BASE  = $D000         ; Texture memory base (64KB)
+VOODOO_TEXMEM_SIZE  = $10000        ; Texture memory size
+VOODOO_PALETTE_BASE = $F840         ; Texture palette base
+VOODOO_FBZCOLOR_PATH = $F810        ; Page offset $04 - Color combine mode
+
+; Banked Voodoo aperture. Write VOODOO_6502_BANK_HI with $F8 for registers
+; or $D0-$DF for texture memory, then access VOODOO_6502_WINDOW_BASE+offset.
+; VOODOO_6502_BANK_PAGE_HI remains available for future 24-bit pages.
+VOODOO_6502_WINDOW_BASE = $E000
+VOODOO_6502_WINDOW_SIZE = $1000
+VOODOO_6502_BANK_HI     = $F7F2
+VOODOO_6502_BANK_PAGE_HI = $F7F3
 
 ; fbzMode bits
 VOODOO_FBZ_CLIPPING     = $01
@@ -2682,7 +2693,7 @@ VOODOO_FOG_TABLE_SHIFT  = 8                 ; Shift for fog table index
 VOODOO_FOG_TABLE_MASK   = $3F               ; 6-bit fog table index mask
 
 ; Phase 6: Fog table constants
-VOODOO_FOG_TABLE_BASE   = $F4140            ; Fog table base address (64 entries)
+VOODOO_FOG_TABLE_BASE   = $F8140            ; Fog table base address (64 entries)
 VOODOO_FOG_TABLE_SIZE   = 64                ; Number of fog table entries
 
 ; Phase 6: fbzMode dithering bits (add to fbzMode)

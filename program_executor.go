@@ -377,7 +377,11 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		if e.videoChip != nil {
 			e.videoChip.SetBigEndianMode(false)
 		}
-		runner := NewCPU6502Runner(e.bus, CPU6502Config{LoadAddr: 0x0800, Entry: 0})
+		runner := NewCPU6502Runner(e.bus, CPU6502Config{
+			LoadAddr:     0x0800,
+			Entry:        0,
+			VoodooEngine: e.voodooEngine,
+		})
 		e.bus.Reset()
 		loadAddr := uint32(0x0800)
 		if loadAddr+uint32(len(data)) > DEFAULT_MEMORY_SIZE {

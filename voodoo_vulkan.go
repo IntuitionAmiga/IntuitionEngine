@@ -149,6 +149,7 @@ type VulkanBackend struct {
 	textureSampler     vk.Sampler
 	textureWidth       int
 	textureHeight      int
+	textureFormat      int
 	textureEnabled     bool
 	textureClampS      bool
 	textureClampT      bool
@@ -200,6 +201,39 @@ func (vb *VulkanBackend) Init(width, height int) error {
 
 	vb.initialized = true
 	return nil
+}
+
+func (vb *VulkanBackend) Resize(width, height int) error {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+
+	if vb.width == width && vb.height == height {
+		return nil
+	}
+
+	// Avoid live Vulkan reinitialization from guest VIDEO_DIM writes. A real
+	// size change falls back to the software backend rather than risking stale
+	// Vulkan state; SetBackend/Destroy still own full Vulkan lifetime.
+	if vb.initialized {
+		vk.DeviceWaitIdle(vb.device)
+		vb.destroyFence()
+		vb.destroyStagingBuffer()
+		vb.destroyVertexBuffer()
+		vb.destroyPipeline()
+		vb.destroyTextureResources()
+		vb.destroyFramebuffer()
+		vb.destroyRenderPass()
+		vb.destroyOffscreenImages()
+		vb.destroyCommandPool()
+		vb.destroyDevice()
+		vb.destroyInstance()
+		vb.initialized = false
+	}
+
+	vb.width = width
+	vb.height = height
+	vb.outputFrame = make([]byte, width*height*4)
+	return vb.software.Resize(width, height)
 }
 
 // initVulkan performs full Vulkan initialization
@@ -771,14 +805,7 @@ func (vb *VulkanBackend) createPipeline() error {
 	vb.pipelineLayout = pipelineLayout
 
 	// Create the default pipeline (depth LESS, no blending)
-	defaultKey := PipelineKey{
-		DepthTestEnable:  true,
-		DepthWriteEnable: true,
-		DepthCompareOp:   VOODOO_DEPTH_LESS,
-		BlendEnable:      false,
-		SrcBlendFactor:   VOODOO_BLEND_ONE,
-		DstBlendFactor:   VOODOO_BLEND_ZERO,
-	}
+	defaultKey := defaultVoodooPipelineKey()
 
 	pipeline, err := vb.createPipelineVariant(defaultKey)
 	if err != nil {
@@ -790,6 +817,17 @@ func (vb *VulkanBackend) createPipeline() error {
 	vb.pipelineVariants[defaultKey] = pipeline
 
 	return nil
+}
+
+func defaultVoodooPipelineKey() PipelineKey {
+	return PipelineKey{
+		DepthTestEnable:  true,
+		DepthWriteEnable: true,
+		DepthCompareOp:   VOODOO_DEPTH_LESS,
+		BlendEnable:      false,
+		SrcBlendFactor:   VOODOO_BLEND_ONE,
+		DstBlendFactor:   VOODOO_BLEND_ZERO,
+	}
 }
 
 // createPipelineVariant creates a graphics pipeline with specific depth/blend settings
@@ -1775,6 +1813,54 @@ func (vb *VulkanBackend) SetChromaKey(chromaKey uint32) {
 	vb.software.SetChromaKey(chromaKey)
 }
 
+func (vb *VulkanBackend) SetChromaRange(chromaRange uint32) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+	vb.software.SetChromaRange(chromaRange)
+}
+
+func (vb *VulkanBackend) SetStipple(stipple uint32) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+	vb.software.SetStipple(stipple)
+}
+
+func (vb *VulkanBackend) SetLFBMode(lfbMode uint32) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+	vb.software.SetLFBMode(lfbMode)
+}
+
+func (vb *VulkanBackend) SetTexBase(level int, addr uint32) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+	vb.software.SetTexBase(level, addr)
+}
+
+func (vb *VulkanBackend) SetTLOD(tlod uint32) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+	vb.software.SetTLOD(tlod)
+}
+
+func (vb *VulkanBackend) SetSlopes(slopes VoodooSlopes, valid bool) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+	vb.software.SetSlopes(slopes, valid)
+}
+
+func (vb *VulkanBackend) SetFogTableEntry(index int, value uint32) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+	vb.software.SetFogTableEntry(index, value)
+}
+
+func (vb *VulkanBackend) SetPaletteEntry(index int, value uint32) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+	vb.software.SetPaletteEntry(index, value)
+}
+
 // SetTextureData uploads texture data for texture mapping
 // Phase 4: Texture Mapping support
 func (vb *VulkanBackend) SetTextureData(width, height int, data []byte, format int) {
@@ -1799,6 +1885,7 @@ func (vb *VulkanBackend) SetTextureData(width, height int, data []byte, format i
 
 	vb.textureWidth = width
 	vb.textureHeight = height
+	vb.textureFormat = format
 
 	// Upload texture data via staging buffer
 	if err := vb.uploadTextureData(data, width, height); err != nil {
@@ -1807,6 +1894,12 @@ func (vb *VulkanBackend) SetTextureData(width, height int, data []byte, format i
 
 	// Update descriptor set with new texture
 	vb.updateDescriptorSet()
+}
+
+func (vb *VulkanBackend) SetTextureMode(textureMode uint32) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+	vb.software.SetTextureMode(textureMode)
 }
 
 // SetTextureEnabled enables or disables texture mapping
@@ -1857,10 +1950,9 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
 
-	// Update software backend for fallback when Vulkan not initialized
-	if !vb.initialized {
-		vb.software.FlushTriangles(triangles)
-	}
+	// Keep software output in lockstep as a correctness fallback for the live
+	// compositor if Vulkan readback produces an empty frame.
+	vb.software.FlushTriangles(triangles)
 
 	// Phase 6: GPU shaders now handle fog and dithering natively
 
@@ -1882,20 +1974,7 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 			ndcX := (v.X/float32(vb.width))*2.0 - 1.0
 			ndcY := (v.Y/float32(vb.height))*2.0 - 1.0
 
-			// Normalize Z to Vulkan depth range [0, 1]
-			// If Z is already in 0-1 range, use directly (modern usage)
-			// Otherwise, divide by 65536 for Voodoo-style depth buffer values
-			var ndcZ float32
-			if v.Z >= 0 && v.Z <= 1.0 {
-				ndcZ = v.Z // Already normalized
-			} else if v.Z > 1.0 {
-				ndcZ = v.Z / 65536.0 // Voodoo-style large Z values
-				if ndcZ > 1 {
-					ndcZ = 1
-				}
-			} else {
-				ndcZ = 0 // Negative Z clamps to 0
-			}
+			ndcZ := normalizeVoodooDepthForVulkan(v.Z, vb.fbzMode)
 
 			vertices = append(vertices, VulkanVertex{
 				Position: [3]float32{ndcX, ndcY, ndcZ},
@@ -2126,9 +2205,61 @@ func (vb *VulkanBackend) GetFrame() []byte {
 	// Phase 6: GPU shaders now handle fog and dithering natively
 
 	if vb.initialized {
+		if hasVisibleVoodooPixels(vb.outputFrame) {
+			return vb.outputFrame
+		}
+		if frame := vb.software.GetFrame(); hasVisibleVoodooPixels(frame) {
+			return frame
+		}
 		return vb.outputFrame
 	}
 	return vb.software.GetFrame()
+}
+
+func hasVisibleVoodooPixels(frame []byte) bool {
+	for i := 0; i+3 < len(frame); i += 4 {
+		if frame[i+3] != 0 && (frame[i] != 0 || frame[i+1] != 0 || frame[i+2] != 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func (vb *VulkanBackend) Reset() {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+
+	if vb.initialized {
+		vk.DeviceWaitIdle(vb.device)
+	}
+	for i := range vb.outputFrame {
+		vb.outputFrame[i] = 0
+	}
+	vb.fbzMode = VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_WRITE |
+		(VOODOO_DEPTH_LESS << 5)
+	vb.alphaMode = 0
+	vb.chromaKey = 0
+	vb.fbzColorPath = VOODOO_COMBINE_UNSET
+	vb.colorPathSet = false
+	vb.fogMode = 0
+	vb.fogColor = 0
+	vb.textureEnabled = false
+	vb.textureClampS = false
+	vb.textureClampT = false
+	vb.textureWidth = 0
+	vb.textureHeight = 0
+	vb.textureFormat = 0
+	vb.clearColor = [4]float32{0, 0, 0, 1}
+	vb.depthClearValue = 1.0
+	if vb.width > 0 && vb.height > 0 {
+		vb.scissor = vk.Rect2D{
+			Offset: vk.Offset2D{X: 0, Y: 0},
+			Extent: vk.Extent2D{Width: uint32(vb.width), Height: uint32(vb.height)},
+		}
+	}
+	if vb.software != nil {
+		vb.software.Reset()
+	}
 }
 
 // Destroy cleans up all resources

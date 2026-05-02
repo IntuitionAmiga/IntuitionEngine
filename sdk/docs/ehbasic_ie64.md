@@ -2250,7 +2250,7 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 | `&HF2300`-`&HF231F` | Media Loader (SOUND PLAY) |
 | `&HF2320`-`&HF233F` | Program Executor (RUN "file") |
 | `&HF2380`-`&HF2383` | System Control (GC trigger) |
-| `&HF4000`-`&HF5000` | Voodoo 3DFX |
+| `&HF8000`-`&HD0000` | Voodoo 3DFX |
 
 ### EhBASIC Memory Layout
 
@@ -2471,30 +2471,30 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF2190`-`&HF21A0` | Player/missile sizes |
 | `&HF21A4`-`&HF21B4` | Player/missile graphics patterns |
 
-### 9.11 Voodoo 3DFX Registers (`&HF4000`-`&HF5000`)
+### 9.11 Voodoo 3DFX Registers (`&HF8000`-`&HF87FF`, texture memory `&HD0000`-`&HDFFFF`)
 
 | Address | Name | Description |
 |---------|------|-------------|
-| `&HF4000` | VOODOO_STATUS | Status flags (read-only) |
-| `&HF4004` | VOODOO_ENABLE | Enable register |
-| `&HF4008`-`&HF401C` | VERTEX_AX..CY | Vertex coordinates (12.4 fixed-point) |
-| `&HF4020`-`&HF403C` | START_R..W | Vertex attributes (12.12 fixed-point) |
-| `&HF4080` | TRIANGLE_CMD | Submit triangle |
-| `&HF4104` | FBZCOLOR_PATH | Colour path control |
-| `&HF4108` | FOG_MODE | Fog mode |
-| `&HF410C` | ALPHA_MODE | Alpha blending mode |
-| `&HF4110` | FBZ_MODE | Framebuffer Z mode (depth, clipping) |
-| `&HF4114` | LFB_MODE | Linear framebuffer mode |
-| `&HF4118` | CLIP_LEFT_RIGHT | Clip rectangle X |
-| `&HF411C` | CLIP_LOW_Y_HIGH | Clip rectangle Y |
-| `&HF4124` | FAST_FILL_CMD | Fast fill command |
-| `&HF4128` | SWAP_BUFFER_CMD | Swap buffers |
-| `&HF4214` | VIDEO_DIM | Video dimensions |
-| `&HF4300` | TEXTURE_MODE | Texture mode |
-| `&HF430C` | TEX_BASE0 | Texture base address |
-| `&HF4330` | TEX_WIDTH | Texture width |
-| `&HF4334` | TEX_HEIGHT | Texture height |
-| `&HF4338` | TEX_UPLOAD | Texture upload trigger |
+| `&HF8000` | VOODOO_STATUS | Status flags (read-only) |
+| `&HF8004` | VOODOO_ENABLE | Enable register |
+| `&HF8008`-`&HF801C` | VERTEX_AX..CY | Vertex coordinates (12.4 fixed-point) |
+| `&HF8020`-`&HF803C` | START_R..W | Vertex attributes (12.12 fixed-point) |
+| `&HF8080` | TRIANGLE_CMD | Submit triangle |
+| `&HF8104` | FBZCOLOR_PATH | Colour path control |
+| `&HF8108` | FOG_MODE | Fog mode |
+| `&HF810C` | ALPHA_MODE | Alpha blending mode |
+| `&HF8110` | FBZ_MODE | Framebuffer Z mode (depth, clipping) |
+| `&HF8114` | LFB_MODE | Linear framebuffer mode |
+| `&HF8118` | CLIP_LEFT_RIGHT | Clip rectangle X |
+| `&HF811C` | CLIP_LOW_Y_HIGH | Clip rectangle Y |
+| `&HF8124` | FAST_FILL_CMD | Fast fill command |
+| `&HF8128` | SWAP_BUFFER_CMD | Swap buffers |
+| `&HF8214` | VIDEO_DIM | Video dimensions |
+| `&HF8300` | TEXTURE_MODE | Texture mode |
+| `&HF830C` | TEX_BASE0 | Texture base address |
+| `&HF8330` | TEX_WIDTH | Texture width |
+| `&HF8334` | TEX_HEIGHT | Texture height |
+| `&HF8338` | TEX_UPLOAD | Texture upload trigger |
 
 ### 9.12 Video Chip Registers (`&HF0000`-`&HF0057`)
 

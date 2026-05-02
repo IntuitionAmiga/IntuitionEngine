@@ -901,79 +901,88 @@ COP_SETBASE_GTIA  equ 0x8003C850            ; GTIA_BASE (0xF2140 >> 2)
 ; ============================================================================
 
 ; Base address
-VOODOO_BASE           equ 0xF4000
+VOODOO_BASE           equ 0xF8000
+VOODOO_END            equ 0xF87FF
 
 ; Status register (read-only)
-VOODOO_STATUS         equ 0xF4000
+VOODOO_STATUS         equ 0xF8000
 
 ; Enable register (write-only)
-VOODOO_ENABLE         equ 0xF4004
+VOODOO_ENABLE         equ 0xF8004
 
 ; Vertex coordinate registers (12.4 fixed-point)
-VOODOO_VERTEX_AX      equ 0xF4008
-VOODOO_VERTEX_AY      equ 0xF400C
-VOODOO_VERTEX_BX      equ 0xF4010
-VOODOO_VERTEX_BY      equ 0xF4014
-VOODOO_VERTEX_CX      equ 0xF4018
-VOODOO_VERTEX_CY      equ 0xF401C
+VOODOO_VERTEX_AX      equ 0xF8008
+VOODOO_VERTEX_AY      equ 0xF800C
+VOODOO_VERTEX_BX      equ 0xF8010
+VOODOO_VERTEX_BY      equ 0xF8014
+VOODOO_VERTEX_CX      equ 0xF8018
+VOODOO_VERTEX_CY      equ 0xF801C
 
 ; Vertex attribute start values (12.12 fixed-point)
-VOODOO_START_R        equ 0xF4020
-VOODOO_START_G        equ 0xF4024
-VOODOO_START_B        equ 0xF4028
-VOODOO_START_Z        equ 0xF402C
-VOODOO_START_A        equ 0xF4030
-VOODOO_START_S        equ 0xF4034
-VOODOO_START_T        equ 0xF4038
-VOODOO_START_W        equ 0xF403C
+VOODOO_START_R        equ 0xF8020
+VOODOO_START_G        equ 0xF8024
+VOODOO_START_B        equ 0xF8028
+VOODOO_START_Z        equ 0xF802C
+VOODOO_START_A        equ 0xF8030
+VOODOO_START_S        equ 0xF8034
+VOODOO_START_T        equ 0xF8038
+VOODOO_START_W        equ 0xF803C
 
 ; Vertex attribute gradients (per-scanline deltas for interpolation)
-VOODOO_DRDX           equ 0xF4040     ; dR/dX
-VOODOO_DGDX           equ 0xF4044     ; dG/dX
-VOODOO_DBDX           equ 0xF4048     ; dB/dX
-VOODOO_DZDX           equ 0xF404C     ; dZ/dX
-VOODOO_DADX           equ 0xF4050     ; dA/dX
-VOODOO_DSDX           equ 0xF4054     ; dS/dX
-VOODOO_DTDX           equ 0xF4058     ; dT/dX
-VOODOO_DWDX           equ 0xF405C     ; dW/dX
-VOODOO_DRDY           equ 0xF4060     ; dR/dY
-VOODOO_DGDY           equ 0xF4064     ; dG/dY
-VOODOO_DBDY           equ 0xF4068     ; dB/dY
-VOODOO_DZDY           equ 0xF406C     ; dZ/dY
-VOODOO_DADY           equ 0xF4070     ; dA/dY
-VOODOO_DSDY           equ 0xF4074     ; dS/dY
-VOODOO_DTDY           equ 0xF4078     ; dT/dY
-VOODOO_DWDY           equ 0xF407C     ; dW/dY
+VOODOO_DRDX           equ 0xF8040     ; dR/dX
+VOODOO_DGDX           equ 0xF8044     ; dG/dX
+VOODOO_DBDX           equ 0xF8048     ; dB/dX
+VOODOO_DZDX           equ 0xF804C     ; dZ/dX
+VOODOO_DADX           equ 0xF8050     ; dA/dX
+VOODOO_DSDX           equ 0xF8054     ; dS/dX
+VOODOO_DTDX           equ 0xF8058     ; dT/dX
+VOODOO_DWDX           equ 0xF805C     ; dW/dX
+VOODOO_DRDY           equ 0xF8060     ; dR/dY
+VOODOO_DGDY           equ 0xF8064     ; dG/dY
+VOODOO_DBDY           equ 0xF8068     ; dB/dY
+VOODOO_DZDY           equ 0xF806C     ; dZ/dY
+VOODOO_DADY           equ 0xF8070     ; dA/dY
+VOODOO_DSDY           equ 0xF8074     ; dS/dY
+VOODOO_DTDY           equ 0xF8078     ; dT/dY
+VOODOO_DWDY           equ 0xF807C     ; dW/dY
 
 ; Command registers
-VOODOO_TRIANGLE_CMD   equ 0xF4080
-VOODOO_COLOR_SELECT   equ 0xF4088
-VOODOO_FBZCOLOR_PATH  equ 0xF4104
-VOODOO_FOG_MODE       equ 0xF4108
-VOODOO_ALPHA_MODE     equ 0xF410C
-VOODOO_FBZ_MODE       equ 0xF4110
-VOODOO_LFB_MODE       equ 0xF4114
-VOODOO_CLIP_LEFT_RIGHT equ 0xF4118
-VOODOO_CLIP_LOW_Y_HIGH equ 0xF411C
-VOODOO_NOP_CMD        equ 0xF4120
-VOODOO_FAST_FILL_CMD  equ 0xF4124
-VOODOO_SWAP_BUFFER_CMD equ 0xF4128
+VOODOO_TRIANGLE_CMD   equ 0xF8080
+VOODOO_COLOR_SELECT   equ 0xF8088
+VOODOO_FBZCOLOR_PATH  equ 0xF8104
+VOODOO_FOG_MODE       equ 0xF8108
+VOODOO_ALPHA_MODE     equ 0xF810C
+VOODOO_FBZ_MODE       equ 0xF8110
+VOODOO_LFB_MODE       equ 0xF8114
+VOODOO_CLIP_LEFT_RIGHT equ 0xF8118
+VOODOO_CLIP_LOW_Y_HIGH equ 0xF811C
+VOODOO_NOP_CMD        equ 0xF8120
+VOODOO_FAST_FILL_CMD  equ 0xF8124
+VOODOO_SWAP_BUFFER_CMD equ 0xF8128
 
 ; Configuration registers
-VOODOO_FOG_COLOR      equ 0xF41C4
-VOODOO_ZA_COLOR       equ 0xF41C8
-VOODOO_CHROMA_KEY     equ 0xF41CC
-VOODOO_COLOR0         equ 0xF41D8
-VOODOO_COLOR1         equ 0xF41DC
-VOODOO_VIDEO_DIM      equ 0xF4214
+VOODOO_FOG_COLOR      equ 0xF81C4
+VOODOO_ZA_COLOR       equ 0xF81C8
+VOODOO_CHROMA_KEY     equ 0xF81CC
+VOODOO_COLOR0         equ 0xF81D8
+VOODOO_COLOR1         equ 0xF81DC
+VOODOO_VIDEO_DIM      equ 0xF8214
 
 ; Texture registers
-VOODOO_TEXTURE_MODE   equ 0xF4300
-VOODOO_TEX_BASE0      equ 0xF430C
-VOODOO_TEX_WIDTH      equ 0xF4330
-VOODOO_TEX_HEIGHT     equ 0xF4334
-VOODOO_TEX_UPLOAD     equ 0xF4338
-VOODOO_TEXMEM_BASE    equ 0xF5000
+VOODOO_TEXTURE_MODE   equ 0xF8300
+VOODOO_TEX_BASE0      equ 0xF830C
+VOODOO_TEX_WIDTH      equ 0xF8330
+VOODOO_TEX_HEIGHT     equ 0xF8334
+VOODOO_TEX_UPLOAD     equ 0xF8338
+VOODOO_TEXMEM_BASE    equ 0xD0000
+VOODOO_TEXMEM_SIZE    equ 0x10000
+VOODOO_PALETTE_BASE   equ 0xF8400
+
+; 6502 banked Voodoo aperture constants (for IE65 targets)
+VOODOO_6502_WINDOW_BASE equ 0xE000
+VOODOO_6502_WINDOW_SIZE equ 0x1000
+VOODOO_6502_BANK_HI     equ 0xF7F2
+VOODOO_6502_BANK_PAGE_HI equ 0xF7F3
 
 ; Status register bits
 VOODOO_STATUS_FBI_BUSY    equ 0x01
@@ -1051,7 +1060,7 @@ VOODOO_TEX_FMT_ARGB4444 equ 9
 VOODOO_TEX_FMT_ARGB8888 equ 10
 
 ; Clip register packing
-VOODOO_CLIP_MASK        equ 0x3FF
+VOODOO_CLIP_MASK        equ 0xFFFF
 
 ; Fixed-point shift amounts
 VOODOO_FIXED_12_4       equ 4
@@ -1102,7 +1111,7 @@ VOODOO_FOG_TABLE_SHIFT  equ 8
 VOODOO_FOG_TABLE_MASK   equ 0x3F
 
 ; Fog table constants
-VOODOO_FOG_TABLE_BASE   equ 0xF4140
+VOODOO_FOG_TABLE_BASE   equ 0xF8140
 VOODOO_FOG_TABLE_SIZE   equ 64
 
 ; fbzMode dithering bits

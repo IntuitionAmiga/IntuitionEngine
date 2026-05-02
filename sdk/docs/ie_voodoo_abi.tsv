@@ -1,0 +1,81 @@
+name	offset	width	access	reset	status	side_effects	units
+VOODOO_STATUS	0x000	32	R	0x00000000	implemented	read status bits	register
+VOODOO_ENABLE	0x004	32	W	0x00000000	implemented	enable or disable compositor source	boolean
+VOODOO_VERTEX_AX	0x008	32	W	0x00000000	implemented	set vertex A X	12.4 fixed
+VOODOO_VERTEX_AY	0x00C	32	W	0x00000000	implemented	set vertex A Y	12.4 fixed
+VOODOO_VERTEX_BX	0x010	32	W	0x00000000	implemented	set vertex B X	12.4 fixed
+VOODOO_VERTEX_BY	0x014	32	W	0x00000000	implemented	set vertex B Y	12.4 fixed
+VOODOO_VERTEX_CX	0x018	32	W	0x00000000	implemented	set vertex C X	12.4 fixed
+VOODOO_VERTEX_CY	0x01C	32	W	0x00000000	implemented	set vertex C Y	12.4 fixed
+VOODOO_START_R	0x020	32	W	0x00000000	implemented	set red attribute	12.12 fixed
+VOODOO_START_G	0x024	32	W	0x00000000	implemented	set green attribute	12.12 fixed
+VOODOO_START_B	0x028	32	W	0x00000000	implemented	set blue attribute	12.12 fixed
+VOODOO_START_Z	0x02C	32	W	0x00000000	implemented	set depth attribute	20.12 fixed
+VOODOO_START_A	0x030	32	W	0x00000000	implemented	set alpha attribute	12.12 fixed
+VOODOO_START_S	0x034	32	W	0x00000000	implemented	set texture S	14.18 fixed
+VOODOO_START_T	0x038	32	W	0x00000000	implemented	set texture T	14.18 fixed
+VOODOO_START_W	0x03C	32	W	0x00000000	implemented	set reciprocal W	2.30 fixed
+VOODOO_DRDX	0x040	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DGDX	0x044	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DBDX	0x048	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DZDX	0x04C	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DADX	0x050	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DSDX	0x054	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DTDX	0x058	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DWDX	0x05C	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DRDY	0x060	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DGDY	0x064	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DBDY	0x068	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DZDY	0x06C	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DADY	0x070	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DSDY	0x074	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DTDY	0x078	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_DWDY	0x07C	32	W	0x00000000	implemented	accepted and forwarded to backend slope state	attribute delta
+VOODOO_TRIANGLE_CMD	0x080	32	W	0x00000000	implemented	submit triangle	command
+VOODOO_FTRIANGLECMD	0x084	32	W	0x00000000	implemented	submit fast triangle command	command
+VOODOO_COLOR_SELECT	0x088	32	W	0x00000000	implemented	select per-vertex attribute target	vertex index
+VOODOO_FBZCOLOR_PATH	0x104	32	RW	0x00000000	implemented	set backend color path	bitfield
+VOODOO_FOG_MODE	0x108	32	RW	0x00000000	implemented	set fog mode	bitfield
+VOODOO_ALPHA_MODE	0x10C	32	RW	0x00000000	implemented	set alpha test and blend	bitfield
+VOODOO_FBZ_MODE	0x110	32	RW	0x00000630	implemented	set depth/framebuffer mode	bitfield
+VOODOO_LFB_MODE	0x114	32	RW	0x00000000	implemented	forwarded to backend LFB mode	bitfield
+VOODOO_CLIP_LEFT_RIGHT	0x118	32	RW	0x02800000	implemented	set X clip rectangle	packed pixels
+VOODOO_CLIP_LOW_Y_HIGH	0x11C	32	RW	0x01E00000	implemented	set Y clip rectangle	packed pixels
+VOODOO_NOP_CMD	0x120	32	W	0x00000000	implemented	no operation	command
+VOODOO_FAST_FILL_CMD	0x124	32	W	0x00000000	implemented	clear framebuffer	command
+VOODOO_SWAP_BUFFER_CMD	0x128	32	W	0x00000000	implemented	flush batch and swap buffers	command
+VOODOO_FOG_TABLE_BASE	0x140	32	RW	0x00000000	implemented	set backend fog table entry	table
+VOODOO_FOG_COLOR	0x1C4	32	RW	0x00000000	implemented	set backend fog color	0x00RRGGBB
+VOODOO_ZA_COLOR	0x1C8	32	RW	0x00000000	implemented	set Z/A constant	packed
+VOODOO_CHROMA_KEY	0x1CC	32	RW	0x00000000	implemented	set chroma key	0x00RRGGBB
+VOODOO_CHROMA_RANGE	0x1D0	32	RW	0x00000000	implemented	set chroma max range	packed range
+VOODOO_STIPPLE	0x1D4	32	RW	0x00000000	implemented	set stipple pattern	pattern
+VOODOO_COLOR0	0x1D8	32	RW	0x00000000	implemented	set fill color	ARGB
+VOODOO_COLOR1	0x1DC	32	RW	0xFFFFFFFF	implemented	set constant color 1	ARGB
+VOODOO_FBI_INIT0	0x200	32	RW	0x00000000	compat-readback	accepted readback	init bitfield
+VOODOO_FBI_INIT1	0x204	32	RW	0x00000000	compat-readback	accepted readback	init bitfield
+VOODOO_FBI_INIT2	0x208	32	RW	0x00000000	compat-readback	accepted readback	init bitfield
+VOODOO_FBI_INIT3	0x20C	32	RW	0x00000000	compat-readback	accepted readback	init bitfield
+VOODOO_FBI_INIT4	0x210	32	RW	0x00000000	compat-readback	accepted readback	init bitfield
+VOODOO_VIDEO_DIM	0x214	32	RW	0x028001E0	implemented	set output dimensions	width<<16|height
+VOODOO_BACK_PORCH	0x218	32	RW	0x00000000	compat-readback	accepted readback	timing
+VOODOO_VIDEO_DIM_V	0x21C	32	RW	0x00000000	compat-readback	accepted readback	timing
+VOODOO_H_SYNC	0x220	32	RW	0x00000000	compat-readback	accepted readback	timing
+VOODOO_V_SYNC	0x224	32	RW	0x00000000	compat-readback	accepted readback	timing
+VOODOO_DAC_DATA	0x22C	32	RW	0x00000000	compat-readback	accepted readback	DAC
+VOODOO_TEXTURE_MODE	0x300	32	RW	0x00000000	implemented	set texture mode	bitfield
+VOODOO_TLOD	0x304	32	RW	0x00000000	implemented	set texture LOD state	bitfield
+VOODOO_TDETAIL	0x308	32	RW	0x00000000	compat-readback	accepted readback	bitfield
+VOODOO_TEX_BASE0	0x30C	32	RW	0x00000000	implemented	texture base LOD 0	byte address
+VOODOO_TEX_BASE1	0x310	32	RW	0x00000000	implemented	set texture base LOD 1	byte address
+VOODOO_TEX_BASE2	0x314	32	RW	0x00000000	implemented	set texture base LOD 2	byte address
+VOODOO_TEX_BASE3	0x318	32	RW	0x00000000	implemented	set texture base LOD 3	byte address
+VOODOO_TEX_BASE4	0x31C	32	RW	0x00000000	implemented	set texture base LOD 4	byte address
+VOODOO_TEX_BASE5	0x320	32	RW	0x00000000	implemented	set texture base LOD 5	byte address
+VOODOO_TEX_BASE6	0x324	32	RW	0x00000000	implemented	set texture base LOD 6	byte address
+VOODOO_TEX_BASE7	0x328	32	RW	0x00000000	implemented	set texture base LOD 7	byte address
+VOODOO_TEX_BASE8	0x32C	32	RW	0x00000000	implemented	set texture base LOD 8	byte address
+VOODOO_TEX_WIDTH	0x330	32	RW	0x00000000	implemented	set upload width	pixels
+VOODOO_TEX_HEIGHT	0x334	32	RW	0x00000000	implemented	set upload height	pixels
+VOODOO_TEX_UPLOAD	0x338	32	W	0x00000000	implemented	upload texmem to backend	command
+VOODOO_PALETTE_BASE	0x400	32	RW	0x00000000	implemented	set backend palette entry	table

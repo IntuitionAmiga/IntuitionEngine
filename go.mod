@@ -3,8 +3,8 @@ module github.com/intuitionamiga/IntuitionEngine
 go 1.26.0
 
 require (
-	github.com/ebitengine/oto/v3 v3.5.0-alpha.4
-	github.com/ebitengine/purego v0.11.0-alpha.1.0.20260318130922-386f7c8fb549
+	github.com/ebitengine/oto/v3 v3.5.0-alpha.6
+	github.com/ebitengine/purego v0.11.0-alpha.2
 	github.com/goki/vulkan v1.0.8
 	github.com/hajimehoshi/ebiten/v2 v2.10.0-alpha.11.0.20260419134110-e144fc3fc9ad
 	golang.org/x/image v0.39.0

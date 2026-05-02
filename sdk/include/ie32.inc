@@ -1073,54 +1073,63 @@
 ; Vulkan-accelerated 3D graphics. See ie68.inc for detailed documentation.
 
 ; Base address
-.equ VOODOO_BASE           0xF4000
+.equ VOODOO_BASE           0xF8000
+.equ VOODOO_END            0xF87FF
 
 ; Status register (read-only)
-.equ VOODOO_STATUS         0xF4000
+.equ VOODOO_STATUS         0xF8000
 
 ; Enable register (write-only) - enables the Voodoo engine for rendering
-.equ VOODOO_ENABLE         0xF4004
+.equ VOODOO_ENABLE         0xF8004
 
 ; Vertex coordinate registers (12.4 fixed-point)
-.equ VOODOO_VERTEX_AX      0xF4008
-.equ VOODOO_VERTEX_AY      0xF400C
-.equ VOODOO_VERTEX_BX      0xF4010
-.equ VOODOO_VERTEX_BY      0xF4014
-.equ VOODOO_VERTEX_CX      0xF4018
-.equ VOODOO_VERTEX_CY      0xF401C
+.equ VOODOO_VERTEX_AX      0xF8008
+.equ VOODOO_VERTEX_AY      0xF800C
+.equ VOODOO_VERTEX_BX      0xF8010
+.equ VOODOO_VERTEX_BY      0xF8014
+.equ VOODOO_VERTEX_CX      0xF8018
+.equ VOODOO_VERTEX_CY      0xF801C
 
 ; Vertex attribute start values (12.12 fixed-point)
-.equ VOODOO_START_R        0xF4020
-.equ VOODOO_START_G        0xF4024
-.equ VOODOO_START_B        0xF4028
-.equ VOODOO_START_Z        0xF402C
-.equ VOODOO_START_A        0xF4030
-.equ VOODOO_START_S        0xF4034
-.equ VOODOO_START_T        0xF4038
-.equ VOODOO_START_W        0xF403C
+.equ VOODOO_START_R        0xF8020
+.equ VOODOO_START_G        0xF8024
+.equ VOODOO_START_B        0xF8028
+.equ VOODOO_START_Z        0xF802C
+.equ VOODOO_START_A        0xF8030
+.equ VOODOO_START_S        0xF8034
+.equ VOODOO_START_T        0xF8038
+.equ VOODOO_START_W        0xF803C
 
 ; Command registers
-.equ VOODOO_TRIANGLE_CMD   0xF4080
-.equ VOODOO_COLOR_SELECT   0xF4088          ; Select vertex (0/1/2) for Gouraud shading
-.equ VOODOO_ALPHA_MODE     0xF410C
-.equ VOODOO_FBZ_MODE       0xF4110
-.equ VOODOO_CLIP_LEFT_RIGHT 0xF4118
-.equ VOODOO_CLIP_LOW_Y_HIGH 0xF411C
-.equ VOODOO_FAST_FILL_CMD  0xF4124
-.equ VOODOO_SWAP_BUFFER_CMD 0xF4128
+.equ VOODOO_TRIANGLE_CMD   0xF8080
+.equ VOODOO_COLOR_SELECT   0xF8088          ; Select vertex (0/1/2) for Gouraud shading
+.equ VOODOO_ALPHA_MODE     0xF810C
+.equ VOODOO_FBZ_MODE       0xF8110
+.equ VOODOO_CLIP_LEFT_RIGHT 0xF8118
+.equ VOODOO_CLIP_LOW_Y_HIGH 0xF811C
+.equ VOODOO_FAST_FILL_CMD  0xF8124
+.equ VOODOO_SWAP_BUFFER_CMD 0xF8128
 
 ; Configuration registers
-.equ VOODOO_COLOR0         0xF41D8
-.equ VOODOO_VIDEO_DIM      0xF4214
+.equ VOODOO_COLOR0         0xF81D8
+.equ VOODOO_VIDEO_DIM      0xF8214
 
 ; Texture registers
-.equ VOODOO_TEXTURE_MODE   0xF4300
-.equ VOODOO_TEX_BASE0      0xF430C
-.equ VOODOO_TEX_WIDTH      0xF4330
-.equ VOODOO_TEX_HEIGHT     0xF4334
-.equ VOODOO_TEX_UPLOAD     0xF4338
-.equ VOODOO_TEXMEM_BASE    0xF5000
-.equ VOODOO_FBZCOLOR_PATH  0xF4104
+.equ VOODOO_TEXTURE_MODE   0xF8300
+.equ VOODOO_TEX_BASE0      0xF830C
+.equ VOODOO_TEX_WIDTH      0xF8330
+.equ VOODOO_TEX_HEIGHT     0xF8334
+.equ VOODOO_TEX_UPLOAD     0xF8338
+.equ VOODOO_TEXMEM_BASE    0xD0000
+.equ VOODOO_TEXMEM_SIZE    0x10000
+.equ VOODOO_PALETTE_BASE   0xF8400
+.equ VOODOO_FBZCOLOR_PATH  0xF8104
+
+; 6502 banked Voodoo aperture constants (for IE65 targets)
+.equ VOODOO_6502_WINDOW_BASE 0xE000
+.equ VOODOO_6502_WINDOW_SIZE 0x1000
+.equ VOODOO_6502_BANK_HI     0xF7F2
+.equ VOODOO_6502_BANK_PAGE_HI 0xF7F3
 
 ; fbzMode bits
 .equ VOODOO_FBZ_CLIPPING     0x0001
@@ -1252,7 +1261,7 @@
 .equ VOODOO_FOG_TABLE_MASK   0x3F           ; 6-bit fog table index mask
 
 ; Phase 6: Fog table constants
-.equ VOODOO_FOG_TABLE_BASE   0xF4140        ; Fog table base address (64 entries)
+.equ VOODOO_FOG_TABLE_BASE   0xF8140        ; Fog table base address (64 entries)
 .equ VOODOO_FOG_TABLE_SIZE   64             ; Number of fog table entries
 
 ; Phase 6: fbzMode dithering bits (add to fbzMode)

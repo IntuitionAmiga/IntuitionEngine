@@ -3177,7 +3177,7 @@ func TestHW_GTIA_Prior(t *testing.T) {
 func TestHW_Voodoo_OnOff(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON")
-	en := readBusMem32(h, 0xF4004) // VOODOO_ENABLE
+	en := readBusMem32(h, 0xF8004) // VOODOO_ENABLE
 	if en != 1 {
 		t.Fatalf("VOODOO ON: expected 1, got %d", en)
 	}
@@ -3186,7 +3186,7 @@ func TestHW_Voodoo_OnOff(t *testing.T) {
 func TestHW_Voodoo_Dim(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO DIM 640, 480")
-	dim := readBusMem32(h, 0xF4214) // VOODOO_VIDEO_DIM
+	dim := readBusMem32(h, 0xF8214) // VOODOO_VIDEO_DIM
 	// (640 << 16) | 480 = 0x028001E0
 	if dim != 0x028001E0 {
 		t.Fatalf("VOODOO DIM: expected 0x028001E0, got 0x%08X", dim)
@@ -3196,7 +3196,7 @@ func TestHW_Voodoo_Dim(t *testing.T) {
 func TestHW_Voodoo_Clear(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO CLEAR 255")
-	color := readBusMem32(h, 0xF41D8) // VOODOO_COLOR0
+	color := readBusMem32(h, 0xF81D8) // VOODOO_COLOR0
 	if color != 255 {
 		t.Fatalf("VOODOO CLEAR: COLOR0 expected 255, got %d", color)
 	}
@@ -3206,7 +3206,7 @@ func TestHW_Voodoo_Swap(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// VOODOO SWAP writes 0 to SWAP_BUFFER_CMD to trigger swap
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO SWAP")
-	en := readBusMem32(h, 0xF4004)
+	en := readBusMem32(h, 0xF8004)
 	if en != 1 {
 		t.Fatalf("VOODOO SWAP: ENABLE expected 1, got %d", en)
 	}
@@ -3215,11 +3215,11 @@ func TestHW_Voodoo_Swap(t *testing.T) {
 func TestHW_Voodoo_Clip(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO CLIP 10, 20, 630, 460")
-	lr := readBusMem32(h, 0xF4118) // CLIP_LEFT_RIGHT = (10<<16)|630
+	lr := readBusMem32(h, 0xF8118) // CLIP_LEFT_RIGHT = (10<<16)|630
 	if lr != 0x000A0276 {
 		t.Fatalf("VOODOO CLIP: LEFT_RIGHT expected 0x000A0276, got 0x%08X", lr)
 	}
-	tb := readBusMem32(h, 0xF411C) // CLIP_LOW_Y_HIGH = (20<<16)|460
+	tb := readBusMem32(h, 0xF811C) // CLIP_LOW_Y_HIGH = (20<<16)|460
 	if tb != 0x001401CC {
 		t.Fatalf("VOODOO CLIP: LOW_Y_HIGH expected 0x001401CC, got 0x%08X", tb)
 	}
@@ -3230,12 +3230,12 @@ func TestHW_Vertex_Triangle(t *testing.T) {
 	_, h := execStmtTestWithBus(t, asmBin,
 		"10 VERTEX A 100, 50\n20 VERTEX B 200, 150\n30 VERTEX C 50, 150\n40 TRIANGLE")
 	// 12.4 fixed-point: value << 4
-	ax := readBusMem32(h, 0xF4008) // VERTEX_AX = 100<<4 = 1600
-	ay := readBusMem32(h, 0xF400C) // VERTEX_AY = 50<<4 = 800
-	bx := readBusMem32(h, 0xF4010) // VERTEX_BX = 200<<4 = 3200
-	by := readBusMem32(h, 0xF4014) // VERTEX_BY = 150<<4 = 2400
-	cx := readBusMem32(h, 0xF4018) // VERTEX_CX = 50<<4 = 800
-	cy := readBusMem32(h, 0xF401C) // VERTEX_CY = 150<<4 = 2400
+	ax := readBusMem32(h, 0xF8008) // VERTEX_AX = 100<<4 = 1600
+	ay := readBusMem32(h, 0xF800C) // VERTEX_AY = 50<<4 = 800
+	bx := readBusMem32(h, 0xF8010) // VERTEX_BX = 200<<4 = 3200
+	by := readBusMem32(h, 0xF8014) // VERTEX_BY = 150<<4 = 2400
+	cx := readBusMem32(h, 0xF8018) // VERTEX_CX = 50<<4 = 800
+	cy := readBusMem32(h, 0xF801C) // VERTEX_CY = 150<<4 = 2400
 	if ax != 1600 {
 		t.Fatalf("VERTEX A: AX expected 1600, got %d", ax)
 	}
@@ -3259,7 +3259,7 @@ func TestHW_Vertex_Triangle(t *testing.T) {
 func TestHW_ZBuffer_On(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 ZBUFFER ON")
-	mode := readBusMem32(h, 0xF4110) // VOODOO_FBZ_MODE
+	mode := readBusMem32(h, 0xF8110) // VOODOO_FBZ_MODE
 	// VOODOO_FBZ_DEPTH_ENABLE = 0x0010
 	if mode&0x0010 == 0 {
 		t.Fatalf("ZBUFFER ON: depth enable bit not set, got 0x%08X", mode)
@@ -3270,7 +3270,7 @@ func TestHW_ZBuffer_Func(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// Set depth func to LESS (1) → bits 1-3 = 1<<1 = 0x02
 	_, h := execStmtTestWithBus(t, asmBin, "10 ZBUFFER ON\n20 ZBUFFER FUNC 1")
-	mode := readBusMem32(h, 0xF4110)
+	mode := readBusMem32(h, 0xF8110)
 	funcBits := (mode >> 1) & 7
 	if funcBits != 1 {
 		t.Fatalf("ZBUFFER FUNC: expected func=1, got %d (mode=0x%08X)", funcBits, mode)
@@ -3280,8 +3280,8 @@ func TestHW_ZBuffer_Func(t *testing.T) {
 func TestHW_Texture_Dim(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 TEXTURE DIM 256, 128")
-	tw := readBusMem32(h, 0xF4330) // VOODOO_TEX_WIDTH
-	th := readBusMem32(h, 0xF4334) // VOODOO_TEX_HEIGHT
+	tw := readBusMem32(h, 0xF8330) // VOODOO_TEX_WIDTH
+	th := readBusMem32(h, 0xF8334) // VOODOO_TEX_HEIGHT
 	if tw != 256 {
 		t.Fatalf("TEXTURE DIM: width expected 256, got %d", tw)
 	}
@@ -3293,7 +3293,7 @@ func TestHW_Texture_Dim(t *testing.T) {
 func TestHW_Texture_Mode(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 TEXTURE MODE 33")
-	mode := readBusMem32(h, 0xF4300) // VOODOO_TEXTURE_MODE
+	mode := readBusMem32(h, 0xF8300) // VOODOO_TEXTURE_MODE
 	if mode != 33 {
 		t.Fatalf("TEXTURE MODE: expected 33, got %d", mode)
 	}
@@ -3735,7 +3735,7 @@ func TestHW_GTIA_Gractl(t *testing.T) {
 func TestHW_Voodoo_Combine(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO COMBINE 4096")
-	path := readBusMem32(h, 0xF4104) // VOODOO_FBZCOLOR_PATH
+	path := readBusMem32(h, 0xF8104) // VOODOO_FBZCOLOR_PATH
 	if path != 4096 {
 		t.Fatalf("VOODOO COMBINE: expected 4096, got %d", path)
 	}
@@ -3744,7 +3744,7 @@ func TestHW_Voodoo_Combine(t *testing.T) {
 func TestHW_Voodoo_Lfb(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO LFB 3")
-	lfb := readBusMem32(h, 0xF4114) // VOODOO_LFB_MODE
+	lfb := readBusMem32(h, 0xF8114) // VOODOO_LFB_MODE
 	if lfb != 3 {
 		t.Fatalf("VOODOO LFB: expected 3, got %d", lfb)
 	}
@@ -3757,7 +3757,7 @@ func TestHW_Voodoo_Lfb(t *testing.T) {
 func TestHW_ZBuffer_Off(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 ZBUFFER ON\n20 ZBUFFER OFF")
-	mode := readBusMem32(h, 0xF4110) // VOODOO_FBZ_MODE
+	mode := readBusMem32(h, 0xF8110) // VOODOO_FBZ_MODE
 	if mode&0x0010 != 0 {
 		t.Fatalf("ZBUFFER OFF: depth enable bit still set, mode=0x%04X", mode)
 	}
@@ -3766,7 +3766,7 @@ func TestHW_ZBuffer_Off(t *testing.T) {
 func TestHW_ZBuffer_WriteOn(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 ZBUFFER WRITE ON")
-	mode := readBusMem32(h, 0xF4110) // VOODOO_FBZ_MODE
+	mode := readBusMem32(h, 0xF8110) // VOODOO_FBZ_MODE
 	if mode&0x0400 == 0 {
 		t.Fatalf("ZBUFFER WRITE ON: depth write bit not set, mode=0x%04X", mode)
 	}
@@ -3775,7 +3775,7 @@ func TestHW_ZBuffer_WriteOn(t *testing.T) {
 func TestHW_ZBuffer_WriteOff(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 ZBUFFER WRITE ON\n20 ZBUFFER WRITE OFF")
-	mode := readBusMem32(h, 0xF4110) // VOODOO_FBZ_MODE
+	mode := readBusMem32(h, 0xF8110) // VOODOO_FBZ_MODE
 	if mode&0x0400 != 0 {
 		t.Fatalf("ZBUFFER WRITE OFF: depth write bit still set, mode=0x%04X", mode)
 	}
@@ -3788,7 +3788,7 @@ func TestHW_ZBuffer_WriteOff(t *testing.T) {
 func TestHW_Texture_On(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 TEXTURE ON")
-	mode := readBusMem32(h, 0xF4300) // VOODOO_TEXTURE_MODE
+	mode := readBusMem32(h, 0xF8300) // VOODOO_TEXTURE_MODE
 	if mode&0x0001 == 0 {
 		t.Fatalf("TEXTURE ON: enable bit not set, mode=0x%04X", mode)
 	}
@@ -3797,7 +3797,7 @@ func TestHW_Texture_On(t *testing.T) {
 func TestHW_Texture_Off(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 TEXTURE ON\n20 TEXTURE OFF")
-	mode := readBusMem32(h, 0xF4300) // VOODOO_TEXTURE_MODE
+	mode := readBusMem32(h, 0xF8300) // VOODOO_TEXTURE_MODE
 	if mode&0x0001 != 0 {
 		t.Fatalf("TEXTURE OFF: enable bit still set, mode=0x%04X", mode)
 	}
@@ -3807,7 +3807,7 @@ func TestHW_Texture_Base(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// TEXTURE BASE lod, addr
 	_, h := execStmtTestWithBus(t, asmBin, "10 TEXTURE BASE 0, 65536")
-	base := readBusMem32(h, 0xF430C) // VOODOO_TEX_BASE0
+	base := readBusMem32(h, 0xF830C) // VOODOO_TEX_BASE0
 	if base != 65536 {
 		t.Fatalf("TEXTURE BASE: expected 65536, got %d", base)
 	}
@@ -4916,9 +4916,9 @@ func TestHW_Sound_Play_SID_EndToEnd(t *testing.T) {
 func TestHW_Voodoo_Tricolor(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO TRICOLOR 100, 150, 200")
-	r := readBusMem32(h, 0xF4020) // VOODOO_START_R
-	g := readBusMem32(h, 0xF4024) // VOODOO_START_G
-	b := readBusMem32(h, 0xF4028) // VOODOO_START_B
+	r := readBusMem32(h, 0xF8020) // VOODOO_START_R
+	g := readBusMem32(h, 0xF8024) // VOODOO_START_G
+	b := readBusMem32(h, 0xF8028) // VOODOO_START_B
 	if r != 100 || g != 150 || b != 200 {
 		t.Fatalf("TRICOLOR: expected R=100 G=150 B=200, got R=%d G=%d B=%d", r, g, b)
 	}
@@ -4927,7 +4927,7 @@ func TestHW_Voodoo_Tricolor(t *testing.T) {
 func TestHW_Voodoo_TricolorAlpha(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO TRICOLOR 10, 20, 30, 255")
-	a := readBusMem32(h, 0xF4030) // VOODOO_START_A
+	a := readBusMem32(h, 0xF8030) // VOODOO_START_A
 	if a != 255 {
 		t.Fatalf("TRICOLOR A: expected 255, got %d", a)
 	}
@@ -4938,7 +4938,7 @@ func TestHW_Voodoo_TricolorAlpha(t *testing.T) {
 func TestHW_Voodoo_AlphaTestOn(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO ALPHA TEST ON")
-	mode := readBusMem32(h, 0xF410C) // VOODOO_ALPHA_MODE
+	mode := readBusMem32(h, 0xF810C) // VOODOO_ALPHA_MODE
 	if mode&0x01 == 0 {
 		t.Fatalf("ALPHA TEST ON: bit 0 not set, got 0x%X", mode)
 	}
@@ -4947,7 +4947,7 @@ func TestHW_Voodoo_AlphaTestOn(t *testing.T) {
 func TestHW_Voodoo_AlphaTestOff(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO ALPHA TEST ON\n30 VOODOO ALPHA TEST OFF")
-	mode := readBusMem32(h, 0xF410C) // VOODOO_ALPHA_MODE
+	mode := readBusMem32(h, 0xF810C) // VOODOO_ALPHA_MODE
 	if mode&0x01 != 0 {
 		t.Fatalf("ALPHA TEST OFF: bit 0 still set, got 0x%X", mode)
 	}
@@ -4956,7 +4956,7 @@ func TestHW_Voodoo_AlphaTestOff(t *testing.T) {
 func TestHW_Voodoo_AlphaBlendOn(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO ALPHA BLEND ON")
-	mode := readBusMem32(h, 0xF410C) // VOODOO_ALPHA_MODE
+	mode := readBusMem32(h, 0xF810C) // VOODOO_ALPHA_MODE
 	if mode&0x10 == 0 {
 		t.Fatalf("ALPHA BLEND ON: bit 4 not set, got 0x%X", mode)
 	}
@@ -4965,7 +4965,7 @@ func TestHW_Voodoo_AlphaBlendOn(t *testing.T) {
 func TestHW_Voodoo_AlphaFunc(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO ALPHA FUNC 5")
-	mode := readBusMem32(h, 0xF410C) // VOODOO_ALPHA_MODE
+	mode := readBusMem32(h, 0xF810C) // VOODOO_ALPHA_MODE
 	// ALPHA_FUNC is bits 1-3, value 5 shifted left by 1 = 0x0A
 	funcVal := (mode >> 1) & 7
 	if funcVal != 5 {
@@ -4978,7 +4978,7 @@ func TestHW_Voodoo_AlphaFunc(t *testing.T) {
 func TestHW_Voodoo_FogOn(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO FOG ON")
-	fogMode := readBusMem32(h, 0xF4108) // VOODOO_FOG_MODE
+	fogMode := readBusMem32(h, 0xF8108) // VOODOO_FOG_MODE
 	if fogMode&0x01 == 0 {
 		t.Fatalf("FOG ON: enable bit not set, got 0x%X", fogMode)
 	}
@@ -4987,7 +4987,7 @@ func TestHW_Voodoo_FogOn(t *testing.T) {
 func TestHW_Voodoo_FogOff(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO FOG ON\n30 VOODOO FOG OFF")
-	fogMode := readBusMem32(h, 0xF4108) // VOODOO_FOG_MODE
+	fogMode := readBusMem32(h, 0xF8108) // VOODOO_FOG_MODE
 	if fogMode&0x01 != 0 {
 		t.Fatalf("FOG OFF: enable bit still set, got 0x%X", fogMode)
 	}
@@ -4996,7 +4996,7 @@ func TestHW_Voodoo_FogOff(t *testing.T) {
 func TestHW_Voodoo_FogColor(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO FOG COLOR 64, 128, 192")
-	color := readBusMem32(h, 0xF41C4) // VOODOO_FOG_COLOR
+	color := readBusMem32(h, 0xF81C4) // VOODOO_FOG_COLOR
 	// Packed as (b<<16)|(g<<8)|r = (192<<16)|(128<<8)|64 = 0xC08040
 	expected := uint32(192<<16 | 128<<8 | 64)
 	if color != expected {
@@ -5009,7 +5009,7 @@ func TestHW_Voodoo_FogColor(t *testing.T) {
 func TestHW_Voodoo_DitherOn(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO DITHER ON")
-	fbzMode := readBusMem32(h, 0xF4110) // VOODOO_FBZ_MODE
+	fbzMode := readBusMem32(h, 0xF8110) // VOODOO_FBZ_MODE
 	if fbzMode&0x0100 == 0 {
 		t.Fatalf("DITHER ON: bit not set, got 0x%X", fbzMode)
 	}
@@ -5018,7 +5018,7 @@ func TestHW_Voodoo_DitherOn(t *testing.T) {
 func TestHW_Voodoo_DitherOff(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO DITHER ON\n30 VOODOO DITHER OFF")
-	fbzMode := readBusMem32(h, 0xF4110) // VOODOO_FBZ_MODE
+	fbzMode := readBusMem32(h, 0xF8110) // VOODOO_FBZ_MODE
 	if fbzMode&0x0100 != 0 {
 		t.Fatalf("DITHER OFF: bit still set, got 0x%X", fbzMode)
 	}
@@ -5029,7 +5029,7 @@ func TestHW_Voodoo_DitherOff(t *testing.T) {
 func TestHW_Voodoo_ChromakeyOn(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO CHROMAKEY ON")
-	fbzMode := readBusMem32(h, 0xF4110) // VOODOO_FBZ_MODE
+	fbzMode := readBusMem32(h, 0xF8110) // VOODOO_FBZ_MODE
 	if fbzMode&0x0002 == 0 {
 		t.Fatalf("CHROMAKEY ON: bit not set, got 0x%X", fbzMode)
 	}
@@ -5038,7 +5038,7 @@ func TestHW_Voodoo_ChromakeyOn(t *testing.T) {
 func TestHW_Voodoo_ChromakeyOff(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO CHROMAKEY ON\n30 VOODOO CHROMAKEY OFF")
-	fbzMode := readBusMem32(h, 0xF4110) // VOODOO_FBZ_MODE
+	fbzMode := readBusMem32(h, 0xF8110) // VOODOO_FBZ_MODE
 	if fbzMode&0x0002 != 0 {
 		t.Fatalf("CHROMAKEY OFF: bit still set, got 0x%X", fbzMode)
 	}
@@ -5047,7 +5047,7 @@ func TestHW_Voodoo_ChromakeyOff(t *testing.T) {
 func TestHW_Voodoo_ChromakeyColor(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO CHROMAKEY COLOR 0, 255, 0")
-	color := readBusMem32(h, 0xF41CC) // VOODOO_CHROMA_KEY
+	color := readBusMem32(h, 0xF81CC) // VOODOO_CHROMA_KEY
 	// Packed as (b<<16)|(g<<8)|r = (0<<16)|(255<<8)|0 = 0x00FF00
 	expected := uint32(0<<16 | 255<<8 | 0)
 	if color != expected {
@@ -5124,7 +5124,7 @@ func TestHW_Sound_FilterMod(t *testing.T) {
 func TestHW_Voodoo_AlphaSrc(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO ALPHA SRC 5")
-	mode := readBusMem32(h, 0xF410C) // VOODOO_ALPHA_MODE
+	mode := readBusMem32(h, 0xF810C) // VOODOO_ALPHA_MODE
 	srcField := (mode >> 8) & 0x0F
 	if srcField != 5 {
 		t.Fatalf("ALPHA SRC: expected 5 in bits 8-11, got %d (mode=0x%X)", srcField, mode)
@@ -5134,7 +5134,7 @@ func TestHW_Voodoo_AlphaSrc(t *testing.T) {
 func TestHW_Voodoo_AlphaDst(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO ALPHA DST 3")
-	mode := readBusMem32(h, 0xF410C) // VOODOO_ALPHA_MODE
+	mode := readBusMem32(h, 0xF810C) // VOODOO_ALPHA_MODE
 	dstField := (mode >> 12) & 0x0F
 	if dstField != 3 {
 		t.Fatalf("ALPHA DST: expected 3 in bits 12-15, got %d (mode=0x%X)", dstField, mode)
@@ -5148,8 +5148,8 @@ func TestHW_Voodoo_Pixel(t *testing.T) {
 	_, h := execStmtTestWithBus(t, asmBin,
 		"10 VOODOO ON\n20 VOODOO DIM 320, 200\n30 VOODOO PIXEL 10, 5, 42")
 	// Pixel at (10,5) with width=320: offset = 5*320+10 = 1610
-	// LFB base = 0xF4200, pixel addr = 0xF4200 + 1610*4 = 0xF4200 + 6440 = 0xF5B28
-	pixVal := readBusMem32(h, 0xF5B28)
+	// LFB/texture aperture base = 0xD0000, pixel addr = 0xD0000 + 1610*4 = 0xD1928
+	pixVal := readBusMem32(h, 0xD1928)
 	if pixVal != 42 {
 		t.Fatalf("VOODOO PIXEL (10,5,42): expected 42, got %d", pixVal)
 	}
@@ -5161,12 +5161,12 @@ func TestHW_Voodoo_Trishade(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin,
 		"10 VOODOO ON\n20 VOODOO TRISHADE 10, 20, 30, 40, 50, 60")
-	drdx := readBusMem32(h, 0xF4040) // VOODOO_DRDX
-	drdy := readBusMem32(h, 0xF4060) // VOODOO_DRDY
-	dgdx := readBusMem32(h, 0xF4044) // VOODOO_DGDX
-	dgdy := readBusMem32(h, 0xF4064) // VOODOO_DGDY
-	dbdx := readBusMem32(h, 0xF4048) // VOODOO_DBDX
-	dbdy := readBusMem32(h, 0xF4068) // VOODOO_DBDY
+	drdx := readBusMem32(h, 0xF8040) // VOODOO_DRDX
+	drdy := readBusMem32(h, 0xF8060) // VOODOO_DRDY
+	dgdx := readBusMem32(h, 0xF8044) // VOODOO_DGDX
+	dgdy := readBusMem32(h, 0xF8064) // VOODOO_DGDY
+	dbdx := readBusMem32(h, 0xF8048) // VOODOO_DBDX
+	dbdy := readBusMem32(h, 0xF8068) // VOODOO_DBDY
 	if drdx != 10 {
 		t.Fatalf("TRISHADE dR/dX: expected 10, got %d", drdx)
 	}
@@ -5193,9 +5193,9 @@ func TestHW_Voodoo_Tridepth(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin,
 		"10 VOODOO ON\n20 VOODOO TRIDEPTH 1000, 5, 3")
-	startZ := readBusMem32(h, 0xF402C) // VOODOO_START_Z
-	dzdx := readBusMem32(h, 0xF404C)   // VOODOO_DZDX
-	dzdy := readBusMem32(h, 0xF406C)   // VOODOO_DZDY
+	startZ := readBusMem32(h, 0xF802C) // VOODOO_START_Z
+	dzdx := readBusMem32(h, 0xF804C)   // VOODOO_DZDX
+	dzdy := readBusMem32(h, 0xF806C)   // VOODOO_DZDY
 	if startZ != 1000 {
 		t.Fatalf("TRIDEPTH START_Z: expected 1000, got %d", startZ)
 	}
@@ -5213,12 +5213,12 @@ func TestHW_Voodoo_Triuv(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin,
 		"10 VOODOO ON\n20 VOODOO TRIUV 100, 200, 1, 2, 3, 4")
-	startS := readBusMem32(h, 0xF4034) // VOODOO_START_S
-	startT := readBusMem32(h, 0xF4038) // VOODOO_START_T
-	dsdx := readBusMem32(h, 0xF4054)   // VOODOO_DSDX
-	dtdx := readBusMem32(h, 0xF4058)   // VOODOO_DTDX
-	dsdy := readBusMem32(h, 0xF4074)   // VOODOO_DSDY
-	dtdy := readBusMem32(h, 0xF4078)   // VOODOO_DTDY
+	startS := readBusMem32(h, 0xF8034) // VOODOO_START_S
+	startT := readBusMem32(h, 0xF8038) // VOODOO_START_T
+	dsdx := readBusMem32(h, 0xF8054)   // VOODOO_DSDX
+	dtdx := readBusMem32(h, 0xF8058)   // VOODOO_DTDX
+	dsdy := readBusMem32(h, 0xF8074)   // VOODOO_DSDY
+	dtdy := readBusMem32(h, 0xF8078)   // VOODOO_DTDY
 	if startS != 100 {
 		t.Fatalf("TRIUV START_S: expected 100, got %d", startS)
 	}
@@ -5245,9 +5245,9 @@ func TestHW_Voodoo_Triw(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin,
 		"10 VOODOO ON\n20 VOODOO TRIW 65536, 100, 50")
-	startW := readBusMem32(h, 0xF403C) // VOODOO_START_W
-	dwdx := readBusMem32(h, 0xF405C)   // VOODOO_DWDX
-	dwdy := readBusMem32(h, 0xF407C)   // VOODOO_DWDY
+	startW := readBusMem32(h, 0xF803C) // VOODOO_START_W
+	dwdx := readBusMem32(h, 0xF805C)   // VOODOO_DWDX
+	dwdy := readBusMem32(h, 0xF807C)   // VOODOO_DWDY
 	if startW != 65536 {
 		t.Fatalf("TRIW START_W: expected 65536, got %d", startW)
 	}
@@ -5264,7 +5264,7 @@ func TestHW_Voodoo_Triw(t *testing.T) {
 func TestHW_Voodoo_RgbOn(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 VOODOO ON\n20 VOODOO RGB ON")
-	fbzMode := readBusMem32(h, 0xF4110) // VOODOO_FBZ_MODE
+	fbzMode := readBusMem32(h, 0xF8110) // VOODOO_FBZ_MODE
 	if fbzMode&0x200 == 0 {
 		t.Fatalf("RGB ON: expected FBZ_RGB_WRITE (0x200) set, got 0x%X", fbzMode)
 	}
@@ -5274,7 +5274,7 @@ func TestHW_Voodoo_RgbOff(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin,
 		"10 VOODOO ON\n20 VOODOO RGB ON\n30 VOODOO RGB OFF")
-	fbzMode := readBusMem32(h, 0xF4110) // VOODOO_FBZ_MODE
+	fbzMode := readBusMem32(h, 0xF8110) // VOODOO_FBZ_MODE
 	if fbzMode&0x200 != 0 {
 		t.Fatalf("RGB OFF: expected FBZ_RGB_WRITE (0x200) clear, got 0x%X", fbzMode)
 	}

@@ -271,9 +271,9 @@ hw_voodoo:
     lsr.l   r1, r1, #16         ; width = upper 16 bits
     mulu.l  r1, r23, r1
     add.l   r1, r1, r22
-    ; Write colour at VOODOO_BASE + 0x200 + offset*4 (LFB area)
+    ; Write colour into the Voodoo texture/LFB aperture.
     lsl.l   r1, r1, #2
-    move.l  r2, #0xF4200
+    move.l  r2, #VOODOO_TEXMEM_BASE
     add.q   r1, r1, r2
     store.l r8, (r1)
     rts

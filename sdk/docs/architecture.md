@@ -253,7 +253,7 @@ Z80 `IN`/`OUT` instructions are translated to bus MMIO accesses by the `Z80BusAd
 | Z80 Port | Chip | Bus Target | Protocol |
 |----------|------|------------|----------|
 | `$A0-$AA` | VGA | `0xF1000` | Direct register map (MODE, STATUS, CTRL, SEQ, CRTC, GC, DAC) |
-| `$B0-$B7` | Voodoo 3D | `0xF4000` | Addr lo/hi + 4 data bytes (write to `$B5` triggers 32-bit bus write) |
+| `$B0-$B7` | Voodoo 3D | `0xF8000` | Addr lo/hi + 4 data bytes (write to `$B5` triggers 32-bit bus write) |
 | `$D0/$D1` | POKEY | `0xF0D00` | Register select / data |
 | `$D4/$D5` | ANTIC | `0xF2100` | Register select / data (x4 stride) |
 | `$D6/$D7` | GTIA | `0xF2140` | Register select / data (x4 stride) |
@@ -280,7 +280,7 @@ x86 shares the Z80 Voodoo port mapping (`$B0-$B7`) and most sound-chip port mapp
 | `$3D4` | VGA CRTC index | `VGA_CRTC_INDEX` | Standard PC port |
 | `$3D5` | VGA CRTC data | `VGA_CRTC_DATA` | Standard PC port |
 | `$3DA` | VGA Status | Returns `0x08` if vsync | Standard PC port |
-| `$B0-$B7` | Voodoo 3D | `0xF4000` | Addr lo/hi + 4 data bytes |
+| `$B0-$B7` | Voodoo 3D | `0xF8000` | Addr lo/hi + 4 data bytes |
 | `$60-$69` | POKEY | `0xF0D00+(port-0x60)` | **Direct** — port offset maps to writable register |
 | `$D4/$D5` | ANTIC | `0xF2100` | Register select / data (x4 stride) |
 | `$D6/$D7` | GTIA | `0xF2140` | Register select / data (x4 stride) |
@@ -368,13 +368,13 @@ graph TB
         ULA_COL["16 Colours<br/>8 normal + 8 bright<br/>(15 visually distinct)"]
     end
 
-    subgraph VOOS["Voodoo 3D (Layer 20, 0xF4000-0xF43FF)"]
+    subgraph VOOS["Voodoo 3D (Layer 20, 0xF8000-0xF87FF)"]
         VOO_VTX["Vertex Assembly<br/>12.4 X/Y, 12.12 colour, 20.12 Z<br/>14.18 S/T, 2.30 W"]
         VOO_TRI["Triangle Rasteriser<br/>Gouraud shading"]
-        VOO_TEX["Texture Unit<br/>Perspective-correct S/T/W<br/>64KB texture memory (0xF5000)"]
+        VOO_TEX["Texture Unit<br/>Perspective-correct S/T/W<br/>64KB texture memory (0xD0000)"]
         VOO_ZB["Z-Buffer<br/>Configurable depth test"]
         VOO_AB["Alpha Blender"]
-        VOO_FOG["Fog Unit<br/>64-entry fog table (0xF4140-0xF423F)"]
+        VOO_FOG["Fog Unit<br/>64-entry fog table (0xF8140-0xF823F)"]
         VOO_CK["Chroma Key"]
         VOO_BE["Vulkan / Software Backend"]
     end
@@ -667,9 +667,9 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xF2390-0xF23AF` | 32B | Clipboard Bridge |
 | `0xF23B0-0xF23BF` | 16B | Coprocessor Extended (monitor registers) |
 | `0xF23E0-0xF23FF` | 32B | Bootstrap HostFS |
-| `0xF4000-0xF43FF` | 1KB | Voodoo 3D Registers |
-| `0xF4140-0xF423F` | 256B | Voodoo Fog Table (64 entries × 4B) |
-| `0xF5000-0x104FFF` | 64KB | Voodoo Texture Memory |
+| `0xF8000-0xF87FF` | 2KB | Voodoo 3D Registers + palette |
+| `0xF8140-0xF823F` | 256B | Voodoo Fog Table (64 entries × 4B) |
+| `0xD0000-0xDFFFF` | 64KB | Voodoo Texture Memory |
 | `0x100000-0x5FFFFF` | 5MB | Video RAM |
 | `0x800000-0x1DFFFFF` | 22MB | AROS Fast Memory |
 | `0x1E00000-0x1FFFFFF` | 2MB | AROS Video RAM |

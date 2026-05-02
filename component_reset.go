@@ -547,6 +547,17 @@ func (v *VoodooEngine) Reset() {
 	v.currentColorTarget = 0
 	v.gouraudEnabled = false
 	v.triangleBatch = v.triangleBatch[:0]
+	v.fbzColorPath = 0
+	v.textureMode = 0
+	v.fogMode = 0
+	v.lfbMode = 0
+	v.tlod = 0
+	v.texBase = [9]uint32{}
+	v.stipple = 0
+	v.chromaRange = 0
+	v.slopes = VoodooSlopes{}
+	v.slopesValid = false
+	v.pipelineDirty = false
 
 	v.clipLeft = 0
 	v.clipRight = VOODOO_DEFAULT_WIDTH
@@ -559,6 +570,9 @@ func (v *VoodooEngine) Reset() {
 	}
 	v.textureWidth = 0
 	v.textureHeight = 0
+	v.busy = false
+	v.swapPending = false
+	v.vretrace.Store(0)
 
 	// Reset triple-buffer
 	defW := int(VOODOO_DEFAULT_WIDTH)
@@ -578,6 +592,9 @@ func (v *VoodooEngine) Reset() {
 	v.readingIdx.Store(2)
 
 	v.initDefaultState()
+	if v.backend != nil {
+		v.backend.Reset()
+	}
 }
 
 // TerminalMMIO.Reset clears all buffers and restores defaults.

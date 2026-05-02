@@ -1551,13 +1551,14 @@ gtia_setpf3       macro   color
 ;   move.l  #0,VOODOO_SWAP_BUFFER_CMD     ; Present frame
 
 ; Base address
-VOODOO_BASE           equ $F4000
+VOODOO_BASE           equ $F8000
+VOODOO_END            equ $F87FF
 
 ; Status register (read-only)
-VOODOO_STATUS         equ $F4000            ; Status register
+VOODOO_STATUS         equ $F8000            ; Status register
 
 ; Enable register (write-only) - enables the Voodoo engine for rendering
-VOODOO_ENABLE         equ $F4004            ; Write 1 to enable, 0 to disable
+VOODOO_ENABLE         equ $F8004            ; Write 1 to enable, 0 to disable
 
 ; Status register bits
 VOODOO_STATUS_FBI_BUSY    equ $01           ; FBI (framebuffer) busy
@@ -1567,54 +1568,62 @@ VOODOO_STATUS_VRETRACE    equ $40           ; Vertical retrace (VSync)
 VOODOO_STATUS_SWAPBUF     equ $80           ; Swap buffers pending
 
 ; Vertex coordinate registers (12.4 fixed-point)
-VOODOO_VERTEX_AX      equ $F4008            ; Vertex A X coordinate
-VOODOO_VERTEX_AY      equ $F400C            ; Vertex A Y coordinate
-VOODOO_VERTEX_BX      equ $F4010            ; Vertex B X coordinate
-VOODOO_VERTEX_BY      equ $F4014            ; Vertex B Y coordinate
-VOODOO_VERTEX_CX      equ $F4018            ; Vertex C X coordinate
-VOODOO_VERTEX_CY      equ $F401C            ; Vertex C Y coordinate
+VOODOO_VERTEX_AX      equ $F8008            ; Vertex A X coordinate
+VOODOO_VERTEX_AY      equ $F800C            ; Vertex A Y coordinate
+VOODOO_VERTEX_BX      equ $F8010            ; Vertex B X coordinate
+VOODOO_VERTEX_BY      equ $F8014            ; Vertex B Y coordinate
+VOODOO_VERTEX_CX      equ $F8018            ; Vertex C X coordinate
+VOODOO_VERTEX_CY      equ $F801C            ; Vertex C Y coordinate
 
 ; Vertex attribute start values (12.12 fixed-point, 0.0-1.0 range)
-VOODOO_START_R        equ $F4020            ; Start red
-VOODOO_START_G        equ $F4024            ; Start green
-VOODOO_START_B        equ $F4028            ; Start blue
-VOODOO_START_Z        equ $F402C            ; Start Z (20.12 fixed-point)
-VOODOO_START_A        equ $F4030            ; Start alpha
-VOODOO_START_S        equ $F4034            ; Start S texture coord (14.18)
-VOODOO_START_T        equ $F4038            ; Start T texture coord (14.18)
-VOODOO_START_W        equ $F403C            ; Start W (perspective, 2.30)
+VOODOO_START_R        equ $F8020            ; Start red
+VOODOO_START_G        equ $F8024            ; Start green
+VOODOO_START_B        equ $F8028            ; Start blue
+VOODOO_START_Z        equ $F802C            ; Start Z (20.12 fixed-point)
+VOODOO_START_A        equ $F8030            ; Start alpha
+VOODOO_START_S        equ $F8034            ; Start S texture coord (14.18)
+VOODOO_START_T        equ $F8038            ; Start T texture coord (14.18)
+VOODOO_START_W        equ $F803C            ; Start W (perspective, 2.30)
 
 ; Command registers
-VOODOO_TRIANGLE_CMD   equ $F4080            ; Submit triangle for rendering
-VOODOO_COLOR_SELECT   equ $F4088            ; Select vertex (0/1/2) for Gouraud shading
-VOODOO_FBZCOLOR_PATH  equ $F4104            ; Framebuffer/color path config
-VOODOO_FOG_MODE       equ $F4108            ; Fog mode
-VOODOO_ALPHA_MODE     equ $F410C            ; Alpha test/blend mode
-VOODOO_FBZ_MODE       equ $F4110            ; Framebuffer Z mode
-VOODOO_LFB_MODE       equ $F4114            ; Linear framebuffer mode
-VOODOO_CLIP_LEFT_RIGHT equ $F4118           ; Clip rectangle left/right
-VOODOO_CLIP_LOW_Y_HIGH equ $F411C           ; Clip rectangle top/bottom
-VOODOO_NOP_CMD        equ $F4120            ; No operation
-VOODOO_FAST_FILL_CMD  equ $F4124            ; Fast fill (clear) command
-VOODOO_SWAP_BUFFER_CMD equ $F4128           ; Swap front/back buffers
+VOODOO_TRIANGLE_CMD   equ $F8080            ; Submit triangle for rendering
+VOODOO_COLOR_SELECT   equ $F8088            ; Select vertex (0/1/2) for Gouraud shading
+VOODOO_FBZCOLOR_PATH  equ $F8104            ; Framebuffer/color path config
+VOODOO_FOG_MODE       equ $F8108            ; Fog mode
+VOODOO_ALPHA_MODE     equ $F810C            ; Alpha test/blend mode
+VOODOO_FBZ_MODE       equ $F8110            ; Framebuffer Z mode
+VOODOO_LFB_MODE       equ $F8114            ; Linear framebuffer mode
+VOODOO_CLIP_LEFT_RIGHT equ $F8118           ; Clip rectangle left/right
+VOODOO_CLIP_LOW_Y_HIGH equ $F811C           ; Clip rectangle top/bottom
+VOODOO_NOP_CMD        equ $F8120            ; No operation
+VOODOO_FAST_FILL_CMD  equ $F8124            ; Fast fill (clear) command
+VOODOO_SWAP_BUFFER_CMD equ $F8128           ; Swap front/back buffers
 
 ; Configuration registers
-VOODOO_FOG_COLOR      equ $F41C4            ; Fog color (RGB)
-VOODOO_ZA_COLOR       equ $F41C8            ; Z/A constant color
-VOODOO_CHROMA_KEY     equ $F41CC            ; Chroma key color
-VOODOO_COLOR0         equ $F41D8            ; Constant color 0 (fill color)
-VOODOO_COLOR1         equ $F41DC            ; Constant color 1
+VOODOO_FOG_COLOR      equ $F81C4            ; Fog color (RGB)
+VOODOO_ZA_COLOR       equ $F81C8            ; Z/A constant color
+VOODOO_CHROMA_KEY     equ $F81CC            ; Chroma key color
+VOODOO_COLOR0         equ $F81D8            ; Constant color 0 (fill color)
+VOODOO_COLOR1         equ $F81DC            ; Constant color 1
 
 ; Framebuffer configuration
-VOODOO_VIDEO_DIM      equ $F4214            ; Video dimensions (width<<16|height)
+VOODOO_VIDEO_DIM      equ $F8214            ; Video dimensions (width<<16|height)
 
 ; Texture registers
-VOODOO_TEXTURE_MODE   equ $F4300            ; Texture mode configuration
-VOODOO_TEX_BASE0      equ $F430C            ; Texture base address (LOD 0)
-VOODOO_TEX_WIDTH      equ $F4330            ; Texture width for upload (IE extension)
-VOODOO_TEX_HEIGHT     equ $F4334            ; Texture height for upload (IE extension)
-VOODOO_TEX_UPLOAD     equ $F4338            ; Write to trigger texture upload (IE extension)
-VOODOO_TEXMEM_BASE    equ $F5000            ; Texture memory base (64KB)
+VOODOO_TEXTURE_MODE   equ $F8300            ; Texture mode configuration
+VOODOO_TEX_BASE0      equ $F830C            ; Texture base address (LOD 0)
+VOODOO_TEX_WIDTH      equ $F8330            ; Texture width for upload (IE extension)
+VOODOO_TEX_HEIGHT     equ $F8334            ; Texture height for upload (IE extension)
+VOODOO_TEX_UPLOAD     equ $F8338            ; Write to trigger texture upload (IE extension)
+VOODOO_TEXMEM_BASE    equ $D0000            ; Texture memory base (64KB)
+VOODOO_TEXMEM_SIZE    equ $10000            ; Texture memory size
+VOODOO_PALETTE_BASE   equ $F8400            ; Texture palette base
+
+; 6502 banked Voodoo aperture constants (for IE65 targets)
+VOODOO_6502_WINDOW_BASE equ $E000
+VOODOO_6502_WINDOW_SIZE equ $1000
+VOODOO_6502_BANK_HI     equ $F7F2
+VOODOO_6502_BANK_PAGE_HI equ $F7F3
 
 ; fbzMode bits
 VOODOO_FBZ_CLIPPING     equ $0001           ; Enable scissor clipping
@@ -1702,7 +1711,7 @@ VOODOO_TEX_FMT_ARGB8888 equ 10              ; ARGB 8888 (default)
 ; Clip register packing (for CLIP_LEFT_RIGHT and CLIP_LOW_Y_HIGH)
 ; clipLeftRight: bits 0-9 = right, bits 16-25 = left
 ; clipLowYHigh: bits 0-9 = bottom, bits 16-25 = top
-VOODOO_CLIP_MASK        equ $3FF            ; 10-bit clip value mask
+VOODOO_CLIP_MASK        equ $FFFF           ; 16-bit clip value mask
 
 ; Fixed-point conversion helpers (shift amounts)
 VOODOO_FIXED_12_4       equ 4               ; Vertex coordinates
@@ -1757,7 +1766,7 @@ VOODOO_FOG_TABLE_SHIFT  equ 8               ; Shift for fog table index
 VOODOO_FOG_TABLE_MASK   equ $3F             ; 6-bit fog table index mask
 
 ; Phase 6: Fog table constants
-VOODOO_FOG_TABLE_BASE   equ $F4140          ; Fog table base address (64 entries)
+VOODOO_FOG_TABLE_BASE   equ $F8140          ; Fog table base address (64 entries)
 VOODOO_FOG_TABLE_SIZE   equ 64              ; Number of fog table entries
 
 ; Phase 6: fbzMode dithering bits (add to fbzMode)

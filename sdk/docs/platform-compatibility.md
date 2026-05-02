@@ -53,7 +53,7 @@ No display, no audio. For CI/testing and batch processing.
 - CGO enabled on Linux
 - C compiler for Linux native runs
 
-**Features:** Stub display/audio backends, software Voodoo rasteriser.
+**Features:** Stub display/audio backends, software Voodoo rasteriser. The IE Voodoo bus ABI and software backend feature contract are covered by headless tests.
 
 ### headless-novulkan
 
@@ -76,6 +76,8 @@ CGO_ENABLED=0 go build -tags "novulkan headless" .
 |---------|-----------|-----------|-------|
 | Ebiten | Linux, Windows, macOS | OpenGL / DirectX / Metal | Default, hardware-accelerated |
 | Headless | All | None | Stub for testing |
+| Voodoo software | All profiles | CPU rasteriser | Contract reference for Voodoo HLE |
+| Voodoo Vulkan | Linux full profile | Vulkan | Must match software output for ABI-implemented features |
 
 Ebiten provides:
 - Hardware-accelerated rendering

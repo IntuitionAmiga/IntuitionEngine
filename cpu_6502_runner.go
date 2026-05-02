@@ -11,8 +11,9 @@ const (
 )
 
 type CPU6502Config struct {
-	LoadAddr uint16
-	Entry    uint16
+	LoadAddr     uint16
+	Entry        uint16
+	VoodooEngine *VoodooEngine
 }
 
 type CPU6502Runner struct {
@@ -35,7 +36,7 @@ func NewCPU6502Runner(bus *MachineBus, config CPU6502Config) *CPU6502Runner {
 	}
 
 	return &CPU6502Runner{
-		cpu:      NewCPU_6502(bus),
+		cpu:      NewCPU_6502WithVoodoo(bus, config.VoodooEngine),
 		bus:      bus,
 		loadAddr: loadAddr,
 		entry:    config.Entry,

@@ -554,6 +554,57 @@ cpu.resume()
 	}
 }
 
+func TestProgramExecutor_6502UsesVoodooAwareAdapter(t *testing.T) {
+	bus, v := newProgramExecutorMappedTestVoodoo(t)
+	exec := NewProgramExecutor(bus, NewCPU64(bus), nil, nil, v, ".")
+
+	program := []byte{
+		0xA9, 0xD0, // LDA #$D0
+		0x8D, 0xF2, 0xF7, // STA $F7F2
+		0xA9, 0x42, // LDA #$42
+		0x8D, 0x00, 0xE0, // STA $E000
+		0x00, // BRK
+	}
+	if err := exec.prepareAndLaunch(program, EXEC_TYPE_6502); err != nil {
+		t.Fatalf("prepareAndLaunch 6502: %v", err)
+	}
+	t.Cleanup(func() {
+		snap := runtimeStatus.snapshot()
+		if snap.cpu65 != nil {
+			snap.cpu65.Stop()
+		}
+		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if v.textureMemory[0] == 0x42 {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("program-executed 6502 did not write Voodoo texture byte; got %#02x", v.textureMemory[0])
+}
+
+func newProgramExecutorMappedTestVoodoo(t *testing.T) (*MachineBus, *VoodooEngine) {
+	t.Helper()
+	bus := NewMachineBus()
+	v, err := NewVoodooEngine(bus)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	t.Cleanup(v.Destroy)
+
+	bus.MapIO(VOODOO_BASE, VOODOO_END, v.HandleRead, v.HandleWrite)
+	bus.MapIOByteRead(VOODOO_BASE, VOODOO_END, v.HandleRead8)
+	bus.MapIOByte(VOODOO_BASE, VOODOO_END, v.HandleWrite8)
+	bus.MapIO64(VOODOO_BASE, VOODOO_END, v.HandleRead64, v.HandleWrite64)
+	bus.MapIO(VOODOO_TEXMEM_BASE, VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE-1, v.HandleTexMemRead, v.HandleTexMemWrite)
+	bus.MapIOByteRead(VOODOO_TEXMEM_BASE, VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE-1, v.HandleTexMemRead8)
+	bus.MapIOByte(VOODOO_TEXMEM_BASE, VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE-1, v.HandleTexMemWrite8)
+	return bus, v
+}
+
 func TestEhBASIC_RunIES_Error(t *testing.T) {
 	dir := t.TempDir()
 	bus := NewMachineBus()

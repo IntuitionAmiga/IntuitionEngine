@@ -2605,9 +2605,10 @@
 ; Vulkan-accelerated 3D graphics. See ie68.inc for detailed documentation.
 
 ; Base address
-.set VOODOO_BASE,0xF4000
+.set VOODOO_BASE,0xF8000
+.set VOODOO_END,0xF87FF
 
-; Z80 I/O ports for Voodoo access (Z80 cannot directly address 0xF4xxx)
+; Z80 I/O ports for Voodoo access (Z80 cannot directly address 0xF8xxx)
 ; Usage: Set address offset via ADDR ports, then write 4 data bytes (DATA3 triggers write)
 .set Z80_VOODOO_PORT_ADDR_LO,0xB0    ; Voodoo register offset low byte
 .set Z80_VOODOO_PORT_ADDR_HI,0xB1    ; Voodoo register offset high byte
@@ -2619,51 +2620,59 @@
 .set Z80_VOODOO_PORT_TEXSRC_HI,0xB7  ; Texture source address high (Z80 RAM)
 
 ; Status register (read-only)
-.set VOODOO_STATUS,0xF4000
+.set VOODOO_STATUS,0xF8000
 
 ; Enable register (write-only) - enables the Voodoo engine for rendering
-.set VOODOO_ENABLE,0xF4004                  ; Write 1 to enable, 0 to disable
+.set VOODOO_ENABLE,0xF8004                  ; Write 1 to enable, 0 to disable
 
 ; Vertex coordinate registers (12.4 fixed-point)
-.set VOODOO_VERTEX_AX,0xF4008
-.set VOODOO_VERTEX_AY,0xF400C
-.set VOODOO_VERTEX_BX,0xF4010
-.set VOODOO_VERTEX_BY,0xF4014
-.set VOODOO_VERTEX_CX,0xF4018
-.set VOODOO_VERTEX_CY,0xF401C
+.set VOODOO_VERTEX_AX,0xF8008
+.set VOODOO_VERTEX_AY,0xF800C
+.set VOODOO_VERTEX_BX,0xF8010
+.set VOODOO_VERTEX_BY,0xF8014
+.set VOODOO_VERTEX_CX,0xF8018
+.set VOODOO_VERTEX_CY,0xF801C
 
 ; Vertex attribute start values (12.12 fixed-point)
-.set VOODOO_START_R,0xF4020
-.set VOODOO_START_G,0xF4024
-.set VOODOO_START_B,0xF4028
-.set VOODOO_START_Z,0xF402C
-.set VOODOO_START_A,0xF4030
-.set VOODOO_START_S,0xF4034
-.set VOODOO_START_T,0xF4038
-.set VOODOO_START_W,0xF403C
+.set VOODOO_START_R,0xF8020
+.set VOODOO_START_G,0xF8024
+.set VOODOO_START_B,0xF8028
+.set VOODOO_START_Z,0xF802C
+.set VOODOO_START_A,0xF8030
+.set VOODOO_START_S,0xF8034
+.set VOODOO_START_T,0xF8038
+.set VOODOO_START_W,0xF803C
 
 ; Command registers
-.set VOODOO_TRIANGLE_CMD,0xF4080
-.set VOODOO_COLOR_SELECT,0xF4088    ; Select vertex (0/1/2) for Gouraud shading
-.set VOODOO_ALPHA_MODE,0xF410C
-.set VOODOO_FBZ_MODE,0xF4110
-.set VOODOO_CLIP_LEFT_RIGHT,0xF4118
-.set VOODOO_CLIP_LOW_Y_HIGH,0xF411C
-.set VOODOO_FAST_FILL_CMD,0xF4124
-.set VOODOO_SWAP_BUFFER_CMD,0xF4128
+.set VOODOO_TRIANGLE_CMD,0xF8080
+.set VOODOO_COLOR_SELECT,0xF8088    ; Select vertex (0/1/2) for Gouraud shading
+.set VOODOO_ALPHA_MODE,0xF810C
+.set VOODOO_FBZ_MODE,0xF8110
+.set VOODOO_CLIP_LEFT_RIGHT,0xF8118
+.set VOODOO_CLIP_LOW_Y_HIGH,0xF811C
+.set VOODOO_FAST_FILL_CMD,0xF8124
+.set VOODOO_SWAP_BUFFER_CMD,0xF8128
 
 ; Configuration registers
-.set VOODOO_COLOR0,0xF41D8
-.set VOODOO_VIDEO_DIM,0xF4214
+.set VOODOO_COLOR0,0xF81D8
+.set VOODOO_VIDEO_DIM,0xF8214
 
 ; Texture registers
-.set VOODOO_TEXTURE_MODE,0xF4300
-.set VOODOO_TEX_BASE0,0xF430C
-.set VOODOO_TEX_WIDTH,0xF4330
-.set VOODOO_TEX_HEIGHT,0xF4334
-.set VOODOO_TEX_UPLOAD,0xF4338
-.set VOODOO_TEXMEM_BASE,0xF5000
-.set VOODOO_FBZCOLOR_PATH,0xF4104
+.set VOODOO_TEXTURE_MODE,0xF8300
+.set VOODOO_TEX_BASE0,0xF830C
+.set VOODOO_TEX_WIDTH,0xF8330
+.set VOODOO_TEX_HEIGHT,0xF8334
+.set VOODOO_TEX_UPLOAD,0xF8338
+.set VOODOO_TEXMEM_BASE,0xD0000
+.set VOODOO_TEXMEM_SIZE,0x10000
+.set VOODOO_PALETTE_BASE,0xF8400
+.set VOODOO_FBZCOLOR_PATH,0xF8104
+
+; 6502 banked Voodoo aperture constants (for IE65 targets)
+.set VOODOO_6502_WINDOW_BASE,0xE000
+.set VOODOO_6502_WINDOW_SIZE,0x1000
+.set VOODOO_6502_BANK_HI,0xF7F2
+.set VOODOO_6502_BANK_PAGE_HI,0xF7F3
 
 ; fbzMode bits
 .set VOODOO_FBZ_CLIPPING,0x0001
@@ -2795,7 +2804,7 @@
 .set VOODOO_FOG_TABLE_MASK,0x3F             ; 6-bit fog table index mask
 
 ; Phase 6: Fog table constants
-.set VOODOO_FOG_TABLE_BASE,0xF4140          ; Fog table base address (64 entries)
+.set VOODOO_FOG_TABLE_BASE,0xF8140          ; Fog table base address (64 entries)
 .set VOODOO_FOG_TABLE_SIZE,64               ; Number of fog table entries
 
 ; Phase 6: fbzMode dithering bits (add to fbzMode)

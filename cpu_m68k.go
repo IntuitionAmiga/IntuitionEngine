@@ -2672,6 +2672,11 @@ func (cpu *M68KCPU) isCoprocSharedAddr(addr uint32) bool {
 			(addr >= 0x790000 && addr < 0x792000))
 }
 
+func isNativeNumericMMIOAddr(addr uint32) bool {
+	return (addr >= 0xF0000 && addr < 0x100000) ||
+		(addr >= VOODOO_TEXMEM_BASE && addr < VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE)
+}
+
 func (cpu *M68KCPU) Read8(addr uint32) uint8 {
 	addr &= M68K_ADDRESS_MASK
 
@@ -2718,7 +2723,7 @@ func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 
 	// I/O register path - return value directly (no byte-swap).
 	// Hardware handlers return numeric register values.
-	if addr >= 0xF0000 && addr < 0x100000 {
+	if isNativeNumericMMIOAddr(addr) {
 		if fb, ok := cpu.bus.(faultingBus); ok {
 			value, ok := fb.Read16WithFault(addr)
 			if !ok {
@@ -2777,7 +2782,7 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 	// I/O register path - return value directly (no byte-swap)
 	// Hardware handlers return numeric values, not memory byte order
 	// Lock-free - bus handles its own synchronisation
-	if addr >= 0xF0000 && addr < 0x100000 {
+	if isNativeNumericMMIOAddr(addr) {
 		if fb, ok := cpu.bus.(faultingBus); ok {
 			value, ok := fb.Read32WithFault(addr)
 			if !ok {
@@ -2885,7 +2890,7 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 
 	// I/O register path - pass original value (not byte-swapped).
 	// Hardware handlers expect numeric register values.
-	if addr >= 0xF0000 && addr < 0x100000 {
+	if isNativeNumericMMIOAddr(addr) {
 		if isByteFanoutMMIOWideAddr(addr, 2) {
 			cpu.Write8(addr, uint8(value>>8))
 			cpu.Write8(addr+1, uint8(value))
@@ -2967,7 +2972,7 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 
 	// I/O register path - pass original value (not byte-swapped) for hardware registers
 	// Hardware handlers expect numeric values, not memory byte order
-	if addr >= 0xF0000 && addr < 0x100000 {
+	if isNativeNumericMMIOAddr(addr) {
 		if isByteFanoutMMIOWideAddr(addr, 4) {
 			cpu.Write8(addr, uint8(value>>24))
 			cpu.Write8(addr+1, uint8(value>>16))

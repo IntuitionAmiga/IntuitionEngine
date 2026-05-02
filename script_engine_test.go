@@ -1062,7 +1062,7 @@ func TestScriptEngine_VideoDeviceWrappers(t *testing.T) {
 	se := NewScriptEngine(bus, comp, term)
 
 	regs := make(map[uint32]uint32)
-	bus.MapIO(0xF0000, 0xF5FFF,
+	bus.MapIO(0xF0000, 0xF8FFF,
 		func(addr uint32) uint32 { return regs[addr] },
 		func(addr uint32, value uint32) { regs[addr] = value },
 	)
@@ -1079,7 +1079,7 @@ func TestScriptEngine_VideoDeviceWrappers(t *testing.T) {
 		if video.read_reg(` + "0xF0F20" + `) ~= 0x10 then error("ted mode1") end
 		if video.read_reg(` + "0xF0F24" + `) ~= 0x20 then error("ted mode2") end
 		video.voodoo_resolution(320, 240)
-		if video.read_reg(` + "0xF4214" + `) ~= 20971760 then error("voodoo res") end
+		if video.read_reg(` + "0xF8214" + `) ~= 20971760 then error("voodoo res") end
 		video.copper_set_program(0x123456)
 		if video.read_reg(` + "0xF0010" + `) ~= 0x123456 then error("copper ptr") end
 		video.blit_line(1,2,3,4,0xAABBCCDD)

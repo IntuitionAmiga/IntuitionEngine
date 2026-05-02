@@ -38,6 +38,8 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 | `voodoo_3dfx_logo_68k.asm` | M68K | Voodoo 3D | -- | Textured 3DFX logo flyby with fog |
 | `voodoo_mega_demo.asm` | IE32 | Voodoo 3D | SID | Textured 3D scenes with SID music |
 | `voodoo_tunnel_z80.asm` | Z80 | Voodoo 3D | -- | Texture-mapped tunnel effect |
+| `voodoo_smoketest_z80.asm` | Z80 | Voodoo 3D | -- | Minimal Voodoo port-adapter smoke test |
+| `voodoo_smoketest_6502.asm` | 6502 | Voodoo 3D | -- | Minimal Voodoo banked-aperture smoke test |
 | `robocop_intro.asm` | IE32 | IEVideoChip + Copper | PSG | Copper rasterbars + blitter sprite + sine scrolltext |
 | `robocop_intro_68k.asm` | M68K | IEVideoChip + Copper | PSG | Copper rasterbars + blitter sprite + sine scrolltext |
 | `robocop_intro_65.asm` | 6502 | IEVideoChip + Copper | PSG | Copper rasterbars + blitter sprite + sine scrolltext |
