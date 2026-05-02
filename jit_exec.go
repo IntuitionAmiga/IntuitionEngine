@@ -243,6 +243,19 @@ func (cpu *CPU64) ExecuteJIT() {
 			break
 		}
 
+		if !cpu.mmuEnabled && opcode == OP_MOVE && ie64TurboStartCandidate(cpu.memory, pcPhys) && ie64TurboEnabled() {
+			if matched, retired := cpu.tryIE64TurboProgram(pcPhys, statsEnabled); matched {
+				if statsEnabled {
+					globalIE64TurboStats.turboRegions.Add(1)
+				}
+				cpu.InstructionCount += retired
+				if !cpu.running.Load() {
+					break
+				}
+				continue
+			}
+		}
+
 		// Under MMU, different address spaces can execute different physical
 		// code at the same virtual PC. Scope cache entries by PTBR to avoid
 		// cross-task aliasing when the OS switches page tables.
