@@ -987,7 +987,7 @@ TED Video CPU Mappings:
 
 ## 3.11 AHX Module Player Registers (0x0F0B80 - 0x0F0B91)
 
-The AHX engine provides Amiga AHX/THX module playback with 4-channel waveform synthesis:
+The AHX engine replays Amiga AHX/THX module commands by mapping tracker voice state to four native SoundChip synthesis channels:
 
 ```
 AHX Control Registers (0x0F0B80):
@@ -4987,10 +4987,10 @@ ted_data_end:
 
 ## 11.8 AHX Sound Chip
 
-The AHX engine provides Amiga AHX/THX module playback with 4-channel waveform synthesis. AHX modules use procedural synthesis rather than samples, creating rich sounds from simple waveforms (triangle, sawtooth, square, noise) with modulation.
+The AHX engine replays Amiga AHX/THX modules by mapping AHX voice state to native SoundChip channels. AHX modules use procedural synthesis rather than PCM samples, creating rich sounds from simple waveforms (triangle, sawtooth, square, noise) with modulation.
 
 ### Features:
-- 4-channel synthesis matching original Amiga hardware
+- 4-channel AHX command-state mapping to native SoundChip synthesis
 - Triangle, sawtooth, square, and noise waveforms
 - Per-voice filter modulation and square pulse width modulation
 - Vibrato, portamento, and envelope effects

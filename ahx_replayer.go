@@ -3,31 +3,15 @@
 
 package main
 
-// Pre-computed constants for AHX waveform processing
-const (
-	// filterBlockSize is the stride between filter positions in the waveform buffer
-	// Formula: 0xfc + 0xfc + 0x80*0x1f + 0x80 + 0x280*3 = 252 + 252 + 3968 + 128 + 1920 = 6520
-	ahxFilterBlockSize = 0xfc + 0xfc + 0x80*0x1f + 0x80 + 0x280*3
-)
+import "errors"
 
-// ahxWaveLengthOffsets maps WaveLength (0-5) to cumulative offsets within a filter block
-// These are the byte offsets for triangle/sawtooth waveforms of different lengths:
-// WaveLength 0 = 4 bytes, 1 = 8 bytes, 2 = 16 bytes, 3 = 32 bytes, 4 = 64 bytes, 5 = 128 bytes
-var ahxWaveLengthOffsets = [6]int{
-	0x00,                             // WaveLength 0: offset 0
-	0x04,                             // WaveLength 1: offset 4
-	0x04 + 0x08,                      // WaveLength 2: offset 12
-	0x04 + 0x08 + 0x10,               // WaveLength 3: offset 28
-	0x04 + 0x08 + 0x10 + 0x20,        // WaveLength 4: offset 60
-	0x04 + 0x08 + 0x10 + 0x20 + 0x40, // WaveLength 5: offset 124
-}
+var errAHXInvalidSubsong = errors.New("AHX: invalid subsong")
 
 // AHXVoice represents the state of a single AHX voice
 type AHXVoice struct {
 	// Output (read by mixer)
 	VoiceVolume int
 	VoicePeriod int
-	VoiceBuffer [0x281]int8 // Extra byte for interpolation
 
 	// Track state
 	Track, Transpose         int
@@ -66,7 +50,6 @@ type AHXVoice struct {
 	SquareLowerLimit, SquareUpperLimit, SquarePos int
 	SquareSign, SquareSlidingIn, SquareReverse    int
 	IgnoreSquare, PlantSquare                     int
-	SquareTempBuffer                              [0x80]int8
 
 	// Filter modulation
 	FilterOn, FilterInit, FilterWait                       int
@@ -83,7 +66,6 @@ type AHXVoice struct {
 
 	// Waveform
 	WaveLength, Waveform, NewWaveform int
-	AudioSource                       []int8
 	AudioPeriod, AudioVolume          int
 }
 
@@ -131,7 +113,6 @@ func (v *AHXVoice) CalcADSR() {
 // AHXReplayer is the main replayer engine
 type AHXReplayer struct {
 	Song   *AHXFile
-	Waves  *AHXWaves
 	Voices [4]AHXVoice
 
 	// Position
@@ -146,25 +127,18 @@ type AHXReplayer struct {
 	PlayingTime           int
 	MainVolume            int
 	Playing               bool
-
-	WaveformTab [4][]int8
-	WNRandom    int
 }
 
-// NewAHXReplayer creates a new replayer with initialized waves
+// NewAHXReplayer creates a new AHX state replayer.
 func NewAHXReplayer() *AHXReplayer {
-	r := &AHXReplayer{
-		Waves: NewAHXWaves(),
-	}
-	// Initialize waveform table pointers
-	r.WaveformTab[0] = r.Waves.Triangle04[:]
-	r.WaveformTab[1] = r.Waves.Sawtooth04[:]
-	r.WaveformTab[3] = r.Waves.WhiteNoiseBig[:]
-	return r
+	return &AHXReplayer{}
 }
 
 // InitSong initializes the replayer with a song
 func (r *AHXReplayer) InitSong(song *AHXFile) {
+	if song != nil {
+		_ = normalizeParsedAHX(song)
+	}
 	r.Song = song
 }
 
@@ -174,14 +148,17 @@ func (r *AHXReplayer) InitSubsong(nr int) error {
 		return nil
 	}
 
-	if nr > r.Song.SubsongNr {
-		return nil
+	if nr < 0 || nr > r.Song.SubsongNr {
+		return errAHXInvalidSubsong
 	}
 
 	if nr == 0 {
 		r.PosNr = 0
 	} else {
 		r.PosNr = r.Song.Subsongs[nr-1]
+	}
+	if r.PosNr < 0 || r.PosNr >= r.Song.PositionNr {
+		return errAHXInvalidSubsong
 	}
 
 	r.PosJump = 0
@@ -211,6 +188,11 @@ func (r *AHXReplayer) PlayIRQ() {
 
 	if r.StepWaitFrames <= 0 {
 		if r.GetNewPosition {
+			if r.PosNr < 0 || r.PosNr >= r.Song.PositionNr || r.Song.PositionNr == 0 {
+				r.SongEndReached = true
+				r.Playing = false
+				return
+			}
 			nextPos := r.PosNr + 1
 			if nextPos >= r.Song.PositionNr {
 				nextPos = 0
@@ -306,7 +288,7 @@ func (r *AHXReplayer) ProcessStep(v int) {
 	case 0xD: // Pattern Break
 		r.PosJump = r.PosNr + 1
 		r.PosJumpNote = (fxParam & 0x0F) + (fxParam>>4)*10
-		if r.PosJumpNote > r.Song.TrackLength {
+		if r.PosJumpNote >= r.Song.TrackLength {
 			r.PosJumpNote = 0
 		}
 		r.PatternBreak = true
@@ -335,8 +317,8 @@ func (r *AHXReplayer) ProcessStep(v int) {
 		}
 	case 0xF: // Speed
 		if fxParam == 0 {
-			// Speed 0 = halt/end song (used by composers to signal end)
-			r.SongEndReached = true
+			// F00 pauses playback timing without marking the song ended.
+			r.Tempo = 0
 		} else {
 			r.Tempo = fxParam
 		}
@@ -371,6 +353,7 @@ func (r *AHXReplayer) ProcessStep(v int) {
 		voice.SquareSlidingIn = 0
 		voice.SquareWait = 0
 		voice.SquareOn = 0
+		voice.WaveLength = min(max(voice.WaveLength, 0), 5)
 		squareLower := voice.Instrument.SquareLowerLimit >> (5 - voice.WaveLength)
 		squareUpper := voice.Instrument.SquareUpperLimit >> (5 - voice.WaveLength)
 		if squareUpper < squareLower {
@@ -417,6 +400,7 @@ func (r *AHXReplayer) ProcessStep(v int) {
 	case 0x4: // Override filter
 		// Handled in PList
 	case 0x9: // Set Square Offset
+		voice.WaveLength = min(max(voice.WaveLength, 0), 5)
 		voice.SquarePos = fxParam >> (5 - voice.WaveLength)
 		voice.PlantSquare = 1
 		voice.IgnoreSquare = 1
@@ -425,6 +409,8 @@ func (r *AHXReplayer) ProcessStep(v int) {
 			voice.PeriodSlideSpeed = fxParam
 		}
 		if note != 0 {
+			note = min(max(note, 0), len(AHXPeriodTable)-1)
+			voice.TrackPeriod = min(max(voice.TrackPeriod, 0), len(AHXPeriodTable)-1)
 			newPeriod := AHXPeriodTable[note]
 			oldPeriod := AHXPeriodTable[voice.TrackPeriod]
 			diff := oldPeriod - newPeriod
@@ -465,7 +451,7 @@ func (r *AHXReplayer) ProcessStep(v int) {
 				}
 			} else {
 				fxParam -= 0xA0 - 0x50
-				if fxParam <= 0x40 {
+				if fxParam >= 0 && fxParam <= 0x40 {
 					voice.TrackMasterVolume = fxParam
 				}
 			}
@@ -541,6 +527,9 @@ func (r *AHXReplayer) ProcessFrame(v int) {
 		if voice.NoteCutWait <= 0 {
 			voice.NoteCutOn = 0
 			if voice.HardCutRelease != 0 {
+				if voice.HardCutReleaseF < 1 {
+					voice.HardCutReleaseF = 1
+				}
 				voice.ADSR.RVolume = -(voice.ADSRVolume - (voice.Instrument.Envelope.RVolume << 8)) / voice.HardCutReleaseF
 				voice.ADSR.RFrames = voice.HardCutReleaseF
 				voice.ADSR.AFrames = 0
@@ -625,7 +614,7 @@ func (r *AHXReplayer) ProcessFrame(v int) {
 
 			entry := &voice.PerfList.Entries[cur]
 			if entry.Waveform != 0 {
-				voice.Waveform = entry.Waveform - 1
+				voice.Waveform = min(max(entry.Waveform, 1), 4) - 1
 				voice.NewWaveform = 1
 				voice.PeriodPerfSlideSpeed = 0
 				voice.PeriodPerfSlidePeriod = 0
@@ -733,28 +722,13 @@ func (r *AHXReplayer) ProcessFrame(v int) {
 		}
 	}
 
-	// Calculate square waveform
+	// Track square waveform selection for native SoundChip PWM mapping.
 	if voice.Waveform == 3-1 || voice.PlantSquare != 0 {
-		// Get base square from filter position
-		squareOffset := (voice.FilterPos - 0x20) * ahxFilterBlockSize
+		voice.WaveLength = min(max(voice.WaveLength, 0), 5)
 		x := voice.SquarePos << (5 - voice.WaveLength)
 		if x > 0x20 {
 			x = 0x40 - x
 			voice.SquareReverse = 1
-		}
-		if x > 0 {
-			x--
-			squareOffset += x << 7
-		}
-		delta := 32 >> voice.WaveLength
-		if squareOffset >= 0 && squareOffset < len(r.Waves.Squares) {
-			r.WaveformTab[2] = voice.SquareTempBuffer[:]
-			for i := 0; i < (1<<voice.WaveLength)*4; i++ {
-				srcIdx := squareOffset + i*delta
-				if srcIdx >= 0 && srcIdx < len(r.Waves.Squares) {
-					voice.SquareTempBuffer[i] = r.Waves.Squares[srcIdx]
-				}
-			}
 		}
 		voice.NewWaveform = 1
 		voice.Waveform = 3 - 1
@@ -765,33 +739,7 @@ func (r *AHXReplayer) ProcessFrame(v int) {
 		voice.NewWaveform = 1
 	}
 
-	// Update audio source
-	if voice.NewWaveform != 0 {
-		audioSource := r.WaveformTab[voice.Waveform]
-		if voice.Waveform != 3-1 {
-			// Apply filter offset
-			filterOffset := (voice.FilterPos - 0x20) * ahxFilterBlockSize
-			if filterOffset >= 0 && filterOffset < len(r.Waves.LowPasses) {
-				if voice.Waveform < 3-1 {
-					// Triangle or sawtooth - get from lowpass buffer
-					if voice.WaveLength < len(ahxWaveLengthOffsets) {
-						filterOffset += ahxWaveLengthOffsets[voice.WaveLength]
-					}
-				}
-			}
-		}
-		if voice.Waveform == 4-1 {
-			// Noise - add random offset
-			audioSource = r.Waves.WhiteNoiseBig[:]
-			offset := (r.WNRandom & (2*0x280 - 1)) & ^1
-			if offset < len(audioSource) {
-				audioSource = audioSource[offset:]
-			}
-			r.WNRandom += 2239384
-			r.WNRandom = ((((r.WNRandom >> 8) | (r.WNRandom << 24)) + 782323) ^ 75) - 6735
-		}
-		voice.AudioSource = audioSource
-	}
+	voice.Waveform = min(max(voice.Waveform, 0), 3)
 
 	// Calculate final period
 	voice.AudioPeriod = voice.InstrPeriod
@@ -840,21 +788,6 @@ func (r *AHXReplayer) SetAudio(v int) {
 		voice.VoicePeriod = voice.AudioPeriod
 	}
 	if voice.NewWaveform != 0 {
-		// Copy waveform to voice buffer
-		if voice.Waveform == 4-1 {
-			// Noise
-			if len(voice.AudioSource) >= 0x280 {
-				copy(voice.VoiceBuffer[:0x280], voice.AudioSource[:0x280])
-			}
-		} else {
-			// Other waveforms - loop to fill buffer
-			waveLen := 4 * (1 << voice.WaveLength)
-			waveLoops := (1 << (5 - voice.WaveLength)) * 5
-			for i := 0; i < waveLoops && len(voice.AudioSource) >= waveLen; i++ {
-				copy(voice.VoiceBuffer[i*waveLen:], voice.AudioSource[:waveLen])
-			}
-		}
-		voice.VoiceBuffer[0x280] = voice.VoiceBuffer[0]
 		voice.NewWaveform = 0
 	}
 }
@@ -864,8 +797,8 @@ func (r *AHXReplayer) PListCommandParse(v, fx, fxParam int) {
 	voice := &r.Voices[v]
 
 	switch fx {
-	case 0: // Set filter (AHX1 only)
-		if r.Song.Revision > 0 && fxParam != 0 {
+	case 0: // Set filter (AHX0 only)
+		if r.Song.Revision == 0 && fxParam != 0 {
 			if voice.IgnoreFilter != 0 {
 				voice.FilterPos = voice.IgnoreFilter
 				voice.IgnoreFilter = 0

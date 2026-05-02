@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bench/README.md` + `bench/interp_baseline.pprof` + `bench/interp_final.pprof` — CPU profiles captured via `go test -cpuprofile` for the legacy path (with `Execute()` forced to `executeLegacy()`) and the fast path, alongside documentation of the exact capture commands and a `go tool pprof -top -cum` summary table.
 
 ### Changed
+- AHX playback hardened malformed-module parsing and now maps AHX voice state directly to native SoundChip synthesis channels; stale 6502 `$D700` AHX constants and unused Amiga sample-buffer replay machinery were removed.
 - M68K CPU: corrected 68EC020 references to 68020 (32-bit address bus)
 - M68K_ADDRESS_MASK changed from 0x00FFFFFF to 0xFFFFFFFF (full 32-bit addressing)
 - M68KRunner.Execute() now routes through JIT when enabled

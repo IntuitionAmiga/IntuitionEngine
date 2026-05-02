@@ -513,7 +513,7 @@ func TestFilterModulation(t *testing.T) {
 func TestPListCommandParse(t *testing.T) {
 	replayer := NewAHXReplayer()
 	song := &AHXFile{
-		Revision: 1,
+		Revision: 0,
 	}
 	replayer.Song = song
 
@@ -571,9 +571,8 @@ func TestReplayerInit(t *testing.T) {
 		t.Errorf("Replayer should have 4 voices, got %d", len(replayer.Voices))
 	}
 
-	// Waves should be initialized
-	if replayer.Waves == nil {
-		t.Error("Waves should be initialized")
+	if replayer.Song != nil {
+		t.Error("New replayer should not have a song before InitSong")
 	}
 }
 

@@ -92,7 +92,6 @@ func BenchmarkAHXReplayer_SetAudio(b *testing.B) {
 	voice.NewWaveform = 1
 	voice.WaveLength = 3
 	voice.Waveform = 0
-	voice.AudioSource = replayer.WaveformTab[0]
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

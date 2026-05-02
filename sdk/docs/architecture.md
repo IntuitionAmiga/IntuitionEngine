@@ -617,9 +617,9 @@ The PSG uses the AY/YM logarithmic 16-step volume curve by default. A legacy lin
 | SID+ | `0xF0E19` | Enhanced render path for SID voices (oversampling/filter/drive/room shaping) |
 | POKEY+ | `0xF0D09` | Enhanced render path (oversampling/filter/drive/room shaping) |
 | TED+ | `0xF0F05` | Enhanced render path plus TED-specific response shaping |
-| AHX+ | `0xF0B80` | Stereo spread/panning with room processing |
+| AHX+ | `0xF0B80` | AHX voice-state mapping with stereo spread/panning and room processing |
 
-When Plus mode is enabled, the engine retains full backward compatibility with the standard register set while exposing additional capabilities. AHX+ uses a 64-sample crossfade when enabling/disabling to prevent audio glitches.
+When Plus mode is enabled, the engine retains full backward compatibility with the standard register set while exposing additional capabilities. AHX maps tracker state to native SoundChip channels instead of producing a Paula DMA stream; AHX+ uses a 64-sample crossfade when enabling/disabling to prevent audio glitches.
 
 ### Subsong Selection
 

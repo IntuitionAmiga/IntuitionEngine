@@ -367,6 +367,8 @@ The `+` variants (PSG+, SID+, POKEY+, TED+, AHX+) provide:
 
 SID+ additionally preserves per-channel filter sweeps. AHX+ adds authentic Amiga stereo panning (L-R-R-L) and hardware PWM.
 
+AHX playback is a native synthesis mapping, not an Amiga DMA sample stream: the replayer advances AHX notes, envelopes, filters, square modulation, vibrato, and portamento, then writes waveform/frequency/volume/duty/filter state into SoundChip channels 0-3. AHX+ keeps the same MMIO contract and adds the L-R-R-L pan spread plus enhanced processing.
+
 ### Display Options
 
 ```bash

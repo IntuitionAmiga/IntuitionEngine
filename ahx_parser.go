@@ -232,7 +232,7 @@ func ParseAHX(data []byte) (*AHXFile, error) {
 
 		// Byte 1: bits 7-3 = filter speed bits 4-0, bits 2-0 = wavelength
 		inst.FilterSpeed = int((data[pos+1] >> 3) & 0x1F)
-		inst.WaveLength = int(data[pos+1] & 0x07)
+		inst.WaveLength = min(int(data[pos+1]&0x07), 5)
 
 		// Envelope
 		inst.Envelope.AFrames = int(data[pos+2])
@@ -293,6 +293,10 @@ func ParseAHX(data []byte) (*AHXFile, error) {
 		}
 	}
 
+	if err := normalizeParsedAHX(song); err != nil {
+		return nil, err
+	}
+
 	return song, nil
 }
 
@@ -304,7 +308,7 @@ func ParseAHX(data []byte) (*AHXFile, error) {
 //	byte 2: PPPPPPPP (fx param)
 func unpackAHXStep(data []byte) AHXStep {
 	return AHXStep{
-		Note:       (int(data[0]) >> 2) & 0x3F,
+		Note:       min((int(data[0])>>2)&0x3F, 60),
 		Instrument: ((int(data[0]) & 0x03) << 4) | (int(data[1]) >> 4),
 		FX:         int(data[1]) & 0x0F,
 		FXParam:    int(data[2]),
@@ -327,11 +331,43 @@ func unpackAHXPListEntry(data []byte) AHXPListEntry {
 
 	return AHXPListEntry{
 		FX:       [2]int{int((v >> 26) & 7), int((v >> 29) & 7)},
-		Waveform: int((v >> 23) & 7),
+		Waveform: min(int((v>>23)&7), 4),
 		Fixed:    int((v >> 22) & 1),
-		Note:     int((v >> 16) & 0x3F),
+		Note:     min(int((v>>16)&0x3F), 60),
 		FXParam:  [2]int{int((v >> 8) & 0xFF), int(v & 0xFF)},
 	}
+}
+
+func normalizeParsedAHX(song *AHXFile) error {
+	if song.PositionNr <= 0 {
+		return errors.New("AHX: position list is empty")
+	}
+	if song.Restart >= song.PositionNr {
+		song.Restart = song.PositionNr - 1
+	}
+	for i, pos := range song.Subsongs {
+		if pos < 0 || pos >= song.PositionNr {
+			return fmt.Errorf("AHX: subsong %d start position %d outside position list", i+1, pos)
+		}
+	}
+	for i := range song.Instruments {
+		inst := &song.Instruments[i]
+		inst.WaveLength = min(max(inst.WaveLength, 0), 5)
+		if inst.HardCutRelease != 0 && inst.HardCutReleaseFrames < 1 {
+			inst.HardCutReleaseFrames = 1
+		}
+		for j := range inst.PList.Entries {
+			entry := &inst.PList.Entries[j]
+			entry.Note = min(max(entry.Note, 0), 60)
+			entry.Waveform = min(max(entry.Waveform, 0), 4)
+		}
+	}
+	for tr := range song.Tracks {
+		for row := range song.Tracks[tr] {
+			song.Tracks[tr][row].Note = min(max(song.Tracks[tr][row].Note, 0), 60)
+		}
+	}
+	return nil
 }
 
 // readNullString reads a null-terminated string from data starting at offset

@@ -9,6 +9,8 @@ import (
 	"sync"
 )
 
+const ahxMaxPlayLen = 16 * 1024 * 1024
+
 // AHXPlayer provides a high-level interface for AHX playback
 type AHXPlayer struct {
 	engine *AHXEngine
@@ -109,7 +111,7 @@ func (p *AHXPlayer) Metadata() AHXMetadata {
 // GetSubsongCount returns the number of subsongs
 func (p *AHXPlayer) GetSubsongCount() int {
 	if p.engine.replayer.Song != nil {
-		return p.engine.replayer.Song.SubsongNr
+		return p.engine.replayer.Song.SubsongNr + 1
 	}
 	return 0
 }
@@ -154,6 +156,7 @@ func (p *AHXPlayer) AttachBus(bus Bus32) {
 func (p *AHXPlayer) HandlePlayWrite(addr uint32, value uint32) {
 	var stopPlayback bool
 	var startReq *ahxAsyncStartRequest
+	var readReq *ahxBusReadRequest
 
 	p.mu.Lock()
 	switch addr {
@@ -203,19 +206,17 @@ func (p *AHXPlayer) HandlePlayWrite(addr uint32, value uint32) {
 			p.playErr = true
 			break
 		}
-		// Read directly from bus memory
-		mem := p.bus.GetMemory()
-		if int(p.playPtr)+int(p.playLen) > len(mem) {
+		if p.playLen > ahxMaxPlayLen || p.playPtr+uint32(p.playLen) < p.playPtr {
 			p.playErr = true
 			break
 		}
-		data := make([]byte, p.playLen)
-		copy(data, mem[p.playPtr:p.playPtr+p.playLen])
 		p.playBusy = true
 		p.playGen++
-		startReq = &ahxAsyncStartRequest{
+		readReq = &ahxBusReadRequest{
 			gen:       p.playGen,
-			data:      data,
+			bus:       p.bus,
+			ptr:       p.playPtr,
+			length:    p.playLen,
 			subsong:   int(p.subsong),
 			forceLoop: p.forceLoop,
 		}
@@ -227,9 +228,36 @@ func (p *AHXPlayer) HandlePlayWrite(addr uint32, value uint32) {
 	if stopPlayback {
 		p.engine.SetPlaying(false)
 	}
+	if readReq != nil {
+		data := make([]byte, readReq.length)
+		for i := range data {
+			data[i] = readReq.bus.Read8(readReq.ptr + uint32(i))
+		}
+
+		p.mu.Lock()
+		if readReq.gen == p.playGen {
+			p.playBusy = true
+			startReq = &ahxAsyncStartRequest{
+				gen:       readReq.gen,
+				data:      data,
+				subsong:   readReq.subsong,
+				forceLoop: readReq.forceLoop,
+			}
+		}
+		p.mu.Unlock()
+	}
 	if startReq != nil {
 		go p.startAsync(*startReq)
 	}
+}
+
+type ahxBusReadRequest struct {
+	gen       uint64
+	bus       Bus32
+	ptr       uint32
+	length    uint32
+	subsong   int
+	forceLoop bool
 }
 
 type ahxAsyncStartRequest struct {

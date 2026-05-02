@@ -15,10 +15,12 @@ type AHXEngine struct {
 	channels   [4]int
 	replayer   *AHXReplayer
 
-	playing        atomic.Bool
-	currentSample  uint64
-	loop           bool
-	samplesPerTick int
+	playing         atomic.Bool
+	currentSample   uint64
+	loop            bool
+	samplesPerTick  int
+	tickRateHz      int
+	tickAccumulator int
 
 	enabled        atomic.Bool
 	channelsInit   bool
@@ -64,6 +66,8 @@ func (e *AHXEngine) LoadSong(song *AHXFile, subsong int) error {
 
 	baseHz := 50 * song.SpeedMultiplier
 	e.samplesPerTick = e.sampleRate / baseHz
+	e.tickRateHz = baseHz
+	e.tickAccumulator = 0
 
 	e.enabled.Store(true)
 	e.currentSample = 0
@@ -103,7 +107,11 @@ func (e *AHXEngine) TickSample() {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
-	if e.samplesPerTick > 0 && e.currentSample%uint64(e.samplesPerTick) == 0 {
+	if e.tickRateHz > 0 && e.sampleRate > 0 {
+		e.tickAccumulator += e.tickRateHz
+	}
+	if e.tickAccumulator >= e.sampleRate {
+		e.tickAccumulator -= e.sampleRate
 		e.replayer.PlayIRQ()
 		e.updateChannels()
 	}
@@ -250,6 +258,7 @@ func (e *AHXEngine) Reset() {
 	e.playing.Store(false)
 	e.enabled.Store(false)
 	e.currentSample = 0
+	e.tickAccumulator = 0
 	e.silenceChannels()
 }
 

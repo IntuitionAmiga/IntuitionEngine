@@ -19,16 +19,3 @@ const (
 	AHX_PLAY_STATUS = 0xF0B90 // Status: bit 0=busy, bit 1=error
 	AHX_SUBSONG     = 0xF0B91 // Subsong selection (0-255)
 )
-
-// 6502/Z80 mode addresses (8-bit CPU compatible)
-// AHX is mapped at $D700-$D711 for 8-bit CPUs
-const (
-	C6502_AHX_BASE        = 0xD700
-	C6502_AHX_PLUS_CTRL   = 0xD700 // AHX+ mode control
-	C6502_AHX_PLAY_PTR    = 0xD704 // Play pointer (4 bytes, little-endian)
-	C6502_AHX_PLAY_LEN    = 0xD708 // Play length (4 bytes, little-endian)
-	C6502_AHX_PLAY_CTRL   = 0xD70C // Play control
-	C6502_AHX_PLAY_STATUS = 0xD710 // Play status
-	C6502_AHX_SUBSONG     = 0xD711 // Subsong selection
-	C6502_AHX_END         = 0xD711
-)

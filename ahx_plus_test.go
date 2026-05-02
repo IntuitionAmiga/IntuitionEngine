@@ -8,6 +8,7 @@ import (
 
 // TestAHXPlus_Enabled tests that AHX+ mode can be enabled/disabled
 func TestAHXPlus_Enabled(t *testing.T) {
+	chip := newTestSoundChip()
 	engine := NewAHXEngine(chip, 44100)
 
 	// Initially disabled
@@ -30,6 +31,7 @@ func TestAHXPlus_Enabled(t *testing.T) {
 
 // TestAHXPlus_StereoSpread tests that AHX+ sets up correct Amiga stereo panning
 func TestAHXPlus_StereoSpread(t *testing.T) {
+	chip := newTestSoundChip()
 	engine := NewAHXEngine(chip, 44100)
 	engine.SetAHXPlusEnabled(true)
 
@@ -57,6 +59,7 @@ func TestAHXPlus_StereoSpread(t *testing.T) {
 
 // TestAHXPlus_Oversampling tests that AHX+ configures oversampling
 func TestAHXPlus_Oversampling(t *testing.T) {
+	chip := newTestSoundChip()
 	engine := NewAHXEngine(chip, 44100)
 
 	// Enable AHX+
@@ -92,6 +95,7 @@ func TestAHXPlus_Oversampling(t *testing.T) {
 
 // TestAHXPlus_RoomReverb tests that AHX+ configures room reverb
 func TestAHXPlus_RoomReverb(t *testing.T) {
+	chip := newTestSoundChip()
 	engine := NewAHXEngine(chip, 44100)
 	engine.SetAHXPlusEnabled(true)
 
@@ -126,6 +130,7 @@ func TestAHXPlus_RoomReverb(t *testing.T) {
 
 // TestAHXPlus_PWMMapping tests PWM duty cycle mapping from SquarePos
 func TestAHXPlus_PWMMapping(t *testing.T) {
+	chip := newTestSoundChip()
 	engine := NewAHXEngine(chip, 44100)
 
 	// Load minimal AHX data
@@ -171,6 +176,7 @@ func TestAHXPlus_PWMMapping(t *testing.T) {
 
 // TestAHXPlus_Drive tests saturation drive parameter
 func TestAHXPlus_Drive(t *testing.T) {
+	chip := newTestSoundChip()
 	engine := NewAHXEngine(chip, 44100)
 	engine.SetAHXPlusEnabled(true)
 
