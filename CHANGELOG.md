@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- ANTIC/GTIA hardening: IE-native display-list rendering, text/bitmap modes 2-15, HSCROL/VSCROL, CHACTL effects, GTIA pseudo-modes, player/missile rendering including missiles, PRIOR priority, collision latches with HITCLR, PAL/NTSC timing, and Z80/M68K/x86 interrupt delivery through `InterruptSink`.
 - Pure-Go release packaging for Windows (`amd64`, `arm64`) and macOS (`arm64`) with embedded EhBASIC, EmuTOS, and AROS ROMs plus bundled `sdk/` and `AROS/` trees
 - Windows `amd64` JIT parity with Linux `amd64` for IE64, 6502, M68K, Z80, and x86 guests
 - Windows `arm64` IE64 native JIT support
@@ -38,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bench/README.md` + `bench/interp_baseline.pprof` + `bench/interp_final.pprof` — CPU profiles captured via `go test -cpuprofile` for the legacy path (with `Execute()` forced to `executeLegacy()`) and the fast path, alongside documentation of the exact capture commands and a `go tool pprof -top -cum` summary table.
 
 ### Changed
+- ANTIC/GTIA is documented as an Atari-inspired IE-native chip on `0xF2100-0xF21FB`; the dead 6502 `$D400/$D000` surface was removed because `$D400` belongs to PSG on 6502.
 - AHX playback hardened malformed-module parsing and now maps AHX voice state directly to native SoundChip synthesis channels; stale 6502 `$D700` AHX constants and unused Amiga sample-buffer replay machinery were removed.
 - M68K CPU: corrected 68EC020 references to 68020 (32-bit address bus)
 - M68K_ADDRESS_MASK changed from 0x00FFFFFF to 0xFFFFFFFF (full 32-bit addressing)
@@ -67,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **VGA**: Text mode (80x25), Mode 13h (320x200x256), Mode 12h (640x480x16), ModeX.
 - **ULA**: ZX Spectrum 256x192 display with attribute colour.
 - **TED**: Commodore Plus/4 video with 121-colour palette.
-- **ANTIC/GTIA**: Atari 8-bit display list processor with Player/Missile graphics.
+- **ANTIC/GTIA**: Atari-inspired IE-native display list processor with Player/Missile graphics.
 - **Voodoo SST-1**: 3DFX hardware 3D with Z-buffer, Gouraud shading, texture mapping, fog, alpha blending, chromakey.
 - Copper coprocessor for per-scanline raster effects.
 - DMA blitter with copy, fill, line draw, and Mode7 (SNES-style rotation/scaling).

@@ -245,6 +245,7 @@ The `sdk/include/` directory provides hardware definition include files for each
 
 All include files provide:
 - **Video registers**: VIDEO_CTRL, VIDEO_MODE, VIDEO_STATUS, blitter, copper, raster band
+- **ANTIC/GTIA registers**: IE-native MMIO/port definitions for `0xF2100-0xF21FB`; 6502 intentionally has no ANTIC/GTIA surface because `$D400` is PSG
 - **Audio registers**: PSG, POKEY, SID, TED raw registers and player control
 - **Memory constants**: VRAM_START, SCREEN_W/H, LINE_BYTES
 - **Blitter operations**: BLT_OP_COPY, BLT_OP_FILL, BLT_OP_LINE, BLT_OP_MASKED, BLT_OP_ALPHA, BLT_OP_MODE7

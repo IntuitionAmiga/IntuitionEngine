@@ -557,6 +557,41 @@
 .set GTIA_REG_PRIOR,0x09
 .set GTIA_REG_GRACTL,0x0A
 .set GTIA_REG_CONSOL,0x0B
+.set GTIA_REG_HPOSP0,0x0C
+.set GTIA_REG_HPOSP1,0x0D
+.set GTIA_REG_HPOSP2,0x0E
+.set GTIA_REG_HPOSP3,0x0F
+.set GTIA_REG_HPOSM0,0x10
+.set GTIA_REG_HPOSM1,0x11
+.set GTIA_REG_HPOSM2,0x12
+.set GTIA_REG_HPOSM3,0x13
+.set GTIA_REG_SIZEP0,0x14
+.set GTIA_REG_SIZEP1,0x15
+.set GTIA_REG_SIZEP2,0x16
+.set GTIA_REG_SIZEP3,0x17
+.set GTIA_REG_SIZEM,0x18
+.set GTIA_REG_GRAFP0,0x19
+.set GTIA_REG_GRAFP1,0x1A
+.set GTIA_REG_GRAFP2,0x1B
+.set GTIA_REG_GRAFP3,0x1C
+.set GTIA_REG_GRAFM,0x1D
+.set GTIA_REG_M0PF,0x1E      ; RO collision latch
+.set GTIA_REG_M1PF,0x1F      ; RO collision latch
+.set GTIA_REG_M2PF,0x20      ; RO collision latch
+.set GTIA_REG_M3PF,0x21      ; RO collision latch
+.set GTIA_REG_P0PF,0x22      ; RO collision latch
+.set GTIA_REG_P1PF,0x23      ; RO collision latch
+.set GTIA_REG_P2PF,0x24      ; RO collision latch
+.set GTIA_REG_P3PF,0x25      ; RO collision latch
+.set GTIA_REG_M0PL,0x26      ; RO collision latch
+.set GTIA_REG_M1PL,0x27      ; RO collision latch
+.set GTIA_REG_M2PL,0x28      ; RO collision latch
+.set GTIA_REG_M3PL,0x29      ; RO collision latch
+.set GTIA_REG_P0PL,0x2A      ; RO collision latch
+.set GTIA_REG_P1PL,0x2B      ; RO collision latch
+.set GTIA_REG_P2PL,0x2C      ; RO collision latch
+.set GTIA_REG_P3PL,0x2D      ; RO collision latch
+.set GTIA_REG_HITCLR,0x2E    ; WO clear collision latches
 
 ; ============================================================================
 ; ULA VIDEO REGISTERS (ZX Spectrum style)
@@ -2444,160 +2479,11 @@
 .set STACK_TOP,0xF000
 
 ; ============================================================================
-; ANTIC VIDEO REGISTERS (Atari 8-bit style)
+; ANTIC/GTIA MEMORY MAP NOTE
 ;
-; The ANTIC chip provides Atari 8-bit compatible video output:
-; - Display list-driven graphics (14 modes)
-; - 320x192 active display (384x240 with borders)
-; - 128 colors (16 hues × 8 luminances)
-; - Hardware fine scrolling
-; - WSYNC for precise raster synchronization
-;
-; For Z80, registers are memory-mapped (same as other video chips).
+; Z80 uses ANTIC/GTIA select/data port I/O at $D4-$D7. There is no $D400
+; memory-mapped ANTIC/GTIA surface in Intuition Engine.
 ; ============================================================================
-
-.set ANTIC_BASE,0xD400
-.set ANTIC_DMACTL,0xD400
-.set ANTIC_CHACTL,0xD401
-.set ANTIC_DLISTL,0xD402
-.set ANTIC_DLISTH,0xD403
-.set ANTIC_HSCROL,0xD404
-.set ANTIC_VSCROL,0xD405
-.set ANTIC_PMBASE,0xD407
-.set ANTIC_CHBASE,0xD409
-.set ANTIC_WSYNC,0xD40A
-.set ANTIC_VCOUNT,0xD40B
-.set ANTIC_PENH,0xD40C
-.set ANTIC_PENV,0xD40D
-.set ANTIC_NMIEN,0xD40E
-.set ANTIC_NMIST,0xD40F
-
-; DMACTL bits
-.set ANTIC_DMA_NARROW,0x01
-.set ANTIC_DMA_NORMAL,0x02
-.set ANTIC_DMA_WIDE,0x03
-.set ANTIC_DMA_MISSILE,0x04
-.set ANTIC_DMA_PLAYER,0x08
-.set ANTIC_DMA_PMRES,0x10
-.set ANTIC_DMA_DL,0x20
-
-; CHACTL bits
-.set ANTIC_CHACTL_BLANK,0x01
-.set ANTIC_CHACTL_INVERT,0x02
-.set ANTIC_CHACTL_REFLECT,0x04
-
-; NMIEN bits
-.set ANTIC_NMIEN_DLI,0x80
-.set ANTIC_NMIEN_VBI,0x40
-
-; Display List Instructions
-; Blank lines (1-8 scanlines)
-.set DL_BLANK1,0x00
-.set DL_BLANK2,0x10
-.set DL_BLANK3,0x20
-.set DL_BLANK4,0x30
-.set DL_BLANK5,0x40
-.set DL_BLANK6,0x50
-.set DL_BLANK7,0x60
-.set DL_BLANK8,0x70
-
-; Jump instructions
-.set DL_JMP,0x01
-.set DL_JVB,0x41
-
-; Graphics modes
-.set DL_MODE2,0x02
-.set DL_MODE3,0x03
-.set DL_MODE4,0x04
-.set DL_MODE5,0x05
-.set DL_MODE6,0x06
-.set DL_MODE7,0x07
-.set DL_MODE8,0x08
-.set DL_MODE9,0x09
-.set DL_MODE10,0x0A
-.set DL_MODE11,0x0B
-.set DL_MODE12,0x0C
-.set DL_MODE13,0x0D
-.set DL_MODE14,0x0E
-.set DL_MODE15,0x0F
-
-; Display list modifiers (OR with mode)
-.set DL_LMS,0x40
-.set DL_DLI,0x80
-.set DL_HSCROL,0x10
-.set DL_VSCROL,0x20
-
-; ============================================================================
-; GTIA VIDEO REGISTERS (Atari 8-bit color control)
-;
-; GTIA (Graphics Television Interface Adapter) handles color generation
-; and player-missile graphics for Atari 8-bit computers. While ANTIC
-; controls the display list and timing, GTIA controls colors and sprites.
-;
-; Color format: HHHHLLLL (hue in high nibble, luminance in low nibble)
-; - 16 hues (0-15) x 8 luminances (0,2,4,6,8,10,12,14) = 128 colors
-; - Hue 0 = grayscale, others are chromatic
-;
-; GTIA uses authentic Atari addresses for Z80 compatibility.
-; ============================================================================
-
-; Playfield color registers
-.set GTIA_COLPF0,0xD016
-.set GTIA_COLPF1,0xD017
-.set GTIA_COLPF2,0xD018
-.set GTIA_COLPF3,0xD019
-.set GTIA_COLBK,0xD01A
-
-; Player color registers
-.set GTIA_COLPM0,0xD012
-.set GTIA_COLPM1,0xD013
-.set GTIA_COLPM2,0xD014
-.set GTIA_COLPM3,0xD015
-
-; GTIA control registers
-.set GTIA_PRIOR,0xD01B
-.set GTIA_GRACTL,0xD01D
-.set GTIA_CONSOL,0xD01F
-
-; Player horizontal position registers (authentic Atari addresses)
-.set GTIA_HPOSP0,0xD000
-.set GTIA_HPOSP1,0xD001
-.set GTIA_HPOSP2,0xD002
-.set GTIA_HPOSP3,0xD003
-
-; Missile horizontal position registers
-.set GTIA_HPOSM0,0xD004
-.set GTIA_HPOSM1,0xD005
-.set GTIA_HPOSM2,0xD006
-.set GTIA_HPOSM3,0xD007
-
-; Player/missile size registers
-.set GTIA_SIZEP0,0xD008
-.set GTIA_SIZEP1,0xD009
-.set GTIA_SIZEP2,0xD00A
-.set GTIA_SIZEP3,0xD00B
-.set GTIA_SIZEM,0xD00C
-
-; Player graphics registers (directly writable)
-.set GTIA_GRAFP0,0xD00D
-.set GTIA_GRAFP1,0xD00E
-.set GTIA_GRAFP2,0xD00F
-.set GTIA_GRAFP3,0xD010
-.set GTIA_GRAFM,0xD011
-
-; PRIOR register bits
-.set GTIA_PRIOR_P03,0x01
-.set GTIA_PRIOR_P01,0x02
-.set GTIA_PRIOR_P23,0x04
-.set GTIA_PRIOR_MULTI,0x10
-.set GTIA_PRIOR_FIFTH,0x20
-.set GTIA_PRIOR_GTIA1,0x40
-.set GTIA_PRIOR_GTIA2,0x80
-
-; GRACTL register bits
-.set GTIA_GRACTL_MISSLE,0x01
-.set GTIA_GRACTL_PLAYER,0x02
-.set GTIA_GRACTL_LATCH,0x04
 
 ; ============================================================================
 ; 3DFX VOODOO GRAPHICS (SST-1) REGISTERS

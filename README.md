@@ -1075,11 +1075,11 @@ Z80 and x86 access the custom synth and player control registers via memory-mapp
 | TED Video | 0x0F0F20-0x0F0F6B | Ports 0xF2/0xF3   | Ports 0xF2/0xF3 | $D620-$D632 | Plus/4-inspired (idx 0x20-0x32) |
 | VGA       | 0x0F1000-0x0F13FF | Ports 0xA0-0xAC   | Ports 0x3C4-0x3DA | $D700-$D70A | IBM VGA compatible |
 | Voodoo    | 0x0F8000-0x0F87FF + texmem 0x0D0000-0xDFFFF | Ports 0xB0-0xB7 | Memory | $E000 banked window | IE-native Voodoo HLE accelerator |
-| ANTIC     | 0x0F2100-0x0F213F | Ports 0xD4/0xD5 | Ports 0xD4/0xD5 | $D400-$D40F | Atari 8-bit video |
-| GTIA      | 0x0F2140-0x0F21B7 | Ports 0xD6/0xD7 | Ports 0xD6/0xD7 | $D000-$D01F | Atari 8-bit color + P/M |
+| ANTIC     | 0x0F2100-0x0F213F | Ports 0xD4/0xD5 | Ports 0xD4/0xD5 | - | Atari-inspired IE-native display list video |
+| GTIA      | 0x0F2140-0x0F21FB | Ports 0xD6/0xD7 | Ports 0xD6/0xD7 | - | Atari-inspired IE-native color + P/M |
 | ULA       | 0x0F2000-0x0F200B | Port 0xFE       | Port 0xFE       | $D800-$D80B | ZX Spectrum compatible |
 
-Note: 6502 has PSG at $D400 which overlaps with ANTIC's authentic Atari address. Use M68K/Z80/x86 for ANTIC access when PSG is in use.
+Note: ANTIC and GTIA intentionally do not expose a 6502 `$D400/$D000` compatibility surface; 6502 `$D400` remains PSG.
 
 ### Access Methods
 
@@ -1334,7 +1334,7 @@ The ULA provides its own frame timing through `SignalVSync()`, which handles the
 
 ## 3.16 ANTIC Video Chip - Atari 8-bit (0x0F2100 - 0x0F213F)
 
-The ANTIC (Alphanumeric Television Interface Controller) provides authentic Atari 8-bit computer video output, enabling classic Atari demos and games:
+The ANTIC (Alphanumeric Television Interface Controller) provides Atari-inspired IE-native display-list video output, enabling classic raster and mixed-mode effects:
 
 ### Display Specifications
 
@@ -1370,16 +1370,7 @@ ANTIC Registers (0x0F2100 - 0x0F213F):
 0x0F213C: ANTIC_STATUS    - Status (VBlank flag, IE-specific)
 ```
 
-### 6502 Register Map (Atari Authentic)
-
-For 6502 compatibility, ANTIC uses authentic Atari addresses at 0xD400:
-
-```
-0xD400: DMACTL    0xD401: CHACTL    0xD402: DLISTL    0xD403: DLISTH
-0xD404: HSCROL    0xD405: VSCROL    0xD407: PMBASE    0xD409: CHBASE
-0xD40A: WSYNC     0xD40B: VCOUNT    0xD40C: PENH      0xD40D: PENV
-0xD40E: NMIEN     0xD40F: NMIST
-```
+ANTIC is exposed through IE-native MMIO for IE32/IE64/M68K and select/data ports for Z80/x86. It has no 6502 `$D400` register alias.
 
 ### DMACTL Register Bits
 
@@ -1499,30 +1490,30 @@ ANTIC integrates with the video compositor as layer 13, positioned between TED (
     antic_wait_vblank
 ```
 
-### Example: WSYNC Raster Effect (6502)
+### Example: WSYNC Raster Effect (x86)
 
 ```asm
-    include "ie65.inc"
+    %include "ie86.inc"
 
     ; Create color bars using WSYNC timing
-    ldx #0
+    xor ecx, ecx
 loop:
-    stx GTIA_COLBK      ; Set background color via GTIA
-    sta ANTIC_WSYNC     ; Wait for horizontal sync
-    inx
-    bne loop
+    mov [GTIA_COLBK], cl ; Set background color via GTIA
+    mov byte [ANTIC_WSYNC], 0
+    inc cl
+    jnz loop
 ```
 
-## 3.17 GTIA Color Control (0x0F2140 - 0x0F216F)
+## 3.17 GTIA Color Control (0x0F2140 - 0x0F21FB)
 
-The GTIA (Graphics Television Interface Adapter) companion chip handles color generation and player-missile graphics for Atari 8-bit systems. While ANTIC controls display timing and the display list, GTIA controls all color output.
+The GTIA (Graphics Television Interface Adapter) companion chip handles color generation and player-missile graphics for the IE-native ANTIC surface. While ANTIC controls display timing and the display list, GTIA controls all color output.
 
 ### Register Map (IE32/IE64/M68K/x86)
 
 All registers are 4-byte aligned for copper coprocessor compatibility:
 
 ```
-GTIA Registers (0x0F2140 - 0x0F21B7):
+GTIA Registers (0x0F2140 - 0x0F21FB):
 0x0F2140: GTIA_COLPF0   - Playfield color 0
 0x0F2144: GTIA_COLPF1   - Playfield color 1
 0x0F2148: GTIA_COLPF2   - Playfield color 2
@@ -1553,25 +1544,26 @@ GTIA Registers (0x0F2140 - 0x0F21B7):
 0x0F21AC: GTIA_GRAFP2   - Player 2 graphics
 0x0F21B0: GTIA_GRAFP3   - Player 3 graphics
 0x0F21B4: GTIA_GRAFM    - Missile graphics (2 bits each)
+0x0F21B8: GTIA_M0PF     - Missile 0 vs playfield collision
+0x0F21BC: GTIA_M1PF     - Missile 1 vs playfield collision
+0x0F21C0: GTIA_M2PF     - Missile 2 vs playfield collision
+0x0F21C4: GTIA_M3PF     - Missile 3 vs playfield collision
+0x0F21C8: GTIA_P0PF     - Player 0 vs playfield collision
+0x0F21CC: GTIA_P1PF     - Player 1 vs playfield collision
+0x0F21D0: GTIA_P2PF     - Player 2 vs playfield collision
+0x0F21D4: GTIA_P3PF     - Player 3 vs playfield collision
+0x0F21D8: GTIA_M0PL     - Missile 0 vs players collision
+0x0F21DC: GTIA_M1PL     - Missile 1 vs players collision
+0x0F21E0: GTIA_M2PL     - Missile 2 vs players collision
+0x0F21E4: GTIA_M3PL     - Missile 3 vs players collision
+0x0F21E8: GTIA_P0PL     - Player 0 vs players collision
+0x0F21EC: GTIA_P1PL     - Player 1 vs players collision
+0x0F21F0: GTIA_P2PL     - Player 2 vs players collision
+0x0F21F4: GTIA_P3PL     - Player 3 vs players collision
+0x0F21F8: GTIA_HITCLR   - Clear collision latches
 ```
 
-### 6502 Register Map (Atari Authentic)
-
-For 6502 compatibility, GTIA uses authentic Atari addresses at 0xD000:
-
-```
-Player/Missile Position and Size:
-0xD000: HPOSP0    0xD001: HPOSP1    0xD002: HPOSP2    0xD003: HPOSP3
-0xD004: HPOSM0    0xD005: HPOSM1    0xD006: HPOSM2    0xD007: HPOSM3
-0xD008: SIZEP0    0xD009: SIZEP1    0xD00A: SIZEP2    0xD00B: SIZEP3
-0xD00C: SIZEM     0xD00D: GRAFP0    0xD00E: GRAFP1    0xD00F: GRAFP2
-0xD010: GRAFP3    0xD011: GRAFM
-
-Color and Control:
-0xD012: COLPM0    0xD013: COLPM1    0xD014: COLPM2    0xD015: COLPM3
-0xD016: COLPF0    0xD017: COLPF1    0xD018: COLPF2    0xD019: COLPF3
-0xD01A: COLBK     0xD01B: PRIOR     0xD01D: GRACTL    0xD01F: CONSOL
-```
+GTIA is exposed through IE-native MMIO for IE32/IE64/M68K and select/data ports for Z80/x86. It has no 6502 `$D000` register alias.
 
 ### Color Format
 

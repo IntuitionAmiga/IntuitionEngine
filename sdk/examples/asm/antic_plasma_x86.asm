@@ -5,10 +5,10 @@
 ;
 ; === SDK QUICK REFERENCE ===
 ; Target CPU:    x86 (16/32-bit Intel-compatible)
-; Video Chip:    ANTIC (Atari 8-bit display list processor) + GTIA
+; Video Chip:    ANTIC (Atari-inspired IE-native display list) + GTIA
 ; Audio Engine:  SID (Commodore 64 sound chip, MOS 6581/8580)
 ; Assembler:     ie32asm (x86 mode)
-; Build:         sdk/bin/ie32asm sdk/examples/asm/antic_plasma_x86.asm
+; Build:         (cd sdk/examples/asm && nasm -f bin -I ../../include/ -o antic_plasma_x86.ie86 antic_plasma_x86.asm)
 ; Run:           ./bin/IntuitionEngine -x86 antic_plasma_x86.ie86
 ; Porting:       ANTIC/GTIA MMIO is CPU-agnostic. Display list programming
 ;                works the same from any CPU core. SID audio setup is also
@@ -17,7 +17,7 @@
 ; === WHAT THIS DEMO DOES ===
 ; 1. Displays animated plasma "raster bars" using per-scanline colour changes
 ; 2. Shows two vertical sine-wave scrolltexts using Player/Missile graphics
-; 3. Uses an authentic ANTIC display list (similar to Amiga copper lists)
+; 3. Uses the IE-native ANTIC display list (similar to Amiga copper lists)
 ; 4. Plays SID music through the Commodore 64 audio emulation
 ;
 ; === WHY ANTIC DISPLAY LIST ARCHITECTURE ===
@@ -37,9 +37,9 @@
 ; chips: ANTIC for display list timing and WSYNC synchronisation, GTIA for
 ; per-scanline background colours and Player/Missile scrolltext rendering.
 ;
-; In the IntuitionEngine, ANTIC's display list architecture is faithfully
-; emulated. The display list is stored in memory and processed by the
-; video chip each frame, just as on the original Atari hardware.
+; In the IntuitionEngine, ANTIC is Atari-inspired but IE-native. The display
+; list is stored in memory and processed by the video chip each frame; this
+; demo uses a mostly blank display list while CPU WSYNC writes drive bars.
 ;
 ; === WHY THESE EFFECTS MATTER (HISTORICAL CONTEXT) ===
 ;
@@ -122,7 +122,7 @@
 ; 0x000000           Program entry point (org 0)
 ; 0xFF0000           Stack top (grows downward)
 ; 0xF2100-0xF213F    ANTIC registers (DMACTL, display list ptr, WSYNC, etc.)
-; 0xF2140-0xF21B7    GTIA registers (COLBK, COLPM, HPOSP, GRAFP, etc.)
+; 0xF2140-0xF21FB    GTIA registers (COLBK, COLPM, HPOSP, GRAFP, collisions)
 ; 0xF0E00-0xF0E2F    SID registers (voices, filter, player control)
 ; display_list       ANTIC display list program (in .data section)
 ; sin_table          256-byte sine lookup table
@@ -130,7 +130,7 @@
 ; sid_data           Embedded SID music file
 ;
 ; === BUILD AND RUN ===
-; sdk/bin/ie32asm sdk/examples/asm/antic_plasma_x86.asm
+; (cd sdk/examples/asm && nasm -f bin -I ../../include/ -o antic_plasma_x86.ie86 antic_plasma_x86.asm)
 ; ./bin/IntuitionEngine -x86 antic_plasma_x86.ie86
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later

@@ -143,9 +143,12 @@ func TestANTIC_RegisterWrite_DisplayList(t *testing.T) {
 // TestANTIC_RegisterRead_VCOUNT tests vertical counter register
 func TestANTIC_RegisterRead_VCOUNT(t *testing.T) {
 	antic := NewANTICEngine(nil)
+	now := int64(1_000_000_000)
+	antic.now = func() int64 { return now }
+	antic.lastFrameStart = now
 
-	// Set internal scanline
-	antic.scanline = 100
+	// Advance to scanline 100 in the NTSC frame.
+	now += (antic.framePeriodNS()*100)/int64(ANTIC_SCANLINES_NTSC) + 1
 
 	// VCOUNT returns scanline / 2
 	val := antic.HandleRead(ANTIC_VCOUNT)
@@ -154,7 +157,7 @@ func TestANTIC_RegisterRead_VCOUNT(t *testing.T) {
 	}
 
 	// Test another value
-	antic.scanline = 200
+	now = antic.lastFrameStart + (antic.framePeriodNS()*200)/int64(ANTIC_SCANLINES_NTSC) + 1
 	val = antic.HandleRead(ANTIC_VCOUNT)
 	if val != 100 {
 		t.Errorf("VCOUNT for 200: expected 100, got %d", val)
@@ -262,14 +265,93 @@ func TestANTIC_SignalVSync(t *testing.T) {
 	// Signal VSync
 	antic.SignalVSync()
 
-	// Scanline should reset to 0
-	if antic.scanline != 0 {
-		t.Errorf("Scanline should be 0 after VSync, got %d", antic.scanline)
+	if antic.scanline != 100 {
+		t.Errorf("Incomplete scanline capture should survive VSync, got %d", antic.scanline)
 	}
 
 	// Frame timer should be set
 	if antic.lastFrameStart == 0 {
 		t.Error("lastFrameStart should be set after SignalVSync")
+	}
+}
+
+func TestANTIC_SignalVSyncPreservesIncompleteCapture(t *testing.T) {
+	antic := NewANTICEngine(nil)
+	antic.writeBuffer = 0
+	antic.scanline = 13
+	antic.colbk = 0x0C
+
+	// Old completed frame in read buffer.
+	antic.scanlineColors[1][12] = 0x02
+	antic.playerGfx[1][1][12] = 0x55
+
+	// Partial current frame in write buffer.
+	antic.scanlineColors[0][12] = 0x6E
+	antic.playerGfx[0][1][12] = 0xAA
+	antic.playerPos[0][1][12] = 0x40
+
+	antic.SignalVSync()
+
+	if antic.writeBuffer != 0 {
+		t.Fatalf("SignalVSync should keep incomplete buffer writable, got writeBuffer=%d", antic.writeBuffer)
+	}
+	if antic.scanline != 13 {
+		t.Fatalf("SignalVSync should not reset incomplete capture scanline, got %d", antic.scanline)
+	}
+	if got := antic.scanlineColors[0][12]; got != 0x6E {
+		t.Fatalf("incomplete raster color changed to 0x%02X", got)
+	}
+	if got := antic.playerGfx[0][1][12]; got != 0xAA {
+		t.Fatalf("incomplete player gfx changed to 0x%02X", got)
+	}
+	if got := antic.scanlineColors[1][12]; got != 0x02 {
+		t.Fatalf("last complete raster color changed to 0x%02X", got)
+	}
+	if got := antic.playerGfx[1][1][12]; got != 0x55 {
+		t.Fatalf("last complete player gfx changed to 0x%02X", got)
+	}
+}
+
+func TestANTIC_IncompleteCapturePublishesOnlyAfterFullWSYNCFrame(t *testing.T) {
+	antic := NewANTICEngine(nil)
+	antic.writeBuffer = 0
+	antic.colbk = 0x2E
+	antic.scanlineColors[1][20] = 0x04
+	for y := 0; y < 100; y++ {
+		antic.scanlineColors[0][y] = 0x06
+		antic.scanline++
+	}
+
+	antic.SignalVSync()
+
+	frame := antic.RenderFrame(nil)
+	if got := anticTestPixel(frame, ANTIC_BORDER_LEFT, ANTIC_BORDER_TOP+20); got != anticRGBA(0x04) {
+		t.Fatalf("incomplete frame was published before 192 WSYNC rows, got %v", got)
+	}
+
+	for antic.scanline < ANTIC_DISPLAY_HEIGHT {
+		antic.scanlineColors[0][antic.scanline] = 0x08
+		antic.scanline++
+	}
+	antic.writeBuffer = 1 - antic.writeBuffer
+	antic.scanline = 0
+
+	frame = antic.RenderFrame(nil)
+	if got := anticTestPixel(frame, ANTIC_BORDER_LEFT, ANTIC_BORDER_TOP+20); got != anticRGBA(0x06) {
+		t.Fatalf("completed frame did not publish captured row, got %v", got)
+	}
+}
+
+func TestANTIC_SignalVSyncClearsUnwrittenRowsToCurrentBackground(t *testing.T) {
+	antic := NewANTICEngine(nil)
+	antic.colbk = 0x0C
+	antic.writeBuffer = 0
+	antic.scanlineColors[0][20] = 0x04
+
+	antic.SignalVSync()
+
+	if got := antic.scanlineColors[0][20]; got != 0x0C {
+		t.Fatalf("unwritten row after VSync = 0x%02X want COLBK 0x0C", got)
 	}
 }
 
@@ -308,20 +390,129 @@ func TestANTIC_EnableRegister(t *testing.T) {
 // TestANTIC_Status_VBlank tests STATUS reflects time-based VBlank
 func TestANTIC_Status_VBlank(t *testing.T) {
 	antic := NewANTICEngine(nil)
+	now := int64(1_000_000_000)
+	antic.now = func() int64 { return now }
 
-	// Initial status should be 0 (auto-initialises frame timer)
+	// Initial status should be 0 and must not initialise frame timing.
 	val := antic.HandleRead(ANTIC_STATUS)
 	if val != 0 {
 		t.Errorf("Initial STATUS: expected 0, got %d", val)
 	}
+	if antic.lastFrameStart != 0 {
+		t.Fatalf("STATUS read mutated lastFrameStart to %d", antic.lastFrameStart)
+	}
 
-	// Set frame start far enough in the past that we're in VBlank region (last 20%)
-	// A 60Hz frame is ~16.67ms; VBlank starts at 80% = ~13.3ms
-	antic.lastFrameStart = time.Now().Add(-15 * time.Millisecond).UnixNano()
+	antic.lastFrameStart = now - int64(16*time.Millisecond)
 
 	val = antic.HandleRead(ANTIC_STATUS)
 	if val&ANTIC_STATUS_VBLANK == 0 {
-		t.Error("Expected VBlank bit to be set in last 20% of frame")
+		t.Error("Expected VBlank bit to be set in VBlank scanline range")
+	}
+}
+
+func TestANTIC_VCOUNT_AutoTicksFromFrameStart(t *testing.T) {
+	antic := NewANTICEngine(nil)
+	now := int64(1_000_000_000)
+	antic.now = func() int64 { return now }
+	antic.lastFrameStart = now
+
+	if got := antic.HandleRead(ANTIC_VCOUNT); got != 0 {
+		t.Fatalf("initial VCOUNT got %d, want 0", got)
+	}
+
+	now += antic.framePeriodNS() / 2
+	if got := antic.HandleRead(ANTIC_VCOUNT); got == 0 {
+		t.Fatalf("mid-frame VCOUNT did not advance")
+	}
+}
+
+func TestANTIC_STATUSReadIsIdempotent(t *testing.T) {
+	antic := NewANTICEngine(nil)
+	now := int64(2_000_000_000)
+	antic.now = func() int64 { return now }
+	antic.lastFrameStart = now - int64(16*time.Millisecond)
+	antic.nmist = ANTIC_NMIST_VBI
+	antic.scanline = 77
+
+	first := antic.HandleRead(ANTIC_STATUS)
+	for i := 0; i < 1000; i++ {
+		if got := antic.HandleRead(ANTIC_STATUS); got != first {
+			t.Fatalf("STATUS read %d got %d, want %d", i, got, first)
+		}
+	}
+	if antic.nmist != ANTIC_NMIST_VBI {
+		t.Fatalf("STATUS reads changed NMIST to 0x%02X", antic.nmist)
+	}
+	if antic.scanline != 77 {
+		t.Fatalf("STATUS reads changed scanline to %d", antic.scanline)
+	}
+}
+
+func TestANTIC_TickFrameSetsVBIPendingOncePerFrame(t *testing.T) {
+	antic := NewANTICEngine(nil)
+	antic.HandleWrite(ANTIC_NMIEN, ANTIC_NMIEN_VBI)
+
+	antic.tickFrame(100)
+	if antic.nmist&ANTIC_NMIST_VBI == 0 {
+		t.Fatal("tickFrame did not set VBI pending")
+	}
+	firstFrame := antic.frameID
+	for i := 0; i < 1000; i++ {
+		_ = antic.HandleRead(ANTIC_STATUS)
+	}
+	if antic.frameID != firstFrame {
+		t.Fatalf("STATUS reads changed frameID to %d", antic.frameID)
+	}
+
+	antic.HandleWrite(ANTIC_NMIST, 0)
+	antic.tickFrame(200)
+	if antic.nmist&ANTIC_NMIST_VBI == 0 {
+		t.Fatal("next tickFrame did not set VBI pending again")
+	}
+	if antic.frameID != firstFrame+1 {
+		t.Fatalf("next tickFrame frameID got %d, want %d", antic.frameID, firstFrame+1)
+	}
+}
+
+func TestANTIC_TickFrameHonorsNMIEN(t *testing.T) {
+	antic := NewANTICEngine(nil)
+	antic.tickFrame(100)
+	if antic.nmist != 0 {
+		t.Fatalf("tickFrame with VBI disabled changed NMIST to 0x%02X", antic.nmist)
+	}
+}
+
+func TestANTIC_PALTimingAndEnableBits(t *testing.T) {
+	antic := NewANTICEngine(nil)
+	now := int64(3_000_000_000)
+	antic.now = func() int64 { return now }
+	antic.lastFrameStart = now
+
+	now = antic.lastFrameStart + antic.framePeriodNS() - 1
+	if got := antic.HandleRead(ANTIC_VCOUNT); got != 130 {
+		t.Fatalf("NTSC max VCOUNT got %d, want 130", got)
+	}
+
+	antic.HandleWrite(ANTIC_ENABLE, ANTIC_ENABLE_PAL)
+	if antic.IsEnabled() {
+		t.Fatal("PAL bit should not enable video")
+	}
+	if got := antic.HandleRead(ANTIC_ENABLE); got != ANTIC_ENABLE_PAL {
+		t.Fatalf("ENABLE after PAL-only write got 0x%02X", got)
+	}
+
+	antic.lastFrameStart = now
+	now = antic.lastFrameStart + antic.framePeriodNS() - 1
+	if got := antic.HandleRead(ANTIC_VCOUNT); got != 155 {
+		t.Fatalf("PAL max VCOUNT got %d, want 155", got)
+	}
+
+	antic.HandleWrite(ANTIC_ENABLE, ANTIC_ENABLE_VIDEO)
+	if !antic.IsEnabled() {
+		t.Fatal("video bit should enable video")
+	}
+	if got := antic.HandleRead(ANTIC_ENABLE); got != ANTIC_ENABLE_VIDEO {
+		t.Fatalf("ENABLE after video-only write got 0x%02X", got)
 	}
 }
 
@@ -358,7 +549,7 @@ func TestANTIC_Render_FrameSize(t *testing.T) {
 	antic := NewANTICEngine(nil)
 	antic.HandleWrite(ANTIC_ENABLE, ANTIC_ENABLE_VIDEO)
 
-	frame := antic.RenderFrame()
+	frame := antic.RenderFrame(nil)
 
 	// Frame should be 384*240*4 bytes (RGBA)
 	expectedSize := ANTIC_FRAME_WIDTH * ANTIC_FRAME_HEIGHT * 4
@@ -376,7 +567,7 @@ func TestANTIC_Render_BorderColor(t *testing.T) {
 	// Using color index 0x94 (green, luminance 9)
 	antic.colbk = 0x94
 
-	frame := antic.RenderFrame()
+	frame := antic.RenderFrame(nil)
 
 	// Check a border pixel (top-left corner)
 	r, g, b := frame[0], frame[1], frame[2]
@@ -408,24 +599,6 @@ func TestANTIC_ColorPalette(t *testing.T) {
 	// Should have some non-zero values
 	if r == 0 && g == 0 && b == 0 {
 		t.Error("Color 0x88 should not be black")
-	}
-}
-
-// =============================================================================
-// Sprint 6: 6502 Bus Integration Tests
-// =============================================================================
-
-// TestANTIC_6502_Addresses tests 6502-style register access
-func TestANTIC_6502_Addresses(t *testing.T) {
-	// Verify 6502 register addresses match Atari authentic addresses
-	if C6502_ANTIC_DMACTL != 0xD400 {
-		t.Errorf("C6502_ANTIC_DMACTL: expected 0xD400, got 0x%X", C6502_ANTIC_DMACTL)
-	}
-	if C6502_ANTIC_VCOUNT != 0xD40B {
-		t.Errorf("C6502_ANTIC_VCOUNT: expected 0xD40B, got 0x%X", C6502_ANTIC_VCOUNT)
-	}
-	if C6502_ANTIC_WSYNC != 0xD40A {
-		t.Errorf("C6502_ANTIC_WSYNC: expected 0xD40A, got 0x%X", C6502_ANTIC_WSYNC)
 	}
 }
 

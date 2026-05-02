@@ -573,7 +573,7 @@ func (b *Z80BusAdapter) Out(port uint16, value byte) {
 	// Handle ANTIC port I/O (0xD4-0xD5)
 	switch lowPort {
 	case Z80_ANTIC_PORT_SELECT:
-		b.anticRegSelect = value & 0x0F // 16 ANTIC registers
+		b.anticRegSelect = value
 		return
 	case Z80_ANTIC_PORT_DATA:
 		if b.anticRegSelect < ANTIC_REG_COUNT {
@@ -586,7 +586,7 @@ func (b *Z80BusAdapter) Out(port uint16, value byte) {
 	// Handle GTIA port I/O (0xD6-0xD7)
 	switch lowPort {
 	case Z80_GTIA_PORT_SELECT:
-		b.gtiaRegSelect = value & 0x0F // 12 GTIA registers
+		b.gtiaRegSelect = value
 		return
 	case Z80_GTIA_PORT_DATA:
 		if b.gtiaRegSelect < GTIA_REG_COUNT {

@@ -506,15 +506,15 @@ func (a *ANTICEngine) Reset() {
 		a.grafp[i] = 0
 	}
 	a.grafm = 0
+	a.clearCollisions()
 
 	a.enabled.Store(false)
+	a.palMode.Store(false)
 	a.vblankActive.Store(false)
+	a.lastFrameStart = 0
+	a.frameID = 0
 	a.writeBuffer = 0
 	a.frameReady = false
-
-	for i := range a.frameBuffer {
-		a.frameBuffer[i] = 0
-	}
 
 	// Reset triple-buffer
 	for i := range a.frameBufs {

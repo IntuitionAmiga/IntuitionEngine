@@ -31,7 +31,7 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 | `vga_mode13h_fire.asm` | IE32 | VGA (Mode 13h) | -- | Classic DOS-era 256-colour fire effect |
 | `ula_rotating_cube_65.asm` | 6502 | ULA (Spectrum) | AHX | Wireframe 3D cube on ZX Spectrum display |
 | `ted_121_colors_68k.asm` | M68K | TED (Plus/4) | PSG | Full-screen plasma using all 121 TED colours |
-| `antic_plasma_x86.asm` | x86 | ANTIC/GTIA | SID | Atari 8-bit display list + Player/Missile graphics |
+| `antic_plasma_x86.asm` | x86 | ANTIC/GTIA | SID | IE-native display list + Player/Missile graphics |
 | `vga_text_sap_demo.asm` | Z80 | VGA (text) | POKEY/SAP | VGA text mode with SAP music playback |
 | `voodoo_cube_68k.asm` | M68K | Voodoo 3D | -- | Z-buffered 3D cube on 3DFX Voodoo hardware |
 | `voodoo_triangle_68k.asm` | M68K | Voodoo 3D | -- | Flat-shaded triangle on 3DFX Voodoo |
@@ -62,7 +62,7 @@ IE32, IE64, M68020, Z80, 6502, x86 (32-bit)
 - **VGA** (text / Mode 13h / Mode 12h / Mode X) - text hello, fire effect, circles, bars, SAP demo
 - **ULA** (ZX Spectrum 256x192) - rotating cube
 - **TED** (Commodore Plus/4 121 colours) - plasma
-- **ANTIC/GTIA** (Atari 8-bit display lists) - plasma
+- **ANTIC/GTIA** (Atari-inspired IE-native display lists) - plasma
 - **Voodoo SST-1** (3DFX hardware 3D) - mega demo, cube, 3DFX logo, triangle, tunnel
 - **Copper coprocessor** - rotating cube with rasterbars, robocop intro
 

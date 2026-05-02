@@ -26,7 +26,7 @@ Comprehensive reference for the Enhanced BASIC interpreter running on the Intuit
 
 EhBASIC IE64 is a port of Lee Davison's Enhanced BASIC (EhBASIC) to the Intuition Engine's IE64 RISC processor. The original EhBASIC was written in 6502 assembly and later ported to the Motorola 68000; this version is a ground-up reimplementation in IE64 assembly, preserving the language semantics whilst taking advantage of the IE64's 64-bit register file and compare-and-branch instructions.
 
-The Intuition Engine is a retro-inspired virtual machine that emulates multiple CPUs (6502, Z80, M68K, IE32, IE64) alongside authentic video and audio hardware: VGA with copper coprocessor and blitter, ULA (ZX Spectrum), TED (Commodore 16/Plus4), ANTIC/GTIA (Atari 8-bit), Voodoo 3DFX, and a full complement of sound chips (SoundChip, PSG/AY-3-8910, SID/MOS 6581, POKEY, TED audio, AHX tracker). EhBASIC IE64 provides direct access to all of this hardware through extension commands.
+The Intuition Engine is a retro-inspired virtual machine that emulates multiple CPUs (6502, Z80, M68K, IE32, IE64) alongside IE-native and compatibility-inspired video/audio hardware: VGA with copper coprocessor and blitter, ULA (ZX Spectrum), TED (Commodore 16/Plus4), ANTIC/GTIA (Atari-inspired display list), Voodoo 3DFX, and a full complement of sound chips (SoundChip, PSG/AY-3-8910, SID/MOS 6581, POKEY, TED audio, AHX tracker). EhBASIC IE64 provides direct access to all of this hardware through extension commands.
 
 ### Floating-Point Arithmetic: Important Note
 
@@ -315,7 +315,7 @@ Statements are listed alphabetically. Hardware extension statements (video, audi
 
 ### ANTIC
 
-Control the Atari 8-bit ANTIC video display processor.
+Control the Atari-inspired IE-native ANTIC display-list processor.
 
 ```
 ANTIC ON                    Enable ANTIC video
@@ -779,7 +779,7 @@ GOTO line_number
 
 ### GTIA
 
-Control the Atari GTIA graphics controller.
+Control the IE-native GTIA graphics controller.
 
 ```
 GTIA COLOR index, value        Set colour register (0-4 = playfield, 5-8 = player)
@@ -2003,7 +2003,7 @@ TED CLS
 
 ### 6.6 ANTIC/GTIA Programming
 
-ANTIC and GTIA together form the Atari 8-bit video system. ANTIC handles display list execution and character/bitmap modes; GTIA handles colour registers, player/missile graphics (sprites), and priority.
+ANTIC and GTIA together form an Atari-inspired IE-native video system. ANTIC handles display list execution and character/bitmap modes; GTIA handles colour registers, player/missile graphics, priority, and collisions.
 
 ```basic
 ANTIC ON
@@ -2245,7 +2245,7 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 | `&HF1000`-`&HF13FF` | VGA registers |
 | `&HF2000`-`&HF200B` | ULA (ZX Spectrum) |
 | `&HF2100`-`&HF213F` | ANTIC |
-| `&HF2140`-`&HF21B4` | GTIA |
+| `&HF2140`-`&HF21FB` | GTIA |
 | `&HF2200`-`&HF221F` | File I/O |
 | `&HF2300`-`&HF231F` | Media Loader (SOUND PLAY) |
 | `&HF2320`-`&HF233F` | Program Executor (RUN "file") |
@@ -2455,10 +2455,10 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF2120` | ANTIC_WSYNC | Wait for sync (write-only) |
 | `&HF2124` | ANTIC_VCOUNT | Vertical counter (read-only) |
 | `&HF2130` | ANTIC_NMIEN | NMI enable |
-| `&HF2138` | ANTIC_ENABLE | Video enable (Bit 0) |
+| `&HF2138` | ANTIC_ENABLE | Video enable (Bit 0), PAL mode (Bit 1) |
 | `&HF213C` | ANTIC_STATUS | Status (Bit 0: VBlank) |
 
-### 9.10 GTIA Registers (`&HF2140`-`&HF21B4`)
+### 9.10 GTIA Registers (`&HF2140`-`&HF21FB`)
 
 | Address Range | Description |
 |---------------|-------------|
@@ -2470,6 +2470,8 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF2180`-`&HF218C` | Missile positions (HPOSM0-3) |
 | `&HF2190`-`&HF21A0` | Player/missile sizes |
 | `&HF21A4`-`&HF21B4` | Player/missile graphics patterns |
+| `&HF21B8`-`&HF21F4` | Collision latches |
+| `&HF21F8` | HITCLR collision latch clear |
 
 ### 9.11 Voodoo 3DFX Registers (`&HF8000`-`&HF87FF`, texture memory `&HD0000`-`&HDFFFF`)
 

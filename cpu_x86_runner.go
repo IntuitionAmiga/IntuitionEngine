@@ -424,7 +424,7 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 
 	// ANTIC port I/O (0xD4-0xD5)
 	if port == X86_PORT_ANTIC_SELECT {
-		b.anticRegSelect = value & 0x0F // 16 ANTIC registers
+		b.anticRegSelect = value
 		return
 	}
 	if port == X86_PORT_ANTIC_DATA {
@@ -437,7 +437,7 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 
 	// GTIA port I/O (0xD6-0xD7)
 	if port == X86_PORT_GTIA_SELECT {
-		b.gtiaRegSelect = value & 0x0F // 12 GTIA registers
+		b.gtiaRegSelect = value
 		return
 	}
 	if port == X86_PORT_GTIA_DATA {

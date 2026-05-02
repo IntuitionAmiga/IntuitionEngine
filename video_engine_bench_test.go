@@ -196,7 +196,7 @@ func BenchmarkANTIC_RenderFrame(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = antic.RenderFrame()
+		_ = antic.RenderFrame(nil)
 	}
 }
 
@@ -237,7 +237,7 @@ func BenchmarkANTIC_RenderFrameWithPlayers(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = antic.RenderFrame()
+		_ = antic.RenderFrame(nil)
 	}
 }
 
@@ -287,6 +287,6 @@ func BenchmarkAllEngines_ANTIC(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = antic.RenderFrame()
+		_ = antic.RenderFrame(nil)
 	}
 }

@@ -1047,6 +1047,25 @@
 .equ GTIA_GRAFP3       0xF21B0          ; Player 3 graphics
 .equ GTIA_GRAFM        0xF21B4          ; Missile graphics (2 bits each)
 
+; Collision registers (read-only except HITCLR)
+.equ GTIA_M0PF         0xF21B8          ; Missile 0 vs playfield
+.equ GTIA_M1PF         0xF21BC          ; Missile 1 vs playfield
+.equ GTIA_M2PF         0xF21C0          ; Missile 2 vs playfield
+.equ GTIA_M3PF         0xF21C4          ; Missile 3 vs playfield
+.equ GTIA_P0PF         0xF21C8          ; Player 0 vs playfield
+.equ GTIA_P1PF         0xF21CC          ; Player 1 vs playfield
+.equ GTIA_P2PF         0xF21D0          ; Player 2 vs playfield
+.equ GTIA_P3PF         0xF21D4          ; Player 3 vs playfield
+.equ GTIA_M0PL         0xF21D8          ; Missile 0 vs players
+.equ GTIA_M1PL         0xF21DC          ; Missile 1 vs players
+.equ GTIA_M2PL         0xF21E0          ; Missile 2 vs players
+.equ GTIA_M3PL         0xF21E4          ; Missile 3 vs players
+.equ GTIA_P0PL         0xF21E8          ; Player 0 vs players
+.equ GTIA_P1PL         0xF21EC          ; Player 1 vs players
+.equ GTIA_P2PL         0xF21F0          ; Player 2 vs players
+.equ GTIA_P3PL         0xF21F4          ; Player 3 vs players
+.equ GTIA_HITCLR       0xF21F8          ; Clear collision latches
+
 ; PRIOR register bits
 .equ GTIA_PRIOR_P03    0x01             ; Players 0-3 have priority over PF
 .equ GTIA_PRIOR_P01    0x02             ; Players 0-1 have priority
@@ -1062,7 +1081,7 @@
 .equ GTIA_GRACTL_LATCH  0x04            ; Latch trigger inputs
 
 ; GTIA register end
-.equ GTIA_END          0xF21B7
+.equ GTIA_END          0xF21FB
 
 ; Copper SETBASE for GTIA
 .equ COP_SETBASE_GTIA  0x8003C850       ; GTIA_BASE (0xF2140 >> 2)

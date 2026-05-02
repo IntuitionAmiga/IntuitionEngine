@@ -23,7 +23,6 @@ This module implements the ANTIC (Alphanumeric Television Interface Controller)
 from Atari 8-bit computers as a standalone video device for the Intuition Engine.
 
 Features:
-- Display list-driven graphics (14 modes)
 - 320x192 active display, 384x240 with borders
 - 128 colors (16 hues × 8 luminances)
 - Horizontal/vertical fine scrolling
@@ -33,14 +32,13 @@ Features:
 
 Register Access:
 - IE32/M68K/x86: Direct access at 0xF2100-0xF213F (4-byte aligned)
-- 6502: Authentic Atari addresses at 0xD400-0xD40F
+- Z80/x86: Select/data port access at 0xD4-0xD7
+- 6502: Not exposed; the 16-bit address space already uses $D400-$D40F for PSG
 
 Signal Flow:
-1. CPU configures display list pointer and DMACTL
-2. ANTIC reads display list from memory via DMA
-3. Display list specifies which modes to render on each line
-4. ANTIC renders framebuffer based on display list
-5. Compositor collects frame via GetFrame() and sends to display
+1. CPU configures ANTIC/GTIA registers
+2. ANTIC renders a frame into a compositor-provided buffer
+3. Compositor collects frame via GetFrame() and sends to display
 */
 
 package main
@@ -78,6 +76,7 @@ type ANTICEngine struct {
 	// NMI control
 	nmien uint8 // NMI enable register
 	nmist uint8 // NMI status register
+	sink  InterruptSink
 
 	// Read-only status
 	vcount   uint8  // Vertical counter (scanline/2)
@@ -89,8 +88,11 @@ type ANTICEngine struct {
 
 	// IE-specific extensions
 	enabled        atomic.Bool // Video output enabled (lock-free)
+	palMode        atomic.Bool // PAL timing selected (lock-free)
 	vblankActive   atomic.Bool // VBlank flag (lock-free)
 	lastFrameStart int64       // Timestamp of last SignalVSync (for time-based VBlank)
+	frameID        uint64
+	now            func() int64
 
 	// GTIA color registers
 	colpf [4]uint8 // Playfield colors 0-3
@@ -113,21 +115,21 @@ type ANTICEngine struct {
 	// Per-scanline player graphics and positions (for rendering) - DOUBLE BUFFERED
 	// Each player can have different graphics/positions per scanline via writes during display
 	// This is authentic Atari behavior - HPOSP/GRAFP changes take effect immediately
-	playerGfx [2][4][ANTIC_DISPLAY_HEIGHT]uint8 // [buffer][player][scanline]
-	playerPos [2][4][ANTIC_DISPLAY_HEIGHT]uint8 // [buffer][player][scanline]
+	playerGfx  [2][4][ANTIC_DISPLAY_HEIGHT]uint8 // [buffer][player][scanline]
+	playerPos  [2][4][ANTIC_DISPLAY_HEIGHT]uint8 // [buffer][player][scanline]
+	missileGfx [2][4][ANTIC_DISPLAY_HEIGHT]uint8 // [buffer][missile][scanline]
+	missilePos [2][4][ANTIC_DISPLAY_HEIGHT]uint8 // [buffer][missile][scanline]
+
+	// Collision latches. Low four bits correspond to PF0..PF3 or P/M0..P/M3.
+	missilePF [4]uint8
+	playerPF  [4]uint8
+	missilePL [4]uint8
+	playerPL  [4]uint8
 
 	// Per-scanline color tracking for raster bar effects (double-buffered)
 	scanlineColors [2][ANTIC_SCANLINES_NTSC]uint8
 	writeBuffer    int  // Buffer being written to by CPU (0 or 1)
 	frameReady     bool // Set when a full frame of scanlines has been written
-
-	// Pre-allocated frame buffer (384x240 RGBA)
-	frameBuffer []byte
-
-	// Debug counters
-	debugFrameCount int
-	debugWriteCount int
-	statusReads     int
 
 	// Triple-buffered frame output for lock-free GetFrame()
 	frameBufs  [3][]byte
@@ -149,8 +151,10 @@ type ANTICEngine struct {
 // NewANTICEngine creates a new ANTIC video engine instance
 func NewANTICEngine(bus *MachineBus) *ANTICEngine {
 	antic := &ANTICEngine{
-		bus:         bus,
-		frameBuffer: make([]byte, ANTIC_FRAME_WIDTH*ANTIC_FRAME_HEIGHT*4),
+		bus: bus,
+		now: func() int64 {
+			return time.Now().UnixNano()
+		},
 	}
 	// enabled defaults to false (atomic.Bool zero value)
 
@@ -212,8 +216,7 @@ func (a *ANTICEngine) HandleRead(addr uint32) uint32 {
 		// Write-only register, read returns 0
 		return 0
 	case ANTIC_VCOUNT:
-		// Returns scanline / 2
-		return uint32(a.scanline / 2)
+		return uint32(a.queryScanlineAt(a.now()) / 2)
 	case ANTIC_PENH:
 		return uint32(a.penh)
 	case ANTIC_PENV:
@@ -223,46 +226,16 @@ func (a *ANTICEngine) HandleRead(addr uint32) uint32 {
 	case ANTIC_NMIST:
 		return uint32(a.nmist)
 	case ANTIC_ENABLE:
+		value := uint32(0)
 		if a.enabled.Load() {
-			return ANTIC_ENABLE_VIDEO
+			value |= ANTIC_ENABLE_VIDEO
 		}
-		return 0
+		if a.palMode.Load() {
+			value |= ANTIC_ENABLE_PAL
+		}
+		return value
 	case ANTIC_STATUS:
-		// Debug: log status reads
-		a.statusReads++
-
-		// Calculate VBlank based on time within frame
-		// Self-resetting: automatically starts new frame when period elapses
-		// VBlank is active for the last 20% of each frame (~3.3ms of 16.67ms frame)
-		now := time.Now().UnixNano()
-		frameStart := a.lastFrameStart
-		if frameStart == 0 {
-			// Auto-initialize on first status read
-			a.lastFrameStart = now
-			frameStart = now
-		}
-		elapsed := time.Duration(now - frameStart)
-		refreshInterval := time.Second / 60 // 60Hz
-
-		// Auto-reset frame timer if we've passed a full frame
-		if elapsed >= refreshInterval {
-			a.lastFrameStart = now
-			elapsed = 0
-		}
-
-		// VBlank is active during the last 20% of the frame
-		inVBlank := elapsed >= (refreshInterval * 80 / 100)
-
-		// Track VBlank transitions for WSYNC scanline reset
-		wasInVBlank := a.vblankActive.Load()
-		a.vblankActive.Store(inVBlank)
-
-		// When transitioning from VBlank to active display, mark for scanline reset
-		if wasInVBlank && !inVBlank {
-			a.scanline = 0 // Reset scanline at start of active display
-		}
-
-		if inVBlank {
+		if a.inVBlankAt(a.now()) {
 			return ANTIC_STATUS_VBLANK
 		}
 		return 0
@@ -336,6 +309,16 @@ func (a *ANTICEngine) HandleRead(addr uint32) uint32 {
 		return uint32(a.grafp[3])
 	case GTIA_GRAFM:
 		return uint32(a.grafm)
+	case GTIA_M0PF, GTIA_M1PF, GTIA_M2PF, GTIA_M3PF:
+		return uint32(a.missilePF[(addr-GTIA_M0PF)/4])
+	case GTIA_P0PF, GTIA_P1PF, GTIA_P2PF, GTIA_P3PF:
+		return uint32(a.playerPF[(addr-GTIA_P0PF)/4])
+	case GTIA_M0PL, GTIA_M1PL, GTIA_M2PL, GTIA_M3PL:
+		return uint32(a.missilePL[(addr-GTIA_M0PL)/4])
+	case GTIA_P0PL, GTIA_P1PL, GTIA_P2PL, GTIA_P3PL:
+		return uint32(a.playerPL[(addr-GTIA_P0PL)/4])
+	case GTIA_HITCLR:
+		return 0
 
 	default:
 		return 0
@@ -378,6 +361,12 @@ func (a *ANTICEngine) HandleWrite(addr uint32, value uint32) {
 			for p := range 4 {
 				a.playerGfx[a.writeBuffer][p][a.scanline] = a.grafp[p]
 				a.playerPos[a.writeBuffer][p][a.scanline] = a.hposp[p]
+				if a.grafm&(1<<p) != 0 {
+					a.missileGfx[a.writeBuffer][p][a.scanline] = 1
+				} else {
+					a.missileGfx[a.writeBuffer][p][a.scanline] = 0
+				}
+				a.missilePos[a.writeBuffer][p][a.scanline] = a.hposm[p]
 			}
 		}
 		a.scanline++
@@ -395,9 +384,10 @@ func (a *ANTICEngine) HandleWrite(addr uint32, value uint32) {
 	case ANTIC_ENABLE:
 		wasEnabled := a.enabled.Load()
 		a.enabled.Store((value & ANTIC_ENABLE_VIDEO) != 0)
+		a.palMode.Store((value & ANTIC_ENABLE_PAL) != 0)
 		// When first enabled, initialize frame timing so VBlank works immediately
 		if !wasEnabled && a.enabled.Load() {
-			a.lastFrameStart = time.Now().UnixNano()
+			a.lastFrameStart = a.now()
 		}
 		// Note: VCOUNT, PENH, PENV are read-only
 
@@ -429,22 +419,30 @@ func (a *ANTICEngine) HandleWrite(addr uint32, value uint32) {
 	// Player horizontal positions
 	case GTIA_HPOSP0:
 		a.hposp[0] = uint8(value)
+		a.capturePlayerPos(0, uint8(value))
 	case GTIA_HPOSP1:
 		a.hposp[1] = uint8(value)
+		a.capturePlayerPos(1, uint8(value))
 	case GTIA_HPOSP2:
 		a.hposp[2] = uint8(value)
+		a.capturePlayerPos(2, uint8(value))
 	case GTIA_HPOSP3:
 		a.hposp[3] = uint8(value)
+		a.capturePlayerPos(3, uint8(value))
 
 	// Missile horizontal positions
 	case GTIA_HPOSM0:
 		a.hposm[0] = uint8(value)
+		a.captureMissilePos(0, uint8(value))
 	case GTIA_HPOSM1:
 		a.hposm[1] = uint8(value)
+		a.captureMissilePos(1, uint8(value))
 	case GTIA_HPOSM2:
 		a.hposm[2] = uint8(value)
+		a.captureMissilePos(2, uint8(value))
 	case GTIA_HPOSM3:
 		a.hposm[3] = uint8(value)
+		a.captureMissilePos(3, uint8(value))
 
 	// Player sizes
 	case GTIA_SIZEP0:
@@ -481,191 +479,144 @@ func (a *ANTICEngine) HandleWrite(addr uint32, value uint32) {
 		}
 	case GTIA_GRAFM:
 		a.grafm = uint8(value)
-	}
-}
-
-// =============================================================================
-// 6502 Register Access (Atari authentic addresses)
-// =============================================================================
-
-// Handle6502Read handles register reads from 6502-style addresses
-func (a *ANTICEngine) Handle6502Read(addr uint16) uint8 {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	reg := addr & 0x0F
-	switch reg {
-	case 0x00: // DMACTL
-		return a.dmactl
-	case 0x01: // CHACTL
-		return a.chactl
-	case 0x02: // DLISTL
-		return a.dlistl
-	case 0x03: // DLISTH
-		return a.dlisth
-	case 0x04: // HSCROL
-		return a.hscrol
-	case 0x05: // VSCROL
-		return a.vscrol
-	case 0x07: // PMBASE
-		return a.pmbase
-	case 0x09: // CHBASE
-		return a.chbase
-	case 0x0A: // WSYNC (write-only)
-		return 0
-	case 0x0B: // VCOUNT
-		return uint8(a.scanline / 2)
-	case 0x0C: // PENH
-		return a.penh
-	case 0x0D: // PENV
-		return a.penv
-	case 0x0E: // NMIEN
-		return a.nmien
-	case 0x0F: // NMIST
-		return a.nmist
-	default:
-		return 0xFF
-	}
-}
-
-// Handle6502Write handles register writes from 6502-style addresses
-func (a *ANTICEngine) Handle6502Write(addr uint16, value uint8) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	reg := addr & 0x0F
-	switch reg {
-	case 0x00: // DMACTL
-		a.dmactl = value
-	case 0x01: // CHACTL
-		a.chactl = value
-	case 0x02: // DLISTL
-		a.dlistl = value
-	case 0x03: // DLISTH
-		a.dlisth = value
-	case 0x04: // HSCROL
-		a.hscrol = value & 0x0F
-	case 0x05: // VSCROL
-		a.vscrol = value & 0x0F
-	case 0x07: // PMBASE
-		a.pmbase = value
-	case 0x09: // CHBASE
-		a.chbase = value
-	case 0x0A: // WSYNC
-		// Wait for horizontal sync
-		a.advanceToNextScanline()
-	case 0x0E: // NMIEN
-		a.nmien = value
-	case 0x0F: // NMIRES (writing clears NMIST)
-		a.nmist = 0
-	}
-}
-
-// advanceToNextScanline advances to the next scanline boundary
-func (a *ANTICEngine) advanceToNextScanline() {
-	a.scanline++
-	if a.scanline >= ANTIC_SCANLINES_NTSC {
-		a.scanline = 0
-	}
-}
-
-// Handle6502GTIARead handles GTIA register reads from 6502-style addresses (0xD0xx)
-func (a *ANTICEngine) Handle6502GTIARead(addr uint16) uint8 {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	reg := addr & 0x1F
-	switch reg {
-	case 0x00, 0x01, 0x02, 0x03: // HPOSP0-3 (reads return collision data, not position)
-		return 0 // Collision detection not implemented
-	case 0x04, 0x05, 0x06, 0x07: // HPOSM0-3
-		return 0
-	case 0x08, 0x09, 0x0A, 0x0B: // SIZEP0-3
-		return a.sizep[reg-0x08]
-	case 0x0C: // SIZEM
-		return a.sizem
-	case 0x0D, 0x0E, 0x0F, 0x10: // GRAFP0-3
-		return a.grafp[reg-0x0D]
-	case 0x11: // GRAFM
-		return a.grafm
-	case 0x12, 0x13, 0x14, 0x15: // COLPM0-3
-		return a.colpm[reg-0x12]
-	case 0x16, 0x17, 0x18, 0x19: // COLPF0-3
-		return a.colpf[reg-0x16]
-	case 0x1A: // COLBK
-		return a.colbk
-	case 0x1B: // PRIOR
-		return a.prior
-	case 0x1D: // GRACTL
-		return a.gractl
-	case 0x1F: // CONSOL
-		return a.consol
-	default:
-		return 0xFF
-	}
-}
-
-// Handle6502GTIAWrite handles GTIA register writes from 6502-style addresses (0xD0xx)
-func (a *ANTICEngine) Handle6502GTIAWrite(addr uint16, value uint8) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	reg := addr & 0x1F
-	switch reg {
-	case 0x00, 0x01, 0x02, 0x03: // HPOSP0-3
-		a.hposp[reg] = value
-	case 0x04, 0x05, 0x06, 0x07: // HPOSM0-3
-		a.hposm[reg-0x04] = value
-	case 0x08, 0x09, 0x0A, 0x0B: // SIZEP0-3
-		a.sizep[reg-0x08] = value & 0x03
-	case 0x0C: // SIZEM
-		a.sizem = value
-	case 0x0D, 0x0E, 0x0F, 0x10: // GRAFP0-3
-		idx := reg - 0x0D
-		a.grafp[idx] = value
 		if a.scanline < ANTIC_DISPLAY_HEIGHT {
-			a.playerGfx[a.writeBuffer][idx][a.scanline] = value
+			for m := range 4 {
+				if a.grafm&(1<<m) != 0 {
+					a.missileGfx[a.writeBuffer][m][a.scanline] = 1
+				} else {
+					a.missileGfx[a.writeBuffer][m][a.scanline] = 0
+				}
+			}
 		}
-	case 0x11: // GRAFM
-		a.grafm = value
-	case 0x12, 0x13, 0x14, 0x15: // COLPM0-3
-		a.colpm[reg-0x12] = value
-	case 0x16, 0x17, 0x18, 0x19: // COLPF0-3
-		a.colpf[reg-0x16] = value
-	case 0x1A: // COLBK
-		a.colbk = value
-	case 0x1B: // PRIOR
-		a.prior = value
-	case 0x1D: // GRACTL
-		a.gractl = value
-		// CONSOL is read-only
+	case GTIA_HITCLR:
+		a.clearCollisions()
 	}
+}
+
+func (a *ANTICEngine) capturePlayerPos(player int, pos uint8) {
+	if a.scanline < ANTIC_DISPLAY_HEIGHT {
+		a.playerPos[a.writeBuffer][player][a.scanline] = pos
+	}
+}
+
+func (a *ANTICEngine) captureMissilePos(missile int, pos uint8) {
+	if a.scanline < ANTIC_DISPLAY_HEIGHT {
+		a.missilePos[a.writeBuffer][missile][a.scanline] = pos
+	}
+}
+
+func (a *ANTICEngine) clearCollisions() {
+	for i := range 4 {
+		a.missilePF[i] = 0
+		a.playerPF[i] = 0
+		a.missilePL[i] = 0
+		a.playerPL[i] = 0
+	}
+}
+
+func (a *ANTICEngine) clearRasterCaptureBuffer(buffer int) {
+	for y := range ANTIC_DISPLAY_HEIGHT {
+		a.scanlineColors[buffer][y] = a.colbk
+		for i := range 4 {
+			a.playerGfx[buffer][i][y] = 0
+			a.playerPos[buffer][i][y] = 0
+			a.missileGfx[buffer][i][y] = 0
+			a.missilePos[buffer][i][y] = 0
+		}
+	}
+}
+
+func (a *ANTICEngine) preserveUnwrittenRasterRows(dstBuffer, srcBuffer int, fromScanline uint16) {
+	start := int(fromScanline)
+	if start < 0 {
+		start = 0
+	}
+	if start > ANTIC_DISPLAY_HEIGHT {
+		start = ANTIC_DISPLAY_HEIGHT
+	}
+	for y := start; y < ANTIC_DISPLAY_HEIGHT; y++ {
+		a.scanlineColors[dstBuffer][y] = a.scanlineColors[srcBuffer][y]
+		for i := range 4 {
+			a.playerGfx[dstBuffer][i][y] = a.playerGfx[srcBuffer][i][y]
+			a.playerPos[dstBuffer][i][y] = a.playerPos[srcBuffer][i][y]
+			a.missileGfx[dstBuffer][i][y] = a.missileGfx[srcBuffer][i][y]
+			a.missilePos[dstBuffer][i][y] = a.missilePos[srcBuffer][i][y]
+		}
+	}
+}
+
+func (a *ANTICEngine) totalScanlines() uint16 {
+	if a.palMode.Load() {
+		return ANTIC_SCANLINES_PAL
+	}
+	return ANTIC_SCANLINES_NTSC
+}
+
+func (a *ANTICEngine) framePeriodNS() int64 {
+	if a.palMode.Load() {
+		return int64(time.Second / 50)
+	}
+	return int64(time.Second / 60)
+}
+
+func (a *ANTICEngine) queryScanlineAt(now int64) uint16 {
+	frameStart := a.lastFrameStart
+	if frameStart == 0 || now <= frameStart {
+		return 0
+	}
+	period := a.framePeriodNS()
+	elapsed := (now - frameStart) % period
+	return uint16((elapsed * int64(a.totalScanlines())) / period)
+}
+
+func (a *ANTICEngine) inVBlankAt(now int64) bool {
+	return a.queryScanlineAt(now) >= ANTIC_FRAME_HEIGHT
+}
+
+func (a *ANTICEngine) tickFrame(now int64) {
+	a.lastFrameStart = now
+	a.frameID++
+	a.vblankActive.Store(false)
+
+	if a.nmien&ANTIC_NMIEN_VBI != 0 {
+		a.nmist |= ANTIC_NMIST_VBI
+		if a.sink != nil {
+			a.sink.Pulse(IntMaskVBI)
+		}
+	}
+}
+
+func (a *ANTICEngine) SetInterruptSink(sink InterruptSink) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sink = sink
 }
 
 // =============================================================================
 // Rendering
 // =============================================================================
 
-// RenderFrame renders the complete display including border
-// RenderFrameTo renders the complete display directly into dst, avoiding a copy.
-func (a *ANTICEngine) RenderFrameTo(dst []byte) {
-	saved := a.frameBuffer
-	a.frameBuffer = dst
-	a.RenderFrame()
-	a.frameBuffer = saved
-}
+// RenderFrame renders the complete display including border into dst.
+func (a *ANTICEngine) RenderFrame(dst []byte) []byte {
+	if len(dst) < ANTIC_FRAME_WIDTH*ANTIC_FRAME_HEIGHT*4 {
+		dst = make([]byte, ANTIC_FRAME_WIDTH*ANTIC_FRAME_HEIGHT*4)
+	}
 
-func (a *ANTICEngine) RenderFrame() []byte {
 	// Snapshot state under lock, then render lock-free
 	a.mu.Lock()
 	readBuffer := 1 - a.writeBuffer
 	snapScanlineColors := a.scanlineColors[readBuffer]
 	snapPlayerGfx := a.playerGfx[readBuffer]
 	snapPlayerPos := a.playerPos[readBuffer]
+	snapMissileGfx := a.missileGfx[readBuffer]
+	snapMissilePos := a.missilePos[readBuffer]
 	snapGractl := a.gractl
 	snapSizep := a.sizep
+	snapSizem := a.sizem
 	snapColpm := a.colpm
+	snapColpf := a.colpf
 	snapColbk := a.colbk
+	snapPrior := a.prior
 	a.mu.Unlock()
 
 	// Render per-scanline colors for raster bar effects
@@ -686,64 +637,28 @@ func (a *ANTICEngine) RenderFrame() []byte {
 		colorRGBA := ANTICPaletteRGBA[color][:]
 		for x := range ANTIC_FRAME_WIDTH {
 			offset := rowStart + x*4
-			copy(a.frameBuffer[offset:offset+4], colorRGBA)
+			copy(dst[offset:offset+4], colorRGBA)
 		}
 	}
 
-	// Render Player/Missile graphics on top of background
-	// Only render in active display area
-	if snapGractl&GTIA_GRACTL_PLAYER != 0 {
-		for y := ANTIC_BORDER_TOP; y < ANTIC_FRAME_HEIGHT-ANTIC_BORDER_BOTTOM; y++ {
-			scanline := y - ANTIC_BORDER_TOP
-			if scanline >= ANTIC_DISPLAY_HEIGHT {
-				continue
-			}
+	pfMask := make([]uint8, ANTIC_FRAME_WIDTH*ANTIC_FRAME_HEIGHT)
+	a.renderDisplayList(dst, pfMask)
 
-			rowStart := y * ANTIC_FRAME_WIDTH * 4
+	a.renderPMG(dst, pmgSnapshot{
+		gractl:     snapGractl,
+		prior:      snapPrior,
+		sizep:      snapSizep,
+		sizem:      snapSizem,
+		colpm:      snapColpm,
+		colpf:      snapColpf,
+		playerGfx:  snapPlayerGfx,
+		playerPos:  snapPlayerPos,
+		missileGfx: snapMissileGfx,
+		missilePos: snapMissilePos,
+		pfMask:     pfMask,
+	})
 
-			// Draw each player (0-3) - read from display buffer (opposite of write buffer)
-			for p := range 4 {
-				gfx := snapPlayerGfx[p][scanline]
-				if gfx == 0 {
-					continue // No pixels set
-				}
-
-				// Use per-scanline position for authentic multiplexing
-				hpos := int(snapPlayerPos[p][scanline])
-				size := snapSizep[p]
-				playerColor := ANTICPaletteRGBA[snapColpm[p]][:]
-
-				// Width multiplier based on size
-				widthMult := 1
-				if size == 1 {
-					widthMult = 2
-				} else if size == 3 {
-					widthMult = 4
-				}
-
-				// Draw 8 pixels (each bit in gfx)
-				for bit := range 8 {
-					if gfx&(0x80>>bit) != 0 {
-						// Calculate screen X position
-						// HPOS is in color clocks, roughly maps to screen coords
-						// Adjust for border offset
-						baseX := hpos - 48 + ANTIC_BORDER_LEFT + bit*widthMult
-
-						// Draw pixel(s) based on size
-						for w := 0; w < widthMult; w++ {
-							screenX := baseX + w
-							if screenX >= 0 && screenX < ANTIC_FRAME_WIDTH {
-								offset := rowStart + screenX*4
-								copy(a.frameBuffer[offset:offset+4], playerColor)
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return a.frameBuffer
+	return dst
 }
 
 // =============================================================================
@@ -926,30 +841,13 @@ func (a *ANTICEngine) SignalVSync() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Record frame start time for time-based VBlank calculation
-	a.lastFrameStart = time.Now().UnixNano()
-
-	// Set VBI flag in NMIST if VBI is enabled in NMIEN
-	if a.nmien&ANTIC_NMIEN_VBI != 0 {
-		a.nmist |= ANTIC_NMIST_VBI
+	if a.scanline > 0 {
+		a.tickFrame(a.now())
+		return
 	}
-
-	// Reset scanline counter
 	a.scanline = 0
-	a.vcount = 0
-
-	// Clear the write buffer for next frame (start with current background)
-	for i := range ANTIC_DISPLAY_HEIGHT {
-		a.scanlineColors[a.writeBuffer][i] = a.colbk
-	}
-
-	// Clear player graphics and positions for next frame (write buffer)
-	for p := range 4 {
-		for i := range ANTIC_DISPLAY_HEIGHT {
-			a.playerGfx[a.writeBuffer][p][i] = 0
-			a.playerPos[a.writeBuffer][p][i] = 0
-		}
-	}
+	a.clearRasterCaptureBuffer(a.writeBuffer)
+	a.tickFrame(a.now())
 }
 
 // =============================================================================
@@ -1017,7 +915,7 @@ func (a *ANTICEngine) renderLoop(ctx context.Context, done chan struct{}) {
 				a.rendering.Store(false)
 				continue
 			}
-			a.RenderFrameTo(a.frameBufs[a.writeIdx])
+			a.RenderFrame(a.frameBufs[a.writeIdx])
 			a.rendering.Store(false)
 			a.writeIdx = int(a.sharedIdx.Swap(int32(a.writeIdx)))
 		}

@@ -1206,6 +1206,9 @@ func main() {
 				m68k.m68kJitEnabled = false
 			}
 			runner := NewM68KRunner(m68k)
+			if anticEngine != nil {
+				anticEngine.SetInterruptSink(NewM68KInterruptSink(m68k))
+			}
 			runner.PerfEnabled = perfMode
 			if noJIT {
 				m68k.m68kJitEnabled = false
@@ -1218,6 +1221,9 @@ func main() {
 				m68k.m68kJitEnabled = false
 			}
 			runner := NewM68KRunner(m68k)
+			if anticEngine != nil {
+				anticEngine.SetInterruptSink(NewM68KInterruptSink(m68k))
+			}
 			runner.PerfEnabled = perfMode
 			if noJIT {
 				m68k.m68kJitEnabled = false
@@ -1232,6 +1238,9 @@ func main() {
 				VGAEngine:    vgaEngine,
 				VoodooEngine: voodooEngine,
 			})
+			if anticEngine != nil {
+				anticEngine.SetInterruptSink(NewZ80InterruptSink(runner.cpu))
+			}
 			runner.PerfEnabled = perfMode
 			return runner, nil
 		case "x86":
@@ -1243,6 +1252,9 @@ func main() {
 				VGAEngine:    vgaEngine,
 				VoodooEngine: voodooEngine,
 			})
+			if anticEngine != nil {
+				anticEngine.SetInterruptSink(NewX86InterruptSink(runner.cpu))
+			}
 			runner.PerfEnabled = perfMode
 			return runner, nil
 		case "6502":
@@ -1473,6 +1485,9 @@ func main() {
 		}
 
 		m68kRunner := NewM68KRunner(m68kCPU)
+		if anticEngine != nil {
+			anticEngine.SetInterruptSink(NewM68KInterruptSink(m68kCPU))
+		}
 		m68kRunner.PerfEnabled = perfMode
 		if noJIT {
 			m68kCPU.m68kJitEnabled = false
@@ -1511,6 +1526,9 @@ func main() {
 		videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
+		if anticEngine != nil {
+			anticEngine.SetInterruptSink(NewM68KInterruptSink(m68kCPU))
+		}
 		m68kRunner.PerfEnabled = perfMode
 		if noJIT {
 			m68kCPU.m68kJitEnabled = false
@@ -1564,6 +1582,9 @@ func main() {
 		configureArosVRAM(sysBus, videoChip)
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
+		if anticEngine != nil {
+			anticEngine.SetInterruptSink(NewM68KInterruptSink(m68kCPU))
+		}
 		m68kRunner.PerfEnabled = perfMode
 		if noJIT {
 			m68kCPU.m68kJitEnabled = false
@@ -1661,6 +1682,9 @@ func main() {
 			VGAEngine:    vgaEngine,
 			VoodooEngine: voodooEngine,
 		})
+		if anticEngine != nil {
+			anticEngine.SetInterruptSink(NewZ80InterruptSink(z80CPU.cpu))
+		}
 		z80CPU.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUZ80, nil, nil, nil, z80CPU, nil, nil)
 
@@ -1699,6 +1723,9 @@ func main() {
 		x86Entry = x86Config.Entry
 
 		x86CPU := NewCPUX86Runner(sysBus, x86Config)
+		if anticEngine != nil {
+			anticEngine.SetInterruptSink(NewX86InterruptSink(x86CPU.cpu))
+		}
 		x86CPU.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, x86CPU, nil)
 
@@ -1977,9 +2004,19 @@ func main() {
 			if haveM68KJIT {
 				newRunner.(*M68KRunner).cpu.m68kJitEnabled = preserveM68KJIT
 			}
+			if anticEngine != nil {
+				anticEngine.SetInterruptSink(NewM68KInterruptSink(newRunner.(*M68KRunner).cpu))
+			}
 		case "z80":
 			if haveZ80JIT {
 				newRunner.(*CPUZ80Runner).cpu.jitEnabled = preserveZ80JIT
+			}
+			if anticEngine != nil {
+				anticEngine.SetInterruptSink(NewZ80InterruptSink(newRunner.(*CPUZ80Runner).cpu))
+			}
+		case "x86":
+			if anticEngine != nil {
+				anticEngine.SetInterruptSink(NewX86InterruptSink(newRunner.(*CPUX86Runner).cpu))
 			}
 		case "6502":
 			if have6502JIT {

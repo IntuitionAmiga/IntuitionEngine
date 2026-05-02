@@ -1469,6 +1469,25 @@ GTIA_GRAFP2       equ $F21AC            ; Player 2 graphics
 GTIA_GRAFP3       equ $F21B0            ; Player 3 graphics
 GTIA_GRAFM        equ $F21B4            ; Missile graphics (2 bits each)
 
+; Collision registers (read-only except HITCLR)
+GTIA_M0PF         equ $F21B8            ; Missile 0 vs playfield
+GTIA_M1PF         equ $F21BC            ; Missile 1 vs playfield
+GTIA_M2PF         equ $F21C0            ; Missile 2 vs playfield
+GTIA_M3PF         equ $F21C4            ; Missile 3 vs playfield
+GTIA_P0PF         equ $F21C8            ; Player 0 vs playfield
+GTIA_P1PF         equ $F21CC            ; Player 1 vs playfield
+GTIA_P2PF         equ $F21D0            ; Player 2 vs playfield
+GTIA_P3PF         equ $F21D4            ; Player 3 vs playfield
+GTIA_M0PL         equ $F21D8            ; Missile 0 vs players
+GTIA_M1PL         equ $F21DC            ; Missile 1 vs players
+GTIA_M2PL         equ $F21E0            ; Missile 2 vs players
+GTIA_M3PL         equ $F21E4            ; Missile 3 vs players
+GTIA_P0PL         equ $F21E8            ; Player 0 vs players
+GTIA_P1PL         equ $F21EC            ; Player 1 vs players
+GTIA_P2PL         equ $F21F0            ; Player 2 vs players
+GTIA_P3PL         equ $F21F4            ; Player 3 vs players
+GTIA_HITCLR       equ $F21F8            ; Clear collision latches
+
 ; PRIOR register bits
 GTIA_PRIOR_P03    equ $01               ; Players 0-3 have priority over PF
 GTIA_PRIOR_P01    equ $02               ; Players 0-1 have priority
@@ -1484,7 +1503,7 @@ GTIA_GRACTL_PLAYER equ $02              ; Enable player graphics
 GTIA_GRACTL_LATCH  equ $04              ; Latch trigger inputs
 
 ; GTIA register end
-GTIA_END          equ $F21B7
+GTIA_END          equ $F21FB
 
 ; Copper SETBASE for GTIA
 COP_SETBASE_GTIA  equ $8003C850         ; GTIA_BASE ($F2140 >> 2)

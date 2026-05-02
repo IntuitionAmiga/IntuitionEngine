@@ -256,7 +256,7 @@ Z80 `IN`/`OUT` instructions are translated to bus MMIO accesses by the `Z80BusAd
 | `$B0-$B7` | Voodoo 3D | `0xF8000` | Addr lo/hi + 4 data bytes (write to `$B5` triggers 32-bit bus write) |
 | `$D0/$D1` | POKEY | `0xF0D00` | Register select / data |
 | `$D4/$D5` | ANTIC | `0xF2100` | Register select / data (x4 stride) |
-| `$D6/$D7` | GTIA | `0xF2140` | Register select / data (x4 stride) |
+| `$D6/$D7` | GTIA | `0xF2140` | Register select / data (x4 stride, collision regs through `0xF21F8`) |
 | `$E0/$E1` | SID | `0xF0E00/0xF0E30/0xF0E50` | Register select / data; select bits 5-6 choose SID1/SID2/SID3 |
 | `$F0/$F1` | PSG | `0xF0C00` | Register select / data |
 | `$F2/$F3` | TED | `0xF0F00` / `0xF0F20` | Register select / data (audio / video x4 stride) |
@@ -283,7 +283,7 @@ x86 shares the Z80 Voodoo port mapping (`$B0-$B7`) and most sound-chip port mapp
 | `$B0-$B7` | Voodoo 3D | `0xF8000` | Addr lo/hi + 4 data bytes |
 | `$60-$69` | POKEY | `0xF0D00+(port-0x60)` | **Direct** — port offset maps to writable register |
 | `$D4/$D5` | ANTIC | `0xF2100` | Register select / data (x4 stride) |
-| `$D6/$D7` | GTIA | `0xF2140` | Register select / data (x4 stride) |
+| `$D6/$D7` | GTIA | `0xF2140` | Register select / data (x4 stride, collision regs through `0xF21F8`) |
 | `$E0/$E1` | SID | `0xF0E00/0xF0E30/0xF0E50` | Register select / data; select bits 5-6 choose SID1/SID2/SID3 |
 | `$F0/$F1` | PSG | `0xF0C00` | Register select / data |
 | `$F2/$F3` | TED | `0xF0F00` / `0xF0F20` | Register select / data (audio / video x4 stride) |
@@ -323,6 +323,8 @@ The 6502 uses `ioTable[page]` to route memory-mapped I/O through the bus:
 | `$D700-$D70A` | VGA | `0xF1000` | Direct handler call |
 | `$D800-$D80F` | ULA | `0xF2000+offset` | |
 
+ANTIC/GTIA intentionally has no 6502 `$D400/$D000` compatibility surface; `$D400-$D40F` is PSG on the 6502 map.
+
 ## 3. Video Subsystem
 
 ```mermaid
@@ -352,12 +354,12 @@ graph TB
         TED_CUR["Cursor Engine<br/>Blink"]
     end
 
-    subgraph ANTICS["ANTIC/GTIA (Layer 13, 0xF2100-0xF21B7)"]
+    subgraph ANTICS["ANTIC/GTIA (Layer 13, 0xF2100-0xF21FB)"]
         ANT_DLP["ANTIC Display List<br/>Processor + DMA"]
         ANT_SCR["Fine Scroll H/V<br/>+ WSYNC"]
         GTIA_C["GTIA Colours<br/>COLPF0-3 / COLBK"]
         GTIA_PM["Player/Missile<br/>Graphics"]
-        GTIA_PR["Priority Control"]
+        GTIA_PR["Priority + Collisions"]
         ANT_COL["128 Colours"]
     end
 
@@ -657,7 +659,7 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xF1000-0xF13FF` | 1KB | VGA Registers |
 | `0xF2000-0xF200B` | 12B | ULA (ZX Spectrum) |
 | `0xF2100-0xF213F` | 64B | ANTIC |
-| `0xF2140-0xF21B7` | 120B | GTIA |
+| `0xF2140-0xF21FB` | 188B | GTIA |
 | `0xF2200-0xF221F` | 32B | File I/O |
 | `0xF2220-0xF225F` | 64B | AROS DOS Handler |
 | `0xF2260-0xF22AF` | 80B | AROS Audio DMA (Paula) |

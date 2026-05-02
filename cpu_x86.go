@@ -66,6 +66,7 @@ type CPU_X86 struct {
 	irqLine    bool
 	irqPending atomic.Bool
 	irqVector  atomic.Uint32
+	nmiPending atomic.Bool
 
 	// Current instruction state
 	prefixSeg      int  // Segment override (-1 = none, 0-5 = ES/CS/SS/DS/FS/GS)
@@ -220,6 +221,7 @@ func (c *CPU_X86) Reset() {
 	c.irqLine = false
 	c.irqPending.Store(false)
 	c.irqVector.Store(0)
+	c.nmiPending.Store(false)
 
 	// Set execution state
 	c.Halted = false
@@ -902,7 +904,10 @@ func (c *CPU_X86) tryFastMMIOPollLoop() bool {
 	hostAddr := adapter.translateIO(addr)
 	iterations := 0
 	for c.Running() && !c.Halted {
-		if c.irqPending.Load() && c.IF() {
+		if c.nmiPending.Load() {
+			c.handleInterrupt(0x02)
+			c.nmiPending.Store(false)
+		} else if c.irqPending.Load() && c.IF() {
 			c.handleInterrupt(byte(c.irqVector.Load()))
 			c.irqPending.Store(false)
 		}
@@ -1214,7 +1219,10 @@ func (c *CPU_X86) Step() int {
 	}
 
 	// Check for pending interrupt
-	if c.irqPending.Load() && c.IF() {
+	if c.nmiPending.Load() {
+		c.handleInterrupt(0x02)
+		c.nmiPending.Store(false)
+	} else if c.irqPending.Load() && c.IF() {
 		c.handleInterrupt(byte(c.irqVector.Load()))
 		c.irqPending.Store(false)
 	}
@@ -1305,6 +1313,12 @@ func (c *CPU_X86) SetIRQ(active bool, vector byte) {
 	if active {
 		c.irqPending.Store(true)
 		c.irqVector.Store(uint32(vector))
+	}
+}
+
+func (c *CPU_X86) SetNMI(active bool) {
+	if active {
+		c.nmiPending.Store(true)
 	}
 }
 

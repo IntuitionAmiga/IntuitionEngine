@@ -22,7 +22,6 @@ antic_constants.go - ANTIC Video Chip Constants
 The ANTIC (Alphanumeric Television Interface Controller) is the custom video
 chip from Atari 8-bit computers (400/800/XL/XE series). It provides:
 
-- Display list-driven graphics (14 text and graphics modes)
 - 320x192 active display area (384x240 with borders)
 - 128 colors (16 hues × 8 luminances)
 - Fine scrolling (horizontal and vertical)
@@ -34,9 +33,11 @@ Register Map (IE32/M68K/x86):
 - Base address: 0xF2100 (between ULA at 0xF2000 and next available)
 - All registers are 4-byte aligned for copper coprocessor compatibility
 
-Register Map (6502):
-- Authentic Atari addresses: 0xD400-0xD40F
-- Compatible with original Atari software
+Register Map (Z80/x86 port I/O):
+- Select/data ports at 0xD4-0xD7
+
+6502:
+- ANTIC/GTIA is not addressable; $D400-$D40F is reserved for PSG.
 */
 
 package main
@@ -154,6 +155,7 @@ const (
 // Enable register bits
 const (
 	ANTIC_ENABLE_VIDEO = 0x01 // Bit 0: Video enable
+	ANTIC_ENABLE_PAL   = 0x02 // Bit 1: PAL timing; clear for NTSC
 )
 
 // Status register bits
@@ -246,8 +248,27 @@ const (
 	GTIA_GRAFP3 = 0xF21B0 // Player 3 graphics
 	GTIA_GRAFM  = 0xF21B4 // Missile graphics (2 bits each)
 
+	// Collision registers (read-only except HITCLR)
+	GTIA_M0PF   = 0xF21B8
+	GTIA_M1PF   = 0xF21BC
+	GTIA_M2PF   = 0xF21C0
+	GTIA_M3PF   = 0xF21C4
+	GTIA_P0PF   = 0xF21C8
+	GTIA_P1PF   = 0xF21CC
+	GTIA_P2PF   = 0xF21D0
+	GTIA_P3PF   = 0xF21D4
+	GTIA_M0PL   = 0xF21D8
+	GTIA_M1PL   = 0xF21DC
+	GTIA_M2PL   = 0xF21E0
+	GTIA_M3PL   = 0xF21E4
+	GTIA_P0PL   = 0xF21E8
+	GTIA_P1PL   = 0xF21EC
+	GTIA_P2PL   = 0xF21F0
+	GTIA_P3PL   = 0xF21F4
+	GTIA_HITCLR = 0xF21F8
+
 	// GTIA register region end
-	GTIA_END = 0xF21B7
+	GTIA_END = 0xF21FB
 )
 
 // =============================================================================
@@ -272,63 +293,7 @@ const (
 	GTIA_GRACTL_LATCH   = 0x04 // Latch trigger inputs
 )
 
-// =============================================================================
-// 6502 CPU Mappings (Atari authentic addresses)
-// =============================================================================
-
 const (
-	// 6502: ANTIC registers at authentic Atari addresses
-	C6502_ANTIC_BASE   = 0xD400
-	C6502_ANTIC_DMACTL = 0xD400
-	C6502_ANTIC_CHACTL = 0xD401
-	C6502_ANTIC_DLISTL = 0xD402
-	C6502_ANTIC_DLISTH = 0xD403
-	C6502_ANTIC_HSCROL = 0xD404
-	C6502_ANTIC_VSCROL = 0xD405
-	C6502_ANTIC_PMBASE = 0xD407
-	C6502_ANTIC_CHBASE = 0xD409
-	C6502_ANTIC_WSYNC  = 0xD40A
-	C6502_ANTIC_VCOUNT = 0xD40B
-	C6502_ANTIC_PENH   = 0xD40C
-	C6502_ANTIC_PENV   = 0xD40D
-	C6502_ANTIC_NMIEN  = 0xD40E
-	C6502_ANTIC_NMIST  = 0xD40F
-	C6502_ANTIC_END    = 0xD40F
-
-	// 6502: GTIA registers at authentic Atari addresses
-	C6502_GTIA_BASE   = 0xD000
-	C6502_GTIA_HPOSP0 = 0xD000 // Player 0 horizontal position (write)
-	C6502_GTIA_HPOSP1 = 0xD001 // Player 1 horizontal position (write)
-	C6502_GTIA_HPOSP2 = 0xD002 // Player 2 horizontal position (write)
-	C6502_GTIA_HPOSP3 = 0xD003 // Player 3 horizontal position (write)
-	C6502_GTIA_HPOSM0 = 0xD004 // Missile 0 horizontal position (write)
-	C6502_GTIA_HPOSM1 = 0xD005 // Missile 1 horizontal position (write)
-	C6502_GTIA_HPOSM2 = 0xD006 // Missile 2 horizontal position (write)
-	C6502_GTIA_HPOSM3 = 0xD007 // Missile 3 horizontal position (write)
-	C6502_GTIA_SIZEP0 = 0xD008 // Player 0 size (write)
-	C6502_GTIA_SIZEP1 = 0xD009 // Player 1 size (write)
-	C6502_GTIA_SIZEP2 = 0xD00A // Player 2 size (write)
-	C6502_GTIA_SIZEP3 = 0xD00B // Player 3 size (write)
-	C6502_GTIA_SIZEM  = 0xD00C // Missile sizes (write)
-	C6502_GTIA_GRAFP0 = 0xD00D // Player 0 graphics (write)
-	C6502_GTIA_GRAFP1 = 0xD00E // Player 1 graphics (write)
-	C6502_GTIA_GRAFP2 = 0xD00F // Player 2 graphics (write)
-	C6502_GTIA_GRAFP3 = 0xD010 // Player 3 graphics (write)
-	C6502_GTIA_GRAFM  = 0xD011 // Missile graphics (write)
-	C6502_GTIA_COLPM0 = 0xD012 // Player/missile 0 color
-	C6502_GTIA_COLPM1 = 0xD013 // Player/missile 1 color
-	C6502_GTIA_COLPM2 = 0xD014 // Player/missile 2 color
-	C6502_GTIA_COLPM3 = 0xD015 // Player/missile 3 color
-	C6502_GTIA_COLPF0 = 0xD016 // Playfield color 0
-	C6502_GTIA_COLPF1 = 0xD017 // Playfield color 1
-	C6502_GTIA_COLPF2 = 0xD018 // Playfield color 2
-	C6502_GTIA_COLPF3 = 0xD019 // Playfield color 3
-	C6502_GTIA_COLBK  = 0xD01A // Background/border color
-	C6502_GTIA_PRIOR  = 0xD01B // Priority and GTIA modes
-	C6502_GTIA_GRACTL = 0xD01D // Graphics control
-	C6502_GTIA_CONSOL = 0xD01F // Console switches
-	C6502_GTIA_END    = 0xD01F
-
 	// Z80 ANTIC port I/O mapping
 	// Use: OUT ($D4),A to select register, OUT ($D5),A to write data
 	//      IN A,($D4) to read selected register number, IN A,($D5) to read data
@@ -340,7 +305,7 @@ const (
 	// Use: OUT ($D6),A to select register, OUT ($D7),A to write data
 	Z80_GTIA_PORT_SELECT = 0xD6
 	Z80_GTIA_PORT_DATA   = 0xD7
-	GTIA_REG_COUNT       = 12 // Number of GTIA registers accessible via port I/O
+	GTIA_REG_COUNT       = 47 // Number of GTIA registers accessible via port I/O
 
 	// x86 ANTIC/GTIA port I/O mapping (same as Z80 for compatibility)
 	X86_PORT_ANTIC_SELECT = 0xD4

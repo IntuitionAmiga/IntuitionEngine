@@ -467,7 +467,7 @@ Video chip, VGA, ULA, ANTIC/GTIA, TED, Voodoo 3D, Copper coprocessor, Blitter, a
 
 `video.ula_get_dimensions()` — Get ULA display dimensions. Returns: width, height.
 
-### ANTIC (Atari 8-bit)
+### ANTIC (Atari-inspired IE-native)
 
 `video.antic_enable(on)` — Enable or disable ANTIC video output. Returns: nothing.
 
@@ -485,7 +485,7 @@ Video chip, VGA, ULA, ANTIC/GTIA, TED, Voodoo 3D, Copper coprocessor, Blitter, a
 
 `video.antic_get_dimensions()` — Get ANTIC display dimensions. Returns: width, height.
 
-### GTIA (Atari 8-bit)
+### GTIA (Atari-inspired IE-native)
 
 `video.gtia_color(reg, value)` — Set a GTIA colour register. Register indices: 0=COLPF0, 1=COLPF1, 2=COLPF2, 3=COLPF3, 4=COLBK, 5=COLPM0, 6=COLPM1, 7=COLPM2, 8=COLPM3. Value is 0..255 (Atari hue/luminance byte). Returns: nothing.
 
