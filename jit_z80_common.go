@@ -648,8 +648,10 @@ func z80JITCanEmit(instr *JITZ80Instr) bool {
 			return true
 		case op == 0x3A || op == 0x32: // LD A,(nn) / LD (nn),A
 			return true
-		case op == 0x2A || op == 0x22: // LD HL,(nn) / LD (nn),HL
+		case op == 0x2A: // LD HL,(nn)
 			return true
+		case op == 0x22: // LD (nn),HL
+			return false
 		case op == 0x37 || op == 0x3F || op == 0x2F: // SCF/CCF/CPL
 			return true
 		case op&0xC7 == 0xC6: // ALU A,n
@@ -716,7 +718,7 @@ func z80JITCanEmit(instr *JITZ80Instr) bool {
 		case 0x4A, 0x5A, 0x6A, 0x7A: // ADC HL,rp
 			return true
 		case 0x43, 0x53, 0x63, 0x73: // LD (nn),rp
-			return true
+			return false
 		case 0x4B, 0x5B, 0x6B, 0x7B: // LD rp,(nn)
 			return true
 		case 0xA0, 0xA8: // LDI / LDD

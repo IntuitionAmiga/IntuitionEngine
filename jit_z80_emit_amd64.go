@@ -447,6 +447,18 @@ func z80EmitCarryCapture(buf *CodeBuffer) {
 	buf.EmitBytes(0x0F, 0x92, 0x44, 0x24, byte(z80OffCycles))
 }
 
+func z80EmitCapturedCarryIntoF(buf *CodeBuffer) {
+	buf.EmitBytes(0x0F, 0xB6, 0x4C, 0x24, byte(z80OffCycles)) // MOVZX ECX, BYTE [RSP+z80OffCycles]
+	buf.EmitBytes(0x40, 0x08, 0xCD)                           // OR BPL, CL
+}
+
+func z80EmitBit16CarryCapture(buf *CodeBuffer, reg byte) {
+	emitREX(buf, false, 0, reg)
+	buf.EmitBytes(0xF7, modRM(3, 0, reg&7))
+	buf.Emit32(0x10000)
+	buf.EmitBytes(0x0F, 0x95, 0x44, 0x24, byte(z80OffCycles)) // SETNZ [RSP+z80OffCycles]
+}
+
 // z80EmitBorrowCapture emits code to save the host borrow flag to [RSP+z80OffCycles].
 // For SUB/SBC/CP, the host CF represents borrow (CF=1 means borrow occurred).
 func z80EmitBorrowCapture(buf *CodeBuffer) {
@@ -2219,12 +2231,11 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		z80EmitReadPair16(buf, pair) // EAX = pair value
 		// ADD R14W, AX
 		buf.EmitBytes(0x66, 0x41, 0x01, modRM(3, z80Scratch1, z80RegHL&0x07))
+		z80EmitCarryCapture(buf)
 		// Flag update: only C, H, N affected (N=0, H=half-carry from bit 11, C=carry from bit 15)
 		// Simplified: clear N, set C if overflow
 		buf.EmitBytes(0x40, 0x80, 0xE5, 0xEC) // AND BPL, ~0x13 (clear N, H, C)
-		// C flag from JC after ADD — use host carry
-		buf.EmitBytes(0x73, 0x04)             // JNC +4 (skip 4-byte OR BPL with REX)
-		buf.EmitBytes(0x40, 0x80, 0xCD, 0x01) // OR BPL, 0x01
+		z80EmitCapturedCarryIntoF(buf)
 
 	// LD A,(nn) (0x3A)
 	case op == 0x3A:
@@ -3277,13 +3288,15 @@ func z80EmitEDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, i
 		buf.EmitBytes(0x40, 0x0F, 0xB6, 0xCD) // MOVZX ECX, BPL
 		buf.EmitBytes(0x80, 0xE1, 0x01)       // AND CL, 0x01 (C flag)
 		// Add carry to operand: EAX += ECX
-		buf.EmitBytes(0x01, 0xC8) // ADD EAX, ECX
-		// SUB R14W, AX
-		buf.EmitBytes(0x66, 0x41, 0x29, modRM(3, z80Scratch1, z80RegHL&0x07))
+		buf.EmitBytes(0x01, 0xC8)                               // ADD EAX, ECX
+		amd64MOVZX_W(buf, z80Scratch3, z80RegHL)                // EDX = HL
+		buf.EmitBytes(0x39, modRM(3, z80Scratch1, z80Scratch3)) // CMP EDX, EAX
+		z80EmitBorrowCapture(buf)
+		buf.EmitBytes(0x29, modRM(3, z80Scratch1, z80Scratch3)) // SUB EDX, EAX
+		buf.EmitBytes(0x66, 0x41, 0x89, modRM(3, z80Scratch3, z80RegHL&0x07))
 		// Simplified flags: set N=1, clear others except C
 		buf.EmitBytes(0x40, 0x80, 0xE5, 0x00) // AND BPL, 0x00 (clear all)
-		buf.EmitBytes(0x73, 0x04)             // JNC +4
-		buf.EmitBytes(0x40, 0x80, 0xCD, 0x01) // OR BPL, 0x01 (C)
+		z80EmitCapturedCarryIntoF(buf)
 		buf.EmitBytes(0x40, 0x80, 0xCD, 0x02) // OR BPL, 0x02 (N=1)
 		// Z flag
 		amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
@@ -3303,15 +3316,16 @@ func z80EmitEDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, i
 		pair := (op >> 4) & 0x03
 		z80EmitReadPair16(buf, pair)
 		// ADC: HL = HL + rp + C
-		buf.EmitBytes(0x40, 0x0F, 0xB6, 0xCD) // MOVZX ECX, BPL
-		buf.EmitBytes(0x80, 0xE1, 0x01)       // AND CL, 0x01
-		buf.EmitBytes(0x01, 0xC8)             // ADD EAX, ECX
-		// ADD R14W, AX
-		buf.EmitBytes(0x66, 0x41, 0x01, modRM(3, z80Scratch1, z80RegHL&0x07))
+		buf.EmitBytes(0x40, 0x0F, 0xB6, 0xCD)                   // MOVZX ECX, BPL
+		buf.EmitBytes(0x80, 0xE1, 0x01)                         // AND CL, 0x01
+		buf.EmitBytes(0x01, 0xC8)                               // ADD EAX, ECX
+		amd64MOVZX_W(buf, z80Scratch3, z80RegHL)                // EDX = HL
+		buf.EmitBytes(0x01, modRM(3, z80Scratch1, z80Scratch3)) // ADD EDX, EAX
+		z80EmitBit16CarryCapture(buf, z80Scratch3)
+		buf.EmitBytes(0x66, 0x41, 0x89, modRM(3, z80Scratch3, z80RegHL&0x07))
 		// Flags: N=0, set C from overflow
 		buf.EmitBytes(0x40, 0x80, 0xE5, 0x00) // AND BPL, 0
-		buf.EmitBytes(0x73, 0x04)
-		buf.EmitBytes(0x40, 0x80, 0xCD, 0x01) // C
+		z80EmitCapturedCarryIntoF(buf)
 		// Z flag
 		amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
 		buf.EmitBytes(0x85, 0xC0)
@@ -3755,12 +3769,12 @@ func z80EmitDDFDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16,
 			buf.EmitBytes(0x89, 0xC8)                                       // MOV EAX, ECX
 		}
 		// Store result back
+		z80EmitBit16CarryCapture(buf, z80Scratch1)
 		buf.EmitBytes(0x66)
 		emitMemOp(buf, false, 0x89, z80Scratch1, z80Scratch4, int32(ixiyOff))
 		// Simplified flags: clear N, set C if carry from bit 15
 		buf.EmitBytes(0x40, 0x80, 0xE5, 0xEC) // AND BPL, ~0x13
-		buf.EmitBytes(0x73, 0x04)             // JNC +4
-		buf.EmitBytes(0x40, 0x80, 0xCD, 0x01) // OR BPL, 0x01
+		z80EmitCapturedCarryIntoF(buf)
 
 	// PUSH IX / PUSH IY (0xE5)
 	case op == 0xE5:

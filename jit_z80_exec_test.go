@@ -6,6 +6,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -27,6 +29,79 @@ func newZ80JITTestRig() *z80JITTestRig {
 	cpu.jitEnabled = true
 	cpu.SP = 0x1FFE // direct page range for stack (not $F000+ I/O zone)
 	return &z80JITTestRig{bus: bus, adapter: adapter, cpu: cpu}
+}
+
+func TestZ80JIT_RotozoomerComputeFrameParity(t *testing.T) {
+	z80RotozoomerPatchedParity(t, []byte{0xCD, 0x9A, 0x00, 0x76}) // CALL compute_frame; HALT
+}
+
+func TestZ80JIT_RotozoomerSecondFrameParity(t *testing.T) {
+	z80RotozoomerPatchedParity(t, []byte{
+		0xCD, 0x9A, 0x00, // CALL compute_frame
+		0xCD, 0x37, 0x04, // CALL advance_animation
+		0xCD, 0x9A, 0x00, // CALL compute_frame
+		0x76, // HALT
+	})
+}
+
+func z80RotozoomerPatchedParity(t *testing.T, entry []byte) {
+	t.Helper()
+	program, err := os.ReadFile(filepath.Join("sdk", "examples", "prebuilt", "rotozoomer_z80.ie80"))
+	if err != nil {
+		t.Fatalf("read rotozoomer fixture: %v", err)
+	}
+	if len(program) < 0x480 {
+		t.Fatalf("rotozoomer fixture too small: %d bytes", len(program))
+	}
+	patched := append([]byte(nil), program...)
+	copy(patched, entry)
+
+	runInterp := func() ([]byte, *CPU_Z80) {
+		bus := NewMachineBus()
+		adapter := NewZ80BusAdapter(bus)
+		cpu := NewCPU_Z80(adapter)
+		for addr, v := range patched {
+			bus.Write8(uint32(addr), v)
+		}
+		cpu.Reset()
+		cpu.PC = 0
+		cpu.SP = 0xEFFE
+		cpu.SetRunning(true)
+		for i := 0; i < 200000 && !cpu.Halted; i++ {
+			cpu.Step()
+		}
+		if !cpu.Halted {
+			t.Fatalf("interpreter did not halt: pc=%04x", cpu.PC)
+		}
+		return append([]byte(nil), bus.GetMemory()[0x044C:0x0478]...), cpu
+	}
+
+	runJIT := func() ([]byte, *CPU_Z80) {
+		bus := NewMachineBus()
+		adapter := NewZ80BusAdapter(bus)
+		cpu := NewCPU_Z80(adapter)
+		cpu.jitEnabled = true
+		for addr, v := range patched {
+			bus.Write8(uint32(addr), v)
+		}
+		cpu.Reset()
+		cpu.PC = 0
+		cpu.SP = 0xEFFE
+		cpu.SetRunning(true)
+		cpu.ExecuteJITZ80()
+		if !cpu.Halted {
+			t.Fatalf("JIT did not halt: pc=%04x", cpu.PC)
+		}
+		return append([]byte(nil), bus.GetMemory()[0x044C:0x0478]...), cpu
+	}
+
+	want, interpCPU := runInterp()
+	got, jitCPU := runJIT()
+	if string(got) != string(want) {
+		t.Fatalf("compute_frame vars mismatch\ninterp pc=%04x af=%02x%02x bc=%04x de=%04x hl=%04x sp=%04x vars=% x\njit    pc=%04x af=%02x%02x bc=%04x de=%04x hl=%04x sp=%04x vars=% x",
+			interpCPU.PC, interpCPU.A, interpCPU.F, interpCPU.BC(), interpCPU.DE(), interpCPU.HL(), interpCPU.SP, want,
+			jitCPU.PC, jitCPU.A, jitCPU.F, jitCPU.BC(), jitCPU.DE(), jitCPU.HL(), jitCPU.SP, got)
+	}
 }
 
 // loadAndRun loads a Z80 program at the given address, sets PC, and runs
@@ -871,6 +946,80 @@ func TestZ80JIT_Exec_ADD_HL_rp(t *testing.T) {
 	hl := uint16(r.cpu.H)<<8 | uint16(r.cpu.L)
 	if hl != 0x1234 {
 		t.Errorf("HL = 0x%04X, want 0x1234", hl)
+	}
+}
+
+func TestZ80JIT_Exec_ADCHL_CarryIncludesCarryInOverflow(t *testing.T) {
+	r := newZ80JITTestRig()
+
+	program := []byte{
+		0x37,             // SCF
+		0x21, 0x01, 0x00, // LD HL, 0x0001
+		0x01, 0xFF, 0xFF, // LD BC, 0xFFFF
+		0xED, 0x4A, // ADC HL, BC
+		0x76, // HALT
+	}
+	r.loadAndRun(t, 0x0100, program, 500*time.Millisecond)
+
+	if got := r.cpu.HL(); got != 0x0001 {
+		t.Fatalf("HL = 0x%04X, want 0x0001", got)
+	}
+	if r.cpu.F&z80FlagC == 0 {
+		t.Fatalf("C flag clear after 0x0001 + 0xffff + carry, want set")
+	}
+}
+
+func TestZ80JIT_Exec_SBCHL_BorrowIncludesCarryInOverflow(t *testing.T) {
+	r := newZ80JITTestRig()
+
+	program := []byte{
+		0x37,             // SCF
+		0x21, 0x01, 0x00, // LD HL, 0x0001
+		0x01, 0xFF, 0xFF, // LD BC, 0xFFFF
+		0xED, 0x42, // SBC HL, BC
+		0x76, // HALT
+	}
+	r.loadAndRun(t, 0x0100, program, 500*time.Millisecond)
+
+	if got := r.cpu.HL(); got != 0x0001 {
+		t.Fatalf("HL = 0x%04X, want 0x0001", got)
+	}
+	if r.cpu.F&z80FlagC == 0 {
+		t.Fatalf("C flag clear after 0x0001 - 0xffff - carry, want set")
+	}
+}
+
+func TestZ80JIT_Exec_ADDIXIY_CarryIs16Bit(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		prefix byte
+	}{
+		{name: "IX", prefix: 0xDD},
+		{name: "IY", prefix: 0xFD},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newZ80JITTestRig()
+			program := []byte{
+				tt.prefix, 0x21, 0xFF, 0xFF, // LD IX/IY, 0xffff
+				0x01, 0x01, 0x00, // LD BC, 0x0001
+				tt.prefix, 0x09, // ADD IX/IY, BC
+				0x76, // HALT
+			}
+			r.loadAndRun(t, 0x0100, program, 500*time.Millisecond)
+
+			var got uint16
+			if tt.prefix == 0xDD {
+				got = r.cpu.IX
+			} else {
+				got = r.cpu.IY
+			}
+			if got != 0x0000 {
+				t.Fatalf("%s = 0x%04X, want 0x0000", tt.name, got)
+			}
+			if r.cpu.F&z80FlagC == 0 {
+				t.Fatalf("C flag clear after 0xffff + 1 for %s, want set", tt.name)
+			}
+		})
 	}
 }
 
