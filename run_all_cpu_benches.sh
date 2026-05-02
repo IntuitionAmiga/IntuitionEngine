@@ -32,6 +32,10 @@
 #   RAW              if set, also print the raw Go benchmark output
 #   GO_BUILD_TAGS    extra build tags (default: headless)
 #   SKIP_ASM_INTERP  if set, skip the 6502 asm-interp second pass
+#
+# The comparison table intentionally disables every backend's turbo tier.
+# Turbo paths are valid runtime accelerators, but they collapse or specialize
+# selected hot loops and therefore do not measure plain JIT throughput.
 
 set -eu
 
@@ -41,6 +45,13 @@ BENCH_TIME="${BENCH_TIME:-3s}"
 BENCH_COUNT="${BENCH_COUNT:-1}"
 GO_BUILD_TAGS="${GO_BUILD_TAGS:-headless}"
 PATTERN='Benchmark(6502|Z80|M68K|IE32|IE64|X86JIT)_.+_(Interpreter|JIT)$'
+JIT_TURBO_ENV=(
+    P65_JIT_TURBO=0
+    Z80_JIT_TURBO=0
+    M68K_JIT_TURBO=0
+    IE64_JIT_TURBO=0
+    X86_JIT_TURBO=0
+)
 
 if ! command -v go >/dev/null 2>&1; then
     echo "error: go toolchain not on PATH" >&2
@@ -51,7 +62,7 @@ run_sweep() {
     local label="$1"
     shift
     echo ">>> [$label] go test -tags $GO_BUILD_TAGS -bench '$PATTERN' -benchtime $BENCH_TIME -count $BENCH_COUNT" >&2
-    "$@" go test -tags "$GO_BUILD_TAGS" \
+    env "${JIT_TURBO_ENV[@]}" "$@" go test -tags "$GO_BUILD_TAGS" \
         -run '^$' \
         -bench "$PATTERN" \
         -benchtime "$BENCH_TIME" \
@@ -63,14 +74,14 @@ run_sweep() {
 # Pass 1: every backend with default interpreter selection. For 6502
 # this means the asm interpreter (cpu_6502_interp_amd64.s) — its init()
 # enables itself unless IE6502_ASM_INTERP is set to 0/false/off.
-PASS1=$(run_sweep "asm-interp" env)
+PASS1=$(run_sweep "asm-interp")
 
 # Pass 2: re-run only the 6502 _Interpreter benches with the asm path
 # disabled, so the "Interp(Go)" column reflects the pure-Go interpreter
 # (executeFast in cpu_six5go2.go).
 PASS2=""
 if [ -z "${SKIP_ASM_INTERP:-}" ]; then
-    PASS2=$(env IE6502_ASM_INTERP=0 go test -tags "$GO_BUILD_TAGS" \
+    PASS2=$(env "${JIT_TURBO_ENV[@]}" IE6502_ASM_INTERP=0 go test -tags "$GO_BUILD_TAGS" \
         -run '^$' \
         -bench '^Benchmark6502_.+_Interpreter$' \
         -benchtime "$BENCH_TIME" \
@@ -233,4 +244,5 @@ END {
     printf "Ratio : JIT / Interp (asm-interp denominator when both present, else Go interp)\n"
     printf "Note  : 6502 is the only backend with a hand-written asm interpreter; others show \"-\" in that column.\n"
     printf "        IE32 has no JIT (per CLAUDE.md); shows \"-\" in JIT column.\n"
+    printf "        Turbo tiers are disabled for all JIT backends in this comparison.\n"
 }'
