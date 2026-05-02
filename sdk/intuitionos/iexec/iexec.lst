@@ -833,7 +833,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 00000000000F0D14  SAP_PLAY_LEN      equ 0xF0D14
          = 00000000000F0D18  SAP_PLAY_CTRL     equ 0xF0D18
          = 00000000000F0D1C  SAP_PLAY_STATUS   equ 0xF0D1C
-         = 00000000000F0D1D  SAP_SUBSONG       equ 0xF0D1D
+         = 00000000000F0D20  SAP_SUBSONG       equ 0xF0D20
          = 00000000000F0F00  TED_BASE          equ 0xF0F00
          = 00000000000F0F00  TED_FREQ1_LO      equ 0xF0F00
          = 00000000000F0F01  TED_FREQ2_LO      equ 0xF0F01

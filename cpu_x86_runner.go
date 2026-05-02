@@ -42,7 +42,7 @@ const (
 	X86_PORT_PSG_DATA   = 0xF1
 	X86_PORT_SID_SELECT = 0xE0
 	X86_PORT_SID_DATA   = 0xE1
-	X86_PORT_POKEY_BASE = 0xD0 // 0xD0-0xDF for POKEY
+	X86_PORT_POKEY_BASE = 0x60 // 0x60-0x69 direct POKEY register window
 	X86_PORT_TED_SELECT = 0xF2
 	X86_PORT_TED_DATA   = 0xF3
 )
@@ -323,7 +323,7 @@ func (b *X86BusAdapter) In(port uint16) byte {
 		return 0
 	}
 
-	// ANTIC port I/O (0xD4-0xD5) - check before POKEY range
+	// ANTIC port I/O (0xD4-0xD5)
 	if port == X86_PORT_ANTIC_SELECT {
 		return b.anticRegSelect
 	}
@@ -335,7 +335,7 @@ func (b *X86BusAdapter) In(port uint16) byte {
 		return 0
 	}
 
-	// GTIA port I/O (0xD6-0xD7) - check before POKEY range
+	// GTIA port I/O (0xD6-0xD7)
 	if port == X86_PORT_GTIA_SELECT {
 		return b.gtiaRegSelect
 	}
@@ -347,13 +347,10 @@ func (b *X86BusAdapter) In(port uint16) byte {
 		return 0
 	}
 
-	// POKEY port I/O (0xD0-0xD3, 0xD8-0xDF) - excludes ANTIC/GTIA ports
-	if port >= X86_PORT_POKEY_BASE && port < X86_PORT_POKEY_BASE+16 {
-		// Skip ANTIC/GTIA ports (0xD4-0xD7)
-		if port < X86_PORT_ANTIC_SELECT || port > X86_PORT_GTIA_DATA {
-			offset := port - X86_PORT_POKEY_BASE
-			return b.bus.Read8(0xF0D00 + uint32(offset))
-		}
+	// POKEY port I/O (0x60-0x69)
+	if port >= X86_PORT_POKEY_BASE && port < X86_PORT_POKEY_BASE+POKEY_WRITABLE_REG_COUNT {
+		offset := port - X86_PORT_POKEY_BASE
+		return b.bus.Read8(POKEY_BASE + uint32(offset))
 	}
 
 	// TED port I/O
@@ -425,7 +422,7 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 		return
 	}
 
-	// ANTIC port I/O (0xD4-0xD5) - check before POKEY range
+	// ANTIC port I/O (0xD4-0xD5)
 	if port == X86_PORT_ANTIC_SELECT {
 		b.anticRegSelect = value & 0x0F // 16 ANTIC registers
 		return
@@ -438,7 +435,7 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 		return
 	}
 
-	// GTIA port I/O (0xD6-0xD7) - check before POKEY range
+	// GTIA port I/O (0xD6-0xD7)
 	if port == X86_PORT_GTIA_SELECT {
 		b.gtiaRegSelect = value & 0x0F // 12 GTIA registers
 		return
@@ -451,13 +448,10 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 		return
 	}
 
-	// POKEY port I/O (0xD0-0xD3, 0xD8-0xDF) - excludes ANTIC/GTIA ports
-	if port >= X86_PORT_POKEY_BASE && port < X86_PORT_POKEY_BASE+16 {
-		// Skip ANTIC/GTIA ports (0xD4-0xD7)
-		if port < X86_PORT_ANTIC_SELECT || port > X86_PORT_GTIA_DATA {
-			offset := port - X86_PORT_POKEY_BASE
-			b.bus.Write8(0xF0D00+uint32(offset), value)
-		}
+	// POKEY port I/O (0x60-0x69)
+	if port >= X86_PORT_POKEY_BASE && port < X86_PORT_POKEY_BASE+POKEY_WRITABLE_REG_COUNT {
+		offset := port - X86_PORT_POKEY_BASE
+		b.bus.Write8(POKEY_BASE+uint32(offset), value)
 		return
 	}
 

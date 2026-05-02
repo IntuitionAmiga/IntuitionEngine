@@ -138,6 +138,7 @@
 .equ POKEY_AUDC4       0xF0D07          ; Channel 4 control
 .equ POKEY_AUDCTL      0xF0D08          ; Master audio control
 .equ POKEY_PLUS_CTRL   0xF0D09          ; POKEY+ mode (0=standard, 1=enhanced)
+.equ POKEY_RANDOM      0xF0D0A          ; Readable polynomial/RNG tap
 
 ; AUDCTL bit masks
 .equ AUDCTL_CLOCK_15KHZ   0x01          ; Use 15kHz base clock (else 64kHz)
@@ -292,7 +293,7 @@
 .equ SAP_PLAY_LEN      0xF0D14          ; Play length (32-bit)
 .equ SAP_PLAY_CTRL     0xF0D18          ; Play control
 .equ SAP_PLAY_STATUS   0xF0D1C          ; Play status
-.equ SAP_SUBSONG       0xF0D1D          ; Subsong selection (0-255)
+.equ SAP_SUBSONG       0xF0D20          ; Subsong selection (0-255)
 
 ; ============================================================================
 ; TED AUDIO REGISTERS (Commodore Plus/4 style)

@@ -991,9 +991,12 @@ func main() {
 	sysBus.MapIO(POKEY_BASE, POKEY_END,
 		pokeyEngine.HandleRead,
 		pokeyEngine.HandleWrite)
+	sysBus.MapIOByte(POKEY_BASE, POKEY_END, pokeyEngine.HandleWrite8)
+	sysBus.MapIOWideWriteFanout(POKEY_BASE, POKEY_END)
 	sysBus.MapIO(SAP_PLAY_PTR, SAP_SUBSONG,
 		pokeyPlayer.HandlePlayRead,
 		pokeyPlayer.HandlePlayWrite)
+	sysBus.MapIOByte(SAP_PLAY_PTR, SAP_SUBSONG, pokeyPlayer.HandlePlayWrite8)
 
 	// Map VGA registers
 	var vgaEngine *VGAEngine

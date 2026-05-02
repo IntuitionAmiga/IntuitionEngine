@@ -2886,7 +2886,7 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 	// I/O register path - pass original value (not byte-swapped).
 	// Hardware handlers expect numeric register values.
 	if addr >= 0xF0000 && addr < 0x100000 {
-		if isSIDMMIOWideAddr(addr, 2) {
+		if isByteFanoutMMIOWideAddr(addr, 2) {
 			cpu.Write8(addr, uint8(value>>8))
 			cpu.Write8(addr+1, uint8(value))
 			return
@@ -2968,7 +2968,7 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 	// I/O register path - pass original value (not byte-swapped) for hardware registers
 	// Hardware handlers expect numeric values, not memory byte order
 	if addr >= 0xF0000 && addr < 0x100000 {
-		if isSIDMMIOWideAddr(addr, 4) {
+		if isByteFanoutMMIOWideAddr(addr, 4) {
 			cpu.Write8(addr, uint8(value>>24))
 			cpu.Write8(addr+1, uint8(value>>16))
 			cpu.Write8(addr+2, uint8(value>>8))
@@ -2999,14 +2999,15 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 	cpu.bus.Write32(addr, leValue)
 }
 
-func isSIDMMIOWideAddr(addr uint32, size uint32) bool {
+func isByteFanoutMMIOWideAddr(addr uint32, size uint32) bool {
 	if size == 0 {
 		return false
 	}
 	end := addr + size - 1
 	return (addr >= SID_BASE && end <= SID_END) ||
 		(addr >= SID2_BASE && end <= SID2_END) ||
-		(addr >= SID3_BASE && end <= SID3_END)
+		(addr >= SID3_BASE && end <= SID3_END) ||
+		(addr >= POKEY_BASE && end <= POKEY_END)
 }
 
 // AttachDirectVRAM enables direct VRAM access mode for maximum video throughput.

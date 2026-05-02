@@ -213,6 +213,7 @@ POKEY_AUDF4     = $D206         ; Channel 4 frequency divider
 POKEY_AUDC4     = $D207         ; Channel 4 control
 POKEY_AUDCTL    = $D208         ; Master audio control
 POKEY_PLUS_CTRL = $D209         ; POKEY+ mode (0=standard, 1=enhanced)
+POKEY_RANDOM    = $D20A         ; Readable polynomial/RNG tap
 
 ; AUDCTL bit masks
 AUDCTL_CLOCK_15KHZ  = $01       ; Use 15kHz base clock (else 64kHz)
@@ -503,7 +504,7 @@ SAP_PLAY_LEN_2  = $FD16         ; Play length byte 2
 SAP_PLAY_LEN_3  = $FD17         ; Play length byte 3
 SAP_PLAY_CTRL   = $FD18         ; Play control (IE32 $F0D18)
 SAP_PLAY_STATUS = $FD1C         ; Play status (IE32 $F0D1C)
-SAP_SUBSONG     = $FD1D         ; Subsong selection (0-255)
+SAP_SUBSONG     = $FD20         ; Subsong selection (0-255)
 
 ; ============================================================================
 ; AHX AUDIO REGISTERS (Amiga AHX module player)

@@ -437,7 +437,7 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 | Video | `$F0000-$F049B` | Display control, copper, blitter, raster, CLUT8 palette, extended blitter |
 | Custom Audio | `$F0800-$F0B7F` | Audio control, envelope shape, filter, legacy channels, flex synth |
 | PSG | `$F0C00-$F0C20` | AY-3-8910/YM2149 registers and file playback |
-| POKEY | `$F0D00-$F0D1D` | Atari POKEY registers and SAP playback |
+| POKEY | `$F0D00-$F0D20` | Atari POKEY registers and SAP playback |
 | SID | `$F0E00-$F0E2D` | MOS 6581 registers and SID playback |
 | MOD | `$F0BC0-$F0BD7` | ProTracker .mod player with Amiga filters |
 | Banking | `$F700-$F7F0` | Bank window control (Z80/6502/x86) |
@@ -484,7 +484,7 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0C10 - 0x0F0C1F: PSG playback control (AY/YM/VGM/SNDH; SN VGM drives native SN76489)
 0x0F0D00 - 0x0F0D08: POKEY registers (Atari 8-bit audio)
 0x0F0D09:            POKEY+ control register
-0x0F0D10 - 0x0F0D1D: SAP playback control
+0x0F0D10 - 0x0F0D20: SAP playback control
 0x0F0E00 - 0x0F0E18: SID registers (C64 audio synthesis)
 0x0F0E19:            SID+ control register
 0x0F0E1A - 0x0F0E1C: SID read-only registers (OSC3, ENV3)
@@ -783,7 +783,7 @@ PSG Playback Control (supports .ym, .ay, .vgm, .vgz, .vtx, .sndh, .pt3, .pt2, .p
 
 Embed the file data in your program, set PTR/LEN, then write to CTRL. Format is auto-detected from file headers. Formats using embedded CPU code (.ay, .sndh, tracker modules) execute via internal Z80 or M68K emulation. Register-dump formats (.ym) and timed-event formats (.vgm/.vgz) are rendered natively. VGM/VGZ files containing SN76489 (`0x50`) writes play on the native SN76489 chip; mixed SN + AY VGMs drive both chips simultaneously. `-psg+` enhanced processing applies only to AY/YM, not SN.
 
-## 3.7 POKEY Sound Chip Registers (0x0F0D00 - 0x0F0D1D)
+## 3.7 POKEY Sound Chip Registers (0x0F0D00 - 0x0F0D20)
 
 ```
 0x0F0D00: POKEY_AUDF1    - Channel 1 frequency divider
@@ -796,6 +796,7 @@ Embed the file data in your program, set PTR/LEN, then write to CTRL. Format is 
 0x0F0D07: POKEY_AUDC4    - Channel 4 control
 0x0F0D08: POKEY_AUDCTL   - Master audio control
 0x0F0D09: POKEY_PLUS_CTRL - POKEY+ mode (0=standard, 1=enhanced)
+0x0F0D0A: POKEY_RANDOM   - Readable polynomial/RNG tap
 
 AUDCTL Bit Masks:
 bit 0: Use 15kHz base clock (else 64kHz)
@@ -817,12 +818,12 @@ AUDC Distortion Modes (bits 5-7):
 0xC0: 4-bit poly only (buzzy)
 0xE0: 17-bit + pulse
 
-SAP Player Registers (0x0F0D10 - 0x0F0D1D, supports .sap Atari 8-bit music):
+SAP Player Registers (0x0F0D10 - 0x0F0D20, supports .sap Atari 8-bit music):
 0x0F0D10: SAP_PLAY_PTR    - Pointer to .sap file data in bus memory (32-bit)
 0x0F0D14: SAP_PLAY_LEN    - Length of .sap file data (32-bit)
 0x0F0D18: SAP_PLAY_CTRL   - Control (bit0=start, bit1=stop, bit2=loop)
 0x0F0D1C: SAP_PLAY_STATUS - Status (bit0=busy, bit1=error)
-0x0F0D1D: SAP_SUBSONG     - Subsong selection (0-255)
+0x0F0D20: SAP_SUBSONG     - Subsong selection (0-255)
 ```
 
 SAP TYPE B files are supported: the embedded 6502 INIT routine is called once, then the PLAYER routine is called each frame to drive POKEY registers.
@@ -1058,11 +1059,11 @@ All sound and video chips are accessible from all CPU architectures at different
 | MOD   | 0x0F0BC0-0x0F0BD7 | Memory $FBC0-$FBD7 | Memory | $FBC0-$FBD7 | .mod ProTracker player |
 | WAV   | 0x0F0BD8-0x0F0BEB | Memory $FBD8-$FBEB | Memory | $FBD8-$FBEB | .wav PCM player |
 | PSG   | 0x0F0C00-0x0F0C20 | Ports 0xF0/0xF1 + Memory $FC10-$FC20 | Ports 0xF0/0xF1 | $D400-$D40F | Synth + .ym/.ay/.vgm/.vgz/.vtx/.sndh/.pt3/.pt2/.pt1/.stc/.sqt/.asc/.ftc player |
-| POKEY | 0x0F0D00-0x0F0D1D | Ports 0xD0/0xD1 + Memory $FD10-$FD1D | Ports 0xD0-0xD3* | $D200-$D21D | Synth + .sap player |
+| POKEY | 0x0F0D00-0x0F0D20 | Ports 0xD0/0xD1 + Memory $FD10-$FD20 | Ports 0x60-0x69 | $D200-$D209 | Synth + .sap player |
 | SID   | 0x0F0E00-0x0F0E6C | Ports 0xE0/0xE1 + Memory $FE20-$FE6C | Ports 0xE0/0xE1 | $D500-$D56C | Synth + .sid player + SID2/SID3 multi-SID |
 | TED   | 0x0F0F00-0x0F0F1C | Ports 0xF2/0xF3 + Memory $FF10-$FF1C | Ports 0xF2/0xF3 | $D600-$D61C | Synth + .ted/.prg player |
 
-\* x86 POKEY uses ports 0xD0-0xD3 and 0xD8-0xDF (0xD4-0xD7 reserved for ANTIC/GTIA)
+\* x86 POKEY uses direct ports 0x60-0x69.
 
 Z80 and x86 access the custom synth and player control registers via memory-mapped I/O: addresses $F000-$FFFF translate to bus $F0000-$F0FFF. Classic sound chip synthesis registers (PSG, POKEY, SID, TED) use dedicated port I/O for register select/data access; their playback control registers use memory-mapped I/O.
 
@@ -3221,7 +3222,7 @@ The x86 core implements the 8086 instruction set with 32-bit register support:
 | Chip  | Ports     | Description |
 |-------|-----------|-------------|
 | PSG   | 0xF0-0xF1 | Register select, data |
-| POKEY | 0xD0-0xDF | Direct register access |
+| POKEY | 0x60-0x69 | Direct writable register access |
 | SID   | 0xE0-0xE1 | Register select, data |
 | TED   | 0xF2-0xF3 | Register select, data |
 
@@ -5810,7 +5811,7 @@ PolyBLEP (polynomial bandlimited step) anti-aliasing is applied to square and sa
 The classic sound chips are implemented via register mapping to the custom audio synthesizer:
 
 - **PSG (AY-3-8910/YM2149)**: Registers at `$F0C00-$F0C0F` map to square wave channels with hardware envelope emulation; R14/R15 are storage-only on IE
-- **POKEY**: Registers at `$F0D00-$F0D09` map to channels with polynomial counter and distortion emulation
+- **POKEY**: Registers at `$F0D00-$F0D0A` map to channels with polynomial counter, readable RNG tap, and distortion emulation
 - **SID (6581/8580)**: Registers at `$F0E00-$F0E1C` map to channels with filter, ring mod, and sync
 
 This approach provides accurate register-level compatibility while leveraging the custom synth's high-quality output (44.1kHz, anti-aliased waveforms, 32-bit processing). VGM/VGZ playback supports SN76489 data through the native IE bus SN76489 chip at `0xF0C30-0xF0C3F`.

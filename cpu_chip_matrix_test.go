@@ -593,7 +593,7 @@ func TestX86_POKEY_PortIO(t *testing.T) {
 	bus := NewMachineBus()
 	x86Bus := NewX86BusAdapter(bus)
 
-	// Write to POKEY register 0 via direct port mapping (0xD0 = AUDF1)
+	// Write to POKEY register 0 via direct port mapping (0x60 = AUDF1)
 	x86Bus.Out(X86_PORT_POKEY_BASE, 0xDE)
 
 	// Verify value is written to POKEY_BASE
@@ -605,6 +605,36 @@ func TestX86_POKEY_PortIO(t *testing.T) {
 	// Test read back via port I/O
 	if x86Bus.In(X86_PORT_POKEY_BASE) != 0xDE {
 		t.Errorf("x86 POKEY port read: got 0x%02X, want 0xDE", x86Bus.In(X86_PORT_POKEY_BASE))
+	}
+}
+
+func TestX86_POKEY_AllRegs(t *testing.T) {
+	bus := NewMachineBus()
+	x86Bus := NewX86BusAdapter(bus)
+
+	for reg := byte(0); reg < POKEY_WRITABLE_REG_COUNT; reg++ {
+		want := byte(0x80 | reg)
+		x86Bus.Out(X86_PORT_POKEY_BASE+uint16(reg), want)
+		if got := bus.Read8(POKEY_BASE + uint32(reg)); got != want {
+			t.Fatalf("x86 POKEY reg %d write via port 0x%X got 0x%02X, want 0x%02X",
+				reg, X86_PORT_POKEY_BASE+uint16(reg), got, want)
+		}
+		if got := x86Bus.In(X86_PORT_POKEY_BASE + uint16(reg)); got != want {
+			t.Fatalf("x86 POKEY reg %d read via port 0x%X got 0x%02X, want 0x%02X",
+				reg, X86_PORT_POKEY_BASE+uint16(reg), got, want)
+		}
+	}
+}
+
+func TestZ80_POKEY_RegSelectResetCleared(t *testing.T) {
+	bus := NewMachineBus()
+	z80Bus := NewZ80BusAdapter(bus)
+	z80Bus.Out(Z80_POKEY_PORT_SELECT, 7)
+
+	z80Bus.ResetIOState()
+
+	if got := z80Bus.In(Z80_POKEY_PORT_SELECT); got != 0 {
+		t.Fatalf("Z80 POKEY select after reset got %d, want 0", got)
 	}
 }
 

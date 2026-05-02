@@ -110,8 +110,8 @@ SN76489_MODE_LFSR_16 equ 1               ; Sega 16-bit LFSR
 ; ============================================================================
 
 ; Port I/O for POKEY access (x86 specific)
-; Ports 0xD0-0xDF map directly to POKEY registers
-POKEY_PORT_BASE     equ 0xD0             ; Base port for POKEY
+; Ports 0x60-0x69 map directly to POKEY writable registers
+POKEY_PORT_BASE     equ 0x60             ; Base port for POKEY
 
 ; Memory-mapped POKEY registers
 POKEY_BASE      equ 0xF0D00              ; POKEY base address
@@ -125,6 +125,7 @@ POKEY_AUDF4     equ 0xF0D06              ; Channel 4 frequency divider
 POKEY_AUDC4     equ 0xF0D07              ; Channel 4 control
 POKEY_AUDCTL    equ 0xF0D08              ; Master audio control
 POKEY_PLUS_CTRL equ 0xF0D09              ; POKEY+ mode (0=standard, 1=enhanced)
+POKEY_RANDOM    equ 0xF0D0A              ; Readable polynomial/RNG tap
 
 ; AUDCTL bit masks
 AUDCTL_CLOCK_15KHZ  equ 0x01             ; Use 15kHz base clock (else 64kHz)
@@ -151,7 +152,7 @@ SAP_PLAY_PTR    equ 0xF0D10              ; Play pointer (32-bit)
 SAP_PLAY_LEN    equ 0xF0D14              ; Play length (32-bit)
 SAP_PLAY_CTRL   equ 0xF0D18              ; Play control
 SAP_PLAY_STATUS equ 0xF0D1C              ; Play status
-SAP_SUBSONG     equ 0xF0D1D              ; Subsong selection (0-255)
+SAP_SUBSONG     equ 0xF0D20              ; Subsong selection (0-255)
 
 ; ============================================================================
 ; SID AUDIO REGISTERS (MOS 6581/8580 style)
@@ -739,7 +740,7 @@ TIMER_RELOAD    equ 0x00F808             ; DEPRECATED: not implemented in curren
 %endmacro
 
 ; Write POKEY register via port I/O
-; Arguments: register offset (0-15), value
+; Arguments: writable register offset (0-9), value
 %macro pokey_write 2
     mov dx, POKEY_PORT_BASE + %1
     mov al, %2

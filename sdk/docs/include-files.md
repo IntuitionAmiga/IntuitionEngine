@@ -277,7 +277,7 @@ start:
 
 **Port I/O addresses:**
 - PSG: ports `0xF0`-`0xF1`
-- POKEY: ports `0xD0`-`0xDF`
+- POKEY: ports `0x60`-`0x69`
 - SID: ports `0xE0`-`0xE1`
 - TED: ports `0xF2`-`0xF3`
 - VGA: standard PC ports (`0x3C4`-`0x3DA`)

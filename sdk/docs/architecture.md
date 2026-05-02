@@ -281,16 +281,15 @@ x86 shares the Z80 Voodoo port mapping (`$B0-$B7`) and most sound-chip port mapp
 | `$3D5` | VGA CRTC data | `VGA_CRTC_DATA` | Standard PC port |
 | `$3DA` | VGA Status | Returns `0x08` if vsync | Standard PC port |
 | `$B0-$B7` | Voodoo 3D | `0xF4000` | Addr lo/hi + 4 data bytes |
-| `$D0-$D3` | POKEY | `0xF0D00+(port-0xD0)` | **Direct** — port offset maps to register |
+| `$60-$69` | POKEY | `0xF0D00+(port-0x60)` | **Direct** — port offset maps to writable register |
 | `$D4/$D5` | ANTIC | `0xF2100` | Register select / data (x4 stride) |
 | `$D6/$D7` | GTIA | `0xF2140` | Register select / data (x4 stride) |
-| `$D8-$DF` | POKEY | `0xF0D00+(port-0xD0)` | **Direct** — same formula, ANTIC/GTIA punched out |
 | `$E0/$E1` | SID | `0xF0E00/0xF0E30/0xF0E50` | Register select / data; select bits 5-6 choose SID1/SID2/SID3 |
 | `$F0/$F1` | PSG | `0xF0C00` | Register select / data |
 | `$F2/$F3` | TED | `0xF0F00` / `0xF0F20` | Register select / data (audio / video x4 stride) |
 | `$FE` | ULA | `0xF2000` | Border colour (bits 0-2) |
 
-**Key difference from Z80**: x86 POKEY access is direct — ports `$D0-$D3` and `$D8-$DF` map one-to-one onto POKEY registers at `0xF0D00+offset`, with ANTIC (`$D4/$D5`) and GTIA (`$D6/$D7`) select/data pairs punched out of the middle of the range.
+**Key difference from Z80**: x86 POKEY access is direct — ports `$60-$69` map one-to-one onto writable POKEY registers at `0xF0D00+(port-0x60)`. ANTIC (`$D4/$D5`) and GTIA (`$D6/$D7`) keep their own select/data pairs.
 
 x86 also directly accesses VGA VRAM at `$A0000-$AFFFF` in the memory path (no port translation needed).
 
@@ -562,7 +561,7 @@ graph LR
     subgraph ENGINES["Sound Engines"]
         PSG_E["PSG / AY-3-8910<br/>0xF0C00-0xF0C0F<br/>3 Tone + Noise + Envelope"]
         SID_E["SID 6581/8580 x3<br/>0xF0E00-0xF0E6C<br/>3 Voices x 3 Chips = 9 Voices"]
-        POK_E["POKEY<br/>0xF0D00-0xF0D09<br/>4 Channels + Poly Counters"]
+        POK_E["POKEY<br/>0xF0D00-0xF0D0A<br/>4 Channels + Poly Counters"]
         TED_E["TED Audio<br/>0xF0F00-0xF0F05<br/>2 Voices (square + noise)"]
         AHX_E["AHX Replayer<br/>0xF0B80-0xF0B94<br/>4 Channels"]
     end
@@ -647,8 +646,8 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xF0C30-0xF0C3F` | 16B | Native SN76489 latch/data, ready, and LFSR mode registers |
 | `0xF0C40-0xF0C4F` | 16B | Reserved for future SN76489 extensions |
 | `0xF0C10-0xF0C1F` | 16B | PSG / AY Player |
-| `0xF0D00-0xF0D09` | 10B | POKEY Engine |
-| `0xF0D10-0xF0D1D` | 14B | SAP Player |
+| `0xF0D00-0xF0D0A` | 11B | POKEY Engine |
+| `0xF0D10-0xF0D20` | 17B | SAP Player |
 | `0xF0E00-0xF0E19` | 26B | SID1 Engine (6581/8580) |
 | `0xF0E20-0xF0E2D` | 14B | SID Player |
 | `0xF0E30-0xF0E6C` | 61B | SID2 + SID3 (Multi-SID) |

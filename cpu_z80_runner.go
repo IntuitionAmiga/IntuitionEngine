@@ -96,6 +96,15 @@ func NewZ80BusAdapterWithVoodoo(bus *MachineBus, vga *VGAEngine, voodoo *VoodooE
 	return &Z80BusAdapter{bus: bus, psgRegSelect: 0, vgaEngine: vga, voodooEngine: voodoo}
 }
 
+func (b *Z80BusAdapter) ResetIOState() {
+	b.psgRegSelect = 0
+	b.sidRegSelect = 0
+	b.pokeyRegSelect = 0
+	b.tedRegSelect = 0
+	b.anticRegSelect = 0
+	b.gtiaRegSelect = 0
+}
+
 // translateIO8Bit converts 16-bit I/O addresses (0xF000-0xFFFF) to
 // 32-bit addresses (0xF0000-0xF0FFF) for 8-bit CPU compatibility.
 // Non-I/O addresses pass through unchanged.
@@ -769,6 +778,9 @@ func (r *CPUZ80Runner) LoadProgramBytes(program []byte) {
 
 func (r *CPUZ80Runner) Reset() {
 	r.cpu.Reset()
+	if z80Bus, ok := r.cpu.bus.(*Z80BusAdapter); ok {
+		z80Bus.ResetIOState()
+	}
 }
 
 func (r *CPUZ80Runner) Execute() {

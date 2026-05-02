@@ -205,6 +205,7 @@
 .set POKEY_AUDC4,0xD207
 .set POKEY_AUDCTL,0xD208
 .set POKEY_PLUS_CTRL,0xD209
+.set POKEY_RANDOM,0xD20A
 
 ; AUDCTL bit masks
 .set AUDCTL_CLOCK_15KHZ,0x01
@@ -504,7 +505,7 @@
 .set SAP_PLAY_LEN_3,0xF0D17
 .set SAP_PLAY_CTRL,0xF0D18
 .set SAP_PLAY_STATUS,0xF0D1C
-.set SAP_SUBSONG,0xF0D1D
+.set SAP_SUBSONG,0xF0D20
 
 ; ============================================================================
 ; ANTIC VIDEO REGISTERS (Atari 8-bit style via port I/O)

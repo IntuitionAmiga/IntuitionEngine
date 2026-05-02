@@ -2239,7 +2239,7 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 | `&HF0800`-`&HF0B7F` | Audio Chip (SoundChip) |
 | `&HF0B80`-`&HF0B91` | AHX Player |
 | `&HF0C00`-`&HF0C20` | PSG (AY-3-8910/YM2149) |
-| `&HF0D00`-`&HF0D1D` | POKEY |
+| `&HF0D00`-`&HF0D20` | POKEY |
 | `&HF0E00`-`&HF0E2D` | SID (MOS 6581) |
 | `&HF0F00`-`&HF0F5F` | TED (audio + video) |
 | `&HF1000`-`&HF13FF` | VGA registers |
@@ -2408,7 +2408,7 @@ Offsets from channel base:
 | `&HF0C18` | PSG_PLAY_CTRL | 1=start, 2=stop |
 | `&HF0C1C` | PSG_PLAY_STATUS | Playback status |
 
-### 9.6 POKEY Registers (`&HF0D00`-`&HF0D1D`)
+### 9.6 POKEY Registers (`&HF0D00`-`&HF0D20`)
 
 | Address | Name | Description |
 |---------|------|-------------|
@@ -2416,7 +2416,7 @@ Offsets from channel base:
 | `&HF0D01` | POKEY_AUDC1 | Channel 1 control (distortion + volume) |
 | `&HF0D02`-`&HF0D07` | AUDF2-4, AUDC2-4 | Channels 2-4 |
 | `&HF0D08` | POKEY_AUDCTL | Master audio control |
-| `&HF0D10`-`&HF0D1D` | SAP_PLAY_* | SAP player registers |
+| `&HF0D10`-`&HF0D20` | SAP_PLAY_* | SAP player registers |
 
 ### 9.7 SID Registers (`&HF0E00`-`&HF0E2D`)
 

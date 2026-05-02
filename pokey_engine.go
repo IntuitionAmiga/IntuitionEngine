@@ -27,16 +27,18 @@ import (
 
 // POKEYEngine emulates the POKEY sound chip via register mapping to SoundChip
 type POKEYEngine struct {
-	mutex      sync.Mutex
-	sound      *SoundChip
-	sampleRate int
-	clockHz    uint32
+	mutex       sync.Mutex
+	sound       *SoundChip
+	sampleRate  int
+	clockHz     uint32
+	baseChannel int
 
 	regs [POKEY_REG_COUNT]uint8
 
-	enabled          bool
 	pokeyPlusEnabled bool
 	channelsInit     bool
+	right            *POKEYEngine
+	randomSR         uint32
 
 	// Pre-computed clock values for fast frequency calculation
 	clock179MHz float64 // Full clock rate (1.79MHz)
@@ -83,14 +85,38 @@ var pokeyPlusMixGain = [4]float32{1.03, 0.98, 1.02, 0.97}
 
 // NewPOKEYEngine creates a new POKEY emulation engine
 func NewPOKEYEngine(sound *SoundChip, sampleRate int) *POKEYEngine {
+	return NewPOKEYEngineMulti(sound, sampleRate, 0)
+}
+
+func NewPOKEYEngineMulti(sound *SoundChip, sampleRate int, baseChannel int) *POKEYEngine {
 	e := &POKEYEngine{
-		sound:      sound,
-		sampleRate: sampleRate,
-		clockHz:    POKEY_CLOCK_NTSC,
+		sound:       sound,
+		sampleRate:  sampleRate,
+		clockHz:     POKEY_CLOCK_NTSC,
+		baseChannel: baseChannel,
+		randomSR:    0x1FFFF,
 	}
 	// Pre-compute clock divisors for fast frequency calculation
 	e.updateClockDivisors()
 	return e
+}
+
+type pokeySyncState struct {
+	sound            *SoundChip
+	regs             [POKEY_REG_COUNT]uint8
+	pokeyPlusEnabled bool
+	baseChannel      int
+	initChannels     bool
+	clock179MHz      float64
+	clock64KHz       float64
+	clock15KHz       float64
+}
+
+func (e *POKEYEngine) setRight(right *POKEYEngine) {
+	if e.right != nil || right == nil || right == e || right.right != nil {
+		panic("invalid POKEY stereo right-engine assignment")
+	}
+	e.right = right
 }
 
 func (e *POKEYEngine) AttachBusMemory(mem []byte) {
@@ -124,6 +150,13 @@ func (e *POKEYEngine) HandleWrite(addr uint32, value uint32) {
 	e.WriteRegister(reg, uint8(value))
 }
 
+func (e *POKEYEngine) HandleWrite8(addr uint32, value uint8) {
+	if addr < POKEY_BASE || addr > POKEY_END {
+		return
+	}
+	e.WriteRegister(uint8(addr-POKEY_BASE), value)
+}
+
 // HandleRead processes a read from a POKEY register
 func (e *POKEYEngine) HandleRead(addr uint32) uint32 {
 	if addr < POKEY_BASE || addr > POKEY_END {
@@ -132,30 +165,60 @@ func (e *POKEYEngine) HandleRead(addr uint32) uint32 {
 	reg := uint8(addr - POKEY_BASE)
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
+	if reg == POKEY_RANDOM-POKEY_BASE {
+		return uint32(e.nextRandomLocked())
+	}
 	return uint32(e.regs[reg])
+}
+
+func (e *POKEYEngine) nextRandomLocked() uint8 {
+	if e.randomSR == 0 {
+		e.randomSR = 0x1FFFF
+	}
+	newBit := ((e.randomSR >> 0) ^ (e.randomSR >> 5)) & 1
+	e.randomSR = ((e.randomSR >> 1) | (newBit << 16)) & 0x1FFFF
+	return uint8(e.randomSR ^ (e.randomSR >> 8))
 }
 
 // WriteRegister writes a value to a POKEY register
 func (e *POKEYEngine) WriteRegister(reg uint8, value uint8) {
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
 
 	if reg >= POKEY_REG_COUNT {
+		e.mutex.Unlock()
+		return
+	}
+	if reg == POKEY_RANDOM-POKEY_BASE {
+		e.mutex.Unlock()
 		return
 	}
 
-	e.enabled = true
+	oldValue := e.regs[reg]
 	e.regs[reg] = value
-
-	// Handle POKEY+ control register
-	if reg == 9 { // POKEY_PLUS_CTRL offset
-		e.pokeyPlusEnabled = (value & 1) != 0
-		if e.sound != nil {
-			e.sound.SetPOKEYPlusEnabled(e.pokeyPlusEnabled)
-		}
+	if mem := e.busMemory; mem != nil {
+		mem[POKEY_BASE+uint32(reg)] = value
 	}
 
-	e.syncToChip()
+	var right *POKEYEngine
+	pokeyPlusChanged := false
+	if reg == POKEY_PLUS_CTRL-POKEY_BASE {
+		e.pokeyPlusEnabled = (value & 1) != 0
+		pokeyPlusChanged = true
+		right = e.right
+	}
+	state := e.snapshotSyncStateLocked()
+	e.mutex.Unlock()
+
+	if pokeyPlusChanged && state.sound != nil {
+		state.sound.SetPOKEYPlusEnabledForRange(state.baseChannel, 4, state.pokeyPlusEnabled)
+	}
+	if pokeyPlusChanged && right != nil {
+		right.SetPOKEYPlusEnabled(state.pokeyPlusEnabled)
+	}
+	applyPOKEYSyncState(state)
+	if reg < 8 && reg%2 == 0 && oldValue != value && state.sound != nil {
+		state.sound.RetriggerChannel(state.baseChannel + int(reg)/2)
+	}
 }
 
 // SetPOKEYPlusEnabled enables/disables POKEY+ enhanced mode
@@ -167,12 +230,18 @@ func (e *POKEYEngine) WriteRegister(reg uint8, value uint8) {
 // - Logarithmic volume curve
 func (e *POKEYEngine) SetPOKEYPlusEnabled(enabled bool) {
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
 	e.pokeyPlusEnabled = enabled
-	if e.sound != nil {
-		e.sound.SetPOKEYPlusEnabled(enabled)
+	right := e.right
+	state := e.snapshotSyncStateLocked()
+	e.mutex.Unlock()
+
+	if state.sound != nil {
+		state.sound.SetPOKEYPlusEnabledForRange(state.baseChannel, 4, enabled)
 	}
-	e.syncToChip()
+	if right != nil {
+		right.SetPOKEYPlusEnabled(enabled)
+	}
+	applyPOKEYSyncState(state)
 }
 
 // POKEYPlusEnabled returns whether POKEY+ mode is active
@@ -206,14 +275,243 @@ func (e *POKEYEngine) ensureChannelsInitialized() {
 
 // syncToChip updates the SoundChip based on current POKEY register state
 func (e *POKEYEngine) syncToChip() {
-	if e.sound == nil {
+	applyPOKEYSyncState(e.snapshotSyncStateLocked())
+}
+
+func (e *POKEYEngine) snapshotSyncStateLocked() pokeySyncState {
+	initChannels := false
+	if !e.channelsInit && e.sound != nil {
+		e.channelsInit = true
+		initChannels = true
+	}
+	return pokeySyncState{
+		sound:            e.sound,
+		regs:             e.regs,
+		pokeyPlusEnabled: e.pokeyPlusEnabled,
+		baseChannel:      e.baseChannel,
+		initChannels:     initChannels,
+		clock179MHz:      e.clock179MHz,
+		clock64KHz:       e.clock64KHz,
+		clock15KHz:       e.clock15KHz,
+	}
+}
+
+func applyPOKEYSyncState(s pokeySyncState) {
+	if s.sound == nil {
 		return
 	}
+	if s.initChannels {
+		for ch := range 4 {
+			writePOKEYChannel(s, ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
+			writePOKEYChannel(s, ch, FLEX_OFF_DUTY, 0x0080)
+			writePOKEYChannel(s, ch, FLEX_OFF_PWM_CTRL, 0)
+			writePOKEYChannel(s, ch, FLEX_OFF_ATK, 0)
+			writePOKEYChannel(s, ch, FLEX_OFF_DEC, 0)
+			writePOKEYChannel(s, ch, FLEX_OFF_SUS, 255)
+			writePOKEYChannel(s, ch, FLEX_OFF_REL, 0)
+			writePOKEYChannel(s, ch, FLEX_OFF_CTRL, 3)
+		}
+	}
+	applyPOKEYFrequencies(s)
+	applyPOKEYVolumes(s)
+	applyPOKEYDistortion(s)
+	applyPOKEYHighPassFilters(s)
+}
 
-	e.ensureChannelsInitialized()
-	e.applyFrequencies()
-	e.applyVolumes()
-	e.applyDistortion()
+func writePOKEYChannel(s pokeySyncState, ch int, offset uint32, value uint32) {
+	base := FLEX_CH_BASE + uint32(s.baseChannel+ch)*FLEX_CH_STRIDE
+	s.sound.HandleRegisterWrite(base+offset, value)
+}
+
+func calcPOKEYFrequency(s pokeySyncState, channel int) float64 {
+	if channel < 0 || channel > 3 {
+		return 0
+	}
+
+	audf := s.regs[channel*2]
+	audctl := s.regs[8]
+	var baseClock float64
+
+	switch channel {
+	case 0:
+		if (audctl & AUDCTL_CH2_BY_CH1) != 0 {
+			period := uint16(s.regs[0]) | (uint16(s.regs[2]) << 8)
+			if (audctl & AUDCTL_CH1_179MHZ) != 0 {
+				baseClock = s.clock179MHz
+			} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
+				baseClock = s.clock15KHz
+			} else {
+				baseClock = s.clock64KHz
+			}
+			return baseClock * 0.5 / float64(period+1)
+		}
+		if (audctl & AUDCTL_CH1_179MHZ) != 0 {
+			baseClock = s.clock179MHz
+		} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
+			baseClock = s.clock15KHz
+		} else {
+			baseClock = s.clock64KHz
+		}
+	case 1:
+		if (audctl & AUDCTL_CH2_BY_CH1) != 0 {
+			period := uint16(s.regs[0]) | (uint16(audf) << 8)
+			if (audctl & AUDCTL_CH1_179MHZ) != 0 {
+				baseClock = s.clock179MHz
+			} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
+				baseClock = s.clock15KHz
+			} else {
+				baseClock = s.clock64KHz
+			}
+			return baseClock * 0.5 / float64(period+1)
+		}
+		if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
+			baseClock = s.clock15KHz
+		} else {
+			baseClock = s.clock64KHz
+		}
+	case 2:
+		if (audctl & AUDCTL_CH4_BY_CH3) != 0 {
+			period := uint16(s.regs[4]) | (uint16(s.regs[6]) << 8)
+			if (audctl & AUDCTL_CH3_179MHZ) != 0 {
+				baseClock = s.clock179MHz
+			} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
+				baseClock = s.clock15KHz
+			} else {
+				baseClock = s.clock64KHz
+			}
+			return baseClock * 0.5 / float64(period+1)
+		}
+		if (audctl & AUDCTL_CH3_179MHZ) != 0 {
+			baseClock = s.clock179MHz
+		} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
+			baseClock = s.clock15KHz
+		} else {
+			baseClock = s.clock64KHz
+		}
+	case 3:
+		if (audctl & AUDCTL_CH4_BY_CH3) != 0 {
+			period := uint16(s.regs[4]) | (uint16(audf) << 8)
+			if (audctl & AUDCTL_CH3_179MHZ) != 0 {
+				baseClock = s.clock179MHz
+			} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
+				baseClock = s.clock15KHz
+			} else {
+				baseClock = s.clock64KHz
+			}
+			return baseClock * 0.5 / float64(period+1)
+		}
+		if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
+			baseClock = s.clock15KHz
+		} else {
+			baseClock = s.clock64KHz
+		}
+	}
+
+	return baseClock * 0.5 / float64(audf+1)
+}
+
+func applyPOKEYFrequencies(s pokeySyncState) {
+	audctl := s.regs[8]
+	for ch := range 4 {
+		if ch == 1 && (audctl&AUDCTL_CH2_BY_CH1) != 0 {
+			writePOKEYChannel(s, ch, FLEX_OFF_FREQ, 0)
+			writePOKEYChannel(s, ch, FLEX_OFF_VOL, 0)
+			continue
+		}
+		if ch == 3 && (audctl&AUDCTL_CH4_BY_CH3) != 0 {
+			writePOKEYChannel(s, ch, FLEX_OFF_FREQ, 0)
+			writePOKEYChannel(s, ch, FLEX_OFF_VOL, 0)
+			continue
+		}
+		freq := calcPOKEYFrequency(s, ch)
+		if freq > 0 && freq <= 20000 {
+			writePOKEYChannel(s, ch, FLEX_OFF_FREQ, uint32(freq*256))
+		} else {
+			writePOKEYChannel(s, ch, FLEX_OFF_FREQ, 0)
+		}
+	}
+}
+
+func applyPOKEYVolumes(s pokeySyncState) {
+	audctl := s.regs[8]
+	for ch := range 4 {
+		if ch == 1 && (audctl&AUDCTL_CH2_BY_CH1) != 0 {
+			writePOKEYChannel(s, ch, FLEX_OFF_VOL, 0)
+			continue
+		}
+		if ch == 3 && (audctl&AUDCTL_CH4_BY_CH3) != 0 {
+			writePOKEYChannel(s, ch, FLEX_OFF_VOL, 0)
+			continue
+		}
+		audc := s.regs[ch*2+1]
+		level := audc & AUDC_VOLUME_MASK
+		gain := pokeyVolumeGain(level, s.pokeyPlusEnabled)
+		writePOKEYChannel(s, ch, FLEX_OFF_VOL, uint32(pokeyGainToDAC(gain)))
+	}
+}
+
+func applyPOKEYDistortion(s pokeySyncState) {
+	audctl := s.regs[8]
+	for ch := range 4 {
+		audc := s.regs[ch*2+1]
+		distortion := (audc & AUDC_DISTORTION_MASK) >> AUDC_DISTORTION_SHIFT
+		volumeOnly := (audc & AUDC_VOLUME_ONLY) != 0
+
+		if volumeOnly {
+			writePOKEYChannel(s, ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
+			writePOKEYChannel(s, ch, FLEX_OFF_FREQ, 0)
+			continue
+		}
+
+		switch distortion {
+		case POKEY_DIST_PURE_TONE:
+			writePOKEYChannel(s, ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
+			writePOKEYChannel(s, ch, FLEX_OFF_NOISEMODE, NOISE_MODE_WHITE)
+		case POKEY_DIST_POLY17_PULSE:
+			writePOKEYChannel(s, ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
+			if (audctl & AUDCTL_POLY9) != 0 {
+				writePOKEYChannel(s, ch, FLEX_OFF_NOISEMODE, NOISE_MODE_PERIODIC)
+			} else {
+				writePOKEYChannel(s, ch, FLEX_OFF_NOISEMODE, NOISE_MODE_WHITE)
+			}
+		case POKEY_DIST_POLY17, POKEY_DIST_POLY17_POLY5, POKEY_DIST_POLY17_POLY4:
+			writePOKEYChannel(s, ch, FLEX_OFF_WAVE_TYPE, WAVE_NOISE)
+			if (audctl & AUDCTL_POLY9) != 0 {
+				writePOKEYChannel(s, ch, FLEX_OFF_NOISEMODE, NOISE_MODE_PERIODIC)
+			} else {
+				writePOKEYChannel(s, ch, FLEX_OFF_NOISEMODE, NOISE_MODE_WHITE)
+			}
+		case POKEY_DIST_POLY5, POKEY_DIST_POLY5_POLY4:
+			writePOKEYChannel(s, ch, FLEX_OFF_WAVE_TYPE, WAVE_NOISE)
+			writePOKEYChannel(s, ch, FLEX_OFF_NOISEMODE, NOISE_MODE_PERIODIC)
+		case POKEY_DIST_POLY4:
+			writePOKEYChannel(s, ch, FLEX_OFF_WAVE_TYPE, WAVE_NOISE)
+			writePOKEYChannel(s, ch, FLEX_OFF_NOISEMODE, NOISE_MODE_METALLIC)
+		default:
+			writePOKEYChannel(s, ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
+		}
+	}
+}
+
+func applyPOKEYHighPassFilters(s pokeySyncState) {
+	audctl := s.regs[8]
+	applyPOKEYHighPassFilter(s, 0, 2, (audctl&AUDCTL_HIPASS_CH1) != 0)
+	applyPOKEYHighPassFilter(s, 1, 3, (audctl&AUDCTL_HIPASS_CH2) != 0)
+}
+
+func applyPOKEYHighPassFilter(s pokeySyncState, targetCh, cutoffCh int, enabled bool) {
+	soundCh := s.baseChannel + targetCh
+	if !enabled {
+		s.sound.SetChannelFilter(soundCh, 0, 0, 0)
+		return
+	}
+	cutoff := float32(calcPOKEYFrequency(s, cutoffCh) / MAX_FILTER_FREQ)
+	if cutoff < 0 {
+		cutoff = 0
+	} else if cutoff > 1 {
+		cutoff = 1
+	}
+	s.sound.SetChannelFilter(soundCh, 0x04, cutoff, 0)
 }
 
 // calcFrequency calculates the output frequency for a channel
@@ -231,6 +529,17 @@ func (e *POKEYEngine) calcFrequency(channel int) float64 {
 	// Determine base clock for this channel using pre-computed divisors
 	switch channel {
 	case 0: // Channel 1
+		if (audctl & AUDCTL_CH2_BY_CH1) != 0 {
+			period := uint16(e.regs[0]) | (uint16(e.regs[2]) << 8)
+			if (audctl & AUDCTL_CH1_179MHZ) != 0 {
+				baseClock = e.clock179MHz
+			} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
+				baseClock = e.clock15KHz
+			} else {
+				baseClock = e.clock64KHz
+			}
+			return baseClock * 0.5 / float64(period+1)
+		}
 		if (audctl & AUDCTL_CH1_179MHZ) != 0 {
 			baseClock = e.clock179MHz
 		} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
@@ -250,9 +559,6 @@ func (e *POKEYEngine) calcFrequency(channel int) float64 {
 			} else {
 				baseClock = e.clock64KHz
 			}
-			if period == 0 {
-				return 0
-			}
 			return baseClock * 0.5 / float64(period+1)
 		}
 		if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
@@ -261,6 +567,17 @@ func (e *POKEYEngine) calcFrequency(channel int) float64 {
 			baseClock = e.clock64KHz
 		}
 	case 2: // Channel 3
+		if (audctl & AUDCTL_CH4_BY_CH3) != 0 {
+			period := uint16(e.regs[4]) | (uint16(e.regs[6]) << 8)
+			if (audctl & AUDCTL_CH3_179MHZ) != 0 {
+				baseClock = e.clock179MHz
+			} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
+				baseClock = e.clock15KHz
+			} else {
+				baseClock = e.clock64KHz
+			}
+			return baseClock * 0.5 / float64(period+1)
+		}
 		if (audctl & AUDCTL_CH3_179MHZ) != 0 {
 			baseClock = e.clock179MHz
 		} else if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
@@ -280,9 +597,6 @@ func (e *POKEYEngine) calcFrequency(channel int) float64 {
 			} else {
 				baseClock = e.clock64KHz
 			}
-			if period == 0 {
-				return 0
-			}
 			return baseClock * 0.5 / float64(period+1)
 		}
 		if (audctl & AUDCTL_CLOCK_15KHZ) != 0 {
@@ -290,10 +604,6 @@ func (e *POKEYEngine) calcFrequency(channel int) float64 {
 		} else {
 			baseClock = e.clock64KHz
 		}
-	}
-
-	if audf == 0 {
-		return 0
 	}
 
 	// Standard frequency calculation: baseClock / (2 * (AUDF + 1))
@@ -312,10 +622,12 @@ func (e *POKEYEngine) applyFrequencies() {
 	for ch := range 4 {
 		// Skip slave channels in 16-bit mode (they're driven by master)
 		if ch == 1 && (audctl&AUDCTL_CH2_BY_CH1) != 0 {
+			e.writeChannel(ch, FLEX_OFF_FREQ, 0)
 			e.writeChannel(ch, FLEX_OFF_VOL, 0) // Silence slave
 			continue
 		}
 		if ch == 3 && (audctl&AUDCTL_CH4_BY_CH3) != 0 {
+			e.writeChannel(ch, FLEX_OFF_FREQ, 0)
 			e.writeChannel(ch, FLEX_OFF_VOL, 0) // Silence slave
 			continue
 		}
@@ -335,7 +647,16 @@ func (e *POKEYEngine) applyVolumes() {
 		return
 	}
 
+	audctl := e.regs[8]
 	for ch := range 4 {
+		if ch == 1 && (audctl&AUDCTL_CH2_BY_CH1) != 0 {
+			e.writeChannel(ch, FLEX_OFF_VOL, 0)
+			continue
+		}
+		if ch == 3 && (audctl&AUDCTL_CH4_BY_CH3) != 0 {
+			e.writeChannel(ch, FLEX_OFF_VOL, 0)
+			continue
+		}
 		audc := e.regs[ch*2+1] // AUDCn register
 		level := audc & AUDC_VOLUME_MASK
 
@@ -350,6 +671,7 @@ func (e *POKEYEngine) applyDistortion() {
 		return
 	}
 
+	audctl := e.regs[8]
 	for ch := range 4 {
 		audc := e.regs[ch*2+1]
 		distortion := (audc & AUDC_DISTORTION_MASK) >> AUDC_DISTORTION_SHIFT
@@ -357,9 +679,8 @@ func (e *POKEYEngine) applyDistortion() {
 
 		if volumeOnly {
 			// Volume-only mode: DC output at volume level
-			// Use a very low frequency square wave to approximate DC
 			e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
-			e.writeChannel(ch, FLEX_OFF_FREQ, 256) // 1 Hz in 16.8 fixed-point
+			e.writeChannel(ch, FLEX_OFF_FREQ, 0)
 			continue
 		}
 
@@ -369,10 +690,20 @@ func (e *POKEYEngine) applyDistortion() {
 			// Pure square wave
 			e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
 			e.writeChannel(ch, FLEX_OFF_NOISEMODE, NOISE_MODE_WHITE)
-		case POKEY_DIST_POLY17, POKEY_DIST_POLY17_POLY5, POKEY_DIST_POLY17_POLY4, POKEY_DIST_POLY17_PULSE:
-			// White noise variants
+		case POKEY_DIST_POLY17_PULSE:
+			e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_SQUARE)
+			if (audctl & AUDCTL_POLY9) != 0 {
+				e.writeChannel(ch, FLEX_OFF_NOISEMODE, NOISE_MODE_PERIODIC)
+			} else {
+				e.writeChannel(ch, FLEX_OFF_NOISEMODE, NOISE_MODE_WHITE)
+			}
+		case POKEY_DIST_POLY17, POKEY_DIST_POLY17_POLY5, POKEY_DIST_POLY17_POLY4:
 			e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_NOISE)
-			e.writeChannel(ch, FLEX_OFF_NOISEMODE, NOISE_MODE_WHITE)
+			if (audctl & AUDCTL_POLY9) != 0 {
+				e.writeChannel(ch, FLEX_OFF_NOISEMODE, NOISE_MODE_PERIODIC)
+			} else {
+				e.writeChannel(ch, FLEX_OFF_NOISEMODE, NOISE_MODE_WHITE)
+			}
 		case POKEY_DIST_POLY5, POKEY_DIST_POLY5_POLY4:
 			// Periodic/buzzy noise
 			e.writeChannel(ch, FLEX_OFF_WAVE_TYPE, WAVE_NOISE)
@@ -387,12 +718,36 @@ func (e *POKEYEngine) applyDistortion() {
 	}
 }
 
+func (e *POKEYEngine) applyHighPassFilters() {
+	if e.sound == nil {
+		return
+	}
+	audctl := e.regs[8]
+	e.applyHighPassFilter(0, 2, (audctl&AUDCTL_HIPASS_CH1) != 0)
+	e.applyHighPassFilter(1, 3, (audctl&AUDCTL_HIPASS_CH2) != 0)
+}
+
+func (e *POKEYEngine) applyHighPassFilter(targetCh, cutoffCh int, enabled bool) {
+	soundCh := e.baseChannel + targetCh
+	if !enabled {
+		e.sound.SetChannelFilter(soundCh, 0, 0, 0)
+		return
+	}
+	cutoff := float32(e.calcFrequency(cutoffCh) / MAX_FILTER_FREQ)
+	if cutoff < 0 {
+		cutoff = 0
+	} else if cutoff > 1 {
+		cutoff = 1
+	}
+	e.sound.SetChannelFilter(soundCh, 0x04, cutoff, 0)
+}
+
 // writeChannel writes a value to a SoundChip channel register
 func (e *POKEYEngine) writeChannel(ch int, offset uint32, value uint32) {
 	if e.sound == nil {
 		return
 	}
-	base := FLEX_CH_BASE + uint32(ch)*FLEX_CH_STRIDE
+	base := FLEX_CH_BASE + uint32(e.baseChannel+ch)*FLEX_CH_STRIDE
 	e.sound.HandleRegisterWrite(base+offset, value)
 }
 
@@ -423,18 +778,37 @@ func pokeyGainToDAC(gain float32) uint8 {
 // Reset resets all POKEY state
 func (e *POKEYEngine) Reset() {
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
 
 	for i := range e.regs {
 		e.regs[i] = 0
 	}
 
-	e.enabled = false
 	e.channelsInit = false
+	e.pokeyPlusEnabled = false
+	e.randomSR = 0x1FFFF
+	sound := e.sound
+	baseChannel := e.baseChannel
 
 	// Reset playback state
+	e.events = nil
 	e.eventIndex = 0
 	e.currentSample = 0
+	e.totalSamples = 0
+	e.loop = false
+	e.loopSample = 0
+	e.forceLoop = false
+	e.playing.Store(false)
+	e.mutex.Unlock()
+
+	if sound != nil {
+		sound.SetPOKEYPlusEnabledForRange(baseChannel, 4, false)
+		for ch := range 4 {
+			base := FLEX_CH_BASE + uint32(baseChannel+ch)*FLEX_CH_STRIDE
+			sound.HandleRegisterWrite(base+FLEX_OFF_VOL, 0)
+			sound.HandleRegisterWrite(base+FLEX_OFF_FREQ, 0)
+			sound.HandleRegisterWrite(base+FLEX_OFF_CTRL, 0)
+		}
+	}
 }
 
 // SetEvents sets the POKEY events for playback (from SAP rendering)
@@ -454,10 +828,14 @@ func (e *POKEYEngine) SetEvents(events []SAPPOKEYEvent, totalSamples uint64, loo
 // SetPlaying starts or stops event-based playback
 func (e *POKEYEngine) SetPlaying(playing bool) {
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
 	e.playing.Store(playing)
+	var state pokeySyncState
 	if playing {
-		e.ensureChannelsInitialized()
+		state = e.snapshotSyncStateLocked()
+	}
+	e.mutex.Unlock()
+	if playing {
+		applyPOKEYSyncState(state)
 	}
 }
 
@@ -495,17 +873,16 @@ func (e *POKEYEngine) TickSample() {
 	}
 
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
 
 	if len(e.events) == 0 {
+		e.mutex.Unlock()
 		return
 	}
 
+	drained := make([]SAPPOKEYEvent, 0, 4)
 	// Process all events at current sample position
 	for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample <= e.currentSample {
-		ev := e.events[e.eventIndex]
-		// Apply POKEY register write (without locking - we already hold the lock)
-		e.writeRegisterLocked(ev.Reg, ev.Value)
+		drained = append(drained, e.events[e.eventIndex])
 		e.eventIndex++
 	}
 
@@ -525,16 +902,13 @@ func (e *POKEYEngine) TickSample() {
 			e.playing.Store(false)
 		}
 	}
-}
+	e.mutex.Unlock()
 
-// writeRegisterLocked writes a register without acquiring the lock (caller must hold lock)
-func (e *POKEYEngine) writeRegisterLocked(reg uint8, value uint8) {
-	if int(reg) >= len(e.regs) {
-		return
+	for _, ev := range drained {
+		if ev.Chip == 1 && e.right != nil {
+			e.right.WriteRegister(ev.Reg, ev.Value)
+			continue
+		}
+		e.WriteRegister(ev.Reg, ev.Value)
 	}
-	e.regs[reg] = value
-	if mem := e.busMemory; mem != nil {
-		mem[POKEY_BASE+uint32(reg)] = value
-	}
-	e.syncToChip() // Apply changes to SoundChip
 }

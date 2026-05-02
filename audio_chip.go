@@ -96,22 +96,23 @@ const (
 	FLEX_CH2_BASE = FLEX_CH_BASE + (FLEX_CH_STRIDE * 2)
 	FLEX_CH3_BASE = FLEX_CH_BASE + (FLEX_CH_STRIDE * 3)
 
-	FLEX_OFF_FREQ      = 0x00 // 16.8 fixed-point Hz (value / 256.0 = Hz)
-	FLEX_OFF_VOL       = 0x04
-	FLEX_OFF_CTRL      = 0x08
-	FLEX_OFF_DUTY      = 0x0C
-	FLEX_OFF_SWEEP     = 0x10
-	FLEX_OFF_ATK       = 0x14
-	FLEX_OFF_DEC       = 0x18
-	FLEX_OFF_SUS       = 0x1C
-	FLEX_OFF_REL       = 0x20
-	FLEX_OFF_WAVE_TYPE = 0x24
-	FLEX_OFF_PWM_CTRL  = 0x28
-	FLEX_OFF_NOISEMODE = 0x2C
-	FLEX_OFF_PHASE     = 0x30 // Reset phase position
-	FLEX_OFF_RINGMOD   = 0x34 // Ring modulation source (bit 7=enable, bits 0-2=source channel)
-	FLEX_OFF_SYNC      = 0x38 // Hard sync source (bit 7=enable, bits 0-2=source channel)
-	FLEX_OFF_DAC       = 0x3C // DAC mode: signed 8-bit sample value (bypasses waveform+envelope)
+	FLEX_OFF_FREQ        = 0x00 // 16.8 fixed-point Hz (value / 256.0 = Hz)
+	FLEX_OFF_VOL         = 0x04
+	FLEX_OFF_CTRL        = 0x08
+	FLEX_OFF_DUTY        = 0x0C
+	FLEX_OFF_SWEEP       = 0x10
+	FLEX_OFF_ATK         = 0x14
+	FLEX_OFF_DEC         = 0x18
+	FLEX_OFF_SUS         = 0x1C
+	FLEX_OFF_REL         = 0x20
+	FLEX_OFF_WAVE_TYPE   = 0x24
+	FLEX_OFF_PWM_CTRL    = 0x28
+	FLEX_OFF_NOISEMODE   = 0x2C
+	FLEX_OFF_PHASE       = 0x30 // Reset phase position
+	FLEX_OFF_PHASE_RESET = FLEX_OFF_PHASE
+	FLEX_OFF_RINGMOD     = 0x34 // Ring modulation source (bit 7=enable, bits 0-2=source channel)
+	FLEX_OFF_SYNC        = 0x38 // Hard sync source (bit 7=enable, bits 0-2=source channel)
+	FLEX_OFF_DAC         = 0x3C // DAC mode: signed 8-bit sample value (bypasses waveform+envelope)
 )
 
 // ------------------------------------------------------------------------------
@@ -1494,7 +1495,7 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 	case FLEX_OFF_NOISEMODE:
 		ch.noiseMode = int(value % NUM_NOISE_MODES)
 	case FLEX_OFF_PHASE:
-		ch.phase = 0 // Reset phase to start of waveform
+		chip.retriggerChannelLocked(int(chIndex))
 	case FLEX_OFF_RINGMOD:
 		if value&0x80 != 0 {
 			srcCh := int(value & 0x0F)
@@ -3245,10 +3246,18 @@ func (chip *SoundChip) SetChannelSIDRateCounter(ch int, enabled bool, sampleRate
 }
 
 func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
+	chip.SetPOKEYPlusEnabledForRange(0, 4, enabled)
+}
+
+func (chip *SoundChip) SetPOKEYPlusEnabledForRange(startCh, count int, enabled bool) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
-	for i := range NUM_CHANNELS {
+	for n := range count {
+		i := startCh + n
+		if i < 0 || i >= NUM_CHANNELS {
+			continue
+		}
 		ch := chip.channels[i]
 		if ch == nil {
 			continue
@@ -3273,8 +3282,9 @@ func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
 					ch.pokeyPlusRoomBuf[j] = 0
 				}
 			}
-			if i < len(pokeyPlusMixGain) {
-				ch.pokeyPlusGain = pokeyPlusMixGain[i]
+			voiceIdx := n % len(pokeyPlusMixGain)
+			if voiceIdx < len(pokeyPlusMixGain) {
+				ch.pokeyPlusGain = pokeyPlusMixGain[voiceIdx]
 			} else {
 				ch.pokeyPlusGain = 1.0
 			}
@@ -3288,6 +3298,24 @@ func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
 			}
 		}
 	}
+}
+
+func (chip *SoundChip) RetriggerChannel(ch int) {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	chip.retriggerChannelLocked(ch)
+}
+
+func (chip *SoundChip) retriggerChannelLocked(ch int) {
+	if ch < 0 || ch >= NUM_CHANNELS || chip.channels[ch] == nil {
+		return
+	}
+	channel := chip.channels[ch]
+	channel.phase = 0
+	channel.noisePhase = 0
+	channel.noiseSR = NOISE_LFSR_SEED
+	channel.phaseWrapped = false
+	channel.phaseMSB = false
 }
 
 func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {

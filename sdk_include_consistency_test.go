@@ -118,6 +118,48 @@ func TestSDKInclude_32BitConstantParity(t *testing.T) {
 	}
 }
 
+func TestSDKInclude_IE86POKEYPortBaseMatchesRuntime(t *testing.T) {
+	vals := parseIncConstants(t, filepath.Join("sdk", "include", "ie86.inc"))
+	got, ok := vals["POKEY_PORT_BASE"]
+	if !ok {
+		t.Fatal("sdk/include/ie86.inc: missing POKEY_PORT_BASE")
+	}
+	if got != X86_PORT_POKEY_BASE {
+		t.Fatalf("sdk/include/ie86.inc: POKEY_PORT_BASE got 0x%X want 0x%X", got, X86_PORT_POKEY_BASE)
+	}
+
+	b, err := os.ReadFile(filepath.Join("sdk", "include", "ie86.inc"))
+	if err != nil {
+		t.Fatalf("read sdk/include/ie86.inc: %v", err)
+	}
+	s := string(b)
+	if strings.Contains(s, "register offset (0-15)") {
+		t.Fatal("sdk/include/ie86.inc: pokey_write documents stale 0-15 register range")
+	}
+	if !strings.Contains(s, "writable register offset (0-9)") {
+		t.Fatal("sdk/include/ie86.inc: pokey_write missing current 0-9 register range")
+	}
+}
+
+func TestDocs_X86POKEYPortsMatchRuntime(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("sdk", "docs", "architecture.md"),
+		filepath.Join("sdk", "docs", "include-files.md"),
+	} {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		s := string(b)
+		if strings.Contains(s, "$D0-$D3") || strings.Contains(s, "$D8-$DF") || strings.Contains(s, "0xD0`-`0xDF") {
+			t.Fatalf("%s: stale x86 POKEY port range present", path)
+		}
+		if !strings.Contains(s, "0x60") && !strings.Contains(s, "$60-$69") {
+			t.Fatalf("%s: missing current x86 POKEY port range", path)
+		}
+	}
+}
+
 func TestSDKInclude_SN8BitAliases(t *testing.T) {
 	ie65 := parseIncConstants(t, filepath.Join("sdk", "include", "ie65.inc"))
 	for key, want := range map[string]uint32{

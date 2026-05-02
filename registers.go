@@ -39,7 +39,7 @@ Address Range       Size    Device              Constants File
 0xF0BC0-0xF0BD7     24B     MOD Player          mod_constants.go
 0xF0BD8-0xF0BEB     20B     WAV Player          wav_constants.go
 0xF0C00-0xF0C20     33B     PSG (AY-3-8910/YM2149) psg_constants.go
-0xF0D00-0xF0D1D     29B     POKEY               pokey_constants.go
+0xF0D00-0xF0D20     33B     POKEY               pokey_constants.go
 0xF0E00-0xF0E2D     45B     SID (6581/8580)     sid_constants.go
 0xF0F00-0xF0F5F     96B     TED (audio+video)   ted_constants.go, ted_video_constants.go
 0xF1000-0xF13FF     1KB     VGA Registers       vga_constants.go
@@ -84,7 +84,7 @@ PSG - AY-3-8910/YM2149 (0xF0C00-0xF0C20) - psg_constants.go
   PSG_PLUS_CTRL
   PSG_PLAY_* (Player registers)
 
-POKEY (0xF0D00-0xF0D1D) - pokey_constants.go
+POKEY (0xF0D00-0xF0D20) - pokey_constants.go
   POKEY_AUDF1-4, POKEY_AUDC1-4, POKEY_AUDCTL
   SAP_PLAY_* (SAP player registers)
 
@@ -175,7 +175,7 @@ const (
 
 	// POKEY region
 	POKEY_REGION_BASE = 0xF0D00
-	POKEY_REGION_END  = 0xF0D1D
+	POKEY_REGION_END  = 0xF0D20
 
 	// SID region (6581/8580)
 	SID_REGION_BASE = 0xF0E00

@@ -3,7 +3,7 @@
 
 package main
 
-// POKEY register addresses (memory-mapped at 0xF0D00-0xF0D09)
+// POKEY register addresses (memory-mapped at 0xF0D00-0xF0D0A)
 const (
 	POKEY_BASE      = 0xF0D00
 	POKEY_AUDF1     = 0xF0D00 // Channel 1 frequency divider
@@ -16,9 +16,11 @@ const (
 	POKEY_AUDC4     = 0xF0D07 // Channel 4 control
 	POKEY_AUDCTL    = 0xF0D08 // Master audio control
 	POKEY_PLUS_CTRL = 0xF0D09 // POKEY+ mode enable (0=standard, 1=enhanced)
-	POKEY_END       = 0xF0D09
+	POKEY_RANDOM    = 0xF0D0A // Readable polynomial/RNG tap
+	POKEY_END       = 0xF0D0A
 
-	POKEY_REG_COUNT = 10
+	POKEY_WRITABLE_REG_COUNT = 10
+	POKEY_REG_COUNT          = 11
 )
 
 // POKEY clock frequencies
@@ -76,15 +78,15 @@ const (
 // Maps $D200-$D209 to POKEY registers 0-9
 const (
 	C6502_POKEY_BASE = 0xD200
-	C6502_POKEY_END  = 0xD209
+	C6502_POKEY_END  = 0xD20A
 )
 
-// SAP Player registers (memory-mapped at 0xF0D10-0xF0D1C)
+// SAP Player registers (memory-mapped at 0xF0D10-0xF0D20)
 // Used to load and play .sap files with embedded 6502 code
 const (
 	SAP_PLAY_PTR    = 0xF0D10 // 32-bit pointer to SAP data (little-endian)
 	SAP_PLAY_LEN    = 0xF0D14 // 32-bit length of SAP data (little-endian)
 	SAP_PLAY_CTRL   = 0xF0D18 // Control: bit 0=start, bit 1=stop, bit 2=loop
 	SAP_PLAY_STATUS = 0xF0D1C // Status: bit 0=busy, bit 1=error
-	SAP_SUBSONG     = 0xF0D1D // Subsong selection (0-255)
+	SAP_SUBSONG     = 0xF0D20 // Subsong selection (0-255)
 )

@@ -269,11 +269,12 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"AUDC4", 0xF0D07, 1, "RW"},
 			{"AUDCTL", 0xF0D08, 1, "RW"},
 			{"PLUS_CTRL", 0xF0D09, 1, "RW"},
+			{"RANDOM", 0xF0D0A, 1, "RO"},
 			{"PLAY_PTR", 0xF0D10, 4, "RW"},
 			{"PLAY_LEN", 0xF0D14, 4, "RW"},
 			{"PLAY_CTRL", 0xF0D18, 4, "RW"},
 			{"PLAY_STATUS", 0xF0D1C, 4, "RO"},
-			{"SAP_SUBSONG", 0xF0D1D, 1, "RW"},
+			{"SAP_SUBSONG", 0xF0D20, 1, "RW"},
 		},
 	},
 	"sid": {

@@ -14,6 +14,7 @@ import (
 // POKEYPlayer handles SAP file playback
 type POKEYPlayer struct {
 	engine   *POKEYEngine
+	right    *POKEYEngine
 	bus      Bus32
 	metadata SAPMetadata
 
@@ -25,6 +26,7 @@ type POKEYPlayer struct {
 	playBusy      bool
 	playErr       bool
 	forceLoop     bool
+	subsong       uint8
 	playGen       uint64
 
 	mu sync.Mutex
@@ -73,9 +75,11 @@ func (p *POKEYPlayer) LoadDataWithSubsong(data []byte, subsong int) error {
 	p.renderInstructions = instrCount
 	p.renderCPU = "6502"
 	p.renderExecNanos = execNanos
+	p.configureStereo(meta.Stereo)
 
 	// Set POKEY clock and events
 	p.engine.SetClockHz(clockHz)
+	p.syncStereoClock()
 	p.engine.SetEvents(events, totalSamples, loop, loopSample)
 
 	return nil
@@ -93,6 +97,7 @@ func (p *POKEYPlayer) Stop() {
 	p.playBusy = false
 	p.mu.Unlock()
 	p.engine.StopPlayback()
+	p.releaseStereo()
 }
 
 // IsPlaying returns true if playback is active
@@ -158,6 +163,8 @@ func (p *POKEYPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 1)
 	case SAP_PLAY_LEN + 2:
 		p.playLenStaged = writeUint32Word(p.playLenStaged, value, 2)
+	case SAP_SUBSONG:
+		p.subsong = uint8(value)
 	case SAP_PLAY_LEN + 3:
 		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 3)
 	case SAP_PLAY_CTRL:
@@ -200,6 +207,7 @@ func (p *POKEYPlayer) HandlePlayWrite(addr uint32, value uint32) {
 			gen:       p.playGen,
 			data:      data,
 			forceLoop: p.forceLoop,
+			subsong:   int(p.subsong),
 		}
 	default:
 		break
@@ -218,11 +226,12 @@ type pokeyAsyncStartRequest struct {
 	gen       uint64
 	data      []byte
 	forceLoop bool
+	subsong   int
 }
 
 func (p *POKEYPlayer) startAsync(req pokeyAsyncStartRequest) {
 	meta, events, totalSamples, clockHz, _, loop, loopSample, instrCount, execNanos, err := renderSAPWithLimit(
-		req.data, SAMPLE_RATE, 0, 0,
+		req.data, SAMPLE_RATE, 0, req.subsong,
 	)
 
 	p.mu.Lock()
@@ -242,9 +251,11 @@ func (p *POKEYPlayer) startAsync(req pokeyAsyncStartRequest) {
 	p.renderInstructions = instrCount
 	p.renderCPU = "6502"
 	p.renderExecNanos = execNanos
+	p.configureStereo(meta.Stereo)
 
 	p.engine.StopPlayback()
 	p.engine.SetClockHz(clockHz)
+	p.syncStereoClock()
 	p.engine.SetEvents(events, totalSamples, loop, loopSample)
 	if req.forceLoop {
 		p.engine.SetForceLoop(true)
@@ -253,6 +264,103 @@ func (p *POKEYPlayer) startAsync(req pokeyAsyncStartRequest) {
 		p.engine.sound.SetSampleTicker(p.engine)
 	}
 	p.engine.SetPlaying(true)
+}
+
+func (p *POKEYPlayer) configureStereo(stereo bool) {
+	if p.engine == nil {
+		return
+	}
+	if !stereo {
+		p.releaseStereo()
+		return
+	}
+	if p.right == nil {
+		p.right = NewPOKEYEngineMulti(p.engine.sound, p.engine.sampleRate, 4)
+	}
+	if p.engine.right == nil {
+		p.engine.setRight(p.right)
+	}
+}
+
+func (p *POKEYPlayer) syncStereoClock() {
+	if p.engine == nil || p.right == nil {
+		return
+	}
+	p.right.SetClockHz(p.engine.clockHz)
+}
+
+func (p *POKEYPlayer) releaseStereo() {
+	if p.engine != nil {
+		p.engine.right = nil
+	}
+	if p.right != nil {
+		p.right.Reset()
+	}
+	p.restoreSharedStereoBank()
+}
+
+func (p *POKEYPlayer) restoreSharedStereoBank() {
+	if p.engine == nil || p.engine.sound == nil {
+		return
+	}
+	sound := p.engine.sound
+	sound.mu.Lock()
+	defer sound.mu.Unlock()
+	waveTypes := [NUM_CHANNELS]int{
+		WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE, WAVE_NOISE,
+		WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE,
+		WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SINE,
+	}
+	for ch := 4; ch < 8 && ch < NUM_CHANNELS; ch++ {
+		c := sound.channels[ch]
+		if c == nil {
+			continue
+		}
+		c.waveType = waveTypes[ch]
+		c.frequency = 0
+		c.volume = MIN_VOLUME
+		c.phase = MIN_PHASE
+		c.noisePhase = 0
+		c.noiseSR = NOISE_LFSR_SEED
+		c.enabled = false
+		c.gate = false
+		c.dutyCycle = DEFAULT_DUTY_CYCLE
+		c.pokeyPlusEnabled = false
+		c.pokeyPlusOversample = 1
+		c.pokeyPlusGain = 1.0
+		c.filterModeMask = 0
+		c.filterType = 0
+	}
+}
+
+func (p *POKEYPlayer) HandlePlayWrite8(addr uint32, value uint8) {
+	p.mu.Lock()
+
+	switch addr {
+	case SAP_PLAY_PTR:
+		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, uint32(value), 0)
+	case SAP_PLAY_PTR + 1:
+		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, uint32(value), 1)
+	case SAP_PLAY_PTR + 2:
+		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, uint32(value), 2)
+	case SAP_PLAY_PTR + 3:
+		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, uint32(value), 3)
+	case SAP_PLAY_LEN:
+		p.playLenStaged = writeUint32Byte(p.playLenStaged, uint32(value), 0)
+	case SAP_PLAY_LEN + 1:
+		p.playLenStaged = writeUint32Byte(p.playLenStaged, uint32(value), 1)
+	case SAP_PLAY_LEN + 2:
+		p.playLenStaged = writeUint32Byte(p.playLenStaged, uint32(value), 2)
+	case SAP_PLAY_LEN + 3:
+		p.playLenStaged = writeUint32Byte(p.playLenStaged, uint32(value), 3)
+	case SAP_SUBSONG:
+		p.subsong = value
+	default:
+		p.mu.Unlock()
+		p.HandlePlayWrite(addr, uint32(value))
+		return
+	}
+	p.mu.Unlock()
 }
 
 // HandlePlayRead handles reads from SAP_PLAY_* registers
@@ -269,6 +377,8 @@ func (p *POKEYPlayer) HandlePlayRead(addr uint32) uint32 {
 		return p.playCtrlStatus()
 	case SAP_PLAY_STATUS:
 		return p.playStatus()
+	case SAP_SUBSONG:
+		return uint32(p.subsong)
 	case SAP_PLAY_PTR + 1:
 		return readUint32Byte(p.playPtrStaged, 1)
 	case SAP_PLAY_PTR + 2:
