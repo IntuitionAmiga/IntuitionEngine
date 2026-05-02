@@ -45,19 +45,6 @@ const (
 	X86_PORT_POKEY_BASE = 0xD0 // 0xD0-0xDF for POKEY
 	X86_PORT_TED_SELECT = 0xF2
 	X86_PORT_TED_DATA   = 0xF3
-
-	// Standard VGA I/O ports
-	X86_PORT_VGA_SEQ_INDEX  = 0x3C4
-	X86_PORT_VGA_SEQ_DATA   = 0x3C5
-	X86_PORT_VGA_DAC_MASK   = 0x3C6
-	X86_PORT_VGA_DAC_RINDEX = 0x3C7
-	X86_PORT_VGA_DAC_WINDEX = 0x3C8
-	X86_PORT_VGA_DAC_DATA   = 0x3C9
-	X86_PORT_VGA_GC_INDEX   = 0x3CE
-	X86_PORT_VGA_GC_DATA    = 0x3CF
-	X86_PORT_VGA_CRTC_INDEX = 0x3D4
-	X86_PORT_VGA_CRTC_DATA  = 0x3D5
-	X86_PORT_VGA_STATUS     = 0x3DA
 )
 
 // CPUX86Config holds configuration for the x86 runner
@@ -389,39 +376,6 @@ func (b *X86BusAdapter) In(port uint16) byte {
 		return b.bus.Read8(ULA_BORDER) & 0x07
 	}
 
-	// Standard VGA ports
-	if b.vgaEngine != nil {
-		switch port {
-		case X86_PORT_VGA_SEQ_INDEX:
-			return b.vgaEngine.seqIndex
-		case X86_PORT_VGA_SEQ_DATA:
-			if b.vgaEngine.seqIndex < 8 {
-				return b.vgaEngine.seqRegs[b.vgaEngine.seqIndex]
-			}
-		case X86_PORT_VGA_DAC_MASK:
-			return b.vgaEngine.dacMask
-		case X86_PORT_VGA_GC_INDEX:
-			return b.vgaEngine.gcIndex
-		case X86_PORT_VGA_GC_DATA:
-			if b.vgaEngine.gcIndex < 16 {
-				return b.vgaEngine.gcRegs[b.vgaEngine.gcIndex]
-			}
-		case X86_PORT_VGA_CRTC_INDEX:
-			return b.vgaEngine.crtcIndex
-		case X86_PORT_VGA_CRTC_DATA:
-			if b.vgaEngine.crtcIndex < 32 {
-				return b.vgaEngine.crtcRegs[b.vgaEngine.crtcIndex]
-			}
-		case X86_PORT_VGA_STATUS:
-			// Return VSync status
-			status := byte(0)
-			if b.vgaEngine.vsync.Load() {
-				status |= 0x08 // Vertical retrace
-			}
-			return status
-		}
-	}
-
 	// Voodoo port I/O (0xB0-0xB7)
 	if b.voodooEngine != nil {
 		switch port {
@@ -525,49 +479,6 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 	if port == Z80_ULA_PORT {
 		b.bus.Write8(ULA_BORDER, value&0x07)
 		return
-	}
-
-	// Standard VGA ports
-	if b.vgaEngine != nil {
-		switch port {
-		case X86_PORT_VGA_SEQ_INDEX:
-			b.vgaEngine.seqIndex = value
-		case X86_PORT_VGA_SEQ_DATA:
-			if b.vgaEngine.seqIndex < 8 {
-				b.vgaEngine.seqRegs[b.vgaEngine.seqIndex] = value
-			}
-		case X86_PORT_VGA_DAC_MASK:
-			b.vgaEngine.dacMask = value
-		case X86_PORT_VGA_DAC_RINDEX:
-			b.vgaEngine.dacReadIndex = value
-			b.vgaEngine.dacReadPhase = 0
-		case X86_PORT_VGA_DAC_WINDEX:
-			b.vgaEngine.dacWriteIndex = value
-			b.vgaEngine.dacWritePhase = 0
-		case X86_PORT_VGA_DAC_DATA:
-			// Write R, G, B in sequence
-			idx := int(b.vgaEngine.dacWriteIndex) * 3
-			if idx+int(b.vgaEngine.dacWritePhase) < len(b.vgaEngine.palette) {
-				b.vgaEngine.palette[idx+int(b.vgaEngine.dacWritePhase)] = value
-			}
-			b.vgaEngine.dacWritePhase++
-			if b.vgaEngine.dacWritePhase >= 3 {
-				b.vgaEngine.dacWritePhase = 0
-				b.vgaEngine.dacWriteIndex++
-			}
-		case X86_PORT_VGA_GC_INDEX:
-			b.vgaEngine.gcIndex = value
-		case X86_PORT_VGA_GC_DATA:
-			if b.vgaEngine.gcIndex < 16 {
-				b.vgaEngine.gcRegs[b.vgaEngine.gcIndex] = value
-			}
-		case X86_PORT_VGA_CRTC_INDEX:
-			b.vgaEngine.crtcIndex = value
-		case X86_PORT_VGA_CRTC_DATA:
-			if b.vgaEngine.crtcIndex < 32 {
-				b.vgaEngine.crtcRegs[b.vgaEngine.crtcIndex] = value
-			}
-		}
 	}
 
 	// Voodoo port I/O (0xB0-0xB7)

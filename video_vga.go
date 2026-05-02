@@ -81,9 +81,12 @@ type VGAEngine struct {
 	dacWritePhase uint8 // 0=R, 1=G, 2=B
 	dacReadPhase  uint8
 	dacMask       uint8
+	dacMaskAtomic atomic.Uint32
 
 	// Palette (256 entries x 3 components, 6-bit values)
 	palette [VGA_PALETTE_SIZE * 3]uint8
+	// Renderers read a copy-on-write RGBA8888 snapshot without taking v.mu.
+	paletteSnapshot atomic.Pointer[[VGA_PALETTE_SIZE]uint32]
 
 	// Sequencer registers
 	seqIndex uint8
@@ -100,7 +103,6 @@ type VGAEngine struct {
 	// Attribute Controller registers
 	attrIndex uint8
 	attrRegs  [VGA_ATTR_REG_COUNT]uint8
-	attrFlip  bool // Index/data flip-flop
 
 	// VRAM (4 planes x 64KB for planar modes)
 	vram [VGA_PLANE_COUNT][VGA_PLANE_SIZE]uint8
@@ -110,12 +112,6 @@ type VGAEngine struct {
 
 	// Latches for planar reads
 	latch [4]uint8
-
-	// Pre-expanded RGBA palette cache (256 entries, 4 bytes each: R, G, B, A)
-	// Invalidated on any palette write, rebuilt on first read after invalidation
-	paletteRGBA  [256][4]uint8
-	paletteU32   [256]uint32 // Packed LE uint32 for direct framebuffer stores
-	paletteDirty bool        // True when palette cache needs rebuilding
 
 	// Pre-allocated framebuffers for each mode to avoid per-frame allocation
 	frameBuffer13h []uint8 // 320x200x4 = 256,000 bytes
@@ -130,6 +126,7 @@ type VGAEngine struct {
 	// VSync state
 	vsync      atomic.Bool
 	frameStart atomic.Int64 // Unix nano timestamp of frame start for time-based vsync
+	frameCount atomic.Uint64
 
 	// Lock-free enable flag
 	enabled atomic.Bool
@@ -157,11 +154,11 @@ type VGAEngine struct {
 // NewVGAEngine creates a new VGA engine instance as a standalone video device
 func NewVGAEngine(bus *MachineBus) *VGAEngine {
 	vga := &VGAEngine{
-		bus:          bus,
-		layer:        VGA_LAYER, // VGA renders on top
-		dacMask:      0xFF,      // Default: all bits enabled
-		paletteDirty: true,      // Force initial cache build
+		bus:     bus,
+		layer:   VGA_LAYER, // VGA renders on top
+		dacMask: 0xFF,      // Default: all bits enabled
 	}
+	vga.dacMaskAtomic.Store(0xFF)
 
 	// Initialize sequencer defaults
 	vga.seqRegs[VGA_SEQ_MAPMASK_R] = 0x0F                 // All planes enabled
@@ -169,9 +166,11 @@ func NewVGAEngine(bus *MachineBus) *VGAEngine {
 
 	// Initialize GC defaults
 	vga.gcRegs[VGA_GC_BITMASK_R] = 0xFF // All bits enabled
+	vga.initDefaultAttrRegs()
 
 	// Initialize default VGA palette (standard 16-color + grayscale)
 	vga.initDefaultPalette()
+	vga.storeFullPaletteSnapshotLocked()
 
 	// Initialize triple buffers for lock-free GetFrame (largest mode: 640x480)
 	bufSize := VGA_MODE12H_WIDTH * VGA_MODE12H_HEIGHT * 4
@@ -183,6 +182,13 @@ func NewVGAEngine(bus *MachineBus) *VGAEngine {
 	vga.readingIdx = 2
 
 	return vga
+}
+
+func (v *VGAEngine) initDefaultAttrRegs() {
+	for i := 0; i < 16; i++ {
+		v.attrRegs[VGA_ATTR_PALETTE_BASE+i] = uint8(i)
+	}
+	v.attrRegs[VGA_ATTR_PLANE_EN] = 0x0F
 }
 
 // initDefaultPalette sets up the standard VGA 256-color palette
@@ -235,8 +241,49 @@ func (v *VGAEngine) initDefaultPalette() {
 		idx++
 	}
 
-	// Mark palette cache as dirty to force rebuild on first use
-	v.paletteDirty = true
+}
+
+func (v *VGAEngine) packedPaletteEntryLocked(index int) uint32 {
+	idx := index * 3
+	r := v.Expand6BitTo8Bit(v.palette[idx])
+	g := v.Expand6BitTo8Bit(v.palette[idx+1])
+	b := v.Expand6BitTo8Bit(v.palette[idx+2])
+	return uint32(r) | uint32(g)<<8 | uint32(b)<<16 | 0xFF000000
+}
+
+func (v *VGAEngine) storeFullPaletteSnapshotLocked() {
+	snap := new([VGA_PALETTE_SIZE]uint32)
+	for i := range snap {
+		snap[i] = v.packedPaletteEntryLocked(i)
+	}
+	v.paletteSnapshot.Store(snap)
+}
+
+func (v *VGAEngine) updatePaletteSnapshotEntryLocked(index int) {
+	old := v.paletteSnapshot.Load()
+	if old == nil {
+		v.storeFullPaletteSnapshotLocked()
+		return
+	}
+	snap := new([VGA_PALETTE_SIZE]uint32)
+	*snap = *old
+	snap[index&0xFF] = v.packedPaletteEntryLocked(index & 0xFF)
+	v.paletteSnapshot.Store(snap)
+}
+
+func (v *VGAEngine) currentPaletteSnapshot() *[VGA_PALETTE_SIZE]uint32 {
+	snap := v.paletteSnapshot.Load()
+	if snap != nil {
+		return snap
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	snap = v.paletteSnapshot.Load()
+	if snap == nil {
+		v.storeFullPaletteSnapshotLocked()
+		snap = v.paletteSnapshot.Load()
+	}
+	return snap
 }
 
 // HandleRead handles register reads
@@ -266,9 +313,14 @@ func (v *VGAEngine) HandleRead(addr uint32) uint32 {
 		// VSync active during last 10% of frame period (~1.6ms at 60Hz)
 		// Also respect explicit SetVSync() calls from compositor/tests
 		inVSync := elapsed >= (VGA_REFRESH_INTERVAL*9/10) || v.vsync.Load()
-		status := v.status &^ (VGA_STATUS_VSYNC | VGA_STATUS_RETRACE)
+		status := v.status &^ (VGA_STATUS_VSYNC | VGA_STATUS_HSYNC | VGA_STATUS_RETRACE)
 		if inVSync {
 			status |= VGA_STATUS_VSYNC | VGA_STATUS_RETRACE
+		}
+		// Approximate hsync on a new ABI bit; bit 0 and bit 3 remain vsync/retrace.
+		lineNs := int64(VGA_REFRESH_INTERVAL) / int64(VGA_MODE12H_HEIGHT)
+		if lineNs > 0 && (now/lineNs)&1 == 1 {
+			status |= VGA_STATUS_HSYNC
 		}
 		return uint32(status)
 	case VGA_CTRL:
@@ -401,6 +453,7 @@ func (v *VGAEngine) HandleWrite(addr uint32, value uint32) {
 	// DAC
 	case VGA_DAC_MASK:
 		v.dacMask = uint8(value)
+		v.dacMaskAtomic.Store(uint32(uint8(value)))
 	case VGA_DAC_RINDEX:
 		v.dacReadIndex = uint8(value)
 		v.dacReadPhase = 0
@@ -415,8 +468,8 @@ func (v *VGAEngine) HandleWrite(addr uint32, value uint32) {
 	if addr >= VGA_PALETTE && addr <= VGA_PALETTE_END {
 		offset := addr - VGA_PALETTE
 		if offset < VGA_PALETTE_BYTES {
-			v.palette[offset] = uint8(value)
-			v.paletteDirty = true // Invalidate cache on any palette write
+			v.palette[offset] = uint8(value) & 0x3F
+			v.updatePaletteSnapshotEntryLocked(int(offset / 3))
 		}
 	}
 }
@@ -455,11 +508,11 @@ func (v *VGAEngine) writeDACData(value uint8) {
 	idx := int(v.dacWriteIndex)*3 + int(v.dacWritePhase)
 	if idx < len(v.palette) {
 		v.palette[idx] = value
-		v.paletteDirty = true // Invalidate cache on any palette write
 	}
 
 	v.dacWritePhase++
 	if v.dacWritePhase >= 3 {
+		v.updatePaletteSnapshotEntryLocked(int(v.dacWriteIndex))
 		v.dacWritePhase = 0
 		v.dacWriteIndex++
 	}
@@ -510,6 +563,30 @@ func (v *VGAEngine) HandleVRAMRead(addr uint32) uint32 {
 			}
 		}
 
+		if v.gcRegs[VGA_GC_MODE]&VGA_GC_MODE_READ_MODE != 0 {
+			colorCompare := v.gcRegs[VGA_GC_COLOR_CMP] & 0x0F
+			colorDontCare := v.gcRegs[VGA_GC_COLOR_DONT] & 0x0F
+			var result uint8
+			for bit := 0; bit < 8; bit++ {
+				matches := true
+				for p := 0; p < 4; p++ {
+					if colorDontCare&(1<<p) == 0 {
+						continue
+					}
+					planeBit := (v.latch[p] >> uint(bit)) & 1
+					cmpBit := (colorCompare >> uint(p)) & 1
+					if planeBit != cmpBit {
+						matches = false
+						break
+					}
+				}
+				if matches {
+					result |= 1 << uint(bit)
+				}
+			}
+			return uint32(result)
+		}
+
 		if offset < VGA_PLANE_SIZE {
 			return uint32(v.vram[plane][offset])
 		}
@@ -539,20 +616,72 @@ func (v *VGAEngine) HandleVRAMWrite(addr uint32, value uint32) {
 		// Planar mode
 		mapMask := v.seqRegs[VGA_SEQ_MAPMASK_R]
 		bitMask := v.gcRegs[VGA_GC_BITMASK_R]
+		mode := v.gcRegs[VGA_GC_MODE] & VGA_GC_MODE_WRITE_MASK
+		rotate := v.gcRegs[VGA_GC_DATA_ROTATE] & 0x07
+		aluOp := (v.gcRegs[VGA_GC_DATA_ROTATE] >> 3) & 0x03
+		rotated := bitsRotateRight8(uint8(value), rotate)
 
 		for plane := range 4 {
-			if mapMask&(1<<plane) != 0 && offset < VGA_PLANE_SIZE {
-				if bitMask == 0xFF {
-					// Full byte write
-					v.vram[plane][offset] = uint8(value)
+			if offset >= VGA_PLANE_SIZE {
+				continue
+			}
+			latch := v.latch[plane]
+			existing := v.vram[plane][offset]
+			if latch == 0 {
+				latch = existing
+			}
+			var data uint8
+			switch mode {
+			case 0:
+				if v.gcRegs[VGA_GC_ENABLE_SR]&(1<<plane) != 0 {
+					if v.gcRegs[VGA_GC_SET_RESET]&(1<<plane) != 0 {
+						data = 0xFF
+					}
 				} else {
-					// Partial write with bit mask
-					existing := v.vram[plane][offset]
-					v.vram[plane][offset] = (existing & ^bitMask) | (uint8(value) & bitMask)
+					data = rotated
 				}
+			case 1:
+				data = latch
+			case 2:
+				if uint8(value)&(1<<plane) != 0 {
+					data = 0xFF
+				}
+			case 3:
+				if v.gcRegs[VGA_GC_SET_RESET]&(1<<plane) != 0 {
+					data = 0xFF
+				}
+				appliedMask := rotated & bitMask
+				final := (data & appliedMask) | (latch &^ appliedMask)
+				if mapMask&(1<<plane) != 0 {
+					v.vram[plane][offset] = final
+				}
+				continue
+			}
+
+			alu := data
+			switch aluOp {
+			case 1:
+				alu = data & latch
+			case 2:
+				alu = data | latch
+			case 3:
+				alu = data ^ latch
+			}
+
+			final := (alu & bitMask) | (latch &^ bitMask)
+			if mapMask&(1<<plane) != 0 {
+				v.vram[plane][offset] = final
 			}
 		}
 	}
+}
+
+func bitsRotateRight8(value uint8, count uint8) uint8 {
+	count &= 7
+	if count == 0 {
+		return value
+	}
+	return (value >> count) | (value << (8 - count))
 }
 
 // HandleTextRead handles reads from text buffer
@@ -622,12 +751,12 @@ func (v *VGAEngine) SetPaletteEntry(index uint8, r, g, b uint8) {
 	v.palette[idx] = r & 0x3F
 	v.palette[idx+1] = g & 0x3F
 	v.palette[idx+2] = b & 0x3F
-	v.paletteDirty = true // Invalidate cache
+	v.updatePaletteSnapshotEntryLocked(int(index))
 }
 
 // ApplyDACMask applies the DAC pixel mask to an index
 func (v *VGAEngine) ApplyDACMask(index uint8) uint8 {
-	return index & v.dacMask
+	return index & uint8(v.dacMaskAtomic.Load())
 }
 
 // Expand6BitTo8Bit converts a 6-bit VGA value to 8-bit
@@ -664,6 +793,36 @@ func (v *VGAEngine) GetStartAddress() uint32 {
 // getStartAddressInternal returns start address without locking (for internal use)
 func (v *VGAEngine) getStartAddressInternal() uint32 {
 	return uint32(v.crtcRegs[VGA_CRTC_START_HI])<<8 | uint32(v.crtcRegs[VGA_CRTC_START_LO])
+}
+
+func (v *VGAEngine) crtcOffsetPitchBytes(defaultPitch int) int {
+	if v.crtcRegs[VGA_CRTC_OFFSET] == 0 {
+		return defaultPitch
+	}
+	return int(v.crtcRegs[VGA_CRTC_OFFSET]) * 2
+}
+
+func (v *VGAEngine) effectiveStartForLine(y int, start uint32) uint32 {
+	lineCmp := int(v.crtcRegs[VGA_CRTC_LINE_CMP])
+	if lineCmp > 0 && y >= lineCmp {
+		return 0
+	}
+	return start
+}
+
+func (v *VGAEngine) attrPaletteIndex(raw uint8) uint8 {
+	planeMask := v.attrRegs[VGA_ATTR_PLANE_EN] & 0x0F
+	mapped := v.attrRegs[VGA_ATTR_PALETTE_BASE+(raw&planeMask&0x0F)] & 0x0F
+	colorSel := v.attrRegs[VGA_ATTR_COLOR_SEL]
+	return mapped | ((colorSel & 0x03) << 4) | (((colorSel >> 2) & 0x03) << 6)
+}
+
+func (v *VGAEngine) isOverscanPixel(x, y, width, height int) bool {
+	if v.attrRegs[VGA_ATTR_OVERSCAN] == 0 {
+		return false
+	}
+	const border = 8
+	return x < border || y < border || x >= width-border || y >= height-border
 }
 
 // GetCursorPosition returns cursor column and row
@@ -709,8 +868,11 @@ func (v *VGAEngine) RenderFrameTo(dst []byte) {
 
 // RenderFrame renders the current mode to a framebuffer
 func (v *VGAEngine) RenderFrame() []uint8 {
-	// Note: No lock acquired here - VRAM is fixed-size and minor racing is
-	// acceptable for video rendering (like real VGA hardware behavior)
+	// invariant: RenderFrame intentionally does not take v.mu. The only
+	// unsynchronized render reads are VRAM bytes and byte-sized register
+	// snapshots; palette lookup uses an atomic copy-on-write snapshot.
+
+	v.frameCount.Add(1)
 
 	switch v.mode {
 	case VGA_MODE_13H:
@@ -740,20 +902,18 @@ func (v *VGAEngine) renderMode13h() []uint8 {
 		fb = v.renderTarget
 	}
 
-	// Rebuild palette cache once at frame start if dirty
-	if v.paletteDirty {
-		v.rebuildPaletteCache()
-	}
-
 	startAddr := v.getStartAddressInternal()
-	dacMask := v.dacMask
+	dacMask := uint8(v.dacMaskAtomic.Load())
+	palette := v.currentPaletteSnapshot()
+	hpan := int(v.attrRegs[VGA_ATTR_HPAN] & 0x03)
 
 	for y := range height {
-		rowLinear := uint32(y*width) + startAddr
+		rowStart := v.effectiveStartForLine(y, startAddr)
+		rowLinear := uint32(y*width) + rowStart
 		pixelBase := y * width * 4
 		for x := range width {
 			// Linear addressing with start address offset
-			linearOffset := rowLinear + uint32(x)
+			linearOffset := (rowLinear + uint32(x+hpan)) & 0xFFFF
 
 			// Chain-4: address bits 0-1 select plane, bits 2+ are VRAM offset
 			plane := linearOffset & 3
@@ -764,11 +924,13 @@ func (v *VGAEngine) renderMode13h() []uint8 {
 				colorIndex = v.vram[plane][vramOffset]
 			}
 
-			// Apply DAC mask and get color from cache
+			if v.isOverscanPixel(x, y, width, height) {
+				colorIndex = v.attrRegs[VGA_ATTR_OVERSCAN]
+			}
 			colorIndex &= dacMask
 
 			pixelIdx := pixelBase + x*4
-			*(*uint32)(unsafe.Pointer(&fb[pixelIdx])) = v.paletteU32[colorIndex]
+			*(*uint32)(unsafe.Pointer(&fb[pixelIdx])) = palette[colorIndex]
 		}
 	}
 
@@ -789,40 +951,40 @@ func (v *VGAEngine) renderMode12h() []uint8 {
 		fb = v.renderTarget
 	}
 
-	// Rebuild palette cache once at frame start if dirty
-	if v.paletteDirty {
-		v.rebuildPaletteCache()
-	}
-
 	bytesPerLine := width / 8
-	dacMask := v.dacMask
+	pitchBytes := v.crtcOffsetPitchBytes(bytesPerLine)
+	dacMask := uint8(v.dacMaskAtomic.Load())
+	palette := v.currentPaletteSnapshot()
+	hpan := int(v.attrRegs[VGA_ATTR_HPAN] & 0x07)
+	startAddr := v.getStartAddressInternal()
 
 	for y := range height {
 		rowBase := y * width * 4
 		for byteX := range bytesPerLine {
-			offset := y*bytesPerLine + byteX
-
-			// Get all 4 planes for this byte
-			var planes [4]uint8
-			if offset < int(VGA_PLANE_SIZE) {
-				planes[0] = v.vram[0][offset]
-				planes[1] = v.vram[1][offset]
-				planes[2] = v.vram[2][offset]
-				planes[3] = v.vram[3][offset]
-			}
+			sourceBase := int(v.effectiveStartForLine(y, startAddr)) + y*pitchBytes + byteX
 
 			// Extract 8 pixels from the planes (branchless)
 			pixelBase := rowBase + byteX*8*4
-			for bit := 7; bit >= 0; bit-- {
+			for outBit := 0; outBit < 8; outBit++ {
+				srcPixel := hpan + outBit
+				sourceOffset := sourceBase + srcPixel/8
+				bit := 7 - (srcPixel & 7)
 				ubit := uint(bit)
-				colorIndex := ((planes[0] >> ubit) & 1) |
-					(((planes[1] >> ubit) & 1) << 1) |
-					(((planes[2] >> ubit) & 1) << 2) |
-					(((planes[3] >> ubit) & 1) << 3)
+				var colorIndex uint8
+				if sourceOffset < int(VGA_PLANE_SIZE) {
+					colorIndex = ((v.vram[0][sourceOffset] >> ubit) & 1) |
+						(((v.vram[1][sourceOffset] >> ubit) & 1) << 1) |
+						(((v.vram[2][sourceOffset] >> ubit) & 1) << 2) |
+						(((v.vram[3][sourceOffset] >> ubit) & 1) << 3)
+				}
 
+				colorIndex = v.attrPaletteIndex(colorIndex)
+				if v.isOverscanPixel(byteX*8+outBit, y, width, height) {
+					colorIndex = v.attrRegs[VGA_ATTR_OVERSCAN]
+				}
 				colorIndex &= dacMask
-				pixelIdx := pixelBase + (7-bit)*4
-				*(*uint32)(unsafe.Pointer(&fb[pixelIdx])) = v.paletteU32[colorIndex]
+				pixelIdx := pixelBase + outBit*4
+				*(*uint32)(unsafe.Pointer(&fb[pixelIdx])) = palette[colorIndex]
 			}
 		}
 	}
@@ -844,31 +1006,33 @@ func (v *VGAEngine) renderModeX() []uint8 {
 		fb = v.renderTarget
 	}
 
-	// Rebuild palette cache once at frame start if dirty
-	if v.paletteDirty {
-		v.rebuildPaletteCache()
-	}
-
 	startAddr := v.getStartAddressInternal()
-	dacMask := v.dacMask
+	dacMask := uint8(v.dacMaskAtomic.Load())
+	palette := v.currentPaletteSnapshot()
 	widthDiv4 := width / 4
+	pitchBytes := v.crtcOffsetPitchBytes(widthDiv4)
+	hpan := int(v.attrRegs[VGA_ATTR_HPAN] & 0x03)
 
 	for y := range height {
 		rowStart := y * width
-		yOffset := uint32(y * widthDiv4)
+		yOffset := uint32(y*pitchBytes) + v.effectiveStartForLine(y, startAddr)
 		for x := range width {
 			// Unchained: pixel X determines plane, Y*width/4 + X/4 is offset
-			plane := x & 3
-			offset := yOffset + uint32(x/4) + startAddr
+			srcX := x + hpan
+			plane := srcX & 3
+			offset := yOffset + uint32(srcX/4)
 
 			var colorIndex uint8
 			if offset < VGA_PLANE_SIZE {
 				colorIndex = v.vram[plane][offset]
 			}
 
+			if v.isOverscanPixel(x, y, width, height) {
+				colorIndex = v.attrRegs[VGA_ATTR_OVERSCAN]
+			}
 			colorIndex &= dacMask
 			pixelIdx := (rowStart + x) * 4
-			*(*uint32)(unsafe.Pointer(&fb[pixelIdx])) = v.paletteU32[colorIndex]
+			*(*uint32)(unsafe.Pointer(&fb[pixelIdx])) = palette[colorIndex]
 		}
 	}
 
@@ -891,10 +1055,18 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 		fb = v.renderTarget
 	}
 
-	// Rebuild palette cache once at frame start if dirty
-	if v.paletteDirty {
-		v.rebuildPaletteCache()
-	}
+	palette := v.currentPaletteSnapshot()
+	frame := v.frameCount.Load()
+	cursorOff := uint16(v.crtcRegs[VGA_CRTC_CURSOR_HI])<<8 | uint16(v.crtcRegs[VGA_CRTC_CURSOR_LO])
+	cursorDisabled := v.crtcRegs[VGA_CRTC_CURSOR_ST]&0x20 != 0
+	cursorStart := int(v.crtcRegs[VGA_CRTC_CURSOR_ST] & 0x1F)
+	cursorEnd := int(v.crtcRegs[VGA_CRTC_CURSOR_END] & 0x1F)
+	cursorConfigured := cursorOff != 0 || cursorStart != 0 || cursorEnd != 0
+	presetRow := int(v.crtcRegs[VGA_CRTC_PRESET_ROW] & 0x1F)
+	underline := int(v.crtcRegs[VGA_CRTC_UNDERLINE] & 0x1F)
+	underlineEnabled := v.crtcRegs[VGA_CRTC_UNDERLINE] != 0
+	blinkEnabled := v.attrRegs[VGA_ATTR_MODE_CTRL]&0x08 != 0
+	blinkOn := (frame/16)%2 == 0
 
 	for row := range VGA_TEXT_ROWS {
 		for col := range VGA_TEXT_COLS {
@@ -906,6 +1078,9 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 			// Extract foreground/background from attribute
 			fg := attr & 0x0F
 			bg := (attr >> 4) & 0x0F
+			if blinkEnabled {
+				bg &= 0x07
+			}
 
 			// Get font glyph
 			glyphOffset := int(char) * charHeight
@@ -914,12 +1089,23 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 
 			// Render character
 			for cy := range charHeight {
-				fontRow := vgaFont8x16[glyphOffset+cy]
+				glyphLine := (cy + presetRow) % charHeight
+				fontRow := vgaFont8x16[glyphOffset+glyphLine]
+				if underlineEnabled && cy == underline && attr&0x01 != 0 {
+					fontRow = 0xFF
+				}
+				cell := uint16(row*VGA_TEXT_COLS + col)
+				if cursorConfigured && !cursorDisabled && cell == cursorOff && cy >= cursorStart && cy <= cursorEnd {
+					fontRow ^= 0xFF
+				}
+				if blinkEnabled && attr&0x80 != 0 && !blinkOn {
+					fontRow = 0
+				}
 				pixelY := charBaseY + cy
 				rowBase := pixelY * width * 4
 
-				fgU32 := v.paletteU32[fg]
-				bgU32 := v.paletteU32[bg]
+				fgU32 := palette[fg]
+				bgU32 := palette[bg]
 				for cx := range charWidth {
 					pixelX := charBaseX + cx
 					pixelIdx := rowBase + pixelX*4
@@ -937,30 +1123,11 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 	return fb
 }
 
-// rebuildPaletteCache rebuilds the pre-expanded RGBA palette cache
-func (v *VGAEngine) rebuildPaletteCache() {
-	for i := range 256 {
-		idx := i * 3
-		r := v.Expand6BitTo8Bit(v.palette[idx])
-		g := v.Expand6BitTo8Bit(v.palette[idx+1])
-		b := v.Expand6BitTo8Bit(v.palette[idx+2])
-		v.paletteRGBA[i][0] = r
-		v.paletteRGBA[i][1] = g
-		v.paletteRGBA[i][2] = b
-		v.paletteRGBA[i][3] = 255
-		v.paletteU32[i] = uint32(r) | uint32(g)<<8 | uint32(b)<<16 | 0xFF000000
-	}
-	v.paletteDirty = false
-}
-
 // getPaletteRGBAInternal returns expanded 8-bit RGBA (internal, no lock)
 // Uses pre-computed cache for fast palette lookups during rendering
 func (v *VGAEngine) getPaletteRGBAInternal(index uint8) (uint8, uint8, uint8, uint8) {
-	if v.paletteDirty {
-		v.rebuildPaletteCache()
-	}
-	c := v.paletteRGBA[index]
-	return c[0], c[1], c[2], c[3]
+	c := v.currentPaletteSnapshot()[index]
+	return uint8(c), uint8(c >> 8), uint8(c >> 16), uint8(c >> 24)
 }
 
 var vgaFrameCount int

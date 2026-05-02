@@ -3,6 +3,7 @@
 package main
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -156,6 +157,81 @@ func TestVGA_DAC_GetRGBA(t *testing.T) {
 	}
 }
 
+func TestVGA_DAC_Mask_AppliedAtRenderLookup(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_13H)
+	vga.SetPaletteEntry(0, 63, 0, 0)
+	vga.SetPaletteEntry(16, 0, 63, 0)
+	vga.HandleVRAMWrite(VGA_VRAM_WINDOW, 16)
+	vga.HandleWrite(VGA_DAC_MASK, 0x0F)
+
+	fb := vga.RenderFrame()
+	if fb[0] != 255 || fb[1] != 0 || fb[2] != 0 || fb[3] != 255 {
+		t.Fatalf("masked rendered pixel = (%d,%d,%d,%d), want red", fb[0], fb[1], fb[2], fb[3])
+	}
+}
+
+func TestVGA_DAC_Mask_DoesNotAffect_RegisterReads(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.SetPaletteEntry(16, 1, 2, 3)
+	vga.HandleWrite(VGA_DAC_MASK, 0x0F)
+	vga.HandleWrite(VGA_DAC_RINDEX, 16)
+
+	if r, g, b := vga.HandleRead(VGA_DAC_DATA), vga.HandleRead(VGA_DAC_DATA), vga.HandleRead(VGA_DAC_DATA); r != 1 || g != 2 || b != 3 {
+		t.Fatalf("DAC_DATA under mask = (%d,%d,%d), want (1,2,3)", r, g, b)
+	}
+	if got := vga.HandleRead(VGA_PALETTE + 16*3); got != 1 {
+		t.Fatalf("direct palette read under mask = %d, want 1", got)
+	}
+}
+
+func TestVGA_Status_VSyncBit0_Preserved(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.SetVSync(true)
+	if got := vga.HandleRead(VGA_STATUS); got&VGA_STATUS_VSYNC == 0 || got&VGA_STATUS_RETRACE == 0 {
+		t.Fatalf("status with vsync = 0x%02X, want bit 0 and bit 3 set", got)
+	}
+	vga.SetVSync(false)
+	if got := vga.HandleRead(VGA_STATUS); got&VGA_STATUS_VSYNC != 0 || got&VGA_STATUS_RETRACE != 0 {
+		t.Fatalf("status after vsync clear = 0x%02X, want bit 0 and bit 3 clear", got)
+	}
+}
+
+func TestVGA_Status_HSyncBit_DoesNotUseVSyncBits(t *testing.T) {
+	if VGA_STATUS_HSYNC == VGA_STATUS_VSYNC || VGA_STATUS_HSYNC == VGA_STATUS_RETRACE {
+		t.Fatalf("hsync bit overlaps existing VGA ABI bits")
+	}
+}
+
+func TestVGA_PaletteSnapshot_ConcurrentDACWriteRender(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_13H)
+	vga.HandleVRAMWrite(VGA_VRAM_WINDOW, 4)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			vga.HandleWrite(VGA_DAC_WINDEX, 4)
+			vga.HandleWrite(VGA_DAC_DATA, uint32(i))
+			vga.HandleWrite(VGA_DAC_DATA, uint32(i>>1))
+			vga.HandleWrite(VGA_DAC_DATA, uint32(i>>2))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			fb := vga.RenderFrame()
+			if len(fb) < 4 || fb[3] != 255 {
+				t.Errorf("render returned invalid RGBA pixel")
+				return
+			}
+		}
+	}()
+	wg.Wait()
+}
+
 // =============================================================================
 // Phase 2: Mode 13h (320x200x256) Tests
 // =============================================================================
@@ -220,6 +296,155 @@ func TestVGA_Mode13h_ReadVRAM(t *testing.T) {
 		if val != i&0xFF {
 			t.Errorf("VRAM[%d]: got %d, want %d", i, val, i&0xFF)
 		}
+	}
+}
+
+func TestVGA_Mode13h_VRAM_OffsetWrap(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_13H)
+	vga.SetPaletteEntry(7, 63, 0, 0)
+	vga.HandleVRAMWrite(VGA_VRAM_WINDOW+0xFFFF, 7)
+	vga.HandleWrite(VGA_CRTC_STARTHI, 0xFF)
+	vga.HandleWrite(VGA_CRTC_STARTLO, 0xFF)
+
+	fb := vga.RenderFrame()
+	if fb[0] != 255 || fb[1] != 0 || fb[2] != 0 {
+		t.Fatalf("wrapped mode13h pixel = (%d,%d,%d), want red", fb[0], fb[1], fb[2])
+	}
+}
+
+func TestVGA_GC_WriteMode0_BitMask(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
+	vga.vram[0][0] = 0xAA
+	vga.HandleWrite(VGA_SEQ_MAPMASK, 0x01)
+	vga.HandleWrite(VGA_GC_BITMASK, 0x0F)
+	vga.HandleVRAMRead(VGA_VRAM_WINDOW)
+	vga.HandleVRAMWrite(VGA_VRAM_WINDOW, 0x55)
+
+	if got := vga.vram[0][0]; got != 0xA5 {
+		t.Fatalf("write mode 0 bitmask = 0x%02X, want 0xA5", got)
+	}
+}
+
+func TestVGA_GC_WriteMode1_LatchCopy(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
+	for p := range 4 {
+		vga.vram[p][0] = uint8(0x11 * (p + 1))
+	}
+	vga.HandleVRAMRead(VGA_VRAM_WINDOW)
+	for p := range 4 {
+		vga.vram[p][0] = 0
+	}
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_MODE)
+	vga.HandleWrite(VGA_GC_DATA, 0x01)
+	vga.HandleVRAMWrite(VGA_VRAM_WINDOW, 0xFF)
+
+	for p := range 4 {
+		want := uint8(0x11 * (p + 1))
+		if got := vga.vram[p][0]; got != want {
+			t.Fatalf("plane %d write mode 1 = 0x%02X, want 0x%02X", p, got, want)
+		}
+	}
+}
+
+func TestVGA_GC_WriteMode2_ColorExpand(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_MODE)
+	vga.HandleWrite(VGA_GC_DATA, 0x02)
+	vga.HandleVRAMWrite(VGA_VRAM_WINDOW, 0x05)
+
+	wants := []uint8{0xFF, 0x00, 0xFF, 0x00}
+	for p, want := range wants {
+		if got := vga.vram[p][0]; got != want {
+			t.Fatalf("plane %d write mode 2 = 0x%02X, want 0x%02X", p, got, want)
+		}
+	}
+}
+
+func TestVGA_GC_WriteMode3_BitMaskWithSetReset(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
+	for p := range 4 {
+		vga.vram[p][0] = 0xAA
+	}
+	vga.HandleVRAMRead(VGA_VRAM_WINDOW)
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_SET_RESET)
+	vga.HandleWrite(VGA_GC_DATA, 0x05)
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_MODE)
+	vga.HandleWrite(VGA_GC_DATA, 0x03)
+	vga.HandleVRAMWrite(VGA_VRAM_WINDOW, 0x0F)
+
+	wants := []uint8{0xAF, 0xA0, 0xAF, 0xA0}
+	for p, want := range wants {
+		if got := vga.vram[p][0]; got != want {
+			t.Fatalf("plane %d write mode 3 = 0x%02X, want 0x%02X", p, got, want)
+		}
+	}
+}
+
+func TestVGA_GC_DataRotate_RoR(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
+	vga.HandleWrite(VGA_SEQ_MAPMASK, 0x01)
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_DATA_ROTATE)
+	vga.HandleWrite(VGA_GC_DATA, 0x01)
+	vga.HandleVRAMWrite(VGA_VRAM_WINDOW, 0x81)
+
+	if got := vga.vram[0][0]; got != 0xC0 {
+		t.Fatalf("rotated write = 0x%02X, want 0xC0", got)
+	}
+}
+
+func TestVGA_GC_SetReset_AppliesPerPlane(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_SET_RESET)
+	vga.HandleWrite(VGA_GC_DATA, 0x0A)
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_ENABLE_SR)
+	vga.HandleWrite(VGA_GC_DATA, 0x0F)
+	vga.HandleVRAMWrite(VGA_VRAM_WINDOW, 0x00)
+
+	wants := []uint8{0x00, 0xFF, 0x00, 0xFF}
+	for p, want := range wants {
+		if got := vga.vram[p][0]; got != want {
+			t.Fatalf("plane %d set/reset = 0x%02X, want 0x%02X", p, got, want)
+		}
+	}
+}
+
+func TestVGA_GC_ReadMode1_ColorCompare(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
+	vga.vram[0][0] = 0xFF
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_COLOR_CMP)
+	vga.HandleWrite(VGA_GC_DATA, 0x01)
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_COLOR_DONT)
+	vga.HandleWrite(VGA_GC_DATA, 0x0F)
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_MODE)
+	vga.HandleWrite(VGA_GC_DATA, VGA_GC_MODE_READ_MODE)
+
+	if got := vga.HandleVRAMRead(VGA_VRAM_WINDOW); got != 0xFF {
+		t.Fatalf("read mode 1 compare = 0x%02X, want 0xFF", got)
+	}
+}
+
+func TestVGA_GC_ReadMode1_DontCare(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
+	vga.vram[0][0] = 0x00
+	vga.vram[1][0] = 0xFF
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_COLOR_CMP)
+	vga.HandleWrite(VGA_GC_DATA, 0x00)
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_COLOR_DONT)
+	vga.HandleWrite(VGA_GC_DATA, 0x01)
+	vga.HandleWrite(VGA_GC_INDEX, VGA_GC_MODE)
+	vga.HandleWrite(VGA_GC_DATA, VGA_GC_MODE_READ_MODE)
+
+	if got := vga.HandleVRAMRead(VGA_VRAM_WINDOW); got != 0xFF {
+		t.Fatalf("read mode 1 don't-care = 0x%02X, want 0xFF", got)
 	}
 }
 
@@ -533,6 +758,36 @@ func TestVGA_Text_Render(t *testing.T) {
 
 	if !hasWhite {
 		t.Error("Rendered 'X' should have some non-black pixels")
+	}
+}
+
+func TestVGA_Text_UnderlineDefaultDoesNotDrawTopBar(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_TEXT)
+	vga.SetPaletteEntry(0, 0, 0, 0)
+	vga.SetPaletteEntry(7, 63, 63, 63)
+	vga.HandleTextWrite(VGA_TEXT_WINDOW, ' ')
+	vga.HandleTextWrite(VGA_TEXT_WINDOW+1, 0x07)
+
+	fb := vga.RenderFrame()
+	if fb[0] != 0 || fb[1] != 0 || fb[2] != 0 || fb[3] != 255 {
+		t.Fatalf("default underline drew over blank text cell: got (%d,%d,%d,%d), want black", fb[0], fb[1], fb[2], fb[3])
+	}
+}
+
+func TestVGA_Attr_HPan_CrossesPlanarByte(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_12H)
+	vga.SetPaletteEntry(0, 0, 0, 0)
+	vga.SetPaletteEntry(1, 63, 63, 63)
+	vga.attrRegs[VGA_ATTR_HPAN] = 1
+	vga.vram[0][0] = 0x01
+	vga.vram[0][1] = 0x80
+
+	fb := vga.RenderFrame()
+	pixel7 := 7 * 4
+	if fb[pixel7] != 255 || fb[pixel7+1] != 255 || fb[pixel7+2] != 255 || fb[pixel7+3] != 255 {
+		t.Fatalf("hpan pixel crossing byte = (%d,%d,%d,%d), want white from next byte", fb[pixel7], fb[pixel7+1], fb[pixel7+2], fb[pixel7+3])
 	}
 }
 

@@ -72,6 +72,7 @@ type Z80BusAdapter struct {
 	// Extended bank windows for IE80 support (same layout as 6502)
 	vramBank    uint32
 	vramEnabled bool
+	vgaVramBank byte
 	bank1       uint32 // Bank number for $2000-$3FFF window
 	bank2       uint32 // Bank number for $4000-$5FFF window
 	bank3       uint32 // Bank number for $6000-$7FFF window
@@ -141,6 +142,9 @@ func (b *Z80BusAdapter) Read(addr uint16) byte {
 
 	// Handle VRAM bank window reads
 	if translated, ok := b.translateVRAM(addr); ok {
+		if b.vgaEngine != nil && translated >= VGA_VRAM_WINDOW && translated < VGA_VRAM_WINDOW+VGA_VRAM_SIZE {
+			return byte(b.vgaEngine.HandleVRAMRead(translated))
+		}
 		return b.bus.Read8(translated)
 	}
 
@@ -202,6 +206,10 @@ func (b *Z80BusAdapter) Write(addr uint16, value byte) {
 	// Use WriteMemoryDirect to bypass VideoChip handler, which does
 	// 32-bit writes even for single bytes (corrupting adjacent bytes)
 	if translated, ok := b.translateVRAM(addr); ok {
+		if b.vgaEngine != nil && translated >= VGA_VRAM_WINDOW && translated < VGA_VRAM_WINDOW+VGA_VRAM_SIZE {
+			b.vgaEngine.HandleVRAMWrite(translated, uint32(value))
+			return
+		}
 		b.bus.WriteMemoryDirect(translated, value)
 		return
 	}
@@ -271,6 +279,14 @@ func (b *Z80BusAdapter) translateExtendedBank(addr uint16) (uint32, bool) {
 // actual 32-bit addresses. Supports both VGA text buffer (0xB8000) and
 // main VRAM (0x100000+) depending on bank value.
 func (b *Z80BusAdapter) translateVRAM(addr uint16) (uint32, bool) {
+	if b.vgaEngine != nil && b.vgaVramBank&0x80 != 0 {
+		if addr < Z80_VRAM_BANK_WINDOW_BASE || addr >= Z80_VRAM_BANK_WINDOW_BASE+Z80_VRAM_BANK_WINDOW_SIZE {
+			return 0, false
+		}
+		bank := uint32(b.vgaVramBank & 0x03)
+		return VGA_VRAM_WINDOW + bank*Z80_VRAM_BANK_WINDOW_SIZE + uint32(addr-Z80_VRAM_BANK_WINDOW_BASE), true
+	}
+
 	if !b.vramEnabled {
 		return 0, false
 	}
@@ -301,6 +317,7 @@ func (b *Z80BusAdapter) translateVRAM(addr uint16) (uint32, bool) {
 func (b *Z80BusAdapter) ResetBank() {
 	b.vramBank = 0
 	b.vramEnabled = false
+	b.vgaVramBank = 0
 	b.bank1 = 0
 	b.bank2 = 0
 	b.bank3 = 0
@@ -432,6 +449,12 @@ func (b *Z80BusAdapter) In(port uint16) byte {
 			return byte(b.vgaEngine.HandleRead(VGA_DAC_WINDEX))
 		case Z80_VGA_PORT_DAC_DATA:
 			return byte(b.vgaEngine.HandleRead(VGA_DAC_DATA))
+		case Z80_VGA_PORT_DAC_RIDX:
+			return byte(b.vgaEngine.HandleRead(VGA_DAC_RINDEX))
+		case Z80_VGA_PORT_DAC_MASK:
+			return byte(b.vgaEngine.HandleRead(VGA_DAC_MASK))
+		case Z80_VGA_PORT_VRAM_BANK:
+			return b.vgaVramBank
 		}
 	}
 
@@ -587,6 +610,15 @@ func (b *Z80BusAdapter) Out(port uint16, value byte) {
 			return
 		case Z80_VGA_PORT_DAC_DATA:
 			b.vgaEngine.HandleWrite(VGA_DAC_DATA, uint32(value))
+			return
+		case Z80_VGA_PORT_DAC_RIDX:
+			b.vgaEngine.HandleWrite(VGA_DAC_RINDEX, uint32(value))
+			return
+		case Z80_VGA_PORT_DAC_MASK:
+			b.vgaEngine.HandleWrite(VGA_DAC_MASK, uint32(value))
+			return
+		case Z80_VGA_PORT_VRAM_BANK:
+			b.vgaVramBank = value
 			return
 		}
 	}

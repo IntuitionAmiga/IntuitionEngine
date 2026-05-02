@@ -695,9 +695,13 @@
 .set VGA_PORT_DAC_DATA,0xAA
 .set VGA_PORT_DAC_RIDX,0xAB
 .set VGA_PORT_DAC_MASK,0xAC
+.set VGA_PORT_VRAM_BANK,0xAD
 
-; VGA VRAM window (banked at 0xA000 in Z80 address space)
-.set VGA_VRAM_BANK,0xA000
+; VGA VRAM window (banked at 0x8000-0xBFFF when VGA_PORT_VRAM_BANK bit 7 is set)
+; Bits 0-1 select one of four 16KB banks. IN returns the raw written byte.
+.set Z80_VGA_VRAM_WINDOW_BASE,0x8000
+.set Z80_VGA_VRAM_WINDOW_SIZE,0x4000
+.set VGA_VRAM_BANK,0x8000
 .set VGA_VRAM_SIZE,0x4000
 
 ; Mode constants

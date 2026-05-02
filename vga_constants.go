@@ -64,6 +64,7 @@ const (
 // VGA Status bits
 const (
 	VGA_STATUS_VSYNC   = 1 << 0 // Vertical sync active
+	VGA_STATUS_HSYNC   = 1 << 1 // Horizontal sync approximation
 	VGA_STATUS_RETRACE = 1 << 3 // Vertical retrace active
 )
 
@@ -190,6 +191,9 @@ const (
 	Z80_VGA_PORT_GC_DATA   = 0xA8
 	Z80_VGA_PORT_DAC_WIDX  = 0xA9
 	Z80_VGA_PORT_DAC_DATA  = 0xAA
+	Z80_VGA_PORT_DAC_RIDX  = 0xAB
+	Z80_VGA_PORT_DAC_MASK  = 0xAC
+	Z80_VGA_PORT_VRAM_BANK = 0xAD
 )
 
 // 6502 VGA memory mapping
@@ -206,5 +210,8 @@ const (
 	C6502_VGA_GC_DATA   = 0xD708
 	C6502_VGA_DAC_WIDX  = 0xD709
 	C6502_VGA_DAC_DATA  = 0xD70A
-	C6502_VGA_END       = 0xD70A
+	C6502_VGA_DAC_RIDX  = 0xD70B
+	C6502_VGA_DAC_MASK  = 0xD70C
+	C6502_VGA_VRAM_BANK = 0xD70D
+	C6502_VGA_END       = 0xD70D
 )

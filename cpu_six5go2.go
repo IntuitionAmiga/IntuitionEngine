@@ -309,6 +309,7 @@ type Bus6502Adapter struct {
 	bus         Bus32
 	vramBank    uint32
 	vramEnabled bool
+	vgaVramBank byte
 	vgaEngine   *VGAEngine // VGA engine for memory-mapped I/O access
 	ownerCPU    *CPU_6502
 
@@ -539,6 +540,12 @@ func readVGAPage(a *Bus6502Adapter, addr uint16) byte {
 			return byte(a.vgaEngine.HandleRead(VGA_DAC_WINDEX))
 		case C6502_VGA_DAC_DATA:
 			return byte(a.vgaEngine.HandleRead(VGA_DAC_DATA))
+		case C6502_VGA_DAC_RIDX:
+			return byte(a.vgaEngine.HandleRead(VGA_DAC_RINDEX))
+		case C6502_VGA_DAC_MASK:
+			return byte(a.vgaEngine.HandleRead(VGA_DAC_MASK))
+		case C6502_VGA_VRAM_BANK:
+			return a.vgaVramBank
 		}
 	}
 	return a.bus.Read8(translateIO8Bit_6502(addr))
@@ -578,6 +585,15 @@ func writeVGAPage(a *Bus6502Adapter, addr uint16, value byte) {
 			return
 		case C6502_VGA_DAC_DATA:
 			a.vgaEngine.HandleWrite(VGA_DAC_DATA, uint32(value))
+			return
+		case C6502_VGA_DAC_RIDX:
+			a.vgaEngine.HandleWrite(VGA_DAC_RINDEX, uint32(value))
+			return
+		case C6502_VGA_DAC_MASK:
+			a.vgaEngine.HandleWrite(VGA_DAC_MASK, uint32(value))
+			return
+		case C6502_VGA_VRAM_BANK:
+			a.vgaVramBank = value
 			return
 		}
 	}
@@ -3152,6 +3168,9 @@ func (adapter *Bus6502Adapter) Read(addr uint16) byte {
 
 	// Handle VRAM bank window reads
 	if translated, ok := adapter.translateVRAM(addr); ok {
+		if adapter.vgaEngine != nil && translated >= VGA_VRAM_WINDOW && translated < VGA_VRAM_WINDOW+VGA_VRAM_SIZE {
+			return byte(adapter.vgaEngine.HandleVRAMRead(translated))
+		}
 		return adapter.bus.Read8(translated)
 	}
 
@@ -3311,6 +3330,10 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 
 	// Handle VRAM bank window writes
 	if translated, ok := adapter.translateVRAM(addr); ok {
+		if adapter.vgaEngine != nil && translated >= VGA_VRAM_WINDOW && translated < VGA_VRAM_WINDOW+VGA_VRAM_SIZE {
+			adapter.vgaEngine.HandleVRAMWrite(translated, uint32(value))
+			return
+		}
 		adapter.bus.Write8(translated, value)
 		return
 	}
@@ -3325,6 +3348,7 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 func (adapter *Bus6502Adapter) ResetBank() {
 	adapter.vramBank = 0
 	adapter.vramEnabled = false
+	adapter.vgaVramBank = 0
 	adapter.bank1 = 0
 	adapter.bank2 = 0
 	adapter.bank3 = 0
@@ -3407,6 +3431,12 @@ func (adapter *Bus6502Adapter) translateExtendedBank(addr uint16) (uint32, bool)
 }
 
 func (adapter *Bus6502Adapter) translateVRAM(addr uint16) (uint32, bool) {
+	if adapter.vgaEngine != nil && adapter.vgaVramBank&0x80 != 0 &&
+		addr >= 0xA000 && addr < 0xC000 {
+		bank := uint32(adapter.vgaVramBank & 0x07)
+		return VGA_VRAM_WINDOW + bank*0x2000 + uint32(addr-0xA000), true
+	}
+
 	if !adapter.vramEnabled {
 		return 0, false
 	}

@@ -941,11 +941,11 @@ VGA_DAC_WIDX    = $D709         ; DAC write index
 VGA_DAC_DATA    = $D70A         ; DAC data (R,G,B sequence)
 VGA_DAC_RIDX    = $D70B         ; DAC read index
 VGA_DAC_MASK    = $D70C         ; DAC pixel mask
-VGA_VRAM_BANK   = $D70D         ; VRAM bank select
+VGA_VRAM_BANK   = $D70D         ; bit 7 enable, bits 0-2 select VGA VRAM bank
 
-; VGA VRAM window (banked at $A000)
-VGA_VRAM        = $A000         ; VRAM window (16KB)
-VGA_VRAM_SIZE   = $4000         ; 16KB per bank
+; VGA VRAM window (banked at $A000-$BFFF when VGA_VRAM_BANK bit 7 is set)
+VGA_VRAM        = $A000         ; VGA VRAM window (8KB)
+VGA_VRAM_SIZE   = $2000         ; 8KB per VGA bank
 
 ; Mode constants
 VGA_MODE_TEXT   = $03           ; 80x25 text mode

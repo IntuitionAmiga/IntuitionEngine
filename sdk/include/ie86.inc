@@ -347,19 +347,6 @@ WAV_POSITION    equ 0xF0BE8              ; Current playback position (32-bit, re
 ; VGA VIDEO REGISTERS (IBM VGA compatible)
 ; ============================================================================
 
-; Standard VGA I/O ports (x86 compatible)
-VGA_PORT_SEQ_INDEX   equ 0x3C4           ; Sequencer index
-VGA_PORT_SEQ_DATA    equ 0x3C5           ; Sequencer data
-VGA_PORT_DAC_MASK    equ 0x3C6           ; DAC pixel mask
-VGA_PORT_DAC_RINDEX  equ 0x3C7           ; DAC read index
-VGA_PORT_DAC_WINDEX  equ 0x3C8           ; DAC write index
-VGA_PORT_DAC_DATA    equ 0x3C9           ; DAC data (R,G,B sequence)
-VGA_PORT_GC_INDEX    equ 0x3CE           ; Graphics controller index
-VGA_PORT_GC_DATA     equ 0x3CF           ; Graphics controller data
-VGA_PORT_CRTC_INDEX  equ 0x3D4           ; CRTC index
-VGA_PORT_CRTC_DATA   equ 0x3D5           ; CRTC data
-VGA_PORT_STATUS      equ 0x3DA           ; Input status 1
-
 ; Memory-mapped VGA registers
 VGA_BASE        equ 0xF1000
 VGA_MODE        equ 0xF1000              ; Mode control
@@ -660,12 +647,11 @@ TIMER_RELOAD    equ 0x00F808             ; DEPRECATED: not implemented in curren
     jz %%wait_vblank
 %endmacro
 
-; Wait for VGA VSync (using port I/O)
+; Wait for VGA VSync
 %macro vga_wait_vsync 0
 %%wait_retrace:
-    mov dx, VGA_PORT_STATUS
-    in al, dx
-    test al, VGA_STATUS_RETRACE
+    mov eax, [VGA_STATUS]
+    test eax, VGA_STATUS_RETRACE
     jz %%wait_retrace
 %endmacro
 
@@ -703,19 +689,13 @@ TIMER_RELOAD    equ 0x00F808             ; DEPRECATED: not implemented in curren
     mov byte [VGA_CTRL], VGA_CTRL_ENABLE
 %endmacro
 
-; Set VGA palette entry (using ports)
+; Set VGA palette entry
 ; Arguments: index, r, g, b
 %macro vga_setpalette 4
-    mov dx, VGA_PORT_DAC_WINDEX
-    mov al, %1
-    out dx, al
-    mov dx, VGA_PORT_DAC_DATA
-    mov al, %2
-    out dx, al
-    mov al, %3
-    out dx, al
-    mov al, %4
-    out dx, al
+    mov byte [VGA_DAC_WINDEX], %1
+    mov byte [VGA_DAC_DATA], %2
+    mov byte [VGA_DAC_DATA], %3
+    mov byte [VGA_DAC_DATA], %4
 %endmacro
 
 ; Set copper list pointer

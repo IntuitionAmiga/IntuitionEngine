@@ -79,6 +79,28 @@ func TestZ80_VGA_PortOut_DAC(t *testing.T) {
 	}
 }
 
+func TestZ80_VGA_DAC_RIDX_Out(t *testing.T) {
+	bus := NewMachineBus()
+	vga := NewVGAEngine(bus)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
+
+	z80Bus.Out(Z80_VGA_PORT_DAC_RIDX, 7)
+	if got := z80Bus.In(Z80_VGA_PORT_DAC_RIDX); got != 7 {
+		t.Fatalf("Z80 DAC read index = %d, want 7", got)
+	}
+}
+
+func TestZ80_VGA_DAC_Mask_Out(t *testing.T) {
+	bus := NewMachineBus()
+	vga := NewVGAEngine(bus)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
+
+	z80Bus.Out(Z80_VGA_PORT_DAC_MASK, 0x0F)
+	if got := z80Bus.In(Z80_VGA_PORT_DAC_MASK); got != 0x0F {
+		t.Fatalf("Z80 DAC mask = 0x%02X, want 0x0F", got)
+	}
+}
+
 func TestZ80_VGA_PortOut_Sequencer(t *testing.T) {
 	// Setup
 	bus := NewMachineBus()
@@ -210,6 +232,92 @@ func Test6502_VGA_DAC(t *testing.T) {
 	r, g, b := vga.GetPaletteEntry(10)
 	if r != 63 || g != 32 || b != 0 {
 		t.Errorf("VGA palette via 6502: got (%d,%d,%d), want (63,32,0)", r, g, b)
+	}
+}
+
+func Test6502_VGA_DAC_RIDX_RoundTrip(t *testing.T) {
+	bus := NewMachineBus()
+	vga := NewVGAEngine(bus)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
+
+	adapter.Write(C6502_VGA_DAC_RIDX, 9)
+	if got := adapter.Read(C6502_VGA_DAC_RIDX); got != 9 {
+		t.Fatalf("6502 DAC read index = %d, want 9", got)
+	}
+}
+
+func Test6502_VGA_DAC_Mask_RoundTrip(t *testing.T) {
+	bus := NewMachineBus()
+	vga := NewVGAEngine(bus)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
+
+	adapter.Write(C6502_VGA_DAC_MASK, 0x3F)
+	if got := adapter.Read(C6502_VGA_DAC_MASK); got != 0x3F {
+		t.Fatalf("6502 DAC mask = 0x%02X, want 0x3F", got)
+	}
+}
+
+func Test6502_VGA_VRAM_Banked_Window(t *testing.T) {
+	bus := NewMachineBus()
+	vga := NewVGAEngine(bus)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
+
+	for bank := byte(0); bank < 8; bank++ {
+		offset := uint16(0x0123)
+		value := bank + 0x40
+		adapter.Write(C6502_VGA_VRAM_BANK, 0x80|bank)
+		adapter.Write(0xA000+offset, value)
+		got := vga.HandleVRAMRead(VGA_VRAM_WINDOW + uint32(bank)*0x2000 + uint32(offset))
+		if got != uint32(value) {
+			t.Fatalf("6502 VGA bank %d VRAM = 0x%02X, want 0x%02X", bank, got, value)
+		}
+	}
+}
+
+func Test6502_VGA_VRAM_Bank_OutOfRange_Masks(t *testing.T) {
+	bus := NewMachineBus()
+	vga := NewVGAEngine(bus)
+	adapter := NewBus6502AdapterWithVGA(bus, vga)
+
+	adapter.Write(C6502_VGA_VRAM_BANK, 0x80|0x0D)
+	adapter.Write(0xA000, 0x77)
+	if got := vga.HandleVRAMRead(VGA_VRAM_WINDOW + 5*0x2000); got != 0x77 {
+		t.Fatalf("6502 masked VGA bank read = 0x%02X, want 0x77", got)
+	}
+	if got := adapter.Read(C6502_VGA_VRAM_BANK); got != 0x8D {
+		t.Fatalf("6502 VGA bank raw readback = 0x%02X, want 0x8D", got)
+	}
+}
+
+func TestZ80_VGA_VRAM_Banked_Window(t *testing.T) {
+	bus := NewMachineBus()
+	vga := NewVGAEngine(bus)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
+
+	for bank := byte(0); bank < 4; bank++ {
+		offset := uint16(0x0234)
+		value := bank + 0x50
+		z80Bus.Out(Z80_VGA_PORT_VRAM_BANK, 0x80|bank)
+		z80Bus.Write(Z80_VRAM_BANK_WINDOW_BASE+offset, value)
+		got := vga.HandleVRAMRead(VGA_VRAM_WINDOW + uint32(bank)*Z80_VRAM_BANK_WINDOW_SIZE + uint32(offset))
+		if got != uint32(value) {
+			t.Fatalf("Z80 VGA bank %d VRAM = 0x%02X, want 0x%02X", bank, got, value)
+		}
+	}
+}
+
+func TestZ80_VGA_VRAM_Bank_OutOfRange_Masks(t *testing.T) {
+	bus := NewMachineBus()
+	vga := NewVGAEngine(bus)
+	z80Bus := NewZ80BusAdapterWithVGA(bus, vga)
+
+	z80Bus.Out(Z80_VGA_PORT_VRAM_BANK, 0x80|0x05)
+	z80Bus.Write(Z80_VRAM_BANK_WINDOW_BASE, 0x66)
+	if got := vga.HandleVRAMRead(VGA_VRAM_WINDOW + Z80_VRAM_BANK_WINDOW_SIZE); got != 0x66 {
+		t.Fatalf("Z80 masked VGA bank read = 0x%02X, want 0x66", got)
+	}
+	if got := z80Bus.In(Z80_VGA_PORT_VRAM_BANK); got != 0x85 {
+		t.Fatalf("Z80 VGA bank raw readback = 0x%02X, want 0x85", got)
 	}
 }
 

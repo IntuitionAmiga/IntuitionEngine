@@ -319,14 +319,16 @@ func (vga *VGAEngine) Reset() {
 
 	// Reset attribute controller
 	vga.attrIndex = 0
-	vga.attrFlip = false
 	for i := range vga.attrRegs {
 		vga.attrRegs[i] = 0
 	}
+	vga.initDefaultAttrRegs()
 
 	// Reinitialize default palette
 	vga.initDefaultPalette()
-	vga.paletteDirty = true
+	vga.dacMask = 0xFF
+	vga.dacMaskAtomic.Store(0xFF)
+	vga.storeFullPaletteSnapshotLocked()
 
 	// Clear VRAM planes
 	for i := range vga.vram {
