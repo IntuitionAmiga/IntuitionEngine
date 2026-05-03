@@ -161,6 +161,8 @@ expr_not_inline:
 
 ; --- Level 4: Comparison (<, >, =) ---
 expr_compare:
+    jsr     str_detect
+    bnez    r8, .cmp_string
     jsr     expr_add
     move.q  r22, r8
 .cmp_loop:
@@ -176,28 +178,84 @@ expr_compare:
 
 .do_lt:
     add.q   r17, r17, #1
+    move.q  r24, r0               ; 0 = <
+    load.b  r1, (r17)
+    move.q  r2, #0x3D             ; raw '=' marker for <=
+    beq     r1, r2, .lt_set_le
+    move.q  r2, #TK_EQUAL         ; tolerate old accidental token stream
+    beq     r1, r2, .lt_set_le
+    move.q  r2, #0x3E             ; raw '>' marker for <>
+    beq     r1, r2, .lt_set_ne
+    move.q  r2, #TK_GT            ; tolerate old accidental token stream
+    beq     r1, r2, .lt_set_ne
+    bra     .lt_eval_right
+.lt_set_le:
+    move.q  r24, #1               ; 1 = <=
+    add.q   r17, r17, #1
+    bra     .lt_eval_right
+.lt_set_ne:
+    move.q  r24, #2               ; 2 = <>
+    add.q   r17, r17, #1
+.lt_eval_right:
     push    r22
+    push    r24
     jsr     expr_add
+    pop     r24
     pop     r22
     ; Compare: R22 < R8?
     move.q  r9, r8               ; R9 = right
     move.q  r8, r22              ; R8 = left
     jsr     fp_cmp               ; R8 = -1/0/1
+    move.q  r2, #2
+    beq     r24, r2, .cmp_ne_check
+    move.q  r2, #1
+    beq     r24, r2, .cmp_le_check
     ; If result = -1 (0xFFFFFFFF), left < right → TRUE (-1.0)
     move.q  r2, #0xFFFFFFFF
     beq     r8, r2, .cmp_true
     bra     .cmp_false
 
+.cmp_le_check:
+    move.q  r2, #0xFFFFFFFF
+    beq     r8, r2, .cmp_true
+    beqz    r8, .cmp_true
+    bra     .cmp_false
+
+.cmp_ne_check:
+    bnez    r8, .cmp_true
+    bra     .cmp_false
+
 .do_gt:
     add.q   r17, r17, #1
+    move.q  r24, r0               ; 0 = >
+    load.b  r1, (r17)
+    move.q  r2, #0x3D             ; raw '=' marker for >=
+    beq     r1, r2, .gt_set_ge
+    move.q  r2, #TK_EQUAL         ; tolerate old accidental token stream
+    beq     r1, r2, .gt_set_ge
+    bra     .gt_eval_right
+.gt_set_ge:
+    move.q  r24, #1               ; 1 = >=
+    add.q   r17, r17, #1
+.gt_eval_right:
     push    r22
+    push    r24
     jsr     expr_add
+    pop     r24
     pop     r22
     move.q  r9, r8
     move.q  r8, r22
     jsr     fp_cmp
     move.q  r2, #1
+    beq     r24, r2, .cmp_ge_check
+    move.q  r2, #1
     beq     r8, r2, .cmp_true
+    bra     .cmp_false
+
+.cmp_ge_check:
+    move.q  r2, #1
+    beq     r8, r2, .cmp_true
+    beqz    r8, .cmp_true
     bra     .cmp_false
 
 .do_eq:
@@ -221,6 +279,111 @@ expr_compare:
     move.q  r22, r8
     bra     .cmp_loop
 
+.cmp_string:
+    jsr     str_eval
+    move.q  r22, r8              ; left string pointer
+.cmp_str_skip_op_sp:
+    load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .cmp_str_op
+    add.q   r17, r17, #1
+    bra     .cmp_str_skip_op_sp
+.cmp_str_op:
+    move.q  r24, r0              ; 0 = =
+    move.q  r2, #TK_EQUAL
+    beq     r1, r2, .cmp_str_eq
+    move.q  r2, #TK_LT
+    beq     r1, r2, .cmp_str_lt
+    move.q  r2, #TK_GT
+    beq     r1, r2, .cmp_str_gt
+    move.q  r8, r0
+    rts
+.cmp_str_eq:
+    add.q   r17, r17, #1
+    bra     .cmp_str_rhs
+.cmp_str_lt:
+    move.q  r24, #1              ; 1 = <
+    add.q   r17, r17, #1
+    load.b  r1, (r17)
+    move.q  r2, #0x3D
+    beq     r1, r2, .cmp_str_lt_eq
+    move.q  r2, #TK_EQUAL
+    beq     r1, r2, .cmp_str_lt_eq
+    move.q  r2, #0x3E
+    beq     r1, r2, .cmp_str_lt_ne
+    move.q  r2, #TK_GT
+    beq     r1, r2, .cmp_str_lt_ne
+    bra     .cmp_str_rhs
+.cmp_str_lt_eq:
+    move.q  r24, #2              ; 2 = <=
+    add.q   r17, r17, #1
+    bra     .cmp_str_rhs
+.cmp_str_lt_ne:
+    move.q  r24, #5              ; 5 = <>
+    add.q   r17, r17, #1
+    bra     .cmp_str_rhs
+.cmp_str_gt:
+    move.q  r24, #3              ; 3 = >
+    add.q   r17, r17, #1
+    load.b  r1, (r17)
+    move.q  r2, #0x3D
+    beq     r1, r2, .cmp_str_gt_eq
+    move.q  r2, #TK_EQUAL
+    beq     r1, r2, .cmp_str_gt_eq
+    bra     .cmp_str_rhs
+.cmp_str_gt_eq:
+    move.q  r24, #4              ; 4 = >=
+    add.q   r17, r17, #1
+.cmp_str_rhs:
+    move.q  r8, r22
+    jsr     str_gc_push
+    push    r24
+.cmp_str_skip_rhs_sp:
+    load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .cmp_str_eval_rhs
+    add.q   r17, r17, #1
+    bra     .cmp_str_skip_rhs_sp
+.cmp_str_eval_rhs:
+    jsr     str_eval
+    move.q  r9, r8               ; right string pointer
+    pop     r24
+    jsr     str_gc_pop           ; updated left string pointer
+    jsr     str_cmp              ; R8 = -1/0/1
+    move.q  r2, #5
+    beq     r24, r2, .cmp_str_ne_check
+    move.q  r2, #4
+    beq     r24, r2, .cmp_str_ge_check
+    move.q  r2, #3
+    beq     r24, r2, .cmp_str_gt_check
+    move.q  r2, #2
+    beq     r24, r2, .cmp_str_le_check
+    move.q  r2, #1
+    beq     r24, r2, .cmp_str_lt_check
+    beqz    r8, .cmp_true
+    bra     .cmp_false
+.cmp_str_lt_check:
+    move.q  r2, #0xFFFFFFFF
+    beq     r8, r2, .cmp_true
+    bra     .cmp_false
+.cmp_str_le_check:
+    move.q  r2, #0xFFFFFFFF
+    beq     r8, r2, .cmp_true
+    beqz    r8, .cmp_true
+    bra     .cmp_false
+.cmp_str_gt_check:
+    move.q  r2, #1
+    beq     r8, r2, .cmp_true
+    bra     .cmp_false
+.cmp_str_ge_check:
+    move.q  r2, #1
+    beq     r8, r2, .cmp_true
+    beqz    r8, .cmp_true
+    bra     .cmp_false
+.cmp_str_ne_check:
+    bnez    r8, .cmp_true
+    bra     .cmp_false
+
 ; --- Level 5: Addition (+, -) ---
 expr_add:
     jsr     expr_mul
@@ -231,6 +394,10 @@ expr_add:
     beq     r1, r2, .do_add
     move.q  r2, #TK_MINUS
     beq     r1, r2, .do_sub
+    move.q  r2, #TK_LSHIFT
+    beq     r1, r2, .do_lshift
+    move.q  r2, #TK_RSHIFT
+    beq     r1, r2, .do_rshift
     move.q  r8, r22
     rts
 
@@ -253,6 +420,32 @@ expr_add:
     move.q  r9, r8               ; R9 = right
     move.q  r8, r22              ; R8 = left
     jsr     fp_sub               ; R8 = left - right
+    move.q  r22, r8
+    bra     .add_loop
+
+.do_lshift:
+    add.q   r17, r17, #1
+    push    r22
+    jsr     expr_mul
+    pop     r22
+    jsr     fp32_to_int_pair
+    and.l   r2, r2, #31
+    lsl.l   r1, r1, r2
+    move.q  r8, r1
+    jsr     fp_float
+    move.q  r22, r8
+    bra     .add_loop
+
+.do_rshift:
+    add.q   r17, r17, #1
+    push    r22
+    jsr     expr_mul
+    pop     r22
+    jsr     fp32_to_int_pair
+    and.l   r2, r2, #31
+    lsr.l   r1, r1, r2
+    move.q  r8, r1
+    jsr     fp_float
     move.q  r22, r8
     bra     .add_loop
 
@@ -285,11 +478,18 @@ expr_mul:
     push    r22
     jsr     expr_power
     pop     r22
+    and.l   r1, r8, #0x7FFFFFFF
+    beqz    r1, .div_zero
     move.q  r9, r8
     move.q  r8, r22
     jsr     fp_div
     move.q  r22, r8
     bra     .mul_loop
+.div_zero:
+    move.q  r8, #ERR_DIV0
+    la      r9, err_msg_div0
+    jsr     raise_error
+    rts
 
 ; --- Level 7: Power (^) ---
 expr_power:
@@ -362,6 +562,12 @@ expr_primary:
     ; Check for '&' (hex literal prefix &H)
     move.q  r2, #0x26             ; '&'
     beq     r1, r2, .do_hex
+
+    ; Check for DEF FN invocation.
+    move.q  r2, #TK_FN
+    beq     r1, r2, .do_fn_call
+    move.q  r2, #0x46             ; raw "FN" prefix in names like FND
+    beq     r1, r2, .maybe_raw_fn_call
 
     ; Check for built-in function tokens (0xBE..0xE1)
     move.q  r2, #TK_SGN
@@ -593,6 +799,95 @@ expr_primary:
     move.q  r8, r0
     rts
 
+.maybe_raw_fn_call:
+    load.b  r2, 1(r17)
+    move.q  r3, #0x4E
+    beq     r2, r3, .do_raw_fn_call
+    move.q  r3, #0x6E
+    beq     r2, r3, .do_raw_fn_call
+    bra     .check_var_range
+
+.do_fn_call:
+    add.q   r17, r17, #1         ; consume FN
+    bra     .fn_call_skip_sp
+.do_raw_fn_call:
+    add.q   r17, r17, #2         ; consume raw FN prefix
+.fn_call_skip_sp:
+    load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .fn_call_name
+    add.q   r17, r17, #1
+    bra     .fn_call_skip_sp
+.fn_call_name:
+    jsr     var_parse_name       ; R14 = function name tag
+    la      r25, fn_table
+    move.q  r3, #8
+.fn_call_find:
+    beqz    r3, .fn_call_undef
+    load.l  r2, (r25)
+    beq     r14, r2, .fn_call_found
+    add.q   r25, r25, #16
+    sub.q   r3, r3, #1
+    bra     .fn_call_find
+.fn_call_found:
+.fn_call_skip_arg_sp:
+    load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .fn_call_lparen
+    add.q   r17, r17, #1
+    bra     .fn_call_skip_arg_sp
+.fn_call_lparen:
+    load.b  r1, (r17)
+    move.q  r2, #0x28
+    bne     r1, r2, .fn_call_syntax
+    add.q   r17, r17, #1
+    push    r25
+    jsr     expr_or              ; argument value
+    pop     r25
+    bnez    r28, .fn_call_done
+    move.q  r22, r8
+    load.b  r1, (r17)
+    move.q  r2, #0x29
+    bne     r1, r2, .fn_call_syntax
+    add.q   r17, r17, #1
+    load.l  r2, 12(r25)
+    bnez    r2, .fn_call_recursive
+    move.q  r2, #1
+    store.l r2, 12(r25)
+
+    push    r17
+    load.l  r14, 4(r25)
+    jsr     var_lookup_tag       ; R8 = parameter variable slot
+    move.q  r23, r8
+    load.l  r24, (r23)           ; save caller value
+    store.l r22, (r23)           ; bind argument
+    load.l  r17, 8(r25)
+    push    r25
+    push    r23
+    push    r24
+    jsr     expr_or
+    move.q  r25, r8
+    pop     r24
+    pop     r23
+    pop     r1
+    store.l r24, (r23)           ; restore caller value
+    store.l r0, 12(r1)
+    pop     r17
+    move.q  r8, r25
+.fn_call_done:
+    rts
+.fn_call_undef:
+.fn_call_syntax:
+    move.q  r8, #ERR_SYNTAX
+    la      r9, err_msg_syntax
+    jsr     raise_error
+    rts
+.fn_call_recursive:
+    move.q  r8, #ERR_ILLEGAL_QTY
+    la      r9, err_msg_illegal_qty
+    jsr     raise_error
+    rts
+
 .do_function:
     ; Function dispatch
     load.b  r1, (r17)
@@ -606,6 +901,10 @@ expr_primary:
     beq     r1, r2, .fn_asc
     move.q  r2, #TK_VAL
     beq     r1, r2, .fn_val
+    move.q  r2, #TK_SADD
+    beq     r1, r2, .fn_sadd
+    move.q  r2, #TK_VPTR
+    beq     r1, r2, .fn_varptr
 
     ; Two-argument functions (must be intercepted before generic single-arg path)
     move.q  r2, #TK_BITTST
@@ -706,6 +1005,8 @@ expr_primary:
     jsr     fp_int
     jsr     fp_fix               ; R8 = int32 address
     move.q  r1, r8
+    and.l   r2, r1, #3
+    bnez    r2, .peek_fc_error
     load.l  r8, (r1)
     jsr     fp_float
     rts
@@ -742,8 +1043,15 @@ expr_primary:
     rts
 .peek_read32:
     ; PEEK - 32-bit read
+    and.l   r2, r1, #3
+    bnez    r2, .peek_fc_error
     load.l  r8, (r1)
     jsr     fp_float
+    rts
+.peek_fc_error:
+    move.q  r8, #ERR_FC
+    la      r9, err_msg_fc
+    jsr     raise_error
     rts
 .peek_no_arg:
     move.q  r8, r0
@@ -974,6 +1282,46 @@ expr_primary:
     move.q  r8, r0
     rts
 
+.fn_sadd:
+    ; SADD(A$) - return address of string data.
+    load.b  r2, (r17)
+    move.q  r3, #0x28
+    bne     r2, r3, .fn_sadd_err
+    add.q   r17, r17, #1
+    jsr     var_lookup           ; R8 = str_ptr slot, R9 = 1 for string
+    beqz    r9, .fn_sadd_err
+    load.l  r8, (r8)             ; R8 = string data pointer
+    load.b  r2, (r17)
+    move.q  r3, #0x29
+    bne     r2, r3, .fn_sadd_return
+    add.q   r17, r17, #1
+.fn_sadd_return:
+    jsr     fp_float
+    rts
+.fn_sadd_err:
+    move.q  r8, r0
+    jsr     fp_float
+    rts
+
+.fn_varptr:
+    ; VARPTR(A) - return address of variable storage slot.
+    load.b  r2, (r17)
+    move.q  r3, #0x28
+    bne     r2, r3, .fn_varptr_err
+    add.q   r17, r17, #1
+    jsr     var_lookup           ; R8 = numeric value slot or string pointer slot
+    load.b  r2, (r17)
+    move.q  r3, #0x29
+    bne     r2, r3, .fn_varptr_return
+    add.q   r17, r17, #1
+.fn_varptr_return:
+    jsr     fp_float
+    rts
+.fn_varptr_err:
+    move.q  r8, r0
+    jsr     fp_float
+    rts
+
 .func_noarg:
     ; Function with no parentheses (PI, TWOPI)
     move.q  r2, #TK_PI
@@ -1084,8 +1432,9 @@ expr_primary:
     rts
 
 .fn_pos:
-    ; POS(x) - cursor column position (stub: returns 0)
-    move.q  r8, r0
+    ; POS(x) - current terminal output column.
+    add.q   r1, r16, #ST_TERM_COL
+    load.l  r8, (r1)
     jsr     fp_float
     rts
 
@@ -1121,8 +1470,7 @@ rnd_state:
 ;         R17 = advanced past the number
 ; Clobbers: R1-R7
 ;
-; Handles: integer (123), float (3.14), leading dot (.5)
-; Does NOT handle scientific notation yet.
+; Handles: integer (123), float (3.14), leading dot (.5), scientific notation.
 
 parse_number:
     push    r14
@@ -1196,6 +1544,58 @@ parse_number:
     jsr     fp_div                ; R8 = value / 10^n
 
 .pn_end:
+    ; Optional scientific exponent: E[+|-]digits
+    load.b  r3, (r17)
+    move.q  r4, #0x45             ; 'E'
+    beq     r3, r4, .pn_exp_start
+    move.q  r4, #0x65             ; 'e'
+    bne     r3, r4, .pn_return
+.pn_exp_start:
+    add.q   r17, r17, #1
+    move.q  r6, r0                ; sign flag: 0 positive, 1 negative
+    load.b  r3, (r17)
+    move.q  r4, #TK_MINUS
+    beq     r3, r4, .pn_exp_neg
+    move.q  r4, #0x2D             ; '-'
+    beq     r3, r4, .pn_exp_neg
+    move.q  r4, #TK_PLUS
+    beq     r3, r4, .pn_exp_pos
+    move.q  r4, #0x2B             ; '+'
+    beq     r3, r4, .pn_exp_pos
+    bra     .pn_exp_digits
+.pn_exp_neg:
+    move.q  r6, #1
+.pn_exp_pos:
+    add.q   r17, r17, #1
+.pn_exp_digits:
+    move.q  r5, r0                ; exponent accumulator
+.pn_exp_loop:
+    load.b  r3, (r17)
+    move.q  r4, #0x30
+    blt     r3, r4, .pn_exp_apply
+    move.q  r4, #0x39
+    bgt     r3, r4, .pn_exp_apply
+    sub.q   r3, r3, #0x30
+    mulu.l  r5, r5, #10
+    add.l   r5, r5, r3
+    add.q   r17, r17, #1
+    bra     .pn_exp_loop
+.pn_exp_apply:
+    beqz    r5, .pn_return
+    bnez    r6, .pn_exp_div_loop
+.pn_exp_mul_loop:
+    move.l  r9, #0x41200000       ; 10.0
+    jsr     fp_mul
+    sub.q   r5, r5, #1
+    bnez    r5, .pn_exp_mul_loop
+    bra     .pn_return
+.pn_exp_div_loop:
+    move.l  r9, #0x41200000       ; 10.0
+    jsr     fp_div
+    sub.q   r5, r5, #1
+    bnez    r5, .pn_exp_div_loop
+
+.pn_return:
     pop     r15
     pop     r14
     rts

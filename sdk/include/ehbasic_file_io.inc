@@ -47,7 +47,7 @@ tk_bitclr_str:   dc.b "BITCLR", 0
 tk_tab_str:      dc.b "TAB", 0
 tk_to_str:       dc.b "TO", 0
 tk_fn_str:       dc.b "FN", 0
-tk_spc_str:      dc.b "SPC", 0
+tk_else_str:     dc.b "ELSE", 0
 tk_then_str:     dc.b "THEN", 0
 tk_not_str:      dc.b "NOT", 0
 tk_step_str:     dc.b "STEP", 0
@@ -150,7 +150,7 @@ detok_table:
     dc.l tk_do_str, tk_loop_str, tk_print_str, tk_cont_str
     dc.l tk_list_str, tk_clear_str, tk_new_str, tk_width_str
     dc.l tk_get_str, tk_swap_str, tk_bitset_str, tk_bitclr_str
-    dc.l tk_tab_str, tk_to_str, tk_fn_str, tk_spc_str
+    dc.l tk_tab_str, tk_to_str, tk_fn_str, tk_else_str
     dc.l tk_then_str, tk_not_str, tk_step_str, tk_until_str
     dc.l tk_while_str, tk_plus_str, tk_minus_str, tk_mult_str
     dc.l tk_div_str, tk_power_str, tk_and_str, tk_eor_str
@@ -416,15 +416,14 @@ exec_do_save:
     load.l  r1, (r1)
     beqz    r1, .save_success
     
-    ; Print error
-    la      r8, .msg_file_error
-    jsr     print_string
-    jsr     print_crlf
+    move.q  r8, #ERR_FC
+    la      r9, .msg_file_error
+    jsr     raise_error
     
 .save_success:
     rts
 
-.msg_file_error: dc.b "?FILE ERROR", 0
+.msg_file_error: dc.b "FILE", 0
 
 ; ============================================================================
 ; exec_do_load - LOAD "filename"

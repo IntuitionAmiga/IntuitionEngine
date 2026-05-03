@@ -78,6 +78,21 @@ ST_ULA_PAPER      equ 0x5C                  ; ULA paper colour
 ST_ULA_FLASH      equ 0x60                  ; ULA flash flag
 ST_CONT_LINE_PTR  equ 0x64                  ; CONT: saved line pointer (R14)
 ST_CONT_TEXT_PTR  equ 0x68                  ; CONT: saved text pointer (R17)
+ST_ERROR_LINE     equ 0x6C                  ; Last runtime error line
+ST_TERM_COL       equ 0x70                  ; Current terminal output column
+
+; EhBASIC runtime error codes
+ERR_SYNTAX        equ 1
+ERR_DIV0          equ 2
+ERR_UNDEF_LINE    equ 3
+ERR_NEXT_NO_FOR   equ 4
+ERR_RET_NO_GOSUB  equ 5
+ERR_OOM           equ 6
+ERR_ILLEGAL_QTY   equ 7
+ERR_OVERFLOW      equ 8
+ERR_TYPE_MISMATCH equ 9
+ERR_FC            equ 10
+ERR_REDIM         equ 11
 
 ; BASIC program/variable storage
 BASIC_PROG_START  equ 0x023000              ; Program text + variables + heap (428KB)

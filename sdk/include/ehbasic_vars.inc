@@ -99,12 +99,20 @@ var_parse_name:
 
 .vpn_store_char:
     move.q  r2, #4
-    bge     r15, r2, .vpn_skip_char
+    bge     r15, r2, .vpn_mix_extra_char
     lsl.l   r14, r14, #8
     or.l    r14, r14, r1
     add.q   r15, r15, #1
+    bra     .vpn_advance
 
-.vpn_skip_char:
+.vpn_mix_extra_char:
+    ; Preserve the existing 4-character packed tag for short names. For longer
+    ; names, mix each extra uppercase character into the 32-bit tag so names
+    ; such as COUNT and COUNTER do not alias.
+    mulu.l  r14, r14, #33
+    add.l   r14, r14, r1
+
+.vpn_advance:
     add.q   r17, r17, #1
     bra     .vpn_collect
 
@@ -274,102 +282,107 @@ var_lookup:
 ; --- Array reference: name followed by '(' ---
 .vl_array_ref:
     add.q   r17, r17, #1        ; skip '('
+    push    r14                  ; preserve array name while expressions run
+    move.q  r10, r0              ; index count
+    la      r11, arr_index_buf
 
-    ; Save name tag, evaluate first index
-    push    r14
-    jsr     expr_or              ; R8 = first index (FP32)
+.vl_arr_parse_index:
+    move.q  r1, #8
+    bge     r10, r1, .vl_array_fc_keep_name
+    push    r10
+    push    r11
+    jsr     expr_or
     jsr     fp_int
-    jsr     fp_fix               ; R8 = integer index
-    move.q  r15, r8              ; R15 = first index
-
-    ; Check for comma (2D array)
+    jsr     fp_fix
+    pop     r11
+    pop     r10
+    lsl.l   r12, r10, #2
+    add.q   r13, r11, r12
+    store.l r8, (r13)
+    add.q   r10, r10, #1
     load.b  r1, (r17)
     move.q  r2, #0x2C            ; ','
-    beq     r1, r2, .vl_arr_2d
-
-    ; 1D reference - skip ')'
-    load.b  r1, (r17)
+    beq     r1, r2, .vl_arr_more_index
     move.q  r2, #0x29            ; ')'
-    bne     r1, r2, .vl_arr_skip_close1
+    beq     r1, r2, .vl_arr_indices_done
+    bra     .vl_array_fc_keep_name
+.vl_arr_more_index:
     add.q   r17, r17, #1
-.vl_arr_skip_close1:
+    bra     .vl_arr_parse_index
+.vl_arr_indices_done:
+    add.q   r17, r17, #1
+    pop     r14
 
-    pop     r14                  ; restore name tag
-    ; R15 = index, R14 = name tag
-    ; Search array table
-    push    r17                  ; save text ptr
-    jsr     arr_find             ; R8 = array base (or 0)
-    pop     r17
-    bnez    r8, .vl_arr_elem_1d
-
-    ; Not found - auto-DIM with 11 elements
+    push    r10
     push    r17
-    move.q  r8, #11              ; total elements
-    move.q  r9, r0               ; dim2 = 0 (1D)
-    jsr     arr_create           ; R8 = base of new array
+    jsr     arr_find
     pop     r17
+    pop     r10
+    bnez    r8, .vl_arr_have_base
 
-.vl_arr_elem_1d:
-    ; R8 = array base, R15 = index
-    ; Element address = base + 12 + index * 4
-    lsl.l   r1, r15, #2
-    add.q   r8, r8, #12
-    add.q   r8, r8, r1
-    move.q  r9, r0               ; R9 = 0 (numeric array)
+    ; Auto-DIM missing arrays with 11 elements per referenced dimension.
+    la      r11, arr_dim_buf
+    move.q  r12, r0
+    move.q  r8, #1
+.vl_arr_auto_dim_loop:
+    bge     r12, r10, .vl_arr_auto_create
+    lsl.l   r13, r12, #2
+    add.q   r13, r11, r13
+    move.q  r1, #11
+    store.l r1, (r13)
+    mulu.l  r8, r8, #11
+    add.q   r12, r12, #1
+    bra     .vl_arr_auto_dim_loop
+.vl_arr_auto_create:
+    move.q  r9, r10
+    push    r10
+    push    r17
+    jsr     arr_create
+    pop     r17
+    pop     r10
+
+.vl_arr_have_base:
+    ; Header: name,total,dim_count,dims...,data...
+    add.q   r1, r8, #8
+    load.l  r1, (r1)             ; stored dim_count
+    bne     r1, r10, .vl_array_fc
+    add.q   r11, r8, #12         ; dims pointer
+    lsl.l   r12, r10, #2
+    add.q   r13, r11, r12        ; data pointer
+    move.q  r3, r0               ; row-major offset
+    move.q  r4, r0               ; loop index
+    la      r5, arr_index_buf
+.vl_arr_offset_loop:
+    bge     r4, r10, .vl_arr_offset_done
+    lsl.l   r6, r4, #2
+    add.q   r7, r11, r6
+    load.l  r7, (r7)             ; dim size
+    add.q   r2, r5, r6
+    load.l  r2, (r2)             ; index
+    bgez    r2, .vl_arr_idx_nonneg
+    bra     .vl_array_fc
+.vl_arr_idx_nonneg:
+    bge     r2, r7, .vl_array_fc
+    mulu.l  r3, r3, r7
+    add.l   r3, r3, r2
+    add.q   r4, r4, #1
+    bra     .vl_arr_offset_loop
+.vl_arr_offset_done:
+    lsl.l   r3, r3, #2
+    add.q   r8, r13, r3
+    move.q  r9, r0
     pop     r15
     pop     r14
     rts
 
-.vl_arr_2d:
-    ; 2D: skip comma, evaluate second index
-    add.q   r17, r17, #1        ; skip ','
-    push    r15                  ; save first index
-    jsr     expr_or              ; R8 = second index (FP32)
-    jsr     fp_int
-    jsr     fp_fix               ; R8 = integer index
-    move.q  r1, r8               ; R1 = second index
-    pop     r15                  ; R15 = first index
+.vl_array_fc_keep_name:
+    pop     r14
 
-    ; Skip ')'
-    load.b  r2, (r17)
-    move.q  r3, #0x29            ; ')'
-    bne     r2, r3, .vl_arr_skip_close2
-    add.q   r17, r17, #1
-.vl_arr_skip_close2:
-
-    pop     r14                  ; restore name tag (pushed before .vl_array_ref)
-    ; R15 = first index, R1 = second index, R14 = name tag
-    push    r1                   ; save second index
-    push    r15                  ; save first index
-    push    r17                  ; save text ptr
-    jsr     arr_find             ; R8 = array base (or 0)
-    pop     r17
-    pop     r15                  ; first index
-    pop     r1                   ; second index
-    bnez    r8, .vl_arr_elem_2d
-
-    ; Not found - auto-DIM with 11*11=121 elements, dim2=11
-    push    r1
-    push    r15
-    push    r17
-    move.q  r8, #121             ; total elements (11*11)
-    move.q  r9, #11              ; dim2 = 11
-    jsr     arr_create           ; R8 = base of new array
-    pop     r17
-    pop     r15
-    pop     r1
-
-.vl_arr_elem_2d:
-    ; R8 = array base, R15 = first index, R1 = second index
-    ; dim2 is stored at base+8
-    add.q   r2, r8, #8
-    load.l  r2, (r2)             ; R2 = dim2
-    mulu.l  r3, r15, r2          ; first_index * dim2
-    add.l   r3, r3, r1           ; + second_index
-    lsl.l   r3, r3, #2           ; * 4
-    add.q   r8, r8, #12
-    add.q   r8, r8, r3
-    move.q  r9, r0               ; R9 = 0 (numeric array)
+.vl_array_fc:
+    move.q  r8, #ERR_FC
+    la      r9, err_msg_fc
+    jsr     raise_error
+    move.q  r8, r0
     pop     r15
     pop     r14
     rts
@@ -392,11 +405,15 @@ arr_find:
     bge     r2, r3, .af_not_found
     load.l  r4, (r2)             ; name tag at this entry
     beq     r4, r14, .af_found
-    ; Skip past this entry: header(12) + total_elems*4
+    ; Skip past this entry: header(12) + dim_count*4 + total_elems*4
     add.q   r5, r2, #4
     load.l  r5, (r5)             ; total_elems
     lsl.l   r5, r5, #2           ; *4
+    add.q   r6, r2, #8
+    load.l  r6, (r6)             ; dim_count
+    lsl.l   r6, r6, #2
     add.q   r2, r2, #12          ; header
+    add.q   r2, r2, r6           ; dims
     add.q   r2, r2, r5           ; data
     bra     .af_loop
 
@@ -413,7 +430,8 @@ arr_find:
 ; ============================================================================
 ; Input:  R14 = packed name tag
 ;         R8  = total element count
-;         R9  = dim2 size (0 for 1D)
+;         R9  = dimension count
+;         arr_dim_buf = dimension element counts
 ;         R16 = state base
 ; Output: R8  = pointer to the new array entry
 ; Clobbers: R1-R5
@@ -428,8 +446,22 @@ arr_create:
     add.q   r2, r2, #4
     store.l r8, (r2)             ; total elements
     add.q   r2, r2, #4
-    store.l r9, (r2)             ; dim2
+    store.l r9, (r2)             ; dim_count
     add.q   r2, r2, #4
+
+    ; Copy dimension sizes.
+    move.q  r5, r0
+    la      r6, arr_dim_buf
+.ac_dim_loop:
+    bge     r5, r9, .ac_dim_done
+    lsl.l   r7, r5, #2
+    add.q   r1, r6, r7
+    load.l  r1, (r1)
+    store.l r1, (r2)
+    add.q   r2, r2, #4
+    add.q   r5, r5, #1
+    bra     .ac_dim_loop
+.ac_dim_done:
 
     ; Zero out element data
     move.q  r4, r8               ; counter = total_elems
@@ -442,6 +474,7 @@ arr_create:
 
 .ac_done:
     ; Update array_end
+    add.q   r1, r16, #ST_ARRAY_END
     store.l r2, (r1)
     ; Return base pointer
     move.q  r8, r3
@@ -479,54 +512,53 @@ arr_dim:
     bne     r1, r2, .ad_done
     add.q   r17, r17, #1         ; skip '('
 
-    ; Evaluate first dimension size
     push    r14                  ; save name tag
-    jsr     expr_or              ; R8 = dim1 size (FP32)
+    move.q  r10, r0              ; dim_count
+    move.q  r11, #1              ; total elements
+    la      r12, arr_dim_buf
+.ad_dim_parse_loop:
+    move.q  r1, #8
+    bge     r10, r1, .ad_dim_too_many
+    push    r10
+    push    r11
+    push    r12
+    jsr     expr_or              ; R8 = dimension upper bound
     jsr     fp_int
-    jsr     fp_fix               ; R8 = integer
-    add.q   r15, r8, #1          ; R15 = dim1 elements (size+1, 0-based)
-
-    ; Check for comma (2D)
+    jsr     fp_fix
+    pop     r12
+    pop     r11
+    pop     r10
+    bgez    r8, .ad_dim_nonneg
+    pop     r14
+    bra     .ad_fc
+.ad_dim_nonneg:
+    add.q   r8, r8, #1
+    lsl.l   r13, r10, #2
+    add.q   r1, r12, r13
+    store.l r8, (r1)
+    mulu.l  r11, r11, r8
+    add.q   r10, r10, #1
     load.b  r1, (r17)
-    move.q  r2, #0x2C            ; ','
-    beq     r1, r2, .ad_2d
-
-    ; 1D: skip ')'
-    load.b  r1, (r17)
+    move.q  r2, #0x2C
+    beq     r1, r2, .ad_dim_more
     move.q  r2, #0x29
-    bne     r1, r2, .ad_1d_no_close
+    beq     r1, r2, .ad_dim_done
+    pop     r14
+    bra     .ad_fc
+.ad_dim_more:
     add.q   r17, r17, #1
-.ad_1d_no_close:
-    pop     r14                  ; restore name tag
-    ; Create 1D array: total=R15, dim2=0
-    push    r17
-    move.q  r8, r15              ; total elements
-    move.q  r9, r0               ; dim2 = 0
-    jsr     arr_create
-    pop     r17
-    bra     .ad_check_comma
-
-.ad_2d:
-    add.q   r17, r17, #1         ; skip ','
-    push    r15                  ; save dim1 elements
-    jsr     expr_or              ; R8 = dim2 size (FP32)
-    jsr     fp_int
-    jsr     fp_fix               ; R8 = integer
-    add.q   r1, r8, #1           ; R1 = dim2 elements (size+1)
-    pop     r15                  ; R15 = dim1 elements
-
-    ; Skip ')'
-    load.b  r2, (r17)
-    move.q  r3, #0x29
-    bne     r2, r3, .ad_2d_no_close
+    bra     .ad_dim_parse_loop
+.ad_dim_too_many:
+    pop     r14
+    bra     .ad_fc
+.ad_dim_done:
     add.q   r17, r17, #1
-.ad_2d_no_close:
-    pop     r14                  ; restore name tag
-    ; Create 2D array: total=dim1*dim2, dim2=dim2_elems
+    pop     r14
     push    r17
-    push    r1                   ; save dim2 elements
-    mulu.l  r8, r15, r1          ; total = dim1 * dim2
-    pop     r9                   ; R9 = dim2 elements
+    jsr     arr_find
+    bnez    r8, .ad_redim_from_push
+    move.q  r8, r11              ; total elements
+    move.q  r9, r10              ; dimension count
     jsr     arr_create
     pop     r17
 
@@ -542,6 +574,18 @@ arr_dim:
     pop     r15
     pop     r14
     rts
+.ad_redim_from_push:
+    pop     r17
+.ad_redim:
+    move.q  r8, #ERR_REDIM
+    la      r9, err_msg_redim
+    jsr     raise_error
+    bra     .ad_done
+.ad_fc:
+    move.q  r8, #ERR_FC
+    la      r9, err_msg_fc
+    jsr     raise_error
+    bra     .ad_done
 
 ; ============================================================================
 ; svar_lookup - Find or create a string variable
@@ -625,16 +669,53 @@ svar_read:
 
 var_read:
     jsr     var_lookup           ; R8 = pointer to value slot
+    bnez    r28, .vr_done
     beqz    r8, .vr_zero
     load.l  r8, (r8)            ; read FP32 value
+.vr_done:
     rts
 .vr_zero:
     move.q  r8, r0               ; undefined → 0
     rts
 
 ; ============================================================================
+; var_lookup_tag - Find or create a numeric variable by pre-parsed name tag
+; ============================================================================
+; Input:  R14 = packed name tag
+; Output: R8  = pointer to 4-byte value slot
+; Clobbers: R1-R4
+
+var_lookup_tag:
+    add.q   r1, r16, #ST_VAR_START
+    load.l  r2, (r1)
+    add.q   r1, r16, #ST_VAR_END
+    load.l  r3, (r1)
+.vlt_search:
+    bge     r2, r3, .vlt_create
+    load.l  r4, (r2)
+    beq     r4, r14, .vlt_found
+    add.q   r2, r2, #8
+    bra     .vlt_search
+.vlt_found:
+    add.q   r8, r2, #4
+    rts
+.vlt_create:
+    store.l r14, (r3)
+    add.q   r8, r3, #4
+    store.l r0, (r8)
+    add.q   r3, r3, #8
+    add.q   r1, r16, #ST_VAR_END
+    store.l r3, (r1)
+    rts
+
+; ============================================================================
 ; Variable cache: 4 slots × [name_tag(4) + var_ptr(4)] = 32 bytes
 ; ============================================================================
+arr_dim_buf:
+    dc.l    0,0,0,0,0,0,0,0
+arr_index_buf:
+    dc.l    0,0,0,0,0,0,0,0
+
 var_cache:
     dc.q    0                    ; slot 0: name_tag(4) + var_ptr(4)
     dc.q    0                    ; slot 1

@@ -90,6 +90,9 @@ exec_next_line:
     ; If exec_line returns 0 in R8, continue to next line normally
     ; If R8 = 1, a GOTO/GOSUB changed R14 - use the new value
     ; If R8 = 2, END was hit - stop
+    ; If R8 = 3, runtime error was reported - stop with stacks reset
+    move.q  r1, #3
+    beq     r8, r1, .exec_error
     move.q  r1, #2
     beq     r8, r1, .exec_done
     move.q  r1, #1
@@ -99,6 +102,12 @@ exec_next_line:
     ; Re-read next-ptr from R14 (R15 may have been clobbered by statement handlers)
     load.l  r14, (r14)          ; R14 = next-line pointer
     bra     exec_next_line
+
+.exec_error:
+    la      r1, BASIC_GOSUB_STACK
+    add.q   r2, r16, #ST_GOSUB_SP
+    store.l r1, (r2)
+    bra     .exec_done
 
 .exec_done:
     pop     r25
@@ -120,10 +129,20 @@ exec_next_line:
 exec_line:
     push    r28
     move.q  r28, r0              ; R28 = return code (0 = normal)
+    la      r1, if_else_boundary
+    store.l r0, (r1)
 
 .el_next_stmt:
     ; Skip spaces
     jsr     exec_skip_spaces
+
+    ; True IF clauses set an ELSE boundary so the statement loop stops before
+    ; executing the ELSE clause.
+    la      r1, if_else_boundary
+    load.l  r1, (r1)
+    beqz    r1, .el_no_else_boundary
+    bge     r17, r1, .el_done
+.el_no_else_boundary:
 
     ; Get current token/character
     load.b  r1, (r17)
@@ -385,6 +404,7 @@ exec_do_let:
     jsr     exec_skip_spaces
     ; Parse variable name and get pointer to value slot
     jsr     var_lookup           ; R8 = value slot, R9 = 0(num)/1(str)
+    bnez    r28, .let_done
     beqz    r8, .let_done        ; error: no variable name
     move.q  r22, r8              ; R22 = save value slot pointer
     move.q  r23, r9              ; R23 = type flag (0=num, 1=str)
@@ -407,12 +427,14 @@ exec_do_let:
 
     ; Numeric RHS
     jsr     expr_eval            ; R8 = FP32 result
+    bnez    r28, .let_done
     store.l r8, (r22)
     rts
 
 .let_str_rhs:
     ; String RHS
     jsr     str_eval             ; R8 = pointer to string data
+    bnez    r28, .let_done
     store.l r8, (r22)
 .let_done:
     rts
@@ -429,7 +451,14 @@ exec_do_print:
     beq     r1, r2, .print_crlf
 
 .print_loop:
+    la      r1, if_else_boundary
+    load.l  r1, (r1)
+    beqz    r1, .print_no_boundary
+    bge     r17, r1, .print_crlf
+.print_no_boundary:
     load.b  r1, (r17)
+    move.q  r2, #0x20
+    beq     r1, r2, .print_space
     beqz    r1, .print_crlf      ; end of line → CRLF
     move.q  r2, #0x3A            ; ':'
     beq     r1, r2, .print_crlf
@@ -452,6 +481,7 @@ exec_do_print:
 
     ; Numeric: evaluate and print
     jsr     expr_eval            ; R8 = FP32 value
+    bnez    r28, .print_no_crlf
     push    r14                  ; fp_print clobbers R14/R15
     push    r15
     jsr     fp_print             ; print the number
@@ -461,11 +491,15 @@ exec_do_print:
 
 .print_str_expr:
     jsr     str_eval             ; R8 = pointer to string data
+    bnez    r28, .print_no_crlf
     move.q  r3, r8
 .print_str_chars:
     load.b  r2, (r3)
     beqz    r2, .print_loop
-    store.b r2, (r26)
+    push    r3
+    move.q  r8, r2
+    jsr     term_putc
+    pop     r3
     add.q   r3, r3, #1
     bra     .print_str_chars
 
@@ -476,6 +510,10 @@ exec_do_print:
     beqz    r1, .print_no_crlf
     move.q  r2, #0x3A
     beq     r1, r2, .print_no_crlf
+    bra     .print_loop
+
+.print_space:
+    add.q   r17, r17, #1
     bra     .print_loop
 
 .print_comma:
@@ -494,7 +532,8 @@ exec_do_print:
     move.q  r2, #0x22            ; closing '"'
     beq     r1, r2, .print_str_end
     ; Output the character
-    store.b r1, (r26)
+    move.q  r8, r1
+    jsr     term_putc
     add.q   r17, r17, #1
     bra     .print_str_loop
 .print_str_end:
@@ -514,9 +553,14 @@ exec_do_goto:
     jsr     exec_parse_linenum   ; R8 = line number
     ; Search for the target line
     jsr     exec_find_line       ; R14 = new line pointer (or 0)
-    beqz    r14, .goto_done      ; line not found → error (silently stop)
+    beqz    r14, .goto_missing
     move.q  r28, #1              ; signal: R14 was changed
 .goto_done:
+    rts
+.goto_missing:
+    move.q  r8, #ERR_UNDEF_LINE
+    la      r9, err_msg_undef_line
+    jsr     raise_error
     rts
     ; === END exec_do_goto ===
 
@@ -527,6 +571,9 @@ exec_do_gosub:
     ; Stack frame: [return line ptr (4)] [return text ptr offset (4)] [marker (4)]
     add.q   r1, r16, #ST_GOSUB_SP
     load.l  r2, (r1)            ; R2 = current GOSUB stack pointer
+    add.q   r3, r2, #12
+    move.l  r4, #BASIC_GOSUB_END
+    bgt     r3, r4, .gosub_overflow
 
     ; Push marker (0x47535542 = "GSUB")
     move.l  r3, #0x47535542
@@ -545,9 +592,17 @@ exec_do_gosub:
     ; Now do the GOTO part
     jsr     exec_parse_linenum   ; R8 = target line number
     jsr     exec_find_line       ; R14 = target line pointer
-    beqz    r14, .gosub_done     ; not found → error
+    beqz    r14, .gosub_missing
     move.q  r28, #1              ; R14 changed
 .gosub_done:
+    rts
+.gosub_missing:
+    move.q  r8, #ERR_UNDEF_LINE
+    la      r9, err_msg_undef_line
+    jsr     raise_error
+    rts
+.gosub_overflow:
+    move.q  r28, #2
     rts
     ; === END exec_do_gosub ===
 
@@ -556,6 +611,8 @@ exec_do_return:
     ; Pop GOSUB stack
     add.q   r1, r16, #ST_GOSUB_SP
     load.l  r2, (r1)            ; R2 = GOSUB stack pointer
+    move.l  r3, #BASIC_GOSUB_STACK
+    ble     r2, r3, .return_no_gosub
 
     ; Pop text offset
     sub.q   r2, r2, #4
@@ -566,6 +623,8 @@ exec_do_return:
     ; Pop marker
     sub.q   r2, r2, #4
     load.l  r4, (r2)            ; R4 = marker (should be "GSUB")
+    move.l  r5, #0x47535542
+    bne     r4, r5, .return_no_gosub
     ; Update GOSUB SP
     store.l r2, (r1)
 
@@ -594,6 +653,11 @@ exec_do_return:
     move.q  r14, r15
     move.q  r28, #1              ; R14 changed
     rts
+.return_no_gosub:
+    move.q  r8, #ERR_RET_NO_GOSUB
+    la      r9, err_msg_ret_no_gosub
+    jsr     raise_error
+    rts
     ; === END exec_do_return ===
 
 ; --- IF ---
@@ -617,16 +681,29 @@ exec_do_if:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x30            ; '0'
-    blt     r1, r2, .if_done    ; not a digit → execute as statement (R28=0)
+    blt     r1, r2, .if_true_scan_else ; not a digit → execute as statement
     move.q  r2, #0x39            ; '9'
-    bgt     r1, r2, .if_done    ; not a digit → execute as statement (R28=0)
+    bgt     r1, r2, .if_true_scan_else ; not a digit → execute as statement
     ; It's a line number - implicit GOTO
     bra     exec_do_goto
+
+.if_true_scan_else:
+    move.q  r3, r17
+.if_true_else_loop:
+    load.b  r1, (r3)
+    beqz    r1, .if_done
+    move.q  r2, #TK_ELSE
+    beq     r1, r2, .if_true_else_found
+    add.q   r3, r3, #1
+    bra     .if_true_else_loop
+.if_true_else_found:
+    la      r1, if_else_boundary
+    store.l r3, (r1)
+    bra     .if_done
 
 .if_false:
     ; Condition is FALSE.
     ; First, skip forward to the THEN token (the one for THEN, not ELSE).
-    ; Both THEN and ELSE tokenize to TK_THEN in EhBASIC.
 .if_find_then:
     load.b  r1, (r17)
     beqz    r1, .if_done          ; no THEN found → end of line
@@ -637,12 +714,12 @@ exec_do_if:
 
 .if_past_then:
     add.q   r17, r17, #1         ; consume the THEN token
-    ; Now scan for ELSE (a second TK_THEN) or end of line.
-    ; Everything between here and ELSE is the THEN-clause (skipped).
+    ; Now scan for ELSE or end of line. Everything between here and ELSE is
+    ; the THEN-clause (skipped).
 .if_seek_else:
     load.b  r1, (r17)
     beqz    r1, .if_done          ; no ELSE → done, produce no output
-    move.q  r2, #TK_THEN
+    move.q  r2, #TK_ELSE
     beq     r1, r2, .if_else_found
     add.q   r17, r17, #1
     bra     .if_seek_else
@@ -653,6 +730,13 @@ exec_do_if:
 .if_done:
     rts
     ; === END exec_do_if ===
+
+; --- ELSE ---
+exec_do_else:
+    move.q  r8, #ERR_SYNTAX
+    la      r9, err_msg_syntax
+    jsr     raise_error
+    rts
 
 ; --- FOR ---
 exec_do_for:
@@ -714,6 +798,9 @@ exec_do_for:
     ;        [step FP32 (4)] [line ptr (4)] [text ptr (4)] = 24 bytes
     add.q   r1, r16, #ST_GOSUB_SP
     load.l  r2, (r1)
+    add.q   r3, r2, #24
+    move.l  r4, #BASIC_GOSUB_END
+    bgt     r3, r4, .for_overflow
 
     move.l  r3, #0x464F5220      ; "FOR "
     store.l r3, (r2)
@@ -738,6 +825,9 @@ exec_do_for:
     ; Continue execution normally (body of loop follows)
 .for_done:
     rts
+.for_overflow:
+    move.q  r28, #2
+    rts
     ; === END exec_do_for ===
 
 ; --- NEXT ---
@@ -745,6 +835,8 @@ exec_do_next:
     ; Find the most recent FOR frame on GOSUB stack
     add.q   r1, r16, #ST_GOSUB_SP
     load.l  r2, (r1)            ; R2 = top of GOSUB stack
+    move.l  r3, #BASIC_GOSUB_STACK
+    ble     r2, r3, .next_err
 
     ; Walk back to find FOR marker
     sub.q   r2, r2, #24         ; back up 24 bytes (FOR frame size)
@@ -807,7 +899,11 @@ exec_do_next:
     sub.q   r2, r2, #24
     store.l r2, (r1)
     ; R28=0, continue to next statement
+    rts
 .next_err:
+    move.q  r8, #ERR_NEXT_NO_FOR
+    la      r9, err_msg_next_no_for
+    jsr     raise_error
     rts
     ; === END exec_do_next ===
 
@@ -963,6 +1059,42 @@ exec_do_clear:
     store.l r1, (r2)
     rts
     ; === END exec_do_clear ===
+
+; --- RUN ---
+exec_do_run:
+    ; Restart stored program from the first line. Variables are preserved, while
+    ; control/data stacks reset like a fresh exec_run.
+    add.q   r1, r16, #ST_DIRECT_MODE
+    store.l r0, (r1)
+    add.q   r1, r16, #ST_DATA_PTR
+    store.l r0, (r1)
+    la      r1, BASIC_GOSUB_STACK
+    add.q   r2, r16, #ST_GOSUB_SP
+    store.l r1, (r2)
+    load.l  r14, (r16)
+    move.q  r28, #1
+    rts
+
+; --- LIST ---
+exec_do_list:
+    push    r14
+    move.q  r8, r0
+    move.q  r9, #0xFFFFFF
+    jsr     line_list
+    pop     r14
+    rts
+
+; --- NEW ---
+exec_do_new:
+    jsr     line_new
+    jsr     var_init
+    add.q   r1, r16, #ST_DATA_PTR
+    store.l r0, (r1)
+    la      r1, BASIC_GOSUB_STACK
+    add.q   r2, r16, #ST_GOSUB_SP
+    store.l r1, (r2)
+    move.q  r28, #2
+    rts
 
 ; --- SWAP ---
 exec_do_swap:
@@ -1210,24 +1342,65 @@ exec_do_loop:
 
 ; --- INPUT ---
 exec_do_input:
-    ; Minimal INPUT implementation: INPUT A[,B,...]
-    ; Reads one line per variable from terminal and parses numeric expression.
+    ; INPUT ["prompt";] var[,var...]
+    ; Reads one line per variable from terminal.
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x22            ; optional quoted prompt
+    bne     r1, r2, .input_loop
+    add.q   r17, r17, #1         ; consume opening quote
+.input_prompt_loop:
+    load.b  r1, (r17)
+    beqz    r1, .input_done
+    move.q  r2, #0x22
+    beq     r1, r2, .input_prompt_end
+    move.q  r8, r1
+    jsr     putchar
+    add.q   r17, r17, #1
+    bra     .input_prompt_loop
+.input_prompt_end:
+    add.q   r17, r17, #1         ; consume closing quote
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x3B            ; ';'
+    beq     r1, r2, .input_prompt_sep
+    move.q  r2, #0x2C            ; ','
+    bne     r1, r2, .input_loop
+.input_prompt_sep:
+    add.q   r17, r17, #1
 .input_loop:
     jsr     exec_skip_spaces
-    jsr     var_lookup           ; R8 = value slot pointer
+    jsr     var_lookup           ; R8 = value slot pointer, R9 = type
     beqz    r8, .input_done
     move.q  r22, r8              ; save value slot pointer
+    move.q  r24, r9              ; save type flag
     move.q  r23, r17             ; save statement cursor
 
-    ; Read line into BASIC_LINE_BUF and parse as expression
+    ; Read line into BASIC_LINE_BUF.
     la      r8, BASIC_LINE_BUF
     move.q  r9, #80
     jsr     read_line
+    bnez    r24, .input_store_string
+
+    ; Numeric variable: parse line as expression.
     la      r17, BASIC_LINE_BUF
     jsr     expr_eval            ; R8 = FP32 value
     store.l r8, (r22)
+    bra     .input_after_store
+
+.input_store_string:
+    la      r8, BASIC_LINE_BUF
+    jsr     str_len
+    jsr     str_alloc
+    bnez    r28, .input_done
+    beqz    r8, .input_done
+    move.q  r3, r8               ; allocated string pointer
+    move.q  r9, #BASIC_LINE_BUF
+    jsr     str_copy
+    store.l r3, (r22)
 
     ; Restore statement cursor and continue list parsing
+.input_after_store:
     move.q  r17, r23
     jsr     exec_skip_spaces
     load.b  r1, (r17)
@@ -1258,9 +1431,14 @@ exec_do_poke:
 .poke_parse:
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = address (FP32)
+    bnez    r28, .poke_done
     jsr     fp_int               ; R8 = INT(addr) FP32
     jsr     fp_fix               ; R8 = integer
     move.q  r22, r8              ; R22 = address
+    bnez    r23, .poke_addr_ok
+    and.l   r1, r22, #3
+    bnez    r1, .poke_fc_error
+.poke_addr_ok:
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C            ; ','
@@ -1268,6 +1446,7 @@ exec_do_poke:
     add.q   r17, r17, #1         ; consume ','
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = value (FP32)
+    bnez    r28, .poke_done
     jsr     fp_int               ; R8 = INT(value) FP32
     jsr     fp_fix               ; R8 = integer
     beqz    r23, .poke_32bit
@@ -1276,6 +1455,11 @@ exec_do_poke:
 .poke_32bit:
     store.l r8, (r22)            ; write 32-bit to address
 .poke_done:
+    rts
+.poke_fc_error:
+    move.q  r8, #ERR_FC
+    la      r9, err_msg_fc
+    jsr     raise_error
     rts
     ; === END exec_do_poke ===
 
@@ -1349,7 +1533,9 @@ exec_do_call:
     push    r16
     push    r17
     push    r26
+    push    r28
     jsr     (r9)                 ; register-indirect JSR
+    pop     r28
     pop     r26
     pop     r17
     pop     r16
@@ -1375,8 +1561,104 @@ exec_do_troff:
     rts
     ; === END exec_do_troff ===
 
+; --- DEF FN ---
+exec_do_def:
+    push    r14
+    push    r15
+    push    r22
+    push    r23
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #TK_FN
+    beq     r1, r2, .def_consume_fn_token
+    move.q  r2, #0x46            ; raw "FN" prefix in names like FND
+    bne     r1, r2, .def_troff   ; legacy TROFF token alias
+    load.b  r1, 1(r17)
+    move.q  r2, #0x4E
+    bne     r1, r2, .def_troff
+    add.q   r17, r17, #2
+    bra     .def_after_fn
+.def_consume_fn_token:
+    add.q   r17, r17, #1
+.def_after_fn:
+    jsr     exec_skip_spaces
+    jsr     var_parse_name       ; R14 = function name tag
+    move.q  r22, r14
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x28            ; '('
+    bne     r1, r2, .def_syntax
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    jsr     var_parse_name       ; R14 = parameter tag
+    move.q  r23, r14
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x29            ; ')'
+    bne     r1, r2, .def_syntax
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #TK_EQUAL
+    beq     r1, r2, .def_has_eq
+    move.q  r2, #0x3D
+    bne     r1, r2, .def_syntax
+.def_has_eq:
+    add.q   r17, r17, #1
+    la      r1, fn_table
+    move.q  r2, #8
+    move.q  r3, r0               ; first empty slot
+.def_find_slot:
+    beqz    r2, .def_store_slot
+    load.l  r4, (r1)             ; function name tag
+    beq     r4, r22, .def_use_slot
+    bnez    r4, .def_next_slot
+    bnez    r3, .def_next_slot
+    move.q  r3, r1               ; remember empty slot
+.def_next_slot:
+    add.q   r1, r1, #16
+    sub.q   r2, r2, #1
+    bra     .def_find_slot
+.def_store_slot:
+    beqz    r3, .def_syntax
+    move.q  r1, r3
+.def_use_slot:
+    store.l r22, (r1)
+    store.l r23, 4(r1)
+    store.l r17, 8(r1)
+    store.l r0, 12(r1)
+.def_skip:
+    load.b  r1, (r17)
+    beqz    r1, .def_done
+    add.q   r17, r17, #1
+    bra     .def_skip
+.def_done:
+    pop     r23
+    pop     r22
+    pop     r15
+    pop     r14
+    rts
+.def_syntax:
+    move.q  r8, #ERR_SYNTAX
+    la      r9, err_msg_syntax
+    jsr     raise_error
+    pop     r23
+    pop     r22
+    pop     r15
+    pop     r14
+    rts
+.def_troff:
+    pop     r23
+    pop     r22
+    pop     r15
+    pop     r14
+    bra     exec_do_troff
+
 ; --- Unknown token handler ---
 exec_do_unknown:
+    move.q  r8, #ERR_SYNTAX
+    la      r9, err_msg_syntax
+    jsr     raise_error
     rts
     ; === END exec_do_unknown ===
 
@@ -1403,7 +1685,7 @@ stmt_jump_table:
     dc.l    exec_do_let          ;  7 = TK_LET      (0x87)
     dc.l    exec_do_dec          ;  8 = TK_DEC      (0x88)
     dc.l    exec_do_goto         ;  9 = TK_GOTO     (0x89)
-    dc.l    exec_do_unknown      ; 10 = TK_RUN      (0x8A) - not a stmt token
+    dc.l    exec_do_run          ; 10 = TK_RUN      (0x8A)
     dc.l    exec_do_if           ; 11 = TK_IF       (0x8B)
     dc.l    exec_do_restore      ; 12 = TK_RESTORE  (0x8C)
     dc.l    exec_do_gosub        ; 13 = TK_GOSUB    (0x8D)
@@ -1416,7 +1698,7 @@ stmt_jump_table:
     dc.l    exec_do_wait         ; 20 = TK_WAIT     (0x94)
     dc.l    exec_do_load         ; 21 = TK_LOAD     (0x95)
     dc.l    exec_do_save         ; 22 = TK_SAVE     (0x96)
-    dc.l    exec_do_troff        ; 23 = TK_DEF→TROFF(0x97)
+    dc.l    exec_do_def          ; 23 = TK_DEF      (0x97)
     dc.l    exec_do_poke         ; 24 = TK_POKE     (0x98)
     dc.l    exec_do_doke         ; 25 = TK_DOKE     (0x99)
     dc.l    exec_do_loke         ; 26 = TK_LOKE     (0x9A)
@@ -1425,9 +1707,9 @@ stmt_jump_table:
     dc.l    exec_do_loop         ; 29 = TK_LOOP     (0x9D)
     dc.l    exec_do_print        ; 30 = TK_PRINT    (0x9E)
     dc.l    exec_do_cont         ; 31 = TK_CONT     (0x9F)
-    dc.l    exec_do_unknown      ; 32 = unused      (0xA0)
+    dc.l    exec_do_list         ; 32 = TK_LIST     (0xA0)
     dc.l    exec_do_clear        ; 33 = TK_CLEAR    (0xA1)
-    dc.l    exec_do_unknown      ; 34 = unused      (0xA2)
+    dc.l    exec_do_new          ; 34 = TK_NEW      (0xA2)
     dc.l    exec_do_bload        ; 35 = TK_WIDTH→BLOAD (0xA3)
     dc.l    exec_do_get          ; 36 = TK_GET      (0xA4)
     dc.l    exec_do_swap         ; 37 = TK_SWAP     (0xA5)
@@ -1436,7 +1718,7 @@ stmt_jump_table:
     dc.l    exec_do_unknown      ; 40 = TK_THEN     (0xA8)
     dc.l    exec_do_unknown      ; 41 = TK_TO       (0xA9)
     dc.l    exec_do_unknown      ; 42 = TK_STEP     (0xAA)
-    dc.l    exec_do_unknown      ; 43 = unused      (0xAB)
+    dc.l    exec_do_else         ; 43 = TK_ELSE     (0xAB)
     dc.l    exec_do_unknown      ; 44 = unused      (0xAC)
     dc.l    exec_do_unknown      ; 45 = TK_NOT      (0xAD)
     dc.l    exec_do_unknown      ; 46 = unused      (0xAE)
@@ -1523,6 +1805,19 @@ stmt_jump_table:
     dc.l    exec_do_vertex       ;125  (0xFD) TK_VERTEX
     dc.l    exec_do_triangle     ;126  (0xFE) TK_TRIANGLE
     dc.l    exec_do_texture      ;127  (0xFF) TK_TEXTURE
+
+if_else_boundary:
+    dc.l    0
+; DEF FN table: 8 entries × [name tag, parameter tag, body pointer, active flag]
+fn_table:
+    dc.l    0,0,0,0
+    dc.l    0,0,0,0
+    dc.l    0,0,0,0
+    dc.l    0,0,0,0
+    dc.l    0,0,0,0
+    dc.l    0,0,0,0
+    dc.l    0,0,0,0
+    dc.l    0,0,0,0
 
 ; ============================================================================
 ; Helper: exec_skip_spaces

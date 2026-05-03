@@ -201,9 +201,9 @@ hw_sound:
 .snd_play_status_done:
     move.q  r3, #3
     bne     r2, r3, .snd_done
-    la      r8, .msg_play_error
-    jsr     print_string
-    jsr     print_crlf
+    move.q  r8, #ERR_FC
+    la      r9, .msg_play_error
+    jsr     raise_error
     rts
 
 .snd_play_stop:
@@ -221,7 +221,7 @@ hw_sound:
     store.l r2, (r1)
     rts
 .msg_play_error:
-    dc.b    "?PLAY ERROR", 0
+    dc.b    "PLAY", 0
     align   4
 
 .snd_filter:

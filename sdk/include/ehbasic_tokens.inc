@@ -54,7 +54,7 @@ TK_BITCLR     equ 0xA7
 TK_TAB        equ 0xA8
 TK_TO         equ 0xA9
 TK_FN         equ 0xAA
-TK_SPC        equ 0xAB
+TK_ELSE       equ 0xAB
 TK_THEN       equ 0xAC
 TK_NOT        equ 0xAD
 TK_STEP       equ 0xAE

@@ -486,6 +486,8 @@ fp_print_to_buf:
     move.q  r8, r1
     jsr     str_alloc
     pop     r1
+    bnez    r28, .fptb_oom
+    beqz    r8, .fptb_oom
     move.q  r9, r8               ; R9 = save heap pointer (return value)
     push    r9
     la      r3, .fptb_scratch
@@ -498,6 +500,11 @@ fp_print_to_buf:
     bra     .fptb_copy
 .fptb_copied:
     pop     r8                   ; R8 = heap string pointer
+    pop     r15
+    pop     r14
+    rts
+.fptb_oom:
+    move.q  r8, r0
     pop     r15
     pop     r14
     rts

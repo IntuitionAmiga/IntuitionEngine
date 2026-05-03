@@ -863,6 +863,41 @@ func TestEhBASIC_Tokenize_Expression(t *testing.T) {
 	}
 }
 
+func TestEhBASIC_Tokenize_CompositeComparisons(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tests := []struct {
+		input string
+		want  []byte
+	}{
+		{"A<=B", []byte{'A', 0xBD, '=', 'B'}},
+		{"A>=B", []byte{'A', 0xBB, '=', 'B'}},
+		{"A<>B", []byte{'A', 0xBD, '>', 'B'}},
+	}
+	for _, tc := range tests {
+		result := tokeniserTest(t, asmBin, tc.input)
+		if !slices.Equal(result, tc.want) {
+			t.Fatalf("tokenize %s: expected %X, got %X", tc.input, tc.want, result)
+		}
+	}
+}
+
+func TestEhBASIC_Tokenize_ShiftsRemainGreedy(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tests := []struct {
+		input string
+		want  []byte
+	}{
+		{"A<<B", []byte{'A', 0xBA, 'B'}},
+		{"A>>B", []byte{'A', 0xB9, 'B'}},
+	}
+	for _, tc := range tests {
+		result := tokeniserTest(t, asmBin, tc.input)
+		if !slices.Equal(result, tc.want) {
+			t.Fatalf("tokenize %s: expected %X, got %X", tc.input, tc.want, result)
+		}
+	}
+}
+
 func TestEhBASIC_Tokenize_GotoGosub(t *testing.T) {
 	asmBin := buildAssembler(t)
 	result := tokeniserTest(t, asmBin, "GOTO 100")
@@ -1377,6 +1412,101 @@ func TestEhBASIC_ListSingleLine(t *testing.T) {
 	}
 }
 
+func TestEhBASIC_List_NoSpuriousTerminator(t *testing.T) {
+	asmBin := buildAssembler(t)
+	body := `    ; Store line 10 with content "HELLO"
+    la      r1, BASIC_LINE_BUF
+    move.q  r2, #0x48
+    store.b r2, (r1)
+    add.q   r1, r1, #1
+    move.q  r2, #0x45
+    store.b r2, (r1)
+    add.q   r1, r1, #1
+    move.q  r2, #0x4C
+    store.b r2, (r1)
+    add.q   r1, r1, #1
+    move.q  r2, #0x4C
+    store.b r2, (r1)
+    add.q   r1, r1, #1
+    move.q  r2, #0x4F
+    store.b r2, (r1)
+    add.q   r1, r1, #1
+    store.b r0, (r1)
+
+    move.q  r8, #10
+    la      r9, BASIC_LINE_BUF
+    move.q  r10, #5
+    jsr     line_store
+
+    move.q  r8, r0
+    move.q  r9, #0xFFFFFF
+    jsr     line_list
+`
+	binary := assembleLineEditorTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.loadBytes(binary)
+	h.runCycles(5_000_000)
+
+	if out := h.readOutput(); out != "10 HELLO\r\n" {
+		t.Fatalf("LIST output mismatch: got %q", out)
+	}
+}
+
+func TestEhBASIC_Delete_Only_Line(t *testing.T) {
+	asmBin := buildAssembler(t)
+	body := `    ; Store line 10
+    la      r1, BASIC_LINE_BUF
+    move.q  r2, #0x41
+    store.b r2, (r1)
+    add.q   r1, r1, #1
+    store.b r0, (r1)
+    move.q  r8, #10
+    la      r9, BASIC_LINE_BUF
+    move.q  r10, #1
+    jsr     line_store
+
+    ; Delete line 10
+    move.q  r8, #10
+    la      r9, BASIC_LINE_BUF
+    move.q  r10, r0
+    jsr     line_store
+
+    ; Capture state and LIST output for the empty program.
+    la      r1, 0x021000
+    load.l  r2, (r16)
+    store.l r2, (r1)
+    add.q   r1, r1, #4
+    add.q   r3, r16, #4
+    load.l  r2, (r3)
+    store.l r2, (r1)
+    add.q   r1, r1, #4
+    la      r2, BASIC_PROG_START
+    load.l  r3, (r2)
+    store.l r3, (r1)
+
+    move.q  r8, r0
+    move.q  r9, #0xFFFFFF
+    jsr     line_list
+`
+	binary := assembleLineEditorTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.loadBytes(binary)
+	h.runCycles(5_000_000)
+
+	if progStart := h.bus.Read32(0x021000); progStart != 0x023000 {
+		t.Fatalf("delete only line: ST_PROG_START expected 0x023000, got 0x%08X", progStart)
+	}
+	if progEnd := h.bus.Read32(0x021004); progEnd != 0x023004 {
+		t.Fatalf("delete only line: ST_PROG_END expected 0x023004, got 0x%08X", progEnd)
+	}
+	if sentinel := h.bus.Read32(0x021008); sentinel != 0 {
+		t.Fatalf("delete only line: sentinel expected 0, got 0x%08X", sentinel)
+	}
+	if out := h.readOutput(); out != "" {
+		t.Fatalf("delete only line: LIST should be empty, got %q", out)
+	}
+}
+
 // =============================================================================
 // Phase 3d Tests - Expression Evaluator
 // =============================================================================
@@ -1535,6 +1665,23 @@ func TestEhBASIC_Expr_Division(t *testing.T) {
 	assertF32Equal(t, "10/4", got, f32bits(2.5), 0)
 }
 
+func TestEhBASIC_Expr_ScientificNotation(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tests := []struct {
+		expr string
+		want float32
+	}{
+		{"1E3", 1000},
+		{"2e-2", 0.02},
+		{"1.5E2", 150},
+		{"3E+1", 30},
+	}
+	for _, tc := range tests {
+		got := exprEvalTest(t, asmBin, tc.expr)
+		assertF32Equal(t, tc.expr, got, f32bits(tc.want), 8)
+	}
+}
+
 func TestEhBASIC_Expr_Power(t *testing.T) {
 	asmBin := buildAssembler(t)
 	got := exprEvalTest(t, asmBin, "2^10")
@@ -1552,6 +1699,89 @@ func TestEhBASIC_Expr_Comparison_False(t *testing.T) {
 	asmBin := buildAssembler(t)
 	got := exprEvalTest(t, asmBin, "2<1")
 	assertF32Equal(t, "2<1", got, f32bits(0.0), 0)
+}
+
+func TestEhBASIC_Expr_CompositeComparisons(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tests := []struct {
+		expr string
+		want float32
+	}{
+		{"1<=1", -1.0},
+		{"1<=2", -1.0},
+		{"2<=1", 0.0},
+		{"2>=2", -1.0},
+		{"3>=2", -1.0},
+		{"1>=2", 0.0},
+		{"1<>2", -1.0},
+		{"2<>2", 0.0},
+	}
+	for _, tc := range tests {
+		got := exprEvalTest(t, asmBin, tc.expr)
+		assertF32Equal(t, tc.expr, got, f32bits(tc.want), 0)
+	}
+}
+
+func TestEhBASIC_Expr_CompositeComparisonPreservesModeAcrossNestedRightSide(t *testing.T) {
+	asmBin := buildAssembler(t)
+	got := exprEvalTest(t, asmBin, "1<=(0<1)+2")
+	assertF32Equal(t, "1<=(0<1)+2", got, f32bits(-1.0), 0)
+}
+
+func TestEhBASIC_StringComparisons(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tests := []struct {
+		name    string
+		cond    string
+		wantOut string
+	}{
+		{"EqualTrue", `"A"="A"`, "Y"},
+		{"NotEqualTrue", `"A"<>"B"`, "Y"},
+		{"LessTrue", `"A"<"B"`, "Y"},
+		{"GreaterTrue", `"B">"A"`, "Y"},
+		{"LessEqualTrue", `"A"<="A"`, "Y"},
+		{"GreaterEqualTrue", `"B">="A"`, "Y"},
+		{"EqualFalse", `"A"="B"`, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := execStmtTest(t, asmBin, `10 IF `+tc.cond+` THEN PRINT "Y"`)
+			out = strings.TrimRight(out, "\r\n")
+			if out != tc.wantOut {
+				t.Fatalf("IF %s: expected %q, got %q", tc.cond, tc.wantOut, out)
+			}
+		})
+	}
+}
+
+func TestEhBASIC_StringComparisons_WithVarsAndFunctions(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 A$="AB"
+20 B$=A$
+30 IF B$="AB" THEN PRINT "EQ"
+40 IF UCASE$("ab")="AB" THEN PRINT "FN"`)
+	out = strings.TrimRight(out, "\r\n")
+	lines := strings.Split(strings.ReplaceAll(out, "\r", ""), "\n")
+	if len(lines) < 2 || lines[0] != "EQ" || lines[1] != "FN" {
+		t.Fatalf("string comparisons with vars/functions: expected EQ/FN, got %q", out)
+	}
+}
+
+func TestEhBASIC_Expr_BitShifts(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tests := []struct {
+		expr string
+		want float32
+	}{
+		{"1<<3", 8.0},
+		{"16>>2", 4.0},
+		{"3<<2", 12.0},
+		{"7>>1", 3.0},
+	}
+	for _, tc := range tests {
+		got := exprEvalTest(t, asmBin, tc.expr)
+		assertF32Equal(t, tc.expr, got, f32bits(tc.want), 0)
+	}
 }
 
 // =============================================================================
@@ -1772,6 +2002,18 @@ func readBusMem8(h *ehbasicTestHarness, addr uint32) byte {
 	return h.bus.Read8(addr)
 }
 
+func readBusString(h *ehbasicTestHarness, addr uint32, max int) string {
+	buf := make([]byte, 0, max)
+	for i := 0; i < max; i++ {
+		b := h.bus.Read8(addr + uint32(i))
+		if b == 0 {
+			break
+		}
+		buf = append(buf, b)
+	}
+	return string(buf)
+}
+
 func TestEhBASIC_PrintLiteral(t *testing.T) {
 	asmBin := buildAssembler(t)
 	out := execStmtTest(t, asmBin, `10 PRINT 42`)
@@ -1983,6 +2225,29 @@ func TestEhBASIC_MultipleVars(t *testing.T) {
 	}
 }
 
+func TestEhBASIC_Var_LongNameNoCollision(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 COUNT=1
+20 COUNTER=2
+30 PRINT COUNT
+40 PRINT COUNTER`)
+	out = strings.TrimRight(out, "\r\n")
+	lines := strings.Split(strings.ReplaceAll(out, "\r", ""), "\n")
+	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "1" || strings.TrimSpace(lines[1]) != "2" {
+		t.Fatalf("long variable names should not collide, got %q", out)
+	}
+}
+
+func TestEhBASIC_Var_FourCharNameStable(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 NAME=7
+20 PRINT NAME`)
+	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
+	if out != "7" {
+		t.Fatalf("four-char variable name: expected '7', got %q", out)
+	}
+}
+
 func TestEhBASIC_ListRange(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// Store lines 10, 20, 30. LIST 20-20 should only show line 20.
@@ -2078,6 +2343,480 @@ func TestEhBASIC_DimMulti(t *testing.T) {
 	out = strings.TrimSpace(out)
 	if out != "7" {
 		t.Fatalf("DIM B(3,3): expected '7', got %q", out)
+	}
+}
+
+func TestEhBASIC_DimThreeDimensionalArray(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 DIM C(1,2,3)
+20 C(1,2,3)=42
+30 PRINT C(1,2,3)`)
+	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
+	if out != "42" {
+		t.Fatalf("DIM C(1,2,3): expected 42, got %q", out)
+	}
+}
+
+func TestEhBASIC_ThreeDimensionalArrayBounds(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, "10 DIM C(1,1,1)\n20 PRINT C(1,1,2)\n30 PRINT 77")
+	if strings.Contains(out, "77") {
+		t.Fatalf("3D array bounds should stop before line 30, got %q", out)
+	}
+	if !strings.Contains(out, "?FC ERROR IN 20") {
+		t.Fatalf("3D array bounds: expected FC error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 10 {
+		t.Fatalf("3D array bounds: expected ERR_FC in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_ArrayDimensionBufferOverflowRaisesFCError(t *testing.T) {
+	asmBin := buildAssembler(t)
+	cases := []string{
+		"10 DIM A(1,1,1,1,1,1,1,1,1)\n20 PRINT 77",
+		"10 A(0,0,0,0,0,0,0,0,0)=1\n20 PRINT 77",
+	}
+	for _, program := range cases {
+		out, h := execStmtTestWithBus(t, asmBin, program)
+		if strings.Contains(out, "77") {
+			t.Fatalf("too many array dimensions should stop before trailing PRINT for %q, got %q", program, out)
+		}
+		if !strings.Contains(out, "?FC ERROR IN 10") {
+			t.Fatalf("too many array dimensions: expected FC error for %q, got %q", program, out)
+		}
+		if got := readBusMem32(h, 0x022000+0x38); got != 10 {
+			t.Fatalf("too many array dimensions: expected ERR_FC for %q, got %d", program, got)
+		}
+	}
+}
+
+func TestEhBASIC_ArrayBoundsRaiseFCError(t *testing.T) {
+	asmBin := buildAssembler(t)
+	cases := []string{
+		"10 DIM A(2)\n20 PRINT A(3)",
+		"10 DIM A(2)\n20 PRINT A(-1)",
+		"10 DIM B(1,1)\n20 PRINT B(2,0)",
+		"10 DIM B(1,1)\n20 PRINT B(0,2)",
+	}
+	for _, program := range cases {
+		out, h := execStmtTestWithBus(t, asmBin, program+"\n30 PRINT 77")
+		if strings.Contains(out, "77") {
+			t.Fatalf("array bounds should stop before trailing line for %q, got %q", program, out)
+		}
+		if !strings.Contains(out, "?FC ERROR IN 20") {
+			t.Fatalf("array bounds: expected FC error for %q, got %q", program, out)
+		}
+		if got := readBusMem32(h, 0x022000+0x38); got != 10 {
+			t.Fatalf("array bounds: expected ERR_FC for %q, got %d", program, got)
+		}
+	}
+}
+
+func TestEhBASIC_DimDuplicateRaisesRedimError(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, "10 DIM A(2)\n20 DIM A(3)\n30 PRINT 77")
+	if strings.Contains(out, "77") {
+		t.Fatalf("duplicate DIM should stop before line 30, got %q", out)
+	}
+	if !strings.Contains(out, "?REDIM ERROR IN 20") {
+		t.Fatalf("duplicate DIM: expected REDIM error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 11 {
+		t.Fatalf("duplicate DIM: expected ERR_REDIM in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_TokenizeElseDistinctFromThen(t *testing.T) {
+	asmBin := buildAssembler(t)
+	result := tokeniserTest(t, asmBin, `IF 1 THEN PRINT 1 ELSE PRINT 2`)
+	hasThen := slices.Contains(result, 0xAC)
+	hasElse := slices.Contains(result, 0xAB)
+	if !hasThen || !hasElse {
+		t.Fatalf("tokenize ELSE distinct: expected TK_THEN 0xAC and TK_ELSE 0xAB in %X", result)
+	}
+}
+
+func TestEhBASIC_IfStandaloneElse_Syntax(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, "10 ELSE PRINT 1\n20 PRINT 77")
+	if strings.Contains(out, "77") {
+		t.Fatalf("standalone ELSE should stop before line 20, got %q", out)
+	}
+	if !strings.Contains(out, "?SYNTAX ERROR IN 10") {
+		t.Fatalf("standalone ELSE: expected syntax error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 1 {
+		t.Fatalf("standalone ELSE: expected ERR_SYNTAX in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_DefFn_Simple(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, "10 DEF FND(X)=X*2+1\n20 PRINT FND(3)")
+	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
+	if out != "7" {
+		t.Fatalf("DEF FN simple: expected 7, got %q", out)
+	}
+}
+
+func TestEhBASIC_DefFn_ParamShadow(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, "10 X=10\n20 DEF FND(X)=X+1\n30 PRINT FND(3)\n40 PRINT X")
+	lines := strings.Split(strings.ReplaceAll(strings.TrimRight(out, "\r\n"), "\r", ""), "\n")
+	if len(lines) != 2 || strings.TrimSpace(lines[0]) != "4" || strings.TrimSpace(lines[1]) != "10" {
+		t.Fatalf("DEF FN param shadow: expected 4 then 10, got %q", out)
+	}
+}
+
+func TestEhBASIC_DefFn_MultipleDefinitions(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, "10 DEF FNA(X)=X+1\n20 DEF FNB(X)=X*2\n30 PRINT FNA(1)\n40 PRINT FNB(3)\n50 PRINT FNA(4)")
+	lines := strings.Split(strings.ReplaceAll(strings.TrimRight(out, "\r\n"), "\r", ""), "\n")
+	if len(lines) != 3 ||
+		strings.TrimSpace(lines[0]) != "2" ||
+		strings.TrimSpace(lines[1]) != "6" ||
+		strings.TrimSpace(lines[2]) != "5" {
+		t.Fatalf("multiple DEF FN definitions should stay distinct, got %q", out)
+	}
+}
+
+func TestEhBASIC_DefFn_RecursiveBlocked(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, "10 DEF FNR(X)=FNR(X)\n20 PRINT FNR(1)\n30 PRINT 77")
+	if strings.Contains(out, "77") {
+		t.Fatalf("recursive DEF FN should stop before line 30, got %q", out)
+	}
+	if !strings.Contains(out, "?ILLEGAL QUANTITY ERROR IN 20") {
+		t.Fatalf("recursive DEF FN: expected illegal quantity error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 7 {
+		t.Fatalf("recursive DEF FN: expected ERR_ILLEGAL_QTY in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_UnknownStatementRaisesSyntax(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, "10 THEN\n20 PRINT 77")
+	if strings.Contains(out, "77") {
+		t.Fatalf("unknown statement token should stop before line 20, got %q", out)
+	}
+	if !strings.Contains(out, "?SYNTAX ERROR IN 10") {
+		t.Fatalf("unknown statement token: expected syntax error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 1 {
+		t.Fatalf("unknown statement token: expected ERR_SYNTAX in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_POS_TracksPrintColumn(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 PRINT "ABC";POS(0)
+20 PRINT POS(0)`)
+	lines := strings.Split(strings.ReplaceAll(strings.TrimRight(out, "\r\n"), "\r", ""), "\n")
+	if len(lines) != 2 || strings.TrimSpace(lines[0]) != "ABC3" || strings.TrimSpace(lines[1]) != "0" {
+		t.Fatalf("POS should track print column and reset after newline, got %q", out)
+	}
+}
+
+func TestEhBASIC_StringHeap_GC_Reclaims(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 FOR I=1 TO 3000
+20 A$="0123456789"
+30 NEXT
+40 PRINT A$`)
+	out = strings.TrimRight(out, "\r\n")
+	if strings.TrimSpace(out) != "0123456789" {
+		t.Fatalf("string heap GC should reclaim overwritten strings, got %q", out)
+	}
+}
+
+func TestEhBASIC_StringHeap_GC_PreservesConcatTemporaries(t *testing.T) {
+	asmBin := buildAssembler(t)
+	body := `    ; Put an old live string root above the heap base so compaction copies
+    ; across the unrooted temporary area if str_eval does not protect it.
+    la      r1, 0x058000
+    add.q   r2, r16, #ST_SVAR_START
+    store.l r1, (r2)
+    add.q   r2, r16, #ST_SVAR_END
+    add.q   r3, r1, #8
+    store.l r3, (r2)
+    move.l  r4, #0x41414141
+    store.l r4, (r1)
+    move.l  r5, #BASIC_STR_TEMP
+    add.q   r5, r5, #16
+    store.l r5, 4(r1)
+    move.q  r6, #200
+.fill_root:
+    move.q  r7, #0x58
+    store.b r7, (r5)
+    add.q   r5, r5, #1
+    sub.q   r6, r6, #1
+    bnez    r6, .fill_root
+    store.b r0, (r5)
+
+    ; Build two live temporaries at the heap base, then force the concat
+    ; allocation to collect before it copies them.
+    la      r17, .expr
+    la      r1, BASIC_STR_TEMP
+    add.q   r2, r16, #ST_HEAP_TOP
+    store.l r1, (r2)
+    jsr     str_primary
+    move.q  r22, r8
+    add.q   r17, r17, #1
+    jsr     str_primary
+    move.q  r23, r8
+    move.l  r1, #BASIC_STR_END
+    sub.q   r1, r1, #1
+    add.q   r2, r16, #ST_HEAP_TOP
+    store.l r1, (r2)
+    move.q  r8, r22
+    jsr     str_gc_push
+    move.q  r8, r23
+    jsr     str_gc_push
+    move.q  r8, #16
+    jsr     str_alloc
+    move.q  r24, r8
+    jsr     str_gc_pop
+    move.q  r23, r8
+    jsr     str_gc_pop
+    move.q  r22, r8
+    move.q  r8, r24
+    move.q  r9, r22
+    jsr     str_copy
+    move.q  r9, r23
+    jsr     str_copy
+    la      r8, 0x021000
+    move.q  r9, r24
+    jsr     str_copy
+    bra     .done
+.expr:
+    dc.b    0x22, "ABCDEFGH", 0x22, 0x2B, 0x22, "ijklmnop", 0x22, 0
+    align 8
+.done:`
+	binary := assembleExecTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.loadBytes(binary)
+	h.runCycles(1_000_000)
+	got := readBusString(h, 0x021000, 32)
+	if got != "ABCDEFGHijklmnop" {
+		t.Fatalf("GC should preserve concat temporaries, got %q", got)
+	}
+}
+
+func TestEhBASIC_StringHeap_GC_PreservesStringFunctionSourceDuringLaterArgs(t *testing.T) {
+	asmBin := buildAssembler(t)
+	const sourceLen = 16350
+	source := strings.Repeat("A", sourceLen)
+
+	emitSource := func(b *strings.Builder) {
+		for len(source) > 0 {
+			n := 96
+			if len(source) < n {
+				n = len(source)
+			}
+			fmt.Fprintf(b, "    dc.b    %q\n", source[:n])
+			source = source[n:]
+		}
+	}
+	runCase := func(name string, token byte, tail string) {
+		t.Run(name, func(t *testing.T) {
+			source = strings.Repeat("A", sourceLen)
+			var expr strings.Builder
+			fmt.Fprintf(&expr, "    dc.b    0x%02X, 0x28, 0x22\n", token)
+			emitSource(&expr)
+			expr.WriteString(tail)
+
+			body := `    ; A durable root forces compaction to reset the heap below
+    ; the source temporary. The later LEN argument then triggers GC.
+    la      r1, 0x058000
+    add.q   r2, r16, #ST_SVAR_START
+    store.l r1, (r2)
+    add.q   r2, r16, #ST_SVAR_END
+    add.q   r3, r1, #8
+    store.l r3, (r2)
+    move.l  r4, #0x524F4F54
+    store.l r4, (r1)
+    move.l  r5, #BASIC_STR_TEMP
+    store.l r5, 4(r1)
+    move.q  r6, #16
+.fill_root:
+    move.q  r7, #0x58
+    store.b r7, (r5)
+    add.q   r5, r5, #1
+    sub.q   r6, r6, #1
+    bnez    r6, .fill_root
+    store.b r0, (r5)
+    move.l  r1, #BASIC_STR_END
+    sub.q   r1, r1, #4
+    add.q   r2, r16, #ST_HEAP_TOP
+    store.l r1, (r2)
+    la      r17, .expr
+    jsr     str_eval
+    la      r9, 0x021000
+    move.q  r10, r8
+.copy:
+    load.b  r1, (r10)
+    store.b r1, (r9)
+    beqz    r1, .done
+    add.q   r10, r10, #1
+    add.q   r9, r9, #1
+    bra     .copy
+.expr:
+` + expr.String() + `
+    align 8
+.done:`
+			binary := assembleExecTest(t, asmBin, body)
+			h := newEhbasicHarness(t)
+			h.loadBytes(binary)
+			h.runCycles(5_000_000)
+			if got := readBusString(h, 0x021000, 16); got != "AA" {
+				t.Fatalf("%s should preserve source temp while parsing later args, got %q", name, got)
+			}
+		})
+	}
+
+	runCase("LEFT", 0xDF, `    dc.b    0x22, 0x2C, 0xD0, 0x28, 0x22, "ZZ", 0x22, 0x29, 0x29, 0
+`)
+	runCase("RIGHT", 0xE0, `    dc.b    0x22, 0x2C, 0xD0, 0x28, 0x22, "ZZ", 0x22, 0x29, 0x29, 0
+`)
+	runCase("MID", 0xE1, `    dc.b    0x22, 0x2C, 0xD0, 0x28, 0x22, "Z", 0x22, 0x29, 0x2C, 0xD0, 0x28, 0x22, "ZZ", 0x22, 0x29, 0x29, 0
+`)
+}
+
+func TestEhBASIC_StringFunctionParseErrorsPopGCRoot(t *testing.T) {
+	asmBin := buildAssembler(t)
+	cases := []struct {
+		name string
+		expr string
+	}{
+		{"LEFT", `    dc.b    0xDF, 0x28, 0x22, "ABCDEFGH", 0x22, 0x29, 0`},
+		{"RIGHT", `    dc.b    0xE0, 0x28, 0x22, "ABCDEFGH", 0x22, 0x29, 0`},
+		{"MID first comma", `    dc.b    0xE1, 0x28, 0x22, "ABCDEFGH", 0x22, 0x29, 0`},
+		{"MID second comma", `    dc.b    0xE1, 0x28, 0x22, "ABCDEFGH", 0x22, 0x2C, "1", 0x29, 0`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `    la      r17, .expr
+    jsr     str_eval
+    la      r1, 0x021000
+    la      r2, str_gc_root_count
+    load.l  r3, (r2)
+    store.l r3, (r1)
+    bra     .done
+.expr:
+` + tc.expr + `
+    align 8
+.done:`
+			binary := assembleExecTest(t, asmBin, body)
+			h := newEhbasicHarness(t)
+			h.loadBytes(binary)
+			h.runCycles(1_000_000)
+			if got := readBusMem32(h, 0x021000); got != 0 {
+				t.Fatalf("%s parse error should pop GC root, count=%d", tc.name, got)
+			}
+		})
+	}
+}
+
+func TestEhBASIC_StringAllocCallersStopOnOOM(t *testing.T) {
+	asmBin := buildAssembler(t)
+	cases := []struct {
+		name string
+		expr string
+	}{
+		{"concat", `    dc.b    0x22, "A", 0x22, 0x2B, 0x22, "B", 0x22, 0`},
+		{"literal", `    dc.b    0x22, "A", 0x22, 0`},
+		{"CHR", `    dc.b    0xD6, 0x28, "65", 0x29, 0`},
+		{"LEFT", `    dc.b    0xDF, 0x28, 0x22, "ABC", 0x22, 0x2C, "1", 0x29, 0`},
+		{"RIGHT", `    dc.b    0xE0, 0x28, 0x22, "ABC", 0x22, 0x2C, "1", 0x29, 0`},
+		{"MID", `    dc.b    0xE1, 0x28, 0x22, "ABC", 0x22, 0x2C, "1", 0x2C, "1", 0x29, 0`},
+		{"HEX", `    dc.b    0xD7, 0x28, "255", 0x29, 0`},
+		{"BIN", `    dc.b    0xD8, 0x28, "7", 0x29, 0`},
+		{"STR", `    dc.b    0xD1, 0x28, "42", 0x29, 0`},
+		{"UCASE", `    dc.b    0xD4, 0x28, 0x22, "abc", 0x22, 0x29, 0`},
+		{"LCASE", `    dc.b    0xD5, 0x28, 0x22, "ABC", 0x22, 0x29, 0`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `    ; Fill the string heap with one durable root so allocation
+    ; still fails after gc_strings compacts live roots.
+    la      r1, 0x058000
+    add.q   r2, r16, #ST_SVAR_START
+    store.l r1, (r2)
+    add.q   r2, r16, #ST_SVAR_END
+    add.q   r3, r1, #8
+    store.l r3, (r2)
+    move.l  r4, #0x4F4F4D21
+    store.l r4, (r1)
+    move.l  r5, #BASIC_STR_TEMP
+    store.l r5, 4(r1)
+    move.q  r6, #16382
+.fill_root:
+    move.q  r7, #0x58
+    store.b r7, (r5)
+    add.q   r5, r5, #1
+    sub.q   r6, r6, #1
+    bnez    r6, .fill_root
+    store.b r0, (r5)
+    move.l  r1, #BASIC_STR_END
+    add.q   r2, r16, #ST_HEAP_TOP
+    store.l r1, (r2)
+    la      r17, .expr
+    jsr     str_eval
+    la      r1, 0x021000
+    store.l r28, (r1)
+    store.l r8, 4(r1)
+    la      r2, str_gc_root_count
+    load.l  r3, (r2)
+    store.l r3, 8(r1)
+    bra     .done
+.expr:
+` + tc.expr + `
+    align 8
+.done:`
+			binary := assembleExecTest(t, asmBin, body)
+			h := newEhbasicHarness(t)
+			h.loadBytes(binary)
+			h.runCycles(2_000_000)
+			if got := readBusMem32(h, 0x021000); got != 3 {
+				t.Fatalf("%s OOM should set R28=3, got %d", tc.name, got)
+			}
+			if got := readBusMem32(h, 0x021004); got != 0 {
+				t.Fatalf("%s OOM should return R8=0, got 0x%08X", tc.name, got)
+			}
+			if got := readBusMem32(h, 0x021008); got != 0 {
+				t.Fatalf("%s OOM should leave GC root stack balanced, count=%d", tc.name, got)
+			}
+		})
+	}
+}
+
+func TestEhBASIC_StringHeap_FullErrorRaised(t *testing.T) {
+	asmBin := buildAssembler(t)
+	body := `    move.q  r1, #77
+    add.q   r2, r16, #ST_CURRENT_LINE
+    store.l r1, (r2)
+    move.q  r8, #20000
+    jsr     str_alloc
+    la      r1, 0x021000
+    store.l r28, (r1)
+    add.q   r1, r1, #4
+    add.q   r2, r16, #ST_ERROR_FLAG
+    load.l  r3, (r2)
+    store.l r3, (r1)`
+	binary := assembleExecTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.loadBytes(binary)
+	h.runCycles(1_000_000)
+	if got := readBusMem32(h, 0x021000); got != 3 {
+		t.Fatalf("str_alloc OOM should set R28=3, got %d", got)
+	}
+	if got := readBusMem32(h, 0x021004); got != 6 {
+		t.Fatalf("str_alloc OOM should set ERR_OOM, got %d", got)
+	}
+	if out := h.readOutput(); !strings.Contains(out, "?OUT OF MEMORY ERROR IN 77") {
+		t.Fatalf("str_alloc OOM should print OOM error, got %q", out)
 	}
 }
 
@@ -2193,6 +2932,34 @@ func TestEhBASIC_IfThenElse(t *testing.T) {
 	}
 }
 
+func TestEhBASIC_IfTrueElse(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 IF 1 THEN PRINT "Y" ELSE PRINT "N"`)
+	out = strings.TrimRight(out, "\r\n")
+	if out != "Y" {
+		t.Fatalf(`IF true ELSE: expected 'Y', got %q`, out)
+	}
+}
+
+func TestEhBASIC_IfTrue_ColonChain_ElseSkipped(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 IF 1 THEN PRINT 1: PRINT 2 ELSE PRINT 3`)
+	out = strings.TrimRight(out, "\r\n")
+	clean := strings.Fields(strings.ReplaceAll(out, "\r", ""))
+	if !slices.Equal(clean, []string{"1", "2"}) {
+		t.Fatalf("IF true colon chain: expected 1/2, got %q", out)
+	}
+}
+
+func TestEhBASIC_IfFalse_ColonChain_ElseRuns(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 IF 0 THEN PRINT 1: PRINT 2 ELSE PRINT 3`)
+	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
+	if out != "3" {
+		t.Fatalf("IF false colon chain: expected 3, got %q", out)
+	}
+}
+
 func TestEhBASIC_DataRead(t *testing.T) {
 	asmBin := buildAssembler(t)
 	out := execStmtTest(t, asmBin, `10 DATA 1,2,3
@@ -2267,6 +3034,44 @@ func TestEhBASIC_Input(t *testing.T) {
 	out := strings.TrimSpace(strings.TrimRight(h.readOutput(), "\r\n"))
 	if out != "42" {
 		t.Fatalf("INPUT A / PRINT A: expected '42', got %q", out)
+	}
+}
+
+func TestEhBASIC_Input_PromptString(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, _ := execStmtTestCore(t, asmBin, `10 INPUT "AGE";A
+20 PRINT A`, func(h *ehbasicTestHarness) {
+		h.sendInput("42\n")
+	})
+	out = strings.TrimRight(out, "\r\n")
+	if !strings.HasPrefix(out, "AGE") || !strings.HasSuffix(strings.TrimSpace(out), "42") {
+		t.Fatalf("INPUT prompt: expected prompt and value, got %q", out)
+	}
+}
+
+func TestEhBASIC_Input_StringVar(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, _ := execStmtTestCore(t, asmBin, `10 INPUT A$
+20 PRINT A$`, func(h *ehbasicTestHarness) {
+		h.sendInput("HELLO\n")
+	})
+	out = strings.TrimRight(out, "\r\n")
+	if out != "HELLO" {
+		t.Fatalf("INPUT A$: expected 'HELLO', got %q", out)
+	}
+}
+
+func TestEhBASIC_Input_MixedList(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, _ := execStmtTestCore(t, asmBin, `10 INPUT A$,B
+20 PRINT A$
+30 PRINT B`, func(h *ehbasicTestHarness) {
+		h.sendInput("HELLO\n7\n")
+	})
+	out = strings.TrimRight(out, "\r\n")
+	lines := strings.Split(strings.ReplaceAll(out, "\r", ""), "\n")
+	if len(lines) < 2 || lines[0] != "HELLO" || strings.TrimSpace(lines[1]) != "7" {
+		t.Fatalf("INPUT mixed: expected HELLO/7, got %q", out)
 	}
 }
 
@@ -4179,6 +4984,44 @@ func TestREPL_DeleteLine(t *testing.T) {
 	}
 }
 
+func TestEhBASIC_RaiseError_RestoresPrompt(t *testing.T) {
+	h, _ := startREPL(t)
+	output := h.runCommand("RETURN")
+	if !strings.Contains(output, "?RETURN WITHOUT GOSUB ERROR IN 0") {
+		t.Fatalf("REPL runtime error: expected RETURN error, got %q", output)
+	}
+	if !strings.Contains(output, "Ready") {
+		t.Fatalf("REPL runtime error: expected Ready prompt after error, got %q", output)
+	}
+	output = h.runCommand("PRINT 1")
+	if !strings.Contains(output, "1") {
+		t.Fatalf("REPL should run next command after runtime error, got %q", output)
+	}
+}
+
+func TestEhBASIC_RaiseError_PersistsLastErrorState(t *testing.T) {
+	h, _ := startREPL(t)
+	_ = h.runCommand("RETURN")
+	if got := readBusMem32(h, 0x022000+0x38); got != 5 {
+		t.Fatalf("REPL error state: expected ERR_RET_NO_GOSUB, got %d", got)
+	}
+	if got := readBusMem32(h, 0x022000+0x6C); got != 0 {
+		t.Fatalf("REPL error state: expected line 0 for direct-mode error, got %d", got)
+	}
+}
+
+func TestEhBASIC_SuccessfulCommand_ClearsLastError(t *testing.T) {
+	h, _ := startREPL(t)
+	_ = h.runCommand("RETURN")
+	_ = h.runCommand("PRINT 1")
+	if got := readBusMem32(h, 0x022000+0x38); got != 0 {
+		t.Fatalf("successful REPL command should clear ST_ERROR_FLAG, got %d", got)
+	}
+	if got := readBusMem32(h, 0x022000+0x6C); got != 0 {
+		t.Fatalf("successful REPL command should clear ST_ERROR_LINE, got %d", got)
+	}
+}
+
 // =============================================================================
 // Phase 5b Tests - Launch Model
 // =============================================================================
@@ -4411,6 +5254,43 @@ func TestEhBASIC_OnGosub(t *testing.T) {
 	out = strings.TrimRight(out, "\r\n")
 	if !strings.Contains(out, "SUB") || !strings.Contains(out, "DONE") {
 		t.Fatalf("ON 1 GOSUB: expected 'SUB' and 'DONE', got %q", out)
+	}
+}
+
+func TestEhBASIC_Run_FromProgram(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 IF A=1 THEN END
+20 PRINT "R"
+30 A=1
+40 RUN
+50 PRINT "BAD"`)
+	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
+	if out != "R" {
+		t.Fatalf("RUN from program: expected 'R', got %q", out)
+	}
+}
+
+func TestEhBASIC_List_FromProgram(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 PRINT "A"
+20 LIST
+30 PRINT "B"`)
+	if !strings.Contains(out, `10 PRINT "A"`) || !strings.Contains(out, "20 LIST") || !strings.Contains(out, `30 PRINT "B"`) {
+		t.Fatalf("LIST from program: expected program listing, got %q", out)
+	}
+	if !strings.Contains(out, "A\r\n") || !strings.HasSuffix(strings.TrimRight(out, "\r\n"), "B") {
+		t.Fatalf("LIST from program: expected execution before and after LIST, got %q", out)
+	}
+}
+
+func TestEhBASIC_New_FromProgram(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 PRINT "A"
+20 NEW
+30 PRINT "B"`)
+	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
+	if out != "A" {
+		t.Fatalf("NEW from program: expected only 'A', got %q", out)
 	}
 }
 
@@ -4655,6 +5535,48 @@ func TestEhBASIC_BinS_Byte(t *testing.T) {
 	out = strings.TrimRight(out, "\r\n")
 	if out != "10101010" {
 		t.Fatalf("BIN$(170): expected '10101010', got %q", out)
+	}
+}
+
+func TestEhBASIC_UcaseS(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 PRINT UCASE$("Abc123!")`)
+	out = strings.TrimRight(out, "\r\n")
+	if out != "ABC123!" {
+		t.Fatalf("UCASE$: expected 'ABC123!', got %q", out)
+	}
+}
+
+func TestEhBASIC_LcaseS(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 PRINT LCASE$("AbC123!")`)
+	out = strings.TrimRight(out, "\r\n")
+	if out != "abc123!" {
+		t.Fatalf("LCASE$: expected 'abc123!', got %q", out)
+	}
+}
+
+func TestEhBASIC_SADD_PointsToBytes(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 A$="ABC"
+20 P= SADD(A$)
+30 POKE8 P+1,90
+40 PRINT A$`)
+	out = strings.TrimRight(out, "\r\n")
+	if out != "AZC" {
+		t.Fatalf("SADD pointer mutation: expected 'AZC', got %q", out)
+	}
+}
+
+func TestEhBASIC_VARPTR(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 A=1
+20 P=VARPTR(A)
+30 POKE P,1120272384
+40 PRINT A`)
+	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
+	if out != "99" {
+		t.Fatalf("VARPTR mutation: expected '99', got %q", out)
 	}
 }
 
@@ -5295,6 +6217,264 @@ func TestEhBASIC_Call(t *testing.T) {
 	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
 	if out != "77" {
 		t.Fatalf("CALL: expected '77' after CALL, got %q", out)
+	}
+}
+
+func TestEhBASIC_Call_PreservesR28(t *testing.T) {
+	asmBin := buildAssembler(t)
+	// Routine at 0x020000:
+	//   move.q r28, #2
+	//   rts
+	// CALL must preserve BASIC's R28 control channel so execution continues.
+	out := execStmtTest(t, asmBin,
+		"10 POKE 131072,59137\n20 POKE 131076,2\n30 POKE 131080,81\n40 POKE 131084,0\n50 CALL 131072\n60 PRINT 77")
+	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
+	if out != "77" {
+		t.Fatalf("CALL should preserve R28 and continue to PRINT, got %q", out)
+	}
+}
+
+func TestEhBASIC_RaiseError_StoresStateAndReturnsRuntimeCode(t *testing.T) {
+	asmBin := buildAssembler(t)
+	body := `    move.q  r1, #123
+    add.q   r2, r16, #ST_CURRENT_LINE
+    store.l r1, (r2)
+    move.q  r8, #ERR_UNDEF_LINE
+    la      r9, err_msg_undef_line
+    jsr     raise_error
+    la      r1, 0x021000
+    store.l r28, (r1)
+    add.q   r1, r1, #4
+    add.q   r2, r16, #ST_ERROR_FLAG
+    load.l  r3, (r2)
+    store.l r3, (r1)
+    add.q   r1, r1, #4
+    add.q   r2, r16, #ST_ERROR_LINE
+    load.l  r3, (r2)
+    store.l r3, (r1)`
+	binary := assembleExecTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.loadBytes(binary)
+	h.runCycles(1_000_000)
+
+	if got := readBusMem32(h, 0x021000); got != 3 {
+		t.Fatalf("raise_error: expected R28=3 runtime error, got %d", got)
+	}
+	if got := readBusMem32(h, 0x021004); got != 3 {
+		t.Fatalf("raise_error: expected ERR_UNDEF_LINE=3 in ST_ERROR_FLAG, got %d", got)
+	}
+	if got := readBusMem32(h, 0x021008); got != 123 {
+		t.Fatalf("raise_error: expected ST_ERROR_LINE=123, got %d", got)
+	}
+	out := h.readOutput()
+	if !strings.Contains(out, "?UNDEFINED LINE ERROR IN 123") {
+		t.Fatalf("raise_error: expected formatted line error, got %q", out)
+	}
+}
+
+func TestEhBASIC_GosubStackOverflow(t *testing.T) {
+	asmBin := buildAssembler(t)
+	body := `    ; Put GOSUB SP too close to BASIC_GOSUB_END for a 12-byte frame.
+    la      r1, BASIC_GOSUB_END
+    sub.q   r1, r1, #8
+    add.q   r2, r16, #ST_GOSUB_SP
+    store.l r1, (r2)
+    la      r3, BASIC_GOSUB_END
+    move.l  r4, #0x55AA1234
+    store.l r4, (r3)
+    la      r14, BASIC_PROG_START
+    la      r17, .target_line
+    jsr     exec_do_gosub
+    la      r1, 0x021000
+    store.l r28, (r1)
+    add.q   r1, r1, #4
+    la      r3, BASIC_GOSUB_END
+    load.l  r4, (r3)
+    store.l r4, (r1)
+    bra     .done
+.target_line:
+    dc.b    "100", 0
+    align 8
+.done:`
+	binary := assembleExecTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.loadBytes(binary)
+	h.runCycles(1_000_000)
+	if got := h.bus.Read32(0x021000); got != 2 {
+		t.Fatalf("GOSUB overflow: expected R28=2 stop, got %d", got)
+	}
+	if sentinel := h.bus.Read32(0x021004); sentinel != 0x55AA1234 {
+		t.Fatalf("GOSUB overflow overwrote sentinel: 0x%08X", sentinel)
+	}
+}
+
+func TestEhBASIC_GotoMissingLineRaisesError(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, "10 GOTO 999\n20 PRINT 77")
+	if strings.Contains(out, "77") {
+		t.Fatalf("GOTO missing line should stop before line 20, got %q", out)
+	}
+	if !strings.Contains(out, "?UNDEFINED LINE ERROR IN 10") {
+		t.Fatalf("GOTO missing line: expected undefined-line error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 3 {
+		t.Fatalf("GOTO missing line: expected ERR_UNDEF_LINE in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_ReturnWithoutGosubRaisesError(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, "10 RETURN\n20 PRINT 77")
+	if strings.Contains(out, "77") {
+		t.Fatalf("RETURN without GOSUB should stop before line 20, got %q", out)
+	}
+	if !strings.Contains(out, "?RETURN WITHOUT GOSUB ERROR IN 10") {
+		t.Fatalf("RETURN without GOSUB: expected runtime error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 5 {
+		t.Fatalf("RETURN without GOSUB: expected ERR_RET_NO_GOSUB in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_NextWithoutForRaisesError(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, "10 NEXT\n20 PRINT 77")
+	if strings.Contains(out, "77") {
+		t.Fatalf("NEXT without FOR should stop before line 20, got %q", out)
+	}
+	if !strings.Contains(out, "?NEXT WITHOUT FOR ERROR IN 10") {
+		t.Fatalf("NEXT without FOR: expected runtime error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 4 {
+		t.Fatalf("NEXT without FOR: expected ERR_NEXT_NO_FOR in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_DivisionByZeroRaisesError(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, "10 PRINT 1/0\n20 PRINT 77")
+	if strings.Contains(out, "77") {
+		t.Fatalf("division by zero should stop before line 20, got %q", out)
+	}
+	if !strings.Contains(out, "?DIVISION BY ZERO ERROR IN 10") {
+		t.Fatalf("division by zero: expected runtime error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 2 {
+		t.Fatalf("division by zero: expected ERR_DIV0 in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_PokeMisalignedRaisesFCError(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, "10 POKE 327681, 42\n20 PRINT 77")
+	if strings.Contains(out, "77") {
+		t.Fatalf("misaligned POKE should stop before line 20, got %q", out)
+	}
+	if !strings.Contains(out, "?FC ERROR IN 10") {
+		t.Fatalf("misaligned POKE: expected FC error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 10 {
+		t.Fatalf("misaligned POKE: expected ERR_FC in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_PeekMisalignedRaisesFCError(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, "10 PRINT PEEK(327681)\n20 PRINT 77")
+	if strings.Contains(out, "77") {
+		t.Fatalf("misaligned PEEK should stop before line 20, got %q", out)
+	}
+	if !strings.Contains(out, "?FC ERROR IN 10") {
+		t.Fatalf("misaligned PEEK: expected FC error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 10 {
+		t.Fatalf("misaligned PEEK: expected ERR_FC in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_LeftNegativeRaisesIllegalQuantity(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, `10 PRINT LEFT$("ABC",-1)
+20 PRINT 77`)
+	if strings.Contains(out, "77") {
+		t.Fatalf("LEFT$ negative count should stop before line 20, got %q", out)
+	}
+	if !strings.Contains(out, "?ILLEGAL QUANTITY ERROR IN 10") {
+		t.Fatalf("LEFT$ negative count: expected illegal quantity error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 7 {
+		t.Fatalf("LEFT$ negative count: expected ERR_ILLEGAL_QTY in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_RightNegativeRaisesIllegalQuantity(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin, `10 PRINT RIGHT$("ABC",-1)
+20 PRINT 77`)
+	if strings.Contains(out, "77") {
+		t.Fatalf("RIGHT$ negative count should stop before line 20, got %q", out)
+	}
+	if !strings.Contains(out, "?ILLEGAL QUANTITY ERROR IN 10") {
+		t.Fatalf("RIGHT$ negative count: expected illegal quantity error, got %q", out)
+	}
+	if got := readBusMem32(h, 0x022000+0x38); got != 7 {
+		t.Fatalf("RIGHT$ negative count: expected ERR_ILLEGAL_QTY in ST_ERROR_FLAG, got %d", got)
+	}
+}
+
+func TestEhBASIC_MidBadBoundsRaiseIllegalQuantity(t *testing.T) {
+	asmBin := buildAssembler(t)
+	cases := []string{
+		`10 PRINT MID$("ABC",0,1)`,
+		`10 PRINT MID$("ABC",1,-1)`,
+	}
+	for _, program := range cases {
+		out, h := execStmtTestWithBus(t, asmBin, program+"\n20 PRINT 77")
+		if strings.Contains(out, "77") {
+			t.Fatalf("MID$ bad bounds should stop before line 20 for %q, got %q", program, out)
+		}
+		if !strings.Contains(out, "?ILLEGAL QUANTITY ERROR IN 10") {
+			t.Fatalf("MID$ bad bounds: expected illegal quantity error for %q, got %q", program, out)
+		}
+		if got := readBusMem32(h, 0x022000+0x38); got != 7 {
+			t.Fatalf("MID$ bad bounds: expected ERR_ILLEGAL_QTY for %q, got %d", program, got)
+		}
+	}
+}
+
+func TestEhBASIC_ForStackOverflow(t *testing.T) {
+	asmBin := buildAssembler(t)
+	body := `    ; Put GOSUB/FOR SP too close to BASIC_GOSUB_END for a 24-byte FOR frame.
+    la      r1, BASIC_GOSUB_END
+    sub.q   r1, r1, #16
+    add.q   r2, r16, #ST_GOSUB_SP
+    store.l r1, (r2)
+    la      r3, BASIC_GOSUB_END
+    move.l  r4, #0x66BB1234
+    store.l r4, (r3)
+    la      r14, BASIC_PROG_START
+    la      r17, .for_line
+    jsr     exec_do_for
+    la      r1, 0x021000
+    store.l r28, (r1)
+    add.q   r1, r1, #4
+    la      r3, BASIC_GOSUB_END
+    load.l  r4, (r3)
+    store.l r4, (r1)
+    bra     .done
+.for_line:
+    dc.b    "I", TK_EQUAL, "1 ", TK_TO, " 2", 0
+    align 8
+.done:`
+	binary := assembleExecTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.loadBytes(binary)
+	h.runCycles(1_000_000)
+	if got := h.bus.Read32(0x021000); got != 2 {
+		t.Fatalf("FOR overflow: expected R28=2 stop, got %d", got)
+	}
+	if sentinel := h.bus.Read32(0x021004); sentinel != 0x66BB1234 {
+		t.Fatalf("FOR overflow overwrote sentinel: 0x%08X", sentinel)
 	}
 }
 

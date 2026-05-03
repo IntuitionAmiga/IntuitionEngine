@@ -221,9 +221,9 @@ hw_copper:
     rts
 
 .cop_move_err:
-    la      r8, cop_err_fc
-    jsr     print_string
-    jsr     print_crlf
+    move.q  r8, #ERR_FC
+    la      r9, err_msg_fc
+    jsr     raise_error
     rts
 .cop_end:
     add.q   r17, r17, #1

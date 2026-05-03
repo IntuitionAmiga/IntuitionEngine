@@ -65,6 +65,13 @@ tokenize:
     move.q  r2, #1
     beq     r13, r2, .tok_data_copy
 
+    ; Composite comparison operators keep the base comparison token followed by
+    ; a raw marker byte, preserving token IDs without needing new slots.
+    move.q  r2, #0x3C              ; '<'
+    beq     r1, r2, .tok_lt_check
+    move.q  r2, #0x3E              ; '>'
+    beq     r1, r2, .tok_gt_check
+
     ; Try keyword matching
     ; First, check if this could be a keyword start character
     ; Keywords start with A-Z, a-z, or special chars (+, -, *, /, etc.)
@@ -188,6 +195,66 @@ tokenize:
     move.q  r13, r0                ; clear DATA mode
     bra     .tok_main
 
+.tok_lt_check:
+    add.q   r3, r10, #1
+    load.b  r4, (r3)
+    move.q  r2, #0x3C              ; '<' for <<
+    beq     r4, r2, .tok_lshift
+    move.q  r2, #0x3D              ; '='
+    beq     r4, r2, .tok_lt_composite
+    move.q  r2, #0x3E              ; '>'
+    beq     r4, r2, .tok_lt_composite
+    move.q  r4, #TK_LT
+    store.b r4, (r12)
+    add.q   r12, r12, #1
+    add.q   r10, r10, #1
+    bra     .tok_main
+
+.tok_lt_composite:
+    move.q  r5, #TK_LT
+    store.b r5, (r12)
+    add.q   r12, r12, #1
+    store.b r4, (r12)
+    add.q   r12, r12, #1
+    add.q   r10, r10, #2
+    bra     .tok_main
+
+.tok_lshift:
+    move.q  r5, #TK_LSHIFT
+    store.b r5, (r12)
+    add.q   r12, r12, #1
+    add.q   r10, r10, #2
+    bra     .tok_main
+
+.tok_gt_check:
+    add.q   r3, r10, #1
+    load.b  r4, (r3)
+    move.q  r2, #0x3E              ; '>' for >>
+    beq     r4, r2, .tok_rshift
+    move.q  r2, #0x3D              ; '='
+    beq     r4, r2, .tok_gt_composite
+    move.q  r4, #TK_GT
+    store.b r4, (r12)
+    add.q   r12, r12, #1
+    add.q   r10, r10, #1
+    bra     .tok_main
+
+.tok_gt_composite:
+    move.q  r5, #TK_GT
+    store.b r5, (r12)
+    add.q   r12, r12, #1
+    store.b r4, (r12)
+    add.q   r12, r12, #1
+    add.q   r10, r10, #2
+    bra     .tok_main
+
+.tok_rshift:
+    move.q  r5, #TK_RSHIFT
+    store.b r5, (r12)
+    add.q   r12, r12, #1
+    add.q   r10, r10, #2
+    bra     .tok_main
+
 .tok_data_copy:
     ; DATA mode: copy raw, but ":" resets
     store.b r1, (r12)
@@ -282,7 +349,7 @@ tok_kw_table:
     dc.b    "DATA", 0, TK_DATA
     dc.b    "DEEK", 0, TK_DEEK
     dc.b    "DOKE", 0, TK_DOKE
-    dc.b    "ELSE", 0, TK_THEN    ; Note: ELSE handled differently in full interpreter
+    dc.b    "ELSE", 0, TK_ELSE
     dc.b    "GOTO", 0, TK_GOTO
     dc.b    "HEX$", 0, TK_HEXS
     dc.b    "BIN$", 0, TK_BINS
@@ -334,7 +401,6 @@ tok_kw_table:
     dc.b    "RUN", 0, TK_RUN
     dc.b    "SGN", 0, TK_SGN
     dc.b    "SIN", 0, TK_SIN
-    dc.b    "SPC", 0, TK_SPC
     dc.b    "SQR", 0, TK_SQR
     dc.b    "TAB", 0, TK_TAB
     dc.b    "TAN", 0, TK_TAN

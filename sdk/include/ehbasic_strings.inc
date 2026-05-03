@@ -24,6 +24,8 @@
 
 str_detect:
     load.b  r1, (r17)
+    move.q  r2, #0x22            ; string literal
+    beq     r1, r2, .sd_yes
     ; String function tokens that RETURN strings
     move.q  r2, #TK_CHRS
     beq     r1, r2, .sd_yes
@@ -38,6 +40,10 @@ str_detect:
     move.q  r2, #TK_HEXS
     beq     r1, r2, .sd_yes
     move.q  r2, #TK_BINS
+    beq     r1, r2, .sd_yes
+    move.q  r2, #TK_UCASES
+    beq     r1, r2, .sd_yes
+    move.q  r2, #TK_LCASES
     beq     r1, r2, .sd_yes
     ; Check for string variable: letter(s) followed by '$'
     move.q  r2, #0x41            ; 'A'
@@ -83,6 +89,8 @@ str_detect:
 str_eval:
     push    r22
     jsr     str_primary          ; R8 = first string pointer
+    bnez    r28, .se_err
+    beqz    r8, .se_err
     move.q  r22, r8
     ; Check for concatenation '+'
 .se_cat_loop:
@@ -97,10 +105,14 @@ str_eval:
 
 .se_do_cat:
     add.q   r17, r17, #1         ; consume '+'
-    push    r22                  ; save left ptr
+    move.q  r8, r22
+    jsr     str_gc_push          ; protect current left temp while RHS parses
     jsr     str_primary          ; R8 = right
     move.q  r14, r8              ; R14 = right
-    pop     r15                  ; R15 = left
+    jsr     str_gc_pop
+    move.q  r15, r8              ; R15 = left
+    bnez    r28, .se_err
+    beqz    r14, .se_err
     ; Get left length
     push    r14
     push    r15
@@ -120,13 +132,20 @@ str_eval:
     pop     r3
     ; Allocate total
     add.q   r1, r3, r8
-    push    r14
-    push    r15
-    move.q  r8, r1
+    push    r1
+    move.q  r8, r15
+    jsr     str_gc_push
+    move.q  r8, r14
+    jsr     str_gc_push
+    pop     r8
     jsr     str_alloc            ; R8 = buffer
     move.q  r22, r8
-    pop     r15
-    pop     r14
+    bnez    r28, .se_cat_alloc_err
+    beqz    r8, .se_cat_alloc_err
+    jsr     str_gc_pop
+    move.q  r14, r8
+    jsr     str_gc_pop
+    move.q  r15, r8
     ; Copy left
     push    r14
     move.q  r8, r22
@@ -140,6 +159,13 @@ str_eval:
     jsr     str_copy
     ; R22 = concatenated string
     bra     .se_cat_loop
+.se_cat_alloc_err:
+    jsr     str_gc_pop
+    jsr     str_gc_pop
+.se_err:
+    move.q  r8, r0
+    pop     r22
+    rts
 
 ; ============================================================================
 ; str_primary - Parse a single string value
@@ -169,6 +195,10 @@ str_primary:
     beq     r1, r2, .sp_hex
     move.q  r2, #TK_BINS
     beq     r1, r2, .sp_bin
+    move.q  r2, #TK_UCASES
+    beq     r1, r2, .sp_ucase
+    move.q  r2, #TK_LCASES
+    beq     r1, r2, .sp_lcase
     ; Must be string variable: name + '$'
     jsr     svar_read            ; R8 = string data pointer
     rts
@@ -192,6 +222,8 @@ str_primary:
     move.q  r8, r4
     jsr     str_alloc            ; R8 = buffer
     pop     r4
+    bnez    r28, .sp_lit_oom
+    beqz    r8, .sp_lit_oom
     move.q  r5, r8               ; R5 = save base for return
     move.q  r3, r8               ; R3 = write cursor
     move.q  r6, r4               ; R6 = count
@@ -212,6 +244,9 @@ str_primary:
     add.q   r17, r17, #1
 .sp_lit_ret:
     move.q  r8, r5               ; return base pointer
+    rts
+.sp_lit_oom:
+    move.q  r8, r0
     rts
 
 ; --- CHR$(n) ---
@@ -235,11 +270,16 @@ str_primary:
     move.q  r8, #1
     jsr     str_alloc
     pop     r3
+    bnez    r28, .sp_chr_oom
+    beqz    r8, .sp_chr_oom
     store.b r3, (r8)
     add.q   r1, r8, #1
     store.b r0, (r1)
     rts
 .sp_chr_err:
+    move.q  r8, r0
+    rts
+.sp_chr_oom:
     move.q  r8, r0
     rts
 
@@ -251,18 +291,27 @@ str_primary:
     bne     r1, r2, .sp_func_err
     add.q   r17, r17, #1         ; skip '('
     jsr     str_eval             ; R8 = string pointer
+    bnez    r28, .sp_func_err
+    beqz    r8, .sp_func_err
     move.q  r14, r8
+    jsr     str_gc_push
     ; skip ','
     load.b  r1, (r17)
     move.q  r2, #0x2C
-    bne     r1, r2, .sp_func_err
+    bne     r1, r2, .sp_func_err_pop
     add.q   r17, r17, #1
     push    r14
     jsr     expr_or
+    bnez    r28, .sp_func_arg_err
     jsr     fp_int
     jsr     fp_fix               ; R8 = count
     move.q  r15, r8
     pop     r14
+    jsr     str_gc_pop
+    move.q  r14, r8
+    bgez    r15, .sp_left_count_ok
+    bra     .sp_illegal_qty
+.sp_left_count_ok:
     ; skip ')'
     load.b  r1, (r17)
     move.q  r2, #0x29
@@ -279,14 +328,18 @@ str_primary:
     bge     r8, r15, .sp_left_ok
     move.q  r15, r8              ; clamp to actual
 .sp_left_ok:
-    push    r14
     push    r15
+    move.q  r8, r14
+    jsr     str_gc_push
     move.q  r8, r15
     jsr     str_alloc
-    pop     r15
-    pop     r14
     move.q  r5, r8               ; save base
-    move.q  r3, r8               ; write cursor
+    bnez    r28, .sp_left_alloc_err
+    beqz    r8, .sp_left_alloc_err
+    jsr     str_gc_pop
+    move.q  r14, r8
+    pop     r15
+    move.q  r3, r5               ; write cursor
     move.q  r4, r15              ; count
 .sp_left_cp:
     beqz    r4, .sp_left_end
@@ -309,17 +362,26 @@ str_primary:
     bne     r1, r2, .sp_func_err
     add.q   r17, r17, #1         ; skip '('
     jsr     str_eval             ; R8 = string pointer
+    bnez    r28, .sp_func_err
+    beqz    r8, .sp_func_err
     move.q  r14, r8
+    jsr     str_gc_push
     load.b  r1, (r17)
     move.q  r2, #0x2C
-    bne     r1, r2, .sp_func_err
+    bne     r1, r2, .sp_func_err_pop
     add.q   r17, r17, #1
     push    r14
     jsr     expr_or
+    bnez    r28, .sp_func_arg_err
     jsr     fp_int
     jsr     fp_fix               ; R8 = count
     move.q  r15, r8
     pop     r14
+    jsr     str_gc_pop
+    move.q  r14, r8
+    bgez    r15, .sp_right_count_ok
+    bra     .sp_illegal_qty
+.sp_right_count_ok:
     load.b  r1, (r17)
     move.q  r2, #0x29
     bne     r1, r2, .sp_right_do
@@ -339,14 +401,18 @@ str_primary:
     move.q  r15, r8              ; clamp count to full length
 .sp_right_ofs:
     add.q   r14, r14, r3         ; advance source to start offset
-    push    r14
     push    r15
+    move.q  r8, r14
+    jsr     str_gc_push
     move.q  r8, r15
     jsr     str_alloc
-    pop     r15
-    pop     r14
     move.q  r5, r8               ; save base
-    move.q  r3, r8               ; write cursor
+    bnez    r28, .sp_right_alloc_err
+    beqz    r8, .sp_right_alloc_err
+    jsr     str_gc_pop
+    move.q  r14, r8
+    pop     r15
+    move.q  r3, r5               ; write cursor
     move.q  r4, r15
 .sp_right_cp:
     beqz    r4, .sp_right_end
@@ -365,6 +431,25 @@ str_primary:
 .sp_func_err:
     move.q  r8, r0
     rts
+.sp_func_err_pop:
+    jsr     str_gc_pop
+    move.q  r8, r0
+    rts
+.sp_func_arg_err:
+    pop     r14
+    jsr     str_gc_pop
+    move.q  r8, r0
+    rts
+.sp_left_alloc_err:
+    jsr     str_gc_pop
+    pop     r15
+    move.q  r8, r0
+    rts
+.sp_right_alloc_err:
+    jsr     str_gc_pop
+    pop     r15
+    move.q  r8, r0
+    rts
 
 ; --- MID$(s$, pos, len) ---
 .sp_mid:
@@ -374,33 +459,55 @@ str_primary:
     bne     r1, r2, .sp_mid_err
     add.q   r17, r17, #1         ; skip '('
     jsr     str_eval             ; R8 = string pointer
+    bnez    r28, .sp_mid_err
+    beqz    r8, .sp_mid_err
     move.q  r14, r8
+    jsr     str_gc_push
     ; skip ','
     load.b  r1, (r17)
     move.q  r2, #0x2C
-    bne     r1, r2, .sp_mid_err
+    bne     r1, r2, .sp_mid_err_pop
     add.q   r17, r17, #1
     ; Second arg: position (1-based)
     push    r14
     jsr     expr_or
+    bnez    r28, .sp_mid_arg1_err
     jsr     fp_int
     jsr     fp_fix               ; R8 = position
     move.q  r15, r8
     pop     r14
+    jsr     str_gc_pop
+    move.q  r14, r8
+    bnez    r15, .sp_mid_pos_nonzero
+    bra     .sp_illegal_qty
+.sp_mid_pos_nonzero:
+    bgez    r15, .sp_mid_pos_ok
+    bra     .sp_illegal_qty
+.sp_mid_pos_ok:
+    move.q  r8, r14
+    jsr     str_gc_push
     ; skip ','
     load.b  r1, (r17)
     move.q  r2, #0x2C
-    bne     r1, r2, .sp_mid_err
+    bne     r1, r2, .sp_mid_err_pop
     add.q   r17, r17, #1
     ; Third arg: length
     push    r14
     push    r15
     jsr     expr_or
+    bnez    r28, .sp_mid_arg2_err
     jsr     fp_int
     jsr     fp_fix               ; R8 = length
     move.q  r3, r8
     pop     r15
     pop     r14
+    push    r3
+    jsr     str_gc_pop
+    move.q  r14, r8
+    pop     r3
+    bgez    r3, .sp_mid_len_ok
+    bra     .sp_illegal_qty
+.sp_mid_len_ok:
     ; skip ')'
     load.b  r1, (r17)
     move.q  r2, #0x29
@@ -411,14 +518,19 @@ str_primary:
     sub.q   r15, r15, #1
     add.q   r14, r14, r15        ; advance source to start
     ; Allocate and copy
-    push    r14
     push    r3
-    move.q  r8, r3
+    push    r3
+    move.q  r8, r14
+    jsr     str_gc_push
+    pop     r8
     jsr     str_alloc
-    pop     r3
-    pop     r14
     move.q  r5, r8               ; save base
-    move.q  r4, r8               ; write cursor
+    bnez    r28, .sp_mid_alloc_err
+    beqz    r8, .sp_mid_alloc_err
+    jsr     str_gc_pop
+    move.q  r14, r8
+    pop     r3
+    move.q  r4, r5               ; write cursor
     move.q  r6, r3               ; count
 .sp_mid_cp:
     beqz    r6, .sp_mid_end
@@ -435,6 +547,32 @@ str_primary:
     rts
 .sp_mid_err:
     move.q  r8, r0
+    rts
+.sp_mid_err_pop:
+    jsr     str_gc_pop
+    move.q  r8, r0
+    rts
+.sp_mid_arg1_err:
+    pop     r14
+    jsr     str_gc_pop
+    move.q  r8, r0
+    rts
+.sp_mid_arg2_err:
+    pop     r15
+    pop     r14
+    jsr     str_gc_pop
+    move.q  r8, r0
+    rts
+.sp_mid_alloc_err:
+    jsr     str_gc_pop
+    pop     r3
+    move.q  r8, r0
+    rts
+
+.sp_illegal_qty:
+    move.q  r8, #ERR_ILLEGAL_QTY
+    la      r9, err_msg_illegal_qty
+    jsr     raise_error
     rts
 
 ; --- STR$(n) ---
@@ -498,6 +636,8 @@ str_primary:
     jsr     str_alloc            ; R8 = buffer
     pop     r5
     pop     r3
+    bnez    r28, .sp_hex_oom
+    beqz    r8, .sp_hex_oom
     move.q  r6, r8               ; R6 = buffer base (for return)
     ; Write digits from end to start (reverse order)
     add.q   r7, r8, r5           ; R7 = one past last digit
@@ -530,6 +670,9 @@ str_primary:
     move.q  r8, r6
     rts
 .sp_hex_err:
+    move.q  r8, r0
+    rts
+.sp_hex_oom:
     move.q  r8, r0
     rts
 
@@ -570,6 +713,8 @@ str_primary:
     jsr     str_alloc            ; R8 = buffer
     pop     r5
     pop     r3
+    bnez    r28, .sp_bin_oom
+    beqz    r8, .sp_bin_oom
     move.q  r6, r8               ; R6 = buffer base (for return)
     ; Write digits from end to start (reverse order)
     add.q   r7, r8, r5           ; R7 = one past last digit
@@ -596,6 +741,88 @@ str_primary:
 .sp_bin_err:
     move.q  r8, r0
     rts
+.sp_bin_oom:
+    move.q  r8, r0
+    rts
+
+; --- UCASE$(s$) / LCASE$(s$) ---
+.sp_ucase:
+    move.q  r15, #1              ; 1 = uppercase
+    bra     .sp_case_common
+.sp_lcase:
+    move.q  r15, #2              ; 2 = lowercase
+.sp_case_common:
+    add.q   r17, r17, #1         ; consume function token
+    load.b  r1, (r17)
+    move.q  r2, #0x28
+    bne     r1, r2, .sp_case_err
+    add.q   r17, r17, #1         ; skip '('
+    push    r15
+    jsr     str_eval             ; R8 = source string
+    pop     r15
+    bnez    r28, .sp_case_err
+    beqz    r8, .sp_case_err
+    move.q  r14, r8
+    load.b  r1, (r17)
+    move.q  r2, #0x29
+    bne     r1, r2, .sp_case_do
+    add.q   r17, r17, #1
+.sp_case_do:
+    push    r14
+    push    r15
+    move.q  r8, r14
+    jsr     str_len
+    move.q  r6, r8
+    pop     r15
+    pop     r14
+    push    r15
+    move.q  r8, r14
+    jsr     str_gc_push
+    move.q  r8, r6
+    jsr     str_alloc
+    move.q  r5, r8               ; destination base
+    bnez    r28, .sp_case_alloc_err
+    beqz    r8, .sp_case_alloc_err
+    jsr     str_gc_pop
+    move.q  r14, r8
+    pop     r15
+    move.q  r3, r5               ; destination cursor
+.sp_case_loop:
+    load.b  r1, (r14)
+    beqz    r1, .sp_case_end
+    move.q  r2, #1
+    beq     r15, r2, .sp_case_upper
+    ; lowercase: A-Z -> a-z
+    move.q  r2, #0x41
+    blt     r1, r2, .sp_case_store
+    move.q  r2, #0x5A
+    bgt     r1, r2, .sp_case_store
+    add.q   r1, r1, #0x20
+    bra     .sp_case_store
+.sp_case_upper:
+    ; uppercase: a-z -> A-Z
+    move.q  r2, #0x61
+    blt     r1, r2, .sp_case_store
+    move.q  r2, #0x7A
+    bgt     r1, r2, .sp_case_store
+    sub.q   r1, r1, #0x20
+.sp_case_store:
+    store.b r1, (r3)
+    add.q   r14, r14, #1
+    add.q   r3, r3, #1
+    bra     .sp_case_loop
+.sp_case_end:
+    store.b r0, (r3)
+    move.q  r8, r5
+    rts
+.sp_case_err:
+    move.q  r8, r0
+    rts
+.sp_case_alloc_err:
+    jsr     str_gc_pop
+    pop     r15
+    move.q  r8, r0
+    rts
 
 ; ============================================================================
 ; str_alloc - Allocate bytes in string heap
@@ -605,13 +832,134 @@ str_primary:
 ; Clobbers: R1-R3
 
 str_alloc:
+    push    r8                    ; requested chars
     add.q   r1, r16, #ST_HEAP_TOP
     load.l  r2, (r1)             ; R2 = current heap top
+    add.q   r3, r8, #1           ; bytes including null
+    add.q   r4, r2, r3
+    move.l  r5, #BASIC_STR_END
+    ble     r4, r5, .sa_have_space
+
+    jsr     gc_strings
+    add.q   r1, r16, #ST_HEAP_TOP
+    load.l  r2, (r1)
+    pop     r8
+    push    r8
+    add.q   r3, r8, #1
+    add.q   r4, r2, r3
+    move.l  r5, #BASIC_STR_END
+    bgt     r4, r5, .sa_oom
+
+.sa_have_space:
     move.q  r3, r2               ; R3 = return value (old top)
+    pop     r8
     add.q   r8, r8, #1           ; +1 for null terminator
     add.q   r2, r2, r8           ; advance top
     store.l r2, (r1)
     move.q  r8, r3
+    rts
+.sa_oom:
+    pop     r8
+    move.q  r8, #ERR_OOM
+    la      r9, err_msg_oom
+    jsr     raise_error
+    move.q  r8, r0
+    rts
+
+; ============================================================================
+; gc_strings - Compact live string variable values to BASIC_STR_TEMP
+; ============================================================================
+; Temporary expression roots are copied first so variable compaction cannot
+; overwrite register-held strings that live below older heap roots.
+; Clobbers: R1-R9, R14-R15
+
+gc_strings:
+    push    r14
+    push    r15
+    la      r14, BASIC_STR_TEMP   ; destination cursor
+
+    la      r2, str_gc_roots
+    la      r1, str_gc_root_count
+    load.l  r3, (r1)
+    move.q  r4, r0
+.gc_temp_loop:
+    bge     r4, r3, .gc_temp_done
+    lsl.l   r5, r4, #2
+    add.q   r6, r2, r5
+    load.l  r5, (r6)
+    beqz    r5, .gc_next_temp
+    move.q  r7, r14              ; new string base
+.gc_temp_copy_loop:
+    load.b  r8, (r5)
+    store.b r8, (r14)
+    add.q   r5, r5, #1
+    add.q   r14, r14, #1
+    bnez    r8, .gc_temp_copy_loop
+    store.l r7, (r6)             ; update temp root slot
+.gc_next_temp:
+    add.q   r4, r4, #1
+    bra     .gc_temp_loop
+.gc_temp_done:
+
+    add.q   r1, r16, #ST_SVAR_START
+    load.l  r2, (r1)             ; scan
+    add.q   r1, r16, #ST_SVAR_END
+    load.l  r3, (r1)             ; end
+.gc_var_loop:
+    bge     r2, r3, .gc_done
+    add.q   r4, r2, #4           ; string pointer slot
+    load.l  r5, (r4)
+    beqz    r5, .gc_next_var
+    move.q  r6, r5               ; source cursor
+    move.q  r7, r14              ; new string base
+.gc_copy_loop:
+    load.b  r8, (r6)
+    store.b r8, (r14)
+    add.q   r6, r6, #1
+    add.q   r14, r14, #1
+    bnez    r8, .gc_copy_loop
+    store.l r7, (r4)             ; update root slot
+.gc_next_var:
+    add.q   r2, r2, #8
+    bra     .gc_var_loop
+.gc_done:
+    add.q   r1, r16, #ST_HEAP_TOP
+    store.l r14, (r1)
+    pop     r15
+    pop     r14
+    rts
+
+; Temporary GC root stack. Callers push string pointers that are live only in
+; registers across allocations, then pop them after str_alloc returns.
+; Input str_gc_push: R8 = string pointer. Output str_gc_pop: R8 = updated ptr.
+str_gc_push:
+    la      r1, str_gc_root_count
+    load.l  r2, (r1)
+    move.q  r3, #8
+    bge     r2, r3, .sgp_done
+    la      r3, str_gc_roots
+    lsl.l   r4, r2, #2
+    add.q   r3, r3, r4
+    store.l r8, (r3)
+    add.q   r2, r2, #1
+    store.l r2, (r1)
+.sgp_done:
+    rts
+
+str_gc_pop:
+    la      r1, str_gc_root_count
+    load.l  r2, (r1)
+    beqz    r2, .sgpop_empty
+    sub.q   r2, r2, #1
+    store.l r2, (r1)
+    la      r3, str_gc_roots
+    lsl.l   r4, r2, #2
+    add.q   r3, r3, r4
+    load.l  r8, (r3)
+    store.l r0, (r3)
+    rts
+.sgpop_empty:
+    move.q  r8, r0
     rts
 
 ; ============================================================================
@@ -650,6 +998,65 @@ str_copy:
     bra     .scpy_loop
 .scpy_done:
     rts
+
+; ============================================================================
+; str_cmp - Compare two null-terminated strings lexicographically
+; ============================================================================
+; Input:  R8 = left string pointer, R9 = right string pointer
+; Output: R8 = -1 if left < right, 0 if equal, 1 if left > right
+; Clobbers: R1-R4
+
+str_cmp:
+.scmp_loop:
+    load.b  r1, (r8)
+    load.b  r2, (r9)
+    bne     r1, r2, .scmp_diff
+    beqz    r1, .scmp_eq
+    add.q   r8, r8, #1
+    add.q   r9, r9, #1
+    bra     .scmp_loop
+.scmp_diff:
+    blt     r1, r2, .scmp_lt
+    move.q  r8, #1
+    rts
+.scmp_lt:
+    move.l  r8, #0xFFFFFFFF
+    rts
+.scmp_eq:
+    move.q  r8, r0
+    rts
+
+str_gc_root_count:
+    dc.l    0
+str_gc_roots:
+    dc.l    0,0,0,0,0,0,0,0
+
+; ============================================================================
+; Runtime error message text
+; ============================================================================
+
+err_msg_syntax:
+    dc.b    "SYNTAX", 0
+err_msg_div0:
+    dc.b    "DIVISION BY ZERO", 0
+err_msg_undef_line:
+    dc.b    "UNDEFINED LINE", 0
+err_msg_next_no_for:
+    dc.b    "NEXT WITHOUT FOR", 0
+err_msg_ret_no_gosub:
+    dc.b    "RETURN WITHOUT GOSUB", 0
+err_msg_oom:
+    dc.b    "OUT OF MEMORY", 0
+err_msg_illegal_qty:
+    dc.b    "ILLEGAL QUANTITY", 0
+err_msg_overflow:
+    dc.b    "OVERFLOW", 0
+err_msg_type_mismatch:
+    dc.b    "TYPE MISMATCH", 0
+err_msg_fc:
+    dc.b    "FC", 0
+err_msg_redim:
+    dc.b    "REDIM", 0
 
 ; ============================================================================
 ; EOF

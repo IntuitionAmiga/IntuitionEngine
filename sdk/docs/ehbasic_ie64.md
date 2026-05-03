@@ -196,30 +196,31 @@ EhBASIC IE64 supports two data types:
 
 **Numeric** - IEEE 754 single-precision floating-point (FP32). All numeric values, including integers, are stored as FP32. Integer operations truncate the fractional part where needed. Range: approximately +/-3.4 x 10^38. Precision: ~7 decimal digits.
 
-**String** - Null-terminated byte sequences stored on a string heap. Strings are allocated linearly; there is no garbage collection. String variables are identified by a trailing `$` suffix.
+**String** - Null-terminated byte sequences stored on a string heap. String variables are identified by a trailing `$` suffix. When the heap fills, live string variables and protected expression temporaries are compacted back to the start of the heap; if compaction cannot free enough space, `?OUT OF MEMORY ERROR` is raised.
 
 ### 3.2 Variables
 
-Variable names consist of letters (A-Z) and digits (0-9). The first character must be a letter. Names are case-insensitive (internally stored as uppercase). Only the first four characters are significant; longer names are silently truncated.
+Variable names consist of letters (A-Z) and digits (0-9). The first character must be a letter. Names are case-insensitive (internally stored as uppercase). Names up to four characters keep the original packed-name representation; longer names are mixed into the internal tag so names such as `COUNT` and `COUNTER` do not collide.
 
 ```basic
 X = 42
 NAME$ = "ZAYN"
-LONGVARIABLENAME = 100   : REM same as LONG
+LONGVARIABLENAME = 100
 ```
 
 **Numeric variables** hold FP32 values. An uninitialised variable returns 0.
 
 **String variables** are indicated by a `$` suffix and hold a pointer to heap-allocated string data. An uninitialised string variable returns an empty string.
 
-**Arrays** are declared with `DIM` and support one or two dimensions. Indices are zero-based:
+**Arrays** are declared with `DIM` and support one or more dimensions. Indices are zero-based:
 
 ```basic
 DIM A(10)        : REM 11 elements: A(0) through A(10)
 DIM B(5, 5)      : REM 6x6 = 36 elements
+DIM C(1, 2, 3)   : REM 2x3x4 = 24 elements
 ```
 
-Referencing an undeclared array auto-creates it with 11 elements (1D) or 11x11 elements (2D).
+Referencing an undeclared array auto-creates it with 11 elements per referenced dimension.
 
 ### 3.3 Operators
 
@@ -240,8 +241,12 @@ Referencing an undeclared array auto-creates it with 11 elements (1D) or 11x11 e
 | `=` | Equal to |
 | `<` | Less than |
 | `>` | Greater than |
+| `<=` | Less than or equal to |
+| `>=` | Greater than or equal to |
+| `<>` | Not equal to |
 
-Comparisons return -1 (true) or 0 (false).
+Numeric and string comparisons return -1 (true) or 0 (false). String
+comparisons are lexicographic byte comparisons.
 
 #### Logical/Bitwise Operators
 
@@ -251,6 +256,8 @@ Comparisons return -1 (true) or 0 (false).
 | `OR` | Bitwise OR |
 | `EOR` | Bitwise exclusive OR |
 | `NOT` | Bitwise complement |
+| `<<` | Logical left shift |
+| `>>` | Logical right shift |
 
 #### String Operator
 
@@ -278,6 +285,7 @@ From lowest to highest:
 42          : REM integer
 3.14159     : REM floating-point
 .5          : REM leading dot (0.5)
+1.25E3      : REM scientific notation (1250)
 &HFF        : REM hexadecimal (255)
 ```
 
@@ -587,11 +595,12 @@ Declare an array with explicit dimensions.
 ```
 DIM name(size) [,name(size) ...]
 DIM name(rows, cols) [,name(rows, cols) ...]
+DIM name(d0, d1, d2 [, ...]) [,name(size) ...]
 ```
 
 Indices are zero-based: `DIM A(10)` creates 11 elements (0 through 10).
 
-Two-dimensional arrays use row-major order: `DIM B(5,3)` creates a 6x4 array.
+Multi-dimensional arrays use row-major order: `DIM B(5,3)` creates a 6x4 array, and `DIM C(1,2,3)` creates a 2x3x4 array.
 
 Multiple arrays can be declared on one line, separated by commas.
 
@@ -829,15 +838,18 @@ INC X       : REM X is now 6
 Read one or more values from the terminal.
 
 ```
-INPUT variable [,variable ...]
+INPUT ["prompt";] variable [,variable ...]
 ```
 
-Each variable prompts the user for input. Numeric variables parse the input as a numeric expression.
+Each variable reads one terminal line. Numeric variables parse the input as a
+numeric expression; string variables store the entered text. A quoted prompt can
+be printed before the first value.
 
 **Example:**
 ```basic
-10 INPUT X
-20 PRINT "You entered: "; X
+10 INPUT "NAME"; N$
+20 INPUT "AGE"; A
+30 PRINT N$; " "; A
 ```
 
 ### LET
@@ -880,7 +892,8 @@ Display the stored program.
 LIST
 ```
 
-`LIST` is handled by the REPL command parser in immediate mode. It is not dispatched from tokenised program lines.
+In a program line, `LIST` displays the current stored program and then continues
+with the next statement or line.
 
 ### LOCATE
 
@@ -912,7 +925,8 @@ Clear the program from memory.
 NEW
 ```
 
-`NEW` is handled by the REPL command parser in immediate mode. It is not dispatched from tokenised program lines.
+In a program line, `NEW` clears program text and variables, then stops the
+current run.
 
 ### NEXT
 
@@ -1098,7 +1112,8 @@ Supported extensions:
 
 On error (file not found, unsupported extension), prints `?FILE ERROR` and returns to the REPL.
 
-`RUN` is handled by the REPL command parser in immediate mode. It is not dispatched from tokenised program lines.
+In a program line, bare `RUN` restarts the stored BASIC program from the
+beginning. Variables are preserved, while DATA and control stacks are reset.
 
 ### SAP
 
@@ -2295,6 +2310,8 @@ The interpreter state block at `&H022000` contains:
 | `+&H40` | ST_DIRECT_MODE | 1=immediate, 0=running |
 | `+&H44` | ST_SVAR_START | String variable table start |
 | `+&H48` | ST_SVAR_END | String variable table end |
+| `+&H6C` | ST_ERROR_LINE | Last runtime error line |
+| `+&H70` | ST_TERM_COL | Current terminal output column |
 
 ---
 
@@ -2598,7 +2615,7 @@ If you write IE64 assembly routines callable from BASIC (via CALL or USR), the f
 | R22 | Temporary value (BASIC expressions) |
 | R26 | Cached TERM_OUT address |
 | R27 | Cached TERM_STATUS address |
-| R28 | Return status code |
+| R28 | Return status code. `CALL` preserves this register across the machine-code call. |
 | R31 | Hardware stack pointer |
 
 ### FP32 Calling Convention
@@ -2612,22 +2629,29 @@ Available routines: `fp_add`, `fp_sub`, `fp_mul`, `fp_div`, `fp_neg`, `fp_abs`, 
 
 ---
 
-## 11. Error Messages
+## 11. Runtime Errors
 
-The current interpreter does not emit textual BASIC error messages, and it does not currently set structured runtime error codes during normal execution. `ST_ERROR_FLAG` exists in the state block layout but is only initialised/cleared at startup.
+Runtime errors are reported through the statement control channel. `R28=3`
+signals a runtime error inside the interpreter; `exec_line` returns that status
+in `R8`. `raise_error` stores the error code in `ST_ERROR_FLAG`, stores the
+current line in `ST_ERROR_LINE`, prints `?<message> ERROR IN <line>`, and stops
+the current program run.
 
-Current behaviour for common failure cases:
+Current structured errors include:
 
 | Condition | Behaviour |
 |-----------|-----------|
-| Undefined line (GOTO/GOSUB) | Execution stops silently |
-| RETURN without GOSUB | Treated as stack mismatch; execution stops |
-| NEXT without FOR | Treated as stack mismatch; execution stops |
+| Undefined line (GOTO/GOSUB) | `?UNDEFINED LINE ERROR IN <line>` |
+| RETURN without GOSUB | `?RETURN WITHOUT GOSUB ERROR IN <line>` |
+| NEXT without FOR | `?NEXT WITHOUT FOR ERROR IN <line>` |
 | WEND without WHILE | Treated as stack mismatch; execution stops |
 | LOOP without DO | Treated as stack mismatch; execution stops |
-| Division by zero | FP32 operation result (typically +/-Infinity) |
+| Division by zero | `?DIVISION BY ZERO ERROR IN <line>` |
 | Square root of negative | Returns 0 |
-| COPPER MOVE with address < &HA0000 | Prints ?FC ERROR, MOVE not emitted |
+| Array bounds, misaligned 32-bit PEEK/POKE, bad FC arguments | `?FC ERROR IN <line>` |
+| LEFT$/RIGHT$/MID$ illegal bounds | `?ILLEGAL QUANTITY ERROR IN <line>` |
+| Duplicate DIM | `?REDIM ERROR IN <line>` |
+| Standalone ELSE or unknown statement token | `?SYNTAX ERROR IN <line>` |
 | INPUT buffer full | Extra typed characters are ignored |
 | DATA exhausted | READ returns 0 |
 
@@ -2921,7 +2945,9 @@ Atari colours use a hue-luminance system: `(hue << 4) | luminance`. 16 hues x 16
 
 Tokens marked with \* are tokenised (recognised by the tokeniser) but do not yet have execution dispatch. Using them in a program will silently have no effect or return 0.
 
-`RUN`, `LIST`, and `NEW` are tokenised keywords but are handled by the REPL command parser in immediate mode rather than the program-line statement dispatcher.
+The token space is fully assigned. Composite comparison operators use the
+existing `<`/`>` tokens followed by a raw marker byte; see
+`ehbasic_token_map.md` for the token-space audit and migration notes.
 
 | Hex | Token | Keyword | Type |
 |-----|-------|---------|------|
@@ -2968,7 +2994,7 @@ Tokens marked with \* are tokenised (recognised by the tokeniser) but do not yet
 | A8 | TK_TAB | TAB | Function |
 | A9 | TK_TO | TO | Keyword |
 | AA | TK_FN | FN | Keyword |
-| AB | TK_SPC | SPC | Function |
+| AB | TK_ELSE | ELSE | Keyword |
 | AC | TK_THEN | THEN | Keyword |
 | AD | TK_NOT | NOT | Operator |
 | AE | TK_STEP | STEP | Keyword |
@@ -2982,8 +3008,8 @@ Tokens marked with \* are tokenised (recognised by the tokeniser) but do not yet
 | B6 | TK_AND | AND | Operator |
 | B7 | TK_EOR | EOR | Operator |
 | B8 | TK_OR | OR | Operator |
-| B9 | TK_RSHIFT | >> | Operator \* |
-| BA | TK_LSHIFT | << | Operator \* |
+| B9 | TK_RSHIFT | >> | Operator |
+| BA | TK_LSHIFT | << | Operator |
 | BB | TK_GT | > | Operator |
 | BC | TK_EQUAL | = | Operator |
 | BD | TK_LT | < | Operator |
@@ -2992,7 +3018,7 @@ Tokens marked with \* are tokenised (recognised by the tokeniser) but do not yet
 | C0 | TK_ABS | ABS | Function |
 | C1 | TK_USR | USR | Function |
 | C2 | TK_FRE | FRE | Function |
-| C3 | TK_POS | POS | Function \* |
+| C3 | TK_POS | POS | Function |
 | C4 | TK_SQR | SQR | Function |
 | C5 | TK_RND | RND | Function |
 | C6 | TK_LOG | LOG | Function |
@@ -3004,13 +3030,13 @@ Tokens marked with \* are tokenised (recognised by the tokeniser) but do not yet
 | CC | TK_PEEK | PEEK | Function |
 | CD | TK_DEEK | DEEK | Function |
 | CE | TK_LEEK | LEEK | Function |
-| CF | TK_SADD | SADD | Function \* |
+| CF | TK_SADD | SADD | Function |
 | D0 | TK_LEN | LEN | Function |
 | D1 | TK_STRS | STR$ | Function |
 | D2 | TK_VAL | VAL | Function |
 | D3 | TK_ASC | ASC | Function |
-| D4 | TK_UCASES | UCASE$ | Function \* |
-| D5 | TK_LCASES | LCASE$ | Function \* |
+| D4 | TK_UCASES | UCASE$ | Function |
+| D5 | TK_LCASES | LCASE$ | Function |
 | D6 | TK_CHRS | CHR$ | Function |
 | D7 | TK_HEXS | HEX$ | Function |
 | D8 | TK_BINS | BIN$ | Function |
@@ -3019,7 +3045,7 @@ Tokens marked with \* are tokenised (recognised by the tokeniser) but do not yet
 | DB | TK_MIN | MIN | Function |
 | DC | TK_PI | PI | Function |
 | DD | TK_TWOPI | TWOPI | Function |
-| DE | TK_VPTR | VARPTR | Function \* |
+| DE | TK_VPTR | VARPTR | Function |
 | DF | TK_LEFTS | LEFT$ | Function |
 | E0 | TK_RIGHTS | RIGHT$ | Function |
 | E1 | TK_MIDS | MID$ | Function |

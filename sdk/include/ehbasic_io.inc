@@ -38,7 +38,37 @@ io_init:
 ; Clobbers: R1
 
 putchar:
-    store.b r8, (r26)               ; write byte to TERM_OUT
+    jsr     term_putc
+    rts
+
+; ============================================================================
+; term_putc - Output one byte and maintain ST_TERM_COL
+; ============================================================================
+; Input: R8.b = character
+; Clobbers: R1-R3
+
+term_putc:
+    store.b r8, (r26)
+    add.q   r1, r16, #ST_TERM_COL
+    move.q  r2, #0x0D
+    beq     r8, r2, .tp_reset
+    move.q  r2, #0x0A
+    beq     r8, r2, .tp_reset
+    move.q  r2, #0x08
+    beq     r8, r2, .tp_backspace
+    load.l  r3, (r1)
+    add.q   r3, r3, #1
+    store.l r3, (r1)
+    rts
+.tp_backspace:
+    load.l  r3, (r1)
+    beqz    r3, .tp_done
+    sub.q   r3, r3, #1
+    store.l r3, (r1)
+.tp_done:
+    rts
+.tp_reset:
+    store.l r0, (r1)
     rts
 
 ; ============================================================================
@@ -91,7 +121,10 @@ print_string:
 .ps_loop:
     load.b  r2, (r3)              ; load byte from string
     beqz    r2, .ps_done           ; null terminator? done
-    store.b r2, (r26)             ; write to TERM_OUT
+    push    r3
+    move.q  r8, r2
+    jsr     term_putc
+    pop     r3
     add.q   r3, r3, #1            ; advance pointer
     bra     .ps_loop
 .ps_done:
@@ -104,9 +137,78 @@ print_string:
 
 print_crlf:
     move.q  r8, #0x0D              ; CR
-    store.b r8, (r26)
+    jsr     term_putc
     move.q  r8, #0x0A              ; LF
-    store.b r8, (r26)
+    jsr     term_putc
+    rts
+
+; ============================================================================
+; raise_error - Report a BASIC runtime error and set the control channel
+; ============================================================================
+; Input:  R8 = ERR_* code, R9 = pointer to message text without "?"/" ERROR"
+; Output: R28 = 3 runtime error
+; Clobbers: R1-R8
+
+raise_error:
+    ; Persist code and line before any output helper clobbers caller-saved regs.
+    add.q   r1, r16, #ST_ERROR_FLAG
+    store.l r8, (r1)
+    add.q   r1, r16, #ST_CURRENT_LINE
+    load.l  r2, (r1)
+    add.q   r1, r16, #ST_ERROR_LINE
+    store.l r2, (r1)
+
+    move.q  r8, #0x3F              ; '?'
+    jsr     putchar
+    move.q  r8, r9
+    jsr     print_string
+    la      r8, err_msg_error_in
+    jsr     print_string
+    add.q   r1, r16, #ST_ERROR_LINE
+    load.l  r8, (r1)
+    jsr     io_print_uint32
+    jsr     print_crlf
+    move.q  r28, #3
+    rts
+
+err_msg_error_in:
+    dc.b    " ERROR IN ", 0
+
+; ============================================================================
+; io_print_uint32 - Print an unsigned 32-bit integer
+; ============================================================================
+; Input: R8 = value
+; Clobbers: R1-R7, R14
+
+io_print_uint32:
+    push    r14
+    beqz    r8, .ipu_zero
+    move.q  r14, r0
+    move.q  r1, r8
+    and.l   r1, r1, #0xFFFFFFFF
+.ipu_div_loop:
+    beqz    r1, .ipu_print
+    move.q  r2, r1
+    move.q  r3, #10
+    divu.l  r2, r2, r3
+    mulu.l  r4, r2, r3
+    sub.l   r3, r1, r4
+    add.q   r3, r3, #0x30
+    push    r3
+    add.q   r14, r14, #1
+    move.q  r1, r2
+    bra     .ipu_div_loop
+.ipu_print:
+    beqz    r14, .ipu_end
+    pop     r8
+    jsr     putchar
+    sub.q   r14, r14, #1
+    bra     .ipu_print
+.ipu_zero:
+    move.q  r8, #0x30
+    jsr     putchar
+.ipu_end:
+    pop     r14
     rts
 
 ; ============================================================================

@@ -296,6 +296,15 @@ repl_immediate:
     add.q   r1, r16, #ST_DIRECT_MODE
     store.l r0, (r1)
 
+    ; Successful direct commands clear the persistent last-error state.
+    beqz    r8, repl_clear_error_state
+    bra     repl_loop
+
+repl_clear_error_state:
+    add.q   r1, r16, #ST_ERROR_FLAG
+    store.l r0, (r1)
+    add.q   r1, r16, #ST_ERROR_LINE
+    store.l r0, (r1)
     bra     repl_loop
 
 ; ============================================================================

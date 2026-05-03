@@ -79,6 +79,16 @@ line_search:
     ; If current = 0, end of list
     beqz    r4, .ls_not_found
 
+    ; Empty/end terminator is the zero word immediately before ST_PROG_END.
+    ; Bytes after it can contain stale compacted line data, so do not inspect +4.
+    add.q   r1, r16, #4
+    load.l  r1, (r1)
+    sub.q   r1, r1, #4
+    bne     r4, r1, .ls_real_line
+    load.l  r5, (r4)
+    beqz    r5, .ls_not_found
+.ls_real_line:
+
     ; Read line number at current+4
     add.q   r5, r4, #4
     load.l  r5, (r5)               ; line number of current line
@@ -294,6 +304,18 @@ line_store:
 line_rechain:
     ; Start at prog_start
     load.l  r1, (r16)              ; R1 = current line address
+    ; Empty program invariant: current points at the zero sentinel immediately
+    ; before ST_PROG_END. Stale bytes after the sentinel are ignored.
+    add.q   r3, r16, #4
+    load.l  r3, (r3)
+    sub.q   r3, r3, #4
+    bne     r1, r3, .rc_loop
+    load.l  r2, (r1)
+    bnez    r2, .rc_loop
+    add.q   r2, r1, #4
+    add.q   r3, r16, #4
+    store.l r2, (r3)
+    rts
 
 .rc_loop:
     ; Check if this is the end terminator (next-ptr = 0 and no valid line after)
@@ -332,8 +354,8 @@ line_rechain:
     bra     .rc_loop
 
 .rc_last:
-    ; This is the last line. Its next-pointer = address of end terminator.
-    store.l r2, (r1)               ; current->next = R2 (terminator location)
+    ; This is the last line. Its next-pointer targets the zero terminator word.
+    store.l r2, (r1)
     store.l r0, (r2)               ; terminator = 0
     rts
 
@@ -360,6 +382,16 @@ line_list:
 .ll_loop:
     ; Check for end of list
     beqz    r14, .ll_done
+
+    ; Stop on the in-memory empty/end sentinel. Stale bytes after the sentinel
+    ; are ignored because compaction only guarantees the zero word itself.
+    add.q   r1, r16, #4
+    load.l  r1, (r1)
+    sub.q   r1, r1, #4
+    bne     r14, r1, .ll_real_line
+    load.l  r15, (r14)
+    beqz    r15, .ll_done
+.ll_real_line:
 
     ; Read next-pointer and line number
     load.l  r15, (r14)              ; R15 = next-pointer
