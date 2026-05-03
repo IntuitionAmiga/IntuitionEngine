@@ -2207,8 +2207,8 @@ COP_MOVE_VGA_DATA     = $40010000           ; Offset 1: DAC data (R,G,B seq)
 ; - 15 unique colors (8 base + 8 bright, black can't brighten)
 ; - FLASH attribute: swaps INK/PAPER at ~1.6Hz
 ;
-; For 6502: ULA registers are memory-mapped at $D800-$D80F
-; VRAM is at $4000 (banked, same as authentic ZX Spectrum)
+; For 6502: ULA registers are memory-mapped at $D800-$D817.
+; VRAM is accessed through ULA_ADDR_LO/HI and ULA_DATA.
 ;
 ; Non-linear bitmap addressing formula:
 ;   addr = ((y & $C0) << 5) + ((y & $07) << 8) + ((y & $38) << 2) + (x >> 3)
@@ -2227,15 +2227,19 @@ ULA_BASE        = $D800         ; ULA register base (6502 mapping)
 ULA_BORDER      = $D800         ; Border color (bits 0-2)
 ULA_CTRL        = $D804         ; Control register
 ULA_STATUS      = $D808         ; Status register
+ULA_ADDR_LO     = $D80C         ; Paged VRAM address low byte
+ULA_ADDR_HI     = $D810         ; Paged VRAM address high bits
+ULA_DATA        = $D814         ; Paged VRAM data byte
 
 ; Control register bits
 ULA_CTRL_ENABLE = $01           ; ULA enable bit
+ULA_CTRL_VBLANK_IRQ_EN = $02    ; VBlank IRQ enable bit
+ULA_CTRL_AUTO_INC = $04         ; Auto-increment ULA_DATA address
 
 ; Status register bits
 ULA_STATUS_VBLANK = $01         ; VBlank active (cleared on read)
 
-; VRAM layout (banked at $4000, same as authentic ZX Spectrum)
-ULA_VRAM        = $4000         ; VRAM base address
+; VRAM layout (accessed through ULA_ADDR_LO/HI and ULA_DATA)
 ULA_BITMAP_SIZE = 6144          ; Bitmap: 256x192/8 = 6144 bytes
 ULA_ATTR_OFFSET = $1800         ; Attribute offset from VRAM base
 ULA_ATTR_SIZE   = 768           ; Attributes: 32x24 = 768 bytes
@@ -2256,6 +2260,36 @@ ULA_CELLS_Y     = 24            ; Character cells vertically
 .macro ULA_SET_BORDER color
     lda #color
     sta ULA_BORDER
+.endmacro
+
+; Set paged ULA VRAM address from a 16-bit immediate.
+.macro ULA_SET_ADDR addr
+    lda #<addr
+    sta ULA_ADDR_LO
+    lda #>addr
+    sta ULA_ADDR_HI
+.endmacro
+
+; Set paged ULA VRAM address from A=low, X=high.
+.macro ULA_SET_ADDR_AX
+    sta ULA_ADDR_LO
+    stx ULA_ADDR_HI
+.endmacro
+
+; Write A to ULA VRAM at the current paged address.
+.macro ULA_WRITE_A
+    sta ULA_DATA
+.endmacro
+
+; Read ULA VRAM at the current paged address into A.
+.macro ULA_READ_A
+    lda ULA_DATA
+.endmacro
+
+; Enable ULA_DATA auto-increment while keeping the display enabled.
+.macro ULA_ENABLE_INC
+    lda #(ULA_CTRL_ENABLE | ULA_CTRL_AUTO_INC)
+    sta ULA_CTRL
 .endmacro
 
 ; Enable ULA

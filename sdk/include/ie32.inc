@@ -868,12 +868,19 @@
 .equ ULA_BORDER        0xF2000          ; Border color (bits 0-2)
 .equ ULA_CTRL          0xF2004          ; Control register
 .equ ULA_STATUS        0xF2008          ; Status register
+.equ ULA_ADDR_LO       0xF200C          ; Paged VRAM address low byte
+.equ ULA_ADDR_HI       0xF2010          ; Paged VRAM address high bits
+.equ ULA_DATA          0xF2014          ; Paged VRAM data byte
 
 ; Control register bits
 .equ ULA_CTRL_ENABLE   0x01             ; ULA enable bit
+.equ ULA_CTRL_VBLANK_IRQ_EN 0x02        ; VBlank IRQ enable bit
+.equ ULA_CTRL_AUTO_INC 0x04             ; Auto-increment ULA_DATA address
 
-; VRAM layout (same as authentic ZX Spectrum)
-.equ ULA_VRAM          0x4000           ; VRAM base address
+; VRAM layout
+.equ ULA_VRAM_AP       0xFA000          ; IE-native VRAM aperture
+.equ ULA_VRAM_AP_END   0xFBAFF          ; Inclusive aperture end
+.equ ULA_VRAM          0xFA000          ; Compatibility alias for 32-bit CPUs
 .equ ULA_BITMAP_SIZE   6144             ; Bitmap: 256x192/8 = 6144 bytes
 .equ ULA_ATTR_OFFSET   0x1800           ; Attribute offset from VRAM base
 .equ ULA_ATTR_SIZE     768              ; Attributes: 32x24 = 768 bytes

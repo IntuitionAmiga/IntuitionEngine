@@ -105,6 +105,12 @@ type VideoSource interface {
 	SignalVSync()              // Called by compositor after frame sent
 }
 
+// FrameTicker is an optional chip-clock hook invoked once per compositor frame,
+// even when a source is disabled and produces no visible frame.
+type FrameTicker interface {
+	TickFrame()
+}
+
 // KeyboardInput is implemented by video outputs that can forward keyboard bytes.
 type KeyboardInput interface {
 	SetKeyHandler(func(byte))

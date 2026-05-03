@@ -639,14 +639,14 @@ func writeVGAPage(a *Bus6502Adapter, addr uint16, value byte) {
 }
 
 func readULAPage(a *Bus6502Adapter, addr uint16) byte {
-	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x0F {
+	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x17 {
 		return a.bus.Read8(ULA_BASE + uint32(addr-C6502_ULA_BASE))
 	}
 	return a.bus.Read8(translateIO8Bit_6502(addr))
 }
 
 func writeULAPage(a *Bus6502Adapter, addr uint16, value byte) {
-	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x0F {
+	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x17 {
 		a.bus.Write8(ULA_BASE+uint32(addr-C6502_ULA_BASE), value)
 		return
 	}
@@ -658,6 +658,11 @@ func (a *Bus6502Adapter) translateVoodooWindow(addr uint16) (uint32, bool) {
 		return 0, false
 	}
 	return uint32(a.voodooBankPage)*VOODOO_6502_WINDOW_SIZE + uint32(addr-VOODOO_6502_WINDOW_BASE), true
+}
+
+// SetIRQLine asserts or clears the 6502 IRQ line.
+func (cpu_6502 *CPU_6502) SetIRQLine(assert bool) {
+	cpu_6502.irqPending.Store(assert)
 }
 
 func readVoodooWindowPage(a *Bus6502Adapter, addr uint16) byte {
@@ -3192,8 +3197,8 @@ func (adapter *Bus6502Adapter) Read(addr uint16) byte {
 		return adapter.bus.Read8(TED_VIDEO_BASE + (tedVReg * 4))
 	}
 
-	// Handle ULA register reads ($D800-$D80F)
-	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x0F {
+	// Handle ULA register reads ($D800-$D817)
+	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x17 {
 		ulaReg := uint32(addr - C6502_ULA_BASE)
 		return adapter.bus.Read8(ULA_BASE + ulaReg)
 	}
@@ -3340,8 +3345,8 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 		return
 	}
 
-	// Handle ULA register writes ($D800-$D80F)
-	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x0F {
+	// Handle ULA register writes ($D800-$D817)
+	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x17 {
 		ulaReg := uint32(addr - C6502_ULA_BASE)
 		adapter.bus.Write8(ULA_BASE+ulaReg, value)
 		return

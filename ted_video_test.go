@@ -224,13 +224,13 @@ func TestTEDVideo_StatusRegister(t *testing.T) {
 		t.Errorf("Initial STATUS: expected 0, got %d", val)
 	}
 
-	// Signal VSync to set VBlank flag
-	ted.SignalVSync()
+	// Tick a frame to set VBlank flag
+	ted.TickFrame()
 
 	// Now status should have VBlank bit set
 	val = ted.HandleRead(TED_V_STATUS)
 	if val&TED_V_STATUS_VBLANK == 0 {
-		t.Error("Expected VBlank bit to be set after SignalVSync")
+		t.Error("Expected VBlank bit to be set after TickFrame")
 	}
 
 	// Reading should clear the flag
@@ -740,12 +740,11 @@ func TestTEDVideo_SignalVSync(t *testing.T) {
 		t.Error("VBlank should be inactive initially")
 	}
 
-	// Signal VSync
-	ted.SignalVSync()
+	ted.TickFrame()
 
 	// VBlank should now be active
 	if !ted.vblankActive.Load() {
-		t.Error("VBlank should be active after SignalVSync")
+		t.Error("VBlank should be active after TickFrame")
 	}
 
 	// Reading status should acknowledge (clear) VBlank
@@ -762,9 +761,9 @@ func TestTEDVideo_CursorBlinkTiming(t *testing.T) {
 	// Initial cursor state
 	initialVisible := ted.cursorVisible
 
-	// Signal VSync 29 times (one less than blink interval)
+	// Tick 29 frames (one less than blink interval)
 	for range TED_V_CURSOR_FRAMES - 1 {
-		ted.SignalVSync()
+		ted.TickFrame()
 	}
 
 	// Cursor state should not have changed yet
@@ -772,15 +771,15 @@ func TestTEDVideo_CursorBlinkTiming(t *testing.T) {
 		t.Error("Cursor should not have toggled before 30 frames")
 	}
 
-	// One more VSync should toggle cursor
-	ted.SignalVSync()
+	// One more frame should toggle cursor
+	ted.TickFrame()
 	if ted.cursorVisible == initialVisible {
 		t.Error("Cursor should have toggled after 30 frames")
 	}
 
 	// Another 30 frames should toggle back
 	for range TED_V_CURSOR_FRAMES {
-		ted.SignalVSync()
+		ted.TickFrame()
 	}
 	if ted.cursorVisible != initialVisible {
 		t.Error("Cursor should have toggled back after 60 frames")

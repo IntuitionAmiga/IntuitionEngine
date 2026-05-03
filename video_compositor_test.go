@@ -83,6 +83,33 @@ func (m *mockScanlineSource) StartFrame()               { m.scanlines = 0 }
 func (m *mockScanlineSource) ProcessScanline(y int)     { m.scanlines++ }
 func (m *mockScanlineSource) FinishFrame() []byte       { return m.frame }
 
+type mockTickSource struct {
+	mockScanlineSource
+	ticks atomic.Int32
+}
+
+func (m *mockTickSource) TickFrame() {
+	m.ticks.Add(1)
+}
+
+func TestCompositorTickFrameFiresWhenSourceDisabled(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(16, 16)
+
+	source := &mockTickSource{}
+	source.enabled.Store(false)
+	source.w = 16
+	source.h = 16
+	source.frame = make([]byte, 16*16*4)
+	comp.RegisterSource(source)
+
+	comp.composite()
+
+	if got := source.ticks.Load(); got != 1 {
+		t.Fatalf("ticks = %d, want 1", got)
+	}
+}
+
 // TestCompositor_ScanlineAware_WithDisabledVoodoo verifies that when a Voodoo
 // source exists but is disabled, compositeScanlineAware still works for the
 // remaining ScanlineAware sources (VideoChip + VGA copper demos).

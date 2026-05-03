@@ -321,7 +321,7 @@ The 6502 uses `ioTable[page]` to route memory-mapped I/O through the bus:
 | `$D600-$D605` | TED Audio | `0xF0F00+offset` | |
 | `$D620-$D62F` | TED Video | `0xF0F20+offset x4` | Stride-4 register mapping |
 | `$D700-$D70A` | VGA | `0xF1000` | Direct handler call |
-| `$D800-$D80F` | ULA | `0xF2000+offset` | |
+| `$D800-$D817` | ULA | `0xF2000+offset` | Registers plus paged VRAM data port |
 
 ANTIC/GTIA intentionally has no 6502 `$D400/$D000` compatibility surface; `$D400-$D40F` is PSG on the 6502 map.
 
@@ -363,7 +363,7 @@ graph TB
         ANT_COL["128 Colours"]
     end
 
-    subgraph ULAS["ULA (Layer 15, 0xF2000-0xF200B)"]
+    subgraph ULAS["ULA (Layer 15, 0xF2000-0xF2017, VRAM 0xFA000-0xFBAFF)"]
         ULA_BMP["Bitmap Unit<br/>256x192"]
         ULA_ATR["Attribute Unit<br/>32x24 cells"]
         ULA_BDR["Border Colour"]
@@ -657,7 +657,8 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xF0F10-0xF0F1C` | 13B | TED Player |
 | `0xF0F20-0xF0F5F` | 64B | TED Video |
 | `0xF1000-0xF13FF` | 1KB | VGA Registers |
-| `0xF2000-0xF200B` | 12B | ULA (ZX Spectrum) |
+| `0xF2000-0xF2017` | 24B | ULA Registers |
+| `0xFA000-0xFBAFF` | 6912B | ULA VRAM Aperture |
 | `0xF2100-0xF213F` | 64B | ANTIC |
 | `0xF2140-0xF21FB` | 188B | GTIA |
 | `0xF2200-0xF221F` | 32B | File I/O |

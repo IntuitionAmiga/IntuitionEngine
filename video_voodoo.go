@@ -919,13 +919,16 @@ func (v *VoodooEngine) GetDimensions() (int, int) {
 	return int(v.width.Load()), int(v.height.Load())
 }
 
-// SignalVSync signals vertical retrace to the Voodoo (lock-free)
-func (v *VoodooEngine) SignalVSync() {
+// TickFrame advances Voodoo retrace state once per compositor frame.
+func (v *VoodooEngine) TickFrame() {
 	v.vretrace.Store(time.Now().UnixNano())
 	if v.OnVBlank != nil {
 		v.OnVBlank()
 	}
 }
+
+// SignalVSync signals that visible output was sent.
+func (v *VoodooEngine) SignalVSync() {}
 
 // SetEnabled enables or disables the Voodoo (lock-free)
 func (v *VoodooEngine) SetEnabled(enabled bool) {

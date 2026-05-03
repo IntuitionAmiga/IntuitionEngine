@@ -606,15 +606,19 @@ ULA_BASE        equ 0xF2000              ; ULA register base
 ULA_BORDER      equ 0xF2000              ; Border color (bits 0-2)
 ULA_CTRL        equ 0xF2004              ; Control register
 ULA_STATUS      equ 0xF2008              ; Status register
-
-; ULA port I/O (same as Z80 for compatibility)
-ULA_PORT        equ 0xFE                 ; Border color via port I/O
+ULA_ADDR_LO     equ 0xF200C              ; Paged VRAM address low byte
+ULA_ADDR_HI     equ 0xF2010              ; Paged VRAM address high bits
+ULA_DATA        equ 0xF2014              ; Paged VRAM data byte
 
 ; Control register bits
 ULA_CTRL_ENABLE equ 0x01                 ; ULA enable bit
+ULA_CTRL_VBLANK_IRQ_EN equ 0x02          ; VBlank IRQ enable bit
+ULA_CTRL_AUTO_INC equ 0x04               ; Auto-increment ULA_DATA address
 
 ; VRAM layout
-ULA_VRAM        equ 0x4000               ; VRAM base address
+ULA_VRAM_AP     equ 0xFA000              ; IE-native VRAM aperture
+ULA_VRAM_AP_END equ 0xFBAFF              ; Inclusive aperture end
+ULA_VRAM        equ 0xFA000              ; Compatibility alias for 32-bit CPUs
 ULA_BITMAP_SIZE equ 6144                 ; Bitmap: 256x192/8 = 6144 bytes
 ULA_ATTR_OFFSET equ 0x1800               ; Attribute offset from VRAM base
 ULA_ATTR_SIZE   equ 768                  ; Attributes: 32x24 = 768 bytes

@@ -1177,10 +1177,13 @@ func (v *VGAEngine) GetDimensions() (int, int) {
 	return v.GetModeDimensions()
 }
 
-// SignalVSync implements VideoSource - called by compositor after frame sent (lock-free)
-func (v *VGAEngine) SignalVSync() {
+// TickFrame advances time-based VGA retrace state once per compositor frame.
+func (v *VGAEngine) TickFrame() {
 	v.frameStart.Store(time.Now().UnixNano())
 }
+
+// SignalVSync implements VideoSource - called by compositor after frame sent.
+func (v *VGAEngine) SignalVSync() {}
 
 // GetCurrentFramebuffer returns the current VGA framebuffer for testing
 func (v *VGAEngine) GetCurrentFramebuffer() []uint8 {

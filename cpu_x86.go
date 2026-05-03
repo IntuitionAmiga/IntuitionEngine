@@ -1313,7 +1313,17 @@ func (c *CPU_X86) SetIRQ(active bool, vector byte) {
 	if active {
 		c.irqPending.Store(true)
 		c.irqVector.Store(uint32(vector))
+	} else {
+		c.ClearIRQ(vector)
 	}
+}
+
+// ClearIRQ clears a pending x86 IRQ if it matches the supplied vector.
+func (c *CPU_X86) ClearIRQ(vector byte) {
+	if byte(c.irqVector.Load()) == vector {
+		c.irqPending.Store(false)
+	}
+	c.irqLine = false
 }
 
 func (c *CPU_X86) SetNMI(active bool) {

@@ -390,14 +390,16 @@ func (ula *ULAEngine) Reset() {
 
 	ula.border = 0
 	ula.control = 0
+	ula.addrLatch = 0
 	ula.enabled.Store(false)
 	ula.vblankActive.Store(false)
+	ula.deassertVBlankIRQ()
 
 	for i := range ula.vram {
 		ula.vram[i] = 0
 	}
-	ula.flashState = false
-	ula.flashCounter = 0
+	ula.flashState.Store(false)
+	ula.flashCounter.Store(0)
 
 	for i := range ula.frameBuffer {
 		ula.frameBuffer[i] = 0

@@ -45,13 +45,13 @@ func TestULA_DefaultState(t *testing.T) {
 	}
 
 	// Flash state should be off
-	if ula.flashState {
+	if ula.flashState.Load() {
 		t.Error("Expected flashState to be false initially")
 	}
 
 	// Flash counter should be 0
-	if ula.flashCounter != 0 {
-		t.Errorf("Expected flashCounter=0, got %d", ula.flashCounter)
+	if ula.flashCounter.Load() != 0 {
+		t.Errorf("Expected flashCounter=0, got %d", ula.flashCounter.Load())
 	}
 }
 
@@ -346,7 +346,7 @@ func TestULA_Render_Flash(t *testing.T) {
 	ula.HandleVRAMWrite(0x1800, 0x87)
 
 	// Render with flash off - ink should be white
-	ula.flashState = false
+	ula.flashState.Store(false)
 	frame1 := ula.RenderFrame()
 	offset := (ULA_BORDER_TOP*ULA_FRAME_WIDTH + ULA_BORDER_LEFT) * 4
 	r1, g1, b1 := frame1[offset], frame1[offset+1], frame1[offset+2]
@@ -357,7 +357,7 @@ func TestULA_Render_Flash(t *testing.T) {
 	}
 
 	// Render with flash on - colors should swap
-	ula.flashState = true
+	ula.flashState.Store(true)
 	frame2 := ula.RenderFrame()
 	r2, g2, b2 := frame2[offset], frame2[offset+1], frame2[offset+2]
 
@@ -377,29 +377,29 @@ func TestULA_FlashTiming(t *testing.T) {
 	ula := NewULAEngine(nil)
 
 	// Initial state
-	if ula.flashState {
+	if ula.flashState.Load() {
 		t.Error("Initial flashState should be false")
 	}
 
 	// Signal 31 vsyncs - should not toggle yet
 	for range 31 {
-		ula.SignalVSync()
+		ula.TickFrame()
 	}
-	if ula.flashState {
+	if ula.flashState.Load() {
 		t.Error("flashState should still be false after 31 frames")
 	}
 
 	// 32nd vsync should toggle
-	ula.SignalVSync()
-	if !ula.flashState {
+	ula.TickFrame()
+	if !ula.flashState.Load() {
 		t.Error("flashState should be true after 32 frames")
 	}
 
 	// Another 32 frames should toggle back
 	for range 32 {
-		ula.SignalVSync()
+		ula.TickFrame()
 	}
-	if ula.flashState {
+	if ula.flashState.Load() {
 		t.Error("flashState should be false after 64 frames")
 	}
 }

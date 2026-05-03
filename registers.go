@@ -43,7 +43,7 @@ Address Range       Size    Device              Constants File
 0xF0E00-0xF0E2D     45B     SID (6581/8580)     sid_constants.go
 0xF0F00-0xF0F5F     96B     TED (audio+video)   ted_constants.go, ted_video_constants.go
 0xF1000-0xF13FF     1KB     VGA Registers       vga_constants.go
-0xF2000-0xF200B     12B     ULA (ZX Spectrum)   ula_constants.go
+0xF2000-0xF2017     24B     ULA Registers       ula_constants.go
 0xF2100-0xF213F     64B     ANTIC (Atari 8-bit) antic_constants.go
 0xF2140-0xF21B7     120B    GTIA (Atari 8-bit)  antic_constants.go
 0xF2200-0xF221F     32B     File I/O            registers.go
@@ -58,6 +58,7 @@ Address Range       Size    Device              Constants File
 0xF23E0-0xF23FF     32B     Bootstrap HostFS    bootstrap_hostfs_constants.go
 0xD0000-0xDFFFF     64KB    Voodoo Texture Memory voodoo_constants.go
 0xF8000-0xF87FF     2KB     Voodoo 3D Graphics  voodoo_constants.go
+0xFA000-0xFBAFF     6912B   ULA VRAM Aperture   ula_constants.go
 
 0x100000-0x5FFFFF   5MB     Video RAM           video_chip.go (VRAM_START)
 
@@ -104,11 +105,12 @@ VGA (0xF1000-0xF13FF) - vga_constants.go
   VGA_SEQ_*, VGA_CRTC_*, VGA_GC_*, VGA_ATTR_*
   VGA_DAC_*, VGA_PALETTE
 
-ULA - ZX Spectrum (0xF2000-0xF200B) - ula_constants.go
+ULA - ZX Spectrum-style video (0xF2000-0xF2017, VRAM 0xFA000-0xFBAFF) - ula_constants.go
   ULA_BORDER (border color, bits 0-2)
-  ULA_CTRL (enable/disable)
+  ULA_CTRL (enable/disable, auto-increment, VBlank IRQ enable)
   ULA_STATUS (vblank)
-  VRAM at 0x4000 (6144 bitmap + 768 attribute bytes)
+  ULA_ADDR_LO, ULA_ADDR_HI, ULA_DATA
+  VRAM aperture at 0xFA000 (6144 bitmap + 768 attribute bytes)
 
 ANTIC (0xF2100-0xF213F) - antic_constants.go
   ANTIC_DMACTL, ANTIC_CHACTL, ANTIC_DLISTL/H, ANTIC_HSCROL, ANTIC_VSCROL
@@ -132,12 +134,12 @@ CPU-SPECIFIC I/O MAPPINGS
 6502 (16-bit address space, directly mapped)
   See cpu_six5go2.go - addresses 0xF000-0xF0FF map to 0xF0000-0xF00FF
   VGA at 0xD700-0xD70A (see vga_constants.go C6502_VGA_*)
-  ULA at 0xD800-0xD80F, VRAM at 0x4000 (see ula_constants.go)
+  ULA at 0xD800-0xD817 with paged VRAM data port (see ula_constants.go)
 
 Z80 (16-bit address with bank windows)
   See cpu_z80_runner.go - addresses 0xF000-0xF0FF map to 0xF0000-0xF00FF
   VGA via port I/O 0xA0-0xAA (see vga_constants.go Z80_VGA_PORT_*)
-  ULA via port I/O 0xFE (authentic ZX Spectrum), VRAM at 0x4000
+  ULA via ports 0xFE/0xFD/0xBE/0xFA-0xFC with paged VRAM data port
 
 M68K (32-bit address space, direct access)
   Full 32-bit addressing to all I/O regions
@@ -192,7 +194,11 @@ const (
 
 	// ULA region (ZX Spectrum video)
 	ULA_REGION_BASE = 0xF2000
-	ULA_REGION_END  = 0xF200B
+	ULA_REGION_END  = 0xF2017
+
+	// ULA VRAM aperture
+	ULA_VRAM_REGION_BASE = 0xFA000
+	ULA_VRAM_REGION_END  = 0xFBAFF
 
 	// File I/O region
 	FILE_IO_REGION_BASE = 0xF2200
@@ -363,6 +369,8 @@ func GetIORegion(addr uint32) string {
 		return "VGA"
 	case addr >= ULA_REGION_BASE && addr <= ULA_REGION_END:
 		return "ULA"
+	case addr >= ULA_VRAM_REGION_BASE && addr <= ULA_VRAM_REGION_END:
+		return "ULA VRAM"
 	case addr >= FILE_IO_REGION_BASE && addr <= FILE_IO_REGION_END:
 		return "FileIO"
 	case addr >= AROS_AUD_REGION_BASE_REG && addr <= AROS_AUD_REGION_END_REG:

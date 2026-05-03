@@ -3267,10 +3267,13 @@ func (chip *VideoChip) GetDimensions() (int, int) {
 	return mode.width, mode.height
 }
 
-// SignalVSync implements VideoSource - called by compositor after frame sent
-func (chip *VideoChip) SignalVSync() {
+// TickFrame advances chip-clock state once per compositor frame.
+func (chip *VideoChip) TickFrame() {
 	chip.inVBlank.Store(true)
 }
+
+// SignalVSync implements VideoSource - called by compositor after frame sent.
+func (chip *VideoChip) SignalVSync() {}
 
 // -----------------------------------------------------------------------------
 // ScanlineAware Interface Implementation

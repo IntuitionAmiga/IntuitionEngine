@@ -446,6 +446,10 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"BORDER", 0xF2000, 4, "RW"},
 			{"CTRL", 0xF2004, 4, "RW"},
 			{"STATUS", 0xF2008, 4, "RO"},
+			{"ADDR_LO", 0xF200C, 1, "RW"},
+			{"ADDR_HI", 0xF2010, 1, "RW"},
+			{"DATA", 0xF2014, 1, "RW"},
+			{"VRAM_APERTURE_START", 0xFA000, 4, "RW"},
 		},
 	},
 	"antic": {

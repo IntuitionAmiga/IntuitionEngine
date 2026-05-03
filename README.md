@@ -1077,7 +1077,7 @@ Z80 and x86 access the custom synth and player control registers via memory-mapp
 | Voodoo    | 0x0F8000-0x0F87FF + texmem 0x0D0000-0xDFFFF | Ports 0xB0-0xB7 | Memory | $E000 banked window | IE-native Voodoo HLE accelerator |
 | ANTIC     | 0x0F2100-0x0F213F | Ports 0xD4/0xD5 | Ports 0xD4/0xD5 | - | Atari-inspired IE-native display list video |
 | GTIA      | 0x0F2140-0x0F21FB | Ports 0xD6/0xD7 | Ports 0xD6/0xD7 | - | Atari-inspired IE-native color + P/M |
-| ULA       | 0x0F2000-0x0F200B | Port 0xFE       | Port 0xFE       | $D800-$D80B | ZX Spectrum compatible |
+| ULA       | 0x0F2000-0x0F2017, VRAM 0x0FA000-0x0FBAFF | Ports 0xFE/0xFD/0xBE/0xFA-0xFC | Polling-only | $D800-$D817 | Spectrum-style attributes, IE-native bus mapping |
 
 Note: ANTIC and GTIA intentionally do not expose a 6502 `$D400/$D000` compatibility surface; 6502 `$D400` remains PSG.
 
@@ -1202,7 +1202,7 @@ The VGA chip integrates with the video compositor as a separate layer (layer 10)
 
 See section 12.9 (Video Compositor) for details on the compositing architecture and section 12.6 (Copper List Executor) for examples of copper-driven VGA palette manipulation.
 
-## 3.15 ULA Video Chip - ZX Spectrum (0x0F2000 - 0x0F200B)
+## 3.15 ULA Video Chip - ZX Spectrum-style (0x0F2000 - 0x0F2017)
 
 The ULA chip provides authentic ZX Spectrum video output, enabling classic Spectrum demos and games:
 
@@ -1220,19 +1220,22 @@ The ULA chip provides authentic ZX Spectrum video output, enabling classic Spect
 ### Register Map
 
 ```
-ULA Control Registers (0x0F2000 - 0x0F200B):
+ULA Control Registers (0x0F2000 - 0x0F2017):
 0x0F2000: ULA_BORDER      - Border color (bits 0-2, values 0-7)
-0x0F2004: ULA_CTRL        - Control (bit 0=enable)
+0x0F2004: ULA_CTRL        - Control (bit 0=enable, bit 1=VBlank IRQ enable, bit 2=auto-increment)
 0x0F2008: ULA_STATUS      - Status (bit 0=vblank)
+0x0F200C: ULA_ADDR_LO     - Paged VRAM address low byte
+0x0F2010: ULA_ADDR_HI     - Paged VRAM address high bits
+0x0F2014: ULA_DATA        - Paged VRAM data byte
 ```
 
 ### VRAM Layout
 
-The ULA uses the authentic ZX Spectrum memory layout at 0x4000:
+The ULA uses the Spectrum bitmap and attribute layout inside ULA VRAM, but not a Spectrum machine memory map. 32-bit-address CPUs access VRAM through the IE-native aperture:
 
 ```
-0x4000 - 0x57FF: Bitmap (6144 bytes, non-linear Y addressing)
-0x5800 - 0x5AFF: Attributes (768 bytes, 32×24 cells)
+0x0FA000 - 0x0FB7FF: Bitmap (6144 bytes, non-linear Y addressing)
+0x0FB800 - 0x0FBAFF: Attributes (768 bytes, 32×24 cells)
 ```
 
 ### Non-Linear Bitmap Addressing
@@ -1277,9 +1280,9 @@ Bits 2-0: INK   (foreground color, 0-7)
 
 | CPU | ULA Registers | ULA VRAM | Notes |
 |-----|---------------|----------|-------|
-| IE32/IE64/M68K | 0x0F2000-0x0F200B | 0x4000-0x5AFF | Direct 32-bit |
-| Z80 | Port 0xFE | 0x4000-0x5AFF | Authentic Spectrum |
-| 6502 | $D800-$D80F | $4000 (banked) | Memory-mapped |
+| IE32/IE64/M68K/x86 | 0x0F2000-0x0F2017 | 0x0FA000-0x0FBAFF | Direct aperture |
+| Z80 | Ports 0xFE/0xFD/0xBE/0xFA-0xFC | Paged ULA_DATA | 16-bit address-safe |
+| 6502 | $D800-$D817 | Paged ULA_DATA | 16-bit address-safe |
 
 ### Example: Drawing a Pixel (M68K)
 
@@ -1308,19 +1311,30 @@ Bits 2-0: INK   (foreground color, 0-7)
     include "ie80.inc"
 
     ; Clear bitmap to zeros (all paper color)
-    ld hl,ULA_VRAM
-    ld de,ULA_VRAM+1
-    ld bc,ULA_BITMAP_SIZE-1
-    ld (hl),0
-    ldir
+    ULA_ENABLE_INC
+    ULA_SET_ADDR 0
+    ld b,24
+clear_page:
+    ld c,0
+clear_byte:
+    xor a
+    ULA_WRITE_A
+    dec c
+    jr nz,clear_byte
+    djnz clear_page
 
     ; Set all attributes to white ink on blue paper
     ; Attribute: BRIGHT=0, PAPER=1 (blue), INK=7 (white) = $0F
-    ld hl,ULA_ATTR_BASE
-    ld de,ULA_ATTR_BASE+1
-    ld bc,ULA_ATTR_SIZE-1
-    ld (hl),$0F
-    ldir
+    ULA_SET_ADDR ULA_ATTR_BASE
+    ld b,3
+attr_page:
+    ld c,0
+attr_byte:
+    ld a,$0F
+    ULA_WRITE_A
+    dec c
+    jr nz,attr_byte
+    djnz attr_page
 
     ; Set border to blue
     ULA_SET_BORDER 1
@@ -1330,7 +1344,7 @@ Bits 2-0: INK   (foreground color, 0-7)
 
 The ULA integrates with the video compositor as layer 15, rendering above both the VideoChip (layer 0) and VGA (layer 10). This allows ZX Spectrum graphics to overlay other video sources.
 
-The ULA provides its own frame timing through `SignalVSync()`, which handles the FLASH attribute timing (toggling every 32 frames). When disabled via `ULA_CTRL`, the chip returns nil frames to the compositor.
+The ULA provides its own frame timing through the compositor `TickFrame()` hook, so VBlank status and FLASH timing continue even while the visible layer is disabled. When disabled via `ULA_CTRL`, the chip returns nil frames to the compositor.
 
 ## 3.16 ANTIC Video Chip - Atari 8-bit (0x0F2100 - 0x0F213F)
 
@@ -2859,11 +2873,11 @@ The Z80 implements a comprehensive instruction set including:
 | TED    | 0xF2-0xF3   | Register select, data (audio + video indices 0x20-0x32) |
 | ANTIC  | 0xD4-0xD5   | Register select, data |
 | GTIA   | 0xD6-0xD7   | Register select, data |
-| ULA    | 0xFE        | Border color / key status |
+| ULA    | 0xFE, 0xFD, 0xBE, 0xFA-0xFC | Border, control/status, paged VRAM |
 | VGA    | 0xA0-0xAC   | VGA register access |
 | Voodoo | 0xB0-0xB7   | Address/data ports for 32-bit Voodoo register writes |
 
-First port selects the register, second port reads/writes data (except ULA which uses a single port, and Voodoo which uses an address/data accumulator).
+First port selects the register, second port reads/writes data. ULA uses fixed ports: 0xFE border, 0xFD control, 0xBE status, 0xFA/0xFB address, 0xFC data.
 
 ## 6.6 Interrupts
 

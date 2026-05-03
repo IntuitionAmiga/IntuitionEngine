@@ -52,14 +52,13 @@
 ;   LDA $1234    ; Absolute: 3 bytes, 4 cycles
 ;   LDA $12      ; Zero page: 2 bytes, 3 cycles
 ;
-; The 16-bit pointer zp_ptr0 (provided by ie65.inc) is used for reaching
-; ULA VRAM at $4000 via indirect indexed addressing: (zp_ptr0),Y.
+; ULA VRAM is accessed through the paged ULA address/data registers.
 ;
 ; === MEMORY MAP ===
 ;   $0000-$00FF  Zero page (line vars, frame pointers, animation state)
-;   $4000-$57FF  ULA bitmap VRAM (6144 bytes, non-linear layout)
-;   $5800-$5AFF  ULA attribute VRAM (768 bytes, 32x24 cells)
-;   $D800        ULA registers (border, control, status)
+;   $0000-$17FF  ULA bitmap VRAM offsets (6144 bytes, non-linear layout)
+;   $1800-$1AFF  ULA attribute VRAM offsets (768 bytes, 32x24 cells)
+;   $D800-$D817  ULA registers (border, control, status, paged VRAM)
 ;   RODATA       Pre-calculated vertex tables, edge list, bit masks
 ;   BINDATA      Embedded AHX tracker module (~15KB)
 ;
@@ -114,6 +113,7 @@ curr_frame:     .res 1      ; Current animation frame (0-31)
 ; 16-bit pointers to the current frame's vertex coordinate arrays.
 frame_ptr_x:    .res 2      ; Pointer to X coordinates for current frame
 frame_ptr_y:    .res 2      ; Pointer to Y coordinates for current frame
+zp_tmp:         .res 1      ; Scratch byte
 
 ; ============================================================================
 ; CODE SEGMENT
@@ -274,23 +274,22 @@ main_loop:
 ; Uses page-at-a-time clearing: 24 pages x 256 bytes = 6144 bytes.
 ; ============================================================================
 .proc clear_screen
-    lda #<ULA_VRAM
-    sta zp_ptr0
-    lda #>ULA_VRAM
-    sta zp_ptr0+1
+    ULA_SET_ADDR 0
+    ULA_ENABLE_INC
 
     lda #0                  ; Value to write (all pixels off)
     ldy #0                  ; Index within current page
     ldx #24                 ; Number of 256-byte pages to clear
 
 @loop:
-    sta (zp_ptr0),y         ; Clear byte at ptr+Y
+    sta ULA_DATA            ; Clear byte at current ULA address
     iny                     ; Next byte
     bne @loop               ; Loop until Y wraps (256 iterations)
-    inc zp_ptr0+1           ; Move to next page
     dex                     ; Decrement page counter
     bne @loop               ; Continue if pages remain
 
+    lda #ULA_CTRL_ENABLE
+    sta ULA_CTRL
     rts
 .endproc
 
@@ -310,23 +309,22 @@ main_loop:
 ; where overlapping colours in the same 8x8 cell cause visual artefacts.
 ; ============================================================================
 .proc set_attributes
-    lda #<(ULA_VRAM + ULA_ATTR_OFFSET)
-    sta zp_ptr0
-    lda #>(ULA_VRAM + ULA_ATTR_OFFSET)
-    sta zp_ptr0+1
+    ULA_SET_ADDR ULA_ATTR_OFFSET
+    ULA_ENABLE_INC
 
     lda #$07
     ldy #0
     ldx #3                  ; 768 bytes = 3 pages of 256
 
 @loop:
-    sta (zp_ptr0),y
+    sta ULA_DATA
     iny
     bne @loop
-    inc zp_ptr0+1
     dex
     bne @loop
 
+    lda #ULA_CTRL_ENABLE
+    sta ULA_CTRL
     rts
 .endproc
 
@@ -573,7 +571,7 @@ main_loop:
 ; 256 bytes apart until you cross a character cell boundary.
 ;
 ; Address formula:
-;   High byte: %010[Y7][Y6][Y2][Y1][Y0]  (+ ULA_VRAM base)
+;   High byte: %000[Y7][Y6][Y2][Y1][Y0]  (offset inside ULA VRAM)
 ;   Low byte:  %[Y5][Y4][Y3][X7][X6][X5][X4][X3]
 ;
 ; The X coordinate's low 3 bits select which bit within the byte to set.
@@ -620,20 +618,25 @@ main_loop:
     bcc @nc                 ; Check for carry into high byte
     inc zp_ptr0+1
 @nc:
-    ; --- Add ULA VRAM base address ---
-    clc
-    lda zp_ptr0+1
-    adc #>ULA_VRAM          ; Add high byte of base address
-    sta zp_ptr0+1
-
     ; --- Set the pixel bit ---
     pla                     ; Retrieve X coordinate
     and #$07                ; Isolate low 3 bits (bit position)
     tax                     ; Use as index into bit_masks table
     lda bit_masks,x         ; Get the bit mask
-    ldy #0
-    ora (zp_ptr0),y         ; OR with existing byte (preserve other pixels)
-    sta (zp_ptr0),y         ; Write back
+    pha                     ; Save bit mask
+    lda zp_ptr0
+    sta ULA_ADDR_LO
+    lda zp_ptr0+1
+    sta ULA_ADDR_HI
+    lda ULA_DATA            ; Read existing byte (preserve other pixels)
+    sta zp_tmp
+    lda zp_ptr0
+    sta ULA_ADDR_LO
+    lda zp_ptr0+1
+    sta ULA_ADDR_HI
+    pla
+    ora zp_tmp
+    sta ULA_DATA            ; Write back
 
     rts
 .endproc

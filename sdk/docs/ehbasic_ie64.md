@@ -2243,7 +2243,7 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 | `&HF0E00`-`&HF0E2D` | SID (MOS 6581) |
 | `&HF0F00`-`&HF0F5F` | TED (audio + video) |
 | `&HF1000`-`&HF13FF` | VGA registers |
-| `&HF2000`-`&HF200B` | ULA (ZX Spectrum) |
+| `&HF2000`-`&HF2017` | ULA registers |
 | `&HF2100`-`&HF213F` | ANTIC |
 | `&HF2140`-`&HF21FB` | GTIA |
 | `&HF2200`-`&HF221F` | File I/O |
@@ -2332,15 +2332,18 @@ This section documents every I/O register accessible via POKE/PEEK or the hardwa
 | `&HF105C` | VGA_DAC_DATA | R/W | DAC data (R, G, B sequence) |
 | `&HF1100`-`&HF13FF` | VGA_PALETTE | R/W | 256 x 3 bytes palette RAM |
 
-### 9.3 ULA Registers (`&HF2000`-`&HF200B`)
+### 9.3 ULA Registers (`&HF2000`-`&HF2017`)
 
 | Address | Name | R/W | Description |
 |---------|------|-----|-------------|
 | `&HF2000` | ULA_BORDER | R/W | Border colour (bits 0-2) |
-| `&HF2004` | ULA_CTRL | R/W | Bit 0: enable |
+| `&HF2004` | ULA_CTRL | R/W | Bit 0: enable, bit 1: VBlank IRQ enable, bit 2: auto-increment |
 | `&HF2008` | ULA_STATUS | R | Bit 0: VBlank |
+| `&HF200C` | ULA_ADDR_LO | R/W | Paged VRAM address low byte |
+| `&HF2010` | ULA_ADDR_HI | R/W | Paged VRAM address high bits |
+| `&HF2014` | ULA_DATA | R/W | Paged VRAM data byte |
 
-ULA VRAM at `&H4000`: 6,144 bytes bitmap + 768 bytes attributes.
+ULA VRAM aperture at `&HFA000`: 6,144 bytes bitmap + 768 bytes attributes.
 
 ### 9.4 Audio Chip Registers (`&HF0800`-`&HF0B7F`)
 

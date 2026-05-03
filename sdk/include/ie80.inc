@@ -601,8 +601,19 @@
 .set ULA_BORDER,0xF2000
 .set ULA_CTRL,0xF2004
 .set ULA_STATUS,0xF2008
+.set ULA_ADDR_LO,0xF200C
+.set ULA_ADDR_HI,0xF2010
+.set ULA_DATA,0xF2014
 .set ULA_CTRL_ENABLE,0x01
+.set ULA_CTRL_VBLANK_IRQ_EN,0x02
+.set ULA_CTRL_AUTO_INC,0x04
 .set ULA_PORT,0xFE
+.set ULA_PORT_BORDER,0xFE
+.set ULA_PORT_CTRL,0xFD
+.set ULA_PORT_STATUS,0xBE
+.set ULA_PORT_ADDR_LO,0xFA
+.set ULA_PORT_ADDR_HI,0xFB
+.set ULA_PORT_DATA,0xFC
 
 ; ============================================================================
 ; AHX AUDIO REGISTERS (Amiga AHX module player)
@@ -2422,9 +2433,8 @@
 ; - 15 unique colors (8 base + 8 bright, black can't brighten)
 ; - FLASH attribute: swaps INK/PAPER at ~1.6Hz
 ;
-; For Z80: ULA is accessed via port I/O at port 0xFE (authentic Spectrum)
-; Current runtime behavior: bits 0-2 set border color; bits 3-4 are ignored.
-; VRAM is at 0x4000 (same as authentic ZX Spectrum)
+; For Z80: ULA is accessed through explicit port I/O. Port 0xFE controls
+; border color; VRAM uses ULA_PORT_ADDR_LO/HI and ULA_PORT_DATA.
 ;
 ; Non-linear bitmap addressing formula:
 ;   addr = ((y & 0xC0) << 5) + ((y & 0x07) << 8) + ((y & 0x38) << 2) + (x >> 3)
@@ -2439,16 +2449,26 @@
 ;   0=Black, 1=Blue, 2=Red, 3=Magenta, 4=Green, 5=Cyan, 6=Yellow, 7=White
 ; ============================================================================
 
-; ULA port (authentic ZX Spectrum)
-.set ULA_PORT,0xFE              ; ULA I/O port (border, speaker, etc.)
+; ULA ports
+.set ULA_PORT,0xFE              ; Compatibility alias for border port
+.set ULA_PORT_BORDER,0xFE       ; Border color port
+.set ULA_PORT_CTRL,0xFD         ; Control register
+.set ULA_PORT_STATUS,0xBE       ; Status register
+.set ULA_PORT_ADDR_LO,0xFA      ; Paged VRAM address low byte
+.set ULA_PORT_ADDR_HI,0xFB      ; Paged VRAM address high bits
+.set ULA_PORT_DATA,0xFC         ; Paged VRAM data byte
 
-; VRAM layout (same as authentic ZX Spectrum)
-.set ULA_VRAM,0x4000            ; VRAM base address
+; Control register bits
+.set ULA_CTRL_ENABLE,0x01
+.set ULA_CTRL_VBLANK_IRQ_EN,0x02
+.set ULA_CTRL_AUTO_INC,0x04
+
+; VRAM layout (accessed through ULA ports)
 .set ULA_BITMAP_SIZE,6144       ; Bitmap: 256x192/8 = 6144 bytes
 .set ULA_ATTR_OFFSET,0x1800     ; Attribute offset from VRAM base
 .set ULA_ATTR_SIZE,768          ; Attributes: 32x24 = 768 bytes
 .set ULA_VRAM_SIZE,6912         ; Total: 6144 + 768 bytes
-.set ULA_ATTR_BASE,0x5800       ; Attribute start address (0x4000 + 0x1800)
+.set ULA_ATTR_BASE,0x1800       ; Attribute offset in ULA VRAM
 
 ; Display dimensions
 .set ULA_DISPLAY_W,256          ; Display width in pixels
@@ -2470,6 +2490,30 @@
 ; Set border color from A register (bits 0-2)
 .macro ULA_BORDER_A
     out (ULA_PORT),a
+.endm
+
+; Set ULA VRAM address from a 16-bit immediate.
+.macro ULA_SET_ADDR addr
+    ld a,((\addr) & 0xFF)
+    out (ULA_PORT_ADDR_LO),a
+    ld a,(((\addr) >> 8) & 0x1F)
+    out (ULA_PORT_ADDR_HI),a
+.endm
+
+; Write A to ULA VRAM at the current paged address.
+.macro ULA_WRITE_A
+    out (ULA_PORT_DATA),a
+.endm
+
+; Read ULA VRAM at the current paged address into A.
+.macro ULA_READ_A
+    in a,(ULA_PORT_DATA)
+.endm
+
+; Enable ULA_DATA auto-increment while keeping the display enabled.
+.macro ULA_ENABLE_INC
+    ld a,(ULA_CTRL_ENABLE | ULA_CTRL_AUTO_INC)
+    out (ULA_PORT_CTRL),a
 .endm
 
 ; ============================================================================

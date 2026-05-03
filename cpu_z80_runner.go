@@ -436,10 +436,21 @@ func (b *Z80BusAdapter) In(port uint16) byte {
 		return 0
 	}
 
-	// Handle ULA port I/O (0xFE)
-	if lowPort == Z80_ULA_PORT {
+	// Handle ULA port I/O
+	switch lowPort {
+	case Z80_ULA_PORT_BORDER:
 		// Read returns border color from ULA_BORDER register
 		return b.bus.Read8(ULA_BORDER) & 0x07
+	case Z80_ULA_PORT_CTRL:
+		return b.bus.Read8(ULA_CTRL)
+	case Z80_ULA_PORT_STATUS:
+		return b.bus.Read8(ULA_STATUS)
+	case Z80_ULA_PORT_ADDR_LO:
+		return b.bus.Read8(ULA_ADDR_LO)
+	case Z80_ULA_PORT_ADDR_HI:
+		return b.bus.Read8(ULA_ADDR_HI)
+	case Z80_ULA_PORT_DATA:
+		return b.bus.Read8(ULA_DATA)
 	}
 
 	// Handle VGA port I/O (0xA0-0xAA)
@@ -596,10 +607,26 @@ func (b *Z80BusAdapter) Out(port uint16, value byte) {
 		return
 	}
 
-	// Handle ULA port I/O (0xFE)
-	if lowPort == Z80_ULA_PORT {
+	// Handle ULA port I/O
+	switch lowPort {
+	case Z80_ULA_PORT_BORDER:
 		// Write sets border color (bits 0-2) to ULA_BORDER register
 		b.bus.Write8(ULA_BORDER, value&0x07)
+		return
+	case Z80_ULA_PORT_CTRL:
+		b.bus.Write8(ULA_CTRL, value)
+		return
+	case Z80_ULA_PORT_STATUS:
+		b.bus.Write8(ULA_STATUS, value)
+		return
+	case Z80_ULA_PORT_ADDR_LO:
+		b.bus.Write8(ULA_ADDR_LO, value)
+		return
+	case Z80_ULA_PORT_ADDR_HI:
+		b.bus.Write8(ULA_ADDR_HI, value)
+		return
+	case Z80_ULA_PORT_DATA:
+		b.bus.Write8(ULA_DATA, value)
 		return
 	}
 

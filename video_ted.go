@@ -645,9 +645,8 @@ func (t *TEDVideoEngine) GetDimensions() (w, h int) {
 	return TED_V_FRAME_WIDTH, TED_V_FRAME_HEIGHT
 }
 
-// SignalVSync is called by compositor after frame sent
-// Sets VBlank flag (lock-free) and handles cursor blink timing
-func (t *TEDVideoEngine) SignalVSync() {
+// TickFrame advances TED video chip-clock state once per compositor frame.
+func (t *TEDVideoEngine) TickFrame() {
 	// Set VBlank flag - lock-free
 	t.vblankActive.Store(true)
 
@@ -660,6 +659,9 @@ func (t *TEDVideoEngine) SignalVSync() {
 
 	// Raster ownership is scanline-driven; pending compare is sticky until acked.
 }
+
+// SignalVSync is called by compositor after frame sent.
+func (t *TEDVideoEngine) SignalVSync() {}
 
 // =============================================================================
 // Independent Render Goroutine

@@ -72,7 +72,7 @@ func TestVoodoo_VBlank_AndSwapCompleteCallbacks(t *testing.T) {
 	v.OnSwapComplete = func() { swapCount++ }
 	v.OnFIFOEmpty = func() { fifoEmptyCount++ }
 
-	v.SignalVSync()
+	v.TickFrame()
 	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
 	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
 

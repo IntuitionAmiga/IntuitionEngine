@@ -24,9 +24,9 @@ The ULA provides authentic ZX Spectrum video output with 256x192 display area,
 attribute-based coloring, and the characteristic non-linear bitmap addressing.
 
 CPU-Specific Mappings:
-  IE32/M68K: 0xF2000+ (direct 32-bit)
-  6502:      0xD800+ (memory-mapped)
-  Z80:       Port 0xFE (authentic Spectrum I/O), VRAM at 0x4000
+  IE32/IE64/M68K/x86: 0xF2000+ registers, 0xFA000+ VRAM aperture
+  6502:               0xD800+ registers with paged VRAM data port
+  Z80:                explicit ULA ports with paged VRAM data port
 
 Display Specifications:
   - Resolution: 256x192 pixels (32x24 character cells of 8x8 pixels)
@@ -64,8 +64,15 @@ const (
 	// Bit 0: VBlank active
 	ULA_STATUS = 0xF2008
 
+	// ULA_ADDR_LO/HI - 13-bit VRAM address latch for paged-port access.
+	ULA_ADDR_LO = 0xF200C
+	ULA_ADDR_HI = 0xF2010
+
+	// ULA_DATA - byte data port at current latched VRAM address.
+	ULA_DATA = 0xF2014
+
 	// ULA register region end
-	ULA_REG_END = 0xF200B
+	ULA_REG_END = 0xF2017
 )
 
 // =============================================================================
@@ -73,7 +80,9 @@ const (
 // =============================================================================
 
 const (
-	ULA_CTRL_ENABLE = 1 << 0 // Bit 0: ULA enable
+	ULA_CTRL_ENABLE        = 1 << 0 // Bit 0: ULA enable
+	ULA_CTRL_VBLANK_IRQ_EN = 1 << 1 // Bit 1: VBlank IRQ enable
+	ULA_CTRL_AUTO_INC      = 1 << 2 // Bit 2: auto-increment ULA_DATA latch
 )
 
 // =============================================================================
@@ -84,13 +93,18 @@ const (
 	ULA_STATUS_VBLANK = 1 << 0 // Bit 0: VBlank active (set during vertical blank)
 )
 
+const (
+	// IRQ_VECTOR_VBLANK is the x86 interrupt vector used by ULA VBlank IRQs.
+	IRQ_VECTOR_VBLANK = 0x20
+)
+
 // =============================================================================
 // ULA VRAM Layout
 // =============================================================================
 
 const (
-	// VRAM base address (authentic ZX Spectrum location)
-	ULA_VRAM_BASE = 0x4000
+	// ULA_VRAM_AP_BASE is the canonical IE-native VRAM aperture.
+	ULA_VRAM_AP_BASE = 0xFA000
 
 	// Bitmap section: 6144 bytes (256x192 / 8 = 6144 pixels worth of bits)
 	ULA_BITMAP_SIZE = 6144
@@ -103,6 +117,9 @@ const (
 
 	// Total VRAM size
 	ULA_VRAM_SIZE = ULA_BITMAP_SIZE + ULA_ATTR_SIZE // 6912 bytes
+
+	// ULA_VRAM_AP_END is the inclusive end of the IE-native VRAM aperture.
+	ULA_VRAM_AP_END = ULA_VRAM_AP_BASE + ULA_VRAM_SIZE - 1
 )
 
 // =============================================================================
@@ -149,13 +166,13 @@ const (
 
 const (
 	// 6502: ULA registers at 0xD800-0xD8FF
-	C6502_ULA_BASE   = 0xD800
-	C6502_ULA_BORDER = 0xD800 // Border color
-	C6502_ULA_CTRL   = 0xD804 // Control register
-	C6502_ULA_STATUS = 0xD808 // Status register
-
-	// 6502: VRAM at 0x4000 (banked, same as authentic Spectrum)
-	C6502_ULA_VRAM = 0x4000
+	C6502_ULA_BASE    = 0xD800
+	C6502_ULA_BORDER  = 0xD800 // Border color
+	C6502_ULA_CTRL    = 0xD804 // Control register
+	C6502_ULA_STATUS  = 0xD808 // Status register
+	C6502_ULA_ADDR_LO = 0xD80C // VRAM address latch low byte
+	C6502_ULA_ADDR_HI = 0xD810 // VRAM address latch high bits
+	C6502_ULA_DATA    = 0xD814 // VRAM data port
 )
 
 // =============================================================================
@@ -163,12 +180,17 @@ const (
 // =============================================================================
 
 const (
-	// Z80: ULA via port I/O at 0xFE (authentic Spectrum port)
+	// Z80: ULA via explicit port I/O.
 	// Writing to port 0xFE: bits 0-2 = border color, bit 3 = MIC, bit 4 = EAR
-	Z80_ULA_PORT = 0xFE
+	Z80_ULA_PORT_BORDER  = 0xFE
+	Z80_ULA_PORT_CTRL    = 0xFD
+	Z80_ULA_PORT_STATUS  = 0xBE
+	Z80_ULA_PORT_ADDR_LO = 0xFA
+	Z80_ULA_PORT_ADDR_HI = 0xFB
+	Z80_ULA_PORT_DATA    = 0xFC
 
-	// Z80: VRAM at 0x4000 (authentic Spectrum location)
-	Z80_ULA_VRAM = 0x4000
+	// Backwards-compatible name for legacy border-port call sites.
+	Z80_ULA_PORT = Z80_ULA_PORT_BORDER
 )
 
 // =============================================================================

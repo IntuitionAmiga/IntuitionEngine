@@ -255,15 +255,14 @@ func TestANTIC_GetFrame_Enabled(t *testing.T) {
 	}
 }
 
-// TestANTIC_SignalVSync tests VSync signal handling
-func TestANTIC_SignalVSync(t *testing.T) {
+// TestANTIC_TickFrame tests VBlank clock handling
+func TestANTIC_TickFrame(t *testing.T) {
 	antic := NewANTICEngine(nil)
 
 	// Set scanline to non-zero
 	antic.scanline = 100
 
-	// Signal VSync
-	antic.SignalVSync()
+	antic.TickFrame()
 
 	if antic.scanline != 100 {
 		t.Errorf("Incomplete scanline capture should survive VSync, got %d", antic.scanline)
@@ -271,7 +270,7 @@ func TestANTIC_SignalVSync(t *testing.T) {
 
 	// Frame timer should be set
 	if antic.lastFrameStart == 0 {
-		t.Error("lastFrameStart should be set after SignalVSync")
+		t.Error("lastFrameStart should be set after TickFrame")
 	}
 }
 
@@ -523,8 +522,7 @@ func TestANTIC_NMIST_VBI_Flag(t *testing.T) {
 	// Enable VBI in NMIEN
 	antic.HandleWrite(ANTIC_NMIEN, ANTIC_NMIEN_VBI)
 
-	// Signal VSync
-	antic.SignalVSync()
+	antic.TickFrame()
 
 	// NMIST should have VBI flag
 	val := antic.HandleRead(ANTIC_NMIST)

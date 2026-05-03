@@ -1833,6 +1833,38 @@ func (bus *MachineBus) findIORegion64(addr uint32) *IORegion64 {
 	return nil
 }
 
+func ioRegion64CoversFullAccess(region *IORegion64, addr uint32) bool {
+	return region != nil && addr <= region.end && uint64(region.end-addr)+1 >= 8
+}
+
+func ioRegionCoversHalf(region *IORegion, addr uint32) bool {
+	return region != nil && addr <= region.end && uint64(region.end-addr)+1 >= 4
+}
+
+func ioRegion64CoversHalf(region *IORegion64, addr uint32) bool {
+	return region != nil && addr <= region.end && uint64(region.end-addr)+1 >= 4
+}
+
+func (bus *MachineBus) canRead64SplitIntoMMIO(addr uint32) bool {
+	if region64 := bus.findIORegion64(addr); ioRegion64CoversHalf(region64, addr) && region64.onRead64 != nil {
+		return true
+	}
+	if region := bus.findIORegion(addr); ioRegionCoversHalf(region, addr) && bus.legacyMMIO64Policy == MMIO64PolicySplit {
+		return true
+	}
+	return false
+}
+
+func (bus *MachineBus) canWrite64SplitIntoMMIO(addr uint32) bool {
+	if region64 := bus.findIORegion64(addr); ioRegion64CoversHalf(region64, addr) && region64.onWrite64 != nil {
+		return true
+	}
+	if region := bus.findIORegion(addr); ioRegionCoversHalf(region, addr) && bus.legacyMMIO64Policy == MMIO64PolicySplit {
+		return true
+	}
+	return false
+}
+
 // findIORegion looks up a legacy 32-bit I/O region for the given address.
 func (bus *MachineBus) findIORegion(addr uint32) *IORegion {
 	page := addr & PAGE_MASK
@@ -1887,7 +1919,6 @@ func (bus *MachineBus) read64Slow(addr uint32) uint64 {
 	}
 
 	lowAddr := effectiveAddr
-	highAddr := effectiveAddr + 4
 
 	// Check for native 64-bit region covering the entire 8 bytes.
 	// For sign-extended addresses, also look up the original (unmapped) address
@@ -1896,13 +1927,18 @@ func (bus *MachineBus) read64Slow(addr uint32) uint64 {
 	if region64 == nil && addr >= 0xFFFF0000 {
 		region64 = bus.findIORegion64(addr)
 	}
-	if region64 != nil && highAddr <= region64.end && region64.onRead64 != nil {
-		return region64.onRead64(lowAddr)
+	if region64 != nil && region64.onRead64 != nil {
+		if ioRegion64CoversFullAccess(region64, lowAddr) {
+			return region64.onRead64(lowAddr)
+		}
+		if !bus.canRead64SplitIntoMMIO(lowAddr + 4) {
+			return 0
+		}
 	}
 
 	// Must split into two 32-bit halves
 	lowVal := bus.read32Half(lowAddr)
-	highVal := bus.read32Half(highAddr)
+	highVal := bus.read32Half(lowAddr + 4)
 	return uint64(lowVal) | (uint64(highVal) << 32)
 }
 
@@ -1984,7 +2020,6 @@ func (bus *MachineBus) write64Slow(addr uint32, value uint64) {
 	}
 
 	lowAddr := effectiveAddr
-	highAddr := effectiveAddr + 4
 
 	// Check for native 64-bit region covering the entire 8 bytes.
 	// For sign-extended addresses, also look up the original (unmapped) address.
@@ -1992,20 +2027,25 @@ func (bus *MachineBus) write64Slow(addr uint32, value uint64) {
 	if region64 == nil && addr >= 0xFFFF0000 {
 		region64 = bus.findIORegion64(addr)
 	}
-	if region64 != nil && highAddr <= region64.end && region64.onWrite64 != nil {
-		region64.onWrite64(lowAddr, value)
-		// Also store to backing memory
-		if uint64(lowAddr)+8 <= uint64(len(bus.memory)) {
-			*(*uint64)(unsafe.Pointer(&bus.memory[lowAddr])) = value
+	if region64 != nil && region64.onWrite64 != nil {
+		if ioRegion64CoversFullAccess(region64, lowAddr) {
+			region64.onWrite64(lowAddr, value)
+			// Also store to backing memory
+			if uint64(lowAddr)+8 <= uint64(len(bus.memory)) {
+				*(*uint64)(unsafe.Pointer(&bus.memory[lowAddr])) = value
+			}
+			return
 		}
-		return
+		if !bus.canWrite64SplitIntoMMIO(lowAddr + 4) {
+			return
+		}
 	}
 
 	// Must split into two 32-bit halves (low then high)
 	lowVal := uint32(value)
 	highVal := uint32(value >> 32)
 	bus.write32Half(lowAddr, lowVal)
-	bus.write32Half(highAddr, highVal)
+	bus.write32Half(lowAddr+4, highVal)
 }
 
 // write32Half writes a 32-bit half for split 64-bit operations.

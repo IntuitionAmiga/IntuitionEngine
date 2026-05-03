@@ -218,6 +218,12 @@ func (c *VideoCompositor) composite() {
 		c.finalFrame[i] = 0
 	}
 
+	for _, source := range c.sources {
+		if ticker, ok := source.(FrameTicker); ok {
+			ticker.TickFrame()
+		}
+	}
+
 	// Check if we can use per-scanline rendering for copper effects
 	// This requires all enabled sources to implement ScanlineAware
 	if c.compositeScanlineAware() {

@@ -1021,9 +1021,17 @@ func main() {
 	sysBus.MapIO(ULA_BASE, ULA_REG_END,
 		ulaEngine.HandleRead,
 		ulaEngine.HandleWrite)
-	sysBus.MapIO(ULA_VRAM_BASE, ULA_VRAM_BASE+ULA_VRAM_SIZE-1,
+	sysBus.MapIOByteRead(ULA_BASE, ULA_REG_END, ulaEngine.HandleRead8)
+	sysBus.MapIOByte(ULA_BASE, ULA_REG_END, ulaEngine.HandleWrite8)
+	sysBus.MapIO(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END,
 		ulaEngine.HandleBusVRAMRead,
 		ulaEngine.HandleBusVRAMWrite)
+	sysBus.MapIOByteRead(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END, ulaEngine.HandleRead8)
+	sysBus.MapIOByte(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END, ulaEngine.HandleWrite8)
+	sysBus.MapIO64(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END,
+		ulaEngine.HandleRead64,
+		ulaEngine.HandleWrite64)
+	sysBus.MapIOWideWriteFanout(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END)
 
 	// Map TED video registers (Commodore Plus/4 video chip)
 	tedVideoEngine = NewTEDVideoEngine(sysBus)
@@ -1192,11 +1200,17 @@ func main() {
 		case "ie32":
 			videoChip.SetBigEndianMode(false)
 			cpu := NewCPU(sysBus)
+			if ulaEngine != nil {
+				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
+			}
 			cpu.PerfEnabled = perfMode
 			return cpu, nil
 		case "ie64":
 			videoChip.SetBigEndianMode(false)
 			cpu := NewCPU64(sysBus)
+			if ulaEngine != nil {
+				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
+			}
 			cpu.PerfEnabled = perfMode
 			return cpu, nil
 		case "m68k":
@@ -1208,6 +1222,9 @@ func main() {
 			runner := NewM68KRunner(m68k)
 			if anticEngine != nil {
 				anticEngine.SetInterruptSink(NewM68KInterruptSink(m68k))
+			}
+			if ulaEngine != nil {
+				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
 			}
 			runner.PerfEnabled = perfMode
 			if noJIT {
@@ -1223,6 +1240,9 @@ func main() {
 			runner := NewM68KRunner(m68k)
 			if anticEngine != nil {
 				anticEngine.SetInterruptSink(NewM68KInterruptSink(m68k))
+			}
+			if ulaEngine != nil {
+				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
 			}
 			runner.PerfEnabled = perfMode
 			if noJIT {
@@ -1241,6 +1261,9 @@ func main() {
 			if anticEngine != nil {
 				anticEngine.SetInterruptSink(NewZ80InterruptSink(runner.cpu))
 			}
+			if ulaEngine != nil {
+				ulaEngine.SetIRQSink(newZ80ULAIRQAdapter(runner.cpu))
+			}
 			runner.PerfEnabled = perfMode
 			return runner, nil
 		case "x86":
@@ -1255,6 +1278,9 @@ func main() {
 			if anticEngine != nil {
 				anticEngine.SetInterruptSink(NewX86InterruptSink(runner.cpu))
 			}
+			if ulaEngine != nil {
+				ulaEngine.SetIRQSink(newX86ULAIRQAdapter(runner.cpu))
+			}
 			runner.PerfEnabled = perfMode
 			return runner, nil
 		case "6502":
@@ -1264,6 +1290,9 @@ func main() {
 				Entry:        cpu6502Entry,
 				VoodooEngine: voodooEngine,
 			})
+			if ulaEngine != nil {
+				ulaEngine.SetIRQSink(new6502ULAIRQAdapter(runner.cpu))
+			}
 			runner.PerfEnabled = perfMode
 			return runner, nil
 		default:
@@ -1685,6 +1714,9 @@ func main() {
 		if anticEngine != nil {
 			anticEngine.SetInterruptSink(NewZ80InterruptSink(z80CPU.cpu))
 		}
+		if ulaEngine != nil {
+			ulaEngine.SetIRQSink(newZ80ULAIRQAdapter(z80CPU.cpu))
+		}
 		z80CPU.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUZ80, nil, nil, nil, z80CPU, nil, nil)
 
@@ -1725,6 +1757,9 @@ func main() {
 		x86CPU := NewCPUX86Runner(sysBus, x86Config)
 		if anticEngine != nil {
 			anticEngine.SetInterruptSink(NewX86InterruptSink(x86CPU.cpu))
+		}
+		if ulaEngine != nil {
+			ulaEngine.SetIRQSink(newX86ULAIRQAdapter(x86CPU.cpu))
 		}
 		x86CPU.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, x86CPU, nil)
@@ -1781,6 +1816,9 @@ func main() {
 			Entry:        parsedEntry,
 			VoodooEngine: voodooEngine,
 		})
+		if ulaEngine != nil {
+			ulaEngine.SetIRQSink(new6502ULAIRQAdapter(cpu6502.cpu))
+		}
 		cpu6502.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPU6502, nil, nil, nil, nil, nil, cpu6502)
 
@@ -2000,12 +2038,18 @@ func main() {
 			if haveIE64JIT {
 				newRunner.(*CPU64).jitEnabled = preserveIE64JIT
 			}
+			if ulaEngine != nil {
+				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
+			}
 		case "m68k", "emutos", "aros":
 			if haveM68KJIT {
 				newRunner.(*M68KRunner).cpu.m68kJitEnabled = preserveM68KJIT
 			}
 			if anticEngine != nil {
 				anticEngine.SetInterruptSink(NewM68KInterruptSink(newRunner.(*M68KRunner).cpu))
+			}
+			if ulaEngine != nil {
+				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
 			}
 		case "z80":
 			if haveZ80JIT {
@@ -2014,14 +2058,23 @@ func main() {
 			if anticEngine != nil {
 				anticEngine.SetInterruptSink(NewZ80InterruptSink(newRunner.(*CPUZ80Runner).cpu))
 			}
+			if ulaEngine != nil {
+				ulaEngine.SetIRQSink(newZ80ULAIRQAdapter(newRunner.(*CPUZ80Runner).cpu))
+			}
 		case "x86":
 			if anticEngine != nil {
 				anticEngine.SetInterruptSink(NewX86InterruptSink(newRunner.(*CPUX86Runner).cpu))
+			}
+			if ulaEngine != nil {
+				ulaEngine.SetIRQSink(newX86ULAIRQAdapter(newRunner.(*CPUX86Runner).cpu))
 			}
 		case "6502":
 			if have6502JIT {
 				newRunner.(*CPU6502Runner).JITEnabled = preserve6502JIT
 				newRunner.(*CPU6502Runner).cpu.jitEnabled = preserve6502JIT
+			}
+			if ulaEngine != nil {
+				ulaEngine.SetIRQSink(new6502ULAIRQAdapter(newRunner.(*CPU6502Runner).cpu))
 			}
 		}
 		cpuRunner = newRunner

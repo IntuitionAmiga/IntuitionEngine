@@ -61,6 +61,10 @@ type ULAEngine struct {
 	mu  sync.Mutex
 	bus *MachineBus
 
+	irqSinkMu   sync.RWMutex
+	irqSink     ulaIRQSink
+	irqAsserted atomic.Bool
+
 	// Border color (0-7)
 	border uint8
 
@@ -72,11 +76,12 @@ type ULAEngine struct {
 	vblankActive atomic.Bool // Set by SignalVSync, cleared by HandleRead(ULA_STATUS)
 
 	// VRAM (6144 bitmap + 768 attributes = 6912 bytes)
-	vram [ULA_VRAM_SIZE]uint8
+	vram      [ULA_VRAM_SIZE]uint8
+	addrLatch uint16
 
 	// Flash state for FLASH attribute
-	flashState   bool
-	flashCounter int
+	flashState   atomic.Bool
+	flashCounter atomic.Int32
 
 	// Pre-computed row start addresses for the non-linear ZX Spectrum addressing
 	// Computed once at init, indexed by Y coordinate (0-191)
@@ -84,11 +89,6 @@ type ULAEngine struct {
 
 	// Pre-built uint32 color lookup: [0..7] = normal, [8..15] = bright
 	colorU32 [16]uint32
-
-	// Snapshot fields for lock-free rendering
-	snapVram    [ULA_VRAM_SIZE]uint8
-	snapBorder  uint8
-	snapControl uint8
 
 	// Pre-allocated frame buffer (320x256 RGBA)
 	frameBuffer []byte
@@ -166,9 +166,17 @@ func (u *ULAEngine) HandleRead(addr uint32) uint32 {
 	case ULA_STATUS:
 		// Return vblank status and clear it (acknowledge) - atomic swap
 		if u.vblankActive.Swap(false) {
+			u.deassertVBlankIRQ()
 			return ULA_STATUS_VBLANK
 		}
+		u.deassertVBlankIRQ()
 		return 0
+	case ULA_ADDR_LO:
+		return uint32(u.addrLatch & 0x00FF)
+	case ULA_ADDR_HI:
+		return uint32((u.addrLatch >> 8) & 0x1F)
+	case ULA_DATA:
+		return uint32(u.readLatchedVRAMLocked())
 	default:
 		return 0
 	}
@@ -186,6 +194,86 @@ func (u *ULAEngine) HandleWrite(addr uint32, value uint32) {
 	case ULA_CTRL:
 		u.control = uint8(value)
 		u.enabled.Store(u.control&ULA_CTRL_ENABLE != 0)
+		if u.control&(ULA_CTRL_ENABLE|ULA_CTRL_VBLANK_IRQ_EN) != ULA_CTRL_ENABLE|ULA_CTRL_VBLANK_IRQ_EN {
+			u.deassertVBlankIRQ()
+		}
+	case ULA_ADDR_LO:
+		u.addrLatch = (u.addrLatch & 0x1F00) | uint16(value&0xFF)
+	case ULA_ADDR_HI:
+		u.addrLatch = (u.addrLatch & 0x00FF) | (uint16(value&0x1F) << 8)
+	case ULA_DATA:
+		u.writeLatchedVRAMLocked(uint8(value))
+	}
+}
+
+func (u *ULAEngine) readLatchedVRAMLocked() uint8 {
+	if int(u.addrLatch) >= len(u.vram) {
+		return 0
+	}
+	value := u.vram[u.addrLatch]
+	u.advanceLatchLocked()
+	return value
+}
+
+func (u *ULAEngine) writeLatchedVRAMLocked(value uint8) {
+	if int(u.addrLatch) < len(u.vram) {
+		u.vram[u.addrLatch] = value
+	}
+	u.advanceLatchLocked()
+}
+
+func (u *ULAEngine) advanceLatchLocked() {
+	if u.control&ULA_CTRL_AUTO_INC == 0 {
+		return
+	}
+	u.addrLatch++
+	if u.addrLatch >= ULA_VRAM_SIZE {
+		u.addrLatch = 0
+	}
+}
+
+// SetIRQSink binds ULA VBlank IRQ delivery to the active CPU.
+func (u *ULAEngine) SetIRQSink(sink ulaIRQSink) {
+	if sink == nil {
+		sink = noopULAIRQAdapter{}
+	}
+	u.irqSinkMu.Lock()
+	old := u.irqSink
+	if old != nil {
+		old.DeassertVBlankIRQ()
+	}
+	u.irqSink = sink
+	u.irqAsserted.Store(false)
+	u.irqSinkMu.Unlock()
+}
+
+func (u *ULAEngine) assertVBlankIRQ() {
+	if !u.irqAsserted.CompareAndSwap(false, true) {
+		u.irqSinkMu.RLock()
+		sink := u.irqSink
+		u.irqSinkMu.RUnlock()
+		if sink != nil {
+			sink.AssertVBlankIRQ()
+		}
+		return
+	}
+	u.irqSinkMu.RLock()
+	sink := u.irqSink
+	u.irqSinkMu.RUnlock()
+	if sink != nil {
+		sink.AssertVBlankIRQ()
+	}
+}
+
+func (u *ULAEngine) deassertVBlankIRQ() {
+	if !u.irqAsserted.Swap(false) {
+		return
+	}
+	u.irqSinkMu.RLock()
+	sink := u.irqSink
+	u.irqSinkMu.RUnlock()
+	if sink != nil {
+		sink.DeassertVBlankIRQ()
 	}
 }
 
@@ -252,28 +340,33 @@ func (u *ULAEngine) GetColor(colorIndex uint8, bright bool) (r, g, b uint8) {
 
 // RenderFrameTo renders the complete display directly into dst, avoiding a copy.
 func (u *ULAEngine) RenderFrameTo(dst []byte) {
-	saved := u.frameBuffer
-	u.frameBuffer = dst
-	u.RenderFrame()
-	u.frameBuffer = saved
+	u.renderInto(dst)
 }
 
 // RenderFrame renders the complete display including border.
 func (u *ULAEngine) RenderFrame() []byte {
-	// Snapshot VRAM and registers under lock, then render lock-free
 	u.mu.Lock()
-	u.snapVram = u.vram
-	u.snapBorder = u.border
-	u.snapControl = u.control
-	snapFlashState := u.flashState
+	frameBuffer := u.frameBuffer
 	u.mu.Unlock()
+	return u.renderInto(frameBuffer)
+}
+
+func (u *ULAEngine) renderInto(frameBuffer []byte) []byte {
+	// Snapshot VRAM and registers under lock, then render lock-free
+	var snapVram [ULA_VRAM_SIZE]uint8
+	var snapBorder uint8
+	u.mu.Lock()
+	snapVram = u.vram
+	snapBorder = u.border
+	u.mu.Unlock()
+	snapFlashState := u.flashState.Load()
 
 	// Get border color as packed uint32
-	borderU32 := u.colorU32[u.snapBorder&0x07]
+	borderU32 := u.colorU32[snapBorder&0x07]
 
 	// Fill entire frame with border color using uint32 writes
-	for i := 0; i < len(u.frameBuffer); i += 4 {
-		*(*uint32)(unsafe.Pointer(&u.frameBuffer[i])) = borderU32
+	for i := 0; i < len(frameBuffer); i += 4 {
+		*(*uint32)(unsafe.Pointer(&frameBuffer[i])) = borderU32
 	}
 
 	// Render the 256x192 display area (cell-based: 32 cells wide x 192 scanlines)
@@ -293,10 +386,10 @@ func (u *ULAEngine) RenderFrame() []byte {
 		for cellX := range ULA_CELLS_X {
 			// Read bitmap byte once per cell
 			bitmapAddr := rowAddr + uint16(cellX)
-			bitmapByte := u.snapVram[bitmapAddr]
+			bitmapByte := snapVram[bitmapAddr]
 
 			// Read attribute once per cell
-			attr := u.snapVram[attrRowBase+uint16(cellX)]
+			attr := snapVram[attrRowBase+uint16(cellX)]
 
 			// Parse attribute
 			ink := attr & 0x07
@@ -325,15 +418,15 @@ func (u *ULAEngine) RenderFrame() []byte {
 			for bit := 7; bit >= 0; bit-- {
 				pixelIdx := pixelBase + (7-bit)*4
 				if (bitmapByte>>bit)&1 != 0 {
-					*(*uint32)(unsafe.Pointer(&u.frameBuffer[pixelIdx])) = fgU32
+					*(*uint32)(unsafe.Pointer(&frameBuffer[pixelIdx])) = fgU32
 				} else {
-					*(*uint32)(unsafe.Pointer(&u.frameBuffer[pixelIdx])) = bgU32
+					*(*uint32)(unsafe.Pointer(&frameBuffer[pixelIdx])) = bgU32
 				}
 			}
 		}
 	}
 
-	return u.frameBuffer
+	return frameBuffer
 }
 
 // =============================================================================
@@ -365,17 +458,27 @@ func (u *ULAEngine) GetDimensions() (w, h int) {
 	return ULA_FRAME_WIDTH, ULA_FRAME_HEIGHT
 }
 
-// SignalVSync is called by compositor after frame sent.
-// Sets VBlank flag (lock-free) and handles flash timing.
+// SignalVSync is called by compositor after visible output is sent.
+// ULA chip-clock state advances in TickFrame so disabled sources still tick.
 func (u *ULAEngine) SignalVSync() {
+}
+
+// TickFrame advances ULA chip-clock state regardless of compositor visibility.
+func (u *ULAEngine) TickFrame() {
 	// Set VBlank flag - lock-free
 	u.vblankActive.Store(true)
+	if u.enabled.Load() {
+		u.mu.Lock()
+		irqEnabled := u.control&ULA_CTRL_VBLANK_IRQ_EN != 0
+		u.mu.Unlock()
+		if irqEnabled {
+			u.assertVBlankIRQ()
+		}
+	}
 
-	// Flash state is compositor-only, no lock needed
-	u.flashCounter++
-	if u.flashCounter >= ULA_FLASH_FRAMES {
-		u.flashCounter = 0
-		u.flashState = !u.flashState
+	if u.flashCounter.Add(1) >= ULA_FLASH_FRAMES {
+		u.flashCounter.Store(0)
+		u.flashState.Store(!u.flashState.Load())
 	}
 }
 
@@ -457,12 +560,61 @@ func (u *ULAEngine) renderLoop(ctx context.Context, done chan struct{}) {
 
 // HandleBusVRAMRead handles VRAM reads from the system bus (uint32 addresses)
 func (u *ULAEngine) HandleBusVRAMRead(addr uint32) uint32 {
-	offset := uint16(addr - ULA_VRAM_BASE)
-	return uint32(u.HandleVRAMRead(offset))
+	if addr < ULA_VRAM_AP_BASE || addr+3 > ULA_VRAM_AP_END {
+		return 0
+	}
+	offset := uint16(addr - ULA_VRAM_AP_BASE)
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return uint32(u.vram[offset]) |
+		uint32(u.vram[offset+1])<<8 |
+		uint32(u.vram[offset+2])<<16 |
+		uint32(u.vram[offset+3])<<24
 }
 
 // HandleBusVRAMWrite handles VRAM writes from the system bus (uint32 addresses)
 func (u *ULAEngine) HandleBusVRAMWrite(addr uint32, value uint32) {
-	offset := uint16(addr - ULA_VRAM_BASE)
-	u.HandleVRAMWrite(offset, uint8(value))
+	if addr < ULA_VRAM_AP_BASE || addr+3 > ULA_VRAM_AP_END {
+		return
+	}
+	u.HandleWrite8(addr, uint8(value))
+	u.HandleWrite8(addr+1, uint8(value>>8))
+	u.HandleWrite8(addr+2, uint8(value>>16))
+	u.HandleWrite8(addr+3, uint8(value>>24))
+}
+
+// HandleRead8 handles byte reads from the ULA register block or VRAM aperture.
+func (u *ULAEngine) HandleRead8(addr uint32) uint8 {
+	if addr >= ULA_VRAM_AP_BASE && addr <= ULA_VRAM_AP_END {
+		return u.HandleVRAMRead(uint16(addr - ULA_VRAM_AP_BASE))
+	}
+	return uint8(u.HandleRead(addr))
+}
+
+// HandleWrite8 handles byte writes from the ULA register block or VRAM aperture.
+func (u *ULAEngine) HandleWrite8(addr uint32, value uint8) {
+	if addr >= ULA_VRAM_AP_BASE && addr <= ULA_VRAM_AP_END {
+		u.HandleVRAMWrite(uint16(addr-ULA_VRAM_AP_BASE), value)
+		return
+	}
+	u.HandleWrite(addr, uint32(value))
+}
+
+// HandleRead64 returns eight aperture bytes packed little-endian.
+func (u *ULAEngine) HandleRead64(addr uint32) uint64 {
+	if addr < ULA_VRAM_AP_BASE || addr+7 > ULA_VRAM_AP_END {
+		return 0
+	}
+	lo := uint64(u.HandleBusVRAMRead(addr))
+	hi := uint64(u.HandleBusVRAMRead(addr + 4))
+	return lo | hi<<32
+}
+
+// HandleWrite64 stores all eight aperture bytes little-endian.
+func (u *ULAEngine) HandleWrite64(addr uint32, value uint64) {
+	if addr < ULA_VRAM_AP_BASE || addr+7 > ULA_VRAM_AP_END {
+		return
+	}
+	u.HandleBusVRAMWrite(addr, uint32(value))
+	u.HandleBusVRAMWrite(addr+4, uint32(value>>32))
 }

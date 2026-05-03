@@ -835,19 +835,20 @@ func (a *ANTICEngine) GetDimensions() (w, h int) {
 	return ANTIC_FRAME_WIDTH, ANTIC_FRAME_HEIGHT
 }
 
-// SignalVSync is called by compositor after frame sent
-// Sets VBlank flag and handles NMI timing
+// TickFrame advances ANTIC chip-clock state once per compositor frame.
+func (a *ANTICEngine) TickFrame() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.tickFrame(a.now())
+}
+
+// SignalVSync is called by compositor after frame sent.
 func (a *ANTICEngine) SignalVSync() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-
-	if a.scanline > 0 {
-		a.tickFrame(a.now())
-		return
+	if a.scanline == 0 {
+		a.clearRasterCaptureBuffer(a.writeBuffer)
 	}
-	a.scanline = 0
-	a.clearRasterCaptureBuffer(a.writeBuffer)
-	a.tickFrame(a.now())
 }
 
 // =============================================================================
