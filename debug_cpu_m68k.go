@@ -16,10 +16,10 @@ type DebugM68K struct {
 	bpMu        sync.RWMutex
 	breakpoints map[uint64]*ConditionalBreakpoint
 	watchpoints map[uint64]*Watchpoint
-	bpChan      chan<- BreakpointEvent
-	cpuID       int
+	events      *adapterEventSink
 	trapRunning atomic.Bool
 	trapStop    chan struct{}
+	frozenCh    chan struct{}
 
 	workerFreeze func()
 	workerResume func()
@@ -31,6 +31,7 @@ func NewDebugM68K(cpu *M68KCPU, runner *M68KRunner) *DebugM68K {
 		runner:      runner,
 		breakpoints: make(map[uint64]*ConditionalBreakpoint),
 		watchpoints: make(map[uint64]*Watchpoint),
+		events:      newAdapterEventSink(),
 	}
 }
 
@@ -39,7 +40,7 @@ func (d *DebugM68K) AddressWidth() int { return 32 }
 
 func (d *DebugM68K) GetRegisters() []RegisterInfo {
 	c := d.cpu
-	regs := make([]RegisterInfo, 0, 19)
+	regs := make([]RegisterInfo, 0, 20)
 	for i := range 8 {
 		regs = append(regs, RegisterInfo{
 			Name: fmt.Sprintf("D%d", i), BitWidth: 32,
@@ -55,6 +56,7 @@ func (d *DebugM68K) GetRegisters() []RegisterInfo {
 	regs = append(regs, RegisterInfo{Name: "PC", BitWidth: 32, Value: uint64(c.PC), Group: "general"})
 	regs = append(regs, RegisterInfo{Name: "SR", BitWidth: 16, Value: uint64(c.SR), Group: "flags"})
 	regs = append(regs, RegisterInfo{Name: "USP", BitWidth: 32, Value: uint64(c.USP), Group: "general"})
+	regs = append(regs, RegisterInfo{Name: "SSP", BitWidth: 32, Value: uint64(c.SSP), Group: "general"})
 	return regs
 }
 
@@ -111,7 +113,8 @@ func (d *DebugM68K) IsRunning() bool {
 func (d *DebugM68K) Freeze() {
 	if d.trapRunning.Load() {
 		close(d.trapStop)
-		for d.trapRunning.Load() {
+		if d.frozenCh != nil {
+			<-d.frozenCh
 		}
 		return
 	}
@@ -119,29 +122,37 @@ func (d *DebugM68K) Freeze() {
 		d.workerFreeze()
 		return
 	}
-	d.runner.Stop()
+	if d.runner != nil {
+		d.runner.Stop()
+	}
 }
 
 func (d *DebugM68K) Resume() {
-	d.bpMu.RLock()
+	d.bpMu.Lock()
 	hasBP := len(d.breakpoints) > 0 || len(d.watchpoints) > 0
-	d.bpMu.RUnlock()
 	if hasBP {
 		d.trapStop = make(chan struct{})
+		d.frozenCh = make(chan struct{})
 		d.trapRunning.Store(true)
 		go d.trapLoop()
+		d.bpMu.Unlock()
 		return
 	}
+	d.bpMu.Unlock()
 	if d.workerResume != nil {
 		d.workerResume()
 		return
 	}
-	d.runner.StartExecution()
+	if d.runner != nil {
+		d.runner.StartExecution()
+	}
 }
 
 func (d *DebugM68K) trapLoop() {
+	frozenCh := d.frozenCh
 	defer d.trapRunning.Store(false)
 	defer d.cpu.SetRunning(false)
+	defer close(frozenCh)
 	d.cpu.SetRunning(true)
 	for {
 		select {
@@ -149,18 +160,10 @@ func (d *DebugM68K) trapLoop() {
 			return
 		default:
 		}
-		d.bpMu.RLock()
-		bp := d.breakpoints[uint64(d.cpu.PC)]
-		d.bpMu.RUnlock()
-		if bp != nil {
-			bp.HitCount++
-			if evaluateConditionWithHitCount(bp.Condition, d, bp.HitCount) {
-				if d.bpChan != nil {
-					select {
-					case d.bpChan <- BreakpointEvent{CPUID: d.cpuID, Address: uint64(d.cpu.PC)}:
-					default:
-					}
-				}
+		if bp, ok := d.SnapshotBreakpoint(uint64(d.cpu.PC)); ok {
+			hitCount, _ := d.IncrementBreakpointHit(uint64(d.cpu.PC))
+			if evaluateConditionWithHitCount(bp.Condition, d, hitCount) {
+				d.events.Publish(BreakpointEvent{Address: uint64(d.cpu.PC)})
 				return
 			}
 		}
@@ -170,24 +173,16 @@ func (d *DebugM68K) trapLoop() {
 		// Check watchpoints
 		d.bpMu.RLock()
 		for _, wp := range d.watchpoints {
-			var cur byte
-			if int(uint32(wp.Address)) < len(d.cpu.memory) {
-				cur = d.cpu.memory[uint32(wp.Address)]
-			}
+			cur := d.readByte(wp.Address)
 			if cur != wp.LastValue {
 				old := wp.LastValue
-				wp.LastValue = cur
+				addr := wp.Address
 				d.bpMu.RUnlock()
-				if d.bpChan != nil {
-					select {
-					case d.bpChan <- BreakpointEvent{
-						CPUID: d.cpuID, Address: uint64(d.cpu.PC),
-						IsWatch: true, WatchAddr: wp.Address,
-						WatchOldValue: old, WatchNewValue: cur,
-					}:
-					default:
-					}
-				}
+				d.UpdateWatchpointLastValue(addr, cur)
+				d.events.Publish(BreakpointEvent{
+					Address: uint64(d.cpu.PC), IsWatch: true, WatchAddr: addr,
+					WatchOldValue: old, WatchNewValue: cur,
+				})
 				return
 			}
 		}
@@ -253,7 +248,8 @@ func (d *DebugM68K) ListConditionalBreakpoints() []*ConditionalBreakpoint {
 	defer d.bpMu.RUnlock()
 	result := make([]*ConditionalBreakpoint, 0, len(d.breakpoints))
 	for _, bp := range d.breakpoints {
-		result = append(result, bp)
+		cp := cloneBreakpoint(bp)
+		result = append(result, &cp)
 	}
 	return result
 }
@@ -266,19 +262,33 @@ func (d *DebugM68K) HasBreakpoint(addr uint64) bool {
 }
 
 func (d *DebugM68K) GetConditionalBreakpoint(addr uint64) *ConditionalBreakpoint {
-	d.bpMu.RLock()
-	defer d.bpMu.RUnlock()
-	return d.breakpoints[addr]
+	bp, ok := d.SnapshotBreakpoint(addr)
+	if !ok {
+		return nil
+	}
+	return &bp
+}
+
+func (d *DebugM68K) SnapshotBreakpoint(addr uint64) (BreakpointSnapshot, bool) {
+	return snapshotBreakpointLocked(&d.bpMu, d.breakpoints, addr)
+}
+
+func (d *DebugM68K) IncrementBreakpointHit(addr uint64) (uint64, bool) {
+	return incrementBreakpointHitLocked(&d.bpMu, d.breakpoints, addr)
+}
+
+func (d *DebugM68K) SetBreakpointCondition(addr uint64, cond *BreakpointCondition) bool {
+	return setBreakpointConditionLocked(&d.bpMu, d.breakpoints, addr, cond)
+}
+
+func (d *DebugM68K) ListBreakpointSnapshots() []BreakpointSnapshot {
+	return listBreakpointSnapshotsLocked(&d.bpMu, d.breakpoints)
 }
 
 func (d *DebugM68K) SetWatchpoint(addr uint64) bool {
 	d.bpMu.Lock()
 	defer d.bpMu.Unlock()
-	var val byte
-	if int(uint32(addr)) < len(d.cpu.memory) {
-		val = d.cpu.memory[uint32(addr)]
-	}
-	d.watchpoints[addr] = &Watchpoint{Address: addr, LastValue: val}
+	d.watchpoints[addr] = &Watchpoint{Address: addr, LastValue: d.readByte(addr)}
 	return true
 }
 
@@ -308,21 +318,70 @@ func (d *DebugM68K) ListWatchpoints() []uint64 {
 	return result
 }
 
-func (d *DebugM68K) ReadMemory(addr uint64, size int) []byte {
-	mem := d.cpu.memory
-	start := uint32(addr)
-	if int(start)+size > len(mem) {
-		end := len(mem)
-		if int(start) >= end {
-			return nil
-		}
-		return append([]byte{}, mem[start:end]...)
+func (d *DebugM68K) SnapshotWatchpoint(addr uint64) (WatchpointSnapshot, bool) {
+	return snapshotWatchpointLocked(&d.bpMu, d.watchpoints, addr)
+}
+
+func (d *DebugM68K) UpdateWatchpointLastValue(addr uint64, val byte) bool {
+	return updateWatchpointLastValueLocked(&d.bpMu, d.watchpoints, addr, val)
+}
+
+func (d *DebugM68K) ListWatchpointSnapshots() []WatchpointSnapshot {
+	return listWatchpointSnapshotsLocked(&d.bpMu, d.watchpoints)
+}
+
+func (d *DebugM68K) ValidateAddress(addr uint64) error {
+	return validateAddressWidth(d.CPUName(), d.AddressWidth(), addr)
+}
+
+func (d *DebugM68K) readByte(addr uint64) byte {
+	if d.cpu.bus != nil {
+		return d.cpu.bus.Read8(uint32(addr))
 	}
-	return append([]byte{}, mem[start:int(start)+size]...)
+	if addr <= 0xFFFFFFFF {
+		a := uint32(addr)
+		if int(a) < len(d.cpu.memory) {
+			return d.cpu.memory[a]
+		}
+	}
+	return 0
+}
+
+func (d *DebugM68K) ReadMemory(addr uint64, size int) []byte {
+	if size <= 0 {
+		return nil
+	}
+	mem := d.cpu.memory
+	if addr <= 0xFFFFFFFF && addr+uint64(size) <= uint64(len(mem)) && !d.memoryRangeHasIO(addr, size) {
+		start := uint32(addr)
+		return append([]byte{}, mem[start:int(start)+size]...)
+	}
+	out := make([]byte, size)
+	if d.cpu.bus != nil {
+		for i := range out {
+			out[i] = d.cpu.bus.Read8(uint32(addr + uint64(i)))
+		}
+		return out
+	}
+	start := uint32(addr)
+	if int(start) >= len(mem) {
+		return nil
+	}
+	return append([]byte{}, mem[start:min(int(start)+size, len(mem))]...)
 }
 
 func (d *DebugM68K) WriteMemory(addr uint64, data []byte) {
 	mem := d.cpu.memory
+	if addr <= 0xFFFFFFFF && addr+uint64(len(data)) <= uint64(len(mem)) && !d.memoryRangeHasIO(addr, len(data)) {
+		copy(mem[uint32(addr):], data)
+		return
+	}
+	if d.cpu.bus != nil {
+		for i, b := range data {
+			d.cpu.bus.Write8(uint32(addr+uint64(i)), b)
+		}
+		return
+	}
 	start := uint32(addr)
 	if int(start)+len(data) > len(mem) {
 		return
@@ -330,7 +389,30 @@ func (d *DebugM68K) WriteMemory(addr uint64, data []byte) {
 	copy(mem[start:], data)
 }
 
+func (d *DebugM68K) memoryRangeHasIO(addr uint64, size int) bool {
+	bus, ok := d.cpu.bus.(*MachineBus)
+	if !ok || size <= 0 || addr > 0xFFFFFFFF {
+		return false
+	}
+	start := uint32(addr)
+	end64 := addr + uint64(size) - 1
+	if end64 > 0xFFFFFFFF {
+		end64 = 0xFFFFFFFF
+	}
+	end := uint32(end64)
+	for page := start & PAGE_MASK; ; page += PAGE_SIZE {
+		for _, region := range bus.mapping[page] {
+			if start <= region.end && end >= region.start {
+				return true
+			}
+		}
+		if page >= end&PAGE_MASK {
+			break
+		}
+	}
+	return false
+}
+
 func (d *DebugM68K) SetBreakpointChannel(ch chan<- BreakpointEvent, cpuID int) {
-	d.bpChan = ch
-	d.cpuID = cpuID
+	d.events.Set(ch, cpuID)
 }

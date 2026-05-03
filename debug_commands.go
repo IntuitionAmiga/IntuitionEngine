@@ -20,6 +20,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -38,11 +39,46 @@ func ParseCommand(input string) MonitorCommand {
 	if input == "" {
 		return MonitorCommand{}
 	}
-	parts := strings.Fields(input)
+	parts, err := splitCommandLine(input)
+	if err != nil || len(parts) == 0 {
+		return MonitorCommand{}
+	}
 	return MonitorCommand{
 		Name: strings.ToLower(parts[0]),
 		Args: parts[1:],
 	}
+}
+
+func splitCommandLine(input string) ([]string, error) {
+	var parts []string
+	var cur strings.Builder
+	inQuote := false
+	escaped := false
+	for _, r := range input {
+		switch {
+		case escaped:
+			cur.WriteRune(r)
+			escaped = false
+		case r == '\\' && inQuote:
+			escaped = true
+		case r == '"':
+			inQuote = !inQuote
+		case (r == ' ' || r == '\t') && !inQuote:
+			if cur.Len() > 0 {
+				parts = append(parts, cur.String())
+				cur.Reset()
+			}
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if escaped || inQuote {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	if cur.Len() > 0 {
+		parts = append(parts, cur.String())
+	}
+	return parts, nil
 }
 
 // ParseAddress parses a monitor address in various formats:
@@ -74,6 +110,26 @@ func ParseAddress(s string) (uint64, bool) {
 	// bare hex (try hex first)
 	v, err := strconv.ParseUint(s, 16, 64)
 	return v, err == nil
+}
+
+func parseCount(s string) (uint64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty count")
+	}
+	base := 10
+	if strings.HasPrefix(s, "$") {
+		s = s[1:]
+		base = 16
+	} else if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		s = s[2:]
+		base = 16
+	}
+	v, err := strconv.ParseUint(s, base, 64)
+	if err != nil {
+		return 0, err
+	}
+	return v, nil
 }
 
 // EvalAddress evaluates a simple expression: <term> [+|- <term>]*
@@ -116,7 +172,7 @@ func EvalAddress(expr string, cpu DebuggableCPU) (uint64, bool) {
 		return 0, false
 	}
 
-	var result uint64
+	var result int64
 	for _, tok := range tokens {
 		var val uint64
 		var ok bool
@@ -134,13 +190,22 @@ func EvalAddress(expr string, cpu DebuggableCPU) (uint64, bool) {
 
 		switch tok.op {
 		case 0, '+':
-			result += val
+			if val > math.MaxInt64 || result > math.MaxInt64-int64(val) {
+				return 0, false
+			}
+			result += int64(val)
 		case '-':
-			result -= val
+			if val > math.MaxInt64 || result < int64(val) {
+				return 0, false
+			}
+			result -= int64(val)
 		}
 	}
 
-	return result, true
+	if result < 0 {
+		return 0, false
+	}
+	return uint64(result), true
 }
 
 // ExecuteCommand dispatches a parsed command to the appropriate handler.
@@ -418,10 +483,15 @@ func (m *MachineMonitor) cmdMemoryDump(cmd MonitorCommand) bool {
 		}
 	}
 	if len(cmd.Args) >= 2 {
-		if v, ok := ParseAddress(cmd.Args[1]); ok {
+		if v, err := parseCount(cmd.Args[1]); err == nil {
 			lines = int(v)
 		}
 	}
+	if err := entry.CPU.ValidateAddress(addr); err != nil {
+		m.appendOutput(err.Error(), colorRed)
+		return false
+	}
+	addrDigits := (entry.CPU.AddressWidth() + 3) / 4
 
 	for i := 0; i < lines; i++ {
 		data := entry.CPU.ReadMemory(addr, 16)
@@ -446,7 +516,7 @@ func (m *MachineMonitor) cmdMemoryDump(cmd MonitorCommand) bool {
 		}
 
 		hexStr := strings.Join(hexParts[:8], " ") + "  " + strings.Join(hexParts[8:], " ")
-		text := fmt.Sprintf("%06X: %s  %s", addr, hexStr, string(asciiParts))
+		text := fmt.Sprintf("%0*X: %s  %s", addrDigits, addr, hexStr, string(asciiParts))
 		m.appendOutput(text, colorWhite)
 		addr += 16
 	}
@@ -462,22 +532,25 @@ func (m *MachineMonitor) cmdStep(cmd MonitorCommand) bool {
 
 	count := 1
 	if len(cmd.Args) >= 1 {
-		if v, ok := ParseAddress(cmd.Args[0]); ok {
+		if v, err := parseCount(cmd.Args[0]); err == nil {
 			count = int(v)
 		}
 	}
 
-	// Snapshot before stepping (for backstep) - per-CPU history
-	snap := TakeSnapshot(entry.CPU)
 	cpuID := m.focusedID
-	m.stepHistory[cpuID] = append(m.stepHistory[cpuID], snap)
-	if len(m.stepHistory[cpuID]) > m.maxBackstep {
-		m.stepHistory[cpuID] = m.stepHistory[cpuID][len(m.stepHistory[cpuID])-m.maxBackstep:]
-	}
 
 	totalCycles := 0
 	for i := 0; i < count; i++ {
-		cycles := entry.CPU.Step()
+		snap := TakeSnapshot(entry.CPU)
+		m.stepHistory[cpuID] = append(m.stepHistory[cpuID], snap)
+		if len(m.stepHistory[cpuID]) > m.maxBackstep {
+			m.stepHistory[cpuID] = m.stepHistory[cpuID][len(m.stepHistory[cpuID])-m.maxBackstep:]
+		}
+		cycles, err := safeDebugStep(entry.CPU)
+		if err != nil {
+			m.appendOutput(fmt.Sprintf("Step failed: %s", err), colorRed)
+			break
+		}
 		totalCycles += cycles
 	}
 
@@ -497,11 +570,24 @@ func (m *MachineMonitor) cmdStep(cmd MonitorCommand) bool {
 	return false
 }
 
+func safeDebugStep(cpu DebuggableCPU) (cycles int, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	return cpu.Step(), nil
+}
+
 func (m *MachineMonitor) cmdGo(cmd MonitorCommand) bool {
 	if len(cmd.Args) >= 1 {
 		entry := m.cpus[m.focusedID]
 		if entry != nil {
 			if v, ok := EvalAddress(cmd.Args[0], entry.CPU); ok {
+				if err := entry.CPU.ValidateAddress(v); err != nil {
+					m.appendOutput(err.Error(), colorRed)
+					return false
+				}
 				entry.CPU.SetPC(v)
 			}
 		}
@@ -528,6 +614,14 @@ func (m *MachineMonitor) cmdBreakpointSet(cmd MonitorCommand) bool {
 	addr, ok := EvalAddress(cmd.Args[0], entry.CPU)
 	if !ok {
 		m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[0]), colorRed)
+		return false
+	}
+	if err := entry.CPU.ValidateAddress(addr); err != nil {
+		m.appendOutput(err.Error(), colorRed)
+		return false
+	}
+	if err := entry.CPU.ValidateAddress(addr); err != nil {
+		m.appendOutput(err.Error(), colorRed)
 		return false
 	}
 
@@ -672,6 +766,14 @@ func (m *MachineMonitor) cmdHunt(cmd MonitorCommand) bool {
 			return false
 		}
 		pattern = append(pattern, byte(v))
+	}
+	if end < start {
+		m.appendOutput("Invalid range: end below start", colorRed)
+		return false
+	}
+	if len(pattern) == 0 || end-start+1 < uint64(len(pattern)) {
+		m.appendOutput("Not found", colorDim)
+		return false
 	}
 
 	found := 0
@@ -1062,11 +1164,17 @@ func (m *MachineMonitor) cmdSaveMemory(cmd MonitorCommand) bool {
 		return false
 	}
 
-	size := int(end - start + 1)
-	if size > 32*1024*1024 {
-		m.appendOutput("Range too large (max 32MB)", colorRed)
+	maxSize := uint64(32 * 1024 * 1024)
+	if m.bus != nil && m.bus.TotalGuestRAM() > 0 {
+		maxSize = m.bus.TotalGuestRAM()
+	}
+	size64 := end - start + 1
+	maxInt := uint64(^uint(0) >> 1)
+	if size64 > maxSize || size64 > maxInt {
+		m.appendOutput(fmt.Sprintf("Range too large (max %d bytes)", maxSize), colorRed)
 		return false
 	}
+	size := int(size64)
 
 	data := entry.CPU.ReadMemory(start, size)
 	if err := os.WriteFile(cmd.Args[2], data, 0644); err != nil {
@@ -1131,9 +1239,13 @@ func (m *MachineMonitor) cmdRunUntil(cmd MonitorCommand) bool {
 		m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[0]), colorRed)
 		return false
 	}
+	if err := entry.CPU.ValidateAddress(addr); err != nil {
+		m.appendOutput(err.Error(), colorRed)
+		return false
+	}
 
-	existingBP := entry.CPU.GetConditionalBreakpoint(addr)
-	if existingBP == nil {
+	existingBP, hasBP := entry.CPU.SnapshotBreakpoint(addr)
+	if !hasBP {
 		// No breakpoint exists - create a temp unconditional one
 		entry.CPU.SetBreakpoint(addr)
 		if m.tempBreakpoints[m.focusedID] == nil {
@@ -1146,8 +1258,38 @@ func (m *MachineMonitor) cmdRunUntil(cmd MonitorCommand) bool {
 		if m.savedConditions[m.focusedID] == nil {
 			m.savedConditions[m.focusedID] = make(map[uint64]*BreakpointCondition)
 		}
-		m.savedConditions[m.focusedID][addr] = existingBP.Condition
-		existingBP.Condition = nil
+		m.savedConditions[m.focusedID][addr] = cloneCondition(existingBP.Condition)
+		entry.CPU.SetBreakpointCondition(addr, nil)
+		if m.runUntilHooks[m.focusedID] == nil {
+			m.runUntilHooks[m.focusedID] = make(map[uint64]int)
+		}
+		cpuID := m.focusedID
+		cpu := entry.CPU
+		saved := cloneCondition(existingBP.Condition)
+		hookID := m.nextStopHookID
+		m.nextStopHookID++
+		m.stopHooks[hookID] = func(stopCPU int, _ StopReason, _ uint64) {
+			if stopCPU != -1 && stopCPU != cpuID {
+				return
+			}
+			cpu.SetBreakpointCondition(addr, saved)
+			m.UnregisterStopHook(hookID)
+			m.mu.Lock()
+			if byAddr := m.savedConditions[cpuID]; byAddr != nil {
+				delete(byAddr, addr)
+				if len(byAddr) == 0 {
+					delete(m.savedConditions, cpuID)
+				}
+			}
+			if byAddr := m.runUntilHooks[cpuID]; byAddr != nil {
+				delete(byAddr, addr)
+				if len(byAddr) == 0 {
+					delete(m.runUntilHooks, cpuID)
+				}
+			}
+			m.mu.Unlock()
+		}
+		m.runUntilHooks[cpuID][addr] = hookID
 	}
 	// else: unconditional breakpoint already exists - it will fire on its own
 
@@ -1172,6 +1314,10 @@ func (m *MachineMonitor) cmdWatchpointSet(cmd MonitorCommand) bool {
 	addr, ok := EvalAddress(cmd.Args[0], entry.CPU)
 	if !ok {
 		m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[0]), colorRed)
+		return false
+	}
+	if err := entry.CPU.ValidateAddress(addr); err != nil {
+		m.appendOutput(err.Error(), colorRed)
 		return false
 	}
 
@@ -1236,7 +1382,7 @@ func (m *MachineMonitor) cmdBacktrace(cmd MonitorCommand) bool {
 
 	depth := 16
 	if len(cmd.Args) >= 1 {
-		if v, ok := ParseAddress(cmd.Args[0]); ok {
+		if v, err := parseCount(cmd.Args[0]); err == nil {
 			depth = int(v)
 		}
 	}
@@ -1248,7 +1394,11 @@ func (m *MachineMonitor) cmdBacktrace(cmd MonitorCommand) bool {
 	}
 
 	for i, addr := range addrs {
-		m.appendOutput(fmt.Sprintf("#%-3d $%06X", i, addr), colorCyan)
+		line := fmt.Sprintf("#%-3d $%0*X", i, (entry.CPU.AddressWidth()+3)/4, addr)
+		if entry.CPU.CPUName() == "6502" {
+			line += " (low confidence)"
+		}
+		m.appendOutput(line, colorCyan)
 	}
 	return false
 }
@@ -1295,7 +1445,10 @@ func (m *MachineMonitor) cmdLoadState(cmd MonitorCommand) bool {
 		return false
 	}
 
-	RestoreSnapshot(entry.CPU, snap)
+	if err := RestoreSnapshot(entry.CPU, snap); err != nil {
+		m.appendOutput(fmt.Sprintf("Error: %s", err), colorRed)
+		return false
+	}
 	m.saveCurrentRegs()
 	m.appendOutput(fmt.Sprintf("State loaded from %s (CPU+memory)", filename), colorCyan)
 	m.showRegisters()
@@ -1335,6 +1488,7 @@ func (m *MachineMonitor) cmdTraceFile(cmd MonitorCommand) bool {
 
 	if strings.ToLower(cmd.Args[1]) == "off" {
 		if m.traceFile != nil {
+			m.traceFile.Sync()
 			m.traceFile.Close()
 			m.traceFile = nil
 		}
@@ -1343,6 +1497,7 @@ func (m *MachineMonitor) cmdTraceFile(cmd MonitorCommand) bool {
 	}
 
 	if m.traceFile != nil {
+		m.traceFile.Sync()
 		m.traceFile.Close()
 	}
 
@@ -1476,8 +1631,8 @@ func (m *MachineMonitor) cmdTraceRun(cmd MonitorCommand) bool {
 		return false
 	}
 
-	count, ok := ParseAddress(cmd.Args[0])
-	if !ok || count == 0 {
+	count, err := parseCount(cmd.Args[0])
+	if err != nil || count == 0 {
 		m.appendOutput("Usage: trace <count>", colorRed)
 		return false
 	}
@@ -1500,6 +1655,10 @@ func (m *MachineMonitor) cmdTraceRun(cmd MonitorCommand) bool {
 
 		// Save pre-step registers
 		preRegs := entry.CPU.GetRegisters()
+		preByName := make(map[string]uint64, len(preRegs))
+		for _, r := range preRegs {
+			preByName[r.Name] = r.Value
+		}
 
 		// Step
 		entry.CPU.Step()
@@ -1507,8 +1666,8 @@ func (m *MachineMonitor) cmdTraceRun(cmd MonitorCommand) bool {
 		// Build trace line showing changed registers
 		postRegs := entry.CPU.GetRegisters()
 		var changes []string
-		for j, r := range postRegs {
-			if j < len(preRegs) && preRegs[j].Value != r.Value {
+		for _, r := range postRegs {
+			if prev, ok := preByName[r.Name]; ok && prev != r.Value {
 				changes = append(changes, fmt.Sprintf("%s=$%X", r.Name, r.Value))
 			}
 		}
@@ -1545,8 +1704,8 @@ func (m *MachineMonitor) cmdTraceRun(cmd MonitorCommand) bool {
 		// Check for breakpoint at new PC - only stop if condition is satisfied
 		newPC := entry.CPU.GetPC()
 		if bp := entry.CPU.GetConditionalBreakpoint(newPC); bp != nil {
-			bp.HitCount++
-			if evaluateConditionWithHitCount(bp.Condition, entry.CPU, bp.HitCount) {
+			hitCount, _ := entry.CPU.IncrementBreakpointHit(newPC)
+			if evaluateConditionWithHitCount(bp.Condition, entry.CPU, hitCount) {
 				m.appendOutput(fmt.Sprintf("Trace stopped at breakpoint $%X", newPC), colorRed)
 				break
 			}
@@ -1587,7 +1746,10 @@ func (m *MachineMonitor) cmdBackstep(_ MonitorCommand) bool {
 	snap := hist[len(hist)-1]
 	m.stepHistory[cpuID] = hist[:len(hist)-1]
 
-	RestoreSnapshot(entry.CPU, snap)
+	if err := RestoreSnapshot(entry.CPU, snap); err != nil {
+		m.appendOutput(fmt.Sprintf("Error: %s", err), colorRed)
+		return false
+	}
 
 	m.appendOutput(fmt.Sprintf("Backstep: restored to PC=$%X (CPU+memory)", entry.CPU.GetPC()), colorCyan)
 
@@ -1673,6 +1835,10 @@ func (m *MachineMonitor) HexEditCommit() {
 		return
 	}
 	for addr, val := range m.hexEditDirty {
+		if err := entry.CPU.ValidateAddress(addr); err != nil {
+			m.appendOutput(err.Error(), colorRed)
+			return
+		}
 		entry.CPU.WriteMemory(addr, []byte{val})
 	}
 	count := len(m.hexEditDirty)
@@ -1696,6 +1862,9 @@ func (m *MachineMonitor) HexEditSetNibble(nibbleVal byte) {
 	}
 
 	addr := m.hexEditAddr + uint64(m.hexEditCursor)
+	if err := entry.CPU.ValidateAddress(addr); err != nil {
+		return
+	}
 
 	// Get current value (from dirty map or memory)
 	var current byte
@@ -1744,15 +1913,23 @@ func (m *MachineMonitor) cmdScript(cmd MonitorCommand) bool {
 		return false
 	}
 
-	lines := strings.SplitSeq(string(data), "\n")
-	for line := range lines {
+	lines := splitScriptLines(string(data))
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if m.executeCommand(line) {
+		cmds, err := splitSemicolonAware(line)
+		if err != nil {
 			m.scriptDepth--
-			return true
+			m.appendOutput(fmt.Sprintf("Script parse error: %s", err), colorRed)
+			return false
+		}
+		for _, scriptCmd := range cmds {
+			if m.executeCommand(scriptCmd) {
+				m.scriptDepth--
+				return true
+			}
 		}
 	}
 
@@ -1768,18 +1945,55 @@ func (m *MachineMonitor) cmdMacro(cmd MonitorCommand) bool {
 
 	name := strings.ToLower(cmd.Args[0])
 	body := strings.Join(cmd.Args[1:], " ")
-	cmds := strings.Split(body, ";")
-	var cleaned []string
-	for _, c := range cmds {
-		c = strings.TrimSpace(c)
-		if c != "" {
-			cleaned = append(cleaned, c)
-		}
+	cleaned, err := splitSemicolonAware(body)
+	if err != nil {
+		m.appendOutput(fmt.Sprintf("Invalid macro: %s", err), colorRed)
+		return false
 	}
 
 	m.macros[name] = cleaned
 	m.appendOutput(fmt.Sprintf("Macro '%s' defined (%d commands)", name, len(cleaned)), colorCyan)
 	return false
+}
+
+func splitScriptLines(text string) []string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	return strings.Split(text, "\n")
+}
+
+func splitSemicolonAware(text string) ([]string, error) {
+	var out []string
+	var cur strings.Builder
+	inQuote := false
+	escaped := false
+	for _, r := range text {
+		switch {
+		case escaped:
+			cur.WriteRune(r)
+			escaped = false
+		case r == '\\' && inQuote:
+			cur.WriteRune(r)
+			escaped = true
+		case r == '"':
+			cur.WriteRune(r)
+			inQuote = !inQuote
+		case r == ';' && !inQuote:
+			if s := strings.TrimSpace(cur.String()); s != "" {
+				out = append(out, s)
+			}
+			cur.Reset()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if escaped || inQuote {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	if s := strings.TrimSpace(cur.String()); s != "" {
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 func (m *MachineMonitor) executeMacro(cmds []string) bool {

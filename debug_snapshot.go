@@ -48,14 +48,21 @@ func TakeSnapshot(cpu DebuggableCPU) *MachineSnapshot {
 	}
 }
 
-// RestoreSnapshot restores CPU registers and memory from a snapshot.
-func RestoreSnapshot(cpu DebuggableCPU, snap *MachineSnapshot) {
+// RestoreSnapshot restores CPU registers and memory from a CPU-local snapshot.
+func RestoreSnapshot(cpu DebuggableCPU, snap *MachineSnapshot) error {
+	if snap == nil {
+		return fmt.Errorf("nil snapshot")
+	}
+	if snap.CPUType != "" && snap.CPUType != cpu.CPUName() {
+		return fmt.Errorf("snapshot CPU type %s does not match focused CPU %s", snap.CPUType, cpu.CPUName())
+	}
 	for _, r := range snap.Registers {
 		cpu.SetRegister(r.Name, r.Value)
 	}
 	if len(snap.Memory) > 0 {
 		cpu.WriteMemory(0, snap.Memory)
 	}
+	return nil
 }
 
 // SaveSnapshotToFile writes a snapshot to disk with gzip compression.

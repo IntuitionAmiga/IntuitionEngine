@@ -75,9 +75,13 @@ type BreakpointCondition struct {
 	Source  ConditionSource
 	RegName string // register name (for CondSourceRegister)
 	MemAddr uint64 // memory address (for CondSourceMemory)
+	Width   uint8  // memory width in bytes for CondSourceMemory: 1, 2, or 4
 	Op      ConditionOp
 	Value   uint64
 }
+
+type BreakpointSnapshot = ConditionalBreakpoint
+type WatchpointSnapshot = Watchpoint
 
 // ConditionalBreakpoint associates a breakpoint with an optional condition.
 type ConditionalBreakpoint struct {
@@ -127,11 +131,20 @@ type DebuggableCPU interface {
 	ListConditionalBreakpoints() []*ConditionalBreakpoint
 	HasBreakpoint(addr uint64) bool
 	GetConditionalBreakpoint(addr uint64) *ConditionalBreakpoint
+	SnapshotBreakpoint(addr uint64) (BreakpointSnapshot, bool)
+	IncrementBreakpointHit(addr uint64) (uint64, bool)
+	SetBreakpointCondition(addr uint64, cond *BreakpointCondition) bool
+	ListBreakpointSnapshots() []BreakpointSnapshot
 
 	SetWatchpoint(addr uint64) bool
 	ClearWatchpoint(addr uint64) bool
 	ClearAllWatchpoints()
 	ListWatchpoints() []uint64
+	SnapshotWatchpoint(addr uint64) (WatchpointSnapshot, bool)
+	UpdateWatchpointLastValue(addr uint64, val byte) bool
+	ListWatchpointSnapshots() []WatchpointSnapshot
+
+	ValidateAddress(addr uint64) error
 
 	ReadMemory(addr uint64, size int) []byte
 	WriteMemory(addr uint64, data []byte)

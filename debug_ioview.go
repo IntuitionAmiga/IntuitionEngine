@@ -2,7 +2,10 @@
 
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // IORegisterDesc describes a single I/O register for display.
 type IORegisterDesc struct {
@@ -675,6 +678,24 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"TEX_UPLOAD", 0xF8338, 4, "RW"},
 		},
 	},
+	"voodoo_depth": {
+		Name: "Voodoo Depth",
+		Registers: []IORegisterDesc{
+			{"FBZ_MODE", VOODOO_FBZ_MODE, 4, "RW"},
+			{"ZA_COLOR", VOODOO_ZA_COLOR, 4, "RW"},
+			{"LFB_MODE", VOODOO_LFB_MODE, 4, "RW"},
+			{"FOG_MODE", VOODOO_FOG_MODE, 4, "RW"},
+		},
+	},
+	"sysinfo": {
+		Name: "SysInfo",
+		Registers: []IORegisterDesc{
+			{"SYSINFO_TOTAL_RAM_LO", SYSINFO_TOTAL_RAM_LO, 4, "RO"},
+			{"SYSINFO_TOTAL_RAM_HI", SYSINFO_TOTAL_RAM_HI, 4, "RO"},
+			{"SYSINFO_ACTIVE_RAM_LO", SYSINFO_ACTIVE_RAM_LO, 4, "RO"},
+			{"SYSINFO_ACTIVE_RAM_HI", SYSINFO_ACTIVE_RAM_HI, 4, "RO"},
+		},
+	},
 }
 
 // formatIOView renders the register view for a device.
@@ -713,8 +734,10 @@ func formatIOView(cpu DebuggableCPU, deviceName string) []string {
 
 // listIODevices returns the names of all available IO devices.
 func listIODevices() []string {
-	return []string{
-		"video", "terminal", "audio", "ahx", "psg", "pokey", "sid", "sid2", "sid3", "ted",
-		"vga", "ula", "antic", "gtia", "fileio", "media", "exec", "coproc", "voodoo",
+	names := make([]string, 0, len(ioDevices))
+	for name := range ioDevices {
+		names = append(names, name)
 	}
+	sort.Strings(names)
+	return names
 }

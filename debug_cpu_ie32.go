@@ -13,10 +13,10 @@ type DebugIE32 struct {
 	bpMu        sync.RWMutex
 	breakpoints map[uint64]*ConditionalBreakpoint
 	watchpoints map[uint64]*Watchpoint
-	bpChan      chan<- BreakpointEvent
-	cpuID       int
+	events      *adapterEventSink
 	trapRunning atomic.Bool
 	trapStop    chan struct{}
+	frozenCh    chan struct{}
 
 	workerFreeze func()
 	workerResume func()
@@ -27,6 +27,7 @@ func NewDebugIE32(cpu *CPU) *DebugIE32 {
 		cpu:         cpu,
 		breakpoints: make(map[uint64]*ConditionalBreakpoint),
 		watchpoints: make(map[uint64]*Watchpoint),
+		events:      newAdapterEventSink(),
 	}
 }
 
@@ -148,7 +149,8 @@ func (d *DebugIE32) IsRunning() bool {
 func (d *DebugIE32) Freeze() {
 	if d.trapRunning.Load() {
 		close(d.trapStop)
-		for d.trapRunning.Load() {
+		if d.frozenCh != nil {
+			<-d.frozenCh
 		}
 		return
 	}
@@ -160,15 +162,17 @@ func (d *DebugIE32) Freeze() {
 }
 
 func (d *DebugIE32) Resume() {
-	d.bpMu.RLock()
+	d.bpMu.Lock()
 	hasBP := len(d.breakpoints) > 0 || len(d.watchpoints) > 0
-	d.bpMu.RUnlock()
 	if hasBP {
 		d.trapStop = make(chan struct{})
+		d.frozenCh = make(chan struct{})
 		d.trapRunning.Store(true)
 		go d.trapLoop()
+		d.bpMu.Unlock()
 		return
 	}
+	d.bpMu.Unlock()
 	if d.workerResume != nil {
 		d.workerResume()
 		return
@@ -178,8 +182,10 @@ func (d *DebugIE32) Resume() {
 }
 
 func (d *DebugIE32) trapLoop() {
+	frozenCh := d.frozenCh
 	defer d.trapRunning.Store(false)
 	defer d.cpu.running.Store(false)
+	defer close(frozenCh)
 	d.cpu.running.Store(true)
 	for {
 		select {
@@ -187,18 +193,10 @@ func (d *DebugIE32) trapLoop() {
 			return
 		default:
 		}
-		d.bpMu.RLock()
-		bp := d.breakpoints[uint64(d.cpu.PC)]
-		d.bpMu.RUnlock()
-		if bp != nil {
-			bp.HitCount++
-			if evaluateConditionWithHitCount(bp.Condition, d, bp.HitCount) {
-				if d.bpChan != nil {
-					select {
-					case d.bpChan <- BreakpointEvent{CPUID: d.cpuID, Address: uint64(d.cpu.PC)}:
-					default:
-					}
-				}
+		if bp, ok := d.SnapshotBreakpoint(uint64(d.cpu.PC)); ok {
+			hitCount, _ := d.IncrementBreakpointHit(uint64(d.cpu.PC))
+			if evaluateConditionWithHitCount(bp.Condition, d, hitCount) {
+				d.events.Publish(BreakpointEvent{Address: uint64(d.cpu.PC)})
 				return
 			}
 		}
@@ -214,18 +212,13 @@ func (d *DebugIE32) trapLoop() {
 			}
 			if cur != wp.LastValue {
 				old := wp.LastValue
-				wp.LastValue = cur
+				addr := wp.Address
 				d.bpMu.RUnlock()
-				if d.bpChan != nil {
-					select {
-					case d.bpChan <- BreakpointEvent{
-						CPUID: d.cpuID, Address: uint64(d.cpu.PC),
-						IsWatch: true, WatchAddr: wp.Address,
-						WatchOldValue: old, WatchNewValue: cur,
-					}:
-					default:
-					}
-				}
+				d.UpdateWatchpointLastValue(addr, cur)
+				d.events.Publish(BreakpointEvent{
+					Address: uint64(d.cpu.PC), IsWatch: true, WatchAddr: addr,
+					WatchOldValue: old, WatchNewValue: cur,
+				})
 				return
 			}
 		}
@@ -291,7 +284,8 @@ func (d *DebugIE32) ListConditionalBreakpoints() []*ConditionalBreakpoint {
 	defer d.bpMu.RUnlock()
 	result := make([]*ConditionalBreakpoint, 0, len(d.breakpoints))
 	for _, bp := range d.breakpoints {
-		result = append(result, bp)
+		cp := cloneBreakpoint(bp)
+		result = append(result, &cp)
 	}
 	return result
 }
@@ -304,9 +298,27 @@ func (d *DebugIE32) HasBreakpoint(addr uint64) bool {
 }
 
 func (d *DebugIE32) GetConditionalBreakpoint(addr uint64) *ConditionalBreakpoint {
-	d.bpMu.RLock()
-	defer d.bpMu.RUnlock()
-	return d.breakpoints[addr]
+	bp, ok := d.SnapshotBreakpoint(addr)
+	if !ok {
+		return nil
+	}
+	return &bp
+}
+
+func (d *DebugIE32) SnapshotBreakpoint(addr uint64) (BreakpointSnapshot, bool) {
+	return snapshotBreakpointLocked(&d.bpMu, d.breakpoints, addr)
+}
+
+func (d *DebugIE32) IncrementBreakpointHit(addr uint64) (uint64, bool) {
+	return incrementBreakpointHitLocked(&d.bpMu, d.breakpoints, addr)
+}
+
+func (d *DebugIE32) SetBreakpointCondition(addr uint64, cond *BreakpointCondition) bool {
+	return setBreakpointConditionLocked(&d.bpMu, d.breakpoints, addr, cond)
+}
+
+func (d *DebugIE32) ListBreakpointSnapshots() []BreakpointSnapshot {
+	return listBreakpointSnapshotsLocked(&d.bpMu, d.breakpoints)
 }
 
 func (d *DebugIE32) SetWatchpoint(addr uint64) bool {
@@ -346,6 +358,22 @@ func (d *DebugIE32) ListWatchpoints() []uint64 {
 	return result
 }
 
+func (d *DebugIE32) SnapshotWatchpoint(addr uint64) (WatchpointSnapshot, bool) {
+	return snapshotWatchpointLocked(&d.bpMu, d.watchpoints, addr)
+}
+
+func (d *DebugIE32) UpdateWatchpointLastValue(addr uint64, val byte) bool {
+	return updateWatchpointLastValueLocked(&d.bpMu, d.watchpoints, addr, val)
+}
+
+func (d *DebugIE32) ListWatchpointSnapshots() []WatchpointSnapshot {
+	return listWatchpointSnapshotsLocked(&d.bpMu, d.watchpoints)
+}
+
+func (d *DebugIE32) ValidateAddress(addr uint64) error {
+	return validateAddressWidth(d.CPUName(), d.AddressWidth(), addr)
+}
+
 func (d *DebugIE32) ReadMemory(addr uint64, size int) []byte {
 	mem := d.cpu.memory
 	start := uint32(addr)
@@ -369,6 +397,5 @@ func (d *DebugIE32) WriteMemory(addr uint64, data []byte) {
 }
 
 func (d *DebugIE32) SetBreakpointChannel(ch chan<- BreakpointEvent, cpuID int) {
-	d.bpChan = ch
-	d.cpuID = cpuID
+	d.events.Set(ch, cpuID)
 }

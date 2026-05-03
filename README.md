@@ -345,7 +345,7 @@ The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and 
 | `d [addr] [count]` | Disassemble instructions with branch annotations |
 | `m <addr> [count]` | Hex dump memory |
 | `s [count]` | Single-step one or more instructions |
-| `bs` | Backstep (undo last step, restores CPU + memory) |
+| `bs` | Backstep (undo last focused-CPU step; CPU-local snapshot) |
 | `g [addr]` | Resume execution (optionally from a new address) |
 | `u <addr>` | Run until address |
 | `b <addr> [cond]` | Set breakpoint (with optional condition) |
@@ -361,7 +361,7 @@ The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and 
 | `h <start> <end> <bytes..>` | Search memory for byte pattern |
 | `save <s> <e> <file>` | Save memory range to file |
 | `load <file> <addr>` | Load file into memory |
-| `ss` / `sl [file]` | Save/load machine state |
+| `ss` / `sl [file]` | Save/load focused CPU-local state |
 | `trace <count>` | Trace N instructions (+ write history) |
 | `io [device\|all]` | I/O register viewer (use `all` for every device) |
 | `e <addr>` | Hex editor mode |
@@ -371,7 +371,7 @@ The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and 
 | `fa` / `ta` | Audio freeze / thaw |
 | `x` | Exit monitor and resume all CPUs |
 
-Addresses accept `$hex`, `0xhex`, bare hex, `#decimal`, or expressions like `pc+$20`.
+Addresses accept `$hex`, `0xhex`, bare hex, `#decimal`, or expressions like `pc+$20`. Counts are decimal by default; use `$` or `0x` for hexadecimal counts. Watchpoints are write-only.
 
 The monitor is also accessible from Lua scripts via the `dbg.*` API module. See [iescript.md](sdk/docs/iescript.md) for scripted debugging workflows.
 

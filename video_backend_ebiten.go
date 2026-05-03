@@ -1238,7 +1238,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	})
 
 	legendColor := color.RGBA{160, 160, 160, 255}
-	legend := "F8:Lua F9:Debug F10:Reset F11:FS/Win F12:Status"
+	legend := "F8:Lua F9:Dbg F10:Reset F11:FS/Win F12:Status"
 	legendScale := 1.0
 	legendW := int(float64(text.BoundString(basicfont.Face7x13, legend).Dx()) * legendScale)
 	legendX := max(eo.width-legendW-6, 6)

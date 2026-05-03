@@ -7,7 +7,6 @@
 # Features:
 # - Parallel compilation using available CPU cores
 # - Debug symbol stripping for smaller binaries
-# - UPX compression for reduced executable size
 # - Automatic dependency management
 # - Build artifact organization
 # Directory structure
@@ -138,7 +137,6 @@ GO_FLAGS := -ldflags "-s -w -X main.Version=$(APP_VERSION) -X main.Commit=$(COMM
 # Commands and tools
 GO := go
 SSTRIP := true
-UPX := upx
 MKDIR := mkdir
 NICE := nice
 INSTALL := install
@@ -247,7 +245,7 @@ SHOWREEL_ALL_ARTIFACTS := \
 RELEASE_DIR := ./release
 
 # Main targets
-.PHONY: all clean list install uninstall novulkan headless headless-novulkan test-cross check-docs
+.PHONY: all clean list install uninstall novulkan headless headless-novulkan test-cross test-race check-docs
 .PHONY: sdk clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl
@@ -256,6 +254,9 @@ RELEASE_DIR := ./release
 all: setup intuition-engine ie32asm ie64asm ie32to64 ie64dis
 	@echo "Build complete! VM in $(BIN_DIR)/, tools in $(SDK_BIN_DIR)/"
 	@$(MAKE) list
+
+test-race:
+	$(GO) test -race -tags headless -run 'TestMonitor|TestBreakpoint|TestWatchpoint|TestSnapshot|TestTrace|TestRunUntil|TestStep|TestHunt|TestParse|TestEval|TestDisasm|TestBacktrace|TestIOView|TestHexEdit|TestStopHook|TestPublishEvent|TestAdapter|TestBP_' ./...
 
 # Create necessary directories
 setup:
@@ -269,8 +270,6 @@ intuition-engine: setup
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) .
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
-	@echo "Applying UPX compression..."
-	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "Intuition Engine VM build complete"
 
@@ -280,8 +279,6 @@ novulkan: setup
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags novulkan .
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
-	@echo "Applying UPX compression..."
-	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "Intuition Engine VM (novulkan) build complete"
 
@@ -291,8 +288,6 @@ headless: setup
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags headless .
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
-	@echo "Applying UPX compression..."
-	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "Intuition Engine VM (headless) build complete"
 
@@ -315,8 +310,6 @@ ie32asm: setup
 	@$(GO) build $(GO_FLAGS) assembler/ie32asm.go
 	@echo "Stripping debug symbols..."
 	@$(SSTRIP) -z ie32asm
-	@echo "Applying UPX compression..."
-	@$(UPX) --lzma ie32asm
 	@$(MKDIR) -p $(SDK_BIN_DIR)
 	@mv ie32asm $(SDK_BIN_DIR)/
 	@echo "IE32 assembler build complete"
@@ -327,8 +320,6 @@ ie64asm: setup
 	@$(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go
 	@echo "Stripping debug symbols..."
 	@$(SSTRIP) -z ie64asm
-	@echo "Applying UPX compression..."
-	@$(UPX) --lzma ie64asm
 	@$(MKDIR) -p $(SDK_BIN_DIR)
 	@mv ie64asm $(SDK_BIN_DIR)/
 	@echo "IE64 assembler build complete"
@@ -374,8 +365,6 @@ basic: ie64asm
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_basic .
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
-	@echo "Applying UPX compression..."
-	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "EhBASIC build complete - run with: $(BIN_DIR)/IntuitionEngine -basic"
 
@@ -390,8 +379,6 @@ basic-emutos: ie64asm emutos-rom
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "embed_basic embed_emutos" .
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
-	@echo "Applying UPX compression..."
-	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "BASIC+EmuTOS build complete - run with: $(BIN_DIR)/IntuitionEngine -basic"
 
@@ -402,8 +389,6 @@ emutos: setup emutos-rom
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_emutos .
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
-	@echo "Applying UPX compression..."
-	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "EmuTOS build complete - run with: $(BIN_DIR)/IntuitionEngine -emutos"
 
@@ -414,8 +399,6 @@ aros: setup aros-rom
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags embed_aros .
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
-	@echo "Applying UPX compression..."
-	@$(NICE) -$(NICE_LEVEL) $(UPX) --lzma IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "AROS build complete - run with: $(BIN_DIR)/IntuitionEngine -aros"
 
@@ -986,9 +969,6 @@ check-showreel-prereqs:
 	if ! command -v $(GO) >/dev/null 2>&1; then \
 		missing_tools="$$missing_tools\n  - Go toolchain ($(GO))"; \
 	fi; \
-	if ! command -v $(UPX) >/dev/null 2>&1; then \
-		missing_tools="$$missing_tools\n  - $(UPX)"; \
-	fi; \
 	if [ "$(SSTRIP)" != "true" ] && ! command -v $(SSTRIP) >/dev/null 2>&1; then \
 		missing_tools="$$missing_tools\n  - $(SSTRIP)"; \
 	fi; \
@@ -1250,8 +1230,6 @@ ie64dis: setup
 	@$(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go
 	@echo "Stripping debug symbols..."
 	@$(SSTRIP) -z ie64dis
-	@echo "Applying UPX compression..."
-	@$(UPX) --lzma ie64dis
 	@$(MKDIR) -p $(SDK_BIN_DIR)
 	@mv ie64dis $(SDK_BIN_DIR)/
 	@echo "IE64 disassembler build complete"
@@ -1513,10 +1491,9 @@ define build-linux-release
 	rm -f IntuitionEngine ie32asm ie64asm ie32to64 ie64dis && \
 	CGO_ENABLED=1 CGO_JOBS=$(NCORES) CC=$(2) CXX=$(3) GOARCH=$(1) $(4) \
 		$(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "embed_basic embed_emutos embed_aros" -o IntuitionEngine . && \
-	if [ "$(1)" = "$(NATIVE_GOARCH)" ]; then \
-		command -v $(SSTRIP) >/dev/null 2>&1 && $(SSTRIP) -z IntuitionEngine || true; \
-		command -v $(UPX) >/dev/null 2>&1 && $(UPX) --lzma IntuitionEngine || true; \
-	fi && \
+		if [ "$(1)" = "$(NATIVE_GOARCH)" ]; then \
+			command -v $(SSTRIP) >/dev/null 2>&1 && $(SSTRIP) -z IntuitionEngine || true; \
+		fi && \
 	echo "Building SDK tools (pure Go, CGO_ENABLED=0)..." && \
 	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go && \
 	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go && \

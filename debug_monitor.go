@@ -23,6 +23,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 )
 
 // MonitorState represents whether the monitor is active.
@@ -55,6 +56,67 @@ type CPUEntry struct {
 	CPU   DebuggableCPU
 }
 
+type eventQueue struct {
+	mu     sync.Mutex
+	cond   *sync.Cond
+	buf    []BreakpointEvent
+	closed bool
+}
+
+func newEventQueue() *eventQueue {
+	q := &eventQueue{}
+	q.cond = sync.NewCond(&q.mu)
+	return q
+}
+
+func (q *eventQueue) push(ev BreakpointEvent) {
+	q.mu.Lock()
+	if !q.closed {
+		q.buf = append(q.buf, ev)
+		q.cond.Signal()
+	}
+	q.mu.Unlock()
+}
+
+func (q *eventQueue) pop() (BreakpointEvent, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for len(q.buf) == 0 && !q.closed {
+		q.cond.Wait()
+	}
+	if len(q.buf) == 0 {
+		return BreakpointEvent{}, false
+	}
+	ev := q.buf[0]
+	copy(q.buf, q.buf[1:])
+	q.buf = q.buf[:len(q.buf)-1]
+	return ev, true
+}
+
+func (q *eventQueue) close() {
+	q.mu.Lock()
+	q.closed = true
+	q.cond.Broadcast()
+	q.mu.Unlock()
+}
+
+type monitorCPUReader struct {
+	cancel chan struct{}
+	done   chan struct{}
+}
+
+type StopReason int
+
+const (
+	StopBreakpoint StopReason = iota
+	StopWatchpoint
+	StopReset
+	StopManualFreeze
+	StopUserAbort
+)
+
+type StopHook func(cpuID int, reason StopReason, addr uint64)
+
 // MachineMonitor is the core debugger state machine.
 type MachineMonitor struct {
 	mu    sync.Mutex
@@ -65,6 +127,12 @@ type MachineMonitor struct {
 	focusedID int
 
 	breakpointChan chan BreakpointEvent
+	eventQueue     *eventQueue
+	cpuReaders     map[int]*monitorCPUReader
+	listenerOnce   sync.Once
+	listenerActive atomic.Bool
+	stopHooks      map[int]StopHook
+	nextStopHookID int
 
 	outputLines  []OutputLine
 	maxOutput    int
@@ -85,6 +153,7 @@ type MachineMonitor struct {
 	// Run-Until temp breakpoints (Feature 2)
 	tempBreakpoints map[int]map[uint64]bool
 	savedConditions map[int]map[uint64]*BreakpointCondition // original conditions saved during run-until
+	runUntilHooks   map[int]map[uint64]int
 
 	// Trace state (Feature 8)
 	traceFile      *os.File
@@ -112,13 +181,17 @@ func NewMachineMonitor(bus *MachineBus) *MachineMonitor {
 	return &MachineMonitor{
 		state:           MonitorInactive,
 		cpus:            make(map[int]*CPUEntry),
-		breakpointChan:  make(chan BreakpointEvent, 1),
+		breakpointChan:  make(chan BreakpointEvent, 8),
+		eventQueue:      newEventQueue(),
+		cpuReaders:      make(map[int]*monitorCPUReader),
+		stopHooks:       make(map[int]StopHook),
 		maxOutput:       500,
 		wasRunning:      make(map[int]bool),
 		bus:             bus,
 		prevRegs:        make(map[string]uint64),
 		tempBreakpoints: make(map[int]map[uint64]bool),
 		savedConditions: make(map[int]map[uint64]*BreakpointCondition),
+		runUntilHooks:   make(map[int]map[uint64]int),
 		traceWatches:    make(map[uint64]bool),
 		traceSnapshots:  make(map[uint64]byte),
 		writeHistory:    make(map[uint64][]WriteRecord),
@@ -136,7 +209,27 @@ func (m *MachineMonitor) RegisterCPU(label string, cpu DebuggableCPU) int {
 	id := m.nextID
 	m.nextID++
 	m.cpus[id] = &CPUEntry{ID: id, Label: label, CPU: cpu}
-	cpu.SetBreakpointChannel(m.breakpointChan, id)
+	adapterCh := make(chan BreakpointEvent, 8)
+	reader := &monitorCPUReader{cancel: make(chan struct{}), done: make(chan struct{})}
+	m.cpuReaders[id] = reader
+	cpu.SetBreakpointChannel(adapterCh, id)
+	go func() {
+		defer close(reader.done)
+		for {
+			select {
+			case ev := <-adapterCh:
+				if !m.listenerActive.Load() {
+					select {
+					case m.breakpointChan <- ev:
+					default:
+					}
+				}
+				m.eventQueue.push(ev)
+			case <-reader.cancel:
+				return
+			}
+		}
+	}()
 	if len(m.cpus) == 1 {
 		m.focusedID = id
 	}
@@ -149,41 +242,58 @@ func (m *MachineMonitor) RegisterCPU(label string, cpu DebuggableCPU) int {
 // goroutines from continuing to step against reset state.
 func (m *MachineMonitor) ResetCPUs() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, entry := range m.cpus {
-		// Freeze stops any adapter-managed trapLoop goroutine that may
-		// be running independently of the native CPU runner.
-		if entry.CPU.IsRunning() {
-			entry.CPU.Freeze()
-		}
-		entry.CPU.ClearAllBreakpoints()
-		entry.CPU.ClearAllWatchpoints()
+	ids := make([]int, 0, len(m.cpus))
+	for id := range m.cpus {
+		ids = append(ids, id)
 	}
+	m.mu.Unlock()
+	for _, id := range ids {
+		m.UnregisterCPU(id)
+	}
+	m.fireStopHooks(-1, StopReset, 0)
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.cpus = make(map[int]*CPUEntry)
+	m.cpuReaders = make(map[int]*monitorCPUReader)
 	m.nextID = 0
 	m.focusedID = 0
 	m.wasRunning = make(map[int]bool)
 	m.tempBreakpoints = make(map[int]map[uint64]bool)
 	m.savedConditions = make(map[int]map[uint64]*BreakpointCondition)
+	m.runUntilHooks = make(map[int]map[uint64]int)
 	m.stepHistory = make(map[int][]*MachineSnapshot)
 }
 
 // UnregisterCPU removes a CPU by its stable ID.
 func (m *MachineMonitor) UnregisterCPU(id int) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	entry, ok := m.cpus[id]
 	if !ok {
+		m.mu.Unlock()
 		return
 	}
-	entry.CPU.ClearAllBreakpoints()
 	delete(m.cpus, id)
+	reader := m.cpuReaders[id]
+	delete(m.cpuReaders, id)
 	delete(m.stepHistory, id)
 	delete(m.tempBreakpoints, id)
 	delete(m.savedConditions, id)
+	delete(m.runUntilHooks, id)
 	if m.focusedID == id {
 		m.focusedID = 0 // fall back to primary
 	}
+	m.mu.Unlock()
+
+	if entry.CPU.IsRunning() {
+		entry.CPU.Freeze()
+	}
+	entry.CPU.SetBreakpointChannel(nil, id)
+	if reader != nil {
+		close(reader.cancel)
+		<-reader.done
+	}
+	entry.CPU.ClearAllBreakpoints()
+	entry.CPU.ClearAllWatchpoints()
 }
 
 // IsActive returns whether the monitor is currently shown.
@@ -254,6 +364,7 @@ func (m *MachineMonitor) FreezeAll() {
 			entry.CPU.Freeze()
 		}
 	}
+	m.fireStopHooks(-1, StopManualFreeze, 0)
 }
 
 // appendOutput adds a line to the scrollback buffer.
@@ -279,16 +390,61 @@ func (m *MachineMonitor) saveCurrentRegs() {
 // StartBreakpointListener runs a background goroutine that watches for
 // breakpoint events from any CPU and auto-activates the monitor.
 func (m *MachineMonitor) StartBreakpointListener() {
-	go func() {
-		for ev := range m.breakpointChan {
-			m.handleBreakpointHit(ev)
-		}
-	}()
+	m.listenerOnce.Do(func() {
+		m.listenerActive.Store(true)
+		go func() {
+			for ev := range m.breakpointChan {
+				m.eventQueue.push(ev)
+			}
+		}()
+		go func() {
+			for {
+				ev, ok := m.eventQueue.pop()
+				if !ok {
+					return
+				}
+				m.handleBreakpointHit(ev)
+			}
+		}()
+	})
+}
+
+func (m *MachineMonitor) RegisterStopHook(hk StopHook) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id := m.nextStopHookID
+	m.nextStopHookID++
+	m.stopHooks[id] = hk
+	return id
+}
+
+func (m *MachineMonitor) UnregisterStopHook(id int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.stopHooks, id)
+}
+
+func (m *MachineMonitor) fireStopHooks(cpuID int, reason StopReason, addr uint64) {
+	m.mu.Lock()
+	hooks := make([]StopHook, 0, len(m.stopHooks))
+	for _, hk := range m.stopHooks {
+		hooks = append(hooks, hk)
+	}
+	m.mu.Unlock()
+	for _, hk := range hooks {
+		hk(cpuID, reason, addr)
+	}
 }
 
 // handleBreakpointHit freezes all CPUs, focuses on the one that hit,
 // and activates the monitor.
 func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
+	reason := StopBreakpoint
+	if ev.IsWatch {
+		reason = StopWatchpoint
+	}
+	m.fireStopHooks(ev.CPUID, reason, ev.Address)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -329,8 +485,15 @@ func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
 		if cond, hasSaved := saved[ev.Address]; hasSaved {
 			// Restore original condition on the user's breakpoint
 			if entry := m.cpus[ev.CPUID]; entry != nil {
-				if bp := entry.CPU.GetConditionalBreakpoint(ev.Address); bp != nil {
-					bp.Condition = cond
+				entry.CPU.SetBreakpointCondition(ev.Address, cond)
+			}
+			if hooks := m.runUntilHooks[ev.CPUID]; hooks != nil {
+				if hookID, ok := hooks[ev.Address]; ok {
+					delete(m.stopHooks, hookID)
+					delete(hooks, ev.Address)
+				}
+				if len(hooks) == 0 {
+					delete(m.runUntilHooks, ev.CPUID)
 				}
 			}
 			delete(saved, ev.Address)

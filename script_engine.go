@@ -3245,6 +3245,21 @@ func (se *ScriptEngine) luaDbgSetConditionalBP() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
+		if L.GetTop() >= 3 {
+			width := strings.ToUpper(L.CheckString(3))
+			if strings.HasPrefix(strings.TrimSpace(cond), "[") && strings.Contains(cond, "]") {
+				idx := strings.Index(cond, "]")
+				switch width {
+				case "B":
+					// byte is the default
+				case "W", "L":
+					cond = cond[:idx+1] + "." + width + cond[idx+1:]
+				default:
+					L.RaiseError("invalid condition width %q", width)
+					return 0
+				}
+			}
+		}
 		mon.ExecuteCommand(fmt.Sprintf("b $%X %s", addr, cond))
 		return 0
 	}
@@ -3309,6 +3324,12 @@ func formatBreakpointCondition(cond *BreakpointCondition) string {
 		lhs = cond.RegName
 	case CondSourceMemory:
 		lhs = fmt.Sprintf("[$%X]", cond.MemAddr)
+		switch conditionWidth(cond) {
+		case 2:
+			lhs += ".W"
+		case 4:
+			lhs += ".L"
+		}
 	case CondSourceHitCount:
 		lhs = "hitcount"
 	default:
@@ -3845,14 +3866,21 @@ func (se *ScriptEngine) luaDbgSaveState() lua.LGFunction {
 func (se *ScriptEngine) luaDbgLoadState() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
-		se.mu.Lock()
-		mon := se.monitor
-		se.mu.Unlock()
-		if mon == nil {
-			L.RaiseError("monitor unavailable")
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
 			return 0
 		}
-		mon.ExecuteCommand("sl " + path)
+		snap, err := LoadSnapshotFromFile(path)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if err := RestoreSnapshot(cpu, snap); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		mon.saveCurrentRegs()
 		return 0
 	}
 }

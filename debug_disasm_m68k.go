@@ -29,6 +29,26 @@ var m68kCondCodes = [16]string{
 	"VC", "VS", "PL", "MI", "GE", "LT", "GT", "LE",
 }
 
+func formatM68KBitField(ext uint16) (string, string) {
+	var offset string
+	if ext&0x0800 != 0 {
+		offset = fmt.Sprintf("D%d", (ext>>6)&7)
+	} else {
+		offset = fmt.Sprintf("%d", (ext>>6)&31)
+	}
+	var width string
+	if ext&0x0020 != 0 {
+		width = fmt.Sprintf("D%d", ext&7)
+	} else {
+		w := ext & 31
+		if w == 0 {
+			w = 32
+		}
+		width = fmt.Sprintf("%d", w)
+	}
+	return offset, width
+}
+
 func formatM68KEA(readMem func(addr uint64, size int) []byte, mode, reg int, addr *uint64, size int) string {
 	switch mode {
 	case 0: // Dn
@@ -202,6 +222,42 @@ func disassembleM68K(readMem func(addr uint64, size int) []byte, startAddr uint6
 }
 
 func decodeM68KInstruction(readMem func(addr uint64, size int) []byte, w uint16, addr *uint64) string {
+	if w&0xFFF8 == 0x4808 {
+		disp, ok := readM68KLong(readMem, *addr)
+		if ok {
+			*addr += 4
+			return fmt.Sprintf("LINK.L A%d, #$%08X", w&7, disp)
+		}
+		return fmt.Sprintf("LINK.L A%d, #????????", w&7)
+	}
+	if w&0xFFC0 == 0xE9C0 {
+		ext, ok := readM68KWord(readMem, *addr)
+		if ok {
+			*addr += 2
+			mode := int((w >> 3) & 7)
+			reg := int(w & 7)
+			eaAddr := *addr
+			ea := formatM68KEA(readMem, mode, reg, &eaAddr, 4)
+			*addr = eaAddr
+			dst := (ext >> 12) & 7
+			offset, width := formatM68KBitField(ext)
+			return fmt.Sprintf("BFEXTU %s {%s:%s}, D%d", ea, offset, width, dst)
+		}
+		return "BFEXTU ???"
+	}
+	if w&0xFFC0 == 0x4C40 {
+		ext, ok := readM68KWord(readMem, *addr)
+		if ok {
+			*addr += 2
+			mode := int((w >> 3) & 7)
+			reg := int(w & 7)
+			ea := formatM68KEA(readMem, mode, reg, addr, 4)
+			dq := (ext >> 12) & 7
+			dr := ext & 7
+			return fmt.Sprintf("DIVSL %s, D%d:D%d", ea, dq, dr)
+		}
+		return "DIVSL ???"
+	}
 	group := (w >> 12) & 0xF
 
 	switch group {

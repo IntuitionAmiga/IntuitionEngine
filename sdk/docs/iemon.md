@@ -18,7 +18,7 @@ It is also exposed to IEScript Lua via the `dbg.*` API for scripted debugging wo
 
 ## Address Formats
 
-All commands accept addresses in these formats:
+Address arguments accept these formats:
 
 | Format | Example | Description |
 |--------|---------|-------------|
@@ -39,6 +39,8 @@ Most address arguments support simple expressions with register names and arithm
 ```
 
 Operators: `+` and `-` only. Each term is either a register name or a numeric address.
+
+Count arguments (`s`, `trace`, `bt`, and dump/disassembly line counts) are decimal by default. Use `$` or `0x` for hexadecimal counts. Bare address arguments remain hexadecimal by default.
 
 ## Command Reference
 
@@ -116,7 +118,7 @@ Disassemble instructions starting from an address (default: current PC, 16 lines
 
 #### `m [addr] [count]` - Memory Dump
 
-Display memory in hex + ASCII format (default: from PC, 8 lines of 16 bytes).
+Display memory in hex + ASCII format (default: from PC, 8 lines of 16 bytes). The address column follows the focused CPU width, so IE64 dumps preserve full 64-bit addresses.
 
 ```
 > m $1000 4
@@ -150,7 +152,7 @@ Filled $2000-$20FF with $00
 
 #### `save <start> <end> <filename>` - Save Memory to File
 
-Save a range of memory to a raw binary file.
+Save a range of memory to a raw binary file. The maximum save range is the bus-reported total guest RAM, not a fixed legacy 32 MiB limit.
 
 ```
 > save $1000 $1FFF dump.bin
@@ -207,11 +209,11 @@ Run the program until the PC reaches the specified address, then stop and re-ent
 > u $2000
 ```
 
-The monitor exits and execution resumes. When the PC reaches `$2000`, the monitor activates automatically and the temporary breakpoint is removed.
+The monitor exits and execution resumes. When the PC reaches `$2000`, the monitor activates automatically and the temporary breakpoint is removed. If run-until temporarily disables an existing conditional breakpoint, the condition is restored when that stop is handled.
 
 #### `bs` - Backstep (Undo Step)
 
-Rewind the focused CPU to the state before the last `s` (single-step) command. Restores all CPU registers and memory to their exact pre-step values.
+Rewind the focused CPU to the state before the last `s` (single-step) command. Restores focused CPU registers and the CPU-local memory snapshot captured by that adapter.
 
 ```
 > s
@@ -221,9 +223,9 @@ Step: 1 instruction(s), 1 cycle(s)
 Backstep: restored to PC=$001000
 ```
 
-A ring buffer of up to 32 snapshots is maintained (16 for 32-bit CPUs due to memory cost). Each `s` command saves a snapshot before stepping; `bs` pops the most recent one.
+A ring buffer of up to 32 CPU-local snapshots is maintained. Each stepped instruction saves a snapshot before stepping; `bs` pops the most recent one.
 
-**Note:** Only CPU registers and memory are restored. Device/chip runtime state (timers, audio envelopes, video scanline position) is not included in snapshots.
+**Note:** Only the focused CPU adapter's registers and memory view are restored. Device/chip runtime state (timers, audio envelopes, video scanline position), other CPUs, and coprocessor state are not included. Whole-machine snapshots are future work.
 
 ### Breakpoints
 
@@ -251,6 +253,8 @@ Conditional breakpoint set at $3000 (hitcount > 10)
 |--------|-------------|
 | `r1==$FF` | Register R1 equals 0xFF |
 | `[$1000]==$42` | Memory byte at $1000 equals 0x42 |
+| `[$1000].W==$1234` | Memory word at $1000 equals 0x1234 |
+| `[$1000].L==$12345678` | Memory long at $1000 equals 0x12345678 |
 | `hitcount>10` | Breakpoint hit count exceeds 10 |
 
 Operators: `==`, `!=`, `<`, `>`, `<=`, `>=`
@@ -288,7 +292,7 @@ BREAK at $1010 on IE64 (id:0)
 
 #### `ww <addr>` - Set Write Watchpoint
 
-Monitor a memory address for writes. When any instruction modifies the watched byte, the monitor activates and displays the old and new values.
+Monitor a memory address for writes. When any instruction modifies the watched byte, the monitor activates and displays the old and new values. Read and read/write access watchpoints are not implemented in this hardening pass.
 
 ```
 > ww $1000
@@ -467,6 +471,8 @@ Trace output -> trace.log
 > trace file off
 Trace output -> scrollback
 ```
+
+Trace files are synced before they are closed.
 
 #### `trace watch add <addr>` - Track Memory Writes
 

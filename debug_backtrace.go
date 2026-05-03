@@ -59,19 +59,27 @@ func backtraceIE32(cpu DebuggableCPU, depth int) []uint64 {
 	return result
 }
 
-// backtraceM68K walks 4-byte stack slots (A7/SP).
+// backtraceM68K follows the conventional A6 frame-link chain.
 func backtraceM68K(cpu DebuggableCPU, depth int) []uint64 {
-	sp, _ := cpu.GetRegister("A7")
+	a6, ok := cpu.GetRegister("A6")
+	if !ok || a6 == 0 {
+		return nil
+	}
 	var result []uint64
 	for range depth {
-		data := cpu.ReadMemory(sp, 4)
-		if len(data) < 4 {
+		frame := cpu.ReadMemory(a6, 8)
+		if len(frame) < 8 {
 			break
 		}
-		// M68K is big-endian
-		addr := uint64(binary.BigEndian.Uint32(data))
-		result = append(result, addr)
-		sp += 4
+		prevA6 := uint64(binary.BigEndian.Uint32(frame[0:4]))
+		ret := uint64(binary.BigEndian.Uint32(frame[4:8]))
+		if ret != 0 {
+			result = append(result, ret)
+		}
+		if prevA6 == 0 || prevA6 == a6 {
+			break
+		}
+		a6 = prevA6
 	}
 	return result
 }
