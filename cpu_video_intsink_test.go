@@ -58,6 +58,93 @@ func TestCPU6502InterruptSinkAssertsIRQ(t *testing.T) {
 	}
 }
 
+func TestLevelTriggered_HeldUntilAck(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	sink := NewCPU6502InterruptSink(cpu)
+
+	var level LevelTriggeredInterruptSink = sink
+	level.Assert(IntMaskBlitter)
+	if !cpu.irqPending.Load() {
+		t.Fatal("Assert did not raise IRQ")
+	}
+
+	cpu.SetIRQLine(false)
+	level.Ack(IntMaskBlitter)
+	if !cpu.irqPending.Load() {
+		t.Fatal("Ack did not reassert held level interrupt")
+	}
+
+	level.Deassert(IntMaskBlitter)
+	cpu.SetIRQLine(false)
+	level.Ack(IntMaskBlitter)
+	if cpu.irqPending.Load() {
+		t.Fatal("Ack reasserted after Deassert")
+	}
+}
+
+func TestLevelTriggered_Mask(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	sink := NewCPU6502InterruptSink(cpu)
+
+	var level LevelTriggeredInterruptSink = sink
+	level.SetMask(IntMaskBlitter, true)
+	level.Assert(IntMaskBlitter)
+	if cpu.irqPending.Load() {
+		t.Fatal("masked Assert raised IRQ")
+	}
+
+	level.SetMask(IntMaskBlitter, false)
+	if !cpu.irqPending.Load() {
+		t.Fatal("unmask did not raise held interrupt")
+	}
+}
+
+func TestLevelTriggered_PreservesOtherSourcesOnAckDeassertMask(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	sink := NewCPU6502InterruptSink(cpu)
+	var level LevelTriggeredInterruptSink = sink
+
+	level.Assert(IntMaskVBI)
+	level.Assert(IntMaskBlitter)
+	cpu.SetIRQLine(false)
+	level.Ack(IntMaskBlitter)
+	if !cpu.irqPending.Load() {
+		t.Fatal("Ack dropped another active interrupt source")
+	}
+
+	cpu.SetIRQLine(false)
+	level.Deassert(IntMaskBlitter)
+	if !cpu.irqPending.Load() {
+		t.Fatal("Deassert dropped another active interrupt source")
+	}
+
+	cpu.SetIRQLine(false)
+	level.SetMask(IntMaskBlitter, true)
+	if !cpu.irqPending.Load() {
+		t.Fatal("Masking one source dropped another active interrupt source")
+	}
+
+	cpu.SetIRQLine(false)
+	level.SetMask(IntMaskVBI, true)
+	if cpu.irqPending.Load() {
+		t.Fatal("all active sources masked but IRQ remained asserted")
+	}
+}
+
+func TestPulseSink_StillWorks(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	var sink InterruptSink = NewCPU6502InterruptSink(cpu)
+
+	sink.Pulse(IntMaskBlitter)
+	if !cpu.irqPending.Load() {
+		t.Fatal("Pulse did not preserve edge-compatible IRQ behavior")
+	}
+}
+
 func TestNewVideoInterruptSinksNilSafe(t *testing.T) {
 	NewIE32InterruptSink(nil).Pulse(IntMaskBlitter)
 	NewIE64InterruptSink(nil).Pulse(IntMaskBlitter)

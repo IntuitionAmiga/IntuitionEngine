@@ -24,7 +24,8 @@ var ErrHighRangeBackingUnsupported = errors.New("mmap-backed high-range guest RA
 // MmapBacking is an anonymous-mmap-backed Backing. The underlying mapping is
 // not Go-managed; callers must invoke Close to munmap when done.
 type MmapBacking struct {
-	mem []byte
+	mem    []byte
+	closed bool
 }
 
 // NewMmapBacking allocates an anonymous private mmap of the requested size.
@@ -61,7 +62,14 @@ func newMmapBackingWithMmap(size uint64, mmapFn func(length, prot, flags int) ([
 
 func (b *MmapBacking) Size() uint64 { return uint64(len(b.mem)) }
 
+func (b *MmapBacking) assertOpen() {
+	if b.closed {
+		panic("MmapBacking use after Close")
+	}
+}
+
 func (b *MmapBacking) inRange(addr, length uint64) bool {
+	b.assertOpen()
 	end := addr + length
 	if end < addr {
 		return false
@@ -132,6 +140,7 @@ func (b *MmapBacking) WriteBytes(addr uint64, src []byte) {
 // via MADV_DONTNEED. Subsequent reads return zero (demand-paged) and the
 // resident-set drops. The mapping itself is not unmapped.
 func (b *MmapBacking) Reset() {
+	b.assertOpen()
 	if len(b.mem) == 0 {
 		return
 	}
@@ -140,10 +149,11 @@ func (b *MmapBacking) Reset() {
 
 // Close unmaps the backing. Subsequent reads/writes are undefined.
 func (b *MmapBacking) Close() error {
-	if b.mem == nil {
+	if b.closed {
 		return nil
 	}
 	err := unix.Munmap(b.mem)
 	b.mem = nil
+	b.closed = true
 	return err
 }

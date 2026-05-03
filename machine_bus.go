@@ -125,6 +125,7 @@ type MachineBus struct {
 	// 64-bit I/O region map - separate from legacy 32-bit mapping.
 	// Registered via MapIO64, used by Read64/Write64 for native 64-bit dispatch.
 	mapping64 map[uint32][]IORegion64
+	mapState  atomic.Pointer[busMapSnapshot]
 
 	// Policy for 64-bit access to legacy-only MMIO regions (default: Fault)
 	legacyMMIO64Policy MMIO64Policy
@@ -153,6 +154,10 @@ type MachineBus struct {
 	// buses install a madvise(MADV_DONTNEED)-based reset so a guest reset
 	// does not eagerly commit every page of a multi-GiB advertised range.
 	memReset func()
+
+	// resetHooks are called after bus RAM/backing reset. Reset is intentionally
+	// caller-quiesced: callers must stop CPU/JIT execution before invoking it.
+	resetHooks []func()
 }
 
 // AddrRange defines an inclusive address range.
@@ -177,6 +182,7 @@ type IORegion struct {
 	onRead8         func(addr uint32) uint8        // Optional: byte-level read handler
 	onWrite8        func(addr uint32, value uint8) // Optional: byte-level write handler
 	wideWriteFanout bool
+	Shadow          bool
 }
 
 // IORegion64 represents a 64-bit-capable memory-mapped I/O region.
@@ -186,6 +192,13 @@ type IORegion64 struct {
 	end       uint32
 	onRead64  func(addr uint32) uint64
 	onWrite64 func(addr uint32, value uint64)
+	Shadow    bool
+}
+
+type busMapSnapshot struct {
+	mapping      map[uint32][]IORegion
+	mapping64    map[uint32][]IORegion64
+	ioPageBitmap []bool
 }
 
 // MMIO64Policy controls behavior when a 64-bit access hits a legacy-only I/O region.
@@ -220,7 +233,7 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 
 		// Special handling for terminal output case
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(TERM_OUT & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
@@ -234,16 +247,14 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 
 		if mapped <= DEFAULT_MEMORY_SIZE-4 {
 			// Check for I/O regions with the mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(mapped & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && (region.onWrite != nil || region.wideWriteFanout) {
 						if !write32Fanout8(region, mapped, value) && region.onWrite != nil {
 							region.onWrite(mapped, value)
 						}
-						if mapped+4 <= uint32(len(bus.memory)) {
-							binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
-						}
+						bus.shadowWrite32(region, mapped, value)
 						return true
 					}
 				}
@@ -265,17 +276,21 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 	}
 
 	// Process I/O regions
-	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
+	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && (region.onWrite != nil || region.wideWriteFanout) {
 				if !write32Fanout8(region, addr, value) && region.onWrite != nil {
 					region.onWrite(addr, value)
 				}
-				binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+				bus.shadowWrite32(region, addr, value)
 				return true
 			}
 		}
+	}
+
+	if bus.hasMappedLegacySpan(addr, 4) {
+		return bus.writeLegacySpanBytes(addr, uint64(value), 4, true)
 	}
 
 	// Regular memory write
@@ -292,6 +307,30 @@ func write32Fanout8(region IORegion, addr uint32, value uint32) bool {
 	region.onWrite8(addr+2, uint8(value>>16))
 	region.onWrite8(addr+3, uint8(value>>24))
 	return true
+}
+
+func (bus *MachineBus) shadowWrite32(region IORegion, addr uint32, value uint32) {
+	if region.Shadow && addr+4 <= uint32(len(bus.memory)) {
+		binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+	}
+}
+
+func (bus *MachineBus) shadowWrite16(region IORegion, addr uint32, value uint16) {
+	if region.Shadow && addr+2 <= uint32(len(bus.memory)) {
+		binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
+	}
+}
+
+func (bus *MachineBus) shadowWrite8(region IORegion, addr uint32, value uint8) {
+	if region.Shadow && addr < uint32(len(bus.memory)) {
+		bus.memory[addr] = value
+	}
+}
+
+func (bus *MachineBus) shadowWrite64(region IORegion64, addr uint32, value uint64) {
+	if region.Shadow && uint64(addr)+8 <= uint64(len(bus.memory)) {
+		*(*uint64)(unsafe.Pointer(&bus.memory[addr])) = value
+	}
 }
 
 func signExtMirror(start uint32) (uint32, bool) {
@@ -317,7 +356,7 @@ func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 
 		// Special handling for terminal input
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(TERM_OUT & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
@@ -331,14 +370,12 @@ func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 
 		if mapped <= DEFAULT_MEMORY_SIZE-4 {
 			// Check for I/O regions with the mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(mapped & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && region.onRead != nil {
 						value := region.onRead(mapped)
-						if mapped+4 <= uint32(len(bus.memory)) {
-							binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
-						}
+						bus.shadowWrite32(region, mapped, value)
 						return value, true
 					}
 				}
@@ -360,15 +397,23 @@ func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 	}
 
 	// Check for I/O regions
-	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
+	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
 				value := region.onRead(addr)
-				binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+				bus.shadowWrite32(region, addr, value)
 				return value, true
 			}
 		}
+	}
+
+	if bus.hasMappedLegacySpan(addr, 4) {
+		value, ok := bus.readLegacySpanBytes(addr, 4, true)
+		if !ok {
+			return 0, false
+		}
+		return uint32(value), true
 	}
 
 	// Regular memory read
@@ -388,7 +433,7 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 		mapped := addr & 0x0000FFFF
 		if mapped <= DEFAULT_MEMORY_SIZE-2 {
 			// This is a valid sign-extended address, handle normally but with mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(mapped & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end {
@@ -399,9 +444,7 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 							region.onWrite(mapped, uint32(value))
 						}
 						// Still store in memory if within bounds
-						if mapped+2 <= uint32(len(bus.memory)) {
-							binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], value)
-						}
+						bus.shadowWrite16(region, mapped, value)
 						return true
 					}
 				}
@@ -417,7 +460,7 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 		// Special handling for terminal output case
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			// Call terminal output handler if available
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(TERM_OUT & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end {
@@ -443,7 +486,7 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 	}
 
 	// Process I/O regions
-	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
+	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end {
@@ -453,10 +496,14 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 				} else if region.onWrite != nil {
 					region.onWrite(addr, uint32(value))
 				}
-				binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
+				bus.shadowWrite16(region, addr, value)
 				return true
 			}
 		}
+	}
+
+	if bus.hasMappedLegacySpan(addr, 2) {
+		return bus.writeLegacySpanBytes(addr, uint64(value), 2, true)
 	}
 
 	// Regular memory write
@@ -476,14 +523,12 @@ func (bus *MachineBus) Read16WithFault(addr uint32) (uint16, bool) {
 		mapped := addr & 0x0000FFFF
 		if mapped <= DEFAULT_MEMORY_SIZE-2 {
 			// Check for I/O regions with the mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(mapped & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && region.onRead != nil {
 						value := region.onRead(mapped)
-						if mapped+2 <= uint32(len(bus.memory)) {
-							binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], uint16(value))
-						}
+						bus.shadowWrite16(region, mapped, uint16(value))
 						return uint16(value), true
 					}
 				}
@@ -498,7 +543,7 @@ func (bus *MachineBus) Read16WithFault(addr uint32) (uint16, bool) {
 
 		// Special handling for terminal input
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(TERM_OUT & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
@@ -519,15 +564,23 @@ func (bus *MachineBus) Read16WithFault(addr uint32) (uint16, bool) {
 	}
 
 	// Check for I/O regions
-	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
+	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
 				value := region.onRead(addr)
-				binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], uint16(value))
+				bus.shadowWrite16(region, addr, uint16(value))
 				return uint16(value), true
 			}
 		}
+	}
+
+	if bus.hasMappedLegacySpan(addr, 2) {
+		value, ok := bus.readLegacySpanBytes(addr, 2, true)
+		if !ok {
+			return 0, false
+		}
+		return uint16(value), true
 	}
 
 	// Regular memory read
@@ -547,7 +600,7 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 		mapped := addr & 0x0000FFFF
 		if mapped < DEFAULT_MEMORY_SIZE {
 			// This is a valid sign-extended address, handle normally but with mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(mapped & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end {
@@ -557,9 +610,7 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 							region.onWrite(mapped, uint32(value))
 						}
 						// Still store in memory if within bounds
-						if mapped < uint32(len(bus.memory)) {
-							bus.memory[mapped] = value
-						}
+						bus.shadowWrite8(region, mapped, value)
 						return true
 					}
 				}
@@ -575,7 +626,7 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 		// Special handling for terminal output case
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			// Call terminal output handler if available
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(TERM_OUT & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end {
@@ -600,7 +651,7 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 	}
 
 	// Process I/O regions
-	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
+	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end {
@@ -609,7 +660,7 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 				} else if region.onWrite != nil {
 					region.onWrite(addr, uint32(value))
 				}
-				bus.memory[addr] = value
+				bus.shadowWrite8(region, addr, value)
 				return true
 			}
 		}
@@ -632,21 +683,17 @@ func (bus *MachineBus) Read8WithFault(addr uint32) (uint8, bool) {
 		mapped := addr & 0x0000FFFF
 		if mapped < DEFAULT_MEMORY_SIZE {
 			// Check for I/O regions with the mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(mapped & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && (region.onRead8 != nil || region.onRead != nil) {
 						if region.onRead8 != nil {
 							value := region.onRead8(mapped)
-							if mapped < uint32(len(bus.memory)) {
-								bus.memory[mapped] = value
-							}
+							bus.shadowWrite8(region, mapped, value)
 							return value, true
 						}
 						value := region.onRead(mapped)
-						if mapped < uint32(len(bus.memory)) {
-							bus.memory[mapped] = uint8(value)
-						}
+						bus.shadowWrite8(region, mapped, uint8(value))
 						return uint8(value), true
 					}
 				}
@@ -661,7 +708,7 @@ func (bus *MachineBus) Read8WithFault(addr uint32) (uint8, bool) {
 
 		// Special handling for terminal input
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(TERM_OUT & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
@@ -682,17 +729,17 @@ func (bus *MachineBus) Read8WithFault(addr uint32) (uint8, bool) {
 	}
 
 	// Check for I/O regions
-	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
+	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && (region.onRead8 != nil || region.onRead != nil) {
 				if region.onRead8 != nil {
 					value := region.onRead8(addr)
-					bus.memory[addr] = value
+					bus.shadowWrite8(region, addr, value)
 					return value, true
 				}
 				value := region.onRead(addr)
-				bus.memory[addr] = uint8(value)
+				bus.shadowWrite8(region, addr, uint8(value))
 				return uint8(value), true
 			}
 		}
@@ -762,13 +809,132 @@ func newMachineBusSizedWithAllocator(memSize uint64, allocator func(size uint64)
 		return nil, fmt.Errorf("%w: bus.memory allocator returned nil for memSize=%d (mmap rejected, no heap fallback)",
 			ErrInvalidSizeArg, memSize)
 	}
-	return &MachineBus{
+	bus := &MachineBus{
 		memory:       mem,
 		mapping:      make(map[uint32][]IORegion),
 		ioPageBitmap: make([]bool, len(mem)/int(PAGE_SIZE)),
 		mapping64:    make(map[uint32][]IORegion64),
 		memReset:     reset,
-	}, nil
+	}
+	bus.publishMapSnapshot()
+	return bus, nil
+}
+
+func cloneIORegionMap(src map[uint32][]IORegion) map[uint32][]IORegion {
+	dst := make(map[uint32][]IORegion, len(src))
+	for page, regions := range src {
+		dst[page] = append([]IORegion(nil), regions...)
+	}
+	return dst
+}
+
+func cloneIORegion64Map(src map[uint32][]IORegion64) map[uint32][]IORegion64 {
+	dst := make(map[uint32][]IORegion64, len(src))
+	for page, regions := range src {
+		dst[page] = append([]IORegion64(nil), regions...)
+	}
+	return dst
+}
+
+func (bus *MachineBus) detachMapStateForWrite() {
+	bus.mapping = cloneIORegionMap(bus.mapping)
+	bus.mapping64 = cloneIORegion64Map(bus.mapping64)
+	bus.ioPageBitmap = append([]bool(nil), bus.ioPageBitmap...)
+}
+
+func (bus *MachineBus) publishMapSnapshot() {
+	bus.mapState.Store(&busMapSnapshot{
+		mapping:      bus.mapping,
+		mapping64:    bus.mapping64,
+		ioPageBitmap: bus.ioPageBitmap,
+	})
+}
+
+func (bus *MachineBus) currentMapSnapshot() *busMapSnapshot {
+	if snap := bus.mapState.Load(); snap != nil {
+		return snap
+	}
+	return &busMapSnapshot{
+		mapping:      bus.mapping,
+		mapping64:    bus.mapping64,
+		ioPageBitmap: bus.ioPageBitmap,
+	}
+}
+
+func (bus *MachineBus) legacyRegions(page uint32) ([]IORegion, bool) {
+	regions, exists := bus.currentMapSnapshot().mapping[page]
+	return regions, exists
+}
+
+func (bus *MachineBus) native64Regions(page uint32) ([]IORegion64, bool) {
+	regions, exists := bus.currentMapSnapshot().mapping64[page]
+	return regions, exists
+}
+
+func (bus *MachineBus) ioPageMapped(page uint32) bool {
+	snap := bus.currentMapSnapshot()
+	return page < uint32(len(snap.ioPageBitmap)) && snap.ioPageBitmap[page]
+}
+
+func (bus *MachineBus) IsIOPageMapped(page uint32) bool {
+	return bus.ioPageMapped(page)
+}
+
+func (bus *MachineBus) hasMappedLegacySpan(addr uint32, width int) bool {
+	if width <= 0 {
+		return false
+	}
+	end := uint64(addr) + uint64(width)
+	if end > 0x100000000 {
+		return false
+	}
+	for a := addr; uint64(a) < end; a++ {
+		if bus.hasMappedRegion(a) {
+			return true
+		}
+	}
+	return false
+}
+
+func (bus *MachineBus) readLegacySpanBytes(addr uint32, width int, fault bool) (uint64, bool) {
+	var value uint64
+	for i := 0; i < width; i++ {
+		a := addr + uint32(i)
+		var b uint8
+		if fault {
+			var ok bool
+			b, ok = bus.Read8WithFault(a)
+			if !ok {
+				return 0, false
+			}
+		} else {
+			b = bus.Read8(a)
+		}
+		value |= uint64(b) << (8 * i)
+	}
+	return value, true
+}
+
+func (bus *MachineBus) writeLegacySpanBytes(addr uint32, value uint64, width int, fault bool) bool {
+	for i := 0; i < width; i++ {
+		a := addr + uint32(i)
+		b := uint8(value >> (8 * i))
+		if fault {
+			if !bus.Write8WithFault(a, b) {
+				return false
+			}
+			continue
+		}
+		bus.Write8(a, b)
+	}
+	return true
+}
+
+func (bus *MachineBus) OnReset(hook func()) {
+	if hook == nil {
+		return
+	}
+	bus.resetHooks = append(bus.resetHooks, hook)
 }
 
 // defaultBusMemAllocator is provided per-platform: Linux/darwin use an
@@ -924,7 +1090,7 @@ func (bus *MachineBus) addrInStrictMMIOWindow(addr uint32) bool {
 }
 
 func (bus *MachineBus) hasMappedRegion(addr uint32) bool {
-	regions, exists := bus.mapping[addr&PAGE_MASK]
+	regions, exists := bus.legacyRegions(addr & PAGE_MASK)
 	if !exists {
 		return false
 	}
@@ -940,7 +1106,7 @@ func (bus *MachineBus) hasMappedRegion64(addr uint32) bool {
 	if bus.hasMappedRegion(addr) {
 		return true
 	}
-	regions, exists := bus.mapping64[addr&PAGE_MASK]
+	regions, exists := bus.native64Regions(addr & PAGE_MASK)
 	if !exists {
 		return false
 	}
@@ -1025,10 +1191,10 @@ func (bus *MachineBus) IsIOAddress(addr uint32) bool {
 		return false
 	}
 	page := addr >> 8
-	if page >= uint32(len(bus.ioPageBitmap)) || !bus.ioPageBitmap[page] {
+	if !bus.ioPageMapped(page) {
 		return false
 	}
-	regions, exists := bus.mapping[addr&PAGE_MASK]
+	regions, exists := bus.legacyRegions(addr & PAGE_MASK)
 	if !exists {
 		return false
 	}
@@ -1066,14 +1232,30 @@ func (bus *MachineBus) SealMappings() {
 }
 
 func (bus *MachineBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32)) {
+	bus.mapIOWithShadow(start, end, onRead, onWrite, true)
+}
+
+func (bus *MachineBus) MapIOShadow(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32)) {
+	bus.mapIOWithShadow(start, end, onRead, onWrite, true)
+}
+
+func (bus *MachineBus) MapIONoShadow(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32)) {
+	bus.mapIOWithShadow(start, end, onRead, onWrite, false)
+}
+
+func (bus *MachineBus) mapIOWithShadow(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32), shadow bool) {
 	if bus.sealed.Load() {
 		panic(fmt.Sprintf("MapIO called after execution started (mapping range $%05X-$%05X)", start, end))
 	}
+	bus.detachMapStateForWrite()
+	defer bus.publishMapSnapshot()
+
 	region := IORegion{
 		start:   start,
 		end:     end,
 		onRead:  onRead,
 		onWrite: onWrite,
+		Shadow:  shadow,
 	}
 
 	// Calculate pages for normal address range
@@ -1116,6 +1298,8 @@ func (bus *MachineBus) MapIOByte(start, end uint32, onWrite8 func(addr uint32, v
 	if bus.sealed.Load() {
 		panic(fmt.Sprintf("MapIOByte called after execution started (mapping range $%05X-$%05X)", start, end))
 	}
+	bus.detachMapStateForWrite()
+	defer bus.publishMapSnapshot()
 
 	// IORegion is a value type — each page has its own copy, so we must
 	// update every copy across all pages (no deduplication).
@@ -1154,6 +1338,8 @@ func (bus *MachineBus) MapIOByteRead(start, end uint32, onRead8 func(addr uint32
 	if bus.sealed.Load() {
 		panic(fmt.Sprintf("MapIOByteRead called after execution started (mapping range $%05X-$%05X)", start, end))
 	}
+	bus.detachMapStateForWrite()
+	defer bus.publishMapSnapshot()
 
 	firstPage := start & PAGE_MASK
 	lastPage := end & PAGE_MASK
@@ -1190,6 +1376,8 @@ func (bus *MachineBus) MapIOWideWriteFanout(start, end uint32) {
 	if bus.sealed.Load() {
 		panic(fmt.Sprintf("MapIOWideWriteFanout called after execution started (mapping range $%05X-$%05X)", start, end))
 	}
+	bus.detachMapStateForWrite()
+	defer bus.publishMapSnapshot()
 
 	firstPage := start & PAGE_MASK
 	lastPage := end & PAGE_MASK
@@ -1223,6 +1411,9 @@ func (bus *MachineBus) MapIOWideWriteFanout(start, end uint32) {
 // restoring those pages to plain bus RAM access. This is used by the EmuTOS loader
 // to reclaim the VRAM address range (0x100000-0x5FFFFF) as normal M68K RAM.
 func (bus *MachineBus) UnmapIO(start, end uint32) {
+	bus.detachMapStateForWrite()
+	defer bus.publishMapSnapshot()
+
 	bus.unmapIOPages(start, end, start, end)
 	if mirrorStart, ok := signExtMirror(start); ok {
 		bus.unmapIOPages(mirrorStart, end|0xFFFF0000, start, end)
@@ -1285,7 +1476,7 @@ func (bus *MachineBus) Write32(addr uint32, value uint32) {
 	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
-	if !bus.ioPageBitmap[addr>>8] {
+	if !bus.ioPageMapped(addr>>8) && !bus.ioPageMapped((addr+3)>>8) {
 		// No I/O on this page - lock-free write using unsafe pointer
 		*(*uint32)(unsafe.Pointer(&bus.memory[addr])) = value
 		return
@@ -1302,17 +1493,14 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 		mapped := addr & 0x0000FFFF
 		if mapped <= DEFAULT_MEMORY_SIZE-4 {
 			// This is a valid sign-extended address, handle normally but with mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(mapped & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && (region.onWrite != nil || region.wideWriteFanout) {
 						if !write32Fanout8(region, mapped, value) && region.onWrite != nil {
 							region.onWrite(mapped, value)
 						}
-						// Still store in memory if within bounds
-						if mapped+4 <= uint32(len(bus.memory)) {
-							binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
-						}
+						bus.shadowWrite32(region, mapped, value)
 						return
 					}
 				}
@@ -1328,7 +1516,7 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 		// Special handling for terminal output case
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			// Call terminal output handler if available
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(TERM_OUT & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
@@ -1352,17 +1540,22 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 	}
 
 	// Process I/O regions
-	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
+	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && (region.onWrite != nil || region.wideWriteFanout) {
 				if !write32Fanout8(region, addr, value) && region.onWrite != nil {
 					region.onWrite(addr, value)
 				}
-				binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+				bus.shadowWrite32(region, addr, value)
 				return
 			}
 		}
+	}
+
+	if bus.hasMappedLegacySpan(addr, 4) {
+		bus.writeLegacySpanBytes(addr, uint64(value), 4, false)
+		return
 	}
 
 	// Regular memory write
@@ -1387,7 +1580,7 @@ func (bus *MachineBus) Read32(addr uint32) uint32 {
 	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
-	if !bus.ioPageBitmap[addr>>8] {
+	if !bus.ioPageMapped(addr>>8) && !bus.ioPageMapped((addr+3)>>8) {
 		// No I/O on this page - lock-free read using unsafe pointer
 		return *(*uint32)(unsafe.Pointer(&bus.memory[addr]))
 	}
@@ -1403,14 +1596,12 @@ func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 		mapped := addr & 0x0000FFFF
 		if mapped <= DEFAULT_MEMORY_SIZE-4 {
 			// Check for I/O regions with the mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(mapped & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && region.onRead != nil {
 						value := region.onRead(mapped)
-						if mapped+4 <= uint32(len(bus.memory)) {
-							binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
-						}
+						bus.shadowWrite32(region, mapped, value)
 						return value
 					}
 				}
@@ -1425,7 +1616,7 @@ func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 
 		// Special handling for terminal input
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(TERM_OUT & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
@@ -1448,15 +1639,20 @@ func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 	}
 
 	// Check for I/O regions
-	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
+	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
 				value := region.onRead(addr)
-				binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+				bus.shadowWrite32(region, addr, value)
 				return value
 			}
 		}
+	}
+
+	if bus.hasMappedLegacySpan(addr, 4) {
+		value, _ := bus.readLegacySpanBytes(addr, 4, false)
+		return uint32(value)
 	}
 
 	// Regular memory read
@@ -1478,7 +1674,7 @@ func (bus *MachineBus) Write16(addr uint32, value uint16) {
 	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
-	if !bus.ioPageBitmap[addr>>8] {
+	if !bus.ioPageMapped(addr>>8) && !bus.ioPageMapped((addr+1)>>8) {
 		// No I/O on this page - lock-free write using unsafe pointer
 		*(*uint16)(unsafe.Pointer(&bus.memory[addr])) = value
 		return
@@ -1495,7 +1691,7 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 		mapped := addr & 0x0000FFFF
 		if mapped <= DEFAULT_MEMORY_SIZE-2 {
 			// This is a valid sign-extended address, handle normally but with mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(mapped & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end {
@@ -1505,10 +1701,7 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 						} else if region.onWrite != nil {
 							region.onWrite(mapped, uint32(value))
 						}
-						// Still store in memory if within bounds
-						if mapped+2 <= uint32(len(bus.memory)) {
-							binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], value)
-						}
+						bus.shadowWrite16(region, mapped, value)
 						return
 					}
 				}
@@ -1524,7 +1717,7 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 		// Special handling for terminal output case
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			// Call terminal output handler if available
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(TERM_OUT & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end {
@@ -1553,7 +1746,7 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 	}
 
 	// Process I/O regions
-	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
+	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end {
@@ -1563,10 +1756,15 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 				} else if region.onWrite != nil {
 					region.onWrite(addr, uint32(value))
 				}
-				binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
+				bus.shadowWrite16(region, addr, value)
 				return
 			}
 		}
+	}
+
+	if bus.hasMappedLegacySpan(addr, 2) {
+		bus.writeLegacySpanBytes(addr, uint64(value), 2, false)
+		return
 	}
 
 	// Regular memory write
@@ -1586,7 +1784,7 @@ func (bus *MachineBus) Read16(addr uint32) uint16 {
 	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
-	if !bus.ioPageBitmap[addr>>8] {
+	if !bus.ioPageMapped(addr>>8) && !bus.ioPageMapped((addr+1)>>8) {
 		// No I/O on this page - lock-free read using unsafe pointer
 		return *(*uint16)(unsafe.Pointer(&bus.memory[addr]))
 	}
@@ -1602,14 +1800,12 @@ func (bus *MachineBus) read16Slow(addr uint32) uint16 {
 		mapped := addr & 0x0000FFFF
 		if mapped <= DEFAULT_MEMORY_SIZE-2 {
 			// Check for I/O regions with the mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(mapped & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && region.onRead != nil {
 						value := region.onRead(mapped)
-						if mapped+2 <= uint32(len(bus.memory)) {
-							binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], uint16(value))
-						}
+						bus.shadowWrite16(region, mapped, uint16(value))
 						return uint16(value)
 					}
 				}
@@ -1624,7 +1820,7 @@ func (bus *MachineBus) read16Slow(addr uint32) uint16 {
 
 		// Special handling for terminal input
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(TERM_OUT & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
@@ -1647,15 +1843,20 @@ func (bus *MachineBus) read16Slow(addr uint32) uint16 {
 	}
 
 	// Check for I/O regions
-	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
+	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
 				value := region.onRead(addr)
-				binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], uint16(value))
+				bus.shadowWrite16(region, addr, uint16(value))
 				return uint16(value)
 			}
 		}
+	}
+
+	if bus.hasMappedLegacySpan(addr, 2) {
+		value, _ := bus.readLegacySpanBytes(addr, 2, false)
+		return uint16(value)
 	}
 
 	// Regular memory read
@@ -1677,7 +1878,7 @@ func (bus *MachineBus) Write8(addr uint32, value uint8) {
 	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
-	if !bus.ioPageBitmap[addr>>8] {
+	if !bus.ioPageMapped(addr >> 8) {
 		// No I/O on this page - lock-free write
 		bus.memory[addr] = value
 		return
@@ -1704,7 +1905,7 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 		mapped := addr & 0x0000FFFF
 		if mapped < DEFAULT_MEMORY_SIZE {
 			// This is a valid sign-extended address, handle normally but with mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(mapped & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end {
@@ -1713,10 +1914,7 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 						} else if region.onWrite != nil {
 							region.onWrite(mapped, uint32(value))
 						}
-						// Still store in memory if within bounds
-						if mapped < uint32(len(bus.memory)) {
-							bus.memory[mapped] = value
-						}
+						bus.shadowWrite8(region, mapped, value)
 						return
 					}
 				}
@@ -1732,7 +1930,7 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 		// Special handling for terminal output case
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
 			// Call terminal output handler if available
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(TERM_OUT & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end {
@@ -1760,7 +1958,7 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 	}
 
 	// Process I/O regions
-	if regions, exists := bus.mapping[addr&PAGE_MASK]; exists {
+	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end {
@@ -1769,7 +1967,7 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 				} else if region.onWrite != nil {
 					region.onWrite(addr, uint32(value))
 				}
-				bus.memory[addr] = value
+				bus.shadowWrite8(region, addr, value)
 				return
 			}
 		}
@@ -1792,7 +1990,7 @@ func (bus *MachineBus) Read8(addr uint32) uint8 {
 	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
-	if !bus.ioPageBitmap[addr>>8] {
+	if !bus.ioPageMapped(addr >> 8) {
 		// No I/O on this page - lock-free read
 		return bus.memory[addr]
 	}
@@ -1808,21 +2006,17 @@ func (bus *MachineBus) read8Slow(addr uint32) uint8 {
 		mapped := addr & 0x0000FFFF
 		if mapped < DEFAULT_MEMORY_SIZE {
 			// Check for I/O regions with the mapped address
-			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(mapped & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && (region.onRead8 != nil || region.onRead != nil) {
 						if region.onRead8 != nil {
 							value := region.onRead8(mapped)
-							if mapped < uint32(len(bus.memory)) {
-								bus.memory[mapped] = value
-							}
+							bus.shadowWrite8(region, mapped, value)
 							return value
 						}
 						value := region.onRead(mapped)
-						if mapped < uint32(len(bus.memory)) {
-							bus.memory[mapped] = uint8(value)
-						}
+						bus.shadowWrite8(region, mapped, uint8(value))
 						return uint8(value)
 					}
 				}
@@ -1837,7 +2031,7 @@ func (bus *MachineBus) read8Slow(addr uint32) uint8 {
 
 		// Special handling for terminal input
 		if addr == TERM_OUT_SIGNEXT || addr == TERM_OUT_16BIT {
-			if regions, exists := bus.mapping[TERM_OUT&PAGE_MASK]; exists {
+			if regions, exists := bus.legacyRegions(TERM_OUT & PAGE_MASK); exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
@@ -1861,17 +2055,17 @@ func (bus *MachineBus) read8Slow(addr uint32) uint8 {
 
 	// Check for I/O regions
 	page := addr & PAGE_MASK
-	if regions, exists := bus.mapping[page]; exists {
+	if regions, exists := bus.legacyRegions(page); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && (region.onRead8 != nil || region.onRead != nil) {
 				if region.onRead8 != nil {
 					value := region.onRead8(addr)
-					bus.memory[addr] = value
+					bus.shadowWrite8(region, addr, value)
 					return value
 				}
 				value := region.onRead(addr)
-				bus.memory[addr] = uint8(value)
+				bus.shadowWrite8(region, addr, uint8(value))
 				return uint8(value)
 			}
 		}
@@ -1894,14 +2088,30 @@ func (bus *MachineBus) SetLegacyMMIO64Policy(policy MMIO64Policy) {
 // MapIO64 registers a 64-bit-capable I/O region. This is separate from MapIO;
 // 64-bit handlers are only used by Read64/Write64. 32-bit operations always use MapIO.
 func (bus *MachineBus) MapIO64(start, end uint32, onRead64 func(addr uint32) uint64, onWrite64 func(addr uint32, value uint64)) {
+	bus.mapIO64WithShadow(start, end, onRead64, onWrite64, true)
+}
+
+func (bus *MachineBus) MapIO64Shadow(start, end uint32, onRead64 func(addr uint32) uint64, onWrite64 func(addr uint32, value uint64)) {
+	bus.mapIO64WithShadow(start, end, onRead64, onWrite64, true)
+}
+
+func (bus *MachineBus) MapIO64NoShadow(start, end uint32, onRead64 func(addr uint32) uint64, onWrite64 func(addr uint32, value uint64)) {
+	bus.mapIO64WithShadow(start, end, onRead64, onWrite64, false)
+}
+
+func (bus *MachineBus) mapIO64WithShadow(start, end uint32, onRead64 func(addr uint32) uint64, onWrite64 func(addr uint32, value uint64), shadow bool) {
 	if bus.sealed.Load() {
 		panic(fmt.Sprintf("MapIO64 called after execution started (mapping range $%05X-$%05X)", start, end))
 	}
+	bus.detachMapStateForWrite()
+	defer bus.publishMapSnapshot()
+
 	region := IORegion64{
 		start:     start,
 		end:       end,
 		onRead64:  onRead64,
 		onWrite64: onWrite64,
+		Shadow:    shadow,
 	}
 
 	firstPage := start & PAGE_MASK
@@ -1928,7 +2138,7 @@ func (bus *MachineBus) MapIO64(start, end uint32, onRead64 func(addr uint32) uin
 // findIORegion64 looks up a 64-bit I/O region for the given address.
 func (bus *MachineBus) findIORegion64(addr uint32) *IORegion64 {
 	page := addr & PAGE_MASK
-	if regions, exists := bus.mapping64[page]; exists {
+	if regions, exists := bus.native64Regions(page); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			if addr >= regions[i].start && addr <= regions[i].end {
 				return &regions[i]
@@ -1948,6 +2158,44 @@ func ioRegionCoversHalf(region *IORegion, addr uint32) bool {
 
 func ioRegion64CoversHalf(region *IORegion64, addr uint32) bool {
 	return region != nil && addr <= region.end && uint64(region.end-addr)+1 >= 4
+}
+
+type bus64Access struct {
+	raw       uint32
+	effective uint32
+	signExt   bool
+}
+
+func (bus *MachineBus) resolve64Access(addr uint32) (bus64Access, bool) {
+	access := bus64Access{raw: addr, effective: addr, signExt: addr >= 0xFFFF0000}
+	if access.signExt {
+		if uint64(addr)+8 > 0x100000000 {
+			return access, false
+		}
+		access.effective = addr & 0x0000FFFF
+	}
+	if uint64(access.effective)+8 > uint64(len(bus.memory)) {
+		return access, false
+	}
+	return access, true
+}
+
+func (bus *MachineBus) canFaultless64Access(access bus64Access) bool {
+	if bus.mustFaultUnmappedMMIO64Span(access.effective, 8) {
+		return false
+	}
+	if bus.legacyMMIO64Policy != MMIO64PolicyFault {
+		return true
+	}
+	lowAddr := access.effective
+	highAddr := access.effective + 4
+	if bus.findIORegion64(lowAddr) == nil && bus.findIORegion(lowAddr) != nil {
+		return false
+	}
+	if bus.findIORegion64(highAddr) == nil && bus.findIORegion(highAddr) != nil {
+		return false
+	}
+	return true
 }
 
 func (bus *MachineBus) canRead64SplitIntoMMIO(addr uint32) bool {
@@ -1973,7 +2221,7 @@ func (bus *MachineBus) canWrite64SplitIntoMMIO(addr uint32) bool {
 // findIORegion looks up a legacy 32-bit I/O region for the given address.
 func (bus *MachineBus) findIORegion(addr uint32) *IORegion {
 	page := addr & PAGE_MASK
-	if regions, exists := bus.mapping[page]; exists {
+	if regions, exists := bus.legacyRegions(page); exists {
 		for i := len(regions) - 1; i >= 0; i-- {
 			if addr >= regions[i].start && addr <= regions[i].end {
 				return &regions[i]
@@ -2000,8 +2248,7 @@ func (bus *MachineBus) Read64(addr uint32) uint64 {
 	// Fast path: both pages are non-I/O → single 64-bit load
 	lowPage := addr >> 8
 	highPage := uint32(uint64(addr)+7) >> 8
-	if lowPage < uint32(len(bus.ioPageBitmap)) && highPage < uint32(len(bus.ioPageBitmap)) &&
-		!bus.ioPageBitmap[lowPage] && !bus.ioPageBitmap[highPage] {
+	if !bus.ioPageMapped(lowPage) && !bus.ioPageMapped(highPage) {
 		return *(*uint64)(unsafe.Pointer(&bus.memory[addr]))
 	}
 
@@ -2010,27 +2257,19 @@ func (bus *MachineBus) Read64(addr uint32) uint64 {
 
 // read64Slow handles 64-bit reads that may involve I/O regions.
 func (bus *MachineBus) read64Slow(addr uint32) uint64 {
-	// Map sign-extended addresses
-	effectiveAddr := addr
-	if addr >= 0xFFFF0000 {
-		// Reject addresses where raw addr+7 would overflow uint32
-		if uint64(addr)+8 > 0x100000000 {
-			return 0
-		}
-		effectiveAddr = addr & 0x0000FFFF
-		if uint64(effectiveAddr)+8 > uint64(len(bus.memory)) {
-			return 0
-		}
+	access, ok := bus.resolve64Access(addr)
+	if !ok {
+		return 0
 	}
 
-	lowAddr := effectiveAddr
+	lowAddr := access.effective
 
 	// Check for native 64-bit region covering the entire 8 bytes.
 	// For sign-extended addresses, also look up the original (unmapped) address
 	// since MapIO64 registers sign-extended pages in the mapping64 table.
 	region64 := bus.findIORegion64(lowAddr)
-	if region64 == nil && addr >= 0xFFFF0000 {
-		region64 = bus.findIORegion64(addr)
+	if region64 == nil && access.signExt {
+		region64 = bus.findIORegion64(access.raw)
 	}
 	if region64 != nil && region64.onRead64 != nil {
 		if ioRegion64CoversFullAccess(region64, lowAddr) {
@@ -2100,8 +2339,7 @@ func (bus *MachineBus) Write64(addr uint32, value uint64) {
 	// Fast path: both pages are non-I/O → single 64-bit store
 	lowPage := addr >> 8
 	highPage := uint32(uint64(addr)+7) >> 8
-	if lowPage < uint32(len(bus.ioPageBitmap)) && highPage < uint32(len(bus.ioPageBitmap)) &&
-		!bus.ioPageBitmap[lowPage] && !bus.ioPageBitmap[highPage] {
+	if !bus.ioPageMapped(lowPage) && !bus.ioPageMapped(highPage) {
 		*(*uint64)(unsafe.Pointer(&bus.memory[addr])) = value
 		return
 	}
@@ -2111,34 +2349,23 @@ func (bus *MachineBus) Write64(addr uint32, value uint64) {
 
 // write64Slow handles 64-bit writes that may involve I/O regions.
 func (bus *MachineBus) write64Slow(addr uint32, value uint64) {
-	// Map sign-extended addresses
-	effectiveAddr := addr
-	if addr >= 0xFFFF0000 {
-		// Reject addresses where raw addr+7 would overflow uint32
-		if uint64(addr)+8 > 0x100000000 {
-			return
-		}
-		effectiveAddr = addr & 0x0000FFFF
-		if uint64(effectiveAddr)+8 > uint64(len(bus.memory)) {
-			return
-		}
+	access, ok := bus.resolve64Access(addr)
+	if !ok {
+		return
 	}
 
-	lowAddr := effectiveAddr
+	lowAddr := access.effective
 
 	// Check for native 64-bit region covering the entire 8 bytes.
 	// For sign-extended addresses, also look up the original (unmapped) address.
 	region64 := bus.findIORegion64(lowAddr)
-	if region64 == nil && addr >= 0xFFFF0000 {
-		region64 = bus.findIORegion64(addr)
+	if region64 == nil && access.signExt {
+		region64 = bus.findIORegion64(access.raw)
 	}
 	if region64 != nil && region64.onWrite64 != nil {
 		if ioRegion64CoversFullAccess(region64, lowAddr) {
 			region64.onWrite64(lowAddr, value)
-			// Also store to backing memory
-			if uint64(lowAddr)+8 <= uint64(len(bus.memory)) {
-				*(*uint64)(unsafe.Pointer(&bus.memory[lowAddr])) = value
-			}
+			bus.shadowWrite64(*region64, lowAddr, value)
 			return
 		}
 		if !bus.canWrite64SplitIntoMMIO(lowAddr + 4) {
@@ -2182,10 +2409,7 @@ func (bus *MachineBus) write32Half(addr uint32, value uint32) {
 		}
 		// Write full 64-bit value via handler
 		region64.onWrite64(base, current)
-		// Update backing memory
-		if base+8 <= uint32(len(bus.memory)) {
-			*(*uint64)(unsafe.Pointer(&bus.memory[base])) = current
-		}
+		bus.shadowWrite64(*region64, base, current)
 		return
 	}
 
@@ -2199,9 +2423,7 @@ func (bus *MachineBus) write32Half(addr uint32, value uint32) {
 		if region.onWrite != nil {
 			region.onWrite(addr, value)
 		}
-		if addr+4 <= uint32(len(bus.memory)) {
-			binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
-		}
+		bus.shadowWrite32(*region, addr, value)
 		return
 	}
 
@@ -2214,31 +2436,9 @@ func (bus *MachineBus) write32Half(addr uint32, value uint32) {
 // Read64WithFault performs a 64-bit read with fault reporting.
 // Returns (0, false) if the access cannot complete (OOB or legacy MMIO under Fault policy).
 func (bus *MachineBus) Read64WithFault(addr uint32) (uint64, bool) {
-	if addr >= 0xFFFF0000 && uint64(addr)+8 > 0x100000000 {
+	access, ok := bus.resolve64Access(addr)
+	if !ok || !bus.canFaultless64Access(access) {
 		return 0, false
-	}
-	effectiveAddr := bus.normalizeFaultAddr(addr)
-
-	if uint64(effectiveAddr)+8 > uint64(len(bus.memory)) {
-		return 0, false
-	}
-	if bus.mustFaultUnmappedMMIO64Span(effectiveAddr, 8) {
-		return 0, false
-	}
-
-	// Check if any half hits legacy-only MMIO under Fault policy
-	lowAddr := effectiveAddr
-	highAddr := effectiveAddr + 4
-
-	if bus.legacyMMIO64Policy == MMIO64PolicyFault {
-		// Check low half
-		if bus.findIORegion64(lowAddr) == nil && bus.findIORegion(lowAddr) != nil {
-			return 0, false
-		}
-		// Check high half
-		if bus.findIORegion64(highAddr) == nil && bus.findIORegion(highAddr) != nil {
-			return 0, false
-		}
 	}
 
 	val := bus.Read64(addr)
@@ -2248,29 +2448,9 @@ func (bus *MachineBus) Read64WithFault(addr uint32) (uint64, bool) {
 // Write64WithFault performs a 64-bit write with fault reporting.
 // Returns false if the access cannot complete.
 func (bus *MachineBus) Write64WithFault(addr uint32, value uint64) bool {
-	if addr >= 0xFFFF0000 && uint64(addr)+8 > 0x100000000 {
+	access, ok := bus.resolve64Access(addr)
+	if !ok || !bus.canFaultless64Access(access) {
 		return false
-	}
-	effectiveAddr := bus.normalizeFaultAddr(addr)
-
-	if uint64(effectiveAddr)+8 > uint64(len(bus.memory)) {
-		return false
-	}
-	if bus.mustFaultUnmappedMMIO64Span(effectiveAddr, 8) {
-		return false
-	}
-
-	// Check if any half hits legacy-only MMIO under Fault policy
-	lowAddr := effectiveAddr
-	highAddr := effectiveAddr + 4
-
-	if bus.legacyMMIO64Policy == MMIO64PolicyFault {
-		if bus.findIORegion64(lowAddr) == nil && bus.findIORegion(lowAddr) != nil {
-			return false
-		}
-		if bus.findIORegion64(highAddr) == nil && bus.findIORegion(highAddr) != nil {
-			return false
-		}
 	}
 
 	bus.Write64(addr, value)
@@ -2295,5 +2475,8 @@ func (bus *MachineBus) Reset() {
 	}
 	if bus.backing != nil {
 		bus.backing.Reset()
+	}
+	for _, hook := range bus.resetHooks {
+		hook()
 	}
 }

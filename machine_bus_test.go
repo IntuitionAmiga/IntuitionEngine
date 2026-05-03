@@ -210,6 +210,182 @@ func TestRead8_SignExtMirror_FiresOnRead8(t *testing.T) {
 	}
 }
 
+func TestMapIONoShadow_DoesNotMirrorReadWrite(t *testing.T) {
+	bus := NewMachineBus()
+	const addr uint32 = 0xF5600
+	bus.MapIONoShadow(addr, addr+3,
+		func(addr uint32) uint32 { return 0xAABBCCDD },
+		func(addr uint32, value uint32) {},
+	)
+
+	bus.Write32(addr, 0x11223344)
+	if got := bus.Read32(addr); got != 0xAABBCCDD {
+		t.Fatalf("Read32 = 0x%08X, want handler value", got)
+	}
+	if got := binary.LittleEndian.Uint32(bus.memory[addr : addr+4]); got != 0 {
+		t.Fatalf("shadow memory = 0x%08X, want unchanged zero", got)
+	}
+}
+
+func TestMapIOShadow_MirrorsReadWrite(t *testing.T) {
+	bus := NewMachineBus()
+	const addr uint32 = 0xF5700
+	bus.MapIOShadow(addr, addr+3,
+		func(addr uint32) uint32 { return 0xAABBCCDD },
+		func(addr uint32, value uint32) {},
+	)
+
+	bus.Write32(addr, 0x11223344)
+	if got := binary.LittleEndian.Uint32(bus.memory[addr : addr+4]); got != 0x11223344 {
+		t.Fatalf("write shadow memory = 0x%08X, want 0x11223344", got)
+	}
+	if got := bus.Read32(addr); got != 0xAABBCCDD {
+		t.Fatalf("Read32 = 0x%08X, want handler value", got)
+	}
+	if got := binary.LittleEndian.Uint32(bus.memory[addr : addr+4]); got != 0xAABBCCDD {
+		t.Fatalf("read shadow memory = 0x%08X, want 0xAABBCCDD", got)
+	}
+}
+
+func TestMapIO64NoShadow_DoesNotMirrorWrite(t *testing.T) {
+	bus := NewMachineBus()
+	const addr uint32 = 0xF5800
+	bus.MapIO64NoShadow(addr, addr+7, nil, func(addr uint32, value uint64) {})
+
+	bus.Write64(addr, 0x1122334455667788)
+	if got := binary.LittleEndian.Uint64(bus.memory[addr : addr+8]); got != 0 {
+		t.Fatalf("shadow memory = 0x%016X, want unchanged zero", got)
+	}
+}
+
+func TestMapIO64Shadow_MirrorsWrite(t *testing.T) {
+	bus := NewMachineBus()
+	const addr uint32 = 0xF5900
+	bus.MapIO64Shadow(addr, addr+7, nil, func(addr uint32, value uint64) {})
+
+	bus.Write64(addr, 0x1122334455667788)
+	if got := binary.LittleEndian.Uint64(bus.memory[addr : addr+8]); got != 0x1122334455667788 {
+		t.Fatalf("shadow memory = 0x%016X, want 0x1122334455667788", got)
+	}
+}
+
+func TestBusMapSnapshot_ImmutableAcrossMappingUpdates(t *testing.T) {
+	bus := NewMachineBus()
+	const addr uint32 = 0xF5A00
+
+	bus.MapIO(addr, addr+3, func(addr uint32) uint32 { return 0x11223344 }, nil)
+	first := bus.mapState.Load()
+	if first == nil {
+		t.Fatal("expected initial map snapshot")
+	}
+	if !first.ioPageBitmap[addr>>8] {
+		t.Fatal("snapshot did not publish mapped page")
+	}
+
+	bus.MapIOByte(addr, addr+3, func(addr uint32, value uint8) {})
+	updated := bus.mapState.Load()
+	if updated == first {
+		t.Fatal("mapping update reused previous snapshot")
+	}
+	if first.mapping[addr&PAGE_MASK][0].onWrite8 != nil {
+		t.Fatal("previous snapshot was mutated by MapIOByte")
+	}
+	if updated.mapping[addr&PAGE_MASK][0].onWrite8 == nil {
+		t.Fatal("updated snapshot did not include MapIOByte handler")
+	}
+
+	bus.UnmapIO(addr, addr+3)
+	unmapped := bus.mapState.Load()
+	if unmapped == updated {
+		t.Fatal("unmap reused previous snapshot")
+	}
+	if !updated.ioPageBitmap[addr>>8] {
+		t.Fatal("previous snapshot lost mapped bitmap bit")
+	}
+	if unmapped.ioPageBitmap[addr>>8] {
+		t.Fatal("unmapped snapshot retained mapped bitmap bit")
+	}
+}
+
+func TestRead32_StraddlingRAMAndMMIOUsesByteDispatcher(t *testing.T) {
+	bus := NewMachineBus()
+	const base uint32 = 0xF5BFD
+	copy(bus.memory[base:base+3], []byte{0x11, 0x22, 0x33})
+	bus.MapIONoShadow(base+3, base+3, nil, nil)
+	bus.MapIOByteRead(base+3, base+3, func(addr uint32) uint8 { return 0xAA })
+
+	if got := bus.Read32(base); got != 0xAA332211 {
+		t.Fatalf("Read32 straddling RAM/MMIO = 0x%08X, want 0xAA332211", got)
+	}
+}
+
+func TestWrite32_StraddlingRAMAndMMIOUsesByteDispatcher(t *testing.T) {
+	bus := NewMachineBus()
+	const base uint32 = 0xF5CFD
+	var writes []struct {
+		addr  uint32
+		value uint8
+	}
+	bus.MapIONoShadow(base+3, base+3, nil, nil)
+	bus.MapIOByte(base+3, base+3, func(addr uint32, value uint8) {
+		writes = append(writes, struct {
+			addr  uint32
+			value uint8
+		}{addr: addr, value: value})
+	})
+
+	bus.Write32(base, 0xAABBCCDD)
+	if got := []byte{bus.memory[base], bus.memory[base+1], bus.memory[base+2]}; string(got) != string([]byte{0xDD, 0xCC, 0xBB}) {
+		t.Fatalf("RAM bytes = % X, want DD CC BB", got)
+	}
+	if len(writes) != 1 || writes[0].addr != base+3 || writes[0].value != 0xAA {
+		t.Fatalf("MMIO writes = %+v, want one byte write at high byte", writes)
+	}
+	if got := bus.memory[base+3]; got != 0 {
+		t.Fatalf("NoShadow MMIO byte mirrored into RAM: got 0x%02X", got)
+	}
+}
+
+func TestRead32WithFault_StraddlingRAMAndMMIOUsesByteDispatcher(t *testing.T) {
+	bus := NewMachineBus()
+	const base uint32 = 0xF5DFD
+	copy(bus.memory[base:base+3], []byte{0x44, 0x55, 0x66})
+	bus.MapIONoShadow(base+3, base+3, nil, nil)
+	bus.MapIOByteRead(base+3, base+3, func(addr uint32) uint8 { return 0xBB })
+
+	got, ok := bus.Read32WithFault(base)
+	if !ok {
+		t.Fatal("Read32WithFault straddling RAM/MMIO faulted")
+	}
+	if got != 0xBB665544 {
+		t.Fatalf("Read32WithFault straddling RAM/MMIO = 0x%08X, want 0xBB665544", got)
+	}
+}
+
+func TestWrite32WithFault_StraddlingRAMAndMMIOUsesByteDispatcher(t *testing.T) {
+	bus := NewMachineBus()
+	const base uint32 = 0xF5EFD
+	var gotAddr uint32
+	var gotValue uint8
+	var calls int
+	bus.MapIONoShadow(base+3, base+3, nil, nil)
+	bus.MapIOByte(base+3, base+3, func(addr uint32, value uint8) {
+		calls++
+		gotAddr = addr
+		gotValue = value
+	})
+
+	if !bus.Write32WithFault(base, 0x44332211) {
+		t.Fatal("Write32WithFault straddling RAM/MMIO faulted")
+	}
+	if got := []byte{bus.memory[base], bus.memory[base+1], bus.memory[base+2]}; string(got) != string([]byte{0x11, 0x22, 0x33}) {
+		t.Fatalf("RAM bytes = % X, want 11 22 33", got)
+	}
+	if calls != 1 || gotAddr != base+3 || gotValue != 0x44 {
+		t.Fatalf("MMIO write calls=%d addr=0x%X value=0x%02X, want one high byte write", calls, gotAddr, gotValue)
+	}
+}
+
 func TestHasMappedRegion64Span_FullyCovered(t *testing.T) {
 	bus := NewMachineBus()
 	bus.MapIO64(0xF5000, 0xF5007, func(addr uint32) uint64 { return 0 }, nil)

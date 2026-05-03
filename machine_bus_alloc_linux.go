@@ -13,3 +13,14 @@ package main
 import "golang.org/x/sys/unix"
 
 const busMemMadviseDiscardFlag = unix.MADV_DONTNEED
+
+func resetBusMmapMemory(mem []byte) {
+	if len(mem) == 0 {
+		return
+	}
+	if err := unix.Madvise(mem, busMemMadviseDiscardFlag); err != nil {
+		for i := range mem {
+			mem[i] = 0
+		}
+	}
+}

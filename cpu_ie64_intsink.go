@@ -1,7 +1,8 @@
 package main
 
 type IE64InterruptSink struct {
-	cpu *CPU64
+	cpu   *CPU64
+	level interruptLevelState
 }
 
 func NewIE64InterruptSink(cpu *CPU64) *IE64InterruptSink {
@@ -13,6 +14,40 @@ func (s *IE64InterruptSink) Pulse(mask InterruptMask) {
 		return
 	}
 	s.cpu.handleExternalInterrupt()
+}
+
+func (s *IE64InterruptSink) Assert(mask InterruptMask) {
+	if s == nil || s.cpu == nil {
+		return
+	}
+	if s.level.assert(mask) {
+		s.cpu.handleExternalInterrupt()
+	}
+}
+
+func (s *IE64InterruptSink) Deassert(mask InterruptMask) {
+	if s == nil {
+		return
+	}
+	s.level.deassert(mask)
+}
+
+func (s *IE64InterruptSink) Ack(mask InterruptMask) {
+	if s == nil || s.cpu == nil {
+		return
+	}
+	if s.level.ack(mask) {
+		s.cpu.handleExternalInterrupt()
+	}
+}
+
+func (s *IE64InterruptSink) SetMask(mask InterruptMask, masked bool) {
+	if s == nil || s.cpu == nil {
+		return
+	}
+	if s.level.setMask(mask, masked) {
+		s.cpu.handleExternalInterrupt()
+	}
 }
 
 func (cpu *CPU64) handleExternalInterrupt() {

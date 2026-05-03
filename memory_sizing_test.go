@@ -217,9 +217,55 @@ func TestReserveFor_AppleSiliconLinux(t *testing.T) {
 	}
 }
 
+func TestReserveFor_DarwinAndWindowsClasses(t *testing.T) {
+	tests := []struct {
+		name     string
+		platform PlatformClass
+		usable   uint64
+		want     uint64
+	}{
+		{"darwin amd64 floor", PlatformDarwinAMD64, 4 * tGiB, 2 * tGiB},
+		{"darwin arm64 percent", PlatformDarwinARM64, 16 * tGiB, 4 * tGiB},
+		{"windows amd64 floor", PlatformWindowsAMD64, 4 * tGiB, (3 * tGiB) / 2},
+		{"windows arm64 percent", PlatformWindowsARM64, 16 * tGiB, (16 * tGiB) / 5},
+	}
+	for _, tt := range tests {
+		got, err := ReserveFor(tt.platform, tt.usable)
+		if err != nil {
+			t.Fatalf("%s: ReserveFor: %v", tt.name, err)
+		}
+		if got != tt.want {
+			t.Fatalf("%s: got %d, want %d", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestReserveFor_UnknownFails(t *testing.T) {
 	if _, err := ReserveFor(PlatformUnknown, 4*tGiB); err == nil {
 		t.Fatalf("expected error for unknown platform")
+	}
+}
+
+func TestDetectPlatformFor_AdditiveOSClasses(t *testing.T) {
+	tests := []struct {
+		goos   string
+		goarch string
+		model  string
+		want   PlatformClass
+	}{
+		{"linux", "amd64", "", PlatformX64PC},
+		{"linux", "arm64", "Raspberry Pi 5 Model B", PlatformRaspberryPi64},
+		{"linux", "arm64", "Apple Virtualization", PlatformAppleSiliconLinux},
+		{"darwin", "amd64", "", PlatformDarwinAMD64},
+		{"darwin", "arm64", "", PlatformDarwinARM64},
+		{"windows", "amd64", "", PlatformWindowsAMD64},
+		{"windows", "arm64", "", PlatformWindowsARM64},
+		{"plan9", "amd64", "", PlatformUnknown},
+	}
+	for _, tt := range tests {
+		if got := detectPlatformFor(tt.goos, tt.goarch, tt.model); got != tt.want {
+			t.Fatalf("%s/%s %q: got %s, want %s", tt.goos, tt.goarch, tt.model, got, tt.want)
+		}
 	}
 }
 

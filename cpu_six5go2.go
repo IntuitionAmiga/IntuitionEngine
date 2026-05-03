@@ -324,8 +324,9 @@ type Bus6502Adapter struct {
 	bank3Enable bool   // Bank 3 enabled
 
 	// Direct memory fast path
-	memDirect    []byte // cached from bus.GetMemory()
-	ioPageBitmap []bool // reference to MachineBus.ioPageBitmap
+	memDirect    []byte      // cached from bus.GetMemory()
+	machineBus   *MachineBus // snapshot-backed I/O bitmap queries
+	ioPageBitmap []bool      // compatibility mirror for JIT contexts built after mapping seal
 	ioTable      [256]ioHandler
 }
 
@@ -419,6 +420,7 @@ func NewBus6502Adapter(bus Bus32) *Bus6502Adapter {
 	a := &Bus6502Adapter{bus: bus}
 	a.memDirect = bus.GetMemory()
 	if mb, ok := bus.(*MachineBus); ok {
+		a.machineBus = mb
 		a.ioPageBitmap = mb.ioPageBitmap
 	}
 	a.initIOTable()
@@ -430,6 +432,7 @@ func NewBus6502AdapterWithVGA(bus Bus32, vga *VGAEngine) *Bus6502Adapter {
 	a := &Bus6502Adapter{bus: bus, vgaEngine: vga}
 	a.memDirect = bus.GetMemory()
 	if mb, ok := bus.(*MachineBus); ok {
+		a.machineBus = mb
 		a.ioPageBitmap = mb.ioPageBitmap
 	}
 	a.initIOTable()
@@ -440,6 +443,7 @@ func NewBus6502AdapterWithVoodoo(bus Bus32, vga *VGAEngine, voodoo *VoodooEngine
 	a := &Bus6502Adapter{bus: bus, vgaEngine: vga, voodooEngine: voodoo}
 	a.memDirect = bus.GetMemory()
 	if mb, ok := bus.(*MachineBus); ok {
+		a.machineBus = mb
 		a.ioPageBitmap = mb.ioPageBitmap
 	}
 	a.initIOTable()
@@ -750,11 +754,18 @@ func writeBankRegPage(a *Bus6502Adapter, addr uint16, value byte) {
 	}
 }
 
+func (a *Bus6502Adapter) pageKnownPlainRAM(page uint16) bool {
+	if a.machineBus != nil {
+		return !a.machineBus.IsIOPageMapped(uint32(page))
+	}
+	return a.ioPageBitmap != nil && int(page) < len(a.ioPageBitmap) && !a.ioPageBitmap[page]
+}
+
 func (a *Bus6502Adapter) ReadFast(addr uint16) byte {
 	// Fast path: has bitmap, no I/O on this page, and within standard 6502 address space
 	// We check addr < 0x2000 because ZP and Stack are there, and it's the most common RAM area.
 	// We also fall back to slow path for banking regions ($2000-$7FFF) or VRAM window ($8000-$BFFF).
-	if a.ioPageBitmap != nil && addr < 0x2000 && !a.ioPageBitmap[addr>>8] {
+	if addr < 0x2000 && a.pageKnownPlainRAM(addr>>8) {
 		return a.memDirect[addr]
 	}
 	// Slow path: no bitmap, banking, I/O, or VRAM
@@ -763,7 +774,7 @@ func (a *Bus6502Adapter) ReadFast(addr uint16) byte {
 
 func (a *Bus6502Adapter) WriteFast(addr uint16, val byte) {
 	a.noteInterpTraceWrite(addr)
-	if a.ioPageBitmap != nil && addr < 0x2000 && !a.ioPageBitmap[addr>>8] {
+	if addr < 0x2000 && a.pageKnownPlainRAM(addr>>8) {
 		a.memDirect[addr] = val
 		return
 	}
@@ -772,7 +783,7 @@ func (a *Bus6502Adapter) WriteFast(addr uint16, val byte) {
 
 func (a *Bus6502Adapter) ReadZP(addr byte) byte {
 	// Zero page is $0000-$00FF. Always page 0.
-	if a.ioPageBitmap != nil && !a.ioPageBitmap[0] {
+	if a.pageKnownPlainRAM(0) {
 		return a.memDirect[addr]
 	}
 	return a.Read(uint16(addr))
@@ -780,7 +791,7 @@ func (a *Bus6502Adapter) ReadZP(addr byte) byte {
 
 func (a *Bus6502Adapter) WriteZP(addr byte, val byte) {
 	a.noteInterpTraceWrite(uint16(addr))
-	if a.ioPageBitmap != nil && !a.ioPageBitmap[0] {
+	if a.pageKnownPlainRAM(0) {
 		a.memDirect[addr] = val
 		return
 	}
@@ -789,7 +800,7 @@ func (a *Bus6502Adapter) WriteZP(addr byte, val byte) {
 
 func (a *Bus6502Adapter) ReadStack(sp byte) byte {
 	// Stack is $0100-$01FF. Always page 1.
-	if a.ioPageBitmap != nil && !a.ioPageBitmap[1] {
+	if a.pageKnownPlainRAM(1) {
 		return a.memDirect[0x0100|uint16(sp)]
 	}
 	return a.Read(0x0100 | uint16(sp))
@@ -797,7 +808,7 @@ func (a *Bus6502Adapter) ReadStack(sp byte) byte {
 
 func (a *Bus6502Adapter) WriteStack(sp byte, val byte) {
 	a.noteInterpTraceWrite(0x0100 | uint16(sp))
-	if a.ioPageBitmap != nil && !a.ioPageBitmap[1] {
+	if a.pageKnownPlainRAM(1) {
 		a.memDirect[0x0100|uint16(sp)] = val
 		return
 	}

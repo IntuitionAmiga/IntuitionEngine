@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -108,6 +109,15 @@ func TestContiguousBacking_ReadBytesWriteBytes(t *testing.T) {
 	}
 }
 
+func TestContiguousBacking_UseAfterClosePanics(t *testing.T) {
+	b, _ := NewContiguousBacking(uint64(MMU_PAGE_SIZE))
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	assertPanics(t, func() { _ = b.Read8(0) })
+	assertPanics(t, func() { b.Write8(0, 1) })
+}
+
 // --- SparseBacking ---
 
 func TestSparseBacking_AdvertisedSize(t *testing.T) {
@@ -193,6 +203,25 @@ func TestSparseBacking_Reset(t *testing.T) {
 	}
 }
 
+func TestSparseBacking_CloseIdempotent(t *testing.T) {
+	b := NewSparseBacking(8 * bGiB)
+	if err := b.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestSparseBacking_UseAfterClosePanics(t *testing.T) {
+	b := NewSparseBacking(8 * bGiB)
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	assertPanics(t, func() { _ = b.Read8(0) })
+	assertPanics(t, func() { b.Write8(0, 1) })
+}
+
 func TestSparseBacking_ConcurrentPageFault_Race(t *testing.T) {
 	b := NewSparseBacking(8 * bGiB)
 	var wg sync.WaitGroup
@@ -248,6 +277,38 @@ func TestAllocateBacking_FirstAttemptSucceeds(t *testing.T) {
 	}
 	if got.Size() != 64*bMiB {
 		t.Fatalf("Backing.Size = %d, want %d", got.Size(), 64*bMiB)
+	}
+}
+
+func TestAllocateBackingWithContext_CancelBeforeFirstAttempt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	calls := 0
+	_, _, err := AllocateBackingWithContext(ctx, 64*bMiB, func(size uint64) (Backing, error) {
+		calls++
+		return NewContiguousBacking(size)
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want context.Canceled", err)
+	}
+	if calls != 0 {
+		t.Fatalf("allocator calls=%d, want 0", calls)
+	}
+}
+
+func TestAllocateBackingWithContext_CancelBetweenRetries(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	_, _, err := AllocateBackingWithContext(ctx, 128*bMiB, func(size uint64) (Backing, error) {
+		calls++
+		cancel()
+		return nil, errors.New("fail once")
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want context.Canceled", err)
+	}
+	if calls != 1 {
+		t.Fatalf("allocator calls=%d, want 1", calls)
 	}
 }
 

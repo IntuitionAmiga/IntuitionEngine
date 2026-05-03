@@ -110,6 +110,31 @@ func TestMmapBacking_OOBWritesIgnored(t *testing.T) {
 	}
 }
 
+func TestMmapBacking_CloseIdempotent(t *testing.T) {
+	b, err := NewMmapBacking(uint64(MMU_PAGE_SIZE))
+	if err != nil {
+		t.Fatalf("NewMmapBacking: %v", err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestMmapBacking_UseAfterClosePanics(t *testing.T) {
+	b, err := NewMmapBacking(uint64(MMU_PAGE_SIZE))
+	if err != nil {
+		t.Fatalf("NewMmapBacking: %v", err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	assertPanics(t, func() { _ = b.Read8(0) })
+	assertPanics(t, func() { b.Write8(0, 1) })
+}
+
 // TestAllocateBacking_HighRangeUnsupportedSentinel_NoRetry pins
 // AllocateBacking's non-retryable behaviour for the platform-unsupported
 // sentinel.

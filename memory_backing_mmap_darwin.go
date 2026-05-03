@@ -1,6 +1,6 @@
 // memory_backing_mmap_darwin.go - PLAN_MAX_RAM slice 10a.
 //
-// MmapBacking on darwin uses anonymous private mmap with MADV_FREE for
+// MmapBacking on darwin uses anonymous private mmap with MAP_FIXED remap for
 // Reset. The underlying memory is not Go-managed; Close calls munmap.
 
 //go:build darwin
@@ -24,7 +24,8 @@ var ErrHighRangeBackingUnsupported = errors.New("mmap-backed high-range guest RA
 // MmapBacking is an anonymous-mmap-backed Backing. The underlying mapping is
 // not Go-managed; callers must invoke Close to munmap when done.
 type MmapBacking struct {
-	mem []byte
+	mem    []byte
+	closed bool
 }
 
 func NewMmapBacking(size uint64) (Backing, error) {
@@ -46,7 +47,14 @@ func NewMmapBacking(size uint64) (Backing, error) {
 
 func (b *MmapBacking) Size() uint64 { return uint64(len(b.mem)) }
 
+func (b *MmapBacking) assertOpen() {
+	if b.closed {
+		panic("MmapBacking use after Close")
+	}
+}
+
 func (b *MmapBacking) inRange(addr, length uint64) bool {
+	b.assertOpen()
 	end := addr + length
 	if end < addr {
 		return false
@@ -113,23 +121,20 @@ func (b *MmapBacking) WriteBytes(addr uint64, src []byte) {
 	copy(b.mem[addr:addr+uint64(len(src))], src)
 }
 
-// Reset releases pages back to the kernel via MADV_FREE. Subsequent reads
-// of pristine pages return zero (kernel zeroes on next access). The byte-
-// loop fallback was removed in PLAN_MAX_RAM slice 10 reviewer P2 — touching
-// every page would defeat lazy mmap residency on darwin exactly like the
-// Linux bus-reset regression that committed gigabytes on guest reset.
+// Reset replaces the mapping with fresh anonymous zero pages at the same
+// virtual address. MADV_FREE is not used here because darwin may keep old
+// contents visible until memory pressure reclaims the page.
 func (b *MmapBacking) Reset() {
-	if len(b.mem) == 0 {
-		return
-	}
-	_ = unix.Madvise(b.mem, unix.MADV_FREE)
+	b.assertOpen()
+	resetAnonymousMmap(b.mem)
 }
 
 func (b *MmapBacking) Close() error {
-	if b.mem == nil {
+	if b.closed {
 		return nil
 	}
 	err := unix.Munmap(b.mem)
 	b.mem = nil
+	b.closed = true
 	return err
 }

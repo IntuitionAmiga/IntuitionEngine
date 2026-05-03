@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -44,7 +45,8 @@ type Backing interface {
 // ContiguousBacking is a flat []byte backing store. Used for legacy/low-memory
 // fast paths and small unit tests.
 type ContiguousBacking struct {
-	mem []byte
+	mem    []byte
+	closed bool
 }
 
 // NewContiguousBacking allocates a contiguous []byte of the requested size.
@@ -62,7 +64,14 @@ func NewContiguousBacking(size uint64) (*ContiguousBacking, error) {
 
 func (b *ContiguousBacking) Size() uint64 { return uint64(len(b.mem)) }
 
+func (b *ContiguousBacking) assertOpen() {
+	if b.closed {
+		panic("ContiguousBacking use after Close")
+	}
+}
+
 func (b *ContiguousBacking) inRange(addr, length uint64) bool {
+	b.assertOpen()
 	end := addr + length
 	if end < addr {
 		return false
@@ -130,12 +139,16 @@ func (b *ContiguousBacking) WriteBytes(addr uint64, src []byte) {
 }
 
 func (b *ContiguousBacking) Reset() {
+	b.assertOpen()
 	for i := range b.mem {
 		b.mem[i] = 0
 	}
 }
 
-func (b *ContiguousBacking) Close() error { return nil }
+func (b *ContiguousBacking) Close() error {
+	b.closed = true
+	return nil
+}
 
 // SparseBacking is a page-keyed sparse backing store. Pages are allocated on
 // first write; reads of unwritten pages return zero. The advertised Size()
@@ -149,6 +162,7 @@ type SparseBacking struct {
 	advertisedSize uint64
 	pages          map[uint64][]byte
 	pageSize       uint64
+	closed         bool
 }
 
 // NewSparseBacking returns a sparse backing of the advertised size in bytes.
@@ -169,10 +183,18 @@ func (b *SparseBacking) Size() uint64 { return b.advertisedSize }
 func (b *SparseBacking) AllocatedPages() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	b.assertOpenLocked()
 	return len(b.pages)
 }
 
+func (b *SparseBacking) assertOpenLocked() {
+	if b.closed {
+		panic("SparseBacking use after Close")
+	}
+}
+
 func (b *SparseBacking) inRange(addr, length uint64) bool {
+	b.assertOpenLocked()
 	end := addr + length
 	if end < addr {
 		return false
@@ -307,10 +329,17 @@ func (b *SparseBacking) WriteBytes(addr uint64, src []byte) {
 func (b *SparseBacking) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.assertOpenLocked()
 	b.pages = make(map[uint64][]byte)
 }
 
-func (b *SparseBacking) Close() error { return nil }
+func (b *SparseBacking) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closed = true
+	b.pages = nil
+	return nil
+}
 
 // AllocateBacking calls allocator with the requested page-aligned size. On
 // allocation failure the size is halved (rounded down to MMU_PAGE_SIZE) and
@@ -328,6 +357,10 @@ func (b *SparseBacking) Close() error { return nil }
 // The retry policy is otherwise deterministic so any final reported
 // total/active value matches what the bus and guest discovery paths see.
 func AllocateBacking(requested uint64, allocator func(size uint64) (Backing, error)) (Backing, uint64, error) {
+	return AllocateBackingWithContext(context.Background(), requested, allocator)
+}
+
+func AllocateBackingWithContext(ctx context.Context, requested uint64, allocator func(size uint64) (Backing, error)) (Backing, uint64, error) {
 	if requested == 0 {
 		return nil, 0, fmt.Errorf("%w: requested=0", ErrInvalidSizeArg)
 	}
@@ -343,6 +376,9 @@ func AllocateBacking(requested uint64, allocator func(size uint64) (Backing, err
 	size := requested
 	var lastErr error
 	for size >= MIN_GUEST_RAM {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
 		b, err := allocator(size)
 		if err == nil {
 			return b, size, nil
@@ -351,6 +387,9 @@ func AllocateBacking(requested uint64, allocator func(size uint64) (Backing, err
 			return nil, 0, err
 		}
 		lastErr = err
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
 		next := (size / 2) &^ pageMask
 		if next == size {
 			next = size - uint64(MMU_PAGE_SIZE)

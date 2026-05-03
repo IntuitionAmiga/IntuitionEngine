@@ -49,3 +49,45 @@ func TestZ80InterruptSinkRapidDoublePulseCoalescesBeforeInstructionBoundary(t *t
 		t.Fatalf("second step did not return from single NMI; PC = 0x%04X, want 0x2000", rig.cpu.PC)
 	}
 }
+
+func TestZ80LevelTriggeredAckReedgesHeldNMI(t *testing.T) {
+	rig := newCPUZ80TestRig()
+	rig.resetAndLoad(0x2000, []byte{0x00})
+	rig.cpu.SP = 0xFF00
+	sink := NewZ80InterruptSink(rig.cpu)
+	var level LevelTriggeredInterruptSink = sink
+
+	level.Assert(IntMaskVBI)
+	if !rig.cpu.nmiPending.Load() {
+		t.Fatal("Assert did not create initial NMI edge")
+	}
+
+	rig.cpu.serviceNMI()
+	if rig.cpu.nmiPending.Load() {
+		t.Fatal("serviceNMI did not clear pending NMI")
+	}
+	if !rig.cpu.nmiLine.Load() {
+		t.Fatal("held level source should leave NMI line asserted")
+	}
+
+	level.Ack(IntMaskVBI)
+	if !rig.cpu.nmiPending.Load() {
+		t.Fatal("Ack did not create a fresh NMI edge for held level source")
+	}
+}
+
+func TestZ80LevelTriggeredOtherSourceReedgesAfterDeassert(t *testing.T) {
+	rig := newCPUZ80TestRig()
+	rig.resetAndLoad(0x2000, []byte{0x00})
+	rig.cpu.SP = 0xFF00
+	sink := NewZ80InterruptSink(rig.cpu)
+	var level LevelTriggeredInterruptSink = sink
+
+	level.Assert(IntMaskVBI)
+	level.Assert(IntMaskBlitter)
+	rig.cpu.serviceNMI()
+	level.Deassert(IntMaskBlitter)
+	if !rig.cpu.nmiPending.Load() {
+		t.Fatal("Deassert of one source did not re-edge remaining held NMI source")
+	}
+}

@@ -16,7 +16,12 @@
 
 package main
 
-import "golang.org/x/sys/unix"
+import (
+	"sync"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
+)
 
 // busMemMmapThreshold picks the size above which the production
 // allocator switches from a Go-heap make() to an anonymous mmap.
@@ -30,6 +35,13 @@ const busMemMmapThreshold uint64 = 64 * 1024 * 1024
 // equals busMemMaxBytes — large allocations are lazy-paged so there is
 // no benefit to a smaller cap.
 const busMemBootClamp uint64 = busMemMaxBytes
+
+type busMemMmapKey struct {
+	addr uintptr
+	len  int
+}
+
+var busMemMmapAllocs sync.Map
 
 func defaultBusMemAllocator(size uint64) []byte {
 	if size < busMemMmapThreshold {
@@ -47,28 +59,34 @@ func defaultBusMemAllocator(size uint64) []byte {
 		// a smaller bus and high-range Backing.
 		return nil
 	}
+	registerBusMemMmap(mem)
 	return mem
 }
 
+func registerBusMemMmap(mem []byte) {
+	if len(mem) == 0 {
+		return
+	}
+	busMemMmapAllocs.Store(busMemMmapKey{addr: uintptr(unsafe.Pointer(&mem[0])), len: len(mem)}, struct{}{})
+}
+
+func isBusMemMmap(mem []byte) bool {
+	if len(mem) == 0 {
+		return false
+	}
+	_, ok := busMemMmapAllocs.Load(busMemMmapKey{addr: uintptr(unsafe.Pointer(&mem[0])), len: len(mem)})
+	return ok
+}
+
 // allocateBusMemory wraps the allocator to also produce a reset closure
-// suited to the underlying allocation strategy. Mmap-backed slices use
-// madvise(MADV_DONTNEED) so a guest reset releases pages instead of
-// touching every byte (which would eagerly commit a multi-GiB region).
-// Heap-backed slices fall through to a plain byte-loop zero.
+// suited to the underlying allocation strategy. Mmap-backed slices use the
+// platform reset helper so guest reset releases or remaps pages instead of
+// touching every byte. Heap-backed slices fall through to a plain byte-loop.
 func allocateBusMemory(size uint64, allocator func(size uint64) []byte) ([]byte, func()) {
 	mem := allocator(size)
-	if size >= busMemMmapThreshold && uint64(len(mem)) == size {
+	if size >= busMemMmapThreshold && uint64(len(mem)) == size && isBusMemMmap(mem) {
 		return mem, func() {
-			if len(mem) == 0 {
-				return
-			}
-			if err := unix.Madvise(mem, busMemMadviseDiscardFlag); err != nil {
-				// madvise rejection (e.g. mem came from heap fallback):
-				// fall through to byte-loop. Cheap on small mappings.
-				for i := range mem {
-					mem[i] = 0
-				}
-			}
+			resetBusMmapMemory(mem)
 		}
 	}
 	return mem, nil

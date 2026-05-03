@@ -31,6 +31,10 @@ const (
 	PlatformRaspberryPi64
 	PlatformX64PC
 	PlatformAppleSiliconLinux
+	PlatformDarwinAMD64
+	PlatformDarwinARM64
+	PlatformWindowsAMD64
+	PlatformWindowsARM64
 )
 
 func (p PlatformClass) String() string {
@@ -41,6 +45,14 @@ func (p PlatformClass) String() string {
 		return "x64-pc"
 	case PlatformAppleSiliconLinux:
 		return "apple-silicon-linux"
+	case PlatformDarwinAMD64:
+		return "darwin-amd64"
+	case PlatformDarwinARM64:
+		return "darwin-arm64"
+	case PlatformWindowsAMD64:
+		return "windows-amd64"
+	case PlatformWindowsARM64:
+		return "windows-arm64"
 	default:
 		return "unknown"
 	}
@@ -230,6 +242,14 @@ func ReserveFor(p PlatformClass, usable uint64) (uint64, error) {
 		pol = policy{minBytes: 1 * 1024 * 1024 * 1024, percent: 20}
 	case PlatformAppleSiliconLinux:
 		pol = policy{minBytes: (3 * 1024 * 1024 * 1024) / 2, percent: 25}
+	case PlatformDarwinAMD64:
+		pol = policy{minBytes: 2 * 1024 * 1024 * 1024, percent: 25}
+	case PlatformDarwinARM64:
+		pol = policy{minBytes: 2 * 1024 * 1024 * 1024, percent: 25}
+	case PlatformWindowsAMD64:
+		pol = policy{minBytes: (3 * 1024 * 1024 * 1024) / 2, percent: 20}
+	case PlatformWindowsARM64:
+		pol = policy{minBytes: (3 * 1024 * 1024 * 1024) / 2, percent: 20}
 	default:
 		return 0, fmt.Errorf("%w: %s", ErrUnsupportedPlatform, p)
 	}
@@ -242,24 +262,41 @@ func ReserveFor(p PlatformClass, usable uint64) (uint64, error) {
 	return pct, nil
 }
 
-// DetectPlatform inspects the running Linux host to pick a PlatformClass.
+// DetectPlatform inspects the running host to pick a PlatformClass.
 // Returns PlatformUnknown when the host is not one of the supported
 // appliance targets.
 func DetectPlatform() PlatformClass {
-	if runtime.GOOS != "linux" {
-		return PlatformUnknown
-	}
-	switch runtime.GOARCH {
-	case "amd64":
-		return PlatformX64PC
-	case "arm64":
-		model := readDeviceTreeModel()
-		lower := strings.ToLower(model)
-		switch {
-		case strings.Contains(lower, "raspberry pi"):
-			return PlatformRaspberryPi64
-		case strings.Contains(lower, "apple"):
-			return PlatformAppleSiliconLinux
+	return detectPlatformFor(runtime.GOOS, runtime.GOARCH, readDeviceTreeModel())
+}
+
+func detectPlatformFor(goos, goarch, model string) PlatformClass {
+	switch goos {
+	case "linux":
+		switch goarch {
+		case "amd64":
+			return PlatformX64PC
+		case "arm64":
+			lower := strings.ToLower(model)
+			switch {
+			case strings.Contains(lower, "raspberry pi"):
+				return PlatformRaspberryPi64
+			case strings.Contains(lower, "apple"):
+				return PlatformAppleSiliconLinux
+			}
+		}
+	case "darwin":
+		switch goarch {
+		case "amd64":
+			return PlatformDarwinAMD64
+		case "arm64":
+			return PlatformDarwinARM64
+		}
+	case "windows":
+		switch goarch {
+		case "amd64":
+			return PlatformWindowsAMD64
+		case "arm64":
+			return PlatformWindowsARM64
 		}
 	}
 	return PlatformUnknown
@@ -309,11 +346,7 @@ func ComputeMemorySizing(visibleCeiling uint64, ov SizingOverrides) (MemorySizin
 	usable := ov.DetectedUsableRAM
 	source := "override"
 	if usable == 0 {
-		text, err := os.ReadFile("/proc/meminfo")
-		if err != nil {
-			return ms, fmt.Errorf("read /proc/meminfo: %w", err)
-		}
-		u, src, err := ParseMeminfo(string(text))
+		u, src, err := detectUsableRAM()
 		if err != nil {
 			return ms, err
 		}

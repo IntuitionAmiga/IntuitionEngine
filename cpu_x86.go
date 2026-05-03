@@ -1329,7 +1329,9 @@ func (c *CPU_X86) ClearIRQ(vector byte) {
 func (c *CPU_X86) SetNMI(active bool) {
 	if active {
 		c.nmiPending.Store(true)
+		return
 	}
+	c.nmiPending.Store(false)
 }
 
 // -----------------------------------------------------------------------------
