@@ -724,6 +724,14 @@
 .set WAV_PLAY_CTRL,0xF0BE0
 .set WAV_PLAY_STATUS,0xF0BE4
 .set WAV_POSITION,0xF0BE8
+.set WAV_PLAY_PTR_HI_0,0xF0BEC
+.set WAV_PLAY_PTR_HI_1,0xF0BED
+.set WAV_PLAY_PTR_HI_2,0xF0BEE
+.set WAV_PLAY_PTR_HI_3,0xF0BEF
+.set WAV_CHANNEL_BASE,0xF0BF0
+.set WAV_VOLUME_L,0xF0BF1
+.set WAV_VOLUME_R,0xF0BF2
+.set WAV_FLAGS,0xF0BF3
 
 ; ============================================================================
 ; VGA VIDEO PORTS (IBM VGA compatible via port I/O)

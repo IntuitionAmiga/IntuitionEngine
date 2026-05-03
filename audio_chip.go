@@ -2819,6 +2819,16 @@ func (chip *SoundChip) UnregisterSampleTicker(key string) {
 	chip.rebuildSampleTickerCacheLocked()
 }
 
+func (chip *SoundChip) HasSampleTicker(key string) bool {
+	if key == "" {
+		key = "default"
+	}
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	ticker, ok := chip.sampleTickers[key]
+	return ok && ticker != nil
+}
+
 func (chip *SoundChip) rebuildSampleTickerCacheLocked() {
 	keys := make([]string, 0, len(chip.sampleTickers))
 	for key := range chip.sampleTickers {
@@ -3074,6 +3084,31 @@ func (chip *SoundChip) SetChannelSIDWaveMask(ch int, mask uint8) {
 	if mask == 0 {
 		channel.sidMixLowpassState = 0
 	}
+}
+
+func (chip *SoundChip) ReleaseDACMode(ch int) {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	if ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	channel := chip.channels[ch]
+	if channel == nil {
+		return
+	}
+	channel.dacMode = false
+	channel.dacValue = 0
+	channel.gate = false
+	channel.enabled = false
+}
+
+func (chip *SoundChip) IsChannelInDAC(ch int) bool {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	if ch < 0 || ch >= NUM_CHANNELS || chip.channels[ch] == nil {
+		return false
+	}
+	return chip.channels[ch].dacMode
 }
 
 // GetChannelOscillatorOutput returns the current oscillator output as 8-bit value (0-255).

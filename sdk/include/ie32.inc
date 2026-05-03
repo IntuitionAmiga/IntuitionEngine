@@ -510,6 +510,11 @@
 .equ WAV_PLAY_CTRL     0xF0BE0          ; Play control (32-bit)
 .equ WAV_PLAY_STATUS   0xF0BE4          ; Play status (32-bit)
 .equ WAV_POSITION      0xF0BE8          ; Current playback position (32-bit, read-only)
+.equ WAV_PLAY_PTR_HI   0xF0BEC          ; High 32 bits of WAV data pointer
+.equ WAV_CHANNEL_BASE  0xF0BF0          ; Left DAC channel base (right=base+1)
+.equ WAV_VOLUME_L      0xF0BF1          ; Left volume (0-255)
+.equ WAV_VOLUME_R      0xF0BF2          ; Right volume (0-255)
+.equ WAV_FLAGS         0xF0BF3          ; bit 0=force mono
 
 ; ============================================================================
 ; VGA VIDEO REGISTERS (IBM VGA compatible)

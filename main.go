@@ -764,7 +764,6 @@ func main() {
 			os.Exit(1)
 		}
 		wavPlayerStandalone := NewWAVPlayer(soundChip, SAMPLE_RATE)
-		soundChip.SetSampleTicker(wavPlayerStandalone.engine)
 		data, err := os.ReadFile(filename)
 		if err != nil {
 			fmt.Printf("Error reading WAV file: %v\n", err)

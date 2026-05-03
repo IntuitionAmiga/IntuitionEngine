@@ -5,22 +5,32 @@ import (
 	"fmt"
 )
 
-// WAVFile holds parsed WAV audio data with samples normalized to float32.
+const (
+	wavFormatPCM        = 0x0001
+	wavFormatExtensible = 0xFFFE
+)
+
+var (
+	wavPCMSubformatGUID   = [16]byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}
+	wavFloatSubformatGUID = [16]byte{0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}
+)
+
+// WAVFile holds parsed WAV audio data as signed 16-bit source frames.
 type WAVFile struct {
 	SampleRate    uint32
 	NumChannels   uint16
 	BitsPerSample uint16
-	Samples       []float32 // normalized to [-1.0, +1.0], mono (downmixed if stereo)
+	LeftSamples   []int16
+	RightSamples  []int16
 }
 
-// ParseWAV parses a RIFF/WAVE file and returns normalized float32 samples.
-// Supports 8-bit unsigned and 16-bit signed PCM. Stereo is downmixed to mono.
+// ParseWAV parses a RIFF/WAVE file.
+// Supports 8-bit unsigned and 16-bit signed PCM, including 16-bit PCM in a
+// WAVE_FORMAT_EXTENSIBLE container. Stereo is preserved as L/R int16 frames.
 func ParseWAV(data []byte) (*WAVFile, error) {
 	if len(data) < 44 {
 		return nil, fmt.Errorf("wav: data too short (%d bytes)", len(data))
 	}
-
-	// Validate RIFF header
 	if string(data[0:4]) != "RIFF" {
 		return nil, fmt.Errorf("wav: missing RIFF magic")
 	}
@@ -28,32 +38,22 @@ func ParseWAV(data []byte) (*WAVFile, error) {
 		return nil, fmt.Errorf("wav: missing WAVE magic")
 	}
 
-	// Find fmt and data chunks (can appear in any order)
 	var fmtChunk []byte
 	var dataChunk []byte
 	pos := 12
-
 	for pos+8 <= len(data) {
 		chunkID := string(data[pos : pos+4])
 		chunkSize := int(binary.LittleEndian.Uint32(data[pos+4 : pos+8]))
 		chunkData := pos + 8
-
 		if chunkData+chunkSize > len(data) {
-			// Truncated chunk — use whatever is available for data chunk
-			if chunkID == "data" && dataChunk == nil {
-				dataChunk = data[chunkData:]
-			}
-			break
+			return nil, fmt.Errorf("wav: truncated %q chunk", chunkID)
 		}
-
 		switch chunkID {
 		case "fmt ":
 			fmtChunk = data[chunkData : chunkData+chunkSize]
 		case "data":
 			dataChunk = data[chunkData : chunkData+chunkSize]
 		}
-
-		// Advance to next chunk (chunks are word-aligned)
 		pos = chunkData + chunkSize
 		if chunkSize%2 != 0 {
 			pos++
@@ -71,63 +71,92 @@ func ParseWAV(data []byte) (*WAVFile, error) {
 	}
 
 	audioFormat := binary.LittleEndian.Uint16(fmtChunk[0:2])
-	if audioFormat != 1 {
-		return nil, fmt.Errorf("wav: unsupported format %d (only PCM=1 supported)", audioFormat)
-	}
-
 	numChannels := binary.LittleEndian.Uint16(fmtChunk[2:4])
 	sampleRate := binary.LittleEndian.Uint32(fmtChunk[4:8])
+	byteRate := binary.LittleEndian.Uint32(fmtChunk[8:12])
+	blockAlign := binary.LittleEndian.Uint16(fmtChunk[12:14])
 	bitsPerSample := binary.LittleEndian.Uint16(fmtChunk[14:16])
 
 	if numChannels == 0 {
 		return nil, fmt.Errorf("wav: zero channels")
 	}
+	if numChannels > 2 {
+		return nil, fmt.Errorf("wav: unsupported channel count %d", numChannels)
+	}
 	if sampleRate == 0 {
 		return nil, fmt.Errorf("wav: zero sample rate")
+	}
+	if audioFormat == wavFormatExtensible {
+		if len(fmtChunk) < 40 {
+			return nil, fmt.Errorf("wav: extensible fmt chunk too short")
+		}
+		validBits := binary.LittleEndian.Uint16(fmtChunk[18:20])
+		var guid [16]byte
+		copy(guid[:], fmtChunk[24:40])
+		if guid == wavFloatSubformatGUID {
+			return nil, fmt.Errorf("wav: unsupported extensible float subformat")
+		}
+		if guid != wavPCMSubformatGUID {
+			return nil, fmt.Errorf("wav: unsupported extensible subformat")
+		}
+		if validBits != 16 || bitsPerSample != 16 {
+			return nil, fmt.Errorf("wav: unsupported extensible bit depth valid=%d container=%d", validBits, bitsPerSample)
+		}
+		audioFormat = wavFormatPCM
+	}
+	if audioFormat != wavFormatPCM {
+		return nil, fmt.Errorf("wav: unsupported format %d", audioFormat)
 	}
 	if bitsPerSample != 8 && bitsPerSample != 16 {
 		return nil, fmt.Errorf("wav: unsupported bits per sample %d (only 8 or 16 supported)", bitsPerSample)
 	}
 
-	// Decode samples and normalize to float32
 	bytesPerSample := int(bitsPerSample) / 8
 	frameSize := bytesPerSample * int(numChannels)
-	if frameSize == 0 {
-		return nil, fmt.Errorf("wav: zero frame size")
+	if int(blockAlign) != frameSize {
+		return nil, fmt.Errorf("wav: invalid block align %d, want %d", blockAlign, frameSize)
+	}
+	if byteRate != sampleRate*uint32(blockAlign) {
+		return nil, fmt.Errorf("wav: invalid byte rate %d, want %d", byteRate, sampleRate*uint32(blockAlign))
+	}
+	if len(dataChunk)%frameSize != 0 {
+		return nil, fmt.Errorf("wav: data chunk is not frame aligned")
 	}
 	numFrames := len(dataChunk) / frameSize
+	if numFrames == 0 {
+		return nil, fmt.Errorf("wav: zero sample frames")
+	}
 
-	samples := make([]float32, numFrames)
-
+	left := make([]int16, numFrames)
+	right := make([]int16, numFrames)
 	for i := range numFrames {
 		frameOff := i * frameSize
-		var monoSum float32
-
 		for ch := range int(numChannels) {
 			sampleOff := frameOff + ch*bytesPerSample
-			var val float32
-
-			switch bitsPerSample {
-			case 8:
-				// 8-bit unsigned: 0-255, center at 128
-				val = float32(int(dataChunk[sampleOff])-128) / 128.0
-			case 16:
-				// 16-bit signed little-endian
-				raw := int16(binary.LittleEndian.Uint16(dataChunk[sampleOff : sampleOff+2]))
-				val = float32(raw) / 32768.0
+			val := decodeWAVSample(dataChunk[sampleOff:], bitsPerSample)
+			if ch == 0 {
+				left[i] = val
+			} else {
+				right[i] = val
 			}
-
-			monoSum += val
 		}
-
-		// Downmix to mono
-		samples[i] = monoSum / float32(numChannels)
+		if numChannels == 1 {
+			right[i] = left[i]
+		}
 	}
 
 	return &WAVFile{
 		SampleRate:    sampleRate,
 		NumChannels:   numChannels,
 		BitsPerSample: bitsPerSample,
-		Samples:       samples,
+		LeftSamples:   left,
+		RightSamples:  right,
 	}, nil
+}
+
+func decodeWAVSample(data []byte, bitsPerSample uint16) int16 {
+	if bitsPerSample == 8 {
+		return int16(int(data[0])-128) << 8
+	}
+	return int16(binary.LittleEndian.Uint16(data[:2]))
 }

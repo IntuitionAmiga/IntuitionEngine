@@ -47,8 +47,8 @@ func TestWriteUint32Word(t *testing.T) {
 	}{
 		{"write word at 0", 0x00000000, 0xABCD, 0, 0x0000ABCD},
 		{"write word at 2", 0x00000000, 0x1234, 2, 0x12340000},
-		{"write single byte", 0x00000000, 0x00AB, 0, 0x000000AB},
-		{"overwrite word", 0xFFFFFFFF, 0x0000, 0, 0xFFFFFF00}, // Only writes byte 0 when value <= 0xFF
+		{"write zero-extended word", 0x00000000, 0x00AB, 0, 0x000000AB},
+		{"overwrite word", 0xFFFFFFFF, 0x0000, 0, 0xFFFF0000},
 	}
 
 	for _, tt := range tests {

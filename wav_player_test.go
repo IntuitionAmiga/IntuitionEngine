@@ -32,7 +32,7 @@ func TestWAVPlayerMMIOWritePtr(t *testing.T) {
 	player.HandlePlayWrite(WAV_PLAY_PTR, 0x12345678)
 
 	player.mu.Lock()
-	got := player.playPtrStaged
+	got := player.PlayPtrStaged
 	player.mu.Unlock()
 
 	if got != 0x12345678 {
@@ -46,11 +46,32 @@ func TestWAVPlayerMMIOWriteLen(t *testing.T) {
 	player.HandlePlayWrite(WAV_PLAY_LEN, 0xABCD)
 
 	player.mu.Lock()
-	got := player.playLenStaged
+	got := player.PlayLenStaged
 	player.mu.Unlock()
 
 	if got != 0xABCD {
 		t.Errorf("expected len=0xABCD, got 0x%X", got)
+	}
+}
+
+func TestWAVPlayerMMIOHighHalfWordWrites(t *testing.T) {
+	player, _ := newTestWAVPlayer(t)
+
+	player.HandlePlayWrite(WAV_PLAY_PTR, 0xFF112233)
+	player.HandlePlayWrite(WAV_PLAY_PTR+2, 0x00BB)
+	player.HandlePlayWrite(WAV_PLAY_LEN, 0xEE000044)
+	player.HandlePlayWrite(WAV_PLAY_LEN+2, 0x00DD)
+
+	player.mu.Lock()
+	ptr := player.PlayPtrStaged
+	length := player.PlayLenStaged
+	player.mu.Unlock()
+
+	if ptr != 0x00BB2233 {
+		t.Fatalf("PlayPtrStaged = 0x%08X, want 0x00BB2233", ptr)
+	}
+	if length != 0x00DD0044 {
+		t.Fatalf("PlayLenStaged = 0x%08X, want 0x00DD0044", length)
 	}
 }
 
@@ -68,7 +89,7 @@ func TestWAVPlayerMMIOStart(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	player.mu.Lock()
-	hasErr := player.playErr
+	hasErr := player.PlayErr
 	player.mu.Unlock()
 
 	if hasErr {
@@ -92,6 +113,36 @@ func TestWAVPlayerMMIOStop(t *testing.T) {
 
 	if player.IsPlaying() {
 		t.Error("expected playback to stop")
+	}
+}
+
+func TestWAVPlayerChannelBaseChangeReleasesOldDACChannels(t *testing.T) {
+	chip, _ := NewSoundChip(AUDIO_BACKEND_OTO)
+	player := NewWAVPlayer(chip, SAMPLE_RATE)
+	wav := &WAVFile{
+		SampleRate:    44100,
+		NumChannels:   2,
+		BitsPerSample: 16,
+		LeftSamples:   []int16{16000, 16000},
+		RightSamples:  []int16{-16000, -16000},
+	}
+	player.engine.LoadWAV(wav)
+	player.engine.SetForceMono(false)
+	player.Play()
+	player.engine.TickSample()
+
+	if !chip.IsChannelInDAC(0) || !chip.IsChannelInDAC(1) {
+		t.Fatal("expected original base channels in DAC mode")
+	}
+
+	player.HandlePlayWrite(WAV_CHANNEL_BASE, 2)
+	player.engine.TickSample()
+
+	if chip.IsChannelInDAC(0) || chip.IsChannelInDAC(1) {
+		t.Fatal("old base channels remained in DAC mode after channel-base change")
+	}
+	if !chip.IsChannelInDAC(2) || !chip.IsChannelInDAC(3) {
+		t.Fatal("expected new base channels in DAC mode")
 	}
 }
 

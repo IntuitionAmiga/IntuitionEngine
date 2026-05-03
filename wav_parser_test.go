@@ -4,7 +4,7 @@ package main
 
 import (
 	"encoding/binary"
-	"math"
+	"reflect"
 	"testing"
 )
 
@@ -60,13 +60,13 @@ func TestWAVParseHeader(t *testing.T) {
 	if w.BitsPerSample != 16 {
 		t.Errorf("expected 16 bits, got %d", w.BitsPerSample)
 	}
-	if len(w.Samples) != 50 {
-		t.Errorf("expected 50 samples, got %d", len(w.Samples))
+	if len(w.LeftSamples) != 50 || len(w.RightSamples) != 50 {
+		t.Errorf("expected 50 frames, got L=%d R=%d", len(w.LeftSamples), len(w.RightSamples))
 	}
 }
 
 func TestWAVParse8Bit(t *testing.T) {
-	// 8-bit unsigned: 128=center(0), 0=-1.0, 255≈+1.0
+	// 8-bit unsigned: 128=center(0), 0=-32768, 255=32512
 	pcm := []byte{128, 0, 255}
 	wav := buildTestWAV(22050, 1, 8, pcm)
 
@@ -74,21 +74,15 @@ func TestWAVParse8Bit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(w.Samples) != 3 {
-		t.Fatalf("expected 3 samples, got %d", len(w.Samples))
+	if len(w.LeftSamples) != 3 {
+		t.Fatalf("expected 3 samples, got %d", len(w.LeftSamples))
 	}
-
-	// Center (128) → 0.0
-	if math.Abs(float64(w.Samples[0])) > 0.01 {
-		t.Errorf("sample[0]: expected ~0.0, got %f", w.Samples[0])
+	want := []int16{0, -32768, 32512}
+	if !reflect.DeepEqual(w.LeftSamples, want) {
+		t.Fatalf("LeftSamples = %v, want %v", w.LeftSamples, want)
 	}
-	// Min (0) → -1.0
-	if math.Abs(float64(w.Samples[1])+1.0) > 0.01 {
-		t.Errorf("sample[1]: expected ~-1.0, got %f", w.Samples[1])
-	}
-	// Max (255) → ~+0.992
-	if w.Samples[2] < 0.98 || w.Samples[2] > 1.01 {
-		t.Errorf("sample[2]: expected ~+0.99, got %f", w.Samples[2])
+	if !reflect.DeepEqual(w.RightSamples, want) {
+		t.Fatalf("RightSamples = %v, want %v", w.RightSamples, want)
 	}
 }
 
@@ -105,23 +99,16 @@ func TestWAVParse16Bit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(w.Samples) != 3 {
-		t.Fatalf("expected 3 samples, got %d", len(w.Samples))
+	want := []int16{0, -32768, 32767}
+	if !reflect.DeepEqual(w.LeftSamples, want) {
+		t.Fatalf("LeftSamples = %v, want %v", w.LeftSamples, want)
 	}
-
-	if math.Abs(float64(w.Samples[0])) > 0.01 {
-		t.Errorf("sample[0]: expected ~0.0, got %f", w.Samples[0])
-	}
-	if math.Abs(float64(w.Samples[1])+1.0) > 0.01 {
-		t.Errorf("sample[1]: expected ~-1.0, got %f", w.Samples[1])
-	}
-	if w.Samples[2] < 0.99 || w.Samples[2] > 1.01 {
-		t.Errorf("sample[2]: expected ~+1.0, got %f", w.Samples[2])
+	if !reflect.DeepEqual(w.RightSamples, want) {
+		t.Fatalf("RightSamples = %v, want %v", w.RightSamples, want)
 	}
 }
 
-func TestWAVParseStereoDownmix(t *testing.T) {
-	// Stereo 16-bit: L=16384(+0.5), R=-16384(-0.5) → mono average = 0.0
+func TestWAVParseStereoPreserved(t *testing.T) {
 	pcm := make([]byte, 4)
 	binary.LittleEndian.PutUint16(pcm[0:2], uint16(int16(16384)))
 	neg := int16(-16384)
@@ -133,11 +120,41 @@ func TestWAVParseStereoDownmix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(w.Samples) != 1 {
-		t.Fatalf("expected 1 mono sample, got %d", len(w.Samples))
+	if len(w.LeftSamples) != 1 || len(w.RightSamples) != 1 {
+		t.Fatalf("expected 1 stereo frame, got L=%d R=%d", len(w.LeftSamples), len(w.RightSamples))
 	}
-	if math.Abs(float64(w.Samples[0])) > 0.01 {
-		t.Errorf("expected ~0.0 after downmix, got %f", w.Samples[0])
+	if w.LeftSamples[0] != 16384 || w.RightSamples[0] != -16384 {
+		t.Fatalf("stereo not preserved: L=%d R=%d", w.LeftSamples[0], w.RightSamples[0])
+	}
+}
+
+func TestWAVParseRejectZeroFrames(t *testing.T) {
+	if _, err := ParseWAV(buildTestWAV(44100, 1, 16, nil)); err == nil {
+		t.Fatal("expected zero-frame data chunk to be rejected")
+	}
+}
+
+func TestWAVParseRejectTruncatedDataChunk(t *testing.T) {
+	wav := buildTestWAV(44100, 1, 16, []byte{0, 0, 1, 0})
+	binary.LittleEndian.PutUint32(wav[len(wav)-8:len(wav)-4], 100)
+	if _, err := ParseWAV(wav); err == nil {
+		t.Fatal("expected truncated data chunk to be rejected")
+	}
+}
+
+func TestWAVParseValidatesBlockAlign(t *testing.T) {
+	wav := buildTestWAV(44100, 2, 16, make([]byte, 4))
+	binary.LittleEndian.PutUint16(wav[32:34], 2)
+	if _, err := ParseWAV(wav); err == nil {
+		t.Fatal("expected invalid blockAlign to be rejected")
+	}
+}
+
+func TestWAVParseValidatesByteRate(t *testing.T) {
+	wav := buildTestWAV(44100, 1, 16, make([]byte, 2))
+	binary.LittleEndian.PutUint32(wav[28:32], 1234)
+	if _, err := ParseWAV(wav); err == nil {
+		t.Fatal("expected invalid byteRate to be rejected")
 	}
 }
 
@@ -222,12 +239,66 @@ func TestWAVParseExtraChunks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(w.Samples) != 10 {
-		t.Errorf("expected 10 samples, got %d", len(w.Samples))
+	if len(w.LeftSamples) != 10 {
+		t.Errorf("expected 10 samples, got %d", len(w.LeftSamples))
 	}
-	// First sample should be 1000/32768 ≈ 0.0305
-	expected := float32(1000) / 32768.0
-	if math.Abs(float64(w.Samples[0]-expected)) > 0.001 {
-		t.Errorf("sample[0]: expected %f, got %f", expected, w.Samples[0])
+	if w.LeftSamples[0] != 1000 {
+		t.Errorf("sample[0]: expected 1000, got %d", w.LeftSamples[0])
 	}
+}
+
+func TestWAVParseExtensible16BitPCM(t *testing.T) {
+	wav := buildExtensibleTestWAV(44100, 2, 16, 16, wavPCMSubformatGUID, make([]byte, 4))
+	if _, err := ParseWAV(wav); err != nil {
+		t.Fatalf("expected extensible PCM to parse: %v", err)
+	}
+}
+
+func TestWAVParseExtensibleRejectsFloatSubformat(t *testing.T) {
+	wav := buildExtensibleTestWAV(44100, 2, 16, 16, wavFloatSubformatGUID, make([]byte, 4))
+	if _, err := ParseWAV(wav); err == nil {
+		t.Fatal("expected extensible float subformat to be rejected")
+	}
+}
+
+func TestWAVParseExtensibleRejects24BitContainer(t *testing.T) {
+	wav := buildExtensibleTestWAV(44100, 2, 24, 24, wavPCMSubformatGUID, make([]byte, 6))
+	if _, err := ParseWAV(wav); err == nil {
+		t.Fatal("expected 24-bit extensible container to be rejected")
+	}
+}
+
+func TestWAVParseNoFloat32Buffer(t *testing.T) {
+	if _, ok := reflect.TypeOf(WAVFile{}).FieldByName("Samples"); ok {
+		t.Fatal("WAVFile must not expose the old float32 Samples buffer")
+	}
+}
+
+func buildExtensibleTestWAV(sampleRate uint32, numChannels, bitsPerSample, validBits uint16, guid [16]byte, pcmData []byte) []byte {
+	dataSize := uint32(len(pcmData))
+	fmtSize := uint32(40)
+	blockAlign := numChannels * bitsPerSample / 8
+	bytesPerSec := sampleRate * uint32(blockAlign)
+	fileSize := 4 + 8 + fmtSize + 8 + dataSize
+	buf := make([]byte, 12+8+fmtSize+8+dataSize)
+	copy(buf[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(buf[4:8], fileSize)
+	copy(buf[8:12], "WAVE")
+	off := 12
+	copy(buf[off:off+4], "fmt ")
+	binary.LittleEndian.PutUint32(buf[off+4:off+8], fmtSize)
+	binary.LittleEndian.PutUint16(buf[off+8:off+10], wavFormatExtensible)
+	binary.LittleEndian.PutUint16(buf[off+10:off+12], numChannels)
+	binary.LittleEndian.PutUint32(buf[off+12:off+16], sampleRate)
+	binary.LittleEndian.PutUint32(buf[off+16:off+20], bytesPerSec)
+	binary.LittleEndian.PutUint16(buf[off+20:off+22], blockAlign)
+	binary.LittleEndian.PutUint16(buf[off+22:off+24], bitsPerSample)
+	binary.LittleEndian.PutUint16(buf[off+24:off+26], 22)
+	binary.LittleEndian.PutUint16(buf[off+26:off+28], validBits)
+	copy(buf[off+32:off+48], guid[:])
+	off += 8 + int(fmtSize)
+	copy(buf[off:off+4], "data")
+	binary.LittleEndian.PutUint32(buf[off+4:off+8], dataSize)
+	copy(buf[off+8:], pcmData)
+	return buf
 }

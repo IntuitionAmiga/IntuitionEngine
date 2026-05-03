@@ -230,18 +230,21 @@ func (p *AHXPlayer) HandlePlayWrite(addr uint32, value uint32) {
 	}
 	if readReq != nil {
 		data := make([]byte, readReq.length)
-		for i := range data {
-			data[i] = readReq.bus.Read8(readReq.ptr + uint32(i))
-		}
+		readErr := ReadGuestBytes(readReq.bus, readReq.ptr, 0, data)
 
 		p.mu.Lock()
 		if readReq.gen == p.playGen {
-			p.playBusy = true
-			startReq = &ahxAsyncStartRequest{
-				gen:       readReq.gen,
-				data:      data,
-				subsong:   readReq.subsong,
-				forceLoop: readReq.forceLoop,
+			if readErr != nil {
+				p.playErr = true
+				p.playBusy = false
+			} else {
+				p.playBusy = true
+				startReq = &ahxAsyncStartRequest{
+					gen:       readReq.gen,
+					data:      data,
+					subsong:   readReq.subsong,
+					forceLoop: readReq.forceLoop,
+				}
 			}
 		}
 		p.mu.Unlock()

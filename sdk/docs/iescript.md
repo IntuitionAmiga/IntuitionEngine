@@ -942,7 +942,7 @@ coproc.stop("ie32")
 
 ## `media`
 
-Format-agnostic media loader. Supports SID, PSG/VGM, TED, AHX, POKEY/SAP formats. Unlike the engine-specific `audio.*` functions, `media.*` auto-detects the format and routes to the appropriate player.
+Format-agnostic media loader. Supports SID, PSG/VGM, TED, AHX, POKEY/SAP, MOD, and WAV formats. WAV routing supports mono/stereo PCM through the WAV MMIO control surface.
 
 `media.load(filename)` — Load and start playing a music file, auto-detecting format. Returns: nothing. Raises only on immediate setup failures (e.g. scratch memory unavailable); format detection and decode errors are reported asynchronously via `media.status()` and `media.error()`.
 

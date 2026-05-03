@@ -517,11 +517,16 @@ MOD_POSITION    equ $F0BD4              ; Current song position (32-bit, read-on
 ; ============================================================================
 ; WAV AUDIO REGISTERS (PCM WAV player)
 ; ============================================================================
-WAV_PLAY_PTR    equ $F0BD8              ; Pointer to WAV data in bus memory (32-bit)
+WAV_PLAY_PTR    equ $F0BD8              ; Low 32 bits of WAV data pointer
 WAV_PLAY_LEN    equ $F0BDC              ; Length of WAV data (32-bit)
 WAV_PLAY_CTRL   equ $F0BE0              ; Play control (32-bit)
 WAV_PLAY_STATUS equ $F0BE4              ; Play status (32-bit)
 WAV_POSITION    equ $F0BE8              ; Current playback position (32-bit, read-only)
+WAV_PLAY_PTR_HI equ $F0BEC              ; High 32 bits of WAV data pointer
+WAV_CHANNEL_BASE equ $F0BF0             ; Left DAC channel base (right=base+1)
+WAV_VOLUME_L    equ $F0BF1              ; Left volume (0-255)
+WAV_VOLUME_R    equ $F0BF2              ; Right volume (0-255)
+WAV_FLAGS       equ $F0BF3              ; bit 0=force mono
 
 ; ----------------------------------------------------------------------------
 ; MOD Player Macros
@@ -575,6 +580,21 @@ PLAY_WAV_LOOP    macro
 ; STOP_WAV - Stop WAV playback
 STOP_WAV    macro
     move.l  #2,WAV_PLAY_CTRL
+    endm
+
+PAUSE_WAV    macro
+    move.l  #8,WAV_PLAY_CTRL
+    endm
+
+RESUME_WAV    macro
+    move.l  #0,WAV_PLAY_CTRL
+    endm
+
+WAIT_WAV    macro
+.wait_wav\@:
+    move.l  WAV_PLAY_STATUS,d0
+    andi.l  #1,d0
+    bne.s   .wait_wav\@
     endm
 
 ; ----------------------------------------------------------------------------

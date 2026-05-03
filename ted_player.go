@@ -269,13 +269,11 @@ func (p *TEDPlayer) HandlePlayWrite(addr uint32, value uint32) {
 			break
 		}
 		// Read directly from bus memory
-		mem := p.bus.GetMemory()
-		if int(p.playPtr)+int(p.playLen) > len(mem) {
+		data := make([]byte, p.playLen)
+		if err := ReadGuestBytes(p.bus, p.playPtr, 0, data); err != nil {
 			p.playErr = true
 			break
 		}
-		data := make([]byte, p.playLen)
-		copy(data, mem[p.playPtr:p.playPtr+p.playLen])
 		p.playBusy = true
 		p.playGen++
 		startReq = &tedAsyncStartRequest{

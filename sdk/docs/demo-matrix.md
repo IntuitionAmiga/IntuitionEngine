@@ -90,4 +90,4 @@ IE32, IE64, M68020, Z80, 6502, x86 (32-bit)
 - `.sap` - Atari 8-bit SAP files (POKEY)
 - `.ahx` - Amiga AHX/THX tracker modules
 - `.mod` - ProTracker MOD modules (4/6/8/xxCH up to 32 channels)
-- `.wav` - PCM WAV audio via SoundChip FLEX DAC mode
+- `.wav` - PCM WAV audio via SoundChip FLEX DAC mode (mono/stereo, 8-bit unsigned, 16-bit signed, 16-bit PCM extensible)

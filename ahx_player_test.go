@@ -50,11 +50,12 @@ func TestAHX_PlayerBusSafeRead(t *testing.T) {
 	data := buildAHXModule(ahxModuleOptions{})
 	const loadAddr = uint32(0x2000)
 	bus := &ahxSparseTestBus{
-		mem:  make([]byte, 16),
+		mem:  make([]byte, int(loadAddr)+len(data)),
 		data: make(map[uint32]byte),
 	}
 	for i, b := range data {
 		bus.data[loadAddr+uint32(i)] = b
+		bus.mem[int(loadAddr)+i] = b
 	}
 
 	player := NewAHXPlayer(newTestSoundChip(), 44100)
@@ -104,7 +105,7 @@ func (b *ahxReentrantReadBus) GetMemory() []byte { return b.mem }
 
 func TestAHX_PlayerMMIOPointerDoesNotDeadlock(t *testing.T) {
 	player := NewAHXPlayer(newTestSoundChip(), 44100)
-	bus := &ahxReentrantReadBus{mem: make([]byte, 16), player: player}
+	bus := &ahxReentrantReadBus{mem: make([]byte, int(AHX_PLAY_STATUS)+14), player: player}
 	player.AttachBus(bus)
 	player.HandlePlayWrite(AHX_PLAY_PTR, AHX_PLAY_STATUS)
 	player.HandlePlayWrite(AHX_PLAY_LEN, 14)
@@ -120,8 +121,8 @@ func TestAHX_PlayerMMIOPointerDoesNotDeadlock(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("HandlePlayWrite deadlocked while AHX bus read re-entered HandlePlayRead")
 	}
-	if bus.reads == 0 {
-		t.Fatal("expected bus reads for malformed MMIO pointer test")
+	if bus.reads != 0 {
+		t.Fatalf("expected bulk helper to avoid reentrant Read8, got %d reads", bus.reads)
 	}
 }
 

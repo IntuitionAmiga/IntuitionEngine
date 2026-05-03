@@ -19,9 +19,7 @@ func writeUint32Byte(current uint32, value uint32, byteIndex uint32) uint32 {
 // Handles both low and high bytes when value > 0xFF
 func writeUint32Word(current uint32, value uint32, byteIndex uint32) uint32 {
 	current = writeUint32Byte(current, value, byteIndex)
-	if value > 0xFF {
-		current = writeUint32Byte(current, value>>8, byteIndex+1)
-	}
+	current = writeUint32Byte(current, value>>8, byteIndex+1)
 	return current
 }
 
@@ -87,6 +85,7 @@ type MusicMetadata struct {
 // running programs (SID, PSG, TED players)
 type PlayerControlState struct {
 	PlayPtrStaged uint32
+	PlayPtrHigh   uint32
 	PlayLenStaged uint32
 	PlayPtr       uint32
 	PlayLen       uint32
@@ -145,7 +144,12 @@ func (s *PlayerControlState) ReadLenByte(offset uint32) uint32 {
 // PreparePlay validates and stages the playback parameters
 // Returns error string if validation fails, empty string on success
 func (s *PlayerControlState) PreparePlay(forceLoop bool) string {
+	return s.PreparePlay64(s.PlayPtrHigh, forceLoop)
+}
+
+func (s *PlayerControlState) PreparePlay64(ptrHigh uint32, forceLoop bool) string {
 	s.PlayPtr = s.PlayPtrStaged
+	s.PlayPtrHigh = ptrHigh
 	s.PlayLen = s.PlayLenStaged
 	s.ForceLoop = forceLoop
 	s.PlayErr = false
@@ -169,15 +173,12 @@ func (s *PlayerControlState) ReadDataFromBus() ([]byte, error) {
 		return nil, nil
 	}
 
-	mem := s.Bus.GetMemory()
-	if int(s.PlayPtr)+int(s.PlayLen) > len(mem) {
+	data := make([]byte, s.PlayLen)
+	if err := ReadGuestBytes(s.Bus, s.PlayPtr, s.PlayPtrHigh, data); err != nil {
 		s.PlayErr = true
 		s.PlayBusy = false
-		return nil, nil
+		return nil, err
 	}
-
-	data := make([]byte, s.PlayLen)
-	copy(data, mem[s.PlayPtr:s.PlayPtr+s.PlayLen])
 	return data, nil
 }
 

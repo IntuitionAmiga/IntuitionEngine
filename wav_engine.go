@@ -1,53 +1,63 @@
 package main
 
 import (
-	"sync"
+	"math"
 	"sync/atomic"
 )
 
-// WAVEngine streams pre-parsed float32 samples through a SoundChip DAC channel.
-// It implements the SampleTicker interface for per-sample callbacks at 44.1kHz.
-type WAVEngine struct {
-	mu          sync.Mutex
-	sound       *SoundChip
-	sampleRate  int
-	playing     atomic.Bool
-	enabled     atomic.Bool
-	samples     []float32
-	sourceRate  uint32
-	phase       float64
+const wavTickerKey = "wav"
+
+type wavState struct {
+	left        []int16
+	right       []int16
 	phaseInc    float64
 	loop        bool
-	channelInit bool
+	paused      bool
+	channelBase int
+	volumeL     uint8
+	volumeR     uint8
+	forceMono   bool
+}
+
+// WAVEngine streams parsed WAV frames through one or two SoundChip DAC channels.
+type WAVEngine struct {
+	sound      *SoundChip
+	sampleRate int
+	state      atomic.Pointer[wavState]
+	playing    atomic.Bool
+	enabled    atomic.Bool
+	phaseBits  atomic.Uint64
 }
 
 // NewWAVEngine creates a new WAV engine bound to a SoundChip.
 func NewWAVEngine(sound *SoundChip, sampleRate int) *WAVEngine {
-	return &WAVEngine{
-		sound:      sound,
-		sampleRate: sampleRate,
-	}
+	e := &WAVEngine{sound: sound, sampleRate: sampleRate}
+	e.state.Store(&wavState{volumeL: 255, volumeR: 255, forceMono: true})
+	return e
 }
 
 // LoadWAV loads a parsed WAV file and prepares for playback.
 func (e *WAVEngine) LoadWAV(wav *WAVFile) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	e.samples = wav.Samples
-	e.sourceRate = wav.SampleRate
-	e.phase = 0
-	e.phaseInc = float64(wav.SampleRate) / float64(e.sampleRate)
+	prev := e.snapshot()
+	st := *prev
+	st.left = append([]int16(nil), wav.LeftSamples...)
+	st.right = append([]int16(nil), wav.RightSamples...)
+	st.phaseInc = float64(wav.SampleRate) / float64(e.sampleRate)
+	e.phaseBits.Store(math.Float64bits(0))
 	e.enabled.Store(true)
+	e.state.Store(&st)
 }
 
 // SetPlaying starts or stops WAV playback.
 func (e *WAVEngine) SetPlaying(playing bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.playing.Store(playing)
-	if !playing {
-		e.silenceChannel()
+	if e.sound != nil {
+		if playing {
+			e.sound.RegisterSampleTicker(wavTickerKey, e)
+		} else {
+			e.sound.UnregisterSampleTicker(wavTickerKey)
+			e.releaseChannels()
+		}
 	}
 }
 
@@ -58,107 +68,152 @@ func (e *WAVEngine) IsPlaying() bool {
 
 // SetLoop enables or disables looping.
 func (e *WAVEngine) SetLoop(loop bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.loop = loop
+	e.updateState(func(st *wavState) { st.loop = loop })
 }
 
-// GetPosition returns the current playback position in samples.
+func (e *WAVEngine) SetPaused(paused bool) {
+	e.updateState(func(st *wavState) { st.paused = paused })
+}
+
+func (e *WAVEngine) IsPaused() bool {
+	return e.snapshot().paused
+}
+
+func (e *WAVEngine) SetChannelBase(base int) {
+	if base < 0 {
+		base = 0
+	}
+	if base >= NUM_CHANNELS-1 {
+		base = NUM_CHANNELS - 2
+	}
+	oldBase := e.snapshot().channelBase
+	e.updateState(func(st *wavState) { st.channelBase = base })
+	if oldBase != base && e.playing.Load() && e.sound != nil {
+		e.sound.ReleaseDACMode(oldBase)
+		e.sound.ReleaseDACMode(oldBase + 1)
+	}
+}
+
+func (e *WAVEngine) ChannelBase() int {
+	return e.snapshot().channelBase
+}
+
+func (e *WAVEngine) SetVolume(left, right uint8) {
+	e.updateState(func(st *wavState) {
+		st.volumeL = left
+		st.volumeR = right
+	})
+}
+
+func (e *WAVEngine) SetForceMono(force bool) {
+	e.updateState(func(st *wavState) { st.forceMono = force })
+}
+
+func (e *WAVEngine) StereoActive() bool {
+	st := e.snapshot()
+	return !st.forceMono && len(st.right) > 0
+}
+
+// GetPosition returns the current source frame index.
 func (e *WAVEngine) GetPosition() int {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return int(e.phase)
+	st := e.snapshot()
+	if len(st.left) == 0 {
+		return 0
+	}
+	pos := int(math.Floor(math.Float64frombits(e.phaseBits.Load())))
+	if pos >= len(st.left) {
+		if st.loop {
+			return pos % len(st.left)
+		}
+		return len(st.left)
+	}
+	return pos
 }
 
 // Reset clears engine state.
 func (e *WAVEngine) Reset() {
-	e.playing.Store(false)
+	e.SetPlaying(false)
 	e.enabled.Store(false)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.samples = nil
-	e.phase = 0
-	e.phaseInc = 0
-	e.loop = false
-	e.channelInit = false
-	e.silenceChannel()
+	e.phaseBits.Store(math.Float64bits(0))
+	e.state.Store(&wavState{volumeL: 255, volumeR: 255, forceMono: true})
 }
 
-// TickSample advances WAV playback by one audio sample.
-// Called at 44.1kHz from SoundChip.ReadSample().
+// TickSample advances WAV playback by one host sample.
 func (e *WAVEngine) TickSample() {
 	if !e.enabled.Load() || !e.playing.Load() {
 		return
 	}
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if len(e.samples) == 0 {
+	st := e.snapshot()
+	if len(st.left) == 0 {
+		e.SetPlaying(false)
 		return
 	}
 
-	e.ensureChannelInitialized()
-
-	// Get current position
-	pos := int(e.phase)
-	if pos >= len(e.samples) {
-		if e.loop {
-			e.phase = 0
-			pos = 0
-		} else {
-			e.playing.Store(false)
-			e.silenceChannel()
+	phase := math.Float64frombits(e.phaseBits.Load())
+	pos := int(phase)
+	for pos >= len(st.left) {
+		if !st.loop {
+			e.SetPlaying(false)
 			return
 		}
+		phase -= float64(len(st.left))
+		pos = int(phase)
 	}
 
-	// Linear interpolation between adjacent samples
-	frac := float32(e.phase - float64(pos))
-	sample := e.samples[pos]
-	if pos+1 < len(e.samples) {
-		sample += frac * (e.samples[pos+1] - sample)
+	left := st.left[pos]
+	right := left
+	if len(st.right) > pos {
+		right = st.right[pos]
 	}
+	if st.forceMono {
+		mono := int16((int(left) + int(right)) / 2)
+		left, right = mono, mono
+	}
+	e.writeDAC(st.channelBase, left, st.volumeL)
+	e.writeDAC(st.channelBase+1, right, st.volumeR)
 
-	// Scale to int8 range and write to DAC
-	scaled := int(sample * 127.0)
+	if !st.paused {
+		phase += st.phaseInc
+		e.phaseBits.Store(math.Float64bits(phase))
+	}
+}
+
+func (e *WAVEngine) updateState(fn func(*wavState)) {
+	prev := e.snapshot()
+	next := *prev
+	fn(&next)
+	e.state.Store(&next)
+}
+
+func (e *WAVEngine) snapshot() *wavState {
+	st := e.state.Load()
+	if st == nil {
+		return &wavState{volumeL: 255, volumeR: 255, forceMono: true}
+	}
+	return st
+}
+
+func (e *WAVEngine) writeDAC(ch int, sample int16, volume uint8) {
+	if e.sound == nil || ch < 0 || ch >= NUM_CHANNELS {
+		return
+	}
+	scaled := int(sample) * int(volume) / 255 / 256
 	if scaled > 127 {
 		scaled = 127
 	} else if scaled < -128 {
 		scaled = -128
 	}
-	e.writeChannel(0, FLEX_OFF_DAC, uint32(byte(int8(scaled))))
-
-	// Advance phase
-	e.phase += e.phaseInc
-}
-
-// ensureChannelInitialized configures SoundChip channel 0 for DAC mode.
-func (e *WAVEngine) ensureChannelInitialized() {
-	if e.channelInit || e.sound == nil {
-		return
-	}
-
-	e.writeChannel(0, FLEX_OFF_VOL, 255) // Full gain
-	e.writeChannel(0, FLEX_OFF_CTRL, 3)  // Enable + gate
-	e.writeChannel(0, FLEX_OFF_DAC, 0)   // Enter DAC mode, silence
-
-	e.channelInit = true
-}
-
-// silenceChannel writes zero to the DAC channel.
-func (e *WAVEngine) silenceChannel() {
-	if e.sound == nil {
-		return
-	}
-	e.writeChannel(0, FLEX_OFF_DAC, 0)
-}
-
-// writeChannel writes a value to a SoundChip channel register.
-func (e *WAVEngine) writeChannel(ch int, offset uint32, value uint32) {
-	if e.sound == nil {
-		return
-	}
 	base := FLEX_CH_BASE + uint32(ch)*FLEX_CH_STRIDE
-	e.sound.HandleRegisterWrite(base+offset, value)
+	e.sound.HandleRegisterWrite(base+FLEX_OFF_VOL, 255)
+	e.sound.HandleRegisterWrite(base+FLEX_OFF_CTRL, 3)
+	e.sound.HandleRegisterWrite(base+FLEX_OFF_DAC, uint32(byte(int8(scaled))))
+}
+
+func (e *WAVEngine) releaseChannels() {
+	if e.sound == nil {
+		return
+	}
+	st := e.snapshot()
+	e.sound.ReleaseDACMode(st.channelBase)
+	e.sound.ReleaseDACMode(st.channelBase + 1)
 }

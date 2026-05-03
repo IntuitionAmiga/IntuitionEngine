@@ -92,8 +92,23 @@ func TestWAVRegisters(t *testing.T) {
 	if WAV_POSITION != 0xF0BE8 {
 		t.Errorf("WAV_POSITION: expected 0xF0BE8, got 0x%X", WAV_POSITION)
 	}
-	if WAV_END != 0xF0BEB {
-		t.Errorf("WAV_END: expected 0xF0BEB, got 0x%X", WAV_END)
+	if WAV_PLAY_PTR_HI != 0xF0BEC {
+		t.Errorf("WAV_PLAY_PTR_HI: expected 0xF0BEC, got 0x%X", WAV_PLAY_PTR_HI)
+	}
+	if WAV_CHANNEL_BASE != 0xF0BF0 {
+		t.Errorf("WAV_CHANNEL_BASE: expected 0xF0BF0, got 0x%X", WAV_CHANNEL_BASE)
+	}
+	if WAV_VOLUME_L != 0xF0BF1 {
+		t.Errorf("WAV_VOLUME_L: expected 0xF0BF1, got 0x%X", WAV_VOLUME_L)
+	}
+	if WAV_VOLUME_R != 0xF0BF2 {
+		t.Errorf("WAV_VOLUME_R: expected 0xF0BF2, got 0x%X", WAV_VOLUME_R)
+	}
+	if WAV_FLAGS != 0xF0BF3 {
+		t.Errorf("WAV_FLAGS: expected 0xF0BF3, got 0x%X", WAV_FLAGS)
+	}
+	if WAV_END != 0xF0BF3 {
+		t.Errorf("WAV_END: expected 0xF0BF3, got 0x%X", WAV_END)
 	}
 
 	// Verify no overlap with MOD registers

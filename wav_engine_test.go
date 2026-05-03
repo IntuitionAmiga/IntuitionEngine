@@ -14,19 +14,20 @@ func newTestWAVEngine(t *testing.T) (*WAVEngine, *SoundChip) {
 	return engine, chip
 }
 
-func buildTestWAVFile(samples []float32, sampleRate uint32) *WAVFile {
+func buildTestWAVFile(samples []int16, sampleRate uint32) *WAVFile {
 	return &WAVFile{
 		SampleRate:    sampleRate,
 		NumChannels:   1,
 		BitsPerSample: 16,
-		Samples:       samples,
+		LeftSamples:   samples,
+		RightSamples:  append([]int16(nil), samples...),
 	}
 }
 
 func TestWAVEngineChannelInit(t *testing.T) {
 	engine, chip := newTestWAVEngine(t)
 
-	samples := make([]float32, 64)
+	samples := make([]int16, 64)
 	wav := buildTestWAVFile(samples, 44100)
 	engine.LoadWAV(wav)
 	engine.SetPlaying(true)
@@ -50,9 +51,9 @@ func TestWAVEngineTickSampleWritesDAC(t *testing.T) {
 	engine, chip := newTestWAVEngine(t)
 
 	// Create samples with known value 0.5
-	samples := make([]float32, 64)
+	samples := make([]int16, 64)
 	for i := range samples {
-		samples[i] = 0.5
+		samples[i] = 16384
 	}
 	wav := buildTestWAVFile(samples, 44100)
 	engine.LoadWAV(wav)
@@ -78,16 +79,14 @@ func TestWAVEngineSampleRateConversion(t *testing.T) {
 	engine, _ := newTestWAVEngine(t)
 
 	// 22050 Hz source at 44100 Hz output → phaseInc = 0.5
-	samples := make([]float32, 100)
+	samples := make([]int16, 100)
 	for i := range samples {
-		samples[i] = float32(i) / 100.0
+		samples[i] = int16(i)
 	}
 	wav := buildTestWAVFile(samples, 22050)
 	engine.LoadWAV(wav)
 
-	engine.mu.Lock()
-	phaseInc := engine.phaseInc
-	engine.mu.Unlock()
+	phaseInc := engine.snapshot().phaseInc
 
 	expected := 22050.0 / 44100.0
 	if math.Abs(phaseInc-expected) > 0.001 {
@@ -100,12 +99,8 @@ func TestWAVEngineSampleRateConversion(t *testing.T) {
 		engine.TickSample()
 	}
 
-	engine.mu.Lock()
-	phase := engine.phase
-	engine.mu.Unlock()
-
-	if math.Abs(phase-2.0) > 0.01 {
-		t.Errorf("expected phase≈2.0 after 4 ticks at phaseInc=0.5, got %f", phase)
+	if got := engine.GetPosition(); got != 2 {
+		t.Errorf("expected source position 2 after 4 ticks at phaseInc=0.5, got %d", got)
 	}
 }
 
@@ -113,9 +108,9 @@ func TestWAVEngineLoop(t *testing.T) {
 	engine, _ := newTestWAVEngine(t)
 
 	// Short sample with looping
-	samples := make([]float32, 10)
+	samples := make([]int16, 10)
 	for i := range samples {
-		samples[i] = 0.5
+		samples[i] = 16384
 	}
 	wav := buildTestWAVFile(samples, 44100)
 	engine.LoadWAV(wav)
@@ -136,9 +131,9 @@ func TestWAVEngineStop(t *testing.T) {
 	engine, _ := newTestWAVEngine(t)
 
 	// Short sample without looping
-	samples := make([]float32, 10)
+	samples := make([]int16, 10)
 	for i := range samples {
-		samples[i] = 0.5
+		samples[i] = 16384
 	}
 	wav := buildTestWAVFile(samples, 44100)
 	engine.LoadWAV(wav)
@@ -158,9 +153,9 @@ func TestWAVEngineStop(t *testing.T) {
 func TestWAVEngineSilenceOnStop(t *testing.T) {
 	engine, chip := newTestWAVEngine(t)
 
-	samples := make([]float32, 64)
+	samples := make([]int16, 64)
 	for i := range samples {
-		samples[i] = 0.8
+		samples[i] = 26000
 	}
 	wav := buildTestWAVFile(samples, 44100)
 	engine.LoadWAV(wav)
@@ -174,10 +169,9 @@ func TestWAVEngineSilenceOnStop(t *testing.T) {
 	// Stop playback
 	engine.SetPlaying(false)
 
-	// DAC should be 0 (silence)
+	// DAC mode should be released.
 	ch := chip.channels[0]
-	sample := ch.generateSample()
-	if sample != 0 {
-		t.Errorf("expected silence after stop, got %f", sample)
+	if ch.dacMode {
+		t.Error("expected DAC mode to be released after stop")
 	}
 }

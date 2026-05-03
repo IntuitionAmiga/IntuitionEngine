@@ -642,7 +642,7 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xF0800-0xF0B7F` | 896B | SoundChip (10 channels, incl. FLEX) |
 | `0xF0B80-0xF0B91` | 18B | AHX Engine / Player |
 | `0xF0BC0-0xF0BD7` | 24B | MOD Player |
-| `0xF0BD8-0xF0BEB` | 20B | WAV Player |
+| `0xF0BD8-0xF0BF3` | 28B | WAV Player |
 | `0xF0C00-0xF0C0F` | 16B | PSG Engine (AY-3-8910/YM2149 registers) |
 | `0xF0C20` | 1B | PSG+ control |
 | `0xF0C30-0xF0C3F` | 16B | Native SN76489 latch/data, ready, and LFSR mode registers |

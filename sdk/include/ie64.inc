@@ -428,11 +428,16 @@ MOD_POSITION      equ 0xF0BD4               ; Current song position (32-bit, rea
 ; - Sample rate conversion with linear interpolation
 ; ============================================================================
 
-WAV_PLAY_PTR      equ 0xF0BD8               ; Pointer to WAV data in bus memory (32-bit)
+WAV_PLAY_PTR      equ 0xF0BD8               ; Low 32 bits of WAV data pointer
 WAV_PLAY_LEN      equ 0xF0BDC               ; Length of WAV data (32-bit)
 WAV_PLAY_CTRL     equ 0xF0BE0               ; Play control (32-bit)
 WAV_PLAY_STATUS   equ 0xF0BE4               ; Play status (32-bit)
 WAV_POSITION      equ 0xF0BE8               ; Current playback position (32-bit, read-only)
+WAV_PLAY_PTR_HI   equ 0xF0BEC               ; High 32 bits of WAV data pointer
+WAV_CHANNEL_BASE  equ 0xF0BF0               ; Left DAC channel base (right=base+1)
+WAV_VOLUME_L      equ 0xF0BF1               ; Left volume (0-255)
+WAV_VOLUME_R      equ 0xF0BF2               ; Right volume (0-255)
+WAV_FLAGS         equ 0xF0BF3               ; bit 0=force mono
 
 ; ============================================================================
 ; VGA VIDEO REGISTERS (IBM VGA compatible)
@@ -1702,6 +1707,26 @@ STOP_WAV macro
     la      r1, WAV_PLAY_CTRL
     li      r2, #2
     store.l r2, (r1)
+    endm
+
+PAUSE_WAV macro
+    la      r1, WAV_PLAY_CTRL
+    li      r2, #8
+    store.l r2, (r1)
+    endm
+
+RESUME_WAV macro
+    la      r1, WAV_PLAY_CTRL
+    li      r2, #0
+    store.l r2, (r1)
+    endm
+
+WAIT_WAV macro
+@@wait_wav:
+    la      r1, WAV_PLAY_STATUS
+    load.l  r2, (r1)
+    andi    r2, #1
+    bnez    r2, @@wait_wav
     endm
 
 ; ============================================================================

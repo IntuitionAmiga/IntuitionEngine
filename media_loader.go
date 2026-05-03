@@ -176,9 +176,6 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fullPath string, typ uint32, s
 				m.mu.Unlock()
 				return
 			}
-			if m.soundChip != nil && m.wavPlayer.engine != nil {
-				m.soundChip.SetSampleTicker(m.wavPlayer.engine)
-			}
 			m.wavPlayer.Play()
 			m.status = MEDIA_STATUS_PLAYING
 			m.errCode = MEDIA_ERR_OK
