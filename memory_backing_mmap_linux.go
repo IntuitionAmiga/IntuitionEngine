@@ -33,6 +33,12 @@ type MmapBacking struct {
 // fragmentation, etc.); the caller (AllocateBacking) is expected to halve
 // and retry.
 func NewMmapBacking(size uint64) (Backing, error) {
+	return newMmapBackingWithMmap(size, func(length, prot, flags int) ([]byte, error) {
+		return unix.Mmap(-1, 0, length, prot, flags)
+	})
+}
+
+func newMmapBackingWithMmap(size uint64, mmapFn func(length, prot, flags int) ([]byte, error)) (Backing, error) {
 	if size == 0 {
 		return nil, fmt.Errorf("%w: size=0", ErrInvalidSizeArg)
 	}
@@ -40,9 +46,13 @@ func NewMmapBacking(size uint64) (Backing, error) {
 		return nil, fmt.Errorf("%w: size %d not aligned to MMU_PAGE_SIZE=%d",
 			ErrInvalidSizeArg, size, MMU_PAGE_SIZE)
 	}
-	mem, err := unix.Mmap(-1, 0, int(size),
+	maxInt := int(^uint(0) >> 1)
+	if size > uint64(maxInt) {
+		return nil, fmt.Errorf("%w: size %d exceeds int max %d", ErrInvalidSizeArg, size, maxInt)
+	}
+	mem, err := mmapFn(int(size),
 		unix.PROT_READ|unix.PROT_WRITE,
-		unix.MAP_ANON|unix.MAP_PRIVATE)
+		unix.MAP_ANON|unix.MAP_PRIVATE|unix.MAP_NORESERVE)
 	if err != nil {
 		return nil, fmt.Errorf("mmap anon failed: %w", err)
 	}

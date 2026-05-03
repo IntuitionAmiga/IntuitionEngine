@@ -92,6 +92,30 @@ func TestParseMeminfo_NoUsefulFields(t *testing.T) {
 	}
 }
 
+func TestParseMeminfo_UnknownUnit_OnUsedField_Errors(t *testing.T) {
+	_, _, err := ParseMeminfo("MemAvailable: 12000000 pages\n")
+	if err == nil {
+		t.Fatal("expected error for unknown unit on consumed MemAvailable field")
+	}
+}
+
+func TestParseMeminfo_UnknownUnit_OnIgnoredField_OK(t *testing.T) {
+	in := strings.Join([]string{
+		"MemAvailable:   12000000 kB",
+		"FutureKernel:   999 widgets",
+	}, "\n") + "\n"
+	usable, source, err := ParseMeminfo(in)
+	if err != nil {
+		t.Fatalf("ParseMeminfo: %v", err)
+	}
+	if source != "MemAvailable" {
+		t.Fatalf("source=%q, want MemAvailable", source)
+	}
+	if usable != 12000000*1024 {
+		t.Fatalf("usable=%d, want %d", usable, 12000000*1024)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Size argument parsing (KiB/MiB/GiB)
 // ---------------------------------------------------------------------------

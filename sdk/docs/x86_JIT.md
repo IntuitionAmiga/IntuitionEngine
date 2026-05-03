@@ -292,6 +292,8 @@ A 2-entry MRU cache (`RTSCache0PC/Addr`, `RTSCache1PC/Addr`) is maintained in th
 4. VGA VRAM (0xA0000-0xAFFFF)
 5. Active bank windows (0x2000-0x9FFF when banking enabled)
 
+M68K-style sign-extended aliases in the `0xFFFF0000-0xFFFFFFFF` range normalize to the low 16-bit address before bus dispatch. Byte reads through those aliases use the same `onRead8` path as direct low-address reads, so JIT fallback and interpreter byte MMIO semantics stay aligned.
+
 ### Fast Path (Direct Memory)
 
 ```asm

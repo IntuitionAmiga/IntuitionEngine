@@ -6,6 +6,7 @@ package main
 
 import (
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -190,6 +191,41 @@ func TestSparseBacking_Reset(t *testing.T) {
 	if b.AllocatedPages() != 0 {
 		t.Fatalf("Reset did not free pages: %d", b.AllocatedPages())
 	}
+}
+
+func TestSparseBacking_ConcurrentPageFault_Race(t *testing.T) {
+	b := NewSparseBacking(8 * bGiB)
+	var wg sync.WaitGroup
+	for _, addr := range []uint64{0x1000, uint64(4*bGiB) + 0x2000} {
+		wg.Add(1)
+		go func(addr uint64) {
+			defer wg.Done()
+			for i := 0; i < 1000; i++ {
+				b.Write8(addr+uint64(i%64), byte(i))
+			}
+		}(addr)
+	}
+	wg.Wait()
+}
+
+func TestSparseBacking_ConcurrentReadWriteSamePage_Race(t *testing.T) {
+	b := NewSparseBacking(8 * bGiB)
+	const addr = uint64(0x3000)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			b.Write32(addr, uint32(i))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			_ = b.Read32(addr)
+		}
+	}()
+	wg.Wait()
 }
 
 // --- AllocateBacking retry/fail policy ---

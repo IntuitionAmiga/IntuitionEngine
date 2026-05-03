@@ -61,9 +61,9 @@ import (
 const (
 	DEFAULT_MEMORY_SIZE = 32 * 1024 * 1024
 	PAGE_SIZE           = 0x100
-	// Keep page base bits for the full 32MB address space.
-	// 0x1FFFF00 aligns any address to its 256-byte page without truncating
-	// addresses >= 1MB (e.g. VRAM at 0x00100000).
+	// Keep page base bits within the legacy 32 MiB window. This masks off
+	// address bits above bit 24, so sized-bus/high-alias keys whose low
+	// 25 bits collide share the same page bucket.
 	PAGE_MASK = 0x1FFFF00
 )
 
@@ -292,6 +292,13 @@ func write32Fanout8(region IORegion, addr uint32, value uint32) bool {
 	region.onWrite8(addr+2, uint8(value>>16))
 	region.onWrite8(addr+3, uint8(value>>24))
 	return true
+}
+
+func signExtMirror(start uint32) (uint32, bool) {
+	if start >= 0x8000 && start < 0x10000 {
+		return start | 0xFFFF0000, true
+	}
+	return 0, false
 }
 
 func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
@@ -921,12 +928,44 @@ func (bus *MachineBus) hasMappedRegion(addr uint32) bool {
 	if !exists {
 		return false
 	}
-	for _, region := range regions {
-		if addr >= region.start && addr <= region.end {
+	for i := len(regions) - 1; i >= 0; i-- {
+		if addr >= regions[i].start && addr <= regions[i].end {
 			return true
 		}
 	}
 	return false
+}
+
+func (bus *MachineBus) hasMappedRegion64(addr uint32) bool {
+	if bus.hasMappedRegion(addr) {
+		return true
+	}
+	regions, exists := bus.mapping64[addr&PAGE_MASK]
+	if !exists {
+		return false
+	}
+	for i := len(regions) - 1; i >= 0; i-- {
+		if addr >= regions[i].start && addr <= regions[i].end {
+			return true
+		}
+	}
+	return false
+}
+
+func (bus *MachineBus) hasMappedRegion64Span(addr uint32, width int) bool {
+	if width <= 0 {
+		return false
+	}
+	end := uint64(addr) + uint64(width)
+	if end > 0x100000000 {
+		return false
+	}
+	for a := addr; uint64(a) < end; a++ {
+		if !bus.hasMappedRegion64(a) {
+			return false
+		}
+	}
+	return true
 }
 
 func (bus *MachineBus) mustFaultUnmappedMMIO(addr uint32) bool {
@@ -934,6 +973,36 @@ func (bus *MachineBus) mustFaultUnmappedMMIO(addr uint32) bool {
 		return false
 	}
 	return !bus.hasMappedRegion(addr)
+}
+
+func (bus *MachineBus) mustFaultUnmappedMMIO64Span(addr uint32, width int) bool {
+	if width <= 0 || len(bus.strictMMIOWindows) == 0 {
+		return false
+	}
+	spanStart := uint64(addr)
+	spanEnd := spanStart + uint64(width) - 1
+	if spanEnd >= 0x100000000 {
+		return true
+	}
+	for _, w := range bus.strictMMIOWindows {
+		start := spanStart
+		if uint64(w.Start) > start {
+			start = uint64(w.Start)
+		}
+		end := spanEnd
+		if uint64(w.End) < end {
+			end = uint64(w.End)
+		}
+		if start > end {
+			continue
+		}
+		for a := start; a <= end; a++ {
+			if !bus.hasMappedRegion64(uint32(a)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (bus *MachineBus) GetMemory() []byte {
@@ -969,6 +1038,19 @@ func (bus *MachineBus) IsIOAddress(addr uint32) bool {
 		}
 	}
 	return false
+}
+
+// IsIOAddress64 reports whether addr resolves to a legacy or native 64-bit
+// mapped MMIO region. It is a single-byte visibility query; wider callers use
+// hasMappedRegion64Span to enforce full-span coverage.
+func (bus *MachineBus) IsIOAddress64(addr uint32) bool {
+	if addr >= 0xFFFF0000 {
+		addr &= 0x0000FFFF
+	}
+	if addr >= uint32(len(bus.memory)) {
+		return false
+	}
+	return bus.hasMappedRegion64(addr)
 }
 
 // SetVideoStatusReader registers a lock-free callback for VIDEO_STATUS reads.
@@ -1012,9 +1094,8 @@ func (bus *MachineBus) MapIO(start, end uint32, onRead func(addr uint32) uint32,
 	// 32-bit addressing modes. For example, a device at 0xFFxx needs to be accessible
 	// at both 0x0000FFxx and 0xFFFFFFxx to properly handle 16-bit peripherals in a
 	// 32-bit address space, matching the real hardware behavior.
-	if start >= 0x8000 && start <= 0xFFFF {
+	if signExtStart, ok := signExtMirror(start); ok {
 		// Also map to 0xFFFF0000-0xFFFFFFFF range
-		signExtStart := start | 0xFFFF0000
 		signExtEnd := end | 0xFFFF0000
 
 		firstSignExtPage := signExtStart & PAGE_MASK
@@ -1051,8 +1132,7 @@ func (bus *MachineBus) MapIOByte(start, end uint32, onWrite8 func(addr uint32, v
 	}
 
 	// Also update sign-extended pages if applicable
-	if start >= 0x8000 && start <= 0xFFFF {
-		signExtStart := start | 0xFFFF0000
+	if signExtStart, ok := signExtMirror(start); ok {
 		signExtEnd := end | 0xFFFF0000
 		firstSignExtPage := signExtStart & PAGE_MASK
 		lastSignExtPage := signExtEnd & PAGE_MASK
@@ -1087,8 +1167,7 @@ func (bus *MachineBus) MapIOByteRead(start, end uint32, onRead8 func(addr uint32
 		bus.mapping[page] = regions
 	}
 
-	if start >= 0x8000 && start <= 0xFFFF {
-		signExtStart := start | 0xFFFF0000
+	if signExtStart, ok := signExtMirror(start); ok {
 		signExtEnd := end | 0xFFFF0000
 		firstSignExtPage := signExtStart & PAGE_MASK
 		lastSignExtPage := signExtEnd & PAGE_MASK
@@ -1124,8 +1203,7 @@ func (bus *MachineBus) MapIOWideWriteFanout(start, end uint32) {
 		bus.mapping[page] = regions
 	}
 
-	if start >= 0x8000 && start <= 0xFFFF {
-		signExtStart := start | 0xFFFF0000
+	if signExtStart, ok := signExtMirror(start); ok {
 		signExtEnd := end | 0xFFFF0000
 		firstSignExtPage := signExtStart & PAGE_MASK
 		lastSignExtPage := signExtEnd & PAGE_MASK
@@ -1145,31 +1223,52 @@ func (bus *MachineBus) MapIOWideWriteFanout(start, end uint32) {
 // restoring those pages to plain bus RAM access. This is used by the EmuTOS loader
 // to reclaim the VRAM address range (0x100000-0x5FFFFF) as normal M68K RAM.
 func (bus *MachineBus) UnmapIO(start, end uint32) {
-	firstPage := start & PAGE_MASK
-	lastPage := end & PAGE_MASK
+	bus.unmapIOPages(start, end, start, end)
+	if mirrorStart, ok := signExtMirror(start); ok {
+		bus.unmapIOPages(mirrorStart, end|0xFFFF0000, start, end)
+	}
+}
+
+func (bus *MachineBus) unmapIOPages(pageStart, pageEnd, matchStart, matchEnd uint32) {
+	firstPage := pageStart & PAGE_MASK
+	lastPage := pageEnd & PAGE_MASK
 	for page := firstPage; page <= lastPage; page += PAGE_SIZE {
-		// Remove all regions that overlap our unmap range
-		regions := bus.mapping[page]
-		filtered := regions[:0]
-		for _, r := range regions {
-			if r.start > end || r.end < start {
-				filtered = append(filtered, r)
-			}
-		}
-		if len(filtered) == 0 {
+		bus.mapping[page] = filterIORegions(bus.mapping[page], matchStart, matchEnd)
+		if len(bus.mapping[page]) == 0 {
 			delete(bus.mapping, page)
-		} else {
-			bus.mapping[page] = filtered
 		}
-		// Clear the bitmap so the fast path skips I/O dispatch
+		bus.mapping64[page] = filterIORegions64(bus.mapping64[page], matchStart, matchEnd)
+		if len(bus.mapping64[page]) == 0 {
+			delete(bus.mapping64, page)
+		}
+
 		pageIdx := page >> 8
 		if pageIdx < uint32(len(bus.ioPageBitmap)) {
-			// Only clear if no remaining regions on this page
-			if len(filtered) == 0 {
+			if len(bus.mapping[page]) == 0 && len(bus.mapping64[page]) == 0 {
 				bus.ioPageBitmap[pageIdx] = false
 			}
 		}
 	}
+}
+
+func filterIORegions(regions []IORegion, start, end uint32) []IORegion {
+	filtered := regions[:0]
+	for _, r := range regions {
+		if r.start > end || r.end < start {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+func filterIORegions64(regions []IORegion64, start, end uint32) []IORegion64 {
+	filtered := regions[:0]
+	for _, r := range regions {
+		if r.start > end || r.end < start {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
 }
 
 func (bus *MachineBus) Write32(addr uint32, value uint32) {
@@ -1712,7 +1811,14 @@ func (bus *MachineBus) read8Slow(addr uint32) uint8 {
 			if regions, exists := bus.mapping[mapped&PAGE_MASK]; exists {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
-					if mapped >= region.start && mapped <= region.end && region.onRead != nil {
+					if mapped >= region.start && mapped <= region.end && (region.onRead8 != nil || region.onRead != nil) {
+						if region.onRead8 != nil {
+							value := region.onRead8(mapped)
+							if mapped < uint32(len(bus.memory)) {
+								bus.memory[mapped] = value
+							}
+							return value
+						}
 						value := region.onRead(mapped)
 						if mapped < uint32(len(bus.memory)) {
 							bus.memory[mapped] = uint8(value)
@@ -1809,8 +1915,7 @@ func (bus *MachineBus) MapIO64(start, end uint32, onRead64 func(addr uint32) uin
 	}
 
 	// Sign-extension mirroring for addresses in 0x8000-0xFFFF range
-	if start >= 0x8000 && start <= 0xFFFF {
-		signExtStart := start | 0xFFFF0000
+	if signExtStart, ok := signExtMirror(start); ok {
 		signExtEnd := end | 0xFFFF0000
 		firstSignExtPage := signExtStart & PAGE_MASK
 		lastSignExtPage := signExtEnd & PAGE_MASK
@@ -1824,7 +1929,7 @@ func (bus *MachineBus) MapIO64(start, end uint32, onRead64 func(addr uint32) uin
 func (bus *MachineBus) findIORegion64(addr uint32) *IORegion64 {
 	page := addr & PAGE_MASK
 	if regions, exists := bus.mapping64[page]; exists {
-		for i := range regions {
+		for i := len(regions) - 1; i >= 0; i-- {
 			if addr >= regions[i].start && addr <= regions[i].end {
 				return &regions[i]
 			}
@@ -1869,7 +1974,7 @@ func (bus *MachineBus) canWrite64SplitIntoMMIO(addr uint32) bool {
 func (bus *MachineBus) findIORegion(addr uint32) *IORegion {
 	page := addr & PAGE_MASK
 	if regions, exists := bus.mapping[page]; exists {
-		for i := range regions {
+		for i := len(regions) - 1; i >= 0; i-- {
 			if addr >= regions[i].start && addr <= regions[i].end {
 				return &regions[i]
 			}
@@ -2109,16 +2214,15 @@ func (bus *MachineBus) write32Half(addr uint32, value uint32) {
 // Read64WithFault performs a 64-bit read with fault reporting.
 // Returns (0, false) if the access cannot complete (OOB or legacy MMIO under Fault policy).
 func (bus *MachineBus) Read64WithFault(addr uint32) (uint64, bool) {
-	effectiveAddr := addr
-	if addr >= 0xFFFF0000 {
-		// Reject addresses where raw addr+7 would overflow uint32
-		if uint64(addr)+8 > 0x100000000 {
-			return 0, false
-		}
-		effectiveAddr = addr & 0x0000FFFF
+	if addr >= 0xFFFF0000 && uint64(addr)+8 > 0x100000000 {
+		return 0, false
 	}
+	effectiveAddr := bus.normalizeFaultAddr(addr)
 
 	if uint64(effectiveAddr)+8 > uint64(len(bus.memory)) {
+		return 0, false
+	}
+	if bus.mustFaultUnmappedMMIO64Span(effectiveAddr, 8) {
 		return 0, false
 	}
 
@@ -2144,16 +2248,15 @@ func (bus *MachineBus) Read64WithFault(addr uint32) (uint64, bool) {
 // Write64WithFault performs a 64-bit write with fault reporting.
 // Returns false if the access cannot complete.
 func (bus *MachineBus) Write64WithFault(addr uint32, value uint64) bool {
-	effectiveAddr := addr
-	if addr >= 0xFFFF0000 {
-		// Reject addresses where raw addr+7 would overflow uint32
-		if uint64(addr)+8 > 0x100000000 {
-			return false
-		}
-		effectiveAddr = addr & 0x0000FFFF
+	if addr >= 0xFFFF0000 && uint64(addr)+8 > 0x100000000 {
+		return false
 	}
+	effectiveAddr := bus.normalizeFaultAddr(addr)
 
 	if uint64(effectiveAddr)+8 > uint64(len(bus.memory)) {
+		return false
+	}
+	if bus.mustFaultUnmappedMMIO64Span(effectiveAddr, 8) {
 		return false
 	}
 

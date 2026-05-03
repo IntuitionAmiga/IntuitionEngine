@@ -222,6 +222,8 @@ When X=1, the third operand is the immediate, zero-extended to 64 bits: `operand
 | `.Q` | 8 | Read64/Write64 |
 
 > **64-bit memory access**: `.Q` loads and stores go through the MachineBus (`Read64`/`Write64`). For plain RAM (no I/O region on either 32-bit half), the bus uses a single 64-bit read/write. If the access spans an I/O region, the bus may split it into two 32-bit halves. For MMIO64 regions receiving a split write, a read-modify-write is performed on backing memory to preserve the untouched half. These semantics are transparent for normal RAM access but matter when accessing hardware registers with `.Q` size.
+>
+> Strict MMIO windows are width-aware. A 64-bit access inside a strict window must have every byte of the window-covered part of its 8-byte span claimed by a legacy `MapIO` or native `MapIO64` region; bytes outside the strict window are exempt. This strict-window check is address-only: native `MapIO64` dispatch still wins when present, and legacy-only regions are then governed by `MMIO64Policy` (`Fault` or `Split`).
 
 ---
 
@@ -737,6 +739,8 @@ Note: For unsigned "greater than or equal" and "less than", use the complementar
 ### 8.1 Address Space Overview
 
 The IE64 uses the same memory map as the Intuition Engine platform. PC and LOAD/STORE addresses are full 64-bit; IE64 reaches the full active visible RAM (which may exceed 4 GiB on hosts with sufficient memory) and reports it via `CR_RAM_SIZE_BYTES` and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair. Total guest RAM is reported through `SYSINFO_TOTAL_RAM_LO/HI`. The historical 25-bit/32 MB mask was retired in PLAN_MAX_RAM.md slice 3.
+
+MMIO visibility APIs are width-specific. `IsIOAddress` is the legacy narrow query and only reports `MapIO` regions. 64-bit dispatch and strict-window checks use the 64-bit view, which treats `MapIO` and `MapIO64` as address claims for the queried span.
 
 | Address Range | Size | Description |
 |---------------|------|-------------|

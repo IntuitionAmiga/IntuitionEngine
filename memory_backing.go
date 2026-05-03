@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
 )
 
 // Backing is the byte-level guest physical memory abstraction. Addresses are
@@ -144,6 +145,7 @@ func (b *ContiguousBacking) Close() error { return nil }
 // Used for IE64 above-4-GiB unit tests where allocating a giant []byte is
 // neither possible nor required.
 type SparseBacking struct {
+	mu             sync.RWMutex
 	advertisedSize uint64
 	pages          map[uint64][]byte
 	pageSize       uint64
@@ -164,7 +166,11 @@ func (b *SparseBacking) Size() uint64 { return b.advertisedSize }
 
 // AllocatedPages reports the number of resident pages. Used by tests to
 // confirm that the sparse backing does not retain unused pages.
-func (b *SparseBacking) AllocatedPages() int { return len(b.pages) }
+func (b *SparseBacking) AllocatedPages() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.pages)
+}
 
 func (b *SparseBacking) inRange(addr, length uint64) bool {
 	end := addr + length
@@ -186,7 +192,7 @@ func (b *SparseBacking) page(pageIdx uint64, allocate bool) []byte {
 	return p
 }
 
-func (b *SparseBacking) Read8(addr uint64) byte {
+func (b *SparseBacking) read8Locked(addr uint64) byte {
 	if !b.inRange(addr, 1) {
 		return 0
 	}
@@ -199,7 +205,7 @@ func (b *SparseBacking) Read8(addr uint64) byte {
 	return p[off]
 }
 
-func (b *SparseBacking) Write8(addr uint64, v byte) {
+func (b *SparseBacking) write8Locked(addr uint64, v byte) {
 	if !b.inRange(addr, 1) {
 		return
 	}
@@ -209,72 +215,98 @@ func (b *SparseBacking) Write8(addr uint64, v byte) {
 	p[off] = v
 }
 
-func (b *SparseBacking) readSpan(addr uint64, dst []byte) {
+func (b *SparseBacking) Read8(addr uint64) byte {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.read8Locked(addr)
+}
+
+func (b *SparseBacking) Write8(addr uint64, v byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.write8Locked(addr, v)
+}
+
+func (b *SparseBacking) readSpanLocked(addr uint64, dst []byte) {
 	for i := range dst {
-		dst[i] = b.Read8(addr + uint64(i))
+		dst[i] = b.read8Locked(addr + uint64(i))
 	}
 }
 
-func (b *SparseBacking) writeSpan(addr uint64, src []byte) {
+func (b *SparseBacking) writeSpanLocked(addr uint64, src []byte) {
 	for i := range src {
-		b.Write8(addr+uint64(i), src[i])
+		b.write8Locked(addr+uint64(i), src[i])
 	}
 }
 
 func (b *SparseBacking) Read32(addr uint64) uint32 {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	if !b.inRange(addr, 4) {
 		return 0
 	}
 	var buf [4]byte
-	b.readSpan(addr, buf[:])
+	b.readSpanLocked(addr, buf[:])
 	return binary.LittleEndian.Uint32(buf[:])
 }
 
 func (b *SparseBacking) Write32(addr uint64, v uint32) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if !b.inRange(addr, 4) {
 		return
 	}
 	var buf [4]byte
 	binary.LittleEndian.PutUint32(buf[:], v)
-	b.writeSpan(addr, buf[:])
+	b.writeSpanLocked(addr, buf[:])
 }
 
 func (b *SparseBacking) Read64(addr uint64) uint64 {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	if !b.inRange(addr, 8) {
 		return 0
 	}
 	var buf [8]byte
-	b.readSpan(addr, buf[:])
+	b.readSpanLocked(addr, buf[:])
 	return binary.LittleEndian.Uint64(buf[:])
 }
 
 func (b *SparseBacking) Write64(addr uint64, v uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if !b.inRange(addr, 8) {
 		return
 	}
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], v)
-	b.writeSpan(addr, buf[:])
+	b.writeSpanLocked(addr, buf[:])
 }
 
 func (b *SparseBacking) ReadBytes(addr uint64, dst []byte) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	if !b.inRange(addr, uint64(len(dst))) {
 		for i := range dst {
 			dst[i] = 0
 		}
 		return
 	}
-	b.readSpan(addr, dst)
+	b.readSpanLocked(addr, dst)
 }
 
 func (b *SparseBacking) WriteBytes(addr uint64, src []byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if !b.inRange(addr, uint64(len(src))) {
 		return
 	}
-	b.writeSpan(addr, src)
+	b.writeSpanLocked(addr, src)
 }
 
 func (b *SparseBacking) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.pages = make(map[uint64][]byte)
 }
 

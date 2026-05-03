@@ -108,6 +108,13 @@ func pageAlignDown(v uint64) uint64 {
 // at zero so the fallback can never wrap.
 func ParseMeminfo(text string) (uint64, string, error) {
 	fields := map[string]uint64{}
+	consumed := map[string]bool{
+		"MemAvailable": true,
+		"MemFree":      true,
+		"Buffers":      true,
+		"Cached":       true,
+		"Shmem":        true,
+	}
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -126,6 +133,9 @@ func ParseMeminfo(text string) (uint64, string, error) {
 		if err != nil {
 			continue
 		}
+		if !consumed[key] {
+			continue
+		}
 		mult := uint64(1)
 		if len(parts) >= 2 {
 			switch strings.ToLower(parts[1]) {
@@ -138,7 +148,7 @@ func ParseMeminfo(text string) (uint64, string, error) {
 			case "b", "":
 				mult = 1
 			default:
-				mult = 1024 // unknown unit: treat as kB (meminfo's documented unit)
+				return 0, "", fmt.Errorf("%w: unknown unit %q on %s", ErrMeminfoUnusable, parts[1], key)
 			}
 		}
 		fields[key] = val * mult

@@ -149,6 +149,8 @@ Navigate to drive U: in the GEM desktop and double-click the .PRG file.
 
 The IE hardware blitter is fully accessible from GEM applications via the standard MMIO registers (`BLT_OP` at `$F0020`, `BLT_CTRL` at `$F001C`, etc.). In EmuTOS mode, the blitter writes directly to bus memory (the same memory backing the VRAM framebuffer), so blitter output is immediately visible.
 
+When the EmuTOS loader reclaims an MMIO aperture as RAM, `UnmapIO` clears both legacy and native 64-bit mappings for the range. If the unmapped range starts in `$8000-$FFFF`, the matching `$FFFFxxxx` sign-extension mirror is cleared as well.
+
 Key points for GEM blitter usage:
 - Enable the VideoChip first: `move.l #1,VIDEO_CTRL`
 - VRAM base is `$100000`, stride is `2560` bytes (640 pixels x 4 bytes)

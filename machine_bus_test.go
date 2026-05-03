@@ -122,6 +122,141 @@ func TestCPUMemoryVisibleToBus(t *testing.T) {
 	}
 }
 
+func TestUnmapIO_ClearsMapping64(t *testing.T) {
+	bus := NewMachineBus()
+	bus.MapIO64(0xF3000, 0xF30FF, func(addr uint32) uint64 { return 0x42 }, nil)
+
+	if bus.findIORegion64(0xF3000) == nil {
+		t.Fatal("precondition: mapping64 not installed")
+	}
+	bus.UnmapIO(0xF3000, 0xF30FF)
+	if bus.findIORegion64(0xF3000) != nil {
+		t.Fatal("UnmapIO left mapping64 region installed")
+	}
+}
+
+func TestUnmapIO_ClearsSignExtMirror_DirectMapInspection(t *testing.T) {
+	bus := NewMachineBus()
+	const start uint32 = 0x9000
+	bus.MapIO(start, start+0xFF, nil, func(addr uint32, value uint32) {})
+	bus.MapIO64(start, start+0xFF, func(addr uint32) uint64 { return 0 }, nil)
+
+	mirror := start | 0xFFFF0000
+	if len(bus.mapping[mirror&PAGE_MASK]) == 0 {
+		t.Fatal("precondition: sign-extended mapping not installed")
+	}
+	if len(bus.mapping64[mirror&PAGE_MASK]) == 0 {
+		t.Fatal("precondition: sign-extended mapping64 not installed")
+	}
+
+	bus.UnmapIO(start, start+0xFF)
+	if len(bus.mapping[mirror&PAGE_MASK]) != 0 {
+		t.Fatal("UnmapIO left sign-extended legacy mapping installed")
+	}
+	if len(bus.mapping64[mirror&PAGE_MASK]) != 0 {
+		t.Fatal("UnmapIO left sign-extended mapping64 installed")
+	}
+}
+
+func TestUnmapIO_ClearsSignExtMirror_BehaviorLock(t *testing.T) {
+	bus := NewMachineBus()
+	var writes int
+	bus.MapIO(0x9000, 0x90FF, nil, func(addr uint32, value uint32) {
+		writes++
+	})
+
+	bus.Write32(0xFFFF9000, 1)
+	if writes != 1 {
+		t.Fatalf("precondition: sign-extended write dispatched %d times, want 1", writes)
+	}
+
+	bus.UnmapIO(0x9000, 0x90FF)
+	bus.Write32(0xFFFF9000, 2)
+	if writes != 1 {
+		t.Fatalf("sign-extended write dispatched after unmap; writes=%d, want 1", writes)
+	}
+}
+
+func TestUnmapIO_BitmapClearedOnlyWhenBothMapsEmpty(t *testing.T) {
+	bus := NewMachineBus()
+	const addr uint32 = 0xF4000
+	bus.MapIO(addr, addr+0xFF, nil, func(addr uint32, value uint32) {})
+	bus.MapIO64(addr, addr+0xFF, func(addr uint32) uint64 { return 0 }, nil)
+
+	bus.UnmapIO(addr, addr+0xFF)
+	if bus.ioPageBitmap[addr>>8] {
+		t.Fatal("bitmap still set after removing both legacy and 64-bit maps")
+	}
+}
+
+func TestRead8_SignExtMirror_FiresOnRead8(t *testing.T) {
+	bus := NewMachineBus()
+	calls := 0
+	bus.MapIO(0x9000, 0x90FF, nil, nil)
+	bus.MapIOByteRead(0x9000, 0x90FF, func(addr uint32) uint8 {
+		calls++
+		if addr != 0x9000 {
+			t.Fatalf("onRead8 addr=0x%X, want 0x9000", addr)
+		}
+		return 0xAB
+	})
+
+	got := bus.Read8(0xFFFF9000)
+	if got != 0xAB {
+		t.Fatalf("Read8 sign-ext = 0x%02X, want 0xAB", got)
+	}
+	if calls != 1 {
+		t.Fatalf("onRead8 calls=%d, want 1", calls)
+	}
+}
+
+func TestHasMappedRegion64Span_FullyCovered(t *testing.T) {
+	bus := NewMachineBus()
+	bus.MapIO64(0xF5000, 0xF5007, func(addr uint32) uint64 { return 0 }, nil)
+	if !bus.hasMappedRegion64Span(0xF5000, 8) {
+		t.Fatal("hasMappedRegion64Span returned false for fully covered span")
+	}
+}
+
+func TestHasMappedRegion64Span_FullyUnmapped(t *testing.T) {
+	bus := NewMachineBus()
+	if bus.hasMappedRegion64Span(0xF5100, 8) {
+		t.Fatal("hasMappedRegion64Span returned true for unmapped span")
+	}
+}
+
+func TestHasMappedRegion64Span_PartialCoverage_ReturnsFalse(t *testing.T) {
+	bus := NewMachineBus()
+	bus.MapIO64(0xF5200, 0xF5203, func(addr uint32) uint64 { return 0 }, nil)
+	if bus.hasMappedRegion64Span(0xF5200, 8) {
+		t.Fatal("hasMappedRegion64Span returned true for partially covered span")
+	}
+}
+
+func TestHasMappedRegion_NarrowExcludesMapping64(t *testing.T) {
+	bus := NewMachineBus()
+	bus.MapIO64(0xF5300, 0xF5307, func(addr uint32) uint64 { return 0 }, nil)
+	if bus.hasMappedRegion(0xF5300) {
+		t.Fatal("hasMappedRegion included mapping64; legacy helper must stay narrow")
+	}
+}
+
+func TestIsIOAddress64_NewAPI(t *testing.T) {
+	bus := NewMachineBus()
+	bus.MapIO64(0xF5400, 0xF5407, func(addr uint32) uint64 { return 0 }, nil)
+	if !bus.IsIOAddress64(0xF5400) {
+		t.Fatal("IsIOAddress64 returned false for mapping64-only address")
+	}
+}
+
+func TestIsIOAddress_LegacyUnchanged(t *testing.T) {
+	bus := NewMachineBus()
+	bus.MapIO64(0xF5500, 0xF5507, func(addr uint32) uint64 { return 0 }, nil)
+	if bus.IsIOAddress(0xF5500) {
+		t.Fatal("IsIOAddress returned true for mapping64-only address")
+	}
+}
+
 // =============================================================================
 // Benchmarks for memory bus operations
 // =============================================================================

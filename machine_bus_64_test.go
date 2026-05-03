@@ -376,6 +376,31 @@ func TestBusRead64Write64_AddrWrap(t *testing.T) {
 	}
 }
 
+func TestBusRead64WithFault_SignExtendedAddrWrapFaults(t *testing.T) {
+	bus := NewMachineBus()
+	bus.Write64(0xFFFC, 0x1122334455667788)
+
+	got, ok := bus.Read64WithFault(0xFFFFFFFC)
+	if ok {
+		t.Fatal("Read64WithFault returned ok=true for raw sign-extended span that wraps uint32")
+	}
+	if got != 0 {
+		t.Fatalf("Read64WithFault returned 0x%016X, want 0 on fault", got)
+	}
+}
+
+func TestBusWrite64WithFault_SignExtendedAddrWrapFaults(t *testing.T) {
+	bus := NewMachineBus()
+	bus.Write64(0xFFFC, 0x1122334455667788)
+
+	if ok := bus.Write64WithFault(0xFFFFFFFC, 0xAABBCCDDEEFF0011); ok {
+		t.Fatal("Write64WithFault returned ok=true for raw sign-extended span that wraps uint32")
+	}
+	if got := bus.Read64(0xFFFC); got != 0x1122334455667788 {
+		t.Fatalf("low alias changed after faulting write: got 0x%016X", got)
+	}
+}
+
 // TestBusMMIO64PolicyDefault verifies that a newly created bus has the Fault
 // policy as the default for legacy MMIO 64-bit access.
 func TestBusMMIO64PolicyDefault(t *testing.T) {
@@ -436,6 +461,154 @@ func TestBusWrite64WithFault_LegacyFaultPolicy(t *testing.T) {
 	}
 	if writeCalled {
 		t.Error("Legacy onWrite was called under Fault policy, should not be")
+	}
+}
+
+func TestRead64WithFault_StrictWindow_FullyCoveredMapping64(t *testing.T) {
+	bus := NewMachineBus()
+	bus.SetStrictMMIOWindows([]AddrRange{{Start: 0xD1000, End: 0xD10FF}})
+	bus.MapIO64(0xD1000, 0xD10FF, func(addr uint32) uint64 { return 0x1122334455667788 }, nil)
+
+	got, ok := bus.Read64WithFault(0xD1000)
+	if !ok {
+		t.Fatal("Read64WithFault faulted on fully covered mapping64 span")
+	}
+	if got != 0x1122334455667788 {
+		t.Fatalf("Read64WithFault = 0x%016X, want 0x1122334455667788", got)
+	}
+}
+
+func TestRead64WithFault_StrictWindow_PartialUnmapped(t *testing.T) {
+	bus := NewMachineBus()
+	bus.SetStrictMMIOWindows([]AddrRange{{Start: 0xD2000, End: 0xD20FF}})
+	bus.MapIO64(0xD2000, 0xD2003, func(addr uint32) uint64 { return 0 }, nil)
+
+	if got, ok := bus.Read64WithFault(0xD2000); ok || got != 0 {
+		t.Fatalf("Read64WithFault partial strict span = (0x%X, %v), want (0, false)", got, ok)
+	}
+}
+
+func TestRead64WithFault_StrictWindow_BoundaryAddrMinus4(t *testing.T) {
+	bus := NewMachineBus()
+	bus.SetStrictMMIOWindows([]AddrRange{{Start: 0xD3000, End: 0xD30FF}})
+
+	if got, ok := bus.Read64WithFault(0xD2FFC); ok || got != 0 {
+		t.Fatalf("Read64WithFault boundary strict span = (0x%X, %v), want (0, false)", got, ok)
+	}
+}
+
+func TestRead64WithFault_StrictWindow_AddrPlus8AtEnd(t *testing.T) {
+	bus := NewMachineBus()
+	bus.SetStrictMMIOWindows([]AddrRange{{Start: 0xD4000, End: 0xD40FF}})
+	bus.MapIO64(0xD40F8, 0xD40FF, func(addr uint32) uint64 { return 0x8877665544332211 }, nil)
+
+	got, ok := bus.Read64WithFault(0xD40F8)
+	if !ok {
+		t.Fatal("Read64WithFault faulted for span ending at strict window end")
+	}
+	if got != 0x8877665544332211 {
+		t.Fatalf("Read64WithFault = 0x%016X, want 0x8877665544332211", got)
+	}
+}
+
+func TestRead64WithFault_StrictWindow_LegacyOnly_PolicyFault(t *testing.T) {
+	bus := NewMachineBus()
+	bus.SetStrictMMIOWindows([]AddrRange{{Start: 0xD5000, End: 0xD50FF}})
+	bus.MapIO(0xD5000, 0xD50FF, func(addr uint32) uint32 { return 0x11111111 }, nil)
+
+	if got, ok := bus.Read64WithFault(0xD5000); ok || got != 0 {
+		t.Fatalf("Read64WithFault legacy strict fault-policy = (0x%X, %v), want (0, false)", got, ok)
+	}
+}
+
+func TestRead64WithFault_StrictWindow_LegacyOnly_PolicySplit(t *testing.T) {
+	bus := NewMachineBus()
+	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
+	bus.SetStrictMMIOWindows([]AddrRange{{Start: 0xD6000, End: 0xD60FF}})
+	bus.MapIO(0xD6000, 0xD60FF, func(addr uint32) uint32 {
+		if addr == 0xD6004 {
+			return 0xBBBBBBBB
+		}
+		return 0xAAAAAAAA
+	}, nil)
+
+	got, ok := bus.Read64WithFault(0xD6000)
+	if !ok {
+		t.Fatal("Read64WithFault faulted for legacy strict split-policy span")
+	}
+	want := uint64(0xBBBBBBBB)<<32 | uint64(0xAAAAAAAA)
+	if got != want {
+		t.Fatalf("Read64WithFault = 0x%016X, want 0x%016X", got, want)
+	}
+}
+
+func TestRead64WithFault_StrictWindow_SignExtAlias(t *testing.T) {
+	bus := NewMachineBus()
+	bus.SetStrictMMIOWindows([]AddrRange{{Start: 0x9000, End: 0x90FF}})
+	bus.MapIO64(0x9000, 0x9003, func(addr uint32) uint64 { return 0 }, nil)
+
+	if got, ok := bus.Read64WithFault(0xFFFF9000); ok || got != 0 {
+		t.Fatalf("Read64WithFault sign-ext strict partial = (0x%X, %v), want (0, false)", got, ok)
+	}
+}
+
+func TestWrite64WithFault_StrictWindow_FullyCoveredMapping64(t *testing.T) {
+	bus := NewMachineBus()
+	bus.SetStrictMMIOWindows([]AddrRange{{Start: 0xD7000, End: 0xD70FF}})
+	var wrote uint64
+	bus.MapIO64(0xD7000, 0xD70FF, nil, func(addr uint32, value uint64) { wrote = value })
+
+	if ok := bus.Write64WithFault(0xD7000, 0x0102030405060708); !ok {
+		t.Fatal("Write64WithFault faulted on fully covered mapping64 span")
+	}
+	if wrote != 0x0102030405060708 {
+		t.Fatalf("onWrite64 value=0x%016X, want 0x0102030405060708", wrote)
+	}
+}
+
+func TestWrite64WithFault_StrictWindow_PartialUnmapped(t *testing.T) {
+	bus := NewMachineBus()
+	bus.SetStrictMMIOWindows([]AddrRange{{Start: 0xD8000, End: 0xD80FF}})
+	bus.MapIO64(0xD8000, 0xD8003, nil, func(addr uint32, value uint64) {})
+
+	if ok := bus.Write64WithFault(0xD8000, 0x0102030405060708); ok {
+		t.Fatal("Write64WithFault succeeded for partially covered strict span")
+	}
+}
+
+func TestWrite64WithFault_StrictWindow_BoundaryAddrMinus4(t *testing.T) {
+	bus := NewMachineBus()
+	bus.SetStrictMMIOWindows([]AddrRange{{Start: 0xD9000, End: 0xD90FF}})
+
+	if ok := bus.Write64WithFault(0xD8FFC, 0x0102030405060708); ok {
+		t.Fatal("Write64WithFault succeeded for boundary span with unmapped strict bytes")
+	}
+}
+
+func TestWrite64WithFault_StrictWindow_LegacyOnly_PolicyFault(t *testing.T) {
+	bus := NewMachineBus()
+	bus.SetStrictMMIOWindows([]AddrRange{{Start: 0xDA000, End: 0xDA0FF}})
+	bus.MapIO(0xDA000, 0xDA0FF, nil, func(addr uint32, value uint32) {})
+
+	if ok := bus.Write64WithFault(0xDA000, 0x0102030405060708); ok {
+		t.Fatal("Write64WithFault succeeded for legacy strict fault-policy span")
+	}
+}
+
+func TestWrite64WithFault_StrictWindow_LegacyOnly_PolicySplit(t *testing.T) {
+	bus := NewMachineBus()
+	bus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
+	bus.SetStrictMMIOWindows([]AddrRange{{Start: 0xDB000, End: 0xDB0FF}})
+	writes := map[uint32]uint32{}
+	bus.MapIO(0xDB000, 0xDB0FF, nil, func(addr uint32, value uint32) {
+		writes[addr] = value
+	})
+
+	if ok := bus.Write64WithFault(0xDB000, 0xBBBBBBBBAAAAAAAA); !ok {
+		t.Fatal("Write64WithFault faulted for legacy strict split-policy span")
+	}
+	if writes[0xDB000] != 0xAAAAAAAA || writes[0xDB004] != 0xBBBBBBBB {
+		t.Fatalf("legacy split writes=%v, want low/high dwords", writes)
 	}
 }
 
