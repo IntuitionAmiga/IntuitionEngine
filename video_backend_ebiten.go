@@ -1113,6 +1113,8 @@ type statusToken struct {
 	enabled bool
 }
 
+const runtimeStatusBarAlpha = 40
+
 func drawStatusLine(screen *ebiten.Image, x, baselineY int, label string, tokens []statusToken) {
 	face := basicfont.Face7x13
 	labelColor := color.RGBA{190, 190, 190, 255}
@@ -1187,7 +1189,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 		return
 	}
 	y := eo.height - barHeight
-	ebitenutil.DrawRect(screen, 0, float64(y), float64(eo.width), float64(barHeight), color.RGBA{0, 0, 0, 180})
+	ebitenutil.DrawRect(screen, 0, float64(y), float64(eo.width), float64(barHeight), color.RGBA{0, 0, 0, runtimeStatusBarAlpha})
 
 	drawStatusLine(screen, 6, y+13, "CPU  ", []statusToken{
 		{name: "IE32 ", enabled: ie32On},
