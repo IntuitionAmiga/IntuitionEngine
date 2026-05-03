@@ -627,3 +627,41 @@ func TestMediaLoader_TypeDetectedOnPlay(t *testing.T) {
 		})
 	}
 }
+
+func TestMediaLoader_DirectMODPath_StopsPriorPlayer(t *testing.T) {
+	dir := t.TempDir()
+	modData := buildMinimalMOD(make([]int8, 64), []MODNote{{SampleNum: 1, Period: 428}})
+	if err := os.WriteFile(filepath.Join(dir, "song.mod"), modData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	bus := NewMachineBus()
+	sound := newTestSoundChip()
+	tedPlayer := NewTEDPlayer(NewTEDEngine(sound, SAMPLE_RATE))
+	modPlayer := NewMODPlayer(sound, SAMPLE_RATE)
+	loader := NewMediaLoader(bus, sound, dir, nil, nil, tedPlayer, nil, nil, modPlayer, nil)
+
+	tedPlayer.Play()
+	if !tedPlayer.IsPlaying() {
+		t.Fatal("TED player should start for test setup")
+	}
+
+	nameAddr := uint32(0x1000)
+	writeFilenameToBus(bus, nameAddr, "song.mod")
+	loader.HandleWrite(MEDIA_NAME_PTR, nameAddr)
+	loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_PLAY)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if loader.HandleRead(MEDIA_STATUS) == MEDIA_STATUS_PLAYING && modPlayer.IsPlaying() {
+			break
+		}
+		runtime.Gosched()
+	}
+	if tedPlayer.IsPlaying() {
+		t.Fatal("direct MOD path did not stop prior TED player")
+	}
+	if !modPlayer.IsPlaying() {
+		t.Fatal("MOD player did not start")
+	}
+}

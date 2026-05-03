@@ -195,6 +195,7 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fullPath string, typ uint32, s
 			return
 		}
 		if m.modPlayer != nil {
+			m.stopPlayersOnly()
 			m.mu.Unlock()
 			loadErr := m.modPlayer.Load(data)
 			m.mu.Lock()

@@ -206,3 +206,41 @@ func TestMODPlayerGenerationCounting(t *testing.T) {
 		t.Error("expected not playing after generation cancel")
 	}
 }
+
+func TestMODPlayer_PlayBusyClearsAfterAsyncStart(t *testing.T) {
+	player, bus := newTestMODPlayer(t)
+	modData := buildMinimalMOD(make([]int8, 64), nil)
+	copy(bus.GetMemory()[0x1000:], modData)
+	player.HandlePlayWrite(MOD_PLAY_PTR, 0x1000)
+	player.HandlePlayWrite(MOD_PLAY_LEN, uint32(len(modData)))
+	player.HandlePlayWrite(MOD_PLAY_CTRL, 1)
+	for range 100 {
+		if player.IsPlaying() {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	player.mu.Lock()
+	busy := player.playBusy
+	player.mu.Unlock()
+	if busy {
+		t.Fatal("playBusy should clear after async start")
+	}
+}
+
+func TestMODPlayer_StatusBit0_MeansPlaying(t *testing.T) {
+	player, bus := newTestMODPlayer(t)
+	modData := buildMinimalMOD(make([]int8, 64), nil)
+	copy(bus.GetMemory()[0x1000:], modData)
+	player.HandlePlayWrite(MOD_PLAY_PTR, 0x1000)
+	player.HandlePlayWrite(MOD_PLAY_LEN, uint32(len(modData)))
+	player.HandlePlayWrite(MOD_PLAY_CTRL, 1)
+	time.Sleep(50 * time.Millisecond)
+	if status := player.HandlePlayRead(MOD_PLAY_STATUS); status&0x1 == 0 {
+		t.Fatalf("status bit 0 should be set while playing, got 0x%x", status)
+	}
+	player.HandlePlayWrite(MOD_PLAY_CTRL, 2)
+	if status := player.HandlePlayRead(MOD_PLAY_STATUS); status&0x1 != 0 {
+		t.Fatalf("status bit 0 should clear when stopped, got 0x%x", status)
+	}
+}

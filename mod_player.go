@@ -43,6 +43,9 @@ func (p *MODPlayer) Load(data []byte) error {
 // Play starts playback.
 func (p *MODPlayer) Play() {
 	p.engine.SetPlaying(true)
+	p.mu.Lock()
+	p.playBusy = false
+	p.mu.Unlock()
 }
 
 // Stop stops playback.
@@ -172,6 +175,7 @@ func (p *MODPlayer) startAsync(req modAsyncStartRequest) {
 		p.playBusy = false
 		return
 	}
+	p.playBusy = false
 
 	p.engine.SetPlaying(false)
 	p.engine.LoadMOD(mod)
@@ -224,7 +228,7 @@ func (p *MODPlayer) HandlePlayRead(addr uint32) uint32 {
 	case MOD_PLAY_STATUS + 3:
 		return readUint32Byte(p.playStatus(), 3)
 	case MOD_FILTER_MODEL:
-		return uint32(p.engine.filterModel)
+		return uint32(p.engine.GetFilterModel())
 	case MOD_POSITION:
 		return uint32(p.engine.GetPosition())
 	case MOD_POSITION + 1:
@@ -256,12 +260,7 @@ func (p *MODPlayer) playCtrlStatus() uint32 {
 
 func (p *MODPlayer) playStatus() uint32 {
 	status := uint32(0)
-	busy := p.playBusy
-	if busy && !p.IsPlaying() {
-		p.playBusy = false
-		busy = false
-	}
-	if busy {
+	if p.IsPlaying() {
 		status |= 0x1
 	}
 	if p.playErr {

@@ -3,7 +3,10 @@
 package main
 
 import (
+	"encoding/binary"
+	"hash/crc32"
 	"math"
+	"sync"
 	"testing"
 )
 
@@ -91,6 +94,85 @@ func TestMODEnginePhaseIncrement(t *testing.T) {
 	if math.Abs(mc.phaseInc-expected) > 0.0001 {
 		t.Errorf("expected phaseInc ≈ %f, got %f", expected, mc.phaseInc)
 	}
+}
+
+func TestMOD_Engine_UsesEngineSampleRate(t *testing.T) {
+	engine, _ := newTestMODEngine(t)
+	engine.sampleRate = 22050
+	mod := buildTestMODWithSample(make([]int8, 64))
+	engine.LoadMOD(mod)
+	engine.SetPlaying(true)
+	engine.TickSample()
+
+	if got, want := engine.samplesPerTick, SamplesPerTick(22050, 125); got != want {
+		t.Fatalf("samplesPerTick=%d, want %d", got, want)
+	}
+	if got := engine.replayer.channels[0].phaseInc; math.Abs(got-(modPALClock/(428.0*22050.0))) > 0.0001 {
+		t.Fatalf("phaseInc=%f, want engine sample-rate increment", got)
+	}
+}
+
+func TestMOD_Replayer_8Channel_MixesIntoFour(t *testing.T) {
+	engine, chip := newTestMODEngine(t)
+	notes := make([]MODNote, 8)
+	for i := range notes {
+		notes[i] = MODNote{SampleNum: 1, Period: 428}
+	}
+	mod, err := ParseMOD(buildMinimalMODN(8, "8CHN", []int8{96, 96, 96, 96}, notes))
+	if err != nil {
+		t.Fatalf("ParseMOD failed: %v", err)
+	}
+	engine.LoadMOD(mod)
+	engine.SetPlaying(true)
+	for range 20 {
+		engine.TickSample()
+	}
+	for i := range modChannels {
+		if got := chip.channels[i].generateSample(); got == 0 {
+			t.Fatalf("chip channel %d silent after 8-channel mix", i)
+		}
+	}
+}
+
+func TestMOD_4Channel_GoldenHashUnchanged(t *testing.T) {
+	got := modGoldenHash(t)
+	const want uint32 = 0xf6a133f6
+	if got != want {
+		t.Fatalf("golden hash=0x%08x, want 0x%08x", got, want)
+	}
+}
+
+func modGoldenHash(t *testing.T) uint32 {
+	t.Helper()
+	engine, chip := newTestMODEngine(t)
+	sampleData := []int8{-80, -40, 0, 40, 80, 40, 0, -40}
+	notes := []MODNote{
+		{SampleNum: 1, Period: 428},
+		{SampleNum: 1, Period: 381},
+	}
+	mod, err := ParseMOD(buildMinimalMOD(sampleData, notes))
+	if err != nil {
+		t.Fatalf("ParseMOD failed: %v", err)
+	}
+	engine.LoadMOD(mod)
+	engine.SetPlaying(true)
+
+	buf := make([]byte, 0, 4096*modChannels*2)
+	var tmp [2]byte
+	for range 4096 {
+		engine.TickSample()
+		for ch := range modChannels {
+			v := int(math.Round(float64(chip.channels[ch].dacValue) * 32767.0))
+			if v < -32768 {
+				v = -32768
+			} else if v > 32767 {
+				v = 32767
+			}
+			binary.LittleEndian.PutUint16(tmp[:], uint16(int16(v)))
+			buf = append(buf, tmp[:]...)
+		}
+	}
+	return crc32.ChecksumIEEE(buf)
 }
 
 func TestMODEngineVolumeScaling(t *testing.T) {
@@ -254,7 +336,7 @@ func TestMODEngineSongEnd(t *testing.T) {
 	engine.SetPlaying(true)
 
 	// Tick through the entire song (1 pattern = 64 rows * 6 ticks/row * 882 samples/tick)
-	totalSamples := 64 * modDefaultSpeed * SamplesPerTick(SAMPLE_RATE, modDefaultBPM)
+	totalSamples := 3 * 64 * modDefaultSpeed * SamplesPerTick(SAMPLE_RATE, modDefaultBPM)
 	for range totalSamples + 1000 {
 		engine.TickSample()
 	}
@@ -262,4 +344,105 @@ func TestMODEngineSongEnd(t *testing.T) {
 	if engine.IsPlaying() {
 		t.Error("expected playback to stop at song end")
 	}
+}
+
+func TestMOD_RestartPos_LoopsToRestartNotZero(t *testing.T) {
+	engine, _ := newTestMODEngine(t)
+	mod := buildTestMODWithSample(make([]int8, 64))
+	mod.SongLength = 3
+	mod.RestartPos = 2
+	engine.LoadMOD(mod)
+	engine.SetLoop(true)
+	engine.SetPlaying(true)
+	totalSamples := 3 * 64 * modDefaultSpeed * SamplesPerTick(SAMPLE_RATE, modDefaultBPM)
+	for range totalSamples + 1000 {
+		engine.TickSample()
+	}
+	if got := engine.GetPosition(); got != 2 {
+		t.Fatalf("loop restart position=%d, want 2", got)
+	}
+}
+
+func TestMOD_FractionalSamplesPerTick_LongRunDriftUnder0_1Percent(t *testing.T) {
+	engine, _ := newTestMODEngine(t)
+	mod := buildTestMODWithSample(make([]int8, 64))
+	engine.LoadMOD(mod)
+	engine.replayer.bpm = 129
+	engine.samplesPerTickQ = samplesPerTickQ(engine.sampleRate, 129)
+	engine.SetLoop(true)
+	engine.SetPlaying(true)
+	ticks := 0
+	for range SAMPLE_RATE * 60 {
+		before := engine.replayer.tick
+		engine.TickSample()
+		if engine.replayer.tick != before {
+			ticks++
+		}
+	}
+	expected := float64(60*129*2) / 5.0
+	if math.Abs(float64(ticks)-expected) > expected*0.001+1 {
+		t.Fatalf("ticks=%d expected %.2f", ticks, expected)
+	}
+}
+
+func TestMOD_BPMChange_PreservesAccumulatorPhase(t *testing.T) {
+	engine, _ := newTestMODEngine(t)
+	data := buildMinimalMOD(make([]int8, 64), []MODNote{{Effect: 0xF, EffParam: 150}})
+	mod, err := ParseMOD(data)
+	if err != nil {
+		t.Fatalf("ParseMOD failed: %v", err)
+	}
+	engine.LoadMOD(mod)
+	engine.SetPlaying(true)
+
+	oldQ := engine.samplesPerTickQ
+	const remainingSamples = 17
+	const halfSampleQ = uint64(1 << 31)
+	engine.tickAccumQ = oldQ - remainingSamples*(1<<32) + halfSampleQ
+	for range remainingSamples {
+		engine.TickSample()
+	}
+	if engine.replayer.bpm != 150 {
+		t.Fatalf("BPM=%d, want 150", engine.replayer.bpm)
+	}
+	if engine.tickAccumQ == 0 {
+		t.Fatal("BPM change reset tick accumulator phase")
+	}
+	if engine.tickAccumQ != halfSampleQ {
+		t.Fatalf("tickAccumQ=%d, want preserved remainder %d", engine.tickAccumQ, halfSampleQ)
+	}
+	if engine.samplesPerTickQ != samplesPerTickQ(engine.sampleRate, 150) {
+		t.Fatalf("samplesPerTickQ not recomputed for BPM 150")
+	}
+}
+
+func TestMOD_TickSample_NoLockContention(t *testing.T) {
+	engine, _ := newTestMODEngine(t)
+	mod := buildTestMODWithSample(make([]int8, 64))
+	engine.LoadMOD(mod)
+	engine.SetPlaying(true)
+
+	var wg sync.WaitGroup
+	for i := range 4 {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for j := range 200 {
+				switch (worker + j) % 4 {
+				case 0:
+					engine.SetPlaying(j%2 == 0)
+				case 1:
+					engine.SetLoop(j%2 == 0)
+				case 2:
+					engine.SetFilterModel(j % 3)
+				case 3:
+					engine.LoadMOD(mod)
+				}
+			}
+		}(i)
+	}
+	for range 2000 {
+		engine.TickSample()
+	}
+	wg.Wait()
 }

@@ -195,7 +195,7 @@ Default core: **IE64**. Additional cores: **IE32, M68K, x86, Z80, 6502**.
 - **SID** (6581/8580) - Supports .sid playback
 - **TED** (Commodore Plus/4) - Supports .ted playback
 - **Amiga AHX** module playback
-- **ProTracker MOD** (.mod) - 4-channel Amiga module playback with A500/A1200 filter emulation
+- **ProTracker MOD** (.mod) - 4/6/8/xxCH module playback up to 32 channels with A500/A1200 filter emulation
 - **WAV** PCM audio via SoundChip FLEX DAC mode
 
 ## Video System
@@ -439,7 +439,7 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 | PSG | `$F0C00-$F0C20` | AY-3-8910/YM2149 registers and file playback |
 | POKEY | `$F0D00-$F0D20` | Atari POKEY registers and SAP playback |
 | SID | `$F0E00-$F0E2D` | MOS 6581 registers and SID playback |
-| MOD | `$F0BC0-$F0BD7` | ProTracker .mod player with Amiga filters |
+| MOD | `$F0BC0-$F0BD7` | ProTracker .mod player, 4/6/8/xxCH up to 32 channels, with Amiga filters |
 | Banking | `$F700-$F7F0` | Bank window control (Z80/6502/x86) |
 | VGA | `$F1000-$F13FF` | VGA mode, DAC, sequencer, CRTC, palette |
 | File I/O | `$F2200-$F221F` | Host filesystem access (read/write); supports byte-level writes for 8-bit CPUs |
@@ -477,7 +477,7 @@ The system's memory layout is designed to provide efficient access to both progr
 0x0F0900 - 0x0F0A6F: Legacy synth registers (square/triangle/sine/noise/saw)
 0x0F0A80 - 0x0F0B7F: Flexible 4-channel synth registers (preferred)
 0x0F0B80 - 0x0F0B91: AHX module player registers
-0x0F0BC0 - 0x0F0BD7: MOD player registers (ProTracker .mod playback)
+0x0F0BC0 - 0x0F0BD7: MOD player registers (ProTracker .mod playback, 4/6/8/xxCH up to 32 channels)
 0x0F0BD8 - 0x0F0BEB: WAV player registers (PCM .wav playback)
 0x0F0C00 - 0x0F0C0F: PSG registers (AY/YM synthesis)
 0x0F0C20:            PSG+ control register
@@ -1018,7 +1018,7 @@ MOD Player Registers (0x0F0BC0 - 0x0F0BD7):
 0x0F0BC0: MOD_PLAY_PTR     - Pointer to MOD data in bus memory (32-bit)
 0x0F0BC4: MOD_PLAY_LEN     - Length of MOD data (32-bit)
 0x0F0BC8: MOD_PLAY_CTRL    - Control (bit0=start, bit1=stop, bit2=loop)
-0x0F0BCC: MOD_PLAY_STATUS  - Status (bit0=busy, bit1=error)
+0x0F0BCC: MOD_PLAY_STATUS  - Status (bit0=playing, bit1=error)
 0x0F0BD0: MOD_FILTER_MODEL - Filter model (0=none, 1=A500 4.5kHz, 2=A1200 28kHz)
 0x0F0BD4: MOD_POSITION     - Current song position (read-only)
 ```
@@ -5066,13 +5066,13 @@ ahx_data_end:
 
 ## 11.9 MOD Player (ProTracker)
 
-The MOD player provides full ProTracker .mod file playback with 4-channel sample-based audio. MOD files are the classic Amiga music format, using PCM samples mixed in real time. The player outputs through the SoundChip FLEX channels in DAC mode.
+The MOD player provides ProTracker .mod playback with sample-based audio for 4/6/8/xxCH formats up to 32 channels. MOD files are the classic Amiga music format, using PCM samples mixed in real time. The player maps source channels onto the four SoundChip FLEX DAC channels and uses Q32.32 tick accumulation for stable long-running tempo.
 
 ### Features:
-- Full ProTracker .mod file parsing (M.K., 4CHN, FLT4, M!K! signatures)
+- ProTracker .mod parsing for M.K., 4CHN, FLT4, M!K!, 6CHN, 8CHN, FLT8, OCTA, CD81, OKTA, and xxCH signatures up to 32 channels
 - 4-channel sample playback via SoundChip FLEX DAC mode
 - Amiga A500 and A1200 low-pass filter emulation with LED filter
-- ProTracker effects: arpeggio (0), portamento up/down (1/2), tone portamento (3), vibrato (4), vol+tone slide (5/6), sample offset (9), volume slide (A), position jump (B), set volume (C), pattern break (D), set speed/BPM (F)
+- ProTracker effects: arpeggio (0), portamento up/down (1/2), tone portamento (3), vibrato (4), tone/vibrato volume slide (5/6), tremolo (7), sample offset (9), volume slide (A), position jump (B), set volume (C), pattern break (D), extended effects (E0/E1/E2/E4/E5/E6/E9/EA/EB/EC/ED/EE/EF), set speed/BPM (F). EFx funk/invert-loop is retained as effect memory only and does not alter sample data.
 - Extended effects (Exy): LED filter (E0), fine porta up/down (E1/E2), set finetune (E5), retrigger (E9), fine vol slide (EA/EB), note cut (EC), note delay (ED), pattern delay (EE)
 - Song position tracking
 - Loop support
@@ -5126,7 +5126,7 @@ mod_data_end:
 **Playback Control:**
 - Write `1` to MOD_PLAY_CTRL to start, `2` to stop, `5` to start with loop
 - Set MOD_FILTER_MODEL before starting to select a filter (0=none, 1=A500, 2=A1200)
-- Read MOD_PLAY_STATUS for busy/error flags
+- Read MOD_PLAY_STATUS for playing/error flags (bit 0 = playing, bit 1 = error)
 - Read MOD_POSITION for the current song position
 
 # 12. Video System
