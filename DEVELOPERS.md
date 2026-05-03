@@ -741,7 +741,7 @@ AROS (Amiga Research Operating System) runs on the IE M68K core with a full Work
 | `aros_loader.go` | ROM loading, memory layout, IRQ generation, input handling |
 | `aros_dos_intercept.go` | DOS handler MMIO filesystem bridge (IE: volume) |
 | `aros_dos_constants.go` | AmigaDOS action codes, error codes, lock types |
-| `aros_audio_dma.go` | Paula-compatible 4-channel DMA audio |
+| `aros_audio_dma.go` | AROS Paula-style DMA shim |
 | `aros_audio_constants.go` | Audio DMA register addresses |
 | `aros_embed.go` | `//go:embed` for ROM image (`embed_aros` tag) |
 | `aros_noembed.go` | Nil ROM fallback (`!embed_aros` tag) |

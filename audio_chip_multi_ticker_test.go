@@ -75,6 +75,50 @@ func TestSoundChip_UnregisterSampleTicker(t *testing.T) {
 	}
 }
 
+func TestSoundChip_UnregisterSampleTickerIf_Match(t *testing.T) {
+	chip, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticker := &countTicker{}
+	chip.RegisterSampleTicker("sn76489", ticker)
+
+	if !chip.UnregisterSampleTickerIf("sn76489", ticker) {
+		t.Fatalf("UnregisterSampleTickerIf returned false, want true")
+	}
+	if chip.HasSampleTicker("sn76489") {
+		t.Fatalf("ticker still registered after matching unregister")
+	}
+}
+
+func TestSoundChip_UnregisterSampleTickerIf_Mismatch(t *testing.T) {
+	chip, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := &countTicker{}
+	second := &countTicker{}
+	chip.RegisterSampleTicker("sn76489", first)
+
+	if chip.UnregisterSampleTickerIf("sn76489", second) {
+		t.Fatalf("UnregisterSampleTickerIf returned true for mismatched ticker")
+	}
+	chip.ReadSample()
+	if first.count != 1 || second.count != 0 {
+		t.Fatalf("counts: first=%d second=%d, want 1/0", first.count, second.count)
+	}
+}
+
+func TestSoundChip_UnregisterSampleTickerIf_AbsentKey(t *testing.T) {
+	chip, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chip.UnregisterSampleTickerIf("missing", &countTicker{}) {
+		t.Fatalf("UnregisterSampleTickerIf returned true for absent key")
+	}
+}
+
 func TestSoundChip_SetSampleTicker_BackwardCompat(t *testing.T) {
 	chip, err := NewSoundChip(AUDIO_BACKEND_OTO)
 	if err != nil {

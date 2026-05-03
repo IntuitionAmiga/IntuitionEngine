@@ -2819,6 +2819,23 @@ func (chip *SoundChip) UnregisterSampleTicker(key string) {
 	chip.rebuildSampleTickerCacheLocked()
 }
 
+func (chip *SoundChip) UnregisterSampleTickerIf(key string, want SampleTicker) bool {
+	if key == "" {
+		key = "default"
+	}
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	if chip.sampleTickers == nil {
+		return false
+	}
+	if chip.sampleTickers[key] != want {
+		return false
+	}
+	delete(chip.sampleTickers, key)
+	chip.rebuildSampleTickerCacheLocked()
+	return true
+}
+
 func (chip *SoundChip) HasSampleTicker(key string) bool {
 	if key == "" {
 		key = "default"

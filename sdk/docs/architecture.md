@@ -578,8 +578,8 @@ graph LR
         AHX_P["AHX Player<br/>0xF0B84"]
     end
 
-    subgraph PAULA["Paula DMA (0xF2260-0xF22AF)"]
-        PDMA["4 DMA Audio Channels<br/>Amiga-compatible"]
+    subgraph PAULA["AROS Paula-style DMA shim (0xF2260-0xF22AF)"]
+        PDMA["4 DMA Audio Channels<br/>AROS audio.device"]
     end
 
     SC["SoundChip<br/>10 Channels"]
@@ -621,7 +621,18 @@ The PSG uses the AY/YM logarithmic 16-step volume curve by default. A legacy lin
 | TED+ | `0xF0F05` | Enhanced render path plus TED-specific response shaping |
 | AHX+ | `0xF0B80` | AHX voice-state mapping with stereo spread/panning and room processing |
 
-When Plus mode is enabled, the engine retains full backward compatibility with the standard register set while exposing additional capabilities. AHX maps tracker state to native SoundChip channels instead of producing a Paula DMA stream; AHX+ uses a 64-sample crossfade when enabling/disabling to prevent audio glitches.
+When Plus mode is enabled, the engine retains full backward compatibility with the standard register set while exposing additional capabilities. AHX maps tracker state to native SoundChip channels instead of producing an AROS audio DMA stream; AHX+ uses a 64-sample crossfade when enabling/disabling to prevent audio glitches.
+
+### AROS Paula-Style DMA Shim ABI
+
+The AROS audio block at `0xF2260-0xF22AF` is an Intuition Engine shim for AROS `audio.device`, not a full Amiga Paula implementation.
+
+- Guest code writes the shim with 32-bit aligned writes (`MOVE.L`). Narrower writes are outside the current ABI.
+- A `DMACON` channel transition from `0` to `1` latches that channel's pointer, length, period, and volume. Active playback uses the latched values until the buffer ends.
+- If the latched period or length is zero at arm time, the channel is not activated. The channel `DMACON` bit is cleared, the status bit is set, and a level-3 interrupt is raised when the corresponding `INTENA` bit is set.
+- Buffer exhaust sets the status bit, raises a level-3 interrupt when the corresponding `INTENA` bit is set, marks the channel inactive, and clears that channel's `DMACON` bit. The guest must write `DMACON` enable again to start the next buffer.
+- Out-of-range pointers beyond the active AROS profile RAM deactivate the channel, mute the DAC output, set the status bit, and raise a level-3 interrupt when the corresponding `INTENA` bit is set.
+- Pointer writes ignore bit 0, length is a word count and preserves odd values, period writes with zero are ignored, and volume writes are clamped to `0..64`.
 
 ### Subsong Selection
 
@@ -663,7 +674,7 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xF2140-0xF21FB` | 188B | GTIA |
 | `0xF2200-0xF221F` | 32B | File I/O |
 | `0xF2220-0xF225F` | 64B | AROS DOS Handler |
-| `0xF2260-0xF22AF` | 80B | AROS Audio DMA (Paula) |
+| `0xF2260-0xF22AF` | 80B | AROS Paula-style DMA shim |
 | `0xF2300-0xF231F` | 32B | Media Loader |
 | `0xF2320-0xF233F` | 32B | Program Executor |
 | `0xF2340-0xF238F` | 80B | Coprocessor Manager |
@@ -903,7 +914,7 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 | `script_engine.go` | Lua scripting engine |
 | `aros_loader.go` | AROS ROM boot manager |
 | `aros_dos_intercept.go` | AmigaDOS packet handler (MMIO) |
-| `aros_audio_dma.go` | Paula DMA (audio hardware) |
+| `aros_audio_dma.go` | AROS Paula-style DMA shim |
 
 ## 9. IntuitionOS Hardening Story
 

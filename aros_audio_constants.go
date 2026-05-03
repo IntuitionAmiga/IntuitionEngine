@@ -1,6 +1,6 @@
 package main
 
-// AROS Audio DMA — MMIO register addresses for Paula-compatible DMA emulation.
+// AROS Audio DMA — MMIO register addresses for the AROS Paula-style DMA shim.
 //
 // The audio DMA engine sits between the AROS audio.device (M68K guest) and
 // the IE SoundChip flex channels. The M68K side writes sample pointer, length,
@@ -32,9 +32,9 @@ const (
 
 	// Per-channel register offsets (relative to channel base)
 	AROS_AUD_OFF_PTR = 0x00 // Sample pointer in guest RAM (uint32)
-	AROS_AUD_OFF_LEN = 0x04 // Length in words (1 word = 2 bytes, Paula-style)
-	AROS_AUD_OFF_PER = 0x08 // Period (Paula-compatible: PAULA_CLOCK / freq)
-	AROS_AUD_OFF_VOL = 0x0C // Volume (0–64, Paula-compatible)
+	AROS_AUD_OFF_LEN = 0x04 // Length in words (1 word = 2 bytes)
+	AROS_AUD_OFF_PER = 0x08 // Period (Paula-style PAL clock / freq)
+	AROS_AUD_OFF_VOL = 0x0C // Volume (0–64)
 
 	// Global register addresses
 	AROS_AUD_DMACON = 0xF22A0 // DMA control: bit 15 = set/clear, bits 0–3 = channels

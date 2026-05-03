@@ -444,7 +444,7 @@ All hardware is accessed through memory-mapped registers in the `$F0000-$FFFFF` 
 | VGA | `$F1000-$F13FF` | VGA mode, DAC, sequencer, CRTC, palette |
 | File I/O | `$F2200-$F221F` | Host filesystem access (read/write); supports byte-level writes for 8-bit CPUs |
 | AROS DOS | `$F2220-$F225F` | AROS DOS handler bridge (AROS mode only) |
-| AROS Audio | `$F2260-$F22AF` | Paula-compatible 4-channel DMA audio (AROS mode only) |
+| AROS Audio | `$F2260-$F22AF` | AROS Paula-style DMA shim (AROS mode only) |
 | Media Loader | `$F2300-$F231F` | Media file auto-detection and loading |
 | Bootstrap HostFS | `$F23E0-$F23FF` | Read-only host-backed boot bridge for IntuitionOS bootstrap |
 | Coprocessor | `$F2340-$F238F` | Worker CPU lifecycle, async RPC, IRQ control |
@@ -6023,12 +6023,12 @@ Total: 27.6MB (5.6MB chip + 22MB fast memory). ROM overlays the top of the Chip 
 - Multi-resolution display: 640x480, 800x600, 1024x768, 1280x960 (CLUT8/RGBA32)
 - Amiga rawkey scancode input, software cursor overlay
 - battclock.resource via RTC_EPOCH MMIO register (0xF0750)
-- Paula-compatible 4-channel audio DMA (see registers below)
+- AROS Paula-style DMA shim (see registers below)
 - iewarp.library: AROS shared library that offloads compute to the IE64 coprocessor
 
-### Paula DMA Audio Registers (0xF2260 - 0xF22AF)
+### AROS Audio DMA Registers (0xF2260 - 0xF22AF)
 
-Paula-compatible 4-channel sample DMA. The M68K audio.device writes sample pointers, lengths, periods, and volumes to per-channel registers, then enables DMA via DMACON. The engine reads sample bytes from guest RAM at the correct rate and outputs them via SoundChip FLEX DAC at 44.1kHz.
+AROS Paula-style DMA shim for 4-channel sample playback. The M68K audio.device writes sample pointers, lengths, periods, and volumes to per-channel registers, then enables DMA via DMACON. The engine reads sample bytes from guest RAM at the correct rate and outputs them via SoundChip FLEX DAC at 44.1kHz.
 
 **Per-Channel Registers** (4 channels × 16 bytes, CH0=0xF2260, CH1=0xF2270, CH2=0xF2280, CH3=0xF2290):
 
@@ -6037,7 +6037,7 @@ Paula-compatible 4-channel sample DMA. The M68K audio.device writes sample point
 | +$00 | AUDxPTR | Sample pointer in guest RAM (32-bit) |
 | +$04 | AUDxLEN | Length in words (1 word = 2 bytes, Paula-style) |
 | +$08 | AUDxPER | Period (frequency = 3546895 / period, PAL clock) |
-| +$0C | AUDxVOL | Volume (0-64, Paula-compatible) |
+| +$0C | AUDxVOL | Volume (0-64) |
 
 **Global Registers:**
 
@@ -6047,7 +6047,7 @@ Paula-compatible 4-channel sample DMA. The M68K audio.device writes sample point
 | `$F22A4` | STATUS | Completion flags: bits 0-3 per channel (write-to-clear) |
 | `$F22A8` | INTENA | Interrupt enable: bit 15=set/clear, bits 0-3=channel enables |
 
-Buffer completion triggers a Level 3 interrupt (M68K autovector 27) when the corresponding INTENA bit is set.
+Buffer completion sets the channel status bit, clears the channel DMACON bit, and triggers a Level 3 interrupt (M68K autovector 27) when the corresponding INTENA bit is set.
 
 ### Build Targets
 

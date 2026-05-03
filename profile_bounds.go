@@ -5,7 +5,7 @@
 // CPU's architectural visible range: EmuTOS and AROS run on M68K (4 GiB
 // addressable) but expose a much smaller profile-specific top-of-RAM by
 // design, preserving the historical low-memory layout that GEMDOS, IOREC,
-// the AROS Paula DMA window, and direct VRAM placement all depend on.
+// the AROS audio DMA window, and direct VRAM placement all depend on.
 //
 // EhBASIC is an IE64 source/runtime profile and follows the bus-reported
 // active visible RAM, capped at uint32 for low-memory accounting paths.
@@ -29,7 +29,7 @@ const (
 	// AROS_PROFILE_TOP is the explicit top-of-RAM the AROS M68K profile
 	// exposes. PLAN_MAX_RAM slice 10h raised this from 32 MiB to 2 GiB.
 	// The direct VRAM window at 0x1E00000..0x2000000 (30 MiB) and the
-	// Paula DMA fetch guard are well inside the new ceiling. 2 GiB
+	// AROS audio DMA fetch guard are well inside the new ceiling. 2 GiB
 	// (= 0x80000000) still fits in uint32 — the value is the largest
 	// page-aligned quantity that survives the M68K profile's uint32
 	// representation. Any deliberate move requires source-coordinated

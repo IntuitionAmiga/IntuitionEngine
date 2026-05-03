@@ -52,7 +52,7 @@ func TestAROS_DirectVRAMUnchanged(t *testing.T) {
 }
 
 func TestAROS_PaulaDMA_ProfileTopUsesAROSContract(t *testing.T) {
-	// The Paula DMA fetch is bounded by AROSProfileBounds.TopOfRAM. With
+	// The AROS audio DMA fetch is bounded by AROSProfileBounds.TopOfRAM. With
 	// active visible at the profile cap (2 GiB), the DMA bound matches
 	// AROS_PROFILE_TOP. SetBacking + SetSizing fakes the 2 GiB sizing
 	// without committing 2 GiB of heap (SparseBacking is page-keyed).

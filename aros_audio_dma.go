@@ -1,24 +1,30 @@
 package main
 
 import (
+	"sync"
 	"sync/atomic"
 	"unsafe"
 )
 
-// ArosAudioDMA emulates Paula-style DMA audio for the AROS audio.device.
+// ArosAudioDMA emulates the AROS Paula-style DMA shim for audio.device.
 // It implements the SampleTicker interface and is called at 44100 Hz from
 // the SoundChip's ReadSample path. For each active DMA channel it reads
 // sample bytes from guest RAM, writes them to the corresponding flex
 // channel DAC, and triggers an M68K level-3 interrupt when a buffer is
 // exhausted.
+//
+// Lock order: ArosAudioDMA.mu may be held while briefly taking SoundChip.mu
+// for direct DAC handoff. SoundChip code must not call back into this DMA
+// while holding SoundChip.mu.
 type ArosAudioDMA struct {
+	mu        sync.Mutex
 	bus       *MachineBus
 	soundChip *SoundChip
 	cpu       *M68KCPU
 	memBase   unsafe.Pointer // cached bus memory base for fast byte reads
 
 	profileTop uint32 // AROS profile top-of-RAM; cached at construction so the
-	// per-sample fetch hot path skips a bus accessor call. The Paula DMA
+	// per-sample fetch hot path skips a bus accessor call. The AROS audio DMA
 	// fetch is bounded by this rather than the underlying CPU's full
 	// architectural visible range.
 
@@ -36,6 +42,10 @@ type arosAudDMACh struct {
 	len    uint32  // sample length in words (×2 = bytes)
 	per    uint32  // Paula period
 	vol    uint32  // Paula volume (0–64)
+	lptr   uint32  // arm-time latched sample pointer
+	llen   uint32  // arm-time latched sample length
+	lper   uint32  // arm-time latched period
+	lvol   uint32  // arm-time latched volume
 	pos    uint32  // current byte offset within buffer
 	phase  float64 // fractional sample accumulator
 	active bool    // DMA running
@@ -61,6 +71,28 @@ func NewArosAudioDMA(bus *MachineBus, sc *SoundChip, cpu *M68KCPU) *ArosAudioDMA
 	}
 }
 
+func (dma *ArosAudioDMA) Reset() {
+	dma.mu.Lock()
+	defer dma.mu.Unlock()
+	dma.dmacon = 0
+	dma.status = 0
+	dma.intena = 0
+	for i := range dma.channels {
+		dma.channels[i] = arosAudDMACh{}
+	}
+	dma.enabled.Store(false)
+}
+
+func arosAudioTeardown(dma *ArosAudioDMA, sysBus *MachineBus, chip *SoundChip) {
+	if dma == nil || sysBus == nil || chip == nil {
+		return
+	}
+	dma.Reset()
+	sysBus.UnmapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END)
+	runtimeStatus.setPaulaDMA(nil)
+	chip.UnregisterSampleTickerIf("default", dma)
+}
+
 // TickSample is called at 44100 Hz from SoundChip.ReadSample().
 // It advances each active DMA channel by one output sample, reads the
 // next byte from guest RAM, and pushes it into the flex channel DAC.
@@ -69,17 +101,19 @@ func (dma *ArosAudioDMA) TickSample() {
 		return
 	}
 
+	var assertIRQ bool
+	dma.mu.Lock()
 	for ch := range 4 {
 		if dma.dmacon&(1<<ch) == 0 {
 			continue
 		}
 		c := &dma.channels[ch]
-		if !c.active || c.per == 0 || c.len == 0 {
+		if !c.active || c.lper == 0 || c.llen == 0 {
 			continue
 		}
 
 		// Phase increment: paulaFreq / sampleRate
-		paulaFreq := paulaClockPAL / float64(c.per)
+		paulaFreq := paulaClockPAL / float64(c.lper)
 		phaseInc := paulaFreq / float64(SAMPLE_RATE)
 
 		c.phase += phaseInc
@@ -90,42 +124,48 @@ func (dma *ArosAudioDMA) TickSample() {
 			c.phase -= 1.0
 		}
 
-		bufBytes := c.len * 2 // len is in words
+		bufBytes := c.llen * 2 // len is in words
 		if c.pos >= bufBytes {
 			// Buffer exhausted — signal completion
 			c.pos = 0
 			c.active = false
+			dma.dmacon &^= 1 << ch
 			dma.status |= 1 << ch
 			if dma.intena&(1<<ch) != 0 {
-				dma.cpu.AssertInterrupt(arosAudioIRQLevel)
+				assertIRQ = true
 			}
 			continue
 		}
 
 		// Read sample byte directly from bus memory (big-endian byte order).
 		// Bounded by the AROS profile top, not DEFAULT_MEMORY_SIZE, so future
-		// profile changes do not silently widen Paula DMA.
-		addr := c.ptr + c.pos
+		// profile changes do not silently widen AROS audio DMA.
+		addr := c.lptr + c.pos
 		if addr < dma.profileTop {
 			sample := *(*byte)(unsafe.Pointer(uintptr(dma.memBase) + uintptr(addr)))
-
-			// Write to flex channel DAC and volume.
-			flexCh := dma.soundChip.channels[ch]
-			flexCh.dacMode = true
-			flexCh.dacValue = float32(int8(sample)) / 128.0
-
-			// Paula volume 0–64 → IE volume 0–255.
-			ieVol := c.vol * 4
-			if ieVol > 255 {
-				ieVol = 255
+			dma.setFlexDACLocked(ch, float32(int8(sample))/128.0, c.lvol)
+		} else {
+			c.active = false
+			dma.dmacon &^= 1 << ch
+			dma.status |= 1 << ch
+			dma.setFlexDACLocked(ch, 0, c.lvol)
+			if dma.intena&(1<<ch) != 0 {
+				assertIRQ = true
 			}
-			flexCh.volume = float32(ieVol) / 255.0
 		}
+	}
+	dma.enabled.Store(dma.dmacon != 0)
+	cpu := dma.cpu
+	dma.mu.Unlock()
+	if assertIRQ && cpu != nil {
+		cpu.AssertInterrupt(arosAudioIRQLevel)
 	}
 }
 
 // HandleRead returns the value of the MMIO register at addr.
 func (dma *ArosAudioDMA) HandleRead(addr uint32) uint32 {
+	dma.mu.Lock()
+	defer dma.mu.Unlock()
 	if addr >= AROS_AUD_REGION_BASE && addr < AROS_AUD_DMACON {
 		chIdx := (addr - AROS_AUD_REGION_BASE) / AROS_AUD_CH_STRIDE
 		off := (addr - AROS_AUD_REGION_BASE) % AROS_AUD_CH_STRIDE
@@ -159,23 +199,34 @@ func (dma *ArosAudioDMA) HandleRead(addr uint32) uint32 {
 
 // HandleWrite processes an MMIO write to addr.
 func (dma *ArosAudioDMA) HandleWrite(addr, value uint32) {
+	var assertIRQ bool
+	dma.mu.Lock()
 	if addr >= AROS_AUD_REGION_BASE && addr < AROS_AUD_DMACON {
 		chIdx := (addr - AROS_AUD_REGION_BASE) / AROS_AUD_CH_STRIDE
 		off := (addr - AROS_AUD_REGION_BASE) % AROS_AUD_CH_STRIDE
 		if chIdx >= 4 {
+			dma.mu.Unlock()
 			return
 		}
 		c := &dma.channels[chIdx]
 		switch off {
 		case AROS_AUD_OFF_PTR:
-			c.ptr = value
+			c.ptr = value &^ 1
 		case AROS_AUD_OFF_LEN:
 			c.len = value
 		case AROS_AUD_OFF_PER:
+			if value == 0 {
+				dma.mu.Unlock()
+				return
+			}
 			c.per = value
 		case AROS_AUD_OFF_VOL:
-			c.vol = value & 0x7F
+			if value > 64 {
+				value = 64
+			}
+			c.vol = value
 		}
+		dma.mu.Unlock()
 		return
 	}
 
@@ -184,26 +235,31 @@ func (dma *ArosAudioDMA) HandleWrite(addr, value uint32) {
 		if value&0x8000 != 0 {
 			// Set mode — enable channels
 			newBits := value & 0x0F
+			acceptedBits := uint32(0)
 			for ch := range 4 {
 				bit := uint32(1 << ch)
 				if newBits&bit != 0 && dma.dmacon&bit == 0 {
 					c := &dma.channels[ch]
+					if c.per == 0 || c.len == 0 {
+						c.active = false
+						dma.status |= bit
+						if dma.intena&bit != 0 {
+							assertIRQ = true
+						}
+						continue
+					}
+					c.lptr = c.ptr
+					c.llen = c.len
+					c.lper = c.per
+					c.lvol = c.vol
 					c.pos = 0
 					c.phase = 0
 					c.active = true
-
-					// Initialise flex channel for DAC output
-					flexBase := uint32(FLEX_CH_BASE) + uint32(ch)*uint32(FLEX_CH_STRIDE)
-					ieVol := c.vol * 4
-					if ieVol > 255 {
-						ieVol = 255
-					}
-					dma.soundChip.HandleRegisterWrite(flexBase+FLEX_OFF_VOL, ieVol)
-					dma.soundChip.HandleRegisterWrite(flexBase+FLEX_OFF_CTRL, 3)
-					dma.soundChip.HandleRegisterWrite(flexBase+FLEX_OFF_DAC, 0)
+					acceptedBits |= bit
+					dma.setFlexDACLocked(ch, 0, c.lvol)
 				}
 			}
-			dma.dmacon |= newBits
+			dma.dmacon |= acceptedBits
 		} else {
 			// Clear mode — disable channels
 			clearBits := value & 0x0F
@@ -227,4 +283,37 @@ func (dma *ArosAudioDMA) HandleWrite(addr, value uint32) {
 			dma.intena &= ^(value & 0x0F)
 		}
 	}
+	cpu := dma.cpu
+	dma.mu.Unlock()
+	if assertIRQ && cpu != nil {
+		cpu.AssertInterrupt(arosAudioIRQLevel)
+	}
+}
+
+func (dma *ArosAudioDMA) setFlexDACLocked(ch int, sample float32, vol uint32) {
+	if dma.soundChip == nil || ch < 0 || ch >= len(dma.soundChip.channels) {
+		return
+	}
+	dma.soundChip.mu.Lock()
+	defer dma.soundChip.mu.Unlock()
+	flexCh := dma.soundChip.channels[ch]
+	if flexCh == nil {
+		return
+	}
+	if !flexCh.gate {
+		flexCh.envelopePhase = ENV_ATTACK
+		flexCh.envelopeSample = 0
+		if !flexCh.sidEnvelope {
+			flexCh.envelopeLevel = 0
+		}
+	}
+	flexCh.enabled = true
+	flexCh.gate = true
+	flexCh.dacMode = true
+	flexCh.dacValue = sample
+	ieVol := vol * 4
+	if ieVol > 255 {
+		ieVol = 255
+	}
+	flexCh.volume = float32(ieVol) / 255.0
 }

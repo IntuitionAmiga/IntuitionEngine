@@ -208,7 +208,7 @@ const (
 	AROS_DOS_REGION_BASE = 0xF2220
 	AROS_DOS_REGION_END  = 0xF225F
 
-	// AROS Audio DMA region (Paula-compatible DMA emulation)
+	// AROS Audio DMA region (AROS Paula-style DMA shim)
 	AROS_AUD_REGION_BASE_REG = 0xF2260
 	AROS_AUD_REGION_END_REG  = 0xF22AF
 
