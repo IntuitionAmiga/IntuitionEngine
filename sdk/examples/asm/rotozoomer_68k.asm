@@ -298,7 +298,7 @@ load_texture:
                 move.l  #TEX_STRIDE,BLT_SRC_STRIDE
                 move.l  #TEX_STRIDE,BLT_DST_STRIDE
                 move.l  #1,BLT_CTRL
-.w1:            move.l  BLT_STATUS,d0
+.w1:            move.l  BLT_CTRL,d0
                 andi.l  #2,d0
                 bne.s   .w1
 
@@ -577,10 +577,11 @@ render_mode7:
                 move.l  #1,BLT_CTRL
 
                 ; --- Wait for completion ---
-                ; BLT_STATUS bit 1 (value 2) = busy. Poll until clear.
+                ; BLT_CTRL bit 1 (value 2) = busy. Poll until clear.
+                ; BLT_STATUS bit 1 is DONE, not BUSY.
                 ; The CPU is idle during this time. In a more complex demo,
                 ; you could use this time for non-blitter work (AI, physics, etc).
-.wait:          move.l  BLT_STATUS,d0
+.wait:          move.l  BLT_CTRL,d0
                 andi.l  #2,d0
                 bne.s   .wait
 
@@ -613,7 +614,7 @@ blit_to_front:
                 move.l  #1,BLT_CTRL
 
                 ; Poll-wait for blit completion
-.wait:          move.l  BLT_STATUS,d0
+.wait:          move.l  BLT_CTRL,d0
                 andi.l  #2,d0
                 bne.s   .wait
 

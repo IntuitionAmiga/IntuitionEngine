@@ -336,7 +336,7 @@ load_texture:
                 mov dword [BLT_SRC_STRIDE], TEX_STRIDE
                 mov dword [BLT_DST_STRIDE], TEX_STRIDE
                 mov dword [BLT_CTRL], 1
-.w1:            mov eax, [BLT_STATUS]
+.w1:            mov eax, [BLT_CTRL]
                 test eax, 2
                 jnz .w1
 
@@ -627,14 +627,14 @@ render_mode7:
 
                 ; --- Trigger the blit and wait for completion ---
                 ; Writing 1 to BLT_CTRL starts the operation. The blitter runs
-                ; asynchronously; we must poll BLT_STATUS until it signals done.
+                ; asynchronously; we must poll BLT_CTRL until busy clears.
                 mov dword [BLT_CTRL], 1
 
-                ; WHY POLL BLT_STATUS BIT 1 (mask value 2):
-                ; BLT_STATUS bit 1 = busy flag. While this bit is set, the
-                ; blitter is still processing. We spin-wait here because we
-                ; need the result before we can blit to front.
-.wait:          mov eax, [BLT_STATUS]
+                ; WHY POLL BLT_CTRL BIT 1 (mask value 2):
+                ; BLT_CTRL bit 1 = busy flag. BLT_STATUS bit 1 is DONE, not
+                ; BUSY. We spin-wait here because we need the result before
+                ; we can blit to front.
+.wait:          mov eax, [BLT_CTRL]
                 test eax, 2
                 jnz .wait
 
@@ -666,7 +666,7 @@ blit_to_front:
                 mov dword [BLT_DST_STRIDE], LINE_BYTES
                 mov dword [BLT_CTRL], 1
 
-.wait:          mov eax, [BLT_STATUS]
+.wait:          mov eax, [BLT_CTRL]
                 test eax, 2
                 jnz .wait
 

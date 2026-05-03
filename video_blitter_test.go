@@ -289,6 +289,34 @@ func TestBlitterMaskedCopy(t *testing.T) {
 	}
 }
 
+func TestBlitterLine_BigEndianMappedVRAMLittleEndian(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	video.SetBigEndianMode(true)
+	mode := VideoModes[video.currentMode]
+	color := uint32(0x11223344)
+
+	start := uint32((1 << 16) | 1)
+	end := start
+	bus.Write32(BLT_OP, bltOpLine)
+	bus.Write32(BLT_SRC, start)
+	bus.Write32(BLT_DST, end)
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	addr := vramAddr(mode, 1, 1)
+	offset := addr - BUFFER_OFFSET
+	gotBytes := video.frontBuffer[offset : offset+4]
+	wantBytes := []byte{0x44, 0x33, 0x22, 0x11}
+	for i := range wantBytes {
+		if gotBytes[i] != wantBytes[i] {
+			t.Fatalf("line VRAM byte %d got 0x%02X want 0x%02X", i, gotBytes[i], wantBytes[i])
+		}
+	}
+	if got := video.HandleRead(addr); got != color {
+		t.Fatalf("HandleRead after line = 0x%08X, want 0x%08X", got, color)
+	}
+}
+
 func TestVideoChip_BlitFill_BigEndian(t *testing.T) {
 	video, bus := newBlitterTestRig(t)
 	video.SetBigEndianMode(true)
@@ -307,10 +335,10 @@ func TestVideoChip_BlitFill_BigEndian(t *testing.T) {
 
 	offset := dst - BUFFER_OFFSET
 	got := video.frontBuffer[offset : offset+4]
-	want := []byte{0x11, 0x22, 0x33, 0x44}
+	want := []byte{0x44, 0x33, 0x22, 0x11}
 	for i := range 4 {
 		if got[i] != want[i] {
-			t.Fatalf("big-endian fill byte %d got 0x%02X want 0x%02X", i, got[i], want[i])
+			t.Fatalf("mapped VRAM fill byte %d got 0x%02X want 0x%02X", i, got[i], want[i])
 		}
 	}
 }
@@ -959,11 +987,11 @@ func TestBlitterDirectVRAM_Fill(t *testing.T) {
 func TestBlitterDirectVRAM_Copy(t *testing.T) {
 	video, bus := newDirectVRAMTestRig(t)
 
-	// Write source pixels to off-screen busMemory using BigEndian (M68K byte order).
-	// Non-VRAM reads in bigEndianMode use BigEndian, matching how the M68K CPU writes.
+	// Write source pixels as raw RGBA bytes. Blitter pixel sources are
+	// little-endian image data even when the CPU profile is big-endian.
 	srcAddr := uint32(0x600000)
-	binary.BigEndian.PutUint32(bus.memory[srcAddr:], 0xDEADBEEF)
-	binary.BigEndian.PutUint32(bus.memory[srcAddr+4:], 0xCAFEBABE)
+	binary.LittleEndian.PutUint32(bus.memory[srcAddr:], 0xDEADBEEF)
+	binary.LittleEndian.PutUint32(bus.memory[srcAddr+4:], 0xCAFEBABE)
 
 	dst := uint32(VRAM_START)
 	bus.Write32(BLT_OP, bltOpCopy)
@@ -1001,13 +1029,13 @@ func TestBlitterDirectVRAM_Mode7(t *testing.T) {
 		BLT_OP_MODE7     = 5
 	)
 
-	// Setup 4x4 texture at off-screen address using BigEndian (M68K byte order).
-	// Non-VRAM reads in bigEndianMode use BigEndian, matching how the M68K CPU writes.
+	// Setup 4x4 texture as raw RGBA bytes. Blitter pixel sources are
+	// little-endian image data even when the CPU profile is big-endian.
 	texAddr := uint32(0x600000)
 	for y := range 4 {
 		for x := range 4 {
 			off := texAddr + uint32(y*16+x*4)
-			binary.BigEndian.PutUint32(bus.memory[off:], 0xAA000000+uint32(y*4+x))
+			binary.LittleEndian.PutUint32(bus.memory[off:], 0xAA000000+uint32(y*4+x))
 		}
 	}
 

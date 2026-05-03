@@ -1333,6 +1333,49 @@ func TestVideoRecorder_AudioSync(t *testing.T) {
 	}
 }
 
+func TestRecorder_AVSync_NoDrift(t *testing.T) {
+	rec := NewVideoRecorder(nil)
+	rec.sound = &SoundChip{}
+	rec.ring = newSampleRing(recorderAudioRate * 20)
+	rec.width = 1
+	rec.height = 1
+	rec.fps = 60
+
+	videoOut, err := os.CreateTemp(t.TempDir(), "video-*.raw")
+	if err != nil {
+		t.Fatalf("CreateTemp video failed: %v", err)
+	}
+	audioOut, err := os.CreateTemp(t.TempDir(), "audio-*.raw")
+	if err != nil {
+		t.Fatalf("CreateTemp audio failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = videoOut.Close()
+		_ = audioOut.Close()
+	})
+	rec.videoIn = videoOut
+	rec.audioW = audioOut
+
+	const frames = 1000
+	expectedSamples := recorderAudioRate * frames / rec.fps
+	for range expectedSamples + rec.fps {
+		rec.ring.push(0.25)
+	}
+	pixels := make([]byte, 4)
+	for range frames {
+		rec.writeFrameData(pixels)
+	}
+
+	info, err := audioOut.Stat()
+	if err != nil {
+		t.Fatalf("audio Stat failed: %v", err)
+	}
+	gotSamples := int(info.Size() / 2)
+	if gotSamples < expectedSamples-1 || gotSamples > expectedSamples+1 {
+		t.Fatalf("audio samples after %d frames = %d, want %d +/- 1", frames, gotSamples, expectedSamples)
+	}
+}
+
 func TestVideoRecorder_StartStop(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg not installed")

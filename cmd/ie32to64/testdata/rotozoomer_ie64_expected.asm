@@ -128,7 +128,7 @@
 ;   |  audio subsystem. Once    |    |  per frame using the 6      |
 ;   |  started, it plays        |    |  affine parameters. CPU     |
 ;   |  independently of the     |    |  only waits for completion  |
-;   |  main CPU -- no per-frame |    |  via BLT_STATUS polling.    |
+;   |  main CPU -- no per-frame |    |  via BLT_CTRL busy polling. |
 ;   |  overhead for music.      |    |                             |
 ;   +----------------------------+    +-----------------------------+
 ;
@@ -408,7 +408,7 @@ load_texture:
     la r17, BLT_CTRL
     store.l r1, (r17)
 lt_w1:
-    la r17, BLT_STATUS
+    la r17, BLT_CTRL
     load.l r1, (r17)
     and.l r1, r1, #2
     bnez r1, lt_w1
@@ -867,15 +867,16 @@ render_mode7:
     store.l r1, (r17)
 
     ; --- Trigger the blit and wait for completion ---
-    ; BLT_CTRL = 1 starts the operation. We then poll BLT_STATUS bit 1
-    ; (busy flag) until it clears. The Mode7 blit processes all 307,200
+    ; BLT_CTRL = 1 starts the operation. We then poll BLT_CTRL bit 1
+    ; (busy flag) until it clears. BLT_STATUS bit 1 is DONE, not BUSY.
+    ; The Mode7 blit processes all 307,200
     ; pixels in hardware, so this is much faster than software rendering.
     move.l r1, #1
     la r17, BLT_CTRL
     store.l r1, (r17)
 
 rm7_wait:
-    la r17, BLT_STATUS
+    la r17, BLT_CTRL
     load.l r1, (r17)
     and.l r1, r1, #2
     bnez r1, rm7_wait
@@ -924,7 +925,7 @@ blit_to_front:
     store.l r1, (r17)
 
 btf_wait:
-    la r17, BLT_STATUS
+    la r17, BLT_CTRL
     load.l r1, (r17)
     and.l r1, r1, #2
     bnez r1, btf_wait
@@ -1118,7 +1119,7 @@ recip_table:
 ; TEXTURE DATA - 256x256 RGBA RAW IMAGE
 ; ============================================================================
 texture_data:
-incbin "../assets/rotozoomtexture.raw"
+incbin "../assets/rotozoomtexture_ie32.raw"
 
 ahx_data:
 incbin "../assets/music/Fairlightz.ahx"

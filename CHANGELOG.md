@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bench/README.md` + `bench/interp_baseline.pprof` + `bench/interp_final.pprof` — CPU profiles captured via `go test -cpuprofile` for the legacy path (with `Execute()` forced to `executeLegacy()`) and the fast path, alongside documentation of the exact capture commands and a `go tool pprof -top -cum` summary table.
 
 ### Changed
+- IEVideoChip hardening: CLUT8 mapped/direct routing now converts consistently, raster bands draw into the active backing store, blitter alpha uses source-over blending, blitter completion IRQ/status bits are wired, VBlank polling is signaled and non-destructive, stopped chips cannot be restarted, and frame reads now return immutable snapshots.
 - ANTIC/GTIA is documented as an Atari-inspired IE-native chip on `0xF2100-0xF21FB`; the dead 6502 `$D400/$D000` surface was removed because `$D400` belongs to PSG on 6502.
 - AHX playback hardened malformed-module parsing and now maps AHX voice state directly to native SoundChip synthesis channels; stale 6502 `$D700` AHX constants and unused Amiga sample-buffer replay machinery were removed.
 - M68K CPU: corrected 68EC020 references to 68020 (32-bit address bus)

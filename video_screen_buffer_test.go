@@ -297,6 +297,18 @@ func TestScreenBuffer_Scrollback_MaxLines(t *testing.T) {
 	}
 }
 
+func TestScreenBuffer_EnsureLine_FarBeyondMax(t *testing.T) {
+	sb := NewScreenBuffer(8, 2, 5)
+	sb.SetCell(0, 15, 'Z')
+
+	if got := sb.TotalLines(); got != 5 {
+		t.Fatalf("TotalLines after far SetCell = %d, want 5", got)
+	}
+	if got := sb.GetCell(0, 4); got != 'Z' {
+		t.Fatalf("far row should be retained at trimmed tail, got %q", got)
+	}
+}
+
 func TestScreenBuffer_VisibleCell(t *testing.T) {
 	sb := NewScreenBuffer(10, 2, 10)
 	sb.SetCell(0, 0, 'A')

@@ -413,8 +413,6 @@ func TestComponentReset_VideoChip(t *testing.T) {
 	if err != nil {
 		t.Skipf("NewVideoChip failed (expected in headless): %v", err)
 	}
-	vc.directMode.Store(true)
-	vc.fullScreenDirty.Store(true)
 	vc.bigEndianMode = true
 	vc.directVRAM = make([]byte, 16)
 	vc.copperManagedByCompositor = true
@@ -425,12 +423,6 @@ func TestComponentReset_VideoChip(t *testing.T) {
 	}
 	if vc.hasContent.Load() {
 		t.Error("VideoChip hasContent should be false after reset")
-	}
-	if vc.directMode.Load() {
-		t.Error("VideoChip directMode should be false after reset")
-	}
-	if vc.fullScreenDirty.Load() {
-		t.Error("VideoChip fullScreenDirty should be false after reset")
 	}
 	if vc.bigEndianMode {
 		t.Error("VideoChip bigEndianMode should be false after reset")

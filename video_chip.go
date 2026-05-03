@@ -200,9 +200,10 @@ const (
 )
 
 const (
-	bltCtrlStart = 1 << 0
-	bltCtrlBusy  = 1 << 1
-	bltCtrlIRQ   = 1 << 2
+	bltCtrlStart     = 1 << 0
+	bltCtrlBusy      = 1 << 1
+	bltCtrlIRQEnable = 1 << 2
+	bltCtrlIRQ       = bltCtrlIRQEnable
 )
 
 const (
@@ -228,7 +229,9 @@ const (
 )
 
 const (
-	bltStatusErr = 1 << 0
+	bltStatusErr        = 1 << 0
+	bltStatusDone       = 1 << 1
+	bltStatusIRQPending = 1 << 2
 )
 
 const (
@@ -449,20 +452,22 @@ type VideoChip struct {
 	dirtyColStride int32  // 4 bytes - Changed from int to int32 for alignment
 
 	// Status flags - atomic for lock-free access (part of Cache Line 0)
-	enabled         atomic.Bool // Lock-free enable status
-	hasContent      atomic.Bool // Lock-free content flag
-	inVBlank        atomic.Bool // Lock-free VBlank status for CPU polling
-	resetting       bool        // 1 byte - still needs mutex for multi-field operations
-	directMode      atomic.Bool // Lock-free direct VRAM mode flag
-	fullScreenDirty atomic.Bool // Lock-free full-screen dirty flag
+	enabled      atomic.Bool // Lock-free enable status
+	hasContent   atomic.Bool // Lock-free content flag
+	inVBlank     atomic.Bool // Lock-free VBlank status for CPU polling
+	everSignaled atomic.Bool // true once compositor-driven VBlank is active
+	stopped      atomic.Bool // Stop is final; stopped chips cannot be restarted
+	resetting    bool        // 1 byte - still needs mutex for multi-field operations
 
 	// Synchronization (Cache Line 1)
-	mu sync.Mutex // 8 bytes - Keep mutex at cache line boundary
+	mu       sync.Mutex // 8 bytes - Keep mutex at cache line boundary
+	stopOnce sync.Once
 
 	// Display interface (Cache Line 1-2)
 	output             VideoOutput    // 8 bytes - Interface pointer
 	onResolutionChange func(w, h int) // Optional resolution callback for compositor integration
 	layer              int            // Z-order for compositor
+	intSink            InterruptSink
 
 	// Communication channels (Cache Line 2)
 	vsyncChan chan struct{} // 8 bytes
@@ -552,10 +557,13 @@ type VideoChip struct {
 
 	bltPending bool
 	bltErr     bool
+	bltDone    bool
+	bltIrqPend bool
 
 	rasterY      uint32
 	rasterHeight uint32
 	rasterColor  uint32
+	rasterCtrl   uint32
 
 	// CLUT8 palette mode state
 	clutMode      atomic.Bool // true = CLUT8 indexed mode, false = RGBA32 direct
@@ -565,6 +573,8 @@ type VideoChip struct {
 	clutFrame     []byte      // Conversion buffer (width*height*4 RGBA32)
 	fbBase        uint32      // Framebuffer base address in bus memory
 	clutWarnOnce  sync.Once   // Rate-limit out-of-range warnings
+	clutWarnFrame uint64      // Last frame that emitted an out-of-range CLUT warning
+	clutWarned    bool
 }
 
 // VideoMode defines resolution and buffer parameters for a display mode
@@ -755,10 +765,13 @@ func (chip *VideoChip) convertCLUT8Frame() {
 
 	fb := chip.fbBase
 	if chip.busMemory == nil || fb+pixelCount > uint32(len(chip.busMemory)) {
-		chip.clutWarnOnce.Do(func() {
+		chip.bltErr = true
+		if !chip.clutWarned || chip.frameCounter-chip.clutWarnFrame >= 60 {
+			chip.clutWarned = true
+			chip.clutWarnFrame = chip.frameCounter
 			fmt.Printf("CLUT8: fbBase 0x%X out of range (need %d bytes, bus has %d)\n",
 				fb, fb+pixelCount, len(chip.busMemory))
-		})
+		}
 		clear(chip.clutFrame)
 		return
 	}
@@ -772,14 +785,14 @@ func (chip *VideoChip) convertCLUT8Frame() {
 	}
 }
 
-// clutGetFrame returns the appropriate frame for CLUT8 or RGBA32 direct modes
-// when directVRAM is set. Called from both GetFrame() and FinishFrame().
+// clutGetFrame returns the appropriate frame for CLUT8 or RGBA32 direct modes.
+// Caller must hold chip.mu.
 func (chip *VideoChip) clutGetFrame() []byte {
-	if chip.clutMode.Load() && chip.directVRAM != nil {
+	if chip.clutMode.Load() {
 		chip.convertCLUT8Frame()
 		return chip.clutFrame
 	}
-	if chip.directVRAM != nil && chip.fbBase != 0 {
+	if chip.fbBase != 0 {
 		mode := VideoModes[chip.currentMode]
 		frameSize := uint32(mode.width * mode.height * BYTES_PER_PIXEL)
 		fb := chip.fbBase
@@ -905,6 +918,9 @@ func (chip *VideoChip) Start() error {
 	*/
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
+	if chip.stopped.Load() {
+		return nil
+	}
 	chip.enabled.Store(true)
 	if chip.output != nil {
 		return chip.output.Start()
@@ -926,10 +942,20 @@ func (chip *VideoChip) Stop() error {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.enabled.Store(false)
+	chip.stopOnce.Do(func() {
+		chip.stopped.Store(true)
+		close(chip.done)
+	})
 	if chip.output != nil {
 		return chip.output.Stop()
 	}
 	return nil
+}
+
+func (chip *VideoChip) SetInterruptSink(sink InterruptSink) {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	chip.intSink = sink
 }
 
 func (chip *VideoChip) initialiseDirtyGrid(mode VideoMode) {
@@ -1201,10 +1227,19 @@ func (chip *VideoChip) runBlitterLocked(mode VideoMode) {
 	chip.bltPending = false
 	chip.executeBlitterLocked(mode)
 	chip.bltBusy = false
+	chip.bltDone = true
+	if chip.bltIrqEnabled {
+		chip.bltIrqPend = true
+		if chip.intSink != nil {
+			chip.intSink.Pulse(IntMaskBlitter)
+		}
+	}
 }
 
 func (chip *VideoChip) executeBlitterLocked(mode VideoMode) {
 	switch chip.bltOp {
+	case bltOpCopy:
+		chip.blitCopyLocked(mode)
 	case bltOpFill:
 		chip.blitFillLocked(mode)
 	case bltOpLine:
@@ -1218,7 +1253,7 @@ func (chip *VideoChip) executeBlitterLocked(mode VideoMode) {
 	case bltOpColorExpand:
 		chip.blitColorExpandLocked(mode)
 	default:
-		chip.blitCopyLocked(mode)
+		chip.bltErr = true
 	}
 }
 
@@ -1339,8 +1374,8 @@ func (chip *VideoChip) blitBulkFill32Locked(dst uint32, width, height int, strid
 		if chip.busMemory == nil {
 			return
 		}
-		endAddr := dst + stride*uint32(height-1) + rowBytes
-		if endAddr > uint32(len(chip.busMemory)) {
+		endAddr := uint64(dst) + uint64(stride)*uint64(height-1) + uint64(rowBytes)
+		if endAddr > uint64(len(chip.busMemory)) {
 			return
 		}
 		// Fill first row
@@ -1365,8 +1400,8 @@ func (chip *VideoChip) blitBulkFill32Locked(dst uint32, width, height int, strid
 	if dst >= VRAM_START && dst < VRAM_START+VRAM_SIZE {
 		// frontBuffer path
 		offset := dst - BUFFER_OFFSET
-		bufLen := uint32(len(chip.frontBuffer))
-		lastOffset := offset + stride*uint32(height-1) + rowBytes
+		bufLen := uint64(len(chip.frontBuffer))
+		lastOffset := uint64(offset) + uint64(stride)*uint64(height-1) + uint64(rowBytes)
 		if lastOffset > bufLen || offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
 			chip.bltErr = true
 			return
@@ -1534,9 +1569,9 @@ func (chip *VideoChip) blitCopyLocked(mode VideoMode) {
 	if chip.directVRAM != nil && chip.busMemory != nil &&
 		src >= VRAM_START && src < VRAM_START+VRAM_SIZE &&
 		dst >= VRAM_START && dst < VRAM_START+VRAM_SIZE {
-		srcEnd := src + srcStride*uint32(height-1) + rowBytes
-		dstEnd := dst + dstStride*uint32(height-1) + rowBytes
-		if srcEnd <= uint32(len(chip.busMemory)) && dstEnd <= uint32(len(chip.busMemory)) {
+		srcEnd := uint64(src) + uint64(srcStride)*uint64(height-1) + uint64(rowBytes)
+		dstEnd := uint64(dst) + uint64(dstStride)*uint64(height-1) + uint64(rowBytes)
+		if srcEnd <= uint64(len(chip.busMemory)) && dstEnd <= uint64(len(chip.busMemory)) {
 			// Overlap detection: copy forward or backward
 			if dst > src && dst < src+srcStride*uint32(height) {
 				// Backward (bottom to top)
@@ -1570,9 +1605,9 @@ func (chip *VideoChip) blitCopyLocked(mode VideoMode) {
 		dst >= VRAM_START && dst < VRAM_START+VRAM_SIZE {
 		srcOff := src - BUFFER_OFFSET
 		dstOff := dst - BUFFER_OFFSET
-		bufLen := uint32(len(chip.frontBuffer))
-		srcEnd := srcOff + srcStride*uint32(height-1) + rowBytes
-		dstEnd := dstOff + dstStride*uint32(height-1) + rowBytes
+		bufLen := uint64(len(chip.frontBuffer))
+		srcEnd := uint64(srcOff) + uint64(srcStride)*uint64(height-1) + uint64(rowBytes)
+		dstEnd := uint64(dstOff) + uint64(dstStride)*uint64(height-1) + uint64(rowBytes)
 		if srcEnd <= bufLen && dstEnd <= bufLen {
 			if dstOff > srcOff && dstOff < srcOff+srcStride*uint32(height) {
 				srcRow := srcOff + srcStride*uint32(height-1)
@@ -1687,10 +1722,29 @@ func (chip *VideoChip) blitAlphaCopyLocked(mode VideoMode) {
 		dstAddr := dstRow
 		for range width {
 			value := chip.blitReadPixelLocked(srcAddr)
-			// Only copy if alpha (lowest byte in our BGRA format) is non-zero
-			alpha := value & 0xFF
-			if alpha > 0 {
+			alpha := (value >> 24) & 0xFF
+			if alpha == 0 {
+				srcAddr += BYTES_PER_PIXEL
+				dstAddr += BYTES_PER_PIXEL
+				continue
+			}
+			if alpha == 0xFF {
 				chip.blitWritePixelLocked(dstAddr, value, mode)
+			} else {
+				dst := chip.blitReadPixelLocked(dstAddr)
+				inv := 255 - alpha
+				sr := value & 0xFF
+				sg := (value >> 8) & 0xFF
+				sb := (value >> 16) & 0xFF
+				dr := dst & 0xFF
+				dg := (dst >> 8) & 0xFF
+				db := (dst >> 16) & 0xFF
+				da := (dst >> 24) & 0xFF
+				outR := (sr*alpha + dr*inv) / 255
+				outG := (sg*alpha + dg*inv) / 255
+				outB := (sb*alpha + db*inv) / 255
+				outA := alpha + (da*inv)/255
+				chip.blitWritePixelLocked(dstAddr, outR|(outG<<8)|(outB<<16)|(outA<<24), mode)
 			}
 			srcAddr += BYTES_PER_PIXEL
 			dstAddr += BYTES_PER_PIXEL
@@ -1744,8 +1798,17 @@ func (chip *VideoChip) blitMode7Locked(mode VideoMode) {
 			uInt := (u >> 16) & texMaskU
 			vInt := (v >> 16) & texMaskV
 
-			// Sample source
-			texAddr := chip.bltSrc + uint32(vInt)*srcStride + uint32(uInt)*4
+			texOff := uint64(uint32(vInt))*uint64(srcStride) + uint64(uint32(uInt))*BYTES_PER_PIXEL
+			texAddr64 := uint64(chip.bltSrc) + texOff
+			if texAddr64+BYTES_PER_PIXEL > math.MaxUint32 {
+				chip.bltErr = true
+				return
+			}
+			texAddr := uint32(texAddr64)
+			if chip.busMemory != nil && texAddr64+BYTES_PER_PIXEL > uint64(len(chip.busMemory)) {
+				chip.bltErr = true
+				return
+			}
 			texel := chip.blitReadPixelLocked(texAddr)
 
 			// Write destination
@@ -1876,10 +1939,11 @@ func (chip *VideoChip) blitReadPixelLocked(addr uint32) uint32 {
 		}
 		return 0
 	}
-	// Non-VRAM pixel data (fonts, sprites loaded via incbin) is raw RGBA bytes
-	// with no endianness — always read as LE regardless of CPU mode.
 	if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
-		return *(*uint32)(unsafe.Pointer(&chip.busMemory[addr]))
+		// Non-VRAM pixel sources are raw RGBA bytes, not CPU-endian words.
+		// Keep them little-endian so incbin textures render identically on
+		// big-endian CPU profiles such as M68K.
+		return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4])
 	}
 	return 0
 }
@@ -2234,17 +2298,15 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 		if chip.hasContent.Load() {
 			status |= 1 // bit 0: has content
 		}
-		// Calculate VBlank based on position within current frame
-		// Use 50% threshold to give M68K a wider window to catch VBlank
-		// - Active display (VBlank=false): first 50% of frame (~8.3ms)
-		// - VBlank period (VBlank=true): last 50% of frame (~8.3ms)
-		// This makes VBlank detection more reliable for M68K polling.
-		// Optimized: direct int64 comparison avoids time.Unix() allocation
-		frameStart := chip.lastFrameStart.Load()
-		now := time.Now().UnixNano()
-		vblankThresholdNs := int64(REFRESH_INTERVAL / 2)
-		if now-frameStart >= vblankThresholdNs {
+		if chip.inVBlank.Load() {
 			status |= 2 // bit 1: in VBlank
+		} else if !chip.everSignaled.Load() {
+			frameStart := chip.lastFrameStart.Load()
+			now := time.Now().UnixNano()
+			vblankThresholdNs := int64(REFRESH_INTERVAL / 2)
+			if now-frameStart >= vblankThresholdNs {
+				status |= 2 // bit 1: in VBlank
+			}
 		}
 
 		return status
@@ -2291,7 +2353,7 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 	case VIDEO_RASTER_COLOR:
 		return chip.rasterColor
 	case VIDEO_RASTER_CTRL:
-		return 0
+		return chip.rasterCtrl
 	case BLT_MODE7_U0:
 		return chip.bltMode7U0Staged
 	case BLT_MODE7_V0:
@@ -2551,13 +2613,19 @@ func (chip *VideoChip) blitterCtrlValueLocked() uint32 {
 		ctrl |= bltCtrlBusy
 	}
 	if chip.bltIrqEnabled {
-		ctrl |= bltCtrlIRQ
+		ctrl |= bltCtrlIRQEnable
 	}
 	return ctrl
 }
 
 func (chip *VideoChip) blitterStatusLocked() uint32 {
 	status := uint32(0)
+	if chip.bltDone {
+		status |= bltStatusDone
+	}
+	if chip.bltIrqPend {
+		status |= bltStatusIRQPending
+	}
 	if chip.bltErr {
 		status |= bltStatusErr
 	}
@@ -2595,7 +2663,7 @@ func (chip *VideoChip) HandleWrite8(addr uint32, value uint8) {
 		if chip.directVRAM != nil {
 			return
 		}
-		offset := addr - VRAM_START
+		offset := addr - BUFFER_OFFSET
 		if offset < uint32(len(chip.frontBuffer)) {
 			chip.frontBuffer[offset] = value
 			mode := VideoModes[chip.currentMode]
@@ -2633,6 +2701,9 @@ func (chip *VideoChip) HandleWrite8(addr uint32, value uint8) {
 func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 	switch addr {
 	case VIDEO_CTRL:
+		if chip.stopped.Load() {
+			return
+		}
 		wasEnabled := chip.enabled.Load()
 		chip.enabled.Store(value != CTRL_DISABLE_FLAG)
 		if !wasEnabled && chip.enabled.Load() {
@@ -2730,6 +2801,7 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 	case VIDEO_RASTER_COLOR + 3:
 		chip.rasterColor = writeUint32Byte(chip.rasterColor, value, 3)
 	case VIDEO_RASTER_CTRL:
+		chip.rasterCtrl = value
 		if value&rasterCtrlStart != 0 {
 			chip.drawRasterBandLocked()
 		}
@@ -2811,7 +2883,7 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 		if !chip.blitterEnabled {
 			return true
 		}
-		if value&bltCtrlIRQ != 0 {
+		if value&bltCtrlIRQEnable != 0 {
 			chip.bltIrqEnabled = true
 		} else {
 			chip.bltIrqEnabled = false
@@ -2824,6 +2896,7 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 		}
 		chip.bltBusy = true
 		chip.bltErr = false
+		chip.bltDone = false
 		chip.bltOp = chip.bltOpStaged
 		chip.bltSrc = chip.bltSrcStaged
 		chip.bltDst = chip.bltDstStaged
@@ -2850,6 +2923,11 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 		// Run blitter immediately (synchronous) so CPU doesn't wait for next frame
 		mode := VideoModes[chip.currentMode]
 		chip.runBlitterLocked(mode)
+		return true
+	case BLT_STATUS:
+		if value&bltStatusIRQPending != 0 {
+			chip.bltIrqPend = false
+		}
 		return true
 	case BLT_OP:
 		chip.bltOpStaged = value
@@ -3133,60 +3211,45 @@ func (chip *VideoChip) drawRasterBandLocked() {
 	endY := min(startY+height, mode.height)
 
 	for y := startY; y < endY; y++ {
-		rowOffset := uint32(y * mode.bytesPerRow)
-		for x := 0; x < mode.width; x++ {
-			offset := rowOffset + uint32(x*BYTES_PER_PIXEL)
-			if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) {
-				break
+		if chip.clutMode.Load() {
+			rowOffset := chip.fbBase + uint32(y*mode.width)
+			for x := 0; x < mode.width; x++ {
+				addr := rowOffset + uint32(x)
+				if chip.busMemory != nil && addr < uint32(len(chip.busMemory)) {
+					chip.busMemory[addr] = uint8(chip.rasterColor)
+					continue
+				}
+				if chip.directVRAM != nil {
+					off := addr - VRAM_START
+					if off < uint32(len(chip.directVRAM)) {
+						chip.directVRAM[off] = uint8(chip.rasterColor)
+					}
+				}
 			}
-			binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], chip.rasterColor)
+		} else if chip.directVRAM != nil {
+			rowOffset := uint32(y * mode.bytesPerRow)
+			for x := 0; x < mode.width; x++ {
+				offset := rowOffset + uint32(x*BYTES_PER_PIXEL)
+				if offset+BYTES_PER_PIXEL > uint32(len(chip.directVRAM)) {
+					break
+				}
+				binary.LittleEndian.PutUint32(chip.directVRAM[offset:], chip.rasterColor)
+			}
+		} else {
+			rowOffset := uint32(y * mode.bytesPerRow)
+			for x := 0; x < mode.width; x++ {
+				offset := rowOffset + uint32(x*BYTES_PER_PIXEL)
+				if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) {
+					break
+				}
+				binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], chip.rasterColor)
+			}
 		}
 		chip.markRegionDirty(0, y)
 	}
 	if !chip.resetting && !chip.hasContent.Load() {
 		chip.hasContent.Store(true)
 	}
-}
-
-// EnableDirectMode enables direct VRAM access mode and returns the framebuffer.
-// In this mode, dirty region tracking is bypassed and the entire screen is
-// refreshed each frame. This is optimal for fullscreen effects like plasma,
-// fire, etc. where every pixel changes every frame.
-//
-// The returned buffer can be written to directly without mutex locks.
-// Call MarkFullScreenDirty() after writing a frame to trigger refresh.
-func (chip *VideoChip) EnableDirectMode() []byte {
-	chip.mu.Lock()
-	defer chip.mu.Unlock()
-
-	chip.directMode.Store(true)
-	chip.hasContent.Store(true)
-
-	// Ensure buffer is allocated
-	if chip.frontBuffer == nil {
-		mode := VideoModes[chip.currentMode]
-		chip.frontBuffer = make([]byte, mode.totalSize)
-	}
-
-	return chip.frontBuffer
-}
-
-// DisableDirectMode returns to normal dirty-region-tracked VRAM mode.
-func (chip *VideoChip) DisableDirectMode() {
-	chip.mu.Lock()
-	defer chip.mu.Unlock()
-	chip.directMode.Store(false)
-}
-
-// MarkFullScreenDirty signals that the entire framebuffer has been updated.
-// Use this after writing a frame in direct mode to trigger display refresh.
-func (chip *VideoChip) MarkFullScreenDirty() {
-	chip.fullScreenDirty.Store(true)
-}
-
-// IsDirectMode returns true if direct VRAM mode is enabled.
-func (chip *VideoChip) IsDirectMode() bool {
-	return chip.directMode.Load()
 }
 
 // GetFrontBuffer returns a direct reference to the front buffer for reading.
@@ -3236,19 +3299,27 @@ func (chip *VideoChip) GetOutput() VideoOutput {
 // GetFrame implements VideoSource - returns the current rendered frame
 // Called by compositor each frame to collect video output
 func (chip *VideoChip) GetFrame() []byte {
+	chip.inVBlank.Store(false)
 	if !chip.enabled.Load() {
 		return nil
 	}
-	// When directVRAM is set (e.g. EmuTOS/AROS mode), use clutGetFrame
-	// which handles both CLUT8 conversion and fbBase redirection
-	if chip.directVRAM != nil {
-		return chip.clutGetFrame()
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+
+	var frame []byte
+	if chip.clutMode.Load() || chip.directVRAM != nil || chip.fbBase != 0 {
+		frame = chip.clutGetFrame()
+	} else if !chip.hasContent.Load() {
+		frame = chip.splashBuffer
+	} else {
+		frame = chip.frontBuffer
 	}
-	// Return splash screen if no content has been written
-	if !chip.hasContent.Load() {
-		return chip.splashBuffer
+	if frame == nil {
+		return nil
 	}
-	return chip.frontBuffer
+	out := make([]byte, len(frame))
+	copy(out, frame)
+	return out
 }
 
 // IsEnabled implements VideoSource - returns whether VideoChip is enabled
@@ -3273,7 +3344,10 @@ func (chip *VideoChip) TickFrame() {
 }
 
 // SignalVSync implements VideoSource - called by compositor after frame sent.
-func (chip *VideoChip) SignalVSync() {}
+func (chip *VideoChip) SignalVSync() {
+	chip.everSignaled.Store(true)
+	chip.inVBlank.Store(true)
+}
 
 // -----------------------------------------------------------------------------
 // ScanlineAware Interface Implementation
@@ -3284,6 +3358,7 @@ func (chip *VideoChip) StartFrame() {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
+	chip.inVBlank.Store(false)
 	chip.copperManagedByCompositor = true // Signal that compositor is managing copper
 
 	if chip.copperEnabled && chip.bus != nil {
@@ -3319,17 +3394,22 @@ func (chip *VideoChip) ProcessScanline(y int) {
 func (chip *VideoChip) FinishFrame() []byte {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
+	chip.inVBlank.Store(false)
 
 	chip.copperManagedByCompositor = false // Release copper management back to refreshLoop
 
-	// When directVRAM is set (e.g. EmuTOS/AROS mode), use clutGetFrame
-	// which handles both CLUT8 conversion and fbBase redirection
-	if chip.directVRAM != nil {
-		return chip.clutGetFrame()
+	var frame []byte
+	if chip.clutMode.Load() || chip.directVRAM != nil || chip.fbBase != 0 {
+		frame = chip.clutGetFrame()
+	} else {
+		frame = chip.frontBuffer
 	}
-
-	// Return the current front buffer
-	return chip.frontBuffer
+	if frame == nil {
+		return nil
+	}
+	out := make([]byte, len(frame))
+	copy(out, frame)
+	return out
 }
 
 func GetSplashImageData() ([]byte, error) {

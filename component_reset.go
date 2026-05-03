@@ -253,8 +253,6 @@ func (vc *VideoChip) Reset() {
 	vc.enabled.Store(false)
 	vc.hasContent.Store(false)
 	vc.inVBlank.Store(false)
-	vc.directMode.Store(false)
-	vc.fullScreenDirty.Store(false)
 	vc.copperEnabled = false
 	vc.copperManagedByCompositor = false
 	vc.bigEndianMode = false
@@ -280,6 +278,11 @@ func (vc *VideoChip) Reset() {
 
 	// Reset blitter state
 	vc.bltBusy = false
+	vc.bltPending = false
+	vc.bltErr = false
+	vc.bltDone = false
+	vc.bltIrqPend = false
+	vc.bltIrqEnabled = false
 
 	// Reset CLUT8 palette state
 	vc.clutMode.Store(false)

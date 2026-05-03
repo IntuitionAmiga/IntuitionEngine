@@ -128,7 +128,7 @@
 ;   |  audio subsystem. Once    |    |  per frame using the 6      |
 ;   |  started, it plays        |    |  affine parameters. CPU     |
 ;   |  independently of the     |    |  only waits for completion  |
-;   |  main CPU -- no per-frame |    |  via BLT_STATUS polling.    |
+;   |  main CPU -- no per-frame |    |  via BLT_CTRL busy polling. |
 ;   |  overhead for music.      |    |                             |
 ;   +----------------------------+    +-----------------------------+
 ;
@@ -391,7 +391,7 @@ load_texture:
     LDA #1
     STA @BLT_CTRL
 lt_w1:
-    LDA @BLT_STATUS
+    LDA @BLT_CTRL
     AND A, #2
     JNZ A, lt_w1
 
@@ -823,14 +823,15 @@ render_mode7:
     STA @BLT_MODE7_DV_ROW       ; dv_row = CA
 
     ; --- Trigger the blit and wait for completion ---
-    ; BLT_CTRL = 1 starts the operation. We then poll BLT_STATUS bit 1
-    ; (busy flag) until it clears. The Mode7 blit processes all 307,200
+    ; BLT_CTRL = 1 starts the operation. We then poll BLT_CTRL bit 1
+    ; (busy flag) until it clears. BLT_STATUS bit 1 is DONE, not BUSY.
+    ; The Mode7 blit processes all 307,200
     ; pixels in hardware, so this is much faster than software rendering.
     LDA #1
     STA @BLT_CTRL
 
 rm7_wait:
-    LDA @BLT_STATUS
+    LDA @BLT_CTRL
     AND A, #2
     JNZ A, rm7_wait
 
@@ -870,7 +871,7 @@ blit_to_front:
     STA @BLT_CTRL
 
 btf_wait:
-    LDA @BLT_STATUS
+    LDA @BLT_CTRL
     AND A, #2
     JNZ A, btf_wait
 

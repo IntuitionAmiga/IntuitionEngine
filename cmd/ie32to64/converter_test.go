@@ -951,7 +951,7 @@ func TestConvertFile_Rotozoomer(t *testing.T) {
 		"pop r6",                    // POP C
 		"eor.l r1, r1, #0xFFFFFFFF", // XOR A, #0xFFFFFFFF → eor.l
 		"mulu.l r1, r1, r5",         // MUL A, B → mulu.l r1, r1, r5
-		"incbin \"../assets/rotozoomtexture.raw\"",
+		"incbin \"../assets/rotozoomtexture_ie32.raw\"",
 		"dc.l 0,6,13,19,25,31,38,44,50,56,62,68,74,80,86,92", // .word → dc.l
 	}
 	for _, check := range checks {

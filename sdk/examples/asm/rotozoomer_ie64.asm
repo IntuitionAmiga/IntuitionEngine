@@ -340,8 +340,8 @@ wait_vsync:
 ; to 256x256 BGRA format. The conversion is done offline to avoid runtime
 ; PNG decoding overhead.
 ;
-; After the BLIT COPY, we poll BLT_STATUS bit 1 (busy flag) to wait for
-; completion. This is essential because the blitter is asynchronous --
+; After the BLIT COPY, we poll BLT_CTRL bit 1 (busy flag) to wait for
+; completion. BLT_STATUS bit 1 is DONE, not BUSY. This is essential because the blitter is asynchronous --
 ; writing BLT_CTRL=1 starts the operation and returns immediately.
 ; =============================================================================
 load_texture:
@@ -375,7 +375,7 @@ load_texture:
     li      r2, #1
     store.l r2, (r1)
 
-    la      r3, BLT_STATUS
+    la      r3, BLT_CTRL
 .wait:
     load.l  r4, (r3)
     and.l   r4, r4, #2
@@ -744,8 +744,8 @@ render_mode7:
 
     ; --- Trigger the Mode7 blit ---
     ; Writing 1 to BLT_CTRL starts the blitter. It runs asynchronously
-    ; (the CPU continues executing), so we must poll BLT_STATUS to know
-    ; when it finishes. Bit 1 of BLT_STATUS = busy.
+    ; (the CPU continues executing), so we must poll BLT_CTRL to know
+    ; when it finishes. Bit 1 of BLT_CTRL = busy; BLT_STATUS bit 1 = DONE.
     la      r1, BLT_CTRL
     li      r2, #1
     store.l r2, (r1)
@@ -754,7 +754,7 @@ render_mode7:
     ; We must wait because the next step (blit_to_front) will reconfigure
     ; the blitter for a COPY operation. If Mode7 is still running, we'd
     ; corrupt its registers mid-blit.
-    la      r1, BLT_STATUS
+    la      r1, BLT_CTRL
 .wait:
     load.l  r2, (r1)
     and.l   r2, r2, #2
@@ -814,7 +814,7 @@ blit_to_front:
     ; Wait for copy completion before returning to main loop.
     ; If we didn't wait, the next frame's Mode7 render could start
     ; writing to the back buffer while the copy is still reading from it.
-    la      r1, BLT_STATUS
+    la      r1, BLT_CTRL
 .wait:
     load.l  r2, (r1)
     and.l   r2, r2, #2

@@ -558,7 +558,7 @@ Programs begin loading at 0x1000, providing:
 0x0F0038: BLT_DST_STRIDE - Dest stride (bytes/row)
 0x0F003C: BLT_COLOR    - Fill/line color (RGBA)
 0x0F0040: BLT_MASK     - Mask address for masked copy (1-bit/pixel)
-0x0F0044: BLT_STATUS   - Blitter status (bit0=error)
+0x0F0044: BLT_STATUS   - Blitter status (bit0=error, bit1=done, bit2=irq pending)
 0x0F0048: VIDEO_RASTER_Y - Raster band start Y
 0x0F004C: VIDEO_RASTER_HEIGHT - Raster band height (pixels)
 0x0F0050: VIDEO_RASTER_COLOR - Raster band color (RGBA)
@@ -5206,7 +5206,8 @@ The system tracks changes in 32x32 pixel blocks:
 Video output uses double buffering to prevent tearing. The system provides a VBlank status bit for flicker-free animation:
 
 - `VIDEO_STATUS` (0x0F0008) bit 1 indicates VBlank period (safe to draw)
-- VBlank is read lock-free - no mutex contention during polling
+- VBlank reads are non-destructive; `GetFrame()`/`StartFrame()` consume the signaled VBlank
+- Without compositor VSync signaling, a timer-based fallback keeps legacy polling loops working
 - Write to back buffer during VBlank to avoid screen flicker
 - Buffers swap automatically
 
@@ -5303,7 +5304,7 @@ The `wait_frame` pattern ensures exactly one frame per loop iteration, giving sm
 
 ## 12.5 Direct VRAM Access Mode
 
-For fullscreen effects such as plasma, fire, or tunnel demos where every pixel is updated each frame, the system provides a direct VRAM access mode with lock-free dirty tracking that bypasses the standard memory bus. This delivers approximately **4.5x video throughput** compared to bus-based access.
+For fullscreen effects such as plasma, fire, or tunnel demos where every pixel is updated each frame, map guest VRAM directly through the machine bus with `SetDirectVRAM`. This keeps the CPU and video chip reading the same backing memory while avoiding stale framebuffer copies.
 
 ### Performance Comparison
 
@@ -5314,7 +5315,7 @@ For fullscreen effects such as plasma, fire, or tunnel demos where every pixel i
 
 ### How It Works
 
-Direct VRAM mode eliminates per-pixel overhead by:
+Bus-backed direct VRAM eliminates per-pixel overhead by:
 - Bypassing CPU and bus mutex locks
 - Skipping I/O region mapping lookups
 - Using lock-free atomic bitmap for dirty tile tracking
@@ -5323,25 +5324,25 @@ Direct VRAM mode eliminates per-pixel overhead by:
 ### API Usage (Go)
 
 ```go
-// Enable direct VRAM mode and get buffer pointer
-vramBuffer := videoChip.EnableDirectMode()
+// Point the video chip at guest VRAM bus memory
+vramBuffer := bus.GetMemory()[VRAM_START : VRAM_START+VRAM_SIZE]
+videoChip.SetDirectVRAM(vramBuffer)
 
 // Attach buffer to CPU for fast writes
 cpu.AttachDirectVRAM(vramBuffer, VRAM_START, VRAM_START+uint32(len(vramBuffer)))
 
 // ... run demo ...
 
-// Cleanup
+// Cleanup CPU-side direct attachment, if used
 cpu.DetachDirectVRAM()
-videoChip.DisableDirectMode()
 ```
 
 ### When to Use
 
-- **Use direct mode** for fullscreen effects where most pixels change every frame
+- **Use bus-backed direct VRAM** for fullscreen effects where most pixels change every frame
 - **Use bus mode** for partial updates, sprites, or when dirty region tracking is beneficial
 
-Direct VRAM mode is ideal for demoscene-style effects, real-time visualisations, and any application that redraws the entire screen each frame.
+Bus-backed direct VRAM is ideal for demoscene-style effects, real-time visualisations, and any application that redraws the entire screen each frame.
 
 ## 12.6 Copper List Executor
 
@@ -5435,7 +5436,7 @@ Operations (`BLT_OP`):
 - `1`: FILL
 - `2`: LINE (coordinates packed into `BLT_SRC`/`BLT_DST`; extended mode below)
 - `3`: MASKED COPY (1-bit mask, LSB-first per byte)
-- `4`: ALPHA (alpha-aware copy with source alpha blending)
+- `4`: ALPHA (source-over blend using source alpha in bits 31-24: `out = (src*a + dst*(255-a))/255`)
 - `5`: MODE7 (affine texture mapping with 16.16 UV coordinates)
 - `6`: COLOR_EXPAND (1-bit template to colored pixels; see Extended Registers below)
 
@@ -5506,7 +5507,7 @@ Example UV mapping values:
     START_BLIT
 ```
 
-The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row bytes when the address is in VRAM, otherwise it uses `width*4`. If an unaligned VRAM address is used, `BLT_STATUS.bit0` is set.
+The blitter defaults `BLT_SRC_STRIDE`/`BLT_DST_STRIDE` to the current mode row bytes when the address is in VRAM, otherwise it uses `width*4`. `BLT_STATUS.bit0` reports errors such as invalid opcodes, overflow, or unaligned VRAM addresses; bit1 is DONE; bit2 is IRQ_PENDING (write 1 to clear).
 
 ### Extended Blitter Registers
 

@@ -297,6 +297,9 @@ func (sb *ScreenBuffer) SetCell(col, absRow int, ch byte) {
 		return
 	}
 	sb.ensureLine(absRow)
+	if absRow >= len(sb.lines) {
+		absRow = len(sb.lines) - 1
+	}
 	sb.lines[absRow][col] = ch
 }
 

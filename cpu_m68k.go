@@ -3016,7 +3016,7 @@ func isByteFanoutMMIOWideAddr(addr uint32, size uint32) bool {
 }
 
 // AttachDirectVRAM enables direct VRAM access mode for maximum video throughput.
-// The buffer should be obtained from VideoChip.EnableDirectMode().
+// The buffer should be obtained from VideoChip.GetFrontBuffer().
 // This bypasses the memory bus and mutex for VRAM writes.
 func (cpu *M68KCPU) AttachDirectVRAM(buffer []byte, start, end uint32) {
 	cpu.vramDirect = buffer

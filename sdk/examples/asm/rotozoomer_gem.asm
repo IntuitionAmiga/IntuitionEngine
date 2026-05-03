@@ -701,8 +701,8 @@ render_window:
                 ; Trigger blit
                 move.l  #1,BLT_CTRL
 
-                ; Wait for completion
-.wait:          move.l  BLT_STATUS,d0
+                ; Wait for completion by polling BLT_CTRL busy; BLT_STATUS bit 1 is DONE.
+.wait:          move.l  BLT_CTRL,d0
                 andi.l  #2,d0
                 bne.s   .wait
 
@@ -846,7 +846,7 @@ load_texture:
                 move.l  #TEX_STRIDE,BLT_SRC_STRIDE
                 move.l  #TEX_STRIDE,BLT_DST_STRIDE
                 move.l  #1,BLT_CTRL
-.w1:            move.l  BLT_STATUS,d0
+.w1:            move.l  BLT_CTRL,d0
                 andi.l  #2,d0
                 bne.s   .w1
                 rts

@@ -42,6 +42,15 @@ var (
 	BuildDate = "unknown"
 )
 
+func wireVideoInterruptSinks(video *VideoChip, antic *ANTICEngine, sink InterruptSink) {
+	if video != nil {
+		video.SetInterruptSink(sink)
+	}
+	if antic != nil {
+		antic.SetInterruptSink(sink)
+	}
+}
+
 type optionalStringFlag struct {
 	value string
 	set   bool
@@ -1209,6 +1218,7 @@ func main() {
 		case "ie32":
 			videoChip.SetBigEndianMode(false)
 			cpu := NewCPU(sysBus)
+			wireVideoInterruptSinks(videoChip, anticEngine, NewIE32InterruptSink(cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
 			}
@@ -1217,6 +1227,7 @@ func main() {
 		case "ie64":
 			videoChip.SetBigEndianMode(false)
 			cpu := NewCPU64(sysBus)
+			wireVideoInterruptSinks(videoChip, anticEngine, NewIE64InterruptSink(cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
 			}
@@ -1229,9 +1240,7 @@ func main() {
 				m68k.m68kJitEnabled = false
 			}
 			runner := NewM68KRunner(m68k)
-			if anticEngine != nil {
-				anticEngine.SetInterruptSink(NewM68KInterruptSink(m68k))
-			}
+			wireVideoInterruptSinks(videoChip, anticEngine, NewM68KInterruptSink(m68k))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
 			}
@@ -1247,9 +1256,7 @@ func main() {
 				m68k.m68kJitEnabled = false
 			}
 			runner := NewM68KRunner(m68k)
-			if anticEngine != nil {
-				anticEngine.SetInterruptSink(NewM68KInterruptSink(m68k))
-			}
+			wireVideoInterruptSinks(videoChip, anticEngine, NewM68KInterruptSink(m68k))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
 			}
@@ -1267,9 +1274,7 @@ func main() {
 				VGAEngine:    vgaEngine,
 				VoodooEngine: voodooEngine,
 			})
-			if anticEngine != nil {
-				anticEngine.SetInterruptSink(NewZ80InterruptSink(runner.cpu))
-			}
+			wireVideoInterruptSinks(videoChip, anticEngine, NewZ80InterruptSink(runner.cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(newZ80ULAIRQAdapter(runner.cpu))
 			}
@@ -1284,9 +1289,7 @@ func main() {
 				VGAEngine:    vgaEngine,
 				VoodooEngine: voodooEngine,
 			})
-			if anticEngine != nil {
-				anticEngine.SetInterruptSink(NewX86InterruptSink(runner.cpu))
-			}
+			wireVideoInterruptSinks(videoChip, anticEngine, NewX86InterruptSink(runner.cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(newX86ULAIRQAdapter(runner.cpu))
 			}
@@ -1299,6 +1302,7 @@ func main() {
 				Entry:        cpu6502Entry,
 				VoodooEngine: voodooEngine,
 			})
+			wireVideoInterruptSinks(videoChip, anticEngine, NewCPU6502InterruptSink(runner.cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(new6502ULAIRQAdapter(runner.cpu))
 			}
@@ -1415,6 +1419,7 @@ func main() {
 
 	if modeIE32 {
 		ie32CPU := NewCPU(sysBus)
+		wireVideoInterruptSinks(videoChip, anticEngine, NewIE32InterruptSink(ie32CPU))
 		ie32CPU.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUIE32, ie32CPU, nil, nil, nil, nil, nil)
 
@@ -1445,6 +1450,7 @@ func main() {
 	} else if modeIE64 {
 		sysBus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 		ie64CPU = NewCPU64(sysBus)
+		wireVideoInterruptSinks(videoChip, anticEngine, NewIE64InterruptSink(ie64CPU))
 		ie64CPU.PerfEnabled = perfMode
 		ie64CPU.jitEnabled = jitAvailable && !noJIT
 		runtimeStatus.setCPUs(runtimeCPUIE64, nil, ie64CPU, nil, nil, nil, nil)
@@ -1523,9 +1529,7 @@ func main() {
 		}
 
 		m68kRunner := NewM68KRunner(m68kCPU)
-		if anticEngine != nil {
-			anticEngine.SetInterruptSink(NewM68KInterruptSink(m68kCPU))
-		}
+		wireVideoInterruptSinks(videoChip, anticEngine, NewM68KInterruptSink(m68kCPU))
 		m68kRunner.PerfEnabled = perfMode
 		if noJIT {
 			m68kCPU.m68kJitEnabled = false
@@ -1564,9 +1568,7 @@ func main() {
 		videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
-		if anticEngine != nil {
-			anticEngine.SetInterruptSink(NewM68KInterruptSink(m68kCPU))
-		}
+		wireVideoInterruptSinks(videoChip, anticEngine, NewM68KInterruptSink(m68kCPU))
 		m68kRunner.PerfEnabled = perfMode
 		if noJIT {
 			m68kCPU.m68kJitEnabled = false
@@ -1620,9 +1622,7 @@ func main() {
 		configureArosVRAM(sysBus, videoChip)
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
-		if anticEngine != nil {
-			anticEngine.SetInterruptSink(NewM68KInterruptSink(m68kCPU))
-		}
+		wireVideoInterruptSinks(videoChip, anticEngine, NewM68KInterruptSink(m68kCPU))
 		m68kRunner.PerfEnabled = perfMode
 		if noJIT {
 			m68kCPU.m68kJitEnabled = false
@@ -1721,9 +1721,7 @@ func main() {
 			VGAEngine:    vgaEngine,
 			VoodooEngine: voodooEngine,
 		})
-		if anticEngine != nil {
-			anticEngine.SetInterruptSink(NewZ80InterruptSink(z80CPU.cpu))
-		}
+		wireVideoInterruptSinks(videoChip, anticEngine, NewZ80InterruptSink(z80CPU.cpu))
 		if ulaEngine != nil {
 			ulaEngine.SetIRQSink(newZ80ULAIRQAdapter(z80CPU.cpu))
 		}
@@ -1765,9 +1763,7 @@ func main() {
 		x86Entry = x86Config.Entry
 
 		x86CPU := NewCPUX86Runner(sysBus, x86Config)
-		if anticEngine != nil {
-			anticEngine.SetInterruptSink(NewX86InterruptSink(x86CPU.cpu))
-		}
+		wireVideoInterruptSinks(videoChip, anticEngine, NewX86InterruptSink(x86CPU.cpu))
 		if ulaEngine != nil {
 			ulaEngine.SetIRQSink(newX86ULAIRQAdapter(x86CPU.cpu))
 		}
@@ -1826,6 +1822,7 @@ func main() {
 			Entry:        parsedEntry,
 			VoodooEngine: voodooEngine,
 		})
+		wireVideoInterruptSinks(videoChip, anticEngine, NewCPU6502InterruptSink(cpu6502.cpu))
 		if ulaEngine != nil {
 			ulaEngine.SetIRQSink(new6502ULAIRQAdapter(cpu6502.cpu))
 		}
@@ -2047,10 +2044,13 @@ func main() {
 			return err
 		}
 		switch mode {
+		case "ie32":
+			wireVideoInterruptSinks(videoChip, anticEngine, NewIE32InterruptSink(newRunner.(*CPU)))
 		case "ie64":
 			if haveIE64JIT {
 				newRunner.(*CPU64).jitEnabled = preserveIE64JIT
 			}
+			wireVideoInterruptSinks(videoChip, anticEngine, NewIE64InterruptSink(newRunner.(*CPU64)))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
 			}
@@ -2058,9 +2058,7 @@ func main() {
 			if haveM68KJIT {
 				newRunner.(*M68KRunner).cpu.m68kJitEnabled = preserveM68KJIT
 			}
-			if anticEngine != nil {
-				anticEngine.SetInterruptSink(NewM68KInterruptSink(newRunner.(*M68KRunner).cpu))
-			}
+			wireVideoInterruptSinks(videoChip, anticEngine, NewM68KInterruptSink(newRunner.(*M68KRunner).cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
 			}
@@ -2068,16 +2066,12 @@ func main() {
 			if haveZ80JIT {
 				newRunner.(*CPUZ80Runner).cpu.jitEnabled = preserveZ80JIT
 			}
-			if anticEngine != nil {
-				anticEngine.SetInterruptSink(NewZ80InterruptSink(newRunner.(*CPUZ80Runner).cpu))
-			}
+			wireVideoInterruptSinks(videoChip, anticEngine, NewZ80InterruptSink(newRunner.(*CPUZ80Runner).cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(newZ80ULAIRQAdapter(newRunner.(*CPUZ80Runner).cpu))
 			}
 		case "x86":
-			if anticEngine != nil {
-				anticEngine.SetInterruptSink(NewX86InterruptSink(newRunner.(*CPUX86Runner).cpu))
-			}
+			wireVideoInterruptSinks(videoChip, anticEngine, NewX86InterruptSink(newRunner.(*CPUX86Runner).cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(newX86ULAIRQAdapter(newRunner.(*CPUX86Runner).cpu))
 			}
@@ -2086,6 +2080,7 @@ func main() {
 				newRunner.(*CPU6502Runner).JITEnabled = preserve6502JIT
 				newRunner.(*CPU6502Runner).cpu.jitEnabled = preserve6502JIT
 			}
+			wireVideoInterruptSinks(videoChip, anticEngine, NewCPU6502InterruptSink(newRunner.(*CPU6502Runner).cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(new6502ULAIRQAdapter(newRunner.(*CPU6502Runner).cpu))
 			}
