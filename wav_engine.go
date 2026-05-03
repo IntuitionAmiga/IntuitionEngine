@@ -203,10 +203,15 @@ func (e *WAVEngine) writeDAC(ch int, sample int16, volume uint8) {
 	} else if scaled < -128 {
 		scaled = -128
 	}
-	base := FLEX_CH_BASE + uint32(ch)*FLEX_CH_STRIDE
-	e.sound.HandleRegisterWrite(base+FLEX_OFF_VOL, 255)
-	e.sound.HandleRegisterWrite(base+FLEX_OFF_CTRL, 3)
-	e.sound.HandleRegisterWrite(base+FLEX_OFF_DAC, uint32(byte(int8(scaled))))
+	if addr, ok := flexAddrForChannel(ch, FLEX_OFF_VOL); ok {
+		e.sound.HandleRegisterWrite(addr, 255)
+	}
+	if addr, ok := flexAddrForChannel(ch, FLEX_OFF_CTRL); ok {
+		e.sound.HandleRegisterWrite(addr, 3)
+	}
+	if addr, ok := flexAddrForChannel(ch, FLEX_OFF_DAC); ok {
+		e.sound.HandleRegisterWrite(addr, uint32(byte(int8(scaled))))
+	}
 }
 
 func (e *WAVEngine) releaseChannels() {

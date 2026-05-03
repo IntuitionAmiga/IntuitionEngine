@@ -22,20 +22,20 @@ func TestFlexChannelDACMode(t *testing.T) {
 	chip.applyFlexRegister(0, FLEX_OFF_VOL, 255) // full volume
 
 	// Write a positive signed value to DAC register
-	// int8(100) → dacValue = 100/128.0 ≈ 0.78125
+	// int8(100) -> dacValue = 100/127.0 in symmetric DAC mode.
 	chip.applyFlexRegister(0, FLEX_OFF_DAC, uint32(byte(100)))
 
 	if !ch.dacMode {
 		t.Fatal("expected dacMode to be true after writing FLEX_OFF_DAC")
 	}
 
-	expected := float32(100) / 128.0
+	expected := float32(100) / 127.0
 	if math.Abs(float64(ch.dacValue-expected)) > 0.001 {
 		t.Fatalf("expected dacValue ≈ %f, got %f", expected, ch.dacValue)
 	}
 
 	sample := ch.generateSample()
-	// output = dacValue * volume = 0.78125 * 1.0 = 0.78125
+	// output = dacValue * volume.
 	if math.Abs(float64(sample-expected)) > 0.001 {
 		t.Fatalf("expected sample ≈ %f, got %f", expected, sample)
 	}
@@ -106,13 +106,13 @@ func TestFlexChannelDACModeWithVolume(t *testing.T) {
 	chip.applyFlexRegister(0, FLEX_OFF_CTRL, 3)
 	chip.applyFlexRegister(0, FLEX_OFF_VOL, 128) // 50% volume
 
-	// int8(127) → dacValue = 127/128.0 ≈ 0.9921875
+	// int8(127) -> dacValue = 1.0.
 	chip.applyFlexRegister(0, FLEX_OFF_DAC, 127)
 
 	sample := ch.generateSample()
-	// output = dacValue * volume = 0.9921875 * (128/255) ≈ 0.4978
+	// output = dacValue * volume.
 	expectedVol := float32(128) / 255.0
-	expected := (float32(127) / 128.0) * expectedVol
+	expected := expectedVol
 	if math.Abs(float64(sample-expected)) > 0.01 {
 		t.Fatalf("expected sample ≈ %f, got %f", expected, sample)
 	}
@@ -133,7 +133,7 @@ func TestFlexChannelDACModeBypassesEnvelope(t *testing.T) {
 	// Generate a sample immediately — if envelope were used, output would be
 	// near 0 because attack just started. DAC mode should give full output.
 	sample := ch.generateSample()
-	expected := float32(100) / 128.0
+	expected := float32(100) / 127.0
 	if math.Abs(float64(sample-expected)) > 0.01 {
 		t.Fatalf("expected immediate output ≈ %f (envelope bypassed), got %f", expected, sample)
 	}
@@ -152,7 +152,7 @@ func TestFlexChannelDACModeNoFrequencyNeeded(t *testing.T) {
 	chip.applyFlexRegister(0, FLEX_OFF_DAC, 100)
 
 	sample := ch.generateSample()
-	expected := float32(100) / 128.0
+	expected := float32(100) / 127.0
 	if sample == 0 {
 		t.Fatal("expected non-zero output with frequency=0 in DAC mode")
 	}

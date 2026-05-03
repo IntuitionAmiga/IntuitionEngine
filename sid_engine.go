@@ -352,8 +352,9 @@ func (e *SIDEngine) syncToChip() {
 	e.mutex.Unlock()
 
 	for _, w := range plan.writes {
-		base := FLEX_CH_BASE + uint32(w.ch)*FLEX_CH_STRIDE
-		sound.HandleRegisterWrite(base+w.offset, w.value)
+		if addr, ok := flexAddrForChannel(w.ch, w.offset); ok {
+			sound.HandleRegisterWrite(addr, w.value)
+		}
 	}
 	for _, s := range plan.envelopeMode {
 		sound.SetChannelEnvelopeMode(s.ch, s.enabled)
@@ -866,8 +867,9 @@ func (e *SIDEngine) writeChannel(ch int, offset uint32, value uint32) {
 	if e.sound == nil {
 		return
 	}
-	base := FLEX_CH_BASE + uint32(e.baseChannel+ch)*FLEX_CH_STRIDE
-	e.sound.HandleRegisterWrite(base+offset, value)
+	if addr, ok := flexAddrForChannel(e.baseChannel+ch, offset); ok {
+		e.sound.HandleRegisterWrite(addr, value)
+	}
 }
 
 // sidVolumeGain converts a 4-bit SID volume level to a gain value

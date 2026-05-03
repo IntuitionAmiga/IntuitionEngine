@@ -14,8 +14,9 @@
 ;   ENVELOPE ch, atk, dec, sus, rel
 ;   GATE ch, ON / GATE ch, OFF
 ;
-; Uses the flexible 4-channel interface (FLEX_CH0_BASE, stride 0x40).
-; Channel 0-3 map to flex channels.
+; Uses the primary flexible interface (FLEX_CH0_BASE, stride 0x40).
+; Channels 0-3 map to primary flex channels; SID2/SID3 expose channels
+; 4-9 at 0xF0C40-0xF0CFF and 0xF0D40-0xF0DFF for lower-level code.
 ;
 ; Register conventions:
 ;   R16 = interpreter state base

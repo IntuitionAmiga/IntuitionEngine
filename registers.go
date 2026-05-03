@@ -35,11 +35,13 @@ Address Range       Size    Device              Constants File
 
 0xF0000-0xF0487     1160B   Video Chip (+palette) video_chip.go
 0xF0700-0xF07FF     256B    Terminal/Serial     registers.go
-0xF0800-0xF0B3F     832B    Audio Chip          audio_chip.go
+0xF0800-0xF0B7F     896B    Audio Chip          audio_chip.go
 0xF0BC0-0xF0BD7     24B     MOD Player          mod_constants.go
 0xF0BD8-0xF0BEB     20B     WAV Player          wav_constants.go
 0xF0C00-0xF0C20     33B     PSG (AY-3-8910/YM2149) psg_constants.go
+0xF0C40-0xF0CFF     192B    SID2 Flex Audio     audio_chip.go
 0xF0D00-0xF0D20     33B     POKEY               pokey_constants.go
+0xF0D40-0xF0DFF     192B    SID3 Flex Audio     audio_chip.go
 0xF0E00-0xF0E2D     45B     SID (6581/8580)     sid_constants.go
 0xF0F00-0xF0F5F     96B     TED (audio+video)   ted_constants.go, ted_video_constants.go
 0xF1000-0xF13FF     1KB     VGA Registers       vga_constants.go
@@ -71,7 +73,7 @@ Video Chip (0xF0000-0xF0054) - video_chip.go
   BLT_* (Blitter registers)
   VIDEO_RASTER_* (Raster effect registers)
 
-Audio Chip (0xF0800-0xF0B3F) - audio_chip.go
+Audio Chip (0xF0800-0xF0B7F) - audio_chip.go
   0xF0800-0xF08FF: Global control (AUDIO_CTRL, ENV_SHAPE, FILTER_*)
   0xF0900-0xF093F: Square wave (SQUARE_*)
   0xF0940-0xF097F: Triangle wave (TRI_*)
@@ -79,7 +81,9 @@ Audio Chip (0xF0800-0xF0B3F) - audio_chip.go
   0xF09C0-0xF09FF: Noise (NOISE_*)
   0xF0A00-0xF0A1F: Sync/Ring mod sources
   0xF0A20-0xF0A6F: Sawtooth wave (SAW_*)
-  0xF0A80-0xF0B3F: Flexible 4-channel block (FLEX_CH*)
+  0xF0A80-0xF0B7F: Flexible 4-channel block (FLEX_CH*)
+  0xF0C40-0xF0CFF: SID2 flexible block (channels 4-6)
+  0xF0D40-0xF0DFF: SID3 flexible block (channels 7-9)
 
 PSG - AY-3-8910/YM2149 (0xF0C00-0xF0C20) - psg_constants.go
   PSG_BASE through PSG_END (R0-R15)
@@ -170,7 +174,12 @@ const (
 
 	// Audio chip region
 	AUDIO_REGION_BASE = 0xF0800
-	AUDIO_REGION_END  = 0xF0B3F
+	AUDIO_REGION_END  = 0xF0B7F
+
+	SID2_FLEX_REGION_BASE = SID2_FLEX_BASE
+	SID2_FLEX_REGION_END  = SID2_FLEX_END
+	SID3_FLEX_REGION_BASE = SID3_FLEX_BASE
+	SID3_FLEX_REGION_END  = SID3_FLEX_END
 
 	// PSG region (AY-3-8910/YM2149)
 	PSG_REGION_BASE = 0xF0C00
@@ -357,8 +366,12 @@ func GetIORegion(addr uint32) string {
 		return "Terminal"
 	case addr >= AUDIO_REGION_BASE && addr <= AUDIO_REGION_END:
 		return "AudioChip"
+	case addr >= SID2_FLEX_REGION_BASE && addr <= SID2_FLEX_REGION_END:
+		return "SID2FlexAudio"
 	case addr >= PSG_REGION_BASE && addr <= PSG_REGION_END:
 		return "PSG"
+	case addr >= SID3_FLEX_REGION_BASE && addr <= SID3_FLEX_REGION_END:
+		return "SID3FlexAudio"
 	case addr >= POKEY_REGION_BASE && addr <= POKEY_REGION_END:
 		return "POKEY"
 	case addr >= SID_REGION_BASE && addr <= SID_REGION_END:

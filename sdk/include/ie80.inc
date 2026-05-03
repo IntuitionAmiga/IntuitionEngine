@@ -867,11 +867,13 @@
 ; ----------------------------------------------------------------------------
 ; Global Audio Control
 ; ----------------------------------------------------------------------------
-.set AUDIO_CTRL_0,0xF800
+.set AUDIO_CTRL_0,0xF800     ; bit0=enable, bit1=freeze
 .set AUDIO_CTRL_1,0xF801
 .set AUDIO_CTRL_2,0xF802
 .set AUDIO_CTRL_3,0xF803
 .set ENV_SHAPE_0,0xF804
+.set ENV_SHAPE_CH_BASE,0xF860
+.set ENV_SHAPE_STRIDE,0x04
 .set ENV_SHAPE_1,0xF805
 .set ENV_SHAPE_2,0xF806
 .set ENV_SHAPE_3,0xF807
@@ -1177,6 +1179,14 @@
 ;   Flex 3: 0xFB40
 ; ----------------------------------------------------------------------------
 .set FLEX_CH_STRIDE,0x40
+.set AUDIO_ENABLE,0x01
+.set AUDIO_FREEZE,0x02
+.set SID2_CH0_BASE,0xFC40
+.set SID2_CH1_BASE,0xFC80
+.set SID2_CH2_BASE,0xFCC0
+.set SID3_CH0_BASE,0xFD40
+.set SID3_CH1_BASE,0xFD80
+.set SID3_CH2_BASE,0xFDC0
 
 ; Flex Channel 0 (0xFA80-0xFAAF)
 ; Frequency is 16.8 fixed-point: value = Hz * 256 (e.g., 440 Hz = 440*256 = 112640)

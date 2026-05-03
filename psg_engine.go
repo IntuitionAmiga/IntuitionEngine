@@ -588,8 +588,9 @@ func (e *PSGEngine) volumeGain(level uint8) float32 {
 }
 
 func (e *PSGEngine) writeChannel(ch int, offset uint32, value uint32) {
-	base := FLEX_CH_BASE + uint32(ch)*FLEX_CH_STRIDE
-	e.sound.HandleRegisterWrite(base+offset, value)
+	if addr, ok := flexAddrForChannel(ch, offset); ok {
+		e.sound.HandleRegisterWrite(addr, value)
+	}
 }
 
 var psgPlusMixGain = [3]float32{1.05, 1.0, 0.95}

@@ -68,7 +68,9 @@ import (
 // F0980-F09BF: Channel 2 legacy registers (sine defaults)
 // F09C0-F09FF: Channel 3 legacy registers (noise defaults)
 // F0A00-F0A6F: Modulation/effects legacy registers
-// F0A80-F0B3F: Flexible 4-channel register block (preferred)
+// F0A80-F0B7F: Flexible 4-channel register block (preferred)
+// F0C40-F0CFF: SID2 flexible register block (channels 4-6)
+// F0D40-F0DFF: SID3 flexible register block (channels 7-9)
 const (
 	SQUARE_REG_START = 0xF0900
 	SQUARE_REG_END   = 0xF093F
@@ -84,12 +86,16 @@ const (
 )
 
 // -------------------------------------------------------------------------------
-// Flexible 4-channel register block (F0A80-F0B3F)
+// Flexible channel register blocks.
 // -------------------------------------------------------------------------------
 const (
-	FLEX_CH_BASE   = 0xF0A80
-	FLEX_CH_STRIDE = 0x40 // Must be >= highest offset (FLEX_OFF_DAC=0x3C) + 4
-	FLEX_CH_END    = FLEX_CH_BASE + (FLEX_CH_STRIDE * NUM_CHANNELS) - 1
+	FLEX_CH_BASE        = 0xF0A80
+	FLEX_CH_STRIDE      = 0x40 // Must be >= highest offset (FLEX_OFF_DAC=0x3C) + 4
+	FLEX_CH_PRIMARY_END = FLEX_CH_BASE + (FLEX_CH_STRIDE * 4) - 1
+	SID2_FLEX_BASE      = 0xF0C40
+	SID2_FLEX_END       = SID2_FLEX_BASE + (FLEX_CH_STRIDE * 3) - 1
+	SID3_FLEX_BASE      = 0xF0D40
+	SID3_FLEX_END       = SID3_FLEX_BASE + (FLEX_CH_STRIDE * 3) - 1
 
 	FLEX_CH0_BASE = FLEX_CH_BASE
 	FLEX_CH1_BASE = FLEX_CH_BASE + FLEX_CH_STRIDE
@@ -239,7 +245,7 @@ const (
 	REVERB_MIX   = 0xF0A50 // 0-255 → 0.0-1.0 (dry/wet)
 	REVERB_DECAY = 0xF0A54 // 0-255 → 0.1-0.99 (tail length)
 
-	AUDIO_CTRL    = 0xF0800                                 // Audio control register
+	AUDIO_CTRL    = 0xF0800                                 // Audio control register: bit 0=enable, bit 1=freeze
 	AUDIO_REG_END = FLEX_CH_BASE + (FLEX_CH_STRIDE * 4) - 1 // 0xF0B7F — bus-mapped channels only
 
 	SAMPLE_RATE = 44100 // Audio sample rate
@@ -254,6 +260,7 @@ const (
 	ENV_SUSTAIN
 	ENV_RELEASE
 	ENV_SHAPE          = 0xF0804
+	ENV_SHAPE_CH_BASE  = 0xF0860
 	ENV_SHAPE_SAW_UP   = 1 // Linear rise to 1.0, then hold
 	ENV_SHAPE_SAW_DOWN = 2 // Linear fall to 0.0, then hold
 	ENV_SHAPE_LOOP     = 3 // ADSR but loops after release
@@ -629,8 +636,8 @@ func sidGetExpIndex(level uint8) int {
 func sidQuantize12Bit(sample float32) float32 {
 	// Convert from [-1, 1] to [0, 4095]
 	normalized := (sample + 1.0) * 0.5 * float32(SID_OSC_MAX)
-	// Quantize to integer
-	quantized := float32(int(normalized + 0.5))
+	// Quantize by truncation to avoid half-LSB DC bias.
+	quantized := float32(int(normalized))
 	// Clamp to valid range
 	if quantized < 0 {
 		quantized = 0
@@ -671,7 +678,7 @@ func sid6581FilterDistort(sample float32) float32 {
 	} else if sample < -SID_6581_FILTER_THRESHOLD_NEG {
 		// Soft clip negative peaks (different threshold for asymmetry)
 		excess := -sample - SID_6581_FILTER_THRESHOLD_NEG
-		return -(SID_6581_FILTER_THRESHOLD_NEG + excess/(1.0+excess*SID_6581_FILTER_KNEE*1.2))
+		return -(SID_6581_FILTER_THRESHOLD_NEG + excess/(1.0+excess*SID_6581_FILTER_KNEE))
 	}
 	return sample
 }
@@ -722,12 +729,13 @@ type Channel struct {
 	volume           float32 // Channel volume (0.0-1.0)
 	envelopeLevel    float32 // Current envelope amplitude
 	prevRawSample    float32 // Previous output (needed for ring modulation)
+	sweepInitialFreq float32 // Frequency captured when sweep is enabled
 	dutyCycle        float32 // Square wave duty cycle (0.0-1.0)
 	noisePhase       float32 // Phase accumulator for noise timing
 	noiseValue       float32 // Current noise generator output
 	noiseMix         float32 // Optional per-channel noise source mix (0.0-1.0)
 	noiseFrequency   float32 // Optional per-channel mixed-noise clock; falls back to frequency
-	dacValue         float32 // DAC mode sample value [-1.0, +0.992]
+	dacValue         float32 // DAC mode sample value [-1.0, +1.0]
 	noiseFilter      float32 // Noise filter coefficient
 	noiseFilterState float32 // Noise filter state variable
 	noiseSR          uint32  // Noise shift register state
@@ -902,21 +910,23 @@ type CombFilter struct {
 
 type SoundChip struct {
 	// Cache line 1 - Hot path DSP state (64 bytes)
-	filterLP         float32                   // Current low-pass filter state
-	filterBP         float32                   // Current band-pass filter state
-	filterHP         float32                   // Current high-pass filter state
-	filterCutoff     float32                   // Normalised filter cutoff frequency (0-1)
-	filterResonance  float32                   // Filter resonance/Q factor (0-1)
-	filterModAmount  float32                   // Filter modulation depth (0-1)
-	overdriveLevel   float32                   // Overdrive distortion amount (0-4)
-	overdriveGain    float32                   // Pre-computed overdrive gain
-	reverbMix        float32                   // Reverb wet/dry mix ratio (0-1)
-	sidMixerDCOffset float32                   // SID mixer DC offset (model-dependent)
-	filterType       int                       // Filter mode (0=off, 1=LP, 2=HP, 3=BP)
-	enabled          atomic.Bool               // Global chip enable flag
-	sidMixerEnabled  bool                      // Enable SID mixer mode (DC offset + saturation)
-	sidMixerSaturate bool                      // Enable soft saturation in mixer
-	_pad1            [SOUNDCHIP_PAD1_SIZE]byte // Align to 64-byte cache line boundary
+	filterLP              float32 // Current low-pass filter state
+	filterBP              float32 // Current band-pass filter state
+	filterHP              float32 // Current high-pass filter state
+	filterCutoff          float32 // Smoothed normalised filter cutoff frequency (0-1)
+	filterResonance       float32 // Smoothed filter resonance/Q factor (0-1)
+	filterCutoffTarget    float32 // Target normalised filter cutoff frequency (0-1)
+	filterResonanceTarget float32 // Target filter resonance/Q factor (0-1)
+	filterModAmount       float32 // Filter modulation depth (0-1)
+	overdriveLevel        float32 // Overdrive distortion amount (0-4)
+	overdriveGain         float32 // Pre-computed overdrive gain
+	reverbMix             float32 // Reverb wet/dry mix ratio (0-1)
+	sidMixerDCOffset      float32 // SID mixer DC offset (model-dependent)
+	filterType            int     // Filter mode (0=off, 1=LP, 2=HP, 3=BP)
+	enabled               atomic.Bool
+	sidMixerEnabled       bool                      // Enable SID mixer mode (DC offset + saturation)
+	sidMixerSaturate      bool                      // Enable soft saturation in mixer
+	_pad1                 [SOUNDCHIP_PAD1_SIZE]byte // Align to 64-byte cache line boundary
 
 	// Cache line 2 - Channel references and thread safety (64 bytes)
 	channels        [NUM_CHANNELS]*Channel    // Array of audio channel pointers
@@ -940,9 +950,8 @@ type SoundChip struct {
 	output          AudioOutput                    // Audio backend interface
 	sampleRateRecip float32                        // Pre-computed 1.0 / sampleRate
 
-	// Byte accumulator for sub-word flex register writes (Write8 path).
-	// Only covers bus-mapped channels 0-3 (4 * FLEX_CH_STRIDE = 256 bytes).
-	flexShadow [4 * FLEX_CH_STRIDE]byte
+	// Byte accumulator/read-back shadow for sub-word flex register writes.
+	flexShadow [NUM_CHANNELS * FLEX_CH_STRIDE]byte
 
 	busMemory []byte // mirror register writes for Machine Monitor visibility
 
@@ -1113,20 +1122,71 @@ func stepNoiseLFSR(mode int, sr uint32) uint32 {
 	}
 }
 
+func flexChannelFromAddr(addr uint32) (chIndex uint32, offset uint32, ok bool) {
+	switch {
+	case addr >= FLEX_CH_BASE && addr <= FLEX_CH_PRIMARY_END:
+		return (addr - FLEX_CH_BASE) / FLEX_CH_STRIDE, (addr - FLEX_CH_BASE) % FLEX_CH_STRIDE, true
+	case addr >= SID2_FLEX_BASE && addr <= SID2_FLEX_END:
+		rel := addr - SID2_FLEX_BASE
+		return 4 + rel/FLEX_CH_STRIDE, rel % FLEX_CH_STRIDE, true
+	case addr >= SID3_FLEX_BASE && addr <= SID3_FLEX_END:
+		rel := addr - SID3_FLEX_BASE
+		return 7 + rel/FLEX_CH_STRIDE, rel % FLEX_CH_STRIDE, true
+	default:
+		return 0, 0, false
+	}
+}
+
+func flexAddrForChannel(ch int, offset uint32) (uint32, bool) {
+	if ch < 0 || ch >= NUM_CHANNELS || offset >= FLEX_CH_STRIDE {
+		return 0, false
+	}
+	switch {
+	case ch < 4:
+		return FLEX_CH_BASE + uint32(ch)*FLEX_CH_STRIDE + offset, true
+	case ch < 7:
+		return SID2_FLEX_BASE + uint32(ch-4)*FLEX_CH_STRIDE + offset, true
+	default:
+		return SID3_FLEX_BASE + uint32(ch-7)*FLEX_CH_STRIDE + offset, true
+	}
+}
+
 // HandleRegisterRead handles reads from audio registers
 // Primarily used for reading channel volumes for VU meters
 func (chip *SoundChip) HandleRegisterRead(addr uint32) uint32 {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
+	if addr == AUDIO_CTRL {
+		var value uint32
+		if chip.enabled.Load() {
+			value |= 0x01
+		}
+		if chip.audioFrozen.Load() {
+			value |= 0x02
+		}
+		return value
+	}
+	if addr == ENV_SHAPE {
+		if chip.channels[0] != nil {
+			return uint32(chip.channels[0].envelopeShape)
+		}
+		return 0
+	}
+	if addr >= ENV_SHAPE_CH_BASE && addr < ENV_SHAPE_CH_BASE+NUM_CHANNELS*4 && (addr-ENV_SHAPE_CH_BASE)%4 == 0 {
+		chIndex := (addr - ENV_SHAPE_CH_BASE) / 4
+		if chIndex < NUM_CHANNELS && chip.channels[chIndex] != nil {
+			return uint32(chip.channels[chIndex].envelopeShape)
+		}
+		return 0
+	}
+
 	// Handle flexible channel reads
-	if addr >= FLEX_CH_BASE && addr <= FLEX_CH_END {
-		chIndex := (addr - FLEX_CH_BASE) / FLEX_CH_STRIDE
+	if chIndex, offset, ok := flexChannelFromAddr(addr); ok {
 		if chIndex >= NUM_CHANNELS {
 			return 0
 		}
 		ch := chip.channels[chIndex]
-		offset := (addr - FLEX_CH_BASE) % FLEX_CH_STRIDE
 		switch offset {
 		case FLEX_OFF_VOL:
 			return uint32(ch.volume * NORMALISE_8BIT)
@@ -1145,6 +1205,16 @@ func (chip *SoundChip) HandleRegisterRead(addr uint32) uint32 {
 			return uint32(ch.dutyCycle * PWM_RANGE)
 		case FLEX_OFF_WAVE_TYPE:
 			return uint32(ch.waveType)
+		case FLEX_OFF_SWEEP, FLEX_OFF_ATK, FLEX_OFF_DEC, FLEX_OFF_SUS, FLEX_OFF_REL,
+			FLEX_OFF_PWM_CTRL, FLEX_OFF_NOISEMODE, FLEX_OFF_RINGMOD, FLEX_OFF_SYNC,
+			FLEX_OFF_DAC:
+			baseIdx := chIndex*FLEX_CH_STRIDE + offset
+			if baseIdx+3 < uint32(len(chip.flexShadow)) {
+				return uint32(chip.flexShadow[baseIdx]) |
+					uint32(chip.flexShadow[baseIdx+1])<<8 |
+					uint32(chip.flexShadow[baseIdx+2])<<16 |
+					uint32(chip.flexShadow[baseIdx+3])<<24
+			}
 		}
 	}
 	return 0
@@ -1190,23 +1260,53 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	}
 
 	if addr == AUDIO_CTRL {
-		chip.enabled.Store(value != 0)
+		chip.enabled.Store(value&0x01 != 0)
+		chip.audioFrozen.Store(value&0x02 != 0)
+		return
+	}
+	if addr == ENV_SHAPE {
+		ch := chip.channels[0]
+		if ch == nil {
+			return
+		}
+		if value >= NUM_ENVELOPE_SHAPES {
+			value = NUM_ENVELOPE_SHAPES - 1
+		}
+		ch.envelopeShape = int(value)
+		ch.envelopePhase = ENV_ATTACK
+		ch.envelopeSample = 0
+		return
+	}
+	if addr >= ENV_SHAPE_CH_BASE && addr < ENV_SHAPE_CH_BASE+NUM_CHANNELS*4 && (addr-ENV_SHAPE_CH_BASE)%4 == 0 {
+		chIndex := (addr - ENV_SHAPE_CH_BASE) / 4
+		ch := chip.channels[chIndex]
+		if ch == nil {
+			return
+		}
+		if value >= NUM_ENVELOPE_SHAPES {
+			value = NUM_ENVELOPE_SHAPES - 1
+		}
+		ch.envelopeShape = int(value)
+		ch.envelopePhase = ENV_ATTACK
+		ch.envelopeSample = 0
 		return
 	}
 
-	if addr >= FLEX_CH_BASE && addr <= FLEX_CH_END {
-		chIndex := (addr - FLEX_CH_BASE) / FLEX_CH_STRIDE
+	if chIndex, offset, ok := flexChannelFromAddr(addr); ok {
 		if chIndex >= NUM_CHANNELS {
 			log.Printf("invalid channel index: %d", chIndex)
 			return
 		}
-		offset := (addr - FLEX_CH_BASE) % FLEX_CH_STRIDE
 		chip.applyFlexRegister(chIndex, offset, value)
 		return
 	}
 
 	var ch *Channel
 	switch {
+	case addr == SINE_SWEEP:
+		ch = chip.channels[2]
+	case addr == TRI_SWEEP:
+		ch = chip.channels[1]
 	case addr >= SQUARE_REG_START && addr <= SQUARE_REG_END:
 		ch = chip.channels[0]
 	case addr >= TRIANGLE_REG_START && addr <= TRIANGLE_REG_END:
@@ -1226,7 +1326,7 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	case SQUARE_DUTY:
 		value16 := uint16(value & WORD_MASK)
 		ch.dutyCycle = float32(value16&BYTE_MASK) / PWM_RANGE
-		ch.pwmDepth = float32((value16>>PWM_DEPTH_SHIFT)&BYTE_MASK) / (PWM_RANGE * 2.0)
+		ch.pwmDepth = float32((value16>>PWM_DEPTH_SHIFT)&BYTE_MASK) / PWM_RANGE
 	case SQUARE_FREQ, TRI_FREQ, SINE_FREQ, NOISE_FREQ, SAW_FREQ:
 		if addr == SAW_FREQ {
 			ch.waveType = WAVE_SAWTOOTH
@@ -1306,7 +1406,11 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		}
 	case NOISE_MODE:
 		ch.waveType = WAVE_NOISE
-		ch.noiseMode = int(value % NUM_NOISE_MODES) // 0=white, 1=periodic, 2=metallic, 3=psg, 4=TED
+		if value >= NUM_NOISE_MODES {
+			log.Printf("audio noise mode out of range: %d", value)
+			value = NUM_NOISE_MODES - 1
+		}
+		ch.noiseMode = int(value) // 0=white, 1=periodic, 2=metallic, 3=psg, 4=TED
 	//case ENV_SHAPE:
 	//	ch.envelopeShape = int(value % NUM_ENVELOPE_SHAPES) // 0=ADSR, 1=SawUp, 2=SawDown, 3=Loop
 	//	// Reset envelope state
@@ -1325,33 +1429,53 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	case SQUARE_SWEEP:
 		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
 		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
+		if ch.sweepPeriod == 0 {
+			ch.sweepEnabled = false
+		}
 		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
 		if ch.sweepShift == 0 {
 			ch.sweepShift = MIN_SWEEP_SHIFT
 		}
+		ch.sweepInitialFreq = ch.frequency
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
 	case TRI_SWEEP:
 		ch = chip.channels[1] // Force channel 1 for TRI_SWEEP
 		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
 		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
+		if ch.sweepPeriod == 0 {
+			ch.sweepEnabled = false
+		}
 		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
 		if ch.sweepShift == 0 {
 			ch.sweepShift = MIN_SWEEP_SHIFT
 		}
+		ch.sweepInitialFreq = ch.frequency
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
 	case SINE_SWEEP:
+		ch = chip.channels[2]
 		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
 		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
-		ch.sweepShift = 1 // Force minimum shift value for largest frequency changes
+		if ch.sweepPeriod == 0 {
+			ch.sweepEnabled = false
+		}
+		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
+		if ch.sweepShift == 0 {
+			ch.sweepShift = MIN_SWEEP_SHIFT
+		}
+		ch.sweepInitialFreq = ch.frequency
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
 	case SAW_SWEEP:
 		ch.waveType = WAVE_SAWTOOTH
 		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
 		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
+		if ch.sweepPeriod == 0 {
+			ch.sweepEnabled = false
+		}
 		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
 		if ch.sweepShift == 0 {
 			ch.sweepShift = MIN_SWEEP_SHIFT
 		}
+		ch.sweepInitialFreq = ch.frequency
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
 	case SYNC_SOURCE_CH0, SYNC_SOURCE_CH1, SYNC_SOURCE_CH2, SYNC_SOURCE_CH3:
 		// Determine target channel (e.g., SYNC_SOURCE_CH0 → channel 0)
@@ -1376,9 +1500,17 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 		masterIndex := int(value % NUM_CHANNELS)
 		ch.ringModSource = chip.channels[masterIndex]
 	case FILTER_CUTOFF:
-		chip.filterCutoff = float32(value) / NORMALISE_8BIT
+		target := float32(value) / NORMALISE_8BIT
+		if chip.filterCutoff == 0 && chip.filterCutoffTarget == 0 {
+			chip.filterCutoff = target * 0.02
+		}
+		chip.filterCutoffTarget = target
 	case FILTER_RESONANCE:
-		chip.filterResonance = float32(value) / NORMALISE_8BIT
+		target := float32(value) / NORMALISE_8BIT
+		if chip.filterResonance == 0 && chip.filterResonanceTarget == 0 {
+			chip.filterResonance = target * 0.02
+		}
+		chip.filterResonanceTarget = target
 	case FILTER_TYPE:
 		chip.filterType = int(value % NUM_FILTER_TYPES)
 	case FILTER_MOD_SOURCE:
@@ -1410,14 +1542,12 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 // assemble stale data from a previous write cycle.
 func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value uint32) {
 	// Sync shadow buffer for bus-mapped channels (keeps shadow consistent regardless of write size)
-	if chIndex < 4 {
-		baseIdx := chIndex*FLEX_CH_STRIDE + offset
-		if baseIdx+3 < uint32(len(chip.flexShadow)) {
-			chip.flexShadow[baseIdx] = byte(value)
-			chip.flexShadow[baseIdx+1] = byte(value >> 8)
-			chip.flexShadow[baseIdx+2] = byte(value >> 16)
-			chip.flexShadow[baseIdx+3] = byte(value >> 24)
-		}
+	baseIdx := chIndex*FLEX_CH_STRIDE + offset
+	if baseIdx+3 < uint32(len(chip.flexShadow)) {
+		chip.flexShadow[baseIdx] = byte(value)
+		chip.flexShadow[baseIdx+1] = byte(value >> 8)
+		chip.flexShadow[baseIdx+2] = byte(value >> 16)
+		chip.flexShadow[baseIdx+3] = byte(value >> 24)
 	}
 
 	ch := chip.channels[chIndex]
@@ -1425,6 +1555,9 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 	case FLEX_OFF_FREQ:
 		// 16.8 fixed-point: divide by 256 to get Hz
 		freq := float32(value) / 256.0
+		if freq > MAX_FREQ {
+			freq = 0
+		}
 		ch.frequency = freq
 	case FLEX_OFF_VOL:
 		ch.volume = float32(value&BYTE_MASK) / NORMALISE_8BIT
@@ -1451,14 +1584,18 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 	case FLEX_OFF_DUTY:
 		value16 := uint16(value & WORD_MASK)
 		ch.dutyCycle = float32(value16&BYTE_MASK) / PWM_RANGE
-		ch.pwmDepth = float32((value16>>PWM_DEPTH_SHIFT)&BYTE_MASK) / (PWM_RANGE * 2.0)
+		ch.pwmDepth = float32((value16>>PWM_DEPTH_SHIFT)&BYTE_MASK) / PWM_RANGE
 	case FLEX_OFF_SWEEP:
 		ch.sweepEnabled = (value & SWEEP_ENABLE_MASK) != 0
 		ch.sweepPeriod = int((value >> SWEEP_PERIOD_SHIFT) & SWEEP_PERIOD_MASK)
+		if ch.sweepPeriod == 0 {
+			ch.sweepEnabled = false
+		}
 		ch.sweepShift = uint(value & SWEEP_SHIFT_MASK)
 		if ch.sweepShift == 0 {
 			ch.sweepShift = MIN_SWEEP_SHIFT
 		}
+		ch.sweepInitialFreq = ch.frequency
 		ch.sweepDirection = (value & SWEEP_DIR_MASK) != 0
 	case FLEX_OFF_ATK:
 		ch.attackTime = max(int(value*MS_TO_SAMPLES), MIN_ENV_TIME)
@@ -1493,13 +1630,19 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 		ch.pwmEnabled = (value & PWM_ENABLE_MASK) != 0
 		ch.pwmRate = float32(value&PWM_RATE_MASK) * PWM_RATE_SCALE
 	case FLEX_OFF_NOISEMODE:
-		ch.noiseMode = int(value % NUM_NOISE_MODES)
+		if value >= NUM_NOISE_MODES {
+			log.Printf("audio noise mode out of range: %d", value)
+			value = NUM_NOISE_MODES - 1
+		}
+		ch.noiseMode = int(value)
 	case FLEX_OFF_PHASE:
 		chip.retriggerChannelLocked(int(chIndex))
 	case FLEX_OFF_RINGMOD:
 		if value&0x80 != 0 {
 			srcCh := int(value & 0x0F)
-			if srcCh < NUM_CHANNELS && srcCh != int(chIndex) {
+			if srcCh == int(chIndex) {
+				ch.ringModSource = nil
+			} else if srcCh < NUM_CHANNELS {
 				ch.ringModSource = chip.channels[srcCh]
 			}
 		} else {
@@ -1507,11 +1650,18 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 		}
 	case FLEX_OFF_DAC:
 		ch.dacMode = true
-		ch.dacValue = float32(int8(byte(value))) / 128.0
+		signed := int8(byte(value))
+		if signed == -128 {
+			ch.dacValue = -1.0
+		} else {
+			ch.dacValue = float32(signed) / 127.0
+		}
 	case FLEX_OFF_SYNC:
 		if value&0x80 != 0 {
 			srcCh := int(value & 0x0F)
-			if srcCh < NUM_CHANNELS && srcCh != int(chIndex) {
+			if srcCh == int(chIndex) {
+				ch.syncSource = nil
+			} else if srcCh < NUM_CHANNELS {
 				ch.syncSource = chip.channels[srcCh]
 			}
 		} else {
@@ -1529,7 +1679,8 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 // For non-flex addresses, delegates directly to HandleRegisterWrite.
 func (chip *SoundChip) HandleRegisterWrite8(addr uint32, value uint8) {
 	// Non-flex addresses: delegate to existing handler (works fine for byte values)
-	if addr < FLEX_CH_BASE || addr > AUDIO_REG_END {
+	chIndex, offset, ok := flexChannelFromAddr(addr)
+	if !ok {
 		chip.HandleRegisterWrite(addr, uint32(value))
 		return
 	}
@@ -1537,12 +1688,10 @@ func (chip *SoundChip) HandleRegisterWrite8(addr uint32, value uint8) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
-	chIndex := (addr - FLEX_CH_BASE) / FLEX_CH_STRIDE
-	if chIndex >= 4 {
-		return // Only bus-mapped channels
+	if chIndex >= NUM_CHANNELS {
+		return
 	}
 
-	offset := (addr - FLEX_CH_BASE) % FLEX_CH_STRIDE
 	shadowIdx := chIndex*FLEX_CH_STRIDE + offset
 	chip.flexShadow[shadowIdx] = value
 
@@ -1555,6 +1704,15 @@ func (chip *SoundChip) HandleRegisterWrite8(addr uint32, value uint8) {
 			uint32(chip.flexShadow[baseIdx+2])<<16 |
 			uint32(value)<<24
 		chip.applyFlexRegister(chIndex, regBase, fullValue)
+		if mem := chip.busMemory; mem != nil {
+			regAddr := addr &^ 3
+			if regAddr+3 < uint32(len(mem)) {
+				mem[regAddr] = byte(fullValue)
+				mem[regAddr+1] = byte(fullValue >> 8)
+				mem[regAddr+2] = byte(fullValue >> 16)
+				mem[regAddr+3] = byte(fullValue >> 24)
+			}
+		}
 	}
 }
 
@@ -1799,8 +1957,12 @@ func (ch *Channel) updateEnvelope() {
 
 	case ENV_SUSTAIN:
 		if !ch.gate {
+			ch.releaseStartLevel = ch.envelopeLevel
 			ch.envelopePhase = ENV_RELEASE
 			ch.envelopeSample = 0
+			if ch.releaseTime > 0 {
+				ch.releaseDecay = float32(math.Pow(0.01, 1.0/float64(ch.releaseTime)))
+			}
 		}
 
 	case ENV_RELEASE:
@@ -1972,13 +2134,16 @@ func (ch *Channel) generateWaveSample(sampleRate, sampleRateRecip float32) float
 			if waveMask&SID_WAVE_NOISE != 0 {
 				// Noise: 12-bit LFSR output ANDed with waveform selector bits
 				// When noise is combined with other waveforms, it gates them
-				noisePhaseInc := ch.frequency * sampleRateRecip
+				noiseFreq := ch.noiseFrequency
+				if noiseFreq == 0 {
+					noiseFreq = ch.frequency
+				}
+				noisePhaseInc := noiseFreq * sampleRateRecip
 				ch.noisePhase += noisePhaseInc
 				steps := int(ch.noisePhase)
 				ch.noisePhase -= float32(steps)
 				for range steps {
-					newBit := ((ch.noiseSR >> NOISE_TAP1) ^ (ch.noiseSR >> NOISE_TAP2)) & 1
-					ch.noiseSR = ((ch.noiseSR << 1) | newBit) & NOISE_LFSR_MASK
+					ch.noiseSR = stepNoiseLFSR(ch.noiseMode, ch.noiseSR)
 				}
 				// Use top 12 bits of LFSR
 				noise12 := uint16((ch.noiseSR >> 11) & SID_OSC_MAX)
@@ -2349,17 +2514,22 @@ func (ch *Channel) generateSample() float32 {
 	if !ch.enabled {
 		return 0
 	}
+
 	// DAC mode: output dacValue * volume directly.
-	// Bypasses envelope, sweep, waveform generation, Plus-mode, and per-channel filter.
+	// Bypasses sweep, waveform generation, Plus-mode, and per-channel filter.
 	if ch.dacMode {
+		ch.updateEnvelope()
 		return clampF32(ch.dacValue*ch.volume, MIN_SAMPLE, MAX_SAMPLE)
 	}
+
+	enhancedOversample := ch.activeEnhancedOversample()
+	for i := 0; i < enhancedOversample; i++ {
+		ch.updateEnvelope()
+	}
+
 	if ch.frequency == 0 && ch.noiseMix == 0 {
 		return 0
 	}
-
-	// Always update envelope - real SID envelope runs even when test bit is set
-	ch.updateEnvelope()
 
 	// SID test bit: hold oscillator phase at 0 and mute output
 	// but envelope continues advancing (important for tunes that toggle TEST)
@@ -2374,20 +2544,24 @@ func (ch *Channel) generateSample() float32 {
 	envLevel := ch.envelopeLevel
 
 	// Frequency sweep logic
-	if ch.sweepEnabled && ch.waveType != WAVE_NOISE {
+	if ch.sweepEnabled {
 		ch.sweepCounter++
 		if ch.sweepCounter >= ch.sweepPeriod {
+			sweepFreq := ch.frequency
+			if ch.waveType == WAVE_NOISE && ch.noiseFrequency > 0 {
+				sweepFreq = ch.noiseFrequency
+			}
 			// Calculate delta per sample instead of per period
-			delta := (ch.frequency / float32(int(1)<<ch.sweepShift)) / float32(ch.sweepPeriod*SWEEP_RATE)
+			delta := (sweepFreq / float32(int(1)<<ch.sweepShift)) / float32(ch.sweepPeriod*SWEEP_RATE)
 
 			var newFreq float32
 			if ch.sweepDirection {
-				newFreq = ch.frequency + delta
+				newFreq = sweepFreq + delta
 			} else {
-				if delta > ch.frequency {
+				if delta > sweepFreq {
 					newFreq = MIN_FILTER_FREQ
 				} else {
-					newFreq = ch.frequency - delta
+					newFreq = sweepFreq - delta
 				}
 			}
 
@@ -2401,11 +2575,15 @@ func (ch *Channel) generateSample() float32 {
 			// Per-test range limits based on initial frequency
 			maxAllowed := float32(MAX_FREQ)
 			minAllowed := float32(MIN_FILTER_FREQ)
+			initialFreq := ch.sweepInitialFreq
+			if initialFreq <= 0 {
+				initialFreq = sweepFreq
+			}
 
 			if ch.sweepDirection {
-				maxAllowed = ch.frequency * 2.0 // One octave up
+				maxAllowed = initialFreq * 2.0 // One octave up
 			} else {
-				minAllowed = ch.frequency / 2.0 // One octave down
+				minAllowed = initialFreq / 2.0 // One octave down
 			}
 
 			if newFreq < minAllowed {
@@ -2414,7 +2592,11 @@ func (ch *Channel) generateSample() float32 {
 				newFreq = maxAllowed
 			}
 
-			ch.frequency = newFreq
+			if ch.waveType == WAVE_NOISE && ch.noiseFrequency > 0 {
+				ch.noiseFrequency = newFreq
+			} else {
+				ch.frequency = newFreq
+			}
 			ch.sweepCounter = 0
 		}
 	}
@@ -2506,6 +2688,23 @@ func (ch *Channel) generateSample() float32 {
 	return clampF32(scaledSample, MIN_SAMPLE, MAX_SAMPLE)
 }
 
+func (ch *Channel) activeEnhancedOversample() int {
+	switch {
+	case ch.psgPlusEnabled && ch.psgPlusOversample > 1:
+		return ch.psgPlusOversample
+	case ch.pokeyPlusEnabled && ch.pokeyPlusOversample > 1:
+		return ch.pokeyPlusOversample
+	case ch.sidPlusEnabled && ch.sidPlusOversample > 1:
+		return ch.sidPlusOversample
+	case ch.tedPlusEnabled && ch.tedPlusOversample > 1:
+		return ch.tedPlusOversample
+	case ch.ahxPlusEnabled && ch.ahxPlusOversample > 1:
+		return ch.ahxPlusOversample
+	default:
+		return 1
+	}
+}
+
 func (ch *Channel) generateNoiseMixSample(sampleRateRecip float32) float32 {
 	frequency := ch.noiseFrequency
 	if frequency == 0 {
@@ -2563,6 +2762,9 @@ func (chip *SoundChip) GenerateSample() float32 {
 	// Take lock and capture all state needed for sample generation to ensure consistency and thread safety
 	chip.mu.Lock()
 	filterType := chip.filterType
+	const globalFilterSmooth = 0.02
+	chip.filterCutoff += (chip.filterCutoffTarget - chip.filterCutoff) * globalFilterSmooth
+	chip.filterResonance += (chip.filterResonanceTarget - chip.filterResonance) * globalFilterSmooth
 	filterCutoff := chip.filterCutoff
 	filterModSource := chip.filterModSource
 	filterModAmount := chip.filterModAmount
@@ -2580,7 +2782,6 @@ func (chip *SoundChip) GenerateSample() float32 {
 	// HandleRegisterWrite on CPU threads
 	var sum float32
 	activeCount := 0
-	var primaryType uint32 = 0 // Store the wave type of first active channel
 	for i := range NUM_CHANNELS {
 		ch := chip.channels[i]
 		if ch.enabled {
@@ -2595,7 +2796,6 @@ func (chip *SoundChip) GenerateSample() float32 {
 			activeCount++
 		}
 	}
-	chip.mu.Unlock()
 
 	var sample float32
 	if activeCount == 0 {
@@ -2622,16 +2822,6 @@ func (chip *SoundChip) GenerateSample() float32 {
 	// Apply overdrive effect with waveform-specific processing
 	if overdriveLevel > 0 {
 		gain := overdriveGain
-
-		// Apply waveform-specific gain scaling for better effect
-		switch primaryType {
-		case WAVE_NOISE:
-			gain *= 1.5
-		case WAVE_SINE:
-			gain *= 1.2
-		case WAVE_TRIANGLE:
-			gain *= 1.2
-		}
 
 		// Apply overdrive with tanh for soft clipping
 		sample = fastTanh(sample * gain)
@@ -2688,6 +2878,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 
 	// Apply showreel master gain and transparent safety compression last.
 	sample = chip.applyMasterNormalizer(sample)
+	chip.mu.Unlock()
 
 	// Clamp final output
 	return clampF32(sample, MIN_SAMPLE, MAX_SAMPLE)
@@ -2712,6 +2903,10 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 	//   input - Dry signal sample in range [-1.0, 1.0]
 	// Returns:
 	//   Processed wet signal in range [-1.0, 1.0]
+
+	if chip.reverbMix == 0 {
+		return input
+	}
 
 	// Reverb configuration:
 	// - Uses 4 parallel comb filters with prime-length delays (1687,1601,2053,2251)
@@ -2959,9 +3154,9 @@ func (chip *SoundChip) SetChannelADSR(ch int, attackMs, decayMs, releaseMs, sust
 		sustainLevel = 1.0
 	}
 
-	channel.attackTime = max(int(attackMs*MS_TO_SAMPLES), MIN_ENV_TIME)
-	channel.decayTime = max(int(decayMs*MS_TO_SAMPLES), MIN_ENV_TIME)
-	channel.releaseTime = max(int(releaseMs*MS_TO_SAMPLES), MIN_ENV_TIME)
+	channel.attackTime = int(attackMs * MS_TO_SAMPLES)
+	channel.decayTime = int(decayMs * MS_TO_SAMPLES)
+	channel.releaseTime = int(releaseMs * MS_TO_SAMPLES)
 	channel.sustainLevel = sustainLevel
 
 	if channel.attackTime > 0 {
@@ -2981,6 +3176,7 @@ func (chip *SoundChip) SetChannelADSR(ch int, attackMs, decayMs, releaseMs, sust
 		}
 	} else {
 		channel.releaseRecip = 0
+		channel.releaseDecay = 0
 	}
 }
 
@@ -3212,9 +3408,10 @@ func (chip *SoundChip) SetChannelFilter(ch int, modeMask uint8, cutoff, resonanc
 	if modeMask != 0 {
 		channel.filterType = 1
 	}
+	wasCold := channel.filterCutoff == 0 && channel.filterCutoffTarget == 0
 	channel.filterCutoffTarget = cutoff
 	channel.filterResonanceTarget = resonance
-	if channel.filterType == 0 {
+	if channel.filterType == 0 || wasCold {
 		channel.filterCutoff = cutoff
 		channel.filterResonance = resonance
 	}
@@ -3368,6 +3565,7 @@ func (chip *SoundChip) retriggerChannelLocked(ch int) {
 	channel.noiseSR = NOISE_LFSR_SEED
 	channel.phaseWrapped = false
 	channel.phaseMSB = false
+	channel.sweepInitialFreq = channel.frequency
 }
 
 func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
@@ -3574,16 +3772,18 @@ func (chip *SoundChip) Start() {
 
 func (chip *SoundChip) Stop() {
 	chip.mu.Lock()
-	defer chip.mu.Unlock()
-
 	if !chip.enabled.Load() {
+		chip.mu.Unlock()
 		return
 	}
 
 	chip.enabled.Store(false)
-	if chip.output != nil {
-		chip.output.Stop()
-		chip.output.Close()
+	output := chip.output
+	chip.mu.Unlock()
+
+	if output != nil {
+		output.Stop()
+		output.Close()
 	}
 }
 

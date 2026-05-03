@@ -1012,11 +1012,13 @@ VGA_CTRL_ENABLE = $01           ; VGA enable
 ; ----------------------------------------------------------------------------
 ; Global Audio Control
 ; ----------------------------------------------------------------------------
-AUDIO_CTRL_0    = $F800         ; Audio control byte 0 (IE32 $F0800)
+AUDIO_CTRL_0    = $F800         ; Audio control byte 0 (bit0=enable, bit1=freeze)
 AUDIO_CTRL_1    = $F801         ; Audio control byte 1
 AUDIO_CTRL_2    = $F802         ; Audio control byte 2
 AUDIO_CTRL_3    = $F803         ; Audio control byte 3
 ENV_SHAPE_0     = $F804         ; Envelope shape byte 0 (IE32 $F0804)
+ENV_SHAPE_CH_BASE = $F860       ; Per-channel envelope shape base
+ENV_SHAPE_STRIDE = $04          ; Per-channel ENV_SHAPE stride
 ENV_SHAPE_1     = $F805         ; Envelope shape byte 1
 ENV_SHAPE_2     = $F806         ; Envelope shape byte 2
 ENV_SHAPE_3     = $F807         ; Envelope shape byte 3
@@ -1324,6 +1326,15 @@ REVERB_DECAY_3  = $FA57         ; Reverb decay time byte 3
 ;   Flex 3: $FB40
 ; ----------------------------------------------------------------------------
 FLEX_CH_STRIDE  = $40           ; Bytes per flexible channel (64)
+AUDIO_ENABLE    = $01           ; AUDIO_CTRL enable
+AUDIO_FREEZE    = $02           ; AUDIO_CTRL freeze sample advancement
+
+SID2_CH0_BASE   = $FC40         ; SID2 flex channel 0 (SoundChip ch4)
+SID2_CH1_BASE   = $FC80         ; SID2 flex channel 1 (SoundChip ch5)
+SID2_CH2_BASE   = $FCC0         ; SID2 flex channel 2 (SoundChip ch6)
+SID3_CH0_BASE   = $FD40         ; SID3 flex channel 0 (SoundChip ch7)
+SID3_CH1_BASE   = $FD80         ; SID3 flex channel 1 (SoundChip ch8)
+SID3_CH2_BASE   = $FDC0         ; SID3 flex channel 2 (SoundChip ch9)
 
 ; Flex Channel 0 ($FA80-$FAAF)
 ; Frequency is 16.8 fixed-point: value = Hz * 256 (e.g., 440 Hz = 440*256 = 112640)

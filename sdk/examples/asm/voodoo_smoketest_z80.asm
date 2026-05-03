@@ -1,19 +1,14 @@
 ; Minimal Z80 Voodoo access smoke test.
 ; Exercises the documented 0xB0..0xB7 Voodoo port adapter.
 
-Z80_VOODOO_PORT_ADDR_LO   equ 0B0h
-Z80_VOODOO_PORT_ADDR_HI   equ 0B1h
-Z80_VOODOO_PORT_DATA0     equ 0B2h
-Z80_VOODOO_PORT_DATA1     equ 0B3h
-Z80_VOODOO_PORT_DATA2     equ 0B4h
-Z80_VOODOO_PORT_DATA3     equ 0B5h
+    .include "ie80.inc"
 
-VOODOO_ENABLE_OFF         equ 0004h
-VOODOO_COLOR0_OFF         equ 01D8h
-VOODOO_FAST_FILL_CMD_OFF  equ 0124h
-VOODOO_SWAP_BUFFER_CMD_OFF equ 0128h
+.set VOODOO_ENABLE_OFF,0x0004
+.set VOODOO_COLOR0_OFF,0x01D8
+.set VOODOO_FAST_FILL_CMD_OFF,0x0124
+.set VOODOO_SWAP_BUFFER_CMD_OFF,0x0128
 
-org 0000h
+    .org 0x0000
 
 start:
     ld hl, VOODOO_ENABLE_OFF

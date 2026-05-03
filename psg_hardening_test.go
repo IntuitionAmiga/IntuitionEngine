@@ -82,7 +82,9 @@ func TestPSGPeriodZeroToneUsesPeriodOne(t *testing.T) {
 	engine.WriteRegister(1, 0)
 	engine.WriteRegister(7, 0xFE)
 
-	want := float32(PSG_CLOCK_ATARI_ST) / 16.0
+	// Period zero is treated as period one by the PSG, but the resulting
+	// 125 kHz tone is above the SoundChip ultrasonic clamp and is muted.
+	want := float32(0)
 	if got := chip.channels[0].frequency; got != want {
 		t.Fatalf("frequency=%.2f, want %.2f", got, want)
 	}

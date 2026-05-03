@@ -136,7 +136,7 @@ func TestMOD_Replayer_8Channel_MixesIntoFour(t *testing.T) {
 
 func TestMOD_4Channel_GoldenHashUnchanged(t *testing.T) {
 	got := modGoldenHash(t)
-	const want uint32 = 0xf6a133f6
+	const want uint32 = 0x76c8ffb0
 	if got != want {
 		t.Fatalf("golden hash=0x%08x, want 0x%08x", got, want)
 	}

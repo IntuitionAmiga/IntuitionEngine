@@ -604,8 +604,10 @@
 ; ----------------------------------------------------------------------------
 ; Global Audio Control (0xF0800-0xF083F)
 ; ----------------------------------------------------------------------------
-.equ AUDIO_CTRL        0xF0800          ; Master audio control
+.equ AUDIO_CTRL        0xF0800          ; Master audio control (bit0=enable, bit1=freeze)
 .equ ENV_SHAPE         0xF0804          ; Global envelope shape
+.equ ENV_SHAPE_CH_BASE 0xF0860          ; Per-channel envelope shape base
+.equ ENV_SHAPE_STRIDE  0x04             ; Per-channel ENV_SHAPE stride
 
 ; Filter registers
 .equ FILTER_CUTOFF     0xF0820          ; Cutoff frequency (0-255, exponential 20Hz-20kHz)
@@ -722,7 +724,7 @@
 ; ----------------------------------------------------------------------------
 ; Flexible 4-Channel Synth Block (0xF0A80-0xF0B7F)
 ;
-; Modern unified interface for all 4 channels. Each channel is 0x40 bytes.
+; Modern unified interface for primary channels. Each channel is 0x40 bytes.
 ; Any channel can be any waveform type. This is the preferred interface.
 ; ----------------------------------------------------------------------------
 .equ FLEX_CH_BASE      0xF0A80          ; Base address of flexible block
@@ -732,12 +734,18 @@
 .equ FLEX_CH1_BASE     0xF0AC0          ; Channel 1 base
 .equ FLEX_CH2_BASE     0xF0B00          ; Channel 2 base
 .equ FLEX_CH3_BASE     0xF0B40          ; Channel 3 base
+.equ SID2_CH0_BASE     0xF0C40          ; SID2 flex channel 0 (SoundChip ch4)
+.equ SID2_CH1_BASE     0xF0C80          ; SID2 flex channel 1 (SoundChip ch5)
+.equ SID2_CH2_BASE     0xF0CC0          ; SID2 flex channel 2 (SoundChip ch6)
+.equ SID3_CH0_BASE     0xF0D40          ; SID3 flex channel 0 (SoundChip ch7)
+.equ SID3_CH1_BASE     0xF0D80          ; SID3 flex channel 1 (SoundChip ch8)
+.equ SID3_CH2_BASE     0xF0DC0          ; SID3 flex channel 2 (SoundChip ch9)
 
 ; Register offsets within each flexible channel (add to FLEX_CHx_BASE)
 .equ FLEX_OFF_FREQ       0x00           ; Frequency (16.8 fixed-point Hz, value = Hz * 256)
 .equ FLEX_OFF_VOL        0x04           ; Volume (0-255)
 .equ FLEX_OFF_CTRL       0x08           ; Control (bit 1 = gate)
-.equ FLEX_OFF_DUTY       0x0C           ; Duty cycle for square wave
+.equ FLEX_OFF_DUTY       0x0C           ; Duty low byte, PWM depth high byte (/256)
 .equ FLEX_OFF_SWEEP      0x10           ; Sweep control
 .equ FLEX_OFF_ATK        0x14           ; Attack time (ms)
 .equ FLEX_OFF_DEC        0x18           ; Decay time (ms)
@@ -746,6 +754,10 @@
 .equ FLEX_OFF_WAVE_TYPE  0x24           ; Waveform type (0-4)
 .equ FLEX_OFF_PWM_CTRL   0x28           ; PWM control
 .equ FLEX_OFF_NOISEMODE  0x2C           ; Noise mode (if wave type is noise)
+.equ FLEX_OFF_PHASE      0x30           ; Reset phase position
+.equ FLEX_OFF_RINGMOD    0x34           ; Ring modulation source (bit7=enable)
+.equ FLEX_OFF_SYNC       0x38           ; Hard sync source (bit7=enable)
+.equ FLEX_OFF_DAC        0x3C           ; DAC sample (-128=-1.0, +127=+1.0)
 
 ; Waveform type constants (for FLEX_OFF_WAVE_TYPE)
 .equ WAVE_SQUARE       0                ; Square wave with PWM
@@ -758,6 +770,8 @@
 ; Control Register Bit Masks
 ; ----------------------------------------------------------------------------
 .equ CTRL_GATE         0x02             ; Gate bit (trigger envelope)
+.equ AUDIO_ENABLE      0x01             ; AUDIO_CTRL enable
+.equ AUDIO_FREEZE      0x02             ; AUDIO_CTRL freeze sample advancement
 .equ PWM_ENABLE        0x80             ; PWM enable (bit 7)
 .equ PWM_RATE_MASK     0x7F             ; PWM rate (bits 0-6)
 .equ SWEEP_ENABLE      0x80             ; Sweep enable (bit 7)

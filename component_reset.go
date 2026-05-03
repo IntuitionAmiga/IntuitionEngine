@@ -30,6 +30,8 @@ func (chip *SoundChip) Reset() {
 	chip.filterHP = DEFAULT_FILTER_HP
 	chip.filterCutoff = 0
 	chip.filterResonance = 0
+	chip.filterCutoffTarget = 0
+	chip.filterResonanceTarget = 0
 	chip.filterModAmount = 0
 	chip.overdriveLevel = 0
 	chip.overdriveGain = 0
@@ -51,6 +53,7 @@ func (chip *SoundChip) Reset() {
 		}
 		ch.waveType = waveTypes[i]
 		ch.frequency = 0
+		ch.sweepInitialFreq = 0
 		ch.volume = MIN_VOLUME
 		ch.phase = MIN_PHASE
 		ch.enabled = false
@@ -194,7 +197,7 @@ func (chip *SoundChip) Reset() {
 	}
 
 	// Clear byte accumulation shadow buffer
-	chip.flexShadow = [4 * FLEX_CH_STRIDE]byte{}
+	chip.flexShadow = [NUM_CHANNELS * FLEX_CH_STRIDE]byte{}
 
 	// Preserve registered sample tickers across reset; engines re-establish
 	// their internal state and should keep advancing afterwards.

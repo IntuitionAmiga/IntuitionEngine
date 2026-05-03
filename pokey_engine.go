@@ -319,8 +319,9 @@ func applyPOKEYSyncState(s pokeySyncState) {
 }
 
 func writePOKEYChannel(s pokeySyncState, ch int, offset uint32, value uint32) {
-	base := FLEX_CH_BASE + uint32(s.baseChannel+ch)*FLEX_CH_STRIDE
-	s.sound.HandleRegisterWrite(base+offset, value)
+	if addr, ok := flexAddrForChannel(s.baseChannel+ch, offset); ok {
+		s.sound.HandleRegisterWrite(addr, value)
+	}
 }
 
 func calcPOKEYFrequency(s pokeySyncState, channel int) float64 {
@@ -747,8 +748,9 @@ func (e *POKEYEngine) writeChannel(ch int, offset uint32, value uint32) {
 	if e.sound == nil {
 		return
 	}
-	base := FLEX_CH_BASE + uint32(e.baseChannel+ch)*FLEX_CH_STRIDE
-	e.sound.HandleRegisterWrite(base+offset, value)
+	if addr, ok := flexAddrForChannel(e.baseChannel+ch, offset); ok {
+		e.sound.HandleRegisterWrite(addr, value)
+	}
 }
 
 // pokeyVolumeGain converts a 4-bit POKEY volume level to a gain value
@@ -803,10 +805,15 @@ func (e *POKEYEngine) Reset() {
 	if sound != nil {
 		sound.SetPOKEYPlusEnabledForRange(baseChannel, 4, false)
 		for ch := range 4 {
-			base := FLEX_CH_BASE + uint32(baseChannel+ch)*FLEX_CH_STRIDE
-			sound.HandleRegisterWrite(base+FLEX_OFF_VOL, 0)
-			sound.HandleRegisterWrite(base+FLEX_OFF_FREQ, 0)
-			sound.HandleRegisterWrite(base+FLEX_OFF_CTRL, 0)
+			if addr, ok := flexAddrForChannel(baseChannel+ch, FLEX_OFF_VOL); ok {
+				sound.HandleRegisterWrite(addr, 0)
+			}
+			if addr, ok := flexAddrForChannel(baseChannel+ch, FLEX_OFF_FREQ); ok {
+				sound.HandleRegisterWrite(addr, 0)
+			}
+			if addr, ok := flexAddrForChannel(baseChannel+ch, FLEX_OFF_CTRL); ok {
+				sound.HandleRegisterWrite(addr, 0)
+			}
 		}
 	}
 }

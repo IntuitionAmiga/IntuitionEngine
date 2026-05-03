@@ -894,6 +894,14 @@ func main() {
 		soundChip.HandleRegisterRead,
 		soundChip.HandleRegisterWrite)
 	sysBus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, soundChip.HandleRegisterWrite8)
+	sysBus.MapIO(SID2_FLEX_BASE, SID2_FLEX_END,
+		soundChip.HandleRegisterRead,
+		soundChip.HandleRegisterWrite)
+	sysBus.MapIOByte(SID2_FLEX_BASE, SID2_FLEX_END, soundChip.HandleRegisterWrite8)
+	sysBus.MapIO(SID3_FLEX_BASE, SID3_FLEX_END,
+		soundChip.HandleRegisterRead,
+		soundChip.HandleRegisterWrite)
+	sysBus.MapIOByte(SID3_FLEX_BASE, SID3_FLEX_END, soundChip.HandleRegisterWrite8)
 
 	sysBus.MapIO(VIDEO_CTRL, VIDEO_REG_END,
 		videoChip.HandleRead,

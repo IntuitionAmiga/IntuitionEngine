@@ -539,7 +539,7 @@ The SoundChip exposes two register interfaces for its channels:
 | `+0x00` | `FREQ` | 16.8 fixed-point Hz (value / 256.0) |
 | `+0x04` | `VOL` | Volume (0-255) |
 | `+0x08` | `CTRL` | Enable (bit 0), gate (bit 1) |
-| `+0x0C` | `DUTY` | Pulse width duty cycle |
+| `+0x0C` | `DUTY` | Pulse width duty cycle; high byte is PWM depth scaled by 1/256 |
 | `+0x10` | `SWEEP` | Frequency sweep rate |
 | `+0x14-0x20` | `ATK/DEC/SUS/REL` | ADSR envelope |
 | `+0x24` | `WAVE_TYPE` | Waveform selection |
@@ -548,13 +548,13 @@ The SoundChip exposes two register interfaces for its channels:
 | `+0x30` | `PHASE` | Phase reset |
 | `+0x34` | `RINGMOD` | Ring modulation (bit 7=enable, 0-2=source) |
 | `+0x38` | `SYNC` | Hard sync (bit 7=enable, 0-2=source) |
-| `+0x3C` | `DAC` | DAC mode bypass (signed 8-bit sample) |
+| `+0x3C` | `DAC` | DAC mode bypass (signed 8-bit sample, -128=-1.0, +127=+1.0) |
 
-FLEX channels are at `FLEX_CH0_BASE = 0xF0A80`, stride = `0x40`. Both interfaces write to the same underlying 10-channel mixer. The FLEX interface is preferred for new code — the legacy interface exists for backward compatibility.
+FLEX channels are at `FLEX_CH0_BASE = 0xF0A80`, stride = `0x40`. Primary channels 0-3 occupy `0xF0A80-0xF0B7F`; SID2 flex channels 4-6 occupy `0xF0C40-0xF0CFF`; SID3 flex channels 7-9 occupy `0xF0D40-0xF0DFF`. `AUDIO_CTRL` uses bit 0 for enable and bit 1 for freeze. `ENV_SHAPE` remains at `0xF0804` for channel 0, with per-channel shapes at `0xF0860 + channel*4`. Both legacy and FLEX interfaces write to the same underlying 10-channel mixer. The FLEX interface is preferred for new code — the legacy interface exists for backward compatibility.
 
 ### Filter and Modulation
 
-The SoundChip's global resonant filter (`0xF0A00-0xF0A30`) supports low-pass, band-pass, and high-pass modes with cutoff frequency, resonance, and optional filter modulation source/amount registers. The filter model can be switched between classic and SVF via the `FILTER_MODEL` register.
+The SoundChip's global resonant filter (`0xF0A00-0xF0A30`) supports low-pass, band-pass, and high-pass modes with cutoff frequency, resonance, and optional filter modulation source/amount registers. Cutoff and resonance smooth toward register targets at the same 0.02 coefficient used by per-channel filters. SID 12-bit DAC quantization truncates to remove half-LSB DC bias.
 
 ### Engine and Player Routing
 
@@ -657,10 +657,11 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xF0C00-0xF0C0F` | 16B | PSG Engine (AY-3-8910/YM2149 registers) |
 | `0xF0C20` | 1B | PSG+ control |
 | `0xF0C30-0xF0C3F` | 16B | Native SN76489 latch/data, ready, and LFSR mode registers |
-| `0xF0C40-0xF0C4F` | 16B | Reserved for future SN76489 extensions |
 | `0xF0C10-0xF0C1F` | 16B | PSG / AY Player |
+| `0xF0C40-0xF0CFF` | 192B | SID2 flex-style SoundChip channels 4-6 |
 | `0xF0D00-0xF0D0A` | 11B | POKEY Engine |
 | `0xF0D10-0xF0D20` | 17B | SAP Player |
+| `0xF0D40-0xF0DFF` | 192B | SID3 flex-style SoundChip channels 7-9 |
 | `0xF0E00-0xF0E19` | 26B | SID1 Engine (6581/8580) |
 | `0xF0E20-0xF0E2D` | 14B | SID Player |
 | `0xF0E30-0xF0E6C` | 61B | SID2 + SID3 (Multi-SID) |

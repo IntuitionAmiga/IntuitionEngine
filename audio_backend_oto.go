@@ -71,6 +71,10 @@ func (op *OtoPlayer) SetupPlayer(chip *SoundChip) {
 }
 
 func (op *OtoPlayer) Read(p []byte) (n int, err error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+
 	// Load chip pointer atomically - no lock needed for the hot path
 	chip := op.chip.Load()
 	if chip == nil {

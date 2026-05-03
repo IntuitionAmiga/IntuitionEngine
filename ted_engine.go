@@ -333,8 +333,9 @@ func (e *TEDEngine) writeChannel(ch int, offset uint32, value uint32) {
 	if e.sound == nil {
 		return
 	}
-	base := FLEX_CH_BASE + uint32(ch)*FLEX_CH_STRIDE
-	e.sound.HandleRegisterWrite(base+offset, value)
+	if addr, ok := flexAddrForChannel(ch, offset); ok {
+		e.sound.HandleRegisterWrite(addr, value)
+	}
 }
 
 // tedVolumeGain converts a 4-bit TED volume level to a gain value

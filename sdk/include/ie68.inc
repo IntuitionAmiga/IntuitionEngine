@@ -782,8 +782,10 @@ vga_readmap     macro   plane
 ; ----------------------------------------------------------------------------
 ; Global Audio Control ($F0800-$F083F)
 ; ----------------------------------------------------------------------------
-AUDIO_CTRL        equ $F0800            ; Master audio control
+AUDIO_CTRL        equ $F0800            ; Master audio control (bit0=enable, bit1=freeze)
 ENV_SHAPE         equ $F0804            ; Global envelope shape
+ENV_SHAPE_CH_BASE equ $F0860            ; Per-channel envelope shape base
+ENV_SHAPE_STRIDE  equ $04               ; Per-channel ENV_SHAPE stride
 
 ; Filter registers
 FILTER_CUTOFF     equ $F0820            ; Cutoff frequency (0-255, exponential 20Hz-20kHz)
@@ -910,12 +912,18 @@ FLEX_CH0_BASE     equ $F0A80            ; Channel 0 base
 FLEX_CH1_BASE     equ $F0AC0            ; Channel 1 base
 FLEX_CH2_BASE     equ $F0B00            ; Channel 2 base
 FLEX_CH3_BASE     equ $F0B40            ; Channel 3 base
+SID2_CH0_BASE     equ $F0C40            ; SID2 flex channel 0 (SoundChip ch4)
+SID2_CH1_BASE     equ $F0C80            ; SID2 flex channel 1 (SoundChip ch5)
+SID2_CH2_BASE     equ $F0CC0            ; SID2 flex channel 2 (SoundChip ch6)
+SID3_CH0_BASE     equ $F0D40            ; SID3 flex channel 0 (SoundChip ch7)
+SID3_CH1_BASE     equ $F0D80            ; SID3 flex channel 1 (SoundChip ch8)
+SID3_CH2_BASE     equ $F0DC0            ; SID3 flex channel 2 (SoundChip ch9)
 
 ; Register offsets within each flexible channel (add to FLEX_CHx_BASE)
 FLEX_OFF_FREQ       equ $00             ; Frequency (16.8 fixed-point Hz, value = Hz * 256)
 FLEX_OFF_VOL        equ $04             ; Volume (0-255)
 FLEX_OFF_CTRL       equ $08             ; Control (bit 1 = gate)
-FLEX_OFF_DUTY       equ $0C             ; Duty cycle for square wave
+FLEX_OFF_DUTY       equ $0C             ; Duty low byte, PWM depth high byte (/256)
 FLEX_OFF_SWEEP      equ $10             ; Sweep control
 FLEX_OFF_ATK        equ $14             ; Attack time (ms)
 FLEX_OFF_DEC        equ $18             ; Decay time (ms)
@@ -923,7 +931,11 @@ FLEX_OFF_SUS        equ $1C             ; Sustain level (0-255)
 FLEX_OFF_REL        equ $20             ; Release time (ms)
 FLEX_OFF_WAVE_TYPE  equ $24             ; Waveform type (0-4)
 FLEX_OFF_PWM_CTRL   equ $28             ; PWM control
-FLEX_OFF_NOISEMODE  equ $2C             ; Noise mode (if wave type is noise)
+FLEX_OFF_NOISEMODE  equ $2C             ; Noise mode
+FLEX_OFF_PHASE      equ $30             ; Reset phase position
+FLEX_OFF_RINGMOD    equ $34             ; Ring modulation source (bit7=enable)
+FLEX_OFF_SYNC       equ $38             ; Hard sync source (bit7=enable)
+FLEX_OFF_DAC        equ $3C             ; DAC sample (-128=-1.0, +127=+1.0)
 
 ; Waveform type constants (for FLEX_OFF_WAVE_TYPE)
 WAVE_SQUARE       equ 0                 ; Square wave with PWM
