@@ -70,6 +70,16 @@ make list              # List compiled binaries with sizes
 make help              # Show all available targets
 ```
 
+Assembler regression coverage:
+
+```bash
+go test ./assembler
+go test -tags ie64 ./assembler
+go test -tags headless -run TestAssemblerExamples .
+```
+
+The assembler example test builds both assembler CLIs, assembles the curated shipped IE32/IE64 source manifest with `-o` into a temporary directory, and compares SHA-256 output hashes in `assembler/testdata/golden_hashes.txt`.
+
 Build outputs:
 ```
 ./bin/IntuitionEngine   # The virtual machine

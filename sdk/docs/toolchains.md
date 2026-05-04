@@ -47,13 +47,18 @@ The `RUN` command auto-detects format by extension: `.iex` (IE32), `.ie64` (IE64
 ```bash
 make ie32asm                              # Build
 sdk/bin/ie32asm program.asm                 # Assemble (produces program.iex)
+sdk/bin/ie32asm -o out.iex program.asm      # Explicit output path
 sdk/bin/ie32asm -I sdk/include program.asm  # With include search path
 ./bin/IntuitionEngine -ie32 program.iex   # Run (or: RUN "program.iex" from BASIC)
 ```
 
 - Custom assembler built from `assembler/ie32asm.go` (assembler tool source code)
 - Supports `-I dir` include search paths (multiple allowed, searched after source file directory)
-- Supports `.include`, `.equ`, `.org`, `.db`, `.dw`, `.dd`, labels, macros
+- Supports `-o path`, `-Werror`, and `-Wno-duplicate-labels` / `-Wno-org-backward` / `-Wno-incbin-changed`
+- Supports `.include`, `.equ`, `.org`, `.word`, `.byte`, `.space`, `.ascii`, `.asciz`, labels, and simple constant expressions
+- Register-indirect displacements (`[reg+offset]`) must be multiples of 16 because the low nibble encodes the register number; negative displacements are accepted and encoded in two's complement.
+- Backward `.org` into a gap is warning-only; any later emit that overlaps already written bytes is an error.
+- `incbin` payloads are cached after the first layout read and reused for emission; if a later layout pass observes file drift, `incbin-changed` is reported without serving the changed bytes.
 - Fixed 8-byte instruction format
 
 ### IE64 Assembler (`ie64asm`)
@@ -61,6 +66,7 @@ sdk/bin/ie32asm -I sdk/include program.asm  # With include search path
 ```bash
 make ie64asm                              # Build
 sdk/bin/ie64asm program.asm                 # Assemble (produces program.ie64)
+sdk/bin/ie64asm -o out.ie64 program.asm     # Explicit output path
 sdk/bin/ie64asm -I sdk/include program.asm  # With include search path
 sdk/bin/ie64asm -list program.asm           # Assemble with listing output
 sdk/bin/ie64asm -D FEATURE=1 program.asm    # Predefine an equate from the CLI
@@ -70,8 +76,14 @@ sdk/bin/ie64asm -D FEATURE=1 program.asm    # Predefine an equate from the CLI
 - Custom assembler built from `assembler/ie64asm.go` (assembler tool source code)
 - Supports `-I dir` include search paths (multiple allowed, searched after source file directory)
 - Supports `-D NAME[=VALUE]` predefined equates. `-D FEATURE` means `FEATURE=1`.
-- Supports `.include`, `equ`, `org`, `dc.b/w/l/q`, labels, macros with positional parameters (`\1`..`\9`)
-- Variable-length instruction encoding (4-12 bytes)
+- Supports `-o path`, `-Werror`, and `-Wno-duplicate-labels` / `-Wno-org-backward` / `-Wno-incbin-changed`
+- Supports `.include`, `equ`, `set`, `org`, `dc.b/w/l/q`, `dc.bz`, `dc.s`, `dc.d`, labels, macros with positional parameters (`\1`..`\9`)
+- `li rd,#expr` always emits a fixed two-instruction `move.l #lo(expr)` + `movt #hi(expr)` pair. Use manual `move.l` when a single 32-bit immediate instruction is required.
+- `move.l` and `move.q` immediate operands must fit the 32-bit instruction immediate field; use `li` for 64-bit constants.
+- Expressions support comparisons, bitwise operators, `&&`, `||`, unary `!`, and `lo(expr)` / `hi(expr)`.
+- Size-affecting directives (`ds.*`, `align`, and `incbin` offsets/lengths) are replayed for up to four pass-1 stabilization iterations when they contain forward references.
+- `incbin` payloads are cached after the first layout read and reused for emission; if a later layout pass observes file drift, `incbin-changed` is reported without serving the changed bytes.
+- IE64 instructions are fixed 8-byte encodings.
 
 ### IE64 Disassembler (`ie64dis`)
 

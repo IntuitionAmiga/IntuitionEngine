@@ -96,6 +96,7 @@ Assembler Syntax (68K-flavored, case-insensitive mnemonics/registers/directives)
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -103,6 +104,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------
@@ -255,24 +257,44 @@ type Macro struct {
 
 // IE64Assembler is a multi-pass assembler for the IE64 instruction set.
 type IE64Assembler struct {
-	labels          map[string]uint32
-	equates         map[string]uint64
-	sets            map[string]uint64
-	macros          map[string]*Macro
-	libManifest     *IE64LibManifest
-	baseAddr        uint32
-	lastGlobalLabel string
-	listingMode     bool
-	listing         []string
-	warnings        []string
-	infos           []string
-	errors          []string
-	verbose         bool
+	labels                 map[string]uint32
+	equates                map[string]uint64
+	sets                   map[string]uint64
+	macros                 map[string]*Macro
+	libManifest            *IE64LibManifest
+	baseAddr               uint32
+	lastGlobalLabel        string
+	listingMode            bool
+	listing                []string
+	warnings               []string
+	infos                  []string
+	errors                 []string
+	verbose                bool
+	warningPolicy          WarningPolicy
+	imageBase              uint32
+	imageBaseSet           bool
+	maxAddr                uint32
+	lastEvalSawUnresolved  bool
+	directiveSawUnresolved bool
+	incbinCache            map[string][]byte
+	written                map[uint32]int
 	// internal state for assembly
 	codeOffset   uint32
 	pass         int
 	basePath     string
 	includePaths []string
+}
+
+type WarningPolicy struct {
+	Werror     bool
+	suppressed map[string]bool
+}
+
+func (w *WarningPolicy) Suppress(category string) {
+	if w.suppressed == nil {
+		w.suppressed = make(map[string]bool)
+	}
+	w.suppressed[category] = true
 }
 
 type IE64LibManifest struct {
@@ -310,11 +332,15 @@ func resolveFile(filename, basePath string, includePaths []string) (string, erro
 // NewIE64Assembler creates a new assembler instance.
 func NewIE64Assembler() *IE64Assembler {
 	return &IE64Assembler{
-		labels:   make(map[string]uint32),
-		equates:  make(map[string]uint64),
-		sets:     make(map[string]uint64),
-		macros:   make(map[string]*Macro),
-		baseAddr: 0x1000,
+		labels:      make(map[string]uint32),
+		equates:     make(map[string]uint64),
+		sets:        make(map[string]uint64),
+		macros:      make(map[string]*Macro),
+		baseAddr:    0x1000,
+		imageBase:   0x1000,
+		maxAddr:     0x1000,
+		incbinCache: make(map[string][]byte),
+		written:     make(map[uint32]int),
 	}
 }
 
@@ -341,7 +367,19 @@ func (a *IE64Assembler) GetWarnings() []string {
 }
 
 func (a *IE64Assembler) addWarning(format string, args ...interface{}) {
-	a.warnings = append(a.warnings, fmt.Sprintf(format, args...))
+	a.addWarningCategory("general", format, args...)
+}
+
+func (a *IE64Assembler) addWarningCategory(category, format string, args ...interface{}) {
+	if a.warningPolicy.suppressed != nil && a.warningPolicy.suppressed[category] {
+		return
+	}
+	msg := fmt.Sprintf("%s: %s", category, fmt.Sprintf(format, args...))
+	if a.warningPolicy.Werror {
+		a.addError("warning treated as error: %s", msg)
+		return
+	}
+	a.warnings = append(a.warnings, msg)
 }
 
 func (a *IE64Assembler) addInfo(format string, args ...interface{}) {
@@ -419,6 +457,13 @@ func parseRegister(name string) (byte, bool) {
 	return 0, false
 }
 
+func immFitsEncoded32(val int64) bool {
+	if val < 0 {
+		return val >= math.MinInt32
+	}
+	return uint64(val) <= math.MaxUint32
+}
+
 func parseFPRegister(name string) (byte, bool) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if strings.HasPrefix(name, "f") {
@@ -467,7 +512,7 @@ func (a *IE64Assembler) evalExpr(s string) (int64, error) {
 		return 0, fmt.Errorf("empty expression")
 	}
 	p := &exprParser{input: s, pos: 0, asm: a}
-	val, err := p.parseExprCompare()
+	val, err := p.parseExprLogicalOr()
 	if err != nil {
 		return 0, err
 	}
@@ -498,6 +543,46 @@ func (p *exprParser) peekTwo() string {
 		return p.input[p.pos : p.pos+2]
 	}
 	return ""
+}
+
+func (p *exprParser) parseExprLogicalOr() (int64, error) {
+	left, err := p.parseExprLogicalAnd()
+	if err != nil {
+		return 0, err
+	}
+	for p.peekTwo() == "||" {
+		p.pos += 2
+		right, err := p.parseExprLogicalAnd()
+		if err != nil {
+			return 0, err
+		}
+		if left != 0 || right != 0 {
+			left = 1
+		} else {
+			left = 0
+		}
+	}
+	return left, nil
+}
+
+func (p *exprParser) parseExprLogicalAnd() (int64, error) {
+	left, err := p.parseExprCompare()
+	if err != nil {
+		return 0, err
+	}
+	for p.peekTwo() == "&&" {
+		p.pos += 2
+		right, err := p.parseExprCompare()
+		if err != nil {
+			return 0, err
+		}
+		if left != 0 && right != 0 {
+			left = 1
+		} else {
+			left = 0
+		}
+	}
+	return left, nil
 }
 
 // parseExprCompare handles comparison operators: ==, !=, <, >, <=, >=
@@ -592,7 +677,7 @@ func (p *exprParser) parseExprOr() (int64, error) {
 		return 0, err
 	}
 	for {
-		if p.peek() == '|' {
+		if p.peekTwo() != "||" && p.peek() == '|' {
 			p.pos++
 			right, err := p.parseExprXor()
 			if err != nil {
@@ -634,7 +719,7 @@ func (p *exprParser) parseExprAnd() (int64, error) {
 		return 0, err
 	}
 	for {
-		if p.peek() == '&' {
+		if p.peekTwo() != "&&" && p.peek() == '&' {
 			p.pos++
 			right, err := p.parseExprShift()
 			if err != nil {
@@ -763,6 +848,17 @@ func (p *exprParser) parseExprUnary() (int64, error) {
 			}
 			return ^val, nil
 		}
+		if ch == '!' {
+			p.pos++
+			val, err := p.parseExprUnary()
+			if err != nil {
+				return 0, err
+			}
+			if val == 0 {
+				return 1, nil
+			}
+			return 0, nil
+		}
 	}
 	return p.parseExprAtom()
 }
@@ -779,7 +875,7 @@ func (p *exprParser) parseExprAtom() (int64, error) {
 	// Parenthesized expression
 	if ch == '(' {
 		p.pos++
-		val, err := p.parseExprOr()
+		val, err := p.parseExprLogicalOr()
 		if err != nil {
 			return 0, err
 		}
@@ -848,9 +944,32 @@ func (p *exprParser) parseExprAtom() (int64, error) {
 			p.pos++
 		}
 		name := p.input[start:p.pos]
+		lowerName := strings.ToLower(name)
+
+		if lowerName == "lo" || lowerName == "hi" {
+			p.skipSpaces()
+			if p.pos >= len(p.input) || p.input[p.pos] != '(' {
+				return 0, fmt.Errorf("%s requires parenthesized expression", name)
+			}
+			p.pos++
+			val, err := p.parseExprLogicalOr()
+			if err != nil {
+				return 0, err
+			}
+			p.skipSpaces()
+			if p.pos >= len(p.input) || p.input[p.pos] != ')' {
+				return 0, fmt.Errorf("missing closing parenthesis for %s", name)
+			}
+			p.pos++
+			u := uint64(val)
+			if lowerName == "lo" {
+				return int64(uint32(u)), nil
+			}
+			return int64(uint32(u >> 32)), nil
+		}
 
 		// Check for narg pseudo-symbol (handled by macro expansion - should be resolved already)
-		if strings.ToLower(name) == "narg" {
+		if lowerName == "narg" {
 			// narg is replaced during macro expansion; if we get here, it's 0
 			return 0, nil
 		}
@@ -875,6 +994,7 @@ func (p *exprParser) parseExprAtom() (int64, error) {
 
 		// On pass 1, unresolved labels are expected - return 0
 		if p.asm.pass <= 1 {
+			p.asm.lastEvalSawUnresolved = true
 			return 0, nil
 		}
 
@@ -887,10 +1007,19 @@ func (p *exprParser) parseExprAtom() (int64, error) {
 		if p.pos >= len(p.input) {
 			return 0, fmt.Errorf("unterminated character literal")
 		}
-		c := p.input[p.pos]
-		p.pos++
-		if c == '\\' && p.pos < len(p.input) {
-			c = unescapeChar(p.input[p.pos])
+		var c byte
+		if p.input[p.pos] == '\\' {
+			bs, next, err := parseEscapeBytes(p.input, p.pos)
+			if err != nil {
+				return 0, err
+			}
+			if len(bs) != 1 {
+				return 0, fmt.Errorf("character literal escape emits %d bytes", len(bs))
+			}
+			c = bs[0]
+			p.pos = next
+		} else {
+			c = p.input[p.pos]
 			p.pos++
 		}
 		if p.pos >= len(p.input) || p.input[p.pos] != '\'' {
@@ -934,6 +1063,37 @@ func unescapeChar(c byte) byte {
 	}
 }
 
+func parseEscapeBytes(s string, slash int) ([]byte, int, error) {
+	if slash+1 >= len(s) || s[slash] != '\\' {
+		return nil, slash, fmt.Errorf("invalid escape position")
+	}
+	c := s[slash+1]
+	switch c {
+	case 'x':
+		if slash+3 >= len(s) {
+			return nil, slash, fmt.Errorf("short \\x escape")
+		}
+		v, err := strconv.ParseUint(s[slash+2:slash+4], 16, 8)
+		if err != nil {
+			return nil, slash, fmt.Errorf("invalid \\x escape")
+		}
+		return []byte{byte(v)}, slash + 4, nil
+	case 'u':
+		if slash+5 >= len(s) {
+			return nil, slash, fmt.Errorf("short \\u escape")
+		}
+		v, err := strconv.ParseUint(s[slash+2:slash+6], 16, 32)
+		if err != nil {
+			return nil, slash, fmt.Errorf("invalid \\u escape")
+		}
+		var buf [utf8.UTFMax]byte
+		n := utf8.EncodeRune(buf[:], rune(v))
+		return buf[:n], slash + 6, nil
+	default:
+		return []byte{unescapeChar(c)}, slash + 2, nil
+	}
+}
+
 // evalExprUint64 evaluates an expression and returns it as uint64.
 func (a *IE64Assembler) evalExprUint64(s string) (uint64, error) {
 	val, err := a.evalExpr(s)
@@ -949,12 +1109,24 @@ func (a *IE64Assembler) evalExprUint64(s string) (uint64, error) {
 
 // stripComment removes a ; comment from a line, respecting quoted strings.
 func stripComment(line string) string {
-	inQuote := false
+	inString := false
+	inChar := false
+	escaped := false
 	for i := 0; i < len(line); i++ {
 		c := line[i]
-		if c == '"' {
-			inQuote = !inQuote
-		} else if c == ';' && !inQuote {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && (inString || inChar) {
+			escaped = true
+			continue
+		}
+		if c == '"' && !inChar {
+			inString = !inString
+		} else if c == '\'' && !inString {
+			inChar = !inChar
+		} else if c == ';' && !inString && !inChar {
 			return line[:i]
 		}
 	}
@@ -1028,6 +1200,9 @@ func (a *IE64Assembler) preprocess(source string, basePath string, included map[
 		fields := strings.Fields(trimmed)
 		if len(fields) >= 2 && strings.ToLower(fields[1]) == "macro" {
 			macroName := strings.ToLower(fields[0])
+			if isReservedSymbol(macroName) {
+				return nil, fmt.Errorf("line %d: reserved word cannot be macro name: %s", i+1, fields[0])
+			}
 			// Count expected params by scanning body for \1..\9
 			var body []string
 			i++
@@ -1139,6 +1314,34 @@ func (a *IE64Assembler) expandPass(lines []string, output *[]string, depth int) 
 				}
 				continue
 
+			case "elseif":
+				if len(condStack) == 0 {
+					return fmt.Errorf("elseif without matching if")
+				}
+				top := &condStack[len(condStack)-1]
+				if top.hasElse {
+					return fmt.Errorf("elseif after else")
+				}
+				parentEmitting := true
+				for j := 0; j < len(condStack)-1; j++ {
+					if !condStack[j].active {
+						parentEmitting = false
+						break
+					}
+				}
+				if !parentEmitting || top.hadTrue {
+					top.active = false
+					continue
+				}
+				exprStr := strings.TrimSpace(trimmed[len(fields[0]):])
+				val, err := a.evalExpr(exprStr)
+				if err != nil {
+					return fmt.Errorf("elseif expression error: %v", err)
+				}
+				top.active = val != 0
+				top.hadTrue = top.active
+				continue
+
 			case "endif":
 				if len(condStack) == 0 {
 					return fmt.Errorf("endif without matching if")
@@ -1212,15 +1415,7 @@ func (a *IE64Assembler) expandPass(lines []string, output *[]string, depth int) 
 					// Replace narg
 					line = strings.ReplaceAll(line, "narg", strconv.Itoa(len(args)))
 					line = strings.ReplaceAll(line, "NARG", strconv.Itoa(len(args)))
-					// Replace \1..\9 with arguments
-					for p := 1; p <= 9; p++ {
-						placeholder := fmt.Sprintf("\\%d", p)
-						if p <= len(args) {
-							line = strings.ReplaceAll(line, placeholder, args[p-1])
-						} else {
-							line = strings.ReplaceAll(line, placeholder, "")
-						}
-					}
+					line = expandMacroParams(line, args)
 					expanded = append(expanded, line)
 				}
 				err := a.expandPass(expanded, output, depth+1)
@@ -1255,6 +1450,50 @@ func splitMacroArgs(s string) []string {
 		}
 	}
 	return result
+}
+
+func expandMacroParams(line string, args []string) string {
+	var b strings.Builder
+	inString := false
+	inChar := false
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if escaped {
+			b.WriteByte(c)
+			escaped = false
+			continue
+		}
+		if c == '\\' && (inString || inChar) {
+			b.WriteByte(c)
+			escaped = true
+			continue
+		}
+		if c == '"' && !inChar {
+			inString = !inString
+			b.WriteByte(c)
+			continue
+		}
+		if c == '\'' && !inString {
+			inChar = !inChar
+			b.WriteByte(c)
+			continue
+		}
+		if c == '\\' && !inString && !inChar && i+1 < len(line) && line[i+1] >= '0' && line[i+1] <= '9' {
+			j := i + 1
+			for j < len(line) && line[j] >= '0' && line[j] <= '9' {
+				j++
+			}
+			idx, _ := strconv.Atoi(line[i+1 : j])
+			if idx >= 1 && idx <= len(args) {
+				b.WriteString(args[idx-1])
+			}
+			i = j - 1
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // ---------------------------------------------------------------------
@@ -1292,7 +1531,7 @@ func (a *IE64Assembler) expandPseudo(line string) []string {
 		return []string{fmt.Sprintf("\tlea %s, %s(r0)", rd, addr)}
 
 	case "li":
-		// li rd, #imm
+		// li rd, #imm always expands to a layout-stable lo/hi pair.
 		rest := strings.TrimSpace(trimmed[2:])
 		parts := splitOperands(rest)
 		if len(parts) != 2 {
@@ -1304,28 +1543,10 @@ func (a *IE64Assembler) expandPseudo(line string) []string {
 			return []string{line}
 		}
 		immStr = strings.TrimSpace(immStr[1:])
-
-		// Try to evaluate
-		val, err := a.evalExprUint64(immStr)
-		if err != nil {
-			// On pass 1, might not resolve - emit two instructions to be safe
-			return []string{
-				fmt.Sprintf("\tmove.l %s, #%s", rd, immStr),
-				fmt.Sprintf("\tmovt %s, #0", rd),
-			}
-		}
-		if val <= math.MaxUint32 {
-			// Fits in 32 bits
-			a.addInfo("pseudo-op 'li' lowered to move.l %s, #%d", rd, val)
-			return []string{fmt.Sprintf("\tmove.l %s, #%d", rd, val)}
-		}
-		// 64-bit: lo32 + hi32
-		lo := uint32(val & 0xFFFFFFFF)
-		hi := uint32(val >> 32)
-		a.addInfo("pseudo-op 'li' lowered to move.l + movt %s, #$%X_%08X", rd, hi, lo)
+		a.addInfo("pseudo-op 'li' lowered to fixed move.l/movt pair for %s", rd)
 		return []string{
-			fmt.Sprintf("\tmove.l %s, #%d", rd, lo),
-			fmt.Sprintf("\tmovt %s, #%d", rd, hi),
+			fmt.Sprintf("\tmove.l %s, #lo(%s)", rd, immStr),
+			fmt.Sprintf("\tmovt %s, #hi(%s)", rd, immStr),
 		}
 
 	case "beqz":
@@ -1362,14 +1583,37 @@ func splitOperands(s string) []string {
 	var result []string
 	depth := 0
 	start := 0
+	inString := false
+	inChar := false
+	escaped := false
 	for i := 0; i < len(s); i++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if s[i] == '\\' && (inString || inChar) {
+			escaped = true
+			continue
+		}
 		switch s[i] {
+		case '"':
+			if !inChar {
+				inString = !inString
+			}
+		case '\'':
+			if !inString {
+				inChar = !inChar
+			}
 		case '(':
-			depth++
+			if !inString && !inChar {
+				depth++
+			}
 		case ')':
-			depth--
+			if !inString && !inChar {
+				depth--
+			}
 		case ',':
-			if depth == 0 {
+			if depth == 0 && !inString && !inChar {
 				result = append(result, s[start:i])
 				start = i + 1
 			}
@@ -1391,6 +1635,12 @@ func instrLineSize() uint32 {
 
 // directiveSize calculates the size in bytes that a directive emits.
 func (a *IE64Assembler) directiveSize(trimmed string) (uint32, error) {
+	a.lastEvalSawUnresolved = false
+	defer func() {
+		if a.lastEvalSawUnresolved {
+			a.directiveSawUnresolved = true
+		}
+	}()
 	fields := strings.Fields(trimmed)
 	if len(fields) == 0 {
 		return 0, nil
@@ -1409,6 +1659,9 @@ func (a *IE64Assembler) directiveSize(trimmed string) (uint32, error) {
 		alignment, err := a.evalExpr(fields[1])
 		if err != nil {
 			return 0, err
+		}
+		if a.lastEvalSawUnresolved && alignment == 0 {
+			return 0, nil
 		}
 		if alignment <= 0 {
 			return 0, fmt.Errorf("align value must be positive")
@@ -1436,11 +1689,18 @@ func (a *IE64Assembler) calcDCSize(line string) (uint32, error) {
 	switch directive {
 	case "dc.b":
 		unitSize = 1
+	case "dc.bz":
+		size := calcDCBSize(rest)
+		return size + 1, nil
 	case "dc.w":
 		unitSize = 2
 	case "dc.l":
 		unitSize = 4
+	case "dc.s":
+		unitSize = 4
 	case "dc.q":
+		unitSize = 8
+	case "dc.d":
 		unitSize = 8
 	default:
 		return 0, fmt.Errorf("unknown dc directive: %s", directive)
@@ -1480,13 +1740,33 @@ func calcDCBSize(rest string) uint32 {
 			i++ // skip opening quote
 			for i < len(rest) && rest[i] != '"' {
 				if rest[i] == '\\' && i+1 < len(rest) {
-					i++ // skip escape sequence
+					bs, next, err := parseEscapeBytes(rest, i)
+					if err == nil {
+						total += uint32(len(bs))
+						i = next
+						continue
+					}
 				}
 				total++
 				i++
 			}
 			if i < len(rest) {
 				i++ // skip closing quote
+			}
+		} else if rest[i] == '\'' {
+			total++
+			i++
+			escaped := false
+			for i < len(rest) {
+				if escaped {
+					escaped = false
+				} else if rest[i] == '\\' {
+					escaped = true
+				} else if rest[i] == '\'' {
+					i++
+					break
+				}
+				i++
 			}
 		} else {
 			// Numeric value - skip to next comma or end
@@ -1540,12 +1820,12 @@ func (a *IE64Assembler) calcIncbinSize(line string) (uint32, error) {
 		a.addWarning("cannot resolve incbin file %s: %v", filename, err)
 		return 0, nil
 	}
-	info, err := os.Stat(path)
+	data, err := a.readIncbin(path)
 	if err != nil {
-		a.addWarning("cannot stat incbin file %s: %v", path, err)
+		a.addWarning("cannot read incbin file %s: %v", path, err)
 		return 0, nil
 	}
-	length := uint64(info.Size())
+	length := uint64(len(data))
 	offset := uint64(0)
 	if len(parts) >= 2 {
 		off, err := a.evalExprUint64(strings.TrimSpace(parts[1]))
@@ -1566,9 +1846,159 @@ func (a *IE64Assembler) calcIncbinSize(line string) (uint32, error) {
 	return uint32(length), nil
 }
 
+func (a *IE64Assembler) readIncbin(path string) ([]byte, error) {
+	abs, _ := filepath.Abs(path)
+	if data, ok := a.incbinCache[abs]; ok {
+		if a.pass == 1 {
+			current, err := os.ReadFile(path)
+			if err == nil && !bytes.Equal(current, data) {
+				a.addWarningCategory("incbin-changed", "incbin file changed after first read: %s", path)
+			}
+		}
+		return data, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	cpy := append([]byte(nil), data...)
+	a.incbinCache[abs] = cpy
+	return cpy, nil
+}
+
 // ---------------------------------------------------------------------
 // Assemble
 // ---------------------------------------------------------------------
+
+func (a *IE64Assembler) collectPass1(expanded []string, warnDuplicates bool) (uint32, bool, error) {
+	a.pass = 1
+	a.codeOffset = 0
+	a.baseAddr = a.imageBase
+	a.lastGlobalLabel = ""
+	a.directiveSawUnresolved = false
+	maxAddr := a.imageBase
+
+	for _, line := range expanded {
+		stripped := stripComment(line)
+		trimmed := strings.TrimSpace(stripped)
+		if trimmed == "" {
+			continue
+		}
+
+		fields := strings.Fields(trimmed)
+		lower := strings.ToLower(fields[0])
+
+		if lower == "org" {
+			if len(fields) < 2 {
+				return 0, false, fmt.Errorf("org requires an address")
+			}
+			addrStr := strings.TrimSpace(strings.Join(fields[1:], " "))
+			addr, err := a.evalExprUint64(addrStr)
+			if err != nil {
+				return 0, false, fmt.Errorf("org: %v", err)
+			}
+			if addr < uint64(a.imageBase) {
+				return 0, false, fmt.Errorf("org address 0x%x before image base 0x%x", addr, a.imageBase)
+			}
+			a.imageBaseSet = true
+			newOffset := uint32(addr) - a.imageBase
+			if warnDuplicates && newOffset < a.codeOffset {
+				a.addWarningCategory("org-backward", "org moved backward to 0x%x", addr)
+			}
+			a.codeOffset = newOffset
+			continue
+		}
+
+		if len(fields) >= 3 && strings.ToLower(fields[1]) == "equ" {
+			name := fields[0]
+			if isReservedSymbol(name) {
+				return 0, false, fmt.Errorf("reserved word cannot be symbol name: %s", name)
+			}
+			exprStr := strings.TrimSpace(trimmed[len(fields[0]):])
+			exprStr = strings.TrimSpace(exprStr[3:])
+			val, err := a.evalExprUint64(exprStr)
+			if err != nil {
+				return 0, false, fmt.Errorf("equ '%s': %v", name, err)
+			}
+			if existing, exists := a.equates[name]; exists {
+				if existing != val {
+					return 0, false, fmt.Errorf("symbol '%s' already defined with equ", name)
+				}
+				continue
+			}
+			if _, exists := a.sets[name]; exists {
+				return 0, false, fmt.Errorf("symbol '%s' already defined with set", name)
+			}
+			a.equates[name] = val
+			continue
+		}
+
+		if len(fields) >= 3 && strings.ToLower(fields[1]) == "set" {
+			name := fields[0]
+			if isReservedSymbol(name) {
+				return 0, false, fmt.Errorf("reserved word cannot be symbol name: %s", name)
+			}
+			exprStr := strings.TrimSpace(trimmed[len(fields[0]):])
+			exprStr = strings.TrimSpace(exprStr[3:])
+			val, err := a.evalExprUint64(exprStr)
+			if err != nil {
+				return 0, false, fmt.Errorf("set '%s': %v", name, err)
+			}
+			if _, exists := a.equates[name]; exists {
+				return 0, false, fmt.Errorf("symbol '%s' already defined with equ", name)
+			}
+			a.sets[name] = val
+			continue
+		}
+
+		if strings.HasSuffix(fields[0], ":") {
+			labelName := strings.TrimSuffix(fields[0], ":")
+			if isReservedSymbol(labelName) {
+				return 0, false, fmt.Errorf("reserved word cannot be label name: %s", labelName)
+			}
+			if strings.HasPrefix(labelName, ".") {
+				if a.lastGlobalLabel == "" {
+					return 0, false, fmt.Errorf("local label '%s' before any global label", labelName)
+				}
+				fullName := a.lastGlobalLabel + labelName
+				if _, exists := a.labels[fullName]; exists && warnDuplicates {
+					a.addWarningCategory("duplicate-labels", "label %q redefined", fullName)
+				}
+				a.labels[fullName] = a.imageBase + a.codeOffset
+			} else {
+				a.lastGlobalLabel = labelName
+				if _, exists := a.labels[labelName]; exists && warnDuplicates {
+					a.addWarningCategory("duplicate-labels", "label %q redefined", labelName)
+				}
+				a.labels[labelName] = a.imageBase + a.codeOffset
+			}
+			if len(fields) > 1 {
+				restLine := strings.TrimSpace(trimmed[len(fields[0]):])
+				size, err := a.lineSize(restLine)
+				if err != nil {
+					return 0, false, err
+				}
+				a.codeOffset += size
+				nextAddr := a.imageBase + a.codeOffset
+				if nextAddr > maxAddr {
+					maxAddr = nextAddr
+				}
+			}
+			continue
+		}
+
+		size, err := a.lineSize(trimmed)
+		if err != nil {
+			return 0, false, err
+		}
+		a.codeOffset += size
+		nextAddr := a.imageBase + a.codeOffset
+		if nextAddr > maxAddr {
+			maxAddr = nextAddr
+		}
+	}
+	return maxAddr, a.directiveSawUnresolved, nil
+}
 
 // Assemble takes source code as a string and returns the assembled binary.
 func (a *IE64Assembler) Assemble(source string) ([]byte, error) {
@@ -1576,6 +2006,10 @@ func (a *IE64Assembler) Assemble(source string) ([]byte, error) {
 	a.warnings = nil
 	a.listing = nil
 	a.libManifest = nil
+	a.imageBase = a.baseAddr
+	a.imageBaseSet = false
+	a.maxAddr = a.baseAddr
+	a.written = make(map[uint32]int)
 
 	// Pass 0: preprocessing
 	preprocessed, err := a.preprocess(source, a.basePath, nil)
@@ -1590,115 +2024,33 @@ func (a *IE64Assembler) Assemble(source string) ([]byte, error) {
 		expanded = append(expanded, exp...)
 	}
 
-	// Pass 1: label collection, address calculation
-	a.pass = 1
-	a.codeOffset = 0
-	a.lastGlobalLabel = ""
-	maxAddr := a.baseAddr
-
-	for _, line := range expanded {
-		stripped := stripComment(line)
-		trimmed := strings.TrimSpace(stripped)
-		if trimmed == "" {
-			continue
-		}
-
-		fields := strings.Fields(trimmed)
-		lower := strings.ToLower(fields[0])
-
-		// org directive
-		if lower == "org" {
-			if len(fields) < 2 {
-				return nil, fmt.Errorf("org requires an address")
-			}
-			addrStr := strings.TrimSpace(strings.Join(fields[1:], " "))
-			addr, err := a.evalExprUint64(addrStr)
-			if err != nil {
-				return nil, fmt.Errorf("org: %v", err)
-			}
-			a.baseAddr = uint32(addr)
-			a.codeOffset = 0
-			continue
-		}
-
-		// equ directive: NAME equ value
-		if len(fields) >= 3 && strings.ToLower(fields[1]) == "equ" {
-			name := fields[0]
-			exprStr := strings.TrimSpace(trimmed[len(fields[0]):])
-			exprStr = strings.TrimSpace(exprStr[3:]) // skip "equ"
-			val, err := a.evalExprUint64(exprStr)
-			if err != nil {
-				return nil, fmt.Errorf("equ '%s': %v", name, err)
-			}
-			if _, exists := a.equates[name]; exists {
-				return nil, fmt.Errorf("symbol '%s' already defined with equ", name)
-			}
-			a.equates[name] = val
-			continue
-		}
-
-		// set directive: NAME set value
-		if len(fields) >= 3 && strings.ToLower(fields[1]) == "set" {
-			name := fields[0]
-			exprStr := strings.TrimSpace(trimmed[len(fields[0]):])
-			exprStr = strings.TrimSpace(exprStr[3:]) // skip "set"
-			val, err := a.evalExprUint64(exprStr)
-			if err != nil {
-				return nil, fmt.Errorf("set '%s': %v", name, err)
-			}
-			a.sets[name] = val
-			continue
-		}
-
-		// Label definition
-		if strings.HasSuffix(fields[0], ":") {
-			labelName := strings.TrimSuffix(fields[0], ":")
-			if strings.HasPrefix(labelName, ".") {
-				// Local label
-				if a.lastGlobalLabel == "" {
-					return nil, fmt.Errorf("local label '%s' before any global label", labelName)
-				}
-				fullName := a.lastGlobalLabel + labelName
-				a.labels[fullName] = a.baseAddr + a.codeOffset
-			} else {
-				// Global label
-				a.lastGlobalLabel = labelName
-				a.labels[labelName] = a.baseAddr + a.codeOffset
-			}
-			// If there's more on the line after the label, process it
-			if len(fields) > 1 {
-				restLine := strings.TrimSpace(trimmed[len(fields[0]):])
-				size, err := a.lineSize(restLine)
-				if err != nil {
-					return nil, err
-				}
-				a.codeOffset += size
-				nextAddr := a.baseAddr + a.codeOffset
-				if nextAddr > maxAddr {
-					maxAddr = nextAddr
-				}
-			}
-			continue
-		}
-
-		// Directive or instruction
-		size, err := a.lineSize(trimmed)
+	maxAddr, unresolved, err := a.collectPass1(expanded, true)
+	if err != nil {
+		return nil, err
+	}
+	for i := 0; unresolved && i < 4; i++ {
+		var nextMax uint32
+		nextMax, unresolved, err = a.collectPass1(expanded, false)
 		if err != nil {
 			return nil, err
 		}
-		a.codeOffset += size
-		nextAddr := a.baseAddr + a.codeOffset
-		if nextAddr > maxAddr {
-			maxAddr = nextAddr
+		if nextMax == maxAddr && !unresolved {
+			maxAddr = nextMax
+			break
 		}
+		maxAddr = nextMax
+	}
+	if unresolved {
+		return nil, fmt.Errorf("could not stabilize forward references in size-affecting directives")
 	}
 
 	// Pass 2: code generation
 	a.pass = 2
 	a.codeOffset = 0
+	a.baseAddr = a.imageBase
 	a.lastGlobalLabel = ""
 
-	programSize := maxAddr - a.baseAddr
+	programSize := maxAddr - a.imageBase
 	if programSize == 0 {
 		return []byte{}, nil
 	}
@@ -1724,8 +2076,10 @@ func (a *IE64Assembler) Assemble(source string) ([]byte, error) {
 			if a.listingMode {
 				a.addListing(uint32(addr), nil, trimmed)
 			}
-			a.baseAddr = uint32(addr)
-			a.codeOffset = 0
+			if addr < uint64(a.imageBase) {
+				return nil, fmt.Errorf("org address 0x%x before image base 0x%x", addr, a.imageBase)
+			}
+			a.codeOffset = uint32(addr) - a.imageBase
 			continue
 		}
 
@@ -1817,6 +2171,14 @@ func isDirective(lower string) bool {
 		lower == "org"
 }
 
+func isReservedSymbol(name string) bool {
+	switch strings.ToLower(strings.TrimSuffix(name, ":")) {
+	case "macro", "endm", "if", "else", "elseif", "endif", "equ", "set", "org", "align", "dc", "ds", "incbin", "include", "rept", "endr":
+		return true
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------
 // assembleLine - pass 2 code generation for a single line
 // ---------------------------------------------------------------------
@@ -1830,11 +2192,28 @@ func (a *IE64Assembler) assembleLine(trimmed string, program []byte) error {
 
 	// Directives
 	if isDirective(lower) {
-		return a.assembleDirective(trimmed, program)
+		start := a.codeOffset
+		err := a.assembleDirective(trimmed, program)
+		if err != nil {
+			return err
+		}
+		return a.markRange(a.imageBase+start, a.codeOffset-start, trimmed)
 	}
 
 	// Instruction
 	return a.assembleInstruction(trimmed, program)
+}
+
+func (a *IE64Assembler) markRange(addr, size uint32, source string) error {
+	_ = source
+	for i := uint32(0); i < size; i++ {
+		at := addr + i
+		if prev, ok := a.written[at]; ok {
+			return fmt.Errorf("overlapping emit at $%X (already written by line %d)", at, prev)
+		}
+		a.written[at] = a.pass
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------
@@ -1997,8 +2376,11 @@ func (a *IE64Assembler) assembleDC(line string, program []byte, startOffset uint
 	rest := strings.TrimSpace(line[len(fields[0]):])
 
 	switch directive {
-	case "dc.b":
+	case "dc.b", "dc.bz":
 		data := a.parseDCB(rest)
+		if directive == "dc.bz" {
+			data = append(data, 0)
+		}
 		copy(program[a.codeOffset:], data)
 		if a.listingMode {
 			a.addListing(a.baseAddr+startOffset, data, line)
@@ -2017,6 +2399,9 @@ func (a *IE64Assembler) assembleDC(line string, program []byte, startOffset uint
 			val, err := a.evalExpr(v)
 			if err != nil {
 				return fmt.Errorf("dc.w: %v", err)
+			}
+			if val < -32768 || val > 0xFFFF {
+				return fmt.Errorf("dc.w value out of 16-bit range: %s", v)
 			}
 			buf := make([]byte, 2)
 			binary.LittleEndian.PutUint16(buf, uint16(val))
@@ -2041,8 +2426,57 @@ func (a *IE64Assembler) assembleDC(line string, program []byte, startOffset uint
 			if err != nil {
 				return fmt.Errorf("dc.l: %v", err)
 			}
+			if val < -2147483648 || val > 0xFFFFFFFF {
+				return fmt.Errorf("dc.l value out of 32-bit range: %s", v)
+			}
 			buf := make([]byte, 4)
 			binary.LittleEndian.PutUint32(buf, uint32(val))
+			data = append(data, buf...)
+		}
+		copy(program[a.codeOffset:], data)
+		if a.listingMode {
+			a.addListing(a.baseAddr+startOffset, data, line)
+		}
+		a.codeOffset += uint32(len(data))
+		return nil
+
+	case "dc.s":
+		values := splitOperands(rest)
+		var data []byte
+		for _, v := range values {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			f, err := strconv.ParseFloat(v, 32)
+			if err != nil {
+				return fmt.Errorf("dc.s: %v", err)
+			}
+			buf := make([]byte, 4)
+			binary.LittleEndian.PutUint32(buf, math.Float32bits(float32(f)))
+			data = append(data, buf...)
+		}
+		copy(program[a.codeOffset:], data)
+		if a.listingMode {
+			a.addListing(a.baseAddr+startOffset, data, line)
+		}
+		a.codeOffset += uint32(len(data))
+		return nil
+
+	case "dc.d":
+		values := splitOperands(rest)
+		var data []byte
+		for _, v := range values {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return fmt.Errorf("dc.d: %v", err)
+			}
+			buf := make([]byte, 8)
+			binary.LittleEndian.PutUint64(buf, math.Float64bits(f))
 			data = append(data, buf...)
 		}
 		copy(program[a.codeOffset:], data)
@@ -2097,8 +2531,13 @@ func (a *IE64Assembler) parseDCB(rest string) []byte {
 			var strBytes []byte
 			for i < len(rest) && rest[i] != '"' {
 				if rest[i] == '\\' && i+1 < len(rest) {
-					strBytes = append(strBytes, unescapeChar(rest[i+1]))
-					i += 2
+					bs, next, err := parseEscapeBytes(rest, i)
+					if err != nil {
+						a.addError("dc.b escape error: %v", err)
+						return data
+					}
+					strBytes = append(strBytes, bs...)
+					i = next
 				} else {
 					strBytes = append(strBytes, rest[i])
 					i++
@@ -2111,6 +2550,31 @@ func (a *IE64Assembler) parseDCB(rest string) []byte {
 			}
 			data = append(data, strBytes...)
 			i++ // skip closing quote
+		} else if rest[i] == '\'' {
+			start := i
+			i++
+			for i < len(rest) {
+				if rest[i] == '\\' && i+1 < len(rest) {
+					i += 2
+					continue
+				}
+				if rest[i] == '\'' {
+					i++
+					break
+				}
+				i++
+			}
+			valStr := strings.TrimSpace(rest[start:i])
+			val, err := a.evalExpr(valStr)
+			if err != nil {
+				a.addError("dc.b value error: %v", err)
+				data = append(data, 0)
+			} else if val < -128 || val > 0xFF {
+				a.addError("dc.b value out of 8-bit range: %s", valStr)
+				data = append(data, 0)
+			} else {
+				data = append(data, byte(val))
+			}
 		} else {
 			// Numeric value - find end
 			start := i
@@ -2122,6 +2586,9 @@ func (a *IE64Assembler) parseDCB(rest string) []byte {
 				val, err := a.evalExpr(valStr)
 				if err != nil {
 					a.addError("dc.b value error: %v", err)
+					data = append(data, 0)
+				} else if val < -128 || val > 0xFF {
+					a.addError("dc.b value out of 8-bit range: %s", valStr)
 					data = append(data, 0)
 				} else {
 					data = append(data, byte(val))
@@ -2206,7 +2673,7 @@ func (a *IE64Assembler) assembleIncbin(line string, program []byte, startOffset 
 	if err != nil {
 		return fmt.Errorf("incbin: %v", err)
 	}
-	data, err := os.ReadFile(path)
+	data, err := a.readIncbin(path)
 	if err != nil {
 		return fmt.Errorf("incbin: cannot read %s: %v", path, err)
 	}
@@ -2558,6 +3025,9 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 		return fmt.Errorf("%s: %v", trimmed, err)
 	}
 
+	if err := a.markRange(a.imageBase+a.codeOffset, instrSize, trimmed); err != nil {
+		return err
+	}
 	copy(program[a.codeOffset:], instr)
 	if a.listingMode {
 		a.addListing(a.baseAddr+startOffset, instr, trimmed)
@@ -2612,16 +3082,20 @@ func (a *IE64Assembler) asmMove(size byte, operands []string) ([]byte, error) {
 		uval := uint64(val)
 		switch size {
 		case SIZE_B:
-			if uval > 0xFF {
+			if val >= 0 && uval > 0xFF {
 				a.addWarning("immediate $%X truncated to 8-bit (.b)", uval)
 			}
 		case SIZE_W:
-			if uval > 0xFFFF {
+			if val >= 0 && uval > 0xFFFF {
 				a.addWarning("immediate $%X truncated to 16-bit (.w)", uval)
 			}
 		case SIZE_L:
-			if uval > 0xFFFFFFFF {
-				a.addWarning("immediate $%X truncated to 32-bit (.l)", uval)
+			if !immFitsEncoded32(val) {
+				return nil, fmt.Errorf("immediate $%X out of 32-bit range for move.l; use li", uval)
+			}
+		case SIZE_Q:
+			if !immFitsEncoded32(val) {
+				return nil, fmt.Errorf("immediate $%X out of 32-bit encoding range for move.q; use li", uval)
 			}
 		}
 		return encodeInstruction(OP64_MOVE, rd, size, 1, 0, 0, uint32(val)), nil
@@ -2652,6 +3126,9 @@ func (a *IE64Assembler) asmMovt(operands []string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("immediate value: %v", err)
 	}
+	if !immFitsEncoded32(val) {
+		return nil, fmt.Errorf("immediate $%X out of 32-bit range for movt", uint64(val))
+	}
 	return encodeInstruction(OP64_MOVT, rd, SIZE_Q, 1, 0, 0, uint32(val)), nil
 }
 
@@ -2672,6 +3149,9 @@ func (a *IE64Assembler) asmMoveq(operands []string) ([]byte, error) {
 	val, err := a.evalExpr(immStr)
 	if err != nil {
 		return nil, fmt.Errorf("immediate value: %v", err)
+	}
+	if !immFitsEncoded32(val) {
+		return nil, fmt.Errorf("immediate $%X out of 32-bit encoding range for moveq", uint64(val))
 	}
 	return encodeInstruction(OP64_MOVEQ, rd, SIZE_Q, 1, 0, 0, uint32(val)), nil
 }
@@ -2943,6 +3423,7 @@ func main() {
 	listMode := false
 	verbose := false
 	var inputFile string
+	var outFile string
 	var includePaths []string
 	asm := NewIE64Assembler()
 
@@ -2953,6 +3434,17 @@ func main() {
 			listMode = true
 		} else if arg == "-v" {
 			verbose = true
+		} else if arg == "-o" {
+			i++
+			if i >= len(args) {
+				fmt.Fprintf(os.Stderr, "Error: -o requires an output path\n")
+				os.Exit(1)
+			}
+			outFile = args[i]
+		} else if arg == "-Werror" {
+			asm.warningPolicy.Werror = true
+		} else if strings.HasPrefix(arg, "-Wno-") {
+			asm.warningPolicy.Suppress(strings.TrimPrefix(arg, "-Wno-"))
 		} else if arg == "-D" {
 			i++
 			if i >= len(args) {
@@ -2983,11 +3475,11 @@ func main() {
 			includePaths = append(includePaths, arg[2:])
 		} else if strings.HasPrefix(arg, "-") {
 			fmt.Fprintf(os.Stderr, "Unknown option: %s\n", arg)
-			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-o output] [-Werror] [-Wno-category] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
 			os.Exit(1)
 		} else if inputFile != "" {
 			fmt.Fprintf(os.Stderr, "Error: multiple input files specified\n")
-			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-o output] [-Werror] [-Wno-category] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
 			os.Exit(1)
 		} else {
 			inputFile = arg
@@ -2995,7 +3487,7 @@ func main() {
 	}
 
 	if inputFile == "" {
-		fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
+		fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-o output] [-Werror] [-Wno-category] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
 		os.Exit(1)
 	}
 
@@ -3029,7 +3521,9 @@ func main() {
 	}
 
 	// Write output
-	outFile := strings.TrimSuffix(inputFile, filepath.Ext(inputFile)) + ".ie64"
+	if outFile == "" {
+		outFile = strings.TrimSuffix(inputFile, filepath.Ext(inputFile)) + ".ie64"
+	}
 	if err := os.WriteFile(outFile, binary, 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing output file: %v\n", err)
 		os.Exit(1)

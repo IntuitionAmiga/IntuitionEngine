@@ -24,6 +24,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -360,18 +361,17 @@ start:
 // ---------------------------------------------------------------------------
 
 func TestIE64Asm_Org(t *testing.T) {
-	// Origin only affects address calculations; the binary output starts at
-	// offset 0 regardless.  We verify by placing a label at the org address
-	// and using it as an immediate - the label value should equal the org.
+	// Raw IE64 images are loaded at PROG_START, so a non-default origin must
+	// preserve leading padding while labels still use the requested address.
 	src := `
 		org $2000
 start:
 		move.q r1, #start
 `
 	bin := assembleString(t, src)
-	// The label "start" = $2000.  Instruction: move.q r1, #$2000
+	assertLen(t, bin, 0x1000+8, "org $2000 keeps PROG_START padding")
 	want := encodeInstr(opMOVE, 1, szQ, 1, 0, 0, 0x2000)
-	assertBytes(t, bin, 0, want, "org $2000 / move.q r1, #start")
+	assertBytes(t, bin, 0x1000, want, "org $2000 / move.q r1, #start")
 }
 
 func TestIE64Asm_Equ(t *testing.T) {
@@ -1374,12 +1374,14 @@ func TestIE64Asm_La(t *testing.T) {
 }
 
 func TestIE64Asm_Li_32bit(t *testing.T) {
-	// li r1, #$DEADBEEF with value fitting in 32 bits => move.l r1, #$DEADBEEF
+	// li is always a fixed two-instruction lo/hi pair for pass-stable layout.
 	src := "li r1, #$DEADBEEF"
 	bin := assembleString(t, src)
-	assertLen(t, bin, 8, "li 32-bit")
-	want := encodeInstr(opMOVE, 1, szL, 1, 0, 0, 0xDEADBEEF)
-	assertBytes(t, bin, 0, want, "li r1, #$DEADBEEF")
+	assertLen(t, bin, 16, "li 32-bit")
+	wantLow := encodeInstr(opMOVE, 1, szL, 1, 0, 0, 0xDEADBEEF)
+	wantHigh := encodeInstr(opMOVT, 1, szQ, 1, 0, 0, 0)
+	assertBytes(t, bin, 0, wantLow, "li low half")
+	assertBytes(t, bin, 8, wantHigh, "li high half")
 }
 
 func TestIE64Asm_Li_64bit(t *testing.T) {
@@ -1393,6 +1395,167 @@ func TestIE64Asm_Li_64bit(t *testing.T) {
 	wantHigh := encodeInstr(opMOVT, 1, szQ, 1, 0, 0, 0xCAFEBABE)
 	assertBytes(t, bin, 0, wantLow, "li low half")
 	assertBytes(t, bin, 8, wantHigh, "li high half")
+}
+
+func TestIE64Asm_LiForwardRefStableAndLoHi(t *testing.T) {
+	src := `
+org $1000
+li r1, #FORWARD
+LBL:
+dc.l 0
+FORWARD equ $1_0000_0000
+`
+	asm := NewIE64Assembler()
+	bin, err := asm.Assemble(src)
+	if err != nil {
+		t.Fatalf("assemble failed: %v", err)
+	}
+	assertLen(t, bin, 20, "forward li")
+	if got := asm.labels["LBL"]; got != 0x1010 {
+		t.Fatalf("LBL = $%X, want $1010", got)
+	}
+	wantLow := encodeInstr(opMOVE, 1, szL, 1, 0, 0, 0)
+	wantHigh := encodeInstr(opMOVT, 1, szQ, 1, 0, 0, 1)
+	assertBytes(t, bin, 0, wantLow, "li forward low")
+	assertBytes(t, bin, 8, wantHigh, "li forward high")
+}
+
+func TestIE64Asm_ParserRobustnessAndNewData(t *testing.T) {
+	src := `
+if (1==1) && !(3<2)
+dc.b ';', ',', "\x41\u0042"
+else
+dc.b 0
+endif
+dc.bz "Z"
+dc.s 1.5
+dc.d 2.5
+`
+	bin := assembleString(t, src)
+	wantPrefix := []byte{';', ',', 'A', 'B', 'Z', 0}
+	if !bytes.Equal(bin[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("data prefix = % X, want % X", bin[:len(wantPrefix)], wantPrefix)
+	}
+	if got := binary.LittleEndian.Uint32(bin[6:10]); got != math.Float32bits(1.5) {
+		t.Fatalf("dc.s bits = %08X", got)
+	}
+	if got := binary.LittleEndian.Uint64(bin[10:18]); got != math.Float64bits(2.5) {
+		t.Fatalf("dc.d bits = %016X", got)
+	}
+}
+
+func TestIE64Asm_DCBEscapedStringSizingMatchesEmission(t *testing.T) {
+	asm := NewIE64Assembler()
+	bin, err := asm.Assemble(`
+org $1000
+dc.b "\x41\u0042"
+target:
+bra target
+`)
+	if err != nil {
+		t.Fatalf("assemble failed: %v", err)
+	}
+	if got := asm.labels["target"]; got != 0x1002 {
+		t.Fatalf("target = $%X, want $1002", got)
+	}
+	if len(bin) != 10 {
+		t.Fatalf("len = %d, want 10", len(bin))
+	}
+	if !bytes.Equal(bin[:2], []byte{'A', 'B'}) {
+		t.Fatalf("dc.b bytes = % X, want 41 42", bin[:2])
+	}
+	wantBra := encodeInstr(opBRA, 0, szQ, 0, 0, 0, 0)
+	assertBytes(t, bin, 2, wantBra, "bra to target should use corrected label address")
+}
+
+func TestIE64Asm_RangeChecksAndDuplicateNamespaces(t *testing.T) {
+	for name, src := range map[string]string{
+		"move.l":          "move.l r1, #$1_0000_0000",
+		"move.q":          "move.q r1, #$1_0000_0000",
+		"move.q high-bit": "move.q r1, #$8000_0000_0000_0000",
+		"dc.b":            "dc.b 256",
+		"dc.w":            "dc.w 65536",
+		"dc.l":            "dc.l $1_0000_0000",
+		"equset":          "A set 1\nA equ 2",
+		"reserved":        "macro: nop",
+	} {
+		t.Run(name, func(t *testing.T) {
+			asm := NewIE64Assembler()
+			if _, err := asm.Assemble(src); err == nil {
+				t.Fatalf("expected error for %s", name)
+			}
+		})
+	}
+}
+
+func TestIE64Asm_SizeDirectiveForwardRefsStabilize(t *testing.T) {
+	asm := NewIE64Assembler()
+	bin, err := asm.Assemble(`
+org $1000
+ds.b COUNT
+after_ds:
+dc.b 1
+dc.b 2
+align ALIGNMENT
+after_align:
+dc.b 3
+COUNT equ 4
+ALIGNMENT equ 8
+`)
+	if err != nil {
+		t.Fatalf("assemble failed: %v", err)
+	}
+	if got := asm.labels["after_ds"]; got != 0x1004 {
+		t.Fatalf("after_ds = $%X, want $1004", got)
+	}
+	if got := asm.labels["after_align"]; got != 0x1008 {
+		t.Fatalf("after_align = $%X, want $1008", got)
+	}
+	if len(bin) != 9 {
+		t.Fatalf("len = %d, want 9", len(bin))
+	}
+}
+
+func TestIE64Asm_IncbinChangedWarnsOnSecondPass1ButUsesCache(t *testing.T) {
+	dir := t.TempDir()
+	payload := filepath.Join(dir, "payload.bin")
+	if err := os.WriteFile(payload, []byte{1, 2, 3}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	asm := NewIE64Assembler()
+	asm.basePath = dir
+	asm.pass = 1
+	size, err := asm.calcIncbinSize(`incbin "payload.bin"`)
+	if err != nil || size != 3 {
+		t.Fatalf("first incbin size = %d, err %v", size, err)
+	}
+	if err := os.WriteFile(payload, []byte{9, 9, 9}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	size, err = asm.calcIncbinSize(`incbin "payload.bin"`)
+	if err != nil || size != 3 {
+		t.Fatalf("second incbin size = %d, err %v", size, err)
+	}
+	if len(asm.warnings) != 1 || !strings.Contains(asm.warnings[0], "incbin-changed") {
+		t.Fatalf("expected incbin-changed warning, got %v", asm.warnings)
+	}
+	if !bytes.Equal(asm.incbinCache[filepath.Join(dir, "payload.bin")], []byte{1, 2, 3}) {
+		t.Fatalf("incbin cache served fresh bytes")
+	}
+}
+
+func TestIE64Asm_MacroParamsLongestAndSkipStrings(t *testing.T) {
+	src := `
+ten macro
+dc.b \10
+dc.b "\1"
+endm
+ten 1,2,3,4,5,6,7,8,9,10
+`
+	bin := assembleString(t, src)
+	if !bytes.Equal(bin, []byte{10, '1'}) {
+		t.Fatalf("macro expansion bytes = % X", bin)
+	}
 }
 
 func TestIE64Asm_Beqz(t *testing.T) {

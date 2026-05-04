@@ -1,4 +1,4 @@
-Successfully assembled to sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
+Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
 
 --- Listing ---
          = 0000000000000001  IOS_VERSION_MAJOR  equ 1
@@ -684,6 +684,19 @@ Successfully assembled to sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 0000000000000060  ST_ULA_FLASH      equ 0x60
          = 0000000000000064  ST_CONT_LINE_PTR  equ 0x64
          = 0000000000000068  ST_CONT_TEXT_PTR  equ 0x68
+         = 000000000000006C  ST_ERROR_LINE     equ 0x6C
+         = 0000000000000070  ST_TERM_COL       equ 0x70
+         = 0000000000000001  ERR_SYNTAX        equ 1
+         = 0000000000000002  ERR_DIV0          equ 2
+         = 0000000000000003  ERR_UNDEF_LINE    equ 3
+         = 0000000000000004  ERR_NEXT_NO_FOR   equ 4
+         = 0000000000000005  ERR_RET_NO_GOSUB  equ 5
+         = 0000000000000006  ERR_OOM           equ 6
+         = 0000000000000007  ERR_ILLEGAL_QTY   equ 7
+         = 0000000000000008  ERR_OVERFLOW      equ 8
+         = 0000000000000009  ERR_TYPE_MISMATCH equ 9
+         = 000000000000000A  ERR_FC            equ 10
+         = 000000000000000B  ERR_REDIM         equ 11
          = 0000000000023000  BASIC_PROG_START  equ 0x023000
          = 000000000008BFFF  BASIC_PROG_END    equ 0x08BFFF
          = 000000000008C000  BASIC_STR_TEMP    equ 0x08C000
@@ -911,6 +924,11 @@ Successfully assembled to sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 00000000000F0BE0  WAV_PLAY_CTRL     equ 0xF0BE0
          = 00000000000F0BE4  WAV_PLAY_STATUS   equ 0xF0BE4
          = 00000000000F0BE8  WAV_POSITION      equ 0xF0BE8
+         = 00000000000F0BEC  WAV_PLAY_PTR_HI   equ 0xF0BEC
+         = 00000000000F0BF0  WAV_CHANNEL_BASE  equ 0xF0BF0
+         = 00000000000F0BF1  WAV_VOLUME_L      equ 0xF0BF1
+         = 00000000000F0BF2  WAV_VOLUME_R      equ 0xF0BF2
+         = 00000000000F0BF3  WAV_FLAGS         equ 0xF0BF3
          = 00000000000F1000  VGA_BASE          equ 0xF1000
          = 00000000000F1000  VGA_MODE          equ 0xF1000
          = 00000000000F1004  VGA_STATUS        equ 0xF1004
@@ -943,6 +961,8 @@ Successfully assembled to sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 0000000000000001  VGA_CTRL_ENABLE   equ 0x01
          = 00000000000F0800  AUDIO_CTRL        equ 0xF0800
          = 00000000000F0804  ENV_SHAPE         equ 0xF0804
+         = 00000000000F0860  ENV_SHAPE_CH_BASE equ 0xF0860
+         = 0000000000000004  ENV_SHAPE_STRIDE  equ 0x04
          = 00000000000F0820  FILTER_CUTOFF     equ 0xF0820
          = 00000000000F0824  FILTER_RESONANCE  equ 0xF0824
          = 00000000000F0828  FILTER_TYPE       equ 0xF0828
@@ -1022,6 +1042,12 @@ Successfully assembled to sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 00000000000F0AC0  FLEX_CH1_BASE     equ 0xF0AC0
          = 00000000000F0B00  FLEX_CH2_BASE     equ 0xF0B00
          = 00000000000F0B40  FLEX_CH3_BASE     equ 0xF0B40
+         = 00000000000F0C40  SID2_CH0_BASE     equ 0xF0C40
+         = 00000000000F0C80  SID2_CH1_BASE     equ 0xF0C80
+         = 00000000000F0CC0  SID2_CH2_BASE     equ 0xF0CC0
+         = 00000000000F0D40  SID3_CH0_BASE     equ 0xF0D40
+         = 00000000000F0D80  SID3_CH1_BASE     equ 0xF0D80
+         = 00000000000F0DC0  SID3_CH2_BASE     equ 0xF0DC0
          = 0000000000000000  FLEX_OFF_FREQ       equ 0x00
          = 0000000000000004  FLEX_OFF_VOL        equ 0x04
          = 0000000000000008  FLEX_OFF_CTRL       equ 0x08
@@ -1034,12 +1060,18 @@ Successfully assembled to sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 0000000000000024  FLEX_OFF_WAVE_TYPE  equ 0x24
          = 0000000000000028  FLEX_OFF_PWM_CTRL   equ 0x28
          = 000000000000002C  FLEX_OFF_NOISEMODE  equ 0x2C
+         = 0000000000000030  FLEX_OFF_PHASE      equ 0x30
+         = 0000000000000034  FLEX_OFF_RINGMOD    equ 0x34
+         = 0000000000000038  FLEX_OFF_SYNC       equ 0x38
+         = 000000000000003C  FLEX_OFF_DAC        equ 0x3C
          = 0000000000000000  WAVE_SQUARE       equ 0
          = 0000000000000001  WAVE_TRIANGLE     equ 1
          = 0000000000000002  WAVE_SINE         equ 2
          = 0000000000000003  WAVE_NOISE        equ 3
          = 0000000000000004  WAVE_SAWTOOTH     equ 4
          = 0000000000000002  CTRL_GATE         equ 0x02
+         = 0000000000000001  AUDIO_ENABLE      equ 0x01
+         = 0000000000000002  AUDIO_FREEZE      equ 0x02
          = 0000000000000080  PWM_ENABLE        equ 0x80
          = 000000000000007F  PWM_RATE_MASK     equ 0x7F
          = 0000000000000080  SWEEP_ENABLE      equ 0x80
@@ -1092,8 +1124,15 @@ Successfully assembled to sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 00000000000F2000  ULA_BORDER        equ 0xF2000
          = 00000000000F2004  ULA_CTRL          equ 0xF2004
          = 00000000000F2008  ULA_STATUS        equ 0xF2008
+         = 00000000000F200C  ULA_ADDR_LO       equ 0xF200C
+         = 00000000000F2010  ULA_ADDR_HI       equ 0xF2010
+         = 00000000000F2014  ULA_DATA          equ 0xF2014
          = 0000000000000001  ULA_CTRL_ENABLE   equ 0x01
-         = 0000000000004000  ULA_VRAM          equ 0x4000
+         = 0000000000000002  ULA_CTRL_VBLANK_IRQ_EN equ 0x02
+         = 0000000000000004  ULA_CTRL_AUTO_INC equ 0x04
+         = 00000000000FA000  ULA_VRAM_AP       equ 0xFA000
+         = 00000000000FBAFF  ULA_VRAM_AP_END   equ 0xFBAFF
+         = 00000000000FA000  ULA_VRAM          equ 0xFA000
          = 0000000000001800  ULA_BITMAP_SIZE   equ 6144
          = 0000000000001800  ULA_ATTR_OFFSET   equ 0x1800
          = 0000000000000300  ULA_ATTR_SIZE     equ 768
@@ -1200,6 +1239,23 @@ Successfully assembled to sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 00000000000F21AC  GTIA_GRAFP2       equ 0xF21AC
          = 00000000000F21B0  GTIA_GRAFP3       equ 0xF21B0
          = 00000000000F21B4  GTIA_GRAFM        equ 0xF21B4
+         = 00000000000F21B8  GTIA_M0PF         equ 0xF21B8
+         = 00000000000F21BC  GTIA_M1PF         equ 0xF21BC
+         = 00000000000F21C0  GTIA_M2PF         equ 0xF21C0
+         = 00000000000F21C4  GTIA_M3PF         equ 0xF21C4
+         = 00000000000F21C8  GTIA_P0PF         equ 0xF21C8
+         = 00000000000F21CC  GTIA_P1PF         equ 0xF21CC
+         = 00000000000F21D0  GTIA_P2PF         equ 0xF21D0
+         = 00000000000F21D4  GTIA_P3PF         equ 0xF21D4
+         = 00000000000F21D8  GTIA_M0PL         equ 0xF21D8
+         = 00000000000F21DC  GTIA_M1PL         equ 0xF21DC
+         = 00000000000F21E0  GTIA_M2PL         equ 0xF21E0
+         = 00000000000F21E4  GTIA_M3PL         equ 0xF21E4
+         = 00000000000F21E8  GTIA_P0PL         equ 0xF21E8
+         = 00000000000F21EC  GTIA_P1PL         equ 0xF21EC
+         = 00000000000F21F0  GTIA_P2PL         equ 0xF21F0
+         = 00000000000F21F4  GTIA_P3PL         equ 0xF21F4
+         = 00000000000F21F8  GTIA_HITCLR       equ 0xF21F8
          = 0000000000000001  GTIA_PRIOR_P03    equ 0x01
          = 0000000000000002  GTIA_PRIOR_P01    equ 0x02
          = 0000000000000004  GTIA_PRIOR_P23    equ 0x04
@@ -1210,7 +1266,7 @@ Successfully assembled to sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 0000000000000001  GTIA_GRACTL_MISSLE equ 0x01
          = 0000000000000002  GTIA_GRACTL_PLAYER equ 0x02
          = 0000000000000004  GTIA_GRACTL_LATCH  equ 0x04
-         = 00000000000F21B7  GTIA_END          equ 0xF21B7
+         = 00000000000F21FB  GTIA_END          equ 0xF21FB
          = 000000008003C850  COP_SETBASE_GTIA  equ 0x8003C850
          = 00000000000F8000  VOODOO_BASE           equ 0xF8000
          = 00000000000F87FF  VOODOO_END            equ 0xF87FF

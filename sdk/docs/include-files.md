@@ -16,6 +16,14 @@ Hardware definition include files for Intuition Engine programs. Each file provi
 | `ie80.inc` | Z80 | vasmz80_std | Constants with Z80 macros |
 | `ie86.inc` | x86 | NASM | Constants, port I/O, VGA registers |
 
+## Assembler Notes
+
+`ie32asm` include recursion is path-stack based, so the same include can be used again after a nested include returns. `.ascii` and `.asciz` process `\n`, `\t`, `\r`, `\\`, `\"`, `\0`, and `\xHH` escapes.
+
+`ie64asm` source strings and character literals preserve semicolons inside quotes. String escapes additionally accept `\xHH` and `\uHHHH`; `\u` is emitted as UTF-8 bytes. Conditional assembly supports `if` / `elseif` / `else` / `endif`.
+
+Both built-in assemblers cache `incbin` payload bytes between layout and emission passes so changing the binary file during one assembly cannot silently corrupt output. `ie64asm` also reruns pass 1 when size-affecting directives contain forward references.
+
 ## Common Definitions
 
 All include files provide these categories of definitions:

@@ -21,6 +21,7 @@ License: GPLv3 or later
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -145,14 +146,388 @@ func writeLittleEndian(val uint32) []byte {
 	}
 }
 
+func stripIE32Comment(line string) string {
+	inString := false
+	inChar := false
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && (inString || inChar) {
+			escaped = true
+			continue
+		}
+		switch c {
+		case '"':
+			if !inChar {
+				inString = !inString
+			}
+		case '\'':
+			if !inString {
+				inChar = !inChar
+			}
+		case ';':
+			if !inString && !inChar {
+				return line[:i]
+			}
+		}
+	}
+	return line
+}
+
+func splitIE32Operands(s string) []string {
+	var out []string
+	start := 0
+	inString := false
+	inChar := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && (inString || inChar) {
+			escaped = true
+			continue
+		}
+		switch c {
+		case '"':
+			if !inChar {
+				inString = !inString
+			}
+		case '\'':
+			if !inString {
+				inChar = !inChar
+			}
+		case ',':
+			if !inString && !inChar {
+				out = append(out, strings.TrimSpace(s[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	out = append(out, strings.TrimSpace(s[start:]))
+	return out
+}
+
+func unescapeIEString(s string) ([]byte, error) {
+	var out []byte
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			out = append(out, s[i])
+			continue
+		}
+		if i+1 >= len(s) {
+			return nil, fmt.Errorf("trailing escape")
+		}
+		i++
+		switch s[i] {
+		case 'n':
+			out = append(out, '\n')
+		case 't':
+			out = append(out, '\t')
+		case 'r':
+			out = append(out, '\r')
+		case '\\':
+			out = append(out, '\\')
+		case '"':
+			out = append(out, '"')
+		case '0':
+			out = append(out, 0)
+		case 'x':
+			if i+2 >= len(s) {
+				return nil, fmt.Errorf("short \\x escape")
+			}
+			v, err := strconv.ParseUint(s[i+1:i+3], 16, 8)
+			if err != nil {
+				return nil, fmt.Errorf("invalid \\x escape")
+			}
+			out = append(out, byte(v))
+			i += 2
+		default:
+			out = append(out, s[i])
+		}
+	}
+	return out, nil
+}
+
+func quotedIE32String(line string) (string, error) {
+	start := strings.IndexByte(line, '"')
+	if start < 0 {
+		return "", fmt.Errorf("missing opening quote")
+	}
+	escaped := false
+	for i := start + 1; i < len(line); i++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if line[i] == '\\' {
+			escaped = true
+			continue
+		}
+		if line[i] == '"' {
+			return line[start+1 : i], nil
+		}
+	}
+	return "", fmt.Errorf("missing closing quote")
+}
+
 type Assembler struct {
 	labels       map[string]uint32
 	equates      map[string]uint32
 	baseAddr     uint32
 	codeOffset   uint32
+	maxAddr      uint32
 	basePath     string
 	includePaths []string
 	verbose      bool
+	pass         int
+	warnings     WarningPolicy
+	incbinCache  map[string][]byte
+	written      map[uint32]int
+}
+
+type WarningPolicy struct {
+	Werror     bool
+	suppressed map[string]bool
+	warnings   []string
+}
+
+func (w *WarningPolicy) Suppress(category string) {
+	if w.suppressed == nil {
+		w.suppressed = make(map[string]bool)
+	}
+	w.suppressed[category] = true
+}
+
+func (w *WarningPolicy) Add(category, format string, args ...interface{}) error {
+	if w.suppressed != nil && w.suppressed[category] {
+		return nil
+	}
+	msg := fmt.Sprintf("%s: %s", category, fmt.Sprintf(format, args...))
+	if w.Werror {
+		return fmt.Errorf("warning treated as error: %s", msg)
+	}
+	w.warnings = append(w.warnings, msg)
+	return nil
+}
+
+func (w *WarningPolicy) Warnings() []string { return w.warnings }
+
+type ie32ExprParser struct {
+	asm   *Assembler
+	input string
+	pos   int
+}
+
+func (a *Assembler) evalExpr(s string) (int64, error) {
+	p := &ie32ExprParser{asm: a, input: strings.TrimSpace(s)}
+	v, err := p.parseOr()
+	if err != nil {
+		return 0, err
+	}
+	p.skip()
+	if p.pos != len(p.input) {
+		return 0, fmt.Errorf("unexpected trailing expression text: %s", p.input[p.pos:])
+	}
+	return v, nil
+}
+
+func (p *ie32ExprParser) skip() {
+	for p.pos < len(p.input) && (p.input[p.pos] == ' ' || p.input[p.pos] == '\t') {
+		p.pos++
+	}
+}
+
+func (p *ie32ExprParser) peek() byte {
+	p.skip()
+	if p.pos >= len(p.input) {
+		return 0
+	}
+	return p.input[p.pos]
+}
+
+func (p *ie32ExprParser) parseOr() (int64, error) {
+	left, err := p.parseXor()
+	if err != nil {
+		return 0, err
+	}
+	for p.peek() == '|' {
+		p.pos++
+		right, err := p.parseXor()
+		if err != nil {
+			return 0, err
+		}
+		left |= right
+	}
+	return left, nil
+}
+
+func (p *ie32ExprParser) parseXor() (int64, error) {
+	left, err := p.parseAnd()
+	if err != nil {
+		return 0, err
+	}
+	for p.peek() == '^' {
+		p.pos++
+		right, err := p.parseAnd()
+		if err != nil {
+			return 0, err
+		}
+		left ^= right
+	}
+	return left, nil
+}
+
+func (p *ie32ExprParser) parseAnd() (int64, error) {
+	left, err := p.parseAdd()
+	if err != nil {
+		return 0, err
+	}
+	for p.peek() == '&' {
+		p.pos++
+		right, err := p.parseAdd()
+		if err != nil {
+			return 0, err
+		}
+		left &= right
+	}
+	return left, nil
+}
+
+func (p *ie32ExprParser) parseAdd() (int64, error) {
+	left, err := p.parseMul()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		switch p.peek() {
+		case '+':
+			p.pos++
+			right, err := p.parseMul()
+			if err != nil {
+				return 0, err
+			}
+			left += right
+		case '-':
+			p.pos++
+			right, err := p.parseMul()
+			if err != nil {
+				return 0, err
+			}
+			left -= right
+		default:
+			return left, nil
+		}
+	}
+}
+
+func (p *ie32ExprParser) parseMul() (int64, error) {
+	left, err := p.parseUnary()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		switch p.peek() {
+		case '*':
+			p.pos++
+			right, err := p.parseUnary()
+			if err != nil {
+				return 0, err
+			}
+			left *= right
+		case '/':
+			p.pos++
+			right, err := p.parseUnary()
+			if err != nil {
+				return 0, err
+			}
+			if right == 0 {
+				return 0, fmt.Errorf("division by zero")
+			}
+			left /= right
+		default:
+			return left, nil
+		}
+	}
+}
+
+func (p *ie32ExprParser) parseUnary() (int64, error) {
+	switch p.peek() {
+	case '-':
+		p.pos++
+		v, err := p.parseUnary()
+		return -v, err
+	case '+':
+		p.pos++
+		return p.parseUnary()
+	case '~':
+		p.pos++
+		v, err := p.parseUnary()
+		return ^v, err
+	}
+	return p.parseAtom()
+}
+
+func (p *ie32ExprParser) parseAtom() (int64, error) {
+	p.skip()
+	if p.pos >= len(p.input) {
+		return 0, fmt.Errorf("unexpected end of expression")
+	}
+	if p.input[p.pos] == '(' {
+		p.pos++
+		v, err := p.parseOr()
+		if err != nil {
+			return 0, err
+		}
+		if p.peek() != ')' {
+			return 0, fmt.Errorf("missing closing parenthesis")
+		}
+		p.pos++
+		return v, nil
+	}
+	if p.input[p.pos] == '$' {
+		p.pos++
+		start := p.pos
+		for p.pos < len(p.input) && ((p.input[p.pos] >= '0' && p.input[p.pos] <= '9') || (p.input[p.pos] >= 'a' && p.input[p.pos] <= 'f') || (p.input[p.pos] >= 'A' && p.input[p.pos] <= 'F') || p.input[p.pos] == '_') {
+			p.pos++
+		}
+		v, err := strconv.ParseUint(strings.ReplaceAll(p.input[start:p.pos], "_", ""), 16, 64)
+		return int64(v), err
+	}
+	if p.input[p.pos] >= '0' && p.input[p.pos] <= '9' {
+		start := p.pos
+		for p.pos < len(p.input) && ((p.input[p.pos] >= '0' && p.input[p.pos] <= '9') || (p.input[p.pos] >= 'a' && p.input[p.pos] <= 'f') || (p.input[p.pos] >= 'A' && p.input[p.pos] <= 'F') || p.input[p.pos] == 'x' || p.input[p.pos] == 'X' || p.input[p.pos] == '_') {
+			p.pos++
+		}
+		raw := strings.ReplaceAll(p.input[start:p.pos], "_", "")
+		if strings.HasPrefix(raw, "0x") || strings.HasPrefix(raw, "0X") {
+			v, err := strconv.ParseUint(raw[2:], 16, 64)
+			return int64(v), err
+		}
+		v, err := strconv.ParseInt(raw, 10, 64)
+		return v, err
+	}
+	if (p.input[p.pos] >= 'A' && p.input[p.pos] <= 'Z') || (p.input[p.pos] >= 'a' && p.input[p.pos] <= 'z') || p.input[p.pos] == '_' || p.input[p.pos] == '.' {
+		start := p.pos
+		for p.pos < len(p.input) && ((p.input[p.pos] >= 'A' && p.input[p.pos] <= 'Z') || (p.input[p.pos] >= 'a' && p.input[p.pos] <= 'z') || (p.input[p.pos] >= '0' && p.input[p.pos] <= '9') || p.input[p.pos] == '_' || p.input[p.pos] == '.') {
+			p.pos++
+		}
+		name := p.input[start:p.pos]
+		if v, ok := p.asm.equates[name]; ok {
+			return int64(v), nil
+		}
+		if v, ok := p.asm.labels[name]; ok {
+			return int64(v), nil
+		}
+		return 0, fmt.Errorf("undefined symbol: %s", name)
+	}
+	return 0, fmt.Errorf("unexpected character %q", p.input[p.pos])
 }
 
 // resolveFile searches for filename relative to basePath first, then each
@@ -179,10 +554,13 @@ func resolveFile(filename, basePath string, includePaths []string) (string, erro
 
 func NewAssembler() *Assembler {
 	return &Assembler{
-		labels:     make(map[string]uint32),
-		equates:    make(map[string]uint32),
-		baseAddr:   PROG_START,
-		codeOffset: 0,
+		labels:      make(map[string]uint32),
+		equates:     make(map[string]uint32),
+		baseAddr:    PROG_START,
+		codeOffset:  0,
+		maxAddr:     PROG_START,
+		incbinCache: make(map[string][]byte),
+		written:     make(map[uint32]int),
 	}
 }
 
@@ -230,6 +608,7 @@ func preprocessIncludes(code string, basePath string, includePaths []string, inc
 
 			// Recursively process includes in the included file
 			processed, err := preprocessIncludes(string(includeContent), filepath.Dir(includePath), includePaths, included)
+			delete(included, absPath)
 			if err != nil {
 				return "", err
 			}
@@ -258,44 +637,38 @@ func (a *Assembler) handleDirective(line string, lineNum int, program []byte) er
 	case ".word":
 		// Handle comma-separated list of word values (supports negative numbers)
 		wordList := strings.Join(parts[1:], " ")
-		wordValues := strings.Split(wordList, ",")
+		wordValues := splitIE32Operands(wordList)
 		for _, wv := range wordValues {
 			wv = strings.TrimSpace(wv)
 			if wv == "" {
 				continue
 			}
-			// Try to parse as signed number first (supports negative values)
-			value, err := strconv.ParseInt(wv, 0, 32)
+			value, err := a.evalExpr(wv)
 			if err != nil {
-				// Try unsigned for large hex values
-				uvalue, uerr := strconv.ParseUint(wv, 0, 32)
-				if uerr != nil {
-					// Not a number, check if it's an equate
-					if val, ok := a.equates[wv]; ok {
-						value = int64(val)
-					} else if labelAddr, ok := a.labels[wv]; ok {
-						// Check if it's a label
-						value = int64(labelAddr)
-					} else {
-						return fmt.Errorf("invalid word value or unknown symbol: %s", wv)
-					}
-				} else {
-					value = int64(uvalue)
-				}
+				return fmt.Errorf("invalid word value: %s: %v", wv, err)
+			}
+			if value < -2147483648 || value > 0xFFFFFFFF {
+				return fmt.Errorf(".word value out of 32-bit range: %s", wv)
 			}
 			if program != nil {
+				if err := a.markRange(a.baseAddr+a.codeOffset, 4, lineNum); err != nil {
+					return err
+				}
 				copy(program[a.codeOffset:], writeLittleEndian(uint32(value)))
-				a.codeOffset += 4
 			}
+			a.codeOffset += 4
 		}
 
 	case ".equ":
 		if len(parts) < 3 {
 			return fmt.Errorf("invalid EQU format")
 		}
-		value, err := strconv.ParseUint(parts[2], 0, 32)
+		value, err := a.evalExpr(strings.TrimSpace(strings.Join(parts[2:], " ")))
 		if err != nil {
-			return fmt.Errorf("invalid EQU value: %s", parts[2])
+			return fmt.Errorf("invalid EQU value: %s: %v", parts[2], err)
+		}
+		if value < -2147483648 || value > 0xFFFFFFFF {
+			return fmt.Errorf("EQU value out of 32-bit range: %s", parts[2])
 		}
 		a.equates[parts[1]] = uint32(value)
 		if a.verbose {
@@ -305,102 +678,185 @@ func (a *Assembler) handleDirective(line string, lineNum int, program []byte) er
 	case ".byte":
 		// Handle comma-separated list of byte values
 		byteList := strings.Join(parts[1:], " ")
-		byteValues := strings.Split(byteList, ",")
+		byteValues := splitIE32Operands(byteList)
 		for _, bv := range byteValues {
 			bv = strings.TrimSpace(bv)
 			if bv == "" {
 				continue
 			}
-			value, err := strconv.ParseUint(bv, 0, 8)
+			value, err := a.evalExpr(bv)
 			if err != nil {
 				return fmt.Errorf("invalid byte value: %s", bv)
 			}
-			if program != nil {
-				program[a.codeOffset] = byte(value)
-				a.codeOffset++
+			if value < -128 || value > 0xFF {
+				return fmt.Errorf(".byte value out of 8-bit range: %s", bv)
 			}
+			if program != nil {
+				if err := a.markRange(a.baseAddr+a.codeOffset, 1, lineNum); err != nil {
+					return err
+				}
+				program[a.codeOffset] = byte(value)
+			}
+			a.codeOffset++
 		}
 
 	case ".incbin":
-		filename := strings.Trim(parts[1], "\"")
+		ops := splitIE32Operands(strings.TrimSpace(line[len(parts[0]):]))
+		if len(ops) < 1 || ops[0] == "" {
+			return fmt.Errorf("incbin requires a filename")
+		}
+		filename := strings.Trim(ops[0], "\"'")
 		path, err := resolveFile(filename, a.basePath, a.includePaths)
 		if err != nil {
 			return fmt.Errorf("incbin: %v", err)
 		}
-		payload, err := os.ReadFile(path)
+		payload, err := a.readIncbin(path)
 		if err != nil {
-			return fmt.Errorf("incbin read failed: %s", path)
+			return err
 		}
 		offset := uint64(0)
 		length := uint64(len(payload))
-		if len(parts) >= 3 {
-			offset, err = strconv.ParseUint(parts[2], 0, 32)
+		if len(ops) >= 2 {
+			offset, err = a.evalExprUint32(ops[1])
 			if err != nil {
-				return fmt.Errorf("invalid incbin offset: %s", parts[2])
+				return fmt.Errorf("invalid incbin offset: %s", ops[1])
 			}
 			if offset > uint64(len(payload)) {
 				return fmt.Errorf("incbin offset out of range: %d", offset)
 			}
 			length = uint64(len(payload)) - offset
 		}
-		if len(parts) >= 4 {
-			length, err = strconv.ParseUint(parts[3], 0, 32)
+		if len(ops) >= 3 {
+			length, err = a.evalExprUint32(ops[2])
 			if err != nil {
-				return fmt.Errorf("invalid incbin length: %s", parts[3])
+				return fmt.Errorf("invalid incbin length: %s", ops[2])
 			}
 		}
 		if offset+length > uint64(len(payload)) {
 			return fmt.Errorf("incbin range out of bounds: %d..%d", offset, offset+length)
 		}
 		if program != nil {
+			if err := a.markRange(a.baseAddr+a.codeOffset, uint32(length), lineNum); err != nil {
+				return err
+			}
 			copy(program[a.codeOffset:], payload[offset:offset+length])
-			a.codeOffset += uint32(length)
 		}
+		a.codeOffset += uint32(length)
 
 	case ".space":
-		size, err := strconv.ParseUint(parts[1], 0, 32)
+		sizeExpr := strings.TrimSpace(strings.Join(parts[1:], " "))
+		size, err := a.evalExprUint32(sizeExpr)
 		if err != nil {
-			return fmt.Errorf("invalid space size: %s", parts[1])
+			return fmt.Errorf("invalid space size: %s", sizeExpr)
 		}
 		if program != nil {
-			// Zero-fill the space (Go slices are already zero-initialized, but be explicit)
-			for i := range size {
+			if err := a.markRange(a.baseAddr+a.codeOffset, uint32(size), lineNum); err != nil {
+				return err
+			}
+			for i := uint64(0); i < size; i++ {
 				program[a.codeOffset+uint32(i)] = 0
 			}
-			a.codeOffset += uint32(size)
 		}
+		a.codeOffset += uint32(size)
 
-	case ".ascii":
+	case ".ascii", ".asciz":
 		// Find the quoted string in the line
-		start := strings.Index(line, "\"")
-		if start == -1 {
-			return fmt.Errorf("invalid ascii format: missing opening quote")
+		str, err := quotedIE32String(line)
+		if err != nil {
+			return fmt.Errorf("invalid ascii format: %v", err)
 		}
-		end := strings.LastIndex(line, "\"")
-		if end == start {
-			return fmt.Errorf("invalid ascii format: missing closing quote")
+		data, err := unescapeIEString(str)
+		if err != nil {
+			return fmt.Errorf("invalid ascii escape: %v", err)
 		}
-		str := line[start+1 : end]
+		if parts[0] == ".asciz" {
+			data = append(data, 0)
+		}
 		if program != nil {
-			copy(program[a.codeOffset:], []byte(str))
-			a.codeOffset += uint32(len(str))
+			if err := a.markRange(a.baseAddr+a.codeOffset, uint32(len(data)), lineNum); err != nil {
+				return err
+			}
+			copy(program[a.codeOffset:], data)
 		}
+		a.codeOffset += uint32(len(data))
 
 	case ".org":
 		if len(parts) < 2 {
 			return fmt.Errorf("invalid org format")
 		}
-		addr, err := strconv.ParseUint(parts[1], 0, 32)
+		addr, err := a.evalExprUint32(parts[1])
 		if err != nil {
 			return fmt.Errorf("invalid org address: %s", parts[1])
 		}
-		a.codeOffset = uint32(addr) - a.baseAddr
+		if addr < uint64(a.baseAddr) {
+			return fmt.Errorf("org address 0x%x before base address 0x%x", addr, a.baseAddr)
+		}
+		newOffset := uint32(addr) - a.baseAddr
+		if newOffset < a.codeOffset {
+			if err := a.warnings.Add("org-backward", ".org moved backward to 0x%x", addr); err != nil {
+				return err
+			}
+		}
+		a.codeOffset = newOffset
 		if a.verbose {
 			fmt.Printf("Setting assembly address to 0x%x\n", addr)
 		}
 
 	default:
 		return fmt.Errorf("unknown directive: %s", parts[0])
+	}
+	return nil
+}
+
+func (a *Assembler) evalExprUint32(expr string) (uint64, error) {
+	v, err := a.evalExpr(strings.TrimSpace(expr))
+	if err != nil {
+		return 0, err
+	}
+	if v < 0 || v > 0xFFFFFFFF {
+		return 0, fmt.Errorf("value out of uint32 range: %s", expr)
+	}
+	return uint64(v), nil
+}
+
+func (a *Assembler) evalExprOperand32(expr string) (uint32, error) {
+	v, err := a.evalExpr(strings.TrimSpace(expr))
+	if err != nil {
+		return 0, err
+	}
+	if v < -2147483648 || v > 0xFFFFFFFF {
+		return 0, fmt.Errorf("value out of 32-bit range: %s", expr)
+	}
+	return uint32(v), nil
+}
+
+func (a *Assembler) readIncbin(path string) ([]byte, error) {
+	abs, _ := filepath.Abs(path)
+	if data, ok := a.incbinCache[abs]; ok {
+		current, err := os.ReadFile(path)
+		if a.pass == 1 && err == nil && !bytes.Equal(current, data) {
+			if warnErr := a.warnings.Add("incbin-changed", "incbin file changed after first read: %s", path); warnErr != nil {
+				return nil, warnErr
+			}
+		}
+		return data, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("incbin read failed: %s", path)
+	}
+	cpy := append([]byte(nil), data...)
+	a.incbinCache[abs] = cpy
+	return cpy, nil
+}
+
+func (a *Assembler) markRange(addr uint32, size uint32, lineNum int) error {
+	for i := uint32(0); i < size; i++ {
+		at := addr + i
+		if prev, ok := a.written[at]; ok {
+			return fmt.Errorf("overlapping emit at $%04X (already written by line %d)", at, prev)
+		}
+		a.written[at] = lineNum
 	}
 	return nil
 }
@@ -413,23 +869,28 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 	// Register-indirect addressing [reg] or [reg+offset]
 	if strings.HasPrefix(operand, "[") && strings.HasSuffix(operand, "]") {
 		inner := strings.Trim(operand, "[]")
-		parts := strings.Split(inner, "+")
-
-		reg := strings.TrimSpace(parts[0])
+		reg := strings.TrimSpace(inner)
+		offsetExpr := ""
+		for i := 1; i < len(inner); i++ {
+			if inner[i] == '+' || inner[i] == '-' {
+				reg = strings.TrimSpace(inner[:i])
+				offsetExpr = strings.TrimSpace(inner[i:])
+				break
+			}
+		}
 		if regNum, ok := registers[reg]; ok {
-			if len(parts) == 1 {
+			if offsetExpr == "" {
 				return ADDR_REG_IND, uint32(regNum), nil
 			}
-			if len(parts) == 2 {
-				offset, err := strconv.ParseUint(strings.TrimSpace(parts[1]), 0, 32)
-				if err != nil {
-					return 0, 0, fmt.Errorf("invalid offset: %s", parts[1])
-				}
-				if offset&3 != 0 {
-					return 0, 0, fmt.Errorf("offset must be multiple of 4")
-				}
-				return ADDR_REG_IND, uint32(regNum) | uint32(offset), nil
+			offset, err := a.evalExpr(offsetExpr)
+			if err != nil {
+				return 0, 0, fmt.Errorf("invalid offset: %s", offsetExpr)
 			}
+			encoded := uint32(int32(offset))
+			if encoded&0x0F != 0 {
+				return 0, 0, fmt.Errorf("offset must be multiple of 16")
+			}
+			return ADDR_REG_IND, uint32(regNum) | encoded, nil
 		}
 		return 0, 0, fmt.Errorf("invalid register in indirect addressing: %s", reg)
 	}
@@ -441,34 +902,11 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 			fmt.Printf("  Direct memory: addr='%s'\n", addr)
 		}
 
-		// Handle equate
-		if val, ok := a.equates[addr]; ok {
-			if a.verbose {
-				fmt.Printf("    Found equate: val=0x%x\n", val)
-			}
-			return ADDR_DIRECT, val, nil
+		val, err := a.evalExprOperand32(addr)
+		if err != nil {
+			return 0, 0, fmt.Errorf("undefined label or invalid address: %s: %v", addr, err)
 		}
-
-		// Handle hex address
-		if strings.HasPrefix(addr, "0x") {
-			val, err := strconv.ParseUint(addr, 0, 32)
-			if err != nil {
-				return 0, 0, fmt.Errorf("invalid hex address: %s", addr)
-			}
-			if a.verbose {
-				fmt.Printf("    Parsed hex: val=0x%x\n", val)
-			}
-			return ADDR_DIRECT, uint32(val), nil
-		}
-
-		// Handle label
-		if labelAddr, ok := a.labels[addr]; ok {
-			if a.verbose {
-				fmt.Printf("    Found label: addr=0x%x\n", labelAddr)
-			}
-			return ADDR_DIRECT, labelAddr, nil
-		}
-		return 0, 0, fmt.Errorf("undefined label or invalid address: %s", addr)
+		return ADDR_DIRECT, val, nil
 	}
 
 	// Immediate value #n
@@ -477,28 +915,14 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 		if a.verbose {
 			fmt.Printf("  Immediate value: '%s'\n", numStr)
 		}
-		// Handle equate
-		if val, ok := a.equates[numStr]; ok {
-			if a.verbose {
-				fmt.Printf("    Found equate: val=0x%x\n", val)
-			}
-			return ADDR_IMMEDIATE, val, nil
-		}
-		// Handle label
-		if labelAddr, ok := a.labels[numStr]; ok {
-			if a.verbose {
-				fmt.Printf("    Found label: addr=0x%x\n", labelAddr)
-			}
-			return ADDR_IMMEDIATE, labelAddr, nil
-		}
-		val, err := strconv.ParseUint(numStr, 0, 32)
+		val, err := a.evalExprOperand32(numStr)
 		if err != nil {
-			return 0, 0, fmt.Errorf("invalid immediate value: %s", numStr)
+			return 0, 0, fmt.Errorf("invalid immediate value: %s: %v", numStr, err)
 		}
 		if a.verbose {
 			fmt.Printf("    Parsed value: val=0x%x\n", val)
 		}
-		return ADDR_IMMEDIATE, uint32(val), nil
+		return ADDR_IMMEDIATE, val, nil
 	}
 
 	// Register
@@ -509,32 +933,10 @@ func (a *Assembler) parseOperand(operand string, lineNum int) (byte, uint32, err
 		return ADDR_REGISTER, uint32(regNum), nil
 	}
 
-	// Equate
-	if val, ok := a.equates[operand]; ok {
-		if a.verbose {
-			fmt.Printf("  Found equate: val=0x%x\n", val)
-		}
+	if val, err := a.evalExprOperand32(operand); err == nil {
 		return ADDR_IMMEDIATE, val, nil
-	}
-
-	// Hex address
-	if strings.HasPrefix(operand, "0x") {
-		val, err := strconv.ParseUint(operand, 0, 32)
-		if err != nil {
-			return 0, 0, fmt.Errorf("invalid hex address: %s", operand)
-		}
-		if a.verbose {
-			fmt.Printf("  Parsed hex: val=0x%x\n", val)
-		}
-		return ADDR_IMMEDIATE, uint32(val), nil
-	}
-
-	// Label
-	if labelAddr, ok := a.labels[operand]; ok {
-		if a.verbose {
-			fmt.Printf("  Found label: addr=0x%x\n", labelAddr)
-		}
-		return ADDR_IMMEDIATE, labelAddr, nil
+	} else if strings.Contains(err.Error(), "out of 32-bit range") {
+		return 0, 0, err
 	}
 
 	return 0, 0, fmt.Errorf("invalid operand: %s", operand)
@@ -576,27 +978,31 @@ func (a *Assembler) calcDirectiveSize(line string) uint32 {
 		return count // 1 byte per value
 
 	case ".incbin":
-		filename := strings.Trim(parts[1], "\"")
+		ops := splitIE32Operands(strings.TrimSpace(line[len(parts[0]):]))
+		if len(ops) < 1 || ops[0] == "" {
+			return 0
+		}
+		filename := strings.Trim(ops[0], "\"'")
 		path, err := resolveFile(filename, a.basePath, a.includePaths)
 		if err != nil {
 			fmt.Printf("Warning: cannot resolve incbin file %s: %v\n", filename, err)
 			return 0
 		}
-		info, err := os.Stat(path)
+		payload, err := a.readIncbin(path)
 		if err != nil {
-			fmt.Printf("Warning: cannot stat incbin file %s: %v\n", path, err)
+			fmt.Printf("Warning: cannot read incbin file %s: %v\n", path, err)
 			return 0
 		}
-		length := uint64(info.Size())
+		length := uint64(len(payload))
 		// Handle optional offset and length parameters
-		if len(parts) >= 3 {
-			offset, err := strconv.ParseUint(parts[2], 0, 32)
+		if len(ops) >= 2 {
+			offset, err := a.evalExprUint32(ops[1])
 			if err == nil && offset < length {
 				length -= offset
 			}
 		}
-		if len(parts) >= 4 {
-			specLen, err := strconv.ParseUint(parts[3], 0, 32)
+		if len(ops) >= 3 {
+			specLen, err := a.evalExprUint32(ops[2])
 			if err == nil {
 				length = specLen
 			}
@@ -605,19 +1011,24 @@ func (a *Assembler) calcDirectiveSize(line string) uint32 {
 
 	case ".space":
 		if len(parts) >= 2 {
-			size, err := strconv.ParseUint(parts[1], 0, 32)
+			size, err := a.evalExprUint32(strings.TrimSpace(strings.Join(parts[1:], " ")))
 			if err == nil {
 				return uint32(size)
 			}
 		}
 		return 0
 
-	case ".ascii":
+	case ".ascii", ".asciz":
 		// Find the quoted string
-		start := strings.Index(line, "\"")
-		end := strings.LastIndex(line, "\"")
-		if start != -1 && end > start {
-			return uint32(end - start - 1)
+		str, err := quotedIE32String(line)
+		if err == nil {
+			data, err := unescapeIEString(str)
+			if err == nil {
+				if parts[0] == ".asciz" {
+					return uint32(len(data) + 1)
+				}
+				return uint32(len(data))
+			}
 		}
 		return 0
 
@@ -626,44 +1037,111 @@ func (a *Assembler) calcDirectiveSize(line string) uint32 {
 	}
 }
 
-func (a *Assembler) assemble(code string) []byte {
-	var program []byte
-	maxAddr := a.baseAddr
+func (a *Assembler) sourceLines(code string) []string {
+	var out []string
+	for _, raw := range strings.Split(code, "\n") {
+		line := strings.TrimSpace(stripIE32Comment(raw))
+		for {
+			if line == "" {
+				break
+			}
+			colon := strings.IndexByte(line, ':')
+			if colon <= 0 {
+				out = append(out, line)
+				break
+			}
+			before := strings.TrimSpace(line[:colon])
+			if strings.ContainsAny(before, " \t") {
+				out = append(out, line)
+				break
+			}
+			out = append(out, before+":")
+			line = strings.TrimSpace(line[colon+1:])
+		}
+	}
+	return out
+}
 
-	// First pass: collect labels and calculate sizes
-	// We use codeOffset to track the current position in the output,
-	// including both code AND data directives.
-	lines := strings.Split(code, "\n")
-	for _, line := range lines {
-		line = strings.Split(line, ";")[0]
-		line = strings.TrimSpace(line)
+func (a *Assembler) defineLabel(label string, lineNum int, warnDuplicate bool) error {
+	if _, exists := a.labels[label]; exists && warnDuplicate {
+		if err := a.warnings.Add("duplicate-labels", "label %q redefined on line %d", label, lineNum); err != nil {
+			return err
+		}
+	}
+	a.labels[label] = a.baseAddr + a.codeOffset
+	if a.verbose {
+		fmt.Printf("Label '%s' at 0x%04x\n", label, a.labels[label])
+	}
+	return nil
+}
+
+func (a *Assembler) noteSize(size uint32) {
+	nextAddr := a.baseAddr + a.codeOffset + size
+	if nextAddr > a.maxAddr {
+		a.maxAddr = nextAddr
+	}
+	a.codeOffset += size
+}
+
+func cloneUint32Map(m map[string]uint32) map[string]uint32 {
+	out := make(map[string]uint32, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func sameUint32Map(a, b map[string]uint32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		if bv, ok := b[k]; !ok || bv != av {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *Assembler) collectIE32Layout(lines []string, warnDuplicateLabels bool) error {
+	a.maxAddr = a.baseAddr
+	a.codeOffset = 0
+	a.pass = 1
+
+	for lineNum, line := range lines {
+		if !strings.HasPrefix(line, ".equ") {
+			continue
+		}
+		err := a.handleDirective(line, lineNum+1, nil)
+		if err == nil {
+			continue
+		}
+		if strings.Contains(err.Error(), "undefined symbol") {
+			continue
+		}
+		return fmt.Errorf("line %d: %v", lineNum+1, err)
+	}
+
+	for lineNum, line := range lines {
 		if line == "" {
 			continue
 		}
 
 		if strings.HasPrefix(line, ".org") {
 			if err := a.handleDirective(line, 0, nil); err != nil {
-				fmt.Printf("Error: %v\n", err)
-				os.Exit(1)
+				return fmt.Errorf("line %d: %v", lineNum+1, err)
 			}
 			continue
 		}
 
 		if before, ok := strings.CutSuffix(line, ":"); ok {
-			label := before
-			// All labels now use the unified codeOffset
-			a.labels[label] = a.baseAddr + a.codeOffset
-			if a.verbose {
-				fmt.Printf("Label '%s' at 0x%04x\n", label, a.labels[label])
+			if err := a.defineLabel(before, lineNum+1, warnDuplicateLabels); err != nil {
+				return err
 			}
 			continue
 		}
 
 		if strings.HasPrefix(line, ".equ") {
-			if err := a.handleDirective(line, 0, nil); err != nil {
-				fmt.Printf("Error: %v\n", err)
-				os.Exit(1)
-			}
 			continue
 		}
 
@@ -671,39 +1149,58 @@ func (a *Assembler) assemble(code string) []byte {
 		if strings.HasPrefix(line, ".") {
 			size := a.calcDirectiveSize(line)
 			if size > 0 {
-				nextAddr := a.baseAddr + a.codeOffset + size
-				if nextAddr > maxAddr {
-					maxAddr = nextAddr
-				}
-				a.codeOffset += size
+				a.noteSize(size)
 			}
 			continue
 		}
 
 		// Code instruction (8 bytes each)
-		nextAddr := a.baseAddr + a.codeOffset + 8
-		if nextAddr > maxAddr {
-			maxAddr = nextAddr
+		a.noteSize(8)
+	}
+
+	for lineNum, line := range lines {
+		if strings.HasPrefix(line, ".equ") {
+			if err := a.handleDirective(line, lineNum+1, nil); err != nil {
+				return fmt.Errorf("line %d: %v", lineNum+1, err)
+			}
 		}
-		a.codeOffset += 8
+	}
+	return nil
+}
+
+func (a *Assembler) assemble(code string) ([]byte, error) {
+	var program []byte
+	lines := a.sourceLines(code)
+	for iter := 0; iter < 5; iter++ {
+		prevLabels := cloneUint32Map(a.labels)
+		prevEquates := cloneUint32Map(a.equates)
+		prevMax := a.maxAddr
+		if err := a.collectIE32Layout(lines, iter == 0); err != nil {
+			return nil, err
+		}
+		if iter > 0 && prevMax == a.maxAddr && sameUint32Map(prevLabels, a.labels) && sameUint32Map(prevEquates, a.equates) {
+			break
+		}
+		if iter == 4 {
+			return nil, fmt.Errorf("could not stabilize forward references in IE32 layout")
+		}
 	}
 
 	// Reset offset for second pass
 	a.codeOffset = 0
-	program = make([]byte, maxAddr-a.baseAddr)
+	a.pass = 2
+	a.written = make(map[uint32]int)
+	program = make([]byte, a.maxAddr-a.baseAddr)
 
 	// Second pass: generate code
 	for lineNum, line := range lines {
-		line = strings.Split(line, ";")[0]
-		line = strings.TrimSpace(line)
 		if line == "" || strings.HasSuffix(line, ":") {
 			continue
 		}
 
 		if strings.HasPrefix(line, ".") {
 			if err := a.handleDirective(line, lineNum, program); err != nil {
-				fmt.Printf("Line %d: %v\n", lineNum+1, err)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: %v", lineNum+1, err)
 			}
 			continue
 		}
@@ -718,21 +1215,18 @@ func (a *Assembler) assemble(code string) []byte {
 			remainder := strings.Join(parts[1:], " ")
 			regAndOp := strings.Split(remainder, ",")
 			if len(regAndOp) != 2 {
-				fmt.Printf("Line %d: Invalid instruction format: %s\n", lineNum+1, line)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: invalid instruction format: %s", lineNum+1, line)
 			}
 
 			reg, ok := registers[strings.TrimSpace(regAndOp[0])]
 			if !ok {
-				fmt.Printf("Line %d: Invalid register: %s\n", lineNum+1, regAndOp[0])
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: invalid register: %s", lineNum+1, regAndOp[0])
 			}
 
 			operand := strings.TrimSpace(regAndOp[1])
 			addrMode, value, err := a.parseOperand(operand, lineNum+1)
 			if err != nil {
-				fmt.Printf("Line %d: %v\n", lineNum+1, err)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: %v", lineNum+1, err)
 			}
 
 			var op byte
@@ -768,8 +1262,7 @@ func (a *Assembler) assemble(code string) []byte {
 
 		case "LDA", "LDB", "LDC", "LDD", "LDE", "LDF", "LDG", "LDH", "LDS", "LDT", "LDU", "LDV", "LDW", "LDX", "LDY", "LDZ":
 			if len(parts) != 2 {
-				fmt.Printf("Line %d: Invalid load instruction format: %s\n", lineNum+1, line)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: invalid load instruction format: %s", lineNum+1, line)
 			}
 
 			var op byte
@@ -828,8 +1321,7 @@ func (a *Assembler) assemble(code string) []byte {
 			operand := parts[1]
 			addrMode, value, err := a.parseOperand(operand, lineNum+1)
 			if err != nil {
-				fmt.Printf("Line %d: %v\n", lineNum+1, err)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: %v", lineNum+1, err)
 			}
 
 			instruction = append(instruction, op, reg, addrMode, 0)
@@ -837,8 +1329,7 @@ func (a *Assembler) assemble(code string) []byte {
 
 		case "STA", "STB", "STC", "STD", "STE", "STF", "STG", "STH", "STS", "STT", "STU", "STV", "STW", "STX", "STY", "STZ":
 			if len(parts) != 2 {
-				fmt.Printf("Line %d: Invalid store instruction format: %s\n", lineNum+1, line)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: invalid store instruction format: %s", lineNum+1, line)
 			}
 
 			var op byte
@@ -897,8 +1388,7 @@ func (a *Assembler) assemble(code string) []byte {
 			operand := parts[1]
 			addrMode, value, err := a.parseOperand(operand, lineNum+1)
 			if err != nil {
-				fmt.Printf("Line %d: %v\n", lineNum+1, err)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: %v", lineNum+1, err)
 			}
 
 			instruction = append(instruction, op, reg, addrMode, 0)
@@ -906,15 +1396,13 @@ func (a *Assembler) assemble(code string) []byte {
 
 		case "INC", "DEC":
 			if len(parts) != 2 {
-				fmt.Printf("Line %d: Invalid increment/decrement instruction format: %s\n", lineNum+1, line)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: invalid increment/decrement instruction format: %s", lineNum+1, line)
 			}
 
 			operand := parts[1]
 			addrMode, value, err := a.parseOperand(operand, lineNum+1)
 			if err != nil {
-				fmt.Printf("Line %d: %v\n", lineNum+1, err)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: %v", lineNum+1, err)
 			}
 
 			var op byte
@@ -930,14 +1418,12 @@ func (a *Assembler) assemble(code string) []byte {
 
 		case "NOT", "PUSH", "POP":
 			if len(parts) != 2 {
-				fmt.Printf("Line %d: Invalid %s instruction format: %s\n", lineNum+1, opcode, line)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: invalid %s instruction format: %s", lineNum+1, opcode, line)
 			}
 
 			reg, ok := registers[parts[1]]
 			if !ok {
-				fmt.Printf("Line %d: Invalid register: %s\n", lineNum+1, parts[1])
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: invalid register: %s", lineNum+1, parts[1])
 			}
 
 			var op byte
@@ -954,8 +1440,7 @@ func (a *Assembler) assemble(code string) []byte {
 
 		case "JMP", "JSR":
 			if len(parts) != 2 {
-				fmt.Printf("Line %d: Invalid jump instruction: %s\n", lineNum+1, line)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: invalid jump instruction: %s", lineNum+1, line)
 			}
 
 			target := parts[1]
@@ -966,8 +1451,7 @@ func (a *Assembler) assemble(code string) []byte {
 			} else if addr, ok := a.labels[target]; ok {
 				targetAddr = addr
 			} else {
-				fmt.Printf("Line %d: Undefined label or equate: %s\n", lineNum+1, target)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: undefined label or equate: %s", lineNum+1, target)
 			}
 
 			var op byte
@@ -985,14 +1469,12 @@ func (a *Assembler) assemble(code string) []byte {
 			remainder := strings.Join(parts[1:], " ")
 			regAndLabel := strings.Split(remainder, ",")
 			if len(regAndLabel) != 2 {
-				fmt.Printf("Line %d: Invalid branch instruction format: %s\n", lineNum+1, line)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: invalid branch instruction format: %s", lineNum+1, line)
 			}
 
 			reg, ok := registers[strings.TrimSpace(regAndLabel[0])]
 			if !ok {
-				fmt.Printf("Line %d: Invalid register: %s\n", lineNum+1, regAndLabel[0])
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: invalid register: %s", lineNum+1, regAndLabel[0])
 			}
 
 			target := strings.TrimSpace(regAndLabel[1])
@@ -1003,8 +1485,7 @@ func (a *Assembler) assemble(code string) []byte {
 			} else if addr, ok := a.labels[target]; ok {
 				targetAddr = addr
 			} else {
-				fmt.Printf("Line %d: Undefined label or equate: %s\n", lineNum+1, target)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: undefined label or equate: %s", lineNum+1, target)
 			}
 
 			var op byte
@@ -1028,14 +1509,12 @@ func (a *Assembler) assemble(code string) []byte {
 
 		case "WAIT":
 			if len(parts) != 2 {
-				fmt.Printf("Line %d: Invalid WAIT instruction: %s\n", lineNum+1, line)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: invalid WAIT instruction: %s", lineNum+1, line)
 			}
 
 			addrMode, value, err := a.parseOperand(parts[1], lineNum+1)
 			if err != nil {
-				fmt.Printf("Line %d: %v\n", lineNum+1, err)
-				os.Exit(1)
+				return nil, fmt.Errorf("line %d: %v", lineNum+1, err)
 			}
 
 			instruction = append(instruction, WAIT, 0, addrMode, 0)
@@ -1060,27 +1539,42 @@ func (a *Assembler) assemble(code string) []byte {
 			instruction = append(instruction, op, 0, 0, 0, 0, 0, 0, 0)
 
 		default:
-			fmt.Printf("Line %d: Unknown instruction: %s\n", lineNum+1, opcode)
-			os.Exit(1)
+			return nil, fmt.Errorf("line %d: unknown instruction: %s", lineNum+1, opcode)
 		}
 
+		if err := a.markRange(a.baseAddr+a.codeOffset, 8, lineNum+1); err != nil {
+			return nil, err
+		}
 		copy(program[a.codeOffset:], instruction)
 		a.codeOffset += 8
 	}
 
-	return program
+	return program, nil
 }
 
 func main() {
 	var includePaths []string
 	var inputFile string
+	var outFile string
 	verbose := false
+	warnings := WarningPolicy{}
 
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "-v" {
 			verbose = true
+		} else if arg == "-o" {
+			i++
+			if i >= len(args) {
+				fmt.Fprintf(os.Stderr, "Error: -o requires an output path\n")
+				os.Exit(1)
+			}
+			outFile = args[i]
+		} else if arg == "-Werror" {
+			warnings.Werror = true
+		} else if strings.HasPrefix(arg, "-Wno-") {
+			warnings.Suppress(strings.TrimPrefix(arg, "-Wno-"))
 		} else if arg == "-I" {
 			i++
 			if i >= len(args) {
@@ -1092,11 +1586,11 @@ func main() {
 			includePaths = append(includePaths, arg[2:])
 		} else if strings.HasPrefix(arg, "-") {
 			fmt.Fprintf(os.Stderr, "Unknown option: %s\n", arg)
-			fmt.Fprintf(os.Stderr, "Usage: ie32asm [-v] [-I dir]... <input.asm>\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie32asm [-v] [-o output] [-Werror] [-Wno-category] [-I dir]... <input.asm>\n")
 			os.Exit(1)
 		} else if inputFile != "" {
 			fmt.Fprintf(os.Stderr, "Error: multiple input files specified\n")
-			fmt.Fprintf(os.Stderr, "Usage: ie32asm [-v] [-I dir]... <input.asm>\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie32asm [-v] [-o output] [-Werror] [-Wno-category] [-I dir]... <input.asm>\n")
 			os.Exit(1)
 		} else {
 			inputFile = arg
@@ -1104,7 +1598,7 @@ func main() {
 	}
 
 	if inputFile == "" {
-		fmt.Fprintf(os.Stderr, "Usage: ie32asm [-v] [-I dir]... <input.asm>\n")
+		fmt.Fprintf(os.Stderr, "Usage: ie32asm [-v] [-o output] [-Werror] [-Wno-category] [-I dir]... <input.asm>\n")
 		os.Exit(1)
 	}
 
@@ -1126,9 +1620,19 @@ func main() {
 	asm.basePath = basePath
 	asm.includePaths = includePaths
 	asm.verbose = verbose
-	binary := asm.assemble(processedCode)
+	asm.warnings = warnings
+	binary, err := asm.assemble(processedCode)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Assembly error: %v\n", err)
+		os.Exit(1)
+	}
+	for _, w := range asm.warnings.Warnings() {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
+	}
 
-	outFile := strings.TrimSuffix(inputFile, ".asm") + ".iex"
+	if outFile == "" {
+		outFile = strings.TrimSuffix(inputFile, filepath.Ext(inputFile)) + ".iex"
+	}
 	if err := os.WriteFile(outFile, binary, 0644); err != nil {
 		fmt.Printf("Error writing output file: %v\n", err)
 		os.Exit(1)
