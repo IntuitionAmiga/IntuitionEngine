@@ -146,6 +146,24 @@ type ANTICEngine struct {
 	// Set by compositor during scanline-aware rendering
 	compositorManaged atomic.Bool
 	rendering         atomic.Bool // True while renderLoop is inside RenderFrame
+
+	scanlineCursor   int
+	scanlineWriteIdx int
+	scanlinePass     anticScanlinePass
+}
+
+type anticScanlinePass struct {
+	target     []byte
+	pfMask     []uint8
+	pmg        pmgSnapshot
+	pc         uint16
+	screenAddr uint16
+	displayY   int
+	entries    int
+	entry      DisplayListEntry
+	entryValid bool
+	entryLine  int
+	stopped    bool
 }
 
 // NewANTICEngine creates a new ANTIC video engine instance
@@ -661,6 +679,24 @@ func (a *ANTICEngine) RenderFrame(dst []byte) []byte {
 	return dst
 }
 
+func fillANTICBackground(dst []byte, scanlineColors [ANTIC_SCANLINES_NTSC]uint8, colbk uint8) {
+	for y := range ANTIC_FRAME_HEIGHT {
+		var color byte
+		if y < ANTIC_BORDER_TOP || y >= ANTIC_FRAME_HEIGHT-ANTIC_BORDER_BOTTOM {
+			color = colbk
+		} else {
+			virtualScanline := y - ANTIC_BORDER_TOP
+			color = scanlineColors[virtualScanline]
+		}
+		rowStart := y * ANTIC_FRAME_WIDTH * 4
+		colorRGBA := ANTICPaletteRGBA[color][:]
+		for x := range ANTIC_FRAME_WIDTH {
+			offset := rowStart + x*4
+			copy(dst[offset:offset+4], colorRGBA)
+		}
+	}
+}
+
 // =============================================================================
 // Display List Processing
 // =============================================================================
@@ -849,6 +885,67 @@ func (a *ANTICEngine) SignalVSync() {
 	if a.scanline == 0 {
 		a.clearRasterCaptureBuffer(a.writeBuffer)
 	}
+}
+
+// StartFrame prepares a compositor-owned ANTIC scanline pass.
+func (a *ANTICEngine) StartFrame() {
+	var snapScanlineColors [ANTIC_SCANLINES_NTSC]uint8
+	var pmg pmgSnapshot
+
+	a.mu.Lock()
+	a.scanlineWriteIdx = a.writeIdx
+	a.scanlineCursor = 0
+	target := a.frameBufs[a.scanlineWriteIdx]
+	readBuffer := 1 - a.writeBuffer
+	snapScanlineColors = a.scanlineColors[readBuffer]
+	pmg = pmgSnapshot{
+		gractl:     a.gractl,
+		prior:      a.prior,
+		sizep:      a.sizep,
+		sizem:      a.sizem,
+		colpm:      a.colpm,
+		colpf:      a.colpf,
+		playerGfx:  a.playerGfx[readBuffer],
+		playerPos:  a.playerPos[readBuffer],
+		missileGfx: a.missileGfx[readBuffer],
+		missilePos: a.missilePos[readBuffer],
+	}
+	colbk := a.colbk
+	pc := a.getDisplayListAddress()
+	a.mu.Unlock()
+
+	fillANTICBackground(target, snapScanlineColors, colbk)
+	pfMask := make([]uint8, ANTIC_FRAME_WIDTH*ANTIC_FRAME_HEIGHT)
+	pmg.pfMask = pfMask
+	a.scanlinePass = anticScanlinePass{
+		target:   target,
+		pfMask:   pfMask,
+		pmg:      pmg,
+		pc:       pc,
+		displayY: ANTIC_BORDER_TOP,
+	}
+}
+
+// ProcessScanline advances the compositor-visible scanline cursor.
+func (a *ANTICEngine) ProcessScanline(y int) {
+	if y < 0 || y >= ANTIC_FRAME_HEIGHT {
+		return
+	}
+	for a.scanlineCursor <= y && a.scanlineCursor < ANTIC_FRAME_HEIGHT {
+		a.processANTICScanline(a.scanlineCursor)
+		a.scanlineCursor++
+	}
+}
+
+// FinishFrame publishes and returns the compositor-owned ANTIC frame.
+func (a *ANTICEngine) FinishFrame() []byte {
+	renderedIdx := a.scanlineWriteIdx
+	if renderedIdx < 0 || renderedIdx >= len(a.frameBufs) {
+		return nil
+	}
+	a.renderPMG(a.frameBufs[renderedIdx], a.scanlinePass.pmg)
+	a.writeIdx = int(a.sharedIdx.Swap(int32(renderedIdx)))
+	return a.frameBufs[renderedIdx]
 }
 
 // =============================================================================

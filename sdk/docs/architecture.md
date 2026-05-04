@@ -454,12 +454,14 @@ The rasteriser walks each destination pixel, computes the source UV from the aff
 
 ### Video Compositor
 
-The compositor collects immutable frame snapshots from all enabled video sources via `GetFrame()` and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, both mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing.
+The compositor collects immutable frame snapshots from all enabled video sources and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, both mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing.
 
 Two rendering paths:
 
-1. **Scanline-aware path** — used when all sources implement `ScanlineAware`. The compositor sorts sources by layer ascending and processes them in that order for each scanline. This guarantees that VideoChip (layer 0) processes its copper display list first — which may write to VGA registers via `bus.Write32()` — before VGA (layer 10) renders that same scanline using the updated state. This ordering is what makes per-scanline palette changes and cross-chip effects work correctly.
-2. **Full-frame fallback** — collects complete frames and blends them. Frame blending uses parallel goroutines with 60-line strips via `sync.WaitGroup`.
+1. **Scanline-aware path** — used when at least one enabled source implements `ScanlineAware`. The compositor advances scanline-capable sources in sorted layer order for each scanline, then blends all enabled sources in the global layer order. Opaque full-frame sources can sit below, between, or above scanline-aware sources without breaking copper/VGA per-scanline effects.
+2. **Full-frame fallback** — used when no enabled source is scanline-aware. It collects complete frames and blends them in sorted layer order. Same-size frame blending uses parallel goroutines with 60-line strips via `sync.WaitGroup`.
+
+Frame alpha is currently an alpha-mask test: alpha 0 is transparent and any nonzero alpha overwrites the destination. The compositor tick remains fixed at 60 Hz for guest VBlank compatibility; `GetRefreshRate()` reports the output backend rate, while `GetTickRate()` reports the compositor tick.
 
 ### Triple-Buffer Protocol
 

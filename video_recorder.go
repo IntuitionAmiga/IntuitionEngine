@@ -66,8 +66,9 @@ type VideoRecorder struct {
 	compositor *VideoCompositor
 	sound      *SoundChip
 
-	running    atomic.Bool
-	frameCount atomic.Uint64
+	running      atomic.Bool
+	frameCount   atomic.Uint64
+	frameSignals atomic.Uint64
 
 	mu      sync.Mutex
 	lastErr error
@@ -214,11 +215,68 @@ func (r *VideoRecorder) Start(path string) error {
 	}
 
 	r.frameCount.Store(0)
+	r.frameSignals.Store(0)
 	r.running.Store(true)
+	r.writeFrameData(make([]byte, w*h*4))
+	r.writeFrameData(make([]byte, w*h*4))
+	if !r.running.Load() {
+		return r.cleanupStartupFailure(cmd, videoIn, audioW, audioR)
+	}
 
 	go r.waitProc(cmd, waitDone)
 	go r.loop(stopCh, frameCh, screenFrameCh, doneCh)
 	return nil
+}
+
+func (r *VideoRecorder) cleanupStartupFailure(cmd *exec.Cmd, videoIn io.WriteCloser, audioW, audioR *os.File) error {
+	r.running.Store(false)
+
+	r.mu.Lock()
+	err := r.lastErr
+	sound := r.sound
+	r.cmd = nil
+	r.videoIn = nil
+	r.audioR = nil
+	r.audioW = nil
+	r.stopCh = nil
+	r.doneCh = nil
+	r.waitDone = nil
+	r.frameCh = nil
+	r.screenFrameCh = nil
+	r.sampleTap = nil
+	r.ring = nil
+	r.mu.Unlock()
+
+	if sound != nil {
+		sound.ClearSampleTap()
+	}
+	if videoIn != nil {
+		_ = videoIn.Close()
+	}
+	if audioW != nil {
+		_ = audioW.Close()
+	}
+	if audioR != nil {
+		_ = audioR.Close()
+	}
+	if cmd != nil && cmd.Process != nil {
+		waitDone := make(chan struct{})
+		go func() {
+			_ = cmd.Wait()
+			close(waitDone)
+		}()
+		select {
+		case <-waitDone:
+		case <-time.After(2 * time.Second):
+			_ = cmd.Process.Kill()
+			<-waitDone
+		}
+	}
+	r.compositor.UnlockResolution()
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("recorder failed during startup frame write")
 }
 
 func (r *VideoRecorder) waitProc(cmd *exec.Cmd, waitDone chan struct{}) {
@@ -344,7 +402,6 @@ func (r *VideoRecorder) writeFrameData(pixels []byte) {
 }
 
 func (r *VideoRecorder) Stop() error {
-	r.running.Store(false)
 	r.useScreen.Store(false)
 
 	r.mu.Lock()
@@ -368,10 +425,6 @@ func (r *VideoRecorder) Stop() error {
 	r.doneCh = nil
 	r.frameCh = nil
 	r.screenFrameCh = nil
-	r.videoIn = nil
-	r.audioW = nil
-	r.audioR = nil
-	r.ring = nil
 	r.sampleTap = nil
 	r.mu.Unlock()
 
@@ -385,6 +438,13 @@ func (r *VideoRecorder) Stop() error {
 	if sound != nil {
 		sound.ClearSampleTap()
 	}
+	r.running.Store(false)
+	r.mu.Lock()
+	r.videoIn = nil
+	r.audioW = nil
+	r.audioR = nil
+	r.ring = nil
+	r.mu.Unlock()
 	if videoIn != nil {
 		_ = videoIn.Close()
 	}
@@ -443,6 +503,7 @@ func (r *VideoRecorder) OnFrame() {
 	}
 	select {
 	case frameCh <- struct{}{}:
+		r.frameSignals.Add(1)
 	default:
 	}
 }

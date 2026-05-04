@@ -88,7 +88,7 @@ Scripts run asynchronously alongside the emulator in a dedicated goroutine. Yiel
 
 ### Frame channel
 
-The compositor calls back into the script engine on every completed frame. This callback sends a notification on an internal channel (capacity 1, non-blocking). When the channel is already full the notification is dropped — this means if script execution between yields takes longer than a frame period, frames are silently skipped rather than queued.
+The compositor calls back into the script engine once for every composite pass, including passes where all sources are idle or disabled. This callback sends a notification on an internal channel (capacity 1, non-blocking). When the channel is already full the notification is dropped — this means if script execution between yields takes longer than a frame period, frames are silently skipped rather than queued.
 
 ### Timing patterns
 
@@ -106,7 +106,7 @@ Use `sys.frame_time()` to check how many host milliseconds have elapsed since th
 
 ### Important behaviour
 
-- `sys.wait_frames(1)` waits for one compositor frame callback.
+- `sys.wait_frames(1)` waits for one compositor frame callback. The callback still fires when sources are idle, so frame waits continue to advance on a blank display.
 - `sys.frame_count()` reports global compositor frame count.
 - `sys.frame_time()` reports elapsed host milliseconds since the last yield point.
 - All blocking waits (`wait_frames`, `wait_ms`, visual waits) respect script cancellation — if the script is cancelled they raise a Lua error.
@@ -162,7 +162,7 @@ Timing, diagnostics, lifecycle.
 
 `sys.frame_time()` — Milliseconds elapsed since the last yield point (wait_frames, wait_ms, or visual wait). Useful for detecting slow scripts. Returns: number.
 
-`sys.fps()` — Current compositor refresh rate in Hz. Returns: number.
+`sys.fps()` — Current output backend refresh rate in Hz. The compositor tick used for frame callbacks remains 60 Hz. Returns: number.
 
 `sys.quit()` — Stop any active recording and shut down the emulator. Returns: nothing.
 

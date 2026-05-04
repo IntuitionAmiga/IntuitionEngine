@@ -72,16 +72,87 @@ type mockScanlineSource struct {
 	w, h      int
 	frame     []byte
 	scanlines int // counts ProcessScanline calls per frame
+	vsyncs    atomic.Int32
 }
 
 func (m *mockScanlineSource) GetFrame() []byte          { return m.frame }
 func (m *mockScanlineSource) IsEnabled() bool           { return m.enabled.Load() }
 func (m *mockScanlineSource) GetLayer() int             { return m.layer }
 func (m *mockScanlineSource) GetDimensions() (int, int) { return m.w, m.h }
-func (m *mockScanlineSource) SignalVSync()              {}
+func (m *mockScanlineSource) SignalVSync()              { m.vsyncs.Add(1) }
 func (m *mockScanlineSource) StartFrame()               { m.scanlines = 0 }
 func (m *mockScanlineSource) ProcessScanline(y int)     { m.scanlines++ }
 func (m *mockScanlineSource) FinishFrame() []byte       { return m.frame }
+
+type mockOpaqueSource struct {
+	enabled atomic.Bool
+	layer   int
+	w, h    int
+	frame   []byte
+	vsyncs  atomic.Int32
+	panicOn string
+}
+
+func (m *mockOpaqueSource) GetFrame() []byte {
+	if m.panicOn == "GetFrame" {
+		panic("mock getframe panic")
+	}
+	return m.frame
+}
+func (m *mockOpaqueSource) IsEnabled() bool           { return m.enabled.Load() }
+func (m *mockOpaqueSource) GetLayer() int             { return m.layer }
+func (m *mockOpaqueSource) GetDimensions() (int, int) { return m.w, m.h }
+func (m *mockOpaqueSource) SignalVSync() {
+	if m.panicOn == "SignalVSync" {
+		panic("mock vsync panic")
+	}
+	m.vsyncs.Add(1)
+}
+
+type managedScanlineSource struct {
+	mockScanlineSource
+	managedFalse atomic.Int32
+	panicY       int
+	ys           []int
+}
+
+func (m *managedScanlineSource) SetCompositorManaged(managed bool) {
+	if !managed {
+		m.managedFalse.Add(1)
+	}
+}
+func (m *managedScanlineSource) WaitRenderIdle() {}
+func (m *managedScanlineSource) ProcessScanline(y int) {
+	m.ys = append(m.ys, y)
+	if y == m.panicY {
+		panic("mock scanline panic")
+	}
+	m.mockScanlineSource.ProcessScanline(y)
+}
+
+func solidTestFrame(w, h int, r, g, b, a byte) []byte {
+	frame := make([]byte, w*h*BYTES_PER_PIXEL)
+	for i := 0; i < len(frame); i += BYTES_PER_PIXEL {
+		frame[i] = r
+		frame[i+1] = g
+		frame[i+2] = b
+		frame[i+3] = a
+	}
+	return frame
+}
+
+func testPixel(frame []byte, x, y, w int) [4]byte {
+	i := (y*w + x) * BYTES_PER_PIXEL
+	return [4]byte{frame[i], frame[i+1], frame[i+2], frame[i+3]}
+}
+
+func setTestPixel(frame []byte, x, y, w int, r, g, b, a byte) {
+	i := (y*w + x) * BYTES_PER_PIXEL
+	frame[i] = r
+	frame[i+1] = g
+	frame[i+2] = b
+	frame[i+3] = a
+}
 
 type mockTickSource struct {
 	mockScanlineSource
@@ -107,6 +178,370 @@ func TestCompositorTickFrameFiresWhenSourceDisabled(t *testing.T) {
 
 	if got := source.ticks.Load(); got != 1 {
 		t.Fatalf("ticks = %d, want 1", got)
+	}
+}
+
+func TestCompositor_FullFrame_RespectsLayerOrder(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(2, 1)
+
+	top := &mockOpaqueSource{layer: 10, w: 2, h: 1, frame: solidTestFrame(2, 1, 0xAA, 0, 0, 0xFF)}
+	top.enabled.Store(true)
+	bottom := &mockOpaqueSource{layer: 0, w: 2, h: 1, frame: solidTestFrame(2, 1, 0, 0xBB, 0, 0xFF)}
+	bottom.enabled.Store(true)
+	comp.RegisterSource(top)
+	comp.RegisterSource(bottom)
+
+	comp.composite()
+
+	if got := testPixel(comp.finalFrame, 0, 0, 2); got != [4]byte{0xAA, 0, 0, 0xFF} {
+		t.Fatalf("top layer pixel = %v", got)
+	}
+}
+
+func TestCompositor_Unregister_RemovesSource(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	src := &mockOpaqueSource{layer: 0, w: 1, h: 1, frame: solidTestFrame(1, 1, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	id := comp.RegisterSourceWithID(src)
+	if !comp.UnregisterSource(id) {
+		t.Fatal("expected source to unregister")
+	}
+	if comp.UnregisterSource(id) {
+		t.Fatal("second unregister unexpectedly succeeded")
+	}
+	comp.SetDimensions(1, 1)
+	comp.composite()
+	if got := testPixel(comp.finalFrame, 0, 0, 1); got != [4]byte{} {
+		t.Fatalf("unregistered source still composed: %v", got)
+	}
+	if len(comp.sources) != 0 {
+		t.Fatalf("sources len = %d, want 0", len(comp.sources))
+	}
+}
+
+func TestCompositor_RegisterSource_StableOrder(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	a := &mockOpaqueSource{layer: 20}
+	b := &mockOpaqueSource{layer: 10}
+	csrc := &mockOpaqueSource{layer: 10}
+	d := &mockOpaqueSource{layer: -1}
+	comp.RegisterSource(a)
+	comp.RegisterSource(b)
+	comp.RegisterSource(csrc)
+	comp.RegisterSource(d)
+	got := []VideoSource{comp.sources[0].source, comp.sources[1].source, comp.sources[2].source, comp.sources[3].source}
+	want := []VideoSource{d, b, csrc, a}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("source order[%d] = %T/%p, want %T/%p", i, got[i], got[i], want[i], want[i])
+		}
+	}
+}
+
+func TestCompositor_MixedScanline_OpaqueBetween(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(1, 1)
+	chip := &mockScanlineSource{layer: 0, w: 1, h: 1, frame: solidTestFrame(1, 1, 0x10, 0, 0, 0xFF)}
+	chip.enabled.Store(true)
+	opaque := &mockOpaqueSource{layer: 5, w: 1, h: 1, frame: solidTestFrame(1, 1, 0, 0x20, 0, 0xFF)}
+	opaque.enabled.Store(true)
+	vga := &mockScanlineSource{layer: 10, w: 1, h: 1, frame: solidTestFrame(1, 1, 0, 0, 0x30, 0x80)}
+	vga.enabled.Store(true)
+	comp.RegisterSource(vga)
+	comp.RegisterSource(opaque)
+	comp.RegisterSource(chip)
+
+	comp.composite()
+
+	if got := testPixel(comp.finalFrame, 0, 0, 1); got != [4]byte{0, 0, 0x30, 0x80} {
+		t.Fatalf("mixed layer pixel = %v", got)
+	}
+	if chip.scanlines != 1 || vga.scanlines != 1 {
+		t.Fatalf("scanline calls chip=%d vga=%d", chip.scanlines, vga.scanlines)
+	}
+}
+
+func TestCompositor_MixedScanline_OpaqueBelowTransparentShowsThrough(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(2, 1)
+	bottom := &mockOpaqueSource{layer: -5, w: 2, h: 1, frame: solidTestFrame(2, 1, 7, 8, 9, 0xFF)}
+	bottom.enabled.Store(true)
+	scan := solidTestFrame(2, 1, 1, 2, 3, 0xFF)
+	setTestPixel(scan, 1, 0, 2, 0, 0, 0, 0)
+	chip := &mockScanlineSource{layer: 0, w: 2, h: 1, frame: scan}
+	chip.enabled.Store(true)
+	comp.RegisterSource(chip)
+	comp.RegisterSource(bottom)
+
+	comp.composite()
+
+	if got := testPixel(comp.finalFrame, 0, 0, 2); got != [4]byte{1, 2, 3, 0xFF} {
+		t.Fatalf("opaque scanline pixel = %v", got)
+	}
+	if got := testPixel(comp.finalFrame, 1, 0, 2); got != [4]byte{7, 8, 9, 0xFF} {
+		t.Fatalf("transparent scanline pixel = %v", got)
+	}
+}
+
+func TestCompositor_PanicInProcessScanline_ReleasesManaged(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(1, 2)
+	src := &managedScanlineSource{panicY: 1}
+	src.layer, src.w, src.h = 0, 1, 2
+	src.frame = solidTestFrame(1, 2, 1, 2, 3, 0xFF)
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	comp.composite()
+
+	if src.managedFalse.Load() == 0 {
+		t.Fatal("managed source was not released after panic")
+	}
+}
+
+func TestCompositor_ScanlineProcess_PastSourceHeight(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(1, 3)
+	small := &managedScanlineSource{panicY: -1}
+	small.layer, small.w, small.h = 0, 1, 1
+	small.frame = solidTestFrame(1, 1, 1, 2, 3, 0xFF)
+	small.enabled.Store(true)
+	tall := &mockScanlineSource{layer: 1, w: 1, h: 3, frame: solidTestFrame(1, 3, 4, 5, 6, 0xFF)}
+	tall.enabled.Store(true)
+	comp.RegisterSource(small)
+	comp.RegisterSource(tall)
+
+	comp.composite()
+
+	if got, want := small.ys, []int{0, 0, 0}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("small source y calls = %v, want %v", got, want)
+	}
+}
+
+func TestCompositor_AllDisabled_PushesClearedFrameOnce(t *testing.T) {
+	out := newMockVideoOutput()
+	_ = out.Start()
+	comp := NewVideoCompositor(out)
+	comp.SetDimensions(1, 1)
+	src := &mockOpaqueSource{layer: 0, w: 1, h: 1, frame: solidTestFrame(1, 1, 9, 9, 9, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	comp.composite()
+	src.enabled.Store(false)
+	comp.composite()
+	comp.composite()
+
+	if out.updateCalls != 2 {
+		t.Fatalf("update calls = %d, want 2", out.updateCalls)
+	}
+	if got := testPixel(out.lastFrame, 0, 0, 1); got != [4]byte{} {
+		t.Fatalf("cleared frame pixel = %v", got)
+	}
+}
+
+func TestCompositor_SignalVSync_FiresEvenOnNilFrame(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	src := &mockOpaqueSource{layer: 0, w: 1, h: 1}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	comp.composite()
+	if src.vsyncs.Load() != 1 {
+		t.Fatalf("vsyncs = %d, want 1", src.vsyncs.Load())
+	}
+}
+
+func TestCompositor_FrameCallback_ExactlyOncePerComposite(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	var calls atomic.Int32
+	comp.SetFrameCallback(func() { calls.Add(1) })
+	comp.composite()
+	comp.composite()
+	if calls.Load() != 2 {
+		t.Fatalf("callback calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestCompositor_OutputUpdate_ReentrantNoDeadlock(t *testing.T) {
+	out := newMockVideoOutput()
+	_ = out.Start()
+	comp := NewVideoCompositor(out)
+	comp.SetDimensions(1, 1)
+	src := &mockOpaqueSource{layer: 0, w: 1, h: 1, frame: solidTestFrame(1, 1, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	done := make(chan struct{})
+	out.updateCallback = func() {
+		_ = comp.GetCurrentFrame()
+		close(done)
+	}
+	comp.composite()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("reentrant UpdateFrame callback deadlocked")
+	}
+}
+
+func TestCompositor_SetDisplayConfig_ReentrantNoDeadlock(t *testing.T) {
+	out := newMockVideoOutput()
+	comp := NewVideoCompositor(out)
+	done := make(chan struct{})
+	out.setCallback = func() {
+		_ = comp.GetCurrentFrame()
+		close(done)
+	}
+	comp.SetDimensions(2, 2)
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("reentrant SetDisplayConfig callback deadlocked")
+	}
+}
+
+func TestCompositor_SetDimensions_HonorsLock(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(3, 2)
+	comp.SetDimensions(1, 1)
+	if w, h := comp.GetDimensions(); w != 3 || h != 2 {
+		t.Fatalf("dimensions = %dx%d, want 3x2", w, h)
+	}
+}
+
+func TestCompositor_AlphaMask_OpaqueWins_TransparentSkipped(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(2, 1)
+	bottom := &mockOpaqueSource{layer: 0, w: 2, h: 1, frame: solidTestFrame(2, 1, 1, 2, 3, 0xFF)}
+	bottom.enabled.Store(true)
+	topFrame := solidTestFrame(2, 1, 9, 8, 7, 0xFF)
+	setTestPixel(topFrame, 1, 0, 2, 4, 5, 6, 0)
+	top := &mockOpaqueSource{layer: 1, w: 2, h: 1, frame: topFrame}
+	top.enabled.Store(true)
+	comp.RegisterSource(bottom)
+	comp.RegisterSource(top)
+	comp.composite()
+	if got := testPixel(comp.finalFrame, 0, 0, 2); got != [4]byte{9, 8, 7, 0xFF} {
+		t.Fatalf("opaque pixel = %v", got)
+	}
+	if got := testPixel(comp.finalFrame, 1, 0, 2); got != [4]byte{1, 2, 3, 0xFF} {
+		t.Fatalf("transparent pixel = %v", got)
+	}
+}
+
+func TestCompositor_AlphaMask_PartialAlphaTreatedAsOpaque(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(1, 1)
+	bottom := &mockOpaqueSource{layer: 0, w: 1, h: 1, frame: solidTestFrame(1, 1, 1, 2, 3, 0xFF)}
+	bottom.enabled.Store(true)
+	top := &mockOpaqueSource{layer: 1, w: 1, h: 1, frame: solidTestFrame(1, 1, 9, 8, 7, 0x01)}
+	top.enabled.Store(true)
+	comp.RegisterSource(bottom)
+	comp.RegisterSource(top)
+	comp.composite()
+	if got := testPixel(comp.finalFrame, 0, 0, 1); got != [4]byte{9, 8, 7, 0x01} {
+		t.Fatalf("partial alpha pixel = %v", got)
+	}
+}
+
+func TestCompositor_Close_ReleasesResources(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	src := &mockOpaqueSource{}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	if err := comp.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := comp.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if len(comp.sources) != 0 {
+		t.Fatalf("sources len after close = %d", len(comp.sources))
+	}
+	if err := comp.Start(); err == nil {
+		t.Fatal("Start after Close unexpectedly succeeded")
+	}
+}
+
+func TestCompositor_PanickingSource_DoesNotKillLoop(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(1, 1)
+	bad := &mockOpaqueSource{layer: 0, w: 1, h: 1, panicOn: "GetFrame"}
+	bad.enabled.Store(true)
+	good := &mockOpaqueSource{layer: 1, w: 1, h: 1, frame: solidTestFrame(1, 1, 7, 8, 9, 0xFF)}
+	good.enabled.Store(true)
+	comp.RegisterSource(bad)
+	comp.RegisterSource(good)
+	comp.composite()
+	if got := testPixel(comp.finalFrame, 0, 0, 1); got != [4]byte{7, 8, 9, 0xFF} {
+		t.Fatalf("good source did not compose after panic: %v", got)
+	}
+}
+
+func TestCompositor_StopStart_RaceFree(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	for range 20 {
+		if err := comp.Start(); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		comp.Stop()
+	}
+}
+
+func TestCompositor_StopWaitsWhenAlreadyStopping(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	loopDone := make(chan struct{})
+	comp.mu.Lock()
+	comp.state = compositorStopping
+	comp.loopDone = loopDone
+	comp.mu.Unlock()
+
+	stopped := make(chan struct{})
+	go func() {
+		comp.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before in-progress stop completed")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(loopDone)
+	select {
+	case <-stopped:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Stop did not return after loopDone closed")
+	}
+}
+
+func TestCompositor_GetFrameSnapshot_IncludesFrameCounter(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.composite()
+	_, n1, ts1 := comp.GetFrameSnapshot()
+	comp.composite()
+	_, n2, ts2 := comp.GetFrameSnapshot()
+	if n2 <= n1 {
+		t.Fatalf("frame counter did not increase: %d -> %d", n1, n2)
+	}
+	if !ts2.After(ts1) && !ts2.Equal(ts1) {
+		t.Fatalf("timestamp regressed: %v -> %v", ts1, ts2)
+	}
+}
+
+func TestCompositor_TickRate_Is60(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	if got := comp.GetTickRate(); got != 60 {
+		t.Fatalf("tick rate = %d, want 60", got)
+	}
+}
+
+func TestCompositor_OutputRate_FollowsBackend(t *testing.T) {
+	out := newMockVideoOutput()
+	out.refreshRate = 75
+	comp := NewVideoCompositor(out)
+	if got := comp.GetRefreshRate(); got != 75 {
+		t.Fatalf("refresh rate = %d, want 75", got)
 	}
 }
 
@@ -155,12 +590,17 @@ func TestCompositor_ScanlineAware_WithDisabledVoodoo(t *testing.T) {
 }
 
 type mockVideoOutput struct {
-	mu        sync.Mutex
-	started   bool
-	config    DisplayConfig
-	setCalls  int
-	updateErr error
-	setErr    error
+	mu             sync.Mutex
+	started        bool
+	config         DisplayConfig
+	setCalls       int
+	updateCalls    int
+	lastFrame      []byte
+	updateErr      error
+	setErr         error
+	updateCallback func()
+	setCallback    func()
+	refreshRate    int
 }
 
 func newMockVideoOutput() *mockVideoOutput {
@@ -200,10 +640,15 @@ func (m *mockVideoOutput) IsStarted() bool {
 
 func (m *mockVideoOutput) SetDisplayConfig(config DisplayConfig) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.setCalls++
 	m.config = config
-	return m.setErr
+	err := m.setErr
+	cb := m.setCallback
+	m.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
+	return err
 }
 
 func (m *mockVideoOutput) GetDisplayConfig() DisplayConfig {
@@ -212,10 +657,28 @@ func (m *mockVideoOutput) GetDisplayConfig() DisplayConfig {
 	return m.config
 }
 
-func (m *mockVideoOutput) UpdateFrame(buffer []byte) error { return m.updateErr }
-func (m *mockVideoOutput) WaitForVSync() error             { return nil }
-func (m *mockVideoOutput) GetFrameCount() uint64           { return 0 }
-func (m *mockVideoOutput) GetRefreshRate() int             { return 60 }
+func (m *mockVideoOutput) UpdateFrame(buffer []byte) error {
+	m.mu.Lock()
+	m.updateCalls++
+	m.lastFrame = append(m.lastFrame[:0], buffer...)
+	err := m.updateErr
+	cb := m.updateCallback
+	m.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
+	return err
+}
+func (m *mockVideoOutput) WaitForVSync() error   { return nil }
+func (m *mockVideoOutput) GetFrameCount() uint64 { return 0 }
+func (m *mockVideoOutput) GetRefreshRate() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.refreshRate != 0 {
+		return m.refreshRate
+	}
+	return 60
+}
 
 func TestCompositor_SetDimensions_UpdatesFrameSize(t *testing.T) {
 	comp := NewVideoCompositor(nil)

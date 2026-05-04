@@ -108,6 +108,16 @@ type ULAEngine struct {
 	// Set by compositor during scanline-aware rendering
 	compositorManaged atomic.Bool
 	rendering         atomic.Bool // True while renderLoop is inside RenderFrame
+
+	compositorSnap     ulaScanlineSnapshot
+	compositorWriteIdx int
+}
+
+type ulaScanlineSnapshot struct {
+	vram       [ULA_VRAM_SIZE]uint8
+	border     uint8
+	flashState bool
+	target     []byte
 }
 
 // NewULAEngine creates a new ULA engine instance
@@ -345,88 +355,85 @@ func (u *ULAEngine) RenderFrameTo(dst []byte) {
 
 // RenderFrame renders the complete display including border.
 func (u *ULAEngine) RenderFrame() []byte {
-	u.mu.Lock()
-	frameBuffer := u.frameBuffer
-	u.mu.Unlock()
-	return u.renderInto(frameBuffer)
+	return u.renderInto(u.frameBuffer)
 }
 
 func (u *ULAEngine) renderInto(frameBuffer []byte) []byte {
-	// Snapshot VRAM and registers under lock, then render lock-free
-	var snapVram [ULA_VRAM_SIZE]uint8
-	var snapBorder uint8
 	u.mu.Lock()
-	snapVram = u.vram
-	snapBorder = u.border
+	snap := u.captureSnapshotLocked()
 	u.mu.Unlock()
-	snapFlashState := u.flashState.Load()
+	snap.target = frameBuffer
 
-	// Get border color as packed uint32
-	borderU32 := u.colorU32[snapBorder&0x07]
-
-	// Fill entire frame with border color using uint32 writes
-	for i := 0; i < len(frameBuffer); i += 4 {
-		*(*uint32)(unsafe.Pointer(&frameBuffer[i])) = borderU32
-	}
-
-	// Render the 256x192 display area (cell-based: 32 cells wide x 192 scanlines)
-	for screenY := range ULA_DISPLAY_HEIGHT {
-		// Use pre-computed row start address
-		rowAddr := u.rowStartAddr[screenY]
-
-		// Pre-compute attribute row address base
-		cellY := screenY >> 3
-		attrRowBase := uint16(ULA_ATTR_OFFSET + cellY*ULA_CELLS_X)
-
-		// Frame buffer offset for this row
-		frameY := ULA_BORDER_TOP + screenY
-		frameRowBase := frameY * ULA_FRAME_WIDTH * 4
-
-		// Iterate by 8-pixel cell (32 cells per row)
-		for cellX := range ULA_CELLS_X {
-			// Read bitmap byte once per cell
-			bitmapAddr := rowAddr + uint16(cellX)
-			bitmapByte := snapVram[bitmapAddr]
-
-			// Read attribute once per cell
-			attr := snapVram[attrRowBase+uint16(cellX)]
-
-			// Parse attribute
-			ink := attr & 0x07
-			paper := (attr >> 3) & 0x07
-			bright := (attr & 0x40) != 0
-			flash := (attr & 0x80) != 0
-
-			// Determine fg/bg based on FLASH state
-			fgColor := ink
-			bgColor := paper
-			if flash && snapFlashState {
-				fgColor, bgColor = bgColor, fgColor
-			}
-
-			// Resolve to uint32 colors once per cell
-			var brightOff uint8
-			if bright {
-				brightOff = 8
-			}
-			fgU32 := u.colorU32[brightOff+fgColor]
-			bgU32 := u.colorU32[brightOff+bgColor]
-
-			// Write 8 pixels for this cell
-			frameX := ULA_BORDER_LEFT + cellX*8
-			pixelBase := frameRowBase + frameX*4
-			for bit := 7; bit >= 0; bit-- {
-				pixelIdx := pixelBase + (7-bit)*4
-				if (bitmapByte>>bit)&1 != 0 {
-					*(*uint32)(unsafe.Pointer(&frameBuffer[pixelIdx])) = fgU32
-				} else {
-					*(*uint32)(unsafe.Pointer(&frameBuffer[pixelIdx])) = bgU32
-				}
-			}
-		}
+	for y := range ULA_FRAME_HEIGHT {
+		u.renderScanlineFromSnap(&snap, y)
 	}
 
 	return frameBuffer
+}
+
+func (u *ULAEngine) captureSnapshotLocked() ulaScanlineSnapshot {
+	return ulaScanlineSnapshot{
+		vram:       u.vram,
+		border:     u.border,
+		flashState: u.flashState.Load(),
+	}
+}
+
+func (u *ULAEngine) renderScanlineFromSnap(snap *ulaScanlineSnapshot, y int) {
+	if y < 0 || y >= ULA_FRAME_HEIGHT || len(snap.target) < ULA_FRAME_WIDTH*ULA_FRAME_HEIGHT*BYTES_PER_PIXEL {
+		return
+	}
+
+	borderU32 := u.colorU32[snap.border&0x07]
+	rowBase := y * ULA_FRAME_WIDTH * BYTES_PER_PIXEL
+	for x := 0; x < ULA_FRAME_WIDTH*BYTES_PER_PIXEL; x += BYTES_PER_PIXEL {
+		*(*uint32)(unsafe.Pointer(&snap.target[rowBase+x])) = borderU32
+	}
+
+	if y < ULA_BORDER_TOP || y >= ULA_BORDER_TOP+ULA_DISPLAY_HEIGHT {
+		return
+	}
+
+	screenY := y - ULA_BORDER_TOP
+	rowAddr := u.rowStartAddr[screenY]
+	cellY := screenY >> 3
+	attrRowBase := uint16(ULA_ATTR_OFFSET + cellY*ULA_CELLS_X)
+
+	for cellX := range ULA_CELLS_X {
+		bitmapAddr := rowAddr + uint16(cellX)
+		bitmapByte := snap.vram[bitmapAddr]
+
+		attr := snap.vram[attrRowBase+uint16(cellX)]
+
+		ink := attr & 0x07
+		paper := (attr >> 3) & 0x07
+		bright := (attr & 0x40) != 0
+		flash := (attr & 0x80) != 0
+
+		fgColor := ink
+		bgColor := paper
+		if flash && snap.flashState {
+			fgColor, bgColor = bgColor, fgColor
+		}
+
+		var brightOff uint8
+		if bright {
+			brightOff = 8
+		}
+		fgU32 := u.colorU32[brightOff+fgColor]
+		bgU32 := u.colorU32[brightOff+bgColor]
+
+		frameX := ULA_BORDER_LEFT + cellX*8
+		pixelBase := rowBase + frameX*BYTES_PER_PIXEL
+		for bit := 7; bit >= 0; bit-- {
+			pixelIdx := pixelBase + (7-bit)*BYTES_PER_PIXEL
+			if (bitmapByte>>bit)&1 != 0 {
+				*(*uint32)(unsafe.Pointer(&snap.target[pixelIdx])) = fgU32
+			} else {
+				*(*uint32)(unsafe.Pointer(&snap.target[pixelIdx])) = bgU32
+			}
+		}
+	}
 }
 
 // =============================================================================
@@ -480,6 +487,33 @@ func (u *ULAEngine) TickFrame() {
 		u.flashCounter.Store(0)
 		u.flashState.Store(!u.flashState.Load())
 	}
+}
+
+// StartFrame prepares a compositor-owned scanline render pass.
+func (u *ULAEngine) StartFrame() {
+	u.mu.Lock()
+	u.compositorSnap = u.captureSnapshotLocked()
+	u.compositorWriteIdx = u.writeIdx
+	u.compositorSnap.target = u.frameBufs[u.compositorWriteIdx]
+	u.mu.Unlock()
+}
+
+// ProcessScanline renders one compositor-owned scanline from the frame snapshot.
+func (u *ULAEngine) ProcessScanline(y int) {
+	if y < 0 || y >= ULA_FRAME_HEIGHT {
+		return
+	}
+	u.renderScanlineFromSnap(&u.compositorSnap, y)
+}
+
+// FinishFrame publishes and returns the exact buffer rendered by ProcessScanline.
+func (u *ULAEngine) FinishFrame() []byte {
+	renderedIdx := u.compositorWriteIdx
+	if renderedIdx < 0 || renderedIdx >= len(u.frameBufs) {
+		return nil
+	}
+	u.writeIdx = int(u.sharedIdx.Swap(int32(renderedIdx)))
+	return u.frameBufs[renderedIdx]
 }
 
 // =============================================================================
