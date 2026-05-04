@@ -482,15 +482,35 @@ func detectMediaType(path string) uint32 {
 }
 
 func (m *MediaLoader) sanitizePathLocked(path string) (string, bool) {
-	if strings.Contains(path, "..") {
+	if path == "" || strings.Contains(path, "..") {
 		return "", false
 	}
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path), true
+	root, err := filepath.EvalSymlinks(m.baseDir)
+	if err != nil {
+		root = filepath.Clean(m.baseDir)
 	}
-	fullPath := filepath.Join(m.baseDir, path)
-	rel, err := filepath.Rel(m.baseDir, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return "", false
+	}
+
+	var fullPath string
+	if filepath.IsAbs(path) {
+		fullPath = filepath.Clean(path)
+	} else {
+		fullPath = filepath.Join(root, path)
+	}
+
+	target := fullPath
+	if resolved, err := filepath.EvalSymlinks(fullPath); err == nil {
+		target = resolved
+	}
+	target, err = filepath.Abs(target)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return "", false
 	}
 	return fullPath, true

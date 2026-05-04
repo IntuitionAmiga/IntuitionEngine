@@ -211,9 +211,22 @@ func EvalAddress(expr string, cpu DebuggableCPU) (uint64, bool) {
 // ExecuteCommand dispatches a parsed command to the appropriate handler.
 // Acquires m.mu for thread safety. Returns true if the monitor should exit.
 func (m *MachineMonitor) ExecuteCommand(input string) bool {
+	exit, _ := m.ExecuteCommandResult(input)
+	return exit
+}
+
+// ExecuteCommandResult dispatches a command and returns the exit hint plus the
+// monitor output lines appended by this command.
+func (m *MachineMonitor) ExecuteCommandResult(input string) (bool, []OutputLine) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.executeCommand(input)
+	before := len(m.outputLines)
+	exit := m.executeCommand(input)
+	if before < 0 || before > len(m.outputLines) {
+		before = 0
+	}
+	out := append([]OutputLine(nil), m.outputLines[before:]...)
+	m.mu.Unlock()
+	return exit, out
 }
 
 // executeCommand is the lock-free implementation of ExecuteCommand.

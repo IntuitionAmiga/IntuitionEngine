@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -333,10 +334,11 @@ func TestScriptEngine_RecScreenshot(t *testing.T) {
 	comp.Stop()
 
 	se := NewScriptEngine(bus, comp, term)
-	outPath := filepath.Join(t.TempDir(), "shot.png")
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "shot.png")
 
-	script := `rec.screenshot("` + outPath + `")`
-	if err := se.RunString(script, "screenshot"); err != nil {
+	script := `rec.screenshot("shot.png")`
+	if err := se.RunString(script, filepath.Join(dir, "screenshot.ies")); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}
 	waitScriptStopped(t, se)
@@ -481,11 +483,15 @@ func TestScriptEngine_MediaLoadUnsupported(t *testing.T) {
 	term := NewTerminalMMIO()
 	comp := NewVideoCompositor(nil)
 	se := NewScriptEngine(bus, comp, term)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "clip.xyz"), []byte("dummy"), 0644); err != nil {
+		t.Fatalf("write media fixture: %v", err)
+	}
 
-	loader := NewMediaLoader(bus, nil, t.TempDir(), nil, nil, nil, nil, nil, nil, nil)
+	loader := NewMediaLoader(bus, nil, dir, nil, nil, nil, nil, nil, nil, nil)
 	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
 
-	if err := se.RunString(`media.load("clip.xyz")`, "media_unsupported"); err != nil {
+	if err := se.RunString(`media.load("clip.xyz")`, filepath.Join(dir, "media_unsupported.ies")); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}
 	waitScriptStopped(t, se)
@@ -508,25 +514,20 @@ func TestScriptEngine_MediaLoadNotFound(t *testing.T) {
 	term := NewTerminalMMIO()
 	comp := NewVideoCompositor(nil)
 	se := NewScriptEngine(bus, comp, term)
+	dir := t.TempDir()
 
 	loader := NewMediaLoader(bus, nil, t.TempDir(), nil, nil, nil, nil, nil, nil, nil)
 	bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
 
-	if err := se.RunString(`media.load("missing.sid")`, "media_not_found"); err != nil {
+	if err := se.RunString(`media.load("missing.sid")`, filepath.Join(dir, "media_not_found.ies")); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}
 	waitScriptStopped(t, se)
-	if err := se.LastError(); err != nil {
-		t.Fatalf("script error: %v", err)
+	if err := se.LastError(); err == nil {
+		t.Fatalf("expected script path validation error")
 	}
-	if got := waitMediaStatus(t, bus, 500*time.Millisecond); got != MEDIA_STATUS_ERROR {
-		t.Fatalf("media status=%d, want error", got)
-	}
-	if got := bus.Read32(MEDIA_TYPE); got != MEDIA_TYPE_SID {
-		t.Fatalf("media type=%d, want sid", got)
-	}
-	if got := bus.Read32(MEDIA_ERROR); got != MEDIA_ERR_NOT_FOUND {
-		t.Fatalf("media error=%d, want not_found", got)
+	if got := bus.Read32(MEDIA_CTRL); got != 0 {
+		t.Fatalf("media ctrl=%d, want no media loader command", got)
 	}
 }
 
@@ -597,13 +598,14 @@ func TestScriptEngine_SysCaptureOutput(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	se := NewScriptEngine(bus, comp, term)
 
-	outPath := filepath.Join(t.TempDir(), "captured.log")
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "captured.log")
 	script := `
-		sys.capture_output("` + outPath + `")
+		sys.capture_output("captured.log")
 		sys.print("captured", 123)
 		sys.capture_output_off()
 	`
-	if err := se.RunString(script, "sys_capture_output"); err != nil {
+	if err := se.RunString(script, filepath.Join(dir, "sys_capture_output.ies")); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}
 	waitScriptStopped(t, se)
@@ -616,6 +618,64 @@ func TestScriptEngine_SysCaptureOutput(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "captured 123") {
 		t.Fatalf("capture file missing output: %q", string(data))
+	}
+}
+
+func TestScript_SysCaptureOutputRejectsEscapes(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name   string
+		path   string
+		target string
+	}{
+		{"absolute", filepath.Join(t.TempDir(), "outside.log"), ""},
+		{"traversal", "../outside.log", filepath.Join(filepath.Dir(dir), "outside.log")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+			if err := se.RunString(`sys.capture_output("`+tc.path+`")`, filepath.Join(dir, "main.ies")); err != nil {
+				t.Fatalf("RunString failed: %v", err)
+			}
+			waitScriptStopped(t, se)
+			if err := se.LastError(); err == nil {
+				t.Fatal("expected capture path validation error")
+			}
+			if tc.target != "" {
+				if _, err := os.Stat(tc.target); !os.IsNotExist(err) {
+					t.Fatalf("unexpected escaped capture target exists or stat failed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestScript_RecOutputRejectsEscapes(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name   string
+		script string
+		target string
+	}{
+		{"screenshot_absolute", `rec.screenshot("` + filepath.Join(t.TempDir(), "shot.png") + `")`, ""},
+		{"screenshot_traversal", `rec.screenshot("../shot.png")`, filepath.Join(filepath.Dir(dir), "shot.png")},
+		{"start_absolute", `rec.start("` + filepath.Join(t.TempDir(), "out.mp4") + `")`, ""},
+		{"start_screen_traversal", `rec.start_screen("../screen.mp4")`, filepath.Join(filepath.Dir(dir), "screen.mp4")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+			if err := se.RunString(tc.script, filepath.Join(dir, "main.ies")); err != nil {
+				t.Fatalf("RunString failed: %v", err)
+			}
+			waitScriptStopped(t, se)
+			if err := se.LastError(); err == nil {
+				t.Fatal("expected recorder path validation error")
+			}
+			if tc.target != "" {
+				if _, err := os.Stat(tc.target); !os.IsNotExist(err) {
+					t.Fatalf("unexpected escaped recorder target exists or stat failed: %v", err)
+				}
+			}
+		})
 	}
 }
 
@@ -963,6 +1023,10 @@ func TestScriptEngine_MediaLoadPlayStop(t *testing.T) {
 			}
 		},
 	)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "track.sid"), []byte("dummy"), 0644); err != nil {
+		t.Fatalf("write media fixture: %v", err)
+	}
 
 	script := `
 		media.load("track.sid")
@@ -973,7 +1037,7 @@ func TestScriptEngine_MediaLoadPlayStop(t *testing.T) {
 		media.stop()
 		if media.status() ~= "idle" then error("status after stop") end
 	`
-	if err := se.RunString(script, "media_load_play_stop"); err != nil {
+	if err := se.RunString(script, filepath.Join(dir, "media_load_play_stop.ies")); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}
 	waitScriptStopped(t, se)
@@ -1157,8 +1221,7 @@ func TestScriptEngine_DbgAdvancedCompatibility(t *testing.T) {
 	mon.RegisterCPU("IE32", NewDebugIE32(cpu))
 	se.SetMonitor(mon)
 
-	statePath := filepath.Join(t.TempDir(), "state.gz")
-	memPath := filepath.Join(t.TempDir(), "mem.bin")
+	dir := t.TempDir()
 	script := `
 		dbg.open()
 		local d = dbg.disasm(0, 1)
@@ -1170,7 +1233,7 @@ func TestScriptEngine_DbgAdvancedCompatibility(t *testing.T) {
 		dbg.trace_watch_list()
 		dbg.trace_history("$3000")
 		dbg.trace_history_clear("$3000")
-		dbg.trace_file("` + statePath + `.trace")
+		dbg.trace_file("state.trace")
 		dbg.trace_file_off()
 		dbg.fill_mem(0x3000, 4, 0x41)
 		local hits = dbg.hunt_mem(0x3000, 4, "AA")
@@ -1178,13 +1241,13 @@ func TestScriptEngine_DbgAdvancedCompatibility(t *testing.T) {
 		dbg.transfer_mem(0x3000, 4, 0x3010)
 		local diffs = dbg.compare_mem(0x3000, 4, 0x3010)
 		if #diffs ~= 0 then error("compare") end
-		dbg.save_mem_file(0x3000, 4, "` + memPath + `")
-		dbg.load_mem_file("` + memPath + `", 0x3020)
-		dbg.save_state("` + statePath + `")
-		dbg.load_state("` + statePath + `")
+		dbg.save_mem_file(0x3000, 4, "mem.bin")
+		dbg.load_mem_file("mem.bin", 0x3020)
+		dbg.save_state("state.gz")
+		dbg.load_state("state.gz")
 		dbg.close()
 	`
-	if err := se.RunString(script, "dbg_advanced_compat"); err != nil {
+	if err := se.RunString(script, filepath.Join(dir, "dbg_advanced_compat.ies")); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}
 	waitScriptStopped(t, se)
@@ -1231,9 +1294,9 @@ func TestScriptEngine_RecStartStop(t *testing.T) {
 	}
 	_ = probe.Stop()
 
-	outPath := filepath.Join(t.TempDir(), "run.mp4")
-	script := `rec.start("` + outPath + `"); rec.stop()`
-	if err := se.RunString(script, "rec_start_stop"); err != nil {
+	dir := t.TempDir()
+	script := `rec.start("run.mp4"); rec.stop()`
+	if err := se.RunString(script, filepath.Join(dir, "rec_start_stop.ies")); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}
 	waitScriptStopped(t, se)
@@ -1261,9 +1324,9 @@ func TestScriptEngine_RecFrameCount(t *testing.T) {
 	}
 	_ = probe.Stop()
 
-	outPath := filepath.Join(t.TempDir(), "frames.mp4")
-	script := `rec.start("` + outPath + `"); sys.wait_frames(3); rec.stop()`
-	if err := se.RunString(script, "rec_frame_count"); err != nil {
+	dir := t.TempDir()
+	script := `rec.start("frames.mp4"); sys.wait_frames(3); rec.stop()`
+	if err := se.RunString(script, filepath.Join(dir, "rec_frame_count.ies")); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}
 	driveFramesUntilStopped(t, se)
@@ -1496,12 +1559,12 @@ func TestScriptEngine_QuitStopsRecording(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	se := NewScriptEngine(bus, comp, term)
 
-	outPath := filepath.Join(t.TempDir(), "quit_stop.mp4")
+	dir := t.TempDir()
 	quitCalled := false
 	se.SetQuitFunc(func() { quitCalled = true })
 
-	script := `rec.start("` + outPath + `"); sys.wait_frames(2); sys.quit()`
-	if err := se.RunString(script, "quit_stops_rec"); err != nil {
+	script := `rec.start("quit_stop.mp4"); sys.wait_frames(2); sys.quit()`
+	if err := se.RunString(script, filepath.Join(dir, "quit_stops_rec.ies")); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}
 	driveFramesUntilStopped(t, se)
@@ -1513,5 +1576,590 @@ func TestScriptEngine_QuitStopsRecording(t *testing.T) {
 	}
 	if !quitCalled {
 		t.Fatalf("quit callback should be invoked")
+	}
+}
+
+func TestScript_SandboxHostAccessBlocked(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	dir := t.TempDir()
+	execCanary := filepath.Join(dir, "exec_canary")
+	ioCanary := filepath.Join(dir, "io_canary")
+	modulePath := filepath.Join(dir, "valid_local_module.lua")
+	if err := os.WriteFile(modulePath, []byte(`return { value = 42 }`), 0644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "pkg"), 0755); err != nil {
+		t.Fatalf("mkdir package: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pkg", "init.lua"), []byte(`return { value = 99 }`), 0644); err != nil {
+		t.Fatalf("write package init: %v", err)
+	}
+	script := `
+		local ok_exec = pcall(function() os.execute("touch ` + execCanary + `") end)
+		local ok_io = pcall(function() local f = io.open("` + ioCanary + `", "w"); f:write("x"); f:close() end)
+		local ok_dofile = pcall(function() dofile("x.lua") end)
+		local ok_loadfile = pcall(function() loadfile("x.lua") end)
+		local ok_debug = debug ~= nil
+		local ok_loadlib = package.loadlib ~= nil
+		local ok_bad_require = pcall(function() require("../../etc/passwd_helper") end)
+		local m = require("valid_local_module")
+		local p = require("pkg")
+		if ok_exec or ok_io or ok_dofile or ok_loadfile or ok_debug or ok_loadlib or ok_bad_require then error("sandbox escape") end
+		if m.value ~= 42 then error("local require failed") end
+		if p.value ~= 99 then error("local init require failed") end
+		if string.format("%02d", math.floor(7.9)) ~= "07" then error("base libs missing") end
+		local t = {}; table.insert(t, bit32.band(7, 3))
+		if t[1] ~= 3 then error("bit32 missing") end
+		if type(os.time()) ~= "number" or type(os.date("*t")) ~= "table" or type(os.clock()) ~= "number" then error("safe os missing") end
+		os.getenv("PATH")
+	`
+	if err := se.RunString(script, filepath.Join(dir, "main.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if _, err := os.Stat(execCanary); !os.IsNotExist(err) {
+		t.Fatalf("os.execute canary exists or stat failed: %v", err)
+	}
+	if _, err := os.Stat(ioCanary); !os.IsNotExist(err) {
+		t.Fatalf("io.open canary exists or stat failed: %v", err)
+	}
+}
+
+func TestScript_Cancel_TightLoop(t *testing.T) {
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`while true do end`, "tight_loop"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		se.Cancel()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Cancel did not stop tight loop")
+	}
+}
+
+func TestScript_Panic_DoesNotLeakRunning(t *testing.T) {
+	se := NewScriptEngine(nil, NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`mem.read8(0)`, "panic"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if se.IsRunning() {
+		t.Fatal("script still running after panic")
+	}
+	if err := se.LastError(); err == nil {
+		t.Fatalf("LastError is nil, want recovered callback error")
+	}
+}
+
+func TestScript_FreezeCleanupOnError(t *testing.T) {
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`cpu.freeze(); error("x")`, "freeze_error"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if got := se.FreezeCount(); got != 0 {
+		t.Fatalf("freeze count=%d, want 0", got)
+	}
+}
+
+func TestScript_AudioFreezeCleanupOnError(t *testing.T) {
+	bus := NewMachineBus()
+	sound, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	if err != nil {
+		t.Fatalf("NewSoundChip failed: %v", err)
+	}
+	t.Cleanup(sound.Stop)
+	runtimeStatus.setChips(nil, nil, nil, nil, nil, nil, sound, nil, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(func() {
+		runtimeStatus.setChips(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	})
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`audio.freeze(); error("x")`, "audio_freeze_error"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if sound.audioFrozen.Load() {
+		t.Fatal("audio freeze leaked after script error")
+	}
+}
+
+func TestScript_DbgLifecycleCleanupAndRefcount(t *testing.T) {
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("ie64", NewDebugIE64(NewCPU64(bus)))
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	se.SetMonitor(mon)
+	if err := se.RunString(`dbg.open(); dbg.open(); dbg.close(); if not dbg.is_open() then error("closed early") end; error("x")`, "dbg_error"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if mon.IsActive() {
+		t.Fatal("monitor active after script error")
+	}
+	if got := se.FreezeCount(); got != 0 {
+		t.Fatalf("freeze count=%d, want 0", got)
+	}
+}
+
+func TestScript_DbgContinueAndRunUntilDeactivateMonitor(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{"continue", `dbg.open(); dbg.continue()`},
+		{"run_until", `dbg.open(); dbg.run_until(0x1000)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := NewMachineBus()
+			mon := NewMachineMonitor(bus)
+			mon.RegisterCPU("ie64", NewDebugIE64(NewCPU64(bus)))
+			se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+			se.SetMonitor(mon)
+			if err := se.RunString(tc.script, tc.name); err != nil {
+				t.Fatalf("RunString failed: %v", err)
+			}
+			waitScriptStopped(t, se)
+			if err := se.LastError(); err != nil {
+				t.Fatalf("script error: %v", err)
+			}
+			if mon.IsActive() {
+				t.Fatal("monitor should be inactive after resume command")
+			}
+			if got := se.FreezeCount(); got != 0 {
+				t.Fatalf("freeze count=%d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestMem_BlockRangesRequireFullFreezeOrFullMMIO(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{"read_block", `mem.read_block(0xF2400, 5)`},
+		{"write_block", `mem.write_block(0xF2400, "abcde")`},
+		{"fill", `mem.fill(0xF2400, 5, 1)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := NewMachineBus()
+			bus.MapIO(0xF24FF, 0xF24FF, func(addr uint32) uint32 { return 0 }, func(addr uint32, value uint32) {})
+			se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+			script := strings.ReplaceAll(tc.script, "0xF2400", "0xF24FF")
+			if err := se.RunString(script, tc.name); err != nil {
+				t.Fatalf("RunString failed: %v", err)
+			}
+			waitScriptStopped(t, se)
+			if err := se.LastError(); err == nil {
+				t.Fatal("expected mixed MMIO/RAM range error")
+			}
+		})
+	}
+}
+
+func TestScript_PathValidationForCpuLoad(t *testing.T) {
+	dir := t.TempDir()
+	prog := filepath.Join(dir, "prog.bin")
+	if err := os.WriteFile(prog, []byte{1, 2, 3}, 0644); err != nil {
+		t.Fatalf("write program: %v", err)
+	}
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	var loaded string
+	se.SetProgramLoader(func(path string) error {
+		loaded = path
+		return nil
+	})
+	if err := se.RunString(`cpu.load("prog.bin")`, filepath.Join(dir, "main.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if loaded != prog {
+		t.Fatalf("loaded path=%q, want %q", loaded, prog)
+	}
+
+	loaded = ""
+	if err := se.RunString(`cpu.load("../prog.bin")`, filepath.Join(dir, "main.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err == nil {
+		t.Fatal("expected traversal error")
+	}
+	if loaded != "" {
+		t.Fatalf("loader called for rejected path: %q", loaded)
+	}
+}
+
+func TestScript_PathValidationForDbgWrappers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{"save_state", `dbg.save_state("../state.gz")`},
+		{"load_state", `dbg.load_state("../state.gz")`},
+		{"save_mem_file", `dbg.save_mem_file(0x3000, 4, "../mem.bin")`},
+		{"load_mem_file", `dbg.load_mem_file("../mem.bin", 0x3000)`},
+		{"run_script", `dbg.run_script("../other.ies")`},
+		{"trace_file", `dbg.trace_file("../trace.log")`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			bus := NewMachineBus()
+			mon := NewMachineMonitor(bus)
+			mon.RegisterCPU("ie32", NewDebugIE32(NewCPU(bus)))
+			se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+			se.SetMonitor(mon)
+			if err := se.RunString(tc.script, filepath.Join(dir, "main.ies")); err != nil {
+				t.Fatalf("RunString failed: %v", err)
+			}
+			waitScriptStopped(t, se)
+			if err := se.LastError(); err == nil {
+				t.Fatal("expected path validation error")
+			}
+		})
+	}
+}
+
+func TestScript_DbgCommandRejectsHostFileCommands(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{"save_mem", `dbg.command("save $0 $0 /tmp/out")`},
+		{"load_mem", `dbg.command("load /tmp/in $1000")`},
+		{"save_state", `dbg.command("ss /tmp/state.gz")`},
+		{"load_state", `dbg.command("sl /tmp/state.gz")`},
+		{"trace_file", `dbg.command("trace file /tmp/trace.log")`},
+		{"script", `dbg.command("script /tmp/run")`},
+		{"macro", `dbg.command("macro x save $0 $0 /tmp/out")`},
+		{"command_output", `dbg.command_output("save $0 $0 /tmp/out")`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			bus := NewMachineBus()
+			mon := NewMachineMonitor(bus)
+			se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+			se.SetMonitor(mon)
+			if err := se.RunString(tc.script, filepath.Join(dir, "main.ies")); err != nil {
+				t.Fatalf("RunString failed: %v", err)
+			}
+			waitScriptStopped(t, se)
+			if err := se.LastError(); err == nil {
+				t.Fatal("expected raw monitor file-command rejection")
+			}
+		})
+	}
+}
+
+func TestScript_DbgMacroRejectsHostFileBodyAndRawInvocation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{"unsafe_body", `dbg.macro("x", "save $0 $0 /tmp/out")`},
+		{"raw_invoke", `dbg.macro("x", "?"); dbg.command("x")`},
+		{"raw_output_invoke", `dbg.macro("x", "?"); dbg.command_output("x")`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			bus := NewMachineBus()
+			mon := NewMachineMonitor(bus)
+			se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+			se.SetMonitor(mon)
+			if err := se.RunString(tc.script, filepath.Join(dir, "main.ies")); err != nil {
+				t.Fatalf("RunString failed: %v", err)
+			}
+			waitScriptStopped(t, se)
+			if err := se.LastError(); err == nil {
+				t.Fatal("expected macro sandbox rejection")
+			}
+		})
+	}
+}
+
+func TestScript_DbgRunScriptRejectsHostFileCommands(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "unsafe.mon"), []byte("?\nsave $0 $0 /tmp/out\n"), 0644); err != nil {
+		t.Fatalf("write monitor script: %v", err)
+	}
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	se.SetMonitor(mon)
+	if err := se.RunString(`dbg.run_script("unsafe.mon")`, filepath.Join(dir, "main.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err == nil {
+		t.Fatal("expected monitor script sandbox rejection")
+	}
+}
+
+func TestScript_DbgRunScriptRejectsExistingMacroInvocation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "invoke.mon"), []byte("x\n"), 0644); err != nil {
+		t.Fatalf("write monitor script: %v", err)
+	}
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	mon.ExecuteCommand("macro x save $0 $0 /tmp/out")
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	se.SetMonitor(mon)
+	if err := se.RunString(`dbg.run_script("invoke.mon")`, filepath.Join(dir, "main.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err == nil {
+		t.Fatal("expected monitor script macro invocation rejection")
+	}
+}
+
+func TestScript_WriteValidationRejectsExistingSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.log")
+	if err := os.WriteFile(outside, []byte("original"), 0644); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "capture.log")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`sys.capture_output("capture.log")`, filepath.Join(dir, "main.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err == nil {
+		t.Fatal("expected symlink escape validation error")
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("read outside target: %v", err)
+	}
+	if string(data) != "original" {
+		t.Fatalf("outside target was modified: %q", data)
+	}
+}
+
+func TestScript_AudioLoadRejectsPathEscapes(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{"psg_absolute", `audio.psg_load("` + filepath.Join(t.TempDir(), "song.pt3") + `")`},
+		{"sid_traversal", `audio.sid_load("../song.sid", 0)`},
+		{"ted_traversal", `audio.ted_load("../song.prg")`},
+		{"pokey_traversal", `audio.pokey_load("../song.sap")`},
+		{"ahx_absolute", `audio.ahx_load("` + filepath.Join(t.TempDir(), "song.ahx") + `")`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+			if err := se.RunString(tc.script, filepath.Join(dir, "main.ies")); err != nil {
+				t.Fatalf("RunString failed: %v", err)
+			}
+			waitScriptStopped(t, se)
+			if err := se.LastError(); err == nil {
+				t.Fatal("expected audio path validation error")
+			}
+		})
+	}
+}
+
+func TestScript_MediaLoadRejectsPathEscapes(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{"load_absolute", `media.load("` + filepath.Join(t.TempDir(), "outside.wav") + `")`},
+		{"load_traversal", `media.load("../outside.mod")`},
+		{"load_subsong_absolute", `media.load_subsong("` + filepath.Join(t.TempDir(), "outside.sid") + `", 1)`},
+		{"load_subsong_traversal", `media.load_subsong("../outside.ahx", 1)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := NewMachineBus()
+			ctrlWrites := 0
+			bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END,
+				func(addr uint32) uint32 { return 0 },
+				func(addr uint32, value uint32) {
+					if addr == MEDIA_CTRL {
+						ctrlWrites++
+					}
+				},
+			)
+			se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+			if err := se.RunString(tc.script, filepath.Join(dir, "main.ies")); err != nil {
+				t.Fatalf("RunString failed: %v", err)
+			}
+			waitScriptStopped(t, se)
+			if err := se.LastError(); err == nil {
+				t.Fatal("expected media path validation error")
+			}
+			if ctrlWrites != 0 {
+				t.Fatalf("media control wrote %d times for rejected path", ctrlWrites)
+			}
+		})
+	}
+}
+
+func TestDbgSaveState_PropagatesMonitorError(t *testing.T) {
+	dir := t.TempDir()
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	se.SetMonitor(mon)
+	if err := se.RunString(`
+		local ok, err = pcall(function() dbg.save_state("state.gz") end)
+		if ok then error("expected monitor error") end
+		if not string.find(tostring(err), "No CPU focused", 1, true) then error("wrong error: " .. tostring(err)) end
+	`, filepath.Join(dir, "main.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestMonitor_ExecuteCommandResult_BadSyntax(t *testing.T) {
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	_, out := mon.ExecuteCommandResult("definitely_not_a_command")
+	if len(out) == 0 {
+		t.Fatal("expected command output")
+	}
+	foundRed := false
+	for _, line := range out {
+		if line.Color == colorRed {
+			foundRed = true
+		}
+	}
+	if !foundRed {
+		t.Fatalf("expected red output, got %#v", out)
+	}
+}
+
+func TestCoproc_Tickets_NoLeak(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	ticket := uint32(0x1234)
+	ringBase := ringBaseAddr(0)
+	reqAddr := ringBase + RING_ENTRIES_OFFSET
+	respAddr := ringBase + RING_RESPONSES_OFFSET
+	bus.Write32(reqAddr+REQ_TICKET_OFF, ticket)
+	bus.Write32(respAddr+RESP_TICKET_OFF, ticket)
+	bus.Write32(reqAddr+REQ_RESP_PTR_OFF, 0x2000)
+	bus.Write32(reqAddr+REQ_RESP_CAP_OFF, 16)
+	bus.Write32(respAddr+RESP_RESP_LEN_OFF, 4)
+	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK)
+	se.coprocMu.Lock()
+	se.coprocTickets[ticket] = coprocTicketBuf{respPtr: 0x2000, respCap: 16}
+	se.coprocMu.Unlock()
+	if _, _, _, ok := se.coprocFindResponse(ticket); !ok {
+		t.Fatal("expected response")
+	}
+	se.coprocMu.Lock()
+	remaining := len(se.coprocTickets)
+	se.coprocMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("ticket map size=%d, want 0", remaining)
+	}
+
+	se.coprocMu.Lock()
+	se.coprocTickets[99] = coprocTicketBuf{}
+	se.coprocMu.Unlock()
+	if err := se.RunString(`sys.print("done")`, "coproc_cleanup"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	se.coprocMu.Lock()
+	remaining = len(se.coprocTickets)
+	se.coprocMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("ticket map size after script=%d, want 0", remaining)
+	}
+}
+
+func TestScript_DbgCommandOutputCapturesLines(t *testing.T) {
+	bus := NewMachineBus()
+	mon := NewMachineMonitor(bus)
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	se.SetMonitor(mon)
+	if err := se.RunString(`
+		local out = dbg.command_output("definitely_not_a_command")
+		if #out == 0 then error("no output") end
+		if out[1].color ~= `+strconv.Itoa(int(colorRed))+` then error("not red") end
+	`, "command_output"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestBit32_ExtractReplaceBtest(t *testing.T) {
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`
+		if bit32.extract(0xF0, 4, 4) ~= 0xF then error("extract") end
+		if bit32.extract(0x10, 4) ~= 1 then error("extract default") end
+		if bit32.replace(0xFFFF0000, 0x12, 8, 8) ~= 0xFFFF1200 then error("replace") end
+		if not bit32.btest(0x10, 0x18) then error("btest true") end
+		if bit32.btest(0x10, 0x08) then error("btest false") end
+	`, "bit32"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestMediaType_MODAndWAV(t *testing.T) {
+	if got := mediaTypeToString(MEDIA_TYPE_MOD); got != "mod" {
+		t.Fatalf("MOD type=%q", got)
+	}
+	if got := mediaTypeToString(MEDIA_TYPE_WAV); got != "wav" {
+		t.Fatalf("WAV type=%q", got)
+	}
+}
+
+func TestScript_MediaType_MODAndWAV(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		typeCode uint32
+		want     string
+	}{
+		{"mod", MEDIA_TYPE_MOD, "mod"},
+		{"wav", MEDIA_TYPE_WAV, "wav"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := NewMachineBus()
+			regs := map[uint32]uint32{MEDIA_TYPE: tc.typeCode}
+			bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END,
+				func(addr uint32) uint32 { return regs[addr] },
+				func(addr uint32, value uint32) { regs[addr] = value },
+			)
+			se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+			if err := se.RunString(`if media.type() ~= "`+tc.want+`" then error(media.type()) end`, tc.name); err != nil {
+				t.Fatalf("RunString failed: %v", err)
+			}
+			waitScriptStopped(t, se)
+			if err := se.LastError(); err != nil {
+				t.Fatalf("script error: %v", err)
+			}
+		})
 	}
 }

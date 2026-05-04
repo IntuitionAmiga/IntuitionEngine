@@ -37,16 +37,24 @@ func TestDetectMediaType(t *testing.T) {
 
 func TestMediaLoaderSanitizePath(t *testing.T) {
 	bus := NewMachineBus()
-	loader := NewMediaLoader(bus, nil, ".", nil, nil, nil, nil, nil, nil, nil)
+	dir := t.TempDir()
+	loader := NewMediaLoader(bus, nil, dir, nil, nil, nil, nil, nil, nil, nil)
+	inside := filepath.Join(dir, "inside.sid")
+	if err := os.WriteFile(inside, []byte("sid"), 0644); err != nil {
+		t.Fatalf("write inside fixture: %v", err)
+	}
 
 	if _, ok := loader.sanitizePathLocked("safe.sid"); !ok {
 		t.Fatalf("expected safe relative path to be accepted")
 	}
+	if _, ok := loader.sanitizePathLocked(inside); !ok {
+		t.Fatalf("expected absolute path inside media root to be accepted")
+	}
 	if _, ok := loader.sanitizePathLocked("../escape.sid"); ok {
 		t.Fatalf("expected traversal path to be rejected")
 	}
-	if p, ok := loader.sanitizePathLocked("/abs/path.sid"); !ok || p != "/abs/path.sid" {
-		t.Fatalf("expected absolute path to be accepted, got ok=%v path=%q", ok, p)
+	if _, ok := loader.sanitizePathLocked(filepath.Join(t.TempDir(), "abs", "path.sid")); ok {
+		t.Fatalf("expected absolute path outside media root to be rejected")
 	}
 	if _, ok := loader.sanitizePathLocked("/abs/../escape.sid"); ok {
 		t.Fatalf("expected absolute path with traversal to be rejected")
@@ -128,6 +136,28 @@ func TestMediaLoader_PathTraversalReject(t *testing.T) {
 
 	nameAddr := uint32(0x1000)
 	writeFilenameToBus(bus, nameAddr, "../escape.sid")
+
+	loader.HandleWrite(MEDIA_NAME_PTR, nameAddr)
+	loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_PLAY)
+
+	if got := loader.HandleRead(MEDIA_STATUS); got != MEDIA_STATUS_ERROR {
+		t.Fatalf("status=%d, want %d (ERROR)", got, MEDIA_STATUS_ERROR)
+	}
+	if got := loader.HandleRead(MEDIA_ERROR); got != MEDIA_ERR_PATH_INVALID {
+		t.Fatalf("error=%d, want %d (PATH_INVALID)", got, MEDIA_ERR_PATH_INVALID)
+	}
+}
+
+func TestMediaLoader_AbsolutePathReject(t *testing.T) {
+	dir := t.TempDir()
+	loader, bus := newMediaLoaderTestEnv(t, dir)
+
+	outside := filepath.Join(t.TempDir(), "outside.wav")
+	if err := os.WriteFile(outside, []byte("RIFF"), 0644); err != nil {
+		t.Fatalf("write outside fixture: %v", err)
+	}
+	nameAddr := uint32(0x1000)
+	writeFilenameToBus(bus, nameAddr, outside)
 
 	loader.HandleWrite(MEDIA_NAME_PTR, nameAddr)
 	loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_PLAY)

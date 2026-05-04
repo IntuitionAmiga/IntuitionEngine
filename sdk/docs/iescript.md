@@ -109,9 +109,21 @@ Use `sys.frame_time()` to check how many host milliseconds have elapsed since th
 - `sys.wait_frames(1)` waits for one compositor frame callback. The callback still fires when sources are idle, so frame waits continue to advance on a blank display.
 - `sys.frame_count()` reports global compositor frame count.
 - `sys.frame_time()` reports elapsed host milliseconds since the last yield point.
-- All blocking waits (`wait_frames`, `wait_ms`, visual waits) respect script cancellation — if the script is cancelled they raise a Lua error.
+- All blocking waits (`wait_frames`, `wait_ms`, visual waits) and Lua VM execution respect script cancellation. A cancelled tight loop is interrupted by the VM context and reported as a script error.
 
 ## Safety and Concurrency Rules
+
+### Sandbox
+
+Scripts run in a controlled sandbox by default. Available standard libraries are `base`, `string`, `math`, `table`, `package`, the IEScript-provided `bit32`, and a restricted `os` table. The `io` and `debug` libraries are not opened.
+
+Removed globals: `dofile`, `loadfile`, `load`, `loadstring`, `module`, and `collectgarbage`.
+
+Removed `os` functions: `execute`, `exit`, `remove`, `rename`, `tmpname`, and `setlocale`. Kept `os` functions include `time`, `date`, `clock`, `getenv`, and `difftime`.
+
+`require` only loads Lua modules from approved script roots: the current script directory and `sdk/scripts/`. Module names containing `..` or path separators are rejected. Native modules and `package.loadlib` are not available.
+
+Known legacy scripts that need migration or trusted mode include `sdk/scripts/showreel_diag.lua`, `ie_product_demo.ies`, `aros_freeze_harness.ies`, and the EmuTOS demo/probe scripts that call `os.execute` or `io.open`. The `diag_*` scripts that only use `require("showreel_diag")` remain parseable, but will inherit that helper's host-FS assumptions at runtime. The deferred flags are `--script-trusted`, `--script-allow-host-fs`, and configurable script roots.
 
 ### Raw RAM access
 
@@ -129,7 +141,7 @@ cpu.resume()
 
 ### MMIO access
 
-MMIO access is allowed without freezing. This includes device registers and control paths through mapped I/O pages. The `requireFrozenForAddress` check consults the bus I/O address bitmap — if the target address falls within a mapped I/O region, the operation proceeds without a freeze.
+MMIO access is allowed without freezing. Block and aggregate operations validate the full byte range. A range that starts in MMIO but spills into RAM is rejected unless the script has frozen the CPU.
 
 ### Freeze reference counting
 
@@ -137,8 +149,16 @@ Freeze requests are reference-counted across API surfaces (`cpu.*`, `dbg.*`). On
 
 - `cpu.freeze()` increments the global freeze counter.
 - `cpu.resume()` decrements it (floor of 0 — extra resumes are harmless).
-- `dbg.open()` / `dbg.freeze()` activate the monitor *and* increment the freeze counter.
-- `dbg.close()` / `dbg.resume()` deactivate the monitor *and* decrement the freeze counter.
+- `dbg.open()` / `dbg.freeze()` activate the monitor and add one script-owned freeze on the first nested open.
+- `dbg.close()` / `dbg.resume()` release that script-owned freeze when the nested open count reaches zero.
+
+If a script errors or is cancelled, script-owned CPU freezes, debugger opens, and audio freezes are automatically released. Audio is restored to the state it had when the script started.
+
+### Host file paths
+
+Host path access is restricted to approved roots. Reads search the current script directory first, then `sdk/scripts/`. Writes are script-relative only and cannot use absolute paths. Parent directories for writes must already exist. Existing output files and symlinks are resolved before the root check, so an output symlink cannot point outside the script root. Special `cpu.load("EMUTOS")` and `cpu.load("AROS")` tokens are unchanged.
+
+The policy applies to `cpu.load`, audio loaders, recording and screenshots, output capture, debugger state/memory files, debugger trace files, monitor scripts launched through `dbg.run_script`, and the Lua `media.load` helpers. The lower media MMIO loader also treats its configured media base directory as an approved root: absolute paths are accepted only when their resolved target stays under that root, and traversal or symlink escapes are rejected.
 
 ## Module Reference
 
@@ -167,6 +187,10 @@ Timing, diagnostics, lifecycle.
 `sys.quit()` — Stop any active recording and shut down the emulator. Returns: nothing.
 
 `sys.emutos_drive(path)` — Set the GEMDOS drive U: host directory for the next EmuTOS boot. Updates both the program executor and the internal boot path so the next `EMUTOS` command (from BASIC) or EmuTOS mode switch will map drive U: to the specified directory. Returns: nothing.
+
+`sys.capture_output(path)` — Redirect host stdout/stderr to script-relative `path`. Returns: nothing. Raises on path validation or file errors.
+
+`sys.capture_output_off()` — Stop output capture and restore host stdout/stderr. Returns: nothing.
 
 Example:
 
@@ -353,7 +377,7 @@ Sound chip and player controls.
 
 ### PSG (AY-3-8910 / YM2149)
 
-`audio.psg_load(path)` — Load a PSG music file (VGM, VTX, PT3, PT2, PT1, STC, SQT, ASC, FTC). Returns: nothing. Raises on error.
+`audio.psg_load(path)` — Load a PSG music file (VGM, VTX, PT3, PT2, PT1, STC, SQT, ASC, FTC) from an approved read path. Returns: nothing. Raises on error.
 
 `audio.psg_play()` — Start PSG playback. Returns: nothing.
 
@@ -371,7 +395,7 @@ Sound chip and player controls.
 
 ### SID (MOS 6581/8580)
 
-`audio.sid_load(path [, subsong])` — Load a SID music file. The optional `subsong` parameter selects a sub-song index (default 0). Returns: nothing. Raises on error.
+`audio.sid_load(path [, subsong])` — Load a SID music file from an approved read path. The optional `subsong` parameter selects a sub-song index (default 0). Returns: nothing. Raises on error.
 
 `audio.sid_play()` — Start SID playback. Returns: nothing.
 
@@ -390,7 +414,7 @@ Sound chip and player controls.
 
 ### TED (MOS 7360/8360)
 
-`audio.ted_load(path)` — Load a TED music file. Returns: nothing. Raises on error.
+`audio.ted_load(path)` — Load a TED music file from an approved read path. Returns: nothing. Raises on error.
 
 `audio.ted_play()` — Start TED playback. Returns: nothing.
 
@@ -400,7 +424,7 @@ Sound chip and player controls.
 
 ### POKEY (Atari C012294)
 
-`audio.pokey_load(path)` — Load a POKEY music file (SAP). Returns: nothing. Raises on error.
+`audio.pokey_load(path)` — Load a POKEY music file (SAP) from an approved read path. Returns: nothing. Raises on error.
 
 `audio.pokey_play()` — Start POKEY playback. Returns: nothing.
 
@@ -410,7 +434,7 @@ Sound chip and player controls.
 
 ### AHX (Abyss' Highest eXperience)
 
-`audio.ahx_load(path)` — Load an AHX music file. Returns: nothing. Raises on error.
+`audio.ahx_load(path)` — Load an AHX music file from an approved read path. Returns: nothing. Raises on error.
 
 `audio.ahx_play()` — Start AHX playback. Returns: nothing.
 
@@ -642,19 +666,19 @@ repl.hide()
 Example — scrolling source code listing:
 
 ```lua
-local f = io.open("source.bas", "r")
-if f then
-    repl.show(); repl.clear()
-    for line in f:lines() do repl.print(line) end
-    f:close()
-    repl.scroll_up(repl.line_count())
-    for _ = 1, repl.line_count() do
-        repl.scroll_down(1)
-        sys.wait_ms(60)
-    end
-    sys.wait_ms(1500)
-    repl.hide()
+local lines = {
+    '10 PRINT "HELLO"',
+    '20 GOTO 10',
+}
+repl.show(); repl.clear()
+for _, line in ipairs(lines) do repl.print(line) end
+repl.scroll_up(repl.line_count())
+for _ = 1, repl.line_count() do
+    repl.scroll_down(1)
+    sys.wait_ms(60)
 end
+sys.wait_ms(1500)
+repl.hide()
 ```
 
 ---
@@ -663,9 +687,11 @@ end
 
 Recording and screenshot capture.
 
-`rec.screenshot(path)` — Capture the current compositor frame as a PNG file at `path`. Pure Go implementation — no external dependencies. Returns: nothing. Raises on error.
+`rec.screenshot(path)` — Capture the current compositor frame as a PNG file at script-relative `path`. Pure Go implementation — no external dependencies. Returns: nothing. Raises on path validation or screenshot errors.
 
-`rec.start(path)` — Start recording video (and audio) to an MP4 file at `path`. Requires FFmpeg in `PATH`. Returns: nothing. Raises on error.
+`rec.start(path)` — Start recording video (and audio) to an MP4 file at script-relative `path`. Requires FFmpeg in `PATH`. Returns: nothing. Raises on path validation or recorder errors.
+
+`rec.start_screen(path)` — Start recording the screen-composited output to an MP4 file at script-relative `path`. Requires FFmpeg in `PATH`. Returns: nothing. Raises on path validation or recorder errors.
 
 `rec.stop()` — Stop an active recording and finalise the file. Returns: nothing. Raises on error.
 
@@ -709,6 +735,8 @@ Monitor/debugger integration. Most functions require the Machine Monitor to be a
 `dbg.continue()` — Resume execution on the focused CPU (equivalent to monitor `g` command). Returns: nothing.
 
 `dbg.run_until(addr)` — Run the focused CPU until it reaches address `addr`. Returns: nothing.
+
+When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned debugger open is released and the monitor is deactivated.
 
 `dbg.backstep()` — Step the focused CPU backward by one instruction (if trace history is available). Returns: nothing.
 
@@ -792,7 +820,7 @@ Monitor/debugger integration. Most functions require the Machine Monitor to be a
 
 `dbg.backtrace([depth])` — Return a call stack backtrace up to `depth` frames (default 8). Returns: table (array) of strings.
 
-`dbg.trace_file(path)` — Start logging execution trace to file at `path`. Returns: nothing.
+`dbg.trace_file(path)` — Start logging execution trace to script-relative `path`. Returns: nothing. Raises on path validation or monitor errors.
 
 `dbg.trace_file_off()` — Stop trace file logging. Returns: nothing.
 
@@ -814,13 +842,13 @@ Monitor/debugger integration. Most functions require the Machine Monitor to be a
 
 ### State Save/Load
 
-`dbg.save_state(path)` — Save the current machine state to file at `path`. Returns: nothing.
+`dbg.save_state(path)` — Save the current machine state to script-relative `path`. Returns: nothing. Raises on monitor errors.
 
-`dbg.load_state(path)` — Restore machine state from file at `path`. Returns: nothing.
+`dbg.load_state(path)` — Restore machine state from an approved read path. Returns: nothing.
 
-`dbg.save_mem_file(start, length, path)` — Save `length` bytes starting at `start` to a binary file at `path`. Returns: nothing.
+`dbg.save_mem_file(start, length, path)` — Save `length` bytes starting at `start` to script-relative `path`. Returns: nothing. Raises on monitor errors.
 
-`dbg.load_mem_file(path, addr)` — Load a binary file from `path` into memory at `addr`. Returns: nothing.
+`dbg.load_mem_file(path, addr)` — Load a binary file from an approved read path into memory at `addr`. Returns: nothing. Raises on monitor errors.
 
 ### Multi-CPU
 
@@ -864,11 +892,13 @@ Monitor/debugger integration. Most functions require the Machine Monitor to be a
 
 ### Scripting
 
-`dbg.run_script(path)` — Execute a monitor script file at `path`. Returns: nothing.
+`dbg.run_script(path)` — Execute a monitor script file from an approved read path. Before execution, every line and semicolon-separated command is validated with the same sandbox filter used by `dbg.command`. Host-file monitor commands are rejected. Returns: nothing.
 
-`dbg.macro(name, cmds)` — Define a monitor macro. `name` is the macro name; `cmds` is the command string. Returns: nothing.
+`dbg.macro(name, cmds)` — Define a monitor macro. `name` is the macro name; `cmds` is the semicolon-aware command string. Each command is sandbox-validated before registration. Macro names cannot contain whitespace or semicolons. Returns: nothing.
 
-`dbg.command(cmd)` — Execute a raw monitor command string. Returns: nothing.
+`dbg.command(cmd)` — Execute a monitor command string after sandbox filtering. Host-file-capable monitor commands are rejected (`save`, `load`, `ss`, `sl`, `script`, `macro`, and `trace file`; `trace file off` is allowed). Invoking monitor macros through this raw API is rejected. Returns: nothing.
+
+`dbg.command_output(cmd)` — Execute a sandbox-filtered monitor command string and return newly appended monitor output lines as `{text, color}` entries. The same command restrictions as `dbg.command` apply. Returns: table.
 
 Example — breakpoint workflow:
 
@@ -946,9 +976,9 @@ coproc.stop("ie32")
 
 Format-agnostic media loader. Supports SID, PSG/VGM, TED, AHX, POKEY/SAP, MOD, and WAV formats. WAV routing supports mono/stereo PCM through the WAV MMIO control surface.
 
-`media.load(filename)` — Load and start playing a music file, auto-detecting format. Returns: nothing. Raises only on immediate setup failures (e.g. scratch memory unavailable); format detection and decode errors are reported asynchronously via `media.status()` and `media.error()`.
+`media.load(filename)` — Load and start playing a music file from an approved read path, auto-detecting format. Returns: nothing. Raises on path validation or immediate setup failures (e.g. scratch memory unavailable); format detection and decode errors are reported asynchronously via `media.status()` and `media.error()`.
 
-`media.load_subsong(filename, subsong)` — Load a music file and select a specific sub-song index. Returns: nothing. Same error semantics as `media.load`.
+`media.load_subsong(filename, subsong)` — Load a music file from an approved read path and select a specific sub-song index. Returns: nothing. Same error semantics as `media.load`.
 
 `media.play()` — Resume playback (if paused or after load). Returns: nothing.
 
@@ -956,7 +986,7 @@ Format-agnostic media loader. Supports SID, PSG/VGM, TED, AHX, POKEY/SAP, MOD, a
 
 `media.status()` — Get the current playback status. Returns: string — one of `"idle"`, `"loading"`, `"playing"`, `"error"`.
 
-`media.type()` — Get the detected media type. Returns: string — one of `"sid"`, `"psg"`, `"ted"`, `"ahx"`, `"pokey"`, `"none"`.
+`media.type()` — Get the detected media type. Returns: string — one of `"sid"`, `"psg"`, `"ted"`, `"ahx"`, `"pokey"`, `"mod"`, `"wav"`, `"none"`.
 
 `media.error()` — Get the last error code (0 if no error). Returns: number.
 
@@ -993,6 +1023,12 @@ Lua 5.1 does not include a bitwise library. IEScript provides a `bit32` global t
 `bit32.lrotate(x, disp)` — Left rotation by `disp` bits. Returns: number.
 
 `bit32.rrotate(x, disp)` — Right rotation by `disp` bits. Returns: number.
+
+`bit32.extract(x, field[, width])` — Extract `width` bits starting at zero-based bit `field` (default width 1). Returns: number.
+
+`bit32.replace(x, v, field[, width])` — Replace `width` bits in `x` starting at zero-based bit `field` with low bits from `v` (default width 1). Returns: number.
+
+`bit32.btest(...)` — Bitwise AND of all arguments, returned as boolean true if any resulting bit is set. Returns: boolean.
 
 Example:
 
@@ -1188,7 +1224,7 @@ Install FFmpeg and ensure the executable is resolvable from your shell session.
 
 - check waits and timeouts (`wait_frames`, `wait_ms`, visual waits)
 - print state periodically with `sys.print`
-- inspect monitor state via `dbg.command(...)`
+- inspect monitor state via `dbg.command(...)` for sandbox-safe monitor commands
 
 ### REPL prints but script output not visible
 
@@ -1204,9 +1240,9 @@ Recording relies on an FFmpeg subprocess. If FFmpeg crashes or is killed, the re
 
 ## Quick Reference
 
-Compact reference for all 223 API functions.
+Compact reference for IEScript API functions.
 
-### sys (10)
+### sys (12)
 
 | Function | Returns |
 |----------|---------|
@@ -1220,6 +1256,8 @@ Compact reference for all 223 API functions.
 | `sys.fps()` | number |
 | `sys.quit()` | — |
 | `sys.emutos_drive(path)` | — |
+| `sys.capture_output(path)` | — |
+| `sys.capture_output_off()` | — |
 
 ### cpu (8)
 
@@ -1380,17 +1418,18 @@ Compact reference for all 223 API functions.
 | `repl.scroll_down(n)` | — |
 | `repl.line_count()` | number |
 
-### rec (5)
+### rec (6)
 
 | Function | Returns |
 |----------|---------|
 | `rec.screenshot(path)` | — |
 | `rec.start(path)` | — |
+| `rec.start_screen(path)` | — |
 | `rec.stop()` | — |
 | `rec.is_recording()` | boolean |
 | `rec.frame_count()` | number |
 
-### dbg (56)
+### dbg (57)
 
 | Function | Returns |
 |----------|---------|
@@ -1450,6 +1489,7 @@ Compact reference for all 223 API functions.
 | `dbg.run_script(path)` | — |
 | `dbg.macro(name, cmds)` | — |
 | `dbg.command(cmd)` | — |
+| `dbg.command_output(cmd)` | table |
 
 ### coproc (7)
 
@@ -1475,7 +1515,7 @@ Compact reference for all 223 API functions.
 | `media.type()` | string |
 | `media.error()` | number |
 
-### bit32 (9)
+### bit32 (12)
 
 | Function | Returns |
 |----------|---------|
@@ -1488,3 +1528,6 @@ Compact reference for all 223 API functions.
 | `bit32.arshift(x, disp)` | number |
 | `bit32.lrotate(x, disp)` | number |
 | `bit32.rrotate(x, disp)` | number |
+| `bit32.extract(x, field[, width])` | number |
+| `bit32.replace(x, v, field[, width])` | number |
+| `bit32.btest(...)` | boolean |

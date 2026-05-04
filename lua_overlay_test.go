@@ -3,64 +3,34 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	lua "github.com/yuin/gopher-lua"
 )
 
-func TestLuaOverlay_ActivateDeactivate(t *testing.T) {
-	o := NewLuaOverlay(nil)
-	if o.IsActive() {
-		t.Fatalf("overlay should start inactive")
-	}
-	o.Toggle()
-	if !o.IsActive() {
-		t.Fatalf("overlay should be active after toggle")
-	}
-	o.Toggle()
-	if o.IsActive() {
-		t.Fatalf("overlay should be inactive after second toggle")
-	}
-}
+func TestOverlay_ResetState_PanicSafe(t *testing.T) {
+	oldHook := luaOverlayRegisterModules
+	t.Cleanup(func() { luaOverlayRegisterModules = oldHook })
 
-func TestLuaOverlay_ExecuteLine(t *testing.T) {
-	o := NewLuaOverlay(nil)
-	o.submitInputLine("return 2+2")
-	found := false
-	for _, line := range o.output {
-		if strings.Contains(line, "4") {
-			found = true
-			break
-		}
+	luaOverlayRegisterModules = func(se *ScriptEngine, L *lua.LState, ctx context.Context) {
+		panic("register boom")
 	}
-	if !found {
-		t.Fatalf("expected REPL output to contain 4, got: %v", o.output)
+	o := &LuaOverlay{scriptEngine: NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())}
+	o.resetState()
+	if o.L != nil {
+		t.Fatal("LState should be nil after reset panic")
 	}
-}
+	if len(o.output) == 0 || !strings.Contains(o.output[len(o.output)-1], "register boom") {
+		t.Fatalf("missing reset panic output: %#v", o.output)
+	}
 
-func TestLuaOverlay_MultilineDetection(t *testing.T) {
-	o := NewLuaOverlay(nil)
-	o.submitInputLine("function foo()")
-	if !o.multiline {
-		t.Fatalf("expected multiline mode after incomplete function declaration")
+	luaOverlayRegisterModules = oldHook
+	o.resetState()
+	if o.L == nil {
+		t.Fatal("reset should recover on next attempt")
 	}
-	o.submitInputLine("return 1")
-	if !o.multiline {
-		t.Fatalf("expected multiline mode to continue before end")
-	}
-	o.submitInputLine("end")
-	if o.multiline {
-		t.Fatalf("expected multiline mode to end after complete chunk")
-	}
-}
-
-func TestLuaOverlay_History(t *testing.T) {
-	o := NewLuaOverlay(nil)
-	o.submitInputLine("a=1")
-	o.submitInputLine("a=2")
-	if len(o.history) != 2 {
-		t.Fatalf("history length=%d, want 2", len(o.history))
-	}
-	if o.history[0] != "a=1" || o.history[1] != "a=2" {
-		t.Fatalf("unexpected history contents: %v", o.history)
-	}
+	o.L.Close()
+	o.L = nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"image"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,6 +60,14 @@ type ScriptEngine struct {
 	outputCapture *os.File
 	stdoutOrig    *os.File
 	stderrOrig    *os.File
+
+	scriptName                 string
+	scriptDir                  string
+	scriptFreezeAdj            int32
+	scriptDbgOpenCount         int32
+	scriptDbgContributedFreeze bool
+	scriptAudioBaseFrozen      bool
+	scriptAudioTouched         bool
 }
 
 type coprocTicketBuf struct {
@@ -229,7 +239,7 @@ func (se *ScriptEngine) Cancel() {
 }
 
 func (se *ScriptEngine) validateScript(script string, name string) error {
-	L := lua.NewState()
+	L := se.newSandboxedState(context.Background(), name)
 	defer L.Close()
 	if _, err := L.LoadString(script); err != nil {
 		if name != "" {
@@ -242,6 +252,12 @@ func (se *ScriptEngine) validateScript(script string, name string) error {
 
 func (se *ScriptEngine) run(ctx context.Context, done chan struct{}, script string, scriptName string) {
 	defer func() {
+		if r := recover(); r != nil {
+			se.mu.Lock()
+			se.lastError = fmt.Errorf("script panic: %v", r)
+			se.mu.Unlock()
+		}
+		se.cleanupScriptState()
 		_ = se.stopOutputCapture()
 		se.running.Store(false)
 		// Release mouse override so the backend resumes hardware mouse updates.
@@ -257,11 +273,11 @@ func (se *ScriptEngine) run(ctx context.Context, done chan struct{}, script stri
 		close(done)
 	}()
 
-	L := lua.NewState()
+	L := se.newSandboxedState(ctx, scriptName)
 	defer L.Close()
 	se.lastYieldNS.Store(time.Now().UnixNano())
+	se.beginScriptState(scriptName)
 	se.registerModules(L, ctx)
-	se.configurePackagePath(L, scriptName)
 	se.registerBit32(L)
 
 	if err := L.DoString(script); err != nil {
@@ -271,22 +287,310 @@ func (se *ScriptEngine) run(ctx context.Context, done chan struct{}, script stri
 	}
 }
 
-func (se *ScriptEngine) configurePackagePath(L *lua.LState, scriptName string) {
-	if scriptName == "" {
+func (se *ScriptEngine) newSandboxedState(ctx context.Context, scriptName string) *lua.LState {
+	L := lua.NewState(lua.Options{SkipOpenLibs: true})
+	L.SetContext(ctx)
+	lua.OpenBase(L)
+	lua.OpenString(L)
+	lua.OpenMath(L)
+	lua.OpenTable(L)
+	lua.OpenPackage(L)
+	lua.OpenOs(L)
+	for _, name := range []string{"dofile", "loadfile", "loadstring", "load", "module", "collectgarbage"} {
+		L.SetGlobal(name, lua.LNil)
+	}
+	if osTbl, ok := L.GetGlobal("os").(*lua.LTable); ok {
+		for _, name := range []string{"execute", "exit", "remove", "rename", "tmpname", "setlocale"} {
+			osTbl.RawSetString(name, lua.LNil)
+		}
+	}
+	if packageTbl, ok := L.GetGlobal("package").(*lua.LTable); ok {
+		packageTbl.RawSetString("loadlib", lua.LNil)
+		packageTbl.RawSetString("seeall", lua.LNil)
+		packageTbl.RawSetString("loaders", L.NewTable())
+		packageTbl.RawSetString("searchers", L.NewTable())
+		packageTbl.RawSetString("path", lua.LString(""))
+		packageTbl.RawSetString("cpath", lua.LString(""))
+	}
+	L.SetGlobal("require", L.NewFunction(se.luaRestrictedRequire(scriptName)))
+	return L
+}
+
+func (se *ScriptEngine) scriptAllowedRoots(scriptName string) []string {
+	var roots []string
+	if scriptName != "" {
+		if dir := filepath.Dir(scriptName); dir != "" && dir != "." {
+			roots = append(roots, dir)
+		}
+	}
+	if se.scriptDir != "" && se.scriptDir != "." {
+		roots = append(roots, se.scriptDir)
+	}
+	roots = append(roots, filepath.Join("sdk", "scripts"))
+	return roots
+}
+
+func (se *ScriptEngine) luaRestrictedRequire(scriptName string) lua.LGFunction {
+	return func(L *lua.LState) int {
+		mod := L.CheckString(1)
+		if mod == "" || strings.Contains(mod, "..") || strings.ContainsAny(mod, `/\`) {
+			L.RaiseError("module %q is outside approved script roots", mod)
+			return 0
+		}
+		loaded := L.GetField(L.GetGlobal("package"), "loaded")
+		if tbl, ok := loaded.(*lua.LTable); ok {
+			if v := tbl.RawGetString(mod); v != lua.LNil {
+				L.Push(v)
+				return 1
+			}
+		}
+		modPath := filepath.FromSlash(strings.ReplaceAll(mod, ".", "/"))
+		candidates := []string{
+			modPath + ".lua",
+			filepath.Join(modPath, "init.lua"),
+		}
+		for _, root := range se.scriptAllowedRoots(scriptName) {
+			for _, rel := range candidates {
+				path, err := validatePathInRoot(root, filepath.Join(root, rel), pathOpRead)
+				if err != nil {
+					continue
+				}
+				fn, err := L.LoadFile(path)
+				if err != nil {
+					L.RaiseError("%v", err)
+					return 0
+				}
+				L.Push(fn)
+				if err := L.PCall(0, 1, nil); err != nil {
+					L.RaiseError("%v", err)
+					return 0
+				}
+				result := L.Get(-1)
+				L.Pop(1)
+				if result == lua.LNil {
+					result = lua.LTrue
+				}
+				if tbl, ok := loaded.(*lua.LTable); ok {
+					tbl.RawSetString(mod, result)
+				}
+				L.Push(result)
+				return 1
+			}
+		}
+		L.RaiseError("module %q not found in approved script roots", mod)
+		return 0
+	}
+}
+
+func (se *ScriptEngine) beginScriptState(scriptName string) {
+	se.scriptName = scriptName
+	se.scriptDir = ""
+	if scriptName != "" {
+		se.scriptDir = filepath.Dir(scriptName)
+	}
+	se.scriptFreezeAdj = 0
+	se.scriptDbgOpenCount = 0
+	se.scriptDbgContributedFreeze = false
+	se.scriptAudioTouched = false
+	se.scriptAudioBaseFrozen = false
+	if s := runtimeStatus.snapshot().sound; s != nil {
+		se.scriptAudioBaseFrozen = s.audioFrozen.Load()
+	}
+}
+
+func (se *ScriptEngine) cleanupScriptState() {
+	if se.scriptFreezeAdj > 0 {
+		se.freezeCount.Add(-se.scriptFreezeAdj)
+	}
+	if se.scriptDbgOpenCount > 0 && se.scriptDbgContributedFreeze {
+		if mon := se.monitor; mon != nil {
+			mon.Deactivate()
+		}
+		se.freezeCount.Add(-1)
+	}
+	if se.scriptAudioTouched {
+		if s := runtimeStatus.snapshot().sound; s != nil {
+			s.audioFrozen.Store(se.scriptAudioBaseFrozen)
+		}
+	}
+	se.coprocMu.Lock()
+	clear(se.coprocTickets)
+	se.coprocMu.Unlock()
+	se.scriptFreezeAdj = 0
+	se.scriptDbgOpenCount = 0
+	se.scriptDbgContributedFreeze = false
+	se.scriptAudioTouched = false
+}
+
+func (se *ScriptEngine) scriptDbgCloseInternal(mon *MachineMonitor) {
+	if se.scriptDbgOpenCount <= 0 {
 		return
 	}
-	dir := filepath.Dir(scriptName)
-	if dir == "" || dir == "." {
-		return
+	se.scriptDbgOpenCount--
+	if se.scriptDbgOpenCount == 0 && se.scriptDbgContributedFreeze {
+		mon.Deactivate()
+		se.freezeCount.Add(-1)
+		se.scriptDbgContributedFreeze = false
 	}
-	packageTbl, ok := L.GetGlobal("package").(*lua.LTable)
-	if !ok {
-		return
+}
+
+func (se *ScriptEngine) scriptDbgResumeAfterExit(mon *MachineMonitor) {
+	if se.scriptDbgOpenCount > 0 && se.scriptDbgContributedFreeze {
+		mon.Deactivate()
+		se.freezeCount.Add(-1)
 	}
-	currentPath := packageTbl.RawGetString("path").String()
-	localPath := filepath.Join(dir, "?.lua")
-	initPath := filepath.Join(dir, "?", "init.lua")
-	packageTbl.RawSetString("path", lua.LString(currentPath+";"+localPath+";"+initPath))
+	se.scriptDbgOpenCount = 0
+	se.scriptDbgContributedFreeze = false
+}
+
+type pathOp int
+
+const (
+	pathOpRead pathOp = iota
+	pathOpWrite
+)
+
+func validatePathInRoot(root, candidate string, op pathOp) (string, error) {
+	canonRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	var canonTarget string
+	switch op {
+	case pathOpRead:
+		canonTarget, err = filepath.EvalSymlinks(candidate)
+		if err != nil {
+			return "", err
+		}
+	case pathOpWrite:
+		parent := filepath.Dir(candidate)
+		base := filepath.Base(candidate)
+		canonParent, err := filepath.EvalSymlinks(parent)
+		if err != nil {
+			return "", err
+		}
+		canonTarget = filepath.Join(canonParent, base)
+		if _, err := os.Lstat(candidate); err == nil {
+			canonTarget, err = filepath.EvalSymlinks(candidate)
+			if err != nil {
+				return "", err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	default:
+		return "", errors.New("unknown path operation")
+	}
+	rel, err := filepath.Rel(canonRoot, canonTarget)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("path escapes approved root")
+	}
+	return canonTarget, nil
+}
+
+func (se *ScriptEngine) validateScriptPath(path string, op pathOp) (string, error) {
+	clean := filepath.Clean(path)
+	if clean == "." || clean == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	roots := se.scriptAllowedRoots(se.scriptName)
+	if op == pathOpWrite {
+		if filepath.IsAbs(clean) {
+			return "", fmt.Errorf("absolute writes are not allowed from scripts")
+		}
+		root := se.scriptDir
+		if root == "" || root == "." {
+			return "", fmt.Errorf("script-relative write root unavailable")
+		}
+		return validatePathInRoot(root, filepath.Join(root, clean), op)
+	}
+	for _, root := range roots {
+		candidate := clean
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(root, clean)
+		}
+		if path, err := validatePathInRoot(root, candidate, op); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("path %q is outside approved script roots", path)
+}
+
+func quoteMonitorArg(s string) string {
+	return strconv.Quote(s)
+}
+
+func redOutputError(lines []OutputLine) error {
+	var red []string
+	for _, line := range lines {
+		if line.Color == colorRed {
+			red = append(red, line.Text)
+		}
+	}
+	if len(red) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(red, "\n"))
+}
+
+func validateSandboxedMonitorCommand(input string, mon *MachineMonitor) error {
+	cmd := ParseCommand(input)
+	switch cmd.Name {
+	case "save", "load", "ss", "sl", "script", "macro":
+		return fmt.Errorf("dbg.command cannot run host-file monitor command %q; use the typed dbg wrapper", cmd.Name)
+	case "trace":
+		if len(cmd.Args) >= 1 && strings.EqualFold(cmd.Args[0], "file") {
+			if len(cmd.Args) >= 2 && strings.EqualFold(cmd.Args[1], "off") {
+				return nil
+			}
+			return fmt.Errorf("dbg.command cannot run trace file; use dbg.trace_file")
+		}
+	}
+	if mon != nil && cmd.Name != "" {
+		mon.mu.Lock()
+		_, isMacro := mon.macros[cmd.Name]
+		mon.mu.Unlock()
+		if isMacro {
+			return fmt.Errorf("dbg.command cannot invoke monitor macro %q", cmd.Name)
+		}
+	}
+	return nil
+}
+
+func validateSandboxedMonitorMacroBody(body string) error {
+	cmds, err := splitSemicolonAware(body)
+	if err != nil {
+		return err
+	}
+	for _, cmd := range cmds {
+		if err := validateSandboxedMonitorCommand(cmd, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSandboxedMonitorScriptFile(path string, mon *MachineMonitor) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	for lineNo, line := range splitScriptLines(string(data)) {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+			continue
+		}
+		cmds, err := splitSemicolonAware(line)
+		if err != nil {
+			return fmt.Errorf("line %d: %w", lineNo+1, err)
+		}
+		for _, cmd := range cmds {
+			if err := validateSandboxedMonitorCommand(cmd, mon); err != nil {
+				return fmt.Errorf("line %d: %w", lineNo+1, err)
+			}
+		}
+	}
+	return nil
 }
 
 func (se *ScriptEngine) registerBit32(L *lua.LState) {
@@ -357,6 +661,49 @@ func (se *ScriptEngine) registerBit32(L *lua.LState) {
 			x := toU32(L.CheckAny(1))
 			disp := uint(L.CheckInt(2) & 31)
 			L.Push(lua.LNumber((x >> disp) | (x << ((32 - disp) & 31))))
+			return 1
+		},
+		"btest": func(L *lua.LState) int {
+			out := uint32(^uint32(0))
+			if L.GetTop() > 0 {
+				out = toU32(L.Get(1))
+				for i := 2; i <= L.GetTop(); i++ {
+					out &= toU32(L.Get(i))
+				}
+			}
+			L.Push(lua.LBool(out != 0))
+			return 1
+		},
+		"extract": func(L *lua.LState) int {
+			x := toU32(L.CheckAny(1))
+			field := L.CheckInt(2)
+			width := L.OptInt(3, 1)
+			if field < 0 || width <= 0 || field+width > 32 {
+				L.RaiseError("trying to access non-existent bits")
+				return 0
+			}
+			mask := uint32(^uint32(0))
+			if width < 32 {
+				mask = (uint32(1) << uint(width)) - 1
+			}
+			L.Push(lua.LNumber((x >> uint(field)) & mask))
+			return 1
+		},
+		"replace": func(L *lua.LState) int {
+			x := toU32(L.CheckAny(1))
+			v := toU32(L.CheckAny(2))
+			field := L.CheckInt(3)
+			width := L.OptInt(4, 1)
+			if field < 0 || width <= 0 || field+width > 32 {
+				L.RaiseError("trying to access non-existent bits")
+				return 0
+			}
+			mask := uint32(^uint32(0))
+			if width < 32 {
+				mask = (uint32(1) << uint(width)) - 1
+			}
+			shifted := mask << uint(field)
+			L.Push(lua.LNumber((x &^ shifted) | ((v & mask) << uint(field))))
 			return 1
 		},
 	})
@@ -638,6 +985,7 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"run_script":          se.luaDbgRunScript(),
 		"macro":               se.luaDbgMacro(),
 		"command":             se.luaDbgCommand(),
+		"command_output":      se.luaDbgCommandOutput(),
 	})
 	L.SetGlobal("dbg", dbg)
 
@@ -884,7 +1232,12 @@ func (se *ScriptEngine) stopOutputCapture() error {
 func (se *ScriptEngine) luaSysCaptureOutput() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
-		if err := se.startOutputCapture(path); err != nil {
+		validated, err := se.validateScriptPath(path, pathOpWrite)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if err := se.startOutputCapture(validated); err != nil {
 			L.RaiseError("%v", err)
 		}
 		return 0
@@ -916,6 +1269,13 @@ func (se *ScriptEngine) luaCPULoad() lua.LGFunction {
 			path = emutosSent
 		} else if path == "AROS" && arosSent != "" {
 			path = arosSent
+		} else {
+			validated, err := se.validateScriptPath(path, pathOpRead)
+			if err != nil {
+				L.RaiseError("%v", err)
+				return 0
+			}
+			path = validated
 		}
 		se.loadingProgram.Store(true)
 		err := loader(path)
@@ -950,16 +1310,18 @@ func (se *ScriptEngine) luaCPUReset() lua.LGFunction {
 func (se *ScriptEngine) luaCPUFreeze() lua.LGFunction {
 	return func(L *lua.LState) int {
 		se.freezeCount.Add(1)
+		se.scriptFreezeAdj++
 		return 0
 	}
 }
 
 func (se *ScriptEngine) luaCPUResume() lua.LGFunction {
 	return func(L *lua.LState) int {
-		if se.freezeCount.Load() <= 0 {
+		if se.scriptFreezeAdj <= 0 {
 			return 0
 		}
 		se.freezeCount.Add(-1)
+		se.scriptFreezeAdj--
 		return 0
 	}
 }
@@ -1194,21 +1556,27 @@ func (se *ScriptEngine) luaCPUExecutionMode() lua.LGFunction {
 	}
 }
 
-func (se *ScriptEngine) requireFrozenForAddress(L *lua.LState, addr uint32) bool {
-	if se.bus.IsIOAddress(addr) {
-		return true
-	}
+func (se *ScriptEngine) requireFrozenForRange(L *lua.LState, addr uint32, n uint32) bool {
 	if se.freezeCount.Load() > 0 {
 		return true
 	}
-	L.RaiseError("raw memory access requires cpu.freeze()")
-	return false
+	for i := uint32(0); i < n; i++ {
+		if !se.bus.IsIOAddress(addr + i) {
+			L.RaiseError("raw memory access requires cpu.freeze()")
+			return false
+		}
+	}
+	return true
+}
+
+func (se *ScriptEngine) requireFrozenForAddress(L *lua.LState, addr uint32) bool {
+	return se.requireFrozenForRange(L, addr, 1)
 }
 
 func (se *ScriptEngine) luaMemRead8() lua.LGFunction {
 	return func(L *lua.LState) int {
 		addr := uint32(L.CheckInt(1))
-		if !se.requireFrozenForAddress(L, addr) {
+		if !se.requireFrozenForRange(L, addr, 1) {
 			return 0
 		}
 		L.Push(lua.LNumber(se.bus.Read8(addr)))
@@ -1219,7 +1587,7 @@ func (se *ScriptEngine) luaMemRead8() lua.LGFunction {
 func (se *ScriptEngine) luaMemRead16() lua.LGFunction {
 	return func(L *lua.LState) int {
 		addr := uint32(L.CheckInt(1))
-		if !se.requireFrozenForAddress(L, addr) {
+		if !se.requireFrozenForRange(L, addr, 2) {
 			return 0
 		}
 		L.Push(lua.LNumber(se.bus.Read16(addr)))
@@ -1230,7 +1598,7 @@ func (se *ScriptEngine) luaMemRead16() lua.LGFunction {
 func (se *ScriptEngine) luaMemRead32() lua.LGFunction {
 	return func(L *lua.LState) int {
 		addr := uint32(L.CheckInt(1))
-		if !se.requireFrozenForAddress(L, addr) {
+		if !se.requireFrozenForRange(L, addr, 4) {
 			return 0
 		}
 		L.Push(lua.LNumber(se.bus.Read32(addr)))
@@ -1242,7 +1610,7 @@ func (se *ScriptEngine) luaMemWrite8() lua.LGFunction {
 	return func(L *lua.LState) int {
 		addr := uint32(L.CheckInt(1))
 		val := uint8(L.CheckInt(2))
-		if !se.requireFrozenForAddress(L, addr) {
+		if !se.requireFrozenForRange(L, addr, 1) {
 			return 0
 		}
 		se.bus.Write8(addr, val)
@@ -1254,7 +1622,7 @@ func (se *ScriptEngine) luaMemWrite16() lua.LGFunction {
 	return func(L *lua.LState) int {
 		addr := uint32(L.CheckInt(1))
 		val := uint16(L.CheckInt(2))
-		if !se.requireFrozenForAddress(L, addr) {
+		if !se.requireFrozenForRange(L, addr, 2) {
 			return 0
 		}
 		se.bus.Write16(addr, val)
@@ -1266,7 +1634,7 @@ func (se *ScriptEngine) luaMemWrite32() lua.LGFunction {
 	return func(L *lua.LState) int {
 		addr := uint32(L.CheckInt(1))
 		val := uint32(L.CheckInt64(2))
-		if !se.requireFrozenForAddress(L, addr) {
+		if !se.requireFrozenForRange(L, addr, 4) {
 			return 0
 		}
 		se.bus.Write32(addr, val)
@@ -1286,7 +1654,7 @@ func (se *ScriptEngine) luaMemReadBlock() lua.LGFunction {
 			L.Push(lua.LString(""))
 			return 1
 		}
-		if !se.requireFrozenForAddress(L, addr) {
+		if !se.requireFrozenForRange(L, addr, uint32(n)) {
 			return 0
 		}
 		out := make([]byte, n)
@@ -1305,7 +1673,7 @@ func (se *ScriptEngine) luaMemWriteBlock() lua.LGFunction {
 		if len(data) == 0 {
 			return 0
 		}
-		if !se.requireFrozenForAddress(L, addr) {
+		if !se.requireFrozenForRange(L, addr, uint32(len(data))) {
 			return 0
 		}
 		for i, b := range data {
@@ -1327,7 +1695,7 @@ func (se *ScriptEngine) luaMemFill() lua.LGFunction {
 		if n == 0 {
 			return 0
 		}
-		if !se.requireFrozenForAddress(L, addr) {
+		if !se.requireFrozenForRange(L, addr, uint32(n)) {
 			return 0
 		}
 		for i := range n {
@@ -1586,6 +1954,7 @@ func (se *ScriptEngine) luaAudioFreeze() lua.LGFunction {
 	return func(L *lua.LState) int {
 		if s := runtimeStatus.snapshot().sound; s != nil {
 			s.audioFrozen.Store(true)
+			se.scriptAudioTouched = true
 		}
 		return 0
 	}
@@ -1595,6 +1964,7 @@ func (se *ScriptEngine) luaAudioResume() lua.LGFunction {
 	return func(L *lua.LState) int {
 		if s := runtimeStatus.snapshot().sound; s != nil {
 			s.audioFrozen.Store(false)
+			se.scriptAudioTouched = true
 		}
 		return 0
 	}
@@ -1700,12 +2070,17 @@ func (se *ScriptEngine) luaAudioResetMasterDynamics() lua.LGFunction {
 func (se *ScriptEngine) luaAudioPSGLoad() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		p := runtimeStatus.snapshot().psgPlayer
 		if p == nil {
 			L.RaiseError("psg player unavailable")
 			return 0
 		}
-		if err := p.Load(path); err != nil {
+		if err := p.Load(validated); err != nil {
 			L.RaiseError("%v", err)
 		}
 		return 0
@@ -1758,13 +2133,18 @@ func (se *ScriptEngine) luaAudioPSGMetadata() lua.LGFunction {
 func (se *ScriptEngine) luaAudioSIDLoad() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		subsong := L.OptInt(2, 0)
 		p := runtimeStatus.snapshot().sidPlayer
 		if p == nil {
 			L.RaiseError("sid player unavailable")
 			return 0
 		}
-		if err := p.LoadWithOptions(path, subsong, false, false); err != nil {
+		if err := p.LoadWithOptions(validated, subsong, false, false); err != nil {
 			L.RaiseError("%v", err)
 		}
 		return 0
@@ -1818,12 +2198,17 @@ func (se *ScriptEngine) luaAudioSIDMetadata() lua.LGFunction {
 func (se *ScriptEngine) luaAudioTEDLoad() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		p := runtimeStatus.snapshot().tedPlayer
 		if p == nil {
 			L.RaiseError("ted player unavailable")
 			return 0
 		}
-		if err := p.Load(path); err != nil {
+		if err := p.Load(validated); err != nil {
 			L.RaiseError("%v", err)
 		}
 		return 0
@@ -1891,12 +2276,17 @@ func (se *ScriptEngine) luaAudioPOKEYIsPlaying() lua.LGFunction {
 func (se *ScriptEngine) luaAudioPOKEYLoad() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		p := runtimeStatus.snapshot().pokeyPlayer
 		if p == nil {
 			L.RaiseError("pokey player unavailable")
 			return 0
 		}
-		if err := p.Load(path); err != nil {
+		if err := p.Load(validated); err != nil {
 			L.RaiseError("%v", err)
 		}
 		return 0
@@ -1906,12 +2296,17 @@ func (se *ScriptEngine) luaAudioPOKEYLoad() lua.LGFunction {
 func (se *ScriptEngine) luaAudioAHXLoad() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		a := runtimeStatus.snapshot().ahxEngine
 		if a == nil {
 			L.RaiseError("ahx engine unavailable")
 			return 0
 		}
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(validated)
 		if err != nil {
 			L.RaiseError("%v", err)
 			return 0
@@ -2849,7 +3244,12 @@ func withinTol(v, target, tol int) bool {
 func (se *ScriptEngine) luaRecScreenshot() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
-		if err := se.TakeScreenshot(path); err != nil {
+		validated, err := se.validateScriptPath(path, pathOpWrite)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if err := se.TakeScreenshot(validated); err != nil {
 			L.RaiseError("%v", err)
 		}
 		return 0
@@ -2859,12 +3259,17 @@ func (se *ScriptEngine) luaRecScreenshot() lua.LGFunction {
 func (se *ScriptEngine) luaRecStart() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpWrite)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		if se.recorder == nil {
 			L.RaiseError("recorder unavailable")
 			return 0
 		}
 		se.recorder.SetSoundChip(runtimeStatus.snapshot().sound)
-		if err := se.recorder.Start(path); err != nil {
+		if err := se.recorder.Start(validated); err != nil {
 			L.RaiseError("%v", err)
 		}
 		return 0
@@ -2909,12 +3314,17 @@ func (se *ScriptEngine) luaRecFrameCount() lua.LGFunction {
 func (se *ScriptEngine) luaRecStartScreen() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpWrite)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		if se.recorder == nil {
 			L.RaiseError("recorder unavailable")
 			return 0
 		}
 		se.recorder.SetSoundChip(runtimeStatus.snapshot().sound)
-		if err := se.recorder.StartScreen(path); err != nil {
+		if err := se.recorder.StartScreen(validated); err != nil {
 			L.RaiseError("%v", err)
 		}
 		return 0
@@ -3109,10 +3519,12 @@ func (se *ScriptEngine) luaDbgOpen() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
-		if !mon.IsActive() {
+		if se.scriptDbgOpenCount == 0 {
 			mon.Activate()
+			se.freezeCount.Add(1)
+			se.scriptDbgContributedFreeze = true
 		}
-		se.freezeCount.Add(1)
+		se.scriptDbgOpenCount++
 		return 0
 	}
 }
@@ -3126,12 +3538,7 @@ func (se *ScriptEngine) luaDbgClose() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
-		if mon.IsActive() {
-			mon.Deactivate()
-		}
-		if se.freezeCount.Load() > 0 {
-			se.freezeCount.Add(-1)
-		}
+		se.scriptDbgCloseInternal(mon)
 		return 0
 	}
 }
@@ -3188,7 +3595,10 @@ func (se *ScriptEngine) luaDbgContinue() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
-		mon.ExecuteCommand("g")
+		exit, _ := mon.ExecuteCommandResult("g")
+		if exit {
+			se.scriptDbgResumeAfterExit(mon)
+		}
 		return 0
 	}
 }
@@ -3217,7 +3627,10 @@ func (se *ScriptEngine) luaDbgRunUntil() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
-		mon.ExecuteCommand(fmt.Sprintf("u $%X", addr))
+		exit, _ := mon.ExecuteCommandResult(fmt.Sprintf("u $%X", addr))
+		if exit {
+			se.scriptDbgResumeAfterExit(mon)
+		}
 		return 0
 	}
 }
@@ -3701,6 +4114,11 @@ func (se *ScriptEngine) luaDbgBackstep() lua.LGFunction {
 func (se *ScriptEngine) luaDbgTraceFile() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpWrite)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		se.mu.Lock()
 		mon := se.monitor
 		se.mu.Unlock()
@@ -3708,7 +4126,7 @@ func (se *ScriptEngine) luaDbgTraceFile() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
-		mon.ExecuteCommand("trace file " + path)
+		mon.ExecuteCommand("trace file " + quoteMonitorArg(validated))
 		return 0
 	}
 }
@@ -3851,6 +4269,11 @@ func (se *ScriptEngine) monitorCommandOutput(mon *MachineMonitor, cmd string) []
 func (se *ScriptEngine) luaDbgSaveState() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpWrite)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		se.mu.Lock()
 		mon := se.monitor
 		se.mu.Unlock()
@@ -3858,7 +4281,10 @@ func (se *ScriptEngine) luaDbgSaveState() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
-		mon.ExecuteCommand("ss " + path)
+		_, out := mon.ExecuteCommandResult("ss " + quoteMonitorArg(validated))
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
+		}
 		return 0
 	}
 }
@@ -3866,12 +4292,17 @@ func (se *ScriptEngine) luaDbgSaveState() lua.LGFunction {
 func (se *ScriptEngine) luaDbgLoadState() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		mon, cpu, err := se.getMonitorAndCPU()
 		if err != nil {
 			L.RaiseError("%v", err)
 			return 0
 		}
-		snap, err := LoadSnapshotFromFile(path)
+		snap, err := LoadSnapshotFromFile(validated)
 		if err != nil {
 			L.RaiseError("%v", err)
 			return 0
@@ -3890,6 +4321,11 @@ func (se *ScriptEngine) luaDbgSaveMemFile() lua.LGFunction {
 		start := uint64(L.CheckInt64(1))
 		length := uint64(L.CheckInt64(2))
 		path := L.CheckString(3)
+		validated, err := se.validateScriptPath(path, pathOpWrite)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		if length == 0 {
 			return 0
 		}
@@ -3901,7 +4337,10 @@ func (se *ScriptEngine) luaDbgSaveMemFile() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
-		mon.ExecuteCommand(fmt.Sprintf("save $%X $%X %s", start, end, path))
+		_, out := mon.ExecuteCommandResult(fmt.Sprintf("save $%X $%X %s", start, end, quoteMonitorArg(validated)))
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
+		}
 		return 0
 	}
 }
@@ -3909,6 +4348,11 @@ func (se *ScriptEngine) luaDbgSaveMemFile() lua.LGFunction {
 func (se *ScriptEngine) luaDbgLoadMemFile() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		addr := uint64(L.CheckInt64(2))
 		se.mu.Lock()
 		mon := se.monitor
@@ -3917,7 +4361,10 @@ func (se *ScriptEngine) luaDbgLoadMemFile() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
-		mon.ExecuteCommand(fmt.Sprintf("load %s $%X", path, addr))
+		_, out := mon.ExecuteCommandResult(fmt.Sprintf("load %s $%X", quoteMonitorArg(validated), addr))
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
+		}
 		return 0
 	}
 }
@@ -4089,6 +4536,11 @@ func (se *ScriptEngine) luaDbgIO() lua.LGFunction {
 func (se *ScriptEngine) luaDbgRunScript() lua.LGFunction {
 	return func(L *lua.LState) int {
 		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		se.mu.Lock()
 		mon := se.monitor
 		se.mu.Unlock()
@@ -4096,7 +4548,14 @@ func (se *ScriptEngine) luaDbgRunScript() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
-		mon.ExecuteCommand("script " + path)
+		if err := validateSandboxedMonitorScriptFile(validated, mon); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		_, out := mon.ExecuteCommandResult("script " + quoteMonitorArg(validated))
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
+		}
 		return 0
 	}
 }
@@ -4105,6 +4564,14 @@ func (se *ScriptEngine) luaDbgMacro() lua.LGFunction {
 	return func(L *lua.LState) int {
 		name := L.CheckString(1)
 		cmds := L.CheckString(2)
+		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t;") {
+			L.RaiseError("invalid macro name")
+			return 0
+		}
+		if err := validateSandboxedMonitorMacroBody(cmds); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		se.mu.Lock()
 		mon := se.monitor
 		se.mu.Unlock()
@@ -4112,7 +4579,10 @@ func (se *ScriptEngine) luaDbgMacro() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
-		mon.ExecuteCommand("macro " + name + " " + cmds)
+		_, out := mon.ExecuteCommandResult("macro " + quoteMonitorArg(name) + " " + cmds)
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
+		}
 		return 0
 	}
 }
@@ -4127,8 +4597,39 @@ func (se *ScriptEngine) luaDbgCommand() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
+		if err := validateSandboxedMonitorCommand(cmd, mon); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		mon.ExecuteCommand(cmd)
 		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgCommandOutput() lua.LGFunction {
+	return func(L *lua.LState) int {
+		cmd := L.CheckString(1)
+		se.mu.Lock()
+		mon := se.monitor
+		se.mu.Unlock()
+		if mon == nil {
+			L.RaiseError("monitor unavailable")
+			return 0
+		}
+		if err := validateSandboxedMonitorCommand(cmd, mon); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		_, out := mon.ExecuteCommandResult(cmd)
+		t := L.NewTable()
+		for i, line := range out {
+			e := L.NewTable()
+			e.RawSetString("text", lua.LString(line.Text))
+			e.RawSetString("color", lua.LNumber(line.Color))
+			t.RawSetInt(i+1, e)
+		}
+		L.Push(t)
+		return 1
 	}
 }
 
@@ -4270,6 +4771,10 @@ func mediaTypeToString(typ uint32) string {
 		return "ahx"
 	case MEDIA_TYPE_POKEY:
 		return "pokey"
+	case MEDIA_TYPE_MOD:
+		return "mod"
+	case MEDIA_TYPE_WAV:
+		return "wav"
 	default:
 		return "none"
 	}
@@ -4293,6 +4798,11 @@ func (se *ScriptEngine) coprocFindResponse(ticket uint32) (uint32, uint32, uint3
 			respCap := se.bus.Read32(reqAddr + REQ_RESP_CAP_OFF)
 			respLen := se.bus.Read32(respAddr + RESP_RESP_LEN_OFF)
 			status := se.bus.Read32(respAddr + RESP_STATUS_OFF)
+			if status != COPROC_TICKET_PENDING {
+				se.coprocMu.Lock()
+				delete(se.coprocTickets, ticket)
+				se.coprocMu.Unlock()
+			}
 			return respPtr, min(respCap, respLen), status, true
 		}
 	}
@@ -4499,7 +5009,12 @@ func (se *ScriptEngine) mediaPlayWith(filename string, subsong uint32) error {
 
 func (se *ScriptEngine) luaMediaLoad() lua.LGFunction {
 	return func(L *lua.LState) int {
-		if err := se.mediaPlayWith(L.CheckString(1), 0); err != nil {
+		filename, err := se.validateScriptPath(L.CheckString(1), pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if err := se.mediaPlayWith(filename, 0); err != nil {
 			L.RaiseError("%v", err)
 		}
 		return 0
@@ -4508,7 +5023,11 @@ func (se *ScriptEngine) luaMediaLoad() lua.LGFunction {
 
 func (se *ScriptEngine) luaMediaLoadSubsong() lua.LGFunction {
 	return func(L *lua.LState) int {
-		filename := L.CheckString(1)
+		filename, err := se.validateScriptPath(L.CheckString(1), pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
 		subsong := uint32(L.CheckInt(2))
 		if err := se.mediaPlayWith(filename, subsong); err != nil {
 			L.RaiseError("%v", err)

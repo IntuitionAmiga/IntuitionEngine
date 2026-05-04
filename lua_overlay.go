@@ -43,6 +43,10 @@ var (
 	luaClipboardOK   bool
 )
 
+var luaOverlayRegisterModules = func(se *ScriptEngine, L *lua.LState, ctx context.Context) {
+	se.registerModules(L, ctx)
+}
+
 const luaOverlayBG = uint32(0x0055AAFF)
 
 func NewLuaOverlay(scriptEngine *ScriptEngine) *LuaOverlay {
@@ -134,10 +138,24 @@ func (o *LuaOverlay) resetState() {
 	defer o.mu.Unlock()
 	if o.L != nil {
 		o.L.Close()
+		o.L = nil
 	}
-	L := lua.NewState()
+	L := lua.NewState(lua.Options{SkipOpenLibs: true})
+	lua.OpenBase(L)
+	lua.OpenString(L)
+	lua.OpenMath(L)
+	lua.OpenTable(L)
+	lua.OpenPackage(L)
+	lua.OpenOs(L)
+	defer func() {
+		if r := recover(); r != nil {
+			L.Close()
+			o.L = nil
+			o.appendOutputLocked(fmt.Sprintf("Lua reset failed: %v", r))
+		}
+	}()
 	if o.scriptEngine != nil {
-		o.scriptEngine.registerModules(L, context.Background())
+		luaOverlayRegisterModules(o.scriptEngine, L, context.Background())
 	}
 	L.SetGlobal("print", L.NewFunction(func(L *lua.LState) int {
 		args := make([]string, 0, L.GetTop())
