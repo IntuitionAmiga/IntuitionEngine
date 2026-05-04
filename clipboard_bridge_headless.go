@@ -55,3 +55,5 @@ func (cb *ClipboardBridge) HandleWrite(addr uint32, val uint32) {
 		}
 	}
 }
+
+func (cb *ClipboardBridge) Close() {}

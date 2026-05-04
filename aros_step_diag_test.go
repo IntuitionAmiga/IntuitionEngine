@@ -20,8 +20,8 @@ func TestAROSPostReadySingleStepDiagnostic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Getwd() failed: %v", err)
 	}
-	driveRoot := resolveAROSDrivePath("", filepath.Join(wd, "IntuitionEngine"))
-	if !isAROSDrivePath(driveRoot) {
+	driveRoot, driveErr := resolveAROSDrivePath("", filepath.Join(wd, "IntuitionEngine"))
+	if driveErr != nil || !isAROSDrivePath(driveRoot) {
 		t.Skip("AROS drive tree not available")
 	}
 

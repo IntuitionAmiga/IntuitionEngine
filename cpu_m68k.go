@@ -675,16 +675,15 @@ type M68KCPU struct {
 	gemdosHandler *GemdosInterceptor
 	xbiosHandler  *XBIOSInterceptor
 
+	// Optional Amiga INTENA master enable. AROS IE builds use SR/IPL traps,
+	// but this preserves compatibility with ROMs that still write $DFF09A.
+	AmigaINTENA *atomic.Bool
+
 	// Performance monitoring (matching IE32 pattern)
 	PerfEnabled      bool      // Enable MIPS reporting
 	InstructionCount uint64    // Total instructions executed
 	perfStartTime    time.Time // When execution started
 	lastPerfReport   time.Time // Last time we printed stats
-
-	// Amiga INTENA master enable (nil = no INTENA emulation, used for AROS).
-	// On Amiga, INTENA ($DFF09A) bit 14 gates all interrupt delivery.
-	// AROS kernel_cpu.c uses move.w #$4000/$C000 to disable/enable.
-	AmigaINTENA *atomic.Bool
 
 	// IRQ diagnostic counters (AROS freeze investigation, exposed via MMIO at 0xF23C0)
 	irqL4Delivered   atomic.Uint32
@@ -2408,8 +2407,7 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 	innerLoop:
 		for range 4096 {
 			// STOP state: real 68020 continuously samples IPL pins and wakes
-			// when an interrupt exceeds the SR mask. No inException gating —
-			// the only criteria are IPL comparison and INTENA (modelling Paula).
+			// when an interrupt exceeds the SR mask. No inException gating.
 			if cpu.stopped.Load() {
 				pendingException := cpu.pendingException.Load()
 				if pendingException != 0 {
@@ -2438,9 +2436,7 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 									}
 								}
 							} else {
-								// INTENA blocked delivery — go back to STOP.
-								// Real 68020 would simply not see the IPL
-								// (Paula wouldn't assert it with INTENA off).
+								// IPL masking blocked delivery — go back to STOP.
 								cpu.stopped.Store(true)
 							}
 							break
@@ -2870,23 +2866,8 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 		return
 	}
 
-	// Amiga INTENA register emulation for AROS compatibility.
-	// AROS kernel writes move.w #$C000/$4000, $DFF09A to enable/disable
-	// the interrupt master gate. Without this, interrupts nest unboundedly
-	// during task switching (KrnSti drops IPL, timer re-asserts).
-	if addr == 0xDFF09A && cpu.AmigaINTENA != nil {
-		// Amiga INTENA protocol: bit 15 = SET(1)/CLEAR(0), bit 14 = master enable
-		if value&0x8000 != 0 {
-			// SET command
-			if value&0x4000 != 0 {
-				cpu.AmigaINTENA.Store(true)
-			}
-		} else {
-			// CLEAR command
-			if value&0x4000 != 0 {
-				cpu.AmigaINTENA.Store(false)
-			}
-		}
+	if addr == 0xDFF09A && cpu.AmigaINTENA != nil && value&0x4000 != 0 {
+		cpu.AmigaINTENA.Store(value&0x8000 != 0)
 	}
 
 	// I/O register path - pass original value (not byte-swapped).
@@ -3820,14 +3801,10 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 
 // ProcessInterrupt attempts to deliver an interrupt at the given level.
 // Returns true if the interrupt was actually delivered, false if blocked
-// by INTENA (Paula gate) or IPL masking (SR). Callers must only clear
+// by IPL masking (SR). Callers must only clear
 // pending bits when this returns true — otherwise the interrupt stays
 // pending for delivery when conditions change.
 func (cpu *M68KCPU) ProcessInterrupt(level uint8) bool {
-	// Amiga INTENA master gate: when disabled, no interrupts are delivered.
-	// This prevents nested interrupts during AROS task switching.
-	// Return false so the caller leaves the pending bit set — matching
-	// real Amiga INTREQ behavior where pending bits survive INTENA masking.
 	if cpu.AmigaINTENA != nil && !cpu.AmigaINTENA.Load() {
 		if level == 4 {
 			cpu.irqL4Blocked.Add(1)

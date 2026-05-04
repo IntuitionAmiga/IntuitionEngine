@@ -502,7 +502,12 @@ func newAROSInterpreterBootEnvironment(rom []byte, hostRoot string, withCoproces
 		}
 	}
 
-	dma := NewArosAudioDMA(bus, sound, cpu)
+	dma, err := NewArosAudioDMA(bus, sound, cpu)
+	if err != nil {
+		sound.Stop()
+		video.Stop()
+		return nil, fmt.Errorf("create AROS audio DMA: %w", err)
+	}
 	bus.UnmapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END)
 	bus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, dma.HandleRead, dma.HandleWrite)
 	sound.SetSampleTicker(dma)

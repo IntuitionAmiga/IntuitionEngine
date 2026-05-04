@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -10,9 +11,13 @@ const (
 	arosDirectVRAMSize = 0x200000
 )
 
-func resolveAROSDrivePath(explicit, exePath string) string {
+func resolveAROSDrivePath(explicit, exePath string) (string, error) {
 	if explicit != "" {
-		return explicit
+		absPath, err := filepath.Abs(explicit)
+		if err != nil || !isAROSDrivePath(absPath) {
+			return "", fmt.Errorf("invalid -aros-drive %q: not a valid AROS system tree", explicit)
+		}
+		return absPath, nil
 	}
 
 	for _, candidate := range arosDriveCandidates(exePath) {
@@ -21,15 +26,11 @@ func resolveAROSDrivePath(explicit, exePath string) string {
 			continue
 		}
 		if isAROSDrivePath(absCandidate) {
-			return absCandidate
+			return absCandidate, nil
 		}
 	}
 
-	if home, err := os.UserHomeDir(); err == nil {
-		return home
-	}
-
-	return ""
+	return "", fmt.Errorf("AROS system tree not found; use -aros-drive <path> or install bundled AROS/")
 }
 
 func arosDriveCandidates(exePath string) []string {

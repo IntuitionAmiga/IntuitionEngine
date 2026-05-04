@@ -36,7 +36,10 @@ func TestResolveAROSDrivePath(t *testing.T) {
 		}
 
 		want := makeArosTree(filepath.Join(root, "AROS", "bin", "ie-m68k", "bin", "ie-m68k", "AROS"))
-		got := resolveAROSDrivePath("", filepath.Join(t.TempDir(), "IntuitionEngine"))
+		got, err := resolveAROSDrivePath("", filepath.Join(t.TempDir(), "IntuitionEngine"))
+		if err != nil {
+			t.Fatalf("resolveAROSDrivePath(): %v", err)
+		}
 		if got != want {
 			t.Fatalf("resolveAROSDrivePath() = %q, want %q", got, want)
 		}
@@ -57,12 +60,31 @@ func TestResolveAROSDrivePath(t *testing.T) {
 			t.Fatalf("MkdirAll(%q): %v", filepath.Dir(exePath), err)
 		}
 
-		got := resolveAROSDrivePath("", exePath)
+		got, err := resolveAROSDrivePath("", exePath)
+		if err != nil {
+			t.Fatalf("resolveAROSDrivePath(): %v", err)
+		}
 		if got != want {
 			t.Fatalf("resolveAROSDrivePath() = %q, want %q", got, want)
 		}
 		if !isAROSDrivePath(got) {
 			t.Fatalf("resolved path %q is not a valid AROS drive", got)
+		}
+	})
+
+	t.Run("explicit invalid rejected", func(t *testing.T) {
+		if got, err := resolveAROSDrivePath(filepath.Join(t.TempDir(), "missing"), ""); err == nil || got != "" {
+			t.Fatalf("resolveAROSDrivePath(invalid) = (%q,%v), want empty error", got, err)
+		}
+	})
+
+	t.Run("omitted missing returns error", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Chdir(root); err != nil {
+			t.Fatalf("Chdir(%q): %v", root, err)
+		}
+		if got, err := resolveAROSDrivePath("", filepath.Join(root, "bin", "IntuitionEngine")); err == nil || got != "" {
+			t.Fatalf("resolveAROSDrivePath(missing) = (%q,%v), want empty error", got, err)
 		}
 	})
 }

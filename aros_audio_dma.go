@@ -38,29 +38,34 @@ type ArosAudioDMA struct {
 }
 
 type arosAudDMACh struct {
-	ptr    uint32  // sample pointer in guest RAM
-	len    uint32  // sample length in words (×2 = bytes)
-	per    uint32  // Paula period
-	vol    uint32  // Paula volume (0–64)
-	lptr   uint32  // arm-time latched sample pointer
-	llen   uint32  // arm-time latched sample length
-	lper   uint32  // arm-time latched period
-	lvol   uint32  // arm-time latched volume
-	pos    uint32  // current byte offset within buffer
-	phase  float64 // fractional sample accumulator
-	active bool    // DMA running
+	ptr     uint32 // sample pointer in guest RAM
+	len     uint32 // sample length in words (×2 = bytes)
+	per     uint32 // Paula period
+	vol     uint32 // Paula volume (0–64)
+	lptr    uint32 // arm-time latched sample pointer
+	llen    uint32 // arm-time latched sample length
+	lper    uint32 // arm-time latched period
+	lvol    uint32 // arm-time latched volume
+	nptr    uint32 // next-buffer latched pointer
+	nlen    uint32 // next-buffer latched length
+	nper    uint32 // next-buffer latched period
+	nvol    uint32 // next-buffer latched volume
+	hasNext bool
+	pos     uint32  // current byte offset within buffer
+	phase   float64 // fractional sample accumulator
+	active  bool    // DMA running
 }
 
 // NewArosAudioDMA creates a DMA engine wired to the given bus, SoundChip,
 // and M68K CPU. Call MapIO afterwards to register the MMIO handlers.
-func NewArosAudioDMA(bus *MachineBus, sc *SoundChip, cpu *M68KCPU) *ArosAudioDMA {
+func NewArosAudioDMA(bus *MachineBus, sc *SoundChip, cpu *M68KCPU) (*ArosAudioDMA, error) {
 	pb := AROSProfileBounds(bus)
+	if pb.Err != nil {
+		return nil, pb.Err
+	}
 	top := pb.TopOfRAM
-	if top == 0 {
-		// AROSProfileBounds rejected the bus sizing (e.g. test rig with no
-		// sizing wired and tiny memory). Fall back to len(memory) so the DMA
-		// still bounds-checks against something sane rather than zero.
-		top = uint32(len(bus.memory))
+	if memLen := uint32(len(bus.memory)); top == 0 || top > memLen {
+		top = memLen
 	}
 	return &ArosAudioDMA{
 		bus:        bus,
@@ -68,7 +73,7 @@ func NewArosAudioDMA(bus *MachineBus, sc *SoundChip, cpu *M68KCPU) *ArosAudioDMA
 		cpu:        cpu,
 		memBase:    unsafe.Pointer(&bus.memory[0]),
 		profileTop: top,
-	}
+	}, nil
 }
 
 func (dma *ArosAudioDMA) Reset() {
@@ -91,6 +96,26 @@ func arosAudioTeardown(dma *ArosAudioDMA, sysBus *MachineBus, chip *SoundChip) {
 	sysBus.UnmapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END)
 	runtimeStatus.setPaulaDMA(nil)
 	chip.UnregisterSampleTickerIf("default", dma)
+}
+
+func arosTeardownAll(snap runtimeStatusSnapshot, sysBus *MachineBus, chip *SoundChip) {
+	if sysBus == nil {
+		return
+	}
+	if snap.paulaDMA != nil {
+		arosAudioTeardown(snap.paulaDMA, sysBus, chip)
+	}
+	if snap.arosDOS != nil {
+		snap.arosDOS.Close()
+		sysBus.UnmapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END)
+		runtimeStatus.setAROSDOS(nil)
+	}
+	if snap.arosClip != nil {
+		snap.arosClip.Close()
+		sysBus.UnmapIO(CLIP_REGION_BASE, CLIP_REGION_END)
+		runtimeStatus.setAROSClipboard(nil)
+	}
+	sysBus.UnmapIO(IRQ_DIAG_REGION_BASE, IRQ_DIAG_REGION_END)
 }
 
 // TickSample is called at 44100 Hz from SoundChip.ReadSample().
@@ -127,12 +152,24 @@ func (dma *ArosAudioDMA) TickSample() {
 		bufBytes := c.llen * 2 // len is in words
 		if c.pos >= bufBytes {
 			// Buffer exhausted — signal completion
-			c.pos = 0
-			c.active = false
-			dma.dmacon &^= 1 << ch
 			dma.status |= 1 << ch
 			if dma.intena&(1<<ch) != 0 {
 				assertIRQ = true
+			}
+			c.pos = 0
+			if c.hasNext && c.nper != 0 && c.nlen != 0 {
+				c.lptr = c.nptr
+				c.llen = c.nlen
+				c.lper = c.nper
+				c.lvol = c.nvol
+				c.ptr = c.nptr
+				c.len = c.nlen
+				c.per = c.nper
+				c.vol = c.nvol
+				c.hasNext = false
+			} else {
+				c.active = false
+				dma.dmacon &^= 1 << ch
 			}
 			continue
 		}
@@ -212,19 +249,35 @@ func (dma *ArosAudioDMA) HandleWrite(addr, value uint32) {
 		switch off {
 		case AROS_AUD_OFF_PTR:
 			c.ptr = value &^ 1
+			if c.active {
+				c.nptr = c.ptr
+				c.hasNext = true
+			}
 		case AROS_AUD_OFF_LEN:
 			c.len = value
+			if c.active {
+				c.nlen = value
+				c.hasNext = true
+			}
 		case AROS_AUD_OFF_PER:
 			if value == 0 {
 				dma.mu.Unlock()
 				return
 			}
 			c.per = value
+			if c.active {
+				c.nper = value
+				c.hasNext = true
+			}
 		case AROS_AUD_OFF_VOL:
 			if value > 64 {
 				value = 64
 			}
 			c.vol = value
+			if c.active {
+				c.nvol = value
+				c.hasNext = true
+			}
 		}
 		dma.mu.Unlock()
 		return
@@ -252,6 +305,11 @@ func (dma *ArosAudioDMA) HandleWrite(addr, value uint32) {
 					c.llen = c.len
 					c.lper = c.per
 					c.lvol = c.vol
+					c.nptr = c.ptr
+					c.nlen = c.len
+					c.nper = c.per
+					c.nvol = c.vol
+					c.hasNext = false
 					c.pos = 0
 					c.phase = 0
 					c.active = true

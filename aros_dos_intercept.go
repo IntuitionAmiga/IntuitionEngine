@@ -1,13 +1,28 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
+
+const arosDOSMaxPacket = 1 << 20
+
+type resolveReason uint8
+
+const (
+	resolveOK resolveReason = iota
+	resolveNotFound
+	resolveWrongType
+	resolveExists
+)
+
+var arosOpenFile = os.OpenFile
 
 // ArosDOSDevice provides host filesystem access to AROS via MMIO.
 // The AROS packet handler (iehandler) translates AmigaDOS packets
@@ -178,7 +193,7 @@ func (d *ArosDOSDevice) dispatch(cmd uint32) {
 	case ADOS_CMD_SET_FILESIZE:
 		d.cmdSetFileSize()
 	case ADOS_CMD_SET_PROTECT:
-		d.res1 = ADOS_DOSTRUE // no-op: iehandler doesn't forward protect bits
+		d.cmdSetProtect()
 	case ADOS_CMD_EXAMINE_FH:
 		d.cmdExamineFH()
 	default:
@@ -204,8 +219,8 @@ func (d *ArosDOSDevice) cmdLock() {
 	}
 
 	name := d.readString(namePtr)
-	hostPath, pathOK := d.resolvePath(parent.hostPath, name)
-	if !pathOK {
+	hostPath, reason := d.resolveOpenReadDOSPath(parent.hostPath, name)
+	if reason != resolveOK {
 		if d.debugTrace {
 			fmt.Printf("[ADOS] LOCK %q (parent=%d) → path resolve failed\n", name, parentKey)
 		}
@@ -482,8 +497,8 @@ func (d *ArosDOSDevice) cmdFindInput() {
 	}
 
 	name := d.readString(namePtr)
-	hostPath, pathOK := d.resolvePath(parent.hostPath, name)
-	if !pathOK {
+	hostPath, reason := d.resolveOpenReadDOSPath(parent.hostPath, name)
+	if reason != resolveOK {
 		if d.debugTrace {
 			fmt.Printf("[ADOS] FINDINPUT %q (parent=%d) → path resolve failed\n", name, parentKey)
 		}
@@ -491,7 +506,17 @@ func (d *ArosDOSDevice) cmdFindInput() {
 		return
 	}
 
-	f, err := os.Open(hostPath)
+	info, err := os.Stat(hostPath)
+	if err != nil {
+		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
+		return
+	}
+	if !info.Mode().IsRegular() {
+		d.res2 = ADOS_ERROR_OBJECT_WRONG_TYPE
+		return
+	}
+
+	f, err := arosOpenFile(hostPath, os.O_RDONLY, 0)
 	if err != nil {
 		if d.debugTrace {
 			fmt.Printf("[ADOS] FINDINPUT %q (parent=%d, path=%q) → %v\n", name, parentKey, hostPath, err)
@@ -532,15 +557,20 @@ func (d *ArosDOSDevice) cmdFindOutput() {
 	}
 
 	name := d.readString(namePtr)
-	hostPath, pathOK := d.resolvePath(parent.hostPath, name)
-	if !pathOK {
+	hostPath, reason := d.resolveCreateDOSPath(parent.hostPath, name)
+	switch reason {
+	case resolveOK, resolveExists:
+	case resolveWrongType:
+		d.res2 = ADOS_ERROR_OBJECT_WRONG_TYPE
+		return
+	default:
 		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		return
 	}
 
-	f, err := os.Create(hostPath)
+	f, err := arosOpenFile(hostPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC|arosOpenNoFollow, 0644)
 	if err != nil {
-		d.res2 = ADOS_ERROR_WRITE_PROTECTED
+		d.res2 = mapWriteErr(err)
 		return
 	}
 
@@ -572,15 +602,22 @@ func (d *ArosDOSDevice) cmdFindUpdate() {
 	}
 
 	name := d.readString(namePtr)
-	hostPath, pathOK := d.resolvePath(parent.hostPath, name)
-	if !pathOK {
+	hostPath, reason := d.resolveUpdateDOSPath(parent.hostPath, name)
+	if reason == resolveNotFound {
+		hostPath, reason = d.resolveCreateDOSPath(parent.hostPath, name)
+	}
+	if reason == resolveWrongType {
+		d.res2 = ADOS_ERROR_OBJECT_WRONG_TYPE
+		return
+	}
+	if reason != resolveOK && reason != resolveExists {
 		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		return
 	}
 
-	f, err := os.OpenFile(hostPath, os.O_RDWR|os.O_CREATE, 0644)
+	f, err := arosOpenFile(hostPath, os.O_RDWR|os.O_CREATE|arosOpenNoFollow, 0644)
 	if err != nil {
-		d.res2 = ADOS_ERROR_WRITE_PROTECTED
+		d.res2 = mapWriteErr(err)
 		return
 	}
 
@@ -607,12 +644,19 @@ func (d *ArosDOSDevice) cmdRead() {
 		return
 	}
 
-	buf := make([]byte, length)
+	if length > arosDOSMaxPacket {
+		d.res1 = 0xFFFFFFFF
+		d.res2 = ADOS_ERROR_OBJECT_TOO_LARGE
+		return
+	}
+
+	buf := make([]byte, int(length))
 	n, err := f.Read(buf)
 	if n > 0 {
-		for i := 0; i < n; i++ {
-			writeAddr := bufPtr + uint32(i)
-			d.bus.Write8(writeAddr, buf[i])
+		if err := WriteGuestBytes(d.bus, bufPtr, 0, buf[:n]); err != nil {
+			d.res1 = 0xFFFFFFFF
+			d.res2 = ADOS_ERROR_OBJECT_TOO_LARGE
+			return
 		}
 	}
 
@@ -646,15 +690,23 @@ func (d *ArosDOSDevice) cmdWrite() {
 		return
 	}
 
-	buf := make([]byte, length)
-	for i := uint32(0); i < length; i++ {
-		buf[i] = d.bus.Read8(bufPtr + i)
+	if length > arosDOSMaxPacket {
+		d.res1 = 0xFFFFFFFF
+		d.res2 = ADOS_ERROR_OBJECT_TOO_LARGE
+		return
+	}
+
+	buf := make([]byte, int(length))
+	if err := ReadGuestBytes(d.bus, bufPtr, 0, buf); err != nil {
+		d.res1 = 0xFFFFFFFF
+		d.res2 = ADOS_ERROR_OBJECT_TOO_LARGE
+		return
 	}
 
 	n, err := f.Write(buf)
 	if err != nil {
 		d.res1 = 0xFFFFFFFF // -1
-		d.res2 = ADOS_ERROR_WRITE_PROTECTED
+		d.res2 = mapWriteErr(err)
 		return
 	}
 	d.res1 = uint32(n)
@@ -695,7 +747,9 @@ func (d *ArosDOSDevice) cmdSeek() {
 	case ADOS_OFFSET_END:
 		whence = 2 // io.SeekEnd
 	default:
-		whence = 1
+		d.res1 = 0xFFFFFFFF
+		d.res2 = ADOS_ERROR_BAD_NUMBER
+		return
 	}
 
 	newPos, err := f.Seek(offset, whence)
@@ -752,15 +806,75 @@ func (d *ArosDOSDevice) cmdSetFileSize() {
 		info, _ := f.Stat()
 		absSize = info.Size() + newSize
 	default:
-		absSize = newSize
+		d.res1 = 0xFFFFFFFF
+		d.res2 = ADOS_ERROR_BAD_NUMBER
+		return
 	}
 
 	if err := f.Truncate(absSize); err != nil {
 		d.res1 = 0xFFFFFFFF
-		d.res2 = ADOS_ERROR_WRITE_PROTECTED
+		d.res2 = mapWriteErr(err)
 		return
 	}
 	d.res1 = uint32(absSize)
+}
+
+func (d *ArosDOSDevice) cmdSetProtect() {
+	parentKey := d.arg1
+	namePtr := d.arg2
+	protect := d.arg3
+
+	parent, ok := d.locks[parentKey]
+	if !ok {
+		if parentKey == 0 {
+			parent = d.locks[0]
+		} else {
+			d.res2 = ADOS_ERROR_INVALID_LOCK
+			return
+		}
+	}
+
+	name := d.readString(namePtr)
+	hostPath, reason := d.resolveSourceDOSPath(parent.hostPath, name)
+	if reason == resolveWrongType {
+		d.res2 = ADOS_ERROR_OBJECT_WRONG_TYPE
+		return
+	}
+	if reason != resolveOK {
+		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
+		return
+	}
+	info, err := os.Lstat(hostPath)
+	if err != nil {
+		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		d.res2 = ADOS_ERROR_OBJECT_WRONG_TYPE
+		return
+	}
+
+	mode := info.Mode().Perm()
+	if protect&ADOS_FIBF_READ != 0 {
+		mode &^= 0o400
+	} else {
+		mode |= 0o400
+	}
+	if protect&ADOS_FIBF_WRITE != 0 {
+		mode &^= 0o200
+	} else {
+		mode |= 0o200
+	}
+	if protect&ADOS_FIBF_EXECUTE != 0 {
+		mode &^= 0o100
+	} else {
+		mode |= 0o100
+	}
+	if err := os.Chmod(hostPath, mode); err != nil {
+		d.res2 = mapWriteErr(err)
+		return
+	}
+	d.res1 = ADOS_DOSTRUE
 }
 
 // --- Filesystem operations ---
@@ -780,19 +894,19 @@ func (d *ArosDOSDevice) cmdDelete() {
 	}
 
 	name := d.readString(namePtr)
-	hostPath, pathOK := d.resolvePath(parent.hostPath, name)
-	if !pathOK {
+	hostPath, reason := d.resolveSourceDOSPath(parent.hostPath, name)
+	if reason == resolveWrongType {
+		d.res2 = ADOS_ERROR_OBJECT_WRONG_TYPE
+		return
+	}
+	if reason != resolveOK {
 		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		return
 	}
 
 	err := os.Remove(hostPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
-		} else {
-			d.res2 = ADOS_ERROR_DELETE_PROTECTED
-		}
+		d.res2 = mapDeleteErr(err)
 		return
 	}
 	d.res1 = ADOS_DOSTRUE
@@ -813,8 +927,13 @@ func (d *ArosDOSDevice) cmdCreateDir() {
 	}
 
 	name := d.readString(namePtr)
-	hostPath, pathOK := d.resolvePath(parent.hostPath, name)
-	if !pathOK {
+	hostPath, reason := d.resolveCreateDOSPath(parent.hostPath, name)
+	switch reason {
+	case resolveOK:
+	case resolveExists, resolveWrongType:
+		d.res2 = ADOS_ERROR_OBJECT_EXISTS
+		return
+	default:
 		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		return
 	}
@@ -865,15 +984,28 @@ func (d *ArosDOSDevice) cmdRename() {
 
 	srcName := d.readString(srcNamePtr)
 	dstName := d.readString(dstNamePtr)
-	srcPath, srcOK := d.resolvePath(srcParent.hostPath, srcName)
-	dstPath, dstOK := d.resolvePath(dstParent.hostPath, dstName)
-	if !srcOK || !dstOK {
+	srcPath, srcReason := d.resolveSourceDOSPath(srcParent.hostPath, srcName)
+	if srcReason == resolveWrongType {
+		d.res2 = ADOS_ERROR_OBJECT_WRONG_TYPE
+		return
+	}
+	if srcReason != resolveOK {
+		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
+		return
+	}
+	dstPath, dstReason := d.resolveCreateDOSPath(dstParent.hostPath, dstName)
+	switch dstReason {
+	case resolveOK:
+	case resolveExists, resolveWrongType:
+		d.res2 = ADOS_ERROR_OBJECT_EXISTS
+		return
+	default:
 		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		return
 	}
 
 	if err := os.Rename(srcPath, dstPath); err != nil {
-		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
+		d.res2 = mapRenameErr(err)
 		return
 	}
 	d.res1 = ADOS_DOSTRUE
@@ -952,50 +1084,169 @@ func (d *ArosDOSDevice) writeBSTR(addr uint32, s string, maxLen int) {
 	}
 }
 
-// resolvePath joins parent + relative name and sanitizes.
-// AmigaDOS uses "/" for parent and "/" as path separator.
-func (d *ArosDOSDevice) resolvePath(parentHost string, amigaName string) (string, bool) {
+func (d *ArosDOSDevice) resolveOpenReadDOSPath(parentHost, amigaName string) (string, resolveReason) {
+	base, leaf := d.normalizeDOSPath(parentHost, amigaName)
+	return d.resolveOpenReadPath(base, leaf)
+}
+
+func (d *ArosDOSDevice) resolveSourceDOSPath(parentHost, amigaName string) (string, resolveReason) {
+	base, leaf := d.normalizeDOSPath(parentHost, amigaName)
+	return d.resolveSourcePath(base, leaf)
+}
+
+func (d *ArosDOSDevice) resolveUpdateDOSPath(parentHost, amigaName string) (string, resolveReason) {
+	base, leaf := d.normalizeDOSPath(parentHost, amigaName)
+	return d.resolveUpdatePath(base, leaf)
+}
+
+func (d *ArosDOSDevice) resolveCreateDOSPath(parentHost, amigaName string) (string, resolveReason) {
+	base, leaf := d.normalizeDOSPath(parentHost, amigaName)
+	return d.resolveCreatePath(base, leaf)
+}
+
+func (d *ArosDOSDevice) normalizeDOSPath(parentHost string, amigaName string) (string, string) {
 	if amigaName == "" {
-		return parentHost, true
+		return parentHost, ""
 	}
-
-	// Convert Amiga path separators: "/" at start means parent
 	name := amigaName
-	base := parentHost
 
-	// Handle leading "/" (parent directory traversal in AmigaDOS)
 	for strings.HasPrefix(name, "/") {
-		base = filepath.Dir(base)
 		name = name[1:]
-		// Don't escape hostRoot
-		if !strings.HasPrefix(base, d.hostRoot) {
-			base = d.hostRoot
+		parentHost = filepath.Dir(parentHost)
+		if !d.containsPath(parentHost) {
+			parentHost = d.hostRoot
 		}
 	}
 
-	// Strip volume name prefix (e.g., "IE:" or "IE0:")
 	if idx := strings.Index(name, ":"); idx >= 0 {
 		name = name[idx+1:]
-		base = d.hostRoot // absolute from root after colon
+		parentHost = d.hostRoot
 	}
 
-	// Convert remaining "/" to host separator
 	name = strings.ReplaceAll(name, "/", string(filepath.Separator))
+	return parentHost, name
+}
 
-	if name == "" {
-		return base, true
+func (d *ArosDOSDevice) resolveOpenReadPath(parentHost string, leafName string) (string, resolveReason) {
+	if filepath.IsAbs(leafName) {
+		return "", resolveNotFound
 	}
-
-	// Walk path components with case-insensitive matching (AmigaDOS is case-insensitive)
-	fullPath := d.caseInsensitiveResolve(base, name)
-	fullPath = filepath.Clean(fullPath)
-
-	// Security check: must stay within hostRoot
-	if !strings.HasPrefix(fullPath, d.hostRoot) {
-		return "", false
+	if leafName == "" {
+		return parentHost, resolveOK
 	}
+	candidate := d.caseInsensitiveResolve(parentHost, leafName)
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", resolveNotFound
+	}
+	resolved = filepath.Clean(resolved)
+	if !d.containsPath(resolved) {
+		return "", resolveNotFound
+	}
+	return resolved, resolveOK
+}
 
-	return fullPath, true
+func (d *ArosDOSDevice) resolveSourcePath(parentHost string, leafName string) (string, resolveReason) {
+	hostPath, info, reason := d.resolveLeafLstat(parentHost, leafName)
+	if reason != resolveOK {
+		return "", reason
+	}
+	mode := info.Mode()
+	if mode.IsRegular() || mode.IsDir() || mode&os.ModeSymlink != 0 {
+		return hostPath, resolveOK
+	}
+	return "", resolveWrongType
+}
+
+func (d *ArosDOSDevice) resolveUpdatePath(parentHost string, leafName string) (string, resolveReason) {
+	hostPath, info, reason := d.resolveLeafLstat(parentHost, leafName)
+	if reason != resolveOK {
+		return "", reason
+	}
+	if info.Mode().IsRegular() {
+		return hostPath, resolveOK
+	}
+	return "", resolveWrongType
+}
+
+func (d *ArosDOSDevice) resolveCreatePath(parentHost string, leafName string) (string, resolveReason) {
+	if filepath.IsAbs(leafName) || leafName == "" {
+		return "", resolveNotFound
+	}
+	hostPath, info, reason := d.resolveLeafLstat(parentHost, leafName)
+	if reason == resolveNotFound {
+		hostPath, reason = d.resolveMissingLeafPath(parentHost, leafName)
+		if reason == resolveOK {
+			return hostPath, resolveOK
+		}
+		return "", reason
+	}
+	if reason != resolveOK {
+		return "", reason
+	}
+	if info.Mode().IsRegular() {
+		return hostPath, resolveExists
+	}
+	return hostPath, resolveWrongType
+}
+
+func (d *ArosDOSDevice) resolveLeafLstat(parentHost string, leafName string) (string, fs.FileInfo, resolveReason) {
+	if filepath.IsAbs(leafName) || leafName == "" {
+		return "", nil, resolveNotFound
+	}
+	hostPath, reason := d.resolveMissingLeafPath(parentHost, leafName)
+	if reason != resolveOK {
+		return "", nil, reason
+	}
+	info, err := os.Lstat(hostPath)
+	if err != nil {
+		return "", nil, resolveNotFound
+	}
+	return hostPath, info, resolveOK
+}
+
+func (d *ArosDOSDevice) resolveMissingLeafPath(parentHost string, leafName string) (string, resolveReason) {
+	if filepath.IsAbs(leafName) || leafName == "" {
+		return "", resolveNotFound
+	}
+	candidate := filepath.Join(parentHost, leafName)
+	dir, base := filepath.Split(candidate)
+	if base == "" {
+		return "", resolveNotFound
+	}
+	dir = d.caseInsensitiveResolve(d.hostRoot, mustRelOrEmpty(d.hostRoot, dir))
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", resolveNotFound
+	}
+	resolvedDir = filepath.Clean(resolvedDir)
+	if !d.containsPath(resolvedDir) {
+		return "", resolveNotFound
+	}
+	return filepath.Join(resolvedDir, base), resolveOK
+}
+
+func mustRelOrEmpty(base, path string) string {
+	rel, err := filepath.Rel(base, path)
+	if err != nil || rel == "." {
+		return ""
+	}
+	return rel
+}
+
+func (d *ArosDOSDevice) containsPath(path string) bool {
+	rel, err := filepath.Rel(d.hostRoot, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// resolvePath joins parent + relative name and sanitizes.
+// AmigaDOS uses "/" for parent and "/" as path separator.
+func (d *ArosDOSDevice) resolvePath(parentHost string, amigaName string) (string, bool) {
+	host, reason := d.resolveOpenReadDOSPath(parentHost, amigaName)
+	return host, reason == resolveOK
 }
 
 // caseInsensitiveResolve walks path components case-insensitively from base.
@@ -1139,8 +1390,16 @@ func (d *ArosDOSDevice) detectProtection(info fs.FileInfo, hostPath string) uint
 	}
 
 	var prot uint32
+	perm := info.Mode().Perm()
+	if perm&0o400 == 0 {
+		prot |= ADOS_FIBF_READ
+	}
+	if perm&0o200 == 0 {
+		prot |= ADOS_FIBF_WRITE
+		prot |= ADOS_FIBF_DELETE
+	}
 	// If the host file lacks user-execute permission, deny Amiga execute.
-	if info.Mode()&0o100 == 0 {
+	if perm&0o100 == 0 {
 		prot |= ADOS_FIBF_EXECUTE
 	}
 
@@ -1154,6 +1413,55 @@ func (d *ArosDOSDevice) detectProtection(info fs.FileInfo, hostPath string) uint
 	}
 
 	return prot
+}
+
+func mapWriteErr(err error) uint32 {
+	switch {
+	case errors.Is(err, syscall.ENOSPC):
+		return ADOS_ERROR_DISK_FULL
+	case errors.Is(err, syscall.EROFS):
+		return ADOS_ERROR_DISK_WRITE_PROTECTED
+	case errors.Is(err, syscall.EBUSY):
+		return ADOS_ERROR_OBJECT_IN_USE
+	case os.IsPermission(err):
+		return ADOS_ERROR_DISK_WRITE_PROTECTED
+	default:
+		return ADOS_ERROR_WRITE_PROTECTED
+	}
+}
+
+func mapDeleteErr(err error) uint32 {
+	switch {
+	case os.IsNotExist(err):
+		return ADOS_ERROR_OBJECT_NOT_FOUND
+	case errors.Is(err, syscall.EBUSY):
+		return ADOS_ERROR_OBJECT_IN_USE
+	case errors.Is(err, syscall.EROFS):
+		return ADOS_ERROR_DISK_WRITE_PROTECTED
+	case os.IsPermission(err):
+		return ADOS_ERROR_DELETE_PROTECTED
+	default:
+		return ADOS_ERROR_DELETE_PROTECTED
+	}
+}
+
+func mapRenameErr(err error) uint32 {
+	switch {
+	case os.IsNotExist(err):
+		return ADOS_ERROR_OBJECT_NOT_FOUND
+	case os.IsExist(err):
+		return ADOS_ERROR_OBJECT_EXISTS
+	case errors.Is(err, syscall.EBUSY):
+		return ADOS_ERROR_OBJECT_IN_USE
+	case errors.Is(err, syscall.ENOSPC):
+		return ADOS_ERROR_DISK_FULL
+	case errors.Is(err, syscall.EROFS):
+		return ADOS_ERROR_DISK_WRITE_PROTECTED
+	case os.IsPermission(err):
+		return ADOS_ERROR_DISK_WRITE_PROTECTED
+	default:
+		return ADOS_ERROR_OBJECT_NOT_FOUND
+	}
 }
 
 // Close releases all open handles and locks.

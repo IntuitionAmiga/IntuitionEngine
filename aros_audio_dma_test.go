@@ -7,7 +7,7 @@ import (
 
 func newTestArosAudioDMA(t *testing.T) (*MachineBus, *SoundChip, *M68KCPU, *ArosAudioDMA) {
 	t.Helper()
-	bus, err := NewMachineBusSized(1 * 1024 * 1024)
+	bus, err := NewMachineBusSized(32 * 1024 * 1024)
 	if err != nil {
 		t.Fatalf("NewMachineBusSized: %v", err)
 	}
@@ -16,7 +16,10 @@ func newTestArosAudioDMA(t *testing.T) (*MachineBus, *SoundChip, *M68KCPU, *Aros
 		t.Fatalf("NewSoundChip: %v", err)
 	}
 	cpu := NewM68KCPU(bus)
-	dma := NewArosAudioDMA(bus, chip, cpu)
+	dma, err := NewArosAudioDMA(bus, chip, cpu)
+	if err != nil {
+		t.Fatalf("NewArosAudioDMA: %v", err)
+	}
 	return bus, chip, cpu, dma
 }
 
@@ -108,7 +111,10 @@ func TestPaulaShim_ReloadDoesNotStackMMIO(t *testing.T) {
 	runtimeStatus.setPaulaDMA(oldDMA)
 
 	arosAudioTeardown(oldDMA, bus, chip)
-	newDMA := NewArosAudioDMA(bus, chip, cpu)
+	newDMA, err := NewArosAudioDMA(bus, chip, cpu)
+	if err != nil {
+		t.Fatalf("NewArosAudioDMA: %v", err)
+	}
 	bus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, newDMA.HandleRead, newDMA.HandleWrite)
 	chip.SetSampleTicker(newDMA)
 	bus.Write32(AROS_AUD_REGION_BASE+AROS_AUD_OFF_VOL, 33)
@@ -330,5 +336,75 @@ func TestPaulaShim_VolumeClampedAt64(t *testing.T) {
 	dma.HandleWrite(AROS_AUD_REGION_BASE+AROS_AUD_OFF_VOL, 127)
 	if got := dma.HandleRead(AROS_AUD_REGION_BASE + AROS_AUD_OFF_VOL); got != 64 {
 		t.Fatalf("volume got %d, want 64", got)
+	}
+}
+
+func TestArosAudioDMA_DoubleBufferReArmContinuesWithoutDMACONRewrite(t *testing.T) {
+	_, _, _, dma := newTestArosAudioDMA(t)
+	writeArosDMAChannel(dma, 0, 0x100, 2, 128, 64)
+	armArosDMAChannel(dma, 0)
+	writeArosDMAChannel(dma, 0, 0x200, 4, 128, 64)
+
+	dma.mu.Lock()
+	dma.channels[0].pos = dma.channels[0].llen * 2
+	dma.mu.Unlock()
+	dma.TickSample()
+
+	if got := dma.HandleRead(AROS_AUD_DMACON); got&1 == 0 {
+		t.Fatalf("DMACON channel bit cleared across double-buffer re-arm: 0x%X", got)
+	}
+	if !dma.channels[0].active || dma.channels[0].lptr != 0x200 || dma.channels[0].llen != 4 {
+		t.Fatalf("channel did not latch next buffer: active=%v lptr=0x%X llen=%d",
+			dma.channels[0].active, dma.channels[0].lptr, dma.channels[0].llen)
+	}
+}
+
+func TestArosAudioDMA_PhasePreservedAcrossReArm(t *testing.T) {
+	_, _, _, dma := newTestArosAudioDMA(t)
+	writeArosDMAChannel(dma, 0, 0x100, 2, 256, 64)
+	armArosDMAChannel(dma, 0)
+	writeArosDMAChannel(dma, 0, 0x200, 2, 256, 64)
+
+	dma.mu.Lock()
+	dma.channels[0].phase = 0.5
+	dma.channels[0].pos = dma.channels[0].llen * 2
+	dma.mu.Unlock()
+	dma.TickSample()
+
+	if dma.channels[0].phase == 0 {
+		t.Fatalf("phase reset across double-buffer re-arm")
+	}
+}
+
+func TestArosAudioDMA_ProfileBoundErrorSurfaces(t *testing.T) {
+	bus, err := NewMachineBusSized(1 * 1024 * 1024)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized: %v", err)
+	}
+	if _, err := NewArosAudioDMA(bus, nil, nil); err == nil {
+		t.Fatalf("NewArosAudioDMA succeeded with undersized AROS profile")
+	}
+}
+
+func TestArosAudioDMA_IRQOnEveryWrappedBuffer(t *testing.T) {
+	_, _, cpu, dma := newTestArosAudioDMA(t)
+	dma.HandleWrite(AROS_AUD_INTENA, 0x8001)
+	writeArosDMAChannel(dma, 0, 0x100, 2, 128, 64)
+	armArosDMAChannel(dma, 0)
+
+	for i := 0; i < 2; i++ {
+		writeArosDMAChannel(dma, 0, 0x200+uint32(i)*0x100, 2, 128, 64)
+		cpu.pendingInterrupt.Store(0)
+		dma.mu.Lock()
+		dma.channels[0].pos = dma.channels[0].llen * 2
+		dma.mu.Unlock()
+		dma.TickSample()
+		if dma.status&1 == 0 {
+			t.Fatalf("wrap %d did not set status", i)
+		}
+		if cpu.pendingInterrupt.Load()&(1<<arosAudioIRQLevel) == 0 {
+			t.Fatalf("wrap %d did not assert L%d IRQ", i, arosAudioIRQLevel)
+		}
+		dma.HandleWrite(AROS_AUD_STATUS, 1)
 	}
 }

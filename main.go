@@ -340,7 +340,26 @@ func main() {
 
 	// Resolve AROS drive config (host filesystem mapping).
 	exePath, _ := os.Executable()
-	arosHostRoot := resolveAROSDrivePath(arosDrive, exePath)
+	var arosHostRoot string
+	if modeAROS {
+		var err error
+		arosHostRoot, err = resolveAROSDrivePath(arosDrive, exePath)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}
+	ensureAROSHostRoot := func() (string, error) {
+		if arosHostRoot != "" {
+			return arosHostRoot, nil
+		}
+		root, err := resolveAROSDrivePath(arosDrive, exePath)
+		if err != nil {
+			return "", err
+		}
+		arosHostRoot = root
+		return root, nil
+	}
 
 	// Resolve GEMDOS drive config for EmuTOS (always, since EmuTOS can be
 	// launched dynamically from BASIC or the program executor)
@@ -1631,11 +1650,16 @@ func main() {
 			fmt.Printf("Warning: AROS DOS device init failed: %v\n", dosErr)
 		} else {
 			sysBus.MapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END, arosDOS.HandleRead, arosDOS.HandleWrite)
+			runtimeStatus.setAROSDOS(arosDOS)
 			fmt.Printf("AROS DOS: IE: → %s\r\n", arosHostRoot)
 		}
 
 		// Initialize AROS Audio DMA engine (AROS Paula-style DMA shim -> flex channel DAC)
-		arosDMA := NewArosAudioDMA(sysBus, soundChip, m68kCPU)
+		arosDMA, dmaErr := NewArosAudioDMA(sysBus, soundChip, m68kCPU)
+		if dmaErr != nil {
+			fmt.Printf("Error initializing AROS audio DMA: %v\n", dmaErr)
+			os.Exit(1)
+		}
 		sysBus.UnmapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END)
 		sysBus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, arosDMA.HandleRead, arosDMA.HandleWrite)
 		soundChip.SetSampleTicker(arosDMA)
@@ -1644,6 +1668,7 @@ func main() {
 		// Initialize clipboard bridge (host ↔ guest clipboard exchange)
 		clipBridge := NewClipboardBridge(sysBus)
 		sysBus.MapIO(CLIP_REGION_BASE, CLIP_REGION_END, clipBridge.HandleRead, clipBridge.HandleWrite)
+		runtimeStatus.setAROSClipboard(clipBridge)
 
 		// IRQ diagnostic registers for freeze investigation scripts
 		loader.MapIRQDiagnostics()
@@ -1998,7 +2023,7 @@ func main() {
 		// Preserve explicit JIT choices when reloading the same active CPU family.
 		snap := runtimeStatus.snapshot()
 		if currentMode == "aros" {
-			arosAudioTeardown(snap.paulaDMA, sysBus, soundChip)
+			arosTeardownAll(snap, sysBus, soundChip)
 		}
 		var preserveM68KJIT bool
 		var haveM68KJIT bool
@@ -2261,13 +2286,23 @@ func main() {
 			if err := loader.LoadROM(bytes); err != nil {
 				return fmt.Errorf("failed to load AROS ROM: %w", err)
 			}
+			hostRoot, err := ensureAROSHostRoot()
+			if err != nil {
+				return err
+			}
 			// Wire up DOS device for host filesystem access
-			if arosDOS, dosErr := NewArosDOSDevice(sysBus, arosHostRoot); dosErr == nil {
+			if arosDOS, dosErr := NewArosDOSDevice(sysBus, hostRoot); dosErr == nil {
 				sysBus.MapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END, arosDOS.HandleRead, arosDOS.HandleWrite)
-				fmt.Printf("AROS DOS: IE: → %s\r\n", arosHostRoot)
+				runtimeStatus.setAROSDOS(arosDOS)
+				fmt.Printf("AROS DOS: IE: → %s\r\n", hostRoot)
+			} else {
+				return fmt.Errorf("AROS DOS device init failed: %w", dosErr)
 			}
 			// Wire up audio DMA engine
-			arosDMA := NewArosAudioDMA(sysBus, soundChip, r.cpu)
+			arosDMA, dmaErr := NewArosAudioDMA(sysBus, soundChip, r.cpu)
+			if dmaErr != nil {
+				return fmt.Errorf("create AROS audio DMA: %w", dmaErr)
+			}
 			sysBus.UnmapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END)
 			sysBus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, arosDMA.HandleRead, arosDMA.HandleWrite)
 			soundChip.SetSampleTicker(arosDMA)
@@ -2275,6 +2310,7 @@ func main() {
 			// Wire up clipboard bridge
 			clipBridge := NewClipboardBridge(sysBus)
 			sysBus.MapIO(CLIP_REGION_BASE, CLIP_REGION_END, clipBridge.HandleRead, clipBridge.HandleWrite)
+			runtimeStatus.setAROSClipboard(clipBridge)
 			// IRQ diagnostic registers for freeze investigation scripts
 			loader.MapIRQDiagnostics()
 			// AROS HIDDs expect Amiga rawkey scancodes

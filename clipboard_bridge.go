@@ -91,7 +91,7 @@ func (cb *ClipboardBridge) doRead() {
 		copyLen = maxLen
 	}
 
-	if cb.bus != nil && ptr+copyLen <= uint32(len(cb.bus.memory)) {
+	if cb.bus != nil && clipboardBoundsOK(ptr, copyLen, uint32(len(cb.bus.memory))) {
 		copy(cb.bus.memory[ptr:ptr+copyLen], data[:copyLen])
 	} else {
 		cb.status = CLIP_STATUS_ERROR
@@ -120,7 +120,7 @@ func (cb *ClipboardBridge) doWrite() {
 		return
 	}
 
-	if cb.bus == nil || ptr+dataLen > uint32(len(cb.bus.memory)) {
+	if cb.bus == nil || !clipboardBoundsOK(ptr, dataLen, uint32(len(cb.bus.memory))) {
 		cb.status = CLIP_STATUS_ERROR
 		return
 	}
@@ -133,3 +133,5 @@ func (cb *ClipboardBridge) doWrite() {
 	cb.resultLen = dataLen
 	cb.status = CLIP_STATUS_READY
 }
+
+func (cb *ClipboardBridge) Close() {}

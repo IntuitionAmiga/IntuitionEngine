@@ -52,6 +52,7 @@ const (
 const (
 	ADOS_ERR_NONE                   = 0
 	ADOS_ERROR_NO_FREE_STORE        = 103
+	ADOS_ERROR_BAD_NUMBER           = 115
 	ADOS_ERROR_OBJECT_IN_USE        = 202
 	ADOS_ERROR_OBJECT_EXISTS        = 203
 	ADOS_ERROR_DIR_NOT_FOUND        = 204
@@ -63,6 +64,8 @@ const (
 	ADOS_ERROR_OBJECT_WRONG_TYPE    = 212
 	ADOS_ERROR_DISK_NOT_VALIDATED   = 213
 	ADOS_ERROR_DISK_WRITE_PROTECTED = 214
+	ADOS_ERROR_DEVICE_NOT_MOUNTED   = 218
+	ADOS_ERROR_DISK_FULL            = 221
 	ADOS_ERROR_DELETE_PROTECTED     = 222
 	ADOS_ERROR_WRITE_PROTECTED      = 223
 	ADOS_ERROR_READ_PROTECTED       = 224
@@ -115,7 +118,12 @@ const (
 // Note: FIBF_READ/WRITE/EXECUTE/DELETE are ACTIVE-LOW (set = denied)
 // while FIBF_SCRIPT/PURE/ARCHIVE are ACTIVE-HIGH (set = enabled).
 const (
+	ADOS_FIBF_DELETE  = 1 << 0 // Set = NOT deletable
 	ADOS_FIBF_EXECUTE = 1 << 1 // Set = NOT executable
+	ADOS_FIBF_WRITE   = 1 << 2 // Set = NOT writable
+	ADOS_FIBF_READ    = 1 << 3 // Set = NOT readable
+	ADOS_FIBF_ARCHIVE = 1 << 4 // Set = archived
+	ADOS_FIBF_PURE    = 1 << 5 // Set = pure
 	ADOS_FIBF_SCRIPT  = 1 << 6 // Set = file is a script
 )
 

@@ -37,6 +37,8 @@ type runtimeStatusSnapshot struct {
 	modEngine *MODEngine
 	wavEngine *WAVEngine
 	paulaDMA  *ArosAudioDMA
+	arosDOS   *ArosDOSDevice
+	arosClip  *ClipboardBridge
 
 	psgPlayer   *PSGPlayer
 	sidPlayer   *SIDPlayer
@@ -85,6 +87,18 @@ func (s *runtimeStatusStore) setChips(video *VideoChip, vga *VGAEngine, ula *ULA
 func (s *runtimeStatusStore) setPaulaDMA(dma *ArosAudioDMA) {
 	s.mu.Lock()
 	s.paulaDMA = dma
+	s.mu.Unlock()
+}
+
+func (s *runtimeStatusStore) setAROSDOS(dos *ArosDOSDevice) {
+	s.mu.Lock()
+	s.arosDOS = dos
+	s.mu.Unlock()
+}
+
+func (s *runtimeStatusStore) setAROSClipboard(cb *ClipboardBridge) {
+	s.mu.Lock()
+	s.arosClip = cb
 	s.mu.Unlock()
 }
 

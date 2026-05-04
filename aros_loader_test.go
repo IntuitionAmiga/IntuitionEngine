@@ -240,6 +240,36 @@ func TestAROSLoader_TimerArmingCheck(t *testing.T) {
 	t.Fatal("timer did not fire after installing valid vectors")
 }
 
+func TestAROSLoader_RevalidatesIRQArming(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	loader := NewAROSLoader(bus, cpu, nil)
+	cpu.Write32(uint32(M68K_VEC_LEVEL4)*4, 0x00001000)
+	loader.refreshIRQArming()
+	if !loader.l4Armed {
+		t.Fatalf("L4 did not arm with valid vector")
+	}
+	cpu.Write32(uint32(M68K_VEC_LEVEL4)*4, 0xFFFFFFFF)
+	loader.refreshIRQArming()
+	if loader.l4Armed {
+		t.Fatalf("L4 stayed armed after vector became invalid")
+	}
+}
+
+func TestAROSLoader_DebugWatchOptIn(t *testing.T) {
+	t.Setenv("IE_AROS_DEBUG", "")
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	loader := NewAROSLoader(bus, cpu, nil)
+	rom := buildAROSTestROM(64*1024, 0x20000, arosROMBase+0x100)
+	if err := loader.LoadROM(rom); err != nil {
+		t.Fatalf("LoadROM: %v", err)
+	}
+	if cpu.DebugWatchFn != nil {
+		t.Fatalf("DebugWatchFn installed without IE_AROS_DEBUG=1")
+	}
+}
+
 func TestAROSLoader_TimerStopsOnCancel(t *testing.T) {
 	bus := NewMachineBus()
 	cpu := NewM68KCPU(bus)

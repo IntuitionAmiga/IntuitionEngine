@@ -65,7 +65,10 @@ func TestAROS_PaulaDMA_ProfileTopUsesAROSContract(t *testing.T) {
 		TotalGuestRAM:    uint64(AROS_PROFILE_TOP),
 		ActiveVisibleRAM: uint64(AROS_PROFILE_TOP),
 	})
-	dma := NewArosAudioDMA(bus, nil, nil)
+	dma, err := NewArosAudioDMA(bus, nil, nil)
+	if err != nil {
+		t.Fatalf("NewArosAudioDMA: %v", err)
+	}
 	if got := dma.profileTop; got != AROS_PROFILE_TOP {
 		t.Fatalf("dma.profileTop = 0x%X, want 0x%X (AROS_PROFILE_TOP)", got, AROS_PROFILE_TOP)
 	}
