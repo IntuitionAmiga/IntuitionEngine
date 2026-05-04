@@ -1558,14 +1558,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		// EmuTOS uses addresses 0x100000-0x3FFFFF as normal RAM (heap, stack).
-		// Remove the VRAM I/O mapping so writes go to bus memory, not VideoChip.
-		// The VideoChip reads from bus memory directly for display in EmuTOS mode.
-		sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
-		videoChip.SetBusMemory(sysBus.memory)
-		videoChip.SetBigEndianMode(true)
-		// Point VideoChip's GetFrame at full VRAM so CLUT8 bitmaps at any offset work.
-		videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
+		applyEmuTOSVideoConfig(sysBus, videoChip)
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
 		wireVideoInterruptSinks(videoChip, anticEngine, NewM68KInterruptSink(m68kCPU))
@@ -1574,6 +1567,7 @@ func main() {
 			m68kCPU.m68kJitEnabled = false
 		}
 		loader := NewEmuTOSLoader(sysBus, m68kCPU, videoChip)
+		m68kCPU.xbiosHandler = NewXBIOSInterceptor(m68kCPU, sysBus, videoChip, psgEngine)
 		if err := loader.LoadROM(romBytes); err != nil {
 			fmt.Printf("Error loading EmuTOS ROM: %v\n", err)
 			os.Exit(1)
@@ -1618,8 +1612,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		// AROS uses bus-backed VRAM at the top of the 32MB address space.
-		configureArosVRAM(sysBus, videoChip)
+		applyArosVideoConfig(sysBus, videoChip)
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
 		wireVideoInterruptSinks(videoChip, anticEngine, NewM68KInterruptSink(m68kCPU))
@@ -2153,21 +2146,10 @@ func main() {
 		// 7. Reset memory
 		sysBus.Reset()
 
-		// 7b. VRAM I/O mapping — must happen after sysBus.Reset().
+		// 7b. VRAM I/O mapping for non-ROM profiles.
+		restoreROMVideoConfig := false
 		if mode == "emutos" || mode == "aros" {
-			// M68K ROM mode: unmap VRAM so M68K writes go to bus memory directly.
-			if mode == "aros" {
-				configureArosVRAM(sysBus, videoChip)
-				// AROS draws its own Intuition cursor — disable Go-side software cursor
-				if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
-					disabler.DisableSoftwareCursor()
-				}
-			} else {
-				sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
-				videoChip.SetBusMemory(sysBus.memory)
-				videoChip.SetBigEndianMode(true)
-				videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
-			}
+			restoreROMVideoConfig = true
 			if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
 				hider.HideSystemCursor()
 			}
@@ -2182,6 +2164,17 @@ func main() {
 
 		// 8. Reset video chips
 		videoChip.Reset()
+		if restoreROMVideoConfig {
+			if mode == "aros" {
+				applyArosVideoConfig(sysBus, videoChip)
+				// AROS draws its own Intuition cursor — disable Go-side software cursor
+				if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
+					disabler.DisableSoftwareCursor()
+				}
+			} else {
+				applyEmuTOSVideoConfig(sysBus, videoChip)
+			}
+		}
 		if vgaEngine != nil {
 			vgaEngine.Reset()
 		}
@@ -2250,6 +2243,7 @@ func main() {
 		if mode == "emutos" {
 			r := cpuRunner.(*M68KRunner)
 			loader := NewEmuTOSLoader(sysBus, r.cpu, videoChip)
+			r.cpu.xbiosHandler = NewXBIOSInterceptor(r.cpu, sysBus, videoChip, psgEngine)
 			if err := loader.LoadROM(bytes); err != nil {
 				return fmt.Errorf("failed to load EmuTOS ROM: %w", err)
 			}
@@ -2562,4 +2556,19 @@ func resolveDefaultEmuTOSImagePath() string {
 		}
 	}
 	return ""
+}
+
+func applyEmuTOSVideoConfig(sysBus *MachineBus, videoChip *VideoChip) {
+	// EmuTOS uses addresses 0x100000-0x3FFFFF as normal RAM (heap, stack).
+	// Remove the VRAM I/O mapping so writes go to bus memory, not VideoChip.
+	// The VideoChip reads from bus memory directly for display in EmuTOS mode.
+	sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
+	videoChip.SetBusMemory(sysBus.memory)
+	videoChip.SetBigEndianMode(true)
+	// Point VideoChip's GetFrame at full VRAM so CLUT8 bitmaps at any offset work.
+	videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
+}
+
+func applyArosVideoConfig(sysBus *MachineBus, videoChip *VideoChip) {
+	configureArosVRAM(sysBus, videoChip)
 }

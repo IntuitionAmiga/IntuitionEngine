@@ -11,6 +11,14 @@ import (
 	"time"
 )
 
+type gemdosPathStatus int
+
+const (
+	gemdosPathNotOurs gemdosPathStatus = iota
+	gemdosPathOK
+	gemdosPathInvalid
+)
+
 // GemdosInterceptor intercepts TRAP #1 (GEMDOS) calls from the M68K CPU,
 // mapping a host directory as a GEMDOS drive letter. Calls targeting other
 // drives pass through to EmuTOS unchanged.
@@ -66,6 +74,9 @@ type pexecSavedState struct {
 
 // NewGemdosInterceptor creates a new interceptor mapping hostRoot as the given drive number.
 func NewGemdosInterceptor(cpu *M68KCPU, bus *MachineBus, hostRoot string, driveNum uint16) (*GemdosInterceptor, error) {
+	if driveNum >= 26 {
+		return nil, fmt.Errorf("invalid GEMDOS drive number %d", driveNum)
+	}
 	resolved, err := filepath.EvalSymlinks(hostRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve symlinks for %q: %w", hostRoot, err)
@@ -195,7 +206,10 @@ func (g *GemdosInterceptor) handleDgetdrv() bool {
 }
 
 func (g *GemdosInterceptor) handleFsetdta(sp uint32) bool {
-	g.dtaAddr = g.cpu.Read32(sp + 2)
+	dtaAddr := g.cpu.Read32(sp + 2)
+	if g.guestRangeValid(dtaAddr, GEMDOS_DTA_TOTAL) {
+		g.dtaAddr = dtaAddr
+	}
 	return false // snoop only — let EmuTOS also process it
 }
 
@@ -230,9 +244,13 @@ func (g *GemdosInterceptor) handleDfree(sp uint32) bool {
 func (g *GemdosInterceptor) handleDcreate(sp uint32) bool {
 	pathAddr := g.cpu.Read32(sp + 2)
 	gemdosPath := g.readString(pathAddr)
-	hostPath, ok := g.resolvePathForOurDrive(gemdosPath)
-	if !ok {
+	hostPath, status := g.resolvePathForCreateOnOurDrive(gemdosPath)
+	if status == gemdosPathNotOurs {
 		return false
+	}
+	if status != gemdosPathOK {
+		g.setD0(signExtend16to32(GEMDOS_EACCDN))
+		return true
 	}
 	if err := os.MkdirAll(hostPath, 0o755); err != nil {
 		g.setD0(signExtend16to32(GEMDOS_EACCDN))
@@ -306,9 +324,13 @@ func (g *GemdosInterceptor) handleFcreate(sp uint32) bool {
 	fnameAddr := g.cpu.Read32(sp + 2)
 	// attr at sp+6 (unused for host files)
 	gemdosPath := g.readString(fnameAddr)
-	hostPath, ok := g.resolvePathForOurDrive(gemdosPath)
-	if !ok {
+	hostPath, status := g.resolvePathForCreateOnOurDrive(gemdosPath)
+	if status == gemdosPathNotOurs {
 		return false
+	}
+	if status != gemdosPathOK {
+		g.setD0(signExtend16to32(GEMDOS_EACCDN))
+		return true
 	}
 	f, err := os.Create(hostPath)
 	if err != nil {
@@ -385,18 +407,37 @@ func (g *GemdosInterceptor) handleFread(sp uint32) bool {
 		g.setD0(signExtend16to32(GEMDOS_EIHNDL))
 		return true
 	}
-	buf := make([]byte, count)
-	n, err := f.Read(buf)
-	if n > 0 {
-		for i := 0; i < n; i++ {
-			g.bus.Write8(bufAddr+uint32(i), buf[i])
-		}
-	}
-	if err != nil && n == 0 {
-		g.setD0(0) // EOF = 0 bytes read
+
+	if !g.guestRangeValid(bufAddr, count) {
+		g.setD0(signExtend16to32(GEMDOS_EIMBA))
 		return true
 	}
-	g.setD0(uint32(n))
+
+	buf := make([]byte, GEMDOS_IO_CHUNK)
+	var total uint32
+	for total < count {
+		want := count - total
+		if want > uint32(len(buf)) {
+			want = uint32(len(buf))
+		}
+		n, err := f.Read(buf[:want])
+		if n > 0 {
+			for i := 0; i < n; i++ {
+				if !g.bus.Write8WithFault(bufAddr+total+uint32(i), buf[i]) {
+					g.setD0(signExtend16to32(GEMDOS_EIMBA))
+					return true
+				}
+			}
+			total += uint32(n)
+		}
+		if err != nil {
+			break
+		}
+		if n == 0 {
+			break
+		}
+	}
+	g.setD0(total)
 	return true
 }
 
@@ -412,16 +453,38 @@ func (g *GemdosInterceptor) handleFwrite(sp uint32) bool {
 		g.setD0(signExtend16to32(GEMDOS_EIHNDL))
 		return true
 	}
-	buf := make([]byte, count)
-	for i := uint32(0); i < count; i++ {
-		buf[i] = g.bus.Read8(bufAddr + i)
-	}
-	n, err := f.Write(buf)
-	if err != nil {
-		g.setD0(signExtend16to32(GEMDOS_EACCDN))
+
+	if !g.guestRangeValid(bufAddr, count) {
+		g.setD0(signExtend16to32(GEMDOS_EIMBA))
 		return true
 	}
-	g.setD0(uint32(n))
+
+	buf := make([]byte, GEMDOS_IO_CHUNK)
+	var total uint32
+	for total < count {
+		want := count - total
+		if want > uint32(len(buf)) {
+			want = uint32(len(buf))
+		}
+		for i := uint32(0); i < want; i++ {
+			b, ok := g.bus.Read8WithFault(bufAddr + total + i)
+			if !ok {
+				g.setD0(signExtend16to32(GEMDOS_EIMBA))
+				return true
+			}
+			buf[i] = b
+		}
+		n, err := f.Write(buf[:want])
+		if err != nil {
+			g.setD0(signExtend16to32(GEMDOS_EACCDN))
+			return true
+		}
+		total += uint32(n)
+		if n < int(want) {
+			break
+		}
+	}
+	g.setD0(total)
 	return true
 }
 
@@ -511,13 +574,17 @@ func (g *GemdosInterceptor) handleFrename(sp uint32) bool {
 	oldPath := g.readString(oldAddr)
 	newPath := g.readString(newAddr)
 	hostOld, okOld := g.resolvePathForOurDrive(oldPath)
-	hostNew, okNew := g.resolvePathForOurDrive(newPath)
-	if !okOld || !okNew {
-		if okOld != okNew {
+	hostNew, newStatus := g.resolvePathForCreateOnOurDrive(newPath)
+	if !okOld || newStatus != gemdosPathOK {
+		if !okOld && newStatus == gemdosPathNotOurs {
+			return false
+		}
+		if !okOld && newStatus == gemdosPathOK {
 			g.setD0(signExtend16to32(GEMDOS_ENSAME))
 			return true
 		}
-		return false
+		g.setD0(signExtend16to32(GEMDOS_EACCDN))
+		return true
 	}
 	if err := os.Rename(hostOld, hostNew); err != nil {
 		g.setD0(signExtend16to32(GEMDOS_EACCDN))
@@ -600,38 +667,59 @@ func (g *GemdosInterceptor) handlePexec(sp uint32) bool {
 	bssSize := binary.BigEndian.Uint32(data[10:14])
 	symSize := binary.BigEndian.Uint32(data[14:18])
 
-	codeDataSize := textSize + dataSize
-	if uint32(len(data)) < TOS_PRG_HEADER_LEN+codeDataSize {
+	codeDataSize, overflow := addUint32(textSize, dataSize)
+	if overflow {
+		g.setD0(signExtend16to32(GEMDOS_EIMBA))
+		return true
+	}
+	if uint64(len(data)) < uint64(TOS_PRG_HEADER_LEN)+uint64(codeDataSize) {
 		g.setD0(signExtend16to32(GEMDOS_EPLFMT))
 		return true
 	}
 
-	// Allocate TPA above EmuTOS-managed memory (at 8MB mark in the 32MB bus).
-	tpaSize := uint32(TOS_BASEPAGE_SIZE) + textSize + dataSize + bssSize + 8192
-	tpaSize = (tpaSize + 255) &^ 255 // round up to 256-byte boundary
+	tpaSize, ok := checkedPexecTPASize(textSize, dataSize, bssSize)
+	if !ok {
+		g.setD0(signExtend16to32(GEMDOS_EIMBA))
+		return true
+	}
 	tpaBase := uint32(PEXEC_TPA_BASE)
-	tpaEnd := tpaBase + tpaSize
+	tpaEnd, overflow := addUint32(tpaBase, tpaSize)
+	if overflow || uint64(tpaEnd) > g.bus.ProfileMemoryCap() || tpaEnd > EmuTOS_PROFILE_TOP {
+		g.setD0(signExtend16to32(GEMDOS_EIMBA))
+		return true
+	}
 
 	bpAddr := tpaBase
 	textBase := tpaBase + TOS_BASEPAGE_SIZE
 	dataBase := textBase + textSize
 	bssBase := dataBase + dataSize
+	bssEnd := bssBase + bssSize
 
 	// Copy TEXT+DATA segments into bus memory
-	src := data[TOS_PRG_HEADER_LEN : TOS_PRG_HEADER_LEN+codeDataSize]
+	srcStart := uint32(TOS_PRG_HEADER_LEN)
+	src := data[srcStart : srcStart+codeDataSize]
 	for i, b := range src {
-		g.bus.Write8(textBase+uint32(i), b)
+		if !g.bus.Write8WithFault(textBase+uint32(i), b) {
+			g.setD0(signExtend16to32(GEMDOS_EIMBA))
+			return true
+		}
 	}
 
 	// Zero BSS
 	for i := uint32(0); i < bssSize; i++ {
-		g.bus.Write8(bssBase+i, 0)
+		if !g.bus.Write8WithFault(bssBase+i, 0) {
+			g.setD0(signExtend16to32(GEMDOS_EIMBA))
+			return true
+		}
 	}
 
 	// Process relocation table
-	relocOffset := TOS_PRG_HEADER_LEN + codeDataSize + symSize
-	if uint32(len(data)) > relocOffset {
-		g.processRelocation(data[relocOffset:], textBase)
+	relocOffset := uint64(TOS_PRG_HEADER_LEN) + uint64(codeDataSize) + uint64(symSize)
+	if uint64(len(data)) > relocOffset {
+		if !g.processRelocation(data[int(relocOffset):], textBase, bssEnd) {
+			g.setD0(signExtend16to32(GEMDOS_EIMBA))
+			return true
+		}
 	}
 
 	// Set up basepage (256 bytes, all fields written as big-endian via M68K Write32)
@@ -684,16 +772,19 @@ func (g *GemdosInterceptor) handlePexec(sp uint32) bool {
 }
 
 // processRelocation applies TOS .PRG relocation to the loaded program.
-func (g *GemdosInterceptor) processRelocation(relocData []byte, textBase uint32) {
+func (g *GemdosInterceptor) processRelocation(relocData []byte, textBase, imageEnd uint32) bool {
 	if len(relocData) < 4 {
-		return
+		return true
 	}
 	firstOffset := binary.BigEndian.Uint32(relocData[0:4])
 	if firstOffset == 0 {
-		return // no relocations
+		return true // no relocations
 	}
 
-	addr := textBase + firstOffset
+	addr, overflow := addUint32(textBase, firstOffset)
+	if overflow || !relocAddrInRange(addr, textBase, imageEnd) {
+		return false
+	}
 	val := g.cpu.Read32(addr)
 	g.cpu.Write32(addr, val+textBase)
 
@@ -706,15 +797,22 @@ func (g *GemdosInterceptor) processRelocation(relocData []byte, textBase uint32)
 			break
 		}
 		if b == 1 {
-			addr += 254
+			addr, overflow = addUint32(addr, 254)
+			if overflow {
+				return false
+			}
 			continue
 		}
-		addr += uint32(b)
+		addr, overflow = addUint32(addr, uint32(b))
+		if overflow || !relocAddrInRange(addr, textBase, imageEnd) {
+			return false
+		}
 		val = g.cpu.Read32(addr)
 		g.cpu.Write32(addr, val+textBase)
 		count++
 	}
 	fmt.Printf("[GEMDOS] Pexec: applied %d relocations (base=$%06X)\n", count, textBase)
+	return true
 }
 
 // handleMshrink intercepts Mshrink for our Pexec-loaded TPA.
@@ -991,7 +1089,102 @@ func (g *GemdosInterceptor) resolvePathForOurDrive(gemdosPath string) (string, b
 
 	// Case-insensitive path resolution
 	hostPath := g.caseInsensitiveResolve(resolved)
+	hostPath, ok := g.resolveHostPathInsideRoot(hostPath)
+	if !ok {
+		return "", false
+	}
 	return hostPath, true
+}
+
+func (g *GemdosInterceptor) resolvePathForCreateOnOurDrive(gemdosPath string) (string, gemdosPathStatus) {
+	if !g.pathTargetsOurDrive(gemdosPath) {
+		return "", gemdosPathNotOurs
+	}
+
+	if existing, ok := g.resolvePathForOurDrive(gemdosPath); ok {
+		return existing, gemdosPathOK
+	}
+
+	normalized := strings.ReplaceAll(gemdosPath, "\\", "/")
+	lastSep := strings.LastIndex(normalized, "/")
+	var dirPart, namePart string
+	if lastSep >= 0 {
+		dirPart = gemdosPath[:lastSep]
+		namePart = gemdosPath[lastSep+1:]
+	} else if len(gemdosPath) >= 2 && gemdosPath[1] == ':' {
+		dirPart = gemdosPath[:2]
+		namePart = gemdosPath[2:]
+	} else {
+		dirPart = ""
+		namePart = gemdosPath
+	}
+	if namePart == "" || namePart == "." || namePart == ".." || strings.Contains(namePart, "/") || strings.Contains(namePart, "\\") {
+		return "", gemdosPathInvalid
+	}
+
+	var parent string
+	var ok bool
+	if dirPart == "" {
+		if g.defaultDrive != g.driveNum {
+			return "", gemdosPathNotOurs
+		}
+		if g.currentDir == "" {
+			parent = g.hostRoot
+		} else {
+			parent, ok = g.resolvePathForOurDrive(g.currentDir)
+			if !ok {
+				return "", gemdosPathInvalid
+			}
+		}
+	} else {
+		parent, ok = g.resolvePathForOurDrive(dirPart)
+		if !ok {
+			return "", gemdosPathInvalid
+		}
+	}
+	if resolved, ok := g.resolveHostPathInsideRoot(filepath.Join(parent, namePart)); ok {
+		return resolved, gemdosPathOK
+	}
+	return "", gemdosPathInvalid
+}
+
+func (g *GemdosInterceptor) pathTargetsOurDrive(gemdosPath string) bool {
+	if len(gemdosPath) >= 2 && gemdosPath[1] == ':' {
+		letter := strings.ToUpper(gemdosPath[:1])
+		if letter[0] < 'A' || letter[0] > 'Z' {
+			return false
+		}
+		return uint16(letter[0]-'A') == g.driveNum
+	}
+	return g.defaultDrive == g.driveNum
+}
+
+func (g *GemdosInterceptor) resolveHostPathInsideRoot(hostPath string) (string, bool) {
+	resolved, err := filepath.EvalSymlinks(hostPath)
+	if err != nil {
+		parent := filepath.Dir(hostPath)
+		parentResolved, parentErr := filepath.EvalSymlinks(parent)
+		if parentErr != nil {
+			return "", false
+		}
+		resolved = filepath.Join(parentResolved, filepath.Base(hostPath))
+	}
+	absPath, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", false
+	}
+	if !pathInsideRoot(g.hostRoot, absPath) {
+		return "", false
+	}
+	return absPath, true
+}
+
+func pathInsideRoot(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // resolveSearchPath splits a GEMDOS filespec (e.g. "U:\DIR\*.TXT") into
@@ -1117,6 +1310,46 @@ func (g *GemdosInterceptor) caseInsensitiveResolve(relPath string) string {
 
 func (g *GemdosInterceptor) setD0(val uint32) {
 	g.cpu.DataRegs[0] = val
+}
+
+func (g *GemdosInterceptor) guestRangeValid(addr uint32, count uint32) bool {
+	cap := g.bus.ProfileMemoryCap()
+	if uint64(addr) > cap {
+		return false
+	}
+	return uint64(count) <= cap-uint64(addr)
+}
+
+func addUint32(a, b uint32) (uint32, bool) {
+	sum := a + b
+	return sum, sum < a
+}
+
+func checkedPexecTPASize(textSize, dataSize, bssSize uint32) (uint32, bool) {
+	size, overflow := addUint32(TOS_BASEPAGE_SIZE, textSize)
+	if overflow {
+		return 0, false
+	}
+	if size, overflow = addUint32(size, dataSize); overflow {
+		return 0, false
+	}
+	if size, overflow = addUint32(size, bssSize); overflow {
+		return 0, false
+	}
+	if size, overflow = addUint32(size, 8192); overflow {
+		return 0, false
+	}
+	if size > 0xFFFFFF00 {
+		return 0, false
+	}
+	return (size + 255) &^ uint32(255), true
+}
+
+func relocAddrInRange(addr, start, end uint32) bool {
+	if end < start || end-start < 4 {
+		return false
+	}
+	return addr >= start && addr <= end-4
 }
 
 func (g *GemdosInterceptor) allocHandle(f *os.File) int16 {
@@ -1373,6 +1606,9 @@ func (g *GemdosInterceptor) logTrap(funcNum uint16, sp uint32) {
 func (g *GemdosInterceptor) fixWnodeChain() {
 	base := g.fnodeBase
 	if base == 0 || g.fnodeSize == 0 || g.returnedCount <= 0 {
+		return
+	}
+	if g.fnodeSize < uint32(g.returnedCount)*GEMDOS_DTA_TOTAL {
 		return
 	}
 

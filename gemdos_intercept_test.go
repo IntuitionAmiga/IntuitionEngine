@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"os"
 	"path/filepath"
@@ -622,6 +623,202 @@ func TestGemdos_StaleHandle(t *testing.T) {
 	}
 }
 
+func TestGemdos_FreadRejectsCountBeyondProfileRAM(t *testing.T) {
+	g, cpu, _ := newTestGemdos(t)
+	defer g.Close()
+
+	f, err := os.OpenFile(filepath.Join(g.hostRoot, "COUNT.BIN"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := g.allocHandle(f)
+	count := uint32(g.bus.ProfileMemoryCap() + 1)
+
+	pushTrapFrameRaw(cpu, GEMDOS_FREAD, []struct {
+		size  int
+		value uint32
+	}{{2, uint32(handle)}, {4, count}, {4, 0x3000}})
+	if !g.HandleTrap1() {
+		t.Fatal("Fread should be handled")
+	}
+	if int32(cpu.DataRegs[0]) != GEMDOS_EIMBA {
+		t.Fatalf("D0=%d, want %d", int32(cpu.DataRegs[0]), GEMDOS_EIMBA)
+	}
+}
+
+func TestGemdos_FreadRejectsBufAddrOutsideMappedRAM(t *testing.T) {
+	g, cpu, _ := newTestGemdos(t)
+	defer g.Close()
+
+	f, err := os.OpenFile(filepath.Join(g.hostRoot, "ADDR.BIN"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := g.allocHandle(f)
+
+	pushTrapFrameRaw(cpu, GEMDOS_FREAD, []struct {
+		size  int
+		value uint32
+	}{{2, uint32(handle)}, {4, 1}, {4, uint32(g.bus.ProfileMemoryCap())}})
+	if !g.HandleTrap1() {
+		t.Fatal("Fread should be handled")
+	}
+	if int32(cpu.DataRegs[0]) != GEMDOS_EIMBA {
+		t.Fatalf("D0=%d, want %d", int32(cpu.DataRegs[0]), GEMDOS_EIMBA)
+	}
+}
+
+func TestGemdos_FreadStreamsLargeValidRequest(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+
+	data := bytes.Repeat([]byte{0x5A}, 8<<20)
+	if err := os.WriteFile(filepath.Join(g.hostRoot, "LARGE.RD"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(filepath.Join(g.hostRoot, "LARGE.RD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := g.allocHandle(f)
+	bufAddr := uint32(0x3001)
+
+	pushTrapFrameRaw(cpu, GEMDOS_FREAD, []struct {
+		size  int
+		value uint32
+	}{{2, uint32(handle)}, {4, uint32(len(data))}, {4, bufAddr}})
+	if !g.HandleTrap1() {
+		t.Fatal("Fread should be handled")
+	}
+	if cpu.DataRegs[0] != uint32(len(data)) {
+		t.Fatalf("read %d bytes, want %d", cpu.DataRegs[0], len(data))
+	}
+	if bus.Read8(bufAddr) != 0x5A || bus.Read8(bufAddr+uint32(len(data)-1)) != 0x5A {
+		t.Fatal("large Fread did not populate expected buffer bytes")
+	}
+}
+
+func TestGemdos_FwriteStreamsLargeValidRequest(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+
+	f, err := os.Create(filepath.Join(g.hostRoot, "LARGE.WR"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := g.allocHandle(f)
+	bufAddr := uint32(0x4001)
+	count := uint32(8 << 20)
+	for i := uint32(0); i < count; i++ {
+		bus.Write8(bufAddr+i, uint8(i))
+	}
+
+	pushTrapFrameRaw(cpu, GEMDOS_FWRITE, []struct {
+		size  int
+		value uint32
+	}{{2, uint32(handle)}, {4, count}, {4, bufAddr}})
+	if !g.HandleTrap1() {
+		t.Fatal("Fwrite should be handled")
+	}
+	if cpu.DataRegs[0] != count {
+		t.Fatalf("wrote %d bytes, want %d", cpu.DataRegs[0], count)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != int64(count) {
+		t.Fatalf("host size=%d, want %d", info.Size(), count)
+	}
+}
+
+func TestGemdos_FreadHandlesUnalignedBufAddr(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+
+	data := []byte{1, 2, 3, 4, 5}
+	if err := os.WriteFile(filepath.Join(g.hostRoot, "ODD.RD"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(filepath.Join(g.hostRoot, "ODD.RD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := g.allocHandle(f)
+	bufAddr := uint32(0x3001)
+
+	pushTrapFrameRaw(cpu, GEMDOS_FREAD, []struct {
+		size  int
+		value uint32
+	}{{2, uint32(handle)}, {4, uint32(len(data))}, {4, bufAddr}})
+	if !g.HandleTrap1() {
+		t.Fatal("Fread should be handled")
+	}
+	for i, want := range data {
+		if got := bus.Read8(bufAddr + uint32(i)); got != want {
+			t.Fatalf("byte %d: got 0x%02X, want 0x%02X", i, got, want)
+		}
+	}
+}
+
+func TestGemdos_NewGemdosInterceptorRejectsInvalidDrive(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	if _, err := NewGemdosInterceptor(cpu, bus, t.TempDir(), 26); err == nil {
+		t.Fatal("expected drive >= 26 to be rejected")
+	}
+}
+
+func TestGemdos_FsetdtaBadPointerLeavesDtaAddrUntouched(t *testing.T) {
+	g, cpu, _ := newTestGemdos(t)
+	defer g.Close()
+	g.dtaAddr = 0x1234
+
+	pushTrapFrame(cpu, GEMDOS_FSETDTA, uint32(g.bus.ProfileMemoryCap()))
+	if g.HandleTrap1() {
+		t.Fatal("Fsetdta should remain snoop-only and forward to EmuTOS")
+	}
+	if g.dtaAddr != 0x1234 {
+		t.Fatalf("dtaAddr=0x%X, want unchanged 0x1234", g.dtaAddr)
+	}
+}
+
+func TestGemdos_FsetdtaValidPointerUpdatesDtaAddr(t *testing.T) {
+	g, cpu, _ := newTestGemdos(t)
+	defer g.Close()
+
+	pushTrapFrame(cpu, GEMDOS_FSETDTA, 0x2345)
+	if g.HandleTrap1() {
+		t.Fatal("Fsetdta should remain snoop-only and forward to EmuTOS")
+	}
+	if g.dtaAddr != 0x2345 {
+		t.Fatalf("dtaAddr=0x%X, want 0x2345", g.dtaAddr)
+	}
+}
+
+func TestGemdos_FreadOverflowSafeBoundsCheck(t *testing.T) {
+	g, cpu, _ := newTestGemdos(t)
+	defer g.Close()
+
+	f, err := os.OpenFile(filepath.Join(g.hostRoot, "WRAP.BIN"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := g.allocHandle(f)
+	cap := uint32(g.bus.ProfileMemoryCap())
+
+	pushTrapFrameRaw(cpu, GEMDOS_FREAD, []struct {
+		size  int
+		value uint32
+	}{{2, uint32(handle)}, {4, 20}, {4, cap - 10}})
+	if !g.HandleTrap1() {
+		t.Fatal("Fread should be handled")
+	}
+	if int32(cpu.DataRegs[0]) != GEMDOS_EIMBA {
+		t.Fatalf("D0=%d, want %d", int32(cpu.DataRegs[0]), GEMDOS_EIMBA)
+	}
+}
+
 // --- Close / lifecycle tests ---
 
 func TestGemdos_Close(t *testing.T) {
@@ -949,6 +1146,18 @@ func buildMinimalPRG(withReloc bool) []byte {
 	return prg
 }
 
+func buildPRGWithSizes(textSize, dataSize, bssSize, symSize uint32, body []byte, reloc []byte) []byte {
+	header := make([]byte, TOS_PRG_HEADER_LEN)
+	binary.BigEndian.PutUint16(header[0:2], TOS_PRG_MAGIC)
+	binary.BigEndian.PutUint32(header[2:6], textSize)
+	binary.BigEndian.PutUint32(header[6:10], dataSize)
+	binary.BigEndian.PutUint32(header[10:14], bssSize)
+	binary.BigEndian.PutUint32(header[14:18], symSize)
+	prg := append(header, body...)
+	prg = append(prg, reloc...)
+	return prg
+}
+
 func TestGemdos_Pexec_LoadAndRelocate(t *testing.T) {
 	g, cpu, bus := newTestGemdos(t)
 	defer g.Close()
@@ -1122,6 +1331,303 @@ func TestGemdos_Pexec_NotOurDrive(t *testing.T) {
 	handled := g.HandleTrap1()
 	if handled {
 		t.Fatal("Pexec for A: drive should NOT be handled")
+	}
+}
+
+func TestGemdos_PexecRejectsTPAOverflow(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+
+	body := make([]byte, 0x100)
+	prg := buildPRGWithSizes(0xFFFFFF00, 0x200, 0, 0, body, nil)
+	if err := os.WriteFile(filepath.Join(g.hostRoot, "OVER.PRG"), prg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fnameAddr := uint32(0x2000)
+	writeGuestStringToBus(bus, fnameAddr, "U:\\OVER.PRG")
+	pushTrapFrameRaw(cpu, GEMDOS_PEXEC, []struct {
+		size  int
+		value uint32
+	}{{2, GEMDOS_PEXEC_LOAD_GO}, {4, fnameAddr}, {4, 0}, {4, 0}})
+
+	if !g.HandleTrap1() {
+		t.Fatal("Pexec should be handled")
+	}
+	if int32(cpu.DataRegs[0]) != GEMDOS_EIMBA {
+		t.Fatalf("D0=%d, want %d", int32(cpu.DataRegs[0]), GEMDOS_EIMBA)
+	}
+}
+
+func TestGemdos_PexecRejectsRelocOutOfRange(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+
+	body := []byte{0, 0, 0, 0}
+	reloc := make([]byte, 5)
+	binary.BigEndian.PutUint32(reloc[0:4], 8)
+	prg := buildPRGWithSizes(4, 0, 0, 0, body, reloc)
+	if err := os.WriteFile(filepath.Join(g.hostRoot, "BADREL.PRG"), prg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fnameAddr := uint32(0x2000)
+	writeGuestStringToBus(bus, fnameAddr, "U:\\BADREL.PRG")
+	pushTrapFrameRaw(cpu, GEMDOS_PEXEC, []struct {
+		size  int
+		value uint32
+	}{{2, GEMDOS_PEXEC_LOAD_GO}, {4, fnameAddr}, {4, 0}, {4, 0}})
+
+	if !g.HandleTrap1() {
+		t.Fatal("Pexec should be handled")
+	}
+	if int32(cpu.DataRegs[0]) != GEMDOS_EIMBA {
+		t.Fatalf("D0=%d, want %d", int32(cpu.DataRegs[0]), GEMDOS_EIMBA)
+	}
+}
+
+func TestGemdos_PexecAcceptsMaxValidTPA(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+
+	maxSize := EmuTOS_PROFILE_TOP - PEXEC_TPA_BASE
+	bssSize := maxSize - TOS_BASEPAGE_SIZE - 8192
+	prg := buildPRGWithSizes(0, 0, bssSize, 0, nil, []byte{0, 0, 0, 0})
+	if err := os.WriteFile(filepath.Join(g.hostRoot, "MAX.PRG"), prg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fnameAddr := uint32(0x2000)
+	writeGuestStringToBus(bus, fnameAddr, "U:\\MAX.PRG")
+	pushTrapFrameRaw(cpu, GEMDOS_PEXEC, []struct {
+		size  int
+		value uint32
+	}{{2, GEMDOS_PEXEC_LOAD_GO}, {4, fnameAddr}, {4, 0}, {4, 0}})
+
+	if !g.HandleTrap1() {
+		t.Fatal("Pexec should be handled")
+	}
+	if int32(cpu.DataRegs[0]) < 0 {
+		t.Fatalf("Pexec unexpectedly failed: D0=%d", int32(cpu.DataRegs[0]))
+	}
+	if got := cpu.Read32(PEXEC_TPA_BASE + 4); got != EmuTOS_PROFILE_TOP {
+		t.Fatalf("p_hitpa=0x%X, want 0x%X", got, EmuTOS_PROFILE_TOP)
+	}
+}
+
+func TestGemdos_SymlinkEscapeRejected(t *testing.T) {
+	g, _, _ := newTestGemdos(t)
+	defer g.Close()
+
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "SECRET.TXT"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(g.hostRoot, "LINK")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, ok := g.resolvePathForOurDrive("U:\\LINK\\SECRET.TXT"); ok {
+		t.Fatal("symlink escape should be rejected")
+	}
+}
+
+func TestGemdos_FcreateResolvesParentOnly(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+	if err := os.Mkdir(filepath.Join(g.hostRoot, "DIR"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	addr := uint32(0x2000)
+	writeGuestStringToBus(bus, addr, "U:\\DIR\\NEW.TXT")
+	pushTrapFrameRaw(cpu, GEMDOS_FCREATE, []struct {
+		size  int
+		value uint32
+	}{{4, addr}, {2, 0}})
+	if !g.HandleTrap1() || int32(cpu.DataRegs[0]) < 0 {
+		t.Fatalf("Fcreate failed: handled D0=%d", int32(cpu.DataRegs[0]))
+	}
+}
+
+func TestGemdos_FcreateNotOurDriveFallsThrough(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+	addr := uint32(0x2000)
+	writeGuestStringToBus(bus, addr, "C:\\OTHER.TXT")
+	pushTrapFrameRaw(cpu, GEMDOS_FCREATE, []struct {
+		size  int
+		value uint32
+	}{{4, addr}, {2, 0}})
+	if g.HandleTrap1() {
+		t.Fatal("Fcreate for non-mapped drive should fall through to EmuTOS")
+	}
+}
+
+func TestGemdos_FcreateExistingTargetResolvesCaseInsensitive(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+	existing := filepath.Join(g.hostRoot, "Mixed.Txt")
+	if err := os.WriteFile(existing, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	addr := uint32(0x2000)
+	writeGuestStringToBus(bus, addr, "U:\\MIXED.TXT")
+	pushTrapFrameRaw(cpu, GEMDOS_FCREATE, []struct {
+		size  int
+		value uint32
+	}{{4, addr}, {2, 0}})
+	if !g.HandleTrap1() || int32(cpu.DataRegs[0]) < 0 {
+		t.Fatalf("Fcreate failed: handled D0=%d", int32(cpu.DataRegs[0]))
+	}
+	if _, err := os.Stat(filepath.Join(g.hostRoot, "MIXED.TXT")); err == nil {
+		t.Fatal("Fcreate created a second case-variant file instead of resolving existing target")
+	}
+	if _, err := os.Stat(existing); err != nil {
+		t.Fatalf("existing file missing after Fcreate: %v", err)
+	}
+}
+
+func TestGemdos_DcreateResolvesParentOnly(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+	if err := os.Mkdir(filepath.Join(g.hostRoot, "PARENT"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	addr := uint32(0x2000)
+	writeGuestStringToBus(bus, addr, "U:\\PARENT\\CHILD")
+	pushTrapFrame(cpu, GEMDOS_DCREATE, addr)
+	if !g.HandleTrap1() || cpu.DataRegs[0] != 0 {
+		t.Fatalf("Dcreate failed: handled D0=%d", int32(cpu.DataRegs[0]))
+	}
+}
+
+func TestGemdos_FrenameNewTargetResolvesParentOnly(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+	if err := os.Mkdir(filepath.Join(g.hostRoot, "DIR"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(g.hostRoot, "OLD.TXT"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldAddr, newAddr := uint32(0x2000), uint32(0x2100)
+	writeGuestStringToBus(bus, oldAddr, "U:\\OLD.TXT")
+	writeGuestStringToBus(bus, newAddr, "U:\\DIR\\NEW.TXT")
+	pushTrapFrameRaw(cpu, GEMDOS_FRENAME, []struct {
+		size  int
+		value uint32
+	}{{2, 0}, {4, oldAddr}, {4, newAddr}})
+	if !g.HandleTrap1() || cpu.DataRegs[0] != 0 {
+		t.Fatalf("Frename failed: handled D0=%d", int32(cpu.DataRegs[0]))
+	}
+}
+
+func TestGemdos_FrenameBothNotOurDriveFallsThrough(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+	oldAddr, newAddr := uint32(0x2000), uint32(0x2100)
+	writeGuestStringToBus(bus, oldAddr, "C:\\OLD.TXT")
+	writeGuestStringToBus(bus, newAddr, "C:\\NEW.TXT")
+	pushTrapFrameRaw(cpu, GEMDOS_FRENAME, []struct {
+		size  int
+		value uint32
+	}{{2, 0}, {4, oldAddr}, {4, newAddr}})
+	if g.HandleTrap1() {
+		t.Fatal("Frename with both paths outside mapped drive should fall through to EmuTOS")
+	}
+}
+
+func TestGemdos_FcreateRejectsParentSymlinkEscape(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(g.hostRoot, "LINK")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	addr := uint32(0x2000)
+	writeGuestStringToBus(bus, addr, "U:\\LINK\\NEW.TXT")
+	pushTrapFrameRaw(cpu, GEMDOS_FCREATE, []struct {
+		size  int
+		value uint32
+	}{{4, addr}, {2, 0}})
+	if !g.HandleTrap1() {
+		t.Fatal("Fcreate should reject symlink parent itself")
+	}
+	if int32(cpu.DataRegs[0]) != GEMDOS_EACCDN {
+		t.Fatalf("D0=%d, want %d", int32(cpu.DataRegs[0]), GEMDOS_EACCDN)
+	}
+}
+
+func TestGemdos_FcreateRejectsLeafSymlinkEscape(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+	outsideFile := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(g.hostRoot, "LEAF.TXT")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	addr := uint32(0x2000)
+	writeGuestStringToBus(bus, addr, "U:\\LEAF.TXT")
+	pushTrapFrameRaw(cpu, GEMDOS_FCREATE, []struct {
+		size  int
+		value uint32
+	}{{4, addr}, {2, 0}})
+	if !g.HandleTrap1() {
+		t.Fatal("Fcreate should reject leaf symlink itself")
+	}
+	if int32(cpu.DataRegs[0]) != GEMDOS_EACCDN {
+		t.Fatalf("D0=%d, want %d", int32(cpu.DataRegs[0]), GEMDOS_EACCDN)
+	}
+	if got, err := os.ReadFile(outsideFile); err != nil || string(got) != "keep" {
+		t.Fatalf("outside file mutated or unreadable: data=%q err=%v", string(got), err)
+	}
+}
+
+func TestGemdos_FrenameRejectsTargetSymlinkEscape(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(g.hostRoot, "LINK")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(g.hostRoot, "OLD.TXT"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldAddr, newAddr := uint32(0x2000), uint32(0x2100)
+	writeGuestStringToBus(bus, oldAddr, "U:\\OLD.TXT")
+	writeGuestStringToBus(bus, newAddr, "U:\\LINK\\NEW.TXT")
+	pushTrapFrameRaw(cpu, GEMDOS_FRENAME, []struct {
+		size  int
+		value uint32
+	}{{2, 0}, {4, oldAddr}, {4, newAddr}})
+	if !g.HandleTrap1() {
+		t.Fatal("Frename should reject symlink target itself")
+	}
+	if int32(cpu.DataRegs[0]) != GEMDOS_EACCDN {
+		t.Fatalf("D0=%d, want %d", int32(cpu.DataRegs[0]), GEMDOS_EACCDN)
+	}
+}
+
+func TestGemdos_DotDotStillRejected(t *testing.T) {
+	g, _, _ := newTestGemdos(t)
+	defer g.Close()
+	if _, ok := g.resolvePathForOurDrive("U:\\..\\ESCAPE"); ok {
+		t.Fatal("dot-dot path should be rejected")
+	}
+}
+
+func TestGemdos_FixWnodeChainSkipsOnSizeMismatch(t *testing.T) {
+	g, cpu, _ := newTestGemdos(t)
+	defer g.Close()
+	base := uint32(0x6000)
+	last := base - 342
+	prev := last - 342
+	cpu.Write32(prev, last)
+	cpu.Write32(last, base)
+	g.fnodeBase = base
+	g.fnodeSize = 1
+	g.returnedCount = 1
+	g.fixWnodeChain()
+	if got := cpu.Read32(last); got != base {
+		t.Fatalf("w_next=0x%X, want unchanged 0x%X", got, base)
 	}
 }
 

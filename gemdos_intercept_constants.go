@@ -84,6 +84,7 @@ const (
 const (
 	GEMDOS_HANDLE_MIN = 1000  // Start of our handle range (well above EmuTOS)
 	GEMDOS_HANDLE_MAX = 32767 // int16 max
+	GEMDOS_IO_CHUNK   = 64 << 10
 )
 
 // EmuTOS system variable for drive bitmap

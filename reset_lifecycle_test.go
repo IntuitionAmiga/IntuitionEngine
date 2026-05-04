@@ -435,6 +435,65 @@ func TestComponentReset_VideoChip(t *testing.T) {
 	}
 }
 
+func TestVRAMReset_EmuTOSReloadPreservesBigEndianAndDirectVRAM(t *testing.T) {
+	sysBus := NewMachineBus()
+	vc, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Skipf("NewVideoChip failed (expected in headless): %v", err)
+	}
+
+	applyEmuTOSVideoConfig(sysBus, vc)
+	vc.Reset()
+	applyEmuTOSVideoConfig(sysBus, vc)
+
+	if !vc.bigEndianMode {
+		t.Fatal("EmuTOS reload must leave VideoChip in big-endian mode")
+	}
+	if len(vc.directVRAM) != VRAM_SIZE {
+		t.Fatalf("EmuTOS direct VRAM len = %d, want %d", len(vc.directVRAM), VRAM_SIZE)
+	}
+	if vc.busMemory == nil {
+		t.Fatal("EmuTOS reload must keep VideoChip bus memory attached")
+	}
+}
+
+func TestVRAMReset_ArosReloadPreservesConfig(t *testing.T) {
+	sysBus := NewMachineBus()
+	vc, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Skipf("NewVideoChip failed (expected in headless): %v", err)
+	}
+
+	applyArosVideoConfig(sysBus, vc)
+	vc.Reset()
+	applyArosVideoConfig(sysBus, vc)
+
+	if !vc.bigEndianMode {
+		t.Fatal("AROS reload must leave VideoChip in big-endian mode")
+	}
+	if len(vc.directVRAM) != arosDirectVRAMSize {
+		t.Fatalf("AROS direct VRAM len = %d, want %d", len(vc.directVRAM), arosDirectVRAMSize)
+	}
+}
+
+func TestVRAMReset_NonEmuTOSProfileClearsConfig(t *testing.T) {
+	sysBus := NewMachineBus()
+	vc, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Skipf("NewVideoChip failed (expected in headless): %v", err)
+	}
+
+	applyEmuTOSVideoConfig(sysBus, vc)
+	vc.Reset()
+
+	if vc.bigEndianMode {
+		t.Fatal("non-EmuTOS reset should clear big-endian mode")
+	}
+	if vc.directVRAM != nil {
+		t.Fatal("non-EmuTOS reset should clear direct VRAM")
+	}
+}
+
 // TestComponentReset_VGAEngine tests VGAEngine.Reset() doesn't panic.
 func TestComponentReset_VGAEngine(t *testing.T) {
 	bus := NewMachineBus()
