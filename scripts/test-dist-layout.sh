@@ -6,10 +6,23 @@ release_dir="${1:-$root_dir/release}"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
-if ! compgen -G "$release_dir/*.{tar.xz,zip}" > /dev/null; then
+if ! compgen -G "$release_dir/*.tar.xz" > /dev/null && \
+   ! compgen -G "$release_dir/*.zip" > /dev/null; then
   echo "no release archives found in $release_dir" >&2
   exit 1
 fi
+
+is_runtime_archive() {
+  local name="$1"
+  case "$name" in
+    *-linux-*.tar.xz|*-darwin-*.tar.xz|*-windows-*.zip)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
 
 check_common_layout() {
   local extract_dir="$1"
@@ -27,9 +40,16 @@ check_common_layout() {
   test -e "$tool_path"
 }
 
+checked=0
 for archive in "$release_dir"/*.tar.xz "$release_dir"/*.zip; do
   [ -e "$archive" ] || continue
   name="$(basename "$archive")"
+  if ! is_runtime_archive "$name"; then
+    echo "skipping non-runtime archive: $name"
+    continue
+  fi
+
+  checked=$((checked + 1))
   extract_root="$tmpdir/${name%.*}"
   mkdir -p "$extract_root"
 
@@ -57,5 +77,10 @@ for archive in "$release_dir"/*.tar.xz "$release_dir"/*.zip; do
       ;;
   esac
 done
+
+if [[ "$checked" -eq 0 ]]; then
+  echo "no runtime release archives found in $release_dir" >&2
+  exit 1
+fi
 
 echo "distribution layout checks passed for archives in $release_dir"

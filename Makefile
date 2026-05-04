@@ -1,5 +1,7 @@
 # Makefile for Intuition Engine Virtual Machine and IE32Asm assembler
 #
+.DELETE_ON_ERROR:
+
 # This Makefile handles the build process for:
 # - IntuitionEngine: The main virtual machine executable
 # - ie32asm: The IE32 assembly language assembler
@@ -71,7 +73,7 @@ AROS_GIT_REF ?= master
 AROS_GCC_VER ?= 15.2.0
 
 # Detect number of CPU cores for parallel compilation
-NCORES := $(shell nproc)
+NCORES := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
 # Detect host architecture
 ARCH := $(shell uname -m)
@@ -127,15 +129,17 @@ else ifeq ($(ARCH),x86_64)
 endif
 
 # Version metadata
+APP_NAME := IntuitionEngine
+APP_VERSION := 1.0.0
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-IEXEC_BUILD_DATE ?=
 
 # Go build flags with version injection
 GO_FLAGS := -ldflags "-s -w -X main.Version=$(APP_VERSION) -X main.Commit=$(COMMIT) -X main.BuildDate=$(BUILD_DATE)"
 
 # Commands and tools
 GO := go
+GIT ?= git
 SSTRIP := true
 MKDIR := mkdir
 NICE := nice
@@ -145,10 +149,7 @@ NICE_LEVEL := 19
 # Installation paths
 PREFIX := /usr/local
 INSTALL_BIN_DIR := $(PREFIX)/bin
-
-# Application metadata
-APP_NAME := IntuitionEngine
-APP_VERSION := 1.0.0
+SUDO ?= $(shell if [ -n "$(DESTDIR)" ] || [ -w "$(INSTALL_BIN_DIR)" ]; then echo ""; else echo "sudo"; fi)
 
 SHOWREEL_SCRIPT := ./sdk/scripts/ie_product_demo.ies
 SHOWREEL_PREBUILT_DIR := ./sdk/examples/prebuilt
@@ -245,10 +246,11 @@ SHOWREEL_ALL_ARTIFACTS := \
 RELEASE_DIR := ./release
 
 # Main targets
-.PHONY: all clean list install uninstall novulkan headless headless-novulkan test-cross test-race check-docs
-.PHONY: sdk clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all players
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan test vet tidy test-makefile test-cross test-race check-docs
+.PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
-.PHONY: testdata-opl
+.PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
+.PHONY: ie32asm ie64asm ie64dis ie32to64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets emutos-probe emutos-release-rom basic basic-emutos cputest-musashi
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 ie64dis
@@ -258,11 +260,22 @@ all: setup intuition-engine ie32asm ie64asm ie32to64 ie64dis
 test-race:
 	$(GO) test -race -tags headless -run 'TestMonitor|TestBreakpoint|TestWatchpoint|TestSnapshot|TestTrace|TestRunUntil|TestStep|TestHunt|TestParse|TestEval|TestDisasm|TestBacktrace|TestIOView|TestHexEdit|TestStopHook|TestPublishEvent|TestAdapter|TestBP_' ./...
 
+test:
+	$(GO) test -tags headless ./...
+
+vet:
+	$(GO) vet -tags headless -unsafeptr=false ./...
+
+tidy:
+	$(GO) mod tidy -v
+
+test-makefile:
+	@bash ./scripts/test-makefile.sh
+
 # Create necessary directories
 setup:
 	@echo "Creating build directories..."
 	@$(MKDIR) -p $(BIN_DIR)
-	@$(GO) mod tidy -v
 
 # Build the Intuition Engine VM
 intuition-engine: setup
@@ -467,7 +480,7 @@ aros-rom:
 		"$(AROS_SRC_DIR)/arch/all-native/acpica/mmakefile.src" 2>/dev/null || true
 	@# IE only needs the AHI core plus paula and the IE-specific ie-audio driver.
 	@sed -i '/SUBDIRS[[:space:]]*+= ac97/d; /SUBDIRS[[:space:]]*+= HDAudio/d; /SUBDIRS[[:space:]]*+= SB128/d; /SUBDIRS[[:space:]]*+= VIA-AC97/d; /SUBDIRS[[:space:]]*+= CMI8738/d; /SUBDIRS[[:space:]]*+= EMU10kx/d; /SUBDIRS[[:space:]]*+= Envy24HT/d; /SUBDIRS[[:space:]]*+= Envy24/d' \
-		"$(AROS_SRC_DIR)/workbench/devs/AHI/Drivers/Makefile.in"
+		"$(AROS_SRC_DIR)/workbench/devs/AHI/Drivers/Makefile.in" 2>/dev/null || true
 	@# Regenerate mmakefiles after patching sources
 	@rm -f "$(AROS_BUILD_DIR)/workbench/c/mmakefile" \
 		"$(AROS_BUILD_DIR)/arch/m68k-amiga/c/mmakefile" \
@@ -826,7 +839,6 @@ aros-rom:
 		"$$AROSDIR/Devs/DOSDrivers/SER0" "$$AROSDIR/Devs/DOSDrivers/SER0.info" \
 		"$$AROSDIR/Devs/DOSDrivers/SER1" "$$AROSDIR/Devs/DOSDrivers/SER1.info" 2>/dev/null || true; \
 	find "$$AROSDIR/Devs/Drivers" -maxdepth 1 -type f \( -name 'i2c.hidd' \) -delete 2>/dev/null || true
-	
 	@echo "Checking AHI artifacts..."
 	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
 	for f in "$$AROSDIR/Devs/ahi.device" "$$AROSDIR/Devs/AHI/ie-audio.audio"; do \
@@ -1256,7 +1268,7 @@ cputest-bin:
 .PHONY: cputest-musashi
 cputest-musashi:
 	@echo "Validating CPU test suite against Musashi reference core..."
-	@CGO_ENABLED=1 $(GO) test -tags "headless musashi m68k_test" -v -run TestM68KCPUTestSuiteMusashi -timeout 300s
+	@CGO_ENABLED=1 $(GO) test -tags "headless musashi m68k_test" -v -run TestM68KCPUTestSuiteMusashi -timeout 300s -count=1
 
 # Assemble an IE65 (6502) program using ca65/ld65
 # Usage: make ie65asm SRC=assembler/robocop_intro_65.asm
@@ -1308,11 +1320,14 @@ rotozoomer-65: rotozoom-textures
 	@ls -lh sdk/examples/prebuilt/rotozoomer_65.ie65
 
 .PHONY: rotozoom-textures
-rotozoom-textures: $(ROTOZOOM_VARIANT_TEXTURES)
+rotozoom-textures: .rotozoom-textures.stamp
 
-$(ROTOZOOM_VARIANT_TEXTURES): ./sdk/examples/assets/rotozoomtexture.raw ./tools/gen_roto_textures.go
+$(ROTOZOOM_VARIANT_TEXTURES): .rotozoom-textures.stamp
+
+.rotozoom-textures.stamp: ./sdk/examples/assets/rotozoomtexture.raw ./tools/gen_roto_textures.go
 	@echo "Generating per-CPU rotozoomer textures..."
 	@go run ./tools/gen_roto_textures.go
+	@touch $@
 
 # Build the Robocop IE32 demo (requires ImageMagick for asset conversion)
 .PHONY: robocop-32
@@ -1409,8 +1424,11 @@ players:
 
 # ─── SDK & Release targets ───────────────────────────────────────────────────
 
-# Build SDK: auto-discover and pre-assemble all SDK example .asm files
-sdk: clean-sdk ie32asm ie64asm ie32to64 ie64dis
+# Build SDK: clean first, then auto-discover and pre-assemble all SDK example .asm files
+sdk:
+	@$(MAKE) clean-sdk && $(MAKE) sdk-build
+
+sdk-build: ie32asm ie64asm ie32to64 ie64dis
 	@echo "=== Building SDK ==="
 	@$(MKDIR) -p sdk/examples/prebuilt
 	@SDK_BUILT=0; SDK_SKIPPED=0; SDK_FAILED=0; \
@@ -1476,7 +1494,8 @@ sdk: clean-sdk ie32asm ie64asm ie32to64 ie64dis
 	mv sdk/examples/asm/*.prg sdk/examples/prebuilt/ 2>/dev/null || true; \
 	echo ""; \
 	echo "SDK build complete: $${SDK_BUILT} assembled, $${SDK_SKIPPED} skipped, $${SDK_FAILED} failed"; \
-	ls sdk/examples/prebuilt/ 2>/dev/null || true
+	ls sdk/examples/prebuilt/ 2>/dev/null || true; \
+	if [ "$$SDK_FAILED" -gt 0 ]; then exit 1; fi
 
 # Reusable macro for building a Linux release archive for a given architecture.
 # $(1) = GOARCH (amd64 or arm64)
@@ -1557,31 +1576,32 @@ release-windows: setup emutos-release-rom aros-release-assets
 	@echo "=== Building Windows releases (amd64 + arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@for goarch in amd64 arm64; do \
+		set -e; \
 		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-windows-$$goarch; \
 		echo ""; \
 		echo "--- $$RELEASE_NAME ---"; \
-		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic embed_emutos embed_aros" -o IntuitionEngine.exe .; \
-		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32asm.exe assembler/ie32asm.go; \
-		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe assembler/ie64asm.go; \
-		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32to64.exe ./cmd/ie32to64/; \
-		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis.exe assembler/ie64dis.go; \
-		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME; \
-		rm -rf $$STAGING; \
-		$(MKDIR) -p $$STAGING; \
-		mv IntuitionEngine.exe $$STAGING/; \
-		cp README.md CHANGELOG.md DEVELOPERS.md $$STAGING/; \
-		cp -r sdk $$STAGING/sdk; \
-		rm -rf $$STAGING/sdk/.git; \
-		rm -rf $$STAGING/sdk/bin; \
-		$(MKDIR) -p $$STAGING/sdk/bin; \
-		mv ie32asm.exe ie64asm.exe ie32to64.exe ie64dis.exe $$STAGING/sdk/bin/; \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic embed_emutos embed_aros" -o IntuitionEngine.exe . && \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32asm.exe assembler/ie32asm.go && \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe assembler/ie64asm.go && \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32to64.exe ./cmd/ie32to64/ && \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis.exe assembler/ie64dis.go && \
+		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME && \
+		rm -rf $$STAGING && \
+		$(MKDIR) -p $$STAGING && \
+		mv IntuitionEngine.exe $$STAGING/ && \
+		cp README.md CHANGELOG.md DEVELOPERS.md $$STAGING/ && \
+		cp -r sdk $$STAGING/sdk && \
+		rm -rf $$STAGING/sdk/.git && \
+		rm -rf $$STAGING/sdk/bin && \
+		$(MKDIR) -p $$STAGING/sdk/bin && \
+		mv ie32asm.exe ie64asm.exe ie32to64.exe ie64dis.exe $$STAGING/sdk/bin/ && \
 		AROS_WB="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
 		if [ -d "$$AROS_WB" ]; then \
 			cp -r "$$AROS_WB" $$STAGING/AROS; \
-		fi; \
-		echo "Creating $$RELEASE_NAME.zip..."; \
-		(cd $(RELEASE_DIR) && zip -rq $$RELEASE_NAME.zip $$RELEASE_NAME); \
-		rm -rf $$STAGING; \
+		fi && \
+		echo "Creating $$RELEASE_NAME.zip..." && \
+		(cd $(RELEASE_DIR) && zip -rq $$RELEASE_NAME.zip $$RELEASE_NAME) && \
+		rm -rf $$STAGING && \
 		echo "Created: $(RELEASE_DIR)/$$RELEASE_NAME.zip"; \
 	done
 
@@ -1658,7 +1678,7 @@ clean-sdk:
 # Create source archive from git
 release-src:
 	@mkdir -p $(RELEASE_DIR)
-	git archive --format=tar --prefix=IntuitionEngine-$(APP_VERSION)/ HEAD | xz -9 > $(RELEASE_DIR)/IntuitionEngine-$(APP_VERSION)-src.tar.xz
+	@bash -o pipefail -c '$(GIT) archive --format=tar --prefix=IntuitionEngine-$(APP_VERSION)/ HEAD | xz -9 > $(RELEASE_DIR)/IntuitionEngine-$(APP_VERSION)-src.tar.xz'
 	@echo "Source archive: $(RELEASE_DIR)/IntuitionEngine-$(APP_VERSION)-src.tar.xz"
 
 # Create standalone SDK archive
@@ -1672,6 +1692,8 @@ release-sdk: sdk
 # Build all release archives and generate checksums
 release-all: release-src release-sdk release-linux release-windows release-macos
 	@echo ""
+	@$(MAKE) release-verify
+	@echo ""
 	@echo "=== Generating SHA256 checksums ==="
 	@cd $(RELEASE_DIR) && sha256sum *.tar.xz *.zip 2>/dev/null > SHA256SUMS
 	@echo "Checksums:"
@@ -1682,6 +1704,9 @@ release-all: release-src release-sdk release-linux release-windows release-macos
 	@echo ""
 	@echo "Release build complete!"
 
+release-verify:
+	@bash scripts/test-dist-layout.sh $(RELEASE_DIR)
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
@@ -1689,7 +1714,11 @@ clean:
 	@rm -rf $(SDK_BIN_DIR)
 	@rm -rf $(RELEASE_DIR)
 	@rm -rf sdk/examples/prebuilt
+	@rm -f IntuitionEngine IntuitionEngine.exe ie32asm ie64asm ie64dis ie32to64 *.test *.test.exe default.pgo.old assembler/assembler clipboard.test .rotozoom-textures.stamp
 	@echo "Clean complete"
+
+distclean: clean intuitionos-clean clean-testdata clean-aros
+	@echo "DESTRUCTIVE: removed checked-in generated IntuitionOS assets (iexec ELFs/listings, runtime images), downloaded test fixtures (Harte/OPL), and the AROS build tree. Use only when intentionally rebuilding from scratch."
 
 # List compiled binaries with their sizes
 list:
@@ -1703,29 +1732,32 @@ install:
 		echo "Error: Binaries not found. Please run 'make' first to build."; \
 		exit 1; \
 	fi
-	@echo "Installing binaries to $(INSTALL_BIN_DIR)..."
-	@sudo $(INSTALL) -d $(INSTALL_BIN_DIR)
-	@sudo $(INSTALL) -m 755 $(BIN_DIR)/IntuitionEngine $(INSTALL_BIN_DIR)/
-	@sudo $(INSTALL) -m 755 $(SDK_BIN_DIR)/ie32asm $(INSTALL_BIN_DIR)/
-	@if [ -f "$(SDK_BIN_DIR)/ie64asm" ]; then sudo $(INSTALL) -m 755 $(SDK_BIN_DIR)/ie64asm $(INSTALL_BIN_DIR)/; fi
-	@if [ -f "$(SDK_BIN_DIR)/ie32to64" ]; then sudo $(INSTALL) -m 755 $(SDK_BIN_DIR)/ie32to64 $(INSTALL_BIN_DIR)/; fi
-	@if [ -f "$(SDK_BIN_DIR)/ie64dis" ]; then sudo $(INSTALL) -m 755 $(SDK_BIN_DIR)/ie64dis $(INSTALL_BIN_DIR)/; fi
+	@echo "Installing binaries to $(DESTDIR)$(INSTALL_BIN_DIR)..."
+	@$(SUDO) $(INSTALL) -d "$(DESTDIR)$(INSTALL_BIN_DIR)"
+	@$(SUDO) $(INSTALL) -m 755 "$(BIN_DIR)/IntuitionEngine" "$(DESTDIR)$(INSTALL_BIN_DIR)/"
+	@$(SUDO) $(INSTALL) -m 755 "$(SDK_BIN_DIR)/ie32asm" "$(DESTDIR)$(INSTALL_BIN_DIR)/"
+	@if [ -f "$(SDK_BIN_DIR)/ie64asm" ]; then $(SUDO) $(INSTALL) -m 755 "$(SDK_BIN_DIR)/ie64asm" "$(DESTDIR)$(INSTALL_BIN_DIR)/"; fi
+	@if [ -f "$(SDK_BIN_DIR)/ie32to64" ]; then $(SUDO) $(INSTALL) -m 755 "$(SDK_BIN_DIR)/ie32to64" "$(DESTDIR)$(INSTALL_BIN_DIR)/"; fi
+	@if [ -f "$(SDK_BIN_DIR)/ie64dis" ]; then $(SUDO) $(INSTALL) -m 755 "$(SDK_BIN_DIR)/ie64dis" "$(DESTDIR)$(INSTALL_BIN_DIR)/"; fi
 	@echo "Installation complete"
 
 # Remove installed binaries
 uninstall:
-	@echo "Uninstalling binaries from $(INSTALL_BIN_DIR)..."
-	@sudo rm -f $(INSTALL_BIN_DIR)/IntuitionEngine
-	@sudo rm -f $(INSTALL_BIN_DIR)/ie32asm
-	@sudo rm -f $(INSTALL_BIN_DIR)/ie64asm
-	@sudo rm -f $(INSTALL_BIN_DIR)/ie32to64
-	@sudo rm -f $(INSTALL_BIN_DIR)/ie64dis
+	@echo "Uninstalling binaries from $(DESTDIR)$(INSTALL_BIN_DIR)..."
+	@$(SUDO) rm -f "$(DESTDIR)$(INSTALL_BIN_DIR)/IntuitionEngine"
+	@$(SUDO) rm -f "$(DESTDIR)$(INSTALL_BIN_DIR)/ie32asm"
+	@$(SUDO) rm -f "$(DESTDIR)$(INSTALL_BIN_DIR)/ie64asm"
+	@$(SUDO) rm -f "$(DESTDIR)$(INSTALL_BIN_DIR)/ie32to64"
+	@$(SUDO) rm -f "$(DESTDIR)$(INSTALL_BIN_DIR)/ie64dis"
 	@echo "Uninstallation complete"
 
 # Test data directories
 TESTDATA_DIR := testdata
 HARTE_TEST_DIR := $(TESTDATA_DIR)/68000/v1
 HARTE_REPO_URL := https://github.com/SingleStepTests/680x0
+X86_HARTE_TEST_DIR := $(TESTDATA_DIR)/8088/v1
+X86_HARTE_REPO_DIR := $(TESTDATA_DIR)/external/8088
+X86_HARTE_REPO_URL := https://github.com/SingleStepTests/8088
 OPL_TEST_DIR := $(TESTDATA_DIR)/external/opl
 
 # Download Tom Harte 68000 test files
@@ -1747,6 +1779,27 @@ testdata-harte:
 	@echo "Test files downloaded to $(HARTE_TEST_DIR)/"
 	@ls -1 $(HARTE_TEST_DIR)/*.json.gz 2>/dev/null | wc -l | xargs echo "Total test files:"
 
+# Download Tom Harte 8088 test files
+testdata-x86:
+	@echo "Downloading Tom Harte 8088 test files..."
+	@$(MKDIR) -p $(X86_HARTE_TEST_DIR)
+	@if command -v git >/dev/null 2>&1; then \
+		if [ ! -d "$(X86_HARTE_REPO_DIR)" ]; then \
+			$(MKDIR) -p "$(TESTDATA_DIR)/external"; \
+			echo "Cloning 8088 test repository (this may take a while)..."; \
+			git clone --depth 1 $(X86_HARTE_REPO_URL) $(X86_HARTE_REPO_DIR) || exit 1; \
+		fi; \
+		echo "Copying 8088 v1 test files..."; \
+		cp $(X86_HARTE_REPO_DIR)/v1/*.json.gz $(X86_HARTE_TEST_DIR)/; \
+	else \
+		echo "Git not found. Please install git and try again."; \
+		exit 1; \
+	fi
+	@echo "Test files downloaded to $(X86_HARTE_TEST_DIR)/"
+	@count=$$(ls -1 $(X86_HARTE_TEST_DIR)/*.json.gz 2>/dev/null | wc -l); \
+	echo "Total test files: $$count"; \
+	if [ "$$count" -eq 0 ]; then exit 1; fi
+
 # Download pinned OPL test fixtures
 testdata-opl:
 	@echo "Fetching pinned OPL test fixtures..."
@@ -1764,13 +1817,23 @@ clean-testdata:
 .PHONY: test-harte
 test-harte: testdata-harte
 	@echo "Running Tom Harte 68000 tests..."
-	@$(GO) test -v -run TestHarte68000 -timeout 30m
+	@$(GO) test -tags headless -v -run TestHarte68000 -timeout 30m -count=1
 
 # Run M68K tests in short mode (sampling)
 .PHONY: test-harte-short
 test-harte-short: testdata-harte
 	@echo "Running Tom Harte 68000 tests (short mode)..."
-	@$(GO) test -v -short -run TestHarte68000 -timeout 5m
+	@$(GO) test -tags headless -v -short -run TestHarte68000 -timeout 5m -count=1
+
+# Run x86 tests with Tom Harte 8088 test suite
+test-x86-harte: testdata-x86
+	@echo "Running Tom Harte 8088 tests..."
+	@$(GO) test -tags headless -v -run TestHarte8086 -timeout 30m -count=1
+
+# Run x86 tests in short mode (sampling)
+test-x86-harte-short: testdata-x86
+	@echo "Running Tom Harte 8088 tests (short mode)..."
+	@$(GO) test -tags headless -v -short -run TestHarte8086 -timeout 5m -count=1
 
 # Install desktop entry and MIME type for file association
 .PHONY: install-desktop-entry
@@ -1807,6 +1870,7 @@ help:
 	@echo "  install          - Install binaries to $(INSTALL_BIN_DIR)"
 	@echo "  uninstall        - Remove installed binaries from $(INSTALL_BIN_DIR)"
 	@echo "  clean            - Remove all build artifacts"
+	@echo "  distclean        - DESTRUCTIVE: removes checked-in generated IntuitionOS assets (iexec ELFs/listings, runtime images), downloaded test fixtures (Harte/OPL), and the AROS build tree. Use only when intentionally rebuilding from scratch."
 	@echo "  list             - List compiled binaries with sizes"
 	@echo "  help             - Show this help message"
 	@echo ""
@@ -1824,6 +1888,7 @@ help:
 	@echo "  release-macos      - Build macOS release archives (amd64 + arm64)"
 	@echo "  release-macos-amd64 - Build macOS release archive (amd64 only)"
 	@echo "  release-macos-arm64 - Build macOS release archive (arm64 only)"
+	@echo "  release-verify   - Verify release archive layout"
 	@echo "  release-all      - Build all release archives + SHA256SUMS"
 	@echo ""
 	@echo "Demo targets:"
@@ -1853,9 +1918,16 @@ help:
 	@echo "  players        - Rebuild Z80 player routines for tracker formats"
 	@echo ""
 	@echo "Test targets:"
+	@echo "  test             - Run headless Go tests"
+	@echo "  vet              - Run headless go vet"
+	@echo "  tidy             - Run go mod tidy"
+	@echo "  test-makefile    - Run Makefile harness checks"
 	@echo "  testdata-harte   - Download Tom Harte 68000 test files"
+	@echo "  testdata-x86     - Download Tom Harte 8088 test files"
 	@echo "  test-harte       - Run full Tom Harte test suite"
 	@echo "  test-harte-short - Run Tom Harte tests (sampling mode)"
+	@echo "  test-x86-harte       - Run full Tom Harte 8088 test suite"
+	@echo "  test-x86-harte-short - Run Tom Harte 8088 tests (sampling mode)"
 	@echo "  clean-testdata   - Remove downloaded test data"
 	@echo ""
 	@echo "Desktop integration:"

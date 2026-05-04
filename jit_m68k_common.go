@@ -745,6 +745,8 @@ func m68kModeTouchesSP(mode, reg uint16) bool {
 	return false
 }
 
+var m68kForceInterpreterFallback = true
+
 // m68kNeedsConservativeFallback rejects blocks that contain opcode families or
 // EA forms that are still known-bad in the JIT. This intentionally favors
 // correctness over coverage: the interpreter remains the source of truth until
@@ -753,10 +755,12 @@ func m68kNeedsConservativeFallback(memory []byte, startPC uint32, instrs []M68KJ
 	// Correctness-first temporary policy: keep runtime execution in the
 	// interpreter until native M68K block coverage is rebuilt behind the full
 	// test matrix. The native emitter remains covered by its direct unit tests.
-	_ = memory
-	_ = startPC
-	_ = instrs
-	return true
+	if m68kForceInterpreterFallback {
+		_ = memory
+		_ = startPC
+		_ = instrs
+		return true
+	}
 
 	for _, ji := range instrs {
 		opcode := ji.opcode

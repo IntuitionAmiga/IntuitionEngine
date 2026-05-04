@@ -5703,6 +5703,12 @@ make headless           # Build for CI/testing (no display/audio)
 make basic              # Build with embedded EhBASIC interpreter
 make basic-emutos       # Build with embedded BASIC + EmuTOS ROM
 make sdk                # Sync includes + pre-assemble SDK demos
+make test               # Run headless Go tests
+make vet                # Run go vet with headless tag
+make tidy               # Run go mod tidy explicitly
+make testdata-x86       # Download Tom Harte 8088 test fixtures
+make test-x86-harte     # Run Tom Harte 8088 tests
+make release-verify     # Verify release archive layout
 make release-all        # Build release archives for all platforms
 go build ./...          # Quick compile check (output in cwd, not bin/)
 ```

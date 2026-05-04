@@ -58,6 +58,7 @@ make release-macos      # macOS amd64 + arm64 (.tar.xz)
 
 make release-src        # Source archive via git archive (.tar.xz)
 make release-sdk        # Standalone SDK archive (.zip)
+make release-verify     # Verify archive layout
 
 make release-all        # All of the above + SHA256SUMS
 ```
@@ -98,7 +99,7 @@ Builds `amd64` and `arm64` `.tar.xz` archives with `CGO_ENABLED=0` and the `novu
 
 ## Checksums
 
-`make release-all` generates SHA256 checksums automatically (covering `.tar.xz` and `.zip` artifacts). To generate manually:
+`make release-all` runs `make release-verify` before generating SHA256 checksums. The checksums cover `.tar.xz` and `.zip` artifacts. To generate manually:
 
 ```bash
 cd release/
