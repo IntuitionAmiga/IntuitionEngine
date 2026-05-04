@@ -92,6 +92,16 @@ func TestSplitComment_InString(t *testing.T) {
 	}
 }
 
+func TestSplitComment_EscapedQuote(t *testing.T) {
+	code, comment := SplitComment(`dc.b "a\";b"`)
+	if code != `dc.b "a\";b"` {
+		t.Errorf("code = %q, want %q", code, `dc.b "a\";b"`)
+	}
+	if comment != "" {
+		t.Errorf("comment = %q, want empty", comment)
+	}
+}
+
 func TestSplitComment_LabelWithComment(t *testing.T) {
 	code, comment := SplitComment("foo: ; setup")
 	if code != "foo:" {
@@ -203,6 +213,26 @@ func TestConvertDirective_Equ(t *testing.T) {
 	}
 }
 
+func TestConvertDirective_EquTab(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertDirective(".equ\tNAME\t0x1234")
+	if got != "NAME equ 0x1234" {
+		t.Errorf("got %q, want %q", got, "NAME equ 0x1234")
+	}
+}
+
+func TestConvert_Equ_NoValue_IsError(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    .equ FOO")
+	expectLines(t, got, []string{
+		"    ; ERROR: .equ requires name and value",
+		"    ; .equ FOO",
+	})
+	if c.errors != 1 {
+		t.Fatalf("errors = %d, want 1", c.errors)
+	}
+}
+
 func TestConvertDirective_EquExpr(t *testing.T) {
 	c := NewConverter()
 	got := c.ConvertDirective(".equ ENTRIES RING_BASE + 0x08")
@@ -243,6 +273,22 @@ func TestConvertDirective_Ascii(t *testing.T) {
 	}
 }
 
+func TestConvertDirective_Asciz(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertDirective(`.asciz "hi"`)
+	if got != `dc.bz "hi"` {
+		t.Errorf("got %q, want %q", got, `dc.bz "hi"`)
+	}
+}
+
+func TestConvertDirective_OrgTab(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertDirective(".org\t0x1000")
+	if got != "org 0x1000" {
+		t.Errorf("got %q, want %q", got, "org 0x1000")
+	}
+}
+
 func TestConvertDirective_Incbin(t *testing.T) {
 	c := NewConverter()
 	got := c.ConvertDirective(`.incbin "data.bin"`)
@@ -272,6 +318,18 @@ func TestConvertDirective_IncludeOther(t *testing.T) {
 	got := c.ConvertDirective(`.include "mylib.inc"`)
 	if got != `include "mylib.inc"` {
 		t.Errorf("got %q, want %q", got, `include "mylib.inc"`)
+	}
+}
+
+func TestConvert_UnknownDirective_IsError(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    .frobnicate 1")
+	expectLines(t, got, []string{
+		"    ; ERROR: unknown directive: .frobnicate",
+		"    ; .frobnicate 1",
+	})
+	if c.errors != 1 {
+		t.Fatalf("errors = %d, want 1", c.errors)
 	}
 }
 
@@ -339,6 +397,12 @@ func TestConvert_LDA_RegOffset(t *testing.T) {
 	c := NewConverter()
 	got := c.ConvertLine("    LDA [B+8]")
 	expectLines(t, got, []string{"    load.l r1, 8(r5)"})
+}
+
+func TestConvert_LDA_RegOffsetNegative(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    LDA [B-16]")
+	expectLines(t, got, []string{"    load.l r1, -16(r5)"})
 }
 
 func TestConvert_LDX_Immediate(t *testing.T) {
@@ -473,6 +537,24 @@ func TestConvert_STORE_Expression(t *testing.T) {
 	})
 }
 
+func TestConvert_STORE_RegisterOperand_IsError(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    STORE A, X")
+	expectLines(t, got, []string{
+		"    ; ERROR: STORE register operand is invalid",
+		"    ; STORE A, X",
+	})
+}
+
+func TestConvert_STORE_ImmediateOperand_IsError(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    STORE A, #5")
+	expectLines(t, got, []string{
+		"    ; ERROR: STORE immediate operand is invalid",
+		"    ; STORE A, #5",
+	})
+}
+
 // ============================================================================
 // ALU Instruction Tests
 // ============================================================================
@@ -523,6 +605,15 @@ func TestConvert_ADD_RegIndirectOffset(t *testing.T) {
 	})
 }
 
+func TestConvert_ADD_RegIndirectNegative(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    ADD A, [B-8]")
+	expectLines(t, got, []string{
+		"    load.l r17, -8(r5)",
+		"    add.l r1, r1, r17",
+	})
+}
+
 func TestConvert_SUB_Immediate(t *testing.T) {
 	c := NewConverter()
 	got := c.ConvertLine("    SUB A, #5")
@@ -545,6 +636,232 @@ func TestConvert_MOD_Immediate(t *testing.T) {
 	c := NewConverter()
 	got := c.ConvertLine("    MOD A, #7")
 	expectLines(t, got, []string{"    mod.l r1, r1, #7"})
+}
+
+func TestConvert_DIV_ImmediateNonZero_NoGuard(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    DIV A, #2")
+	expectLines(t, got, []string{"    divu.l r1, r1, #2"})
+}
+
+func TestConvert_DIV_ImmediateZero_StaticHalt(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    DIV A, #0")
+	expectLines(t, got, []string{"    halt"})
+}
+
+func TestConvert_DIV_ImmediateSymbolic_GuardMaterialized(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    DIV A, #FOO")
+	expectLines(t, got, []string{
+		"    move.l r17, #FOO",
+		"    beqz r17, __ie32to64_div_zero_0",
+		"    divu.l r1, r1, r17",
+		"    bra __ie32to64_div_skip_0",
+		"__ie32to64_div_zero_0:",
+		"    halt",
+		"__ie32to64_div_skip_0:",
+	})
+}
+
+func TestConvert_DIV_BareZero_StaticHalt(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    DIV A, 0")
+	expectLines(t, got, []string{"    halt"})
+}
+
+func TestConvert_DIV_BareNonZero_NoGuard(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    DIV A, 1")
+	expectLines(t, got, []string{"    divu.l r1, r1, #1"})
+}
+
+func TestConvert_DIV_BareSymbolic_GuardMaterialized(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    DIV A, FOO")
+	expectLines(t, got, []string{
+		"    move.l r17, #FOO",
+		"    beqz r17, __ie32to64_div_zero_0",
+		"    divu.l r1, r1, r17",
+		"    bra __ie32to64_div_skip_0",
+		"__ie32to64_div_zero_0:",
+		"    halt",
+		"__ie32to64_div_skip_0:",
+	})
+}
+
+func TestConvert_DIV_BareExpression_GuardMaterialized(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    DIV A, 1+1")
+	expectLines(t, got, []string{
+		"    move.l r17, #1+1",
+		"    beqz r17, __ie32to64_div_zero_0",
+		"    divu.l r1, r1, r17",
+		"    bra __ie32to64_div_skip_0",
+		"__ie32to64_div_zero_0:",
+		"    halt",
+		"__ie32to64_div_skip_0:",
+	})
+}
+
+func TestConvert_DIV_Register_Guard(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    DIV A, X")
+	expectLines(t, got, []string{
+		"    beqz r2, __ie32to64_div_zero_0",
+		"    divu.l r1, r1, r2",
+		"    bra __ie32to64_div_skip_0",
+		"__ie32to64_div_zero_0:",
+		"    halt",
+		"__ie32to64_div_skip_0:",
+	})
+}
+
+func TestConvert_DIV_Direct_Guard(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    DIV A, @addr")
+	expectLines(t, got, []string{
+		"    la r17, addr",
+		"    load.l r17, (r17)",
+		"    beqz r17, __ie32to64_div_zero_0",
+		"    divu.l r1, r1, r17",
+		"    bra __ie32to64_div_skip_0",
+		"__ie32to64_div_zero_0:",
+		"    halt",
+		"__ie32to64_div_skip_0:",
+	})
+}
+
+func TestConvert_DIV_RegIndirect_Guard(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    DIV A, [B]")
+	expectLines(t, got, []string{
+		"    load.l r17, (r5)",
+		"    beqz r17, __ie32to64_div_zero_0",
+		"    divu.l r1, r1, r17",
+		"    bra __ie32to64_div_skip_0",
+		"__ie32to64_div_zero_0:",
+		"    halt",
+		"__ie32to64_div_skip_0:",
+	})
+}
+
+func TestConvert_DIV_RegIndirectNegative_Guard(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    DIV A, [B-8]")
+	expectLines(t, got, []string{
+		"    load.l r17, -8(r5)",
+		"    beqz r17, __ie32to64_div_zero_0",
+		"    divu.l r1, r1, r17",
+		"    bra __ie32to64_div_skip_0",
+		"__ie32to64_div_zero_0:",
+		"    halt",
+		"__ie32to64_div_skip_0:",
+	})
+}
+
+func TestConvert_MOD_DivideByZeroGuards(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want []string
+	}{
+		{name: "immediate zero", line: "    MOD A, #0", want: []string{"    halt"}},
+		{name: "immediate nonzero", line: "    MOD A, #7", want: []string{"    mod.l r1, r1, #7"}},
+		{name: "bare zero", line: "    MOD A, 0", want: []string{"    halt"}},
+		{name: "bare nonzero", line: "    MOD A, 1", want: []string{"    mod.l r1, r1, #1"}},
+		{name: "symbolic", line: "    MOD A, FOO", want: []string{
+			"    move.l r17, #FOO",
+			"    beqz r17, __ie32to64_div_zero_0",
+			"    mod.l r1, r1, r17",
+			"    bra __ie32to64_div_skip_0",
+			"__ie32to64_div_zero_0:",
+			"    halt",
+			"__ie32to64_div_skip_0:",
+		}},
+		{name: "expression", line: "    MOD A, 1+1", want: []string{
+			"    move.l r17, #1+1",
+			"    beqz r17, __ie32to64_div_zero_0",
+			"    mod.l r1, r1, r17",
+			"    bra __ie32to64_div_skip_0",
+			"__ie32to64_div_zero_0:",
+			"    halt",
+			"__ie32to64_div_skip_0:",
+		}},
+		{name: "register", line: "    MOD A, X", want: []string{
+			"    beqz r2, __ie32to64_div_zero_0",
+			"    mod.l r1, r1, r2",
+			"    bra __ie32to64_div_skip_0",
+			"__ie32to64_div_zero_0:",
+			"    halt",
+			"__ie32to64_div_skip_0:",
+		}},
+		{name: "direct", line: "    MOD A, @addr", want: []string{
+			"    la r17, addr",
+			"    load.l r17, (r17)",
+			"    beqz r17, __ie32to64_div_zero_0",
+			"    mod.l r1, r1, r17",
+			"    bra __ie32to64_div_skip_0",
+			"__ie32to64_div_zero_0:",
+			"    halt",
+			"__ie32to64_div_skip_0:",
+		}},
+		{name: "indirect", line: "    MOD A, [B]", want: []string{
+			"    load.l r17, (r5)",
+			"    beqz r17, __ie32to64_div_zero_0",
+			"    mod.l r1, r1, r17",
+			"    bra __ie32to64_div_skip_0",
+			"__ie32to64_div_zero_0:",
+			"    halt",
+			"__ie32to64_div_skip_0:",
+		}},
+		{name: "indirect negative", line: "    MOD A, [B-8]", want: []string{
+			"    load.l r17, -8(r5)",
+			"    beqz r17, __ie32to64_div_zero_0",
+			"    mod.l r1, r1, r17",
+			"    bra __ie32to64_div_skip_0",
+			"__ie32to64_div_zero_0:",
+			"    halt",
+			"__ie32to64_div_skip_0:",
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := NewConverter()
+			got := c.ConvertLine(tt.line)
+			expectLines(t, got, tt.want)
+		})
+	}
+}
+
+func TestConvert_DIV_GuardOff(t *testing.T) {
+	c := NewConverter()
+	c.divGuard = false
+	got := c.ConvertLine("    DIV A, X")
+	expectLines(t, got, []string{"    divu.l r1, r1, r2"})
+}
+
+func TestConvert_DIV_GuardLabelUsesReservedPrefix(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    DIV A, X")
+	if len(got) < 1 || !strings.Contains(got[0], "__ie32to64_div_zero_0") {
+		t.Fatalf("guard label missing reserved prefix in %v", got)
+	}
+}
+
+func TestConvert_DIV_GuardLabelSequencing(t *testing.T) {
+	c := NewConverter()
+	output := c.ConvertFile("DIV A, X\nDIV A, X")
+	for _, want := range []string{
+		"__ie32to64_div_zero_0:",
+		"__ie32to64_div_skip_0:",
+		"__ie32to64_div_zero_1:",
+		"__ie32to64_div_skip_1:",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
 }
 
 func TestConvert_AND_Immediate(t *testing.T) {
@@ -607,6 +924,16 @@ func TestConvert_INC_Direct(t *testing.T) {
 		"    load.l r18, (r17)",
 		"    add.l r18, r18, #1",
 		"    store.l r18, (r17)",
+	})
+}
+
+func TestConvert_INC_RegIndirectNegative(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    INC [B-8]")
+	expectLines(t, got, []string{
+		"    load.l r18, -8(r5)",
+		"    add.l r18, r18, #1",
+		"    store.l r18, -8(r5)",
 	})
 }
 
@@ -824,6 +1151,40 @@ func TestConvert_Indentation(t *testing.T) {
 	expectLines(t, got, []string{"    move.l r1, #42"})
 }
 
+func TestConvert_LabelWithInlineInstruction(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    start: LDA #1")
+	expectLines(t, got, []string{
+		"    start:",
+		"    move.l r1, #1",
+	})
+
+	got = c.ConvertLine("start: LDA #1")
+	expectLines(t, got, []string{
+		"start:",
+		"move.l r1, #1",
+	})
+}
+
+func TestConvert_LabelInlineWithComment(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("    start: LDA #1 ; init")
+	expectLines(t, got, []string{
+		"    start:",
+		"    move.l r1, #1    ; init",
+	})
+}
+
+func TestConvert_NestedInlineLabels(t *testing.T) {
+	c := NewConverter()
+	got := c.ConvertLine("outer: inner: LDA #1")
+	expectLines(t, got, []string{
+		"outer:",
+		"inner:",
+		"move.l r1, #1",
+	})
+}
+
 // ============================================================================
 // File-Level Tests
 // ============================================================================
@@ -842,6 +1203,18 @@ func TestConvert_FileHeader_Omitted(t *testing.T) {
 	output := c.ConvertFile("NOP")
 	if strings.HasPrefix(output, "; Converted") {
 		t.Errorf("output should NOT start with header when noHeader=true")
+	}
+}
+
+func TestConvertFile_ResetsErrorsAcrossCalls(t *testing.T) {
+	c := NewConverter()
+	c.ConvertFile(".frobnicate 1")
+	if c.errors == 0 {
+		t.Fatalf("first conversion should record an error")
+	}
+	c.ConvertFile("NOP")
+	if c.errors != 0 {
+		t.Fatalf("errors after clean second conversion = %d, want 0", c.errors)
 	}
 }
 

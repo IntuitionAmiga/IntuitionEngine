@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -29,10 +30,12 @@ const (
 
 // Converter translates IE32 assembly to IE64 assembly.
 type Converter struct {
-	regMap     map[string]string
-	sizeSuffix string
-	noHeader   bool
-	errors     int
+	regMap      map[string]string
+	sizeSuffix  string
+	noHeader    bool
+	divGuard    bool
+	divLabelSeq int
+	errors      int
 }
 
 // NewConverter creates a Converter with default settings.
@@ -45,6 +48,7 @@ func NewConverter() *Converter {
 			"T": "r13", "U": "r14", "V": "r15", "W": "r16",
 		},
 		sizeSuffix: ".l",
+		divGuard:   true,
 	}
 	return c
 }
@@ -69,9 +73,18 @@ func (c *Converter) isRegister(s string) bool {
 func SplitComment(line string) (code, comment string) {
 	inQuote := false
 	quoteChar := byte(0)
+	escaped := false
 	for i := 0; i < len(line); i++ {
 		ch := line[i]
 		if inQuote {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
 			if ch == quoteChar {
 				inQuote = false
 			}
@@ -89,6 +102,19 @@ func SplitComment(line string) (code, comment string) {
 		}
 	}
 	return line, ""
+}
+
+func splitInlineLabel(code string) (label, rest string, ok bool) {
+	trimmed := strings.TrimSpace(code)
+	colon := strings.IndexByte(trimmed, ':')
+	if colon <= 0 {
+		return "", "", false
+	}
+	labelName := strings.TrimSpace(trimmed[:colon])
+	if strings.ContainsAny(labelName, " \t") {
+		return "", "", false
+	}
+	return labelName + ":", strings.TrimSpace(trimmed[colon+1:]), true
 }
 
 // ClassifyLine classifies the code portion of a line (after comment removal).
@@ -142,9 +168,15 @@ func (c *Converter) parseRegIndirect(op string) (reg string, offset string, err 
 	inner = strings.TrimSuffix(inner, "]")
 	inner = strings.TrimSpace(inner)
 
-	if before, after, ok := strings.Cut(inner, "+"); ok {
-		regPart := strings.TrimSpace(before)
-		offPart := strings.TrimSpace(after)
+	for i := 1; i < len(inner); i++ {
+		if inner[i] != '+' && inner[i] != '-' {
+			continue
+		}
+		regPart := strings.TrimSpace(inner[:i])
+		offPart := strings.TrimSpace(inner[i:])
+		if strings.HasPrefix(offPart, "+") {
+			offPart = strings.TrimSpace(offPart[1:])
+		}
 		mapped, e := c.MapRegister(regPart)
 		if e != nil {
 			return "", "", e
@@ -161,49 +193,66 @@ func (c *Converter) parseRegIndirect(op string) (reg string, offset string, err 
 
 // ConvertDirective converts an IE32 directive to IE64.
 func (c *Converter) ConvertDirective(line string) string {
+	converted, err := c.convertDirective(line)
+	if err != nil {
+		c.errors++
+		return "; ERROR: " + err.Error()
+	}
+	return converted
+}
+
+func (c *Converter) convertDirective(line string) (string, error) {
 	trimmed := strings.TrimSpace(line)
-	lower := strings.ToLower(trimmed)
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return "", nil
+	}
+	directive := strings.ToLower(fields[0])
+	args := strings.TrimSpace(trimmed[len(fields[0]):])
 
-	switch {
-	case strings.HasPrefix(lower, ".org "):
-		return "org " + strings.TrimSpace(trimmed[4:])
+	switch directive {
+	case ".org":
+		return "org " + args, nil
 
-	case strings.HasPrefix(lower, ".equ "):
-		rest := strings.TrimSpace(trimmed[4:])
+	case ".equ":
+		rest := args
 		// .equ NAME value → NAME equ value
 		fields := strings.Fields(rest)
 		if len(fields) >= 2 {
 			name := fields[0]
 			value := strings.TrimSpace(rest[len(name):])
 			value = strings.TrimSpace(value)
-			return name + " equ " + value
+			return name + " equ " + value, nil
 		}
-		return rest + " equ"
+		return "", fmt.Errorf(".equ requires name and value")
 
-	case strings.HasPrefix(lower, ".word "):
-		return "dc.l " + strings.TrimSpace(trimmed[5:])
+	case ".word":
+		return "dc.l " + args, nil
 
-	case strings.HasPrefix(lower, ".byte "):
-		return "dc.b " + strings.TrimSpace(trimmed[5:])
+	case ".byte":
+		return "dc.b " + args, nil
 
-	case strings.HasPrefix(lower, ".space "):
-		return "ds.b " + strings.TrimSpace(trimmed[6:])
+	case ".space":
+		return "ds.b " + args, nil
 
-	case strings.HasPrefix(lower, ".ascii "):
-		return "dc.b " + strings.TrimSpace(trimmed[6:])
+	case ".ascii":
+		return "dc.b " + args, nil
 
-	case strings.HasPrefix(lower, ".incbin "):
-		return "incbin " + strings.TrimSpace(trimmed[7:])
+	case ".asciz":
+		return "dc.bz " + args, nil
 
-	case strings.HasPrefix(lower, ".include "):
-		filename := strings.TrimSpace(trimmed[8:])
+	case ".incbin":
+		return "incbin " + args, nil
+
+	case ".include":
+		filename := args
 		if filename == `"ie32.inc"` {
 			filename = `"ie64.inc"`
 		}
-		return "include " + filename
+		return "include " + filename, nil
 
 	default:
-		return "; WARNING: unknown directive: " + trimmed
+		return "", fmt.Errorf("unknown directive: %s", directive)
 	}
 }
 
@@ -245,10 +294,22 @@ func (c *Converter) ConvertLine(rawLine string) []string {
 		return []string{""}
 
 	case LineLabel:
+		if label, rest, ok := splitInlineLabel(code); ok && rest != "" {
+			out := []string{indent.String() + label}
+			recurseLine := indent.String() + rest
+			if comment != "" {
+				recurseLine += " ; " + comment
+			}
+			out = append(out, c.ConvertLine(recurseLine)...)
+			return out
+		}
 		return []string{indent.String() + code + commentSuffix}
 
 	case LineDirective:
-		converted := c.ConvertDirective(code)
+		converted, err := c.convertDirective(code)
+		if err != nil {
+			return c.emitError(indent.String(), code, err.Error())
+		}
 		return []string{indent.String() + converted + commentSuffix}
 
 	case LineInstruction:
@@ -345,7 +406,7 @@ func (c *Converter) convertInstruction(code string, indent string) []string {
 		if err != nil {
 			return c.emitError(indent, code, "unknown register in "+mnemonic)
 		}
-		return c.convertStore(srcReg, strings.TrimSpace(rest), indent, sz)
+		return c.convertStore(srcReg, strings.TrimSpace(rest), indent, sz, code)
 	}
 
 	// --- Generic LOAD / STORE ---
@@ -369,7 +430,7 @@ func (c *Converter) convertInstruction(code string, indent string) []string {
 		if err != nil {
 			return c.emitError(indent, code, err.Error())
 		}
-		return c.convertStore(srcReg, parts[1], indent, sz)
+		return c.convertStore(srcReg, parts[1], indent, sz, "STORE "+parts[0]+", "+parts[1])
 	}
 
 	// --- ALU: ADD, SUB, MUL, DIV, MOD, AND, OR, XOR, SHL, SHR ---
@@ -388,7 +449,7 @@ func (c *Converter) convertInstruction(code string, indent string) []string {
 		if err != nil {
 			return c.emitError(indent, code, err.Error())
 		}
-		return c.convertALU(ie64op, destReg, parts[1], indent, sz)
+		return c.convertALU(mnemonic, ie64op, destReg, parts[1], indent, sz)
 	}
 
 	// --- NOT (unary) ---
@@ -488,10 +549,16 @@ func (c *Converter) convertGenericLoad(destReg, operand, indent, sz string) []st
 }
 
 // convertStore converts a store operation.
-func (c *Converter) convertStore(srcReg, operand, indent, sz string) []string {
-	opType := ClassifyOperand(operand)
+func (c *Converter) convertStore(srcReg, operand, indent, sz, sourceText string) []string {
+	opType := c.ClassifyOperandWithReg(operand)
 
 	switch opType {
+	case OpImmediate:
+		return c.emitError(indent, sourceText, "STORE immediate operand is invalid")
+
+	case OpRegister:
+		return c.emitError(indent, sourceText, "STORE register operand is invalid")
+
 	case OpDirect:
 		addr := strings.TrimSpace(operand[1:])
 		return []string{
@@ -509,11 +576,8 @@ func (c *Converter) convertStore(srcReg, operand, indent, sz string) []string {
 		}
 		return []string{indent + "store" + sz + " " + srcReg + ", (" + reg + ")"}
 
-	default: // OpBare and OpImmediate - STORE always writes to memory
+	default: // OpBare - STORE always writes to memory
 		addr := operand
-		if strings.HasPrefix(addr, "#") {
-			addr = addr[1:]
-		}
 		return []string{
 			indent + "la r17, " + addr,
 			indent + "store" + sz + " " + srcReg + ", (r17)",
@@ -522,7 +586,11 @@ func (c *Converter) convertStore(srcReg, operand, indent, sz string) []string {
 }
 
 // convertALU converts a 2-operand ALU instruction to 3-operand IE64.
-func (c *Converter) convertALU(ie64op, destReg, operand, indent, sz string) []string {
+func (c *Converter) convertALU(ie32mn, ie64op, destReg, operand, indent, sz string) []string {
+	if c.divGuard && (ie32mn == "DIV" || ie32mn == "MOD") {
+		return c.convertDivMod(ie64op, destReg, operand, indent, sz)
+	}
+
 	opType := c.ClassifyOperandWithReg(operand)
 
 	switch opType {
@@ -560,6 +628,94 @@ func (c *Converter) convertALU(ie64op, destReg, operand, indent, sz string) []st
 	default: // OpBare - immediate per IE32 semantics
 		return []string{indent + ie64op + sz + " " + destReg + ", " + destReg + ", #" + operand}
 	}
+}
+
+func (c *Converter) convertDivMod(ie64op, destReg, operand, indent, sz string) []string {
+	opType := c.ClassifyOperandWithReg(operand)
+
+	switch opType {
+	case OpImmediate:
+		if val, ok := tryParseConstantInt(operand); ok {
+			if val == 0 {
+				return []string{indent + "halt"}
+			}
+			return []string{indent + ie64op + sz + " " + destReg + ", " + destReg + ", " + operand}
+		}
+		imm := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(operand), "#"))
+		return c.emitDivModGuard(ie64op, destReg, "r17", []string{indent + "move" + sz + " r17, #" + imm}, indent, sz)
+
+	case OpBare:
+		if val, ok := tryParseConstantInt(operand); ok {
+			if val == 0 {
+				return []string{indent + "halt"}
+			}
+			return []string{indent + ie64op + sz + " " + destReg + ", " + destReg + ", #" + strings.TrimSpace(operand)}
+		}
+		return c.emitDivModGuard(ie64op, destReg, "r17", []string{indent + "move" + sz + " r17, #" + strings.TrimSpace(operand)}, indent, sz)
+
+	case OpRegister:
+		srcReg, _ := c.MapRegister(operand)
+		return c.emitDivModGuard(ie64op, destReg, srcReg, nil, indent, sz)
+
+	case OpDirect:
+		addr := strings.TrimSpace(operand[1:])
+		prefix := []string{
+			indent + "la r17, " + addr,
+			indent + "load" + sz + " r17, (r17)",
+		}
+		return c.emitDivModGuard(ie64op, destReg, "r17", prefix, indent, sz)
+
+	case OpRegIndirect:
+		reg, offset, err := c.parseRegIndirect(operand)
+		if err != nil {
+			return c.emitError(indent, ie64op+" "+operand, err.Error())
+		}
+		memRef := "(" + reg + ")"
+		if offset != "" {
+			memRef = offset + "(" + reg + ")"
+		}
+		return c.emitDivModGuard(ie64op, destReg, "r17", []string{indent + "load" + sz + " r17, " + memRef}, indent, sz)
+	}
+
+	return c.emitError(indent, ie64op+" "+operand, "unsupported operand for DIV/MOD")
+}
+
+func (c *Converter) emitDivModGuard(ie64op, destReg, divisorReg string, prefix []string, indent, sz string) []string {
+	seq := c.divLabelSeq
+	c.divLabelSeq++
+	zeroLabel := fmt.Sprintf("__ie32to64_div_zero_%d", seq)
+	skipLabel := fmt.Sprintf("__ie32to64_div_skip_%d", seq)
+
+	out := append([]string{}, prefix...)
+	out = append(out,
+		indent+"beqz "+divisorReg+", "+zeroLabel,
+		indent+ie64op+sz+" "+destReg+", "+destReg+", "+divisorReg,
+		indent+"bra "+skipLabel,
+		zeroLabel+":",
+		indent+"halt",
+		skipLabel+":",
+	)
+	return out
+}
+
+func tryParseConstantInt(s string) (int64, bool) {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "#")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	val, err := strconv.ParseInt(s, 0, 64)
+	if err == nil {
+		return val, true
+	}
+	if strings.HasPrefix(s, "0b") || strings.HasPrefix(s, "0B") {
+		val, err = strconv.ParseInt(s[2:], 2, 64)
+		if err == nil {
+			return val, true
+		}
+	}
+	return 0, false
 }
 
 // convertIncDec converts INC/DEC with various addressing modes.
@@ -630,6 +786,8 @@ func (c *Converter) emitError(indent, code, msg string) []string {
 
 // ConvertFile converts an entire IE32 assembly file content string to IE64.
 func (c *Converter) ConvertFile(input string) string {
+	c.errors = 0
+	c.divLabelSeq = 0
 	lines := strings.Split(input, "\n")
 	var output []string
 

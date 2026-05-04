@@ -11,6 +11,7 @@ func main() {
 	outFile := flag.String("o", "", "Output file (default: input_ie64.asm)")
 	sizeSuffix := flag.String("size", ".l", "Default size suffix (.l or .q)")
 	noHeader := flag.Bool("no-header", false, "Omit header comment")
+	noDivGuard := flag.Bool("no-div-guard", false, "Disable DIV/MOD zero guards")
 	stats := flag.Bool("stats", false, "Print conversion statistics")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: ie32to64 [options] input.asm\n\nConverts IE32 assembly source to IE64 assembly.\n\nOptions:\n")
@@ -37,6 +38,9 @@ func main() {
 	conv := NewConverter()
 	conv.sizeSuffix = *sizeSuffix
 	conv.noHeader = *noHeader
+	if *noDivGuard {
+		conv.divGuard = false
+	}
 
 	output, err := conv.ConvertFileFromPath(inputPath)
 	if err != nil {
