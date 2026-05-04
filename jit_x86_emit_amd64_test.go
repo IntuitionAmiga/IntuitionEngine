@@ -740,6 +740,21 @@ func TestX86JIT_MOV_moffs32_EAX(t *testing.T) {
 	}
 }
 
+func TestX86JIT_MOV_moffs8_AL_Prefixed(t *testing.T) {
+	r := newX86JITTestRig(t)
+	addr := uint32(0x3000)
+	r.cpu.EAX = 0x0000007F
+
+	// 66 A2 id: operand-size prefix is ignored by MOV moffs8, AL.
+	r.compileAndRun(t, 0x1000,
+		0x66, 0xA2, byte(addr), byte(addr>>8), byte(addr>>16), byte(addr>>24),
+	)
+
+	if got := r.bus.Read8(addr); got != 0x7F {
+		t.Errorf("[0x%X] = 0x%02X, want 0x7F", addr, got)
+	}
+}
+
 func TestX86JIT_MOV_memabs_imm32(t *testing.T) {
 	r := newX86JITTestRig(t)
 	addr := uint32(0x3000)

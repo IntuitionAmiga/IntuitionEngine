@@ -149,11 +149,20 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			}
 		}
 		// Check for pending interrupt (named fields are stale; sync first)
-		if cpu.irqPending.Load() && cpu.IF() {
+		if cpu.nmiPending.Load() {
 			cpu.syncJITRegsToNamed()
-			cpu.handleInterrupt(byte(cpu.irqVector.Load()))
-			cpu.irqPending.Store(false)
+			cpu.handleInterrupt(0x02)
+			cpu.nmiPending.Store(false)
 			cpu.syncJITRegsFromNamed()
+		} else if cpu.irqPending.Load() {
+			cpu.syncJITRegsToNamed()
+			if !cpu.IF() {
+				cpu.syncJITRegsFromNamed()
+			} else {
+				cpu.handleInterrupt(byte(cpu.irqVector.Load()))
+				cpu.irqPending.Store(false)
+				cpu.syncJITRegsFromNamed()
+			}
 		}
 
 		// MMIO status spin loops dominate demo wait time. Handle the common
@@ -512,12 +521,12 @@ func x86PatchCompatibleChainsTo(cache *CodeCache, target *JITBlock) {
 // I/O page. It preserves the architectural effect of the interpreter handlers
 // for these no-prefix forms while avoiding the full fetch/decode Step path.
 func (cpu *CPU_X86) tryFastMMIOWriteFallback() (uint64, bool) {
-	if cpu.nmiPending.Load() || (cpu.irqPending.Load() && cpu.IF()) {
-		return 0, false
-	}
-
 	var executed uint64
 	for executed < 64 {
+		if cpu.hasPendingX86Interrupt() {
+			return executed, executed != 0
+		}
+
 		pc := cpu.EIP
 		if pc >= uint32(len(cpu.memory)) {
 			break
@@ -583,6 +592,10 @@ func (cpu *CPU_X86) tryFastMMIOWriteFallback() (uint64, bool) {
 	}
 
 	return executed, executed != 0
+}
+
+func (cpu *CPU_X86) hasPendingX86Interrupt() bool {
+	return cpu.nmiPending.Load() || (cpu.irqPending.Load() && cpu.IF())
 }
 
 func (cpu *CPU_X86) isX86GuestIOPage(addr uint32) bool {

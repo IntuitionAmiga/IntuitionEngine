@@ -136,6 +136,18 @@ func TestX86JIT_Exec_ByteMemoryStores(t *testing.T) {
 	}
 }
 
+func TestX86JIT_Exec_PrefixedMoffs8Store(t *testing.T) {
+	cpu := runX86JITProgram(t, 0x1000,
+		0xB0, 0x7F, // MOV AL, 0x7F
+		0x66, 0xA2, 0x00, 0x30, 0x00, 0x00, // MOV [0x3000], AL with ignored operand-size prefix
+		0xF4, // HLT
+	)
+
+	if got := cpu.memory[0x3000]; got != 0x7F {
+		t.Fatalf("[0x3000] = 0x%02X, want 0x7F", got)
+	}
+}
+
 func TestX86JIT_Exec_MMIOByteWriteFallbackFastPath(t *testing.T) {
 	if !x86JitAvailable {
 		t.Skip("x86 JIT not available on this platform")
@@ -191,6 +203,104 @@ func TestX86JIT_Exec_MMIOByteWriteFallbackFastPath(t *testing.T) {
 	}
 	if got := writes[0xF2102]; got != 0x34 {
 		t.Fatalf("[0xF2102] = 0x%02X, want 0x34", got)
+	}
+}
+
+func TestX86JIT_Exec_MMIOByteWriteFallbackStopsOnRaisedIRQ(t *testing.T) {
+	bus := NewMachineBus()
+	bus.MapIO(0xF2100, 0xF2100, nil, nil)
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	bus.MapIOByte(0xF2100, 0xF2100, func(addr uint32, value uint8) {
+		cpu.SetIRQ(true, 0x21)
+	})
+
+	cpu.memory = adapter.GetMemory()
+	cpu.x86JitIOBitmap = buildX86IOBitmap(adapter, bus)
+	cpu.EIP = 0x1000
+	cpu.EAX = 0x0000007F
+
+	code := []byte{
+		0xA2, 0x00, 0x21, 0x0F, 0x00, // MOV [0xF2100], AL
+		0xB4, 0x12, // MOV AH, 0x12
+	}
+	for i, b := range code {
+		cpu.memory[cpu.EIP+uint32(i)] = b
+	}
+
+	executed, ok := cpu.tryFastMMIOWriteFallback()
+	if !ok {
+		t.Fatal("fast MMIO fallback returned false after executing the MMIO write")
+	}
+	if executed != 1 {
+		t.Fatalf("executed = %d, want 1", executed)
+	}
+	if cpu.EIP != 0x1005 {
+		t.Fatalf("EIP = 0x%08X, want 0x00001005", cpu.EIP)
+	}
+	if cpu.AH() != 0x00 {
+		t.Fatalf("AH = 0x%02X, want 0x00 before IRQ service", cpu.AH())
+	}
+	if !cpu.irqPending.Load() {
+		t.Fatal("IRQ should remain pending for the outer JIT loop to service")
+	}
+}
+
+func TestX86JIT_Exec_MMIOByteWriteFallbackRaisedNMIIsServicedBeforeNextInstruction(t *testing.T) {
+	if !x86JitAvailable {
+		t.Skip("x86 JIT not available on this platform")
+	}
+
+	bus := NewMachineBus()
+	bus.MapIO(0xF2100, 0xF2100, nil, nil)
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	bus.MapIOByte(0xF2100, 0xF2100, func(addr uint32, value uint8) {
+		cpu.SetNMI(true)
+	})
+
+	cpu.memory = adapter.GetMemory()
+	cpu.x86JitEnabled = true
+	cpu.x86JitIOBitmap = buildX86IOBitmap(adapter, bus)
+	cpu.EIP = 0x1000
+
+	cpu.memory[0x0008] = 0x00 // NMI vector IP = 0x2000
+	cpu.memory[0x0009] = 0x20
+	cpu.memory[0x000A] = 0x00 // NMI vector CS = 0x0000
+	cpu.memory[0x000B] = 0x00
+	cpu.memory[0x2000] = 0xF4 // HLT in NMI handler
+
+	code := []byte{
+		0xB0, 0x7F, // MOV AL, 0x7F
+		0xA2, 0x00, 0x21, 0x0F, 0x00, // MOV [0xF2100], AL
+		0xB4, 0x12, // MOV AH, 0x12
+		0xF4, // HLT
+	}
+	for i, b := range code {
+		cpu.memory[cpu.EIP+uint32(i)] = b
+	}
+
+	done := make(chan struct{})
+	go func() {
+		cpu.running.Store(true)
+		cpu.Halted = false
+		cpu.X86ExecuteJIT()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cpu.running.Store(false)
+		<-done
+		t.Fatal("x86 JIT execution timed out")
+	}
+
+	if cpu.AH() != 0x00 {
+		t.Fatalf("AH = 0x%02X, want 0x00 because NMI should preempt MOV AH", cpu.AH())
+	}
+	if cpu.nmiPending.Load() {
+		t.Fatal("NMI should have been serviced")
 	}
 }
 

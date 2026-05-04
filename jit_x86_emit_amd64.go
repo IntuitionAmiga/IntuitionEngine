@@ -1296,6 +1296,10 @@ func x86EmitMOV_r8_imm8(cb *CodeBuffer, ji *X86JITInstr, memory []byte) bool {
 	return true
 }
 
+func x86MoffsDispPC(ji *X86JITInstr) uint32 {
+	return ji.opcodePC + uint32(ji.length) - 4
+}
+
 func x86EmitMOV_EAX_moffs32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
 	if ji.length < 5 {
 		return false
@@ -1325,7 +1329,7 @@ func x86EmitMOV_moffs8_AL(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrI
 	if ji.length < 5 {
 		return false
 	}
-	addr := readLE32(memory, ji.opcodePC+1)
+	addr := readLE32(memory, x86MoffsDispPC(ji))
 	amd64MOV_reg_imm32(cb, amd64R10, addr)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64R8, 0) // EAX
