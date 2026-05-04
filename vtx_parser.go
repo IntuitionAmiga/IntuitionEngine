@@ -21,7 +21,10 @@ import (
 	"fmt"
 )
 
-const vtxMinHeaderSize = 16 // Fixed header before variable strings
+const (
+	vtxMinHeaderSize = 16 // Fixed header before variable strings
+	vtxMaxSize       = 8 << 20
+)
 
 // VTXStereo represents the stereo layout of a VTX file.
 type VTXStereo uint8
@@ -74,6 +77,9 @@ func ParseVTXData(data []byte) (*YMFile, PSGMetadata, error) {
 
 	if len(compressedData) == 0 {
 		return nil, PSGMetadata{}, fmt.Errorf("vtx: no compressed data")
+	}
+	if header.DataSize > vtxMaxSize {
+		return nil, PSGMetadata{}, fmt.Errorf("vtx: data size %d exceeds maximum %d", header.DataSize, vtxMaxSize)
 	}
 
 	decompressed, err := decompressLH5(compressedData, int(header.DataSize))

@@ -127,6 +127,14 @@ func TestParseVTXHeader_TooShort(t *testing.T) {
 	}
 }
 
+func TestParseVTXData_RejectsOversizeDataSize(t *testing.T) {
+	vtx := buildVTXFile("ay", 0, 1773400, 50, 2000, "", "", "", "", "", []byte{0})
+	binary.LittleEndian.PutUint32(vtx[12:16], uint32(vtxMaxSize+1))
+	if _, _, err := ParseVTXData(vtx); err == nil {
+		t.Fatal("expected oversize VTX data error")
+	}
+}
+
 func TestParseVTXHeader_AllStereoTypes(t *testing.T) {
 	frames := makeInterleavedFrames(1, 14, func(reg, frame int) byte { return 0 })
 	for stereo := uint8(0); stereo <= 6; stereo++ {

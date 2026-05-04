@@ -30,6 +30,7 @@ const (
 type lh5Decoder struct {
 	src    []byte
 	srcPos int
+	err    error
 
 	// Bit buffer: bits are MSB-aligned in bitBuf.
 	// bitsAvail is the number of valid bits starting from the MSB.
@@ -59,6 +60,9 @@ func decompressLH(src []byte, origSize, dicBit int) ([]byte, error) {
 	}
 	if origSize <= 0 {
 		return nil, fmt.Errorf("lh: invalid original size %d", origSize)
+	}
+	if origSize > lhaMaxSize {
+		return nil, fmt.Errorf("lh: original size %d exceeds maximum %d", origSize, lhaMaxSize)
 	}
 	if len(src) == 0 {
 		return nil, fmt.Errorf("lh: empty compressed data")
@@ -91,6 +95,9 @@ func decompressLH(src []byte, origSize, dicBit int) ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
+			if p < 0 || p >= dicSize {
+				return nil, fmt.Errorf("lh: invalid match offset %d for dictionary size %d", p, dicSize)
+			}
 			matchPos := (dictPos - p - 1) & dictMask
 			for i := 0; i < matchLen && outPos < origSize; i++ {
 				b := dict[matchPos]
@@ -112,22 +119,46 @@ func decompressLH5(src []byte, origSize int) ([]byte, error) {
 }
 
 // ensureBits fills the bit buffer to have at least n valid bits.
-func (d *lh5Decoder) ensureBits(n int) {
+func (d *lh5Decoder) ensureBits(n int) error {
 	for d.bitsAvail < n && d.srcPos < len(d.src) {
 		d.bitBuf |= uint32(d.src[d.srcPos]) << uint(24-d.bitsAvail)
 		d.srcPos++
 		d.bitsAvail += 8
 	}
+	if d.bitsAvail < n {
+		if d.err == nil {
+			d.err = fmt.Errorf("lh5: unexpected EOF while reading %d bits", n)
+		}
+		return d.err
+	}
+	return nil
+}
+
+func (d *lh5Decoder) ensureLookupBits(n int) error {
+	if err := d.ensureBits(n); err != nil {
+		if d.srcPos == len(d.src) && d.bitsAvail > 0 {
+			d.err = nil
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // peekBits returns the top n bits without consuming them.
 func (d *lh5Decoder) peekBits(n int) uint16 {
-	d.ensureBits(n)
+	_ = d.ensureBits(n)
 	return uint16(d.bitBuf >> uint(32-n))
 }
 
 // dropBits consumes n bits from the buffer.
 func (d *lh5Decoder) dropBits(n int) {
+	if n < 0 || n > d.bitsAvail {
+		if d.err == nil {
+			d.err = fmt.Errorf("lh5: invalid bit drop %d with %d available", n, d.bitsAvail)
+		}
+		return
+	}
 	d.bitBuf <<= uint(n)
 	d.bitsAvail -= n
 }
@@ -142,6 +173,12 @@ func (d *lh5Decoder) getBits(n int) uint16 {
 func (d *lh5Decoder) decodeC() (int, error) {
 	if d.blockRemaining <= 0 {
 		d.blockRemaining = int(d.getBits(16))
+		if d.err != nil {
+			return 0, d.err
+		}
+		if d.blockRemaining == 0 {
+			return 0, fmt.Errorf("lh5: invalid zero-length block")
+		}
 		if err := d.readPTLen(lh5NT, lh5TBit, 3); err != nil {
 			return 0, err
 		}
@@ -158,11 +195,16 @@ func (d *lh5Decoder) decodeC() (int, error) {
 	}
 	d.blockRemaining--
 
-	d.ensureBits(lh5CTableBits)
+	if err := d.ensureLookupBits(lh5CTableBits); err != nil {
+		return 0, err
+	}
 	j := d.cTable[d.bitBuf>>uint(32-lh5CTableBits)]
 	if int(j) >= lh5NC {
 		mask := uint32(1) << uint(32-lh5CTableBits-1)
 		for int(j) >= lh5NC {
+			if mask == 0 || int(j) >= len(d.left) {
+				return 0, fmt.Errorf("lh5: invalid character tree")
+			}
 			if d.bitBuf&mask != 0 {
 				j = d.right[j]
 			} else {
@@ -172,6 +214,9 @@ func (d *lh5Decoder) decodeC() (int, error) {
 		}
 	}
 	d.dropBits(int(d.cLen[j]))
+	if d.err != nil {
+		return 0, d.err
+	}
 	return int(j), nil
 }
 
@@ -180,11 +225,16 @@ func (d *lh5Decoder) decodeP() (int, error) {
 	if np == 0 {
 		np = lh5NP
 	}
-	d.ensureBits(lh5PTableBits)
+	if err := d.ensureLookupBits(lh5PTableBits); err != nil {
+		return 0, err
+	}
 	j := d.pTable[d.bitBuf>>uint(32-lh5PTableBits)]
 	if int(j) >= np {
 		mask := uint32(1) << uint(32-lh5PTableBits-1)
 		for int(j) >= np {
+			if mask == 0 || int(j) >= len(d.left) {
+				return 0, fmt.Errorf("lh5: invalid position tree")
+			}
 			if d.bitBuf&mask != 0 {
 				j = d.right[j]
 			} else {
@@ -194,19 +244,31 @@ func (d *lh5Decoder) decodeP() (int, error) {
 		}
 	}
 	d.dropBits(int(d.pLen[j]))
+	if d.err != nil {
+		return 0, d.err
+	}
 
 	if j == 0 {
 		return 0, nil
 	}
 	extra := int(d.getBits(int(j) - 1))
+	if d.err != nil {
+		return 0, d.err
+	}
 	return (1 << uint(j-1)) + extra, nil
 }
 
 // readPTLen reads a Huffman tree for position/temp decoding.
 func (d *lh5Decoder) readPTLen(nn, nBit, iSpecial int) error {
 	n := int(d.getBits(nBit))
+	if d.err != nil {
+		return d.err
+	}
 	if n == 0 {
 		c := d.getBits(nBit)
+		if d.err != nil {
+			return d.err
+		}
 		for i := range nn {
 			d.pLen[i] = 0
 		}
@@ -218,8 +280,14 @@ func (d *lh5Decoder) readPTLen(nn, nBit, iSpecial int) error {
 
 	i := 0
 	for i < n && i < nn {
+		if err := d.ensureBits(3); err != nil {
+			return err
+		}
 		c := int(d.peekBits(3))
 		if c == 7 {
+			if err := d.ensureBits(4); err != nil {
+				return err
+			}
 			mask := uint32(1) << uint(32-4)
 			for mask&d.bitBuf != 0 {
 				c++
@@ -234,11 +302,17 @@ func (d *lh5Decoder) readPTLen(nn, nBit, iSpecial int) error {
 		} else {
 			d.dropBits(c - 3)
 		}
+		if d.err != nil {
+			return d.err
+		}
 		d.pLen[i] = uint8(c)
 		i++
 
 		if i == iSpecial {
 			gap := int(d.getBits(2))
+			if d.err != nil {
+				return d.err
+			}
 			for gap > 0 && i < nn {
 				d.pLen[i] = 0
 				i++
@@ -257,8 +331,14 @@ func (d *lh5Decoder) readPTLen(nn, nBit, iSpecial int) error {
 // readCLen reads the character Huffman tree using the temp tree (in pTable/pLen).
 func (d *lh5Decoder) readCLen() error {
 	n := int(d.getBits(lh5CBit))
+	if d.err != nil {
+		return d.err
+	}
 	if n == 0 {
 		c := d.getBits(lh5CBit)
+		if d.err != nil {
+			return d.err
+		}
 		for i := range lh5NC {
 			d.cLen[i] = 0
 		}
@@ -270,11 +350,16 @@ func (d *lh5Decoder) readCLen() error {
 
 	i := 0
 	for i < n && i < lh5NC {
-		d.ensureBits(lh5PTableBits)
+		if err := d.ensureBits(lh5PTableBits); err != nil {
+			return err
+		}
 		c := int(d.pTable[d.bitBuf>>uint(32-lh5PTableBits)])
 		if c >= lh5NT {
 			mask := uint32(1) << uint(32-lh5PTableBits-1)
 			for c >= lh5NT {
+				if mask == 0 || c >= len(d.left) {
+					return fmt.Errorf("lh5: invalid code-length tree")
+				}
 				if d.bitBuf&mask != 0 {
 					c = int(d.right[c])
 				} else {
@@ -284,6 +369,9 @@ func (d *lh5Decoder) readCLen() error {
 			}
 		}
 		d.dropBits(int(d.pLen[c]))
+		if d.err != nil {
+			return d.err
+		}
 
 		if c <= 2 {
 			var runLen int
@@ -294,6 +382,9 @@ func (d *lh5Decoder) readCLen() error {
 				runLen = int(d.getBits(4)) + 3
 			case 2:
 				runLen = int(d.getBits(lh5CBit)) + 20
+			}
+			if d.err != nil {
+				return d.err
 			}
 			for runLen > 0 && i < lh5NC {
 				d.cLen[i] = 0
@@ -317,7 +408,7 @@ func (d *lh5Decoder) readCLen() error {
 func (d *lh5Decoder) makeTable(nchar int, bitLen []uint8, tableBits int, table []uint16, left, right []uint16) error {
 	tableSize := 1 << uint(tableBits)
 
-	var count [17]uint16
+	var count [17]uint32
 	for i := range nchar {
 		if bitLen[i] > 16 {
 			return fmt.Errorf("lh5: code length %d exceeds 16", bitLen[i])
@@ -336,6 +427,12 @@ func (d *lh5Decoder) makeTable(nchar int, bitLen []uint8, tableBits int, table [
 	for i := 1; i <= 16; i++ {
 		start[i] = total
 		total += uint32(count[i]) * weight[i]
+		if total > 1<<16 {
+			return fmt.Errorf("lh5: oversubscribed huffman table")
+		}
+	}
+	if total != 1<<16 {
+		return fmt.Errorf("lh5: incomplete huffman table")
 	}
 
 	// Shift start values for table-sized codes
@@ -359,7 +456,10 @@ func (d *lh5Decoder) makeTable(nchar int, bitLen []uint8, tableBits int, table [
 		if l <= tableBits {
 			fillCount := 1 << uint(tableBits-l)
 			idx := int(start[l])
-			for k := 0; k < fillCount && idx+k < tableSize; k++ {
+			if idx < 0 || idx+fillCount > tableSize {
+				return fmt.Errorf("lh5: huffman table overflow")
+			}
+			for k := 0; k < fillCount; k++ {
 				table[idx+k] = uint16(ch)
 			}
 			start[l] += uint32(fillCount)
@@ -372,6 +472,9 @@ func (d *lh5Decoder) makeTable(nchar int, bitLen []uint8, tableBits int, table [
 			p := &table[idx]
 			for i := tableBits + 1; i <= l; i++ {
 				if *p == 0 {
+					if int(avail) >= len(left) {
+						return fmt.Errorf("lh5: huffman tree overflow")
+					}
 					left[avail] = 0
 					right[avail] = 0
 					*p = avail

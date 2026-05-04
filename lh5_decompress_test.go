@@ -149,6 +149,41 @@ func TestDecompressLH5_ZeroOrigSize(t *testing.T) {
 	}
 }
 
+func TestDecompressLH5_ZeroBlockRejected(t *testing.T) {
+	_, err := decompressLH5([]byte{0x00, 0x00}, 1)
+	if err == nil {
+		t.Fatal("expected error for zero-length block")
+	}
+}
+
+func TestDecompressLH5_TruncatedStreamRejected(t *testing.T) {
+	compressed := testCompressLH5([]byte("truncated"))
+	_, err := decompressLH5(compressed[:len(compressed)-1], len("truncated"))
+	if err == nil {
+		t.Fatal("expected error for truncated stream")
+	}
+}
+
+func TestLH5MakeTableRejectsOversubscribedTree(t *testing.T) {
+	d := &lh5Decoder{}
+	lengths := []uint8{1, 1, 1}
+	table := make([]uint16, 2)
+	if err := d.makeTable(len(lengths), lengths, 1, table, d.left[:], d.right[:]); err == nil {
+		t.Fatal("expected oversubscribed table error")
+	}
+}
+
+func TestLH5MakeTableAcceptsMaxLengthCanonicalTree(t *testing.T) {
+	d := &lh5Decoder{}
+	lengths := []uint8{1, 1}
+	table := make([]uint16, 2)
+	left := make([]uint16, 8)
+	right := make([]uint16, 8)
+	if err := d.makeTable(len(lengths), lengths, 0, table, left, right); err != nil {
+		t.Fatalf("makeTable rejected canonical max-length tree: %v", err)
+	}
+}
+
 func TestDecompressLH5_YMRegisterData(t *testing.T) {
 	// Simulate 3 frames of 14 AY registers (interleaved like YM3)
 	// In YM3 interleaved format: all values for reg 0, then reg 1, etc.

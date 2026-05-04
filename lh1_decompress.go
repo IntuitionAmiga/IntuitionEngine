@@ -62,6 +62,8 @@ var lh1DLen = [256]uint8{
 type lh1Decoder struct {
 	src    []byte
 	srcPos int
+	err    error
+	padded bool
 
 	// Bit buffer (MSB-aligned, 16-bit register like original LZHUF)
 	getBuf uint16
@@ -93,7 +95,10 @@ func decompressLH1(src []byte, origSize int) ([]byte, error) {
 	outPos := 0
 
 	for outPos < origSize {
-		c := d.decodeChar()
+		c, err := d.decodeChar()
+		if err != nil {
+			return nil, err
+		}
 		if c < 256 {
 			out[outPos] = byte(c)
 			textBuf[r] = byte(c)
@@ -101,7 +106,13 @@ func decompressLH1(src []byte, origSize int) ([]byte, error) {
 			outPos++
 		} else {
 			matchLen := c - 255 + lh1Threshold // length 3..60
-			pos := d.decodePosition()
+			if matchLen > origSize-outPos {
+				matchLen = origSize - outPos
+			}
+			pos, err := d.decodePosition()
+			if err != nil {
+				return nil, err
+			}
 			i := (r - pos - 1) & (lh1N - 1)
 			for k := range matchLen {
 				b := textBuf[(i+k)&(lh1N-1)]
@@ -143,12 +154,20 @@ func (d *lh1Decoder) startHuff() {
 	d.prnt[lh1R] = 0      // root has no parent
 }
 
-func (d *lh1Decoder) getBit() int {
+func (d *lh1Decoder) getBit() (int, error) {
 	for d.getLen <= 8 {
 		var b byte
 		if d.srcPos < len(d.src) {
 			b = d.src[d.srcPos]
 			d.srcPos++
+		} else {
+			if !d.padded && d.getLen > 0 {
+				d.padded = true
+				b = 0
+			} else {
+				d.err = fmt.Errorf("lh1: unexpected EOF")
+				return 0, d.err
+			}
 		}
 		d.getBuf |= uint16(b) << (8 - d.getLen)
 		d.getLen += 8
@@ -157,17 +176,25 @@ func (d *lh1Decoder) getBit() int {
 	d.getBuf <<= 1
 	d.getLen--
 	if val&0x8000 != 0 {
-		return 1
+		return 1, nil
 	}
-	return 0
+	return 0, nil
 }
 
-func (d *lh1Decoder) getByte() int {
+func (d *lh1Decoder) getByte() (int, error) {
 	for d.getLen <= 8 {
 		var b byte
 		if d.srcPos < len(d.src) {
 			b = d.src[d.srcPos]
 			d.srcPos++
+		} else {
+			if !d.padded && d.getLen > 0 {
+				d.padded = true
+				b = 0
+			} else {
+				d.err = fmt.Errorf("lh1: unexpected EOF")
+				return 0, d.err
+			}
 		}
 		d.getBuf |= uint16(b) << (8 - d.getLen)
 		d.getLen += 8
@@ -175,29 +202,49 @@ func (d *lh1Decoder) getByte() int {
 	val := d.getBuf
 	d.getBuf <<= 8
 	d.getLen -= 8
-	return int(val >> 8)
+	return int(val >> 8), nil
 }
 
-func (d *lh1Decoder) decodeChar() int {
+func (d *lh1Decoder) decodeChar() (int, error) {
 	c := d.son[lh1R]
 	for c < lh1T {
-		c += int32(d.getBit())
+		bit, err := d.getBit()
+		if err != nil {
+			return 0, err
+		}
+		c += int32(bit)
+		if c < 0 || int(c) >= len(d.son) {
+			return 0, fmt.Errorf("lh1: corrupt huffman tree")
+		}
 		c = d.son[c]
 	}
 	c -= lh1T
+	if c < 0 || c >= lh1NChar {
+		return 0, fmt.Errorf("lh1: invalid character code %d", c)
+	}
 	d.update(int(c))
-	return int(c)
+	if d.err != nil {
+		return 0, d.err
+	}
+	return int(c), nil
 }
 
-func (d *lh1Decoder) decodePosition() int {
-	i := d.getByte()
+func (d *lh1Decoder) decodePosition() (int, error) {
+	i, err := d.getByte()
+	if err != nil {
+		return 0, err
+	}
 	c := int(lh1DCode[i]) << 6
 	j := int(lh1DLen[i]) - 2
 	for j > 0 {
-		i = (i << 1) | d.getBit()
+		bit, err := d.getBit()
+		if err != nil {
+			return 0, err
+		}
+		i = (i << 1) | bit
 		j--
 	}
-	return c | (i & 0x3F)
+	return c | (i & 0x3F), nil
 }
 
 func (d *lh1Decoder) reconst() {
@@ -218,7 +265,7 @@ func (d *lh1Decoder) reconst() {
 		d.freq[jj] = f
 		// Insert in sorted position
 		k := jj - 1
-		for f < d.freq[k] {
+		for k > 0 && f < d.freq[k] {
 			k--
 		}
 		k++
@@ -255,30 +302,42 @@ func (d *lh1Decoder) update(c int) {
 
 		// Check if frequency order is violated
 		l := c + 1
-		if k > d.freq[l] {
+		if l < len(d.freq) && k > d.freq[l] {
 			// Find rightmost node with frequency < k
-			for k > d.freq[l+1] {
+			for l+1 < len(d.freq) && k > d.freq[l+1] {
 				l++
 			}
 			// Now freq[l] < k <= freq[l+1] — but we want the last one < k
 			// Actually: we incremented past all freq < k, so l is the swap target
 
 			// Swap frequencies
+			if l >= len(d.son) {
+				d.err = fmt.Errorf("lh1: corrupt frequency tree")
+				return
+			}
 			d.freq[c] = d.freq[l]
 			d.freq[l] = k
 
 			// Swap children and update parent pointers
 			i := d.son[c]
+			if i < 0 || int(i) >= len(d.prnt) {
+				d.err = fmt.Errorf("lh1: corrupt parent pointer")
+				return
+			}
 			d.prnt[i] = int32(l)
-			if i < lh1T {
+			if i < lh1T && int(i)+1 < len(d.prnt) {
 				d.prnt[i+1] = int32(l)
 			}
 
 			jj := d.son[l]
 			d.son[l] = i
 
+			if jj < 0 || int(jj) >= len(d.prnt) {
+				d.err = fmt.Errorf("lh1: corrupt parent pointer")
+				return
+			}
 			d.prnt[jj] = int32(c)
-			if jj < lh1T {
+			if jj < lh1T && int(jj)+1 < len(d.prnt) {
 				d.prnt[jj+1] = int32(c)
 			}
 			d.son[c] = jj

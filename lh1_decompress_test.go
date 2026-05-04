@@ -250,6 +250,25 @@ func testCompressLH1(data []byte) []byte {
 	return e.buf
 }
 
+func TestDecompressLH1_TruncatedStreamRejected(t *testing.T) {
+	compressed := testCompressLH1([]byte("truncated lh1 data"))
+	if len(compressed) < 2 {
+		t.Fatal("test compressor produced too little data")
+	}
+	if _, err := decompressLH1(compressed[:len(compressed)-1], len("truncated lh1 data")); err == nil {
+		t.Fatal("expected error for truncated stream")
+	}
+}
+
+func TestLH1UpdateGuardsFrequencyWalk(t *testing.T) {
+	d := &lh1Decoder{}
+	d.startHuff()
+	d.freq[lh1T] = 0
+	d.freq[lh1R] = 1
+	d.prnt[lh1T] = int32(lh1R)
+	d.update(0)
+}
+
 // testCompressLH1LiteralsOnly compresses using only literals (no backreferences).
 func testCompressLH1LiteralsOnly(data []byte) []byte {
 	e := newLH1Encoder()

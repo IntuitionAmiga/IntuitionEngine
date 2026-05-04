@@ -13,6 +13,7 @@ import (
 const (
 	iceMagic      = 0x49434521 // "ICE!"
 	iceHeaderSize = 12
+	iceMaxSize    = 16 << 20
 )
 
 // Pre-computed lookup tables for faster decoding
@@ -80,6 +81,9 @@ func UnpackICE(data []byte) ([]byte, error) {
 	if crunchedLen <= 0 || decrunchedLen <= 0 {
 		return nil, fmt.Errorf("invalid ICE lengths: crunched=%d, decrunched=%d", crunchedLen, decrunchedLen)
 	}
+	if decrunchedLen > iceMaxSize {
+		return nil, fmt.Errorf("ICE decrunched length %d exceeds maximum %d", decrunchedLen, iceMaxSize)
+	}
 
 	if len(data) < crunchedLen {
 		return nil, fmt.Errorf("ICE data truncated: have %d, need %d", len(data), crunchedLen)
@@ -110,7 +114,7 @@ func UnpackICE(data []byte) ([]byte, error) {
 }
 
 // iceGetBit reads a single bit from the bit stream
-func iceGetBit(state *iceState) int {
+func iceGetBit(state *iceState) (int, error) {
 	bit := 0
 	if (state.bits & 0x80) != 0 {
 		bit = 1
@@ -120,9 +124,7 @@ func iceGetBit(state *iceState) int {
 	if state.bits == 0 {
 		state.packed--
 		if state.packed < iceHeaderSize {
-			// Underflow protection
-			state.bits = 1
-			return bit
+			return 0, fmt.Errorf("ice unpack: input underflow while reading bits")
 		}
 		state.bits = int(state.data[state.packed])
 		if (state.bits & 0x80) != 0 {
@@ -133,99 +135,127 @@ func iceGetBit(state *iceState) int {
 		state.bits = ((state.bits << 1) & 0xff) + 1
 	}
 
-	return bit
+	return bit, nil
 }
 
 // iceGetBits reads n bits from the bit stream
-func iceGetBits(state *iceState, n int) int {
+func iceGetBits(state *iceState, n int) (int, error) {
 	bits := 0
 	for n > 0 {
-		bits = (bits << 1) | iceGetBit(state)
+		bit, err := iceGetBit(state)
+		if err != nil {
+			return 0, err
+		}
+		bits = (bits << 1) | bit
 		n--
 	}
-	return bits
+	return bits, nil
 }
 
 // iceGetDepackLength decodes the match length
 // Uses pre-computed lookup tables for faster decoding.
-func iceGetDepackLength(state *iceState) int {
+func iceGetDepackLength(state *iceState) (int, error) {
 	i := 0
-	for i < 4 && iceGetBit(state) != 0 {
+	for i < 4 {
+		bit, err := iceGetBit(state)
+		if err != nil {
+			return 0, err
+		}
+		if bit == 0 {
+			break
+		}
 		i++
 	}
 
 	length := 0
 	if bits := iceDepackBitsToGet[i]; bits > 0 {
-		length = iceGetBits(state, bits)
+		var err error
+		length, err = iceGetBits(state, bits)
+		if err != nil {
+			return 0, err
+		}
 	}
-	return length + iceDepackNumberToAdd[i]
+	return length + iceDepackNumberToAdd[i], nil
 }
 
 // iceGetDepackOffset decodes the match offset
 // Uses pre-computed lookup tables for faster decoding.
-func iceGetDepackOffset(state *iceState, length int) int {
+func iceGetDepackOffset(state *iceState, length int) (int, error) {
 	var offset, bits, add int
 
 	if length == 2 {
-		if iceGetBit(state) != 0 {
+		bit, err := iceGetBit(state)
+		if err != nil {
+			return 0, err
+		}
+		if bit != 0 {
 			bits = 9
 			add = 0x3f
 		} else {
 			bits = 6
 			add = -1
 		}
-		offset = iceGetBits(state, bits) + add
+		v, err := iceGetBits(state, bits)
+		if err != nil {
+			return 0, err
+		}
+		offset = v + add
 	} else {
 		i := 0
-		for i < 2 && iceGetBit(state) != 0 {
+		for i < 2 {
+			bit, err := iceGetBit(state)
+			if err != nil {
+				return 0, err
+			}
+			if bit == 0 {
+				break
+			}
 			i++
 		}
 
 		bits = iceOffsetBitsToGet[i]
 		add = iceOffsetNumberToAdd[i]
-		offset = iceGetBits(state, bits) + add
+		v, err := iceGetBits(state, bits)
+		if err != nil {
+			return 0, err
+		}
+		offset = v + add
 		if offset < 0 {
 			offset -= length - 2
 		}
 	}
 
-	return offset
+	return offset, nil
 }
 
 // iceGetDirectLength decodes the literal copy length
 // Uses pre-computed lookup tables for faster decoding.
-func iceGetDirectLength(state *iceState) int {
+func iceGetDirectLength(state *iceState) (int, error) {
 	i := 0
 	n := 0
 	for i < 6 {
-		n = iceGetBits(state, iceDirectBitsToGet[i])
+		var err error
+		n, err = iceGetBits(state, iceDirectBitsToGet[i])
+		if err != nil {
+			return 0, err
+		}
 		if n != iceDirectAllOnes[i] {
 			break
 		}
 		i++
 	}
-	return n + iceDirectNumberToAdd[i]
+	return n + iceDirectNumberToAdd[i], nil
 }
 
 // iceMemcpyBwd copies n bytes backwards (for overlapping regions)
 // Caller must ensure all indices are within bounds.
-func iceMemcpyBwd(output []byte, to, from, n int) {
-	// Fast path: validate bounds once, then copy without per-byte checks
+func iceMemcpyBwd(output []byte, to, from, n int) error {
 	outLen := len(output)
 	toEnd := to + n
 	fromEnd := from + n
 
-	// Bounds validation (single check)
 	if to < 0 || toEnd > outLen || from < 0 || fromEnd > outLen {
-		// Fallback to safe byte-by-byte copy for edge cases
-		for i := n - 1; i >= 0; i-- {
-			toIdx := to + i
-			fromIdx := from + i
-			if toIdx >= 0 && toIdx < outLen && fromIdx >= 0 && fromIdx < outLen {
-				output[toIdx] = output[fromIdx]
-			}
-		}
-		return
+		return fmt.Errorf("ice unpack: invalid back-reference to=%d from=%d length=%d output=%d", to, from, n, outLen)
 	}
 
 	// Optimized path: copy backwards without bounds checks
@@ -233,14 +263,22 @@ func iceMemcpyBwd(output []byte, to, from, n int) {
 	for i := n - 1; i >= 0; i-- {
 		output[to+i] = output[from+i]
 	}
+	return nil
 }
 
 // iceNormalBytes is the main decompression loop
 func iceNormalBytes(state *iceState) error {
 	for {
 		// Check for literal copy
-		if iceGetBit(state) != 0 {
-			length := iceGetDirectLength(state)
+		bit, err := iceGetBit(state)
+		if err != nil {
+			return err
+		}
+		if bit != 0 {
+			length, err := iceGetDirectLength(state)
+			if err != nil {
+				return err
+			}
 			state.packed -= length
 			state.unpacked -= length
 
@@ -261,8 +299,14 @@ func iceNormalBytes(state *iceState) error {
 		}
 
 		// Handle back-reference (LZ77-style match)
-		length := iceGetDepackLength(state)
-		offset := iceGetDepackOffset(state, length)
+		length, err := iceGetDepackLength(state)
+		if err != nil {
+			return err
+		}
+		offset, err := iceGetDepackOffset(state, length)
+		if err != nil {
+			return err
+		}
 
 		state.unpacked -= length
 
@@ -271,6 +315,8 @@ func iceNormalBytes(state *iceState) error {
 		}
 
 		// Copy from already-decoded output (backwards to handle overlap)
-		iceMemcpyBwd(state.output, state.unpacked, state.unpacked+length+offset, length)
+		if err := iceMemcpyBwd(state.output, state.unpacked, state.unpacked+length+offset, length); err != nil {
+			return err
+		}
 	}
 }

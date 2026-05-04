@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	snapshotMagic   = "IEMS"
-	snapshotVersion = 1
+	snapshotMagic        = "IEMS"
+	snapshotVersion      = 1
+	snapshotMaxMemory    = 512 << 20
+	snapshotMaxRegisters = 1024
 )
 
 // MachineSnapshot captures CPU registers and memory for save/load and backstep.
@@ -150,6 +152,9 @@ func LoadSnapshotFromFile(path string) (*MachineSnapshot, error) {
 	if err := binary.Read(r, binary.LittleEndian, &regCount); err != nil {
 		return nil, fmt.Errorf("reading register count: %w", err)
 	}
+	if regCount > snapshotMaxRegisters {
+		return nil, fmt.Errorf("snapshot register count %d exceeds maximum %d", regCount, snapshotMaxRegisters)
+	}
 
 	regs := make([]RegisterInfo, regCount)
 	for i := range regCount {
@@ -180,6 +185,9 @@ func LoadSnapshotFromFile(path string) (*MachineSnapshot, error) {
 	var uncompressedLen uint32
 	if err := binary.Read(r, binary.LittleEndian, &uncompressedLen); err != nil {
 		return nil, fmt.Errorf("reading memory length: %w", err)
+	}
+	if uncompressedLen > snapshotMaxMemory {
+		return nil, fmt.Errorf("snapshot memory length %d exceeds maximum %d", uncompressedLen, snapshotMaxMemory)
 	}
 
 	remaining := data[len(data)-r.Len():]

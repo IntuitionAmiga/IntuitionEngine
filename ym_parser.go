@@ -37,7 +37,7 @@ func ParseYMFile(path string) (*YMFile, error) {
 
 	decompressed, decErr := DecompressLHAFile(path)
 	if decErr != nil {
-		return nil, err
+		return nil, decErr
 	}
 
 	ym, err = parseYMData(decompressed)

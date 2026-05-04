@@ -10,6 +10,7 @@ import (
 )
 
 const lhaMaxSize = 64 << 20 // 64 MB maximum allocation guard
+const lhaMaxMembers = 4096
 
 type lhaHeader struct {
 	method         string
@@ -49,6 +50,9 @@ func parseLHALevel0(data []byte, method string) (lhaHeader, error) {
 	if totalHeader < 22 {
 		return lhaHeader{}, fmt.Errorf("lha: level 0 header too small (%d)", totalHeader)
 	}
+	if err := validateLHAHeaderChecksum(data[:totalHeader]); err != nil {
+		return lhaHeader{}, err
+	}
 
 	compU32 := binary.LittleEndian.Uint32(data[7:11])
 	origU32 := binary.LittleEndian.Uint32(data[11:15])
@@ -76,6 +80,9 @@ func parseLHALevel1(data []byte, method string) (lhaHeader, error) {
 	if baseHeader < 27 {
 		return lhaHeader{}, fmt.Errorf("lha: level 1 header too small (%d)", baseHeader)
 	}
+	if err := validateLHAHeaderChecksum(data[:baseHeader]); err != nil {
+		return lhaHeader{}, err
+	}
 
 	compU32 := binary.LittleEndian.Uint32(data[7:11])
 	origU32 := binary.LittleEndian.Uint32(data[11:15])
@@ -98,7 +105,6 @@ func parseLHALevel1(data []byte, method string) (lhaHeader, error) {
 		}
 		nextSize := int(binary.LittleEndian.Uint16(data[offset:]))
 		if nextSize == 0 {
-			extTotal += 2 // terminator counts toward chain size
 			offset += 2
 			break
 		}
@@ -120,6 +126,20 @@ func parseLHALevel1(data []byte, method string) (lhaHeader, error) {
 		originalSize:   int(origU32),
 		headerSize:     offset,
 	}, nil
+}
+
+func validateLHAHeaderChecksum(header []byte) error {
+	if len(header) < 2 {
+		return fmt.Errorf("lha: header too short for checksum")
+	}
+	var sum byte
+	for _, b := range header[2:] {
+		sum += b
+	}
+	if sum != header[1] {
+		return fmt.Errorf("lha: invalid header checksum got 0x%02x want 0x%02x", header[1], sum)
+	}
+	return nil
 }
 
 func parseLHALevel2(data []byte, method string) (lhaHeader, error) {
@@ -151,24 +171,46 @@ func parseLHALevel2(data []byte, method string) (lhaHeader, error) {
 }
 
 func extractFirstFile(data []byte) ([]byte, error) {
-	hdr, err := parseLHAHeader(data)
-	if err != nil {
-		return nil, err
+	for off, iter := 0, 0; off < len(data) && iter < lhaMaxMembers; iter++ {
+		if data[off] == 0 {
+			break
+		}
+		hdr, err := parseLHAHeader(data[off:])
+		if err != nil {
+			return nil, err
+		}
+		if hdr.compressedSize < 0 || hdr.headerSize <= 0 {
+			return nil, fmt.Errorf("lha: invalid header values")
+		}
+		payloadStart := off + hdr.headerSize
+		payloadEnd := payloadStart + hdr.compressedSize
+		if payloadStart < off || payloadEnd < payloadStart {
+			return nil, fmt.Errorf("lha: member offset overflow")
+		}
+		if payloadEnd > len(data) {
+			return nil, fmt.Errorf("lha: compressed data truncated (need %d, have %d after header)", hdr.compressedSize, len(data)-payloadStart)
+		}
+		next := payloadEnd
+		if next <= off {
+			return nil, fmt.Errorf("lha: non-advancing member at offset %d", off)
+		}
+		if hdr.method == "-lhd-" {
+			off = next
+			continue
+		}
+		return decompressLHAMember(hdr, data[payloadStart:payloadEnd])
 	}
+	return nil, fmt.Errorf("lha: no extractable file found")
+}
 
-	if hdr.compressedSize < 0 || hdr.headerSize < 0 {
-		return nil, fmt.Errorf("lha: invalid header values")
+func decompressLHAMember(hdr lhaHeader, payload []byte) ([]byte, error) {
+	if hdr.originalSize < 0 || hdr.originalSize > lhaMaxSize {
+		return nil, fmt.Errorf("lha: original size %d exceeds maximum", hdr.originalSize)
 	}
-	if hdr.compressedSize > len(data)-hdr.headerSize {
-		return nil, fmt.Errorf("lha: compressed data truncated (need %d, have %d after header)", hdr.compressedSize, len(data)-hdr.headerSize)
-	}
-
-	payload := data[hdr.headerSize : hdr.headerSize+hdr.compressedSize]
-
 	switch hdr.method {
 	case "-lh0-":
-		if len(payload) != hdr.originalSize {
-			return nil, fmt.Errorf("lha: -lh0- size mismatch (compressed %d != original %d)", len(payload), hdr.originalSize)
+		if hdr.compressedSize != hdr.originalSize {
+			return nil, fmt.Errorf("lha: -lh0- size mismatch (compressed %d != original %d)", hdr.compressedSize, hdr.originalSize)
 		}
 		out := make([]byte, hdr.originalSize)
 		copy(out, payload)
@@ -192,6 +234,9 @@ func DecompressLHAFile(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("lha: %w", err)
+	}
+	if len(data) > lhaMaxSize {
+		return nil, fmt.Errorf("lha: file size %d exceeds maximum %d", len(data), lhaMaxSize)
 	}
 	return extractFirstFile(data)
 }

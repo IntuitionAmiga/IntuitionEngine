@@ -217,9 +217,10 @@ func (p *PSGPlayer) LoadData(data []byte) error {
 	}
 	if isLHAData(data) {
 		decompressed, err := DecompressLHAData(data)
-		if err == nil {
-			return p.LoadData(decompressed)
+		if err != nil {
+			return err
 		}
+		return p.LoadData(decompressed)
 	}
 	if isZXAYEMUL(data) {
 		if p.engine == nil {
@@ -601,9 +602,10 @@ func renderPSGData(data []byte, sampleRate int) (psgRenderResult, error) {
 	}
 	if isLHAData(data) {
 		decompressed, err := DecompressLHAData(data)
-		if err == nil {
-			return renderPSGData(decompressed, sampleRate)
+		if err != nil {
+			return res, err
 		}
+		return renderPSGData(decompressed, sampleRate)
 	}
 	if isZXAYEMUL(data) {
 		meta, events, total, clockHz, frameRate, loop, loopSample, instrCount, execNanos, err := renderAYZ80(data, sampleRate)

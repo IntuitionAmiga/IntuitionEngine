@@ -76,9 +76,9 @@ func buildLHALevel1(method string, compressed, original []byte) []byte {
 	// [2:7] method
 	headerBody = append(headerBody, []byte(method)...)
 	// [7:11] compressed size — includes extended headers in Level 1
-	// We'll add one 7-byte extended header + terminator
+	// We'll add one 7-byte extended header; the zero terminator is not counted.
 	extHeaderSize := 7
-	totalCompressed := len(compressed) + extHeaderSize + 2 // +2 for terminator
+	totalCompressed := len(compressed) + extHeaderSize
 	headerBody = binary.LittleEndian.AppendUint32(headerBody, uint32(totalCompressed))
 	// [11:15] original size
 	headerBody = binary.LittleEndian.AppendUint32(headerBody, uint32(len(original)))
@@ -203,6 +203,43 @@ func TestLHAExtract_Level1_LH5(t *testing.T) {
 	}
 	if !bytes.Equal(result, original) {
 		t.Errorf("data mismatch")
+	}
+}
+
+func TestLHAExtract_Level1_TerminatorNotCompressedData(t *testing.T) {
+	original := []byte("level 1 terminator off by one")
+	compressed := testCompressLH5(original)
+	archive := buildLHALevel1("-lh5-", compressed, original)
+
+	hdr, err := parseLHAHeader(archive)
+	if err != nil {
+		t.Fatalf("parseLHAHeader error: %v", err)
+	}
+	if hdr.compressedSize != len(compressed) {
+		t.Fatalf("compressedSize = %d, want %d", hdr.compressedSize, len(compressed))
+	}
+}
+
+func TestLHAExtract_SkipsDirectoryMember(t *testing.T) {
+	dir := buildLHALevel0("-lhd-", nil, nil)
+	original := []byte("file after directory")
+	file := buildLHALevel0("-lh0-", original, original)
+	archive := append(dir, file...)
+
+	got, err := DecompressLHAData(archive)
+	if err != nil {
+		t.Fatalf("DecompressLHAData error: %v", err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("got %q, want %q", got, original)
+	}
+}
+
+func TestLHAExtract_Level0BadChecksum(t *testing.T) {
+	archive := buildLHALevel0("-lh0-", []byte("x"), []byte("x"))
+	archive[2] ^= 0xff
+	if _, err := DecompressLHAData(archive); err == nil {
+		t.Fatal("expected checksum error")
 	}
 }
 

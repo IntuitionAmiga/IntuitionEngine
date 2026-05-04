@@ -49,6 +49,37 @@ func TestICE_Lengths(t *testing.T) {
 	}
 }
 
+func TestICE_UnpackRejectsTruncatedStream(t *testing.T) {
+	data := []byte{
+		0x49, 0x43, 0x45, 0x21,
+		0x00, 0x00, 0x00, 0x0d,
+		0x00, 0x00, 0x00, 0x20,
+		0x00,
+	}
+	if _, err := UnpackICE(data); err == nil {
+		t.Fatal("expected error for truncated ICE stream")
+	}
+}
+
+func TestICE_UnpackRejectsOversizeOutput(t *testing.T) {
+	data := []byte{
+		0x49, 0x43, 0x45, 0x21,
+		0x00, 0x00, 0x00, 0x0d,
+		0x01, 0x00, 0x00, 0x01,
+		0x00,
+	}
+	if _, err := UnpackICE(data); err == nil {
+		t.Fatal("expected error for oversize ICE output")
+	}
+}
+
+func TestICE_MemcpyBwdRejectsInvalidBackref(t *testing.T) {
+	out := make([]byte, 8)
+	if err := iceMemcpyBwd(out, 0, 7, 4); err == nil {
+		t.Fatal("expected invalid back-reference error")
+	}
+}
+
 // BenchmarkICE_GetBit benchmarks the bit reading function
 func BenchmarkICE_GetBit(b *testing.B) {
 	// Create a state with some data to read
@@ -78,7 +109,7 @@ func BenchmarkICE_GetBit(b *testing.B) {
 			state.packed = len(data)
 			state.bits = 0x80
 		}
-		_ = iceGetBit(state)
+		_, _ = iceGetBit(state)
 	}
 }
 
@@ -109,7 +140,7 @@ func BenchmarkICE_GetBits(b *testing.B) {
 			state.packed = len(data)
 			state.bits = 0x80
 		}
-		_ = iceGetBits(state, 8)
+		_, _ = iceGetBits(state, 8)
 	}
 }
 
@@ -126,7 +157,7 @@ func BenchmarkICE_MemcpyBwd(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// Copy 32 bytes backwards (typical match length)
-		iceMemcpyBwd(output, 1000, 1100, 32)
+		_ = iceMemcpyBwd(output, 1000, 1100, 32)
 	}
 }
 
@@ -141,6 +172,6 @@ func BenchmarkICE_MemcpyBwd_Large(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		iceMemcpyBwd(output, 1000, 2000, 256)
+		_ = iceMemcpyBwd(output, 1000, 2000, 256)
 	}
 }
