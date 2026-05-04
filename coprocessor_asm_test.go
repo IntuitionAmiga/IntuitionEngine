@@ -884,65 +884,28 @@ func TestCoprocByteLevel_NoWorkerEnqueue(t *testing.T) {
 	}
 }
 
-// TestCoprocGateway_NoExistingConflict verifies that no existing assembler
-// source files reference the gateway address range 0xF200-0xF23F.
+// TestCoprocGateway_NoExistingConflict verifies that the 8-bit coprocessor
+// gateway does not overlap any other MMIO range reserved in this package.
 func TestCoprocGateway_NoExistingConflict(t *testing.T) {
-	// Check for references to the gateway range in assembler source files
-	patterns := []string{
-		"sdk/examples/asm/*.asm",
-		"sdk/include/*.inc",
-		"sdk/examples/asm/*.bas",
+	type mmioRange struct {
+		name       string
+		start, end uint32
 	}
-
-	for _, pattern := range patterns {
-		matches, _ := filepath.Glob(pattern)
-		for _, file := range matches {
-			data, err := os.ReadFile(file)
-			if err != nil {
-				continue
-			}
-			content := string(data)
-
-			// Check for hex references to the gateway range
-			// $F200-$F23F (6502/Z80 style) or 0xF200-0xF23F
-			for addr := uint16(0xF200); addr <= 0xF23F; addr++ {
-				hexUpper := func(a uint16) string {
-					return "$" + string([]byte{
-						"0123456789ABCDEF"[(a>>12)&0xF],
-						"0123456789ABCDEF"[(a>>8)&0xF],
-						"0123456789ABCDEF"[(a>>4)&0xF],
-						"0123456789ABCDEF"[a&0xF],
-					})
-				}
-				hexLower := func(a uint16) string {
-					return "0x" + string([]byte{
-						"0123456789abcdef"[(a>>12)&0xF],
-						"0123456789abcdef"[(a>>8)&0xF],
-						"0123456789abcdef"[(a>>4)&0xF],
-						"0123456789abcdef"[a&0xF],
-					})
-				}
-				hexUpperPfx := func(a uint16) string {
-					return "0x" + string([]byte{
-						"0123456789ABCDEF"[(a>>12)&0xF],
-						"0123456789ABCDEF"[(a>>8)&0xF],
-						"0123456789ABCDEF"[(a>>4)&0xF],
-						"0123456789ABCDEF"[a&0xF],
-					})
-				}
-
-				for _, ref := range []string{hexUpper(addr), hexLower(addr), hexUpperPfx(addr)} {
-					if containsRef(content, ref) {
-						// Skip coproc-related files that legitimately use gateway addresses
-						base := filepath.Base(file)
-						if base == "ie65.inc" || base == "ie80.inc" ||
-							base == "coproc_caller_65.asm" || base == "coproc_caller_z80.asm" {
-							continue
-						}
-						t.Errorf("file %s references gateway address %s", file, ref)
-					}
-				}
-			}
+	ranges := []mmioRange{
+		{"COPROC", COPROC_BASE, COPROC_END},
+		{"COPROC_EXT", COPROC_EXT_BASE, COPROC_EXT_END},
+		{"AUDIO", AUDIO_CTRL, AUDIO_REG_END},
+		{"VIDEO", VIDEO_CTRL, VIDEO_REG_END},
+		{"VOODOO", VOODOO_BASE, VOODOO_END},
+		{"FILE_IO", FILE_IO_BASE, FILE_IO_END},
+		{"TERMINAL", TERM_OUT, TERMINAL_REGION_END},
+		{"CLIPBOARD", CLIP_REGION_BASE, CLIP_REGION_END},
+	}
+	gateway := mmioRange{"COPROC_GATEWAY", COPROC_GATEWAY_BASE, COPROC_GATEWAY_END}
+	for _, r := range ranges {
+		if gateway.start <= r.end && r.start <= gateway.end {
+			t.Fatalf("%s %#x-%#x overlaps %s %#x-%#x",
+				gateway.name, gateway.start, gateway.end, r.name, r.start, r.end)
 		}
 	}
 }

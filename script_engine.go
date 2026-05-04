@@ -4237,7 +4237,7 @@ func coprocStatusToString(status uint32) string {
 	case COPROC_TICKET_TIMEOUT:
 		return "timeout"
 	case COPROC_TICKET_WORKER_DOWN:
-		return "error"
+		return "worker_down"
 	default:
 		return "error"
 	}

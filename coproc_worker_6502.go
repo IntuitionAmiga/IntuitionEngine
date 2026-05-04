@@ -75,14 +75,15 @@ func create6502Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 	// Copy service binary to worker region at offset 0 (CPU addr $0000)
 	copy(mem[WORKER_6502_BASE:], data)
 
-	// Create coproc bus adapter with mailbox window at CPU addr $2000-$3FFF
+	// Create coproc bus adapter with mailbox window at CPU addr
+	// $2000 through $2000+MAILBOX_SIZE-1.
 	coprocBus := &CoprocBus32{
 		bus:          bus,
 		mem:          mem,
 		bankBase:     WORKER_6502_BASE,
 		mailboxBase:  MAILBOX_BASE,
 		mailboxStart: 0x2000,
-		mailboxEnd:   0x4000,
+		mailboxEnd:   0x2000 + uint16(MAILBOX_SIZE),
 	}
 
 	// Set reset vector at CPU addr $FFFC-$FFFD to point to entry (CPU addr $0000)

@@ -18,7 +18,10 @@ License: GPLv3 or later
 
 package main
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // SoundChip.Reset restores audio to constructor defaults. Preserves OTO output.
 func (chip *SoundChip) Reset() {
@@ -661,10 +664,10 @@ func (m *CoprocessorManager) Reset() {
 	m.StopAll()
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	m.nextTicket = 1
 	m.completions = make(map[uint32]*CoprocCompletion)
+	m.pendingMonitorUnregs = nil
 
 	m.cmd = 0
 	m.cpuType = 0
@@ -685,6 +688,16 @@ func (m *CoprocessorManager) Reset() {
 	m.completionIRQEnabled.Store(false)
 	m.completedTicket.Store(0)
 	m.dispatchOverheadNs.Store(0)
+	m.workerStartTime = [7]time.Time{}
+	m.busyBuckets = [10]busyBucket{}
+	m.busyBucketIdx = 0
+	m.busyRotateCounter = 0
+	m.lastTransition = time.Time{}
+	m.workerBusy = false
+	m.initRings()
+	drained := m.drainPendingUnregsLocked()
+	m.mu.Unlock()
+	m.flushReaped(drained)
 }
 
 // PSGPlayer.Reset stops playback and clears metadata.

@@ -39,6 +39,11 @@ type CoprocCompletion struct {
 	created    time.Time
 }
 
+type reapedMonitor struct {
+	monitor *MachineMonitor
+	id      int
+}
+
 // busyBucket tracks busy/idle nanoseconds for a 100ms window.
 type busyBucket struct {
 	busyNs uint64
@@ -51,10 +56,11 @@ type CoprocessorManager struct {
 	baseDir string
 	monitor *MachineMonitor
 
-	mu          sync.Mutex
-	workers     [7]*CoprocWorker // indexed by cpuType (1-6)
-	nextTicket  uint32
-	completions map[uint32]*CoprocCompletion
+	mu                   sync.Mutex
+	workers              [7]*CoprocWorker // indexed by cpuType (1-6)
+	nextTicket           uint32
+	completions          map[uint32]*CoprocCompletion
+	pendingMonitorUnregs []reapedMonitor
 
 	// MMIO shadow registers
 	cmd          uint32
@@ -105,14 +111,22 @@ func NewCoprocessorManager(bus *MachineBus, baseDir string) *CoprocessorManager 
 		nextTicket:  1,
 		completions: make(map[uint32]*CoprocCompletion),
 	}
-	// Initialize ring headers in mailbox RAM
+	mgr.initRings()
+	return mgr
+}
+
+// initRings clears mailbox descriptors and initializes all ring headers.
+// Caller may hold m.mu; bus writes do not re-enter the manager lock.
+func (m *CoprocessorManager) initRings() {
 	for i := range 6 {
 		base := ringBaseAddr(i)
-		bus.Write8(base+RING_HEAD_OFFSET, 0)
-		bus.Write8(base+RING_TAIL_OFFSET, 0)
-		bus.Write8(base+RING_CAPACITY_OFFSET, RING_CAPACITY)
+		for off := uint32(RING_ENTRIES_OFFSET); off < RING_RESPONSES_OFFSET+uint32(RING_CAPACITY)*RESP_DESC_SIZE; off++ {
+			m.bus.Write8(base+off, 0)
+		}
+		m.bus.Write8(base+RING_HEAD_OFFSET, 0)
+		m.bus.Write8(base+RING_TAIL_OFFSET, 0)
+		m.bus.Write8(base+RING_CAPACITY_OFFSET, RING_CAPACITY)
 	}
-	return mgr
 }
 
 // SetIRQTarget sets the M68K CPU that receives completion interrupts.
@@ -199,11 +213,87 @@ func (m *CoprocessorManager) scanForCompletions() {
 
 	// Transition busy -> idle when all completions are resolved
 	if !anyPending && m.workerBusy {
-		elapsed := uint64(time.Now().Sub(m.lastTransition).Nanoseconds())
-		m.busyBuckets[m.busyBucketIdx].busyNs += elapsed
-		m.lastTransition = time.Now()
-		m.workerBusy = false
+		m.transitionBusyIdleLocked()
 	}
+}
+
+func (m *CoprocessorManager) reapDeadWorkersLocked() {
+	for i := uint32(1); i <= 6; i++ {
+		w := m.workers[i]
+		if w == nil || w.done == nil {
+			continue
+		}
+		select {
+		case <-w.done:
+			w.mu.Lock()
+			frozen := w.frozen
+			w.mu.Unlock()
+			if frozen {
+				continue
+			}
+			m.workers[i] = nil
+			m.workerStartTime[i] = time.Time{}
+			m.markWorkerDownCompletionsLocked(i)
+			if m.monitor != nil && w.monitorID >= 0 {
+				m.pendingMonitorUnregs = append(m.pendingMonitorUnregs, reapedMonitor{
+					monitor: m.monitor,
+					id:      w.monitorID,
+				})
+			}
+		default:
+		}
+	}
+}
+
+func (m *CoprocessorManager) markWorkerDownCompletionsLocked(cpuType uint32) {
+	for _, comp := range m.completions {
+		if comp.cpuType != cpuType {
+			continue
+		}
+		if comp.status == COPROC_TICKET_PENDING || comp.status == COPROC_TICKET_RUNNING {
+			status := m.scanTicketStatus(comp.ticket)
+			if status == COPROC_TICKET_PENDING || status == COPROC_TICKET_RUNNING {
+				status = COPROC_TICKET_WORKER_DOWN
+			}
+			comp.status = status
+		}
+	}
+}
+
+func (m *CoprocessorManager) drainPendingUnregsLocked() []reapedMonitor {
+	drained := m.pendingMonitorUnregs
+	m.pendingMonitorUnregs = nil
+	return drained
+}
+
+func (m *CoprocessorManager) flushReaped(reaped []reapedMonitor) {
+	for _, r := range reaped {
+		if r.monitor != nil && r.id >= 0 {
+			r.monitor.UnregisterCPU(r.id)
+		}
+	}
+}
+
+func (m *CoprocessorManager) transitionBusyIdleLocked() {
+	now := time.Now()
+	if !m.lastTransition.IsZero() {
+		elapsed := uint64(now.Sub(m.lastTransition).Nanoseconds())
+		m.busyBuckets[m.busyBucketIdx].busyNs += elapsed
+	}
+	m.lastTransition = now
+	m.workerBusy = false
+}
+
+func (m *CoprocessorManager) maybeFlushBusyIdleLocked() {
+	if !m.workerBusy {
+		return
+	}
+	for _, comp := range m.completions {
+		if comp.status == COPROC_TICKET_PENDING || comp.status == COPROC_TICKET_RUNNING {
+			return
+		}
+	}
+	m.transitionBusyIdleLocked()
 }
 
 // readReg returns the shadow register value for a given aligned register base address.
@@ -251,7 +341,7 @@ func (m *CoprocessorManager) readReg(regBase uint32) uint32 {
 	case COPROC_COMPLETED_TICKET:
 		return m.completedTicket.Load()
 	case COPROC_RING_DEPTH:
-		idx := cpuTypeToIndex(EXEC_TYPE_IE64)
+		idx, _ := m.selectedMonitorCPUIndexLocked()
 		if idx < 0 {
 			return 0
 		}
@@ -264,8 +354,9 @@ func (m *CoprocessorManager) readReg(regBase uint32) uint32 {
 		}
 		return (head - tail + cap) % cap
 	case COPROC_WORKER_UPTIME:
-		start := m.workerStartTime[EXEC_TYPE_IE64]
-		if m.workers[EXEC_TYPE_IE64] != nil && !start.IsZero() {
+		_, cpuType := m.selectedMonitorCPUIndexLocked()
+		start := m.workerStartTime[cpuType]
+		if cpuType >= 1 && cpuType <= 6 && m.workers[cpuType] != nil && !start.IsZero() {
 			return uint32(time.Since(start).Seconds())
 		}
 		return 0
@@ -276,6 +367,18 @@ func (m *CoprocessorManager) readReg(regBase uint32) uint32 {
 	default:
 		return 0
 	}
+}
+
+func (m *CoprocessorManager) selectedMonitorCPUIndexLocked() (int, uint32) {
+	if idx := cpuTypeToIndex(m.cpuType); idx >= 0 {
+		return idx, m.cpuType
+	}
+	for cpuType := uint32(1); cpuType <= 6; cpuType++ {
+		if m.workers[cpuType] != nil {
+			return cpuTypeToIndex(cpuType), cpuType
+		}
+	}
+	return -1, 0
 }
 
 // writeReg sets a shadow register value for a given aligned register base address.
@@ -322,12 +425,14 @@ func (m *CoprocessorManager) writeReg(regBase, val uint32) {
 // and byte-level reads at sub-register offsets (for 8-bit CPUs).
 func (m *CoprocessorManager) HandleRead(addr uint32) uint32 {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	offset := addr - COPROC_BASE
 	regBase := COPROC_BASE + (offset & ^uint32(3))
 	byteOff := offset & 3
 	val := m.readReg(regBase)
+	drained := m.drainPendingUnregsLocked()
+	m.mu.Unlock()
+	m.flushReaped(drained)
 	if byteOff != 0 {
 		return (val >> (byteOff * 8)) & 0xFF
 	}
@@ -339,7 +444,6 @@ func (m *CoprocessorManager) HandleRead(addr uint32) uint32 {
 // Writing to COPROC_CMD byte 0 triggers command dispatch.
 func (m *CoprocessorManager) HandleWrite(addr uint32, val uint32) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	offset := addr - COPROC_BASE
 	regBase := COPROC_BASE + (offset & ^uint32(3))
@@ -358,6 +462,9 @@ func (m *CoprocessorManager) HandleWrite(addr uint32, val uint32) {
 	if regBase == COPROC_CMD && byteOff == 0 {
 		m.dispatchCmd()
 	}
+	drained := m.drainPendingUnregsLocked()
+	m.mu.Unlock()
+	m.flushReaped(drained)
 }
 
 func (m *CoprocessorManager) dispatchCmd() {
@@ -538,6 +645,7 @@ func (m *CoprocessorManager) cmdStop() {
 }
 
 func (m *CoprocessorManager) cmdEnqueue() {
+	m.reapDeadWorkersLocked()
 	cpuIdx := cpuTypeToIndex(m.cpuType)
 	if cpuIdx < 0 {
 		m.ticket = 0
@@ -577,15 +685,21 @@ func (m *CoprocessorManager) cmdEnqueue() {
 	}
 
 	// Allocate ticket
+	if m.nextTicket == 0 {
+		m.nextTicket = 1
+	}
 	ticket := m.nextTicket
 	m.nextTicket++
+	if m.nextTicket == 0 {
+		m.nextTicket = 1
+	}
 
 	// Write request descriptor at entries[head]
 	entryAddr := ringBase + RING_ENTRIES_OFFSET + uint32(head)*REQ_DESC_SIZE
 	m.bus.Write32(entryAddr+REQ_TICKET_OFF, ticket)
 	m.bus.Write32(entryAddr+REQ_CPU_TYPE_OFF, m.cpuType)
 	m.bus.Write32(entryAddr+REQ_OP_OFF, m.op)
-	m.bus.Write32(entryAddr+REQ_FLAGS_OFF, m.timeout)
+	m.bus.Write32(entryAddr+REQ_TIMEOUT_OFF, m.timeout)
 	m.bus.Write32(entryAddr+REQ_REQ_PTR_OFF, m.reqPtr)
 	m.bus.Write32(entryAddr+REQ_REQ_LEN_OFF, m.reqLen)
 	m.bus.Write32(entryAddr+REQ_RESP_PTR_OFF, m.respPtr)
@@ -625,6 +739,7 @@ func (m *CoprocessorManager) cmdEnqueue() {
 }
 
 func (m *CoprocessorManager) cmdPoll() {
+	m.reapDeadWorkersLocked()
 	ticket := m.ticket
 	// Ticket 0 is the "already complete" sentinel (fallback path)
 	if ticket == 0 {
@@ -665,6 +780,7 @@ func (m *CoprocessorManager) cmdPoll() {
 			comp.observed = true
 		}
 	}
+	m.maybeFlushBusyIdleLocked()
 
 	m.ticketStatus = status
 	m.cmdStatus = COPROC_STATUS_OK
@@ -672,6 +788,7 @@ func (m *CoprocessorManager) cmdPoll() {
 }
 
 func (m *CoprocessorManager) cmdWait() {
+	m.reapDeadWorkersLocked()
 	ticket := m.ticket
 	// Ticket 0 is the "already complete" sentinel (fallback path)
 	if ticket == 0 {
@@ -698,17 +815,33 @@ func (m *CoprocessorManager) cmdWait() {
 		m.ticketStatus = comp.status
 		m.cmdStatus = COPROC_STATUS_OK
 		m.cmdError = COPROC_ERR_NONE
+		m.maybeFlushBusyIdleLocked()
 		return
 	}
 
 	// Release lock while waiting
+	drained := m.drainPendingUnregsLocked()
 	m.mu.Unlock()
+	m.flushReaped(drained)
 
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 	var status uint32
 	for {
 		status = m.scanTicketStatus(ticket)
 		if status != COPROC_TICKET_PENDING && status != COPROC_TICKET_RUNNING {
+			break
+		}
+		m.mu.Lock()
+		m.reapDeadWorkersLocked()
+		down := false
+		if comp.cpuType >= 1 && comp.cpuType <= 6 {
+			down = m.workers[comp.cpuType] == nil
+		}
+		drained := m.drainPendingUnregsLocked()
+		m.mu.Unlock()
+		m.flushReaped(drained)
+		if down {
+			status = COPROC_TICKET_WORKER_DOWN
 			break
 		}
 		if time.Now().After(deadline) {
@@ -720,6 +853,7 @@ func (m *CoprocessorManager) cmdWait() {
 
 	m.mu.Lock()
 	comp.status = status
+	m.maybeFlushBusyIdleLocked()
 	m.ticketStatus = status
 	m.cmdStatus = COPROC_STATUS_OK
 	m.cmdError = COPROC_ERR_NONE
@@ -743,11 +877,16 @@ func (m *CoprocessorManager) scanTicketStatus(ticket uint32) uint32 {
 // IsWorkerRunning returns true if the given EXEC_TYPE_* worker is active.
 func (m *CoprocessorManager) IsWorkerRunning(cpuType uint32) bool {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.workers[cpuType] != nil
+	m.reapDeadWorkersLocked()
+	running := cpuType >= 1 && cpuType <= 6 && m.workers[cpuType] != nil
+	drained := m.drainPendingUnregsLocked()
+	m.mu.Unlock()
+	m.flushReaped(drained)
+	return running
 }
 
 func (m *CoprocessorManager) computeWorkerState() uint32 {
+	m.reapDeadWorkersLocked()
 	var state uint32
 	for i := uint32(1); i <= 6; i++ {
 		if m.workers[i] != nil {
@@ -935,7 +1074,7 @@ type CoprocDebugInfo struct {
 // with their DebuggableCPU references. Safe for inspection from the monitor.
 func (m *CoprocessorManager) GetActiveWorkers() []CoprocDebugInfo {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.reapDeadWorkersLocked()
 
 	var result []CoprocDebugInfo
 	for i := uint32(1); i <= 6; i++ {
@@ -948,6 +1087,9 @@ func (m *CoprocessorManager) GetActiveWorkers() []CoprocDebugInfo {
 			})
 		}
 	}
+	drained := m.drainPendingUnregsLocked()
+	m.mu.Unlock()
+	m.flushReaped(drained)
 	return result
 }
 
@@ -967,9 +1109,12 @@ func (m *CoprocessorManager) StopAll() {
 				worker  *CoprocWorker
 			}{i, w})
 			m.workers[i] = nil
+			m.workerStartTime[i] = time.Time{}
 		}
 	}
+	drained := m.drainPendingUnregsLocked()
 	m.mu.Unlock()
+	m.flushReaped(drained)
 
 	for _, s := range toStop {
 		m.stopWorkerAndUnregister(s.cpuType, s.worker)

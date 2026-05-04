@@ -30,10 +30,10 @@ const (
 
 	// Extended monitor registers (after clipboard bridge gap at 0xF2390-0xF23AF)
 	COPROC_EXT_BASE      = 0xF23B0
-	COPROC_RING_DEPTH    = 0xF23B0 // IE64 ring occupancy: (head-tail+cap)%cap (R)
-	COPROC_WORKER_UPTIME = 0xF23B4 // Seconds since IE64 worker started (R)
+	COPROC_RING_DEPTH    = 0xF23B0 // Selected CPU ring occupancy: write COPROC_CPU_TYPE first (R)
+	COPROC_WORKER_UPTIME = 0xF23B4 // Seconds since selected CPU worker started: write COPROC_CPU_TYPE first (R)
 	COPROC_STATS_RESET   = 0xF23B8 // Write 1 to zero global stats + busy buckets (W)
-	COPROC_BUSY_PCT      = 0xF23BC // Worker busy % over last 1s, 0-100 (R)
+	COPROC_BUSY_PCT      = 0xF23BC // Aggregate worker busy % over last 1s, 0-100 (R)
 	COPROC_EXT_END       = 0xF23BF
 )
 
@@ -109,7 +109,9 @@ const (
 	REQ_TICKET_OFF   = 0x00
 	REQ_CPU_TYPE_OFF = 0x04
 	REQ_OP_OFF       = 0x08
-	REQ_FLAGS_OFF    = 0x0C
+	REQ_TIMEOUT_OFF  = 0x0C
+	// Deprecated: request descriptor offset 0x0C stores timeout metadata, not flags.
+	REQ_FLAGS_OFF    = REQ_TIMEOUT_OFF
 	REQ_REQ_PTR_OFF  = 0x10
 	REQ_REQ_LEN_OFF  = 0x14
 	REQ_RESP_PTR_OFF = 0x18

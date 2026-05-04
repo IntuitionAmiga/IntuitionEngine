@@ -55,14 +55,15 @@ func createZ80Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 	// Copy service binary to worker region
 	copy(mem[WORKER_Z80_BASE:], data)
 
-	// Create coproc Z80 bus adapter with mailbox window at Z80 addr $2000-$3FFF
+	// Create coproc Z80 bus adapter with mailbox window at Z80 addr
+	// $2000 through $2000+MAILBOX_SIZE-1.
 	coprocBus := &CoprocZ80Bus{
 		bus:          bus,
 		mem:          mem,
 		bankBase:     WORKER_Z80_BASE,
 		mailboxBase:  MAILBOX_BASE,
 		mailboxStart: 0x2000,
-		mailboxEnd:   0x4000,
+		mailboxEnd:   0x2000 + uint16(MAILBOX_SIZE),
 	}
 
 	// Create Z80 CPU with the coproc bus

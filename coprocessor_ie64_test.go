@@ -710,3 +710,72 @@ func TestCoprocBusyPct(t *testing.T) {
 		t.Fatalf("idle COPROC_BUSY_PCT = %d, want 0", pct)
 	}
 }
+
+func TestBusyPct_ClearedByPoll_NonM68KMode(t *testing.T) {
+	bus, mgr := newTestBusAndManagerExt(t)
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.mu.Unlock()
+
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE64)
+	bus.Write32(COPROC_REQ_PTR, 0x80000)
+	bus.Write32(COPROC_REQ_LEN, 4)
+	bus.Write32(COPROC_RESP_PTR, 0x81000)
+	bus.Write32(COPROC_RESP_CAP, 4)
+	bus.Write32(COPROC_CMD, COPROC_CMD_ENQUEUE)
+	if bus.Read32(COPROC_CMD_STATUS) != COPROC_STATUS_OK {
+		t.Fatalf("enqueue failed: err=%d", bus.Read32(COPROC_CMD_ERROR))
+	}
+	ticket := bus.Read32(COPROC_TICKET)
+
+	respAddr := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE64)) + RING_RESPONSES_OFFSET
+	bus.Write32(respAddr+RESP_TICKET_OFF, ticket)
+	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK)
+
+	bus.Write32(COPROC_TICKET, ticket)
+	bus.Write32(COPROC_CMD, COPROC_CMD_POLL)
+	if got := bus.Read32(COPROC_TICKET_STATUS); got != COPROC_TICKET_OK {
+		t.Fatalf("poll status=%d, want OK", got)
+	}
+
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if mgr.workerBusy {
+		t.Fatal("workerBusy remained true after terminal poll")
+	}
+}
+
+func TestRingDepth_PerCPU(t *testing.T) {
+	bus, mgr := newTestBusAndManagerExt(t)
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE32] = newOpenSyntheticWorker(EXEC_TYPE_IE32)
+	mgr.mu.Unlock()
+
+	ie32Ring := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32))
+	ie64Ring := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE64))
+	bus.Write8(ie32Ring+RING_HEAD_OFFSET, 3)
+	bus.Write8(ie32Ring+RING_TAIL_OFFSET, 1)
+	bus.Write8(ie64Ring+RING_HEAD_OFFSET, 0)
+	bus.Write8(ie64Ring+RING_TAIL_OFFSET, 0)
+
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE32)
+	if got := bus.Read32(COPROC_RING_DEPTH); got != 2 {
+		t.Fatalf("IE32 ring depth=%d, want 2", got)
+	}
+}
+
+func TestWorkerUptime_PerCPU(t *testing.T) {
+	bus, mgr := newTestBusAndManagerExt(t)
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_Z80] = newOpenSyntheticWorker(EXEC_TYPE_Z80)
+	mgr.workerStartTime[EXEC_TYPE_Z80] = time.Now().Add(-2 * time.Second)
+	mgr.mu.Unlock()
+
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_Z80)
+	if got := bus.Read32(COPROC_WORKER_UPTIME); got == 0 {
+		t.Fatalf("Z80 worker uptime=%d, want nonzero", got)
+	}
+}

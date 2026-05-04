@@ -931,6 +931,12 @@ func TestScriptEngine_CoprocEnqueuePollWait(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_CoprocWorkerDownStatusString(t *testing.T) {
+	if got := coprocStatusToString(COPROC_TICKET_WORKER_DOWN); got != "worker_down" {
+		t.Fatalf("worker-down status string = %q, want worker_down", got)
+	}
+}
+
 func TestScriptEngine_MediaLoadPlayStop(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()

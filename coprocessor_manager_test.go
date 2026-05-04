@@ -160,6 +160,28 @@ func newTestBusAndManager(t *testing.T) (*MachineBus, *CoprocessorManager) {
 	return bus, mgr
 }
 
+func newClosedSyntheticWorker(cpuType uint32) *CoprocWorker {
+	done := make(chan struct{})
+	close(done)
+	return &CoprocWorker{
+		cpuType:   cpuType,
+		monitorID: -1,
+		stopCPU:   func() {},
+		execCPU:   func() {},
+		done:      done,
+	}
+}
+
+func newOpenSyntheticWorker(cpuType uint32) *CoprocWorker {
+	return &CoprocWorker{
+		cpuType:   cpuType,
+		monitorID: -1,
+		stopCPU:   func() {},
+		execCPU:   func() {},
+		done:      make(chan struct{}),
+	}
+}
+
 // writeString writes a null-terminated string to bus memory at addr.
 func writeString(bus *MachineBus, addr uint32, s string) {
 	for i, b := range []byte(s) {
@@ -169,6 +191,259 @@ func writeString(bus *MachineBus, addr uint32, s string) {
 }
 
 // --- Manager Unit Tests ---
+
+func TestCmdWait_WorkerDown_ReturnsWorkerDown(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+	ticket := uint32(0xCAFE)
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.completions[ticket] = &CoprocCompletion{
+		ticket:  ticket,
+		cpuType: EXEC_TYPE_IE64,
+		status:  COPROC_TICKET_PENDING,
+		created: time.Now(),
+	}
+	mgr.mu.Unlock()
+
+	bus.Write32(COPROC_TICKET, ticket)
+	bus.Write32(COPROC_TIMEOUT, 50)
+	bus.Write32(COPROC_CMD, COPROC_CMD_WAIT)
+
+	if got := bus.Read32(COPROC_TICKET_STATUS); got != COPROC_TICKET_WORKER_DOWN {
+		t.Fatalf("WAIT status=%d, want WORKER_DOWN", got)
+	}
+}
+
+func TestLiveness_GoroutineSelfExit_DetectedByPoll(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+	ticket := uint32(0xDEAD)
+
+	for i := range 6 {
+		ringBase := ringBaseAddr(i)
+		for slot := range uint32(RING_CAPACITY) {
+			if got := bus.Read32(ringBase + RING_RESPONSES_OFFSET + slot*RESP_DESC_SIZE + RESP_TICKET_OFF); got == ticket {
+				t.Fatalf("test ticket unexpectedly present in empty ring")
+			}
+		}
+	}
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.completions[ticket] = &CoprocCompletion{
+		ticket:  ticket,
+		cpuType: EXEC_TYPE_IE64,
+		status:  COPROC_TICKET_PENDING,
+		created: time.Now(),
+	}
+	mgr.mu.Unlock()
+
+	bus.Write32(COPROC_TICKET, ticket)
+	bus.Write32(COPROC_CMD, COPROC_CMD_POLL)
+
+	if got := bus.Read32(COPROC_TICKET_STATUS); got != COPROC_TICKET_WORKER_DOWN {
+		t.Fatalf("POLL status=%d, want WORKER_DOWN", got)
+	}
+}
+
+func TestLiveness_GoroutineSelfExit_RejectsEnqueue(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.mu.Unlock()
+
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE64)
+	bus.Write32(COPROC_CMD, COPROC_CMD_ENQUEUE)
+
+	if got := bus.Read32(COPROC_CMD_ERROR); got != COPROC_ERR_NO_WORKER {
+		t.Fatalf("ENQUEUE error=%d, want NO_WORKER", got)
+	}
+}
+
+func TestLiveness_WorkerStateBitClearsAfterSelfExit(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.mu.Unlock()
+
+	if got := bus.Read32(COPROC_WORKER_STATE); got&(1<<EXEC_TYPE_IE64) != 0 {
+		t.Fatalf("WORKER_STATE=%#x still has IE64 bit set", got)
+	}
+}
+
+func TestLiveness_ReapedWorkerMarksOldTicketsWorkerDown(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+	ticket := uint32(0xBEEF)
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.completions[ticket] = &CoprocCompletion{
+		ticket:  ticket,
+		cpuType: EXEC_TYPE_IE64,
+		status:  COPROC_TICKET_PENDING,
+		created: time.Now(),
+	}
+	mgr.reapDeadWorkersLocked()
+	mgr.workers[EXEC_TYPE_IE64] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.mu.Unlock()
+
+	bus.Write32(COPROC_TICKET, ticket)
+	bus.Write32(COPROC_CMD, COPROC_CMD_POLL)
+
+	if got := bus.Read32(COPROC_TICKET_STATUS); got != COPROC_TICKET_WORKER_DOWN {
+		t.Fatalf("old ticket status=%d, want WORKER_DOWN", got)
+	}
+}
+
+func TestLiveness_ReapedWorkerPreservesCompletedPollStatus(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+	ticket := uint32(0xBEE0)
+	respAddr := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE64)) + RING_RESPONSES_OFFSET
+	bus.Write32(respAddr+RESP_TICKET_OFF, ticket)
+	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK)
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.completions[ticket] = &CoprocCompletion{
+		ticket:  ticket,
+		cpuType: EXEC_TYPE_IE64,
+		status:  COPROC_TICKET_PENDING,
+		created: time.Now(),
+	}
+	mgr.mu.Unlock()
+
+	bus.Write32(COPROC_TICKET, ticket)
+	bus.Write32(COPROC_CMD, COPROC_CMD_POLL)
+
+	if got := bus.Read32(COPROC_TICKET_STATUS); got != COPROC_TICKET_OK {
+		t.Fatalf("completed old ticket poll status=%d, want OK", got)
+	}
+}
+
+func TestLiveness_ReapedWorkerPreservesCompletedWaitStatus(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+	ticket := uint32(0xBEE1)
+	respAddr := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE64)) + RING_RESPONSES_OFFSET
+	bus.Write32(respAddr+RESP_TICKET_OFF, ticket)
+	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_ERROR)
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.completions[ticket] = &CoprocCompletion{
+		ticket:  ticket,
+		cpuType: EXEC_TYPE_IE64,
+		status:  COPROC_TICKET_RUNNING,
+		created: time.Now(),
+	}
+	mgr.mu.Unlock()
+
+	bus.Write32(COPROC_TICKET, ticket)
+	bus.Write32(COPROC_CMD, COPROC_CMD_WAIT)
+
+	if got := bus.Read32(COPROC_TICKET_STATUS); got != COPROC_TICKET_ERROR {
+		t.Fatalf("completed old ticket wait status=%d, want ERROR", got)
+	}
+}
+
+func TestLiveness_FrozenWorkerIsNotReaped(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+	worker := newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	worker.frozen = true
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64] = worker
+	mgr.mu.Unlock()
+
+	if !mgr.IsWorkerRunning(EXEC_TYPE_IE64) {
+		t.Fatal("frozen worker was reaped by IsWorkerRunning")
+	}
+	if got := bus.Read32(COPROC_WORKER_STATE); got&(1<<EXEC_TYPE_IE64) == 0 {
+		t.Fatalf("WORKER_STATE=%#x lost frozen IE64 bit", got)
+	}
+}
+
+func TestNextTicket_SkipsZeroOnWrap(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.nextTicket = 0xFFFFFFFE
+	mgr.mu.Unlock()
+
+	for i := 0; i < 3; i++ {
+		bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE64)
+		bus.Write32(COPROC_REQ_PTR, 0x400000+uint32(i)*4)
+		bus.Write32(COPROC_RESP_PTR, 0x401000+uint32(i)*4)
+		bus.Write32(COPROC_CMD, COPROC_CMD_ENQUEUE)
+		if got := bus.Read32(COPROC_CMD_STATUS); got != COPROC_STATUS_OK {
+			t.Fatalf("enqueue %d status=%d err=%d", i, got, bus.Read32(COPROC_CMD_ERROR))
+		}
+		if ticket := bus.Read32(COPROC_TICKET); ticket == 0 {
+			t.Fatalf("enqueue %d issued ticket 0", i)
+		}
+	}
+}
+
+func TestReset_ClearsBusyState(t *testing.T) {
+	_, mgr := newTestBusAndManager(t)
+
+	mgr.mu.Lock()
+	mgr.workerBusy = true
+	mgr.lastTransition = time.Now().Add(-time.Second)
+	mgr.busyBuckets[3] = busyBucket{busyNs: 10, idleNs: 20}
+	mgr.busyBucketIdx = 3
+	mgr.busyRotateCounter = 99
+	mgr.workerStartTime[EXEC_TYPE_IE64] = time.Now()
+	mgr.mu.Unlock()
+
+	mgr.Reset()
+
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if mgr.workerBusy || !mgr.lastTransition.IsZero() || mgr.busyBucketIdx != 0 || mgr.busyRotateCounter != 0 {
+		t.Fatalf("busy lifecycle not reset: busy=%v last=%v idx=%d rotate=%d",
+			mgr.workerBusy, mgr.lastTransition, mgr.busyBucketIdx, mgr.busyRotateCounter)
+	}
+	for i, b := range mgr.busyBuckets {
+		if b != (busyBucket{}) {
+			t.Fatalf("busy bucket %d not cleared: %+v", i, b)
+		}
+	}
+	for i, start := range mgr.workerStartTime {
+		if !start.IsZero() {
+			t.Fatalf("workerStartTime[%d] not cleared", i)
+		}
+	}
+}
+
+func TestReset_ClearsRingMemory(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+
+	for i := range 6 {
+		base := ringBaseAddr(i)
+		bus.Write8(base+RING_HEAD_OFFSET, 7)
+		bus.Write8(base+RING_TAIL_OFFSET, 3)
+		bus.Write32(base+RING_ENTRIES_OFFSET+REQ_TICKET_OFF, 0xAAAAAAAA)
+		bus.Write32(base+RING_RESPONSES_OFFSET+RESP_TICKET_OFF, 0xBBBBBBBB)
+	}
+
+	mgr.Reset()
+
+	for i := range 6 {
+		base := ringBaseAddr(i)
+		if head, tail, cap := bus.Read8(base+RING_HEAD_OFFSET), bus.Read8(base+RING_TAIL_OFFSET), bus.Read8(base+RING_CAPACITY_OFFSET); head != 0 || tail != 0 || cap != RING_CAPACITY {
+			t.Fatalf("ring %d header head=%d tail=%d cap=%d", i, head, tail, cap)
+		}
+		if got := bus.Read32(base + RING_ENTRIES_OFFSET + REQ_TICKET_OFF); got != 0 {
+			t.Fatalf("ring %d request descriptor not cleared: %#x", i, got)
+		}
+		if got := bus.Read32(base + RING_RESPONSES_OFFSET + RESP_TICKET_OFF); got != 0 {
+			t.Fatalf("ring %d response descriptor not cleared: %#x", i, got)
+		}
+	}
+}
 
 func TestCoprocessorTicketMonotonicity(t *testing.T) {
 	bus, mgr := newTestBusAndManager(t)
@@ -506,6 +781,29 @@ func TestCoprocBus32Translation(t *testing.T) {
 	}
 }
 
+func TestMailbox_6502_BoundsClamp(t *testing.T) {
+	bus := NewMachineBus()
+	mem := bus.GetMemory()
+	cb := &CoprocBus32{
+		bus:          bus,
+		mem:          mem,
+		bankBase:     WORKER_6502_BASE,
+		mailboxBase:  MAILBOX_BASE,
+		mailboxStart: 0x2000,
+		mailboxEnd:   0x2000 + uint16(MAILBOX_SIZE),
+	}
+
+	mem[MAILBOX_END+1] = 0x55
+	cb.Write8(0x3FFF, 0xA5)
+
+	if mem[MAILBOX_END+1] != 0x55 {
+		t.Fatalf("6502 mailbox write spilled past MAILBOX_END")
+	}
+	if mem[WORKER_6502_BASE+0x3FFF] != 0xA5 {
+		t.Fatalf("6502 write above mailbox window did not route to worker RAM")
+	}
+}
+
 // TestCoprocZ80BusTranslation tests the CoprocZ80Bus address translation.
 func TestCoprocZ80BusTranslation(t *testing.T) {
 	bus := NewMachineBus()
@@ -543,6 +841,29 @@ func TestCoprocZ80BusTranslation(t *testing.T) {
 	}
 	zb.Out(0x10, 0xFF) // should not panic
 	zb.Tick(100)       // should not panic
+}
+
+func TestMailbox_Z80_BoundsClamp(t *testing.T) {
+	bus := NewMachineBus()
+	mem := bus.GetMemory()
+	zb := &CoprocZ80Bus{
+		bus:          bus,
+		mem:          mem,
+		bankBase:     WORKER_Z80_BASE,
+		mailboxBase:  MAILBOX_BASE,
+		mailboxStart: 0x2000,
+		mailboxEnd:   0x2000 + uint16(MAILBOX_SIZE),
+	}
+
+	mem[MAILBOX_END+1] = 0x66
+	zb.Write(0x3FFF, 0xA6)
+
+	if mem[MAILBOX_END+1] != 0x66 {
+		t.Fatalf("Z80 mailbox write spilled past MAILBOX_END")
+	}
+	if mem[WORKER_Z80_BASE+0x3FFF] != 0xA6 {
+		t.Fatalf("Z80 write above mailbox window did not route to worker RAM")
+	}
 }
 
 // TestCoprocessorEnqueueAndRingLayout tests that enqueue correctly writes to the ring buffer.

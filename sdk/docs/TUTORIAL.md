@@ -746,6 +746,8 @@ The blitter's masked copy operation (BLT_OP_MASKED = 3) uses a 1-bit mask to con
 
 The copper coprocessor executes a list of commands synchronised to the raster beam, allowing mid-frame register changes.
 
+For CPU-worker coprocessor services and the mailbox MMIO contract, see [Coprocessor.md](Coprocessor.md).
+
 ## Copper List Structure
 
 Each copper bar entry consists of 9 longwords (36 bytes):

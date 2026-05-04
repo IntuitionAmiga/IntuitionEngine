@@ -895,9 +895,9 @@ dbg.close()
 
 ## `coproc`
 
-Coprocessor manager for offloading work to secondary CPU instances.
+Coprocessor manager for offloading work to secondary CPU instances. The low-level MMIO and mailbox contract is documented in [Coprocessor.md](Coprocessor.md).
 
-Supported CPU types: `"ie32"`, `"6502"`, `"m68k"`, `"z80"`, `"x86"`.
+Supported CPU types: `"ie32"`, `"6502"`, `"m68k"`, `"z80"`, `"x86"`, `"ie64"`.
 
 ### Ticket lifecycle
 
@@ -915,7 +915,7 @@ Supported CPU types: `"ie32"`, `"6502"`, `"m68k"`, `"z80"`, `"x86"`.
 
 `coproc.enqueue(cpu_type, op, request)` — Enqueue a work request. `op` is a numeric opcode; `request` is a raw byte string payload. Returns: number (ticket ID).
 
-`coproc.poll(ticket)` — Check the status of a ticket without blocking. Returns: string — one of `"pending"`, `"running"`, `"ok"`, `"error"`, `"timeout"`.
+`coproc.poll(ticket)` — Check the status of a ticket without blocking. Returns: string — one of `"pending"`, `"running"`, `"ok"`, `"error"`, `"timeout"`, `"worker_down"`.
 
 `coproc.wait(ticket, timeout_ms)` — Block until the ticket completes or `timeout_ms` expires. Returns: status (string), response (string, raw bytes). The response is empty if the ticket did not complete successfully.
 
@@ -925,6 +925,8 @@ Supported CPU types: `"ie32"`, `"6502"`, `"m68k"`, `"z80"`, `"x86"`.
 |-------|------|-------------|
 | `cpu_type` | string | CPU type name |
 | `is_running` | boolean | Whether the worker is active |
+
+Per-CPU monitor registers such as ring depth and uptime are selected by writing `COPROC_CPU_TYPE` before reading the register. `COPROC_BUSY_PCT` is aggregate across workers. For 6502 and Z80 workers, the mailbox CPU window is `0x2000` through `0x37FF`; `0x3800` through `0x3FFF` remains worker RAM.
 
 `coproc.response(ticket)` — Retrieve the response data for a ticket. If the ticket completed successfully, returns the response bytes. If the ticket is not found in the response ring but was previously enqueued, returns the raw contents of the preallocated response buffer (which may contain stale or partial data). Returns empty string only if the ticket is entirely unknown. Returns: string (raw bytes).
 
