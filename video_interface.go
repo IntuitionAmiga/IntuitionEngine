@@ -153,6 +153,12 @@ type ScanlineAware interface {
 	FinishFrame() []byte
 }
 
+// ScanlineCompositingSource optionally narrows ScanlineAware sources to the
+// frames where compositor-owned scanline timing is required.
+type ScanlineCompositingSource interface {
+	NeedsScanlineCompositing() bool
+}
+
 // CompositorManageable is implemented by video sources with independent render
 // goroutines. The compositor sets the flag during scanline-aware rendering to
 // prevent the render goroutine from racing with the compositor's scanline path.

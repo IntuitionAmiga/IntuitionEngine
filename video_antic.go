@@ -871,6 +871,14 @@ func (a *ANTICEngine) GetDimensions() (w, h int) {
 	return ANTIC_FRAME_WIDTH, ANTIC_FRAME_HEIGHT
 }
 
+// NeedsScanlineCompositing reports whether ANTIC display-list execution must be
+// owned by the compositor for per-scanline interrupt timing.
+func (a *ANTICEngine) NeedsScanlineCompositing() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.nmien&ANTIC_NMIEN_DLI != 0
+}
+
 // TickFrame advances ANTIC chip-clock state once per compositor frame.
 func (a *ANTICEngine) TickFrame() {
 	a.mu.Lock()

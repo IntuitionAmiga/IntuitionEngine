@@ -3355,6 +3355,15 @@ func (chip *VideoChip) SignalVSync() {
 	chip.inVBlank.Store(true)
 }
 
+// NeedsScanlineCompositing reports whether the compositor must own per-scanline
+// timing for this frame. Normal framebuffer/blitter/raster rendering is already
+// materialized in buffers and can use full-frame compositing.
+func (chip *VideoChip) NeedsScanlineCompositing() bool {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	return chip.copperEnabled && chip.bus != nil
+}
+
 // -----------------------------------------------------------------------------
 // ScanlineAware Interface Implementation
 // -----------------------------------------------------------------------------

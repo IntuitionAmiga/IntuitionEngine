@@ -984,6 +984,10 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		}
 		return x86EmitMOV_r32_imm32(cb, ji, memory)
 
+	// MOV AL, moffs8 (0xA0) / MOV moffs8, AL (0xA2)
+	case op == 0xA2:
+		return x86EmitMOV_moffs8_AL(cb, ji, memory, instrIdx)
+
 	// MOV EAX, moffs32 (0xA1) / MOV moffs32, EAX (0xA3)
 	case op == 0xA1:
 		return x86EmitMOV_EAX_moffs32(cb, ji, memory, instrIdx)
@@ -1033,7 +1037,11 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 	case op == 0x3B:
 		return x86EmitALU_Gv_Ev(cb, ji, 7, cs, memory, instrIdx) // CMP
 
-	// MOV Ev, Gv (0x89) -- reg-reg only for now
+	// MOV Eb, Gb (0x88)
+	case op == 0x88:
+		return x86EmitMOV_Eb_Gb(cb, ji, memory, instrIdx)
+
+	// MOV Ev, Gv (0x89)
 	case op == 0x89:
 		return x86EmitMOV_Ev_Gv(cb, ji, memory, instrIdx)
 	// MOV Gv, Ev (0x8B) -- reg-reg only for now
@@ -1159,9 +1167,9 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 	case op >= 0x70 && op <= 0x7F:
 		return x86EmitJcc_rel8(cb, ji, memory, startPC, cs, instrIdx)
 
-	// MOV Eb,Ib (0xC6) -- register mode only
+	// MOV Eb,Ib (0xC6)
 	case op == 0xC6:
-		return x86EmitMOV_Eb_Ib(cb, ji, memory)
+		return x86EmitMOV_Eb_Ib(cb, ji, memory, instrIdx)
 
 	// MOV Ev,Iv (0xC7)
 	case op == 0xC7:
@@ -1309,6 +1317,71 @@ func x86EmitMOV_moffs32_EAX(cb *CodeBuffer, ji *X86JITInstr, memory []byte, inst
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64R8, 0) // EAX
 	x86EmitMemStore32(cb, amd64R10, amd64R8)
+	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
+	return true
+}
+
+func x86EmitMOV_moffs8_AL(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if ji.length < 5 {
+		return false
+	}
+	addr := readLE32(memory, ji.opcodePC+1)
+	amd64MOV_reg_imm32(cb, amd64R10, addr)
+	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	x86EmitLoadGuestReg32(cb, amd64R8, 0) // EAX
+	x86EmitMemStore8(cb, amd64R10, amd64R8)
+	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
+	return true
+}
+
+// x86EmitMOV_Eb_Gb handles MOV Eb, Gb (0x88) for register and memory modes.
+func x86EmitMOV_Eb_Gb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if !ji.hasModRM {
+		return false
+	}
+	mod := ji.modrm >> 6
+	srcR8 := (ji.modrm >> 3) & 7
+	srcGuestReg := srcR8 & 3
+	srcHigh := srcR8 >= 4
+
+	if mod == 3 {
+		dstR8 := ji.modrm & 7
+		dstGuestReg := dstR8 & 3
+		dstHigh := dstR8 >= 4
+
+		x86EmitLoadGuestReg32(cb, amd64R8, dstGuestReg)
+		x86EmitLoadGuestReg32(cb, amd64R9, srcGuestReg)
+		if srcHigh {
+			amd64SHR_imm32(cb, amd64R9, 8)
+		}
+		if dstHigh {
+			emitREX(cb, false, 0, amd64R8)
+			cb.EmitBytes(0x81, modRM(3, 4, amd64R8))
+			cb.Emit32(0xFFFF00FF)
+			emitREX(cb, false, amd64R9, amd64R9)
+			cb.EmitBytes(0x0F, 0xB6, modRM(3, amd64R9, amd64R9))
+			amd64SHL_imm32(cb, amd64R9, 8)
+		} else {
+			emitREX(cb, false, 0, amd64R8)
+			cb.EmitBytes(0x81, modRM(3, 4, amd64R8))
+			cb.Emit32(0xFFFFFF00)
+			emitREX(cb, false, amd64R9, amd64R9)
+			cb.EmitBytes(0x0F, 0xB6, modRM(3, amd64R9, amd64R9))
+		}
+		amd64ALU_reg_reg32(cb, 0x09, amd64R8, amd64R9) // OR
+		x86EmitStoreGuestReg32(cb, dstGuestReg, amd64R8)
+		return true
+	}
+
+	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+		return false
+	}
+	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	x86EmitLoadGuestReg32(cb, amd64R8, srcGuestReg)
+	if srcHigh {
+		amd64SHR_imm32(cb, amd64R8, 8)
+	}
+	x86EmitMemStore8(cb, amd64R10, amd64R8)
 	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
 	return true
 }
@@ -2412,16 +2485,31 @@ func x86EmitLEAVE(cb *CodeBuffer, ji *X86JITInstr) bool {
 }
 
 // ===========================================================================
-// MOV Eb,Ib (0xC6) and MOV Ev,Iv (0xC7) -- register mode only
+// MOV Eb,Ib (0xC6) and MOV Ev,Iv (0xC7)
 // ===========================================================================
 
-func x86EmitMOV_Eb_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte) bool {
-	if !ji.hasModRM || ji.modrm>>6 != 3 {
+func x86EmitMOV_Eb_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if !ji.hasModRM {
 		return false
 	}
-	r8 := ji.modrm & 7
 	immPC := ji.opcodePC + uint32(ji.length) - 1
 	imm := memory[immPC]
+
+	if ji.modrm>>6 != 3 {
+		if ji.grpOp != 0 {
+			return false
+		}
+		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+			return false
+		}
+		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+		amd64MOV_reg_imm32(cb, amd64R8, uint32(imm))
+		x86EmitMemStore8(cb, amd64R10, amd64R8)
+		x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
+		return true
+	}
+
+	r8 := ji.modrm & 7
 
 	guestReg := r8 & 3
 	isHigh := r8 >= 4

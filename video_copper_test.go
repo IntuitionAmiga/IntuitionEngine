@@ -31,6 +31,24 @@ func copperSetBaseWord(addr uint32) uint32 {
 	return (uint32(copperOpcodeSetBase) << copperOpcodeShift) | ((addr >> 2) & copperSetBaseMask)
 }
 
+func TestVideoChip_NeedsScanlineCompositingTracksCopper(t *testing.T) {
+	video, bus := newCopperTestRig(t)
+
+	if video.NeedsScanlineCompositing() {
+		t.Fatal("default VideoChip should not need scanline compositing")
+	}
+
+	bus.Write32(COPPER_CTRL, copperCtrlEnable)
+	if !video.NeedsScanlineCompositing() {
+		t.Fatal("VideoChip with enabled copper should need scanline compositing")
+	}
+
+	bus.Write32(COPPER_CTRL, 0)
+	if video.NeedsScanlineCompositing() {
+		t.Fatal("VideoChip with disabled copper should not need scanline compositing")
+	}
+}
+
 func writeWord8(bus *MachineBus, addr uint32, value uint32) {
 	bus.Write8(addr, uint8(value))
 	bus.Write8(addr+1, uint8(value>>8))

@@ -130,6 +130,15 @@ func (m *managedScanlineSource) ProcessScanline(y int) {
 	m.mockScanlineSource.ProcessScanline(y)
 }
 
+type selectableScanlineSource struct {
+	mockScanlineSource
+	needs bool
+}
+
+func (m *selectableScanlineSource) NeedsScanlineCompositing() bool {
+	return m.needs
+}
+
 func solidTestFrame(w, h int, r, g, b, a byte) []byte {
 	frame := make([]byte, w*h*BYTES_PER_PIXEL)
 	for i := 0; i < len(frame); i += BYTES_PER_PIXEL {
@@ -542,6 +551,75 @@ func TestCompositor_OutputRate_FollowsBackend(t *testing.T) {
 	comp := NewVideoCompositor(out)
 	if got := comp.GetRefreshRate(); got != 75 {
 		t.Fatalf("refresh rate = %d, want 75", got)
+	}
+}
+
+func TestCompositor_ScanlineSelectorFalseUsesFullFrame(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(2, 1)
+	source := &selectableScanlineSource{
+		mockScanlineSource: mockScanlineSource{
+			layer: 0,
+			w:     2,
+			h:     1,
+			frame: solidTestFrame(2, 1, 1, 2, 3, 255),
+		},
+		needs: false,
+	}
+	source.enabled.Store(true)
+	comp.RegisterSource(source)
+
+	comp.composite()
+
+	if source.scanlines != 0 {
+		t.Fatalf("scanline calls = %d, want 0", source.scanlines)
+	}
+	if source.vsyncs.Load() != 1 {
+		t.Fatalf("vsync calls = %d, want 1", source.vsyncs.Load())
+	}
+	if got := testPixel(comp.finalFrame, 0, 0, 2); got != [4]byte{1, 2, 3, 255} {
+		t.Fatalf("full-frame pixel = %v", got)
+	}
+}
+
+func TestCompositor_ScanlineSelectorTrueUsesScanlinePath(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(2, 3)
+	source := &selectableScanlineSource{
+		mockScanlineSource: mockScanlineSource{
+			layer: 0,
+			w:     2,
+			h:     3,
+			frame: solidTestFrame(2, 3, 4, 5, 6, 255),
+		},
+		needs: true,
+	}
+	source.enabled.Store(true)
+	comp.RegisterSource(source)
+
+	comp.composite()
+
+	if source.scanlines != 3 {
+		t.Fatalf("scanline calls = %d, want 3", source.scanlines)
+	}
+}
+
+func TestCompositor_LegacyScanlineSourceStillUsesScanlinePath(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(2, 3)
+	source := &mockScanlineSource{
+		layer: 0,
+		w:     2,
+		h:     3,
+		frame: solidTestFrame(2, 3, 7, 8, 9, 255),
+	}
+	source.enabled.Store(true)
+	comp.RegisterSource(source)
+
+	comp.composite()
+
+	if source.scanlines != 3 {
+		t.Fatalf("scanline calls = %d, want 3", source.scanlines)
 	}
 }
 

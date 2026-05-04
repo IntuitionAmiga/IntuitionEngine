@@ -398,6 +398,9 @@ func (c *VideoCompositor) compositeScanlineAware() (bool, bool) {
 		if !ok {
 			continue
 		}
+		if selector, ok := source.(ScanlineCompositingSource); ok && !selector.NeedsScanlineCompositing() {
+			continue
+		}
 
 		_, srcH := source.GetDimensions()
 		if srcH > maxSourceHeight {

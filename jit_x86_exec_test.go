@@ -115,6 +115,85 @@ func TestX86JIT_Exec_MOV_HLT(t *testing.T) {
 	}
 }
 
+func TestX86JIT_Exec_ByteMemoryStores(t *testing.T) {
+	cpu := runX86JITProgram(t, 0x1000,
+		0xB0, 0x7F, // MOV AL, 0x7F
+		0xA2, 0x00, 0x30, 0x00, 0x00, // MOV [0x3000], AL
+		0xB4, 0x12, // MOV AH, 0x12
+		0x88, 0x25, 0x01, 0x30, 0x00, 0x00, // MOV [0x3001], AH
+		0xC6, 0x05, 0x02, 0x30, 0x00, 0x00, 0x34, // MOV byte [0x3002], 0x34
+		0xF4, // HLT
+	)
+
+	if got := cpu.memory[0x3000]; got != 0x7F {
+		t.Fatalf("[0x3000] = 0x%02X, want 0x7F", got)
+	}
+	if got := cpu.memory[0x3001]; got != 0x12 {
+		t.Fatalf("[0x3001] = 0x%02X, want 0x12", got)
+	}
+	if got := cpu.memory[0x3002]; got != 0x34 {
+		t.Fatalf("[0x3002] = 0x%02X, want 0x34", got)
+	}
+}
+
+func TestX86JIT_Exec_MMIOByteWriteFallbackFastPath(t *testing.T) {
+	if !x86JitAvailable {
+		t.Skip("x86 JIT not available on this platform")
+	}
+
+	bus := NewMachineBus()
+	writes := map[uint32]uint8{}
+	bus.MapIO(0xF2100, 0xF2102, nil, nil)
+	bus.MapIOByte(0xF2100, 0xF2102, func(addr uint32, value uint8) {
+		writes[addr] = value
+	})
+
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	cpu.memory = adapter.GetMemory()
+	cpu.x86JitEnabled = true
+	cpu.x86JitIOBitmap = buildX86IOBitmap(adapter, bus)
+	cpu.EIP = 0x1000
+
+	code := []byte{
+		0xB0, 0x7F, // MOV AL, 0x7F
+		0xA2, 0x00, 0x21, 0x0F, 0x00, // MOV [0xF2100], AL
+		0xB4, 0x12, // MOV AH, 0x12
+		0x88, 0x25, 0x01, 0x21, 0x0F, 0x00, // MOV [0xF2101], AH
+		0xC6, 0x05, 0x02, 0x21, 0x0F, 0x00, 0x34, // MOV byte [0xF2102], 0x34
+		0xF4, // HLT
+	}
+	for i, b := range code {
+		cpu.memory[cpu.EIP+uint32(i)] = b
+	}
+
+	done := make(chan struct{})
+	go func() {
+		cpu.running.Store(true)
+		cpu.Halted = false
+		cpu.X86ExecuteJIT()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cpu.running.Store(false)
+		<-done
+		t.Fatal("x86 JIT execution timed out")
+	}
+
+	if got := writes[0xF2100]; got != 0x7F {
+		t.Fatalf("[0xF2100] = 0x%02X, want 0x7F", got)
+	}
+	if got := writes[0xF2101]; got != 0x12 {
+		t.Fatalf("[0xF2101] = 0x%02X, want 0x12", got)
+	}
+	if got := writes[0xF2102]; got != 0x34 {
+		t.Fatalf("[0xF2102] = 0x%02X, want 0x34", got)
+	}
+}
+
 func TestX86JIT_Exec_MultipleInstructions(t *testing.T) {
 	// MOV EAX, 10; MOV EBX, 20; ADD EAX, EBX; HLT
 	cpu := runX86JITProgram(t, 0x1000,

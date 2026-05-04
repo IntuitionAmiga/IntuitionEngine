@@ -189,6 +189,13 @@ _start:
         ; ESP must point to valid RAM before any PUSH/CALL instructions.
         mov     esp, STACK_TOP
 
+        ; --- Disable Default VideoChip Layer ---
+        ; This demo renders exclusively through ANTIC/GTIA. Leaving the
+        ; default VideoChip enabled forces the compositor to include its
+        ; unused scanline-aware layer, which can make ANTIC VBlank polling
+        ; miss frames and visibly slow the plasma animation.
+        mov     byte [VIDEO_CTRL], 0
+
 ; ============================================================================
 ; ANTIC DISPLAY LIST SETUP
 ; ============================================================================

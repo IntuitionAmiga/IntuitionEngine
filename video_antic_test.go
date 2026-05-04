@@ -481,6 +481,23 @@ func TestANTIC_TickFrameHonorsNMIEN(t *testing.T) {
 	}
 }
 
+func TestANTIC_NeedsScanlineCompositingTracksDLI(t *testing.T) {
+	antic := NewANTICEngine(nil)
+	if antic.NeedsScanlineCompositing() {
+		t.Fatal("default ANTIC should not need scanline compositing")
+	}
+
+	antic.HandleWrite(ANTIC_NMIEN, ANTIC_NMIEN_VBI)
+	if antic.NeedsScanlineCompositing() {
+		t.Fatal("ANTIC VBI alone should not need scanline compositing")
+	}
+
+	antic.HandleWrite(ANTIC_NMIEN, ANTIC_NMIEN_DLI)
+	if !antic.NeedsScanlineCompositing() {
+		t.Fatal("ANTIC DLI should need scanline compositing")
+	}
+}
+
 func TestANTIC_PALTimingAndEnableBits(t *testing.T) {
 	antic := NewANTICEngine(nil)
 	now := int64(3_000_000_000)

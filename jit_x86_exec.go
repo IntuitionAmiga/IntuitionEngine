@@ -407,25 +407,30 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			ctx.RTSCache1Addr = 0
 		}
 
-		// I/O fallback: sync to named, interpreter step, sync back
+		// I/O fallback: sync to named, then either execute a recognized
+		// MMIO byte write directly or fall back to the full interpreter.
 		ioFallback := false
 		if ctx.NeedIOFallback != 0 {
 			ioFallback = true
 			ctx.NeedIOFallback = 0
 			block.ioBails++ // profile counter for promotion decisions
 			cpu.syncJITRegsToNamed()
-			var stepT0 time.Time
-			if perfAcctOn {
-				stepT0 = time.Now()
-			}
-			cpu.Step()
-			if perfAcctOn {
-				cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
+			if fastCount, ok := cpu.tryFastMMIOWriteFallback(); ok {
+				executed += fastCount
+			} else {
+				var stepT0 time.Time
+				if perfAcctOn {
+					stepT0 = time.Now()
+				}
+				cpu.Step()
+				if perfAcctOn {
+					cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
+				}
+				diagFallbackInstr++
+				executed++
 			}
 			cpu.syncJITRegsFromNamed()
-			executed++
 			diagIOBails++
-			diagFallbackInstr++
 			if cpu.Halted || !cpu.Running() {
 				break
 			}
@@ -500,6 +505,98 @@ func x86PatchCompatibleChainsTo(cache *CodeCache, target *JITBlock) {
 			}
 		}
 	}
+}
+
+// tryFastMMIOWriteFallback handles the byte-store MMIO instructions that are
+// common in raster-effect loops after the native block has already bailed on an
+// I/O page. It preserves the architectural effect of the interpreter handlers
+// for these no-prefix forms while avoiding the full fetch/decode Step path.
+func (cpu *CPU_X86) tryFastMMIOWriteFallback() (uint64, bool) {
+	if cpu.nmiPending.Load() || (cpu.irqPending.Load() && cpu.IF()) {
+		return 0, false
+	}
+
+	var executed uint64
+	for executed < 64 {
+		pc := cpu.EIP
+		if pc >= uint32(len(cpu.memory)) {
+			break
+		}
+
+		switch cpu.memory[pc] {
+		case 0xA2: // MOV moffs8, AL
+			if pc+5 > uint32(len(cpu.memory)) {
+				return executed, executed != 0
+			}
+			addr := readLE32(cpu.memory, pc+1)
+			if !cpu.isX86GuestIOPage(addr) {
+				return executed, executed != 0
+			}
+			cpu.write8(addr, cpu.AL())
+			cpu.finishFastMMIOWrite(pc + 5)
+			executed++
+
+		case 0x88: // MOV Eb, Gb
+			if pc+6 > uint32(len(cpu.memory)) {
+				return executed, executed != 0
+			}
+			modrm := cpu.memory[pc+1]
+			if modrm>>6 != 0 || modrm&7 != 5 {
+				return executed, executed != 0
+			}
+			addr := readLE32(cpu.memory, pc+2)
+			if !cpu.isX86GuestIOPage(addr) {
+				return executed, executed != 0
+			}
+			cpu.write8(addr, cpu.getReg8((modrm>>3)&7))
+			cpu.finishFastMMIOWrite(pc + 6)
+			executed++
+
+		case 0xC6: // MOV Eb, Ib
+			if pc+7 > uint32(len(cpu.memory)) {
+				return executed, executed != 0
+			}
+			modrm := cpu.memory[pc+1]
+			if modrm>>6 != 0 || modrm&7 != 5 || (modrm>>3)&7 != 0 {
+				return executed, executed != 0
+			}
+			addr := readLE32(cpu.memory, pc+2)
+			if !cpu.isX86GuestIOPage(addr) {
+				return executed, executed != 0
+			}
+			cpu.write8(addr, cpu.memory[pc+6])
+			cpu.finishFastMMIOWrite(pc + 7)
+			executed++
+
+		default:
+			if cpu.memory[pc] >= 0xB0 && cpu.memory[pc] <= 0xB7 { // MOV r8, imm8
+				if pc+2 > uint32(len(cpu.memory)) {
+					return executed, executed != 0
+				}
+				cpu.setReg8(cpu.memory[pc]-0xB0, cpu.memory[pc+1])
+				cpu.finishFastMMIOWrite(pc + 2)
+				executed++
+				continue
+			}
+			return executed, executed != 0
+		}
+	}
+
+	return executed, executed != 0
+}
+
+func (cpu *CPU_X86) isX86GuestIOPage(addr uint32) bool {
+	page := addr >> 8
+	if page < uint32(len(cpu.x86JitIOBitmap)) && cpu.x86JitIOBitmap[page] != 0 {
+		return true
+	}
+	return false
+}
+
+func (cpu *CPU_X86) finishFastMMIOWrite(nextPC uint32) {
+	cpu.EIP = nextPC
+	cpu.Cycles++
+	cpu.bus.Tick(1)
 }
 
 // x86RunInterpreter is the fallback interpreter loop. Used when JIT is
