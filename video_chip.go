@@ -751,6 +751,12 @@ func (chip *VideoChip) setPaletteEntry(index uint8, hwVal uint32) {
 	chip.clutPalette[index] = uint32(r) | uint32(g)<<8 | uint32(b)<<16 | 0xFF000000
 }
 
+func (chip *VideoChip) SetPaletteEntry(index uint8, hwVal uint32) {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	chip.setPaletteEntry(index, hwVal)
+}
+
 // convertCLUT8Frame reads indexed pixels from bus memory at fbBase and
 // converts them to RGBA32 in clutFrame using the palette lookup table.
 func (chip *VideoChip) convertCLUT8Frame() {

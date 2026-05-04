@@ -673,6 +673,7 @@ type M68KCPU struct {
 
 	// GEMDOS trap interception for EmuTOS filesystem access
 	gemdosHandler *GemdosInterceptor
+	xbiosHandler  *XBIOSInterceptor
 
 	// Performance monitoring (matching IE32 pattern)
 	PerfEnabled      bool      // Enable MIPS reporting
@@ -10596,6 +10597,11 @@ func (cpu *M68KCPU) ExecTRAP(opcode uint16) {
 	trapNum := opcode & 0x000F
 	if trapNum == 1 && cpu.gemdosHandler != nil {
 		if cpu.gemdosHandler.HandleTrap1() {
+			return
+		}
+	}
+	if trapNum == 14 && cpu.xbiosHandler != nil {
+		if cpu.xbiosHandler.HandleTrap14() {
 			return
 		}
 	}

@@ -13,6 +13,7 @@ Implemented in IE runtime:
 - Raw ST-style scancode + modifier MMIO (`0xF0740` block)
 - GEMDOS TRAP #1 filesystem interception — maps a host directory as drive U: in the GEM desktop
 - IOREC keyboard buffer detection and initialization from ROM pattern scan
+- XBIOS minimal shim (TRAP #14) for IE-mapped video, palette, PSG, random, and keyboard-rate calls
 - ProgramExecutor support for `.tos` and `.img`
 
 ## Quick Start
@@ -115,6 +116,29 @@ EmuTOS has full access to the complete IE hardware map. The key registers for Em
 | `VOODOO_BASE` | `0xF8000+` | Voodoo 3D registers |
 | `SYS_GC_TRIGGER` | `0xF2380` | Write any value to trigger GC |
 | `VRAM` | `0x100000+` | RGBA32 framebuffer (5MB) |
+
+## XBIOS minimal shim (TRAP #14)
+
+IE is not an Atari ST emulator. The EmuTOS XBIOS shim only maps a small set of calls onto IE hardware:
+
+| Function | Number | IE behavior |
+|---|---:|---|
+| `Physbase` | `2` | returns `0x100000` |
+| `Logbase` | `3` | returns the current logical framebuffer base |
+| `Setscreen` | `5` | accepts in-range logical bases inside IE VRAM; out-of-range bases are ignored |
+| `Setpalette` | `6` | translates 16 ST palette words into IE VideoChip palette entries |
+| `Setcolor` | `7` | updates one IE palette entry and returns the previous ST color word |
+| `Random` | `17` | deterministic per-session pseudo-random value |
+| `Dosound` | `32` | writes simple PSG register/value blocks into the IE PSG register array |
+| `Kbrate` | `35` | stores and returns the previous keyboard repeat tuple; no hardware timing effect |
+
+All unsupported XBIOS calls return -1. Calls that imply Atari ST hardware such as FDC, ACSI, MFP serial, direct IKBD commands, or ST shifter control are deliberately not shimmed.
+
+## IOREC keyboard pump
+
+The EmuTOS loader discovers the keyboard IOREC fields from the ROM pattern scan and initializes a fallback ring buffer if the ROM leaves it unset. The fallback buffer is placed below the EmuTOS profile top-of-RAM, not at a fixed low-memory address.
+
+During the existing 5 ms level-5 timer cadence, IE drains up to 16 queued `SCAN_CODE` values into the discovered IOREC ring. The pump reads `SCAN_STATUS` first and only reads `SCAN_CODE` when a scancode is available, so it does not inject zero scancodes. If the IOREC ring is full, the scancode has already been dequeued from TerminalMMIO and is dropped; TerminalMMIO does not support peek-before-dequeue. This is the documented drop-on-full behavior.
 
 ## GEM Application Programming (.PRG)
 

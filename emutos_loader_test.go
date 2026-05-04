@@ -793,6 +793,96 @@ func TestMMIO_Mouse_FullIOSetup(t *testing.T) {
 	}
 }
 
+func newIORECPumpTest(t *testing.T) (*EmuTOSLoader, *TerminalMMIO) {
+	t.Helper()
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	term := NewTerminalMMIO()
+	bus.MapIO(TERM_OUT, TERMINAL_REGION_END, term.HandleRead, term.HandleWrite)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	loader := NewEmuTOSLoader(bus, cpu, video)
+	loader.l5Armed = true
+	loader.iorecBufBase = 0x2000
+	loader.iorecBufSize = 0x2004
+	loader.iorecReadIdx = 0x2008
+	loader.iorecWriteIdx = 0x200A
+	cpu.Write32(loader.iorecBufBase, 0x3000)
+	cpu.Write16(loader.iorecBufSize, 4)
+	cpu.Write16(loader.iorecReadIdx, 0)
+	cpu.Write16(loader.iorecWriteIdx, 0)
+	return loader, term
+}
+
+func TestEmuTOSLoader_IORECPumpDrainsScancodesOnTimerTick(t *testing.T) {
+	loader, term := newIORECPumpTest(t)
+	term.EnqueueScancode(0x1E)
+	term.EnqueueScancode(0x9E)
+	loader.pumpIOREC()
+	if got := loader.cpu.Read8(0x3000); got != 0x1E {
+		t.Fatalf("ring[0]=0x%X, want 0x1E", got)
+	}
+	if got := loader.cpu.Read8(0x3001); got != 0x9E {
+		t.Fatalf("ring[1]=0x%X, want 0x9E", got)
+	}
+	if got := loader.cpu.Read16(loader.iorecWriteIdx); got != 2 {
+		t.Fatalf("write idx=%d, want 2", got)
+	}
+}
+
+func TestEmuTOSLoader_IORECPumpBoundedPerTick(t *testing.T) {
+	loader, term := newIORECPumpTest(t)
+	loader.cpu.Write16(loader.iorecBufSize, 32)
+	for i := 0; i < iorecMaxDrainPerTick+4; i++ {
+		term.EnqueueScancode(uint8(i + 1))
+	}
+	loader.pumpIOREC()
+	if got := loader.cpu.Read16(loader.iorecWriteIdx); got != iorecMaxDrainPerTick {
+		t.Fatalf("write idx=%d, want %d", got, iorecMaxDrainPerTick)
+	}
+	if got := loader.bus.Read8(SCAN_STATUS); got != 1 {
+		t.Fatalf("scan status=%d, want queued scancodes remaining", got)
+	}
+}
+
+func TestEmuTOSLoader_IORECPumpDropsOnFullRing(t *testing.T) {
+	loader, term := newIORECPumpTest(t)
+	loader.cpu.Write16(loader.iorecReadIdx, 0)
+	loader.cpu.Write16(loader.iorecWriteIdx, 3)
+	term.EnqueueScancode(0x55)
+	loader.pumpIOREC()
+	if got := loader.cpu.Read16(loader.iorecWriteIdx); got != 3 {
+		t.Fatalf("write idx=%d, want unchanged full index 3", got)
+	}
+	if got := loader.bus.Read8(SCAN_STATUS); got != 0 {
+		t.Fatalf("scan status=%d, want event dequeued and dropped", got)
+	}
+}
+
+func TestEmuTOSLoader_IORECPumpRespectsScanStatus(t *testing.T) {
+	loader, _ := newIORECPumpTest(t)
+	loader.pumpIOREC()
+	if got := loader.cpu.Read16(loader.iorecWriteIdx); got != 0 {
+		t.Fatalf("write idx=%d, want 0", got)
+	}
+	if got := loader.cpu.Read8(0x3000); got != 0 {
+		t.Fatalf("ring[0]=0x%X, want no zero injection", got)
+	}
+}
+
+func TestEmuTOSLoader_IORECFallbackBufferDerivedFromProfileTop(t *testing.T) {
+	loader, _ := newIORECPumpTest(t)
+	loader.cpu.Write32(loader.iorecBufBase, 0)
+	loader.iorecDelay = 199
+	loader.fixIORECIfNeeded()
+	want := (EmuTOS_PROFILE_TOP - 256) &^ uint32(1)
+	if got := loader.cpu.Read32(loader.iorecBufBase); got != want {
+		t.Fatalf("fallback buffer=0x%X, want 0x%X", got, want)
+	}
+}
+
 func TestEmuTOSBoot_Diagnostics(t *testing.T) {
 	romPath := "etos256us.img"
 	romData, err := os.ReadFile(romPath)

@@ -13,6 +13,8 @@ const (
 	emutosBase192 = 0xFC0000
 	emutosBaseStd = 0xE00000
 	emutosBootSP  = 0x00020000 // Above BSS end (MEMBOT), startup.S replaces with _stktop
+
+	iorecMaxDrainPerTick = 16
 )
 
 type EmuTOSLoader struct {
@@ -148,6 +150,7 @@ func (l *EmuTOSLoader) StartTimer() {
 				if l.l5Armed {
 					l.cpu.AssertInterrupt(5)
 					l.fixIORECIfNeeded()
+					l.pumpIOREC()
 				}
 				if l.gemdos != nil {
 					l.gemdos.PollDrvbits()
@@ -289,9 +292,8 @@ func (l *EmuTOSLoader) fixIORECIfNeeded() {
 		return // Already initialized by the ROM
 	}
 
-	// Allocate a 256-byte keyboard buffer at $9E000 (top of main RAM, safe location)
-	const kbdBufAddr = 0x9E000
 	const kbdBufSize = 256
+	kbdBufAddr := (l.profile.TopOfRAM - kbdBufSize) &^ uint32(1)
 
 	l.cpu.Write32(l.iorecBufBase, kbdBufAddr)
 	l.cpu.Write16(l.iorecBufSize, kbdBufSize)
@@ -299,6 +301,42 @@ func (l *EmuTOSLoader) fixIORECIfNeeded() {
 	l.cpu.Write16(l.iorecWriteIdx, 0)
 
 	fmt.Printf("EmuTOS IOREC: initialized keyboard buffer at $%06X (size=%d)\n", kbdBufAddr, kbdBufSize)
+}
+
+func (l *EmuTOSLoader) pumpIOREC() {
+	if !l.l5Armed || l.iorecBufBase == 0 || l.iorecBufSize == 0 || l.iorecReadIdx == 0 || l.iorecWriteIdx == 0 {
+		return
+	}
+	bufPtr := l.cpu.Read32(l.iorecBufBase)
+	bufSize := uint32(l.cpu.Read16(l.iorecBufSize))
+	if bufPtr == 0 || bufSize == 0 {
+		return
+	}
+
+	for i := 0; i < iorecMaxDrainPerTick; i++ {
+		status, ok := l.bus.Read8WithFault(SCAN_STATUS)
+		if !ok || status&1 == 0 {
+			return
+		}
+		scancode, ok := l.bus.Read8WithFault(SCAN_CODE)
+		if !ok || scancode == 0 {
+			return
+		}
+
+		readIdx := uint32(l.cpu.Read16(l.iorecReadIdx)) % bufSize
+		writeIdx := uint32(l.cpu.Read16(l.iorecWriteIdx)) % bufSize
+		nextWrite := (writeIdx + 1) % bufSize
+		if nextWrite == readIdx {
+			continue
+		}
+		if !l.bus.Write8WithFault(bufPtr+writeIdx, scancode) {
+			return
+		}
+		if !l.bus.Write8WithFault(l.iorecWriteIdx, uint8(nextWrite>>8)) ||
+			!l.bus.Write8WithFault(l.iorecWriteIdx+1, uint8(nextWrite)) {
+			return
+		}
+	}
 }
 
 // isValidEmuTOSVectorBound applies the explicit EmuTOS profile bounds to a

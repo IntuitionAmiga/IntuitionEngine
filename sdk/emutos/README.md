@@ -7,7 +7,7 @@ Files:
 - `ie_screen.c`: 640x480 RGBA32 framebuffer helpers
 - `ie_sound.c`: YM2149/PSG register writes at `0xF0C00`
 - `ie_mouse.c`: mouse poll helpers (`0xF0730` block)
-- `ie_kbd.c`: scancode/modifier poll helpers (`0xF0740` block)
+- `ie_kbd.c`: scancode/modifier MMIO helpers (`0xF0740` block); current IE runtime pumps scancodes into EmuTOS IOREC, so target timer code must not poll `IE_SCAN_CODE`
 - `ie_timer.c`: level 5 (200Hz) and level 4 (VBlank) hook skeleton
 
 These are intentionally thin target-side shims to be integrated into an EmuTOS source tree.
