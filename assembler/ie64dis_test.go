@@ -79,7 +79,7 @@ func TestIE64Dis_BasicDecode(t *testing.T) {
 		{
 			name:     "MOVEQ",
 			instr:    encodeInstr(dis64_MOVEQ, 7, 0, 0, 0, 0, 0xFFFFFF00),
-			contains: "moveq r7, #$FFFFFF00",
+			contains: "moveq r7, #-256",
 		},
 		{
 			name:     "LEA with displacement",

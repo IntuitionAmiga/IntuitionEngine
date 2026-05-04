@@ -79,6 +79,35 @@ const (
 	dis64_PUSH     = 0x52
 	dis64_POP      = 0x53
 	dis64_JSRI     = 0x54
+	dis64_FMOV     = 0x60
+	dis64_FLOAD    = 0x61
+	dis64_FSTORE   = 0x62
+	dis64_FADD     = 0x63
+	dis64_FSUB     = 0x64
+	dis64_FMUL     = 0x65
+	dis64_FDIV     = 0x66
+	dis64_FMOD     = 0x67
+	dis64_FABS     = 0x68
+	dis64_FNEG     = 0x69
+	dis64_FSQRT    = 0x6A
+	dis64_FINT     = 0x6B
+	dis64_FCMP     = 0x6C
+	dis64_FCVTIF   = 0x6D
+	dis64_FCVTFI   = 0x6E
+	dis64_FMOVI    = 0x6F
+	dis64_FMOVO    = 0x70
+	dis64_FSIN     = 0x71
+	dis64_FCOS     = 0x72
+	dis64_FTAN     = 0x73
+	dis64_FATAN    = 0x74
+	dis64_FLOG     = 0x75
+	dis64_FEXP     = 0x76
+	dis64_FPOW     = 0x77
+	dis64_FMOVECR  = 0x78
+	dis64_FMOVSR   = 0x79
+	dis64_FMOVCR   = 0x7A
+	dis64_FMOVSC   = 0x7B
+	dis64_FMOVCC   = 0x7C
 	dis64_DMOV     = 0x80
 	dis64_DLOAD    = 0x81
 	dis64_DSTORE   = 0x82
@@ -173,6 +202,35 @@ var opcodeNames = map[byte]string{
 	dis64_PUSH:     "push",
 	dis64_POP:      "pop",
 	dis64_JSRI:     "jsr",
+	dis64_FMOV:     "fmov",
+	dis64_FLOAD:    "fload",
+	dis64_FSTORE:   "fstore",
+	dis64_FADD:     "fadd",
+	dis64_FSUB:     "fsub",
+	dis64_FMUL:     "fmul",
+	dis64_FDIV:     "fdiv",
+	dis64_FMOD:     "fmod",
+	dis64_FABS:     "fabs",
+	dis64_FNEG:     "fneg",
+	dis64_FSQRT:    "fsqrt",
+	dis64_FINT:     "fint",
+	dis64_FCMP:     "fcmp",
+	dis64_FCVTIF:   "fcvtif",
+	dis64_FCVTFI:   "fcvtfi",
+	dis64_FMOVI:    "fmovi",
+	dis64_FMOVO:    "fmovo",
+	dis64_FSIN:     "fsin",
+	dis64_FCOS:     "fcos",
+	dis64_FTAN:     "ftan",
+	dis64_FATAN:    "fatan",
+	dis64_FLOG:     "flog",
+	dis64_FEXP:     "fexp",
+	dis64_FPOW:     "fpow",
+	dis64_FMOVECR:  "fmovecr",
+	dis64_FMOVSR:   "fmovsr",
+	dis64_FMOVCR:   "fmovcr",
+	dis64_FMOVSC:   "fmovsc",
+	dis64_FMOVCC:   "fmovcc",
 	dis64_DMOV:     "dmov",
 	dis64_DLOAD:    "dload",
 	dis64_DSTORE:   "dstore",
@@ -232,38 +290,7 @@ func regName(r byte) string {
 
 // crName returns the symbolic name of a control register.
 func crName(cr byte) string {
-	switch cr {
-	case 0:
-		return "cr0"
-	case 1:
-		return "cr1"
-	case 2:
-		return "cr2"
-	case 3:
-		return "cr3"
-	case 4:
-		return "cr4"
-	case 5:
-		return "cr5"
-	case 6:
-		return "cr6"
-	case 7:
-		return "cr7"
-	case 8:
-		return "cr8"
-	case 9:
-		return "cr9"
-	case 10:
-		return "cr10"
-	case 11:
-		return "cr11"
-	case 12:
-		return "cr12"
-	case 13:
-		return "cr13"
-	default:
-		return fmt.Sprintf("cr%d", cr)
-	}
+	return fmt.Sprintf("cr%d", cr)
 }
 
 // ---------------------------------------------------------------------
@@ -271,7 +298,7 @@ func crName(cr byte) string {
 // ---------------------------------------------------------------------
 
 type DecodedInstruction struct {
-	PC     uint32
+	PC     uint64
 	Raw    [8]byte
 	Opcode byte
 	Rd     byte
@@ -283,9 +310,12 @@ type DecodedInstruction struct {
 }
 
 // Decode decodes an 8-byte instruction at the given PC.
-func Decode(data []byte, pc uint32) DecodedInstruction {
+func Decode(data []byte, pc uint64) DecodedInstruction {
 	var d DecodedInstruction
 	d.PC = pc
+	if len(data) < dis64InstrSize {
+		return d
+	}
 	copy(d.Raw[:], data[:8])
 	d.Opcode = data[0]
 	byte1 := data[1]
@@ -302,10 +332,6 @@ func Decode(data []byte, pc uint32) DecodedInstruction {
 // Instruction classification helpers
 // ---------------------------------------------------------------------
 
-func isBranch(op byte) bool {
-	return op >= dis64_BRA && op <= dis64_JMP
-}
-
 func isConditionalBranch(op byte) bool {
 	return op >= dis64_BEQ && op <= dis64_BLS
 }
@@ -320,6 +346,9 @@ func isSized(op byte) bool {
 		dis64_MTCR, dis64_MFCR, dis64_ERET, dis64_TLBFLUSH, dis64_TLBINVAL,
 		dis64_SYSCALL, dis64_SMODE, dis64_SUAEN, dis64_SUADIS,
 		dis64_CAS, dis64_XCHG, dis64_FAA, dis64_FAND, dis64_FOR, dis64_FXOR:
+		return false
+	}
+	if op >= dis64_FMOV && op <= dis64_FMOVCC {
 		return false
 	}
 	if op >= dis64_DMOV && op <= dis64_FCVTDS {
@@ -351,7 +380,6 @@ func isUnaryALU(op byte) bool {
 
 // ---------------------------------------------------------------------
 // FormatInstruction formats a single decoded instruction as a string.
-// It does NOT handle multi-instruction pseudo-ops (li 64-bit).
 // Returns (hex bytes, mnemonic+operands).
 // ---------------------------------------------------------------------
 
@@ -362,7 +390,8 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 
 	name, ok := opcodeNames[d.Opcode]
 	if !ok {
-		return hexBytes, fmt.Sprintf("dc.b $%02X  ; unknown opcode", d.Opcode)
+		return hexBytes, fmt.Sprintf("dc.b $%02X, $%02X, $%02X, $%02X, $%02X, $%02X, $%02X, $%02X  ; unknown opcode",
+			d.Raw[0], d.Raw[1], d.Raw[2], d.Raw[3], d.Raw[4], d.Raw[5], d.Raw[6], d.Raw[7])
 	}
 
 	suffix := ""
@@ -433,6 +462,9 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 
 	// MOVEQ: Rd, #imm32 (sign-extend)
 	case d.Opcode == dis64_MOVEQ:
+		if int32(d.Imm32) < 0 {
+			return hexBytes, fmt.Sprintf("%s %s, #%d", mnemonic, regName(d.Rd), int32(d.Imm32))
+		}
 		return hexBytes, fmt.Sprintf("%s %s, #$%X", mnemonic, regName(d.Rd), d.Imm32)
 
 	// LEA: Rd, disp(Rs)
@@ -482,12 +514,12 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 
 	// BRA: unconditional branch
 	case d.Opcode == dis64_BRA:
-		target := uint32(int32(d.PC) + int32(d.Imm32))
+		target := uint64(int64(d.PC) + int64(int32(d.Imm32)))
 		return hexBytes, fmt.Sprintf("%s $%06X", mnemonic, target)
 
 	// Conditional branches: Rs, Rt, offset
 	case isConditionalBranch(d.Opcode):
-		target := uint32(int32(d.PC) + int32(d.Imm32))
+		target := uint64(int64(d.PC) + int64(int32(d.Imm32)))
 		// Check for pseudo-ops: compare against r0
 		if d.Rt == 0 {
 			switch d.Opcode {
@@ -509,7 +541,7 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 
 	// JSR: PC-relative
 	case d.Opcode == dis64_JSR:
-		target := uint32(int32(d.PC) + int32(d.Imm32))
+		target := uint64(int64(d.PC) + int64(int32(d.Imm32)))
 		return hexBytes, fmt.Sprintf("%s $%06X", mnemonic, target)
 
 	// JMP: register-indirect
@@ -542,34 +574,71 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 	case d.Opcode == dis64_POP:
 		return hexBytes, fmt.Sprintf("%s %s", mnemonic, regName(d.Rd))
 
+	case d.Opcode >= dis64_FMOV && d.Opcode <= dis64_FMOVCC:
+		return hexBytes, formatFPU(d, mnemonic)
+
 	case d.Opcode >= dis64_DMOV && d.Opcode <= dis64_FCVTDS:
-		fr := func(r byte) string { return fmt.Sprintf("f%d", r) }
-		switch d.Opcode {
-		case dis64_DMOV:
-			return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
-		case dis64_DLOAD, dis64_DSTORE:
-			disp := int32(d.Imm32)
-			if disp == 0 {
-				return hexBytes, fmt.Sprintf("%s %s, (%s)", mnemonic, fr(d.Rd), regName(d.Rs))
-			}
-			return hexBytes, fmt.Sprintf("%s %s, %d(%s)", mnemonic, fr(d.Rd), disp, regName(d.Rs))
-		case dis64_DADD, dis64_DSUB, dis64_DMUL, dis64_DDIV, dis64_DMOD:
-			return hexBytes, fmt.Sprintf("%s %s, %s, %s", mnemonic, fr(d.Rd), fr(d.Rs), fr(d.Rt))
-		case dis64_DABS, dis64_DNEG, dis64_DSQRT, dis64_DINT:
-			return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
-		case dis64_DCMP:
-			return hexBytes, fmt.Sprintf("%s %s, %s, %s", mnemonic, regName(d.Rd), fr(d.Rs), fr(d.Rt))
-		case dis64_DCVTIF:
-			return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), regName(d.Rs))
-		case dis64_DCVTFI:
-			return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, regName(d.Rd), fr(d.Rs))
-		case dis64_FCVTSD, dis64_FCVTDS:
-			return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
-		}
-		return hexBytes, fmt.Sprintf("%s ???", mnemonic)
+		return hexBytes, formatFPU(d, mnemonic)
 
 	default:
 		return hexBytes, fmt.Sprintf("%s ???", mnemonic)
+	}
+}
+
+func formatFPU(d DecodedInstruction, mnemonic string) string {
+	fr := func(r byte) string { return fmt.Sprintf("f%d", r) }
+	switch d.Opcode {
+	case dis64_FMOV:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
+	case dis64_FLOAD, dis64_FSTORE:
+		disp := int32(d.Imm32)
+		if disp == 0 {
+			return fmt.Sprintf("%s %s, (%s)", mnemonic, fr(d.Rd), regName(d.Rs))
+		}
+		return fmt.Sprintf("%s %s, %d(%s)", mnemonic, fr(d.Rd), disp, regName(d.Rs))
+	case dis64_FADD, dis64_FSUB, dis64_FMUL, dis64_FDIV, dis64_FMOD, dis64_FPOW:
+		return fmt.Sprintf("%s %s, %s, %s", mnemonic, fr(d.Rd), fr(d.Rs), fr(d.Rt))
+	case dis64_FABS, dis64_FNEG, dis64_FSQRT, dis64_FINT,
+		dis64_FSIN, dis64_FCOS, dis64_FTAN, dis64_FATAN, dis64_FLOG, dis64_FEXP:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
+	case dis64_FCMP:
+		return fmt.Sprintf("%s %s, %s, %s", mnemonic, regName(d.Rd), fr(d.Rs), fr(d.Rt))
+	case dis64_FCVTIF:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), regName(d.Rs))
+	case dis64_FCVTFI:
+		return fmt.Sprintf("%s %s, %s", mnemonic, regName(d.Rd), fr(d.Rs))
+	case dis64_FMOVI:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), regName(d.Rs))
+	case dis64_FMOVO:
+		return fmt.Sprintf("%s %s, %s", mnemonic, regName(d.Rd), fr(d.Rs))
+	case dis64_FMOVECR:
+		return fmt.Sprintf("%s %s, #%d", mnemonic, fr(d.Rd), d.Imm32)
+	case dis64_FMOVSR, dis64_FMOVCR:
+		return fmt.Sprintf("%s %s", mnemonic, regName(d.Rd))
+	case dis64_FMOVSC, dis64_FMOVCC:
+		return fmt.Sprintf("%s %s", mnemonic, regName(d.Rs))
+	case dis64_DMOV:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
+	case dis64_DLOAD, dis64_DSTORE:
+		disp := int32(d.Imm32)
+		if disp == 0 {
+			return fmt.Sprintf("%s %s, (%s)", mnemonic, fr(d.Rd), regName(d.Rs))
+		}
+		return fmt.Sprintf("%s %s, %d(%s)", mnemonic, fr(d.Rd), disp, regName(d.Rs))
+	case dis64_DADD, dis64_DSUB, dis64_DMUL, dis64_DDIV, dis64_DMOD:
+		return fmt.Sprintf("%s %s, %s, %s", mnemonic, fr(d.Rd), fr(d.Rs), fr(d.Rt))
+	case dis64_DABS, dis64_DNEG, dis64_DSQRT, dis64_DINT:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
+	case dis64_DCMP:
+		return fmt.Sprintf("%s %s, %s, %s", mnemonic, regName(d.Rd), fr(d.Rs), fr(d.Rt))
+	case dis64_DCVTIF:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), regName(d.Rs))
+	case dis64_DCVTFI:
+		return fmt.Sprintf("%s %s, %s", mnemonic, regName(d.Rd), fr(d.Rs))
+	case dis64_FCVTSD, dis64_FCVTDS:
+		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
+	default:
+		return fmt.Sprintf("%s ???", mnemonic)
 	}
 }
 
@@ -578,11 +647,11 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 // It recognizes multi-instruction pseudo-ops like li (move.l + movt).
 // ---------------------------------------------------------------------
 
-func Disassemble(data []byte, baseAddr uint32) []string {
+func Disassemble(data []byte, baseAddr uint64) []string {
 	var lines []string
 	offset := 0
 	for offset+dis64InstrSize <= len(data) {
-		pc := baseAddr + uint32(offset)
+		pc := baseAddr + uint64(offset)
 		d := Decode(data[offset:], pc)
 
 		// Check for li pseudo-op: move.l Rd, #lo32 followed by movt Rd, #hi32
@@ -618,14 +687,15 @@ func Disassemble(data []byte, baseAddr uint32) []string {
 	// Handle trailing bytes that don't form a complete instruction
 	if offset < len(data) {
 		remaining := len(data) - offset
-		pc := baseAddr + uint32(offset)
-		var hexParts []string
+		pc := baseAddr + uint64(offset)
+		var hexParts, dcParts []string
 		for i := 0; i < remaining; i++ {
 			hexParts = append(hexParts, fmt.Sprintf("%02X", data[offset+i]))
+			dcParts = append(dcParts, fmt.Sprintf("$%02X", data[offset+i]))
 		}
 		lines = append(lines, fmt.Sprintf("$%06X: %-23s    dc.b %s  ; trailing bytes",
 			pc, strings.Join(hexParts, " "),
-			strings.Join(hexParts, ", $")))
+			strings.Join(dcParts, ", ")))
 	}
 
 	return lines
@@ -636,45 +706,11 @@ func Disassemble(data []byte, baseAddr uint32) []string {
 // ---------------------------------------------------------------------
 
 func main() {
-	baseAddr := uint32(0x1000)
-	args := os.Args[1:]
-
-	if len(args) == 0 {
+	filename, baseAddr, err := parseArgs(os.Args[1:])
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "IE64 Disassembler\n")
 		fmt.Fprintf(os.Stderr, "Usage: ie64dis [-base $ADDR] file.ie64\n")
-		os.Exit(1)
-	}
-
-	// Parse arguments
-	var filename string
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "-base":
-			if i+1 >= len(args) {
-				fmt.Fprintf(os.Stderr, "Error: -base requires an address argument\n")
-				os.Exit(1)
-			}
-			i++
-			addrStr := args[i]
-			// Strip leading $ for hex
-			if strings.HasPrefix(addrStr, "$") {
-				addrStr = addrStr[1:]
-			} else if strings.HasPrefix(addrStr, "0x") || strings.HasPrefix(addrStr, "0X") {
-				addrStr = addrStr[2:]
-			}
-			val, err := strconv.ParseUint(addrStr, 16, 32)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: invalid base address '%s': %v\n", args[i], err)
-				os.Exit(1)
-			}
-			baseAddr = uint32(val)
-		default:
-			filename = args[i]
-		}
-	}
-
-	if filename == "" {
-		fmt.Fprintf(os.Stderr, "Error: no input file specified\n")
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -693,4 +729,44 @@ func main() {
 	for _, line := range lines {
 		fmt.Println(line)
 	}
+}
+
+func parseArgs(args []string) (string, uint64, error) {
+	baseAddr := uint64(0x1000)
+	var filename string
+
+	if len(args) == 0 {
+		return "", 0, fmt.Errorf("no input file specified")
+	}
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-base":
+			if i+1 >= len(args) {
+				return "", 0, fmt.Errorf("-base requires an address argument")
+			}
+			i++
+			addrStr := args[i]
+			if strings.HasPrefix(addrStr, "$") {
+				addrStr = addrStr[1:]
+			} else if strings.HasPrefix(addrStr, "0x") || strings.HasPrefix(addrStr, "0X") {
+				addrStr = addrStr[2:]
+			}
+			val, err := strconv.ParseUint(addrStr, 16, 64)
+			if err != nil {
+				return "", 0, fmt.Errorf("invalid base address %q: %w", args[i], err)
+			}
+			baseAddr = val
+		default:
+			if filename != "" {
+				return "", 0, fmt.Errorf("multiple input files specified: %q and %q", filename, args[i])
+			}
+			filename = args[i]
+		}
+	}
+
+	if filename == "" {
+		return "", 0, fmt.Errorf("no input file specified")
+	}
+	return filename, baseAddr, nil
 }

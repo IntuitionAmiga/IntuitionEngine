@@ -339,6 +339,11 @@ The IE64 FPU provides native single-precision (`f*`) and double-precision
 - `d6` = `f12:f13`
 - `d7` = `f14:f15`
 
+The standalone `ie64dis` tool and the in-monitor IE64 disassembler both render
+PC-relative branch and call targets using the full 64-bit PC, including code
+located at or above 4 GiB. `fcmp` and `dcmp` disassemble with the integer
+destination register first: `fcmp rd, fs, ft` and `dcmp rd, fs, ft`.
+
 All `d*` mnemonics require even-numbered FP operands in assembly. Writing a
 double clobbers both halves of the pair.
 
@@ -1608,7 +1613,7 @@ frame from a previous run.
 | 0x54   | `$54`  | JSR      | Subroutine | (Rs) / disp(Rs) |
 | 0x60   | `$60`  | FMOV     | FPU | fd, fs |
 | 0x61   | `$61`  | FLOAD    | FPU | fd, disp(rs) |
-| 0x62   | `$62`  | FSTORE   | FPU | fs, disp(rd) |
+| 0x62   | `$62`  | FSTORE   | FPU | fs, disp(rs) |
 | 0x63   | `$63`  | FADD     | FPU | fd, fs, ft |
 | 0x64   | `$64`  | FSUB     | FPU | fd, fs, ft |
 | 0x65   | `$65`  | FMUL     | FPU | fd, fs, ft |
@@ -1680,14 +1685,16 @@ frame from a previous run.
 |-------|----------|
 | `$01-$04` | Data Movement |
 | `$10-$11` | Memory Access |
-| `$20-$27` | Arithmetic |
-| `$30-$37` | Logical / Shift |
+| `$20-$2A` | Arithmetic |
+| `$30-$3D` | Logical / Shift |
 | `$40-$49` | Branches |
 | `$50-$54` | Subroutine / Stack |
 | `$60-$7C` | Floating Point (FPU) |
+| `$80-$90` | Double-precision Floating Point (FPU64) |
 | `$E0-$E5` | System |
 | `$E6-$EC` | MMU |
 | `$ED-$F2` | Atomic Memory Operations |
+| `$F3-$F4` | Supervisor-user-access controls |
 
 Any opcode not listed above causes the CPU to print an error message and halt execution.
 

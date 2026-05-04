@@ -151,7 +151,8 @@ func ie64FormatInstruction(d ie64Decoded) (string, string) {
 
 	name, ok := ie64OpcodeNames[d.Opcode]
 	if !ok {
-		return hexBytes, fmt.Sprintf("dc.b $%02X", d.Opcode)
+		return hexBytes, fmt.Sprintf("dc.b $%02X, $%02X, $%02X, $%02X, $%02X, $%02X, $%02X, $%02X  ; unknown opcode",
+			d.Raw[0], d.Raw[1], d.Raw[2], d.Raw[3], d.Raw[4], d.Raw[5], d.Raw[6], d.Raw[7])
 	}
 
 	suffix := ""
@@ -247,11 +248,11 @@ func ie64FormatInstruction(d ie64Decoded) (string, string) {
 		return hexBytes, fmt.Sprintf("%s %s, %s", mnemonic, ie64RegName(d.Rd), ie64RegName(d.Rs))
 
 	case d.Opcode == OP_BRA:
-		target := uint64(int64(int32(d.PC)) + int64(int32(d.Imm32)))
+		target := uint64(int64(d.PC) + int64(int32(d.Imm32)))
 		return hexBytes, fmt.Sprintf("%s $%06X", mnemonic, target)
 
 	case ie64IsConditionalBranch(d.Opcode):
-		target := uint64(int64(int32(d.PC)) + int64(int32(d.Imm32)))
+		target := uint64(int64(d.PC) + int64(int32(d.Imm32)))
 		if d.Rt == 0 {
 			switch d.Opcode {
 			case OP_BEQ:
@@ -271,7 +272,7 @@ func ie64FormatInstruction(d ie64Decoded) (string, string) {
 		return hexBytes, fmt.Sprintf("%s %s, %s, $%06X", mnemonic, ie64RegName(d.Rs), ie64RegName(d.Rt), target)
 
 	case d.Opcode == OP_JSR64:
-		target := uint64(int64(int32(d.PC)) + int64(int32(d.Imm32)))
+		target := uint64(int64(d.PC) + int64(int32(d.Imm32)))
 		return hexBytes, fmt.Sprintf("%s $%06X", mnemonic, target)
 
 	case d.Opcode == OP_JMP:
@@ -333,7 +334,7 @@ func ie64FormatFPU(d ie64Decoded, mnemonic string) string {
 		OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP:
 		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
 	case OP_FCMP:
-		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rs), fr(d.Rt))
+		return fmt.Sprintf("%s %s, %s, %s", mnemonic, ie64RegName(d.Rd), fr(d.Rs), fr(d.Rt))
 	case OP_FCVTIF:
 		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), ie64RegName(d.Rs))
 	case OP_FCVTFI:
@@ -405,7 +406,7 @@ func disassembleIE64(readMem func(addr uint64, size int) []byte, addr uint64, co
 			line.IsBranch = true
 			switch {
 			case d.Opcode == OP_BRA || ie64IsConditionalBranch(d.Opcode) || d.Opcode == OP_JSR64:
-				line.BranchTarget = uint64(int64(int32(d.PC)) + int64(int32(d.Imm32)))
+				line.BranchTarget = uint64(int64(d.PC) + int64(int32(d.Imm32)))
 			default:
 				// JMP/JSR_IND with register - target unknown
 				line.BranchTarget = 0
