@@ -40,7 +40,7 @@ func init() {
 }
 
 type EbitenOutput struct {
-	running            bool
+	running            atomic.Bool
 	window             *ebiten.Image
 	width              int
 	height             int
@@ -51,10 +51,12 @@ type EbitenOutput struct {
 	windowedH          int
 	frameBuffer        []byte
 	bufferMutex        sync.RWMutex
-	frameCount         uint64
+	frameCount         atomic.Uint64
 	refreshRate        int
 	vsyncChan          chan struct{}
+	lifecycleMu        sync.Mutex
 	done               chan struct{}
+	doneOnce           *sync.Once
 	keyHandler         func(byte)
 	scrollHandler      func(int)
 	copyHandler        func()
@@ -95,41 +97,57 @@ func NewEbitenOutput() (VideoOutput, error) {
 		refreshRate:   60,
 		vsyncChan:     make(chan struct{}, 1),
 		done:          make(chan struct{}),
+		doneOnce:      &sync.Once{},
 		showStatusBar: true,
 	}, nil
 }
 
 func (eo *EbitenOutput) Start() error {
-	if eo.running {
+	if !eo.running.CompareAndSwap(false, true) {
 		return nil
 	}
-	eo.bufferMutex.Lock()
-	eo.done = make(chan struct{})
-	eo.bufferMutex.Unlock()
-	eo.running = true
-	ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
+	var err error
+	defer func() {
+		if err != nil {
+			eo.running.Store(false)
+			eo.lifecycleMu.Lock()
+			done := eo.done
+			once := eo.doneOnce
+			eo.lifecycleMu.Unlock()
+			closeVideoDoneOnce(done, once)
+		}
+	}()
+
+	eo.lifecycleMu.Lock()
+	done := make(chan struct{})
+	once := &sync.Once{}
+	eo.done = done
+	eo.doneOnce = once
+	eo.lifecycleMu.Unlock()
+
+	eo.bufferMutex.RLock()
+	windowedW := eo.windowedW
+	windowedH := eo.windowedH
+	hideSystemCursor := eo.hideSystemCursor
+	fullscreen := eo.fullscreen
+	eo.bufferMutex.RUnlock()
+	ebiten.SetWindowSize(windowedW, windowedH)
 	ebiten.SetWindowTitle("Intuition Engine (c) 2024 - 2026 Zayn Otley")
 	ebiten.SetWindowResizable(true)
 	ebiten.SetRunnableOnUnfocused(true)
 	ebiten.SetVsyncEnabled(true)
-	if eo.hideSystemCursor {
+	if hideSystemCursor {
 		ebiten.SetCursorMode(ebiten.CursorModeHidden)
 	}
-	if eo.fullscreen {
+	if fullscreen {
 		ebiten.SetFullscreen(true)
 	}
+	drainVSync(eo.vsyncChan)
 
 	go func() {
 		defer func() {
-			eo.running = false
-			eo.bufferMutex.RLock()
-			done := eo.done
-			eo.bufferMutex.RUnlock()
-			select {
-			case <-done:
-			default:
-				close(done)
-			}
+			eo.running.Store(false)
+			closeVideoDoneOnce(done, once)
 		}()
 		if err := ebiten.RunGame(eo); err != nil {
 			fmt.Printf("Ebiten error: %v\n", err)
@@ -137,12 +155,20 @@ func (eo *EbitenOutput) Start() error {
 	}()
 
 	// Wait for first Draw call to ensure Ebiten is ready
-	<-eo.vsyncChan
+	err = waitForFirstVideoFrame(eo.vsyncChan, done, 2*time.Second)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
 func (eo *EbitenOutput) Stop() error {
-	eo.running = false
+	eo.running.Store(false)
+	eo.lifecycleMu.Lock()
+	done := eo.done
+	once := eo.doneOnce
+	eo.lifecycleMu.Unlock()
+	closeVideoDoneOnce(done, once)
 	return nil
 }
 
@@ -151,9 +177,9 @@ func (eo *EbitenOutput) Close() error {
 }
 
 func (eo *EbitenOutput) Done() <-chan struct{} {
-	eo.bufferMutex.RLock()
+	eo.lifecycleMu.Lock()
 	done := eo.done
-	eo.bufferMutex.RUnlock()
+	eo.lifecycleMu.Unlock()
 	return done
 }
 
@@ -171,6 +197,10 @@ func (eo *EbitenOutput) Clear(color uint32) error {
 
 func (eo *EbitenOutput) UpdateFrame(data []byte) error {
 	eo.bufferMutex.Lock()
+	if err := validateFrameSize(eo.width, eo.height, data); err != nil {
+		eo.bufferMutex.Unlock()
+		return err
+	}
 	copy(eo.frameBuffer, data)
 	eo.bufferMutex.Unlock()
 	return nil
@@ -219,6 +249,8 @@ func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
 }
 
 func (eo *EbitenOutput) GetDisplayConfig() DisplayConfig {
+	eo.bufferMutex.RLock()
+	defer eo.bufferMutex.RUnlock()
 	return DisplayConfig{
 		Width:       eo.width,
 		Height:      eo.height,
@@ -231,14 +263,19 @@ func (eo *EbitenOutput) GetDisplayConfig() DisplayConfig {
 }
 
 func (eo *EbitenOutput) WaitForVSync() error {
-	<-eo.vsyncChan
-	// print current FPS to console
-	fmt.Printf("FPS: %0.2f\n", ebiten.CurrentFPS())
-	return nil
+	eo.lifecycleMu.Lock()
+	done := eo.done
+	eo.lifecycleMu.Unlock()
+	select {
+	case <-eo.vsyncChan:
+		return nil
+	case <-done:
+		return fmt.Errorf("EbitenOutput: stopped")
+	}
 }
 
 func (eo *EbitenOutput) GetFrameCount() uint64 {
-	return eo.frameCount
+	return eo.frameCount.Load()
 }
 
 func (eo *EbitenOutput) GetRefreshRate() int {
@@ -261,7 +298,7 @@ func (eo *EbitenOutput) GetSnapshot() (FrameSnapshot, error) {
 }
 
 func (eo *EbitenOutput) IsStarted() bool {
-	return eo.running
+	return eo.running.Load()
 }
 
 func (eo *EbitenOutput) SupportsPalette() bool {
@@ -277,17 +314,27 @@ func (eo *EbitenOutput) SupportsSprites() bool {
 }
 
 func (eo *EbitenOutput) UpdateRegion(x, y, width, height int, pixels []byte) error {
-	if x < 0 || y < 0 || x+width > eo.width || y+height > eo.height {
+	if width <= 0 || height <= 0 {
+		return fmt.Errorf("region dimensions out of bounds")
+	}
+	if x < 0 || y < 0 {
 		return fmt.Errorf("region coordinates out of bounds")
 	}
-
 	eo.bufferMutex.Lock()
+	defer eo.bufferMutex.Unlock()
+	if x > eo.width || y > eo.height || width > eo.width-x || height > eo.height-y {
+		return fmt.Errorf("region coordinates out of bounds")
+	}
+	want := width * height * 4
+	if len(pixels) < want {
+		return fmt.Errorf("region pixel buffer too small: got %d bytes, want at least %d", len(pixels), want)
+	}
+
 	for dy := range height {
 		dstOffset := ((y+dy)*eo.width + x) * 4
 		srcOffset := dy * width * 4
 		copy(eo.frameBuffer[dstOffset:], pixels[srcOffset:srcOffset+width*4])
 	}
-	eo.bufferMutex.Unlock()
 	return nil
 }
 
@@ -301,7 +348,7 @@ func (eo *EbitenOutput) Update() error {
 	}
 
 	// Normal update path when window is open
-	if !eo.running {
+	if !eo.running.Load() {
 		return ebiten.Termination
 	}
 
@@ -449,21 +496,33 @@ func (eo *EbitenOutput) SetMiddleMouseHandler(fn func()) {
 }
 
 func (eo *EbitenOutput) HideSystemCursor() {
+	eo.bufferMutex.Lock()
 	eo.hideSystemCursor = true
-	if eo.running {
-		ebiten.SetCursorMode(ebiten.CursorModeHidden)
+	running := eo.running.Load()
+	noSoftwareCursor := eo.noSoftwareCursor
+	if !noSoftwareCursor && eo.cursorImage == nil {
+		eo.initSoftwareCursorLocked()
 	}
-	if !eo.noSoftwareCursor {
-		eo.initSoftwareCursor()
+	eo.bufferMutex.Unlock()
+	if running {
+		ebiten.SetCursorMode(ebiten.CursorModeHidden)
 	}
 }
 
 func (eo *EbitenOutput) DisableSoftwareCursor() {
+	eo.bufferMutex.Lock()
+	defer eo.bufferMutex.Unlock()
 	eo.noSoftwareCursor = true
 }
 
 // initSoftwareCursor creates a classic Amiga-style arrow cursor image.
 func (eo *EbitenOutput) initSoftwareCursor() {
+	eo.bufferMutex.Lock()
+	defer eo.bufferMutex.Unlock()
+	eo.initSoftwareCursorLocked()
+}
+
+func (eo *EbitenOutput) initSoftwareCursorLocked() {
 	// 16x16 Amiga-style arrow cursor: 1=black outline, 2=white fill, 3=orange highlight
 	const curW, curH = 16, 16
 	cursor := [curH][curW]byte{
@@ -1017,7 +1076,7 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	// When monitor is active, draw the overlay instead
 	if eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive() {
 		eo.monitorOverlay.Draw(screen)
-		eo.frameCount++
+		eo.frameCount.Add(1)
 		select {
 		case eo.vsyncChan <- struct{}{}:
 		default:
@@ -1026,7 +1085,7 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	}
 	if eo.luaOverlay != nil && eo.luaOverlay.IsActive() {
 		eo.luaOverlay.Draw(screen)
-		eo.frameCount++
+		eo.frameCount.Add(1)
 		select {
 		case eo.vsyncChan <- struct{}{}:
 		default:
@@ -1034,31 +1093,33 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 		return
 	}
 
+	eo.bufferMutex.Lock()
 	if eo.window == nil {
 		eo.window = ebiten.NewImage(eo.width, eo.height)
 	}
-
-	eo.bufferMutex.RLock()
 	eo.window.WritePixels(eo.frameBuffer)
 	showStatusBar := eo.showStatusBar
-	eo.bufferMutex.RUnlock()
+	cursorImage := eo.cursorImage
+	noSoftwareCursor := eo.noSoftwareCursor
+	termMMIO := eo.termMMIO
+	eo.bufferMutex.Unlock()
 	screen.DrawImage(eo.window, nil)
 
 	// Draw software cursor when the system cursor is hidden (EmuTOS mode).
 	// AROS draws its own Intuition cursor in VRAM, so skip when noSoftwareCursor is set.
-	if eo.cursorImage != nil && eo.termMMIO != nil && !eo.noSoftwareCursor {
-		mx := float64(eo.termMMIO.mouseX.Load())
-		my := float64(eo.termMMIO.mouseY.Load())
+	if cursorImage != nil && termMMIO != nil && !noSoftwareCursor {
+		mx := float64(termMMIO.mouseX.Load())
+		my := float64(termMMIO.mouseY.Load())
 		op := &ebiten.DrawImageOptions{}
 		op.GeoM.Translate(mx, my)
-		screen.DrawImage(eo.cursorImage, op)
+		screen.DrawImage(cursorImage, op)
 	}
 
 	if showStatusBar {
 		eo.drawRuntimeStatusBar(screen)
 	}
 
-	eo.frameCount++
+	eo.frameCount.Add(1)
 	select {
 	case eo.vsyncChan <- struct{}{}:
 	default:
@@ -1066,6 +1127,8 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 }
 
 func (eo *EbitenOutput) Layout(_, _ int) (int, int) {
+	eo.bufferMutex.RLock()
+	defer eo.bufferMutex.RUnlock()
 	return eo.width, eo.height
 }
 

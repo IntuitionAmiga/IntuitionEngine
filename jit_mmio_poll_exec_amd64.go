@@ -139,12 +139,13 @@ func (cpu *M68KCPU) tryFastM68KMMIOPollLoop() (bool, uint32) {
 		return false, 0
 	}
 	pattern := M68KPollPattern
+	pattern.Load = m68kSizeToPollLoadShape(size)
 	pattern.Test = PollTestBitTest
 	pattern.AddressIsMMIOPredicate = func(a uint32) bool {
 		return mb.IsIOAddress(a)
 	}
 	match := TryFastMMIOPoll([]PollInstr{
-		{Kind: PollInstrLoad, LoadShape: PollLoad16, LoadAddr: addr},
+		{Kind: PollInstrLoad, LoadShape: m68kSizeToPollLoadShape(size), LoadAddr: addr},
 		{Kind: PollInstrTest, TestShape: PollTestBitTest},
 		{Kind: PollInstrBranchBackward},
 	}, &pattern)
@@ -192,6 +193,19 @@ func (cpu *M68KCPU) tryFastM68KMMIOPollLoop() (bool, uint32) {
 		}
 	}
 	return true, uint32(iterations * 3)
+}
+
+func m68kSizeToPollLoadShape(size int) PollLoadShape {
+	switch size {
+	case M68K_SIZE_BYTE:
+		return PollLoad8
+	case M68K_SIZE_WORD:
+		return PollLoad16
+	case M68K_SIZE_LONG:
+		return PollLoad32
+	default:
+		return PollLoad16
+	}
 }
 
 func poll6502PageIsMMIO(adapter *Bus6502Adapter, addr uint16) bool {

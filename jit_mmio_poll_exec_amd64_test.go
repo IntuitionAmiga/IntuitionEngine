@@ -127,6 +127,43 @@ func TestM68KJITFastMMIOPollLoopPreservesUpperBitsForByteAndWord(t *testing.T) {
 	}
 }
 
+func TestM68KPollFastPath_LoadSizes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		moveOp uint16
+		tstOp  uint16
+	}{
+		{name: "word", moveOp: 0x3039, tstOp: 0x4A40},
+		{name: "byte", moveOp: 0x1039, tstOp: 0x4A00},
+		{name: "long", moveOp: 0x2039, tstOp: 0x4A80},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := NewMachineBus()
+			reads := 0
+			bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 {
+				reads++
+				return 0
+			}, nil)
+			cpu := NewM68KCPU(bus)
+			cpu.PC = 0x1000
+			cpu.running.Store(true)
+			mem := bus.GetMemory()
+			binary.BigEndian.PutUint16(mem[0x1000:], tc.moveOp)
+			binary.BigEndian.PutUint32(mem[0x1002:], 0x000F0008)
+			binary.BigEndian.PutUint16(mem[0x1006:], tc.tstOp)
+			binary.BigEndian.PutUint16(mem[0x1008:], 0x66F6)
+
+			matched, _ := cpu.tryFastM68KMMIOPollLoop()
+			if !matched {
+				t.Fatal("expected M68K MMIO poll loop to match")
+			}
+			if reads != 1 {
+				t.Fatalf("reads = %d, want 1", reads)
+			}
+		})
+	}
+}
+
 func Test6502JITFastMMIOPollLoop_AND_BNE(t *testing.T) {
 	bus := NewMachineBus()
 	reads := 0

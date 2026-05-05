@@ -79,7 +79,9 @@ type VideoOutput interface {
 	// Core display operations - kept minimal
 	SetDisplayConfig(config DisplayConfig) error
 	GetDisplayConfig() DisplayConfig
-	UpdateFrame(buffer []byte) error // Takes raw RGBA pixels only
+	// UpdateFrame takes raw RGBA pixels only. The buffer length must equal
+	// width*height*4 bytes for the current display config.
+	UpdateFrame(buffer []byte) error
 
 	// Timing and synchronization
 	WaitForVSync() error
