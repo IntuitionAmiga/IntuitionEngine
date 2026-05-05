@@ -32,6 +32,18 @@ assembler/untracked/
 .tmp*
 .cache*
 
+# Local agent/tool state
+.claude/
+.codex
+
+# Local Go/build outputs
+/*.test
+/*.test.exe
+/*.exe
+/*.o
+/all_cpu_bench.tar
+/assembler/assembler
+
 # Release artifacts
 *.AppImage
 appimagetool*
