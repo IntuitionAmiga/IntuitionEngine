@@ -1,6 +1,6 @@
 # Intuition Engine
 
-![68k VGA SID Copper Cube](68k VGA SID Copper Cube.png)
+![68k VGA SID Copper Cube](68k-VGA-SID-Copper-Cube.png)
 
 Intuition Engine is a retro computer that never existed but I wish had! :)
 
