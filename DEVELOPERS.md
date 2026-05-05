@@ -1,8 +1,9 @@
 # Intuition Engine Developer Guide
 
-Build, test, and contribute guide for the Intuition Engine retro hardware emulator.
+Build, test, and contribution guide for the Intuition Engine retro hardware emulator.
 
-For the full technical reference (CPU architectures, memory map, hardware registers, sound/video systems), see [README.md](README.md).
+For the project overview, see [README.md](README.md).
+For technical references, see the focused documents under [sdk/docs](sdk/docs/).
 For the SDK developer package, see [sdk/README.md](sdk/README.md).
 
 ---
@@ -503,7 +504,7 @@ Reference results on Intel Core i5-8365U @ 1.60 GHz (fast interpreter + x86-64 J
 | Branch | 187 MIPS | 1,008 MIPS | 5.4x |
 | Mixed | 186 MIPS | 1,508 MIPS | 8.1x |
 
-The fast interpreter itself is roughly 1.8-2.3x faster than the legacy generic interpreter that preceded it — see `bench/README.md` for the pprof-driven before/after comparison and `bench/interp_{baseline,final}.pprof` for captured CPU profiles. The Call benchmark has the lowest JIT speedup because JSR/RTS trigger a block exit on every call; see [sdk/docs/6502_JIT.md](sdk/docs/6502_JIT.md) for details.
+The fast interpreter itself is roughly 1.8-2.3x faster than the legacy generic interpreter that preceded it. See `bench/README.md` for the pprof-driven before/after comparison and `bench/interp_{baseline,final}.pprof` for captured CPU profiles. The Call benchmark has the lowest JIT speedup because JSR/RTS trigger a block exit on every call; see [sdk/docs/6502_JIT.md](sdk/docs/6502_JIT.md) for details.
 
 #### Portable benchmark binary
 
@@ -514,7 +515,7 @@ For running the benchmarks on another machine without a Go toolchain, use the tw
 # headless + novulkan, -trimpath, stripped link flags). Both Interpreter
 # AND JIT benchmarks run in the static binary because the JIT trampoline
 # (jit_call.go) dispatches through runtime.asmcgocall instead of
-# runtime.cgocall — asmcgocall has no iscgo guard and is available in
+# runtime.cgocall. asmcgocall has no iscgo guard and is available in
 # CGO_ENABLED=0 builds.
 ./build_6502_benchmarks.sh              # produces ./6502_bench.test (~13 MiB)
 
@@ -528,7 +529,7 @@ tar czf 6502_bench.tar.gz 6502_bench.test run_6502_bench_report.sh
 tar xzf 6502_bench.tar.gz && ./run_6502_bench_report.sh
 ```
 
-`run_6502_bench_report.sh` is bash + awk only — no Python, no Go, no codebase dependency. The friend unpacks the tarball and runs one script to see both Interpreter and JIT columns side by side plus a JIT/Interpreter speedup row.
+`run_6502_bench_report.sh` is bash + awk only, with no Python, no Go, and no codebase dependency. The friend unpacks the tarball and runs one script to see both Interpreter and JIT columns side by side plus a JIT/Interpreter speedup row.
 
 #### Profile-Guided Optimization (evaluated, not adopted)
 

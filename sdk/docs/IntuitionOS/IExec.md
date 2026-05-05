@@ -1274,7 +1274,7 @@ M11.5 is a freeze milestone, not a feature milestone. After M11 the userland is 
 **Documentation:**
 
 - This file's section 5.11 "Exec Boundary" adds the boundary statement, the syscall admission rule, the classification table (mirrors `iexec.inc` annotations), the `SYS_MAP_IO` allowlist impurity acknowledgement, the "nucleus is disciplined not closed" list of acceptable future additions, the OpenLibrary rationale, and the console.handler MMIO ownership change.
-- `README.md` § 18 IntuitionOS: M11.5 status block replaces M11.
+- Root `README.md`: links to this IExec reference instead of carrying the IntuitionOS status blocks inline.
 
 **TDD discipline:**
 

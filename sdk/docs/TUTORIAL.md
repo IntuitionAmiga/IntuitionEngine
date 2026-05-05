@@ -1482,7 +1482,7 @@ The demo runs at 60 FPS with VBlank synchronisation.
 
 # Further Reading
 
-- **README.md** - Complete system reference documentation
+- **README.md** - Project overview and links to the focused reference docs
 - **sdk/include/ie32.inc** - IE32 hardware definitions
 - **sdk/include/ie68.inc** - M68K hardware definitions and macros
 - **sdk/include/ie80.inc** - Z80 hardware definitions and macros
