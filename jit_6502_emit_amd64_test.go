@@ -1968,8 +1968,7 @@ func TestJIT6502_AMD64_BidirectionalPatching(t *testing.T) {
 	for _, slot := range blockA.chainSlots {
 		if slot.targetPC == 0x0610 && slot.patchAddr != 0 {
 			// Read the JMP rel32 displacement at patchAddr
-			p := (*[4]byte)(unsafe.Pointer(slot.patchAddr))
-			disp := int32(uint32(p[0]) | uint32(p[1])<<8 | uint32(p[2])<<16 | uint32(p[3])<<24)
+			disp := mustExecRel32(t, slot.patchAddr)
 			target := uintptr(int64(slot.patchAddr) + 4 + int64(disp))
 			if target == blockB.chainEntry {
 				foundPatched = true

@@ -95,31 +95,54 @@ func (em *ExecMem) Used() int {
 	return em.used
 }
 
-func (em *ExecMem) execToWritable(execAddr uintptr) (uintptr, bool) {
-	if len(em.mem) == 0 {
-		return 0, false
+func (em *ExecMem) execBytes(execAddr uintptr, size int) ([]byte, bool) {
+	if len(em.mem) == 0 || size < 0 {
+		return nil, false
 	}
 	base := uintptr(unsafe.Pointer(&em.mem[0]))
-	if execAddr < base || execAddr >= base+uintptr(len(em.mem)) {
-		return 0, false
+	if execAddr < base {
+		return nil, false
 	}
-	return execAddr, true
+	offset := execAddr - base
+	if offset > uintptr(len(em.mem)) || uintptr(size) > uintptr(len(em.mem))-offset {
+		return nil, false
+	}
+	return em.mem[offset : offset+uintptr(size)], true
 }
 
-func lookupWritable(execAddr uintptr) uintptr {
+func (em *ExecMem) writableBytes(execAddr uintptr, size int) ([]byte, uintptr, bool) {
+	b, ok := em.execBytes(execAddr, size)
+	if !ok {
+		return nil, 0, false
+	}
+	return b, execAddr, true
+}
+
+func lookupWritableBytes(execAddr uintptr, size int) ([]byte, uintptr, bool) {
 	execMemsMu.RLock()
 	defer execMemsMu.RUnlock()
 	for _, em := range execMems {
-		if addr, ok := em.execToWritable(execAddr); ok {
-			return addr
+		if b, addr, ok := em.writableBytes(execAddr, size); ok {
+			return b, addr, true
 		}
 	}
-	return 0
+	return nil, 0, false
+}
+
+func lookupExecBytes(execAddr uintptr, size int) ([]byte, bool) {
+	execMemsMu.RLock()
+	defer execMemsMu.RUnlock()
+	for _, em := range execMems {
+		if b, ok := em.execBytes(execAddr, size); ok {
+			return b, true
+		}
+	}
+	return nil, false
 }
 
 func PatchRel32At(patchAddr, targetAddr uintptr) {
-	writableAddr := lookupWritable(patchAddr)
-	if writableAddr == 0 {
+	p, _, ok := lookupWritableBytes(patchAddr, 4)
+	if !ok {
 		return
 	}
 	if err := jitPrepareForWrite(); err != nil {
@@ -132,7 +155,6 @@ func PatchRel32At(patchAddr, targetAddr uintptr) {
 	}()
 
 	disp := int32(targetAddr - (patchAddr + 4))
-	p := (*[4]byte)(unsafe.Pointer(writableAddr))
 	p[0] = byte(disp)
 	p[1] = byte(disp >> 8)
 	p[2] = byte(disp >> 16)

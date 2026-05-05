@@ -113,36 +113,65 @@ func (em *ExecMem) Used() int {
 	return em.used
 }
 
-func (em *ExecMem) execToWritable(execAddr uintptr) (uintptr, bool) {
-	if len(em.exec) == 0 {
-		return 0, false
+func (em *ExecMem) execBytes(execAddr uintptr, size int) ([]byte, bool) {
+	if len(em.exec) == 0 || size < 0 {
+		return nil, false
 	}
 	execBase := uintptr(unsafe.Pointer(&em.exec[0]))
-	if execAddr < execBase || execAddr >= execBase+uintptr(len(em.exec)) {
-		return 0, false
+	if execAddr < execBase {
+		return nil, false
 	}
 	offset := execAddr - execBase
-	return uintptr(unsafe.Pointer(&em.writable[offset])), true
+	if offset > uintptr(len(em.exec)) || uintptr(size) > uintptr(len(em.exec))-offset {
+		return nil, false
+	}
+	return em.exec[offset : offset+uintptr(size)], true
 }
 
-func lookupWritable(execAddr uintptr) uintptr {
+func (em *ExecMem) writableBytes(execAddr uintptr, size int) ([]byte, uintptr, bool) {
+	if len(em.exec) == 0 || size < 0 {
+		return nil, 0, false
+	}
+	execBase := uintptr(unsafe.Pointer(&em.exec[0]))
+	if execAddr < execBase {
+		return nil, 0, false
+	}
+	offset := execAddr - execBase
+	if offset > uintptr(len(em.exec)) || uintptr(size) > uintptr(len(em.exec))-offset {
+		return nil, 0, false
+	}
+	writableAddr := uintptr(unsafe.Pointer(&em.writable[offset]))
+	return em.writable[offset : offset+uintptr(size)], writableAddr, true
+}
+
+func lookupWritableBytes(execAddr uintptr, size int) ([]byte, uintptr, bool) {
 	execMemsMu.RLock()
 	defer execMemsMu.RUnlock()
 	for _, em := range execMems {
-		if addr, ok := em.execToWritable(execAddr); ok {
-			return addr
+		if b, addr, ok := em.writableBytes(execAddr, size); ok {
+			return b, addr, true
 		}
 	}
-	return 0
+	return nil, 0, false
+}
+
+func lookupExecBytes(execAddr uintptr, size int) ([]byte, bool) {
+	execMemsMu.RLock()
+	defer execMemsMu.RUnlock()
+	for _, em := range execMems {
+		if b, ok := em.execBytes(execAddr, size); ok {
+			return b, true
+		}
+	}
+	return nil, false
 }
 
 func PatchRel32At(patchAddr, targetAddr uintptr) {
-	writableAddr := lookupWritable(patchAddr)
-	if writableAddr == 0 {
+	p, writableAddr, ok := lookupWritableBytes(patchAddr, 4)
+	if !ok {
 		return
 	}
 	disp := int32(targetAddr - (patchAddr + 4))
-	p := (*[4]byte)(unsafe.Pointer(writableAddr))
 	p[0] = byte(disp)
 	p[1] = byte(disp >> 8)
 	p[2] = byte(disp >> 16)

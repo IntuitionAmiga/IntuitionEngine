@@ -789,8 +789,7 @@ func TestM68KJIT_CodeCachePatchChains(t *testing.T) {
 	// Verify the displacement was patched correctly
 	// Expected: target - (patchAddr + 4)
 	expectedDisp := int32(blockB.chainEntry) - int32(patchAddr+4)
-	patchBytes := (*[4]byte)(unsafe.Pointer(patchAddr))
-	gotDisp := int32(patchBytes[0]) | int32(patchBytes[1])<<8 | int32(patchBytes[2])<<16 | int32(patchBytes[3])<<24
+	gotDisp := mustExecRel32(t, patchAddr)
 	if gotDisp != expectedDisp {
 		t.Errorf("patched displacement: got %d, want %d", gotDisp, expectedDisp)
 	}

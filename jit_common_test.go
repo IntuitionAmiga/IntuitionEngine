@@ -6,7 +6,6 @@ package main
 
 import (
 	"testing"
-	"unsafe"
 )
 
 // ===========================================================================
@@ -435,8 +434,7 @@ func TestCodeCache_PatchChainsTo(t *testing.T) {
 	cc.PatchChainsTo(0x2000, targetEntry)
 
 	// Verify the displacement was patched
-	p := (*[4]byte)(unsafe.Pointer(block.chainSlots[0].patchAddr))
-	disp := int32(uint32(p[0]) | uint32(p[1])<<8 | uint32(p[2])<<16 | uint32(p[3])<<24)
+	disp := mustExecRel32(t, block.chainSlots[0].patchAddr)
 	actualTarget := uintptr(int64(block.chainSlots[0].patchAddr) + 4 + int64(disp))
 	if actualTarget != targetEntry {
 		t.Errorf("patched target = 0x%X, want 0x%X", actualTarget, targetEntry)
@@ -483,8 +481,7 @@ func TestCodeCache_UnpatchChainsInRange(t *testing.T) {
 	cc.UnpatchChainsInRange(0x2000, 0x2100)
 
 	// The JMP should now point to patchAddr+4 (the byte right after the displacement)
-	p := (*[4]byte)(unsafe.Pointer(patchAddr))
-	disp := int32(uint32(p[0]) | uint32(p[1])<<8 | uint32(p[2])<<16 | uint32(p[3])<<24)
+	disp := mustExecRel32(t, patchAddr)
 	actualTarget := uintptr(int64(patchAddr) + 4 + int64(disp))
 	expected := patchAddr + 4 // unchained fallback = next instruction
 	if actualTarget != expected {
@@ -550,8 +547,7 @@ func TestCodeCache_UnpatchChainsInRange_CrossPage(t *testing.T) {
 	}
 
 	// Verify A's chain slot was unpatched (points to unchained fallback)
-	p := (*[4]byte)(unsafe.Pointer(patchAddr))
-	disp := int32(uint32(p[0]) | uint32(p[1])<<8 | uint32(p[2])<<16 | uint32(p[3])<<24)
+	disp := mustExecRel32(t, patchAddr)
 	actualTarget := uintptr(int64(patchAddr) + 4 + int64(disp))
 	expected := patchAddr + 4 // unchained fallback
 	if actualTarget != expected {

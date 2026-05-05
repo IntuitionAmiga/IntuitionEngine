@@ -35,7 +35,7 @@ func (em *ExecMem) Used() int {
 	return em.used
 }
 
-func lookupWritable(execAddr uintptr) uintptr { return 0 }
+func lookupExecBytes(execAddr uintptr, size int) ([]byte, bool) { return nil, false }
 
 func PatchRel32At(patchAddr, targetAddr uintptr) {}
 

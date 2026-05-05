@@ -291,7 +291,7 @@ func TestExecMem_ExecViewReadsReflectWritableWrites(t *testing.T) {
 		t.Fatalf("Write failed: %v", err)
 	}
 
-	got := (*[6]byte)(unsafe.Pointer(execAddr))
+	got := mustExecBytes(t, execAddr, len(code))
 	for i := range code {
 		if got[i] != code[i] {
 			t.Errorf("exec view byte[%d] = 0x%02X, want 0x%02X (same physical pages)",
@@ -317,11 +317,8 @@ func TestPatchRel32At_WritesThroughWritableView(t *testing.T) {
 	targetExec := execAddr + 100
 	PatchRel32At(patchExecAddr, targetExec)
 
-	execBytes := (*[4]byte)(unsafe.Pointer(patchExecAddr))
-	disp := int32(uint32(execBytes[0]) |
-		uint32(execBytes[1])<<8 |
-		uint32(execBytes[2])<<16 |
-		uint32(execBytes[3])<<24)
+	execBytes := mustExecBytes(t, patchExecAddr, 4)
+	disp := mustExecRel32(t, patchExecAddr)
 	wantDisp := int32(targetExec - (patchExecAddr + 4))
 	if disp != wantDisp {
 		t.Errorf("disp through exec view = %d, want %d", disp, wantDisp)
