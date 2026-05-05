@@ -199,6 +199,14 @@ See `sdk/examples/asm/rotozoomer_gem.asm` for a complete GEM application that op
 - Timer IRQ goroutines are pause-safe: monitor freeze (`cpu.Running()==false`) skips ticks but keeps goroutines alive.
 - On resume, timer/vblank assertions continue.
 
+## Test Coverage Notes
+
+- `TestEmuTOS_MenuClick` is currently skipped: EmuTOS hits Line-F/illegal instruction during boot before `gl_mntree` is populated, making the menu-click assertion unreachable. Reframe in two parts when investigating: (1) `TestEmuTOS_BootsToDesktop` — assert no exception during boot + `gl_mntree != 0`; (2) UI-input simulation — gate behind `videolong` tag once boot is reliable.
+
+## Copper Bad-MOVE Policy
+
+`COPPER MOVE <addr>, <data>` with `addr < 0xA0000` is a runtime fault (`?FC ERROR`). Policy is **halt-on-error**: program execution aborts at the offending statement, the Copper list is NOT advanced, and any subsequent `COPPER END` in the program never runs. Authors writing Copper lists should validate addresses before the MOVE statement, not rely on a trailing END to be emitted.
+
 ## Troubleshooting
 
 - `make emutos` fails with missing ROM:

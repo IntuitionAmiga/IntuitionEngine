@@ -1817,23 +1817,23 @@ clean-testdata:
 .PHONY: test-harte
 test-harte: testdata-harte
 	@echo "Running Tom Harte 68000 tests..."
-	@$(GO) test -tags headless -v -run TestHarte68000 -timeout 30m -count=1
+	@IE_HARTE_LONG=1 $(GO) test -tags headless -v -run TestHarte68000 -timeout 30m -count=1
 
 # Run M68K tests in short mode (sampling)
 .PHONY: test-harte-short
 test-harte-short: testdata-harte
 	@echo "Running Tom Harte 68000 tests (short mode)..."
-	@$(GO) test -tags headless -v -short -run TestHarte68000 -timeout 5m -count=1
+	@IE_HARTE_LONG=1 $(GO) test -tags headless -v -short -run TestHarte68000 -timeout 5m -count=1
 
 # Run x86 tests with Tom Harte 8088 test suite
 test-x86-harte: testdata-x86
 	@echo "Running Tom Harte 8088 tests..."
-	@$(GO) test -tags headless -v -run TestHarte8086 -timeout 30m -count=1
+	@IE_HARTE_LONG=1 $(GO) test -tags headless -v -run TestHarte8086 -timeout 30m -count=1
 
 # Run x86 tests in short mode (sampling)
 test-x86-harte-short: testdata-x86
 	@echo "Running Tom Harte 8088 tests (short mode)..."
-	@$(GO) test -tags headless -v -short -run TestHarte8086 -timeout 5m -count=1
+	@IE_HARTE_LONG=1 $(GO) test -tags headless -v -short -run TestHarte8086 -timeout 5m -count=1
 
 # Install desktop entry and MIME type for file association
 .PHONY: install-desktop-entry

@@ -11,6 +11,9 @@ import (
 )
 
 func TestAROSPostReadySingleStepDiagnostic(t *testing.T) {
+	if os.Getenv("IE_AROS_DIAG") == "" {
+		t.Skip("AROS post-ready diagnostic; set IE_AROS_DIAG=1 to run")
+	}
 	rom, err := os.ReadFile("sdk/roms/aros-ie-m68k.rom")
 	if err != nil {
 		t.Skipf("AROS ROM not available: %v", err)

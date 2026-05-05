@@ -91,7 +91,7 @@ func TestX86JIT_SegmentOverride_FSAccess(t *testing.T) {
 		case <-done:
 		case <-time.After(2 * time.Second):
 			cpu.running.Store(false)
-			<-done
+			waitDoneWithGuard(t, done)
 			t.Fatal("timed out")
 		}
 		return cpu
@@ -150,7 +150,7 @@ func TestX86JIT_SegmentOverride_GSAccess(t *testing.T) {
 		case <-done:
 		case <-time.After(2 * time.Second):
 			cpu.running.Store(false)
-			<-done
+			waitDoneWithGuard(t, done)
 			t.Fatal("timed out")
 		}
 		return cpu

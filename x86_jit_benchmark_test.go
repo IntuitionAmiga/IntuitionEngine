@@ -547,7 +547,7 @@ func TestX86JIT_BenchCall_Correctness(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("JIT timed out")
 	}
 

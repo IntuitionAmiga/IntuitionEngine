@@ -3074,7 +3074,7 @@ func TestIE64_TimerInterrupt_ERETModel(t *testing.T) {
 	go func() { cpu.Execute(); close(done) }()
 	time.Sleep(50 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	cause := binary.LittleEndian.Uint64(cpu.memory[kernDataBase:])
 	if cause != FAULT_TIMER {
@@ -3170,7 +3170,7 @@ func TestIE64_FAULT_TIMER_CauseCode(t *testing.T) {
 	go func() { cpu.Execute(); close(done) }()
 	time.Sleep(50 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if cpu.faultCause != FAULT_TIMER {
 		t.Fatalf("faultCause = %d, want %d", cpu.faultCause, FAULT_TIMER)

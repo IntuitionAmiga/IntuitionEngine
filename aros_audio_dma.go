@@ -64,8 +64,8 @@ func NewArosAudioDMA(bus *MachineBus, sc *SoundChip, cpu *M68KCPU) (*ArosAudioDM
 		return nil, pb.Err
 	}
 	top := pb.TopOfRAM
-	if memLen := uint32(len(bus.memory)); top == 0 || top > memLen {
-		top = memLen
+	if top == 0 {
+		top = uint32(len(bus.memory))
 	}
 	return &ArosAudioDMA{
 		bus:        bus,
@@ -179,7 +179,16 @@ func (dma *ArosAudioDMA) TickSample() {
 		// profile changes do not silently widen AROS audio DMA.
 		addr := c.lptr + c.pos
 		if addr < dma.profileTop {
-			sample := *(*byte)(unsafe.Pointer(uintptr(dma.memBase) + uintptr(addr)))
+			var sample byte
+			if uint64(addr) < uint64(len(dma.bus.memory)) {
+				// Fast path: address within the legacy bus.memory slice.
+				sample = *(*byte)(unsafe.Pointer(uintptr(dma.memBase) + uintptr(addr)))
+			} else {
+				// Slow path: high backing (e.g. SparseBacking for AROS 2 GiB).
+				// ReadPhys8 routes through the bound Backing for addresses
+				// above the legacy slice; bus.Read8 would zero-fill them.
+				sample = dma.bus.ReadPhys8(uint64(addr))
+			}
 			dma.setFlexDACLocked(ch, float32(int8(sample))/128.0, c.lvol)
 		} else {
 			c.active = false

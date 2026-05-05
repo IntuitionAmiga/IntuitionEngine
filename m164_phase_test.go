@@ -127,7 +127,7 @@ func m164BootAndResetToDosTask(t *testing.T) (*ie64TestRig, shellTaskLayout) {
 	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(2 * time.Second)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	for slot := uint32(0); slot < maxTasks; slot++ {
 		state := rig.cpu.memory[kernDataBase+kdTCBBase+slot*tcbStride+tcbStateOff]
@@ -220,7 +220,7 @@ func m164RunPrivateASLRSelectorFromDosTask(t *testing.T, rig *ie64TestRig, layou
 	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(1500 * time.Millisecond)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	return binary.LittleEndian.Uint64(mem[layout.dataPhys+0x300:]), binary.LittleEndian.Uint64(mem[layout.dataPhys+0x308:])
 }
@@ -420,7 +420,7 @@ func TestIExec_M164_ASLRImageBaseSelectorDeniedToUserTasks(t *testing.T) {
 	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(1500 * time.Millisecond)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	dataPhys := m164TaskPhysOrFatal(t, rig.cpu.memory, 0, dataVA)
 	if got := binary.LittleEndian.Uint64(rig.cpu.memory[dataPhys:]); got != 0 {
@@ -493,7 +493,7 @@ func TestIExec_M164_BootRuntimeTasksUseChosenImageBases(t *testing.T) {
 	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(300 * time.Millisecond)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	output := term.DrainOutput()
 	if !strings.Contains(output, "IntuitionOS 1.16.7") {

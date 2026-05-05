@@ -70,7 +70,7 @@ func x86SIBHarness(t *testing.T, code []byte) (interp, jit *CPU_X86) {
 		case <-done:
 		case <-time.After(2 * time.Second):
 			cpu.running.Store(false)
-			<-done
+			waitDoneWithGuard(t, done)
 			t.Fatal("execution timed out")
 		}
 		return cpu

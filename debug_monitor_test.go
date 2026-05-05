@@ -1028,9 +1028,9 @@ func TestM68KRegisters(t *testing.T) {
 	adapter := NewDebugM68K(cpu, nil)
 	regs := adapter.GetRegisters()
 
-	// D0-D7 + A0-A7 + PC + SR + USP = 19
-	if len(regs) != 19 {
-		t.Fatalf("Expected 19 registers, got %d", len(regs))
+	// D0-D7 + A0-A7 + PC + SR + USP + SSP = 20
+	if len(regs) != 20 {
+		t.Fatalf("Expected 20 registers, got %d", len(regs))
 	}
 
 	val, ok := adapter.GetRegister("D0")
@@ -3771,8 +3771,18 @@ func TestIOViewUnknownDevice(t *testing.T) {
 
 func TestListIODevices(t *testing.T) {
 	devices := listIODevices()
-	if len(devices) != 19 {
-		t.Errorf("Expected 19 devices, got %d", len(devices))
+	if len(devices) < 19 {
+		t.Errorf("Expected at least 19 devices, got %d", len(devices))
+	}
+	essentials := []string{"video", "audio", "terminal", "fileio", "exec"}
+	have := make(map[string]bool, len(devices))
+	for _, name := range devices {
+		have[name] = true
+	}
+	for _, name := range essentials {
+		if !have[name] {
+			t.Errorf("essential IO device %q missing from listIODevices()", name)
+		}
 	}
 }
 

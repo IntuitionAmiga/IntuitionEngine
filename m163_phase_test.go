@@ -206,7 +206,7 @@ func TestIExec_M163_BootstrapRejectsDosLibraryWithoutASLRManifestFlag(t *testing
 	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(2 * time.Second)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	output := term.DrainOutput()
 	if !strings.Contains(output, "BOOT FAIL") {
@@ -441,7 +441,7 @@ func m163RunDosRunHostFixture(t *testing.T, image []byte, command string, args s
 
 	time.Sleep(3 * time.Second)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	dataBase := findShellTaskDataBase(t, rig.cpu.memory)
 	return rig, term, dataBase

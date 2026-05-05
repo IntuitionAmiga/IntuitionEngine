@@ -149,7 +149,7 @@ func TestIExec_M1621_OpenDeviceCloseDeviceViaExecLibraryIPC(t *testing.T) {
 	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(2 * time.Second)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	scratch = uint32(taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStackBase) + 0x100)
 	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+56:]); got != 0xCAFE {
@@ -260,7 +260,7 @@ func TestIExec_M1621_OpenDeviceRejectsNonZeroNamePadding(t *testing.T) {
 	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(500 * time.Millisecond)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	scratch = uint32(taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStackBase) + 0x180)
 	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch+24:]); got != 0xCAFE {

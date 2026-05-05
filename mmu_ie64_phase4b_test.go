@@ -481,7 +481,7 @@ func TestPhase4d_DispatchActuallyRoutesMMUWorkloadThroughMMUCompiler(t *testing.
 	case <-done:
 	case <-time.After(2 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("ExecuteJIT did not halt within 2s — block decode likely wrong, but the dispatch invariant should still have fired")
 	}
 

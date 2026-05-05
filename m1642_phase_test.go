@@ -235,7 +235,7 @@ func TestIExec_M1642_ShellResidentCommandListsInventoryAndShowsUsage(t *testing.
 	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(12 * time.Second)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 	output := term.DrainOutput()
 	if !strings.Contains(output, "BEFORE") || !strings.Contains(output, "AFTER") {
 		t.Fatalf("shell injected ECHO commands did not print output=%q", output[:min(len(output), 500)])
@@ -271,7 +271,7 @@ func TestIExec_M1642_ResidentCommandDOSRunMutatesEligibleLibrary(t *testing.T) {
 	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(5 * time.Second)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 	term.DrainOutput()
 
 	idx, ok := m16FindModuleRowByName(rig.cpu.memory, "dos.library")
@@ -428,7 +428,7 @@ func runM1642ListResidentInventoryClient(t *testing.T, client *m161Task0ClientRi
 	w(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	resetM161Task0ClientState(client)
-	runRigForDuration(client.rig, 300*time.Millisecond)
+	runRigForDuration(t, client.rig, 300*time.Millisecond)
 	if got := binary.LittleEndian.Uint64(mem[client.datap+offSentinel:]); got != 0xCAFE {
 		output := client.term.DrainOutput()
 		t.Fatalf("inventory client did not finish: sentinel=%#x output=%q", got, output[:min(len(output), 800)])

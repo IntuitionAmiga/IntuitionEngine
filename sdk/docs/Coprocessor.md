@@ -39,6 +39,12 @@ Monitor registers are at `COPROC_EXT_BASE = 0xF23B0` through `COPROC_EXT_END = 0
 
 Write `COPROC_CPU_TYPE` before reading `COPROC_RING_DEPTH` or `COPROC_WORKER_UPTIME`. If the selected type is invalid, the manager falls back to the first running worker.
 
+## Worker Visibility Window
+
+`COPROC_WORKER_STATE` reports a bit per live worker (bit `n` = `EXEC_TYPE_n` worker exists). `computeWorkerState` reaps dead workers *before* reporting, so the bit is only set while the worker goroutine is still scheduled. A worker binary that halts on entry (e.g. `OP_HALT64` as first instruction) may be reaped before any subsequent poll observes it: there is no "ever-existed" latch.
+
+To probe creation, load a worker that stays alive long enough for the poll — a single-instruction self-loop (`OP_BRA` with displacement `0`, since IE64 BRA displacements are relative to the current instruction PC) or a busy-wait on a host-set MMIO flag is sufficient. Tests asserting "worker visible after creation" must use a non-halting binary.
+
 ## Command Flow
 
 1. Write `COPROC_CPU_TYPE` and `COPROC_NAME_PTR`, then write `COPROC_CMD_START`.

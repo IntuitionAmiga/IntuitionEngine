@@ -62,7 +62,7 @@ func x86REPHarness(t *testing.T, code []byte, esi, edi, ecx uint32, eax uint32, 
 		case <-done:
 		case <-time.After(2 * time.Second):
 			cpu.running.Store(false)
-			<-done
+			waitDoneWithGuard(t, done)
 			t.Fatal("execution timed out")
 		}
 		return cpu
@@ -219,7 +219,7 @@ func TestX86JIT_REPE_CMPSB_Slice4(t *testing.T) {
 		case <-done:
 		case <-time.After(2 * time.Second):
 			cpu.running.Store(false)
-			<-done
+			waitDoneWithGuard(t, done)
 			t.Fatal("timed out")
 		}
 		return cpu

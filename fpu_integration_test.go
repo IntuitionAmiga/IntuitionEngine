@@ -348,11 +348,12 @@ func TestFPU_FMOVEM_ExtendedRoundTrip(t *testing.T) {
 	}
 
 	opcode := uint16((2 << 3) | 0) // (A0)
-	cpu.execFMOVEM(opcode, 0x00FF) // to memory, FP0-FP7
+	// cmdWord direction (bit 13): 0 = EA → FP regs (load), 1 = FP regs → EA (store).
+	cpu.execFMOVEM(opcode, 0x20FF) // store: FP0-FP7 → memory
 	for i := range 8 {
 		cpu.FPU.SetFP64(i, 0)
 	}
-	cpu.execFMOVEM(opcode, 0x20FF) // from memory, FP0-FP7
+	cpu.execFMOVEM(opcode, 0x00FF) // load: memory → FP0-FP7
 
 	for i := range 8 {
 		got := cpu.FPU.GetFP64(i)
@@ -375,12 +376,17 @@ func TestFPU_IllegalOpcodeRaisesLineF(t *testing.T) {
 	cpu.Write32(M68K_VEC_LINE_F*4, 0x4000)
 
 	invalidOps := make([]uint16, 0, 128)
+	// Architectural set per Motorola 68881 PRM Table 6-2 (reg-to-reg ops).
+	// Drift between this set and fpuOpTable is the bug we want to catch in
+	// either direction; do NOT auto-derive from fpuOpTable.
 	valid := map[uint16]bool{
-		0x00: true, 0x01: true, 0x02: true, 0x03: true, 0x04: true, 0x09: true, 0x0A: true,
-		0x0C: true, 0x0D: true, 0x0E: true, 0x0F: true, 0x10: true, 0x11: true, 0x12: true,
-		0x14: true, 0x15: true, 0x16: true, 0x18: true, 0x19: true, 0x1A: true, 0x1C: true,
-		0x1D: true, 0x1E: true, 0x1F: true, 0x20: true, 0x21: true, 0x22: true, 0x23: true,
-		0x24: true, 0x25: true, 0x26: true, 0x27: true, 0x28: true, 0x38: true, 0x3A: true,
+		0x00: true, 0x01: true, 0x02: true, 0x03: true, 0x04: true, 0x06: true,
+		0x08: true, 0x09: true, 0x0A: true, 0x0C: true, 0x0D: true, 0x0E: true,
+		0x0F: true, 0x10: true, 0x11: true, 0x12: true, 0x14: true, 0x15: true,
+		0x16: true, 0x18: true, 0x19: true, 0x1A: true, 0x1C: true, 0x1D: true,
+		0x1E: true, 0x1F: true, 0x20: true, 0x21: true, 0x22: true, 0x23: true,
+		0x24: true, 0x25: true, 0x26: true, 0x27: true, 0x28: true, 0x38: true,
+		0x3A: true,
 	}
 	for op := range uint16(128) {
 		if !valid[op] {
@@ -397,6 +403,26 @@ func TestFPU_IllegalOpcodeRaisesLineF(t *testing.T) {
 	}
 }
 
+// TestFPU_OpTableCoverage_NoLineF asserts every populated fpuOpTable entry
+// executes without raising LINE-F. Catches table entries that lack spec
+// backing (impl→spec drift), complementing TestFPU_IllegalOpcodeRaisesLineF
+// which catches missing-from-impl ops (spec→impl drift).
+func TestFPU_OpTableCoverage_NoLineF(t *testing.T) {
+	cpu := setupFPUTestCPU()
+	cpu.SR = M68K_SR_S
+	cpu.Write32(M68K_VEC_LINE_F*4, 0x4000)
+	for op, fn := range fpuOpTable {
+		if fn == nil {
+			continue
+		}
+		cpu.PC = 0x2000
+		cpu.execFPURegToReg(uint16(op))
+		if cpu.PC == 0x4000 {
+			t.Fatalf("populated op 0x%02X raised LINE_F (table entry lacks spec backing)", op)
+		}
+	}
+}
+
 func TestFPU_FMOVECR_AfterJumpTable(t *testing.T) {
 	cpu := setupFPUTestCPU()
 	cases := []struct {
@@ -409,8 +435,10 @@ func TestFPU_FMOVECR_AfterJumpTable(t *testing.T) {
 		{0x31, math.Ln10},
 	}
 	for i, tc := range cases {
+		// FMOVECR is decoded in execFPUGeneral, not execFPURegToReg.
+		// Encoding: cmdWord bits 15:10 = 010111 (= 0x5C00), bits 9:7 = dst FPn, bits 6:0 = ROM addr.
 		cmdWord := uint16(0x5C00 | (uint16(i&7) << 7) | uint16(tc.rom))
-		cpu.execFPURegToReg(cmdWord)
+		cpu.execFPUGeneral(0, cmdWord)
 		if got := cpu.FPU.GetFP64(i & 7); math.Abs(got-tc.want) > 1e-15 {
 			t.Fatalf("rom 0x%02X got %v want %v", tc.rom, got, tc.want)
 		}

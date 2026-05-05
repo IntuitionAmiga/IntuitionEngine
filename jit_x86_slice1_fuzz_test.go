@@ -355,7 +355,7 @@ func x86Slice1FuzzRunInterp(t *testing.T, cpu *CPU_X86, ctx string) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatalf("interpreter execution timed out (%s)", ctx)
 	}
 }
@@ -377,7 +377,7 @@ func x86Slice1FuzzRunJIT(t *testing.T, cpu *CPU_X86) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("JIT execution timed out")
 	}
 }

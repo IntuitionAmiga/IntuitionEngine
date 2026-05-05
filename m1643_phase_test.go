@@ -159,7 +159,7 @@ func TestIExec_M1643_DOSRunLaunchesCommandFromResidentCacheAfterHostRemoval(t *t
 	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(8 * time.Second)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 	output := term.DrainOutput()
 	if strings.Contains(output, "Unknown Command") || strings.Contains(output, "GURU MEDITATION") {
 		t.Fatalf("resident cached DIR did not launch after host file removal output=%q", output[:min(len(output), 1600)])

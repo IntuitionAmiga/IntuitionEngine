@@ -234,7 +234,7 @@ func runM161GetIOSMClient(t *testing.T, client *m161Task0ClientRig, portName str
 	w(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	resetM161Task0ClientState(client)
-	runRigForDuration(client.rig, 300*time.Millisecond)
+	runRigForDuration(t, client.rig, 300*time.Millisecond)
 
 	if got := binary.LittleEndian.Uint64(mem[client.datap+offSentinel:]); got != 0xCAFE {
 		output := client.term.DrainOutput()

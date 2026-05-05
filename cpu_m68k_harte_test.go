@@ -521,6 +521,9 @@ func RunHarteTestFile(t *testing.T, filename string) {
 
 // TestHarte68000 runs all available Tom Harte tests
 func TestHarte68000(t *testing.T) {
+	if os.Getenv("IE_HARTE_LONG") == "" && !testing.Short() {
+		t.Skip("Tom Harte 68000 full suite is long-running; set IE_HARTE_LONG=1 to run (or use 'make test-harte').")
+	}
 	files, err := filepath.Glob(filepath.Join(harteTestDir, "*.json.gz"))
 	if err != nil || len(files) == 0 {
 		t.Skip("Tom Harte test files not found. Run 'make testdata-harte' to download them.")

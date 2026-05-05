@@ -11738,14 +11738,17 @@ func (cpu *M68KCPU) execFPURegToMem(opcode, cmdWord uint16) {
 func (cpu *M68KCPU) execFMOVEM(opcode, cmdWord uint16) {
 	mode := (opcode >> 3) & 0x7
 	reg := opcode & 0x7
-	dr := (cmdWord >> 13) & 0x1 // 0=EA→FP regs, 1=FP regs→EA
+	// cmdWord bit 13 routes the FMOVEM direction within the FPU decoder
+	// (execFPUGeneral case 2 vs case 3): 0 = EA → FP regs (load),
+	// 1 = FP regs → EA (store). This must stay consistent with the decoder
+	// switch in execFPUGeneral.
+	dr := (cmdWord >> 13) & 0x1
 	regList := cmdWord & 0xFF
 
-	// Calculate effective address
 	ea := cpu.GetEffectiveAddress(mode, reg)
 
 	if dr == 0 {
-		// EA → FP registers
+		// EA → FP registers (load)
 		for i := range 8 {
 			if (regList & (1 << (7 - i))) != 0 {
 				cpu.FPU.SetFromExtendedReal(i, cpu.readExtendedReal96(ea))
@@ -11753,7 +11756,7 @@ func (cpu *M68KCPU) execFMOVEM(opcode, cmdWord uint16) {
 			}
 		}
 	} else {
-		// FP registers → EA
+		// FP registers → EA (store)
 		for i := range 8 {
 			if (regList & (1 << (7 - i))) != 0 {
 				cpu.writeExtendedReal96(ea, cpu.FPU.GetExtendedReal(i))

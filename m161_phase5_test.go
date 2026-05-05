@@ -214,7 +214,7 @@ func runM161ParseManifestClient(t *testing.T, client *m161Task0ClientRig, path s
 
 	resetM161Task0ClientState(client)
 	parkM161TasksExcept(client, "dos.library")
-	runRigForDuration(client.rig, 1200*time.Millisecond)
+	runRigForDuration(t, client.rig, 1200*time.Millisecond)
 
 	var res m161ParseManifestResult
 	res.findErr = binary.LittleEndian.Uint64(mem[statePhys+offFindErr:])
@@ -353,7 +353,7 @@ func runM161ListResidentsClient(t *testing.T, client *m161Task0ClientRig) m161Li
 	w(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	resetM161Task0ClientState(client)
-	runRigForDuration(client.rig, 300*time.Millisecond)
+	runRigForDuration(t, client.rig, 300*time.Millisecond)
 
 	if got := binary.LittleEndian.Uint64(mem[client.datap+offSentinel:]); got != 0xCAFE {
 		output := client.term.DrainOutput()
@@ -427,7 +427,7 @@ func runM161PortNameByIndexClient(t *testing.T, client *m161Task0ClientRig, inde
 	w(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 
 	resetM161Task0ClientState(client)
-	runRigForDuration(client.rig, 300*time.Millisecond)
+	runRigForDuration(t, client.rig, 300*time.Millisecond)
 
 	if got := binary.LittleEndian.Uint64(mem[client.datap+offSentinel:]); got != 0xCAFE {
 		output := client.term.DrainOutput()

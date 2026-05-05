@@ -185,14 +185,14 @@ func runM68KCPUTestSuite(t *testing.T, useJIT bool) {
 				break loopJIT
 			case <-timeout:
 				cpu.running.Store(false)
-				<-done
+				waitDoneWithGuard(t, done)
 				t.Fatalf("JIT CPU test suite timed out (PC=$%08X SP=$%08X pass=%d fail=%d)",
 					cpu.PC, cpu.AddrRegs[7], cpu.Read32(ctPassCount), cpu.Read32(ctFailCount))
 			case <-ticker.C:
 				cycles += 100_000
 				if cpu.Read32(ctSuiteDone) != 0 {
 					cpu.running.Store(false)
-					<-done
+					waitDoneWithGuard(t, done)
 					break loopJIT
 				}
 				if !cpu.running.Load() {
@@ -203,7 +203,7 @@ func runM68KCPUTestSuite(t *testing.T, useJIT bool) {
 					stuckCount++
 					if stuckCount >= 300 {
 						cpu.running.Store(false)
-						<-done
+						waitDoneWithGuard(t, done)
 						t.Logf("Suite stuck at %d cases in JIT mode (PC=$%08X SP=$%08X)",
 							currentCases, cpu.PC, cpu.AddrRegs[7])
 						break loopJIT
@@ -346,7 +346,7 @@ func TestM68KCPUTest_FirstBFMemCaseJIT(t *testing.T) {
 			goto finished
 		case <-timeout:
 			cpu.running.Store(false)
-			<-done
+			waitDoneWithGuard(t, done)
 			t.Fatalf("first bf_mem JIT case timed out (PC=$%08X SP=$%08X pass=%d fail=%d)",
 				cpu.PC, cpu.AddrRegs[7], cpu.Read32(ctPassCount), cpu.Read32(ctFailCount))
 		case <-ticker.C:
@@ -413,7 +413,7 @@ func TestM68KCPUTest_LogPassHelperJIT(t *testing.T) {
 			goto finished
 		case <-timeout:
 			cpu.running.Store(false)
-			<-done
+			waitDoneWithGuard(t, done)
 			t.Fatalf("ct_log_pass JIT timed out (PC=$%08X SP=$%08X)", cpu.PC, cpu.AddrRegs[7])
 		case <-ticker.C:
 			if cpu.stopped.Load() {
@@ -484,7 +484,7 @@ func TestM68KCPUTest_FirstCHK2BInRangeCaseJIT(t *testing.T) {
 			goto finished
 		case <-timeout:
 			cpu.running.Store(false)
-			<-done
+			waitDoneWithGuard(t, done)
 			t.Fatalf("first CHK2.B in-range JIT case timed out (PC=$%08X SP=$%08X pass=%d fail=%d trap=%d vec=%d)",
 				cpu.PC, cpu.AddrRegs[7], cpu.Read32(ctPassCount), cpu.Read32(ctFailCount), cpu.Read32(ctMailbox+24), cpu.Read32(ctMailbox+28))
 		case <-ticker.C:
@@ -551,7 +551,7 @@ func TestM68KCPUTest_FirstCHK2BOutOfRangeCaseJIT(t *testing.T) {
 			goto finished
 		case <-timeout:
 			cpu.running.Store(false)
-			<-done
+			waitDoneWithGuard(t, done)
 			t.Fatalf("first CHK2.B out-of-range JIT case timed out (PC=$%08X SP=$%08X pass=%d fail=%d trap=%d vec=%d)",
 				cpu.PC, cpu.AddrRegs[7], cpu.Read32(ctPassCount), cpu.Read32(ctFailCount), cpu.Read32(ctMailbox+24), cpu.Read32(ctMailbox+28))
 		case <-ticker.C:

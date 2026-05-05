@@ -103,11 +103,18 @@ func TestIE64WorkerCreate(t *testing.T) {
 	bus, mgr := newTestBusAndManager(t)
 	defer mgr.StopAll()
 
-	// Write halt binary to a file
+	// Use a self-loop binary (BRA -8 = jump to self) instead of HALT so the
+	// worker stays alive long enough for the visibility poll. computeWorkerState
+	// reaps dead workers before reporting; a HALT-on-entry binary is reaped
+	// before the test's 10ms poll fires.
 	tmpDir := t.TempDir()
 	mgr.baseDir = tmpDir
 	binPath := filepath.Join(tmpDir, "test_ie64.ie64")
-	if err := os.WriteFile(binPath, buildIE64HaltBinary(), 0644); err != nil {
+	// IE64 BRA displacement is relative to the current instruction's PC,
+	// so disp=0 is a true single-instruction self-loop. (-8 would jump to
+	// WORKER_IE64_BASE-8, executing whatever bytes precede the worker image.)
+	selfLoop := buildIE64Instr(OP_BRA, 0, IE64_SIZE_Q, 0, 0, 0, false)
+	if err := os.WriteFile(binPath, selfLoop, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -359,7 +366,7 @@ func TestIE64CoprocMode_JIT(t *testing.T) {
 		// completed
 	case <-time.After(2 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("jitExecute did not complete within timeout")
 	}
 

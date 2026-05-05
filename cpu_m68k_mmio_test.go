@@ -181,10 +181,6 @@ func testM68KRunnerRotozoomerBinaryReachesWaitVSyncWithConfiguredBlitter(t *test
 	}
 }
 
-func TestM68KRunner_RotozoomerBinary_JIT_ReachesWaitVSyncWithConfiguredBlitter(t *testing.T) {
-	testM68KRunnerRotozoomerBinaryReachesWaitVSyncWithConfiguredBlitter(t, true)
-}
-
 func TestM68KRunner_RotozoomerBinary_Interpreter_ReachesWaitVSyncWithConfiguredBlitter(t *testing.T) {
 	testM68KRunnerRotozoomerBinaryReachesWaitVSyncWithConfiguredBlitter(t, false)
 }

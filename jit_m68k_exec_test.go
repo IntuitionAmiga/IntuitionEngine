@@ -55,7 +55,7 @@ func runM68KJITProgramWithSetup(t *testing.T, startPC uint32, setup func(*M68KCP
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("M68K JIT execution timed out")
 	}
 
@@ -144,7 +144,7 @@ func TestM68KJIT_Exec_SimpleHalt(t *testing.T) {
 	// Wait a bit then stop
 	time.Sleep(100 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if cpu.DataRegs[0] != 42 {
 		t.Errorf("D0 = %d, want 42", cpu.DataRegs[0])
@@ -237,7 +237,7 @@ func TestM68KJIT_Exec_JSR_RTS(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if cpu.DataRegs[0] != 3 {
 		t.Errorf("D0 = %d, want 3 (set after JSR return)", cpu.DataRegs[0])
@@ -371,7 +371,7 @@ func TestM68KJIT_Exec_RotatingCubeDrawLineMatchesInterpreter(t *testing.T) {
 			time.Sleep(time.Millisecond)
 		}
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		if !cpu.stopped.Load() {
 			t.Fatal("draw_line execution timed out")
 		}
@@ -462,7 +462,7 @@ func TestM68KJIT_Exec_BSR_W_RTS(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if cpu.DataRegs[0] != 3 {
 		t.Errorf("D0 = %d, want 3 (set after BSR return)", cpu.DataRegs[0])
@@ -516,7 +516,7 @@ func TestM68KJIT_Exec_BSR_W_IntoInterpreterFallbackThenRTS(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatal("BSR fallback/RTS test timed out")
@@ -571,7 +571,7 @@ func TestM68KJIT_Exec_MoveWordPredecrementPushesOntoStack(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatal("stack push test timed out")
@@ -634,7 +634,7 @@ func TestM68KJIT_Exec_MoveWordPushesThenBSRIntoFallbackThenRTS(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatal("push+bsr fallback test timed out")
@@ -727,7 +727,7 @@ func TestM68KJIT_Exec_TrapHandlerPreludeExtractsVectorWord(t *testing.T) {
 			time.Sleep(time.Millisecond)
 		}
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		if !cpu.stopped.Load() {
 			t.Fatalf("JIT trap-prelude test did not stop (PC=0x%08X SP=0x%08X)", cpu.PC, cpu.AddrRegs[7])
 		}
@@ -817,7 +817,7 @@ func TestM68KJIT_Exec_JSRHelperSkipsInlineDataViaAddqSPThenRTS(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatalf("inline-data helper test did not reach STOP (PC=0x%08X SP=0x%08X)", cpu.PC, cpu.AddrRegs[7])
@@ -907,7 +907,7 @@ func TestM68KJIT_Exec_FirstCPUSuiteBFTSTCaseMatchesInterpreter(t *testing.T) {
 			time.Sleep(time.Millisecond)
 		}
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		if !cpu.stopped.Load() {
 			t.Fatalf("JIT case did not reach STOP (PC=0x%08X)", cpu.PC)
 		}
@@ -1029,7 +1029,7 @@ func TestM68KJIT_Exec_FirstCPUSuiteCaseWithPassHelperAndBSR(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatalf("suite case + pass helper did not stop (PC=0x%08X SP=0x%08X)", cpu.PC, cpu.AddrRegs[7])
@@ -1174,7 +1174,7 @@ func TestM68KJIT_Exec_ShardDispatcherJSRIndirectMatchesSuitePattern(t *testing.T
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatalf("suite dispatcher repro did not stop (PC=0x%08X SP=0x%08X A5=0x%08X)", cpu.PC, cpu.AddrRegs[7], cpu.AddrRegs[5])
@@ -1303,7 +1303,7 @@ func TestM68KJIT_Exec_ShardPrologueJSRThenFirstCase(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatalf("shard prologue repro did not stop (PC=0x%08X SP=0x%08X)", cpu.PC, cpu.AddrRegs[7])
@@ -1363,7 +1363,7 @@ func TestM68KJIT_Exec_JSRIndirectWithSavedA5OnStack(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatalf("indirect jsr + saved a5 test did not stop (PC=0x%08X SP=0x%08X A5=0x%08X)", cpu.PC, cpu.AddrRegs[7], cpu.AddrRegs[5])
@@ -1431,7 +1431,7 @@ func TestM68KJIT_Exec_LoadShardPointerViaA5PostIncrement(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatalf("load shard pointer test did not stop (PC=0x%08X A5=0x%08X D0=0x%08X A1=0x%08X)", cpu.PC, cpu.AddrRegs[5], cpu.DataRegs[0], cpu.AddrRegs[1])
@@ -1514,7 +1514,7 @@ func TestM68KJIT_Exec_SubroutineWithMovemFrameAroundIndexedVGAPixelWrite(t *test
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatal("movem VGA subroutine test timed out")
@@ -1607,7 +1607,7 @@ func TestM68KJIT_Exec_WordStackLocalsThenMovemPixelSubroutineThenRTS(t *testing.
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatal("word locals + pixel subroutine test timed out")
@@ -1694,7 +1694,7 @@ func TestM68KJIT_Exec_DrawLineStyleNestedFramesAndLocals(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatal("draw-line style nested frame test timed out")
@@ -1761,7 +1761,7 @@ func TestM68KJIT_Exec_OuterMovemThenWordLocalsThenBSRIntoFallbackThenRTS(t *test
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if !cpu.stopped.Load() {
 		t.Fatal("outer movem + locals + bsr test timed out")
@@ -1834,7 +1834,7 @@ func TestM68KJIT_Exec_NestedBSRWithMovemFramesRestoresStack(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if got := cpu.DataRegs[0]; got != 7 {
 		t.Fatalf("D0 = %d, want 7", got)
@@ -1941,7 +1941,7 @@ func TestM68KJIT_Exec_VideoBlitterSetupSequence(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if got := video.HandleRead(BLT_SRC); got != 0x00001600 {
 		t.Fatalf("BLT_SRC = 0x%08X, want 0x00001600", got)
@@ -2002,7 +2002,7 @@ func TestM68KJIT_Exec_MoveLongAbsMaskAndStoreBack(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if got := cpu.Read32(0x880C); got != 0x00000018 {
 		t.Fatalf("memory[0x880C] = 0x%08X, want 0x00000018", got)
@@ -2059,7 +2059,7 @@ func TestM68KJIT_Exec_MoveMaskStoreThenBRA_W(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if got := cpu.Read32(0x880C); got != 0x00000018 {
 		t.Fatalf("memory[0x880C] = 0x%08X, want 0x00000018", got)
@@ -2117,7 +2117,7 @@ func TestM68KJIT_Exec_MoveByteIndexedLongIntoDn(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if got := cpu.DataRegs[5]; got != 0x7F {
 		t.Fatalf("D5 = 0x%08X, want 0x0000007F", got)
@@ -2164,7 +2164,7 @@ func TestM68KJIT_Exec_LEAAbsLongThenMoveBytePostInc(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if got := bus.Read8(0x000A0000); got != 0x01 {
 		t.Fatalf("bus[0x000A0000] = 0x%02X, want 0x01", got)
@@ -2223,7 +2223,7 @@ func TestM68KJIT_Exec_MoveByteImmediateToVGAMMIO(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if got := bus.Read8(VGA_MODE); got != VGA_MODE_13H {
 		t.Fatalf("VGA_MODE = 0x%02X, want 0x%02X", got, VGA_MODE_13H)
@@ -2285,7 +2285,7 @@ func TestM68KJIT_Exec_MoveByteDnToIndexedVGAVRAMDoesNotTouchStack(t *testing.T) 
 		time.Sleep(time.Millisecond)
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 	if !cpu.stopped.Load() {
 		t.Fatal("indexed VGA write test timed out")
 	}
@@ -2345,7 +2345,7 @@ func TestM68KJIT_Exec_DBF_MoveBytePostIncrementIntoVGAVRAM(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	for i := uint32(0); i < 4; i++ {
 		if got := bus.Read8(0x000A0000 + i); got != 0x01 {
@@ -2403,7 +2403,7 @@ func TestM68KJIT_Exec_MoveLongIndexedMappedIndexIntoDn(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if got := cpu.DataRegs[2]; got != 0x12345740 {
 		t.Fatalf("D2 = 0x%08X, want 0x12345740", got)
@@ -2456,7 +2456,7 @@ func TestM68KJIT_Exec_DBF_MoveByteImmediatePostIncrementLoop(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	for i := uint32(0); i < 1000; i++ {
 		if got := cpu.Read8(0x2000 + i); got != 0x80 {
@@ -2625,7 +2625,7 @@ func TestM68KJIT_Exec_SpilledAddressCalcAcrossMULUBail(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	const want = 0x0018C0A0
 	if got := cpu.DataRegs[4]; got != want {
@@ -2747,7 +2747,7 @@ func runM68KJITStopProgramWithSetup(t *testing.T, startPC uint32, setup func(*M6
 	case <-done:
 	case <-time.After(2 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		// Don't fatal — STOP halts in a loop, we just stop it externally
 	}
 
@@ -3011,7 +3011,7 @@ func TestM68KJIT_Exec_ChainBudgetExhaustion(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	// D0 should be large (many iterations via chaining) but execution didn't hang
 	if cpu.DataRegs[0] == 0 {
@@ -3068,7 +3068,7 @@ func TestM68KJIT_Exec_JSR_RTS_Chain(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if cpu.DataRegs[0] != 3 {
 		t.Errorf("D0 = %d, want 3 (set after JSR return)", cpu.DataRegs[0])
@@ -3188,14 +3188,14 @@ func TestM68KJIT_Exec_RTS_CacheHitWithLazyCCR(t *testing.T) {
 		select {
 		case <-deadline:
 			cpu.running.Store(false)
-			<-done
+			waitDoneWithGuard(t, done)
 			t.Fatal("RTS cache hit + lazy CCR test timed out")
 		default:
 			runtime.Gosched()
 		}
 	}
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	// ADDQ #1,D0 called 5 times (D7: 4,3,2,1,0,-1)
 	if cpu.DataRegs[0] != 5 {
@@ -3253,7 +3253,7 @@ func TestM68KJIT_Exec_RTS_IOBailRetPC(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	// D0 should be 3 (set at 0x1008, the return target after RTS)
 	if cpu.DataRegs[0] != 3 {
@@ -3328,7 +3328,7 @@ func TestM68KJIT_Exec_RTSCacheClearedOnInval(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	if cpu.DataRegs[0] != 42 {
 		t.Errorf("D0 = %d, want 42 (set in subroutine before invalidation)", cpu.DataRegs[0])

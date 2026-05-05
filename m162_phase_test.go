@@ -76,13 +76,13 @@ func TestIExec_M162_BootPublishesNonLibraryRegistryRows(t *testing.T) {
 		}
 		if all {
 			rig.cpu.running.Store(false)
-			<-done
+			waitDoneWithGuard(t, done)
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 	output := term.DrainOutput()
 	var rows []string
 	for i := uint32(0); i < kdModuleMax; i++ {
@@ -135,7 +135,7 @@ func TestIExec_M162_OpenLibraryExRejectsOnlineNonLibraryRows(t *testing.T) {
 	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(500 * time.Millisecond)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	scratch0 = uint32(taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStackBase) + 0x100)
 	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+16:]); got != 0xCAFE {
@@ -218,7 +218,7 @@ func TestIExec_M162_AddDeviceRejectsLibraryLoadingRowWithWaiters(t *testing.T) {
 	go func() { rig.cpu.Execute(); close(done) }()
 	time.Sleep(500 * time.Millisecond)
 	rig.cpu.running.Store(false)
-	<-done
+	waitDoneWithGuard(t, done)
 
 	scratch0 = uint32(taskLayoutFieldQ(rig.cpu.memory, 0, kdTaskStackBase) + 0x100)
 	if got := binary.LittleEndian.Uint64(rig.cpu.memory[scratch0+32:]); got != 0xCAFE {

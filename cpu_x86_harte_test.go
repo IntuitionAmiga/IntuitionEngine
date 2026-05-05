@@ -439,6 +439,9 @@ func RunX86HarteTestFile(t *testing.T, filename string) {
 
 // TestHarte8086 runs all available Tom Harte 8088 tests
 func TestHarte8086(t *testing.T) {
+	if os.Getenv("IE_HARTE_LONG") == "" && !testing.Short() {
+		t.Skip("Tom Harte 8086 full suite is long-running; set IE_HARTE_LONG=1 to run (or use 'make test-x86-harte').")
+	}
 	files, err := filepath.Glob(filepath.Join(x86HarteTestDir, "*.json.gz"))
 	if err != nil || len(files) == 0 {
 		t.Skip("Tom Harte 8088 test files not found. Run 'make testdata-x86' to download them.")

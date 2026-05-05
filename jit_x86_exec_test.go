@@ -48,7 +48,7 @@ func runX86JITProgram(t *testing.T, startPC uint32, code ...byte) *CPU_X86 {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("x86 JIT execution timed out")
 	}
 
@@ -84,7 +84,7 @@ func runX86InterpreterProgram(t *testing.T, startPC uint32, code ...byte) *CPU_X
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("x86 interpreter execution timed out")
 	}
 
@@ -191,7 +191,7 @@ func TestX86JIT_Exec_MMIOByteWriteFallbackFastPath(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("x86 JIT execution timed out")
 	}
 
@@ -292,7 +292,7 @@ func TestX86JIT_Exec_MMIOByteWriteFallbackRaisedNMIIsServicedBeforeNextInstructi
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("x86 JIT execution timed out")
 	}
 
@@ -627,7 +627,7 @@ func TestX86JIT_Dispatch_Enabled(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("dispatch timed out")
 	}
 
@@ -716,7 +716,7 @@ func TestX86JIT_Chain_CALL(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("timed out")
 	}
 

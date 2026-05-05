@@ -164,7 +164,10 @@ func TestHardSync_AllChannels(t *testing.T) {
 			chip.channels[slave].syncSource = nil
 
 			// Set up sync via FLEX
-			addr := FLEX_CH_BASE + uint32(slave)*FLEX_CH_STRIDE + FLEX_OFF_SYNC
+			addr, ok := flexAddrForChannel(slave, FLEX_OFF_SYNC)
+			if !ok {
+				t.Fatalf("ch %d has no FLEX address", slave)
+			}
 			chip.HandleRegisterWrite(addr, 0x80|uint32(master))
 
 			if chip.channels[slave].syncSource != chip.channels[master] {

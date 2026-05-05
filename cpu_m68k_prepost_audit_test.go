@@ -415,7 +415,9 @@ func TestM68KAudit_ExecCas_PrePost(t *testing.T) {
 		cpu.Write8(0x3800, 0x22)
 		cpu.Write8(0x3801, 0x77)
 
-		cpu.ExecCas(M68K_SIZE_BYTE, M68K_AM_AR_PRE, 0)
+		// CAS opmode encoding: 1=byte, 2=word, 3=long (NOT M68K_SIZE_* iota values).
+		// See cpu_m68k.go:1083 — opmode is extracted from instruction bits 9:8.
+		cpu.ExecCas(1, M68K_AM_AR_PRE, 0)
 
 		if cpu.AddrRegs[0] != 0x3800 {
 			t.Fatalf("A0=0x%08X want 0x00003800", cpu.AddrRegs[0])
@@ -437,7 +439,7 @@ func TestM68KAudit_ExecCas_PrePost(t *testing.T) {
 		cpu.AddrRegs[0] = 0x3801
 		cpu.Write8(0x3801, 0x22)
 
-		cpu.ExecCas(M68K_SIZE_BYTE, M68K_AM_AR_POST, 0)
+		cpu.ExecCas(1, M68K_AM_AR_POST, 0)
 
 		if cpu.AddrRegs[0] != 0x3802 {
 			t.Fatalf("A0=0x%08X want 0x00003802", cpu.AddrRegs[0])

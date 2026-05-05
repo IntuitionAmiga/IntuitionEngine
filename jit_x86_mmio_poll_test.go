@@ -55,7 +55,7 @@ func TestX86JIT_ForceNativeMMIOPoll(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("execution timed out — poll matcher likely missed pattern")
 	}
 	if cpu.EAX != 1 {

@@ -134,6 +134,17 @@ func (h *ehbasicTestHarness) execCPU() {
 
 // runCycles runs the CPU with a host timeout derived from maxCycles.
 // This is a safety bound, not an exact instruction counter.
+// waitDone bounds the wait on the CPU goroutine's done channel after
+// running.Store(false). Fails the test fast on deadlock instead of letting
+// the package timeout swallow it.
+func (h *ehbasicTestHarness) waitDone(done <-chan struct{}) {
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		h.t.Fatalf("CPU did not exit within 2s of running.Store(false) (deadlock)")
+	}
+}
+
 func (h *ehbasicTestHarness) runCycles(maxCycles int) {
 	h.cpu.running.Store(true)
 
@@ -152,7 +163,11 @@ func (h *ehbasicTestHarness) runCycles(maxCycles int) {
 		// CPU halted naturally
 	case <-time.After(timeout):
 		h.cpu.running.Store(false)
-		<-done
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			h.t.Fatalf("CPU did not exit within 2s after running.Store(false) (deadlock); cycle budget %d", maxCycles)
+		}
 		h.t.Fatalf("CPU execution timed out after %s (cycle budget %d)", timeout, maxCycles)
 	}
 }
@@ -180,7 +195,7 @@ func (h *ehbasicTestHarness) runUntilPrompt() string {
 			return allOutput.String()
 		case <-deadline:
 			h.cpu.running.Store(false)
-			<-done
+			h.waitDone(done)
 			allOutput.WriteString(h.readOutput())
 			return allOutput.String()
 		case <-ticker.C:
@@ -193,7 +208,7 @@ func (h *ehbasicTestHarness) runUntilPrompt() string {
 				strings.HasSuffix(s, "Ready\n") || strings.HasSuffix(s, "Ok\n") ||
 				strings.HasSuffix(s, "Ready\r\n") || strings.HasSuffix(s, "Ok\r\n") {
 				h.cpu.running.Store(false)
-				<-done
+				h.waitDone(done)
 				return allOutput.String()
 			}
 		}
@@ -3622,17 +3637,18 @@ func TestHW_Copper_Move_VGA_DAC(t *testing.T) {
 
 func TestHW_Copper_Move_BadAddr(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// MOVE 5, 42 - address below 0xA0000, should print ?FC ERROR and not emit MOVE
+	// MOVE 5, 42 — address below 0xA0000.
+	// Policy: bad MOVE prints ?FC ERROR and halts program execution; line 30's
+	// COPPER END never runs, so the Copper list stays empty (no MOVE, no END).
 	out, h := execStmtTestWithBus(t, asmBin,
 		"10 COPPER LIST 196608\n20 COPPER MOVE 5, 42\n30 COPPER END")
-	// Output should contain ?FC ERROR
 	if !strings.Contains(out, "?FC ERROR") {
 		t.Fatalf("COPPER MOVE bad addr: expected '?FC ERROR' in output, got %q", out)
 	}
-	// Copper list should have END at offset 0 (no MOVE emitted)
+	// Halt-on-error: nothing should be emitted into the Copper list at all.
 	w0 := readBusMem32(h, 0x30000)
-	if w0 != 0xC0000000 {
-		t.Fatalf("COPPER MOVE bad addr: expected END (0xC0000000) at list start, got 0x%08X", w0)
+	if w0 != 0 {
+		t.Fatalf("COPPER MOVE bad addr: expected empty list (0) at start (halt-on-error), got 0x%08X", w0)
 	}
 }
 
@@ -6608,7 +6624,7 @@ func execStmtTestWithVideo(t *testing.T, asmBin string, program string, maxCycle
 	case <-done:
 	case <-time.After(timeout):
 		h.cpu.running.Store(false)
-		<-done
+		h.waitDone(done)
 		t.Fatalf("CPU execution timed out after %s (cycle budget %d)", timeout, maxCycles)
 	}
 

@@ -34,7 +34,7 @@ func runJITProgram(t *testing.T, instructions ...[]byte) *CPU64 {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("JIT execution timed out")
 	}
 	return cpu
@@ -63,7 +63,7 @@ func runInterpreterProgram(t *testing.T, instructions ...[]byte) *CPU64 {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("interpreter execution timed out")
 	}
 	return cpu
@@ -128,7 +128,7 @@ func TestJIT_Reset(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("timeout")
 	}
 
@@ -290,7 +290,7 @@ func TestJIT_IOFallback_MMIO(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("JIT execution timed out")
 	}
 
@@ -396,7 +396,7 @@ func TestJIT_FCVTFI_Bail(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("timed out")
 	}
 
@@ -430,7 +430,7 @@ func TestJIT_FCVTFI_Saturate(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("timed out")
 	}
 
@@ -472,7 +472,7 @@ func TestJIT_FINT_Bail(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		cpu.running.Store(false)
-		<-done
+		waitDoneWithGuard(t, done)
 		t.Fatal("timed out")
 	}
 

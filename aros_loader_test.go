@@ -95,16 +95,30 @@ func TestAROSLoader_LoadROM_RealROMProbe(t *testing.T) {
 		t.Fatalf("LoadROM failed: %v", err)
 	}
 
-	checks := map[uint32]uint16{
-		0x0062490C: 0x0C04,
-		0x00624910: 0x226B,
-		0x00624914: 0x246B,
-		0x00624918: 0x487A,
+	// Structural checks (ROM-version-independent):
+	// (1) Reset SSP at vector 0 must be a valid stack-top in RAM (non-zero, even).
+	// (2) Reset PC at vector 1 must point inside the loaded ROM range.
+	// (3) ROM payload at the load offset must contain non-zero bytes
+	//     (sanity that the ROM body actually got mapped).
+	resetSSP := cpu.Read32(0)
+	resetPC := cpu.Read32(4)
+	if resetSSP == 0 || (resetSSP&1) != 0 {
+		t.Fatalf("reset SSP at vector 0 = 0x%08X, want non-zero even value", resetSSP)
 	}
-	for addr, want := range checks {
-		if got := cpu.Read16(addr); got != want {
-			t.Fatalf("cpu.Read16(0x%08X) = 0x%04X, want 0x%04X", addr, got, want)
+	if resetPC < arosROMBase || uint64(resetPC) >= uint64(arosROMBase)+uint64(len(rom)) {
+		t.Fatalf("reset PC at vector 1 = 0x%08X, want inside ROM [0x%08X, 0x%08X)",
+			resetPC, arosROMBase, uint64(arosROMBase)+uint64(len(rom)))
+	}
+	// Probe a small window inside the ROM body for non-zero content.
+	nonZero := false
+	for off := uint32(0x100); off < 0x200; off += 2 {
+		if cpu.Read16(arosROMBase+off) != 0 {
+			nonZero = true
+			break
 		}
+	}
+	if !nonZero {
+		t.Fatalf("ROM body at arosROMBase+0x100..0x200 is all zero; ROM not mapped")
 	}
 }
 
