@@ -221,6 +221,7 @@ func main() {
 		fullscreen  bool
 		scriptFile  string
 		noJIT       bool
+		coprocSvc   string
 	)
 
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
@@ -260,6 +261,7 @@ func main() {
 	flagSet.BoolVar(&fullscreen, "fullscreen", false, "Start in fullscreen mode")
 	flagSet.StringVar(&scriptFile, "script", "", "Run IES Lua script file after startup")
 	flagSet.BoolVar(&noJIT, "nojit", false, "Disable JIT compilation, use interpreter only")
+	registerCoprocServiceFlags(flagSet, &coprocSvc)
 	var emutosDrive string
 	flagSet.StringVar(&emutosDrive, "emutos-drive", "", "Host directory to map as GEMDOS drive U: (default: ~/)")
 	var arosDrive string
@@ -1199,6 +1201,15 @@ func main() {
 	sysBus.MapIO(COPROC_EXT_BASE, COPROC_EXT_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
 	defer coprocMgr.StopAll()
 	runtimeStatus.setCoprocManager(coprocMgr)
+	stageConfiguredCoprocService := func() {
+		if coprocSvc == "" {
+			return
+		}
+		if err := stageCoprocService(sysBus, coprocMgr, coprocSvc); err != nil {
+			fmt.Printf("Error staging coprocessor service: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	// Initialize Machine Monitor (debugger)
 	monitor := NewMachineMonitor(sysBus)
@@ -1455,6 +1466,7 @@ func main() {
 		monitor.RegisterCPU("IE32", NewDebugIE32(ie32CPU))
 
 		if startExecution {
+			stageConfiguredCoprocService()
 			videoChip.Start()
 			compositor.Start()
 			vgaEngine.StartRenderLoop()
@@ -1522,6 +1534,7 @@ func main() {
 		monitor.RegisterCPU("IE64", NewDebugIE64(ie64CPU))
 
 		if startExecution {
+			stageConfiguredCoprocService()
 			videoChip.Start()
 			compositor.Start()
 			vgaEngine.StartRenderLoop()
@@ -1560,6 +1573,7 @@ func main() {
 		monitor.RegisterCPU("M68K", NewDebugM68K(m68kCPU, m68kRunner))
 
 		if startExecution {
+			stageConfiguredCoprocService()
 			videoChip.Start()
 			compositor.Start()
 			vgaEngine.StartRenderLoop()
@@ -1621,6 +1635,7 @@ func main() {
 		soundChip.Start()
 		// All MMIO peripherals are registered unconditionally,
 		// so EmuTOS .PRG programs have full hardware access.
+		stageConfiguredCoprocService()
 		loader.StartTimer()
 		fmt.Println("Starting EmuTOS on M68K")
 		m68kRunner.StartExecution()
@@ -1707,6 +1722,7 @@ func main() {
 		videoChip.Start()
 		compositor.Start()
 		soundChip.Start()
+		stageConfiguredCoprocService()
 		loader.StartTimer()
 		fmt.Println("Starting AROS on M68K")
 		m68kRunner.StartExecution()
@@ -1759,6 +1775,7 @@ func main() {
 		monitor.RegisterCPU("Z80", NewDebugZ80(z80CPU.cpu, z80CPU))
 
 		if startExecution {
+			stageConfiguredCoprocService()
 			videoChip.Start()
 			compositor.Start()
 			vgaEngine.StartRenderLoop()
@@ -1801,6 +1818,7 @@ func main() {
 		monitor.RegisterCPU("X86", NewDebugX86(x86CPU.cpu, x86CPU))
 
 		if startExecution {
+			stageConfiguredCoprocService()
 			videoChip.Start()
 			compositor.Start()
 			vgaEngine.StartRenderLoop()
@@ -1860,6 +1878,7 @@ func main() {
 		monitor.RegisterCPU("6502", NewDebug6502(cpu6502.cpu, cpu6502))
 
 		if startExecution {
+			stageConfiguredCoprocService()
 			videoChip.Start()
 			compositor.Start()
 			vgaEngine.StartRenderLoop()
@@ -2326,6 +2345,10 @@ func main() {
 			runtime.GC()
 		}
 
+		// runProgramWithFullReset clears RAM and coprocessor MMIO; restage any
+		// CLI-provided service name after the selected loader has finished.
+		stageConfiguredCoprocService()
+
 		// 12. Start peripherals
 		videoChip.Start()
 		soundChip.Start()
@@ -2535,6 +2558,34 @@ func parseUint16Flag(value string) (uint16, error) {
 		return 0, fmt.Errorf("value out of range: 0x%X", parsed)
 	}
 	return uint16(parsed), nil
+}
+
+const coprocServiceNameStagingAddr uint32 = 0x400000
+
+func registerCoprocServiceFlags(flagSet *flag.FlagSet, target *string) {
+	flagSet.StringVar(target, "coproc-svc", "", "Stage a relative coprocessor service path")
+	flagSet.StringVar(target, "coproc", "", "Alias for -coproc-svc")
+}
+
+func stageCoprocService(bus *MachineBus, mgr *CoprocessorManager, path string) error {
+	fullPath, ok := mgr.sanitizePath(path)
+	if !ok {
+		return fmt.Errorf("invalid coprocessor service path %q: use a relative path under the coprocessor base directory", path)
+	}
+	if f, err := os.Open(fullPath); err != nil {
+		return fmt.Errorf("coprocessor service %q is not readable: %w", path, err)
+	} else {
+		_ = f.Close()
+	}
+	if len(path) > 255 {
+		return fmt.Errorf("coprocessor service path %q is too long", path)
+	}
+	for i := 0; i < len(path); i++ {
+		bus.Write8(coprocServiceNameStagingAddr+uint32(i), path[i])
+	}
+	bus.Write8(coprocServiceNameStagingAddr+uint32(len(path)), 0)
+	bus.Write32(COPROC_NAME_PTR, coprocServiceNameStagingAddr)
+	return nil
 }
 
 func resolveDefaultBasicImagePath() string {

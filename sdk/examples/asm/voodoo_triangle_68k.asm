@@ -173,7 +173,7 @@ main_loop:
     move.l  #0,VOODOO_TRIANGLE_CMD
 
     ; --- Swap buffers (vsync wait built into the Voodoo) ---
-    move.l  #1,VOODOO_SWAP_BUFFER_CMD
+    move.l  #VOODOO_SWAP_VSYNC,VOODOO_SWAP_BUFFER_CMD
 
     bra     main_loop
 

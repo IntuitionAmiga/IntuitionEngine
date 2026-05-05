@@ -9,7 +9,7 @@
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler, NASM-compatible syntax)
 ; Build:         sdk/bin/ie32asm sdk/examples/asm/coproc_caller_x86.asm
-; Run:           ./bin/IntuitionEngine -x86 coproc_caller_x86.ie86 -coproc coproc_service_x86.ie86
+; Run:           ./bin/IntuitionEngine -x86 -coproc-svc coproc_service_x86.ie86 coproc_caller_x86.ie86
 ; Porting:       Mailbox protocol is CPU-agnostic. See coproc_caller_65.asm
 ;                (6502), coproc_caller_68k.asm (M68K), coproc_caller_z80.asm
 ;                (Z80) for the same demo on other CPU cores.
@@ -66,7 +66,7 @@
 ;
 ; === BUILD AND RUN ===
 ;   sdk/bin/ie32asm sdk/examples/asm/coproc_caller_x86.asm
-;   ./bin/IntuitionEngine -x86 coproc_caller_x86.ie86 -coproc coproc_service_x86.ie86
+;   ./bin/IntuitionEngine -x86 -coproc-svc coproc_service_x86.ie86 coproc_caller_x86.ie86
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -77,7 +77,7 @@
     org 0x1000
 
 ; ============================================================================
-; PHASE 1 - START THE IE32 WORKER
+; PHASE 1 - START THE X86 WORKER
 ; ============================================================================
 ;
 ; WHY: The coproc_start macro writes COPROC_CPU_TYPE and COPROC_NAME_PTR,
@@ -86,7 +86,7 @@
 ; afterwards: zero means success, non-zero means the worker failed to
 ; launch (e.g., binary not found).
 
-    coproc_start COPROC_CPU_IE32, 0x400000
+    coproc_start COPROC_CPU_X86, 0x400000
 
     ; Verify the start command succeeded
     mov eax, [COPROC_CMD_STATUS]
@@ -107,8 +107,8 @@
     mov dword [0x410000], 10           ; operand 1
     mov dword [0x410004], 20           ; operand 2
 
-    ; Enqueue: CPU=IE32, op=1(add), req=0x410000(8 bytes), resp=0x410100(4 bytes)
-    coproc_enqueue COPROC_CPU_IE32, 1, 0x410000, 8, 0x410100, 4
+    ; Enqueue: CPU=X86, op=1(add), req=0x410000(8 bytes), resp=0x410100(4 bytes)
+    coproc_enqueue COPROC_CPU_X86, 1, 0x410000, 8, 0x410100, 4
 
     ; Save the ticket for polling
     mov ebx, [COPROC_TICKET]           ; EBX = ticket (preserved across loop)
@@ -129,6 +129,8 @@ poll_loop:
     mov eax, [COPROC_TICKET_STATUS]
     cmp eax, COPROC_ST_OK
     je done
+    cmp eax, COPROC_ST_ERROR
+    je error
     jmp poll_loop
 
 ; ============================================================================

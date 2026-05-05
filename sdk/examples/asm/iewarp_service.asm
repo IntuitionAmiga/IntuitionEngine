@@ -288,6 +288,8 @@ memcpy_byte_loop:
 
 ; ── MEMCPY_QUICK ───────────────────────────────────────────────────
 ; Same as MEMCPY but assumes ULONG alignment
+; Copies only complete 32-bit words; trailing 1-3 bytes are intentionally
+; ignored by this fast path. Use OP_MEMCPY when byte-exact tails matter.
 op_memcpy_quick:
     beq r13, r0, op_done_ok
 
@@ -834,7 +836,6 @@ alpha_col_loop:
     store.b r8, 2(r25)
 
     ; A channel: set fully opaque (text rendering always produces opaque result)
-    store.b r0, 3(r25)
     move.l r8, #255
     store.b r8, 3(r25)
     bra alpha_next
@@ -1333,9 +1334,8 @@ amix_write_sample:
     move.l r22, r7
     bra amix_store
 amix_clamp_lo:
-    move.l r7, #0xFFFF8000               ; -32768 as unsigned
-    ; Check if accumulator < -32768 (signed comparison)
-    ; Use sub+sign check: if acc is very negative
+    move.l r7, #0xFFFF8000               ; -32768 in 32-bit two's complement
+    ; Check if accumulator < -32768 using signed comparison
     bge r22, r7, amix_store
     move.l r22, r7
 
@@ -1419,6 +1419,20 @@ resamp_in_range:
 ;
 ; IMA-ADPCM: 4 bits per sample, decodes to 16-bit PCM.
 ; Step table and index table are embedded in the code.
+ima_step_table:
+    dc.w 7, 8, 9, 10, 11, 12, 13, 14, 16, 17
+    dc.w 19, 21, 23, 25, 28, 31, 34, 37, 41, 45
+    dc.w 50, 55, 60, 66, 73, 80, 88, 97, 107, 118
+    dc.w 130, 143, 157, 173, 190, 209, 230, 253, 279, 307
+    dc.w 337, 371, 408, 449, 494, 544, 598, 658, 724, 796
+    dc.w 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066
+    dc.w 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358
+    dc.w 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899
+    dc.w 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
+
+ima_index_adjust:
+    dc.l -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8
+
 op_audio_decode:
     beq r13, r0, op_done_ok
 
@@ -1434,7 +1448,8 @@ op_audio_decode:
     move.l r21, r13                       ; bytes remaining
 
     ; Initial step size
-    move.l r22, #7                        ; step = ima_step_table[0] = 7
+    la r27, ima_step_table
+    load.w r22, 0(r27)                   ; step = ima_step_table[0]
 
 adpcm_byte_loop:
     beq r21, r0, op_done_ok
@@ -1466,19 +1481,12 @@ adpcm_lo_clamp_lo:
 adpcm_lo_store:
     store.w r16, 0(r19)
     add.l r19, r19, #2
-    ; Update step index
-    ; index_adjust for nibble values: -1,-1,-1,-1, 2, 4, 6, 8
-    and.l r7, r24, #7
-    move.l r8, #4
-    blt r7, r8, adpcm_lo_idx_dec
-    ; index += 2 * (nibble & 3) + 2 (approximation: (n-4)*2+2)
-    sub.l r7, r7, #4
-    lsl.l r7, r7, #1
-    add.l r7, r7, #2
+    ; Update step index from canonical IMA index table
+    la r27, ima_index_adjust
+    lsl.l r7, r24, #2
+    add.l r27, r27, r7
+    load.l r7, 0(r27)
     add.l r17, r17, r7
-    bra adpcm_lo_idx_clamp
-adpcm_lo_idx_dec:
-    sub.l r17, r17, #1
 adpcm_lo_idx_clamp:
     bge r17, r0, adpcm_lo_idx_max
     move.l r17, r0
@@ -1488,11 +1496,10 @@ adpcm_lo_idx_max:
     move.l r17, #88
 
 adpcm_hi_nibble:
-    ; Recompute step from index (approximate: step = 7 * 1.1^index)
-    ; Simplified: step = 7 + index * index / 2 (quadratic approximation)
-    mulu.l r22, r17, r17                 ; index^2
-    lsr.l r22, r22, #1                   ; / 2
-    add.l r22, r22, #7                   ; + 7
+    la r27, ima_step_table
+    lsl.l r7, r17, #1
+    add.l r27, r27, r7
+    load.w r22, 0(r27)
 
     ; Process high nibble
     lsr.l r24, r23, #4                   ; high nibble
@@ -1519,16 +1526,11 @@ adpcm_hi_store:
     store.w r16, 0(r19)
     add.l r19, r19, #2
     ; Update step index for high nibble
-    and.l r7, r24, #7
-    move.l r8, #4
-    blt r7, r8, adpcm_hi_idx_dec
-    sub.l r7, r7, #4
-    lsl.l r7, r7, #1
-    add.l r7, r7, #2
+    la r27, ima_index_adjust
+    lsl.l r7, r24, #2
+    add.l r27, r27, r7
+    load.l r7, 0(r27)
     add.l r17, r17, r7
-    bra adpcm_hi_idx_clamp
-adpcm_hi_idx_dec:
-    sub.l r17, r17, #1
 adpcm_hi_idx_clamp:
     bge r17, r0, adpcm_hi_idx_max
     move.l r17, r0
@@ -1538,9 +1540,10 @@ adpcm_hi_idx_max:
     move.l r17, #88
 
 adpcm_step_update:
-    mulu.l r22, r17, r17
-    lsr.l r22, r22, #1
-    add.l r22, r22, #7
+    la r27, ima_step_table
+    lsl.l r7, r17, #1
+    add.l r27, r27, r7
+    load.w r22, 0(r27)
 
     add.l r18, r18, #1                   ; next src byte
     sub.l r21, r21, #1
@@ -1731,6 +1734,8 @@ matmul_next_i:
 ; Compute CRC32 of data buffer.
 ; reqPtr = data pointer, reqLen = data length
 ; Result written to response descriptor's resultCode field.
+; The caller supplies the initial CRC in flags; standard CRC32 callers
+; pre-XOR this value with 0xFFFFFFFF and post-process on the host side.
 op_crc32:
     beq r13, r0, op_done_ok_crc
 

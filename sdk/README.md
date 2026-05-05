@@ -149,6 +149,10 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 |---------|-----|-------------|
 | `coproc_caller_ie32.asm` | IE32 | Launches a worker, sends a request, reads the result |
 | `coproc_service_ie32.asm` | IE32 | Worker that polls a ring buffer and processes requests |
+| `coproc_caller_65.asm` / `coproc_service_65.asm` | 6502 | 8-bit caller/service pair using gateway MMIO |
+| `coproc_caller_68k.asm` / `coproc_service_68k.asm` | M68K | 68020 caller/service pair using direct MMIO |
+| `coproc_caller_z80.asm` / `coproc_service_z80.asm` | Z80 | Z80 caller/service pair using gateway MMIO |
+| `coproc_caller_x86.asm` / `coproc_service_x86.asm` | x86 | Flat 32-bit x86 caller/service pair using direct MMIO |
 
 ## Coverage Summary
 

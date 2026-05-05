@@ -118,10 +118,10 @@ cold_start:
 
     ; Clear state block (256 bytes)
     move.q  r1, r16
-    move.q  r2, #256
+    move.q  r2, #32
 .clear_state:
-    store.b r0, (r1)
-    add.q   r1, r1, #1
+    store.q r0, (r1)
+    add.q   r1, r1, #8
     sub.q   r2, r2, #1
     bnez    r2, .clear_state
 

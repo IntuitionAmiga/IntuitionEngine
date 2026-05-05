@@ -6,9 +6,9 @@
 ; === SDK QUICK REFERENCE ===
 ; Target CPU:    MOS 6502
 ; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
-; Audio Engine:  AHX (Amiga tracker synthesis)
+; Audio Engine:  SID (C64-style synthesis)
 ; Assembler:     ca65/ld65 (cc65 toolchain)
-; Build:         make ie65asm SRC=assembler/rotozoomer_65.asm
+; Build:         make ie65asm SRC=sdk/examples/asm/rotozoomer_65.asm
 ; Run:           ./bin/IntuitionEngine -m6502 rotozoomer_65.ie65
 ; Porting:       VideoChip/blitter MMIO is CPU-agnostic. Compare with
 ;                rotozoomer_z80.asm (Z80) for another 8-bit approach, or
@@ -20,7 +20,7 @@
 ; and zoomed smoothly using the hardware Mode 7 affine texture mapper. The
 ; CPU computes just 6 parameters per frame (u0, v0, du_col, dv_col,
 ; du_row, dv_row), and the blitter handles all 307,200 pixels (640x480).
-; PSG music plays in the background via the audio subsystem.
+; SID music plays in the background via the audio subsystem.
 ;
 ; === WHY MODE 7 HARDWARE BLITTER ===
 ;
@@ -543,26 +543,6 @@ loop:
     lda sine_table+257,x
     sta mul_a+1
 @sin_done:
-
-    ; -----------------------------------------------------------------------
-    ; STEP 5: Look up reciprocal(scale) again for SA
-    ; -----------------------------------------------------------------------
-    ; We re-read the reciprocal because mul16_signed consumed mul_b.
-    lda scale_accum+1
-    asl a
-    tax
-    bcs @rcp2_hi
-    lda recip_table,x
-    sta mul_b
-    lda recip_table+1,x
-    sta mul_b+1
-    jmp @rcp2_done
-@rcp2_hi:
-    lda recip_table+256,x
-    sta mul_b
-    lda recip_table+257,x
-    sta mul_b+1
-@rcp2_done:
 
     ; -----------------------------------------------------------------------
     ; STEP 6: SA = sin(angle) * reciprocal(scale)

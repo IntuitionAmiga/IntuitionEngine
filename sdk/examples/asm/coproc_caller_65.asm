@@ -9,7 +9,7 @@
 ; Audio Engine:  None
 ; Assembler:     ca65/ld65 (cc65 toolchain)
 ; Build:         make ie65asm SRC=sdk/examples/asm/coproc_caller_65.asm
-; Run:           ./bin/IntuitionEngine -6502 coproc_caller_65.ie65 -coproc coproc_service_65.ie65
+; Run:           ./bin/IntuitionEngine -m6502 -coproc-svc coproc_service_65.ie65 coproc_caller_65.ie65
 ; Porting:       Mailbox protocol is CPU-agnostic. See coproc_caller_68k.asm
 ;                (M68K), coproc_caller_x86.asm (x86), coproc_caller_z80.asm
 ;                (Z80) for the same demo on other CPU cores.
@@ -70,7 +70,7 @@
 ;
 ; === BUILD AND RUN ===
 ;   make ie65asm SRC=sdk/examples/asm/coproc_caller_65.asm
-;   ./bin/IntuitionEngine -6502 coproc_caller_65.ie65 -coproc coproc_service_65.ie65
+;   ./bin/IntuitionEngine -m6502 -coproc-svc coproc_service_65.ie65 coproc_caller_65.ie65
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -88,7 +88,7 @@
 ; Data buffers use bank windows to access bus memory above $FFFF.
 
 ; ============================================================================
-; PHASE 1 - START THE IE32 WORKER
+; PHASE 1 - START THE 6502 WORKER
 ; ============================================================================
 ;
 ; WHY: Before we can enqueue any work, the coprocessor controller needs
@@ -98,8 +98,8 @@
 ; with COPROC_CMD_START triggers the launch. We then check CMD_STATUS to
 ; confirm the worker started without error.
 
-    ; Select IE32 as the worker CPU type
-    STORE32 COPROC_CPU_TYPE, COPROC_CPU_IE32
+    ; Select 6502 as the worker CPU type
+    STORE32 COPROC_CPU_TYPE, COPROC_CPU_6502
 
     ; Point to the service binary filename in bus memory
     ; (must be pre-loaded into bus memory by the host before execution)
@@ -128,7 +128,7 @@ no_start_err:
 ; The response buffer at $410100 will receive one uint32 (the sum).
 ; These buffers must be pre-populated by the host environment.
 
-    STORE32 COPROC_CPU_TYPE, COPROC_CPU_IE32
+    STORE32 COPROC_CPU_TYPE, COPROC_CPU_6502
     STORE32 COPROC_OP, 1               ; op = add
     STORE32 COPROC_REQ_PTR, $410000    ; request data at bus $410000
     STORE32 COPROC_REQ_LEN, 8          ; two uint32 = 8 bytes
@@ -169,6 +169,8 @@ poll_loop:
     LDA COPROC_TICKET_STATUS
     CMP #COPROC_ST_OK                  ; 2 = completed successfully
     BEQ done
+    CMP #COPROC_ST_ERROR               ; 3 = service reported an error
+    BEQ error
     JMP poll_loop
 
 ; ============================================================================

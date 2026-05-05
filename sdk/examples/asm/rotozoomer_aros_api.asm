@@ -67,6 +67,9 @@ _LVOCloseWindow        equ -72
 _LVOBestCModeIDTagList equ -60
 _LVOWritePixelArray    equ -126         ; LVO 21
 
+; Graphics LVOs
+_LVOWaitTOF            equ -270
+
 ; Screen struct offsets
 sc_RastPort     equ     84
 
@@ -96,6 +99,13 @@ SCALE_INC       equ     104
 ; Raw key code for ESC
 RAWKEY_ESC      equ     $45
 
+; Media loader MMIO
+MEDIA_NAME_PTR  equ     $F2300
+MEDIA_SUBSONG   equ     $F2304
+MEDIA_CTRL      equ     $F2308
+MEDIA_OP_PLAY   equ     1
+MEDIA_OP_STOP   equ     2
+
 ; ============================================================================
 ; ENTRY POINT
 ; ============================================================================
@@ -123,6 +133,14 @@ start:
                 jsr     _LVOOpenLibrary(a6)
                 move.l  d0,_CyberGfxBase
                 beq     .close_intuition
+
+                ; --- Open graphics.library for WaitTOF ---
+                lea     graphics_name(pc),a1
+                moveq   #39,d0
+                movea.l _ExecBase,a6
+                jsr     _LVOOpenLibrary(a6)
+                move.l  d0,_GfxBase
+                beq     .close_cgfx
 
                 ; --- AllocMem: texture buffer ---
                 move.l  #TEX_SIZE,d0
@@ -178,6 +196,7 @@ start:
                 ; --- Init animation ---
                 clr.l   angle_accum
                 clr.l   scale_accum
+                bsr     start_music
 
 ; ============================================================================
 ; MAIN LOOP
@@ -195,6 +214,8 @@ start:
 ; ============================================================================
 ; CLEANUP
 ; ============================================================================
+                bsr     stop_music
+
 .close_window:
                 movea.l window_ptr,a0
                 movea.l _IntuitionBase,a6
@@ -222,6 +243,13 @@ start:
                 jsr     _LVOFreeMem(a6)
 
 .close_cgfx:
+                move.l  _GfxBase,d0
+                beq.s   .close_cgfx_lib
+                movea.l d0,a1
+                movea.l _ExecBase,a6
+                jsr     _LVOCloseLibrary(a6)
+
+.close_cgfx_lib:
                 move.l  _CyberGfxBase,d0
                 beq.s   .close_intuition
                 movea.l d0,a1
@@ -256,6 +284,20 @@ load_texture:
 .wait:          move.l  BLT_CTRL,d0
                 andi.l  #2,d0
                 bne.s   .wait
+                rts
+
+; ============================================================================
+; MUSIC
+; ============================================================================
+start_music:
+                lea     music_path(pc),a0
+                move.l  a0,MEDIA_NAME_PTR
+                clr.l   MEDIA_SUBSONG
+                move.l  #MEDIA_OP_PLAY,MEDIA_CTRL
+                rts
+
+stop_music:
+                move.l  #MEDIA_OP_STOP,MEDIA_CTRL
                 rts
 
 ; ============================================================================
@@ -393,12 +435,8 @@ copy_to_screen:
 ; WAIT VSYNC
 ; ============================================================================
 wait_vsync:
-.wait_end:      move.l  VIDEO_STATUS,d0
-                andi.l  #STATUS_VBLANK,d0
-                bne.s   .wait_end
-.wait_start:    move.l  VIDEO_STATUS,d0
-                andi.l  #STATUS_VBLANK,d0
-                beq.s   .wait_start
+                movea.l _GfxBase,a6
+                jsr     _LVOWaitTOF(a6)
                 rts
 
 ; ============================================================================
@@ -455,11 +493,13 @@ check_idcmp:
 
 intuition_name: dc.b    'intuition.library',0
 cybergfx_name:  dc.b    'cybergraphics.library',0
+graphics_name:  dc.b    'graphics.library',0
                 even
 
 _ExecBase:      dc.l    0
 _IntuitionBase: dc.l    0
 _CyberGfxBase:  dc.l    0
+_GfxBase:       dc.l    0
 
 screen_ptr:     dc.l    0
 window_ptr:     dc.l    0
@@ -554,3 +594,7 @@ recip_table:
                 even
 texture_data:
                 incbin  "../assets/rotozoomtexture.raw"
+
+music_path:
+                dc.b    "sdk/examples/assets/music/chopper.ahx",0
+                even

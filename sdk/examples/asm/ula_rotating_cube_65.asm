@@ -630,10 +630,6 @@ main_loop:
     sta ULA_ADDR_HI
     lda ULA_DATA            ; Read existing byte (preserve other pixels)
     sta zp_tmp
-    lda zp_ptr0
-    sta ULA_ADDR_LO
-    lda zp_ptr0+1
-    sta ULA_ADDR_HI
     pla
     ora zp_tmp
     sta ULA_DATA            ; Write back
@@ -724,7 +720,7 @@ all_vertex_x:
     .byte 159, 80, 80, 159, 175, 96, 96, 175      ; Frame 17
     .byte 149, 75, 75, 149, 180, 106, 106, 180    ; Frame 18
     .byte 139, 72, 72, 139, 183, 116, 116, 183    ; Frame 19
-    .byte 128, 71, 71, 128, 184, 127, 127, 184    ; Frame 20
+    .byte 128, 71, 71, 128, 184, 128, 128, 184    ; Frame 20
     .byte 116, 72, 72, 116, 183, 139, 139, 183    ; Frame 21
     .byte 106, 75, 75, 106, 180, 149, 149, 180    ; Frame 22
     .byte 96, 80, 80, 96, 175, 159, 159, 175      ; Frame 23
@@ -762,7 +758,7 @@ all_vertex_y:
     .byte 163, 105, 67, 126, 124, 65, 28, 86      ; Frame 21
     .byte 161, 100, 55, 117, 136, 74, 30, 91      ; Frame 22
     .byte 157, 97, 46, 106, 145, 85, 34, 94       ; Frame 23
-    .byte 152, 96, 39, 96, 152, 95, 39, 96        ; Frame 24
+    .byte 152, 96, 39, 96, 152, 96, 39, 96        ; Frame 24
     .byte 146, 97, 35, 85, 156, 106, 45, 94       ; Frame 25
     .byte 141, 100, 33, 74, 158, 117, 50, 91      ; Frame 26
     .byte 136, 105, 34, 65, 157, 126, 55, 86      ; Frame 27

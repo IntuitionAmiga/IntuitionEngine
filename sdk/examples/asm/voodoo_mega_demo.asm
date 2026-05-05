@@ -111,6 +111,7 @@
 .equ SCROLL_Y_POS   340             ; Base Y position on screen
 .equ WOBBLE_AMP     50              ; Sine-wave Y amplitude
 .equ MAX_CHARS      24              ; Max visible characters
+.equ SCROLL_WRAP    6944            ; 217 message chars * 32 pixels/char
 
 ; --- Runtime variables ---
 .equ frame_counter  0x8800
@@ -517,6 +518,11 @@ skip_star:
 
     LDA @scroll_offset
     ADD A, #SCROLL_SPEED
+    LDB A
+    SUB B, #SCROLL_WRAP
+    JLT B, scroll_advance_store
+    LDA B
+scroll_advance_store:
     STA @scroll_offset
 
     JMP main_loop
@@ -533,7 +539,7 @@ skip_star:
 
 get_sin:
     AND A, #255
-    SHL A, #2
+    MUL A, #4
     LDX #sin_table
     ADD X, A
     LDA [X]
@@ -585,14 +591,13 @@ scroll_char_loop:
     SUB A, #MAX_CHARS
     JGE A, scroll_text_done
 
-    ; Modulo wraparound for looping message (218 characters)
+    ; Modulo wraparound for looping message (217 characters)
     LDA @scroll_char_num
     ADD A, Y
-    LDX #scroll_message
 scroll_mod:
-    SUB A, #218
+    SUB A, #217
     JGE A, scroll_mod
-    ADD A, #218
+    ADD A, #217
 
     ; Fetch ASCII character from message
     LDX #scroll_message
@@ -863,11 +868,11 @@ sin_loop:
 no_mirror:
 
     ; Look up quarter-sine value
-    SHL A, #2
     PUSH X
     LDX #quarter_sin
     ADD X, A
     LDA [X]
+    AND A, #0xFF
     POP X
 
     ; Quadrants 2-3 are the negative half: value = 127 - quarter_sin
@@ -942,17 +947,17 @@ init_loop:
 ; ----------------------------------------------------------------------------
 
 quarter_sin:
-    .word   0,   3,   6,  10,  13,  16,  19,  22
-    .word  25,  28,  31,  34,  37,  40,  43,  46
-    .word  49,  51,  54,  57,  60,  62,  65,  68
-    .word  70,  73,  75,  78,  80,  82,  85,  87
-    .word  89,  91,  94,  96,  98, 100, 102, 103
-    .word 105, 107, 108, 110, 112, 113, 114, 116
-    .word 117, 118, 119, 120, 121, 122, 123, 124
-    .word 124, 125, 125, 126, 126, 127, 127, 127
+    .byte   0,   3,   6,  10,  13,  16,  19,  22
+    .byte  25,  28,  31,  34,  37,  40,  43,  46
+    .byte  49,  51,  54,  57,  60,  62,  65,  68
+    .byte  70,  73,  75,  78,  80,  82,  85,  87
+    .byte  89,  91,  94,  96,  98, 100, 102, 103
+    .byte 105, 107, 108, 110, 112, 113, 114, 116
+    .byte 117, 118, 119, 120, 121, 122, 123, 124
+    .byte 124, 125, 125, 126, 126, 127, 127, 127
 
 ; ----------------------------------------------------------------------------
-; Scroll message (218 characters, loops continuously)
+; Scroll message (217 characters, loops continuously)
 ; ----------------------------------------------------------------------------
 
 scroll_message:

@@ -9,7 +9,7 @@
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in assembler, NASM-compatible x86 mode)
 ; Build:         sdk/bin/ie32asm sdk/examples/asm/coproc_service_x86.asm
-; Run:           Used as -coproc argument with a matching caller binary
+; Run:           Used as -coproc-svc argument with a matching caller binary
 ; Porting:       Same service implemented on all CPU cores. See
 ;                coproc_service_ie32.asm (reference), coproc_service_65.asm,
 ;                coproc_service_68k.asm, coproc_service_z80.asm.

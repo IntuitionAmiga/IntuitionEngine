@@ -10,7 +10,7 @@
 ; Assembler:     ca65/ld65 (cc65 toolchain)
 ; Build:         make ie65asm SRC=sdk/examples/asm/coproc_service_65.asm
 ; Linker cfg:    ie65_service.cfg (auto-detected by SDK build)
-; Run:           Used as -coproc argument with a matching caller binary
+; Run:           Used as -coproc-svc argument with a matching caller binary
 ; Porting:       Same service implemented on all CPU cores. See
 ;                coproc_service_ie32.asm (reference), coproc_service_68k.asm,
 ;                coproc_service_x86.asm, coproc_service_z80.asm.
@@ -393,6 +393,31 @@ error_resp:
     ; status = 3 (error)
     LDY #4
     LDA #3
+    STA (ZP_RESPL),Y
+    INY
+    LDA #0
+    STA (ZP_RESPL),Y
+    INY
+    STA (ZP_RESPL),Y
+    INY
+    STA (ZP_RESPL),Y
+
+    ; resultCode = 0, respLen = 0 on error
+    LDY #8
+    STA (ZP_RESPL),Y
+    INY
+    STA (ZP_RESPL),Y
+    INY
+    STA (ZP_RESPL),Y
+    INY
+    STA (ZP_RESPL),Y
+    INY
+    STA (ZP_RESPL),Y
+    INY
+    STA (ZP_RESPL),Y
+    INY
+    STA (ZP_RESPL),Y
+    INY
     STA (ZP_RESPL),Y
 
     ; Advance tail

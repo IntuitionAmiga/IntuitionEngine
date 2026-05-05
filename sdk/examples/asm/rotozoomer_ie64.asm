@@ -496,6 +496,8 @@ compute_frame:
     load.l  r6, (r1)
     lsr.l   r6, r6, #8
     and.l   r6, r6, #255                    ; r6 = scale_idx (0-255)
+    la      r2, sine_table
+    la      r3, recip_table
 
     ; --- Look up cos_val = sine_table[(angle_idx + 64) & 255] ---
     ; cos(x) = sin(x + 90 degrees). In our 256-entry table, 90 degrees = 64.
@@ -505,7 +507,6 @@ compute_frame:
     add.l   r1, r5, #64
     and.l   r1, r1, #255
     lsl.l   r1, r1, #1                     ; *2 for word access
-    la      r2, sine_table
     add.l   r1, r2, r1
     load.l  r7, (r1)
     and.l   r7, r7, #0xFFFF                ; mask to 16 bits (zero upper bits)
@@ -514,7 +515,6 @@ compute_frame:
 
     ; --- Look up sin_val = sine_table[angle_idx] ---
     lsl.l   r1, r5, #1                     ; *2 for word access
-    la      r2, sine_table
     add.l   r1, r2, r1
     load.l  r8, (r1)
     and.l   r8, r8, #0xFFFF
@@ -525,8 +525,7 @@ compute_frame:
     ; Reciprocal values are always positive (320-1280), so zero-extension
     ; from load.l is correct here -- no sign extension needed.
     lsl.l   r1, r6, #1                     ; *2 for word access
-    la      r2, recip_table
-    add.l   r1, r2, r1
+    add.l   r1, r3, r1
     load.l  r9, (r1)
     and.l   r9, r9, #0xFFFF                ; r9 = recip (unsigned, always positive)
 

@@ -9,7 +9,7 @@
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler)
 ; Build:         sdk/bin/ie32asm sdk/examples/asm/coproc_service_ie32.asm
-; Run:           Used as -coproc argument with a matching caller binary
+; Run:           Used as -coproc-svc argument with a matching caller binary
 ; Porting:       Mailbox protocol is CPU-agnostic. Same service implemented
 ;                on all CPU cores. See coproc_service_65.asm,
 ;                coproc_service_68k.asm, coproc_service_x86.asm,
@@ -76,8 +76,8 @@
 ;
 ; === MEMORY MAP ===
 ; $200000          Code entry point (WORKER_IE32_BASE)
-; $820000          Mailbox base (MAILBOX_BASE)
-; $820000          Ring 0 head pointer (IE32 is ring index 0)
+; $790000          Mailbox base (MAILBOX_BASE)
+; $790000          Ring 0 head pointer (IE32 is ring index 0)
 ; $820001          Ring 0 tail pointer
 ; $820008+tail*32  Request entry descriptors (32 bytes each)
 ; $820208+tail*16  Response descriptors (16 bytes each)
@@ -96,7 +96,7 @@
 ; ============================================================================
 ;
 ; The IE32 is assigned ring index 0, so its ring lives directly at the
-; mailbox base ($820000). Each ring has 16 entry slots (32 bytes each)
+; mailbox base ($790000). Each ring has 16 entry slots (32 bytes each)
 ; starting at offset +8, and 16 response slots (16 bytes each) starting
 ; at offset +$208.
 

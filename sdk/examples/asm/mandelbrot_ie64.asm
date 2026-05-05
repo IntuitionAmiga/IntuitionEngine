@@ -26,7 +26,6 @@ include "ie64.inc"
 
 WIDTH           equ 640
 HEIGHT          equ 480
-LINE_BYTES      set 2560                    ; 640 * 4
 
 MAX_ITERS       equ 256
 
@@ -114,8 +113,7 @@ render_frame:
 
     ; newZY = ((2*zx*zy) >> 16) + cy
     muls.q  r10, r6, r7
-    lsl.q   r10, r10, #1
-    asr.q   r10, r10, #16
+    asr.q   r10, r10, #15
     add.q   r10, r10, r5
 
     ; update z and i
@@ -131,19 +129,9 @@ render_frame:
     mulu.q  r9, r8, r8
     and.q   r9, r9, #0xFF
 
-    ; rgb = gray | (gray << 8) | (gray << 16)
-    move.q  r10, r9
-    lsl.q   r10, r10, #8
-    add.q   r10, r10, r9                   ; 0x0000GGGG
-
-    move.q  r1, r10
-    lsl.q   r1, r1, #16
-    add.q   r10, r10, r1                   ; 0x00GGGGGG
-
-    ; color = 0xFF000000 | rgb
-    move.q  r1, #255
-    lsl.q   r1, r1, #24                    ; 0xFF000000
-    add.q   r10, r10, r1
+    ; color = 0xFF000000 | gray*0x010101
+    mulu.q  r10, r9, #0x010101
+    add.q   r10, r10, #0xFF000000
 
     store.l r10, (r11)
 

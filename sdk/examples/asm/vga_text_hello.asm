@@ -193,7 +193,7 @@ draw_palette:
     LDA #10
     STA @VAR_CURSOR_X
 
-    LDY #0
+    LDY #1
 
 .pal_loop:
     ; Set foreground colour to the current palette index

@@ -9,7 +9,7 @@
 ; Audio Engine:  None
 ; Assembler:     vasmz80_std (standard Z80 syntax)
 ; Build:         vasmz80_std -Fbin -o coproc_service_z80.ie80 coproc_service_z80.asm
-; Run:           Used as -coproc argument with a matching caller binary
+; Run:           Used as -coproc-svc argument with a matching caller binary
 ; Porting:       Same service implemented on all CPU cores. See
 ;                coproc_service_ie32.asm (reference), coproc_service_65.asm,
 ;                coproc_service_68k.asm, coproc_service_x86.asm.
@@ -386,6 +386,24 @@ error_resp:
 
     ; status = 3
     LD (HL), 3
+    INC HL
+    LD (HL), 0
+    INC HL
+    LD (HL), 0
+    INC HL
+    LD (HL), 0
+
+    ; resultCode = 0, respLen = 0 on error
+    INC HL
+    LD (HL), 0
+    INC HL
+    LD (HL), 0
+    INC HL
+    LD (HL), 0
+    INC HL
+    LD (HL), 0
+    INC HL
+    LD (HL), 0
     INC HL
     LD (HL), 0
     INC HL

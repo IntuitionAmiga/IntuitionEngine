@@ -498,6 +498,10 @@ do_redraw:
                 ; Get work area for intersection calculation
                 bsr     get_work_area
                 ; d0=wx, d1=wy, d2=ww, d3=wh
+                move.w  d0,work_x
+                move.w  d1,work_y
+                move.w  d2,work_w
+                move.w  d3,work_h
 
                 ; Compute intersection of work area and visible rect
                 ; Clip rect to work area bounds
@@ -516,17 +520,16 @@ do_redraw:
                 add.w   d6,d4                    ; rx+rw
                 move.w  a0,d6                    ; restore rx to d6 (not needed after)
 
-                bsr     get_work_area
-                move.w  d0,d6                    ; wx
-                add.w   d2,d6                    ; wx+ww = work right edge
+                move.w  work_x,d6
+                add.w   work_w,d6                ; wx+ww = work right edge
 
                 cmp.w   d6,d4
                 ble.s   .cr_ok
                 move.w  d6,d4                    ; clip to work right
 .cr_ok:
                 ; clip_bottom = min(ry+rh, wy+wh)
-                move.w  d1,d6                    ; wy
-                add.w   d3,d6                    ; wy+wh = work bottom edge
+                move.w  work_y,d6
+                add.w   work_h,d6                ; wy+wh = work bottom edge
 
                 add.w   d7,d5                    ; ry+rh
                 cmp.w   d6,d5
@@ -671,23 +674,23 @@ render_window:
 
                 ; CA * x  (shift decomposition not needed for small window coords)
                 move.l  d5,d7
-                muls.w  d0,d7                    ; CA * x (fits in 32 bits for window coords)
+                muls.l  d0,d7                    ; CA * x
                 move.l  var_u0,d4
                 add.l   d7,d4                    ; + CA*x
 
                 move.l  d6,d7
-                muls.w  d1,d7                    ; SA * y
+                muls.l  d1,d7                    ; SA * y
                 sub.l   d7,d4                    ; - SA*y
                 move.l  d4,BLT_MODE7_U0
 
                 ; v0 = base_v0 + SA*x + CA*y
                 move.l  d6,d7
-                muls.w  d0,d7                    ; SA * x
+                muls.l  d0,d7                    ; SA * x
                 move.l  var_v0,d4
                 add.l   d7,d4                    ; + SA*x
 
                 move.l  d5,d7
-                muls.w  d1,d7                    ; CA * y
+                muls.l  d1,d7                    ; CA * y
                 add.l   d7,d4                    ; + CA*y
                 move.l  d4,BLT_MODE7_V0
 
@@ -979,6 +982,10 @@ win_x:          ds.w    1
 win_y:          ds.w    1
 win_w:          ds.w    1
 win_h:          ds.w    1
+work_x:         ds.w    1
+work_y:         ds.w    1
+work_w:         ds.w    1
+work_h:         ds.w    1
 
 ; AES arrays
 aes_control:    ds.w    5

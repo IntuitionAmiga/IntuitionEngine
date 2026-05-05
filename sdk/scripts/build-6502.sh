@@ -41,7 +41,11 @@ if [ $# -gt 0 ]; then
     build_one "$1"
 else
     for src in "$ASM_DIR"/rotozoomer_65.asm \
-               "$ASM_DIR"/ula_rotating_cube_65.asm; do
+               "$ASM_DIR"/ula_rotating_cube_65.asm \
+               "$ASM_DIR"/coproc_caller_65.asm \
+               "$ASM_DIR"/coproc_service_65.asm \
+               "$ASM_DIR"/robocop_intro_65.asm \
+               "$ASM_DIR"/voodoo_smoketest_6502.asm; do
         if [ -f "$src" ]; then
             build_one "$src"
         fi

@@ -145,15 +145,13 @@ draw_bars:
     LDA Y
     MUL A, #40
     LDX A
-
-    LDT #0
-
-.row_loop:
-    ; --- Select bit planes matching this colour index ---
     LDA Y
     AND A, #0x0F
     STA @VGA_SEQ_MAPMASK
 
+    LDT #0
+
+.row_loop:
     ; --- Calculate VRAM byte address ---
     ; address = row * 80 + (x_pixel / 8) + VGA_VRAM base
     LDA T

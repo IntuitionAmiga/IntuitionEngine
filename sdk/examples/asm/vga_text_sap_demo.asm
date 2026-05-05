@@ -166,11 +166,9 @@ start:
     ; XOR A is the fastest way to zero A on Z80 (1 byte, 4 T-states).
     xor a
     ld (frame_lo),a
-    ld (frame_hi),a
     ld (scroll_pos),a
     ld (scroll_pos+1),a
     ld (scroll_wait),a
-    ld (scroll_cnt),a
 
 ; ============================================================================
 ; MAIN LOOP (60 FPS)
@@ -729,12 +727,8 @@ sc_not_end:
 ; ============================================================================
 
 frame_lo:       .byte 0
-frame_hi:       .byte 0
 scroll_pos:     .word 0
 scroll_wait:    .byte 0
-temp_row:       .byte 0
-temp_var:       .byte 0
-scroll_cnt:     .byte 0
 bounce_off:     .byte 0
 
 ; ============================================================================

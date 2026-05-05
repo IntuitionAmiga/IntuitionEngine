@@ -99,6 +99,13 @@ SCALE_INC       equ     104
 ; Raw key code for ESC
 RAWKEY_ESC      equ     $45
 
+; Media loader MMIO
+MEDIA_NAME_PTR  equ     $F2300
+MEDIA_SUBSONG   equ     $F2304
+MEDIA_CTRL      equ     $F2308
+MEDIA_OP_PLAY   equ     1
+MEDIA_OP_STOP   equ     2
+
 ; ============================================================================
 ; ENTRY POINT
 ; ============================================================================
@@ -181,6 +188,7 @@ start:
                 ; --- Init animation ---
                 clr.l   angle_accum
                 clr.l   scale_accum
+                bsr     start_music
 
 ; ============================================================================
 ; MAIN LOOP
@@ -198,6 +206,8 @@ start:
 ; ============================================================================
 ; CLEANUP
 ; ============================================================================
+                bsr     stop_music
+
 .close_window:
                 movea.l window_ptr,a0
                 movea.l _IntuitionBase,a6
@@ -259,6 +269,20 @@ load_texture:
 .wait:          move.l  BLT_CTRL,d0
                 andi.l  #2,d0
                 bne.s   .wait
+                rts
+
+; ============================================================================
+; MUSIC
+; ============================================================================
+start_music:
+                lea     music_path(pc),a0
+                move.l  a0,MEDIA_NAME_PTR
+                clr.l   MEDIA_SUBSONG
+                move.l  #MEDIA_OP_PLAY,MEDIA_CTRL
+                rts
+
+stop_music:
+                move.l  #MEDIA_OP_STOP,MEDIA_CTRL
                 rts
 
 ; ============================================================================
@@ -602,3 +626,7 @@ recip_table:
                 even
 texture_data:
                 incbin  "../assets/rotozoomtexture.raw"
+
+music_path:
+                dc.b    "sdk/examples/assets/music/chopper.ahx",0
+                even

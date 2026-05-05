@@ -358,10 +358,11 @@ render_plasma:
     lsl.l   #4,d2
     or.l    d0,d2
 
-    ; Avoid pure black (hue 0 always reads as black regardless of luminance)
-    tst.b   d2
+    ; Avoid hue 0: TED treats every hue-0 luminance as black.
+    move.l  d2,d0
+    andi.l  #$0F,d0
     bne.s   .not_black
-    moveq   #$11,d2                 ; Dark white instead
+    ori.l   #$01,d2
 .not_black:
 
     ; Write colour to colour RAM
@@ -498,6 +499,10 @@ update_scroller:
 .have_char:
     move.b  d2,TED_VRAM_BASE+(24*40)+39
     addq.l  #1,d1
+    tst.b   (a1,d1.l)
+    bne.s   .store_scroll_char
+    clr.l   d1
+.store_scroll_char:
     move.l  d1,scroll_char
 
 .no_char_scroll:

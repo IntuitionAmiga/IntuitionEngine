@@ -9,7 +9,7 @@
 ; Audio Engine:  None
 ; Assembler:     vasmz80_std (VASM Z80, standard syntax)
 ; Build:         vasmz80_std -Fbin -o coproc_caller_z80.ie80 coproc_caller_z80.asm
-; Run:           ./bin/IntuitionEngine -z80 coproc_caller_z80.ie80 -coproc coproc_service_z80.ie80
+; Run:           ./bin/IntuitionEngine -z80 -coproc-svc coproc_service_z80.ie80 coproc_caller_z80.ie80
 ; Porting:       Mailbox protocol is CPU-agnostic. See coproc_caller_65.asm
 ;                (6502), coproc_caller_68k.asm (M68K), coproc_caller_x86.asm
 ;                (x86) for the same demo on other CPU cores.
@@ -73,7 +73,7 @@
 ;
 ; === BUILD AND RUN ===
 ;   vasmz80_std -Fbin -o coproc_caller_z80.ie80 coproc_caller_z80.asm
-;   ./bin/IntuitionEngine -z80 coproc_caller_z80.ie80 -coproc coproc_service_z80.ie80
+;   ./bin/IntuitionEngine -z80 -coproc-svc coproc_service_z80.ie80 coproc_caller_z80.ie80
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -95,23 +95,22 @@
 ;
 ; WHY: Before we can enqueue any work, the coprocessor controller needs
 ; to know which CPU type to spawn and where to find the service binary.
-; COPROC_CPU_TYPE selects the worker architecture (M68K in this case);
+; COPROC_CPU_TYPE selects the worker architecture (Z80 in this case);
 ; COPROC_NAME_PTR points to a null-terminated filename string in bus
 ; memory. Writing COPROC_CMD with COPROC_CMD_START triggers the launch.
 ; We then check CMD_STATUS to confirm the worker started without error.
 ;
-; Note: this Z80 caller launches an M68K worker (not IE32), demonstrating
-; that any CPU can launch any other CPU type as a coprocessor.
+; Note: this Z80 caller launches a matching Z80 worker by convention.
 
-    ; Select M68K as the worker CPU type
-    STORE32 COPROC_CPU_TYPE COPROC_CPU_M68K
+    ; Select Z80 as the worker CPU type
+    STORE32 COPROC_CPU_TYPE, COPROC_CPU_Z80
 
     ; Point to the service binary filename in bus memory
     ; (must be pre-loaded into bus memory by the host before execution)
-    STORE32 COPROC_NAME_PTR 0x400000
+    STORE32 COPROC_NAME_PTR, 0x400000
 
     ; Trigger the START command
-    STORE32 COPROC_CMD COPROC_CMD_START
+    STORE32 COPROC_CMD, COPROC_CMD_START
 
     ; Check whether the start succeeded (0 = OK, non-zero = error)
     ; Z80 idiom: `or a` sets the zero flag if A == 0
@@ -133,13 +132,13 @@
 ; The response buffer at 0x410100 will receive one uint32 (the sum).
 ; These buffers must be pre-populated by the host environment.
 
-    STORE32 COPROC_CPU_TYPE COPROC_CPU_M68K
-    STORE32 COPROC_OP 1                ; op = add
-    STORE32 COPROC_REQ_PTR 0x410000    ; request data at bus 0x410000
-    STORE32 COPROC_REQ_LEN 8           ; two uint32 = 8 bytes
-    STORE32 COPROC_RESP_PTR 0x410100   ; response buffer
-    STORE32 COPROC_RESP_CAP 4          ; capacity: 4 bytes (one uint32)
-    STORE32 COPROC_CMD COPROC_CMD_ENQUEUE
+    STORE32 COPROC_CPU_TYPE, COPROC_CPU_Z80
+    STORE32 COPROC_OP, 1                ; op = add
+    STORE32 COPROC_REQ_PTR, 0x410000    ; request data at bus 0x410000
+    STORE32 COPROC_REQ_LEN, 8           ; two uint32 = 8 bytes
+    STORE32 COPROC_RESP_PTR, 0x410100   ; response buffer
+    STORE32 COPROC_RESP_CAP, 4          ; capacity: 4 bytes (one uint32)
+    STORE32 COPROC_CMD, COPROC_CMD_ENQUEUE
 
     ; Save the returned ticket number into register B
     ; (tickets are small integers, so only byte 0 matters on the Z80)
@@ -168,12 +167,14 @@ poll_loop:
     ld (COPROC_TICKET+3),a
 
     ; Issue the POLL command
-    STORE32 COPROC_CMD COPROC_CMD_POLL
+    STORE32 COPROC_CMD, COPROC_CMD_POLL
 
     ; Check the ticket status
     ld a,(COPROC_TICKET_STATUS)
     cp COPROC_ST_OK                    ; 2 = completed successfully
     jr z,done
+    cp COPROC_ST_ERROR                 ; 3 = service reported an error
+    jr z,error
     jr poll_loop
 
 ; ============================================================================

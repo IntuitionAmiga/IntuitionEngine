@@ -150,7 +150,6 @@ setup_palette:
     LDX #0
 
 .pal_loop:
-    STA @VGA_DAC_WINDEX
     LDA X
     STA @VGA_DAC_WINDEX
 
@@ -300,50 +299,53 @@ fire_propagate:
     AND A, #0x80000000
     JNZ A, .done
 
+    ; Precompute row bases once per row.
+    LDA Y
+    MUL A, #WIDTH
+    ADD A, #VGA_VRAM
+    LDE A                              ; E = current row base
+    ADD A, #WIDTH
+    LDT A                              ; T = row below base
+
     LDX #0
 
 .col_loop:
     ; --- Address of current pixel (destination) ---
-    LDA Y
-    MUL A, #WIDTH
+    LDA E
     ADD A, X
-    ADD A, #VGA_VRAM
     LDF A
 
     ; --- Address of pixel directly below (source centre) ---
-    LDA Y
-    ADD A, #1
-    MUL A, #WIDTH
+    LDA T
     ADD A, X
-    ADD A, #VGA_VRAM
-    LDT A
+    LDC A
 
     ; --- Start sum with centre-below value ---
-    LDA [T]
+    LDA [C]
     AND A, #0xFF
     LDB A
 
     ; --- Add left-below neighbour (skip if at left edge) ---
     LDA X
     JZ A, .no_left
-    LDA T
+    LDA C
     SUB A, #1
-    LDC A
-    LDA [C]
+    LDU A
+    LDA [U]
     AND A, #0xFF
     ADD B, A
 .no_left:
 
     ; --- Add right-below neighbour (skip if at right edge) ---
     LDA X
-    LDC #WIDTH
-    SUB C, #1
-    SUB A, C
+    LDU #WIDTH
+    SUB U, #1
+    SUB A, U
     JZ A, .no_right
-    LDA T
+    LDA C
     ADD A, #1
-    LDC A
-    LDA [C]
+    LDU A
+    LDA [U]
     AND A, #0xFF
     ADD B, A
 .no_right:
@@ -355,11 +357,7 @@ fire_propagate:
     SUB A, #1
 
     ; --- Clamp to 0 on underflow (prevents wrap-around to bright colours) ---
-    LDB A
-    AND B, #0x80000000
-    JZ B, .no_clamp
-    LDA #0
-.no_clamp:
+    JSR clamp_nonnegative
 
     ; --- Write cooled value to current pixel ---
     STA [F]
@@ -374,4 +372,12 @@ fire_propagate:
     JMP .row_loop
 
 .done:
+    RTS
+
+clamp_nonnegative:
+    LDB A
+    AND B, #0x80000000
+    JZ B, .ok
+    LDA #0
+.ok:
     RTS

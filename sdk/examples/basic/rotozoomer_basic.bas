@@ -43,7 +43,7 @@
 32 REM   where (U,V) are texture coordinates in 16.16 fixed-point.
 33 REM   For pure rotation+zoom, the matrix is:
 34 REM     dUdX =  CA    dUdY = SA     (cosine/sine scaled by zoom)
-35 REM     dVdX = -SA    dVdY = CA
+35 REM     dVdX =  SA    dVdY = CA
 36 REM   and (u0,v0) centres the rotation on the texture.
 37 REM
 38 REM (c) 2024-2026 Zayn Otley - GPLv3 or later
@@ -134,8 +134,8 @@
 806 REM
 807 REM  DC (delta-cosine) and DS (delta-sine) are the per-pixel step
 808 REM  sizes. These become the Mode7 affine matrix:
-809 REM    dUdX =  DC    dUdY =  DS
-810 REM    dVdX = -DS    dVdY =  DC
+809 REM    dUdX =  DC    dUdY = -DS
+810 REM    dVdX =  DS    dVdY =  DC
 811 REM
 812 REM  INT() truncates toward zero, matching the blitter's internal
 813 REM  fixed-point truncation (the difference from floor() is at most
@@ -173,7 +173,7 @@
 1009 REM    SV     - starting V (16.16 fixed-point)
 1010 REM    DC     - dUdX: U step per pixel moving right (cosine term)
 1011 REM    DS     - dVdX: V step per pixel moving right (sine term)
-1012 REM    0-DS   - dUdY: U step per pixel moving down (-sine term)
+1012 REM    0-DS   - dUdY: U step per pixel moving down
 1013 REM    DC     - dVdY: V step per pixel moving down (cosine term)
 1014 REM    255    - texture U mask (256-1, for power-of-2 wrapping)
 1015 REM    255    - texture V mask (256-1, for power-of-2 wrapping)
@@ -215,10 +215,7 @@
 1208 REM
 1209 REM  A wraps at 2*PI (6.28318) to prevent unbounded growth of the
 1210 REM  floating-point value, which would eventually lose precision.
-1211 REM  SI does not need wrapping because SIN(SI) naturally cycles -
-1212 REM  the value just grows slowly, and BASIC's SIN() handles any
-1213 REM  input magnitude. Over hours of runtime the precision loss in
-1214 REM  SI is negligible for a smooth visual effect.
+1211 REM  SI also wraps at 2*PI so SIN(SI) keeps full precision.
 1220 A=A+0.03: IF A>6.28318 THEN A=A-6.28318
-1230 SI=SI+0.01
+1230 SI=SI+0.01: IF SI>6.28318 THEN SI=SI-6.28318
 1240 GOTO 600

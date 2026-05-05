@@ -187,7 +187,7 @@ ULONG IEWarpAudioDecode(APTR src, APTR dst, ULONG srcLen, ULONG codec)
                         /* (A0, A1, D0, D1) */
 ```
 
-Decode compressed audio. `codec` identifies the compression format (1 = IMA-ADPCM). The codec value is passed via `respCap`. IMA-ADPCM decodes 4-bit nibbles to 16-bit PCM samples with quadratic step size adaptation.
+Decode compressed audio. `codec` identifies the compression format (1 = IMA-ADPCM). The codec value is passed via `respCap`. IMA-ADPCM decodes 4-bit nibbles to 16-bit PCM samples using the canonical 89-entry IMA step table and 16-entry index adjustment table.
 
 **LVO**: -114 (slot 19)
 
@@ -219,7 +219,7 @@ Multiply two 4×4 float32 matrices: `matOut = matA × matB`. Each matrix is 64 b
 ULONG IEWarpCRC32(APTR data, ULONG len, ULONG initial, ULONG *result)  /* (A0, D0, D1, A1) */
 ```
 
-Compute CRC32 of `len` bytes at `data`, starting from `initial` CRC value. Use `0xFFFFFFFF` for standard CRC32. The `initial` parameter is passed via the flags register (r29). The worker writes the computed CRC directly to `*result` via respPtr (r14). Returns a ticket; after `IEWarpWait(ticket)`, `*result` contains the final CRC.
+Compute CRC32 of `len` bytes at `data`, starting from `initial` CRC value. The caller pre-XORs the initial value with `0xFFFFFFFF` for standard CRC32. The `initial` parameter is passed via the flags register (r29). The worker writes the computed CRC directly to `*result` via respPtr (r14). Returns a ticket; after `IEWarpWait(ticket)`, `*result` contains the final CRC.
 
 Usage:
 ```c
@@ -710,7 +710,7 @@ The worker implements all 22 operations:
 |-----------|-------------|
 | NOP | No-op for calibration round-trips |
 | MEMCPY | Byte copy with ULONG-aligned fast path |
-| MEMCPY_QUICK | Copy assuming ULONG-aligned src/dst |
+| MEMCPY_QUICK | Copy assuming ULONG-aligned src/dst; copies complete ULONGs only and intentionally truncates trailing 1-3 bytes |
 | MEMSET | Fill memory with a byte value |
 | MEMMOVE | Overlap-safe copy (backward copy when dst > src) |
 | BLIT_COPY | Row-by-row rectangular blit copy |
@@ -723,7 +723,7 @@ The worker implements all 22 operations:
 | PIXEL_PROCESS | Sub-operations: brighten, darken, set-alpha, greyscale (ITU-R BT.601), negative |
 | AUDIO_MIX | N-channel mix with per-channel volume (0-256), int16 clamping |
 | AUDIO_RESAMPLE | Linear interpolation with fractional sample position |
-| AUDIO_DECODE | IMA-ADPCM 4-bit decoder with quadratic step approximation |
+| AUDIO_DECODE | IMA-ADPCM 4-bit decoder with canonical step/index tables |
 | FP_BATCH | 14 FP sub-ops via native IE64 FPU (add, sub, mul, div, sqrt, sin, cos, tan, atan, log, exp, pow, abs, neg); 12-byte descriptors |
 | MATRIX_MUL | 4×4 float32 matrix multiply using FPU triple-nested loop |
 | CRC32 | Bit-by-bit with polynomial 0xEDB88320 |

@@ -35,8 +35,16 @@ if [ $# -gt 0 ]; then
     build_one "$1"
 else
     for src in "$ASM_DIR"/rotozoomer_68k.asm \
+               "$ASM_DIR"/rotozoomer_gem.asm \
+               "$ASM_DIR"/rotozoomer_aros_api.asm \
+               "$ASM_DIR"/rotozoomer_aros_hw.asm \
                "$ASM_DIR"/ted_121_colors_68k.asm \
-               "$ASM_DIR"/voodoo_cube_68k.asm; do
+               "$ASM_DIR"/rotating_cube_copper_68k.asm \
+               "$ASM_DIR"/voodoo_cube_68k.asm \
+               "$ASM_DIR"/voodoo_triangle_68k.asm \
+               "$ASM_DIR"/voodoo_3dfx_logo_68k.asm \
+               "$ASM_DIR"/coproc_caller_68k.asm \
+               "$ASM_DIR"/coproc_service_68k.asm; do
         if [ -f "$src" ]; then
             build_one "$src"
         fi

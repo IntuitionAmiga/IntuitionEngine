@@ -9,7 +9,7 @@
 ; Audio Engine:  None
 ; Assembler:     vasmm68k_mot (VASM M68K, Motorola syntax)
 ; Build:         vasmm68k_mot -Fbin -m68020 -devpac -o coproc_caller_68k.ie68 coproc_caller_68k.asm
-; Run:           ./bin/IntuitionEngine -m68k coproc_caller_68k.ie68 -coproc coproc_service_68k.ie68
+; Run:           ./bin/IntuitionEngine -m68k -coproc-svc coproc_service_68k.ie68 coproc_caller_68k.ie68
 ; Porting:       Mailbox protocol is CPU-agnostic. See coproc_caller_65.asm
 ;                (6502), coproc_caller_x86.asm (x86), coproc_caller_z80.asm
 ;                (Z80) for the same demo on other CPU cores.
@@ -69,7 +69,7 @@
 ;
 ; === BUILD AND RUN ===
 ;   vasmm68k_mot -Fbin -m68020 -devpac -o coproc_caller_68k.ie68 coproc_caller_68k.asm
-;   ./bin/IntuitionEngine -m68k coproc_caller_68k.ie68 -coproc coproc_service_68k.ie68
+;   ./bin/IntuitionEngine -m68k -coproc-svc coproc_service_68k.ie68 coproc_caller_68k.ie68
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -79,7 +79,7 @@
     org $1000
 
 ; ============================================================================
-; PHASE 1 - START THE IE32 WORKER
+; PHASE 1 - START THE M68K WORKER
 ; ============================================================================
 ;
 ; WHY: The coproc_start macro writes COPROC_CPU_TYPE and COPROC_NAME_PTR,
@@ -88,7 +88,7 @@
 ; We check CMD_STATUS afterwards: zero means success, non-zero means the
 ; worker failed to launch (e.g., binary not found).
 
-    coproc_start COPROC_CPU_IE32,$400000
+    coproc_start COPROC_CPU_M68K,$400000
 
     ; Verify the start command succeeded
     move.l  COPROC_CMD_STATUS,d0
@@ -112,8 +112,8 @@
     move.l  #10,$410000                ; operand 1
     move.l  #20,$410004                ; operand 2
 
-    ; Enqueue: CPU=IE32, op=1(add), req=$410000(8 bytes), resp=$410100(4 bytes)
-    coproc_enqueue COPROC_CPU_IE32,1,$410000,8,$410100,4
+    ; Enqueue: CPU=M68K, op=1(add), req=$410000(8 bytes), resp=$410100(4 bytes)
+    coproc_enqueue COPROC_CPU_M68K,1,$410000,8,$410100,4
 
     ; Save the ticket for polling
     move.l  COPROC_TICKET,d2           ; D2 = ticket (preserved across loop)
@@ -134,6 +134,8 @@ poll_loop:
     move.l  COPROC_TICKET_STATUS,d0
     cmpi.l  #COPROC_ST_OK,d0
     beq     done
+    cmpi.l  #COPROC_ST_ERROR,d0
+    beq     error
     bra     poll_loop
 
 ; ============================================================================

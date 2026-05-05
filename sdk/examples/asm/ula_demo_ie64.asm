@@ -38,19 +38,22 @@ attr_loop:
     sub.q   r3, r3, #1
     bnez    r3, attr_loop
 
-    ; Draw a diagonal line in the first 32 bitmap bytes.
+    ; Draw a diagonal across the first ZX-style 8-line character band.
     la      r1, ULA_VRAM
     move.q  r2, #0x80
-    move.q  r3, #32
+    la      r4, ula_y_band_offsets
+    move.q  r3, #8
 line_loop:
-    store.b r2, (r1)
-    add.q   r1, r1, #1
+    load.l  r5, (r4)
+    add.q   r6, r1, r5
+    store.b r2, (r6)
+    add.q   r4, r4, #4
     lsr.l   r2, r2, #1
-    bnez    r2, mask_ok
-    move.q  r2, #0x80
-mask_ok:
     sub.q   r3, r3, #1
     bnez    r3, line_loop
 
 idle:
     bra     idle
+
+ula_y_band_offsets:
+    dc.l    0x0000,0x0100,0x0200,0x0300,0x0400,0x0500,0x0600,0x0700

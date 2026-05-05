@@ -15,10 +15,12 @@
 
 #include <proto/exec.h>
 #include <proto/intuition.h>
+#include <proto/graphics.h>
 #include <proto/cybergraphics.h>
 #include <proto/dos.h>
 
 #include <exec/memory.h>
+#include <graphics/gfxbase.h>
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 #include <cybergraphx/cybergraphics.h>
@@ -33,6 +35,11 @@
 #define TEX_STRIDE      (256 * 4)
 #define TEX_SIZE        (256 * 256 * 4)
 #define BACKBUF_SIZE    (RENDER_W * RENDER_H * 4)
+#define MEDIA_NAME_PTR  0xF2300
+#define MEDIA_SUBSONG   0xF2304
+#define MEDIA_CTRL      0xF2308
+#define MEDIA_OP_PLAY   1
+#define MEDIA_OP_STOP   2
 
 /* Animation increments (8.8 fixed-point) */
 #define ANGLE_INC       313
@@ -82,15 +89,28 @@ static const UWORD recip_table[256] = {
 };
 
 struct Library *CyberGfxBase = NULL;
+struct GfxBase *GfxBase = NULL;
 
 /* Animation state */
 static ULONG angle_accum, scale_accum;
 static LONG var_ca, var_sa, var_u0, var_v0;
+static char music_path[] = "sdk/examples/assets/music/chopper.ahx";
+
+static void start_music(void)
+{
+    ie_write32(MEDIA_NAME_PTR, (ULONG)music_path);
+    ie_write32(MEDIA_SUBSONG, 0);
+    ie_write32(MEDIA_CTRL, MEDIA_OP_PLAY);
+}
+
+static void stop_music(void)
+{
+    ie_write32(MEDIA_CTRL, MEDIA_OP_STOP);
+}
 
 static void wait_vsync(void)
 {
-    while (ie_read32(IE_VIDEO_STATUS) & 2) {}
-    while (!(ie_read32(IE_VIDEO_STATUS) & 2)) {}
+    WaitTOF();
 }
 
 static void wait_blit(void)
@@ -137,13 +157,19 @@ static void render_mode7(APTR texture_buf, APTR back_buf)
     wait_blit();
 }
 
-static void load_texture(APTR texture_buf)
+static int load_texture(APTR texture_buf)
 {
     BPTR fh = Open("PROGDIR:rotozoomtexture.raw", MODE_OLDFILE);
-    if (fh) {
-        Read(fh, texture_buf, TEX_SIZE);
-        Close(fh);
+    LONG bytes_read;
+    if (!fh) {
+        return 0;
     }
+    bytes_read = Read(fh, texture_buf, TEX_SIZE);
+    Close(fh);
+    if (bytes_read != TEX_SIZE) {
+        return 0;
+    }
+    return 1;
 }
 
 static void advance_animation(void)
@@ -165,6 +191,11 @@ int main(void)
     if (!CyberGfxBase)
         return 20;
 
+    /* Open graphics.library for WaitTOF() */
+    GfxBase = (struct GfxBase *)OpenLibrary("graphics.library", 39);
+    if (!GfxBase)
+        goto cleanup;
+
     /* Allocate buffers */
     texture_buf = AllocMem(TEX_SIZE, MEMF_ANY | MEMF_CLEAR);
     if (!texture_buf) goto cleanup;
@@ -173,7 +204,9 @@ int main(void)
     if (!back_buf) goto cleanup;
 
     /* Load texture */
-    load_texture(texture_buf);
+    if (!load_texture(texture_buf))
+        goto cleanup;
+    start_music();
 
     /* Find best display mode */
     {
@@ -252,10 +285,12 @@ int main(void)
     }
 
 cleanup:
+    stop_music();
     if (window)      CloseWindow(window);
     if (screen)      CloseScreen(screen);
     if (back_buf)    FreeMem(back_buf, BACKBUF_SIZE);
     if (texture_buf) FreeMem(texture_buf, TEX_SIZE);
+    if (GfxBase)     CloseLibrary((struct Library *)GfxBase);
     if (CyberGfxBase) CloseLibrary(CyberGfxBase);
     return 0;
 }

@@ -574,8 +574,6 @@ compute_ca_320:
     ld (var_tmp3+3),a
     xor a
     ld (var_tmp3),a
-    ; Sign extend byte 3 from bit 7 of var_ca+2
-    ld a,(var_ca+3)
     ; Actually CA is 32-bit, CA*256 could overflow. But CA<<8:
     ; byte 0 = 0, byte 1 = CA[0], byte 2 = CA[1], byte 3 = CA[2]
     ; We lose CA[3], but CA fits in ~20 bits so this is fine.

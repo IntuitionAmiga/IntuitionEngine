@@ -202,6 +202,7 @@ draw_starburst:
 
     ; Vertex B: outer left
     move.w  d2,d3
+    move.w  d3,d5
     move.w  d7,d4
     mulu    #SPIKE_OUTER,d4
     lsr.l   #8,d4
@@ -210,7 +211,7 @@ draw_starburst:
     move.l  d1,-(sp)
 
     ; Vertex C: outer right
-    move.w  8(sp),d3
+    move.w  d5,d3
     add.w   #16,d3
     and.w   #255,d3
     move.w  d7,d4

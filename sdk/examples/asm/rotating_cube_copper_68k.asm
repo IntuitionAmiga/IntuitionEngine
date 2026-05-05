@@ -845,7 +845,6 @@ update_copper_colors:
                 ; --- Colour group (bands of similar colour) ---
                 move.l  d7,d0
                 lsr.l   #2,d0                   ; line / 4
-                andi.l  #$1F,d0                 ; 32 groups
 
                 ; --- Brightness (tube effect via sine wave) ---
                 move.l  d7,d1

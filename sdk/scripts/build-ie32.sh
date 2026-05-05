@@ -37,7 +37,9 @@ else
     for src in "$ASM_DIR"/rotozoomer.asm \
                "$ASM_DIR"/vga_text_hello.asm \
                "$ASM_DIR"/vga_mode13h_fire.asm \
-               "$ASM_DIR"/copper_vga_bands.asm \
+               "$ASM_DIR"/vga_mode12h_bars.asm \
+               "$ASM_DIR"/vga_modex_circles.asm \
+               "$ASM_DIR"/voodoo_mega_demo.asm \
                "$ASM_DIR"/coproc_caller_ie32.asm \
                "$ASM_DIR"/coproc_service_ie32.asm; do
         if [ -f "$src" ]; then

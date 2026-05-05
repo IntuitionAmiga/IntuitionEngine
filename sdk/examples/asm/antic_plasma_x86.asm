@@ -309,6 +309,9 @@ main_loop:
 ;
 ; ANTIC_STATUS bit 0 = 1 during VBlank, 0 during active display.
 
+.wait_not_vb:
+        test    byte [ANTIC_STATUS], ANTIC_STATUS_VBLANK
+        jnz     .wait_not_vb
 .wait_vblank:
         test    byte [ANTIC_STATUS], ANTIC_STATUS_VBLANK
         jz      .wait_vblank
@@ -605,10 +608,6 @@ main_loop:
         mov     edx, [cur_char_line]
         add     eax, message_len/4 + message_len/2  ; Combined offset
         cmp     eax, message_len
-        jl      .char2b_ok
-        sub     eax, message_len
-.char2b_ok:
-        cmp     eax, message_len        ; May need to wrap twice
         jl      .char2b_ok2
         sub     eax, message_len
 .char2b_ok2:

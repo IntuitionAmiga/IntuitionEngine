@@ -11,7 +11,7 @@
 ; Build:         sdk/bin/ie32asm sdk/examples/asm/coproc_caller_ie32.asm
 ;                sdk/bin/ie32asm sdk/examples/asm/coproc_service_ie32.asm
 ; Run:           ./bin/IntuitionEngine -ie32 coproc_caller_ie32.iex
-;                    -coproc coproc_service_ie32.iex
+;                    -coproc-svc coproc_service_ie32.iex
 ; Porting:       Coprocessor MMIO is CPU-agnostic. Caller/service pairs can
 ;                mix CPU cores (e.g. M68K caller + Z80 service). See
 ;                coproc_caller_68k.asm, coproc_caller_z80.asm,
@@ -87,8 +87,7 @@
 ;   sdk/bin/ie32asm sdk/examples/asm/coproc_service_ie32.asm
 ;
 ; Run:
-;   ./bin/IntuitionEngine -ie32 coproc_caller_ie32.iex \
-;       -coproc coproc_service_ie32.iex
+;   ./bin/IntuitionEngine -ie32 -coproc-svc coproc_service_ie32.iex coproc_caller_ie32.iex
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -197,6 +196,9 @@ poll_loop:
     LOAD    A, COPROC_TICKET_STATUS
     SUB     A, #COPROC_ST_OK           ; compare with OK (2)
     JZ      A, done
+    LOAD    A, COPROC_TICKET_STATUS
+    SUB     A, #COPROC_ST_ERROR        ; compare with ERROR (3)
+    JZ      A, error
     JMP     poll_loop
 
 ; ============================================================================

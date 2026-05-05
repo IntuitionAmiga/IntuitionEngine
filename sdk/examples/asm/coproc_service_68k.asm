@@ -9,7 +9,7 @@
 ; Audio Engine:  None
 ; Assembler:     vasmm68k_mot (Motorola syntax, DevPac compatible)
 ; Build:         vasmm68k_mot -Fbin -m68020 -devpac -o coproc_service_68k.ie68 coproc_service_68k.asm
-; Run:           Used as -coproc argument with a matching caller binary
+; Run:           Used as -coproc-svc argument with a matching caller binary
 ; Porting:       Same service implemented on all CPU cores. See
 ;                coproc_service_ie32.asm (reference), coproc_service_65.asm,
 ;                coproc_service_x86.asm, coproc_service_z80.asm.

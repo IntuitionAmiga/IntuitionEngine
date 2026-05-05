@@ -47,7 +47,9 @@ func TestAssemblerExamples(t *testing.T) {
 	goldenPath := filepath.Join(root, "assembler", "testdata", "golden_hashes.txt")
 	golden := readAssemblerGoldenHashes(t, goldenPath)
 	regen := os.Getenv("IE_REGEN_GOLDEN") == "1"
+	regenFilter := os.Getenv("IE_REGEN_GOLDEN_FILTER")
 	var newGolden []string
+	replacements := map[string]string{}
 
 	for _, ex := range assemblerExamples {
 		t.Run(filepath.Base(ex.source), func(t *testing.T) {
@@ -70,7 +72,17 @@ func TestAssemblerExamples(t *testing.T) {
 			sum := sha256.Sum256(data)
 			hash := hex.EncodeToString(sum[:])
 			if regen {
-				newGolden = append(newGolden, ex.source+" "+hash)
+				if regenFilter != "" {
+					matched, err := assemblerGoldenFilterMatches(regenFilter, ex.source)
+					if err != nil {
+						t.Fatalf("invalid IE_REGEN_GOLDEN_FILTER %q: %v", regenFilter, err)
+					}
+					if matched {
+						replacements[ex.source] = hash
+					}
+				} else {
+					newGolden = append(newGolden, ex.source+" "+hash)
+				}
 				return
 			}
 			if golden[ex.source] != hash {
@@ -79,10 +91,23 @@ func TestAssemblerExamples(t *testing.T) {
 		})
 	}
 	if regen {
-		if err := os.WriteFile(goldenPath, []byte(strings.Join(newGolden, "\n")+"\n"), 0644); err != nil {
+		var out string
+		if regenFilter != "" {
+			out = mergeAssemblerGoldenHashes(t, goldenPath, replacements)
+		} else {
+			out = strings.Join(newGolden, "\n") + "\n"
+		}
+		if err := os.WriteFile(goldenPath, []byte(out), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+func assemblerGoldenFilterMatches(pattern, source string) (bool, error) {
+	if strings.HasSuffix(pattern, "/**") {
+		return strings.HasPrefix(source, strings.TrimSuffix(pattern, "**")), nil
+	}
+	return filepath.Match(pattern, source)
 }
 
 func buildAssemblerBinary(t *testing.T, root, out string, tags []string) {
@@ -119,6 +144,37 @@ func readAssemblerGoldenHashes(t *testing.T, path string) map[string]string {
 		out[fields[0]] = fields[1]
 	}
 	return out
+}
+
+func mergeAssemblerGoldenHashes(t *testing.T, path string, replacements map[string]string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitAfter(string(data), "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) != 2 {
+			t.Fatalf("invalid golden hash line: %q", trimmed)
+		}
+		if hash, ok := replacements[fields[0]]; ok {
+			suffix := ""
+			if strings.HasSuffix(line, "\n") {
+				suffix = "\n"
+			}
+			lines[i] = fields[0] + " " + hash + suffix
+			delete(replacements, fields[0])
+		}
+	}
+	if len(replacements) != 0 {
+		t.Fatalf("filtered regen produced hashes not present in golden file: %v", replacements)
+	}
+	return strings.Join(lines, "")
 }
 
 func assertAssemblerManifestStillMatches(t *testing.T, root string, ex assemblerExample) {
