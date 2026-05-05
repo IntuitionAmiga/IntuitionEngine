@@ -108,7 +108,7 @@ func mustBuildELFPTNote(t *testing.T, image []byte) []byte {
 	phoff := binary.LittleEndian.Uint64(image[32:40])
 	phentsize := binary.LittleEndian.Uint16(image[54:56])
 	phnum := binary.LittleEndian.Uint16(image[56:58])
-	for i := uint16(0); i < phnum; i++ {
+	for i := range phnum {
 		off := phoff + uint64(i)*uint64(phentsize)
 		if binary.LittleEndian.Uint32(image[off:off+4]) != elfPTNote {
 			continue

@@ -180,8 +180,8 @@ func parseLibManifestSpecFromListing(body []byte, label string) (libManifestSpec
 		if trimmed == "" {
 			continue
 		}
-		if idx := strings.Index(trimmed, ".libmanifest"); idx >= 0 {
-			spec, err := parseLibManifestDirective(trimmed[idx+len(".libmanifest"):], symbols, label)
+		if _, after, ok := strings.Cut(trimmed, ".libmanifest"); ok {
+			spec, err := parseLibManifestDirective(after, symbols, label)
 			if err != nil {
 				return libManifestSpec{}, false, fmt.Errorf("parse %s .libmanifest: %w", label, err)
 			}
@@ -208,8 +208,8 @@ func parseListingSymbols(lines [][]byte) map[string]uint64 {
 				symbols[fields[2]] = val
 			}
 		}
-		if strings.HasSuffix(trimmed, ":") {
-			label := strings.TrimSuffix(trimmed, ":")
+		if before, ok := strings.CutSuffix(trimmed, ":"); ok {
+			label := before
 			if strings.HasPrefix(label, ".") {
 				if lastGlobal != "" {
 					pendingLabels = append(pendingLabels, lastGlobal+label)

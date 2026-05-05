@@ -23,6 +23,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -305,7 +306,7 @@ func (w *WarningPolicy) Suppress(category string) {
 	w.suppressed[category] = true
 }
 
-func (w *WarningPolicy) Add(category, format string, args ...interface{}) error {
+func (w *WarningPolicy) Add(category, format string, args ...any) error {
 	if w.suppressed != nil && w.suppressed[category] {
 		return nil
 	}
@@ -753,7 +754,7 @@ func (a *Assembler) handleDirective(line string, lineNum int, program []byte) er
 			if err := a.markRange(a.baseAddr+a.codeOffset, uint32(size), lineNum); err != nil {
 				return err
 			}
-			for i := uint64(0); i < size; i++ {
+			for i := range size {
 				program[a.codeOffset+uint32(i)] = 0
 			}
 		}
@@ -851,7 +852,7 @@ func (a *Assembler) readIncbin(path string) ([]byte, error) {
 }
 
 func (a *Assembler) markRange(addr uint32, size uint32, lineNum int) error {
-	for i := uint32(0); i < size; i++ {
+	for i := range size {
 		at := addr + i
 		if prev, ok := a.written[at]; ok {
 			return fmt.Errorf("overlapping emit at $%04X (already written by line %d)", at, prev)
@@ -1039,7 +1040,7 @@ func (a *Assembler) calcDirectiveSize(line string) uint32 {
 
 func (a *Assembler) sourceLines(code string) []string {
 	var out []string
-	for _, raw := range strings.Split(code, "\n") {
+	for raw := range strings.SplitSeq(code, "\n") {
 		line := strings.TrimSpace(stripIE32Comment(raw))
 		for {
 			if line == "" {
@@ -1085,9 +1086,7 @@ func (a *Assembler) noteSize(size uint32) {
 
 func cloneUint32Map(m map[string]uint32) map[string]uint32 {
 	out := make(map[string]uint32, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
+	maps.Copy(out, m)
 	return out
 }
 
@@ -1171,7 +1170,7 @@ func (a *Assembler) collectIE32Layout(lines []string, warnDuplicateLabels bool) 
 func (a *Assembler) assemble(code string) ([]byte, error) {
 	var program []byte
 	lines := a.sourceLines(code)
-	for iter := 0; iter < 5; iter++ {
+	for iter := range 5 {
 		prevLabels := cloneUint32Map(a.labels)
 		prevEquates := cloneUint32Map(a.equates)
 		prevMax := a.maxAddr
@@ -1573,8 +1572,8 @@ func main() {
 			outFile = args[i]
 		} else if arg == "-Werror" {
 			warnings.Werror = true
-		} else if strings.HasPrefix(arg, "-Wno-") {
-			warnings.Suppress(strings.TrimPrefix(arg, "-Wno-"))
+		} else if after, ok := strings.CutPrefix(arg, "-Wno-"); ok {
+			warnings.Suppress(after)
 		} else if arg == "-I" {
 			i++
 			if i >= len(args) {
