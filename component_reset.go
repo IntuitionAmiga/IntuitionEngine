@@ -201,6 +201,9 @@ func (chip *SoundChip) Reset() {
 
 	// Clear byte accumulation shadow buffer
 	chip.flexShadow = [NUM_CHANNELS * FLEX_CH_STRIDE]byte{}
+	if chip.sfx != nil {
+		chip.sfx.Reset()
+	}
 
 	// Preserve registered sample tickers across reset; engines re-establish
 	// their internal state and should keep advancing afterwards.

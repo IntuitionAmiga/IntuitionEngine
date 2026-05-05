@@ -46,6 +46,10 @@ VIDEO_CTRL      equ $F0000              ; Video control (enable/disable)
 VIDEO_MODE      equ $F0004              ; Video mode (resolution)
 VIDEO_STATUS    equ $F0008              ; Video status (VBlank flag)
 STATUS_VBLANK   equ 2                   ; VBlank status bit
+VIDEO_PAL_INDEX equ $F0078              ; CLUT palette write index
+VIDEO_PAL_DATA  equ $F007C              ; CLUT palette data ($00RRGGBB)
+VIDEO_COLOR_MODE equ $F0080             ; 0=RGBA32, 1=CLUT8 indexed
+VIDEO_FB_BASE   equ $F0084              ; Bus-memory framebuffer base
 
 ; Copper coprocessor
 COPPER_CTRL     equ $F000C              ; Copper control
@@ -267,6 +271,41 @@ SID_PLAY_LEN    equ $F0E24              ; Play length (32-bit)
 SID_PLAY_CTRL   equ $F0E28              ; Play control
 SID_PLAY_STATUS equ $F0E2C              ; Play status
 SID_SUBSONG     equ $F0E2D              ; Subsong selection (0-255)
+
+; ============================================================================
+; IE SFX TRIGGER REGISTERS (4-channel sample trigger block)
+;
+; SFX_PAN_RESERVED is accepted but ignored in mono Phase 1 output.
+; SFX_CTRL writes: bit0 trigger, bit1 stop, bit2 loop enable.
+; SFX_CTRL reads return status: bit0 playing, bit1 pointer/range error.
+; ============================================================================
+IE_SFX_CH_BASE    equ $F0E80            ; Base address of SFX channel 0
+IE_SFX_CH_STRIDE  equ $20               ; Bytes per SFX channel
+IE_SFX_CH0_BASE   equ $F0E80
+IE_SFX_CH1_BASE   equ $F0EA0
+IE_SFX_CH2_BASE   equ $F0EC0
+IE_SFX_CH3_BASE   equ $F0EE0
+
+SFX_PTR           equ $00               ; Sample base pointer (u32)
+SFX_LEN           equ $04               ; Sample length in bytes (u32)
+SFX_LOOP_PTR      equ $08               ; Loop start pointer, 0=no loop (u32)
+SFX_LOOP_LEN      equ $0C               ; Loop length in bytes (u32)
+SFX_FREQ          equ $10               ; Source sample rate in Hz (u32)
+SFX_VOL           equ $14               ; Volume 0-255 (u16)
+SFX_PAN_RESERVED  equ $16               ; Reserved, ignored in mono output (u16)
+SFX_FORMAT        equ $18               ; 0=signed8, 1=unsigned8, 2=signed16
+SFX_CTRL          equ $1C               ; Write control / read status (u32)
+
+SFX_FORMAT_SIGNED8   equ 0
+SFX_FORMAT_UNSIGNED8 equ 1
+SFX_FORMAT_SIGNED16  equ 2
+
+SFX_CTRL_TRIGGER  equ $01
+SFX_CTRL_STOP     equ $02
+SFX_CTRL_LOOP_EN  equ $04
+
+SFX_STATUS_PLAYING equ $01
+SFX_STATUS_ERROR   equ $02
 
 ; ----------------------------------------------------------------------------
 ; SAP Player Registers
@@ -1020,6 +1059,8 @@ MODE_640x480    equ $00                 ; 640x480 true colour
 MODE_800x600    equ $01                 ; 800x600 true colour
 MODE_1024x768   equ $02                 ; 1024x768 true colour
 MODE_1280x960   equ $03                 ; 1280x960 true colour (default)
+MODE_320x200    equ $04                 ; 320x200 chunky, RGBA32 or CLUT8
+MODE_320x240    equ $05                 ; 320x240 chunky, RGBA32 or CLUT8
 
 ; Blitter operations
 BLT_OP_COPY     equ 0                   ; Copy source to dest

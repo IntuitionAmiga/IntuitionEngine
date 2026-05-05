@@ -34,6 +34,10 @@ VIDEO_CTRL      = $F000         ; Video control (enable/disable)
 VIDEO_MODE      = $F004         ; Video mode (resolution)
 VIDEO_STATUS    = $F008         ; Video status (VBlank flag)
 STATUS_VBLANK   = 2             ; VBlank status bit
+VIDEO_PAL_INDEX = $F078         ; CLUT palette write index
+VIDEO_PAL_DATA  = $F07C         ; CLUT palette data ($00RRGGBB)
+VIDEO_COLOR_MODE = $F080        ; 0=RGBA32, 1=CLUT8 indexed
+VIDEO_FB_BASE   = $F084         ; Bus-memory framebuffer base
 
 ; Copper coprocessor
 COPPER_CTRL     = $F00C         ; Copper control
@@ -345,6 +349,33 @@ SID_PLAY_LEN_3  = $FE27         ; Play length byte 3
 SID_PLAY_CTRL   = $FE28         ; Play control (IE32 $F0E28)
 SID_PLAY_STATUS = $FE2C         ; Play status (IE32 $F0E2C)
 SID_SUBSONG     = $FE2D         ; Subsong selection (0-255)
+
+; ============================================================================
+; IE SFX TRIGGER REGISTERS (4-channel sample trigger block)
+; ============================================================================
+IE_SFX_CH_BASE    = $FE80       ; SFX channel 0 base (IE32 $F0E80)
+IE_SFX_CH_STRIDE  = $20
+IE_SFX_CH0_BASE   = $FE80
+IE_SFX_CH1_BASE   = $FEA0
+IE_SFX_CH2_BASE   = $FEC0
+IE_SFX_CH3_BASE   = $FEE0
+SFX_PTR           = $00
+SFX_LEN           = $04
+SFX_LOOP_PTR      = $08
+SFX_LOOP_LEN      = $0C
+SFX_FREQ          = $10
+SFX_VOL           = $14
+SFX_PAN_RESERVED  = $16
+SFX_FORMAT        = $18
+SFX_CTRL          = $1C
+SFX_FORMAT_SIGNED8   = 0
+SFX_FORMAT_UNSIGNED8 = 1
+SFX_FORMAT_SIGNED16  = 2
+SFX_CTRL_TRIGGER  = $01
+SFX_CTRL_STOP     = $02
+SFX_CTRL_LOOP_EN  = $04
+SFX_STATUS_PLAYING = $01
+SFX_STATUS_ERROR   = $02
 
 ; ============================================================================
 ; TED AUDIO REGISTERS (Commodore Plus/4 style)
@@ -1508,6 +1539,8 @@ MODE_640x480    = $00           ; 640x480 true colour
 MODE_800x600    = $01           ; 800x600 true colour
 MODE_1024x768   = $02           ; 1024x768 true colour
 MODE_1280x960   = $03           ; 1280x960 true colour (default)
+MODE_320x200    = $04           ; 320x200 chunky, RGBA32 or CLUT8
+MODE_320x240    = $05           ; 320x240 chunky, RGBA32 or CLUT8
 
 ; Blitter operations
 BLT_OP_COPY     = 0             ; Copy source to dest

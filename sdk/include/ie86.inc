@@ -45,6 +45,10 @@ VIDEO_CTRL      equ 0xF0000              ; Video control (enable/disable)
 VIDEO_MODE      equ 0xF0004              ; Video mode (resolution)
 VIDEO_STATUS    equ 0xF0008              ; Video status (VBlank flag)
 STATUS_VBLANK   equ 2                    ; VBlank status bit
+VIDEO_PAL_INDEX equ 0xF0078              ; CLUT palette write index
+VIDEO_PAL_DATA  equ 0xF007C              ; CLUT palette data (0x00RRGGBB)
+VIDEO_COLOR_MODE equ 0xF0080             ; 0=RGBA32, 1=CLUT8 indexed
+VIDEO_FB_BASE   equ 0xF0084              ; Bus-memory framebuffer base
 
 ; Copper coprocessor
 COPPER_CTRL     equ 0xF000C              ; Copper control
@@ -233,6 +237,33 @@ SID_PLAY_LEN    equ 0xF0E24              ; Play length (32-bit)
 SID_PLAY_CTRL   equ 0xF0E28              ; Play control
 SID_PLAY_STATUS equ 0xF0E2C              ; Play status
 SID_SUBSONG     equ 0xF0E2D              ; Subsong selection (0-255)
+
+; ============================================================================
+; IE SFX TRIGGER REGISTERS (4-channel sample trigger block)
+; ============================================================================
+IE_SFX_CH_BASE    equ 0xF0E80
+IE_SFX_CH_STRIDE  equ 0x20
+IE_SFX_CH0_BASE   equ 0xF0E80
+IE_SFX_CH1_BASE   equ 0xF0EA0
+IE_SFX_CH2_BASE   equ 0xF0EC0
+IE_SFX_CH3_BASE   equ 0xF0EE0
+SFX_PTR           equ 0x00
+SFX_LEN           equ 0x04
+SFX_LOOP_PTR      equ 0x08
+SFX_LOOP_LEN      equ 0x0C
+SFX_FREQ          equ 0x10
+SFX_VOL           equ 0x14
+SFX_PAN_RESERVED  equ 0x16
+SFX_FORMAT        equ 0x18
+SFX_CTRL          equ 0x1C
+SFX_FORMAT_SIGNED8   equ 0
+SFX_FORMAT_UNSIGNED8 equ 1
+SFX_FORMAT_SIGNED16  equ 2
+SFX_CTRL_TRIGGER  equ 0x01
+SFX_CTRL_STOP     equ 0x02
+SFX_CTRL_LOOP_EN  equ 0x04
+SFX_STATUS_PLAYING equ 0x01
+SFX_STATUS_ERROR   equ 0x02
 
 ; ============================================================================
 ; TED AUDIO REGISTERS (Commodore Plus/4 style)
@@ -567,6 +598,8 @@ MODE_640x480    equ 0x00                 ; 640x480 true colour
 MODE_800x600    equ 0x01                 ; 800x600 true colour
 MODE_1024x768   equ 0x02                 ; 1024x768 true colour
 MODE_1280x960   equ 0x03                 ; 1280x960 true colour (default)
+MODE_320x200    equ 0x04                 ; 320x200 chunky, RGBA32 or CLUT8
+MODE_320x240    equ 0x05                 ; 320x240 chunky, RGBA32 or CLUT8
 
 ; Blitter operations
 BLT_OP_COPY     equ 0                    ; Copy source to dest

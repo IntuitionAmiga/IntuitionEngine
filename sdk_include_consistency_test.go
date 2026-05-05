@@ -95,6 +95,28 @@ func TestSDKInclude_32BitConstantParity(t *testing.T) {
 		"SN_PORT_MODE":         SN_PORT_MODE,
 		"SN76489_MODE_LFSR_15": SN76489_MODE_LFSR_15,
 		"SN76489_MODE_LFSR_16": SN76489_MODE_LFSR_16,
+		"VIDEO_PAL_INDEX":      VIDEO_PAL_INDEX,
+		"VIDEO_PAL_DATA":       VIDEO_PAL_DATA,
+		"VIDEO_COLOR_MODE":     VIDEO_COLOR_MODE,
+		"VIDEO_FB_BASE":        VIDEO_FB_BASE,
+		"MODE_320x200":         MODE_320x200,
+		"MODE_320x240":         MODE_320x240,
+		"IE_SFX_CH_BASE":       IE_SFX_CH_BASE,
+		"IE_SFX_CH_STRIDE":     IE_SFX_CH_STRIDE,
+		"SFX_PTR":              SFX_PTR,
+		"SFX_LEN":              SFX_LEN,
+		"SFX_LOOP_PTR":         SFX_LOOP_PTR,
+		"SFX_LOOP_LEN":         SFX_LOOP_LEN,
+		"SFX_FREQ":             SFX_FREQ,
+		"SFX_VOL":              SFX_VOL,
+		"SFX_PAN_RESERVED":     SFX_PAN_RESERVED,
+		"SFX_FORMAT":           SFX_FORMAT,
+		"SFX_CTRL":             SFX_CTRL,
+		"SFX_CTRL_TRIGGER":     SFX_CTRL_TRIGGER,
+		"SFX_CTRL_STOP":        SFX_CTRL_STOP,
+		"SFX_CTRL_LOOP_EN":     SFX_CTRL_LOOP_EN,
+		"SFX_STATUS_PLAYING":   SFX_STATUS_PLAYING,
+		"SFX_STATUS_ERROR":     SFX_STATUS_ERROR,
 	}
 
 	incFiles := []string{
@@ -114,6 +136,46 @@ func TestSDKInclude_32BitConstantParity(t *testing.T) {
 			if got != want {
 				t.Fatalf("%s: %s mismatch: got 0x%X want 0x%X", path, key, got, want)
 			}
+		}
+	}
+}
+
+func TestSDKInclude_SFXAndLowRes8BitAliases(t *testing.T) {
+	ie65 := parseIncConstants(t, filepath.Join("sdk", "include", "ie65.inc"))
+	for key, want := range map[string]uint32{
+		"VIDEO_PAL_INDEX":    0xF078,
+		"VIDEO_PAL_DATA":     0xF07C,
+		"VIDEO_COLOR_MODE":   0xF080,
+		"VIDEO_FB_BASE":      0xF084,
+		"MODE_320x200":       MODE_320x200,
+		"MODE_320x240":       MODE_320x240,
+		"IE_SFX_CH_BASE":     0xFE80,
+		"IE_SFX_CH_STRIDE":   IE_SFX_CH_STRIDE,
+		"SFX_PAN_RESERVED":   SFX_PAN_RESERVED,
+		"SFX_CTRL_TRIGGER":   SFX_CTRL_TRIGGER,
+		"SFX_STATUS_PLAYING": SFX_STATUS_PLAYING,
+	} {
+		if got := ie65[key]; got != want {
+			t.Fatalf("ie65.inc: %s got 0x%X want 0x%X", key, got, want)
+		}
+	}
+
+	ie80 := parseIncConstants(t, filepath.Join("sdk", "include", "ie80.inc"))
+	for key, want := range map[string]uint32{
+		"VIDEO_PAL_INDEX":    0xF078,
+		"VIDEO_PAL_DATA":     0xF07C,
+		"VIDEO_COLOR_MODE":   0xF080,
+		"VIDEO_FB_BASE":      0xF084,
+		"MODE_320x200":       MODE_320x200,
+		"MODE_320x240":       MODE_320x240,
+		"IE_SFX_CH_BASE":     IE_SFX_CH_BASE,
+		"IE_SFX_CH_STRIDE":   IE_SFX_CH_STRIDE,
+		"SFX_PAN_RESERVED":   SFX_PAN_RESERVED,
+		"SFX_CTRL_TRIGGER":   SFX_CTRL_TRIGGER,
+		"SFX_STATUS_PLAYING": SFX_STATUS_PLAYING,
+	} {
+		if got := ie80[key]; got != want {
+			t.Fatalf("ie80.inc: %s got 0x%X want 0x%X", key, got, want)
 		}
 	}
 }

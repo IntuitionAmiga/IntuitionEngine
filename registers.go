@@ -43,6 +43,7 @@ Address Range       Size    Device              Constants File
 0xF0D00-0xF0D20     33B     POKEY               pokey_constants.go
 0xF0D40-0xF0DFF     192B    SID3 Flex Audio     audio_chip.go
 0xF0E00-0xF0E2D     45B     SID (6581/8580)     sid_constants.go
+0xF0E80-0xF0EFF     128B    SFX Trigger         sfx_constants.go
 0xF0F00-0xF0F5F     96B     TED (audio+video)   ted_constants.go, ted_video_constants.go
 0xF1000-0xF13FF     1KB     VGA Registers       vga_constants.go
 0xF2000-0xF2017     24B     ULA Registers       ula_constants.go
@@ -69,6 +70,7 @@ I/O REGION DETAILS
 
 Video Chip (0xF0000-0xF0054) - video_chip.go
   VIDEO_CTRL, VIDEO_MODE, VIDEO_STATUS
+  Modes: 320x200, 320x240, 640x480, 800x600, 1024x768, 1280x960
   COPPER_CTRL, COPPER_PTR, COPPER_PC, COPPER_STATUS
   BLT_* (Blitter registers)
   VIDEO_RASTER_* (Raster effect registers)
@@ -98,6 +100,10 @@ SID - 6581/8580 (0xF0E00-0xF0E2D) - sid_constants.go
   SID_V1_*, SID_V2_*, SID_V3_* (Voice registers)
   SID_FC_*, SID_RES_FILT, SID_MODE_VOL (Filter/volume)
   SID_PLAY_* (Player registers)
+
+SFX Trigger (0xF0E80-0xF0EFF) - sfx_constants.go
+  4 channels, 32-byte stride
+  SFX_PTR/LEN/LOOP_PTR/LOOP_LEN/FREQ/VOL/FORMAT/CTRL
 
 TED (0xF0F00-0xF0F5F) - ted_constants.go, ted_video_constants.go
   Audio: TED_FREQ1_*, TED_FREQ2_*, TED_SND_CTRL (0xF0F00-0xF0F05)

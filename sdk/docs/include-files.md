@@ -154,6 +154,7 @@ As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level kernel image/
 - TED: `TED_*`
 - AHX: `AHX_*`
 - MOD: `MOD_PLAY_PTR`, `MOD_PLAY_LEN`, `MOD_PLAY_CTRL`, `MOD_PLAY_STATUS`, `MOD_FILTER_MODEL`, `MOD_POSITION`
+- SFX: `IE_SFX_CH_BASE`, `IE_SFX_CH_STRIDE`, `SFX_*`
 
 ### Memory Constants
 - `VRAM_START` - Start of video RAM

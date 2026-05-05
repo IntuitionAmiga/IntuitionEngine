@@ -932,6 +932,10 @@ func main() {
 		soundChip.HandleRegisterRead,
 		soundChip.HandleRegisterWrite)
 	sysBus.MapIOByte(SID3_FLEX_BASE, SID3_FLEX_END, soundChip.HandleRegisterWrite8)
+	sysBus.MapIO(IE_SFX_REGION_BASE, IE_SFX_REGION_END,
+		soundChip.sfx.HandleRead,
+		soundChip.sfx.HandleWrite)
+	sysBus.MapIOByte(IE_SFX_REGION_BASE, IE_SFX_REGION_END, soundChip.sfx.HandleWrite8)
 
 	sysBus.MapIO(VIDEO_CTRL, VIDEO_REG_END,
 		videoChip.HandleRead,
@@ -1183,7 +1187,7 @@ func main() {
 	// during file playback are mirrored to raw memory, making them visible
 	// in the Machine Monitor's IO view.
 	busMem := sysBus.GetMemory()
-	soundChip.AttachBusMemory(busMem)
+	soundChip.AttachBus(sysBus)
 	psgEngine.AttachBusMemory(busMem)
 	sidEngine.AttachBusMemory(busMem)
 	sid2Engine.AttachBusMemory(busMem)

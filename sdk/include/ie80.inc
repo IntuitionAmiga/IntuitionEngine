@@ -36,6 +36,10 @@
 .set VIDEO_MODE,0xF004
 .set VIDEO_STATUS,0xF008
 .set STATUS_VBLANK,2
+.set VIDEO_PAL_INDEX,0xF078
+.set VIDEO_PAL_DATA,0xF07C
+.set VIDEO_COLOR_MODE,0xF080
+.set VIDEO_FB_BASE,0xF084
 
 ; Copper coprocessor
 .set COPPER_CTRL,0xF00C
@@ -345,6 +349,33 @@
 .set SID_PLAY_CTRL,0xF0E28
 .set SID_PLAY_STATUS,0xF0E2C
 .set SID_SUBSONG,0xF0E2D
+
+; ============================================================================
+; IE SFX TRIGGER REGISTERS (4-channel sample trigger block)
+; ============================================================================
+.set IE_SFX_CH_BASE,0xF0E80
+.set IE_SFX_CH_STRIDE,0x20
+.set IE_SFX_CH0_BASE,0xF0E80
+.set IE_SFX_CH1_BASE,0xF0EA0
+.set IE_SFX_CH2_BASE,0xF0EC0
+.set IE_SFX_CH3_BASE,0xF0EE0
+.set SFX_PTR,0x00
+.set SFX_LEN,0x04
+.set SFX_LOOP_PTR,0x08
+.set SFX_LOOP_LEN,0x0C
+.set SFX_FREQ,0x10
+.set SFX_VOL,0x14
+.set SFX_PAN_RESERVED,0x16
+.set SFX_FORMAT,0x18
+.set SFX_CTRL,0x1C
+.set SFX_FORMAT_SIGNED8,0
+.set SFX_FORMAT_UNSIGNED8,1
+.set SFX_FORMAT_SIGNED16,2
+.set SFX_CTRL_TRIGGER,0x01
+.set SFX_CTRL_STOP,0x02
+.set SFX_CTRL_LOOP_EN,0x04
+.set SFX_STATUS_PLAYING,0x01
+.set SFX_STATUS_ERROR,0x02
 
 ; ============================================================================
 ; TED AUDIO REGISTERS (Commodore Plus/4 style)
@@ -1354,6 +1385,8 @@
 .set MODE_800x600,0x01
 .set MODE_1024x768,0x02
 .set MODE_1280x960,0x03
+.set MODE_320x200,0x04
+.set MODE_320x240,0x05
 
 ; Blitter operations
 .set BLT_OP_COPY,0

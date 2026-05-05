@@ -44,6 +44,10 @@
 .equ VIDEO_MODE        0xF0004          ; Video mode (resolution)
 .equ VIDEO_STATUS      0xF0008          ; Video status (VBlank flag)
 .equ STATUS_VBLANK     2                ; VBlank status bit
+.equ VIDEO_PAL_INDEX   0xF0078          ; CLUT palette write index
+.equ VIDEO_PAL_DATA    0xF007C          ; CLUT palette data (0x00RRGGBB)
+.equ VIDEO_COLOR_MODE  0xF0080          ; 0=RGBA32, 1=CLUT8 indexed
+.equ VIDEO_FB_BASE     0xF0084          ; Bus-memory framebuffer base
 
 ; Copper coprocessor
 .equ COPPER_CTRL       0xF000C          ; Copper control
@@ -265,6 +269,33 @@
 .equ SID_PLAY_CTRL     0xF0E28          ; Play control
 .equ SID_PLAY_STATUS   0xF0E2C          ; Play status
 .equ SID_SUBSONG       0xF0E2D          ; Subsong selection (0-255)
+
+; ============================================================================
+; IE SFX TRIGGER REGISTERS (4-channel sample trigger block)
+; ============================================================================
+.equ IE_SFX_CH_BASE     0xF0E80
+.equ IE_SFX_CH_STRIDE   0x20
+.equ IE_SFX_CH0_BASE    0xF0E80
+.equ IE_SFX_CH1_BASE    0xF0EA0
+.equ IE_SFX_CH2_BASE    0xF0EC0
+.equ IE_SFX_CH3_BASE    0xF0EE0
+.equ SFX_PTR            0x00
+.equ SFX_LEN            0x04
+.equ SFX_LOOP_PTR       0x08
+.equ SFX_LOOP_LEN       0x0C
+.equ SFX_FREQ           0x10
+.equ SFX_VOL            0x14
+.equ SFX_PAN_RESERVED   0x16
+.equ SFX_FORMAT         0x18
+.equ SFX_CTRL           0x1C
+.equ SFX_FORMAT_SIGNED8   0
+.equ SFX_FORMAT_UNSIGNED8 1
+.equ SFX_FORMAT_SIGNED16  2
+.equ SFX_CTRL_TRIGGER   0x01
+.equ SFX_CTRL_STOP      0x02
+.equ SFX_CTRL_LOOP_EN   0x04
+.equ SFX_STATUS_PLAYING 0x01
+.equ SFX_STATUS_ERROR   0x02
 
 ; ----------------------------------------------------------------------------
 ; SAP Player Registers
@@ -794,6 +825,8 @@
 .equ MODE_800x600     0x01              ; 800x600 true colour
 .equ MODE_1024x768    0x02              ; 1024x768 true colour
 .equ MODE_1280x960    0x03              ; 1280x960 true colour (default)
+.equ MODE_320x200     0x04              ; 320x200 chunky, RGBA32 or CLUT8
+.equ MODE_320x240     0x05              ; 320x240 chunky, RGBA32 or CLUT8
 
 ; Blitter operations
 .equ BLT_OP_COPY       0                ; Copy source to dest

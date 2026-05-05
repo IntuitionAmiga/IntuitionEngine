@@ -71,6 +71,7 @@ import (
 // F0A80-F0B7F: Flexible 4-channel register block (preferred)
 // F0C40-F0CFF: SID2 flexible register block (channels 4-6)
 // F0D40-F0DFF: SID3 flexible register block (channels 7-9)
+// F0E80-F0EFF: IE_SFX trigger sample block
 const (
 	SQUARE_REG_START = 0xF0900
 	SQUARE_REG_END   = 0xF093F
@@ -938,6 +939,7 @@ type SoundChip struct {
 	sampleTickers map[string]SampleTicker
 	sampleTap     atomic.Value // Optional tap callback fed with each generated sample
 	audioFrozen   atomic.Bool  // When true, ReadSample returns 0 (hard pause)
+	sfx           *SFXTrigger  // Independent trigger-and-forget sample mixer
 
 	snVoices [4]Channel // Native SN76489 voices, independent from flex channels.
 
@@ -1003,9 +1005,11 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 		sampleRateRecip:  1.0 / float32(SAMPLE_RATE),
 		masterGainLinear: 1.0,
 		sampleTickers:    make(map[string]SampleTicker),
+		sfx:              NewSFXTrigger(),
 	}
 	chip.sampleTicker.Store(&sampleTickerListHolder{})
 	chip.sampleTap.Store(&sampleTapHolder{})
+	chip.RegisterSampleTicker("sfx", chip.sfx)
 
 	// Initialise channels (4 base + 6 SID2/SID3 channels)
 	waveTypes := []int{
@@ -1222,6 +1226,13 @@ func (chip *SoundChip) HandleRegisterRead(addr uint32) uint32 {
 
 func (chip *SoundChip) AttachBusMemory(mem []byte) {
 	chip.busMemory = mem
+}
+
+func (chip *SoundChip) AttachBus(bus *MachineBus) {
+	chip.AttachBusMemory(bus.GetMemory())
+	if chip.sfx != nil {
+		chip.sfx.AttachBus(bus)
+	}
 }
 
 func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
@@ -2806,6 +2817,9 @@ func (chip *SoundChip) GenerateSample() float32 {
 	} else {
 		// When multiple channels are active, average their samples.
 		sample = sum / float32(activeCount)
+	}
+	if chip.sfx != nil {
+		sample = clampF32(sample+chip.sfx.MixSample(), MIN_SAMPLE, MAX_SAMPLE)
 	}
 
 	// Apply SID mixer mode (DC offset and soft saturation)
