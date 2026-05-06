@@ -82,7 +82,7 @@ func boilerPlate() {
 	fmt.Println("\nA modern 64-bit RISC re-imagining of Commodore/Atari/Sinclair/BBC/Amstrad/IBM 8/16/32-bit home computers.")
 	fmt.Println("Six heterogeneous CPU cores : IE64 RISC(JIT), IE32 RISC, M68020(JIT), x86(JIT), Z80(JIT) and 6502(JIT).")
 	fmt.Println("Six independent video chips : IEVideoChip + SNES Mode7 + Blitter + Copper, VGA, ZX Spectrum ULA, TED Video, Atari ANTIC/GTIA, 3DFX Voodoo.")
-	fmt.Println("Seven discrete audio chips  : IESoundChip, AY/YM/PSG, SID, POKEY, TED Audio, TI SN76489, AROS audio DMA.")
+	fmt.Println("Seven discrete audio chips  : IESoundChip, AY/YM/PSG, SID, POKEY, TED Audio, TI SN76489, Paula DMA.")
 	fmt.Println("20+ retro chiptune formats  : ProTracker MOD 4/6/8 channel, PCM WAV, AHX/THX (Resynthesized), PSID/RSID/MultiSID, TED/TMF/PRG, SAP A/B/C, YM2/YM3/YM3b/YM4/YM5/YM6/LHA, AY, VGM/VGZ, SNDH/SND, VTX/VT, PT1/PT2/PT3, STC, SQT, ASC, FTC.")
 	fmt.Println("(c) 2024 - 2026 Zayn Otley")
 	fmt.Println("https://github.com/IntuitionAmiga/IntuitionEngine")
@@ -277,7 +277,7 @@ func main() {
 		fmt.Println("Default (no mode/filename)  : start EhBASIC IE64.")
 		fmt.Println("Six heterogeneous CPU cores : IE64 RISC(JIT), IE32 RISC, M68020(JIT), x86(JIT), Z80(JIT) and 6502(JIT).")
 		fmt.Println("Six independent video chips : IEVideoChip + SNES Mode7 + Blitter + Copper, VGA, ZX Spectrum ULA, TED Video, Atari ANTIC/GTIA, 3DFX Voodoo.")
-		fmt.Println("Seven discrete audio chips  : IESoundChip, AY/YM/PSG, SID, POKEY, TED Audio, TI SN76489, AROS audio DMA.")
+		fmt.Println("Seven discrete audio chips  : IESoundChip, AY/YM/PSG, SID, POKEY, TED Audio, TI SN76489, Paula DMA.")
 		fmt.Println("20+ retro chiptune formats  : ProTracker MOD 4/6/8 channel, PCM WAV, AHX/THX (Resynthesized), PSID/RSID/MultiSID, TED/TMF/PRG, SAP A/B/C, YM2/YM3/YM3b/YM4/YM5/YM6/LHA, AY, VGM/VGZ, SNDH/SND, VTX/VT, PT1/PT2/PT3, STC, SQT, ASC, FTC.")
 		flagSet.PrintDefaults()
 	}
