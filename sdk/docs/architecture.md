@@ -2,7 +2,7 @@
 
 *Last updated: 2026-05-07*
 
-Intuition Engine is a multi-CPU retro hardware emulator with 6 heterogeneous CPU cores, 6 video systems, 9 audio engines/players, a copper coprocessor, DMA blitter, and extensive I/O peripherals — all connected through a unified MachineBus. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve (see `memory_sizing.go`); each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
+Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, 9 audio engines/players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve (see `memory_sizing.go`); each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
 The diagrams below describe wired runtime behavior. Source-file presence alone is not treated as support: for example, `jit_z80_emit_arm64.go` exists, but `jit_z80_dispatch.go` keeps Z80 JIT available only when `runtime.GOARCH == "amd64"`.
 
@@ -116,9 +116,9 @@ flowchart TB
 
 **Bus architecture notes:**
 
-- **Concurrent multi-CPU bus** — the Program Executor selects the primary CPU mode, but the Coprocessor Manager can launch additional worker CPUs that run concurrently on the same bus. Lock-free bus design (immutable `MapIO` dispatch, `ioPageBitmap` fast path, I/O callbacks protect their own state) allows safe concurrent access without bus arbitration.
-- **No centralised interrupt controller** — each CPU has per-CPU interrupt lines (IRQ/NMI as `atomic.Bool`). Peripherals signal the active CPU directly.
-- **MMIO dispatch** — the bus uses an `ioPageBitmap []bool` fast path (page = 256 bytes). Non-I/O pages use direct unsafe pointer access with zero dispatch overhead.
+- **Concurrent multi-CPU bus** - the Program Executor selects the primary CPU mode, but the Coprocessor Manager can launch additional worker CPUs that run concurrently on the same bus. Lock-free bus design (immutable `MapIO` dispatch, `ioPageBitmap` fast path, I/O callbacks protect their own state) allows safe concurrent access without bus arbitration.
+- **No centralised interrupt controller** - each CPU has per-CPU interrupt lines (IRQ/NMI as `atomic.Bool`). Peripherals signal the active CPU directly.
+- **MMIO dispatch** - the bus uses an `ioPageBitmap []bool` fast path (page = 256 bytes). Non-I/O pages use direct unsafe pointer access with zero dispatch overhead.
 
 ### Runtime Data and Control Flow
 
@@ -311,7 +311,7 @@ x86 shares the Z80 Voodoo port mapping (`$B0-$B7`) and most sound-chip port mapp
 | `$3D5` | VGA CRTC data | `VGA_CRTC_DATA` | Standard PC port |
 | `$3DA` | VGA Status | Returns `0x08` if vsync | Standard PC port |
 | `$B0-$B7` | Voodoo 3D | `0xF8000` | Addr lo/hi + 4 data bytes |
-| `$60-$69` | POKEY | `0xF0D00+(port-0x60)` | **Direct** — port offset maps to writable register |
+| `$60-$69` | POKEY | `0xF0D00+(port-0x60)` | **Direct** - port offset maps to writable register |
 | `$D4/$D5` | ANTIC | `0xF2100` | Register select / data (x4 stride) |
 | `$D6/$D7` | GTIA | `0xF2140` | Register select / data (x4 stride, collision regs through `0xF21F8`) |
 | `$E0/$E1` | SID | `0xF0E00/0xF0E30/0xF0E50` | Register select / data; select bits 5-6 choose SID1/SID2/SID3 |
@@ -319,7 +319,7 @@ x86 shares the Z80 Voodoo port mapping (`$B0-$B7`) and most sound-chip port mapp
 | `$F2/$F3` | TED | `0xF0F00` / `0xF0F20` | Register select / data (audio / video x4 stride) |
 | `$FE` | ULA | `0xF2000` | Border colour (bits 0-2) |
 
-**Key difference from Z80**: x86 POKEY access is direct — ports `$60-$69` map one-to-one onto writable POKEY registers at `0xF0D00+(port-0x60)`. ANTIC (`$D4/$D5`) and GTIA (`$D6/$D7`) keep their own select/data pairs.
+**Key difference from Z80**: x86 POKEY access is direct - ports `$60-$69` map one-to-one onto writable POKEY registers at `0xF0D00+(port-0x60)`. ANTIC (`$D4/$D5`) and GTIA (`$D6/$D7`) keep their own select/data pairs.
 
 x86 also directly accesses VGA VRAM at `$A0000-$AFFFF` in the memory path (no port translation needed).
 
@@ -453,9 +453,9 @@ The blitter supports two pixel formats via `BLT_FLAGS` (`0xF0488`): RGBA32 (4 bp
 
 `BLT_CTRL` bit 0 starts the synchronous blit, bit 1 is read-only busy, and bit 2 enables a completion pulse on `IntMaskBlitter`. `BLT_STATUS` bit 0 is ERR, bit 1 is DONE, and bit 2 is sticky IRQ_PENDING (write 1 to clear). Invalid opcodes, out-of-range Mode7 samples, and overflowed blitter bounds set ERR and do not silently fall back to COPY.
 
-The color expansion operation (`BLT_OP=6`) renders 1-bit glyph templates into colored pixels for hardware-accelerated text. It reads a template from `BLT_MASK`, uses `BLT_FG`/`BLT_BG` (`0xF048C`/`0xF0490`) as foreground/background colors, and supports three modes: JAM2 (opaque — set bits write FG, clear bits write BG), JAM1 (transparent — only set bits write FG), and Invert (set bits XOR the destination). `BLT_MASK_MOD` (`0xF0494`) sets the template row stride and `BLT_MASK_SRCX` (`0xF0498`) provides sub-byte bit alignment for glyph fragments. Template bits are MSB-first (Amiga convention).
+The color expansion operation (`BLT_OP=6`) renders 1-bit glyph templates into colored pixels for hardware-accelerated text. It reads a template from `BLT_MASK`, uses `BLT_FG`/`BLT_BG` (`0xF048C`/`0xF0490`) as foreground/background colors, and supports three modes: JAM2 (opaque - set bits write FG, clear bits write BG), JAM1 (transparent - only set bits write FG), and Invert (set bits XOR the destination). `BLT_MASK_MOD` (`0xF0494`) sets the template row stride and `BLT_MASK_SRCX` (`0xF0498`) provides sub-byte bit alignment for glyph fragments. Template bits are MSB-first (Amiga convention).
 
-Line drawing (`BLT_OP=2`) supports an extended mode when `BLT_FLAGS != 0`: `BLT_DST` becomes the framebuffer base address, `BLT_WIDTH` holds the packed endpoint coordinates `(y1<<16)|x1`, and `BLT_DST_STRIDE` sets the row stride. This allows line drawing into arbitrary bitmaps (not just the active framebuffer) with BPP awareness and all 16 draw modes. When `BLT_FLAGS=0`, legacy behavior is preserved (endpoint in `BLT_DST`, base at `VRAM_START`). In extended mode the blitter does not clip — callers must provide pre-clipped coordinates (the AROS driver uses Cohen-Sutherland clipping before calling the blitter).
+Line drawing (`BLT_OP=2`) supports an extended mode when `BLT_FLAGS != 0`: `BLT_DST` becomes the framebuffer base address, `BLT_WIDTH` holds the packed endpoint coordinates `(y1<<16)|x1`, and `BLT_DST_STRIDE` sets the row stride. This allows line drawing into arbitrary bitmaps (not just the active framebuffer) with BPP awareness and all 16 draw modes. When `BLT_FLAGS=0`, legacy behavior is preserved (endpoint in `BLT_DST`, base at `VRAM_START`). In extended mode the blitter does not clip - callers must provide pre-clipped coordinates (the AROS driver uses Cohen-Sutherland clipping before calling the blitter).
 
 | Register | Address | Description |
 |----------|---------|-------------|
@@ -480,7 +480,7 @@ The blitter's Mode7 operation (`bltOpMode7`) implements SNES-style affine textur
 | `BLT_MODE7_TEX_W` | `0xF0070` | Texture width mask (must be power-of-2 minus 1) |
 | `BLT_MODE7_TEX_H` | `0xF0074` | Texture height mask (must be power-of-2 minus 1) |
 
-The rasteriser walks each destination pixel, computes the source UV from the affine matrix (origin + column delta + row delta), wraps via power-of-2 bitmask, and samples the source texture. This enables rotation, scaling, and perspective-like effects on tiled backgrounds — the same technique used by the SNES PPU2 for its Mode 7 background layer.
+The rasteriser walks each destination pixel, computes the source UV from the affine matrix (origin + column delta + row delta), wraps via power-of-2 bitmask, and samples the source texture. This enables rotation, scaling, and perspective-like effects on tiled backgrounds - the same technique used by the SNES PPU2 for its Mode 7 background layer.
 
 ### Video Compositor
 
@@ -488,8 +488,8 @@ The compositor collects immutable frame snapshots from all enabled video sources
 
 Two rendering paths:
 
-1. **Scanline-aware path** — used when at least one enabled source implements `ScanlineAware`. The compositor advances scanline-capable sources in sorted layer order for each scanline, then blends all enabled sources in the global layer order. Opaque full-frame sources can sit below, between, or above scanline-aware sources without breaking copper/VGA per-scanline effects.
-2. **Full-frame fallback** — used when no enabled source is scanline-aware. It collects complete frames and blends them in sorted layer order. Same-size frame blending uses parallel goroutines with 60-line strips via `sync.WaitGroup`.
+1. **Scanline-aware path** - used when at least one enabled source implements `ScanlineAware`. The compositor advances scanline-capable sources in sorted layer order for each scanline, then blends all enabled sources in the global layer order. Opaque full-frame sources can sit below, between, or above scanline-aware sources without breaking copper/VGA per-scanline effects.
+2. **Full-frame fallback** - used when no enabled source is scanline-aware. It collects complete frames and blends them in sorted layer order. Same-size frame blending uses parallel goroutines with 60-line strips via `sync.WaitGroup`.
 
 Frame alpha is currently an alpha-mask test: alpha 0 is transparent and any nonzero alpha overwrites the destination. The compositor tick remains fixed at 60 Hz for guest VBlank compatibility; `GetRefreshRate()` reports the output backend rate, while `GetTickRate()` reports the compositor tick.
 
@@ -510,7 +510,7 @@ Consumer (compositor, GetFrame):
     return frameBufs[readIdx]
 ```
 
-**Important**: `GetFrame()` performs an atomic Swap — calling it twice in a row swaps back to the previous buffer. Always call once and save the result.
+**Important**: `GetFrame()` performs an atomic Swap - calling it twice in a row swaps back to the previous buffer. Always call once and save the result.
 
 On resolution change, all 3 buffer slots are reallocated and indices reset to `writeIdx=0`, `sharedIdx=1`, `readingIdx=2`.
 
@@ -556,7 +556,7 @@ graph LR
 
 The SoundChip exposes two register interfaces for its channels:
 
-**Legacy per-waveform interface** (`0xF0900-0xF09FF`) — 5 dedicated register blocks, each hardwired to one waveform type:
+**Legacy per-waveform interface** (`0xF0900-0xF09FF`) - 5 dedicated register blocks, each hardwired to one waveform type:
 
 | Range | Channel | Default Waveform |
 |-------|---------|-----------------|
@@ -564,9 +564,9 @@ The SoundChip exposes two register interfaces for its channels:
 | `0xF0940-0xF097F` | Ch 1 | Triangle |
 | `0xF0980-0xF09BF` | Ch 2 | Sine |
 | `0xF09C0-0xF09FF` | Ch 3 | Noise |
-| `0xF0A00-0xF0A6F` | — | Sawtooth + modulation/effects |
+| `0xF0A00-0xF0A6F` | - | Sawtooth + modulation/effects |
 
-**FLEX unified interface** (`0xF0A80-0xF0B7F`) — 4 channels with identical 64-byte register blocks. Each channel can be any waveform type:
+**FLEX unified interface** (`0xF0A80-0xF0B7F`) - 4 channels with identical 64-byte register blocks. Each channel can be any waveform type:
 
 | Offset | Register | Description |
 |--------|----------|-------------|
@@ -584,7 +584,7 @@ The SoundChip exposes two register interfaces for its channels:
 | `+0x38` | `SYNC` | Hard sync (bit 7=enable, 0-2=source) |
 | `+0x3C` | `DAC` | DAC mode bypass (signed 8-bit sample, -128=-1.0, +127=+1.0) |
 
-FLEX channels are at `FLEX_CH0_BASE = 0xF0A80`, stride = `0x40`. Primary channels 0-3 occupy `0xF0A80-0xF0B7F`; SID2 flex channels 4-6 occupy `0xF0C40-0xF0CFF`; SID3 flex channels 7-9 occupy `0xF0D40-0xF0DFF`. `AUDIO_CTRL` uses bit 0 for enable and bit 1 for freeze. `ENV_SHAPE` remains at `0xF0804` for channel 0, with per-channel shapes at `0xF0860 + channel*4`. Both legacy and FLEX interfaces write to the same underlying 10-channel mixer. The FLEX interface is preferred for new code — the legacy interface exists for backward compatibility.
+FLEX channels are at `FLEX_CH0_BASE = 0xF0A80`, stride = `0x40`. Primary channels 0-3 occupy `0xF0A80-0xF0B7F`; SID2 flex channels 4-6 occupy `0xF0C40-0xF0CFF`; SID3 flex channels 7-9 occupy `0xF0D40-0xF0DFF`. `AUDIO_CTRL` uses bit 0 for enable and bit 1 for freeze. `ENV_SHAPE` remains at `0xF0804` for channel 0, with per-channel shapes at `0xF0860 + channel*4`. Both legacy and FLEX interfaces write to the same underlying 10-channel mixer. The FLEX interface is preferred for new code - the legacy interface exists for backward compatibility.
 
 ### Filter and Modulation
 
@@ -645,7 +645,7 @@ graph LR
 
 ### Audio Engine Plus Enhanced Mode
 
-All five retro sound engines have a "Plus" enhanced mode, activated by writing `1` to their respective `PLUS_CTRL` register:
+All five classic-style sound engines have a "Plus" enhanced mode, activated by writing `1` to their respective `PLUS_CTRL` register:
 
 | Engine | PLUS_CTRL Address | Enhancements |
 |--------|-------------------|--------------|
@@ -890,12 +890,12 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 ### Synchronisation Model
 
 **Hot paths** (lock-free):
-- `atomic.Bool` — CPU `running`, chip `enabled`, `compositorManaged`
-- `atomic.Int32` — triple-buffer `sharedIdx`
-- `atomic.Pointer` — selected CPU pointer
+- `atomic.Bool` - CPU `running`, chip `enabled`, `compositorManaged`
+- `atomic.Int32` - triple-buffer `sharedIdx`
+- `atomic.Pointer` - selected CPU pointer
 
 **Cold paths** (mutex-protected):
-- `sync.Mutex` (`chip.mu`, `video.mu`) — configuration changes, setup, stop
+- `sync.Mutex` (`chip.mu`, `video.mu`) - configuration changes, setup, stop
 
 **CPU-to-Video**:
 - CPU writes to VRAM/MMIO invoke I/O callbacks under per-chip `mu`
@@ -906,14 +906,14 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 - OTO callback reads parameters atomically or under `chip.mu` for `GenerateSample()`
 
 **No CPU-video vsync coupling**:
-- CPU runs ahead freely — no wait-for-vblank blocking
+- CPU runs ahead freely - no wait-for-vblank blocking
 - WAIT register polls `vblankActive atomic.Bool` without blocking the CPU
 
 ## Appendix: Key Source Files
 
 | File | Role |
 |------|------|
-| `registers.go` | Master I/O address map — all region boundaries |
+| `registers.go` | Master I/O address map - all region boundaries |
 | `machine_bus.go` | MachineBus: autodetected guest RAM, MapIO, ioPageBitmap, Read/Write, SYSINFO accessors |
 | `memory_sizing.go` | Boot-time guest RAM autodetection: total guest RAM + active visible RAM with platform reserves |
 | `profile_bounds.go` | Source-owned profile bounds for EmuTOS, AROS, EhBASIC |
@@ -961,17 +961,17 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 
 ## 10. IntuitionOS Hardening Story
 
-IntuitionOS runs inside the IE64 emulator, so the security model has
+IntuitionOS runs inside the IE64 virtual machine, so the security model has
 two sides: the **guest** (IE64 MMU + `iexec.library` microkernel) and
-the **host** (the Go emulator process that executes the guest and
+the **host** (the Go engine process that executes the guest and
 its JIT output). M15.4 closed the major guest-side gaps; M15.6
 extends both sides so nothing the kernel relies on is contradicted
-by the emulator one layer down.
+by the engine one layer down.
 
-- **Guest W^X** — every page is exclusively writable or executable
+- **Guest W^X** - every page is exclusively writable or executable
   (see `IE64_ISA.md` §12.10). Code pages map `P|R|X`, data pages
   map `P|R|W`, `PTE.X` and `PTE.W` are never set together.
-- **Host W^X** — as of M15.6 the JIT memory region is dual-mapped
+- **Host W^X** - as of M15.6 the JIT memory region is dual-mapped
   (see `IE64_JIT.md`). The writable view (`PROT_READ|PROT_WRITE`)
   is where `ExecMem.Write` and `PatchRel32At` emit bytes; the
   execution view (`PROT_READ|PROT_EXEC`) is the VA the JIT
@@ -979,34 +979,34 @@ by the emulator one layer down.
   both write and execute permission. Prior releases mapped the
   region RWX permanently; that contradiction with the guest W^X
   story is resolved.
-- **SMEP / SMAP equivalent** — the IE64 MMU gained `SKEF` and
+- **SMEP / SMAP equivalent** - the IE64 MMU gained `SKEF` and
   `SKAC` bits in M15.6. `SKEF` stops supervisor instruction fetch
   from user-accessible pages (`FAULT_SKEF`). `SKAC` stops
   supervisor data access to user pages (`FAULT_SKAC`) unless the
   kernel has explicitly opened a supervisor-user-access window
   via the `SUAEN` privileged opcode. See `IE64_ISA.md` §12.2.1
   for the complete model.
-- **User↔kernel copy contract** — kernel touches of user memory
+- **User↔kernel copy contract** - kernel touches of user memory
   are funnelled through named helpers (`copy_from_user`,
   `copy_to_user`, `copy_cstring_from_user`) that bracket every
   access in `SUAEN` / `SUADIS`. Any missed call site faults with
   `FAULT_SKAC` and is loud rather than silent. See
   `IE64_COOKBOOK.md` for the worked idiom and anti-patterns.
-- **Trap-frame stack** — nested-trap state (`CR_FAULT_PC`,
+- **Trap-frame stack** - nested-trap state (`CR_FAULT_PC`,
   `CR_FAULT_ADDR`, `CR_FAULT_CAUSE`, `CR_PREV_MODE`,
   `CR_SAVED_SUA`) is preserved by the CPU across trap entry and
   ERET so kernel handlers survive a nested synchronous trap
   without a manual MFCR/MTCR save/restore dance. See
   `IE64_ISA.md` §12.14.
-- **Stack guard pages** — as of R1 in M15.6, both user stacks and
+- **Stack guard pages** - as of R1 in M15.6, both user stacks and
   the kernel stack reserve one unmapped page below the downward-growing
   stack floor. Overflow is therefore a deterministic `FAULT_NOT_PRESENT`
   instead of silent adjacent-page corruption.
-- **Heap guard pages** — as of R2 in M15.6, `AllocMem(MEMF_GUARD)`
+- **Heap guard pages** - as of R2 in M15.6, `AllocMem(MEMF_GUARD)`
   reserves one unmapped page on each side of the mapped allocation.
   The per-task VA allocator treats those guard slots as occupied for the
   life of the region, so a neighboring allocation cannot consume them.
-- **Cross-task confidentiality** — private and shared allocator
+- **Cross-task confidentiality** - private and shared allocator
   pages are zeroed on free before release, so a later owner cannot
   observe prior-task bytes. `MapShared` then narrows consumer-side
   access further with an explicit permission bitmask. See
