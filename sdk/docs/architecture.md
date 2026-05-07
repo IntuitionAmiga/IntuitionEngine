@@ -374,39 +374,54 @@ flowchart TB
 ### Runtime Data and Control Flow
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#E8F1F8', 'primaryBorderColor': '#455A64', 'primaryTextColor': '#111111', 'actorBkg': '#E8F1F8', 'actorBorder': '#455A64', 'actorTextColor': '#111111', 'activationBkgColor': '#FFF3E0', 'activationBorderColor': '#EF6C00', 'sequenceNumberColor': '#111111'}}}%%
-sequenceDiagram
-    box rgb(232, 241, 248) Host control
-        participant Host as main.go / host loop
-        participant Debug as Debug/Lua
-    end
-    box rgb(225, 238, 251) Execution
-        participant CPU as Active CPU runner
-        participant JIT as JIT dispatcher
-    end
-    box rgb(255, 235, 238) Bus and MMIO
-        participant Bus as MachineBus
-        participant Dev as MMIO devices
-    end
-    box rgb(232, 245, 233) Video path
-        participant Video as VideoCompositor
-    end
-    box rgb(255, 243, 224) Audio path
-        participant Audio as SoundChip mixer
+flowchart LR
+    subgraph HOSTFLOW["Host control"]
+        HOSTLOOP["main.go / host loop"]
+        DEBUGFLOW["Debug / Lua"]
     end
 
-    Host->>Bus: allocate guest RAM and register MMIO
-    Host->>CPU: load selected program/profile
-    CPU->>JIT: execute if platform gate and CPU setting allow
-    JIT-->>CPU: interpreter fallback or native block exits
-    CPU->>Bus: read/write RAM and MMIO
-    Bus->>Dev: dispatch mapped register access
-    Dev->>Video: publish video frames by layer
-    Dev->>Audio: tick engines and players
-    Video-->>Host: composed frame
-    Audio-->>Host: mixed samples
-    Debug-->>CPU: inspect/step/breakpoint
-    Debug-->>Bus: memory and MMIO inspection
+    subgraph EXECFLOW["Execution"]
+        CPUFLOW["Active CPU runner"]
+        JITFLOW["JIT dispatcher"]
+    end
+
+    subgraph BUSFLOW["Bus and MMIO"]
+        BUSFLOWNODE["MachineBus"]
+        DEVFLOW["MMIO devices"]
+    end
+
+    subgraph VIDEOFLOW["Video path"]
+        VIDEOOUT["VideoCompositor"]
+    end
+
+    subgraph AUDIOFLOW["Audio path"]
+        AUDIOOUT["SoundChip mixer"]
+    end
+
+    HOSTLOOP -->|"allocate guest RAM and register MMIO"| BUSFLOWNODE
+    HOSTLOOP -->|"load selected program/profile"| CPUFLOW
+    CPUFLOW -->|"execute if platform gate and CPU setting allow"| JITFLOW
+    JITFLOW -. "interpreter fallback or native block exits" .-> CPUFLOW
+    CPUFLOW -->|"read/write RAM and MMIO"| BUSFLOWNODE
+    BUSFLOWNODE -->|"dispatch mapped register access"| DEVFLOW
+    DEVFLOW -->|"publish video frames by layer"| VIDEOOUT
+    DEVFLOW -->|"tick engines and players"| AUDIOOUT
+    VIDEOOUT -. "composed frame" .-> HOSTLOOP
+    AUDIOOUT -. "mixed samples" .-> HOSTLOOP
+    DEBUGFLOW -. "inspect/step/breakpoint" .-> CPUFLOW
+    DEBUGFLOW -. "memory and MMIO inspection" .-> BUSFLOWNODE
+
+    classDef host fill:#455A64,stroke:#263238,color:#fff
+    classDef cpu fill:#1565C0,stroke:#0D47A1,color:#fff
+    classDef bus fill:#B71C1C,stroke:#7F0000,color:#fff
+    classDef video fill:#2E7D32,stroke:#1B5E20,color:#fff
+    classDef audio fill:#EF6C00,stroke:#BF360C,color:#fff
+
+    class HOSTLOOP,DEBUGFLOW host
+    class CPUFLOW,JITFLOW cpu
+    class BUSFLOWNODE,DEVFLOW bus
+    class VIDEOOUT video
+    class AUDIOOUT audio
 ```
 
 ### Subsystem Matrix
