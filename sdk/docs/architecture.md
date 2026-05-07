@@ -1,141 +1,117 @@
 # Intuition Engine Architecture
 
-*Last updated: 2026-03-01*
+*Last updated: 2026-05-07*
 
-Intuition Engine is a multi-CPU retro hardware emulator with 6 heterogeneous CPU cores, 6 video chips, 6 audio engines, a copper coprocessor, DMA blitter, and extensive I/O peripherals — all connected through a unified MachineBus. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve (see `memory_sizing.go`); each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing all chips, buses, internal functional units, and data flow paths.
+Intuition Engine is a multi-CPU retro hardware emulator with 6 heterogeneous CPU cores, 6 video systems, 9 audio engines/players, a copper coprocessor, DMA blitter, and extensive I/O peripherals — all connected through a unified MachineBus. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve (see `memory_sizing.go`); each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
-## Platform JIT Matrix
+The diagrams below describe wired runtime behavior. Source-file presence alone is not treated as support: for example, `jit_z80_emit_arm64.go` exists, but `jit_z80_dispatch.go` keeps Z80 JIT available only when `runtime.GOARCH == "amd64"`.
 
-The host-side JIT support is intentionally asymmetric:
-
-| Host platform | JIT-enabled guest cores |
-|---------------|-------------------------|
-| Linux amd64 | IE64, 6502, M68K, Z80, x86 |
-| Linux arm64 | IE64 |
-| Windows amd64 | IE64, 6502, M68K, Z80, x86 |
-| Windows arm64 | IE64 |
-| macOS amd64 | IE64, 6502, M68K, Z80, x86 |
-| macOS arm64 | IE64 |
-
-On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles, and non-IE64 guest cores remain interpreter-only on arm64 hosts.
-
-## 1. System Overview
+## 1. Whole-System Architecture
 
 ```mermaid
-graph TB
-    subgraph CPUs["CPU Bank (concurrent via Coprocessor Manager)"]
-        IE32["IE32<br/>16 x 32-bit GPR"]
-        IE64["IE64<br/>32 x 64-bit GPR"]
-        M68K["M68K 68020<br/>D0-D7 / A0-A7"]
-        Z80["Z80<br/>Main + Shadow Regs"]
-        C6502["6502<br/>A / X / Y"]
-        X86["x86<br/>EAX-EDI"]
+flowchart TB
+    HOST["Host runtime<br/>main.go flags, memory sizing,<br/>debug monitor, Lua/IEScript"]
+    EXEC["Guest execution<br/>ProgramExecutor + CoprocessorManager<br/>IE32, IE64, M68K, Z80, 6502, x86"]
+    JIT["JIT dispatch<br/>IE64: amd64/arm64<br/>6502, M68K, Z80, x86: amd64"]
+    BUS["MachineBus<br/>host-sized RAM, profile clamps,<br/>MapIO / MapIOByte / MapIO64,<br/>ioPageBitmap fast path"]
+    MEM["Memory discovery<br/>SYSINFO_TOTAL_RAM_LO/HI<br/>SYSINFO_ACTIVE_RAM_LO/HI<br/>IE64 CR_RAM_SIZE_BYTES"]
+    OS["OS and loader shims<br/>EmuTOS + GEMDOS/XBIOS<br/>AROS + DOS/audio DMA<br/>Boot HostFS"]
+    VIDEO["6 video systems<br/>VideoChip, VGA, TED video,<br/>ANTIC/GTIA, ULA, Voodoo 3D<br/>VideoCompositor layers 0/10/12/13/15/20"]
+    AUDIO["9 audio engines/players<br/>SoundChip/SFX, PSG/AY, SN76489,<br/>SID x3, TED, POKEY/SAP,<br/>AHX, MOD, WAV"]
+    IO["I/O MMIO<br/>terminal, file I/O, media loader,<br/>clipboard bridge, program executor"]
+    BACKEND["Host backends<br/>Ebiten or headless video<br/>OTO or headless audio<br/>Vulkan or software Voodoo"]
+
+    HOST --> EXEC
+    HOST --> MEM
+    EXEC --> JIT
+    EXEC <--> BUS
+    MEM --> BUS
+    BUS <--> OS
+    BUS <--> VIDEO
+    BUS <--> AUDIO
+    BUS <--> IO
+    VIDEO --> BACKEND
+    AUDIO --> BACKEND
+    HOST -. debug/script .-> BUS
+
+    classDef host fill:#455A64,stroke:#263238,color:#fff
+    classDef cpu fill:#1565C0,stroke:#0D47A1,color:#fff
+    classDef bus fill:#B71C1C,stroke:#7F0000,color:#fff
+    classDef os fill:#6A1B9A,stroke:#4A148C,color:#fff
+    classDef video fill:#2E7D32,stroke:#1B5E20,color:#fff
+    classDef audio fill:#EF6C00,stroke:#BF360C,color:#fff
+
+    class HOST,BACKEND host
+    class EXEC,JIT cpu
+    class BUS,MEM bus
+    class OS,IO os
+    class VIDEO video
+    class AUDIO audio
+```
+
+## 2. Layered System Overview
+
+```mermaid
+flowchart TB
+    subgraph L0["Launch and profile selection"]
+        MAIN["main.go"]
+        FLAGS["CLI flags<br/>-aros, -debug, -jit, -headless build tags"]
+        LOADERS["Program/ROM/script loaders"]
     end
 
-    BUS["MachineBus (autodetected guest RAM)<br/>MMIO Dispatch via ioPageBitmap"]
-
-    IE32 --> BUS
-    IE64 --> BUS
-    M68K --> BUS
-    Z80 --> BUS
-    C6502 --> BUS
-    X86 --> BUS
-
-    subgraph MEM["Memory"]
-        RAM["Main RAM<br/>636KB"]
-        STK["Stack<br/>4KB"]
-        VGAW["VGA Windows<br/>128KB"]
-        VRAM["Video RAM<br/>5MB"]
-        FAST["Fast RAM<br/>22MB (AROS mode)"]
+    subgraph L1["Execution layer"]
+        RUNNERS["CPU runners<br/>file extension or OS mode"]
+        JITS["JIT dispatch gates<br/>build tags + runtime GOARCH"]
+        WORKERS["Coprocessor workers<br/>shared bus"]
     end
 
-    BUS --> RAM
-    BUS --> STK
-    BUS --> VGAW
-    BUS --> VRAM
-    BUS --> FAST
-
-    subgraph VIDEO["Video Subsystem"]
-        VC["VideoChip<br/>Layer 0"]
-        VGA["VGA<br/>Layer 10"]
-        TED_V["TED Video<br/>Layer 12"]
-        ANTIC["ANTIC/GTIA<br/>Layer 13"]
-        ULA["ULA<br/>Layer 15"]
-        VOO["Voodoo 3D<br/>Layer 20"]
-        COMP["Compositor<br/>Z-order blend"]
-        DISP["Display<br/>Ebiten 60Hz"]
+    subgraph L2["Shared address space"]
+        RAM["Guest RAM<br/>host-sized, profile-clamped"]
+        MMIO["MMIO map<br/>MapIO / MapIOByte / MapIO64"]
+        SYS["SYSINFO RAM discovery"]
     end
 
-    BUS --> VC
-    BUS --> VGA
-    BUS --> TED_V
-    BUS --> ANTIC
-    BUS --> ULA
-    BUS --> VOO
-    VC --> COMP
-    VGA --> COMP
-    TED_V --> COMP
-    ANTIC --> COMP
-    ULA --> COMP
-    VOO --> COMP
-    COMP --> DISP
-
-    subgraph AUDIO["Audio Subsystem"]
-        SC["SoundChip<br/>10 Channels"]
-        PSG["PSG<br/>AY-3-8910"]
-        SID["SID<br/>6581/8580 x3"]
-        POK["POKEY"]
-        TED_A["TED Audio"]
-        AHX["AHX Replayer"]
-        AOUT["Audio Backend<br/>OTO 44.1kHz"]
+    subgraph L3["Device layer"]
+        VIDEO2["Video MMIO<br/>VideoChip, VGA, TED, ANTIC/GTIA, ULA, Voodoo"]
+        AUDIO2["Audio MMIO<br/>SoundChip, SFX, PSG, SN76489, SID, TED, POKEY, AHX, MOD, WAV"]
+        IO2["I/O MMIO<br/>terminal, file, HostFS, media, clipboard, exec"]
+        OS2["OS shims<br/>GEMDOS, AROS DOS, AROS audio DMA"]
     end
 
-    BUS --> SC
-    BUS --> PSG
-    BUS --> SID
-    BUS --> POK
-    BUS --> TED_A
-    BUS --> AHX
-    PSG --> SC
-    SID --> SC
-    POK --> SC
-    TED_A --> SC
-    AHX --> SC
-    SC --> AOUT
-
-    subgraph IO["I/O Peripherals"]
-        TERM["Terminal/Serial"]
-        FIO["File I/O"]
-        PEXEC["Program Executor"]
-        COPRO["Coprocessor Manager"]
-        CLIP["Clipboard Bridge"]
-        MEDIA["Media Loader"]
-        LUA["Lua Scripting"]
-        DOS["DOS Handler"]
+    subgraph L4["Host presentation"]
+        COMPOSITOR["VideoCompositor"]
+        DISPLAY["Display backend<br/>Ebiten or headless"]
+        MIXER["Audio backend<br/>OTO or headless"]
+        MONITOR["Debug monitor / Lua"]
     end
 
-    BUS --> TERM
-    BUS --> FIO
-    BUS --> PEXEC
-    BUS --> COPRO
-    BUS --> CLIP
-    BUS --> MEDIA
-    BUS --> DOS
-    LUA -.->|"bus access"| BUS
+    MAIN --> FLAGS --> LOADERS --> RUNNERS
+    RUNNERS --> JITS
+    RUNNERS --> WORKERS
+    RUNNERS <--> RAM
+    RUNNERS <--> MMIO
+    WORKERS <--> MMIO
+    SYS --> MMIO
+    MMIO <--> VIDEO2
+    MMIO <--> AUDIO2
+    MMIO <--> IO2
+    MMIO <--> OS2
+    VIDEO2 --> COMPOSITOR --> DISPLAY
+    AUDIO2 --> MIXER
+    MONITOR -.-> RUNNERS
+    MONITOR -.-> MMIO
 
-    classDef cpu fill:#4169E1,stroke:#333,color:#fff
-    classDef video fill:#228B22,stroke:#333,color:#fff
-    classDef audio fill:#FF8C00,stroke:#333,color:#fff
-    classDef mem fill:#708090,stroke:#333,color:#fff
-    classDef periph fill:#8B008B,stroke:#333,color:#fff
-    classDef bus fill:#DC143C,stroke:#333,color:#fff
+    classDef host fill:#455A64,stroke:#263238,color:#fff
+    classDef runtime fill:#1565C0,stroke:#0D47A1,color:#fff
+    classDef bus fill:#B71C1C,stroke:#7F0000,color:#fff
+    classDef chip fill:#2E7D32,stroke:#1B5E20,color:#fff
+    classDef out fill:#EF6C00,stroke:#BF360C,color:#fff
 
-    class IE32,IE64,M68K,Z80,C6502,X86 cpu
-    class VC,VGA,TED_V,ANTIC,ULA,VOO,COMP,DISP video
-    class SC,PSG,SID,POK,TED_A,AHX,AOUT audio
-    class RAM,STK,VGAW,VRAM,FAST mem
-    class TERM,FIO,PEXEC,COPRO,CLIP,MEDIA,LUA,DOS periph
-    class BUS bus
+    class MAIN,FLAGS,LOADERS host
+    class RUNNERS,JITS,WORKERS runtime
+    class RAM,MMIO,SYS bus
+    class VIDEO2,AUDIO2,IO2,OS2 chip
+    class COMPOSITOR,DISPLAY,MIXER,MONITOR out
 ```
 
 **Bus architecture notes:**
@@ -144,7 +120,61 @@ graph TB
 - **No centralised interrupt controller** — each CPU has per-CPU interrupt lines (IRQ/NMI as `atomic.Bool`). Peripherals signal the active CPU directly.
 - **MMIO dispatch** — the bus uses an `ioPageBitmap []bool` fast path (page = 256 bytes). Non-I/O pages use direct unsafe pointer access with zero dispatch overhead.
 
-## 2. CPU Subsystem
+### Runtime Data and Control Flow
+
+```mermaid
+sequenceDiagram
+    participant Host as main.go / host loop
+    participant Bus as MachineBus
+    participant CPU as Active CPU runner
+    participant JIT as JIT dispatcher
+    participant Dev as MMIO devices
+    participant Video as VideoCompositor
+    participant Audio as SoundChip mixer
+    participant Debug as Debug/Lua
+
+    Host->>Bus: allocate guest RAM and register MMIO
+    Host->>CPU: load selected program/profile
+    CPU->>JIT: execute if platform gate and CPU setting allow
+    JIT-->>CPU: interpreter fallback or native block exits
+    CPU->>Bus: read/write RAM and MMIO
+    Bus->>Dev: dispatch mapped register access
+    Dev->>Video: publish video frames by layer
+    Dev->>Audio: tick engines and players
+    Video-->>Host: composed frame
+    Audio-->>Host: mixed samples
+    Debug-->>CPU: inspect/step/breakpoint
+    Debug-->>Bus: memory and MMIO inspection
+```
+
+### Subsystem Matrix
+
+| Subsystem | Runtime surface | Primary files | Wired registration / dispatch |
+|-----------|-----------------|---------------|-------------------------------|
+| CPU cores | IE32, IE64, M68K, Z80, 6502, x86 | `cpu_*.go`, `cpu_*_runner.go` | `main.go` selects runners by file extension, OS mode, or EXEC MMIO |
+| JIT | IE64 on amd64/arm64; 6502, M68K, Z80, x86 on amd64 | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` | Build tags plus `runtime.GOARCH` gates; non-supported hosts use dispatch stubs |
+| Bus and RAM | Host-sized guest RAM, profile clamps, MMIO, byte/64-bit handlers | `machine_bus.go`, `memory_sizing.go`, `profile_bounds.go`, `sysinfo_mmio.go` | `main.go` registers devices before execution; `MachineBus.SealMappings` prevents late maps |
+| Video | VideoChip, VGA, TED video, ANTIC/GTIA, ULA, Voodoo | `video_chip.go`, `video_vga.go`, `video_ted.go`, `video_antic.go`, `video_ula.go`, `video_voodoo.go` | `main.go` maps each register/VRAM block and registers compositor layers 0/10/12/13/15/20 |
+| Audio | SoundChip/SFX, PSG/AY, SN76489, SID x3, TED, POKEY/SAP, AHX, MOD, WAV | `audio_chip.go`, `sfx_trigger.go`, `psg_engine.go`, `sn76489_chip.go`, `sid_engine.go`, `ted_engine.go`, `pokey_engine.go`, `ahx_player.go`, `mod_player.go`, `wav_player.go` | `main.go` maps chip/player MMIO and registers sample tickers into SoundChip |
+| OS integration | EmuTOS, AROS, GEMDOS/XBIOS, AROS DOS, Paula-style DMA | `emutos_loader.go`, `aros_loader.go`, `gemdos_intercept.go`, `aros_dos_intercept.go`, `aros_audio_dma.go` | OS modes install intercept MMIO and loader state during boot/reset |
+| Tooling | Assemblers, disassembler, transpiler, generators | `assembler/`, `cmd/ie32to64/`, `cmd/gen_m68k_cputest/`, `cmd/gen_interp6502/` | Makefile builds SDK tools into `sdk/bin/` |
+
+## Platform JIT Matrix
+
+The host-side JIT support is intentionally asymmetric and follows the dispatch files, not emitter-file presence:
+
+| Host platform | JIT-enabled guest cores | Dispatch authority |
+|---------------|-------------------------|--------------------|
+| Linux amd64 | IE64, 6502, M68K, Z80, x86 | `jit_dispatch.go`, amd64 per-core dispatch files |
+| Linux arm64 | IE64 | `jit_dispatch.go`; Z80 dispatch compiles but keeps `z80JitAvailable` false |
+| Windows amd64 | IE64, 6502, M68K, Z80, x86 | amd64 per-core dispatch files |
+| Windows arm64 | IE64 | IE64 dispatch only; per-core non-IE64 stubs |
+| macOS amd64 | IE64, 6502, M68K, Z80, x86 | amd64 per-core dispatch files |
+| macOS arm64 | IE64 | IE64 dispatch plus Darwin arm64 JIT write-protect helpers |
+
+On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles, and non-IE64 guest cores remain interpreter-only on arm64 hosts.
+
+## 3. CPU Subsystem
 
 ```mermaid
 graph LR
@@ -325,11 +355,11 @@ The 6502 uses `ioTable[page]` to route memory-mapped I/O through the bus:
 
 ANTIC/GTIA intentionally has no 6502 `$D400/$D000` compatibility surface; `$D400-$D40F` is PSG on the 6502 map.
 
-## 3. Video Subsystem
+## 4. Video Subsystem
 
 ```mermaid
 graph TB
-    subgraph VCS["VideoChip (Layer 0, 0xF0000-0xF0487)"]
+    subgraph VCS["VideoChip (Layer 0, 0xF0000-0xF049B)"]
         VC_FB["Framebuffer Manager<br/>640x480 / 800x600 / 1024x768 / 1280x960"]
         VC_COP["Copper Coprocessor<br/>WAIT / MOVE / SETBASE / END"]
         VC_BLT["DMA Blitter<br/>Copy / Fill / Line / Masked / Alpha"]
@@ -347,14 +377,14 @@ graph TB
         VGA_VRAM["VRAM Windows<br/>0xA0000 graphics / 0xB8000 text"]
     end
 
-    subgraph TEDS["TED Video (Layer 12, 0xF0F20-0xF0F5F)"]
+    subgraph TEDS["TED Video (Layer 12, 0xF0F20-0xF0F6B)"]
         TED_TXT["Text Display<br/>40x25"]
         TED_CHR["Character Set"]
         TED_COL["121 Colours<br/>16 hue x 8 luminance"]
         TED_CUR["Cursor Engine<br/>Blink"]
     end
 
-    subgraph ANTICS["ANTIC/GTIA (Layer 13, 0xF2100-0xF21FB)"]
+    subgraph ANTICS["ANTIC/GTIA (Layer 13, ANTIC 0xF2100-0xF213F, GTIA 0xF2140-0xF21FB)"]
         ANT_DLP["ANTIC Display List<br/>Processor + DMA"]
         ANT_SCR["Fine Scroll H/V<br/>+ WSYNC"]
         GTIA_C["GTIA Colours<br/>COLPF0-3 / COLBK"]
@@ -465,7 +495,7 @@ Frame alpha is currently an alpha-mask test: alpha 0 is transparent and any nonz
 
 ### Triple-Buffer Protocol
 
-All video chips except VideoChip use a lock-free triple-buffer protocol for `GetFrame()`:
+All video systems except VideoChip use a lock-free triple-buffer protocol for `GetFrame()`:
 
 ```text
 Slots:  writeIdx = 0 (producer-owned)
@@ -484,7 +514,7 @@ Consumer (compositor, GetFrame):
 
 On resolution change, all 3 buffer slots are reallocated and indices reset to `writeIdx=0`, `sharedIdx=1`, `readingIdx=2`.
 
-## 4. Audio Subsystem
+## 5. Audio Subsystem
 
 ### Synthesis Pipeline
 
@@ -569,7 +599,8 @@ graph LR
         SID_E["SID 6581/8580 x3<br/>0xF0E00-0xF0E6C<br/>3 Voices x 3 Chips = 9 Voices"]
         POK_E["POKEY<br/>0xF0D00-0xF0D0A<br/>4 Channels + Poly Counters"]
         TED_E["TED Audio<br/>0xF0F00-0xF0F05<br/>2 Voices (square + noise)"]
-        AHX_E["AHX Replayer<br/>0xF0B80-0xF0B94<br/>4 Channels"]
+        SN_E["SN76489<br/>0xF0C30-0xF0C3F<br/>3 Tone + Noise"]
+        AHX_E["AHX Replayer<br/>0xF0B80-0xF0B91<br/>4 Channels"]
     end
 
     subgraph PLAYERS["Music Players (PTR/LEN/CTRL/STATUS/POSITION protocol)"]
@@ -589,6 +620,7 @@ graph LR
     SC["SoundChip<br/>10 Channels"]
 
     PSG_E -->|"Ch 0-2"| SC
+    SN_E -->|"Ch 0-3"| SC
     SID_E -->|"SID1:Ch0-2 SID2:Ch4-6 SID3:Ch7-9"| SC
     POK_E -->|"Ch 0-3"| SC
     TED_E -->|"Ch 0-1"| SC
@@ -606,7 +638,7 @@ graph LR
     classDef audio fill:#FF8C00,stroke:#333,color:#fff
     classDef player fill:#CD853F,stroke:#333,color:#fff
     classDef chip fill:#B8860B,stroke:#333,color:#fff
-    class PSG_E,SID_E,POK_E,TED_E,AHX_E audio
+    class PSG_E,SN_E,SID_E,POK_E,TED_E,AHX_E audio
     class MOD_P,WAV_P,AY_P,SID_P,SAP_P,TED_P,AHX_P player
     class SC,PDMA chip
 ```
@@ -616,14 +648,14 @@ graph LR
 All five retro sound engines have a "Plus" enhanced mode, activated by writing `1` to their respective `PLUS_CTRL` register:
 
 | Engine | PLUS_CTRL Address | Enhancements |
-|--------|------------------|--------------|
+|--------|-------------------|--------------|
 | PSG+ | `0xF0C20` | Enhanced render path: oversampling, filtering, drive/room shaping, stereo voicing |
-
-The PSG uses the AY/YM logarithmic 16-step volume curve by default. A legacy linear curve is retained only for compatibility audits.
 | SID+ | `0xF0E19` | Enhanced render path for SID voices (oversampling/filter/drive/room shaping) |
 | POKEY+ | `0xF0D09` | Enhanced render path (oversampling/filter/drive/room shaping) |
 | TED+ | `0xF0F05` | Enhanced render path plus TED-specific response shaping |
 | AHX+ | `0xF0B80` | AHX voice-state mapping with stereo spread/panning and room processing |
+
+The PSG uses the AY/YM logarithmic 16-step volume curve by default. A legacy linear curve is retained only for compatibility audits.
 
 When Plus mode is enabled, the engine retains full backward compatibility with the standard register set while exposing additional capabilities. AHX maps tracker state to native SoundChip channels instead of producing an AROS audio DMA stream; AHX+ uses a 64-sample crossfade when enabling/disabling to prevent audio glitches.
 
@@ -644,7 +676,7 @@ SID, SAP, and AHX players support subsong selection for multi-tune files. Each p
 
 SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-zero, the player uses that latch as `cyclesPerTick`, so multispeed tunes run at `clockHz / latch`. SID MMIO opts into wide-write fanout: 16-bit and 32-bit writes are decomposed into little-endian byte register writes.
 
-## 5. Memory Map
+## 6. Memory Map
 
 | Range | Size | Device |
 |-------|------|--------|
@@ -652,16 +684,16 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0x9F000-0x9FFFF` | 4KB | Stack |
 | `0xA0000-0xAFFFF` | 64KB | VGA VRAM Window |
 | `0xB8000-0xBFFFF` | 32KB | VGA Text Buffer |
-| `0xF0000-0xF0487` | 1160B | VideoChip + Copper + Blitter + Palette |
+| `0xF0000-0xF049B` | 1180B | VideoChip + Copper + Blitter + Palette + extended blitter |
 | `0xF0700-0xF07FF` | 256B | Terminal / Serial / Mouse / Keyboard / RTC_EPOCH (0xF0750) |
 | `0xF0800-0xF0B7F` | 896B | SoundChip (10 channels, incl. FLEX) |
 | `0xF0B80-0xF0B91` | 18B | AHX Engine / Player |
 | `0xF0BC0-0xF0BD7` | 24B | MOD Player |
 | `0xF0BD8-0xF0BF3` | 28B | WAV Player |
 | `0xF0C00-0xF0C0F` | 16B | PSG Engine (AY-3-8910/YM2149 registers) |
+| `0xF0C10-0xF0C1F` | 16B | PSG / AY Player |
 | `0xF0C20` | 1B | PSG+ control |
 | `0xF0C30-0xF0C3F` | 16B | Native SN76489 latch/data, ready, and LFSR mode registers |
-| `0xF0C10-0xF0C1F` | 16B | PSG / AY Player |
 | `0xF0C40-0xF0CFF` | 192B | SID2 flex-style SoundChip channels 4-6 |
 | `0xF0D00-0xF0D0A` | 11B | POKEY Engine |
 | `0xF0D10-0xF0D20` | 17B | SAP Player |
@@ -669,9 +701,10 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xF0E00-0xF0E19` | 26B | SID1 Engine (6581/8580) |
 | `0xF0E20-0xF0E2D` | 14B | SID Player |
 | `0xF0E30-0xF0E6C` | 61B | SID2 + SID3 (Multi-SID) |
+| `0xF0E80-0xF0EFF` | 128B | SoundChip SFX trigger channels |
 | `0xF0F00-0xF0F05` | 6B | TED Audio Engine |
 | `0xF0F10-0xF0F1C` | 13B | TED Player |
-| `0xF0F20-0xF0F5F` | 64B | TED Video |
+| `0xF0F20-0xF0F6B` | 76B | TED Video |
 | `0xF1000-0xF13FF` | 1KB | VGA Registers |
 | `0xF2000-0xF2017` | 24B | ULA Registers |
 | `0xFA000-0xFBAFF` | 6912B | ULA VRAM Aperture |
@@ -685,7 +718,9 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xF2340-0xF238F` | 80B | Coprocessor Manager |
 | `0xF2390-0xF23AF` | 32B | Clipboard Bridge |
 | `0xF23B0-0xF23BF` | 16B | Coprocessor Extended (monitor registers) |
+| `0xF23C0-0xF23DF` | 32B | IRQ diagnostic registers |
 | `0xF23E0-0xF23FF` | 32B | Bootstrap HostFS |
+| `0xF2400-0xF24FF` | 256B | SYSINFO RAM-size discovery |
 | `0xF8000-0xF87FF` | 2KB | Voodoo 3D Registers + palette |
 | `0xF8140-0xF823F` | 256B | Voodoo Fog Table (64 entries × 4B) |
 | `0xD0000-0xDFFFF` | 64KB | Voodoo Texture Memory |
@@ -706,7 +741,7 @@ Additional special regions used by the coprocessor subsystem:
 | `0x800000` | 64KB | Media loader staging buffer |
 | `0x790000-0x7917FF` | 6KB | Coprocessor mailbox ring buffers |
 
-## 6. I/O Peripherals
+## 7. I/O Peripherals
 
 ```mermaid
 graph LR
@@ -766,7 +801,7 @@ The coprocessor manager supports 6 worker CPU types (IE32, IE64, 6502, M68K, Z80
 
 The Lua scripting engine (`script_engine.go`) runs in its own goroutine and provides host-side access to the entire bus. It supports an F8 REPL for interactive debugging, video recording, and direct chip register manipulation. Scripts use the `.ies` extension and are loaded via the IE Script Engine.
 
-## 7. Data Flow
+## 8. Data Flow
 
 ### Video Pipeline
 
@@ -793,7 +828,7 @@ graph LR
 graph LR
     EX["CPU Execute"]
     BW["Bus Write<br/>Audio MMIO"]
-    ET["Engine Translate<br/>PSG/SID/POKEY/TED/AHX"]
+    ET["Engine Translate<br/>PSG/SN/SID/POKEY/TED/AHX/MOD/WAV"]
     SC["SoundChip Params<br/>Updated"]
     OTO["OTO Callback<br/>ReadSample()"]
     TS["TickSample()<br/>All engines"]
@@ -826,7 +861,7 @@ graph LR
     class EXT,DET,CRE,STOP,RST,LOAD,START flow
 ```
 
-## 8. Concurrency Model and System Timing
+## 9. Concurrency Model and System Timing
 
 ### Goroutine Inventory
 
@@ -848,7 +883,7 @@ graph LR
 
 ```text
 CPU:   Free-running (no fixed clock -- instruction throughput varies with host speed)
-Video: 6 x 60Hz tickers (one per video chip + compositor), lock-free triple-buffer handoff
+Video: 6 video sources plus compositor tick at 60Hz; non-VideoChip sources use lock-free triple-buffer handoff
 Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned goroutine
 ```
 
@@ -893,10 +928,13 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 | `video_voodoo.go` | Voodoo 3D pipeline |
 | `audio_chip.go` | SoundChip (10-channel synthesis) |
 | `psg_engine.go` | PSG / AY-3-8910 |
+| `sn76489_chip.go` | SN76489 programmable sound generator |
 | `sid_engine.go` | SID 6581/8580 |
 | `pokey_engine.go` | POKEY |
 | `ted_engine.go` | TED audio |
 | `ahx_engine.go` | AHX replayer |
+| `mod_player.go` | MOD player |
+| `wav_player.go` | WAV player |
 | `cpu_ie32.go` | IE32 CPU |
 | `cpu_ie64.go` | IE64 CPU + interpreter |
 | `fpu_ie64.go` | IE64 FPU (16 x float32) |
@@ -921,7 +959,7 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 | `aros_dos_intercept.go` | AmigaDOS packet handler (MMIO) |
 | `aros_audio_dma.go` | AROS Paula-style DMA shim |
 
-## 9. IntuitionOS Hardening Story
+## 10. IntuitionOS Hardening Story
 
 IntuitionOS runs inside the IE64 emulator, so the security model has
 two sides: the **guest** (IE64 MMU + `iexec.library` microkernel) and
