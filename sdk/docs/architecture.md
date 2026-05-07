@@ -6,6 +6,257 @@ Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores,
 
 The diagrams below describe wired runtime behavior. Source-file presence alone is not treated as support: for example, `jit_z80_emit_arm64.go` exists, but `jit_z80_dispatch.go` keeps Z80 JIT available only when `runtime.GOARCH == "amd64"`.
 
+## Single Complete Architecture Diagram
+
+```mermaid
+flowchart LR
+    subgraph HOST["Host process and tooling"]
+        MAIN["main.go<br/>CLI flags and boot profile"]
+        SIZE["memory_sizing.go<br/>host-sized guest RAM"]
+        PB["profile_bounds.go<br/>profile visible-RAM clamps"]
+        DBG["Debug monitor<br/>breakpoints, watchpoints,<br/>CPU-local snapshots"]
+        LUA["ScriptEngine<br/>Lua / IEScript"]
+        SDK["SDK tools<br/>ie32asm, ie64asm, ie64dis,<br/>ie32to64, test generators"]
+    end
+
+    subgraph EXECUTION["Guest execution"]
+        EXEC["ProgramExecutor<br/>EXEC MMIO and CPU switching"]
+        COPROC["CoprocessorManager<br/>worker lifecycle and tickets"]
+        IE32["IE32 interpreter"]
+        IE64["IE64 interpreter"]
+        M68K["M68K 68020 interpreter"]
+        Z80["Z80 interpreter"]
+        C6502["6502 interpreter"]
+        X86["x86 interpreter / JIT-required amd64 path"]
+        JIE64["IE64 JIT<br/>amd64 + arm64"]
+        J6502["6502 JIT<br/>amd64"]
+        JM68K["M68K JIT<br/>amd64"]
+        JZ80["Z80 JIT<br/>amd64 only"]
+        JX86["x86 JIT<br/>amd64 only"]
+        CPUMON["Debug CPU adapters<br/>IE32, IE64, M68K, Z80, 6502, x86"]
+    end
+
+    subgraph BUSMEM["Shared address space"]
+        BUS["MachineBus<br/>RAM, MapIO, MapIOByte,<br/>MapIO64, ioPageBitmap"]
+        RAM["Guest RAM<br/>host-sized, profile-clamped"]
+        SYSINFO["SYSINFO MMIO<br/>total/active RAM"]
+        VGAMEM["VGA windows<br/>0xA0000 graphics<br/>0xB8000 text"]
+        VRAM["Video RAM<br/>0x100000-0x5FFFFF"]
+        ULAMEM["ULA VRAM aperture<br/>0xFA000-0xFBAFF"]
+        VOOTEX["Voodoo texture memory<br/>0xD0000-0xDFFFF"]
+        AROSMEM["AROS memory<br/>Fast RAM + video RAM"]
+        COPMEM["Coprocessor memory slices<br/>IE32, IE64, M68K,<br/>Z80, 6502, x86"]
+        MAILBOX["Coprocessor mailboxes<br/>0x790000-0x7917FF"]
+        STAGING["Media staging buffer<br/>0x800000"]
+    end
+
+    subgraph OSLOAD["OS and loader shims"]
+        EMUTOS["EmuTOS loader"]
+        GEMDOS["GEMDOS intercept"]
+        XBIOS["XBIOS intercept"]
+        AROS["AROS loader"]
+        ADOS["AROS DOS handler"]
+        ADMA["AROS Paula-style audio DMA"]
+        HOSTFS["Bootstrap HostFS"]
+        FILEIO["File I/O MMIO"]
+        MEDIA["Media loader"]
+        CLIP["Clipboard bridge"]
+        TERM["Terminal / serial / keyboard / mouse"]
+        IRQD["IRQ diagnostic registers"]
+    end
+
+    subgraph VIDEO["Video systems"]
+        VCHIP["VideoChip<br/>layer 0"]
+        COPPER["Copper<br/>WAIT / MOVE / SETBASE / END"]
+        BLITTER["DMA blitter<br/>copy, fill, line, alpha,<br/>color expansion, Mode7"]
+        VCHPAL["VideoChip palette / CLUT8"]
+        VGA["VGA<br/>layer 10"]
+        VGASEQ["VGA sequencer"]
+        VGACRTC["VGA CRTC"]
+        VGAGC["VGA graphics controller"]
+        VGADAC["VGA DAC"]
+        TEDV["TED video<br/>layer 12"]
+        ANTIC["ANTIC<br/>layer 13"]
+        GTIA["GTIA<br/>colors, priority, collisions"]
+        ULA["ULA<br/>layer 15"]
+        VOO["Voodoo 3D<br/>layer 20"]
+        VOORAST["Voodoo rasterizer<br/>triangles, texture, Z,<br/>alpha, fog, chroma key"]
+        COMP["VideoCompositor<br/>layers 0/10/12/13/15/20"]
+    end
+
+    subgraph AUDIO["Audio systems"]
+        SOUND["SoundChip<br/>10 flex channels + mixer"]
+        SFX["SFX trigger channels"]
+        PSG["PSG / AY-3-8910"]
+        AYPLAYER["AY player"]
+        SN["SN76489"]
+        SID1["SID1"]
+        SID2["SID2"]
+        SID3["SID3"]
+        SIDPLAYER["SID player"]
+        POKEY["POKEY"]
+        SAP["SAP player"]
+        TEDA["TED audio"]
+        TEDPLAYER["TED player"]
+        AHX["AHX engine"]
+        AHXPLAYER["AHX player"]
+        MOD["MOD player"]
+        WAV["WAV player"]
+    end
+
+    subgraph BACKENDS["Host backends"]
+        EB["Ebiten video output"]
+        HV["Headless video output"]
+        OTO["OTO audio output"]
+        HA["Headless audio output"]
+        VULKAN["Voodoo Vulkan backend"]
+        VSOFT["Voodoo software backend"]
+    end
+
+    MAIN --> SIZE --> BUS
+    SIZE --> RAM
+    PB --> RAM
+    MAIN --> EXEC
+    EXEC --> IE32
+    EXEC --> IE64
+    EXEC --> M68K
+    EXEC --> Z80
+    EXEC --> C6502
+    EXEC --> X86
+    EXEC --> COPROC
+    COPROC --> IE32
+    COPROC --> IE64
+    COPROC --> M68K
+    COPROC --> Z80
+    COPROC --> C6502
+    COPROC --> X86
+    IE64 --> JIE64
+    C6502 --> J6502
+    M68K --> JM68K
+    Z80 --> JZ80
+    X86 --> JX86
+    IE32 <--> BUS
+    IE64 <--> BUS
+    M68K <--> BUS
+    Z80 <--> BUS
+    C6502 <--> BUS
+    X86 <--> BUS
+    JIE64 <--> BUS
+    J6502 <--> BUS
+    JM68K <--> BUS
+    JZ80 <--> BUS
+    JX86 <--> BUS
+    DBG --> CPUMON
+    CPUMON --> IE32
+    CPUMON --> IE64
+    CPUMON --> M68K
+    CPUMON --> Z80
+    CPUMON --> C6502
+    CPUMON --> X86
+    LUA -.-> BUS
+
+    BUS <--> RAM
+    BUS <--> SYSINFO
+    BUS <--> VGAMEM
+    BUS <--> VRAM
+    BUS <--> ULAMEM
+    BUS <--> VOOTEX
+    BUS <--> AROSMEM
+    BUS <--> COPMEM
+    BUS <--> MAILBOX
+    BUS <--> STAGING
+
+    BUS <--> EMUTOS
+    EMUTOS --> GEMDOS
+    EMUTOS --> XBIOS
+    BUS <--> AROS
+    AROS --> ADOS
+    AROS --> ADMA
+    BUS <--> HOSTFS
+    BUS <--> FILEIO
+    BUS <--> MEDIA
+    BUS <--> CLIP
+    BUS <--> TERM
+    BUS <--> IRQD
+
+    BUS <--> VCHIP
+    VCHIP --> COPPER
+    VCHIP --> BLITTER
+    VCHIP --> VCHPAL
+    BUS <--> VGA
+    VGA --> VGASEQ
+    VGA --> VGACRTC
+    VGA --> VGAGC
+    VGA --> VGADAC
+    BUS <--> TEDV
+    BUS <--> ANTIC
+    ANTIC --> GTIA
+    BUS <--> ULA
+    BUS <--> VOO
+    VOO --> VOORAST
+    VCHIP --> COMP
+    VGA --> COMP
+    TEDV --> COMP
+    ANTIC --> COMP
+    ULA --> COMP
+    VOO --> COMP
+
+    BUS <--> SOUND
+    SOUND --> SFX
+    BUS <--> PSG
+    AYPLAYER --> PSG
+    BUS <--> SN
+    BUS <--> SID1
+    BUS <--> SID2
+    BUS <--> SID3
+    SIDPLAYER --> SID1
+    SIDPLAYER --> SID2
+    SIDPLAYER --> SID3
+    BUS <--> POKEY
+    SAP --> POKEY
+    BUS <--> TEDA
+    TEDPLAYER --> TEDA
+    BUS <--> AHX
+    AHXPLAYER --> AHX
+    BUS <--> MOD
+    BUS <--> WAV
+    PSG --> SOUND
+    SN --> SOUND
+    SID1 --> SOUND
+    SID2 --> SOUND
+    SID3 --> SOUND
+    POKEY --> SOUND
+    TEDA --> SOUND
+    AHX --> SOUND
+    MOD --> SOUND
+    WAV --> SOUND
+    ADMA --> SOUND
+
+    COMP --> EB
+    COMP --> HV
+    SOUND --> OTO
+    SOUND --> HA
+    VOO --> VULKAN
+    VOO --> VSOFT
+    SDK -.-> EXEC
+
+    classDef host fill:#455A64,stroke:#263238,color:#fff
+    classDef cpu fill:#1565C0,stroke:#0D47A1,color:#fff
+    classDef bus fill:#B71C1C,stroke:#7F0000,color:#fff
+    classDef os fill:#6A1B9A,stroke:#4A148C,color:#fff
+    classDef video fill:#2E7D32,stroke:#1B5E20,color:#fff
+    classDef audio fill:#EF6C00,stroke:#BF360C,color:#fff
+    classDef backend fill:#37474F,stroke:#263238,color:#fff
+
+    class MAIN,SIZE,PB,DBG,LUA,SDK host
+    class EXEC,COPROC,IE32,IE64,M68K,Z80,C6502,X86,JIE64,J6502,JM68K,JZ80,JX86,CPUMON cpu
+    class BUS,RAM,SYSINFO,VGAMEM,VRAM,ULAMEM,VOOTEX,AROSMEM,COPMEM,MAILBOX,STAGING bus
+    class EMUTOS,GEMDOS,XBIOS,AROS,ADOS,ADMA,HOSTFS,FILEIO,MEDIA,CLIP,TERM,IRQD os
+    class VCHIP,COPPER,BLITTER,VCHPAL,VGA,VGASEQ,VGACRTC,VGAGC,VGADAC,TEDV,ANTIC,GTIA,ULA,VOO,VOORAST,COMP video
+    class SOUND,SFX,PSG,AYPLAYER,SN,SID1,SID2,SID3,SIDPLAYER,POKEY,SAP,TEDA,TEDPLAYER,AHX,AHXPLAYER,MOD,WAV audio
+    class EB,HV,OTO,HA,VULKAN,VSOFT backend
+```
+
 ## 1. Whole-System Architecture
 
 ```mermaid
@@ -123,15 +374,26 @@ flowchart TB
 ### Runtime Data and Control Flow
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#E8F1F8', 'primaryBorderColor': '#455A64', 'primaryTextColor': '#111111', 'actorBkg': '#E8F1F8', 'actorBorder': '#455A64', 'actorTextColor': '#111111', 'activationBkgColor': '#FFF3E0', 'activationBorderColor': '#EF6C00', 'sequenceNumberColor': '#111111'}}}%%
 sequenceDiagram
-    participant Host as main.go / host loop
-    participant Bus as MachineBus
-    participant CPU as Active CPU runner
-    participant JIT as JIT dispatcher
-    participant Dev as MMIO devices
-    participant Video as VideoCompositor
-    participant Audio as SoundChip mixer
-    participant Debug as Debug/Lua
+    box rgb(232, 241, 248) Host control
+        participant Host as main.go / host loop
+        participant Debug as Debug/Lua
+    end
+    box rgb(225, 238, 251) Execution
+        participant CPU as Active CPU runner
+        participant JIT as JIT dispatcher
+    end
+    box rgb(255, 235, 238) Bus and MMIO
+        participant Bus as MachineBus
+        participant Dev as MMIO devices
+    end
+    box rgb(232, 245, 233) Video path
+        participant Video as VideoCompositor
+    end
+    box rgb(255, 243, 224) Audio path
+        participant Audio as SoundChip mixer
+    end
 
     Host->>Bus: allocate guest RAM and register MMIO
     Host->>CPU: load selected program/profile
