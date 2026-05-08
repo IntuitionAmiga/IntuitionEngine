@@ -111,6 +111,7 @@ Detailed video references:
 - IEScript uses Lua 5.1-compatible semantics through GopherLua.
 - Script modules include `sys`, `cpu`, `mem`, `term`, `audio`, `video`, `repl`, `rec`, `dbg`, `coproc`, `media`, and `bit32`.
 - The Machine Monitor is available with `F9` in desktop builds and has CPU, memory, breakpoint, watchpoint, trace, I/O view, and scripting support.
+- In desktop builds, guests can request captured relative mouse mode. Press `Ctrl+Alt` to release the host mouse, then left-click inside the IE window to recapture while the guest still requests relative mode.
 
 References:
 

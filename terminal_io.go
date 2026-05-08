@@ -38,8 +38,11 @@ type TerminalMMIO struct {
 	// Mouse state, updated by graphical backends and read via MMIO.
 	mouseX        atomic.Int32
 	mouseY        atomic.Int32
+	mouseDX       atomic.Int32
+	mouseDY       atomic.Int32
 	mouseButtons  atomic.Uint32
 	mouseChanged  atomic.Bool
+	mouseCtrl     atomic.Uint32
 	mouseOverride atomic.Bool  // when true, backend skips mouse updates (script owns mouse)
 	mouseNativeW  atomic.Int32 // native video source width (0 = use raw coordinates)
 	mouseNativeH  atomic.Int32 // native video source height
@@ -180,6 +183,12 @@ func (tm *TerminalMMIO) HandleRead(addr uint32) uint32 {
 			return 1
 		}
 		return 0
+	case MOUSE_CTRL:
+		return tm.mouseCtrl.Load()
+	case MOUSE_DX:
+		return uint32(tm.mouseDX.Swap(0))
+	case MOUSE_DY:
+		return uint32(tm.mouseDY.Swap(0))
 	case SCAN_CODE:
 		return uint32(tm.dequeueScancodeLocked())
 	case SCAN_STATUS:
@@ -218,6 +227,11 @@ func (tm *TerminalMMIO) HandleWrite(addr uint32, value uint32) {
 		tm.echoEnabled = (value & 1) != 0
 	case TERM_CTRL:
 		tm.lineInputMode = (value & 1) != 0
+	case MOUSE_CTRL:
+		old := tm.mouseCtrl.Swap(value & 1)
+		if old != (value & 1) {
+			tm.ClearMouseDeltas()
+		}
 
 	case TERM_SENTINEL:
 		if value == 0xDEAD {
@@ -305,6 +319,27 @@ func (tm *TerminalMMIO) SetForceEchoOff(force bool) {
 func (tm *TerminalMMIO) SetMouseNativeResolution(w, h int) {
 	tm.mouseNativeW.Store(int32(w))
 	tm.mouseNativeH.Store(int32(h))
+}
+
+// MouseRelativeMode reports whether the guest requested captured relative mouse input.
+func (tm *TerminalMMIO) MouseRelativeMode() bool {
+	return tm.mouseCtrl.Load()&1 != 0
+}
+
+// AddMouseDelta accumulates signed relative mouse motion for MOUSE_DX/Y.
+func (tm *TerminalMMIO) AddMouseDelta(dx, dy int32) {
+	if dx == 0 && dy == 0 {
+		return
+	}
+	tm.mouseDX.Add(dx)
+	tm.mouseDY.Add(dy)
+	tm.mouseChanged.Store(true)
+}
+
+// ClearMouseDeltas drops any pending relative motion.
+func (tm *TerminalMMIO) ClearMouseDeltas() {
+	tm.mouseDX.Store(0)
+	tm.mouseDY.Store(0)
 }
 
 // DrainOutput returns and clears the accumulated output buffer.

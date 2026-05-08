@@ -789,6 +789,7 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"echo":               se.luaTermEcho(),
 		"wait_output":        se.luaTermWaitOutput(ctx),
 		"mouse_move":         se.luaTermMouseMove(),
+		"mouse_delta":        se.luaTermMouseDelta(),
 		"mouse_click":        se.luaTermMouseClick(ctx),
 		"mouse_double_click": se.luaTermMouseDoubleClick(ctx),
 		"mouse_release":      se.luaTermMouseRelease(),
@@ -1839,6 +1840,21 @@ func (se *ScriptEngine) luaTermMouseMove() lua.LGFunction {
 		se.terminal.mouseX.Store(cx)
 		se.terminal.mouseY.Store(cy)
 		se.terminal.mouseChanged.Store(true)
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaTermMouseDelta() lua.LGFunction {
+	return func(L *lua.LState) int {
+		dx := int32(L.CheckInt(1))
+		dy := int32(L.CheckInt(2))
+		se.terminal.mouseOverride.Store(true)
+		se.terminal.AddMouseDelta(dx, dy)
+		if L.GetTop() >= 3 {
+			btn := validateMouseButton(L, 3, L.CheckInt(3))
+			se.terminal.mouseButtons.Store(btn)
+			se.terminal.mouseChanged.Store(true)
+		}
 		return 0
 	}
 }

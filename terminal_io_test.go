@@ -611,6 +611,15 @@ func TestTerminalMMIO_RegisterConstants(t *testing.T) {
 	if MOUSE_X != 0xF0730 {
 		t.Fatalf("MOUSE_X mismatch: 0x%X", MOUSE_X)
 	}
+	if MOUSE_CTRL != 0xF074C {
+		t.Fatalf("MOUSE_CTRL mismatch: 0x%X", MOUSE_CTRL)
+	}
+	if MOUSE_DX != 0xF0754 {
+		t.Fatalf("MOUSE_DX mismatch: 0x%X", MOUSE_DX)
+	}
+	if MOUSE_DY != 0xF0758 {
+		t.Fatalf("MOUSE_DY mismatch: 0x%X", MOUSE_DY)
+	}
 	if SCAN_CODE != 0xF0740 {
 		t.Fatalf("SCAN_CODE mismatch: 0x%X", SCAN_CODE)
 	}
@@ -729,5 +738,78 @@ func TestTerminalMMIO_MouseStatusOnlyOnChange(t *testing.T) {
 	}
 	if got := tm.HandleRead(MOUSE_STATUS); got != 0 {
 		t.Fatalf("cleared MOUSE_STATUS got %d want 0", got)
+	}
+}
+
+func TestTerminalMMIO_MouseRelativeDefaultsOffAndAbsoluteStaysAbsolute(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.mouseX.Store(123)
+	tm.mouseY.Store(456)
+
+	if got := tm.HandleRead(MOUSE_CTRL); got != 0 {
+		t.Fatalf("MOUSE_CTRL got %d want 0", got)
+	}
+	tm.HandleWrite(MOUSE_CTRL, 1)
+	if got := tm.HandleRead(MOUSE_CTRL); got != 1 {
+		t.Fatalf("MOUSE_CTRL after enable got %d want 1", got)
+	}
+	if got := tm.HandleRead(MOUSE_X); got != 123 {
+		t.Fatalf("MOUSE_X changed in relative mode: got %d want 123", got)
+	}
+	if got := tm.HandleRead(MOUSE_Y); got != 456 {
+		t.Fatalf("MOUSE_Y changed in relative mode: got %d want 456", got)
+	}
+}
+
+func TestTerminalMMIO_MouseDeltaReadClearsIndependently(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.HandleWrite(MOUSE_CTRL, 1)
+	tm.AddMouseDelta(7, -3)
+	tm.AddMouseDelta(-2, 9)
+
+	if got := int32(tm.HandleRead(MOUSE_DX)); got != 5 {
+		t.Fatalf("MOUSE_DX got %d want 5", got)
+	}
+	if got := int32(tm.HandleRead(MOUSE_DX)); got != 0 {
+		t.Fatalf("MOUSE_DX second read got %d want 0", got)
+	}
+	if got := int32(tm.HandleRead(MOUSE_DY)); got != 6 {
+		t.Fatalf("MOUSE_DY got %d want 6", got)
+	}
+	if got := int32(tm.HandleRead(MOUSE_DY)); got != 0 {
+		t.Fatalf("MOUSE_DY second read got %d want 0", got)
+	}
+}
+
+func TestTerminalMMIO_MouseDeltaSetsStatus(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.HandleWrite(MOUSE_CTRL, 1)
+	tm.AddMouseDelta(1, 0)
+	if got := tm.HandleRead(MOUSE_STATUS); got != 1 {
+		t.Fatalf("MOUSE_STATUS after delta got %d want 1", got)
+	}
+	if got := tm.HandleRead(MOUSE_STATUS); got != 0 {
+		t.Fatalf("MOUSE_STATUS second read got %d want 0", got)
+	}
+}
+
+func TestTerminalMMIO_MouseRelativeSwitchClearsStaleDeltas(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.AddMouseDelta(12, -8)
+	tm.HandleWrite(MOUSE_CTRL, 1)
+	if got := tm.HandleRead(MOUSE_DX); got != 0 {
+		t.Fatalf("MOUSE_DX after enabling got %d want 0", got)
+	}
+	if got := tm.HandleRead(MOUSE_DY); got != 0 {
+		t.Fatalf("MOUSE_DY after enabling got %d want 0", got)
+	}
+
+	tm.AddMouseDelta(3, 4)
+	tm.HandleWrite(MOUSE_CTRL, 0)
+	if got := tm.HandleRead(MOUSE_DX); got != 0 {
+		t.Fatalf("MOUSE_DX after disabling got %d want 0", got)
+	}
+	if got := tm.HandleRead(MOUSE_DY); got != 0 {
+		t.Fatalf("MOUSE_DY after disabling got %d want 0", got)
 	}
 }

@@ -1193,7 +1193,9 @@ M11 takes the next step toward an Amiga-shaped graphical OS: interactive input a
 
 - **MMIO source registers** (chip page 0xF0):
   - `SCAN_CODE` (0xF0740, dequeues a raw scancode), `SCAN_STATUS` (0xF0744 bit 0), `SCAN_MODIFIERS` (0xF0748). Use these for keyboard, NOT `TERM_KEY_*` which is the cooked terminal queue owned by console.handler.
-  - `MOUSE_X` / `MOUSE_Y` / `MOUSE_BUTTONS` / `MOUSE_STATUS` (0xF0730-0xF073F).
+  - `MOUSE_X` / `MOUSE_Y` / `MOUSE_BUTTONS` / `MOUSE_STATUS` (0xF0730-0xF073F). `MOUSE_X/Y` are absolute in every mode.
+  - `MOUSE_CTRL` (0xF074C bit 0) requests captured relative mode. `MOUSE_DX` (0xF0754) and `MOUSE_DY` (0xF0758) return signed accumulated deltas and clear independently on read.
+  - Desktop hosts let users press `Ctrl+Alt` to release host capture without changing `MOUSE_CTRL`; a left-click inside the IE window recaptures while the guest request remains enabled.
 - **Event push protocol**: clients call `INPUT_OPEN` (data0 = client port_id) to register a single subscriber. input.device polls registers on its scheduler quantum and `PutMsg`'s `INPUT_EVENT` messages into the registered client port whenever scancodes dequeue or mouse state changes.
 - **Single subscriber for M11.** A second `INPUT_OPEN` while one is registered returns `INPUT_ERR_BUSY`. Multi-subscriber fan-out is M12 work in `intuition.library`.
 - **Event message format**: `mn_Type = INPUT_EVENT`, `mn_Data0 = (event_type<<24)|(code<<16)|(modifiers<<8)|flags`, `mn_Data1 = (mouse_x16<<48)|(mouse_y16<<32)|event_seq32`. The 32-bit event sequence number in the low half of `mn_Data1` is a per-device monotonic counter useful for debugging dropped events and (later) coalescing.

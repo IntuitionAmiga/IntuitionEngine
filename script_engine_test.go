@@ -135,6 +135,59 @@ func TestScriptEngine_MemoryIOAllowedWithoutFreeze(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_TermMouseDelta(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	if err := se.RunString(`term.mouse_delta(6, -4, 1)`, "test"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("unexpected script error: %v", err)
+	}
+
+	if got := int32(term.HandleRead(MOUSE_DX)); got != 6 {
+		t.Fatalf("MOUSE_DX got %d want 6", got)
+	}
+	if got := int32(term.HandleRead(MOUSE_DY)); got != -4 {
+		t.Fatalf("MOUSE_DY got %d want -4", got)
+	}
+	if got := term.HandleRead(MOUSE_DX); got != 0 {
+		t.Fatalf("MOUSE_DX second read got %d want 0", got)
+	}
+	if got := term.HandleRead(MOUSE_BUTTONS); got != 1 {
+		t.Fatalf("MOUSE_BUTTONS got %d want 1", got)
+	}
+}
+
+func TestScriptEngine_TermMouseDeltaRelativeMMIO(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	bus.MapIO(TERM_OUT, TERMINAL_REGION_END, term.HandleRead, term.HandleWrite)
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	script := `
+		mem.write32(0xF074C, 1)
+		term.mouse_delta(9, -7)
+		assert(mem.read32(0xF074C) == 1)
+		assert(mem.read32(0xF0754) == 9)
+		assert(mem.read32(0xF0758) == 0xFFFFFFF9)
+		assert(mem.read32(0xF0754) == 0)
+		assert(mem.read32(0xF0758) == 0)
+	`
+	if err := se.RunString(script, "mouse_delta_mmio"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("unexpected script error: %v", err)
+	}
+}
+
 func TestScriptEngine_AudioWriteReg(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()

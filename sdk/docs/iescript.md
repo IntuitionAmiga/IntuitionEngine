@@ -303,6 +303,10 @@ Terminal automation for driving the emulated terminal I/O.
 
 `term.mouse_move(x, y)` — Set the mouse position. Coordinates are clamped to the compositor frame bounds (negative values become 0, values beyond frame dimensions are clamped to the edge). Returns: nothing.
 
+`term.mouse_delta(dx, dy [, button])` — Add signed relative mouse deltas to `MOUSE_DX` and `MOUSE_DY`. The optional `button` value uses the same encoding as `mouse_click`: 1 = left, 2 = right, 3 = both. Returns: nothing.
+
+In desktop builds, captured relative mouse mode can be released manually with `Ctrl+Alt`; left-click inside the IE window recaptures while the guest still has `MOUSE_CTRL` bit 0 set. This host escape does not change guest-visible `MOUSE_CTRL` and does not affect scripted `term.mouse_delta` injection.
+
 `term.mouse_click(x, y [, button])` — Perform a single mouse click at (x, y). Coordinates are clamped to frame bounds. The optional `button` parameter specifies which button: 1 = left (default), 2 = right, 3 = both. The click holds the button for 50 ms then releases. Returns: nothing.
 
 `term.mouse_double_click(x, y [, button])` — Perform a double click at (x, y). Two clicks with a 100 ms gap between them (within the TOS double-click threshold). Coordinates are clamped, button values are the same as `mouse_click`. Returns: nothing.
@@ -1287,7 +1291,7 @@ Compact reference for IEScript API functions.
 | `mem.write_block(addr, bytes)` | — |
 | `mem.fill(addr, len, value)` | — |
 
-### term (11)
+### term (12)
 
 | Function | Returns |
 |----------|---------|
@@ -1298,6 +1302,7 @@ Compact reference for IEScript API functions.
 | `term.echo(on)` | — |
 | `term.wait_output(pattern, timeout_ms)` | boolean |
 | `term.mouse_move(x, y)` | — |
+| `term.mouse_delta(dx, dy [, button])` | — |
 | `term.mouse_click(x, y [, button])` | — |
 | `term.mouse_double_click(x, y [, button])` | — |
 | `term.scancode(code)` | — |

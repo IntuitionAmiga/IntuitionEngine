@@ -335,10 +335,13 @@ const (
 	MOUSE_Y             = 0xF0734    // Absolute mouse Y position (16-bit in low bits)
 	MOUSE_BUTTONS       = 0xF0738    // Bit 0=left, 1=right, 2=middle
 	MOUSE_STATUS        = 0xF073C    // Bit 0=changed since last read (clears on read)
+	MOUSE_CTRL          = 0xF074C    // Bit 0=relative/captured mouse mode request
 	SCAN_CODE           = 0xF0740    // Raw keyboard scancode dequeue
 	SCAN_STATUS         = 0xF0744    // Bit 0=scancode available
 	SCAN_MODIFIERS      = 0xF0748    // Bit 0=shift,1=ctrl,2=alt,3=capslock
 	RTC_EPOCH           = 0xF0750    // Read: host UTC seconds since Unix epoch
+	MOUSE_DX            = 0xF0754    // Signed accumulated relative X delta, clears on read
+	MOUSE_DY            = 0xF0758    // Signed accumulated relative Y delta, clears on read
 	TERM_SENTINEL       = 0xF07F0    // Write 0xDEAD to stop CPU (via OnSentinel callback)
 	TERMINAL_REGION_END = 0xF07FF    // Reserve 256 bytes for future expansion
 )

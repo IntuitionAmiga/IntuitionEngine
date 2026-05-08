@@ -75,6 +75,7 @@ type EbitenOutput struct {
 	luaOverlay       *LuaOverlay
 	termMMIO         *TerminalMMIO
 	hideSystemCursor bool
+	relativeMouse    relativeMouseCaptureState
 
 	recorder         *VideoRecorder
 	screenCaptureBuf []byte
@@ -388,6 +389,8 @@ func (eo *EbitenOutput) Update() error {
 		}
 	}
 
+	eo.updateRelativeMouseBeforeOverlay()
+
 	// When monitor is active, route all input to the overlay
 	if eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive() {
 		eo.monitorOverlay.HandleInput()
@@ -510,6 +513,10 @@ func (eo *EbitenOutput) HideSystemCursor() {
 }
 
 func (eo *EbitenOutput) applySystemCursorMode(hidden bool) {
+	if eo.relativeMouse.captured {
+		ebiten.SetCursorMode(ebiten.CursorModeCaptured)
+		return
+	}
 	if hidden {
 		ebiten.SetCursorMode(ebiten.CursorModeHidden)
 		return
@@ -759,48 +766,130 @@ func shouldRepeat(key ebiten.Key) bool {
 	return (dur-keyRepeatDelay)%keyRepeatInterval == 0
 }
 
+func relativeMouseReleaseRequested() bool {
+	ctrl := ebiten.IsKeyPressed(ebiten.KeyControlLeft) || ebiten.IsKeyPressed(ebiten.KeyControlRight)
+	alt := ebiten.IsKeyPressed(ebiten.KeyAltLeft) || ebiten.IsKeyPressed(ebiten.KeyAltRight)
+	if !ctrl || !alt {
+		return false
+	}
+	return inpututil.IsKeyJustPressed(ebiten.KeyControlLeft) ||
+		inpututil.IsKeyJustPressed(ebiten.KeyControlRight) ||
+		inpututil.IsKeyJustPressed(ebiten.KeyAltLeft) ||
+		inpututil.IsKeyJustPressed(ebiten.KeyAltRight)
+}
+
+func (eo *EbitenOutput) applyRelativeMouseOutput(tm *TerminalMMIO, out relativeMouseCaptureOutput, fullscreen, hideSystemCursor bool) {
+	if out.clearDeltas {
+		tm.ClearMouseDeltas()
+	}
+	if out.addDX != 0 || out.addDY != 0 {
+		tm.AddMouseDelta(out.addDX, out.addDY)
+	}
+	switch out.cursorAction {
+	case relativeMouseCursorCapture:
+		ebiten.SetCursorMode(ebiten.CursorModeCaptured)
+	case relativeMouseCursorVisible:
+		ebiten.SetCursorMode(ebiten.CursorModeVisible)
+	case relativeMouseCursorRestorePolicy:
+		eo.applySystemCursorMode(shouldHideSystemCursor(fullscreen, hideSystemCursor))
+	}
+}
+
+func (eo *EbitenOutput) updateRelativeMouseBeforeOverlay() {
+	eo.bufferMutex.RLock()
+	tm := eo.termMMIO
+	fullscreen := eo.fullscreen
+	hideSystemCursor := eo.hideSystemCursor
+	eo.bufferMutex.RUnlock()
+	if tm == nil {
+		return
+	}
+	relativeMode := tm.MouseRelativeMode()
+	releaseRequested := relativeMouseReleaseRequested()
+	if relativeMode && !releaseRequested {
+		return
+	}
+	if !relativeMode && !eo.relativeMouse.active && !eo.relativeMouse.captured && !eo.relativeMouse.hostReleased {
+		return
+	}
+	mx, my := ebiten.CursorPosition()
+	out := eo.relativeMouse.Update(relativeMouseCaptureInput{
+		guestRelative:    relativeMode,
+		mouseOverride:    tm.mouseOverride.Load(),
+		hostX:            mx,
+		hostY:            my,
+		releaseRequested: releaseRequested,
+	})
+	eo.applyRelativeMouseOutput(tm, out, fullscreen, hideSystemCursor)
+}
+
 func (eo *EbitenOutput) updateTerminalMMIOInput() {
 	eo.bufferMutex.RLock()
 	tm := eo.termMMIO
 	width := eo.width
 	height := eo.height
+	fullscreen := eo.fullscreen
+	hideSystemCursor := eo.hideSystemCursor
 	eo.bufferMutex.RUnlock()
 	if tm == nil {
 		return
 	}
 
-	if !tm.mouseOverride.Load() {
-		mx, my := ebiten.CursorPosition()
+	relativeMode := tm.MouseRelativeMode()
+	mx, my := ebiten.CursorPosition()
+	mouseOverride := tm.mouseOverride.Load()
+	relativeOut := eo.relativeMouse.Update(relativeMouseCaptureInput{
+		guestRelative:      relativeMode,
+		mouseOverride:      mouseOverride,
+		hostX:              mx,
+		hostY:              my,
+		releaseRequested:   relativeMouseReleaseRequested(),
+		recaptureRequested: inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft),
+	})
+	eo.applyRelativeMouseOutput(tm, relativeOut, fullscreen, hideSystemCursor)
 
-		// Scale from display space to native video source space when upscaling.
-		nw := int(tm.mouseNativeW.Load())
-		nh := int(tm.mouseNativeH.Load())
-		if nw > 0 && nh > 0 && (nw != width || nh != height) {
-			mx = mx * nw / width
-			my = my * nh / height
-			width = nw
-			height = nh
+	if !mouseOverride {
+		if !relativeMode {
+			// Scale from display space to native video source space when upscaling.
+			nw := int(tm.mouseNativeW.Load())
+			nh := int(tm.mouseNativeH.Load())
+			if nw > 0 && nh > 0 && (nw != width || nh != height) {
+				mx = mx * nw / width
+				my = my * nh / height
+				width = nw
+				height = nh
+			}
+
+			newX := int32(max(0, min(mx, width-1)))
+			newY := int32(max(0, min(my, height-1)))
+
+			oldX := tm.mouseX.Swap(newX)
+			oldY := tm.mouseY.Swap(newY)
+			if oldX != newX || oldY != newY {
+				tm.mouseChanged.Store(true)
+			}
 		}
 
-		newX := int32(max(0, min(mx, width-1)))
-		newY := int32(max(0, min(my, height-1)))
+		if relativeOut.suppressButtons {
+			if oldButtons := tm.mouseButtons.Swap(0); oldButtons != 0 {
+				tm.mouseChanged.Store(true)
+			}
+		} else {
+			var buttons uint32
+			if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
+				buttons |= 1
+			}
+			if ebiten.IsMouseButtonPressed(ebiten.MouseButtonRight) {
+				buttons |= 2
+			}
+			if ebiten.IsMouseButtonPressed(ebiten.MouseButtonMiddle) {
+				buttons |= 4
+			}
 
-		var buttons uint32
-		if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
-			buttons |= 1
-		}
-		if ebiten.IsMouseButtonPressed(ebiten.MouseButtonRight) {
-			buttons |= 2
-		}
-		if ebiten.IsMouseButtonPressed(ebiten.MouseButtonMiddle) {
-			buttons |= 4
-		}
-
-		oldX := tm.mouseX.Swap(newX)
-		oldY := tm.mouseY.Swap(newY)
-		oldButtons := tm.mouseButtons.Swap(buttons)
-		if oldX != newX || oldY != newY || oldButtons != buttons {
-			tm.mouseChanged.Store(true)
+			oldButtons := tm.mouseButtons.Swap(buttons)
+			if oldButtons != buttons {
+				tm.mouseChanged.Store(true)
+			}
 		}
 	}
 
@@ -1309,7 +1398,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	})
 
 	legendColor := color.RGBA{160, 160, 160, 255}
-	legend := "F8:Lua F9:Dbg F10:Reset F11:FS/Win F12:Status"
+	legend := "F8:Lua F9:Dbg F10:Reset F11:FS/Win F12:Status Ctrl+Alt:Mouse"
 	legendScale := 1.0
 	legendW := int(float64(text.BoundString(basicfont.Face7x13, legend).Dx()) * legendScale)
 	legendX := max(eo.width-legendW-6, 6)

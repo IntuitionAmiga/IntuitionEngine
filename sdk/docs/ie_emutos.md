@@ -99,6 +99,9 @@ EmuTOS has full access to the complete IE hardware map. The key registers for Em
 | `MOUSE_Y` | `0xF0734` | absolute Y |
 | `MOUSE_BUTTONS` | `0xF0738` | bit0=left bit1=right bit2=middle |
 | `MOUSE_STATUS` | `0xF073C` | bit0 changed since last read |
+| `MOUSE_CTRL` | `0xF074C` | bit0 requests captured relative mouse mode |
+| `MOUSE_DX` | `0xF0754` | signed accumulated relative X delta, clears on read |
+| `MOUSE_DY` | `0xF0758` | signed accumulated relative Y delta, clears on read |
 | `SCAN_CODE` | `0xF0740` | dequeues make/break scancode |
 | `SCAN_STATUS` | `0xF0744` | bit0 available |
 | `SCAN_MODIFIERS` | `0xF0748` | bit0 shift bit1 ctrl bit2 alt bit3 caps |
@@ -116,6 +119,8 @@ EmuTOS has full access to the complete IE hardware map. The key registers for Em
 | `VOODOO_BASE` | `0xF8000+` | Voodoo 3D registers |
 | `SYS_GC_TRIGGER` | `0xF2380` | Write any value to trigger GC |
 | `VRAM` | `0x100000+` | RGBA32 framebuffer (5MB) |
+
+`MOUSE_X` and `MOUSE_Y` remain absolute coordinates in both absolute and relative modes for compatibility with BASIC, EmuTOS, AROS, menus, and existing scripts. Guests that need unbounded motion set `MOUSE_CTRL` bit 0, then read signed deltas from `MOUSE_DX` and `MOUSE_DY`; each delta register clears independently when read. `MOUSE_STATUS` bit 0 is set by absolute coordinate/button changes and by relative delta accumulation, and still clears on read. In desktop builds, `Ctrl+Alt` releases host capture without changing `MOUSE_CTRL`; left-click inside the IE window recaptures while the guest request remains enabled.
 
 ## XBIOS minimal shim (TRAP #14)
 
