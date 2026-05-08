@@ -145,6 +145,7 @@ func (f *FileIODevice) doRead() {
 	}
 
 	data, err := os.ReadFile(fullPath)
+	traceHostIO("FILEIO", "READ", fileName, fullPath, err, len(data))
 	if err != nil {
 		f.fileStatus = 1
 		if os.IsNotExist(err) {
@@ -182,6 +183,7 @@ func (f *FileIODevice) doWrite() {
 	}
 
 	err := os.WriteFile(fullPath, data, 0644)
+	traceHostIO("FILEIO", "WRITE", fileName, fullPath, err, len(data))
 	if err != nil {
 		f.fileStatus = 1
 		f.fileErrorCode = FILE_ERR_PERMISSION

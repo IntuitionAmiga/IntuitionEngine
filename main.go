@@ -35,6 +35,14 @@ import (
 const emutosSentinel = "\x00emutos\x00"
 const intuitionOSSentinel = "\x00intuitionos\x00"
 
+func shouldAutostartAB3D2() bool {
+	return len(embeddedAB3D2Image) > 0
+}
+
+func isEmbeddedAB3D2DefaultBoot(modeM68K bool, filename string) bool {
+	return shouldAutostartAB3D2() && modeM68K && filename == ""
+}
+
 // Version metadata injected at build time via ldflags.
 var (
 	Version   = "dev"
@@ -417,6 +425,14 @@ func main() {
 	if modeBasic {
 		modeIE64 = true
 	}
+	if scriptFile != "" && !filepath.IsAbs(scriptFile) {
+		absScript, err := filepath.Abs(scriptFile)
+		if err != nil {
+			fmt.Printf("Error resolving script path %s: %v\n", scriptFile, err)
+			os.Exit(1)
+		}
+		scriptFile = absScript
+	}
 	useGraphicalTerm := false
 
 	modeCount := 0
@@ -466,8 +482,12 @@ func main() {
 		modeCount++
 	}
 	if modeCount == 0 && filename == "" {
-		modeBasic = true
-		modeIE64 = true
+		if shouldAutostartAB3D2() {
+			modeM68K = true
+		} else {
+			modeBasic = true
+			modeIE64 = true
+		}
 		modeCount = 1
 	}
 	useGraphicalTerm = modeBasic && !modeTerm
@@ -507,8 +527,10 @@ func main() {
 			fmt.Println("Error: IE64 mode requires a filename (or use -basic)")
 			os.Exit(1)
 		case modeM68K:
-			fmt.Println("Error: M68K mode requires a filename")
-			os.Exit(1)
+			if !shouldAutostartAB3D2() {
+				fmt.Println("Error: M68K mode requires a filename")
+				os.Exit(1)
+			}
 		case modeEmuTOS:
 			if emutosImage == "" && filename == "" && len(embeddedEmuTOSImage) == 0 && resolveDefaultEmuTOSImagePath() == "" {
 				fmt.Println("Error: EmuTOS mode requires -emutos-image <path> or an embedded EmuTOS ROM")
@@ -1215,8 +1237,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	runtimeBaseDir := "."
+	if shouldAutostartAB3D2() {
+		ab3d2RuntimeDir, err := ensureEmbeddedAB3D2Assets()
+		if err != nil {
+			fmt.Printf("Error preparing AB3D2 assets: %v\n", err)
+			os.Exit(1)
+		}
+		if ab3d2RuntimeDir != "" {
+			runtimeBaseDir = ab3d2RuntimeDir
+		}
+	}
+
 	// Initialize File I/O
-	fileIO := NewFileIODevice(sysBus, ".") // Current directory as base
+	fileIO := NewFileIODevice(sysBus, runtimeBaseDir)
 	sysBus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
 	sysBus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fileIO.HandleWrite8)
 	bootHostFS := NewBootstrapHostFSDevice(sysBus, defaultBootstrapHostFSRoot())
@@ -1235,11 +1269,11 @@ func main() {
 	tedEngine.AttachBusMemory(busMem)
 
 	// Initialize unified SOUND PLAY media loader
-	mediaLoader := NewMediaLoader(sysBus, soundChip, ".", psgPlayer, sidPlayer, tedPlayer, ahxPlayerCPU, pokeyPlayer, modPlayer, wavPlayer)
+	mediaLoader := NewMediaLoader(sysBus, soundChip, runtimeBaseDir, psgPlayer, sidPlayer, tedPlayer, ahxPlayerCPU, pokeyPlayer, modPlayer, wavPlayer)
 	sysBus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, mediaLoader.HandleRead, mediaLoader.HandleWrite)
 
 	// Initialize coprocessor subsystem MMIO (available to all CPU modes)
-	coprocMgr := NewCoprocessorManager(sysBus, ".")
+	coprocMgr := NewCoprocessorManager(sysBus, runtimeBaseDir)
 	sysBus.MapIO(COPROC_BASE, COPROC_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
 	sysBus.MapIO(COPROC_EXT_BASE, COPROC_EXT_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
 	defer coprocMgr.StopAll()
@@ -1273,7 +1307,7 @@ func main() {
 
 	// ProgramExecutor is created unconditionally so EXEC MMIO is always mapped.
 	// Its CPU pointer is set/updated when entering IE64 mode (initial or mode-switch).
-	progExec := NewProgramExecutor(sysBus, nil, videoChip, vgaEngine, voodooEngine, ".")
+	progExec := NewProgramExecutor(sysBus, nil, videoChip, vgaEngine, voodooEngine, runtimeBaseDir)
 	if gemdosHostRoot != "" {
 		progExec.SetGemdosConfig(gemdosHostRoot, gemdosDriveNum)
 	}
@@ -1285,6 +1319,7 @@ func main() {
 	var currentMode string
 	var currentPath string
 	var scriptEngine *ScriptEngine
+	ab3d2DefaultBoot := isEmbeddedAB3D2DefaultBoot(modeM68K, filename)
 
 	createRunnerForMode := func(mode string) (EmulatorCPU, error) {
 		switch mode {
@@ -1600,6 +1635,13 @@ func main() {
 				fmt.Printf("Error loading M68K program: %v\n", err)
 				os.Exit(1)
 			}
+			programBytes, _ = os.ReadFile(filename)
+			currentPath = filename
+			startExecution = true
+		} else if shouldAutostartAB3D2() {
+			m68kCPU.LoadProgramBytes(embeddedAB3D2Image)
+			programBytes = append([]byte(nil), embeddedAB3D2Image...)
+			currentPath = ""
 			startExecution = true
 		}
 
@@ -1624,7 +1666,11 @@ func main() {
 			tedVideoEngine.StartRenderLoop()
 			anticEngine.StartRenderLoop()
 			soundChip.Start()
-			fmt.Printf("Starting M68K CPU with program: %s\n\n", filename)
+			if filename != "" {
+				fmt.Printf("Starting M68K CPU with program: %s\n\n", filename)
+			} else {
+				fmt.Println("Starting AB3D2 embedded M68K program")
+			}
 			m68kRunner.StartExecution()
 		}
 	} else if modeEmuTOS {
@@ -1947,7 +1993,7 @@ func main() {
 	reloadProgram = buildReloadClosure(currentMode, cpuRunner, programBytes, sysBus)
 
 	// runProgramWithFullReset is the ONLY mutating entry point for reset+load.
-	// path == "" means "hard reset to BASIC cold boot" (F10 case).
+	// path == "" means "hard reset to the default boot program" (F10 case).
 	// path != "" means "load new program from disk" (IPC OPEN case).
 	runProgramWithFullReset := func(path string) error {
 		resetMu.Lock()
@@ -1983,7 +2029,10 @@ func main() {
 			// F10 hard reset: reload the original CLI boot mode, not the
 			// current mode. EmuTOS launched via BASIC's EMUTOS command
 			// should reset back to BASIC, not EmuTOS.
-			if modeEmuTOS {
+			if ab3d2DefaultBoot {
+				bytes = append([]byte(nil), embeddedAB3D2Image...)
+				mode = "m68k"
+			} else if modeEmuTOS {
 				var err error
 				bytes, path, err = loadEmuTOSImage()
 				if err != nil {

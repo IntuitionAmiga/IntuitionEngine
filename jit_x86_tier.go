@@ -4,9 +4,9 @@
 // reference RegPressureProfile. Build tag matches jit_x86_exec.go (the
 // sole consumer) so the symbol is defined on every platform that
 // compiles the exec loop — amd64 (linux/windows/darwin) plus arm64
-// linux.
+// linux/windows/darwin.
 
-//go:build (amd64 && (linux || windows || darwin)) || (arm64 && linux)
+//go:build (amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin))
 
 package main
 

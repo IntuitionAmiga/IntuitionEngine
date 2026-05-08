@@ -89,7 +89,14 @@ endif
 
 # Cross-compiler detection for dual-architecture Linux release builds.
 # aarch64 host → cross-compile for amd64; x86_64 host → cross-compile for arm64.
-CROSS_SYSROOT := ./sysroot
+ifneq ($(wildcard /opt/ie-sysroots/tumbleweed-aarch64/usr),)
+    DEFAULT_CROSS_SYSROOT := /opt/ie-sysroots/tumbleweed-aarch64
+else ifneq ($(wildcard /usr/aarch64-suse-linux/sys-root/usr),)
+    DEFAULT_CROSS_SYSROOT := /usr/aarch64-suse-linux/sys-root
+else
+    DEFAULT_CROSS_SYSROOT := ./sysroot-arm64
+endif
+CROSS_SYSROOT ?= $(DEFAULT_CROSS_SYSROOT)
 HAS_SYSROOT := $(wildcard $(CROSS_SYSROOT)/usr)
 
 ifeq ($(ARCH),aarch64)
@@ -109,6 +116,7 @@ else ifeq ($(ARCH),x86_64)
     else ifneq ($(shell command -v aarch64-suse-linux-gcc 2>/dev/null),)
         CROSS_CC := aarch64-suse-linux-gcc
         CROSS_CXX := aarch64-suse-linux-g++
+        CROSS_CC_SYSROOT := $(shell aarch64-suse-linux-gcc -print-sysroot 2>/dev/null)
     else
         CROSS_CC := aarch64-linux-gnu-gcc
         CROSS_CXX := aarch64-linux-gnu-g++
@@ -118,7 +126,10 @@ else ifeq ($(ARCH),x86_64)
         CROSS_CGO_CFLAGS := --sysroot=$(CROSS_SYSROOT)
         CROSS_CGO_CXXFLAGS := --sysroot=$(CROSS_SYSROOT)
         CROSS_CGO_LDFLAGS := --sysroot=$(CROSS_SYSROOT)
-        CROSS_PKG_CONFIG_LIBDIR := $(CROSS_SYSROOT)/usr/lib64/pkgconfig:$(CROSS_SYSROOT)/usr/share/pkgconfig:$(CROSS_SYSROOT)/usr/lib/aarch64-linux-gnu/pkgconfig
+        ifneq ($(CROSS_CC_SYSROOT),)
+            CROSS_CGO_LDFLAGS += -L$(CROSS_CC_SYSROOT)/lib64
+        endif
+        CROSS_PKG_CONFIG_LIBDIR := $(CROSS_SYSROOT)/usr/lib64/pkgconfig:$(CROSS_SYSROOT)/usr/share/pkgconfig:$(CROSS_SYSROOT)/usr/lib/pkgconfig:$(CROSS_SYSROOT)/lib64/pkgconfig:$(CROSS_SYSROOT)/usr/lib/aarch64-linux-gnu/pkgconfig:$(CROSS_SYSROOT)/usr/aarch64-suse-linux/sys-root/usr/lib64/pkgconfig:$(CROSS_SYSROOT)/usr/aarch64-suse-linux/sys-root/usr/share/pkgconfig
         CROSS_PKG_CONFIG_SYSROOT_DIR := $(CROSS_SYSROOT)
     else
         CROSS_CGO_CFLAGS :=
@@ -136,6 +147,19 @@ BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # Go build flags with version injection
 GO_FLAGS := -ldflags "-s -w -X main.Version=$(APP_VERSION) -X main.Commit=$(COMMIT) -X main.BuildDate=$(BUILD_DATE)"
+VM_EMBED_TAGS := embed_basic embed_emutos embed_aros
+VM_NOVULKAN_TAGS := novulkan $(VM_EMBED_TAGS)
+
+# Shared VM binary build recipes used by both direct binary checks and releases.
+# $(1) = GOARCH, $(2) = CC, $(3) = CXX, $(4) = extra env, $(5) = output path
+define build-linux-vm-binary
+CGO_ENABLED=1 CGO_JOBS=$(NCORES) CC=$(2) CXX=$(3) GOOS=linux GOARCH=$(1) $(4) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "$(VM_EMBED_TAGS)" -o $(5) .
+endef
+
+# $(1) = GOOS, $(2) = GOARCH, $(3) = output path
+define build-purego-novulkan-vm-binary
+CGO_ENABLED=0 GOOS=$(1) GOARCH=$(2) $(GO) build $(GO_FLAGS) -tags "$(VM_NOVULKAN_TAGS)" -o $(3) .
+endef
 
 # Commands and tools
 GO := go
@@ -244,9 +268,21 @@ SHOWREEL_ALL_ARTIFACTS := \
 
 # Release directories
 RELEASE_DIR := ./release
+CROSS_BUILD_DIR ?= ./bin/cross-build
+CROSS_BINARY_PREFIX ?= IntuitionEngine
+AB3D2_BUILD_DIR ?= ./bin/ab3d2
+AB3D2_BINARY_PREFIX ?= IntuitionEngine-AB3D2-Karlos-TKG-High
+AB3D2_SOURCE ?= ../alienbreed3d2/ab3d2_source/ab3d2_ie68_redux_high.ie68
+AB3D2_ASSET_ROOT ?= ../alienbreed3d2
+AB3D2_ASSET_TREE ?= ab3d2_source/_build
+UPX ?= upx
+BSDTAR ?= bsdtar
+AB3D2_EMBED_DIR := embedded/ab3d2
+AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
+AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan test vet tidy test-makefile test-cross test-race check-docs
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan test vet tidy test-makefile test-cross test-cross-binaries ab3d2 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -313,6 +349,74 @@ headless-novulkan: setup
 
 test-cross:
 	@bash ./scripts/test-cross-compile.sh
+
+check-linux-arm64-cross-prereqs:
+	@if ! command -v $(CROSS_CC) >/dev/null 2>&1; then \
+		echo "missing Linux arm64 cross compiler: $(CROSS_CC)" >&2; \
+		echo "install aarch64-linux-gnu-gcc/g++ or aarch64-suse-linux-gcc/g++, or override CROSS_CC/CROSS_CXX" >&2; \
+		exit 1; \
+	fi
+	@if [ ! -d "$(CROSS_SYSROOT)/usr" ]; then \
+		echo "missing Linux arm64 sysroot: $(CROSS_SYSROOT)" >&2; \
+		echo "set CROSS_SYSROOT=/path/to/aarch64/sysroot" >&2; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(CROSS_SYSROOT)/usr/include/X11/Xlib.h" ]; then \
+		echo "missing Linux arm64 X11 development headers in $(CROSS_SYSROOT)" >&2; \
+		echo "Ebiten/GLFW full Linux builds require target X11 headers such as usr/include/X11/Xlib.h." >&2; \
+		echo "Install the aarch64 X11 development packages into the sysroot, or set CROSS_SYSROOT=/path/to a richer aarch64 sysroot." >&2; \
+		exit 1; \
+	fi
+
+test-cross-binaries:
+	@echo "Building direct VM binaries for supported release-like targets..."
+	@$(MKDIR) -p $(CROSS_BUILD_DIR)
+	@echo "== linux/amd64 full CGO =="
+	@$(call build-linux-vm-binary,amd64,$(CC),$(CXX),,$(CROSS_BUILD_DIR)/$(CROSS_BINARY_PREFIX)-linux-amd64)
+	@echo "== linux/arm64 full CGO =="
+	@$(MAKE) check-linux-arm64-cross-prereqs
+	@$(call build-linux-vm-binary,arm64,$(CROSS_CC),$(CROSS_CXX),$(CROSS_ENV),$(CROSS_BUILD_DIR)/$(CROSS_BINARY_PREFIX)-linux-arm64)
+	@for goos in windows darwin; do \
+		for goarch in amd64 arm64; do \
+			ext=""; \
+			if [ "$$goos" = "windows" ]; then ext=".exe"; fi; \
+			echo "== $$goos/$$goarch pure Go novulkan =="; \
+			$(call build-purego-novulkan-vm-binary,$$goos,$$goarch,$(CROSS_BUILD_DIR)/$(CROSS_BINARY_PREFIX)-$$goos-$$goarch$$ext); \
+		done; \
+	done
+
+prepare-ab3d2-embed:
+	@if [ ! -f "$(AB3D2_SOURCE)" ]; then \
+		echo "missing AB3D2 image: $(AB3D2_SOURCE)" >&2; \
+		exit 1; \
+	fi
+	@if [ ! -d "$(AB3D2_ASSET_ROOT)/$(AB3D2_ASSET_TREE)" ]; then \
+		echo "missing AB3D2 asset tree: $(AB3D2_ASSET_ROOT)/$(AB3D2_ASSET_TREE)" >&2; \
+		exit 1; \
+	fi
+	@if ! command -v $(BSDTAR) >/dev/null 2>&1; then \
+		echo "missing archive tool: $(BSDTAR)" >&2; \
+		exit 1; \
+	fi
+	@$(MKDIR) -p $(AB3D2_EMBED_DIR)
+	@cp "$(AB3D2_SOURCE)" "$(AB3D2_EMBED_FILE)"
+	@rm -f "$(AB3D2_EMBED_ZIP)"
+	@$(BSDTAR) -c -L --format zip -f "$(abspath $(AB3D2_EMBED_ZIP))" -C "$(AB3D2_ASSET_ROOT)" "$(AB3D2_ASSET_TREE)"
+
+ab3d2: prepare-ab3d2-embed
+	@$(MAKE) test-cross-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR) CROSS_BINARY_PREFIX=$(AB3D2_BINARY_PREFIX) VM_EMBED_TAGS="embed_ab3d2"
+	@$(MAKE) compress-ab3d2
+
+compress-ab3d2:
+	@if ! command -v $(UPX) >/dev/null 2>&1; then \
+		echo "missing UPX compressor: $(UPX)" >&2; \
+		exit 1; \
+	fi
+	@echo "Compressing AB3D2 UPX-supported binaries with UPX --lzma..."
+	@$(UPX) --lzma \
+		$(AB3D2_BUILD_DIR)/$(AB3D2_BINARY_PREFIX)-linux-amd64 \
+		$(AB3D2_BUILD_DIR)/$(AB3D2_BINARY_PREFIX)-linux-arm64 \
+		$(AB3D2_BUILD_DIR)/$(AB3D2_BINARY_PREFIX)-windows-amd64.exe
 
 check-docs:
 	@bash ./scripts/check-doc-consistency.sh
@@ -1508,8 +1612,7 @@ define build-linux-release
 	echo "--- $$RELEASE_NAME ---"; \
 	echo "Building main binary (GOARCH=$(1), CC=$(2))..."; \
 	rm -f IntuitionEngine ie32asm ie64asm ie32to64 ie64dis && \
-	CGO_ENABLED=1 CGO_JOBS=$(NCORES) CC=$(2) CXX=$(3) GOARCH=$(1) $(4) \
-		$(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "embed_basic embed_emutos embed_aros" -o IntuitionEngine . && \
+	$(call build-linux-vm-binary,$(1),$(2),$(3),$(4),IntuitionEngine) && \
 		if [ "$(1)" = "$(NATIVE_GOARCH)" ]; then \
 			command -v $(SSTRIP) >/dev/null 2>&1 && $(SSTRIP) -z IntuitionEngine || true; \
 		fi && \
@@ -1549,6 +1652,9 @@ release-linux: setup emutos-release-rom aros-release-assets
 	@echo "=== Building Linux releases (amd64 + arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	$(call build-linux-release,$(NATIVE_GOARCH),$(CC),$(CXX),)
+ifeq ($(CROSS_GOARCH),arm64)
+	@$(MAKE) check-linux-arm64-cross-prereqs
+endif
 	$(call build-linux-release,$(CROSS_GOARCH),$(CROSS_CC),$(CROSS_CXX),$(CROSS_ENV))
 
 # Build Linux release archive for amd64 only.
@@ -1568,6 +1674,7 @@ release-linux-arm64: setup emutos-release-rom aros-release-assets
 ifeq ($(NATIVE_GOARCH),arm64)
 	$(call build-linux-release,arm64,$(CC),$(CXX),)
 else
+	@$(MAKE) check-linux-arm64-cross-prereqs
 	$(call build-linux-release,arm64,$(CROSS_CC),$(CROSS_CXX),$(CROSS_ENV))
 endif
 
@@ -1580,7 +1687,7 @@ release-windows: setup emutos-release-rom aros-release-assets
 		RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-windows-$$goarch; \
 		echo ""; \
 		echo "--- $$RELEASE_NAME ---"; \
-		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic embed_emutos embed_aros" -o IntuitionEngine.exe . && \
+		$(call build-purego-novulkan-vm-binary,windows,$$goarch,IntuitionEngine.exe) && \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32asm.exe assembler/ie32asm.go && \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe assembler/ie64asm.go && \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32to64.exe ./cmd/ie32to64/ && \
@@ -1614,7 +1721,7 @@ release-macos-amd64: setup emutos-release-rom aros-release-assets
 	@echo "=== Building macOS release (amd64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-darwin-amd64 && \
-		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic embed_emutos embed_aros" -o IntuitionEngine . && \
+		$(call build-purego-novulkan-vm-binary,darwin,amd64,IntuitionEngine) && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/ && \
@@ -1642,7 +1749,7 @@ release-macos-arm64: setup emutos-release-rom aros-release-assets
 	@echo "=== Building macOS release (arm64) ==="
 	@$(MKDIR) -p $(RELEASE_DIR)
 	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-darwin-arm64 && \
-		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -tags "novulkan embed_basic embed_emutos embed_aros" -o IntuitionEngine . && \
+		$(call build-purego-novulkan-vm-binary,darwin,arm64,IntuitionEngine) && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/ && \

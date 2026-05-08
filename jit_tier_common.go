@@ -22,7 +22,7 @@
 // and stays in jit_x86_exec.go. The shared piece is the threshold/gate
 // arithmetic so a behavioral change applies uniformly.
 
-//go:build (amd64 && (linux || windows || darwin)) || (arm64 && linux)
+//go:build (amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin))
 
 package main
 

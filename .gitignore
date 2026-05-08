@@ -56,5 +56,9 @@ SHA256SUMS
 # Cross-compilation sysroot
 sysroot/
 
+# Locally staged external embed payloads
+/embedded/ab3d2/*.ie68
+/embedded/ab3d2/*.zip
+
 # SDK build artifacts
 sdk/bin/

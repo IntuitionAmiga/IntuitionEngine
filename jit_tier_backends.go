@@ -11,7 +11,7 @@
 // registry total over the backend set. A false return is the permanent
 // disposition, not an unfinished implementation hook.
 
-//go:build (amd64 && (linux || windows || darwin)) || (arm64 && linux)
+//go:build (amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin))
 
 package main
 

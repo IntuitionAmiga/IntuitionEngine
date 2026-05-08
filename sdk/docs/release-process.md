@@ -72,11 +72,17 @@ Each platform archive contains:
 
 All release binaries are built with `-tags "novulkan embed_basic embed_emutos embed_aros"` on Windows and macOS, and `embed_basic embed_emutos embed_aros` on Linux.
 
+### Dependency Policy
+
+Intuition Engine intentionally tracks the Ebiten v2.10 development line. Do not update `github.com/hajimehoshi/ebiten/v2` with plain `@latest` if that resolves to a stable v2.9.x release; use the newest v2.10 alpha or v2.10 pseudo-version and verify the cross-build matrix. Keep `github.com/ebitengine/purego` on the newest upstream tag compatible with that Ebiten pin.
+
 ### Build Details
 
 **Linux**
 
 Builds `amd64` and `arm64` `.tar.xz` archives. Linux keeps the full CGO desktop stack and can use Vulkan in non-`novulkan` builds.
+
+Linux arm64 release builds require an aarch64 CGO toolchain and target sysroot. On openSUSE Tumbleweed, the Makefile defaults to `/usr/aarch64-suse-linux/sys-root` when it exists and uses `aarch64-suse-linux-gcc/g++`. Override with `CROSS_SYSROOT=/path/to/aarch64/sysroot` for a richer sysroot. Full Ebiten Linux builds require target desktop headers such as `usr/include/X11/Xlib.h` inside that sysroot.
 
 **Windows**
 

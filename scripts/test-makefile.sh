@@ -80,6 +80,13 @@ assert_makefile_contains() {
   rg -q "$regex" Makefile || fail "Makefile does not match: $regex"
 }
 
+assert_makefile_not_contains() {
+  local regex="$1"
+  if rg -q "$regex" Makefile; then
+    fail "Makefile unexpectedly matches: $regex"
+  fi
+}
+
 assert_release_src_pipefail_runtime() {
   local tmp
   tmp="$(mktemp -d)"
@@ -122,6 +129,16 @@ assert_rotozoom_single_invocation() {
 assert_sdk_serialized() {
   rg -q '\$\(MAKE\) clean-sdk && \$\(MAKE\) sdk-build' Makefile || \
     fail "sdk target does not serialize clean-sdk before sdk-build via sub-make"
+}
+
+assert_ab3d2_prepares_embed_before_build() {
+  local dry cp_zip build_vm
+  dry="$(make_dry ab3d2)"
+  cp_zip="$(printf '%s\n' "$dry" | rg -n 'bsdtar.*ab3d2_source/_build' | head -n 1 | cut -d: -f1 || true)"
+  build_vm="$(printf '%s\n' "$dry" | rg -n 'test-cross-binaries CROSS_BUILD_DIR=\./bin/ab3d2 CROSS_BINARY_PREFIX=IntuitionEngine-AB3D2-Karlos-TKG-High VM_EMBED_TAGS="embed_ab3d2"' | head -n 1 | cut -d: -f1 || true)"
+  [[ -n "$cp_zip" ]] || fail "ab3d2 dry-run does not package AB3D2 asset tree"
+  [[ -n "$build_vm" ]] || fail "ab3d2 dry-run does not build AB3D2 binaries"
+  [[ "$cp_zip" -lt "$build_vm" ]] || fail "ab3d2 builds binaries before refreshing embedded AB3D2 zip"
 }
 
 assert_dist_layout_skips_non_runtime_archives() {
@@ -177,7 +194,7 @@ for target in \
   all setup intuition-engine ie32asm ie64asm ie64dis ie32to64 clean clean-sdk distclean \
   rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets emutos-probe \
   emutos-release-rom basic basic-emutos cputest-musashi sdk sdk-build test vet tidy \
-  test-makefile testdata-harte testdata-x86 test-harte test-harte-short \
+  test-makefile test-cross test-cross-binaries ab3d2 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs testdata-harte testdata-x86 test-harte test-harte-short \
   test-x86-harte test-x86-harte-short release-verify; do
   assert_phony "$target"
   assert_target_exists "$target"
@@ -206,6 +223,34 @@ assert_recipe_contains install '/tmp/x/usr/local/bin' DESTDIR=/tmp/x
 assert_recipe_not_contains install 'sudo' DESTDIR=/tmp/x
 assert_recipe_contains install 'sudo' PREFIX=/root/intuition-engine-test
 assert_recipe_contains release-verify 'scripts/test-dist-layout\.sh'
+assert_makefile_contains 'define build-linux-vm-binary'
+assert_makefile_contains 'define build-purego-novulkan-vm-binary'
+assert_makefile_contains '/opt/ie-sysroots/tumbleweed-aarch64/usr'
+assert_makefile_contains 'test-cross-binaries:'
+assert_makefile_contains 'CROSS_BINARY_PREFIX \?= IntuitionEngine'
+assert_makefile_contains 'AB3D2_BINARY_PREFIX \?= IntuitionEngine-AB3D2-Karlos-TKG-High'
+assert_makefile_contains '\$\(call build-linux-vm-binary,amd64'
+assert_makefile_contains '\$\(call build-linux-vm-binary,arm64'
+assert_makefile_contains '\$\(call build-purego-novulkan-vm-binary,\$\$goos,\$\$goarch'
+assert_makefile_contains '\$\(call build-purego-novulkan-vm-binary,windows,\$\$goarch'
+assert_makefile_contains '\$\(call build-purego-novulkan-vm-binary,darwin,amd64'
+assert_makefile_contains '\$\(call build-purego-novulkan-vm-binary,darwin,arm64'
+assert_makefile_contains 'AB3D2_SOURCE \?= \.\./alienbreed3d2/ab3d2_source/ab3d2_ie68_redux_high\.ie68'
+assert_makefile_contains 'AB3D2_ASSET_ROOT \?= \.\./alienbreed3d2'
+assert_makefile_contains 'AB3D2_ASSET_TREE \?= ab3d2_source/_build'
+assert_makefile_contains 'cp "\$\(AB3D2_SOURCE\)" "\$\(AB3D2_EMBED_FILE\)"'
+assert_makefile_contains '\$\(BSDTAR\) -c -L --format zip'
+assert_makefile_contains 'test-cross-binaries CROSS_BUILD_DIR=\$\(AB3D2_BUILD_DIR\) CROSS_BINARY_PREFIX=\$\(AB3D2_BINARY_PREFIX\) VM_EMBED_TAGS="embed_ab3d2"'
+assert_makefile_contains '\$\(MAKE\) compress-ab3d2'
+assert_makefile_contains '\$\(UPX\) --lzma[[:space:]]*\\'
+assert_makefile_not_contains 'AB3D2_UPX_FLAGS'
+assert_recipe_contains compress-ab3d2 'IntuitionEngine-AB3D2-Karlos-TKG-High-linux-amd64'
+assert_recipe_contains compress-ab3d2 'IntuitionEngine-AB3D2-Karlos-TKG-High-linux-arm64'
+assert_recipe_contains compress-ab3d2 'IntuitionEngine-AB3D2-Karlos-TKG-High-windows-amd64\.exe'
+assert_recipe_not_contains compress-ab3d2 'IntuitionEngine-AB3D2-Karlos-TKG-High-windows-arm64\.exe'
+assert_recipe_not_contains compress-ab3d2 'IntuitionEngine-AB3D2-Karlos-TKG-High-darwin-amd64'
+assert_recipe_not_contains compress-ab3d2 'IntuitionEngine-AB3D2-Karlos-TKG-High-darwin-arm64'
+assert_ab3d2_prepares_embed_before_build
 assert_install_runtime_destdir
 assert_dist_layout_skips_non_runtime_archives
 

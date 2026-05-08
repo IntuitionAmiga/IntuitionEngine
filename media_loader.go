@@ -124,10 +124,10 @@ func (m *MediaLoader) startPlay() {
 	m.typ = typ
 	m.mu.Unlock()
 
-	go m.loadAndStart(reqGen, fullPath, typ, subsong)
+	go m.loadAndStart(reqGen, fileName, fullPath, typ, subsong)
 }
 
-func (m *MediaLoader) loadAndStart(reqGen uint64, fullPath string, typ uint32, subsong uint32) {
+func (m *MediaLoader) loadAndStart(reqGen uint64, fileName, fullPath string, typ uint32, subsong uint32) {
 	defer func() {
 		if r := recover(); r != nil {
 			m.mu.Lock()
@@ -140,6 +140,7 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fullPath string, typ uint32, s
 	}()
 
 	data, err := os.ReadFile(fullPath)
+	traceHostIO("MEDIA", "READ", fileName, fullPath, err, len(data))
 	if err != nil {
 		m.mu.Lock()
 		defer m.mu.Unlock()
