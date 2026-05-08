@@ -988,6 +988,64 @@ func TestVideoChip_ModeChange_WithCompositor_EndToEnd(t *testing.T) {
 	}
 }
 
+func TestVideoChip_Reset_FiresDefaultResolutionCallback(t *testing.T) {
+	chip := newTestVideoChip(newMockVideoOutput())
+	chip.HandleWrite(VIDEO_MODE, MODE_320x200)
+
+	var gotW, gotH int
+	chip.SetResolutionChangeCallback(func(w, h int) {
+		gotW, gotH = w, h
+	})
+	chip.Reset()
+
+	mode := VideoModes[DEFAULT_VIDEO_MODE]
+	if gotW != mode.width || gotH != mode.height {
+		t.Fatalf("expected reset callback %dx%d, got %dx%d", mode.width, mode.height, gotW, gotH)
+	}
+}
+
+func TestVideoChip_Reset_WithCompositor_RestoresDefaultResolution(t *testing.T) {
+	out := newMockVideoOutput()
+	chip := newTestVideoChip(out)
+	comp := NewVideoCompositor(out)
+	chip.SetResolutionChangeCallback(func(w, h int) {
+		comp.NotifyResolutionChange(w, h)
+	})
+
+	chip.HandleWrite(VIDEO_MODE, MODE_320x200)
+	comp.composite()
+	if comp.frameWidth != 320 || comp.frameHeight != 200 {
+		t.Fatalf("expected compositor 320x200 before reset, got %dx%d", comp.frameWidth, comp.frameHeight)
+	}
+
+	chip.Reset()
+	comp.composite()
+
+	mode := VideoModes[DEFAULT_VIDEO_MODE]
+	if comp.frameWidth != mode.width || comp.frameHeight != mode.height {
+		t.Fatalf("expected compositor default %dx%d after reset, got %dx%d", mode.width, mode.height, comp.frameWidth, comp.frameHeight)
+	}
+	cfg := out.GetDisplayConfig()
+	if cfg.Width != mode.width || cfg.Height != mode.height {
+		t.Fatalf("expected output config default %dx%d after reset, got %dx%d", mode.width, mode.height, cfg.Width, cfg.Height)
+	}
+}
+
+func TestVideoChip_Reset_NilCallback_RestoresOutputConfig(t *testing.T) {
+	out := newMockVideoOutput()
+	chip := newTestVideoChip(out)
+	chip.HandleWrite(VIDEO_MODE, MODE_320x200)
+	chip.SetResolutionChangeCallback(nil)
+
+	chip.Reset()
+
+	mode := VideoModes[DEFAULT_VIDEO_MODE]
+	cfg := out.GetDisplayConfig()
+	if cfg.Width != mode.width || cfg.Height != mode.height {
+		t.Fatalf("expected output config default %dx%d after reset, got %dx%d", mode.width, mode.height, cfg.Width, cfg.Height)
+	}
+}
+
 func TestVoodoo_DimensionChange_FiresCallback(t *testing.T) {
 	v := &VoodooEngine{}
 	v.width.Store(VOODOO_DEFAULT_WIDTH)

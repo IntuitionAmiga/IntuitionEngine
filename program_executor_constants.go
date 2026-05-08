@@ -5,7 +5,7 @@ const (
 	EXEC_BASE = 0xF2320
 
 	EXEC_NAME_PTR = EXEC_BASE + 0x00 // Pointer to null-terminated filename
-	EXEC_CTRL     = EXEC_BASE + 0x04 // 1=execute
+	EXEC_CTRL     = EXEC_BASE + 0x04 // 1=execute,2=EmuTOS,3=AROS,4=IExec,5=hard-reset
 	EXEC_STATUS   = EXEC_BASE + 0x08 // 0=idle,1=loading,2=running,3=error
 	EXEC_TYPE     = EXEC_BASE + 0x0C // Executor type
 	EXEC_ERROR    = EXEC_BASE + 0x10 // 0=ok,1=not-found,2=unsupported,3=path-invalid,4=load-failed
@@ -15,10 +15,11 @@ const (
 )
 
 const (
-	EXEC_OP_EXECUTE = 1
-	EXEC_OP_EMUTOS  = 2
-	EXEC_OP_AROS    = 3
-	EXEC_OP_IEXEC   = 4
+	EXEC_OP_EXECUTE    = 1
+	EXEC_OP_EMUTOS     = 2
+	EXEC_OP_AROS       = 3
+	EXEC_OP_IEXEC      = 4
+	EXEC_OP_HARD_RESET = 5
 )
 
 const (

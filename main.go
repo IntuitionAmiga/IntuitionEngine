@@ -2450,6 +2450,9 @@ func main() {
 	// Ensure RUN "file" (ProgramExecutor) uses the same launch path as IPC/F10
 	// so monitor/runtime state stays consistent across all entry points.
 	progExec.SetExternalLauncher(launchProgramOrScript)
+	progExec.SetHardReset(func() error {
+		return runProgramWithFullReset("")
+	})
 	progExec.SetEmuTOSBootLoader(func() error {
 		return runProgramWithFullReset(emutosSentinel)
 	})

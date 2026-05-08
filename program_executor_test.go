@@ -703,8 +703,93 @@ func TestProgramExecutor_AROS_Constants(t *testing.T) {
 	if EXEC_OP_AROS != 3 {
 		t.Fatalf("EXEC_OP_AROS=%d, want 3", EXEC_OP_AROS)
 	}
+	if EXEC_OP_IEXEC != 4 {
+		t.Fatalf("EXEC_OP_IEXEC=%d, want 4", EXEC_OP_IEXEC)
+	}
+	if EXEC_OP_HARD_RESET != 5 {
+		t.Fatalf("EXEC_OP_HARD_RESET=%d, want 5", EXEC_OP_HARD_RESET)
+	}
 	if EXEC_TYPE_AROS != 9 {
 		t.Fatalf("EXEC_TYPE_AROS=%d, want 9", EXEC_TYPE_AROS)
+	}
+}
+
+func TestProgramExecutor_HardResetNilCallback(t *testing.T) {
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, ".")
+
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_HARD_RESET)
+
+	if got := exec.HandleRead(EXEC_STATUS); got != EXEC_STATUS_ERROR {
+		t.Fatalf("status=%d, want %d (ERROR)", got, EXEC_STATUS_ERROR)
+	}
+	if got := exec.HandleRead(EXEC_ERROR); got != EXEC_ERR_LOAD_FAILED {
+		t.Fatalf("error=%d, want %d (LOAD_FAILED)", got, EXEC_ERR_LOAD_FAILED)
+	}
+	if got := exec.HandleRead(EXEC_TYPE); got != EXEC_TYPE_NONE {
+		t.Fatalf("type=%d, want %d (NONE)", got, EXEC_TYPE_NONE)
+	}
+}
+
+func TestProgramExecutor_HardResetSuccess(t *testing.T) {
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, ".")
+
+	called := false
+	exec.SetHardReset(func() error {
+		called = true
+		return nil
+	})
+
+	s0 := exec.HandleRead(EXEC_SESSION)
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_HARD_RESET)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if exec.HandleRead(EXEC_STATUS) == EXEC_STATUS_RUNNING {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	if !called {
+		t.Fatalf("hard reset callback was not called")
+	}
+	if got := exec.HandleRead(EXEC_STATUS); got != EXEC_STATUS_RUNNING {
+		t.Fatalf("status=%d, want %d (RUNNING)", got, EXEC_STATUS_RUNNING)
+	}
+	if got := exec.HandleRead(EXEC_SESSION); got <= s0 {
+		t.Fatalf("session=%d, want > %d", got, s0)
+	}
+	if got := exec.HandleRead(EXEC_ERROR); got != EXEC_ERR_OK {
+		t.Fatalf("error=%d, want %d (OK)", got, EXEC_ERR_OK)
+	}
+}
+
+func TestProgramExecutor_HardResetError(t *testing.T) {
+	bus := NewMachineBus()
+	ie64CPU := NewCPU64(bus)
+	exec := NewProgramExecutor(bus, ie64CPU, nil, nil, nil, ".")
+
+	exec.SetHardReset(func() error { return errors.New("reset failed") })
+
+	exec.HandleWrite(EXEC_CTRL, EXEC_OP_HARD_RESET)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if exec.HandleRead(EXEC_STATUS) == EXEC_STATUS_ERROR {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	if got := exec.HandleRead(EXEC_STATUS); got != EXEC_STATUS_ERROR {
+		t.Fatalf("status=%d, want %d (ERROR)", got, EXEC_STATUS_ERROR)
+	}
+	if got := exec.HandleRead(EXEC_ERROR); got != EXEC_ERR_LOAD_FAILED {
+		t.Fatalf("error=%d, want %d (LOAD_FAILED)", got, EXEC_ERR_LOAD_FAILED)
 	}
 }
 

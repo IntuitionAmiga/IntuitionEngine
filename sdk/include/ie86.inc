@@ -1259,6 +1259,46 @@ FILE_OP_READ      equ 1
 FILE_OP_WRITE     equ 2
 
 ; ============================================================================
+; PROGRAM EXECUTOR REGISTERS (0xF2320-0xF233F)
+; ============================================================================
+
+EXEC_NAME_PTR     equ 0xF2320              ; Pointer to null-terminated filename (W)
+EXEC_CTRL         equ 0xF2324              ; 1=execute,2=EmuTOS,3=AROS,4=IExec,5=reset (W)
+EXEC_STATUS       equ 0xF2328              ; 0=idle,1=loading,2=running,3=error (R)
+EXEC_TYPE         equ 0xF232C              ; 0=none,1=IE32,2=IE64,3=6502,4=M68K,5=Z80,6=x86,7=EmuTOS,8=Script,9=AROS,10=IExec (R)
+EXEC_ERROR        equ 0xF2330              ; 0=ok,1=not-found,2=unsupported,3=path,4=load-failed (R)
+EXEC_SESSION      equ 0xF2334              ; Monotonic session id (R)
+
+EXEC_OP_EXECUTE    equ 1
+EXEC_OP_EMUTOS     equ 2
+EXEC_OP_AROS       equ 3
+EXEC_OP_IEXEC      equ 4
+EXEC_OP_HARD_RESET equ 5
+
+EXEC_STATUS_IDLE    equ 0
+EXEC_STATUS_LOADING equ 1
+EXEC_STATUS_RUNNING equ 2
+EXEC_STATUS_ERROR   equ 3
+
+EXEC_TYPE_NONE      equ 0
+EXEC_TYPE_IE32      equ 1
+EXEC_TYPE_IE64      equ 2
+EXEC_TYPE_6502      equ 3
+EXEC_TYPE_M68K      equ 4
+EXEC_TYPE_Z80       equ 5
+EXEC_TYPE_X86       equ 6
+EXEC_TYPE_EMUTOS    equ 7
+EXEC_TYPE_SCRIPT    equ 8
+EXEC_TYPE_AROS      equ 9
+EXEC_TYPE_IEXEC     equ 10
+
+EXEC_ERR_OK           equ 0
+EXEC_ERR_NOT_FOUND    equ 1
+EXEC_ERR_UNSUPPORTED  equ 2
+EXEC_ERR_PATH_INVALID equ 3
+EXEC_ERR_LOAD_FAILED  equ 4
+
+; ============================================================================
 ; COPROCESSOR REGISTERS (0xF2340-0xF238F)
 ; ============================================================================
 
@@ -1311,9 +1351,6 @@ COPROC_CPU_6502       equ 3
 COPROC_CPU_M68K       equ 4
 COPROC_CPU_Z80        equ 5
 COPROC_CPU_X86        equ 6
-
-; Execution type (matches EXEC_TYPE register)
-EXEC_TYPE_IE64        equ 2
 
 ; ----- Coprocessor helper macros (NASM) -----
 

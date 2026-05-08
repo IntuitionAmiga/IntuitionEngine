@@ -249,7 +249,7 @@ func (e *PSGEngine) Reset() {
 }
 
 // VideoChip.Reset restores video chip to cold boot state.
-// Preserves: output, layer, bus, busMemory, splashBuffer, bigEndianMode, directVRAM, onResolutionChange.
+// Preserves: output, layer, bus, busMemory, splashBuffer, onResolutionChange.
 func (vc *VideoChip) Reset() {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
@@ -297,6 +297,19 @@ func (vc *VideoChip) Reset() {
 	vc.palIndex = 0
 	vc.fbBase = 0
 	vc.clutWarnOnce = sync.Once{}
+
+	if vc.onResolutionChange != nil {
+		vc.onResolutionChange(mode.width, mode.height)
+	} else if vc.output != nil {
+		config := DisplayConfig{
+			Width:       mode.width,
+			Height:      mode.height,
+			Scale:       DEFAULT_DISPLAY_SCALE,
+			PixelFormat: PixelFormatRGBA,
+			VSync:       VSYNC_ON,
+		}
+		_ = vc.output.SetDisplayConfig(config)
+	}
 }
 
 // VGAEngine.Reset restores VGA to power-on defaults.

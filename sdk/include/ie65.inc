@@ -2689,8 +2689,37 @@ COPROC_CPU_M68K       = 4
 COPROC_CPU_Z80        = 5
 COPROC_CPU_X86        = 6
 
-; Execution type (matches EXEC_TYPE register)
+; Program Executor shared constants.
+; The 6502 profile does not currently expose a direct EXEC gateway window, but
+; these values match EXEC_CTRL/EXEC_STATUS/EXEC_TYPE/EXEC_ERROR on the main bus.
+EXEC_OP_EXECUTE       = 1
+EXEC_OP_EMUTOS        = 2
+EXEC_OP_AROS          = 3
+EXEC_OP_IEXEC         = 4
+EXEC_OP_HARD_RESET    = 5
+
+EXEC_STATUS_IDLE      = 0
+EXEC_STATUS_LOADING   = 1
+EXEC_STATUS_RUNNING   = 2
+EXEC_STATUS_ERROR     = 3
+
+EXEC_TYPE_NONE        = 0
+EXEC_TYPE_IE32        = 1
 EXEC_TYPE_IE64        = 2
+EXEC_TYPE_6502        = 3
+EXEC_TYPE_M68K        = 4
+EXEC_TYPE_Z80         = 5
+EXEC_TYPE_X86         = 6
+EXEC_TYPE_EMUTOS      = 7
+EXEC_TYPE_SCRIPT      = 8
+EXEC_TYPE_AROS        = 9
+EXEC_TYPE_IEXEC       = 10
+
+EXEC_ERR_OK           = 0
+EXEC_ERR_NOT_FOUND    = 1
+EXEC_ERR_UNSUPPORTED  = 2
+EXEC_ERR_PATH_INVALID = 3
+EXEC_ERR_LOAD_FAILED  = 4
 
 ; System control
 SYS_GC_TRIGGER        = $F2380            ; Write any value to trigger GC

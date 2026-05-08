@@ -25,6 +25,8 @@ type ProgramExecutor struct {
 	loadAROS func() error
 	// loadIExec boots the IExec microkernel (ROM is resolved by main).
 	loadIExec func() error
+	// hardReset performs the same full reset path as the UI hard-reset hotkey.
+	hardReset func() error
 
 	// GEMDOS drive mapping for EmuTOS mode
 	gemdosHostRoot string
@@ -100,6 +102,14 @@ func (e *ProgramExecutor) SetExternalLauncher(fn func(path string) error) {
 	e.launchExternal = fn
 }
 
+// SetHardReset configures a callback that performs a full engine reset back to
+// BASIC. Called when a guest writes EXEC_OP_HARD_RESET to EXEC_CTRL.
+func (e *ProgramExecutor) SetHardReset(fn func() error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.hardReset = fn
+}
+
 func (e *ProgramExecutor) HandleRead(addr uint32) uint32 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -135,6 +145,8 @@ func (e *ProgramExecutor) HandleWrite(addr uint32, val uint32) {
 			e.startAROS()
 		} else if val == EXEC_OP_IEXEC {
 			e.startIExec()
+		} else if val == EXEC_OP_HARD_RESET {
+			e.startHardReset()
 		}
 	}
 }
@@ -277,6 +289,37 @@ func (e *ProgramExecutor) startIExec() {
 
 	go func() {
 		if err := loader(); err != nil {
+			e.failSession(session, EXEC_ERR_LOAD_FAILED)
+			return
+		}
+		e.mu.Lock()
+		if session == e.session {
+			e.status = EXEC_STATUS_RUNNING
+			e.errCode = EXEC_ERR_OK
+		}
+		e.mu.Unlock()
+	}()
+}
+
+func (e *ProgramExecutor) startHardReset() {
+	e.mu.Lock()
+	reset := e.hardReset
+	if reset == nil {
+		e.status = EXEC_STATUS_ERROR
+		e.errCode = EXEC_ERR_LOAD_FAILED
+		e.typ = EXEC_TYPE_NONE
+		e.mu.Unlock()
+		return
+	}
+	e.session++
+	session := e.session
+	e.status = EXEC_STATUS_LOADING
+	e.typ = EXEC_TYPE_NONE
+	e.errCode = EXEC_ERR_OK
+	e.mu.Unlock()
+
+	go func() {
+		if err := reset(); err != nil {
 			e.failSession(session, EXEC_ERR_LOAD_FAILED)
 			return
 		}

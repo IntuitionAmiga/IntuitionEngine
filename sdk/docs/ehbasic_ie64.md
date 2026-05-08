@@ -2554,14 +2554,14 @@ Staging buffer: `&H800000`-`&H80FFFF` (64 KB) - transient copy of loaded file da
 
 ### 9.14 Program Executor Registers (`&HF2320`-`&HF233F`)
 
-Used by `RUN "file"` to launch external CPU binaries.
+Used by `RUN "file"` to launch external CPU binaries and by guest programs that need to request the same full reset path as the F10 hard-reset hotkey.
 
 | Address | Name | R/W | Description |
 |---------|------|-----|-------------|
 | `&HF2320` | EXEC_NAME_PTR | W | Pointer to NUL-terminated filename in memory |
-| `&HF2324` | EXEC_CTRL | W | Control: 1=execute, 2=boot EmuTOS |
+| `&HF2324` | EXEC_CTRL | W | Control: 1=execute, 2=boot EmuTOS, 3=boot AROS, 4=boot IExec, 5=hard reset to BASIC |
 | `&HF2328` | EXEC_STATUS | R | 0=idle, 1=loading, 2=running, 3=error |
-| `&HF232C` | EXEC_TYPE | R | 1=IE32, 2=IE64, 3=6502, 4=M68K, 5=Z80, 6=x86 |
+| `&HF232C` | EXEC_TYPE | R | 0=none, 1=IE32, 2=IE64, 3=6502, 4=M68K, 5=Z80, 6=x86, 7=EmuTOS, 8=script, 9=AROS, 10=IExec |
 | `&HF2330` | EXEC_ERROR | R | 0=ok, 1=not-found, 2=unsupported, 3=path-invalid, 4=load-failed |
 | `&HF2334` | EXEC_SESSION | R | Monotonic session counter (increments per request) |
 

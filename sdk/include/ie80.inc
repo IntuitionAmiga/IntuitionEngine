@@ -2893,8 +2893,37 @@
 .set COPROC_CPU_Z80,5
 .set COPROC_CPU_X86,6
 
-; Execution type (matches EXEC_TYPE register)
+; Program Executor shared constants.
+; The Z80 profile does not currently expose a direct EXEC gateway window, but
+; these values match EXEC_CTRL/EXEC_STATUS/EXEC_TYPE/EXEC_ERROR on the main bus.
+.set EXEC_OP_EXECUTE,1
+.set EXEC_OP_EMUTOS,2
+.set EXEC_OP_AROS,3
+.set EXEC_OP_IEXEC,4
+.set EXEC_OP_HARD_RESET,5
+
+.set EXEC_STATUS_IDLE,0
+.set EXEC_STATUS_LOADING,1
+.set EXEC_STATUS_RUNNING,2
+.set EXEC_STATUS_ERROR,3
+
+.set EXEC_TYPE_NONE,0
+.set EXEC_TYPE_IE32,1
 .set EXEC_TYPE_IE64,2
+.set EXEC_TYPE_6502,3
+.set EXEC_TYPE_M68K,4
+.set EXEC_TYPE_Z80,5
+.set EXEC_TYPE_X86,6
+.set EXEC_TYPE_EMUTOS,7
+.set EXEC_TYPE_SCRIPT,8
+.set EXEC_TYPE_AROS,9
+.set EXEC_TYPE_IEXEC,10
+
+.set EXEC_ERR_OK,0
+.set EXEC_ERR_NOT_FOUND,1
+.set EXEC_ERR_UNSUPPORTED,2
+.set EXEC_ERR_PATH_INVALID,3
+.set EXEC_ERR_LOAD_FAILED,4
 
 ; System control
 .set SYS_GC_TRIGGER,0xF2380             ; Write any value to trigger GC

@@ -180,6 +180,82 @@ func TestSDKInclude_SFXAndLowRes8BitAliases(t *testing.T) {
 	}
 }
 
+func TestSDKInclude_ProgramExecutorConstantParity(t *testing.T) {
+	shared := map[string]uint32{
+		"EXEC_OP_EXECUTE":       EXEC_OP_EXECUTE,
+		"EXEC_OP_EMUTOS":        EXEC_OP_EMUTOS,
+		"EXEC_OP_AROS":          EXEC_OP_AROS,
+		"EXEC_OP_IEXEC":         EXEC_OP_IEXEC,
+		"EXEC_OP_HARD_RESET":    EXEC_OP_HARD_RESET,
+		"EXEC_STATUS_IDLE":      EXEC_STATUS_IDLE,
+		"EXEC_STATUS_LOADING":   EXEC_STATUS_LOADING,
+		"EXEC_STATUS_RUNNING":   EXEC_STATUS_RUNNING,
+		"EXEC_STATUS_ERROR":     EXEC_STATUS_ERROR,
+		"EXEC_TYPE_NONE":        EXEC_TYPE_NONE,
+		"EXEC_TYPE_IE32":        EXEC_TYPE_IE32,
+		"EXEC_TYPE_IE64":        EXEC_TYPE_IE64,
+		"EXEC_TYPE_6502":        EXEC_TYPE_6502,
+		"EXEC_TYPE_M68K":        EXEC_TYPE_M68K,
+		"EXEC_TYPE_Z80":         EXEC_TYPE_Z80,
+		"EXEC_TYPE_X86":         EXEC_TYPE_X86,
+		"EXEC_TYPE_EMUTOS":      EXEC_TYPE_EMUTOS,
+		"EXEC_TYPE_SCRIPT":      EXEC_TYPE_SCRIPT,
+		"EXEC_TYPE_AROS":        EXEC_TYPE_AROS,
+		"EXEC_TYPE_IEXEC":       EXEC_TYPE_IEXEC,
+		"EXEC_ERR_OK":           EXEC_ERR_OK,
+		"EXEC_ERR_NOT_FOUND":    EXEC_ERR_NOT_FOUND,
+		"EXEC_ERR_UNSUPPORTED":  EXEC_ERR_UNSUPPORTED,
+		"EXEC_ERR_PATH_INVALID": EXEC_ERR_PATH_INVALID,
+		"EXEC_ERR_LOAD_FAILED":  EXEC_ERR_LOAD_FAILED,
+	}
+
+	for _, path := range []string{
+		filepath.Join("sdk", "include", "ie32.inc"),
+		filepath.Join("sdk", "include", "ie64.inc"),
+		filepath.Join("sdk", "include", "ie65.inc"),
+		filepath.Join("sdk", "include", "ie68.inc"),
+		filepath.Join("sdk", "include", "ie80.inc"),
+		filepath.Join("sdk", "include", "ie86.inc"),
+	} {
+		vals := parseIncConstants(t, path)
+		for key, want := range shared {
+			got, ok := vals[key]
+			if !ok {
+				t.Fatalf("%s: missing %s", path, key)
+			}
+			if got != want {
+				t.Fatalf("%s: %s mismatch: got 0x%X want 0x%X", path, key, got, want)
+			}
+		}
+	}
+
+	registers := map[string]uint32{
+		"EXEC_NAME_PTR": EXEC_NAME_PTR,
+		"EXEC_CTRL":     EXEC_CTRL,
+		"EXEC_STATUS":   EXEC_STATUS,
+		"EXEC_TYPE":     EXEC_TYPE,
+		"EXEC_ERROR":    EXEC_ERROR,
+		"EXEC_SESSION":  EXEC_SESSION,
+	}
+	for _, path := range []string{
+		filepath.Join("sdk", "include", "ie32.inc"),
+		filepath.Join("sdk", "include", "ie64.inc"),
+		filepath.Join("sdk", "include", "ie68.inc"),
+		filepath.Join("sdk", "include", "ie86.inc"),
+	} {
+		vals := parseIncConstants(t, path)
+		for key, want := range registers {
+			got, ok := vals[key]
+			if !ok {
+				t.Fatalf("%s: missing %s", path, key)
+			}
+			if got != want {
+				t.Fatalf("%s: %s mismatch: got 0x%X want 0x%X", path, key, got, want)
+			}
+		}
+	}
+}
+
 func TestSDKInclude_IE86POKEYPortBaseMatchesRuntime(t *testing.T) {
 	vals := parseIncConstants(t, filepath.Join("sdk", "include", "ie86.inc"))
 	got, ok := vals["POKEY_PORT_BASE"]

@@ -717,7 +717,7 @@ EmuTOS runs on the IE M68K core with GEM desktop, GEMDOS filesystem interception
 
 ### ProgramExecutor
 
-File extensions `.tos` and `.img` are detected as EmuTOS mode. The `EMUTOS` command at the BASIC prompt triggers boot via the `emutosSentinel` path.
+File extensions `.tos` and `.img` are detected as EmuTOS mode. The `EMUTOS` command at the BASIC prompt triggers boot via the `emutosSentinel` path. Guest software can write `EXEC_OP_HARD_RESET` (`5`) to `EXEC_CTRL` (`0xF2324`) to request the same hard reset to BASIC as the F10 runtime hotkey.
 
 ### Build
 
