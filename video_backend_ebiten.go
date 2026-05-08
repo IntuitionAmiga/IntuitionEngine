@@ -128,17 +128,15 @@ func (eo *EbitenOutput) Start() error {
 	eo.bufferMutex.RLock()
 	windowedW := eo.windowedW
 	windowedH := eo.windowedH
-	hideSystemCursor := eo.hideSystemCursor
 	fullscreen := eo.fullscreen
+	hideSystemCursor := shouldHideSystemCursor(fullscreen, eo.hideSystemCursor)
 	eo.bufferMutex.RUnlock()
 	ebiten.SetWindowSize(windowedW, windowedH)
 	ebiten.SetWindowTitle("Intuition Engine (c) 2024 - 2026 Zayn Otley")
 	ebiten.SetWindowResizable(true)
 	ebiten.SetRunnableOnUnfocused(true)
 	ebiten.SetVsyncEnabled(true)
-	if hideSystemCursor {
-		ebiten.SetCursorMode(ebiten.CursorModeHidden)
-	}
+	eo.applySystemCursorMode(hideSystemCursor)
 	if fullscreen {
 		ebiten.SetFullscreen(true)
 	}
@@ -241,6 +239,7 @@ func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
 	if !eo.fullscreen {
 		ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
 	}
+	eo.applySystemCursorMode(shouldHideSystemCursor(eo.fullscreen, eo.hideSystemCursor))
 	if eo.window != nil {
 		eo.window.Dispose()
 		eo.window = nil
@@ -407,6 +406,7 @@ func (eo *EbitenOutput) Update() error {
 		if !eo.fullscreen {
 			ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
 		}
+		eo.applySystemCursorMode(shouldHideSystemCursor(eo.fullscreen, eo.hideSystemCursor))
 		eo.bufferMutex.Unlock()
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyF12) {
@@ -505,8 +505,16 @@ func (eo *EbitenOutput) HideSystemCursor() {
 	}
 	eo.bufferMutex.Unlock()
 	if running {
-		ebiten.SetCursorMode(ebiten.CursorModeHidden)
+		eo.applySystemCursorMode(true)
 	}
+}
+
+func (eo *EbitenOutput) applySystemCursorMode(hidden bool) {
+	if hidden {
+		ebiten.SetCursorMode(ebiten.CursorModeHidden)
+		return
+	}
+	ebiten.SetCursorMode(ebiten.CursorModeVisible)
 }
 
 func (eo *EbitenOutput) DisableSoftwareCursor() {
