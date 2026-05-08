@@ -1415,7 +1415,7 @@ The complete source files are located in the `sdk/examples/asm/` directory:
 sdk/bin/ie32asm sdk/examples/asm/robocop_intro.asm
 
 # Run
-./bin/IntuitionEngine -ie32 robocop_intro.iex
+./bin/IntuitionEngine robocop_intro.iex
 ```
 
 ## M68K
@@ -1427,7 +1427,7 @@ vasmm68k_mot -Fbin -m68020 -Isdk/include -Isdk/examples/assets \
     sdk/examples/asm/robocop_intro_68k.asm
 
 # Run
-./bin/IntuitionEngine -m68k robocop_intro_68k.ie68
+./bin/IntuitionEngine robocop_intro_68k.ie68
 ```
 
 ## Z80
@@ -1439,7 +1439,7 @@ vasmz80_std -Fbin -Isdk/include -Isdk/examples/assets \
     sdk/examples/asm/robocop_intro_z80.asm
 
 # Run
-./bin/IntuitionEngine -z80 robocop_intro_z80.ie80
+./bin/IntuitionEngine robocop_intro_z80.ie80
 ```
 
 ## 6502
@@ -1465,7 +1465,7 @@ RUN "sdk/examples/prebuilt/robocop_intro_z80.ie80"
 RUN "sdk/examples/prebuilt/robocop_intro_65.bin"
 ```
 
-The `RUN` command auto-detects the CPU core from the file extension.
+The CLI and `RUN` command auto-detect typed Intuition Engine binaries from `.ie*` extensions. Raw `.bin` files still require an explicit CPU mode such as `-m6502` plus any needed load/entry options.
 
 ## Expected Output
 

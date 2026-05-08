@@ -32,13 +32,13 @@ Programs can be run from the command line or from the EhBASIC interpreter:
 
 ```bash
 # Command line
-./bin/IntuitionEngine -ie32 program.iex
+./bin/IntuitionEngine program.iex
 
 # From EhBASIC (at the BASIC prompt)
 RUN "program.iex"
 ```
 
-The `RUN` command auto-detects format by extension: `.iex` (IE32), `.ie64` (IE64), `.ie68` (M68K), `.ie80` (Z80), `.ie65`/`.bin` (6502), `.ie86` (x86).
+The CLI and `RUN` command auto-detect typed Intuition Engine formats by extension: `.iex`/`.ie32` (IE32), `.ie64` (IE64), `.ie68` (M68K), `.ie80` (Z80), `.ie65` (6502), `.ie86` (x86), and `.ies` (IEScript). Raw `.bin` files require an explicit CPU mode and load/entry options when needed.
 
 ## Built-in Assemblers
 
@@ -49,7 +49,7 @@ make ie32asm                              # Build
 sdk/bin/ie32asm program.asm                 # Assemble (produces program.iex)
 sdk/bin/ie32asm -o out.iex program.asm      # Explicit output path
 sdk/bin/ie32asm -I sdk/include program.asm  # With include search path
-./bin/IntuitionEngine -ie32 program.iex   # Run (or: RUN "program.iex" from BASIC)
+./bin/IntuitionEngine program.iex         # Run (or: RUN "program.iex" from BASIC)
 ```
 
 - Custom assembler built from `assembler/ie32asm.go` (assembler tool source code)
@@ -70,7 +70,7 @@ sdk/bin/ie64asm -o out.ie64 program.asm     # Explicit output path
 sdk/bin/ie64asm -I sdk/include program.asm  # With include search path
 sdk/bin/ie64asm -list program.asm           # Assemble with listing output
 sdk/bin/ie64asm -D FEATURE=1 program.asm    # Predefine an equate from the CLI
-./bin/IntuitionEngine -ie64 program.ie64  # Run (or: RUN "program.ie64" from BASIC)
+./bin/IntuitionEngine program.ie64        # Run (or: RUN "program.ie64" from BASIC)
 ```
 
 - Custom assembler built from `assembler/ie64asm.go` (assembler tool source code)
@@ -122,7 +122,7 @@ vasmm68k_mot -Fbin -m68020 -devpac -I sdk/include -o output.ie68 input.asm
 
 **Run:**
 ```bash
-./bin/IntuitionEngine -m68k output.ie68   # Or: RUN "output.ie68" from BASIC
+./bin/IntuitionEngine output.ie68         # Or: RUN "output.ie68" from BASIC
 ```
 
 ### Z80: VASM (`vasmz80_std`)
@@ -144,7 +144,7 @@ make ie80asm SRC=sdk/examples/asm/program.asm
 
 **Run:**
 ```bash
-./bin/IntuitionEngine -z80 output.ie80    # Or: RUN "output.ie80" from BASIC
+./bin/IntuitionEngine output.ie80         # Or: RUN "output.ie80" from BASIC
 ```
 
 ### 6502: cc65 (`ca65` / `ld65`)
@@ -172,7 +172,7 @@ The `ie65.cfg` linker configuration defines the Intuition Engine 6502 memory lay
 
 **Run:**
 ```bash
-./bin/IntuitionEngine -m6502 program.ie65  # Or: RUN "program.ie65" from BASIC
+./bin/IntuitionEngine program.ie65         # Or: RUN "program.ie65" from BASIC
 # Or with explicit load/entry addresses:
 ./bin/IntuitionEngine -m6502 --load-addr 0x0600 --entry 0x0600 program.bin
 ```
@@ -195,7 +195,7 @@ nasm -f bin -o program.ie86 program.asm
 
 **Run:**
 ```bash
-./bin/IntuitionEngine -x86 program.ie86   # Or: RUN "program.ie86" from BASIC
+./bin/IntuitionEngine program.ie86        # Or: RUN "program.ie86" from BASIC
 ```
 
 ## Environment Variables

@@ -24,6 +24,8 @@ import (
 	"strings"
 )
 
+const cliAutoDetectExtensions = ".iex, .ie32, .ie64, .ie65, .ie68, .ie80, .ie86, .ies"
+
 func modeFromExtension(path string) (string, error) {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".ie32", ".iex":
@@ -45,6 +47,53 @@ func modeFromExtension(path string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported extension: %s", filepath.Ext(path))
 	}
+}
+
+func cliModeFromExtension(path string) (string, error) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".ie32", ".iex":
+		return "ie32", nil
+	case ".ie64":
+		return "ie64", nil
+	case ".ie65":
+		return "6502", nil
+	case ".ie68":
+		return "m68k", nil
+	case ".ie80":
+		return "z80", nil
+	case ".ie86":
+		return "x86", nil
+	case ".ies":
+		return "script", nil
+	default:
+		return "", fmt.Errorf("unsupported extension %q for auto-detect; supported extensions: %s. Raw binaries require an explicit CPU mode flag", filepath.Ext(path), cliAutoDetectExtensions)
+	}
+}
+
+func extractScriptFlag(args []string) ([]string, string, error) {
+	normalized := make([]string, 0, len(args))
+	var script string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-script" || arg == "--script":
+			if i+1 >= len(args) {
+				return nil, "", fmt.Errorf("%s requires a filename", arg)
+			}
+			script = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "-script="):
+			script = strings.TrimPrefix(arg, "-script=")
+		case strings.HasPrefix(arg, "--script="):
+			script = strings.TrimPrefix(arg, "--script=")
+		default:
+			normalized = append(normalized, arg)
+		}
+	}
+	if script == "" {
+		return normalized, "", nil
+	}
+	return normalized, script, nil
 }
 
 func createCPURunner(mode string, sysBus *MachineBus, videoChip *VideoChip,

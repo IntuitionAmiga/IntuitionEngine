@@ -64,7 +64,8 @@ sys.print("fps:", sys.fps())
 
 ```bash
 ./bin/IntuitionEngine -script demo.ies
-./bin/IntuitionEngine -ie64 program.ie64 -script demo.ies
+./bin/IntuitionEngine program.ie64 -script demo.ies
+./bin/IntuitionEngine -script demo.ies program.ie64
 ./bin/IntuitionEngine -headless -script render.ies
 ```
 

@@ -34,7 +34,7 @@ sdk/
 
 2. Run a pre-assembled demo directly:
    ```bash
-   ./bin/IntuitionEngine -ie32 sdk/examples/prebuilt/vga_text_hello.iex
+   ./bin/IntuitionEngine sdk/examples/prebuilt/vga_text_hello.iex
    ```
 
    Or from the EhBASIC prompt:
@@ -56,7 +56,7 @@ sdk/
 3. Or build and run from source (IE32 VGA text mode):
    ```bash
    sdk/bin/ie32asm sdk/examples/asm/vga_text_hello.asm
-   ./bin/IntuitionEngine -ie32 sdk/examples/asm/vga_text_hello.iex
+   ./bin/IntuitionEngine sdk/examples/asm/vga_text_hello.iex
    ```
 
 4. Build all examples with available toolchains:
@@ -81,7 +81,8 @@ make run-showreel
 ```
 
 ```bash
-./bin/IntuitionEngine -ie64 program.ie64 -script demo.ies
+./bin/IntuitionEngine program.ie64 -script demo.ies
+./bin/IntuitionEngine -script demo.ies program.ie64
 ```
 
 Or from the EhBASIC prompt:

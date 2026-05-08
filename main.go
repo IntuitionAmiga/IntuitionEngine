@@ -282,12 +282,20 @@ func main() {
 		flagSet.PrintDefaults()
 	}
 
-	if err := flagSet.Parse(os.Args[1:]); err != nil {
+	args, positionalScriptFile, err := extractScriptFlag(os.Args[1:])
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := flagSet.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			os.Exit(0)
 		}
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
+	}
+	if positionalScriptFile != "" {
+		scriptFile = positionalScriptFile
 	}
 
 	filename := flagSet.Arg(0)
@@ -338,6 +346,38 @@ func main() {
 	// -aros-image implies -aros mode
 	if arosImage != "" {
 		modeAROS = true
+	}
+	if !modeIE32 && !modeIE64 && !modeBasic && !modeM68K && !modeEmuTOS && !modeAROS &&
+		!modeM6502 && !modeZ80 && !modeX86 && !modePSG && !modeSID && !modePOKEY &&
+		!modeTED && !modeAHX && !modeMOD && !modeWAV && filename != "" {
+		mode, err := cliModeFromExtension(filename)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		switch mode {
+		case "ie32":
+			modeIE32 = true
+		case "ie64":
+			modeIE64 = true
+		case "6502":
+			modeM6502 = true
+		case "m68k":
+			modeM68K = true
+		case "z80":
+			modeZ80 = true
+		case "x86":
+			modeX86 = true
+		case "script":
+			if scriptFile != "" {
+				fmt.Println("Error: provide only one script file")
+				os.Exit(1)
+			}
+			scriptFile = filename
+			filename = ""
+			modeBasic = true
+			modeIE64 = true
+		}
 	}
 
 	// Resolve AROS drive config (host filesystem mapping).

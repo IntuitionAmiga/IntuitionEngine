@@ -24,11 +24,11 @@ The simplest SDK example is the VGA text mode demo. If you ran `make sdk`, it's 
 
 ```bash
 # Run the pre-assembled demo
-./bin/IntuitionEngine -ie32 sdk/examples/prebuilt/vga_text_hello.iex
+./bin/IntuitionEngine sdk/examples/prebuilt/vga_text_hello.iex
 
 # Or assemble from source and run
 sdk/bin/ie32asm sdk/examples/asm/vga_text_hello.asm
-./bin/IntuitionEngine -ie32 vga_text_hello.iex
+./bin/IntuitionEngine vga_text_hello.iex
 
 # Or from the EhBASIC prompt:
 # RUN "sdk/examples/prebuilt/vga_text_hello.iex"
@@ -79,7 +79,7 @@ This displays coloured text on an 80x25 VGA text screen.
 4. Assemble and run:
    ```bash
    sdk/bin/ie32asm my_demo.asm
-   ./bin/IntuitionEngine -ie32 my_demo.iex
+   ./bin/IntuitionEngine my_demo.iex
    ```
 
 ## EhBASIC Programs

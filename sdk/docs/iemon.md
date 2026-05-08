@@ -9,7 +9,7 @@ It is also exposed to IEScript Lua via the `dbg.*` API for scripted debugging wo
 
 ## Quick Start
 
-1. Run any program: `./bin/IntuitionEngine -ie64 program.ie64`
+1. Run any typed program: `./bin/IntuitionEngine program.ie64`
 2. Press **F9** to freeze and enter the monitor
 3. Type `r` to see registers
 4. Type `d` to disassemble around the program counter

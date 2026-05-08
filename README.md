@@ -26,7 +26,7 @@ After the VM has been built, build the SDK assets and run a shipped demo:
 
 ```bash
 make sdk
-./bin/IntuitionEngine -ie32 sdk/examples/prebuilt/vga_text_hello.iex
+./bin/IntuitionEngine sdk/examples/prebuilt/vga_text_hello.iex
 ```
 
 Default runtime: when launched with no mode and no filename, the VM starts EhBASIC on IE64.
@@ -177,7 +177,7 @@ Use [DEVELOPERS.md](DEVELOPERS.md) for full build, release, and contribution det
 
 ## Run
 
-Important: when a command includes a program filename, put all flags before the filename. The Go flag parser used by this program parses flags before the first positional argument.
+Typed Intuition Engine binaries and IEScript files can be launched directly by extension. The `-script script.ies` option may appear before or after a typed program filename.
 
 ### CPU and BASIC Modes
 
@@ -186,12 +186,12 @@ Important: when a command includes a program filename, put all flags before the 
 ./bin/IntuitionEngine
 
 # Run guest programs
-./bin/IntuitionEngine -ie64 program.ie64
-./bin/IntuitionEngine -ie32 program.iex
-./bin/IntuitionEngine -m68k program.ie68
-./bin/IntuitionEngine -z80 program.ie80
-./bin/IntuitionEngine -m6502 program.ie65
-./bin/IntuitionEngine -x86 program.ie86
+./bin/IntuitionEngine program.ie64
+./bin/IntuitionEngine program.iex
+./bin/IntuitionEngine program.ie68
+./bin/IntuitionEngine program.ie80
+./bin/IntuitionEngine program.ie65
+./bin/IntuitionEngine program.ie86
 
 # Run EhBASIC
 ./bin/IntuitionEngine -basic
@@ -241,16 +241,17 @@ EmuTOS and AROS availability depends on embedded assets, local default ROM paths
 ./bin/IntuitionEngine -script script.ies
 
 # Script alongside a guest program
-./bin/IntuitionEngine -ie64 -script script.ies program.ie64
+./bin/IntuitionEngine -script script.ies program.ie64
+./bin/IntuitionEngine program.ie64 -script script.ies
 
 # Performance and interpreter-only runs
-./bin/IntuitionEngine -ie64 -perf program.ie64
-./bin/IntuitionEngine -ie64 -nojit program.ie64
+./bin/IntuitionEngine -perf program.ie64
+./bin/IntuitionEngine -nojit program.ie64
 
 # Display options
-./bin/IntuitionEngine -ie32 -scale 2 program.iex
-./bin/IntuitionEngine -m68k -fullscreen program.ie68
-./bin/IntuitionEngine -ie64 -width 800 -height 600 program.ie64
+./bin/IntuitionEngine -scale 2 program.iex
+./bin/IntuitionEngine -fullscreen program.ie68
+./bin/IntuitionEngine -width 800 -height 600 program.ie64
 
 # Runtime information
 ./bin/IntuitionEngine -version
@@ -269,8 +270,9 @@ If a desktop build is already running, opening a supported file can hand it to t
 | `.ie68` | M68K |
 | `.ie80` | Z80 |
 | `.ie86` | x86 |
-| `.tos`, `.img` | EmuTOS |
 | `.ies` | IEScript |
+
+Raw `.bin`, extensionless files, ROM images, and media files are not CLI auto-detected. Use the explicit CPU, OS, or media mode flag for those files.
 
 Desktop file association targets are Linux-oriented:
 
@@ -344,7 +346,7 @@ Common SDK commands:
 make sdk
 make sdk-build
 ./sdk/scripts/build-all.sh
-./bin/IntuitionEngine -ie32 sdk/examples/prebuilt/vga_text_hello.iex
+./bin/IntuitionEngine sdk/examples/prebuilt/vga_text_hello.iex
 ```
 
 Core SDK references:
