@@ -62,7 +62,7 @@
 .equ BLT_HEIGHT        0xF0030          ; Blit height (32-bit)
 .equ BLT_SRC_STRIDE    0xF0034          ; Source stride (32-bit)
 .equ BLT_DST_STRIDE    0xF0038          ; Dest stride (32-bit)
-.equ BLT_COLOR         0xF003C          ; Fill color (32-bit BGRA)
+.equ BLT_COLOR         0xF003C          ; Fill/line color or scale dest size
 .equ BLT_MASK          0xF0040          ; Mask address (32-bit)
 .equ BLT_STATUS        0xF0044          ; Blitter status
 .equ BLT_MODE7_U0      0xF0058          ; Mode7 U0
@@ -836,6 +836,7 @@
 .equ BLT_OP_ALPHA      4                ; Alpha blending
 .equ BLT_OP_MODE7      5                ; Affine texture mapping
 .equ BLT_OP_COLOR_EXPAND 6              ; Color expansion blit
+.equ BLT_OP_SCALE      7                ; Nearest-neighbour scale blit
 
 ; BLT_FLAGS bit definitions
 .equ BLT_FLAGS_BPP_RGBA32     0x00      ; Bits 0-1: 4 bytes per pixel (default)

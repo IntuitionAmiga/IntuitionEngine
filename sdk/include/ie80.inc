@@ -67,10 +67,10 @@
 .set BLT_SRC_STRIDE_HI,0xF035
 .set BLT_DST_STRIDE_LO,0xF038
 .set BLT_DST_STRIDE_HI,0xF039
-.set BLT_COLOR_0,0xF03C
-.set BLT_COLOR_1,0xF03D
-.set BLT_COLOR_2,0xF03E
-.set BLT_COLOR_3,0xF03F
+.set BLT_COLOR_0,0xF03C    ; Fill/line color or scale dest size byte 0
+.set BLT_COLOR_1,0xF03D    ; Fill/line color or scale dest size byte 1
+.set BLT_COLOR_2,0xF03E    ; Fill/line color or scale dest size byte 2
+.set BLT_COLOR_3,0xF03F    ; Fill/line color or scale dest size byte 3
 .set BLT_MASK_0,0xF040
 .set BLT_MASK_1,0xF041
 .set BLT_MASK_2,0xF042
@@ -1396,6 +1396,7 @@
 .set BLT_OP_ALPHA,4
 .set BLT_OP_MODE7,5
 .set BLT_OP_COLOR_EXPAND,6
+.set BLT_OP_SCALE,7
 
 ; BLT_FLAGS bit definitions
 .set BLT_FLAGS_BPP_RGBA32,0x00

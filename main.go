@@ -1144,7 +1144,6 @@ func main() {
 			compositor.NotifyResolutionChange(w, h)
 		})
 	}
-	compositor.LockResolution(DefaultScreenWidth, DefaultScreenHeight)
 	if useResolutionOverride {
 		compositor.LockResolution(validWidth, validHeight)
 	}
@@ -1718,10 +1717,6 @@ func main() {
 
 		// AROS HIDDs expect Amiga rawkey scancodes, not PC/AT scancodes
 		termMMIO.amigaScancodeMode.Store(true)
-
-		// Unlock compositor resolution so the iegfx HIDD's IE_VideoSetMode(640x480)
-		// propagates correctly during boot (default lock is 800x600).
-		compositor.UnlockResolution()
 
 		videoChip.Start()
 		compositor.Start()

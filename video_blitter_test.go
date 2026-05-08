@@ -140,6 +140,383 @@ func TestBlitterCopy(t *testing.T) {
 	}
 }
 
+func TestBlitterScaleCLUT8Exact2x(t *testing.T) {
+	_, bus := newBlitterTestRig(t)
+	src := uint32(0x20000)
+	dst := uint32(0x21000)
+	source := []uint8{1, 2, 3, 4}
+	for i, v := range source {
+		bus.Write8(src+uint32(i), v)
+	}
+
+	bus.Write32(BLT_OP, bltOpScale)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 2)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_SRC_STRIDE, 2)
+	bus.Write32(BLT_DST_STRIDE, 4)
+	bus.Write32(BLT_COLOR, uint32(4)|(uint32(4)<<16))
+	bus.Write32(BLT_FLAGS, bltFlagsBPP_CLUT8)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	want := []uint8{
+		1, 1, 2, 2,
+		1, 1, 2, 2,
+		3, 3, 4, 4,
+		3, 3, 4, 4,
+	}
+	for i, v := range want {
+		if got := bus.Read8(dst + uint32(i)); got != v {
+			t.Fatalf("scaled CLUT8 byte %d = %d, want %d", i, got, v)
+		}
+	}
+}
+
+func TestBlitterScaleCLUT8VRAMApertureUsesBusMemory(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+	src := uint32(VRAM_START + uint32(mode.totalSize) + 0x800)
+	dst := uint32(VRAM_START + uint32(mode.totalSize) + 0x1000)
+	for i, v := range []uint8{5, 6, 7, 8} {
+		bus.Write8(src+uint32(i), v)
+	}
+
+	bus.Write32(BLT_OP, bltOpScale)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 2)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_SRC_STRIDE, 2)
+	bus.Write32(BLT_DST_STRIDE, 4)
+	bus.Write32(BLT_COLOR, uint32(4)|(uint32(4)<<16))
+	bus.Write32(BLT_FLAGS, bltFlagsBPP_CLUT8)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	if got := bus.Read32(BLT_STATUS); got&bltStatusErr != 0 {
+		t.Fatalf("VRAM-aperture CLUT8 scale set error: 0x%X", got)
+	}
+	want := []uint8{
+		5, 5, 6, 6,
+		5, 5, 6, 6,
+		7, 7, 8, 8,
+		7, 7, 8, 8,
+	}
+	for i, v := range want {
+		if got := bus.Read8(dst + uint32(i)); got != v {
+			t.Fatalf("VRAM-aperture scaled byte %d = %d, want %d", i, got, v)
+		}
+	}
+}
+
+func TestBlitterScaleCLUT8VisibleSourceReadsFrontBuffer(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+	src := uint32(VRAM_START + 0x1800)
+	dst := uint32(0x21800)
+
+	for i, v := range []uint8{11, 22, 33, 44} {
+		bus.Write32(BLT_OP, bltOpFill)
+		bus.Write32(BLT_DST, src+uint32(i))
+		bus.Write32(BLT_WIDTH, 1)
+		bus.Write32(BLT_HEIGHT, 1)
+		bus.Write32(BLT_DST_STRIDE, uint32(mode.width))
+		bus.Write32(BLT_COLOR, uint32(v))
+		bus.Write32(BLT_FLAGS, IE_BLT_MAKE_FLAGS(bltFlagsBPP_CLUT8, 0x03))
+		bus.Write32(BLT_CTRL, bltCtrlStart)
+		if got := bus.Read32(BLT_STATUS); got&bltStatusErr != 0 {
+			t.Fatalf("visible CLUT8 fill %d set error: 0x%X", i, got)
+		}
+	}
+
+	bus.Write32(BLT_OP, bltOpScale)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 2)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_SRC_STRIDE, 2)
+	bus.Write32(BLT_DST_STRIDE, 4)
+	bus.Write32(BLT_COLOR, uint32(4)|(uint32(4)<<16))
+	bus.Write32(BLT_FLAGS, bltFlagsBPP_CLUT8)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	if got := bus.Read32(BLT_STATUS); got&bltStatusErr != 0 {
+		t.Fatalf("visible-source CLUT8 scale set error: 0x%X", got)
+	}
+	want := []uint8{
+		11, 11, 22, 22,
+		11, 11, 22, 22,
+		33, 33, 44, 44,
+		33, 33, 44, 44,
+	}
+	for i, v := range want {
+		if got := bus.Read8(dst + uint32(i)); got != v {
+			t.Fatalf("visible-source scaled byte %d = %d, want %d", i, got, v)
+		}
+	}
+}
+
+func TestBlitterScaleCLUT8VisibleDestinationWritesFrontBuffer(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	src := uint32(0x22800)
+	dst := uint32(VRAM_START + 0x2800)
+	for i, v := range []uint8{9, 8, 7, 6} {
+		bus.Write8(src+uint32(i), v)
+	}
+
+	bus.Write32(BLT_OP, bltOpScale)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 2)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_SRC_STRIDE, 2)
+	bus.Write32(BLT_DST_STRIDE, 4)
+	bus.Write32(BLT_COLOR, uint32(4)|(uint32(4)<<16))
+	bus.Write32(BLT_FLAGS, bltFlagsBPP_CLUT8)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	if got := bus.Read32(BLT_STATUS); got&bltStatusErr != 0 {
+		t.Fatalf("visible-destination CLUT8 scale set error: 0x%X", got)
+	}
+	want := []uint8{
+		9, 9, 8, 8,
+		9, 9, 8, 8,
+		7, 7, 6, 6,
+		7, 7, 6, 6,
+	}
+	dstOff := dst - BUFFER_OFFSET
+	for y := range 4 {
+		for x := range 4 {
+			got := video.frontBuffer[dstOff+uint32(y*4+x)]
+			wantByte := want[y*4+x]
+			if got != wantByte {
+				t.Fatalf("visible-destination frontBuffer byte (%d,%d) = %d, want %d", x, y, got, wantByte)
+			}
+		}
+	}
+}
+
+func TestBlitterScaleRGBA32Exact2x(t *testing.T) {
+	_, bus := newBlitterTestRig(t)
+	src := uint32(0x22000)
+	dst := uint32(0x23000)
+	source := []uint32{0x01020304, 0x11121314, 0x21222324, 0x31323334}
+	for i, v := range source {
+		bus.Write32(src+uint32(i*4), v)
+	}
+
+	bus.Write32(BLT_OP, bltOpScale)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 2)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_SRC_STRIDE, 8)
+	bus.Write32(BLT_DST_STRIDE, 16)
+	bus.Write32(BLT_COLOR, uint32(4)|(uint32(4)<<16))
+	bus.Write32(BLT_FLAGS, bltFlagsBPP_RGBA32)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	want := []uint32{
+		source[0], source[0], source[1], source[1],
+		source[0], source[0], source[1], source[1],
+		source[2], source[2], source[3], source[3],
+		source[2], source[2], source[3], source[3],
+	}
+	for i, v := range want {
+		if got := bus.Read32(dst + uint32(i*4)); got != v {
+			t.Fatalf("scaled RGBA32 pixel %d = 0x%08X, want 0x%08X", i, got, v)
+		}
+	}
+}
+
+func TestBlitterScaleRGBA32VRAMBackBufferUsesBusMemory(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+	src := uint32(0x23800)
+	dst := VRAM_START + uint32(mode.totalSize)
+	source := []uint32{0x10203040, 0x50607080, 0x90A0B0C0, 0xD0E0F001}
+	for i, v := range source {
+		writeU32Bytes(bus, src+uint32(i*4), v)
+	}
+
+	bus.Write32(BLT_OP, bltOpScale)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 2)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_SRC_STRIDE, 8)
+	bus.Write32(BLT_DST_STRIDE, 16)
+	bus.Write32(BLT_COLOR, uint32(4)|(uint32(4)<<16))
+	bus.Write32(BLT_FLAGS, bltFlagsBPP_RGBA32)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	if got := bus.Read32(BLT_STATUS); got&bltStatusErr != 0 {
+		t.Fatalf("VRAM back-buffer RGBA32 scale set error: 0x%X", got)
+	}
+	want := []uint32{
+		source[0], source[0], source[1], source[1],
+		source[0], source[0], source[1], source[1],
+		source[2], source[2], source[3], source[3],
+		source[2], source[2], source[3], source[3],
+	}
+	for i, v := range want {
+		raw := binary.LittleEndian.Uint32(bus.GetMemory()[dst+uint32(i*4) : dst+uint32(i*4)+4])
+		if raw != v {
+			t.Fatalf("VRAM back-buffer scaled pixel %d = 0x%08X, want 0x%08X", i, raw, v)
+		}
+	}
+}
+
+func TestBlitterScaleRGBA32MisalignedVisibleVRAMSetsError(t *testing.T) {
+	_, bus := newBlitterTestRig(t)
+	src := uint32(0x23C00)
+	dst := uint32(VRAM_START + 1)
+	writeU32Bytes(bus, src, 0xA1B2C3D4)
+
+	bus.Write32(BLT_OP, bltOpScale)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_SRC_STRIDE, 4)
+	bus.Write32(BLT_DST_STRIDE, 4)
+	bus.Write32(BLT_COLOR, uint32(1)|(uint32(1)<<16))
+	bus.Write32(BLT_FLAGS, bltFlagsBPP_RGBA32)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	if got := bus.Read32(BLT_STATUS); got&bltStatusErr == 0 {
+		t.Fatalf("misaligned visible RGBA32 scale did not set error: 0x%X", got)
+	}
+	if got := binary.LittleEndian.Uint32(bus.GetMemory()[dst : dst+4]); got != 0 {
+		t.Fatalf("misaligned visible RGBA32 scale wrote busMemory: 0x%08X", got)
+	}
+}
+
+func TestBlitterScaleNonSquareNearest(t *testing.T) {
+	_, bus := newBlitterTestRig(t)
+	src := uint32(0x24000)
+	dst := uint32(0x25000)
+	for i, v := range []uint8{10, 20, 30, 40} {
+		bus.Write8(src+uint32(i), v)
+	}
+
+	bus.Write32(BLT_OP, bltOpScale)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 2)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_SRC_STRIDE, 2)
+	bus.Write32(BLT_DST_STRIDE, 4)
+	bus.Write32(BLT_COLOR, uint32(4)|(uint32(3)<<16))
+	bus.Write32(BLT_FLAGS, bltFlagsBPP_CLUT8)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	want := []uint8{
+		10, 10, 20, 20,
+		10, 10, 20, 20,
+		30, 30, 40, 40,
+	}
+	for i, v := range want {
+		if got := bus.Read8(dst + uint32(i)); got != v {
+			t.Fatalf("non-square scaled byte %d = %d, want %d", i, got, v)
+		}
+	}
+}
+
+func TestBlitterScalePaddedStride(t *testing.T) {
+	_, bus := newBlitterTestRig(t)
+	src := uint32(0x26000)
+	dst := uint32(0x27000)
+	bus.Write8(src+0, 1)
+	bus.Write8(src+1, 2)
+	bus.Write8(src+4, 3)
+	bus.Write8(src+5, 4)
+
+	bus.Write32(BLT_OP, bltOpScale)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 2)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_SRC_STRIDE, 4)
+	bus.Write32(BLT_DST_STRIDE, 6)
+	bus.Write32(BLT_COLOR, uint32(4)|(uint32(4)<<16))
+	bus.Write32(BLT_FLAGS, bltFlagsBPP_CLUT8)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	for _, tc := range []struct {
+		off  uint32
+		want uint8
+	}{
+		{0, 1}, {1, 1}, {2, 2}, {3, 2},
+		{6, 1}, {7, 1}, {8, 2}, {9, 2},
+		{12, 3}, {13, 3}, {14, 4}, {15, 4},
+		{18, 3}, {19, 3}, {20, 4}, {21, 4},
+	} {
+		if got := bus.Read8(dst + tc.off); got != tc.want {
+			t.Fatalf("padded scaled byte at offset %d = %d, want %d", tc.off, got, tc.want)
+		}
+	}
+}
+
+func TestBlitterScaleInvalidDestinationSetsError(t *testing.T) {
+	_, bus := newBlitterTestRig(t)
+	src := uint32(0x28000)
+	dst := uint32(0x29000)
+	bus.Write8(src, 9)
+	bus.Write8(dst, 7)
+
+	bus.Write32(BLT_OP, bltOpScale)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_COLOR, 0)
+	bus.Write32(BLT_FLAGS, bltFlagsBPP_CLUT8)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	if got := bus.Read32(BLT_STATUS); got&bltStatusErr == 0 {
+		t.Fatalf("zero destination scale did not set error: 0x%X", got)
+	}
+	if got := bus.Read8(dst); got != 7 {
+		t.Fatalf("zero destination scale mutated dst: %d", got)
+	}
+
+	bus.Write32(BLT_COLOR, uint32(1)|(uint32(1)<<16))
+	bus.Write32(BLT_DST, uint32(len(bus.GetMemory())))
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	if got := bus.Read32(BLT_STATUS); got&bltStatusErr == 0 {
+		t.Fatalf("out-of-bounds scale did not set error: 0x%X", got)
+	}
+}
+
+func TestBlitterScaleRejectsVRAMCrossingBounds(t *testing.T) {
+	_, bus := newBlitterTestRig(t)
+	src := uint32(0x2A000)
+	dst := uint32(VRAM_START + VRAM_SIZE - 1)
+	bus.Write8(src, 0x5A)
+	bus.Write8(dst, 0x11)
+	bus.Write8(dst+1, 0x22)
+
+	bus.Write32(BLT_OP, bltOpScale)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_DST_STRIDE, 2)
+	bus.Write32(BLT_COLOR, uint32(2)|(uint32(1)<<16))
+	bus.Write32(BLT_FLAGS, bltFlagsBPP_CLUT8)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	if got := bus.Read32(BLT_STATUS); got&bltStatusErr == 0 {
+		t.Fatalf("VRAM-crossing scale did not set error: 0x%X", got)
+	}
+	if got := bus.Read8(dst); got != 0x11 {
+		t.Fatalf("VRAM-crossing scale mutated last VRAM byte: 0x%02X", got)
+	}
+	if got := bus.Read8(dst + 1); got != 0x22 {
+		t.Fatalf("VRAM-crossing scale mutated byte beyond VRAM: 0x%02X", got)
+	}
+}
+
 func TestBlitterDefaultStrideVRAM(t *testing.T) {
 	video, bus := newBlitterTestRig(t)
 	mode := VideoModes[video.currentMode]

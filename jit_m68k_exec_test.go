@@ -2754,6 +2754,28 @@ func runM68KJITStopProgramWithSetup(t *testing.T, startPC uint32, setup func(*M6
 	return cpu
 }
 
+func TestM68KJIT_Exec_SccAbsoluteLongFallbackSetsByte(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	const target = 0x2301
+	cpu := runM68KJITStopProgramWithSetup(t, 0x1000, func(cpu *M68KCPU) {
+		cpu.SR = M68K_SR_S | M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C | M68K_SR_X
+		cpu.Write8(target, 0x00)
+		cpu.Write8(target+1, 0x77)
+	}, false,
+		0x50F9, 0x0000, target, // ST (xxx).L
+	)
+
+	if got := cpu.Read8(target); got != 0xFF {
+		t.Fatalf("target byte = 0x%02X, want 0xFF", got)
+	}
+	if got := cpu.Read8(target + 1); got != 0x77 {
+		t.Fatalf("adjacent byte = 0x%02X, want 0x77", got)
+	}
+}
+
 // TestM68KJIT_Exec_DBRA_Loop runs a DBRA loop through the full dispatcher.
 func TestM68KJIT_Exec_DBRA_Loop(t *testing.T) {
 	if !m68kJitAvailable {

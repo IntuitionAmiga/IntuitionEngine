@@ -68,7 +68,7 @@ flowchart LR
     subgraph VIDEO["Video systems"]
         VCHIP["VideoChip<br/>layer 0"]
         COPPER["Copper<br/>WAIT / MOVE / SETBASE / END"]
-        BLITTER["DMA blitter<br/>copy, fill, line, alpha,<br/>color expansion, Mode7"]
+        BLITTER["DMA blitter<br/>copy, fill, line, alpha,<br/>color expansion, scale, Mode7"]
         VCHPAL["VideoChip palette / CLUT8"]
         VGA["VGA<br/>layer 10"]
         VGASEQ["VGA sequencer"]
@@ -724,15 +724,17 @@ The copper coprocessor is internal to VideoChip but can write to any MMIO-mapped
 - `copperIOBase` resets to `VIDEO_REG_BASE` at the start of each frame
 - The compositor's `ScanlineAware` interface orchestrates this: `StartFrame()` -> `ProcessScanline(y)` -> `FinishFrame()`
 
-### Extended Blitter: BPP Modes, Draw Modes, and Color Expansion
+### Extended Blitter: BPP Modes, Draw Modes, Color Expansion, and Scale
 
-The blitter supports two pixel formats via `BLT_FLAGS` (`0xF0488`): RGBA32 (4 bpp, default) and CLUT8 (1 bpp). Bits 4-7 select one of 16 raster draw modes (Clear, And, Copy, Xor, Invert, etc.) applied per pixel during FILL and COPY operations. `BLT_OP=4` performs source-over alpha blending with source alpha in bits 31-24 using `out = (src*a + dst*(255-a))/255`. When `BLT_FLAGS=0`, the blitter defaults to Copy mode with RGBA32 for full backward compatibility.
+The blitter supports two pixel formats via `BLT_FLAGS` (`0xF0488`): RGBA32 (4 bpp, default) and CLUT8 (1 bpp). Bits 4-7 select one of 16 raster draw modes (Clear, And, Copy, Xor, Invert, etc.) applied per pixel during FILL and COPY operations. `BLT_OP=4` performs source-over alpha blending with source alpha in bits 31-24 using `out = (src*a + dst*(255-a))/255`. `BLT_OP=7` performs nearest-neighbour scaling in RGBA32 or CLUT8. When `BLT_FLAGS=0`, the blitter defaults to Copy mode with RGBA32 for full backward compatibility.
 
 `BLT_CTRL` bit 0 starts the synchronous blit, bit 1 is read-only busy, and bit 2 enables a completion pulse on `IntMaskBlitter`. `BLT_STATUS` bit 0 is ERR, bit 1 is DONE, and bit 2 is sticky IRQ_PENDING (write 1 to clear). Invalid opcodes, out-of-range Mode7 samples, and overflowed blitter bounds set ERR and do not silently fall back to COPY.
 
 The color expansion operation (`BLT_OP=6`) renders 1-bit glyph templates into colored pixels for hardware-accelerated text. It reads a template from `BLT_MASK`, uses `BLT_FG`/`BLT_BG` (`0xF048C`/`0xF0490`) as foreground/background colors, and supports three modes: JAM2 (opaque - set bits write FG, clear bits write BG), JAM1 (transparent - only set bits write FG), and Invert (set bits XOR the destination). `BLT_MASK_MOD` (`0xF0494`) sets the template row stride and `BLT_MASK_SRCX` (`0xF0498`) provides sub-byte bit alignment for glyph fragments. Template bits are MSB-first (Amiga convention).
 
 Line drawing (`BLT_OP=2`) supports an extended mode when `BLT_FLAGS != 0`: `BLT_DST` becomes the framebuffer base address, `BLT_WIDTH` holds the packed endpoint coordinates `(y1<<16)|x1`, and `BLT_DST_STRIDE` sets the row stride. This allows line drawing into arbitrary bitmaps (not just the active framebuffer) with BPP awareness and all 16 draw modes. When `BLT_FLAGS=0`, legacy behavior is preserved (endpoint in `BLT_DST`, base at `VRAM_START`). In extended mode the blitter does not clip - callers must provide pre-clipped coordinates (the AROS driver uses Cohen-Sutherland clipping before calling the blitter).
+
+Scale blits (`BLT_OP=7`) use `BLT_SRC`/`BLT_DST` as base addresses, `BLT_WIDTH`/`BLT_HEIGHT` as the source size in pixels, and `BLT_COLOR` as a packed destination size (`height << 16 | width`). `BLT_SRC_STRIDE` defaults to source width times bytes-per-pixel. `BLT_DST_STRIDE` defaults to the active VideoChip mode stride for VRAM destinations or destination width times bytes-per-pixel for ordinary memory. In non-direct VRAM mode, visible VRAM accesses use the active VideoChip front buffer and off-screen VRAM aperture accesses fall back to bus memory so back buffers can be presented through `VIDEO_FB_BASE`. Out-of-bounds source or destination rectangles, rectangles crossing the VRAM aperture end, zero source dimensions, and zero destination dimensions set `BLT_STATUS.ERR`.
 
 | Register | Address | Description |
 |----------|---------|-------------|

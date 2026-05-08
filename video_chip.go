@@ -214,6 +214,7 @@ const (
 	bltOpAlphaCopy // Copy only pixels with alpha > 0 (for transparency)
 	bltOpMode7     // Affine texture mapping
 	bltOpColorExpand
+	bltOpScale // Nearest-neighbour scaling
 )
 
 // BLT_FLAGS bit definitions
@@ -1276,6 +1277,8 @@ func (chip *VideoChip) executeBlitterLocked(mode VideoMode) {
 		chip.blitMode7Locked(mode)
 	case bltOpColorExpand:
 		chip.blitColorExpandLocked(mode)
+	case bltOpScale:
+		chip.blitScaleLocked(mode)
 	default:
 		chip.bltErr = true
 	}
@@ -1683,6 +1686,88 @@ func (chip *VideoChip) blitCopyLocked(mode VideoMode) {
 	}
 }
 
+func (chip *VideoChip) blitScaleLocked(mode VideoMode) {
+	srcW := int(chip.bltWidth)
+	srcH := int(chip.bltHeight)
+	dstW := int(chip.bltColor & 0xFFFF)
+	dstH := int((chip.bltColor >> 16) & 0xFFFF)
+	if srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0 {
+		chip.bltErr = true
+		return
+	}
+
+	bpp := bppFromFlags(chip.bltFlags)
+	bytesPerPx := uint32(bpp)
+	srcStride := chip.bltSrcStrideRun
+	if srcStride == 0 {
+		srcStride = chip.defaultStrideBPP(chip.bltSrc, srcW, bpp, mode)
+	}
+	dstStride := chip.bltDstStrideRun
+	if dstStride == 0 {
+		dstStride = chip.defaultStrideBPP(chip.bltDst, dstW, bpp, mode)
+	}
+
+	if !chip.blitRectReadableLocked(chip.bltSrc, srcW, srcH, srcStride, bpp) ||
+		!chip.blitRectWritableLocked(chip.bltDst, dstW, dstH, dstStride, bpp) {
+		chip.bltErr = true
+		return
+	}
+
+	dstRow := chip.bltDst
+	for y := 0; y < dstH; y++ {
+		srcY := y * srcH / dstH
+		srcRow := chip.bltSrc + uint32(srcY)*srcStride
+		dstAddr := dstRow
+		for x := 0; x < dstW; x++ {
+			srcX := x * srcW / dstW
+			srcAddr := srcRow + uint32(srcX)*bytesPerPx
+			if bpp == 1 {
+				chip.blitWrite8Locked(dstAddr, chip.blitRead8Locked(srcAddr), mode)
+			} else {
+				chip.blitWritePixelLocked(dstAddr, chip.blitReadPixelLocked(srcAddr), mode)
+			}
+			dstAddr += bytesPerPx
+		}
+		dstRow += dstStride
+	}
+}
+
+func (chip *VideoChip) blitRectReadableLocked(addr uint32, width, height int, stride uint32, bpp int) bool {
+	return chip.blitRectInBoundsLocked(addr, width, height, stride, bpp)
+}
+
+func (chip *VideoChip) blitRectWritableLocked(addr uint32, width, height int, stride uint32, bpp int) bool {
+	return chip.blitRectInBoundsLocked(addr, width, height, stride, bpp)
+}
+
+func (chip *VideoChip) blitRectInBoundsLocked(addr uint32, width, height int, stride uint32, bpp int) bool {
+	if width <= 0 || height <= 0 || bpp <= 0 {
+		return false
+	}
+	rowBytes := uint64(width * bpp)
+	end := uint64(addr) + uint64(stride)*uint64(height-1) + rowBytes
+	if end > math.MaxUint32+1 {
+		return false
+	}
+	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		if end > uint64(VRAM_START+VRAM_SIZE) {
+			return false
+		}
+		if chip.directVRAM == nil && addr < VRAM_START+uint32(len(chip.frontBuffer)) {
+			offset := addr - BUFFER_OFFSET
+			return uint64(offset)+uint64(stride)*uint64(height-1)+rowBytes <= uint64(len(chip.frontBuffer))
+		}
+		if chip.busMemory != nil {
+			return end <= uint64(len(chip.busMemory))
+		}
+		return false
+	}
+	if chip.busMemory != nil {
+		return end <= uint64(len(chip.busMemory))
+	}
+	return false
+}
+
 func (chip *VideoChip) blitMaskedCopyLocked(mode VideoMode) {
 	width := int(chip.bltWidth)
 	height := int(chip.bltHeight)
@@ -2007,7 +2092,18 @@ func (chip *VideoChip) blitWritePixelLocked(addr uint32, value uint32, mode Vide
 			return
 		}
 		offset := addr - BUFFER_OFFSET
-		if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) || offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
+		if offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
+			chip.bltErr = true
+			return
+		}
+		if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) {
+			if chip.busMemory != nil && addr+BYTES_PER_PIXEL <= uint32(len(chip.busMemory)) {
+				binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], value)
+				if !chip.resetting && !chip.hasContent.Load() {
+					chip.hasContent.Store(true)
+				}
+				return
+			}
 			chip.bltErr = true
 			return
 		}
@@ -2042,7 +2138,7 @@ func (chip *VideoChip) defaultStrideBPP(addr uint32, width, bpp int, mode VideoM
 	return uint32(width * bpp)
 }
 
-// blitRead8Locked reads a single byte from bus memory for CLUT8 operations.
+// blitRead8Locked reads a single byte for CLUT8 operations.
 func (chip *VideoChip) blitRead8Locked(addr uint32) uint8 {
 	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
 		if chip.directVRAM != nil {
@@ -2080,6 +2176,13 @@ func (chip *VideoChip) blitWrite8Locked(addr uint32, value uint8, mode VideoMode
 		}
 		offset := addr - BUFFER_OFFSET
 		if offset >= uint32(len(chip.frontBuffer)) {
+			if chip.busMemory != nil && addr < uint32(len(chip.busMemory)) {
+				chip.busMemory[addr] = value
+				if !chip.resetting && !chip.hasContent.Load() {
+					chip.hasContent.Store(true)
+				}
+				return
+			}
 			chip.bltErr = true
 			return
 		}

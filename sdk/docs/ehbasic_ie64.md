@@ -1964,7 +1964,7 @@ The copper is a display-list coprocessor that executes instructions synchronised
 
 ### 6.3 Blitter Operations
 
-The blitter performs hardware-accelerated block operations: copy, fill, and line drawing. It operates on rectangular regions defined by source/destination addresses, width, height, and stride.
+The blitter performs hardware-accelerated block operations: copy, fill, line drawing, alpha, Mode7, color expansion, and nearest-neighbour scaling. Rectangular operations use source/destination addresses, width, height, and stride. Scale blits use `BLT_WIDTH`/`BLT_HEIGHT` as the source size and pack the destination size in `BLT_COLOR` as `(height << 16) | width`.
 
 ```basic
 REM Copy 100x50 block
@@ -2249,7 +2249,7 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 
 | Address Range | Device |
 |---------------|--------|
-| `&HF0000`-`&HF0057` | Video Chip (copper, blitter, raster) |
+| `&HF0000`-`&HF049B` | Video Chip (copper, blitter, raster, palette, extended blitter) |
 | `&HF0700`-`&HF07FF` | Terminal MMIO |
 | `&HF0800`-`&HF0B7F` | Audio Chip (SoundChip) |
 | `&HF0B80`-`&HF0B91` | AHX Player |
@@ -2518,7 +2518,7 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF8334` | TEX_HEIGHT | Texture height |
 | `&HF8338` | TEX_UPLOAD | Texture upload trigger |
 
-### 9.12 Video Chip Registers (`&HF0000`-`&HF0057`)
+### 9.12 Video Chip Registers (`&HF0000`-`&HF049B`)
 
 | Address | Name | Description |
 |---------|------|-------------|
@@ -2528,14 +2528,14 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF000C` | COPPER_CTRL | Copper control (1=enable) |
 | `&HF0010` | COPPER_PTR | Copper list pointer |
 | `&HF001C` | BLT_CTRL | Control (write 1 to start) |
-| `&HF0020` | BLT_OP | Operation (0=copy, 1=fill, 2=line) |
+| `&HF0020` | BLT_OP | Operation (0=copy, 1=fill, 2=line, 3=masked, 4=alpha, 5=Mode7, 6=color expand, 7=scale) |
 | `&HF0024` | BLT_SRC | Blitter source address |
 | `&HF0028` | BLT_DST | Blitter destination address |
 | `&HF002C` | BLT_WIDTH | Blitter width |
 | `&HF0030` | BLT_HEIGHT | Blitter height |
 | `&HF0034` | BLT_SRC_STRIDE | Source stride |
 | `&HF0038` | BLT_DST_STRIDE | Destination stride |
-| `&HF003C` | BLT_COLOR | Fill/line colour |
+| `&HF003C` | BLT_COLOR | Fill/line colour; for scale, packed destination size `(height << 16) | width` |
 
 ### 9.13 Media Loader Registers (`&HF2300`-`&HF231F`)
 

@@ -806,6 +806,27 @@ func TestCompositor_LockResolution_IgnoresNotifications(t *testing.T) {
 	}
 }
 
+func TestCompositor_UnlockResolution_AppliesPendingNotification(t *testing.T) {
+	out := newMockVideoOutput()
+	comp := NewVideoCompositor(out)
+	comp.LockResolution(DefaultScreenWidth, DefaultScreenHeight)
+	comp.NotifyResolutionChange(640, 480)
+	comp.composite()
+	if comp.frameWidth != DefaultScreenWidth || comp.frameHeight != DefaultScreenHeight {
+		t.Fatalf("expected locked default resolution, got %dx%d", comp.frameWidth, comp.frameHeight)
+	}
+
+	comp.UnlockResolution()
+	comp.composite()
+	if comp.frameWidth != 640 || comp.frameHeight != 480 {
+		t.Fatalf("expected pending 640x480 after unlock, got %dx%d", comp.frameWidth, comp.frameHeight)
+	}
+	cfg := out.GetDisplayConfig()
+	if cfg.Width != 640 || cfg.Height != 480 {
+		t.Fatalf("expected output config 640x480, got %dx%d", cfg.Width, cfg.Height)
+	}
+}
+
 func TestCompositor_LockResolution_PropagatesConfig_Started(t *testing.T) {
 	out := newMockVideoOutput()
 	_ = out.Start()

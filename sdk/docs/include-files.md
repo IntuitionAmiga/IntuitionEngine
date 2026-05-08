@@ -136,6 +136,7 @@ As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level kernel image/
 - `BLT_OP_ALPHA` - Alpha-blended copy
 - `BLT_OP_MODE7` - SNES-style rotation/scaling
 - `BLT_OP_COLOR_EXPAND` - 1-bit template to colored pixels (text rendering)
+- `BLT_OP_SCALE` - Nearest-neighbour rectangular scale; destination size is packed in `BLT_COLOR` as `(height << 16) | width`
 
 ### Extended Blitter Registers
 - `BLT_FLAGS` / `BLT_FG` / `BLT_BG` / `BLT_MASK_MOD` / `BLT_MASK_SRCX` - BPP mode, draw modes, color expansion

@@ -1674,8 +1674,10 @@ func (cpu *M68KCPU) decodeGroup5(opcode uint16) {
 		return
 	}
 
-	// TRAPcc (68020) — must be checked before Scc because 0x5xFA & 0xF0C0 == 0x50C0 (Scc mask)
-	if (opcode & 0xF0F8) == 0x50F8 {
+	// TRAPcc (68020) — must be checked before Scc because 0x5xFA & 0xF0C0 == 0x50C0 (Scc mask).
+	// Only low opmodes 2, 3, and 4 are TRAPcc. Opmodes 0 and 1 are valid
+	// Scc absolute word/long destinations: Scc (xxx).W / Scc (xxx).L.
+	if (opcode&0xF0F8) == 0x50F8 && (opcode&0x7) >= 2 && (opcode&0x7) <= 4 {
 		condition := uint8((opcode >> 8) & 0xF)
 		opmode := opcode & 0x7 // 010=word operand, 011=long operand, 100=no operand
 		// Skip the operand (must fetch before testing condition to keep PC in sync)

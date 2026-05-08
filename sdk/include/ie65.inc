@@ -65,10 +65,10 @@ BLT_SRC_STRIDE_LO = $F034       ; Source stride (low byte)
 BLT_SRC_STRIDE_HI = $F035       ; Source stride (high byte)
 BLT_DST_STRIDE_LO = $F038       ; Dest stride (low byte)
 BLT_DST_STRIDE_HI = $F039       ; Dest stride (high byte)
-BLT_COLOR_0     = $F03C         ; Fill color byte 0
-BLT_COLOR_1     = $F03D         ; Fill color byte 1
-BLT_COLOR_2     = $F03E         ; Fill color byte 2
-BLT_COLOR_3     = $F03F         ; Fill color byte 3
+BLT_COLOR_0     = $F03C         ; Fill/line color or scale dest size byte 0
+BLT_COLOR_1     = $F03D         ; Fill/line color or scale dest size byte 1
+BLT_COLOR_2     = $F03E         ; Fill/line color or scale dest size byte 2
+BLT_COLOR_3     = $F03F         ; Fill/line color or scale dest size byte 3
 BLT_MASK_0      = $F040         ; Mask address byte 0 (LSB)
 BLT_MASK_1      = $F041         ; Mask address byte 1
 BLT_MASK_2      = $F042         ; Mask address byte 2
@@ -128,6 +128,7 @@ BLT_MASK_SRCX_1   = $F499
 BLT_MASK_SRCX_2   = $F49A
 BLT_MASK_SRCX_3   = $F49B
 BLT_OP_COLOR_EXPAND = 6           ; Color expansion blit
+BLT_OP_SCALE      = 7             ; Nearest-neighbour scale blit
 
 ; BLT_FLAGS bit definitions
 BLT_FLAGS_BPP_RGBA32     = $00   ; Bits 0-1: 4 bytes per pixel (default)
@@ -1550,6 +1551,7 @@ BLT_OP_MASKED   = 3             ; Copy with mask
 BLT_OP_ALPHA    = 4             ; Alpha blending
 BLT_OP_MODE7_OP = 5             ; Affine texture mapping
 BLT_OP_COLOR_EXPAND_OP = 6      ; Color expansion blit
+BLT_OP_SCALE_OP = 7             ; Nearest-neighbour scale blit
 
 ; Background color (black with alpha)
 BACKGROUND_0    = $00           ; Blue

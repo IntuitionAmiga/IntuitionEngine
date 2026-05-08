@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -443,6 +444,153 @@ func TestSccMemory(t *testing.T) {
 	result := cpu.Read8(0x2000)
 	if result != 0xFF {
 		t.Errorf("Expected memory[0x2000]=0xFF, got 0x%02X", result)
+	}
+}
+
+func TestSccAbsoluteDestinationsDoNotDecodeAsTRAPcc(t *testing.T) {
+	tests := []struct {
+		name     string
+		opcode   uint16
+		ext      []uint16
+		target   uint32
+		initial  uint8
+		adjacent uint8
+		want     uint8
+		wantSR   uint16
+		wantPC   uint32
+	}{
+		{
+			name:     "ST_abs_word_sets_only_target_byte",
+			opcode:   0x50F8, // ST (xxx).W
+			ext:      []uint16{0x2201},
+			target:   0x2201,
+			initial:  0x00,
+			adjacent: 0x44,
+			want:     0xFF,
+			wantSR:   M68K_SR_S | M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C | M68K_SR_X,
+			wantPC:   0x1004,
+		},
+		{
+			name:     "ST_abs_long_sets_only_target_byte",
+			opcode:   0x50F9, // ST (xxx).L
+			ext:      []uint16{0x0000, 0x2301},
+			target:   0x2301,
+			initial:  0x00,
+			adjacent: 0x55,
+			want:     0xFF,
+			wantSR:   M68K_SR_S | M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C | M68K_SR_X,
+			wantPC:   0x1006,
+		},
+		{
+			name:     "SF_abs_long_clears_only_target_byte",
+			opcode:   0x51F9, // SF (xxx).L
+			ext:      []uint16{0x0000, 0x2401},
+			target:   0x2401,
+			initial:  0xAA,
+			adjacent: 0x66,
+			want:     0x00,
+			wantSR:   M68K_SR_S | M68K_SR_N | M68K_SR_Z | M68K_SR_V | M68K_SR_C | M68K_SR_X,
+			wantPC:   0x1006,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cpu := setupTestCPU()
+			cpu.PC = 0x1000
+			cpu.SR = tc.wantSR
+			cpu.Write8(tc.target, tc.initial)
+			cpu.Write8(tc.target+1, tc.adjacent)
+			cpu.Write16(cpu.PC, tc.opcode)
+			for i, w := range tc.ext {
+				cpu.Write16(cpu.PC+2+uint32(i*2), w)
+			}
+
+			cpu.currentIR = cpu.Fetch16()
+			cpu.FetchAndDecodeInstruction()
+
+			if got := cpu.Read8(tc.target); got != tc.want {
+				t.Fatalf("target byte = 0x%02X, want 0x%02X", got, tc.want)
+			}
+			if got := cpu.Read8(tc.target + 1); got != tc.adjacent {
+				t.Fatalf("adjacent byte = 0x%02X, want 0x%02X", got, tc.adjacent)
+			}
+			if cpu.SR != tc.wantSR {
+				t.Fatalf("SR = 0x%04X, want unchanged 0x%04X", cpu.SR, tc.wantSR)
+			}
+			if cpu.PC != tc.wantPC {
+				t.Fatalf("PC = 0x%08X, want 0x%08X", cpu.PC, tc.wantPC)
+			}
+		})
+	}
+}
+
+func TestTSTBytePCRelativeReadsExactByte(t *testing.T) {
+	for _, target := range []uint32{0x1011, 0xB0011} {
+		t.Run(fmt.Sprintf("target_%06X", target), func(t *testing.T) {
+			cpu := setupTestCPU()
+			cpu.PC = target - 0x11
+			cpu.SR = M68K_SR_S | M68K_SR_X | M68K_SR_Z
+			cpu.Write8(target-1, 0x00)
+			cpu.Write8(target, 0x80)
+			cpu.Write8(target+1, 0x00)
+			cpu.Write16(cpu.PC, 0x4A3A) // TST.B (d16,PC)
+			cpu.Write16(cpu.PC+2, uint16(target-(cpu.PC+2)))
+			wantPC := cpu.PC + 4
+
+			cpu.currentIR = cpu.Fetch16()
+			cpu.FetchAndDecodeInstruction()
+
+			if cpu.SR&M68K_SR_N == 0 {
+				t.Fatalf("N flag was not set; TST.B did not read target byte 0x%08X", target)
+			}
+			if cpu.SR&M68K_SR_Z != 0 {
+				t.Fatalf("Z flag is set; TST.B read a zero byte instead of target byte")
+			}
+			if cpu.SR&M68K_SR_X == 0 {
+				t.Fatalf("X flag was not preserved")
+			}
+			if cpu.PC != wantPC {
+				t.Fatalf("PC = 0x%08X, want 0x%08X", cpu.PC, wantPC)
+			}
+		})
+	}
+}
+
+func TestByteRegisterOpsPreserveMenuBitMaskSemantics(t *testing.T) {
+	cpu := setupTestCPU()
+	cpu.PC = 0x1000
+	cpu.SR = M68K_SR_S
+	program := []uint16{
+		0x41F8, 0x1022, // LEA source,A0
+		0x45F8, 0x1023, // LEA dest,A2
+		0x7607,         // MOVEQ #7,D3
+		0x7280,         // MOVEQ #-128,D1
+		0x7000,         // MOVEQ #0,D0
+		0x1410,         // MOVE.B (A0),D2
+		0xC401,         // AND.B D1,D2
+		0x6704,         // BEQ.S no_p0
+		0x803C, 0x0001, // OR.B #1,D0
+		0x14C0,         // MOVE.B D0,(A2)+
+		0xE209,         // LSR.B #1,D1
+		0x51CB, 0xFFEE, // DBRA D3,bit_loop
+		0x4AFC, // ILLEGAL
+	}
+	for i, word := range program {
+		cpu.Write16(0x1000+uint32(i*2), word)
+	}
+	cpu.Write8(0x1022, 0x80)
+
+	for !cpu.stopped.Load() && cpu.PC != 0x1020 {
+		cpu.currentIR = cpu.Fetch16()
+		cpu.FetchAndDecodeInstruction()
+	}
+
+	want := []uint8{1, 0, 0, 0, 0, 0, 0, 0}
+	for i, v := range want {
+		if got := cpu.Read8(0x1023 + uint32(i)); got != v {
+			t.Fatalf("dest[%d] = %d, want %d", i, got, v)
+		}
 	}
 }
 
