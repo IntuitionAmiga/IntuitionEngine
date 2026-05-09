@@ -637,7 +637,7 @@ ANTIC/GTIA intentionally has no 6502 `$D400/$D000` compatibility surface; `$D400
 ```mermaid
 graph TB
     subgraph VCS["VideoChip (Layer 0, 0xF0000-0xF049B)"]
-        VC_FB["Framebuffer Manager<br/>640x480 / 800x600 / 1024x768 / 1280x960"]
+        VC_FB["Framebuffer Manager<br/>640x480 / 800x600 / 1024x768 / 1280x960 / 1920x1080"]
         VC_COP["Copper Coprocessor<br/>WAIT / MOVE / SETBASE / END"]
         VC_BLT["DMA Blitter<br/>Copy / Fill / Line / Masked / Alpha"]
         VC_M7["Mode7 Affine Texture Unit<br/>16.16 fixed-point UV<br/>per-col + per-row deltas"]

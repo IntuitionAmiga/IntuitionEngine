@@ -125,8 +125,15 @@ As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level kernel image/
 
 ### Video Registers
 - `VIDEO_CTRL` / `VIDEO_MODE` / `VIDEO_STATUS` - Display control
+- `STATUS_VBLANK` / `STATUS_FB_ERROR` - Video status bits. `STATUS_FB_ERROR`
+  is set when the selected full-frame source is invalid or unsupported, such as
+  `MODE_1920x1080` RGBA32 through the legacy 5 MiB VRAM aperture.
 - `BLT_OP` / `BLT_SRC` / `BLT_DST` / `BLT_WIDTH` / `BLT_HEIGHT` - Blitter
 - `COP_PTR` / `COP_CTRL` - Copper coprocessor
+
+### Video Modes
+- `MODE_640x480`, `MODE_800x600`, `MODE_1024x768`, `MODE_1280x960`, `MODE_1920x1080` - VideoChip true-colour or CLUT8 modes. `MODE_1920x1080` RGBA32 requires a full-frame high `VIDEO_FB_BASE`; the legacy VRAM aperture remains 5 MiB.
+- `MODE_320x200` / `MODE_320x240` - Low-resolution chunky modes
 
 ### Blitter Operations
 - `BLT_OP_COPY` - Rectangular copy

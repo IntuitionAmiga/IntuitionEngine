@@ -42,8 +42,9 @@
 
 .equ VIDEO_CTRL        0xF0000          ; Video control (enable/disable)
 .equ VIDEO_MODE        0xF0004          ; Video mode (resolution)
-.equ VIDEO_STATUS      0xF0008          ; Video status (VBlank flag)
+.equ VIDEO_STATUS      0xF0008          ; Video status
 .equ STATUS_VBLANK     2                ; VBlank status bit
+.equ STATUS_FB_ERROR   4                ; Framebuffer source invalid/unsupported
 .equ VIDEO_PAL_INDEX   0xF0078          ; CLUT palette write index
 .equ VIDEO_PAL_DATA    0xF007C          ; CLUT palette data (0x00RRGGBB)
 .equ VIDEO_COLOR_MODE  0xF0080          ; 0=RGBA32, 1=CLUT8 indexed
@@ -827,6 +828,7 @@
 .equ MODE_1280x960    0x03              ; 1280x960 true colour (default)
 .equ MODE_320x200     0x04              ; 320x200 chunky, RGBA32 or CLUT8
 .equ MODE_320x240     0x05              ; 320x240 chunky, RGBA32 or CLUT8
+.equ MODE_1920x1080   0x06              ; 1920x1080 true colour or CLUT8
 
 ; Blitter operations
 .equ BLT_OP_COPY       0                ; Copy source to dest

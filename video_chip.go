@@ -22,7 +22,7 @@ License: GPLv3 or later
 video_chip.go - Graphics Display Chip for the Intuition Engine
 
 This module implements a complete video display system with:
-- Multiple resolution modes (640x480, 800x600, 1024x768, 1280x960)
+- Multiple resolution modes (640x480, 800x600, 1024x768, 1280x960, 1920x1080)
 - Double-buffered RGBA framebuffer
 - Dirty region tracking for efficient updates
 - Splash screen support with bilinear scaling
@@ -170,6 +170,10 @@ const (
 )
 
 const (
+	videoStatusHasContent     = 1 << 0
+	videoStatusVBlank         = 1 << 1
+	videoStatusFramebufferErr = 1 << 2
+
 	copperCtrlEnable = 1 << 0
 	copperCtrlReset  = 1 << 1
 )
@@ -243,29 +247,32 @@ const (
 // Video Mode Constants
 // ------------------------------------------------------------------------------
 const (
-	MODE_640x480  = 0x00
-	MODE_800x600  = 0x01
-	MODE_1024x768 = 0x02
-	MODE_1280x960 = 0x03
-	MODE_320x200  = 0x04
-	MODE_320x240  = 0x05
+	MODE_640x480   = 0x00
+	MODE_800x600   = 0x01
+	MODE_1024x768  = 0x02
+	MODE_1280x960  = 0x03
+	MODE_320x200   = 0x04
+	MODE_320x240   = 0x05
+	MODE_1920x1080 = 0x06
 
-	RESOLUTION_320x200_WIDTH   = 320
-	RESOLUTION_320x200_HEIGHT  = 200
-	RESOLUTION_320x240_WIDTH   = 320
-	RESOLUTION_320x240_HEIGHT  = 240
-	RESOLUTION_640x480_WIDTH   = 640
-	RESOLUTION_640x480_HEIGHT  = 480
-	RESOLUTION_800x600_WIDTH   = 800
-	RESOLUTION_800x600_HEIGHT  = 600
-	RESOLUTION_1024x768_WIDTH  = 1024
-	RESOLUTION_1024x768_HEIGHT = 768
-	RESOLUTION_1280x960_WIDTH  = 1280
-	RESOLUTION_1280x960_HEIGHT = 960
+	RESOLUTION_320x200_WIDTH    = 320
+	RESOLUTION_320x200_HEIGHT   = 200
+	RESOLUTION_320x240_WIDTH    = 320
+	RESOLUTION_320x240_HEIGHT   = 240
+	RESOLUTION_640x480_WIDTH    = 640
+	RESOLUTION_640x480_HEIGHT   = 480
+	RESOLUTION_800x600_WIDTH    = 800
+	RESOLUTION_800x600_HEIGHT   = 600
+	RESOLUTION_1024x768_WIDTH   = 1024
+	RESOLUTION_1024x768_HEIGHT  = 768
+	RESOLUTION_1280x960_WIDTH   = 1280
+	RESOLUTION_1280x960_HEIGHT  = 960
+	RESOLUTION_1920x1080_WIDTH  = 1920
+	RESOLUTION_1920x1080_HEIGHT = 1080
 
 	// DEFAULT_VIDEO_MODE is the single source of truth for the default resolution.
 	// Change this one constant to change the default everywhere (VideoChip, compositor,
-	// Ebiten window, overlays). Valid values: MODE_640x480 .. MODE_1280x960.
+	// Ebiten window, overlays). Valid values: MODE_640x480 .. MODE_1920x1080.
 	DEFAULT_VIDEO_MODE = MODE_800x600
 )
 
@@ -414,6 +421,12 @@ var VideoModes = map[uint32]VideoMode{
 		bytesPerRow: RESOLUTION_1280x960_WIDTH * BYTES_PER_PIXEL,
 		totalSize:   RESOLUTION_1280x960_WIDTH * RESOLUTION_1280x960_HEIGHT * BYTES_PER_PIXEL,
 	},
+	MODE_1920x1080: {
+		width:       RESOLUTION_1920x1080_WIDTH,
+		height:      RESOLUTION_1920x1080_HEIGHT,
+		bytesPerRow: RESOLUTION_1920x1080_WIDTH * BYTES_PER_PIXEL,
+		totalSize:   RESOLUTION_1920x1080_WIDTH * RESOLUTION_1920x1080_HEIGHT * BYTES_PER_PIXEL,
+	},
 }
 
 // Derived from DEFAULT_VIDEO_MODE — do not edit these directly.
@@ -471,12 +484,13 @@ type VideoChip struct {
 	dirtyColStride int32  // 4 bytes - Changed from int to int32 for alignment
 
 	// Status flags - atomic for lock-free access (part of Cache Line 0)
-	enabled      atomic.Bool // Lock-free enable status
-	hasContent   atomic.Bool // Lock-free content flag
-	inVBlank     atomic.Bool // Lock-free VBlank status for CPU polling
-	everSignaled atomic.Bool // true once compositor-driven VBlank is active
-	stopped      atomic.Bool // Stop is final; stopped chips cannot be restarted
-	resetting    bool        // 1 byte - still needs mutex for multi-field operations
+	enabled        atomic.Bool // Lock-free enable status
+	hasContent     atomic.Bool // Lock-free content flag
+	inVBlank       atomic.Bool // Lock-free VBlank status for CPU polling
+	everSignaled   atomic.Bool // true once compositor-driven VBlank is active
+	stopped        atomic.Bool // Stop is final; stopped chips cannot be restarted
+	framebufferErr atomic.Bool // Latched when the selected full-frame source is unsupported
+	resetting      bool        // 1 byte - still needs mutex for multi-field operations
 
 	// Synchronization (Cache Line 1)
 	mu       sync.Mutex // 8 bytes - Keep mutex at cache line boundary
@@ -730,6 +744,7 @@ func (chip *VideoChip) AttachBus(bus Bus32) {
 	defer chip.mu.Unlock()
 	chip.bus = bus
 	chip.busMemory = bus.GetMemory() // Cache for lock-free reads
+	chip.updateFramebufferErrLocked()
 }
 
 // SetBusMemory sets a direct reference to bus memory, used when VRAM I/O mapping
@@ -738,6 +753,7 @@ func (chip *VideoChip) SetBusMemory(mem []byte) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.busMemory = mem
+	chip.updateFramebufferErrLocked()
 }
 
 // SetBigEndianMode configures the video chip to read memory in big-endian format.
@@ -757,6 +773,7 @@ func (chip *VideoChip) SetDirectVRAM(slice []byte) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.directVRAM = slice
+	chip.updateFramebufferErrLocked()
 }
 
 // setPaletteEntry unpacks a 0x00RRGGBB hardware value into a pre-packed
@@ -780,7 +797,7 @@ func (chip *VideoChip) SetPaletteEntry(index uint8, hwVal uint32) {
 // converts them to RGBA32 in clutFrame using the palette lookup table.
 func (chip *VideoChip) convertCLUT8Frame() {
 	mode := VideoModes[chip.currentMode]
-	pixelCount := uint32(mode.width * mode.height)
+	pixelCount := uint64(mode.width * mode.height)
 	frameSize := int(pixelCount) * BYTES_PER_PIXEL
 
 	// Ensure clutFrame is allocated
@@ -789,21 +806,25 @@ func (chip *VideoChip) convertCLUT8Frame() {
 	}
 
 	fb := chip.fbBase
-	if chip.busMemory == nil || fb+pixelCount > uint32(len(chip.busMemory)) {
+	if chip.clutFrameSourceUnsupportedLocked(mode) {
 		chip.bltErr = true
+		chip.framebufferErr.Store(true)
 		if !chip.clutWarned || chip.frameCounter-chip.clutWarnFrame >= 60 {
 			chip.clutWarned = true
 			chip.clutWarnFrame = chip.frameCounter
 			fmt.Printf("CLUT8: fbBase 0x%X out of range (need %d bytes, bus has %d)\n",
-				fb, fb+pixelCount, len(chip.busMemory))
+				fb, uint64(fb)+pixelCount, len(chip.busMemory))
 		}
 		clear(chip.clutFrame)
 		return
 	}
+	chip.framebufferErr.Store(false)
 
-	src := chip.busMemory[fb : fb+pixelCount]
+	start := uint64(fb)
+	end := start + pixelCount
+	src := chip.busMemory[start:end]
 	dst := chip.clutFrame
-	for i := uint32(0); i < pixelCount; i++ {
+	for i := uint64(0); i < pixelCount; i++ {
 		rgba := chip.clutPalette[src[i]]
 		off := i * BYTES_PER_PIXEL
 		*(*uint32)(unsafe.Pointer(&dst[off])) = rgba
@@ -817,15 +838,64 @@ func (chip *VideoChip) clutGetFrame() []byte {
 		chip.convertCLUT8Frame()
 		return chip.clutFrame
 	}
+	mode := VideoModes[chip.currentMode]
+	if chip.frameSourceUnsupportedLocked(mode) {
+		chip.framebufferErr.Store(true)
+		return nil
+	}
+	chip.framebufferErr.Store(false)
 	if chip.fbBase != 0 {
-		mode := VideoModes[chip.currentMode]
-		frameSize := uint32(mode.width * mode.height * BYTES_PER_PIXEL)
-		fb := chip.fbBase
-		if chip.busMemory != nil && fb+frameSize <= uint32(len(chip.busMemory)) {
-			return chip.busMemory[fb : fb+frameSize]
+		frameSize := uint64(mode.totalSize)
+		start := uint64(chip.fbBase)
+		end := start + frameSize
+		if chip.busMemory != nil && end <= uint64(len(chip.busMemory)) {
+			return chip.busMemory[start:end]
 		}
 	}
 	return chip.directVRAM
+}
+
+func (chip *VideoChip) updateFramebufferErrLocked() {
+	mode := VideoModes[chip.currentMode]
+	chip.framebufferErr.Store(chip.frameSourceUnsupportedLocked(mode))
+}
+
+func (chip *VideoChip) frameSourceUnsupportedLocked(mode VideoMode) bool {
+	if chip.clutMode.Load() {
+		return chip.clutFrameSourceUnsupportedLocked(mode)
+	}
+	return chip.rgbaFrameSourceUnsupportedLocked(mode)
+}
+
+func (chip *VideoChip) clutFrameSourceUnsupportedLocked(mode VideoMode) bool {
+	pixelCount := uint64(mode.width * mode.height)
+	return chip.busFrameSourceUnsupportedLocked(pixelCount)
+}
+
+func (chip *VideoChip) rgbaFrameSourceUnsupportedLocked(mode VideoMode) bool {
+	frameSize := uint64(mode.totalSize)
+	if chip.fbBase == 0 {
+		if chip.directVRAM != nil {
+			return uint64(len(chip.directVRAM)) < frameSize
+		}
+		return frameSize > VRAM_SIZE
+	}
+	return chip.busFrameSourceUnsupportedLocked(frameSize)
+}
+
+func (chip *VideoChip) busFrameSourceUnsupportedLocked(frameSize uint64) bool {
+	fb := uint64(chip.fbBase)
+	end := fb + frameSize
+	if end < fb {
+		return true
+	}
+	if chip.fbBase >= VRAM_START && chip.fbBase < VRAM_START+VRAM_SIZE {
+		return end > uint64(VRAM_START+VRAM_SIZE)
+	}
+	if chip.busMemory == nil || end > uint64(len(chip.busMemory)) {
+		return true
+	}
+	return false
 }
 
 func (chip *VideoChip) SetBlitterEnabled(enabled bool) {
@@ -2423,17 +2493,20 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 	if addr == VIDEO_STATUS {
 		status := uint32(0)
 		if chip.hasContent.Load() {
-			status |= 1 // bit 0: has content
+			status |= videoStatusHasContent
 		}
 		if chip.inVBlank.Load() {
-			status |= 2 // bit 1: in VBlank
+			status |= videoStatusVBlank
 		} else if !chip.everSignaled.Load() {
 			frameStart := chip.lastFrameStart.Load()
 			now := time.Now().UnixNano()
 			vblankThresholdNs := int64(REFRESH_INTERVAL / 2)
 			if now-frameStart >= vblankThresholdNs {
-				status |= 2 // bit 1: in VBlank
+				status |= videoStatusVBlank
 			}
+		}
+		if chip.framebufferErr.Load() {
+			status |= videoStatusFramebufferErr
 		}
 
 		return status
@@ -2875,6 +2948,7 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 					return
 				}
 			}
+			chip.updateFramebufferErrLocked()
 		}
 	case COPPER_CTRL:
 		prevEnabled := chip.copperEnabled
@@ -2948,8 +3022,10 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 				chip.clutFrame = make([]byte, frameSize)
 			}
 		}
+		chip.updateFramebufferErrLocked()
 	case VIDEO_FB_BASE:
 		chip.fbBase = value
+		chip.updateFramebufferErrLocked()
 	default:
 		// Handle palette table direct writes (0xF0088-0xF0487)
 		if addr >= VIDEO_PAL_TABLE && addr <= VIDEO_PAL_END {
@@ -3434,11 +3510,18 @@ func (chip *VideoChip) GetFrame() []byte {
 	defer chip.mu.Unlock()
 
 	var frame []byte
+	mode := VideoModes[chip.currentMode]
+	if !chip.clutMode.Load() && chip.rgbaFrameSourceUnsupportedLocked(mode) {
+		chip.framebufferErr.Store(true)
+		return nil
+	}
 	if chip.clutMode.Load() || chip.directVRAM != nil || chip.fbBase != 0 {
 		frame = chip.clutGetFrame()
 	} else if !chip.hasContent.Load() {
+		chip.framebufferErr.Store(false)
 		frame = chip.splashBuffer
 	} else {
+		chip.framebufferErr.Store(false)
 		frame = chip.frontBuffer
 	}
 	if frame == nil {
@@ -3535,9 +3618,15 @@ func (chip *VideoChip) FinishFrame() []byte {
 	chip.copperManagedByCompositor = false // Release copper management back to refreshLoop
 
 	var frame []byte
+	mode := VideoModes[chip.currentMode]
+	if !chip.clutMode.Load() && chip.rgbaFrameSourceUnsupportedLocked(mode) {
+		chip.framebufferErr.Store(true)
+		return nil
+	}
 	if chip.clutMode.Load() || chip.directVRAM != nil || chip.fbBase != 0 {
 		frame = chip.clutGetFrame()
 	} else {
+		chip.framebufferErr.Store(false)
 		frame = chip.frontBuffer
 	}
 	if frame == nil {

@@ -70,7 +70,8 @@ I/O REGION DETAILS
 
 Video Chip (0xF0000-0xF0054) - video_chip.go
   VIDEO_CTRL, VIDEO_MODE, VIDEO_STATUS
-  Modes: 320x200, 320x240, 640x480, 800x600, 1024x768, 1280x960
+  Modes: 320x200, 320x240, 640x480, 800x600, 1024x768, 1280x960, 1920x1080
+  1920x1080 RGBA32 requires a high VIDEO_FB_BASE outside the legacy 5 MiB VRAM aperture.
   COPPER_CTRL, COPPER_PTR, COPPER_PC, COPPER_STATUS
   BLT_* (Blitter registers)
   VIDEO_RASTER_* (Raster effect registers)

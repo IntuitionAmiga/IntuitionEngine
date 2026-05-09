@@ -43,8 +43,9 @@ VRAM_BANK_REG   equ 0x00F7F0             ; VRAM bank select
 
 VIDEO_CTRL      equ 0xF0000              ; Video control (enable/disable)
 VIDEO_MODE      equ 0xF0004              ; Video mode (resolution)
-VIDEO_STATUS    equ 0xF0008              ; Video status (VBlank flag)
+VIDEO_STATUS    equ 0xF0008              ; Video status
 STATUS_VBLANK   equ 2                    ; VBlank status bit
+STATUS_FB_ERROR equ 4                    ; Framebuffer source invalid/unsupported
 VIDEO_PAL_INDEX equ 0xF0078              ; CLUT palette write index
 VIDEO_PAL_DATA  equ 0xF007C              ; CLUT palette data (0x00RRGGBB)
 VIDEO_COLOR_MODE equ 0xF0080             ; 0=RGBA32, 1=CLUT8 indexed
@@ -600,6 +601,7 @@ MODE_1024x768   equ 0x02                 ; 1024x768 true colour
 MODE_1280x960   equ 0x03                 ; 1280x960 true colour (default)
 MODE_320x200    equ 0x04                 ; 320x200 chunky, RGBA32 or CLUT8
 MODE_320x240    equ 0x05                 ; 320x240 chunky, RGBA32 or CLUT8
+MODE_1920x1080  equ 0x06                 ; 1920x1080 true colour or CLUT8
 
 ; Blitter operations
 BLT_OP_COPY     equ 0                    ; Copy source to dest
