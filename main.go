@@ -1201,11 +1201,6 @@ func main() {
 		compositor.NotifyResolutionChange(w, h)
 		termMMIO.SetMouseNativeResolution(w, h)
 	})
-	if voodooEngine != nil {
-		voodooEngine.SetResolutionChangeCallback(func(w, h int) {
-			compositor.NotifyResolutionChange(w, h)
-		})
-	}
 	if useResolutionOverride {
 		compositor.LockResolution(validWidth, validHeight)
 	}

@@ -763,7 +763,7 @@ The rasteriser walks each destination pixel, computes the source UV from the aff
 
 ### Video Compositor
 
-The compositor collects immutable frame snapshots from all enabled video sources and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, both mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing.
+The compositor collects immutable frame snapshots from all enabled video sources and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, both mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing. Sources whose native frame dimensions differ from the compositor output, including Voodoo 640x480 or 800x600 frames over a 1920x1080 VideoChip output, are scaled into the compositor frame during blending.
 
 Two rendering paths:
 

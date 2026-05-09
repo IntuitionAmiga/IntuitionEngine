@@ -667,6 +667,62 @@ func TestCompositor_ScanlineAware_WithDisabledVoodoo(t *testing.T) {
 	}
 }
 
+func TestCompositor_EnabledVoodooScalesIntoLockedVideoChipFrame(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		w, h int
+	}{
+		{name: "640x480", w: 640, h: 480},
+		{name: "800x600", w: 800, h: 600},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			comp := NewVideoCompositor(nil)
+			comp.LockResolution(1920, 1080)
+
+			chip := &mockScanlineSource{
+				layer: 0,
+				w:     1920,
+				h:     1080,
+				frame: solidTestFrame(1920, 1080, 0x10, 0x20, 0x30, 0xFF),
+			}
+			chip.enabled.Store(true)
+			voodoo := &mockOpaqueSource{
+				layer: 20,
+				w:     tc.w,
+				h:     tc.h,
+				frame: solidTestFrame(tc.w, tc.h, 0xA0, 0x40, 0x10, 0xFF),
+			}
+			voodoo.enabled.Store(true)
+
+			comp.RegisterSource(chip)
+			comp.RegisterSource(voodoo)
+			comp.composite()
+
+			if gotW, gotH := comp.GetDimensions(); gotW != 1920 || gotH != 1080 {
+				t.Fatalf("compositor dimensions = %dx%d, want 1920x1080", gotW, gotH)
+			}
+			if got := testPixel(comp.finalFrame, 960, 540, 1920); got != [4]byte{0xA0, 0x40, 0x10, 0xFF} {
+				t.Fatalf("scaled Voodoo pixel = %v, want [160 64 16 255]", got)
+			}
+		})
+	}
+}
+
+func TestCompositor_NativeSourceDimensionsPreferVideoChipBelowVoodoo(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	chip := &mockScanlineSource{layer: 0, w: 1920, h: 1080, frame: solidTestFrame(1920, 1080, 1, 2, 3, 255)}
+	chip.enabled.Store(true)
+	voodoo := &mockOpaqueSource{layer: 20, w: 640, h: 480, frame: solidTestFrame(640, 480, 4, 5, 6, 255)}
+	voodoo.enabled.Store(true)
+
+	comp.RegisterSource(voodoo)
+	comp.RegisterSource(chip)
+
+	if gotW, gotH := comp.GetNativeSourceDimensions(); gotW != 1920 || gotH != 1080 {
+		t.Fatalf("native dimensions = %dx%d, want VideoChip 1920x1080", gotW, gotH)
+	}
+}
+
 type mockVideoOutput struct {
 	mu             sync.Mutex
 	started        bool

@@ -470,7 +470,7 @@ Video chip, VGA, ULA, ANTIC/GTIA, TED, Voodoo 3D, Copper coprocessor, Blitter, a
 
 `video.read_reg(addr)` — Read a 32-bit value from a video register at bus address `addr`. Returns: number.
 
-`video.get_dimensions()` — Get the compositor output dimensions. Returns: width, height (two numbers).
+`video.get_dimensions()` — Get the compositor output dimensions. Returns: width, height (two numbers). This reports the active output frame, not necessarily an individual source's native size; for example, an enabled 800x600 Voodoo source can be scaled into a 1920x1080 VideoChip-driven compositor frame.
 
 `video.is_enabled()` — Check whether the primary VideoChip is enabled. Returns: boolean.
 

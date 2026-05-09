@@ -49,6 +49,13 @@ Compat-readback pending behavior: palette-indexed texture lookup and fog table r
 
 Clip coordinates use 16-bit packed fields. Existing raster code may clamp to backend dimensions.
 
+`VOODOO_VIDEO_DIM` sets the Voodoo source framebuffer size only. When another
+video owner, such as IEVideoChip, defines the compositor output size, the
+compositor scales enabled Voodoo frames into that output frame instead of
+letting the Voodoo source dimensions become the global display dimensions. This
+allows 640x480 and 800x600 Voodoo scenes to be blended into a 1920x1080
+VideoChip-driven frame.
+
 ## Lifecycle, Status, IRQ
 
 Reset clears register shadow, texture memory, triangle batch, vertex assembly state, VBlank state, and backend state. Status bits are IE-native:
