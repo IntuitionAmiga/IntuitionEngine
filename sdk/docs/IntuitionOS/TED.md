@@ -30,6 +30,10 @@ Video registers live at `0x0F0F20-0x0F0F6B` and are 4-byte aligned for copper ac
 
 `TED_V_CHAR_BASE` uses bits 4-7 as the charset base in 1 KiB steps and bits 0-3 as the bitmap base in 1 KiB steps. `TED_V_VIDEO_BASE` uses bits 3-7 as the matrix base in 1 KiB steps; color RAM follows the matrix at `matrix + 0x400`. Out-of-range bases fall back to the default layout instead of clamping.
 
+`TED_V_BG_COLOR0` through `TED_V_BG_COLOR3` and `TED_V_BORDER` are sampled per scanline. A VideoChip copper list can therefore use `SETBASE 0x0F0F20` and 4-byte-aligned `MOVE` operations to reprogram TED background and border colours at `WAIT` positions during the same frame. TED VRAM is still snapshotted at frame start, so copper-driven TED raster effects should target registers, not bulk TED VRAM updates.
+
+The VideoChip copper is the IE-wide raster coprocessor. Its `MOVE` path is not limited to VideoChip registers: after `SETBASE`, moves route through the unified `MachineBus`, so mapped TED video registers are valid copper targets.
+
 ## Raster
 
 `TED_V_RASTER_LO` and `TED_V_RASTER_HI` expose the current visible raster line. `TED_V_RASTER_CMP_LO` and `TED_V_RASTER_CMP_HI` store a 9-bit compare target. `TED_V_RASTER_STATUS` bit 7 is a sticky compare-pending latch; write `0x80` to clear it.

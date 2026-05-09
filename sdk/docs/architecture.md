@@ -67,7 +67,7 @@ flowchart LR
 
     subgraph VIDEO["Video systems"]
         VCHIP["VideoChip<br/>layer 0"]
-        COPPER["Copper<br/>WAIT / MOVE / SETBASE / END"]
+        COPPER["Copper<br/>WAIT / MOVE / SETBASE / END<br/>bus-routed register writes"]
         BLITTER["DMA blitter<br/>copy, fill, line, alpha,<br/>color expansion, scale, Mode7"]
         VCHPAL["VideoChip palette / CLUT8"]
         VGA["VGA<br/>layer 10"]

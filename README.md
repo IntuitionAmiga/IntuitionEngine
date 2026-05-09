@@ -94,7 +94,7 @@ The video system includes:
 - IEVideoChip with copper, blitter, Mode7-style effects, and compositor integration
 - VGA
 - ZX Spectrum-style ULA
-- TED video
+- TED video, including copper-driven per-scanline background and border colour changes
 - Atari-style ANTIC/GTIA
 - 3DFX Voodoo-style 3D path
 - Ebiten display backend for normal desktop builds

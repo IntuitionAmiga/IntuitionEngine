@@ -1051,6 +1051,153 @@ func TestTED_BitmapModes(t *testing.T) {
 	}
 }
 
+func newTEDCopperTestRig(t *testing.T) (*VideoChip, *TEDVideoEngine, *MachineBus) {
+	t.Helper()
+
+	bus := NewMachineBus()
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("failed to create video chip: %v", err)
+	}
+	video.AttachBus(bus)
+	bus.MapIO(VIDEO_CTRL, COPPER_STATUS+3, video.HandleRead, video.HandleWrite)
+
+	ted := NewTEDVideoEngine(bus)
+	bus.MapIO(TED_VIDEO_BASE, TED_VIDEO_END, ted.HandleRead, ted.HandleWrite)
+	bus.MapIO(TED_V_VRAM_BASE, TED_V_VRAM_BASE+TED_V_VRAM_SIZE-1, ted.HandleBusVRAMRead, ted.HandleBusVRAMWrite)
+	return video, ted, bus
+}
+
+func tedRenderWithCopper(video *VideoChip, ted *TEDVideoEngine) []byte {
+	video.StartFrame()
+	ted.StartFrame()
+	for y := 0; y < TED_V_FRAME_HEIGHT; y++ {
+		video.ProcessScanline(y)
+		ted.ProcessScanline(y)
+	}
+	return ted.FinishFrame()
+}
+
+func TestTEDCopper_BGColor0VisibleFromWaitScanline(t *testing.T) {
+	video, ted, bus := newTEDCopperTestRig(t)
+	listAddr := uint32(0x3000)
+	waitY := uint16(TED_V_BORDER_TOP + 16)
+	red := TEDColorByte(TED_HUE_RED, 7)
+	blue := TEDColorByte(TED_HUE_BLUE, 7)
+
+	ted.HandleWrite(TED_V_ENABLE, TED_V_ENABLE_VIDEO)
+	ted.HandleWrite(TED_V_CTRL1, TED_V_CTRL1_RSEL)
+	ted.HandleWrite(TED_V_CTRL2, TED_V_CTRL2_CSEL)
+	ted.HandleWrite(TED_V_CHAR_BASE, 0x00)
+	ted.HandleWrite(TED_V_BG_COLOR0, uint32(red))
+	ted.HandleVRAMWrite(0, 2) // Character 2 is forced empty below, so BG0 is visible.
+	for row := 0; row < TED_V_CELL_HEIGHT; row++ {
+		ted.HandleVRAMWrite(uint16(2*TED_V_CELL_HEIGHT+row), 0)
+	}
+
+	bus.Write32(listAddr, copperSetBaseWord(TED_VIDEO_BASE))
+	bus.Write32(listAddr+4, copperWaitWord(waitY, 0))
+	bus.Write32(listAddr+8, copperMoveWord(uint32((TED_V_BG_COLOR0-TED_VIDEO_BASE)/4)))
+	bus.Write32(listAddr+12, uint32(blue))
+	bus.Write32(listAddr+16, copperEndWord())
+	bus.Write32(COPPER_PTR, listAddr)
+	bus.Write32(COPPER_CTRL, copperCtrlEnable)
+
+	frame := tedRenderWithCopper(video, ted)
+	x := TED_V_BORDER_LEFT
+	before := tedFramePixel(frame, x, int(waitY)-1)
+	after := tedFramePixel(frame, x, int(waitY))
+	if before != tedColorRGB(red) {
+		t.Fatalf("pre-wait BG0 = %v, want red %v", before, tedColorRGB(red))
+	}
+	if after != tedColorRGB(blue) {
+		t.Fatalf("post-wait BG0 = %v, want blue %v", after, tedColorRGB(blue))
+	}
+}
+
+func TestTEDCopper_BorderBandsVisibleFromWaitScanline(t *testing.T) {
+	video, ted, bus := newTEDCopperTestRig(t)
+	listAddr := uint32(0x3100)
+	waitY := uint16(12)
+	red := TEDColorByte(TED_HUE_RED, 7)
+	green := TEDColorByte(TED_HUE_GREEN, 7)
+
+	ted.HandleWrite(TED_V_ENABLE, TED_V_ENABLE_VIDEO)
+	ted.HandleWrite(TED_V_BORDER, uint32(red))
+
+	bus.Write32(listAddr, copperSetBaseWord(TED_VIDEO_BASE))
+	bus.Write32(listAddr+4, copperWaitWord(waitY, 0))
+	bus.Write32(listAddr+8, copperMoveWord(uint32((TED_V_BORDER-TED_VIDEO_BASE)/4)))
+	bus.Write32(listAddr+12, uint32(green))
+	bus.Write32(listAddr+16, copperEndWord())
+	bus.Write32(COPPER_PTR, listAddr)
+	bus.Write32(COPPER_CTRL, copperCtrlEnable)
+
+	frame := tedRenderWithCopper(video, ted)
+	before := tedFramePixel(frame, 0, int(waitY)-1)
+	after := tedFramePixel(frame, 0, int(waitY))
+	if before != tedColorRGB(red) {
+		t.Fatalf("pre-wait border = %v, want red %v", before, tedColorRGB(red))
+	}
+	if after != tedColorRGB(green) {
+		t.Fatalf("post-wait border = %v, want green %v", after, tedColorRGB(green))
+	}
+}
+
+func TestTEDCopper_MultipleBackgroundAndBorderBands(t *testing.T) {
+	video, ted, bus := newTEDCopperTestRig(t)
+	listAddr := uint32(0x3200)
+	y1 := uint16(TED_V_BORDER_TOP + 16)
+	y2 := uint16(TED_V_BORDER_TOP + 32)
+	red := TEDColorByte(TED_HUE_RED, 7)
+	green := TEDColorByte(TED_HUE_GREEN, 7)
+	blue := TEDColorByte(TED_HUE_BLUE, 7)
+	yellow := TEDColorByte(TED_HUE_YELLOW, 7)
+
+	ted.HandleWrite(TED_V_ENABLE, TED_V_ENABLE_VIDEO)
+	ted.HandleWrite(TED_V_CTRL1, TED_V_CTRL1_RSEL)
+	ted.HandleWrite(TED_V_CTRL2, TED_V_CTRL2_CSEL)
+	ted.HandleWrite(TED_V_CHAR_BASE, 0x00)
+	ted.HandleWrite(TED_V_BG_COLOR0, uint32(red))
+	ted.HandleWrite(TED_V_BORDER, uint32(red))
+	ted.HandleVRAMWrite(0, 2)
+	for row := 0; row < TED_V_CELL_HEIGHT; row++ {
+		ted.HandleVRAMWrite(uint16(2*TED_V_CELL_HEIGHT+row), 0)
+	}
+
+	bg0Index := uint32((TED_V_BG_COLOR0 - TED_VIDEO_BASE) / 4)
+	borderIndex := uint32((TED_V_BORDER - TED_VIDEO_BASE) / 4)
+	bus.Write32(listAddr, copperSetBaseWord(TED_VIDEO_BASE))
+	bus.Write32(listAddr+4, copperWaitWord(y1, 0))
+	bus.Write32(listAddr+8, copperMoveWord(bg0Index))
+	bus.Write32(listAddr+12, uint32(green))
+	bus.Write32(listAddr+16, copperMoveWord(borderIndex))
+	bus.Write32(listAddr+20, uint32(green))
+	bus.Write32(listAddr+24, copperWaitWord(y2, 0))
+	bus.Write32(listAddr+28, copperMoveWord(bg0Index))
+	bus.Write32(listAddr+32, uint32(blue))
+	bus.Write32(listAddr+36, copperMoveWord(borderIndex))
+	bus.Write32(listAddr+40, uint32(yellow))
+	bus.Write32(listAddr+44, copperEndWord())
+	bus.Write32(COPPER_PTR, listAddr)
+	bus.Write32(COPPER_CTRL, copperCtrlEnable)
+
+	frame := tedRenderWithCopper(video, ted)
+	displayX := TED_V_BORDER_LEFT
+	if got, want := tedFramePixel(frame, displayX, int(y1)-1), tedColorRGB(red); got != want {
+		t.Fatalf("band0 BG0 = %v, want %v", got, want)
+	}
+	if got, want := tedFramePixel(frame, displayX, int(y1)), tedColorRGB(green); got != want {
+		t.Fatalf("band1 BG0 = %v, want %v", got, want)
+	}
+	if got, want := tedFramePixel(frame, displayX, int(y2)), tedColorRGB(blue); got != want {
+		t.Fatalf("band2 BG0 = %v, want %v", got, want)
+	}
+	if got, want := tedFramePixel(frame, 0, int(y2)), tedColorRGB(yellow); got != want {
+		t.Fatalf("band2 border = %v, want %v", got, want)
+	}
+}
+
 func TestTED_ScanlineParityAndRasterCompare(t *testing.T) {
 	ted := NewTEDVideoEngine(nil)
 	ted.HandleWrite(TED_V_CTRL1, TED_V_CTRL1_RSEL)

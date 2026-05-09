@@ -90,10 +90,8 @@ type TEDVideoEngine struct {
 	// VRAM: video matrix + color RAM + character set
 	vram [TED_V_VRAM_SIZE]uint8
 
-	// Snapshot fields for lock-free rendering
-	snapVram    [TED_V_VRAM_SIZE]uint8
-	snapBgColor [4]uint8
-	snapBorder  uint8
+	// Snapshot field for lock-free VRAM rendering.
+	snapVram [TED_V_VRAM_SIZE]uint8
 
 	// Pre-allocated frame buffer (384x272 RGBA)
 	frameBuffer []byte
@@ -365,11 +363,10 @@ func (t *TEDVideoEngine) RenderFrame() []byte {
 
 // StartFrame prepares TED video for scanline rendering.
 func (t *TEDVideoEngine) StartFrame() {
-	// Snapshot VRAM and registers under lock, then render lock-free
+	// Snapshot VRAM for a stable frame image. Registers that can be driven by
+	// scanline effects, such as border/background colours, are sampled live.
 	t.mu.Lock()
 	t.snapVram = t.vram
-	t.snapBorder = t.border
-	t.snapBgColor = t.bgColor
 	t.rasterLine = 0
 	t.mu.Unlock()
 }
@@ -388,9 +385,11 @@ func (t *TEDVideoEngine) ProcessScanline(y int) {
 	ctrl2 := t.ctrl2
 	charBaseReg := t.charBase
 	videoBaseReg := t.videoBase
+	bgColor := t.bgColor
+	border := t.border
 	t.mu.Unlock()
 
-	borderIdx := t.snapBorder & 0x7F
+	borderIdx := border & 0x7F
 	borderC := TEDPalette[borderIdx]
 	borderU32 := uint32(borderC[0]) | uint32(borderC[1])<<8 | uint32(borderC[2])<<16 | 0xFF000000
 
@@ -434,9 +433,9 @@ func (t *TEDVideoEngine) ProcessScanline(y int) {
 
 		var color uint32
 		if ctrl1&TED_V_CTRL1_BMM != 0 {
-			color = t.renderBitmapPixel(ctrl2, matrixBase, colorBase, bitmapBase, srcX, srcY)
+			color = t.renderBitmapPixel(ctrl2, bgColor, matrixBase, colorBase, bitmapBase, srcX, srcY)
 		} else {
-			color = t.renderTextPixel(ctrl1, ctrl2, matrixBase, colorBase, charsetBase, srcX, srcY)
+			color = t.renderTextPixel(ctrl1, ctrl2, bgColor, matrixBase, colorBase, charsetBase, srcX, srcY)
 		}
 		offset := rowOffset + (TED_V_BORDER_LEFT+x)*4
 		*(*uint32)(unsafe.Pointer(&t.frameBuffer[offset])) = color
@@ -462,7 +461,7 @@ func tedPackColor(colorByte uint8) uint32 {
 	return uint32(c[0]) | uint32(c[1])<<8 | uint32(c[2])<<16 | 0xFF000000
 }
 
-func (t *TEDVideoEngine) renderTextPixel(ctrl1, ctrl2 uint8, matrixBase, colorBase, charsetBase uint32, srcX, srcY int) uint32 {
+func (t *TEDVideoEngine) renderTextPixel(ctrl1, ctrl2 uint8, bgColor [4]uint8, matrixBase, colorBase, charsetBase uint32, srcX, srcY int) uint32 {
 	cellX := srcX / TED_V_CELL_WIDTH
 	cellY := srcY / TED_V_CELL_HEIGHT
 	row := srcY & 7
@@ -478,7 +477,7 @@ func (t *TEDVideoEngine) renderTextPixel(ctrl1, ctrl2 uint8, matrixBase, colorBa
 		if (bitmapByte>>(7-col))&1 != 0 {
 			return tedPackColor(colorByte)
 		}
-		return tedPackColor(t.snapBgColor[bgIndex])
+		return tedPackColor(bgColor[bgIndex])
 	}
 
 	bitmapByte := t.snapVram[charsetBase+uint32(charCode)*8+uint32(row)]
@@ -486,11 +485,11 @@ func (t *TEDVideoEngine) renderTextPixel(ctrl1, ctrl2 uint8, matrixBase, colorBa
 		pair := (bitmapByte >> (6 - 2*(col/2))) & 0x03
 		switch pair {
 		case 0:
-			return tedPackColor(t.snapBgColor[0])
+			return tedPackColor(bgColor[0])
 		case 1:
-			return tedPackColor(t.snapBgColor[1])
+			return tedPackColor(bgColor[1])
 		case 2:
-			return tedPackColor(t.snapBgColor[2])
+			return tedPackColor(bgColor[2])
 		default:
 			return tedPackColor(colorByte)
 		}
@@ -503,10 +502,10 @@ func (t *TEDVideoEngine) renderTextPixel(ctrl1, ctrl2 uint8, matrixBase, colorBa
 	if pixelSet {
 		return tedPackColor(colorByte)
 	}
-	return tedPackColor(t.snapBgColor[0])
+	return tedPackColor(bgColor[0])
 }
 
-func (t *TEDVideoEngine) renderBitmapPixel(ctrl2 uint8, matrixBase, colorBase, bitmapBase uint32, srcX, srcY int) uint32 {
+func (t *TEDVideoEngine) renderBitmapPixel(ctrl2 uint8, bgColor [4]uint8, matrixBase, colorBase, bitmapBase uint32, srcX, srcY int) uint32 {
 	cellX := srcX / TED_V_CELL_WIDTH
 	cellY := srcY / TED_V_CELL_HEIGHT
 	row := srcY & 7
@@ -521,7 +520,7 @@ func (t *TEDVideoEngine) renderBitmapPixel(ctrl2 uint8, matrixBase, colorBase, b
 		pair := (bitmapByte >> (6 - 2*(col/2))) & 0x03
 		switch pair {
 		case 0:
-			return tedPackColor(t.snapBgColor[0])
+			return tedPackColor(bgColor[0])
 		case 1:
 			return tedPackColor(matrixByte >> 4)
 		case 2:
