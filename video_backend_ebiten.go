@@ -132,15 +132,6 @@ func (eo *EbitenOutput) Start() error {
 	fullscreen := eo.fullscreen
 	hideSystemCursor := shouldHideSystemCursor(fullscreen, eo.hideSystemCursor)
 	eo.bufferMutex.RUnlock()
-	ebiten.SetWindowSize(windowedW, windowedH)
-	ebiten.SetWindowTitle("Intuition Engine (c) 2024 - 2026 Zayn Otley")
-	ebiten.SetWindowResizable(true)
-	ebiten.SetRunnableOnUnfocused(true)
-	ebiten.SetVsyncEnabled(true)
-	eo.applySystemCursorMode(hideSystemCursor)
-	if fullscreen {
-		ebiten.SetFullscreen(true)
-	}
 	drainVSync(eo.vsyncChan)
 
 	go func() {
@@ -148,16 +139,20 @@ func (eo *EbitenOutput) Start() error {
 			eo.running.Store(false)
 			closeVideoDoneOnce(done, once)
 		}()
+		ebiten.SetWindowSize(windowedW, windowedH)
+		ebiten.SetWindowTitle("Intuition Engine (c) 2024 - 2026 Zayn Otley")
+		ebiten.SetWindowResizable(true)
+		ebiten.SetRunnableOnUnfocused(true)
+		ebiten.SetVsyncEnabled(true)
+		eo.applySystemCursorMode(hideSystemCursor)
+		if fullscreen {
+			ebiten.SetFullscreen(true)
+		}
 		if err := ebiten.RunGame(eo); err != nil {
 			fmt.Printf("Ebiten error: %v\n", err)
 		}
 	}()
 
-	// Wait for first Draw call to ensure Ebiten is ready
-	err = waitForFirstVideoFrame(eo.vsyncChan, done, 2*time.Second)
-	if err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -236,11 +231,13 @@ func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
 	eo.windowedW = eo.width * eo.scale
 	eo.windowedH = eo.height * eo.scale
 	eo.fullscreen = config.Fullscreen
-	ebiten.SetFullscreen(eo.fullscreen)
-	if !eo.fullscreen {
-		ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
+	if eo.running.Load() {
+		ebiten.SetFullscreen(eo.fullscreen)
+		if !eo.fullscreen {
+			ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
+		}
+		eo.applySystemCursorMode(shouldHideSystemCursor(eo.fullscreen, eo.hideSystemCursor))
 	}
-	eo.applySystemCursorMode(shouldHideSystemCursor(eo.fullscreen, eo.hideSystemCursor))
 	if eo.window != nil {
 		eo.window.Dispose()
 		eo.window = nil

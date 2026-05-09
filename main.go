@@ -1659,19 +1659,23 @@ func main() {
 
 		if startExecution {
 			stageConfiguredCoprocService()
-			videoChip.Start()
-			compositor.Start()
-			vgaEngine.StartRenderLoop()
-			ulaEngine.StartRenderLoop()
-			tedVideoEngine.StartRenderLoop()
-			anticEngine.StartRenderLoop()
-			soundChip.Start()
 			if filename != "" {
 				fmt.Printf("Starting M68K CPU with program: %s\n\n", filename)
 			} else {
 				fmt.Println("Starting AB3D2 embedded M68K program")
 			}
 			m68kRunner.StartExecution()
+			go func() {
+				if err := videoChip.Start(); err != nil {
+					fmt.Printf("Failed to start video: %v\n", err)
+				}
+			}()
+			compositor.Start()
+			vgaEngine.StartRenderLoop()
+			ulaEngine.StartRenderLoop()
+			tedVideoEngine.StartRenderLoop()
+			anticEngine.StartRenderLoop()
+			go soundChip.Start()
 		}
 	} else if modeEmuTOS {
 		romBytes, romPath, err := loadEmuTOSImage()
