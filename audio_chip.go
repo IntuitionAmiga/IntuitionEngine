@@ -3779,9 +3779,13 @@ func (chip *SoundChip) SetAHXPlusEnabled(enabled bool) {
 
 func (chip *SoundChip) Start() {
 	chip.mu.Lock()
-	defer chip.mu.Unlock()
 	chip.enabled.Store(true)
-	chip.output.Start()
+	output := chip.output
+	chip.mu.Unlock()
+
+	if output != nil {
+		output.Start()
+	}
 }
 
 func (chip *SoundChip) Stop() {
