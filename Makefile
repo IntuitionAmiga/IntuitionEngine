@@ -279,7 +279,6 @@ AB3D2_OVERDRIVE_SOURCE ?= ../alienbreed3d2/ab3d2_source/ab3d2_ie68_overdrive.ie6
 AB3D2_ASSET_ROOT ?= ../alienbreed3d2
 AB3D2_ASSET_TREE ?= ab3d2_source/_build
 AB3D2_START_FULLSCREEN ?= $(if $(findstring overdrive,$(notdir $(AB3D2_SOURCE))),1,0)
-UPX ?= upx
 BSDTAR ?= bsdtar
 AB3D2_EMBED_DIR := embedded/ab3d2
 AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
@@ -409,7 +408,6 @@ prepare-ab3d2-embed:
 
 ab3d2: prepare-ab3d2-embed
 	@$(MAKE) test-cross-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR) CROSS_BINARY_PREFIX=$(AB3D2_BINARY_PREFIX) VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=$(AB3D2_START_FULLSCREEN)
-	@$(MAKE) compress-ab3d2
 
 ab3d2-overdrive:
 	@$(MAKE) ab3d2 AB3D2_SOURCE=$(AB3D2_OVERDRIVE_SOURCE) AB3D2_BINARY_PREFIX=$(AB3D2_OVERDRIVE_BINARY_PREFIX) AB3D2_START_FULLSCREEN=1
@@ -419,15 +417,7 @@ ab3d2-all:
 	@$(MAKE) ab3d2-overdrive
 
 compress-ab3d2:
-	@if ! command -v $(UPX) >/dev/null 2>&1; then \
-		echo "missing UPX compressor: $(UPX)" >&2; \
-		exit 1; \
-	fi
-	@echo "Compressing AB3D2 UPX-supported binaries with UPX --lzma..."
-	@$(UPX) --lzma \
-		$(AB3D2_BUILD_DIR)/$(AB3D2_BINARY_PREFIX)-linux-amd64 \
-		$(AB3D2_BUILD_DIR)/$(AB3D2_BINARY_PREFIX)-linux-arm64 \
-		$(AB3D2_BUILD_DIR)/$(AB3D2_BINARY_PREFIX)-windows-amd64.exe
+	@echo "Skipping AB3D2 binary compression."
 
 check-docs:
 	@bash ./scripts/check-doc-consistency.sh
