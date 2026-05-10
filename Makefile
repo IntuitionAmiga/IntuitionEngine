@@ -273,9 +273,9 @@ CROSS_BUILD_DIR ?= ./bin/cross-build
 CROSS_BINARY_PREFIX ?= IntuitionEngine
 AB3D2_BUILD_DIR ?= ./bin/ab3d2
 AB3D2_BINARY_PREFIX ?= IntuitionEngine-AB3D2-Karlos-TKG-High
-AB3D2_SOURCE ?= ../alienbreed3d2/ab3d2_source/ab3d2_ie68_redux_high.ie68
+AB3D2_SOURCE ?= ../alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68_redux_high.ie68
 AB3D2_OVERDRIVE_BINARY_PREFIX ?= IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive
-AB3D2_OVERDRIVE_SOURCE ?= ../alienbreed3d2/ab3d2_source/ab3d2_ie68_overdrive.ie68
+AB3D2_OVERDRIVE_SOURCE ?= ../alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68_redux_high_overdrive.ie68
 AB3D2_ASSET_ROOT ?= ../alienbreed3d2
 AB3D2_ASSET_TREE ?= ab3d2_source/_build
 AB3D2_START_FULLSCREEN ?= $(if $(findstring overdrive,$(notdir $(AB3D2_SOURCE))),1,0)
@@ -289,7 +289,7 @@ AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
-.PHONY: ie32asm ie64asm ie64dis ie32to64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets emutos-probe emutos-release-rom basic basic-emutos cputest-musashi
+.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets emutos-probe emutos-release-rom basic basic-emutos cputest-musashi
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 ie64dis
@@ -449,6 +449,19 @@ ie32to64: setup
 	@$(MKDIR) -p $(SDK_BIN_DIR)
 	@mv ie32to64 $(SDK_BIN_DIR)/
 	@echo "IE32-to-IE64 converter build complete"
+
+# Build the M68K-to-IE64 transpiler (see sdk/docs/M68KtoIE64.md)
+m68kto64: setup
+	@echo "Building M68K-to-IE64 transpiler..."
+	@$(GO) build $(GO_FLAGS) -o m68kto64 ./cmd/m68kto64/
+	@$(MKDIR) -p $(SDK_BIN_DIR)
+	@mv m68kto64 $(SDK_BIN_DIR)/
+	@install -m 0755 cmd/m68kto64/kmake.sh $(SDK_BIN_DIR)/m68kto64-kmake
+	@echo "M68K-to-IE64 transpiler build complete"
+
+# Run m68kto64 unit + golden tests
+test-m68kto64:
+	@$(GO) test -tags headless ./cmd/m68kto64/...
 
 # Assemble the IExec microkernel
 .PHONY: intuitionos intuitionos-clean
