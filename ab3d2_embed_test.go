@@ -21,3 +21,13 @@ func TestEmbeddedAB3D2DefaultBoot_OnlyForDefaultM68KLaunch(t *testing.T) {
 		t.Fatal("explicit M68K filename should reset using normal launch semantics")
 	}
 }
+
+func TestShouldStartFullscreen_EmbeddedOverdriveBuildFlag(t *testing.T) {
+	old := EmbeddedAB3D2StartFullscreen
+	EmbeddedAB3D2StartFullscreen = "1"
+	t.Cleanup(func() { EmbeddedAB3D2StartFullscreen = old })
+
+	if !shouldStartFullscreen(false, true, "") {
+		t.Fatal("embedded AB3D2 Overdrive build should start fullscreen")
+	}
+}

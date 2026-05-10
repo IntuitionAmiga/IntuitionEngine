@@ -35,12 +35,42 @@ import (
 const emutosSentinel = "\x00emutos\x00"
 const intuitionOSSentinel = "\x00intuitionos\x00"
 
+// EmbeddedAB3D2StartFullscreen is set by release builds that embed an AB3D2
+// program whose presentation should start in fullscreen.
+var EmbeddedAB3D2StartFullscreen = "0"
+
 func shouldAutostartAB3D2() bool {
 	return len(embeddedAB3D2Image) > 0
 }
 
 func isEmbeddedAB3D2DefaultBoot(modeM68K bool, filename string) bool {
 	return shouldAutostartAB3D2() && modeM68K && filename == ""
+}
+
+func embeddedAB3D2StartFullscreenEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(EmbeddedAB3D2StartFullscreen)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func isOverdriveAB3D2Launch(modeM68K bool, filename string) bool {
+	if !modeM68K || filename == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(filepath.Base(filename)), "overdrive")
+}
+
+func shouldStartFullscreen(cliFullscreen bool, modeM68K bool, filename string) bool {
+	if cliFullscreen {
+		return true
+	}
+	if isOverdriveAB3D2Launch(modeM68K, filename) {
+		return true
+	}
+	return isEmbeddedAB3D2DefaultBoot(modeM68K, filename) && embeddedAB3D2StartFullscreenEnabled()
 }
 
 // Version metadata injected at build time via ldflags.
@@ -1226,7 +1256,7 @@ func main() {
 	output := videoChip.GetOutput()
 	outputConfig := output.GetDisplayConfig()
 	outputConfig.Scale = ClampScale(scale)
-	outputConfig.Fullscreen = fullscreen
+	outputConfig.Fullscreen = shouldStartFullscreen(fullscreen, modeM68K, filename)
 	if err := output.SetDisplayConfig(outputConfig); err != nil {
 		fmt.Printf("Failed to configure video output: %v\n", err)
 		os.Exit(1)

@@ -144,9 +144,10 @@ APP_NAME := IntuitionEngine
 APP_VERSION := 1.0.0
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+EMBEDDED_AB3D2_START_FULLSCREEN ?= 0
 
 # Go build flags with version injection
-GO_FLAGS := -ldflags "-s -w -X main.Version=$(APP_VERSION) -X main.Commit=$(COMMIT) -X main.BuildDate=$(BUILD_DATE)"
+GO_FLAGS := -ldflags "-s -w -X main.Version=$(APP_VERSION) -X main.Commit=$(COMMIT) -X main.BuildDate=$(BUILD_DATE) -X main.EmbeddedAB3D2StartFullscreen=$(EMBEDDED_AB3D2_START_FULLSCREEN)"
 VM_EMBED_TAGS := embed_basic embed_emutos embed_aros
 VM_NOVULKAN_TAGS := novulkan $(VM_EMBED_TAGS)
 
@@ -275,6 +276,7 @@ AB3D2_BINARY_PREFIX ?= IntuitionEngine-AB3D2-Karlos-TKG-High
 AB3D2_SOURCE ?= ../alienbreed3d2/ab3d2_source/ab3d2_ie68_redux_high.ie68
 AB3D2_ASSET_ROOT ?= ../alienbreed3d2
 AB3D2_ASSET_TREE ?= ab3d2_source/_build
+AB3D2_START_FULLSCREEN ?= $(if $(findstring overdrive,$(notdir $(AB3D2_SOURCE))),1,0)
 UPX ?= upx
 BSDTAR ?= bsdtar
 AB3D2_EMBED_DIR := embedded/ab3d2
@@ -404,7 +406,7 @@ prepare-ab3d2-embed:
 	@$(BSDTAR) -c -L --format zip -f "$(abspath $(AB3D2_EMBED_ZIP))" -C "$(AB3D2_ASSET_ROOT)" "$(AB3D2_ASSET_TREE)"
 
 ab3d2: prepare-ab3d2-embed
-	@$(MAKE) test-cross-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR) CROSS_BINARY_PREFIX=$(AB3D2_BINARY_PREFIX) VM_EMBED_TAGS="embed_ab3d2"
+	@$(MAKE) test-cross-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR) CROSS_BINARY_PREFIX=$(AB3D2_BINARY_PREFIX) VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=$(AB3D2_START_FULLSCREEN)
 	@$(MAKE) compress-ab3d2
 
 compress-ab3d2:
