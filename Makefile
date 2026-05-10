@@ -274,6 +274,8 @@ CROSS_BINARY_PREFIX ?= IntuitionEngine
 AB3D2_BUILD_DIR ?= ./bin/ab3d2
 AB3D2_BINARY_PREFIX ?= IntuitionEngine-AB3D2-Karlos-TKG-High
 AB3D2_SOURCE ?= ../alienbreed3d2/ab3d2_source/ab3d2_ie68_redux_high.ie68
+AB3D2_OVERDRIVE_BINARY_PREFIX ?= IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive
+AB3D2_OVERDRIVE_SOURCE ?= ../alienbreed3d2/ab3d2_source/ab3d2_ie68_overdrive.ie68
 AB3D2_ASSET_ROOT ?= ../alienbreed3d2
 AB3D2_ASSET_TREE ?= ab3d2_source/_build
 AB3D2_START_FULLSCREEN ?= $(if $(findstring overdrive,$(notdir $(AB3D2_SOURCE))),1,0)
@@ -284,7 +286,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan test vet tidy test-makefile test-cross test-cross-binaries ab3d2 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -408,6 +410,13 @@ prepare-ab3d2-embed:
 ab3d2: prepare-ab3d2-embed
 	@$(MAKE) test-cross-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR) CROSS_BINARY_PREFIX=$(AB3D2_BINARY_PREFIX) VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=$(AB3D2_START_FULLSCREEN)
 	@$(MAKE) compress-ab3d2
+
+ab3d2-overdrive:
+	@$(MAKE) ab3d2 AB3D2_SOURCE=$(AB3D2_OVERDRIVE_SOURCE) AB3D2_BINARY_PREFIX=$(AB3D2_OVERDRIVE_BINARY_PREFIX) AB3D2_START_FULLSCREEN=1
+
+ab3d2-all:
+	@$(MAKE) ab3d2
+	@$(MAKE) ab3d2-overdrive
 
 compress-ab3d2:
 	@if ! command -v $(UPX) >/dev/null 2>&1; then \

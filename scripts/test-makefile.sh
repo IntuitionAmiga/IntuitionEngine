@@ -154,6 +154,16 @@ assert_ab3d2_overdrive_starts_fullscreen() {
     fail "AB3D2 Overdrive package build does not stamp fullscreen startup"
 }
 
+assert_ab3d2_overdrive_target_packages_overdrive() {
+  local dry cp_rom build_vm
+  dry="$(make_dry ab3d2-overdrive)"
+  cp_rom="$(printf '%s\n' "$dry" | rg -n 'cp "\.\./alienbreed3d2/ab3d2_source/ab3d2_ie68_overdrive\.ie68" "embedded/ab3d2/ab3d2_ie68_redux_high\.ie68"' | head -n 1 | cut -d: -f1 || true)"
+  build_vm="$(printf '%s\n' "$dry" | rg -n 'test-cross-binaries CROSS_BUILD_DIR=\./bin/ab3d2 CROSS_BINARY_PREFIX=IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=1' | head -n 1 | cut -d: -f1 || true)"
+  [[ -n "$cp_rom" ]] || fail "ab3d2-overdrive dry-run does not embed the Overdrive IE68 ROM"
+  [[ -n "$build_vm" ]] || fail "ab3d2-overdrive dry-run does not build Overdrive binaries with the expected prefix"
+  [[ "$cp_rom" -lt "$build_vm" ]] || fail "ab3d2-overdrive builds binaries before refreshing the embedded ROM"
+}
+
 assert_dist_layout_skips_non_runtime_archives() {
   local tmp runtime source sdk_archive
   tmp="$(mktemp -d)"
@@ -207,7 +217,7 @@ for target in \
   all setup intuition-engine ie32asm ie64asm ie64dis ie32to64 clean clean-sdk distclean \
   rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets emutos-probe \
   emutos-release-rom basic basic-emutos cputest-musashi sdk sdk-build test vet tidy \
-  test-makefile test-cross test-cross-binaries ab3d2 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs testdata-harte testdata-x86 test-harte test-harte-short \
+  test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs testdata-harte testdata-x86 test-harte test-harte-short \
   test-x86-harte test-x86-harte-short release-verify; do
   assert_phony "$target"
   assert_target_exists "$target"
@@ -242,6 +252,7 @@ assert_makefile_contains '/opt/ie-sysroots/tumbleweed-aarch64/usr'
 assert_makefile_contains 'test-cross-binaries:'
 assert_makefile_contains 'CROSS_BINARY_PREFIX \?= IntuitionEngine'
 assert_makefile_contains 'AB3D2_BINARY_PREFIX \?= IntuitionEngine-AB3D2-Karlos-TKG-High'
+assert_makefile_contains 'AB3D2_OVERDRIVE_BINARY_PREFIX \?= IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive'
 assert_makefile_contains '\$\(call build-linux-vm-binary,amd64'
 assert_makefile_contains '\$\(call build-linux-vm-binary,arm64'
 assert_makefile_contains '\$\(call build-purego-novulkan-vm-binary,\$\$goos,\$\$goarch'
@@ -249,6 +260,7 @@ assert_makefile_contains '\$\(call build-purego-novulkan-vm-binary,windows,\$\$g
 assert_makefile_contains '\$\(call build-purego-novulkan-vm-binary,darwin,amd64'
 assert_makefile_contains '\$\(call build-purego-novulkan-vm-binary,darwin,arm64'
 assert_makefile_contains 'AB3D2_SOURCE \?= \.\./alienbreed3d2/ab3d2_source/ab3d2_ie68_redux_high\.ie68'
+assert_makefile_contains 'AB3D2_OVERDRIVE_SOURCE \?= \.\./alienbreed3d2/ab3d2_source/ab3d2_ie68_overdrive\.ie68'
 assert_makefile_contains 'AB3D2_ASSET_ROOT \?= \.\./alienbreed3d2'
 assert_makefile_contains 'AB3D2_ASSET_TREE \?= ab3d2_source/_build'
 assert_makefile_contains 'AB3D2_START_FULLSCREEN \?= \$\(if \$\(findstring overdrive,\$\(notdir \$\(AB3D2_SOURCE\)\)\),1,0\)'
@@ -256,6 +268,8 @@ assert_makefile_contains 'cp "\$\(AB3D2_SOURCE\)" "\$\(AB3D2_EMBED_FILE\)"'
 assert_makefile_contains '\$\(BSDTAR\) -c -L --format zip'
 assert_makefile_contains 'test-cross-binaries CROSS_BUILD_DIR=\$\(AB3D2_BUILD_DIR\) CROSS_BINARY_PREFIX=\$\(AB3D2_BINARY_PREFIX\) VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=\$\(AB3D2_START_FULLSCREEN\)'
 assert_makefile_contains '\$\(MAKE\) compress-ab3d2'
+assert_makefile_contains 'ab3d2 AB3D2_SOURCE=\$\(AB3D2_OVERDRIVE_SOURCE\) AB3D2_BINARY_PREFIX=\$\(AB3D2_OVERDRIVE_BINARY_PREFIX\) AB3D2_START_FULLSCREEN=1'
+assert_makefile_contains '\$\(MAKE\) ab3d2-overdrive'
 assert_makefile_contains '\$\(UPX\) --lzma[[:space:]]*\\'
 assert_makefile_not_contains 'AB3D2_UPX_FLAGS'
 assert_recipe_contains compress-ab3d2 'IntuitionEngine-AB3D2-Karlos-TKG-High-linux-amd64'
@@ -263,6 +277,7 @@ assert_recipe_contains compress-ab3d2 'IntuitionEngine-AB3D2-Karlos-TKG-High-lin
 assert_recipe_contains compress-ab3d2 'IntuitionEngine-AB3D2-Karlos-TKG-High-windows-amd64\.exe'
 assert_recipe_not_contains compress-ab3d2 'IntuitionEngine-AB3D2-Karlos-TKG-High-windows-arm64\.exe'
 assert_ab3d2_overdrive_starts_fullscreen
+assert_ab3d2_overdrive_target_packages_overdrive
 assert_no_nested_external_git_checkouts
 assert_recipe_not_contains compress-ab3d2 'IntuitionEngine-AB3D2-Karlos-TKG-High-darwin-amd64'
 assert_recipe_not_contains compress-ab3d2 'IntuitionEngine-AB3D2-Karlos-TKG-High-darwin-arm64'
