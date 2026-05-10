@@ -148,6 +148,7 @@ Build outputs:
 | `sdk/bin/ie32asm` | `make`, `make ie32asm`, `make sdk` |
 | `sdk/bin/ie64asm` | `make`, `make ie64asm`, `make sdk` |
 | `sdk/bin/ie32to64` | `make`, `make ie32to64`, `make sdk` |
+| `sdk/bin/m68kto64` | `make m68kto64` |
 | `sdk/bin/ie64dis` | `make`, `make ie64dis`, `make sdk` |
 
 Build profiles:
@@ -438,6 +439,7 @@ CPU and tools:
 - [6502 JIT](sdk/docs/6502_JIT.md)
 - [x86 JIT](sdk/docs/x86_JIT.md)
 - [IE32 to IE64 Converter](sdk/docs/ie32to64.md)
+- [M68K to IE64 Converter](sdk/docs/M68KtoIE64.md)
 
 Scripting, monitor, and SDK:
 

@@ -292,7 +292,7 @@ AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 .PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets emutos-probe emutos-release-rom basic basic-emutos cputest-musashi
 
 # Default target builds everything
-all: setup intuition-engine ie32asm ie64asm ie32to64 ie64dis
+all: setup intuition-engine ie32asm ie64asm ie32to64 m68kto64 ie64dis
 	@echo "Build complete! VM in $(BIN_DIR)/, tools in $(SDK_BIN_DIR)/"
 	@$(MAKE) list
 
@@ -1546,7 +1546,7 @@ players:
 sdk:
 	@$(MAKE) clean-sdk && $(MAKE) sdk-build
 
-sdk-build: ie32asm ie64asm ie32to64 ie64dis
+sdk-build: ie32asm ie64asm ie32to64 m68kto64 ie64dis
 	@echo "=== Building SDK ==="
 	@$(MKDIR) -p sdk/examples/prebuilt
 	@SDK_BUILT=0; SDK_SKIPPED=0; SDK_FAILED=0; \
@@ -1625,7 +1625,7 @@ define build-linux-release
 	echo ""; \
 	echo "--- $$RELEASE_NAME ---"; \
 	echo "Building main binary (GOARCH=$(1), CC=$(2))..."; \
-	rm -f IntuitionEngine ie32asm ie64asm ie32to64 ie64dis && \
+	rm -f IntuitionEngine ie32asm ie64asm ie32to64 m68kto64 ie64dis && \
 	$(call build-linux-vm-binary,$(1),$(2),$(3),$(4),IntuitionEngine) && \
 		if [ "$(1)" = "$(NATIVE_GOARCH)" ]; then \
 			command -v $(SSTRIP) >/dev/null 2>&1 && $(SSTRIP) -z IntuitionEngine || true; \
@@ -1634,6 +1634,7 @@ define build-linux-release
 	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go && \
 	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go && \
 	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/ && \
+	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o m68kto64 ./cmd/m68kto64/ && \
 	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go && \
 	STAGING=$(RELEASE_DIR)/$$RELEASE_NAME && \
 	rm -rf $$STAGING && \
@@ -1644,7 +1645,8 @@ define build-linux-release
 	rm -rf $$STAGING/sdk/.git && \
 	rm -rf $$STAGING/sdk/bin && \
 	$(MKDIR) -p $$STAGING/sdk/bin && \
-	mv ie32asm ie64asm ie32to64 ie64dis $$STAGING/sdk/bin/ && \
+	mv ie32asm ie64asm ie32to64 m68kto64 ie64dis $$STAGING/sdk/bin/ && \
+	install -m 0755 cmd/m68kto64/kmake.sh $$STAGING/sdk/bin/m68kto64-kmake && \
 	AROS_WB="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
 	if [ -d "$$AROS_WB" ]; then \
 		cp -r "$$AROS_WB" $$STAGING/AROS; \
@@ -1705,6 +1707,7 @@ release-windows: setup emutos-release-rom aros-release-assets
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32asm.exe assembler/ie32asm.go && \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe assembler/ie64asm.go && \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32to64.exe ./cmd/ie32to64/ && \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o m68kto64.exe ./cmd/m68kto64/ && \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis.exe assembler/ie64dis.go && \
 		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME && \
 		rm -rf $$STAGING && \
@@ -1715,7 +1718,7 @@ release-windows: setup emutos-release-rom aros-release-assets
 		rm -rf $$STAGING/sdk/.git && \
 		rm -rf $$STAGING/sdk/bin && \
 		$(MKDIR) -p $$STAGING/sdk/bin && \
-		mv ie32asm.exe ie64asm.exe ie32to64.exe ie64dis.exe $$STAGING/sdk/bin/ && \
+		mv ie32asm.exe ie64asm.exe ie32to64.exe m68kto64.exe ie64dis.exe $$STAGING/sdk/bin/ && \
 		AROS_WB="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
 		if [ -d "$$AROS_WB" ]; then \
 			cp -r "$$AROS_WB" $$STAGING/AROS; \
@@ -1739,6 +1742,7 @@ release-macos-amd64: setup emutos-release-rom aros-release-assets
 		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/ && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -o m68kto64 ./cmd/m68kto64/ && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go && \
 		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME && \
 		rm -rf $$STAGING && \
@@ -1749,7 +1753,8 @@ release-macos-amd64: setup emutos-release-rom aros-release-assets
 		rm -rf $$STAGING/sdk/.git && \
 		rm -rf $$STAGING/sdk/bin && \
 		$(MKDIR) -p $$STAGING/sdk/bin && \
-		mv ie32asm ie64asm ie32to64 ie64dis $$STAGING/sdk/bin/ && \
+		mv ie32asm ie64asm ie32to64 m68kto64 ie64dis $$STAGING/sdk/bin/ && \
+		install -m 0755 cmd/m68kto64/kmake.sh $$STAGING/sdk/bin/m68kto64-kmake && \
 		AROS_WB="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
 		if [ -d "$$AROS_WB" ]; then \
 			cp -r "$$AROS_WB" $$STAGING/AROS; \
@@ -1767,6 +1772,7 @@ release-macos-arm64: setup emutos-release-rom aros-release-assets
 		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/ && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -o m68kto64 ./cmd/m68kto64/ && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go && \
 		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME && \
 		rm -rf $$STAGING && \
@@ -1777,7 +1783,8 @@ release-macos-arm64: setup emutos-release-rom aros-release-assets
 		rm -rf $$STAGING/sdk/.git && \
 		rm -rf $$STAGING/sdk/bin && \
 		$(MKDIR) -p $$STAGING/sdk/bin && \
-		mv ie32asm ie64asm ie32to64 ie64dis $$STAGING/sdk/bin/ && \
+		mv ie32asm ie64asm ie32to64 m68kto64 ie64dis $$STAGING/sdk/bin/ && \
+		install -m 0755 cmd/m68kto64/kmake.sh $$STAGING/sdk/bin/m68kto64-kmake && \
 		AROS_WB="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
 		if [ -d "$$AROS_WB" ]; then \
 			cp -r "$$AROS_WB" $$STAGING/AROS; \
@@ -1835,7 +1842,7 @@ clean:
 	@rm -rf $(SDK_BIN_DIR)
 	@rm -rf $(RELEASE_DIR)
 	@rm -rf sdk/examples/prebuilt
-	@rm -f IntuitionEngine IntuitionEngine.exe ie32asm ie64asm ie64dis ie32to64 *.test *.test.exe default.pgo.old assembler/assembler clipboard.test .rotozoom-textures.stamp
+	@rm -f IntuitionEngine IntuitionEngine.exe ie32asm ie64asm ie64dis ie32to64 m68kto64 *.test *.test.exe default.pgo.old assembler/assembler clipboard.test .rotozoom-textures.stamp
 	@echo "Clean complete"
 
 distclean: clean intuitionos-clean clean-testdata clean-aros

@@ -1,3 +1,5 @@
+// Command ie32to64 transpiles IE32 assembly source to IE64 assembly.
+// Sibling tool: cmd/m68kto64 (Motorola m68k -> IE64); see sdk/docs/M68KtoIE64.md.
 package main
 
 import (
