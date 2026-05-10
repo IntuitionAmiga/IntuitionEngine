@@ -1,8 +1,11 @@
 # M68K-to-IE64 Assembly Source Converter (`m68kto64`)
 
-> **Status: in development.** This document is a skeleton. Sections are filled in as the
-> transpiler implementation lands, phase by phase. See `.claude/plans/M68KtoIE64plan.md`
-> for the engineering plan and TDD gates.
+> **Status: shipped (Phases 0–7 complete).** Integer (68000 + 68020) and 68881/68882 FPU
+> coverage are content-complete. Round-trip verified against `sdk/bin/ie64asm` on the
+> four checked-in goldens (`arith_basic`, `control_flow`, `shadow_ccr`, `fpu_basic`)
+> and on multi-file 68k inputs concatenated through the `kmake.sh` wrapper. See
+> `.claude/plans/M68KtoIE64plan.md` for the engineering plan and TDD gates and §15 for
+> the live status / open gaps.
 
 Source-to-source transpiler that converts Motorola m68k (vasm/devpac flavor) assembly
 into IE64 assembly that can be assembled by `assembler/ie64asm.go`. Sibling to
@@ -43,82 +46,113 @@ transpiled binaries can run on the JIT-capable IE64 core.
 
 ## 1. Overview & motivation
 
-*TBD — Phase 0 placeholder.* Why source-level transpile vs running on the M68K core
-(JIT only on amd64; IE64 has both amd64 and arm64 JIT). AB3D2 case study. Relationship
-to `cmd/ie32to64/`.
+`m68kto64` exists to put an existing m68k assembly codebase onto the IE64 core without
+re-architecting it. The IE64 core ships two JIT backends: a heavily-optimized amd64
+backend and an immature arm64 backend. The M68K core has an amd64 JIT only and no
+arm64 JIT path at all. Source-level transpile to IE64 therefore extends portable
+reach (the arm64 IE64 backend exists where the M68K backend does not — a portability
+win, not a peak-performance win against amd64) and unlocks the IE64 JIT register file
+and 64-bit ALU width for pre-existing 68k programs without intermediate dynamic
+translation. On amd64 hosts, the mature IE64 backend is also the faster execution
+target than the M68K JIT for non-trivial workloads.
+
+The converter is single-pass-per-line with auxiliary peephole and liveness passes for
+the flag model and the FPU shadow. It does not interpret, link, or relocate; it emits
+IE64 assembly source consumed by `assembler/ie64asm.go`. Multi-file inputs are handled
+by concatenating units through the `kmake.sh` wrapper before transpile.
+
+This converter is the m68k sibling of [`ie32to64`](ie32to64.md). The integer-side
+philosophy mirrors `ie32to64` (line-by-line emit, opaque MMIO equates); the additions
+beyond `ie32to64` are full m68k addressing-mode lowering, the CMP/Bcc fuse + shadow CCR
+fallback (§7), an emulated 32-bit guest stack on r30 (§5), and the 68881/68882 FPU
+contract documented in the §*.FP sub-sections.
 
 ## 2. Quickstart
 
-*TBD — Phase 1.*
-
 ```bash
-# Build (placeholder; target lands in Phase 1)
+# Build
 make m68kto64
 
 # Convert one file
 sdk/bin/m68kto64 input.s -o input.ie64.s
 sdk/bin/ie64asm input.ie64.s -o input.bin
+
+# Multi-file project (concatenate via kmake.sh wrapper)
+sdk/bin/m68kto64-kmake -I include/ -o project.bin src/*.s
 ```
 
 ## 3. CLI reference
 
-*TBD — Phase 1.* Flags planned:
+```text
+Usage: m68kto64 [options] input.s
+```
 
 | Flag | Purpose |
 |------|---------|
 | `-o <file>` | Output path (default: `<input>_ie64.s`) |
-| `-size .l|.q` | Default size suffix |
-| `-no-header` | Omit "Converted from m68k" header |
-| `-no-flags-fuse` | Disable CMP/Bcc fuse (debug aid) |
-| `-strict` | Error on unfused flag spans / unsupported ops |
-| `-include-path <dir>` | Add include search path |
-| `-define <K=V>` | Define assembler symbol |
+| `-size .l\|.q` | Default size suffix when an input mnemonic carries none (default `.l`) |
+| `-no-header` | Omit the `; Converted from m68k by m68kto64` header line |
+| `-no-flags-fuse` | Disable CMP/TST + Bcc adjacent-fuse (debug aid; forces shadow CCR path) |
+| `-strict` | Error on unfused flag spans, `.X`/`.P` size degradation, FSAVE/FRESTORE, and other approximated/unsupported ops |
+
+Multi-file builds (with include search paths and macro concatenation) go through the
+`sdk/bin/m68kto64-kmake` wrapper rather than direct flags on the per-file converter.
 
 ## 4. Register-file ABI
-
-*Finalized in Phase 1.* See `.claude/plans/M68KtoIE64plan.md` "Register File Mapping"
-for the canonical table; reproduced here once Phase 1 lands.
 
 | m68k | IE64 | Notes |
 |------|------|-------|
 | d0–d7 | r1–r8 | data registers |
 | a0–a6 | r9–r15 | address registers |
-| a7 (m68k SP) | r30 | **emulated 32-bit guest stack** |
-| (host SP) | r31 | reserved for transpiler-internal scratch saves |
-| ccr/sr | r24–r27 (shadows) | only materialized when fuse fails |
-| scratch | r16, r17, r18 | EA computation, mem temps |
-| mul/div pair | r19–r23 | 64-bit pair lowering of MULU.L/DIVU.L |
+| a7 (m68k SP) | r30 | **emulated 32-bit guest stack** (see §5) |
+| (host SP) | r31 | reserved for IE64-side internal use; do not touch from inline |
+| ccr (NZCV shadow) | r24/r25/r26/r27 | only materialized when fuse fails — see §7 |
+| EA / mem scratch | r16 (ScrEA), r17 (ScrV1), r18 (ScrV2) | EA computation, mem temps, immediates |
+| aux scratch | r19 (ScrAux), r20 (ScrDC) | partial-update + DBcc/condition materialization; doubles as mul/div pair lo/hi for MULU.L / MULS.L / DIVU.L / DIVS.L |
+| pre-op snapshot | r21 (ShadowSnap) | source operand capture for shadow C / V |
+| shadow helpers | r22 (ShadowTmp1), r23 (ShadowTmp2) | shadow-update internal scratch |
+| ShadowX | r28 | m68k X (extend) flag — separate from C; ABCD/SBCD/NBCD read it as chain-in carry; logical/MOVE ops clear C but leave X unchanged |
+| ShadowFPCC | r29 | mirrors m68k FPSR cc field (bits 27:24) — see §7.FP |
 
-> **Inline IE64 asm rule:** do **not** touch r30/r31 from inline IE64 fragments
-> embedded in transpiled m68k. r30 is the emulated guest stack pointer; r31 is the
-> IE64 hardwired SP used for transpiler-internal saves.
+> **Inline IE64 asm rule (integer):** do **not** touch r16–r29 or r30/r31 from inline
+> IE64 fragments embedded in transpiled m68k. r30 is the emulated guest SP; r31 is the
+> IE64 hardwired SP; r16–r23 are EA / aux / shadow scratch; r24–r27 are CCR shadows;
+> r28 is ShadowX; r29 is ShadowFPCC.
 
 ### §4.FP — Floating-point register ABI
 
-*Phase 7.0 scaffold; bodies filled across Phase 7.1–7.7.*
-
-m68k 68881/68882 FP0–FP7 map onto **even-numbered** IE64 FP registers; odd half is
+m68k 68881/68882 FP0–FP7 map onto **even-numbered** IE64 FP registers; the odd half is
 implicit double-precision storage and must not be referenced separately (per IE64 ISA
 §4.6.6).
 
-| m68k FP | IE64 even reg | High-half storage |
-|---------|---------------|-------------------|
-| FP0 | f0  | f1  |
-| FP1 | f2  | f3  |
-| FP2 | f4  | f5  |
-| FP3 | f6  | f7  |
-| FP4 | f8  | f9  |
-| FP5 | f10 | f11 |
-| FP6 | f12 | f13 |
-| FP7 | f14 | f15 |
-| FPCR  | IE64 hardware FPCR (`fmovcr`/`fmovcc`) | — |
-| FPSR  | IE64 hardware FPSR (sticky exceptions) + r29 ShadowFPCC (cc bits 27:24) | — |
-| FPIAR | not exposed; reads return 0 + diagnostic comment | — |
+| m68k FP | IE64 even reg | High-half storage | Notes |
+|---------|---------------|-------------------|-------|
+| FP0 | f0  | f1  | |
+| FP1 | f2  | f3  | |
+| FP2 | f4  | f5  | |
+| FP3 | f6  | f7  | |
+| FP4 | f8  | f9  | |
+| FP5 | f10 | f11 | **also `ScrFP1` — clobbered by FTST/FSCALE/FGETEXP/FGETMAN** |
+| FP6 | f12 | f13 | **also `ScrFP2` — clobbered by FTST/FSCALE/FGETEXP** |
+| FP7 | f14 | f15 | |
+| FPCR  | IE64 hardware FPCR (`fmovcr`/`fmovcc`) | — | direct |
+| FPSR (sticky) | IE64 hardware FPSR (`fmovsr`/`fmovsc`) | — | exception bits 3:0 |
+| FPSR (cc field) | r29 (ShadowFPCC) | — | bits 27:24 — see §7.FP |
+| FPIAR | not exposed; reads return 0 + diagnostic comment | — | writes silently dropped |
 
-**Inline-asm reservation rule:** transpiled m68k FPU code reserves the **entire f0–f15
-file** for guest FP0–FP7. Inline IE64 fragments embedded in transpiled m68k must not
-clobber any `f` register. Integer scratch reservations (r16–r29) and r30/r31
-unchanged.
+**FP5/FP6 scratch overlay.** The transpiler reuses f10 (FP5) and f12 (FP6) as
+scratch for the synthesised ops listed above. Programs that hold live values in
+FP5 or FP6 across an FTST/FSCALE/FGETEXP/FGETMAN sequence will observe corruption.
+Either spill FP5/FP6 around those ops, or restrict floating-point register use to
+FP0–FP4 + FP7 in transpiled code paths. Lifting this restriction is the single
+open FPU implementation gap (see §15.FP).
+
+**Inline-asm reservation rule:** transpiled m68k FPU code reserves the entire f0–f15
+file: even regs (f0/f2/.../f14) hold guest FP0–FP7, odd regs (f1/f3/.../f15) hold the
+implicit double-precision high halves, and f10/f12 additionally serve as `ScrFP1`/
+`ScrFP2` scratch (overlaid on FP5/FP6 storage). Inline IE64 fragments embedded in
+transpiled m68k must not clobber any `f` register. Integer scratch reservations
+(r16–r29) and r30/r31 unchanged.
 
 **Per-output-file memory-slot reservations** (BSS-style globals, single-thread
 guest):
@@ -133,20 +167,54 @@ Slots are non-reentrant under guest interrupts — see §15.FP roadmap entry.
 
 ## 5. Stack model
 
-*TBD — Phase 3.* Emulated 32-bit guest stack on r30; native IE64 push/pop (which use
-8-byte slots on r31) are reserved for transpiler internals. LINK/UNLK/JSR/RTS lower to
-explicit width-correct sequences. See plan "Critical: m68k stack must be 32-bit-emulated"
-for worked examples.
+m68k a7 (the m68k SP) maps to IE64 r30 and operates as a **32-bit-emulated guest stack**.
+Native IE64 push/pop opcodes use 8-byte slots on r31 and are reserved for transpiler
+internals; they are never emitted for guest stack ops.
+
+Every guest stack op lowers to an explicit width-correct sequence:
+
+| m68k | IE64 lowering |
+|------|---------------|
+| push (`-(a7)` write) | `sub.l r30, r30, #4; store.l <src>, (r30)` (or `#2` / `store.w` for `.w`) |
+| pop  (`(a7)+` read)  | `load.l <dst>, (r30); add.l r30, r30, #4` |
+| `JSR target` | push 32-bit return label; `bra target` (return label is auto-generated `__m68kto64_bsr_ret_N`) |
+| `BSR target` | identical to `JSR` |
+| `RTS` | `load.l ScrV1, (r30); add.l r30, r30, #4; jmp (ScrV1)` |
+| `LINK an,#disp` | push An; `move.l An, r30`; `add.l r30, r30, #disp` (disp is m68k word-signed) |
+| `UNLK an` | `move.l r30, An`; pop An |
+| `MOVEM.W <list>,-(a7)` / `MOVEM.L <list>,-(a7)` | predec spill, descending mask order, 2 / 4-byte slots respectively |
+| `MOVEM.W (a7)+,<list>` / `MOVEM.L (a7)+,<list>` | postinc reload, ascending mask order, 2 / 4-byte slots; `.W` reloads sign-extend into Dn |
+
+Stack slot width is 4 bytes (m68k 32-bit ABI). FPU `MOVEM.X` against the guest stack
+expands per-element to `dstore` / `dload` 8-byte slots — `.X` operands degrade to `.D`
+per §6.FP, so each element consumes 8 bytes, not 12.
 
 ## 6. Addressing-mode lowering
 
-*TBD — Phase 1.* Every m68k addressing mode (`Dn`, `An`, `(An)`, `(An)+`, `-(An)`,
-`(d16,An)`, `(d8,An,Xn)`, `(xxx).w/.l`, `(d16,PC)`, `(d8,PC,Xn)`, `#imm`) → IE64
-sequence with scratch-reg usage.
+Every m68k addressing mode lowers to an IE64 sequence using the EA scratch trio
+(`r16`/`r17`/`r18`). The EA computation always lands in `ScrEA` (r16) when an indirect
+form is used; immediates and direct register forms are inlined.
+
+| m68k mode | IE64 lowering (read into Rs, write from Rd) |
+|-----------|---------------------------------------------|
+| `Dn` | direct map (r1–r8) |
+| `An` | direct map (r9–r15) |
+| `(An)` | `load.<sz> Rd, (An)` / `store.<sz> Rs, (An)` |
+| `(An)+` | EA = An; `load/store`; `add.l An, An, #<sz>` |
+| `-(An)` | `sub.l An, An, #<sz>`; `load/store` at `(An)` |
+| `(d16,An)` | `add.l ScrEA, An, #d16`; access via `(ScrEA)` |
+| `(d8,An,Xn)` | `<sext.w/.l Xn>` if needed; `add.l ScrEA, An, Xn`; `add.l ScrEA, ScrEA, #d8` |
+| `(xxx).w` | sign-extend word to 32; `move.l ScrEA, #...`; `(ScrEA)` |
+| `(xxx).l` | `move.l ScrEA, #addr`; `(ScrEA)` |
+| `(d16,PC)` | resolved at transpile time — `la ScrEA, label` |
+| `(d8,PC,Xn)` | `la ScrEA, label`; `add.l ScrEA, ScrEA, Xn`; `add.l ScrEA, ScrEA, #d8` |
+| `#imm` | `move.l ScrV1, #imm` and feed ScrV1 into the op |
+
+`<sz>` resolves from the m68k size suffix: `.b` → 1, `.w` → 2, `.l` → 4. Predec/postinc
+on `(a7)` always uses 4 (m68k 32-bit ABI) regardless of the suffix on the operation,
+matching real-hardware 68k behaviour.
 
 ### §6.FP — FPU addressing modes
-
-*Phase 7.0 scaffold.*
 
 Most FP addressing modes are integer modes applied to the source/dest of FMOVE and
 its arithmetic siblings. New cases:
@@ -155,8 +223,10 @@ its arithmetic siblings. New cases:
 |------|----------|
 | `FPn` | direct `f(2n)`; double ops accept the even reg, implicitly use the odd half |
 | `#imm` (FP) | `fmovecr fd, #idx` if it matches an IE64 ROM entry; else allocate `dc.s`/`dc.d` in `__m68kto64_fp_const_pool` then `la r17, label; fload/dload f(2n), (r17)` |
-| `(An)+` / `-(An)` / `(An)` / `(d,An)` / `(d,An,Xn)` / abs / PC-rel | EA via existing integer helpers, then **single: `fload`/`fstore` (4B); double: `dload`/`dstore` (8B, opcode 0x81/0x82)**. Predec/postinc adjusts An by 4 (single) or 8 (double) |
-| `FPCR` / `FPSR` | `fmovcr`/`fmovcc` resp. `fmovsr`/`fmovsc` |
+| `(An)+` / `-(An)` / `(An)` / `(d,An)` / `(d,An,Xn)` / abs / PC-rel | EA via existing integer helpers, then **single: `fload`/`fstore` (4 B); double: `dload`/`dstore` (8 B, opcode 0x81/0x82)**. Predec/postinc adjusts An by 4 (single) or 8 (double) |
+| `FPCR` | `fmovcr` (read) / `fmovcc` (write) |
+| `FPSR` (sticky bits 3:0) | `fmovsr` (read) / `fmovsc` (write) |
+| `FPSR` (cc bits 27:24) | r29 (ShadowFPCC) — see split-on-write/compose-on-read fold in §7.FP |
 | `FPIAR` | reads return 0 + diagnostic; writes silently dropped + diagnostic |
 
 **Size-suffix routing:**
@@ -171,20 +241,48 @@ its arithmetic siblings. New cases:
 | `.X` | 80-bit extended    | degraded to `.D`; `;.X degraded` comment in non-strict; `-strict` errors |
 | `.P` | 96-bit packed BCD  | unsupported; `-strict` errors; non-strict emits `; ERROR: .P unsupported` |
 
-**FMOVECR ROM-offset translation** (m68k 7-bit ROM → IE64 4-bit `fmovecr` index, plus
-`dc.d` constant-pool fallback): table lands with Phase 7.2.
+**FMOVECR ROM-offset translation.** A static table maps the 7-bit m68k FMOVECR ROM
+offset to the 4-bit IE64 `fmovecr` index where the constant exists in IE64 ROM; the
+remaining offsets fall back to a `dc.d` constant-pool entry.
 
 ## 7. Flag model
 
-*TBD — Phase 3.* Two-pass fuse: pass 1 classifies flag-producing/consuming lines;
-pass 2 peephole-fuses CMP/TST + Bcc into IE64 register-pair branches. Width
-normalization mandatory before signed fused branches (m68k computes flags at .b/.w/.l
-width; IE64 compares full 64-bit). Fallback shadow regs r24–r27 only emitted when
-downstream code reads them. `-strict` errors on unfused spans.
+The integer flag model uses a two-pass design:
+
+1. **Liveness / fuse pass.** Backward walk classifies every line as flag-producer,
+   flag-consumer, or neither. Adjacent producer/consumer pairs (CMP/TST + Bcc with no
+   intervening label, no intervening flag-clobber) are marked for **fuse**: lower as a
+   single IE64 register-pair branch and skip shadow emission. Spans that fail fuse mark
+   the producer line as "shadows live" so pass 2 emits the full shadow update.
+
+2. **Emit pass.** Producers emit the IE64 instruction; if shadows are live they also
+   emit the four `r24`/`r25`/`r26`/`r27` updates per m68k semantics. Consumers either
+   take the fused integer Bcc form or read the shadow regs through the standalone-test
+   path.
+
+Width normalisation is mandatory before signed fused branches: m68k computes flags at
+.b/.w/.l width, IE64 compares full 64-bit. The fused emit chains a `sext.b`/`sext.w`
+through ScrV1 before the integer Bcc when the producer was sub-32-bit.
+
+`-no-flags-fuse` forces every span through the shadow path (debug aid). `-strict` errors
+on any consumer that finds itself reading a shadow that was never written upstream.
+
+**Shadow CCR layout:**
+
+| IE64 reg | m68k bit | Encoding |
+|----------|----------|----------|
+| r24 | N | sign-extended last result (test against 0 with `bltz`/`bgez`) |
+| r25 | Z | width-masked last result (test against 0 with `beqz`/`bnez`) |
+| r26 | C | 0 / 1 (carry-out of unsigned add/sub at the m68k width) |
+| r27 | V | 0 / 1 (signed-overflow indicator, computed from pre-op snapshot in r21) |
+| r28 | X | 0 / 1 (extend bit). Tracks C for arithmetic ops; left unchanged by logical/MOVE ops; chain-in carry source for ABCD/SBCD/NBCD. ADDX/SUBX/NEGX/ROXL/ROXR consumers are not implemented (see §8). |
+
+Producers (CMP/TST/ADD/SUB/AND/OR/EOR/NOT/NEG/CLR/MOVE/MOVEQ/MULU/MULS/DIVU/DIVS/EXT/
+EXTB/SWAP/BTST and the bit-field family) emit shadows per m68k semantics; ADD/SUB/CMP/
+NEG capture the pre-op destination into r21 (ShadowSnap) for full C/V. Standalone Bcc
+(all 14 cc), DBcc (all variants), and Scc (all variants) consume shadows.
 
 ### §7.FP — FPU shadow model
-
-*Phase 7.0 scaffold.*
 
 **ShadowFPCC (r29)** mirrors the four-bit m68k FPSR cc field (bits 27:24). Bit
 layout:
@@ -206,22 +304,26 @@ every transcendental) emit a `dcmp`-derived 4-instruction shadow update.
 3:0) live in IE64 hardware FPSR; the cc field lives in ShadowFPCC. FPCR (rounding
 mode bits 1:0) lives in IE64 hardware FPCR; no GPR shadow.
 
-**FINTRZ memory-slot save/restore** uses `__m68kto64_fpcr_save`. Sequence:
+**FINTRZ memory-slot save/restore** uses `__m68kto64_fpcr_save`. Sequence (using
+canonical scratch names — the assembler sees real `rN` tokens; `ScrEA`/`ScrV1`/`ScrV2`
+are documentation aliases for r16/r17/r18 respectively):
 
-```
-fmovcr  r17                  ; capture current FPCR
-store.l r17, __m68kto64_fpcr_save
-move.l  r18, #2              ; round-toward-zero mode constant
-fmovcc  r18                  ; force RZ
-dint    fd, fs               ; rounded integer with RZ
-load.l  r17, __m68kto64_fpcr_save
-fmovcc  r17                  ; restore caller's FPCR
+```asm
+fmovcr  r17                            ; capture current FPCR (alias: ScrV1)
+la      r16, __m68kto64_fpcr_save      ; alias: ScrEA
+store.l r17, (r16)
+move.l  r18, #2                        ; round-toward-zero (alias: ScrV2)
+fmovcc  r18                            ; force RZ
+dint    fd, fs                         ; rounded integer with RZ
+la      r16, __m68kto64_fpcr_save
+load.l  r17, (r16)
+fmovcc  r17                            ; restore caller's FPCR
 ```
 
 **FPSR ↔ Dn fold (split-on-write, compose-on-read).**
 
-- `FMOVE.L FPSR,Dn` (read): `fmovsr r17` (sticky bits 3:0); `lsl.l r18, ShadowFPCC, #24`; `or.l Dn, r17, r18`.
-- `FMOVE.L Dn,FPSR` (write): `lsr.l r17, Dn, #24; and.l ShadowFPCC, r17, #$F` (cc into shadow); `fmovsc Dn` (hardware masks input to bits 3:0; cc bits ignored by hw FPSR).
+- `FMOVE.L FPSR,Dn` (read): `fmovsr ScrV1` (sticky bits 3:0); `lsl.l ScrV2, ShadowFPCC, #24`; `or.l Dn, ScrV1, ScrV2`.
+- `FMOVE.L Dn,FPSR` (write): `lsr.l ScrV1, Dn, #24; and.l ShadowFPCC, ScrV1, #$F` (cc into shadow); `fmovsc Dn` (hardware masks input to bits 3:0; cc bits ignored by hw FPSR).
 - `FMOVE.L FPCR,Dn` / `FMOVE.L Dn,FPCR`: direct `fmovcr` / `fmovcc`. No fold.
 - `FMOVE.L FPIAR,Dn`: read returns 0; write dropped; diagnostic comment.
 
@@ -233,7 +335,7 @@ producer and consumer are both adjacent **and** the producer is `fcmp`/`ftst`. A
 other producer (incl. `fmove.l Dn,fpsr`, `fmovsc`, or any intervening label)
 suppresses fuse and routes the FBcc through `emitShadowFBcc`.
 
-**Liveness pass (mirrors integer Phase A).** Backward walk: at each consumer, mark
+**Liveness pass (mirrors integer pass).** Backward walk: at each consumer, mark
 "FPCC live"; at each producer, record live-set into `fpccLiveAt[i]` and reset; force
 "all live" at any label or function entry. Pass-2 emits the 4-instruction shadow
 update only when `fpccLiveAt[i]` is set. Forward branches into a sequence force the
@@ -242,15 +344,66 @@ non-elided path.
 
 ## 8. Instruction reference
 
-*Filled in Phase 2 (ALU/memory), Phase 3 (control flow), Phase 5 (68020 extras).*
-Each entry will be marked ✅ fully covered, ⚠️ semantic caveat, or ❌ unsupported.
+Convention: ✅ fully covered, ⚠️ semantic caveat, ❌ unsupported.
+
+**Data movement (Phase 2):**
+
+| Mnemonic | Lowering | Status |
+|----------|----------|--------|
+| `MOVE.<sz>` | EA load → EA store via ScrV1; shadows updated | ✅ |
+| `MOVEA.<sz>` | sign-extend word source as needed; flags untouched | ✅ |
+| `MOVEQ #imm,Dn` | `move.l Dn, #sext8(imm)`; shadows updated | ✅ |
+| `LEA <ea>,An` | EA computation only; no flag effect | ✅ |
+| `MOVEM.W <list>,<ea>` / `<ea>,<list>` | per-element load/store; 2-byte slots, sign-extended on `.W` reload | ✅ |
+| `MOVEM.L <list>,<ea>` / `<ea>,<list>` | per-element load/store; 4-byte slots | ✅ |
+| `EXT.W/.L Dn` | `sext.b`/`sext.w` into Dn; shadows updated | ✅ |
+| `EXTB.L Dn` (68020) | `sext.b` Dn → 32-bit | ✅ |
+| `SWAP Dn` | half-word swap via mask + or; shadows updated | ✅ |
+
+**Arithmetic / logical (Phase 2):**
+
+| Mnemonic | Lowering | Status |
+|----------|----------|--------|
+| `ADD.<sz>` / `ADDA` / `ADDI` / `ADDQ` | `add.l` / width-masked variant; full NZCV | ✅ |
+| `SUB` / `SUBA` / `SUBI` / `SUBQ` / `CMP` / `CMPA` / `CMPI` | `sub.l`; CMP discards result, keeps shadows | ✅ |
+| `NEG` / `NOT` / `CLR` | direct ops; full NZCV | ✅ |
+| `AND` / `OR` / `EOR` (+ immediate / to-CCR-or-SR) | direct ops | ✅ |
+| `MULU` / `MULS` (.W) | widen → multiply; shadows updated | ✅ |
+| `MULU.L` / `MULS.L` (68020) | 64-bit pair lowering into r19/r20 | ✅ |
+| `DIVU` / `DIVS` (.W) | divide; zero-divisor → syscall #16 | ✅ |
+| `DIVU.L` / `DIVS.L` (68020) | 64-bit pair; quotient/remainder pair form | ✅ |
+| `LSL` / `LSR` / `ASL` / `ASR` / `ROL` / `ROR` | direct ops; shadows updated | ✅ |
+| `BTST` / `BSET` / `BCLR` / `BCHG` | bit ops; Z reflects pre-op bit | ✅ |
+| `TST.<sz>` | shadow update only | ✅ |
+| `St` / `Sf` (Scc family — all 14 cc) | shadow read → 0/-1 byte | ✅ |
+| `ABCD` / `SBCD` / `NBCD` | BCD lowering, both Dn and -(Ay),-(Ax) forms | ✅ |
+| `PACK` / `UNPK` (68020) | byte-level pack/unpack | ✅ |
+| `BFEXTU` / `BFEXTS` / `BFINS` / `BFCLR` / `BFSET` / `BFCHG` / `BFTST` / `BFFFO` (68020) | bit-field ops on Dn destinations | ✅ |
+| `CAS` (68020) | non-atomic load-cmp-store fallback | ⚠️ non-atomic |
+| `CAS2` | unsupported | ❌ |
+| `ADDX` / `SUBX` / `NEGX` / `ROXL` / `ROXR` | unsupported (X-flag chain-in arithmetic) | ❌ |
+| `RTM` / `MOVES` / `CALLM` / `RETM` | unsupported | ❌ |
+
+**Control flow (Phase 3):**
+
+| Mnemonic | Lowering | Status |
+|----------|----------|--------|
+| `Bcc` (all 14 cc) | adjacent-fuse with CMP/TST → integer Bcc; standalone via shadow CCR | ✅ |
+| `BRA` / `BSR` / `JMP` / `JSR` / `RTS` / `RTR` | direct/emulated 32-bit return on r30; RTR additionally restores CCR shadows | ✅ |
+| `DBcc Dn,label` (all variants) | decrement+branch on Dn low word; cc tested against shadow CCR | ✅ |
+| `TRAP #n` | `syscall #n` (n in 0..15) | ✅ |
+| `CHK` / `CHK2` | bounds test → syscall #17 | ✅ |
+| `TRAPV` | guarded `syscall #18` against shadow V | ✅ |
+| `TRAPcc` (68020, integer-cc form) | conditional `syscall #18` against integer CCR | ⚠️ shares #18 with TRAPV |
+| `STOP` / `RESET` / `MOVEC` | stripped + diagnostic | ⚠️ |
+
+**Floating-point** — see §8.FP.
 
 ### §8.FP — FPU instruction reference
 
-*Phase 7.0 scaffold; per-mnemonic body lands across Phase 7.2–7.6.* Convention:
-✅ fully covered (bit-exact within IE64 double-precision limits), ⚠️ semantic caveat
-(typically due to extended → double degradation or transcendental approximation),
-❌ unsupported.
+Convention: ✅ fully covered (bit-exact within IE64 double-precision limits),
+⚠️ semantic caveat (typically due to extended → double degradation or transcendental
+approximation), ❌ unsupported.
 
 **Data movement (Phase 7.2):**
 
@@ -308,15 +461,35 @@ Each entry will be marked ✅ fully covered, ⚠️ semantic caveat, or ❌ unsu
 
 ## 9. Directives & macros
 
-*TBD — Phase 4.* `dc.b/w/l`, `ds.X`, `equ`, `set`, `align`, `incbin`, `include` →
-mostly 1:1 with `ie64asm`. `IFD IS_IE` rewritten to `if 1`. `xdef`/`xref` dropped
-(single-file flat namespace) with warning if cross-unit linkage was actually needed.
-Macros (`\1..\9`) and `rept`/`endr` pass through verbatim.
+| m68k directive | IE64 emit | Notes |
+|----------------|-----------|-------|
+| `dc.b/w/l/q` | passthrough | width-equivalent in `ie64asm` |
+| `ds.b/w/l/q` | passthrough | reservation, width-equivalent |
+| `equ` / `set` | passthrough | symbol assignment |
+| `org` / `section` | passthrough | layout directives |
+| `align` / `even` | `align 2` / passthrough | `even` lowered to `align 2` |
+| `incbin` / `include` | passthrough | resolved against `kmake.sh -I` paths |
+| `IFD IS_IE` | `if 1` | conditional asm |
+| `IFND IS_IE` | `if 0` | conditional asm |
+| `endc` | `endif` | conditional terminator |
+| `xdef` / `xref` / `public` / `global` / `extern` | dropped + diagnostic | flat single-file namespace |
+| `macro` / `endm` / `\1`–`\9` | passthrough verbatim | macro expansion deferred to assembler |
+| `rept` / `endr` | passthrough | repeat blocks deferred to assembler |
+
+Macro and rept bodies are emitted verbatim; the converter does not expand them. This
+keeps `\1`–`\9` argument substitutions intact for `ie64asm` to handle.
 
 ## 10. MMIO & equates
 
-AB3D2 already uses IE chip equates (e.g. `EXEC_CTRL equ $F2324`). Transpiler treats
-these as opaque symbols — no remap table needed. Mirrors `ie32to64` behavior.
+m68k programs that target the IE platform already use IE chip equates (e.g.
+`SOMECTRL equ $F2324`). The transpiler treats those as opaque symbols — no remap table,
+no rewriting. This mirrors `ie32to64` behaviour.
+
+Programs targeting non-IE m68k platforms will assemble cleanly but will not function:
+their hardware-register addresses are not mapped on the IE platform.
+Hardware-register translation is out of scope; either run such programs on a host that
+emulates the original platform, or rewrite the I/O layer to IE chip equates before
+transpile.
 
 ## 11. TRAP / syscall vectors
 
@@ -329,7 +502,7 @@ extension):
 | `#0`–`#15` | `TRAP #n` (instruction-encoded immediate) | direct 1:1 mapping |
 | `#16` | integer divide-by-zero (m68k vector 5, relocated) | DIVU/DIVS/DIVU.L/DIVS.L zero-divisor guard |
 | `#17` | CHK / CHK2 fail (m68k vector 6, relocated) | bounds-test bltz/bgt fall-through |
-| `#18` | TRAPV (m68k vector 7, relocated) | guarded on ShadowV |
+| `#18` | TRAPV / integer TRAPcc (m68k vector 7, relocated) | guarded on ShadowV / integer CCR |
 | `#32`–`#63` | FTRAPcc (one syscall # per FP cc kind) | see §11.FP |
 
 CHK/TRAPV/divide-by-zero originally landed at `#5/#6/#7` in early Phase 5; relocated
@@ -338,32 +511,194 @@ TRAP-instruction-# disjoint from m68k exception-vector-#.
 
 ### §11.FP — Locked syscall # vector table
 
-*Phase 7.0 scaffold.*
-
-`FTRAPcc` (Phase 7.4) consumes syscall numbers `#32`–`#63`, one per FP cc kind, in
-this order:
+`FTRAPcc` (Phase 7.4) consumes syscall numbers `#32`–`#63`, one per FP cc kind. Order
+is fixed in `cmd/m68kto64/fpu_shadow.go::fpFTrapccOrder` and is permanent — downstream
+consumers may pin handlers to specific numbers.
 
 | # | cc | # | cc | # | cc | # | cc |
 |---|----|----|----|----|----|----|----|
-| 32 | F  | 40 | UN  | 48 | SF  | 56 | NLE |
-| 33 | EQ | 41 | UEQ | 49 | SEQ | 57 | NLT |
-| 34 | OGT| 42 | UGT | 50 | GT  | 58 | NGE |
-| 35 | OGE| 43 | UGE | 51 | GE  | 59 | NGT |
-| 36 | OLT| 44 | ULT | 52 | LT  | 60 | SNE |
-| 37 | OLE| 45 | ULE | 53 | LE  | 61 | ST  |
-| 38 | OGL| 46 | NE  | 54 | GL  | 62 | (reserved) |
-| 39 | OR | 47 | T   | 55 | GLE | 63 | NGLE |
-
-Reservation is permanent; downstream consumers may pin handlers to specific numbers.
+| 32 | F  | 40 | UN  | 48 | SF  | 56 | NGLE |
+| 33 | EQ | 41 | UEQ | 49 | SEQ | 57 | NGL  |
+| 34 | OGT| 42 | UGT | 50 | GT  | 58 | NLE  |
+| 35 | OGE| 43 | UGE | 51 | GE  | 59 | NLT  |
+| 36 | OLT| 44 | ULT | 52 | LT  | 60 | NGE  |
+| 37 | OLE| 45 | ULE | 53 | LE  | 61 | NGT  |
+| 38 | OGL| 46 | NE  | 54 | GL  | 62 | SNE  |
+| 39 | OR | 47 | T   | 55 | GLE | 63 | ST   |
 
 ## 12. Limitations & caveats
 
-*TBD.* Self-modifying code, multi-unit linkage, BCD/CAS edge cases, performance
-bound from shadow flags.
+- **Self-modifying code.** Not supported. Source-level transpile freezes the m68k
+  instruction stream at convert time; runtime patches against m68k addresses have no
+  effect on the emitted IE64 stream.
+- **Multi-unit linkage.** `xdef` / `xref` are dropped. Multi-file builds must be
+  concatenated through `kmake.sh` so all symbols resolve in a single namespace.
+- **CAS / CAS2.** `CAS` lowers to a non-atomic load-cmp-store fallback; multi-context
+  guests racing on the same address will observe lost updates. `CAS2` is unsupported.
+- **BCD edge cases.** ABCD/SBCD/NBCD cover the common `Dn,Dn` and `-(Ay),-(Ax)` forms
+  with X-flag carry propagation; underflow into the X flag matches m68k semantics but
+  has not been bit-validated against every 6809-era undefined-flag corner case.
+- **Performance.** Shadow-flag emission inflates straight-line code 4–8× when fuse
+  fails. The fuse pass mitigates the bulk of CMP/Bcc traffic, but unfused spans
+  (especially around macros that hide flag dependencies) carry real runtime cost.
+- **Memory-slot reentrancy.** `__m68kto64_fpcr_save` and `__m68kto64_fp_scratch_q` are
+  per-output-file globals. Single-thread guests are unaffected; multi-context guests
+  must wrap interrupt prolog/epilog with manual save/restore (see §15.FP).
 
 ## 13. Worked examples
 
-*TBD — Phase 6.* `controlloop.s` snippet → IE64; AB3D2 hot-loop case study.
+All snippets in this section are real `m68kto64` output. They round-trip through
+`sdk/bin/ie64asm` cleanly and back the integer goldens
+(`cmd/m68kto64/golden/{arith_basic,control_flow,shadow_ccr}.s`).
+
+#### 1. Straight-line arithmetic — fused ADD / SUB
+
+m68k input:
+
+```asm
+        move.l  #5,d1
+        add.l   d1,d0
+        sub.l   #1,d0
+        rts
+```
+
+IE64 lowering (key fragments shown; full shadow CCR updates elided for brevity):
+
+```asm
+        move.l  r17, #5
+        move.l  r2, r17           ; d1 ← #5
+        ; … shadow update r24..r27 …
+        move.l  r21, r1           ; pre-op snapshot of d0 for V
+        add.l   r1, r1, r2        ; d0 ← d0 + d1
+        ; … N/Z/C/V shadows from r21, r2, r1 …
+        move.l  r17, #1
+        move.l  r21, r1
+        sub.l   r1, r1, r17       ; d0 ← d0 - 1
+        ; … shadows …
+        load.l  r17, (r30)        ; rts (32-bit emulated stack on r30)
+        add.l   r30, r30, #4
+        jmp     (r17)
+```
+
+Notes: r1 = d0, r2 = d1, r17 = ScrV1 immediate carrier, r21 = pre-op snapshot for
+shadow C/V. The RTS sequence shows the 4-byte guest-stack pop on r30 — never a native
+IE64 8-byte slot.
+
+#### 2. Adjacent-fuse loop — DBcc-shaped countdown
+
+m68k input:
+
+```asm
+start:
+        move.l  #10,d0
+loop:
+        sub.l   #1,d0
+        cmp.l   #0,d0
+        bne     loop
+        bsr     helper
+        bra     done
+helper:
+        move.l  #1,d1
+        rts
+done:
+        rts
+```
+
+IE64 lowering of the fused-loop body and the BSR sequence:
+
+```asm
+loop:
+        move.l  r17, #1
+        move.l  r21, r1
+        sub.l   r1, r1, r17        ; d0 -= 1 (shadows updated, fused below)
+        ; … (shadow updates emitted because Bcc is non-adjacent to sub) …
+        move.l  r17, #0
+        bne     r1, r17, loop      ; ← fused CMP+BNE → integer-pair branch on r1,r17
+
+        sub.l   r30, r30, #4       ; bsr helper — push 32-bit return label
+        la      r17, __m68kto64_bsr_ret_1
+        store.l r17, (r30)
+        bra     helper
+__m68kto64_bsr_ret_1:
+        bra     done
+
+helper:
+        move.l  r17, #1
+        move.l  r2, r17            ; d1 ← #1
+        ; … shadows …
+        load.l  r17, (r30)         ; rts
+        add.l   r30, r30, #4
+        jmp     (r17)
+```
+
+Notes: the auto-generated label `__m68kto64_bsr_ret_N` makes the m68k JSR/BSR push
+explicit; the 4-byte slot on r30 carries the return address. The `bne r1, r17, loop`
+form is the fused emit — no shadow CCR read is required because the producer (`sub.l`)
+and the consumer (`bne` after the immediate compare against #0) are adjacent.
+
+#### 3. Standalone shadow-CCR consumer (fuse fails)
+
+m68k input — an intervening `move.l` between the flag producer and the consumer
+defeats the fuse:
+
+```asm
+start:
+        move.l  #10,d0
+        tst.l   d0
+        move.l  #$1234,d1   ; intervening op — forces shadow-CCR path
+        beq     target
+        cmp.l   #5,d0
+        move.l  #$5678,d2
+        blt     other
+target: rts
+other:  rts
+```
+
+IE64 lowering:
+
+```asm
+start:
+        move.l  r17, #10
+        move.l  r1, r17            ; d0 ← #10  (shadows updated below)
+        sext.l  r24, r17           ; N
+        move.l  r25, r17           ; Z
+        move.l  r26, #0            ; C
+        move.l  r27, #0            ; V
+
+        ; tst.l d0  — refresh shadows from r1
+        sext.l  r24, r1
+        move.l  r25, r1
+        move.l  r26, #0
+        move.l  r27, #0
+
+        move.l  r17, #$1234        ; intervening op (does its own shadow update)
+        move.l  r2, r17
+        ; … shadows …
+
+        beqz    r25, target        ; standalone BEQ — reads shadow Z (r25)
+
+        ; cmp.l #5,d0 — produces full N/Z/C/V from pre-op snapshot
+        move.l  r17, #5
+        sub.l   r21, r1, r17       ; result discarded for cmp; shadows captured
+        ; … N/Z/C/V update sequence …
+
+        move.l  r17, #$5678
+        move.l  r3, r17            ; d2 ← #$5678 (clobbers shadows again)
+        ; … shadows …
+
+        ; blt other — needs N != V, must reconstruct from shadow regs
+        lsr.q   r17, r24, #63      ; sign bit of shadow N
+        and.q   r17, r17, #1
+        eor.q   r17, r17, r27      ; N XOR V
+        bnez    r17, other         ; LT condition
+
+target: load.l r17, (r30); add.l r30, r30, #4; jmp (r17)
+other:  load.l r17, (r30); add.l r30, r30, #4; jmp (r17)
+```
+
+Notes: `beqz r25, target` is the simple shadow-Z form. The `blt` lower at the bottom
+shows the signed-LT compose: `(N XOR V) != 0`. Every intervening op refreshes shadows,
+so the consumer always reads the most recently composed values — m68k semantics.
 
 ### §13.FP — FPU worked examples
 
@@ -405,8 +740,8 @@ IE64 lowering (key fragments):
         dmul    f4, f4, f6
         dadd    f0, f0, f4
         sub.l   r1, r1, #1
-        sext.w  ScrTmp1, r1
-        bne     ScrTmp1, #-1, .loop
+        sext.w  r17, r1                  ; ScrV1 = sext.w(d0 low word)
+        bne     r17, #-1, .loop          ; DBRA: branch while low word ≠ -1
         rts
 ```
 
@@ -470,8 +805,8 @@ IE64 lowering for the hot fragment:
         add.l   r9, r9, #8
         dadd    f2, f2, f4          ; fp1 += fp2
         sub.l   r1, r1, #1
-        sext.w  ScrTmp1, r1
-        bne     ScrTmp1, #-1, .gen
+        sext.w  r17, r1                  ; ScrV1 = sext.w(d0 low word)
+        bne     r17, #-1, .gen           ; DBRA: branch while low word ≠ -1
         rts
 ```
 
@@ -480,8 +815,35 @@ ShadowFPCC liveness elision interact cleanly across typical FPU hot loops.
 
 ## 14. Troubleshooting
 
-*TBD — Phase 6.* Common assembler errors after conversion, fuse-failure diagnostics,
-`-strict` output reading.
+**Shadow-CCR consumer reads stale flags.** Symptom: a Bcc takes the wrong path after
+an apparently-unrelated `move.l`. Cause: m68k MOVE updates NZCV; the shadow-CCR
+producer pass faithfully refreshes r24/r25/r26/r27 on every flag-touching op, so the
+consumer sees the most recent producer's flags, not the CMP/TST you intended. Either
+move the CMP/TST adjacent to the consumer (so the fuse fires), or restructure to
+avoid the intervening flag-clobber.
+
+**`ie64asm` rejects an emit with `unknown register`.** Almost always an EA scratch
+collision: hand-written inline IE64 inside transpiled m68k clobbered r16–r29 or
+r30/r31. Re-read §4 reservation rule and confine inline fragments to r0 or r1–r15
+copies that you have first spilled.
+
+**`-strict` errors on a span with no obvious flag consumer.** The fuse pass walks
+forward across labels and conservatively forces "all live" at any label entry. Code
+that falls through to a label but does not consume flags there will still report
+"unfused" under `-strict`. Either restructure the label out (if the label is dead) or
+accept the standalone shadow path under non-strict mode.
+
+**MOVEM mask order looks wrong.** m68k specifies that `MOVEM <list>,-(An)` writes in
+**descending** register order (a7 first) and `MOVEM (An)+,<list>` reads in
+**ascending** order. The transpiler matches both. If you need the opposite ordering
+(writing low-to-high through `-(An)`), re-order the source-side mask — the converter
+does not silently re-sort.
+
+**Multi-file build: undefined symbol from a cross-unit macro.** Symbols defined via
+`DC`-style macros expanded across multiple input files require all units to be
+concatenated into a single `m68kto64` invocation. Use `sdk/bin/m68kto64-kmake` with
+all relevant include and source paths so that macro expansions resolve in one
+namespace.
 
 ### §14.FP — FPU troubleshooting
 
@@ -502,9 +864,16 @@ register as the destination of a `d*` opcode. IE64 ISA §4.6.6 mandates even
 operand selection for double-precision ops because the odd register provides
 the high-half storage. If the assembler reports `dadd f1, ...`, the upstream
 source has either named the wrong m68k FPn (FP0 → f0, FP1 → f2, …, FP7 →
-f14 per §4.FP) or has inadvertently written through `ScrFP1` (f10 reserved)
-or `ScrFP2` (f12 reserved). Re-map against the table in §4.FP and ensure no
+f14 per §4.FP) or has inadvertently written through `ScrFP1` (f10 — also FP5)
+or `ScrFP2` (f12 — also FP6). Re-map against the table in §4.FP and ensure no
 inline IE64 fragment touches `f0`–`f15`.
+
+**FP5 / FP6 corruption across FTST/FSCALE/FGETEXP/FGETMAN.** The transpiler
+overlays `ScrFP1` on f10 (FP5) and `ScrFP2` on f12 (FP6). Programs that hold
+live FP5 / FP6 values across one of those synthesised ops will read garbage
+back. Either spill FP5 / FP6 around the op (manual `dstore`/`dload` to a
+guest-managed slot) or restrict floating-point register use to FP0–FP4 + FP7
+in the affected routine. This is the single open implementation gap (see §15.FP).
 
 `.X` extended-precision divergence against a 68881 reference is expected
 behaviour, not a bug. IE64 has no 80-bit path, so the transpiler degrades
@@ -531,9 +900,8 @@ The FINTRZ memory slot (`__m68kto64_fpcr_save`) is single-instance per
 output file. Programs that route FPU code through guest interrupt handlers
 must wrap handler entry/exit with manual FPCR save/restore — otherwise an
 interrupt fired between the FINTRZ save and restore observes the transient
-round-toward-zero FPCR value. AB3D2-class single-thread guests are
-unaffected. The same caveat applies to `__m68kto64_fp_scratch_q` used by
-FSCALE and FGETMAN.
+round-toward-zero FPCR value. Single-thread guests are unaffected. The same
+caveat applies to `__m68kto64_fp_scratch_q` used by FSCALE and FGETMAN.
 
 ## 15. Roadmap
 
@@ -547,23 +915,32 @@ Status, May 2026:
 - **Phase 5 — done.** TRAP→syscall (locked range #0–#15 instruction-encoded), CHK→bounds+syscall #17 (relocated), TRAPV→syscall #18 (relocated), integer divide-by-zero→syscall #16 (relocated), MOVEC stripped, MULU.L/MULS.L/DIVU.L/DIVS.L 64-bit pair, BFEXTU/BFEXTS.
 - **Phase A (Phase-3 completion) — done.** Shadow CCR maintained: r24=N (sign-extended), r25=Z (width-masked), r26=C (0/1), r27=V (0/1). Producers (CMP/TST/ADD/SUB/AND/OR/EOR/NOT/NEG/CLR/MOVE/MOVEQ/MULU/MULS/DIVU/DIVS/EXT/EXTB/SWAP/BTST and the bit-field family) emit shadow updates per m68k semantics; ADD/SUB/CMP/NEG capture pre-op operands for full C/V. Standalone Bcc (all 14 cc), DBcc (all variants), and Scc (all variants) consume shadows.
 - **Phase B (Phase-5 remainder) — done.** TRAPV against shadow V, ABCD/SBCD/NBCD (Dn,Dn and -(Ay),-(Ax) forms), PACK/UNPK (both forms), CAS (non-atomic load-cmp-store fallback), BFINS/BFCLR/BFSET/BFCHG/BFTST/BFFFO on Dn destinations.
-- **Phase 6 — multi-file wrapper shipped + AB3D2 dry-run clean.** All 88 AB3D2 `.s`/`.i` files transpile with **zero ERRORs and zero FUSE-MISS** (was 898 pre-shadow). `cmd/m68kto64/kmake.sh` (installed as `sdk/bin/m68kto64-kmake`) concatenates multi-file builds and invokes `ie64asm` with `-I` paths.
+- **Phase 6 — done.** Multi-file wrapper (`cmd/m68kto64/kmake.sh`, installed as `sdk/bin/m68kto64-kmake`) concatenates multi-file builds and invokes `ie64asm` with `-I` paths.
 - **Phase 7 — done.** 68881/68882 FPU coprocessor support: FP0–FP7 → f0/f2/.../f14 even-pair ABI, ShadowFPCC at r29, FCMP+FBcc adjacent fuse, ShadowFPCC liveness pass, FPSR↔Dn split-on-write/compose-on-read fold, FINTRZ memory-slot save/restore, FSCALE+FGETMAN exponent-bit-pattern round-trip, all 32 FP cc kinds (FBcc/FDBcc/FScc/FTRAPcc), full transcendental set via single-precision IE64 ops + identities, FNOP/FSAVE/FRESTORE/.P diagnostics, locked syscall range #16/#17/#18 + #32–#63 (FTRAPcc).
 
 ### Round-trip verified
 
 - Four checked-in goldens (`cmd/m68kto64/golden/{arith_basic,control_flow,shadow_ccr,fpu_basic}.s`) transpile and assemble cleanly through `sdk/bin/ie64asm`, producing non-zero binaries. Harness: `TestGolden_RoundTrip` in `cmd/m68kto64/golden_test.go`.
-- All 88 AB3D2 source files transpile with **0 ERRORs and 0 FUSE-MISS**. `kmake.sh` concat path validated on single-file builds.
+- Multi-file inputs concatenate cleanly through `sdk/bin/m68kto64-kmake` and assemble to non-zero binaries.
 - Statement coverage: **100%** of `cmd/m68kto64/` package (every function and branch covered by the test suite, including direct-invoke tests for defensive error paths).
 - Numeric differential validated: `TestM68KFPU_NumericDifferential_RuntimeVsHostMath` runs a transpiled+assembled FPU program on a real `MachineBus` + `CPU64`, reads back 5 transcendental results from guest memory, and confirms agreement with host `math.Sin/Cos/Exp/Log/Sqrt` within ε=1e-6 (Δ profile 0 to 8.3e-08, reflecting IE64 single-precision native ops widened to double).
 
 ### Genuinely out of scope for transpiler-only ship
 
-1. **AB3D2 redux-high end-to-end boot** — `diag_redux_smoke.ies` smoke on IE64 core. Requires runtime debugging of the running binary, not transpiler code work.
-2. **Harte 68020 conformance harness** — Harte test data (`testdata/680x0/`) is raw machine code, so wiring it requires a m68k disassembler step before transpile. The transpiler operates on assembly source, not bytes; conformance via Harte therefore needs an external chain (vasm round-trip or musashi-driven differential). Deferred until that chain is built.
-3. **Differential vs M68K core** — same dependency on a m68k assembler chain (vasm/devpac) to produce the reference binary the IE64 transpilation is compared to. Plan §TDD acknowledges this is built on top of the transpiler.
-4. **Performance pass on `hires.s`** — shadow-flag overhead + fuse-coverage measurements; needs binary running on IE64 core. Blocked on (1).
-5. **Multi-file AB3D2 build** — symbols like `Plr1_Data` are defined via `DCLC` macros expanded at assemble time across all units. Full build needs `macros.i` + all `bss/*.s` concatenated via `kmake.sh`; the wrapper exists but the build manifest does not.
+1. **End-to-end boot of an arbitrary transpiled binary.** Diagnostic-driven smoke
+   on the IE64 core requires runtime debugging of the running binary, not transpiler
+   code work. The transpile path is verified; the runtime behaviour of any specific
+   downstream binary is the binary's responsibility.
+2. **Harte 68020 conformance harness.** Harte test data (`testdata/680x0/`) is raw
+   machine code, so wiring it requires a m68k disassembler step before transpile.
+   The transpiler operates on assembly source, not bytes; conformance via Harte
+   therefore needs an external chain (vasm round-trip or musashi-driven differential).
+   Deferred until that chain is built.
+3. **Differential vs M68K core.** Same dependency on a m68k assembler chain
+   (vasm/devpac) to produce the reference binary the IE64 transpilation is compared
+   to. Plan §TDD acknowledges this is built on top of the transpiler.
+4. **Performance pass on transpiled hot loops.** Shadow-flag overhead + fuse-coverage
+   measurements; needs binaries running on the IE64 core. Blocked on (1).
 
 ### §15.FP — FPU roadmap
 
@@ -616,18 +993,24 @@ narrow/widen wrappers; the remaining transcendentals (FACOS, FASIN, the
 hyperbolics, FLOG10, FLOG2, FLOGNP1, FTENTOX, FTWOTOX) are synthesised
 via the standard mathematical identities.
 
-The single open implementation gap is memory-slot reentrancy under guest
-interrupts. `__m68kto64_fpcr_save` and `__m68kto64_fp_scratch_q` are
-single-instance globals per output file; the transpiler emits no
-save/restore of these slots across guest interrupt entry and exit. A
-program where an interrupt handler executes FINTRZ, FSCALE, or FGETMAN
-while the main line is mid-sequence will corrupt the slot and observe the
-transient FPCR or exponent value. AB3D2-class single-thread targets are
-unaffected. Multi-context guests must currently wrap handler prolog/epilog
-with manual slot save/restore. Lifting this restriction requires an
-interrupt-aware codegen pass that emits per-handler save/restore stubs;
-this is the natural Phase 7 successor work but is out of scope for the
-current deliverable.
+Two open implementation gaps remain. The first is the FP5 / FP6 scratch
+overlay: `ScrFP1` (f10) and `ScrFP2` (f12) double as FP5 / FP6 storage,
+so any synthesised op that uses scratch (FTST, FSCALE, FGETEXP, FGETMAN)
+clobbers the live FP5 / FP6 value. Programs are responsible for spilling
+FP5 / FP6 around those ops, or for restricting register use to FP0–FP4 +
+FP7. Lifting this restriction requires either widening the IE64 FP file
+or burning two more f-registers as dedicated scratch.
+
+The second open gap is memory-slot reentrancy under guest interrupts.
+`__m68kto64_fpcr_save` and `__m68kto64_fp_scratch_q` are single-instance
+globals per output file; the transpiler emits no save/restore of these
+slots across guest interrupt entry and exit. A program where an interrupt
+handler executes FINTRZ, FSCALE, or FGETMAN while the main line is
+mid-sequence will corrupt the slot and observe the transient FPCR or
+exponent value. Single-thread targets are unaffected. Multi-context
+guests must currently wrap handler prolog/epilog with manual slot
+save/restore. Lifting this restriction requires an interrupt-aware
+codegen pass that emits per-handler save/restore stubs.
 
 Phase 7 is otherwise content-complete: every m68k FPU mnemonic lowers to
 IE64; every FP cc kind either fuses with an adjacent FCMP/FTST or
