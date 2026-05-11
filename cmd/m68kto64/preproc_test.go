@@ -86,6 +86,134 @@ func TestPreproc_LoneCRRejected(t *testing.T) {
 	}
 }
 
+// TestPreproc_EquCaptured — Phase B: equ binding is recorded in symtab.
+func TestPreproc_EquCaptured(t *testing.T) {
+	src := "FOO equ 5\n\tnop\n"
+	var stderr bytes.Buffer
+	r, errs := Preprocess([]byte(src), "test.s", DefaultPreprocOpts(), &stderr)
+	if errs != 0 {
+		t.Fatalf("unexpected errors: %s", stderr.String())
+	}
+	v, ok := r.symtab.Get("FOO")
+	if !ok {
+		t.Fatalf("FOO not in symtab")
+	}
+	if v != 5 {
+		t.Errorf("FOO = %d, want 5", v)
+	}
+}
+
+// TestPreproc_SetMutable — set / = are mutable, equ redefinition errors.
+func TestPreproc_SetMutable(t *testing.T) {
+	type tc struct {
+		name      string
+		src       string
+		wantErrs  bool
+		wantFinal int64
+	}
+	cases := []tc{
+		{"set/set", "FOO set 1\nFOO set 2\n", false, 2},
+		{"=/=", "FOO = 1\nFOO = 2\n", false, 2},
+		{"equ/equ", "FOO equ 1\nFOO equ 2\n", true, 1},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			r, errs := Preprocess([]byte(c.src), "test.s", DefaultPreprocOpts(), &stderr)
+			gotErr := errs > 0
+			if gotErr != c.wantErrs {
+				t.Errorf("errs=%d, want err=%v, stderr=%s", errs, c.wantErrs, stderr.String())
+			}
+			v, _ := r.symtab.Get("FOO")
+			if v != c.wantFinal {
+				t.Errorf("FOO=%d, want %d", v, c.wantFinal)
+			}
+		})
+	}
+}
+
+// TestPreproc_DefineFlag — -D values parse correctly.
+func TestPreproc_DefineFlag(t *testing.T) {
+	cases := []struct {
+		defs map[string]int64
+		want map[string]int64
+	}{
+		{map[string]int64{"FOO": 1}, map[string]int64{"FOO": 1}},
+		{map[string]int64{"FOO": 5}, map[string]int64{"FOO": 5}},
+		{map[string]int64{"FOO": 0xff}, map[string]int64{"FOO": 255}},
+		{map[string]int64{"FOO": 0x10}, map[string]int64{"FOO": 16}},
+		{map[string]int64{"FOO": 5, "BAR": 7}, map[string]int64{"FOO": 5, "BAR": 7}},
+	}
+	for i, c := range cases {
+		opts := DefaultPreprocOpts()
+		opts.Defines = c.defs
+		var stderr bytes.Buffer
+		r, errs := Preprocess([]byte("\tnop\n"), "test.s", opts, &stderr)
+		if errs != 0 {
+			t.Fatalf("case %d: %s", i, stderr.String())
+		}
+		for k, want := range c.want {
+			got, ok := r.symtab.Get(k)
+			if !ok {
+				t.Errorf("case %d: %s missing", i, k)
+				continue
+			}
+			if got != want {
+				t.Errorf("case %d: %s=%d, want %d", i, k, got, want)
+			}
+		}
+	}
+}
+
+// TestPreproc_DefinePrecedence — -D mutable; source set overrides; source equ
+// errors as redefinition.
+func TestPreproc_DefinePrecedence(t *testing.T) {
+	type tc struct {
+		name     string
+		src      string
+		defs     map[string]int64
+		wantErrs bool
+		wantFoo  int64
+	}
+	cases := []tc{
+		{"D_then_set", "FOO set 2\n", map[string]int64{"FOO": 1}, false, 2},
+		{"D_then_assign", "FOO = 2\n", map[string]int64{"FOO": 1}, false, 2},
+		{"D_then_equ_errors", "FOO equ 2\n", map[string]int64{"FOO": 1}, true, 1},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			opts := DefaultPreprocOpts()
+			opts.Defines = c.defs
+			var stderr bytes.Buffer
+			r, errs := Preprocess([]byte(c.src), "test.s", opts, &stderr)
+			if (errs > 0) != c.wantErrs {
+				t.Errorf("errs=%d want err=%v stderr=%s", errs, c.wantErrs, stderr.String())
+			}
+			v, _ := r.symtab.Get("FOO")
+			if v != c.wantFoo {
+				t.Errorf("FOO=%d want %d", v, c.wantFoo)
+			}
+		})
+	}
+}
+
+// TestPreproc_IsIeSeeded — IS_IE auto-seeded to 1, suppressible via opt.
+func TestPreproc_IsIeSeeded(t *testing.T) {
+	var stderr bytes.Buffer
+	r, _ := Preprocess([]byte("\tnop\n"), "test.s", DefaultPreprocOpts(), &stderr)
+	if v, ok := r.symtab.Get("IS_IE"); !ok || v != 1 {
+		t.Errorf("IS_IE=%d ok=%v, want 1/true", v, ok)
+	}
+	opts := DefaultPreprocOpts()
+	opts.NoDefaultSeeds = true
+	r2, _ := Preprocess([]byte("\tnop\n"), "test.s", opts, &stderr)
+	if _, ok := r2.symtab.Get("IS_IE"); ok {
+		t.Errorf("IS_IE should be absent under -no-default-seeds")
+	}
+}
+
 // TestPreproc_CRLFNormalized — CRLF line endings normalize to LF and produce
 // the same output as an LF-only input would.
 func TestPreproc_CRLFNormalized(t *testing.T) {

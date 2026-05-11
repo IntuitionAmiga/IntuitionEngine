@@ -473,6 +473,37 @@ approximation), ❌ unsupported.
 
 ## 9. Directives & macros
 
+### Symbol table (Phase B)
+
+The preprocessor maintains a symbol table populated from three sources, scanned in
+forward order:
+
+1. **IE-convenience seeds** — `IS_IE=1` is auto-seeded for compatibility with
+   the legacy `ifd IS_IE` rewrite (`-no-default-seeds` suppresses for vasm-pure
+   behavior).
+2. **`-D NAME[=VALUE]`** — CLI seeds, **mutable** class. Value literals share the
+   source-expression grammar: `$hex`, `0x...`, `%bin`, decimal, optional sign.
+   Whitespace around `=` is rejected at the CLI surface only (source-level
+   `FOO = 5` allows whitespace per vasm).
+3. **Source-level `equ` / `set` / `=`** — captured at preprocess time, evaluated
+   against the symtab as it stands at that line.
+
+Mutability classes:
+
+| Form | Class | Redefinition |
+|------|-------|--------------|
+| `NAME equ EXPR` | immutable | error |
+| `NAME set EXPR` | mutable   | overwrite |
+| `NAME = EXPR`   | mutable   | overwrite |
+| `-D NAME[=VAL]` | mutable   | overridable by source `set` / `=`; `equ` errors |
+
+Cross-class: `equ` after any prior binding errors; `set` / `=` after an existing
+`equ` errors (vasm semantics — `equ` locks the symbol).
+
+The symtab is captured in Phase B but only drives conditional gates in Phase C
+onward. Symtab-driven `if`/`elseif*` predicates use the same recursive-descent
+expression grammar described in §9 "Conditional assembly".
+
 | m68k directive | IE64 emit | Notes |
 |----------------|-----------|-------|
 | `dc.b/w/l/q` | passthrough | width-equivalent in `ie64asm` |
