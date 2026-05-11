@@ -2071,7 +2071,15 @@ func (c *Converter) emitShiftCPre(e *Emit, srcReg string, size int, ie64op, m68k
 	}
 	e.Lf("bra %s", done)
 	e.Label(zero)
-	// count == 0: m68k says C := 0 and X UNCHANGED. V := 0 for ASL too.
+	// count == 0:
+	//   LSL/LSR/ASL/ASR: m68k says C := 0, X UNCHANGED, V := 0 (ASL).
+	//   ROL/ROR:         m68k says C UNCHANGED, X UNCHANGED, V := 0.
+	//   ROXL/ROXR:       m68k says C := X, X UNCHANGED; handled by emitRox,
+	//                    not reached here.
+	// We unconditionally write C := 0 for all shift/rotate mnemonics that
+	// route through emitShiftCPre. Correct for LSL/LSR/ASL/ASR; deviation
+	// for ROL/ROR (documented in sdk/docs/m68Kto64.md §12 "Rotate count=0
+	// C-flag deviation").
 	e.Lf("move.l %s, #0", ShadowC)
 	if m68kMnem == "asl" {
 		e.Lf("move.l %s, #0", ShadowV)
