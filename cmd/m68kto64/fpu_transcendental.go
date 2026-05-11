@@ -33,6 +33,19 @@ func (c *Converter) emitFTranscendental(e *Emit, l Line, m string) error {
 	if !ok {
 		return fmt.Errorf("%s dst must be FPn, got %q", m, dst)
 	}
+	// Every transcendental synthesis path touches f10 (ScrFP1) and/or f12
+	// (ScrFP2) — wrap the whole op in FP5/FP6 save/restore. Upper-bound the
+	// scratch set to FP12 rather than per-op fine-grained because the cost
+	// of an extra slot save is one la + one dstore.d.
+	// NOTE: ftanh additionally uses f14 (= guest FP7) as scratch via the
+	// hyperbolic helper; FP7 corruption there is a separate known limitation
+	// not covered by this Phase 1 fix.
+	scratchSet := scratchSetFP12
+	if c.fpccLive() {
+		scratchSet |= scratchSetFP2 // already set above; explicit for clarity
+	}
+	dstFPnum, _ := fpRegNumFromToken(dst)
+	c.emitFP56SpillPrologue(e, scratchSet)
 	srcReg, err := c.materializeFPSrc(e, src, l.Size)
 	if err != nil {
 		return err
@@ -42,6 +55,7 @@ func (c *Converter) emitFTranscendental(e *Emit, l Line, m string) error {
 		if c.fpccLive() {
 			c.emitShadowFPCCFromResult(e, dstFP)
 		}
+		c.emitFP56SpillEpilogue(e, scratchSet, dstFPnum)
 	}()
 
 	// Direct single-precision native ops.

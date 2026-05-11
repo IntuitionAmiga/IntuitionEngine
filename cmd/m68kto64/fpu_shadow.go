@@ -33,6 +33,9 @@ func (c *Converter) emitFCmp(e *Emit, l Line) error {
 	if size == "" {
 		size = ".x"
 	}
+	scratchSet := detectFP56MaterializeScratch(src)
+	// FCMP has no FPn destination — pass dstFPnum=-1 so epilogue restores all.
+	c.emitFP56SpillPrologue(e, scratchSet)
 	srcReg, err := c.materializeFPSrc(e, src, size)
 	if err != nil {
 		return err
@@ -41,6 +44,7 @@ func (c *Converter) emitFCmp(e *Emit, l Line) error {
 	if c.fpccLive() {
 		c.emitShadowFPCCFromDcmp(e)
 	}
+	c.emitFP56SpillEpilogue(e, scratchSet, -1)
 	c.markFPInUse()
 	return nil
 }
@@ -51,6 +55,10 @@ func (c *Converter) emitFTst(e *Emit, l Line) error {
 		return fmt.Errorf("ftst requires 1 operand")
 	}
 	src := strings.TrimSpace(l.Operands[0])
+	// FTST body uses ScrFP2 (f12) for the zero constant; materialize may use
+	// ScrFP1 (f10) for non-FPn sources.
+	scratchSet := detectFP56MaterializeScratch(src) | scratchSetFP2
+	c.emitFP56SpillPrologue(e, scratchSet)
 	srcReg, err := c.materializeFPSrc(e, src, l.Size)
 	if err != nil {
 		return err
@@ -64,6 +72,7 @@ func (c *Converter) emitFTst(e *Emit, l Line) error {
 	if c.fpccLive() {
 		c.emitShadowFPCCFromDcmp(e)
 	}
+	c.emitFP56SpillEpilogue(e, scratchSet, -1)
 	c.usesFPConstPool = true
 	c.markFPInUse()
 	return nil

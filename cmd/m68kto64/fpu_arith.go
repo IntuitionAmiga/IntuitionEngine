@@ -39,6 +39,13 @@ func (c *Converter) emitFArith(e *Emit, l Line, m string) error {
 	if strings.ToLower(size) == ".x" {
 		// degraded silently; per-op no need to spam the comment
 	}
+	scratchSet := detectFP56MaterializeScratch(src)
+	if c.fpccLive() {
+		// emitShadowFPCCFromResult clobbers ScrFP2 (f12) — see fpu_shadow.go.
+		scratchSet |= scratchSetFP2
+	}
+	dstFPnum, _ := fpRegNumFromToken(dst)
+	c.emitFP56SpillPrologue(e, scratchSet)
 	srcReg, err := c.materializeFPSrc(e, src, size)
 	if err != nil {
 		return err
@@ -48,6 +55,7 @@ func (c *Converter) emitFArith(e *Emit, l Line, m string) error {
 	if c.fpccLive() {
 		c.emitShadowFPCCFromResult(e, dstFP)
 	}
+	c.emitFP56SpillEpilogue(e, scratchSet, dstFPnum)
 	c.markFPInUse()
 	return nil
 }
@@ -106,6 +114,18 @@ func (c *Converter) emitFUnary(e *Emit, l Line, m string) error {
 	if size == "" {
 		size = ".x"
 	}
+	scratchSet := detectFP56MaterializeScratch(src)
+	switch m {
+	case "fgetexp":
+		scratchSet |= scratchSetFP1
+	case "fgetman":
+		scratchSet |= scratchSetFP12
+	}
+	if c.fpccLive() {
+		scratchSet |= scratchSetFP2 // emitShadowFPCCFromResult uses f12
+	}
+	dstFPnum, _ := fpRegNumFromToken(dst)
+	c.emitFP56SpillPrologue(e, scratchSet)
 	srcReg, err := c.materializeFPSrc(e, src, size)
 	if err != nil {
 		return err
@@ -176,6 +196,7 @@ func (c *Converter) emitFUnary(e *Emit, l Line, m string) error {
 	if c.fpccLive() {
 		c.emitShadowFPCCFromResult(e, dstFP)
 	}
+	c.emitFP56SpillEpilogue(e, scratchSet, dstFPnum)
 	c.markFPInUse()
 	return nil
 }
@@ -193,6 +214,12 @@ func (c *Converter) emitFScale(e *Emit, l Line) error {
 	if !ok1 || !ok2 {
 		return fmt.Errorf("fscale operands must be FPn,FPn")
 	}
+	dstFPnum, _ := fpRegNumFromToken(dst)
+	scratchSet := scratchSetFP1
+	if c.fpccLive() {
+		scratchSet |= scratchSetFP2
+	}
+	c.emitFP56SpillPrologue(e, scratchSet)
 	// Extract integer scale factor: dcvtfi r17, srcFP.
 	e.Lf("dcvtfi %s, %s", ScrV1, srcFP)
 	// Build double-precision exponent: r18 = (1023 + r17) << 52.
@@ -209,6 +236,7 @@ func (c *Converter) emitFScale(e *Emit, l Line) error {
 	if c.fpccLive() {
 		c.emitShadowFPCCFromResult(e, dstFP)
 	}
+	c.emitFP56SpillEpilogue(e, scratchSet, dstFPnum)
 	c.markFPInUse()
 	return nil
 }

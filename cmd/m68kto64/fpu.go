@@ -75,6 +75,29 @@ func fpRegFromToken(tok string) (string, bool) {
 	return r.IE64, true
 }
 
+// fpRegNumFromToken returns the m68k FP register number (0..7) for an "fpN"
+// token; returns (-1, false) for non-FPn (e.g. memory operand). Used by the
+// FP5/FP6 spill epilogue to decide which destination overlap to skip.
+func fpRegNumFromToken(tok string) (int, bool) {
+	r, ok := LookupFPRegister(strings.TrimSpace(tok))
+	if !ok || r.Class != FPRegData {
+		return -1, false
+	}
+	// IE64 mapping: fpN → "f{2*N}". Parse trailing number.
+	name := r.IE64
+	if !strings.HasPrefix(name, "f") {
+		return -1, false
+	}
+	hostIdx := 0
+	if _, err := fmt.Sscanf(name[1:], "%d", &hostIdx); err != nil {
+		return -1, false
+	}
+	if hostIdx%2 != 0 || hostIdx < 0 || hostIdx > 14 {
+		return -1, false
+	}
+	return hostIdx / 2, true
+}
+
 // fpControlFromToken returns the FPRegClass for FPCR/FPSR/FPIAR tokens; for FPn
 // or non-FP tokens it returns FPRegUnknown.
 func fpControlFromToken(tok string) FPRegClass {
@@ -448,6 +471,77 @@ func (c *Converter) emitFMoveCR(e *Emit, l Line) error {
 func (c *Converter) markFPInUse() { c.fpUsed = true }
 
 // =====================================================================
+// FP5 / FP6 scratch-overlay spill helpers (Phase 1 of the two-gap closeout)
+// =====================================================================
+//
+// IE64 scratch FP registers ScrFP1=f10 and ScrFP2=f12 ARE the canonical
+// m68k FP5 and FP6 slots (FPGuestRegToHost(5)="f10", (6)="f12"). Every
+// synthesis op that touches scratch must spill live FP5/FP6 first and
+// restore after, unless the op's destination IS that FP register (in which
+// case the post-restore would overwrite the just-computed result).
+//
+// Scratch-set bits:
+//   1 = ScrFP1/FP5 is clobbered
+//   2 = ScrFP2/FP6 is clobbered
+//
+// Wrapper call sites pass the scratch set they use plus the destination
+// FP register number (or -1 if the op has no FPn destination).
+
+const (
+	scratchSetFP1 = 1
+	scratchSetFP2 = 2
+	scratchSetFP12 = scratchSetFP1 | scratchSetFP2
+)
+
+// detectFP56MaterializeScratch returns scratchSetFP1 if a materializeFPSrc
+// call for `src` will route through scratch (any non-FPn source), else 0.
+// Used by emitter wrappers to decide whether to spill FP5 before the call.
+func detectFP56MaterializeScratch(src string) int {
+	if _, isFPn := fpRegFromToken(strings.TrimSpace(src)); isFPn {
+		return 0
+	}
+	return scratchSetFP1
+}
+
+// emitFP56SpillPrologue spills the FP5/FP6 slots that the upcoming
+// synthesis op will clobber. Always emits the full spill for the slots in
+// `scratchSet` — source operands FP5/FP6 must be read into a different
+// register before calling this helper (Phase 1 wrapper-site refactor
+// commits already arrange this for the existing call sites).
+func (c *Converter) emitFP56SpillPrologue(e *Emit, scratchSet int) {
+	if scratchSet == 0 {
+		return
+	}
+	c.needsFP56Save = true
+	if scratchSet&scratchSetFP1 != 0 {
+		e.Lf("la %s, %s", ScrEA, FPSlotFP5Save)
+		e.Lf("dstore %s, (%s)  ; spill FP5 around scratch use", ScrFP1, ScrEA)
+	}
+	if scratchSet&scratchSetFP2 != 0 {
+		e.Lf("la %s, %s", ScrEA, FPSlotFP6Save)
+		e.Lf("dstore %s, (%s)  ; spill FP6 around scratch use", ScrFP2, ScrEA)
+	}
+}
+
+// emitFP56SpillEpilogue restores the FP5/FP6 slots spilled by the matching
+// prologue, skipping any slot whose destination is the op's result (where
+// the restore would overwrite live data). `dstFP` is the m68k destination
+// register number (0..7); pass -1 if the op has no FPn destination.
+func (c *Converter) emitFP56SpillEpilogue(e *Emit, scratchSet, dstFP int) {
+	if scratchSet == 0 {
+		return
+	}
+	if scratchSet&scratchSetFP1 != 0 && dstFP != 5 {
+		e.Lf("la %s, %s", ScrEA, FPSlotFP5Save)
+		e.Lf("dload %s, (%s)  ; restore FP5", ScrFP1, ScrEA)
+	}
+	if scratchSet&scratchSetFP2 != 0 && dstFP != 6 {
+		e.Lf("la %s, %s", ScrEA, FPSlotFP6Save)
+		e.Lf("dload %s, (%s)  ; restore FP6", ScrFP2, ScrEA)
+	}
+}
+
+// =====================================================================
 // FMOVEM
 // =====================================================================
 
@@ -771,6 +865,12 @@ func (c *Converter) emitFPFooter(e *Emit) {
 		e.L("dc.q 0    ; FINTRZ FPCR save/restore slot")
 		e.Label(FPSlotScratchQ)
 		e.L("dc.q 0    ; FSCALE bit-pattern round-trip slot")
+	}
+	if c.needsFP56Save {
+		e.Label(FPSlotFP5Save)
+		e.L("dc.q 0    ; FP5 spill around scratch-clobbering ops (Phase 1)")
+		e.Label(FPSlotFP6Save)
+		e.L("dc.q 0    ; FP6 spill around scratch-clobbering ops (Phase 1)")
 	}
 	for _, ent := range c.fpConsts {
 		e.Label(ent.Label)

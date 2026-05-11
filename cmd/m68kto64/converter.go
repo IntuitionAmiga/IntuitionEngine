@@ -32,6 +32,11 @@ type Converter struct {
 	fpUsed          bool
 	usesFPConstPool bool
 	fpConsts        map[string]fpConstEntry
+	// needsFP56Save is set when at least one synthesis op that touches FP5/FP6
+	// scratch (FTST/FSCALE/FNEG/FGETEXP/FGETMAN/SINH/COSH/ATANH/...) is
+	// lowered. Gates BSS allocation of __m68kto64_fp5_save / fp6_save and
+	// (Phase 2) decides handler-frame size for the RTE-walkback wrapper.
+	needsFP56Save bool
 	// fpccLiveAt is populated by the Phase-7.4 liveness pass to gate
 	// ShadowFPCC update emission. Indexed by line position in the lexed
 	// input.
