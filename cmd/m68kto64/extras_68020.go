@@ -31,9 +31,28 @@ func (c *Converter) emit68020Extra(e *Emit, l Line) (bool, error) {
 		return true, c.emitTrap(e, l)
 	case "chk":
 		return true, c.emitChk(e, l)
+	case "chk2":
+		return true, c.emitChk2(e, l)
+	case "moves":
+		return true, c.emitMoves(e, l)
+	case "callm":
+		return true, c.emitCallm(e, l)
+	case "rtm":
+		return true, c.emitRtm(e, l)
+	case "retm":
+		return true, c.emitRetm(e, l)
+	case "trapt", "trapf",
+		"trapeq", "trapne",
+		"traphi", "trapls",
+		"trapcc", "trapcs",
+		"trapmi", "trappl",
+		"trapvs", "trapvc",
+		"trapge", "traplt",
+		"trapgt", "traple":
+		return true, c.emitTrapcc(e, l)
 	case "movec":
 		// Privileged, strip.
-		e.Lf("; m68kto64: stripped %s %s (privileged, user-mode AB3D2 should not hit)",
+		e.Lf("; m68kto64: stripped %s %s (privileged supervisor op; user-mode guests should not reach it)",
 			l.Mnemonic, strings.Join(l.Operands, ","))
 		return true, nil
 	case "mulu", "muls":
@@ -128,6 +147,194 @@ func (c *Converter) emitChk(e *Emit, l Line) error {
 	e.Label(fail)
 	e.L("syscall #17")
 	e.Label(pass)
+	return nil
+}
+
+// emitChk2 lowers CHK2.<sz> <ea>,Rn — m68k bounds-trap if Rn is outside
+// [lower,upper] inclusive. Lower/upper are a contiguous size-pair at <ea>.
+// Dn form: bounds sign-extended to long, register sign-extended to long,
+// signed compare. An form: 32-bit signed compare with bounds sign-extended
+// to long. Fail path → syscall #17 (shared CHK vector, see §11).
+func (c *Converter) emitChk2(e *Emit, l Line) error {
+	if len(l.Operands) != 2 {
+		return fmt.Errorf("chk2 requires 2 operands")
+	}
+	src, e1 := ParseOperand(l.Operands[0])
+	if e1 != nil {
+		return e1
+	}
+	rn, e2 := ParseOperand(l.Operands[1])
+	if e2 != nil {
+		return e2
+	}
+	if rn.Mode != AMDataReg && rn.Mode != AMAddrReg {
+		return fmt.Errorf("chk2 destination must be Dn or An")
+	}
+	size := SizeBytes(l.Size)
+	if size == 0 {
+		size = 2
+	}
+	szIE := IE64Size(size)
+
+	// Compute EA into ScrEA (r16).
+	switch src.Mode {
+	case AMIndirect:
+		e.Lf("move.l %s, %s", ScrEA, src.Reg.IE64)
+	case AMDispAn:
+		e.Lf("lea %s, %s(%s)", ScrEA, dispOrZero(src.Disp), src.Reg.IE64)
+	case AMAbsW, AMAbsL:
+		e.Lf("la %s, %s", ScrEA, src.Disp)
+	default:
+		return fmt.Errorf("chk2: EA mode %v not supported", src.Mode)
+	}
+
+	// Load bound pair from contiguous memory.
+	e.Lf("load%s %s, (%s)", szIE, ScrV1, ScrEA)
+	e.Lf("load%s %s, %d(%s)", szIE, ScrV2, size, ScrEA)
+
+	// Sign-extend bounds to long for the signed compare.
+	if size != 4 {
+		e.Lf("sext%s %s, %s", szIE, ScrV1, ScrV1)
+		e.Lf("sext%s %s, %s", szIE, ScrV2, ScrV2)
+	}
+
+	// Sign-extend the test register to long.
+	regVal := rn.Reg.IE64
+	if rn.Mode == AMDataReg && size != 4 {
+		e.Lf("sext%s %s, %s", szIE, ScrAux, rn.Reg.IE64)
+		regVal = ScrAux
+	}
+
+	pass := e.NewLabel("chk2_pass")
+	fail := e.NewLabel("chk2_fail")
+	e.Lf("blt %s, %s, %s", regVal, ScrV1, fail)
+	e.Lf("bgt %s, %s, %s", regVal, ScrV2, fail)
+	e.Lf("bra %s", pass)
+	e.Label(fail)
+	e.L("syscall #17")
+	e.Label(pass)
+	return nil
+}
+
+// emitTrapcc lowers 68020 integer TRAPcc (16 cc kinds) — conditional trap on
+// shadow CCR. Lowering: cc TRUE → branch to `do_trap` label → `syscall #18`
+// (shared TRAPV vector, m68k vector 7). cc FALSE falls through.
+//
+// Optional `#data16` / `#data32` operand (TRAPcc.W / TRAPcc.L) is parsed and
+// dropped with a diagnostic — no IE64 handler observes it.
+func (c *Converter) emitTrapcc(e *Emit, l Line) error {
+	// Optional immediate data operand — drop with diag.
+	if len(l.Operands) == 1 {
+		op, err := ParseOperand(l.Operands[0])
+		if err != nil {
+			return err
+		}
+		if op.Mode != AMImmediate {
+			return fmt.Errorf("%s operand must be #imm", l.Mnemonic)
+		}
+		e.Lf("; m68kto64: %s data operand dropped (#%s — no IE64 handler reads it)",
+			l.Mnemonic, op.Imm)
+	} else if len(l.Operands) > 1 {
+		return fmt.Errorf("%s takes 0 or 1 operands", l.Mnemonic)
+	}
+
+	switch l.Mnemonic {
+	case "trapt":
+		e.L("syscall #18")
+		return nil
+	case "trapf":
+		e.Lf("; m68kto64: %s (cc always false, no trap emitted)", l.Mnemonic)
+		return nil
+	}
+
+	doTrap := e.NewLabel("trapcc_do")
+	past := e.NewLabel("trapcc_past")
+	// emitDBccConditionSkip semantics: branch to `skip` when cc TRUE — match
+	// directly for TRAPcc (cc TRUE → take the trap).
+	if err := c.emitDBccConditionSkip(e, l.Mnemonic, doTrap); err != nil {
+		return err
+	}
+	e.Lf("bra %s", past)
+	e.Label(doTrap)
+	e.L("syscall #18")
+	e.Label(past)
+	return nil
+}
+
+// =====================================================================
+// 68020 supervisor / module-call loose ends
+// =====================================================================
+//
+// MOVES / CALLM / RTM / RETM lower as approximations: alternate FC-space and
+// module-descriptor semantics have no generic user-mode IE64 representation.
+// Each emits a ⚠️ transpiler diagnostic and proceeds with the most faithful
+// available rewrite (MOVE / JSR / RTS). Per Strict-mode policy, none error
+// under -strict.
+
+// emitMoves lowers MOVES.<sz> by forwarding to MOVE.<sz>. FC-space ignored.
+func (c *Converter) emitMoves(e *Emit, l Line) error {
+	e.Lf("; m68kto64: MOVES → MOVE (FC-space dropped)")
+	fwd := l
+	fwd.Mnemonic = "move"
+	return c.emitInstruction(e, fwd)
+}
+
+// emitCallm lowers CALLM #n,<ea> by forwarding to JSR <ea>. Module-descriptor
+// count is dropped.
+func (c *Converter) emitCallm(e *Emit, l Line) error {
+	if len(l.Operands) != 2 {
+		return fmt.Errorf("callm requires 2 operands (#n, <ea>)")
+	}
+	cnt, err := ParseOperand(l.Operands[0])
+	if err != nil {
+		return err
+	}
+	if cnt.Mode != AMImmediate {
+		return fmt.Errorf("callm: first operand must be #imm")
+	}
+	e.Lf("; m68kto64: CALLM → JSR (module descriptor #%s dropped)", cnt.Imm)
+	fwd := l
+	fwd.Mnemonic = "jsr"
+	fwd.Operands = []string{l.Operands[1]}
+	return c.emitInstruction(e, fwd)
+}
+
+// emitRtm lowers RTM Rn by forwarding to RTS. The Rn operand (module's saved
+// frame pointer) is dropped — no module-frame semantics in IE64.
+func (c *Converter) emitRtm(e *Emit, l Line) error {
+	reg := ""
+	if len(l.Operands) == 1 {
+		reg = strings.TrimSpace(l.Operands[0])
+	}
+	e.Lf("; m68kto64: RTM %s → RTS (module-frame teardown dropped)", reg)
+	fwd := l
+	fwd.Mnemonic = "rts"
+	fwd.Operands = nil
+	return c.emitInstruction(e, fwd)
+}
+
+// emitRetm lowers RETM #n by forwarding to RTS, then adjusting the guest
+// stack by #n bytes (matches the m68k stack-frame teardown post-RTS).
+func (c *Converter) emitRetm(e *Emit, l Line) error {
+	if len(l.Operands) != 1 {
+		return fmt.Errorf("retm requires 1 operand (#n)")
+	}
+	cnt, err := ParseOperand(l.Operands[0])
+	if err != nil {
+		return err
+	}
+	if cnt.Mode != AMImmediate {
+		return fmt.Errorf("retm: operand must be #imm")
+	}
+	e.Lf("; m68kto64: RETM #%s → RTS + sp += %s (module-frame teardown approximated)",
+		cnt.Imm, cnt.Imm)
+	fwd := l
+	fwd.Mnemonic = "rts"
+	fwd.Operands = nil
+	if err := c.emitInstruction(e, fwd); err != nil {
+		return err
+	}
+	e.Lf("add.l %s, %s, #%s", GuestSP, GuestSP, cnt.Imm)
 	return nil
 }
 

@@ -17,33 +17,33 @@ import (
 // Returns "" if mnem is not a conditional branch / scc.
 func bccKind(mnem string) string {
 	switch mnem {
-	case "beq", "dbeq", "seq":
+	case "beq", "dbeq", "seq", "trapeq":
 		return "eq"
-	case "bne", "dbne", "sne":
+	case "bne", "dbne", "sne", "trapne":
 		return "ne"
-	case "blt", "dblt", "slt":
+	case "blt", "dblt", "slt", "traplt":
 		return "lt"
-	case "bge", "dbge", "sge":
+	case "bge", "dbge", "sge", "trapge":
 		return "ge"
-	case "bgt", "dbgt", "sgt":
+	case "bgt", "dbgt", "sgt", "trapgt":
 		return "gt"
-	case "ble", "dble", "sle":
+	case "ble", "dble", "sle", "traple":
 		return "le"
-	case "bhi", "dbhi", "shi":
+	case "bhi", "dbhi", "shi", "traphi":
 		return "hi"
-	case "bls", "dbls", "sls":
+	case "bls", "dbls", "sls", "trapls":
 		return "ls"
-	case "bcc", "dbcc", "scc":
+	case "bcc", "dbcc", "scc", "trapcc":
 		return "cc"
-	case "bcs", "dbcs", "scs":
+	case "bcs", "dbcs", "scs", "trapcs":
 		return "cs"
-	case "bmi", "dbmi", "smi":
+	case "bmi", "dbmi", "smi", "trapmi":
 		return "mi"
-	case "bpl", "dbpl", "spl":
+	case "bpl", "dbpl", "spl", "trappl":
 		return "pl"
-	case "bvs", "dbvs", "svs":
+	case "bvs", "dbvs", "svs", "trapvs":
 		return "vs"
-	case "bvc", "dbvc", "svc":
+	case "bvc", "dbvc", "svc", "trapvc":
 		return "vc"
 	case "bra", "dbra", "dbf", "dbt":
 		// Not flag-consuming in the classical sense; callers handle.

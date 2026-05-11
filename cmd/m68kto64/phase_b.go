@@ -37,6 +37,8 @@ func (c *Converter) emitPhaseB(e *Emit, l Line) (bool, error) {
 		return true, c.emitUnpk(e, l)
 	case "cas":
 		return true, c.emitCas(e, l)
+	case "cas2":
+		return true, c.emitCas2(e, l)
 	case "bfins":
 		return true, c.emitBfins(e, l)
 	case "bfclr":
@@ -49,6 +51,16 @@ func (c *Converter) emitPhaseB(e *Emit, l Line) (bool, error) {
 		return true, c.emitBftst(e, l)
 	case "bfffo":
 		return true, c.emitBfffo(e, l)
+	case "addx":
+		return true, c.emitAddxSubx(e, l, true)
+	case "subx":
+		return true, c.emitAddxSubx(e, l, false)
+	case "negx":
+		return true, c.emitNegx(e, l)
+	case "roxl":
+		return true, c.emitRox(e, l, true)
+	case "roxr":
+		return true, c.emitRox(e, l, false)
 	}
 	return false, nil
 }
@@ -229,6 +241,301 @@ func (c *Converter) emitNbcd(e *Emit, l Line) error {
 }
 
 // =====================================================================
+// ADDX / SUBX / NEGX — X-chain-in arithmetic
+// =====================================================================
+//
+// m68k ADDX/SUBX/NEGX consume the X (extend) flag as a chain-in carry/borrow.
+// Producers update ShadowX at emit.go:69 / ccr_shadow.go:72; these emitters
+// are the missing consumer side.
+//
+// Operand forms:
+//   ADDX.<sz> Dy,Dx          SUBX.<sz> Dy,Dx          NEGX.<sz> Dn
+//   ADDX.<sz> -(Ay),-(Ax)    SUBX.<sz> -(Ay),-(Ax)    NEGX.<sz> <mem>  (Dn-only here)
+//
+// Flag semantics differ from ABCD: V is **defined** (signed overflow), not
+// undefined. Z is sticky (cleared only when result nonzero — preserve prior
+// value otherwise). N reflects masked sign. X := C after the op.
+//
+// Lowering computes the full 64-bit (dst + src + X) or (dst - src - X) into
+// ScrAux, then extracts C from bit `8*size` of the unmasked sum/diff and V
+// from a sign-bit XOR mask using ShadowTmp1 / ShadowTmp2.
+
+// addxLoadOperands resolves ADDX/SUBX operands at the requested size.
+//
+// For Dn,Dn: returns the IE64 guest-mapped register names and isMem=false.
+// For -(Ay),-(Ax): emits size-aware predec + load.<sz> into ScrV1 (src) and
+// ScrAux (dst), returns ScrV1 / ScrAux as the value carriers and isMem=true
+// (caller must store.<sz> the result back at dst.Reg.IE64).
+//
+// dstOp is returned so the caller can reach dst.Reg.IE64 for the writeback.
+func (c *Converter) addxLoadOperands(e *Emit, l Line, size int) (srcReg, dstReg string, isMem bool, dstOp Operand, err error) {
+	if len(l.Operands) != 2 {
+		err = fmt.Errorf("%s requires 2 operands", l.Mnemonic)
+		return
+	}
+	src, e1 := ParseOperand(l.Operands[0])
+	if e1 != nil {
+		err = e1
+		return
+	}
+	dst, e2 := ParseOperand(l.Operands[1])
+	if e2 != nil {
+		err = e2
+		return
+	}
+	if src.Mode == AMDataReg && dst.Mode == AMDataReg {
+		return src.Reg.IE64, dst.Reg.IE64, false, dst, nil
+	}
+	if src.Mode == AMPreDec && dst.Mode == AMPreDec {
+		szIE := IE64Size(size)
+		e.Lf("sub.l %s, %s, #%d", src.Reg.IE64, src.Reg.IE64, size)
+		e.Lf("load%s %s, (%s)", szIE, ScrV1, src.Reg.IE64)
+		e.Lf("sub.l %s, %s, #%d", dst.Reg.IE64, dst.Reg.IE64, size)
+		e.Lf("load%s %s, (%s)", szIE, ScrAux, dst.Reg.IE64)
+		return ScrV1, ScrAux, true, dst, nil
+	}
+	err = fmt.Errorf("%s: unsupported operand combination", l.Mnemonic)
+	return
+}
+
+// emitAddxSubx lowers ADDX (isAdd=true) or SUBX (isAdd=false) at the size
+// in l.Size (defaults to .w if absent).
+func (c *Converter) emitAddxSubx(e *Emit, l Line, isAdd bool) error {
+	size := SizeBytes(l.Size)
+	if size == 0 {
+		size = 2
+	}
+	srcCarrier, dstCarrier, isMem, dstOp, err := c.addxLoadOperands(e, l, size)
+	if err != nil {
+		return err
+	}
+	mask := SizeMask(size)
+	bitN := size * 8
+	signBit := bitN - 1
+
+	// Stage src and pre-op dst at width into ShadowTmp scratches we own for
+	// the full shadow-update window. ScrV1/ScrAux may collide with the
+	// memory-form holders above, so route through ShadowTmp1 (src masked)
+	// and ShadowSnap (dst masked, pre-op snapshot for V).
+	e.Lf("and.l %s, %s, #%s", ShadowTmp1, srcCarrier, mask)
+	e.Lf("and.l %s, %s, #%s", ShadowSnap, dstCarrier, mask)
+
+	// Full-width result = dst ± src ± X. Use ScrAux to hold the unmasked
+	// 64-bit value (carry/borrow lives in bit `bitN`).
+	if isAdd {
+		e.Lf("add.q %s, %s, %s", ScrAux, ShadowSnap, ShadowTmp1)
+		e.Lf("add.q %s, %s, %s", ScrAux, ScrAux, ShadowX)
+	} else {
+		e.Lf("sub.q %s, %s, %s", ScrAux, ShadowSnap, ShadowTmp1)
+		e.Lf("sub.q %s, %s, %s", ScrAux, ScrAux, ShadowX)
+	}
+
+	// C = bit `bitN` of unmasked result.
+	e.Lf("lsr.q %s, %s, #%d", ShadowC, ScrAux, bitN)
+	e.Lf("and.q %s, %s, #1", ShadowC, ShadowC)
+
+	// V = signed-overflow at the width sign bit.
+	//   ADD: V = NOT(d XOR s) AND (d XOR r), sign bit.
+	//   SUB: V = (d XOR s) AND (d XOR r), sign bit.
+	// d = ShadowSnap (already width-masked), s = ShadowTmp1, r = ScrAux masked.
+	// Use ShadowTmp2 to hold (d XOR r), ShadowV as workspace.
+	e.Lf("and.l %s, %s, #%s", ShadowTmp2, ScrAux, mask) // masked result
+	e.Lf("eor.q %s, %s, %s", ShadowTmp2, ShadowTmp2, ShadowSnap) // d XOR r
+	e.Lf("eor.q %s, %s, %s", ShadowV, ShadowSnap, ShadowTmp1)    // d XOR s
+	if isAdd {
+		e.Lf("not.q %s, %s", ShadowV, ShadowV) // NOT(d XOR s)
+	}
+	e.Lf("and.q %s, %s, %s", ShadowV, ShadowV, ShadowTmp2)
+	e.Lf("lsr.q %s, %s, #%d", ShadowV, ShadowV, signBit)
+	e.Lf("and.q %s, %s, #1", ShadowV, ShadowV)
+
+	// Mask the result down to width for writeback + N/Z shadows.
+	e.Lf("and.l %s, %s, #%s", ScrAux, ScrAux, mask)
+
+	// Sticky Z: r25 stays nonzero if any prior op in the chain produced
+	// nonzero, or if this op did. (r25 == 0 ⇔ m68k Z=1.)
+	e.Lf("or.l %s, %s, %s", ShadowZ, ShadowZ, ScrAux)
+
+	// N: sign-extend masked result.
+	if size == 4 {
+		e.Lf("sext.l %s, %s", ShadowN, ScrAux)
+	} else {
+		e.Lf("sext%s %s, %s", IE64Size(size), ShadowN, ScrAux)
+	}
+
+	// X := C.
+	e.Lf("move.l %s, %s", ShadowX, ShadowC)
+
+	// Writeback.
+	if isMem {
+		e.Lf("store%s %s, (%s)", IE64Size(size), ScrAux, dstOp.Reg.IE64)
+		return nil
+	}
+	// Dn dst — partial-update merge.
+	e.Lf("and.q %s, %s, #%s", dstCarrier, dstCarrier, SizeInvMask(size))
+	e.Lf("or.q %s, %s, %s", dstCarrier, dstCarrier, ScrAux)
+	return nil
+}
+
+// emitNegx lowers NEGX.<sz> Dn — dst = 0 - dst - X with full N/Z/C/V shadows
+// per the SUBX rule with src treated as 0. Memory destinations fall back to
+// "unsupported" until needed (matches the NBCD pattern at phase_b.go:202).
+func (c *Converter) emitNegx(e *Emit, l Line) error {
+	if len(l.Operands) != 1 {
+		return fmt.Errorf("negx requires 1 operand")
+	}
+	dst, err := ParseOperand(l.Operands[0])
+	if err != nil {
+		return err
+	}
+	if dst.Mode != AMDataReg {
+		return fmt.Errorf("negx: only Dn supported in Phase B")
+	}
+	size := SizeBytes(l.Size)
+	if size == 0 {
+		size = 2
+	}
+	mask := SizeMask(size)
+	bitN := size * 8
+	signBit := bitN - 1
+	rd := dst.Reg.IE64
+
+	// Snapshot pre-op dst at width.
+	e.Lf("and.l %s, %s, #%s", ShadowSnap, rd, mask)
+	// src is 0 for NEGX.
+	e.Lf("move.l %s, #0", ShadowTmp1)
+
+	// Full-width result = 0 - dst - X.
+	e.Lf("sub.q %s, %s, %s", ScrAux, ShadowTmp1, ShadowSnap)
+	e.Lf("sub.q %s, %s, %s", ScrAux, ScrAux, ShadowX)
+
+	// C — borrow at bit `bitN`. For 0 - dst - X this is 1 iff (dst | X) nonzero.
+	// Use the standard "lsr.q bitN, and #1" extraction.
+	e.Lf("lsr.q %s, %s, #%d", ShadowC, ScrAux, bitN)
+	e.Lf("and.q %s, %s, #1", ShadowC, ShadowC)
+
+	// V: SUB form with src=0 — (d XOR 0) AND (d XOR r) = d AND (d XOR r).
+	e.Lf("and.l %s, %s, #%s", ShadowTmp2, ScrAux, mask)
+	e.Lf("eor.q %s, %s, %s", ShadowTmp2, ShadowTmp2, ShadowSnap) // d XOR r
+	e.Lf("and.q %s, %s, %s", ShadowV, ShadowSnap, ShadowTmp2)
+	e.Lf("lsr.q %s, %s, #%d", ShadowV, ShadowV, signBit)
+	e.Lf("and.q %s, %s, #1", ShadowV, ShadowV)
+
+	// Mask, sticky Z, N, X := C.
+	e.Lf("and.l %s, %s, #%s", ScrAux, ScrAux, mask)
+	e.Lf("or.l %s, %s, %s", ShadowZ, ShadowZ, ScrAux)
+	if size == 4 {
+		e.Lf("sext.l %s, %s", ShadowN, ScrAux)
+	} else {
+		e.Lf("sext%s %s, %s", IE64Size(size), ShadowN, ScrAux)
+	}
+	e.Lf("move.l %s, %s", ShadowX, ShadowC)
+
+	// Partial-update merge.
+	e.Lf("and.q %s, %s, #%s", rd, rd, SizeInvMask(size))
+	e.Lf("or.q %s, %s, %s", rd, rd, ScrAux)
+	return nil
+}
+
+// =====================================================================
+// ROXL / ROXR — rotate through X-extend ((width+1)-bit rotate)
+// =====================================================================
+//
+// Operand forms:
+//   ROXL.<sz> #data,Dn       data ∈ 1..8
+//   ROXL.<sz> Dx,Dn          count = Dx mod 64
+//   ROXL.W <ea>              memory single-bit rotate — DEFERRED, returns error
+// (and the ROXR mirror image of each.)
+//
+// Semantics:
+//   - X participates as the (width+1)th bit. X := last bit shifted out.
+//   - C := X (after the rotate completes).
+//   - count=0 → operand unchanged, but C := X (X stays). Z is NOT sticky for
+//     ROX: standard result-based "result==0 → Z=1" semantic.
+//   - V := 0 always.
+
+func (c *Converter) emitRox(e *Emit, l Line, isLeft bool) error {
+	if len(l.Operands) != 2 {
+		return fmt.Errorf("%s: memory single-bit form not yet supported", l.Mnemonic)
+	}
+	cnt, e1 := ParseOperand(l.Operands[0])
+	if e1 != nil {
+		return e1
+	}
+	dst, e2 := ParseOperand(l.Operands[1])
+	if e2 != nil {
+		return e2
+	}
+	if dst.Mode != AMDataReg {
+		return fmt.Errorf("%s: destination must be Dn (Phase B)", l.Mnemonic)
+	}
+	size := SizeBytes(l.Size)
+	if size == 0 {
+		size = 2
+	}
+	mask := SizeMask(size)
+	width := size * 8
+	rd := dst.Reg.IE64
+
+	// Materialise count into ScrAux. Reg form masks mod 64; #imm is constant.
+	switch cnt.Mode {
+	case AMImmediate:
+		e.Lf("move.l %s, #%s", ScrAux, cnt.Imm)
+	case AMDataReg:
+		e.Lf("and.l %s, %s, #63", ScrAux, cnt.Reg.IE64)
+	default:
+		return fmt.Errorf("%s: count must be Dn or #imm", l.Mnemonic)
+	}
+
+	// ShadowTmp1 = working X (chain), ShadowTmp2 = working operand (masked).
+	e.Lf("move.l %s, %s", ShadowTmp1, ShadowX)
+	e.Lf("and.l %s, %s, #%s", ShadowTmp2, rd, mask)
+
+	head := e.NewLabel("rox_head")
+	end := e.NewLabel("rox_end")
+	e.Label(head)
+	e.Lf("beqz %s, %s", ScrAux, end)
+	if isLeft {
+		// newX = bit (width-1) of operand
+		e.Lf("lsr.l %s, %s, #%d", ScrV1, ShadowTmp2, width-1)
+		e.Lf("and.l %s, %s, #1", ScrV1, ScrV1)
+		// op = (op << 1) | oldX
+		e.Lf("lsl.l %s, %s, #1", ShadowTmp2, ShadowTmp2)
+		e.Lf("or.l %s, %s, %s", ShadowTmp2, ShadowTmp2, ShadowTmp1)
+	} else {
+		// newX = bit 0 of operand
+		e.Lf("and.l %s, %s, #1", ScrV1, ShadowTmp2)
+		// op = (op >> 1) | (oldX << (width-1))
+		e.Lf("lsr.l %s, %s, #1", ShadowTmp2, ShadowTmp2)
+		e.Lf("lsl.l %s, %s, #%d", ScrV2, ShadowTmp1, width-1)
+		e.Lf("or.l %s, %s, %s", ShadowTmp2, ShadowTmp2, ScrV2)
+	}
+	e.Lf("and.l %s, %s, #%s", ShadowTmp2, ShadowTmp2, mask)
+	e.Lf("move.l %s, %s", ShadowTmp1, ScrV1)
+	e.Lf("sub.l %s, %s, #1", ScrAux, ScrAux)
+	e.Lf("bra %s", head)
+	e.Label(end)
+
+	// C := final X, X := final X (chain forward).
+	e.Lf("move.l %s, %s", ShadowC, ShadowTmp1)
+	e.Lf("move.l %s, %s", ShadowX, ShadowTmp1)
+	// V := 0.
+	e.Lf("move.l %s, #0", ShadowV)
+	// N := sign of result.
+	if size == 4 {
+		e.Lf("sext.l %s, %s", ShadowN, ShadowTmp2)
+	} else {
+		e.Lf("sext%s %s, %s", IE64Size(size), ShadowN, ShadowTmp2)
+	}
+	// Z := result (r25 nonzero ⇔ m68k Z=0). Non-sticky.
+	e.Lf("move.l %s, %s", ShadowZ, ShadowTmp2)
+	// Partial-update merge.
+	e.Lf("and.q %s, %s, #%s", rd, rd, SizeInvMask(size))
+	e.Lf("or.q %s, %s, %s", rd, rd, ShadowTmp2)
+	return nil
+}
+
+// =====================================================================
 // PACK / UNPK
 // =====================================================================
 //
@@ -399,6 +706,121 @@ func (c *Converter) emitCas(e *Emit, l Line) error {
 		e.Lf("or.q %s, %s, %s", dc.Reg.IE64, dc.Reg.IE64, ScrV2)
 	}
 	e.Lf("move.l %s, #1", ShadowZ)
+	e.Label(done)
+	return nil
+}
+
+// =====================================================================
+// CAS2 — non-atomic dual-address compare-and-swap fallback
+// =====================================================================
+//
+// CAS2.<sz> Dc1:Dc2,Du1:Du2,(Rn1):(Rn2)
+//
+// Sequential load-cmp-store-or-update on each of the two addresses. No
+// atomicity — multi-context guests will observe lost updates. Mirrors the
+// existing single-CAS fallback (`emitCas` above).
+
+// splitColonPair splits "lhs:rhs" into two trimmed parts.
+func splitColonPair(s string) (lhs, rhs string, err error) {
+	i := strings.Index(s, ":")
+	if i < 0 {
+		return "", "", fmt.Errorf("expected Lhs:Rhs, got %q", s)
+	}
+	return strings.TrimSpace(s[:i]), strings.TrimSpace(s[i+1:]), nil
+}
+
+func (c *Converter) emitCas2(e *Emit, l Line) error {
+	if len(l.Operands) != 3 {
+		return fmt.Errorf("cas2 requires 3 colon-pair operands")
+	}
+	dc1Tok, dc2Tok, err := splitColonPair(l.Operands[0])
+	if err != nil {
+		return err
+	}
+	du1Tok, du2Tok, err := splitColonPair(l.Operands[1])
+	if err != nil {
+		return err
+	}
+	ea1Tok, ea2Tok, err := splitColonPair(l.Operands[2])
+	if err != nil {
+		return err
+	}
+	dc1, err := ParseOperand(dc1Tok)
+	if err != nil {
+		return err
+	}
+	dc2, err := ParseOperand(dc2Tok)
+	if err != nil {
+		return err
+	}
+	du1, err := ParseOperand(du1Tok)
+	if err != nil {
+		return err
+	}
+	du2, err := ParseOperand(du2Tok)
+	if err != nil {
+		return err
+	}
+	ea1, err := ParseOperand(ea1Tok)
+	if err != nil {
+		return err
+	}
+	ea2, err := ParseOperand(ea2Tok)
+	if err != nil {
+		return err
+	}
+	if dc1.Mode != AMDataReg || dc2.Mode != AMDataReg ||
+		du1.Mode != AMDataReg || du2.Mode != AMDataReg {
+		return fmt.Errorf("cas2: Dc/Du operands must be Dn")
+	}
+	if ea1.Mode != AMIndirect || ea2.Mode != AMIndirect {
+		return fmt.Errorf("cas2: address operands must be (Rn)")
+	}
+	size := SizeBytes(l.Size)
+	if size == 0 {
+		size = 4
+	}
+	szIE := IE64Size(size)
+	mask := SizeMask(size)
+	invMask := SizeInvMask(size)
+
+	e.L("; m68kto64: CAS2 non-atomic fallback (no IE64 dual-address atomic primitive)")
+
+	// Load both (Rn) values: first into ScrV1, second into ScrV2.
+	e.Lf("load%s %s, (%s)", szIE, ScrV1, ea1.Reg.IE64)
+	e.Lf("load%s %s, (%s)", szIE, ScrV2, ea2.Reg.IE64)
+
+	notEq := e.NewLabel("cas2_neq")
+	done := e.NewLabel("cas2_done")
+
+	// Compare both EAs against Dc1/Dc2 (size-masked).
+	if size == 4 {
+		e.Lf("bne %s, %s, %s", ScrV1, dc1.Reg.IE64, notEq)
+		e.Lf("bne %s, %s, %s", ScrV2, dc2.Reg.IE64, notEq)
+	} else {
+		e.Lf("and.l %s, %s, #%s", ScrAux, dc1.Reg.IE64, mask)
+		e.Lf("bne %s, %s, %s", ScrV1, ScrAux, notEq)
+		e.Lf("and.l %s, %s, #%s", ScrAux, dc2.Reg.IE64, mask)
+		e.Lf("bne %s, %s, %s", ScrV2, ScrAux, notEq)
+	}
+	// Both equal: store Du1 → (Rn1), Du2 → (Rn2); Z := 1.
+	e.Lf("store%s %s, (%s)", szIE, du1.Reg.IE64, ea1.Reg.IE64)
+	e.Lf("store%s %s, (%s)", szIE, du2.Reg.IE64, ea2.Reg.IE64)
+	e.Lf("move.l %s, #0", ShadowZ) // r25==0 ⇔ Z=1
+	e.Lf("bra %s", done)
+
+	e.Label(notEq)
+	// Mismatch: Dc1 := (Rn1), Dc2 := (Rn2); Z := 0.
+	if size == 4 {
+		e.Lf("move.l %s, %s", dc1.Reg.IE64, ScrV1)
+		e.Lf("move.l %s, %s", dc2.Reg.IE64, ScrV2)
+	} else {
+		e.Lf("and.q %s, %s, #%s", dc1.Reg.IE64, dc1.Reg.IE64, invMask)
+		e.Lf("or.q %s, %s, %s", dc1.Reg.IE64, dc1.Reg.IE64, ScrV1)
+		e.Lf("and.q %s, %s, #%s", dc2.Reg.IE64, dc2.Reg.IE64, invMask)
+		e.Lf("or.q %s, %s, %s", dc2.Reg.IE64, dc2.Reg.IE64, ScrV2)
+	}
+	e.Lf("move.l %s, #1", ShadowZ) // r25!=0 ⇔ Z=0
 	e.Label(done)
 	return nil
 }

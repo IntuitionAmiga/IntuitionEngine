@@ -1712,7 +1712,8 @@ func (c *Converter) emitShiftCPre(e *Emit, srcReg string, size int, ie64op, m68k
 		e.Lf("and.q %s, %s, #1", ShadowC, ShadowC)
 	}
 	// Mirror C into X (m68k: shifts with count > 0 update X := C; ROL/ROR
-	// leave X unchanged, but the typical AB3D2 use is benign).
+	// leave X unchanged, but skipping that guarantee here is benign for the
+	// typical guest programs the transpiler targets).
 	if ie64op != "rol" && ie64op != "ror" {
 		e.Lf("move.l %s, %s", ShadowX, ShadowC)
 	}

@@ -199,7 +199,14 @@ var instructionMnemonicSet = map[string]struct{}{
 	"st": {}, "sf": {}, "seq": {}, "sne": {}, "slt": {}, "sge": {}, "sgt": {}, "sle": {},
 	"shi": {}, "sls": {}, "scc": {}, "scs": {}, "smi": {}, "spl": {}, "svs": {}, "svc": {},
 	"link": {}, "unlk": {},
+	// 68020 supervisor / module-call loose ends (approximate lowerings).
+	"moves": {}, "callm": {}, "rtm": {}, "retm": {},
 	"trap": {}, "trapv": {}, "chk": {}, "chk2": {},
+	// Integer TRAPcc (68020) — 16 cc kinds. Bare / `.W #data16` / `.L #data32`.
+	"trapt": {}, "trapf": {}, "trapeq": {}, "trapne": {},
+	"traphi": {}, "trapls": {}, "trapcc": {}, "trapcs": {},
+	"trapmi": {}, "trappl": {}, "trapvs": {}, "trapvc": {},
+	"trapge": {}, "traplt": {}, "trapgt": {}, "traple": {},
 	"bfextu": {}, "bfexts": {}, "bfins": {}, "bfclr": {}, "bfset": {}, "bfchg": {}, "bfffo": {}, "bftst": {},
 	"abcd": {}, "sbcd": {}, "nbcd": {}, "pack": {}, "unpk": {}, "cas": {}, "cas2": {},
 	// 68881 / 68882 FPU mnemonics (Phase 7).
