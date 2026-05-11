@@ -3,9 +3,20 @@
 > **Status: shipped (Phases 0–7 complete).** Integer (68000 + 68020) and 68881/68882 FPU
 > coverage are content-complete. Round-trip verified against `sdk/bin/ie64asm` on the
 > four checked-in goldens (`arith_basic`, `control_flow`, `shadow_ccr`, `fpu_basic`)
-> and on multi-file 68k inputs concatenated through the `kmake.sh` wrapper. See
+> and on multi-file 68k inputs concatenated through `sdk/scripts/ab3d2/kmake.sh`. See
 > `.claude/plans/M68KtoIE64plan.md` for the engineering plan and TDD gates and §15 for
 > the live status / open gaps.
+
+> **Changelog (vasm/devpac preprocessor pass).** Phases A–G add a full
+> vasm/devpac preprocessor in front of the lowerer: include resolution with
+> `-I` paths and cycle guarding (Phase D); `-D NAME[=VAL]` symbol seeding with
+> equ/set/= capture and a recursive-descent expression evaluator (Phase B);
+> generic `if` / `ifd` / `ifnd` / `ifeq` / `ifne` plus the full `elseif*`
+> family with first-true latch, default Model A (wrappers preserved) and
+> opt-in Model B via `-strip-cond` (Phase C); macro / endm / mexit / rept /
+> endr with `\1..\9` and globally-monotonic `\@` (Phase E); `section`
+> directive dropped (Phase F); env-gated real-world corpus smoke test
+> (Phase G).
 
 Source-to-source transpiler that converts Motorola m68k (vasm/devpac flavor) assembly
 into IE64 assembly that can be assembled by `assembler/ie64asm.go`. Sibling to
@@ -604,7 +615,13 @@ consumers may pin handlers to specific numbers.
   instruction stream at convert time; runtime patches against m68k addresses have no
   effect on the emitted IE64 stream.
 - **Multi-unit linkage.** `xdef` / `xref` are dropped. Multi-file builds must be
-  concatenated through `kmake.sh` so all symbols resolve in a single namespace.
+  concatenated through `sdk/scripts/ab3d2/kmake.sh` (or an equivalent per-port
+  wrapper) so all symbols resolve in a single namespace.
+- **Unsupported preprocessor extensions.** `\?` (devpac alt-arg) and `\<name>`
+  (vasm named macro args) emit explicit errors — add when a real port needs
+  them. Float-expression evaluation in conditional predicates is out of scope
+  (no consumer demand). `equ.s` / `equ.l` size-typed equates are not honored
+  (orthogonal to the preprocessor surface).
 - **CAS / CAS2.** `CAS` lowers to a non-atomic load-cmp-store fallback; multi-context
   guests racing on the same address will observe lost updates. `CAS2` is unsupported.
 - **BCD edge cases.** ABCD/SBCD/NBCD cover the common `Dn,Dn` and `-(Ay),-(Ax)` forms
