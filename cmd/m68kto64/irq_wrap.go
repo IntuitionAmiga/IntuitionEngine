@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 // =====================================================================
 // Phase 2 — RTE-walkback handler detection + FP slot save/restore
 // =====================================================================
@@ -57,6 +59,127 @@ func fileTouchesFP56Scratch(lines []Line) bool {
 	return false
 }
 
+// scanVectorTableHandlers — Phase F4 — pre-marks labels referenced as
+// vector-table targets. Two patterns recognised:
+//
+//   move.l #LABEL,<absolute-EA>
+//   lea LABEL,An ; ...no An clobber... ; move.l An,<absolute-EA>
+//
+// LABEL must be a non-numeric token (label/symbol). Numeric immediates
+// (e.g. move.l #$2700,sr) are skipped. The recognised LABEL is added to
+// c.irqHandlerLabels regardless of whether the source-level label has a
+// straight-line RTE fall-through path — the vector write is itself proof
+// of intent.
+//
+// An-clobber tracker for the LEA two-instruction pattern:
+//   * Any instruction writing An as destination wipes that An's entry.
+//   * JSR/BSR/JMP/BRA wipe the entire map (call boundary; callee may
+//     freely clobber).
+//   * New label opens new scope; wipe map.
+//   * RTE/RTS/RTR (block exit); wipe map.
+func (c *Converter) scanVectorTableHandlers(lines []Line) {
+	anHoldsLabel := map[string]string{} // "a0".."a6" → labelName
+	wipeAll := func() {
+		for k := range anHoldsLabel {
+			delete(anHoldsLabel, k)
+		}
+	}
+	for _, l := range lines {
+		// Label boundary wipes scope.
+		if l.Kind == LineLabelOnly || (l.Kind == LineInstruction && l.Label != "") {
+			wipeAll()
+		}
+		if l.Kind != LineInstruction {
+			continue
+		}
+		switch l.Mnemonic {
+		case "jsr", "bsr", "jmp", "bra", "rte", "rts", "rtr":
+			wipeAll()
+			continue
+		case "lea":
+			if len(l.Operands) != 2 {
+				continue
+			}
+			srcOp, err := ParseOperand(l.Operands[0])
+			if err != nil || srcOp.Mode != AMAbsL {
+				continue
+			}
+			if !looksLikeLabelToken(srcOp.Disp) {
+				continue
+			}
+			dstOp, err := ParseOperand(l.Operands[1])
+			if err != nil || dstOp.Mode != AMAddrReg {
+				continue
+			}
+			anHoldsLabel[dstOp.Reg.IE64] = srcOp.Disp
+			continue
+		case "move", "movea":
+			if len(l.Operands) != 2 {
+				continue
+			}
+			srcOp, err := ParseOperand(l.Operands[0])
+			if err != nil {
+				continue
+			}
+			dstOp, err := ParseOperand(l.Operands[1])
+			if err != nil {
+				continue
+			}
+			// (a) #LABEL → absolute EA
+			if srcOp.Mode == AMImmediate && (dstOp.Mode == AMAbsL || dstOp.Mode == AMAbsW) {
+				lbl := strings.TrimPrefix(strings.TrimSpace(srcOp.Imm), "#")
+				if looksLikeLabelToken(lbl) {
+					c.irqHandlerLabels[lbl] = true
+				}
+				continue
+			}
+			// (b) An → absolute EA, after a prior `lea LABEL,An`.
+			if srcOp.Mode == AMAddrReg && (dstOp.Mode == AMAbsL || dstOp.Mode == AMAbsW) {
+				if lbl, ok := anHoldsLabel[srcOp.Reg.IE64]; ok {
+					c.irqHandlerLabels[lbl] = true
+				}
+				continue
+			}
+			// Writing to An clobbers the tracker.
+			if dstOp.Mode == AMAddrReg {
+				delete(anHoldsLabel, dstOp.Reg.IE64)
+			}
+		default:
+			// Any instruction that targets An clobbers — conservative pass.
+			for _, raw := range l.Operands {
+				op, err := ParseOperand(strings.TrimSpace(raw))
+				if err == nil && op.Mode == AMAddrReg {
+					// Heuristic: assume any An-destination write clobbers.
+					// Only the LAST operand is the m68k destination, but
+					// conservatively wipe on any An mention.
+					delete(anHoldsLabel, op.Reg.IE64)
+				}
+			}
+		}
+	}
+}
+
+// looksLikeLabelToken returns true when s is plausibly a source-level
+// label (non-numeric identifier). Used to filter `#$2700` from
+// `#handler_name`.
+func looksLikeLabelToken(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	// Numeric prefixes: $, %, 0x, or leading digit.
+	if s[0] == '$' || s[0] == '%' {
+		return false
+	}
+	if len(s) >= 2 && (s[:2] == "0x" || s[:2] == "0X") {
+		return false
+	}
+	if s[0] >= '0' && s[0] <= '9' {
+		return false
+	}
+	return true
+}
+
 // fileTouchesFP7Scratch reports whether any FTANH appears in the line
 // stream. FTANH is the only op (as of Phase F1) that clobbers f14
 // (= guest FP7) via the hyperbolic helper.
@@ -92,6 +215,12 @@ func (c *Converter) scanRTEHandlerBlocks(lines []Line) {
 	if !c.needsFP7Save && fileTouchesFP7Scratch(lines) {
 		c.needsFP7Save = true
 	}
+	// Phase F4 — vector-table handler heuristic: scan for
+	//   move.l #LABEL,<abs>
+	//   lea LABEL,An ... move.l An,<abs>
+	// patterns and pre-mark LABEL as a handler entry. Closes the
+	// "unlabeled vector-table handlers" gap from §12.
+	c.scanVectorTableHandlers(lines)
 	curLabel := ""
 	pendingRTEs := []int{}
 	commit := func() {
