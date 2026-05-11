@@ -1,0 +1,112 @@
+-- diag_pc_trace.ies — PC sampler for the AB3D64 .ie64 boot path.
+--
+-- Lets the program run for a short warm-up, then freezes the IE64
+-- core every TICK_MS and logs PC + a small register window. Final
+-- pass dumps a disassembly burst at the last sampled PC so the
+-- stall site can be mapped back to source.
+--
+-- Usage:
+--   cd <dir containing _build/ie_media/redux-high>
+--   IntuitionEngine -ie64 -script sdk/ab3d64/tools/diag_pc_trace.ies \
+--     sdk/ab3d64/bin/ab3d2_ie64_redux_high_overdrive.ie64
+
+local WARMUP_MS   = 50
+local SAMPLES     = 40
+local TICK_MS     = 100    -- 100ms intervals — long enough to see drift, short enough to fit in a budget
+local DISASM_LINES = 24
+local PROG_START  = 0x1000
+
+local function hex32(v)
+    if v == nil then return "nil" end
+    if v < 0 then v = v + 0x100000000 end
+    return string.format("$%08X", v)
+end
+
+local function focus_ie64()
+    dbg.open()
+    local picked = nil
+    for _, e in ipairs(dbg.cpu_list() or {}) do
+        local name = e.cpu_name or e.label or ""
+        if string.find(string.upper(name), "IE64") then
+            dbg.cpu_focus(e.id)
+            picked = e
+            break
+        end
+    end
+    if not picked then
+        sys.print("[pc_trace] ERROR: no IE64 CPU found in dbg.cpu_list()")
+    else
+        sys.print(string.format("[pc_trace] focused CPU id=%s name=%s",
+            tostring(picked.id), tostring(picked.cpu_name or picked.label)))
+    end
+    return picked ~= nil
+end
+
+local function reg(name)
+    local ok, v = pcall(dbg.get_reg, name)
+    if ok then return v end
+    return nil
+end
+
+local function sample(idx)
+    dbg.freeze()
+    local pc  = reg("PC")
+    local sp  = reg("R30") or reg("SP")
+    local r1  = reg("R1")
+    local r17 = reg("R17")
+    local r16 = reg("R16")
+    sys.print(string.format(
+        "[pc_trace] #%02d PC=%s R30=%s R1=%s R16=%s R17=%s",
+        idx, hex32(pc), hex32(sp), hex32(r1), hex32(r16), hex32(r17)))
+    dbg.resume()
+    return pc
+end
+
+local function final_disasm(pc)
+    if pc == nil then return end
+    dbg.freeze()
+    local ok, lines = pcall(dbg.disasm, pc, DISASM_LINES)
+    if ok and type(lines) == "table" then
+        sys.print(string.format("[pc_trace] disasm @%s:", hex32(pc)))
+        for _, entry in ipairs(lines) do
+            sys.print(string.format("  %s  %-16s %s",
+                hex32(entry.addr or 0),
+                tostring(entry.hex or ""),
+                tostring(entry.mnemonic or "")))
+        end
+    else
+        sys.print(string.format("[pc_trace] disasm error: %s", tostring(lines)))
+    end
+    dbg.resume()
+end
+
+sys.print("[pc_trace] start")
+if not focus_ie64() then
+    sys.print("[pc_trace] aborting; cannot select IE64 CPU")
+    sys.quit()
+    return
+end
+
+sys.print(string.format("[pc_trace] warmup %dms ...", WARMUP_MS))
+sys.wait_ms(WARMUP_MS)
+
+local last_pc = nil
+local stuck_count = 0
+for i = 1, SAMPLES do
+    local pc = sample(i)
+    if pc == last_pc then
+        stuck_count = stuck_count + 1
+    else
+        stuck_count = 0
+    end
+    last_pc = pc
+    sys.wait_ms(TICK_MS)
+end
+
+sys.print(string.format("[pc_trace] PROG_START=%s; last PC=%s; consecutive same-PC samples at tail=%d",
+    hex32(PROG_START), hex32(last_pc), stuck_count))
+
+final_disasm(last_pc)
+
+sys.print("[pc_trace] done")
+sys.quit()

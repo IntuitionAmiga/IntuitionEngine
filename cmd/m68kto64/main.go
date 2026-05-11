@@ -147,6 +147,7 @@ func run(args []string, stderrW io.Writer) int {
 	strict := fs.Bool("strict", false, "Error on unfused flag spans / unsupported ops")
 	fpIrqWrap := fs.Bool("fp-irq-wrap", false, "Auto-wrap RTE handlers with FP-slot save/restore (Phase 2 opt-in)")
 	sizeFlag := fs.String("size", ".l", "Default size suffix (.l or .q)")
+	labelSalt := fs.String("label-salt", "", "Namespace __m68kto64_* labels with this salt (prevents collisions in multi-TU concat builds)")
 
 	opts := DefaultPreprocOpts()
 	opts.Defines = map[string]int64{}
@@ -176,6 +177,7 @@ func run(args []string, stderrW io.Writer) int {
 	c.strict = *strict
 	c.fpIrqWrap = *fpIrqWrap
 	c.defaultSize = *sizeFlag
+	c.labelSalt = *labelSalt
 	source, errs := c.ConvertFile(in, opts, stderrW)
 	if errs > 0 && source == "" {
 		// Pure preprocessor failure (e.g. read error or lone-CR rejection);

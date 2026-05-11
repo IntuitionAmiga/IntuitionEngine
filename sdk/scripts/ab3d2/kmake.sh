@@ -91,7 +91,12 @@ fi
 for src in "${INPUTS[@]}"; do
     base="$(basename "$src")"
     converted="$WORK/${base}.ie64.s"
-    "$M68KTO64" "${M68K_FLAGS[@]}" -o "$converted" "$src"
+    # Salt internal labels per input file so concat across multiple TUs
+    # cannot produce duplicate `__m68kto64_*` definitions (which collapse
+    # to the first occurrence under ie64asm's single-namespace symbol
+    # table — branches in later TUs then jump to the wrong site).
+    salt="$(echo "${base%.*}" | tr -c 'A-Za-z0-9' '_')"
+    "$M68KTO64" "${M68K_FLAGS[@]}" -label-salt "$salt" -o "$converted" "$src"
     {
         echo
         echo "; ========================================================================="

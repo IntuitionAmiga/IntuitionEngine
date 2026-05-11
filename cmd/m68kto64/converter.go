@@ -23,6 +23,7 @@ type Converter struct {
 	strict            bool // unsupported op -> error rather than ; TODO
 	noFlagsFuse       bool // disable Phase-3 fuse (forwards-compat flag)
 	werrorUnknownMnem bool // unknown mnemonic emits ; ERROR: rather than passing through
+	labelSalt         string // forwarded to Emit.SetLabelSalt for cross-TU label namespacing
 	errors            int
 
 	// Phase-7 FPU state. fpUsed is set when any FPU op is lowered so the
@@ -91,6 +92,7 @@ func NewConverter() *Converter {
 // emitted source plus the number of lines that produced "; ERROR:" diagnostics.
 func (c *Converter) ConvertLines(input []string) (string, int) {
 	e := &Emit{}
+	e.SetLabelSalt(c.labelSalt)
 	if !c.noHeader {
 		e.sb.WriteString("; Converted from m68k by m68kto64\n\n")
 	}

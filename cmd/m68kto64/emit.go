@@ -6,11 +6,21 @@ import (
 )
 
 // Emit accumulates IE64 source lines for one transpiled m68k routine.
-// Internal scratch labels are unique per Emit instance.
+// Internal scratch labels are unique per Emit instance — see NewLabel for
+// the cross-TU collision-avoidance scheme.
 type Emit struct {
 	sb       strings.Builder
 	labelSeq int
+	// salt namespaces __m68kto64_* labels by input TU so per-process counter
+	// restarts (each `m68kto64` invocation processes a single file with its
+	// own Emit) don't collide when kmake.sh concatenates two transpiled TUs
+	// into one ie64asm input. Set via Emit.SetLabelSalt before lowering.
+	labelSalt string
 }
+
+// SetLabelSalt namespaces NewLabel output. Empty salt keeps the
+// pre-multi-TU label shape so unit tests stay stable.
+func (e *Emit) SetLabelSalt(s string) { e.labelSalt = s }
 
 // L appends one IE64 source line, indented one tab.
 func (e *Emit) L(line string) {
@@ -30,9 +40,14 @@ func (e *Emit) Label(name string) {
 	e.sb.WriteString(":\n")
 }
 
-// NewLabel returns a unique transpiler-internal label name.
+// NewLabel returns a unique transpiler-internal label name. When a salt
+// is set, it is folded into the name (`__m68kto64_<salt>_<prefix>_<n>`)
+// so the same prefix in different TUs cannot collide post-concat.
 func (e *Emit) NewLabel(prefix string) string {
 	e.labelSeq++
+	if e.labelSalt != "" {
+		return fmt.Sprintf("__m68kto64_%s_%s_%d", e.labelSalt, prefix, e.labelSeq)
+	}
 	return fmt.Sprintf("__m68kto64_%s_%d", prefix, e.labelSeq)
 }
 
