@@ -160,6 +160,20 @@ func TestStatusDoc_FPGapsClosed(t *testing.T) {
 		"-fp-irq-wrap",
 		"RTE-walkback",
 		"integer scratch r17",
+		// Phase F1 — FTANH FP7 sub-gap
+		"__m68kto64_fp7_save",
+		"FTANH FP7 sub-gap",
+		// Phase F2 — (xxx).w sign-extension
+		"maybeSignExtAbsW",
+		"CLOSED in Phase F2",
+		// Phase F3 — ANDI/ORI/EORI #imm,CCR/SR consumer
+		"ccr_imm.go",
+		"CLOSED in Phase F3",
+		// Phase F4 — vector-table handler heuristic
+		"scanVectorTableHandlers",
+		// Phase F5 — MOVEP
+		"emitMovep",
+		"CLOSED in Phase F5",
 	}
 	for _, p := range phrases {
 		if !strings.Contains(doc, p) {
