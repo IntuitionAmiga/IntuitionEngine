@@ -24,6 +24,8 @@ type Converter struct {
 	noFlagsFuse       bool // disable Phase-3 fuse (forwards-compat flag)
 	werrorUnknownMnem bool // unknown mnemonic emits ; ERROR: rather than passing through
 	labelSalt         string // forwarded to Emit.SetLabelSalt for cross-TU label namespacing
+	flagLiveness      bool  // Phase H: integer-CC liveness elision (opt-in)
+	intCCLiveAt       map[int]bool
 	errors            int
 
 	// Phase-7 FPU state. fpUsed is set when any FPU op is lowered so the
@@ -79,6 +81,17 @@ func (c *Converter) fpccLive() bool {
 	return c.fpccLiveAt[c.curLineIdx]
 }
 
+// integerCCLive reports whether integer N/Z/C/V/X produced at the current
+// line has a live downstream consumer. With liveness elision off (default)
+// or unsetup, conservatively returns true so existing emit paths emit the
+// full shadow update sequence.
+func (c *Converter) integerCCLive() bool {
+	if c.intCCLiveAt == nil {
+		return true
+	}
+	return c.intCCLiveAt[c.curLineIdx]
+}
+
 // NewConverter constructs a Converter with default settings. The symtab is
 // pre-seeded with `IS_IE=1` to preserve the legacy ifd/ifnd lowering shape
 // for callers that use ConvertSource directly (bypassing the preprocessor).
@@ -103,6 +116,11 @@ func (c *Converter) ConvertLines(input []string) (string, int) {
 	}
 	// Compute ShadowFPCC liveness across the routine.
 	c.fpccLiveAt = computeFPCCLiveness(lines)
+	if c.flagLiveness {
+		c.intCCLiveAt = computeIntegerCCLiveness(lines)
+	} else {
+		c.intCCLiveAt = nil
+	}
 	// Phase-2 RTE-walkback: partition the line stream into handler regions
 	// when -fp-irq-wrap is enabled. No-op when disabled.
 	c.scanRTEHandlerBlocks(lines)

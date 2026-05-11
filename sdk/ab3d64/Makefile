@@ -34,7 +34,10 @@ DEFINES := -D mnu_nocode=1 -D USE_16X16_TEXEL_MULS=1 -D IE_OVERDRIVE=1
 
 # -strip-cond drops if/else/endif wrappers so dead branches don't leak
 # unsupported-mnemonic noise into ie64asm. Match Phase-2 contract.
-export M68KTO64_EXTRA_FLAGS := -strip-cond
+# -flag-liveness elides shadow-CCR emission when N/Z/C/V/X are dead
+# (no downstream Bcc/DBcc/Scc/addx/etc. before the next producer).
+# Substantial throughput win for arith-heavy code without semantic change.
+export M68KTO64_EXTRA_FLAGS := -strip-cond -flag-liveness
 
 SRCS := src/ie/ie_hires_platform.s src/ie/hires.s
 

@@ -148,6 +148,7 @@ func run(args []string, stderrW io.Writer) int {
 	fpIrqWrap := fs.Bool("fp-irq-wrap", false, "Auto-wrap RTE handlers with FP-slot save/restore (Phase 2 opt-in)")
 	sizeFlag := fs.String("size", ".l", "Default size suffix (.l or .q)")
 	labelSalt := fs.String("label-salt", "", "Namespace __m68kto64_* labels with this salt (prevents collisions in multi-TU concat builds)")
+	flagLiveness := fs.Bool("flag-liveness", false, "Phase H: elide shadow N/Z/C/V/X emission when no downstream consumer reads them (opt-in)")
 
 	opts := DefaultPreprocOpts()
 	opts.Defines = map[string]int64{}
@@ -178,6 +179,7 @@ func run(args []string, stderrW io.Writer) int {
 	c.fpIrqWrap = *fpIrqWrap
 	c.defaultSize = *sizeFlag
 	c.labelSalt = *labelSalt
+	c.flagLiveness = *flagLiveness
 	source, errs := c.ConvertFile(in, opts, stderrW)
 	if errs > 0 && source == "" {
 		// Pure preprocessor failure (e.g. read error or lone-CR rejection);

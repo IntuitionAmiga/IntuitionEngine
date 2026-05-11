@@ -210,6 +210,13 @@ func shadowWantsCV(mnem string) bool {
 // `srcReg` the post-load src register (or ScrV1 when an immediate was
 // materialised). `size` is the operation width.
 func (c *Converter) emitArithShadows(e *Emit, mnem string, resultReg, preDst, srcReg string, size int) {
+	// Phase H: liveness-driven elision. When no downstream consumer reads
+	// any of N/Z/C/V/X before the next producer overwrites them, skip the
+	// full shadow update sequence (10-15 IE64 ops per arith op).
+	if !c.integerCCLive() {
+		e.L("; m68kto64: shadow elided (no live consumer)")
+		return
+	}
 	switch mnem {
 	case "add", "addi", "addq":
 		c.emitShadowNZFromReg(e, resultReg, size)
