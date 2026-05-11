@@ -2068,19 +2068,27 @@ func (c *Converter) emitShift(e *Emit, l Line, size int, ie64op, m68kMnem string
 
 func (c *Converter) emitShiftRMW(e *Emit, dst Operand, size int, ie64op, m68kMnem, countReg, countImm string) error {
 	szIE := IE64Size(size)
+	// Phase H: when shadow N/Z/C/V are dead, the multi-instruction
+	// emitShiftCPre / emitShadowNZFromReg / emitShadowClearV trio is the
+	// bulk of the shift's cost. AB3D2's palette channel-extraction loop
+	// is ~40% shift ops; elision is a major perf win there.
+	shadowLive := c.integerCCLive()
 	if dst.Mode == AMDataReg && size == 4 {
-		// Capture pre-op for shift-C computation.
-		c.emitShiftCPre(e, dst.Reg.IE64, size, ie64op, m68kMnem, countReg, countImm)
+		if shadowLive {
+			c.emitShiftCPre(e, dst.Reg.IE64, size, ie64op, m68kMnem, countReg, countImm)
+		}
 		if countImm != "" {
 			e.Lf("%s.l %s, %s, #%s", ie64op, dst.Reg.IE64, dst.Reg.IE64, countImm)
 		} else {
 			e.Lf("%s.l %s, %s, %s", ie64op, dst.Reg.IE64, dst.Reg.IE64, countReg)
 		}
-		// Shadow N/Z from result. V was set by emitShiftCPre for ASL; for
-		// every other shift m68k clears V.
-		c.emitShadowNZFromReg(e, dst.Reg.IE64, size)
-		if m68kMnem != "asl" {
-			c.emitShadowClearV(e)
+		if shadowLive {
+			c.emitShadowNZFromReg(e, dst.Reg.IE64, size)
+			if m68kMnem != "asl" {
+				c.emitShadowClearV(e)
+			}
+		} else {
+			e.L("; m68kto64: shift shadow elided (no live consumer)")
 		}
 		return nil
 	}
@@ -2088,15 +2096,21 @@ func (c *Converter) emitShiftRMW(e *Emit, dst Operand, size int, ie64op, m68kMne
 	if err != nil {
 		return err
 	}
-	c.emitShiftCPre(e, h.valReg, size, ie64op, m68kMnem, countReg, countImm)
+	if shadowLive {
+		c.emitShiftCPre(e, h.valReg, size, ie64op, m68kMnem, countReg, countImm)
+	}
 	if countImm != "" {
 		e.Lf("%s%s %s, %s, #%s", ie64op, szIE, ScrV2, h.valReg, countImm)
 	} else {
 		e.Lf("%s%s %s, %s, %s", ie64op, szIE, ScrV2, h.valReg, countReg)
 	}
-	c.emitShadowNZFromReg(e, ScrV2, size)
-	if m68kMnem != "asl" {
-		c.emitShadowClearV(e)
+	if shadowLive {
+		c.emitShadowNZFromReg(e, ScrV2, size)
+		if m68kMnem != "asl" {
+			c.emitShadowClearV(e)
+		}
+	} else {
+		e.L("; m68kto64: shift shadow elided (no live consumer)")
 	}
 	return c.storeDstRMW(e, h, ScrV2)
 }

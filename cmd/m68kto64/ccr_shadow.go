@@ -188,7 +188,12 @@ func (c *Converter) emitShadowAddCV(e *Emit, dstReg, srcReg string, size int) {
 
 // emitShadowsForLogical writes shadows for AND/OR/EOR/NOT/MOVE/MOVEQ/EXT/SWAP/
 // MULU/MULS/CLR style ops: N and Z from result; C and V cleared.
+// Phase H: elide entirely when no downstream consumer reads N/Z/C/V.
 func (c *Converter) emitShadowsForLogical(e *Emit, resultReg string, size int) {
+	if !c.integerCCLive() {
+		e.L("; m68kto64: logical shadow elided (no live consumer)")
+		return
+	}
 	c.emitShadowNZFromReg(e, resultReg, size)
 	c.emitShadowClearC(e)
 	c.emitShadowClearV(e)
