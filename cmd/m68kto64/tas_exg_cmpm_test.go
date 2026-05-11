@@ -16,12 +16,28 @@ func TestTAS_Dn(t *testing.T) {
 	mustContain(t, out, "move.l r27, #0")    // V := 0
 }
 
-func TestTAS_Memory_NonAtomicDiag(t *testing.T) {
+func TestTAS_Memory_AtomicSyscall(t *testing.T) {
+	// Full TAS: host-pinned atomic test-and-set via syscall #20.
+	// Address in r17; host returns pre-op byte in r17.
 	out := convertOneInstr(t, "\ttas (a0)")
-	mustContain(t, out, "non-atomic")
-	mustContain(t, out, "load.b ")
-	mustContain(t, out, "store.b ")
-	mustContain(t, out, "or.l ")
+	mustContain(t, out, "move.l r17, r9")     // byte address into r17
+	mustContain(t, out, "syscall #20")        // atomic primitive
+	mustContain(t, out, "sext.b r24, r17")    // N from returned pre-op byte
+	mustContain(t, out, "move.l r25, r17")    // Z from returned pre-op byte
+	mustContain(t, out, "move.l r26, #0")     // C := 0
+	mustContain(t, out, "move.l r27, #0")     // V := 0
+}
+
+func TestTAS_DispAn_AtomicSyscall(t *testing.T) {
+	out := convertOneInstr(t, "\ttas 8(a0)")
+	mustContain(t, out, "lea r17,")
+	mustContain(t, out, "syscall #20")
+}
+
+func TestTAS_Absolute_AtomicSyscall(t *testing.T) {
+	out := convertOneInstr(t, "\ttas $1000")
+	mustContain(t, out, "la r17,")
+	mustContain(t, out, "syscall #20")
 }
 
 // EXG — 32-bit register exchange.

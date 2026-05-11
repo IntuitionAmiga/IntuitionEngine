@@ -296,12 +296,9 @@ func (c *Converter) emitInstruction(e *Emit, l Line) error {
 	case "rte":
 		return c.emitRte(e, l)
 	case "stop":
-		e.Lf("; m68kto64: stripped STOP %s (privileged; no IE64 supervisor halt)",
-			strings.Join(l.Operands, ","))
-		return nil
+		return c.emitStop(e, l)
 	case "reset":
-		e.L("; m68kto64: stripped RESET (privileged peripheral reset; no IE64 analog)")
-		return nil
+		return c.emitResetOp(e, l)
 
 	case "nop":
 		e.L("; nop (m68k) — no IE64 output (transparent)")
@@ -691,10 +688,16 @@ func (c *Converter) emitBitRmw(e *Emit, l Line, op string) error {
 	return c.storeDstRMW(e, h, h.valReg)
 }
 
-// emitTas lowers TAS <ea> — test byte (set N/Z from the pre-op value, clear
-// V/C), then set bit 7 and write back. Real m68k is atomic; lowered as a
-// non-atomic byte RMW (mirrors CAS/CAS2 strict-mode policy). N := sign of
-// pre-op byte. Z := pre-op byte == 0.
+// emitTas lowers TAS <ea> — test byte (set N/Z from pre-op value, clear V/C),
+// then set bit 7 of the byte in dst.
+//
+// For Dn destinations the operation is purely in-register and atomicity is
+// trivially preserved by single-threaded transpile-time codegen. For memory
+// destinations we emit `syscall #20`, the host-pinned atomic test-and-set
+// primitive (see §11): the host receives the target byte address in r17
+// (ScrV1) and returns the pre-op byte value in r17, performing load + set-bit-7
+// + store as one indivisible operation. Shadows are derived from the
+// returned pre-op byte.
 func (c *Converter) emitTas(e *Emit, l Line) error {
 	if len(l.Operands) != 1 {
 		return fmt.Errorf("tas requires 1 operand")
@@ -703,7 +706,6 @@ func (c *Converter) emitTas(e *Emit, l Line) error {
 	if err != nil {
 		return err
 	}
-	// Pre-op load for shadow N/Z.
 	if dst.Mode == AMDataReg {
 		rd := dst.Reg.IE64
 		e.Lf("and.l %s, %s, #$FF", ScrV1, rd)
@@ -711,22 +713,61 @@ func (c *Converter) emitTas(e *Emit, l Line) error {
 		e.Lf("move.l %s, %s", ShadowZ, ScrV1)
 		c.emitShadowClearC(e)
 		c.emitShadowClearV(e)
-		// Set bit 7.
 		e.Lf("or.l %s, %s, #$80", rd, rd)
 		return nil
 	}
-	e.L("; m68kto64: TAS non-atomic fallback (no IE64 atomic byte primitive)")
-	h, err := c.loadDstRMW(e, dst, 1)
-	if err != nil {
-		return err
+
+	// Compute byte address into ScrV1 (r17) per the syscall #20 ABI.
+	switch dst.Mode {
+	case AMIndirect:
+		e.Lf("move.l %s, %s", ScrV1, dst.Reg.IE64)
+	case AMDispAn:
+		e.Lf("lea %s, %s(%s)", ScrV1, dispOrZero(dst.Disp), dst.Reg.IE64)
+	case AMAbsW, AMAbsL:
+		e.Lf("la %s, %s", ScrV1, dst.Disp)
+	case AMPostInc:
+		e.Lf("move.l %s, %s", ScrV1, dst.Reg.IE64)
+		e.Lf("add.l %s, %s, #1", dst.Reg.IE64, dst.Reg.IE64)
+	case AMPreDec:
+		e.Lf("sub.l %s, %s, #1", dst.Reg.IE64, dst.Reg.IE64)
+		e.Lf("move.l %s, %s", ScrV1, dst.Reg.IE64)
+	default:
+		return fmt.Errorf("tas: EA mode %v not supported", dst.Mode)
 	}
-	e.Lf("and.l %s, %s, #$FF", ScrV1, h.valReg)
+	// Atomic test-and-set: host returns pre-op byte in r17 after performing
+	// load + set-bit-7 + store as one operation.
+	e.L("syscall #20")
+	// Derive shadows from the returned pre-op byte.
+	e.Lf("and.l %s, %s, #$FF", ScrV1, ScrV1)
 	e.Lf("sext.b %s, %s", ShadowN, ScrV1)
 	e.Lf("move.l %s, %s", ShadowZ, ScrV1)
 	c.emitShadowClearC(e)
 	c.emitShadowClearV(e)
-	e.Lf("or.l %s, %s, #$80", h.valReg, h.valReg)
-	return c.storeDstRMW(e, h, h.valReg)
+	return nil
+}
+
+// emitUnpackCCRBits unpacks the low byte of a 16-bit m68k SR/CCR value held
+// in `srcReg` into the shadow CCR registers. Bit layout:
+//   bit 0 = C, bit 1 = V, bit 2 = Z, bit 3 = N, bit 4 = X.
+// Shadow contract: ShadowN sign-extended (−1 if N=1 else 0), ShadowZ inverted
+// (r25 nonzero ⇔ Z=0), ShadowC / ShadowV / ShadowX as 0/1 bits.
+func (c *Converter) emitUnpackCCRBits(e *Emit, srcReg string) {
+	// C bit 0.
+	e.Lf("and.l %s, %s, #1", ShadowC, srcReg)
+	// V bit 1.
+	e.Lf("lsr.l %s, %s, #1", ShadowV, srcReg)
+	e.Lf("and.l %s, %s, #1", ShadowV, ShadowV)
+	// Z bit 2 → ShadowZ = NOT(Z).
+	e.Lf("lsr.l %s, %s, #2", ShadowTmp1, srcReg)
+	e.Lf("and.l %s, %s, #1", ShadowTmp1, ShadowTmp1)
+	e.Lf("eor.l %s, %s, #1", ShadowZ, ShadowTmp1)
+	// N bit 3 → ShadowN = neg(Nbit) so bit set sign-extends to −1.
+	e.Lf("lsr.l %s, %s, #3", ShadowTmp1, srcReg)
+	e.Lf("and.l %s, %s, #1", ShadowTmp1, ShadowTmp1)
+	e.Lf("neg.q %s, %s", ShadowN, ShadowTmp1)
+	// X bit 4 → ShadowX = 0/1 bit.
+	e.Lf("lsr.l %s, %s, #4", ShadowX, srcReg)
+	e.Lf("and.l %s, %s, #1", ShadowX, ShadowX)
 }
 
 // emitExg lowers EXG Rx,Ry — exchange two 32-bit registers. m68k allows
@@ -787,13 +828,60 @@ func (c *Converter) emitCmpm(e *Emit, l Line) error {
 	return nil
 }
 
-// emitRte lowers RTE — privileged return from exception. m68k pops SR then PC
-// from the supervisor stack frame. IE64 has no SR; lower as RTS (pop 4-byte
-// PC) and drop the SR pop with a diagnostic. Format-dependent stack frame
-// adjustment is approximated as 0 — user-mode guests should not reach RTE.
+// emitRte lowers RTE — return from exception. Pops 16-bit SR (with its low
+// byte = CCR) then 4-byte PC from the guest stack, unpacks the CCR bits
+// (X/N/Z/V/C) into the shadow registers via the shared `emitUnpackCCRBits`
+// helper, and jumps to the popped PC. The supervisor-only high byte (T,S,M,
+// interrupt mask) has no IE64 user-mode representation and is discarded —
+// the transpile target is single-context user mode, so the discarded bits
+// have no effect on continued execution.
+//
+// 68000 stack-frame format (6 bytes total: SR + PC) is assumed. 68010+
+// format/vector words sit AFTER the PC; user code that runs RTE under an
+// 8-byte frame must drop the format word with an additional `addq.l #2,sp`
+// before the RTE. Document under §12.
 func (c *Converter) emitRte(e *Emit, l Line) error {
-	e.L("; m68kto64: RTE → RTS (SR pop dropped; no IE64 supervisor model)")
-	return c.emitRts(e)
+	// Pop 16-bit SR.
+	e.Lf("load.w %s, (%s)", ScrV1, GuestSP)
+	e.Lf("add.l %s, %s, #2", GuestSP, GuestSP)
+	// Unpack CCR bits from low byte of SR.
+	c.emitUnpackCCRBits(e, ScrV1)
+	// Pop 32-bit PC and jump.
+	e.Lf("load.l %s, (%s)", ScrV1, GuestSP)
+	e.Lf("add.l %s, %s, #4", GuestSP, GuestSP)
+	e.Lf("jmp (%s)", ScrV1)
+	return nil
+}
+
+// emitStop lowers STOP #imm — load SR with the immediate, then halt until
+// interrupt. The CCR portion (low byte of #imm) is unpacked into the shadow
+// registers exactly like RTE. The halt itself is delegated to the host via
+// `syscall #21`, the host-pinned suspend-until-interrupt primitive (see §11).
+func (c *Converter) emitStop(e *Emit, l Line) error {
+	if len(l.Operands) != 1 {
+		return fmt.Errorf("stop requires 1 operand (#imm)")
+	}
+	imm, err := ParseOperand(l.Operands[0])
+	if err != nil {
+		return err
+	}
+	if imm.Mode != AMImmediate {
+		return fmt.Errorf("stop: operand must be #imm")
+	}
+	// Materialise the SR-load value and unpack its CCR bits.
+	e.Lf("move.l %s, #%s", ScrV1, imm.Imm)
+	c.emitUnpackCCRBits(e, ScrV1)
+	// Suspend until interrupt — host-pinned syscall ABI.
+	e.L("syscall #21")
+	return nil
+}
+
+// emitResetOp lowers RESET — broadcast peripheral reset. Delegated to the
+// host via `syscall #22`, the host-pinned reset-peripherals primitive
+// (see §11). CCR / register state preserved per m68k spec.
+func (c *Converter) emitResetOp(e *Emit, l Line) error {
+	e.L("syscall #22")
+	return nil
 }
 
 // emitDbra lowers DBRA/DBF Dn,L — decrement low 16 bits of Dn; if result !=

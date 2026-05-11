@@ -108,13 +108,13 @@ func TestStatusDoc_DocMarkersMatch(t *testing.T) {
 		"BSET":    "✅",
 		"BCLR":    "✅",
 		"BCHG":    "✅",
-		"TAS":     "⚠",
+		"TAS":     "✅",
 		"EXG":     "✅",
 		"CMPM":    "✅",
 		"ILLEGAL": "✅",
-		"RTE":     "⚠",
-		"STOP":    "⚠",
-		"RESET":   "⚠",
+		"RTE":     "✅",
+		"STOP":    "✅",
+		"RESET":   "✅",
 	}
 	for mn, marker := range want {
 		// Find at least one line containing the mnemonic AND the marker.
