@@ -86,16 +86,27 @@ func TestDirective_Equ(t *testing.T) {
 	mustContain(t, out, "equ $1234")
 }
 
-func TestDirective_Macro_PassThrough(t *testing.T) {
-	src := "MYMAC\tmacro\n\tmove.l \\1,\\2\n\tendm\n"
-	out := convertSrc(t, src)
-	mustContain(t, out, "macro")
-	mustContain(t, out, "\\1")
-	mustContain(t, out, "endm")
+// Post-Phase-E: macros are expanded transpile-time by the preprocessor. The
+// macro definition is consumed; only the invocation's expanded body reaches
+// ConvertLines. \1..\9 are substituted; \@ resolves to a unique counter.
+func TestDirective_Macro_Expanded(t *testing.T) {
+	src := "MYMAC\tmacro\n\tmove.l \\1,\\2\n\tendm\n\tMYMAC d0,d1\n"
+	out := preprocSrc(t, src, DefaultPreprocOpts())
+	mustContain(t, out, "move.l")
+	mustNotContain(t, out, "macro")
+	mustNotContain(t, out, "endm")
+	mustNotContain(t, out, "\\1")
+	mustNotContain(t, out, "MYMAC d0,d1")
 }
 
-func TestDirective_Rept_PassThrough(t *testing.T) {
-	out := convertSrc(t, "\trept 4\n\tnop\n\tendr\n")
-	mustContain(t, out, "rept 4")
-	mustContain(t, out, "endr")
+// Post-Phase-E: rept bodies are unrolled transpile-time. The rept/endr
+// directive pair is consumed; only the expanded copies reach ConvertLines.
+func TestDirective_Rept_Expanded(t *testing.T) {
+	out := preprocSrc(t, "\trept 4\n\tnop\n\tendr\n", DefaultPreprocOpts())
+	mustNotContain(t, out, "rept 4")
+	mustNotContain(t, out, "endr")
+	// 4 nop lowerings (`; nop` plus the lowered instruction text).
+	if strings.Count(out, "nop") < 4 {
+		t.Errorf("expected 4 nop expansions, got: %q", out)
+	}
 }

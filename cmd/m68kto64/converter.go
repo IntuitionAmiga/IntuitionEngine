@@ -17,18 +17,12 @@ import (
 // Control flow (Bcc, JSR, RTS, MOVEM, LINK, UNLK, DBcc, Scc) and flag fusion
 // land in Phase 3.
 type Converter struct {
-	defaultSize string // ".l" or ".q" (default ".l")
-	noHeader    bool
-	strict      bool // unsupported op -> error rather than ; TODO
-	noFlagsFuse bool // disable Phase-3 fuse (forwards-compat flag)
-	errors      int
-
-	// Pass-through state: when inside a macro / rept body, instruction lines
-	// are emitted verbatim rather than lowered, because their bodies may
-	// reference macro argument substitutions (\1..\9) that aren't valid m68k
-	// operands but become so at expand-time.
-	inMacro int
-	inRept  int
+	defaultSize       string // ".l" or ".q" (default ".l")
+	noHeader          bool
+	strict            bool // unsupported op -> error rather than ; TODO
+	noFlagsFuse       bool // disable Phase-3 fuse (forwards-compat flag)
+	werrorUnknownMnem bool // unknown mnemonic emits ; ERROR: rather than passing through
+	errors            int
 
 	// Phase-7 FPU state. fpUsed is set when any FPU op is lowered so the
 	// per-output-file FPU footer (memory slots) gets emitted. fpConsts
@@ -154,35 +148,9 @@ func (c *Converter) convertLexed(e *Emit, l Line) {
 		e.Label(l.Label)
 	}
 	if l.Kind == LineDirective {
-		// Track macro/rept nesting before delegating, so the inMacro/inRept
-		// flags reflect the body lines.
-		switch l.Mnemonic {
-		case "macro":
-			c.inMacro++
-		case "endm":
-			if c.inMacro > 0 {
-				c.inMacro--
-			}
-		case "rept":
-			c.inRept++
-		case "endr":
-			if c.inRept > 0 {
-				c.inRept--
-			}
-		}
 		if !c.emitDirective(e, l) {
 			c.emitDirectivePassthrough(e, l)
 		}
-		return
-	}
-	// Inside a macro body, instructions may use \1..\9 arg substitutions
-	// that don't parse as m68k operands. Pass those lines through verbatim
-	// so the assembler does the substitution at expand time.
-	//
-	// rept/endr bodies, by contrast, are pure m68k (no \N args), so they
-	// lower normally and ie64asm's own rept handles the duplication.
-	if c.inMacro > 0 {
-		c.emitDirectivePassthrough(e, l)
 		return
 	}
 	if err := c.emitInstruction(e, l); err != nil {
@@ -348,11 +316,16 @@ func (c *Converter) emitInstruction(e *Emit, l Line) error {
 		"dbcc", "dbcs", "dbmi", "dbpl", "dbvs", "dbvc", "dbt":
 		return c.emitShadowDBcc(e, l)
 	}
-	// Unknown mnemonic — assume user-defined macro invocation and pass
-	// through verbatim. ie64asm will validate at assemble time. -strict
-	// rejects this fall-through to keep diagnostics tight.
+	// Unknown mnemonic. After Phase E, the preprocessor expands macros at
+	// transpile time, so an unknown mnemonic reaching the converter via the
+	// ConvertFile path is a real error — gated by werrorUnknownMnem (default
+	// on through DefaultPreprocOpts). ConvertSource direct callers default
+	// the flag off so the legacy passthrough survives for migration users.
 	if c.strict {
 		return fmt.Errorf("mnemonic %q not yet lowered", l.Mnemonic)
+	}
+	if c.werrorUnknownMnem {
+		return fmt.Errorf("unknown mnemonic %q", l.Mnemonic)
 	}
 	c.emitDirectivePassthrough(e, l)
 	return nil

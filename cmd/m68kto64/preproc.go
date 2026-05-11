@@ -540,6 +540,7 @@ func (c *Converter) ConvertFile(path string, opts PreprocOpts, stderrW io.Writer
 		return "", perrs
 	}
 	c.symtab = pre.symtab
+	c.werrorUnknownMnem = opts.WerrorUnknownMnem
 	out, cerrs := c.ConvertLines(pre.lines)
 	return out, perrs + cerrs
 }

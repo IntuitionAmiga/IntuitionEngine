@@ -17,6 +17,27 @@ func convertSrc(t *testing.T, src string) string {
 	return out
 }
 
+// preprocSrc routes a snippet through the full Preprocess + ConvertLines
+// pipeline so tests can assert post-expansion shape (macros expanded,
+// conditionals lowered, includes inlined, etc).
+func preprocSrc(t *testing.T, src string, opts PreprocOpts) string {
+	t.Helper()
+	var stderr strings.Builder
+	r, errs := Preprocess([]byte(src), "test.s", opts, &stderr)
+	if errs != 0 {
+		t.Fatalf("preproc errors=%d:\n%s", errs, stderr.String())
+	}
+	c := NewConverter()
+	c.noHeader = true
+	c.symtab = r.symtab
+	c.werrorUnknownMnem = opts.WerrorUnknownMnem
+	out, cerrs := c.ConvertLines(r.lines)
+	if cerrs != 0 {
+		t.Fatalf("convert errors:\n%s", out)
+	}
+	return out
+}
+
 // =====================================================================
 // CMP + Bcc fuse
 // =====================================================================
