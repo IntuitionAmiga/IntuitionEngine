@@ -41,13 +41,13 @@ func (e *Emit) String() string { return e.sb.String() }
 
 // Scratch register reservations (per plan §"Register File Mapping"):
 //
-//   r16 — primary EA scratch
-//   r17 — primary value scratch (loaded src or computed result)
-//   r18 — secondary value scratch
-//   r19, r20 — partial-update / mul-div pair lowering
-//   r24..r27 — flag shadows (set in Phase 3)
-//   r30 — emulated guest a7
-//   r31 — host SP, do not touch
+//	r16 — primary EA scratch
+//	r17 — primary value scratch (loaded src or computed result)
+//	r18 — secondary value scratch
+//	r19, r20 — partial-update / mul-div pair lowering
+//	r24..r27 — flag shadows (set in Phase 3)
+//	r30 — emulated guest a7
+//	r31 — host SP, do not touch
 const (
 	ScrEA  = "r16"
 	ScrV1  = "r17"
@@ -74,19 +74,19 @@ const (
 	//   bit 3 = N, bit 2 = Z, bit 1 = I (infinity), bit 0 = NaN
 	// Producers: FCMP/FTST + cc-affecting arithmetic. Consumers: FBcc /
 	// FDBcc / FScc / FTRAPcc / FMOVE.L FPSR,Dn. See plan §"Shadow FPSR
-	// maintenance" and `sdk/docs/M68KtoIE64.md` §7.FP.
+	// maintenance" and `sdk/docs/m68Kto64.md` §7.FP.
 	ShadowFPCC = "r29"
 
 	GuestSP = "r30"
 )
 
 // FPU memory-slot reservations. These are per-output-file BSS-style globals
-// (single-thread guest assumed). See `sdk/docs/M68KtoIE64.md` §4.FP and
+// (single-thread guest assumed). See `sdk/docs/m68Kto64.md` §4.FP and
 // §15.FP for the reentrancy caveat under guest interrupts.
 const (
-	FPSlotFPCRSave   = "__m68kto64_fpcr_save"     // FINTRZ FPCR save/restore
-	FPSlotScratchQ   = "__m68kto64_fp_scratch_q"  // FSCALE bit-pattern round-trip
-	FPSlotConstPool  = "__m68kto64_fp_const_pool" // FP-immediate pool prefix
+	FPSlotFPCRSave  = "__m68kto64_fpcr_save"     // FINTRZ FPCR save/restore
+	FPSlotScratchQ  = "__m68kto64_fp_scratch_q"  // FSCALE bit-pattern round-trip
+	FPSlotConstPool = "__m68kto64_fp_const_pool" // FP-immediate pool prefix
 )
 
 // FPGuestRegToHost maps m68k FPn (n ∈ 0..7) to the canonical IE64 even FP
@@ -123,7 +123,8 @@ func IE64Size(bytes int) string {
 }
 
 // SizeMask returns a hex literal of the low-bytes mask for a width.
-//   1 -> "$FF", 2 -> "$FFFF", 4 -> "$FFFFFFFF"
+//
+//	1 -> "$FF", 2 -> "$FFFF", 4 -> "$FFFFFFFF"
 func SizeMask(bytes int) string {
 	switch bytes {
 	case 1:
@@ -137,9 +138,10 @@ func SizeMask(bytes int) string {
 
 // SizeInvMask returns a hex literal masking off the LOW `bytes` bytes (so the
 // result preserves the upper bits of a 64-bit register).
-//   1 -> "$FFFFFFFFFFFFFF00"
-//   2 -> "$FFFFFFFFFFFF0000"
-//   4 -> "$FFFFFFFF00000000"
+//
+//	1 -> "$FFFFFFFFFFFFFF00"
+//	2 -> "$FFFFFFFFFFFF0000"
+//	4 -> "$FFFFFFFF00000000"
 func SizeInvMask(bytes int) string {
 	switch bytes {
 	case 1:

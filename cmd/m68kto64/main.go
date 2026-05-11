@@ -6,7 +6,7 @@
 // the elseif* family with first-true latch, macro / endm / mexit, rept /
 // endr, \1..\9 positional args, globally-monotonic \@ unique-label suffix)
 // → ConvertLines (m68k → IE64 lowering with CMP/Bcc + FCMP/FBcc fuse and
-// shadow CCR/FPCC) → emit. See sdk/docs/M68KtoIE64.md and
+// shadow CCR/FPCC) → emit. See sdk/docs/m68Kto64.md and
 // .claude/plans/M68KtoIE64plan.md.
 package main
 
@@ -157,7 +157,7 @@ func run(args []string, stderrW io.Writer) int {
 	fs.BoolVar(&opts.NoDefaultSeeds, "no-default-seeds", false, "Skip IE-convenience symbol seeds (IS_IE=1)")
 
 	fs.Usage = func() {
-		fmt.Fprintf(stderrW, "Usage: m68kto64 [options] input.s\n\nSee sdk/docs/M68KtoIE64.md.\n\nOptions:\n")
+		fmt.Fprintf(stderrW, "Usage: m68kto64 [options] input.s\n\nSee sdk/docs/m68Kto64.md.\n\nOptions:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {

@@ -9,10 +9,11 @@ import (
 // Converter turns lexed m68k Lines into IE64 source via the configured Emit.
 //
 // Phase 2 scope (this file): straight-line ALU + memory lowering.
-//   MOVE, ADD, ADDA, ADDI, ADDQ, SUB, SUBA, SUBI, SUBQ,
-//   AND, ANDI, OR, ORI, EOR, EORI, NOT, NEG, CLR,
-//   LSL, LSR, ASL, ASR, ROL, ROR, EXT, EXTB,
-//   plus LEA, MOVEA.
+//
+//	MOVE, ADD, ADDA, ADDI, ADDQ, SUB, SUBA, SUBI, SUBQ,
+//	AND, ANDI, OR, ORI, EOR, EORI, NOT, NEG, CLR,
+//	LSL, LSR, ASL, ASR, ROL, ROR, EXT, EXTB,
+//	plus LEA, MOVEA.
 //
 // Control flow (Bcc, JSR, RTS, MOVEM, LINK, UNLK, DBcc, Scc) and flag fusion
 // land in Phase 3.
@@ -604,13 +605,13 @@ func (c *Converter) emitBtst(e *Emit, l Line, size int) error {
 //
 // Skeleton (no condition test, since DBRA has no cc):
 //
-//   and.l  scrV1, Dn, #$FFFF
-//   sub.l  scrV1, scrV1, #1
-//   and.l  scrV1, scrV1, #$FFFF
-//   and.q  scrV2, Dn,    #$FFFFFFFFFFFF0000
-//   or.q   Dn,    scrV2, scrV1
-//   move.l scrV2, #$FFFF
-//   bne    scrV1, scrV2, L
+//	and.l  scrV1, Dn, #$FFFF
+//	sub.l  scrV1, scrV1, #1
+//	and.l  scrV1, scrV1, #$FFFF
+//	and.q  scrV2, Dn,    #$FFFFFFFFFFFF0000
+//	or.q   Dn,    scrV2, scrV1
+//	move.l scrV2, #$FFFF
+//	bne    scrV1, scrV2, L
 func (c *Converter) emitDbra(e *Emit, l Line) error {
 	if len(l.Operands) != 2 {
 		return fmt.Errorf("dbra requires 2 operands (Dn,label)")
@@ -1322,7 +1323,7 @@ func (c *Converter) emitArith(e *Emit, l Line, size int, ie64op string) error {
 // `divisorImm` is non-empty). On zero divisor, m68k DIVU/DIVS traps via
 // vector 5; we emit `syscall #16` (relocated from #5 to keep TRAP #0..#15
 // disjoint from m68k exception vectors per the locked syscall # table in
-// sdk/docs/M68KtoIE64.md §11) and skip the divide. Returns the divisor
+// sdk/docs/m68Kto64.md §11) and skip the divide. Returns the divisor
 // register name to use in the actual divide (always a register; immediates
 // get materialised into ScrV1).
 func (c *Converter) emitDivZeroGuard(e *Emit, divisorReg, divisorImm string) string {
@@ -1390,9 +1391,10 @@ func (c *Converter) emitMulW(e *Emit, l Line, signed bool) error {
 // emitDivW handles DIVU.W / DIVS.W src,Dn — 32÷16, packs Dn = (rem<<16)|quo.
 //
 // m68k semantics:
-//   DIVU.W: Dn (32-bit unsigned) / src (16-bit unsigned) -> 16-bit quotient
-//           in low word, 16-bit remainder in high word.
-//   DIVS.W: signed equivalent.
+//
+//	DIVU.W: Dn (32-bit unsigned) / src (16-bit unsigned) -> 16-bit quotient
+//	        in low word, 16-bit remainder in high word.
+//	DIVS.W: signed equivalent.
 //
 // IE64 lowering: divu.l and mod.l on full 32-bit Dn against a width-correct
 // src, then mask both results to 16 and pack.
@@ -1594,9 +1596,10 @@ func (c *Converter) emitTstShadow(e *Emit, l Line, size int) error {
 // emitShift handles LSL/LSR/ASL/ASR/ROL/ROR.
 //
 // Forms accepted:
-//   shift.X #count, Dn
-//   shift.X Dm, Dn      (count in low 6 bits of Dm)
-//   shift.X dst         (single-operand mem form, count = 1 — m68k legacy)
+//
+//	shift.X #count, Dn
+//	shift.X Dm, Dn      (count in low 6 bits of Dm)
+//	shift.X dst         (single-operand mem form, count = 1 — m68k legacy)
 //
 // IE64 has lsl/lsr/asr/rol/ror at .b/.w/.l/.q widths and supports both
 // register and immediate shift counts.

@@ -12,7 +12,7 @@ import (
 //   - TRAPV            -> conditional syscall #18 against shadow V (Phase 5 strict-only)
 //   - CHK[.X] src,Dn   -> bounds test + syscall #17 on fail
 //
-// Syscall # vector table is locked in sdk/docs/M68KtoIE64.md §11. Integer
+// Syscall # vector table is locked in sdk/docs/m68Kto64.md §11. Integer
 // TRAP-instruction-# (0..15) and m68k exception-vector-# (5,6,7,...) live
 // in disjoint syscall # ranges to avoid handler collisions.
 //   - MULU.L Dq,Dh:Dl  -> mulu.l + mulhu.q pair
@@ -223,11 +223,15 @@ func (c *Converter) emitDivPair(e *Emit, l Line) error {
 //
 // 68020 syntax:  bfextu  Dn{#offset:#width}, Dd
 // IE64 lowering:
-//   shift = 32 - offset - width   (left-justify)
-//   mask  = (1 << width) - 1
-//   tmp   = (Dn >> (32 - offset - width)) & mask     ; for big-endian m68k bit-numbering
+//
+//	shift = 32 - offset - width   (left-justify)
+//	mask  = (1 << width) - 1
+//	tmp   = (Dn >> (32 - offset - width)) & mask     ; for big-endian m68k bit-numbering
+//
 // Actually m68k bit fields number MSB=0 within the source value.
-//   field = (Dn >> (32 - offset - width)) & ((1<<width) - 1)  for fixed-32-bit Dn
+//
+//	field = (Dn >> (32 - offset - width)) & ((1<<width) - 1)  for fixed-32-bit Dn
+//
 // Only the {Dn,#offset,#width} form is supported here.
 func (c *Converter) emitBfextu(e *Emit, l Line, signed bool) error {
 	if len(l.Operands) != 2 {

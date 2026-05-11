@@ -4,11 +4,11 @@ Intuition Engine 64-bit RISC CPU -- Complete ISA Specification
 
 (c) 2024-2026 Zayn Otley -- GPLv3 or later
 
-> See also: [`ie32to64.md`](ie32to64.md) and [`M68KtoIE64.md`](M68KtoIE64.md) for the
+> See also: [`ie32to64.md`](ie32to64.md) and [`m68Kto64.md`](m68Kto64.md) for the
 > source-level transpilers that target this ISA. The `syscall #n` mnemonic
 > (`assembler/ie64asm.go:3898`) is the canonical lowering target for m68k `TRAP #n`;
-> `M68KtoIE64.md` §11 documents the integer vector mapping and §11.FP the FTRAPcc
-> reservation. For 68881/68882 FPU coverage see `M68KtoIE64.md` §4.FP (FP0–FP7 →
+> `m68Kto64.md` §11 documents the integer vector mapping and §11.FP the FTRAPcc
+> reservation. For 68881/68882 FPU coverage see `m68Kto64.md` §4.FP (FP0–FP7 →
 > f0/f2/.../f14 register mapping), §6.FP (FP addressing modes & size suffixes), and
 > §7.FP (ShadowFPCC + hardware-FPSR/FPCR access pattern).
 

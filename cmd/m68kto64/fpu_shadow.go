@@ -126,7 +126,7 @@ func fpCCKind(m string) string {
 
 // fpFTrapccSyscall returns the locked syscall # (32–63) for a given FTRAPcc
 // suffix. Order is fixed in plan §"Locked syscall # vector table" /
-// `sdk/docs/M68KtoIE64.md` §11.FP.
+// `sdk/docs/m68Kto64.md` §11.FP.
 var fpFTrapccOrder = []string{
 	"f", "eq", "ogt", "oge", "olt", "ole", "ogl", "or",
 	"un", "ueq", "ugt", "uge", "ult", "ule", "ne", "t",
@@ -148,10 +148,10 @@ func fpFTrapccSyscall(cc string) (int, bool) {
 // otherwise. Reads ShadowFPCC (r29).
 func (c *Converter) emitShadowFBccTest(e *Emit, cc string) {
 	// Extract bits.
-	e.Lf("and.l %s, %s, #1", ShadowTmp1, ShadowFPCC)            // NaN
-	e.Lf("lsr.l %s, %s, #2", ShadowTmp2, ShadowFPCC)            // (r29 >> 2)
-	e.Lf("and.l %s, %s, #1", ShadowTmp2, ShadowTmp2)            // Z
-	e.Lf("lsr.l %s, %s, #3", ScrV1, ShadowFPCC)                 // (r29 >> 3)
+	e.Lf("and.l %s, %s, #1", ShadowTmp1, ShadowFPCC) // NaN
+	e.Lf("lsr.l %s, %s, #2", ShadowTmp2, ShadowFPCC) // (r29 >> 2)
+	e.Lf("and.l %s, %s, #1", ShadowTmp2, ShadowTmp2) // Z
+	e.Lf("lsr.l %s, %s, #3", ScrV1, ShadowFPCC)      // (r29 >> 3)
 	e.Lf("and.l %s, %s, #1 ; ScrV1=N, ShadowTmp1=NaN, ShadowTmp2=Z", ScrV1, ScrV1)
 	switch cc {
 	case "f", "sf":
@@ -173,25 +173,25 @@ func (c *Converter) emitShadowFBccTest(e *Emit, cc string) {
 		e.Lf("xor.l %s, %s, #1", ScrV1, ShadowTmp1)
 	case "ge", "oge":
 		// !NaN && (Z || !N)
-		e.Lf("xor.l %s, %s, #1", ScrV1, ScrV1)                       // !N
-		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2)           // !N | Z
-		e.Lf("xor.l %s, %s, #1", ShadowTmp1, ShadowTmp1)             // !NaN
+		e.Lf("xor.l %s, %s, #1", ScrV1, ScrV1)            // !N
+		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2) // !N | Z
+		e.Lf("xor.l %s, %s, #1", ShadowTmp1, ShadowTmp1)  // !NaN
 		e.Lf("and.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp1)
 	case "lt", "olt":
 		// !NaN && N && !Z
-		e.Lf("xor.l %s, %s, #1", ShadowTmp2, ShadowTmp2)             // !Z
-		e.Lf("and.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2)           // N & !Z
-		e.Lf("xor.l %s, %s, #1", ShadowTmp1, ShadowTmp1)             // !NaN
+		e.Lf("xor.l %s, %s, #1", ShadowTmp2, ShadowTmp2)   // !Z
+		e.Lf("and.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2) // N & !Z
+		e.Lf("xor.l %s, %s, #1", ShadowTmp1, ShadowTmp1)   // !NaN
 		e.Lf("and.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp1)
 	case "le", "ole":
 		// !NaN && (Z || N)
-		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2)           // N | Z
-		e.Lf("xor.l %s, %s, #1", ShadowTmp1, ShadowTmp1)             // !NaN
+		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2) // N | Z
+		e.Lf("xor.l %s, %s, #1", ShadowTmp1, ShadowTmp1)  // !NaN
 		e.Lf("and.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp1)
 	case "gl", "ogl":
 		// !NaN && !Z
-		e.Lf("xor.l %s, %s, #1", ShadowTmp2, ShadowTmp2)             // !Z
-		e.Lf("xor.l %s, %s, #1", ShadowTmp1, ShadowTmp1)             // !NaN
+		e.Lf("xor.l %s, %s, #1", ShadowTmp2, ShadowTmp2) // !Z
+		e.Lf("xor.l %s, %s, #1", ShadowTmp1, ShadowTmp1) // !NaN
 		e.Lf("and.l %s, %s, %s", ScrV1, ShadowTmp1, ShadowTmp2)
 	case "gle":
 		// !NaN
@@ -204,24 +204,24 @@ func (c *Converter) emitShadowFBccTest(e *Emit, cc string) {
 		e.Lf("or.l %s, %s, %s", ScrV1, ShadowTmp1, ShadowTmp2)
 	case "nle":
 		// NaN || (!Z && !N)
-		e.Lf("xor.l %s, %s, #1", ShadowTmp2, ShadowTmp2)             // !Z
-		e.Lf("xor.l %s, %s, #1", ScrV1, ScrV1)                        // !N
-		e.Lf("and.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2)           // !Z & !N
-		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp1)            // | NaN
+		e.Lf("xor.l %s, %s, #1", ShadowTmp2, ShadowTmp2)   // !Z
+		e.Lf("xor.l %s, %s, #1", ScrV1, ScrV1)             // !N
+		e.Lf("and.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2) // !Z & !N
+		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp1)  // | NaN
 	case "nlt":
 		// NaN || (Z || !N)
-		e.Lf("xor.l %s, %s, #1", ScrV1, ScrV1)                        // !N
-		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2)           // | Z
-		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp1)            // | NaN
+		e.Lf("xor.l %s, %s, #1", ScrV1, ScrV1)            // !N
+		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2) // | Z
+		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp1) // | NaN
 	case "nge":
 		// NaN || (N && !Z)
-		e.Lf("xor.l %s, %s, #1", ShadowTmp2, ShadowTmp2)             // !Z
-		e.Lf("and.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2)           // N & !Z
-		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp1)            // | NaN
+		e.Lf("xor.l %s, %s, #1", ShadowTmp2, ShadowTmp2)   // !Z
+		e.Lf("and.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2) // N & !Z
+		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp1)  // | NaN
 	case "ngt":
 		// NaN || Z || N
-		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2)           // N | Z
-		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp1)            // | NaN
+		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp2) // N | Z
+		e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ShadowTmp1) // | NaN
 	case "ueq":
 		// Z || NaN
 		e.Lf("or.l %s, %s, %s", ScrV1, ShadowTmp2, ShadowTmp1)

@@ -439,7 +439,7 @@ CPU and tools:
 - [6502 JIT](sdk/docs/6502_JIT.md)
 - [x86 JIT](sdk/docs/x86_JIT.md)
 - [IE32 to IE64 Converter](sdk/docs/ie32to64.md)
-- [M68K to IE64 Converter](sdk/docs/M68KtoIE64.md)
+- [M68K to IE64 Converter](sdk/docs/m68Kto64.md)
 
 Scripting, monitor, and SDK:
 

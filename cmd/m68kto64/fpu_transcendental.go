@@ -13,7 +13,7 @@ import (
 // for the IE64 native call, then widen back. Identities synthesise the
 // remainder of the m68k transcendental set.
 //
-// Approximations are documented per-mnemonic in `sdk/docs/M68KtoIE64.md`
+// Approximations are documented per-mnemonic in `sdk/docs/m68Kto64.md`
 // §15.FP.
 // =====================================================================
 
