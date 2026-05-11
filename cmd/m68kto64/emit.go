@@ -98,6 +98,7 @@ const (
 	FPSlotConstPool = "__m68kto64_fp_const_pool" // FP-immediate pool prefix (read-only)
 	FPSlotFP5Save   = "__m68kto64_fp5_save"      // FP5 spill around scratch-clobbering ops
 	FPSlotFP6Save   = "__m68kto64_fp6_save"      // FP6 spill around scratch-clobbering ops
+	FPSlotFP7Save   = "__m68kto64_fp7_save"      // FP7 spill (Phase F1; FTANH uses f14)
 )
 
 // FPGuestRegToHost maps m68k FPn (n ∈ 0..7) to the canonical IE64 even FP

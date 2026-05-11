@@ -37,6 +37,10 @@ type Converter struct {
 	// lowered. Gates BSS allocation of __m68kto64_fp5_save / fp6_save and
 	// (Phase 2) decides handler-frame size for the RTE-walkback wrapper.
 	needsFP56Save bool
+	// Phase F1 — FTANH uses f14 (= guest FP7) as a second scratch via the
+	// hyperbolic helper. Gates BSS allocation of __m68kto64_fp7_save and
+	// (Phase F1.1) the handler-frame growth from 32B to 40B.
+	needsFP7Save bool
 
 	// Phase-2 RTE-walkback handler wrap. When fpIrqWrap is set, the
 	// pre-emit scan partitions the line stream into (label, …, rte)

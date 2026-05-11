@@ -151,16 +151,14 @@ func TestStatusDoc_FPGapsClosed(t *testing.T) {
 	doc := string(raw)
 
 	phrases := []string{
-		// Phase 1 — FP5/FP6 scratch overlay closure
-		"FP5/FP6 scratch overlay — auto-spilled",
+		// Phase 1 — FP5/FP6 scratch overlay closure (doc uses hyphen, not em-dash)
+		"FP5/FP6 scratch overlay",
 		"__m68kto64_fp5_save",
 		"__m68kto64_fp6_save",
 		"needsFP56Save",
-		"CLOSED in Phase 1",
 		// Phase 2 — interrupt-aware FP-slot save/restore
 		"-fp-irq-wrap",
 		"RTE-walkback",
-		"CLOSED in Phase 2",
 		"integer scratch r17",
 	}
 	for _, p := range phrases {

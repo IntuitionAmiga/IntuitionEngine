@@ -488,9 +488,12 @@ func (c *Converter) markFPInUse() { c.fpUsed = true }
 // FP register number (or -1 if the op has no FPn destination).
 
 const (
-	scratchSetFP1 = 1
-	scratchSetFP2 = 2
+	scratchSetFP1  = 1
+	scratchSetFP2  = 2
 	scratchSetFP12 = scratchSetFP1 | scratchSetFP2
+	// Phase F1 — FTANH's hyperbolic helper uses f14 (= guest FP7) as a
+	// second scratch target. Wrapped only at the ftanh call site.
+	scratchSetFP7 = 4
 )
 
 // detectFP56MaterializeScratch returns scratchSetFP1 if a materializeFPSrc
@@ -521,6 +524,11 @@ func (c *Converter) emitFP56SpillPrologue(e *Emit, scratchSet int) {
 		e.Lf("la %s, %s", ScrEA, FPSlotFP6Save)
 		e.Lf("dstore %s, (%s)  ; spill FP6 around scratch use", ScrFP2, ScrEA)
 	}
+	if scratchSet&scratchSetFP7 != 0 {
+		c.needsFP7Save = true
+		e.Lf("la %s, %s", ScrEA, FPSlotFP7Save)
+		e.Lf("dstore f14, (%s)  ; spill FP7 around scratch use", ScrEA)
+	}
 }
 
 // emitFP56SpillEpilogue restores the FP5/FP6 slots spilled by the matching
@@ -538,6 +546,10 @@ func (c *Converter) emitFP56SpillEpilogue(e *Emit, scratchSet, dstFP int) {
 	if scratchSet&scratchSetFP2 != 0 && dstFP != 6 {
 		e.Lf("la %s, %s", ScrEA, FPSlotFP6Save)
 		e.Lf("dload %s, (%s)  ; restore FP6", ScrFP2, ScrEA)
+	}
+	if scratchSet&scratchSetFP7 != 0 && dstFP != 7 {
+		e.Lf("la %s, %s", ScrEA, FPSlotFP7Save)
+		e.Lf("dload f14, (%s)  ; restore FP7", ScrEA)
 	}
 }
 
@@ -871,6 +883,10 @@ func (c *Converter) emitFPFooter(e *Emit) {
 		e.L("dc.q 0    ; FP5 spill around scratch-clobbering ops (Phase 1)")
 		e.Label(FPSlotFP6Save)
 		e.L("dc.q 0    ; FP6 spill around scratch-clobbering ops (Phase 1)")
+	}
+	if c.needsFP7Save {
+		e.Label(FPSlotFP7Save)
+		e.L("dc.q 0    ; FP7 spill around ftanh hyperbolic helper (Phase F1)")
 	}
 	for _, ent := range c.fpConsts {
 		e.Label(ent.Label)
