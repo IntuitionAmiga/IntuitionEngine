@@ -7,6 +7,8 @@ The Machine Monitor is a built-in system-level debugger inspired by the Commodor
 The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and handles multi-CPU scenarios, including coprocessors.
 It is also exposed to IEScript Lua via the `dbg.*` API for scripted debugging workflows. See [iescript.md](iescript.md) for the full `dbg.*` module reference.
 
+**Availability:** The monitor is always built into the engine — no command-line flag or build tag is required. Press F9 from any running program to enter. If an IEScript Lua REPL is also bound (F8), the monitor takes priority while it is active and F8 is suppressed.
+
 ## Quick Start
 
 1. Run any typed program: `./bin/IntuitionEngine program.ie64`
@@ -40,7 +42,7 @@ Most address arguments support simple expressions with register names and arithm
 
 Operators: `+` and `-` only. Each term is either a register name or a numeric address.
 
-Count arguments (`s`, `trace`, `bt`, and dump/disassembly line counts) are decimal by default. Use `$` or `0x` for hexadecimal counts. Bare address arguments remain hexadecimal by default.
+Count arguments for `s`, `m`, `trace`, and `bt` are decimal by default. Use `$` or `0x` for hexadecimal counts. The `d` (disassemble) line count is the exception: it is parsed as an address and so defaults to **hexadecimal** (e.g. `d $2000 10` disassembles 0x10 = 16 lines). Bare address arguments remain hexadecimal by default. The `#decimal` prefix is only recognised for address/value arguments (e.g. `r r1 #42`), not for count arguments.
 
 ## Command Reference
 
@@ -57,9 +59,9 @@ Step: 1 instruction(s), 1 cycle(s)
 > 001008: E0 00 00 00 00 00 00 00  nop
 ```
 
-Step 10 instructions:
+Step 10 instructions (counts are decimal):
 ```
-> s #10
+> s 10
 Step: 10 instruction(s), 10 cycle(s)
 ```
 
@@ -71,6 +73,8 @@ Resume execution and exit the monitor. Optionally set the PC before resuming.
 > g          (resume from current PC)
 > g $2000    (set PC to $2000, then resume)
 ```
+
+If the supplied address fails to parse, the command resumes from the current PC without setting it and without an error message.
 
 #### `x` - Exit Monitor
 
@@ -211,6 +215,8 @@ Run the program until the PC reaches the specified address, then stop and re-ent
 
 The monitor exits and execution resumes. When the PC reaches `$2000`, the monitor activates automatically and the temporary breakpoint is removed. If run-until temporarily disables an existing conditional breakpoint, the condition is restored when that stop is handled.
 
+If execution never reaches the target address before the monitor is re-entered for another reason, the temporary breakpoint remains set and will fire on a future run. Use `bc <addr>` to clear it explicitly if you no longer want the stop.
+
 #### `bs` - Backstep (Undo Step)
 
 Rewind the focused CPU to the state before the last `s` (single-step) command. Restores focused CPU registers and the CPU-local memory snapshot captured by that adapter.
@@ -261,14 +267,14 @@ Operators: `==`, `!=`, `<`, `>`, `<=`, `>=`
 
 #### `bc <addr>` / `bc *` - Clear Breakpoint(s)
 
-Clear a single breakpoint by address, or clear all breakpoints on the currently focused CPU.
+Clear a single breakpoint by address, or clear all breakpoints on the currently focused CPU. `bc *` clears only the focused CPU's breakpoints; use `cpu <id>` then `bc *` on each CPU to clear globally.
 
 ```
 > bc $1010
 Breakpoint cleared at $1010
 
 > bc *
-All breakpoints cleared for focused CPU
+All breakpoints cleared
 ```
 
 #### `bl` - List Breakpoints
@@ -314,7 +320,7 @@ Clear a single watchpoint by address, or clear all watchpoints on the focused CP
 Watchpoint cleared at $1000
 
 > wc *
-All watchpoints cleared for focused CPU
+All watchpoints cleared
 ```
 
 #### `wl` - List Watchpoints
@@ -399,14 +405,14 @@ Walk the stack and display return addresses. Default depth is 16.
 
 Stack walking is CPU-specific:
 
-| CPU | SP Register | Slot Size | Notes |
-|-----|------------|-----------|-------|
-| IE64 | R31 | 8 bytes | Addresses masked to 25-bit |
-| IE32 | SP | 4 bytes | - |
-| M68K | A7 | 4 bytes | - |
-| Z80 | SP | 2 bytes | - |
-| 6502 | SP (page 1) | 2 bytes | +1 offset (JSR pushes return-1) |
-| X86 | ESP | 4 bytes | - |
+| CPU | Source | Slot Size | Notes |
+|-----|--------|-----------|-------|
+| IE64 | SP | 8 bytes (LE) | Full 64-bit return addresses; the legacy 25-bit mask was retired in PLAN_MAX_RAM slice 3 |
+| IE32 | SP | 4 bytes (LE) | - |
+| M68K | A6 frame-link chain | 4 bytes (BE) | Walks `prevA6 = mem[A6]; ret = mem[A6+4]` (LINK/UNLK convention). Returns "No stack frames found" if A6 is 0, so leaf or link-less functions produce no trace |
+| Z80 | SP | 2 bytes (LE) | - |
+| 6502 | SP (page 1) | 2 bytes (LE) | Each frame is tagged `(low confidence)` in output; reads from `$0100 + ((SP+1) & 0xFF)` upward, adding +1 because JSR pushes return-1 |
+| X86 | ESP | 4 bytes (LE) | Raw stack slot scan; no EBP frame-chain walk |
 
 ### Save/Load Machine State
 
@@ -416,10 +422,10 @@ Save a complete snapshot of the focused CPU's registers and memory to disk. Defa
 
 ```
 > ss
-State saved to snapshot.iem
+State saved to snapshot.iem (CPU+memory)
 
 > ss mystate.iem
-State saved to mystate.iem
+State saved to mystate.iem (CPU+memory)
 ```
 
 #### `sl [filename]` - Load State
@@ -428,13 +434,13 @@ Restore a previously saved snapshot, overwriting all CPU registers and memory.
 
 ```
 > sl
-State loaded from snapshot.iem
+State loaded from snapshot.iem (CPU+memory)
 
 > sl mystate.iem
-State loaded from mystate.iem
+State loaded from mystate.iem (CPU+memory)
 ```
 
-**Note:** Only CPU registers and memory are saved/restored. Device/chip runtime state (timers, audio, video) is not included.
+**Note:** `ss`/`sl` operate only on the focused CPU and its memory view. Other CPUs and device/chip runtime state (timers, audio envelopes, video scanline position) are not included. `sl` refuses to load a snapshot whose CPU type differs from the focused CPU.
 
 ### Trace and Write History
 
@@ -443,7 +449,7 @@ State loaded from mystate.iem
 Execute exactly N instructions on the focused CPU, logging each instruction and register changes. The trace runs synchronously while the monitor is active.
 
 ```
-> trace #10
+> trace 10
 001000: move.l r1, #$2A              R1=$2A
 001008: add.l r2, r1, #$10           R2=$3A
 ...
@@ -453,7 +459,7 @@ Trace complete: 10 instructions
 If a breakpoint is hit during tracing, the trace stops early:
 
 ```
-> trace #1000
+> trace 1000
 ...
 Trace stopped at breakpoint $1010
 ```
@@ -464,12 +470,12 @@ Direct trace output to a file instead of the scrollback buffer. Use `trace file 
 
 ```
 > trace file trace.log
-Trace output -> trace.log
+Trace output to trace.log
 
-> trace #10000
+> trace 10000
 
 > trace file off
-Trace output -> scrollback
+Trace file output stopped
 ```
 
 Trace files are synced before they are closed.
@@ -480,7 +486,7 @@ Add a memory address to the write-tracking list. During subsequent `trace` runs,
 
 ```
 > trace watch add $1000
-Watch added: $1000
+Trace watch added at $1000
 ```
 
 #### `trace watch del <addr>` - Stop Tracking
@@ -489,15 +495,15 @@ Remove an address from the write-tracking list.
 
 ```
 > trace watch del $1000
-Watch removed: $1000
+Trace watch removed at $1000
 ```
 
 #### `trace watch list` - List Tracked Addresses
 
 ```
 > trace watch list
-$1000
-$2000
+  $1000
+  $2000
 ```
 
 #### `trace history show <addr>` - Show Write History
@@ -530,7 +536,29 @@ Display formatted I/O register values for a hardware device. Without arguments, 
 
 ```
 > io
-Available devices: video terminal audio ahx psg pokey sid sid2 sid3 ted vga ula antic gtia fileio media exec coproc voodoo
+Available I/O devices:
+  ahx
+  antic
+  audio
+  coproc
+  exec
+  fileio
+  gtia
+  irqdiag
+  media
+  pokey
+  psg
+  sid
+  sid2
+  sid3
+  sn76489
+  sysinfo
+  ted
+  terminal
+  ula
+  vga
+  video
+  voodoo
 
 > io vga
 === VGA Registers ===
@@ -540,7 +568,7 @@ VGA_CTRL       ($F1008) = $00000001  [1]
 ...
 
 > io all
-(dumps all 17 devices)
+(dumps all 22 devices)
 ```
 
 Register widths are per-register (1, 2, or 4 bytes). Values are displayed in the appropriate width with both hex and decimal representations.
@@ -736,7 +764,7 @@ Cursor movement, delete, and backspace keys repeat automatically when held.
 ### Tracing a Memory Write
 
 1. `trace watch add $3000` - track writes to $3000
-2. `trace #1000` - trace 1000 instructions
+2. `trace 1000` - trace 1000 instructions (decimal)
 3. `trace history show $3000` - see which instructions wrote to $3000 and what values they wrote
 
 ### Saving and Restoring State
@@ -753,7 +781,7 @@ Cursor movement, delete, and backspace keys repeat automatically when held.
 
 ## Display
 
-The monitor uses an 80x30 character grid rendered with the Amiga 1200 Topaz bitmap font. Colors follow classic monitor conventions:
+The monitor overlay is a character grid sized to the current video mode (`screenWidth / 8` columns × `screenHeight / 16` rows, e.g. 100×37 at the 800×600 default), rendered with the Amiga Topaz 8 bitmap font. Colors follow classic monitor conventions:
 
 - **White**: Default text
 - **Cyan**: Headers, labels, informational messages
@@ -765,10 +793,13 @@ The monitor uses an 80x30 character grid rendered with the Amiga 1200 Topaz bitm
 
 ## GURU MEDITATION Fault Lines (IE64)
 
-When an IE64 fault escapes the kernel, the console prints a
-`GURU MEDITATION` line with the full fault context. M15.6 extends the
-supported fault causes; the monitor decodes them against the table
-in `IE64_ISA.md` §12.8:
+When an IE64 fault escapes the IntuitionOS / `iexec` kernel, the kernel
+itself prints a `GURU MEDITATION` line on the host console with the
+full fault context. The machine monitor does **not** synthesize this
+line; it is emitted from kernel string tables (`sdk/intuitionos/iexec/boot/strings.s`).
+The cause-code table below is reproduced here for convenience when
+reading those reports; the canonical source is `IE64_ISA.md` §12.8.
+M15.6 adds the `SKEF` and `SKAC` causes:
 
 | Cause | Label | Trigger |
 |------:|-------|---------|
@@ -801,3 +832,16 @@ Note: the monitor's IE64 disassembler recognises the new `suaen` and
 `suadis` mnemonics so listings of the shipped iexec kernel show the
 helper bracket at its real source locations rather than as raw
 `dc.b $F3` / `dc.b $F4`.
+
+## Common Pitfalls
+
+- **`d` count is hexadecimal.** `d $1000 10` shows 0x10 = 16 lines, not 10. Counts for `s`, `m`, `trace`, and `bt` are decimal.
+- **`#N` does not work for count arguments.** It is only honoured for address/value parsing (e.g. `r r1 #42`, `m #4096`). `s #10` silently steps one instruction.
+- **Watchpoints are write-only.** `ww` traps on store. There is no read or read/write watch in this revision.
+- **`ss`/`sl` are focused-CPU only.** Other CPUs, video/audio/timer device state, and coprocessor state are not in the snapshot. `sl` will refuse a snapshot whose CPU type differs from the focused CPU.
+- **`bs` (backstep) is focused-CPU only.** It restores that adapter's registers and memory view from the per-CPU ring (max 32 entries). It does not roll back device state or other CPUs.
+- **M68K backtrace requires A6 frame links.** Code that does not use LINK/UNLK (or has not yet set A6) will produce "No stack frames found".
+- **6502 backtrace is heuristic.** Each frame is tagged `(low confidence)`; the walker scans page 1 upward from SP+1 and assumes JSR-pushed return addresses.
+- **`bc *` / `wc *` clear only the focused CPU.** Switch CPUs and repeat to clear globally; `bl` lists across all CPUs but `bc *` does not.
+- **Run-until leaks its temp breakpoint if never hit.** If the PC never reaches the `u` target before you re-enter the monitor for another reason, clear it explicitly with `bc <addr>`.
+- **`g <addr>` silently ignores parse errors** and resumes from the current PC. Use `r pc <addr>` first if you want a hard error on bad input.
