@@ -1,0 +1,177 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+sys.print("native_scene_acceptance", "start")
+local D = require("diag_native_common")
+sys.print("native_scene_acceptance", "common_loaded")
+local TARGET = D.ensure_target("ab3d2_ie68_overdrive_native.ie68")
+sys.print("native_scene_acceptance", "target", TARGET)
+local S = D.load_symbols("native")
+sys.print("native_scene_acceptance", "symbols_loaded", D.symbol_path or "unknown")
+
+D.attach()
+sys.print("native_scene_acceptance", "attached")
+dbg.open()
+sys.print("native_scene_acceptance", "debugger_open")
+if S.Game_Begin then
+    sys.print("native_scene_acceptance", "set_bp", D.hex(S.Game_Begin))
+    dbg.set_bp(S.Game_Begin)
+    sys.print("native_scene_acceptance", "continue_to_game_begin")
+    dbg.continue()
+    dbg.close()
+    sys.print("native_scene_acceptance", "game_begin_hit")
+    D.drive_default_menu()
+    sys.wait_ms(3500)
+    dbg.open()
+    sys.print("native_scene_acceptance", "post_menu_debugger_open")
+    dbg.clear_all_bp()
+    dbg.step(1)
+    dbg.continue()
+end
+
+sys.wait_ms(1500)
+dbg.open()
+
+local fb = video.read_reg(D.VIDEO_FB_BASE)
+local fast = D.rd32(S._Vid_FastBufferPtr_l)
+local frame_base = fb
+if frame_base ~= D.NATIVE_CHUNKY_BASE and frame_base ~= D.NATIVE_CHUNKY_BACK_BASE then
+    frame_base = fast
+end
+
+local scan = D.scan_fb("native_scene.medical_bay_start", frame_base, D.NATIVE_W, D.NATIVE_H)
+local scan_back = D.scan_fb("native_scene.back", D.NATIVE_CHUNKY_BACK_BASE, D.NATIVE_W, D.NATIVE_H)
+local scan_scale = D.scan_fb("native_scene.scale", D.NATIVE_MENU_SCALE_BASE, D.NATIVE_W, D.NATIVE_H)
+local scan_scale_back = D.scan_fb("native_scene.scale_back", D.NATIVE_MENU_SCALE_BACK_BASE, D.NATIVE_W, D.NATIVE_H)
+local hash = D.hash_mem(frame_base, D.NATIVE_BYTES)
+local zone = S.Plr1_Zone_w and D.s16(D.rd16(S.Plr1_Zone_w)) or -1
+local pvs = S.Plr1_PotVisibleZoneListPtr_l and D.rd32(S.Plr1_PotVisibleZoneListPtr_l) or 0
+local list = S._Lvl_ListOfGraphRoomsPtr_l and D.rd32(S._Lvl_ListOfGraphRoomsPtr_l) or 0
+local zend = S.Zone_EndOfListPtr_l and D.rd32(S.Zone_EndOfListPtr_l) or 0
+
+sys.print("native_scene", "state",
+    "data", D.hex(S.Lvl_DataPtr_l and D.rd32(S.Lvl_DataPtr_l) or 0),
+    "gfx", D.hex(S.Lvl_GraphicsPtr_l and D.rd32(S.Lvl_GraphicsPtr_l) or 0),
+    "clips", D.hex(S._Lvl_ClipsPtr_l and D.rd32(S._Lvl_ClipsPtr_l) or 0),
+    "points", S._Lvl_NumPoints_w and D.s16(D.rd16(S._Lvl_NumPoints_w)) or -1,
+    "zones", S._Lvl_NumZones_w and D.s16(D.rd16(S._Lvl_NumZones_w)) or -1,
+    "player_zone", zone,
+    "pvs", D.hex(pvs),
+    "list", D.hex(list),
+    "list0", list ~= 0 and D.s16(D.rd16(list)) or -999,
+    "zend", D.hex(zend),
+    "zendm1", zend ~= 0 and D.s16(D.rd16(zend - 2)) or -999,
+    "draw_clip", D.s16(D.rd16(S._Draw_LeftClip_w)), D.s16(D.rd16(S._Draw_RightClip_w)),
+    "zone_clip", D.s16(D.rd16(S._Draw_ZoneClipL_w)), D.s16(D.rd16(S._Draw_ZoneClipR_w)),
+    "back_nz", scan_back.nonzero,
+    "scale_nz", scan_scale.nonzero,
+    "scale_back_nz", scan_scale_back.nonzero)
+
+local function s32(v)
+    if v >= 0x80000000 then return v - 0x100000000 end
+    return v
+end
+
+sys.print("native_scene", "counters",
+    "zone_candidates", S.NativeDiag_ZoneCandidates_l and D.rd32(S.NativeDiag_ZoneCandidates_l) or -1,
+    "zone_render", S.NativeDiag_ZoneRenderCalls_l and D.rd32(S.NativeDiag_ZoneRenderCalls_l) or -1,
+    "zone_skip_clip", S.NativeDiag_ZoneSkipClip_l and D.rd32(S.NativeDiag_ZoneSkipClip_l) or -1,
+    "wall_records", S.NativeDiag_WallRecords_l and D.rd32(S.NativeDiag_WallRecords_l) or -1,
+    "flat_records", S.NativeDiag_FlatRecords_l and D.rd32(S.NativeDiag_FlatRecords_l) or -1,
+    "object_records", S.NativeDiag_ObjectRecords_l and D.rd32(S.NativeDiag_ObjectRecords_l) or -1,
+    "wall_entries", S.NativeDiag_WallEntries_l and D.rd32(S.NativeDiag_WallEntries_l) or -1,
+    "wall_facing_away", S.NativeDiag_WallFacingAway_l and D.rd32(S.NativeDiag_WallFacingAway_l) or -1,
+    "wall_reject_height", S.NativeDiag_WallRejectHeight_l and D.rd32(S.NativeDiag_WallRejectHeight_l) or -1,
+    "wall_reject_both_behind", S.NativeDiag_WallRejectBothBehind_l and D.rd32(S.NativeDiag_WallRejectBothBehind_l) or -1,
+    "wall_reject_first_clip", S.NativeDiag_WallRejectFirstClip_l and D.rd32(S.NativeDiag_WallRejectFirstClip_l) or -1,
+    "wall_reject_second_clip", S.NativeDiag_WallRejectSecondClip_l and D.rd32(S.NativeDiag_WallRejectSecondClip_l) or -1,
+    "wall_simple", S.NativeDiag_WallSimpleCalls_l and D.rd32(S.NativeDiag_WallSimpleCalls_l) or -1,
+    "wall_gouraud", S.NativeDiag_WallGouraudCalls_l and D.rd32(S.NativeDiag_WallGouraudCalls_l) or -1,
+    "xform_mode", S.NativeDiag_TransformMode_l and D.rd32(S.NativeDiag_TransformMode_l) or -1,
+    "post20x", S.NativeDiag_PostXform20X_l and s32(D.rd32(S.NativeDiag_PostXform20X_l)) or 0,
+    "post20z", S.NativeDiag_PostXform20Z_l and s32(D.rd32(S.NativeDiag_PostXform20Z_l)) or 0,
+    "xwobble", S.xwobble and s32(D.rd32(S.xwobble)) or 0)
+
+local rot = S._Rotated_vl or S.Rotated_vl
+local ons = S._OnScreen_vl or S.OnScreen_vl
+if rot and ons then
+    for _, idx in ipairs({0, 1, 2, 3, 18, 53, 123, 187}) do
+        sys.print("native_scene", "point",
+            idx,
+            "rx", D.rd32(rot + idx * 8),
+            "rz", D.rd32(rot + idx * 8 + 4),
+            "rz_hi16", D.s16(D.rd16(rot + idx * 8 + 4)),
+            "rz16", D.s16(D.rd16(rot + idx * 8 + 6)),
+            "sx", D.s16(D.rd16(ons + idx * 2)))
+    end
+end
+
+local pts = S._Lvl_PointsPtr_l and D.rd32(S._Lvl_PointsPtr_l) or 0
+if rot and pts ~= 0 and S.Plr_XOff_l and S.Plr_ZOff_l and S.Vis_SinVal_w and S.Vis_CosVal_w then
+    local px = D.s16(D.rd16(S.Plr_XOff_l))
+    local pz = D.s16(D.rd16(S.Plr_ZOff_l))
+    local sinv = D.s16(D.rd16(S.Vis_SinVal_w))
+    local cosv = D.s16(D.rd16(S.Vis_CosVal_w))
+    sys.print("native_scene", "view_state",
+        "points_ptr", D.hex(pts),
+        "px", px,
+        "pz", pz,
+        "sin", sinv,
+        "cos", cosv)
+    for _, idx in ipairs({15, 20, 21, 23, 38, 39, 40, 42, 409, 410}) do
+        local wx = D.s16(D.rd16(pts + idx * 4))
+        local wz = D.s16(D.rd16(pts + idx * 4 + 2))
+        local vx = wx - px
+        local vz = wz - pz
+        local rx = math.floor((vx * cosv - vz * sinv) / 256)
+        local rz = math.floor((((vx * sinv + vz * cosv) * 4) / 65536) * 1229 / 2048 / 4096)
+        sys.print("native_scene", "raw_point",
+            idx,
+            "wx", wx,
+            "wz", wz,
+            "vx", vx,
+            "vz", vz,
+            "lua_rx_pre", rx,
+            "lua_rz_approx", rz,
+            "mem_rx", s32(D.rd32(rot + idx * 8)),
+            "mem_rz", s32(D.rd32(rot + idx * 8 + 4)))
+    end
+end
+
+if S.NativeDiag_WallSampleCount_l and S.NativeDiag_WallSamples_vl then
+    local n = math.min(D.rd32(S.NativeDiag_WallSampleCount_l), 16)
+    for i = 0, n - 1 do
+        local p = S.NativeDiag_WallSamples_vl + i * 32
+        sys.print("native_scene", "wall_sample",
+            i,
+            "l", D.rd32(p),
+            "r", D.rd32(p + 4),
+            "lz", D.rd32(p + 8),
+            "rz", D.rd32(p + 12),
+            "lx", D.rd32(p + 16),
+            "rx", D.rd32(p + 20),
+            "lsx", D.s16(D.rd16(p + 26)),
+            "rsx", D.s16(D.rd16(p + 30)))
+    end
+end
+
+D.expect(hash ~= 0, "frame_hash_blank")
+D.expect(scan.nonzero > D.NATIVE_BYTES / 20, "unexpected_large_blank_frame", scan.nonzero)
+D.expect(scan.maxx - scan.minx > D.NATIVE_W / 3, "narrow_frame_bbox", scan.minx, scan.maxx)
+D.expect(scan.maxy - scan.miny > D.NATIVE_H / 3, "short_frame_bbox", scan.miny, scan.maxy)
+
+D.capture_screenshot(D.NATIVE_DIAG_DIR, "overdrive-native_medical_bay_start_frame0001.png")
+D.save_debug_evidence(D.NATIVE_DIAG_DIR, "overdrive-native_medical_bay_start_frame0001", S)
+
+D.write_metadata(D.NATIVE_DIAG_DIR, "overdrive-native_medical_bay_start_frame0001.txt", {
+    "target=ab3d2_ie68_overdrive_native.ie68",
+    "scene=medical_bay_start",
+    "frame=1",
+    "fb=" .. D.hex(frame_base),
+    "hash=" .. D.hex(hash),
+    "nonzero=" .. tostring(scan.nonzero),
+    "bbox=" .. tostring(scan.minx) .. "," .. tostring(scan.miny) .. "," .. tostring(scan.maxx) .. "," .. tostring(scan.maxy),
+    "zone=" .. tostring(zone),
+    "pvs=" .. D.hex(pvs),
+})
+
+sys.print("native_scene", "PASS")
+sys.quit()

@@ -1,0 +1,2 @@
+sys.print("diag_packaged_script_smoke", "ok")
+sys.quit()

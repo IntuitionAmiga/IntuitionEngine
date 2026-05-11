@@ -1,0 +1,118 @@
+local function hex(n)
+    if n == nil then return "nil" end
+    return string.format("$%08X", n)
+end
+
+local function rd32(addr)
+    local s = dbg.read_mem(addr, 4)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return ((a or 0) * 0x1000000) + ((b or 0) * 0x10000) + ((c or 0) * 0x100) + (d or 0)
+end
+
+local function rd16(addr)
+    local s = dbg.read_mem(addr, 2)
+    local a, b = string.byte(s, 1, 2)
+    return ((a or 0) * 0x100) + (b or 0)
+end
+
+local function rd8(addr)
+    local s = dbg.read_mem(addr, 1)
+    return string.byte(s, 1) or 0
+end
+
+local function sample_block(addr, len, stride)
+    local counts = {}
+    local nonzero = 0
+    local first = nil
+    local last = nil
+    for off = 0, len - 1, stride do
+        local v = rd8(addr + off)
+        counts[v] = (counts[v] or 0) + 1
+        if v ~= 0 then
+            nonzero = nonzero + 1
+            if first == nil then first = off end
+            last = off
+        end
+    end
+    local keys = {}
+    for k, _ in pairs(counts) do
+        keys[#keys + 1] = k
+    end
+    table.sort(keys, function(a, b) return counts[a] > counts[b] end)
+    local top = {}
+    for i = 1, math.min(8, #keys) do
+        top[#top + 1] = string.format("%02X:%d", keys[i], counts[keys[i]])
+    end
+    return nonzero, first or -1, last or -1, table.concat(top, " ")
+end
+
+sys.wait_ms(10000)
+dbg.open()
+
+sys.print("mode", cpu.mode(), "running", tostring(cpu.is_running()))
+sys.print("pc", hex(dbg.get_pc()))
+local regs = dbg.get_regs()
+sys.print("d0", hex(regs.D0), "d1", hex(regs.D1), "a0", hex(regs.A0), "a1", hex(regs.A1), "a7", hex(regs.A7))
+
+local VIDEO_FB_BASE = 0xF0084
+sys.print("fileio regs", hex(video.read_reg(0xF2200)), hex(video.read_reg(0xF2204)), hex(video.read_reg(0xF2210)), hex(video.read_reg(0xF2214)), hex(video.read_reg(0xF2218)))
+
+sys.print("video ctrl", hex(video.read_reg(0xF0000)), "mode", hex(video.read_reg(0xF0004)), "color", hex(video.read_reg(0xF0080)), "fb", hex(video.read_reg(VIDEO_FB_BASE)))
+
+local ADDR = {
+    fast = 0x000667b4,
+    screen1 = 0x000667bc,
+    screen2 = 0x000667c0,
+    draw = 0x000667c4,
+    display = 0x000667c8,
+    lvl = 0x00067800,
+    glf = 0x000294b4,
+    running = 0x00005dde,
+    end_reason = 0x00005e10,
+    shouldquit = 0x000171b6,
+    finished = 0x00016c54,
+    zone = 0x00070820,
+    clip_l = 0x00070822,
+    clip_r = 0x00070824,
+    plr_pos = 0x000699a0,
+    plr_zone = 0x00069a14,
+    io_heap = 0x00098d90,
+    io_path = 0x00098d94,
+}
+
+local fast = rd32(ADDR.fast)
+local draw = rd32(ADDR.draw)
+local display = rd32(ADDR.display)
+local screen1 = rd32(ADDR.screen1)
+local screen2 = rd32(ADDR.screen2)
+sys.print("ptr fast", hex(fast), "draw", hex(draw), "display", hex(display), "s1", hex(screen1), "s2", hex(screen2))
+sys.print("data glf", hex(rd32(ADDR.glf)), "lvl", hex(rd32(ADDR.lvl)), "io_heap", hex(rd32(ADDR.io_heap)))
+sys.print("state running", rd8(ADDR.running), "end_reason", rd16(ADDR.end_reason), "quit", rd8(ADDR.shouldquit), "finished", rd16(ADDR.finished), "zone", rd16(ADDR.zone), "clip", rd16(ADDR.clip_l), rd16(ADDR.clip_r))
+sys.print("plr pos", hex(rd32(ADDR.plr_pos)), hex(rd32(ADDR.plr_pos + 4)), hex(rd32(ADDR.plr_pos + 8)), "zone", rd16(ADDR.plr_zone))
+
+local path = dbg.read_mem(ADDR.io_path, 80)
+path = string.gsub(path, "%z.*", "")
+sys.print("last path", path)
+
+for _, item in ipairs({
+    {"fast", fast},
+    {"draw", draw},
+    {"display", display},
+    {"screen1", screen1},
+    {"screen2", screen2},
+    {"fbreg", video.read_reg(VIDEO_FB_BASE)},
+}) do
+    local name, ptr = item[1], item[2]
+    if ptr ~= 0 then
+        local nonzero, first, last, top = sample_block(ptr, 320 * 240, 17)
+        sys.print("sample", name, hex(ptr), "nonzero", nonzero, "first", first, "last", last, "top", top)
+    end
+end
+
+local dis = dbg.disasm(dbg.get_pc(), 8)
+for i, row in ipairs(dis) do
+    sys.print("dis", hex(row.addr), row.hex or "", row.mnemonic or "")
+end
+
+dbg.close()
+sys.quit()

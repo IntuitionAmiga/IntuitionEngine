@@ -1,0 +1,70 @@
+local function hex(n)
+    if n == nil then return "nil" end
+    return string.format("$%08X", n)
+end
+
+local function log(msg)
+    sys.print("[ab3d2-gameplay] " .. msg)
+end
+
+local S = require("diag_symbols")
+
+local function rd(addr, len)
+    dbg.open()
+    local s = dbg.read_mem(addr, len)
+    dbg.close()
+    return s
+end
+
+local function rd8(addr)
+    return string.byte(rd(addr, 1), 1) or 0
+end
+
+local function rd16(addr)
+    local a, b = string.byte(rd(addr, 2), 1, 2)
+    return ((a or 0) * 0x100) + (b or 0)
+end
+
+local function rd32(addr)
+    local a, b, c, d = string.byte(rd(addr, 4), 1, 4)
+    return ((a or 0) * 0x1000000) + ((b or 0) * 0x10000) + ((c or 0) * 0x100) + (d or 0)
+end
+
+local function dump(tag)
+    log(tag ..
+        " run=" .. hex(rd8(S.Game_Running_b)) ..
+        " readctl=" .. hex(rd8(S.READCONTROLS)) ..
+        " health=" .. hex(rd16(S.Plr1_Health_w)) ..
+        " keys=" .. hex(rd8(S.Plr1_Keys_b)) ..
+        " mouse=" .. hex(rd8(S.Plr1_Mouse_b)) ..
+        " decel=" .. hex(rd8(S.Plr_Decelerate_b)) ..
+        " W=" .. hex(rd8(S._KeyMap_vb + 0x11)) ..
+        " L=" .. hex(rd8(S._KeyMap_vb + 0x28)) ..
+        " x=" .. hex(rd32(S.Plr1_XOff_l)) ..
+        " z=" .. hex(rd32(S.Plr1_ZOff_l)) ..
+        " sx=" .. hex(rd32(S.Plr1_SnapXOff_l)) ..
+        " sz=" .. hex(rd32(S.Plr1_SnapZOff_l)) ..
+        " xspd=" .. hex(rd32(S.Plr1_SnapXSpdVal_l)) ..
+        " sang=" .. hex(rd16(S.Plr1_SnapAngPos_w)) ..
+        " mouseY=" .. hex(rd16(S._Sys_MouseY)))
+end
+
+sys.wait_ms(800)
+dump("initial")
+term.scancode(keys.W)
+sys.wait_ms(1000)
+dump("held W")
+term.scancode(keys.W + 0x80)
+sys.wait_ms(250)
+dump("released W")
+term.scancode(keys.LEFT)
+sys.wait_ms(800)
+dump("held LEFT")
+term.scancode(keys.LEFT + 0x80)
+term.mouse_move(160, 70)
+sys.wait_ms(200)
+term.mouse_move(160, 150)
+sys.wait_ms(500)
+dump("after mouse")
+log("PASS")
+sys.quit()

@@ -171,7 +171,11 @@ func (c *Converter) convertLexed(e *Emit, l Line) {
 		}
 		return
 	}
-	if l.Label != "" {
+	// Some directives (equ/set/= / rs) bind the label as part of their own
+	// syntax — emitting a bare `LABEL:\n` ahead of them would create a
+	// duplicate definition. Suppress the auto-label in that case.
+	directiveOwnsLabel := l.Kind == LineDirective && labelBindingDirective(l.Mnemonic)
+	if l.Label != "" && !directiveOwnsLabel {
 		e.Label(l.Label)
 		if c.fpIrqWrap && c.irqHandlerLabels[l.Label] {
 			c.emitIRQHandlerEntry(e, l.Label)
@@ -1110,6 +1114,24 @@ func (c *Converter) emitMovem(e *Emit, l Line) error {
 			return err
 		}
 		return c.emitMovemLoad(e, regs, a, size, szIE)
+	}
+	// Single-register movem: m68k accepts `movem.<sz> Dn,<ea>` and
+	// `movem.<sz> <ea>,Dn` with one register (the regList degenerates to
+	// a singleton). Treat the bare register as a 1-element reglist when
+	// the other operand is a memory EA.
+	isReg := func(op Operand) bool { return op.Mode == AMDataReg || op.Mode == AMAddrReg }
+	isMemEA := func(op Operand) bool {
+		switch op.Mode {
+		case AMIndirect, AMPostInc, AMPreDec, AMDispAn, AMIndexAn, AMAbsW, AMAbsL, AMDispPC, AMIndexPC:
+			return true
+		}
+		return false
+	}
+	if isReg(a) && isMemEA(b) {
+		return c.emitMovemStore(e, []string{a.Reg.IE64}, b, size, szIE)
+	}
+	if isMemEA(a) && isReg(b) {
+		return c.emitMovemLoad(e, []string{b.Reg.IE64}, a, size, szIE)
 	}
 	return fmt.Errorf("movem: one operand must be a register list")
 }

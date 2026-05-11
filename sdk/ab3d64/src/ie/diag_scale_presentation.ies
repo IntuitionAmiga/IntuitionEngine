@@ -1,0 +1,63 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+local D = require("diag_redux_common")
+local S = D.S
+
+local MODE_640x480 = 0x00
+local CLUT8 = 0x01
+local SCALE_BASE = 0x240000
+local SCALE_BACK_BASE = 0x28B000
+local DISPLAY_BYTES = 640 * 480
+
+local function fail(...)
+    sys.print("scale", "FAIL", ...)
+    sys.quit()
+end
+
+local function expect(cond, ...)
+    if not cond then fail(...) end
+end
+
+local function expect_video(label)
+    local mode = video.read_reg(D.VIDEO_MODE)
+    local color = video.read_reg(D.VIDEO_COLOR_MODE)
+    local fb = video.read_reg(D.VIDEO_FB_BASE)
+    local hash = D.hash_mem(fb, DISPLAY_BYTES)
+    sys.print("scale", label, "mode", D.hex(mode), "color", D.hex(color), "fb", D.hex(fb), "hash", D.hex(hash))
+    expect(mode == MODE_640x480, label, "VIDEO_MODE is not MODE_640x480")
+    expect(color == CLUT8, label, "VIDEO_COLOR_MODE is not CLUT8")
+    expect(fb == SCALE_BASE or fb == SCALE_BACK_BASE, label, "VIDEO_FB_BASE is not a scaled presentation buffer")
+    expect(hash ~= 0, label, "scaled framebuffer is blank")
+end
+
+sys.print("scale", "start")
+D.attach()
+sys.wait_ms(1000)
+expect_video("menu")
+
+dbg.open()
+dbg.set_bp(S.Game_Begin)
+dbg.continue()
+dbg.close()
+D.drive_default_menu()
+sys.wait_ms(3000)
+dbg.open()
+dbg.clear_all_bp()
+dbg.step(1)
+dbg.continue()
+dbg.close()
+sys.wait_ms(1000)
+expect_video("gameplay")
+expect(D.rd8(S._Vid_FullScreen_b) ~= 0, "gameplay", "fullscreen viewport is not enabled")
+
+local vbl0 = D.rd32(S._Vid_VBLCount_l)
+if keys then
+    term.scancode(keys.W)
+    sys.wait_ms(250)
+    term.scancode(keys.W + 0x80)
+end
+sys.wait_ms(250)
+local vbl1 = D.rd32(S._Vid_VBLCount_l)
+expect(vbl1 > vbl0, "input", "VBL did not advance")
+
+sys.print("scale", "PASS")
+sys.quit()

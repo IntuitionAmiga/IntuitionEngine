@@ -1,0 +1,260 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+
+local S = require("diag_symbols_ted")
+
+local function expect(ok, ...)
+    if not ok then
+        sys.print("FAIL", ...)
+        sys.quit(1)
+    end
+end
+
+local function hex(n) return string.format("$%08X", n or 0) end
+
+local TED_V_CTRL1 = 0x000F0F20
+local TED_V_CTRL2 = 0x000F0F24
+local TED_V_ENABLE = 0x000F0F58
+local MOUSE_CTRL = 0x000F074C
+local FILE_NAME = 0x000F2200
+local FILE_DATA_LEN = 0x000F2208
+local FILE_STATUS = 0x000F2210
+local FILE_ERROR = 0x000F2218
+local stack_addr = 0x00FFFF00
+local save_level = 3
+local save_health = 137
+local RAWKEY_ENTER = 0x44
+
+local function be16(n)
+    return string.char(math.floor(n / 0x100) % 0x100, n % 0x100)
+end
+
+local function be32(n)
+    return string.char(
+        math.floor(n / 0x1000000) % 256,
+        math.floor(n / 0x10000) % 256,
+        math.floor(n / 0x100) % 256,
+        n % 256)
+end
+
+local function rd16(addr)
+    local s = dbg.read_mem(addr, 2)
+    local a, b = string.byte(s, 1, 2)
+    return (a or 0) * 0x100 + (b or 0)
+end
+
+local function rd8(addr)
+    return string.byte(dbg.read_mem(addr, 1), 1) or 0
+end
+
+local function wr16(addr, v)
+    dbg.write_mem(addr, be16(v))
+end
+
+local function wr8(addr, v)
+    dbg.write_mem(addr, string.char(v % 256))
+end
+
+local function cstr(addr, max)
+    if not addr or addr == 0 then return "" end
+    local s = dbg.read_mem(addr, max or 160)
+    local out = {}
+    for i = 1, #s do
+        local b = string.byte(s, i)
+        if b == 0 then break end
+        out[#out + 1] = string.char(b)
+    end
+    return table.concat(out)
+end
+
+local function tap(key)
+    term.scancode(key)
+    sys.wait_ms(40)
+    term.scancode(key + 0x80)
+    sys.wait_ms(140)
+end
+
+local function focus_m68k()
+    for _, entry in ipairs(dbg.cpu_list()) do
+        if entry.label == "M68K" or entry.cpu_name == "M68K" or entry.name == "M68K" then
+            dbg.cpu_focus(entry.id)
+            return
+        end
+    end
+    error("M68K CPU not registered")
+end
+
+local function ted_gameplay_ready(label)
+    expect(video.read_reg(TED_V_ENABLE) == 1, label, "TED disabled")
+    expect(video.read_reg(MOUSE_CTRL) == 1, label, "relative mouse not captured")
+    expect(video.read_reg(TED_V_CTRL1) == 0x18, label, "TED not in text gameplay mode", hex(video.read_reg(TED_V_CTRL1)))
+    local ctrl2 = video.read_reg(TED_V_CTRL2)
+    expect(ctrl2 == 0x08, label, "TED not in text/40-column mode", hex(ctrl2))
+    expect(rd16(S._Vid_RightX_w) == 192, label, "width mismatch", tostring(rd16(S._Vid_RightX_w)))
+    expect(rd16(S.Vid_BottomY_w) == 160, label, "height mismatch", tostring(rd16(S.Vid_BottomY_w)))
+end
+
+local function enter_game()
+    dbg.open()
+    focus_m68k()
+    dbg.clear_all_bp()
+    wr16(S.mnu_row, 0)
+    dbg.set_bp(S._Game_LevelBegin)
+    dbg.continue()
+    dbg.close()
+    tap(keys.ENTER or keys.RETURN or keys.SPACE)
+    sys.wait_ms(2500)
+    dbg.open()
+    focus_m68k()
+    expect(dbg.get_pc() == S._Game_LevelBegin, "Play Game did not reach _Game_LevelBegin", hex(dbg.get_pc()), hex(S._Game_LevelBegin))
+    dbg.clear_all_bp()
+    dbg.continue()
+    dbg.close()
+    sys.wait_ms(1200)
+    dbg.open()
+    focus_m68k()
+    wr16(S.ie_ted_gameplay_effect_frames_w, 0)
+    dbg.close()
+    sys.wait_ms(600)
+end
+
+local function exercise_credits()
+    dbg.open()
+    focus_m68k()
+    expect(S.mnu_viewcredz ~= nil, "missing mnu_viewcredz symbol")
+    dbg.write_mem(stack_addr, be32(0))
+    dbg.set_reg("A7", stack_addr)
+    dbg.set_pc(S.mnu_viewcredz)
+    dbg.set_bp(0)
+    dbg.continue()
+    dbg.close()
+    sys.wait_ms(600)
+    tap(keys.ENTER or keys.RETURN or keys.SPACE)
+    sys.wait_ms(1200)
+    dbg.open()
+    focus_m68k()
+    expect(dbg.get_pc() == 0, "mnu_viewcredz did not return", hex(dbg.get_pc()))
+    expect(video.read_reg(TED_V_ENABLE) == 1, "credits left TED disabled")
+    dbg.clear_all_bp()
+    dbg.close()
+end
+
+local function call_returning(symbol, label)
+    dbg.open()
+    focus_m68k()
+    expect(symbol ~= nil, "missing symbol for", label)
+    dbg.write_mem(stack_addr, be32(0))
+    dbg.set_reg("A7", stack_addr)
+    dbg.set_pc(symbol)
+    dbg.set_bp(0)
+    dbg.continue()
+    dbg.close()
+    sys.wait_ms(600)
+    dbg.open()
+    focus_m68k()
+    expect(dbg.get_pc() == 0, label, "did not return", hex(dbg.get_pc()))
+    dbg.clear_all_bp()
+    dbg.close()
+end
+
+local function save_progress()
+    dbg.open()
+    focus_m68k()
+    wr16(S.Game_LevelCounter_w, save_level)
+    wr16(S.Plr_Health_w, save_health)
+    expect(rd16(S.Game_LevelCounter_w) == save_level, "level setup failed")
+    expect(rd16(S.Plr_Health_w) == save_health, "health setup failed")
+    dbg.write_mem(stack_addr, be32(0))
+    dbg.set_reg("A7", stack_addr)
+    dbg.set_pc(S.game_SavePosition)
+    dbg.set_bp(0)
+    dbg.continue()
+    dbg.close()
+    sys.wait_ms(700)
+    for _ = 1, 3 do
+        tap(keys.ENTER or keys.RETURN or keys.SPACE)
+        sys.wait_ms(250)
+    end
+    sys.wait_ms(2500)
+    dbg.open()
+    focus_m68k()
+    expect(dbg.get_pc() == 0, "game_SavePosition did not return", hex(dbg.get_pc()))
+    sys.print("save_file", cstr(video.read_reg(FILE_NAME), 160),
+        "len", tostring(video.read_reg(FILE_DATA_LEN)),
+        "status", tostring(video.read_reg(FILE_STATUS)),
+        "error", tostring(video.read_reg(FILE_ERROR)))
+    expect(video.read_reg(FILE_STATUS) == 0, "FILE_STATUS after save", tostring(video.read_reg(FILE_STATUS)))
+    dbg.clear_all_bp()
+    dbg.close()
+end
+
+local function load_progress()
+    dbg.open()
+    focus_m68k()
+    wr16(S.Game_LevelCounter_w, 0)
+    wr16(S.Plr_Health_w, 1)
+    expect(rd16(S.Game_LevelCounter_w) == 0, "level reset failed")
+    expect(rd16(S.Plr_Health_w) == 1, "health reset failed")
+    wr8(S._KeyMap_vb + rd8(S.backward_key), 1)
+    wr8(S._KeyMap_vb + RAWKEY_ENTER, 1)
+    dbg.write_mem(stack_addr, be32(0))
+    dbg.set_reg("A7", stack_addr)
+    dbg.set_pc(S.game_LoadPosition)
+    dbg.set_bp(0)
+    dbg.continue()
+    dbg.close()
+    sys.wait_ms(2500)
+    dbg.open()
+    focus_m68k()
+    expect(dbg.get_pc() == 0, "game_LoadPosition did not return", hex(dbg.get_pc()))
+    expect(video.read_reg(FILE_STATUS) == 0, "FILE_STATUS after load", tostring(video.read_reg(FILE_STATUS)))
+    expect(rd16(S.Game_LevelCounter_w) == save_level, "loaded level mismatch", tostring(rd16(S.Game_LevelCounter_w)))
+    expect(rd16(S.Plr_Health_w) == save_health, "loaded health mismatch", tostring(rd16(S.Plr_Health_w)))
+    dbg.clear_all_bp()
+    dbg.close()
+end
+
+local function pause_resume()
+    tap(keys.P)
+    sys.wait_ms(500)
+    tap(keys.P)
+    sys.wait_ms(900)
+    dbg.open()
+    focus_m68k()
+    ted_gameplay_ready("after_pause")
+    dbg.close()
+end
+
+sys.print("diag_ted_full_game_gate", "start")
+sys.wait_ms(1800)
+enter_game()
+dbg.open()
+focus_m68k()
+ted_gameplay_ready("initial_gameplay")
+dbg.close()
+
+pause_resume()
+save_progress()
+load_progress()
+
+call_returning(S._Game_LevelWon, "level_won")
+dbg.open()
+focus_m68k()
+expect(rd8(S._Game_FinishedLevel_b) ~= 0, "level_won did not set finished flag")
+dbg.close()
+
+call_returning(S._Game_LevelFailed, "level_failed")
+call_returning(S._Game_LevelBegin, "level_restart")
+dbg.open()
+focus_m68k()
+wr16(S.ie_ted_gameplay_effect_frames_w, 0)
+dbg.close()
+call_returning(S._Vid_Present, "restart_present")
+dbg.open()
+focus_m68k()
+ted_gameplay_ready("after_level_failed")
+dbg.close()
+
+exercise_credits()
+
+sys.print("diag_ted_full_game_gate", "pass")
+sys.quit()

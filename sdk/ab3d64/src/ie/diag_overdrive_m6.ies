@@ -1,0 +1,112 @@
+local S = require("diag_symbols_overdrive")
+
+local VIDEO_MODE = 0xF0004
+local VIDEO_COLOR_MODE = 0xF0080
+local VIDEO_FB_BASE = 0xF0084
+
+local MODE_1920x1080 = 0x06
+local OVERDRIVE_RGBA_BACK = 0x03800000
+local OVERDRIVE_WIDTH = 1920
+local OVERDRIVE_HEIGHT = 1080
+local OVERDRIVE_M6_ASSET_COUNT = 8
+
+local function log(msg)
+    print("[overdrive-m6] " .. msg)
+end
+
+local function fail(msg)
+    log("FAIL: " .. msg)
+    sys.exit(1)
+    error(msg, 0)
+end
+
+local function hex(v)
+    return string.format("0x%X", tonumber(v) or 0)
+end
+
+local function expect(cond, msg)
+    if not cond then fail(msg) end
+end
+
+local function assert_eq(name, got, want)
+    if got ~= want then fail(name .. " got " .. hex(got) .. " want " .. hex(want)) end
+end
+
+local function be32(s)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return (a or 0) * 0x1000000 + (b or 0) * 0x10000 + (c or 0) * 0x100 + (d or 0)
+end
+
+local function rd32(addr)
+    return be32(dbg.read_mem(addr, 4))
+end
+
+local function focus_m68k()
+    local cpus = dbg.cpu_list()
+    for _, entry in ipairs(cpus) do
+        if entry.label == "M68K" or entry.cpu_name == "M68K" or entry.name == "M68K" then
+            dbg.cpu_focus(entry.id)
+            return
+        end
+    end
+    fail("M68K CPU not registered")
+end
+
+local function call_m68k(addr, wait_ms)
+    local stack_addr = 0x00FFF800
+    dbg.open()
+    focus_m68k()
+    dbg.clear_all_bp()
+    if dbg.clear_all_wp then dbg.clear_all_wp() end
+    dbg.write_mem(stack_addr, string.char(0, 0, 0, 0))
+    dbg.set_reg("A7", stack_addr)
+    dbg.set_pc(addr)
+    dbg.set_bp(0)
+    dbg.continue()
+    sys.wait_ms(wait_ms or 1000)
+    dbg.open()
+    expect(dbg.get_pc() == 0, "call did not return to sentinel pc from " .. hex(addr) .. ": pc=" .. hex(dbg.get_pc()))
+    dbg.clear_all_bp()
+    if dbg.clear_all_wp then dbg.clear_all_wp() end
+    dbg.close()
+end
+
+for _, name in ipairs({
+    "ie_overdrive_m6_asset_state_l",
+    "ie_overdrive_m6_asset_fallback_l",
+    "ie_overdrive_m6_asset_loaded_l",
+    "ie_overdrive_m6_asset_sample_l",
+    "ie_overdrive_m6_asset_source_l",
+    "ie_overdrive_m6_present_l",
+    "ie_overdrive_m6_present_rgba_frame",
+}) do
+    expect(S[name] ~= nil, "missing symbol " .. name)
+end
+
+call_m68k(S.ie_overdrive_m6_present_rgba_frame, 1500)
+
+local w, h = video.get_dimensions()
+assert_eq("M6 video mode", mem.read32(VIDEO_MODE), MODE_1920x1080)
+assert_eq("M6 width", w, OVERDRIVE_WIDTH)
+assert_eq("M6 height", h, OVERDRIVE_HEIGHT)
+assert_eq("M6 RGBA color mode", mem.read32(VIDEO_COLOR_MODE), 0)
+assert_eq("M6 RGBA framebuffer", mem.read32(VIDEO_FB_BASE), OVERDRIVE_RGBA_BACK)
+assert_eq("M6 state", rd32(S.ie_overdrive_m6_asset_state_l), 1)
+assert_eq("M6 fallback", rd32(S.ie_overdrive_m6_asset_fallback_l), 0)
+assert_eq("M6 loaded count", rd32(S.ie_overdrive_m6_asset_loaded_l), OVERDRIVE_M6_ASSET_COUNT)
+assert_eq("M6 source telemetry", rd32(S.ie_overdrive_m6_asset_source_l), OVERDRIVE_RGBA_BACK)
+assert_eq("M6 present telemetry", rd32(S.ie_overdrive_m6_present_l), 1)
+
+for _, x in ipairs({0, 160, 320, 480, 640, 800, 960, 1120}) do
+    local px = dbg.read_mem(OVERDRIVE_RGBA_BACK + x * 4, 4)
+    local r, g, b, a = string.byte(px, 1, 4)
+    expect(a == 0xFF, "M6 asset at x=" .. tostring(x) .. " was not opaque")
+    expect(r ~= 0 or g ~= 0 or b ~= 0, "M6 asset at x=" .. tostring(x) .. " was blank")
+end
+
+expect(rd32(S.ie_overdrive_m6_asset_sample_l) ~= 0, "M6 sample telemetry was blank")
+
+log("PASS rgba_source=" .. hex(rd32(S.ie_overdrive_m6_asset_source_l)) ..
+    " loaded=" .. tostring(rd32(S.ie_overdrive_m6_asset_loaded_l)) ..
+    " fallback=" .. tostring(rd32(S.ie_overdrive_m6_asset_fallback_l)))
+sys.exit(0)

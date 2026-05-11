@@ -1,0 +1,59 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+sys.print("native_contract", "start")
+local D = require("diag_native_common")
+sys.print("native_contract", "common_loaded")
+local TARGET = D.ensure_target("ab3d2_ie68_overdrive_native.ie68")
+sys.print("native_contract", "target", TARGET)
+local S = D.load_symbols("native")
+sys.print("native_contract", "symbols_loaded", D.symbol_path or "unknown")
+
+local function sym(name)
+    D.expect(S[name] ~= nil, "missing_symbol", name)
+    return S[name]
+end
+
+D.attach()
+sys.print("native_contract", "attached")
+sys.print("native_contract", "opening_debugger")
+dbg.open()
+sys.print("native_contract", "debugger_open")
+
+local mode = video.read_reg(D.VIDEO_MODE)
+local color = video.read_reg(D.VIDEO_COLOR_MODE)
+local fb = video.read_reg(D.VIDEO_FB_BASE)
+sys.print("native_contract", "symbols", D.symbol_path or "unknown")
+sys.print("native_contract", "video", "mode", D.hex(mode), "color", D.hex(color), "fb", D.hex(fb))
+D.capture_screenshot(D.NATIVE_DIAG_DIR, "overdrive-native_contract.png")
+D.save_debug_evidence(D.NATIVE_DIAG_DIR, "overdrive-native_contract", S)
+
+D.expect(mode == D.MODE_1920x1080, "VIDEO_MODE", D.hex(mode))
+D.expect(color == D.CLUT8, "VIDEO_COLOR_MODE", D.hex(color))
+D.expect(fb == D.NATIVE_CHUNKY_BASE or fb == D.NATIVE_CHUNKY_BACK_BASE or
+    fb == D.NATIVE_MENU_SCALE_BASE or fb == D.NATIVE_MENU_SCALE_BACK_BASE,
+    "VIDEO_FB_BASE", D.hex(fb))
+
+if video.get_dimensions then
+    local w, h = video.get_dimensions()
+    D.expect(w == D.NATIVE_W and h == D.NATIVE_H, "video_dimensions", tostring(w), tostring(h))
+end
+
+D.expect(D.rd32(sym("_Vid_Screen1Ptr_l")) == D.NATIVE_CHUNKY_BASE, "screen1")
+D.expect(D.rd32(sym("_Vid_Screen2Ptr_l")) == D.NATIVE_CHUNKY_BACK_BASE, "screen2")
+D.expect(D.rd32(sym("_Vid_FastBufferPtr_l")) == D.NATIVE_CHUNKY_BASE or
+    D.rd32(sym("_Vid_FastBufferPtr_l")) == D.NATIVE_CHUNKY_BACK_BASE, "fast_buffer")
+
+D.expect(D.s16(D.rd16(sym("_Vid_RightX_w"))) == D.NATIVE_W, "right_x")
+D.expect(D.s16(D.rd16(sym("Vid_CentreX_w"))) == D.NATIVE_W / 2, "centre_x")
+D.expect(D.s16(D.rd16(sym("Vid_BottomY_w"))) == D.NATIVE_H, "bottom_y")
+D.expect(D.s16(D.rd16(sym("TOTHEMIDDLE"))) == D.NATIVE_H / 2, "to_the_middle")
+
+local last_line = D.rd32(sym("draw_LineOffsetBuffer_vl") + (D.NATIVE_H - 1) * 4)
+D.expect(last_line == (D.NATIVE_H - 1) * D.NATIVE_W, "line_offset_last", D.hex(last_line))
+
+D.expect_no_overlap("native_front_vs_heap_ptr", D.NATIVE_CHUNKY_BASE, D.NATIVE_BYTES, D.FILE_HEAP_PTR, D.FILE_HEAP_PTR + 4)
+D.expect_no_overlap("native_back_vs_heap_ptr", D.NATIVE_CHUNKY_BACK_BASE, D.NATIVE_BYTES, D.FILE_HEAP_PTR, D.FILE_HEAP_PTR + 4)
+D.expect_no_overlap("native_menu_a_vs_heap", D.NATIVE_MENU_SCALE_BASE, D.NATIVE_BYTES, D.FILE_HEAP_BASE, D.FILE_HEAP_LIMIT)
+D.expect_no_overlap("native_menu_b_vs_heap", D.NATIVE_MENU_SCALE_BACK_BASE, D.NATIVE_BYTES, D.FILE_HEAP_BASE, D.FILE_HEAP_LIMIT)
+
+sys.print("native_contract", "PASS")
+sys.quit()

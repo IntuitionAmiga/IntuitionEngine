@@ -1,0 +1,34 @@
+local function hex(n)
+    if n == nil then return "nil" end
+    return string.format("$%08X", n)
+end
+
+local function log(msg)
+    sys.print("[ab3d2-input] " .. msg)
+end
+
+local ok, symbols = pcall(require, "diag_symbols")
+if ok and type(symbols) == "table" then
+    log("symbols loaded keymap=" .. hex(symbols._KeyMap_vb) ..
+        " poll=" .. hex(symbols.ie_poll_input))
+else
+    log("symbols unavailable: " .. tostring(symbols))
+end
+
+log("mode=" .. cpu.mode() .. " running=" .. tostring(cpu.is_running()))
+
+term.scancode(keys.W)
+log("after W make SCAN_STATUS=" .. hex(mem.read32(0xF0744)))
+term.scancode(keys.W + 0x80)
+log("after W break SCAN_STATUS=" .. hex(mem.read32(0xF0744)))
+
+term.mouse_move(160, 100)
+log("mouse at 160,100 X=" .. hex(mem.read32(0xF0730)) ..
+    " Y=" .. hex(mem.read32(0xF0734)) ..
+    " buttons=" .. hex(mem.read32(0xF0738)))
+
+term.mouse_click(160, 100, 1)
+log("after left click buttons=" .. hex(mem.read32(0xF0738)))
+
+log("PASS")
+sys.quit()

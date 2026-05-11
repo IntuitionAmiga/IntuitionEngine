@@ -1,0 +1,51 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+local D = require("diag_redux_common")
+local S = D.S
+
+local function wp(addr)
+    if dbg.set_wp then
+        dbg.set_wp(addr)
+    end
+end
+
+sys.print("diag_redux_watch_ptrs", "start")
+D.attach()
+
+dbg.open()
+dbg.set_bp(S.Game_Begin)
+dbg.continue()
+dbg.close()
+D.drive_default_menu()
+sys.wait_ms(3000)
+
+dbg.open()
+dbg.clear_all_bp()
+dbg.set_bp(S.DrawDisplay)
+dbg.step(1)
+dbg.continue()
+sys.wait_ms(1500)
+dbg.open()
+D.dump_checkpoint("at_drawdisplay")
+
+if dbg.clear_all_wp then dbg.clear_all_wp() end
+wp(S.Draw_TextureMapsPtr_l)
+wp(S.Draw_TexturePalettePtr_l)
+wp(S.Draw_TexturePalettePtr_l + 4)
+wp(S.Draw_TexturePalettePtr_l + 8)
+wp(S.Draw_PalettePtr_l)
+wp(S.Draw_PalettePtr_l + 4)
+sys.print("watch_ptrs", "armed",
+    D.hex(S.Draw_TextureMapsPtr_l),
+    D.hex(S.Draw_TexturePalettePtr_l),
+    D.hex(S.Draw_PalettePtr_l))
+
+dbg.clear_all_bp()
+dbg.continue()
+sys.wait_ms(2500)
+dbg.open()
+D.dump_checkpoint("after_watch")
+D.dump_buffers("after_watch")
+if dbg.clear_all_wp then dbg.clear_all_wp() end
+dbg.close()
+sys.print("diag_redux_watch_ptrs", "done")
+sys.quit()

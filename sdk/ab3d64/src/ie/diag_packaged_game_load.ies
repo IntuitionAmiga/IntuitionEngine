@@ -1,0 +1,97 @@
+local A = {
+    game_LoadPosition = 0x00017CBE,
+    Game_LevelCounter_w = 0x00017AC2,
+    Plr_Health_w = 0x0006B6EE,
+}
+
+local stack_addr = 0x00FFFF00
+local expected_level = 3
+local expected_health = 137
+
+local function expect(cond, ...)
+    if not cond then error(table.concat({...}, " ")) end
+end
+
+local function be16(n)
+    return string.char(math.floor(n / 0x100) % 0x100, n % 0x100)
+end
+
+local function be32(n)
+    return string.char(
+        math.floor(n / 0x1000000) % 0x100,
+        math.floor(n / 0x10000) % 0x100,
+        math.floor(n / 0x100) % 0x100,
+        n % 0x100)
+end
+
+local function rd16(addr)
+    local s = dbg.read_mem(addr, 2)
+    local a, b = string.byte(s, 1, 2)
+    return ((a or 0) * 0x100) + (b or 0)
+end
+
+local function focus_m68k()
+    for _, entry in ipairs(dbg.cpu_list()) do
+        if entry.label == "M68K" or entry.cpu_name == "M68K" or entry.name == "M68K" then
+            dbg.cpu_focus(entry.id)
+            return
+        end
+    end
+    error("M68K CPU not registered")
+end
+
+local function tap(key)
+    term.scancode(key)
+    sys.wait_ms(40)
+    term.scancode(key + 0x80)
+    sys.wait_ms(120)
+end
+
+local function confirm_menu()
+    local key = keys.ENTER or keys.RETURN or keys.SPACE
+    tap(keys.DOWN)
+    sys.wait_ms(250)
+    for _ = 1, 3 do
+        tap(key)
+        sys.wait_ms(250)
+    end
+end
+
+sys.print("diag_packaged_game_load", "start")
+sys.wait_ms(800)
+dbg.open()
+focus_m68k()
+dbg.clear_all_bp()
+if dbg.clear_all_wp then dbg.clear_all_wp() end
+
+dbg.write_mem(A.Game_LevelCounter_w, be16(0))
+dbg.write_mem(A.Plr_Health_w, be16(1))
+expect(rd16(A.Game_LevelCounter_w) == 0, "level reset failed")
+expect(rd16(A.Plr_Health_w) == 1, "health reset failed")
+
+dbg.write_mem(stack_addr, be32(0))
+dbg.set_reg("A7", stack_addr)
+dbg.set_pc(A.game_LoadPosition)
+dbg.set_bp(0)
+sys.print("diag_packaged_game_load", "calling", string.format("$%08X", A.game_LoadPosition))
+dbg.continue()
+dbg.close()
+
+sys.wait_ms(700)
+confirm_menu()
+sys.wait_ms(2500)
+
+dbg.open()
+focus_m68k()
+local loaded_level = rd16(A.Game_LevelCounter_w)
+local loaded_health = rd16(A.Plr_Health_w)
+sys.print("diag_packaged_game_load", "pc", string.format("$%08X", dbg.get_pc()), "level", tostring(loaded_level), "health", tostring(loaded_health))
+expect(dbg.get_pc() == 0, "game_LoadPosition did not return to sentinel pc")
+expect(loaded_level == expected_level, "loaded level mismatch", tostring(loaded_level), "expected", tostring(expected_level))
+expect(loaded_health == expected_health, "loaded health mismatch", tostring(loaded_health), "expected", tostring(expected_health))
+
+dbg.clear_all_bp()
+if dbg.clear_all_wp then dbg.clear_all_wp() end
+dbg.close()
+sys.print("diag_packaged_game_load", "ok")
+sys.quit()

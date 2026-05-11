@@ -285,7 +285,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -415,6 +415,11 @@ ab3d2-overdrive:
 ab3d2-all:
 	@$(MAKE) ab3d2
 	@$(MAKE) ab3d2-overdrive
+
+# AB3D64 — IE64 source-port of AB3D2 Redux High Overdrive via m68kto64.
+# Single-variant build; see sdk/ab3d64/README.md and sdk/docs/AB3D64.md.
+ab3d64: m68kto64 ie64asm
+	@$(MAKE) -C sdk/ab3d64 all
 
 compress-ab3d2:
 	@echo "Skipping AB3D2 binary compression."
@@ -1834,6 +1839,7 @@ release-all: release-src release-sdk release-linux release-windows release-macos
 
 release-verify:
 	@bash scripts/test-dist-layout.sh $(RELEASE_DIR)
+	@$(MAKE) ab3d64
 
 # Clean build artifacts
 clean:

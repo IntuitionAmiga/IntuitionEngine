@@ -1,0 +1,60 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+local D = require("diag_redux_common")
+local S = D.S
+
+local CHUNKY_BASE = 0x100000
+local CHUNKY_BACK_BASE = 0x113000
+local PRESENT_BASE = 0x126000
+local SCALE_BASE = 0x240000
+local SCALE_BACK_BASE = 0x28B000
+local BLT_STATUS = 0xF0044
+
+local function sample(label)
+    dbg.open()
+    local fb = video.read_reg(D.VIDEO_FB_BASE)
+    sys.print("scale_buf", label,
+        "pc", D.hex(dbg.get_pc()),
+        "mode", D.hex(video.read_reg(D.VIDEO_MODE)),
+        "color", D.hex(video.read_reg(D.VIDEO_COLOR_MODE)),
+        "fb", D.hex(fb),
+        "bltStatus", D.hex(video.read_reg(BLT_STATUS)),
+        "full", D.hex(D.rd8(S._Vid_FullScreen_b)),
+        "right", S._Vid_RightX_w and D.hex(D.rd16(S._Vid_RightX_w)) or "na",
+        "vbl", S._Vid_VBLCount_l and D.hex(D.rd32(S._Vid_VBLCount_l)) or "na",
+        "stage", S.ie_game_stage and D.hex(D.rd32(S.ie_game_stage)) or "na")
+    local w, h = video.get_dimensions()
+    sys.print("scale_frame", label,
+        "dim", w, h,
+        "frameHash", D.hex(video.frame_hash()))
+    sys.print("scale_hash", label,
+        "chunky", D.hex(D.hash_mem(CHUNKY_BASE, 320 * 240)),
+        "back", D.hex(D.hash_mem(CHUNKY_BACK_BASE, 320 * 240)),
+        "present", D.hex(D.hash_mem(PRESENT_BASE, 320 * 240)),
+        "scaleA", D.hex(D.hash_mem(SCALE_BASE, 640 * 480)),
+        "scaleB", D.hex(D.hash_mem(SCALE_BACK_BASE, 640 * 480)),
+        "fb", D.hex(D.hash_mem(fb, 640 * 480)))
+    dbg.close()
+end
+
+sys.print("scale_buf", "start")
+D.attach()
+sys.wait_ms(1000)
+sample("menu")
+
+dbg.open()
+dbg.set_bp(S.Game_Begin)
+dbg.continue()
+dbg.close()
+D.drive_default_menu()
+sys.wait_ms(3000)
+dbg.open()
+dbg.clear_all_bp()
+dbg.step(1)
+dbg.continue()
+dbg.close()
+
+for i = 1, 6 do
+    sys.wait_ms(500)
+    sample("game_" .. i)
+end
+sys.quit()

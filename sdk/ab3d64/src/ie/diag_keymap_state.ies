@@ -1,0 +1,63 @@
+local function hex(n)
+    if n == nil then return "nil" end
+    return string.format("$%08X", n)
+end
+
+local function log(msg)
+    sys.print("[ab3d2-keymap] " .. msg)
+end
+
+local S = require("diag_symbols")
+
+local function rd8(addr)
+    dbg.open()
+    local s = dbg.read_mem(addr, 1)
+    dbg.close()
+    return string.byte(s, 1) or 0
+end
+
+local function rd16(addr)
+    dbg.open()
+    local s = dbg.read_mem(addr, 2)
+    dbg.close()
+    local a, b = string.byte(s, 1, 2)
+    return ((a or 0) * 0x100) + (b or 0)
+end
+
+local function dump(tag)
+    log(tag ..
+        " W=" .. hex(rd8(S._KeyMap_vb + 0x11)) ..
+        " S=" .. hex(rd8(S._KeyMap_vb + 0x21)) ..
+        " A=" .. hex(rd8(S._KeyMap_vb + 0x20)) ..
+        " D=" .. hex(rd8(S._KeyMap_vb + 0x22)) ..
+        " L=" .. hex(rd8(S._KeyMap_vb + 0x28)) ..
+        " LEFT=" .. hex(rd8(S._KeyMap_vb + 0x4F)) ..
+        " RIGHT=" .. hex(rd8(S._KeyMap_vb + 0x4E)) ..
+        " last=" .. hex(rd8(S.lastpressed)) ..
+        " scan_status=" .. hex(mem.read32(0xF0744)) ..
+        " mouseY=" .. hex(rd16(S._Sys_MouseY)))
+end
+
+log("keymap=" .. hex(S._KeyMap_vb) .. " poll=" .. hex(S.ie_poll_input))
+sys.wait_ms(500)
+dump("initial")
+term.scancode(keys.W)
+sys.wait_ms(120)
+dump("after W make")
+term.scancode(keys.W + 0x80)
+sys.wait_ms(120)
+dump("after W break")
+term.scancode(keys.L)
+sys.wait_ms(120)
+dump("after L make")
+term.scancode(keys.L + 0x80)
+sys.wait_ms(120)
+dump("after L break")
+term.mouse_move(160, 80)
+sys.wait_ms(100)
+dump("after mouse 80")
+term.mouse_move(160, 130)
+sys.wait_ms(100)
+dump("after mouse 130")
+log("PASS")
+sys.quit()

@@ -1,0 +1,113 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+local D = require("diag_redux_common")
+local S = D.S
+
+local function fail(...)
+    sys.print("parity", "FAIL", ...)
+    sys.quit()
+end
+
+local function expect(cond, ...)
+    if not cond then fail(...) end
+end
+
+local function music_snapshot(label)
+    local mod_ptr = D.rd32le(D.MOD_PLAY_PTR)
+    local mod_len = D.rd32le(D.MOD_PLAY_LEN)
+    local mod_status = D.rd32le(D.MOD_PLAY_STATUS)
+    local sid_ptr = D.rd32le(D.SID_PLAY_PTR)
+    local sid_len = D.rd32le(D.SID_PLAY_LEN)
+    local sid_status = D.rd32le(D.SID_PLAY_STATUS)
+    sys.print("parity", label,
+        "modPtr", D.hex(mod_ptr),
+        "modLen", D.hex(mod_len),
+        "modStatus", D.hex(mod_status),
+        "sidPtr", D.hex(sid_ptr),
+        "sidLen", D.hex(sid_len),
+        "sidStatus", D.hex(sid_status))
+    return mod_ptr, mod_len, mod_status, sid_ptr, sid_len, sid_status
+end
+
+local function sample(label)
+    dbg.open()
+    local vbl = D.rd32(S._Vid_VBLCount_l)
+    local stage = D.rd32(S.ie_game_stage)
+    local flags = D.rd32(S._Dev_DebugFlags_l)
+    local x = D.rd32(S.Plr1_XOff_l)
+    local z = D.rd32(S.Plr1_ZOff_l)
+    local angle = S.Plr1_AngPos_w and D.rd16(S.Plr1_AngPos_w) or D.rd16(S.Plr1_SnapAngPos_w)
+    local fb = video.read_reg(D.VIDEO_FB_BASE)
+    local hash = D.hash_mem(fb, D.SCREEN_W * D.SCREEN_H)
+    local nonzero = D.hash_mem(fb + 64 + 20 * D.SCREEN_W, 192 * 160)
+    local mod_ptr, mod_len, mod_status, sid_ptr, sid_len, sid_status = music_snapshot(label)
+    sys.print("parity", label,
+        "pc", D.hex(dbg.get_pc()),
+        "stage", D.hex(stage),
+        "vbl", D.hex(vbl),
+        "x", D.hex(x),
+        "z", D.hex(z),
+        "angle", D.hex(angle),
+        "flags", D.hex(flags),
+        "fb", D.hex(fb),
+        "fbHash", D.hex(hash),
+        "viewHash", D.hex(nonzero))
+    expect(stage ~= 0, label, "stage did not initialize")
+    expect(vbl > 0, label, "VBL did not advance")
+    expect(fb ~= 0, label, "framebuffer register is null")
+    expect(hash ~= 0, label, "framebuffer hash is zero")
+    expect((math.floor(flags / D.DEV_SKIP_LIGHTING) % 2) == 0, label, "lighting is disabled")
+    expect(mod_ptr ~= 0 and mod_len ~= 0 and mod_status ~= 0, label, "MOD playback inactive")
+    expect(sid_ptr == 0 and sid_len == 0 and sid_status == 0, label, "SID playback active in default build")
+    dbg.close()
+    return {vbl = vbl, x = x, z = z, angle = angle, hash = hash}
+end
+
+sys.print("parity", "start")
+D.attach()
+
+dbg.open()
+dbg.set_bp(S.Game_Begin)
+dbg.continue()
+dbg.close()
+D.drive_default_menu()
+sys.wait_ms(3000)
+dbg.open()
+dbg.clear_all_bp()
+dbg.step(1)
+dbg.continue()
+dbg.close()
+sys.wait_ms(1000)
+
+local s30 = sample("idle_30")
+sys.wait_ms(850)
+local s80 = sample("idle_80")
+expect(s80.vbl > s30.vbl, "idle_80", "VBL did not advance after idle_30")
+
+if keys then
+    term.scancode(keys.W)
+    sys.wait_ms(350)
+    term.scancode(keys.W + 0x80)
+    term.scancode(keys.LEFT)
+    sys.wait_ms(350)
+    term.scancode(keys.LEFT + 0x80)
+    term.scancode(keys.A)
+    sys.wait_ms(250)
+    term.scancode(keys.A + 0x80)
+    term.scancode(keys.SPACE)
+    sys.wait_ms(80)
+    term.scancode(keys.SPACE + 0x80)
+end
+
+local smove = sample("after_input")
+expect(smove.vbl > s80.vbl, "after_input", "VBL did not advance during scripted input")
+
+sys.wait_ms(3600)
+local s300 = sample("idle_300")
+expect(s300.vbl > smove.vbl, "idle_300", "VBL did not advance after scripted input")
+
+sys.print("parity", "PASS",
+    "idle30", D.hex(s30.hash),
+    "idle80", D.hex(s80.hash),
+    "afterInput", D.hex(smove.hash),
+    "idle300", D.hex(s300.hash))
+sys.quit()

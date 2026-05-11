@@ -1,0 +1,5 @@
+# Build output and operator-staged trees. None of this belongs in
+# the repo — see README §Updating the snapshot / AGENTS.md.
+/bin/
+/build/
+/_build/

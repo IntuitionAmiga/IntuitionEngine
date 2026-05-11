@@ -1,0 +1,22 @@
+local function hex(n) return string.format("$%08X", n) end
+local function rd32(addr) local s=dbg.read_mem(addr,4); local a,b,c,d=string.byte(s,1,4); return ((a or 0)*0x1000000)+((b or 0)*0x10000)+((c or 0)*0x100)+(d or 0) end
+local function wr32(addr, v) dbg.write_mem(addr, string.char(math.floor(v/0x1000000)%256, math.floor(v/0x10000)%256, math.floor(v/0x100)%256, v%256)) end
+local function scan(base)
+  local nz, ff = 0, 0
+  for y=0,239 do
+    local bytes=dbg.read_mem(base+y*320,320)
+    for x=1,320 do local v=string.byte(bytes,x) or 0; if v ~= 0 then nz=nz+1 end; if v == 255 then ff=ff+1 end end
+  end
+  sys.print("scan", hex(base), "nz", nz, "ff", ff)
+end
+sys.wait_ms(2000)
+dbg.open()
+wr32(0x00004474, 0x00008000)
+sys.print("set Dev_DebugFlags", hex(rd32(0x00004474)))
+dbg.close()
+sys.wait_ms(10000)
+dbg.open()
+sys.print("pc", hex(dbg.get_pc()), "flags", hex(rd32(0x00004474)), "fb", hex(video.read_reg(0xF0084)))
+scan(rd32(0x000667b4))
+dbg.close()
+sys.quit()

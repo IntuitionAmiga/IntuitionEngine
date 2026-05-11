@@ -1,0 +1,59 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+local D = require("diag_redux_common")
+local S = D.S
+
+local samples = rawget(_G, "SAMPLES") or 120
+local interval_ms = rawget(_G, "INTERVAL_MS") or 100
+local stale_limit = rawget(_G, "STALE_LIMIT") or 12
+
+sys.print("diag_redux_freeze_watch", "start", "samples", samples, "interval", interval_ms)
+D.attach()
+
+dbg.open()
+dbg.set_bp(S.Game_Begin)
+dbg.continue()
+dbg.close()
+D.drive_default_menu()
+sys.wait_ms(3000)
+dbg.open()
+D.dump_checkpoint("after_menu_wait")
+dbg.clear_all_bp()
+dbg.step(1)
+dbg.continue()
+dbg.close()
+
+local last = nil
+local stale = 0
+
+for i = 1, samples do
+    sys.wait_ms(interval_ms)
+    dbg.open()
+    local pc = dbg.get_pc()
+    local stage = D.rd32(S.ie_game_stage)
+    local vbl = D.rd32(S._Vid_VBLCount_l)
+    local anim = D.rd16(S.Anim_FramesToDraw_w)
+    local sig = string.format("%08X:%08X:%08X:%04X", pc or 0, stage, vbl, anim)
+    sys.print("watch", i, "pc", D.hex(pc), "stage", D.hex(stage), "vbl", D.hex(vbl), "anim", D.hex(anim), "running", D.hex(D.rd8(S.Game_Running_b)))
+    if sig == last then
+        stale = stale + 1
+    else
+        stale = 0
+        last = sig
+    end
+    if stale >= stale_limit then
+        sys.print("watch", "stalled", "sample", i, "stale", stale)
+        D.dump_checkpoint("stalled")
+        D.dump_buffers("stalled")
+        dbg.clear_all_bp()
+        dbg.close()
+        sys.quit()
+    end
+    dbg.close()
+end
+
+dbg.open()
+D.dump_checkpoint("watch_complete")
+D.dump_buffers("watch_complete")
+dbg.close()
+sys.print("diag_redux_freeze_watch", "done")
+sys.quit()

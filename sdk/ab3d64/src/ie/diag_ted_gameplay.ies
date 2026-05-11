@@ -1,0 +1,278 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+
+local S = require("diag_symbols_ted")
+
+local function expect(ok, ...)
+    if not ok then
+        sys.print("FAIL", ...)
+        sys.quit(1)
+    end
+end
+
+local function hex(n) return string.format("$%08X", n or 0) end
+
+local TED_VRAM_BASE = 0x000F3000
+local TED_TEXT_COLOR_RAM = 0x000F3400
+local TED_BITMAP_BASE = 0x000F5000
+local TED_V_CTRL1 = 0x000F0F20
+local TED_V_CTRL2 = 0x000F0F24
+local TED_V_CHAR_BASE = 0x000F0F28
+local TED_V_VIDEO_BASE = 0x000F0F2C
+local TED_V_ENABLE = 0x000F0F58
+local COPPER_PC = 0x000F0014
+local COPPER_STATUS = 0x000F0018
+local MOUSE_CTRL = 0x000F074C
+
+local function be16(s)
+    local a, b = string.byte(s, 1, 2)
+    return (a or 0) * 0x100 + (b or 0)
+end
+
+local function be32(s)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return (a or 0) * 0x1000000 + (b or 0) * 0x10000 + (c or 0) * 0x100 + (d or 0)
+end
+
+local function rd16(addr) return be16(dbg.read_mem(addr, 2)) end
+local function rd32(addr) return be32(dbg.read_mem(addr, 4)) end
+local function wr16(addr, v)
+    dbg.write_mem(addr, string.char(math.floor(v / 0x100) % 256, v % 256))
+end
+
+local function tap(key)
+    term.scancode(key)
+    sys.wait_ms(40)
+    term.scancode(key + 0x80)
+    sys.wait_ms(120)
+end
+
+local function focus_m68k()
+    for _, entry in ipairs(dbg.cpu_list()) do
+        if entry.label == "M68K" or entry.cpu_name == "M68K" or entry.name == "M68K" then
+            dbg.cpu_focus(entry.id)
+            return
+        end
+    end
+    error("M68K CPU not registered")
+end
+
+local function count_nonzero(addr, len)
+    local s = dbg.read_mem(addr, len)
+    local n = 0
+    for i = 1, #s do
+        if string.byte(s, i) ~= 0 then n = n + 1 end
+    end
+    return n
+end
+
+local function count_unique_bytes(addr, len)
+    local s = dbg.read_mem(addr, len)
+    local seen = {}
+    local n = 0
+    for i = 1, #s do
+        local b = string.byte(s, i)
+        if not seen[b] then
+            seen[b] = true
+            n = n + 1
+        end
+    end
+    return n
+end
+
+local function count_bitmap_bits(addr, len)
+    local s = dbg.read_mem(addr, len)
+    local set = 0
+    local clear = 0
+    for i = 1, #s do
+        local b = string.byte(s, i) or 0
+        for bit = 0, 7 do
+            if math.floor(b / (2 ^ bit)) % 2 == 1 then
+                set = set + 1
+            else
+                clear = clear + 1
+            end
+        end
+    end
+    return set, clear
+end
+
+local function resolved_ted_colour(byte)
+    local hue = byte % 16
+    local lum = math.floor(byte / 16) % 8
+    if hue == 0 then return 0 end
+    return lum * 16 + hue
+end
+
+local function count_visible_ted_colours()
+    local seen = {}
+    local colour = dbg.read_mem(TED_TEXT_COLOR_RAM, 1000)
+    for i = 1, #colour do
+        seen[resolved_ted_colour(string.byte(colour, i) or 0)] = true
+    end
+    local n = 0
+    for _ in pairs(seen) do n = n + 1 end
+    return n
+end
+
+local function count_ted_hues_and_luminance(addr)
+    local s = dbg.read_mem(addr, 1000)
+    local hues = {}
+    local lums = {}
+    local hue_n = 0
+    local lum_n = 0
+    for i = 1, #s do
+        local b = string.byte(s, i) or 0
+        local hue = b % 16
+        local lum = math.floor(b / 16) % 8
+        if not hues[hue] then
+            hues[hue] = true
+            hue_n = hue_n + 1
+        end
+        if not lums[lum] then
+            lums[lum] = true
+            lum_n = lum_n + 1
+        end
+    end
+    return hue_n, lum_n
+end
+
+sys.print("diag_ted_gameplay", "start")
+sys.wait_ms(1800)
+dbg.open()
+focus_m68k()
+expect(S._Game_LevelBegin ~= nil, "missing _Game_LevelBegin symbol")
+expect(S._Vid_RightX_w ~= nil, "missing _Vid_RightX_w symbol")
+expect(S.Vid_BottomY_w ~= nil, "missing Vid_BottomY_w symbol")
+expect(S.ie_ted_gameplay_effect_frames_w ~= nil, "missing TED effect symbol")
+expect(S.ie_ted_renderer_wolf_w ~= nil, "missing TED Wolf renderer symbol")
+expect(S.ie_ted_hires_frame_w ~= nil, "missing TED hi-res mode symbol")
+expect(S.ie_ted_copper_list ~= nil, "missing TED copper list symbol")
+expect(S.ie_ted_copper_bg0_0 ~= nil, "missing TED copper data symbol")
+expect(S.ie_ted_copper_bg0_1 ~= nil, "missing TED copper data symbol")
+expect(S.ie_ted_copper_bg0_3 ~= nil, "missing TED copper data symbol")
+expect(S.ie_ted_copper_border_0 ~= nil, "missing TED copper border symbol")
+expect(S.ie_ted_copper_border_1 ~= nil, "missing TED copper border symbol")
+expect(S.ie_ted_copper_border_3 ~= nil, "missing TED copper border symbol")
+expect(S.Plr1_Health_w ~= nil, "missing player health symbol")
+expect(S.ie_ted_copper_pulse_timer_w ~= nil, "missing TED copper pulse timer symbol")
+expect(S.ie_ted_copper_pulse_kind_w ~= nil, "missing TED copper pulse kind symbol")
+expect(S.ie_ted_copper_scene_frame_w ~= nil, "missing TED scene copper frame symbol")
+expect(S.mnu_row ~= nil, "missing mnu_row symbol")
+expect(rd16(S.ie_ted_renderer_wolf_w) == 1, "TED Wolf renderer is not enabled",
+    tostring(rd16(S.ie_ted_renderer_wolf_w)))
+expect(video.read_reg(TED_V_ENABLE) == 1, "TED video not enabled at menu")
+
+dbg.clear_all_bp()
+wr16(S.mnu_row, 0)
+dbg.set_bp(S._Game_LevelBegin)
+dbg.continue()
+dbg.close()
+
+tap(keys.ENTER or keys.RETURN or keys.SPACE)
+sys.wait_ms(2500)
+
+dbg.open()
+focus_m68k()
+expect(dbg.get_pc() == S._Game_LevelBegin, "Play Game did not reach _Game_LevelBegin", hex(dbg.get_pc()), hex(S._Game_LevelBegin))
+dbg.clear_all_bp()
+dbg.continue()
+dbg.close()
+
+sys.wait_ms(5000)
+
+dbg.open()
+focus_m68k()
+expect(video.read_reg(TED_V_ENABLE) == 1, "TED video disabled in gameplay")
+expect(video.read_reg(MOUSE_CTRL) == 1, "gameplay did not request captured relative mouse", hex(video.read_reg(MOUSE_CTRL)))
+expect(video.read_reg(TED_V_CTRL1) == 0x18, "TED gameplay is not text/25-row mode", hex(video.read_reg(TED_V_CTRL1)))
+local ctrl2_now = video.read_reg(TED_V_CTRL2)
+expect(ctrl2_now == 0x08, "TED gameplay is not text/40-column mode", hex(ctrl2_now))
+dbg.close()
+for _ = 1, 12 do
+    sys.wait_ms(80)
+    dbg.open()
+    focus_m68k()
+    expect(video.read_reg(TED_V_CTRL1) == 0x18, "TED gameplay switched away from text mode", hex(video.read_reg(TED_V_CTRL1)))
+    local ctrl2 = video.read_reg(TED_V_CTRL2)
+    expect(ctrl2 == 0x08, "TED gameplay switched away from text/40-column mode", hex(ctrl2))
+    dbg.close()
+end
+dbg.open()
+focus_m68k()
+ctrl2_now = video.read_reg(TED_V_CTRL2)
+expect(video.read_reg(TED_V_CTRL1) == 0x18, "TED gameplay is not text/25-row mode", hex(video.read_reg(TED_V_CTRL1)))
+expect(ctrl2_now == 0x08, "TED gameplay is not text/40-column mode", hex(ctrl2_now))
+expect(video.read_reg(TED_V_CHAR_BASE) == 0x20, "TED text charset base mismatch", hex(video.read_reg(TED_V_CHAR_BASE)))
+expect(video.read_reg(TED_V_VIDEO_BASE) == 0x00, "TED text matrix base mismatch", hex(video.read_reg(TED_V_VIDEO_BASE)))
+expect((video.read_reg(COPPER_STATUS) % 8) >= 3, "TED copper did not become active", hex(video.read_reg(COPPER_STATUS)))
+expect(video.read_reg(COPPER_PC) > S.ie_ted_copper_list, "TED copper PC did not advance", hex(video.read_reg(COPPER_PC)), hex(S.ie_ted_copper_list))
+expect(rd32(S.ie_ted_copper_list) == 0x8003C3C8, "TED copper list does not SETBASE to TED video", hex(rd32(S.ie_ted_copper_list)))
+expect(rd32(S.ie_ted_copper_bg0_0) <= 0x7F, "TED copper BG0 value invalid", hex(rd32(S.ie_ted_copper_bg0_0)))
+expect(rd32(S.ie_ted_copper_border_0) <= 0x7F, "TED copper border value invalid", hex(rd32(S.ie_ted_copper_border_0)))
+if rd32(S.ie_ted_copper_bg0_0) == rd32(S.ie_ted_copper_bg0_3) and rd32(S.ie_ted_copper_border_0) == rd32(S.ie_ted_copper_border_3) then
+    sys.print("diag_ted_gameplay", "copper bands currently match; relying on scene frame counter for activity")
+end
+expect(rd16(S.ie_ted_copper_scene_frame_w) > 0, "TED scene-adaptive copper path did not run",
+    tostring(rd16(S.ie_ted_copper_scene_frame_w)))
+expect(rd16(S._Vid_RightX_w) == 192, "TED gameplay did not preserve 192-wide source", tostring(rd16(S._Vid_RightX_w)))
+expect(rd16(S.Vid_BottomY_w) == 160, "TED gameplay did not preserve 160-high source", tostring(rd16(S.Vid_BottomY_w)))
+
+local glyph_nonzero = count_nonzero(TED_VRAM_BASE, 1000)
+local glyph_unique = count_unique_bytes(TED_VRAM_BASE, 1000)
+local gameplay_colour_ram = TED_TEXT_COLOR_RAM
+local colour_nonzero = count_nonzero(gameplay_colour_ram, 1000)
+local colour_unique = count_unique_bytes(gameplay_colour_ram, 1000)
+local visible_unique = count_visible_ted_colours()
+local hue_unique, lum_unique = count_ted_hues_and_luminance(gameplay_colour_ram)
+sys.print("diag_ted_gameplay",
+    "glyph_nonzero", tostring(glyph_nonzero),
+    "glyph_unique", tostring(glyph_unique),
+    "colour_nonzero", tostring(colour_nonzero),
+    "colour_unique", tostring(colour_unique),
+    "visible_unique", tostring(visible_unique),
+    "hue_unique", tostring(hue_unique),
+    "lum_unique", tostring(lum_unique))
+expect(glyph_nonzero > 900, "TED gameplay text matrix is too sparse", tostring(glyph_nonzero))
+expect(glyph_unique >= 6, "TED gameplay text glyph vocabulary collapsed", tostring(glyph_unique))
+expect(colour_nonzero > 0, "TED gameplay colour RAM is blank")
+expect(colour_unique >= 16, "TED gameplay colour RAM has weak plasma/source colour pressure", tostring(colour_unique))
+expect(visible_unique >= 16, "TED gameplay colour field collapsed", tostring(visible_unique))
+expect(hue_unique >= 5, "TED gameplay hue range collapsed", tostring(hue_unique))
+expect(lum_unique >= 5, "TED gameplay luminance range collapsed", tostring(lum_unique))
+
+local old_health = rd16(S.Plr1_Health_w)
+if old_health > 20 then
+    wr16(S.ie_ted_last_health_w, old_health)
+    wr16(S.ie_ted_copper_pulse_timer_w, 0)
+    wr16(S.ie_ted_copper_pulse_kind_w, 0)
+    wr16(S.Plr1_Health_w, old_health - 20)
+    dbg.close()
+    local pulse_kind = 0
+    local pulse_timer = 0
+    for _ = 1, 8 do
+        sys.wait_ms(50)
+        dbg.open()
+        focus_m68k()
+        pulse_kind = rd16(S.ie_ted_copper_pulse_kind_w)
+        pulse_timer = rd16(S.ie_ted_copper_pulse_timer_w)
+        if pulse_kind == 1 and pulse_timer > 0 then
+            break
+        end
+        dbg.close()
+    end
+    if pulse_kind ~= 1 or pulse_timer <= 0 then
+        dbg.open()
+        focus_m68k()
+    end
+    sys.print("diag_ted_gameplay", "damage_pulse_kind", tostring(pulse_kind), "timer", tostring(pulse_timer),
+        "border0", hex(rd32(S.ie_ted_copper_border_0)))
+    expect(pulse_kind == 1, "TED damage copper pulse did not select damage kind", tostring(pulse_kind))
+    expect(pulse_timer > 0, "TED damage copper pulse expired too early", tostring(pulse_timer))
+    expect(rd32(S.ie_ted_copper_border_0) == 0x72, "TED damage copper pulse did not patch red border",
+        hex(rd32(S.ie_ted_copper_border_0)))
+    wr16(S.Plr1_Health_w, old_health)
+end
+
+dbg.close()
+sys.print("diag_ted_gameplay", "pass")
+sys.quit()

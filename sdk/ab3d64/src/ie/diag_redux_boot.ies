@@ -1,0 +1,26 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+local D = require("diag_redux_common")
+local S = D.S
+
+sys.print("diag_redux_boot", "start")
+D.attach()
+
+dbg.open()
+dbg.set_bp(S.Game_Begin)
+dbg.continue()
+dbg.close()
+D.drive_default_menu()
+
+sys.wait_ms(3000)
+D.dump_checkpoint("after_menu_wait")
+D.run_until("after_level_load", S.DrawDisplay)
+D.dump_buffers("before_first_draw")
+D.run_until("before_first_present", S._Vid_Present)
+D.dump_buffers("before_first_present")
+D.run_until("after_first_present", S._Draw_ResetGameDisplay)
+D.dump_buffers("after_first_present")
+
+dbg.clear_all_bp()
+dbg.close()
+sys.print("diag_redux_boot", "done")
+sys.quit()

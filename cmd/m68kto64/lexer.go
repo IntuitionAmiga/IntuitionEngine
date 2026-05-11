@@ -158,7 +158,7 @@ func SplitMnemonicSize(tok string) (mnemonic, size string) {
 // recognises at the line-classification level. It is intentionally small in
 // Phase 1 and grows in Phase 4.
 var directiveSet = map[string]struct{}{
-	"dc": {}, "ds": {}, "dcb": {},
+	"dc": {}, "ds": {}, "dcb": {}, "blk": {},
 	"equ": {}, "set": {}, "=": {},
 	"align": {}, "even": {}, "cnop": {},
 	"incbin": {}, "include": {},
@@ -171,6 +171,8 @@ var directiveSet = map[string]struct{}{
 	"macro": {}, "endm": {}, "mexit": {},
 	"rept": {}, "endr": {},
 	"end": {},
+	"output": {}, "opt": {},
+	"rs": {}, "rsreset": {},
 }
 
 func isDirective(mnemonic string) bool {
@@ -292,8 +294,23 @@ func LexLine(raw string) Line {
 			end++
 		}
 		first := rest[:end]
+		// vasm `LABEL=EXPR` (no whitespace around `=`) is shorthand for
+		// `LABEL set EXPR`. Split mid-token before label classification.
+		if eq := strings.IndexByte(first, '='); eq > 0 {
+			line.Label = first[:eq]
+			line.Mnemonic = "="
+			rhs := strings.TrimSpace(first[eq+1:] + rest[end:])
+			if rhs != "" {
+				line.Operands = SplitOperands(rhs)
+			}
+			line.Kind = LineDirective
+			return line
+		}
 		hasColon := strings.HasSuffix(first, ":")
-		bare := strings.TrimSuffix(first, ":")
+		// `LABEL::` is vasm's export form ("global" linkage). ie64asm has
+		// a single-file namespace, so strip all trailing colons rather
+		// than carry the `::` into the emitted label.
+		bare := strings.TrimRight(first, ":")
 		mnemTok, _ := SplitMnemonicSize(bare)
 		if !hasColon && isKnownMnemonic(mnemTok) {
 			// Treat as mnemonic flush-left; no label on this line.
@@ -304,6 +321,19 @@ func LexLine(raw string) Line {
 		}
 	} else {
 		rest = strings.TrimLeft(rest, " \t")
+		// Indented label form. devpac accepts a label introduced after
+		// leading whitespace as long as it carries a trailing `:`, and
+		// real-world m68k corpora put local labels like `\t.keys:` on
+		// their own indented line. Detect the first token; if it ends
+		// in `:`, classify as a label rather than a mnemonic.
+		end := 0
+		for end < len(rest) && !isSpace(rest[end]) {
+			end++
+		}
+		if end > 0 && strings.HasSuffix(rest[:end], ":") {
+			line.Label = strings.TrimSuffix(rest[:end], ":")
+			rest = strings.TrimLeft(rest[end:], " \t")
+		}
 	}
 
 	if rest == "" {

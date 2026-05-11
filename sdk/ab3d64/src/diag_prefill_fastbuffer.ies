@@ -1,0 +1,55 @@
+local S = require("diag_symbols")
+
+local function hex(n)
+    if n == nil then return "nil" end
+    return string.format("$%08X", n)
+end
+
+local function rd32(addr)
+    local s = dbg.read_mem(addr, 4)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return ((a or 0) * 0x1000000) + ((b or 0) * 0x10000) + ((c or 0) * 0x100) + (d or 0)
+end
+
+local function scan(label, base)
+    local nz = 0
+    local counts = {}
+    for y = 0, 239 do
+        local row = dbg.read_mem(base + y * 320, 320)
+        for x = 0, 319 do
+            local v = string.byte(row, x + 1) or 0
+            counts[v] = (counts[v] or 0) + 1
+            if v ~= 0 then nz = nz + 1 end
+        end
+    end
+    local keys = {}
+    for k, _ in pairs(counts) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return counts[a] > counts[b] end)
+    local top = {}
+    for i = 1, math.min(#keys, 10) do top[#top + 1] = string.format("%02X:%d", keys[i], counts[keys[i]]) end
+    sys.print("fb", label, hex(base), "nz", nz, "top", table.concat(top, " "))
+end
+
+sys.wait_ms(2500)
+dbg.open()
+local fast = rd32(S._Vid_FastBufferPtr_l)
+local fill = string.rep(string.char(0x0A), 320)
+for y = 0, 239 do
+    dbg.write_mem(fast + y * 320, fill)
+end
+sys.print("prefilled", hex(fast))
+dbg.close()
+
+sys.wait_ms(2500)
+dbg.open()
+fast = rd32(S._Vid_FastBufferPtr_l)
+local draw = rd32(S._Vid_DrawScreenPtr_l)
+local display = rd32(S._Vid_DisplayScreenPtr_l)
+local fb = video.read_reg(0xF0084)
+sys.print("pc", hex(dbg.get_pc()), "ptrs", "fast", hex(fast), "draw", hex(draw), "display", hex(display), "fb", hex(fb))
+scan("fast", fast)
+if draw ~= fast then scan("draw", draw) end
+if display ~= fast and display ~= draw then scan("display", display) end
+scan("present", 0x126000)
+dbg.close()
+sys.quit()

@@ -1,0 +1,90 @@
+local function hex(n)
+    if n == nil then return "nil" end
+    return string.format("$%08X", n)
+end
+
+local function be32(addr)
+    local s = dbg.read_mem(addr, 4)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return ((a or 0) * 0x1000000) + ((b or 0) * 0x10000) + ((c or 0) * 0x100) + (d or 0)
+end
+
+local function be16(addr)
+    local s = dbg.read_mem(addr, 2)
+    local a, b = string.byte(s, 1, 2)
+    return ((a or 0) * 0x100) + (b or 0)
+end
+
+local function byte(addr)
+    local s = dbg.read_mem(addr, 1)
+    return string.byte(s, 1) or 0
+end
+
+local function cstr(addr, max)
+    local s = dbg.read_mem(addr, max)
+    local z = string.find(s, "\0", 1, true)
+    if z then s = string.sub(s, 1, z - 1) end
+    return s
+end
+
+local A = {
+    startup = 0x1000,
+    game_start = 0x16bf0,
+    game_begin = 0x12a2,
+    main_loop = 0x17f8,
+    done_menu = 0x16c8c,
+    dontusestats = 0x16d7c,
+    game_quit = 0x16d88,
+    exit_hang = 0x10ae,
+    fast_ptr = 0x66784,
+    glf = 0x29464,
+    lvl = 0x677d0,
+    running = 0x5dde,
+    quit = 0x17166,
+    finished = 0x16be4,
+    io_heap = 0x98d60,
+    io_path = 0x98d64,
+    plr_pos = 0x69970,
+    plr_zone = 0x699e4,
+}
+
+local function dump_state(tag)
+    sys.print("STATE", tag, "pc", hex(dbg.get_pc()))
+    sys.print(" ptrs fast", hex(be32(A.fast_ptr)), "glf", hex(be32(A.glf)), "lvl", hex(be32(A.lvl)), "heap", hex(be32(A.io_heap)))
+    sys.print(" flags running", byte(A.running), "quit", byte(A.quit), "finished", be16(A.finished), "plr_zone", be16(A.plr_zone))
+    sys.print(" pos", hex(be32(A.plr_pos)), hex(be32(A.plr_pos + 4)), hex(be32(A.plr_pos + 8)))
+    sys.print(" path", cstr(A.io_path, 80))
+end
+
+cpu.stop()
+cpu.load("ab3d2_ie68.ie68")
+dbg.open()
+dbg.clear_all_bp()
+
+for _, bp in ipairs({A.game_start, A.done_menu, A.game_begin, A.main_loop, A.dontusestats, A.game_quit, A.exit_hang}) do
+    dbg.set_bp(bp)
+end
+
+dbg.set_pc(A.startup)
+dump_state("initial")
+
+local sequence = {
+    "game_start",
+    "done_menu_or_begin",
+    "begin_or_quit",
+    "main_or_quit",
+    "next",
+    "next2",
+}
+
+for _, label in ipairs(sequence) do
+    dbg.continue()
+    sys.wait_ms(100)
+    dbg.open()
+    dump_state(label)
+    if dbg.get_pc() == A.exit_hang then break end
+end
+
+dbg.clear_all_bp()
+dbg.close()
+sys.quit()

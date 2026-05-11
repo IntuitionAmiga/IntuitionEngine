@@ -1,0 +1,50 @@
+local function expect(cond, msg)
+    if not cond then error(msg, 2) end
+end
+
+local A = {
+    MOUSE_CTRL = 0xF074C,
+    MENU_ACTIVE = 0x0002ACF4,
+    MENU_ROW = 0x00019024,
+    GAME_BEGIN = 0x0002A36E,
+}
+
+local function be32(s)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return (a or 0) * 0x1000000 + (b or 0) * 0x10000 + (c or 0) * 0x100 + (d or 0)
+end
+
+local function rd32(addr) return be32(dbg.read_mem(addr, 4)) end
+
+local function wr16(addr, v)
+    dbg.write_mem(addr, string.char(math.floor(v / 0x100) % 256, v % 256))
+end
+
+local function tap(key)
+    term.scancode(key)
+    sys.wait_ms(40)
+    term.scancode(key + 0x80)
+    sys.wait_ms(120)
+end
+
+sys.print("diag_menu_play", "start")
+sys.wait_ms(1800)
+dbg.open()
+expect(rd32(A.MENU_ACTIVE) == 1, "menu is not active")
+expect(video.read_reg(A.MOUSE_CTRL) == 0, "menu captured the mouse")
+wr16(A.MENU_ROW, 0)
+dbg.clear_all_bp()
+dbg.set_bp(A.GAME_BEGIN)
+dbg.continue()
+dbg.close()
+
+tap(keys.ENTER)
+sys.wait_ms(2500)
+
+dbg.open()
+expect(dbg.get_pc() == A.GAME_BEGIN, "Play Game did not reach Game_LevelBegin")
+expect(video.read_reg(A.MOUSE_CTRL) == 1, "gameplay did not recapture relative mouse")
+dbg.clear_all_bp()
+dbg.close()
+sys.print("diag_menu_play", "ok")
+sys.quit()

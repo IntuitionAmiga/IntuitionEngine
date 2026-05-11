@@ -1,0 +1,16 @@
+local function rd16(addr)
+    local s = dbg.read_mem(addr, 2)
+    local a, b = string.byte(s, 1, 2)
+    return ((a or 0) * 0x100) + (b or 0)
+end
+local function hex(n) return string.format("$%08X", n) end
+sys.wait_ms(6000)
+dbg.open()
+local pal = 0x0003bf4c
+for _, idx in ipairs({0,1,2,25,69,133,190,250,254,255}) do
+    local a = pal + idx * 6
+    sys.print("pal", idx, rd16(a), rd16(a+2), rd16(a+4))
+end
+sys.print("texpalptr", hex((function(addr) local s=dbg.read_mem(addr,4); local a,b,c,d=string.byte(s,1,4); return ((a or 0)*0x1000000)+((b or 0)*0x10000)+((c or 0)*0x100)+(d or 0) end)(0x0006bcb0)))
+dbg.close()
+sys.quit()

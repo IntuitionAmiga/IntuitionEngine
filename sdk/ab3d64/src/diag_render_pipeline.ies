@@ -1,0 +1,319 @@
+local S = require("diag_symbols")
+
+local VIDEO_CTRL = 0xF0000
+local VIDEO_MODE = 0xF0004
+local VIDEO_STATUS = 0xF0008
+local VIDEO_PAL_INDEX = 0xF0078
+local VIDEO_PAL_DATA = 0xF007C
+local VIDEO_COLOR_MODE = 0xF0080
+local VIDEO_FB_BASE = 0xF0084
+
+local CHUNKY_BASE = 0x100000
+local CHUNKY_BACK_BASE = 0x113000
+local PRESENT_BASE = 0x126000
+
+local SCREEN_W = 320
+local SCREEN_H = 240
+local SMALL_X = 64
+local SMALL_Y = 20
+local SMALL_W = 192
+local SMALL_H = 160
+
+local DEV_SKIP_FASTBUFFER_CLEAR = 0x00000100
+local DEV_SKIP_EDGE_PVS = 0x00008000
+local ZONE_UNUSED_OFS = 30
+
+local function hex(n)
+    if n == nil then return "nil" end
+    return string.format("$%08X", n)
+end
+
+local function rd8(addr)
+    local s = dbg.read_mem(addr, 1)
+    return string.byte(s, 1) or 0
+end
+
+local function rd16(addr)
+    local s = dbg.read_mem(addr, 2)
+    local a, b = string.byte(s, 1, 2)
+    return ((a or 0) * 0x100) + (b or 0)
+end
+
+local function rd32(addr)
+    local s = dbg.read_mem(addr, 4)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return ((a or 0) * 0x1000000) + ((b or 0) * 0x10000) + ((c or 0) * 0x100) + (d or 0)
+end
+
+local function wr32(addr, v)
+    dbg.write_mem(addr, string.char(
+        math.floor(v / 0x1000000) % 256,
+        math.floor(v / 0x10000) % 256,
+        math.floor(v / 0x100) % 256,
+        v % 256))
+end
+
+local function s16(v)
+    if v >= 0x8000 then return v - 0x10000 end
+    return v
+end
+
+local function dump_regs(label)
+    local names = {"PC", "SR", "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "SP"}
+    local out = {}
+    for _, name in ipairs(names) do
+        local v = dbg.get_reg(name)
+        if v ~= nil then out[#out + 1] = name .. "=" .. hex(v) end
+    end
+    sys.print("regs", label, table.concat(out, " "))
+end
+
+local function dump_disasm(label)
+    local pc = dbg.get_pc()
+    local rows = dbg.disasm(pc, 8)
+    for _, row in ipairs(rows) do
+        sys.print("dis", label, hex(row.addr), row.hex or "", row.mnemonic or "")
+    end
+end
+
+local function dump_words(label, addr, count)
+    if addr == 0 then
+        sys.print(label, hex(addr), "null")
+        return
+    end
+    local t = {}
+    for i = 0, count - 1 do
+        t[#t + 1] = tostring(s16(rd16(addr + i * 2)))
+    end
+    sys.print(label, hex(addr), table.concat(t, " "))
+end
+
+local function dump_ptrs(label, addr, count)
+    if addr == 0 then
+        sys.print(label, hex(addr), "null")
+        return
+    end
+    local t = {}
+    for i = 0, count - 1 do
+        t[#t + 1] = hex(rd32(addr + i * 4))
+    end
+    sys.print(label, hex(addr), table.concat(t, " "))
+end
+
+local function scan_fb(label, base, x0, y0, w, h)
+    if base == 0 then
+        sys.print("fb", label, hex(base), "null")
+        return {nonzero = 0}
+    end
+    local counts = {}
+    local nonzero = 0
+    local minx, miny, maxx, maxy = 9999, 9999, -1, -1
+    for y = y0, y0 + h - 1 do
+        local bytes = dbg.read_mem(base + y * SCREEN_W + x0, w)
+        for x = 0, w - 1 do
+            local v = string.byte(bytes, x + 1) or 0
+            counts[v] = (counts[v] or 0) + 1
+            if v ~= 0 then
+                nonzero = nonzero + 1
+                if x0 + x < minx then minx = x0 + x end
+                if y < miny then miny = y end
+                if x0 + x > maxx then maxx = x0 + x end
+                if y > maxy then maxy = y end
+            end
+        end
+    end
+    local keys = {}
+    for k, _ in pairs(counts) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return counts[a] > counts[b] end)
+    local top = {}
+    for i = 1, math.min(10, #keys) do
+        top[#top + 1] = string.format("%02X:%d", keys[i], counts[keys[i]])
+    end
+    sys.print("fb", label, hex(base), "nz", nonzero, "bbox", minx, miny, maxx, maxy, "top", table.concat(top, " "))
+    return {nonzero = nonzero, minx = minx, miny = miny, maxx = maxx, maxy = maxy}
+end
+
+local function count_visible_zones()
+    local zone_ptrs = rd32(S._Lvl_ZonePtrsPtr_l)
+    local num_zones = s16(rd16(S._Lvl_NumZones_w))
+    local visible = 0
+    local sample = {}
+    if zone_ptrs == 0 or num_zones <= 0 then
+        return 0, "no-zone-table"
+    end
+    for i = 0, math.min(num_zones, 256) - 1 do
+        local zone = rd32(zone_ptrs + i * 4)
+        local mark = 0
+        if zone ~= 0 then mark = rd16(zone + ZONE_UNUSED_OFS) end
+        if mark ~= 0 then
+            visible = visible + 1
+            if #sample < 24 then sample[#sample + 1] = tostring(i) .. ":" .. string.format("%04X", mark) end
+        end
+    end
+    return visible, table.concat(sample, " ")
+end
+
+local function dump_state(label)
+    sys.print("checkpoint", label, "pc", hex(dbg.get_pc()), "running", tostring(cpu.is_running()), "mode", cpu.mode())
+    dump_regs(label)
+    dump_disasm(label)
+
+    sys.print("video", label,
+        "ctrl", hex(video.read_reg(VIDEO_CTRL)),
+        "mode", hex(video.read_reg(VIDEO_MODE)),
+        "status", hex(video.read_reg(VIDEO_STATUS)),
+        "color", hex(video.read_reg(VIDEO_COLOR_MODE)),
+        "fb", hex(video.read_reg(VIDEO_FB_BASE)),
+        "palidx", hex(video.read_reg(VIDEO_PAL_INDEX)),
+        "paldata", hex(video.read_reg(VIDEO_PAL_DATA)))
+
+    local fast = rd32(S._Vid_FastBufferPtr_l)
+    local draw = rd32(S._Vid_DrawScreenPtr_l)
+    local display = rd32(S._Vid_DisplayScreenPtr_l)
+    sys.print("state", label,
+        "game", rd8(S.Game_Running_b),
+        "flags", hex(rd32(S._Dev_DebugFlags_l)),
+        "full", rd8(S._Vid_FullScreen_b),
+        "letterbox", s16(rd16(S._Vid_LetterBoxMarginHeight_w)),
+        "curZone", s16(rd16(S._Draw_CurrentZone_w)),
+        "clip", s16(rd16(S._Draw_ZoneClipL_w)), s16(rd16(S._Draw_ZoneClipR_w)))
+    sys.print("ptrs", label,
+        "fast", hex(fast),
+        "draw", hex(draw),
+        "display", hex(display),
+        "s1", hex(rd32(S._Vid_Screen1Ptr_l)),
+        "s2", hex(rd32(S._Vid_Screen2Ptr_l)))
+    sys.print("level", label,
+        "zones", s16(rd16(S._Lvl_NumZones_w)),
+        "points", s16(rd16(S._Lvl_NumPoints_w)),
+        "zonePtrs", hex(rd32(S._Lvl_ZonePtrsPtr_l)),
+        "graph", hex(rd32(S._Lvl_ListOfGraphRoomsPtr_l)),
+        "graphAdds", hex(rd32(S.Lvl_ZoneGraphAddsPtr_l)),
+        "graphics", hex(rd32(S.Lvl_GraphicsPtr_l)))
+    sys.print("player", label,
+        "x", hex(rd32(S.Plr1_XOff_l)),
+        "y", hex(rd32(S.Plr1_YOff_l)),
+        "z", hex(rd32(S.Plr1_ZOff_l)),
+        "zonePtr", hex(rd32(S.Plr1_ZonePtr_l)),
+        "zone", s16(rd16(S.Plr1_Zone_w)),
+        "pvs", hex(rd32(S.Plr1_PotVisibleZoneListPtr_l)),
+        "ang", s16(rd16(S.Plr1_AngPos_w)))
+    sys.print("textures", label,
+        "maps", hex(rd32(S.Draw_TextureMapsPtr_l)),
+        "texPal", hex(rd32(S.Draw_TexturePalettePtr_l)),
+        "drawPal", hex(rd32(S.Draw_PalettePtr_l)))
+    sys.print("edge", label,
+        "visJoins", s16(rd16(S._Zone_VisJoins_w)),
+        "totJoins", s16(rd16(S._Zone_TotJoins_w)),
+        "joinMask", string.format("$%04X", rd16(S._Zone_VisJoinMask_w)))
+
+    local visible, visible_sample = count_visible_zones()
+    sys.print("visible", label, "count", visible, "sample", visible_sample)
+    dump_ptrs("zonePtrs." .. label, rd32(S._Lvl_ZonePtrsPtr_l), 12)
+    dump_words("playerPVS." .. label, rd32(S.Plr1_PotVisibleZoneListPtr_l), 32)
+    dump_words("zonePVSList." .. label, S._Zone_PVSList_vw, 32)
+    dump_words("onScreen." .. label, S.OnScreen_vl, 24)
+end
+
+local function dump_buffers(label)
+    local fast = rd32(S._Vid_FastBufferPtr_l)
+    local draw = rd32(S._Vid_DrawScreenPtr_l)
+    local display = rd32(S._Vid_DisplayScreenPtr_l)
+    local fb = video.read_reg(VIDEO_FB_BASE)
+    scan_fb(label .. ".fast.all", fast, 0, 0, SCREEN_W, SCREEN_H)
+    scan_fb(label .. ".fast.small", fast, 0, 0, SMALL_W, SMALL_H)
+    scan_fb(label .. ".fast.center", fast, SMALL_X, SMALL_Y, SMALL_W, SMALL_H)
+    if draw ~= fast then scan_fb(label .. ".draw.all", draw, 0, 0, SCREEN_W, SCREEN_H) end
+    if display ~= fast and display ~= draw then scan_fb(label .. ".display.all", display, 0, 0, SCREEN_W, SCREEN_H) end
+    if fb ~= fast and fb ~= draw and fb ~= display then scan_fb(label .. ".fbreg.all", fb, 0, 0, SCREEN_W, SCREEN_H) end
+    if fb ~= PRESENT_BASE then scan_fb(label .. ".present.all", PRESENT_BASE, 0, 0, SCREEN_W, SCREEN_H) end
+end
+
+local function stop_at(name, addr)
+    sys.print("run_until", name, hex(addr))
+    dbg.open()
+    dbg.run_until(addr)
+    dbg.open()
+    dump_state(name)
+end
+
+local function set_debug_flags(mask)
+    local old = rd32(S._Dev_DebugFlags_l)
+    wr32(S._Dev_DebugFlags_l, mask)
+    sys.print("debug_flags", hex(old), "=>", hex(rd32(S._Dev_DebugFlags_l)))
+end
+
+local function arm_watchpoints()
+    dbg.clear_all_wp()
+    local fast = rd32(S._Vid_FastBufferPtr_l)
+    local draw = rd32(S._Vid_DrawScreenPtr_l)
+    local display = rd32(S._Vid_DisplayScreenPtr_l)
+    dbg.set_wp(S._Vid_FastBufferPtr_l)
+    dbg.set_wp(S._Vid_DrawScreenPtr_l)
+    dbg.set_wp(S._Vid_DisplayScreenPtr_l)
+    if fast ~= 0 then
+        dbg.set_wp(fast)
+        dbg.set_wp(fast + SMALL_Y * SCREEN_W + SMALL_X)
+        dbg.set_wp(fast + (SMALL_Y + SMALL_H - 1) * SCREEN_W + SMALL_X + SMALL_W - 1)
+    end
+    if draw ~= 0 then dbg.set_wp(draw) end
+    if display ~= 0 then dbg.set_wp(display) end
+    dbg.set_wp(PRESENT_BASE)
+    sys.print("watchpoints", table.concat(dbg.list_wp(), " "))
+end
+
+sys.print("diag_render_pipeline", "symbols from diag_symbols.lua")
+cpu.load("ab3d2_ie68.ie68")
+sys.print("diag_render_pipeline", "loaded ab3d2_ie68.ie68 from script root")
+dbg.open()
+dbg.clear_all_bp()
+dbg.clear_all_wp()
+dbg.close()
+cpu.start()
+
+dbg.open()
+dbg.clear_all_bp()
+dbg.clear_all_wp()
+dbg.close()
+
+stop_at("Game_Begin", S.Game_Begin)
+stop_at("DrawDisplay.entry.normal", S.DrawDisplay)
+dump_buffers("before_draw.normal")
+arm_watchpoints()
+
+stop_at("Draw_Zone_Graph.normal", S.Draw_Zone_Graph)
+dump_buffers("at_zone_graph.normal")
+
+stop_at("_Vid_Present.before.normal", S._Vid_Present)
+dump_buffers("before_present.normal")
+
+stop_at("_Draw_ResetGameDisplay.after_present.normal", S._Draw_ResetGameDisplay)
+dump_buffers("after_present.normal")
+
+set_debug_flags(DEV_SKIP_EDGE_PVS)
+stop_at("DrawDisplay.entry.skip_edge_pvs", S.DrawDisplay)
+dump_buffers("before_draw.skip_edge_pvs")
+
+stop_at("Draw_Zone_Graph.skip_edge_pvs", S.Draw_Zone_Graph)
+dump_buffers("at_zone_graph.skip_edge_pvs")
+
+stop_at("_Vid_Present.before.skip_edge_pvs", S._Vid_Present)
+dump_buffers("before_present.skip_edge_pvs")
+
+stop_at("_Draw_ResetGameDisplay.after_present.skip_edge_pvs", S._Draw_ResetGameDisplay)
+dump_buffers("after_present.skip_edge_pvs")
+
+set_debug_flags(DEV_SKIP_EDGE_PVS + DEV_SKIP_FASTBUFFER_CLEAR)
+stop_at("DrawDisplay.entry.skip_edge_no_clear", S.DrawDisplay)
+dump_buffers("before_draw.skip_edge_no_clear")
+
+stop_at("_Vid_Present.before.skip_edge_no_clear", S._Vid_Present)
+dump_buffers("before_present.skip_edge_no_clear")
+
+stop_at("_Draw_ResetGameDisplay.after_present.skip_edge_no_clear", S._Draw_ResetGameDisplay)
+dump_buffers("after_present.skip_edge_no_clear")
+
+dbg.clear_all_wp()
+set_debug_flags(0)
+dbg.close()
+sys.quit()

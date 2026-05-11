@@ -887,6 +887,24 @@ func (p *exprParser) parseExprAtom() (int64, error) {
 		return val, nil
 	}
 
+	// Binary with % prefix: %1010 (m68k/vasm convention).
+	if ch == '%' {
+		p.pos++
+		start := p.pos
+		for p.pos < len(p.input) && (p.input[p.pos] == '0' || p.input[p.pos] == '1' || p.input[p.pos] == '_') {
+			p.pos++
+		}
+		if p.pos == start {
+			return 0, fmt.Errorf("expected binary digits after %%")
+		}
+		numStr := strings.ReplaceAll(p.input[start:p.pos], "_", "")
+		val, err := strconv.ParseUint(numStr, 2, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid binary number: %%%s", p.input[start:p.pos])
+		}
+		return int64(val), nil
+	}
+
 	// Hex with $ prefix: $FF, $CAFE_BABE
 	if ch == '$' {
 		p.pos++
@@ -1001,32 +1019,44 @@ func (p *exprParser) parseExprAtom() (int64, error) {
 		return 0, fmt.Errorf("undefined symbol: %s", name)
 	}
 
-	// Character literal 'c'
-	if ch == '\'' {
+	// Character / packed-string literal 'c' or "abcd". m68k convention
+	// packs up to 8 bytes big-endian into the result; useful for
+	// `move.l #'.pal',d0` style 4-byte tag values.
+	if ch == '\'' || ch == '"' {
+		quote := ch
 		p.pos++
-		if p.pos >= len(p.input) {
+		var val uint64
+		count := 0
+		for p.pos < len(p.input) && p.input[p.pos] != quote {
+			var c byte
+			if p.input[p.pos] == '\\' {
+				bs, next, err := parseEscapeBytes(p.input, p.pos)
+				if err != nil {
+					return 0, err
+				}
+				if len(bs) != 1 {
+					return 0, fmt.Errorf("string literal escape emits %d bytes", len(bs))
+				}
+				c = bs[0]
+				p.pos = next
+			} else {
+				c = p.input[p.pos]
+				p.pos++
+			}
+			if count >= 8 {
+				return 0, fmt.Errorf("string literal exceeds 8 packed bytes")
+			}
+			val = (val << 8) | uint64(c)
+			count++
+		}
+		if p.pos >= len(p.input) || p.input[p.pos] != quote {
 			return 0, fmt.Errorf("unterminated character literal")
 		}
-		var c byte
-		if p.input[p.pos] == '\\' {
-			bs, next, err := parseEscapeBytes(p.input, p.pos)
-			if err != nil {
-				return 0, err
-			}
-			if len(bs) != 1 {
-				return 0, fmt.Errorf("character literal escape emits %d bytes", len(bs))
-			}
-			c = bs[0]
-			p.pos = next
-		} else {
-			c = p.input[p.pos]
-			p.pos++
-		}
-		if p.pos >= len(p.input) || p.input[p.pos] != '\'' {
-			return 0, fmt.Errorf("unterminated character literal")
-		}
 		p.pos++
-		return int64(c), nil
+		if count == 0 {
+			return 0, fmt.Errorf("empty character literal")
+		}
+		return int64(val), nil
 	}
 
 	return 0, fmt.Errorf("unexpected character '%c' in expression", ch)
@@ -1966,7 +1996,16 @@ func (a *IE64Assembler) collectPass1(expanded []string, warnDuplicates bool) (ui
 				}
 				a.labels[fullName] = a.imageBase + a.codeOffset
 			} else {
-				a.lastGlobalLabel = labelName
+				// `__m68kto64_*` are transpiler-generated continuation
+				// labels (jsr_ret / bsr_ret / fp-fuse / cc-shadow markers)
+				// emitted inline alongside user code. Treating them as
+				// global resets the scope used to resolve neighbouring
+				// `.local:` labels, which breaks branches like
+				// `bne .done` whose definition appears after the marker.
+				// Keep these out of the global-scope chain.
+				if !strings.HasPrefix(labelName, "__m68kto64_") {
+					a.lastGlobalLabel = labelName
+				}
 				if _, exists := a.labels[labelName]; exists && warnDuplicates {
 					a.addWarningCategory("duplicate-labels", "label %q redefined", labelName)
 				}
@@ -2109,7 +2148,11 @@ func (a *IE64Assembler) Assemble(source string) ([]byte, error) {
 		// Label
 		if strings.HasSuffix(fields[0], ":") {
 			labelName := strings.TrimSuffix(fields[0], ":")
-			if !strings.HasPrefix(labelName, ".") {
+			// Mirror collectPass1: transpiler-generated `__m68kto64_*`
+			// continuation labels do not participate in local-label
+			// scoping; otherwise they'd break `.local` resolution mid-
+			// function.
+			if !strings.HasPrefix(labelName, ".") && !strings.HasPrefix(labelName, "__m68kto64_") {
 				a.lastGlobalLabel = labelName
 			}
 			if a.listingMode {
@@ -2551,20 +2594,39 @@ func (a *IE64Assembler) parseDCB(rest string) []byte {
 			data = append(data, strBytes...)
 			i++ // skip closing quote
 		} else if rest[i] == '\'' {
-			start := i
+			// Single-quoted literal. For dc.b, multi-char strings are
+			// laid down as a byte sequence (m68k convention); the
+			// evalExpr packing form is for immediate operands.
 			i++
-			for i < len(rest) {
+			start := i
+			var strBytes []byte
+			for i < len(rest) && rest[i] != '\'' {
 				if rest[i] == '\\' && i+1 < len(rest) {
-					i += 2
-					continue
-				}
-				if rest[i] == '\'' {
+					bs, next, err := parseEscapeBytes(rest, i)
+					if err != nil {
+						a.addError("dc.b escape error: %v", err)
+						return data
+					}
+					strBytes = append(strBytes, bs...)
+					i = next
+				} else {
+					strBytes = append(strBytes, rest[i])
 					i++
-					break
 				}
-				i++
 			}
-			valStr := strings.TrimSpace(rest[start:i])
+			if i >= len(rest) {
+				a.addError("unclosed character literal in dc.b")
+				return data
+			}
+			i++ // skip closing quote
+			if len(strBytes) >= 2 {
+				data = append(data, strBytes...)
+				continue
+			}
+			// Re-enter the legacy path for the 1-char form (so signed
+			// char-literal handling stays intact via evalExpr).
+			valStr := "'" + string(strBytes) + "'"
+			_ = start
 			val, err := a.evalExpr(valStr)
 			if err != nil {
 				a.addError("dc.b value error: %v", err)
@@ -3175,13 +3237,16 @@ func (a *IE64Assembler) asmLea(operands []string) ([]byte, error) {
 }
 
 // parseDispReg parses "disp(rs)" or "(rs)" and returns (displacement, register, error).
+// disp may itself contain parens (arithmetic expressions like
+// `(A*B)+C(r11)`), so the register paren-pair is identified as the
+// LAST `(...)` in the input rather than the first.
 func (a *IE64Assembler) parseDispReg(s string) (int64, byte, error) {
 	s = strings.TrimSpace(s)
-	parenIdx := strings.Index(s, "(")
+	parenIdx := strings.LastIndex(s, "(")
 	if parenIdx < 0 {
 		return 0, 0, fmt.Errorf("expected disp(rs) form, got: %s", s)
 	}
-	closeIdx := strings.Index(s, ")")
+	closeIdx := strings.LastIndex(s, ")")
 	if closeIdx < 0 || closeIdx < parenIdx {
 		return 0, 0, fmt.Errorf("missing closing parenthesis in: %s", s)
 	}

@@ -1,0 +1,81 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+sys.print("native_projection_trace", "start")
+local D = require("diag_native_common")
+sys.print("native_projection_trace", "common_loaded")
+local TARGET = D.ensure_target("ab3d2_ie68_overdrive_native.ie68")
+sys.print("native_projection_trace", "target", TARGET)
+local S = D.load_symbols("native")
+sys.print("native_projection_trace", "symbols_loaded", D.symbol_path or "unknown")
+
+local function have(name)
+    return S[name] ~= nil and S[name] or 0
+end
+
+D.attach()
+sys.print("native_projection_trace", "attached")
+dbg.open()
+sys.print("native_projection_trace", "debugger_open")
+if S.Game_Begin then
+    sys.print("native_projection_trace", "set_bp", D.hex(S.Game_Begin))
+    dbg.set_bp(S.Game_Begin)
+    sys.print("native_projection_trace", "continue_to_game_begin")
+    dbg.continue()
+    dbg.close()
+    sys.print("native_projection_trace", "game_begin_hit")
+    D.drive_default_menu()
+    sys.wait_ms(3000)
+    dbg.open()
+    sys.print("native_projection_trace", "post_menu_debugger_open")
+    dbg.clear_all_bp()
+    dbg.step(1)
+    dbg.continue()
+end
+
+sys.wait_ms(1000)
+dbg.open()
+
+local fb = video.read_reg(D.VIDEO_FB_BASE)
+local fast = D.rd32(have("_Vid_FastBufferPtr_l"))
+local left = D.s16(D.rd16(have("_Draw_LeftClip_w")))
+local right = D.s16(D.rd16(have("_Draw_RightClip_w")))
+local zleft = D.s16(D.rd16(have("_Draw_ZoneClipL_w")))
+local zright = D.s16(D.rd16(have("_Draw_ZoneClipR_w")))
+
+sys.print("native_projection", "video", "fb", D.hex(fb), "fast", D.hex(fast))
+sys.print("native_projection", "viewport",
+    "right", D.s16(D.rd16(have("_Vid_RightX_w"))),
+    "centreX", D.s16(D.rd16(have("Vid_CentreX_w"))),
+    "centreY", D.s16(D.rd16(have("Vid_CentreY_w"))),
+    "bottomY", D.s16(D.rd16(have("Vid_BottomY_w"))),
+    "middle", D.s16(D.rd16(have("TOTHEMIDDLE"))))
+sys.print("native_projection", "clip", "zone", zleft, zright, "draw", left, right)
+sys.print("native_projection", "object",
+    "numPoints", D.s16(D.rd16(have("draw_NumPoints_w"))),
+    "objClip", D.s16(D.rd16(have("draw_ObjClipT_w"))), D.s16(D.rd16(have("draw_ObjClipB_w"))),
+    "objX", D.s16(D.rd16(have("draw_Obj_XPos_w"))),
+    "objZ", D.s16(D.rd16(have("draw_Obj_ZPos_w"))))
+
+D.expect(left >= 0 and left <= D.NATIVE_W, "left_clip_range", left)
+D.expect(right >= 0 and right <= D.NATIVE_W, "right_clip_range", right)
+D.expect(left <= right, "clip_order", left, right)
+D.expect(zleft >= 0 and zright <= D.NATIVE_W and zleft <= zright, "zone_clip_range", zleft, zright)
+
+if fb == D.NATIVE_CHUNKY_BASE or fb == D.NATIVE_CHUNKY_BACK_BASE then
+    local scan = D.scan_fb("native_projection.fb", fb, D.NATIVE_W, D.NATIVE_H)
+    D.expect(scan.nonzero > 0, "native_frame_blank")
+end
+
+D.capture_screenshot(D.NATIVE_DIAG_DIR, "overdrive-native_projection_trace.png")
+D.save_debug_evidence(D.NATIVE_DIAG_DIR, "overdrive-native_projection_trace", S)
+
+D.write_metadata(D.NATIVE_DIAG_DIR, "overdrive-native_projection_trace.txt", {
+    "target=ab3d2_ie68_overdrive_native.ie68",
+    "scene=projection_trace",
+    "fb=" .. D.hex(fb),
+    "fast=" .. D.hex(fast),
+    "clip=" .. tostring(left) .. "," .. tostring(right),
+    "zone_clip=" .. tostring(zleft) .. "," .. tostring(zright),
+})
+
+sys.print("native_projection", "PASS")
+sys.quit()

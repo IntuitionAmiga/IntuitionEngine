@@ -1,0 +1,47 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+sys.print("overdrive_baseline_capture", "start")
+local D = require("diag_native_common")
+sys.print("overdrive_baseline_capture", "common_loaded")
+local TARGET = D.ensure_target("ab3d2_ie68_overdrive.ie68")
+sys.print("overdrive_baseline_capture", "target", TARGET)
+local S = D.load_symbols("overdrive")
+sys.print("overdrive_baseline_capture", "symbols_loaded", D.symbol_path or "unknown")
+
+D.attach()
+dbg.open()
+if S.Game_Begin then
+    dbg.set_bp(S.Game_Begin)
+    dbg.continue()
+    dbg.close()
+    D.drive_default_menu()
+    sys.wait_ms(3500)
+    dbg.open()
+    dbg.clear_all_bp()
+    dbg.step(1)
+    dbg.continue()
+end
+
+sys.wait_ms(1500)
+dbg.open()
+
+local fb = video.read_reg(D.VIDEO_FB_BASE)
+local hash = D.hash_mem(fb, D.NATIVE_BYTES)
+local scan = D.scan_fb("overdrive_baseline.medical_bay_start", fb, D.NATIVE_W, D.NATIVE_H)
+D.expect(hash ~= 0, "baseline_hash_blank")
+D.expect(scan.nonzero > D.NATIVE_BYTES / 20, "baseline_large_blank_frame", scan.nonzero)
+
+D.capture_screenshot(D.OVERDRIVE_DIAG_DIR, "overdrive_medical_bay_start_frame0001.png")
+D.save_debug_evidence(D.OVERDRIVE_DIAG_DIR, "overdrive_medical_bay_start_frame0001", S)
+
+D.write_metadata(D.OVERDRIVE_DIAG_DIR, "overdrive_medical_bay_start_frame0001.txt", {
+    "target=ab3d2_ie68_overdrive.ie68",
+    "scene=medical_bay_start",
+    "frame=1",
+    "fb=" .. D.hex(fb),
+    "hash=" .. D.hex(hash),
+    "nonzero=" .. tostring(scan.nonzero),
+    "bbox=" .. tostring(scan.minx) .. "," .. tostring(scan.miny) .. "," .. tostring(scan.maxx) .. "," .. tostring(scan.maxy),
+})
+
+sys.print("overdrive_baseline", "PASS")
+sys.quit()

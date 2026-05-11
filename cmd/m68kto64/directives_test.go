@@ -81,9 +81,13 @@ func TestDirective_Even(t *testing.T) {
 }
 
 func TestDirective_Equ(t *testing.T) {
+	// equ binds the label as part of its own syntax — emit the single-line
+	// `FOO equ $1234` form, never `FOO:\n equ $1234` (which silently mis-
+	// defines FOO as a code-offset label under ie64asm's single-line equ
+	// parser at assembler/ie64asm.go:1912).
 	out := convertSrc(t, "FOO\tequ $1234\n")
-	mustContain(t, out, "FOO:")
-	mustContain(t, out, "equ $1234")
+	mustContain(t, out, "FOO equ $1234")
+	mustNotContain(t, out, "FOO:")
 }
 
 // Post-Phase-E: macros are expanded transpile-time by the preprocessor. The

@@ -325,6 +325,15 @@ func (p *preprocCtx) processLines(lines []string, source string) {
 
 		// Macro invocation? Active-branch only.
 		if name, args, isMacro := p.detectMacroInvocation(l, raw); isMacro {
+			// If the invocation carries a leading label (devpac form
+			// `LABEL: MACRO args`), the label belongs to the source
+			// position, not to the expansion. Emit it before the body
+			// so downstream consumers (and any branch targets) still
+			// see the binding. Detection via l.Label is gated on the
+			// mnemonic-path branch — see detectMacroInvocation.
+			if l.Label != "" && l.Mnemonic != "" {
+				p.emit(l.Label + ":")
+			}
 			p.expandMacro(name, args, source, lineNum)
 			continue
 		}

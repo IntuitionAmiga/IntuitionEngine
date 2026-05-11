@@ -1,0 +1,41 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+local D = require("diag_redux_common")
+local S = D.S
+
+local cases = {
+    {"baseline", 0},
+    {"no_flats", D.DEV_SKIP_FLATS},
+    {"no_walls", D.DEV_SKIP_SIMPLE_WALLS + D.DEV_SKIP_SHADED_WALLS},
+    {"no_flats_no_walls", D.DEV_SKIP_FLATS + D.DEV_SKIP_SIMPLE_WALLS + D.DEV_SKIP_SHADED_WALLS},
+    {"no_bitmaps_models_ai", D.DEV_SKIP_BITMAPS + D.DEV_SKIP_AI_ATTACK},
+    {"fullbright", D.DEV_SKIP_LIGHTING},
+    {"skip_edge_pvs", D.DEV_SKIP_EDGE_PVS},
+}
+
+local frame_wait_ms = rawget(_G, "FRAME_WAIT_MS") or 700
+
+local function run_case(label, flags)
+    sys.print("bisect", "case", label, "flags", D.hex(flags))
+    D.attach()
+    dbg.open()
+    dbg.set_bp(S.Game_Begin)
+    dbg.continue()
+    dbg.close()
+    D.drive_default_menu()
+    sys.wait_ms(3000)
+    D.dump_checkpoint(label .. ".after_menu_wait")
+    D.set_flags(flags)
+    dbg.close()
+    sys.wait_ms(frame_wait_ms)
+    dbg.open()
+    D.dump_checkpoint(label .. ".after_wait")
+    D.dump_buffers(label .. ".after_wait")
+    dbg.close()
+end
+
+for _, case in ipairs(cases) do
+    run_case(case[1], case[2])
+end
+
+sys.print("diag_redux_bisect", "done")
+sys.quit()

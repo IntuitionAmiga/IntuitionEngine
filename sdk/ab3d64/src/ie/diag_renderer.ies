@@ -1,0 +1,146 @@
+local function hex(n)
+    if n == nil then return "nil" end
+    return string.format("$%08X", n)
+end
+
+local function rd8(addr)
+    local s = dbg.read_mem(addr, 1)
+    return string.byte(s, 1) or 0
+end
+
+local function rd16(addr)
+    local s = dbg.read_mem(addr, 2)
+    local a, b = string.byte(s, 1, 2)
+    return ((a or 0) * 0x100) + (b or 0)
+end
+
+local function s16(v)
+    if v >= 0x8000 then return v - 0x10000 end
+    return v
+end
+
+local function rd32(addr)
+    local s = dbg.read_mem(addr, 4)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return ((a or 0) * 0x1000000) + ((b or 0) * 0x10000) + ((c or 0) * 0x100) + (d or 0)
+end
+
+local A = {
+    running = 0x00005dde,
+    bottomY = 0x0000e3c2,
+    zonePtr = 0x000294a0,
+    centreX = 0x000294b0,
+    rightX = 0x000294b2,
+    fast = 0x000668d4,
+    screen1 = 0x000668dc,
+    screen2 = 0x000668e0,
+    draw = 0x000668e4,
+    display = 0x000668e8,
+    full = 0x00067514,
+    connect = 0x0006792c,
+    graph = 0x00067930,
+    zonePtrs = 0x0006794c,
+    numPoints = 0x00067976,
+    numZones = 0x0006797a,
+    zoneCount = 0x00009346,
+    plrX = 0x00069ac0,
+    plrY = 0x00069ac4,
+    plrZ = 0x00069ac8,
+    plrZonePtr = 0x00069acc,
+    plrPVS = 0x00069b08,
+    plrAng = 0x00069b32,
+    wallPtrs = 0x0006bb2c,
+    texMaps = 0x0006bdcc,
+    texPal = 0x0006bdd0,
+    drawPal = 0x0006bddc,
+    globalWallPtrs = 0x0006bdec,
+    levelWallPtrs = 0x0006be2c,
+    currentZone = 0x00070940,
+    clipL = 0x00070942,
+    clipR = 0x00070944,
+    rotated = 0x0007a190,
+    onScreen = 0x0007ca30,
+}
+
+local function dump_words(label, addr, count)
+    local t = {}
+    for i = 0, count - 1 do
+        t[#t + 1] = tostring(s16(rd16(addr + i * 2)))
+    end
+    sys.print(label, hex(addr), table.concat(t, " "))
+end
+
+local function dump_ptrs(label, addr, count)
+    local t = {}
+    for i = 0, count - 1 do
+        t[#t + 1] = hex(rd32(addr + i * 4))
+    end
+    sys.print(label, hex(addr), table.concat(t, " "))
+end
+
+local function scan_fb(label, base, x0, y0, w, h)
+    local counts = {}
+    local nonzero = 0
+    local minx, miny, maxx, maxy = 9999, 9999, -1, -1
+    local rowHits = {}
+    for y = y0, y0 + h - 1 do
+        local row = 0
+        local bytes = dbg.read_mem(base + y * 320 + x0, w)
+        for x = 0, w - 1 do
+            local v = string.byte(bytes, x + 1) or 0
+            counts[v] = (counts[v] or 0) + 1
+            if v ~= 0 then
+                nonzero = nonzero + 1
+                row = row + 1
+                if x0 + x < minx then minx = x0 + x end
+                if y < miny then miny = y end
+                if x0 + x > maxx then maxx = x0 + x end
+                if y > maxy then maxy = y end
+            end
+        end
+        if row > 0 then rowHits[#rowHits + 1] = string.format("%d:%d", y, row) end
+    end
+    local keys = {}
+    for k, _ in pairs(counts) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return counts[a] > counts[b] end)
+    local top = {}
+    for i = 1, math.min(10, #keys) do top[#top + 1] = string.format("%02X:%d", keys[i], counts[keys[i]]) end
+    sys.print("fb", label, hex(base), "nz", nonzero, "bbox", minx, miny, maxx, maxy, "top", table.concat(top, " "))
+    if #rowHits > 0 then
+        local sample = {}
+        for i = 1, math.min(#rowHits, 24) do sample[#sample + 1] = rowHits[i] end
+        sys.print("rows", label, table.concat(sample, " "))
+    end
+end
+
+sys.wait_ms(20000)
+dbg.open()
+
+sys.print("pc", hex(dbg.get_pc()), "running", tostring(cpu.is_running()), "mode", cpu.mode())
+sys.print("video", "ctrl", hex(video.read_reg(0xF0000)), "mode", hex(video.read_reg(0xF0004)), "color", hex(video.read_reg(0xF0080)), "fb", hex(video.read_reg(0xF0084)))
+sys.print("state", "game", rd8(A.running), "full", rd8(A.full), "right", s16(rd16(A.rightX)), "bottom", s16(rd16(A.bottomY)), "centre", s16(rd16(A.centreX)), "curZone", s16(rd16(A.currentZone)), "clip", s16(rd16(A.clipL)), s16(rd16(A.clipR)))
+sys.print("ptrs", "fast", hex(rd32(A.fast)), "draw", hex(rd32(A.draw)), "display", hex(rd32(A.display)), "s1", hex(rd32(A.screen1)), "s2", hex(rd32(A.screen2)))
+sys.print("level", "zones", s16(rd16(A.numZones)), "points", s16(rd16(A.numPoints)), "zoneCount", s16(rd16(A.zoneCount)), "zonePtr", hex(rd32(A.zonePtr)), "zonePtrs", hex(rd32(A.zonePtrs)), "graph", hex(rd32(A.graph)), "connect", hex(rd32(A.connect)))
+sys.print("player", "x", hex(rd32(A.plrX)), "y", hex(rd32(A.plrY)), "z", hex(rd32(A.plrZ)), "zonePtr", hex(rd32(A.plrZonePtr)), "pvs", hex(rd32(A.plrPVS)), "ang", s16(rd16(A.plrAng)))
+sys.print("textures", "maps", hex(rd32(A.texMaps)), "texPal", hex(rd32(A.texPal)), "drawPal", hex(rd32(A.drawPal)))
+
+dump_ptrs("zonePtrs", rd32(A.zonePtrs), 12)
+dump_words("graphWords", rd32(A.graph), 32)
+dump_words("playerPVS", rd32(A.plrPVS), 32)
+dump_ptrs("wallPtrs", A.wallPtrs, 16)
+dump_ptrs("globalWallPtrs", A.globalWallPtrs, 16)
+dump_ptrs("levelWallPtrs", A.levelWallPtrs, 16)
+dump_words("onScreen", A.onScreen, 24)
+
+local fast = rd32(A.fast)
+local fb = video.read_reg(0xF0084)
+scan_fb("fast_all", fast, 0, 0, 320, 240)
+scan_fb("fast_small", fast, 0, 0, 192, 160)
+scan_fb("fast_center", fast, 64, 20, 192, 160)
+if fb ~= fast then scan_fb("fbreg_all", fb, 0, 0, 320, 240) end
+
+local dis = dbg.disasm(dbg.get_pc(), 8)
+for i, row in ipairs(dis) do sys.print("dis", hex(row.addr), row.hex or "", row.mnemonic or "") end
+
+dbg.close()
+sys.quit()

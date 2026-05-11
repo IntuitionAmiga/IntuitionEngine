@@ -1,0 +1,91 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+local D = require("diag_redux_common")
+local S = D.S
+
+local frames = rawget(_G, "FRAMES") or 80
+local dump_every = rawget(_G, "DUMP_EVERY") or 20
+
+local function drive(frame)
+    local x_phase = (frame % 80) - 40
+    local z_phase = ((frame * 3) % 80) - 40
+    local x = (0xfcd40000 + x_phase * 0x6000) % 0x100000000
+    local z = (0x00b00000 + z_phase * 0x6000) % 0x100000000
+    local angle = (frame * 64) % 8192
+
+    D.wr32(S.Plr1_XOff_l, x)
+    D.wr32(S.Plr1_SnapXOff_l, x)
+    D.wr32(S.Plr1_ZOff_l, z)
+    D.wr32(S.Plr1_SnapZOff_l, z)
+    D.wr16(S.Plr1_AngPos_w, angle)
+    D.wr16(S.Plr1_SnapAngPos_w, angle)
+
+end
+
+local function sample(label, frame)
+    local invalid, reason = D.clip_state_invalid()
+    local left, right, zone_left, zone_right, zone = D.dump_clip_state(label)
+    local fb = video.read_reg(D.VIDEO_FB_BASE)
+    local fast = D.rd32(S._Vid_FastBufferPtr_l)
+    local draw = D.rd32(S._Vid_DrawScreenPtr_l)
+    local display = D.rd32(S._Vid_DisplayScreenPtr_l)
+    sys.print("motion", frame,
+        "reason", reason,
+        "pc", D.hex(dbg.get_pc()),
+        "vbl", D.hex(D.rd32(S._Vid_VBLCount_l)),
+        "playerZone", D.s16(D.rd16(S.Plr1_Zone_w)),
+        "drawZone", zone,
+        "x", D.hex(D.rd32(S.Plr1_XOff_l)),
+        "z", D.hex(D.rd32(S.Plr1_ZOff_l)),
+        "fb", D.hex(fb),
+        "fast", D.hex(fast),
+        "draw", D.hex(draw),
+        "display", D.hex(display),
+        "clip", left .. ":" .. right,
+        "zoneClip", zone_left .. ":" .. zone_right)
+    return invalid, reason
+end
+
+sys.print("diag_redux_motion_corruption", "start", "frames", frames)
+D.attach()
+
+dbg.open()
+dbg.set_bp(S.Game_Begin)
+dbg.continue()
+dbg.close()
+D.drive_default_menu()
+sys.wait_ms(3000)
+
+dbg.open()
+D.dump_checkpoint("after_menu_wait")
+dbg.clear_all_bp()
+dbg.set_bp(S._Vid_Present)
+dbg.close()
+
+for frame = 1, frames do
+    dbg.open()
+    drive(frame)
+    if dbg.get_pc() == S._Vid_Present then
+        dbg.step(1)
+    end
+    dbg.continue()
+    dbg.close()
+    sys.wait_ms(100)
+    dbg.open()
+    local invalid, reason = sample("frame_" .. frame, frame)
+    if invalid then
+        sys.print("diag_redux_motion_corruption", "invalid_clip", "frame", frame, "reason", reason)
+        D.dump_checkpoint("invalid_clip_" .. frame)
+        D.dump_buffers("invalid_clip_" .. frame)
+        dbg.close()
+        sys.quit()
+    end
+    if frame % dump_every == 0 then
+        D.dump_lighting("frame_" .. frame)
+        D.dump_music("frame_" .. frame)
+        D.scan_fb("frame_" .. frame .. ".present", video.read_reg(D.VIDEO_FB_BASE), 0, 0, D.SCREEN_W, D.SCREEN_H)
+    end
+    dbg.close()
+end
+
+sys.print("diag_redux_motion_corruption", "done")
+sys.quit()

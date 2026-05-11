@@ -1,0 +1,54 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+local D = require("diag_redux_common")
+local S = D.S
+
+local function dump_words(label, addr, count)
+    local out = {}
+    for i = 0, count - 1 do
+        out[#out + 1] = string.format("%04X", D.rd16(addr + i * 2))
+    end
+    sys.print("words", label, D.hex(addr), table.concat(out, " "))
+end
+
+local function dump_bytes(label, addr, count)
+    local bytes = D.rd(addr, count)
+    local out = {}
+    for i = 1, count do
+        out[#out + 1] = string.format("%02X", string.byte(bytes, i) or 0)
+    end
+    sys.print("bytes", label, D.hex(addr), table.concat(out, " "))
+end
+
+local function compare_display_palette()
+    dump_words("draw_palette.first24", S._draw_Palette_vw, 24)
+end
+
+local function compare_texture_palette()
+    local ptr = D.rd32(S.Draw_TexturePalettePtr_l)
+    dump_bytes("texture_palette.first64", ptr, 64)
+    if ptr == 0 then
+        sys.print("compare", "texture_palette", "runtime pointer is null")
+    end
+end
+
+sys.print("diag_redux_palette", "start")
+D.attach()
+
+dbg.open()
+dbg.set_bp(S.Game_Begin)
+dbg.continue()
+dbg.close()
+D.drive_default_menu()
+sys.wait_ms(3000)
+D.run_until("first_draw", S.DrawDisplay)
+
+compare_display_palette()
+compare_texture_palette()
+D.dump_render_ptrs("palette")
+D.dump_paths("palette")
+D.dump_buffers("palette")
+
+dbg.clear_all_bp()
+dbg.close()
+sys.print("diag_redux_palette", "done")
+sys.quit()

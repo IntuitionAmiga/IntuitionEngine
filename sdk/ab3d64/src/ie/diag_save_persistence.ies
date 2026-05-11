@@ -1,0 +1,73 @@
+sys.print("diag_save_persistence", "script entered")
+local S = {
+    io_ie_write_buffer = 0x000161DE,
+}
+
+local FILE_STATUS = 0x000F2210
+local FILE_DATA_LEN = 0x000F2208
+
+local function expect(cond, ...)
+    if not cond then error(table.concat({...}, " ")) end
+end
+
+local function be32(n)
+    local b1 = math.floor(n / 0x1000000) % 0x100
+    local b2 = math.floor(n / 0x10000) % 0x100
+    local b3 = math.floor(n / 0x100) % 0x100
+    local b4 = n % 0x100
+    return string.char(b1, b2, b3, b4)
+end
+
+local function focus_m68k()
+    local cpus = dbg.cpu_list()
+    for _, entry in ipairs(cpus) do
+        if entry.label == "M68K" or entry.cpu_name == "M68K" or entry.name == "M68K" then
+            dbg.cpu_focus(entry.id)
+            return
+        end
+    end
+    error("M68K CPU not registered")
+end
+
+local name_addr = 0x00080000
+local data_addr = 0x00080100
+local stack_addr = 0x00FFFF00
+local payload = "IE_SAVE_PERSISTENCE_DIAG_PACKAGED\n"
+
+sys.print("diag_save_persistence", "start")
+sys.wait_ms(500)
+dbg.open()
+sys.print("diag_save_persistence", "debugger open")
+focus_m68k()
+sys.print("diag_save_persistence", "m68k focused")
+dbg.clear_all_bp()
+dbg.clear_all_wp()
+sys.print("diag_save_persistence", "breakpoints cleared")
+
+dbg.write_mem(name_addr, "ab3:ie_save_diag.bin\0")
+dbg.write_mem(data_addr, payload)
+dbg.write_mem(stack_addr, be32(0))
+dbg.set_reg("A0", name_addr)
+dbg.set_reg("D0", data_addr)
+dbg.set_reg("D1", string.len(payload))
+dbg.set_reg("A7", stack_addr)
+dbg.set_pc(S.io_ie_write_buffer)
+dbg.set_bp(0)
+sys.print("diag_save_persistence", "calling helper", string.format("$%08X", S.io_ie_write_buffer))
+dbg.continue()
+sys.wait_ms(1000)
+dbg.open()
+sys.print("diag_save_persistence", "after helper", string.format("$%08X", dbg.get_pc()))
+
+expect(dbg.get_pc() == 0, "write helper did not return to sentinel pc", string.format("pc=%08X", dbg.get_pc()))
+local status = video.read_reg(FILE_STATUS)
+local data_len = video.read_reg(FILE_DATA_LEN)
+sys.print("diag_save_persistence", "status", tostring(status), "len", tostring(data_len))
+expect(status == 0, "FILE_STATUS not zero after save write", tostring(status))
+expect(data_len == string.len(payload), "FILE_DATA_LEN mismatch", tostring(data_len))
+
+dbg.clear_all_bp()
+dbg.clear_all_wp()
+dbg.close()
+sys.print("diag_save_persistence", "ok", "ab3d2_source/_build/ie_media/redux-high/ie_save_diag.bin")
+sys.quit()

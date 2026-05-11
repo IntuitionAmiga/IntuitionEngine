@@ -1,0 +1,98 @@
+local function expect(cond, msg)
+    if not cond then error(msg, 2) end
+end
+
+local function be16(s)
+    local a, b = string.byte(s, 1, 2)
+    return (a or 0) * 0x100 + (b or 0)
+end
+
+local function be32(s)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return (a or 0) * 0x1000000 + (b or 0) * 0x10000 + (c or 0) * 0x100 + (d or 0)
+end
+
+local function rd16(addr) return be16(dbg.read_mem(addr, 2)) end
+local function rd32(addr) return be32(dbg.read_mem(addr, 4)) end
+local function wr16(addr, v)
+    dbg.write_mem(addr, string.char(math.floor(v / 0x100) % 256, v % 256))
+end
+
+local function hash_mem(addr, len)
+    local h = 5381
+    local offset = 0
+    while offset < len do
+        local n = math.min(1024, len - offset)
+        local s = dbg.read_mem(addr + offset, n)
+        for i = 1, #s do
+            h = (h * 33 + string.byte(s, i)) % 4294967296
+        end
+        offset = offset + n
+    end
+    return h
+end
+
+local function tap(key)
+    term.scancode(key)
+    sys.wait_ms(40)
+    term.scancode(key + 0x80)
+    sys.wait_ms(120)
+end
+
+local A = {
+    MOUSE_CTRL = 0xF074C,
+    VIDEO_MODE = 0xF0004,
+    VIDEO_COLOR_MODE = 0xF0080,
+    VIDEO_FB_BASE = 0xF0084,
+    SCALE_BASE = 0x240000,
+    MENU_ACTIVE = 0x0002ACF4,
+    MENU_SCROLL = 0x0002ACFC,
+    MENU_FIRE_PHASE = 0x0002ACFE,
+    MENU_ROW = 0x00019024,
+    MENU_SCREEN = 0x000B7840,
+    MENU_MORE = 0x000C1840,
+}
+
+sys.print("diag_menu_effects", "start")
+sys.wait_ms(1800)
+dbg.open()
+expect(rd32(A.MENU_ACTIVE) == 1, "menu is not active")
+expect(video.read_reg(A.MOUSE_CTRL) == 0, "menu captured the mouse")
+expect(video.read_reg(A.VIDEO_MODE) == 0, "menu is not in 640x480 mode")
+expect(video.read_reg(A.VIDEO_COLOR_MODE) == 1, "menu is not in CLUT8 mode")
+
+local scroll0 = rd16(A.MENU_SCROLL)
+local fire0 = rd16(A.MENU_FIRE_PHASE)
+local lower0 = hash_mem(A.MENU_MORE, 40 * 240 * 3)
+local fb0 = video.frame_hash()
+sys.print("diag_menu_effects", "sample0", "scroll", scroll0, "fire", fire0,
+    "lower", string.format("%08X", lower0), "frame", string.format("%08X", fb0))
+dbg.close()
+
+sys.wait_ms(900)
+dbg.open()
+local scroll1 = rd16(A.MENU_SCROLL)
+local fire1 = rd16(A.MENU_FIRE_PHASE)
+local lower1 = hash_mem(A.MENU_MORE, 40 * 240 * 3)
+local fb1 = video.frame_hash()
+sys.print("diag_menu_effects", "sample1", "scroll", scroll1, "fire", fire1,
+    "lower", string.format("%08X", lower1), "frame", string.format("%08X", fb1))
+expect(scroll1 ~= scroll0, "menu background scroll did not advance")
+expect(fire1 ~= fire0, "menu fire phase did not advance")
+expect(lower1 ~= 0, "menu fire planes are blank")
+expect(lower1 ~= lower0, "menu fire planes did not change")
+expect(fb1 ~= 0, "menu framebuffer hash is blank")
+expect(fb1 ~= fb0, "menu frame did not change")
+wr16(A.MENU_ROW, 4)
+dbg.close()
+tap(keys.ENTER)
+sys.wait_ms(900)
+dbg.open()
+local credits_fb = video.frame_hash()
+sys.print("diag_menu_effects", "credits", "frame", string.format("%08X", credits_fb))
+expect(credits_fb ~= 0, "credits framebuffer hash is blank")
+expect(credits_fb ~= fb1, "credits did not change the menu frame")
+dbg.clear_all_bp()
+dbg.close()
+sys.print("diag_menu_effects", "ok")
+sys.quit()

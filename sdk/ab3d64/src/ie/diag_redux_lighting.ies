@@ -1,0 +1,39 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+local D = require("diag_redux_common")
+local S = D.S
+
+sys.print("diag_redux_lighting", "start")
+D.attach()
+
+dbg.open()
+dbg.set_bp(S.Game_Begin)
+dbg.continue()
+dbg.close()
+D.drive_default_menu()
+
+sys.wait_ms(3000)
+D.dump_checkpoint("after_menu_wait")
+
+D.run_until("at_draw_display", S.DrawDisplay)
+D.dump_lighting("at_draw_display")
+D.dump_render_ptrs("at_draw_display")
+D.dump_paths("at_draw_display")
+
+D.run_until("at_present", S._Vid_Present)
+D.dump_lighting("at_present")
+D.dump_music("at_present")
+D.dump_buffers("at_present")
+
+dbg.open()
+dbg.clear_all_bp()
+dbg.step(1)
+dbg.continue()
+dbg.close()
+sys.wait_ms(1000)
+dbg.open()
+D.dump_checkpoint("after_present_running")
+D.dump_buffers("after_present_running")
+dbg.close()
+
+sys.print("diag_redux_lighting", "done")
+sys.quit()

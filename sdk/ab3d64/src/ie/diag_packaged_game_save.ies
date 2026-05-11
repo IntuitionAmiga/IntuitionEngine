@@ -1,0 +1,93 @@
+local A = {
+    game_SavePosition = 0x00017D98,
+    Game_LevelCounter_w = 0x00017AC2,
+    Plr_Health_w = 0x0006B6EE,
+}
+
+local FILE_STATUS = 0x000F2210
+local stack_addr = 0x00FFFF00
+local save_level = 3
+local save_health = 137
+
+local function expect(cond, ...)
+    if not cond then error(table.concat({...}, " ")) end
+end
+
+local function be16(n)
+    return string.char(math.floor(n / 0x100) % 0x100, n % 0x100)
+end
+
+local function be32(n)
+    return string.char(
+        math.floor(n / 0x1000000) % 0x100,
+        math.floor(n / 0x10000) % 0x100,
+        math.floor(n / 0x100) % 0x100,
+        n % 0x100)
+end
+
+local function rd16(addr)
+    local s = dbg.read_mem(addr, 2)
+    local a, b = string.byte(s, 1, 2)
+    return ((a or 0) * 0x100) + (b or 0)
+end
+
+local function focus_m68k()
+    for _, entry in ipairs(dbg.cpu_list()) do
+        if entry.label == "M68K" or entry.cpu_name == "M68K" or entry.name == "M68K" then
+            dbg.cpu_focus(entry.id)
+            return
+        end
+    end
+    error("M68K CPU not registered")
+end
+
+local function tap(key)
+    term.scancode(key)
+    sys.wait_ms(40)
+    term.scancode(key + 0x80)
+    sys.wait_ms(120)
+end
+
+local function confirm_menu()
+    local key = keys.ENTER or keys.RETURN or keys.SPACE
+    for _ = 1, 3 do
+        tap(key)
+        sys.wait_ms(250)
+    end
+end
+
+sys.print("diag_packaged_game_save", "start")
+sys.wait_ms(800)
+dbg.open()
+focus_m68k()
+dbg.clear_all_bp()
+if dbg.clear_all_wp then dbg.clear_all_wp() end
+
+dbg.write_mem(A.Game_LevelCounter_w, be16(save_level))
+dbg.write_mem(A.Plr_Health_w, be16(save_health))
+expect(rd16(A.Game_LevelCounter_w) == save_level, "level write failed")
+expect(rd16(A.Plr_Health_w) == save_health, "health write failed")
+
+dbg.write_mem(stack_addr, be32(0))
+dbg.set_reg("A7", stack_addr)
+dbg.set_pc(A.game_SavePosition)
+dbg.set_bp(0)
+sys.print("diag_packaged_game_save", "calling", string.format("$%08X", A.game_SavePosition))
+dbg.continue()
+dbg.close()
+
+sys.wait_ms(700)
+confirm_menu()
+sys.wait_ms(2500)
+
+dbg.open()
+focus_m68k()
+sys.print("diag_packaged_game_save", "pc", string.format("$%08X", dbg.get_pc()))
+expect(dbg.get_pc() == 0, "game_SavePosition did not return to sentinel pc")
+expect(video.read_reg(FILE_STATUS) == 0, "FILE_STATUS not zero after game save", tostring(video.read_reg(FILE_STATUS)))
+
+dbg.clear_all_bp()
+if dbg.clear_all_wp then dbg.clear_all_wp() end
+dbg.close()
+sys.print("diag_packaged_game_save", "ok", "level", tostring(save_level), "health", tostring(save_health))
+sys.quit()

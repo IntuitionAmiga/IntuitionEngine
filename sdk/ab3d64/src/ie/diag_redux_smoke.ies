@@ -1,0 +1,8 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+sys.print("diag_redux_smoke", "start")
+local ok, D = pcall(require, "diag_redux_common")
+sys.print("diag_redux_smoke", "require", tostring(ok), tostring(D))
+if ok then
+    sys.print("diag_redux_smoke", "mode", cpu.mode(), "running", tostring(cpu.is_running()), "Game_Begin", D.hex(D.S.Game_Begin))
+end
+sys.quit()

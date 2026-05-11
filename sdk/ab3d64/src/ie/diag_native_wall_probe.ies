@@ -1,0 +1,113 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+
+sys.print("native_wall_probe", "start")
+local D = require("diag_native_common")
+local S = D.load_symbols("native")
+
+local DRAW_WALL = 0x0000FA42
+local DOFLOOR = 0x00011C7E
+local DRAW_WALL_SIMPLE = 0x0000EFC6
+local DRAW_WALL_GOURAUD = 0x0001023A
+
+local function s16(v)
+    return D.s16(v)
+end
+
+local function words(addr, count)
+    if not addr or addr == 0 then return "<null>" end
+    local out = {}
+    for i = 0, count - 1 do
+        out[#out + 1] = tostring(s16(D.rd16(addr + i * 2)))
+    end
+    return table.concat(out, " ")
+end
+
+local function bytes(addr, count)
+    if not addr or addr == 0 then return "<null>" end
+    local data = D.rd(addr, count)
+    local out = {}
+    for i = 1, #data do
+        out[#out + 1] = string.format("%02X", string.byte(data, i) or 0)
+    end
+    return table.concat(out, " ")
+end
+
+local function scan(label)
+    local fb = video.read_reg(D.VIDEO_FB_BASE)
+    local fast = D.rd32(S._Vid_FastBufferPtr_l)
+    D.scan_fb(label .. ".fb", fb, D.NATIVE_W, D.NATIVE_H)
+    if fast ~= fb then D.scan_fb(label .. ".fast", fast, D.NATIVE_W, D.NATIVE_H) end
+end
+
+local function run_until(label, addr)
+    sys.print("native_wall_probe", "run_until", label, D.hex(addr))
+    dbg.open()
+    dbg.run_until(addr)
+    dbg.open()
+    sys.print("native_wall_probe", "hit", label, "pc", D.hex(dbg.get_pc and dbg.get_pc() or 0))
+end
+
+D.attach()
+dbg.open()
+dbg.clear_all_bp()
+if S.Game_Begin then
+    dbg.run_until(S.Game_Begin)
+    dbg.close()
+    D.drive_default_menu()
+    sys.wait_ms(1500)
+    dbg.open()
+    dbg.step(1)
+    dbg.continue()
+    sys.wait_ms(500)
+    dbg.close()
+end
+
+run_until("DrawDisplay", S.DrawDisplay)
+sys.print("native_wall_probe", "drawdisplay_state",
+    "data", D.hex(D.rd32(S.Lvl_DataPtr_l)),
+    "gfx", D.hex(D.rd32(S.Lvl_GraphicsPtr_l)),
+    "clips", D.hex(S._Lvl_ClipsPtr_l and D.rd32(S._Lvl_ClipsPtr_l) or 0),
+    "zones", S._Lvl_NumZones_w and s16(D.rd16(S._Lvl_NumZones_w)) or -1,
+    "player_zone", S.Plr1_Zone_w and s16(D.rd16(S.Plr1_Zone_w)) or -1,
+    "list", D.hex(S._Lvl_ListOfGraphRoomsPtr_l and D.rd32(S._Lvl_ListOfGraphRoomsPtr_l) or 0),
+    "zend", D.hex(S.Zone_EndOfListPtr_l and D.rd32(S.Zone_EndOfListPtr_l) or 0),
+    "clip", s16(D.rd16(S._Draw_LeftClip_w)), s16(D.rd16(S._Draw_RightClip_w)),
+    "right", s16(D.rd16(S._Vid_RightX_w)))
+scan("at_drawdisplay")
+
+run_until("Draw_Zone_Graph", S.Draw_Zone_Graph)
+sys.print("native_wall_probe", "zone_state",
+    "current", S._Draw_CurrentZone_w and s16(D.rd16(S._Draw_CurrentZone_w)) or -1,
+    "root", S.draw_Root_Zone_w and s16(D.rd16(S.draw_Root_Zone_w)) or -1,
+    "list_words", words(D.rd32(S._Lvl_ListOfGraphRoomsPtr_l), 24),
+    "order_tail", words(D.rd32(S.Zone_EndOfListPtr_l) - 24, 12),
+    "clip", s16(D.rd16(S._Draw_LeftClip_w)), s16(D.rd16(S._Draw_RightClip_w)))
+
+run_until("Draw_Wall", DRAW_WALL)
+local regs = dbg.get_regs and dbg.get_regs() or {}
+local a0 = regs.A0 or (dbg.get_reg and dbg.get_reg("A0")) or 0
+sys.print("native_wall_probe", "wall_entry",
+    "a0", D.hex(a0),
+    "desc_bytes", bytes(a0, 48),
+    "desc_words", words(a0, 24),
+    "current_zone", S._Draw_CurrentZone_w and s16(D.rd16(S._Draw_CurrentZone_w)) or -1,
+    "draw_wall_id", S.draw_WallID_w and string.format("%04X", D.rd16(S.draw_WallID_w)) or "na",
+    "clip", s16(D.rd16(S._Draw_LeftClip_w)), s16(D.rd16(S._Draw_RightClip_w)),
+    "onscreen", words(S._OnScreen_vl or S.OnScreen_vl, 24),
+    "rotated_head", words(S._Rotated_vl or S.Rotated_vl, 32))
+
+run_until("draw_WallSimpleShaded", DRAW_WALL_SIMPLE)
+sys.print("native_wall_probe", "simple_wall_state",
+    "pc", D.hex(dbg.get_pc and dbg.get_pc() or 0),
+    "clip", s16(D.rd16(S._Draw_LeftClip_w)), s16(D.rd16(S._Draw_RightClip_w)))
+
+run_until("dofloor", DOFLOOR)
+sys.print("native_wall_probe", "floor_state",
+    "pc", D.hex(dbg.get_pc and dbg.get_pc() or 0),
+    "current_zone", S._Draw_CurrentZone_w and s16(D.rd16(S._Draw_CurrentZone_w)) or -1,
+    "clip", s16(D.rd16(S._Draw_LeftClip_w)), s16(D.rd16(S._Draw_RightClip_w)))
+
+run_until("Vid_Present", S._Vid_Present)
+scan("before_present")
+
+sys.quit()

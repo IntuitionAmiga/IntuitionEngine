@@ -1,0 +1,109 @@
+package.path = "ab3d2_source/ie/?.lua;ie/?.lua;" .. package.path
+
+sys.print("native_live_probe", "start")
+local D = require("diag_native_common")
+local S = D.load_symbols("native")
+
+local function cstr(addr, maxlen)
+    if not addr or addr == 0 then return "<null>" end
+    maxlen = maxlen or 120
+    local out = {}
+    local data = D.rd(addr, maxlen)
+    for i = 1, #data do
+        local b = string.byte(data, i)
+        if not b or b == 0 then break end
+        out[#out + 1] = string.char(b)
+    end
+    return table.concat(out)
+end
+
+D.attach()
+dbg.open()
+dbg.clear_all_bp()
+if S.Game_Begin then
+    sys.print("native_live_probe", "bp_game_begin", D.hex(S.Game_Begin))
+    dbg.set_bp(S.Game_Begin)
+    dbg.continue()
+    sys.print("native_live_probe", "hit_game_begin")
+    dbg.clear_all_bp()
+end
+
+local io_load_failure = 0x0001AAE4
+local noload = 0x0000129E
+local game_level_number = 0x0001CA2C
+local lvl_bin_filename = 0x0004786C
+sys.print("native_live_probe", "bp_level_loaded", D.hex(noload), "bp_load_failure", D.hex(io_load_failure))
+dbg.set_bp(noload)
+dbg.set_bp(io_load_failure)
+dbg.continue()
+local pc = dbg.get_pc and dbg.get_pc() or 0
+if pc == io_load_failure then
+    sys.print("native_live_probe", "hit_load_failure",
+        "stage", D.rd32(S.ie_game_stage),
+        "game_level", D.s16(D.rd16(game_level_number)),
+        "raw_level_file", cstr(lvl_bin_filename),
+        "normalized", cstr(S.io_ie_path_vb))
+    sys.quit()
+end
+sys.print("native_live_probe", "hit_level_loaded",
+    "pc", D.hex(pc),
+    "stage", D.rd32(S.ie_game_stage),
+    "game_level", D.s16(D.rd16(game_level_number)),
+    "raw_level_file", cstr(lvl_bin_filename),
+    "normalized", cstr(S.io_ie_path_vb),
+    "data", D.hex(D.rd32(S.Lvl_DataPtr_l)),
+    "gfx", D.hex(D.rd32(S.Lvl_GraphicsPtr_l)),
+    "clips", D.hex(S._Lvl_ClipsPtr_l and D.rd32(S._Lvl_ClipsPtr_l) or 0))
+dbg.clear_all_bp()
+
+local game_main_loop = 0x000017fc
+sys.print("native_live_probe", "bp_game_loop", D.hex(game_main_loop))
+dbg.set_bp(game_main_loop)
+dbg.continue()
+sys.print("native_live_probe", "hit_game_loop")
+dbg.clear_all_bp()
+if S._Vid_Present then
+    sys.print("native_live_probe", "bp_present", D.hex(S._Vid_Present))
+    dbg.set_bp(S._Vid_Present)
+    dbg.continue()
+    sys.print("native_live_probe", "hit_present")
+    dbg.clear_all_bp()
+end
+local fb = video.read_reg(D.VIDEO_FB_BASE)
+local fast = D.rd32(S._Vid_FastBufferPtr_l)
+local frame = fb
+if frame ~= D.NATIVE_CHUNKY_BASE and frame ~= D.NATIVE_CHUNKY_BACK_BASE then
+    frame = fast
+end
+
+sys.print("native_live_probe", "fb", D.hex(fb), "fast", D.hex(fast), "frame", D.hex(frame))
+sys.print("native_live_probe", "viewport",
+    "right", D.s16(D.rd16(S._Vid_RightX_w)),
+    "centerX", D.s16(D.rd16(S.Vid_CentreX_w)),
+    "centerY", D.s16(D.rd16(S.Vid_CentreY_w)),
+    "bottomY", D.s16(D.rd16(S.Vid_BottomY_w)))
+sys.print("native_live_probe", "clip",
+    "draw", D.s16(D.rd16(S._Draw_LeftClip_w)), D.s16(D.rd16(S._Draw_RightClip_w)),
+    "zone", D.s16(D.rd16(S._Draw_ZoneClipL_w)), D.s16(D.rd16(S._Draw_ZoneClipR_w)))
+local pvs = D.rd32(S._Lvl_ListOfGraphRoomsPtr_l)
+local zend = D.rd32(S.Zone_EndOfListPtr_l)
+sys.print("native_live_probe", "zones",
+    "num", D.s16(D.rd16(S._Lvl_NumZones_w)),
+    "player", D.s16(D.rd16(S.Plr1_Zone_w)),
+    "data", D.hex(D.rd32(S.Lvl_DataPtr_l)),
+    "gfx", D.hex(D.rd32(S.Lvl_GraphicsPtr_l)),
+    "clips", D.hex(S._Lvl_ClipsPtr_l and D.rd32(S._Lvl_ClipsPtr_l) or 0),
+    "pvs", D.hex(pvs),
+    "pvs0", D.s16(D.rd16(pvs)),
+    "pvs1", D.s16(D.rd16(pvs + 8)),
+    "zend", D.hex(zend),
+    "zendm1", D.s16(D.rd16(zend - 2)),
+    "zendm2", D.s16(D.rd16(zend - 4)))
+
+local scan = D.scan_fb("native_live.frame", frame, D.NATIVE_W, D.NATIVE_H)
+sys.print("native_live_probe", "scan",
+    "nonzero", scan.nonzero,
+    "bbox", scan.minx, scan.miny, scan.maxx, scan.maxy,
+    "hash", D.hex(D.hash_mem(frame, D.NATIVE_BYTES)))
+
+sys.quit()

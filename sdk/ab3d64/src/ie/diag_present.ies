@@ -1,0 +1,24 @@
+local function hex(n) return string.format("$%08X", n) end
+local function rd32(addr) local s=dbg.read_mem(addr,4); local a,b,c,d=string.byte(s,1,4); return ((a or 0)*0x1000000)+((b or 0)*0x10000)+((c or 0)*0x100)+(d or 0) end
+local function scan(label, base)
+  local nz, ff = 0, 0
+  local minx,miny,maxx,maxy = 9999,9999,-1,-1
+  for y=0,239 do
+    local bytes=dbg.read_mem(base+y*320,320)
+    for x=0,319 do local v=string.byte(bytes,x+1) or 0; if v ~= 0 then nz=nz+1; if x<minx then minx=x end; if x>maxx then maxx=x end; if y<miny then miny=y end; if y>maxy then maxy=y end end; if v==255 then ff=ff+1 end end
+  end
+  sys.print("scan", label, hex(base), "nz", nz, "ff", ff, "bbox", minx,miny,maxx,maxy)
+end
+sys.wait_ms(1000)
+dbg.open()
+dbg.clear_all_bp()
+dbg.set_bp(0x00029896)
+dbg.continue()
+sys.wait_ms(90000)
+dbg.open()
+sys.print("hit pc", hex(dbg.get_pc()), "fbreg", hex(video.read_reg(0xF0084)), "fastptr", hex(rd32(0x000668d4)))
+scan("fast", rd32(0x000668d4))
+scan("present", 0x00126000)
+dbg.clear_all_bp()
+dbg.close()
+sys.quit()

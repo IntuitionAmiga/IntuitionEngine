@@ -1,0 +1,47 @@
+local function hex(n)
+    if n == nil then return "nil" end
+    return string.format("$%08X", n)
+end
+
+local function be32(addr)
+    local s = dbg.read_mem(addr, 4)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return ((a or 0) * 0x1000000) + ((b or 0) * 0x10000) + ((c or 0) * 0x100) + (d or 0)
+end
+
+local function be16(addr)
+    local s = dbg.read_mem(addr, 2)
+    local a, b = string.byte(s, 1, 2)
+    return ((a or 0) * 0x100) + (b or 0)
+end
+
+local function byte(addr)
+    local s = dbg.read_mem(addr, 1)
+    return string.byte(s, 1) or 0
+end
+
+local function dump(tag)
+    sys.print("CLOSE", tag, "pc", hex(dbg.get_pc()))
+    sys.print("glf", hex(be32(0x29464)), "lvl", hex(be32(0x677d0)), "fast", hex(be32(0x66784)), "fb", hex(video.read_reg(0xF0084)))
+    sys.print("health", be16(0x6a302), "p1health", be16(0x699f4), "shield", be16(0x6a32e), "weapons", be16(0x6a332))
+    sys.print("running", byte(0x5dde), "finished", be16(0x16be4), "quit", byte(0x17166), "plrzone", be16(0x699e4))
+    sys.print("pos", hex(be32(0x69970)), hex(be32(0x69974)), hex(be32(0x69978)))
+end
+
+dbg.open()
+dbg.clear_all_bp()
+dbg.set_bp(0x294e8)
+dbg.set_bp(0x5de0)
+dbg.set_bp(0x5ebe)
+dbg.set_bp(0x5ec4)
+dbg.continue()
+sys.wait_ms(800)
+dbg.open()
+dump("hit")
+local dis = dbg.disasm(dbg.get_pc(), 8)
+for _, row in ipairs(dis) do
+    sys.print("dis", hex(row.addr), row.hex or "", row.mnemonic or "")
+end
+dbg.clear_all_bp()
+dbg.close()
+sys.quit()

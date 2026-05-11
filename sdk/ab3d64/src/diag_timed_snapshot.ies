@@ -1,0 +1,160 @@
+local S = require("diag_symbols")
+
+local function hex(n)
+    if n == nil then return "nil" end
+    return string.format("$%08X", n)
+end
+
+local function rd16(addr)
+    local s = dbg.read_mem(addr, 2)
+    local a, b = string.byte(s, 1, 2)
+    return ((a or 0) * 0x100) + (b or 0)
+end
+
+local function rd32(addr)
+    local s = dbg.read_mem(addr, 4)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return ((a or 0) * 0x1000000) + ((b or 0) * 0x10000) + ((c or 0) * 0x100) + (d or 0)
+end
+
+local function s16(v)
+    if v >= 0x8000 then return v - 0x10000 end
+    return v
+end
+
+local function scan(label, base)
+    local nz = 0
+    local minx, miny, maxx, maxy = 9999, 9999, -1, -1
+    local counts = {}
+    for y = 0, 239 do
+        local row = dbg.read_mem(base + y * 320, 320)
+        for x = 0, 319 do
+            local v = string.byte(row, x + 1) or 0
+            counts[v] = (counts[v] or 0) + 1
+            if v ~= 0 then
+                nz = nz + 1
+                if x < minx then minx = x end
+                if x > maxx then maxx = x end
+                if y < miny then miny = y end
+                if y > maxy then maxy = y end
+            end
+        end
+    end
+    local keys = {}
+    for k, _ in pairs(counts) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return counts[a] > counts[b] end)
+    local top = {}
+    for i = 1, math.min(#keys, 8) do top[#top + 1] = string.format("%02X:%d", keys[i], counts[keys[i]]) end
+    sys.print("fb", label, hex(base), "nz", nz, "bbox", minx, miny, maxx, maxy, "top", table.concat(top, " "))
+end
+
+local function dump_words(label, base, count)
+    if base == 0 then
+        sys.print(label, "null")
+        return
+    end
+    local words = {}
+    for i = 0, count - 1 do
+        local v = s16(rd16(base + i * 2))
+        words[#words + 1] = tostring(v)
+    end
+    sys.print(label, hex(base), table.concat(words, " "))
+end
+
+local function dump_level_header(level_base)
+    local header = level_base + 1600
+    local points_off = rd32(header + 22)
+    local floor_off = rd32(header + 26)
+    local object_off = rd32(header + 30)
+    sys.print(
+        "level_header",
+        "base", hex(level_base),
+        "p1start", s16(rd16(header + 0)), s16(rd16(header + 2)), s16(rd16(header + 4)),
+        "p2start", s16(rd16(header + 6)), s16(rd16(header + 8)), s16(rd16(header + 10)),
+        "ctrl", s16(rd16(header + 12)),
+        "points", s16(rd16(header + 14)),
+        "zones_raw", s16(rd16(header + 16)),
+        "objects", s16(rd16(header + 20)),
+        "pointsOff", hex(points_off),
+        "floorOff", hex(floor_off),
+        "objectOff", hex(object_off),
+        "exitWordAtFloorMinus2", s16(rd16(level_base + floor_off - 2))
+    )
+    dump_words("floor_minus_words", level_base + floor_off - 16, 16)
+end
+
+local function dump_zone_order()
+    sys.print("zone_order_meta", "root", s16(rd16(S.draw_Root_Zone_w)), "endPtr", hex(rd32(S.Zone_EndOfListPtr_l)), "finalBase", hex(S.Zone_FinalOrderTable_vw))
+    dump_words("zone_final_order", S.Zone_FinalOrderTable_vw, 32)
+    dump_words("zone_to_draw", S.zone_ToDrawTable_vw, 32)
+    local graphics = rd32(S.Lvl_GraphicsPtr_l)
+    local adds = rd32(S.Lvl_ZoneGraphAddsPtr_l)
+    local lower_off = rd32(adds)
+    local upper_off = rd32(adds + 4)
+    sys.print("zone0_graph", "graphics", hex(graphics), "adds", hex(adds), "lowerOff", hex(lower_off), "upperOff", hex(upper_off), "lowerPtr", hex(graphics + lower_off), "upperPtr", hex(graphics + upper_off))
+    dump_words("zone0_lower_words", graphics + lower_off, 48)
+    dump_words("zone0_upper_words", graphics + upper_off, 48)
+end
+
+local function dump_zone0_fields(zone_ptr)
+    sys.print(
+        "zone0_fields",
+        "id", s16(rd16(zone_ptr)),
+        "floor", hex(rd32(zone_ptr + 2)),
+        "roof", hex(rd32(zone_ptr + 6)),
+        "upperFloor", hex(rd32(zone_ptr + 10)),
+        "upperRoof", hex(rd32(zone_ptr + 14)),
+        "water", hex(rd32(zone_ptr + 18)),
+        "bright", s16(rd16(zone_ptr + 22)),
+        "edgeOff", s16(rd16(zone_ptr + 32)),
+        "pointsOff", s16(rd16(zone_ptr + 34)),
+        "backdrop", rd16(zone_ptr + 36) / 256
+    )
+    dump_words("zone0_pvs", zone_ptr + 48, 32)
+    dump_words("zone0_edge_list", zone_ptr + s16(rd16(zone_ptr + 32)), 32)
+end
+
+local function dump_points()
+    local points = rd32(S._Lvl_PointsPtr_l)
+    local out = {}
+    for i = 0, 15 do
+        local px = s16(rd16(points + i * 4))
+        local pz = s16(rd16(points + i * 4 + 2))
+        local rx = rd32(S.Rotated_vl + i * 8)
+        local rz = rd32(S.Rotated_vl + i * 8 + 4)
+        local sx = s16(rd16(S.OnScreen_vl + i * 2))
+        out[#out + 1] = string.format("%d:(%d,%d)->(%s,%s)/%d", i, px, pz, hex(rx), hex(rz), sx)
+    end
+    sys.print("points", table.concat(out, " "))
+end
+
+sys.wait_ms(5000)
+dbg.open()
+local fast = rd32(S._Vid_FastBufferPtr_l)
+local draw = rd32(S._Vid_DrawScreenPtr_l)
+local display = rd32(S._Vid_DisplayScreenPtr_l)
+local fb = video.read_reg(0xF0084)
+local points_to_rotate = rd32(S.PointsToRotatePtr_l)
+local plr1_points_to_rotate = rd32(S.plr1_PointsToRotatePtr_l)
+sys.print("pc", hex(dbg.get_pc()), "running", tostring(cpu.is_running()))
+sys.print("video", "mode", hex(video.read_reg(0xF0004)), "color", hex(video.read_reg(0xF0080)), "fb", hex(fb))
+sys.print("ptrs", "fast", hex(fast), "draw", hex(draw), "display", hex(display))
+sys.print("level", "zones", s16(rd16(S._Lvl_NumZones_w)), "points", s16(rd16(S._Lvl_NumPoints_w)), "zonePtrs", hex(rd32(S._Lvl_ZonePtrsPtr_l)), "graph", hex(rd32(S._Lvl_ListOfGraphRoomsPtr_l)))
+dump_level_header(rd32(S.Lvl_DataPtr_l))
+dump_zone_order()
+local zone_ptr = rd32(S.Plr1_ZonePtr_l)
+local zone_id_at_ptr = s16(rd16(zone_ptr))
+sys.print("player", "zone", s16(rd16(S.Plr1_Zone_w)), "zonePtr", hex(zone_ptr), "zoneIdAtPtr", zone_id_at_ptr, "exit", s16(rd16(S.Lvl_ExitZoneID_w)), "pvs", hex(rd32(S.Plr1_PotVisibleZoneListPtr_l)), "ang", s16(rd16(S.Plr1_AngPos_w)))
+dump_zone0_fields(zone_ptr)
+dump_points()
+sys.print("rotate_ptrs", "global", hex(points_to_rotate), "plr1", hex(plr1_points_to_rotate), "edge", hex(S._Zone_EdgePointIndexes_vw))
+dump_words("rotate_words", points_to_rotate, 48)
+dump_words("plr1_rotate_words", plr1_points_to_rotate, 48)
+dump_words("edge_words", S._Zone_EdgePointIndexes_vw, 32)
+scan("fast", fast)
+if draw ~= fast then scan("draw", draw) end
+if display ~= fast and display ~= draw then scan("display", display) end
+if fb ~= fast and fb ~= draw and fb ~= display then scan("fbreg", fb) end
+scan("present", 0x126000)
+dbg.close()
+sys.quit()
