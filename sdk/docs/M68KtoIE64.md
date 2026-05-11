@@ -94,9 +94,21 @@ Usage: m68kto64 [options] input.s
 | `-no-header` | Omit the `; Converted from m68k by m68kto64` header line |
 | `-no-flags-fuse` | Disable CMP/TST + Bcc adjacent-fuse (debug aid; forces shadow CCR path) |
 | `-strict` | Error on unfused flag spans, `.X`/`.P` size degradation, FSAVE/FRESTORE, and other approximated/unsupported ops |
+| `-I <dir>` | (scaffolded; activated Phase D) Add directory to `include` search path; repeatable |
+| `-D NAME[=VALUE]` | (scaffolded; activated Phase B) Define symbol for the preprocessor; repeatable. Value parses as `$hex`, `0x...`, `%bin`, decimal. Whitespace around `=` rejected. Bare `-D NAME` → 1 |
+| `-strip-cond` | (scaffolded; activated Phase C) Strip `if`/`else`/`endif` wrappers from output (Model B). Default off — wrappers preserved (Model A) |
+| `-max-macro-recurs N` | (scaffolded; activated Phase E) Max macro expansion depth (default 1000, vasm-compatible) |
+| `-Werror-unknown-mnemonic` | (scaffolded; activated Phase E) Treat unknown mnemonics as errors (default on; `=false` restores legacy passthrough) |
+| `-no-default-seeds` | (scaffolded; activated Phase B) Suppress IE-convenience symbol seeds (currently `IS_IE=1`) for vasm-pure behavior |
 
-Multi-file builds (with include search paths and macro concatenation) go through the
-`sdk/bin/m68kto64-kmake` wrapper rather than direct flags on the per-file converter.
+Generic invocation (no kmake wrapper):
+
+```text
+m68kto64 -I include/ -I include/shared -D DEBUG=1 src/main.s
+ie64asm -I include/ src/main_ie64.s -o main.ie64
+```
+
+See §9 for the per-phase activation status of each preproc flag.
 
 ## 4. Register-file ABI
 

@@ -104,6 +104,68 @@ func TestMainEntry(t *testing.T) {
 	}
 }
 
+// TestMain_AcceptsAllFlags — Phase A scaffold guard: every preproc CLI flag
+// parses cleanly with default behavior. Repeated -I and -D accumulate.
+// Activation behavior is asserted in later phases.
+func TestMain_AcceptsAllFlags(t *testing.T) {
+	tmp := t.TempDir()
+	in := filepath.Join(tmp, "in.s")
+	out := filepath.Join(tmp, "out.s")
+	if err := os.WriteFile(in, []byte("\trts\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := [][]string{
+		{"-I", "/tmp/inc1", "-I", "/tmp/inc2"},
+		{"-D", "FOO"},
+		{"-D", "FOO=5"},
+		{"-D", "FOO=$ff"},
+		{"-D", "FOO=0x10"},
+		{"-D", "FOO=%101"},
+		{"-D", "FOO=1", "-D", "BAR=2"},
+		{"-strip-cond"},
+		{"-max-macro-recurs", "500"},
+		{"-Werror-unknown-mnemonic=false"},
+		{"-no-default-seeds"},
+		{"-I", "/tmp/a", "-D", "X=1", "-strip-cond", "-no-default-seeds"},
+	}
+	for _, args := range cases {
+		args := args
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			full := append(append([]string{}, args...), "-o", out, in)
+			var stderr bytes.Buffer
+			rc := run(full, &stderr)
+			if rc != 0 {
+				t.Fatalf("rc=%d for args=%v stderr=%s", rc, args, stderr.String())
+			}
+		})
+	}
+}
+
+// TestMain_RejectsBadDefine — whitespace around `=`, empty name, bad literal.
+func TestMain_RejectsBadDefine(t *testing.T) {
+	tmp := t.TempDir()
+	in := filepath.Join(tmp, "in.s")
+	if err := os.WriteFile(in, []byte("\trts\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []string{
+		"FOO = 5",  // whitespace around =
+		"=5",       // empty name
+		"FOO=abc",  // non-numeric value
+		"FOO=",     // empty value
+	}
+	for _, def := range cases {
+		def := def
+		t.Run(def, func(t *testing.T) {
+			var stderr bytes.Buffer
+			rc := run([]string{"-D", def, "-o", filepath.Join(tmp, "out.s"), in}, &stderr)
+			if rc == 0 {
+				t.Errorf("expected rejection of -D %q; rc=0 stderr=%s", def, stderr.String())
+			}
+		})
+	}
+}
+
 func TestRun_WriteFails(t *testing.T) {
 	tmp := t.TempDir()
 	in := filepath.Join(tmp, "in.s")
