@@ -145,6 +145,7 @@ func run(args []string, stderrW io.Writer) int {
 	noHeader := fs.Bool("no-header", false, "Omit header comment")
 	noFlagsFuse := fs.Bool("no-flags-fuse", false, "Disable CMP/Bcc fuse (debug aid)")
 	strict := fs.Bool("strict", false, "Error on unfused flag spans / unsupported ops")
+	fpIrqWrap := fs.Bool("fp-irq-wrap", false, "Auto-wrap RTE handlers with FP-slot save/restore (Phase 2 opt-in)")
 	sizeFlag := fs.String("size", ".l", "Default size suffix (.l or .q)")
 
 	opts := DefaultPreprocOpts()
@@ -173,6 +174,7 @@ func run(args []string, stderrW io.Writer) int {
 	c.noHeader = *noHeader
 	c.noFlagsFuse = *noFlagsFuse
 	c.strict = *strict
+	c.fpIrqWrap = *fpIrqWrap
 	c.defaultSize = *sizeFlag
 	source, errs := c.ConvertFile(in, opts, stderrW)
 	if errs > 0 && source == "" {

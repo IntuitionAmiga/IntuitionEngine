@@ -37,6 +37,16 @@ type Converter struct {
 	// lowered. Gates BSS allocation of __m68kto64_fp5_save / fp6_save and
 	// (Phase 2) decides handler-frame size for the RTE-walkback wrapper.
 	needsFP56Save bool
+
+	// Phase-2 RTE-walkback handler wrap. When fpIrqWrap is set, the
+	// pre-emit scan partitions the line stream into (label, …, rte)
+	// regions and marks each handler label so emit-time can wrap entry
+	// with FP-slot save and exit (immediately before RTE) with restore.
+	// Default off — most corpus is single-threaded.
+	fpIrqWrap          bool
+	irqHandlerLabels   map[string]bool // label name → emit save stub at label
+	irqHandlerRTELine  map[int]string  // RTE line index → handler label name (so emitRte knows frame size)
+	irqWrapInitialized bool
 	// fpccLiveAt is populated by the Phase-7.4 liveness pass to gate
 	// ShadowFPCC update emission. Indexed by line position in the lexed
 	// input.
@@ -86,6 +96,9 @@ func (c *Converter) ConvertLines(input []string) (string, int) {
 	}
 	// Compute ShadowFPCC liveness across the routine.
 	c.fpccLiveAt = computeFPCCLiveness(lines)
+	// Phase-2 RTE-walkback: partition the line stream into handler regions
+	// when -fp-irq-wrap is enabled. No-op when disabled.
+	c.scanRTEHandlerBlocks(lines)
 	i := 0
 	for i < len(lines) {
 		c.curLineIdx = i
@@ -148,10 +161,16 @@ func (c *Converter) convertLexed(e *Emit, l Line) {
 		return
 	case LineLabelOnly:
 		e.Label(l.Label)
+		if c.fpIrqWrap && c.irqHandlerLabels[l.Label] {
+			c.emitIRQHandlerEntry(e, l.Label)
+		}
 		return
 	}
 	if l.Label != "" {
 		e.Label(l.Label)
+		if c.fpIrqWrap && c.irqHandlerLabels[l.Label] {
+			c.emitIRQHandlerEntry(e, l.Label)
+		}
 	}
 	if l.Kind == LineDirective {
 		if !c.emitDirective(e, l) {
@@ -846,6 +865,13 @@ func (c *Converter) emitCmpm(e *Emit, l Line) error {
 // 8-byte frame must drop the format word with an additional `addq.l #2,sp`
 // before the RTE. Document under §12.
 func (c *Converter) emitRte(e *Emit, l Line) error {
+	// Phase-2 IRQ wrap: if this RTE was identified by scanRTEHandlerBlocks
+	// as a handler exit, emit the FP-slot restore stub first.
+	if c.fpIrqWrap {
+		if _, isHandlerRTE := c.irqHandlerRTELine[c.curLineIdx]; isHandlerRTE {
+			c.emitIRQHandlerExit(e)
+		}
+	}
 	// Pop 16-bit SR.
 	e.Lf("load.w %s, (%s)", ScrV1, GuestSP)
 	e.Lf("add.l %s, %s, #2", GuestSP, GuestSP)
