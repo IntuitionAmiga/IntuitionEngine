@@ -535,7 +535,8 @@ symbols).
 | `dc.b/w/l/q` | passthrough | width-equivalent in `ie64asm` |
 | `ds.b/w/l/q` | passthrough | reservation, width-equivalent |
 | `equ` / `set` | passthrough | symbol assignment |
-| `org` / `section` | passthrough | layout directives |
+| `org` | passthrough | layout directive |
+| `section` | dropped + diagnostic | ie64asm assembles into a single flat output (Phase F) |
 | `align` / `even` | `align 2` / passthrough | `even` lowered to `align 2` |
 | `include` | inlined transpile-time | resolves against `-I` paths and the includer's dir (Phase D). Cycle-guarded |
 | `incbin` | passthrough verbatim | ie64asm resolves at assemble-time via its own `-I` |

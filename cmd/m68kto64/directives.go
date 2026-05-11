@@ -34,6 +34,14 @@ func (c *Converter) emitDirective(e *Emit, l Line) bool {
 				mnem, strings.Join(l.Operands, ","))
 		}
 		return true
+	case "section":
+		// vasm `section` is layout metadata; ie64asm assembles into a single
+		// flat output. Drop with a diagnostic line so the source-to-output
+		// trace is still legible.
+		if len(l.Operands) > 0 {
+			e.Lf("; m68kto64: dropped section %s", strings.Join(l.Operands, ","))
+		}
+		return true
 	case "ifd":
 		// ie64asm has no `defined()` predicate. The preprocessor-time symbol
 		// table (seeded with IS_IE=1 by default; extended via -D and source

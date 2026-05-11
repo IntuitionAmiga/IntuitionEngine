@@ -14,7 +14,6 @@ func TestDirective_PassThrough(t *testing.T) {
 		"\tinclude defs.i",
 		"\tincbin \"image.bin\"",
 		"\torg $10000",
-		"\tsection \"text\",code",
 	}
 	for _, in := range cases {
 		out := convertSrc(t, in+"\n")
@@ -43,6 +42,26 @@ func TestDirective_IfdOther_AssumedUndefined(t *testing.T) {
 	out := convertSrc(t, "\tifd FOO\n\tdc.l 1\n\tendc\n")
 	// ie64asm has no defined() predicate — non-IS_IE ifd assumed undefined.
 	mustContain(t, out, "if 0")
+}
+
+func TestDirective_SectionDropped(t *testing.T) {
+	cases := []string{
+		"\tsection .bss,bss",
+		"\tsection .bsschip,bss_c",
+		"\tsection .datachip,data_c",
+		"\tsection .text,code",
+		"\tsection .data,data",
+		"\tsection \"text\",code",
+	}
+	for _, in := range cases {
+		out := convertSrc(t, in+"\n")
+		if !strings.Contains(out, "dropped section") {
+			t.Errorf("section not dropped:\ninput: %q\nout: %q", in, out)
+		}
+		if strings.Contains(out, "\tsection") {
+			t.Errorf("section directive should not survive:\nout: %q", out)
+		}
+	}
 }
 
 func TestDirective_XdefDropped(t *testing.T) {
