@@ -168,7 +168,7 @@ var directiveSet = map[string]struct{}{
 	"elseif": {}, "elseifd": {}, "elseifnd": {}, "elseifeq": {}, "elseifne": {},
 	"else": {}, "endc": {}, "endif": {},
 	"ifb": {}, "ifnb": {},
-	"macro": {}, "endm": {},
+	"macro": {}, "endm": {}, "mexit": {},
 	"rept": {}, "endr": {},
 	"end": {},
 }

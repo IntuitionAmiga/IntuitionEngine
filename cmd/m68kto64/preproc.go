@@ -44,15 +44,19 @@ type condFrame struct {
 
 func (f condFrame) active() bool { return f.parentActive && f.own }
 
-// preprocCtx threads state across recursive include processing.
+// preprocCtx threads state across recursive include / macro processing.
 type preprocCtx struct {
-	opts      PreprocOpts
-	symtab    *Symtab
-	stderrW   io.Writer
-	condStack []condFrame
-	fileStack []string // absolute paths currently being processed (cycle guard)
-	out       []string
-	errors    int
+	opts        PreprocOpts
+	symtab      *Symtab
+	stderrW     io.Writer
+	condStack   []condFrame
+	fileStack   []string
+	out         []string
+	errors      int
+	macros      map[string]*macroDef
+	uniqCounter int   // global monotonic, never reset
+	expandDepth int   // current macro-expansion depth (vs MaxMacroRecurs)
+	atStack     []int // \@ resolution stack (innermost wins)
 }
 
 func (p *preprocCtx) topActive() bool {
@@ -69,12 +73,8 @@ func (p *preprocCtx) errAt(source string, lineNum int, format string, args ...in
 	p.errors++
 }
 
-// resolveInclude searches for `name` first relative to the including file's
-// directory, then through opts.IncludeDirs in order. Returns the absolute
-// path or "" + error.
 func (p *preprocCtx) resolveInclude(name, includerPath string) (string, error) {
 	name = strings.Trim(name, "\"'")
-	// Absolute path: use as-is.
 	if filepath.IsAbs(name) {
 		if _, err := os.Stat(name); err == nil {
 			abs, _ := filepath.Abs(name)
@@ -82,7 +82,6 @@ func (p *preprocCtx) resolveInclude(name, includerPath string) (string, error) {
 		}
 		return "", fmt.Errorf("include %q not found", name)
 	}
-	// Relative to includer's directory.
 	if includerPath != "" {
 		cand := filepath.Join(filepath.Dir(includerPath), name)
 		if _, err := os.Stat(cand); err == nil {
@@ -90,7 +89,6 @@ func (p *preprocCtx) resolveInclude(name, includerPath string) (string, error) {
 			return abs, nil
 		}
 	}
-	// -I search paths.
 	for _, dir := range p.opts.IncludeDirs {
 		cand := filepath.Join(dir, name)
 		if _, err := os.Stat(cand); err == nil {
@@ -101,9 +99,6 @@ func (p *preprocCtx) resolveInclude(name, includerPath string) (string, error) {
 	return "", fmt.Errorf("include %q not found (searched %d -I path(s))", name, len(p.opts.IncludeDirs))
 }
 
-// processFile reads `path`, normalizes line endings, then processLines on the
-// content. The path is pushed onto fileStack for cycle detection; an entry
-// already on the stack errors.
 func (p *preprocCtx) processFile(path string) {
 	for _, on := range p.fileStack {
 		if on == path {
@@ -133,14 +128,61 @@ func (p *preprocCtx) processFile(path string) {
 	p.fileStack = p.fileStack[:len(p.fileStack)-1]
 }
 
-// processLines walks `lines` (already CRLF-normalized) sourced from `source`,
-// updating ctx state. source is used for error messages and as the
-// includer-directory anchor for nested includes.
+// detectMacroInvocation returns (canonical name, args, true) if `l` (lexed from
+// `raw`) is a call to a registered macro.
+func (p *preprocCtx) detectMacroInvocation(l Line, raw string) (string, []string, bool) {
+	if l.Mnemonic != "" {
+		if _, ok := p.macros[strings.ToLower(l.Mnemonic)]; ok {
+			return l.Mnemonic, l.Operands, true
+		}
+	}
+	if l.Label != "" {
+		if _, ok := p.macros[strings.ToLower(l.Label)]; ok {
+			return l.Label, parseMacroInvocation(raw, l.Label), true
+		}
+	}
+	return "", nil, false
+}
+
+func (p *preprocCtx) expandMacro(name string, args []string, source string, lineNum int) {
+	p.expandDepth++
+	defer func() { p.expandDepth-- }()
+	if p.expandDepth > p.opts.MaxMacroRecurs {
+		p.errAt(source, lineNum, "macro expansion depth exceeded MAXMACRECURS=%d (likely recursive macro: %s)", p.opts.MaxMacroRecurs, name)
+		return
+	}
+	m := p.macros[strings.ToLower(name)]
+	p.uniqCounter++
+	atVal := p.uniqCounter
+	p.atStack = append(p.atStack, atVal)
+	defer func() { p.atStack = p.atStack[:len(p.atStack)-1] }()
+
+	expanded := make([]string, 0, len(m.body))
+	for _, line := range m.body {
+		sub, errMsg := substituteMacroArgs(line, args)
+		if errMsg != "" {
+			p.errAt(source, lineNum, "macro %s: %s", name, errMsg)
+			return
+		}
+		l := LexLine(sub)
+		if l.Kind == LineDirective && l.Mnemonic == "mexit" {
+			break
+		}
+		expanded = append(expanded, sub)
+	}
+	p.processLines(expanded, source+":<macro "+name+">")
+}
+
 func (p *preprocCtx) processLines(lines []string, source string) {
-	for i, raw := range lines {
+	for i := 0; i < len(lines); i++ {
+		raw := lines[i]
+		// Resolve \@ markers against the current atStack top. Safe to call
+		// unconditionally — no-op when no markers are present.
+		raw = p.resolveAt(raw)
 		lineNum := i + 1
 		l := LexLine(raw)
 
+		// Conditional directives unconditionally modify state.
 		if l.Kind == LineDirective {
 			switch l.Mnemonic {
 			case "if", "ifd", "ifnd", "ifeq", "ifne", "ifb", "ifnb":
@@ -158,7 +200,31 @@ func (p *preprocCtx) processLines(lines []string, source string) {
 			}
 		}
 
+		// Inactive branches: macro/rept blocks must still be range-consumed so
+		// the matching endm/endr lines do not leak out as stray directives.
 		if !p.topActive() {
+			if l.Kind == LineDirective {
+				switch l.Mnemonic {
+				case "macro":
+					_, endIdx, ok := captureMacro(lines, i)
+					if !ok {
+						p.errAt(source, lineNum, "unterminated macro in inactive branch")
+						return
+					}
+					i = endIdx
+					continue
+				case "rept":
+					_, endIdx, ok := captureRept(lines, i)
+					if !ok {
+						p.errAt(source, lineNum, "unterminated rept in inactive branch")
+						return
+					}
+					i = endIdx
+					continue
+				case "endm", "endr", "mexit":
+					continue
+				}
+			}
 			if p.opts.StripCond {
 				continue
 			}
@@ -166,9 +232,52 @@ func (p *preprocCtx) processLines(lines []string, source string) {
 			continue
 		}
 
-		// Active branch: handle equ/set/=/include/incbin captures.
+		// Active branch.
 		if l.Kind == LineDirective {
 			switch l.Mnemonic {
+			case "macro":
+				name := strings.ToLower(l.Label)
+				if name == "" {
+					p.errAt(source, lineNum, "macro requires a label name")
+					continue
+				}
+				body, endIdx, ok := captureMacro(lines, i)
+				if !ok {
+					p.errAt(source, lineNum, "unterminated macro %s", name)
+					return
+				}
+				p.macros[name] = &macroDef{name: name, body: body}
+				i = endIdx
+				continue
+			case "endm":
+				p.errAt(source, lineNum, "stray endm")
+				continue
+			case "rept":
+				count, err := EvalExpr(strings.Join(l.Operands, ","), p.symtab)
+				if err != nil {
+					p.errAt(source, lineNum, "rept: %v", err)
+					continue
+				}
+				body, endIdx, ok := captureRept(lines, i)
+				if !ok {
+					p.errAt(source, lineNum, "unterminated rept")
+					return
+				}
+				for j := int64(0); j < count; j++ {
+					p.uniqCounter++
+					p.atStack = append(p.atStack, p.uniqCounter)
+					p.processLines(body, source+":<rept>")
+					p.atStack = p.atStack[:len(p.atStack)-1]
+				}
+				i = endIdx
+				continue
+			case "endr":
+				p.errAt(source, lineNum, "stray endr")
+				continue
+			case "mexit":
+				// Outside a macro expansion this is a no-op; expandMacro
+				// detects MEXIT in its own loop before lines reach here.
+				continue
 			case "equ":
 				if l.Label != "" && len(l.Operands) > 0 {
 					v, err := EvalExpr(strings.Join(l.Operands, ","), p.symtab)
@@ -204,10 +313,15 @@ func (p *preprocCtx) processLines(lines []string, source string) {
 				p.processFile(path)
 				continue
 			case "incbin":
-				// Verbatim: ie64asm resolves at assemble-time via its own -I.
 				p.emit(raw)
 				continue
 			}
+		}
+
+		// Macro invocation? Active-branch only.
+		if name, args, isMacro := p.detectMacroInvocation(l, raw); isMacro {
+			p.expandMacro(name, args, source, lineNum)
+			continue
 		}
 
 		p.emit(raw)
@@ -396,8 +510,8 @@ func Preprocess(data []byte, rootPath string, opts PreprocOpts, stderrW io.Write
 		opts:    opts,
 		symtab:  r.symtab,
 		stderrW: stderrW,
+		macros:  map[string]*macroDef{},
 	}
-	// Push the root path so includes-of-root form a cycle.
 	absRoot, _ := filepath.Abs(rootPath)
 	ctx.fileStack = append(ctx.fileStack, absRoot)
 	ctx.processLines(inputLines, absRoot)

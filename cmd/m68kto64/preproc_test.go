@@ -13,9 +13,11 @@ import (
 // ConvertSource(string(data)) path. Covers all three golden tiers; tier2 byte
 // identity holds until macros become transpile-time-expanded in Phase E.
 func TestPreproc_ByteIdentityPassthrough(t *testing.T) {
+	// Phase E migrated tier2_with_macros → tier2_post_macro; macros now
+	// expand transpile-time so the byte-identity guard for tier2 retires.
+	// A separate TestPreproc_MacroBasic exercises the expansion contract.
 	tiers := []string{
 		"testdata/golden_pre_extension/tier1_no_directives",
-		"testdata/golden_pre_extension/tier2_with_macros",
 		"testdata/golden_pre_extension/tier3_conditionals",
 	}
 	for _, dir := range tiers {

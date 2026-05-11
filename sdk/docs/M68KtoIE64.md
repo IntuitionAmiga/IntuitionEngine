@@ -543,8 +543,9 @@ symbols).
 | `else` / `elseif` / `elseifd` / `elseifnd` / `elseifeq` / `elseifne` | `else` / `elseif N` | first-true latch at preproc |
 | `endc` / `endif` | `endif` | conditional terminator |
 | `xdef` / `xref` / `public` / `global` / `extern` | dropped + diagnostic | flat single-file namespace |
-| `macro` / `endm` / `\1`–`\9` | passthrough verbatim | macro expansion deferred to assembler |
-| `rept` / `endr` | passthrough | repeat blocks deferred to assembler |
+| `macro` / `endm` / `mexit` / `\1`–`\9` / `\@` | expanded transpile-time (Phase E) | preprocessor owns expansion; converter no longer passes raw macro bodies via `ConvertFile` path |
+| `rept` / `endr` | expanded transpile-time | per-iteration global-monotonic `\@` |
+| `ifb \N` / `ifnb \N` | preproc conditional | macro-arg-blank tests; valid inside macro bodies |
 
 Macro and rept bodies are emitted verbatim; the converter does not expand them. This
 keeps `\1`–`\9` argument substitutions intact for `ie64asm` to handle.
