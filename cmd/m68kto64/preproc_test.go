@@ -214,6 +214,160 @@ func TestPreproc_IsIeSeeded(t *testing.T) {
 	}
 }
 
+// TestPreproc_IfdGeneric — Phase C: ifd/ifnd queries symtab (not legacy IS_IE
+// literal match).
+func TestPreproc_IfdGeneric(t *testing.T) {
+	t.Run("defined", func(t *testing.T) {
+		src := "FOO equ 1\n\tifd FOO\n\tnop\n\tendc\n"
+		var stderr bytes.Buffer
+		r, errs := Preprocess([]byte(src), "test.s", DefaultPreprocOpts(), &stderr)
+		if errs != 0 {
+			t.Fatalf("errs=%d: %s", errs, stderr.String())
+		}
+		joined := strings.Join(r.lines, "\n")
+		if !strings.Contains(joined, "if 1") {
+			t.Errorf("expected 'if 1' in output: %q", joined)
+		}
+		if !strings.Contains(joined, "endif") {
+			t.Errorf("expected 'endif' in output: %q", joined)
+		}
+	})
+	t.Run("undefined", func(t *testing.T) {
+		src := "\tifd BAR\n\tnop\n\tendc\n"
+		var stderr bytes.Buffer
+		r, _ := Preprocess([]byte(src), "test.s", DefaultPreprocOpts(), &stderr)
+		joined := strings.Join(r.lines, "\n")
+		if !strings.Contains(joined, "if 0") {
+			t.Errorf("expected 'if 0' for undefined symbol: %q", joined)
+		}
+	})
+	t.Run("ifnd_undefined", func(t *testing.T) {
+		src := "\tifnd BAR\n\tnop\n\tendc\n"
+		var stderr bytes.Buffer
+		r, _ := Preprocess([]byte(src), "test.s", DefaultPreprocOpts(), &stderr)
+		joined := strings.Join(r.lines, "\n")
+		if !strings.Contains(joined, "if 1") {
+			t.Errorf("expected 'if 1' (ifnd of undefined): %q", joined)
+		}
+	})
+}
+
+func TestPreproc_NestedCond(t *testing.T) {
+	src := "FOO equ 1\n\tifd FOO\n\tifd BAR\n\tnop\n\tendc\n\tendc\n"
+	var stderr bytes.Buffer
+	r, errs := Preprocess([]byte(src), "test.s", DefaultPreprocOpts(), &stderr)
+	if errs != 0 {
+		t.Fatalf("errs=%d: %s", errs, stderr.String())
+	}
+	joined := strings.Join(r.lines, "\n")
+	// Outer: if 1, inner: if 0 (BAR undefined), two endifs.
+	if strings.Count(joined, "if 1") < 1 {
+		t.Errorf("outer 'if 1' missing: %q", joined)
+	}
+	if strings.Count(joined, "if 0") < 1 {
+		t.Errorf("inner 'if 0' missing: %q", joined)
+	}
+	if strings.Count(joined, "endif") < 2 {
+		t.Errorf("expected 2 'endif': %q", joined)
+	}
+}
+
+func TestPreproc_ElseBranch(t *testing.T) {
+	src := "\tifd UNDEFINED\n\tnop\n\telse\n\trts\n\tendc\n"
+	var stderr bytes.Buffer
+	r, errs := Preprocess([]byte(src), "test.s", DefaultPreprocOpts(), &stderr)
+	if errs != 0 {
+		t.Fatalf("errs=%d: %s", errs, stderr.String())
+	}
+	joined := strings.Join(r.lines, "\n")
+	if !strings.Contains(joined, "if 0") || !strings.Contains(joined, "else") || !strings.Contains(joined, "endif") {
+		t.Errorf("missing wrappers: %q", joined)
+	}
+}
+
+func TestPreproc_IfExpr(t *testing.T) {
+	src := "FOO equ 5\n\tif FOO > 3\n\tnop\n\tendc\n"
+	var stderr bytes.Buffer
+	r, errs := Preprocess([]byte(src), "test.s", DefaultPreprocOpts(), &stderr)
+	if errs != 0 {
+		t.Fatalf("errs=%d: %s", errs, stderr.String())
+	}
+	joined := strings.Join(r.lines, "\n")
+	if !strings.Contains(joined, "if 1") {
+		t.Errorf("expected 'if 1' for FOO>3 when FOO=5: %q", joined)
+	}
+}
+
+func TestPreproc_ElseIf(t *testing.T) {
+	// First-true latch: when FOO=2, the FOO==2 branch wins. Subsequent
+	// elseif predicates emit 'elseif 0' (latched) even if literally true.
+	src := "FOO equ 2\n\tif FOO == 1\n\tdc.l 1\n\telseif FOO == 2\n\tdc.l 2\n\telseif FOO == 2\n\tdc.l 3\n\telse\n\tdc.l 4\n\tendc\n"
+	var stderr bytes.Buffer
+	r, errs := Preprocess([]byte(src), "test.s", DefaultPreprocOpts(), &stderr)
+	if errs != 0 {
+		t.Fatalf("errs=%d: %s", errs, stderr.String())
+	}
+	joined := strings.Join(r.lines, "\n")
+	// Expected wrappers: if 0, elseif 1, elseif 0, else, endif.
+	if !strings.Contains(joined, "if 0") {
+		t.Errorf("first wrapper should be 'if 0': %q", joined)
+	}
+	if strings.Count(joined, "elseif 1") != 1 {
+		t.Errorf("expected exactly one 'elseif 1' (first-true latch): %q", joined)
+	}
+	if strings.Count(joined, "elseif 0") < 1 {
+		t.Errorf("expected 'elseif 0' on latched-out branch: %q", joined)
+	}
+}
+
+func TestPreproc_IsIeLegacy(t *testing.T) {
+	// Preserves the IS_IE-seed convention: ifd IS_IE → if 1, body kept.
+	src := "\tifd IS_IE\n\tnop\n\tendc\n"
+	var stderr bytes.Buffer
+	r, errs := Preprocess([]byte(src), "test.s", DefaultPreprocOpts(), &stderr)
+	if errs != 0 {
+		t.Fatalf("errs=%d: %s", errs, stderr.String())
+	}
+	joined := strings.Join(r.lines, "\n")
+	if !strings.Contains(joined, "if 1") {
+		t.Errorf("ifd IS_IE should emit 'if 1': %q", joined)
+	}
+	if !strings.Contains(joined, "\tnop") {
+		t.Errorf("active-branch body must survive (Model A): %q", joined)
+	}
+}
+
+func TestPreproc_StripCondMode(t *testing.T) {
+	// Model B: wrappers stripped, inactive bodies dropped.
+	src := "\tifd IS_IE\n\tnop\n\telse\n\trts\n\tendc\n"
+	opts := DefaultPreprocOpts()
+	opts.StripCond = true
+	var stderr bytes.Buffer
+	r, errs := Preprocess([]byte(src), "test.s", opts, &stderr)
+	if errs != 0 {
+		t.Fatalf("errs=%d: %s", errs, stderr.String())
+	}
+	joined := strings.Join(r.lines, "\n")
+	if strings.Contains(joined, "if 1") || strings.Contains(joined, "if 0") || strings.Contains(joined, "endif") || strings.Contains(joined, "else") {
+		t.Errorf("Model B should strip all wrappers: %q", joined)
+	}
+	if !strings.Contains(joined, "\tnop") {
+		t.Errorf("active body should survive: %q", joined)
+	}
+	if strings.Contains(joined, "\trts") {
+		t.Errorf("inactive body should be dropped: %q", joined)
+	}
+}
+
+func TestPreproc_UnterminatedIf(t *testing.T) {
+	src := "\tifd IS_IE\n\tnop\n"
+	var stderr bytes.Buffer
+	_, errs := Preprocess([]byte(src), "test.s", DefaultPreprocOpts(), &stderr)
+	if errs == 0 {
+		t.Errorf("expected error for unterminated if-chain")
+	}
+}
+
 // TestPreproc_CRLFNormalized — CRLF line endings normalize to LF and produce
 // the same output as an LF-only input would.
 func TestPreproc_CRLFNormalized(t *testing.T) {

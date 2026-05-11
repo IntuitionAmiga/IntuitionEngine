@@ -35,18 +35,25 @@ func (c *Converter) emitDirective(e *Emit, l Line) bool {
 		}
 		return true
 	case "ifd":
-		// ie64asm has no `defined()` predicate. We assume IS_IE is defined
-		// (transpiler always targets IE) and any other symbol is not. The
-		// user can override by editing the transpiled output or supplying
-		// `-define` flags to ie64asm directly.
-		if len(l.Operands) == 1 && strings.EqualFold(strings.TrimSpace(l.Operands[0]), "IS_IE") {
+		// ie64asm has no `defined()` predicate. The preprocessor-time symbol
+		// table (seeded with IS_IE=1 by default; extended via -D and source
+		// equ/set/= captures) decides defined-ness. Unknown symbols → if 0.
+		name := ""
+		if len(l.Operands) == 1 {
+			name = strings.TrimSpace(l.Operands[0])
+		}
+		if c.symtab != nil && c.symtab.Has(name) {
 			e.L("if 1")
 		} else {
 			e.L("if 0")
 		}
 		return true
 	case "ifnd":
-		if len(l.Operands) == 1 && strings.EqualFold(strings.TrimSpace(l.Operands[0]), "IS_IE") {
+		name := ""
+		if len(l.Operands) == 1 {
+			name = strings.TrimSpace(l.Operands[0])
+		}
+		if c.symtab != nil && c.symtab.Has(name) {
 			e.L("if 0")
 		} else {
 			e.L("if 1")

@@ -44,6 +44,13 @@ type Converter struct {
 	// curLineIdx is the current pre-lexed line index for the in-flight
 	// emit. Liveness lookups consume it.
 	curLineIdx int
+
+	// symtab carries preprocessor-time symbol bindings, used by emitDirective
+	// to lower ifd/ifnd via symbol lookup instead of the legacy literal
+	// IS_IE check. Defaults to a symtab seeded with IS_IE=1 (preserves the
+	// pre-Phase-C output shape for direct ConvertSource callers). ConvertFile
+	// overwrites this with the preprocessor's populated symtab.
+	symtab *Symtab
 }
 
 // fpccLive reports whether the current line is a ShadowFPCC producer with
@@ -56,9 +63,13 @@ func (c *Converter) fpccLive() bool {
 	return c.fpccLiveAt[c.curLineIdx]
 }
 
-// NewConverter constructs a Converter with default settings.
+// NewConverter constructs a Converter with default settings. The symtab is
+// pre-seeded with `IS_IE=1` to preserve the legacy ifd/ifnd lowering shape
+// for callers that use ConvertSource directly (bypassing the preprocessor).
 func NewConverter() *Converter {
-	return &Converter{defaultSize: ".l"}
+	st := NewSymtab()
+	_ = st.SetMutable("IS_IE", 1)
+	return &Converter{defaultSize: ".l", symtab: st}
 }
 
 // ConvertLines converts a slice of input lines to IE64 source. Returns the

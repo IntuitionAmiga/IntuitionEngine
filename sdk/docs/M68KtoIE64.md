@@ -500,9 +500,35 @@ Mutability classes:
 Cross-class: `equ` after any prior binding errors; `set` / `=` after an existing
 `equ` errors (vasm semantics — `equ` locks the symbol).
 
-The symtab is captured in Phase B but only drives conditional gates in Phase C
+The symtab is captured in Phase B and drives conditional gates from Phase C
 onward. Symtab-driven `if`/`elseif*` predicates use the same recursive-descent
-expression grammar described in §9 "Conditional assembly".
+expression grammar listed below.
+
+### Conditional assembly (Phase C)
+
+Supported spellings: `if EXPR`, `ifd SYM`, `ifnd SYM`, `ifeq EXPR`, `ifne EXPR`,
+`ifb \N`, `ifnb \N`, plus `elseif EXPR`, `elseifd SYM`, `elseifnd SYM`,
+`elseifeq EXPR`, `elseifne EXPR`, `else`, `endc` (alias of `endif`), `endif`.
+
+The preprocessor evaluates each predicate transpile-time against the symtab and
+rewrites the directive line to a literal `if N` / `elseif N` / `else` / `endif`
+form so ie64asm sees stable wrapper shape (Model A, default). First-true latch
+applies across an `if`/`elseif*`/`else` chain. The `cpp`-style `elif` is **not** a
+vasm token and is rejected.
+
+`-strip-cond` switches to Model B: the preprocessor drops both wrapper
+directives and inactive bodies, producing cleaner output but breaking byte-diff
+against the legacy wrapper-preserving shape.
+
+Expression grammar (lowest→highest precedence): `||`, `&&`, `|`, `^`, `&`,
+equality (`==`, `!=`, `=`, `<>`), relation (`<`, `>`, `<=`, `>=`), shift
+(`<<`, `>>`), additive (`+`, `-`), multiplicative (`*`, `/`, `%`), unary
+(`-`, `~`, `!`), primary (literal / symbol / parens). Literals: decimal,
+`$hex`, `0x...`, `%bin`.
+
+Failed symbol lookup in an active branch records an error; in an inactive
+branch it is silent (allows nested feature gates to reference undefined
+symbols).
 
 | m68k directive | IE64 emit | Notes |
 |----------------|-----------|-------|
@@ -512,9 +538,9 @@ expression grammar described in §9 "Conditional assembly".
 | `org` / `section` | passthrough | layout directives |
 | `align` / `even` | `align 2` / passthrough | `even` lowered to `align 2` |
 | `incbin` / `include` | passthrough | resolved against `kmake.sh -I` paths |
-| `IFD IS_IE` | `if 1` | conditional asm |
-| `IFND IS_IE` | `if 0` | conditional asm |
-| `endc` | `endif` | conditional terminator |
+| `if` / `ifd` / `ifnd` / `ifeq` / `ifne` | `if N` (preproc-evaluated) | predicate against symtab |
+| `else` / `elseif` / `elseifd` / `elseifnd` / `elseifeq` / `elseifne` | `else` / `elseif N` | first-true latch at preproc |
+| `endc` / `endif` | `endif` | conditional terminator |
 | `xdef` / `xref` / `public` / `global` / `extern` | dropped + diagnostic | flat single-file namespace |
 | `macro` / `endm` / `\1`–`\9` | passthrough verbatim | macro expansion deferred to assembler |
 | `rept` / `endr` | passthrough | repeat blocks deferred to assembler |
