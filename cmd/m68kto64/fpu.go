@@ -41,12 +41,10 @@ func (c *Converter) emitFPU(e *Emit, l Line) (bool, error) {
 	case "fnop":
 		e.L("; nop (FPU)")
 		return true, nil
-	case "fsave", "frestore":
-		if c.strict {
-			return true, fmt.Errorf("%s not modelled (FPU state context-switch)", m)
-		}
-		e.Lf("; m68kto64: stripped %s (FPU state save not modeled)", m)
-		return true, nil
+	case "fsave":
+		return true, c.emitFSave(e, l)
+	case "frestore":
+		return true, c.emitFRestore(e, l)
 	}
 	if strings.HasPrefix(m, "fb") {
 		return true, c.emitFBcc(e, l, m)
@@ -602,6 +600,157 @@ func (c *Converter) emitFMovemLoad(e *Emit, regs []string, ea Operand, size stri
 		return nil
 	}
 	return fmt.Errorf("fmovem load: unsupported EA %v", ea.Mode)
+}
+
+// =====================================================================
+// FSAVE / FRESTORE — opaque transpiler-private state frame
+// =====================================================================
+//
+// FSAVE/FRESTORE bracket FP context save/restore. The 68881/68882 dumps an
+// opaque internal pipeline frame (null=4 / idle=28 / busy=108 bytes with a
+// format-id byte at offset 0); IE64 has no equivalent pipeline state, so a
+// bit-faithful round-trip is impossible. Instead, the transpiler defines its
+// own 80-byte frame; both ends (FSAVE / FRESTORE) are emitted by this tool,
+// so symmetric save/restore round-trips perfectly.
+//
+// Frame layout (80 bytes):
+//
+//   Offset  Size  Content
+//      0     64   FP0..FP7 as 8 x IE64 double (dstore.d)
+//     64      4   FPCR (fmovcr → store.l)
+//     68      4   FPSR composed: hardware sticky bits 3:0 | (ShadowFPCC << 24)
+//     72      4   FPIAR slot (always zero — FPIAR drop documented)
+//     76      4   format magic $1E64FE7E (FRESTORE verifies)
+//
+// FRESTORE on a frame whose magic does NOT match the transpiler's value
+// treats the frame as a null-frame init (clears FP0..FP7 to +0.0, resets
+// FPCR / FPSR / ShadowFPCC). This covers the common m68881 cold-boot idiom:
+//
+//     clr.l   -(sp)
+//     frestore (sp)+
+//
+// EA modes accepted:
+//
+//   FSAVE     : (An), -(An), d(An), (xxx).w, (xxx).l
+//   FRESTORE  : (An), (An)+, d(An), (xxx).w, (xxx).l
+//
+// Index / PC-rel source EAs are not yet wired; transpile-time error if hit.
+
+const (
+	fpSaveFrameMagic = "$1E64FE7E"
+	fpSaveFrameSize  = 80
+)
+
+// emitFSave lowers FSAVE <ea>. Writes the 80-byte transpiler-private state
+// frame at the EA address.
+func (c *Converter) emitFSave(e *Emit, l Line) error {
+	if len(l.Operands) != 1 {
+		return fmt.Errorf("fsave requires 1 operand")
+	}
+	ea, err := ParseOperand(l.Operands[0])
+	if err != nil {
+		return err
+	}
+	// Frame base into ScrEA. -(An) decrements by full frame size first.
+	switch ea.Mode {
+	case AMIndirect:
+		e.Lf("move.l %s, %s", ScrEA, ea.Reg.IE64)
+	case AMPreDec:
+		e.Lf("sub.l %s, %s, #%d", ea.Reg.IE64, ea.Reg.IE64, fpSaveFrameSize)
+		e.Lf("move.l %s, %s", ScrEA, ea.Reg.IE64)
+	case AMDispAn:
+		e.Lf("lea %s, %s(%s)", ScrEA, dispOrZero(ea.Disp), ea.Reg.IE64)
+	case AMAbsW, AMAbsL:
+		e.Lf("la %s, %s", ScrEA, ea.Disp)
+	default:
+		return fmt.Errorf("fsave: EA mode %v not supported", ea.Mode)
+	}
+	e.L("; m68kto64: FSAVE → IE64-shaped 80-byte state frame (see §11)")
+	// FP0..FP7 at offsets 0..56.
+	for i := 0; i < 8; i++ {
+		e.Lf("dstore.d %s, %d(%s)", FPGuestRegToHost(i), i*8, ScrEA)
+	}
+	// FPCR at +64.
+	e.Lf("fmovcr %s", ScrV1)
+	e.Lf("store.l %s, 64(%s)", ScrV1, ScrEA)
+	// FPSR composed (hardware sticky bits | ShadowFPCC<<24) at +68.
+	e.Lf("fmovsr %s", ScrV1)
+	e.Lf("lsl.l %s, %s, #24", ScrV2, ShadowFPCC)
+	e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ScrV2)
+	e.Lf("store.l %s, 68(%s)", ScrV1, ScrEA)
+	// FPIAR slot (zero) at +72.
+	e.Lf("move.l %s, #0", ScrV1)
+	e.Lf("store.l %s, 72(%s)", ScrV1, ScrEA)
+	// Format magic at +76.
+	e.Lf("move.l %s, #%s", ScrV1, fpSaveFrameMagic)
+	e.Lf("store.l %s, 76(%s)", ScrV1, ScrEA)
+	c.fpUsed = true
+	return nil
+}
+
+// emitFRestore lowers FRESTORE <ea>. Verifies the format magic at +76; on
+// match, restores FP0..FP7 / FPCR / FPSR / ShadowFPCC from the transpiler's
+// 80-byte frame. On mismatch, performs a null-frame init (clears FP regs and
+// control state) so cold-boot `clr.l -(sp); frestore (sp)+` works.
+func (c *Converter) emitFRestore(e *Emit, l Line) error {
+	if len(l.Operands) != 1 {
+		return fmt.Errorf("frestore requires 1 operand")
+	}
+	ea, err := ParseOperand(l.Operands[0])
+	if err != nil {
+		return err
+	}
+	var postIncReg string
+	switch ea.Mode {
+	case AMIndirect:
+		e.Lf("move.l %s, %s", ScrEA, ea.Reg.IE64)
+	case AMPostInc:
+		e.Lf("move.l %s, %s", ScrEA, ea.Reg.IE64)
+		postIncReg = ea.Reg.IE64
+	case AMDispAn:
+		e.Lf("lea %s, %s(%s)", ScrEA, dispOrZero(ea.Disp), ea.Reg.IE64)
+	case AMAbsW, AMAbsL:
+		e.Lf("la %s, %s", ScrEA, ea.Disp)
+	default:
+		return fmt.Errorf("frestore: EA mode %v not supported", ea.Mode)
+	}
+	e.L("; m68kto64: FRESTORE — verify magic, restore IE64 frame or null-init FPU")
+	// Read magic at +76; compare against $1E64FE7E.
+	e.Lf("load.l %s, 76(%s)", ScrV1, ScrEA)
+	e.Lf("move.l %s, #%s", ScrV2, fpSaveFrameMagic)
+	nullPath := e.NewLabel("frestore_null")
+	done := e.NewLabel("frestore_done")
+	e.Lf("bne %s, %s, %s", ScrV1, ScrV2, nullPath)
+	// Magic match — restore FP0..FP7 from +0..+56.
+	for i := 0; i < 8; i++ {
+		e.Lf("dload.d %s, %d(%s)", FPGuestRegToHost(i), i*8, ScrEA)
+	}
+	// FPCR at +64.
+	e.Lf("load.l %s, 64(%s)", ScrV1, ScrEA)
+	e.Lf("fmovcc %s", ScrV1)
+	// FPSR at +68: bits 27:24 → ShadowFPCC; sticky bits 3:0 → hardware via fmovsc.
+	e.Lf("load.l %s, 68(%s)", ScrV1, ScrEA)
+	e.Lf("lsr.l %s, %s, #24", ScrV2, ScrV1)
+	e.Lf("and.l %s, %s, #$F", ShadowFPCC, ScrV2)
+	e.Lf("fmovsc %s", ScrV1)
+	e.Lf("bra %s", done)
+	// Null/foreign frame — clear FPU to cold-boot state.
+	e.Label(nullPath)
+	e.L("; m68kto64: null/foreign frame → clear FPU (matches m68881 null-frame cold init)")
+	e.Lf("move.l %s, #0", ScrV1)
+	for i := 0; i < 8; i++ {
+		// dcvtif fp, Dn := 0 produces +0.0 in the target FP reg.
+		e.Lf("dcvtif %s, %s", FPGuestRegToHost(i), ScrV1)
+	}
+	e.Lf("fmovcc %s", ScrV1)         // FPCR := 0
+	e.Lf("fmovsc %s", ScrV1)         // FPSR sticky bits := 0
+	e.Lf("move.l %s, #0", ShadowFPCC) // ShadowFPCC := 0
+	e.Label(done)
+	if postIncReg != "" {
+		e.Lf("add.l %s, %s, #%d", postIncReg, postIncReg, fpSaveFrameSize)
+	}
+	c.fpUsed = true
+	return nil
 }
 
 // =====================================================================

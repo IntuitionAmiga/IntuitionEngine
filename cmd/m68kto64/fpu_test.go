@@ -340,25 +340,12 @@ func TestFNop_Comment(t *testing.T) {
 	mustContain(t, out, "nop (FPU)")
 }
 
-func TestFSave_StripWithDiagnostic(t *testing.T) {
-	out := convertSrc(t, "\tfsave (a0)\n")
-	mustContain(t, out, "stripped fsave")
-}
-
-func TestFRestore_StripWithDiagnostic(t *testing.T) {
-	out := convertSrc(t, "\tfrestore (a0)\n")
-	mustContain(t, out, "stripped frestore")
-}
-
-func TestFSave_StrictErrors(t *testing.T) {
-	c := NewConverter()
-	c.noHeader = true
-	c.strict = true
-	_, errs := c.ConvertSource("\tfsave (a0)\n")
-	if errs == 0 {
-		t.Errorf("strict fsave should error")
-	}
-}
+// FSAVE / FRESTORE are now fully lowered (transpiler-private 80-byte state
+// frame, magic-verified). The "stripped" diagnostic test is obsolete and
+// replaced by the comprehensive coverage in fsave_test.go.
+//
+// FSAVE under -strict no longer errors — the full lowering covers the
+// single-context user-mode case without semantic loss.
 
 func TestFMove_P_UnsupportedDiag(t *testing.T) {
 	out := convertSrc(t, "\tfmove.p fp0,(a0)\n")

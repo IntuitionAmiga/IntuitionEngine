@@ -60,6 +60,8 @@ var statusCatalogue = []statusCheck{
 	{"rte", "\trte", true},
 	{"stop", "\tstop #$2700", true},
 	{"reset", "\treset", true},
+	{"fsave", "\tfsave (a0)", true},
+	{"frestore", "\tfrestore (a0)", true},
 }
 
 func TestStatusDoc_MnemonicsConvert(t *testing.T) {
@@ -115,6 +117,8 @@ func TestStatusDoc_DocMarkersMatch(t *testing.T) {
 		"RTE":     "✅",
 		"STOP":    "✅",
 		"RESET":   "✅",
+		"FSAVE":   "✅",
+		"FRESTORE": "✅",
 	}
 	for mn, marker := range want {
 		// Find at least one line containing the mnemonic AND the marker.
