@@ -63,6 +63,7 @@ func fileTouchesFP56Scratch(lines []Line) bool {
 func (c *Converter) scanRTEHandlerBlocks(lines []Line) {
 	c.irqHandlerLabels = map[string]bool{}
 	c.irqHandlerRTELine = map[int]string{}
+	c.irqOrphanRTELine = map[int]bool{}
 	if !c.fpIrqWrap {
 		c.irqWrapInitialized = true
 		return
@@ -104,11 +105,16 @@ func (c *Converter) scanRTEHandlerBlocks(lines []Line) {
 		}
 		switch l.Mnemonic {
 		case "rte":
-			// RTE terminates the block AND marks it as a handler. Commit
-			// immediately so back-to-back handlers ("h1: rte / h2: rte")
-			// attribute correctly.
-			pendingRTEs = append(pendingRTEs, i)
-			commit()
+			// RTE terminates the block AND marks it as a handler when
+			// there is a preceding label in scope. Orphan RTE (no
+			// active label) cannot be wrapped — record for emit-time
+			// diag/error.
+			if curLabel == "" {
+				c.irqOrphanRTELine[i] = true
+			} else {
+				pendingRTEs = append(pendingRTEs, i)
+				commit()
+			}
 		case "rts", "jmp", "bra":
 			// Block ends here, not a handler — drop pending state.
 			curLabel = ""

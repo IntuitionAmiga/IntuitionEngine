@@ -87,6 +87,26 @@ func TestFP56Spill_FNEG_FPnSrc_LiveConsumer_FP6(t *testing.T) {
 	mustContain(t, out, spillStoreFP6)
 }
 
+// FSCALE preserves FP6 via shadow-update path: needs a live FPCC consumer
+// downstream so emitShadowFPCCFromResult fires and clobbers f12.
+func TestFP56Spill_FSCALE_PreservesFP6(t *testing.T) {
+	src := "\tfscale.l fp2,fp1\n\tfbne done\n"
+	out := convertSrc(t, src)
+	mustContain(t, out, "la r16, __m68kto64_fp6_save")
+	mustContain(t, out, spillStoreFP6)
+	mustContain(t, out, spillLoadFP6)
+}
+
+// FNEG with non-FPn source and no downstream FBcc consumer: materialize uses
+// f10 (FP5) but body only emits `dneg`; FP6 stays untouched (no shadow update).
+// Validates that the scratchSet logic distinguishes FP1-only from FP12.
+func TestFP56Spill_FNEG_OneScratchOnly(t *testing.T) {
+	src := "\tfneg.d (a0),fp1\n"
+	out := convertSrc(t, src)
+	mustContain(t, out, spillStoreFP5)
+	mustNotContain(t, out, spillStoreFP6)
+}
+
 // FGETMAN body uses both f10 AND f12 directly.
 func TestFP56Spill_FGETMAN_BothScratch(t *testing.T) {
 	out := convertOneInstr(t, "\tfgetman.x fp2,fp1")

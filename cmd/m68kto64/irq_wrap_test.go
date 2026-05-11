@@ -105,6 +105,40 @@ func TestIRQWrap_NestedJSR_DoesNotBreakWalkback(t *testing.T) {
 	mustContain(t, out, "FP-slot save")
 }
 
+// Orphan RTE: RTE with no preceding label cannot be wrapped. Under
+// -strict -fp-irq-wrap the converter must error.
+func TestIRQWrap_OrphanRTE_StrictErrors(t *testing.T) {
+	c := NewConverter()
+	c.noHeader = true
+	c.fpIrqWrap = true
+	c.strict = true
+	out, errs := c.ConvertSource("\trte\n")
+	if errs == 0 {
+		t.Errorf("orphan RTE under -strict -fp-irq-wrap should error, got 0 errors. Output:\n%s", out)
+	}
+	if !strings.Contains(out, "ERROR") {
+		t.Errorf("expected ; ERROR: diagnostic for orphan RTE, got:\n%s", out)
+	}
+}
+
+// Orphan RTE: under default (non-strict) -fp-irq-wrap, emit a diag and
+// fall through to the regular RTE lowering (no save/restore stubs).
+func TestIRQWrap_OrphanRTE_NonStrictDiagAndSkip(t *testing.T) {
+	c := NewConverter()
+	c.noHeader = true
+	c.fpIrqWrap = true
+	c.strict = false
+	out, errs := c.ConvertSource("\trte\n")
+	if errs != 0 {
+		t.Errorf("orphan RTE under non-strict -fp-irq-wrap should not error, got %d errors", errs)
+	}
+	mustContain(t, out, "orphan RTE")
+	mustNotContain(t, out, "FP-slot save")
+	mustNotContain(t, out, "restore FP slots before RTE")
+	// Regular RTE lowering still emits.
+	mustContain(t, out, "load.w r17, (r30)")
+}
+
 // Stack balance: sub.l #N at entry must match add.l #N at exit for both
 // 16 and 32 frame sizes.
 func TestIRQWrap_StackBalance(t *testing.T) {

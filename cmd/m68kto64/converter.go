@@ -46,6 +46,7 @@ type Converter struct {
 	fpIrqWrap          bool
 	irqHandlerLabels   map[string]bool // label name → emit save stub at label
 	irqHandlerRTELine  map[int]string  // RTE line index → handler label name (so emitRte knows frame size)
+	irqOrphanRTELine   map[int]bool    // RTE line index with no preceding label in scope
 	irqWrapInitialized bool
 	// fpccLiveAt is populated by the Phase-7.4 liveness pass to gate
 	// ShadowFPCC update emission. Indexed by line position in the lexed
@@ -866,10 +867,17 @@ func (c *Converter) emitCmpm(e *Emit, l Line) error {
 // before the RTE. Document under §12.
 func (c *Converter) emitRte(e *Emit, l Line) error {
 	// Phase-2 IRQ wrap: if this RTE was identified by scanRTEHandlerBlocks
-	// as a handler exit, emit the FP-slot restore stub first.
+	// as a handler exit, emit the FP-slot restore stub first. Orphan RTE
+	// (no preceding label) cannot be wrapped — error under -strict, diag
+	// under default.
 	if c.fpIrqWrap {
 		if _, isHandlerRTE := c.irqHandlerRTELine[c.curLineIdx]; isHandlerRTE {
 			c.emitIRQHandlerExit(e)
+		} else if c.irqOrphanRTELine[c.curLineIdx] {
+			if c.strict {
+				return fmt.Errorf("cannot determine handler entry for RTE (no preceding label); disable -fp-irq-wrap or add a label")
+			}
+			e.L("; m68kto64: orphan RTE — no preceding label, FP-slot wrap skipped")
 		}
 	}
 	// Pop 16-bit SR.
