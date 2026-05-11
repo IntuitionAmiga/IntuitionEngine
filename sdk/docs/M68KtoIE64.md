@@ -975,6 +975,34 @@ interrupt fired between the FINTRZ save and restore observes the transient
 round-toward-zero FPCR value. Single-thread guests are unaffected. The same
 caveat applies to `__m68kto64_fp_scratch_q` used by FSCALE and FGETMAN.
 
+## 14.1. Real-world ports (Phase G)
+
+`cmd/m68kto64/integration_realworld_test.go` (build tag
+`m68kto64_integration`) runs each entry in the corpus registry
+(`corpus_registry_test.go`) through `Preprocess` + `ConvertLines`
++ `sdk/bin/ie64asm`. Each sub-test `t.Skip`s when:
+
+- the corpus env var is unset (e.g. `IE_M68KTO64_CORPUS_AB3D2`);
+- the configured root file is not stat-able;
+- `sdk/bin/ie64asm` is missing (run `make ie64asm`).
+
+Invoke (AB3D2 example):
+
+```text
+IE_M68KTO64_CORPUS_AB3D2=/path/to/alienbreed3d2 \
+  go test -tags m68kto64_integration -run TestRealworldCorpus ./cmd/m68kto64/
+```
+
+Registered corpora:
+
+| Name | Env var | Root file |
+|------|---------|-----------|
+| ab3d2 | `IE_M68KTO64_CORPUS_AB3D2` | `ab3d2_source/ie/hires.s` |
+
+**Coverage caveat.** A clean `ie64asm` exit proves the output assembles, not
+that the lowering is semantically correct. Functional/runtime validation is
+owned by the per-port companion plan.
+
 ## 15. Roadmap
 
 Status, May 2026:
