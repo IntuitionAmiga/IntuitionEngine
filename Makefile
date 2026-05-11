@@ -456,7 +456,7 @@ m68kto64: setup
 	@$(GO) build $(GO_FLAGS) -o m68kto64 ./cmd/m68kto64/
 	@$(MKDIR) -p $(SDK_BIN_DIR)
 	@mv m68kto64 $(SDK_BIN_DIR)/
-	@install -m 0755 cmd/m68kto64/kmake.sh $(SDK_BIN_DIR)/m68kto64-kmake
+	@install -m 0755 sdk/scripts/ab3d2/kmake.sh $(SDK_BIN_DIR)/m68kto64-kmake
 	@echo "M68K-to-IE64 transpiler build complete"
 
 # Run m68kto64 unit + golden tests
@@ -1646,7 +1646,7 @@ define build-linux-release
 	rm -rf $$STAGING/sdk/bin && \
 	$(MKDIR) -p $$STAGING/sdk/bin && \
 	mv ie32asm ie64asm ie32to64 m68kto64 ie64dis $$STAGING/sdk/bin/ && \
-	install -m 0755 cmd/m68kto64/kmake.sh $$STAGING/sdk/bin/m68kto64-kmake && \
+	install -m 0755 sdk/scripts/ab3d2/kmake.sh $$STAGING/sdk/bin/m68kto64-kmake && \
 	AROS_WB="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
 	if [ -d "$$AROS_WB" ]; then \
 		cp -r "$$AROS_WB" $$STAGING/AROS; \
@@ -1754,7 +1754,7 @@ release-macos-amd64: setup emutos-release-rom aros-release-assets
 		rm -rf $$STAGING/sdk/bin && \
 		$(MKDIR) -p $$STAGING/sdk/bin && \
 		mv ie32asm ie64asm ie32to64 m68kto64 ie64dis $$STAGING/sdk/bin/ && \
-		install -m 0755 cmd/m68kto64/kmake.sh $$STAGING/sdk/bin/m68kto64-kmake && \
+		install -m 0755 sdk/scripts/ab3d2/kmake.sh $$STAGING/sdk/bin/m68kto64-kmake && \
 		AROS_WB="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
 		if [ -d "$$AROS_WB" ]; then \
 			cp -r "$$AROS_WB" $$STAGING/AROS; \
@@ -1784,7 +1784,7 @@ release-macos-arm64: setup emutos-release-rom aros-release-assets
 		rm -rf $$STAGING/sdk/bin && \
 		$(MKDIR) -p $$STAGING/sdk/bin && \
 		mv ie32asm ie64asm ie32to64 m68kto64 ie64dis $$STAGING/sdk/bin/ && \
-		install -m 0755 cmd/m68kto64/kmake.sh $$STAGING/sdk/bin/m68kto64-kmake && \
+		install -m 0755 sdk/scripts/ab3d2/kmake.sh $$STAGING/sdk/bin/m68kto64-kmake && \
 		AROS_WB="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
 		if [ -d "$$AROS_WB" ]; then \
 			cp -r "$$AROS_WB" $$STAGING/AROS; \

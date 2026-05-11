@@ -537,7 +537,8 @@ symbols).
 | `equ` / `set` | passthrough | symbol assignment |
 | `org` / `section` | passthrough | layout directives |
 | `align` / `even` | `align 2` / passthrough | `even` lowered to `align 2` |
-| `incbin` / `include` | passthrough | resolved against `kmake.sh -I` paths |
+| `include` | inlined transpile-time | resolves against `-I` paths and the includer's dir (Phase D). Cycle-guarded |
+| `incbin` | passthrough verbatim | ie64asm resolves at assemble-time via its own `-I` |
 | `if` / `ifd` / `ifnd` / `ifeq` / `ifne` | `if N` (preproc-evaluated) | predicate against symtab |
 | `else` / `elseif` / `elseifd` / `elseifnd` / `elseifeq` / `elseifne` | `else` / `elseif N` | first-true latch at preproc |
 | `endc` / `endif` | `endif` | conditional terminator |
