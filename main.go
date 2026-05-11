@@ -202,6 +202,11 @@ func boilerPlate() {
 //}
 
 func main() {
+	// Pin the main goroutine to the OS main thread before any other goroutine
+	// can spawn. macOS Cocoa demands AppKit calls (Ebiten window creation)
+	// happen on the OS main thread. No-op on non-darwin / headless darwin.
+	lockMainThread()
+
 	// Handle -version and -features before boilerplate so output is clean and script-friendly
 	for _, arg := range os.Args[1:] {
 		if arg == "-version" || arg == "--version" {
@@ -2600,38 +2605,44 @@ func main() {
 	}
 
 	// Wait for window close (graphical mode), script completion, or CPU halt.
-	waited := false
-	if waiter, ok := videoChip.GetOutput().(interface{ Done() <-chan struct{} }); ok {
-		<-waiter.Done()
-		waited = true
-	}
-	if !waited && scriptEngine != nil {
-		if ch := scriptEngine.Done(); ch != nil {
-			<-ch
+	// On darwin (non-headless), driveMainThread runs this block in a goroutine
+	// while the main goroutine pumps mainThreadQ so ebiten.RunGame can execute
+	// on the OS main thread. On all other configurations it is a direct call.
+	driveMainThread(func() {
+		waited := false
+		if waiter, ok := videoChip.GetOutput().(interface{ Done() <-chan struct{} }); ok {
+			<-waiter.Done()
 			waited = true
 		}
-	}
-	if !waited && emuTOSLoader != nil {
-		// Headless EmuTOS: block until the CPU stops running.
-		for emuTOSLoader.cpu.Running() {
-			time.Sleep(100 * time.Millisecond)
+		if !waited && scriptEngine != nil {
+			if ch := scriptEngine.Done(); ch != nil {
+				<-ch
+				waited = true
+			}
 		}
-	}
-	if !waited && arosLoader != nil {
-		// Headless AROS: block until the CPU stops running.
-		for arosLoader.cpu.Running() {
-			time.Sleep(100 * time.Millisecond)
+		if !waited && emuTOSLoader != nil {
+			// Headless EmuTOS: block until the CPU stops running.
+			for emuTOSLoader.cpu.Running() {
+				time.Sleep(100 * time.Millisecond)
+			}
 		}
-		waited = true
-	}
-	if !waited {
-		if runner, ok := cpuRunner.(interface{ IsRunning() bool }); ok {
-			for runner.IsRunning() {
+		if !waited && arosLoader != nil {
+			// Headless AROS: block until the CPU stops running.
+			for arosLoader.cpu.Running() {
 				time.Sleep(100 * time.Millisecond)
 			}
 			waited = true
 		}
-	}
+		if !waited {
+			if runner, ok := cpuRunner.(interface{ IsRunning() bool }); ok {
+				for runner.IsRunning() {
+					time.Sleep(100 * time.Millisecond)
+				}
+				waited = true
+			}
+		}
+		_ = waited
+	})
 
 	// Shut down terminal host (restores stdin to blocking) and render goroutines.
 	if scriptEngine != nil {

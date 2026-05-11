@@ -134,7 +134,10 @@ func (eo *EbitenOutput) Start() error {
 	eo.bufferMutex.RUnlock()
 	drainVSync(eo.vsyncChan)
 
-	go func() {
+	// macOS Cocoa requires NSApplication/NSWindow on the OS main thread, so
+	// the Ebiten run loop must execute there. On !darwin (or headless darwin)
+	// mainThreadCall is just `go fn()` — identical to the previous behaviour.
+	mainThreadCall(func() {
 		defer func() {
 			eo.running.Store(false)
 			closeVideoDoneOnce(done, once)
@@ -151,7 +154,7 @@ func (eo *EbitenOutput) Start() error {
 		if err := ebiten.RunGame(eo); err != nil {
 			fmt.Printf("Ebiten error: %v\n", err)
 		}
-	}()
+	})
 
 	return nil
 }
