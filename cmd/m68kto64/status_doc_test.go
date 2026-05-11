@@ -135,3 +135,37 @@ func TestStatusDoc_DocMarkersMatch(t *testing.T) {
 		}
 	}
 }
+
+// TestStatusDoc_FPGapsClosed pins the doc claims for the two FPU gaps closed
+// by the m68kto64 FPU closeout plan: FP5/FP6 auto-spill (Phase 1) and the
+// -fp-irq-wrap handler save/restore (Phase 2). The phrases below must appear
+// somewhere in m68Kto64.md or the doc has silently regressed against the
+// implementation in fpu.go / fpu_arith.go / fpu_shadow.go /
+// fpu_transcendental.go / irq_wrap.go.
+func TestStatusDoc_FPGapsClosed(t *testing.T) {
+	docPath := filepath.Join("..", "..", "sdk", "docs", "m68Kto64.md")
+	raw, err := os.ReadFile(docPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", docPath, err)
+	}
+	doc := string(raw)
+
+	phrases := []string{
+		// Phase 1 — FP5/FP6 scratch overlay closure
+		"FP5/FP6 scratch overlay — auto-spilled",
+		"__m68kto64_fp5_save",
+		"__m68kto64_fp6_save",
+		"needsFP56Save",
+		"CLOSED in Phase 1",
+		// Phase 2 — interrupt-aware FP-slot save/restore
+		"-fp-irq-wrap",
+		"RTE-walkback",
+		"CLOSED in Phase 2",
+		"integer scratch r17",
+	}
+	for _, p := range phrases {
+		if !strings.Contains(doc, p) {
+			t.Errorf("doc drift: m68Kto64.md missing FP-gap-closure anchor %q", p)
+		}
+	}
+}
