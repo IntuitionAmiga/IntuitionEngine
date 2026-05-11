@@ -241,10 +241,19 @@ func (c *Converter) emitInstruction(e *Emit, l Line) error {
 	case "sub", "suba", "subi", "subq":
 		return c.emitArith(e, l, size, "sub")
 	case "and", "andi":
+		if handled, err := c.tryEmitArithCCR(e, l, "and"); handled {
+			return err
+		}
 		return c.emitArith(e, l, size, "and")
 	case "or", "ori":
+		if handled, err := c.tryEmitArithCCR(e, l, "or"); handled {
+			return err
+		}
 		return c.emitArith(e, l, size, "or")
 	case "eor", "eori":
+		if handled, err := c.tryEmitArithCCR(e, l, "eor"); handled {
+			return err
+		}
 		return c.emitArith(e, l, size, "eor")
 	case "mulu":
 		// 68000 MULU.W produces a 32-bit result that overwrites the full Dn.
