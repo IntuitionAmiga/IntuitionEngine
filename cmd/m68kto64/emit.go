@@ -90,8 +90,8 @@ const (
 )
 
 // FPU memory-slot reservations. These are per-output-file BSS-style globals
-// (single-thread guest assumed). See `sdk/docs/m68Kto64.md` §4.FP and
-// §15.FP for the reentrancy caveat under guest interrupts.
+// (single-thread guest assumed). See `sdk/docs/m68Kto64.md` §4.FP and §12
+// (memory-slot reentrancy bullet) for the caveat under guest interrupts.
 const (
 	FPSlotFPCRSave  = "__m68kto64_fpcr_save"     // FINTRZ FPCR save/restore
 	FPSlotScratchQ  = "__m68kto64_fp_scratch_q"  // FSCALE bit-pattern round-trip

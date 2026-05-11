@@ -14,7 +14,7 @@ import (
 // remainder of the m68k transcendental set.
 //
 // Approximations are documented per-mnemonic in `sdk/docs/m68Kto64.md`
-// §15.FP.
+// §8.FP (Transcendentals table) and §14.FP.
 // =====================================================================
 
 func (c *Converter) emitFTranscendental(e *Emit, l Line, m string) error {
