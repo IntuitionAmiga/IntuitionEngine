@@ -54,6 +54,33 @@ func TestAbsW_LEA_SignExtends(t *testing.T) {
 	}
 }
 
+// JSR numeric (xxx).w: emitJsr's AMAbsW path uses la + sext.w + jmp
+// (indirect) for numeric Disp, so the m68k jump target sign-extends
+// correctly. Symbolic labels still resolve via `bra` because ie64asm
+// patches them at assemble time and the address is already correct.
+func TestAbsW_JSR_SignExtends(t *testing.T) {
+	out := convertOneInstr(t, "\tjsr ($FFFE).w")
+	mustContain(t, out, "la r17, $FFFE")
+	mustContain(t, out, "sext.w r17, r17")
+	mustContain(t, out, "jmp (r17)")
+}
+
+// JSR with symbolic label stays on the bra path — no sext.w needed.
+func TestAbsW_JSR_LabelStaysBra(t *testing.T) {
+	out := convertOneInstr(t, "\tjsr myfunc")
+	if strings.Contains(out, "sext.w") {
+		t.Errorf("JSR with label should not trigger sext.w; got:\n%s", out)
+	}
+}
+
+// JMP numeric (xxx).w: matching JSR fix in emitJmp.
+func TestAbsW_JMP_SignExtends(t *testing.T) {
+	out := convertOneInstr(t, "\tjmp ($FFFE).w")
+	mustContain(t, out, "la r17, $FFFE")
+	mustContain(t, out, "sext.w r17, r17")
+	mustContain(t, out, "jmp (r17)")
+}
+
 // PEA: no transpiler handler today — falls through to passthrough. PEA
 // (xxx).w sign-extension is a separate gap that requires a real emitPea
 // lowering first; tracked in §12.

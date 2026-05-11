@@ -440,7 +440,16 @@ func (c *Converter) emitJmp(e *Emit, l Line) error {
 		e.Lf("jmp (%s)", ScrEA)
 		return nil
 	case AMAbsW, AMAbsL, AMDispPC, AMIndexPC:
-		// PC-rel and absolute targets resolve via `bra`.
+		// PC-rel and labelled absolute targets resolve via `bra` (ie64asm
+		// patches the literal). Numeric (xxx).w needs explicit sign-extend
+		// to a 32-bit address before jumping, since `bra $FFFE` would
+		// resolve to +65534 instead of m68k's 0xFFFFFFFE.
+		if op.Mode == AMAbsW && looksLikeNumericDisp(op.Disp) {
+			e.Lf("la %s, %s", ScrV1, op.Disp)
+			maybeSignExtAbsW(e, ScrV1, op.Mode)
+			e.Lf("jmp (%s)", ScrV1)
+			return nil
+		}
 		e.Lf("bra %s", op.Disp)
 		return nil
 	}
@@ -469,7 +478,13 @@ func (c *Converter) emitJsr(e *Emit, l Line) error {
 		c.emitIndexAddr(e, op, ScrEA)
 		e.Lf("jmp (%s)", ScrEA)
 	case AMAbsW, AMAbsL, AMDispPC, AMIndexPC:
-		e.Lf("bra %s", op.Disp)
+		if op.Mode == AMAbsW && looksLikeNumericDisp(op.Disp) {
+			e.Lf("la %s, %s", ScrV1, op.Disp)
+			maybeSignExtAbsW(e, ScrV1, op.Mode)
+			e.Lf("jmp (%s)", ScrV1)
+		} else {
+			e.Lf("bra %s", op.Disp)
+		}
 	default:
 		return fmt.Errorf("jsr: unsupported mode %v", op.Mode)
 	}
@@ -783,6 +798,24 @@ func (c *Converter) emitTas(e *Emit, l Line) error {
 	c.emitShadowClearC(e)
 	c.emitShadowClearV(e)
 	return nil
+}
+
+// looksLikeNumericDisp returns true when a Disp string is a numeric
+// literal ($-hex, %-binary, 0x-hex, or decimal) rather than a label or
+// symbolic expression. Used to decide whether AMAbsW JMP/JSR targets need
+// explicit sign-extension before the jump.
+func looksLikeNumericDisp(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if s[0] == '$' || s[0] == '%' || s[0] == '+' || s[0] == '-' {
+		return true
+	}
+	if len(s) >= 2 && (s[:2] == "0x" || s[:2] == "0X") {
+		return true
+	}
+	return s[0] >= '0' && s[0] <= '9'
 }
 
 // maybeSignExtAbsW emits `sext.w reg, reg` when `mode == AMAbsW`. m68k

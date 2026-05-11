@@ -70,6 +70,45 @@ func TestVectorHeuristic_LEAClobberedByJSR_NotMarked(t *testing.T) {
 	}
 }
 
+// JMP between LEA and MOVE wipes the An→label map.
+func TestVectorHeuristic_LEAClobberedByJMP_NotMarked(t *testing.T) {
+	src := "" +
+		"\tlea myhandler,a0\n" +
+		"\tjmp elsewhere\n" +
+		"\tmove.l a0,($80).l\n" +
+		"\trts\n" +
+		"myhandler:\n" +
+		"\tmove.l #1,d0\n" +
+		"\trts\n"
+	out := convertSrcWithIRQWrap(t, src)
+	if strings.Contains(out, "handler at myhandler wrapped") {
+		t.Errorf("JMP boundary should wipe LEA tracker; got:\n%s", out)
+	}
+}
+
+// Orphan-RTE diag suppressed when vector heuristic supplies the handler
+// label: the move.l #handler,(vec) write marks `handler` in
+// irqHandlerLabels; the handler body contains a fall-through RTE so the
+// RTE-walkback pass also records irqHandlerRTELine[idx]=handler. Both
+// paths agree and no orphan diag fires.
+func TestVectorHeuristic_OrphanRTE_NowResolved(t *testing.T) {
+	src := "" +
+		"\tmove.l #myhandler,($80).l\n" +
+		"\trts\n" +
+		"myhandler:\n" +
+		"\tmove.l #1,d0\n" +
+		"\trte\n"
+	out := convertSrcWithIRQWrap(t, src)
+	// Entry stub emitted at handler label.
+	mustContain(t, out, "handler at myhandler wrapped")
+	// Exit stub emitted before RTE.
+	mustContain(t, out, "restore FP slots before RTE")
+	// No orphan diag.
+	if strings.Contains(out, "orphan RTE") {
+		t.Errorf("orphan RTE diag should NOT fire when vector heuristic + walkback both mark handler:\n%s", out)
+	}
+}
+
 // Numeric immediate (move.l #$2700,...) is NOT a label — not marked.
 func TestVectorHeuristic_NumericImmediateSkipped(t *testing.T) {
 	src := "\tmove.l #$2700,($80).l\n\trts\n"
