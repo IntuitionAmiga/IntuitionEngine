@@ -57,6 +57,18 @@ func fileTouchesFP56Scratch(lines []Line) bool {
 	return false
 }
 
+// fileTouchesFP7Scratch reports whether any FTANH appears in the line
+// stream. FTANH is the only op (as of Phase F1) that clobbers f14
+// (= guest FP7) via the hyperbolic helper.
+func fileTouchesFP7Scratch(lines []Line) bool {
+	for _, l := range lines {
+		if l.Kind == LineInstruction && l.Mnemonic == "ftanh" {
+			return true
+		}
+	}
+	return false
+}
+
 // scanRTEHandlerBlocks performs Pass 1: walks the lexed line stream and
 // populates c.irqHandlerLabels / c.irqHandlerRTELine. Called once per
 // ConvertLines invocation, only when c.fpIrqWrap is true.
@@ -74,6 +86,11 @@ func (c *Converter) scanRTEHandlerBlocks(lines []Line) {
 	// stub emitted at the first handler label sees the final value.
 	if !c.needsFP56Save && fileTouchesFP56Scratch(lines) {
 		c.needsFP56Save = true
+	}
+	// Phase F1.1 — eagerly set needsFP7Save when ftanh appears in the file
+	// so the handler frame size is stable at first emit.
+	if !c.needsFP7Save && fileTouchesFP7Scratch(lines) {
+		c.needsFP7Save = true
 	}
 	curLabel := ""
 	pendingRTEs := []int{}
@@ -125,13 +142,19 @@ func (c *Converter) scanRTEHandlerBlocks(lines []Line) {
 	c.irqWrapInitialized = true
 }
 
-// irqWrapFrameSize returns the handler frame size in bytes (16 base, 32 if
-// FP5/FP6 slots are in the save set).
+// irqWrapFrameSize returns the handler frame size in bytes:
+//   16 base, +16 when FP5/FP6 slots in save set, +8 when FP7 slot in save set.
+//   Possible sizes: 16, 24 (FP7-only, rare — FP7 cluster without FP56 is
+//   impossible since ftanh implies the FP12 spill cluster), 32, 40.
 func (c *Converter) irqWrapFrameSize() int {
+	n := 16
 	if c.needsFP56Save {
-		return 32
+		n += 16
 	}
-	return 16
+	if c.needsFP7Save {
+		n += 8
+	}
+	return n
 }
 
 // emitIRQHandlerEntry emits the save stub at handler entry. Called from
@@ -150,6 +173,16 @@ func (c *Converter) emitIRQHandlerEntry(e *Emit, label string) {
 		c.emitIRQSlotStore(e, FPSlotFP5Save, 16)
 		c.emitIRQSlotStore(e, FPSlotFP6Save, 24)
 	}
+	if c.needsFP7Save {
+		// FP7 slot lives at offset 32 (after FP5/FP6 if present) or 16
+		// (if FP56 absent — impossible with current ops, but handle for
+		// future-proofing).
+		off := 16
+		if c.needsFP56Save {
+			off = 32
+		}
+		c.emitIRQSlotStore(e, FPSlotFP7Save, off)
+	}
 }
 
 // emitIRQHandlerExit emits the restore stub immediately before the RTE
@@ -158,6 +191,13 @@ func (c *Converter) emitIRQHandlerEntry(e *Emit, label string) {
 func (c *Converter) emitIRQHandlerExit(e *Emit) {
 	n := c.irqWrapFrameSize()
 	e.L("; m68kto64: restore FP slots before RTE")
+	if c.needsFP7Save {
+		off := 16
+		if c.needsFP56Save {
+			off = 32
+		}
+		c.emitIRQSlotLoad(e, FPSlotFP7Save, off)
+	}
 	if c.needsFP56Save {
 		c.emitIRQSlotLoad(e, FPSlotFP6Save, 24)
 		c.emitIRQSlotLoad(e, FPSlotFP5Save, 16)

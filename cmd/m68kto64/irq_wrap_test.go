@@ -105,6 +105,53 @@ func TestIRQWrap_NestedJSR_DoesNotBreakWalkback(t *testing.T) {
 	mustContain(t, out, "FP-slot save")
 }
 
+// Phase F1.1 — handler frame grows to 40B when ftanh appears in the file
+// (FP7 slot adds 8B on top of the FP5/FP6 32B frame).
+func TestFP7Spill_IRQWrap_FrameSize40(t *testing.T) {
+	src := "handler:\n\tftanh.x fp1\n\trte\n"
+	out := convertSrcWithIRQWrap(t, src)
+	mustContain(t, out, "sub.l r30, r30, #40")
+	mustContain(t, out, "add.l r30, r30, #40")
+	// FP7 slot lives at offset 32 (after FP5 at 16 and FP6 at 24).
+	mustContain(t, out, "store.l r17, 32(r30)")
+	mustContain(t, out, "store.l r17, 36(r30)")
+	mustContain(t, out, "__m68kto64_fp7_save")
+}
+
+// Stack balance for the 40B frame size.
+func TestFP7Spill_IRQWrap_StackBalance40(t *testing.T) {
+	src := "h:\n\tftanh.x fp1\n\trte\n"
+	out := convertSrcWithIRQWrap(t, src)
+	if strings.Count(out, "sub.l r30, r30, #40") != 1 {
+		t.Errorf("expected exactly one sub.l #40, got:\n%s", out)
+	}
+	if strings.Count(out, "add.l r30, r30, #40") != 1 {
+		t.Errorf("expected exactly one add.l #40, got:\n%s", out)
+	}
+}
+
+// Save order: FP7 saved AFTER FP5/FP6 in entry stub; restored BEFORE
+// FP5/FP6 in exit stub (matches plan §"Frame layout").
+func TestFP7Spill_IRQWrap_SaveOrder(t *testing.T) {
+	src := "h:\n\tftanh.x fp1\n\trte\n"
+	out := convertSrcWithIRQWrap(t, src)
+	// Entry order: FP5 store at offset 16, FP6 at 24, FP7 at 32.
+	fp5Store := strings.Index(out, "store.l r17, 16(r30)")
+	fp6Store := strings.Index(out, "store.l r17, 24(r30)")
+	fp7Store := strings.Index(out, "store.l r17, 32(r30)")
+	if !(fp5Store < fp6Store && fp6Store < fp7Store) {
+		t.Errorf("entry order wrong: fp5@%d, fp6@%d, fp7@%d:\n%s",
+			fp5Store, fp6Store, fp7Store, out)
+	}
+	// Exit order (reverse): FP7 load before FP5/FP6 loads.
+	fp7Load := strings.Index(out, "load.l r17, 32(r30)")
+	fp6Load := strings.Index(out, "load.l r17, 24(r30)")
+	if !(fp7Load < fp6Load) {
+		t.Errorf("exit order wrong: fp7-load@%d should precede fp6-load@%d:\n%s",
+			fp7Load, fp6Load, out)
+	}
+}
+
 // Orphan RTE: RTE with no preceding label cannot be wrapped. Under
 // -strict -fp-irq-wrap the converter must error.
 func TestIRQWrap_OrphanRTE_StrictErrors(t *testing.T) {
