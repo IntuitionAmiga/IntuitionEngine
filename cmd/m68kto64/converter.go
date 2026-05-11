@@ -754,6 +754,7 @@ func (c *Converter) emitTas(e *Emit, l Line) error {
 		e.Lf("lea %s, %s(%s)", ScrV1, dispOrZero(dst.Disp), dst.Reg.IE64)
 	case AMAbsW, AMAbsL:
 		e.Lf("la %s, %s", ScrV1, dst.Disp)
+		maybeSignExtAbsW(e, ScrV1, dst.Mode)
 	case AMPostInc:
 		e.Lf("move.l %s, %s", ScrV1, dst.Reg.IE64)
 		e.Lf("add.l %s, %s, #1", dst.Reg.IE64, dst.Reg.IE64)
@@ -773,6 +774,19 @@ func (c *Converter) emitTas(e *Emit, l Line) error {
 	c.emitShadowClearC(e)
 	c.emitShadowClearV(e)
 	return nil
+}
+
+// maybeSignExtAbsW emits `sext.w reg, reg` when `mode == AMAbsW`. m68k
+// `(xxx).w` short-absolute addresses are 16-bit signed and sign-extend to
+// 32 bits before forming the EA; IE64 `la` zero-extends, so addresses like
+// `$FFFE.w` would resolve to +65534 instead of -2 / 0xFFFFFFFE.
+//
+// Called immediately after every `la reg, op.Disp` emit that lowers an
+// AMAbsW operand. No-op for AMAbsL (already 32-bit) and other modes.
+func maybeSignExtAbsW(e *Emit, reg string, mode AddrMode) {
+	if mode == AMAbsW {
+		e.Lf("sext.w %s, %s ; (xxx).w sign-extend to 32-bit address", reg, reg)
+	}
 }
 
 // emitUnpackCCRBits unpacks the low byte of a 16-bit m68k SR/CCR value held
@@ -1124,6 +1138,7 @@ func (c *Converter) emitEABase(e *Emit, ea Operand, dst string) error {
 		return nil
 	case AMAbsW, AMAbsL, AMDispPC, AMIndexPC:
 		e.Lf("la %s, %s", dst, ea.Disp)
+		maybeSignExtAbsW(e, dst, ea.Mode)
 		if ea.Mode == AMIndexPC {
 			c.emitIndexCombine(e, ea.Index, dst)
 		}
@@ -1184,6 +1199,7 @@ func (c *Converter) loadValue(e *Emit, op Operand, size int, scratch string) (re
 		return scratch, "", nil
 	case AMAbsW, AMAbsL:
 		e.Lf("la %s, %s", ScrEA, op.Disp)
+		maybeSignExtAbsW(e, ScrEA, op.Mode)
 		e.Lf("load%s %s, (%s)", sz, scratch, ScrEA)
 		return scratch, "", nil
 	case AMDispPC:
@@ -1266,6 +1282,7 @@ func (c *Converter) storeValue(e *Emit, op Operand, size int, srcReg string) err
 		return nil
 	case AMAbsW, AMAbsL:
 		e.Lf("la %s, %s", ScrEA, op.Disp)
+		maybeSignExtAbsW(e, ScrEA, op.Mode)
 		e.Lf("store%s %s, (%s)", sz, srcReg, ScrEA)
 		return nil
 	}
@@ -1505,6 +1522,7 @@ func (c *Converter) emitLea(e *Emit, l Line) error {
 		return nil
 	case AMAbsW, AMAbsL:
 		e.Lf("la %s, %s", dst.Reg.IE64, src.Disp)
+		maybeSignExtAbsW(e, dst.Reg.IE64, src.Mode)
 		return nil
 	case AMDispPC, AMIndexPC:
 		// la resolves PC-rel labels.

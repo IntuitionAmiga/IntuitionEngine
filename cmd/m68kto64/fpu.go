@@ -160,6 +160,7 @@ func (c *Converter) emitFPMemLoad(e *Emit, op Operand, fpDst string, size string
 		return nil
 	case AMAbsW, AMAbsL, AMDispPC, AMIndexPC:
 		e.Lf("la %s, %s", ScrEA, op2.Disp)
+		maybeSignExtAbsW(e, ScrEA, op2.Mode)
 		if op2.Mode == AMIndexPC {
 			c.emitIndexCombine(e, op2.Index, ScrEA)
 		}
@@ -193,6 +194,7 @@ func (c *Converter) emitFPMemStore(e *Emit, op Operand, fpSrc string, size strin
 		return nil
 	case AMAbsW, AMAbsL:
 		e.Lf("la %s, %s", ScrEA, op.Disp)
+		maybeSignExtAbsW(e, ScrEA, op.Mode)
 		e.Lf("%s %s, (%s)", fpStoreOp(size), fpSrc, ScrEA)
 		return nil
 	}
@@ -768,6 +770,7 @@ func (c *Converter) emitFSave(e *Emit, l Line) error {
 		e.Lf("lea %s, %s(%s)", ScrEA, dispOrZero(ea.Disp), ea.Reg.IE64)
 	case AMAbsW, AMAbsL:
 		e.Lf("la %s, %s", ScrEA, ea.Disp)
+		maybeSignExtAbsW(e, ScrEA, ea.Mode)
 	default:
 		return fmt.Errorf("fsave: EA mode %v not supported", ea.Mode)
 	}
@@ -817,6 +820,7 @@ func (c *Converter) emitFRestore(e *Emit, l Line) error {
 		e.Lf("lea %s, %s(%s)", ScrEA, dispOrZero(ea.Disp), ea.Reg.IE64)
 	case AMAbsW, AMAbsL:
 		e.Lf("la %s, %s", ScrEA, ea.Disp)
+		maybeSignExtAbsW(e, ScrEA, ea.Mode)
 	default:
 		return fmt.Errorf("frestore: EA mode %v not supported", ea.Mode)
 	}

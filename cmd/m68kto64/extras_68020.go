@@ -184,6 +184,7 @@ func (c *Converter) emitChk2(e *Emit, l Line) error {
 		e.Lf("lea %s, %s(%s)", ScrEA, dispOrZero(src.Disp), src.Reg.IE64)
 	case AMAbsW, AMAbsL:
 		e.Lf("la %s, %s", ScrEA, src.Disp)
+		maybeSignExtAbsW(e, ScrEA, src.Mode)
 	default:
 		return fmt.Errorf("chk2: EA mode %v not supported", src.Mode)
 	}
