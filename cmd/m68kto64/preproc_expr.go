@@ -455,6 +455,27 @@ func (p *exprParser) parsePrimary() (int64, error) {
 		}
 		return v, nil
 	}
+	// Char literal: 'x' or 'XYZW' (packed big-endian, vasm convention).
+	if p.peek() == '\'' {
+		p.pos++
+		start := p.pos
+		for p.pos < len(p.src) && p.src[p.pos] != '\'' {
+			p.pos++
+		}
+		if p.pos >= len(p.src) {
+			return 0, fmt.Errorf("unterminated char literal")
+		}
+		raw := p.src[start:p.pos]
+		p.pos++ // consume closing quote
+		if len(raw) == 0 {
+			return 0, fmt.Errorf("empty char literal")
+		}
+		var v int64
+		for _, b := range []byte(raw) {
+			v = (v << 8) | int64(b)
+		}
+		return v, nil
+	}
 	// Literals.
 	if p.peek() == '$' {
 		p.pos++

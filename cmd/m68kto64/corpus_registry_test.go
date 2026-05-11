@@ -23,6 +23,13 @@ var corpora = []corpus{
 		name:     "ab3d2",
 		envVar:   "IE_M68KTO64_CORPUS_AB3D2",
 		rootFile: "ab3d2_source/ie/hires.s",
-		includes: []string{"ab3d2_source/ie", "ab3d2_source"},
+		// Build-variant-generated headers live under _build/ie/<variant>/.
+		// Pick the redux-high default-SID native build; the corpus author
+		// can override by editing this list.
+		includes: []string{
+			"ab3d2_source/ie",
+			"ab3d2_source",
+			"ab3d2_source/_build/ie/redux-high-sid0-overdrive0-native0",
+		},
 	},
 }

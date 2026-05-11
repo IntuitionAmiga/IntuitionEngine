@@ -33,6 +33,22 @@ func TestPreproc_MacroBasic(t *testing.T) {
 	}
 }
 
+func TestPreproc_MacroMnemonicFirst(t *testing.T) {
+	// vasm/devpac allows `MACRO name` as an alternative to `name MACRO`.
+	// Body must capture identically.
+	src := "\tmacro FOO\n\tnop\n\tendm\n\tFOO\n"
+	out, errs := runPreproc(t, src, DefaultPreprocOpts())
+	if errs != 0 {
+		t.Fatalf("errs=%d out=%q", errs, out)
+	}
+	if !strings.Contains(out, "\tnop") {
+		t.Errorf("macro body not expanded: %q", out)
+	}
+	if strings.Contains(out, "\tFOO\n") {
+		t.Errorf("invocation should be consumed: %q", out)
+	}
+}
+
 func TestPreproc_MacroArgs(t *testing.T) {
 	src := "SHIFT macro\n\tmove.l \\1,\\2\n\tendm\n\tSHIFT d0,d1\n"
 	out, errs := runPreproc(t, src, DefaultPreprocOpts())

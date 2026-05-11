@@ -77,6 +77,32 @@ func TestExpr_Operators(t *testing.T) {
 	}
 }
 
+func TestExpr_CharLiteral(t *testing.T) {
+	cases := []struct {
+		src  string
+		want int64
+	}{
+		{"'a'", int64('a')},
+		{"'A'", int64('A')},
+		{"'0'", int64('0')},
+		{"'m'", int64('m')},
+		{"' '", int64(' ')},
+		// Multi-char packed big-endian (vasm convention).
+		{"'AB'", int64('A')<<8 | int64('B')},
+		{"'ABCD'", int64('A')<<24 | int64('B')<<16 | int64('C')<<8 | int64('D')},
+	}
+	for _, c := range cases {
+		got, err := EvalExpr(c.src, NewSymtab())
+		if err != nil {
+			t.Errorf("%q: %v", c.src, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%q: got %d (0x%x), want %d (0x%x)", c.src, got, got, c.want, c.want)
+		}
+	}
+}
+
 func TestExpr_SymbolLookup(t *testing.T) {
 	st := NewSymtab()
 	_ = st.SetEqu("FOO", 7)

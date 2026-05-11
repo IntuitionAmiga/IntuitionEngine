@@ -236,7 +236,12 @@ func (p *preprocCtx) processLines(lines []string, source string) {
 		if l.Kind == LineDirective {
 			switch l.Mnemonic {
 			case "macro":
+				// vasm/devpac accepts both `NAME macro` (label-prefix) and
+				// `macro NAME` (mnemonic-first) forms.
 				name := strings.ToLower(l.Label)
+				if name == "" && len(l.Operands) > 0 {
+					name = strings.ToLower(strings.TrimSpace(l.Operands[0]))
+				}
 				if name == "" {
 					p.errAt(source, lineNum, "macro requires a label name")
 					continue
