@@ -49,6 +49,17 @@ var statusCatalogue = []statusCheck{
 	{"callm", "\tcallm #4,(a0)", true},
 	{"rtm", "\trtm d0", true},
 	{"retm", "\tretm #8", true},
+	// Mainline integer ops promoted in the same wave.
+	{"bset", "\tbset #3,d1", true},
+	{"bclr", "\tbclr #4,(a0)", true},
+	{"bchg", "\tbchg d0,d1", true},
+	{"tas", "\ttas d2", true},
+	{"exg", "\texg d0,d1", true},
+	{"cmpm", "\tcmpm.l (a0)+,(a1)+", true},
+	{"illegal", "\tillegal", true},
+	{"rte", "\trte", true},
+	{"stop", "\tstop #$2700", true},
+	{"reset", "\treset", true},
 }
 
 func TestStatusDoc_MnemonicsConvert(t *testing.T) {
@@ -89,11 +100,21 @@ func TestStatusDoc_DocMarkersMatch(t *testing.T) {
 		"ROXR":   "✅",
 		"CHK2":   "✅",
 		"TRAPcc": "✅",
-		"CAS2":   "⚠",
-		"MOVES":  "⚠",
-		"CALLM":  "⚠",
-		"RTM":    "⚠",
-		"RETM":   "⚠",
+		"CAS2":    "⚠",
+		"MOVES":   "⚠",
+		"CALLM":   "⚠",
+		"RTM":     "⚠",
+		"RETM":    "⚠",
+		"BSET":    "✅",
+		"BCLR":    "✅",
+		"BCHG":    "✅",
+		"TAS":     "⚠",
+		"EXG":     "✅",
+		"CMPM":    "✅",
+		"ILLEGAL": "✅",
+		"RTE":     "⚠",
+		"STOP":    "⚠",
+		"RESET":   "⚠",
 	}
 	for mn, marker := range want {
 		// Find at least one line containing the mnemonic AND the marker.

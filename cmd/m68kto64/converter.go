@@ -278,6 +278,30 @@ func (c *Converter) emitInstruction(e *Emit, l Line) error {
 		return c.emitShadowScc(e, l)
 	case "btst":
 		return c.emitBtst(e, l, size)
+	case "bset":
+		return c.emitBitRmw(e, l, "set")
+	case "bclr":
+		return c.emitBitRmw(e, l, "clr")
+	case "bchg":
+		return c.emitBitRmw(e, l, "chg")
+	case "tas":
+		return c.emitTas(e, l)
+	case "exg":
+		return c.emitExg(e, l)
+	case "cmpm":
+		return c.emitCmpm(e, l)
+	case "illegal":
+		e.L("syscall #19")
+		return nil
+	case "rte":
+		return c.emitRte(e, l)
+	case "stop":
+		e.Lf("; m68kto64: stripped STOP %s (privileged; no IE64 supervisor halt)",
+			strings.Join(l.Operands, ","))
+		return nil
+	case "reset":
+		e.L("; m68kto64: stripped RESET (privileged peripheral reset; no IE64 analog)")
+		return nil
 
 	case "nop":
 		e.L("; nop (m68k) — no IE64 output (transparent)")
@@ -598,6 +622,178 @@ func (c *Converter) emitBtst(e *Emit, l Line, size int) error {
 	e.Lf("and.l %s, %s, #1", ShadowZ, ShadowZ)
 	// N/V/C unaffected — leave alone.
 	return nil
+}
+
+// emitBitRmw lowers BSET / BCLR / BCHG <bit>,<dst>.
+//
+// Semantics: read the dst at width (long for Dn, byte for memory), set
+// ShadowZ to the pre-op bit value (ShadowZ contract: r25 nonzero ⇔ Z=0,
+// so r25 := bitValue matches m68k Z = NOT(bit)). Then modify the dst with
+// OR (set) / AND-NOT (clr) / EOR (chg) using a mask = 1 << bitNum.
+// N / V / C unaffected. Bit numbers mask mod 32 (Dn) or mod 8 (memory).
+func (c *Converter) emitBitRmw(e *Emit, l Line, op string) error {
+	if len(l.Operands) != 2 {
+		return fmt.Errorf("%s requires 2 operands", l.Mnemonic)
+	}
+	bitOp, err := ParseOperand(l.Operands[0])
+	if err != nil {
+		return err
+	}
+	dst, err := ParseOperand(l.Operands[1])
+	if err != nil {
+		return err
+	}
+	mod := 8
+	size := 1
+	if dst.Mode == AMDataReg {
+		mod = 32
+		size = 4
+	}
+
+	switch bitOp.Mode {
+	case AMImmediate:
+		e.Lf("move.l %s, #%s", ScrV1, bitOp.Imm)
+	case AMDataReg:
+		e.Lf("move.l %s, %s", ScrV1, bitOp.Reg.IE64)
+	default:
+		return fmt.Errorf("%s bit operand must be #imm or Dn", l.Mnemonic)
+	}
+	e.Lf("and.l %s, %s, #%d", ScrV1, ScrV1, mod-1)
+
+	// Mask = 1 << bitNum into ScrV2.
+	e.Lf("move.l %s, #1", ScrV2)
+	e.Lf("lsl.l %s, %s, %s", ScrV2, ScrV2, ScrV1)
+
+	apply := func(target string) {
+		// Z := pre-op bit.
+		e.Lf("lsr.l %s, %s, %s", ShadowZ, target, ScrV1)
+		e.Lf("and.l %s, %s, #1", ShadowZ, ShadowZ)
+		switch op {
+		case "set":
+			e.Lf("or.l %s, %s, %s", target, target, ScrV2)
+		case "clr":
+			e.Lf("not.l %s, %s", ScrAux, ScrV2)
+			e.Lf("and.l %s, %s, %s", target, target, ScrAux)
+		case "chg":
+			e.Lf("eor.l %s, %s, %s", target, target, ScrV2)
+		}
+	}
+
+	if dst.Mode == AMDataReg {
+		apply(dst.Reg.IE64)
+		return nil
+	}
+	h, err := c.loadDstRMW(e, dst, size)
+	if err != nil {
+		return err
+	}
+	apply(h.valReg)
+	return c.storeDstRMW(e, h, h.valReg)
+}
+
+// emitTas lowers TAS <ea> — test byte (set N/Z from the pre-op value, clear
+// V/C), then set bit 7 and write back. Real m68k is atomic; lowered as a
+// non-atomic byte RMW (mirrors CAS/CAS2 strict-mode policy). N := sign of
+// pre-op byte. Z := pre-op byte == 0.
+func (c *Converter) emitTas(e *Emit, l Line) error {
+	if len(l.Operands) != 1 {
+		return fmt.Errorf("tas requires 1 operand")
+	}
+	dst, err := ParseOperand(l.Operands[0])
+	if err != nil {
+		return err
+	}
+	// Pre-op load for shadow N/Z.
+	if dst.Mode == AMDataReg {
+		rd := dst.Reg.IE64
+		e.Lf("and.l %s, %s, #$FF", ScrV1, rd)
+		e.Lf("sext.b %s, %s", ShadowN, ScrV1)
+		e.Lf("move.l %s, %s", ShadowZ, ScrV1)
+		c.emitShadowClearC(e)
+		c.emitShadowClearV(e)
+		// Set bit 7.
+		e.Lf("or.l %s, %s, #$80", rd, rd)
+		return nil
+	}
+	e.L("; m68kto64: TAS non-atomic fallback (no IE64 atomic byte primitive)")
+	h, err := c.loadDstRMW(e, dst, 1)
+	if err != nil {
+		return err
+	}
+	e.Lf("and.l %s, %s, #$FF", ScrV1, h.valReg)
+	e.Lf("sext.b %s, %s", ShadowN, ScrV1)
+	e.Lf("move.l %s, %s", ShadowZ, ScrV1)
+	c.emitShadowClearC(e)
+	c.emitShadowClearV(e)
+	e.Lf("or.l %s, %s, #$80", h.valReg, h.valReg)
+	return c.storeDstRMW(e, h, h.valReg)
+}
+
+// emitExg lowers EXG Rx,Ry — exchange two 32-bit registers. m68k allows
+// Dn↔Dn, An↔An, and Dn↔An. CCR unaffected.
+func (c *Converter) emitExg(e *Emit, l Line) error {
+	if len(l.Operands) != 2 {
+		return fmt.Errorf("exg requires 2 operands")
+	}
+	a, err := ParseOperand(l.Operands[0])
+	if err != nil {
+		return err
+	}
+	b, err := ParseOperand(l.Operands[1])
+	if err != nil {
+		return err
+	}
+	if (a.Mode != AMDataReg && a.Mode != AMAddrReg) ||
+		(b.Mode != AMDataReg && b.Mode != AMAddrReg) {
+		return fmt.Errorf("exg: both operands must be Dn or An")
+	}
+	ra, rb := a.Reg.IE64, b.Reg.IE64
+	e.Lf("move.l %s, %s", ScrV1, ra)
+	e.Lf("move.l %s, %s", ra, rb)
+	e.Lf("move.l %s, %s", rb, ScrV1)
+	return nil
+}
+
+// emitCmpm lowers CMPM.<sz> (Ay)+,(Ax)+ — postinc-read both operands,
+// compute dst - src for shadow CCR (no writeback).
+func (c *Converter) emitCmpm(e *Emit, l Line) error {
+	if len(l.Operands) != 2 {
+		return fmt.Errorf("cmpm requires 2 operands")
+	}
+	src, err := ParseOperand(l.Operands[0])
+	if err != nil {
+		return err
+	}
+	dst, err := ParseOperand(l.Operands[1])
+	if err != nil {
+		return err
+	}
+	if src.Mode != AMPostInc || dst.Mode != AMPostInc {
+		return fmt.Errorf("cmpm: both operands must be (An)+")
+	}
+	size := SizeBytes(l.Size)
+	if size == 0 {
+		size = 2
+	}
+	szIE := IE64Size(size)
+	e.Lf("load%s %s, (%s)", szIE, ScrV1, src.Reg.IE64)
+	e.Lf("add.l %s, %s, #%d", src.Reg.IE64, src.Reg.IE64, size)
+	e.Lf("load%s %s, (%s)", szIE, ScrV2, dst.Reg.IE64)
+	e.Lf("add.l %s, %s, #%d", dst.Reg.IE64, dst.Reg.IE64, size)
+	// Shadow CCR via sub semantics (dst - src). Snapshot dst pre-op.
+	e.Lf("move.l %s, %s", ShadowSnap, ScrV2)
+	e.Lf("sub%s %s, %s, %s", szIE, ScrAux, ScrV2, ScrV1)
+	c.emitArithShadows(e, "sub", ScrAux, ShadowSnap, ScrV1, size)
+	return nil
+}
+
+// emitRte lowers RTE — privileged return from exception. m68k pops SR then PC
+// from the supervisor stack frame. IE64 has no SR; lower as RTS (pop 4-byte
+// PC) and drop the SR pop with a diagnostic. Format-dependent stack frame
+// adjustment is approximated as 0 — user-mode guests should not reach RTE.
+func (c *Converter) emitRte(e *Emit, l Line) error {
+	e.L("; m68kto64: RTE → RTS (SR pop dropped; no IE64 supervisor model)")
+	return c.emitRts(e)
 }
 
 // emitDbra lowers DBRA/DBF Dn,L — decrement low 16 bits of Dn; if result !=
