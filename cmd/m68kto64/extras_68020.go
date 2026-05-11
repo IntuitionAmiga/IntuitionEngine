@@ -35,6 +35,8 @@ func (c *Converter) emit68020Extra(e *Emit, l Line) (bool, error) {
 		return true, c.emitChk2(e, l)
 	case "moves":
 		return true, c.emitMoves(e, l)
+	case "movep":
+		return true, c.emitMovep(e, l)
 	case "callm":
 		return true, c.emitCallm(e, l)
 	case "rtm":
@@ -494,6 +496,90 @@ func (c *Converter) emitBfextu(e *Emit, l Line, signed bool) error {
 		e.Lf("lsl.l %s, %s, #%s", ScrV2, ScrV2, wid)
 		e.Lf("sub.l %s, %s, #1", ScrV2, ScrV2)
 		e.Lf("and.l %s, %s, %s", rd, rd, ScrV2)
+	}
+	return nil
+}
+
+// emitMovep lowers MOVEP — Phase F5. Strided byte transfer between a data
+// register and memory at `d(An)`, stride 2. Used historically for accessing
+// even-only or odd-only byte lanes of peripheral chips (Amiga CIA, Atari
+// YM2149, etc.).
+//
+// MOVEP.W Dn,d(An): (An+d).b = Dn[15:8]; (An+d+2).b = Dn[7:0]
+// MOVEP.L Dn,d(An): bytes at offsets 0,2,4,6 from MSB to LSB.
+// MOVEP.W d(An),Dn: pack two bytes into Dn[15:0]; preserve upper 16.
+// MOVEP.L d(An),Dn: pack four bytes into full 32.
+//
+// EA must be `d(An)` (= AMDispAn) per m68k spec; other modes → error.
+func (c *Converter) emitMovep(e *Emit, l Line) error {
+	if len(l.Operands) != 2 {
+		return fmt.Errorf("movep requires 2 operands")
+	}
+	size := SizeBytes(l.Size)
+	if size != 2 && size != 4 {
+		return fmt.Errorf("movep size must be .w or .l, got %q", l.Size)
+	}
+	srcOp, err := ParseOperand(l.Operands[0])
+	if err != nil {
+		return err
+	}
+	dstOp, err := ParseOperand(l.Operands[1])
+	if err != nil {
+		return err
+	}
+	// Direction: Dn,d(An) = store; d(An),Dn = load.
+	var dn, an Operand
+	var store bool
+	switch {
+	case srcOp.Mode == AMDataReg && dstOp.Mode == AMDispAn:
+		dn, an, store = srcOp, dstOp, true
+	case srcOp.Mode == AMDispAn && dstOp.Mode == AMDataReg:
+		dn, an, store = dstOp, srcOp, false
+	default:
+		return fmt.Errorf("movep requires Dn,d(An) or d(An),Dn; got %v,%v", srcOp.Mode, dstOp.Mode)
+	}
+	// EA base into ScrEA = An + d.
+	e.Lf("lea %s, %s(%s)", ScrEA, dispOrZero(an.Disp), an.Reg.IE64)
+	if store {
+		// MSB-first byte stride. Number of bytes = size.
+		// For .w: shift 8, store low byte then shift 0.
+		// For .l: shift 24, 16, 8, 0.
+		for i := 0; i < size; i++ {
+			shift := 8 * (size - 1 - i)
+			if shift != 0 {
+				e.Lf("lsr.l %s, %s, #%d", ScrV1, dn.Reg.IE64, shift)
+				e.Lf("store.b %s, %d(%s)", ScrV1, i*2, ScrEA)
+			} else {
+				e.Lf("store.b %s, %d(%s)", dn.Reg.IE64, i*2, ScrEA)
+			}
+		}
+	} else {
+		// Pack bytes into accumulator.
+		// .w: result lives in low 16 of Dn; preserve upper 16.
+		// .l: result overwrites full 32 of Dn.
+		if size == 2 {
+			// tmp = ((b0 << 8) | b1) & 0xFFFF; Dn = (Dn & 0xFFFF0000) | tmp.
+			e.Lf("load.b %s, 0(%s)", ScrV1, ScrEA)
+			e.Lf("and.l %s, %s, #$FF", ScrV1, ScrV1)
+			e.Lf("lsl.l %s, %s, #8", ScrV1, ScrV1)
+			e.Lf("load.b %s, 2(%s)", ScrV2, ScrEA)
+			e.Lf("and.l %s, %s, #$FF", ScrV2, ScrV2)
+			e.Lf("or.l %s, %s, %s", ScrV1, ScrV1, ScrV2)
+			e.Lf("and.l %s, %s, #$FFFF0000", dn.Reg.IE64, dn.Reg.IE64)
+			e.Lf("or.l %s, %s, %s", dn.Reg.IE64, dn.Reg.IE64, ScrV1)
+		} else {
+			// .l — full 32-bit overwrite.
+			e.Lf("move.l %s, #0", dn.Reg.IE64)
+			for i := 0; i < 4; i++ {
+				shift := 8 * (3 - i)
+				e.Lf("load.b %s, %d(%s)", ScrV1, i*2, ScrEA)
+				e.Lf("and.l %s, %s, #$FF", ScrV1, ScrV1)
+				if shift != 0 {
+					e.Lf("lsl.l %s, %s, #%d", ScrV1, ScrV1, shift)
+				}
+				e.Lf("or.l %s, %s, %s", dn.Reg.IE64, dn.Reg.IE64, ScrV1)
+			}
+		}
 	}
 	return nil
 }

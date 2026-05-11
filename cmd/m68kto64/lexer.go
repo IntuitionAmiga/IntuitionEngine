@@ -182,7 +182,7 @@ func isDirective(mnemonic string) bool {
 // recognises (used both by the lexer for col-0 disambiguation and by the
 // converter dispatch for sanity). Keep in sync with emitInstruction.
 var instructionMnemonicSet = map[string]struct{}{
-	"move": {}, "movea": {}, "moveq": {}, "movem": {}, "movec": {}, "lea": {}, "exg": {}, "swap": {},
+	"move": {}, "movea": {}, "moveq": {}, "movem": {}, "movec": {}, "movep": {}, "lea": {}, "exg": {}, "swap": {},
 	"add": {}, "adda": {}, "addi": {}, "addq": {}, "addx": {},
 	"sub": {}, "suba": {}, "subi": {}, "subq": {}, "subx": {},
 	"and": {}, "andi": {}, "or": {}, "ori": {}, "eor": {}, "eori": {}, "not": {}, "neg": {}, "negx": {}, "clr": {},
