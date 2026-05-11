@@ -1,7 +1,13 @@
 // Command m68kto64 transpiles Motorola m68k (vasm/devpac) assembly to IE64
 // assembly that can be assembled by sdk/bin/ie64asm.
 //
-// See sdk/docs/M68KtoIE64.md and .claude/plans/M68KtoIE64plan.md.
+// The pipeline is: os.ReadFile → Preprocess (vasm/devpac preprocessor:
+// include / -D / equ / set / = capture, generic if/ifd/ifnd/ifeq/ifne plus
+// the elseif* family with first-true latch, macro / endm / mexit, rept /
+// endr, \1..\9 positional args, globally-monotonic \@ unique-label suffix)
+// → ConvertLines (m68k → IE64 lowering with CMP/Bcc + FCMP/FBcc fuse and
+// shadow CCR/FPCC) → emit. See sdk/docs/M68KtoIE64.md and
+// .claude/plans/M68KtoIE64plan.md.
 package main
 
 import (

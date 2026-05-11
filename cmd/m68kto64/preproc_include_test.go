@@ -116,6 +116,26 @@ func TestPreproc_IncludeMinusI(t *testing.T) {
 	}
 }
 
+// TestPreproc_IncbinInsideMacro — plan D.5a deferred to Phase E once macros
+// land. Macro-arg substitution runs BEFORE incbin emit, so an `incbin "\1.bin"`
+// inside a macro body emits the post-substitution literal `incbin "foo.bin"`
+// verbatim. No path resolution happens at preproc time; ie64asm owns that.
+func TestPreproc_IncbinInsideMacro(t *testing.T) {
+	src := "DATA macro\n\tincbin \"\\1.bin\"\n\tendm\n\tDATA foo\n"
+	var stderr bytes.Buffer
+	r, errs := Preprocess([]byte(src), "test.s", DefaultPreprocOpts(), &stderr)
+	if errs != 0 {
+		t.Fatalf("errs=%d stderr=%s", errs, stderr.String())
+	}
+	joined := strings.Join(r.lines, "\n")
+	if !strings.Contains(joined, "incbin \"foo.bin\"") {
+		t.Errorf("expected resolved incbin \"foo.bin\"; got: %q", joined)
+	}
+	if strings.Contains(joined, "\\1") {
+		t.Errorf("macro arg \\1 should be substituted: %q", joined)
+	}
+}
+
 func TestPreproc_IncbinVerbatim(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, filepath.Join(tmp, "a.s"), "\tincbin \"image.bin\"\n")

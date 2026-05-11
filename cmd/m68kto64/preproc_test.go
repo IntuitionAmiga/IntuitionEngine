@@ -55,6 +55,40 @@ func TestPreproc_ByteIdentityPassthrough(t *testing.T) {
 	}
 }
 
+// TestPreproc_Tier2PostMacroGolden — Phase E migrated tier2 fixtures from the
+// byte-identity firewall to a regenerated post-expansion baseline. ConvertFile
+// output for each fixture must match its sibling `.expected.s` golden.
+func TestPreproc_Tier2PostMacroGolden(t *testing.T) {
+	dir := "testdata/golden_pre_extension/tier2_post_macro"
+	files, err := filepath.Glob(filepath.Join(dir, "*.s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, ".expected.s") {
+			continue
+		}
+		f := f
+		t.Run(filepath.Base(f), func(t *testing.T) {
+			expectedPath := strings.TrimSuffix(f, ".s") + ".expected.s"
+			want, err := os.ReadFile(expectedPath)
+			if err != nil {
+				t.Fatalf("expected fixture missing (%s): %v", expectedPath, err)
+			}
+			c := NewConverter()
+			c.noHeader = true
+			var stderr bytes.Buffer
+			got, errs := c.ConvertFile(f, DefaultPreprocOpts(), &stderr)
+			if errs != 0 {
+				t.Fatalf("errs=%d stderr=%s", errs, stderr.String())
+			}
+			if got != string(want) {
+				t.Errorf("byte-diff vs %s\nwant len=%d, got len=%d", expectedPath, len(want), len(got))
+			}
+		})
+	}
+}
+
 // TestPreproc_NoTrailingNewline — directive-free input without trailing \n
 // must still round-trip byte-identical.
 func TestPreproc_NoTrailingNewline(t *testing.T) {
