@@ -1,0 +1,111 @@
+-- diag_video_mmio.ies — dump IE64 video-chip MMIO state after AB3D64 boot.
+--
+-- AB3D2 IE platform configures the host video chip via the $F00xx
+-- MMIO range during _Vid_OpenMainScreen. White-screen-on-launch
+-- means either the program reached that code and the host did not
+-- transition (writes went to wrong place / wrong width) or it never
+-- reached it (game stuck mid-init). This script reads the relevant
+-- registers and prints them so the operator can diff against an
+-- expected baseline.
+
+local WARMUP_MS = 8000
+
+-- MMIO register map (per sdk/ab3d64/src/ie/ie_hires_platform.s).
+local REGS = {
+    {name = "VIDEO_CTRL",       addr = 0xF0000, size = 4},
+    {name = "VIDEO_MODE",       addr = 0xF0004, size = 4},
+    {name = "VIDEO_STATUS",     addr = 0xF0008, size = 4},
+    {name = "BLT_CTRL",         addr = 0xF001C, size = 4},
+    {name = "BLT_OP",           addr = 0xF0020, size = 4},
+    {name = "BLT_SRC",          addr = 0xF0024, size = 4},
+    {name = "BLT_DST",          addr = 0xF0028, size = 4},
+    {name = "BLT_WIDTH",        addr = 0xF002C, size = 4},
+    {name = "BLT_HEIGHT",       addr = 0xF0030, size = 4},
+    {name = "BLT_FLAGS",        addr = 0xF0488, size = 4},
+    {name = "VIDEO_PAL_INDEX",  addr = 0xF0078, size = 4},
+    {name = "VIDEO_PAL_DATA",   addr = 0xF007C, size = 4},
+    {name = "VIDEO_COLOR_MODE", addr = 0xF0080, size = 4},
+    {name = "VIDEO_FB_BASE",    addr = 0xF0084, size = 4},
+    {name = "MOUSE_X",          addr = 0xF0730, size = 4},
+    {name = "MOUSE_Y",          addr = 0xF0734, size = 4},
+    {name = "MOUSE_BUTTONS",    addr = 0xF0738, size = 4},
+    {name = "MOUSE_CTRL",       addr = 0xF074C, size = 4},
+    {name = "KBD_STATUS_F0744", addr = 0xF0744, size = 4},
+}
+
+local function hex32(v)
+    if v == nil then return "nil" end
+    if v < 0 then v = v + 0x100000000 end
+    return string.format("$%08X", v)
+end
+
+local function rd32(addr)
+    local ok, s = pcall(dbg.read_mem, addr, 4)
+    if not ok then
+        sys.print(string.format("  rd32(%08X) raised: %s", addr, tostring(s)))
+        return nil
+    end
+    if type(s) ~= "string" then
+        sys.print(string.format("  rd32(%08X) returned type=%s value=%s",
+            addr, type(s), tostring(s)))
+        return nil
+    end
+    if #s ~= 4 then
+        sys.print(string.format("  rd32(%08X) short read len=%d", addr, #s))
+        return nil
+    end
+    local b1, b2, b3, b4 = string.byte(s, 1, 4)
+    -- little-endian read (IE64 word order)
+    return b1 + b2*0x100 + b3*0x10000 + b4*0x1000000
+end
+
+local function focus_ie64()
+    dbg.open()
+    for _, e in ipairs(dbg.cpu_list() or {}) do
+        local name = e.cpu_name or e.label or ""
+        if string.find(string.upper(name), "IE64") then
+            dbg.cpu_focus(e.id)
+            return true
+        end
+    end
+    return false
+end
+
+sys.print("[video_mmio] start")
+if not focus_ie64() then
+    sys.print("[video_mmio] ERROR: no IE64 CPU")
+    sys.quit()
+    return
+end
+
+sys.print(string.format("[video_mmio] warmup %dms", WARMUP_MS))
+sys.wait_ms(WARMUP_MS)
+
+dbg.freeze()
+sys.print("[video_mmio] CPU regs at sample:")
+sys.print(string.format("  PC=%s R30=%s R17=%s R16=%s",
+    hex32(dbg.get_reg("PC")),
+    hex32(dbg.get_reg("R30") or dbg.get_reg("SP")),
+    hex32(dbg.get_reg("R17")),
+    hex32(dbg.get_reg("R16"))))
+
+sys.print("[video_mmio] MMIO snapshot:")
+for _, r in ipairs(REGS) do
+    local v = rd32(r.addr)
+    sys.print(string.format("  %-18s @ %s = %s",
+        r.name, hex32(r.addr), hex32(v)))
+end
+
+-- Peek at the first few palette entries via PAL_INDEX/PAL_DATA. AB3D2
+-- writes RGB triples; entry 0 should be the background color.
+sys.print("[video_mmio] First 8 palette entries (via index/data probe):")
+for i = 0, 7 do
+    -- write index, read data. Some chips latch; treat as informational.
+    local ok = pcall(dbg.write_mem, 0xF0078, string.char(i, 0, 0, 0))
+    local v = rd32(0xF007C)
+    sys.print(string.format("  pal[%d] = %s", i, hex32(v)))
+end
+
+dbg.resume()
+sys.print("[video_mmio] done")
+sys.quit()
