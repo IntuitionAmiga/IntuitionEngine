@@ -229,7 +229,7 @@ func (c *Converter) materializeFPSrc(e *Emit, src string, size string) (string, 
 	if err != nil {
 		return "", err
 	}
-	scratch := "f10" // ScrFP1 — reserved per plan §"Register-file mapping"
+	scratch := ScrFP1 // reserved scratch — see emit.go
 	sz := strings.ToLower(size)
 	switch sz {
 	case ".s":

@@ -78,6 +78,15 @@ const (
 	ShadowFPCC = "r29"
 
 	GuestSP = "r30"
+
+	// FP scratch convention. f10 and f12 are reserved as synthesis scratch for
+	// FPU lowerings that need temporaries (FTST, FSCALE, FNEG, FGETEXP/MAN,
+	// transcendentals). These ALSO happen to be the canonical m68k FP5 and FP6
+	// register slots (FPGuestRegToHost(5)="f10", FPGuestRegToHost(6)="f12") —
+	// any synth op that touches scratch must spill live FP5/FP6 to dedicated
+	// memory slots first; see emitFP56SpillPrologue/Epilogue in fpu.go.
+	ScrFP1 = "f10" // also m68k FP5 — spilled around clobbering ops
+	ScrFP2 = "f12" // also m68k FP6 — spilled around clobbering ops
 )
 
 // FPU memory-slot reservations. These are per-output-file BSS-style globals
