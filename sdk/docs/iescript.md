@@ -1,8 +1,10 @@
 # IEScript Lua Automation Manual
 
-IEScript is the Lua automation layer for Intuition Engine. It allows scripted control of CPU execution, memory, terminal I/O, audio/video devices, monitor debugging, media playback, coprocessor workflows, and recording.
+IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
 Scripts use the `.ies` extension.
+
+This manual documents the Lua API exposed by `script_engine.go`. It is a developer-facing reference, not a tutorial for Lua itself or for the guest CPU instruction sets.
 
 ## Contents
 
@@ -16,6 +18,7 @@ Scripts use the `.ies` extension.
    - [cpu](#cpu) - CPU lifecycle and mode
    - [mem](#mem) - Memory/bus operations
    - [term](#term) - Terminal automation
+   - [keys](#keys) - Atari ST scancode constants
    - [audio](#audio) - Sound chip and player controls
    - [video](#video) - Video chip, VGA, ULA, ANTIC/GTIA, TED, Voodoo, Copper, Blitter
    - [repl](#repl) - REPL overlay control (show/hide, print, scroll)
@@ -64,9 +67,11 @@ sys.print("fps:", sys.fps())
 
 ```bash
 ./bin/IntuitionEngine -script demo.ies
+./bin/IntuitionEngine demo.ies
 ./bin/IntuitionEngine program.ie64 -script demo.ies
 ./bin/IntuitionEngine -script demo.ies program.ie64
-./bin/IntuitionEngine -headless -script render.ies
+# With a headless build:
+./bin/IntuitionEngine -script render.ies
 ```
 
 ### EhBASIC dispatch
@@ -77,7 +82,7 @@ From EhBASIC:
 RUN "demo.ies"
 ```
 
-ProgramExecutor recognises `.ies` and routes it through the external launcher path.
+ProgramExecutor recognises `.ies` files and routes them to the same script engine used by the `-script` command-line option.
 
 ### In-window Lua REPL
 
@@ -95,7 +100,7 @@ The compositor calls back into the script engine once for every composite pass, 
 
 | Pattern | Mechanism | Use case |
 |---------|-----------|----------|
-| `sys.wait_frames(n)` | Blocks until `n` compositor frame callbacks | Frame-accurate sequencing |
+| `sys.wait_frames(n)` | Consumes `n` compositor frame notifications | Frame-based sequencing |
 | `sys.wait_ms(ms)` | Blocks on a wall-clock timer | Time-based delays independent of frame rate |
 | `video.wait_pixel(...)` | Polls each frame until pixel matches | Visual synchronisation |
 | `video.wait_stable(...)` | Polls each frame until hash unchanged | Wait for rendering to settle |
@@ -107,7 +112,7 @@ Use `sys.frame_time()` to check how many host milliseconds have elapsed since th
 
 ### Important behaviour
 
-- `sys.wait_frames(1)` waits for one compositor frame callback. The callback still fires when sources are idle, so frame waits continue to advance on a blank display.
+- `sys.wait_frames(1)` consumes one compositor frame notification. A notification may already be buffered when the wait begins. The callback still fires when sources are idle, so frame waits continue to advance on a blank display.
 - `sys.frame_count()` reports global compositor frame count.
 - `sys.frame_time()` reports elapsed host milliseconds since the last yield point.
 - All blocking waits (`wait_frames`, `wait_ms`, visual waits) and Lua VM execution respect script cancellation. A cancelled tight loop is interrupted by the VM context and reported as a script error.
@@ -124,7 +129,7 @@ Removed `os` functions: `execute`, `exit`, `remove`, `rename`, `tmpname`, and `s
 
 `require` only loads Lua modules from approved script roots: the current script directory and `sdk/scripts/`. Module names containing `..` or path separators are rejected. Native modules and `package.loadlib` are not available.
 
-Known legacy scripts that need migration or trusted mode include `sdk/scripts/showreel_diag.lua`, `ie_product_demo.ies`, `aros_freeze_harness.ies`, and the EmuTOS demo/probe scripts that call `os.execute` or `io.open`. The `diag_*` scripts that only use `require("showreel_diag")` remain parseable, but will inherit that helper's host-FS assumptions at runtime. The deferred flags are `--script-trusted`, `--script-allow-host-fs`, and configurable script roots.
+Scripts that depend on `io.open`, `os.execute`, arbitrary host paths, native Lua modules, or dynamic code loading are outside this sandboxed API and must be rewritten before they can be used as normal end-user IEScript files.
 
 ### Raw RAM access
 
@@ -153,13 +158,15 @@ Freeze requests are reference-counted across API surfaces (`cpu.*`, `dbg.*`). On
 - `dbg.open()` / `dbg.freeze()` activate the monitor and add one script-owned freeze on the first nested open.
 - `dbg.close()` / `dbg.resume()` release that script-owned freeze when the nested open count reaches zero.
 
-If a script errors or is cancelled, script-owned CPU freezes, debugger opens, and audio freezes are automatically released. Audio is restored to the state it had when the script started.
+If a script errors or is cancelled, script-owned CPU freezes, debugger opens, and freezes made through `audio.freeze()` are automatically released. Audio is restored to the state it had when the script started only if the script touched audio through the `audio.freeze()` / `audio.resume()` API.
 
 ### Host file paths
 
-Host path access is restricted to approved roots. Reads search the current script directory first, then `sdk/scripts/`. Writes are script-relative only and cannot use absolute paths. Parent directories for writes must already exist. Existing output files and symlinks are resolved before the root check, so an output symlink cannot point outside the script root. Special `cpu.load("EMUTOS")` and `cpu.load("AROS")` tokens are unchanged.
+Host path access is restricted to approved roots. Relative reads search the current script directory first, then `sdk/scripts/`. Absolute read paths are allowed only when the resolved target is still inside one of those approved roots. Writes are script-relative only and cannot use absolute paths. Parent directories for writes must already exist. Existing output files and symlinks are resolved before the root check, so an output symlink cannot point outside the script root. Special `cpu.load("EMUTOS")` and `cpu.load("AROS")` tokens are unchanged.
 
 The policy applies to `cpu.load`, audio loaders, recording and screenshots, output capture, debugger state/memory files, debugger trace files, monitor scripts launched through `dbg.run_script`, and the Lua `media.load` helpers. The lower media MMIO loader also treats its configured media base directory as an approved root: absolute paths are accepted only when their resolved target stays under that root, and traversal or symlink escapes are rejected.
+
+`sys.emutos_drive(path [, drive])` is a host-directory mapping control, not a script asset loader. It passes `path` to the EmuTOS GEMDOS drive configuration for the next EmuTOS boot or mode switch and does not resolve it through the script-relative read/write policy above.
 
 ## Module Reference
 
@@ -169,7 +176,7 @@ The policy applies to `cpu.load`, audio loaders, recording and screenshots, outp
 
 Timing, diagnostics, lifecycle.
 
-`sys.wait_frames(n)` - Block until `n` compositor frames have completed. Yields to the frame channel on each frame. Returns: nothing.
+`sys.wait_frames(n)` - Consume `n` compositor frame notifications from the frame channel. A pending notification may already be buffered when the call starts. Returns: nothing.
 
 `sys.wait_ms(ms)` - Block for `ms` milliseconds (wall-clock timer). Returns: nothing.
 
@@ -210,18 +217,6 @@ sys.print("frame_time:", sys.frame_time(), "ms")
 CPU lifecycle and mode.
 
 `cpu.load(path)` - Load a program binary from `path` into the active CPU. The file format must match the active CPU mode. The special values `"EMUTOS"` and `"AROS"` trigger OS boot without a file path (ROM resolved via CLI flags or embedded image). Returns: nothing. Raises on error.
-
-For M68K AROS interpreter triage, the repo includes two ready-made debugger scripts built around `cpu.load("AROS")` plus `dbg.*` control:
-
-- `scripts/m68k_aros_ready_probe.ies` boots AROS and polls the same ready-state signal used by the Go boot harness (`SysBase`, `ThisTask`, and task-list visibility).
-- `scripts/m68k_aros_fault_capture.ies` boots AROS, detects a fault-like stall, and dumps registers, disassembly, backtrace, and Exec/task state for the first failing site.
-
-Typical bring-up commands:
-
-```bash
-./bin/IntuitionEngine -aros -nojit -script scripts/m68k_aros_ready_probe.ies
-./bin/IntuitionEngine -aros -nojit -script scripts/m68k_aros_fault_capture.ies
-```
 
 `cpu.reset()` - Perform a hard reset of the emulator (all CPUs and devices). Returns: nothing. Raises on error.
 
@@ -317,9 +312,9 @@ In desktop builds, captured relative mouse mode can be released manually with `C
 
 `term.mouse_release()` - Clear the script-side mouse-override flag set implicitly by `term.mouse_move`, `term.mouse_delta`, `term.mouse_click`, and `term.mouse_double_click`. Call this when a script is done driving the mouse so the host's normal mouse policy resumes. Returns: nothing.
 
-`term.mouse_click(x, y [, button])` - Perform a single mouse click at (x, y). Coordinates are clamped to frame bounds. The optional `button` parameter specifies which button: 1 = left (default), 2 = right, 3 = both. The click holds the button for 50 ms then releases. Returns: nothing.
+`term.mouse_click(x, y [, button])` - Perform a single mouse click at (x, y). Coordinates are clamped to frame bounds. The optional `button` parameter specifies which button: 1 = left (default), 2 = right, 3 = both. The implementation moves the pointer, waits 50 ms, holds the button for 60 ms, releases it, then waits 50 ms before returning. Returns: nothing.
 
-`term.mouse_double_click(x, y [, button])` - Perform a double click at (x, y). Two clicks with a 100 ms gap between them (within the TOS double-click threshold). Coordinates are clamped, button values are the same as `mouse_click`. Returns: nothing.
+`term.mouse_double_click(x, y [, button])` - Perform a double click at (x, y). Coordinates are clamped, button values are the same as `mouse_click`. The implementation moves the pointer, waits 50 ms, then performs two 60 ms button holds separated by 80 ms gaps. Returns: nothing.
 
 `term.scancode(code)` - Inject a raw Atari ST scancode (make or break) into the scancode ring buffer. Code must be 0..255. Returns: nothing.
 
@@ -636,7 +631,7 @@ Voodoo functions accept integer pixel coordinates for vertices and 0..255 byte v
 
 `video.get_pixel(x, y)` - Read a pixel from the current compositor frame. Returns: r, g, b, a (four numbers, each 0..255). Returns all zeros if coordinates are out of bounds.
 
-`video.get_region(x, y, w, h)` - Read a rectangular region from the current compositor frame. Returns: string (raw RGBA bytes, row-major, 4 bytes per pixel). Returns empty string if region is invalid.
+`video.get_region(x, y, w, h)` - Read a rectangular region from the current compositor frame. Regions that partly overlap the frame are clipped to the frame bounds. Returns: string (raw RGBA bytes, row-major, 4 bytes per pixel). Returns empty string if width or height is non-positive, no frame is available, or the requested region is entirely outside the frame.
 
 `video.frame_hash()` - Compute an FNV-1a hash of the current compositor frame. Returns: number. Returns 0 if no frame is available.
 
@@ -680,9 +675,9 @@ Programmatic control of the Lua REPL overlay. Use this module from scripts to di
 
 `repl.clear()` - Clear the overlay output buffer. Returns: nothing.
 
-`repl.scroll_up(n)` - Scroll the overlay output up by `n` lines. Returns: nothing.
+`repl.scroll_up([n])` - Scroll the overlay output up by `n` lines (default 1). Returns: nothing.
 
-`repl.scroll_down(n)` - Scroll the overlay output down by `n` lines. Returns: nothing.
+`repl.scroll_down([n])` - Scroll the overlay output down by `n` lines (default 1). Returns: nothing.
 
 `repl.line_count()` - Get the total number of lines in the overlay output buffer. Returns: number.
 
@@ -753,15 +748,15 @@ Monitor/debugger integration. The Machine Monitor is always built into the engin
 
 ### Core
 
-`dbg.open()` - Activate the monitor and increment the freeze counter. This is the standard way to enter a debug session from a script. Returns: nothing.
+`dbg.open()` - Activate the monitor. The first nested `dbg.open()` / `dbg.freeze()` held by the script also increments the freeze counter. Further nested opens only increase the script debugger-open count. This is the standard way to enter a debug session from a script. Returns: nothing.
 
-`dbg.close()` - Deactivate the monitor and decrement the freeze counter. Returns: nothing.
+`dbg.close()` - Release one script debugger open. The monitor is deactivated and the script-owned debugger freeze is released only when the nested debugger-open count reaches zero. Extra closes beyond zero are harmless. Returns: nothing.
 
 `dbg.is_open()` - Check whether the monitor is currently active. Returns: boolean.
 
-`dbg.freeze()` - Alias for `dbg.open()`. Activates the monitor and increments the freeze counter. Returns: nothing.
+`dbg.freeze()` - Alias for `dbg.open()`. Returns: nothing.
 
-`dbg.resume()` - Alias for `dbg.close()`. Deactivates the monitor and decrements the freeze counter. Returns: nothing.
+`dbg.resume()` - Alias for `dbg.close()`. Returns: nothing.
 
 ### Execution Control
 
@@ -773,7 +768,7 @@ Monitor/debugger integration. The Machine Monitor is always built into the engin
 
 When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned debugger open is released and the monitor is deactivated.
 
-`dbg.run_until` is a fire-and-forget request: it has no timeout argument. If execution never reaches the target address before the monitor is re-entered for another reason, the temporary breakpoint set by `run_until` persists and will fire on a future run. Clear it explicitly with `dbg.clear_bp(addr)` if you no longer want the stop. See iemon.md §"Common Pitfalls" for details.
+`dbg.run_until` is a fire-and-forget request: it has no timeout argument. If execution never reaches the target address before the monitor is re-entered for another reason, the temporary breakpoint set by `run_until` persists and will fire on a future run. Clear it explicitly with `dbg.clear_bp(addr)` if you no longer want the stop. See [iemon.md](iemon.md) "Common Pitfalls" for details.
 
 `dbg.backstep()` - Step the focused CPU backward by one instruction (if trace history is available). Returns: nothing.
 
@@ -781,7 +776,7 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 
 `dbg.set_bp(addr)` - Set an unconditional breakpoint at address `addr`. Returns: nothing.
 
-`dbg.set_conditional_bp(addr, condition)` - Set a conditional breakpoint at `addr` with condition string `condition` (e.g. `"A==$FF"`, `"[$1000]==$42"`, `"[$2000].L==$DEADBEEF"`, `"hitcount>10"`). The condition grammar is the same as the monitor `b` command; see iemon.md §Breakpoints "Condition syntax" for the full operator and term reference. Returns: nothing.
+`dbg.set_conditional_bp(addr, condition [, width])` - Set a conditional breakpoint at `addr` with condition string `condition` (e.g. `"A==$FF"`, `"[$1000]==$42"`, `"[$2000].L==$DEADBEEF"`, `"hitcount>10"`). The condition grammar is the same as the monitor `b` command; see [iemon.md](iemon.md) Breakpoints "Condition syntax" for the full operator and term reference. If `condition` starts with a memory term such as `"[$1000]"`, optional `width` may be `"B"`, `"W"`, or `"L"`; `"W"` and `"L"` insert `.W` or `.L` after the first memory term, and `"B"` leaves byte width unchanged. Returns: nothing.
 
 `dbg.clear_bp(addr)` - Remove the breakpoint at address `addr`. Returns: nothing.
 
@@ -976,7 +971,7 @@ Supported CPU types: `"ie32"`, `"6502"`, `"m68k"`, `"z80"`, `"x86"`, `"ie64"`.
 
 ### Functions
 
-`coproc.start(cpu_type, filename)` - Start a coprocessor worker of the given `cpu_type`, loading the program from `filename`. Returns: nothing. Raises on error.
+`coproc.start(cpu_type, filename)` - Start a coprocessor worker of the given `cpu_type`, loading the program from `filename`. `filename` is resolved by the coprocessor manager relative to its configured base directory; absolute paths and names containing `..` are rejected. Returns: nothing. Raises on error.
 
 `coproc.stop(cpu_type)` - Stop the coprocessor worker for `cpu_type`. Returns: nothing. Raises on error.
 
@@ -1111,7 +1106,7 @@ Notes:
 - Recording uses compositor dimensions/refresh settings.
 - Audio is captured via a sample tap on the sound chip - no double-ticking occurs.
 - Resolution is locked for the duration of a recording session.
-- Recording works in headless mode (`-headless -script render.ies`).
+- Recording works in headless builds; use the normal `-script render.ies` option on a binary built with the `headless` tag.
 
 ### Full demo recording workflow
 
@@ -1169,7 +1164,7 @@ The REPL overlay is not available in headless builds (no display backend). Use `
 
 ## EhBASIC Integration
 
-`RUN "file.ies"` routes through ProgramExecutor `.ies` detection and then into the external launcher dispatch. This allows script execution without firmware keyword changes.
+`RUN "file.ies"` routes through ProgramExecutor `.ies` detection and runs the file through the same script engine used by `-script`. This allows script execution without firmware keyword changes.
 
 ## Worked Examples
 
@@ -1290,18 +1285,18 @@ When a script raises an unhandled error or is cancelled (by host shutdown, Lua V
 
 - **CPU freeze counter** - every outstanding `cpu.freeze()` made by the script is decremented.
 - **Debugger open count** - if the script holds the script-owned `dbg.open()` / `dbg.freeze()` contribution, the monitor is deactivated and the associated CPU freeze it added is released.
-- **Audio freeze** - the sound chip's `audioFrozen` flag is restored to the value it had at script start (so a script that called `audio.freeze()` or `dbg.freeze_audio()` does not leak silence into later runs).
+- **Audio freeze** - if the script called `audio.freeze()` or `audio.resume()`, the sound chip's `audioFrozen` flag is restored to the value it had at script start.
 - **Coprocessor tickets** - the in-process ticket table is cleared.
 - **Output capture** - `sys.capture_output` redirection is reverted.
 - **Mouse override** - the sticky flag set by `term.mouse_*` injection is cleared so host mouse handling resumes.
 
-State *not* auto-released: breakpoints, watchpoints, monitor macros, trace watches, `dbg.run_until` temp breakpoints, any guest-side state mutated through `mem.*` / `dbg.write_mem`, and **active recordings started by `rec.start*`** (recording stops only on explicit `rec.stop()`, `sys.quit()`, `sys.exit()`, or engine shutdown). Clean these up explicitly when correctness depends on it.
+State *not* auto-released: breakpoints, watchpoints, monitor macros, trace watches, `dbg.run_until` temp breakpoints, audio changes made through `dbg.freeze_audio()` / `dbg.thaw_audio()`, any guest-side state mutated through `mem.*` / `dbg.write_mem`, and **active recordings started by `rec.start*`** (recording stops only on explicit `rec.stop()`, `sys.quit()`, `sys.exit()`, replacement by a new script, explicit cancellation, or engine shutdown). Clean these up explicitly when correctness depends on it.
 
 ## Common Pitfalls
 
 - **`raw memory access requires cpu.freeze()`** - every `mem.read*` / `mem.write*` / `mem.read_block` / `mem.write_block` / `mem.fill` on a RAM address must be inside a `cpu.freeze()` / `cpu.resume()` bracket. MMIO addresses are exempt, but block operations that span MMIO into RAM still require a freeze.
 - **`audio.*_load` format mismatch** - each player accepts only its own file types. Use the format-agnostic `media.load` if you need auto-detection across SID, PSG/VGM, TED, AHX, POKEY, MOD, and WAV.
-- **Host-FS denial outside script roots** - reads search the current script directory then `sdk/scripts/`; writes are script-relative only. Absolute paths and `..` traversal are rejected. Use `--script-trusted` / `--script-allow-host-fs` (when implemented) only for legacy scripts.
+- **Host-FS denial outside script roots** - relative reads search the current script directory then `sdk/scripts/`; absolute reads succeed only when the resolved target remains under an approved root. Writes are script-relative only. Traversal and symlink escapes are rejected.
 - **`require` only loads Lua modules from approved roots** - native modules and `package.loadlib` are unavailable.
 - **`rec.start*` needs FFmpeg in `PATH`** - `rec.screenshot` is pure Go and has no external dependency.
 - **`dbg.run_until` has no timeout** - leaves a temp breakpoint if the target is never reached. Clear with `dbg.clear_bp(addr)`.
@@ -1380,6 +1375,10 @@ Compact reference for IEScript API functions.
 | `term.scancode(code)` | - |
 | `term.key_press(code [, hold_ms])` | - |
 
+### keys
+
+`keys` is a global table of Atari ST make-code constants for use with `term.scancode()` and `term.key_press()`. It contains `ESCAPE`, `BACKSPACE`, `TAB`, `ENTER`, `SPACE`, `LSHIFT`, `RSHIFT`, `LCTRL`, `CAPSLOCK`, `F1` through `F10`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `A` through `Z`, `DIGIT_0` through `DIGIT_9`, `MINUS`, and `EQUAL`.
+
 ### audio (36)
 
 | Function | Returns |
@@ -1421,7 +1420,7 @@ Compact reference for IEScript API functions.
 | `audio.ahx_stop()` | - |
 | `audio.ahx_is_playing()` | boolean |
 
-### video (65)
+### video (63)
 
 | Function | Returns |
 |----------|---------|
@@ -1500,8 +1499,8 @@ Compact reference for IEScript API functions.
 | `repl.is_open()` | boolean |
 | `repl.print(text)` | - |
 | `repl.clear()` | - |
-| `repl.scroll_up(n)` | - |
-| `repl.scroll_down(n)` | - |
+| `repl.scroll_up([n])` | - |
+| `repl.scroll_down([n])` | - |
 | `repl.line_count()` | number |
 
 ### rec (6)
@@ -1529,7 +1528,7 @@ Compact reference for IEScript API functions.
 | `dbg.run_until(addr)` | - |
 | `dbg.backstep()` | - |
 | `dbg.set_bp(addr)` | - |
-| `dbg.set_conditional_bp(addr, condition)` | - |
+| `dbg.set_conditional_bp(addr, condition [, width])` | - |
 | `dbg.clear_bp(addr)` | - |
 | `dbg.clear_all_bp()` | - |
 | `dbg.list_bp()` | table |
