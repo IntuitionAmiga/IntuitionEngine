@@ -12,18 +12,18 @@ Scripts use the `.ies` extension.
 4. [Script Runtime Model](#script-runtime-model)
 5. [Safety and Concurrency Rules](#safety-and-concurrency-rules)
 6. [Module Reference](#module-reference)
-   - [sys](#sys) — Timing, diagnostics, lifecycle
-   - [cpu](#cpu) — CPU lifecycle and mode
-   - [mem](#mem) — Memory/bus operations
-   - [term](#term) — Terminal automation
-   - [audio](#audio) — Sound chip and player controls
-   - [video](#video) — Video chip, VGA, ULA, ANTIC/GTIA, TED, Voodoo, Copper, Blitter
-   - [repl](#repl) — REPL overlay control (show/hide, print, scroll)
-   - [rec](#rec) — Recording and screenshots
-   - [dbg](#dbg) — Monitor/debugger integration
-   - [coproc](#coproc) — Coprocessor manager
-   - [media](#media) — Format-agnostic media loader
-   - [bit32](#bit32) — Bitwise operations
+   - [sys](#sys) - Timing, diagnostics, lifecycle
+   - [cpu](#cpu) - CPU lifecycle and mode
+   - [mem](#mem) - Memory/bus operations
+   - [term](#term) - Terminal automation
+   - [audio](#audio) - Sound chip and player controls
+   - [video](#video) - Video chip, VGA, ULA, ANTIC/GTIA, TED, Voodoo, Copper, Blitter
+   - [repl](#repl) - REPL overlay control (show/hide, print, scroll)
+   - [rec](#rec) - Recording and screenshots
+   - [dbg](#dbg) - Monitor/debugger integration
+   - [coproc](#coproc) - Coprocessor manager
+   - [media](#media) - Format-agnostic media loader
+   - [bit32](#bit32) - Bitwise operations
 7. [Recording and Screenshots](#recording-and-screenshots)
 8. [Lua REPL Overlay (F8)](#lua-repl-overlay-f8)
 9. [EhBASIC Integration](#ehbasic-integration)
@@ -44,7 +44,7 @@ The runtime uses GopherLua (Lua 5.1-compatible semantics).
 
 ## Getting Started
 
-IEScript is built in — no separate install required. Create a file with the `.ies` extension and pass it on the command line:
+IEScript is built in - no separate install required. Create a file with the `.ies` extension and pass it on the command line:
 
 ```bash
 ./bin/IntuitionEngine -script demo.ies
@@ -89,7 +89,7 @@ Scripts run asynchronously alongside the emulator in a dedicated goroutine. Yiel
 
 ### Frame channel
 
-The compositor calls back into the script engine once for every composite pass, including passes where all sources are idle or disabled. This callback sends a notification on an internal channel (capacity 1, non-blocking). When the channel is already full the notification is dropped — this means if script execution between yields takes longer than a frame period, frames are silently skipped rather than queued.
+The compositor calls back into the script engine once for every composite pass, including passes where all sources are idle or disabled. This callback sends a notification on an internal channel (capacity 1, non-blocking). When the channel is already full the notification is dropped - this means if script execution between yields takes longer than a frame period, frames are silently skipped rather than queued.
 
 ### Timing patterns
 
@@ -149,7 +149,7 @@ MMIO access is allowed without freezing. Block and aggregate operations validate
 Freeze requests are reference-counted across API surfaces (`cpu.*`, `dbg.*`). One subsystem closing a freeze source does not implicitly clear another active freeze source. Specifically:
 
 - `cpu.freeze()` increments the global freeze counter.
-- `cpu.resume()` decrements it (floor of 0 — extra resumes are harmless).
+- `cpu.resume()` decrements it (floor of 0 - extra resumes are harmless).
 - `dbg.open()` / `dbg.freeze()` activate the monitor and add one script-owned freeze on the first nested open.
 - `dbg.close()` / `dbg.resume()` release that script-owned freeze when the nested open count reaches zero.
 
@@ -169,29 +169,31 @@ The policy applies to `cpu.load`, audio loaders, recording and screenshots, outp
 
 Timing, diagnostics, lifecycle.
 
-`sys.wait_frames(n)` — Block until `n` compositor frames have completed. Yields to the frame channel on each frame. Returns: nothing.
+`sys.wait_frames(n)` - Block until `n` compositor frames have completed. Yields to the frame channel on each frame. Returns: nothing.
 
-`sys.wait_ms(ms)` — Block for `ms` milliseconds (wall-clock timer). Returns: nothing.
+`sys.wait_ms(ms)` - Block for `ms` milliseconds (wall-clock timer). Returns: nothing.
 
-`sys.print(...)` — Print all arguments to host stdout, space-separated, with trailing newline. Returns: nothing.
+`sys.print(...)` - Print all arguments to host stdout, space-separated, with trailing newline. Returns: nothing.
 
-`sys.log(...)` — Log all arguments to host stdout (mirrors `sys.print` currently). Returns: nothing.
+`sys.log(...)` - Log all arguments to host stdout (mirrors `sys.print` currently). Returns: nothing.
 
-`sys.time_ms()` — Current Unix time in milliseconds. Returns: number.
+`sys.time_ms()` - Current Unix time in milliseconds. Returns: number.
 
-`sys.frame_count()` — Global compositor frame count since engine start. Returns: number.
+`sys.frame_count()` - Global compositor frame count since engine start. Returns: number.
 
-`sys.frame_time()` — Milliseconds elapsed since the last yield point (wait_frames, wait_ms, or visual wait). Useful for detecting slow scripts. Returns: number.
+`sys.frame_time()` - Milliseconds elapsed since the last yield point (wait_frames, wait_ms, or visual wait). Useful for detecting slow scripts. Returns: number.
 
-`sys.fps()` — Current output backend refresh rate in Hz. The compositor tick used for frame callbacks remains 60 Hz. Returns: number.
+`sys.fps()` - Current output backend refresh rate in Hz. The compositor tick used for frame callbacks remains 60 Hz. Returns: number.
 
-`sys.quit()` — Stop any active recording and shut down the emulator. Returns: nothing.
+`sys.quit()` - Stop any active recording and shut down the emulator. Returns: nothing.
 
-`sys.emutos_drive(path)` — Set the GEMDOS drive U: host directory for the next EmuTOS boot. Updates both the program executor and the internal boot path so the next `EMUTOS` command (from BASIC) or EmuTOS mode switch will map drive U: to the specified directory. Returns: nothing.
+`sys.exit([code])` - Stop any active recording and exit the engine with optional integer `code` (default 0). Unlike `sys.quit`, this propagates an exit status to the host process via the engine's exit hook. Returns: nothing.
 
-`sys.capture_output(path)` — Redirect host stdout/stderr to script-relative `path`. Returns: nothing. Raises on path validation or file errors.
+`sys.emutos_drive(path [, drive])` - Set a GEMDOS drive host directory for the next EmuTOS boot. The optional `drive` parameter is the drive letter index (default 20 = drive U:; A:=0, C:=2, etc.). Updates both the program executor and the internal boot path so the next `EMUTOS` command (from BASIC) or EmuTOS mode switch will map the chosen drive to the specified directory. Returns: nothing.
 
-`sys.capture_output_off()` — Stop output capture and restore host stdout/stderr. Returns: nothing.
+`sys.capture_output(path)` - Redirect host stdout/stderr to script-relative `path`. Returns: nothing. Raises on path validation or file errors.
+
+`sys.capture_output_off()` - Stop output capture and restore host stdout/stderr. Returns: nothing.
 
 Example:
 
@@ -207,7 +209,7 @@ sys.print("frame_time:", sys.frame_time(), "ms")
 
 CPU lifecycle and mode.
 
-`cpu.load(path)` — Load a program binary from `path` into the active CPU. The file format must match the active CPU mode. The special values `"EMUTOS"` and `"AROS"` trigger OS boot without a file path (ROM resolved via CLI flags or embedded image). Returns: nothing. Raises on error.
+`cpu.load(path)` - Load a program binary from `path` into the active CPU. The file format must match the active CPU mode. The special values `"EMUTOS"` and `"AROS"` trigger OS boot without a file path (ROM resolved via CLI flags or embedded image). Returns: nothing. Raises on error.
 
 For M68K AROS interpreter triage, the repo includes two ready-made debugger scripts built around `cpu.load("AROS")` plus `dbg.*` control:
 
@@ -221,19 +223,25 @@ Typical bring-up commands:
 ./bin/IntuitionEngine -aros -nojit -script scripts/m68k_aros_fault_capture.ies
 ```
 
-`cpu.reset()` — Perform a hard reset of the emulator (all CPUs and devices). Returns: nothing. Raises on error.
+`cpu.reset()` - Perform a hard reset of the emulator (all CPUs and devices). Returns: nothing. Raises on error.
 
-`cpu.freeze()` — Increment the global freeze counter, pausing CPU execution for safe memory access. Returns: nothing.
+`cpu.freeze()` - Increment the global freeze counter, pausing CPU execution for safe memory access. Returns: nothing.
 
-`cpu.resume()` — Decrement the global freeze counter. Execution resumes when the counter reaches zero. Extra resume calls beyond zero are harmless (counter floors at 0). Returns: nothing.
+`cpu.resume()` - Decrement the global freeze counter. Execution resumes when the counter reaches zero. Extra resume calls beyond zero are harmless (counter floors at 0). Returns: nothing.
 
-`cpu.start()` — Start execution on the active CPU. Returns: nothing.
+`cpu.start()` - Start execution on the active CPU. Returns: nothing.
 
-`cpu.stop()` — Stop execution on the active CPU. Returns: nothing.
+`cpu.stop()` - Stop execution on the active CPU. Returns: nothing.
 
-`cpu.is_running()` — Check whether the active CPU is currently executing. Returns: boolean.
+`cpu.is_running()` - Check whether the active CPU is currently executing. Returns: boolean.
 
-`cpu.mode()` — Return the active CPU type as a string. Returns: one of `"ie32"`, `"ie64"`, `"m68k"`, `"z80"`, `"x86"`, `"6502"`, or `"none"`.
+`cpu.mode()` - Return the active CPU type as a string. Returns: one of `"ie32"`, `"ie64"`, `"m68k"`, `"z80"`, `"x86"`, `"6502"`, or `"none"`.
+
+`cpu.jit_enabled()` - Check whether JIT compilation is currently enabled for the active CPU. Supported for m68k, z80, 6502, and ie64; returns `false` for any other CPU. Returns: boolean.
+
+`cpu.set_jit_enabled(enabled)` - Enable or disable JIT for the active CPU. Raises if the CPU is currently running, if the platform build does not provide a JIT for that CPU, or if the selected CPU does not support script-controlled JIT (currently only m68k, z80, 6502, and ie64 are supported). On a successful disable the JIT is turned off immediately. Returns: nothing.
+
+`cpu.execution_mode()` - Report the effective execution mode for the active CPU. Returns: `"jit"` if a JIT is enabled and available for that CPU, otherwise `"interpreter"`.
 
 Example:
 
@@ -253,23 +261,23 @@ cpu.resume()
 
 Memory/bus operations. All `mem.*` functions require `cpu.freeze()` for raw RAM addresses. MMIO addresses (device registers) are allowed without freezing.
 
-`mem.read8(addr)` — Read one byte from bus address `addr`. Returns: number (0..255).
+`mem.read8(addr)` - Read one byte from bus address `addr`. Returns: number (0..255).
 
-`mem.read16(addr)` — Read a 16-bit word from bus address `addr`. Returns: number.
+`mem.read16(addr)` - Read a 16-bit word from bus address `addr`. Returns: number.
 
-`mem.read32(addr)` — Read a 32-bit word from bus address `addr`. Returns: number.
+`mem.read32(addr)` - Read a 32-bit word from bus address `addr`. Returns: number.
 
-`mem.write8(addr, value)` — Write one byte `value` to bus address `addr`. Returns: nothing.
+`mem.write8(addr, value)` - Write one byte `value` to bus address `addr`. Returns: nothing.
 
-`mem.write16(addr, value)` — Write a 16-bit word `value` to bus address `addr`. Returns: nothing.
+`mem.write16(addr, value)` - Write a 16-bit word `value` to bus address `addr`. Returns: nothing.
 
-`mem.write32(addr, value)` — Write a 32-bit word `value` to bus address `addr`. Returns: nothing.
+`mem.write32(addr, value)` - Write a 32-bit word `value` to bus address `addr`. Returns: nothing.
 
-`mem.read_block(addr, len)` — Read `len` bytes starting at `addr`. Returns: string (raw bytes).
+`mem.read_block(addr, len)` - Read `len` bytes starting at `addr`. Returns: string (raw bytes).
 
-`mem.write_block(addr, bytes)` — Write the raw byte string `bytes` starting at `addr`. Returns: nothing.
+`mem.write_block(addr, bytes)` - Write the raw byte string `bytes` starting at `addr`. Returns: nothing.
 
-`mem.fill(addr, len, value)` — Fill `len` bytes starting at `addr` with byte `value`. Returns: nothing.
+`mem.fill(addr, len, value)` - Fill `len` bytes starting at `addr` with byte `value`. Returns: nothing.
 
 Example:
 
@@ -289,31 +297,33 @@ cpu.resume()
 
 Terminal automation for driving the emulated terminal I/O.
 
-`term.type(str)` — Enqueue each byte of `str` as keyboard input to the terminal. Does not append a newline. Returns: nothing.
+`term.type(str)` - Enqueue each byte of `str` as keyboard input to the terminal. Does not append a newline. Returns: nothing.
 
-`term.type_line(str)` — Enqueue `str` followed by a newline character. Returns: nothing.
+`term.type_line(str)` - Enqueue `str` followed by a newline character. Returns: nothing.
 
-`term.read()` — Drain and return all pending terminal output. Returns: string.
+`term.read()` - Drain and return all pending terminal output. Returns: string.
 
-`term.clear()` — Drain and discard all pending terminal output. Returns: nothing.
+`term.clear()` - Drain and discard all pending terminal output. Returns: nothing.
 
-`term.echo(on)` — Enable or disable terminal echo. Returns: nothing.
+`term.echo(on)` - Enable or disable terminal echo. Returns: nothing.
 
-`term.wait_output(pattern, timeout_ms)` — Poll terminal output every 10 ms until `pattern` (a plain string, not a regex) is found or `timeout_ms` expires. Accumulates output across polls. Returns: boolean (`true` if pattern found, `false` on timeout).
+`term.wait_output(pattern, timeout_ms)` - Poll terminal output every 10 ms until `pattern` (a plain string, not a regex) is found or `timeout_ms` expires. Accumulates output across polls. Returns: boolean (`true` if pattern found, `false` on timeout).
 
-`term.mouse_move(x, y)` — Set the mouse position. Coordinates are clamped to the compositor frame bounds (negative values become 0, values beyond frame dimensions are clamped to the edge). Returns: nothing.
+`term.mouse_move(x, y)` - Set the mouse position. Coordinates are clamped to the compositor frame bounds (negative values become 0, values beyond frame dimensions are clamped to the edge). Returns: nothing.
 
-`term.mouse_delta(dx, dy [, button])` — Add signed relative mouse deltas to `MOUSE_DX` and `MOUSE_DY`. The optional `button` value uses the same encoding as `mouse_click`: 1 = left, 2 = right, 3 = both. Returns: nothing.
+`term.mouse_delta(dx, dy [, button])` - Add signed relative mouse deltas to `MOUSE_DX` and `MOUSE_DY`. The optional `button` value uses the same encoding as `mouse_click`: 1 = left, 2 = right, 3 = both. Returns: nothing.
 
 In desktop builds, captured relative mouse mode can be released manually with `Ctrl+Alt`; left-click inside the IE window recaptures while the guest still has `MOUSE_CTRL` bit 0 set. This host escape does not change guest-visible `MOUSE_CTRL` and does not affect scripted `term.mouse_delta` injection.
 
-`term.mouse_click(x, y [, button])` — Perform a single mouse click at (x, y). Coordinates are clamped to frame bounds. The optional `button` parameter specifies which button: 1 = left (default), 2 = right, 3 = both. The click holds the button for 50 ms then releases. Returns: nothing.
+`term.mouse_release()` - Clear the script-side mouse-override flag set implicitly by `term.mouse_move`, `term.mouse_delta`, `term.mouse_click`, and `term.mouse_double_click`. Call this when a script is done driving the mouse so the host's normal mouse policy resumes. Returns: nothing.
 
-`term.mouse_double_click(x, y [, button])` — Perform a double click at (x, y). Two clicks with a 100 ms gap between them (within the TOS double-click threshold). Coordinates are clamped, button values are the same as `mouse_click`. Returns: nothing.
+`term.mouse_click(x, y [, button])` - Perform a single mouse click at (x, y). Coordinates are clamped to frame bounds. The optional `button` parameter specifies which button: 1 = left (default), 2 = right, 3 = both. The click holds the button for 50 ms then releases. Returns: nothing.
 
-`term.scancode(code)` — Inject a raw Atari ST scancode (make or break) into the scancode ring buffer. Code must be 0..255. Returns: nothing.
+`term.mouse_double_click(x, y [, button])` - Perform a double click at (x, y). Two clicks with a 100 ms gap between them (within the TOS double-click threshold). Coordinates are clamped, button values are the same as `mouse_click`. Returns: nothing.
 
-`term.key_press(code [, hold_ms])` — Inject a key press: enqueues the make code, waits `hold_ms` milliseconds (default 50), then enqueues the break code (make code OR 0x80). Code must be 0..127 (make codes only). Returns: nothing.
+`term.scancode(code)` - Inject a raw Atari ST scancode (make or break) into the scancode ring buffer. Code must be 0..255. Returns: nothing.
+
+`term.key_press(code [, hold_ms])` - Inject a key press: enqueues the make code, waits `hold_ms` milliseconds (default 50), then enqueues the break code (make code OR 0x80). Code must be 0..127 (make codes only). Returns: nothing.
 
 Example:
 
@@ -368,29 +378,49 @@ Sound chip and player controls.
 
 ### Core
 
-`audio.start()` — Start the sound chip. Returns: nothing.
+`audio.start()` - Start the sound chip. Returns: nothing.
 
-`audio.stop()` — Stop the sound chip. Returns: nothing.
+`audio.stop()` - Stop the sound chip. Returns: nothing.
 
-`audio.reset()` — Reset the sound chip to initial state. Returns: nothing.
+`audio.reset()` - Reset the sound chip to initial state. Returns: nothing.
 
-`audio.freeze()` — Freeze audio generation (silence output). Returns: nothing.
+`audio.freeze()` - Freeze audio generation (silence output). Returns: nothing.
 
-`audio.resume()` — Resume audio generation after a freeze. Returns: nothing.
+`audio.resume()` - Resume audio generation after a freeze. Returns: nothing.
 
-`audio.write_reg(addr, value)` — Write a 32-bit `value` to sound chip register at bus address `addr`. This is an MMIO write (no freeze required). Returns: nothing.
+`audio.write_reg(addr, value)` - Write a 32-bit `value` to sound chip register at bus address `addr`. This is an MMIO write (no freeze required). Returns: nothing.
+
+### Master Mix and Dynamics
+
+These functions tune the sound chip's master output stage (post-mix gain, auto-leveller, and compressor). All operate on the live sound chip and take effect immediately; no freeze required.
+
+`audio.set_master_gain_db(db)` - Set master output gain in decibels (float). Returns: nothing.
+
+`audio.get_master_gain_db()` - Read the current master gain in decibels. Returns: number.
+
+`audio.set_master_auto_level_enabled(on)` - Enable or disable the master auto-leveller. Returns: nothing.
+
+`audio.configure_master_auto_level(target_db, min_gain_db, max_gain_db, attack_ms, release_ms)` - Configure the auto-leveller with five floating-point parameters: target loudness in dB, minimum and maximum allowed gain in dB, attack and release time constants in ms. Argument order matches `SoundChip.ConfigureMasterAutoLevel`. Returns: nothing.
+
+`audio.set_master_compressor_enabled(on)` - Enable or disable the master compressor. Returns: nothing.
+
+`audio.configure_master_compressor(threshold_db, ratio, attack_ms, release_ms, knee_db, makeup_db, lookahead_ms)` - Configure the compressor with seven floating-point parameters. Returns: nothing.
+
+`audio.use_showreel_normalizer_preset()` - Apply the canonical "showreel" preset (auto-level + compressor settings tuned for the demo showreel). Returns: nothing.
+
+`audio.reset_master_dynamics()` - Reset auto-level and compressor internal state (gain envelopes, look-ahead buffer). Does not change the configured parameters. Returns: nothing.
 
 ### PSG (AY-3-8910 / YM2149)
 
-`audio.psg_load(path)` — Load a PSG music file (VGM, VTX, PT3, PT2, PT1, STC, SQT, ASC, FTC) from an approved read path. Returns: nothing. Raises on error.
+`audio.psg_load(path)` - Load a PSG music file from an approved read path. Supported extensions: `.vgm`, `.vgz`, `.vtx`, `.vt`, `.ym`, `.ay`, `.snd`, `.sndh`, `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc`. See `psg_player.go` for the authoritative list. Returns: nothing. Raises on error.
 
-`audio.psg_play()` — Start PSG playback. Returns: nothing.
+`audio.psg_play()` - Start PSG playback. Returns: nothing.
 
-`audio.psg_stop()` — Stop PSG playback. Returns: nothing.
+`audio.psg_stop()` - Stop PSG playback. Returns: nothing.
 
-`audio.psg_is_playing()` — Check whether the PSG engine is currently playing. Returns: boolean.
+`audio.psg_is_playing()` - Check whether the PSG engine is currently playing. Returns: boolean.
 
-`audio.psg_metadata()` — Return metadata for the currently loaded PSG file. Returns: table with fields:
+`audio.psg_metadata()` - Return metadata for the currently loaded PSG file. Returns: table with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -400,15 +430,15 @@ Sound chip and player controls.
 
 ### SID (MOS 6581/8580)
 
-`audio.sid_load(path [, subsong])` — Load a SID music file from an approved read path. The optional `subsong` parameter selects a sub-song index (default 0). Returns: nothing. Raises on error.
+`audio.sid_load(path [, subsong])` - Load a SID music file from an approved read path. The optional `subsong` parameter selects a sub-song index (default 0). Returns: nothing. Raises on error.
 
-`audio.sid_play()` — Start SID playback. Returns: nothing.
+`audio.sid_play()` - Start SID playback. Returns: nothing.
 
-`audio.sid_stop()` — Stop SID playback. Returns: nothing.
+`audio.sid_stop()` - Stop SID playback. Returns: nothing.
 
-`audio.sid_is_playing()` — Check whether the SID player is currently playing. Returns: boolean.
+`audio.sid_is_playing()` - Check whether the SID player is currently playing. Returns: boolean.
 
-`audio.sid_metadata()` — Return metadata for the currently loaded SID file. Returns: table with fields:
+`audio.sid_metadata()` - Return metadata for the currently loaded SID file. Returns: table with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -419,33 +449,33 @@ Sound chip and player controls.
 
 ### TED (MOS 7360/8360)
 
-`audio.ted_load(path)` — Load a TED music file from an approved read path. Returns: nothing. Raises on error.
+`audio.ted_load(path)` - Load a TED music file from an approved read path. Returns: nothing. Raises on error.
 
-`audio.ted_play()` — Start TED playback. Returns: nothing.
+`audio.ted_play()` - Start TED playback. Returns: nothing.
 
-`audio.ted_stop()` — Stop TED playback. Returns: nothing.
+`audio.ted_stop()` - Stop TED playback. Returns: nothing.
 
-`audio.ted_is_playing()` — Check whether the TED player is currently playing. Returns: boolean.
+`audio.ted_is_playing()` - Check whether the TED player is currently playing. Returns: boolean.
 
 ### POKEY (Atari C012294)
 
-`audio.pokey_load(path)` — Load a POKEY music file (SAP) from an approved read path. Returns: nothing. Raises on error.
+`audio.pokey_load(path)` - Load a POKEY music file (SAP) from an approved read path. Returns: nothing. Raises on error.
 
-`audio.pokey_play()` — Start POKEY playback. Returns: nothing.
+`audio.pokey_play()` - Start POKEY playback. Returns: nothing.
 
-`audio.pokey_stop()` — Stop POKEY playback. Returns: nothing.
+`audio.pokey_stop()` - Stop POKEY playback. Returns: nothing.
 
-`audio.pokey_is_playing()` — Check whether the POKEY player is currently playing. Returns: boolean.
+`audio.pokey_is_playing()` - Check whether the POKEY player is currently playing. Returns: boolean.
 
 ### AHX (Abyss' Highest eXperience)
 
-`audio.ahx_load(path)` — Load an AHX music file from an approved read path. Returns: nothing. Raises on error.
+`audio.ahx_load(path)` - Load an AHX music file from an approved read path. Returns: nothing. Raises on error.
 
-`audio.ahx_play()` — Start AHX playback. Returns: nothing.
+`audio.ahx_play()` - Start AHX playback. Returns: nothing.
 
-`audio.ahx_stop()` — Stop AHX playback. Returns: nothing.
+`audio.ahx_stop()` - Stop AHX playback. Returns: nothing.
 
-`audio.ahx_is_playing()` — Check whether the AHX engine is currently playing. Returns: boolean.
+`audio.ahx_is_playing()` - Check whether the AHX engine is currently playing. Returns: boolean.
 
 Example:
 
@@ -466,161 +496,161 @@ Video chip, VGA, ULA, ANTIC/GTIA, TED, Voodoo 3D, Copper coprocessor, Blitter, a
 
 ### General
 
-`video.write_reg(addr, value)` — Write a 32-bit `value` to a video register at bus address `addr` (MMIO). Returns: nothing.
+`video.write_reg(addr, value)` - Write a 32-bit `value` to a video register at bus address `addr` (MMIO). Returns: nothing.
 
-`video.read_reg(addr)` — Read a 32-bit value from a video register at bus address `addr`. Returns: number.
+`video.read_reg(addr)` - Read a 32-bit value from a video register at bus address `addr`. Returns: number.
 
-`video.get_dimensions()` — Get the compositor output dimensions. Returns: width, height (two numbers). This reports the active output frame, not necessarily an individual source's native size; for example, an enabled 800x600 Voodoo source can be scaled into a 1920x1080 VideoChip-driven compositor frame.
+`video.get_dimensions()` - Get the compositor output dimensions. Returns: width, height (two numbers). This reports the active output frame, not necessarily an individual source's native size; for example, an enabled 800x600 Voodoo source can be scaled into a 1920x1080 VideoChip-driven compositor frame.
 
-`video.is_enabled()` — Check whether the primary VideoChip is enabled. Returns: boolean.
+`video.is_enabled()` - Check whether the primary VideoChip is enabled. Returns: boolean.
 
 ### VGA
 
-`video.vga_enable(on)` — Enable or disable the VGA output. Returns: nothing.
+`video.vga_enable(on)` - Enable or disable the VGA output. Returns: nothing.
 
-`video.vga_set_mode(mode)` — Set the VGA video mode (e.g. 0x13 for Mode 13h). Returns: nothing.
+`video.vga_set_mode(mode)` - Set the VGA video mode (e.g. 0x13 for Mode 13h). Returns: nothing.
 
-`video.vga_set_palette(idx, r, g, b)` — Set VGA palette entry `idx` (0..255) to the given RGB values (each 0..255). Returns: nothing.
+`video.vga_set_palette(idx, r, g, b)` - Set VGA palette entry `idx` (0..255) to the given RGB values (each 0..255). Returns: nothing.
 
-`video.vga_get_palette(idx)` — Read VGA palette entry `idx`. Returns: r, g, b (three numbers, each 0..255).
+`video.vga_get_palette(idx)` - Read VGA palette entry `idx`. Returns: r, g, b (three numbers, each 0..255).
 
-`video.vga_get_dimensions()` — Get VGA framebuffer dimensions. Returns: width, height.
+`video.vga_get_dimensions()` - Get VGA framebuffer dimensions. Returns: width, height.
 
 ### ULA (ZX Spectrum)
 
-`video.ula_enable(on)` — Enable or disable ULA video output. Returns: nothing.
+`video.ula_enable(on)` - Enable or disable ULA video output. Returns: nothing.
 
-`video.ula_is_enabled()` — Check whether ULA is enabled. Returns: boolean.
+`video.ula_is_enabled()` - Check whether ULA is enabled. Returns: boolean.
 
-`video.ula_border(colour)` — Set the ULA border colour (0..7). Returns: nothing.
+`video.ula_border(colour)` - Set the ULA border colour (0..7). Returns: nothing.
 
-`video.ula_get_dimensions()` — Get ULA display dimensions. Returns: width, height.
+`video.ula_get_dimensions()` - Get ULA display dimensions. Returns: width, height.
 
 ### ANTIC (Atari-inspired IE-native)
 
-`video.antic_enable(on)` — Enable or disable ANTIC video output. Returns: nothing.
+`video.antic_enable(on)` - Enable or disable ANTIC video output. Returns: nothing.
 
-`video.antic_is_enabled()` — Check whether ANTIC is enabled. Returns: boolean.
+`video.antic_is_enabled()` - Check whether ANTIC is enabled. Returns: boolean.
 
-`video.antic_dlist(addr)` — Set the ANTIC display list address. Returns: nothing.
+`video.antic_dlist(addr)` - Set the ANTIC display list address. Returns: nothing.
 
-`video.antic_dma(flags)` — Set ANTIC DMA control flags (DMACTL register, 0..255). Returns: nothing.
+`video.antic_dma(flags)` - Set ANTIC DMA control flags (DMACTL register, 0..255). Returns: nothing.
 
-`video.antic_scroll(h, v)` — Set ANTIC horizontal and vertical scroll values (each 0..15). Returns: nothing.
+`video.antic_scroll(h, v)` - Set ANTIC horizontal and vertical scroll values (each 0..15). Returns: nothing.
 
-`video.antic_charset(page)` — Set ANTIC character set base page (CHBASE register, 0..255). Returns: nothing.
+`video.antic_charset(page)` - Set ANTIC character set base page (CHBASE register, 0..255). Returns: nothing.
 
-`video.antic_pmbase(page)` — Set ANTIC player/missile base page (PMBASE register, 0..255). Returns: nothing.
+`video.antic_pmbase(page)` - Set ANTIC player/missile base page (PMBASE register, 0..255). Returns: nothing.
 
-`video.antic_get_dimensions()` — Get ANTIC display dimensions. Returns: width, height.
+`video.antic_get_dimensions()` - Get ANTIC display dimensions. Returns: width, height.
 
 ### GTIA (Atari-inspired IE-native)
 
-`video.gtia_color(reg, value)` — Set a GTIA colour register. Register indices: 0=COLPF0, 1=COLPF1, 2=COLPF2, 3=COLPF3, 4=COLBK, 5=COLPM0, 6=COLPM1, 7=COLPM2, 8=COLPM3. Value is 0..255 (Atari hue/luminance byte). Returns: nothing.
+`video.gtia_color(reg, value)` - Set a GTIA colour register. Register indices: 0=COLPF0, 1=COLPF1, 2=COLPF2, 3=COLPF3, 4=COLBK, 5=COLPM0, 6=COLPM1, 7=COLPM2, 8=COLPM3. Value is 0..255 (Atari hue/luminance byte). Returns: nothing.
 
-`video.gtia_player_pos(player, x)` — Set horizontal position of player sprite `player` (0..3) to `x` (0..255). Returns: nothing.
+`video.gtia_player_pos(player, x)` - Set horizontal position of player sprite `player` (0..3) to `x` (0..255). Returns: nothing.
 
-`video.gtia_player_size(player, size)` — Set width of player sprite `player` (0..3). Size: 0=normal, 1=double, 3=quad. Returns: nothing.
+`video.gtia_player_size(player, size)` - Set width of player sprite `player` (0..3). Size: 0=normal, 1=double, 3=quad. Returns: nothing.
 
-`video.gtia_player_gfx(player, data)` — Set graphics data byte for player sprite `player` (0..3). Returns: nothing.
+`video.gtia_player_gfx(player, data)` - Set graphics data byte for player sprite `player` (0..3). Returns: nothing.
 
-`video.gtia_priority(value)` — Set GTIA priority register (PRIOR, 0..255). Returns: nothing.
+`video.gtia_priority(value)` - Set GTIA priority register (PRIOR, 0..255). Returns: nothing.
 
 ### TED Video (Commodore Plus/4)
 
-`video.ted_enable(on)` — Enable or disable TED video output. Returns: nothing.
+`video.ted_enable(on)` - Enable or disable TED video output. Returns: nothing.
 
-`video.ted_is_enabled()` — Check whether TED video is enabled. Returns: boolean.
+`video.ted_is_enabled()` - Check whether TED video is enabled. Returns: boolean.
 
-`video.ted_mode(ctrl1, ctrl2)` — Set TED control registers 1 and 2 (each 0..255). Returns: nothing.
+`video.ted_mode(ctrl1, ctrl2)` - Set TED control registers 1 and 2 (each 0..255). Returns: nothing.
 
-`video.ted_colors(bg0, bg1, bg2, bg3, border)` — Set all five TED colour registers (each 0..127, TED colour format). Returns: nothing.
+`video.ted_colors(bg0, bg1, bg2, bg3, border)` - Set all five TED colour registers (each 0..127, TED colour format). Returns: nothing.
 
-`video.ted_charset(page)` — Set TED character set base page (0..255). Returns: nothing.
+`video.ted_charset(page)` - Set TED character set base page (0..255). Returns: nothing.
 
-`video.ted_video_base(page)` — Set TED video memory base page (0..255). Returns: nothing.
+`video.ted_video_base(page)` - Set TED video memory base page (0..255). Returns: nothing.
 
-`video.ted_cursor(pos, colour)` — Set TED cursor position (0..65535) and colour (0..127). Returns: nothing.
+`video.ted_cursor(pos, colour)` - Set TED cursor position (0..65535) and colour (0..127). Returns: nothing.
 
-`video.ted_get_dimensions()` — Get TED display dimensions. Returns: width, height.
+`video.ted_get_dimensions()` - Get TED display dimensions. Returns: width, height.
 
 ### Voodoo 3D
 
 Voodoo functions accept integer pixel coordinates for vertices and 0..255 byte values for colours. Internally, vertex coordinates are converted to 12.4 fixed-point and colours to 12.12 fixed-point.
 
-`video.voodoo_enable(on)` — Enable or disable Voodoo 3D rendering. Returns: nothing.
+`video.voodoo_enable(on)` - Enable or disable Voodoo 3D rendering. Returns: nothing.
 
-`video.voodoo_is_enabled()` — Check whether Voodoo is enabled. Returns: boolean.
+`video.voodoo_is_enabled()` - Check whether Voodoo is enabled. Returns: boolean.
 
-`video.voodoo_resolution(w, h)` — Set the Voodoo framebuffer resolution. Returns: nothing.
+`video.voodoo_resolution(w, h)` - Set the Voodoo framebuffer resolution. Returns: nothing.
 
-`video.voodoo_vertex(ax, ay, bx, by, cx, cy)` — Set the three triangle vertex positions in integer pixel coordinates. Returns: nothing.
+`video.voodoo_vertex(ax, ay, bx, by, cx, cy)` - Set the three triangle vertex positions in integer pixel coordinates. Returns: nothing.
 
-`video.voodoo_color(idx, r, g, b, a)` — Set vertex colour for vertex `idx` (0..2). RGBA values are 0..255. Returns: nothing.
+`video.voodoo_color(idx, r, g, b, a)` - Set vertex colour for vertex `idx` (0..2). RGBA values are 0..255. Returns: nothing.
 
-`video.voodoo_depth(z)` — Set the starting depth value for the triangle (integer, converted to 20.12 fixed-point). Returns: nothing.
+`video.voodoo_depth(z)` - Set the starting depth value for the triangle (integer, converted to 20.12 fixed-point). Returns: nothing.
 
-`video.voodoo_texcoord(s, t, w)` — Set texture coordinates. `s` and `t` are floating-point texture coordinates; `w` is the perspective correction factor. Returns: nothing.
+`video.voodoo_texcoord(s, t, w)` - Set texture coordinates. `s` and `t` are floating-point texture coordinates; `w` is the perspective correction factor. Returns: nothing.
 
-`video.voodoo_draw()` — Submit the current triangle for rasterisation. Returns: nothing.
+`video.voodoo_draw()` - Submit the current triangle for rasterisation. Returns: nothing.
 
-`video.voodoo_swap()` — Swap the Voodoo front and back buffers. Returns: nothing.
+`video.voodoo_swap()` - Swap the Voodoo front and back buffers. Returns: nothing.
 
-`video.voodoo_clear(r, g, b)` — Clear the Voodoo framebuffer with the given RGB colour (each 0..255). Returns: nothing.
+`video.voodoo_clear(r, g, b)` - Clear the Voodoo framebuffer with the given RGB colour (each 0..255). Returns: nothing.
 
-`video.voodoo_fog(on, r, g, b)` — Enable/disable fog and set the fog colour. Returns: nothing.
+`video.voodoo_fog(on, r, g, b)` - Enable/disable fog and set the fog colour. Returns: nothing.
 
-`video.voodoo_alpha(mode)` — Set the Voodoo alpha blending mode register. Returns: nothing.
+`video.voodoo_alpha(mode)` - Set the Voodoo alpha blending mode register. Returns: nothing.
 
-`video.voodoo_zbuffer(mode)` — Set the Voodoo depth buffer mode (FBZ_MODE register). Returns: nothing.
+`video.voodoo_zbuffer(mode)` - Set the Voodoo depth buffer mode (FBZ_MODE register). Returns: nothing.
 
-`video.voodoo_clip(left, right, top, bottom)` — Set the Voodoo clip rectangle. Returns: nothing.
+`video.voodoo_clip(left, right, top, bottom)` - Set the Voodoo clip rectangle. Returns: nothing.
 
-`video.voodoo_texture(w, h, data)` — Upload texture data. `w` and `h` are the texture dimensions; `data` is a raw byte string of pixel data. Returns: nothing.
+`video.voodoo_texture(w, h, data)` - Upload texture data. `w` and `h` are the texture dimensions; `data` is a raw byte string of pixel data. Returns: nothing.
 
-`video.voodoo_chromakey(on, r, g, b)` — Enable/disable chroma keying and set the key colour. Returns: nothing.
+`video.voodoo_chromakey(on, r, g, b)` - Enable/disable chroma keying and set the key colour. Returns: nothing.
 
-`video.voodoo_dither(on)` — Enable or disable dithering. Returns: nothing.
+`video.voodoo_dither(on)` - Enable or disable dithering. Returns: nothing.
 
-`video.voodoo_get_dimensions()` — Get Voodoo framebuffer dimensions. Returns: width, height.
+`video.voodoo_get_dimensions()` - Get Voodoo framebuffer dimensions. Returns: width, height.
 
 ### Copper Coprocessor
 
-`video.copper_enable(on)` — Enable or disable the copper coprocessor. Returns: nothing.
+`video.copper_enable(on)` - Enable or disable the copper coprocessor. Returns: nothing.
 
-`video.copper_set_program(addr)` — Set the copper program pointer to bus address `addr`. Returns: nothing.
+`video.copper_set_program(addr)` - Set the copper program pointer to bus address `addr`. Returns: nothing.
 
-`video.copper_is_running()` — Check whether the copper is currently executing. Returns: boolean.
+`video.copper_is_running()` - Check whether the copper is currently executing. Returns: boolean.
 
 ### Blitter
 
-`video.blit_copy(src, dst, w, h, src_stride, dst_stride)` — Start a blitter copy operation. Copies a `w`x`h` rectangle from `src` to `dst` with the given strides. Returns: nothing.
+`video.blit_copy(src, dst, w, h, src_stride, dst_stride)` - Start a blitter copy operation. Copies a `w`x`h` rectangle from `src` to `dst` with the given strides. Returns: nothing.
 
-`video.blit_fill(dst, w, h, colour, dst_stride)` — Start a blitter fill operation. Fills a `w`x`h` rectangle at `dst` with `colour` (32-bit RGBA). Returns: nothing.
+`video.blit_fill(dst, w, h, colour, dst_stride)` - Start a blitter fill operation. Fills a `w`x`h` rectangle at `dst` with `colour` (32-bit RGBA). Returns: nothing.
 
-`video.blit_line(x0, y0, x1, y1, colour)` — Draw a line from (`x0`,`y0`) to (`x1`,`y1`) with `colour` (32-bit RGBA). Returns: nothing.
+`video.blit_line(x0, y0, x1, y1, colour)` - Draw a line from (`x0`,`y0`) to (`x1`,`y1`) with `colour` (32-bit RGBA). Returns: nothing.
 
-`video.blit_wait()` — Block until the blitter is idle. Polls every 1 ms. Returns: nothing.
+`video.blit_wait()` - Block until the blitter is idle. Polls every 1 ms. Returns: nothing.
 
 ### Frame Inspection
 
-`video.get_pixel(x, y)` — Read a pixel from the current compositor frame. Returns: r, g, b, a (four numbers, each 0..255). Returns all zeros if coordinates are out of bounds.
+`video.get_pixel(x, y)` - Read a pixel from the current compositor frame. Returns: r, g, b, a (four numbers, each 0..255). Returns all zeros if coordinates are out of bounds.
 
-`video.get_region(x, y, w, h)` — Read a rectangular region from the current compositor frame. Returns: string (raw RGBA bytes, row-major, 4 bytes per pixel). Returns empty string if region is invalid.
+`video.get_region(x, y, w, h)` - Read a rectangular region from the current compositor frame. Returns: string (raw RGBA bytes, row-major, 4 bytes per pixel). Returns empty string if region is invalid.
 
-`video.frame_hash()` — Compute an FNV-1a hash of the current compositor frame. Returns: number. Returns 0 if no frame is available.
+`video.frame_hash()` - Compute an FNV-1a hash of the current compositor frame. Returns: number. Returns 0 if no frame is available.
 
 ### Visual Waits
 
 All visual waits block on the frame channel (yielding per frame) and respect script cancellation.
 
-`video.wait_pixel(x, y, r, g, b, timeout_ms)` — Wait until the pixel at (`x`,`y`) matches the target RGB colour within a tolerance of +/-2 per channel, or until `timeout_ms` expires. Returns: boolean (`true` if matched, `false` on timeout).
+`video.wait_pixel(x, y, r, g, b, timeout_ms)` - Wait until the pixel at (`x`,`y`) matches the target RGB colour within a tolerance of +/-2 per channel, or until `timeout_ms` expires. Returns: boolean (`true` if matched, `false` on timeout).
 
-`video.wait_stable(n_frames, timeout_ms)` — Wait until the compositor frame hash remains unchanged for `n_frames` consecutive frames, or until `timeout_ms` expires. Useful for waiting until rendering has settled. Returns: boolean.
+`video.wait_stable(n_frames, timeout_ms)` - Wait until the compositor frame hash remains unchanged for `n_frames` consecutive frames, or until `timeout_ms` expires. Useful for waiting until rendering has settled. Returns: boolean.
 
-`video.wait_condition(fn, timeout_ms)` — Call the Lua function `fn` once per frame. If `fn` returns `true`, the wait succeeds. Continues until `fn` returns `true` or `timeout_ms` expires. Returns: boolean.
+`video.wait_condition(fn, timeout_ms)` - Call the Lua function `fn` once per frame. If `fn` returns `true`, the wait succeeds. Continues until `fn` returns `true` or `timeout_ms` expires. Returns: boolean.
 
-Example — Voodoo triangle:
+Example - Voodoo triangle:
 
 ```lua
 video.voodoo_enable(true)
@@ -640,23 +670,23 @@ video.voodoo_swap()
 
 Programmatic control of the Lua REPL overlay. Use this module from scripts to display information, title cards, or scrolling text on-screen without affecting the underlying emulator display.
 
-`repl.show()` — Show the REPL overlay. Returns: nothing.
+`repl.show()` - Show the REPL overlay. Returns: nothing.
 
-`repl.hide()` — Hide the REPL overlay. Returns: nothing.
+`repl.hide()` - Hide the REPL overlay. Returns: nothing.
 
-`repl.is_open()` — Check whether the overlay is currently visible. Returns: boolean.
+`repl.is_open()` - Check whether the overlay is currently visible. Returns: boolean.
 
-`repl.print(text)` — Append a line of text to the overlay output buffer. Returns: nothing.
+`repl.print(text)` - Append a line of text to the overlay output buffer. Returns: nothing.
 
-`repl.clear()` — Clear the overlay output buffer. Returns: nothing.
+`repl.clear()` - Clear the overlay output buffer. Returns: nothing.
 
-`repl.scroll_up(n)` — Scroll the overlay output up by `n` lines. Returns: nothing.
+`repl.scroll_up(n)` - Scroll the overlay output up by `n` lines. Returns: nothing.
 
-`repl.scroll_down(n)` — Scroll the overlay output down by `n` lines. Returns: nothing.
+`repl.scroll_down(n)` - Scroll the overlay output down by `n` lines. Returns: nothing.
 
-`repl.line_count()` — Get the total number of lines in the overlay output buffer. Returns: number.
+`repl.line_count()` - Get the total number of lines in the overlay output buffer. Returns: number.
 
-Example — title card:
+Example - title card:
 
 ```lua
 repl.show()
@@ -668,7 +698,7 @@ sys.wait_ms(3000)
 repl.hide()
 ```
 
-Example — scrolling source code listing:
+Example - scrolling source code listing:
 
 ```lua
 local lines = {
@@ -692,17 +722,17 @@ repl.hide()
 
 Recording and screenshot capture.
 
-`rec.screenshot(path)` — Capture the current compositor frame as a PNG file at script-relative `path`. Pure Go implementation — no external dependencies. Returns: nothing. Raises on path validation or screenshot errors.
+`rec.screenshot(path)` - Capture the current compositor frame as a PNG file at script-relative `path`. Pure Go implementation - no external dependencies. Returns: nothing. Raises on path validation or screenshot errors.
 
-`rec.start(path)` — Start recording video (and audio) to an MP4 file at script-relative `path`. Requires FFmpeg in `PATH`. Returns: nothing. Raises on path validation or recorder errors.
+`rec.start(path)` - Start recording video (and audio) to an MP4 file at script-relative `path`. Requires FFmpeg in `PATH`. Returns: nothing. Raises on path validation or recorder errors.
 
-`rec.start_screen(path)` — Start recording the screen-composited output to an MP4 file at script-relative `path`. Requires FFmpeg in `PATH`. Returns: nothing. Raises on path validation or recorder errors.
+`rec.start_screen(path)` - Start recording the screen-composited output to an MP4 file at script-relative `path`. Requires FFmpeg in `PATH`. Returns: nothing. Raises on path validation or recorder errors.
 
-`rec.stop()` — Stop an active recording and finalise the file. Returns: nothing. Raises on error.
+`rec.stop()` - Stop an active recording and finalise the file. Returns: nothing. Raises on error.
 
-`rec.is_recording()` — Check whether a recording is in progress. Returns: boolean.
+`rec.is_recording()` - Check whether a recording is in progress. Returns: boolean.
 
-`rec.frame_count()` — Number of frames captured in the current recording session. Returns: number.
+`rec.frame_count()` - Number of frames captured in the current recording session. Returns: number.
 
 Example:
 
@@ -719,43 +749,45 @@ rec.screenshot("after.png")
 
 ## `dbg`
 
-Monitor/debugger integration. Most functions require the Machine Monitor to be available (set via `-monitor` or programmatically).
+Monitor/debugger integration. The Machine Monitor is always built into the engine - no command-line flag is required. See [iemon.md](iemon.md) for the underlying command set, breakpoint condition grammar, and CPU-specific behaviour.
 
 ### Core
 
-`dbg.open()` — Activate the monitor and increment the freeze counter. This is the standard way to enter a debug session from a script. Returns: nothing.
+`dbg.open()` - Activate the monitor and increment the freeze counter. This is the standard way to enter a debug session from a script. Returns: nothing.
 
-`dbg.close()` — Deactivate the monitor and decrement the freeze counter. Returns: nothing.
+`dbg.close()` - Deactivate the monitor and decrement the freeze counter. Returns: nothing.
 
-`dbg.is_open()` — Check whether the monitor is currently active. Returns: boolean.
+`dbg.is_open()` - Check whether the monitor is currently active. Returns: boolean.
 
-`dbg.freeze()` — Alias for `dbg.open()`. Activates the monitor and increments the freeze counter. Returns: nothing.
+`dbg.freeze()` - Alias for `dbg.open()`. Activates the monitor and increments the freeze counter. Returns: nothing.
 
-`dbg.resume()` — Alias for `dbg.close()`. Deactivates the monitor and decrements the freeze counter. Returns: nothing.
+`dbg.resume()` - Alias for `dbg.close()`. Deactivates the monitor and decrements the freeze counter. Returns: nothing.
 
 ### Execution Control
 
-`dbg.step([n])` — Single-step the focused CPU by `n` instructions (default 1). Returns: nothing.
+`dbg.step([n])` - Single-step the focused CPU by `n` instructions (default 1). Returns: nothing.
 
-`dbg.continue()` — Resume execution on the focused CPU (equivalent to monitor `g` command). Returns: nothing.
+`dbg.continue()` - Resume execution on the focused CPU (equivalent to monitor `g` command). Returns: nothing.
 
-`dbg.run_until(addr)` — Run the focused CPU until it reaches address `addr`. Returns: nothing.
+`dbg.run_until(addr)` - Run the focused CPU until it reaches address `addr`. Returns: nothing.
 
 When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned debugger open is released and the monitor is deactivated.
 
-`dbg.backstep()` — Step the focused CPU backward by one instruction (if trace history is available). Returns: nothing.
+`dbg.run_until` is a fire-and-forget request: it has no timeout argument. If execution never reaches the target address before the monitor is re-entered for another reason, the temporary breakpoint set by `run_until` persists and will fire on a future run. Clear it explicitly with `dbg.clear_bp(addr)` if you no longer want the stop. See iemon.md §"Common Pitfalls" for details.
+
+`dbg.backstep()` - Step the focused CPU backward by one instruction (if trace history is available). Returns: nothing.
 
 ### Breakpoints
 
-`dbg.set_bp(addr)` — Set an unconditional breakpoint at address `addr`. Returns: nothing.
+`dbg.set_bp(addr)` - Set an unconditional breakpoint at address `addr`. Returns: nothing.
 
-`dbg.set_conditional_bp(addr, condition)` — Set a conditional breakpoint at `addr` with condition string `condition` (e.g. `"A==$FF"`). Returns: nothing.
+`dbg.set_conditional_bp(addr, condition)` - Set a conditional breakpoint at `addr` with condition string `condition` (e.g. `"A==$FF"`, `"[$1000]==$42"`, `"[$2000].L==$DEADBEEF"`, `"hitcount>10"`). The condition grammar is the same as the monitor `b` command; see iemon.md §Breakpoints "Condition syntax" for the full operator and term reference. Returns: nothing.
 
-`dbg.clear_bp(addr)` — Remove the breakpoint at address `addr`. Returns: nothing.
+`dbg.clear_bp(addr)` - Remove the breakpoint at address `addr`. Returns: nothing.
 
-`dbg.clear_all_bp()` — Remove all breakpoints on the focused CPU. Returns: nothing.
+`dbg.clear_all_bp()` - Remove all breakpoints on the focused CPU. Returns: nothing.
 
-`dbg.list_bp()` — List all breakpoints on the focused CPU. Returns: table (array) of entries, each with fields:
+`dbg.list_bp()` - List all breakpoints on the focused CPU. Returns: table (array) of entries, each with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -765,37 +797,37 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 
 ### Watchpoints
 
-`dbg.set_wp(addr)` — Set a watchpoint (memory write watch) at address `addr`. Returns: nothing.
+`dbg.set_wp(addr)` - Set a watchpoint at address `addr`. Watchpoints are **write-only** in this revision (no read or read/write variants); the monitor activates when an instruction modifies the watched byte. Returns: nothing.
 
-`dbg.clear_wp(addr)` — Remove the watchpoint at address `addr`. Returns: nothing.
+`dbg.clear_wp(addr)` - Remove the watchpoint at address `addr`. Returns: nothing.
 
-`dbg.clear_all_wp()` — Remove all watchpoints on the focused CPU. Returns: nothing.
+`dbg.clear_all_wp()` - Remove all watchpoints on the focused CPU. Returns: nothing.
 
-`dbg.list_wp()` — List all watchpoint addresses. Returns: table (array) of numbers.
+`dbg.list_wp()` - List all watchpoint addresses. Returns: table (array) of numbers.
 
 ### Registers
 
-`dbg.get_reg(name)` — Read a CPU register by name (e.g. `"A"`, `"PC"`, `"SP"`). Returns: number, or `nil` if the register name is unknown.
+`dbg.get_reg(name)` - Read a CPU register by name (e.g. `"A"`, `"PC"`, `"SP"`). Returns: number, or `nil` if the register name is unknown.
 
-`dbg.set_reg(name, value)` — Write a value to a CPU register by name. Returns: nothing. Raises on unknown register.
+`dbg.set_reg(name, value)` - Write a value to a CPU register by name. Returns: nothing. Raises on unknown register.
 
-`dbg.get_regs()` — Read all CPU registers. Returns: table `{name = value, ...}`.
+`dbg.get_regs()` - Read all CPU registers. Returns: table `{name = value, ...}`.
 
-`dbg.get_pc()` — Read the program counter. Returns: number.
+`dbg.get_pc()` - Read the program counter. Returns: number.
 
-`dbg.set_pc(addr)` — Set the program counter to `addr`. Returns: nothing.
+`dbg.set_pc(addr)` - Set the program counter to `addr`. Returns: nothing.
 
 ### Memory
 
-`dbg.read_mem(addr, len)` — Read `len` bytes from the focused CPU's memory at `addr`. Returns: string (raw bytes).
+`dbg.read_mem(addr, len)` - Read `len` bytes from the focused CPU's memory at `addr`. Returns: string (raw bytes).
 
-`dbg.write_mem(addr, data)` — Write raw byte string `data` to the focused CPU's memory at `addr`. Returns: nothing.
+`dbg.write_mem(addr, data)` - Write raw byte string `data` to the focused CPU's memory at `addr`. Returns: nothing.
 
-`dbg.fill_mem(addr, len, value)` — Fill `len` bytes starting at `addr` with byte `value`. Returns: nothing.
+`dbg.fill_mem(addr, len, value)` - Fill `len` bytes starting at `addr` with byte `value`. Returns: nothing.
 
-`dbg.hunt_mem(start, len, pattern)` — Search for byte pattern `pattern` within `len` bytes starting at `start`. Returns: table (array) of matching addresses.
+`dbg.hunt_mem(start, len, pattern)` - Search for byte pattern `pattern` within `len` bytes starting at `start`. Returns: table (array) of matching addresses.
 
-`dbg.compare_mem(start, len, dest)` — Compare `len` bytes between `start` and `dest`, reporting differences. Returns: table (array) of entries, each with fields:
+`dbg.compare_mem(start, len, dest)` - Compare `len` bytes between `start` and `dest`, reporting differences. Returns: table (array) of entries, each with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -803,11 +835,11 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 | `val1` | number | Byte value at `start + offset` |
 | `val2` | number | Byte value at `dest + offset` |
 
-`dbg.transfer_mem(start, len, dest)` — Copy `len` bytes from `start` to `dest` (safe for overlapping regions). Returns: nothing.
+`dbg.transfer_mem(start, len, dest)` - Copy `len` bytes from `start` to `dest` (safe for overlapping regions). Returns: nothing.
 
 ### Disassembly and Trace
 
-`dbg.disasm(addr, count)` — Disassemble `count` instructions starting at `addr`. Returns: table (array) of entries, each with fields:
+`dbg.disasm(addr, count)` - Disassemble `count` instructions starting at `addr`. Returns: table (array) of entries, each with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -815,7 +847,7 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 | `hex` | string | Raw instruction bytes in hex |
 | `mnemonic` | string | Disassembled instruction text |
 
-`dbg.trace(n)` — Execute `n` instructions on the focused CPU, recording each step. Returns: table (array) of entries, each with fields:
+`dbg.trace(n)` - Execute `n` instructions on the focused CPU, recording each step. Returns: table (array) of entries, each with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -823,19 +855,19 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 | `mnemonic` | string | Disassembled instruction text |
 | `reg_changes` | table | Register changes (currently empty table) |
 
-`dbg.backtrace([depth])` — Return a call stack backtrace up to `depth` frames (default 8). Returns: table (array) of strings.
+`dbg.backtrace([depth])` - Return a call stack backtrace up to `depth` frames (default 8). Returns: table (array) of strings.
 
-`dbg.trace_file(path)` — Start logging execution trace to script-relative `path`. Returns: nothing. Raises on path validation or monitor errors.
+`dbg.trace_file(path)` - Start logging execution trace to script-relative `path`. Returns: nothing. Raises on path validation or monitor errors.
 
-`dbg.trace_file_off()` — Stop trace file logging. Returns: nothing.
+`dbg.trace_file_off()` - Stop trace file logging. Returns: nothing.
 
-`dbg.trace_watch_add(addr)` — Add a memory address to the trace watch list. Returns: nothing.
+`dbg.trace_watch_add(addr)` - Add a memory address to the trace watch list. Returns: nothing.
 
-`dbg.trace_watch_del(addr)` — Remove a memory address from the trace watch list. Returns: nothing.
+`dbg.trace_watch_del(addr)` - Remove a memory address from the trace watch list. Returns: nothing.
 
-`dbg.trace_watch_list()` — List all trace watch addresses. Returns: table (array) of numbers.
+`dbg.trace_watch_list()` - List all trace watch addresses. Returns: table (array) of numbers.
 
-`dbg.trace_history(addr_str)` — Get the write history for a memory address. Pass the address as a hex string (e.g. `"$1000"`). Passing `"*"` returns an empty table (per-address query only). Returns: table (array) of entries, each with fields:
+`dbg.trace_history(addr_str)` - Get the write history for a memory address. Pass the address as a hex string (e.g. `"$1000"`). Passing `"*"` returns an empty table (per-address query only). Returns: table (array) of entries, each with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -843,21 +875,21 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 | `old_val` | number | Previous value |
 | `new_val` | number | New value written |
 
-`dbg.trace_history_clear(addr)` — Clear write history for address `addr` (string, e.g. `"$1000"` or `"*"`). Returns: nothing.
+`dbg.trace_history_clear(addr)` - Clear write history for address `addr` (string, e.g. `"$1000"` or `"*"`). Returns: nothing.
 
 ### State Save/Load
 
-`dbg.save_state(path)` — Save the current machine state to script-relative `path`. Returns: nothing. Raises on monitor errors.
+`dbg.save_state(path)` - Save the current machine state to script-relative `path`. Returns: nothing. Raises on monitor errors.
 
-`dbg.load_state(path)` — Restore machine state from an approved read path. Returns: nothing.
+`dbg.load_state(path)` - Restore machine state from an approved read path. Returns: nothing.
 
-`dbg.save_mem_file(start, length, path)` — Save `length` bytes starting at `start` to script-relative `path`. Returns: nothing. Raises on monitor errors.
+`dbg.save_mem_file(start, length, path)` - Save `length` bytes starting at `start` to script-relative `path`. Returns: nothing. Raises on monitor errors.
 
-`dbg.load_mem_file(path, addr)` — Load a binary file from an approved read path into memory at `addr`. Returns: nothing. Raises on monitor errors.
+`dbg.load_mem_file(path, addr)` - Load a binary file from an approved read path into memory at `addr`. Returns: nothing. Raises on monitor errors.
 
 ### Multi-CPU
 
-`dbg.cpu_list()` — List all registered CPUs. Returns: table (array) of entries, each with fields:
+`dbg.cpu_list()` - List all registered CPUs. Returns: table (array) of entries, each with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -866,27 +898,27 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 | `cpu_name` | string | CPU architecture name |
 | `is_running` | boolean | Whether the CPU is currently running |
 
-`dbg.cpu_focus(id)` — Switch monitor focus to a CPU by numeric `id` or string label. Returns: nothing.
+`dbg.cpu_focus(id)` - Switch monitor focus to a CPU by numeric `id` or string label. Returns: nothing.
 
-`dbg.freeze_cpu(label)` — Freeze a specific CPU by label. Returns: nothing.
+`dbg.freeze_cpu(label)` - Freeze a specific CPU by label. Returns: nothing.
 
-`dbg.thaw_cpu(label)` — Thaw (resume) a specific CPU by label. Returns: nothing.
+`dbg.thaw_cpu(label)` - Thaw (resume) a specific CPU by label. Returns: nothing.
 
-`dbg.freeze_all()` — Freeze all CPUs. Returns: nothing.
+`dbg.freeze_all()` - Freeze all CPUs. Returns: nothing.
 
-`dbg.thaw_all()` — Thaw all CPUs. Returns: nothing.
+`dbg.thaw_all()` - Thaw all CPUs. Returns: nothing.
 
 ### Audio Debug
 
-`dbg.freeze_audio()` — Freeze audio generation (silence). Returns: nothing.
+`dbg.freeze_audio()` - Freeze audio generation (silence). Returns: nothing.
 
-`dbg.thaw_audio()` — Resume audio generation. Returns: nothing.
+`dbg.thaw_audio()` - Resume audio generation. Returns: nothing.
 
 ### I/O Inspection
 
-`dbg.io_devices()` — List all available I/O device names. Returns: table (array) of strings.
+`dbg.io_devices()` - List all available I/O device names. Returns: table (array) of strings.
 
-`dbg.io(device)` — Read all registers for the named I/O device. Returns: table (array) of entries, each with fields:
+`dbg.io(device)` - Read all registers for the named I/O device. If `device` is not a recognised device name (see `dbg.io_devices()` for the authoritative list), returns an empty table silently - typos do not raise. Returns: table (array) of entries, each with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -897,15 +929,15 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 
 ### Scripting
 
-`dbg.run_script(path)` — Execute a monitor script file from an approved read path. Before execution, every line and semicolon-separated command is validated with the same sandbox filter used by `dbg.command`. Host-file monitor commands are rejected. Returns: nothing.
+`dbg.run_script(path)` - Execute a monitor script file from an approved read path. Before execution, every line and semicolon-separated command is validated with the same sandbox filter used by `dbg.command`. Host-file monitor commands are rejected. Returns: nothing.
 
-`dbg.macro(name, cmds)` — Define a monitor macro. `name` is the macro name; `cmds` is the semicolon-aware command string. Each command is sandbox-validated before registration. Macro names cannot contain whitespace or semicolons. Returns: nothing.
+`dbg.macro(name, cmds)` - Define a monitor macro. `name` is the macro name; `cmds` is the semicolon-aware command string. Each command is sandbox-validated before registration. Macro names cannot contain whitespace or semicolons. Returns: nothing.
 
-`dbg.command(cmd)` — Execute a monitor command string after sandbox filtering. Host-file-capable monitor commands are rejected (`save`, `load`, `ss`, `sl`, `script`, `macro`, and `trace file`; `trace file off` is allowed). Invoking monitor macros through this raw API is rejected. Returns: nothing.
+`dbg.command(cmd)` - Execute a monitor command string after sandbox filtering. Host-file-capable monitor commands are rejected (`save`, `load`, `ss`, `sl`, `script`, `macro`, and `trace file`; `trace file off` is allowed). Invoking monitor macros through this raw API is rejected. Returns: nothing.
 
-`dbg.command_output(cmd)` — Execute a sandbox-filtered monitor command string and return newly appended monitor output lines as `{text, color}` entries. The same command restrictions as `dbg.command` apply. Returns: table.
+`dbg.command_output(cmd)` - Execute a sandbox-filtered monitor command string and return newly appended monitor output lines as `{text, color}` entries. The same command restrictions as `dbg.command` apply. Returns: table.
 
-Example — breakpoint workflow:
+Example - breakpoint workflow:
 
 ```lua
 dbg.open()
@@ -936,25 +968,25 @@ Supported CPU types: `"ie32"`, `"6502"`, `"m68k"`, `"z80"`, `"x86"`, `"ie64"`.
 
 ### Ticket lifecycle
 
-1. `coproc.start(cpu_type, filename)` — launch a worker.
-2. `coproc.enqueue(cpu_type, op, request)` — submit work, get a ticket ID.
-3. `coproc.poll(ticket)` or `coproc.wait(ticket, timeout_ms)` — check/wait for completion.
-4. `coproc.response(ticket)` — retrieve the response data.
-5. `coproc.stop(cpu_type)` — tear down the worker when done.
+1. `coproc.start(cpu_type, filename)` - launch a worker.
+2. `coproc.enqueue(cpu_type, op, request)` - submit work, get a ticket ID.
+3. `coproc.poll(ticket)` or `coproc.wait(ticket, timeout_ms)` - check/wait for completion.
+4. `coproc.response(ticket)` - retrieve the response data.
+5. `coproc.stop(cpu_type)` - tear down the worker when done.
 
 ### Functions
 
-`coproc.start(cpu_type, filename)` — Start a coprocessor worker of the given `cpu_type`, loading the program from `filename`. Returns: nothing. Raises on error.
+`coproc.start(cpu_type, filename)` - Start a coprocessor worker of the given `cpu_type`, loading the program from `filename`. Returns: nothing. Raises on error.
 
-`coproc.stop(cpu_type)` — Stop the coprocessor worker for `cpu_type`. Returns: nothing. Raises on error.
+`coproc.stop(cpu_type)` - Stop the coprocessor worker for `cpu_type`. Returns: nothing. Raises on error.
 
-`coproc.enqueue(cpu_type, op, request)` — Enqueue a work request. `op` is a numeric opcode; `request` is a raw byte string payload. Returns: number (ticket ID).
+`coproc.enqueue(cpu_type, op, request)` - Enqueue a work request. `op` is a numeric opcode; `request` is a raw byte string payload. Returns: number (ticket ID).
 
-`coproc.poll(ticket)` — Check the status of a ticket without blocking. Returns: string — one of `"pending"`, `"running"`, `"ok"`, `"error"`, `"timeout"`, `"worker_down"`.
+`coproc.poll(ticket)` - Check the status of a ticket without blocking. Returns: string - one of `"pending"`, `"running"`, `"ok"`, `"error"`, `"timeout"`, `"worker_down"`.
 
-`coproc.wait(ticket, timeout_ms)` — Block until the ticket completes or `timeout_ms` expires. Returns: status (string), response (string, raw bytes). The response is empty if the ticket did not complete successfully.
+`coproc.wait(ticket, timeout_ms)` - Block until the ticket completes or `timeout_ms` expires. Returns: status (string), response (string, raw bytes). The response is empty if the ticket did not complete successfully.
 
-`coproc.workers()` — List all active coprocessor workers. Returns: table (array) of entries, each with fields:
+`coproc.workers()` - List all active coprocessor workers. Returns: table (array) of entries, each with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -963,7 +995,16 @@ Supported CPU types: `"ie32"`, `"6502"`, `"m68k"`, `"z80"`, `"x86"`, `"ie64"`.
 
 Per-CPU monitor registers such as ring depth and uptime are selected by writing `COPROC_CPU_TYPE` before reading the register. `COPROC_BUSY_PCT` is aggregate across workers. For 6502 and Z80 workers, the mailbox CPU window is `0x2000` through `0x37FF`; `0x3800` through `0x3FFF` remains worker RAM.
 
-`coproc.response(ticket)` — Retrieve the response data for a ticket. If the ticket completed successfully, returns the response bytes. If the ticket is not found in the response ring but was previously enqueued, returns the raw contents of the preallocated response buffer (which may contain stale or partial data). Returns empty string only if the ticket is entirely unknown. Returns: string (raw bytes).
+`coproc.response(ticket)` - Retrieve the response data for a ticket. If the ticket completed successfully, returns the response bytes. If the ticket is not found in the response ring but was previously enqueued, returns the raw contents of the preallocated response buffer (which may contain stale or partial data). Returns empty string only if the ticket is entirely unknown. Returns: string (raw bytes).
+
+`coproc.stats()` - Read aggregate dispatcher counters from MMIO. Returns: table with fields:
+
+| Field | Type | Source register |
+|-------|------|-----------------|
+| `ops` | number | `COPROC_STATS_OPS` - total completed ops |
+| `bytes` | number | `COPROC_STATS_BYTES` - total bytes processed |
+| `overhead_ns` | number | `COPROC_DISPATCH_OVERHEAD` - most recent dispatch overhead in ns |
+| `completed_ticket` | number | `COPROC_COMPLETED_TICKET` - most recently completed ticket ID |
 
 Example:
 
@@ -981,19 +1022,19 @@ coproc.stop("ie32")
 
 Format-agnostic media loader. Supports SID, PSG/VGM, TED, AHX, POKEY/SAP, MOD, and WAV formats. WAV routing supports mono/stereo PCM through the WAV MMIO control surface.
 
-`media.load(filename)` — Load and start playing a music file from an approved read path, auto-detecting format. Returns: nothing. Raises on path validation or immediate setup failures (e.g. scratch memory unavailable); format detection and decode errors are reported asynchronously via `media.status()` and `media.error()`.
+`media.load(filename)` - Load and start playing a music file from an approved read path, auto-detecting format. Returns: nothing. Raises on path validation or immediate setup failures (e.g. scratch memory unavailable); format detection and decode errors are reported asynchronously via `media.status()` and `media.error()`.
 
-`media.load_subsong(filename, subsong)` — Load a music file from an approved read path and select a specific sub-song index. Returns: nothing. Same error semantics as `media.load`.
+`media.load_subsong(filename, subsong)` - Load a music file from an approved read path and select a specific sub-song index. Returns: nothing. Same error semantics as `media.load`.
 
-`media.play()` — Resume playback (if paused or after load). Returns: nothing.
+`media.play()` - Resume playback (if paused or after load). Returns: nothing.
 
-`media.stop()` — Stop playback. Returns: nothing.
+`media.stop()` - Stop playback. Returns: nothing.
 
-`media.status()` — Get the current playback status. Returns: string — one of `"idle"`, `"loading"`, `"playing"`, `"error"`.
+`media.status()` - Get the current playback status. Returns: string - one of `"idle"`, `"loading"`, `"playing"`, `"error"`.
 
-`media.type()` — Get the detected media type. Returns: string — one of `"sid"`, `"psg"`, `"ted"`, `"ahx"`, `"pokey"`, `"mod"`, `"wav"`, `"none"`.
+`media.type()` - Get the detected media type. Returns: string - one of `"sid"`, `"psg"`, `"ted"`, `"ahx"`, `"pokey"`, `"mod"`, `"wav"`, `"none"`.
 
-`media.error()` — Get the last error code (0 if no error). Returns: number.
+`media.error()` - Get the last error code (0 if no error). Returns: number.
 
 Example:
 
@@ -1011,29 +1052,29 @@ media.stop()
 
 Lua 5.1 does not include a bitwise library. IEScript provides a `bit32` global table with unsigned 32-bit operations, compatible with the Lua 5.2 `bit32` library interface.
 
-`bit32.band(...)` — Bitwise AND of all arguments. With zero arguments, returns `0xFFFFFFFF`. Returns: number.
+`bit32.band(...)` - Bitwise AND of all arguments. With zero arguments, returns `0xFFFFFFFF`. Returns: number.
 
-`bit32.bor(...)` — Bitwise OR of all arguments. Returns: number.
+`bit32.bor(...)` - Bitwise OR of all arguments. Returns: number.
 
-`bit32.bxor(...)` — Bitwise XOR of all arguments. Returns: number.
+`bit32.bxor(...)` - Bitwise XOR of all arguments. Returns: number.
 
-`bit32.bnot(x)` — Bitwise NOT (ones complement). Returns: number.
+`bit32.bnot(x)` - Bitwise NOT (ones complement). Returns: number.
 
-`bit32.lshift(x, disp)` — Logical left shift by `disp` bits (masked to 0..31). Returns: number.
+`bit32.lshift(x, disp)` - Logical left shift by `disp` bits (masked to 0..31). Returns: number.
 
-`bit32.rshift(x, disp)` — Logical right shift by `disp` bits (masked to 0..31). Returns: number.
+`bit32.rshift(x, disp)` - Logical right shift by `disp` bits (masked to 0..31). Returns: number.
 
-`bit32.arshift(x, disp)` — Arithmetic right shift by `disp` bits (sign-extending). Returns: number.
+`bit32.arshift(x, disp)` - Arithmetic right shift by `disp` bits (sign-extending). Returns: number.
 
-`bit32.lrotate(x, disp)` — Left rotation by `disp` bits. Returns: number.
+`bit32.lrotate(x, disp)` - Left rotation by `disp` bits. Returns: number.
 
-`bit32.rrotate(x, disp)` — Right rotation by `disp` bits. Returns: number.
+`bit32.rrotate(x, disp)` - Right rotation by `disp` bits. Returns: number.
 
-`bit32.extract(x, field[, width])` — Extract `width` bits starting at zero-based bit `field` (default width 1). Returns: number.
+`bit32.extract(x, field[, width])` - Extract `width` bits starting at zero-based bit `field` (default width 1). Returns: number.
 
-`bit32.replace(x, v, field[, width])` — Replace `width` bits in `x` starting at zero-based bit `field` with low bits from `v` (default width 1). Returns: number.
+`bit32.replace(x, v, field[, width])` - Replace `width` bits in `x` starting at zero-based bit `field` with low bits from `v` (default width 1). Returns: number.
 
-`bit32.btest(...)` — Bitwise AND of all arguments, returned as boolean true if any resulting bit is set. Returns: boolean.
+`bit32.btest(...)` - Bitwise AND of all arguments, returned as boolean true if any resulting bit is set. Returns: boolean.
 
 Example:
 
@@ -1054,7 +1095,7 @@ sys.print(string.format("0x%X", shifted))
 rec.screenshot("frame.png")
 ```
 
-Screenshots are pure Go (PNG encoding) — no external tools required.
+Screenshots are pure Go (PNG encoding) - no external tools required.
 
 ### Recording
 
@@ -1068,7 +1109,7 @@ Notes:
 
 - FFmpeg must be available in `PATH`.
 - Recording uses compositor dimensions/refresh settings.
-- Audio is captured via a sample tap on the sound chip — no double-ticking occurs.
+- Audio is captured via a sample tap on the sound chip - no double-ticking occurs.
 - Resolution is locked for the duration of a recording session.
 - Recording works in headless mode (`-headless -script render.ies`).
 
@@ -1243,39 +1284,69 @@ The overlay requires a display backend. It is not available in headless builds (
 
 Recording relies on an FFmpeg subprocess. If FFmpeg crashes or is killed, the recording stops. Check FFmpeg stderr output for encoding errors. Common causes: unsupported resolution, disk full, or codec issues.
 
+## Script Cancellation and Auto-Release
+
+When a script raises an unhandled error or is cancelled (by host shutdown, Lua VM context cancellation, or an explicit stop), the runtime auto-releases the script's contributions to global state so the emulator returns to a coherent baseline. The deferred cleanup in `ScriptEngine.run` performs:
+
+- **CPU freeze counter** - every outstanding `cpu.freeze()` made by the script is decremented.
+- **Debugger open count** - if the script holds the script-owned `dbg.open()` / `dbg.freeze()` contribution, the monitor is deactivated and the associated CPU freeze it added is released.
+- **Audio freeze** - the sound chip's `audioFrozen` flag is restored to the value it had at script start (so a script that called `audio.freeze()` or `dbg.freeze_audio()` does not leak silence into later runs).
+- **Coprocessor tickets** - the in-process ticket table is cleared.
+- **Output capture** - `sys.capture_output` redirection is reverted.
+- **Mouse override** - the sticky flag set by `term.mouse_*` injection is cleared so host mouse handling resumes.
+
+State *not* auto-released: breakpoints, watchpoints, monitor macros, trace watches, `dbg.run_until` temp breakpoints, any guest-side state mutated through `mem.*` / `dbg.write_mem`, and **active recordings started by `rec.start*`** (recording stops only on explicit `rec.stop()`, `sys.quit()`, `sys.exit()`, or engine shutdown). Clean these up explicitly when correctness depends on it.
+
+## Common Pitfalls
+
+- **`raw memory access requires cpu.freeze()`** - every `mem.read*` / `mem.write*` / `mem.read_block` / `mem.write_block` / `mem.fill` on a RAM address must be inside a `cpu.freeze()` / `cpu.resume()` bracket. MMIO addresses are exempt, but block operations that span MMIO into RAM still require a freeze.
+- **`audio.*_load` format mismatch** - each player accepts only its own file types. Use the format-agnostic `media.load` if you need auto-detection across SID, PSG/VGM, TED, AHX, POKEY, MOD, and WAV.
+- **Host-FS denial outside script roots** - reads search the current script directory then `sdk/scripts/`; writes are script-relative only. Absolute paths and `..` traversal are rejected. Use `--script-trusted` / `--script-allow-host-fs` (when implemented) only for legacy scripts.
+- **`require` only loads Lua modules from approved roots** - native modules and `package.loadlib` are unavailable.
+- **`rec.start*` needs FFmpeg in `PATH`** - `rec.screenshot` is pure Go and has no external dependency.
+- **`dbg.run_until` has no timeout** - leaves a temp breakpoint if the target is never reached. Clear with `dbg.clear_bp(addr)`.
+- **`dbg.io(device)` returns an empty table for unknown device names** - no error is raised; check `dbg.io_devices()` for the canonical list.
+- **`cpu.set_jit_enabled(true)` raises while the CPU is running** - stop the CPU first or toggle JIT only at boot.
+- **Frame channel capacity 1** - if inter-yield work exceeds a frame period, frames are silently dropped rather than queued. Inspect `sys.frame_time()` to detect.
+- **`term.mouse_*` injection sets a sticky override** - call `term.mouse_release()` when done so host mouse handling resumes.
+
 ## Quick Reference
 
 Compact reference for IEScript API functions.
 
-### sys (12)
+### sys (13)
 
 | Function | Returns |
 |----------|---------|
-| `sys.wait_frames(n)` | — |
-| `sys.wait_ms(ms)` | — |
-| `sys.print(...)` | — |
-| `sys.log(...)` | — |
+| `sys.wait_frames(n)` | - |
+| `sys.wait_ms(ms)` | - |
+| `sys.print(...)` | - |
+| `sys.log(...)` | - |
 | `sys.time_ms()` | number |
 | `sys.frame_count()` | number |
 | `sys.frame_time()` | number |
 | `sys.fps()` | number |
-| `sys.quit()` | — |
-| `sys.emutos_drive(path)` | — |
-| `sys.capture_output(path)` | — |
-| `sys.capture_output_off()` | — |
+| `sys.quit()` | - |
+| `sys.exit([code])` | - |
+| `sys.emutos_drive(path [, drive])` | - |
+| `sys.capture_output(path)` | - |
+| `sys.capture_output_off()` | - |
 
-### cpu (8)
+### cpu (11)
 
 | Function | Returns |
 |----------|---------|
-| `cpu.load(path)` | — |
-| `cpu.reset()` | — |
-| `cpu.freeze()` | — |
-| `cpu.resume()` | — |
-| `cpu.start()` | — |
-| `cpu.stop()` | — |
+| `cpu.load(path)` | - |
+| `cpu.reset()` | - |
+| `cpu.freeze()` | - |
+| `cpu.resume()` | - |
+| `cpu.start()` | - |
+| `cpu.stop()` | - |
 | `cpu.is_running()` | boolean |
 | `cpu.mode()` | string |
+| `cpu.jit_enabled()` | boolean |
+| `cpu.set_jit_enabled(enabled)` | - |
+| `cpu.execution_mode()` | string |
 
 ### mem (9)
 
@@ -1284,126 +1355,135 @@ Compact reference for IEScript API functions.
 | `mem.read8(addr)` | number |
 | `mem.read16(addr)` | number |
 | `mem.read32(addr)` | number |
-| `mem.write8(addr, value)` | — |
-| `mem.write16(addr, value)` | — |
-| `mem.write32(addr, value)` | — |
+| `mem.write8(addr, value)` | - |
+| `mem.write16(addr, value)` | - |
+| `mem.write32(addr, value)` | - |
 | `mem.read_block(addr, len)` | string |
-| `mem.write_block(addr, bytes)` | — |
-| `mem.fill(addr, len, value)` | — |
+| `mem.write_block(addr, bytes)` | - |
+| `mem.fill(addr, len, value)` | - |
 
-### term (12)
+### term (13)
 
 | Function | Returns |
 |----------|---------|
-| `term.type(str)` | — |
-| `term.type_line(str)` | — |
+| `term.type(str)` | - |
+| `term.type_line(str)` | - |
 | `term.read()` | string |
-| `term.clear()` | — |
-| `term.echo(on)` | — |
+| `term.clear()` | - |
+| `term.echo(on)` | - |
 | `term.wait_output(pattern, timeout_ms)` | boolean |
-| `term.mouse_move(x, y)` | — |
-| `term.mouse_delta(dx, dy [, button])` | — |
-| `term.mouse_click(x, y [, button])` | — |
-| `term.mouse_double_click(x, y [, button])` | — |
-| `term.scancode(code)` | — |
-| `term.key_press(code [, hold_ms])` | — |
+| `term.mouse_move(x, y)` | - |
+| `term.mouse_delta(dx, dy [, button])` | - |
+| `term.mouse_click(x, y [, button])` | - |
+| `term.mouse_double_click(x, y [, button])` | - |
+| `term.mouse_release()` | - |
+| `term.scancode(code)` | - |
+| `term.key_press(code [, hold_ms])` | - |
 
-### audio (28)
+### audio (36)
 
 | Function | Returns |
 |----------|---------|
-| `audio.start()` | — |
-| `audio.stop()` | — |
-| `audio.reset()` | — |
-| `audio.freeze()` | — |
-| `audio.resume()` | — |
-| `audio.write_reg(addr, value)` | — |
-| `audio.psg_load(path)` | — |
-| `audio.psg_play()` | — |
-| `audio.psg_stop()` | — |
+| `audio.start()` | - |
+| `audio.stop()` | - |
+| `audio.reset()` | - |
+| `audio.freeze()` | - |
+| `audio.resume()` | - |
+| `audio.write_reg(addr, value)` | - |
+| `audio.set_master_gain_db(db)` | - |
+| `audio.get_master_gain_db()` | number |
+| `audio.set_master_auto_level_enabled(on)` | - |
+| `audio.configure_master_auto_level(target_db, min_gain_db, max_gain_db, attack_ms, release_ms)` | - |
+| `audio.set_master_compressor_enabled(on)` | - |
+| `audio.configure_master_compressor(threshold_db, ratio, attack_ms, release_ms, knee_db, makeup_db, lookahead_ms)` | - |
+| `audio.use_showreel_normalizer_preset()` | - |
+| `audio.reset_master_dynamics()` | - |
+| `audio.psg_load(path)` | - |
+| `audio.psg_play()` | - |
+| `audio.psg_stop()` | - |
 | `audio.psg_is_playing()` | boolean |
 | `audio.psg_metadata()` | table |
-| `audio.sid_load(path [, subsong])` | — |
-| `audio.sid_play()` | — |
-| `audio.sid_stop()` | — |
+| `audio.sid_load(path [, subsong])` | - |
+| `audio.sid_play()` | - |
+| `audio.sid_stop()` | - |
 | `audio.sid_is_playing()` | boolean |
 | `audio.sid_metadata()` | table |
-| `audio.ted_load(path)` | — |
-| `audio.ted_play()` | — |
-| `audio.ted_stop()` | — |
+| `audio.ted_load(path)` | - |
+| `audio.ted_play()` | - |
+| `audio.ted_stop()` | - |
 | `audio.ted_is_playing()` | boolean |
-| `audio.pokey_load(path)` | — |
-| `audio.pokey_play()` | — |
-| `audio.pokey_stop()` | — |
+| `audio.pokey_load(path)` | - |
+| `audio.pokey_play()` | - |
+| `audio.pokey_stop()` | - |
 | `audio.pokey_is_playing()` | boolean |
-| `audio.ahx_load(path)` | — |
-| `audio.ahx_play()` | — |
-| `audio.ahx_stop()` | — |
+| `audio.ahx_load(path)` | - |
+| `audio.ahx_play()` | - |
+| `audio.ahx_stop()` | - |
 | `audio.ahx_is_playing()` | boolean |
 
 ### video (65)
 
 | Function | Returns |
 |----------|---------|
-| `video.write_reg(addr, value)` | — |
+| `video.write_reg(addr, value)` | - |
 | `video.read_reg(addr)` | number |
 | `video.get_dimensions()` | width, height |
 | `video.is_enabled()` | boolean |
-| `video.vga_enable(on)` | — |
-| `video.vga_set_mode(mode)` | — |
-| `video.vga_set_palette(idx, r, g, b)` | — |
+| `video.vga_enable(on)` | - |
+| `video.vga_set_mode(mode)` | - |
+| `video.vga_set_palette(idx, r, g, b)` | - |
 | `video.vga_get_palette(idx)` | r, g, b |
 | `video.vga_get_dimensions()` | width, height |
-| `video.ula_enable(on)` | — |
+| `video.ula_enable(on)` | - |
 | `video.ula_is_enabled()` | boolean |
-| `video.ula_border(colour)` | — |
+| `video.ula_border(colour)` | - |
 | `video.ula_get_dimensions()` | width, height |
-| `video.antic_enable(on)` | — |
+| `video.antic_enable(on)` | - |
 | `video.antic_is_enabled()` | boolean |
-| `video.antic_dlist(addr)` | — |
-| `video.antic_dma(flags)` | — |
-| `video.antic_scroll(h, v)` | — |
-| `video.antic_charset(page)` | — |
-| `video.antic_pmbase(page)` | — |
+| `video.antic_dlist(addr)` | - |
+| `video.antic_dma(flags)` | - |
+| `video.antic_scroll(h, v)` | - |
+| `video.antic_charset(page)` | - |
+| `video.antic_pmbase(page)` | - |
 | `video.antic_get_dimensions()` | width, height |
-| `video.gtia_color(reg, value)` | — |
-| `video.gtia_player_pos(player, x)` | — |
-| `video.gtia_player_size(player, size)` | — |
-| `video.gtia_player_gfx(player, data)` | — |
-| `video.gtia_priority(value)` | — |
-| `video.ted_enable(on)` | — |
+| `video.gtia_color(reg, value)` | - |
+| `video.gtia_player_pos(player, x)` | - |
+| `video.gtia_player_size(player, size)` | - |
+| `video.gtia_player_gfx(player, data)` | - |
+| `video.gtia_priority(value)` | - |
+| `video.ted_enable(on)` | - |
 | `video.ted_is_enabled()` | boolean |
-| `video.ted_mode(ctrl1, ctrl2)` | — |
-| `video.ted_colors(bg0, bg1, bg2, bg3, border)` | — |
-| `video.ted_charset(page)` | — |
-| `video.ted_video_base(page)` | — |
-| `video.ted_cursor(pos, colour)` | — |
+| `video.ted_mode(ctrl1, ctrl2)` | - |
+| `video.ted_colors(bg0, bg1, bg2, bg3, border)` | - |
+| `video.ted_charset(page)` | - |
+| `video.ted_video_base(page)` | - |
+| `video.ted_cursor(pos, colour)` | - |
 | `video.ted_get_dimensions()` | width, height |
-| `video.voodoo_enable(on)` | — |
+| `video.voodoo_enable(on)` | - |
 | `video.voodoo_is_enabled()` | boolean |
-| `video.voodoo_resolution(w, h)` | — |
-| `video.voodoo_vertex(ax, ay, bx, by, cx, cy)` | — |
-| `video.voodoo_color(idx, r, g, b, a)` | — |
-| `video.voodoo_depth(z)` | — |
-| `video.voodoo_texcoord(s, t, w)` | — |
-| `video.voodoo_draw()` | — |
-| `video.voodoo_swap()` | — |
-| `video.voodoo_clear(r, g, b)` | — |
-| `video.voodoo_fog(on, r, g, b)` | — |
-| `video.voodoo_alpha(mode)` | — |
-| `video.voodoo_zbuffer(mode)` | — |
-| `video.voodoo_clip(left, right, top, bottom)` | — |
-| `video.voodoo_texture(w, h, data)` | — |
-| `video.voodoo_chromakey(on, r, g, b)` | — |
-| `video.voodoo_dither(on)` | — |
+| `video.voodoo_resolution(w, h)` | - |
+| `video.voodoo_vertex(ax, ay, bx, by, cx, cy)` | - |
+| `video.voodoo_color(idx, r, g, b, a)` | - |
+| `video.voodoo_depth(z)` | - |
+| `video.voodoo_texcoord(s, t, w)` | - |
+| `video.voodoo_draw()` | - |
+| `video.voodoo_swap()` | - |
+| `video.voodoo_clear(r, g, b)` | - |
+| `video.voodoo_fog(on, r, g, b)` | - |
+| `video.voodoo_alpha(mode)` | - |
+| `video.voodoo_zbuffer(mode)` | - |
+| `video.voodoo_clip(left, right, top, bottom)` | - |
+| `video.voodoo_texture(w, h, data)` | - |
+| `video.voodoo_chromakey(on, r, g, b)` | - |
+| `video.voodoo_dither(on)` | - |
 | `video.voodoo_get_dimensions()` | width, height |
-| `video.copper_enable(on)` | — |
-| `video.copper_set_program(addr)` | — |
+| `video.copper_enable(on)` | - |
+| `video.copper_set_program(addr)` | - |
 | `video.copper_is_running()` | boolean |
-| `video.blit_copy(src, dst, w, h, src_stride, dst_stride)` | — |
-| `video.blit_fill(dst, w, h, colour, dst_stride)` | — |
-| `video.blit_line(x0, y0, x1, y1, colour)` | — |
-| `video.blit_wait()` | — |
+| `video.blit_copy(src, dst, w, h, src_stride, dst_stride)` | - |
+| `video.blit_fill(dst, w, h, colour, dst_stride)` | - |
+| `video.blit_line(x0, y0, x1, y1, colour)` | - |
+| `video.blit_wait()` | - |
 | `video.get_pixel(x, y)` | r, g, b, a |
 | `video.get_region(x, y, w, h)` | string |
 | `video.frame_hash()` | number |
@@ -1415,23 +1495,23 @@ Compact reference for IEScript API functions.
 
 | Function | Returns |
 |----------|---------|
-| `repl.show()` | — |
-| `repl.hide()` | — |
+| `repl.show()` | - |
+| `repl.hide()` | - |
 | `repl.is_open()` | boolean |
-| `repl.print(text)` | — |
-| `repl.clear()` | — |
-| `repl.scroll_up(n)` | — |
-| `repl.scroll_down(n)` | — |
+| `repl.print(text)` | - |
+| `repl.clear()` | - |
+| `repl.scroll_up(n)` | - |
+| `repl.scroll_down(n)` | - |
 | `repl.line_count()` | number |
 
 ### rec (6)
 
 | Function | Returns |
 |----------|---------|
-| `rec.screenshot(path)` | — |
-| `rec.start(path)` | — |
-| `rec.start_screen(path)` | — |
-| `rec.stop()` | — |
+| `rec.screenshot(path)` | - |
+| `rec.start(path)` | - |
+| `rec.start_screen(path)` | - |
+| `rec.stop()` | - |
 | `rec.is_recording()` | boolean |
 | `rec.frame_count()` | number |
 
@@ -1439,84 +1519,85 @@ Compact reference for IEScript API functions.
 
 | Function | Returns |
 |----------|---------|
-| `dbg.open()` | — |
-| `dbg.close()` | — |
+| `dbg.open()` | - |
+| `dbg.close()` | - |
 | `dbg.is_open()` | boolean |
-| `dbg.freeze()` | — |
-| `dbg.resume()` | — |
-| `dbg.step([n])` | — |
-| `dbg.continue()` | — |
-| `dbg.run_until(addr)` | — |
-| `dbg.backstep()` | — |
-| `dbg.set_bp(addr)` | — |
-| `dbg.set_conditional_bp(addr, condition)` | — |
-| `dbg.clear_bp(addr)` | — |
-| `dbg.clear_all_bp()` | — |
+| `dbg.freeze()` | - |
+| `dbg.resume()` | - |
+| `dbg.step([n])` | - |
+| `dbg.continue()` | - |
+| `dbg.run_until(addr)` | - |
+| `dbg.backstep()` | - |
+| `dbg.set_bp(addr)` | - |
+| `dbg.set_conditional_bp(addr, condition)` | - |
+| `dbg.clear_bp(addr)` | - |
+| `dbg.clear_all_bp()` | - |
 | `dbg.list_bp()` | table |
-| `dbg.set_wp(addr)` | — |
-| `dbg.clear_wp(addr)` | — |
-| `dbg.clear_all_wp()` | — |
+| `dbg.set_wp(addr)` | - |
+| `dbg.clear_wp(addr)` | - |
+| `dbg.clear_all_wp()` | - |
 | `dbg.list_wp()` | table |
 | `dbg.get_reg(name)` | number/nil |
-| `dbg.set_reg(name, value)` | — |
+| `dbg.set_reg(name, value)` | - |
 | `dbg.get_regs()` | table |
 | `dbg.get_pc()` | number |
-| `dbg.set_pc(addr)` | — |
+| `dbg.set_pc(addr)` | - |
 | `dbg.read_mem(addr, len)` | string |
-| `dbg.write_mem(addr, data)` | — |
-| `dbg.fill_mem(addr, len, value)` | — |
+| `dbg.write_mem(addr, data)` | - |
+| `dbg.fill_mem(addr, len, value)` | - |
 | `dbg.hunt_mem(start, len, pattern)` | table |
 | `dbg.compare_mem(start, len, dest)` | table |
-| `dbg.transfer_mem(start, len, dest)` | — |
+| `dbg.transfer_mem(start, len, dest)` | - |
 | `dbg.backtrace([depth])` | table |
 | `dbg.disasm(addr, count)` | table |
 | `dbg.trace(n)` | table |
-| `dbg.trace_file(path)` | — |
-| `dbg.trace_file_off()` | — |
-| `dbg.trace_watch_add(addr)` | — |
-| `dbg.trace_watch_del(addr)` | — |
+| `dbg.trace_file(path)` | - |
+| `dbg.trace_file_off()` | - |
+| `dbg.trace_watch_add(addr)` | - |
+| `dbg.trace_watch_del(addr)` | - |
 | `dbg.trace_watch_list()` | table |
 | `dbg.trace_history(addr_str)` | table |
-| `dbg.trace_history_clear(addr)` | — |
-| `dbg.save_state(path)` | — |
-| `dbg.load_state(path)` | — |
-| `dbg.save_mem_file(start, length, path)` | — |
-| `dbg.load_mem_file(path, addr)` | — |
+| `dbg.trace_history_clear(addr)` | - |
+| `dbg.save_state(path)` | - |
+| `dbg.load_state(path)` | - |
+| `dbg.save_mem_file(start, length, path)` | - |
+| `dbg.load_mem_file(path, addr)` | - |
 | `dbg.cpu_list()` | table |
-| `dbg.cpu_focus(id)` | — |
-| `dbg.freeze_cpu(label)` | — |
-| `dbg.thaw_cpu(label)` | — |
-| `dbg.freeze_all()` | — |
-| `dbg.thaw_all()` | — |
-| `dbg.freeze_audio()` | — |
-| `dbg.thaw_audio()` | — |
+| `dbg.cpu_focus(id)` | - |
+| `dbg.freeze_cpu(label)` | - |
+| `dbg.thaw_cpu(label)` | - |
+| `dbg.freeze_all()` | - |
+| `dbg.thaw_all()` | - |
+| `dbg.freeze_audio()` | - |
+| `dbg.thaw_audio()` | - |
 | `dbg.io_devices()` | table |
 | `dbg.io(device)` | table |
-| `dbg.run_script(path)` | — |
-| `dbg.macro(name, cmds)` | — |
-| `dbg.command(cmd)` | — |
+| `dbg.run_script(path)` | - |
+| `dbg.macro(name, cmds)` | - |
+| `dbg.command(cmd)` | - |
 | `dbg.command_output(cmd)` | table |
 
-### coproc (7)
+### coproc (8)
 
 | Function | Returns |
 |----------|---------|
-| `coproc.start(cpu_type, filename)` | — |
-| `coproc.stop(cpu_type)` | — |
+| `coproc.start(cpu_type, filename)` | - |
+| `coproc.stop(cpu_type)` | - |
 | `coproc.enqueue(cpu_type, op, request)` | number (ticket) |
 | `coproc.poll(ticket)` | string |
 | `coproc.wait(ticket, timeout_ms)` | string, string |
 | `coproc.workers()` | table |
 | `coproc.response(ticket)` | string |
+| `coproc.stats()` | table |
 
 ### media (7)
 
 | Function | Returns |
 |----------|---------|
-| `media.load(filename)` | — |
-| `media.load_subsong(filename, subsong)` | — |
-| `media.play()` | — |
-| `media.stop()` | — |
+| `media.load(filename)` | - |
+| `media.load_subsong(filename, subsong)` | - |
+| `media.play()` | - |
+| `media.stop()` | - |
 | `media.status()` | string |
 | `media.type()` | string |
 | `media.error()` | number |
