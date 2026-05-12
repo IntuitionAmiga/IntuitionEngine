@@ -544,7 +544,17 @@ func NewCPU64(bus *MachineBus) *CPU64 {
 		FPU:            NewIE64FPU(),
 	}
 	cpu.memBase = unsafe.Pointer(&cpu.memory[0])
-	cpu.regs[31] = STACK_START // R31 is the stack pointer
+	cpu.regs[31] = STACK_START // R31 is the host stack pointer
+	// R30 is the IE64 ABI's "guest SP" — m68kto64 lowers m68k a7 / sp to
+	// r30, and `bsr` pushes return addresses there via `sub.l r30, r30,
+	// #4; store.l r17, (r30)`. Leaving r30=0 at boot wraps the first
+	// push to $FFFFFFFFFFFFFFFC, which trashes return-address state and
+	// destroys control flow in transpiled programs (the visible
+	// AB3D2-on-IE64 "white screen" was caused by this). Seed r30 to the
+	// same legacy STACK_START used for r31 so a stand-alone .ie64
+	// without a custom prologue boots cleanly. Programs that use r30 as
+	// a general register will overwrite it before reading.
+	cpu.regs[30] = STACK_START
 	cpu.running.Store(true)
 	return cpu
 }
@@ -1106,6 +1116,7 @@ func (cpu *CPU64) Reset() {
 	}
 	cpu.PC = PROG_START
 	cpu.regs[31] = STACK_START
+	cpu.regs[30] = STACK_START // guest SP — see NewCPU64 for rationale
 	cpu.cycleCounter = 0
 	cpu.interruptVector = 0
 	cpu.interruptEnabled.Store(false)
