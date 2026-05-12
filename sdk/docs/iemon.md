@@ -2,16 +2,16 @@
 
 ## Overview
 
-The Machine Monitor is a built-in system-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge, HRTMon, and the Commodore Plus/4 built-in monitor. Press **F9** at any time to freeze the entire system and enter the monitor. Press **x** or **Esc** to resume execution.
+The Machine Monitor is a built-in system-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge, HRTMon, and the Commodore Plus/4 built-in monitor. In interactive display builds, press **F9** to freeze the guest CPUs and enter the monitor. Press **x** or **Esc** to close the monitor and resume CPUs that were running when it was entered.
 
 The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and handles multi-CPU scenarios, including coprocessors.
 It is also exposed to IEScript Lua via the `dbg.*` API for scripted debugging workflows. See [iescript.md](iescript.md) for the full `dbg.*` module reference.
 
-**Availability:** The monitor is always built into the engine — no command-line flag or build tag is required. Press F9 from any running program to enter. If an IEScript Lua REPL is also bound (F8), the monitor takes priority while it is active and F8 is suppressed.
+**Availability:** The monitor is part of the engine - no command-line flag is required. The F9 overlay is available when a video backend attaches the monitor; headless builds still use the same monitor core for tests and scripted debugging. If an IEScript Lua REPL is also bound (F8), the monitor takes priority while it is active and F8 is suppressed.
 
 ## Quick Start
 
-1. Run any typed program: `./bin/IntuitionEngine program.ie64`
+1. Run a target program: `./bin/IntuitionEngine program.ie64`
 2. Press **F9** to freeze and enter the monitor
 3. Type `r` to see registers
 4. Type `d` to disassemble around the program counter
@@ -31,7 +31,7 @@ Address arguments accept these formats:
 
 ### Expression Evaluation
 
-Most address arguments support simple expressions with register names and arithmetic:
+Several address arguments support simple expressions with register names and arithmetic:
 
 ```
 > d pc+$20         (disassemble from PC+0x20)
@@ -42,7 +42,11 @@ Most address arguments support simple expressions with register names and arithm
 
 Operators: `+` and `-` only. Each term is either a register name or a numeric address.
 
-Count arguments for `s`, `m`, `trace`, and `bt` are decimal by default. Use `$` or `0x` for hexadecimal counts. The `d` (disassemble) line count is the exception: it is parsed as an address and so defaults to **hexadecimal** (e.g. `d $2000 10` disassembles 0x10 = 16 lines). Bare address arguments remain hexadecimal by default. The `#decimal` prefix is only recognised for address/value arguments (e.g. `r r1 #42`), not for count arguments.
+Expression support is command-specific. It is available for `d`, `m`, `b`, `g`, `save`, the destination address in `load`, `u`, `ww`, `wc`, `trace watch`, `trace history`, and `e`. The low-level byte/range commands `w`, `f`, `h`, `c`, `t`, and `bc` parse literal addresses only.
+
+Count arguments for `s`, `m`, `trace`, and `bt` are decimal by default. Use `$` or `0x` for hexadecimal counts. The `d` (disassemble) line count is the exception: it is parsed with the address parser, so a bare count is hexadecimal and `#decimal` is accepted (for example, `d $2000 10` disassembles 0x10 = 16 lines, while `d $2000 #10` disassembles 10 lines). Bare address arguments remain hexadecimal by default. The `#decimal` prefix is recognised for address/value arguments and for the `d` line count, but not for other count arguments.
+
+Arguments containing spaces can be wrapped in double quotes, for example `save $1000 $1FFF "my dump.bin"`. Inside double quotes, a backslash escapes the following character.
 
 ## Command Reference
 
@@ -74,21 +78,21 @@ Resume execution and exit the monitor. Optionally set the PC before resuming.
 > g $2000    (set PC to $2000, then resume)
 ```
 
-If the supplied address fails to parse, the command resumes from the current PC without setting it and without an error message.
+If the supplied address fails to parse, the command resumes from the current PC without setting it and without an error message. If it parses but is out of range for the focused CPU, the command prints a red `ValidateAddress` error and stays in the monitor instead of resuming.
 
 #### `x` - Exit Monitor
 
-Resume all CPUs and close the monitor overlay. Equivalent to pressing Esc.
+Close the monitor overlay. CPUs that were running when the monitor was entered are resumed; CPUs that were already frozen stay frozen. Equivalent to pressing Esc.
 
 ### Inspection
 
 #### `r` - Show Registers
 
-Display all registers of the focused CPU. Registers that changed since the last step are shown in green.
+Display all registers of the focused CPU. Registers that changed since the monitor's last saved register snapshot are shown in green. The snapshot is refreshed when the monitor is entered, after `s`, after `bs`, after `sl`, and after changing CPU focus.
 
 ```
 > r
-PC   $00001000
+PC   $0000000000001000
 R0   $0000000000000000
 R1   $000000000000002A    (green = changed)
 ...
@@ -96,7 +100,7 @@ R1   $000000000000002A    (green = changed)
 
 #### `r <name> <value>` - Set Register
 
-Modify a register value.
+Modify a register value. Values are truncated by the CPU adapter to the target register width where applicable.
 
 ```
 > r pc $2000
@@ -107,7 +111,7 @@ R1 = $2A
 
 #### `d [addr] [count]` - Disassemble
 
-Disassemble instructions starting from an address (default: current PC, 16 lines). The current PC is marked with `>`, breakpoints with `*`.
+Disassemble instructions starting from an address (default: current PC, 16 lines). The current PC is marked with `>`, breakpoints with `*`, and branch targets within the visible window with `T`.
 
 ```
 > d
@@ -118,11 +122,13 @@ Disassemble instructions starting from an address (default: current PC, 16 lines
 > d $2000 8    (disassemble 8 instructions from $2000)
 ```
 
-**Branch annotations:** Branch and jump instructions are annotated with target information. Backward branches (likely loops) are marked with `<- LOOP` in magenta. Lines that are branch targets within the visible window are prefixed with `T`.
+**Branch annotations:** Backward branch and jump instructions with a known target are marked with `<- LOOP` in magenta. Lines that are branch targets within the visible window are prefixed with `T`.
+
+If an address or count argument does not parse, `d` keeps the default for that argument and does not print an error.
 
 #### `m [addr] [count]` - Memory Dump
 
-Display memory in hex + ASCII format (default: from PC, 8 lines of 16 bytes). The address column follows the focused CPU width, so IE64 dumps preserve full 64-bit addresses.
+Display memory in hex + ASCII format (default: from PC, 8 lines of 16 bytes). The `count` argument is a line count, not a byte count. The address column follows the focused CPU width, so IE64 dumps preserve full 64-bit addresses.
 
 ```
 > m $1000 4
@@ -136,7 +142,7 @@ Display memory in hex + ASCII format (default: from PC, 8 lines of 16 bytes). Th
 
 #### `w <addr> <bytes..>` - Write Bytes
 
-Write individual bytes to memory.
+Write individual bytes to memory. Byte values are parsed as monitor values and then truncated to 8 bits.
 
 ```
 > w $1000 DE AD BE EF
@@ -152,15 +158,17 @@ Fill a memory range with a single byte value.
 Filled $2000-$20FF with $00
 ```
 
+The fill range is capped at 1 MiB (`0x100000` bytes); larger ranges are rejected with `Invalid range`. The fill value is truncated to 8 bits.
+
 ### Memory Export/Import
 
 #### `save <start> <end> <filename>` - Save Memory to File
 
-Save a range of memory to a raw binary file. The maximum save range is the bus-reported total guest RAM, not a fixed legacy 32 MiB limit.
+Save a range of memory to a raw binary file. The maximum requested save range is the bus-reported total guest RAM when the bus is available, falling back to 32 MiB when it is not. Ranges larger than the cap are rejected with `Range too large (max N bytes)`. The command reads through the focused CPU adapter; use an address range that is meaningful for that CPU. Adapter short reads are not reported separately.
 
 ```
 > save $1000 $1FFF dump.bin
-Saved $1000 bytes to dump.bin
+Saved 4096 bytes ($1000-$1FFF) to dump.bin
 ```
 
 #### `load <filename> <addr>` - Load File into Memory
@@ -169,16 +177,16 @@ Load a raw binary file into memory at the specified address.
 
 ```
 > load dump.bin $2000
-Loaded 4096 bytes at $2000
+Loaded 4096 bytes from dump.bin to $2000
 ```
 
-File size is capped for safety; `iemon` rejects files larger than the active visible RAM reported by the bus, ensuring loads cannot exceed the autodetected guest memory window.
+File size is capped for safety at 32 MiB. Files larger than that are rejected with `File too large (max 32MB)`. The destination address is not validated after parsing. Adapter behaviour near the top of the address space is CPU-specific: 6502 and Z80 writes wrap through 16-bit addresses; x86 and some M68K paths write through a 32-bit bus address; IE32 rejects writes that do not fit in its backing memory; IE64 may write through the machine bus for high addresses. Pick the destination address with that in mind.
 
 ### Memory Tools
 
 #### `h <start> <end> <bytes..>` - Hunt/Search
 
-Search a memory range for a byte pattern.
+Search a memory range for a byte pattern. Pattern values are truncated to 8 bits.
 
 ```
 > h $0 $FFFF DE AD
@@ -186,9 +194,11 @@ Found at $1000
 Found at $3456
 ```
 
+Hit reporting is capped at 256 matches. When the cap is reached, the search prints `... (truncated)` and stops. Zero matches print `Not found` in dim text.
+
 #### `c <start> <end> <dest>` - Compare Memory
 
-Compare two memory ranges and report differences.
+Compare two memory ranges and report differences. If the requested range is outside the focused CPU's readable memory, the comparison is limited by what the adapter returns. If both reads return no comparable bytes, the command prints `Identical`.
 
 ```
 > c $1000 $100F $2000
@@ -196,9 +206,11 @@ $1000: DE != 00 (at $2000)
 $1001: AD != 00 (at $2001)
 ```
 
+Diff output is capped at 256 mismatches. When the cap is reached, comparison prints `... (truncated)` and stops. Identical compared bytes print `Identical` in green.
+
 #### `t <start> <end> <dest>` - Transfer/Copy Memory
 
-Copy a memory range to another location.
+Copy a memory range to another location. The command reads through the focused CPU adapter and writes the returned bytes to the destination; overlapping copies are read before writing. The success message reports the requested byte count.
 
 ```
 > t $1000 $100F $2000
@@ -215,7 +227,7 @@ Run the program until the PC reaches the specified address, then stop and re-ent
 
 The monitor exits and execution resumes. When the PC reaches `$2000`, the monitor activates automatically and the temporary breakpoint is removed. If run-until temporarily disables an existing conditional breakpoint, the condition is restored when that stop is handled.
 
-If execution never reaches the target address before the monitor is re-entered for another reason, the temporary breakpoint remains set and will fire on a future run. Use `bc <addr>` to clear it explicitly if you no longer want the stop.
+If `u` creates a new temporary breakpoint and execution never reaches the target address before the monitor is re-entered for another reason, that temporary breakpoint remains set and will fire on a future run. Use `bc <addr>` to clear it explicitly if you no longer want the stop.
 
 #### `bs` - Backstep (Undo Step)
 
@@ -226,31 +238,31 @@ Rewind the focused CPU to the state before the last `s` (single-step) command. R
 Step: 1 instruction(s), 1 cycle(s)
   R1: $0 -> $2A
 > bs
-Backstep: restored to PC=$001000
+Backstep: restored to PC=$1000 (CPU+memory)
 ```
 
 A ring buffer of up to 32 CPU-local snapshots is maintained. Each stepped instruction saves a snapshot before stepping; `bs` pops the most recent one.
 
-**Note:** Only the focused CPU adapter's registers and memory view are restored. Device/chip runtime state (timers, audio envelopes, video scanline position), other CPUs, and coprocessor state are not included. Whole-machine snapshots are future work.
+**Note:** Only the focused CPU adapter's registers and the captured memory span are restored. The captured span starts at address 0 and is 64 KiB for 16-bit adapters or 32 MiB for wider adapters. Device/chip runtime state (timers, audio envelopes, video scanline position), other CPUs, and coprocessor state are not included.
 
 ### Breakpoints
 
 #### `b <addr> [condition]` - Set Breakpoint
 
-Set a breakpoint at an address. When the CPU executes an instruction at this address, the monitor activates automatically. An optional condition causes the breakpoint to fire only when the condition is true.
+Set a breakpoint at an address. When normal execution reaches this PC, the monitor activates before that instruction is executed. An optional condition causes the breakpoint to fire only when the condition is true.
 
 ```
 > b $1010
 Breakpoint set at $1010
 
 > b $1010 r1==$FF
-Conditional breakpoint set at $1010 (r1 == $FF)
+Breakpoint set at $1010 if R1==$FF
 
 > b $2000 [$1000]==$42
-Conditional breakpoint set at $2000 ([$1000] == $42)
+Breakpoint set at $2000 if [$1000]==$42
 
-> b $3000 hitcount>10
-Conditional breakpoint set at $3000 (hitcount > 10)
+> b $3000 hitcount>#10
+Breakpoint set at $3000 if hitcount>$A
 ```
 
 **Condition syntax:**
@@ -261,9 +273,11 @@ Conditional breakpoint set at $3000 (hitcount > 10)
 | `[$1000]==$42` | Memory byte at $1000 equals 0x42 |
 | `[$1000].W==$1234` | Memory word at $1000 equals 0x1234 |
 | `[$1000].L==$12345678` | Memory long at $1000 equals 0x12345678 |
-| `hitcount>10` | Breakpoint hit count exceeds 10 |
+| `hitcount>#10` | Breakpoint hit count exceeds decimal 10 |
 
 Operators: `==`, `!=`, `<`, `>`, `<=`, `>=`
+
+Condition values use the normal address/value syntax (`$hex`, `0xhex`, bare hex, or `#decimal`). Memory condition addresses are literals, not expressions. `.W` and `.L` memory values use the focused CPU's byte order: M68K is big-endian; the other current CPU adapters are little-endian.
 
 #### `bc <addr>` / `bc *` - Clear Breakpoint(s)
 
@@ -284,11 +298,13 @@ List all breakpoints across all CPUs, including conditions and hit counts.
 ```
 > bl
 $1010 (id:0 IE64)
-$2000 (id:0 IE64) if r1 == $FF [hits: 3]
-$0400 (id:3 coproc:Z80)
+$2000 if R1==$FF (hits:3) (id:0 IE64)
+$400 (id:3 coproc:Z80)
 ```
 
-When a breakpoint is hit during normal execution, the monitor activates automatically, freezes all CPUs, and focuses on the CPU that hit the breakpoint:
+CPUs with no breakpoints are skipped silently; an empty list produces no output.
+
+When a breakpoint is hit during normal execution, the monitor activates automatically, freezes running CPUs, and focuses on the CPU that hit the breakpoint:
 
 ```
 BREAK at $1010 on IE64 (id:0)
@@ -298,7 +314,7 @@ BREAK at $1010 on IE64 (id:0)
 
 #### `ww <addr>` - Set Write Watchpoint
 
-Monitor a memory address for writes. When any instruction modifies the watched byte, the monitor activates and displays the old and new values. Read and read/write access watchpoints are not implemented in this hardening pass.
+Monitor a memory address for writes. When an instruction changes the watched byte's value, the monitor activates and displays the old and new values. A store that writes the same byte value does not trigger. Only write watchpoints are currently implemented.
 
 ```
 > ww $1000
@@ -308,7 +324,7 @@ Write watchpoint set at $1000
 When triggered:
 
 ```
-WATCH at $1000 on IE64 (id:0): $00 -> $FF
+WATCH $1000: $00 -> $FF at PC=$1234 on IE64 (id:0)
 ```
 
 #### `wc <addr>` / `wc *` - Clear Watchpoint(s)
@@ -325,12 +341,12 @@ All watchpoints cleared
 
 #### `wl` - List Watchpoints
 
-List all watchpoints on the focused CPU.
+List all watchpoints across all CPUs.
 
 ```
 > wl
-$1000 (write)
-$2000 (write)
+W $1000 (id:0 IE64)
+W $2000 (id:3 coproc:Z80)
 ```
 
 ### Multi-CPU Commands
@@ -342,8 +358,8 @@ List all registered CPUs with their ID, label, status, and program counter. The 
 ```
 > cpu
 *id:0   IE64         [FROZEN ]  PC=$1000
- id:1   coproc:Z80   [FROZEN ]  PC=$0040
- id:2   coproc:6502  [FROZEN ]  PC=$0200
+ id:1   coproc:Z80   [FROZEN ]  PC=$40
+ id:2   coproc:6502  [FROZEN ]  PC=$200
 ```
 
 #### `cpu <id|label>` - Switch Focus
@@ -407,7 +423,7 @@ Stack walking is CPU-specific:
 
 | CPU | Source | Slot Size | Notes |
 |-----|--------|-----------|-------|
-| IE64 | SP | 8 bytes (LE) | Full 64-bit return addresses; the legacy 25-bit mask was retired in PLAN_MAX_RAM slice 3 |
+| IE64 | SP | 8 bytes (LE) | Full 64-bit return addresses |
 | IE32 | SP | 4 bytes (LE) | - |
 | M68K | A6 frame-link chain | 4 bytes (BE) | Walks `prevA6 = mem[A6]; ret = mem[A6+4]` (LINK/UNLK convention). Returns "No stack frames found" if A6 is 0, so leaf or link-less functions produce no trace |
 | Z80 | SP | 2 bytes (LE) | - |
@@ -418,7 +434,7 @@ Stack walking is CPU-specific:
 
 #### `ss [filename]` - Save State
 
-Save a complete snapshot of the focused CPU's registers and memory to disk. Default filename: `snapshot.iem`.
+Save a snapshot of the focused CPU's registers and a fixed CPU memory span to disk. Default filename: `snapshot.iem`.
 
 ```
 > ss
@@ -430,7 +446,7 @@ State saved to mystate.iem (CPU+memory)
 
 #### `sl [filename]` - Load State
 
-Restore a previously saved snapshot, overwriting all CPU registers and memory.
+Restore a previously saved snapshot, overwriting the focused CPU registers and the memory span stored in the snapshot.
 
 ```
 > sl
@@ -440,18 +456,18 @@ State loaded from snapshot.iem (CPU+memory)
 State loaded from mystate.iem (CPU+memory)
 ```
 
-**Note:** `ss`/`sl` operate only on the focused CPU and its memory view. Other CPUs and device/chip runtime state (timers, audio envelopes, video scanline position) are not included. `sl` refuses to load a snapshot whose CPU type differs from the focused CPU.
+**Note:** `ss`/`sl` operate only on the focused CPU. Current snapshots capture memory starting at address 0: 64 KiB for 16-bit adapters and 32 MiB for wider adapters. Snapshot files gzip-compress that memory on disk. Other CPUs and device/chip runtime state (timers, audio envelopes, video scanline position) are not included. `sl` refuses to load a snapshot whose CPU type differs from the focused CPU.
 
 ### Trace and Write History
 
 #### `trace <count>` - Trace Instructions
 
-Execute exactly N instructions on the focused CPU, logging each instruction and register changes. The trace runs synchronously while the monitor is active.
+Execute up to N instructions on the focused CPU, logging each instruction and register changes. The trace runs synchronously while the monitor is active. `trace 0` is rejected.
 
 ```
 > trace 10
-001000: move.l r1, #$2A              R1=$2A
-001008: add.l r2, r1, #$10           R2=$3A
+001000: move.l r1, #$2A          R1=$2A
+001008: add.l r2, r1, #$10       R2=$3A
 ...
 Trace complete: 10 instructions
 ```
@@ -462,7 +478,10 @@ If a breakpoint is hit during tracing, the trace stops early:
 > trace 1000
 ...
 Trace stopped at breakpoint $1010
+Trace complete: 1000 instructions
 ```
+
+The completion line reports the requested count, even if a breakpoint stopped the trace early.
 
 #### `trace file <path>` / `trace file off` - File Output
 
@@ -478,11 +497,11 @@ Trace output to trace.log
 Trace file output stopped
 ```
 
-Trace files are synced before they are closed.
+Trace files are synced before they are closed. When trace output is redirected to a file, the final `Trace complete: N instructions` line still appears in the monitor scrollback.
 
 #### `trace watch add <addr>` - Track Memory Writes
 
-Add a memory address to the write-tracking list. During subsequent `trace` runs, writes to tracked addresses are recorded.
+Add a memory address to the write-tracking list. Trace watches are byte watches: after each traced instruction, the monitor reads one byte at each tracked address and records a write if the byte differs from the previous sampled value.
 
 ```
 > trace watch add $1000
@@ -508,7 +527,7 @@ Trace watch removed at $1000
 
 #### `trace history show <addr>` - Show Write History
 
-Display recorded writes to a tracked address, including the PC that performed the write, and old/new values.
+Display recorded writes to a tracked address, including the PC that performed the write, and old/new values. Step numbers are relative to the trace run that recorded the write. The history is capped at 256 records per address; when the cap is exceeded, older records are dropped.
 
 ```
 > trace history show $1000
@@ -519,7 +538,7 @@ $1000: 4 writes recorded
   Step #510  PC=$009ABC  $00 -> $01
 ```
 
-#### `trace history clear [addr|*]` - Clear History
+#### `trace history clear <addr|*>` - Clear History
 
 Clear write history for a specific address or all addresses.
 
@@ -561,23 +580,23 @@ Available I/O devices:
   voodoo
 
 > io vga
-=== VGA Registers ===
-VGA_MODE       ($F1000) = $00000013  [19]
-VGA_STATUS     ($F1004) = $00000000  [0]
-VGA_CTRL       ($F1008) = $00000001  [1]
+--- VGA Registers ---
+  MODE                 ($F1000) = $00000013 [19] RW
+  STATUS               ($F1004) = $00000000 [0] RO
+  CTRL                 ($F1008) = $00000001 [1] RW
 ...
 
 > io all
 (dumps all 22 devices)
 ```
 
-Register widths are per-register (1, 2, or 4 bytes). Values are displayed in the appropriate width with both hex and decimal representations.
+Register widths are per-register (1, 2, or 4 bytes). Values are displayed in the appropriate width with both hex and decimal representations, followed by the access mode (`RO`, `WO`, or `RW`). Unknown devices print `Unknown device: <name>`.
 
 ### Hex Editor
 
 #### `e <addr>` - Enter Hex Editor
 
-Open an interactive hex editor at the specified address. The display switches to a hex grid showing 16 rows of 16 bytes (256 bytes total).
+Open an interactive hex editor at the specified address. The display switches to a hex grid showing up to 16 rows of 16 bytes (256 bytes total on the default-size overlay).
 
 ```
 > e $1000
@@ -593,13 +612,13 @@ Open an interactive hex editor at the specified address. The display switches to
 | Enter | Commit changes to memory |
 | Esc | Discard changes and return to command mode |
 
-Changed bytes are highlighted in green. The cursor position is shown with inverted colors.
+Changed bytes are highlighted in green. The cursor position is shown with inverted colours. Edits are kept in a dirty map until Enter commits them; Esc discards the dirty bytes. If the focused CPU adapter rejects an address while editing, that byte is left unchanged.
 
 ### Scripting
 
 #### `script <filename>` - Run Command Script
 
-Execute monitor commands from a text file, one command per line. Lines starting with `#` are treated as comments and skipped.
+Execute monitor commands from a text file, one command per line. After leading and trailing whitespace is removed, lines starting with `#` are treated as comments and skipped. Inline comments are not stripped.
 
 ```
 > script setup.mon
@@ -614,7 +633,7 @@ ww $3000
 trace watch add $3000
 ```
 
-Scripts can nest up to 8 levels deep.
+Scripts can nest up to 8 levels deep. Semicolon-separated commands on a script line are supported outside quotes.
 
 #### `macro <name> <commands>` - Define Macro
 
@@ -628,7 +647,7 @@ Macro 'inspect' defined (3 commands)
 (runs r, then d, then m sp 4)
 ```
 
-Macros persist for the duration of the session.
+Macros persist for the duration of the session. Macro names are case-insensitive (the name is lowercased on definition and lookup). Redefining an existing macro silently overwrites it; there is no `macro list` or `macro del` command. Macros share the script nesting counter, so recursive invocation aborts with `Macro recursion limit reached` once depth exceeds 8.
 
 ### Audio Control
 
@@ -661,7 +680,7 @@ Display a quick command reference.
 | Key | Action |
 |-----|--------|
 | Enter | Submit command |
-| Esc | Exit monitor (same as `x`) |
+| Esc | Exit monitor in command mode; discard changes and return to command mode in the hex editor |
 | Up/Down | Navigate command history |
 | Left/Right | Move cursor within input line |
 | Home / End | Jump to start/end of input line |
@@ -694,22 +713,23 @@ Cursor movement, delete, and backspace keys repeat automatically when held.
 - Register display: 16-digit hex (`$0000000000001000`)
 
 ### IE32 (32-bit RISC)
-- 16 named registers: PC, SP, A, X, Y, Z, B-W
+- 16 general-purpose 32-bit registers: A, X, Y, Z, B, C, D, E, F, G, H, S, T, U, V, W (note the gap: I through R are not register names)
+- Plus PC and SP, for 18 registers total in the snapshot
 - Fixed 8-byte instruction encoding
 - Register display: 8-digit hex (`$00001000`)
 
 ### M68K (Motorola 68020)
 - Data registers D0-D7, address registers A0-A7
 - A7 is the stack pointer, A6 is typically the frame pointer
-- SR (status register), USP (user stack pointer)
-- Variable-length instructions (2-10 bytes)
+- SR (status register), USP (user stack pointer), SSP (supervisor stack pointer)
+- Variable-length instructions (2-22 bytes; 68020 indirect/scaled-index modes can extend a 2-byte opcode by up to 20 bytes of extension words)
 - Big-endian byte order
 
 ### Z80
 - Main registers: A, F, B, C, D, E, H, L
 - Shadow registers: A', F', B', C', D', E', H', L'
 - Index registers: IX, IY
-- Other: SP, PC, I, R
+- Other: SP, PC, I (interrupt vector), R (refresh), IM (interrupt mode)
 - Register display: 4-digit hex (`$0040`)
 
 ### 6502 (MOS Technology)
@@ -723,7 +743,7 @@ Cursor movement, delete, and backspace keys repeat automatically when held.
 - Index: ESI, EDI
 - Pointer: ESP, EBP
 - EIP (instruction pointer), EFLAGS
-- Segment registers: CS, DS, ES, FS, GS, SS
+- Segment registers (16-bit): CS, DS, ES, SS, FS, GS
 - Variable-length instructions (1-15 bytes)
 
 ## Multi-CPU Debugging Workflows
@@ -736,11 +756,11 @@ Cursor movement, delete, and backspace keys repeat automatically when held.
 4. `r` to inspect registers, `d` to disassemble
 5. `s` to single-step the coprocessor
 6. `cpu 0` to switch back to the primary CPU
-7. `x` to resume all
+7. `x` to resume the CPUs that were running when the monitor was entered
 
 ### Stepping One CPU While Others Run
 
-1. Press F9 (all CPUs frozen)
+1. Press F9 (running CPUs are frozen)
 2. `thaw 1` - let the coprocessor run freely
 3. `s` - step the primary CPU while coprocessor executes
 4. `freeze *` - re-freeze everything to inspect shared state
@@ -753,7 +773,7 @@ Cursor movement, delete, and backspace keys repeat automatically when held.
 3. When execution reaches $2000, the monitor activates automatically
 4. `r` - inspect the state at the breakpoint
 5. `bc $2000` - clear the breakpoint
-6. `x` - resume
+6. `x` - resume the CPUs that were running when the monitor was entered
 
 ### Using Conditional Breakpoints
 
@@ -781,7 +801,7 @@ Cursor movement, delete, and backspace keys repeat automatically when held.
 
 ## Display
 
-The monitor overlay is a character grid sized to the current video mode (`screenWidth / 8` columns × `screenHeight / 16` rows, e.g. 100×37 at the 800×600 default), rendered with the Amiga Topaz 8 bitmap font. Colors follow classic monitor conventions:
+The monitor overlay is a character grid sized to the current video mode (`screenWidth / 8` columns x `screenHeight / 16` rows, for example 100x37 at the 800x600 default), rendered with the Amiga Topaz 8 bitmap font. Colours follow classic monitor conventions:
 
 - **White**: Default text
 - **Cyan**: Headers, labels, informational messages
@@ -791,15 +811,16 @@ The monitor overlay is a character grid sized to the current video mode (`screen
 - **Magenta**: Backward branch / loop markers
 - **Dim blue**: Inactive/separator text
 
-## GURU MEDITATION Fault Lines (IE64)
+## IE64 Fault Reports
 
 When an IE64 fault escapes the IntuitionOS / `iexec` kernel, the kernel
 itself prints a `GURU MEDITATION` line on the host console with the
-full fault context. The machine monitor does **not** synthesize this
-line; it is emitted from kernel string tables (`sdk/intuitionos/iexec/boot/strings.s`).
+full fault context. The machine monitor does **not** synthesise this
+line; it only helps you inspect the CPU and memory state after you stop
+the machine.
+
 The cause-code table below is reproduced here for convenience when
-reading those reports; the canonical source is `IE64_ISA.md` §12.8.
-M15.6 adds the `SKEF` and `SKAC` causes:
+reading those reports; the canonical source is `IE64_ISA.md` section 12.8.
 
 | Cause | Label | Trigger |
 |------:|-------|---------|
@@ -815,33 +836,45 @@ M15.6 adds the `SKEF` and `SKAC` causes:
 | 9     | `skef`             | Supervisor instruction fetch from user page (`MMU_CTRL.SKEF`) |
 | 10    | `skac`             | Supervisor data access to user page with `MMU_CTRL.SKAC` set and `MMU_CTRL.SUA` clear |
 
-The `SKEF` and `SKAC` lines are new in M15.6 and indicate a kernel
-bug: either a stray supervisor fetch into a user page or a missing
-`SUAEN` / `SUADIS` bracket around a kernel user-memory access. See
-`IE64_COOKBOOK.md` "Supervisor-User Access Helpers" and
-`IntuitionOS/IExec.md` for the canonical usercopy helpers that make
-this class of fault impossible when used correctly.
+The CPU raises `FAULT_SKEF` (9) and `FAULT_SKAC` (10) with the correct
+numeric `cause=` value. The current IntuitionOS fault printer may still
+show the class word as `unknown` for those two causes, so use the numeric
+cause when triaging supervisor-guard faults.
 
-The emitted line format otherwise follows the M15.5 contract:
-`cause`, `PC`, `ADDR`, `task`, `ACCESS`, `MODE`, `CLASS`, and `PTE`
-bits are all present. Nested-trap state (outer `FAULT_PC`,
-`CR_SAVED_SUA`) is preserved architecturally by the CPU's
-trap-frame stack and is not part of the printed line.
+`SKEF` and `SKAC` usually indicate a kernel bug: either a stray
+supervisor fetch into a user page or a missing `SUAEN` / `SUADIS`
+bracket around a kernel user-memory access. See `IE64_COOKBOOK.md`
+"Supervisor-User Access Helpers" and `IntuitionOS/IExec.md` for the
+canonical usercopy helpers.
 
-Note: the monitor's IE64 disassembler recognises the new `suaen` and
-`suadis` mnemonics so listings of the shipped iexec kernel show the
-helper bracket at its real source locations rather than as raw
-`dc.b $F3` / `dc.b $F4`.
+The emitted line includes `cause`, `PC`, `ADDR`, `task`, `ACCESS`,
+`MODE`, `CLASS`, and `PTE` bits. Nested-trap state (outer `FAULT_PC`,
+`CR_SAVED_SUA`) is preserved architecturally by the CPU's trap-frame
+stack and is not part of the printed line.
+
+The monitor's IE64 disassembler recognises the `suaen` and `suadis`
+mnemonics, so listings of the shipped `iexec` kernel show the helper
+brackets at their real source locations rather than as raw `dc.b $F3`
+or `dc.b $F4`.
 
 ## Common Pitfalls
 
-- **`d` count is hexadecimal.** `d $1000 10` shows 0x10 = 16 lines, not 10. Counts for `s`, `m`, `trace`, and `bt` are decimal.
-- **`#N` does not work for count arguments.** It is only honoured for address/value parsing (e.g. `r r1 #42`, `m #4096`). `s #10` silently steps one instruction.
+- **Bare `d` counts are hexadecimal.** `d $1000 10` shows 0x10 = 16 lines, not 10. Use `d $1000 #10` for decimal 10. Counts for `s`, `m`, `trace`, and `bt` are decimal.
+- **`#N` does not work for most count arguments.** It is honoured for address/value parsing and for the `d` line count because `d` uses the address parser for that argument. For other counts, use bare decimal, `$hex`, or `0xhex`. For example, `s #10` silently steps one instruction because the invalid count is ignored.
 - **Watchpoints are write-only.** `ww` traps on store. There is no read or read/write watch in this revision.
+- **Watchpoints detect changed byte values.** A store of the same byte value updates no visible state and does not trap.
 - **`ss`/`sl` are focused-CPU only.** Other CPUs, video/audio/timer device state, and coprocessor state are not in the snapshot. `sl` will refuse a snapshot whose CPU type differs from the focused CPU.
 - **`bs` (backstep) is focused-CPU only.** It restores that adapter's registers and memory view from the per-CPU ring (max 32 entries). It does not roll back device state or other CPUs.
 - **M68K backtrace requires A6 frame links.** Code that does not use LINK/UNLK (or has not yet set A6) will produce "No stack frames found".
 - **6502 backtrace is heuristic.** Each frame is tagged `(low confidence)`; the walker scans page 1 upward from SP+1 and assumes JSR-pushed return addresses.
 - **`bc *` / `wc *` clear only the focused CPU.** Switch CPUs and repeat to clear globally; `bl` lists across all CPUs but `bc *` does not.
-- **Run-until leaks its temp breakpoint if never hit.** If the PC never reaches the `u` target before you re-enter the monitor for another reason, clear it explicitly with `bc <addr>`.
-- **`g <addr>` silently ignores parse errors** and resumes from the current PC. Use `r pc <addr>` first if you want a hard error on bad input.
+- **Run-until can leave a temp breakpoint if never hit.** If `u` created a new temporary breakpoint and the PC never reaches the target before you re-enter the monitor for another reason, clear it explicitly with `bc <addr>`.
+- **`g <addr>` silently ignores parse errors** and resumes from the current PC. Use `r pc <addr>` first if you want a hard error on bad input. If the address parses but lies outside the focused CPU's address space, `g` prints a red `ValidateAddress` error and stays in the monitor.
+- **`trace` breakpoint checks happen after each step.** Normal run breakpoints stop before executing the instruction at the breakpoint PC. `trace` steps first, then checks whether the new PC is a breakpoint.
+- **`trace history` records are capped at 256 per address.** Older writes are dropped FIFO; only the latest 256 records for that address are retained.
+- **`h` and `c` cap displayed hits at 256** before printing `... (truncated)`. Scanning stops once that display limit is reached.
+- **`f` (fill) refuses ranges over 1 MiB** with `Invalid range`. Use repeated `f` calls for larger spans.
+- **`r <name> <value>` does not accept expressions.** The value goes through `ParseAddress`, so `$N`, `0xN`, bare hex, and `#decimal` work, but `pc+8` does not. Use `r` only to set a literal value.
+- **Not every displayed register is writable.** For example, IE64 `R0` is hardwired to zero, and the Z80 shadow registers are displayed but are not accepted by `r <name> <value>` or expression evaluation.
+- **Invalid optional arguments are often ignored.** `d bad`, `d $1000 bad`, `m $1000 bad`, `s bad`, and `bt bad` keep their defaults rather than printing parse errors.
+- **Raw memory tools trust the CPU adapter.** `save`, `c`, and `t` do not perform a separate address validation pass over the full range. For out-of-map ranges, results follow the focused adapter's read/write behaviour.
