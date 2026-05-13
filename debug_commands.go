@@ -22,7 +22,9 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -135,6 +137,10 @@ func parseCount(s string) (uint64, error) {
 // EvalAddress evaluates a simple expression: <term> [+|- <term>]*
 // Each term is either a register name or a numeric address.
 func EvalAddress(expr string, cpu DebuggableCPU) (uint64, bool) {
+	return EvalAddressWithSymbols(expr, cpu, nil, "")
+}
+
+func EvalAddressWithSymbols(expr string, cpu DebuggableCPU, symbols *SymbolTable, cpuName string) (uint64, bool) {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
 		return 0, false
@@ -184,6 +190,9 @@ func EvalAddress(expr string, cpu DebuggableCPU) (uint64, bool) {
 		if !ok {
 			val, ok = ParseAddress(tok.text)
 		}
+		if !ok && symbols != nil {
+			val, ok = symbols.Lookup(cpuName, tok.text)
+		}
 		if !ok {
 			return 0, false
 		}
@@ -206,6 +215,13 @@ func EvalAddress(expr string, cpu DebuggableCPU) (uint64, bool) {
 		return 0, false
 	}
 	return uint64(result), true
+}
+
+func (m *MachineMonitor) evalAddress(expr string, entry *CPUEntry) (uint64, bool) {
+	if entry == nil {
+		return 0, false
+	}
+	return EvalAddressWithSymbols(expr, entry.CPU, m.symbols, entry.CPU.CPUName())
 }
 
 // ExecuteCommand dispatches a parsed command to the appropriate handler.
@@ -232,26 +248,52 @@ func (m *MachineMonitor) ExecuteCommandResult(input string) (bool, []OutputLine)
 // executeCommand is the lock-free implementation of ExecuteCommand.
 // Caller must hold m.mu.
 func (m *MachineMonitor) executeCommand(input string) bool {
+	rawInput := strings.TrimSpace(input)
 	cmd := ParseCommand(input)
+	if cmd.Name == "" {
+		if m.lastRepeat != "" {
+			cmd = ParseCommand(m.lastRepeat)
+			rawInput = m.lastRepeat
+		}
+	}
 	if cmd.Name == "" {
 		return false
 	}
+	if expanded, ok := m.aliases[cmd.Name]; ok {
+		pieces := []string{expanded}
+		pieces = append(pieces, cmd.Args...)
+		rawInput = strings.Join(pieces, " ")
+		cmd = ParseCommand(rawInput)
+		if cmd.Name == "" {
+			return false
+		}
+	}
 
 	// Add to history
-	if len(m.history) == 0 || m.history[len(m.history)-1] != input {
-		m.history = append(m.history, input)
+	if rawInput != "" && (len(m.history) == 0 || m.history[len(m.history)-1] != rawInput) {
+		m.history = append(m.history, rawInput)
+		m.savePersistentHistory()
 	}
 	m.historyIdx = len(m.history)
+	m.rememberRepeatCommand(rawInput, cmd.Name)
 
 	switch cmd.Name {
 	case "r":
 		return m.cmdRegisters(cmd)
 	case "d":
 		return m.cmdDisassemble(cmd)
+	case "list":
+		return m.cmdListSource(cmd)
 	case "m":
 		return m.cmdMemoryDump(cmd)
 	case "s":
 		return m.cmdStep(cmd)
+	case "rg":
+		return m.cmdReverseContinue(cmd)
+	case "rt":
+		return m.cmdReverseRunUntil(cmd)
+	case "tl":
+		return m.cmdTimeline(cmd)
 	case "g":
 		return m.cmdGo(cmd)
 	case "x":
@@ -290,6 +332,32 @@ func (m *MachineMonitor) executeCommand(input string) bool {
 		return m.cmdRunUntil(cmd)
 	case "ww":
 		return m.cmdWatchpointSet(cmd)
+	case "wr", "wrw":
+		return m.cmdWatchpointSetMode(cmd, WatchReadWrite, 1)
+	case "bpmbr", "bpmrb":
+		return m.cmdWatchpointSetMode(cmd, WatchRead, 1)
+	case "bpmbw", "bpmwb":
+		return m.cmdWatchpointSetMode(cmd, WatchWrite, 1)
+	case "bpmb", "bpmba", "bpmab":
+		return m.cmdWatchpointSetMode(cmd, WatchReadWrite, 1)
+	case "bpmwr", "bpmrw":
+		return m.cmdWatchpointSetMode(cmd, WatchRead, 2)
+	case "bpmww":
+		return m.cmdWatchpointSetMode(cmd, WatchWrite, 2)
+	case "bpmw", "bpmwa", "bpmaw":
+		return m.cmdWatchpointSetMode(cmd, WatchReadWrite, 2)
+	case "bpmdr", "bpmrd":
+		return m.cmdWatchpointSetMode(cmd, WatchRead, 4)
+	case "bpmdw", "bpmwd":
+		return m.cmdWatchpointSetMode(cmd, WatchWrite, 4)
+	case "bpmd", "bpmda", "bpmad":
+		return m.cmdWatchpointSetMode(cmd, WatchReadWrite, 4)
+	case "bpmqr", "bpmrq":
+		return m.cmdWatchpointSetMode(cmd, WatchRead, 8)
+	case "bpmqw", "bpmwq":
+		return m.cmdWatchpointSetMode(cmd, WatchWrite, 8)
+	case "bpmq", "bpmqa", "bpmaq":
+		return m.cmdWatchpointSetMode(cmd, WatchReadWrite, 8)
 	case "wc":
 		return m.cmdWatchpointClear(cmd)
 	case "wl":
@@ -302,16 +370,48 @@ func (m *MachineMonitor) executeCommand(input string) bool {
 		return m.cmdLoadState(cmd)
 	case "trace":
 		return m.cmdTrace(cmd)
+	case "tracering":
+		return m.cmdTraceRing(cmd)
+	case "show":
+		return m.cmdShowTraceRing(cmd)
+	case "history":
+		return m.cmdHistory(cmd)
 	case "bs":
+		return m.cmdBackstep(cmd)
+	case "rs":
 		return m.cmdBackstep(cmd)
 	case "io":
 		return m.cmdIOView(cmd)
+	case "sym":
+		return m.cmdSymbols(cmd)
+	case "map":
+		return m.cmdMap(cmd)
+	case "addr":
+		return m.cmdAddr(cmd)
+	case "pg":
+		return m.cmdPageGuard(cmd)
+	case "accesslog":
+		return m.cmdAccessLog(cmd)
+	case "who":
+		return m.cmdWhoAccess(cmd)
+	case "bfirst":
+		return m.cmdBreakFirst(cmd)
+	case "fault":
+		return m.cmdFault(cmd)
 	case "e":
 		return m.cmdHexEdit(cmd)
 	case "script":
 		return m.cmdScript(cmd)
 	case "macro":
 		return m.cmdMacro(cmd)
+	case "alias":
+		return m.cmdAlias(cmd)
+	case "rc":
+		return m.cmdRC(cmd)
+	case "layout":
+		return m.cmdLayout(cmd)
+	case "bug":
+		return m.cmdBugReport(cmd)
 	case "?", "help":
 		return m.cmdHelp(cmd)
 	default:
@@ -324,10 +424,454 @@ func (m *MachineMonitor) executeCommand(input string) bool {
 	}
 }
 
+func (m *MachineMonitor) cmdSymbols(cmd MonitorCommand) bool {
+	entry := m.cpus[m.focusedID]
+	if entry == nil {
+		m.appendOutput("No CPU focussed", colorRed)
+		return false
+	}
+	cpuName := entry.CPU.CPUName()
+	if len(cmd.Args) < 1 {
+		m.appendOutput("Usage: sym add|lookup|resolve|list|loadlbl|loadelf ...", colorRed)
+		return false
+	}
+	switch strings.ToLower(cmd.Args[0]) {
+	case "add":
+		if len(cmd.Args) < 3 {
+			m.appendOutput("Usage: sym add <name> <addr> [func|object|label]", colorRed)
+			return false
+		}
+		addr, ok := m.evalAddress(cmd.Args[2], entry)
+		if !ok {
+			m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[2]), colorRed)
+			return false
+		}
+		kind := SymbolLabel
+		if len(cmd.Args) >= 4 {
+			kind = SymbolKind(strings.ToLower(cmd.Args[3]))
+		}
+		m.symbols.Add(cpuName, addr, cmd.Args[1], 0, kind)
+		m.appendOutput(fmt.Sprintf("Symbol %s = $%X", cmd.Args[1], addr), colorCyan)
+	case "lookup":
+		if len(cmd.Args) < 2 {
+			m.appendOutput("Usage: sym lookup <name>", colorRed)
+			return false
+		}
+		addr, ok := m.symbols.Lookup(cpuName, cmd.Args[1])
+		if !ok {
+			m.appendOutput(fmt.Sprintf("No symbol: %s", cmd.Args[1]), colorRed)
+			return false
+		}
+		m.appendOutput(fmt.Sprintf("%s = $%X", cmd.Args[1], addr), colorCyan)
+	case "resolve":
+		if len(cmd.Args) < 2 {
+			m.appendOutput("Usage: sym resolve <addr>", colorRed)
+			return false
+		}
+		addr, ok := m.evalAddress(cmd.Args[1], entry)
+		if !ok {
+			m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[1]), colorRed)
+			return false
+		}
+		res, ok := m.symbols.Resolve(cpuName, addr)
+		if !ok {
+			m.appendOutput(fmt.Sprintf("$%X: no symbol", addr), colorDim)
+			return false
+		}
+		m.appendOutput(fmt.Sprintf("$%X = %s", addr, formatSymbolResolution(res)), colorCyan)
+	case "list":
+		syms := m.symbols.List(cpuName)
+		if len(syms) == 0 {
+			m.appendOutput("No symbols", colorDim)
+			return false
+		}
+		for _, sym := range syms {
+			m.appendOutput(fmt.Sprintf("$%X %-8s %s", sym.Addr, sym.Kind, sym.Name), colorCyan)
+		}
+	case "loadlbl":
+		if len(cmd.Args) < 2 {
+			m.appendOutput("Usage: sym loadlbl <file> [base]", colorRed)
+			return false
+		}
+		base := uint64(0)
+		if len(cmd.Args) >= 3 {
+			var ok bool
+			base, ok = m.evalAddress(cmd.Args[2], entry)
+			if !ok {
+				m.appendOutput(fmt.Sprintf("Invalid base: %s", cmd.Args[2]), colorRed)
+				return false
+			}
+		}
+		f, err := os.Open(cmd.Args[1])
+		if err != nil {
+			m.appendOutput(fmt.Sprintf("Error: %s", err), colorRed)
+			return false
+		}
+		err = m.symbols.LoadVICELabels(cpuName, f, base)
+		closeErr := f.Close()
+		if err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			m.appendOutput(fmt.Sprintf("Error: %s", err), colorRed)
+			return false
+		}
+		m.appendOutput(fmt.Sprintf("Loaded VICE labels from %s", cmd.Args[1]), colorCyan)
+	case "loadelf":
+		if len(cmd.Args) < 2 {
+			m.appendOutput("Usage: sym loadelf <file>", colorRed)
+			return false
+		}
+		if err := m.symbols.LoadELF(cpuName, cmd.Args[1]); err != nil {
+			m.appendOutput(fmt.Sprintf("Error: %s", err), colorRed)
+			return false
+		}
+		_ = m.sources.LoadELF(cpuName, cmd.Args[1])
+		m.appendOutput(fmt.Sprintf("Loaded ELF symbols from %s", cmd.Args[1]), colorCyan)
+	default:
+		m.appendOutput("Usage: sym add|lookup|resolve|list|loadlbl|loadelf ...", colorRed)
+	}
+	return false
+}
+
+func (m *MachineMonitor) cmdMap(cmd MonitorCommand) bool {
+	entry := m.cpus[m.focusedID]
+	if entry == nil {
+		m.appendOutput("No CPU focussed", colorRed)
+		return false
+	}
+	regions := m.regions.List(entry.CPU.CPUName())
+	if len(regions) == 0 {
+		m.appendOutput("No regions", colorDim)
+		return false
+	}
+	for _, region := range regions {
+		m.appendOutput(fmt.Sprintf("$%X-$%X %-6s %s", region.Start, region.End, region.Kind, region.Name), colorCyan)
+	}
+	return false
+}
+
+func (m *MachineMonitor) cmdAddr(cmd MonitorCommand) bool {
+	entry := m.cpus[m.focusedID]
+	if entry == nil {
+		m.appendOutput("No CPU focussed", colorRed)
+		return false
+	}
+	if len(cmd.Args) < 1 {
+		m.appendOutput("Usage: addr <addr>", colorRed)
+		return false
+	}
+	addr, ok := m.evalAddress(cmd.Args[0], entry)
+	if !ok {
+		m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[0]), colorRed)
+		return false
+	}
+	region := m.regions.Lookup(entry.CPU.CPUName(), addr)
+	if region == nil {
+		m.appendOutput(fmt.Sprintf("$%X: unmapped", addr), colorDim)
+		return false
+	}
+	m.appendOutput(fmt.Sprintf("$%X: %s %s ($%X-$%X)", addr, region.Kind, region.Name, region.Start, region.End), colorCyan)
+	return false
+}
+
+func (m *MachineMonitor) cmdPageGuard(cmd MonitorCommand) bool {
+	if m.access == nil {
+		m.appendOutput("Debug access service unavailable", colorRed)
+		return false
+	}
+	if len(cmd.Args) < 1 {
+		m.appendOutput("Usage: pg add <start> <end> <rwx> [cpu=all|current] | pg list | pg clear", colorRed)
+		return false
+	}
+	switch strings.ToLower(cmd.Args[0]) {
+	case "add":
+		if !m.access.Instrumented() {
+			m.appendOutput("Page guards require CPU/bus access instrumentation; this build has not enabled it yet", colorRed)
+			return false
+		}
+		entry := m.cpus[m.focusedID]
+		if entry == nil || len(cmd.Args) < 4 {
+			m.appendOutput("Usage: pg add <start> <end> <rwx> [cpu=all|current]", colorRed)
+			return false
+		}
+		start, ok1 := m.evalAddress(cmd.Args[1], entry)
+		end, ok2 := m.evalAddress(cmd.Args[2], entry)
+		perm, ok3 := parseAccessPerm(cmd.Args[3])
+		if !ok1 || !ok2 || !ok3 || end < start {
+			m.appendOutput("Invalid page guard arguments", colorRed)
+			return false
+		}
+		scope := GuardScope{AllCPUs: true}
+		if len(cmd.Args) >= 5 && strings.EqualFold(cmd.Args[4], "cpu=current") {
+			scope = GuardScope{CPUID: m.focusedID}
+		}
+		m.access.Guard(start, end, perm, scope)
+		m.appendOutput(fmt.Sprintf("Guard added $%X-$%X %s", start, end, strings.ToLower(cmd.Args[3])), colorCyan)
+	case "list":
+		guards := m.access.ListGuards()
+		if len(guards) == 0 {
+			m.appendOutput("No page guards", colorDim)
+			return false
+		}
+		for _, guard := range guards {
+			scope := "all"
+			if !guard.Scope.AllCPUs {
+				scope = fmt.Sprintf("cpu=%d", guard.Scope.CPUID)
+			}
+			m.appendOutput(fmt.Sprintf("$%X-$%X %s %s", guard.Start, guard.End, formatAccessPerm(guard.Perm), scope), colorCyan)
+		}
+	case "clear":
+		m.access.ClearGuards()
+		m.appendOutput("Page guards cleared", colorCyan)
+	default:
+		m.appendOutput("Usage: pg add <start> <end> <rwx> [cpu=all|current] | pg list | pg clear", colorRed)
+	}
+	return false
+}
+
+func (m *MachineMonitor) cmdAccessLog(cmd MonitorCommand) bool {
+	if m.access == nil {
+		m.appendOutput("Debug access service unavailable", colorRed)
+		return false
+	}
+	if len(cmd.Args) == 0 {
+		m.appendOutput("Usage: accesslog on [size] | accesslog off | accesslog show [count]", colorRed)
+		return false
+	}
+	switch strings.ToLower(cmd.Args[0]) {
+	case "on":
+		if !m.access.Instrumented() {
+			m.appendOutput("Access log requires CPU/bus access instrumentation; this build has not enabled it yet", colorRed)
+			return false
+		}
+		size := 256
+		if len(cmd.Args) >= 2 {
+			count, err := parseCount(cmd.Args[1])
+			if err != nil || count == 0 {
+				m.appendOutput("Usage: accesslog on [size]", colorRed)
+				return false
+			}
+			size = int(count)
+		}
+		m.access.EnableHistory(size)
+		m.appendOutput(fmt.Sprintf("Access log enabled (%d events)", size), colorCyan)
+	case "off":
+		m.access.DisableHistory()
+		m.appendOutput("Access log disabled", colorCyan)
+	case "show":
+		count := 16
+		if len(cmd.Args) >= 2 {
+			parsed, err := parseCount(cmd.Args[1])
+			if err != nil {
+				m.appendOutput("Usage: accesslog show [count]", colorRed)
+				return false
+			}
+			count = int(parsed)
+		}
+		events := m.access.HistoryTail(count)
+		if len(events) == 0 {
+			m.appendOutput("Access log is empty", colorCyan)
+			return false
+		}
+		for _, ev := range events {
+			m.appendOutput(formatAccessEvent(ev), colorWhite)
+		}
+	default:
+		m.appendOutput("Usage: accesslog on [size] | accesslog off | accesslog show [count]", colorRed)
+	}
+	return false
+}
+
+func (m *MachineMonitor) cmdWhoAccess(cmd MonitorCommand) bool {
+	if m.access == nil {
+		m.appendOutput("Debug access service unavailable", colorRed)
+		return false
+	}
+	if len(cmd.Args) < 2 {
+		m.appendOutput("Usage: who read|wrote|fetched <addr>", colorRed)
+		return false
+	}
+	kind, ok := parseWhoAccessKind(cmd.Args[0])
+	if !ok {
+		m.appendOutput("Usage: who read|wrote|fetched <addr>", colorRed)
+		return false
+	}
+	entry := m.cpus[m.focusedID]
+	addr, ok := m.evalAddress(cmd.Args[1], entry)
+	if !ok {
+		m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[1]), colorRed)
+		return false
+	}
+	ev, ok := m.access.LastAccess(kind, addr)
+	if !ok {
+		m.appendOutput(fmt.Sprintf("No %s recorded for $%X", accessKindString(kind), addr), colorCyan)
+		return false
+	}
+	m.appendOutput(formatAccessEvent(ev), colorWhite)
+	return false
+}
+
+func (m *MachineMonitor) cmdBreakFirst(cmd MonitorCommand) bool {
+	if m.access == nil {
+		m.appendOutput("Debug access service unavailable", colorRed)
+		return false
+	}
+	entry := m.cpus[m.focusedID]
+	if entry == nil {
+		m.appendOutput("No CPU focussed", colorRed)
+		return false
+	}
+	if len(cmd.Args) < 2 {
+		m.appendOutput("Usage: bfirst read|write|fetch <region-name>", colorRed)
+		return false
+	}
+	if !m.access.Instrumented() {
+		m.appendOutput("bfirst requires CPU/bus access instrumentation; this build has not enabled it yet", colorRed)
+		return false
+	}
+	kind, ok := parseWhoAccessKind(cmd.Args[0])
+	if !ok {
+		m.appendOutput("Usage: bfirst read|write|fetch <region-name>", colorRed)
+		return false
+	}
+	region := m.regions.LookupName(entry.CPU.CPUName(), cmd.Args[1])
+	if region == nil {
+		m.appendOutput(fmt.Sprintf("Unknown region for %s: %s", entry.CPU.CPUName(), cmd.Args[1]), colorRed)
+		return false
+	}
+	m.access.GuardOnce(region.Start, region.End, accessPermForKind(kind), GuardScope{AllCPUs: true}, region.Name)
+	m.appendOutput(fmt.Sprintf("Break-on-first %s armed for %s ($%X-$%X)", accessKindString(kind), region.Name, region.Start, region.End), colorCyan)
+	return false
+}
+
+func (m *MachineMonitor) cmdFault(cmd MonitorCommand) bool {
+	if m.faults == nil {
+		m.appendOutput("Fault interception unavailable", colorRed)
+		return false
+	}
+	if len(cmd.Args) == 0 || strings.EqualFold(cmd.Args[0], "list") {
+		all, kinds := m.faults.List()
+		if all {
+			m.appendOutput("Fault interception: all", colorCyan)
+			return false
+		}
+		if len(kinds) == 0 {
+			m.appendOutput("Fault interception: off", colorDim)
+			return false
+		}
+		m.appendOutput("Fault break kinds:", colorCyan)
+		for _, kind := range kinds {
+			m.appendOutput("  "+kind, colorCyan)
+		}
+		return false
+	}
+	switch strings.ToLower(cmd.Args[0]) {
+	case "on":
+		m.faults.EnableAll()
+		m.appendOutput("Fault interception enabled for all supported faults", colorCyan)
+	case "off":
+		m.faults.DisableAll()
+		m.appendOutput("Fault interception disabled", colorCyan)
+	case "break":
+		if len(cmd.Args) < 2 || !m.faults.EnableKind(cmd.Args[1]) {
+			m.appendOutput("Usage: fault break <kind>", colorRed)
+			return false
+		}
+		m.appendOutput("Fault break enabled: "+normalizeFaultKind(cmd.Args[1]), colorCyan)
+	case "clear":
+		if len(cmd.Args) < 2 || !m.faults.DisableKind(cmd.Args[1]) {
+			m.appendOutput("Usage: fault clear <kind>", colorRed)
+			return false
+		}
+		m.appendOutput("Fault break cleared: "+normalizeFaultKind(cmd.Args[1]), colorCyan)
+	default:
+		m.appendOutput("Usage: fault on|off|list|break <kind>|clear <kind>", colorRed)
+	}
+	return false
+}
+
+func parseWhoAccessKind(s string) (AccessKind, bool) {
+	switch strings.ToLower(s) {
+	case "read", "r":
+		return AccessRead, true
+	case "wrote", "write", "written", "w":
+		return AccessWrite, true
+	case "fetched", "fetch", "execute", "exec", "x":
+		return AccessExecute, true
+	default:
+		return AccessRead, false
+	}
+}
+
+func accessPermForKind(kind AccessKind) AccessPerm {
+	switch kind {
+	case AccessRead:
+		return PermRead
+	case AccessWrite:
+		return PermWrite
+	case AccessExecute:
+		return PermExecute
+	default:
+		return 0
+	}
+}
+
+func formatAccessEvent(ev AccessEvent) string {
+	width := ev.Width
+	if width <= 0 {
+		width = 1
+	}
+	line := fmt.Sprintf("#%d cpu=%d pc=$%X %s $%X", ev.Seq, ev.CPUID, ev.PC, accessKindString(ev.Kind), ev.Address)
+	if width > 1 {
+		line += fmt.Sprintf("..$%X", ev.Address+uint64(width-1))
+	}
+	if ev.Kind == AccessWrite {
+		if ev.OldValueKnown {
+			line += fmt.Sprintf(" old=$%X", ev.OldValue)
+		} else {
+			line += " old=?"
+		}
+		line += fmt.Sprintf(" new=$%X", ev.NewValue)
+	}
+	return line
+}
+
+func parseAccessPerm(text string) (AccessPerm, bool) {
+	var perm AccessPerm
+	for _, r := range strings.ToLower(text) {
+		switch r {
+		case 'r':
+			perm |= PermRead
+		case 'w':
+			perm |= PermWrite
+		case 'x':
+			perm |= PermExecute
+		default:
+			return 0, false
+		}
+	}
+	return perm, perm != 0
+}
+
+func formatAccessPerm(perm AccessPerm) string {
+	var b strings.Builder
+	if perm&PermRead != 0 {
+		b.WriteByte('r')
+	}
+	if perm&PermWrite != 0 {
+		b.WriteByte('w')
+	}
+	if perm&PermExecute != 0 {
+		b.WriteByte('x')
+	}
+	return b.String()
+}
+
 func (m *MachineMonitor) cmdRegisters(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -366,41 +910,38 @@ func (m *MachineMonitor) showRegisters() {
 			color = colorGreen
 		}
 
-		var line string
-		switch {
-		case addrWidth <= 16:
-			line = fmt.Sprintf("%-4s $%04X", r.Name, r.Value)
-		case addrWidth <= 32 && r.BitWidth <= 32:
-			line = fmt.Sprintf("%-4s $%08X", r.Name, r.Value)
-		default:
-			line = fmt.Sprintf("%-4s $%016X", r.Name, r.Value)
-		}
-		m.appendOutput(line, color)
+		m.appendOutput(formatMonitorRegisterLine(r, addrWidth), color)
 	}
 }
 
 func (m *MachineMonitor) cmdDisassemble(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
 	addr := entry.CPU.GetPC()
 	count := 16
+	sourceMode := false
 
-	if len(cmd.Args) >= 1 {
-		if v, ok := EvalAddress(cmd.Args[0], entry.CPU); ok {
+	args := cmd.Args
+	if len(args) > 0 && args[0] == "/s" {
+		sourceMode = true
+		args = args[1:]
+	}
+	if len(args) >= 1 {
+		if v, ok := m.evalAddress(args[0], entry); ok {
 			addr = v
 		}
 	}
-	if len(cmd.Args) >= 2 {
-		if v, ok := ParseAddress(cmd.Args[1]); ok {
+	if len(args) >= 2 {
+		if v, ok := ParseAddress(args[1]); ok {
 			count = int(v)
 		}
 	}
 
-	m.showDisassemblyAt(addr, count)
+	m.showDisassemblyAt(addr, count, sourceMode)
 	return false
 }
 
@@ -412,14 +953,15 @@ func (m *MachineMonitor) showDisassembly(addr uint64, count int) {
 	if addr == 0 {
 		addr = entry.CPU.GetPC()
 	}
-	m.showDisassemblyAt(addr, count)
+	m.showDisassemblyAt(addr, count, false)
 }
 
-func (m *MachineMonitor) showDisassemblyAt(addr uint64, count int) {
+func (m *MachineMonitor) showDisassemblyAt(addr uint64, count int, sourceMode ...bool) {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
 		return
 	}
+	withSource := len(sourceMode) > 0 && sourceMode[0]
 
 	lines := entry.CPU.Disassemble(addr, count)
 
@@ -447,6 +989,7 @@ func (m *MachineMonitor) showDisassemblyAt(addr uint64, count int) {
 		addrFmt = "%08X"
 	}
 
+	lastSource := ""
 	for _, line := range lines {
 		color := uint32(colorWhite)
 		prefix := "  "
@@ -473,17 +1016,117 @@ func (m *MachineMonitor) showDisassemblyAt(addr uint64, count int) {
 					color = colorMagenta
 				}
 			}
+			if res, ok := m.symbols.Resolve(entry.CPU.CPUName(), line.BranchTarget); ok {
+				suffix += " ; " + formatSymbolResolution(res)
+			}
 		}
 
+		if withSource {
+			if src, ok := m.sources.Resolve(entry.CPU.CPUName(), line.Address); ok {
+				srcText := fmt.Sprintf("%s:%d", src.File, src.Line)
+				if srcText != lastSource {
+					m.appendOutput("  "+srcText, colorDim)
+					lastSource = srcText
+				}
+			} else if lastSource == "" {
+				m.appendOutput(fmt.Sprintf("  no source info for %s", entry.CPU.CPUName()), colorDim)
+				lastSource = "-"
+			}
+		}
 		text := fmt.Sprintf("%s"+addrFmt+": %-24s %s%s", prefix, line.Address, line.HexBytes, line.Mnemonic, suffix)
 		m.appendOutput(text, color)
 	}
 }
 
+func (m *MachineMonitor) cmdListSource(cmd MonitorCommand) bool {
+	entry := m.cpus[m.focusedID]
+	if entry == nil {
+		m.appendOutput("No CPU focussed", colorRed)
+		return false
+	}
+	addr := entry.CPU.GetPC()
+	if len(cmd.Args) >= 1 {
+		if v, ok := m.evalAddress(cmd.Args[0], entry); ok {
+			addr = v
+		}
+	}
+	src, ok := m.sources.Resolve(entry.CPU.CPUName(), addr)
+	if !ok {
+		m.appendOutput(fmt.Sprintf("no source info for %s", entry.CPU.CPUName()), colorDim)
+		return false
+	}
+	m.appendOutput(fmt.Sprintf("%s:%d", src.File, src.Line), colorCyan)
+	if lines, ok := sourceContextLines(src.File, src.Line, 2); ok {
+		for _, line := range lines {
+			m.appendOutput(line, colorWhite)
+		}
+	}
+	return false
+}
+
+func sourceContextLines(file string, line, radius int) ([]string, bool) {
+	path, ok := resolveSourcePath(file)
+	if !ok {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	srcLines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	if line <= 0 || line > len(srcLines) {
+		return nil, false
+	}
+	start := line - radius
+	if start < 1 {
+		start = 1
+	}
+	end := line + radius
+	if end > len(srcLines) {
+		end = len(srcLines)
+	}
+	out := make([]string, 0, end-start+1)
+	width := len(strconv.Itoa(end))
+	for n := start; n <= end; n++ {
+		marker := " "
+		if n == line {
+			marker = ">"
+		}
+		out = append(out, fmt.Sprintf("%s %*d  %s", marker, width, n, srcLines[n-1]))
+	}
+	return out, true
+}
+
+func resolveSourcePath(file string) (string, bool) {
+	if file == "" {
+		return "", false
+	}
+	if filepath.IsAbs(file) {
+		if _, err := os.Stat(file); err == nil {
+			return file, true
+		}
+		return "", false
+	}
+	candidates := []string{file}
+	if paths := os.Getenv("IEMON_SRC_PATH"); paths != "" {
+		for _, root := range filepath.SplitList(paths) {
+			if root != "" {
+				candidates = append(candidates, filepath.Join(root, file))
+			}
+		}
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
 func (m *MachineMonitor) cmdMemoryDump(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -491,7 +1134,7 @@ func (m *MachineMonitor) cmdMemoryDump(cmd MonitorCommand) bool {
 	lines := 8
 
 	if len(cmd.Args) >= 1 {
-		if v, ok := EvalAddress(cmd.Args[0], entry.CPU); ok {
+		if v, ok := m.evalAddress(cmd.Args[0], entry); ok {
 			addr = v
 		}
 	}
@@ -539,7 +1182,7 @@ func (m *MachineMonitor) cmdMemoryDump(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdStep(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -554,11 +1197,13 @@ func (m *MachineMonitor) cmdStep(cmd MonitorCommand) bool {
 
 	totalCycles := 0
 	for i := 0; i < count; i++ {
+		m.recordWholeMachineHistory()
 		snap := TakeSnapshot(entry.CPU)
 		m.stepHistory[cpuID] = append(m.stepHistory[cpuID], snap)
 		if len(m.stepHistory[cpuID]) > m.maxBackstep {
 			m.stepHistory[cpuID] = m.stepHistory[cpuID][len(m.stepHistory[cpuID])-m.maxBackstep:]
 		}
+		m.recordTraceRing(cpuID, entry, entry.CPU.GetPC())
 		cycles, err := safeDebugStep(entry.CPU)
 		if err != nil {
 			m.appendOutput(fmt.Sprintf("Step failed: %s", err), colorRed)
@@ -583,6 +1228,78 @@ func (m *MachineMonitor) cmdStep(cmd MonitorCommand) bool {
 	return false
 }
 
+func (m *MachineMonitor) recordWholeMachineHistory() uint64 {
+	snap, err := m.takeWholeMachineSnapshotLocked()
+	if err != nil {
+		m.appendOutput(fmt.Sprintf("Whole-machine snapshot skipped: %s", err), colorRed)
+		return 0
+	}
+	if len(m.wholeHistory) > 0 {
+		if prev, err := m.materializeWholeMachineSnapshotLocked(m.wholeHistory[len(m.wholeHistory)-1]); err == nil && wholeSnapshotsEquivalent(prev, snap) {
+			return prev.ID
+		}
+	}
+	m.nextWholeID++
+	snap.ID = m.nextWholeID
+	snap.Full = true
+	snap.DeltaBytes = snapshotDeltaBytes(snap)
+	if len(m.wholeHistory) > 0 {
+		prev, err := m.materializeWholeMachineSnapshotLocked(m.wholeHistory[len(m.wholeHistory)-1])
+		if err == nil {
+			interval := m.wholeCheckpointInterval
+			if interval <= 0 {
+				interval = 32
+			}
+			bytesLimit := m.wholeCheckpointBytes
+			if bytesLimit == 0 {
+				bytesLimit = 64 << 20
+			}
+			if m.wholeDeltaCount < interval && m.wholeDeltaBytes < bytesLimit {
+				snap = makeWholeMachineDelta(snap, prev)
+				m.wholeDeltaCount++
+				m.wholeDeltaBytes += snap.DeltaBytes
+			} else {
+				m.wholeDeltaCount = 0
+				m.wholeDeltaBytes = 0
+			}
+		}
+	}
+	m.wholeHistory = append(m.wholeHistory, snap)
+	m.pruneWholeHistoryLocked()
+	return snap.ID
+}
+
+func (m *MachineMonitor) pruneWholeHistoryLocked() {
+	limit := m.maxWholeHistory
+	if limit <= 0 {
+		limit = 32
+	}
+	if len(m.wholeHistory) > limit {
+		m.wholeHistory = m.wholeHistory[len(m.wholeHistory)-limit:]
+	}
+	checkpointLimit := m.maxWholeCheckpoints
+	if checkpointLimit <= 0 {
+		checkpointLimit = 8
+	}
+	checkpoints := 0
+	keepFrom := 0
+	for i := len(m.wholeHistory) - 1; i >= 0; i-- {
+		if m.wholeHistory[i] != nil && m.wholeHistory[i].Full {
+			checkpoints++
+			if checkpoints == checkpointLimit {
+				keepFrom = i
+				break
+			}
+		}
+	}
+	if checkpoints >= checkpointLimit && keepFrom > 0 {
+		m.wholeHistory = m.wholeHistory[keepFrom:]
+	}
+	for len(m.wholeHistory) > 0 && m.wholeHistory[0] != nil && !m.wholeHistory[0].Full {
+		m.wholeHistory = m.wholeHistory[1:]
+	}
+}
+
 func safeDebugStep(cpu DebuggableCPU) (cycles int, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -592,11 +1309,41 @@ func safeDebugStep(cpu DebuggableCPU) (cycles int, err error) {
 	return cpu.Step(), nil
 }
 
+func (m *MachineMonitor) recordTraceRing(cpuID int, entry *CPUEntry, pc uint64) {
+	ring := m.traceRings[cpuID]
+	if ring == nil || !ring.Enabled() || entry == nil {
+		return
+	}
+	lines := entry.CPU.Disassemble(pc, 1)
+	tr := TraceRingEntry{CPUName: entry.CPU.CPUName(), PC: pc}
+	if len(lines) > 0 {
+		tr.HexBytes = lines[0].HexBytes
+		tr.Mnemonic = lines[0].Mnemonic
+	}
+	ring.Add(tr)
+	m.recordTimelineEventLocked("instr", cpuID, pc, strings.TrimSpace(tr.Mnemonic))
+}
+
+func (m *MachineMonitor) recordTimelineEventLocked(kind string, cpuID int, pc uint64, detail string) {
+	m.recordTimelineEventWithSnapshotLocked(kind, cpuID, pc, detail, 0)
+}
+
+func (m *MachineMonitor) recordTimelineEventWithSnapshotLocked(kind string, cpuID int, pc uint64, detail string, snapshotID uint64) {
+	if m.maxTimeline <= 0 {
+		m.maxTimeline = 4096
+	}
+	ev := TimelineEvent{Seq: m.nextTimelineSeq(), Kind: kind, CPUID: cpuID, PC: pc, Detail: detail, SnapshotID: snapshotID}
+	m.timelineEvents = append(m.timelineEvents, ev)
+	if len(m.timelineEvents) > m.maxTimeline {
+		m.timelineEvents = m.timelineEvents[len(m.timelineEvents)-m.maxTimeline:]
+	}
+}
+
 func (m *MachineMonitor) cmdGo(cmd MonitorCommand) bool {
 	if len(cmd.Args) >= 1 {
 		entry := m.cpus[m.focusedID]
 		if entry != nil {
-			if v, ok := EvalAddress(cmd.Args[0], entry.CPU); ok {
+			if v, ok := m.evalAddress(cmd.Args[0], entry); ok {
 				if err := entry.CPU.ValidateAddress(v); err != nil {
 					m.appendOutput(err.Error(), colorRed)
 					return false
@@ -615,7 +1362,7 @@ func (m *MachineMonitor) cmdExit(_ MonitorCommand) bool {
 func (m *MachineMonitor) cmdBreakpointSet(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -624,7 +1371,7 @@ func (m *MachineMonitor) cmdBreakpointSet(cmd MonitorCommand) bool {
 		return false
 	}
 
-	addr, ok := EvalAddress(cmd.Args[0], entry.CPU)
+	addr, ok := m.evalAddress(cmd.Args[0], entry)
 	if !ok {
 		m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[0]), colorRed)
 		return false
@@ -658,7 +1405,7 @@ func (m *MachineMonitor) cmdBreakpointSet(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdBreakpointClear(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -720,7 +1467,7 @@ func (m *MachineMonitor) cmdBreakpointList(_ MonitorCommand) bool {
 func (m *MachineMonitor) cmdFill(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -755,7 +1502,7 @@ func (m *MachineMonitor) cmdFill(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdHunt(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -820,7 +1567,7 @@ func (m *MachineMonitor) cmdHunt(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdCompare(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -864,7 +1611,7 @@ func (m *MachineMonitor) cmdCompare(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdTransfer(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -895,7 +1642,7 @@ func (m *MachineMonitor) cmdTransfer(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdWrite(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -928,7 +1675,12 @@ func (m *MachineMonitor) cmdWrite(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdCPU(cmd MonitorCommand) bool {
 	if len(cmd.Args) == 0 {
 		// List all registered CPUs
+		entries := make([]*CPUEntry, 0, len(m.cpus))
 		for _, entry := range m.cpus {
+			entries = append(entries, entry)
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+		for _, entry := range entries {
 			status := "FROZEN"
 			if entry.CPU.IsRunning() {
 				status = "RUNNING"
@@ -940,7 +1692,31 @@ func (m *MachineMonitor) cmdCPU(cmd MonitorCommand) bool {
 			m.appendOutput(fmt.Sprintf("%sid:%-3d %-12s [%-7s]  PC=$%X",
 				focus, entry.ID, entry.Label, status, entry.CPU.GetPC()), colorWhite)
 		}
+		if m.coprocMgr != nil {
+			registered := make(map[uint32]bool)
+			for _, entry := range entries {
+				if cpuType, ok := coprocCPUTypeFromLabel(entry.Label); ok {
+					registered[cpuType] = true
+				}
+			}
+			m.mu.Unlock()
+			slots := m.coprocMgr.WorkerInventory()
+			m.mu.Lock()
+			for _, slot := range slots {
+				if slot.Online || registered[slot.CPUType] {
+					continue
+				}
+				m.appendOutput(fmt.Sprintf(" id:-   %-12s [OFFLINE]  PC=-", slot.Label), colorDim)
+			}
+		}
 		return false
+	}
+
+	switch strings.ToLower(cmd.Args[0]) {
+	case "online":
+		return m.cmdCPUOnline(cmd)
+	case "offline":
+		return m.cmdCPUOffline(cmd)
 	}
 
 	// Switch focus by ID or label
@@ -951,7 +1727,7 @@ func (m *MachineMonitor) cmdCPU(cmd MonitorCommand) bool {
 		if _, ok := m.cpus[id]; ok {
 			m.focusedID = id
 			m.saveCurrentRegs()
-			m.appendOutput(fmt.Sprintf("Focused on id:%d %s", id, m.cpus[id].Label), colorCyan)
+			m.appendOutput(fmt.Sprintf("Focussed on id:%d %s", id, m.cpus[id].Label), colorCyan)
 			m.showRegisters()
 			m.showDisassembly(0, 8)
 			return false
@@ -971,7 +1747,7 @@ func (m *MachineMonitor) cmdCPU(cmd MonitorCommand) bool {
 	if len(matches) == 1 {
 		m.focusedID = matches[0].ID
 		m.saveCurrentRegs()
-		m.appendOutput(fmt.Sprintf("Focused on id:%d %s", matches[0].ID, matches[0].Label), colorCyan)
+		m.appendOutput(fmt.Sprintf("Focussed on id:%d %s", matches[0].ID, matches[0].Label), colorCyan)
 		m.showRegisters()
 		m.showDisassembly(0, 8)
 		return false
@@ -987,6 +1763,148 @@ func (m *MachineMonitor) cmdCPU(cmd MonitorCommand) bool {
 
 	m.appendOutput(fmt.Sprintf("No CPU matching '%s'", target), colorRed)
 	return false
+}
+
+func (m *MachineMonitor) cmdCPUOnline(cmd MonitorCommand) bool {
+	if m.coprocMgr == nil {
+		m.appendOutput("No coprocessor manager attached", colorRed)
+		return false
+	}
+	args := append([]string(nil), cmd.Args[1:]...)
+	replace := false
+	filtered := args[:0]
+	for _, arg := range args {
+		if arg == "--replace" {
+			replace = true
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	args = filtered
+	if len(args) < 1 || len(args) > 2 {
+		m.appendOutput("Usage: cpu online [--replace] <type|path.ie*> [path.ie*]", colorRed)
+		return false
+	}
+
+	var cpuType uint32
+	var imagePath string
+	if len(args) == 1 {
+		if inferred := inferCoprocCPUTypeFromImagePath(args[0]); inferred != EXEC_TYPE_NONE {
+			imagePath = args[0]
+		} else {
+			cpuType = coprocCPUTypeFromString(args[0])
+			if cpuType == EXEC_TYPE_NONE {
+				m.appendOutput(fmt.Sprintf("Unrecognised coprocessor CPU type or image: %s", args[0]), colorRed)
+				return false
+			}
+		}
+	} else {
+		cpuType = coprocCPUTypeFromString(args[0])
+		if cpuType == EXEC_TYPE_NONE {
+			m.appendOutput(fmt.Sprintf("Unrecognised coprocessor CPU type: %s", args[0]), colorRed)
+			return false
+		}
+		imagePath = args[1]
+	}
+
+	var err error
+	if imagePath == "" {
+		m.mu.Unlock()
+		imagePath = m.coprocMgr.StagedServicePath()
+		if imagePath == "" {
+			err = fmt.Errorf("no staged coprocessor service image for %s", coprocCPUTypeToString(cpuType))
+		} else {
+			_, err = m.coprocMgr.StartWorkerFromImage(cpuType, imagePath, replace)
+		}
+		m.mu.Lock()
+	} else {
+		m.mu.Unlock()
+		cpuType, err = m.coprocMgr.StartWorkerFromImage(cpuType, imagePath, replace)
+		m.mu.Lock()
+	}
+	if err != nil {
+		m.appendOutput(fmt.Sprintf("CPU online failed: %v", err), colorRed)
+		return false
+	}
+	m.appendOutput(fmt.Sprintf("Online %s as %s", coprocCPUTypeToString(cpuType), coprocLabel(cpuType)), colorCyan)
+	return false
+}
+
+func (m *MachineMonitor) cmdCPUOffline(cmd MonitorCommand) bool {
+	if m.coprocMgr == nil {
+		m.appendOutput("No coprocessor manager attached", colorRed)
+		return false
+	}
+	if len(cmd.Args) != 2 {
+		m.appendOutput("Usage: cpu offline <id|label|type>", colorRed)
+		return false
+	}
+	cpuType, ok := m.coprocCPUTypeFromTarget(cmd.Args[1])
+	if !ok {
+		return false
+	}
+	m.mu.Unlock()
+	err := m.coprocMgr.StopWorker(cpuType)
+	m.mu.Lock()
+	if err != nil {
+		m.appendOutput(fmt.Sprintf("CPU offline failed: %v", err), colorRed)
+		return false
+	}
+	m.appendOutput(fmt.Sprintf("Offline %s", coprocLabel(cpuType)), colorCyan)
+	return false
+}
+
+func (m *MachineMonitor) coprocCPUTypeFromTarget(target string) (uint32, bool) {
+	if cpuType := coprocCPUTypeFromString(target); cpuType != EXEC_TYPE_NONE {
+		return cpuType, true
+	}
+	if cpuType, ok := coprocCPUTypeFromLabel(target); ok {
+		return cpuType, true
+	}
+	if id, err := strconv.Atoi(target); err == nil {
+		entry := m.cpus[id]
+		if entry == nil {
+			m.appendOutput(fmt.Sprintf("No CPU with id:%d", id), colorRed)
+			return 0, false
+		}
+		cpuType, ok := coprocCPUTypeFromLabel(entry.Label)
+		if !ok {
+			m.appendOutput(fmt.Sprintf("id:%d %s is not a coprocessor worker", id, entry.Label), colorRed)
+			return 0, false
+		}
+		return cpuType, true
+	}
+	var matches []uint32
+	for _, entry := range m.cpus {
+		if !strings.EqualFold(entry.Label, target) {
+			continue
+		}
+		if cpuType, ok := coprocCPUTypeFromLabel(entry.Label); ok {
+			matches = append(matches, cpuType)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], true
+	}
+	if len(matches) > 1 {
+		m.appendOutput("Ambiguous label, use ID:", colorRed)
+		for _, entry := range m.cpus {
+			if strings.EqualFold(entry.Label, target) {
+				m.appendOutput(fmt.Sprintf("  id:%d %s", entry.ID, entry.Label), colorWhite)
+			}
+		}
+		return 0, false
+	}
+	m.appendOutput(fmt.Sprintf("No coprocessor CPU matching '%s'", target), colorRed)
+	return 0, false
+}
+
+func coprocCPUTypeFromLabel(label string) (uint32, bool) {
+	if !strings.HasPrefix(strings.ToLower(label), "coproc:") {
+		return EXEC_TYPE_NONE, false
+	}
+	cpuType := coprocCPUTypeFromString(label[len("coproc:"):])
+	return cpuType, cpuType != EXEC_TYPE_NONE
 }
 
 func (m *MachineMonitor) cmdFreeze(cmd MonitorCommand) bool {
@@ -1069,54 +1987,305 @@ func (m *MachineMonitor) cmdThawAudio(_ MonitorCommand) bool {
 	return false
 }
 
-func (m *MachineMonitor) cmdHelp(_ MonitorCommand) bool {
-	helpLines := []string{
-		"Machine Monitor Commands:",
-		"  r                  Show registers",
-		"  r <name> <value>   Set register",
-		"  d [addr] [count]   Disassemble",
-		"  m [addr] [count]   Memory dump (hex+ASCII)",
-		"  s [count]          Single-step",
-		"  bs                 Backstep (undo last step, CPU+memory)",
-		"  g [addr]           Go/continue (exit monitor)",
-		"  u <addr>           Run until address",
-		"  x                  Exit monitor",
-		"  b <addr> [cond]    Set breakpoint (optional condition)",
-		"  bc <addr|*>        Clear breakpoint(s)",
-		"  bl                 List breakpoints",
-		"  ww <addr>          Set write watchpoint",
-		"  wc <addr|*>        Clear watchpoint(s)",
-		"  wl                 List watchpoints",
-		"  bt [depth]         Stack backtrace",
-		"  f <start> <end> <byte>   Fill memory",
-		"  w <addr> <bytes..>       Write bytes",
-		"  h <start> <end> <bytes..> Hunt/search",
-		"  c <start> <end> <dest>   Compare memory",
-		"  t <start> <end> <dest>   Transfer/copy memory",
-		"  save <s> <e> <file>  Save memory to file",
-		"  load <file> <addr>   Load file into memory",
-		"  ss [file]          Save machine state",
-		"  sl [file]          Load machine state",
-		"  trace <count>      Trace N instructions",
-		"  trace file <path|off>  Set/stop trace file output",
-		"  trace watch add/del/list <addr>  Write tracking",
-		"  trace history show/clear <addr>  Write history",
-		"  io [device]        I/O register viewer",
-		"  e <addr>           Hex editor mode",
-		"  script <file>      Run command script",
-		"  macro <name> <cmds..> Define macro (;-separated)",
-		"  cpu                List CPUs",
-		"  cpu <id|label>     Switch focused CPU",
-		"  freeze <id|*>      Freeze CPU(s)",
-		"  thaw <id|*>        Thaw CPU(s)",
-		"  fa / ta            Freeze/thaw audio",
-		"",
-		"Addresses: $hex, 0xhex, bare hex, #decimal, expr+expr",
-		"Conditions: reg==val, [$addr]==val, hitcount>val",
+type monitorHelpEntry struct {
+	Name     string
+	Summary  string
+	Syntax   []string
+	Examples []string
+}
+
+func monitorHelpRegistry() []monitorHelpEntry {
+	return []monitorHelpEntry{
+		{Name: "r", Summary: "Show or change registers", Syntax: []string{"r", "r <name> <value>"}, Examples: []string{"r", "r pc $1000", "r d0 #42"}},
+		{Name: "d", Summary: "Disassemble memory; /s shows source lines when available", Syntax: []string{"d [/s] [addr] [count]"}, Examples: []string{"d", "d main #12", "d /s pc #8"}},
+		{Name: "list", Summary: "Show source location for an address", Syntax: []string{"list [addr]"}, Examples: []string{"list", "list main", "list pc"}},
+		{Name: "m", Summary: "Dump memory as hex and ASCII", Syntax: []string{"m [addr] [lines]"}, Examples: []string{"m pc", "m $4000 8", "m main+4 2"}},
+		{Name: "s", Summary: "Single-step the focussed CPU", Syntax: []string{"s [count]"}, Examples: []string{"s", "s 10", "s 16"}},
+		{Name: "bs", Summary: "Step the focussed CPU backwards using CPU-local history", Syntax: []string{"bs", "rs"}, Examples: []string{"bs", "rs", "s; bs"}},
+		{Name: "rg", Summary: "Replay or restore to the previous whole-machine reverse boundary", Syntax: []string{"rg"}, Examples: []string{"s; rg", "history horizon", "rg"}},
+		{Name: "rt", Summary: "Replay or restore to the latest reverse boundary matching an expression", Syntax: []string{"rt <expr>"}, Examples: []string{"rt pc==$1000", "rt A==1", "rt b($4000)==$ff"}},
+		{Name: "tl", Summary: "Show the merged sequence-ordered access and monitor timeline, or scrub backwards", Syntax: []string{"tl [count]", "tl back"}, Examples: []string{"tl", "tl 32", "tl back"}},
+		{Name: "g", Summary: "Continue execution, optionally from a new PC", Syntax: []string{"g [addr]"}, Examples: []string{"g", "g main", "g $2000"}},
+		{Name: "u", Summary: "Run until an address is reached", Syntax: []string{"u <addr>"}, Examples: []string{"u main", "u pc+20", "u $1000"}},
+		{Name: "x", Summary: "Close the monitor and resume CPUs that were running", Syntax: []string{"x"}, Examples: []string{"x", "g", "thaw *; x"}},
+		{Name: "b", Summary: "Set a breakpoint with an optional condition", Syntax: []string{"b <addr> [if <expr>]", "b <addr> <legacy-condition>"}, Examples: []string{"b main", "b $1000 if R1==5", "b loop hitcount>3"}},
+		{Name: "bc", Summary: "Clear one breakpoint or all breakpoints", Syntax: []string{"bc <addr|*>"}, Examples: []string{"bc main", "bc $1000", "bc *"}},
+		{Name: "bl", Summary: "List breakpoints", Syntax: []string{"bl"}, Examples: []string{"bl", "b main; bl", "cpu 1; bl"}},
+		{Name: "ww", Summary: "Set a legacy one-byte write watchpoint", Syntax: []string{"ww <addr>"}, Examples: []string{"ww $5000", "ww sprite_x", "ww pc+1"}},
+		{Name: "bpm", Summary: "Set read/write watchpoints by mode and width", Syntax: []string{"bpmbr|bpmbw|bpmb <addr>", "bpmwr|bpmww|bpmw <addr>", "bpmdr|bpmdw|bpmd <addr>", "bpmqr|bpmqw|bpmq <addr>"}, Examples: []string{"bpmbr $5000", "bpmdw pixel", "bpmq buffer"}},
+		{Name: "wc", Summary: "Clear one watchpoint or all watchpoints", Syntax: []string{"wc <addr|*>"}, Examples: []string{"wc $5000", "wc sprite_x", "wc *"}},
+		{Name: "wl", Summary: "List watchpoints", Syntax: []string{"wl"}, Examples: []string{"wl", "ww $5000; wl", "bpmw $8000; wl"}},
+		{Name: "bt", Summary: "Show a symbol-aware stack backtrace", Syntax: []string{"bt [depth]"}, Examples: []string{"bt", "bt 8", "sym loadelf kernel.elf; bt"}},
+		{Name: "sym", Summary: "Manage symbols for the focussed CPU", Syntax: []string{"sym add <name> <addr> [func|object|label]", "sym loadlbl <file> [base]", "sym loadelf <file>", "sym lookup|resolve|list ..."}, Examples: []string{"sym add main $1000 func", "sym lookup main", "sym loadelf demo.elf"}},
+		{Name: "map", Summary: "List the memory map for the focussed CPU", Syntax: []string{"map"}, Examples: []string{"map", "cpu 1; map", "addr $F0000"}},
+		{Name: "addr", Summary: "Describe the memory region containing an address", Syntax: []string{"addr <addr>"}, Examples: []string{"addr pc", "addr $F0000", "addr sprite_buffer"}},
+		{Name: "pg", Summary: "Add, list, or clear page-access guards", Syntax: []string{"pg add <start> <end> <rwx> [cpu=all|current]", "pg list", "pg clear"}, Examples: []string{"pg add $4000 $4FFF rw cpu=current", "pg add code code+255 x", "pg list"}},
+		{Name: "accesslog", Summary: "Record read/write/fetch access events", Syntax: []string{"accesslog on [size]", "accesslog off", "accesslog show [count]"}, Examples: []string{"accesslog on 4096", "accesslog show 20", "accesslog off"}},
+		{Name: "who", Summary: "Find the last reader, writer, or fetcher of an address", Syntax: []string{"who read|wrote|fetched <addr>"}, Examples: []string{"who wrote $D020", "who read buffer", "who fetched main"}},
+		{Name: "bfirst", Summary: "Break once on the first access to a named region", Syntax: []string{"bfirst read|write|fetch <region-name>"}, Examples: []string{"bfirst write mmio", "bfirst fetch rom", "bfirst read ram"}},
+		{Name: "trace", Summary: "Trace instructions, files, write history, or MMIO access events", Syntax: []string{"trace <count>", "trace file <path|off>", "trace watch add|del|list <addr>", "trace history show|clear <addr|*>", "trace mmio <region> [count]"}, Examples: []string{"trace 20", "trace file trace.txt", "trace mmio mmio 32"}},
+		{Name: "history", Summary: "Show or tune reverse-debugging snapshot history", Syntax: []string{"history horizon", "history config [delta-interval] [delta-miB] [checkpoints] [snapshots]"}, Examples: []string{"history horizon", "history config", "history config 32 64 8 256"}},
+		{Name: "tracering", Summary: "Enable or disable the per-CPU instruction trace ring", Syntax: []string{"tracering on|off [size]"}, Examples: []string{"tracering on", "tracering on 8192", "tracering off"}},
+		{Name: "show", Summary: "Show the tail of the instruction trace ring", Syntax: []string{"show [count]"}, Examples: []string{"show", "show 32", "tracering on; s 4; show"}},
+		{Name: "fault", Summary: "Break before selected guest fault handlers run", Syntax: []string{"fault on|off|list", "fault break <kind>", "fault clear <kind>"}, Examples: []string{"fault list", "fault break m68k.illegal", "fault off"}},
+		{Name: "cpu", Summary: "List CPUs, change focus, or manage coprocessor worker slots", Syntax: []string{"cpu", "cpu <id|label>", "cpu online [--replace] <type|path.ie*> [path.ie*]", "cpu offline <id|label|type>"}, Examples: []string{"cpu", "cpu 1", "cpu online z80", "cpu online z80 svc.ie80", "cpu online --replace svc.ie80", "cpu offline z80"}},
+		{Name: "freeze", Summary: "Freeze a CPU or all CPUs", Syntax: []string{"freeze <id|label|*>"}, Examples: []string{"freeze *", "freeze 0", "freeze M68K"}},
+		{Name: "thaw", Summary: "Resume a frozen CPU or all CPUs", Syntax: []string{"thaw <id|label|*>"}, Examples: []string{"thaw *", "thaw 0", "thaw M68K"}},
+		{Name: "layout", Summary: "Render a named monitor view preset", Syntax: []string{"layout cpu|trace|debug", "layout list", "layout save <name>"}, Examples: []string{"layout cpu", "layout trace", "layout save bringup"}},
+		{Name: "alias", Summary: "Create or list command aliases", Syntax: []string{"alias", "alias <name> <command...>"}, Examples: []string{"alias ni s", "alias regs r", "alias"}},
+		{Name: "rc", Summary: "List, trust, or load project-local IEMon rc files", Syntax: []string{"rc list", "rc trust [file]", "rc load [file]"}, Examples: []string{"rc list", "rc trust .iemonrc", "rc load .iemonrc"}},
+		{Name: "bug", Summary: "Print a copyable debugger report bundle", Syntax: []string{"bug [trace-count]"}, Examples: []string{"bug", "bug 64", "accesslog on; bug"}},
+		{Name: "io", Summary: "Show I/O registers", Syntax: []string{"io [device|all]"}, Examples: []string{"io", "io video", "io all"}},
+		{Name: "e", Summary: "Enter hex editor mode", Syntax: []string{"e <addr>"}, Examples: []string{"e $4000", "e pc", "e sprite_buffer"}},
+		{Name: "f", Summary: "Fill memory", Syntax: []string{"f <start> <end> <byte>"}, Examples: []string{"f $4000 $40FF 00", "f buffer buffer+255 FF", "f #0 #15 #32"}},
+		{Name: "w", Summary: "Write bytes to memory", Syntax: []string{"w <addr> <bytes..>"}, Examples: []string{"w $4000 01 02 03", "w pc EA", "w buffer 00 FF"}},
+		{Name: "h", Summary: "Hunt for a byte pattern", Syntax: []string{"h <start> <end> <bytes..>"}, Examples: []string{"h $1000 $2000 DE AD", "h #0 $FFFF 4C 00", "h code code+1024 EA"}},
+		{Name: "c", Summary: "Compare two memory ranges", Syntax: []string{"c <start> <end> <dest>"}, Examples: []string{"c $1000 $10FF $2000", "c buffer buffer+31 copy", "c #0 #15 $100"}},
+		{Name: "t", Summary: "Transfer memory", Syntax: []string{"t <start> <end> <dest>"}, Examples: []string{"t $1000 $10FF $2000", "t buffer buffer+255 scratch", "t #0 #15 $8000"}},
+		{Name: "save", Summary: "Save memory to a host file", Syntax: []string{"save <start> <end> <file>"}, Examples: []string{"save $1000 $1FFF dump.bin", "save main main+255 code.bin", "save #0 #255 page0.bin"}},
+		{Name: "load", Summary: "Load a host file into memory", Syntax: []string{"load <file> <addr>"}, Examples: []string{"load demo.bin $1000", "load patch.bin pc", "load font.bin charset"}},
+		{Name: "ss", Summary: "Save a CPU-local state snapshot", Syntax: []string{"ss [file]"}, Examples: []string{"ss", "ss before.iem", "s; ss step.iem"}},
+		{Name: "sl", Summary: "Load a CPU-local state snapshot", Syntax: []string{"sl [file]"}, Examples: []string{"sl", "sl before.iem", "sl step.iem"}},
+		{Name: "fa", Summary: "Freeze audio output", Syntax: []string{"fa"}, Examples: []string{"fa", "fa; s 10", "fa; ta"}},
+		{Name: "ta", Summary: "Thaw audio output", Syntax: []string{"ta"}, Examples: []string{"ta", "fa; ta", "ta; g"}},
+		{Name: "script", Summary: "Run a monitor command script", Syntax: []string{"script <file>"}, Examples: []string{"script bringup.imon", "script tests/boot.imon", "script repro.imon"}},
+		{Name: "macro", Summary: "Define a semicolon-separated command macro", Syntax: []string{"macro <name> <cmds..>"}, Examples: []string{"macro regs r;d", "macro boot b main;g", "macro mm map;pg list"}},
 	}
-	for _, line := range helpLines {
-		m.appendOutput(line, colorCyan)
+}
+
+func monitorHelpByName(name string) (monitorHelpEntry, bool) {
+	name = strings.ToLower(name)
+	for _, entry := range monitorHelpRegistry() {
+		if entry.Name == name {
+			return entry, true
+		}
 	}
+	if strings.HasPrefix(name, "bpm") {
+		return monitorHelpByName("bpm")
+	}
+	return monitorHelpEntry{}, false
+}
+
+func (m *MachineMonitor) cmdHelp(cmd MonitorCommand) bool {
+	if len(cmd.Args) > 0 {
+		name := strings.ToLower(cmd.Args[0])
+		entry, ok := monitorHelpByName(name)
+		if !ok {
+			m.appendOutput(fmt.Sprintf("No help for %s", name), colorRed)
+			return false
+		}
+		m.appendOutput(entry.Name+" - "+entry.Summary, colorCyan)
+		m.appendOutput("Syntax:", colorCyan)
+		for _, line := range entry.Syntax {
+			m.appendOutput("  "+line, colorWhite)
+		}
+		m.appendOutput("Examples:", colorCyan)
+		for _, line := range entry.Examples {
+			m.appendOutput("  "+line, colorWhite)
+		}
+		return false
+	}
+
+	m.appendOutput("Machine Monitor Commands:", colorCyan)
+	for _, entry := range monitorHelpRegistry() {
+		m.appendOutput(fmt.Sprintf("  %-10s %s", entry.Name, entry.Summary), colorCyan)
+	}
+	m.appendOutput("", colorCyan)
+	m.appendOutput("Use help <command> for syntax and worked examples.", colorCyan)
+	m.appendOutput("Addresses: $hex, 0xhex, bare hex, #decimal, symbols, and expr+expr.", colorCyan)
+	m.appendOutput("Conditions: reg==val, [$addr]==val, hitcount>val, or if <expr>.", colorCyan)
+	return false
+}
+
+func (m *MachineMonitor) rememberRepeatCommand(input, name string) {
+	switch strings.ToLower(name) {
+	case "s", "d", "m":
+		m.lastRepeat = input
+	}
+}
+
+func (m *MachineMonitor) reverseHistorySearch() bool {
+	query := string(m.inputLine)
+	continuing := m.historySearchIdx >= 0 && m.historySearchIdx < len(m.history) && string(m.inputLine) == m.history[m.historySearchIdx]
+	if continuing {
+		query = m.historySearchQuery
+	}
+	if !continuing && (query != m.historySearchQuery || m.historySearchIdx < 0 || m.historySearchIdx > len(m.history)) {
+		m.historySearchQuery = query
+		m.historySearchIdx = len(m.history)
+	}
+	for i := m.historySearchIdx - 1; i >= 0; i-- {
+		if query == "" || strings.Contains(m.history[i], query) {
+			m.historySearchIdx = i
+			m.historyIdx = i
+			m.inputLine = []byte(m.history[i])
+			m.cursorPos = len(m.inputLine)
+			return true
+		}
+	}
+	return false
+}
+
+func iemonHomeDir() string {
+	if home := os.Getenv("IEMON_HOME"); home != "" {
+		return home
+	}
+	if len(os.Args) > 0 && strings.HasSuffix(os.Args[0], ".test") {
+		return ""
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".iemon")
+	}
+	return ""
+}
+
+func iemonHistoryPath() string {
+	home := iemonHomeDir()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "history")
+}
+
+func (m *MachineMonitor) loadPersistentHistory() {
+	path := iemonHistoryPath()
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	seen := make(map[string]bool)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		m.history = append(m.history, line)
+	}
+	if len(m.history) > 1000 {
+		m.history = m.history[len(m.history)-1000:]
+	}
+	m.historyIdx = len(m.history)
+}
+
+func (m *MachineMonitor) savePersistentHistory() {
+	path := iemonHistoryPath()
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return
+	}
+	start := 0
+	if len(m.history) > 1000 {
+		start = len(m.history) - 1000
+	}
+	var b strings.Builder
+	seen := make(map[string]bool)
+	for _, line := range m.history[start:] {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	_ = os.WriteFile(path, []byte(b.String()), 0600)
+}
+
+func (m *MachineMonitor) cmdAlias(cmd MonitorCommand) bool {
+	if len(cmd.Args) == 0 {
+		if len(m.aliases) == 0 {
+			m.appendOutput("No aliases", colorDim)
+			return false
+		}
+		names := make([]string, 0, len(m.aliases))
+		for name := range m.aliases {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			m.appendOutput(fmt.Sprintf("%s = %s", name, m.aliases[name]), colorCyan)
+		}
+		return false
+	}
+	if len(cmd.Args) < 2 {
+		m.appendOutput("Usage: alias <name> <command...>", colorRed)
+		return false
+	}
+	name := strings.ToLower(cmd.Args[0])
+	if _, ok := monitorHelpByName(name); ok {
+		m.appendOutput("Alias cannot replace a built-in command", colorRed)
+		return false
+	}
+	m.aliases[name] = strings.Join(cmd.Args[1:], " ")
+	m.appendOutput(fmt.Sprintf("Alias %s = %s", name, m.aliases[name]), colorCyan)
+	return false
+}
+
+func (m *MachineMonitor) cmdLayout(cmd MonitorCommand) bool {
+	if len(cmd.Args) == 0 || strings.EqualFold(cmd.Args[0], "list") {
+		m.appendOutput("Layouts: cpu, trace, debug", colorCyan)
+		return false
+	}
+	switch strings.ToLower(cmd.Args[0]) {
+	case "cpu":
+		m.showRegisters()
+		m.showDisassembly(0, 8)
+	case "trace":
+		_ = m.cmdShowTraceRing(MonitorCommand{Name: "show", Args: []string{"16"}})
+		_ = m.cmdAccessLog(MonitorCommand{Name: "accesslog", Args: []string{"show", "16"}})
+	case "debug":
+		m.showRegisters()
+		m.showDisassembly(0, 6)
+		_ = m.cmdBacktrace(MonitorCommand{Name: "bt", Args: []string{"8"}})
+		_ = m.cmdPageGuard(MonitorCommand{Name: "pg", Args: []string{"list"}})
+	case "save":
+		if len(cmd.Args) < 2 {
+			m.appendOutput("Usage: layout save <name>", colorRed)
+			return false
+		}
+		m.aliases["layout-"+strings.ToLower(cmd.Args[1])] = "layout debug"
+		m.appendOutput(fmt.Sprintf("Layout %s saved", cmd.Args[1]), colorCyan)
+	default:
+		m.appendOutput("Usage: layout cpu|trace|debug|list|save <name>", colorRed)
+	}
+	return false
+}
+
+func (m *MachineMonitor) cmdBugReport(cmd MonitorCommand) bool {
+	traceCount := 16
+	if len(cmd.Args) > 0 {
+		if parsed, err := parseCount(cmd.Args[0]); err == nil && parsed > 0 {
+			traceCount = int(parsed)
+		}
+	}
+	m.appendOutput("IEMon bug report", colorCyan)
+	m.appendOutput("== CPU ==", colorCyan)
+	if entry := m.cpus[m.focusedID]; entry != nil {
+		m.appendOutput(fmt.Sprintf("focussed=%d label=%s cpu=%s pc=$%X running=%v", entry.ID, entry.Label, entry.CPU.CPUName(), entry.CPU.GetPC(), entry.CPU.IsRunning()), colorWhite)
+	}
+	m.appendOutput("== Registers ==", colorCyan)
+	m.showRegisters()
+	m.appendOutput("== Disassembly ==", colorCyan)
+	m.showDisassembly(0, 6)
+	m.appendOutput("== Stack ==", colorCyan)
+	_ = m.cmdBacktrace(MonitorCommand{Name: "bt", Args: []string{"8"}})
+	m.appendOutput("== Regions ==", colorCyan)
+	_ = m.cmdMap(MonitorCommand{Name: "map"})
+	m.appendOutput("== Guards ==", colorCyan)
+	_ = m.cmdPageGuard(MonitorCommand{Name: "pg", Args: []string{"list"}})
+	m.appendOutput("== Access events ==", colorCyan)
+	_ = m.cmdAccessLog(MonitorCommand{Name: "accesslog", Args: []string{"show", strconv.Itoa(traceCount)}})
+	m.appendOutput("== Trace ring ==", colorCyan)
+	_ = m.cmdShowTraceRing(MonitorCommand{Name: "show", Args: []string{strconv.Itoa(traceCount)}})
+	m.appendOutput("== Symbols ==", colorCyan)
+	_ = m.cmdSymbols(MonitorCommand{Name: "sym", Args: []string{"list"}})
 	return false
 }
 
@@ -1157,7 +2326,7 @@ func (m *MachineMonitor) findCPUByArg(arg string) *CPUEntry {
 func (m *MachineMonitor) cmdSaveMemory(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -1166,8 +2335,8 @@ func (m *MachineMonitor) cmdSaveMemory(cmd MonitorCommand) bool {
 		return false
 	}
 
-	start, ok1 := EvalAddress(cmd.Args[0], entry.CPU)
-	end, ok2 := EvalAddress(cmd.Args[1], entry.CPU)
+	start, ok1 := m.evalAddress(cmd.Args[0], entry)
+	end, ok2 := m.evalAddress(cmd.Args[1], entry)
 	if !ok1 || !ok2 {
 		m.appendOutput("Invalid address", colorRed)
 		return false
@@ -1202,7 +2371,7 @@ func (m *MachineMonitor) cmdSaveMemory(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdLoadMemory(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -1222,7 +2391,7 @@ func (m *MachineMonitor) cmdLoadMemory(cmd MonitorCommand) bool {
 		return false
 	}
 
-	addr, ok := EvalAddress(cmd.Args[1], entry.CPU)
+	addr, ok := m.evalAddress(cmd.Args[1], entry)
 	if !ok {
 		m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[1]), colorRed)
 		return false
@@ -1238,7 +2407,7 @@ func (m *MachineMonitor) cmdLoadMemory(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdRunUntil(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -1247,7 +2416,7 @@ func (m *MachineMonitor) cmdRunUntil(cmd MonitorCommand) bool {
 		return false
 	}
 
-	addr, ok := EvalAddress(cmd.Args[0], entry.CPU)
+	addr, ok := m.evalAddress(cmd.Args[0], entry)
 	if !ok {
 		m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[0]), colorRed)
 		return false
@@ -1313,18 +2482,21 @@ func (m *MachineMonitor) cmdRunUntil(cmd MonitorCommand) bool {
 // --- Feature 5: Watchpoints ---
 
 func (m *MachineMonitor) cmdWatchpointSet(cmd MonitorCommand) bool {
+	return m.cmdWatchpointSetMode(cmd, WatchWrite, 1)
+}
+
+func (m *MachineMonitor) cmdWatchpointSetMode(cmd MonitorCommand, typ WatchpointType, width uint8) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
 	if len(cmd.Args) < 1 {
-		m.appendOutput("Usage: ww <addr>", colorRed)
+		m.appendOutput("Usage: ww|bpm* <addr>", colorRed)
 		return false
 	}
-
-	addr, ok := EvalAddress(cmd.Args[0], entry.CPU)
+	addr, ok := m.evalAddress(cmd.Args[0], entry)
 	if !ok {
 		m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[0]), colorRed)
 		return false
@@ -1334,15 +2506,26 @@ func (m *MachineMonitor) cmdWatchpointSet(cmd MonitorCommand) bool {
 		return false
 	}
 
-	entry.CPU.SetWatchpoint(addr)
-	m.appendOutput(fmt.Sprintf("Write watchpoint set at $%X", addr), colorCyan)
+	if setter, ok := entry.CPU.(extendedWatchpointSetter); ok {
+		setter.SetWatchpointEx(addr, typ, width)
+	} else {
+		entry.CPU.SetWatchpoint(addr)
+	}
+	if m.access != nil && (typ != WatchWrite || isBPMWatchpointCommand(cmd.Name)) {
+		m.access.Watch(entry.ID, addr, int(normalizeWatchWidth(width)), typ)
+	}
+	m.appendOutput(fmt.Sprintf("%s%d watchpoint set at $%X", watchpointTypeString(typ), normalizeWatchWidth(width), addr), colorCyan)
 	return false
+}
+
+func isBPMWatchpointCommand(name string) bool {
+	return strings.HasPrefix(strings.ToLower(name), "bpm")
 }
 
 func (m *MachineMonitor) cmdWatchpointClear(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -1353,17 +2536,23 @@ func (m *MachineMonitor) cmdWatchpointClear(cmd MonitorCommand) bool {
 
 	if cmd.Args[0] == "*" {
 		entry.CPU.ClearAllWatchpoints()
+		if m.access != nil {
+			m.access.ClearWatchesForCPU(entry.ID)
+		}
 		m.appendOutput("All watchpoints cleared", colorCyan)
 		return false
 	}
 
-	addr, ok := EvalAddress(cmd.Args[0], entry.CPU)
+	addr, ok := m.evalAddress(cmd.Args[0], entry)
 	if !ok {
 		m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[0]), colorRed)
 		return false
 	}
 
 	if entry.CPU.ClearWatchpoint(addr) {
+		if m.access != nil {
+			m.access.ClearWatch(entry.ID, addr)
+		}
 		m.appendOutput(fmt.Sprintf("Watchpoint cleared at $%X", addr), colorCyan)
 	} else {
 		m.appendOutput(fmt.Sprintf("No watchpoint at $%X", addr), colorRed)
@@ -1378,7 +2567,11 @@ func (m *MachineMonitor) cmdWatchpointList(_ MonitorCommand) bool {
 			continue
 		}
 		for _, addr := range wps {
-			m.appendOutput(fmt.Sprintf("W $%X (id:%d %s)", addr, entry.ID, entry.Label), colorCyan)
+			if wp, ok := entry.CPU.SnapshotWatchpoint(addr); ok {
+				m.appendOutput(fmt.Sprintf("%s%d $%X (id:%d %s)", watchpointTypeString(wp.Type), normalizeWatchWidth(wp.Width), addr, entry.ID, entry.Label), colorCyan)
+			} else {
+				m.appendOutput(fmt.Sprintf("W1 $%X (id:%d %s)", addr, entry.ID, entry.Label), colorCyan)
+			}
 		}
 	}
 	return false
@@ -1389,7 +2582,7 @@ func (m *MachineMonitor) cmdWatchpointList(_ MonitorCommand) bool {
 func (m *MachineMonitor) cmdBacktrace(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -1400,15 +2593,18 @@ func (m *MachineMonitor) cmdBacktrace(cmd MonitorCommand) bool {
 		}
 	}
 
-	addrs := backtrace(entry.CPU, depth)
-	if len(addrs) == 0 {
+	frames := symbolAwareBacktrace(entry.CPU, depth, m.symbols, m.regions)
+	if len(frames) == 0 {
 		m.appendOutput("No stack frames found", colorDim)
 		return false
 	}
 
-	for i, addr := range addrs {
-		line := fmt.Sprintf("#%-3d $%0*X", i, (entry.CPU.AddressWidth()+3)/4, addr)
-		if entry.CPU.CPUName() == "6502" {
+	for i, frame := range frames {
+		line := fmt.Sprintf("#%-3d $%0*X", i, (entry.CPU.AddressWidth()+3)/4, frame.Address)
+		if frame.HasSymbol {
+			line += " " + formatSymbolResolution(frame.Symbol)
+		}
+		if frame.LowConfidence {
 			line += " (low confidence)"
 		}
 		m.appendOutput(line, colorCyan)
@@ -1421,7 +2617,7 @@ func (m *MachineMonitor) cmdBacktrace(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdSaveState(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -1443,7 +2639,7 @@ func (m *MachineMonitor) cmdSaveState(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdLoadState(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -1488,9 +2684,76 @@ func (m *MachineMonitor) cmdTrace(cmd MonitorCommand) bool {
 		return m.cmdTraceWatch(cmd)
 	case "history":
 		return m.cmdTraceHistory(cmd)
+	case "mmio":
+		return m.cmdTraceMMIO(cmd)
 	default:
 		return m.cmdTraceRun(cmd)
 	}
+}
+
+func (m *MachineMonitor) cmdTraceRing(cmd MonitorCommand) bool {
+	entry := m.cpus[m.focusedID]
+	if entry == nil {
+		m.appendOutput("No CPU focussed", colorRed)
+		return false
+	}
+	if len(cmd.Args) < 1 {
+		m.appendOutput("Usage: tracering on|off [size]", colorRed)
+		return false
+	}
+	ring := m.traceRings[m.focusedID]
+	if ring == nil {
+		ring = NewDebugTraceRing(4096)
+		m.traceRings[m.focusedID] = ring
+	}
+	switch strings.ToLower(cmd.Args[0]) {
+	case "on":
+		if len(cmd.Args) >= 2 {
+			size, err := parseCount(cmd.Args[1])
+			if err != nil || size == 0 {
+				m.appendOutput("Invalid trace ring size", colorRed)
+				return false
+			}
+			ring.Resize(int(size))
+		}
+		ring.SetEnabled(true)
+		m.appendOutput("Trace ring enabled", colorCyan)
+	case "off":
+		ring.SetEnabled(false)
+		m.appendOutput("Trace ring disabled", colorCyan)
+	default:
+		m.appendOutput("Usage: tracering on|off [size]", colorRed)
+	}
+	return false
+}
+
+func (m *MachineMonitor) cmdShowTraceRing(cmd MonitorCommand) bool {
+	entry := m.cpus[m.focusedID]
+	if entry == nil {
+		m.appendOutput("No CPU focussed", colorRed)
+		return false
+	}
+	count := 16
+	if len(cmd.Args) >= 1 {
+		if v, err := parseCount(cmd.Args[0]); err == nil {
+			count = int(v)
+		}
+	}
+	ring := m.traceRings[m.focusedID]
+	if ring == nil {
+		m.appendOutput("Trace ring empty", colorDim)
+		return false
+	}
+	entries := ring.Tail(count)
+	if len(entries) == 0 {
+		m.appendOutput("Trace ring empty", colorDim)
+		return false
+	}
+	addrWidth := (entry.CPU.AddressWidth() + 3) / 4
+	for _, tr := range entries {
+		m.appendOutput(fmt.Sprintf("%0*X: %-24s %s", addrWidth, tr.PC, tr.HexBytes, tr.Mnemonic), colorWhite)
+	}
+	return false
 }
 
 func (m *MachineMonitor) cmdTraceFile(cmd MonitorCommand) bool {
@@ -1538,7 +2801,7 @@ func (m *MachineMonitor) cmdTraceWatch(cmd MonitorCommand) bool {
 			m.appendOutput("Usage: trace watch add <addr>", colorRed)
 			return false
 		}
-		addr, ok := EvalAddress(cmd.Args[2], entry.CPU)
+		addr, ok := m.evalAddress(cmd.Args[2], entry)
 		if !ok {
 			m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[2]), colorRed)
 			return false
@@ -1556,7 +2819,7 @@ func (m *MachineMonitor) cmdTraceWatch(cmd MonitorCommand) bool {
 			m.appendOutput("Usage: trace watch del <addr>", colorRed)
 			return false
 		}
-		addr, ok := EvalAddress(cmd.Args[2], entry.CPU)
+		addr, ok := m.evalAddress(cmd.Args[2], entry)
 		if !ok {
 			m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[2]), colorRed)
 			return false
@@ -1594,7 +2857,7 @@ func (m *MachineMonitor) cmdTraceHistory(cmd MonitorCommand) bool {
 			m.appendOutput("Usage: trace history show <addr>", colorRed)
 			return false
 		}
-		addr, ok := EvalAddress(cmd.Args[2], entry.CPU)
+		addr, ok := m.evalAddress(cmd.Args[2], entry)
 		if !ok {
 			m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[2]), colorRed)
 			return false
@@ -1622,7 +2885,7 @@ func (m *MachineMonitor) cmdTraceHistory(cmd MonitorCommand) bool {
 			if entry == nil {
 				return false
 			}
-			addr, ok := EvalAddress(cmd.Args[2], entry.CPU)
+			addr, ok := m.evalAddress(cmd.Args[2], entry)
 			if !ok {
 				m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[2]), colorRed)
 				return false
@@ -1637,10 +2900,67 @@ func (m *MachineMonitor) cmdTraceHistory(cmd MonitorCommand) bool {
 	return false
 }
 
+func (m *MachineMonitor) cmdTraceMMIO(cmd MonitorCommand) bool {
+	if m.access == nil {
+		m.appendOutput("Debug access service unavailable", colorRed)
+		return false
+	}
+	entry := m.cpus[m.focusedID]
+	if entry == nil {
+		m.appendOutput("No CPU focussed", colorRed)
+		return false
+	}
+	if len(cmd.Args) < 2 {
+		m.appendOutput("Usage: trace mmio <region-name> [count]", colorRed)
+		return false
+	}
+	region := m.regions.LookupName(entry.CPU.CPUName(), cmd.Args[1])
+	if region == nil {
+		m.appendOutput(fmt.Sprintf("Unknown region for %s: %s", entry.CPU.CPUName(), cmd.Args[1]), colorRed)
+		return false
+	}
+	count := 16
+	if len(cmd.Args) >= 3 {
+		parsed, err := parseCount(cmd.Args[2])
+		if err != nil {
+			m.appendOutput("Usage: trace mmio <region-name> [count]", colorRed)
+			return false
+		}
+		count = int(parsed)
+	}
+	events := m.access.HistoryTail(0)
+	var matches []AccessEvent
+	for _, ev := range events {
+		if accessEventOverlapsRegion(ev, *region) {
+			matches = append(matches, ev)
+		}
+	}
+	if len(matches) == 0 {
+		m.appendOutput(fmt.Sprintf("No access events for %s", region.Name), colorDim)
+		return false
+	}
+	if count > 0 && len(matches) > count {
+		matches = matches[len(matches)-count:]
+	}
+	for _, ev := range matches {
+		m.appendOutput(formatAccessEvent(ev), colorWhite)
+	}
+	return false
+}
+
+func accessEventOverlapsRegion(ev AccessEvent, region MemoryRegion) bool {
+	width := ev.Width
+	if width <= 0 {
+		width = 1
+	}
+	end := ev.Address + uint64(width-1)
+	return end >= region.Start && ev.Address <= region.End
+}
+
 func (m *MachineMonitor) cmdTraceRun(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -1660,6 +2980,7 @@ func (m *MachineMonitor) cmdTraceRun(cmd MonitorCommand) bool {
 	for i := range n {
 		// Get pre-step state
 		pc := entry.CPU.GetPC()
+		m.recordTraceRing(m.focusedID, entry, pc)
 		lines := entry.CPU.Disassemble(pc, 1)
 		mnemonic := ""
 		if len(lines) > 0 {
@@ -1745,7 +3066,7 @@ func (m *MachineMonitor) cmdTraceRun(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdBackstep(_ MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -1778,12 +3099,296 @@ func (m *MachineMonitor) cmdBackstep(_ MonitorCommand) bool {
 	return false
 }
 
+func (m *MachineMonitor) popWholeSnapshot() (*WholeMachineSnapshot, bool) {
+	if len(m.wholeHistory) == 0 {
+		return nil, false
+	}
+	snap := m.wholeHistory[len(m.wholeHistory)-1]
+	m.wholeHistory = m.wholeHistory[:len(m.wholeHistory)-1]
+	return snap, true
+}
+
+func (m *MachineMonitor) cmdReverseContinue(_ MonitorCommand) bool {
+	snap, ok := m.popWholeSnapshot()
+	if !ok {
+		m.appendOutput("No whole-machine reverse history available", colorRed)
+		return false
+	}
+	material, replayed, steps, err := m.restoreWholeMachineSnapshotWithReplayLocked(snap)
+	if err != nil {
+		m.appendOutput(fmt.Sprintf("Error: %s", err), colorRed)
+		return false
+	}
+	if replayed {
+		m.appendOutput(fmt.Sprintf("Reverse continue: replayed %d instruction(s) to boundary; restored %d CPU(s), shared bus state, and %d device snapshot(s)", steps, len(material.CPUs), len(material.Devices)), colorCyan)
+	} else {
+		m.appendOutput(fmt.Sprintf("Reverse continue: restored %d CPU(s), shared bus state, and %d device snapshot(s)", len(material.CPUs), len(material.Devices)), colorCyan)
+	}
+	m.saveCurrentRegs()
+	m.showDisassembly(0, 1)
+	return false
+}
+
+func (m *MachineMonitor) restoreWholeMachineSnapshotWithReplayLocked(target *WholeMachineSnapshot) (*WholeMachineSnapshot, bool, int, error) {
+	material, err := m.materializeWholeMachineSnapshotLocked(target)
+	if err != nil {
+		return nil, false, 0, err
+	}
+	if len(m.wholeHistory) == 0 {
+		if err := m.restoreWholeMachineSnapshotLocked(material); err != nil {
+			return nil, false, 0, err
+		}
+		return material, false, 0, nil
+	}
+	start := m.wholeHistory[len(m.wholeHistory)-1]
+	startMaterial, err := m.materializeWholeMachineSnapshotLocked(start)
+	if err != nil {
+		return nil, false, 0, err
+	}
+	if err := m.restoreWholeMachineSnapshotLocked(startMaterial); err != nil {
+		return nil, false, 0, err
+	}
+	cpuID := m.replayCPUForTargetLocked(startMaterial, material)
+	entry := m.cpus[cpuID]
+	if entry == nil || entry.CPU == nil {
+		if err := m.restoreWholeMachineSnapshotLocked(material); err != nil {
+			return nil, false, 0, err
+		}
+		return material, false, 0, nil
+	}
+	const maxReverseReplaySteps = 100000
+	for steps := 0; steps <= maxReverseReplaySteps; steps++ {
+		current, err := m.takeWholeMachineSnapshotLocked()
+		if err != nil {
+			return nil, false, steps, err
+		}
+		if wholeSnapshotsEquivalent(current, material) {
+			return material, true, steps, nil
+		}
+		if steps == maxReverseReplaySteps {
+			break
+		}
+		if _, err := safeDebugStep(entry.CPU); err != nil {
+			return nil, false, steps, err
+		}
+	}
+	return nil, false, maxReverseReplaySteps, fmt.Errorf("reverse replay did not reach snapshot boundary within %d instruction(s)", maxReverseReplaySteps)
+}
+
+func (m *MachineMonitor) replayCPUForTargetLocked(start, target *WholeMachineSnapshot) int {
+	targetByID := make(map[int]WholeMachineCPUState, len(target.CPUs))
+	for _, cpu := range target.CPUs {
+		targetByID[cpu.ID] = cpu
+	}
+	for _, startCPU := range start.CPUs {
+		targetCPU, ok := targetByID[startCPU.ID]
+		if !ok {
+			continue
+		}
+		if !registerInfosEqual(startCPU.Registers, targetCPU.Registers) || !snapshotPagesEqual(startCPU.Pages, targetCPU.Pages) {
+			return startCPU.ID
+		}
+	}
+	return m.focusedID
+}
+
+func (m *MachineMonitor) cmdReverseRunUntil(cmd MonitorCommand) bool {
+	if len(cmd.Args) == 0 {
+		m.appendOutput("Usage: rt <expr>", colorRed)
+		return false
+	}
+	entry := m.cpus[m.focusedID]
+	if entry == nil {
+		m.appendOutput("No CPU focussed", colorRed)
+		return false
+	}
+	expr, err := ParseBreakpointExpr(strings.Join(cmd.Args, " "))
+	if err != nil {
+		m.appendOutput(fmt.Sprintf("Invalid expression: %s", err), colorRed)
+		return false
+	}
+	current, err := m.takeWholeMachineSnapshotLocked()
+	if err != nil {
+		m.appendOutput(fmt.Sprintf("Error: %s", err), colorRed)
+		return false
+	}
+	originalHistory := append([]*WholeMachineSnapshot(nil), m.wholeHistory...)
+	for len(m.wholeHistory) > 0 {
+		snap, _ := m.popWholeSnapshot()
+		material, err := m.materializeWholeMachineSnapshotLocked(snap)
+		if err != nil {
+			m.wholeHistory = originalHistory
+			_ = m.restoreWholeMachineSnapshotLocked(current)
+			m.appendOutput(fmt.Sprintf("Error: %s", err), colorRed)
+			return false
+		}
+		if err := m.restoreWholeMachineSnapshotLocked(material); err != nil {
+			m.wholeHistory = originalHistory
+			_ = m.restoreWholeMachineSnapshotLocked(current)
+			m.appendOutput(fmt.Sprintf("Error: %s", err), colorRed)
+			return false
+		}
+		entry = m.cpus[m.focusedID]
+		if entry != nil && evalBreakpointExpr(expr, entry.CPU, 0) {
+			material, replayed, steps, err := m.restoreWholeMachineSnapshotWithReplayLocked(snap)
+			if err != nil {
+				m.wholeHistory = originalHistory
+				_ = m.restoreWholeMachineSnapshotLocked(current)
+				m.appendOutput(fmt.Sprintf("Error: %s", err), colorRed)
+				return false
+			}
+			entry = m.cpus[m.focusedID]
+			pc := uint64(0)
+			if entry != nil {
+				pc = entry.CPU.GetPC()
+			} else if len(material.CPUs) > 0 {
+				for _, r := range material.CPUs[0].Registers {
+					if strings.EqualFold(r.Name, "PC") {
+						pc = r.Value
+						break
+					}
+				}
+			}
+			if replayed {
+				m.appendOutput(fmt.Sprintf("Reverse run-until: replayed %d instruction(s) to matching snapshot at PC=$%X", steps, pc), colorCyan)
+			} else {
+				m.appendOutput(fmt.Sprintf("Reverse run-until: restored matching snapshot at PC=$%X", pc), colorCyan)
+			}
+			m.saveCurrentRegs()
+			m.showDisassembly(0, 1)
+			return false
+		}
+	}
+	m.wholeHistory = originalHistory
+	_ = m.restoreWholeMachineSnapshotLocked(current)
+	m.appendOutput("No earlier whole-machine snapshot matched", colorRed)
+	return false
+}
+
+func (m *MachineMonitor) cmdTimeline(cmd MonitorCommand) bool {
+	if len(cmd.Args) >= 1 {
+		switch strings.ToLower(cmd.Args[0]) {
+		case "back", "prev", "reverse":
+			return m.cmdReverseContinue(MonitorCommand{Name: "rg"})
+		}
+	}
+	count := 16
+	if len(cmd.Args) >= 1 {
+		if v, err := parseCount(cmd.Args[0]); err == nil && v > 0 {
+			count = int(v)
+		}
+	}
+	type line struct {
+		seq  uint64
+		text string
+	}
+	var lines []line
+	for _, ev := range m.access.HistoryTail(count) {
+		lines = append(lines, line{seq: ev.Seq, text: "access " + formatAccessEvent(ev)})
+	}
+	start := len(m.timelineEvents) - count
+	if start < 0 {
+		start = 0
+	}
+	for _, ev := range m.timelineEvents[start:] {
+		lines = append(lines, line{seq: ev.Seq, text: formatTimelineEvent(ev)})
+	}
+	if len(lines) == 0 {
+		m.appendOutput("Timeline is empty; enable accesslog to collect access events", colorDim)
+		return false
+	}
+	sort.SliceStable(lines, func(i, j int) bool { return lines[i].seq < lines[j].seq })
+	if len(lines) > count {
+		lines = lines[len(lines)-count:]
+	}
+	for _, line := range lines {
+		m.appendOutput(line.text, colorWhite)
+	}
+	return false
+}
+
+func formatTimelineEvent(ev TimelineEvent) string {
+	line := fmt.Sprintf("#%d %s cpu=%d pc=$%X", ev.Seq, ev.Kind, ev.CPUID, ev.PC)
+	if ev.SnapshotID != 0 {
+		line += fmt.Sprintf(" snap=%d", ev.SnapshotID)
+	}
+	if ev.Detail != "" {
+		line += " " + ev.Detail
+	}
+	return line
+}
+
+func (m *MachineMonitor) cmdHistory(cmd MonitorCommand) bool {
+	if len(cmd.Args) > 0 && strings.EqualFold(cmd.Args[0], "config") {
+		return m.cmdHistoryConfig(cmd)
+	}
+	if len(cmd.Args) == 0 || strings.EqualFold(cmd.Args[0], "horizon") {
+		checkpoints, deltas, bytes := m.wholeHistoryStatsLocked()
+		m.appendOutput(fmt.Sprintf("Whole-machine reverse horizon: %d snapshot(s), %d checkpoint(s), %d delta(s), capacity %d", len(m.wholeHistory), checkpoints, deltas, m.maxWholeHistory), colorCyan)
+		m.appendOutput(fmt.Sprintf("Snapshot chain: checkpoint every %d delta(s) or %d MiB, retained checkpoints %d, delta bytes %d", m.wholeCheckpointInterval, m.wholeCheckpointBytes>>20, m.maxWholeCheckpoints, bytes), colorCyan)
+		m.appendOutput(fmt.Sprintf("Snapshot devices registered: %d", len(m.devices)), colorCyan)
+		if m.access != nil && m.access.HistoryEnabled() {
+			m.appendOutput(fmt.Sprintf("Access timeline: %d recent event(s)", len(m.access.HistoryTail(0))), colorCyan)
+		}
+		return false
+	}
+	m.appendOutput("Usage: history horizon | history config [delta-interval] [delta-miB] [checkpoints] [snapshots]", colorRed)
+	return false
+}
+
+func (m *MachineMonitor) cmdHistoryConfig(cmd MonitorCommand) bool {
+	if len(cmd.Args) == 1 {
+		m.appendOutput(fmt.Sprintf("Snapshot history config: delta-interval=%d delta-miB=%d checkpoints=%d snapshots=%d",
+			m.wholeCheckpointInterval, m.wholeCheckpointBytes>>20, m.maxWholeCheckpoints, m.maxWholeHistory), colorCyan)
+		return false
+	}
+	if len(cmd.Args) < 4 || len(cmd.Args) > 5 {
+		m.appendOutput("Usage: history config [delta-interval] [delta-miB] [checkpoints] [snapshots]", colorRed)
+		return false
+	}
+	interval, err1 := parseCount(cmd.Args[1])
+	miB, err2 := parseCount(cmd.Args[2])
+	checkpoints, err3 := parseCount(cmd.Args[3])
+	snapshots := uint64(m.maxWholeHistory)
+	var err4 error
+	if len(cmd.Args) >= 5 {
+		snapshots, err4 = parseCount(cmd.Args[4])
+	}
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || interval == 0 || miB == 0 || checkpoints == 0 || snapshots == 0 {
+		m.appendOutput("Invalid history config values", colorRed)
+		return false
+	}
+	m.wholeCheckpointInterval = int(interval)
+	m.wholeCheckpointBytes = miB << 20
+	m.maxWholeCheckpoints = int(checkpoints)
+	m.maxWholeHistory = int(snapshots)
+	m.pruneWholeHistoryLocked()
+	m.appendOutput(fmt.Sprintf("Snapshot history config: delta-interval=%d delta-miB=%d checkpoints=%d snapshots=%d",
+		m.wholeCheckpointInterval, m.wholeCheckpointBytes>>20, m.maxWholeCheckpoints, m.maxWholeHistory), colorCyan)
+	return false
+}
+
+func (m *MachineMonitor) wholeHistoryStatsLocked() (checkpoints, deltas int, bytes uint64) {
+	for _, snap := range m.wholeHistory {
+		if snap == nil {
+			continue
+		}
+		bytes += snap.DeltaBytes
+		if snap.Full {
+			checkpoints++
+		} else {
+			deltas++
+		}
+	}
+	return checkpoints, deltas, bytes
+}
+
 // --- Feature 11: I/O Register Viewer ---
 
 func (m *MachineMonitor) cmdIOView(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -1818,7 +3423,7 @@ func (m *MachineMonitor) cmdIOView(cmd MonitorCommand) bool {
 func (m *MachineMonitor) cmdHexEdit(cmd MonitorCommand) bool {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
-		m.appendOutput("No CPU focused", colorRed)
+		m.appendOutput("No CPU focussed", colorRed)
 		return false
 	}
 
@@ -1827,7 +3432,7 @@ func (m *MachineMonitor) cmdHexEdit(cmd MonitorCommand) bool {
 		return false
 	}
 
-	addr, ok := EvalAddress(cmd.Args[0], entry.CPU)
+	addr, ok := m.evalAddress(cmd.Args[0], entry)
 	if !ok {
 		m.appendOutput(fmt.Sprintf("Invalid address: %s", cmd.Args[0]), colorRed)
 		return false

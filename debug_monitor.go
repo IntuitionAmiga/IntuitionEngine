@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -110,6 +111,7 @@ type StopReason int
 const (
 	StopBreakpoint StopReason = iota
 	StopWatchpoint
+	StopFault
 	StopReset
 	StopManualFreeze
 	StopUserAbort
@@ -138,17 +140,28 @@ type MachineMonitor struct {
 	maxOutput    int
 	scrollOffset int
 
-	inputLine  []byte
-	cursorPos  int
-	history    []string
-	historyIdx int
+	inputLine          []byte
+	cursorPos          int
+	history            []string
+	historyIdx         int
+	aliases            map[string]string
+	loadedRC           map[string]string
+	lastRepeat         string
+	historySearchQuery string
+	historySearchIdx   int
 
 	wasRunning map[int]bool
 	soundChip  *SoundChip
+	devices    map[string]DebugSnapshotDevice
 
 	bus       *MachineBus
 	coprocMgr *CoprocessorManager
 	prevRegs  map[string]uint64 // for change highlighting
+	symbols   *SymbolTable
+	sources   *SourceLineTable
+	regions   *RegionRegistry
+	access    *DebugAccessService
+	faults    *DebugFaultService
 
 	// Run-Until temp breakpoints (Feature 2)
 	tempBreakpoints map[int]map[uint64]bool
@@ -160,10 +173,22 @@ type MachineMonitor struct {
 	traceWatches   map[uint64]bool
 	traceSnapshots map[uint64]byte
 	writeHistory   map[uint64][]WriteRecord
+	traceRings     map[int]*DebugTraceRing
+	timelineEvents []TimelineEvent
+	timelineSeq    atomic.Uint64
+	maxTimeline    int
 
 	// Backstep (Feature 9) - per-CPU history keyed by CPU ID
-	stepHistory map[int][]*MachineSnapshot
-	maxBackstep int
+	stepHistory             map[int][]*MachineSnapshot
+	wholeHistory            []*WholeMachineSnapshot
+	nextWholeID             uint64
+	wholeDeltaCount         int
+	wholeDeltaBytes         uint64
+	maxBackstep             int
+	maxWholeHistory         int
+	wholeCheckpointInterval int
+	wholeCheckpointBytes    uint64
+	maxWholeCheckpoints     int
 
 	// Hex editor (Feature 12)
 	hexEditAddr   uint64
@@ -178,28 +203,68 @@ type MachineMonitor struct {
 
 // NewMachineMonitor creates a new monitor instance.
 func NewMachineMonitor(bus *MachineBus) *MachineMonitor {
-	return &MachineMonitor{
-		state:           MonitorInactive,
-		cpus:            make(map[int]*CPUEntry),
-		breakpointChan:  make(chan BreakpointEvent, 8),
-		eventQueue:      newEventQueue(),
-		cpuReaders:      make(map[int]*monitorCPUReader),
-		stopHooks:       make(map[int]StopHook),
-		maxOutput:       500,
-		wasRunning:      make(map[int]bool),
-		bus:             bus,
-		prevRegs:        make(map[string]uint64),
-		tempBreakpoints: make(map[int]map[uint64]bool),
-		savedConditions: make(map[int]map[uint64]*BreakpointCondition),
-		runUntilHooks:   make(map[int]map[uint64]int),
-		traceWatches:    make(map[uint64]bool),
-		traceSnapshots:  make(map[uint64]byte),
-		writeHistory:    make(map[uint64][]WriteRecord),
-		stepHistory:     make(map[int][]*MachineSnapshot),
-		maxBackstep:     32,
-		hexEditDirty:    make(map[uint64]byte),
-		macros:          make(map[string][]string),
+	monitor := &MachineMonitor{
+		state:                   MonitorInactive,
+		cpus:                    make(map[int]*CPUEntry),
+		breakpointChan:          make(chan BreakpointEvent, 8),
+		eventQueue:              newEventQueue(),
+		cpuReaders:              make(map[int]*monitorCPUReader),
+		stopHooks:               make(map[int]StopHook),
+		maxOutput:               500,
+		wasRunning:              make(map[int]bool),
+		devices:                 make(map[string]DebugSnapshotDevice),
+		bus:                     bus,
+		prevRegs:                make(map[string]uint64),
+		symbols:                 NewSymbolTable(),
+		sources:                 NewSourceLineTable(),
+		regions:                 NewRegionRegistry(),
+		access:                  NewDebugAccessService(),
+		faults:                  NewDebugFaultService(),
+		tempBreakpoints:         make(map[int]map[uint64]bool),
+		savedConditions:         make(map[int]map[uint64]*BreakpointCondition),
+		runUntilHooks:           make(map[int]map[uint64]int),
+		traceWatches:            make(map[uint64]bool),
+		traceSnapshots:          make(map[uint64]byte),
+		writeHistory:            make(map[uint64][]WriteRecord),
+		traceRings:              make(map[int]*DebugTraceRing),
+		maxTimeline:             4096,
+		stepHistory:             make(map[int][]*MachineSnapshot),
+		maxBackstep:             32,
+		maxWholeHistory:         32,
+		wholeCheckpointInterval: 32,
+		wholeCheckpointBytes:    64 << 20,
+		maxWholeCheckpoints:     8,
+		hexEditDirty:            make(map[uint64]byte),
+		macros:                  make(map[string][]string),
+		aliases:                 make(map[string]string),
+		loadedRC:                make(map[string]string),
 	}
+	if bus != nil {
+		bus.SetDebugAccessService(monitor.access)
+	}
+	monitor.access.SetSequenceSource(monitor.nextTimelineSeq)
+	monitor.loadPersistentHistory()
+	return monitor
+}
+
+func (m *MachineMonitor) nextTimelineSeq() uint64 {
+	return m.timelineSeq.Add(1)
+}
+
+// RegisterSnapshotDevice adds a versioned mutable device to whole-machine
+// snapshots. Names are stable snapshot keys, so replacing a device with the
+// same name updates future capture/restore operations.
+func (m *MachineMonitor) RegisterSnapshotDevice(dev DebugSnapshotDevice) {
+	if m == nil || dev == nil {
+		return
+	}
+	name := strings.TrimSpace(dev.DebugSnapshotName())
+	if name == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.devices[name] = dev
 }
 
 // RegisterCPU adds a CPU to the monitor and returns its stable ID.
@@ -213,6 +278,21 @@ func (m *MachineMonitor) RegisterCPU(label string, cpu DebuggableCPU) int {
 	reader := &monitorCPUReader{cancel: make(chan struct{}), done: make(chan struct{})}
 	m.cpuReaders[id] = reader
 	cpu.SetBreakpointChannel(adapterCh, id)
+	if attachable, ok := cpu.(interface{ SetDebugFaultService(*DebugFaultService) }); ok {
+		attachable.SetDebugFaultService(m.faults)
+	}
+	if m.access != nil {
+		m.access.RegisterCPU(id, adapterCh)
+		m.access.RegisterPCReader(id, cpu.GetPC)
+		if stopper, ok := cpu.(interface{ StopForAccessHit() }); ok {
+			m.access.RegisterStopper(id, stopper.StopForAccessHit)
+		} else {
+			m.access.RegisterStopper(id, cpu.Freeze)
+		}
+	}
+	if m.faults != nil {
+		m.faults.RegisterCPU(id, adapterCh)
+	}
 	go func() {
 		defer close(reader.done)
 		for {
@@ -233,6 +313,7 @@ func (m *MachineMonitor) RegisterCPU(label string, cpu DebuggableCPU) int {
 	if len(m.cpus) == 1 {
 		m.focusedID = id
 	}
+	m.autoLoadTrustedIEMONRCs()
 	return id
 }
 
@@ -262,6 +343,8 @@ func (m *MachineMonitor) ResetCPUs() {
 	m.savedConditions = make(map[int]map[uint64]*BreakpointCondition)
 	m.runUntilHooks = make(map[int]map[uint64]int)
 	m.stepHistory = make(map[int][]*MachineSnapshot)
+	m.wholeHistory = nil
+	m.loadedRC = make(map[string]string)
 }
 
 // UnregisterCPU removes a CPU by its stable ID.
@@ -288,6 +371,10 @@ func (m *MachineMonitor) UnregisterCPU(id int) {
 		entry.CPU.Freeze()
 	}
 	entry.CPU.SetBreakpointChannel(nil, id)
+	if m.access != nil {
+		m.access.RegisterCPU(id, nil)
+		m.access.ClearWatchesForCPU(id)
+	}
 	if reader != nil {
 		close(reader.cancel)
 		<-reader.done
@@ -303,7 +390,7 @@ func (m *MachineMonitor) IsActive() bool {
 	return m.state == MonitorActive || m.state == MonitorHexEdit
 }
 
-// FocusedCPU returns the currently focused CPU entry, or nil.
+// FocusedCPU returns the currently focussed CPU entry, or nil.
 func (m *MachineMonitor) FocusedCPU() *CPUEntry {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -341,6 +428,24 @@ func (m *MachineMonitor) Activate() {
 	m.showDisassembly(0, 8)
 }
 
+// RequestBreakIn raises a host-side break request for every currently running
+// CPU. Stopped CPUs are left untouched so a break-in request cannot change
+// their paused/stopped state when the monitor later deactivates.
+func (m *MachineMonitor) RequestBreakIn() {
+	m.mu.Lock()
+	entries := make([]*CPUEntry, 0, len(m.cpus))
+	for _, entry := range m.cpus {
+		if entry.CPU.IsRunning() {
+			entries = append(entries, entry)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, entry := range entries {
+		entry.CPU.RequestBreakIn()
+	}
+}
+
 // Deactivate resumes previously-running CPUs and exits the monitor.
 func (m *MachineMonitor) Deactivate() {
 	m.mu.Lock()
@@ -375,7 +480,7 @@ func (m *MachineMonitor) appendOutput(text string, color uint32) {
 	}
 }
 
-// saveCurrentRegs snapshots the focused CPU's registers for change detection.
+// saveCurrentRegs snapshots the focussed CPU's registers for change detection.
 func (m *MachineMonitor) saveCurrentRegs() {
 	entry := m.cpus[m.focusedID]
 	if entry == nil {
@@ -442,11 +547,18 @@ func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
 	reason := StopBreakpoint
 	if ev.IsWatch {
 		reason = StopWatchpoint
+	} else if ev.IsFault {
+		reason = StopFault
 	}
 	m.fireStopHooks(ev.CPUID, reason, ev.Address)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if ev.IsBreakIn {
+		if entry := m.cpus[ev.CPUID]; entry != nil {
+			entry.CPU.ConsumeBreakIn()
+		}
+	}
 
 	// Snapshot which CPUs are running BEFORE freezing, so Deactivate
 	// only resumes CPUs that were genuinely running. The CPU that hit
@@ -505,16 +617,43 @@ func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
 
 	// Build the display message
 	var msg string
-	if ev.IsWatch {
-		msg = fmt.Sprintf("WATCH $%X: $%02X -> $%02X at PC=$%X on %s (id:%d)",
-			ev.WatchAddr, ev.WatchOldValue, ev.WatchNewValue, ev.Address, getLabelForCPU(m.cpus, ev.CPUID), ev.CPUID)
+	if ev.IsFault {
+		msg = fmt.Sprintf("FAULT %s at $%X on %s (id:%d)", ev.FaultKind, ev.Address, getLabelForCPU(m.cpus, ev.CPUID), ev.CPUID)
+		if ev.FaultInfo != "" {
+			msg += " " + ev.FaultInfo
+		}
+	} else if ev.IsGuard {
+		msg = fmt.Sprintf("GUARD %s at $%X on %s (id:%d)", accessKindString(ev.Access), ev.Address, getLabelForCPU(m.cpus, ev.CPUID), ev.CPUID)
+	} else if ev.IsWatch {
+		old := fmt.Sprintf("$%02X", ev.WatchOldValue)
+		if !ev.WatchOldValueKnown {
+			old = "?"
+		}
+		msg = fmt.Sprintf("WATCH $%X: %s -> $%02X at PC=$%X on %s (id:%d)",
+			ev.WatchAddr, old, ev.WatchNewValue, ev.Address, getLabelForCPU(m.cpus, ev.CPUID), ev.CPUID)
+	} else if ev.IsBreakIn {
+		msg = fmt.Sprintf("BREAK-IN at $%X on %s (id:%d)", ev.Address, getLabelForCPU(m.cpus, ev.CPUID), ev.CPUID)
 	} else {
 		msg = fmt.Sprintf("BREAK at $%X on %s (id:%d)", ev.Address, getLabelForCPU(m.cpus, ev.CPUID), ev.CPUID)
 	}
+	timelineKind := "break"
+	if ev.IsFault {
+		timelineKind = "fault"
+	} else if ev.IsGuard {
+		timelineKind = "guard"
+	} else if ev.IsWatch {
+		timelineKind = "watch"
+	} else if ev.IsBreakIn {
+		timelineKind = "break-in"
+	}
+	snapshotID := m.recordWholeMachineHistory()
+	m.recordTimelineEventWithSnapshotLocked(timelineKind, ev.CPUID, ev.Address, msg, snapshotID)
 
 	// If already active, just print the message and switch focus
 	if m.state == MonitorActive {
-		m.focusedID = ev.CPUID
+		if _, ok := m.cpus[ev.CPUID]; ok {
+			m.focusedID = ev.CPUID
+		}
 		m.appendOutput(msg, colorRed)
 		m.saveCurrentRegs()
 		m.showRegisters()
@@ -525,7 +664,9 @@ func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
 	// Activate the monitor
 	m.state = MonitorActive
 	m.wasRunning = wasRunning
-	m.focusedID = ev.CPUID
+	if _, ok := m.cpus[ev.CPUID]; ok {
+		m.focusedID = ev.CPUID
+	}
 
 	m.scrollOffset = 0
 	m.inputLine = nil

@@ -43,7 +43,7 @@ Write `COPROC_CPU_TYPE` before reading `COPROC_RING_DEPTH` or `COPROC_WORKER_UPT
 
 `COPROC_WORKER_STATE` reports a bit per live worker (bit `n` = `EXEC_TYPE_n` worker exists). `computeWorkerState` reaps dead workers *before* reporting, so the bit is only set while the worker goroutine is still scheduled. A worker binary that halts on entry (e.g. `OP_HALT64` as first instruction) may be reaped before any subsequent poll observes it: there is no "ever-existed" latch.
 
-To probe creation, load a worker that stays alive long enough for the poll — a single-instruction self-loop (`OP_BRA` with displacement `0`, since IE64 BRA displacements are relative to the current instruction PC) or a busy-wait on a host-set MMIO flag is sufficient. Tests asserting "worker visible after creation" must use a non-halting binary.
+To probe creation, load a worker that stays alive long enough for the poll - a single-instruction self-loop (`OP_BRA` with displacement `0`, since IE64 BRA displacements are relative to the current instruction PC) or a busy-wait on a host-set MMIO flag is sufficient. Tests asserting "worker visible after creation" must use a non-halting binary.
 
 ## Command Flow
 
@@ -53,13 +53,15 @@ To probe creation, load a worker that stays alive long enough for the poll — a
 4. Write `COPROC_TICKET`, then write `COPROC_CMD_POLL` or `COPROC_CMD_WAIT`.
 5. Read `COPROC_TICKET_STATUS`.
 
+IEMon `cpu online` and `cpu offline` commands use the same worker lifecycle as `COPROC_CMD_START` and `COPROC_CMD_STOP`. Service images are still loaded by the per-CPU worker loaders into the dedicated worker regions below, not into arbitrary live guest RAM. IEMon adds monitor-side validation for typed `.ie*` extensions and refuses duplicate online starts unless `--replace` is supplied.
+
 Ticket states are `PENDING`, `RUNNING`, `OK`, `ERROR`, `TIMEOUT`, and `WORKER_DOWN`. `WORKER_DOWN` means the worker slot is empty or the worker goroutine exited before the ticket reached a terminal response.
 
 Command errors include invalid CPU type, missing worker binary, invalid path, load failure, full queue, no worker, and stale ticket.
 
 ## Ring Layout
 
-Mailbox RAM starts at `MAILBOX_BASE = 0x790000` and has `MAILBOX_SIZE = 0x1800` bytes. There are six rings, one per CPU type, each with `RING_CAPACITY = 16` and `RING_STRIDE = 0x300`.
+Mailbox RAM starts at `MAILBOX_BASE = 0x790000` and has `MAILBOX_SIZE = 0x1800` bytes. There are six rings, one per CPU type, each with `RING_CAPACITY = 16` and `RING_STRIDE = 0x300`. The ring uses the conventional `nextHead == tail` full test, so at most 15 descriptors are usable at once; one slot is reserved to distinguish full from empty.
 
 Each ring contains:
 
@@ -105,9 +107,11 @@ Workers run from dedicated memory regions:
 
 The 8-bit mailbox window is CPU address `0x2000` through `0x2000 + MAILBOX_SIZE - 1`. With the current `MAILBOX_SIZE` this is `0x2000` through `0x37FF`. Addresses `0x3800` through `0x3FFF` are normal worker RAM.
 
+All coprocessor registers are little-endian at byte level. For 6502 and Z80 gateway accesses, write byte 0 first when a register write should dispatch a command: writing byte 0 of `COPROC_CMD` triggers the command, while writes to bytes 1-3 only update the shadow register.
+
 ## IRQ And Completion
 
-When completion IRQs are enabled, the manager records the latest completed ticket and can assert the configured M68K interrupt target. The completion watcher is started by M68K boot paths today; non-M68K modes should use `POLL` or `WAIT` to drive completion observation and busy-state cleanup.
+When completion IRQs are enabled, the manager records the latest completed ticket and can assert the configured M68K interrupt target at level 6. The completion watcher is started by M68K boot paths today; non-M68K modes should use `POLL` or `WAIT` to drive completion observation and busy-state cleanup.
 
 ## Monitoring
 

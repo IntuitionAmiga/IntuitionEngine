@@ -362,6 +362,11 @@ type CPU struct {
 	memory []byte       // Cached reference to bus.memory (shared, not private)
 	bus    Bus32        // Memory interface
 
+	debugAccess  *DebugAccessService
+	debugFaults  *DebugFaultService
+	debugBreakIn func(pc uint64) bool
+	debugCPUID   int
+
 	// Direct VRAM access (bypasses bus for video writes)
 	vramDirect     []byte // Direct pointer to video framebuffer
 	vramStart      uint32 // Cached VRAM start address
@@ -412,10 +417,11 @@ func NewCPU(bus Bus32) *CPU {
 	*/
 
 	cpu := &CPU{
-		SP:     STACK_START,
-		PC:     PROG_START,
-		bus:    bus,
-		memory: bus.GetMemory(), // Use shared bus memory
+		SP:         STACK_START,
+		PC:         PROG_START,
+		bus:        bus,
+		memory:     bus.GetMemory(), // Use shared bus memory
+		debugCPUID: -1,
 	}
 	// Initialize register pointer array for fast lookup
 	cpu.regs = [16]*uint32{
@@ -503,12 +509,39 @@ func (cpu *CPU) Write32(addr uint32, value uint32) {
 	// Non-I/O fast path - direct memory write, no mutex, no bounds check
 	// CPU is the sole writer, so no synchronisation needed
 	if addr < IO_REGION_START {
+		oldValue := uint32(0)
+		if cpu.debugAccess != nil && cpu.debugAccess.AnyActive(cpu.debugCPUID) {
+			oldValue = *(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+		}
 		*(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = value
+		cpu.debugOnWrite(uint64(addr), 4, uint64(oldValue), uint64(value))
 		return
 	}
 
 	// I/O path - callbacks protect their own state
 	cpu.bus.Write32(addr, value)
+	cpu.debugOnWrite(uint64(addr), 4, 0, uint64(value))
+}
+
+func (cpu *CPU) debugOnRead(addr uint64, width int) {
+	if cpu == nil || cpu.debugAccess == nil || !cpu.debugAccess.AnyActive(cpu.debugCPUID) {
+		return
+	}
+	cpu.debugAccess.OnRead(cpu.debugCPUID, addr, width)
+}
+
+func (cpu *CPU) debugOnWrite(addr uint64, width int, oldVal, newVal uint64) {
+	if cpu == nil || cpu.debugAccess == nil || !cpu.debugAccess.AnyActive(cpu.debugCPUID) {
+		return
+	}
+	cpu.debugAccess.OnWrite(cpu.debugCPUID, addr, width, oldVal, newVal)
+}
+
+func (cpu *CPU) debugOnFetch(addr uint64, width int) {
+	if cpu == nil || cpu.debugAccess == nil || !cpu.debugAccess.AnyActive(cpu.debugCPUID) {
+		return
+	}
+	cpu.debugAccess.OnFetch(cpu.debugCPUID, addr, width)
 }
 
 // AttachDirectVRAM enables direct VRAM access mode for maximum video throughput.
@@ -543,11 +576,15 @@ func (cpu *CPU) Read32(addr uint32) uint32 {
 	// Non-I/O fast path - direct memory read, no mutex, no bounds check
 	// CPU writes are the only mutations; readers see consistent data
 	if addr < IO_REGION_START {
-		return *(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+		value := *(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+		cpu.debugOnRead(uint64(addr), 4)
+		return value
 	}
 
 	// I/O path - callbacks protect their own state
-	return cpu.bus.Read32(addr)
+	value := cpu.bus.Read32(addr)
+	cpu.debugOnRead(uint64(addr), 4)
+	return value
 }
 
 func btou32(b bool) uint32 {
@@ -926,6 +963,9 @@ func (cpu *CPU) Execute() {
 	memBase := unsafe.Pointer(&cpu.memory[0])
 
 	for running {
+		if cpu.debugHandleBreakIn(uint64(cpu.PC)) {
+			break
+		}
 		// Periodic check of external stop signal (every 4096 instructions)
 		checkCounter++
 		if checkCounter&0xFFF == 0 && !cpu.running.Load() {
@@ -955,6 +995,7 @@ func (cpu *CPU) Execute() {
 		reg := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 1))
 		addrMode := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 2))
 		operand := *(*uint32)(unsafe.Pointer(uintptr(instrPtr) + 4))
+		cpu.debugOnFetch(uint64(currentPC), INSTRUCTION_SIZE)
 
 		// Fully inlined operand resolution - avoids function call overhead
 		var resolvedOperand uint32
@@ -1437,6 +1478,10 @@ func (cpu *CPU) Execute() {
 			running = false
 
 		default:
+			if cpu.debugFault("ie32.invalid-opcode", uint64(opcode), faultInfof("opcode=$%02X", opcode)) {
+				running = false
+				break
+			}
 			fmt.Printf("Invalid opcode: %02x at PC=%08x\n", opcode, cpu.PC)
 			cpu.running.Store(false)
 			running = false
@@ -1450,6 +1495,17 @@ func (cpu *CPU) Execute() {
 
 func (cpu *CPU) IsRunning() bool {
 	return cpu.running.Load()
+}
+
+func (cpu *CPU) debugHandleBreakIn(pc uint64) bool {
+	if cpu == nil || cpu.debugBreakIn == nil {
+		return false
+	}
+	if cpu.debugBreakIn(pc) {
+		cpu.running.Store(false)
+		return true
+	}
+	return false
 }
 
 func (cpu *CPU) StartExecution() {
@@ -1500,6 +1556,7 @@ func (cpu *CPU) StepOne() int {
 	reg := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 1))
 	addrMode := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 2))
 	operand := *(*uint32)(unsafe.Pointer(uintptr(instrPtr) + 4))
+	cpu.debugOnFetch(uint64(cpu.PC), INSTRUCTION_SIZE)
 
 	var resolvedOperand uint32
 	switch addrMode {
@@ -1729,7 +1786,21 @@ func (cpu *CPU) StepOne() int {
 	case HALT:
 		return 1
 	default:
+		if cpu.debugFault("ie32.invalid-opcode", uint64(opcode), faultInfof("opcode=$%02X", opcode)) {
+			return 1
+		}
 		return 0
 	}
 	return 1
+}
+
+func (cpu *CPU) debugFault(kind string, addr uint64, info string) bool {
+	if cpu == nil || cpu.debugFaults == nil {
+		return false
+	}
+	if cpu.debugFaults.OnFault(cpu.debugCPUID, uint64(cpu.PC), kind, addr, info) {
+		cpu.running.Store(false)
+		return true
+	}
+	return false
 }

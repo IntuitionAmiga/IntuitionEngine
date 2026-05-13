@@ -84,6 +84,21 @@ func updateWatchpointLastValueLocked(mu *sync.RWMutex, watchpoints map[uint64]*W
 		return false
 	}
 	wp.LastValue = val
+	wp.LastBytes = []byte{val}
+	return true
+}
+
+func updateWatchpointSnapshotLocked(mu *sync.RWMutex, watchpoints map[uint64]*Watchpoint, addr uint64, vals []byte) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	wp, ok := watchpoints[addr]
+	if !ok {
+		return false
+	}
+	wp.LastBytes = append([]byte(nil), vals...)
+	if len(vals) > 0 {
+		wp.LastValue = vals[0]
+	}
 	return true
 }
 

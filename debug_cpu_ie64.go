@@ -142,9 +142,15 @@ func (d *DebugIE64) Freeze() {
 	d.cpu.Stop()
 }
 
+func (d *DebugIE64) StopForAccessHit() {
+	if d.cpu != nil {
+		d.cpu.running.Store(false)
+	}
+}
+
 func (d *DebugIE64) Resume() {
 	d.bpMu.Lock()
-	hasBP := len(d.breakpoints) > 0 || len(d.watchpoints) > 0
+	hasBP := len(d.breakpoints) > 0 || len(d.watchpoints) > 0 || d.accessDebugActive()
 	if hasBP {
 		d.trapStop = make(chan struct{})
 		d.frozenCh = make(chan struct{})
@@ -174,6 +180,10 @@ func (d *DebugIE64) trapLoop() {
 			return
 		default:
 		}
+		if d.ConsumeBreakIn() {
+			publishAdapterBreakIn(d, d.events)
+			return
+		}
 
 		if bp, ok := d.SnapshotBreakpoint(d.cpu.PC); ok {
 			hitCount, _ := d.IncrementBreakpointHit(d.cpu.PC)
@@ -186,6 +196,9 @@ func (d *DebugIE64) trapLoop() {
 		if d.cpu.StepOne() == 0 {
 			return
 		}
+		if !d.cpu.IsRunning() {
+			return
+		}
 
 		// Check watchpoints. PLAN_MAX_RAM.md slice 3 widened IE64 to
 		// 64-bit physical addressing; route reads through the bus so a
@@ -193,15 +206,13 @@ func (d *DebugIE64) trapLoop() {
 		// the bound Backing rather than aliasing into low memory.
 		d.bpMu.RLock()
 		for _, wp := range d.watchpoints {
-			cur := d.readByte(wp.Address)
-			if cur != wp.LastValue {
-				old := wp.LastValue
+			if changed, old, cur, snapshot := watchpointChanged(d, wp); changed {
 				addr := wp.Address
 				d.bpMu.RUnlock()
-				d.UpdateWatchpointLastValue(addr, cur)
+				updateWatchpointSnapshotLocked(&d.bpMu, d.watchpoints, addr, snapshot)
 				d.events.Publish(BreakpointEvent{
 					Address: d.cpu.PC, IsWatch: true, WatchAddr: addr,
-					WatchOldValue: old, WatchNewValue: cur,
+					WatchOldValue: old, WatchOldValueKnown: true, WatchNewValue: cur,
 				})
 				return
 			}
@@ -211,6 +222,10 @@ func (d *DebugIE64) trapLoop() {
 }
 
 func (d *DebugIE64) Step() int {
+	if d.ConsumeBreakIn() {
+		publishAdapterBreakIn(d, d.events)
+		return 0
+	}
 	return d.cpu.StepOne()
 }
 
@@ -308,10 +323,7 @@ func (d *DebugIE64) ListBreakpointSnapshots() []BreakpointSnapshot {
 }
 
 func (d *DebugIE64) SetWatchpoint(addr uint64) bool {
-	d.bpMu.Lock()
-	defer d.bpMu.Unlock()
-	d.watchpoints[addr] = &Watchpoint{Address: addr, LastValue: d.readByte(addr)}
-	return true
+	return d.SetWatchpointEx(addr, WatchWrite, 1)
 }
 
 // readByte fetches one byte at the full 64-bit physical address. Routes
@@ -407,4 +419,27 @@ func (d *DebugIE64) WriteMemory(addr uint64, data []byte) {
 
 func (d *DebugIE64) SetBreakpointChannel(ch chan<- BreakpointEvent, cpuID int) {
 	d.events.Set(ch, cpuID)
+	if d.cpu != nil {
+		d.cpu.debugBreakIn = nil
+		d.cpu.debugAccess = nil
+		d.cpu.debugCPUID = cpuID
+		if ch != nil {
+			d.cpu.debugBreakIn = func(pc uint64) bool {
+				if !d.ConsumeBreakIn() {
+					return false
+				}
+				publishBreakInAt(d.events, pc)
+				return true
+			}
+		}
+		if ch != nil && d.cpu.bus != nil {
+			d.cpu.debugAccess = d.cpu.bus.debugAccess
+		}
+	}
+}
+
+func (d *DebugIE64) SetDebugFaultService(faults *DebugFaultService) {
+	if d.cpu != nil {
+		d.cpu.debugFaults = faults
+	}
 }

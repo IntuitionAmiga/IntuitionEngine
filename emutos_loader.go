@@ -21,6 +21,7 @@ type EmuTOSLoader struct {
 	bus       *MachineBus
 	cpu       *M68KCPU
 	videoChip *VideoChip
+	symbols   *SymbolTable
 
 	profile ProfileBounds // EmuTOS M68K memory-map contract; populated in LoadROM.
 
@@ -42,6 +43,13 @@ type EmuTOSLoader struct {
 	iorecWriteIdx uint32 // RAM address of IOREC ibuftl field
 	iorecFixed    bool   // true once we've initialized the IOREC
 	iorecDelay    int    // delay ticks after L5 armed before attempting fix
+}
+
+func (l *EmuTOSLoader) SetSymbolTable(symbols *SymbolTable) {
+	l.symbols = symbols
+	if l.gemdos != nil {
+		l.gemdos.SetSymbolTable(symbols)
+	}
 }
 
 func NewEmuTOSLoader(bus *MachineBus, cpu *M68KCPU, videoChip *VideoChip) *EmuTOSLoader {
@@ -358,6 +366,7 @@ func (l *EmuTOSLoader) SetupGemdos(hostPath string, driveNum uint16) error {
 	if err != nil {
 		return err
 	}
+	g.SetSymbolTable(l.symbols)
 	l.gemdos = g
 	l.cpu.gemdosHandler = g
 	return nil

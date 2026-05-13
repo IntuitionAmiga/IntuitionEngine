@@ -149,6 +149,9 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 	var diagFallbackInstr uint64
 
 	for cpu.running.Load() {
+		if cpu.debugHandleBreakIn(uint64(cpu.PC)) {
+			break
+		}
 		// ── Interrupt checks (matching interpreter order in cpu_z80.go:261-283) ──
 
 		// NMI (highest priority)

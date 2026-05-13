@@ -39,14 +39,22 @@ type DisassembledLine struct {
 
 // BreakpointEvent is published when a CPU hits a breakpoint or watchpoint during execution.
 type BreakpointEvent struct {
-	CPUID   int    // Stable CPU ID that hit the breakpoint
-	Address uint64 // Address of the breakpoint
+	CPUID     int    // Stable CPU ID that hit the breakpoint
+	Address   uint64 // Address of the breakpoint
+	IsBreakIn bool   // true when raised by a host-side break-in request
+	IsGuard   bool   // true when raised by a page/access guard
+	IsFault   bool   // true when raised by guest fault/exception interception
+	Access    AccessKind
+	FaultKind string
+	FaultAddr uint64
+	FaultInfo string
 
 	// Watchpoint fields (zero values when this is a plain breakpoint)
-	IsWatch       bool   // true if this is a watchpoint hit
-	WatchAddr     uint64 // watched memory address
-	WatchOldValue byte   // previous value
-	WatchNewValue byte   // new value
+	IsWatch            bool   // true if this is a watchpoint hit
+	WatchAddr          uint64 // watched memory address
+	WatchOldValue      byte   // previous value
+	WatchOldValueKnown bool   // false when the old value was not safely sampled
+	WatchNewValue      byte   // new value
 }
 
 // ConditionOp defines the comparison operator for breakpoint conditions.
@@ -68,6 +76,7 @@ const (
 	CondSourceRegister ConditionSource = iota
 	CondSourceMemory
 	CondSourceHitCount
+	CondSourceExpression
 )
 
 // BreakpointCondition defines a conditional expression for a breakpoint.
@@ -78,6 +87,7 @@ type BreakpointCondition struct {
 	Width   uint8  // memory width in bytes for CondSourceMemory: 1, 2, or 4
 	Op      ConditionOp
 	Value   uint64
+	Expr    *BreakpointExpr // expression tree for CondSourceExpression
 }
 
 type BreakpointSnapshot = ConditionalBreakpoint
@@ -94,14 +104,18 @@ type ConditionalBreakpoint struct {
 type WatchpointType int
 
 const (
-	WatchWrite WatchpointType = iota // Write watchpoint (only type currently supported)
+	WatchRead WatchpointType = iota
+	WatchWrite
+	WatchReadWrite
 )
 
 // Watchpoint represents a write watchpoint on a memory address.
 type Watchpoint struct {
 	Type      WatchpointType
 	Address   uint64
+	Width     uint8
 	LastValue byte
+	LastBytes []byte
 }
 
 // DebuggableCPU is the interface that all CPU debug adapters must implement.
@@ -118,6 +132,9 @@ type DebuggableCPU interface {
 	IsRunning() bool
 	Freeze() // Stop execution, preserve state
 	Resume() // Restart execution goroutine
+	RequestBreakIn()
+	BreakInRequested() bool
+	ConsumeBreakIn() bool
 
 	Step() int // Execute one instruction, return cycles
 

@@ -31,6 +31,7 @@ var arosOpenFile = os.OpenFile
 type ArosDOSDevice struct {
 	bus      *MachineBus
 	hostRoot string
+	symbols  *SymbolTable
 
 	// Lock management: key → lock state
 	locks    map[uint32]*adosLock
@@ -103,6 +104,13 @@ func NewArosDOSDevice(bus *MachineBus, hostRoot string) (*ArosDOSDevice, error) 
 	}
 
 	return d, nil
+}
+
+func (d *ArosDOSDevice) SetSymbolTable(symbols *SymbolTable) {
+	if d == nil {
+		return
+	}
+	d.symbols = symbols
 }
 
 // HandleRead handles MMIO reads from the AROS DOS region.
@@ -196,6 +204,8 @@ func (d *ArosDOSDevice) dispatch(cmd uint32) {
 		d.cmdSetProtect()
 	case ADOS_CMD_EXAMINE_FH:
 		d.cmdExamineFH()
+	case ADOS_CMD_LOADSEG_SYMS:
+		d.cmdLoadSegSymbols()
 	default:
 		d.res1 = ADOS_DOSFALSE
 		d.res2 = ADOS_ERROR_ACTION_NOT_KNOWN
@@ -540,6 +550,49 @@ func (d *ArosDOSDevice) cmdFindInput() {
 	}
 
 	d.res1 = key
+}
+
+func (d *ArosDOSDevice) cmdLoadSegSymbols() {
+	namePtr := d.arg1
+	parentKey := d.arg2
+	base := d.arg3
+
+	if d.symbols == nil {
+		d.res1 = ADOS_DOSTRUE
+		d.res2 = ADOS_ERR_NONE
+		return
+	}
+
+	parent, ok := d.locks[parentKey]
+	if !ok {
+		if parentKey == 0 {
+			parent = d.locks[0]
+		} else {
+			d.res2 = ADOS_ERROR_INVALID_LOCK
+			return
+		}
+	}
+
+	name := d.readString(namePtr)
+	hostPath, reason := d.resolveOpenReadDOSPath(parent.hostPath, name)
+	if reason != resolveOK {
+		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
+		return
+	}
+
+	sidecar, err := loadGuestSymbolSidecar(d.symbols, "M68K", hostPath, uint64(base))
+	if err != nil {
+		if d.debugTrace {
+			fmt.Printf("[ADOS] LOADSEG_SYMS %q base=$%08X → sidecar %q disabled: %v\n", name, base, sidecar, err)
+		}
+		d.res2 = ADOS_ERROR_BAD_NUMBER
+		return
+	}
+	if d.debugTrace && sidecar != "" {
+		fmt.Printf("[ADOS] LOADSEG_SYMS %q → loaded %s at base $%08X\n", name, sidecar, base)
+	}
+	d.res1 = ADOS_DOSTRUE
+	d.res2 = ADOS_ERR_NONE
 }
 
 func (d *ArosDOSDevice) cmdFindOutput() {

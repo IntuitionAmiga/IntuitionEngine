@@ -109,6 +109,9 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 	var diagIOBails uint64
 
 	for cpu.running.Load() {
+		if cpu.debugHandleBreakIn(uint64(cpu.PC)) {
+			break
+		}
 		// ── STOP state handling (replicates cpu_m68k.go:2358-2405) ──
 		if cpu.stopped.Load() {
 			pendingException := cpu.pendingException.Load()

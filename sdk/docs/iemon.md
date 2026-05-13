@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Machine Monitor is a built-in system-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge, HRTMon, and the Commodore Plus/4 built-in monitor. In interactive display builds, press **F9** to freeze the guest CPUs and enter the monitor. Press **x** or **Esc** to close the monitor and resume CPUs that were running when it was entered.
+The Machine Monitor is a built-in system-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge, HRTMon, the Commodore Plus/4 built-in monitor, NuMega SoftICE, MAME's debugger, and the VICE monitor. In interactive display builds, press **F9** to freeze the guest CPUs and enter the monitor. Press **x** or **Esc** to close the monitor and resume CPUs that were running when it was entered.
 
 The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and handles multi-CPU scenarios, including coprocessors.
 It is also exposed to IEScript Lua via the `dbg.*` API for scripted debugging workflows. See [iescript.md](iescript.md) for the full `dbg.*` module reference.
@@ -44,6 +44,139 @@ Operators: `+` and `-` only. Each term is either a register name or a numeric ad
 
 Expression support is command-specific. It is available for `d`, `m`, `b`, `g`, `save`, the destination address in `load`, `u`, `ww`, `wc`, `trace watch`, `trace history`, and `e`. The low-level byte/range commands `w`, `f`, `h`, `c`, `t`, and `bc` parse literal addresses only.
 
+Symbols loaded with `sym add`, `sym loadlbl`, or `sym loadelf` can be used as expression terms, for example `b main+0x10`. See [iemon-symbols.md](iemon-symbols.md) for symbol sources and per-CPU scope.
+
+`d /s [addr] [count]` asks the monitor to interleave source locations from DWARF line data when available. `list [addr]` prints the nearest source location, or a no-source message for CPUs/builds without line information.
+
+## Conditional Breakpoints
+
+Breakpoints accept either the legacy single comparison form or an `if` expression:
+
+```
+> b $2000 R1==$10
+> b $2000 if R1==$10 && (hitcount>2 || b($3000)!=$00)
+```
+
+| Form | Meaning |
+|------|---------|
+| `REG==$10` | Register comparison |
+| `hitcount>5` | Breakpoint hit-count comparison |
+| `b($1000)` | 8-bit memory read |
+| `w($1000)` | 16-bit memory read |
+| `l($1000)` | 32-bit memory read |
+| `q($1000)` | 64-bit memory read |
+| `&&`, `||`, `(...)` | Boolean composition |
+
+| CPU | Register names |
+|-----|----------------|
+| IE64 | `R0`-`R31`, `SP`, `PC` |
+| IE32 | IE32 general register names, `SP`, `PC` |
+| M68K | `D0`-`D7`, `A0`-`A7`, `SP`, `PC`, status registers exposed by the adapter |
+| Z80 | `A`, `F`, `B`, `C`, `D`, `E`, `H`, `L`, shadow/index registers, `SP`, `PC` |
+| 6502 | `A`, `X`, `Y`, `SP`, `PC`, `SR` |
+| X86 | x86 adapter register names including `EAX`-`EDI`, `ESP`, `EBP`, `EIP` |
+
+## Trace Ring
+
+`tracering on [size]` enables a per-CPU rolling instruction ring. `show [n]` dumps the last entries for the focussed CPU.
+
+| Command | Description |
+|---------|-------------|
+| `tracering on` | Enable the default 4096-entry ring |
+| `tracering on 256` | Enable and resize the focussed CPU ring |
+| `tracering off` | Stop recording |
+| `show 32` | Show the last 32 recorded instructions |
+
+| CPU | Entry shape |
+|-----|-------------|
+| IE64 | 64-bit PC, raw bytes, disassembly |
+| IE32 | 32-bit PC, raw bytes, disassembly |
+| M68K | 32-bit PC, raw bytes, disassembly |
+| Z80 | 16-bit PC, raw bytes, disassembly |
+| 6502 | 16-bit PC, raw bytes, disassembly |
+| X86 | 32-bit PC, raw bytes, disassembly |
+
+## Reverse Step
+
+`rs` is an alias for the existing `bs` backstep command. It restores the focussed CPU from the CPU-local step-history snapshot and does not rewind other CPUs, devices, audio, video, timers, DMA, or MMIO side effects.
+
+## Whole-Machine Reverse
+
+`rg` targets the latest retained whole-machine snapshot, including snapshots captured when the monitor stops for a breakpoint, watchpoint, guard, break-in, or fault. When a retained predecessor exists, IEMon restores that predecessor and deterministically re-executes to the target boundary; when the target is the oldest retained state, it restores it directly. `rt <expr>` walks backwards through retained whole-machine snapshots and uses the same replay path for the newest snapshot where the focussed CPU satisfies the breakpoint-expression syntax. `tl back` is a timeline-view shorthand for `rg`. `history horizon` reports the retained reverse snapshot horizon, checkpoint count, delta count, and approximate retained bytes. `history config` prints the current snapshot-chain settings; `history config <delta-interval> <delta-miB> <checkpoints> [snapshots]` changes them and can be placed in a trusted `.iemonrc`. `tl [count]` shows the merged timeline from access events, instruction trace entries, and monitor stop events using the shared sequence assigned when each event is recorded; stop events include `snap=N` when they captured a reverse boundary.
+
+Whole-machine snapshots cover all monitor-registered CPUs, shared bus RAM, sparse IE64 backing memory, and registered versioned device blobs. The history stores full sparse checkpoints plus sparse deltas anchored to a retained checkpoint; `rg` and `rt` materialise deltas before replay or restore. The production monitor registers the main video chip, sound chip, terminal MMIO, command-style host helpers (file I/O, media loader, program executor, and coprocessor manager), compatibility audio/video engines (PSG/AY, SN76489, SID/SID2/SID3, TED audio, POKEY, VGA, ULA, TED video, ANTIC/GTIA, and Voodoo), and AROS guest-visible host bridges when present. Additional devices join the same contract through `RegisterSnapshotDevice`. Timeline replay still depends on deterministic device code, which is audited in [iemon-determinism.md](iemon-determinism.md).
+
+## Project RC Files
+
+IEMon can load project-local `.iemonrc` files after they have been explicitly trusted. `rc list` searches from the current directory up to the file system root and prints each candidate with its SHA-256 hash and trust state. `rc trust [file]` records the current absolute path and hash in the IEMon trust store, and `rc load [file]` runs the file only while the stored hash still matches. Trusted rc files are auto-loaded once per matching hash when the monitor has exactly one registered CPU; multi-CPU monitor sessions require explicit `rc load` to avoid applying setup to the wrong focus.
+
+RC files are deliberately limited to debugger setup commands: `b`, `bc`, `ww`, `wc`, `bpm*`, `pg add|clear|list`, `sym add`, `history config`, `layout`, and safe `alias` definitions whose target command is also allowed. Commands that load host files, run scripts, continue execution, or modify guest memory are rejected.
+
+See [iemon-rc.md](iemon-rc.md) for the file format and trust-store details.
+
+| Command | Description |
+|---------|-------------|
+| `rc list` | Show discovered `.iemonrc` files and trust state |
+| `rc trust .iemonrc` | Trust the current contents of a project rc file |
+| `rc load .iemonrc` | Load a trusted rc file |
+
+## Command History
+
+Command history persists under the IEMon home directory, normally `~/.iemon/history`. Up and Down browse entries, and Ctrl-R searches backwards using the current input text as the query. Press Ctrl-R again to continue to the next older match.
+
+## Watchpoints
+
+Legacy `ww <addr>` sets a one-byte write watchpoint. SoftICE-style `bpm*` commands add read/write mode and width syntax:
+
+| Command family | Mode | Width |
+|----------------|------|-------|
+| `bpmbr`, `bpmrb` | Read | Byte |
+| `bpmbw`, `bpmwb` | Write | Byte |
+| `bpmb`, `bpmba`, `bpmab` | Read/write | Byte |
+| `bpmwr`, `bpmrw` | Read | Word |
+| `bpmww` | Write | Word |
+| `bpmw`, `bpmwa`, `bpmaw` | Read/write | Word |
+| `bpmdr`, `bpmrd` | Read | Long |
+| `bpmdw`, `bpmwd` | Write | Long |
+| `bpmd`, `bpmda`, `bpmad` | Read/write | Long |
+| `bpmqr`, `bpmrq` | Read | Quad |
+| `bpmqw`, `bpmwq` | Write | Quad |
+| `bpmq`, `bpmqa`, `bpmaq` | Read/write | Quad |
+
+Read and read/write watchpoints are backed by CPU access-site instrumentation. Write-only `ww` compatibility remains available.
+
+## Page Guards
+
+`pg` manages debug access-service guards:
+
+| Command | Description |
+|---------|-------------|
+| `pg add $1000 $10ff r` | Break on reads in a range |
+| `pg add $1000 $10ff rwx cpu=current` | Scope to the focussed CPU |
+| `pg list` | List guards |
+| `pg clear` | Clear guards |
+
+The shared debug access service stores guard policy and emits monitor events with CPU id and access kind. Bus-mediated `Read8/16/32` and `Write8/16/32` paths are instrumented; CPU-local direct memory paths and instruction fetch hooks are tracked in [iemon-access-audit.md](iemon-access-audit.md).
+
+## Access History
+
+The access service can retain a bounded event log for read/write/fetch hooks. Data read/write paths for all six CPU families are attributed to the active CPU for guard/break semantics. Bus activity that is not attributed by a CPU context is recorded with `cpu=-1` for history only; it does not trip guards because monitor breaks must focus a real CPU.
+
+| Command | Description |
+|---------|-------------|
+| `accesslog on 1024` | Keep the last 1024 access events |
+| `accesslog show 16` | Show recent events |
+| `accesslog off` | Disable and clear the access log |
+| `who wrote $4000` | Show the last recorded write covering an address |
+| `who read $4000` | Show the last recorded read covering an address |
+| `who fetched $4000` | Show the last recorded execute/fetch covering an address |
+| `bfirst write mmio` | Break once on the first write to a named region |
+| `trace mmio mmio 16` | Show recent access events inside a named region |
+
+Wide accesses are matched by range, so `who wrote $4003` reports a prior 4-byte write at `$4000`. Like page guards, this depends on CPU and bus access sites calling the shared debug access service.
+
+See [iemon-timeline.md](iemon-timeline.md) for the access-event time model and reverse-debugging snapshot contract.
+
 Count arguments for `s`, `m`, `trace`, and `bt` are decimal by default. Use `$` or `0x` for hexadecimal counts. The `d` (disassemble) line count is the exception: it is parsed with the address parser, so a bare count is hexadecimal and `#decimal` is accepted (for example, `d $2000 10` disassembles 0x10 = 16 lines, while `d $2000 #10` disassembles 10 lines). Bare address arguments remain hexadecimal by default. The `#decimal` prefix is recognised for address/value arguments and for the `d` line count, but not for other count arguments.
 
 Arguments containing spaces can be wrapped in double quotes, for example `save $1000 $1FFF "my dump.bin"`. Inside double quotes, a backslash escapes the following character.
@@ -52,9 +185,35 @@ Arguments containing spaces can be wrapped in double quotes, for example `save $
 
 ### Execution Control
 
+#### Break-In
+
+Host-side break-in requests stop the focussed execution path through the same event pipeline as breakpoints and enter IEMon with a `BREAK-IN` message. Debug adapters expose `RequestBreakIn`, `BreakInRequested`, and `ConsumeBreakIn` so CPU dispatch loops can poll at instruction boundaries. Display builds still use F9 for the overlay toggle; TTY-style hosts can bind the SoftICE-style Ctrl-D byte to `RequestBreakIn()` through the hotkey listener.
+
+| CPU | Break-in boundary |
+|-----|-------------------|
+| IE64 | Before the next instruction observed by the debug adapter |
+| IE32 | Before the next instruction observed by the debug adapter |
+| M68K | Before the next 68020 instruction observed by the debug adapter |
+| Z80 | Before the next opcode observed by the debug adapter |
+| 6502 | Before the next opcode observed by the debug adapter |
+| X86 | Before the next instruction observed by the debug adapter |
+
+### Memory Map
+
+The `map` command lists named memory regions for the focussed CPU. The `addr <addr>` command resolves one address to a region and accepts the same symbol-aware address expressions as `d` and `b`.
+
+| CPU | Region divergence |
+|-----|-------------------|
+| IE64 | Standard host-visible RAM, stack, VRAM, and `0xF0000-0xFFFFF` MMIO regions |
+| IE32 | Standard host-visible RAM, stack, VRAM, and `0xF0000-0xFFFFF` MMIO regions |
+| M68K | Standard host-visible RAM, stack, VRAM, and `0xF0000-0xFFFFF` MMIO regions |
+| X86 | Standard regions plus x86 runner bank windows translated by the bus adapter |
+| Z80 | `0xF000-0xF0FF` direct MMIO window and `0xA0-0xAA` VGA port range |
+| 6502 | Page-1 stack, `0xF000-0xF0FF` direct MMIO, VGA at `0xD700-0xD70A`, and ULA at `0xD800-0xD817` |
+
 #### `s [count]` - Single-Step
 
-Execute one (or more) instructions on the focused CPU. Displays changed registers in green, followed by the next instruction to be executed.
+Execute one (or more) instructions on the focussed CPU. Displays changed registers in green, followed by the next instruction to be executed.
 
 ```
 > s
@@ -78,7 +237,7 @@ Resume execution and exit the monitor. Optionally set the PC before resuming.
 > g $2000    (set PC to $2000, then resume)
 ```
 
-If the supplied address fails to parse, the command resumes from the current PC without setting it and without an error message. If it parses but is out of range for the focused CPU, the command prints a red `ValidateAddress` error and stays in the monitor instead of resuming.
+If the supplied address fails to parse, the command resumes from the current PC without setting it and without an error message. If it parses but is out of range for the focussed CPU, the command prints a red `ValidateAddress` error and stays in the monitor instead of resuming.
 
 #### `x` - Exit Monitor
 
@@ -88,7 +247,7 @@ Close the monitor overlay. CPUs that were running when the monitor was entered a
 
 #### `r` - Show Registers
 
-Display all registers of the focused CPU. Registers that changed since the monitor's last saved register snapshot are shown in green. The snapshot is refreshed when the monitor is entered, after `s`, after `bs`, after `sl`, and after changing CPU focus.
+Display all registers of the focussed CPU. Registers that changed since the monitor's last saved register snapshot are shown in green. The snapshot is refreshed when the monitor is entered, after `s`, after `bs`, after `sl`, and after changing CPU focus.
 
 ```
 > r
@@ -128,7 +287,7 @@ If an address or count argument does not parse, `d` keeps the default for that a
 
 #### `m [addr] [count]` - Memory Dump
 
-Display memory in hex + ASCII format (default: from PC, 8 lines of 16 bytes). The `count` argument is a line count, not a byte count. The address column follows the focused CPU width, so IE64 dumps preserve full 64-bit addresses.
+Display memory in hex + ASCII format (default: from PC, 8 lines of 16 bytes). The `count` argument is a line count, not a byte count. The address column follows the focussed CPU width, so IE64 dumps preserve full 64-bit addresses.
 
 ```
 > m $1000 4
@@ -164,7 +323,7 @@ The fill range is capped at 1 MiB (`0x100000` bytes); larger ranges are rejected
 
 #### `save <start> <end> <filename>` - Save Memory to File
 
-Save a range of memory to a raw binary file. The maximum requested save range is the bus-reported total guest RAM when the bus is available, falling back to 32 MiB when it is not. Ranges larger than the cap are rejected with `Range too large (max N bytes)`. The command reads through the focused CPU adapter; use an address range that is meaningful for that CPU. Adapter short reads are not reported separately.
+Save a range of memory to a raw binary file. The maximum requested save range is the bus-reported total guest RAM when the bus is available, falling back to 32 MiB when it is not. Ranges larger than the cap are rejected with `Range too large (max N bytes)`. The command reads through the focussed CPU adapter; use an address range that is meaningful for that CPU. Adapter short reads are not reported separately.
 
 ```
 > save $1000 $1FFF dump.bin
@@ -198,7 +357,7 @@ Hit reporting is capped at 256 matches. When the cap is reached, the search prin
 
 #### `c <start> <end> <dest>` - Compare Memory
 
-Compare two memory ranges and report differences. If the requested range is outside the focused CPU's readable memory, the comparison is limited by what the adapter returns. If both reads return no comparable bytes, the command prints `Identical`.
+Compare two memory ranges and report differences. If the requested range is outside the focussed CPU's readable memory, the comparison is limited by what the adapter returns. If both reads return no comparable bytes, the command prints `Identical`.
 
 ```
 > c $1000 $100F $2000
@@ -210,7 +369,7 @@ Diff output is capped at 256 mismatches. When the cap is reached, comparison pri
 
 #### `t <start> <end> <dest>` - Transfer/Copy Memory
 
-Copy a memory range to another location. The command reads through the focused CPU adapter and writes the returned bytes to the destination; overlapping copies are read before writing. The success message reports the requested byte count.
+Copy a memory range to another location. The command reads through the focussed CPU adapter and writes the returned bytes to the destination; overlapping copies are read before writing. The success message reports the requested byte count.
 
 ```
 > t $1000 $100F $2000
@@ -231,7 +390,7 @@ If `u` creates a new temporary breakpoint and execution never reaches the target
 
 #### `bs` - Backstep (Undo Step)
 
-Rewind the focused CPU to the state before the last `s` (single-step) command. Restores focused CPU registers and the CPU-local memory snapshot captured by that adapter.
+Rewind the focussed CPU to the state before the last `s` (single-step) command. Restores focussed CPU registers and the CPU-local memory snapshot captured by that adapter.
 
 ```
 > s
@@ -243,7 +402,7 @@ Backstep: restored to PC=$1000 (CPU+memory)
 
 A ring buffer of up to 32 CPU-local snapshots is maintained. Each stepped instruction saves a snapshot before stepping; `bs` pops the most recent one.
 
-**Note:** Only the focused CPU adapter's registers and the captured memory span are restored. The captured span starts at address 0 and is 64 KiB for 16-bit adapters or 32 MiB for wider adapters. Device/chip runtime state (timers, audio envelopes, video scanline position), other CPUs, and coprocessor state are not included.
+**Note:** Only the focussed CPU adapter's registers and the captured memory span are restored. The captured span starts at address 0 and is 64 KiB for 16-bit adapters or 32 MiB for wider adapters. Device/chip runtime state (timers, audio envelopes, video scanline position), other CPUs, and coprocessor state are not included.
 
 ### Breakpoints
 
@@ -277,11 +436,11 @@ Breakpoint set at $3000 if hitcount>$A
 
 Operators: `==`, `!=`, `<`, `>`, `<=`, `>=`
 
-Condition values use the normal address/value syntax (`$hex`, `0xhex`, bare hex, or `#decimal`). Memory condition addresses are literals, not expressions. `.W` and `.L` memory values use the focused CPU's byte order: M68K is big-endian; the other current CPU adapters are little-endian.
+Legacy memory conditions use `[$addr]`, `[$addr].W`, or `[$addr].L`. The `if <expr>` form also accepts `b(addr)`, `w(addr)`, `l(addr)`, and `q(addr)` memory terms for byte, word, long, and quad reads. Condition values use the normal address/value syntax (`$hex`, `0xhex`, bare hex, or `#decimal`). Memory condition addresses inside both syntaxes are literals, not register or symbol expressions. `.W`/`w(addr)`, `.L`/`l(addr)`, and `q(addr)` memory values use the focussed CPU's byte order: M68K is big-endian; the other current CPU adapters are little-endian.
 
 #### `bc <addr>` / `bc *` - Clear Breakpoint(s)
 
-Clear a single breakpoint by address, or clear all breakpoints on the currently focused CPU. `bc *` clears only the focused CPU's breakpoints; use `cpu <id>` then `bc *` on each CPU to clear globally.
+Clear a single breakpoint by address, or clear all breakpoints on the currently focussed CPU. `bc *` clears only the focussed CPU's breakpoints; use `cpu <id>` then `bc *` on each CPU to clear globally.
 
 ```
 > bc $1010
@@ -312,13 +471,19 @@ BREAK at $1010 on IE64 (id:0)
 
 ### Watchpoints
 
-#### `ww <addr>` - Set Write Watchpoint
+#### `ww <addr>` / `bpm* <addr>` - Set Watchpoint
 
-Monitor a memory address for writes. When an instruction changes the watched byte's value, the monitor activates and displays the old and new values. A store that writes the same byte value does not trigger. Only write watchpoints are currently implemented.
+Monitor a memory address for reads, writes, or either mode. Width-aware `bpm*` commands support byte, word, long, and quad ranges and trigger on overlapping accesses.
 
 ```
 > ww $1000
-Write watchpoint set at $1000
+W1 watchpoint set at $1000
+
+> bpmdr $2000
+R4 watchpoint set at $2000
+
+> bpmq $3000
+RW8 watchpoint set at $3000
 ```
 
 When triggered:
@@ -329,7 +494,7 @@ WATCH $1000: $00 -> $FF at PC=$1234 on IE64 (id:0)
 
 #### `wc <addr>` / `wc *` - Clear Watchpoint(s)
 
-Clear a single watchpoint by address, or clear all watchpoints on the focused CPU.
+Clear a single watchpoint by address, or clear all watchpoints on the focussed CPU.
 
 ```
 > wc $1000
@@ -353,22 +518,25 @@ W $2000 (id:3 coproc:Z80)
 
 #### `cpu` - List CPUs
 
-List all registered CPUs with their ID, label, status, and program counter. The focused CPU is marked with `*`.
+List all registered CPUs with their ID, label, status, and program counter. When a coprocessor manager is attached, offline coprocessor worker slots are also shown. The focussed CPU is marked with `*`.
 
 ```
 > cpu
 *id:0   IE64         [FROZEN ]  PC=$1000
  id:1   coproc:Z80   [FROZEN ]  PC=$40
  id:2   coproc:6502  [FROZEN ]  PC=$200
+ id:-   coproc:IE32  [OFFLINE]  PC=-
 ```
+
+Offline rows are worker slots only. They are not general CPU hot-plug targets and do not include the primary boot CPU.
 
 #### `cpu <id|label>` - Switch Focus
 
-Switch the focused CPU by stable ID or label. All register/disassembly/step commands operate on the focused CPU.
+Switch the focussed CPU by stable ID or label. All register/disassembly/step commands operate on the focussed CPU.
 
 ```
 > cpu 1
-Focused on id:1 coproc:Z80
+Focussed on id:1 coproc:Z80
 ```
 
 Labels are matched exactly (case-insensitive).
@@ -380,6 +548,44 @@ Ambiguous label, use ID:
   id:1 coproc:Z80
   id:5 coproc:Z80
 ```
+
+#### `cpu online` - Start Coprocessor Worker
+
+Start an offline coprocessor worker slot through the same isolated worker lifecycle used by `COPROC_CMD_START`.
+
+```
+> cpu online z80
+Online z80 as coproc:Z80
+
+> cpu online svc.ie80
+Online z80 as coproc:Z80
+
+> cpu online z80 svc.ie80
+Online z80 as coproc:Z80
+
+> cpu online --replace svc.ie80
+Online z80 as coproc:Z80
+```
+
+`cpu online <type>` uses the currently staged/default coprocessor service image. The staging path is the same one used by `-coproc-svc` / `-coproc` and `COPROC_NAME_PTR`; if no service path is staged, the command fails without starting a worker.
+
+`cpu online <path.ie*>` infers the worker CPU from the typed image extension. `cpu online <type> <path.ie*>` requires the type and extension to match. Recognised extensions are `.ie64` (IE64), `.iex`/`.ie32` (IE32), `.ie68` (M68K), `.ie80` (Z80), `.ie65` (6502), and `.ie86` (x86).
+
+Paths are resolved by the coprocessor manager under its configured base directory. Absolute paths, `..`, unsupported extensions, missing files, oversized worker images, and type/extension mismatches are rejected. Starting an already-online worker is rejected unless `--replace` is supplied.
+
+#### `cpu offline <id|label|type>` - Stop Coprocessor Worker
+
+Stop an online coprocessor worker and unregister it from IEMon.
+
+```
+> cpu offline z80
+Offline coproc:Z80
+
+> cpu offline coproc:z80
+Offline coproc:Z80
+```
+
+Only coprocessor worker slots can be offlined. Primary CPUs and other registered monitor adapters are rejected.
 
 #### `freeze <id|label|*>` - Freeze CPU
 
@@ -404,7 +610,7 @@ Resume a specific CPU while the monitor stays open. This allows advanced debuggi
 
 #### `bt [depth]` - Backtrace
 
-Walk the stack and display return addresses. Default depth is 16.
+Walk the stack and display return addresses. Default depth is 16. If symbols are loaded, `bt` resolves frame labels and filters obvious stack noise by requiring a symbol hit and rejecting addresses that fall inside known stack, VRAM, or MMIO regions.
 
 ```
 > bt
@@ -425,16 +631,16 @@ Stack walking is CPU-specific:
 |-----|--------|-----------|-------|
 | IE64 | SP | 8 bytes (LE) | Full 64-bit return addresses |
 | IE32 | SP | 4 bytes (LE) | - |
-| M68K | A6 frame-link chain | 4 bytes (BE) | Walks `prevA6 = mem[A6]; ret = mem[A6+4]` (LINK/UNLK convention). Returns "No stack frames found" if A6 is 0, so leaf or link-less functions produce no trace |
+| M68K | A6 frame-link chain, then A7 scan | 4 bytes (BE) | Walks `prevA6 = mem[A6]; ret = mem[A6+4]` for LINK/UNLK frames. If A6 is invalid, falls back to an SP scan and lets symbol filtering reject noise |
 | Z80 | SP | 2 bytes (LE) | - |
 | 6502 | SP (page 1) | 2 bytes (LE) | Each frame is tagged `(low confidence)` in output; reads from `$0100 + ((SP+1) & 0xFF)` upward, adding +1 because JSR pushes return-1 |
-| X86 | ESP | 4 bytes (LE) | Raw stack slot scan; no EBP frame-chain walk |
+| X86 | EBP chain, then ESP scan | 4 bytes (LE) | Uses an EBP frame chain when it looks valid, otherwise scans ESP |
 
 ### Save/Load Machine State
 
 #### `ss [filename]` - Save State
 
-Save a snapshot of the focused CPU's registers and a fixed CPU memory span to disk. Default filename: `snapshot.iem`.
+Save a snapshot of the focussed CPU's registers and a fixed CPU memory span to disk. Default filename: `snapshot.iem`.
 
 ```
 > ss
@@ -446,7 +652,7 @@ State saved to mystate.iem (CPU+memory)
 
 #### `sl [filename]` - Load State
 
-Restore a previously saved snapshot, overwriting the focused CPU registers and the memory span stored in the snapshot.
+Restore a previously saved snapshot, overwriting the focussed CPU registers and the memory span stored in the snapshot.
 
 ```
 > sl
@@ -456,13 +662,13 @@ State loaded from snapshot.iem (CPU+memory)
 State loaded from mystate.iem (CPU+memory)
 ```
 
-**Note:** `ss`/`sl` operate only on the focused CPU. Current snapshots capture memory starting at address 0: 64 KiB for 16-bit adapters and 32 MiB for wider adapters. Snapshot files gzip-compress that memory on disk. Other CPUs and device/chip runtime state (timers, audio envelopes, video scanline position) are not included. `sl` refuses to load a snapshot whose CPU type differs from the focused CPU.
+**Note:** `ss`/`sl` operate only on the focussed CPU. Current snapshots capture memory starting at address 0: 64 KiB for 16-bit adapters and 32 MiB for wider adapters. Snapshot files gzip-compress that memory on disk. Other CPUs and device/chip runtime state (timers, audio envelopes, video scanline position) are not included. `sl` refuses to load a snapshot whose CPU type differs from the focussed CPU.
 
 ### Trace and Write History
 
 #### `trace <count>` - Trace Instructions
 
-Execute up to N instructions on the focused CPU, logging each instruction and register changes. The trace runs synchronously while the monitor is active. `trace 0` is rejected.
+Execute up to N instructions on the focussed CPU, logging each instruction and register changes. The trace runs synchronously while the monitor is active. `trace 0` is rejected.
 
 ```
 > trace 10
@@ -612,7 +818,7 @@ Open an interactive hex editor at the specified address. The display switches to
 | Enter | Commit changes to memory |
 | Esc | Discard changes and return to command mode |
 
-Changed bytes are highlighted in green. The cursor position is shown with inverted colours. Edits are kept in a dirty map until Enter commits them; Esc discards the dirty bytes. If the focused CPU adapter rejects an address while editing, that byte is left unchanged.
+Changed bytes are highlighted in green. The cursor position is shown with inverted colours. Edits are kept in a dirty map until Enter commits them; Esc discards the dirty bytes. If the focussed CPU adapter rejects an address while editing, that byte is left unchanged.
 
 ### Scripting
 
@@ -673,7 +879,68 @@ Audio thawed
 
 #### `?` / `help` - Command Reference
 
-Display a quick command reference.
+Display the command reference. `help` lists every registered command and
+`help <command>` prints syntax plus worked examples from the same registry that
+drives the in-monitor help text.
+
+```
+> help pg
+pg - Add, list, or clear page-access guards
+Syntax:
+  pg add <start> <end> <rwx> [cpu=all|current]
+  pg list
+  pg clear
+Examples:
+  pg add $4000 $4FFF rw cpu=current
+  pg add code code+255 x
+  pg list
+```
+
+Every user-facing command is expected to have at least one example; this is
+covered by the IEMon UX tests.
+
+### Command History, Aliases, Layouts, and Reports
+
+Command history is kept in memory for the overlay and persisted to
+`~/.iemon/history` in interactive builds. Duplicate adjacent commands are
+collapsed, and the on-disk history is capped so long debugging sessions do not
+grow it without bound. In tests, persistence is disabled unless `IEMON_HOME` is
+set explicitly.
+
+Pressing Enter on an empty command line repeats the last repeatable command
+(`s`, `d`, or `m`). This is intended for short step/disassemble/memory workflows
+where repeatedly typing the same command is noise.
+
+Aliases are session-local command shorthands:
+
+```
+> alias ni s
+Alias ni = s
+
+> alias regs r
+Alias regs = r
+
+> alias
+ni = s
+regs = r
+```
+
+Aliases cannot replace built-in command names.
+
+Named layouts render common inspection views without changing emulator state:
+
+| Command | View |
+|---------|------|
+| `layout cpu` | Registers plus nearby disassembly |
+| `layout trace` | Instruction trace ring tail plus recent access events |
+| `layout debug` | Registers, disassembly, stack, and page guards |
+| `layout list` | Available built-in layouts |
+| `layout save <name>` | Saves a session alias for the debug layout |
+
+The `bug [trace-count]` command prints a copyable report bundle containing the
+focussed CPU, registers, disassembly, stack, memory regions, page guards, access
+events, trace-ring entries, and loaded symbols. It is deliberately plain text so
+it can be pasted into an issue without extra formatting work.
 
 ## Keyboard Shortcuts
 
@@ -813,6 +1080,35 @@ The monitor overlay is a character grid sized to the current video mode (`screen
 
 ## IE64 Fault Reports
 
+### Fault Interception
+
+`fault` lets IEMon break before a guest fault or exception is dispatched to the guest handler. It is off by default so operating-system boots keep their normal exception flow.
+
+```
+> fault list
+Fault interception: off
+
+> fault break ie64.priv
+Fault break enabled: ie64.priv
+
+> fault on
+Fault interception enabled for all supported faults
+
+> fault off
+Fault interception disabled
+```
+
+Supported fault kinds:
+
+| CPU | Kinds |
+|-----|-------|
+| IE64 | `ie64.not-present`, `ie64.read-denied`, `ie64.write-denied`, `ie64.exec-denied`, `ie64.user-supervisor`, `ie64.priv`, `ie64.syscall`, `ie64.misaligned`, `ie64.illegal`, `ie64.skef`, `ie64.skac` |
+| IE32 | `ie32.invalid-opcode` |
+| M68K | `m68k.bus-error`, `m68k.address-error`, `m68k.illegal`, `m68k.divide-zero`, `m68k.privilege`, `m68k.line-a`, `m68k.line-f`, `m68k.format-error`, `m68k.trapv` |
+| Z80 | `z80.rst38`, `z80.nmi` |
+| 6502 | `6502.brk` |
+| X86 | `x86.ud` |
+
 When an IE64 fault escapes the IntuitionOS / `iexec` kernel, the kernel
 itself prints a `GURU MEDITATION` line on the host console with the
 full fault context. The machine monitor does **not** synthesise this
@@ -861,15 +1157,15 @@ or `dc.b $F4`.
 
 - **Bare `d` counts are hexadecimal.** `d $1000 10` shows 0x10 = 16 lines, not 10. Use `d $1000 #10` for decimal 10. Counts for `s`, `m`, `trace`, and `bt` are decimal.
 - **`#N` does not work for most count arguments.** It is honoured for address/value parsing and for the `d` line count because `d` uses the address parser for that argument. For other counts, use bare decimal, `$hex`, or `0xhex`. For example, `s #10` silently steps one instruction because the invalid count is ignored.
-- **Watchpoints are write-only.** `ww` traps on store. There is no read or read/write watch in this revision.
-- **Watchpoints detect changed byte values.** A store of the same byte value updates no visible state and does not trap.
-- **`ss`/`sl` are focused-CPU only.** Other CPUs, video/audio/timer device state, and coprocessor state are not in the snapshot. `sl` will refuse a snapshot whose CPU type differs from the focused CPU.
-- **`bs` (backstep) is focused-CPU only.** It restores that adapter's registers and memory view from the per-CPU ring (max 32 entries). It does not roll back device state or other CPUs.
-- **M68K backtrace requires A6 frame links.** Code that does not use LINK/UNLK (or has not yet set A6) will produce "No stack frames found".
+- **Legacy `ww` is a one-byte write watchpoint.** Use `bpm*` commands for read, write, read/write, and wider overlapping access watchpoints.
+- **Access-backed watchpoints require instrumentation.** In normal supported builds the CPU access hooks drive read/write/fetch watchpoints. If a future build disables those hooks, commands that need live access coverage fail closed instead of advertising partial behaviour.
+- **`ss`/`sl` are focussed-CPU only.** Other CPUs, video/audio/timer device state, and coprocessor state are not in the snapshot. `sl` will refuse a snapshot whose CPU type differs from the focussed CPU.
+- **`bs` (backstep) is focussed-CPU only.** It restores that adapter's registers and memory view from the per-CPU ring (max 32 entries). It does not roll back device state or other CPUs.
+- **M68K backtrace prefers A6 frame links.** Code that does not use LINK/UNLK falls back to an A7 stack scan, so symbol coverage strongly affects how much noise is filtered.
 - **6502 backtrace is heuristic.** Each frame is tagged `(low confidence)`; the walker scans page 1 upward from SP+1 and assumes JSR-pushed return addresses.
-- **`bc *` / `wc *` clear only the focused CPU.** Switch CPUs and repeat to clear globally; `bl` lists across all CPUs but `bc *` does not.
+- **`bc *` / `wc *` clear only the focussed CPU.** Switch CPUs and repeat to clear globally; `bl` lists across all CPUs but `bc *` does not.
 - **Run-until can leave a temp breakpoint if never hit.** If `u` created a new temporary breakpoint and the PC never reaches the target before you re-enter the monitor for another reason, clear it explicitly with `bc <addr>`.
-- **`g <addr>` silently ignores parse errors** and resumes from the current PC. Use `r pc <addr>` first if you want a hard error on bad input. If the address parses but lies outside the focused CPU's address space, `g` prints a red `ValidateAddress` error and stays in the monitor.
+- **`g <addr>` silently ignores parse errors** and resumes from the current PC. Use `r pc <addr>` first if you want a hard error on bad input. If the address parses but lies outside the focussed CPU's address space, `g` prints a red `ValidateAddress` error and stays in the monitor.
 - **`trace` breakpoint checks happen after each step.** Normal run breakpoints stop before executing the instruction at the breakpoint PC. `trace` steps first, then checks whether the new PC is a breakpoint.
 - **`trace history` records are capped at 256 per address.** Older writes are dropped FIFO; only the latest 256 records for that address are retained.
 - **`h` and `c` cap displayed hits at 256** before printing `... (truncated)`. Scanning stops once that display limit is reached.
@@ -877,4 +1173,4 @@ or `dc.b $F4`.
 - **`r <name> <value>` does not accept expressions.** The value goes through `ParseAddress`, so `$N`, `0xN`, bare hex, and `#decimal` work, but `pc+8` does not. Use `r` only to set a literal value.
 - **Not every displayed register is writable.** For example, IE64 `R0` is hardwired to zero, and the Z80 shadow registers are displayed but are not accepted by `r <name> <value>` or expression evaluation.
 - **Invalid optional arguments are often ignored.** `d bad`, `d $1000 bad`, `m $1000 bad`, `s bad`, and `bt bad` keep their defaults rather than printing parse errors.
-- **Raw memory tools trust the CPU adapter.** `save`, `c`, and `t` do not perform a separate address validation pass over the full range. For out-of-map ranges, results follow the focused adapter's read/write behaviour.
+- **Raw memory tools trust the CPU adapter.** `save`, `c`, and `t` do not perform a separate address validation pass over the full range. For out-of-map ranges, results follow the focussed adapter's read/write behaviour.

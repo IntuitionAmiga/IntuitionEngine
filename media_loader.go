@@ -21,6 +21,7 @@ type MediaLoader struct {
 	pokeyPlayer *POKEYPlayer
 	modPlayer   *MODPlayer
 	wavPlayer   *WAVPlayer
+	symbols     *SymbolTable
 
 	namePtr uint32
 	subsong uint32
@@ -31,6 +32,12 @@ type MediaLoader struct {
 	reqGen uint64
 
 	mu sync.Mutex
+}
+
+func (m *MediaLoader) SetSymbolTable(symbols *SymbolTable) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.symbols = symbols
 }
 
 func NewMediaLoader(bus *MachineBus, soundChip *SoundChip, baseDir string, psgPlayer *PSGPlayer, sidPlayer *SIDPlayer, tedPlayer *TEDPlayer, ahxPlayer *AHXPlayer, pokeyPlayer *POKEYPlayer, modPlayer *MODPlayer, wavPlayer *WAVPlayer) *MediaLoader {
@@ -155,6 +162,7 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fileName, fullPath string, typ
 		}
 		return
 	}
+	m.loadSymbolSidecar(fullPath, typ)
 
 	// WAV files can exceed MEDIA_STAGING_SIZE (64KB); load directly via player
 	if typ == MEDIA_TYPE_WAV {
@@ -357,6 +365,17 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fileName, fullPath string, typ
 	m.errCode = MEDIA_ERR_OK
 }
 
+func (m *MediaLoader) loadSymbolSidecar(fullPath string, typ uint32) {
+	m.mu.Lock()
+	symbols := m.symbols
+	m.mu.Unlock()
+	cpu := mediaSymbolCPU(typ)
+	if symbols == nil || cpu == "" {
+		return
+	}
+	_, _ = loadVICELabelSidecar(symbols, cpu, fullPath, 0)
+}
+
 func (m *MediaLoader) stopPlayersOnly() {
 	if m.sidPlayer != nil {
 		m.sidPlayer.Stop()
@@ -479,6 +498,19 @@ func detectMediaType(path string) uint32 {
 		return MEDIA_TYPE_WAV
 	default:
 		return MEDIA_TYPE_NONE
+	}
+}
+
+func mediaSymbolCPU(typ uint32) string {
+	switch typ {
+	case MEDIA_TYPE_SID, MEDIA_TYPE_TED, MEDIA_TYPE_POKEY:
+		return "6502"
+	case MEDIA_TYPE_PSG:
+		return "Z80"
+	case MEDIA_TYPE_AHX, MEDIA_TYPE_MOD:
+		return "M68K"
+	default:
+		return ""
 	}
 }
 

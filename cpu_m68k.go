@@ -632,6 +632,11 @@ type M68KCPU struct {
 	// Cache Lines 3+ - Bus Interface (lock-free design like IE32)
 	bus Bus32
 
+	debugAccess  *DebugAccessService
+	debugFaults  *DebugFaultService
+	debugBreakIn func(pc uint64) bool
+	debugCPUID   int
+
 	// FPU Coprocessor (68881/68882)
 	FPU *M68881FPU // Optional FPU - nil if not present
 
@@ -757,6 +762,17 @@ func (cpu *M68KCPU) SetRunning(state bool) {
 	cpu.running.Store(state)
 }
 
+func (cpu *M68KCPU) debugHandleBreakIn(pc uint64) bool {
+	if cpu == nil || cpu.debugBreakIn == nil {
+		return false
+	}
+	if cpu.debugBreakIn(pc) {
+		cpu.running.Store(false)
+		return true
+	}
+	return false
+}
+
 // AssertInterrupt atomically asserts an interrupt level in the pending bitmask.
 func (cpu *M68KCPU) AssertInterrupt(level uint8) {
 	if level < 1 || level > 7 {
@@ -795,6 +811,7 @@ func NewM68KCPU(bus Bus32) *M68KCPU {
 		stackUpperBound: defaultTop,
 		profileTopOfRAM: defaultTop,
 		FPU:             NewM68881FPU(), // Initialize 68881 FPU coprocessor
+		debugCPUID:      -1,
 		// The IE EmuTOS build targets 68020 (`-m68020`) and expects
 		// 68010/68020 exception frame formats (incl. format/vector word).
 		use68000ExceptionFrame: false,
@@ -2408,6 +2425,9 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 	for cpu.running.Load() {
 	innerLoop:
 		for range 4096 {
+			if cpu.debugHandleBreakIn(uint64(cpu.PC)) {
+				break innerLoop
+			}
 			// STOP state: real 68020 continuously samples IPL pins and wakes
 			// when an interrupt exceeds the SR mask. No inException gating.
 			if cpu.stopped.Load() {
@@ -2481,6 +2501,7 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 			execPC := cpu.PC
 			leValue := *(*uint16)(unsafe.Pointer(uintptr(memBase) + uintptr(cpu.PC)))
 			cpu.currentIR = bits.ReverseBytes16(leValue)
+			cpu.debugOnFetch(execPC, M68K_WORD_SIZE)
 			cpu.PC += M68K_WORD_SIZE
 			cpu.lastExecPC = execPC
 			cpu.lastExecOpcode = cpu.currentIR
@@ -2572,8 +2593,10 @@ func (cpu *M68KCPU) StepOne() int {
 	if cpu.PC >= uint32(len(cpu.memory))-2 {
 		return 0
 	}
+	execPC := cpu.PC
 	leValue := *(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(cpu.PC)))
 	cpu.currentIR = bits.ReverseBytes16(leValue)
+	cpu.debugOnFetch(execPC, M68K_WORD_SIZE)
 	cpu.PC += M68K_WORD_SIZE
 
 	cpu.FetchAndDecodeInstruction()
@@ -2682,11 +2705,14 @@ func (cpu *M68KCPU) Read8(addr uint32) uint8 {
 	// Lock-free fast path for non-I/O addresses using unsafe pointer
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
-		return *(*byte)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+		value := *(*byte)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+		cpu.debugOnRead(addr, 1)
+		return value
 	}
 
 	// Terminal device always returns zero to indicate ready state
 	if addr == TERM_OUT || addr == TERM_OUT_SIGNEXT {
+		cpu.debugOnRead(addr, 1)
 		return 0
 	}
 
@@ -2699,10 +2725,35 @@ func (cpu *M68KCPU) Read8(addr uint32) uint8 {
 			cpu.ProcessException(M68K_VEC_BUS_ERROR)
 			return 0
 		}
+		cpu.debugOnRead(addr, 1)
 		return value
 	}
-	return cpu.bus.Read8(addr)
+	value := cpu.bus.Read8(addr)
+	cpu.debugOnRead(addr, 1)
+	return value
 }
+
+func (cpu *M68KCPU) debugOnRead(addr uint32, width int) {
+	if cpu == nil || cpu.debugAccess == nil || !cpu.debugAccess.AnyActive(cpu.debugCPUID) {
+		return
+	}
+	cpu.debugAccess.OnRead(cpu.debugCPUID, uint64(addr), width)
+}
+
+func (cpu *M68KCPU) debugOnWrite(addr uint32, width int, oldVal, newVal uint64) {
+	if cpu == nil || cpu.debugAccess == nil || !cpu.debugAccess.AnyActive(cpu.debugCPUID) {
+		return
+	}
+	cpu.debugAccess.OnWrite(cpu.debugCPUID, uint64(addr), width, oldVal, newVal)
+}
+
+func (cpu *M68KCPU) debugOnFetch(addr uint32, width int) {
+	if cpu == nil || cpu.debugAccess == nil || !cpu.debugAccess.AnyActive(cpu.debugCPUID) {
+		return
+	}
+	cpu.debugAccess.OnFetch(cpu.debugCPUID, uint64(addr), width)
+}
+
 func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 	addr &= M68K_ADDRESS_MASK
 
@@ -2717,6 +2768,7 @@ func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
 		leValue := *(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+		cpu.debugOnRead(addr, 2)
 		return bits.ReverseBytes16(leValue)
 	}
 
@@ -2730,9 +2782,12 @@ func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 				cpu.ProcessException(M68K_VEC_BUS_ERROR)
 				return 0
 			}
+			cpu.debugOnRead(addr, 2)
 			return value
 		}
-		return cpu.bus.Read16(addr)
+		value := cpu.bus.Read16(addr)
+		cpu.debugOnRead(addr, 2)
+		return value
 	}
 
 	// For addresses >= M68K_MEMORY_SIZE, let bus handle (Atari ST hardware registers)
@@ -2750,6 +2805,7 @@ func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 	} else {
 		leValue = cpu.bus.Read16(addr)
 	}
+	cpu.debugOnRead(addr, 2)
 
 	// Coprocessor shared data: return LE value directly (no byte-swap)
 	if cpu.isCoprocSharedAddr(addr) {
@@ -2775,6 +2831,7 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
 		leValue := *(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+		cpu.debugOnRead(addr, 4)
 		return bits.ReverseBytes32(leValue)
 	}
 
@@ -2789,9 +2846,12 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 				cpu.ProcessException(M68K_VEC_BUS_ERROR)
 				return 0
 			}
+			cpu.debugOnRead(addr, 4)
 			return value
 		}
-		return cpu.bus.Read32(addr)
+		value := cpu.bus.Read32(addr)
+		cpu.debugOnRead(addr, 4)
+		return value
 	}
 
 	var leValue uint32
@@ -2806,6 +2866,7 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 	} else {
 		leValue = cpu.bus.Read32(addr)
 	}
+	cpu.debugOnRead(addr, 4)
 
 	// Coprocessor shared data: return LE value directly (no byte-swap)
 	if cpu.isCoprocSharedAddr(addr) {
@@ -2822,6 +2883,7 @@ func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
 	if addr == TERM_OUT || addr == TERM_OUT_SIGNEXT {
 		fmt.Printf("%c", value)
 		cpu.bus.Write8(TERM_OUT, value)
+		cpu.debugOnWrite(addr, 1, 0, uint64(value))
 		return
 	}
 
@@ -2833,6 +2895,7 @@ func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
 		*(*byte)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = value
+		cpu.debugOnWrite(addr, 1, 0, uint64(value))
 		return
 	}
 
@@ -2843,9 +2906,11 @@ func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
 			cpu.recordFault(addr, 1, true, uint32(value))
 			cpu.ProcessException(M68K_VEC_BUS_ERROR)
 		}
+		cpu.debugOnWrite(addr, 1, 0, uint64(value))
 		return
 	}
 	cpu.bus.Write8(addr, value)
+	cpu.debugOnWrite(addr, 1, 0, uint64(value))
 }
 func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 	addr &= M68K_ADDRESS_MASK
@@ -2865,6 +2930,7 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
 		*(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = bits.ReverseBytes16(value)
+		cpu.debugOnWrite(addr, 2, 0, uint64(value))
 		return
 	}
 
@@ -2885,9 +2951,11 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 				cpu.recordFault(addr, 2, true, uint32(value))
 				cpu.ProcessException(M68K_VEC_BUS_ERROR)
 			}
+			cpu.debugOnWrite(addr, 2, 0, uint64(value))
 			return
 		}
 		cpu.bus.Write16(addr, value)
+		cpu.debugOnWrite(addr, 2, 0, uint64(value))
 		return
 	}
 
@@ -2908,9 +2976,11 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 			cpu.recordFault(addr, 2, true, uint32(busValue))
 			cpu.ProcessException(M68K_VEC_BUS_ERROR)
 		}
+		cpu.debugOnWrite(addr, 2, 0, uint64(busValue))
 		return
 	}
 	cpu.bus.Write16(addr, busValue)
+	cpu.debugOnWrite(addr, 2, 0, uint64(busValue))
 }
 func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 	addr &= M68K_ADDRESS_MASK
@@ -2932,6 +3002,7 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
 		*(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = bits.ReverseBytes32(value)
+		cpu.debugOnWrite(addr, 4, 0, uint64(value))
 		return
 	}
 
@@ -2950,6 +3021,7 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 		if offset+4 <= uint32(len(cpu.vramDirect)) {
 			binary.LittleEndian.PutUint32(cpu.vramDirect[offset:], leValue)
 			cpu.VRAMWriteCount++
+			cpu.debugOnWrite(addr, 4, 0, uint64(leValue))
 			return
 		}
 	}
@@ -2969,9 +3041,11 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 				cpu.recordFault(addr, 4, true, value)
 				cpu.ProcessException(M68K_VEC_BUS_ERROR)
 			}
+			cpu.debugOnWrite(addr, 4, 0, uint64(value))
 			return
 		}
 		cpu.bus.Write32(addr, value)
+		cpu.debugOnWrite(addr, 4, 0, uint64(value))
 		return
 	}
 
@@ -2983,9 +3057,11 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 			cpu.recordFault(addr, 4, true, leValue)
 			cpu.ProcessException(M68K_VEC_BUS_ERROR)
 		}
+		cpu.debugOnWrite(addr, 4, 0, uint64(leValue))
 		return
 	}
 	cpu.bus.Write32(addr, leValue)
+	cpu.debugOnWrite(addr, 4, 0, uint64(leValue))
 }
 
 func isByteFanoutMMIOWideAddr(addr uint32, size uint32) bool {
@@ -3093,6 +3169,7 @@ func (cpu *M68KCPU) Fetch16() uint16 {
 	// Read as little-endian uint16, then byte-swap to big-endian
 	leValue := *(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
 	value := bits.ReverseBytes16(leValue)
+	cpu.debugOnFetch(addr, M68K_WORD_SIZE)
 	cpu.PC += M68K_WORD_SIZE
 	cpu.cycleCounter += M68K_CYCLE_FETCH
 	return value
@@ -3104,10 +3181,12 @@ func (cpu *M68KCPU) Fetch32() uint32 {
 		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
 		return 0
 	}
-	high := uint32(cpu.Read16(cpu.PC)) << 16
-	cpu.PC += 2 // Advance PC after reading high word
-	low := uint32(cpu.Read16(cpu.PC))
-	cpu.PC += 2 // Advance PC after reading low word
+	addr := cpu.PC
+	high := uint32(cpu.Fetch16()) << 16
+	if cpu.PC == addr {
+		return high
+	}
+	low := uint32(cpu.Fetch16())
 	return high | low
 }
 func (cpu *M68KCPU) GetEffectiveAddress(mode, reg uint16) uint32 {
@@ -3756,6 +3835,10 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 		oldPC = cpu.lastExecPC
 	}
 	cpu.emitStructuredFault(vector, oldPC)
+	if cpu.debugFault(m68kFaultKind(vector), uint64(cpu.lastFaultAddr), faultInfof("vector=%d", vector), oldPC) {
+		cpu.inException.Store(false)
+		return
+	}
 
 	// RESET doesn't push state because stack may be corrupted
 	if vector == M68K_VEC_RESET {
@@ -3799,6 +3882,42 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 	cpu.PC = newPC
 	cpu.cycleCounter += M68K_CYCLE_EXCEPTION
 	cpu.inException.Store(false)
+}
+
+func (cpu *M68KCPU) debugFault(kind string, addr uint64, info string, pc uint32) bool {
+	if cpu == nil || cpu.debugFaults == nil || kind == "" {
+		return false
+	}
+	if cpu.debugFaults.OnFault(cpu.debugCPUID, uint64(pc), kind, addr, info) {
+		cpu.running.Store(false)
+		return true
+	}
+	return false
+}
+
+func m68kFaultKind(vector uint8) string {
+	switch vector {
+	case M68K_VEC_BUS_ERROR:
+		return "m68k.bus-error"
+	case M68K_VEC_ADDRESS_ERROR:
+		return "m68k.address-error"
+	case M68K_VEC_ILLEGAL_INSTR:
+		return "m68k.illegal"
+	case M68K_VEC_ZERO_DIVIDE:
+		return "m68k.divide-zero"
+	case M68K_VEC_PRIVILEGE:
+		return "m68k.privilege"
+	case M68K_VEC_LINE_A:
+		return "m68k.line-a"
+	case M68K_VEC_LINE_F:
+		return "m68k.line-f"
+	case M68K_VEC_FORMAT_ERROR:
+		return "m68k.format-error"
+	case M68K_VEC_TRAPV:
+		return "m68k.trapv"
+	default:
+		return ""
+	}
 }
 
 // ProcessInterrupt attempts to deliver an interrupt at the given level.

@@ -101,21 +101,107 @@ type X86BusAdapter struct {
 	bank1Enable bool
 	bank2Enable bool
 	bank3Enable bool
+	debugAccess *DebugAccessService
+	debugCPUID  int
 }
 
 // NewX86BusAdapter creates a new x86 system bus
 func NewX86BusAdapter(bus *MachineBus) *X86BusAdapter {
-	return &X86BusAdapter{bus: bus, psgRegSelect: 0}
+	return &X86BusAdapter{bus: bus, psgRegSelect: 0, debugCPUID: -1}
 }
 
 // NewX86BusAdapterWithVGA creates an x86 system bus with VGA engine support
 func NewX86BusAdapterWithVGA(bus *MachineBus, vga *VGAEngine) *X86BusAdapter {
-	return &X86BusAdapter{bus: bus, psgRegSelect: 0, vgaEngine: vga}
+	return &X86BusAdapter{bus: bus, psgRegSelect: 0, vgaEngine: vga, debugCPUID: -1}
 }
 
 // NewX86BusAdapterWithVoodoo creates an x86 system bus with VGA and Voodoo engine support
 func NewX86BusAdapterWithVoodoo(bus *MachineBus, vga *VGAEngine, voodoo *VoodooEngine) *X86BusAdapter {
-	return &X86BusAdapter{bus: bus, psgRegSelect: 0, vgaEngine: vga, voodooEngine: voodoo}
+	return &X86BusAdapter{bus: bus, psgRegSelect: 0, vgaEngine: vga, voodooEngine: voodoo, debugCPUID: -1}
+}
+
+func (b *X86BusAdapter) debugOnRead(addr uint32, width int) {
+	if b == nil || b.debugAccess == nil || !b.debugAccess.AnyActive(b.debugCPUID) {
+		return
+	}
+	b.debugAccess.OnRead(b.debugCPUID, uint64(addr), width)
+}
+
+func (b *X86BusAdapter) debugOnWrite(addr uint32, width int, oldVal, newVal uint64) {
+	if b == nil || b.debugAccess == nil || !b.debugAccess.AnyActive(b.debugCPUID) {
+		return
+	}
+	b.debugAccess.OnWrite(b.debugCPUID, uint64(addr), width, oldVal, newVal)
+}
+
+func (b *X86BusAdapter) debugOnFetch(addr uint32, width int) {
+	if b == nil || b.debugAccess == nil || !b.debugAccess.AnyActive(b.debugCPUID) {
+		return
+	}
+	b.debugAccess.OnFetch(b.debugCPUID, uint64(addr), width)
+}
+
+func (b *X86BusAdapter) fetchRead(addr uint32) byte {
+	return b.readNoDebug(addr)
+}
+
+func (b *X86BusAdapter) readNoDebug(addr uint32) byte {
+	if addr == X86_VRAM_BANK_REG {
+		return byte(b.vramBank & 0xFF)
+	}
+	if addr == X86_VRAM_BANK_RSVD {
+		return 0
+	}
+	switch addr {
+	case X86_BANK1_REG_LO:
+		return byte(b.bank1 & 0xFF)
+	case X86_BANK1_REG_HI:
+		return byte((b.bank1 >> 8) & 0xFF)
+	case X86_BANK2_REG_LO:
+		return byte(b.bank2 & 0xFF)
+	case X86_BANK2_REG_HI:
+		return byte((b.bank2 >> 8) & 0xFF)
+	case X86_BANK3_REG_LO:
+		return byte(b.bank3 & 0xFF)
+	case X86_BANK3_REG_HI:
+		return byte((b.bank3 >> 8) & 0xFF)
+	}
+	if addr >= 0xA0000 && addr < 0xB0000 {
+		return b.readBus8NoDebug(addr)
+	}
+	if translated, ok := b.translateExtendedBank(addr); ok {
+		return b.readBus8NoDebug(translated)
+	}
+	if translated, ok := b.translateVRAM(addr); ok {
+		return b.readBus8NoDebug(translated)
+	}
+	return b.readBus8NoDebug(b.translateIO(addr))
+}
+
+func (b *X86BusAdapter) readBus8NoDebug(addr uint32) byte {
+	return b.bus.Read8NoDebug(addr)
+}
+
+func (b *X86BusAdapter) readBus8(addr uint32) byte {
+	value := b.bus.Read8(addr)
+	b.debugOnRead(addr, 1)
+	return value
+}
+
+func (b *X86BusAdapter) writeBus8(addr uint32, value byte) {
+	b.bus.Write8(addr, value)
+	b.debugOnWrite(addr, 1, 0, uint64(value))
+}
+
+func (b *X86BusAdapter) readBus32(addr uint32) uint32 {
+	value := b.bus.Read32(addr)
+	b.debugOnRead(addr, 4)
+	return value
+}
+
+func (b *X86BusAdapter) writeBus32(addr uint32, value uint32) {
+	b.bus.Write32(addr, value)
+	b.debugOnWrite(addr, 4, 0, uint64(value))
 }
 
 // GetMemory returns the underlying memory slice for direct JIT access.
@@ -166,20 +252,20 @@ func (b *X86BusAdapter) Read(addr uint32) byte {
 
 	// Handle VGA VRAM at 0xA0000-0xAFFFF (64KB window)
 	if addr >= 0xA0000 && addr < 0xB0000 {
-		return b.bus.Read8(addr)
+		return b.readBus8(addr)
 	}
 
 	// Handle extended bank window reads
 	if translated, ok := b.translateExtendedBank(addr); ok {
-		return b.bus.Read8(translated)
+		return b.readBus8(translated)
 	}
 
 	// Handle VRAM bank window reads
 	if translated, ok := b.translateVRAM(addr); ok {
-		return b.bus.Read8(translated)
+		return b.readBus8(translated)
 	}
 
-	return b.bus.Read8(b.translateIO(addr))
+	return b.readBus8(b.translateIO(addr))
 }
 
 // Write implements X86Bus.Write
@@ -224,23 +310,23 @@ func (b *X86BusAdapter) Write(addr uint32, value byte) {
 
 	// Handle VGA VRAM at 0xA0000-0xAFFFF (64KB window)
 	if addr >= 0xA0000 && addr < 0xB0000 {
-		b.bus.Write8(addr, value)
+		b.writeBus8(addr, value)
 		return
 	}
 
 	// Handle extended bank window writes
 	if translated, ok := b.translateExtendedBank(addr); ok {
-		b.bus.Write8(translated, value)
+		b.writeBus8(translated, value)
 		return
 	}
 
 	// Handle VRAM bank window writes
 	if translated, ok := b.translateVRAM(addr); ok {
-		b.bus.Write8(translated, value)
+		b.writeBus8(translated, value)
 		return
 	}
 
-	b.bus.Write8(b.translateIO(addr), value)
+	b.writeBus8(b.translateIO(addr), value)
 }
 
 // translateExtendedBank translates addresses in extended bank windows
@@ -309,7 +395,7 @@ func (b *X86BusAdapter) In(port uint16) byte {
 	}
 	if port == X86_PORT_PSG_DATA {
 		// Read from PSG register
-		return b.bus.Read8(0xF0C00 + uint32(b.psgRegSelect))
+		return b.readBus8(0xF0C00 + uint32(b.psgRegSelect))
 	}
 
 	// SID port I/O
@@ -318,7 +404,7 @@ func (b *X86BusAdapter) In(port uint16) byte {
 	}
 	if port == X86_PORT_SID_DATA {
 		if addr, _, ok := sidPortTarget(b.sidRegSelect); ok {
-			return b.bus.Read8(addr)
+			return b.readBus8(addr)
 		}
 		return 0
 	}
@@ -330,7 +416,7 @@ func (b *X86BusAdapter) In(port uint16) byte {
 	if port == X86_PORT_ANTIC_DATA {
 		if b.anticRegSelect < ANTIC_REG_COUNT {
 			// ANTIC registers are 4-byte aligned
-			return b.bus.Read8(ANTIC_BASE + uint32(b.anticRegSelect)*4)
+			return b.readBus8(ANTIC_BASE + uint32(b.anticRegSelect)*4)
 		}
 		return 0
 	}
@@ -342,7 +428,7 @@ func (b *X86BusAdapter) In(port uint16) byte {
 	if port == X86_PORT_GTIA_DATA {
 		if b.gtiaRegSelect < GTIA_REG_COUNT {
 			// GTIA registers are 4-byte aligned
-			return b.bus.Read8(GTIA_BASE + uint32(b.gtiaRegSelect)*4)
+			return b.readBus8(GTIA_BASE + uint32(b.gtiaRegSelect)*4)
 		}
 		return 0
 	}
@@ -350,7 +436,7 @@ func (b *X86BusAdapter) In(port uint16) byte {
 	// POKEY port I/O (0x60-0x69)
 	if port >= X86_PORT_POKEY_BASE && port < X86_PORT_POKEY_BASE+POKEY_WRITABLE_REG_COUNT {
 		offset := port - X86_PORT_POKEY_BASE
-		return b.bus.Read8(POKEY_BASE + uint32(offset))
+		return b.readBus8(POKEY_BASE + uint32(offset))
 	}
 
 	// TED port I/O
@@ -360,17 +446,17 @@ func (b *X86BusAdapter) In(port uint16) byte {
 	if port == X86_PORT_TED_DATA {
 		// Audio registers 0x00-0x05, video registers 0x20-0x2F
 		if b.tedRegSelect < 0x06 {
-			return b.bus.Read8(0xF0F00 + uint32(b.tedRegSelect))
+			return b.readBus8(0xF0F00 + uint32(b.tedRegSelect))
 		} else if b.tedRegSelect >= 0x20 && b.tedRegSelect < 0x30 {
 			// Video registers at 0xF0F20-0xF0F5F (4-byte aligned)
-			return b.bus.Read8(0xF0F20 + uint32(b.tedRegSelect-0x20)*4)
+			return b.readBus8(0xF0F20 + uint32(b.tedRegSelect-0x20)*4)
 		}
 		return 0
 	}
 
 	// ULA port I/O (0xFE - same as Z80 for compatibility)
 	if port == Z80_ULA_PORT {
-		return b.bus.Read8(ULA_BORDER) & 0x07
+		return b.readBus8(ULA_BORDER) & 0x07
 	}
 
 	// Voodoo port I/O (0xB0-0xB7)
@@ -406,7 +492,7 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 		return
 	}
 	if port == X86_PORT_PSG_DATA {
-		b.bus.Write8(0xF0C00+uint32(b.psgRegSelect), value)
+		b.writeBus8(0xF0C00+uint32(b.psgRegSelect), value)
 		return
 	}
 
@@ -417,7 +503,7 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 	}
 	if port == X86_PORT_SID_DATA {
 		if addr, _, ok := sidPortTarget(b.sidRegSelect); ok {
-			b.bus.Write8(addr, value)
+			b.writeBus8(addr, value)
 		}
 		return
 	}
@@ -430,7 +516,7 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 	if port == X86_PORT_ANTIC_DATA {
 		if b.anticRegSelect < ANTIC_REG_COUNT {
 			// ANTIC registers are 4-byte aligned
-			b.bus.Write8(ANTIC_BASE+uint32(b.anticRegSelect)*4, value)
+			b.writeBus8(ANTIC_BASE+uint32(b.anticRegSelect)*4, value)
 		}
 		return
 	}
@@ -443,7 +529,7 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 	if port == X86_PORT_GTIA_DATA {
 		if b.gtiaRegSelect < GTIA_REG_COUNT {
 			// GTIA registers are 4-byte aligned
-			b.bus.Write8(GTIA_BASE+uint32(b.gtiaRegSelect)*4, value)
+			b.writeBus8(GTIA_BASE+uint32(b.gtiaRegSelect)*4, value)
 		}
 		return
 	}
@@ -451,7 +537,7 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 	// POKEY port I/O (0x60-0x69)
 	if port >= X86_PORT_POKEY_BASE && port < X86_PORT_POKEY_BASE+POKEY_WRITABLE_REG_COUNT {
 		offset := port - X86_PORT_POKEY_BASE
-		b.bus.Write8(POKEY_BASE+uint32(offset), value)
+		b.writeBus8(POKEY_BASE+uint32(offset), value)
 		return
 	}
 
@@ -462,16 +548,16 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 	}
 	if port == X86_PORT_TED_DATA {
 		if b.tedRegSelect < 0x06 {
-			b.bus.Write8(0xF0F00+uint32(b.tedRegSelect), value)
+			b.writeBus8(0xF0F00+uint32(b.tedRegSelect), value)
 		} else if b.tedRegSelect >= 0x20 && b.tedRegSelect < 0x30 {
-			b.bus.Write8(0xF0F20+uint32(b.tedRegSelect-0x20)*4, value)
+			b.writeBus8(0xF0F20+uint32(b.tedRegSelect-0x20)*4, value)
 		}
 		return
 	}
 
 	// ULA port I/O (0xFE - same as Z80 for compatibility)
 	if port == Z80_ULA_PORT {
-		b.bus.Write8(ULA_BORDER, value&0x07)
+		b.writeBus8(ULA_BORDER, value&0x07)
 		return
 	}
 
@@ -504,7 +590,7 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 				texSize := b.voodooEngine.textureWidth * b.voodooEngine.textureHeight * 4
 				if texSize > 0 && texSize <= VOODOO_TEXMEM_SIZE {
 					for i := range texSize {
-						b.voodooEngine.textureMemory[i] = b.bus.Read8(uint32(b.voodooTexSrc) + uint32(i))
+						b.voodooEngine.textureMemory[i] = b.readBus8(uint32(b.voodooTexSrc) + uint32(i))
 					}
 				}
 			}

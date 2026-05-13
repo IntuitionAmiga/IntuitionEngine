@@ -1322,7 +1322,28 @@ func main() {
 	monitor := NewMachineMonitor(sysBus)
 	monitor.coprocMgr = coprocMgr
 	monitor.soundChip = soundChip
+	monitor.RegisterSnapshotDevice(soundChip)
+	monitor.RegisterSnapshotDevice(videoChip)
+	monitor.RegisterSnapshotDevice(termMMIO)
+	monitor.RegisterSnapshotDevice(fileIO)
+	monitor.RegisterSnapshotDevice(mediaLoader)
+	monitor.RegisterSnapshotDevice(coprocMgr)
+	monitor.RegisterSnapshotDevice(psgEngine)
+	monitor.RegisterSnapshotDevice(snChip)
+	monitor.RegisterSnapshotDevice(sidEngine)
+	monitor.RegisterSnapshotDevice(sid2Engine)
+	monitor.RegisterSnapshotDevice(sid3Engine)
+	monitor.RegisterSnapshotDevice(tedEngine)
+	monitor.RegisterSnapshotDevice(pokeyEngine)
+	monitor.RegisterSnapshotDevice(vgaEngine)
+	monitor.RegisterSnapshotDevice(ulaEngine)
+	monitor.RegisterSnapshotDevice(tedVideoEngine)
+	monitor.RegisterSnapshotDevice(anticEngine)
+	if voodooEngine != nil {
+		monitor.RegisterSnapshotDevice(voodooEngine)
+	}
 	coprocMgr.monitor = monitor
+	mediaLoader.SetSymbolTable(monitor.symbols)
 	monitor.StartBreakpointListener()
 
 	// Initialize the selected CPU and optionally load program
@@ -1338,6 +1359,7 @@ func main() {
 	// ProgramExecutor is created unconditionally so EXEC MMIO is always mapped.
 	// Its CPU pointer is set/updated when entering IE64 mode (initial or mode-switch).
 	progExec := NewProgramExecutor(sysBus, nil, videoChip, vgaEngine, voodooEngine, runtimeBaseDir)
+	monitor.RegisterSnapshotDevice(progExec)
 	if gemdosHostRoot != "" {
 		progExec.SetGemdosConfig(gemdosHostRoot, gemdosDriveNum)
 	}
@@ -1728,6 +1750,12 @@ func main() {
 			fmt.Printf("Error loading EmuTOS ROM: %v\n", err)
 			os.Exit(1)
 		}
+		if sidecar, err := loadELFSymbolSidecar(monitor.symbols, "M68K", romPath); err != nil {
+			fmt.Printf("Warning: EmuTOS ELF symbols disabled: %v\n", err)
+		} else if sidecar != "" {
+			fmt.Printf("IEMon: loaded EmuTOS symbols from %s\r\n", sidecar)
+		}
+		loader.SetSymbolTable(monitor.symbols)
 		if gemdosHostRoot != "" {
 			if err := loader.SetupGemdos(gemdosHostRoot, gemdosDriveNum); err != nil {
 				fmt.Printf("Warning: GEMDOS drive U: disabled: %v\n", err)
@@ -1782,11 +1810,17 @@ func main() {
 			fmt.Printf("Error loading AROS ROM: %v\n", err)
 			os.Exit(1)
 		}
+		if sidecar, err := loadELFSymbolSidecar(monitor.symbols, "M68K", romPath); err != nil {
+			fmt.Printf("Warning: AROS ELF symbols disabled: %v\n", err)
+		} else if sidecar != "" {
+			fmt.Printf("IEMon: loaded AROS symbols from %s\r\n", sidecar)
+		}
 		// Initialize AROS DOS interceptor for host filesystem access
 		arosDOS, dosErr := NewArosDOSDevice(sysBus, arosHostRoot)
 		if dosErr != nil {
 			fmt.Printf("Warning: AROS DOS device init failed: %v\n", dosErr)
 		} else {
+			arosDOS.SetSymbolTable(monitor.symbols)
 			sysBus.MapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END, arosDOS.HandleRead, arosDOS.HandleWrite)
 			runtimeStatus.setAROSDOS(arosDOS)
 			fmt.Printf("AROS DOS: IE: → %s\r\n", arosHostRoot)
@@ -1802,11 +1836,13 @@ func main() {
 		sysBus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, arosDMA.HandleRead, arosDMA.HandleWrite)
 		soundChip.SetSampleTicker(arosDMA)
 		runtimeStatus.setPaulaDMA(arosDMA)
+		monitor.RegisterSnapshotDevice(arosDMA)
 
 		// Initialize clipboard bridge (host ↔ guest clipboard exchange)
 		clipBridge := NewClipboardBridge(sysBus)
 		sysBus.MapIO(CLIP_REGION_BASE, CLIP_REGION_END, clipBridge.HandleRead, clipBridge.HandleWrite)
 		runtimeStatus.setAROSClipboard(clipBridge)
+		monitor.RegisterSnapshotDevice(clipBridge)
 
 		// IRQ diagnostic registers for freeze investigation scripts
 		loader.MapIRQDiagnostics()
@@ -2413,6 +2449,12 @@ func main() {
 			if err := loader.LoadROM(bytes); err != nil {
 				return fmt.Errorf("failed to load EmuTOS ROM: %w", err)
 			}
+			if sidecar, err := loadELFSymbolSidecar(monitor.symbols, "M68K", path); err != nil {
+				fmt.Printf("Warning: EmuTOS ELF symbols disabled: %v\n", err)
+			} else if sidecar != "" {
+				fmt.Printf("IEMon: loaded EmuTOS symbols from %s\r\n", sidecar)
+			}
+			loader.SetSymbolTable(monitor.symbols)
 			if gemdosHostRoot != "" {
 				if err := loader.SetupGemdos(gemdosHostRoot, gemdosDriveNum); err != nil {
 					fmt.Printf("Warning: GEMDOS drive U: disabled: %v\n", err)
@@ -2427,12 +2469,18 @@ func main() {
 			if err := loader.LoadROM(bytes); err != nil {
 				return fmt.Errorf("failed to load AROS ROM: %w", err)
 			}
+			if sidecar, err := loadELFSymbolSidecar(monitor.symbols, "M68K", path); err != nil {
+				fmt.Printf("Warning: AROS ELF symbols disabled: %v\n", err)
+			} else if sidecar != "" {
+				fmt.Printf("IEMon: loaded AROS symbols from %s\r\n", sidecar)
+			}
 			hostRoot, err := ensureAROSHostRoot()
 			if err != nil {
 				return err
 			}
 			// Wire up DOS device for host filesystem access
 			if arosDOS, dosErr := NewArosDOSDevice(sysBus, hostRoot); dosErr == nil {
+				arosDOS.SetSymbolTable(monitor.symbols)
 				sysBus.MapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END, arosDOS.HandleRead, arosDOS.HandleWrite)
 				runtimeStatus.setAROSDOS(arosDOS)
 				fmt.Printf("AROS DOS: IE: → %s\r\n", hostRoot)
@@ -2448,10 +2496,12 @@ func main() {
 			sysBus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, arosDMA.HandleRead, arosDMA.HandleWrite)
 			soundChip.SetSampleTicker(arosDMA)
 			runtimeStatus.setPaulaDMA(arosDMA)
+			monitor.RegisterSnapshotDevice(arosDMA)
 			// Wire up clipboard bridge
 			clipBridge := NewClipboardBridge(sysBus)
 			sysBus.MapIO(CLIP_REGION_BASE, CLIP_REGION_END, clipBridge.HandleRead, clipBridge.HandleWrite)
 			runtimeStatus.setAROSClipboard(clipBridge)
+			monitor.RegisterSnapshotDevice(clipBridge)
 			// IRQ diagnostic registers for freeze investigation scripts
 			loader.MapIRQDiagnostics()
 			// AROS HIDDs expect Amiga rawkey scancodes

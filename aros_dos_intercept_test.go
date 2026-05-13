@@ -80,6 +80,31 @@ func TestArosDOS_CommandsUseContainmentHelpers(t *testing.T) {
 	}
 }
 
+func TestArosDOS_LoadSegSymbolsAppliesGuestRelocationBase(t *testing.T) {
+	bus, d, root := newTestArosDOSDevice(t)
+	if err := os.WriteFile(filepath.Join(root, "Demo"), []byte{0, 0, 3, 0}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Demo.iesym"), []byte("al 0000 .entry\nal 0010 .data\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	symbols := NewSymbolTable()
+	d.SetSymbolTable(symbols)
+	writeArosDOSString(t, bus, 0x1000, "Demo")
+
+	base := uint32(0x00420000)
+	res1, res2 := dispatchArosDOS(d, ADOS_CMD_LOADSEG_SYMS, 0x1000, 0, base)
+	if res1 != ADOS_DOSTRUE || res2 != ADOS_ERR_NONE {
+		t.Fatalf("LOADSEG_SYMS res1=$%X res2=%d, want true/none", res1, res2)
+	}
+	if got, ok := symbols.Lookup("M68K", "entry"); !ok || got != uint64(base) {
+		t.Fatalf("entry symbol=$%X ok=%v, want base $%X", got, ok, base)
+	}
+	if got, ok := symbols.Lookup("M68K", "data"); !ok || got != uint64(base)+0x10 {
+		t.Fatalf("data symbol=$%X ok=%v, want $%X", got, ok, uint64(base)+0x10)
+	}
+}
+
 func TestArosDOS_PacketClampAndGuestBounds(t *testing.T) {
 	_, d, root := newTestArosDOSDevice(t)
 	path := filepath.Join(root, "rw")

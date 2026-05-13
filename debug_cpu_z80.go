@@ -160,9 +160,15 @@ func (d *DebugZ80) Freeze() {
 	}
 }
 
+func (d *DebugZ80) StopForAccessHit() {
+	if d.cpu != nil {
+		d.cpu.SetRunning(false)
+	}
+}
+
 func (d *DebugZ80) Resume() {
 	d.bpMu.Lock()
-	hasBP := len(d.breakpoints) > 0 || len(d.watchpoints) > 0
+	hasBP := len(d.breakpoints) > 0 || len(d.watchpoints) > 0 || d.accessDebugActive()
 	if hasBP {
 		d.trapStop = make(chan struct{})
 		d.frozenCh = make(chan struct{})
@@ -193,6 +199,10 @@ func (d *DebugZ80) trapLoop() {
 			return
 		default:
 		}
+		if d.ConsumeBreakIn() {
+			publishAdapterBreakIn(d, d.events)
+			return
+		}
 		if bp, ok := d.SnapshotBreakpoint(uint64(d.cpu.PC)); ok {
 			hitCount, _ := d.IncrementBreakpointHit(uint64(d.cpu.PC))
 			if evaluateConditionWithHitCount(bp.Condition, d, hitCount) {
@@ -201,18 +211,19 @@ func (d *DebugZ80) trapLoop() {
 			}
 		}
 		d.cpu.Step()
+		if !d.cpu.Running() {
+			return
+		}
 		// Check watchpoints
 		d.bpMu.RLock()
 		for _, wp := range d.watchpoints {
-			cur := d.cpu.bus.Read(uint16(wp.Address))
-			if cur != wp.LastValue {
-				old := wp.LastValue
+			if changed, old, cur, snapshot := watchpointChanged(d, wp); changed {
 				addr := wp.Address
 				d.bpMu.RUnlock()
-				d.UpdateWatchpointLastValue(addr, cur)
+				updateWatchpointSnapshotLocked(&d.bpMu, d.watchpoints, addr, snapshot)
 				d.events.Publish(BreakpointEvent{
 					Address: uint64(d.cpu.PC), IsWatch: true, WatchAddr: addr,
-					WatchOldValue: old, WatchNewValue: cur,
+					WatchOldValue: old, WatchOldValueKnown: true, WatchNewValue: cur,
 				})
 				return
 			}
@@ -222,6 +233,10 @@ func (d *DebugZ80) trapLoop() {
 }
 
 func (d *DebugZ80) Step() int {
+	if d.ConsumeBreakIn() {
+		publishAdapterBreakIn(d, d.events)
+		return 0
+	}
 	d.cpu.SetRunning(true)
 	d.cpu.Step()
 	d.cpu.SetRunning(false)
@@ -322,11 +337,7 @@ func (d *DebugZ80) ListBreakpointSnapshots() []BreakpointSnapshot {
 }
 
 func (d *DebugZ80) SetWatchpoint(addr uint64) bool {
-	d.bpMu.Lock()
-	defer d.bpMu.Unlock()
-	val := d.cpu.bus.Read(uint16(addr))
-	d.watchpoints[addr] = &Watchpoint{Address: addr, LastValue: val}
-	return true
+	return d.SetWatchpointEx(addr, WatchWrite, 1)
 }
 
 func (d *DebugZ80) ClearWatchpoint(addr uint64) bool {
@@ -387,4 +398,30 @@ func (d *DebugZ80) WriteMemory(addr uint64, data []byte) {
 
 func (d *DebugZ80) SetBreakpointChannel(ch chan<- BreakpointEvent, cpuID int) {
 	d.events.Set(ch, cpuID)
+	if d.cpu != nil {
+		d.cpu.debugBreakIn = nil
+		d.cpu.debugCPUID = cpuID
+		if ch != nil {
+			d.cpu.debugBreakIn = func(pc uint64) bool {
+				if !d.ConsumeBreakIn() {
+					return false
+				}
+				publishBreakInAt(d.events, pc)
+				return true
+			}
+		}
+		if adapter, ok := d.cpu.bus.(*Z80BusAdapter); ok {
+			adapter.debugAccess = nil
+			adapter.debugCPUID = cpuID
+			if ch != nil && adapter.bus != nil {
+				adapter.debugAccess = adapter.bus.debugAccess
+			}
+		}
+	}
+}
+
+func (d *DebugZ80) SetDebugFaultService(faults *DebugFaultService) {
+	if d.cpu != nil {
+		d.cpu.debugFaults = faults
+	}
 }

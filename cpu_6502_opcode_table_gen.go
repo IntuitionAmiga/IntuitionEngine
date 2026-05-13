@@ -1341,6 +1341,12 @@ func op6502_F8(cpu_6502 *CPU_6502) {
 }
 
 func op6502_00(cpu_6502 *CPU_6502) {
+	brkPC := cpu_6502.PC - 1
+	cpu_6502.PC = brkPC
+	if cpu_6502.debugFault("6502.brk", uint64(brkPC), "") {
+		return
+	}
+	cpu_6502.PC = brkPC + 1
 	cpu_6502.PC++
 	cpu_6502.push16(cpu_6502.PC)
 	cpu_6502.push(cpu_6502.SR | BREAK_FLAG | UNUSED_FLAG)

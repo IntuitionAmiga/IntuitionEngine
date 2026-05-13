@@ -452,6 +452,180 @@ func TestScriptEngine_DbgCommand(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_DbgGuards(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	mon := NewMachineMonitor(bus)
+	cpu := NewCPU(bus)
+	mon.RegisterCPU("IE32", NewDebugIE32(cpu))
+	se.SetMonitor(mon)
+
+	script := `
+		dbg.guard_add(0x4000, 0x40ff, "rw", "current")
+		local guards = dbg.guard_list()
+		if #guards ~= 1 then error("guard not listed") end
+		if guards[1].perm ~= "rw" or guards[1].scope ~= "current" then error("guard fields wrong") end
+		local removed = dbg.guard_del(0x4000, 0x40ff, "current")
+		if removed ~= 1 then error("guard not removed") end
+		if #dbg.guard_list() ~= 0 then error("guard still listed") end
+	`
+	if err := se.RunString(script, "dbg_guards"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_DbgAccessTimelineWrappers(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	mon := NewMachineMonitor(bus)
+	cpu := NewCPU(bus)
+	mon.RegisterCPU("IE32", NewDebugIE32(cpu))
+	se.SetMonitor(mon)
+
+	if err := se.RunString(`dbg.accesslog_on(8)`, "dbg_accesslog_on"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	mon.access.OnWrite(0, 0x4010, 4, 0x11, 0x22)
+
+	script := `
+		local log = dbg.accesslog(4)
+		if #log ~= 1 then error("access log length") end
+		if log[1].kind ~= "write" or log[1].addr ~= 0x4010 or log[1].width ~= 4 then error("access log fields") end
+		local who = dbg.who("wrote", 0x4013)
+		if who == nil or who.addr ~= 0x4010 then error("who wrote failed") end
+		local tl = dbg.timeline(1)
+		if #tl ~= 1 or string.find(tl[1], "write") == nil then error("timeline missing access") end
+		dbg.accesslog_off()
+		if #dbg.accesslog() ~= 0 then error("access log not cleared") end
+	`
+	if err := se.RunString(script, "dbg_access_timeline"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_DbgFaults(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	mon := NewMachineMonitor(bus)
+	cpu := NewCPU64(bus)
+	mon.RegisterCPU("IE64", NewDebugIE64(cpu))
+	se.SetMonitor(mon)
+
+	script := `
+		dbg.fault_break("ie64.priv")
+		local faults = dbg.fault_list()
+		if faults.all then error("unexpected all-fault mode") end
+		if #faults.kinds ~= 1 or faults.kinds[1] ~= "ie64.priv" then error("fault kind missing") end
+		dbg.fault_clear("ie64.priv")
+		if #dbg.fault_list().kinds ~= 0 then error("fault kind not cleared") end
+		dbg.fault_on()
+		if not dbg.fault_list().all then error("fault all not enabled") end
+		dbg.fault_off()
+		if dbg.fault_list().all then error("fault all not disabled") end
+	`
+	if err := se.RunString(script, "dbg_faults"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_DbgOnFaultCallback(t *testing.T) {
+	bus, err := NewMachineBusSized(uint64(MMU_PAGE_SIZE))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cpu := NewCPU64(bus)
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("IE64", NewDebugIE64(cpu))
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	se.SetMonitor(mon)
+
+	script := `
+		local seen = 0
+		dbg.on_fault("ie64.illegal", function(ev)
+			if ev.kind == "ie64.illegal" and ev.cpu_id == 0 then
+				seen = ev.pc
+			end
+		end)
+		sys.wait_ms(100)
+		cpu.freeze()
+		mem.write32(0x200, seen)
+		cpu.resume()
+	`
+	if err := se.RunString(script, "fault_callback"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) && !mon.faults.Enabled("ie64.illegal") {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !mon.faults.Enabled("ie64.illegal") {
+		t.Fatal("fault callback did not enable fault kind")
+	}
+	if !mon.faults.OnFault(0, 0x1234, "ie64.illegal", 0xDEAD, "test fault") {
+		t.Fatal("fault event was not accepted")
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if got := bus.Read32(0x200); got != 0x1234 {
+		t.Fatalf("callback marker=$%X, want $1234", got)
+	}
+}
+
+func TestScriptEngine_DbgWatchpointEx(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	mon := NewMachineMonitor(bus)
+	cpu := NewCPU(bus)
+	adapter := NewDebugIE32(cpu)
+	mon.RegisterCPU("IE32", adapter)
+	se.SetMonitor(mon)
+
+	script := `
+		dbg.set_wp_ex(0x44, "rw", 4)
+		local wps = dbg.list_wp()
+		if #wps ~= 1 or wps[1] ~= 0x44 then error("watchpoint missing") end
+		dbg.clear_wp(0x44)
+		if #dbg.list_wp() ~= 0 then error("watchpoint not cleared") end
+	`
+	if err := se.RunString(script, "dbg_watchpoint_ex"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
 func TestScriptEngine_DbgIsOpenStepContinue(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()
@@ -1261,6 +1435,34 @@ func TestScriptEngine_DbgExtendedWrappers(t *testing.T) {
 	if err := se.LastError(); err != nil {
 		t.Fatalf("script error: %v", err)
 	}
+}
+
+func TestScriptEngine_IEMonSymbolAndRegionModules(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	mon := NewMachineMonitor(bus)
+	cpu := NewCPU(bus)
+	mon.RegisterCPU("IE32", NewDebugIE32(cpu))
+	se.SetMonitor(mon)
+
+	script := `
+		sym.add("main", 0x2000, "func")
+		if sym.lookup("main") ~= 0x2000 then error("lookup") end
+		local resolved = sym.resolve(0x2004)
+		if resolved == nil or resolved.name ~= "main" or resolved.offset ~= 4 then error("resolve") end
+		local regs = regions.list()
+		if type(regs) ~= "table" or #regs < 1 then error("regions list") end
+		local r = regions.lookup(0xF0000)
+		if r == nil or r.kind ~= "MMIO" then error("regions lookup") end
+		dbg.request_break_in()
+	`
+	if err := se.RunString(script, "iemon_symbols_regions"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
 }
 
 func TestScriptEngine_DbgAdvancedCompatibility(t *testing.T) {
@@ -2076,7 +2278,7 @@ func TestDbgSaveState_PropagatesMonitorError(t *testing.T) {
 	if err := se.RunString(`
 		local ok, err = pcall(function() dbg.save_state("state.gz") end)
 		if ok then error("expected monitor error") end
-		if not string.find(tostring(err), "No CPU focused", 1, true) then error("wrong error: " .. tostring(err)) end
+		if not string.find(tostring(err), "No CPU focussed", 1, true) then error("wrong error: " .. tostring(err)) end
 	`, filepath.Join(dir, "main.ies")); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}

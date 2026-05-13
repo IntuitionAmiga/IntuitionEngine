@@ -1,10 +1,10 @@
 # Intuition Engine Architecture
 
-*Last updated: 2026-05-07*
+*Last updated: 2026-05-13*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, 9 audio engines/players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve (see `memory_sizing.go`); each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
-The diagrams below describe wired runtime behavior. Source-file presence alone is not treated as support: for example, `jit_z80_emit_arm64.go` exists, but `jit_z80_dispatch.go` keeps Z80 JIT available only when `runtime.GOARCH == "amd64"`.
+The diagrams below describe wired runtime behaviour. Source-file presence alone is not treated as support: for example, `jit_z80_emit_arm64.go` exists, but `jit_z80_dispatch.go` keeps Z80 JIT available only when `runtime.GOARCH == "amd64"`.
 
 ## Single Complete Architecture Diagram
 
@@ -14,7 +14,7 @@ flowchart LR
         MAIN["main.go<br/>CLI flags and boot profile"]
         SIZE["memory_sizing.go<br/>host-sized guest RAM"]
         PB["profile_bounds.go<br/>profile visible-RAM clamps"]
-        DBG["Debug monitor<br/>breakpoints, watchpoints,<br/>CPU-local snapshots"]
+        DBG["Debug monitor<br/>breakpoints, watchpoints,<br/>CPU-local and whole-machine snapshots"]
         LUA["ScriptEngine<br/>Lua / IEScript"]
         SDK["SDK tools<br/>ie32asm, ie64asm, ie64dis,<br/>ie32to64, test generators"]
     end
@@ -68,7 +68,7 @@ flowchart LR
     subgraph VIDEO["Video systems"]
         VCHIP["VideoChip<br/>layer 0"]
         COPPER["Copper<br/>WAIT / MOVE / SETBASE / END<br/>bus-routed register writes"]
-        BLITTER["DMA blitter<br/>copy, fill, line, alpha,<br/>color expansion, scale, Mode7"]
+        BLITTER["DMA blitter<br/>copy, fill, line, alpha,<br/>colour expansion, scale, Mode7"]
         VCHPAL["VideoChip palette / CLUT8"]
         VGA["VGA<br/>layer 10"]
         VGASEQ["VGA sequencer"]
@@ -77,7 +77,7 @@ flowchart LR
         VGADAC["VGA DAC"]
         TEDV["TED video<br/>layer 12"]
         ANTIC["ANTIC<br/>layer 13"]
-        GTIA["GTIA<br/>colors, priority, collisions"]
+        GTIA["GTIA<br/>colours, priority, collisions"]
         ULA["ULA<br/>layer 15"]
         VOO["Voodoo 3D<br/>layer 20"]
         VOORAST["Voodoo rasterizer<br/>triangles, texture, Z,<br/>alpha, fog, chroma key"]
@@ -730,17 +730,17 @@ The blitter supports two pixel formats via `BLT_FLAGS` (`0xF0488`): RGBA32 (4 bp
 
 `BLT_CTRL` bit 0 starts the synchronous blit, bit 1 is read-only busy, and bit 2 enables a completion pulse on `IntMaskBlitter`. `BLT_STATUS` bit 0 is ERR, bit 1 is DONE, and bit 2 is sticky IRQ_PENDING (write 1 to clear). Invalid opcodes, out-of-range Mode7 samples, and overflowed blitter bounds set ERR and do not silently fall back to COPY.
 
-The color expansion operation (`BLT_OP=6`) renders 1-bit glyph templates into colored pixels for hardware-accelerated text. It reads a template from `BLT_MASK`, uses `BLT_FG`/`BLT_BG` (`0xF048C`/`0xF0490`) as foreground/background colors, and supports three modes: JAM2 (opaque - set bits write FG, clear bits write BG), JAM1 (transparent - only set bits write FG), and Invert (set bits XOR the destination). `BLT_MASK_MOD` (`0xF0494`) sets the template row stride and `BLT_MASK_SRCX` (`0xF0498`) provides sub-byte bit alignment for glyph fragments. Template bits are MSB-first (Amiga convention).
+The colour expansion operation (`BLT_OP=6`) renders 1-bit glyph templates into coloured pixels for hardware-accelerated text. It reads a template from `BLT_MASK`, uses `BLT_FG`/`BLT_BG` (`0xF048C`/`0xF0490`) as foreground/background colours, and supports three modes: JAM2 (opaque - set bits write FG, clear bits write BG), JAM1 (transparent - only set bits write FG), and Invert (set bits XOR the destination). `BLT_MASK_MOD` (`0xF0494`) sets the template row stride and `BLT_MASK_SRCX` (`0xF0498`) provides sub-byte bit alignment for glyph fragments. Template bits are MSB-first (Amiga convention).
 
-Line drawing (`BLT_OP=2`) supports an extended mode when `BLT_FLAGS != 0`: `BLT_DST` becomes the framebuffer base address, `BLT_WIDTH` holds the packed endpoint coordinates `(y1<<16)|x1`, and `BLT_DST_STRIDE` sets the row stride. This allows line drawing into arbitrary bitmaps (not just the active framebuffer) with BPP awareness and all 16 draw modes. When `BLT_FLAGS=0`, legacy behavior is preserved (endpoint in `BLT_DST`, base at `VRAM_START`). In extended mode the blitter does not clip - callers must provide pre-clipped coordinates (the AROS driver uses Cohen-Sutherland clipping before calling the blitter).
+Line drawing (`BLT_OP=2`) supports an extended mode when `BLT_FLAGS != 0`: `BLT_DST` becomes the framebuffer base address, `BLT_WIDTH` holds the packed endpoint coordinates `(y1<<16)|x1`, and `BLT_DST_STRIDE` sets the row stride. This allows line drawing into arbitrary bitmaps (not just the active framebuffer) with BPP awareness and all 16 draw modes. When `BLT_FLAGS=0`, legacy behaviour is preserved (endpoint in `BLT_DST`, base at `VRAM_START`). In extended mode the blitter does not clip - callers must provide pre-clipped coordinates (the AROS driver uses Cohen-Sutherland clipping before calling the blitter).
 
 Scale blits (`BLT_OP=7`) use `BLT_SRC`/`BLT_DST` as base addresses, `BLT_WIDTH`/`BLT_HEIGHT` as the source size in pixels, and `BLT_COLOR` as a packed destination size (`height << 16 | width`). `BLT_SRC_STRIDE` defaults to source width times bytes-per-pixel. `BLT_DST_STRIDE` defaults to the active VideoChip mode stride for VRAM destinations or destination width times bytes-per-pixel for ordinary memory. In non-direct VRAM mode, visible VRAM accesses use the active VideoChip front buffer and off-screen VRAM aperture accesses fall back to bus memory so back buffers can be presented through `VIDEO_FB_BASE`. Out-of-bounds source or destination rectangles, rectangles crossing the VRAM aperture end, zero source dimensions, and zero destination dimensions set `BLT_STATUS.ERR`.
 
 | Register | Address | Description |
 |----------|---------|-------------|
 | `BLT_FLAGS` | `0xF0488` | BPP (bits 0-1), draw mode (bits 4-7), JAM1/invert flags (bits 8-10) |
-| `BLT_FG` | `0xF048C` | Foreground color for color expansion |
-| `BLT_BG` | `0xF0490` | Background color for color expansion |
+| `BLT_FG` | `0xF048C` | Foreground colour for colour expansion |
+| `BLT_BG` | `0xF0490` | Background colour for colour expansion |
 | `BLT_MASK_MOD` | `0xF0494` | Template row modulo (bytes per row) |
 | `BLT_MASK_SRCX` | `0xF0498` | Starting X bit offset in template |
 
@@ -1050,7 +1050,7 @@ graph LR
 
     subgraph EXT["External World"]
         HOST_KB["Host Keyboard/Mouse"]
-        HOST_FS["Host Filesystem"]
+        HOST_FS["Host File System"]
         HOST_CB["Host Clipboard"]
         CPUSUB["Worker CPUs"]
         AUDIO_E["Audio Engines"]
@@ -1074,11 +1074,17 @@ graph LR
 
 ### Coprocessor Worker Dispatch
 
-The coprocessor manager supports 6 worker CPU types (IE32, IE64, 6502, M68K, Z80, x86) with ticket-based job dispatch and mailbox ring buffers at `0x790000`. Each worker type has its own dedicated memory region (see memory map above). The main CPU enqueues work via MMIO writes; workers execute independently and post results back through their mailbox slots. When `COPROC_IRQ_CTRL` bit 0 is set, the coprocessor fires a Level 6 completion interrupt (INTB_COPER) on job completion, with the finished ticket ID readable from `COPROC_COMPLETED_TICKET`.
+The coprocessor manager supports 6 worker CPU types (IE32, IE64, 6502, M68K, Z80, x86) with ticket-based job dispatch and mailbox ring buffers at `0x790000`. Each worker type has its own dedicated memory region (see memory map above). The main CPU enqueues work via MMIO writes; workers execute independently and post results back through their mailbox slots. Each ring has 16 descriptor slots but uses one slot to distinguish full from empty, so it can hold 15 queued requests at once. When `COPROC_IRQ_CTRL` bit 0 is set and an M68K IRQ target plus completion watcher have been configured, the coprocessor asserts M68K interrupt level 6 on job completion, with the finished ticket ID readable from `COPROC_COMPLETED_TICKET`. Non-M68K modes should observe completion through `POLL` or `WAIT`.
 
 ### Lua Scripting
 
 The Lua scripting engine (`script_engine.go`) runs in its own goroutine and provides host-side access to the entire bus. It supports an F8 REPL for interactive debugging, video recording, and direct chip register manipulation. Scripts use the `.ies` extension and are loaded via the IE Script Engine.
+
+### IEMon Reverse-Debug Snapshot Contract
+
+IEMon whole-machine snapshots enumerate the monitor CPU registry by stable CPU id and label, so profiles with omitted CPUs or multiple coprocessors restore by identity rather than by CPU type. Shared bus RAM and IE64 backing memory are stored as sparse 4 KiB pages. The reverse-history chain keeps full sparse checkpoints plus page deltas anchored to retained checkpoints; the monitor materialises deltas before `rg` or `rt` applies a restore.
+
+Mutable devices join the snapshot contract through `MachineMonitor.RegisterSnapshotDevice`. Each device supplies a stable name, a version, and an opaque guest-visible state blob. Restore fails closed if a captured device is absent, preventing partial reverse-debug restores. The production monitor registers the main video chip, sound chip, terminal MMIO, command-style host helpers, compatibility audio/video engines, and AROS clipboard/audio-DMA bridges when present; new guest-visible timers, DMA engines, IRQ controllers, and host bridges must register their own versioned blobs before they are considered covered by whole-machine reverse debugging.
 
 ## 8. Data Flow
 
@@ -1284,7 +1290,7 @@ by the engine one layer down.
 - **Heap guard pages** - as of R2 in M15.6, `AllocMem(MEMF_GUARD)`
   reserves one unmapped page on each side of the mapped allocation.
   The per-task VA allocator treats those guard slots as occupied for the
-  life of the region, so a neighboring allocation cannot consume them.
+  life of the region, so a neighbouring allocation cannot consume them.
 - **Cross-task confidentiality** - private and shared allocator
   pages are zeroed on free before release, so a later owner cannot
   observe prior-task bytes. `MapShared` then narrows consumer-side

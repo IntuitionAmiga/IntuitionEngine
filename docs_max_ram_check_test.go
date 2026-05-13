@@ -23,16 +23,14 @@ import (
 	"testing"
 )
 
-// authoritativeDocs lists the docs PLAN_MAX_RAM.md slice 7 commits to
+// authoritativeDocs lists the tracked docs PLAN_MAX_RAM.md slice 7 commits to
 // keeping current. Each entry is repo-relative; the test resolves it
 // relative to the package directory (which is the repo root for the
-// main package).
+// main package). Do not include agent-local memory files such as CLAUDE.md
+// or AGENTS.md unless they are tracked by the repository.
 var authoritativeDocs = []string{
 	"README.md",
 	"DEVELOPERS.md",
-	"AGENTS.md",
-	"CLAUDE.md",
-	"sdk/intuitionos/CLAUDE.md",
 	"sdk/docs/architecture.md",
 	"sdk/docs/IE64_ISA.md",
 	"sdk/docs/IE64_ABI.md",

@@ -1,0 +1,76 @@
+local function hex32(v)
+  if v < 0 then
+    v = (v % 4294967296)
+  end
+  return string.format("$%08X", v)
+end
+
+local function dump_regs(tag)
+  local regs = dbg.get_regs()
+  sys.print(string.format(
+    "%s PC=%s SR=%s A1=%s A2=%s A3=%s D2=%s SP=%s",
+    tag,
+    hex32(regs["PC"] or 0),
+    hex32(regs["SR"] or 0),
+    hex32(regs["A1"] or 0),
+    hex32(regs["A2"] or 0),
+    hex32(regs["A3"] or 0),
+    hex32(regs["D2"] or 0),
+    hex32(regs["A7"] or 0)
+  ))
+end
+
+local function dump_mem32(tag, addr)
+  local raw = dbg.read_mem(addr, 4)
+  if #raw ~= 4 then
+    sys.print(tag .. " <short read>")
+    return
+  end
+  local b1, b2, b3, b4 = string.byte(raw, 1, 4)
+  local value = (((b1 * 256 + b2) * 256 + b3) * 256 + b4)
+  sys.print(string.format("%s mem[%s]=%s", tag, hex32(addr), hex32(value)))
+end
+
+local function dump_disasm(addr, count)
+  local lines = dbg.disasm(addr, count)
+  for _, entry in ipairs(lines) do
+    sys.print(string.format("%s  %-12s %s", hex32(entry.addr), entry.hex, entry.mnemonic))
+  end
+end
+
+sys.print("attaching debugger immediately")
+
+dbg.open()
+for _, entry in ipairs(dbg.cpu_list()) do
+  if entry.cpu_name == "M68K" or entry.label == "M68K" then
+    dbg.cpu_focus(entry.id)
+  end
+end
+
+dbg.clear_all_bp()
+dbg.set_bp(0x00624910)
+dbg.continue()
+
+local pc = dbg.get_pc()
+sys.print("hit breakpoint at " .. hex32(pc))
+dump_regs("before")
+
+local regs = dbg.get_regs()
+local a3 = regs["A3"] or 0
+dump_mem32("src14", a3 + 14)
+dump_mem32("src18", a3 + 18)
+dump_disasm(pc, 6)
+
+for i = 1, 3 do
+  dbg.step(1)
+  local stepPC = dbg.get_pc()
+  dump_regs("after step " .. i)
+  local stepRegs = dbg.get_regs()
+  local stepA3 = stepRegs["A3"] or 0
+  dump_mem32("src14", stepA3 + 14)
+  dump_mem32("src18", stepA3 + 18)
+  dump_disasm(stepPC, 3)
+end
+
+dbg.clear_all_bp()
+dbg.close()

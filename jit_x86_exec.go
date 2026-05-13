@@ -138,6 +138,12 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 	bounded := cpu.x86BudgetActive
 	var budgetPrevCount uint64
 	for cpu.Running() && !cpu.Halted {
+		cpu.syncJITRegsToNamed()
+		if cpu.debugHandleBreakIn(uint64(cpu.EIP)) {
+			cpu.syncJITSegRegsToNamed()
+			return
+		}
+		cpu.syncJITRegsFromNamed()
 		if bounded {
 			delta := instructionCount - budgetPrevCount
 			budgetPrevCount = instructionCount

@@ -17,8 +17,26 @@ import (
 //	hitcount>10    - hit count, op >, value 10
 func ParseCondition(text string) (*BreakpointCondition, error) {
 	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "if ") {
+		text = strings.TrimSpace(strings.TrimPrefix(text, "if "))
+		if text == "" {
+			return nil, fmt.Errorf("empty condition")
+		}
+		expr, err := ParseBreakpointExpr(text)
+		if err != nil {
+			return nil, err
+		}
+		return &BreakpointCondition{Source: CondSourceExpression, Expr: expr}, nil
+	}
 	if text == "" {
 		return nil, fmt.Errorf("empty condition")
+	}
+	if strings.Contains(text, "&&") || strings.Contains(text, "||") || strings.Contains(text, "(") {
+		expr, err := ParseBreakpointExpr(text)
+		if err != nil {
+			return nil, err
+		}
+		return &BreakpointCondition{Source: CondSourceExpression, Expr: expr}, nil
 	}
 
 	// Find operator
@@ -147,6 +165,8 @@ func evaluateCondition(cond *BreakpointCondition, cpu DebuggableCPU) bool {
 		// through a different mechanism. For simplicity, hitcount
 		// conditions are evaluated in the trapLoop directly.
 		return false
+	case CondSourceExpression:
+		return evalBreakpointExpr(cond.Expr, cpu, 0)
 	}
 
 	return compareValues(actual, cond.Op, cond.Value)
@@ -176,6 +196,8 @@ func evaluateConditionWithHitCount(cond *BreakpointCondition, cpu DebuggableCPU,
 		actual = bytesToConditionValue(data, conditionLittleEndian(cpu))
 	case CondSourceHitCount:
 		actual = hitCount
+	case CondSourceExpression:
+		return evalBreakpointExpr(cond.Expr, cpu, hitCount)
 	}
 
 	return compareValues(actual, cond.Op, cond.Value)
@@ -203,7 +225,7 @@ func conditionWidth(cond *BreakpointCondition) uint8 {
 	if cond == nil || cond.Width == 0 {
 		return 1
 	}
-	if cond.Width == 2 || cond.Width == 4 {
+	if cond.Width == 2 || cond.Width == 4 || cond.Width == 8 {
 		return cond.Width
 	}
 	return 1
@@ -255,23 +277,30 @@ func FormatCondition(cond *BreakpointCondition) string {
 		}
 	case CondSourceHitCount:
 		lhs = "hitcount"
+	case CondSourceExpression:
+		return formatBreakpointExpr(cond.Expr)
 	}
 
-	var opStr string
-	switch cond.Op {
-	case CondOpEqual:
-		opStr = "=="
-	case CondOpNotEqual:
-		opStr = "!="
-	case CondOpLess:
-		opStr = "<"
-	case CondOpGreater:
-		opStr = ">"
-	case CondOpLessEqual:
-		opStr = "<="
-	case CondOpGreaterEqual:
-		opStr = ">="
-	}
+	opStr := conditionOpString(cond.Op)
 
 	return fmt.Sprintf("%s%s$%X", lhs, opStr, cond.Value)
+}
+
+func conditionOpString(op ConditionOp) string {
+	switch op {
+	case CondOpEqual:
+		return "=="
+	case CondOpNotEqual:
+		return "!="
+	case CondOpLess:
+		return "<"
+	case CondOpGreater:
+		return ">"
+	case CondOpLessEqual:
+		return "<="
+	case CondOpGreaterEqual:
+		return ">="
+	default:
+		return "?"
+	}
 }

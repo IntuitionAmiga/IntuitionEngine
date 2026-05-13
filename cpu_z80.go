@@ -64,6 +64,10 @@ type CPU_Z80 struct {
 
 	bus Z80Bus
 
+	debugFaults  *DebugFaultService
+	debugBreakIn func(pc uint64) bool
+	debugCPUID   int
+
 	baseOps [256]func(*CPU_Z80)
 	cbOps   [256]func(*CPU_Z80)
 	ddOps   [256]func(*CPU_Z80)
@@ -103,6 +107,17 @@ func (c *CPU_Z80) Running() bool {
 // SetRunning sets the execution state (thread-safe)
 func (c *CPU_Z80) SetRunning(state bool) {
 	c.running.Store(state)
+}
+
+func (c *CPU_Z80) debugHandleBreakIn(pc uint64) bool {
+	if c == nil || c.debugBreakIn == nil {
+		return false
+	}
+	if c.debugBreakIn(pc) {
+		c.running.Store(false)
+		return true
+	}
+	return false
 }
 
 const (
@@ -280,6 +295,9 @@ func (c *CPU_Z80) Step() {
 	if !c.running.Load() {
 		return
 	}
+	if c.debugHandleBreakIn(uint64(c.PC)) {
+		return
+	}
 
 	if c.nmiPending.Load() {
 		c.serviceNMI()
@@ -349,15 +367,19 @@ func (c *CPU_Z80) incrementR() {
 }
 
 func (c *CPU_Z80) fetchOpcode() byte {
-	opcode := c.read(c.PC)
+	pc := c.PC
+	opcode := c.fetchRead(c.PC)
 	c.PC++
+	c.debugOnFetch(pc, 1)
 	c.incrementR()
 	return opcode
 }
 
 func (c *CPU_Z80) fetchByte() byte {
-	value := c.read(c.PC)
+	pc := c.PC
+	value := c.fetchRead(c.PC)
 	c.PC++
+	c.debugOnFetch(pc, 1)
 	return value
 }
 
@@ -367,6 +389,23 @@ func (c *CPU_Z80) read(addr uint16) byte {
 
 func (c *CPU_Z80) write(addr uint16, value byte) {
 	c.bus.Write(addr, value)
+}
+
+func (c *CPU_Z80) fetchRead(addr uint16) byte {
+	if b, ok := c.bus.(interface {
+		fetchRead(uint16) byte
+	}); ok {
+		return b.fetchRead(addr)
+	}
+	return c.bus.Read(addr)
+}
+
+func (c *CPU_Z80) debugOnFetch(addr uint16, width int) {
+	if b, ok := c.bus.(interface {
+		debugOnFetch(uint16, int)
+	}); ok {
+		b.debugOnFetch(addr, width)
+	}
 }
 
 func (c *CPU_Z80) in(port uint16) byte {
@@ -1240,9 +1279,23 @@ func (c *CPU_Z80) opRST38() {
 }
 
 func (c *CPU_Z80) opRST(vector uint16) {
+	if vector == 0x38 && c.debugFault("z80.rst38", uint64(vector), "") {
+		return
+	}
 	c.pushWord(c.PC)
 	c.PC = vector
 	c.tick(11)
+}
+
+func (c *CPU_Z80) debugFault(kind string, addr uint64, info string) bool {
+	if c == nil || c.debugFaults == nil {
+		return false
+	}
+	if c.debugFaults.OnFault(c.debugCPUID, uint64(c.PC), kind, addr, info) {
+		c.running.Store(false)
+		return true
+	}
+	return false
 }
 
 func (c *CPU_Z80) opCBPrefix() {
@@ -1274,6 +1327,10 @@ func (c *CPU_Z80) opEDPrefix() {
 }
 
 func (c *CPU_Z80) serviceNMI() {
+	if c.debugFault("z80.nmi", 0x66, "") {
+		c.nmiPending.Store(false)
+		return
+	}
 	c.nmiPending.Store(false)
 	c.Halted = false
 	c.incrementR()

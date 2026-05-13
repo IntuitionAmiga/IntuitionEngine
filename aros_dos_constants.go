@@ -46,6 +46,7 @@ const (
 	ADOS_CMD_SET_FILESIZE = 20 // ARG1=handle_key, ARG2=size, ARG3=mode → RESULT1=new_size
 	ADOS_CMD_SET_PROTECT  = 21 // ARG1=parent_key, ARG2=name_ptr, ARG3=protect_bits
 	ADOS_CMD_EXAMINE_FH   = 22 // ARG1=handle_key, ARG2=fib_ptr → fills FIB
+	ADOS_CMD_LOADSEG_SYMS = 23 // ARG1=name_ptr, ARG2=parent_key, ARG3=relocation_base → loads .iesym/.lbl sidecar
 )
 
 // AmigaDOS error codes (stored in RESULT2 on failure)

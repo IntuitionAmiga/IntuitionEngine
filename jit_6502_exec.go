@@ -129,6 +129,9 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 	defer cpu.executing.Store(false)
 
 	for cpu.running.Load() {
+		if cpu.debugHandleBreakIn(uint64(cpu.PC)) {
+			break
+		}
 		// ── Per-block checks (every block boundary) ──
 
 		// Pause at instruction boundary if Reset() requests it

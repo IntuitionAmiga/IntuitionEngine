@@ -83,6 +83,10 @@ type CPU_X86 struct {
 	// Bus interface
 	bus X86Bus
 
+	debugFaults  *DebugFaultService
+	debugBreakIn func(pc uint64) bool
+	debugCPUID   int
+
 	// Optional x87 FPU coprocessor
 	FPU *FPU_X87
 
@@ -757,31 +761,54 @@ func (c *CPU_X86) setFlagsLogic32(result uint32) {
 
 // fetch8 fetches a byte at EIP and increments EIP
 func (c *CPU_X86) fetch8() byte {
-	v := c.bus.Read(c.EIP)
+	eip := c.EIP
+	v := c.fetchRead(c.EIP)
 	c.EIP++
+	c.debugOnFetch(eip, 1)
 	return v
 }
 
 // fetch16 fetches a 16-bit word at EIP (little-endian) and increments EIP
 func (c *CPU_X86) fetch16() uint16 {
-	lo := c.bus.Read(c.EIP)
+	eip := c.EIP
+	lo := c.fetchRead(c.EIP)
 	c.EIP++
-	hi := c.bus.Read(c.EIP)
+	hi := c.fetchRead(c.EIP)
 	c.EIP++
+	c.debugOnFetch(eip, 2)
 	return uint16(lo) | (uint16(hi) << 8)
 }
 
 // fetch32 fetches a 32-bit dword at EIP (little-endian) and increments EIP
 func (c *CPU_X86) fetch32() uint32 {
-	b0 := c.bus.Read(c.EIP)
+	eip := c.EIP
+	b0 := c.fetchRead(c.EIP)
 	c.EIP++
-	b1 := c.bus.Read(c.EIP)
+	b1 := c.fetchRead(c.EIP)
 	c.EIP++
-	b2 := c.bus.Read(c.EIP)
+	b2 := c.fetchRead(c.EIP)
 	c.EIP++
-	b3 := c.bus.Read(c.EIP)
+	b3 := c.fetchRead(c.EIP)
 	c.EIP++
+	c.debugOnFetch(eip, 4)
 	return uint32(b0) | (uint32(b1) << 8) | (uint32(b2) << 16) | (uint32(b3) << 24)
+}
+
+func (c *CPU_X86) fetchRead(addr uint32) byte {
+	if b, ok := c.bus.(interface {
+		fetchRead(uint32) byte
+	}); ok {
+		return b.fetchRead(addr)
+	}
+	return c.bus.Read(addr)
+}
+
+func (c *CPU_X86) debugOnFetch(addr uint32, width int) {
+	if b, ok := c.bus.(interface {
+		debugOnFetch(uint32, int)
+	}); ok {
+		b.debugOnFetch(addr, width)
+	}
 }
 
 // read8 reads a byte from memory
@@ -800,7 +827,7 @@ func (c *CPU_X86) read16(addr uint32) uint16 {
 func (c *CPU_X86) read32(addr uint32) uint32 {
 	if adapter, ok := c.bus.(*X86BusAdapter); ok {
 		if addr >= 0xF000 && addr < 0x10000 {
-			return adapter.bus.Read32(adapter.translateIO(addr))
+			return adapter.readBus32(adapter.translateIO(addr))
 		}
 	}
 	b0 := c.bus.Read(addr)
@@ -825,7 +852,7 @@ func (c *CPU_X86) write16(addr uint32, v uint16) {
 func (c *CPU_X86) write32(addr uint32, v uint32) {
 	if adapter, ok := c.bus.(*X86BusAdapter); ok {
 		if addr >= 0xF000 && addr < 0x10000 {
-			adapter.bus.Write32(adapter.translateIO(addr), v)
+			adapter.writeBus32(adapter.translateIO(addr), v)
 			return
 		}
 	}
@@ -912,7 +939,7 @@ func (c *CPU_X86) tryFastMMIOPollLoop() bool {
 			c.irqPending.Store(false)
 		}
 
-		c.EAX = adapter.bus.Read32(hostAddr)
+		c.EAX = adapter.readBus32(hostAddr)
 		c.bus.Tick(1)
 		iterations++
 		if bounded {
@@ -1217,6 +1244,9 @@ func (c *CPU_X86) Step() int {
 	if c.Halted || !c.running.Load() {
 		return 0
 	}
+	if c.debugHandleBreakIn(uint64(c.EIP)) {
+		return 0
+	}
 
 	// Check for pending interrupt
 	if c.nmiPending.Load() {
@@ -1270,6 +1300,9 @@ func (c *CPU_X86) Step() int {
 				handler(c)
 			} else {
 				// Undefined opcode - halt
+				if c.debugFault("x86.ud", uint64(c.EIP-1), faultInfof("opcode=$%02X", c.opcode)) {
+					goto done
+				}
 				fmt.Printf("X86: Undefined opcode 0x%02X at EIP=0x%08X, halting\n", c.opcode, c.EIP-1)
 				c.Halted = true
 			}
@@ -1284,6 +1317,29 @@ done:
 	}
 	c.bus.Tick(cycles)
 	return cycles
+}
+
+func (c *CPU_X86) debugHandleBreakIn(pc uint64) bool {
+	if c == nil || c.debugBreakIn == nil {
+		return false
+	}
+	if c.debugBreakIn(pc) {
+		c.running.Store(false)
+		return true
+	}
+	return false
+}
+
+func (c *CPU_X86) debugFault(kind string, addr uint64, info string) bool {
+	if c == nil || c.debugFaults == nil {
+		return false
+	}
+	if c.debugFaults.OnFault(c.debugCPUID, uint64(c.EIP), kind, addr, info) {
+		c.Halted = true
+		c.running.Store(false)
+		return true
+	}
+	return false
 }
 
 // handleInterrupt handles an interrupt

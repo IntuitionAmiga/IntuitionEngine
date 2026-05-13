@@ -239,6 +239,9 @@ type CPU_6502 struct {
 	Debug         bool            // Debug mode
 	memory        Bus6502         // Memory interface
 	fastAdapter   *Bus6502Adapter // Direct memory fast path (nil if non-standard bus)
+	debugFaults   *DebugFaultService
+	debugBreakIn  func(pc uint64) bool
+	debugCPUID    int
 	opcodeTable   [256]func(*CPU_6502)
 	breakpoints   map[uint16]bool // Debug points
 	breakpointHit chan uint16     // Debug channel
@@ -328,6 +331,7 @@ type Bus6502Adapter struct {
 	machineBus   *MachineBus // snapshot-backed I/O bitmap queries
 	ioPageBitmap []bool      // compatibility mirror for JIT contexts built after mapping seal
 	ioTable      [256]ioHandler
+	debugCPUID   int
 }
 
 type ioHandler struct {
@@ -396,6 +400,13 @@ func (cpu_6502 *CPU_6502) readByte(addr uint16) byte {
 	return cpu_6502.memory.Read(addr)
 }
 
+func (cpu_6502 *CPU_6502) readFetchByte(addr uint16) byte {
+	if cpu_6502.fastAdapter != nil {
+		return cpu_6502.fastAdapter.FetchFast(addr)
+	}
+	return cpu_6502.memory.Read(addr)
+}
+
 func (cpu_6502 *CPU_6502) writeByte(addr uint16, value byte) {
 	if cpu_6502.fastAdapter != nil {
 		cpu_6502.fastAdapter.WriteFast(addr, value)
@@ -417,7 +428,7 @@ func NewBus6502Adapter(bus Bus32) *Bus6502Adapter {
 	   Returns:
 	   - *Bus6502Adapter: Configured adapter
 	*/
-	a := &Bus6502Adapter{bus: bus}
+	a := &Bus6502Adapter{bus: bus, debugCPUID: -1}
 	a.memDirect = bus.GetMemory()
 	if mb, ok := bus.(*MachineBus); ok {
 		a.machineBus = mb
@@ -429,7 +440,7 @@ func NewBus6502Adapter(bus Bus32) *Bus6502Adapter {
 
 // NewBus6502AdapterWithVGA creates a 6502 memory bus adapter with VGA engine support
 func NewBus6502AdapterWithVGA(bus Bus32, vga *VGAEngine) *Bus6502Adapter {
-	a := &Bus6502Adapter{bus: bus, vgaEngine: vga}
+	a := &Bus6502Adapter{bus: bus, vgaEngine: vga, debugCPUID: -1}
 	a.memDirect = bus.GetMemory()
 	if mb, ok := bus.(*MachineBus); ok {
 		a.machineBus = mb
@@ -440,7 +451,7 @@ func NewBus6502AdapterWithVGA(bus Bus32, vga *VGAEngine) *Bus6502Adapter {
 }
 
 func NewBus6502AdapterWithVoodoo(bus Bus32, vga *VGAEngine, voodoo *VoodooEngine) *Bus6502Adapter {
-	a := &Bus6502Adapter{bus: bus, vgaEngine: vga, voodooEngine: voodoo}
+	a := &Bus6502Adapter{bus: bus, vgaEngine: vga, voodooEngine: voodoo, debugCPUID: -1}
 	a.memDirect = bus.GetMemory()
 	if mb, ok := bus.(*MachineBus); ok {
 		a.machineBus = mb
@@ -478,32 +489,32 @@ func (a *Bus6502Adapter) initIOTable() {
 
 func readPOKEYPage(a *Bus6502Adapter, addr uint16) byte {
 	if addr >= C6502_POKEY_BASE && addr <= C6502_POKEY_END {
-		return a.bus.Read8(POKEY_BASE + uint32(addr-C6502_POKEY_BASE))
+		return a.readBus8(POKEY_BASE + uint32(addr-C6502_POKEY_BASE))
 	}
-	return a.bus.Read8(translateIO8Bit_6502(addr))
+	return a.readBus8(translateIO8Bit_6502(addr))
 }
 
 func writePOKEYPage(a *Bus6502Adapter, addr uint16, value byte) {
 	if addr >= C6502_POKEY_BASE && addr <= C6502_POKEY_END {
-		a.bus.Write8(POKEY_BASE+uint32(addr-C6502_POKEY_BASE), value)
+		a.writeBus8(POKEY_BASE+uint32(addr-C6502_POKEY_BASE), value)
 		return
 	}
-	a.bus.Write8(translateIO8Bit_6502(addr), value)
+	a.writeBus8(translateIO8Bit_6502(addr), value)
 }
 
 func readPSGPage(a *Bus6502Adapter, addr uint16) byte {
 	if addr >= C6502_PSG_BASE && addr <= C6502_PSG_END {
-		return a.bus.Read8(PSG_BASE + uint32(addr-C6502_PSG_BASE))
+		return a.readBus8(PSG_BASE + uint32(addr-C6502_PSG_BASE))
 	}
-	return a.bus.Read8(translateIO8Bit_6502(addr))
+	return a.readBus8(translateIO8Bit_6502(addr))
 }
 
 func writePSGPage(a *Bus6502Adapter, addr uint16, value byte) {
 	if addr >= C6502_PSG_BASE && addr <= C6502_PSG_END {
-		a.bus.Write8(PSG_BASE+uint32(addr-C6502_PSG_BASE), value)
+		a.writeBus8(PSG_BASE+uint32(addr-C6502_PSG_BASE), value)
 		return
 	}
-	a.bus.Write8(translateIO8Bit_6502(addr), value)
+	a.writeBus8(translateIO8Bit_6502(addr), value)
 }
 
 func c6502SIDTarget(addr uint16) (uint32, bool) {
@@ -522,39 +533,39 @@ func c6502SIDTarget(addr uint16) (uint32, bool) {
 
 func readSIDPage(a *Bus6502Adapter, addr uint16) byte {
 	if busAddr, ok := c6502SIDTarget(addr); ok {
-		return a.bus.Read8(busAddr)
+		return a.readBus8(busAddr)
 	}
-	return a.bus.Read8(translateIO8Bit_6502(addr))
+	return a.readBus8(translateIO8Bit_6502(addr))
 }
 
 func writeSIDPage(a *Bus6502Adapter, addr uint16, value byte) {
 	if busAddr, ok := c6502SIDTarget(addr); ok {
-		a.bus.Write8(busAddr, value)
+		a.writeBus8(busAddr, value)
 		return
 	}
-	a.bus.Write8(translateIO8Bit_6502(addr), value)
+	a.writeBus8(translateIO8Bit_6502(addr), value)
 }
 
 func readTEDPage(a *Bus6502Adapter, addr uint16) byte {
 	if addr >= C6502_TED_BASE && addr <= C6502_TED_END {
-		return a.bus.Read8(TED_BASE + uint32(addr-C6502_TED_BASE))
+		return a.readBus8(TED_BASE + uint32(addr-C6502_TED_BASE))
 	}
 	if addr >= C6502_TED_V_BASE && addr <= C6502_TED_V_END {
-		return a.bus.Read8(TED_VIDEO_BASE + uint32((addr-C6502_TED_V_BASE)*4))
+		return a.readBus8(TED_VIDEO_BASE + uint32((addr-C6502_TED_V_BASE)*4))
 	}
-	return a.bus.Read8(translateIO8Bit_6502(addr))
+	return a.readBus8(translateIO8Bit_6502(addr))
 }
 
 func writeTEDPage(a *Bus6502Adapter, addr uint16, value byte) {
 	if addr >= C6502_TED_BASE && addr <= C6502_TED_END {
-		a.bus.Write8(TED_BASE+uint32(addr-C6502_TED_BASE), value)
+		a.writeBus8(TED_BASE+uint32(addr-C6502_TED_BASE), value)
 		return
 	}
 	if addr >= C6502_TED_V_BASE && addr <= C6502_TED_V_END {
-		a.bus.Write8(TED_VIDEO_BASE+uint32((addr-C6502_TED_V_BASE)*4), value)
+		a.writeBus8(TED_VIDEO_BASE+uint32((addr-C6502_TED_V_BASE)*4), value)
 		return
 	}
-	a.bus.Write8(translateIO8Bit_6502(addr), value)
+	a.writeBus8(translateIO8Bit_6502(addr), value)
 }
 
 func readVGAPage(a *Bus6502Adapter, addr uint16) byte {
@@ -590,7 +601,7 @@ func readVGAPage(a *Bus6502Adapter, addr uint16) byte {
 			return a.vgaVramBank
 		}
 	}
-	return a.bus.Read8(translateIO8Bit_6502(addr))
+	return a.readBus8(translateIO8Bit_6502(addr))
 }
 
 func writeVGAPage(a *Bus6502Adapter, addr uint16, value byte) {
@@ -639,22 +650,22 @@ func writeVGAPage(a *Bus6502Adapter, addr uint16, value byte) {
 			return
 		}
 	}
-	a.bus.Write8(translateIO8Bit_6502(addr), value)
+	a.writeBus8(translateIO8Bit_6502(addr), value)
 }
 
 func readULAPage(a *Bus6502Adapter, addr uint16) byte {
 	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x17 {
-		return a.bus.Read8(ULA_BASE + uint32(addr-C6502_ULA_BASE))
+		return a.readBus8(ULA_BASE + uint32(addr-C6502_ULA_BASE))
 	}
-	return a.bus.Read8(translateIO8Bit_6502(addr))
+	return a.readBus8(translateIO8Bit_6502(addr))
 }
 
 func writeULAPage(a *Bus6502Adapter, addr uint16, value byte) {
 	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x17 {
-		a.bus.Write8(ULA_BASE+uint32(addr-C6502_ULA_BASE), value)
+		a.writeBus8(ULA_BASE+uint32(addr-C6502_ULA_BASE), value)
 		return
 	}
-	a.bus.Write8(translateIO8Bit_6502(addr), value)
+	a.writeBus8(translateIO8Bit_6502(addr), value)
 }
 
 func (a *Bus6502Adapter) translateVoodooWindow(addr uint16) (uint32, bool) {
@@ -671,17 +682,17 @@ func (cpu_6502 *CPU_6502) SetIRQLine(assert bool) {
 
 func readVoodooWindowPage(a *Bus6502Adapter, addr uint16) byte {
 	if translated, ok := a.translateVoodooWindow(addr); ok {
-		return a.bus.Read8(translated)
+		return a.readBus8(translated)
 	}
-	return a.bus.Read8(translateIO8Bit_6502(addr))
+	return a.readBus8(translateIO8Bit_6502(addr))
 }
 
 func writeVoodooWindowPage(a *Bus6502Adapter, addr uint16, value byte) {
 	if translated, ok := a.translateVoodooWindow(addr); ok {
-		a.bus.Write8(translated, value)
+		a.writeBus8(translated, value)
 		return
 	}
-	a.bus.Write8(translateIO8Bit_6502(addr), value)
+	a.writeBus8(translateIO8Bit_6502(addr), value)
 }
 
 func readBankRegPage(a *Bus6502Adapter, addr uint16) byte {
@@ -707,7 +718,7 @@ func readBankRegPage(a *Bus6502Adapter, addr uint16) byte {
 	case VOODOO_6502_BANK_PAGE_HI:
 		return byte((a.voodooBankPage >> 8) & 0xFF)
 	default:
-		return a.bus.Read8(translateIO8Bit_6502(addr))
+		return a.readBus8(translateIO8Bit_6502(addr))
 	}
 }
 
@@ -750,7 +761,7 @@ func writeBankRegPage(a *Bus6502Adapter, addr uint16, value byte) {
 		a.voodooBankPage = (a.voodooBankPage & 0x00FF) | (uint16(value) << 8)
 		return
 	default:
-		a.bus.Write8(translateIO8Bit_6502(addr), value)
+		a.writeBus8(translateIO8Bit_6502(addr), value)
 	}
 }
 
@@ -766,16 +777,131 @@ func (a *Bus6502Adapter) ReadFast(addr uint16) byte {
 	// We check addr < 0x2000 because ZP and Stack are there, and it's the most common RAM area.
 	// We also fall back to slow path for banking regions ($2000-$7FFF) or VRAM window ($8000-$BFFF).
 	if addr < 0x2000 && a.pageKnownPlainRAM(addr>>8) {
-		return a.memDirect[addr]
+		value := a.memDirect[addr]
+		a.debugOnRead(addr, 1)
+		return value
 	}
 	// Slow path: no bitmap, banking, I/O, or VRAM
 	return a.Read(addr)
 }
 
+func (a *Bus6502Adapter) FetchFast(addr uint16) byte {
+	if addr < 0x2000 && a.pageKnownPlainRAM(addr>>8) {
+		return a.memDirect[addr]
+	}
+	return a.readNoDebug(addr)
+}
+
+func (a *Bus6502Adapter) readNoDebug(addr uint16) byte {
+	if addr == VRAM_BANK_REG {
+		return byte(a.vramBank & 0xFF)
+	}
+	if addr == VRAM_BANK_REG_RSVD {
+		return 0
+	}
+	switch addr {
+	case BANK1_REG_LO:
+		return byte(a.bank1 & 0xFF)
+	case BANK1_REG_HI:
+		return byte((a.bank1 >> 8) & 0xFF)
+	case BANK2_REG_LO:
+		return byte(a.bank2 & 0xFF)
+	case BANK2_REG_HI:
+		return byte((a.bank2 >> 8) & 0xFF)
+	case BANK3_REG_LO:
+		return byte(a.bank3 & 0xFF)
+	case BANK3_REG_HI:
+		return byte((a.bank3 >> 8) & 0xFF)
+	case VOODOO_6502_BANK_HI:
+		return byte(a.voodooBankPage & 0xFF)
+	case VOODOO_6502_BANK_PAGE_HI:
+		return byte((a.voodooBankPage >> 8) & 0xFF)
+	}
+	if translated, ok := c6502RegisterReadTarget(a, addr); ok {
+		return a.readBus8NoDebug(translated)
+	}
+	if a.vgaEngine != nil && addr >= C6502_VGA_BASE && addr <= C6502_VGA_END {
+		switch addr {
+		case C6502_VGA_MODE:
+			return byte(a.vgaEngine.HandleRead(VGA_MODE))
+		case C6502_VGA_STATUS:
+			return byte(a.vgaEngine.HandleRead(VGA_STATUS))
+		case C6502_VGA_CTRL:
+			return byte(a.vgaEngine.HandleRead(VGA_CTRL))
+		case C6502_VGA_SEQ_IDX:
+			return byte(a.vgaEngine.HandleRead(VGA_SEQ_INDEX))
+		case C6502_VGA_SEQ_DATA:
+			return byte(a.vgaEngine.HandleRead(VGA_SEQ_DATA))
+		case C6502_VGA_CRTC_IDX:
+			return byte(a.vgaEngine.HandleRead(VGA_CRTC_INDEX))
+		case C6502_VGA_CRTC_DATA:
+			return byte(a.vgaEngine.HandleRead(VGA_CRTC_DATA))
+		case C6502_VGA_GC_IDX:
+			return byte(a.vgaEngine.HandleRead(VGA_GC_INDEX))
+		case C6502_VGA_GC_DATA:
+			return byte(a.vgaEngine.HandleRead(VGA_GC_DATA))
+		case C6502_VGA_DAC_WIDX:
+			return byte(a.vgaEngine.HandleRead(VGA_DAC_WINDEX))
+		case C6502_VGA_DAC_DATA:
+			return byte(a.vgaEngine.HandleRead(VGA_DAC_DATA))
+		case C6502_VGA_DAC_RIDX:
+			return byte(a.vgaEngine.HandleRead(VGA_DAC_RINDEX))
+		case C6502_VGA_DAC_MASK:
+			return byte(a.vgaEngine.HandleRead(VGA_DAC_MASK))
+		case C6502_VGA_VRAM_BANK:
+			return a.vgaVramBank
+		}
+	}
+	if translated, ok := a.translateVoodooWindow(addr); ok {
+		return a.readBus8NoDebug(translated)
+	}
+	if addr >= COPROC_GATEWAY_BASE && addr <= COPROC_GATEWAY_END {
+		return a.readBus8NoDebug(COPROC_BASE + uint32(addr-COPROC_GATEWAY_BASE))
+	}
+	if translated, ok := a.translateExtendedBank(addr); ok {
+		return a.readBus8NoDebug(translated)
+	}
+	if translated, ok := a.translateVRAM(addr); ok {
+		if a.vgaEngine != nil && translated >= VGA_VRAM_WINDOW && translated < VGA_VRAM_WINDOW+VGA_VRAM_SIZE {
+			return byte(a.vgaEngine.HandleVRAMRead(translated))
+		}
+		return a.readBus8NoDebug(translated)
+	}
+	return a.readBus8NoDebug(translateIO8Bit_6502(addr))
+}
+
+func (a *Bus6502Adapter) readBus8NoDebug(addr uint32) byte {
+	if a.machineBus != nil {
+		return a.machineBus.Read8NoDebug(addr)
+	}
+	return a.bus.Read8(addr)
+}
+
+func c6502RegisterReadTarget(a *Bus6502Adapter, addr uint16) (uint32, bool) {
+	switch {
+	case addr >= C6502_PSG_BASE && addr <= C6502_PSG_END:
+		return PSG_BASE + uint32(addr-C6502_PSG_BASE), true
+	case addr >= C6502_POKEY_BASE && addr <= C6502_POKEY_END:
+		return POKEY_BASE + uint32(addr-C6502_POKEY_BASE), true
+	case addr >= C6502_TED_BASE && addr <= C6502_TED_END:
+		return TED_BASE + uint32(addr-C6502_TED_BASE), true
+	case addr >= C6502_TED_V_BASE && addr <= C6502_TED_V_END:
+		return TED_VIDEO_BASE + (uint32(addr-C6502_TED_V_BASE) * 4), true
+	case addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x17:
+		return ULA_BASE + uint32(addr-C6502_ULA_BASE), true
+	}
+	if busAddr, ok := c6502SIDTarget(addr); ok {
+		return busAddr, true
+	}
+	return 0, false
+}
+
 func (a *Bus6502Adapter) WriteFast(addr uint16, val byte) {
 	a.noteInterpTraceWrite(addr)
 	if addr < 0x2000 && a.pageKnownPlainRAM(addr>>8) {
+		old := a.memDirect[addr]
 		a.memDirect[addr] = val
+		a.debugOnWrite(addr, 1, uint64(old), uint64(val))
 		return
 	}
 	a.Write(addr, val)
@@ -784,7 +910,9 @@ func (a *Bus6502Adapter) WriteFast(addr uint16, val byte) {
 func (a *Bus6502Adapter) ReadZP(addr byte) byte {
 	// Zero page is $0000-$00FF. Always page 0.
 	if a.pageKnownPlainRAM(0) {
-		return a.memDirect[addr]
+		value := a.memDirect[addr]
+		a.debugOnRead(uint16(addr), 1)
+		return value
 	}
 	return a.Read(uint16(addr))
 }
@@ -792,7 +920,9 @@ func (a *Bus6502Adapter) ReadZP(addr byte) byte {
 func (a *Bus6502Adapter) WriteZP(addr byte, val byte) {
 	a.noteInterpTraceWrite(uint16(addr))
 	if a.pageKnownPlainRAM(0) {
+		old := a.memDirect[addr]
 		a.memDirect[addr] = val
+		a.debugOnWrite(uint16(addr), 1, uint64(old), uint64(val))
 		return
 	}
 	a.Write(uint16(addr), val)
@@ -801,7 +931,10 @@ func (a *Bus6502Adapter) WriteZP(addr byte, val byte) {
 func (a *Bus6502Adapter) ReadStack(sp byte) byte {
 	// Stack is $0100-$01FF. Always page 1.
 	if a.pageKnownPlainRAM(1) {
-		return a.memDirect[0x0100|uint16(sp)]
+		addr := 0x0100 | uint16(sp)
+		value := a.memDirect[addr]
+		a.debugOnRead(addr, 1)
+		return value
 	}
 	return a.Read(0x0100 | uint16(sp))
 }
@@ -809,7 +942,10 @@ func (a *Bus6502Adapter) ReadStack(sp byte) byte {
 func (a *Bus6502Adapter) WriteStack(sp byte, val byte) {
 	a.noteInterpTraceWrite(0x0100 | uint16(sp))
 	if a.pageKnownPlainRAM(1) {
-		a.memDirect[0x0100|uint16(sp)] = val
+		addr := 0x0100 | uint16(sp)
+		old := a.memDirect[addr]
+		a.memDirect[addr] = val
+		a.debugOnWrite(addr, 1, uint64(old), uint64(val))
 		return
 	}
 	a.Write(0x0100|uint16(sp), val)
@@ -820,6 +956,60 @@ func (a *Bus6502Adapter) noteInterpTraceWrite(addr uint16) {
 		return
 	}
 	a.ownerCPU.noteInterpTraceWrite(addr)
+}
+
+func (a *Bus6502Adapter) debugOnRead(addr uint16, width int) {
+	if a == nil || a.machineBus == nil || a.machineBus.debugAccess == nil || !a.machineBus.debugAccess.AnyActive(a.debugCPUID) {
+		return
+	}
+	a.machineBus.debugAccess.OnRead(a.debugCPUID, uint64(addr), width)
+}
+
+func (a *Bus6502Adapter) debugOnWrite(addr uint16, width int, oldVal, newVal uint64) {
+	a.debugOnWriteKnown(addr, width, oldVal, newVal, true)
+}
+
+func (a *Bus6502Adapter) debugOnWriteKnown(addr uint16, width int, oldVal, newVal uint64, oldKnown bool) {
+	if a == nil || a.machineBus == nil || a.machineBus.debugAccess == nil || !a.machineBus.debugAccess.AnyActive(a.debugCPUID) {
+		return
+	}
+	a.machineBus.debugAccess.OnWriteKnown(a.debugCPUID, uint64(addr), width, oldVal, newVal, oldKnown)
+}
+
+func (a *Bus6502Adapter) debugOnBusRead(addr uint32, width int) {
+	if a == nil || a.machineBus == nil || a.machineBus.debugAccess == nil || !a.machineBus.debugAccess.AnyActive(a.debugCPUID) {
+		return
+	}
+	a.machineBus.debugAccess.OnRead(a.debugCPUID, uint64(addr), width)
+}
+
+func (a *Bus6502Adapter) debugOnBusWrite(addr uint32, width int, oldVal, newVal uint64) {
+	a.debugOnBusWriteKnown(addr, width, oldVal, newVal, true)
+}
+
+func (a *Bus6502Adapter) debugOnBusWriteKnown(addr uint32, width int, oldVal, newVal uint64, oldKnown bool) {
+	if a == nil || a.machineBus == nil || a.machineBus.debugAccess == nil || !a.machineBus.debugAccess.AnyActive(a.debugCPUID) {
+		return
+	}
+	a.machineBus.debugAccess.OnWriteKnown(a.debugCPUID, uint64(addr), width, oldVal, newVal, oldKnown)
+}
+
+func (a *Bus6502Adapter) debugOnFetch(addr uint16, width int) {
+	if a == nil || a.machineBus == nil || a.machineBus.debugAccess == nil || !a.machineBus.debugAccess.AnyActive(a.debugCPUID) {
+		return
+	}
+	a.machineBus.debugAccess.OnFetch(a.debugCPUID, uint64(addr), width)
+}
+
+func (a *Bus6502Adapter) readBus8(addr uint32) byte {
+	value := a.bus.Read8(addr)
+	a.debugOnBusRead(addr, 1)
+	return value
+}
+
+func (a *Bus6502Adapter) writeBus8(addr uint32, value byte) {
+	a.bus.Write8(addr, value)
+	a.debugOnBusWriteKnown(addr, 1, 0, uint64(value), false)
 }
 
 func (cpu_6502 *CPU_6502) rmw(addr uint16, operation func(byte) byte) {
@@ -1070,7 +1260,7 @@ func (cpu_6502 *CPU_6502) getZeroPage() uint16 {
 	   Protected by memory read mutex
 	*/
 
-	addr := uint16(cpu_6502.readByte(cpu_6502.PC))
+	addr := uint16(cpu_6502.readFetchByte(cpu_6502.PC))
 	cpu_6502.PC++
 	return addr
 }
@@ -1090,7 +1280,7 @@ func (cpu_6502 *CPU_6502) getZeroPageX() uint16 {
 	   Protected by memory read mutex
 	*/
 
-	addr := (uint16(cpu_6502.readByte(cpu_6502.PC)) + uint16(cpu_6502.X)) & 0xFF
+	addr := (uint16(cpu_6502.readFetchByte(cpu_6502.PC)) + uint16(cpu_6502.X)) & 0xFF
 	cpu_6502.PC++
 	return addr
 }
@@ -1110,7 +1300,7 @@ func (cpu_6502 *CPU_6502) getZeroPageY() uint16 {
 	   Protected by memory read mutex
 	*/
 
-	addr := (uint16(cpu_6502.readByte(cpu_6502.PC)) + uint16(cpu_6502.Y)) & 0xFF
+	addr := (uint16(cpu_6502.readFetchByte(cpu_6502.PC)) + uint16(cpu_6502.Y)) & 0xFF
 	cpu_6502.PC++
 	return addr
 }
@@ -1127,7 +1317,7 @@ func (cpu_6502 *CPU_6502) getIndirectX() uint16 {
 	   3. Reads address from result
 	*/
 
-	base := cpu_6502.readByte(cpu_6502.PC)
+	base := cpu_6502.readFetchByte(cpu_6502.PC)
 	cpu_6502.PC++
 	ptr := (uint16(base) + uint16(cpu_6502.X)) & 0xFF
 	if cpu_6502.fastAdapter != nil {
@@ -1152,7 +1342,7 @@ func (cpu_6502 *CPU_6502) getIndirectY() (uint16, bool) {
 	   4. Checks page crossing
 	*/
 
-	ptr := uint16(cpu_6502.readByte(cpu_6502.PC))
+	ptr := uint16(cpu_6502.readFetchByte(cpu_6502.PC))
 	cpu_6502.PC++
 	var base uint16
 	if cpu_6502.fastAdapter != nil {
@@ -1529,7 +1719,7 @@ func (cpu_6502 *CPU_6502) branch(condition bool) {
 	      - Adds cycle for page cross
 	*/
 
-	offset := int8(cpu_6502.readByte(cpu_6502.PC))
+	offset := int8(cpu_6502.readFetchByte(cpu_6502.PC))
 	cpu_6502.PC++
 	if condition {
 		cpu_6502.Cycles++
@@ -1723,6 +1913,9 @@ func (cpu_6502 *CPU_6502) executeLegacy() {
 
 	for cpu_6502.running.Load() {
 		for range 4096 {
+			if cpu_6502.debugHandleBreakIn(uint64(cpu_6502.PC)) {
+				break
+			}
 			// Pause at instruction boundary if Reset() or external observer requests it
 			if cpu_6502.resetting.Load() {
 				cpu_6502.resetAck.Store(true)
@@ -1750,7 +1943,10 @@ func (cpu_6502 *CPU_6502) executeLegacy() {
 			}
 
 			// Fetch and execute instruction
-			opcode := cpu_6502.readByte(cpu_6502.PC)
+			if cpu_6502.fastAdapter != nil {
+				cpu_6502.fastAdapter.debugOnFetch(cpu_6502.PC, 1)
+			}
+			opcode := cpu_6502.readFetchByte(cpu_6502.PC)
 			cpu_6502.PC++
 
 			// Handle breakpoints
@@ -1792,6 +1988,9 @@ func (cpu_6502 *CPU_6502) executeLegacy() {
 // Step executes a single instruction and returns the number of cycles consumed.
 // This is useful for embedding the CPU in other systems that need precise control.
 func (cpu_6502 *CPU_6502) Step() int {
+	if cpu_6502.debugHandleBreakIn(uint64(cpu_6502.PC)) {
+		return 0
+	}
 	if cpu_6502.fastAdapter != nil && !cpu_6502.Debug {
 		return cpu_6502.stepFast()
 	}
@@ -1825,7 +2024,10 @@ func (cpu_6502 *CPU_6502) Step() int {
 	startCycles := cpu_6502.Cycles
 
 	// Fetch opcode
-	opcode := cpu_6502.readByte(cpu_6502.PC)
+	if cpu_6502.fastAdapter != nil {
+		cpu_6502.fastAdapter.debugOnFetch(cpu_6502.PC, 1)
+	}
+	opcode := cpu_6502.readFetchByte(cpu_6502.PC)
 	cpu_6502.PC++
 
 	// Execute the instruction using the same dispatch table as Execute()
@@ -1834,13 +2036,24 @@ func (cpu_6502 *CPU_6502) Step() int {
 	return int(cpu_6502.Cycles - startCycles)
 }
 
+func (cpu_6502 *CPU_6502) debugHandleBreakIn(pc uint64) bool {
+	if cpu_6502 == nil || cpu_6502.debugBreakIn == nil {
+		return false
+	}
+	if cpu_6502.debugBreakIn(pc) {
+		cpu_6502.running.Store(false)
+		return true
+	}
+	return false
+}
+
 // executeOpcodeSwitch executes a single opcode through the legacy switch.
 func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 	switch opcode {
 
 	// Load/Store Operations
 	case 0xA9: // LDA Immediate
-		cpu_6502.A = cpu_6502.readByte(cpu_6502.PC)
+		cpu_6502.A = cpu_6502.readFetchByte(cpu_6502.PC)
 		cpu_6502.PC++
 		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 2
@@ -1893,7 +2106,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		}
 
 	case 0xA2: // LDX Immediate
-		cpu_6502.X = cpu_6502.readByte(cpu_6502.PC)
+		cpu_6502.X = cpu_6502.readFetchByte(cpu_6502.PC)
 		cpu_6502.PC++
 		cpu_6502.updateNZ(cpu_6502.X)
 		cpu_6502.Cycles += 2
@@ -1923,7 +2136,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		}
 
 	case 0xA0: // LDY Immediate
-		cpu_6502.Y = cpu_6502.readByte(cpu_6502.PC)
+		cpu_6502.Y = cpu_6502.readFetchByte(cpu_6502.PC)
 		cpu_6502.PC++
 		cpu_6502.updateNZ(cpu_6502.Y)
 		cpu_6502.Cycles += 2
@@ -2058,7 +2271,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 
 	// Arithmetic Operations
 	case 0x69: // ADC Immediate
-		cpu_6502.adc(cpu_6502.readByte(cpu_6502.PC))
+		cpu_6502.adc(cpu_6502.readFetchByte(cpu_6502.PC))
 		cpu_6502.PC++
 		cpu_6502.Cycles += 2
 
@@ -2103,7 +2316,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		}
 
 	case 0xE9: // SBC Immediate
-		cpu_6502.sbc(cpu_6502.readByte(cpu_6502.PC))
+		cpu_6502.sbc(cpu_6502.readFetchByte(cpu_6502.PC))
 		cpu_6502.PC++
 		cpu_6502.Cycles += 2
 
@@ -2204,7 +2417,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 
 	// Logical Operations
 	case 0x29: // AND Immediate
-		cpu_6502.A &= cpu_6502.readByte(cpu_6502.PC)
+		cpu_6502.A &= cpu_6502.readFetchByte(cpu_6502.PC)
 		cpu_6502.PC++
 		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 2
@@ -2257,7 +2470,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		}
 
 	case 0x09: // ORA Immediate
-		cpu_6502.A |= cpu_6502.readByte(cpu_6502.PC)
+		cpu_6502.A |= cpu_6502.readFetchByte(cpu_6502.PC)
 		cpu_6502.PC++
 		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 2
@@ -2310,7 +2523,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		}
 
 	case 0x49: // EOR Immediate
-		cpu_6502.A ^= cpu_6502.readByte(cpu_6502.PC)
+		cpu_6502.A ^= cpu_6502.readFetchByte(cpu_6502.PC)
 		cpu_6502.PC++
 		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.Cycles += 2
@@ -2464,7 +2677,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 
 	// Compare Operations
 	case 0xC9: // CMP Immediate
-		cpu_6502.compare(cpu_6502.A, cpu_6502.readByte(cpu_6502.PC))
+		cpu_6502.compare(cpu_6502.A, cpu_6502.readFetchByte(cpu_6502.PC))
 		cpu_6502.PC++
 		cpu_6502.Cycles += 2
 
@@ -2509,7 +2722,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		}
 
 	case 0xE0: // CPX Immediate
-		cpu_6502.compare(cpu_6502.X, cpu_6502.readByte(cpu_6502.PC))
+		cpu_6502.compare(cpu_6502.X, cpu_6502.readFetchByte(cpu_6502.PC))
 		cpu_6502.PC++
 		cpu_6502.Cycles += 2
 
@@ -2522,7 +2735,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		cpu_6502.Cycles += 4
 
 	case 0xC0: // CPY Immediate
-		cpu_6502.compare(cpu_6502.Y, cpu_6502.readByte(cpu_6502.PC))
+		cpu_6502.compare(cpu_6502.Y, cpu_6502.readFetchByte(cpu_6502.PC))
 		cpu_6502.PC++
 		cpu_6502.Cycles += 2
 
@@ -2565,8 +2778,8 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		cpu_6502.Cycles += 3
 
 	case 0x6C: // JMP Indirect
-		low := cpu_6502.readByte(cpu_6502.PC)
-		high := cpu_6502.readByte(cpu_6502.PC + 1)
+		low := cpu_6502.readFetchByte(cpu_6502.PC)
+		high := cpu_6502.readFetchByte(cpu_6502.PC + 1)
 		addr := uint16(low) | uint16(high)<<8
 		// 6502 bug: wraps within page
 		low2 := cpu_6502.readByte(addr)
@@ -2615,6 +2828,12 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 
 	// Special Operations
 	case 0x00: // BRK
+		brkPC := cpu_6502.PC - 1
+		cpu_6502.PC = brkPC
+		if cpu_6502.debugFault("6502.brk", uint64(brkPC), "") {
+			return
+		}
+		cpu_6502.PC = brkPC + 1
 		cpu_6502.PC++
 		cpu_6502.push16(cpu_6502.PC)
 		cpu_6502.push(cpu_6502.SR | BREAK_FLAG | UNUSED_FLAG)
@@ -2721,7 +2940,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		cpu_6502.Cycles += 6
 
 	case 0xEB: // SBC Immediate (unofficial)
-		cpu_6502.sbc(cpu_6502.readByte(cpu_6502.PC))
+		cpu_6502.sbc(cpu_6502.readFetchByte(cpu_6502.PC))
 		cpu_6502.PC++
 		cpu_6502.Cycles += 2
 
@@ -3014,14 +3233,14 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 
 	// ANC
 	case 0x0B, 0x2B: // ANC Immediate
-		cpu_6502.A &= cpu_6502.readByte(cpu_6502.PC)
+		cpu_6502.A &= cpu_6502.readFetchByte(cpu_6502.PC)
 		cpu_6502.PC++
 		cpu_6502.updateNZ(cpu_6502.A)
 		cpu_6502.setFlag(CARRY_FLAG, cpu_6502.A&0x80 != 0)
 		cpu_6502.Cycles += 2
 
 	case 0x4B: // ALR Immediate
-		cpu_6502.A &= cpu_6502.readByte(cpu_6502.PC)
+		cpu_6502.A &= cpu_6502.readFetchByte(cpu_6502.PC)
 		cpu_6502.PC++
 		cpu_6502.setFlag(CARRY_FLAG, cpu_6502.A&1 != 0)
 		cpu_6502.A >>= 1
@@ -3029,7 +3248,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		cpu_6502.Cycles += 2
 
 	case 0x6B: // ARR Immediate
-		cpu_6502.A &= cpu_6502.readByte(cpu_6502.PC)
+		cpu_6502.A &= cpu_6502.readFetchByte(cpu_6502.PC)
 		cpu_6502.PC++
 		carry := cpu_6502.SR&CARRY_FLAG != 0
 		carryBit := byte(0)
@@ -3043,7 +3262,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		cpu_6502.Cycles += 2
 
 	case 0xCB: // AXS Immediate
-		val := cpu_6502.readByte(cpu_6502.PC)
+		val := cpu_6502.readFetchByte(cpu_6502.PC)
 		cpu_6502.PC++
 		result := int(cpu_6502.A&cpu_6502.X) - int(val)
 		cpu_6502.X = byte(result)
@@ -3101,7 +3320,7 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		}
 
 	case 0xAB: // LAX Immediate (unstable)
-		val := cpu_6502.readByte(cpu_6502.PC)
+		val := cpu_6502.readFetchByte(cpu_6502.PC)
 		cpu_6502.PC++
 		cpu_6502.A = val
 		cpu_6502.X = val
@@ -3115,6 +3334,17 @@ func (cpu_6502 *CPU_6502) executeOpcodeSwitch(opcode byte) {
 		fmt.Printf("Unknown opcode: %02X at PC=%04X\n", opcode, cpu_6502.PC-1)
 		cpu_6502.running.Store(false)
 	}
+}
+
+func (cpu_6502 *CPU_6502) debugFault(kind string, addr uint64, info string) bool {
+	if cpu_6502 == nil || cpu_6502.debugFaults == nil {
+		return false
+	}
+	if cpu_6502.debugFaults.OnFault(cpu_6502.debugCPUID, uint64(cpu_6502.PC), kind, addr, info) {
+		cpu_6502.running.Store(false)
+		return true
+	}
+	return false
 }
 
 // translateIO8Bit_6502 converts 16-bit I/O addresses (0xF000-0xFFFF) to
@@ -3135,7 +3365,10 @@ func translateIO8Bit_6502(addr uint16) uint32 {
 	return uint32(addr)
 }
 
-func (adapter *Bus6502Adapter) Read(addr uint16) byte {
+func (adapter *Bus6502Adapter) Read(addr uint16) (result byte) {
+	defer func() {
+		adapter.debugOnRead(addr, 1)
+	}()
 	/*
 	   Read performs 8-bit memory read.
 
@@ -3182,36 +3415,36 @@ func (adapter *Bus6502Adapter) Read(addr uint16) byte {
 	// Handle PSG register reads (C64 SID-style mapping at $D400-$D40F)
 	if addr >= C6502_PSG_BASE && addr <= C6502_PSG_END {
 		psgReg := uint32(addr - C6502_PSG_BASE)
-		return adapter.bus.Read8(PSG_BASE + psgReg)
+		return adapter.readBus8(PSG_BASE + psgReg)
 	}
 
 	// Handle SID register reads ($D500-$D55F: SID1/SID2/SID3)
 	if busAddr, ok := c6502SIDTarget(addr); ok {
-		return adapter.bus.Read8(busAddr)
+		return adapter.readBus8(busAddr)
 	}
 
 	// Handle POKEY register reads ($D200-$D209)
 	if addr >= C6502_POKEY_BASE && addr <= C6502_POKEY_END {
 		pokeyReg := uint32(addr - C6502_POKEY_BASE)
-		return adapter.bus.Read8(POKEY_BASE + pokeyReg)
+		return adapter.readBus8(POKEY_BASE + pokeyReg)
 	}
 
 	// Handle TED audio register reads ($D600-$D605)
 	if addr >= C6502_TED_BASE && addr <= C6502_TED_END {
 		tedReg := uint32(addr - C6502_TED_BASE)
-		return adapter.bus.Read8(TED_BASE + tedReg)
+		return adapter.readBus8(TED_BASE + tedReg)
 	}
 
 	// Handle TED video register reads ($D620-$D62F)
 	if addr >= C6502_TED_V_BASE && addr <= C6502_TED_V_END {
 		tedVReg := uint32(addr - C6502_TED_V_BASE)
-		return adapter.bus.Read8(TED_VIDEO_BASE + (tedVReg * 4))
+		return adapter.readBus8(TED_VIDEO_BASE + (tedVReg * 4))
 	}
 
 	// Handle ULA register reads ($D800-$D817)
 	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x17 {
 		ulaReg := uint32(addr - C6502_ULA_BASE)
-		return adapter.bus.Read8(ULA_BASE + ulaReg)
+		return adapter.readBus8(ULA_BASE + ulaReg)
 	}
 
 	// Handle VGA register reads ($D700-$D70A)
@@ -3244,12 +3477,12 @@ func (adapter *Bus6502Adapter) Read(addr uint16) byte {
 
 	// Handle coprocessor gateway window (0xF200-0xF23F → COPROC_BASE on bus)
 	if addr >= COPROC_GATEWAY_BASE && addr <= COPROC_GATEWAY_END {
-		return adapter.bus.Read8(COPROC_BASE + uint32(addr-COPROC_GATEWAY_BASE))
+		return adapter.readBus8(COPROC_BASE + uint32(addr-COPROC_GATEWAY_BASE))
 	}
 
 	// Handle extended bank window reads (IE65 mode)
 	if translated, ok := adapter.translateExtendedBank(addr); ok {
-		return adapter.bus.Read8(translated)
+		return adapter.readBus8(translated)
 	}
 
 	// Handle VRAM bank window reads
@@ -3257,13 +3490,22 @@ func (adapter *Bus6502Adapter) Read(addr uint16) byte {
 		if adapter.vgaEngine != nil && translated >= VGA_VRAM_WINDOW && translated < VGA_VRAM_WINDOW+VGA_VRAM_SIZE {
 			return byte(adapter.vgaEngine.HandleVRAMRead(translated))
 		}
-		return adapter.bus.Read8(translated)
+		return adapter.readBus8(translated)
 	}
 
-	return adapter.bus.Read8(translateIO8Bit_6502(addr))
+	return adapter.readBus8(translateIO8Bit_6502(addr))
 }
 
 func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
+	oldVal := uint64(0)
+	oldKnown := false
+	if adapter.pageKnownPlainRAM(addr >> 8) {
+		oldVal = uint64(adapter.memDirect[addr])
+		oldKnown = true
+	}
+	defer func() {
+		adapter.debugOnWriteKnown(addr, 1, oldVal, uint64(value), oldKnown)
+	}()
 	/*
 	   Write performs 8-bit memory write.
 
@@ -3325,41 +3567,41 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 	// Handle PSG register writes (C64 SID-style mapping at $D400-$D40F)
 	if addr >= C6502_PSG_BASE && addr <= C6502_PSG_END {
 		psgReg := uint32(addr - C6502_PSG_BASE)
-		adapter.bus.Write8(PSG_BASE+psgReg, value)
+		adapter.writeBus8(PSG_BASE+psgReg, value)
 		return
 	}
 
 	// Handle SID register writes ($D500-$D55F: SID1/SID2/SID3)
 	if busAddr, ok := c6502SIDTarget(addr); ok {
-		adapter.bus.Write8(busAddr, value)
+		adapter.writeBus8(busAddr, value)
 		return
 	}
 
 	// Handle POKEY register writes ($D200-$D209)
 	if addr >= C6502_POKEY_BASE && addr <= C6502_POKEY_END {
 		pokeyReg := uint32(addr - C6502_POKEY_BASE)
-		adapter.bus.Write8(POKEY_BASE+pokeyReg, value)
+		adapter.writeBus8(POKEY_BASE+pokeyReg, value)
 		return
 	}
 
 	// Handle TED audio register writes ($D600-$D605)
 	if addr >= C6502_TED_BASE && addr <= C6502_TED_END {
 		tedReg := uint32(addr - C6502_TED_BASE)
-		adapter.bus.Write8(TED_BASE+tedReg, value)
+		adapter.writeBus8(TED_BASE+tedReg, value)
 		return
 	}
 
 	// Handle TED video register writes ($D620-$D62F)
 	if addr >= C6502_TED_V_BASE && addr <= C6502_TED_V_END {
 		tedVReg := uint32(addr - C6502_TED_V_BASE)
-		adapter.bus.Write8(TED_VIDEO_BASE+(tedVReg*4), value)
+		adapter.writeBus8(TED_VIDEO_BASE+(tedVReg*4), value)
 		return
 	}
 
 	// Handle ULA register writes ($D800-$D817)
 	if addr >= C6502_ULA_BASE && addr <= C6502_ULA_BASE+0x17 {
 		ulaReg := uint32(addr - C6502_ULA_BASE)
-		adapter.bus.Write8(ULA_BASE+ulaReg, value)
+		adapter.writeBus8(ULA_BASE+ulaReg, value)
 		return
 	}
 
@@ -3404,13 +3646,13 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 
 	// Handle coprocessor gateway window (0xF200-0xF23F → COPROC_BASE on bus)
 	if addr >= COPROC_GATEWAY_BASE && addr <= COPROC_GATEWAY_END {
-		adapter.bus.Write8(COPROC_BASE+uint32(addr-COPROC_GATEWAY_BASE), value)
+		adapter.writeBus8(COPROC_BASE+uint32(addr-COPROC_GATEWAY_BASE), value)
 		return
 	}
 
 	// Handle extended bank window writes (IE65 mode)
 	if translated, ok := adapter.translateExtendedBank(addr); ok {
-		adapter.bus.Write8(translated, value)
+		adapter.writeBus8(translated, value)
 		return
 	}
 
@@ -3420,7 +3662,7 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 			adapter.vgaEngine.HandleVRAMWrite(translated, uint32(value))
 			return
 		}
-		adapter.bus.Write8(translated, value)
+		adapter.writeBus8(translated, value)
 		return
 	}
 
@@ -3428,7 +3670,7 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 	if addr >= 0xD800 && addr <= 0xD8FF {
 		fmt.Printf("6502 write in ULA range: addr=0x%04X value=0x%02X (NOT handled as ULA)\n", addr, value)
 	}
-	adapter.bus.Write8(translateIO8Bit_6502(addr), value)
+	adapter.writeBus8(translateIO8Bit_6502(addr), value)
 }
 
 func (adapter *Bus6502Adapter) ResetBank() {

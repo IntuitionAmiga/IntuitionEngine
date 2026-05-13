@@ -39,6 +39,7 @@ type ScriptEngine struct {
 	arosSentinel   string
 
 	frameChan chan struct{}
+	faultChan chan BreakpointEvent
 
 	mu        sync.Mutex
 	cancel    context.CancelFunc
@@ -68,6 +69,9 @@ type ScriptEngine struct {
 	scriptDbgContributedFreeze bool
 	scriptAudioBaseFrozen      bool
 	scriptAudioTouched         bool
+
+	faultCallbacks       map[string]*lua.LFunction
+	faultListenerRemoves []func()
 }
 
 type coprocTicketBuf struct {
@@ -81,6 +85,7 @@ func NewScriptEngine(bus *MachineBus, compositor *VideoCompositor, terminal *Ter
 		compositor:    compositor,
 		terminal:      terminal,
 		frameChan:     make(chan struct{}, 1),
+		faultChan:     make(chan BreakpointEvent, 64),
 		recorder:      NewVideoRecorder(compositor),
 		coprocTickets: make(map[uint32]coprocTicketBuf),
 	}
@@ -393,6 +398,15 @@ func (se *ScriptEngine) beginScriptState(scriptName string) {
 	se.scriptDbgContributedFreeze = false
 	se.scriptAudioTouched = false
 	se.scriptAudioBaseFrozen = false
+	se.faultCallbacks = nil
+	for {
+		select {
+		case <-se.faultChan:
+		default:
+			goto drainedFaults
+		}
+	}
+drainedFaults:
 	if s := runtimeStatus.snapshot().sound; s != nil {
 		se.scriptAudioBaseFrozen = s.audioFrozen.Load()
 	}
@@ -413,6 +427,11 @@ func (se *ScriptEngine) cleanupScriptState() {
 			s.audioFrozen.Store(se.scriptAudioBaseFrozen)
 		}
 	}
+	for _, remove := range se.faultListenerRemoves {
+		remove()
+	}
+	se.faultListenerRemoves = nil
+	se.faultCallbacks = nil
 	se.coprocMu.Lock()
 	clear(se.coprocTickets)
 	se.coprocMu.Unlock()
@@ -935,6 +954,7 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"is_open":             se.luaDbgIsOpen(),
 		"freeze":              se.luaDbgFreeze(),
 		"resume":              se.luaDbgResume(),
+		"request_break_in":    se.luaDbgRequestBreakIn(),
 		"step":                se.luaDbgStep(),
 		"continue":            se.luaDbgContinue(),
 		"run_until":           se.luaDbgRunUntil(),
@@ -944,6 +964,7 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"clear_all_bp":        se.luaDbgClearAllBP(),
 		"list_bp":             se.luaDbgListBP(),
 		"set_wp":              se.luaDbgSetWP(),
+		"set_wp_ex":           se.luaDbgSetWPEx(),
 		"clear_wp":            se.luaDbgClearWP(),
 		"clear_all_wp":        se.luaDbgClearAllWP(),
 		"list_wp":             se.luaDbgListWP(),
@@ -969,6 +990,24 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"trace_watch_list":    se.luaDbgTraceWatchList(),
 		"trace_history":       se.luaDbgTraceHistory(),
 		"trace_history_clear": se.luaDbgTraceHistoryClear(),
+		"accesslog_on":        se.luaDbgAccessLogOn(),
+		"accesslog_off":       se.luaDbgAccessLogOff(),
+		"accesslog":           se.luaDbgAccessLog(),
+		"who":                 se.luaDbgWhoAccess(),
+		"bfirst":              se.luaDbgBreakFirst(),
+		"reverse_continue":    se.luaDbgReverseContinue(),
+		"reverse_until":       se.luaDbgReverseUntil(),
+		"timeline":            se.luaDbgTimeline(),
+		"guard_add":           se.luaDbgGuardAdd(),
+		"guard_del":           se.luaDbgGuardDel(),
+		"guard_list":          se.luaDbgGuardList(),
+		"fault_on":            se.luaDbgFaultOn(),
+		"fault_off":           se.luaDbgFaultOff(),
+		"fault_break":         se.luaDbgFaultBreak(),
+		"fault_clear":         se.luaDbgFaultClear(),
+		"fault_list":          se.luaDbgFaultList(),
+		"on_fault":            se.luaDbgOnFault(),
+		"poll_faults":         se.luaDbgPollFaults(),
 		"save_state":          se.luaDbgSaveState(),
 		"load_state":          se.luaDbgLoadState(),
 		"save_mem_file":       se.luaDbgSaveMemFile(),
@@ -989,6 +1028,19 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"command_output":      se.luaDbgCommandOutput(),
 	})
 	L.SetGlobal("dbg", dbg)
+
+	sym := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
+		"add":     se.luaSymAdd(),
+		"lookup":  se.luaSymLookup(),
+		"resolve": se.luaSymResolve(),
+	})
+	L.SetGlobal("sym", sym)
+
+	regions := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
+		"list":   se.luaRegionsList(),
+		"lookup": se.luaRegionsLookup(),
+	})
+	L.SetGlobal("regions", regions)
 
 	coproc := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
 		"start":    se.luaCoprocStart(),
@@ -1059,6 +1111,7 @@ func (se *ScriptEngine) luaSysWaitFrames(ctx context.Context) lua.LGFunction {
 			}
 		}
 		se.lastYieldNS.Store(time.Now().UnixNano())
+		se.pumpFaultCallbacks(L)
 		return 0
 	}
 }
@@ -1078,7 +1131,53 @@ func (se *ScriptEngine) luaSysWaitMS(ctx context.Context) lua.LGFunction {
 		case <-timer.C:
 		}
 		se.lastYieldNS.Store(time.Now().UnixNano())
+		se.pumpFaultCallbacks(L)
 		return 0
+	}
+}
+
+func (se *ScriptEngine) ensureFaultListener(mon *MachineMonitor) {
+	if mon == nil || mon.faults == nil || len(se.faultListenerRemoves) > 0 {
+		return
+	}
+	remove := mon.faults.AddListener(func(ev BreakpointEvent) {
+		select {
+		case se.faultChan <- ev:
+		default:
+		}
+	})
+	se.faultListenerRemoves = append(se.faultListenerRemoves, remove)
+}
+
+func (se *ScriptEngine) pumpFaultCallbacks(L *lua.LState) {
+	if len(se.faultCallbacks) == 0 {
+		return
+	}
+	for {
+		select {
+		case ev := <-se.faultChan:
+			fn := se.faultCallbacks[normalizeFaultKind(ev.FaultKind)]
+			if fn == nil {
+				fn = se.faultCallbacks["*"]
+			}
+			if fn == nil {
+				continue
+			}
+			t := L.NewTable()
+			t.RawSetString("cpu_id", lua.LNumber(ev.CPUID))
+			t.RawSetString("pc", lua.LNumber(ev.Address))
+			t.RawSetString("addr", lua.LNumber(ev.FaultAddr))
+			t.RawSetString("kind", lua.LString(ev.FaultKind))
+			t.RawSetString("info", lua.LString(ev.FaultInfo))
+			L.Push(fn)
+			L.Push(t)
+			if err := L.PCall(1, 0, nil); err != nil {
+				L.RaiseError("%v", err)
+				return
+			}
+		default:
+			return
+		}
 	}
 }
 
@@ -3581,6 +3680,20 @@ func (se *ScriptEngine) luaDbgResume() lua.LGFunction {
 	return se.luaDbgClose()
 }
 
+func (se *ScriptEngine) luaDbgRequestBreakIn() lua.LGFunction {
+	return func(L *lua.LState) int {
+		se.mu.Lock()
+		mon := se.monitor
+		se.mu.Unlock()
+		if mon == nil {
+			L.RaiseError("monitor unavailable")
+			return 0
+		}
+		mon.RequestBreakIn()
+		return 0
+	}
+}
+
 func (se *ScriptEngine) luaDbgStep() lua.LGFunction {
 	return func(L *lua.LState) int {
 		n := L.OptInt(1, 1)
@@ -3628,7 +3741,7 @@ func (se *ScriptEngine) getMonitorAndCPU() (*MachineMonitor, DebuggableCPU, erro
 	}
 	entry := mon.FocusedCPU()
 	if entry == nil || entry.CPU == nil {
-		return mon, nil, fmt.Errorf("no focused cpu")
+		return mon, nil, fmt.Errorf("no focussed cpu")
 	}
 	return mon, entry.CPU, nil
 }
@@ -3780,13 +3893,56 @@ func formatBreakpointCondition(cond *BreakpointCondition) string {
 	return fmt.Sprintf("%s%s$%X", lhs, op, cond.Value)
 }
 
+func parseWatchpointMode(mode string) (WatchpointType, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "r", "read":
+		return WatchRead, true
+	case "w", "write":
+		return WatchWrite, true
+	case "rw", "wr", "access", "readwrite":
+		return WatchReadWrite, true
+	default:
+		return WatchWrite, false
+	}
+}
+
 func (se *ScriptEngine) luaDbgSetWP() lua.LGFunction {
 	return func(L *lua.LState) int {
 		addr := uint64(L.CheckInt64(1))
-		if _, cpu, err := se.getMonitorAndCPU(); err == nil {
+		if mon, cpu, err := se.getMonitorAndCPU(); err == nil {
 			cpu.SetWatchpoint(addr)
+			if mon.access != nil {
+				mon.access.Watch(mon.focusedID, addr, 1, WatchWrite)
+			}
 		} else {
 			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgSetWPEx() lua.LGFunction {
+	return func(L *lua.LState) int {
+		addr := uint64(L.CheckInt64(1))
+		mode, ok := parseWatchpointMode(L.OptString(2, "w"))
+		if !ok {
+			L.RaiseError("invalid watchpoint mode")
+			return 0
+		}
+		width := uint8(L.OptInt(3, 1))
+		width = normalizeWatchWidth(width)
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if setter, ok := cpu.(extendedWatchpointSetter); ok {
+			setter.SetWatchpointEx(addr, mode, width)
+		} else {
+			cpu.SetWatchpoint(addr)
+		}
+		if mon.access != nil {
+			mon.access.Watch(mon.focusedID, addr, int(width), mode)
 		}
 		return 0
 	}
@@ -3795,8 +3951,11 @@ func (se *ScriptEngine) luaDbgSetWP() lua.LGFunction {
 func (se *ScriptEngine) luaDbgClearWP() lua.LGFunction {
 	return func(L *lua.LState) int {
 		addr := uint64(L.CheckInt64(1))
-		if _, cpu, err := se.getMonitorAndCPU(); err == nil {
+		if mon, cpu, err := se.getMonitorAndCPU(); err == nil {
 			cpu.ClearWatchpoint(addr)
+			if mon.access != nil {
+				mon.access.ClearWatch(mon.focusedID, addr)
+			}
 		} else {
 			L.RaiseError("%v", err)
 		}
@@ -3806,8 +3965,11 @@ func (se *ScriptEngine) luaDbgClearWP() lua.LGFunction {
 
 func (se *ScriptEngine) luaDbgClearAllWP() lua.LGFunction {
 	return func(L *lua.LState) int {
-		if _, cpu, err := se.getMonitorAndCPU(); err == nil {
+		if mon, cpu, err := se.getMonitorAndCPU(); err == nil {
 			cpu.ClearAllWatchpoints()
+			if mon.access != nil {
+				mon.access.ClearWatchesForCPU(mon.focusedID)
+			}
 		} else {
 			L.RaiseError("%v", err)
 		}
@@ -4265,6 +4427,175 @@ func (se *ScriptEngine) luaDbgTraceHistoryClear() lua.LGFunction {
 	}
 }
 
+func luaAccessEventTable(L *lua.LState, ev AccessEvent) *lua.LTable {
+	t := L.NewTable()
+	t.RawSetString("seq", lua.LNumber(ev.Seq))
+	t.RawSetString("cpu_id", lua.LNumber(ev.CPUID))
+	t.RawSetString("pc", lua.LNumber(ev.PC))
+	t.RawSetString("addr", lua.LNumber(ev.Address))
+	t.RawSetString("width", lua.LNumber(ev.Width))
+	t.RawSetString("kind", lua.LString(accessKindString(ev.Kind)))
+	t.RawSetString("old_val", lua.LNumber(ev.OldValue))
+	t.RawSetString("new_val", lua.LNumber(ev.NewValue))
+	return t
+}
+
+func luaStringList(L *lua.LState, lines []string) *lua.LTable {
+	t := L.NewTable()
+	for i, line := range lines {
+		t.RawSetInt(i+1, lua.LString(line))
+	}
+	return t
+}
+
+func (se *ScriptEngine) luaDbgAccessLogOn() lua.LGFunction {
+	return func(L *lua.LState) int {
+		size := L.OptInt(1, 256)
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if size <= 0 {
+			L.RaiseError("access log size must be positive")
+			return 0
+		}
+		if mon.access == nil || !mon.access.Instrumented() {
+			L.RaiseError("debug access instrumentation unavailable")
+			return 0
+		}
+		mon.access.EnableHistory(size)
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgAccessLogOff() lua.LGFunction {
+	return func(L *lua.LState) int {
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if mon.access != nil {
+			mon.access.DisableHistory()
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgAccessLog() lua.LGFunction {
+	return func(L *lua.LState) int {
+		count := L.OptInt(1, 0)
+		mon, _, err := se.getMonitorAndCPU()
+		t := L.NewTable()
+		if err != nil || mon.access == nil {
+			L.Push(t)
+			return 1
+		}
+		for i, ev := range mon.access.HistoryTail(count) {
+			t.RawSetInt(i+1, luaAccessEventTable(L, ev))
+		}
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgWhoAccess() lua.LGFunction {
+	return func(L *lua.LState) int {
+		kind, ok := parseWhoAccessKind(L.CheckString(1))
+		if !ok {
+			L.RaiseError("invalid access kind")
+			return 0
+		}
+		addr := uint64(L.CheckInt64(2))
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil || mon.access == nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+		ev, ok := mon.access.LastAccess(kind, addr)
+		if !ok {
+			L.Push(lua.LNil)
+			return 1
+		}
+		L.Push(luaAccessEventTable(L, ev))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgBreakFirst() lua.LGFunction {
+	return func(L *lua.LState) int {
+		kindText := L.CheckString(1)
+		regionName := L.CheckString(2)
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if mon.access == nil || !mon.access.Instrumented() {
+			L.RaiseError("debug access instrumentation unavailable")
+			return 0
+		}
+		kind, ok := parseWhoAccessKind(kindText)
+		if !ok {
+			L.RaiseError("invalid access kind")
+			return 0
+		}
+		region := mon.regions.LookupName(cpu.CPUName(), regionName)
+		if region == nil {
+			L.RaiseError("unknown region: %s", regionName)
+			return 0
+		}
+		mon.access.GuardOnce(region.Start, region.End, accessPermForKind(kind), GuardScope{AllCPUs: true}, region.Name)
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgReverseContinue() lua.LGFunction {
+	return func(L *lua.LState) int {
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		_, out := mon.ExecuteCommandResult("rg")
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgReverseUntil() lua.LGFunction {
+	return func(L *lua.LState) int {
+		expr := L.CheckString(1)
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		_, out := mon.ExecuteCommandResult("rt " + expr)
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgTimeline() lua.LGFunction {
+	return func(L *lua.LState) int {
+		count := L.OptInt(1, 16)
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		lines := se.monitorCommandOutput(mon, fmt.Sprintf("tl %d", count))
+		L.Push(luaStringList(L, lines))
+		return 1
+	}
+}
+
 func (se *ScriptEngine) monitorCommandOutput(mon *MachineMonitor, cmd string) []string {
 	mon.mu.Lock()
 	before := len(mon.outputLines)
@@ -4646,6 +4977,297 @@ func (se *ScriptEngine) luaDbgCommandOutput() lua.LGFunction {
 		}
 		L.Push(t)
 		return 1
+	}
+}
+
+func (se *ScriptEngine) luaSymAdd() lua.LGFunction {
+	return func(L *lua.LState) int {
+		name := L.CheckString(1)
+		addr := uint64(L.CheckInt64(2))
+		kind := SymbolKind(L.OptString(3, string(SymbolLabel)))
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		mon.symbols.Add(cpu.CPUName(), addr, name, 0, kind)
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaSymLookup() lua.LGFunction {
+	return func(L *lua.LState) int {
+		name := L.CheckString(1)
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+		addr, ok := mon.symbols.Lookup(cpu.CPUName(), name)
+		if !ok {
+			L.Push(lua.LNil)
+			return 1
+		}
+		L.Push(lua.LNumber(addr))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaSymResolve() lua.LGFunction {
+	return func(L *lua.LState) int {
+		addr := uint64(L.CheckInt64(1))
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+		res, ok := mon.symbols.Resolve(cpu.CPUName(), addr)
+		if !ok {
+			L.Push(lua.LNil)
+			return 1
+		}
+		t := L.NewTable()
+		t.RawSetString("name", lua.LString(res.Symbol.Name))
+		t.RawSetString("addr", lua.LNumber(res.Symbol.Addr))
+		t.RawSetString("offset", lua.LNumber(res.Offset))
+		t.RawSetString("kind", lua.LString(res.Symbol.Kind))
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaRegionsList() lua.LGFunction {
+	return func(L *lua.LState) int {
+		t := L.NewTable()
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.Push(t)
+			return 1
+		}
+		for i, region := range mon.regions.List(cpu.CPUName()) {
+			e := L.NewTable()
+			e.RawSetString("start", lua.LNumber(region.Start))
+			e.RawSetString("end", lua.LNumber(region.End))
+			e.RawSetString("name", lua.LString(region.Name))
+			e.RawSetString("kind", lua.LString(region.Kind))
+			t.RawSetInt(i+1, e)
+		}
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaRegionsLookup() lua.LGFunction {
+	return func(L *lua.LState) int {
+		addr := uint64(L.CheckInt64(1))
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+		region := mon.regions.Lookup(cpu.CPUName(), addr)
+		if region == nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+		t := L.NewTable()
+		t.RawSetString("start", lua.LNumber(region.Start))
+		t.RawSetString("end", lua.LNumber(region.End))
+		t.RawSetString("name", lua.LString(region.Name))
+		t.RawSetString("kind", lua.LString(region.Kind))
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgGuardAdd() lua.LGFunction {
+	return func(L *lua.LState) int {
+		start := uint64(L.CheckInt64(1))
+		end := uint64(L.CheckInt64(2))
+		perm, ok := parseAccessPerm(L.CheckString(3))
+		if !ok || end < start {
+			L.RaiseError("invalid guard range or permissions")
+			return 0
+		}
+		scopeText := strings.ToLower(L.OptString(4, "all"))
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		scope := GuardScope{AllCPUs: true}
+		if scopeText == "current" {
+			scope = GuardScope{CPUID: mon.focusedID}
+		}
+		mon.access.Guard(start, end, perm, scope)
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgGuardDel() lua.LGFunction {
+	return func(L *lua.LState) int {
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if L.GetTop() == 0 {
+			mon.access.ClearGuards()
+			L.Push(lua.LNumber(0))
+			return 1
+		}
+		start := uint64(L.CheckInt64(1))
+		end := uint64(L.CheckInt64(2))
+		scopeText := strings.ToLower(L.OptString(3, "all"))
+		scope := GuardScope{AllCPUs: true}
+		if scopeText == "current" {
+			scope = GuardScope{CPUID: mon.focusedID}
+		}
+		L.Push(lua.LNumber(mon.access.ClearGuard(start, end, scope)))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgGuardList() lua.LGFunction {
+	return func(L *lua.LState) int {
+		mon, _, err := se.getMonitorAndCPU()
+		t := L.NewTable()
+		if err != nil {
+			L.Push(t)
+			return 1
+		}
+		for i, guard := range mon.access.ListGuards() {
+			e := L.NewTable()
+			e.RawSetString("start", lua.LNumber(guard.Start))
+			e.RawSetString("end", lua.LNumber(guard.End))
+			e.RawSetString("perm", lua.LString(formatAccessPerm(guard.Perm)))
+			if guard.Scope.AllCPUs {
+				e.RawSetString("scope", lua.LString("all"))
+			} else {
+				e.RawSetString("scope", lua.LString("current"))
+				e.RawSetString("cpu_id", lua.LNumber(guard.Scope.CPUID))
+			}
+			e.RawSetString("once", lua.LBool(guard.Once))
+			e.RawSetString("name", lua.LString(guard.Name))
+			t.RawSetInt(i+1, e)
+		}
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgFaultOn() lua.LGFunction {
+	return func(L *lua.LState) int {
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		mon.faults.EnableAll()
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgFaultOff() lua.LGFunction {
+	return func(L *lua.LState) int {
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		mon.faults.DisableAll()
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgFaultBreak() lua.LGFunction {
+	return func(L *lua.LState) int {
+		kind := L.CheckString(1)
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if !mon.faults.EnableKind(kind) {
+			L.RaiseError("invalid fault kind")
+			return 0
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgFaultClear() lua.LGFunction {
+	return func(L *lua.LState) int {
+		kind := L.CheckString(1)
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if !mon.faults.DisableKind(kind) {
+			L.RaiseError("invalid fault kind")
+			return 0
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgFaultList() lua.LGFunction {
+	return func(L *lua.LState) int {
+		mon, _, err := se.getMonitorAndCPU()
+		t := L.NewTable()
+		if err != nil {
+			L.Push(t)
+			return 1
+		}
+		all, kinds := mon.faults.List()
+		t.RawSetString("all", lua.LBool(all))
+		list := L.NewTable()
+		for i, kind := range kinds {
+			list.RawSetInt(i+1, lua.LString(kind))
+		}
+		t.RawSetString("kinds", list)
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgOnFault() lua.LGFunction {
+	return func(L *lua.LState) int {
+		kind := normalizeFaultKind(L.CheckString(1))
+		fn := L.CheckFunction(2)
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if kind == "" {
+			L.ArgError(1, "fault kind is required")
+			return 0
+		}
+		if se.faultCallbacks == nil {
+			se.faultCallbacks = make(map[string]*lua.LFunction)
+		}
+		se.faultCallbacks[kind] = fn
+		se.ensureFaultListener(mon)
+		if kind == "*" || kind == "all" {
+			se.faultCallbacks["*"] = fn
+			delete(se.faultCallbacks, "all")
+			mon.faults.EnableAll()
+			return 0
+		}
+		if !mon.faults.EnableKind(kind) {
+			L.RaiseError("invalid fault kind")
+			return 0
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgPollFaults() lua.LGFunction {
+	return func(L *lua.LState) int {
+		se.pumpFaultCallbacks(L)
+		return 0
 	}
 }
 

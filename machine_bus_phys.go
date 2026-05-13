@@ -97,13 +97,33 @@ func (bus *MachineBus) PhysMapped(addr, length uint64) bool {
 	return bus.addrInLowMemory(addr, length) || bus.addrInBacking(addr, length)
 }
 
+func (bus *MachineBus) debugOnPhysRead(addr uint64, width int) {
+	if bus == nil || bus.debugAccess == nil || !bus.debugAccess.AnyActive(-1) {
+		return
+	}
+	bus.debugAccess.OnRead(-1, addr, width)
+}
+
+func (bus *MachineBus) debugOnPhysWrite(addr uint64, width int, oldVal, newVal uint64) {
+	bus.debugOnPhysWriteKnown(addr, width, oldVal, newVal, true)
+}
+
+func (bus *MachineBus) debugOnPhysWriteKnown(addr uint64, width int, oldVal, newVal uint64, oldKnown bool) {
+	if bus == nil || bus.debugAccess == nil || !bus.debugAccess.AnyActive(-1) {
+		return
+	}
+	bus.debugAccess.OnWriteKnown(-1, addr, width, oldVal, newVal, oldKnown)
+}
+
 // ReadPhys8 reads a byte at the given uint64 physical address.
 func (bus *MachineBus) ReadPhys8(addr uint64) byte {
 	if bus.addrInLowMemory(addr, 1) {
 		return bus.Read8(uint32(addr))
 	}
 	if bus.addrInBacking(addr, 1) {
-		return bus.backing.Read8(addr)
+		value := bus.backing.Read8(addr)
+		bus.debugOnPhysRead(addr, 1)
+		return value
 	}
 	return 0
 }
@@ -115,7 +135,12 @@ func (bus *MachineBus) WritePhys8(addr uint64, v byte) {
 		return
 	}
 	if bus.addrInBacking(addr, 1) {
+		var old byte
+		if bus.debugWriteActive() {
+			old = bus.backing.Read8(addr)
+		}
 		bus.backing.Write8(addr, v)
+		bus.debugOnPhysWrite(addr, 1, uint64(old), uint64(v))
 	}
 }
 
@@ -127,7 +152,9 @@ func (bus *MachineBus) ReadPhys16(addr uint64) uint16 {
 	if bus.addrInBacking(addr, 2) {
 		lo := uint16(bus.backing.Read8(addr))
 		hi := uint16(bus.backing.Read8(addr + 1))
-		return lo | hi<<8
+		value := lo | hi<<8
+		bus.debugOnPhysRead(addr, 2)
+		return value
 	}
 	return 0
 }
@@ -139,8 +166,13 @@ func (bus *MachineBus) WritePhys16(addr uint64, v uint16) {
 		return
 	}
 	if bus.addrInBacking(addr, 2) {
+		var old uint16
+		if bus.debugWriteActive() {
+			old = uint16(bus.backing.Read8(addr)) | uint16(bus.backing.Read8(addr+1))<<8
+		}
 		bus.backing.Write8(addr, byte(v))
 		bus.backing.Write8(addr+1, byte(v>>8))
+		bus.debugOnPhysWrite(addr, 2, uint64(old), uint64(v))
 	}
 }
 
@@ -150,7 +182,9 @@ func (bus *MachineBus) ReadPhys32(addr uint64) uint32 {
 		return bus.Read32(uint32(addr))
 	}
 	if bus.addrInBacking(addr, 4) {
-		return bus.backing.Read32(addr)
+		value := bus.backing.Read32(addr)
+		bus.debugOnPhysRead(addr, 4)
+		return value
 	}
 	return 0
 }
@@ -162,7 +196,12 @@ func (bus *MachineBus) WritePhys32(addr uint64, v uint32) {
 		return
 	}
 	if bus.addrInBacking(addr, 4) {
+		var old uint32
+		if bus.debugWriteActive() {
+			old = bus.backing.Read32(addr)
+		}
 		bus.backing.Write32(addr, v)
+		bus.debugOnPhysWrite(addr, 4, uint64(old), uint64(v))
 	}
 }
 
@@ -172,7 +211,9 @@ func (bus *MachineBus) ReadPhys64(addr uint64) uint64 {
 		return bus.Read64(uint32(addr))
 	}
 	if bus.addrInBacking(addr, 8) {
-		return bus.backing.Read64(addr)
+		value := bus.backing.Read64(addr)
+		bus.debugOnPhysRead(addr, 8)
+		return value
 	}
 	return 0
 }
@@ -184,7 +225,12 @@ func (bus *MachineBus) WritePhys64(addr uint64, v uint64) {
 		return
 	}
 	if bus.addrInBacking(addr, 8) {
+		var old uint64
+		if bus.debugWriteActive() {
+			old = bus.backing.Read64(addr)
+		}
 		bus.backing.Write64(addr, v)
+		bus.debugOnPhysWrite(addr, 8, old, v)
 	}
 }
 
@@ -194,7 +240,9 @@ func (bus *MachineBus) ReadPhys64WithFault(addr uint64) (uint64, bool) {
 		return bus.Read64WithFault(uint32(addr))
 	}
 	if bus.addrInBacking(addr, 8) {
-		return bus.backing.Read64(addr), true
+		value := bus.backing.Read64(addr)
+		bus.debugOnPhysRead(addr, 8)
+		return value, true
 	}
 	return 0, false
 }
@@ -205,7 +253,12 @@ func (bus *MachineBus) WritePhys64WithFault(addr uint64, v uint64) bool {
 		return bus.Write64WithFault(uint32(addr), v)
 	}
 	if bus.addrInBacking(addr, 8) {
+		var old uint64
+		if bus.debugWriteActive() {
+			old = bus.backing.Read64(addr)
+		}
 		bus.backing.Write64(addr, v)
+		bus.debugOnPhysWrite(addr, 8, old, v)
 		return true
 	}
 	return false

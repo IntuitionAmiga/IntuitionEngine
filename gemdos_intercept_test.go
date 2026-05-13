@@ -1257,6 +1257,45 @@ func TestGemdos_Pexec_LoadAndRelocate(t *testing.T) {
 	}
 }
 
+func TestGemdos_Pexec_LoadsGuestSymbolSidecarAtTextBase(t *testing.T) {
+	g, cpu, bus := newTestGemdos(t)
+	defer g.Close()
+
+	prg := buildMinimalPRG(false)
+	if err := os.WriteFile(filepath.Join(g.hostRoot, "TEST.PRG"), prg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(g.hostRoot, "TEST.iesym"), []byte("al 0000 .entry\nal 000A .data_label\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	symbols := NewSymbolTable()
+	g.SetSymbolTable(symbols)
+
+	fnameAddr := uint32(0x2000)
+	writeGuestStringToBus(bus, fnameAddr, "U:\\TEST.PRG")
+	pushTrapFrameRaw(cpu, GEMDOS_PEXEC, []struct {
+		size  int
+		value uint32
+	}{
+		{2, GEMDOS_PEXEC_LOAD_GO},
+		{4, fnameAddr},
+		{4, 0},
+		{4, 0},
+	})
+
+	if !g.HandleTrap1() {
+		t.Fatal("Pexec should be handled for U: drive")
+	}
+
+	textBase := uint64(PEXEC_TPA_BASE + TOS_BASEPAGE_SIZE)
+	if got, ok := symbols.Lookup("M68K", "entry"); !ok || got != textBase {
+		t.Fatalf("entry symbol = $%X, %v; want $%X", got, ok, textBase)
+	}
+	if got, ok := symbols.Lookup("M68K", "data_label"); !ok || got != textBase+0xA {
+		t.Fatalf("data_label symbol = $%X, %v; want $%X", got, ok, textBase+0xA)
+	}
+}
+
 func TestGemdos_Pexec_MshrinkIntercept(t *testing.T) {
 	g, cpu, bus := newTestGemdos(t)
 	defer g.Close()

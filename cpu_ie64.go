@@ -454,6 +454,11 @@ type CPU64 struct {
 	// Coprocessor mode: allows PC outside PROG_START..STACK_START
 	CoprocMode bool
 
+	debugAccess  *DebugAccessService
+	debugFaults  *DebugFaultService
+	debugBreakIn func(pc uint64) bool
+	debugCPUID   int
+
 	// MMU state
 	mmuEnabled     bool         // MMU translation active
 	supervisorMode bool         // true = supervisor, false = user
@@ -542,6 +547,7 @@ func NewCPU64(bus *MachineBus) *CPU64 {
 		memory:         bus.GetMemory(),
 		supervisorMode: true, // Boot in supervisor mode
 		FPU:            NewIE64FPU(),
+		debugCPUID:     -1,
 	}
 	cpu.memBase = unsafe.Pointer(&cpu.memory[0])
 	cpu.regs[31] = STACK_START // R31 is the host stack pointer
@@ -657,6 +663,9 @@ func (cpu *CPU64) popTrapFrame() {
 // active fields and PC are left untouched so the interpreter/JIT
 // main loops do not jump into a trap handler on top of a halted CPU.
 func (cpu *CPU64) trapFault(cause uint32, addr uint64) {
+	if cpu.debugFault("ie64."+ie64FaultCauseName(cause), addr, faultInfof("cause=%d addr=$%X", cause, addr)) {
+		return
+	}
 	if !cpu.trapEntry() {
 		return
 	}
@@ -671,6 +680,9 @@ func (cpu *CPU64) trapFault(cause uint32, addr uint64) {
 // via MFCR CR1. User convention: arguments in R1-R6 before SYSCALL.
 // Overflow handling matches trapFault: the CPU halts and PC is left alone.
 func (cpu *CPU64) trapSyscall(syscallNum uint32) {
+	if cpu.debugFault("ie64.syscall", uint64(syscallNum), faultInfof("syscall=%d", syscallNum)) {
+		return
+	}
 	if !cpu.trapEntry() {
 		return
 	}
@@ -678,6 +690,48 @@ func (cpu *CPU64) trapSyscall(syscallNum uint32) {
 	cpu.faultAddr = uint64(syscallNum)     // handler reads via MFCR CR_FAULT_ADDR
 	cpu.faultCause = FAULT_SYSCALL
 	cpu.PC = cpu.trapVector
+}
+
+func (cpu *CPU64) debugFault(kind string, addr uint64, info string) bool {
+	if cpu == nil || cpu.debugFaults == nil {
+		return false
+	}
+	if cpu.debugFaults.OnFault(cpu.debugCPUID, cpu.PC, kind, addr, info) {
+		cpu.running.Store(false)
+		return true
+	}
+	return false
+}
+
+func ie64FaultCauseName(cause uint32) string {
+	switch cause {
+	case FAULT_NOT_PRESENT:
+		return "not-present"
+	case FAULT_READ_DENIED:
+		return "read-denied"
+	case FAULT_WRITE_DENIED:
+		return "write-denied"
+	case FAULT_EXEC_DENIED:
+		return "exec-denied"
+	case FAULT_USER_SUPER:
+		return "user-supervisor"
+	case FAULT_PRIV:
+		return "priv"
+	case FAULT_SYSCALL:
+		return "syscall"
+	case FAULT_TIMER:
+		return "timer"
+	case FAULT_MISALIGNED:
+		return "misaligned"
+	case FAULT_ILLEGAL_INSTRUCTION:
+		return "illegal"
+	case FAULT_SKEF:
+		return "skef"
+	case FAULT_SKAC:
+		return "skac"
+	default:
+		return "fault"
+	}
 }
 
 // requireSupervisor checks privilege; returns true if in supervisor mode.
@@ -913,13 +967,21 @@ func (cpu *CPU64) loadMem(vaddr uint64, size byte) uint64 {
 		}
 		switch size {
 		case IE64_SIZE_B:
-			return uint64(cpu.bus.ReadPhys8(physWide))
+			result := uint64(cpu.bus.ReadPhys8(physWide))
+			cpu.debugOnRead(physWide, size)
+			return result
 		case IE64_SIZE_W:
-			return uint64(cpu.bus.ReadPhys16(physWide))
+			result := uint64(cpu.bus.ReadPhys16(physWide))
+			cpu.debugOnRead(physWide, size)
+			return result
 		case IE64_SIZE_L:
-			return uint64(cpu.bus.ReadPhys32(physWide))
+			result := uint64(cpu.bus.ReadPhys32(physWide))
+			cpu.debugOnRead(physWide, size)
+			return result
 		case IE64_SIZE_Q:
-			return cpu.bus.ReadPhys64(physWide)
+			result := cpu.bus.ReadPhys64(physWide)
+			cpu.debugOnRead(physWide, size)
+			return result
 		}
 		return 0
 	}
@@ -929,45 +991,135 @@ func (cpu *CPU64) loadMem(vaddr uint64, size byte) uint64 {
 	if cpu.vramDirect != nil && addr >= cpu.vramStart && addr < cpu.vramEnd {
 		offset := addr - cpu.vramStart
 		base := unsafe.Pointer(&cpu.vramDirect[offset])
+		var result uint64
 		switch size {
 		case IE64_SIZE_Q:
-			return *(*uint64)(base)
+			result = *(*uint64)(base)
 		case IE64_SIZE_L:
-			return uint64(*(*uint32)(base))
+			result = uint64(*(*uint32)(base))
 		case IE64_SIZE_W:
-			return uint64(*(*uint16)(base))
+			result = uint64(*(*uint16)(base))
 		case IE64_SIZE_B:
-			return uint64(*(*byte)(base))
+			result = uint64(*(*byte)(base))
 		}
+		cpu.debugOnRead(uint64(addr), size)
+		return result
 	}
 
 	// Non-I/O fast path - direct memory read, no bus overhead
 	if addr < IO_REGION_START {
 		base := unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))
+		var result uint64
 		switch size {
 		case IE64_SIZE_Q:
-			return *(*uint64)(base)
+			result = *(*uint64)(base)
 		case IE64_SIZE_L:
-			return uint64(*(*uint32)(base))
+			result = uint64(*(*uint32)(base))
 		case IE64_SIZE_W:
-			return uint64(*(*uint16)(base))
+			result = uint64(*(*uint16)(base))
 		case IE64_SIZE_B:
-			return uint64(*(*byte)(base))
+			result = uint64(*(*byte)(base))
 		}
+		cpu.debugOnRead(uint64(addr), size)
+		return result
 	}
 
 	// I/O slow path - bus callbacks protect their own state
+	var result uint64
 	switch size {
 	case IE64_SIZE_B:
-		return uint64(cpu.bus.Read8(addr))
+		result = uint64(cpu.bus.Read8(addr))
 	case IE64_SIZE_W:
-		return uint64(cpu.bus.Read16(addr))
+		result = uint64(cpu.bus.Read16(addr))
 	case IE64_SIZE_L:
-		return uint64(cpu.bus.Read32(addr))
+		result = uint64(cpu.bus.Read32(addr))
 	case IE64_SIZE_Q:
-		return cpu.bus.Read64(addr)
+		result = cpu.bus.Read64(addr)
+	default:
+		return 0
 	}
-	return 0
+	cpu.debugOnRead(uint64(addr), size)
+	return result
+}
+
+func (cpu *CPU64) debugAccessWidth(size byte) int {
+	switch size {
+	case IE64_SIZE_B:
+		return 1
+	case IE64_SIZE_W:
+		return 2
+	case IE64_SIZE_L:
+		return 4
+	case IE64_SIZE_Q:
+		return 8
+	default:
+		return 1
+	}
+}
+
+func (cpu *CPU64) debugOnRead(addr uint64, size byte) {
+	if cpu == nil || cpu.debugAccess == nil || !cpu.debugAccess.AnyActive(cpu.debugCPUID) {
+		return
+	}
+	cpu.debugAccess.OnRead(cpu.debugCPUID, addr, cpu.debugAccessWidth(size))
+}
+
+func (cpu *CPU64) debugOnWrite(addr uint64, size byte, oldVal, newVal uint64) {
+	if cpu == nil || cpu.debugAccess == nil || !cpu.debugAccess.AnyActive(cpu.debugCPUID) {
+		return
+	}
+	cpu.debugAccess.OnWrite(cpu.debugCPUID, addr, cpu.debugAccessWidth(size), oldVal, newVal)
+}
+
+func (cpu *CPU64) debugOnWriteKnown(addr uint64, size byte, oldVal, newVal uint64, oldKnown bool) {
+	if cpu == nil || cpu.debugAccess == nil || !cpu.debugAccess.AnyActive(cpu.debugCPUID) {
+		return
+	}
+	cpu.debugAccess.OnWriteKnown(cpu.debugCPUID, addr, cpu.debugAccessWidth(size), oldVal, newVal, oldKnown)
+}
+
+func (cpu *CPU64) debugWriteActive() bool {
+	return cpu != nil && cpu.debugAccess != nil && cpu.debugAccess.AnyActive(cpu.debugCPUID)
+}
+
+func ie64DirectValue(base unsafe.Pointer, size byte) uint64 {
+	switch size {
+	case IE64_SIZE_B:
+		return uint64(*(*byte)(base))
+	case IE64_SIZE_W:
+		return uint64(*(*uint16)(base))
+	case IE64_SIZE_L:
+		return uint64(*(*uint32)(base))
+	case IE64_SIZE_Q:
+		return *(*uint64)(base)
+	default:
+		return 0
+	}
+}
+
+func (cpu *CPU64) readPhysDebugValue(addr uint64, size byte) uint64 {
+	if cpu == nil || cpu.bus == nil || cpu.bus.backing == nil || !cpu.bus.addrInBacking(addr, uint64(cpu.debugAccessWidth(size))) {
+		return 0
+	}
+	switch size {
+	case IE64_SIZE_B:
+		return uint64(cpu.bus.backing.Read8(addr))
+	case IE64_SIZE_W:
+		return uint64(cpu.bus.backing.Read8(addr)) | uint64(cpu.bus.backing.Read8(addr+1))<<8
+	case IE64_SIZE_L:
+		return uint64(cpu.bus.backing.Read32(addr))
+	case IE64_SIZE_Q:
+		return cpu.bus.backing.Read64(addr)
+	default:
+		return 0
+	}
+}
+
+func (cpu *CPU64) debugOnFetch(addr uint64, width int) {
+	if cpu == nil || cpu.debugAccess == nil || !cpu.debugAccess.AnyActive(cpu.debugCPUID) {
+		return
+	}
+	cpu.debugAccess.OnFetch(cpu.debugCPUID, addr, width)
 }
 
 func (cpu *CPU64) storeMem(vaddr uint64, val uint64, size byte) {
@@ -1005,6 +1157,10 @@ func (cpu *CPU64) storeMem(vaddr uint64, val uint64, size byte) {
 			cpu.trapped = true
 			return
 		}
+		oldVal := uint64(0)
+		if cpu.debugWriteActive() {
+			oldVal = cpu.readPhysDebugValue(physWide, size)
+		}
 		switch size {
 		case IE64_SIZE_B:
 			cpu.bus.WritePhys8(physWide, byte(val))
@@ -1014,7 +1170,10 @@ func (cpu *CPU64) storeMem(vaddr uint64, val uint64, size byte) {
 			cpu.bus.WritePhys32(physWide, uint32(val))
 		case IE64_SIZE_Q:
 			cpu.bus.WritePhys64(physWide, val)
+		default:
+			return
 		}
+		cpu.debugOnWrite(physWide, size, oldVal, val)
 		return
 	}
 	addr := uint32(physWide)
@@ -1023,6 +1182,10 @@ func (cpu *CPU64) storeMem(vaddr uint64, val uint64, size byte) {
 	if cpu.vramDirect != nil && addr >= cpu.vramStart && addr < cpu.vramEnd {
 		offset := addr - cpu.vramStart
 		base := unsafe.Pointer(&cpu.vramDirect[offset])
+		oldVal := uint64(0)
+		if cpu.debugWriteActive() {
+			oldVal = ie64DirectValue(base, size)
+		}
 		switch size {
 		case IE64_SIZE_B:
 			*(*byte)(base) = byte(val)
@@ -1033,12 +1196,17 @@ func (cpu *CPU64) storeMem(vaddr uint64, val uint64, size byte) {
 		case IE64_SIZE_Q:
 			*(*uint64)(base) = val
 		}
+		cpu.debugOnWrite(uint64(addr), size, oldVal, val)
 		return
 	}
 
 	// Non-I/O fast path - direct memory write, no bus overhead
 	if addr < IO_REGION_START {
 		base := unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))
+		oldVal := uint64(0)
+		if cpu.debugWriteActive() {
+			oldVal = ie64DirectValue(base, size)
+		}
 		switch size {
 		case IE64_SIZE_B:
 			*(*byte)(base) = byte(val)
@@ -1049,6 +1217,7 @@ func (cpu *CPU64) storeMem(vaddr uint64, val uint64, size byte) {
 		case IE64_SIZE_Q:
 			*(*uint64)(base) = val
 		}
+		cpu.debugOnWrite(uint64(addr), size, oldVal, val)
 		return
 	}
 
@@ -1062,7 +1231,10 @@ func (cpu *CPU64) storeMem(vaddr uint64, val uint64, size byte) {
 		cpu.bus.Write32(addr, uint32(val))
 	case IE64_SIZE_Q:
 		cpu.bus.Write64(addr, val)
+	default:
+		return
 	}
+	cpu.debugOnWriteKnown(uint64(addr), size, 0, val, false)
 }
 
 // ------------------------------------------------------------------------------
@@ -1227,6 +1399,9 @@ func (cpu *CPU64) Execute() {
 	checkCounter := uint32(0)
 
 	for running {
+		if cpu.debugHandleBreakIn(cpu.PC) {
+			break
+		}
 		// M15.6 G2 Phase 2c-trap: trap-frame stack overflow sets
 		// trapHalted in pushTrapFrame. Poll it every iteration (cheap
 		// non-atomic read) so a runaway nested-fault kernel bug stops
@@ -1294,6 +1469,7 @@ func (cpu *CPU64) Execute() {
 			}
 			instr = fetched
 		}
+		cpu.debugOnFetch(pcVirt, IE64_INSTR_SIZE)
 		opcode := byte(instr)
 		byte1 := byte(instr >> 8)
 		byte2 := byte(instr >> 16)
@@ -2451,6 +2627,17 @@ func (cpu *CPU64) IsRunning() bool {
 	return cpu.running.Load()
 }
 
+func (cpu *CPU64) debugHandleBreakIn(pc uint64) bool {
+	if cpu == nil || cpu.debugBreakIn == nil {
+		return false
+	}
+	if cpu.debugBreakIn(pc) {
+		cpu.running.Store(false)
+		return true
+	}
+	return false
+}
+
 func (cpu *CPU64) StartExecution() {
 	cpu.execMu.Lock()
 	defer cpu.execMu.Unlock()
@@ -2513,6 +2700,7 @@ func (cpu *CPU64) StepOne() int {
 		}
 		instr = fetched
 	}
+	cpu.debugOnFetch(pcVirt, IE64_INSTR_SIZE)
 	opcode := byte(instr)
 	byte1 := byte(instr >> 8)
 	byte2 := byte(instr >> 16)

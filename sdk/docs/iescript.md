@@ -758,19 +758,55 @@ Monitor/debugger integration. The Machine Monitor is always built into the engin
 
 `dbg.resume()` - Alias for `dbg.close()`. Returns: nothing.
 
+`dbg.request_break_in()` - Request an IEMon break-in on currently running CPUs. Stopped CPUs are left untouched. Returns: nothing.
+
 ### Execution Control
 
-`dbg.step([n])` - Single-step the focused CPU by `n` instructions (default 1). Returns: nothing.
+`dbg.step([n])` - Single-step the focussed CPU by `n` instructions (default 1). Returns: nothing.
 
-`dbg.continue()` - Resume execution on the focused CPU (equivalent to monitor `g` command). Returns: nothing.
+`dbg.continue()` - Resume execution on the focussed CPU (equivalent to monitor `g` command). Returns: nothing.
 
-`dbg.run_until(addr)` - Run the focused CPU until it reaches address `addr`. Returns: nothing.
+`dbg.run_until(addr)` - Run the focussed CPU until it reaches address `addr`. Returns: nothing.
 
 When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned debugger open is released and the monitor is deactivated.
 
 `dbg.run_until` is a fire-and-forget request: it has no timeout argument. If execution never reaches the target address before the monitor is re-entered for another reason, the temporary breakpoint set by `run_until` persists and will fire on a future run. Clear it explicitly with `dbg.clear_bp(addr)` if you no longer want the stop. See [iemon.md](iemon.md) "Common Pitfalls" for details.
 
-`dbg.backstep()` - Step the focused CPU backward by one instruction (if trace history is available). Returns: nothing.
+`dbg.backstep()` - Step the focussed CPU backward by one instruction (if trace history is available). Returns: nothing.
+
+### Page Guards
+
+`dbg.guard_add(start, end, perm [, scope])` - Add a page/access guard over
+`start..end`. `perm` is any non-empty combination of `"r"`, `"w"`, and `"x"`.
+`scope` is `"all"` by default, or `"current"` for the currently focussed CPU.
+Returns: nothing.
+
+`dbg.guard_del([start, end [, scope]])` - Remove a matching guard. With no
+arguments, clears all guards. With a range, returns the number of guards removed.
+
+`dbg.guard_list()` - List guards. Returns a table of entries with fields
+`start`, `end`, `perm`, `scope`, `cpu_id`, `once`, and `name`.
+
+### Fault Interception
+
+`dbg.fault_break(kind)` - Break before the guest handler for fault `kind` runs.
+For example, `dbg.fault_break("m68k.illegal")`. Returns: nothing.
+
+`dbg.fault_clear(kind)` - Clear one fault-break kind. Returns: nothing.
+
+`dbg.fault_on()` / `dbg.fault_off()` - Enable interception for all supported
+faults, or disable all fault interception. Returns: nothing.
+
+`dbg.fault_list()` - Return `{ all = boolean, kinds = { ... } }` for the current
+fault-interception configuration.
+
+`dbg.on_fault(kind, fn)` - Enable fault interception for `kind` and call `fn(event)`
+at script yield/poll points when that fault is observed. Use `"*"` to subscribe to
+all fault kinds. The event table contains `cpu_id`, `pc`, `addr`, `kind`, and
+`info`. Returns: nothing.
+
+`dbg.poll_faults()` - Dispatch queued `dbg.on_fault` callbacks immediately.
+`sys.wait_ms` and `sys.wait_frames` also poll before returning. Returns: nothing.
 
 ### Breakpoints
 
@@ -780,9 +816,9 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 
 `dbg.clear_bp(addr)` - Remove the breakpoint at address `addr`. Returns: nothing.
 
-`dbg.clear_all_bp()` - Remove all breakpoints on the focused CPU. Returns: nothing.
+`dbg.clear_all_bp()` - Remove all breakpoints on the focussed CPU. Returns: nothing.
 
-`dbg.list_bp()` - List all breakpoints on the focused CPU. Returns: table (array) of entries, each with fields:
+`dbg.list_bp()` - List all breakpoints on the focussed CPU. Returns: table (array) of entries, each with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -792,13 +828,30 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 
 ### Watchpoints
 
-`dbg.set_wp(addr)` - Set a watchpoint at address `addr`. Watchpoints are **write-only** in this revision (no read or read/write variants); the monitor activates when an instruction modifies the watched byte. Returns: nothing.
+`dbg.set_wp(addr)` - Set a one-byte write watchpoint at address `addr`. Returns: nothing.
+
+`dbg.set_wp_ex(addr [, mode [, width]])` - Set a watchpoint with an explicit
+mode and width. `mode` is `"r"`, `"w"`, or `"rw"`; `width` is 1, 2, 4, or 8
+bytes. Wider watchpoints fire on overlapping narrower accesses. Returns:
+nothing.
 
 `dbg.clear_wp(addr)` - Remove the watchpoint at address `addr`. Returns: nothing.
 
-`dbg.clear_all_wp()` - Remove all watchpoints on the focused CPU. Returns: nothing.
+`dbg.clear_all_wp()` - Remove all watchpoints on the focussed CPU. Returns: nothing.
 
 `dbg.list_wp()` - List all watchpoint addresses. Returns: table (array) of numbers.
+
+### Symbols And Regions
+
+`sym.add(name, addr [, kind])` - Add a symbol to the focussed CPU's symbol namespace. `kind` defaults to `"label"`. Returns: nothing.
+
+`sym.lookup(name)` - Look up a symbol in the focussed CPU's symbol namespace. Returns: address or `nil`.
+
+`sym.resolve(addr)` - Resolve an address to the nearest symbol. Returns a table `{name, addr, offset, kind}` or `nil`.
+
+`regions.list()` - List memory regions visible to the focussed CPU. Returns a table of `{start, end, name, kind}` entries.
+
+`regions.lookup(addr)` - Resolve an address to a memory region for the focussed CPU. Returns `{start, end, name, kind}` or `nil`.
 
 ### Registers
 
@@ -814,9 +867,9 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 
 ### Memory
 
-`dbg.read_mem(addr, len)` - Read `len` bytes from the focused CPU's memory at `addr`. Returns: string (raw bytes).
+`dbg.read_mem(addr, len)` - Read `len` bytes from the focussed CPU's memory at `addr`. Returns: string (raw bytes).
 
-`dbg.write_mem(addr, data)` - Write raw byte string `data` to the focused CPU's memory at `addr`. Returns: nothing.
+`dbg.write_mem(addr, data)` - Write raw byte string `data` to the focussed CPU's memory at `addr`. Returns: nothing.
 
 `dbg.fill_mem(addr, len, value)` - Fill `len` bytes starting at `addr` with byte `value`. Returns: nothing.
 
@@ -842,7 +895,7 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 | `hex` | string | Raw instruction bytes in hex |
 | `mnemonic` | string | Disassembled instruction text |
 
-`dbg.trace(n)` - Execute `n` instructions on the focused CPU, recording each step. Returns: table (array) of entries, each with fields:
+`dbg.trace(n)` - Execute `n` instructions on the focussed CPU, recording each step. Returns: table (array) of entries, each with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -871,6 +924,22 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 | `new_val` | number | New value written |
 
 `dbg.trace_history_clear(addr)` - Clear write history for address `addr` (string, e.g. `"$1000"` or `"*"`). Returns: nothing.
+
+`dbg.accesslog_on([size])` - Enable the IEMon read/write/fetch access-event ring. `size` defaults to 256 events. Raises if debug access instrumentation is unavailable. Returns: nothing.
+
+`dbg.accesslog_off()` - Disable and clear the access-event ring. Returns: nothing.
+
+`dbg.accesslog([count])` - Return recent access events from the ring. `count` defaults to all retained events. Each entry has fields `seq`, `cpu_id`, `pc`, `addr`, `width`, `kind`, `old_val`, and `new_val`. Returns: table.
+
+`dbg.who(kind, addr)` - Return the most recent access event covering `addr` for `kind` (`"read"`, `"wrote"`, or `"fetched"`), or `nil`. Returns: table or nil.
+
+`dbg.bfirst(kind, region)` - Arm a one-shot break on the first access of `kind` to the named memory region. Returns: nothing.
+
+`dbg.reverse_continue()` - Run IEMon's whole-machine reverse-continue command (`rg`). Returns: nothing.
+
+`dbg.reverse_until(expr)` - Run IEMon's reverse run-until command (`rt <expr>`). Returns: nothing.
+
+`dbg.timeline([count])` - Return `tl [count]` output lines as a table of strings. Returns: table.
 
 ### State Save/Load
 
@@ -1514,7 +1583,7 @@ Compact reference for IEScript API functions.
 | `rec.is_recording()` | boolean |
 | `rec.frame_count()` | number |
 
-### dbg (57)
+### dbg
 
 | Function | Returns |
 |----------|---------|
@@ -1533,6 +1602,7 @@ Compact reference for IEScript API functions.
 | `dbg.clear_all_bp()` | - |
 | `dbg.list_bp()` | table |
 | `dbg.set_wp(addr)` | - |
+| `dbg.set_wp_ex(addr [, mode [, width]])` | - |
 | `dbg.clear_wp(addr)` | - |
 | `dbg.clear_all_wp()` | - |
 | `dbg.list_wp()` | table |
@@ -1557,6 +1627,22 @@ Compact reference for IEScript API functions.
 | `dbg.trace_watch_list()` | table |
 | `dbg.trace_history(addr_str)` | table |
 | `dbg.trace_history_clear(addr)` | - |
+| `dbg.accesslog_on([size])` | - |
+| `dbg.accesslog_off()` | - |
+| `dbg.accesslog([count])` | table |
+| `dbg.who(kind, addr)` | table/nil |
+| `dbg.bfirst(kind, region)` | - |
+| `dbg.reverse_continue()` | - |
+| `dbg.reverse_until(expr)` | - |
+| `dbg.timeline([count])` | table |
+| `dbg.guard_add(start, end, perm [, scope])` | - |
+| `dbg.guard_del([start, end [, scope]])` | number |
+| `dbg.guard_list()` | table |
+| `dbg.fault_on()` / `dbg.fault_off()` | - |
+| `dbg.fault_break(kind)` / `dbg.fault_clear(kind)` | - |
+| `dbg.fault_list()` | table |
+| `dbg.on_fault(kind, fn)` | - |
+| `dbg.poll_faults()` | - |
 | `dbg.save_state(path)` | - |
 | `dbg.load_state(path)` | - |
 | `dbg.save_mem_file(start, length, path)` | - |

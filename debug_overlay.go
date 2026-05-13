@@ -541,6 +541,10 @@ func (o *MonitorOverlay) HandleInput() bool {
 			m.inputLine = m.inputLine[m.cursorPos:]
 			m.cursorPos = 0
 		}
+		// Ctrl+R = reverse history search using the current input as query
+		if inpututil.IsKeyJustPressed(ebiten.KeyR) {
+			m.reverseHistorySearch()
+		}
 		// Ctrl+Left = Word left
 		if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) || monitorShouldRepeat(ebiten.KeyArrowLeft) {
 			for m.cursorPos > 0 && m.inputLine[m.cursorPos-1] == ' ' {

@@ -293,6 +293,18 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 
 	for cpu_6502.running.Load() {
 		for range 4096 {
+			if cpu_6502.debugBreakIn != nil {
+				cpu_6502.PC = pc
+				cpu_6502.SP = sp
+				cpu_6502.A = a
+				cpu_6502.X = x
+				cpu_6502.Y = y
+				cpu_6502.SR = sr
+				cpu_6502.Cycles = cycles
+				if cpu_6502.debugHandleBreakIn(uint64(pc)) {
+					return
+				}
+			}
 			// Reset handshake at instruction boundary.
 			if cpu_6502.resetting.Load() {
 				cpu_6502.PC = pc
@@ -3622,6 +3634,26 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				cycles += 6
 
 			case 0x00: // BRK — matches legacy executeLegacy() byte for byte
+				brkPC := pc - 1
+				if cpu_6502.debugFaults != nil {
+					cpu_6502.PC = brkPC
+					cpu_6502.SP = sp
+					cpu_6502.A = a
+					cpu_6502.X = x
+					cpu_6502.Y = y
+					cpu_6502.SR = sr
+					cpu_6502.Cycles = cycles
+					if cpu_6502.debugFault("6502.brk", uint64(brkPC), "") {
+						return
+					}
+					pc = brkPC + 1
+					sp = cpu_6502.SP
+					a = cpu_6502.A
+					x = cpu_6502.X
+					y = cpu_6502.Y
+					sr = cpu_6502.SR
+					cycles = cpu_6502.Cycles
+				}
 				pc++ // legacy cpu_6502.PC++
 				if dpb[1] == 0 {
 					memDirect[0x0100|uint16(sp)] = byte(pc >> 8)
@@ -3807,10 +3839,11 @@ func (cpu_6502 *CPU_6502) stepFast() int {
 	// Direct bitmap-aware opcode fetch.
 	adapter := cpu_6502.fastAdapter
 	var opcode byte
+	adapter.debugOnFetch(cpu_6502.PC, 1)
 	if cpu_6502.directPageBitmap[cpu_6502.PC>>8] == 0 {
 		opcode = adapter.memDirect[cpu_6502.PC]
 	} else {
-		opcode = adapter.Read(cpu_6502.PC)
+		opcode = adapter.FetchFast(cpu_6502.PC)
 	}
 	cpu_6502.PC++
 

@@ -149,6 +149,8 @@ type MachineBus struct {
 	// directly via SetBacking. Routing rules live in machine_bus_phys.go.
 	backing Backing
 
+	debugAccess *DebugAccessService
+
 	// memReset is the platform/allocator-specific reset hook for
 	// bus.memory. nil falls back to a plain byte-loop zero. mmap-allocated
 	// buses install a madvise(MADV_DONTNEED)-based reset so a guest reset
@@ -820,6 +822,70 @@ func newMachineBusSizedWithAllocator(memSize uint64, allocator func(size uint64)
 	return bus, nil
 }
 
+func (bus *MachineBus) SetDebugAccessService(access *DebugAccessService) {
+	bus.debugAccess = access
+	if access != nil {
+		access.SetInstrumented(true)
+	}
+}
+
+func (bus *MachineBus) debugOnRead(addr uint32, width int) {
+	if bus == nil || bus.debugAccess == nil || !bus.debugAccess.AnyActive(-1) {
+		return
+	}
+	bus.debugAccess.OnRead(-1, uint64(addr), width)
+}
+
+func (bus *MachineBus) debugOnWrite(addr uint32, width int, oldVal, newVal uint64) {
+	bus.debugOnWriteKnown(addr, width, oldVal, newVal, true)
+}
+
+func (bus *MachineBus) debugOnWriteKnown(addr uint32, width int, oldVal, newVal uint64, oldKnown bool) {
+	if bus == nil || bus.debugAccess == nil || !bus.debugAccess.AnyActive(-1) {
+		return
+	}
+	bus.debugAccess.OnWriteKnown(-1, uint64(addr), width, oldVal, newVal, oldKnown)
+}
+
+func (bus *MachineBus) debugWriteActive() bool {
+	return bus != nil && bus.debugAccess != nil && bus.debugAccess.AnyActive(-1)
+}
+
+func (bus *MachineBus) debugOldValueNoCallback(addr uint32, width int) (uint64, bool) {
+	if width <= 0 {
+		return 0, false
+	}
+	base := uint64(addr)
+	if addr >= 0xFFFF0000 {
+		base = uint64(addr & 0x0000FFFF)
+	} else if base+uint64(width) > 0x100000000 {
+		return 0, false
+	}
+	if base+uint64(width) > uint64(len(bus.memory)) {
+		return 0, false
+	}
+	var value uint64
+	for i := 0; i < width; i++ {
+		a := uint32(base + uint64(i))
+		if region64 := bus.findIORegion64(a); region64 != nil && !region64.Shadow {
+			return 0, false
+		}
+		if region := bus.findIORegion(a); region != nil && !region.Shadow {
+			return 0, false
+		}
+		value |= uint64(bus.memory[a]) << (8 * i)
+	}
+	return value, true
+}
+
+type debugWriteSpan struct {
+	addr     uint32
+	width    int
+	old      uint64
+	new      uint64
+	oldKnown bool
+}
+
 func cloneIORegionMap(src map[uint32][]IORegion) map[uint32][]IORegion {
 	dst := make(map[uint32][]IORegion, len(src))
 	for page, regions := range src {
@@ -1465,7 +1531,12 @@ func filterIORegions64(regions []IORegion64, start, end uint32) []IORegion64 {
 func (bus *MachineBus) Write32(addr uint32, value uint32) {
 	// Skip sign-extended addresses (rare, use slow path)
 	if addr >= 0xFFFF0000 {
+		old, oldKnown := uint64(0), false
+		if bus.debugWriteActive() {
+			old, oldKnown = bus.debugOldValueNoCallback(addr, 4)
+		}
 		bus.write32Slow(addr, value)
+		bus.debugOnWriteKnown(addr, 4, old, uint64(value), oldKnown)
 		return
 	}
 
@@ -1478,12 +1549,22 @@ func (bus *MachineBus) Write32(addr uint32, value uint32) {
 	// Lock-free fast path: check bitmap for I/O mappings
 	if !bus.ioPageMapped(addr>>8) && !bus.ioPageMapped((addr+3)>>8) {
 		// No I/O on this page - lock-free write using unsafe pointer
+		var old uint32
+		if bus.debugWriteActive() {
+			old = *(*uint32)(unsafe.Pointer(&bus.memory[addr]))
+		}
 		*(*uint32)(unsafe.Pointer(&bus.memory[addr])) = value
+		bus.debugOnWrite(addr, 4, uint64(old), uint64(value))
 		return
 	}
 
 	// Has I/O mappings - use slow path with mutex
+	old, oldKnown := uint64(0), false
+	if bus.debugWriteActive() {
+		old, oldKnown = bus.debugOldValueNoCallback(addr, 4)
+	}
 	bus.write32Slow(addr, value)
+	bus.debugOnWriteKnown(addr, 4, old, uint64(value), oldKnown)
 }
 
 func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
@@ -1565,12 +1646,16 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 func (bus *MachineBus) Read32(addr uint32) uint32 {
 	// Lock-free fast path for VIDEO_STATUS (VBlank polling)
 	if addr == 0xF0008 && bus.videoStatusReader != nil {
-		return bus.videoStatusReader(addr)
+		value := bus.videoStatusReader(addr)
+		bus.debugOnRead(addr, 4)
+		return value
 	}
 
 	// Skip sign-extended addresses (rare, use slow path)
 	if addr >= 0xFFFF0000 {
-		return bus.read32Slow(addr)
+		value := bus.read32Slow(addr)
+		bus.debugOnRead(addr, 4)
+		return value
 	}
 
 	// Bounds check
@@ -1582,11 +1667,15 @@ func (bus *MachineBus) Read32(addr uint32) uint32 {
 	// Lock-free fast path: check bitmap for I/O mappings
 	if !bus.ioPageMapped(addr>>8) && !bus.ioPageMapped((addr+3)>>8) {
 		// No I/O on this page - lock-free read using unsafe pointer
-		return *(*uint32)(unsafe.Pointer(&bus.memory[addr]))
+		value := *(*uint32)(unsafe.Pointer(&bus.memory[addr]))
+		bus.debugOnRead(addr, 4)
+		return value
 	}
 
 	// Has I/O mappings - use slow path with mutex
-	return bus.read32Slow(addr)
+	value := bus.read32Slow(addr)
+	bus.debugOnRead(addr, 4)
+	return value
 }
 
 func (bus *MachineBus) read32Slow(addr uint32) uint32 {
@@ -1663,7 +1752,12 @@ func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 func (bus *MachineBus) Write16(addr uint32, value uint16) {
 	// Skip sign-extended addresses (rare, use slow path)
 	if addr >= 0xFFFF0000 {
+		old, oldKnown := uint64(0), false
+		if bus.debugWriteActive() {
+			old, oldKnown = bus.debugOldValueNoCallback(addr, 2)
+		}
 		bus.write16Slow(addr, value)
+		bus.debugOnWriteKnown(addr, 2, old, uint64(value), oldKnown)
 		return
 	}
 
@@ -1676,12 +1770,22 @@ func (bus *MachineBus) Write16(addr uint32, value uint16) {
 	// Lock-free fast path: check bitmap for I/O mappings
 	if !bus.ioPageMapped(addr>>8) && !bus.ioPageMapped((addr+1)>>8) {
 		// No I/O on this page - lock-free write using unsafe pointer
+		var old uint16
+		if bus.debugWriteActive() {
+			old = *(*uint16)(unsafe.Pointer(&bus.memory[addr]))
+		}
 		*(*uint16)(unsafe.Pointer(&bus.memory[addr])) = value
+		bus.debugOnWrite(addr, 2, uint64(old), uint64(value))
 		return
 	}
 
 	// Has I/O mappings - use slow path with mutex
+	old, oldKnown := uint64(0), false
+	if bus.debugWriteActive() {
+		old, oldKnown = bus.debugOldValueNoCallback(addr, 2)
+	}
 	bus.write16Slow(addr, value)
+	bus.debugOnWriteKnown(addr, 2, old, uint64(value), oldKnown)
 }
 
 func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
@@ -1774,7 +1878,9 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 func (bus *MachineBus) Read16(addr uint32) uint16 {
 	// Skip sign-extended addresses (rare, use slow path)
 	if addr >= 0xFFFF0000 {
-		return bus.read16Slow(addr)
+		value := bus.read16Slow(addr)
+		bus.debugOnRead(addr, 2)
+		return value
 	}
 
 	// Bounds check
@@ -1786,11 +1892,15 @@ func (bus *MachineBus) Read16(addr uint32) uint16 {
 	// Lock-free fast path: check bitmap for I/O mappings
 	if !bus.ioPageMapped(addr>>8) && !bus.ioPageMapped((addr+1)>>8) {
 		// No I/O on this page - lock-free read using unsafe pointer
-		return *(*uint16)(unsafe.Pointer(&bus.memory[addr]))
+		value := *(*uint16)(unsafe.Pointer(&bus.memory[addr]))
+		bus.debugOnRead(addr, 2)
+		return value
 	}
 
 	// Has I/O mappings - use slow path with mutex
-	return bus.read16Slow(addr)
+	value := bus.read16Slow(addr)
+	bus.debugOnRead(addr, 2)
+	return value
 }
 
 func (bus *MachineBus) read16Slow(addr uint32) uint16 {
@@ -1867,7 +1977,12 @@ func (bus *MachineBus) read16Slow(addr uint32) uint16 {
 func (bus *MachineBus) Write8(addr uint32, value uint8) {
 	// Skip sign-extended addresses (rare, use slow path)
 	if addr >= 0xFFFF0000 {
+		old, oldKnown := uint64(0), false
+		if bus.debugWriteActive() {
+			old, oldKnown = bus.debugOldValueNoCallback(addr, 1)
+		}
 		bus.write8Slow(addr, value)
+		bus.debugOnWriteKnown(addr, 1, old, uint64(value), oldKnown)
 		return
 	}
 
@@ -1880,12 +1995,22 @@ func (bus *MachineBus) Write8(addr uint32, value uint8) {
 	// Lock-free fast path: check bitmap for I/O mappings
 	if !bus.ioPageMapped(addr >> 8) {
 		// No I/O on this page - lock-free write
+		var old uint8
+		if bus.debugWriteActive() {
+			old = bus.memory[addr]
+		}
 		bus.memory[addr] = value
+		bus.debugOnWrite(addr, 1, uint64(old), uint64(value))
 		return
 	}
 
 	// Has I/O mappings - use slow path with mutex
+	old, oldKnown := uint64(0), false
+	if bus.debugWriteActive() {
+		old, oldKnown = bus.debugOldValueNoCallback(addr, 1)
+	}
 	bus.write8Slow(addr, value)
+	bus.debugOnWriteKnown(addr, 1, old, uint64(value), oldKnown)
 }
 
 // WriteMemoryDirect writes a single byte directly to memory,
@@ -1894,7 +2019,12 @@ func (bus *MachineBus) Write8(addr uint32, value uint8) {
 // (it does 32-bit writes even for single-byte values).
 func (bus *MachineBus) WriteMemoryDirect(addr uint32, value uint8) {
 	if addr < uint32(len(bus.memory)) {
+		var old uint8
+		if bus.debugWriteActive() {
+			old = bus.memory[addr]
+		}
 		bus.memory[addr] = value
+		bus.debugOnWrite(addr, 1, uint64(old), uint64(value))
 	}
 }
 
@@ -1980,7 +2110,9 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 func (bus *MachineBus) Read8(addr uint32) uint8 {
 	// Skip sign-extended addresses (rare, use slow path)
 	if addr >= 0xFFFF0000 {
-		return bus.read8Slow(addr)
+		value := bus.read8Slow(addr)
+		bus.debugOnRead(addr, 1)
+		return value
 	}
 
 	// Bounds check
@@ -1992,10 +2124,28 @@ func (bus *MachineBus) Read8(addr uint32) uint8 {
 	// Lock-free fast path: check bitmap for I/O mappings
 	if !bus.ioPageMapped(addr >> 8) {
 		// No I/O on this page - lock-free read
-		return bus.memory[addr]
+		value := bus.memory[addr]
+		bus.debugOnRead(addr, 1)
+		return value
 	}
 
 	// Has I/O mappings - use slow path with mutex
+	value := bus.read8Slow(addr)
+	bus.debugOnRead(addr, 1)
+	return value
+}
+
+func (bus *MachineBus) Read8NoDebug(addr uint32) uint8 {
+	if addr >= 0xFFFF0000 {
+		return bus.read8Slow(addr)
+	}
+	if addr >= uint32(len(bus.memory)) {
+		fmt.Printf("Warning: Read8 from out-of-bounds address 0x%08X\n", addr)
+		return 0
+	}
+	if !bus.ioPageMapped(addr >> 8) {
+		return bus.memory[addr]
+	}
 	return bus.read8Slow(addr)
 }
 
@@ -2237,7 +2387,9 @@ func (bus *MachineBus) Read64(addr uint32) uint64 {
 	// Sign-extended addresses always take the slow path (before bounds check,
 	// since the mapped address may be in bounds even if the raw address is not)
 	if addr >= 0xFFFF0000 {
-		return bus.read64Slow(addr)
+		value := bus.read64Slow(addr)
+		bus.debugOnRead(addr, 8)
+		return value
 	}
 
 	// Bounds check using uint64 arithmetic to prevent overflow
@@ -2249,10 +2401,14 @@ func (bus *MachineBus) Read64(addr uint32) uint64 {
 	lowPage := addr >> 8
 	highPage := uint32(uint64(addr)+7) >> 8
 	if !bus.ioPageMapped(lowPage) && !bus.ioPageMapped(highPage) {
-		return *(*uint64)(unsafe.Pointer(&bus.memory[addr]))
+		value := *(*uint64)(unsafe.Pointer(&bus.memory[addr]))
+		bus.debugOnRead(addr, 8)
+		return value
 	}
 
-	return bus.read64Slow(addr)
+	value := bus.read64Slow(addr)
+	bus.debugOnRead(addr, 8)
+	return value
 }
 
 // read64Slow handles 64-bit reads that may involve I/O regions.
@@ -2327,7 +2483,9 @@ func (bus *MachineBus) Write64(addr uint32, value uint64) {
 	// Sign-extended addresses always take the slow path (before bounds check,
 	// since the mapped address may be in bounds even if the raw address is not)
 	if addr >= 0xFFFF0000 {
-		bus.write64Slow(addr, value)
+		for _, span := range bus.write64Slow(addr, value) {
+			bus.debugOnWriteKnown(span.addr, span.width, span.old, span.new, span.oldKnown)
+		}
 		return
 	}
 
@@ -2340,18 +2498,25 @@ func (bus *MachineBus) Write64(addr uint32, value uint64) {
 	lowPage := addr >> 8
 	highPage := uint32(uint64(addr)+7) >> 8
 	if !bus.ioPageMapped(lowPage) && !bus.ioPageMapped(highPage) {
+		var old uint64
+		if bus.debugWriteActive() {
+			old = *(*uint64)(unsafe.Pointer(&bus.memory[addr]))
+		}
 		*(*uint64)(unsafe.Pointer(&bus.memory[addr])) = value
+		bus.debugOnWrite(addr, 8, old, value)
 		return
 	}
 
-	bus.write64Slow(addr, value)
+	for _, span := range bus.write64Slow(addr, value) {
+		bus.debugOnWriteKnown(span.addr, span.width, span.old, span.new, span.oldKnown)
+	}
 }
 
 // write64Slow handles 64-bit writes that may involve I/O regions.
-func (bus *MachineBus) write64Slow(addr uint32, value uint64) {
+func (bus *MachineBus) write64Slow(addr uint32, value uint64) []debugWriteSpan {
 	access, ok := bus.resolve64Access(addr)
 	if !ok {
-		return
+		return nil
 	}
 
 	lowAddr := access.effective
@@ -2364,20 +2529,41 @@ func (bus *MachineBus) write64Slow(addr uint32, value uint64) {
 	}
 	if region64 != nil && region64.onWrite64 != nil {
 		if ioRegion64CoversFullAccess(region64, lowAddr) {
+			old, oldKnown := uint64(0), false
+			if bus.debugWriteActive() {
+				old, oldKnown = bus.debugOldValueNoCallback(addr, 8)
+			}
 			region64.onWrite64(lowAddr, value)
 			bus.shadowWrite64(*region64, lowAddr, value)
-			return
+			return []debugWriteSpan{{addr: addr, width: 8, old: old, new: value, oldKnown: oldKnown}}
 		}
 		if !bus.canWrite64SplitIntoMMIO(lowAddr + 4) {
-			return
+			return nil
 		}
 	}
 
 	// Must split into two 32-bit halves (low then high)
 	lowVal := uint32(value)
 	highVal := uint32(value >> 32)
-	bus.write32Half(lowAddr, lowVal)
-	bus.write32Half(lowAddr+4, highVal)
+	var spans []debugWriteSpan
+	lowOld, lowOldKnown := uint64(0), false
+	if bus.debugWriteActive() {
+		lowOld, lowOldKnown = bus.debugOldValueNoCallback(addr, 4)
+	}
+	lowOK := bus.write32Half(lowAddr, lowVal)
+	if lowOK {
+		spans = append(spans, debugWriteSpan{addr: addr, width: 4, old: lowOld, new: uint64(lowVal), oldKnown: lowOldKnown})
+	}
+	highAddr := addr + 4
+	highOld, highOldKnown := uint64(0), false
+	if bus.debugWriteActive() {
+		highOld, highOldKnown = bus.debugOldValueNoCallback(highAddr, 4)
+	}
+	highOK := bus.write32Half(lowAddr+4, highVal)
+	if highOK {
+		spans = append(spans, debugWriteSpan{addr: highAddr, width: 4, old: highOld, new: uint64(highVal), oldKnown: highOldKnown})
+	}
+	return spans
 }
 
 // write32Half writes a 32-bit half for split 64-bit operations.
@@ -2388,7 +2574,7 @@ func (bus *MachineBus) write64Slow(addr uint32, value uint64) {
 // Backing memory stays in sync because write64Slow updates it after every write,
 // and the two write32Half calls in a split sequence execute in low-then-high
 // order, so the second call sees the first half's update.
-func (bus *MachineBus) write32Half(addr uint32, value uint32) {
+func (bus *MachineBus) write32Half(addr uint32, value uint32) bool {
 	// Check for 64-bit region
 	region64 := bus.findIORegion64(addr)
 	if region64 != nil && region64.onWrite64 != nil {
@@ -2410,27 +2596,29 @@ func (bus *MachineBus) write32Half(addr uint32, value uint32) {
 		// Write full 64-bit value via handler
 		region64.onWrite64(base, current)
 		bus.shadowWrite64(*region64, base, current)
-		return
+		return true
 	}
 
 	// Check for legacy 32-bit region
 	region := bus.findIORegion(addr)
 	if region != nil {
 		if bus.legacyMMIO64Policy == MMIO64PolicyFault {
-			return // no-op under Fault policy
+			return false // no-op under Fault policy
 		}
 		// Split policy: use legacy callback
 		if region.onWrite != nil {
 			region.onWrite(addr, value)
 		}
 		bus.shadowWrite32(*region, addr, value)
-		return
+		return true
 	}
 
 	// Plain RAM
 	if addr+4 <= uint32(len(bus.memory)) {
 		*(*uint32)(unsafe.Pointer(&bus.memory[addr])) = value
+		return true
 	}
+	return false
 }
 
 // Read64WithFault performs a 64-bit read with fault reporting.

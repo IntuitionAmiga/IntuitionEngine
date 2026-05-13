@@ -3227,6 +3227,85 @@ func TestHitCountCondition(t *testing.T) {
 	}
 }
 
+func TestBpExpr_Parse_AllOperators(t *testing.T) {
+	cond, err := ParseCondition("if R1==$10 && (hitcount>2 || b($2000)!=$00)")
+	if err != nil {
+		t.Fatalf("ParseCondition: %v", err)
+	}
+	if cond.Source != CondSourceExpression || cond.Expr == nil {
+		t.Fatalf("condition source = %v, expr=%#v; want expression", cond.Source, cond.Expr)
+	}
+}
+
+func TestBpExpr_IfPrefixAlwaysUsesExpressionParser(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	cpu.DataRegs[0] = 0x1234
+	cpu.DataRegs[1] = 0x1234
+	adapter := NewDebugM68K(cpu, nil)
+
+	cond, err := ParseCondition("if D0==D1")
+	if err != nil {
+		t.Fatalf("ParseCondition: %v", err)
+	}
+	if cond.Source != CondSourceExpression || cond.Expr == nil {
+		t.Fatalf("condition source = %v, expr=%#v; want expression", cond.Source, cond.Expr)
+	}
+	if !evaluateConditionWithHitCount(cond, adapter, 0) {
+		t.Fatal("if D0==D1 should evaluate true as a register-to-register expression")
+	}
+
+	cpu6502 := NewCPU_6502(bus)
+	cpu6502.A = 0x44
+	cpu6502.X = 0x44
+	cond, err = ParseCondition("if A==X")
+	if err != nil {
+		t.Fatalf("ParseCondition 6502: %v", err)
+	}
+	if !evaluateConditionWithHitCount(cond, NewDebug6502(cpu6502, nil), 0) {
+		t.Fatal("if A==X should evaluate true as a register-to-register expression")
+	}
+}
+
+func TestBpExpr_TriggersBreak_AllCPUs(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.running.Store(false)
+	cpu.regs[1] = 0x10
+	cpu.memory[0x2000] = 0x42
+	adapter := NewDebugIE64(cpu)
+
+	cond, err := ParseCondition("if R1==$10 && b($2000)==$42")
+	if err != nil {
+		t.Fatalf("ParseCondition: %v", err)
+	}
+	if !evaluateConditionWithHitCount(cond, adapter, 1) {
+		t.Fatal("expression condition should evaluate true")
+	}
+}
+
+func TestTraceRing_RecordsLastN(t *testing.T) {
+	mon, cpu := newTestMonitor()
+	cpu.PC = PROG_START
+	cpu.memory[PROG_START] = OP_NOP64
+	cpu.memory[PROG_START+8] = OP_NOP64
+	cpu.memory[PROG_START+16] = OP_NOP64
+
+	mon.ExecuteCommand("tracering on 2")
+	mon.ExecuteCommand("s 3")
+	_, out := mon.ExecuteCommandResult("show 4")
+
+	var lines []string
+	for _, line := range out {
+		if strings.Contains(line.Text, "nop") {
+			lines = append(lines, line.Text)
+		}
+	}
+	if len(lines) != 2 {
+		t.Fatalf("show returned %d trace-ring instruction lines, want 2: %#v", len(lines), out)
+	}
+}
+
 // ===========================================================================
 // Feature 5: Watchpoints
 // ===========================================================================
@@ -3266,6 +3345,84 @@ func TestWatchpointCommands(t *testing.T) {
 	wps = entry.CPU.ListWatchpoints()
 	if len(wps) != 0 {
 		t.Errorf("Expected no watchpoints after clear, got %v", wps)
+	}
+}
+
+func TestWatchpoint_WidthModeCommands(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+
+	mon.ExecuteCommand("bpmdw $5000")
+	wp, ok := entry.CPU.SnapshotWatchpoint(0x5000)
+	if !ok {
+		t.Fatal("expected watchpoint at $5000")
+	}
+	if wp.Type != WatchWrite || wp.Width != 4 {
+		t.Fatalf("watchpoint = type %v width %d, want write width 4", wp.Type, wp.Width)
+	}
+
+	_, out := mon.ExecuteCommandResult("wl")
+	var saw bool
+	for _, line := range out {
+		if strings.Contains(line.Text, "W4 $5000") {
+			saw = true
+			break
+		}
+	}
+	if !saw {
+		t.Fatalf("wl did not show W4 watchpoint: %#v", out)
+	}
+}
+
+func TestWatchpoint_ReadModeCommandEnabledWithAccessHooks(t *testing.T) {
+	mon, _ := newTestMonitor()
+
+	_, out := mon.ExecuteCommandResult("bpmdr $5000")
+	if !outputContains(out, "R4 watchpoint set at $5000") {
+		t.Fatalf("bpmdr output = %#v, want read-watch enabled", out)
+	}
+}
+
+func TestWatchpoint_WidthMatchingDetectsLaterByte(t *testing.T) {
+	mon, cpu := newTestMonitor()
+	entry := mon.cpus[0]
+
+	entry.CPU.WriteMemory(0x5000, []byte{0x10, 0x20, 0x30, 0x40})
+	mon.ExecuteCommand("bpmdw $5000")
+	wp, ok := entry.CPU.SnapshotWatchpoint(0x5000)
+	if !ok {
+		t.Fatal("expected watchpoint")
+	}
+	entry.CPU.WriteMemory(0x5000, []byte{0x10, 0x20, 0x99, 0x40})
+
+	changed, old, cur, snapshot := watchpointChanged(entry.CPU, &wp)
+	if !changed {
+		t.Fatal("wide watchpoint did not detect later-byte change")
+	}
+	if old != 0x30 || cur != 0x99 {
+		t.Fatalf("change old/new = %#x/%#x, want 0x30/0x99", old, cur)
+	}
+	if len(snapshot) != 4 {
+		t.Fatalf("snapshot width = %d, want 4", len(snapshot))
+	}
+	_ = cpu
+}
+
+func TestWatchpoint_ReadPollingDoesNotReportWrites(t *testing.T) {
+	mon, _ := newTestMonitor()
+	entry := mon.cpus[0]
+	setter := entry.CPU.(extendedWatchpointSetter)
+
+	entry.CPU.WriteMemory(0x5000, []byte{0x10})
+	setter.SetWatchpointEx(0x5000, WatchRead, 1)
+	wp, ok := entry.CPU.SnapshotWatchpoint(0x5000)
+	if !ok {
+		t.Fatal("expected read watchpoint")
+	}
+	entry.CPU.WriteMemory(0x5000, []byte{0x99})
+
+	if changed, _, _, _ := watchpointChanged(entry.CPU, &wp); changed {
+		t.Fatal("read-only watchpoint must not be reported by post-instruction write polling")
 	}
 }
 
@@ -3643,6 +3800,21 @@ func TestBackstepEmptyHistory(t *testing.T) {
 
 	if !hasError {
 		t.Error("Expected error message for empty step history")
+	}
+}
+
+func TestReverseStepAlias_CPULocal(t *testing.T) {
+	mon, cpu := newTestMonitor()
+	origPC := cpu.PC
+	cpu.memory[origPC] = OP_NOP64
+
+	mon.ExecuteCommand("s")
+	if cpu.PC == origPC {
+		t.Fatal("step did not advance PC")
+	}
+	mon.ExecuteCommand("rs")
+	if cpu.PC != origPC {
+		t.Fatalf("rs left PC=%#x, want %#x", cpu.PC, origPC)
 	}
 }
 

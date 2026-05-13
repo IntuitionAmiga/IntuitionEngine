@@ -27,6 +27,7 @@ type GemdosInterceptor struct {
 	bus      *MachineBus
 	driveNum uint16 // 0=A, 1=B, ... 20=U
 	hostRoot string // Canonicalized absolute host path
+	symbols  *SymbolTable
 
 	mu           sync.Mutex
 	currentDir   string             // GEMDOS-relative CWD (e.g. "" or "SUBDIR\CHILD")
@@ -59,6 +60,15 @@ type GemdosInterceptor struct {
 	fnodeBase     uint32 // p_fbase from dos_shrink
 	fnodeSize     uint32 // allocation size (count * sizeof(FNODE))
 	returnedCount int    // number of entries successfully returned (Fsnext OK count)
+}
+
+func (g *GemdosInterceptor) SetSymbolTable(symbols *SymbolTable) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.symbols = symbols
 }
 
 // pexecSavedState holds the parent process state saved during Pexec child execution.
@@ -765,10 +775,26 @@ func (g *GemdosInterceptor) handlePexec(sp uint32) bool {
 
 	g.cpu.AddrRegs[7] = childSP
 	g.cpu.PC = textBase
+	g.loadGuestSymbolsLocked(hostPath, textBase)
 
 	fmt.Printf("[GEMDOS] Pexec: loaded %q at $%06X (text=%d data=%d bss=%d) entry=$%06X sp=$%06X\n",
 		fname, textBase, textSize, dataSize, bssSize, textBase, childSP)
 	return true
+}
+
+func (g *GemdosInterceptor) loadGuestSymbolsLocked(hostPath string, textBase uint32) {
+	symbols := g.symbols
+	if symbols == nil {
+		return
+	}
+	sidecar, err := loadGuestSymbolSidecar(symbols, "M68K", hostPath, uint64(textBase))
+	if err != nil {
+		fmt.Printf("[GEMDOS] Pexec: symbol sidecar %q disabled: %v\n", sidecar, err)
+		return
+	}
+	if sidecar != "" {
+		fmt.Printf("[GEMDOS] Pexec: loaded symbols from %s at base $%06X\n", sidecar, textBase)
+	}
 }
 
 // processRelocation applies TOS .PRG relocation to the loaded program.

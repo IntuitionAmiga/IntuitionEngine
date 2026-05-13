@@ -89,10 +89,10 @@ func TestCoprocStaging_StartCmdLoadsWorker(t *testing.T) {
 	data := assembleService(t, []string{
 		"nasm", "-f", "bin", "-I", "sdk/include/", "-o", "OUTPUT",
 	}, "sdk/examples/asm/coproc_service_x86.asm")
-	if err := os.WriteFile(filepath.Join(baseDir, "svc.iex"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(baseDir, "svc.ie86"), data, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := stageCoprocService(bus, mgr, "svc.iex"); err != nil {
+	if err := stageCoprocService(bus, mgr, "svc.ie86"); err != nil {
 		t.Fatal(err)
 	}
 

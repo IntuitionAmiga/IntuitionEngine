@@ -44,6 +44,39 @@ type reapedMonitor struct {
 	id      int
 }
 
+// CoprocWorkerSlot describes one coprocessor worker slot for monitor display.
+type CoprocWorkerSlot struct {
+	CPUType   uint32
+	Label     string
+	Online    bool
+	MonitorID int
+	CPU       DebuggableCPU
+	Path      string
+}
+
+type coprocLifecycleError struct {
+	code uint32
+	err  error
+}
+
+func (e *coprocLifecycleError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *coprocLifecycleError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func coprocLifecycleErr(code uint32, format string, args ...any) error {
+	return &coprocLifecycleError{code: code, err: fmt.Errorf(format, args...)}
+}
+
 // busyBucket tracks busy/idle nanoseconds for a 100ms window.
 type busyBucket struct {
 	busyNs uint64
@@ -94,6 +127,7 @@ type CoprocessorManager struct {
 
 	// Worker start time for uptime tracking
 	workerStartTime [7]time.Time
+	workerImagePath [7]string
 
 	// Rolling busy% tracking (10x100ms buckets = 1 second window)
 	busyBuckets       [10]busyBucket
@@ -486,89 +520,13 @@ func (m *CoprocessorManager) dispatchCmd() {
 }
 
 func (m *CoprocessorManager) cmdStart() {
-	cpuIdx := cpuTypeToIndex(m.cpuType)
-	if cpuIdx < 0 {
-		m.cmdStatus = COPROC_STATUS_ERROR
-		m.cmdError = COPROC_ERR_INVALID_CPU
-		return
-	}
-
-	filename := m.readFileName(m.namePtr)
-	fullPath, ok := m.sanitizePath(filename)
-	if !ok {
-		m.cmdStatus = COPROC_STATUS_ERROR
-		m.cmdError = COPROC_ERR_PATH_INVALID
-		return
-	}
-
-	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		m.cmdStatus = COPROC_STATUS_ERROR
-		m.cmdError = COPROC_ERR_NOT_FOUND
-		return
-	}
-
-	// Stop existing worker for this CPU type if running
 	cpuType := m.cpuType
-	if existing := m.workers[cpuType]; existing != nil {
-		m.workers[cpuType] = nil
-		m.mu.Unlock()
-		m.stopWorkerAndUnregister(cpuType, existing)
-		m.mu.Lock()
-	}
-
-	m.mu.Unlock()
-	worker, err := m.createWorker(cpuType, data)
-	m.mu.Lock()
-	if err != nil {
-		m.cmdStatus = COPROC_STATUS_ERROR
-		m.cmdError = COPROC_ERR_LOAD_FAILED
-		return
-	}
-
-	// Store worker under mu BEFORE registering with monitor.
-	// If someone else took this slot while we were unlocked, stop our
-	// newly created worker instead of overwriting theirs.
-	if m.workers[cpuType] != nil {
-		// Another start beat us - discard our worker
-		m.mu.Unlock()
-		worker.stopCPU()
-		select {
-		case <-worker.done:
-		case <-time.After(2 * time.Second):
-		}
-		m.mu.Lock()
-		m.cmdStatus = COPROC_STATUS_ERROR
-		m.cmdError = COPROC_ERR_LOAD_FAILED
-		return
-	}
-	m.workers[cpuType] = worker
-	m.workerStartTime[cpuType] = time.Now()
-	mon := m.monitor
-
-	// Register with monitor outside mu, then recheck ownership.
-	m.mu.Unlock()
-	var newID int = -1
-	if mon != nil && worker.debugCPU != nil {
-		newID = mon.RegisterCPU(coprocLabel(cpuType), worker.debugCPU)
-	}
-	m.mu.Lock()
-	if m.workers[cpuType] == worker {
-		worker.monitorID = newID
-	} else {
-		// Stale: someone replaced us during registration - clean up
-		if mon != nil && newID >= 0 {
-			m.mu.Unlock()
-			mon.UnregisterCPU(newID)
-			m.mu.Lock()
-		}
-	}
-
-	m.cmdStatus = COPROC_STATUS_OK
-	m.cmdError = COPROC_ERR_NONE
+	filename := m.readFileName(m.namePtr)
+	err := m.startWorkerLocked(cpuType, filename, true)
+	m.setCmdResultFromLifecycleErr(err)
 
 	// Auto-calibrate dispatch overhead on first IE64 worker start
-	if cpuType == EXEC_TYPE_IE64 && m.dispatchOverheadNs.Load() == 0 {
+	if err == nil && cpuType == EXEC_TYPE_IE64 && m.dispatchOverheadNs.Load() == 0 {
 		go m.calibrateDispatchOverhead()
 	}
 }
@@ -620,28 +578,7 @@ func (m *CoprocessorManager) calibrateDispatchOverhead() {
 }
 
 func (m *CoprocessorManager) cmdStop() {
-	cpuIdx := cpuTypeToIndex(m.cpuType)
-	if cpuIdx < 0 {
-		m.cmdStatus = COPROC_STATUS_ERROR
-		m.cmdError = COPROC_ERR_INVALID_CPU
-		return
-	}
-
-	cpuType := m.cpuType
-	worker := m.workers[cpuType]
-	if worker == nil {
-		m.cmdStatus = COPROC_STATUS_ERROR
-		m.cmdError = COPROC_ERR_NO_WORKER
-		return
-	}
-
-	m.workers[cpuType] = nil
-	m.workerStartTime[cpuType] = time.Time{}
-	m.mu.Unlock()
-	m.stopWorkerAndUnregister(cpuType, worker)
-	m.mu.Lock()
-	m.cmdStatus = COPROC_STATUS_OK
-	m.cmdError = COPROC_ERR_NONE
+	m.setCmdResultFromLifecycleErr(m.stopWorkerLocked(m.cpuType))
 }
 
 func (m *CoprocessorManager) cmdEnqueue() {
@@ -938,6 +875,175 @@ func (m *CoprocessorManager) sanitizePath(path string) (string, bool) {
 	return fullPath, true
 }
 
+func (m *CoprocessorManager) setCmdResultFromLifecycleErr(err error) {
+	if err == nil {
+		m.cmdStatus = COPROC_STATUS_OK
+		m.cmdError = COPROC_ERR_NONE
+		return
+	}
+	m.cmdStatus = COPROC_STATUS_ERROR
+	if le, ok := err.(*coprocLifecycleError); ok {
+		m.cmdError = le.code
+	} else {
+		m.cmdError = COPROC_ERR_LOAD_FAILED
+	}
+}
+
+func inferCoprocCPUTypeFromImagePath(path string) uint32 {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".ie64":
+		return EXEC_TYPE_IE64
+	case ".iex", ".ie32":
+		return EXEC_TYPE_IE32
+	case ".ie68":
+		return EXEC_TYPE_M68K
+	case ".ie80":
+		return EXEC_TYPE_Z80
+	case ".ie65":
+		return EXEC_TYPE_6502
+	case ".ie86":
+		return EXEC_TYPE_X86
+	default:
+		return EXEC_TYPE_NONE
+	}
+}
+
+func (m *CoprocessorManager) stagedServicePathLocked() string {
+	if m.namePtr == 0 {
+		return ""
+	}
+	return strings.TrimSpace(m.readFileName(m.namePtr))
+}
+
+// StagedServicePath returns the currently staged COPROC_NAME_PTR service path.
+func (m *CoprocessorManager) StagedServicePath() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stagedServicePathLocked()
+}
+
+// StartWorkerFromStaged starts a coprocessor worker from the currently staged
+// COPROC_NAME_PTR service path. It is intended for IEMon, where duplicate
+// starts are rejected unless replace is true.
+func (m *CoprocessorManager) StartWorkerFromStaged(cpuType uint32, replace bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.startWorkerLocked(cpuType, m.stagedServicePathLocked(), replace)
+}
+
+// StartWorkerFromImage starts a coprocessor worker from an explicit relative
+// image path. When cpuType is EXEC_TYPE_NONE, the type is inferred from the
+// typed .ie* extension.
+func (m *CoprocessorManager) StartWorkerFromImage(cpuType uint32, path string, replace bool) (uint32, error) {
+	inferred := inferCoprocCPUTypeFromImagePath(path)
+	if inferred == EXEC_TYPE_NONE {
+		return 0, coprocLifecycleErr(COPROC_ERR_PATH_INVALID, "unsupported coprocessor image extension: %s", path)
+	}
+	if cpuType == EXEC_TYPE_NONE {
+		cpuType = inferred
+	} else if cpuType != inferred {
+		return 0, coprocLifecycleErr(COPROC_ERR_INVALID_CPU, "CPU type %s does not match image extension for %s", coprocCPUTypeToString(cpuType), path)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return cpuType, m.startWorkerLocked(cpuType, path, replace)
+}
+
+func (m *CoprocessorManager) startWorkerLocked(cpuType uint32, filename string, replace bool) error {
+	if cpuTypeToIndex(cpuType) < 0 {
+		return coprocLifecycleErr(COPROC_ERR_INVALID_CPU, "invalid coprocessor CPU type: %d", cpuType)
+	}
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return coprocLifecycleErr(COPROC_ERR_NOT_FOUND, "no staged coprocessor service image for %s", coprocCPUTypeToString(cpuType))
+	}
+	if inferred := inferCoprocCPUTypeFromImagePath(filename); inferred != EXEC_TYPE_NONE && inferred != cpuType {
+		return coprocLifecycleErr(COPROC_ERR_INVALID_CPU, "CPU type %s does not match image extension for %s", coprocCPUTypeToString(cpuType), filename)
+	}
+	fullPath, ok := m.sanitizePath(filename)
+	if !ok {
+		return coprocLifecycleErr(COPROC_ERR_PATH_INVALID, "invalid coprocessor service path: %s", filename)
+	}
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return coprocLifecycleErr(COPROC_ERR_NOT_FOUND, "coprocessor service %q is not readable: %w", filename, err)
+	}
+
+	if existing := m.workers[cpuType]; existing != nil {
+		if !replace {
+			return coprocLifecycleErr(COPROC_ERR_LOAD_FAILED, "%s coprocessor worker is already online", coprocCPUTypeToString(cpuType))
+		}
+		m.workers[cpuType] = nil
+		m.workerStartTime[cpuType] = time.Time{}
+		m.workerImagePath[cpuType] = ""
+		m.mu.Unlock()
+		m.stopWorkerAndUnregister(cpuType, existing)
+		m.mu.Lock()
+	}
+
+	m.mu.Unlock()
+	worker, err := m.createWorker(cpuType, data)
+	m.mu.Lock()
+	if err != nil {
+		return coprocLifecycleErr(COPROC_ERR_LOAD_FAILED, "%w", err)
+	}
+
+	if m.workers[cpuType] != nil {
+		m.mu.Unlock()
+		worker.stopCPU()
+		select {
+		case <-worker.done:
+		case <-time.After(2 * time.Second):
+		}
+		m.mu.Lock()
+		return coprocLifecycleErr(COPROC_ERR_LOAD_FAILED, "%s coprocessor worker was started concurrently", coprocCPUTypeToString(cpuType))
+	}
+	m.workers[cpuType] = worker
+	m.workerStartTime[cpuType] = time.Now()
+	m.workerImagePath[cpuType] = filename
+	mon := m.monitor
+
+	m.mu.Unlock()
+	newID := -1
+	if mon != nil && worker.debugCPU != nil {
+		newID = mon.RegisterCPU(coprocLabel(cpuType), worker.debugCPU)
+	}
+	m.mu.Lock()
+	if m.workers[cpuType] == worker {
+		worker.monitorID = newID
+	} else if mon != nil && newID >= 0 {
+		m.mu.Unlock()
+		mon.UnregisterCPU(newID)
+		m.mu.Lock()
+	}
+	return nil
+}
+
+// StopWorker stops an online coprocessor worker and unregisters it from IEMon.
+func (m *CoprocessorManager) StopWorker(cpuType uint32) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stopWorkerLocked(cpuType)
+}
+
+func (m *CoprocessorManager) stopWorkerLocked(cpuType uint32) error {
+	if cpuTypeToIndex(cpuType) < 0 {
+		return coprocLifecycleErr(COPROC_ERR_INVALID_CPU, "invalid coprocessor CPU type: %d", cpuType)
+	}
+	worker := m.workers[cpuType]
+	if worker == nil {
+		return coprocLifecycleErr(COPROC_ERR_NO_WORKER, "%s coprocessor worker is not online", coprocCPUTypeToString(cpuType))
+	}
+	m.workers[cpuType] = nil
+	m.workerStartTime[cpuType] = time.Time{}
+	m.workerImagePath[cpuType] = ""
+	m.markWorkerDownCompletionsLocked(cpuType)
+	m.mu.Unlock()
+	m.stopWorkerAndUnregister(cpuType, worker)
+	m.mu.Lock()
+	return nil
+}
+
 func (m *CoprocessorManager) pruneCompletions() {
 	now := time.Now()
 	// TTL-based pruning
@@ -1086,6 +1192,32 @@ func (m *CoprocessorManager) GetActiveWorkers() []CoprocDebugInfo {
 				CPU:     w.debugCPU,
 			})
 		}
+	}
+	drained := m.drainPendingUnregsLocked()
+	m.mu.Unlock()
+	m.flushReaped(drained)
+	return result
+}
+
+// WorkerInventory returns all six coprocessor worker slots, online or offline.
+func (m *CoprocessorManager) WorkerInventory() []CoprocWorkerSlot {
+	m.mu.Lock()
+	m.reapDeadWorkersLocked()
+
+	result := make([]CoprocWorkerSlot, 0, 6)
+	for _, cpuType := range []uint32{EXEC_TYPE_IE32, EXEC_TYPE_IE64, EXEC_TYPE_M68K, EXEC_TYPE_Z80, EXEC_TYPE_6502, EXEC_TYPE_X86} {
+		slot := CoprocWorkerSlot{
+			CPUType:   cpuType,
+			Label:     coprocLabel(cpuType),
+			MonitorID: -1,
+			Path:      m.workerImagePath[cpuType],
+		}
+		if w := m.workers[cpuType]; w != nil {
+			slot.Online = true
+			slot.MonitorID = w.monitorID
+			slot.CPU = w.debugCPU
+		}
+		result = append(result, slot)
 	}
 	drained := m.drainPendingUnregsLocked()
 	m.mu.Unlock()

@@ -133,6 +133,9 @@ func (cpu *CPU64) ExecuteJIT() {
 	checkCounter := uint32(0)
 
 	for running {
+		if cpu.debugHandleBreakIn(cpu.PC) {
+			break
+		}
 		// M15.6 G2 Phase 2c-trap: trap-frame stack overflow sets
 		// trapHalted in pushTrapFrame. Poll it every iteration so a
 		// runaway nested-fault kernel bug stops the JIT dispatcher on

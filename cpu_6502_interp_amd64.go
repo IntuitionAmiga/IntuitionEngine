@@ -55,10 +55,17 @@ func (cpu_6502 *CPU_6502) executeOptimizedInterpreter() {
 		cpu_6502.ExecuteFast()
 		return
 	}
+	if cpu_6502.debugBreakIn != nil {
+		cpu_6502.ExecuteFast()
+		return
+	}
 	cpu_6502.executeAsmInterpreter()
 }
 
 func (cpu_6502 *CPU_6502) executeAsmInterpreter() {
+	if cpu_6502.debugHandleBreakIn(uint64(cpu_6502.PC)) {
+		return
+	}
 	cpu_6502.ensureDirectPageBitmap()
 	adapter := cpu_6502.fastAdapter
 	memDirect := adapter.memDirect
