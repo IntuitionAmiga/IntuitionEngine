@@ -23,6 +23,18 @@ func waitScriptStopped(t *testing.T, se *ScriptEngine) {
 	t.Fatalf("script did not stop before timeout")
 }
 
+func waitScriptStoppedWithin(t *testing.T, se *ScriptEngine, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !se.IsRunning() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("script did not stop before timeout")
+}
+
 func driveFramesUntilStopped(t *testing.T, se *ScriptEngine) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -81,6 +93,12 @@ func TestScriptEngine_ShowreelDiagnosisScriptsParse(t *testing.T) {
 		filepath.Join("sdk", "scripts", "diag_voodoo_cube_68k.ies"),
 		filepath.Join("sdk", "scripts", "diag_voodoo_3dfx_logo_68k.ies"),
 		filepath.Join("sdk", "scripts", "diag_emutos_rotozoomer_gem.ies"),
+		filepath.Join("scripts", "diag_tracering.ies"),
+		filepath.Join("scripts", "diag_source_step.ies"),
+		filepath.Join("scripts", "diag_history_horizon.ies"),
+		filepath.Join("scripts", "diag_cpu_online.ies"),
+		filepath.Join("scripts", "diag_device_diff.ies"),
+		filepath.Join("scripts", "diag_bug_report.ies"),
 	}
 
 	for _, path := range paths {
@@ -513,6 +531,277 @@ func TestScriptEngine_DbgAccessTimelineWrappers(t *testing.T) {
 		if #dbg.accesslog() ~= 0 then error("access log not cleared") end
 	`
 	if err := se.RunString(script, "dbg_access_timeline"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_DbgTraceRingWrappers(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	mon := NewMachineMonitor(bus)
+	cpu := NewCPU(bus)
+	mon.RegisterCPU("IE32", NewDebugIE32(cpu))
+	se.SetMonitor(mon)
+
+	script := `
+		dbg.tracering_on(4)
+		dbg.step(2)
+		local ring = dbg.tracering_show(4)
+		if #ring == 0 then error("trace ring empty") end
+		if ring[1].pc == nil or ring[1].mnemonic == nil or ring[1].cpu ~= "IE32" then error("trace ring fields") end
+		dbg.tracering_off()
+	`
+	if err := se.RunString(script, "dbg_tracering"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_SymbolLoadersAndSourceAt(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("IE32", NewDebugIE32(NewCPU(bus)))
+	se.SetMonitor(mon)
+
+	dir := t.TempDir()
+	lbl := filepath.Join(dir, "demo.lbl")
+	if err := os.WriteFile(lbl, []byte("al C:1000 start\nal C:1010 update\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	image := filepath.Join(dir, "demo.bin")
+	if err := os.WriteFile(image+".iesym", []byte("al C:2000 sidecar\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcPath := filepath.Join(dir, "tiny.c")
+	if err := os.WriteFile(srcPath, []byte("int demo_symbol(void) { return 7; }\nint main(void) { return demo_symbol(); }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	build := exec.Command("gcc", "-g", "-O0", "-o", filepath.Join(dir, "tiny"), srcPath)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Skipf("cannot build ELF/DWARF fixture: %v\n%s", err, out)
+	}
+
+	script := `
+		sym.load_vice("demo.lbl", 0x100)
+		if sym.lookup("start") ~= 0x1100 then error("VICE label not loaded") end
+		local syms = sym.list()
+		if #syms < 2 or syms[1].name == nil or syms[1].addr == nil or syms[1].kind == nil then error("sym.list shape") end
+		local auto = sym.autoload("demo.bin", 0x20)
+		if not auto.loaded or auto.kind ~= "guest" or auto.path == nil or auto.err ~= nil then error("autoload failed") end
+		if sym.lookup("sidecar") ~= 0x2020 then error("sidecar base not applied") end
+		sym.load_elf("tiny")
+		sym.load_dwarf("tiny")
+		local src = dbg.source_at(0)
+		if src ~= nil and (src.file == nil or src.line == nil) then error("source_at shape") end
+	`
+	if err := se.RunString(script, filepath.Join(dir, "symbols.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStoppedWithin(t, se, 10*time.Second)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_SymAutoloadRejectsEscapingSidecarSymlink(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("IE32", NewDebugIE32(NewCPU(bus)))
+	se.SetMonitor(mon)
+
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.iesym")
+	if err := os.WriteFile(outside, []byte("al C:3000 escaped\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "demo.bin.iesym")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	script := `
+		local auto = sym.autoload("demo.bin")
+		if auto.loaded then error("escaping sidecar loaded") end
+		if auto.err == nil or string.find(auto.err, "outside approved script roots") == nil then error("missing sandbox error") end
+		if sym.lookup("escaped") ~= nil then error("escaped symbol leaked") end
+	`
+	if err := se.RunString(script, filepath.Join(dir, "autoload_escape.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_DbgHistoryConfigWrappers(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("IE32", NewDebugIE32(NewCPU(bus)))
+	se.SetMonitor(mon)
+
+	script := `
+		local before = dbg.history_horizon()
+		if before.snapshots == nil or before.devices == nil then error("horizon shape") end
+		local cfg = dbg.history_config({delta_interval=7, delta_mib=2, checkpoints=3, snapshots=9})
+		if cfg.delta_interval ~= 7 or cfg.delta_mib ~= 2 or cfg.checkpoints ~= 3 or cfg.snapshots ~= 9 then error("config not applied") end
+		local now = dbg.history_config()
+		if now.delta_interval ~= 7 or now.delta_mib ~= 2 then error("config readback") end
+	`
+	if err := se.RunString(script, "history_config"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_DbgCPUOnlineOfflineWrappersPropagateMonitorErrors(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("IE32", NewDebugIE32(NewCPU(bus)))
+	se.SetMonitor(mon)
+
+	if err := se.RunString(`dbg.cpu_online("ie32")`, "cpu_online_no_mgr"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err == nil || !strings.Contains(err.Error(), "No coprocessor manager") {
+		t.Fatalf("cpu_online error=%v, want coprocessor manager error", err)
+	}
+
+	if err := se.RunString(`dbg.cpu_offline("ie32")`, "cpu_offline_no_mgr"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err == nil || !strings.Contains(err.Error(), "No coprocessor manager") {
+		t.Fatalf("cpu_offline error=%v, want coprocessor manager error", err)
+	}
+}
+
+func TestScriptEngine_DbgConditionalBPIfExprErrors(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	mon := NewMachineMonitor(bus)
+	adapter := NewDebugIE32(NewCPU(bus))
+	mon.RegisterCPU("IE32", adapter)
+	se.SetMonitor(mon)
+
+	if err := se.RunString(`dbg.set_conditional_bp(0x100, "if b($1000)==0 && hitcount>2")`, "cond_ok"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if got := adapter.ListConditionalBreakpoints(); len(got) != 1 || got[0].Condition == nil {
+		t.Fatalf("conditional breakpoint not installed: %+v", got)
+	}
+
+	if err := se.RunString(`dbg.set_conditional_bp(0x102, "if b($1000)==")`, "cond_bad"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err == nil {
+		t.Fatal("expected bad conditional expression to propagate to Lua")
+	}
+}
+
+type scriptSnapshotDevice struct {
+	name    string
+	version uint32
+	data    []byte
+}
+
+func (d scriptSnapshotDevice) DebugSnapshotName() string { return d.name }
+func (d scriptSnapshotDevice) DebugSnapshot() (uint32, []byte, error) {
+	return d.version, append([]byte(nil), d.data...), nil
+}
+func (d scriptSnapshotDevice) DebugRestoreSnapshot(uint32, []byte) error { return nil }
+
+func TestScriptEngine_DbgDeviceSnapshotWrappers(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("IE32", NewDebugIE32(NewCPU(bus)))
+	mon.RegisterSnapshotDevice(scriptSnapshotDevice{name: "demo-device", version: 2, data: []byte{1, 2, 3}})
+	se.SetMonitor(mon)
+
+	script := `
+		local names = dbg.device_list()
+		if #names ~= 1 or names[1] ~= "demo-device" then error("device list") end
+		local snap = dbg.device_snapshot("demo-device")
+		if snap.name ~= "demo-device" or snap.version ~= 2 or snap.data ~= string.char(1,2,3) then error("snapshot shape") end
+		local same = dbg.device_diff(snap, snap)
+		if string.find(same, "identical") == nil then error("identical diff") end
+		local changed = {name=snap.name, version=snap.version, data=string.char(1,9,3)}
+		local diff = dbg.device_diff(snap, changed)
+		if string.find(diff, "first at offset $1") == nil then error("byte diff") end
+	`
+	if err := se.RunString(script, "device_snapshots"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_DbgLayoutBugHelpWrappers(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("IE32", NewDebugIE32(NewCPU(bus)))
+	se.SetMonitor(mon)
+
+	script := `
+		local layout = dbg.layout("list")
+		if string.find(layout, "Layouts") == nil then error("layout output") end
+		local bug = dbg.bug_report(2)
+		if string.find(bug, "IEMon bug report") == nil then error("bug output") end
+		local help = dbg.help("sym")
+		if string.find(help, "Manage symbols") == nil then error("help output") end
+	`
+	if err := se.RunString(script, "layout_bug_help"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_DbgBacktraceFrames(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU(bus)
+	adapter := NewDebugIE32(cpu)
+	adapter.SetRegister("SP", 0x200)
+	adapter.WriteMemory(0x200, []byte{0x34, 0x12, 0, 0})
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("IE32", adapter)
+	se.SetMonitor(mon)
+
+	script := `
+		sym.add("ret_site", 0x1234, "func")
+		local frames = dbg.backtrace_frames(4)
+		if #frames ~= 1 then error("frame count") end
+		if frames[1].pc ~= 0x1234 or frames[1].sym ~= "ret_site" or frames[1].offset ~= 0 or frames[1].frame ~= 0 then error("frame fields") end
+		local legacy = dbg.backtrace(4)
+		if #legacy == 0 then error("legacy backtrace changed") end
+	`
+	if err := se.RunString(script, "backtrace_frames"); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}
 	waitScriptStopped(t, se)

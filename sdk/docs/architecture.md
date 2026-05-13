@@ -367,7 +367,7 @@ flowchart TB
 
 **Bus architecture notes:**
 
-- **Concurrent multi-CPU bus** - the Program Executor selects the primary CPU mode, but the Coprocessor Manager can launch additional worker CPUs that run concurrently on the same bus. Lock-free bus design (immutable `MapIO` dispatch, `ioPageBitmap` fast path, I/O callbacks protect their own state) allows safe concurrent access without bus arbitration.
+- **Concurrent multi-CPU bus** - the Program Executor selects the primary CPU mode, but the Coprocessor Manager can launch additional worker CPUs that run concurrently on the same bus. Address dispatch is immutable after mapping is sealed, `ioPageBitmap` provides the fast path, and I/O callbacks protect their own mutable state. There is no central bus-arbitration model exposed to guest software.
 - **No centralised interrupt controller** - each CPU has per-CPU interrupt lines (IRQ/NMI as `atomic.Bool`). Peripherals signal the active CPU directly.
 - **MMIO dispatch** - the bus uses an `ioPageBitmap []bool` fast path (page = 256 bytes). Non-I/O pages use direct unsafe pointer access with zero dispatch overhead.
 
@@ -724,7 +724,7 @@ The copper coprocessor is internal to VideoChip but can write to any MMIO-mapped
 - `copperIOBase` resets to `VIDEO_REG_BASE` at the start of each frame
 - The compositor's `ScanlineAware` interface orchestrates this: `StartFrame()` -> `ProcessScanline(y)` -> `FinishFrame()`
 
-### Extended Blitter: BPP Modes, Draw Modes, Color Expansion, and Scale
+### Extended Blitter: BPP Modes, Draw Modes, Colour Expansion, and Scale
 
 The blitter supports two pixel formats via `BLT_FLAGS` (`0xF0488`): RGBA32 (4 bpp, default) and CLUT8 (1 bpp). Bits 4-7 select one of 16 raster draw modes (Clear, And, Copy, Xor, Invert, etc.) applied per pixel during FILL and COPY operations. `BLT_OP=4` performs source-over alpha blending with source alpha in bits 31-24 using `out = (src*a + dst*(255-a))/255`. `BLT_OP=7` performs nearest-neighbour scaling in RGBA32 or CLUT8. When `BLT_FLAGS=0`, the blitter defaults to Copy mode with RGBA32 for full backward compatibility.
 
@@ -1300,6 +1300,7 @@ by the engine one layer down.
 The hardening story is layered rather than siloed: what the guest
 kernel enforces (W^X, per-task quotas, exit-time sweeps,
 permission-preserving shared mappings) and what the host enforces
-(JIT W^X, bootstrap hostfs confinement) are complementary, and
-each item has a regression test that fails loudly if the invariant
-is dropped.
+(JIT W^X, bootstrap HostFS confinement) are complementary. Treat the
+linked ISA and IntuitionOS documents as authoritative for guest ABI
+details; this architecture document summarises how the engine wires
+those mechanisms into the runtime.

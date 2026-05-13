@@ -48,6 +48,8 @@ Symbols loaded with `sym add`, `sym loadlbl`, or `sym loadelf` can be used as ex
 
 `d /s [addr] [count]` asks the monitor to interleave source locations from DWARF line data when available. `list [addr]` prints the nearest source location, or a no-source message for CPUs/builds without line information.
 
+Scripted equivalents: `sym.load_dwarf(path)` and `dbg.source_at(addr)`.
+
 ## Conditional Breakpoints
 
 Breakpoints accept either the legacy single comparison form or an `if` expression:
@@ -80,6 +82,8 @@ Breakpoints accept either the legacy single comparison form or an `if` expressio
 
 `tracering on [size]` enables a per-CPU rolling instruction ring. `show [n]` dumps the last entries for the focussed CPU.
 
+Scripted equivalents: `dbg.tracering_on([size])`, `dbg.tracering_off()`, and `dbg.tracering_show([n])`.
+
 | Command | Description |
 |---------|-------------|
 | `tracering on` | Enable the default 4096-entry ring |
@@ -105,6 +109,8 @@ Breakpoints accept either the legacy single comparison form or an `if` expressio
 `rg` targets the latest retained whole-machine snapshot, including snapshots captured when the monitor stops for a breakpoint, watchpoint, guard, break-in, or fault. When a retained predecessor exists, IEMon restores that predecessor and deterministically re-executes to the target boundary; when the target is the oldest retained state, it restores it directly. `rt <expr>` walks backwards through retained whole-machine snapshots and uses the same replay path for the newest snapshot where the focussed CPU satisfies the breakpoint-expression syntax. `tl back` is a timeline-view shorthand for `rg`. `history horizon` reports the retained reverse snapshot horizon, checkpoint count, delta count, and approximate retained bytes. `history config` prints the current snapshot-chain settings; `history config <delta-interval> <delta-miB> <checkpoints> [snapshots]` changes them and can be placed in a trusted `.iemonrc`. `tl [count]` shows the merged timeline from access events, instruction trace entries, and monitor stop events using the shared sequence assigned when each event is recorded; stop events include `snap=N` when they captured a reverse boundary.
 
 Whole-machine snapshots cover all monitor-registered CPUs, shared bus RAM, sparse IE64 backing memory, and registered versioned device blobs. The history stores full sparse checkpoints plus sparse deltas anchored to a retained checkpoint; `rg` and `rt` materialise deltas before replay or restore. The production monitor registers the main video chip, sound chip, terminal MMIO, command-style host helpers (file I/O, media loader, program executor, and coprocessor manager), compatibility audio/video engines (PSG/AY, SN76489, SID/SID2/SID3, TED audio, POKEY, VGA, ULA, TED video, ANTIC/GTIA, and Voodoo), and AROS guest-visible host bridges when present. Additional devices join the same contract through `RegisterSnapshotDevice`. Timeline replay still depends on deterministic device code, which is audited in [iemon-determinism.md](iemon-determinism.md).
+
+Scripted equivalents: `dbg.history_horizon()`, `dbg.history_config([opts])`, `dbg.device_list()`, `dbg.device_snapshot(name)`, and `dbg.device_diff(a,b)`.
 
 ## Project RC Files
 
@@ -156,7 +162,7 @@ Read and read/write watchpoints are backed by CPU access-site instrumentation. W
 | `pg list` | List guards |
 | `pg clear` | Clear guards |
 
-The shared debug access service stores guard policy and emits monitor events with CPU id and access kind. Bus-mediated `Read8/16/32` and `Write8/16/32` paths are instrumented; CPU-local direct memory paths and instruction fetch hooks are tracked in [iemon-access-audit.md](iemon-access-audit.md).
+The shared debug access service stores guard policy and emits monitor events with CPU id and access kind. Bus-mediated `Read8/16/32` and `Write8/16/32` paths are instrumented. CPU-local direct memory paths and instruction fetch hooks are tracked in [iemon-access-audit.md](iemon-access-audit.md), and supported builds fail closed when live access coverage is unavailable.
 
 ## Access History
 
@@ -553,6 +559,8 @@ Ambiguous label, use ID:
 
 Start an offline coprocessor worker slot through the same isolated worker lifecycle used by `COPROC_CMD_START`.
 
+Scripted equivalents: `dbg.cpu_online(type_or_path [, path_or_replace] [, replace])` and `dbg.cpu_offline(id_or_label)`.
+
 ```
 > cpu online z80
 Online z80 as coproc:Z80
@@ -567,7 +575,7 @@ Online z80 as coproc:Z80
 Online z80 as coproc:Z80
 ```
 
-`cpu online <type>` uses the currently staged/default coprocessor service image. The staging path is the same one used by `-coproc-svc` / `-coproc` and `COPROC_NAME_PTR`; if no service path is staged, the command fails without starting a worker.
+`cpu online <type>` uses the currently staged/default coprocessor service image. The staging path is the same one used by `-coproc-svc` / `-coproc` and `COPROC_NAME_PTR`; if no service path is staged, the command fails without starting a worker. Path validation is performed by the coprocessor manager, so the monitor does not bypass the worker loader's sandbox.
 
 `cpu online <path.ie*>` infers the worker CPU from the typed image extension. `cpu online <type> <path.ie*>` requires the type and extension to match. Recognised extensions are `.ie64` (IE64), `.iex`/`.ie32` (IE32), `.ie68` (M68K), `.ie80` (Z80), `.ie65` (6502), and `.ie86` (x86).
 
@@ -625,7 +633,7 @@ Walk the stack and display return addresses. Default depth is 16. If symbols are
 #3 $00DEF0
 ```
 
-Stack walking is CPU-specific:
+Stack walking is CPU-specific and best-effort. A missing frame does not prove there was no caller; it means IEMon could not identify a plausible saved return address through the adapter and symbol filters.
 
 | CPU | Source | Slot Size | Notes |
 |-----|--------|-----------|-------|
@@ -839,7 +847,7 @@ ww $3000
 trace watch add $3000
 ```
 
-Scripts can nest up to 8 levels deep. Semicolon-separated commands on a script line are supported outside quotes.
+Scripts can nest up to 8 levels deep. Semicolon-separated commands on a script line are supported outside quotes. Monitor command scripts are more powerful than trusted `.iemonrc` files: they can run ordinary monitor commands and should be used only with files you intend to execute.
 
 #### `macro <name> <commands>` - Define Macro
 
@@ -882,6 +890,8 @@ Audio thawed
 Display the command reference. `help` lists every registered command and
 `help <command>` prints syntax plus worked examples from the same registry that
 drives the in-monitor help text.
+
+Scripted equivalent: `dbg.help([name])`.
 
 ```
 > help pg
@@ -941,6 +951,8 @@ The `bug [trace-count]` command prints a copyable report bundle containing the
 focussed CPU, registers, disassembly, stack, memory regions, page guards, access
 events, trace-ring entries, and loaded symbols. It is deliberately plain text so
 it can be pasted into an issue without extra formatting work.
+
+Scripted equivalents: `dbg.layout(name)` and `dbg.bug_report([trace_count])`.
 
 ## Keyboard Shortcuts
 

@@ -24,6 +24,8 @@ This manual documents the Lua API exposed by `script_engine.go`. It is a develop
    - [repl](#repl) - REPL overlay control (show/hide, print, scroll)
    - [rec](#rec) - Recording and screenshots
    - [dbg](#dbg) - Monitor/debugger integration
+   - [sym](#sym) - Debug symbols and source-line metadata
+   - [regions](#regions) - Monitor memory-region lookup
    - [coproc](#coproc) - Coprocessor manager
    - [media](#media) - Format-agnostic media loader
    - [bit32](#bit32) - Bitwise operations
@@ -764,7 +766,7 @@ Monitor/debugger integration. The Machine Monitor is always built into the engin
 
 `dbg.step([n])` - Single-step the focussed CPU by `n` instructions (default 1). Returns: nothing.
 
-`dbg.continue()` - Resume execution on the focussed CPU (equivalent to monitor `g` command). Returns: nothing.
+`dbg.continue()` - Execute the monitor `g` command, which deactivates IEMon and resumes the CPUs that the monitor would normally resume on exit. Returns: nothing.
 
 `dbg.run_until(addr)` - Run the focussed CPU until it reaches address `addr`. Returns: nothing.
 
@@ -772,7 +774,7 @@ When `dbg.continue()` or `dbg.run_until()` resumes execution, the script-owned d
 
 `dbg.run_until` is a fire-and-forget request: it has no timeout argument. If execution never reaches the target address before the monitor is re-entered for another reason, the temporary breakpoint set by `run_until` persists and will fire on a future run. Clear it explicitly with `dbg.clear_bp(addr)` if you no longer want the stop. See [iemon.md](iemon.md) "Common Pitfalls" for details.
 
-`dbg.backstep()` - Step the focussed CPU backward by one instruction (if trace history is available). Returns: nothing.
+`dbg.backstep()` - Restore the focussed CPU from the CPU-local step-history snapshot used by monitor `bs`. This does not rewind other CPUs or device state. Returns: nothing.
 
 ### Page Guards
 
@@ -841,13 +843,25 @@ nothing.
 
 `dbg.list_wp()` - List all watchpoint addresses. Returns: table (array) of numbers.
 
-### Symbols And Regions
+### Symbols
 
 `sym.add(name, addr [, kind])` - Add a symbol to the focussed CPU's symbol namespace. `kind` defaults to `"label"`. Returns: nothing.
 
 `sym.lookup(name)` - Look up a symbol in the focussed CPU's symbol namespace. Returns: address or `nil`.
 
 `sym.resolve(addr)` - Resolve an address to the nearest symbol. Returns a table `{name, addr, offset, kind}` or `nil`.
+
+`sym.load_elf(path)` - Load ELF `.symtab` entries for the focussed CPU from an approved read path. Function and object symbols are imported. Returns: nothing. Raises on path validation or ELF errors.
+
+`sym.load_vice(path [, base])` - Load VICE-style label records, or `.iesym` files that use the same accepted label syntax, from an approved read path. `base` defaults to 0 and is added to each parsed address. Returns: nothing.
+
+`sym.load_dwarf(path)` - Load DWARF line information for the focussed CPU from an approved read path. It updates the source-line table; use `sym.load_elf(path)` as well when you also need `.symtab` symbols. Returns: nothing.
+
+`sym.autoload(image_path [, base])` - Probe neighbouring symbol sidecars for `image_path`. `image_path` is normalised under the script roots, and every existing sidecar must pass approved read-path validation before loading. Returns `{loaded=bool, path=string|nil, kind="elf"|"guest"|nil, err=string|nil}`.
+
+`sym.list()` - List symbols in the focussed CPU namespace. Returns a table of `{name, addr, size, kind, cpu}` entries.
+
+### Regions
 
 `regions.list()` - List memory regions visible to the focussed CPU. Returns a table of `{start, end, name, kind}` entries.
 
@@ -964,6 +978,10 @@ nothing.
 
 `dbg.cpu_focus(id)` - Switch monitor focus to a CPU by numeric `id` or string label. Returns: nothing.
 
+`dbg.cpu_online(type_or_path [, path_or_replace] [, replace])` - Start an offline coprocessor worker through monitor `cpu online`. The first argument is either a CPU type (`"ie32"`, `"6502"`, `"m68k"`, `"z80"`, `"x86"`, or `"ie64"`) or a typed worker image path accepted by IEMon. If the second argument is a string, it is validated as an approved read path and passed as the worker image; if it is a boolean, it is treated as `replace`. The third argument, when present, is the boolean `replace` flag. Returns: nothing. Raises on monitor, path validation, or worker start errors.
+
+`dbg.cpu_offline(id_or_label)` - Stop an online coprocessor worker by numeric ID, label, or type through monitor `cpu offline`. Returns: nothing. Raises on monitor errors.
+
 `dbg.freeze_cpu(label)` - Freeze a specific CPU by label. Returns: nothing.
 
 `dbg.thaw_cpu(label)` - Thaw (resume) a specific CPU by label. Returns: nothing.
@@ -999,7 +1017,7 @@ nothing.
 
 `dbg.command(cmd)` - Execute a monitor command string after sandbox filtering. Host-file-capable monitor commands are rejected (`save`, `load`, `ss`, `sl`, `script`, `macro`, and `trace file`; `trace file off` is allowed). Invoking monitor macros through this raw API is rejected. Returns: nothing.
 
-`dbg.command_output(cmd)` - Execute a sandbox-filtered monitor command string and return newly appended monitor output lines as `{text, color}` entries. The same command restrictions as `dbg.command` apply. Returns: table.
+`dbg.command_output(cmd)` - Execute a sandbox-filtered monitor command string and return newly appended monitor output lines as `{text, color}` entries. The field is named `color` because that is the exported Lua table key. The same command restrictions as `dbg.command` apply. Returns: table.
 
 Example - breakpoint workflow:
 
@@ -1489,7 +1507,7 @@ Compact reference for IEScript API functions.
 | `audio.ahx_stop()` | - |
 | `audio.ahx_is_playing()` | boolean |
 
-### video (63)
+### video (65)
 
 | Function | Returns |
 |----------|---------|
@@ -1592,6 +1610,7 @@ Compact reference for IEScript API functions.
 | `dbg.is_open()` | boolean |
 | `dbg.freeze()` | - |
 | `dbg.resume()` | - |
+| `dbg.request_break_in()` | - |
 | `dbg.step([n])` | - |
 | `dbg.continue()` | - |
 | `dbg.run_until(addr)` | - |
@@ -1618,8 +1637,13 @@ Compact reference for IEScript API functions.
 | `dbg.compare_mem(start, len, dest)` | table |
 | `dbg.transfer_mem(start, len, dest)` | - |
 | `dbg.backtrace([depth])` | table |
+| `dbg.backtrace_frames([depth])` | table |
 | `dbg.disasm(addr, count)` | table |
 | `dbg.trace(n)` | table |
+| `dbg.tracering_on([size])` | - |
+| `dbg.tracering_off()` | - |
+| `dbg.tracering_show([count])` | table |
+| `dbg.source_at(addr)` | table/nil |
 | `dbg.trace_file(path)` | - |
 | `dbg.trace_file_off()` | - |
 | `dbg.trace_watch_add(addr)` | - |
@@ -1635,6 +1659,8 @@ Compact reference for IEScript API functions.
 | `dbg.reverse_continue()` | - |
 | `dbg.reverse_until(expr)` | - |
 | `dbg.timeline([count])` | table |
+| `dbg.history_horizon()` | table |
+| `dbg.history_config([opts])` | table |
 | `dbg.guard_add(start, end, perm [, scope])` | - |
 | `dbg.guard_del([start, end [, scope]])` | number |
 | `dbg.guard_list()` | table |
@@ -1647,8 +1673,13 @@ Compact reference for IEScript API functions.
 | `dbg.load_state(path)` | - |
 | `dbg.save_mem_file(start, length, path)` | - |
 | `dbg.load_mem_file(path, addr)` | - |
+| `dbg.device_list()` | table |
+| `dbg.device_snapshot(name)` | table/nil |
+| `dbg.device_diff(a, b)` | string |
 | `dbg.cpu_list()` | table |
 | `dbg.cpu_focus(id)` | - |
+| `dbg.cpu_online(type_or_path [, path_or_replace] [, replace])` | - |
+| `dbg.cpu_offline(id_or_label)` | - |
 | `dbg.freeze_cpu(label)` | - |
 | `dbg.thaw_cpu(label)` | - |
 | `dbg.freeze_all()` | - |
@@ -1659,8 +1690,37 @@ Compact reference for IEScript API functions.
 | `dbg.io(device)` | table |
 | `dbg.run_script(path)` | - |
 | `dbg.macro(name, cmds)` | - |
+| `dbg.layout(name)` | string |
+| `dbg.bug_report([trace_count])` | string |
+| `dbg.help([name])` | string |
 | `dbg.command(cmd)` | - |
 | `dbg.command_output(cmd)` | table |
+
+New monitor-parity wrappers return structured data where the monitor prints text. `dbg.tracering_show()` returns `{cpu, pc, hex, mnemonic}` entries. `dbg.backtrace_frames()` returns `{frame, pc, sym, offset}` entries and leaves `dbg.backtrace()` text-compatible. `dbg.device_snapshot()` returns `{name, version, data}` with `data` as an opaque byte string; compare two snapshots with `dbg.device_diff()`. `dbg.history_config({delta_interval=32, delta_mib=64, checkpoints=8, snapshots=256})` pins reverse-history retention for deterministic scripts.
+
+`dbg.on_fault(kind, fn)` receives `{kind, cpu_id, pc, addr, info}`. `info` is CPU-specific flat text: IE64 privilege/illegal/syscall faults include the decoded trap or control-register context when available; M68K/Z80/6502/x86 faults report the adapter-supplied fault detail; guard and access faults include the monitored address/range text emitted by the debug service.
+
+### sym
+
+| Function | Returns |
+|----------|---------|
+| `sym.add(name, addr [, kind])` | - |
+| `sym.lookup(name)` | number/nil |
+| `sym.resolve(addr)` | table/nil |
+| `sym.load_elf(path)` | - |
+| `sym.load_vice(path [, base])` | - |
+| `sym.autoload(image_path [, base])` | table |
+| `sym.load_dwarf(path)` | - |
+| `sym.list()` | table |
+
+`sym.autoload()` probes `<image>.elf`, `<stem>.elf`, then guest label sidecars `<image>.iesym`, `<image>.lbl`, `<stem>.iesym`, `<stem>.lbl`. It returns `{loaded=bool, path=string|nil, kind="elf"|"guest"|nil, err=string|nil}`. The returned `path`, when non-nil, is the validated sidecar path that was actually loaded or rejected.
+
+### regions (2)
+
+| Function | Returns |
+|----------|---------|
+| `regions.list()` | table |
+| `regions.lookup(addr)` | table/nil |
 
 ### coproc (8)
 

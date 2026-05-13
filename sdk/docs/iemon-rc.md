@@ -2,6 +2,8 @@
 
 IEMon looks for `.iemonrc` files by walking from the current working directory up to the file system root. Files are never executed on first sight. A file must be trusted by absolute path and SHA-256 hash before it can be loaded manually or auto-loaded later. Auto-loading only happens while the monitor has exactly one registered CPU; in multi-CPU sessions, use `rc load` explicitly after selecting the intended focus.
 
+`.iemonrc` trust management is host policy and is intentionally not exposed to IEScript; scripts should use typed `dbg.*` setup calls instead.
+
 ## Commands
 
 | Command | Description |
@@ -41,6 +43,6 @@ RC files are limited to debugger setup commands:
 | `sym add` | Manual symbol insertion |
 | `history config` | Whole-machine snapshot chain tuning; use either `history config` to print current values or `history config <delta-interval> <delta-miB> <checkpoints> [snapshots]` to set them |
 | `layout` | Layout presets and saving |
-| `alias` | Accepted only when the alias target is also allowed |
+| `alias` | Accepted only when the alias target is also allowed. `alias` with no target is allowed as a harmless listing command |
 
-File I/O, scripts, guest memory mutation, and execution-control commands are rejected from rc files. If a trusted file changes, its hash no longer matches and it must be trusted again before loading.
+File I/O, scripts, guest memory mutation, and execution-control commands are rejected from rc files. `sym load...` commands are also rejected because they read host files; use `sym add` in rc files and load symbol files manually or through IEScript. If a trusted file changes, its hash no longer matches and it must be trusted again before loading.

@@ -48,4 +48,6 @@ Required device state includes:
 
 ## Current Limits
 
-`rg` and `rt` restore a retained predecessor snapshot and re-execute to the selected boundary when the predecessor is available; otherwise they restore the selected retained state directly. Monitor stop events capture reverse boundaries for breakpoints, watchpoints, guards, break-ins, and faults. Deterministic replay still depends on pinning the host-time sources above. Code that adds a new guest-visible timer, DMA engine, interrupt controller, or host bridge must register a device blob before it can be considered covered by whole-machine reverse debugging.
+`rg` and `rt` restore a retained predecessor snapshot and re-execute to the selected boundary when the predecessor is available; otherwise they restore the selected retained state directly. Monitor stop events capture reverse boundaries for breakpoints, watchpoints, guards, break-ins, and faults. Deterministic replay still depends on pinning the host-time sources above and on all guest-visible devices obeying the snapshot contract. Code that adds a new guest-visible timer, DMA engine, interrupt controller, or host bridge must register a device blob before it can be considered covered by whole-machine reverse debugging.
+
+IEScript `dbg.history_config()` changes the same reverse-history retention values as `history config`. Deterministic scripts should pin `delta_interval`, `delta_mib`, `checkpoints`, and `snapshots` at startup so replay horizons do not vary with user rc files or interactive monitor changes.

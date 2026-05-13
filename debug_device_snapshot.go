@@ -3,12 +3,57 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 const (
 	videoChipSnapshotVersion = 1
 	soundChipSnapshotVersion = 1
 )
+
+func DiffDeviceStateBlob(a, b DeviceStateBlob) string {
+	if a.Name != b.Name {
+		return fmt.Sprintf("name mismatch: %s vs %s", a.Name, b.Name)
+	}
+	if a.Version != b.Version {
+		return fmt.Sprintf("version mismatch: %d vs %d (%d vs %d bytes)", a.Version, b.Version, len(a.Data), len(b.Data))
+	}
+	if len(a.Data) != len(b.Data) {
+		return fmt.Sprintf("length mismatch: %d vs %d bytes", len(a.Data), len(b.Data))
+	}
+	diffCount := 0
+	first := -1
+	offsets := make([]int, 0, 8)
+	for i := range a.Data {
+		if a.Data[i] == b.Data[i] {
+			continue
+		}
+		diffCount++
+		if first < 0 {
+			first = i
+			continue
+		}
+		if len(offsets) < 8 {
+			offsets = append(offsets, i)
+		}
+	}
+	if diffCount == 0 {
+		return fmt.Sprintf("identical (%d bytes)", len(a.Data))
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("diff: %d byte(s) differ; first at offset $%X: $%X -> $%X", diffCount, first, a.Data[first], b.Data[first]))
+	for _, off := range offsets {
+		sb.WriteString(fmt.Sprintf("; off $%X", off))
+	}
+	if diffCount > 1+len(offsets) {
+		sb.WriteString("; ... (truncated)")
+	}
+	out := sb.String()
+	if len(out) > 512 {
+		return out[:512]
+	}
+	return out
+}
 
 type videoChipDebugSnapshot struct {
 	FrameCounter uint64

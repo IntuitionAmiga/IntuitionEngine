@@ -2,14 +2,12 @@
 
 ![68k VGA SID Copper Cube](68k-VGA-SID-Copper-Cube.png)
 
-Intuition Engine is a retro computer that never existed but I wish had! :)
+Intuition Engine is a Go-based emulator and virtual machine for a retro computer design that never existed. It is built for demoscene-style hardware experiments, CPU bring-up, tracker playback, and operating-system work. One executable supports six guest CPU modes and can run them concurrently through the coprocessor subsystem, drive several classic-inspired video and audio devices, automate itself with Lua, and boot into BASIC, EmuTOS, AROS, or IntuitionOS development paths.
 
-It is a Go-based emulator and virtual machine built for demoscene-style hardware experiments, CPU bring-up, tracker playback, and operating-system work. One executable supports six guest CPU modes and can run them concurrently through the coprocessor subsystem, drive several classic-inspired video and audio devices, automate itself with Lua, and boot into BASIC, EmuTOS, AROS, or IntuitionOS development paths.
-
-What makes it worth looking at:
+Core capabilities:
 
 - Six guest CPU modes in one machine: IE64, IE32, M68K, Z80, 6502, and 32-bit x86.
-- A real SDK with assemblers, include files, examples, prebuilt demos, and build scripts.
+- An SDK with assemblers, include files, examples, prebuilt demos, and build scripts.
 - Multiple display devices in one compositor: IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, and Voodoo-style 3D.
 - Chiptune and module playback paths for PSG/AY/YM, SN76489 VGM, SID, POKEY/SAP, TED, AHX, MOD, and WAV.
 - Built-in Machine Monitor, Lua automation, REPL overlay, screenshots, recording support, and scripted test harnesses.
@@ -29,9 +27,7 @@ make sdk
 ./bin/IntuitionEngine sdk/examples/prebuilt/vga_text_hello.iex
 ```
 
-Default runtime: when launched with no mode and no filename, the VM starts EhBASIC on IE64.
-
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61AHEFR)
+Default runtime: in standard builds, launching with no mode and no filename starts EhBASIC on IE64.
 
 ## Contents
 
@@ -43,7 +39,7 @@ Default runtime: when launched with no mode and no filename, the VM starts EhBAS
 6. [SDK and Toolchains](#sdk-and-toolchains)
 7. [Testing](#testing)
 8. [Platform Support](#platform-support)
-9. [Documentation Index](#documentation-index)
+9. [Documentation](#documentation)
 10. [Licence](#licence)
 
 ## Current Scope
@@ -109,7 +105,7 @@ Detailed video references:
 ### Scripting and Debugging
 
 - IEScript uses Lua 5.1-compatible semantics through GopherLua.
-- Script modules include `sys`, `cpu`, `mem`, `term`, `audio`, `video`, `repl`, `rec`, `dbg`, `coproc`, `media`, and `bit32`.
+- Script modules include `sys`, `cpu`, `mem`, `term`, `audio`, `video`, `repl`, `rec`, `dbg`, `sym`, `regions`, `coproc`, and `media`. IEScript also exposes the `bit32` and `keys` global tables.
 - The Machine Monitor is available with `F9` in desktop builds and has CPU, memory, breakpoint, watchpoint, trace, I/O view, and scripting support.
 - In desktop builds, guests can request captured relative mouse mode. Press `Ctrl+Alt` to release the host mouse, then left-click inside the IE window to recapture while the guest still requests relative mode.
 
@@ -148,14 +144,14 @@ Build outputs:
 | `sdk/bin/ie32asm` | `make`, `make ie32asm`, `make sdk` |
 | `sdk/bin/ie64asm` | `make`, `make ie64asm`, `make sdk` |
 | `sdk/bin/ie32to64` | `make`, `make ie32to64`, `make sdk` |
-| `sdk/bin/m68kto64` | `make m68kto64` |
+| `sdk/bin/m68kto64` | `make`, `make m68kto64`, `make sdk-build`, `make sdk` |
 | `sdk/bin/ie64dis` | `make`, `make ie64dis`, `make sdk` |
 
 Build profiles:
 
 | Profile | Command | Use |
 |---------|---------|-----|
-| full | `make` | Default desktop build with Ebiten, Oto, and Vulkan-capable Voodoo support. |
+| full | `make` | Linux desktop build with Ebiten, Oto, and Vulkan-capable Voodoo support. Uses CGO and native system libraries. |
 | novulkan | `make novulkan` | Desktop build without the Vulkan dependency. |
 | headless | `make headless` | CI and test build with display and audio stubs. |
 | headless-novulkan | `make headless-novulkan` | `CGO_ENABLED=0` portable build with no display or audio backend. |
@@ -221,20 +217,15 @@ EmuTOS and AROS availability depends on embedded assets, local default ROM paths
 
 ```bash
 ./bin/IntuitionEngine -psg music.ym
-./bin/IntuitionEngine -psg+ music.pt3
 ./bin/IntuitionEngine -sid music.sid
-./bin/IntuitionEngine -sid music.sid -sid-pal
-./bin/IntuitionEngine -sid music.sid -sid-ntsc
-./bin/IntuitionEngine -sid+ music.sid
 ./bin/IntuitionEngine -pokey music.sap
-./bin/IntuitionEngine -pokey+ music.sap
 ./bin/IntuitionEngine -ted music.ted
-./bin/IntuitionEngine -ted+ music.prg
 ./bin/IntuitionEngine -ahx music.ahx
-./bin/IntuitionEngine -ahx+ music.ahx
 ./bin/IntuitionEngine -mod music.mod
 ./bin/IntuitionEngine -wav sound.wav
 ```
+
+The `+` variants (`-psg+`, `-sid+`, `-pokey+`, `-ted+`, and `-ahx+`) enable enhanced render paths for the corresponding player. SID playback also accepts `-sid-pal` or `-sid-ntsc` to force timing.
 
 ### Scripting, Performance, and Display Options
 
@@ -297,22 +288,7 @@ Desktop builds use the Ebiten backend.
 | `Page Up` / `Page Down` | Scroll terminal scrollback where supported. |
 | Mouse wheel | Scroll terminal scrollback where supported. |
 
-Machine Monitor command examples:
-
-| Command | Meaning |
-|---------|---------|
-| `r` | Show registers. |
-| `d [addr] [count]` | Disassemble. |
-| `m <addr> [count]` | Hex dump memory. |
-| `s [count]` | Step instructions. |
-| `g [addr]` | Resume, optionally from an address. |
-| `b <addr> [cond]` | Set a breakpoint. |
-| `ww <addr>` | Set a write watchpoint. |
-| `io [device|all]` | Inspect I/O registers. |
-| `cpu [n]` | Switch focused CPU in multi-CPU debugging. |
-| `x` | Exit the monitor and resume. |
-
-See [Machine Monitor](sdk/docs/iemon.md) for the full command reference.
+See [Machine Monitor](sdk/docs/iemon.md) for monitor commands, breakpoint/watchpoint syntax, reverse debugging, and multi-CPU debugging.
 
 ## Architecture Summary
 
@@ -407,58 +383,29 @@ Summary from [Platform Compatibility](sdk/docs/platform-compatibility.md):
 | macOS | x86_64 | `novulkan` |
 | macOS | ARM64 | `novulkan` |
 
-The full Linux profile may need a native C toolchain and Vulkan SDK or drivers. Use `novulkan` when Vulkan is not available. Use `headless-novulkan` for a portable no-CGO build.
+Linux amd64 and arm64 support the full profile, including the Vulkan-backed Voodoo HLE path. The full Linux profile is a CGO build and depends on native display, audio, C runtime, and Vulkan libraries, so its binaries are not fully static.
+
+Windows and macOS release builds are maintained on amd64 and arm64 as Pure Go `novulkan` builds. They have no CGO or third-party native runtime dependencies, but the hardware-accelerated Vulkan Voodoo path is disabled; these builds use the software Voodoo rasteriser. Use `headless-novulkan` for a portable no-CGO build with no display or audio backend.
 
 JIT support is asymmetric by host platform. Check [Platform Compatibility](sdk/docs/platform-compatibility.md) before relying on JIT for a specific guest and host combination.
 
-## Documentation Index
-
-Project and developer workflow:
+## Documentation
 
 - [Developer Guide](DEVELOPERS.md)
-- [Changelog](CHANGELOG.md)
-- [Release Process](sdk/docs/release-process.md)
 - [Platform Compatibility](sdk/docs/platform-compatibility.md)
-
-Architecture and hardware:
-
 - [Architecture](sdk/docs/architecture.md)
-- [Compositor](sdk/docs/compositor.md)
-- [Sound MMIO](sdk/docs/ie_sfx_mmio.md)
-- [Voodoo ABI](sdk/docs/ie_voodoo_abi.md)
-- [WAV Player](sdk/docs/wav_player.md)
-- [Coprocessor](sdk/docs/Coprocessor.md)
-
-CPU and tools:
-
-- [IE64 ISA](sdk/docs/IE64_ISA.md)
-- [IE64 ABI](sdk/docs/IE64_ABI.md)
-- [IE64 Cookbook](sdk/docs/IE64_COOKBOOK.md)
-- [IE64 JIT](sdk/docs/IE64_JIT.md)
-- [M68K JIT](sdk/docs/M68K_JIT.md)
-- [6502 JIT](sdk/docs/6502_JIT.md)
-- [x86 JIT](sdk/docs/x86_JIT.md)
-- [IE32 to IE64 Converter](sdk/docs/ie32to64.md)
-- [M68K to IE64 Converter](sdk/docs/m68Kto64.md)
-
-Scripting, monitor, and SDK:
-
-- [IEScript](sdk/docs/iescript.md)
-- [Machine Monitor](sdk/docs/iemon.md)
 - [SDK README](sdk/README.md)
 - [SDK Getting Started](sdk/docs/sdk-getting-started.md)
 - [Toolchains](sdk/docs/toolchains.md)
 - [Demo Matrix](sdk/docs/demo-matrix.md)
-- [Tutorial](sdk/docs/TUTORIAL.md)
-
-OS integration:
-
+- [IEScript](sdk/docs/iescript.md)
+- [Machine Monitor](sdk/docs/iemon.md)
+- [IE64 ISA](sdk/docs/IE64_ISA.md)
+- [IE64 ABI](sdk/docs/IE64_ABI.md)
 - [EmuTOS Integration](sdk/docs/ie_emutos.md)
 - [IntuitionOS IExec](sdk/docs/IntuitionOS/IExec.md)
-- [IntuitionOS HostFS](sdk/docs/IntuitionOS/HostFS.md)
-- [IntuitionOS Toolchain](sdk/docs/IntuitionOS/Toolchain.md)
-- [IntuitionOS ELF](sdk/docs/IntuitionOS/ELF.md)
-- [IntuitionOS TED](sdk/docs/IntuitionOS/TED.md)
+
+Additional hardware, JIT, OS, and tutorial references live under [sdk/docs/](sdk/docs/).
 
 ## Licence
 

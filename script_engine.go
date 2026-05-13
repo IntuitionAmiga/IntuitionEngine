@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -980,6 +981,7 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"compare_mem":         se.luaDbgCompareMem(),
 		"transfer_mem":        se.luaDbgTransferMem(),
 		"backtrace":           se.luaDbgBacktrace(),
+		"backtrace_frames":    se.luaDbgBacktraceFrames(),
 		"disasm":              se.luaDbgDisasm(),
 		"trace":               se.luaDbgTrace(),
 		"backstep":            se.luaDbgBackstep(),
@@ -998,6 +1000,12 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"reverse_continue":    se.luaDbgReverseContinue(),
 		"reverse_until":       se.luaDbgReverseUntil(),
 		"timeline":            se.luaDbgTimeline(),
+		"tracering_on":        se.luaDbgTraceRingOn(),
+		"tracering_off":       se.luaDbgTraceRingOff(),
+		"tracering_show":      se.luaDbgTraceRingShow(),
+		"source_at":           se.luaDbgSourceAt(),
+		"history_horizon":     se.luaDbgHistoryHorizon(),
+		"history_config":      se.luaDbgHistoryConfig(),
 		"guard_add":           se.luaDbgGuardAdd(),
 		"guard_del":           se.luaDbgGuardDel(),
 		"guard_list":          se.luaDbgGuardList(),
@@ -1012,8 +1020,13 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"load_state":          se.luaDbgLoadState(),
 		"save_mem_file":       se.luaDbgSaveMemFile(),
 		"load_mem_file":       se.luaDbgLoadMemFile(),
+		"device_list":         se.luaDbgDeviceList(),
+		"device_snapshot":     se.luaDbgDeviceSnapshot(),
+		"device_diff":         se.luaDbgDeviceDiff(),
 		"cpu_list":            se.luaDbgCPUList(),
 		"cpu_focus":           se.luaDbgCPUFocus(),
+		"cpu_online":          se.luaDbgCPUOnline(),
+		"cpu_offline":         se.luaDbgCPUOffline(),
 		"freeze_cpu":          se.luaDbgFreezeCPU(),
 		"thaw_cpu":            se.luaDbgThawCPU(),
 		"freeze_all":          se.luaDbgFreezeAll(),
@@ -1024,15 +1037,23 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"io":                  se.luaDbgIO(),
 		"run_script":          se.luaDbgRunScript(),
 		"macro":               se.luaDbgMacro(),
+		"layout":              se.luaDbgLayout(),
+		"bug_report":          se.luaDbgBugReport(),
+		"help":                se.luaDbgHelp(),
 		"command":             se.luaDbgCommand(),
 		"command_output":      se.luaDbgCommandOutput(),
 	})
 	L.SetGlobal("dbg", dbg)
 
 	sym := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
-		"add":     se.luaSymAdd(),
-		"lookup":  se.luaSymLookup(),
-		"resolve": se.luaSymResolve(),
+		"add":        se.luaSymAdd(),
+		"lookup":     se.luaSymLookup(),
+		"resolve":    se.luaSymResolve(),
+		"load_elf":   se.luaSymLoadELF(),
+		"load_vice":  se.luaSymLoadVICE(),
+		"autoload":   se.luaSymAutoload(),
+		"load_dwarf": se.luaSymLoadDWARF(),
+		"list":       se.luaSymList(),
 	})
 	L.SetGlobal("sym", sym)
 
@@ -3802,7 +3823,10 @@ func (se *ScriptEngine) luaDbgSetConditionalBP() lua.LGFunction {
 				}
 			}
 		}
-		mon.ExecuteCommand(fmt.Sprintf("b $%X %s", addr, cond))
+		_, out := mon.ExecuteCommandResult(fmt.Sprintf("b $%X %s", addr, cond))
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
+		}
 		return 0
 	}
 }
@@ -4215,6 +4239,34 @@ func (se *ScriptEngine) luaDbgBacktrace() lua.LGFunction {
 	}
 }
 
+func (se *ScriptEngine) luaDbgBacktraceFrames() lua.LGFunction {
+	return func(L *lua.LState) int {
+		depth := max(L.OptInt(1, 8), 1)
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		frames := symbolAwareBacktrace(cpu, depth, mon.symbols, mon.regions)
+		t := L.NewTable()
+		for i, frame := range frames {
+			e := L.NewTable()
+			e.RawSetString("pc", lua.LNumber(frame.Address))
+			e.RawSetString("frame", lua.LNumber(i))
+			if frame.HasSymbol {
+				e.RawSetString("sym", lua.LString(frame.Symbol.Symbol.Name))
+				e.RawSetString("offset", lua.LNumber(frame.Symbol.Offset))
+			} else {
+				e.RawSetString("sym", lua.LNil)
+				e.RawSetString("offset", lua.LNumber(0))
+			}
+			t.RawSetInt(i+1, e)
+		}
+		L.Push(t)
+		return 1
+	}
+}
+
 func (se *ScriptEngine) luaDbgDisasm() lua.LGFunction {
 	return func(L *lua.LState) int {
 		addr := uint64(L.CheckInt64(1))
@@ -4596,6 +4648,163 @@ func (se *ScriptEngine) luaDbgTimeline() lua.LGFunction {
 	}
 }
 
+func (se *ScriptEngine) luaDbgTraceRingOn() lua.LGFunction {
+	return func(L *lua.LState) int {
+		size := L.OptInt(1, 4096)
+		if size <= 0 {
+			L.RaiseError("trace ring size must be positive")
+			return 0
+		}
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		_, out := mon.ExecuteCommandResult(fmt.Sprintf("tracering on %d", size))
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgTraceRingOff() lua.LGFunction {
+	return func(L *lua.LState) int {
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		_, out := mon.ExecuteCommandResult("tracering off")
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgTraceRingShow() lua.LGFunction {
+	return func(L *lua.LState) int {
+		count := L.OptInt(1, 16)
+		if count < 0 {
+			L.ArgError(1, "must be >= 0")
+			return 0
+		}
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		mon.mu.Lock()
+		ring := mon.traceRings[mon.focusedID]
+		entries := ring.Tail(count)
+		mon.mu.Unlock()
+		t := L.NewTable()
+		for i, tr := range entries {
+			e := L.NewTable()
+			e.RawSetString("cpu", lua.LString(tr.CPUName))
+			e.RawSetString("pc", lua.LNumber(tr.PC))
+			e.RawSetString("hex", lua.LString(tr.HexBytes))
+			e.RawSetString("mnemonic", lua.LString(tr.Mnemonic))
+			t.RawSetInt(i+1, e)
+		}
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgSourceAt() lua.LGFunction {
+	return func(L *lua.LState) int {
+		addr := uint64(L.CheckInt64(1))
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+		src, ok := mon.sources.Resolve(cpu.CPUName(), addr)
+		if !ok {
+			L.Push(lua.LNil)
+			return 1
+		}
+		t := L.NewTable()
+		t.RawSetString("file", lua.LString(src.File))
+		t.RawSetString("line", lua.LNumber(src.Line))
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgHistoryHorizon() lua.LGFunction {
+	return func(L *lua.LState) int {
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		mon.mu.Lock()
+		checkpoints, deltas, bytes := mon.wholeHistoryStatsLocked()
+		t := L.NewTable()
+		t.RawSetString("snapshots", lua.LNumber(len(mon.wholeHistory)))
+		t.RawSetString("checkpoints", lua.LNumber(checkpoints))
+		t.RawSetString("deltas", lua.LNumber(deltas))
+		t.RawSetString("capacity", lua.LNumber(mon.maxWholeHistory))
+		t.RawSetString("delta_bytes", lua.LNumber(bytes))
+		t.RawSetString("checkpoint_interval", lua.LNumber(mon.wholeCheckpointInterval))
+		t.RawSetString("checkpoint_mib", lua.LNumber(mon.wholeCheckpointBytes>>20))
+		t.RawSetString("retained_checkpoints", lua.LNumber(mon.maxWholeCheckpoints))
+		t.RawSetString("devices", lua.LNumber(len(mon.devices)))
+		mon.mu.Unlock()
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgHistoryConfig() lua.LGFunction {
+	return func(L *lua.LState) int {
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if L.GetTop() > 0 && L.Get(1) != lua.LNil {
+			opts := L.CheckTable(1)
+			interval := luaTableOptInt(opts, "delta_interval", mon.wholeCheckpointInterval)
+			miB := luaTableOptInt(opts, "delta_mib", int(mon.wholeCheckpointBytes>>20))
+			checkpoints := luaTableOptInt(opts, "checkpoints", mon.maxWholeCheckpoints)
+			snapshots := luaTableOptInt(opts, "snapshots", mon.maxWholeHistory)
+			if interval <= 0 || miB <= 0 || checkpoints <= 0 || snapshots <= 0 {
+				L.RaiseError("history config values must be positive")
+				return 0
+			}
+			mon.mu.Lock()
+			mon.wholeCheckpointInterval = interval
+			mon.wholeCheckpointBytes = uint64(miB) << 20
+			mon.maxWholeCheckpoints = checkpoints
+			mon.maxWholeHistory = snapshots
+			mon.pruneWholeHistoryLocked()
+			mon.mu.Unlock()
+		}
+		mon.mu.Lock()
+		t := L.NewTable()
+		t.RawSetString("delta_interval", lua.LNumber(mon.wholeCheckpointInterval))
+		t.RawSetString("delta_mib", lua.LNumber(mon.wholeCheckpointBytes>>20))
+		t.RawSetString("checkpoints", lua.LNumber(mon.maxWholeCheckpoints))
+		t.RawSetString("snapshots", lua.LNumber(mon.maxWholeHistory))
+		mon.mu.Unlock()
+		L.Push(t)
+		return 1
+	}
+}
+
+func luaTableOptInt(t *lua.LTable, key string, def int) int {
+	if v := t.RawGetString(key); v != lua.LNil {
+		if n, ok := v.(lua.LNumber); ok {
+			return int(n)
+		}
+	}
+	return def
+}
+
 func (se *ScriptEngine) monitorCommandOutput(mon *MachineMonitor, cmd string) []string {
 	mon.mu.Lock()
 	before := len(mon.outputLines)
@@ -4716,6 +4925,95 @@ func (se *ScriptEngine) luaDbgLoadMemFile() lua.LGFunction {
 	}
 }
 
+func (se *ScriptEngine) luaDbgDeviceList() lua.LGFunction {
+	return func(L *lua.LState) int {
+		se.mu.Lock()
+		mon := se.monitor
+		se.mu.Unlock()
+		t := L.NewTable()
+		if mon == nil {
+			L.Push(t)
+			return 1
+		}
+		mon.mu.Lock()
+		names := make([]string, 0, len(mon.devices))
+		for name := range mon.devices {
+			names = append(names, name)
+		}
+		mon.mu.Unlock()
+		sort.Strings(names)
+		for i, name := range names {
+			t.RawSetInt(i+1, lua.LString(name))
+		}
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgDeviceSnapshot() lua.LGFunction {
+	return func(L *lua.LState) int {
+		name := L.CheckString(1)
+		se.mu.Lock()
+		mon := se.monitor
+		se.mu.Unlock()
+		if mon == nil {
+			L.RaiseError("monitor unavailable")
+			return 0
+		}
+		mon.mu.Lock()
+		dev := mon.devices[name]
+		mon.mu.Unlock()
+		if dev == nil {
+			L.Push(lua.LNil)
+			return 1
+		}
+		version, data, err := dev.DebugSnapshot()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		t := L.NewTable()
+		t.RawSetString("name", lua.LString(name))
+		t.RawSetString("version", lua.LNumber(version))
+		t.RawSetString("data", lua.LString(string(data)))
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgDeviceDiff() lua.LGFunction {
+	return func(L *lua.LState) int {
+		a, err := luaDeviceStateBlob(L.CheckTable(1))
+		if err != nil {
+			L.ArgError(1, err.Error())
+			return 0
+		}
+		b, err := luaDeviceStateBlob(L.CheckTable(2))
+		if err != nil {
+			L.ArgError(2, err.Error())
+			return 0
+		}
+		L.Push(lua.LString(DiffDeviceStateBlob(a, b)))
+		return 1
+	}
+}
+
+func luaDeviceStateBlob(t *lua.LTable) (DeviceStateBlob, error) {
+	name, ok := t.RawGetString("name").(lua.LString)
+	if !ok {
+		return DeviceStateBlob{}, fmt.Errorf("missing name")
+	}
+	version, ok := t.RawGetString("version").(lua.LNumber)
+	if !ok {
+		return DeviceStateBlob{}, fmt.Errorf("missing version")
+	}
+	data, ok := t.RawGetString("data").(lua.LString)
+	if !ok {
+		return DeviceStateBlob{}, fmt.Errorf("missing data")
+	}
+	return DeviceStateBlob{Name: string(name), Version: uint32(version), Data: []byte(string(data))}, nil
+}
+
 func (se *ScriptEngine) luaDbgCPUList() lua.LGFunction {
 	return func(L *lua.LState) int {
 		t := L.NewTable()
@@ -4758,6 +5056,64 @@ func (se *ScriptEngine) luaDbgCPUFocus() lua.LGFunction {
 			mon.ExecuteCommand(fmt.Sprintf("cpu %d", int(v)))
 		default:
 			mon.ExecuteCommand("cpu " + L.CheckString(1))
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgCPUOnline() lua.LGFunction {
+	return func(L *lua.LState) int {
+		cpuType := L.CheckString(1)
+		args := []string{"cpu online"}
+		replace := false
+		pathArg := ""
+		if L.GetTop() >= 2 && L.Get(2) != lua.LNil {
+			switch v := L.Get(2).(type) {
+			case lua.LBool:
+				replace = bool(v)
+			default:
+				pathArg = L.CheckString(2)
+			}
+		}
+		if L.GetTop() >= 3 && L.Get(3) != lua.LNil {
+			replace = bool(L.CheckBool(3))
+		}
+		if replace {
+			args = append(args, "--replace")
+		}
+		args = append(args, quoteMonitorArg(cpuType))
+		if pathArg != "" {
+			validated, err := se.validateScriptPath(pathArg, pathOpRead)
+			if err != nil {
+				L.RaiseError("%v", err)
+				return 0
+			}
+			args = append(args, quoteMonitorArg(validated))
+		}
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		_, out := mon.ExecuteCommandResult(strings.Join(args, " "))
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaDbgCPUOffline() lua.LGFunction {
+	return func(L *lua.LState) int {
+		target := L.CheckString(1)
+		mon, _, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		_, out := mon.ExecuteCommandResult("cpu offline " + quoteMonitorArg(target))
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
 		}
 		return 0
 	}
@@ -4934,6 +5290,59 @@ func (se *ScriptEngine) luaDbgMacro() lua.LGFunction {
 	}
 }
 
+func (se *ScriptEngine) luaMonitorTextCommand(name string, format func(*lua.LState) (string, error)) lua.LGFunction {
+	return func(L *lua.LState) int {
+		cmd, err := format(L)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		se.mu.Lock()
+		mon := se.monitor
+		se.mu.Unlock()
+		if mon == nil {
+			L.RaiseError("monitor unavailable")
+			return 0
+		}
+		_, out := mon.ExecuteCommandResult(cmd)
+		if err := redOutputError(out); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		lines := make([]string, 0, len(out))
+		for _, line := range out {
+			lines = append(lines, line.Text)
+		}
+		L.Push(lua.LString(strings.Join(lines, "\n")))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgLayout() lua.LGFunction {
+	return se.luaMonitorTextCommand("layout", func(L *lua.LState) (string, error) {
+		return "layout " + quoteMonitorArg(L.CheckString(1)), nil
+	})
+}
+
+func (se *ScriptEngine) luaDbgBugReport() lua.LGFunction {
+	return se.luaMonitorTextCommand("bug_report", func(L *lua.LState) (string, error) {
+		count := L.OptInt(1, 16)
+		if count <= 0 {
+			return "", fmt.Errorf("trace_count must be positive")
+		}
+		return fmt.Sprintf("bug %d", count), nil
+	})
+}
+
+func (se *ScriptEngine) luaDbgHelp() lua.LGFunction {
+	return se.luaMonitorTextCommand("help", func(L *lua.LState) (string, error) {
+		if L.GetTop() == 0 || L.Get(1) == lua.LNil {
+			return "help", nil
+		}
+		return "help " + quoteMonitorArg(L.CheckString(1)), nil
+	})
+}
+
 func (se *ScriptEngine) luaDbgCommand() lua.LGFunction {
 	return func(L *lua.LState) int {
 		cmd := L.CheckString(1)
@@ -5031,6 +5440,241 @@ func (se *ScriptEngine) luaSymResolve() lua.LGFunction {
 		t.RawSetString("addr", lua.LNumber(res.Symbol.Addr))
 		t.RawSetString("offset", lua.LNumber(res.Offset))
 		t.RawSetString("kind", lua.LString(res.Symbol.Kind))
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaSymLoadELF() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if err := mon.symbols.LoadELF(cpu.CPUName(), validated); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaSymLoadVICE() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		base := uint64(L.OptInt64(2, 0))
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		f, err := os.Open(validated)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		defer f.Close()
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if err := mon.symbols.LoadVICELabels(cpu.CPUName(), f, base); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaSymAutoload() lua.LGFunction {
+	return func(L *lua.LState) int {
+		imagePath := L.CheckString(1)
+		base := uint64(L.OptInt64(2, 0))
+		validated, err := se.validateAutoloadImagePath(imagePath)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		t := L.NewTable()
+		if path, loadErr, found := se.loadValidatedELFAutoloadSidecar(mon.symbols, cpu.CPUName(), validated); found {
+			setLuaAutoloadResult(t, loadErr == nil, path, "elf", loadErr)
+			L.Push(t)
+			return 1
+		}
+		if path, loadErr, found := se.loadValidatedGuestAutoloadSidecar(mon.symbols, cpu.CPUName(), validated, base); found {
+			setLuaAutoloadResult(t, loadErr == nil, path, "guest", loadErr)
+			L.Push(t)
+			return 1
+		}
+		setLuaAutoloadResult(t, false, "", "", nil)
+		L.Push(t)
+		return 1
+	}
+}
+
+func setLuaAutoloadResult(t *lua.LTable, loaded bool, path, kind string, err error) {
+	t.RawSetString("loaded", lua.LBool(loaded))
+	if path != "" {
+		t.RawSetString("path", lua.LString(path))
+	} else {
+		t.RawSetString("path", lua.LNil)
+	}
+	if kind != "" {
+		t.RawSetString("kind", lua.LString(kind))
+	} else {
+		t.RawSetString("kind", lua.LNil)
+	}
+	if err != nil {
+		t.RawSetString("err", lua.LString(err.Error()))
+	} else {
+		t.RawSetString("err", lua.LNil)
+	}
+}
+
+func (se *ScriptEngine) loadValidatedELFAutoloadSidecar(st *SymbolTable, cpu, imagePath string) (string, error, bool) {
+	if st == nil || imagePath == "" || strings.HasPrefix(imagePath, "\x00") {
+		return "", nil, false
+	}
+	for _, path := range autoloadELFSidecarCandidates(imagePath) {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			return path, err, true
+		}
+		return validated, st.LoadELF(cpu, validated), true
+	}
+	return "", nil, false
+}
+
+func (se *ScriptEngine) loadValidatedGuestAutoloadSidecar(st *SymbolTable, cpu, imagePath string, base uint64) (string, error, bool) {
+	if st == nil || imagePath == "" || strings.HasPrefix(imagePath, "\x00") {
+		return "", nil, false
+	}
+	for _, path := range autoloadGuestSidecarCandidates(imagePath) {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			return path, err, true
+		}
+		f, err := os.Open(validated)
+		if err != nil {
+			return validated, err, true
+		}
+		loadErr := st.LoadVICELabels(cpu, f, base)
+		closeErr := f.Close()
+		if loadErr == nil {
+			loadErr = closeErr
+		}
+		return validated, loadErr, true
+	}
+	return "", nil, false
+}
+
+func autoloadELFSidecarCandidates(imagePath string) []string {
+	candidates := []string{imagePath + ".elf"}
+	if ext := filepath.Ext(imagePath); ext != "" {
+		candidates = append(candidates, strings.TrimSuffix(imagePath, ext)+".elf")
+	}
+	return dedupeAutoloadCandidates(candidates)
+}
+
+func autoloadGuestSidecarCandidates(imagePath string) []string {
+	candidates := []string{imagePath + ".iesym", imagePath + ".lbl"}
+	if ext := filepath.Ext(imagePath); ext != "" {
+		stem := strings.TrimSuffix(imagePath, ext)
+		candidates = append(candidates, stem+".iesym", stem+".lbl")
+	}
+	return dedupeAutoloadCandidates(candidates)
+}
+
+func dedupeAutoloadCandidates(candidates []string) []string {
+	seen := make(map[string]bool, len(candidates))
+	out := candidates[:0]
+	for _, path := range candidates {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out
+}
+
+func (se *ScriptEngine) validateAutoloadImagePath(path string) (string, error) {
+	if validated, err := se.validateScriptPath(path, pathOpRead); err == nil {
+		return validated, nil
+	}
+	clean := filepath.Clean(path)
+	if filepath.IsAbs(clean) {
+		for _, root := range se.scriptAllowedRoots(se.scriptName) {
+			if validated, err := validatePathInRoot(root, clean, pathOpWrite); err == nil {
+				return validated, nil
+			}
+		}
+		return "", fmt.Errorf("path %q is outside approved script roots", path)
+	}
+	root := se.scriptDir
+	if root == "" || root == "." {
+		return "", fmt.Errorf("script-relative root unavailable")
+	}
+	return validatePathInRoot(root, filepath.Join(root, clean), pathOpWrite)
+}
+
+func (se *ScriptEngine) luaSymLoadDWARF() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		mon, cpu, err := se.getMonitorAndCPU()
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if err := mon.sources.LoadELF(cpu.CPUName(), validated); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaSymList() lua.LGFunction {
+	return func(L *lua.LState) int {
+		mon, cpu, err := se.getMonitorAndCPU()
+		t := L.NewTable()
+		if err != nil {
+			L.Push(t)
+			return 1
+		}
+		for i, sym := range mon.symbols.List(cpu.CPUName()) {
+			e := L.NewTable()
+			e.RawSetString("name", lua.LString(sym.Name))
+			e.RawSetString("addr", lua.LNumber(sym.Addr))
+			e.RawSetString("size", lua.LNumber(sym.Size))
+			e.RawSetString("kind", lua.LString(sym.Kind))
+			e.RawSetString("cpu", lua.LString(sym.CPU))
+			t.RawSetInt(i+1, e)
+		}
 		L.Push(t)
 		return 1
 	}

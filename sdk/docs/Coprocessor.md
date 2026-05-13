@@ -41,7 +41,7 @@ Write `COPROC_CPU_TYPE` before reading `COPROC_RING_DEPTH` or `COPROC_WORKER_UPT
 
 ## Worker Visibility Window
 
-`COPROC_WORKER_STATE` reports a bit per live worker (bit `n` = `EXEC_TYPE_n` worker exists). `computeWorkerState` reaps dead workers *before* reporting, so the bit is only set while the worker goroutine is still scheduled. A worker binary that halts on entry (e.g. `OP_HALT64` as first instruction) may be reaped before any subsequent poll observes it: there is no "ever-existed" latch.
+`COPROC_WORKER_STATE` reports a bit per live worker (bit `n` = `EXEC_TYPE_n` worker exists). The current `EXEC_TYPE_*` values are the bit positions; if a new execution type is added, code must not assume the ring index is the same as the worker-state bit. `computeWorkerState` reaps dead workers *before* reporting, so the bit is only set while the worker goroutine is still scheduled. A worker binary that halts on entry (for example `OP_HALT64` as the first instruction) may be reaped before any subsequent poll observes it: there is no "ever-existed" latch.
 
 To probe creation, load a worker that stays alive long enough for the poll - a single-instruction self-loop (`OP_BRA` with displacement `0`, since IE64 BRA displacements are relative to the current instruction PC) or a busy-wait on a host-set MMIO flag is sufficient. Tests asserting "worker visible after creation" must use a non-halting binary.
 
@@ -61,7 +61,7 @@ Command errors include invalid CPU type, missing worker binary, invalid path, lo
 
 ## Ring Layout
 
-Mailbox RAM starts at `MAILBOX_BASE = 0x790000` and has `MAILBOX_SIZE = 0x1800` bytes. There are six rings, one per CPU type, each with `RING_CAPACITY = 16` and `RING_STRIDE = 0x300`. The ring uses the conventional `nextHead == tail` full test, so at most 15 descriptors are usable at once; one slot is reserved to distinguish full from empty.
+Mailbox RAM starts at `MAILBOX_BASE = 0x790000` and has `MAILBOX_SIZE = 0x1800` bytes. There are six rings, one per supported worker CPU type, each with `RING_CAPACITY = 16` and `RING_STRIDE = 0x300`. Ring order is `IE32`, `6502`, `M68K`, `Z80`, `x86`, `IE64` as defined by `cpuTypeToIndex`; this is documented separately from `EXEC_TYPE_*` numeric values. The ring uses the conventional `nextHead == tail` full test, so at most 15 descriptors are usable at once; one slot is reserved to distinguish full from empty.
 
 Each ring contains:
 

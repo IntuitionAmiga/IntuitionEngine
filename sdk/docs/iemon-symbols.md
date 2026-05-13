@@ -71,3 +71,25 @@ Commands that accept register-plus-address expressions also accept symbols:
 | IE32 | Graceful no-source fallback unless DWARF-bearing ELF is loaded |
 | Z80 | Graceful no-source fallback |
 | 6502 | Graceful no-source fallback |
+
+## IEScript
+
+Scripts use the same focussed CPU namespace:
+
+```lua
+sym.load_elf("demo.elf")
+sym.load_vice("demo.lbl", 0x2000)
+sym.load_dwarf("demo.elf")
+
+local loaded = sym.autoload("demo.ie68", 0x4000)
+if loaded.loaded then
+    sys.print("loaded " .. loaded.kind .. " symbols from " .. loaded.path)
+elseif loaded.err then
+    error(loaded.err)
+end
+
+local here = sym.resolve(dbg.get_pc())
+local src = dbg.source_at(dbg.get_pc())
+```
+
+`sym.autoload(image_path [, base])` probes in this order: `<image_path>.elf`, `<stem>.elf`, then `<image_path>.iesym`, `<image_path>.lbl`, `<stem>.iesym`, and `<stem>.lbl`. It stops at the first existing candidate and returns `{loaded=bool, path=string|nil, kind="elf"|"guest"|nil, err=string|nil}`. Script path sandboxing still applies: `image_path` is normalised under the script roots, and every sidecar that exists must pass approved read-path validation before it is loaded.
