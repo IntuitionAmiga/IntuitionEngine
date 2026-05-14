@@ -2,12 +2,6 @@
 
 		DCLC	Zone_MovementMask_l,	dc.l,	$FFF0FFF0
 
-tmp_ListOfGraphRoomsPtr_l:
-				dc.l	0
-
-zone_LastPosition_vw: ; basically a short coordinate pair
-				dc.l	-1
-
 Zone_OrderZones:
 				CALLC Zone_CheckVisibleEdges
 
@@ -15,6 +9,10 @@ Zone_OrderZones:
 				swap	d0
 				move.w	Plr_ZOff_l,d0		  ; d0 is the short coordinate location of the player
 				and.l	Zone_MovementMask_l,d0 ; reduce the change sensitivity a bit by discarding the low x/z bits
+
+				tst.l	Zone_EndOfListPtr_l
+				beq		.continue
+
 				cmp.l	zone_LastPosition_vw,d0
 				bne		.continue
 				rts
@@ -30,7 +28,6 @@ Zone_OrderZones:
 				bsr		Sys_MemFillLong
 
 				move.l	Lvl_ListOfGraphRoomsPtr_l,a1 ; a0=list of rooms to draw.
-				move.l	a1,tmp_ListOfGraphRoomsPtr_l
 				move.l	#zone_ToDrawTable_vw,a3
 				move.l	#Sys_Workspace_vl,a4
 				move.l	#zone_OrderTable_vw,a5
@@ -48,7 +45,7 @@ Zone_OrderZones:
 				; We now have a table with $ff rep.
 				; a room to be drawn at some stage.
 
-				move.l	tmp_ListOfGraphRoomsPtr_l,a0
+				move.l	Lvl_ListOfGraphRoomsPtr_l,a0
 				move.l	#zone_OrderTable_vw,a2
 				moveq	#0,d0
 				moveq	#2,d1

@@ -48,6 +48,14 @@ Draw_FloorTexturesPtr_l:		ds.l	1 ; this will be a copy of either Draw_GlobalFloo
 Draw_PalettePtr_l:				ds.l	1
 Draw_ChunkPtr_l:				ds.l	1
 
+Lvl_CompactMapPtr_l:			ds.l	1
+Lvl_BigMapPtr_l:				ds.l	1
+Draw_CurrentZonePtr_l:			ds.l	2
+Zone_SplitHeight_l:				ds.l	1
+draw_WallID_w:					ds.w	1
+SMALLIT:						ds.w	1
+draw_GouraudFlatsSelected_b:	ds.w	1
+
 
 ; Allow levels to override the floor texture tiles
 Draw_GlobalFloorTexturesPtr_l:  ds.l	1 ; this is the pointer to the global set of floor tiles

@@ -136,11 +136,12 @@ func (f *FileIODevice) readFileName() string {
 }
 
 func (f *FileIODevice) resolveReadFileName(fileName string) string {
-	if strings.HasPrefix(fileName, "media/") {
-		unpackedName := filepath.Join("_build", "ie_unpacked", fileName)
-		if fullPath, ok := f.sanitizePath(unpackedName); ok {
+	if strings.HasPrefix(fileName, "_build/ie_unpacked/media/levels/") {
+		levelName := strings.TrimPrefix(fileName, "_build/ie_unpacked/media/levels/")
+		reduxName := filepath.Join("_build", "ie_media", "redux-high", "levels_editor_uncompressed", levelName)
+		if fullPath, ok := f.sanitizePath(reduxName); ok {
 			if _, err := os.Stat(fullPath); err == nil {
-				return unpackedName
+				return reduxName
 			}
 		}
 	}
@@ -153,26 +154,123 @@ func (f *FileIODevice) resolveReadFileName(fileName string) string {
 			}
 		}
 	}
+	if strings.HasPrefix(fileName, "media/") {
+		unpackedName := filepath.Join("_build", "ie_unpacked", fileName)
+		if fullPath, ok := f.sanitizePath(unpackedName); ok {
+			if _, err := os.Stat(fullPath); err == nil {
+				return unpackedName
+			}
+		}
+	}
 	if fileName == "_b" {
 		return "_build/ie_media/redux-high/includes/test.lnk"
 	}
-	if strings.HasPrefix(fileName, "_b") {
-		return "_build/ie_media/redux-high/" + strings.TrimPrefix(fileName, "_b")
+	if strings.HasPrefix(fileName, "_b/") {
+		return "_build/ie_media/redux-high/" + strings.TrimPrefix(fileName, "_b/")
 	}
 	return fileName
+}
+
+func (f *FileIODevice) caseInsensitiveReadPath(fullPath string) (string, bool) {
+	rel, err := filepath.Rel(f.baseDir, fullPath)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return "", false
+	}
+	parts := strings.Split(filepath.Clean(rel), string(os.PathSeparator))
+	cur := f.baseDir
+	for _, part := range parts {
+		if part == "." || part == "" {
+			continue
+		}
+		entries, err := os.ReadDir(cur)
+		if err != nil {
+			return "", false
+		}
+		match := ""
+		for _, entry := range entries {
+			name := entry.Name()
+			if name == part {
+				match = name
+				break
+			}
+			if match == "" && strings.EqualFold(name, part) {
+				match = name
+			}
+		}
+		if match == "" {
+			return "", false
+		}
+		cur = filepath.Join(cur, match)
+	}
+	return cur, true
+}
+
+func (f *FileIODevice) reduxReadFallbacks(fileName string) []string {
+	const prefix = "_build/ie_media/redux-high/"
+	if !strings.HasPrefix(fileName, prefix) {
+		return nil
+	}
+	rel := strings.TrimPrefix(fileName, prefix)
+	candidates := make([]string, 0, 4)
+	switch {
+	case strings.HasPrefix(rel, "levels/"):
+		levelAsset := strings.TrimPrefix(rel, "levels/")
+		candidates = append(candidates, prefix+"levels_editor_uncompressed/"+levelAsset)
+	case strings.HasPrefix(rel, "soundfx/samples/"):
+		name := strings.TrimPrefix(rel, "soundfx/samples/")
+		candidates = append(candidates,
+			"_build/ie_unpacked/media/ab3dsfx/samples/"+name,
+			"_build/ie_unpacked/media/ab3dsfx/"+name,
+			"_build/ie_unpacked/media/sounds/"+strings.TrimSuffix(name, ".fib"),
+		)
+	case strings.HasPrefix(rel, "hqn/"):
+		candidates = append(candidates, "_build/ie_unpacked/media/hqn/"+strings.TrimPrefix(rel, "hqn/"))
+	case strings.HasPrefix(rel, "vectobj/"):
+		candidates = append(candidates, "_build/ie_unpacked/media/vectobj/"+strings.TrimPrefix(rel, "vectobj/"))
+	}
+	candidates = append(candidates, "_build/ie_unpacked/media/"+rel)
+	return candidates
+}
+
+func (f *FileIODevice) readHostFile(fileName string) ([]byte, string, error, bool) {
+	fullPath, ok := f.sanitizePath(fileName)
+	if !ok {
+		return nil, "", nil, false
+	}
+	data, err := os.ReadFile(fullPath)
+	if os.IsNotExist(err) {
+		if resolved, ok := f.caseInsensitiveReadPath(fullPath); ok {
+			fullPath = resolved
+			data, err = os.ReadFile(fullPath)
+		}
+	}
+	return data, fullPath, err, true
 }
 
 // doRead performs the actual file read operation.
 func (f *FileIODevice) doRead() {
 	fileName := f.resolveReadFileName(f.readFileName())
-	fullPath, ok := f.sanitizePath(fileName)
+	data, fullPath, err, ok := f.readHostFile(fileName)
 	if !ok {
 		f.fileStatus = 1
 		f.fileErrorCode = FILE_ERR_PATH_TRAVERSAL
 		return
 	}
-
-	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		for _, candidate := range f.reduxReadFallbacks(fileName) {
+			fallbackData, fallbackPath, fallbackErr, fallbackOK := f.readHostFile(candidate)
+			if !fallbackOK {
+				continue
+			}
+			if fallbackErr == nil {
+				fileName = candidate
+				fullPath = fallbackPath
+				data = fallbackData
+				err = nil
+				break
+			}
+		}
+	}
 	traceHostIO("FILEIO", fmt.Sprintf("READ name_ptr=0x%08X", f.fileNamePtr), fileName, fullPath, err, len(data))
 	if err != nil {
 		f.fileStatus = 1

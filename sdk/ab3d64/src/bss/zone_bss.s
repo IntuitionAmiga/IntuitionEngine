@@ -7,6 +7,7 @@ Zone_BrightTable_vl:			ds.l	300
 
 ; Zone ordering
 Zone_EndOfListPtr_l:			ds.l	1
+zone_LastPosition_vw:			ds.l	1		; masked player X/Z used to skip unchanged ordering
 zone_ToDrawTable_vw:			ds.w	400*2	; originally declared as 400 long, accessed as word
 zone_OrderTable_vw:				ds.w	400*2	; originally declared as 400 long, accessed as word
 Zone_OrderTable_Barrier_w:		ds.w	1 		; needs initialisation to -1

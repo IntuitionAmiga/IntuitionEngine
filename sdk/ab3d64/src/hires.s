@@ -3364,15 +3364,6 @@ nowaterfull:
 
 
 
-				align 4
-Lvl_CompactMapPtr_l:			dc.l	0
-Lvl_BigMapPtr_l:				dc.l	0
-Draw_CurrentZonePtr_l:			dc.l	0,0
-Zone_SplitHeight_l:				dc.l	0
-draw_WallID_w:					dc.w	0
-SMALLIT:						dc.w	0
-draw_GouraudFlatsSelected_b:	dc.w	0
-
 				include	"orderzones.s"
 
 noturn:
