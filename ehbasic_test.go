@@ -7270,6 +7270,9 @@ func TestHW_DIR_REPLListsRootDirectory(t *testing.T) {
 
 	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
 	output := h.runCommand("DIR")
+	if !strings.Contains(output, "Demos/\r\nalpha.bas\r\nzeta.bas\r\n") {
+		t.Fatalf("DIR output should separate entries with CRLF; got %q", output)
+	}
 	for _, want := range []string{"Demos/", "alpha.bas", "zeta.bas"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("DIR output missing %q: %q", want, output)

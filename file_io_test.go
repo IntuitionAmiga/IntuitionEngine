@@ -502,7 +502,7 @@ func TestFileIO_ListDirectory(t *testing.T) {
 	if got := fio.HandleRead(FILE_STATUS); got != 0 {
 		t.Fatalf("status: got %d, want 0 (error code %d)", got, fio.HandleRead(FILE_ERROR_CODE))
 	}
-	want := "Demos/\nalpha.bas\nzeta.bas\n"
+	want := "Demos/\r\nalpha.bas\r\nzeta.bas\r\n"
 	if got := readFileIOBusString(bus, dataBufAddr, len(want)+1); got != want {
 		t.Fatalf("listing: got %q, want %q", got, want)
 	}
@@ -535,7 +535,7 @@ func TestFileIO_ListSubdirectory(t *testing.T) {
 	if got := fio.HandleRead(FILE_STATUS); got != 0 {
 		t.Fatalf("status: got %d, want 0 (error code %d)", got, fio.HandleRead(FILE_ERROR_CODE))
 	}
-	want := "demo.bas\n"
+	want := "demo.bas\r\n"
 	if got := readFileIOBusString(bus, dataBufAddr, len(want)+1); got != want {
 		t.Fatalf("listing: got %q, want %q", got, want)
 	}

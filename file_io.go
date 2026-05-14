@@ -364,9 +364,9 @@ func (f *FileIODevice) doList() {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	data := []byte(strings.Join(names, "\n"))
+	data := []byte(strings.Join(names, "\r\n"))
 	if len(data) > 0 {
-		data = append(data, '\n')
+		data = append(data, '\r', '\n')
 	}
 
 	for i, b := range data {
