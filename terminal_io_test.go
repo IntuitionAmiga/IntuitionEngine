@@ -637,6 +637,27 @@ func TestTerminalMMIO_MousePosition(t *testing.T) {
 	}
 }
 
+func TestTerminalMMIO_MouseNativeResolutionLock(t *testing.T) {
+	tm := NewTerminalMMIO()
+	tm.LockMouseNativeResolution(1920, 1080)
+	tm.SetMouseNativeResolution(960, 540)
+	if got := tm.mouseNativeW.Load(); got != 1920 {
+		t.Fatalf("locked mouse native width = %d, want 1920", got)
+	}
+	if got := tm.mouseNativeH.Load(); got != 1080 {
+		t.Fatalf("locked mouse native height = %d, want 1080", got)
+	}
+
+	tm.UnlockMouseNativeResolution()
+	tm.SetMouseNativeResolution(960, 540)
+	if got := tm.mouseNativeW.Load(); got != 960 {
+		t.Fatalf("unlocked mouse native width = %d, want 960", got)
+	}
+	if got := tm.mouseNativeH.Load(); got != 540 {
+		t.Fatalf("unlocked mouse native height = %d, want 540", got)
+	}
+}
+
 func TestTerminalMMIO_MouseButtons(t *testing.T) {
 	tm := NewTerminalMMIO()
 	tm.mouseButtons.Store(0x5)

@@ -195,7 +195,9 @@ CLUT8 resolution, loads the Karlos-TKG-High asset profile, then uses
 `BLT_OP_SCALE` to stretch the full source framebuffer to a 1920x1080 CLUT8
 presentation buffer. The Overdrive path intentionally uses every output pixel,
 so it does not preserve the original aspect ratio with letterboxing or
-pillarboxing. It requires an IE runtime that supports `MODE_1920x1080` (`0x06`)
+pillarboxing. This is now a normal IE presentation mode rather than a
+fullscreen startup special case. It requires an IE runtime that supports
+`MODE_1920x1080` (`0x06`)
 and high bus-backed CLUT8 framebuffers large enough for two `1920 * 1080`
 buffers. It is presentation upscaling only, not native 1080p rendering.
 

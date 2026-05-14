@@ -39,8 +39,8 @@ func TestVideoMode1920x1080_Metadata(t *testing.T) {
 	if mode.totalSize != 8294400 {
 		t.Fatalf("totalSize got %d, want 8294400", mode.totalSize)
 	}
-	if DEFAULT_VIDEO_MODE != MODE_800x600 {
-		t.Fatalf("DEFAULT_VIDEO_MODE changed: got 0x%X want MODE_800x600", DEFAULT_VIDEO_MODE)
+	if DEFAULT_VIDEO_MODE != MODE_960x540 {
+		t.Fatalf("DEFAULT_VIDEO_MODE changed: got 0x%X want MODE_960x540", DEFAULT_VIDEO_MODE)
 	}
 	if VRAM_START != 0x100000 || VRAM_SIZE != 0x500000 {
 		t.Fatalf("legacy VRAM aperture changed: start=0x%X size=0x%X", VRAM_START, VRAM_SIZE)

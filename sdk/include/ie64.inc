@@ -704,18 +704,19 @@ SWEEP_SHIFT_MASK  equ 0x07                  ; Sweep shift (bits 0-2)
 ; ============================================================================
 
 VRAM_START        equ 0x100000              ; VRAM starts at 1MB
-SCREEN_W          set 1280                  ; Default screen width (use 'set' to allow override)
-SCREEN_H          set 960                   ; Default screen height (use 'set' to allow override)
-LINE_BYTES        set 5120                  ; Bytes per scanline (use 'set' to allow override)
+SCREEN_W          set 960                   ; Default screen width (use 'set' to allow override)
+SCREEN_H          set 540                   ; Default screen height (use 'set' to allow override)
+LINE_BYTES        set 3840                  ; Bytes per scanline (use 'set' to allow override)
 
 ; VideoChip mode constants (write to VIDEO_MODE)
 MODE_640x480      equ 0x00                  ; 640x480 true colour
 MODE_800x600      equ 0x01                  ; 800x600 true colour
 MODE_1024x768     equ 0x02                  ; 1024x768 true colour
-MODE_1280x960     equ 0x03                  ; 1280x960 true colour (default)
+MODE_1280x960     equ 0x03                  ; 1280x960 true colour
 MODE_320x200      equ 0x04                  ; 320x200 chunky, RGBA32 or CLUT8
 MODE_320x240      equ 0x05                  ; 320x240 chunky, RGBA32 or CLUT8
 MODE_1920x1080    equ 0x06                  ; 1920x1080 true colour or CLUT8
+MODE_960x540      equ 0x07                  ; 960x540 true colour or CLUT8 (default)
 
 ; Blitter operations
 BLT_OP_COPY       equ 0                     ; Copy source to dest

@@ -82,7 +82,7 @@ VRAM is RGBA32 packed as:
 (R << 24) | (G << 16) | (B << 8) | A
 ```
 
-Framebuffer base is `0x100000`. Default mode is `1280x960` (`stride=5120`). Programs can set `640x480` (`stride=2560`) via `VIDEO_MODE=0`.
+Framebuffer base is `0x100000`. Default native mode is `960x540` (`stride=3840`) and desktop presentation scales it to 1920x1080. Programs can set `640x480` (`stride=2560`) via `VIDEO_MODE=0`.
 
 ## IE Hardware Map (EmuTOS target)
 
@@ -91,7 +91,7 @@ EmuTOS has full access to the complete IE hardware map. The key registers for Em
 | Register | Address | Purpose |
 |---|---:|---|
 | `VIDEO_CTRL` | `0xF0000` | video enable |
-| `VIDEO_MODE` | `0xF0004` | `0=640x480, 3=1280x960 (default)` |
+| `VIDEO_MODE` | `0xF0004` | `0=640x480, 7=960x540 (default)` |
 | `VIDEO_STATUS` | `0xF0008` | bit 1 `in_vblank` |
 | `BLT_OP` | `0xF0020` | blitter operation (fill, copy, Mode7) |
 | `TERM_OUT` | `0xF0700` | debug output |
@@ -120,7 +120,7 @@ EmuTOS has full access to the complete IE hardware map. The key registers for Em
 | `SYS_GC_TRIGGER` | `0xF2380` | Write any value to trigger GC |
 | `VRAM` | `0x100000+` | RGBA32 framebuffer (5MB) |
 
-`MOUSE_X` and `MOUSE_Y` remain absolute coordinates in both absolute and relative modes for compatibility with BASIC, EmuTOS, AROS, menus, and existing scripts. Guests that need unbounded motion set `MOUSE_CTRL` bit 0, then read signed deltas from `MOUSE_DX` and `MOUSE_DY`; each delta register clears independently when read. `MOUSE_STATUS` bit 0 is set by absolute coordinate/button changes and by relative delta accumulation, and still clears on read. In desktop builds, `Ctrl+Alt` releases host capture without changing `MOUSE_CTRL`; left-click inside the IE window recaptures while the guest request remains enabled.
+`MOUSE_X` and `MOUSE_Y` remain absolute coordinates in both absolute and relative modes for compatibility with BASIC, EmuTOS, AROS, menus, and existing scripts. Desktop backends convert from the 1920x1080 presentation frame into the guest cursor coordinate space before updating these registers: BASIC and EmuTOS use the active native video mode, while AROS uses the 1920x1080 presentation contract because it draws its own pointer into guest VRAM. Guests that need unbounded motion set `MOUSE_CTRL` bit 0, then read signed deltas from `MOUSE_DX` and `MOUSE_DY`; each delta register clears independently when read. `MOUSE_STATUS` bit 0 is set by absolute coordinate/button changes and by relative delta accumulation, and still clears on read. In desktop builds, `Ctrl+Alt` releases host capture without changing `MOUSE_CTRL`; left-click inside the IE window recaptures while the guest request remains enabled.
 
 ## XBIOS minimal shim (TRAP #14)
 

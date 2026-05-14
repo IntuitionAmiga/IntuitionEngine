@@ -132,7 +132,7 @@ As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level kernel image/
 - `COP_PTR` / `COP_CTRL` - Copper coprocessor
 
 ### Video Modes
-- `MODE_640x480`, `MODE_800x600`, `MODE_1024x768`, `MODE_1280x960`, `MODE_1920x1080` - VideoChip true-colour or CLUT8 modes. `MODE_1920x1080` RGBA32 requires a full-frame high `VIDEO_FB_BASE`; the legacy VRAM aperture remains 5 MiB.
+- `MODE_640x480`, `MODE_800x600`, `MODE_960x540`, `MODE_1024x768`, `MODE_1280x960`, `MODE_1920x1080` - VideoChip true-colour or CLUT8 modes. `MODE_960x540` is the default native 16:9 mode for BASIC, IntuitionOS, and monitor/text surfaces. `MODE_1920x1080` RGBA32 requires a full-frame high `VIDEO_FB_BASE`; the legacy VRAM aperture remains 5 MiB.
 - `MODE_320x200` / `MODE_320x240` - Low-resolution chunky modes
 
 ### Blitter Operations

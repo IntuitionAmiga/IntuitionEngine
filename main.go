@@ -64,13 +64,7 @@ func isOverdriveAB3D2Launch(modeM68K bool, filename string) bool {
 }
 
 func shouldStartFullscreen(cliFullscreen bool, modeM68K bool, filename string) bool {
-	if cliFullscreen {
-		return true
-	}
-	if isOverdriveAB3D2Launch(modeM68K, filename) {
-		return true
-	}
-	return isEmbeddedAB3D2DefaultBoot(modeM68K, filename) && embeddedAB3D2StartFullscreenEnabled()
+	return DefaultPresentationFullscreen || cliFullscreen
 }
 
 // Version metadata injected at build time via ldflags.
@@ -1236,8 +1230,14 @@ func main() {
 		compositor.NotifyResolutionChange(w, h)
 		termMMIO.SetMouseNativeResolution(w, h)
 	})
+	termMMIO.SetMouseNativeResolution(DefaultScreenWidth, DefaultScreenHeight)
 	if useResolutionOverride {
 		compositor.LockResolution(validWidth, validHeight)
+	} else {
+		compositor.LockResolution(DefaultPresentationWidth, DefaultPresentationHeight)
+	}
+	if attachable, ok := videoChip.GetOutput().(interface{ SetVideoCompositor(*VideoCompositor) }); ok {
+		attachable.SetVideoCompositor(compositor)
 	}
 
 	runtimeStatus.setChips(
@@ -1777,7 +1777,12 @@ func main() {
 		}
 		programBytes = append([]byte(nil), romBytes...)
 
-		// Hide system cursor — EmuTOS draws its own VDI cursor in VRAM
+		termMMIO.UnlockMouseNativeResolution()
+		termMMIO.SetMouseNativeResolution(DefaultScreenWidth, DefaultScreenHeight)
+		// EmuTOS draws its own VDI cursor in VRAM.
+		if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
+			disabler.DisableSoftwareCursor()
+		}
 		if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
 			hider.HideSystemCursor()
 		}
@@ -1874,6 +1879,7 @@ func main() {
 
 		// AROS HIDDs expect Amiga rawkey scancodes, not PC/AT scancodes
 		termMMIO.amigaScancodeMode.Store(true)
+		termMMIO.LockMouseNativeResolution(DefaultPresentationWidth, DefaultPresentationHeight)
 
 		videoChip.Start()
 		compositor.Start()
@@ -2353,6 +2359,9 @@ func main() {
 		restoreROMVideoConfig := false
 		if mode == "emutos" || mode == "aros" {
 			restoreROMVideoConfig = true
+			if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
+				disabler.DisableSoftwareCursor()
+			}
 			if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
 				hider.HideSystemCursor()
 			}
@@ -2372,10 +2381,6 @@ func main() {
 		if restoreROMVideoConfig {
 			if mode == "aros" {
 				applyArosVideoConfig(sysBus, videoChip)
-				// AROS draws its own Intuition cursor — disable Go-side software cursor
-				if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
-					disabler.DisableSoftwareCursor()
-				}
 			} else {
 				applyEmuTOSVideoConfig(sysBus, videoChip)
 			}
@@ -2398,6 +2403,9 @@ func main() {
 
 		// 9. Reset terminal/coproc
 		termMMIO.Reset()
+		termMMIO.amigaScancodeMode.Store(false)
+		termMMIO.UnlockMouseNativeResolution()
+		termMMIO.SetMouseNativeResolution(DefaultScreenWidth, DefaultScreenHeight)
 		if forceBasicBoot {
 			// F10 is a power-on reset to BASIC: switch terminal plumbing to
 			// the in-window BASIC terminal path.
@@ -2447,6 +2455,9 @@ func main() {
 		// 11. Load program
 		if mode == "emutos" {
 			r := cpuRunner.(*M68KRunner)
+			if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
+				disabler.DisableSoftwareCursor()
+			}
 			loader := NewEmuTOSLoader(sysBus, r.cpu, videoChip)
 			r.cpu.xbiosHandler = NewXBIOSInterceptor(r.cpu, sysBus, videoChip, psgEngine)
 			if err := loader.LoadROM(bytes); err != nil {
@@ -2509,6 +2520,7 @@ func main() {
 			loader.MapIRQDiagnostics()
 			// AROS HIDDs expect Amiga rawkey scancodes
 			termMMIO.amigaScancodeMode.Store(true)
+			termMMIO.LockMouseNativeResolution(DefaultPresentationWidth, DefaultPresentationHeight)
 			loader.StartTimer()
 			arosLoader = loader
 			runtime.GC()

@@ -41,7 +41,11 @@ The frame callback fires exactly once per composite pass, including all-idle fra
 
 ## Resolution
 
-Default boot starts locked at `DefaultScreenWidth` by `DefaultScreenHeight`. `LockResolution` pins a size and ignores later notifications until `UnlockResolution`. `SetDimensions` is also ignored while locked.
+Default desktop boot starts locked at `DefaultPresentationWidth` by `DefaultPresentationHeight` (`1920x1080`). Native video sources can still change their own dimensions; those frames are scaled into the presentation frame during blending. The default native IEVideoChip mode is `MODE_960x540`, which fills 1080p at exact 2x scale.
+
+`LockResolution` pins a presentation size and ignores later notifications until `UnlockResolution`. `SetDimensions` is also ignored while locked. Runtime notifications still update native mouse-coordinate mapping outside the compositor.
+
+The default scale mode is aspect-fit. Non-16:9 sources are letterboxed or pillarboxed; `Shift+F11` toggles stretch-fill only when the active native source is not already 16:9.
 
 `pendingResolution` is a packed `uint64` with zero as the no-pending sentinel. Public resolution-change paths reject non-positive dimensions before packing, so a valid pending resolution cannot be zero.
 

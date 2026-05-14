@@ -163,8 +163,8 @@ prog_about_code:
     jsr     .ab_draw_string
 
     ; Send INTUITION_OPEN_WINDOW
-    ; data0 = (320<<48)|(200<<32)|(240<<16)|200  (w/h/x/y)
-    ; M12: window centered on 800x600 screen at (240, 200), size 320x200.
+    ; data0 = (320<<48)|(200<<32)|(320<<16)|170  (w/h/x/y)
+    ; Window centered on 960x540 screen at (320, 170), size 320x200.
     load.q  r1, 136(r29)               ; intuition_port
     move.l  r2, #INTUITION_OPEN_WINDOW
     move.q  r3, #320
@@ -172,10 +172,10 @@ prog_about_code:
     move.q  r14, #200
     lsl     r14, r14, #32
     or      r3, r3, r14
-    move.q  r14, #240
+    move.q  r14, #320
     lsl     r14, r14, #16
     or      r3, r3, r14
-    or      r3, r3, #200
+    or      r3, r3, #170
     load.q  r4, 152(r29)               ; data1 = idcmp_port
     load.q  r5, 144(r29)               ; reply_port
     load.l  r6, 168(r29)               ; share = surface_share

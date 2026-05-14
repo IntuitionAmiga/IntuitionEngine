@@ -87,10 +87,10 @@ prog_gfxdemo_code:
 .gd_in_ok:
     store.q r1, 144(r29)               ; data[144] = input_port
 
-    ; ===== AllocMem(1920000, MEMF_PUBLIC|MEMF_CLEAR) — 800x600 RGBA32 =====
-    ; M12: bumped from 1228800 (640x480) to 1920000 (800x600) to match
+    ; ===== AllocMem(2073600, MEMF_PUBLIC|MEMF_CLEAR) — 960x540 RGBA32 =====
+    ; M12: bumped from 1228800 (640x480) to 2073600 (960x540) to match
     ; graphics.library's M12 default mode.
-    move.l  r1, #1920000
+    move.l  r1, #2073600
     move.l  r2, #0x10001               ; MEMF_PUBLIC | MEMF_CLEAR
     syscall #SYS_ALLOC_MEM             ; R1=va R2=err R3=share_handle
     load.q  r29, (sp)
@@ -133,19 +133,19 @@ prog_gfxdemo_code:
     store.q r2, 184(r29)               ; data[184] = display_handle
 
     ; ===== Send GFX_REGISTER_SURFACE =====
-    ; data1 = (800<<48) | (600<<32) | (1<<16) | 3200 — M12: 800x600 stride 3200
+    ; data1 = (960<<48) | (540<<32) | (1<<16) | 3840 — 960x540 stride 3840
     load.q  r1, 136(r29)
     move.l  r2, #GFX_REGISTER_SURFACE
     load.q  r3, 184(r29)               ; data0 = display_handle
-    move.q  r4, #800
+    move.q  r4, #960
     lsl     r4, r4, #48
-    move.q  r14, #600
+    move.q  r14, #540
     lsl     r14, r14, #32
     or      r4, r4, r14
     move.q  r14, #1                    ; format
     lsl     r14, r14, #16
     or      r4, r4, r14
-    or      r4, r4, #3200              ; stride bytes (800 * 4 = 3200)
+    or      r4, r4, #3840              ; stride bytes (960 * 4 = 3840)
     load.q  r5, 168(r29)               ; reply_port
     load.l  r6, 160(r29)               ; share_handle
     syscall #SYS_PUT_MSG
@@ -183,20 +183,20 @@ prog_gfxdemo_code:
     store.l r14, 216(r29)              ; rect_vx = +4
     move.l  r14, #3
     store.l r14, 220(r29)              ; rect_vy = +3
-    move.l  r14, #320
-    store.l r14, 224(r29)              ; mouse_x = 320 (center)
-    move.l  r14, #240
-    store.l r14, 228(r29)              ; mouse_y = 240
+    move.l  r14, #480
+    store.l r14, 224(r29)              ; mouse_x = 480 (center)
+    move.l  r14, #270
+    store.l r14, 228(r29)              ; mouse_y = 270
 
     ; ===== Animation loop: backdrop + rect + pointer + present + drain =====
 .gd_frame:
     load.q  r29, (sp)
 
     ; --- Fill backdrop (dark navy) ---
-    ; M12: bumped to 800x600 = 1920000 bytes. Color is 0xFF602020 in RGBA byte
+    ; M12: bumped to 960x540 = 2073600 bytes. Color is 0xFF602020 in RGBA byte
     ; order (LE bytes 20,20,60,FF → R=0x20 G=0x20 B=0x60 = dark navy).
     load.q  r14, 152(r29)              ; surface_va
-    move.l  r15, #1920000
+    move.l  r15, #2073600
     move.l  r16, #0xFF602020
 .gd_fill_bg:
     beqz    r15, .gd_fill_bg_done
@@ -211,8 +211,8 @@ prog_gfxdemo_code:
     load.l  r15, 208(r29)              ; rect_x
     load.l  r16, 212(r29)              ; rect_y
     move.l  r17, #0xFFFFFFFF           ; white
-    ; pixel addr = surface + y*2560 + x*4
-    move.l  r18, #3200
+    ; pixel addr = surface + y*3840 + x*4
+    move.l  r18, #3840
     mulu    r19, r16, r18
     lsl     r20, r15, #2
     add     r19, r19, r20
@@ -229,7 +229,7 @@ prog_gfxdemo_code:
     sub     r21, r21, #1
     bra     .gd_rect_col
 .gd_rect_row_done:
-    add     r19, r19, #3200            ; next row
+    add     r19, r19, #3840            ; next row
     sub     r20, r20, #1
     bra     .gd_rect_row
 .gd_rect_done:
@@ -238,23 +238,23 @@ prog_gfxdemo_code:
     load.q  r14, 152(r29)
     load.l  r15, 224(r29)              ; mouse_x
     load.l  r16, 228(r29)              ; mouse_y
-    ; Clamp mouse to surface bounds [0, 784] / [0, 584] (M12: 800x600 - 16)
-    move.l  r28, #784
+    ; Clamp mouse to surface bounds [0, 944] / [0, 524] (960x540 - 16)
+    move.l  r28, #944
     ble     r15, r28, .gd_mp_x_ok
-    move.l  r15, #784
+    move.l  r15, #944
 .gd_mp_x_ok:
     bgez    r15, .gd_mp_x_pos
     move.l  r15, #0
 .gd_mp_x_pos:
-    move.l  r28, #584
+    move.l  r28, #524
     ble     r16, r28, .gd_mp_y_ok
-    move.l  r16, #584
+    move.l  r16, #524
 .gd_mp_y_ok:
     bgez    r16, .gd_mp_y_pos
     move.l  r16, #0
 .gd_mp_y_pos:
     move.l  r17, #0xFF00FF00           ; green
-    move.l  r18, #3200
+    move.l  r18, #3840
     mulu    r19, r16, r18
     lsl     r20, r15, #2
     add     r19, r19, r20
@@ -271,7 +271,7 @@ prog_gfxdemo_code:
     sub     r21, r21, #1
     bra     .gd_mp_col
 .gd_mp_row_done:
-    add     r19, r19, #3200
+    add     r19, r19, #3840
     sub     r20, r20, #1
     bra     .gd_mp_row
 .gd_mp_done:
@@ -293,13 +293,13 @@ prog_gfxdemo_code:
     move.l  r14, #1
     store.l r14, 200(r29)
 
-    ; --- Update bouncing rect: x += vx, bounce at [0, 768] (M12: 800-32) ---
+    ; --- Update bouncing rect: x += vx, bounce at [0, 928] (960-32) ---
     load.l  r14, 208(r29)
     load.l  r15, 216(r29)
     add     r14, r14, r15
-    move.l  r28, #768
+    move.l  r28, #928
     ble     r14, r28, .gd_x_low_check
-    move.l  r14, #768
+    move.l  r14, #928
     sub     r15, r0, r15
     bra     .gd_x_save
 .gd_x_low_check:
@@ -313,9 +313,9 @@ prog_gfxdemo_code:
     load.l  r14, 212(r29)
     load.l  r15, 220(r29)
     add     r14, r14, r15
-    move.l  r28, #568
+    move.l  r28, #508
     ble     r14, r28, .gd_y_low_check
-    move.l  r14, #568
+    move.l  r14, #508
     sub     r15, r0, r15
     bra     .gd_y_save
 .gd_y_low_check:

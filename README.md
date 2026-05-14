@@ -278,12 +278,18 @@ make set-default-handler
 
 Desktop builds use the Ebiten backend.
 
+Desktop builds start fullscreen with a 1920x1080 presentation frame. Native
+guest modes are composited into that frame; the default native text/OS mode is
+960x540 for exact 2x scaling, and non-16:9 modes use aspect-fit unless stretch
+is explicitly toggled.
+
 | Key | Action |
 |-----|--------|
 | `F8` | Toggle the Lua REPL overlay, unless the Machine Monitor is active. |
 | `F9` | Toggle the Machine Monitor. |
 | `F10` | Hard reset. |
 | `F11` | Toggle fullscreen. |
+| `Shift+F11` | Toggle fit/stretch scaling when the active native mode is not 16:9. |
 | `F12` | Toggle the runtime status bar. |
 | `Page Up` / `Page Down` | Scroll terminal scrollback where supported. |
 | Mouse wheel | Scroll terminal scrollback where supported. |

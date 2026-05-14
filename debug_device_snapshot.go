@@ -515,6 +515,7 @@ type terminalMMIODebugSnapshot struct {
 	MouseOverride     bool
 	MouseNativeW      int32
 	MouseNativeH      int32
+	MouseNativeLocked bool
 	ScanBuf           [256]uint8
 	ScanHead          int
 	ScanTail          int
@@ -556,6 +557,7 @@ func (tm *TerminalMMIO) DebugSnapshot() (uint32, []byte, error) {
 		MouseOverride:     tm.mouseOverride.Load(),
 		MouseNativeW:      tm.mouseNativeW.Load(),
 		MouseNativeH:      tm.mouseNativeH.Load(),
+		MouseNativeLocked: tm.mouseNativeLocked.Load(),
 		ScanBuf:           tm.scanBuf,
 		ScanHead:          tm.scanHead,
 		ScanTail:          tm.scanTail,
@@ -598,6 +600,7 @@ func (tm *TerminalMMIO) DebugRestoreSnapshot(version uint32, data []byte) error 
 	tm.mouseOverride.Store(snap.MouseOverride)
 	tm.mouseNativeW.Store(snap.MouseNativeW)
 	tm.mouseNativeH.Store(snap.MouseNativeH)
+	tm.mouseNativeLocked.Store(snap.MouseNativeLocked)
 	tm.modifiers.Store(snap.Modifiers)
 	tm.amigaScancodeMode.Store(snap.AmigaScancodeMode)
 	tm.SentinelTriggered.Store(snap.SentinelTriggered)

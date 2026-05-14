@@ -8461,18 +8461,18 @@ include "../dev/input_device.s"
 include "../resource/hardware_resource.s"
 
 ; ---------------------------------------------------------------------------
-; graphics.library — fullscreen RGBA32 display service (M11, M12: 800x600)
+; graphics.library — fullscreen RGBA32 display service (M11, M12: 960x540)
 ; ---------------------------------------------------------------------------
-; Maps the chip register page (0xF0) and the 800x600x4 VRAM range
-; (PPNs 0x100..0x2D5 = 470 pages = 1925120 bytes), creates the
+; Maps the chip register page (0xF0) and the 960x540x4 VRAM range
+; (PPNs 0x100..0x2FA = 507 pages = 2076672 bytes), creates the
 ; "graphics.library" port, then services requests synchronously.
 ;
-; M12: bumped from 640x480 to 800x600 to match the chip's DEFAULT_VIDEO_MODE
-; and give clients more screen real estate. The chip is left in mode 1 the
-; whole time (the chip's DEFAULT_VIDEO_MODE = MODE_800x600), so a kernel-side
-; VideoTerminal that started in 800x600 keeps the same framebuffer dimensions.
+; M12: bumped from 640x480 to 960x540 to match the chip's DEFAULT_VIDEO_MODE
+; and give clients more screen real estate. The chip is left in mode 7 the
+; whole time (the chip's DEFAULT_VIDEO_MODE = MODE_960x540), so a kernel-side
+; VideoTerminal that started in 960x540 keeps the same framebuffer dimensions.
 ; The protocol still allows clients to request other modes — graphics.library
-; just defaults to 800x600 in M12 because no other mode is enumerated yet.
+; just defaults to 960x540 in M12 because no other mode is enumerated yet.
 ;
 ; Single surface only (USER_DYN_PAGES=768 doesn't fit two persistent surface
 ; mappings + persistent VRAM). Client double-buffering remains deferred.
@@ -8545,7 +8545,7 @@ include "intuition_library.s"
 ; About — intuition.library client with text rendering (M12)
 ; ---------------------------------------------------------------------------
 ; Allocates a 320x200 RGBA32 backing surface, opens an intuition.library
-; window centered on the 800x600 screen, fills the content area with a
+; window centered on the 960x540 screen, fills the content area with a
 ; teal backdrop, draws several lines of "About IntuitionOS" text using
 ; the embedded Topaz 8x16 bitmap font, sends DAMAGE, then waits on its
 ; IDCMP port. On IDCMP_CLOSEWINDOW (Esc key OR click on close gadget)

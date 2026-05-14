@@ -15,14 +15,14 @@ func TestShouldStartFullscreen_ExplicitOverdriveM68KProgram(t *testing.T) {
 }
 
 func TestShouldStartFullscreen_OverdriveNameRequiresM68K(t *testing.T) {
-	if shouldStartFullscreen(false, false, "/tmp/ab3d2_ie68_overdrive.ie68") {
-		t.Fatal("non-M68K launch should not infer Overdrive fullscreen from filename")
+	if !shouldStartFullscreen(false, false, "/tmp/ab3d2_ie68_overdrive.ie68") {
+		t.Fatal("all launches should start fullscreen by default")
 	}
 }
 
-func TestShouldStartFullscreen_NonOverdriveM68KProgramStaysWindowed(t *testing.T) {
-	if shouldStartFullscreen(false, true, "/tmp/ab3d2_ie68_redux_high.ie68") {
-		t.Fatal("non-Overdrive M68K image should not start fullscreen by default")
+func TestShouldStartFullscreen_NonOverdriveM68KProgramStartsFullscreen(t *testing.T) {
+	if !shouldStartFullscreen(false, true, "/tmp/ab3d2_ie68_redux_high.ie68") {
+		t.Fatal("non-Overdrive M68K image should start fullscreen by default")
 	}
 }
 

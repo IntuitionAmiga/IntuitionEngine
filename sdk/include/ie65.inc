@@ -1527,23 +1527,24 @@ SWEEP_UP        = 1             ; Sweep frequency up
 
 VRAM_START      = $100000       ; VRAM starts at 1MB in 32-bit space
 .ifndef SCREEN_W
-SCREEN_W        = 1280          ; Default screen width
+SCREEN_W        = 960           ; Default screen width
 .endif
 .ifndef SCREEN_H
-SCREEN_H        = 960           ; Default screen height
+SCREEN_H        = 540           ; Default screen height
 .endif
 .ifndef LINE_BYTES
-LINE_BYTES      = 5120          ; Bytes per scanline (1280 * 4)
+LINE_BYTES      = 3840          ; Bytes per scanline (960 * 4)
 .endif
 
 ; VideoChip mode constants (write to VIDEO_MODE)
 MODE_640x480    = $00           ; 640x480 true colour
 MODE_800x600    = $01           ; 800x600 true colour
 MODE_1024x768   = $02           ; 1024x768 true colour
-MODE_1280x960   = $03           ; 1280x960 true colour (default)
+MODE_1280x960   = $03           ; 1280x960 true colour
 MODE_320x200    = $04           ; 320x200 chunky, RGBA32 or CLUT8
 MODE_320x240    = $05           ; 320x240 chunky, RGBA32 or CLUT8
 MODE_1920x1080  = $06           ; 1920x1080 true colour or CLUT8
+MODE_960x540    = $07           ; 960x540 true colour or CLUT8 (default)
 
 ; Blitter operations
 BLT_OP_COPY     = 0             ; Copy source to dest

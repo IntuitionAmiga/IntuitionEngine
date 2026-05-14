@@ -1082,7 +1082,7 @@ Cursor movement, delete, and backspace keys repeat automatically when held.
 
 ## Display
 
-The monitor overlay is a character grid sized to the current video mode (`screenWidth / 8` columns x `screenHeight / 16` rows, for example 100x37 at the 800x600 default), rendered with the Amiga Topaz 8 bitmap font. Colours follow classic monitor conventions:
+The monitor overlay is a character grid sized to the current native video mode (`screenWidth / 8` columns x `screenHeight / 16` rows, for example 120x33 at the 960x540 default), rendered with the Amiga Topaz 8 bitmap font. Desktop presentation scales that native surface into the default 1920x1080 fullscreen output. Colours follow classic monitor conventions:
 
 - **White**: Default text
 - **Cyan**: Headers, labels, informational messages

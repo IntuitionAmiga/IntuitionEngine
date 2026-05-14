@@ -817,18 +817,19 @@
 ; ============================================================================
 
 .equ VRAM_START        0x100000         ; VRAM starts at 1MB
-.equ SCREEN_W          1280             ; Default screen width
-.equ SCREEN_H          960              ; Default screen height
-.equ LINE_BYTES        5120             ; Bytes per scanline (1280 * 4)
+.equ SCREEN_W          960              ; Default screen width
+.equ SCREEN_H          540              ; Default screen height
+.equ LINE_BYTES        3840             ; Bytes per scanline (960 * 4)
 
 ; VideoChip mode constants (write to VIDEO_MODE)
 .equ MODE_640x480     0x00              ; 640x480 true colour
 .equ MODE_800x600     0x01              ; 800x600 true colour
 .equ MODE_1024x768    0x02              ; 1024x768 true colour
-.equ MODE_1280x960    0x03              ; 1280x960 true colour (default)
+.equ MODE_1280x960    0x03              ; 1280x960 true colour
 .equ MODE_320x200     0x04              ; 320x200 chunky, RGBA32 or CLUT8
 .equ MODE_320x240     0x05              ; 320x240 chunky, RGBA32 or CLUT8
 .equ MODE_1920x1080   0x06              ; 1920x1080 true colour or CLUT8
+.equ MODE_960x540     0x07              ; 960x540 true colour or CLUT8 (default)
 
 ; Blitter operations
 .equ BLT_OP_COPY       0                ; Copy source to dest

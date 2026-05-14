@@ -1211,7 +1211,7 @@ M11 takes the next step toward an Amiga-shaped graphical OS: interactive input a
   - Display: opened by `(adapter_id, mode_id)`; M11 only `(0, 0)` succeeds. Single display owner for M11. `display_handle = 1`.
   - Surface: client owns the buffer (allocated with `MEMF_PUBLIC`), passes the share_handle in `GFX_REGISTER_SURFACE`. graphics.library does `MapShared(..., MAPF_READ)` and caches the mapped VA. Single surface for M11 (VA budget — see kernel section). `surface_handle = 1`.
 - **Present**: full-frame CPU memcpy from the mapped surface VA to the mapped VRAM VA (1228800 bytes). Synchronous reply with `present_seq` (per-surface monotonic counter). Forward-compatible: `mn_Data1` reserves a packed dirty rect for future rect-bounded copies (M11 always sends 0 = full frame).
-- **Mode set**: `GFX_OPEN_DISPLAY` writes `MODE_640x480` (= 0) to `VIDEO_MODE` and enables the chip with `VIDEO_CTRL = 1`. (Note: the constant `CTRL_DISABLE_FLAG = 0` in `video_chip.go` and its accompanying comment are misleading — the actual chip code at `video_chip.go:2653` enables the chip when `value != 0`, so writing `1` enables and writing `0` disables. Existing examples like `mandelbrot_ie64.asm` and `rotozoomer.asm` use the same `VIDEO_CTRL = 1` convention.) `GFX_CLOSE_DISPLAY` resets `VIDEO_MODE` to `MODE_800x600` (the default) and writes `VIDEO_CTRL = 0` to disable scanout, so the next `GFX_OPEN_DISPLAY` re-enables cleanly.
+- **Mode set**: current graphics.library builds use the native 16:9 `MODE_960x540` default and enable the chip with `VIDEO_CTRL = 1`. (Note: the constant `CTRL_DISABLE_FLAG = 0` in `video_chip.go` and its accompanying comment are misleading — the actual chip code enables the chip when `value != 0`, so writing `1` enables and writing `0` disables.) `GFX_CLOSE_DISPLAY` resets `VIDEO_MODE` to `MODE_960x540` and writes `VIDEO_CTRL = 0` to disable scanout, so the next `GFX_OPEN_DISPLAY` re-enables cleanly.
 - **Internal layering**: M11 ships graphics.library as a single monolithic service block — IEVideo-specific MMIO writes are inlined directly into the message-dispatch handlers. The plan called for a generic display/service layer plus a backend vtable (`init`, `set_mode`, `restore_mode`, `present_full`, `present_rect`, `shutdown`) so M12+ adapters could plug in cleanly, but that refactor is **deferred to M12** and will happen naturally when a second adapter driver is introduced.
 - **Future-proof opcode space**: `GFX_WAIT_VBLANK` (`0x209`) and `GFX_PRESENT_ASYNC` (`0x20A`) are reserved in the constants table but not implemented in M11.
 
@@ -1247,7 +1247,7 @@ The user can then type `GFXDEMO` to launch `C/GfxDemo`, which fills the framebuf
 - Surface ownership: M11 stores one surface entry. `GFX_REGISTER_SURFACE` while one is in use returns `GFX_ERR_BUSY`. `GFX_UNREGISTER_SURFACE` clears the entry.
 - Subscriber ownership: input.device tracks a single `subscriber_port`. `INPUT_OPEN` while a subscriber is registered returns `INPUT_ERR_BUSY`. `INPUT_CLOSE` clears the subscription.
 - On client task exit: existing M9 region cleanup unmaps any AllocMem'd surface buffers and tears down ports. graphics.library's surface table can be left holding a stale entry until the client cleans up explicitly or until graphics.library detects via failed `MapShared` reuse — M11 does not auto-reap stale surface entries.
-- **Known wart (crash path only)**: clean shutdown via `GFX_CLOSE_DISPLAY` does reset `VIDEO_MODE` to `MODE_800x600` and writes `VIDEO_CTRL = 0`, so a well-behaved client returns the chip to a sane state. But if `graphics.library` itself crashes or exits abnormally before reaching `CloseDisplay`, the kernel unmaps its VRAM region without touching `VIDEO_MODE`/`VIDEO_CTRL` — the system is left in graphics mode with no service running until the next boot. M12 can fix this with either a kernel hook on chip-page tasks or an init-task that resets the chip before relaunching graphics.library.
+- **Known wart (crash path only)**: clean shutdown via `GFX_CLOSE_DISPLAY` does reset `VIDEO_MODE` to `MODE_960x540` and writes `VIDEO_CTRL = 0`, so a well-behaved client returns the chip to a sane state. But if `graphics.library` itself crashes or exits abnormally before reaching `CloseDisplay`, the kernel unmaps its VRAM region without touching `VIDEO_MODE`/`VIDEO_CTRL` — the system is left in graphics mode with no service running until the next boot.
 
 ### Milestone 11.5: Exec Boundary Cleanup (Complete)
 
@@ -1347,9 +1347,9 @@ M12 ships the first user-space windowing layer (`intuition.library`) and quietly
 **5.13.1 intuition.library service.** A new user-space service registered as `"intuition.library"` (a public message port). On the FIRST `INTUITION_OPEN_WINDOW` it lazily:
 
 1. `FindPort("graphics.library")` and `FindPort("input.device")` (cached on the data page)
-2. `AllocMem(1920000, MEMF_PUBLIC|MEMF_CLEAR)` for its own 800×600 RGBA32 screen surface
-3. `GFX_OPEN_DISPLAY(0, 0)` → `display_handle`. graphics.library writes `VIDEO_MODE = MODE_800x600 = 1`, which matches the chip's `DEFAULT_VIDEO_MODE` so the chip's frontBuffer is NOT reallocated and any kernel-side `VideoTerminal` rendering keeps its dimensions valid.
-4. `GFX_REGISTER_SURFACE(display_handle, dims, share=screen_share)` → `surface_handle`. The geometry is encoded as `(800<<48)|(600<<32)|(format<<16)|stride`, with `stride = 3200` (= 800 × 4). intuition.library is now the **sole** registered display client.
+2. `AllocMem(2073600, MEMF_PUBLIC|MEMF_CLEAR)` for its own 960x540 RGBA32 screen surface
+3. `GFX_OPEN_DISPLAY(0, 0)` → `display_handle`. graphics.library writes `VIDEO_MODE = MODE_960x540 = 7`, which matches the chip's `DEFAULT_VIDEO_MODE` so the chip's frontBuffer is NOT reallocated and any kernel-side `VideoTerminal` rendering keeps its dimensions valid.
+4. `GFX_REGISTER_SURFACE(display_handle, dims, share=screen_share)` → `surface_handle`. The geometry is encoded as `(960<<48)|(540<<32)|(format<<16)|stride`, with `stride = 3840` (= 960 × 4). intuition.library is now the **sole** registered display client.
 5. `INPUT_OPEN(my_input_port)` to receive raw `IE_KEY_DOWN`/`IE_MOUSE_MOVE`/`IE_MOUSE_BTN` events. The reply type is checked: if input.device returns `INPUT_ERR_BUSY` (another client already owns the subscription), intuition.library records `input_subscribed = 0` and the close path will SKIP `INPUT_CLOSE` so it doesn't clobber the other subscriber.
 6. `MapShared(client_window_buffer, MAPF_READ)` → cached `win_mapped_va`
 
@@ -1358,16 +1358,16 @@ Until that first OPEN_WINDOW the system stays in text mode (intuition.library ha
 **Window protocol** (see `iexec.inc`):
 
 - `INTUITION_OPEN_WINDOW` (0x300) — `data0 = (w<<48)|(h<<32)|(x<<16)|y`, `data1 = idcmp_port_id`, `share = win_buf_share`. Returns `data0 = window_handle` (always 1 in M12). M12 is single-window — a second OPEN_WINDOW while one is open returns `INTUI_ERR_BUSY`.
-- `INTUITION_CLOSE_WINDOW` (0x301) — `data0 = window_handle`. Performs a full teardown: `SYS_FREE_MEM` on the mapped client window buffer (using `win_w * win_h * 4` for the size), conditionally sends `INPUT_CLOSE` only if `input_subscribed == 1`, sends `GFX_UNREGISTER_SURFACE` (which now also calls `SYS_FREE_MEM` on graphics.library's mapped surface so the shared object's refcount actually reaches zero), sends `GFX_CLOSE_DISPLAY`, then `SYS_FREE_MEM`s its own screen surface (1920000 bytes). All cached display state (`screen_va`, `screen_share`, `display_handle`, `surface_handle`, `display_open`) is cleared so a future OPEN_WINDOW lazily re-acquires from a clean slate.
+- `INTUITION_CLOSE_WINDOW` (0x301) — `data0 = window_handle`. Performs a full teardown: `SYS_FREE_MEM` on the mapped client window buffer (using `win_w * win_h * 4` for the size), conditionally sends `INPUT_CLOSE` only if `input_subscribed == 1`, sends `GFX_UNREGISTER_SURFACE` (which now also calls `SYS_FREE_MEM` on graphics.library's mapped surface so the shared object's refcount actually reaches zero), sends `GFX_CLOSE_DISPLAY`, then `SYS_FREE_MEM`s its own screen surface (2073600 bytes). All cached display state (`screen_va`, `screen_share`, `display_handle`, `surface_handle`, `display_open`) is cleared so a future OPEN_WINDOW lazily re-acquires from a clean slate.
 - `INTUITION_DAMAGE` (0x302) — `data0 = window_handle`, `data1 = (x<<48)|(y<<32)|(w<<16)|h` (rect; M12 ignores the rect and does a full-window blit because `GFX_PRESENT` is full-frame in M11 — see §5.12). intuition.library:
-  1. Blits the (mapped) client buffer at `(win_x, win_y)` into its own 800×600 screen surface (3200-byte stride).
+  1. Blits the (mapped) client buffer at `(win_x, win_y)` into its own 960x540 screen surface (3840-byte stride).
   2. Paints a 1-pixel 3D bevel: WHITE highlight on top + left edges, BLACK shadow on bottom + right edges (raised window appearance).
   3. Paints a 16-pixel title bar at rows `(win_y+1, win_y+16)` with alternating Amiga-blue pinstripes — light steel blue `0xFFB89878` on even rows, medium steel blue `0xFF905030` on odd rows.
   4. Paints a 16×16 close gadget at `(win_x+1, win_y+1)`: light grey fill `0xFFCCCCCC`, 1-pixel black outline, recessed black 4×4 centre square.
   5. Paints a 16×16 depth gadget at `(win_x+win_w-17, win_y+1)`: light grey fill, black outline, two overlapping rectangle outlines (the AmigaOS front/back depth icon).
   6. Calls `GFX_PRESENT(surface_handle)`.
 
-  All decoration is drawn via the `.intui_fillrect` helper subroutine — a small `jsr`/`rts` routine in the intuition.library code section that fills a screen-space rectangle with a single colour. It hardcodes the 800×600 stride (3200) and reads the screen surface VA from `data[200]`. Rect coordinates are passed in `r6..r9` and color in `r17`. The compositor reloads `r22..r25` (`win_x`, `win_y`, `win_w`, `win_h`) from `data[224..240]` at the start of the decoration block, because the user-buffer blit loop above destroys `r25` (decrements `win_h` to 0 row by row).
+  All decoration is drawn via the `.intui_fillrect` helper subroutine — a small `jsr`/`rts` routine in the intuition.library code section that fills a screen-space rectangle with a single colour. It hardcodes the 960x540 stride (3840) and reads the screen surface VA from `data[200]`. Rect coordinates are passed in `r6..r9` and color in `r17`. The compositor reloads `r22..r25` (`win_x`, `win_y`, `win_w`, `win_h`) from `data[224..240]` at the start of the decoration block, because the user-buffer blit loop above destroys `r25` (decrements `win_h` to 0 row by row).
 
 **IDCMP delivery** (also in `iexec.inc`):
 
@@ -1392,8 +1392,8 @@ Until that first OPEN_WINDOW the system stays in text mode (intuition.library ha
    - "(C) 2024-2026 Zayn Otley"
 
    Text is drawn by the `.ab_draw_string` / `.ab_draw_char` subroutines, which walk a null-terminated string and emit one 8×16 glyph per character. The font itself is included via `incbin "topaz.raw"` (a copy of the AmigaOS Topaz Plus 8×16 font lives at `sdk/include/topaz.raw` and is full 256-glyph × 16-byte = 4096 bytes embedded at offset 1024 of the About app's data section). Glyphs are rendered in white (0xFFFFFFFF) on whatever backdrop the buffer already contains; transparent for "0" bits in the glyph bitmap.
-5. `INTUITION_OPEN_WINDOW(w=320, h=200, x=240, y=200, idcmp_port=mine, share=surface_share)` → `window_handle`
-   (Window is centered on the 800×600 screen.)
+5. `INTUITION_OPEN_WINDOW(w=320, h=200, x=320, y=170, idcmp_port=mine, share=surface_share)` → `window_handle`
+   (Window is centered on the 960x540 screen.)
 6. `INTUITION_DAMAGE(window_handle, full)`
 7. `WaitPort(idcmp_port)` loop, exits on `IDCMP_CLOSEWINDOW`
 8. `INTUITION_CLOSE_WINDOW`, then `SYS_EXIT_TASK`
@@ -1413,7 +1413,7 @@ intuition.library does not just blit the client buffer raw — it overpaints Mag
 4. **16×16 depth gadget** at the title bar's right edge, position `(win_x+win_w-17, win_y+1, 16, 16)`:
    - Light grey fill, 1-pixel black outline, two overlapping rectangle outlines drawn inside (an upper-left "back" rectangle and a lower-right "front" rectangle), reproducing the classic AmigaOS front/back depth icon.
 
-All decoration is painted via the `.intui_fillrect` helper subroutine — a small `jsr`/`rts` routine in the intuition.library code section that fills a rectangle with a single color. It hardcodes the 800×600 screen stride (3200) and reads the screen surface VA from `data[200]`. Rect coordinates are passed in `r6..r9` and color in `r17`.
+All decoration is painted via the `.intui_fillrect` helper subroutine — a small `jsr`/`rts` routine in the intuition.library code section that fills a rectangle with a single color. It hardcodes the 960x540 screen stride (3840) and reads the screen surface VA from `data[200]`. Rect coordinates are passed in `r6..r9` and color in `r17`.
 
 The compositor reloads `r22..r25` (`win_x`, `win_y`, `win_w`, `win_h`) from `data[224..240]` at the start of the decoration block, because the user-buffer blit loop above destroys `r25` (decrements `win_h` to 0 row by row).
 
@@ -1449,7 +1449,7 @@ The combined kernel-data-layout shift moves `KD_PAGE_BITMAP` from 1664 to 6080, 
 - **Multiple windows / z-order / overlap.** M12 ships single-window. The data model has focus/active concepts even though only one window exists, so M12.x can add z-order without an API break.
 - **Window dragging.**
 - **Resize gadgets.**
-- **Pointer overlay save-under.** M12 relies on the host emulator's mouse cursor; intuition.library doesn't render its own pointer.
+- **Pointer overlay save-under.** M12 relies on the presentation backend's pointer path; intuition.library doesn't render its own pointer or save-under overlay.
 - **Menus, icons, requesters, multiple public screens.**
 - **Rect-bounded `GFX_PRESENT`.** Stays full-frame for M12; rect packing reserved for the next graphics.library protocol revision.
 - **`hardware.resource` and de-publicization of `SYS_MAP_IO`.** Still a documented impurity; will land alongside the first concrete consumer per the M11.5 admission rule.

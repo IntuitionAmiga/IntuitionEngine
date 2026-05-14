@@ -126,7 +126,7 @@ Every demo starts with setting up the display and establishing a stable frame ra
 
 ## Video Mode Setup
 
-The Intuition Engine supports four resolutions (default is 1280x960). We'll use 640×480 (mode 0) for this tutorial:
+The Intuition Engine supports multiple native resolutions (default is 960x540, presented at 1920x1080 in desktop builds). We'll use 640×480 (mode 0) for this tutorial:
 
 **IE32:**
 ```assembly

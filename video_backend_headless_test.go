@@ -48,6 +48,9 @@ func TestHeadlessOutput_UpdateFrame_RejectsWrongSize(t *testing.T) {
 	}
 	h := out.(*HeadlessVideoOutput)
 	cfg := h.GetDisplayConfig()
+	if cfg.Width != DefaultPresentationWidth || cfg.Height != DefaultPresentationHeight {
+		t.Fatalf("default headless config = %dx%d, want presentation %dx%d", cfg.Width, cfg.Height, DefaultPresentationWidth, DefaultPresentationHeight)
+	}
 	want := cfg.Width * cfg.Height * 4
 	if err := h.UpdateFrame(make([]byte, want)); err != nil {
 		t.Fatalf("valid frame rejected: %v", err)

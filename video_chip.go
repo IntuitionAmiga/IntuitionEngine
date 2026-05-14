@@ -254,6 +254,7 @@ const (
 	MODE_320x200   = 0x04
 	MODE_320x240   = 0x05
 	MODE_1920x1080 = 0x06
+	MODE_960x540   = 0x07
 
 	RESOLUTION_320x200_WIDTH    = 320
 	RESOLUTION_320x200_HEIGHT   = 200
@@ -263,6 +264,8 @@ const (
 	RESOLUTION_640x480_HEIGHT   = 480
 	RESOLUTION_800x600_WIDTH    = 800
 	RESOLUTION_800x600_HEIGHT   = 600
+	RESOLUTION_960x540_WIDTH    = 960
+	RESOLUTION_960x540_HEIGHT   = 540
 	RESOLUTION_1024x768_WIDTH   = 1024
 	RESOLUTION_1024x768_HEIGHT  = 768
 	RESOLUTION_1280x960_WIDTH   = 1280
@@ -270,10 +273,9 @@ const (
 	RESOLUTION_1920x1080_WIDTH  = 1920
 	RESOLUTION_1920x1080_HEIGHT = 1080
 
-	// DEFAULT_VIDEO_MODE is the single source of truth for the default resolution.
-	// Change this one constant to change the default everywhere (VideoChip, compositor,
-	// Ebiten window, overlays). Valid values: MODE_640x480 .. MODE_1920x1080.
-	DEFAULT_VIDEO_MODE = MODE_800x600
+	// DEFAULT_VIDEO_MODE is the single source of truth for the default native
+	// guest/source resolution. The host presentation resolution is separate.
+	DEFAULT_VIDEO_MODE = MODE_960x540
 )
 
 // ------------------------------------------------------------------------------
@@ -409,6 +411,12 @@ var VideoModes = map[uint32]VideoMode{
 		bytesPerRow: RESOLUTION_800x600_WIDTH * BYTES_PER_PIXEL,
 		totalSize:   RESOLUTION_800x600_WIDTH * RESOLUTION_800x600_HEIGHT * BYTES_PER_PIXEL,
 	},
+	MODE_960x540: {
+		width:       RESOLUTION_960x540_WIDTH,
+		height:      RESOLUTION_960x540_HEIGHT,
+		bytesPerRow: RESOLUTION_960x540_WIDTH * BYTES_PER_PIXEL,
+		totalSize:   RESOLUTION_960x540_WIDTH * RESOLUTION_960x540_HEIGHT * BYTES_PER_PIXEL,
+	},
 	MODE_1024x768: {
 		width:       RESOLUTION_1024x768_WIDTH,
 		height:      RESOLUTION_1024x768_HEIGHT,
@@ -436,6 +444,12 @@ var (
 	DefaultScreenHeight = defaultMode.height
 	DefaultOverlayCols  = DefaultScreenWidth / 8   // 8px glyph width
 	DefaultOverlayRows  = DefaultScreenHeight / 16 // 16px glyph height
+)
+
+const (
+	DefaultPresentationWidth      = RESOLUTION_1920x1080_WIDTH
+	DefaultPresentationHeight     = RESOLUTION_1920x1080_HEIGHT
+	DefaultPresentationFullscreen = true
 )
 
 //go:embed splash.png

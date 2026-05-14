@@ -637,7 +637,7 @@ ANTIC/GTIA intentionally has no 6502 `$D400/$D000` compatibility surface; `$D400
 ```mermaid
 graph TB
     subgraph VCS["VideoChip (Layer 0, 0xF0000-0xF049B)"]
-        VC_FB["Framebuffer Manager<br/>640x480 / 800x600 / 1024x768 / 1280x960 / 1920x1080"]
+        VC_FB["Framebuffer Manager<br/>640x480 / 800x600 / 960x540 / 1024x768 / 1280x960 / 1920x1080"]
         VC_COP["Copper Coprocessor<br/>WAIT / MOVE / SETBASE / END"]
         VC_BLT["DMA Blitter<br/>Copy / Fill / Line / Masked / Alpha"]
         VC_M7["Mode7 Affine Texture Unit<br/>16.16 fixed-point UV<br/>per-col + per-row deltas"]
@@ -763,7 +763,7 @@ The rasteriser walks each destination pixel, computes the source UV from the aff
 
 ### Video Compositor
 
-The compositor collects immutable frame snapshots from all enabled video sources and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, both mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing. Sources whose native frame dimensions differ from the compositor output, including Voodoo 640x480 or 800x600 frames over a 1920x1080 VideoChip output, are scaled into the compositor frame during blending.
+The compositor collects immutable frame snapshots from all enabled video sources and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, both mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing. Desktop startup locks the presentation output to 1920x1080 fullscreen while native sources keep their requested dimensions. The default native mode is 960x540 for exact 2x 1080p presentation. Non-16:9 sources are aspect-fit by default and can be stretch-filled with `Shift+F11`.
 
 Two rendering paths:
 

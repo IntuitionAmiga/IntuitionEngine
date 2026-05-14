@@ -829,7 +829,7 @@ func TestCompositor_NotifyResolutionChange_AppliesOnComposite(t *testing.T) {
 	out := newMockVideoOutput()
 	comp := NewVideoCompositor(out)
 	comp.NotifyResolutionChange(1024, 768)
-	if comp.frameWidth != DefaultScreenWidth {
+	if comp.frameWidth != DefaultPresentationWidth {
 		t.Fatalf("expected width unchanged before composite, got %d", comp.frameWidth)
 	}
 	comp.composite()
@@ -865,10 +865,10 @@ func TestCompositor_LockResolution_IgnoresNotifications(t *testing.T) {
 func TestCompositor_UnlockResolution_AppliesPendingNotification(t *testing.T) {
 	out := newMockVideoOutput()
 	comp := NewVideoCompositor(out)
-	comp.LockResolution(DefaultScreenWidth, DefaultScreenHeight)
+	comp.LockResolution(DefaultPresentationWidth, DefaultPresentationHeight)
 	comp.NotifyResolutionChange(640, 480)
 	comp.composite()
-	if comp.frameWidth != DefaultScreenWidth || comp.frameHeight != DefaultScreenHeight {
+	if comp.frameWidth != DefaultPresentationWidth || comp.frameHeight != DefaultPresentationHeight {
 		t.Fatalf("expected locked default resolution, got %dx%d", comp.frameWidth, comp.frameHeight)
 	}
 
@@ -915,7 +915,7 @@ func TestCompositor_LockResolution_PropagatesConfig_PreStart(t *testing.T) {
 func TestCompositor_ApplyResolution_NoDuplicateUpdate(t *testing.T) {
 	out := newMockVideoOutput()
 	comp := NewVideoCompositor(out)
-	comp.NotifyResolutionChange(DefaultScreenWidth, DefaultScreenHeight)
+	comp.NotifyResolutionChange(DefaultPresentationWidth, DefaultPresentationHeight)
 	comp.composite()
 	if out.setCalls != 0 {
 		t.Fatalf("expected no SetDisplayConfig calls, got %d", out.setCalls)
@@ -945,6 +945,208 @@ func TestDisplayConfig_FullscreenDefaultFalse(t *testing.T) {
 	var config DisplayConfig
 	if config.Fullscreen {
 		t.Fatal("expected zero-value Fullscreen to be false")
+	}
+}
+
+func TestDefaultVideoAndPresentationModes(t *testing.T) {
+	mode := VideoModes[DEFAULT_VIDEO_MODE]
+	if DEFAULT_VIDEO_MODE != MODE_960x540 {
+		t.Fatalf("DEFAULT_VIDEO_MODE = 0x%X, want MODE_960x540", DEFAULT_VIDEO_MODE)
+	}
+	if mode.width != 960 || mode.height != 540 {
+		t.Fatalf("default native mode = %dx%d, want 960x540", mode.width, mode.height)
+	}
+	if DefaultPresentationWidth != 1920 || DefaultPresentationHeight != 1080 {
+		t.Fatalf("default presentation = %dx%d, want 1920x1080", DefaultPresentationWidth, DefaultPresentationHeight)
+	}
+}
+
+func TestCompositor_AspectFit_BarsFourByThree(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	src := &mockOpaqueSource{
+		layer: 0,
+		w:     640,
+		h:     480,
+		frame: solidTestFrame(640, 480, 0x20, 0x40, 0x60, 0xFF),
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	comp.composite()
+
+	if got := testPixel(comp.finalFrame, 239, 540, 1920); got != [4]byte{} {
+		t.Fatalf("left bar pixel = %v, want transparent black", got)
+	}
+	if got := testPixel(comp.finalFrame, 240, 540, 1920); got != [4]byte{0x20, 0x40, 0x60, 0xFF} {
+		t.Fatalf("first fit pixel = %v, want source color", got)
+	}
+}
+
+func TestCompositor_StretchFill_FillsFourByThree(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	comp.SetScaleMode(ScaleStretchFill)
+	src := &mockOpaqueSource{
+		layer: 0,
+		w:     640,
+		h:     480,
+		frame: solidTestFrame(640, 480, 0x20, 0x40, 0x60, 0xFF),
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	comp.composite()
+
+	if got := testPixel(comp.finalFrame, 0, 540, 1920); got != [4]byte{0x20, 0x40, 0x60, 0xFF} {
+		t.Fatalf("stretched edge pixel = %v, want source color", got)
+	}
+}
+
+func TestCompositor_960x540Fills1080p(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	src := &mockOpaqueSource{
+		layer: 0,
+		w:     960,
+		h:     540,
+		frame: solidTestFrame(960, 540, 0x11, 0x22, 0x33, 0xFF),
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	comp.composite()
+
+	if got := testPixel(comp.finalFrame, 0, 0, 1920); got != [4]byte{0x11, 0x22, 0x33, 0xFF} {
+		t.Fatalf("top-left pixel = %v, want source color", got)
+	}
+	if got := testPixel(comp.finalFrame, 1919, 1079, 1920); got != [4]byte{0x11, 0x22, 0x33, 0xFF} {
+		t.Fatalf("bottom-right pixel = %v, want source color", got)
+	}
+}
+
+func TestCompositor_ScaleToggleOnlyForNon16x9Sources(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	src := &mockOpaqueSource{layer: 0, w: 960, h: 540, frame: solidTestFrame(960, 540, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	if comp.ActiveSourceNeedsScaleToggle() {
+		t.Fatal("16:9 source should not need scale toggle")
+	}
+	if comp.ToggleScaleModeIfNonNative() {
+		t.Fatal("16:9 source should not toggle scale mode")
+	}
+	if got := comp.GetScaleMode(); got != ScaleAspectFit {
+		t.Fatalf("scale mode changed for 16:9 source: %v", got)
+	}
+
+	src.w, src.h = 640, 480
+	src.frame = solidTestFrame(640, 480, 1, 2, 3, 0xFF)
+	if !comp.ActiveSourceNeedsScaleToggle() {
+		t.Fatal("4:3 source should need scale toggle")
+	}
+	if !comp.ToggleScaleModeIfNonNative() {
+		t.Fatal("4:3 source should toggle scale mode")
+	}
+	if got := comp.GetScaleMode(); got != ScaleStretchFill {
+		t.Fatalf("scale mode = %v, want stretch", got)
+	}
+}
+
+func TestCompositor_MapPresentationPointToNative_AspectFitPillarbox(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	src := &mockOpaqueSource{layer: 0, w: 640, h: 480, frame: solidTestFrame(640, 480, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	x, y, w, h := comp.MapPresentationPointToNative(240, 0)
+	if x != 0 || y != 0 || w != 640 || h != 480 {
+		t.Fatalf("visible top-left maps to (%d,%d) %dx%d, want (0,0) 640x480", x, y, w, h)
+	}
+	x, y, _, _ = comp.MapPresentationPointToNative(960, 540)
+	if x != 320 || y != 240 {
+		t.Fatalf("presentation center maps to (%d,%d), want (320,240)", x, y)
+	}
+	x, y, _, _ = comp.MapPresentationPointToNative(239, 540)
+	if x != 0 || y != 240 {
+		t.Fatalf("left pillarbox maps to (%d,%d), want clamped left edge (0,240)", x, y)
+	}
+	x, y, _, _ = comp.MapPresentationPointToNative(1680, 1079)
+	if x != 639 || y != 479 {
+		t.Fatalf("visible bottom-right maps to (%d,%d), want (639,479)", x, y)
+	}
+}
+
+func TestCompositor_MapNativePointToPresentation_AspectFitPillarbox(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	src := &mockOpaqueSource{layer: 0, w: 640, h: 480, frame: solidTestFrame(640, 480, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	x, y := comp.MapNativePointToPresentation(0, 0)
+	if x != 240 || y != 0 {
+		t.Fatalf("native top-left maps to (%d,%d), want presentation visible top-left (240,0)", x, y)
+	}
+	x, y = comp.MapNativePointToPresentation(320, 240)
+	if x != 960 || y != 540 {
+		t.Fatalf("native center maps to (%d,%d), want presentation center (960,540)", x, y)
+	}
+	x, y = comp.MapNativePointToPresentation(639, 479)
+	if x != 1677 || y != 1077 {
+		t.Fatalf("native bottom-right maps to (%d,%d), want last scaled pixel near (1677,1077)", x, y)
+	}
+}
+
+func TestCompositor_MapNativePointToPresentation_960x540Doubles(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	src := &mockOpaqueSource{layer: 0, w: 960, h: 540, frame: solidTestFrame(960, 540, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	x, y := comp.MapNativePointToPresentation(480, 270)
+	if x != 960 || y != 540 {
+		t.Fatalf("native 960x540 center maps to (%d,%d), want (960,540)", x, y)
+	}
+}
+
+func TestCompositor_MapPresentationPointToNativeForSource_IgnoresActiveSource(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	src := &mockOpaqueSource{layer: 0, w: 960, h: 540, frame: solidTestFrame(960, 540, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	x, y, w, h := comp.MapPresentationPointToNativeForSource(1919, 1079, 1920, 1080)
+	if x != 1919 || y != 1079 || w != 1920 || h != 1080 {
+		t.Fatalf("presentation bottom-right maps to (%d,%d) %dx%d, want (1919,1079) 1920x1080", x, y, w, h)
+	}
+}
+
+func TestCompositor_MapNativePointToPresentationForSource_IgnoresActiveSource(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	src := &mockOpaqueSource{layer: 0, w: 960, h: 540, frame: solidTestFrame(960, 540, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	x, y := comp.MapNativePointToPresentationForSource(960, 540, 1920, 1080)
+	if x != 960 || y != 540 {
+		t.Fatalf("native center maps to (%d,%d), want presentation center (960,540)", x, y)
+	}
+}
+
+func TestCompositor_MapPresentationPointToNative_StretchFill(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	comp.SetScaleMode(ScaleStretchFill)
+	src := &mockOpaqueSource{layer: 0, w: 640, h: 480, frame: solidTestFrame(640, 480, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	x, y, w, h := comp.MapPresentationPointToNative(960, 540)
+	if x != 320 || y != 240 || w != 640 || h != 480 {
+		t.Fatalf("stretch center maps to (%d,%d) %dx%d, want (320,240) 640x480", x, y, w, h)
 	}
 }
 

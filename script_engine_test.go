@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -418,6 +419,110 @@ func TestScriptEngine_RecScreenshot(t *testing.T) {
 	}
 	if _, err := os.Stat(outPath); err != nil {
 		t.Fatalf("screenshot missing: %v", err)
+	}
+}
+
+func TestScriptEngine_TakeScreenshotMapsCursorToPresentation(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	term.mouseOverride.Store(true)
+	term.SetMouseNativeResolution(960, 540)
+	term.mouseX.Store(480)
+	term.mouseY.Store(270)
+
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	src := &scriptTestSource{
+		w:       960,
+		h:       540,
+		enabled: true,
+		frame:   solidTestFrame(960, 540, 16, 32, 48, 0xFF),
+	}
+	comp.RegisterSource(src)
+	comp.composite()
+
+	se := NewScriptEngine(bus, comp, term)
+	outPath := filepath.Join(t.TempDir(), "shot.png")
+	if err := se.TakeScreenshot(outPath); err != nil {
+		t.Fatalf("TakeScreenshot failed: %v", err)
+	}
+
+	f, err := os.Open(outPath)
+	if err != nil {
+		t.Fatalf("open screenshot: %v", err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		t.Fatalf("decode screenshot: %v", err)
+	}
+
+	r, g, b, a := img.At(960, 540).RGBA()
+	if r != 0 || g != 0 || b != 0 || a != 0xFFFF {
+		t.Fatalf("cursor pixel at presentation center = (%04x,%04x,%04x,%04x), want black opaque", r, g, b, a)
+	}
+	r, g, b, _ = img.At(480, 270).RGBA()
+	if r == 0 && g == 0 && b == 0 {
+		t.Fatal("cursor was drawn at native coordinates instead of presentation coordinates")
+	}
+}
+
+func TestScriptEngine_TermMouseMoveClampsToTerminalNativeResolution(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	term.LockMouseNativeResolution(1920, 1080)
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	src := &scriptTestSource{
+		w:       960,
+		h:       540,
+		enabled: true,
+		frame:   solidTestFrame(960, 540, 16, 32, 48, 0xFF),
+	}
+	comp.RegisterSource(src)
+
+	se := NewScriptEngine(bus, comp, term)
+	if err := se.RunString(`term.mouse_move(1919, 1079)`, filepath.Join(t.TempDir(), "mouse_move.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if got := term.mouseX.Load(); got != 1919 {
+		t.Fatalf("mouseX = %d, want 1919", got)
+	}
+	if got := term.mouseY.Load(); got != 1079 {
+		t.Fatalf("mouseY = %d, want 1079", got)
+	}
+}
+
+func TestScriptEngine_TermMouseMoveFallsBackToCompositorWhenTerminalNativeUnset(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	src := &scriptTestSource{
+		w:       960,
+		h:       540,
+		enabled: true,
+		frame:   solidTestFrame(960, 540, 16, 32, 48, 0xFF),
+	}
+	comp.RegisterSource(src)
+
+	se := NewScriptEngine(bus, comp, term)
+	if err := se.RunString(`term.mouse_move(1919, 1079)`, filepath.Join(t.TempDir(), "mouse_move.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if got := term.mouseX.Load(); got != 959 {
+		t.Fatalf("mouseX = %d, want 959", got)
+	}
+	if got := term.mouseY.Load(); got != 539 {
+		t.Fatalf("mouseY = %d, want 539", got)
 	}
 }
 

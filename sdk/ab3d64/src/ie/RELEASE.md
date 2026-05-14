@@ -32,8 +32,10 @@ binary bundles:
 - the selected Karlos-TKG-High AB3D2 IE68 program;
 - the prepared Karlos-TKG-High asset pack.
 
-The Overdrive binaries bundle the Overdrive IE68 program, start fullscreen, and
-present the existing 320x240 CLUT8 renderer as a full-frame 1920x1080 stretch.
+The Overdrive binaries bundle the Overdrive IE68 program and present the
+existing 320x240 CLUT8 renderer as a full-frame 1920x1080 stretch. Current IE
+desktop builds already start fullscreen with a 1920x1080 presentation frame, so
+Overdrive no longer relies on a package-specific fullscreen startup path.
 They use the same prepared Karlos-TKG-High asset pack as the standard packaged
 runtimes. The Overdrive runtime requires a display capable of 1920x1080. Press
 F11 to drop out of fullscreen into a window if the host desktop is smaller or
@@ -156,8 +158,8 @@ F10 hard reset reboots the bundled IE68 program from scratch and discards any
 unsaved in-game progress. Use the in-game save option before pressing F10 if
 you want to keep the current run.
 
-F11 toggles between fullscreen and windowed display. Overdrive packages start
-fullscreen; press F11 once to drop to a window.
+F11 toggles between fullscreen and windowed display. Press F11 once to drop to
+a window.
 
 Because F9 is reserved by Intuition Engine, this build uses Backtick for the
 AB3D2 pixel/double-height mode toggle.

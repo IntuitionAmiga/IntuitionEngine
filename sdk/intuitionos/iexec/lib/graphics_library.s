@@ -79,10 +79,10 @@ prog_gfxlib_code:
     bnez    r2, .gfx_halt
     store.q r1, 152(r29)               ; data[152] = chip_mmio_va
 
-    ; ===== SYS_MAP_IO VRAM (PPN 0x100, 470 pages = 800x600x4 = 1920000 bytes
-    ; → 469 pages, rounded up to 470) =====
+    ; ===== SYS_MAP_IO VRAM (PPN 0x100, 507 pages = 960x540x4 = 2073600 bytes
+    ; → 507 pages, rounded up) =====
     move.l  r1, #0x100
-    move.l  r2, #470
+    move.l  r2, #507
     syscall #SYS_MAP_IO
     load.q  r29, (sp)
     bnez    r2, .gfx_halt
@@ -161,21 +161,21 @@ prog_gfxlib_code:
     move.q  r4, r0
     bra     .gfx_reply
 
-    ; ----- GET_MODE_INFO: data0=(800<<16)|600, data1=(1<<32)|3200 -----
-    ; M12: bumped from 640x480 to 800x600. Stride = 800*4 = 3200 bytes.
+    ; ----- GET_MODE_INFO: data0=(960<<16)|540, data1=(1<<32)|3840 -----
+    ; 16:9 default. Stride = 960*4 = 3840 bytes.
 .gfx_h_get_mode:
     load.q  r14, 208(r29)              ; adapter_id
     bnez    r14, .gfx_reply_bad_handle
     load.q  r14, 216(r29)              ; mode_id
     bnez    r14, .gfx_reply_bad_handle
-    ; data0 = (800<<16) | 600
-    move.l  r3, #800
+    ; data0 = (960<<16) | 540
+    move.l  r3, #960
     lsl     r3, r3, #16
-    or      r3, r3, #600
-    ; data1 = (FMT_RGBA32 << 32) | 3200
+    or      r3, r3, #540
+    ; data1 = (FMT_RGBA32 << 32) | 3840
     move.l  r4, #GFX_FMT_RGBA32
     lsl     r4, r4, #32
-    or      r4, r4, #3200
+    or      r4, r4, #3840
     move.l  r2, #GFX_ERR_OK
     bra     .gfx_reply
 
@@ -187,14 +187,14 @@ prog_gfxlib_code:
     bnez    r14, .gfx_reply_bad_mode
     load.b  r14, 168(r29)              ; display_open
     bnez    r14, .gfx_reply_busy
-    ; M12: write VIDEO_MODE = 1 (MODE_800x600 = chip's DEFAULT_VIDEO_MODE).
-    ; This is a no-op when the chip is already in 800x600 (the chip skips
+    ; Write VIDEO_MODE = 7 (MODE_960x540 = chip's DEFAULT_VIDEO_MODE).
+    ; This is a no-op when the chip is already in 960x540 (the chip skips
     ; reallocating its frontBuffer when len matches), so VideoTerminal's
     ; cached pixel dimensions stay valid. The protocol still allows other
     ; modes — graphics.library just defaults to the chip's native mode.
     load.q  r15, 152(r29)              ; chip_mmio_va
     add     r16, r15, #4               ; VIDEO_MODE
-    move.l  r17, #1                    ; MODE_800x600
+    move.l  r17, #7                    ; MODE_960x540
     store.l r17, (r16)
     ; Set VIDEO_CTRL = 1 to ENABLE the chip. Writing 0 to VIDEO_CTRL
     ; DISABLES the chip per video_chip.go:2653 (the constant name
@@ -216,13 +216,13 @@ prog_gfxlib_code:
     bne     r14, r28, .gfx_reply_bad_handle
     store.b r0, 168(r29)               ; display_open = 0
     store.b r0, 176(r29)               ; surface_in_use = 0 (drop on close)
-    ; Reset chip mode to 800x600 default and disable scanout. The next
+    ; Reset chip mode to 960x540 default and disable scanout. The next
     ; OpenDisplay will re-enable with VIDEO_CTRL=1. This makes CloseDisplay
     ; observable on the chip and mitigates the M11 wart (crashed
     ; graphics.library leaving graphics mode active) for the clean-exit path.
     load.q  r15, 152(r29)              ; chip_mmio_va
     add     r16, r15, #4               ; VIDEO_MODE
-    move.l  r17, #1                    ; MODE_800x600 (DEFAULT_VIDEO_MODE)
+    move.l  r17, #7                    ; MODE_960x540 (DEFAULT_VIDEO_MODE)
     store.l r17, (r16)
     ; VIDEO_CTRL = 0 disables the chip (CTRL_DISABLE_FLAG = 0).
     store.l r0, (r15)

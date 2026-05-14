@@ -1051,18 +1051,19 @@ set_reverb macro mix,decay
 ; ============================================================================
 
 VRAM_START      equ $100000             ; VRAM starts at 1MB
-SCREEN_W        set 1280                ; Default screen width (use 'set' to allow override)
-SCREEN_H        set 960                 ; Default screen height (use 'set' to allow override)
-LINE_BYTES      set 5120                ; Bytes per scanline (use 'set' to allow override)
+SCREEN_W        set 960                 ; Default screen width (use 'set' to allow override)
+SCREEN_H        set 540                 ; Default screen height (use 'set' to allow override)
+LINE_BYTES      set 3840                ; Bytes per scanline (use 'set' to allow override)
 
 ; VideoChip mode constants (write to VIDEO_MODE)
 MODE_640x480    equ $00                 ; 640x480 true colour
 MODE_800x600    equ $01                 ; 800x600 true colour
 MODE_1024x768   equ $02                 ; 1024x768 true colour
-MODE_1280x960   equ $03                 ; 1280x960 true colour (default)
+MODE_1280x960   equ $03                 ; 1280x960 true colour
 MODE_320x200    equ $04                 ; 320x200 chunky, RGBA32 or CLUT8
 MODE_320x240    equ $05                 ; 320x240 chunky, RGBA32 or CLUT8
 MODE_1920x1080  equ $06                 ; 1920x1080 true colour or CLUT8
+MODE_960x540    equ $07                 ; 960x540 true colour or CLUT8 (default)
 
 ; Blitter operations
 BLT_OP_COPY     equ 0                   ; Copy source to dest

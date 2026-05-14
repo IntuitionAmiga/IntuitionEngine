@@ -69,6 +69,13 @@ const (
 	compositorClosed
 )
 
+type PresentationScaleMode int
+
+const (
+	ScaleAspectFit PresentationScaleMode = iota
+	ScaleStretchFill
+)
+
 type registeredSource struct {
 	id     uint64
 	source VideoSource
@@ -87,6 +94,7 @@ type VideoCompositor struct {
 	done              chan struct{}
 	frameWidth        int
 	frameHeight       int
+	scaleMode         PresentationScaleMode
 	pendingResolution atomic.Uint64
 	lockedResolution  bool
 	prevHasContent    bool
@@ -105,8 +113,9 @@ func NewVideoCompositor(output VideoOutput) *VideoCompositor {
 		output:      output,
 		sources:     make([]registeredSource, 0),
 		done:        make(chan struct{}),
-		frameWidth:  DefaultScreenWidth,
-		frameHeight: DefaultScreenHeight,
+		frameWidth:  DefaultPresentationWidth,
+		frameHeight: DefaultPresentationHeight,
+		scaleMode:   ScaleAspectFit,
 	}
 }
 
@@ -530,14 +539,45 @@ func (c *VideoCompositor) blendFrame(srcFrame []byte, srcW, srcH int) {
 		return
 	}
 
+	rect := c.scaleRect(srcW, srcH, dstW, dstH)
+	if rect.w <= 0 || rect.h <= 0 {
+		return
+	}
+
 	// Fast path: 1:1 scaling (most common case)
-	if srcW == dstW && srcH == dstH {
+	if rect.x == 0 && rect.y == 0 && rect.w == dstW && rect.h == dstH && srcW == dstW && srcH == dstH {
 		c.blendFrame1to1(srcFrame, srcW, srcH)
 		return
 	}
 
 	// Scaled path using Bresenham-style integer arithmetic
-	c.blendFrameScaled(srcFrame, srcW, srcH)
+	c.blendFrameScaled(srcFrame, srcW, srcH, rect)
+}
+
+type scaleRect struct {
+	x, y int
+	w, h int
+}
+
+func (c *VideoCompositor) scaleRect(srcW, srcH, dstW, dstH int) scaleRect {
+	if srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0 {
+		return scaleRect{}
+	}
+	if c.scaleMode == ScaleStretchFill || sameAspect(srcW, srcH, dstW, dstH) {
+		return scaleRect{w: dstW, h: dstH}
+	}
+	drawW := dstW
+	drawH := dstW * srcH / srcW
+	if drawH > dstH {
+		drawH = dstH
+		drawW = dstH * srcW / srcH
+	}
+	return scaleRect{
+		x: (dstW - drawW) / 2,
+		y: (dstH - drawH) / 2,
+		w: drawW,
+		h: drawH,
+	}
 }
 
 // blendFrame1to1 is the optimized fast path for same-size source and destination.
@@ -584,24 +624,21 @@ func (c *VideoCompositor) blendStrip(srcFrame []byte, width, startY, endY int) {
 
 // blendFrameScaled handles scaling using optimized integer arithmetic
 // This matches the original dstX * srcW / dstW calculation exactly
-func (c *VideoCompositor) blendFrameScaled(srcFrame []byte, srcW, srcH int) {
+func (c *VideoCompositor) blendFrameScaled(srcFrame []byte, srcW, srcH int, rect scaleRect) {
 	dstW := c.frameWidth
-	dstH := c.frameHeight
 
 	srcRowBytes := srcW * BYTES_PER_PIXEL
 	dstRowBytes := dstW * BYTES_PER_PIXEL
 
-	dstOffset := 0
-
-	for dstY := range dstH {
-		// Calculate srcY once per row (matches original: dstY * srcH / dstH)
-		srcY := dstY * srcH / dstH
+	for dy := range rect.h {
+		srcY := dy * srcH / rect.h
 		srcRowOffset := srcY * srcRowBytes
+		dstOffset := (rect.y+dy)*dstRowBytes + rect.x*BYTES_PER_PIXEL
 
-		for dstX := range dstW {
-			srcX := dstX * srcW / dstW
+		for dx := range rect.w {
+			srcX := dx * srcW / rect.w
 			srcIdx := srcRowOffset + srcX*BYTES_PER_PIXEL
-			dstIdx := dstOffset + dstX*BYTES_PER_PIXEL
+			dstIdx := dstOffset + dx*BYTES_PER_PIXEL
 
 			// Read uint32 directly using unsafe pointer
 			srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcIdx]))
@@ -611,8 +648,6 @@ func (c *VideoCompositor) blendFrameScaled(srcFrame []byte, srcW, srcH int) {
 				*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = srcPixel
 			}
 		}
-
-		dstOffset += dstRowBytes
 	}
 }
 
@@ -658,6 +693,112 @@ func (c *VideoCompositor) GetNativeSourceDimensions() (int, int) {
 	for _, s := range c.sources {
 		if s.source.IsEnabled() {
 			return s.source.GetDimensions()
+		}
+	}
+	return c.frameWidth, c.frameHeight
+}
+
+func (c *VideoCompositor) MapPresentationPointToNative(x, y int) (int, int, int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	srcW, srcH := c.activeSourceDimensionsLocked()
+	return c.mapPresentationPointToNativeLocked(x, y, srcW, srcH)
+}
+
+func (c *VideoCompositor) MapPresentationPointToNativeForSource(x, y, srcW, srcH int) (int, int, int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mapPresentationPointToNativeLocked(x, y, srcW, srcH)
+}
+
+func (c *VideoCompositor) mapPresentationPointToNativeLocked(x, y, srcW, srcH int) (int, int, int, int) {
+	rect := c.scaleRect(srcW, srcH, c.frameWidth, c.frameHeight)
+	if srcW <= 0 || srcH <= 0 || rect.w <= 0 || rect.h <= 0 {
+		return x, y, c.frameWidth, c.frameHeight
+	}
+
+	nx := (x - rect.x) * srcW / rect.w
+	ny := (y - rect.y) * srcH / rect.h
+	nx = max(0, min(nx, srcW-1))
+	ny = max(0, min(ny, srcH-1))
+	return nx, ny, srcW, srcH
+}
+
+func (c *VideoCompositor) MapNativePointToPresentation(x, y int) (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	srcW, srcH := c.activeSourceDimensionsLocked()
+	return c.mapNativePointToPresentationLocked(x, y, srcW, srcH)
+}
+
+func (c *VideoCompositor) MapNativePointToPresentationForSource(x, y, srcW, srcH int) (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mapNativePointToPresentationLocked(x, y, srcW, srcH)
+}
+
+func (c *VideoCompositor) mapNativePointToPresentationLocked(x, y, srcW, srcH int) (int, int) {
+	rect := c.scaleRect(srcW, srcH, c.frameWidth, c.frameHeight)
+	if srcW <= 0 || srcH <= 0 || rect.w <= 0 || rect.h <= 0 {
+		return x, y
+	}
+
+	x = max(0, min(x, srcW-1))
+	y = max(0, min(y, srcH-1))
+	px := rect.x + x*rect.w/srcW
+	py := rect.y + y*rect.h/srcH
+	return px, py
+}
+
+func sameAspect(w1, h1, w2, h2 int) bool {
+	if w1 <= 0 || h1 <= 0 || w2 <= 0 || h2 <= 0 {
+		return false
+	}
+	return w1*h2 == w2*h1
+}
+
+func (c *VideoCompositor) GetScaleMode() PresentationScaleMode {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.scaleMode
+}
+
+func (c *VideoCompositor) SetScaleMode(mode PresentationScaleMode) {
+	c.mu.Lock()
+	if mode != ScaleAspectFit && mode != ScaleStretchFill {
+		mode = ScaleAspectFit
+	}
+	c.scaleMode = mode
+	c.mu.Unlock()
+}
+
+func (c *VideoCompositor) ActiveSourceNeedsScaleToggle() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w, h := c.activeSourceDimensionsLocked()
+	return !sameAspect(w, h, c.frameWidth, c.frameHeight)
+}
+
+func (c *VideoCompositor) ToggleScaleModeIfNonNative() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w, h := c.activeSourceDimensionsLocked()
+	if sameAspect(w, h, c.frameWidth, c.frameHeight) {
+		return false
+	}
+	if c.scaleMode == ScaleStretchFill {
+		c.scaleMode = ScaleAspectFit
+	} else {
+		c.scaleMode = ScaleStretchFill
+	}
+	return true
+}
+
+func (c *VideoCompositor) activeSourceDimensionsLocked() (int, int) {
+	for i := len(c.sources) - 1; i >= 0; i-- {
+		source := c.sources[i].source
+		if source.IsEnabled() {
+			return source.GetDimensions()
 		}
 	}
 	return c.frameWidth, c.frameHeight

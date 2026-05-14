@@ -93,24 +93,24 @@ prog_intui_code:
     and     r15, r15, #0xFFFF
     store.l r15, 228(r29)              ; win_y
 
-    ; ----- Security: bounds-check the rect against the 800x600 screen -----
+    ; ----- Security: bounds-check the rect against the 960x540 screen -----
     ; The DAMAGE handler blits win_w*win_h*4 bytes from win_mapped_va into
-    ; screen_va + win_y*3200 + win_x*4. Without this check a malicious
+    ; screen_va + win_y*3840 + win_x*4. Without this check a malicious
     ; client could supply a rect that walks the destination cursor past
-    ; the end of the 1.92 MB screen surface and clobber whatever sits in
+    ; the end of the 2073600-byte screen surface and clobber whatever sits in
     ; intuition.library's address space after it. Reject any geometry
-    ; that doesn't lie strictly inside the 800x600 frame, or that has a
+    ; that doesn't lie strictly inside the 960x540 frame, or that has a
     ; zero dimension. Values are already 16-bit unsigned (masked above).
     load.l  r14, 232(r29)              ; win_w
     beqz    r14, .intui_reply_badarg
-    move.l  r28, #800
+    move.l  r28, #960
     bgt     r14, r28, .intui_reply_badarg
     load.l  r15, 224(r29)              ; win_x
     add     r14, r14, r15              ; r14 = win_x + win_w
     bgt     r14, r28, .intui_reply_badarg
     load.l  r14, 236(r29)              ; win_h
     beqz    r14, .intui_reply_badarg
-    move.l  r28, #600
+    move.l  r28, #540
     bgt     r14, r28, .intui_reply_badarg
     load.l  r15, 228(r29)              ; win_y
     add     r14, r14, r15              ; r14 = win_y + win_h
@@ -206,10 +206,10 @@ prog_intui_code:
 .intui_findin_ok:
     store.q r1, 152(r29)               ; input_port
 
-    ; AllocMem(1920000, MEMF_PUBLIC|MEMF_CLEAR) — 800x600 RGBA32 screen surface
-    ; (M12: bumped from 1228800 / 640x480 to 1920000 / 800x600 to give clients
-    ; more screen real estate. Stride = 800*4 = 3200.)
-    move.l  r1, #1920000
+    ; AllocMem(2073600, MEMF_PUBLIC|MEMF_CLEAR) — 960x540 RGBA32 screen surface
+    ; (M12: bumped from 1228800 / 640x480 to 2073600 / 960x540 to give clients
+    ; more screen real estate. Stride = 960*4 = 3840.)
+    move.l  r1, #2073600
     move.l  r2, #0x10001
     syscall #SYS_ALLOC_MEM             ; R1=va R2=err R3=share
     load.q  r29, (sp)
@@ -217,11 +217,11 @@ prog_intui_code:
     store.q r1, 200(r29)               ; screen_va
     store.l r3, 208(r29)               ; screen_share
 
-    ; M12 redesign: fill the entire 800x600 screen surface with the
+    ; M12 redesign: fill the entire 960x540 screen surface with the
     ; AmigaOS 3.9 / ReAction prefs grey (COL_SCREEN_BG = 0xFFD4D0C8)
     ; so the desktop reads as a system surface, not a black void.
     load.q  r14, 200(r29)              ; r14 = screen_va cursor
-    move.l  r15, #1920000              ; r15 = remaining bytes
+    move.l  r15, #2073600              ; r15 = remaining bytes
     move.l  r16, #0xFFD4D0C8           ; COL_SCREEN_BG (RGBA bytes C8,D0,D4,FF)
 .intui_screen_bg:
     beqz    r15, .intui_screen_bg_done
@@ -248,19 +248,19 @@ prog_intui_code:
     bnez    r1, .intui_display_init_fail ; r1 = err code from gfx
     store.q r2, 184(r29)               ; display_handle
 
-    ; GFX_REGISTER_SURFACE — width=800, height=600, format=RGBA32, stride=3200
+    ; GFX_REGISTER_SURFACE — width=960, height=540, format=RGBA32, stride=3840
     load.q  r1, 144(r29)
     move.l  r2, #GFX_REGISTER_SURFACE
     load.q  r3, 184(r29)               ; display_handle
-    move.q  r4, #800
+    move.q  r4, #960
     lsl     r4, r4, #48
-    move.q  r14, #600
+    move.q  r14, #540
     lsl     r14, r14, #32
     or      r4, r4, r14
     move.q  r14, #1
     lsl     r14, r14, #16
     or      r4, r4, r14
-    or      r4, r4, #3200              ; stride bytes (800 * 4 = 3200)
+    or      r4, r4, #3840              ; stride bytes (960 * 4 = 3840)
     load.q  r5, 160(r29)
     load.l  r6, 208(r29)               ; share = own screen_share
     syscall #SYS_PUT_MSG
@@ -334,7 +334,7 @@ prog_intui_code:
 
     ; Composite the entire window into the screen.
     ; Source: win_mapped_va (win_w * win_h * 4 bytes, stride = win_w * 4)
-    ; Dest:   screen_va + win_y*3200 + win_x*4
+    ; Dest:   screen_va + win_y*3840 + win_x*4
     ; (M12: ignore the per-call dirty rect; do a full window blit. The rect
     ; argument is reserved for M12.1 once GFX_PRESENT carries it through.)
     load.q  r20, 248(r29)              ; src
@@ -343,13 +343,13 @@ prog_intui_code:
     load.l  r23, 228(r29)              ; win_y
     load.l  r24, 232(r29)              ; win_w
     load.l  r25, 236(r29)              ; win_h
-    ; dst = screen_va + win_y*3200 + win_x*4 (M12: 800x600 stride = 3200)
-    move.l  r14, #3200
+    ; dst = screen_va + win_y*3840 + win_x*4 (M12: 960x540 stride = 3840)
+    move.l  r14, #3840
     mulu    r14, r23, r14
     add     r21, r21, r14
     lsl     r14, r22, #2
     add     r21, r21, r14
-    ; src_stride = win_w*4, dst_stride = 3200
+    ; src_stride = win_w*4, dst_stride = 3840
 .intui_blit_row:
     beqz    r25, .intui_blit_done
     move.q  r14, r20                   ; src cursor
@@ -366,7 +366,7 @@ prog_intui_code:
 .intui_blit_row_done:
     lsl     r14, r24, #2
     add     r20, r20, r14              ; advance src by win_w*4
-    add     r21, r21, #3200            ; advance dst by screen stride
+    add     r21, r21, #3840            ; advance dst by screen stride
     sub     r25, r25, #1
     bra     .intui_blit_row
 .intui_blit_done:
@@ -782,13 +782,13 @@ prog_intui_code:
 .intui_close_graphics_done:
 
     ; --- 6. FreeMem our own screen surface ---
-    ; The screen surface was AllocMem(1920000, MEMF_PUBLIC|MEMF_CLEAR) so
+    ; The screen surface was AllocMem(2073600, MEMF_PUBLIC|MEMF_CLEAR) so
     ; it lives in the SHARED region table. FreeMem decrements the shared
     ; object refcount; if graphics.library has already released its
     ; mapping (M12: it does in the gfx_h_unreg_surf companion fix below),
     ; the backing pages are released here.
     load.q  r1, 200(r29)               ; screen_va
-    move.l  r2, #1920000               ; 800 * 600 * 4 bytes (M12: was 1228800)
+    move.l  r2, #2073600               ; 960 * 540 * 4 bytes (M12: was 1228800)
     syscall #SYS_FREE_MEM
     load.q  r29, (sp)
 
@@ -1104,7 +1104,7 @@ prog_intui_code:
 ; .intui_fillrect — fill a screen-space rectangle with a color
 ; ----------------------------------------------------------------
 ; Inputs:
-;   r6  = rect_x   (column, in pixels, on the 800-wide screen)
+;   r6  = rect_x   (column, in pixels, on the 960-wide screen)
 ;   r7  = rect_y   (row)
 ;   r8  = rect_w   (width in pixels)
 ;   r9  = rect_h   (height in pixels — rows)
@@ -1114,18 +1114,18 @@ prog_intui_code:
 ; Clobbers: r5, r11, r12, r13, r14, r15, r16
 ; Preserves: r6..r9, r17, r29 (caller's loop variables stay live)
 ;
-; Stride is hardcoded to 3200 (800 pixels × 4 bytes/pixel) which matches
+; Stride is hardcoded to 3840 (960 pixels × 4 bytes/pixel) which matches
 ; the M12 intuition.library screen surface dimensions. Bounds-checks the
-; rect against the 800x600 frame and silently clips zero-or-negative
+; rect against the 960x540 frame and silently clips zero-or-negative
 ; sizes so the caller can pass arbitrary expressions.
 ; ----------------------------------------------------------------
 .intui_fillrect:
     ; Reject empty rects
     blez    r8, .intui_fr_ret
     blez    r9, .intui_fr_ret
-    ; Compute base address: screen_va + r7*3200 + r6*4
+    ; Compute base address: screen_va + r7*3840 + r6*4
     load.q  r5, 200(r29)               ; screen_va
-    move.l  r12, #3200
+    move.l  r12, #3840
     mulu    r12, r7, r12
     add     r5, r5, r12
     lsl     r12, r6, #2
@@ -1142,7 +1142,7 @@ prog_intui_code:
     sub     r15, r15, #1
     bra     .intui_fr_col
 .intui_fr_row_done:
-    add     r5, r5, #3200              ; next row
+    add     r5, r5, #3840              ; next row
     sub     r13, r13, #1
     bra     .intui_fr_row
 .intui_fr_ret:
@@ -1152,7 +1152,7 @@ prog_intui_code:
 ; .intui_draw_char — render one Topaz 8x16 glyph into the screen surface
 ; ----------------------------------------------------------------
 ; Inputs:
-;   r10 = x  (screen column, must be a valid position on the 800-wide screen)
+;   r10 = x  (screen column, must be a valid position on the 960-wide screen)
 ;   r11 = y  (screen row)
 ;   r3  = character byte (ASCII; lookup is `font[ch * 16 + row]`)
 ;   r29 = data base (font lives at offset 768)
@@ -1163,7 +1163,7 @@ prog_intui_code:
 ; ----------------------------------------------------------------
 .intui_draw_char:
     load.q  r4, 200(r29)               ; r4 = screen_va
-    move.l  r14, #3200                 ; screen stride
+    move.l  r14, #3840                 ; screen stride
     mulu    r14, r11, r14
     add     r4, r4, r14
     lsl     r14, r10, #2
@@ -1194,7 +1194,7 @@ prog_intui_code:
     add     r9, r9, #1
     bra     .intui_dc_col
 .intui_dc_col_done:
-    add     r4, r4, #3200              ; next row
+    add     r4, r4, #3840              ; next row
     add     r6, r6, #1
     bra     .intui_dc_row
 .intui_dc_done:

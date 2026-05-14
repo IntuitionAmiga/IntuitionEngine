@@ -22,8 +22,8 @@ type HeadlessVideoOutput struct {
 func NewEbitenOutput() (VideoOutput, error) {
 	return &HeadlessVideoOutput{
 		config: DisplayConfig{
-			Width:       DefaultScreenWidth,
-			Height:      DefaultScreenHeight,
+			Width:       DefaultPresentationWidth,
+			Height:      DefaultPresentationHeight,
 			PixelFormat: PixelFormatRGBA,
 			RefreshRate: 60,
 			Scale:       1,

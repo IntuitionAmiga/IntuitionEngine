@@ -27092,13 +27092,13 @@ func TestIExec_GfxDemoEndToEnd(t *testing.T) {
 //  1. About allocates a 320×200 RGBA32 backing buffer (256000 bytes)
 //  2. About fills it with a dark teal backdrop and renders five lines
 //     of white text via the embedded Topaz 8×16 bitmap font
-//  3. About sends INTUITION_OPEN_WINDOW (window centered at (240,200)
-//     on the 800×600 screen — this is what triggers intuition.library's
+//  3. About sends INTUITION_OPEN_WINDOW (window centered at (320,170)
+//     on the 960x540 screen — this is what triggers intuition.library's
 //     first GFX_OPEN_DISPLAY + GFX_REGISTER_SURFACE + INPUT_OPEN, the
 //     "lazy display ownership" path)
 //  4. About sends INTUITION_DAMAGE
 //  5. intuition.library blits the (mapped) app buffer into its own
-//     800×600 screen surface, then paints Magic Workbench-style chrome
+//     960x540 screen surface, then paints Magic Workbench-style chrome
 //     on top: 1px 3D bevel, Amiga-blue pinstripe title bar, outlined
 //     close gadget, outlined depth gadget — and calls GFX_PRESENT
 //  5. The test injects an Esc key (scancode 0x01) via TerminalMMIO
@@ -27226,8 +27226,8 @@ func runAboutAppEndToEndWithRig(t *testing.T, rig *ie64TestRig, term *TerminalMM
 	}
 
 	// Verify intuition.library's compositor reached VRAM. M12 redesign
-	// (AmigaOS 3.9 / ReAction): 800×600 screen filled with COL_SCREEN_BG
-	// (0xFFD4D0C8) at display open. The About window sits at (240, 200)
+	// (AmigaOS 3.9 / ReAction): 960x540 screen filled with COL_SCREEN_BG
+	// (0xFFD4D0C8) at display open. The About window sits at (320, 170)
 	// size 320×200 with the OS 3.9 blue-title-furniture decoration:
 	//   - Outer 1-px black border
 	//   - Raised 1-px bevel (white top+left, COL_SHADOW 0xFF808080
@@ -27255,8 +27255,8 @@ func runAboutAppEndToEndWithRig(t *testing.T, rig *ie64TestRig, term *TerminalMM
 	if !chip.IsEnabled() {
 		t.Errorf("chip is not enabled — intuition.library never opened the display via graphics.library")
 	}
-	// Screen layout: window at (240, 200), size 320x200, on 800x600 chip.
-	const screenStride = 800
+	// Screen layout: window at (320, 170), size 320x200, on 960x540 chip.
+	const screenStride = 960
 
 	const (
 		colScreenBG       uint32 = 0xFFD4D0C8
@@ -27289,8 +27289,8 @@ func runAboutAppEndToEndWithRig(t *testing.T, rig *ie64TestRig, term *TerminalMM
 	// C. Window frame highlight exists (top-left bevel at the very
 	//    corner — outer black border + bevel ordering puts white at
 	//    (240, 200) once the top hilite line is drawn).
-	frameTL := sampleAt(240, 200)
-	t.Logf("M12 About: frame highlight TL (240,200) = 0x%08X (want 0x%08X)", frameTL, colHilite)
+	frameTL := sampleAt(320, 170)
+	t.Logf("M12 About: frame highlight TL (320,170) = 0x%08X (want 0x%08X)", frameTL, colHilite)
 	if frameTL != colHilite {
 		t.Errorf("window frame highlight wrong - expected white bevel 0x%08X, got 0x%08X", colHilite, frameTL)
 	}
@@ -27298,64 +27298,64 @@ func runAboutAppEndToEndWithRig(t *testing.T, rig *ie64TestRig, term *TerminalMM
 	// D. Window bottom-right edge: outer 1-px black border at the
 	//    extreme corner. Allow grey shadow if a different draw order
 	//    overpaints the corner pixel.
-	frameBR := sampleAt(559, 399)
-	t.Logf("M12 About: frame bottom-right edge (559,399) = 0x%08X (want 0x%08X or 0x%08X)", frameBR, colDark, colShadow)
+	frameBR := sampleAt(639, 369)
+	t.Logf("M12 About: frame bottom-right edge (639,369) = 0x%08X (want 0x%08X or 0x%08X)", frameBR, colDark, colShadow)
 	if frameBR != colDark && frameBR != colShadow {
 		t.Errorf("window bottom-right edge wrong - expected black border 0x%08X (or shadow 0x%08X), got 0x%08X", colDark, colShadow, frameBR)
 	}
 
-	// E. Title bar main fill is BLUE (not grey). (400, 210) is inside
+	// E. Title bar main fill is BLUE (not grey). (480, 180) is inside
 	//    the title strip, away from gadgets and title text.
-	titleFill := sampleAt(400, 210)
-	t.Logf("M12 About: title bar fill (400,210) = 0x%08X (want 0x%08X)", titleFill, colTitleBlue)
+	titleFill := sampleAt(480, 180)
+	t.Logf("M12 About: title bar fill (480,180) = 0x%08X (want 0x%08X)", titleFill, colTitleBlue)
 	if titleFill != colTitleBlue {
 		t.Errorf("title bar fill wrong - expected OS 3.9 blue 0x%08X, got 0x%08X", colTitleBlue, titleFill)
 	}
 
-	// F. Title bar top edge — 1-px lighter blue highlight at y+2 = 202.
-	titleTop := sampleAt(400, 202)
-	t.Logf("M12 About: title top highlight (400,202) = 0x%08X (want 0x%08X)", titleTop, colTitleBlueLight)
+	// F. Title bar top edge — 1-px lighter blue highlight at y+2 = 172.
+	titleTop := sampleAt(480, 172)
+	t.Logf("M12 About: title top highlight (480,172) = 0x%08X (want 0x%08X)", titleTop, colTitleBlueLight)
 	if titleTop != colTitleBlueLight {
 		t.Errorf("title bar top edge wrong - expected lighter blue highlight 0x%08X, got 0x%08X", colTitleBlueLight, titleTop)
 	}
 
-	// G. Title bar bottom edge — 1-px darker blue shadow at y+17 = 217.
-	titleBot := sampleAt(400, 217)
-	t.Logf("M12 About: title bottom shadow (400,217) = 0x%08X (want 0x%08X)", titleBot, colTitleBlueDark)
+	// G. Title bar bottom edge — 1-px darker blue shadow at y+17 = 187.
+	titleBot := sampleAt(480, 187)
+	t.Logf("M12 About: title bottom shadow (480,187) = 0x%08X (want 0x%08X)", titleBot, colTitleBlueDark)
 	if titleBot != colTitleBlueDark {
 		t.Errorf("title bar bottom edge wrong - expected darker blue shadow 0x%08X, got 0x%08X", colTitleBlueDark, titleBot)
 	}
 
 	// H. Close gadget body — sample inside the gadget face (not on
-	//    bevel, not on centre mark). Close gadget at gx=242 gy=202
+	//    bevel, not on centre mark). Close gadget at gx=322 gy=172
 	//    18x16. Face fill rect = (gx+1, gy+1, 16, 14) = (243..258,
-	//    203..216). (244, 206) is inside the face, well clear of the
-	//    centre mark at (gx+4, gy+5, 6, 6) = (246..251, 207..212).
-	closeFill := sampleAt(244, 206)
-	t.Logf("M12 About: close gadget body (244,206) = 0x%08X (want 0x%08X)", closeFill, colWinFace)
+	//    173..186). (324, 176) is inside the face, well clear of the
+	//    centre mark at (gx+4, gy+5, 6, 6) = (326..331, 177..182).
+	closeFill := sampleAt(324, 176)
+	t.Logf("M12 About: close gadget body (324,176) = 0x%08X (want 0x%08X)", closeFill, colWinFace)
 	if closeFill != colWinFace {
 		t.Errorf("close gadget fill wrong - expected grey gadget body 0x%08X, got 0x%08X", colWinFace, closeFill)
 	}
 
 	// I. Close gadget detail dark — sample inside the centre mark
-	//    (gx+4, gy+5, 6, 6) = (246..251, 207..212). (248, 208) lands
+	//    (gx+4, gy+5, 6, 6) = (326..331, 177..182). (328, 178) lands
 	//    inside the black mark.
-	closeMark := sampleAt(248, 208)
-	t.Logf("M12 About: close gadget detail (248,208) = 0x%08X (want 0x%08X)", closeMark, colDark)
+	closeMark := sampleAt(328, 178)
+	t.Logf("M12 About: close gadget detail (328,178) = 0x%08X (want 0x%08X)", closeMark, colDark)
 	if closeMark != colDark {
 		t.Errorf("close gadget detail wrong - expected black mark 0x%08X, got 0x%08X", colDark, closeMark)
 	}
 
 	// J. Depth gadget body — sample inside the depth gadget face,
 	//    inside the unfilled interior of the "front" rectangle icon.
-	//    Depth gadget at gx = win_x + win_w - 20 = 540, gy = win_y + 2
-	//    = 202, 18x16. Front rect outline = (gx+7, gy+3, 7, 5) =
-	//    (547..553, 205..209) drawn as 4 one-pixel lines, leaving
-	//    interior (548..552, 206..208) as plain face fill. (548, 206)
+	//    Depth gadget at gx = win_x + win_w - 20 = 620, gy = win_y + 2
+	//    = 172, 18x16. Front rect outline = (gx+7, gy+3, 7, 5) =
+	//    (627..633, 175..179) drawn as 4 one-pixel lines, leaving
+	//    interior (628..632, 176..178) as plain face fill. (628, 176)
 	//    is at the top-left interior pixel of the front rect — face
 	//    grey.
-	depthFill := sampleAt(548, 206)
-	t.Logf("M12 About: depth gadget body (548,206) = 0x%08X (want 0x%08X)", depthFill, colWinFace)
+	depthFill := sampleAt(628, 176)
+	t.Logf("M12 About: depth gadget body (628,176) = 0x%08X (want 0x%08X)", depthFill, colWinFace)
 	if depthFill != colWinFace {
 		t.Errorf("depth gadget fill wrong - expected grey gadget body 0x%08X, got 0x%08X", colWinFace, depthFill)
 	}
@@ -27363,12 +27363,12 @@ func runAboutAppEndToEndWithRig(t *testing.T, rig *ie64TestRig, term *TerminalMM
 	// K. Recessed content panel interior — this area shows the user
 	//    buffer's pixels, which About fills with COL_PANEL_BG. Pick a
 	//    spot well below all text lines (text rendered at window-local
-	//    y = 32/56/80/104/152, each 16 px tall — screen rows 232..248,
-	//    256..272, 280..296, 304..320, 352..368). Pick (300, 330)
+	//    y = 32/56/80/104/152, each 16 px tall — screen rows 202..218,
+	//    226..242, 250..266, 274..290, 322..338). Pick (380, 300)
 	//    = window-local (60, 130), in the gap between line 4 and
 	//    line 5.
-	panelBG := sampleAt(300, 330)
-	t.Logf("M12 About: content panel interior (300,330) = 0x%08X (want 0x%08X)", panelBG, colPanelBG)
+	panelBG := sampleAt(380, 300)
+	t.Logf("M12 About: content panel interior (380,300) = 0x%08X (want 0x%08X)", panelBG, colPanelBG)
 	if panelBG != colPanelBG {
 		t.Errorf("content panel wrong - expected recessed grey panel 0x%08X, got 0x%08X", colPanelBG, panelBG)
 	}
@@ -27495,7 +27495,7 @@ func findLiveAboutTask(mem []byte) (int, uint32, uint64, bool) {
 //   - allocate its own 320×200 buffer (256000 bytes — consumes one
 //     shmem slot at the About-task side)
 //   - send INTUITION_OPEN_WINDOW (intuition.library lazily allocates a
-//     fresh 800×600 screen surface = 1920000 bytes = a second shmem
+//     fresh 960x540 screen surface = 2073600 bytes = a second shmem
 //     slot, plus calls MapShared on the About buffer = a region in
 //     intui's table)
 //   - send INTUITION_DAMAGE

@@ -1980,6 +1980,18 @@ func (se *ScriptEngine) clampMouse(x, y int) (int32, int32) {
 	if y < 0 {
 		y = 0
 	}
+	if se.terminal != nil {
+		w, h := int(se.terminal.mouseNativeW.Load()), int(se.terminal.mouseNativeH.Load())
+		if w > 0 && h > 0 {
+			if x >= w {
+				x = w - 1
+			}
+			if y >= h {
+				y = h - 1
+			}
+			return int32(x), int32(y)
+		}
+	}
 	if se.compositor != nil {
 		w, h := se.compositor.GetNativeSourceDimensions()
 		if w > 0 && x >= w {
@@ -3641,10 +3653,15 @@ func (se *ScriptEngine) TakeScreenshot(path string) error {
 		}
 	}
 
-	// Composite software cursor if terminal MMIO is available (AROS/EmuTOS mode).
+	// Composite software cursor in presentation space when scripts own mouse input.
 	if se.terminal != nil && se.terminal.mouseOverride.Load() {
 		mx := int(se.terminal.mouseX.Load())
 		my := int(se.terminal.mouseY.Load())
+		if nw, nh := int(se.terminal.mouseNativeW.Load()), int(se.terminal.mouseNativeH.Load()); nw > 0 && nh > 0 {
+			mx, my = se.compositor.MapNativePointToPresentationForSource(mx, my, nw, nh)
+		} else {
+			mx, my = se.compositor.MapNativePointToPresentation(mx, my)
+		}
 		drawSoftwareCursor(img, mx, my)
 	}
 

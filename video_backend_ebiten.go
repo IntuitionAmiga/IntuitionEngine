@@ -57,6 +57,7 @@ type EbitenOutput struct {
 	lifecycleMu        sync.Mutex
 	done               chan struct{}
 	doneOnce           *sync.Once
+	compositor         *VideoCompositor
 	keyHandler         func(byte)
 	scrollHandler      func(int)
 	copyHandler        func()
@@ -80,21 +81,21 @@ type EbitenOutput struct {
 	recorder         *VideoRecorder
 	screenCaptureBuf []byte
 
-	// Software cursor overlay for modes that hide the system cursor (EmuTOS).
-	// AROS draws its own Intuition cursor in VRAM — set noSoftwareCursor to avoid duplicate.
+	// Software cursor overlay for guests that need host-side cursor rendering.
+	// ROM desktops that draw into VRAM set noSoftwareCursor to avoid duplicates.
 	cursorImage      *ebiten.Image
 	noSoftwareCursor bool
 }
 
 func NewEbitenOutput() (VideoOutput, error) {
 	return &EbitenOutput{
-		width:         DefaultScreenWidth,
-		height:        DefaultScreenHeight,
+		width:         DefaultPresentationWidth,
+		height:        DefaultPresentationHeight,
 		format:        PixelFormatRGBA,
 		scale:         1,
-		windowedW:     DefaultScreenWidth,
-		windowedH:     DefaultScreenHeight,
-		frameBuffer:   make([]byte, DefaultScreenWidth*DefaultScreenHeight*4),
+		windowedW:     DefaultPresentationWidth,
+		windowedH:     DefaultPresentationHeight,
+		frameBuffer:   make([]byte, DefaultPresentationWidth*DefaultPresentationHeight*4),
 		refreshRate:   60,
 		vsyncChan:     make(chan struct{}, 1),
 		done:          make(chan struct{}),
@@ -216,10 +217,10 @@ func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
 		height = eo.height
 	}
 	if width <= 0 {
-		width = DefaultScreenWidth
+		width = DefaultPresentationWidth
 	}
 	if height <= 0 {
-		height = DefaultScreenHeight
+		height = DefaultPresentationHeight
 	}
 	eo.width = width
 	eo.height = height
@@ -402,7 +403,14 @@ func (eo *EbitenOutput) Update() error {
 		return nil
 	}
 
-	if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
+	if inpututil.IsKeyJustPressed(ebiten.KeyF11) && (ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight)) {
+		eo.bufferMutex.RLock()
+		compositor := eo.compositor
+		eo.bufferMutex.RUnlock()
+		if compositor != nil {
+			compositor.ToggleScaleModeIfNonNative()
+		}
+	} else if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
 		eo.bufferMutex.Lock()
 		eo.fullscreen = !eo.fullscreen
 		ebiten.SetFullscreen(eo.fullscreen)
@@ -459,6 +467,12 @@ func (eo *EbitenOutput) SetScriptEngine(scriptEngine *ScriptEngine) {
 func (eo *EbitenOutput) SetTerminalMMIO(tm *TerminalMMIO) {
 	eo.bufferMutex.Lock()
 	eo.termMMIO = tm
+	eo.bufferMutex.Unlock()
+}
+
+func (eo *EbitenOutput) SetVideoCompositor(compositor *VideoCompositor) {
+	eo.bufferMutex.Lock()
+	eo.compositor = compositor
 	eo.bufferMutex.Unlock()
 }
 
@@ -826,6 +840,7 @@ func (eo *EbitenOutput) updateRelativeMouseBeforeOverlay() {
 func (eo *EbitenOutput) updateTerminalMMIOInput() {
 	eo.bufferMutex.RLock()
 	tm := eo.termMMIO
+	compositor := eo.compositor
 	width := eo.width
 	height := eo.height
 	fullscreen := eo.fullscreen
@@ -850,15 +865,8 @@ func (eo *EbitenOutput) updateTerminalMMIOInput() {
 
 	if !mouseOverride {
 		if !relativeMode {
-			// Scale from display space to native video source space when upscaling.
-			nw := int(tm.mouseNativeW.Load())
-			nh := int(tm.mouseNativeH.Load())
-			if nw > 0 && nh > 0 && (nw != width || nh != height) {
-				mx = mx * nw / width
-				my = my * nh / height
-				width = nw
-				height = nh
-			}
+			// Scale from display space to the guest cursor coordinate space.
+			mx, my, width, height = mapPresentationMouseToGuest(mx, my, width, height, tm, compositor)
 
 			newX := int32(max(0, min(mx, width-1)))
 			newY := int32(max(0, min(my, height-1)))
@@ -1199,16 +1207,20 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	cursorImage := eo.cursorImage
 	noSoftwareCursor := eo.noSoftwareCursor
 	termMMIO := eo.termMMIO
+	compositor := eo.compositor
 	eo.bufferMutex.Unlock()
 	screen.DrawImage(eo.window, nil)
 
 	// Draw software cursor when the system cursor is hidden (EmuTOS mode).
 	// AROS draws its own Intuition cursor in VRAM, so skip when noSoftwareCursor is set.
 	if cursorImage != nil && termMMIO != nil && !noSoftwareCursor {
-		mx := float64(termMMIO.mouseX.Load())
-		my := float64(termMMIO.mouseY.Load())
+		mx := int(termMMIO.mouseX.Load())
+		my := int(termMMIO.mouseY.Load())
+		if compositor != nil {
+			mx, my = compositor.MapNativePointToPresentation(mx, my)
+		}
 		op := &ebiten.DrawImageOptions{}
-		op.GeoM.Translate(mx, my)
+		op.GeoM.Translate(float64(mx), float64(my))
 		screen.DrawImage(cursorImage, op)
 	}
 
@@ -1278,12 +1290,17 @@ const runtimeStatusBarAlpha = 40
 func drawStatusLine(screen *ebiten.Image, x, baselineY int, label string, tokens []statusToken) {
 	face := basicfont.Face7x13
 	labelColor := color.RGBA{190, 190, 190, 255}
-	offColor := color.RGBA{120, 120, 120, 255}
-	onColor := color.RGBA{0, 220, 90, 255}
 
 	text.Draw(screen, label, face, x, baselineY, labelColor)
 	cursorX := x + text.BoundString(face, label).Dx() + 6
+	drawStatusTokens(screen, cursorX, baselineY, tokens)
+}
 
+func drawStatusTokens(screen *ebiten.Image, x, baselineY int, tokens []statusToken) {
+	face := basicfont.Face7x13
+	offColor := color.RGBA{120, 120, 120, 255}
+	onColor := color.RGBA{0, 220, 90, 255}
+	cursorX := x
 	for _, token := range tokens {
 		c := offColor
 		if token.enabled {
@@ -1292,6 +1309,18 @@ func drawStatusLine(screen *ebiten.Image, x, baselineY int, label string, tokens
 		text.Draw(screen, token.name, face, cursorX, baselineY, c)
 		cursorX += text.BoundString(face, token.name).Dx() + 8
 	}
+}
+
+func statusTokensWidth(tokens []statusToken) int {
+	face := basicfont.Face7x13
+	width := 0
+	for i, token := range tokens {
+		width += text.BoundString(face, token.name).Dx()
+		if i != len(tokens)-1 {
+			width += 8
+		}
+	}
+	return width
 }
 
 func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
@@ -1397,14 +1426,29 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 		{name: "PAULA", enabled: paulaOn},
 	})
 
-	legendColor := color.RGBA{160, 160, 160, 255}
-	legend := "F8:Lua F9:Dbg F10:Reset F11:FS/Win F12:Status Ctrl+Alt:Mouse"
-	legendScale := 1.0
-	legendW := int(float64(text.BoundString(basicfont.Face7x13, legend).Dx()) * legendScale)
+	eo.bufferMutex.RLock()
+	compositor := eo.compositor
+	eo.bufferMutex.RUnlock()
+	legendTokens := []statusToken{
+		{name: "F8:Lua", enabled: false},
+		{name: "F9:Dbg", enabled: false},
+		{name: "F10:Reset", enabled: false},
+		{name: "F11:FS/Win", enabled: false},
+	}
+	if compositor != nil && compositor.ActiveSourceNeedsScaleToggle() {
+		mode := compositor.GetScaleMode()
+		legendTokens = append(legendTokens,
+			statusToken{name: "Shift+F11:", enabled: false},
+			statusToken{name: "fit", enabled: mode == ScaleAspectFit},
+			statusToken{name: "/", enabled: false},
+			statusToken{name: "stretch", enabled: mode == ScaleStretchFill},
+		)
+	}
+	legendTokens = append(legendTokens,
+		statusToken{name: "F12:Status", enabled: false},
+		statusToken{name: "Ctrl+Alt:Mouse", enabled: false},
+	)
+	legendW := statusTokensWidth(legendTokens)
 	legendX := max(eo.width-legendW-6, 6)
-	legendOpts := &ebiten.DrawImageOptions{}
-	legendOpts.GeoM.Scale(legendScale, legendScale)
-	legendOpts.GeoM.Translate(float64(legendX), float64(y+39))
-	legendOpts.ColorScale.ScaleWithColor(legendColor)
-	text.DrawWithOptions(screen, legend, basicfont.Face7x13, legendOpts)
+	drawStatusTokens(screen, legendX, y+39, legendTokens)
 }

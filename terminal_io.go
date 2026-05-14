@@ -36,16 +36,17 @@ type TerminalMMIO struct {
 	rawKeyLen  int
 
 	// Mouse state, updated by graphical backends and read via MMIO.
-	mouseX        atomic.Int32
-	mouseY        atomic.Int32
-	mouseDX       atomic.Int32
-	mouseDY       atomic.Int32
-	mouseButtons  atomic.Uint32
-	mouseChanged  atomic.Bool
-	mouseCtrl     atomic.Uint32
-	mouseOverride atomic.Bool  // when true, backend skips mouse updates (script owns mouse)
-	mouseNativeW  atomic.Int32 // native video source width (0 = use raw coordinates)
-	mouseNativeH  atomic.Int32 // native video source height
+	mouseX            atomic.Int32
+	mouseY            atomic.Int32
+	mouseDX           atomic.Int32
+	mouseDY           atomic.Int32
+	mouseButtons      atomic.Uint32
+	mouseChanged      atomic.Bool
+	mouseCtrl         atomic.Uint32
+	mouseOverride     atomic.Bool  // when true, backend skips mouse updates (script owns mouse)
+	mouseNativeW      atomic.Int32 // native video source width (0 = use raw coordinates)
+	mouseNativeH      atomic.Int32 // native video source height
+	mouseNativeLocked atomic.Bool  // when true, video mode changes do not alter mouseNativeW/H
 
 	// Scancode ring buffer for raw keyboard make/break events.
 	scanBuf  [256]uint8
@@ -313,12 +314,27 @@ func (tm *TerminalMMIO) SetForceEchoOff(force bool) {
 	tm.mu.Unlock()
 }
 
-// SetMouseNativeResolution sets the native video source resolution for mouse
-// coordinate scaling. When set (w > 0), backends scale display-space coordinates
-// to native-space before writing MMIO registers.
+// SetMouseNativeResolution sets the guest mouse coordinate space. When set
+// (w > 0), backends scale display-space coordinates before writing MMIO.
 func (tm *TerminalMMIO) SetMouseNativeResolution(w, h int) {
+	if tm.mouseNativeLocked.Load() {
+		return
+	}
 	tm.mouseNativeW.Store(int32(w))
 	tm.mouseNativeH.Store(int32(h))
+}
+
+// LockMouseNativeResolution pins the guest mouse coordinate space until
+// UnlockMouseNativeResolution is called. This is used by guests whose cursor
+// contract is not the currently composited native video source.
+func (tm *TerminalMMIO) LockMouseNativeResolution(w, h int) {
+	tm.mouseNativeW.Store(int32(w))
+	tm.mouseNativeH.Store(int32(h))
+	tm.mouseNativeLocked.Store(true)
+}
+
+func (tm *TerminalMMIO) UnlockMouseNativeResolution() {
+	tm.mouseNativeLocked.Store(false)
 }
 
 // MouseRelativeMode reports whether the guest requested captured relative mouse input.
