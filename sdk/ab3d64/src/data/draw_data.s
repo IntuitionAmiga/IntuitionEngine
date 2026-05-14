@@ -56,7 +56,7 @@ draw_Digits_vb:
 
 				align 4
 draw_BackdropImageName_vb:
-				dc.b	"ab3:includes/rawbackpacked",0
+				dc.b	"media/includes/rawbackpacked",0
 				align 4
 
 _draw_BorderPacked_vb::
@@ -109,4 +109,3 @@ draw_XZAngs_vw:
 
 ; todo - what is this?
 guff:			incbin	"includes/guff"
-

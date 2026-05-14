@@ -88,7 +88,8 @@ func TestFMoveCR_DataReg_Errors(t *testing.T) {
 func TestFMove_FP_To_PostInc_L(t *testing.T) {
 	out := convertSrc(t, "\tfmove.l fp0,(a0)+\n")
 	mustContain(t, out, "dcvtfi r17, f0")
-	mustContain(t, out, "store.l r17, (r9)")
+	mustContain(t, out, "bswap.l r20, r17")
+	mustContain(t, out, "store.l r20, (r9)")
 	mustContain(t, out, "add.l r9, r9, #4")
 }
 

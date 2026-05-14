@@ -11,13 +11,15 @@ import (
 func TestMovem_LoadDispAn(t *testing.T) {
 	out := convertOneInstr(t, "\tmovem.l 8(a0),d0-d2")
 	mustContain(t, out, "lea r16, 8(r9)")
-	mustContain(t, out, "load.l r1, 0(r16)")
+	mustContain(t, out, "load.l r1, (r16)")
+	mustContain(t, out, "bswap.l r1, r1")
 }
 
 func TestMovem_StoreDispAn(t *testing.T) {
 	out := convertOneInstr(t, "\tmovem.l d0-d2,8(a0)")
 	mustContain(t, out, "lea r16, 8(r9)")
-	mustContain(t, out, "store.l r1, 0(r16)")
+	mustContain(t, out, "bswap.l r20, r1")
+	mustContain(t, out, "store.l r20, (r16)")
 }
 
 func TestMovem_LoadAbs(t *testing.T) {
@@ -53,7 +55,8 @@ func TestShift_Mem_RMW(t *testing.T) {
 	out := convertOneInstr(t, "\tlsl.l #1,(a0)")
 	mustContain(t, out, "load.l r18, (r9)")
 	mustContain(t, out, "lsl.l r18, r18, #1")
-	mustContain(t, out, "store.l r18, (r9)")
+	mustContain(t, out, "bswap.l r20, r18")
+	mustContain(t, out, "store.l r20, (r9)")
 }
 
 func TestFused_CmpBgt_Word(t *testing.T) {

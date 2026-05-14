@@ -3153,9 +3153,19 @@ fillscrnwater:
 				dc.w	0
 DONTDOGUN:
 				dc.w	0
+ie_first_present_done:
+				dc.b	0
 
 				include "ie/draw_zone_graph.s"
 DrawDisplay:
+	IFD		IE_FIRST_FRAME_PRESENT_EARLY
+				tst.b	ie_first_present_done
+				bne.s	.ie_full_draw
+				st		ie_first_present_done
+				CALLC	Vid_Present
+				rts
+.ie_full_draw:
+	ENDC
 				clr.b	fillscrnwater
 
 				; bigsine is 16kb = 8192 words for 4pi (720deg)
@@ -3816,6 +3826,22 @@ bothinfront:
 				; now "draw" the projected line into the line buffer which stores X
 				; values
 lineclipped:
+				cmp.w	#0,d1
+				bge.s	.d1_nonnegative
+				moveq	#0,d1
+.d1_nonnegative:
+				cmp.w	#SCREEN_HEIGHT-1,d1
+				ble.s	.d1_inrange
+				move.w	#SCREEN_HEIGHT-1,d1
+.d1_inrange:
+				cmp.w	#0,d3
+				bge.s	.d3_nonnegative
+				moveq	#0,d3
+.d3_nonnegative:
+				cmp.w	#SCREEN_HEIGHT-1,d3
+				ble.s	.d3_inrange
+				move.w	#SCREEN_HEIGHT-1,d3
+.d3_inrange:
 				move.l	#RightSideTable_vw,a3
 				cmp.w	d1,d3
 				beq		lineflat				; if line is flat, skip
@@ -4111,6 +4137,22 @@ bothinfrontGOUR:
 
 
 lineclippedGOUR:
+				cmp.w	#0,d1
+				bge.s	.d1_nonnegative
+				moveq	#0,d1
+.d1_nonnegative:
+				cmp.w	#SCREEN_HEIGHT-1,d1
+				ble.s	.d1_inrange
+				move.w	#SCREEN_HEIGHT-1,d1
+.d1_inrange:
+				cmp.w	#0,d3
+				bge.s	.d3_nonnegative
+				moveq	#0,d3
+.d3_nonnegative:
+				cmp.w	#SCREEN_HEIGHT-1,d3
+				ble.s	.d3_inrange
+				move.w	#SCREEN_HEIGHT-1,d3
+.d3_inrange:
 				move.l	#RightSideTable_vw,a3
 				cmp.w	d1,d3
 				bne		linenotflatGOUR
@@ -8086,7 +8128,7 @@ Vid_CentreX_w:		dc.w	SMALL_WIDTH/2
 * Link file !*****************************
 ******************************************
 GLF_DatabasePtr_l:		dc.l	0
-GLF_DatabaseName_vb:	dc.b	"ab3:includes/test.lnk",0
+GLF_DatabaseName_vb:	dc.b	"media/includes/test.lnk",0
 
 				align 4
 

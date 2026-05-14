@@ -433,16 +433,15 @@ mnu_openmenu:;in:a0=Ptr to menu
 				move.w	mnu_currentlevel,d0
 				add.w	#65,d0
 				move.b	d0,mnu_mainleveltext
-				move.l	a0,-(a7)
+				move.l	a0,mnu_openmenu_savedptr
 				move.l	#0,mnu_printdelay
 				bsr.w	mnu_cls
-				move.l	(a7)+,a0
-				move.l	a0,-(a7)
+				move.l	mnu_openmenu_savedptr,a0
 				move.w	(a0),d0
 				move.w	2(a0),d1
 				move.l	4(a0),a0
 				bsr.w	mnu_printxy
-				move.l	(a7)+,a0
+				move.l	mnu_openmenu_savedptr,a0
 				move.w	8(a0),mnu_curx
 				move.w	10(a0),mnu_cury
 				move.w	12(a0),mnu_spread
@@ -1213,6 +1212,8 @@ mnu_oldrow:		dc.w	30000
 mnu_screenpos:	dc.w	0
 
 mnu_printdelay:	dc.l	0
+mnu_openmenu_savedptr:
+				dc.l	0
 
 ;----------------------------------------------------------------- Fire data --
 
@@ -1934,9 +1935,9 @@ mnu_background:
 
 				xdef	_mnu_screen
 				xdef	_mnu_morescreen
-_mnu_screen		equ	$02800000
+_mnu_screen		equ	$01400000
 mnu_screen		equ	_mnu_screen
-_mnu_morescreen	equ	$02840000
+_mnu_morescreen	equ	$01440000
 mnu_morescreen	equ	_mnu_morescreen
 
 				align	8				; align for fetch mode 3

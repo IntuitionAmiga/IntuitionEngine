@@ -141,6 +141,8 @@ func (c *Converter) fuseNormaliseValue(e *Emit, op Operand, size int, signed boo
 		e.Lf("move%s %s, #%s", IE64Size(size), scratch, op.Imm)
 		if signed {
 			e.Lf("sext%s %s, %s", IE64Size(size), scratch, scratch)
+		} else {
+			e.Lf("and.l %s, %s, #%s", scratch, scratch, SizeMask(size))
 		}
 		return scratch, nil
 	}
@@ -164,9 +166,12 @@ func (c *Converter) fuseNormaliseValue(e *Emit, op Operand, size int, signed boo
 // emitFusedCmpBcc handles CMP/CMPI/CMPA + Bcc.
 //
 // m68k:   cmp.X src,dst   sets flags from (dst - src).
-//         Bcc L   branches per cc on (dst CMP src).
+//
+//	Bcc L   branches per cc on (dst CMP src).
+//
 // IE64:   bne dst, src, L  branches if dst != src.
-//         For signed, sign-extend operands to 64 bits.
+//
+//	For signed, sign-extend operands to 64 bits.
 func (c *Converter) emitFusedCmpBcc(e *Emit, prod, cons Line) error {
 	srcOp, err := ParseOperand(prod.Operands[0])
 	if err != nil {

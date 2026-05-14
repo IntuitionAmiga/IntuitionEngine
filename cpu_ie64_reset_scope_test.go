@@ -8,7 +8,10 @@
 
 package main
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // TestCPU64Reset_DoesNotTouchMemoryOutsideProgramWindow asserts CPU64.Reset
 // does not zero or otherwise touch cpu.memory. Memory zeroing belongs to
@@ -101,5 +104,61 @@ func TestCPU64LoadProgramBytes_OversizeProgramTruncatesAtStackStart(t *testing.T
 	}
 	if got := cpu.memory[STACK_START+1]; got != sentinel {
 		t.Fatalf("oversize program spilled past STACK_START: got %#x, want sentinel %#x", got, sentinel)
+	}
+}
+
+func TestCPU64LoadFlatProgramBytes_LoadsLargeImagePastStackStart(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+
+	const sentinel byte = 0x42
+	programLen := int(STACK_START-PROG_START) + 4096
+	program := make([]byte, programLen)
+	for i := range program {
+		program[i] = byte(i)
+	}
+	tailAddr := uint32(PROG_START + programLen + 16)
+	cpu.memory[tailAddr] = sentinel
+
+	cpu.LoadFlatProgramBytes(program)
+
+	pastStack := STACK_START + 256
+	want := program[int(pastStack-PROG_START)]
+	if got := cpu.memory[pastStack]; got != want {
+		t.Fatalf("large image byte at %#x = %#x, want %#x", pastStack, got, want)
+	}
+	if got := cpu.memory[tailAddr]; got != sentinel {
+		t.Fatalf("LoadFlatProgramBytes clobbered byte past image at %#x: got %#x, want %#x", tailAddr, got, sentinel)
+	}
+	if cpu.PC != PROG_START {
+		t.Fatalf("PC=%#x, want PROG_START %#x", cpu.PC, PROG_START)
+	}
+}
+
+func TestCPU64LoadFlatProgram_LoadsLargeImageFromFilePastStackStart(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+
+	programLen := int(STACK_START-PROG_START) + 4096
+	program := make([]byte, programLen)
+	for i := range program {
+		program[i] = byte((i * 11) + 7)
+	}
+
+	tmp := t.TempDir() + "/large.ie64"
+	if err := os.WriteFile(tmp, program, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := cpu.LoadFlatProgram(tmp); err != nil {
+		t.Fatalf("LoadFlatProgram: %v", err)
+	}
+
+	pastStack := STACK_START + 512
+	want := program[int(pastStack-PROG_START)]
+	if got := cpu.memory[pastStack]; got != want {
+		t.Fatalf("LoadFlatProgram did not load byte past STACK_START at %#x: got %#x, want %#x", pastStack, got, want)
+	}
+	if cpu.PC != PROG_START {
+		t.Fatalf("PC=%#x, want PROG_START %#x", cpu.PC, PROG_START)
 	}
 }

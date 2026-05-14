@@ -55,6 +55,7 @@
 	xdef ie_mouse_delta_x_w
 	xdef ie_mouse_left_key_down_b
 	xdef ie_mouse_right_key_down_b
+	xdef _ie64_entry
 
 	xdef _SysBase
 	xdef _DOSBase
@@ -102,6 +103,7 @@
 	xref _Vid_ContrastAdjust_w
 	xref _Vid_BrightnessOffset_w
 	xref _Vid_GammaLevel_b
+	xref _startup
 	xref _mnu_bltbusy
 	xref _mnu_background
 	xref _mnu_screen
@@ -121,15 +123,16 @@ MOUSE_BUTTONS	equ	$F0738
 MOUSE_CTRL	equ	$F074C
 MOUSE_DX	equ	$F0754
 MOUSE_DY	equ	$F0758
-CHUNKY_BASE	equ	$100000
-CHUNKY_BACK_BASE	equ	$113000
-PRESENT_BASE	equ	$126000
+CHUNKY_BASE	equ	$00600000
+CHUNKY_BACK_BASE	equ	$00613000
+PRESENT_BASE	equ	$00626000
+IE_PRESENT_COUNT	equ	$00625FFC
 	IFD		IE_OVERDRIVE
-SCALE_BASE	equ	$02000000
-SCALE_BACK_BASE	equ	$02200000
+SCALE_BASE	equ	$01000000
+SCALE_BACK_BASE	equ	$01200000
 	ELSE
-SCALE_BASE	equ	$240000
-SCALE_BACK_BASE	equ	$28B000
+SCALE_BASE	equ	$00800000
+SCALE_BACK_BASE	equ	$0084B000
 	ENDC
 SCREEN_WIDTH	equ	320
 SCREEN_HEIGHT	equ	240
@@ -183,12 +186,15 @@ VIDEO_PAL_DATA	equ	$F007C
 VIDEO_COLOR_MODE	equ	$F0080
 VIDEO_FB_BASE	equ	$F0084
 BLT_FLAGS	equ	$F0488
+BLT_OP_FILL	equ	1
 BLT_OP_SCALE	equ	7
 BLT_FLAGS_BPP_CLUT8	equ	1
+BLT_FLAGS_CLUT8_COPY	equ	$31
 BLT_SCALE_DISPLAY	equ	(DISPLAY_HEIGHT<<16)|DISPLAY_WIDTH
 FAKE_LIB_BASE	equ	$6F0000
 FAKE_VEC_BYTES	equ	$0800
 FAKE_LVO_WAITTOF	equ	-270
+IE_STACK_TOP	equ	$00FFF000
 EDGE_POINT_ID_LIST_END	equ	-4
 IE_SCANCODE_NONE	equ	$FF
 RAWKEY_CTRL	equ	$63
@@ -202,6 +208,11 @@ IE_MOD_ALT	equ	2
 POTINP		equ	$016
 CIAPRA		equ	0
 CIAB_GAMEPORT0	equ	6
+
+_ie64_entry:
+	move.l	#IE_STACK_TOP,sp
+	lea		_startup(pc),a0
+	jmp		(a0)
 
 _Sys_Init:
 	move.l	#FAKE_LIB_BASE,_DOSBase
@@ -457,6 +468,7 @@ ie_palette_apply_channel:
 	rts
 
 _Vid_Present:
+	addq.l	#1,IE_PRESENT_COUNT
 	bsr		ie_poll_input
 	; Apply deferred palette uploads from legacy path.
 	tst.b	_Vid_UpdatePalette_b
@@ -571,21 +583,14 @@ ie_scale_to_display:
 
 	IFD		IE_OVERDRIVE
 ie_overdrive_clear_clut_frame:
-	movem.l	d0-d2/a0,-(sp)
-	move.l	a1,a0
-	moveq	#0,d0
-	moveq	#6,d2
-.clear_64k_chunks:
-	move.w	#$FFFF,d1
-.clear_64k_loop:
-	move.l	d0,(a0)+
-	dbra	d1,.clear_64k_loop
-	dbra	d2,.clear_64k_chunks
-	move.w	#59647,d1
-.clear_tail:
-	move.l	d0,(a0)+
-	dbra	d1,.clear_tail
-	movem.l	(sp)+,d0-d2/a0
+	move.l	#BLT_OP_FILL,BLT_OP
+	move.l	a1,BLT_DST
+	move.l	#DISPLAY_WIDTH,BLT_WIDTH
+	move.l	#DISPLAY_HEIGHT,BLT_HEIGHT
+	move.l	#DISPLAY_WIDTH,BLT_DST_STRIDE
+	clr.l	BLT_COLOR
+	move.l	#BLT_FLAGS_CLUT8_COPY,BLT_FLAGS
+	move.l	#1,BLT_CTRL
 	rts
 	ENDC
 
@@ -1201,14 +1206,6 @@ ie_MakeSomeNoise:
 	rts
 
 ie_init_fake_lib_vectors:
-	lea		FAKE_LIB_BASE-FAKE_VEC_BYTES,a0
-	move.w	#((FAKE_VEC_BYTES/2)-1),d7
-.fill_rts:
-	move.w	#$4E75,(a0)+
-	dbra	d7,.fill_rts
-	lea		FAKE_LIB_BASE+FAKE_LVO_WAITTOF,a0
-	move.w	#$4EF9,(a0)+
-	move.l	#ie_wait_tof,(a0)
 	rts
 
 _SysBase:

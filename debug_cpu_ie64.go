@@ -151,7 +151,18 @@ func (d *DebugIE64) StopForAccessHit() {
 func (d *DebugIE64) Resume() {
 	d.bpMu.Lock()
 	hasBP := len(d.breakpoints) > 0 || len(d.watchpoints) > 0 || d.accessDebugActive()
+	jitBreakpointOnly := d.cpu != nil && d.cpu.jitEnabled && len(d.breakpoints) > 0 && len(d.watchpoints) == 0 && !d.accessDebugActive()
 	if hasBP {
+		if jitBreakpointOnly {
+			d.bpMu.Unlock()
+			if d.workerResume != nil {
+				d.workerResume()
+				return
+			}
+			d.cpu.running.Store(true)
+			d.cpu.StartExecution()
+			return
+		}
 		d.trapStop = make(chan struct{})
 		d.frozenCh = make(chan struct{})
 		d.trapRunning.Store(true)
@@ -421,11 +432,24 @@ func (d *DebugIE64) SetBreakpointChannel(ch chan<- BreakpointEvent, cpuID int) {
 	d.events.Set(ch, cpuID)
 	if d.cpu != nil {
 		d.cpu.debugBreakIn = nil
+		d.cpu.debugBreakpointsActive = nil
 		d.cpu.debugAccess = nil
 		d.cpu.debugCPUID = cpuID
 		if ch != nil {
+			d.cpu.debugBreakpointsActive = func() bool {
+				d.bpMu.RLock()
+				defer d.bpMu.RUnlock()
+				return len(d.breakpoints) > 0
+			}
 			d.cpu.debugBreakIn = func(pc uint64) bool {
 				if !d.ConsumeBreakIn() {
+					if bp, ok := d.SnapshotBreakpoint(pc); ok {
+						hitCount, _ := d.IncrementBreakpointHit(pc)
+						if evaluateConditionWithHitCount(bp.Condition, d, hitCount) {
+							d.events.Publish(BreakpointEvent{Address: pc})
+							return true
+						}
+					}
 					return false
 				}
 				publishBreakInAt(d.events, pc)

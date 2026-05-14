@@ -32,6 +32,50 @@ func mustNotContain(t *testing.T, src, want string) {
 	}
 }
 
+func TestBigEndianRAMWordLoadUsesNativeLoadAndBSwap(t *testing.T) {
+	out := convertOneInstr(t, "\tmove.w (a0),d0")
+	mustContain(t, out, "load.w r17, (r9)")
+	mustContain(t, out, "bswap.l r17, r17")
+	mustContain(t, out, "lsr.l r17, r17, #16")
+	mustNotContain(t, out, "load.b r17, (r9)")
+}
+
+func TestBigEndianRAMLongLoadUsesNativeLoadAndBSwap(t *testing.T) {
+	out := convertOneInstr(t, "\tmove.l (a0),d0")
+	mustContain(t, out, "load.l r17, (r9)")
+	mustContain(t, out, "bswap.l r17, r17")
+	mustNotContain(t, out, "load.b r17, (r9)")
+}
+
+func TestBigEndianRAMWordStoreUsesBSwapAndNativeStore(t *testing.T) {
+	out := convertOneInstr(t, "\tmove.w d0,(a0)")
+	mustContain(t, out, "lsl.l r20, r17, #16")
+	mustContain(t, out, "bswap.l r20, r20")
+	mustContain(t, out, "store.w r20, (r9)")
+	mustNotContain(t, out, "store.b r17, (r9)")
+}
+
+func TestBigEndianRAMLongStoreUsesBSwapAndNativeStore(t *testing.T) {
+	out := convertOneInstr(t, "\tmove.l d0,(a0)")
+	mustContain(t, out, "bswap.l r20, r1")
+	mustContain(t, out, "store.l r20, (r9)")
+	mustNotContain(t, out, "store.b r17, (r9)")
+}
+
+func TestMMIORangeUsesNativeEndianBranch(t *testing.T) {
+	c := NewConverter()
+	c.noHeader = true
+	c.mmioRanges = []addrRange{{start: 0xF0000, end: 0xF2FFF}}
+	out, errs := c.ConvertSource("\tmove.l (a0),d0\n")
+	if errs != 0 {
+		t.Fatalf("conversion errors:\n%s", out)
+	}
+	mustContain(t, out, "mem_native_")
+	mustContain(t, out, "bswap.l r17, r17")
+	mustContain(t, out, "load.l r17, (r9)")
+	mustContain(t, out, "bra __m68kto64_mem_done_")
+}
+
 // =====================================================================
 // MOVE
 // =====================================================================
@@ -68,12 +112,15 @@ func TestMove_PostInc_Load(t *testing.T) {
 func TestMove_PreDec_Store(t *testing.T) {
 	out := convertOneInstr(t, "\tmove.l d1,-(a0)")
 	mustContain(t, out, "sub.l r9, r9, #4")
-	mustContain(t, out, "store.l r2, (r9)")
+	mustContain(t, out, "bswap.l r20, r2")
+	mustContain(t, out, "store.l r20, (r9)")
 }
 
 func TestMove_DispAn(t *testing.T) {
 	out := convertOneInstr(t, "\tmove.l 8(a0),d1")
-	mustContain(t, out, "load.l r17, 8(r9)")
+	mustContain(t, out, "lea r16, 8(r9)")
+	mustContain(t, out, "load.l r17, (r16)")
+	mustContain(t, out, "bswap.l r17, r17")
 }
 
 func TestMove_Abs(t *testing.T) {
@@ -128,7 +175,8 @@ func TestSub_Mem_RMW(t *testing.T) {
 	mustContain(t, out, "load.l r18, (r9)")
 	mustContain(t, out, "move.l r17, #1") // imm materialised for shadow C/V
 	mustContain(t, out, "sub.l r18, r18, r17")
-	mustContain(t, out, "store.l r18, (r9)")
+	mustContain(t, out, "bswap.l r20, r18")
+	mustContain(t, out, "store.l r20, (r9)")
 }
 
 func TestAnd_PartialByte(t *testing.T) {
@@ -162,7 +210,8 @@ func TestNot_Mem(t *testing.T) {
 	out := convertOneInstr(t, "\tnot.l (a0)")
 	mustContain(t, out, "load.l r18, (r9)")
 	mustContain(t, out, "not.l r18, r18")
-	mustContain(t, out, "store.l r18, (r9)")
+	mustContain(t, out, "bswap.l r20, r18")
+	mustContain(t, out, "store.l r20, (r9)")
 }
 
 func TestClr_DnLong(t *testing.T) {
@@ -177,7 +226,8 @@ func TestClr_DnByte_PartialUpdate(t *testing.T) {
 
 func TestClr_Mem(t *testing.T) {
 	out := convertOneInstr(t, "\tclr.l (a0)")
-	mustContain(t, out, "store.l r0, (r9)")
+	mustContain(t, out, "bswap.l r20, r0")
+	mustContain(t, out, "store.l r20, (r9)")
 }
 
 func TestExt_W(t *testing.T) {
@@ -237,9 +287,18 @@ func TestLea_Abs(t *testing.T) {
 
 func TestLea_Indexed(t *testing.T) {
 	out := convertOneInstr(t, "\tlea (8,a0,d0.l*4),a1")
-	mustContain(t, out, "lsl.l r10, r10, #2")
-	mustContain(t, out, "add.l r10, r10, r9")
+	mustContain(t, out, "move.l r19, r1")
+	mustContain(t, out, "lsl.l r19, r19, #2")
+	mustContain(t, out, "add.l r10, r19, r9")
 	mustContain(t, out, "add.l r10, r10, #8")
+}
+
+func TestLea_IndexedDestinationMayAliasBase(t *testing.T) {
+	out := convertOneInstr(t, "\tlea (a3,d1*2),a3")
+	mustContain(t, out, "sext.w r19, r2")
+	mustContain(t, out, "lsl.l r19, r19, #1")
+	mustContain(t, out, "add.l r12, r19, r12")
+	mustNotContain(t, out, "add.l r12, r12, r12")
 }
 
 // =====================================================================

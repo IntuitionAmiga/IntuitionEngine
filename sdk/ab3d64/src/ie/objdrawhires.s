@@ -1520,12 +1520,14 @@ draw_CalcBrightRings:
 
 draw_TweenBrights:
 				moveq	#0,d0
+				moveq	#15,d6
 
 .backinto:
 				cmp.b	#-128,(a0,d0.w)
 				bne.s	.okbr
 				addq	#1,d0
-				bra.s	.backinto
+				dbra	d6,.backinto
+				rts
 
 .okbr:
 				move.b	d0,d7					;starting pos

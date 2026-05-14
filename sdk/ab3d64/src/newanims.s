@@ -688,6 +688,9 @@ Anim_ExplodeIntoBits:
 				rts
 
 brightanim:
+				IFD IE_DISABLE_BRIGHTANIM
+				rts
+				ELSE
 				move.l	#Anim_BrightTable_vw,a1
 				move.l	#anim_BrightessAnimPtrs_vl,a3
 				move.l	#anim_BrightnessAnimStartPtrs_vl,a4
@@ -712,8 +715,12 @@ brightanim:
 
 .nomoreanims:
 				rts
+				ENDC
 
 BACKSFX:
+				IFD IE_DISABLE_BACKSFX
+				rts
+				ENDC
 				move.w	Anim_TempFrames_w,d0
 				sub.w	d0,anim_TimeToNoise_w
 				bgt		.nosfx

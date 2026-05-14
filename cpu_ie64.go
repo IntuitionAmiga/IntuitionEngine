@@ -454,10 +454,11 @@ type CPU64 struct {
 	// Coprocessor mode: allows PC outside PROG_START..STACK_START
 	CoprocMode bool
 
-	debugAccess  *DebugAccessService
-	debugFaults  *DebugFaultService
-	debugBreakIn func(pc uint64) bool
-	debugCPUID   int
+	debugAccess            *DebugAccessService
+	debugFaults            *DebugFaultService
+	debugBreakIn           func(pc uint64) bool
+	debugBreakpointsActive func() bool
+	debugCPUID             int
 
 	// MMU state
 	mmuEnabled     bool         // MMU translation active
@@ -1250,6 +1251,15 @@ func (cpu *CPU64) LoadProgram(filename string) error {
 	return nil
 }
 
+func (cpu *CPU64) LoadFlatProgram(filename string) error {
+	program, err := os.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+	cpu.LoadFlatProgramBytes(program)
+	return nil
+}
+
 // LoadProgramBytes loads raw machine code bytes at PROG_START and resets PC.
 // Touches only the fixed program load window [PROG_START, STACK_START); never
 // the open-ended slice tail. PLAN_MAX_RAM slice 10 invariant: no boot path may
@@ -1271,6 +1281,26 @@ func (cpu *CPU64) LoadProgramBytes(program []byte) {
 		src = src[:maxCopy]
 	}
 	copy(cpu.memory[PROG_START:progEnd], src)
+	cpu.PC = PROG_START
+}
+
+// LoadFlatProgramBytes loads a large flat IE64 image at PROG_START without
+// applying the legacy stack-window clamp. It is intentionally separate from
+// LoadProgramBytes so normal boot/reload paths keep their bounded RSS behavior.
+func (cpu *CPU64) LoadFlatProgramBytes(program []byte) {
+	progEnd := PROG_START + len(program)
+	if progEnd > len(cpu.memory) {
+		progEnd = len(cpu.memory)
+	}
+	if progEnd < PROG_START {
+		progEnd = PROG_START
+	}
+	for i := PROG_START; i < progEnd; i++ {
+		cpu.memory[i] = 0
+	}
+	if progEnd > PROG_START {
+		copy(cpu.memory[PROG_START:progEnd], program[:progEnd-PROG_START])
+	}
 	cpu.PC = PROG_START
 }
 

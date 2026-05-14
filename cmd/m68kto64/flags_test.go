@@ -75,6 +75,13 @@ func TestFuse_CmpiImm(t *testing.T) {
 	mustContain(t, out, "beq r1, r17, target")
 }
 
+func TestFuse_CmpByteNegativeImmediateMasksForEquality(t *testing.T) {
+	out := convertSrc(t, "\tcmp.b #-128,(a0)\n\tbeq target\n")
+	mustContain(t, out, "move.b r17, #-128")
+	mustContain(t, out, "and.l r17, r17, #$FF")
+	mustContain(t, out, "beq r18, r17, target")
+}
+
 // =====================================================================
 // TST + Bcc fuse
 // =====================================================================
@@ -94,6 +101,23 @@ func TestFuse_TstBmi(t *testing.T) {
 func TestFuse_TstBpl_Long(t *testing.T) {
 	out := convertSrc(t, "\ttst.l d0\n\tbpl target\n")
 	mustContain(t, out, "bgez")
+}
+
+func TestFuse_SkipsWhenLaterBranchStillConsumesSameTstFlags(t *testing.T) {
+	out := convertSrc(t, "\ttst.b d0\n\tblt negative\n\tbeq zero\n")
+	mustContain(t, out, "sext.b r24")
+	mustContain(t, out, "and.l r25")
+	mustContain(t, out, "bnez r17, negative")
+	mustContain(t, out, "beqz r25, zero")
+	mustNotContain(t, out, "bltz r17, negative")
+}
+
+func TestFuse_SkipsWhenLaterBranchConsumesCmpFlagsAcrossLabel(t *testing.T) {
+	out := convertSrc(t, "\tcmp.w d1,d3\n\tbne notflat\n\tbra flat\nnotflat:\n\tbgt right\nflat:\n\trts\nright:\n\trts\n")
+	mustContain(t, out, "sub.w r21")
+	mustContain(t, out, "bnez r25, notflat")
+	mustContain(t, out, "bgt")
+	mustNotContain(t, out, "bne r4, r2, notflat")
 }
 
 // =====================================================================
@@ -119,7 +143,8 @@ func TestBra(t *testing.T) {
 func TestBsr_PushReturn(t *testing.T) {
 	out := convertSrc(t, "\tbsr target\n")
 	mustContain(t, out, "sub.l r30, r30, #4")
-	mustContain(t, out, "store.l r17, (r30)")
+	mustContain(t, out, "bswap.l r20, r17")
+	mustContain(t, out, "store.l r20, (r30)")
 	mustContain(t, out, "bra target")
 }
 
@@ -155,7 +180,8 @@ func TestJmp_Indirect(t *testing.T) {
 func TestLink(t *testing.T) {
 	out := convertSrc(t, "\tlink a6,#-12\n")
 	mustContain(t, out, "sub.l r30, r30, #4")
-	mustContain(t, out, "store.l r15, (r30)")
+	mustContain(t, out, "bswap.l r20, r15")
+	mustContain(t, out, "store.l r20, (r30)")
 	mustContain(t, out, "move.l r15, r30")
 	mustContain(t, out, "add.l r30, r30, #-12")
 }
@@ -176,8 +202,8 @@ func TestMovem_StorePreDec_Reversed(t *testing.T) {
 	// d2 first, then d1, then d0 (each preceded by sub r30,r30,#4).
 	out := convertSrc(t, "\tmovem.l d0-d2,-(sp)\n")
 	// d2 stored first.
-	d2Idx := strings.Index(out, "store.l r3,")
-	d0Idx := strings.Index(out, "store.l r1,")
+	d2Idx := strings.Index(out, "bswap.l r20, r3")
+	d0Idx := strings.Index(out, "bswap.l r20, r1")
 	if d2Idx < 0 || d0Idx < 0 {
 		t.Fatalf("missing d0 or d2 store:\n%s", out)
 	}

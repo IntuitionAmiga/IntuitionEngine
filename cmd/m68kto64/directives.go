@@ -38,6 +38,15 @@ func labelBindingDirective(mnem string) bool {
 func (c *Converter) emitDirective(e *Emit, l Line) bool {
 	mnem := l.Mnemonic
 	switch mnem {
+	case "dc":
+		switch l.Size {
+		case ".w":
+			emitBEDC(e, 2, l.Operands)
+			return true
+		case ".l":
+			emitBEDC(e, 4, l.Operands)
+			return true
+		}
 	case "xdef", "xref", "public", "global", "extern":
 		// Drop linkage directives (single-file namespace).
 		if len(l.Operands) > 0 {
@@ -201,4 +210,33 @@ func (c *Converter) emitDirective(e *Emit, l Line) bool {
 		return true
 	}
 	return false
+}
+
+func emitBEDC(e *Emit, size int, operands []string) {
+	if len(operands) == 0 {
+		e.L("dc.b")
+		return
+	}
+	bytes := make([]string, 0, len(operands)*size)
+	for _, op := range operands {
+		expr := strings.TrimSpace(op)
+		if expr == "" {
+			continue
+		}
+		switch size {
+		case 2:
+			bytes = append(bytes,
+				"(("+expr+") >> 8) & 0xFF",
+				"("+expr+") & 0xFF",
+			)
+		case 4:
+			bytes = append(bytes,
+				"(("+expr+") >> 24) & 0xFF",
+				"(("+expr+") >> 16) & 0xFF",
+				"(("+expr+") >> 8) & 0xFF",
+				"("+expr+") & 0xFF",
+			)
+		}
+	}
+	e.Lf("dc.b %s", strings.Join(bytes, ","))
 }

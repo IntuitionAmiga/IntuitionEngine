@@ -92,6 +92,25 @@ func assembleExpectError(t *testing.T, src string) error {
 	return err
 }
 
+func TestIE64Assembler_DCBSingleQuotedMultiCharSizesForwardLabels(t *testing.T) {
+	bin := assembleString(t, `
+		org $1000
+entry:
+		la r1, target
+		bra target
+		dc.b 'abcd'
+target:
+		halt
+	`)
+
+	if got, want := binary.LittleEndian.Uint32(bin[4:8]), uint32(0x1014); got != want {
+		t.Fatalf("la target immediate = %#x, want %#x", got, want)
+	}
+	if got, want := int32(binary.LittleEndian.Uint32(bin[12:16])), int32(0x0000000C); got != want {
+		t.Fatalf("bra target offset = %#x, want %#x", got, want)
+	}
+}
+
 func assemblerRepoRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)

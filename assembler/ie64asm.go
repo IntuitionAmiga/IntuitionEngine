@@ -399,6 +399,26 @@ func (a *IE64Assembler) GetLibManifest() *IE64LibManifest {
 	return &manifest
 }
 
+func cloneLabelMap(src map[string]uint32) map[string]uint32 {
+	dst := make(map[string]uint32, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func equalLabelMaps(a, b map[string]uint32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		if bv, ok := b[k]; !ok || bv != av {
+			return false
+		}
+	}
+	return true
+}
+
 func (a *IE64Assembler) addError(format string, args ...interface{}) {
 	a.errors = append(a.errors, fmt.Sprintf(format, args...))
 }
@@ -1784,20 +1804,28 @@ func calcDCBSize(rest string) uint32 {
 				i++ // skip closing quote
 			}
 		} else if rest[i] == '\'' {
-			total++
 			i++
-			escaped := false
+			var strBytes uint32
 			for i < len(rest) {
-				if escaped {
-					escaped = false
-				} else if rest[i] == '\\' {
-					escaped = true
-				} else if rest[i] == '\'' {
+				if rest[i] == '\\' && i+1 < len(rest) {
+					bs, next, err := parseEscapeBytes(rest, i)
+					if err == nil {
+						strBytes += uint32(len(bs))
+						i = next
+						continue
+					}
+				}
+				if rest[i] == '\'' {
 					i++
 					break
 				}
+				strBytes++
 				i++
 			}
+			if strBytes == 0 {
+				strBytes = 1
+			}
+			total += strBytes
 		} else {
 			// Numeric value - skip to next comma or end
 			for i < len(rest) && rest[i] != ',' {
@@ -2067,16 +2095,19 @@ func (a *IE64Assembler) Assemble(source string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := 0; unresolved && i < 4; i++ {
+	prevLabels := cloneLabelMap(a.labels)
+	for i := 0; i < 8; i++ {
 		var nextMax uint32
 		nextMax, unresolved, err = a.collectPass1(expanded, false)
 		if err != nil {
 			return nil, err
 		}
-		if nextMax == maxAddr && !unresolved {
+		labelsStable := equalLabelMaps(prevLabels, a.labels)
+		if nextMax == maxAddr && !unresolved && labelsStable {
 			maxAddr = nextMax
 			break
 		}
+		prevLabels = cloneLabelMap(a.labels)
 		maxAddr = nextMax
 	}
 	if unresolved {

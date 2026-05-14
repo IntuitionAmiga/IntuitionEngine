@@ -3,3 +3,7 @@
 /bin/
 /build/
 /_build/
+/tools/generated/
+/tools/shots/
+/tools/states/
+/tools/memdumps/

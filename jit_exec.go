@@ -95,7 +95,7 @@ func (cpu *CPU64) interpretOne() {
 // ExecuteJIT is the main JIT execution loop. It replaces Execute() when
 // JIT compilation is enabled.
 func (cpu *CPU64) ExecuteJIT() {
-	if !cpu.CoprocMode && (cpu.PC < PROG_START || cpu.PC >= STACK_START) {
+	if !cpu.CoprocMode && cpu.PC < PROG_START {
 		fmt.Printf("IE64 JIT: Invalid initial PC value: 0x%08x\n", cpu.PC)
 		cpu.running.Store(false)
 		return
@@ -412,8 +412,15 @@ func (cpu *CPU64) ExecuteJIT() {
 			}
 		}
 
-		// Reset per-callNative chain dispatch state.
-		cpu.jitCtx.ChainBudget = ie64ChainBudget
+		// Reset per-callNative chain dispatch state. Debug break-in checks
+		// run in the Go dispatcher, so keep native chaining disabled while a
+		// debug adapter is attached; otherwise a patched chain can jump over a
+		// script breakpoint such as the AB3D64 _Vid_Present landmark.
+		if cpu.debugBreakpointsActive != nil && cpu.debugBreakpointsActive() {
+			cpu.jitCtx.ChainBudget = 0
+		} else {
+			cpu.jitCtx.ChainBudget = ie64ChainBudget
+		}
 		cpu.jitCtx.ChainCount = 0
 
 		// Update 4-entry MRU RTS cache: shift entries down and write the

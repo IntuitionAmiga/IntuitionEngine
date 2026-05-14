@@ -8,8 +8,6 @@ import (
 func TestDirective_PassThrough(t *testing.T) {
 	cases := []string{
 		"\tdc.b 1,2,3",
-		"\tdc.w $1234,$5678",
-		"\tdc.l 0,0,0",
 		"\tds.l 16",
 		"\tinclude defs.i",
 		"\tincbin \"image.bin\"",
@@ -24,6 +22,14 @@ func TestDirective_PassThrough(t *testing.T) {
 			t.Errorf("input %q: output missing %q\n%s", in, want, out)
 		}
 	}
+}
+
+func TestDirective_DCWordLongRewriteBigEndianBytes(t *testing.T) {
+	out := convertSrc(t, "\tdc.w $1234,-1\n\tdc.l $12345678,foo-here\n")
+	mustContain(t, out, "dc.b (($1234) >> 8) & 0xFF,($1234) & 0xFF,((-1) >> 8) & 0xFF,(-1) & 0xFF")
+	mustContain(t, out, "dc.b (($12345678) >> 24) & 0xFF,(($12345678) >> 16) & 0xFF,(($12345678) >> 8) & 0xFF,($12345678) & 0xFF,((foo-here) >> 24) & 0xFF,((foo-here) >> 16) & 0xFF,((foo-here) >> 8) & 0xFF,(foo-here) & 0xFF")
+	mustNotContain(t, out, "dc.w $1234")
+	mustNotContain(t, out, "dc.l $12345678")
 }
 
 func TestDirective_IfdIsIE_Rewrite(t *testing.T) {

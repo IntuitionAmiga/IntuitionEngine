@@ -110,7 +110,8 @@ func TestMovem_VariousMasks(t *testing.T) {
 func TestShift_MemRegCount(t *testing.T) {
 	out := convertOneInstr(t, "\tlsl.l d0,(a0)")
 	mustContain(t, out, "load.l r18, (r9)")
-	mustContain(t, out, "store.l r18, (r9)")
+	mustContain(t, out, "bswap.l r20, r18")
+	mustContain(t, out, "store.l r20, (r9)")
 }
 
 // emitBfModify mem path.

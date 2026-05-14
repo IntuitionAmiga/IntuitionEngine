@@ -69,6 +69,33 @@ func runInterpreterProgram(t *testing.T, instructions ...[]byte) *CPU64 {
 	return cpu
 }
 
+func TestExecuteJIT_AllowsFlatImageCodePastLegacyStackStart(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+	highPC := uint32(STACK_START + 0x1000)
+	copy(cpu.memory[highPC:], ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x12345678))
+	copy(cpu.memory[highPC+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	cpu.PC = uint64(highPC)
+
+	done := make(chan struct{})
+	go func() {
+		cpu.ExecuteJIT()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cpu.running.Store(false)
+		waitDoneWithGuard(t, done)
+		t.Fatal("JIT execution above legacy stack start timed out")
+	}
+	if got := cpu.regs[1]; got != 0x12345678 {
+		t.Fatalf("R1 = 0x%X, want 0x12345678", got)
+	}
+}
+
 func TestJIT_SingleALU(t *testing.T) {
 	// MOVE.Q R1, #100; ADD.Q R1, R1, #50; HALT
 	cpu := runJITProgram(t,

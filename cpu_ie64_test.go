@@ -254,6 +254,40 @@ func TestIE64_LOAD_STORE_Long(t *testing.T) {
 	}
 }
 
+func TestIE64_LOAD_LongFromHighRAMAboveLegacyIOStart(t *testing.T) {
+	r := newIE64TestRig()
+	addr := uint32(0x2103F0)
+	r.cpu.regs[2] = uint64(addr)
+	binary.LittleEndian.PutUint32(r.cpu.memory[addr:], 0x34042100)
+
+	load := ie64Instr(OP_LOAD, 1, IE64_SIZE_L, 0, 2, 0, 0)
+	r.executeOne(load)
+
+	if r.cpu.regs[1] != 0x34042100 {
+		t.Fatalf("R1 = 0x%08X, want 0x34042100", r.cpu.regs[1])
+	}
+	if got := binary.LittleEndian.Uint32(r.cpu.memory[addr:]); got != 0x34042100 {
+		t.Fatalf("load mutated memory at 0x%X: got 0x%08X, want 0x34042100", addr, got)
+	}
+}
+
+func TestIE64FlatProgramVideoConfigKeepsProgramDataInLegacyVRAMWindowReadable(t *testing.T) {
+	bus := NewMachineBus()
+	chip := &VideoChip{}
+	addr := uint32(0x2103F0)
+	binary.LittleEndian.PutUint32(bus.memory[addr:], 0x34042100)
+	bus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1, func(uint32) uint32 { return 0 }, nil)
+
+	applyIE64FlatProgramVideoConfig(bus, chip)
+
+	if got := bus.Read32(addr); got != 0x34042100 {
+		t.Fatalf("Read32(0x%X) = 0x%08X, want flat-program RAM value 0x34042100", addr, got)
+	}
+	if got := binary.LittleEndian.Uint32(bus.memory[addr:]); got != 0x34042100 {
+		t.Fatalf("legacy VRAM read clobbered flat program data: got 0x%08X", got)
+	}
+}
+
 func TestIE64_LOAD_STORE_Word(t *testing.T) {
 	r := newIE64TestRig()
 	addr := uint32(0x5000)

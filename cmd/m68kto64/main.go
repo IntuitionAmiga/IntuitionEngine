@@ -43,6 +43,44 @@ func (r repeatedString) Set(v string) error {
 	return nil
 }
 
+type mmioRangeFlag struct {
+	vals *[]addrRange
+}
+
+func (m mmioRangeFlag) String() string {
+	if m.vals == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(*m.vals))
+	for _, r := range *m.vals {
+		parts = append(parts, fmt.Sprintf("0x%X-0x%X", r.start, r.end))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (m mmioRangeFlag) Set(v string) error {
+	if m.vals == nil {
+		return fmt.Errorf("mmioRangeFlag uninitialized")
+	}
+	parts := strings.Split(v, "-")
+	if len(parts) != 2 {
+		return fmt.Errorf("expected START-END")
+	}
+	start, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 0, 32)
+	if err != nil {
+		return fmt.Errorf("invalid start: %w", err)
+	}
+	end, err := strconv.ParseUint(strings.TrimSpace(parts[1]), 0, 32)
+	if err != nil {
+		return fmt.Errorf("invalid end: %w", err)
+	}
+	if end < start {
+		return fmt.Errorf("end before start")
+	}
+	*m.vals = append(*m.vals, addrRange{start: uint32(start), end: uint32(end)})
+	return nil
+}
+
 // defineFlag is a flag.Value backing repeatable -D NAME[=VALUE] flags. Whitespace
 // around `=` is rejected per plan §Expression evaluator. Bare `-D NAME` seeds
 // to 1.
@@ -149,6 +187,7 @@ func run(args []string, stderrW io.Writer) int {
 	sizeFlag := fs.String("size", ".l", "Default size suffix (.l or .q)")
 	labelSalt := fs.String("label-salt", "", "Namespace __m68kto64_* labels with this salt (prevents collisions in multi-TU concat builds)")
 	flagLiveness := fs.Bool("flag-liveness", false, "Phase H: elide shadow N/Z/C/V/X emission when no downstream consumer reads them (opt-in)")
+	var mmioRanges []addrRange
 
 	opts := DefaultPreprocOpts()
 	opts.Defines = map[string]int64{}
@@ -158,6 +197,7 @@ func run(args []string, stderrW io.Writer) int {
 	fs.IntVar(&opts.MaxMacroRecurs, "max-macro-recurs", opts.MaxMacroRecurs, "Max macro expansion depth")
 	fs.BoolVar(&opts.WerrorUnknownMnem, "Werror-unknown-mnemonic", opts.WerrorUnknownMnem, "Treat unknown mnemonics as errors")
 	fs.BoolVar(&opts.NoDefaultSeeds, "no-default-seeds", false, "Skip IE-convenience symbol seeds (IS_IE=1)")
+	fs.Var(mmioRangeFlag{&mmioRanges}, "mmio-range", "Native-endian MMIO address range START-END (repeatable)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(stderrW, "Usage: m68kto64 [options] input.s\n\nSee sdk/docs/m68Kto64.md.\n\nOptions:\n")
@@ -180,6 +220,7 @@ func run(args []string, stderrW io.Writer) int {
 	c.defaultSize = *sizeFlag
 	c.labelSalt = *labelSalt
 	c.flagLiveness = *flagLiveness
+	c.mmioRanges = mmioRanges
 	source, errs := c.ConvertFile(in, opts, stderrW)
 	if errs > 0 && source == "" {
 		// Pure preprocessor failure (e.g. read error or lone-CR rejection);

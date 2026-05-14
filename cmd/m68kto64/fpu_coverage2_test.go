@@ -245,5 +245,6 @@ func TestFMove_FP_To_B_Mem(t *testing.T) {
 func TestFMove_FP_To_W_Mem(t *testing.T) {
 	out := convertSrc(t, "\tfmove.w fp0,(a0)\n")
 	mustContain(t, out, "dcvtfi r17, f0")
-	mustContain(t, out, "store.w r17, (r9)")
+	mustContain(t, out, "bswap.l r20, r20")
+	mustContain(t, out, "store.w r20, (r9)")
 }

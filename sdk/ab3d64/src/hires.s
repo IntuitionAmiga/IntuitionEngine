@@ -3875,6 +3875,22 @@ bothinfront:
 				; now "draw" the projected line into the line buffer which stores X
 				; values
 lineclipped:
+				cmp.w	#0,d1
+				bge.s	.d1_nonnegative
+				moveq	#0,d1
+.d1_nonnegative:
+				cmp.w	#SCREEN_HEIGHT-1,d1
+				ble.s	.d1_inrange
+				move.w	#SCREEN_HEIGHT-1,d1
+.d1_inrange:
+				cmp.w	#0,d3
+				bge.s	.d3_nonnegative
+				moveq	#0,d3
+.d3_nonnegative:
+				cmp.w	#SCREEN_HEIGHT-1,d3
+				ble.s	.d3_inrange
+				move.w	#SCREEN_HEIGHT-1,d3
+.d3_inrange:
 				move.l	#RightSideTable_vw,a3
 				cmp.w	d1,d3
 				beq		lineflat				; if line is flat, skip
@@ -4169,6 +4185,22 @@ bothinfrontGOUR:
 
 
 lineclippedGOUR:
+				cmp.w	#0,d1
+				bge.s	.d1_nonnegative
+				moveq	#0,d1
+.d1_nonnegative:
+				cmp.w	#SCREEN_HEIGHT-1,d1
+				ble.s	.d1_inrange
+				move.w	#SCREEN_HEIGHT-1,d1
+.d1_inrange:
+				cmp.w	#0,d3
+				bge.s	.d3_nonnegative
+				moveq	#0,d3
+.d3_nonnegative:
+				cmp.w	#SCREEN_HEIGHT-1,d3
+				ble.s	.d3_inrange
+				move.w	#SCREEN_HEIGHT-1,d3
+.d3_inrange:
 				move.l	#RightSideTable_vw,a3
 				cmp.w	d1,d3
 				bne		linenotflatGOUR

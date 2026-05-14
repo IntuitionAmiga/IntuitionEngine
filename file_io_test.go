@@ -53,6 +53,94 @@ func TestFileIO_ReadFile(t *testing.T) {
 	}
 }
 
+func TestFileIO_ReadMediaPrefersPreparedUnpackedAsset(t *testing.T) {
+	bus := NewMachineBus()
+	tmpDir, err := os.MkdirTemp("", "fileio_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	packed := []byte("packed")
+	unpacked := []byte("unpacked")
+	mediaPath := filepath.Join(tmpDir, "media", "levels", "level_a")
+	unpackedPath := filepath.Join(tmpDir, "_build", "ie_unpacked", "media", "levels", "level_a")
+	if err := os.MkdirAll(mediaPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(unpackedPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mediaPath, "twolev.map"), packed, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unpackedPath, "twolev.map"), unpacked, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fio := NewFileIODevice(bus, tmpDir)
+	fileNameAddr := uint32(0x1000)
+	dataBufAddr := uint32(0x2000)
+	for i, b := range []byte("media/levels/level_a/twolev.map\x00") {
+		bus.Write8(fileNameAddr+uint32(i), b)
+	}
+
+	fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+	fio.HandleWrite(FILE_DATA_PTR, dataBufAddr)
+	fio.HandleWrite(FILE_CTRL, FILE_OP_READ)
+
+	if fio.HandleRead(FILE_STATUS) != 0 {
+		t.Fatalf("expected status 0, got %d", fio.HandleRead(FILE_STATUS))
+	}
+	got := make([]byte, len(unpacked))
+	for i := range got {
+		got[i] = bus.Read8(dataBufAddr + uint32(i))
+	}
+	if !bytes.Equal(got, unpacked) {
+		t.Errorf("expected unpacked media %q, got %q", unpacked, got)
+	}
+}
+
+func TestFileIO_ReadMediaLevelAssetFallsBackToPreparedReduxLevel(t *testing.T) {
+	bus := NewMachineBus()
+	tmpDir, err := os.MkdirTemp("", "fileio_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	content := []byte("redux-level-asset")
+	reduxLevelPath := filepath.Join(tmpDir, "_build", "ie_media", "redux-high", "levels_editor_uncompressed", "level_a")
+	if err := os.MkdirAll(reduxLevelPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(reduxLevelPath, "floortile"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fio := NewFileIODevice(bus, tmpDir)
+	fileNameAddr := uint32(0x1000)
+	dataBufAddr := uint32(0x2000)
+	for i, b := range []byte("media/levels/level_a/floortile\x00") {
+		bus.Write8(fileNameAddr+uint32(i), b)
+	}
+
+	fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+	fio.HandleWrite(FILE_DATA_PTR, dataBufAddr)
+	fio.HandleWrite(FILE_CTRL, FILE_OP_READ)
+
+	if fio.HandleRead(FILE_STATUS) != 0 {
+		t.Fatalf("expected status 0, got %d", fio.HandleRead(FILE_STATUS))
+	}
+	got := make([]byte, len(content))
+	for i := range got {
+		got[i] = bus.Read8(dataBufAddr + uint32(i))
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("expected redux level asset %q, got %q", content, got)
+	}
+}
+
 func TestFileIO_WriteFile(t *testing.T) {
 	bus := NewMachineBus()
 	tmpDir, err := os.MkdirTemp("", "fileio_test")

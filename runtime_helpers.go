@@ -148,7 +148,7 @@ func buildReloadClosure(mode string, runner EmulatorCPU, bytes []byte, bus *Mach
 		return func() {
 			cpu := runner.(*CPU64)
 			cpu.Reset()
-			cpu.LoadProgramBytes(bytes)
+			cpu.LoadFlatProgramBytes(bytes)
 		}
 	case "m68k":
 		return func() {

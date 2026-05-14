@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,9 +135,36 @@ func (f *FileIODevice) readFileName() string {
 	return string(name)
 }
 
+func (f *FileIODevice) resolveReadFileName(fileName string) string {
+	if strings.HasPrefix(fileName, "media/") {
+		unpackedName := filepath.Join("_build", "ie_unpacked", fileName)
+		if fullPath, ok := f.sanitizePath(unpackedName); ok {
+			if _, err := os.Stat(fullPath); err == nil {
+				return unpackedName
+			}
+		}
+	}
+	if strings.HasPrefix(fileName, "media/levels/") {
+		levelName := strings.TrimPrefix(fileName, "media/levels/")
+		reduxName := filepath.Join("_build", "ie_media", "redux-high", "levels_editor_uncompressed", levelName)
+		if fullPath, ok := f.sanitizePath(reduxName); ok {
+			if _, err := os.Stat(fullPath); err == nil {
+				return reduxName
+			}
+		}
+	}
+	if fileName == "_b" {
+		return "_build/ie_media/redux-high/includes/test.lnk"
+	}
+	if strings.HasPrefix(fileName, "_b") {
+		return "_build/ie_media/redux-high/" + strings.TrimPrefix(fileName, "_b")
+	}
+	return fileName
+}
+
 // doRead performs the actual file read operation.
 func (f *FileIODevice) doRead() {
-	fileName := f.readFileName()
+	fileName := f.resolveReadFileName(f.readFileName())
 	fullPath, ok := f.sanitizePath(fileName)
 	if !ok {
 		f.fileStatus = 1
@@ -145,7 +173,7 @@ func (f *FileIODevice) doRead() {
 	}
 
 	data, err := os.ReadFile(fullPath)
-	traceHostIO("FILEIO", "READ", fileName, fullPath, err, len(data))
+	traceHostIO("FILEIO", fmt.Sprintf("READ name_ptr=0x%08X", f.fileNamePtr), fileName, fullPath, err, len(data))
 	if err != nil {
 		f.fileStatus = 1
 		if os.IsNotExist(err) {
@@ -183,7 +211,7 @@ func (f *FileIODevice) doWrite() {
 	}
 
 	err := os.WriteFile(fullPath, data, 0644)
-	traceHostIO("FILEIO", "WRITE", fileName, fullPath, err, len(data))
+	traceHostIO("FILEIO", fmt.Sprintf("WRITE name_ptr=0x%08X", f.fileNamePtr), fileName, fullPath, err, len(data))
 	if err != nil {
 		f.fileStatus = 1
 		f.fileErrorCode = FILE_ERR_PERMISSION

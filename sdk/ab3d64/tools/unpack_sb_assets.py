@@ -45,23 +45,35 @@ def extract_with_7z(lha_data: bytes, expected_size: int, output_name: str) -> by
         return data
 
 
-def unpack_sb_file(source: pathlib.Path) -> bytes | None:
-    data = source.read_bytes()
+def unpack_sb_bytes(data: bytes, name: str) -> bytes | None:
     if len(data) < 12 or data[:4] != b"=SB=":
         return None
     unpacked_size = struct.unpack(">I", data[4:8])[0]
     packed_size = struct.unpack(">I", data[8:12])[0]
     payload = data[12:]
     if packed_size != len(payload):
-        raise RuntimeError(f"{source}: packed size {packed_size} != file payload {len(payload)}")
+        raise RuntimeError(f"{name}: packed size {packed_size} != file payload {len(payload)}")
     if packed_size == unpacked_size:
-        return payload
-    for method in (b"-lh6-", b"-lh7-"):
-        try:
-            return extract_with_7z(make_lha(payload, unpacked_size, source.name, method), unpacked_size, source.name)
-        except RuntimeError:
-            pass
-    raise RuntimeError(f"{source}: unable to unpack =SB= payload")
+        unpacked = payload
+    else:
+        unpacked = None
+        for method in (b"-lh6-", b"-lh7-"):
+            try:
+                unpacked = extract_with_7z(make_lha(payload, unpacked_size, name, method), unpacked_size, name)
+                break
+            except RuntimeError:
+                pass
+        if unpacked is None:
+            raise RuntimeError(f"{name}: unable to unpack =SB= payload")
+    nested = unpack_sb_bytes(unpacked, name)
+    if nested is not None:
+        return nested
+    return unpacked
+
+
+def unpack_sb_file(source: pathlib.Path) -> bytes | None:
+    data = source.read_bytes()
+    return unpack_sb_bytes(data, source.name)
 
 
 def write_aliases(out_root: pathlib.Path, rel: pathlib.Path, data: bytes) -> int:

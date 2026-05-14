@@ -245,6 +245,13 @@ BLUE			macro
 				SETCOPLOR0 $f
 				endm
 
+	IFD IS_IE
+DataCacheOff	macro
+				endm
+
+DataCacheOn		macro
+				endm
+	ELSE
 DataCacheOff	macro
 				movem.l	a0-a6/d0-d7,-(sp)
 				moveq	#0,d0
@@ -260,6 +267,7 @@ DataCacheOn		macro
 				CALLEXEC CacheControl
 				movem.l	(sp)+,a0-a6/d0-d7
 				endm
+	ENDC
 
 SAVEREGS		MACRO
 				movem.l	d0-d7/a0-a6,-(a7)

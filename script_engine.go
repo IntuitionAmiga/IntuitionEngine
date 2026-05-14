@@ -775,6 +775,7 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 
 	cpu := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
 		"load":            se.luaCPULoad(),
+		"load_stopped":    se.luaCPULoadStopped(),
 		"reset":           se.luaCPUReset(),
 		"freeze":          se.luaCPUFreeze(),
 		"resume":          se.luaCPUResume(),
@@ -1403,6 +1404,52 @@ func (se *ScriptEngine) luaCPULoad() lua.LGFunction {
 		se.loadingProgram.Store(false)
 		if err != nil {
 			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaCPULoadStopped() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		snap := runtimeStatus.snapshot()
+		se.loadingProgram.Store(true)
+		defer se.loadingProgram.Store(false)
+		switch snap.selectedCPU {
+		case runtimeCPUIE64:
+			if snap.ie64 == nil {
+				L.RaiseError("IE64 CPU unavailable")
+				return 0
+			}
+			program, err := os.ReadFile(validated)
+			if err != nil {
+				L.RaiseError("%v", err)
+				return 0
+			}
+			snap.ie64.Stop()
+			snap.ie64.Reset()
+			snap.ie64.LoadFlatProgramBytes(program)
+			snap.ie64.running.Store(false)
+		case runtimeCPUIE32:
+			if snap.ie32 == nil {
+				L.RaiseError("IE32 CPU unavailable")
+				return 0
+			}
+			program, err := os.ReadFile(validated)
+			if err != nil {
+				L.RaiseError("%v", err)
+				return 0
+			}
+			snap.ie32.Stop()
+			snap.ie32.Reset()
+			snap.ie32.LoadProgramBytes(program)
+		default:
+			L.RaiseError("cpu.load_stopped unsupported for current CPU")
 		}
 		return 0
 	}
@@ -3738,6 +3785,7 @@ func (se *ScriptEngine) luaDbgStep() lua.LGFunction {
 
 func (se *ScriptEngine) luaDbgContinue() lua.LGFunction {
 	return func(L *lua.LState) int {
+		startStopped := L.OptBool(1, false)
 		se.mu.Lock()
 		mon := se.monitor
 		se.mu.Unlock()
@@ -3745,9 +3793,18 @@ func (se *ScriptEngine) luaDbgContinue() lua.LGFunction {
 			L.RaiseError("monitor unavailable")
 			return 0
 		}
+		var focused DebuggableCPU
+		if startStopped {
+			if entry := mon.FocusedCPU(); entry != nil {
+				focused = entry.CPU
+			}
+		}
 		exit, _ := mon.ExecuteCommandResult("g")
 		if exit {
 			se.scriptDbgResumeAfterExit(mon)
+			if startStopped && focused != nil && !focused.IsRunning() {
+				focused.Resume()
+			}
 		}
 		return 0
 	}

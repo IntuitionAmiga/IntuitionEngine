@@ -305,6 +305,7 @@ io_LoadAndUnpackFile:
 ; Load an optional file, i.e. one that might not exist.
 IO_LoadFileOptional:
 				SAVEREGS
+				move.l	a0,d1
 				move.l	a0,a5
 				bsr		io_ie_load_to_heap
 				tst.l	d0
@@ -582,6 +583,16 @@ io_ie_load_to_heap:
 					move.l	d0,IO_IE_HEAP_PTR
 .have_heap:
 					move.l	d0,d2
+					bsr		io_ie_make_unpacked_media_path
+					tst.l	d0
+					beq.s	.try_repo_root_build_ie
+					move.l	d2,FILE_IO_DATA
+					move.l	d0,FILE_IO_NAME
+					move.l	#1,FILE_IO_CTRL
+					move.l	FILE_IO_STATUS,d6
+					tst.l	d6
+					beq		.loaded_ie
+.try_repo_root_build_ie:
 					bsr		io_ie_make_repo_root_build_path
 					tst.l	d0
 					beq.s	.try_parent_media_ie

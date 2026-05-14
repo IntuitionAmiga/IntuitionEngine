@@ -20,11 +20,11 @@ import (
 type Converter struct {
 	defaultSize       string // ".l" or ".q" (default ".l")
 	noHeader          bool
-	strict            bool // unsupported op -> error rather than ; TODO
-	noFlagsFuse       bool // disable Phase-3 fuse (forwards-compat flag)
-	werrorUnknownMnem bool // unknown mnemonic emits ; ERROR: rather than passing through
+	strict            bool   // unsupported op -> error rather than ; TODO
+	noFlagsFuse       bool   // disable Phase-3 fuse (forwards-compat flag)
+	werrorUnknownMnem bool   // unknown mnemonic emits ; ERROR: rather than passing through
 	labelSalt         string // forwarded to Emit.SetLabelSalt for cross-TU label namespacing
-	flagLiveness      bool  // Phase H: integer-CC liveness elision (opt-in)
+	flagLiveness      bool   // Phase H: integer-CC liveness elision (opt-in)
 	intCCLiveAt       map[int]bool
 	errors            int
 
@@ -69,6 +69,13 @@ type Converter struct {
 	// pre-Phase-C output shape for direct ConvertSource callers). ConvertFile
 	// overwrites this with the preprocessor's populated symtab.
 	symtab *Symtab
+
+	mmioRanges []addrRange
+}
+
+type addrRange struct {
+	start uint32
+	end   uint32
 }
 
 // fpccLive reports whether the current line is a ShadowFPCC producer with
@@ -134,7 +141,8 @@ func (c *Converter) ConvertLines(input []string) (string, int) {
 		// (`label:\n\tcmp.l ...`) — both forms must inhibit fusion.
 		precededByLabelOnly := i > 0 && lines[i-1].Kind == LineLabelOnly
 		if !c.noFlagsFuse && fusableProducer(l) && l.Label == "" && !precededByLabelOnly &&
-			i+1 < len(lines) && canFuseBcc(lines[i+1]) && lines[i+1].Label == "" {
+			i+1 < len(lines) && canFuseBcc(lines[i+1]) && lines[i+1].Label == "" &&
+			!laterIntegerCCConsumerBeforeProducer(lines, i+2) {
 			c.emitFusedPair(e, l, lines[i+1])
 			i += 2
 			continue
@@ -154,6 +162,30 @@ func (c *Converter) ConvertLines(input []string) (string, int) {
 	}
 	c.emitFPFooter(e)
 	return e.String(), c.errors
+}
+
+// laterIntegerCCConsumerBeforeProducer reports whether flags from a candidate
+// fused producer remain live after the immediately-following Bcc. M68K permits
+// several conditional branches to read the same CCR value in sequence, so the
+// producer must emit shadow CCRs instead of being fused with only the first
+// consumer in that case.
+func laterIntegerCCConsumerBeforeProducer(lines []Line, start int) bool {
+	for i := start; i < len(lines); i++ {
+		l := lines[i]
+		switch l.Kind {
+		case LineEmpty, LineComment:
+			continue
+		case LineLabelOnly:
+			continue
+		}
+		if isIntegerCCProducer(l) {
+			return false
+		}
+		if isIntegerCCConsumer(l) {
+			return true
+		}
+	}
+	return false
 }
 
 // emitFusedPair handles a (CMP|TST,Bcc) adjacent pair.
@@ -437,7 +469,7 @@ func (c *Converter) emitBsr(e *Emit, l Line) error {
 	ret := e.NewLabel("bsr_ret")
 	e.Lf("sub.l %s, %s, #4", GuestSP, GuestSP)
 	e.Lf("la %s, %s", ScrV1, ret)
-	e.Lf("store.l %s, (%s)", ScrV1, GuestSP)
+	c.emitStoreMem(e, ScrV1, GuestSP, 4)
 	e.Lf("bra %s", target)
 	e.Label(ret)
 	return nil
@@ -492,7 +524,7 @@ func (c *Converter) emitJsr(e *Emit, l Line) error {
 	ret := e.NewLabel("jsr_ret")
 	e.Lf("sub.l %s, %s, #4", GuestSP, GuestSP)
 	e.Lf("la %s, %s", ScrV1, ret)
-	e.Lf("store.l %s, (%s)", ScrV1, GuestSP)
+	c.emitStoreMem(e, ScrV1, GuestSP, 4)
 	switch op.Mode {
 	case AMIndirect:
 		e.Lf("jmp (%s)", op.Reg.IE64)
@@ -518,7 +550,7 @@ func (c *Converter) emitJsr(e *Emit, l Line) error {
 
 // emitRts emits m68k RTS — pop return PC from guest stack, jump.
 func (c *Converter) emitRts(e *Emit) error {
-	e.Lf("load.l %s, (%s)", ScrV1, GuestSP)
+	c.emitLoadMem(e, ScrV1, GuestSP, 4)
 	e.Lf("add.l %s, %s, #4", GuestSP, GuestSP)
 	e.Lf("jmp (%s)", ScrV1)
 	return nil
@@ -533,7 +565,7 @@ func (c *Converter) emitRts(e *Emit) error {
 // the shadow registers, then pops PC like RTS.
 func (c *Converter) emitRtr(e *Emit) error {
 	// Read 16-bit CCR.
-	e.Lf("load.w %s, (%s)", ScrV1, GuestSP)
+	c.emitLoadMem(e, ScrV1, GuestSP, 2)
 	e.Lf("add.l %s, %s, #2", GuestSP, GuestSP)
 	// CCR bit layout (m68k):  bit4=X, bit3=N, bit2=Z, bit1=V, bit0=C.
 	// Unpack into shadows. ShadowN: m68k N is "result negative" — store the
@@ -554,7 +586,7 @@ func (c *Converter) emitRtr(e *Emit) error {
 	e.Lf("and.l %s, %s, #1", ShadowTmp1, ShadowTmp1)
 	e.Lf("neg.q %s, %s", ShadowN, ShadowTmp1)
 	// Pop PC.
-	e.Lf("load.l %s, (%s)", ScrV1, GuestSP)
+	c.emitLoadMem(e, ScrV1, GuestSP, 4)
 	e.Lf("add.l %s, %s, #4", GuestSP, GuestSP)
 	e.Lf("jmp (%s)", ScrV1)
 	return nil
@@ -581,7 +613,7 @@ func (c *Converter) emitLink(e *Emit, l Line) error {
 	}
 	rA := an.Reg.IE64
 	e.Lf("sub.l %s, %s, #4", GuestSP, GuestSP)
-	e.Lf("store.l %s, (%s)", rA, GuestSP)
+	c.emitStoreMem(e, rA, GuestSP, 4)
 	e.Lf("move.l %s, %s", rA, GuestSP)
 	e.Lf("add.l %s, %s, #%s", GuestSP, GuestSP, disp.Imm)
 	return nil
@@ -601,7 +633,7 @@ func (c *Converter) emitUnlk(e *Emit, l Line) error {
 	}
 	rA := an.Reg.IE64
 	e.Lf("move.l %s, %s", GuestSP, rA)
-	e.Lf("load.l %s, (%s)", rA, GuestSP)
+	c.emitLoadMem(e, rA, GuestSP, 4)
 	e.Lf("add.l %s, %s, #4", GuestSP, GuestSP)
 	return nil
 }
@@ -857,7 +889,9 @@ func maybeSignExtAbsW(e *Emit, reg string, mode AddrMode) {
 
 // emitUnpackCCRBits unpacks the low byte of a 16-bit m68k SR/CCR value held
 // in `srcReg` into the shadow CCR registers. Bit layout:
-//   bit 0 = C, bit 1 = V, bit 2 = Z, bit 3 = N, bit 4 = X.
+//
+//	bit 0 = C, bit 1 = V, bit 2 = Z, bit 3 = N, bit 4 = X.
+//
 // Shadow contract: ShadowN sign-extended (−1 if N=1 else 0), ShadowZ inverted
 // (r25 nonzero ⇔ Z=0), ShadowC / ShadowV / ShadowX as 0/1 bits.
 func (c *Converter) emitUnpackCCRBits(e *Emit, srcReg string) {
@@ -965,12 +999,12 @@ func (c *Converter) emitRte(e *Emit, l Line) error {
 		}
 	}
 	// Pop 16-bit SR.
-	e.Lf("load.w %s, (%s)", ScrV1, GuestSP)
+	c.emitLoadMem(e, ScrV1, GuestSP, 2)
 	e.Lf("add.l %s, %s, #2", GuestSP, GuestSP)
 	// Unpack CCR bits from low byte of SR.
 	c.emitUnpackCCRBits(e, ScrV1)
 	// Pop 32-bit PC and jump.
-	e.Lf("load.l %s, (%s)", ScrV1, GuestSP)
+	c.emitLoadMem(e, ScrV1, GuestSP, 4)
 	e.Lf("add.l %s, %s, #4", GuestSP, GuestSP)
 	e.Lf("jmp (%s)", ScrV1)
 	return nil
@@ -1157,12 +1191,13 @@ func (c *Converter) emitMovem(e *Emit, l Line) error {
 }
 
 func (c *Converter) emitMovemStore(e *Emit, regs []string, ea Operand, size int, szIE string) error {
+	_ = szIE
 	if ea.Mode == AMPreDec {
 		// Predecrement: reverse order, sub-then-store per reg.
 		rA := ea.Reg.IE64
 		for i := len(regs) - 1; i >= 0; i-- {
 			e.Lf("sub.l %s, %s, #%d", rA, rA, size)
-			e.Lf("store%s %s, (%s)", szIE, regs[i], rA)
+			c.emitStoreMem(e, regs[i], rA, size)
 		}
 		return nil
 	}
@@ -1171,21 +1206,25 @@ func (c *Converter) emitMovemStore(e *Emit, regs []string, ea Operand, size int,
 		return err
 	}
 	for i, r := range regs {
-		e.Lf("store%s %s, %d(%s)", szIE, r, i*size, ScrEA)
+		if i > 0 {
+			e.Lf("add.l %s, %s, #%d", ScrEA, ScrEA, size)
+		}
+		c.emitStoreMem(e, r, ScrEA, size)
 	}
 	return nil
 }
 
 func (c *Converter) emitMovemLoad(e *Emit, regs []string, ea Operand, size int, szIE string) error {
+	_ = szIE
 	if ea.Mode == AMPostInc {
 		rA := ea.Reg.IE64
 		for _, r := range regs {
 			if size == 2 {
 				// .w MOVEM load sign-extends to .l.
-				e.Lf("load.w %s, (%s)", r, rA)
+				c.emitLoadMem(e, r, rA, size)
 				e.Lf("sext.w %s, %s", r, r)
 			} else {
-				e.Lf("load.l %s, (%s)", r, rA)
+				c.emitLoadMem(e, r, rA, size)
 			}
 			e.Lf("add.l %s, %s, #%d", rA, rA, size)
 		}
@@ -1195,11 +1234,14 @@ func (c *Converter) emitMovemLoad(e *Emit, regs []string, ea Operand, size int, 
 		return err
 	}
 	for i, r := range regs {
+		if i > 0 {
+			e.Lf("add.l %s, %s, #%d", ScrEA, ScrEA, size)
+		}
 		if size == 2 {
-			e.Lf("load.w %s, %d(%s)", r, i*size, ScrEA)
+			c.emitLoadMem(e, r, ScrEA, size)
 			e.Lf("sext.w %s, %s", r, r)
 		} else {
-			e.Lf("load.l %s, %d(%s)", r, i*size, ScrEA)
+			c.emitLoadMem(e, r, ScrEA, size)
 		}
 	}
 	return nil
@@ -1235,6 +1277,87 @@ func (c *Converter) emitEABase(e *Emit, ea Operand, dst string) error {
 // Operand load / store helpers
 // =====================================================================
 
+func (c *Converter) emitNativeMMIOBranch(e *Emit, addrReg, nativeLabel string) {
+	for _, r := range c.mmioRanges {
+		next := e.NewLabel("mmio_next")
+		e.Lf("move.l %s, #0x%X", ScrDC, r.start)
+		e.Lf("blt %s, %s, %s", addrReg, ScrDC, next)
+		e.Lf("move.l %s, #0x%X", ScrDC, r.end)
+		e.Lf("ble %s, %s, %s", addrReg, ScrDC, nativeLabel)
+		e.Label(next)
+	}
+}
+
+func (c *Converter) emitLoadMem(e *Emit, dstReg, addrReg string, size int) {
+	if size == 1 {
+		e.Lf("load.b %s, (%s)", dstReg, addrReg)
+		return
+	}
+	if len(c.mmioRanges) > 0 {
+		native := e.NewLabel("mem_native")
+		done := e.NewLabel("mem_done")
+		c.emitNativeMMIOBranch(e, addrReg, native)
+		c.emitLoadMemBE(e, dstReg, addrReg, size)
+		e.Lf("bra %s", done)
+		e.Label(native)
+		e.Lf("load%s %s, (%s)", IE64Size(size), dstReg, addrReg)
+		e.Label(done)
+		return
+	}
+	c.emitLoadMemBE(e, dstReg, addrReg, size)
+}
+
+func (c *Converter) emitLoadMemBE(e *Emit, dstReg, addrReg string, size int) {
+	switch size {
+	case 2:
+		e.Lf("load.w %s, (%s)", dstReg, addrReg)
+		e.Lf("bswap.l %s, %s", dstReg, dstReg)
+		e.Lf("lsr.l %s, %s, #16", dstReg, dstReg)
+	case 4:
+		e.Lf("load.l %s, (%s)", dstReg, addrReg)
+		e.Lf("bswap.l %s, %s", dstReg, dstReg)
+	default:
+		e.Lf("load%s %s, (%s)", IE64Size(size), dstReg, addrReg)
+	}
+}
+
+func (c *Converter) emitStoreMem(e *Emit, srcReg, addrReg string, size int) {
+	if size == 1 {
+		e.Lf("store.b %s, (%s)", srcReg, addrReg)
+		return
+	}
+	if len(c.mmioRanges) > 0 {
+		native := e.NewLabel("mem_native")
+		done := e.NewLabel("mem_done")
+		c.emitNativeMMIOBranch(e, addrReg, native)
+		c.emitStoreMemBE(e, srcReg, addrReg, size)
+		e.Lf("bra %s", done)
+		e.Label(native)
+		e.Lf("store%s %s, (%s)", IE64Size(size), srcReg, addrReg)
+		e.Label(done)
+		return
+	}
+	c.emitStoreMemBE(e, srcReg, addrReg, size)
+}
+
+func (c *Converter) emitStoreMemBE(e *Emit, srcReg, addrReg string, size int) {
+	tmp := ScrDC
+	if srcReg == ScrDC {
+		tmp = ScrAux
+	}
+	switch size {
+	case 2:
+		e.Lf("lsl.l %s, %s, #16", tmp, srcReg)
+		e.Lf("bswap.l %s, %s", tmp, tmp)
+		e.Lf("store.w %s, (%s)", tmp, addrReg)
+	case 4:
+		e.Lf("bswap.l %s, %s", tmp, srcReg)
+		e.Lf("store.l %s, (%s)", tmp, addrReg)
+	default:
+		e.Lf("store%s %s, (%s)", IE64Size(size), srcReg, addrReg)
+	}
+}
+
 // loadValue emits the IE64 sequence to materialise the value of `op` (m68k
 // width = `size` bytes) into a register the caller can consume. Returns the
 // register name holding the value, or — for immediates — an empty regName and
@@ -1247,7 +1370,6 @@ func (c *Converter) emitEABase(e *Emit, ea Operand, dst string) error {
 // bits zero). Sign-extension is the caller's job (used only by signed fused
 // branches in Phase 3).
 func (c *Converter) loadValue(e *Emit, op Operand, size int, scratch string) (regName string, immText string, err error) {
-	sz := IE64Size(size)
 	switch op.Mode {
 	case AMDataReg:
 		if size == 4 {
@@ -1264,27 +1386,28 @@ func (c *Converter) loadValue(e *Emit, op Operand, size int, scratch string) (re
 	case AMImmediate:
 		return "", op.Imm, nil
 	case AMIndirect:
-		e.Lf("load%s %s, (%s)", sz, scratch, op.Reg.IE64)
+		c.emitLoadMem(e, scratch, op.Reg.IE64, size)
 		return scratch, "", nil
 	case AMPostInc:
-		e.Lf("load%s %s, (%s)", sz, scratch, op.Reg.IE64)
+		c.emitLoadMem(e, scratch, op.Reg.IE64, size)
 		e.Lf("add.l %s, %s, #%d", op.Reg.IE64, op.Reg.IE64, postIncStep(op.Reg, size))
 		return scratch, "", nil
 	case AMPreDec:
 		e.Lf("sub.l %s, %s, #%d", op.Reg.IE64, op.Reg.IE64, postIncStep(op.Reg, size))
-		e.Lf("load%s %s, (%s)", sz, scratch, op.Reg.IE64)
+		c.emitLoadMem(e, scratch, op.Reg.IE64, size)
 		return scratch, "", nil
 	case AMDispAn:
-		e.Lf("load%s %s, %s(%s)", sz, scratch, dispOrZero(op.Disp), op.Reg.IE64)
+		e.Lf("lea %s, %s(%s)", ScrEA, dispOrZero(op.Disp), op.Reg.IE64)
+		c.emitLoadMem(e, scratch, ScrEA, size)
 		return scratch, "", nil
 	case AMIndexAn:
 		c.emitIndexAddr(e, op, ScrEA)
-		e.Lf("load%s %s, (%s)", sz, scratch, ScrEA)
+		c.emitLoadMem(e, scratch, ScrEA, size)
 		return scratch, "", nil
 	case AMAbsW, AMAbsL:
 		e.Lf("la %s, %s", ScrEA, op.Disp)
 		maybeSignExtAbsW(e, ScrEA, op.Mode)
-		e.Lf("load%s %s, (%s)", sz, scratch, ScrEA)
+		c.emitLoadMem(e, scratch, ScrEA, size)
 		return scratch, "", nil
 	case AMDispPC:
 		// PC-relative collapses to `la <label>` since labels resolve at
@@ -1294,7 +1417,7 @@ func (c *Converter) loadValue(e *Emit, op Operand, size int, scratch string) (re
 			return "", "", fmt.Errorf("PC-relative without disp not yet lowered")
 		}
 		e.Lf("la %s, %s", ScrEA, op.Disp)
-		e.Lf("load%s %s, (%s)", sz, scratch, ScrEA)
+		c.emitLoadMem(e, scratch, ScrEA, size)
 		return scratch, "", nil
 	case AMIndexPC:
 		if op.Disp == "" {
@@ -1302,7 +1425,7 @@ func (c *Converter) loadValue(e *Emit, op Operand, size int, scratch string) (re
 		}
 		e.Lf("la %s, %s", ScrEA, op.Disp)
 		c.emitIndexCombine(e, op.Index, ScrEA)
-		e.Lf("load%s %s, (%s)", sz, scratch, ScrEA)
+		c.emitLoadMem(e, scratch, ScrEA, size)
 		return scratch, "", nil
 	}
 	return "", "", fmt.Errorf("loadValue: unsupported mode %v", op.Mode)
@@ -1313,7 +1436,6 @@ func (c *Converter) loadValue(e *Emit, op Operand, size int, scratch string) (re
 // width, emits the partial-update merge so upper bits of the host IE64 reg
 // are preserved (m68k semantics).
 func (c *Converter) storeValue(e *Emit, op Operand, size int, srcReg string) error {
-	sz := IE64Size(size)
 	switch op.Mode {
 	case AMDataReg:
 		if size == 4 {
@@ -1347,27 +1469,28 @@ func (c *Converter) storeValue(e *Emit, op Operand, size int, srcReg string) err
 		}
 		return nil
 	case AMIndirect:
-		e.Lf("store%s %s, (%s)", sz, srcReg, op.Reg.IE64)
+		c.emitStoreMem(e, srcReg, op.Reg.IE64, size)
 		return nil
 	case AMPostInc:
-		e.Lf("store%s %s, (%s)", sz, srcReg, op.Reg.IE64)
+		c.emitStoreMem(e, srcReg, op.Reg.IE64, size)
 		e.Lf("add.l %s, %s, #%d", op.Reg.IE64, op.Reg.IE64, postIncStep(op.Reg, size))
 		return nil
 	case AMPreDec:
 		e.Lf("sub.l %s, %s, #%d", op.Reg.IE64, op.Reg.IE64, postIncStep(op.Reg, size))
-		e.Lf("store%s %s, (%s)", sz, srcReg, op.Reg.IE64)
+		c.emitStoreMem(e, srcReg, op.Reg.IE64, size)
 		return nil
 	case AMDispAn:
-		e.Lf("store%s %s, %s(%s)", sz, srcReg, dispOrZero(op.Disp), op.Reg.IE64)
+		e.Lf("lea %s, %s(%s)", ScrEA, dispOrZero(op.Disp), op.Reg.IE64)
+		c.emitStoreMem(e, srcReg, ScrEA, size)
 		return nil
 	case AMIndexAn:
 		c.emitIndexAddr(e, op, ScrEA)
-		e.Lf("store%s %s, (%s)", sz, srcReg, ScrEA)
+		c.emitStoreMem(e, srcReg, ScrEA, size)
 		return nil
 	case AMAbsW, AMAbsL:
 		e.Lf("la %s, %s", ScrEA, op.Disp)
 		maybeSignExtAbsW(e, ScrEA, op.Mode)
-		e.Lf("store%s %s, (%s)", sz, srcReg, ScrEA)
+		c.emitStoreMem(e, srcReg, ScrEA, size)
 		return nil
 	}
 	return fmt.Errorf("storeValue: unsupported mode %v", op.Mode)
@@ -1378,17 +1501,18 @@ func (c *Converter) storeValue(e *Emit, op Operand, size int, srcReg string) err
 func (c *Converter) emitIndexAddr(e *Emit, op Operand, dst string) {
 	idx := op.Index
 	idxReg := idx.Reg.IE64
+	idxTerm := ScrAux
 	// Width-normalize Xn.
 	if idx.Size == "w" {
-		e.Lf("sext.w %s, %s", dst, idxReg)
+		e.Lf("sext.w %s, %s", idxTerm, idxReg)
 	} else {
-		e.Lf("move.l %s, %s", dst, idxReg)
+		e.Lf("move.l %s, %s", idxTerm, idxReg)
 	}
 	if idx.Scale > 1 {
 		log2 := bits.TrailingZeros(uint(idx.Scale))
-		e.Lf("lsl.l %s, %s, #%d", dst, dst, log2)
+		e.Lf("lsl.l %s, %s, #%d", idxTerm, idxTerm, log2)
 	}
-	e.Lf("add.l %s, %s, %s", dst, dst, op.Reg.IE64)
+	e.Lf("add.l %s, %s, %s", dst, idxTerm, op.Reg.IE64)
 	if op.Disp != "" {
 		e.Lf("add.l %s, %s, #%s", dst, dst, op.Disp)
 	}
@@ -1449,7 +1573,7 @@ func (c *Converter) loadDstRMW(e *Emit, dst Operand, size int) (rmwHandle, error
 		h.autoinc = true
 		h.rA = dst.Reg.IE64
 		e.Lf("move.l %s, %s", ScrEA, h.rA)
-		e.Lf("load%s %s, (%s)", h.szIE, ScrV2, ScrEA)
+		c.emitLoadMem(e, ScrV2, ScrEA, size)
 		h.eaReg = ScrEA
 		h.valReg = ScrV2
 		return h, nil
@@ -1458,7 +1582,7 @@ func (c *Converter) loadDstRMW(e *Emit, dst Operand, size int) (rmwHandle, error
 		h.rA = dst.Reg.IE64
 		e.Lf("sub.l %s, %s, #%d", h.rA, h.rA, postIncStep(dst.Reg, size))
 		e.Lf("move.l %s, %s", ScrEA, h.rA)
-		e.Lf("load%s %s, (%s)", h.szIE, ScrV2, ScrEA)
+		c.emitLoadMem(e, ScrV2, ScrEA, size)
 		h.eaReg = ScrEA
 		h.valReg = ScrV2
 		return h, nil
@@ -1478,12 +1602,12 @@ func (c *Converter) loadDstRMW(e *Emit, dst Operand, size int) (rmwHandle, error
 // side-effect exactly once.
 func (c *Converter) storeDstRMW(e *Emit, h rmwHandle, srcReg string) error {
 	if h.autoinc {
-		e.Lf("store%s %s, (%s)", h.szIE, srcReg, h.eaReg)
+		c.emitStoreMem(e, srcReg, h.eaReg, h.size)
 		e.Lf("add.l %s, %s, #%d", h.rA, h.rA, postIncStep(h.op.Reg, h.size))
 		return nil
 	}
 	if h.predec {
-		e.Lf("store%s %s, (%s)", h.szIE, srcReg, h.eaReg)
+		c.emitStoreMem(e, srcReg, h.eaReg, h.size)
 		return nil
 	}
 	return c.storeValue(e, h.op, h.size, srcReg)

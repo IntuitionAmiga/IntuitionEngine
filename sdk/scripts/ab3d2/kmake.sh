@@ -130,10 +130,23 @@ DEDUP_AWK='
 }'
 awk "$DEDUP_AWK" "$CONCAT" > "$CONCAT.dedup" && mv "$CONCAT.dedup" "$CONCAT"
 
+if [[ -n "${IE64_SOURCE_OUT:-}" ]]; then
+    mkdir -p "$(dirname "$IE64_SOURCE_OUT")"
+    cp "$CONCAT" "$IE64_SOURCE_OUT"
+fi
+
 CMD=( "$IE64ASM" )
+if [[ -n "${IE64_LISTING_OUT:-}" ]]; then
+    CMD+=( -list )
+fi
 for d in "${INCLUDES[@]}"; do
     CMD+=( -I "$d" )
 done
 CMD+=( -o "$OUT" "$CONCAT" )
 
-"${CMD[@]}"
+if [[ -n "${IE64_LISTING_OUT:-}" ]]; then
+    mkdir -p "$(dirname "$IE64_LISTING_OUT")"
+    "${CMD[@]}" | tee "$IE64_LISTING_OUT"
+else
+    "${CMD[@]}"
+fi

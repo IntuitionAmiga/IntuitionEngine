@@ -2285,6 +2285,45 @@ func TestScript_DbgContinueAndRunUntilDeactivateMonitor(t *testing.T) {
 	}
 }
 
+func TestScript_DbgContinueCanStartStoppedCPUUnderBreakpoints(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	for i := range uint32(4) {
+		cpu.memory[PROG_START+i*8] = OP_NOP64
+	}
+	cpu.memory[PROG_START+4*8] = OP_HALT64
+	cpu.PC = PROG_START
+
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("ie64", NewDebugIE64(cpu))
+	mon.StartBreakpointListener()
+
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	se.SetMonitor(mon)
+	script := `
+		local bp = 0x1010
+		dbg.open()
+		dbg.set_bp(bp)
+		dbg.continue(true)
+		local deadline = sys.time_ms() + 1000
+		while sys.time_ms() < deadline and not dbg.is_open() do
+			sys.wait_ms(1)
+		end
+		if not dbg.is_open() then error("monitor did not reopen on breakpoint") end
+		if dbg.get_pc() ~= bp then error(string.format("pc=0x%X", dbg.get_pc())) end
+	`
+	if err := se.RunString(script, "dbg_continue_start_stopped"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if got := cpu.PC; got != PROG_START+16 {
+		t.Fatalf("PC=%#x, want %#x", got, uint64(PROG_START+16))
+	}
+}
+
 func TestMem_BlockRangesRequireFullFreezeOrFullMMIO(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -2343,6 +2382,41 @@ func TestScript_PathValidationForCpuLoad(t *testing.T) {
 	}
 	if loaded != "" {
 		t.Fatalf("loader called for rejected path: %q", loaded)
+	}
+}
+
+func TestScript_CPULoadStopped_IE64LoadsWithoutStarting(t *testing.T) {
+	dir := t.TempDir()
+	prog := filepath.Join(dir, "prog.ie64")
+	if err := os.WriteFile(prog, []byte{OP_HALT64}, 0644); err != nil {
+		t.Fatalf("write program: %v", err)
+	}
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.PC = 0x2222
+	cpu.running.Store(true)
+	runtimeStatus.setCPUs(runtimeCPUIE64, nil, cpu, nil, nil, nil, nil)
+	t.Cleanup(func() {
+		cpu.running.Store(false)
+		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	})
+
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`cpu.load_stopped("prog.ie64")`, filepath.Join(dir, "main.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if cpu.running.Load() {
+		t.Fatal("cpu.load_stopped left IE64 running")
+	}
+	if cpu.PC != PROG_START {
+		t.Fatalf("PC=%#x, want PROG_START %#x", cpu.PC, PROG_START)
+	}
+	if got := cpu.memory[PROG_START]; got != OP_HALT64 {
+		t.Fatalf("program byte at PROG_START=%#x, want HALT %#x", got, OP_HALT64)
 	}
 }
 

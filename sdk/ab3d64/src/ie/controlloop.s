@@ -87,6 +87,14 @@ Game_Start:
 
 				jsr		IO_InitQueue
 
+				IFND	IE_AUTOSTART
+				jsr		game_SetMenuLevelNames
+				bsr		game_ReadMainMenu
+				move.l	#15,ie_game_stage
+				tst.b	Game_ShouldQuit_b
+				bne		Game_Quit
+				ENDC
+
 				;move.w	#0,FADEVAL
 				;move.w	#31,FADEAMOUNT
 				;bsr		FADEUPTITLE
@@ -129,6 +137,10 @@ Game_Start:
 				bsr		DEFAULTGAME
 				move.l	#13,ie_game_stage
 
+				IFND	IE_AUTOSTART
+				bra		game_DoneMenu
+				ENDC
+
 game_BackToMenu:
 				move.l	#14,ie_game_stage
 				CALLC	Sys_ClearKeyboard
@@ -138,6 +150,10 @@ game_BackToMenu:
 
 				cmp.b	#PLR_MASTER,Plr_MultiplayerType_b
 				beq.s	game_BackToMaster
+
+				IFD	IE_AUTOSTART
+				bra		game_DoneMenu
+				ENDC
 
 				bsr		game_ReadMainMenu
 				move.l	#15,ie_game_stage
@@ -157,8 +173,10 @@ game_DoneMenu:
 				tst.b	Game_ShouldQuit_b
 				bne		Game_Quit
 
+				IFND	IE_AUTOSTART
 				moveq	#1,d0 ; Fade out
 				CALLC	mnu_clearscreen
+				ENDC
 
 				;	bsr		game_WaitForMenuKey
 
@@ -550,7 +568,7 @@ levelMenu2:
 .levelSelectDone
 				rts
 ***************************************************************
-Lvl_DefFilename_vb:		dc.b	'ab3:levels/level_'
+Lvl_DefFilename_vb:		dc.b	'media/levels/level_'
 Lvl_DefFilenameX_vb:	dc.b	'a/deflev.dat',0
 LOADEXT:				dc.b	0
 				even
@@ -1360,7 +1378,7 @@ FADEAMOUNT:		dc.w	0
 FADEVAL:		dc.w	0
 
 Game_StoryFile_vb:
-				dc.b	'ab3:includes/TEXT_FILE',0
+				dc.b	'media/includes/TEXT_FILE',0
 
 				even
 

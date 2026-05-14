@@ -11,20 +11,20 @@ import (
 
 func TestShadowBcc_AllConditions(t *testing.T) {
 	cases := map[string][]string{
-		"beq":    {"beqz r25, L"},
-		"bne":    {"bnez r25, L"},
-		"bmi":    {"bltz r24, L"},
-		"bpl":    {"bgez r24, L"},
-		"bcs":    {"bnez r26, L"},
-		"bcc":    {"beqz r26, L"},
-		"bvs":    {"bnez r27, L"},
-		"bvc":    {"beqz r27, L"},
-		"blt":    {"eor.q", "bnez"},
-		"bge":    {"eor.q", "beqz"},
-		"bgt":    {"beqz r25", "eor.q"},
-		"ble":    {"beqz r25", "eor.q"},
-		"bhi":    {"bnez r26", "beqz r25"},
-		"bls":    {"bnez r26", "beqz r25"},
+		"beq": {"beqz r25, L"},
+		"bne": {"bnez r25, L"},
+		"bmi": {"bltz r24, L"},
+		"bpl": {"bgez r24, L"},
+		"bcs": {"bnez r26, L"},
+		"bcc": {"beqz r26, L"},
+		"bvs": {"bnez r27, L"},
+		"bvc": {"beqz r27, L"},
+		"blt": {"eor.q", "bnez"},
+		"bge": {"eor.q", "beqz"},
+		"bgt": {"beqz r25", "eor.q"},
+		"ble": {"beqz r25", "eor.q"},
+		"bhi": {"bnez r26", "beqz r25"},
+		"bls": {"bnez r26", "beqz r25"},
 	}
 	for mnem, wants := range cases {
 		out := convertSrc(t, "\ttst.l d0\n\tnop\n\t"+mnem+" L\nL:\n\trts\n")
@@ -100,7 +100,7 @@ func TestBtst_ImmDn(t *testing.T) {
 
 func TestBtst_DnDn(t *testing.T) {
 	out := convertOneInstr(t, "\tbtst d2,d0")
-	mustContain(t, out, "move.l r17, r3") // count from d2
+	mustContain(t, out, "move.l r17, r3")      // count from d2
 	mustContain(t, out, "and.l r17, r17, #31") // mod 32 for Dn dst
 }
 
@@ -116,6 +116,6 @@ func TestBtst_Mem(t *testing.T) {
 
 func TestMovem_Indexed_BaseEA(t *testing.T) {
 	out := convertOneInstr(t, "\tmovem.l d0-d1,(8,a0,d2.l*4)")
-	mustContain(t, out, "store.l r1") // d0 saved
-	mustContain(t, out, "store.l r2") // d1 saved
+	mustContain(t, out, "bswap.l r20, r1") // d0 saved
+	mustContain(t, out, "bswap.l r20, r2") // d1 saved
 }

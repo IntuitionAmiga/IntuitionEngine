@@ -345,7 +345,7 @@ func main() {
 
 	// Single-instance IPC handoff: if another instance is already running and we have
 	// a file to open, send it via IPC and exit. This must happen before hardware init.
-	if filename != "" {
+	if filename != "" && os.Getenv("IE_NO_IPC") == "" {
 		absPath, absErr := filepath.Abs(filename)
 		if absErr == nil {
 			if _, extErr := modeFromExtension(absPath); extErr == nil {
@@ -1652,7 +1652,8 @@ func main() {
 			}
 			startExecution = true
 		} else if filename != "" {
-			if err := ie64CPU.LoadProgram(filename); err != nil {
+			applyIE64FlatProgramVideoConfig(sysBus, videoChip)
+			if err := ie64CPU.LoadFlatProgram(filename); err != nil {
 				fmt.Printf("Error loading IE64 program: %v\n", err)
 				os.Exit(1)
 			}
@@ -2355,6 +2356,8 @@ func main() {
 			if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
 				hider.HideSystemCursor()
 			}
+		} else if mode == "ie64" {
+			applyIE64FlatProgramVideoConfig(sysBus, videoChip)
 		} else if currentMode == "emutos" || currentMode == "aros" {
 			// Leaving M68K ROM mode: restore VRAM I/O mapping and VideoChip defaults.
 			sysBus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1,
@@ -2834,6 +2837,16 @@ func applyEmuTOSVideoConfig(sysBus *MachineBus, videoChip *VideoChip) {
 	videoChip.SetBusMemory(sysBus.memory)
 	videoChip.SetBigEndianMode(true)
 	// Point VideoChip's GetFrame at full VRAM so CLUT8 bitmaps at any offset work.
+	videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
+}
+
+func applyIE64FlatProgramVideoConfig(sysBus *MachineBus, videoChip *VideoChip) {
+	// Large flat IE64 images can legitimately place code/data in the legacy
+	// VRAM aperture. Treat that aperture as RAM and let VideoChip sample it
+	// directly, matching the ROM-profile display model.
+	sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
+	videoChip.SetBusMemory(sysBus.memory)
+	videoChip.SetBigEndianMode(false)
 	videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
 }
 
