@@ -160,7 +160,27 @@ func (o *MonitorOverlay) Draw(screen *ebiten.Image) {
 	}
 
 	o.image.WritePixels(o.pixels)
-	screen.DrawImage(o.image, nil)
+	drawOverlayImage(screen, o.image)
+}
+
+func drawOverlayImage(screen, image *ebiten.Image) {
+	if screen == nil || image == nil {
+		return
+	}
+	screenW, screenH := screen.Bounds().Dx(), screen.Bounds().Dy()
+	imageW, imageH := image.Bounds().Dx(), image.Bounds().Dy()
+	if screenW <= 0 || screenH <= 0 || imageW <= 0 || imageH <= 0 {
+		return
+	}
+	if screenW == imageW && screenH == imageH {
+		screen.DrawImage(image, nil)
+		return
+	}
+
+	op := &ebiten.DrawImageOptions{}
+	op.Filter = ebiten.FilterNearest
+	op.GeoM.Scale(float64(screenW)/float64(imageW), float64(screenH)/float64(imageH))
+	screen.DrawImage(image, op)
 }
 
 func (o *MonitorOverlay) drawStringSel(s string, col, row int, fg uint32) {

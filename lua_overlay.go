@@ -493,7 +493,7 @@ func (o *LuaOverlay) Draw(screen *ebiten.Image) {
 	}
 
 	o.image.WritePixels(o.pixels)
-	screen.DrawImage(o.image, nil)
+	drawOverlayImage(screen, o.image)
 }
 
 func (o *LuaOverlay) drawGlyph(ch byte, col, row int, fg, bg uint32) {
