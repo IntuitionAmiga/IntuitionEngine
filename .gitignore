@@ -31,6 +31,8 @@ assembler/untracked/
 .go*
 .tmp*
 .cache*
+__pycache__/
+*.pyc
 
 # Local agent/tool state
 .claude/
@@ -50,6 +52,7 @@ build/
 /build-x64-live-*.log
 /intuition-engine-x64.img
 /intuition-engine-x64.img.zst
+/intuition-engine-x64.tar.zst
 
 # Release artifacts
 *.AppImage
@@ -69,3 +72,9 @@ sysroot/
 
 # SDK build artifacts
 sdk/bin/
+sdk/examples/prebuilt/
+sdk/ab3d64/bin/
+sdk/ab3d64/build/
+sdk/ab3d64/_build/
+sdk/ab3d64/tools/generated/
+sdk/ab3d64/tools/shots/

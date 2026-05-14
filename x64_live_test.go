@@ -26,6 +26,7 @@ func TestX64LiveMakefileTargets(t *testing.T) {
 		"-tags \"$(VM_EMBED_TAGS)\"",
 		"-o $(BIN_DIR)/IntuitionEngine_v3 .",
 		"x64-live: x86-64-v3",
+		"x64-live-demos",
 		`X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" ./build_x64_ie_img.sh`,
 		"x64-live-rebuild-golden: x86-64-v3",
 		`X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" ./build_x64_ie_img.sh --rebuild-golden`,
@@ -40,6 +41,33 @@ func TestX64LiveMakefileTargets(t *testing.T) {
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Makefile missing %q", want)
+		}
+	}
+}
+
+func TestX64LiveDemoPayloadTargets(t *testing.T) {
+	makefile, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	text := string(makefile)
+
+	for _, want := range []string{
+		".PHONY: x64-live-demos",
+		"x64-live-demos: sdk-build gem-rotozoomer x64-live-aros-demos x64-live-ab3d2-assets",
+		".PHONY: x64-live-ab3d2-assets",
+		`$(AB3D2_EMBED_ZIP)`,
+		"prepare-ab3d2-embed",
+		".PHONY: x64-live-aros-demos",
+		"vasmm68k_mot -Fhunk -m68020 -devpac -Isdk/include",
+		"-o sdk/examples/asm/RotoAPI",
+		"-o sdk/examples/asm/RotoHW",
+		"AROS_CC ?=",
+		"-o sdk/examples/c/RotoAPIc",
+		"-o sdk/examples/c/RotoHWc",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Makefile missing live demo payload contract %q", want)
 		}
 	}
 }
@@ -94,14 +122,14 @@ func TestX64LiveScriptContract(t *testing.T) {
 		`IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"`,
 		`FINAL_IMAGE_SIZE="8G"`,
 		`ROOT_PART_SIZE="5G"`,
-		`SAVE_PART_SIZE="1G"`,
 		`FATSHARE_LABEL="IESHARE"`,
 		`LIVE_OUT_DIR="${X64_LIVE_OUT_DIR:-${SCRIPT_DIR}/build/x64-live}"`,
 		`WORK_DIR="${X64_LIVE_WORK_DIR:-${LIVE_OUT_DIR}/work}"`,
 		`LOG_FILE="${X64_LIVE_LOG_FILE:-${LIVE_OUT_DIR}/build-x64-live-${TIMESTAMP}.log}"`,
 		`OUTPUT_IMG="${X64_LIVE_OUTPUT_IMG:-${LIVE_OUT_DIR}/intuition-engine-x64.img}"`,
 		`mformat -i "$fat_img" -F -v "${FATSHARE_LABEL}" ::`,
-		`zstd -19 --long=27`,
+		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd tar python3)`,
+		`tar -C "$archive_root" -I 'zstd --fast=31 -T0' -cf "$archive_path" "$(basename "$OUTPUT_IMG")" README.md`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("build_x64_ie_img.sh missing %q", want)
@@ -121,6 +149,7 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 		`for g in video audio input render seat tty; do getent group "$g" >/dev/null || groupadd -r "$g"; done`,
 		`useradd -m -u 1000 -g 1000 -s /bin/bash -G video,audio,input,render,seat,tty ie`,
 		`command = "cage -s -- xwayland-run -- /opt/ie/launch.sh"`,
+		`cd /var/ie/share`,
 		`pipewire >/tmp/ie-pipewire.log 2>&1 &`,
 		`wireplumber >/tmp/ie-wireplumber.log 2>&1 &`,
 		`pipewire-pulse >/tmp/ie-pipewire-pulse.log 2>&1 &`,
@@ -197,12 +226,39 @@ func TestX64LiveNoShareDoesNotRequireMtools(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd python3)`,
+		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd tar python3)`,
 		`if [[ "${CREATE_SHARE}" == "true" ]]; then`,
-		`required_cmds+=(mformat)`,
+		`required_cmds+=(mformat mcopy)`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("build_x64_ie_img.sh missing no-share dependency behavior %q", want)
+		}
+	}
+}
+
+func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
+	body := readX64LiveScript(t)
+
+	for _, want := range []string{
+		`stage_share_payload`,
+		`local demos_dir="${payload_root}/Demos"`,
+		`"${SCRIPT_DIR}"/sdk/examples/prebuilt/*.ie*`,
+		`"${SCRIPT_DIR}"/sdk/examples/prebuilt/*.prg`,
+		`"${SCRIPT_DIR}/sdk/examples/basic/rotozoomer_basic.bas"`,
+		`"${SCRIPT_DIR}/sdk/examples/asm/RotoAPI"`,
+		`"${SCRIPT_DIR}/sdk/examples/asm/RotoHW"`,
+		`"${SCRIPT_DIR}/sdk/examples/c/RotoAPIc"`,
+		`"${SCRIPT_DIR}/sdk/examples/c/RotoHWc"`,
+		`"${SCRIPT_DIR}/embedded/ab3d2/_build.zip"`,
+		`"ab3d2_source/_build/ie_media/redux-high/"`,
+		`"ab3d2_source/_build/ie_unpacked/"`,
+		`fat_name = name.lower()`,
+		`case-colliding AB3D2 asset differs`,
+		`"${demos_dir}/README.TXT"`,
+		`mcopy -i "$fat_img" -D A -s "${SHARE_PAYLOAD_ROOT}/Demos" ::/`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("build_x64_ie_img.sh missing IESHARE demo payload behavior %q", want)
 		}
 	}
 }
@@ -231,20 +287,27 @@ func TestX64LiveScriptPartitionFlow(t *testing.T) {
 		`blockdev-getsz /dev/sda`,
 		`SHARE_END=$(( total_sectors - 34 ))`,
 		`part-list /dev/sda`,
-		`part-add /dev/sda p ${SAVE_START} ${SAVE_END}`,
 		`part-add /dev/sda p ${SHARE_START} ${SHARE_END}`,
 		`part-set-gpt-type /dev/sda ${IESHARE_NUM} EBD0A0A2-B9E5-4433-87C0-68B6B72699C7`,
 		`part-set-mbr-id /dev/sda ${IESHARE_NUM} 0x0c`,
-		`mkfs ext4 ${IESAVE_DEV}`,
-		`set-label ${IESAVE_DEV} IESAVE`,
-		`chown 1000 1000 /`,
-		`LABEL=IESAVE /var/ie/save ext4 defaults,nofail 0 2\n`,
-		`LABEL=IESHARE /mnt/share vfat defaults,nofail,umask=0022,uid=1000,gid=1000 0 0\n`,
+		`LABEL=IESHARE /var/ie/share vfat defaults,nofail,umask=0022,uid=1000,gid=1000 0 0\n`,
 		`format_share_partition_rootless`,
 		`--no-share`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("build_x64_ie_img.sh missing %q", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		`IESAVE`,
+		`/var/ie/save`,
+		`SAVE_START`,
+		`SAVE_END`,
+		`mkfs ext4`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("build_x64_ie_img.sh must not create a separate save partition/folder; found %q", forbidden)
 		}
 	}
 }
@@ -257,7 +320,6 @@ func TestX64LiveDiscoversAppendedPartitionsByStartOffset(t *testing.T) {
 		`target_sector = int(sys.argv[1])`,
 		`start = int(m_start.group(1)) // sector_size`,
 		`python3 -c`,
-		`IESAVE_NUM="$(find_partition_num_by_start "$SAVE_START")"`,
 		`IESHARE_NUM="$(find_partition_num_by_start "$SHARE_START")"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -296,7 +358,7 @@ func TestX64LiveGoldenCacheHasContentStamp(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`GOLDEN_STAMP_VERSION=`,
+		`GOLDEN_STAMP_VERSION="x64-live-golden-v8-fat32-root-launch"`,
 		`GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"`,
 		`write_golden_stamp`,
 		`expected_golden_stamp`,
@@ -348,7 +410,7 @@ func TestX64LiveArtifactsAreIgnored(t *testing.T) {
 		"/x64-img-build-work/",
 		"/build-x64-live-*.log",
 		"/intuition-engine-x64.img",
-		"/intuition-engine-x64.img.zst",
+		"/intuition-engine-x64.tar.zst",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf(".gitignore missing live image artifact ignore %q", want)

@@ -71,6 +71,9 @@ AROS_RELEASE_DIR ?= $(AROS_BUILD_DIR)/bin/ie-m68k/AROS
 AROS_GIT_URL ?= https://github.com/IntuitionAmiga/AROS.git
 AROS_GIT_REF ?= master
 AROS_GCC_VER ?= 15.2.0
+AROS_DEVELOPER_DIR ?= $(AROS_BUILD_DIR)/bin/ie-m68k/AROS/Developer
+AROS_ARCH_INCLUDE ?= $(AROS_SRC_DIR)/arch/m68k-ie/include
+AROS_CC ?= $(firstword $(wildcard $(AROS_BUILD_DIR)/bin/*/tools/crosstools/m68k-aros-gcc))
 
 # Detect number of CPU cores for parallel compilation
 NCORES := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
@@ -288,7 +291,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live x64-live-rebuild-golden x64-live-qemu test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -340,13 +343,64 @@ x86-64-v3:
 	@ls -lh $(BIN_DIR)/IntuitionEngine_v3
 
 .PHONY: x64-live
-x64-live: x86-64-v3
+x64-live: x86-64-v3 x64-live-demos
 	@echo "Building IE x64 live USB image..."
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" ./build_x64_ie_img.sh
 
 .PHONY: x64-live-rebuild-golden
-x64-live-rebuild-golden: x86-64-v3
+x64-live-rebuild-golden: x86-64-v3 x64-live-demos
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" ./build_x64_ie_img.sh --rebuild-golden
+
+.PHONY: x64-live-demos
+x64-live-demos: sdk-build gem-rotozoomer x64-live-aros-demos x64-live-ab3d2-assets
+	@test -n "$$(find sdk/examples/prebuilt -maxdepth 1 -type f -name '*.ie*' -print -quit)" || { echo "Error: no .ie* demos found in sdk/examples/prebuilt"; exit 1; }
+	@echo "x64 live demo payload inputs are ready."
+
+.PHONY: x64-live-ab3d2-assets
+x64-live-ab3d2-assets:
+	@if [ -f "$(AB3D2_EMBED_ZIP)" ]; then \
+		echo "Using existing AB3D2 asset zip: $(AB3D2_EMBED_ZIP)"; \
+	else \
+		$(MAKE) prepare-ab3d2-embed; \
+	fi
+
+.PHONY: x64-live-aros-demos
+x64-live-aros-demos:
+	@echo "Building AROS rotozoomer demos..."
+	@if ! command -v vasmm68k_mot >/dev/null 2>&1; then \
+		echo "Error: vasmm68k_mot not found. Required for AROS assembly demos."; \
+		exit 1; \
+	fi
+	@vasmm68k_mot -Fhunk -m68020 -devpac -Isdk/include \
+	  -o sdk/examples/asm/RotoAPI \
+	  sdk/examples/asm/rotozoomer_aros_api.asm
+	@vasmm68k_mot -Fhunk -m68020 -devpac -Isdk/include \
+	  -o sdk/examples/asm/RotoHW \
+	  sdk/examples/asm/rotozoomer_aros_hw.asm
+	@if [ -z "$(AROS_CC)" ] || [ ! -x "$(AROS_CC)" ]; then \
+		echo "Error: AROS cross compiler not found under $(AROS_BUILD_DIR)/bin/*/tools/crosstools/m68k-aros-gcc."; \
+		echo "Build AROS first or set AROS_CC=/path/to/m68k-aros-gcc."; \
+		exit 1; \
+	fi
+	@if [ ! -d "$(AROS_DEVELOPER_DIR)" ]; then \
+		echo "Error: AROS developer directory not found: $(AROS_DEVELOPER_DIR)"; \
+		exit 1; \
+	fi
+	@if [ ! -d "$(AROS_ARCH_INCLUDE)" ]; then \
+		echo "Error: AROS architecture include directory not found: $(AROS_ARCH_INCLUDE)"; \
+		exit 1; \
+	fi
+	@$(AROS_CC) -O2 -m68020 \
+	  -I$(AROS_DEVELOPER_DIR)/include -I$(AROS_ARCH_INCLUDE) \
+	  -L$(AROS_DEVELOPER_DIR)/lib \
+	  -o sdk/examples/c/RotoAPIc \
+	  sdk/examples/c/rotozoomer_aros_api.c -lamiga -larossupport
+	@$(AROS_CC) -O2 -m68020 \
+	  -I$(AROS_DEVELOPER_DIR)/include -I$(AROS_ARCH_INCLUDE) \
+	  -L$(AROS_DEVELOPER_DIR)/lib \
+	  -o sdk/examples/c/RotoHWc \
+	  sdk/examples/c/rotozoomer_aros_hw.c -lamiga -larossupport
+	@echo "AROS rotozoomer demos built: sdk/examples/asm/RotoAPI sdk/examples/asm/RotoHW sdk/examples/c/RotoAPIc sdk/examples/c/RotoHWc"
 
 .PHONY: x64-live-qemu
 x64-live-qemu: $(X64_LIVE_IMG)
@@ -2045,6 +2099,7 @@ help:
 	@echo ""
 	@echo "SDK & Release targets:"
 	@echo "  sdk              - Sync includes and pre-assemble SDK demos"
+	@echo "  x64-live-demos   - Build demo payload inputs for the x64 Live USB FAT32 share"
 	@echo "  build-showreel-deps - Build the exact artifacts needed by sdk/scripts/ie_product_demo.ies"
 	@echo "  run-showreel     - Build showreel dependencies, then launch sdk/scripts/ie_product_demo.ies"
 	@echo "  check-showreel-prereqs - Validate showreel toolchains, runtime inputs, and EmuTOS availability"

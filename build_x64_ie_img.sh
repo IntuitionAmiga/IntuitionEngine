@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Ubuntu x64 Intuition Engine live USB image builder.
-# Produces build/x64-live/intuition-engine-x64.img and .img.zst by default.
+# Produces build/x64-live/intuition-engine-x64.img and .tar.zst by default.
 
 set -euo pipefail
 
@@ -29,7 +29,7 @@ EXPANDED_IMG="${WORK_DIR}/ubuntu-26.04-ie-expanded.img"
 GOLDEN_IMG="ubuntu-26.04-lowlatency-cage-golden.img"
 GOLDEN_IMG_PATH="${WORK_DIR}/${GOLDEN_IMG}"
 GOLDEN_IMG_MAX_AGE_DAYS=30
-GOLDEN_STAMP_VERSION="x64-live-golden-v7-xwayland-launch"
+GOLDEN_STAMP_VERSION="x64-live-golden-v8-fat32-root-launch"
 GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"
 KERNEL_PKG="linux-lowlatency"
 COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,mesa-utils,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core"
@@ -44,7 +44,6 @@ IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"
 IE_INSTALL_NAME="IntuitionEngine"
 FINAL_IMAGE_SIZE="8G"
 ROOT_PART_SIZE="5G"
-SAVE_PART_SIZE="1G"
 FATSHARE_LABEL="IESHARE"
 OUTPUT_IMG="${X64_LIVE_OUTPUT_IMG:-${LIVE_OUT_DIR}/intuition-engine-x64.img}"
 
@@ -113,9 +112,9 @@ trap cleanup EXIT
 
 check_dependencies() {
     log_section "Checking dependencies"
-    local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd python3)
+    local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd tar python3)
     if [[ "${CREATE_SHARE}" == "true" ]]; then
-        required_cmds+=(mformat)
+        required_cmds+=(mformat mcopy)
     fi
 
     local missing_deps=()
@@ -144,6 +143,12 @@ check_dependencies() {
         exit 1
     fi
 
+    if [[ "${CREATE_SHARE}" == "true" && ! -f "${SCRIPT_DIR}/embedded/ab3d2/_build.zip" ]]; then
+        log_error "AB3D2 embedded asset zip not found: ${SCRIPT_DIR}/embedded/ab3d2/_build.zip"
+        log_error "Run: make x64-live-demos"
+        exit 1
+    fi
+
     local available_space
     available_space="$(df -BG "$SCRIPT_DIR" | awk 'NR==2 {print $4}' | sed 's/G//')"
     if [[ "$available_space" -lt 18 ]]; then
@@ -151,6 +156,92 @@ check_dependencies() {
         exit 1
     fi
     log_success "Sufficient disk space available (${available_space}GB)"
+}
+
+stage_share_payload() {
+    log_section "Staging IESHARE demo payload"
+    local payload_root="${WORK_DIR}/ieshare-payload"
+    local demos_dir="${payload_root}/Demos"
+    rm -rf "$payload_root"
+    mkdir -p "$demos_dir"
+
+    shopt -s nullglob
+    local demo_files=(
+        "${SCRIPT_DIR}"/sdk/examples/prebuilt/*.ie*
+        "${SCRIPT_DIR}"/sdk/examples/prebuilt/*.prg
+    )
+    shopt -u nullglob
+
+    if [[ ${#demo_files[@]} -eq 0 ]]; then
+        log_error "No .ie* or .prg demos found in ${SCRIPT_DIR}/sdk/examples/prebuilt"
+        log_error "Run: make x64-live-demos"
+        exit 1
+    fi
+    cp -f "${demo_files[@]}" "$demos_dir/"
+    cp -f "${SCRIPT_DIR}/sdk/examples/basic/rotozoomer_basic.bas" "$demos_dir/"
+
+    local aros_demo
+    for aros_demo in \
+        "${SCRIPT_DIR}/sdk/examples/asm/RotoAPI" \
+        "${SCRIPT_DIR}/sdk/examples/asm/RotoHW" \
+        "${SCRIPT_DIR}/sdk/examples/c/RotoAPIc" \
+        "${SCRIPT_DIR}/sdk/examples/c/RotoHWc"; do
+        if [[ ! -f "$aros_demo" ]]; then
+            log_error "Missing AROS demo executable: $aros_demo"
+            log_error "Run: make x64-live-demos"
+            exit 1
+        fi
+        cp -f "$aros_demo" "$demos_dir/"
+    done
+
+    python3 - "${SCRIPT_DIR}/embedded/ab3d2/_build.zip" "$demos_dir" <<'PY'
+import hashlib
+import os
+import sys
+import zipfile
+
+zip_path, dest = sys.argv[1], sys.argv[2]
+dest_real = os.path.realpath(dest)
+runtime_roots = (
+    "ab3d2_source/_build/ie_media/redux-high/",
+    "ab3d2_source/_build/ie_unpacked/",
+)
+seen = {}
+with zipfile.ZipFile(zip_path) as zf:
+    for info in zf.infolist():
+        name = info.filename
+        if name.startswith("/") or ".." in name.split("/"):
+            raise SystemExit(f"unsafe zip entry path: {name}")
+        if info.is_dir() or not name.startswith(runtime_roots):
+            continue
+        fat_name = name.lower()
+        data = zf.read(info)
+        digest = hashlib.sha256(data).hexdigest()
+        existing = seen.get(fat_name)
+        if existing is not None:
+            if existing != digest:
+                raise SystemExit(f"case-colliding AB3D2 asset differs: {name}")
+            continue
+        seen[fat_name] = digest
+        target = os.path.realpath(os.path.join(dest, fat_name))
+        if target != dest_real and not target.startswith(dest_real + os.sep):
+            raise SystemExit(f"zip entry escapes destination: {name}")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as out:
+            out.write(data)
+PY
+
+    cat > "${demos_dir}/README.TXT" <<'EOF'
+Intuition Engine Live USB demos
+
+This folder is populated during make x64-live.
+It contains runnable Intuition Engine demo binaries, EmuTOS/AROS demo programs,
+and the AB3D2 runtime asset tree extracted from the embedded release payload.
+EOF
+
+    find "$demos_dir" -maxdepth 2 -type f | sort | sed "s#^${payload_root}/#  #" | tee -a "$LOG_FILE"
+    SHARE_PAYLOAD_ROOT="$payload_root"
+    export SHARE_PAYLOAD_ROOT
 }
 
 download_ubuntu() {
@@ -189,7 +280,7 @@ generate_support_files() {
     log_section "Generating image support files"
 cat > "${WORK_DIR}/launch.sh" <<'EOF'
 #!/bin/sh
-cd /var/ie/save
+cd /var/ie/share
 pipewire >/tmp/ie-pipewire.log 2>&1 &
 wireplumber >/tmp/ie-wireplumber.log 2>&1 &
 pipewire-pulse >/tmp/ie-pipewire-pulse.log 2>&1 &
@@ -433,11 +524,10 @@ build_golden_image() {
         --run-command 'passwd -d ie' \
         --mkdir /opt/ie \
         --mkdir /var/ie \
-        --mkdir /var/ie/save \
-        --mkdir /mnt/share \
+        --mkdir /var/ie/share \
         --upload "${WORK_DIR}/launch.sh:/opt/ie/launch.sh" \
         --run-command 'chmod +x /opt/ie/launch.sh' \
-        --run-command 'chown 1000:1000 /opt/ie/launch.sh /opt/ie /var/ie/save' \
+        --run-command 'chown 1000:1000 /opt/ie/launch.sh /opt/ie /var/ie /var/ie/share' \
         --upload "${WORK_DIR}/greetd-config.toml:/etc/greetd/config.toml" \
         --upload "${WORK_DIR}/overlayroot.conf:/etc/overlayroot.conf" \
         --upload "${WORK_DIR}/90-ie-networkmanager.yaml:/etc/netplan/90-ie-networkmanager.yaml" \
@@ -473,12 +563,12 @@ install_ie_binary() {
         --copy-in "${IE_BINARY}:/opt/ie/" \
         --run-command "mv /opt/ie/$(basename "${IE_BINARY}") /opt/ie/${IE_INSTALL_NAME}" \
         --run-command "chmod +x /opt/ie/${IE_INSTALL_NAME}" \
-        --run-command 'chown -R 1000:1000 /var/ie/save /opt/ie' \
+        --run-command 'chown -R 1000:1000 /var/ie /opt/ie' \
         2>&1 | tee -a "$LOG_FILE"
 }
 
 compute_partition_sectors() {
-    local sector_size total_sectors part_info last_end_bytes align_bytes save_bytes save_start_b save_end_b
+    local sector_size total_sectors part_info last_end_bytes align_bytes
     sector_size="$(guestfish --ro -a "${OUTPUT_IMG}" run : blockdev-getss /dev/sda | tr -d '[:space:]')"
     [[ "$sector_size" =~ ^[0-9]+$ ]] || { log_error "could not read sector size"; exit 1; }
     log "Sector size: ${sector_size} bytes"
@@ -497,16 +587,10 @@ print(max(ends))
 ')"
 
     align_bytes=$((1024 * 1024))
-    save_bytes="$((1024 * 1024 * 1024))"
-    if [[ "$SAVE_PART_SIZE" != "1G" ]]; then
-        log_warn "SAVE_PART_SIZE=${SAVE_PART_SIZE}; partition math currently uses 1 GiB as specified by the x64-live v1 plan"
-    fi
-    save_start_b=$(( ((last_end_bytes + 1 + align_bytes - 1) / align_bytes) * align_bytes ))
-    save_end_b=$(( save_start_b + save_bytes - 1 ))
-    SHARE_START_B=$(( ((save_end_b + 1 + align_bytes - 1) / align_bytes) * align_bytes ))
+    SHARE_START_B=$(( ((last_end_bytes + 1 + align_bytes - 1) / align_bytes) * align_bytes ))
 
     local label_val name val
-    for label_val in "SAVE_START_B:${save_start_b}" "SAVE_END_PLUS1:$((save_end_b + 1))" "SHARE_START_B:${SHARE_START_B}"; do
+    for label_val in "SHARE_START_B:${SHARE_START_B}"; do
         name="${label_val%%:*}"
         val="${label_val##*:}"
         if (( val % sector_size != 0 )); then
@@ -515,8 +599,6 @@ print(max(ends))
         fi
     done
 
-    SAVE_START=$(( save_start_b / sector_size ))
-    SAVE_END=$(( (save_end_b + 1) / sector_size - 1 ))
     SHARE_START=$(( SHARE_START_B / sector_size ))
     SHARE_END=$(( total_sectors - 34 ))
     if (( SHARE_END <= SHARE_START )); then
@@ -524,7 +606,7 @@ print(max(ends))
         exit 1
     fi
     export SECTOR_SIZE="$sector_size"
-    export SAVE_START SAVE_END SHARE_START SHARE_END SHARE_START_B
+    export SHARE_START SHARE_END SHARE_START_B
 }
 
 find_partition_num_by_start() {
@@ -585,20 +667,15 @@ sys.exit(2)
 
 discover_appended_partition_devices() {
     if [[ "${CREATE_SHARE}" == "true" ]]; then
-        IESAVE_NUM="$(find_partition_num_by_start "$SAVE_START")"
         IESHARE_NUM="$(find_partition_num_by_start "$SHARE_START")"
         IESHARE_SIZE_B="$(find_partition_size_by_start "$SHARE_START")"
-        IESAVE_DEV="/dev/sda${IESAVE_NUM}"
         IESHARE_DEV="/dev/sda${IESHARE_NUM}"
     else
-        IESAVE_NUM="$(find_partition_num_by_start "$SAVE_START")"
-        IESAVE_DEV="/dev/sda${IESAVE_NUM}"
         IESHARE_NUM=""
         IESHARE_DEV=""
         IESHARE_SIZE_B=""
     fi
-    export IESAVE_NUM IESHARE_NUM IESAVE_DEV IESHARE_DEV IESHARE_SIZE_B
-    log "IESAVE device: ${IESAVE_DEV}"
+    export IESHARE_NUM IESHARE_DEV IESHARE_SIZE_B
     if [[ "${CREATE_SHARE}" == "true" ]]; then
         log "IESHARE device: ${IESHARE_DEV}"
     fi
@@ -632,34 +709,18 @@ GUESTFISH_EOF
 }
 
 append_partitions() {
-    log_section "Appending persistent partitions"
+    log_section "Appending persistent FAT32 partition"
     compute_partition_sectors
 
     if [[ "${CREATE_SHARE}" == "true" ]]; then
         guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
 run
-part-add /dev/sda p ${SAVE_START} ${SAVE_END}
 part-add /dev/sda p ${SHARE_START} ${SHARE_END}
-GUESTFISH_EOF
-    else
-        guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
-run
-part-add /dev/sda p ${SAVE_START} ${SAVE_END}
 GUESTFISH_EOF
     fi
 
     discover_appended_partition_devices
     set_share_partition_type
-
-    guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
-run
-mkfs ext4 ${IESAVE_DEV}
-set-label ${IESAVE_DEV} IESAVE
-mount ${IESAVE_DEV} /
-chown 1000 1000 /
-chmod 0755 /
-umount /
-GUESTFISH_EOF
 }
 
 write_fstab() {
@@ -672,16 +733,8 @@ write_fstab() {
         guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
 run
 mount ${os_root_dev} /
-mkdir-p /mnt/share
-write-append /etc/fstab "LABEL=IESAVE /var/ie/save ext4 defaults,nofail 0 2\n"
-write-append /etc/fstab "LABEL=IESHARE /mnt/share vfat defaults,nofail,umask=0022,uid=1000,gid=1000 0 0\n"
-umount /
-GUESTFISH_EOF
-    else
-        guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
-run
-mount ${os_root_dev} /
-write-append /etc/fstab "LABEL=IESAVE /var/ie/save ext4 defaults,nofail 0 2\n"
+mkdir-p /var/ie/share
+write-append /etc/fstab "LABEL=IESHARE /var/ie/share vfat defaults,nofail,umask=0022,uid=1000,gid=1000 0 0\n"
 umount /
 GUESTFISH_EOF
     fi
@@ -699,6 +752,8 @@ format_share_partition_rootless() {
     rm -f "$fat_img"
     truncate -s "$IESHARE_SIZE_B" "$fat_img"
     mformat -i "$fat_img" -F -v "${FATSHARE_LABEL}" ::
+    stage_share_payload
+    mcopy -i "$fat_img" -D A -s "${SHARE_PAYLOAD_ROOT}/Demos" ::/
     guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
 run
 upload "$fat_img" ${IESHARE_DEV}
@@ -711,10 +766,16 @@ validate_image() {
 }
 
 compress_image() {
-    log_section "Compressing image"
-    rm -f "${OUTPUT_IMG}.zst"
-    zstd -19 --long=27 "${OUTPUT_IMG}" -o "${OUTPUT_IMG}.zst" 2>&1 | tee -a "$LOG_FILE"
-    log_success "Created ${OUTPUT_IMG}.zst"
+    log_section "Creating compressed release archive"
+    local archive_path="${OUTPUT_IMG%.img}.tar.zst"
+    local archive_root="${WORK_DIR}/x64-live-archive"
+    rm -rf "$archive_root"
+    mkdir -p "$archive_root"
+    cp "$OUTPUT_IMG" "$archive_root/$(basename "$OUTPUT_IMG")"
+    cp "${SCRIPT_DIR}/README.md" "$archive_root/README.md"
+    rm -f "$archive_path"
+    tar -C "$archive_root" -I 'zstd --fast=31 -T0' -cf "$archive_path" "$(basename "$OUTPUT_IMG")" README.md 2>&1 | tee -a "$LOG_FILE"
+    log_success "Created ${archive_path}"
 }
 
 main() {
@@ -733,7 +794,7 @@ main() {
     format_share_partition_rootless
     validate_image
     compress_image
-    log_success "x64 live image complete: ${OUTPUT_IMG}.zst"
+    log_success "x64 live image complete: ${OUTPUT_IMG%.img}.tar.zst"
 }
 
 main "$@"
