@@ -71,6 +71,11 @@ type Converter struct {
 	symtab *Symtab
 
 	mmioRanges []addrRange
+
+	// directJSR rewrites parsed JSR operands to direct branch targets. This is
+	// empty by default; projects may opt in for platform ABI calls they provide
+	// as native labels.
+	directJSR map[string]string
 }
 
 type addrRange struct {
@@ -525,6 +530,11 @@ func (c *Converter) emitJsr(e *Emit, l Line) error {
 	e.Lf("sub.l %s, %s, #4", GuestSP, GuestSP)
 	e.Lf("la %s, %s", ScrV1, ret)
 	c.emitStoreMem(e, ScrV1, GuestSP, 4)
+	if target, ok := c.directJSRTarget(op); ok {
+		e.Lf("bra %s", target)
+		e.Label(ret)
+		return nil
+	}
 	switch op.Mode {
 	case AMIndirect:
 		e.Lf("jmp (%s)", op.Reg.IE64)
@@ -546,6 +556,31 @@ func (c *Converter) emitJsr(e *Emit, l Line) error {
 	}
 	e.Label(ret)
 	return nil
+}
+
+func (c *Converter) directJSRTarget(op Operand) (string, bool) {
+	if len(c.directJSR) == 0 {
+		return "", false
+	}
+	target, ok := c.directJSR[operandRewriteKey(op)]
+	return target, ok
+}
+
+func operandRewriteKey(op Operand) string {
+	switch op.Mode {
+	case AMIndirect:
+		return fmt.Sprintf("ind:%s", strings.ToLower(op.Reg.Name))
+	case AMDispAn:
+		return fmt.Sprintf("disp:%s:%s", strings.ToLower(op.Reg.Name), strings.TrimSpace(op.Disp))
+	case AMIndexAn:
+		return fmt.Sprintf("index:%s:%s:%s:%s:%d",
+			strings.ToLower(op.Reg.Name), strings.TrimSpace(op.Disp),
+			strings.ToLower(op.Index.Reg.Name), op.Index.Size, op.Index.Scale)
+	case AMAbsW, AMAbsL, AMDispPC, AMIndexPC:
+		return fmt.Sprintf("%s:%s", op.Mode.String(), strings.TrimSpace(op.Disp))
+	default:
+		return fmt.Sprintf("%s:%s", op.Mode.String(), strings.TrimSpace(op.Raw))
+	}
 }
 
 // emitRts emits m68k RTS — pop return PC from guest stack, jump.

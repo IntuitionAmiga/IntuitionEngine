@@ -48,12 +48,12 @@ func TestBranch_ErrorPaths(t *testing.T) {
 		"\tnot.l\n",
 		// emitClr.
 		"\tclr.l\n",
-		"\tclr.l a0\n",  // illegal
+		"\tclr.l a0\n", // illegal
 		// emitShift.
 		"\tlsl\n",
 		"\tlsl #1,#2,#3\n",
 		// emitExt.
-		"\text d0\n",   // missing size
+		"\text d0\n", // missing size
 		"\text.l (a0)\n",
 		// emitSwap count + non-Dn.
 		"\tswap\n",
@@ -82,8 +82,8 @@ func TestBranch_ErrorPaths(t *testing.T) {
 		// emitMovem.
 		"\tmovem\n",
 		"\tmovem.l d0\n",
-		"\tmovem.l d0,d1\n",       // neither side is a list
-		"\tmovem.b d0/d1,(a0)\n",  // bad size
+		"\tmovem.l d0,d1\n",      // neither side is a list
+		"\tmovem.b d0/d1,(a0)\n", // bad size
 		// emitDirective ifd/ifnd general.
 		"\tifd FOO\n\tendc\n",
 		"\tifnd FOO\n\tendc\n",
@@ -98,14 +98,14 @@ func TestBranch_ErrorPaths(t *testing.T) {
 		"\ttrap\n",
 		"\ttrap d0\n",
 		"\tchk\n",
-		"\tchk.w d0,(a0)\n",     // dst not Dn
+		"\tchk.w d0,(a0)\n", // dst not Dn
 		"\tmulu.l #5\n",
 		"\tdivu.l #5\n",
 		"\tbfextu d0\n",
-		"\tbfextu d0{0:8}\n",   // missing # (still parses ok)
-		"\tbfextu (a0),d0\n",   // wrong bf form
+		"\tbfextu d0{0:8}\n", // missing # (still parses ok)
+		"\tbfextu (a0),d0\n", // wrong bf form
 		"\tbfexts d0{#0:#8},(a0)\n",
-		"\tbfexts (a0){#0:#8}\n",  // dst is required
+		"\tbfexts (a0){#0:#8}\n", // dst is required
 		// Phase B.
 		"\tabcd d0\n",
 		"\tabcd d0,(a0)\n",
@@ -250,12 +250,12 @@ func TestEmitFusedTstBcc_BadOperand(t *testing.T) {
 
 func TestParseOperand_MoreCases(t *testing.T) {
 	cases := []struct{ in string }{
-		{"-(d0)"},      // predec on Dn (illegal)
-		{"(d0)+"},      // postinc on Dn
-		{"#"},          // empty imm
-		{""},           // empty
+		{"-(d0)"}, // predec on Dn (illegal)
+		{"(d0)+"}, // postinc on Dn
+		{"#"},     // empty imm
+		{""},      // empty
 		{"foo*bar"},
-		{"(foo,d0,a0)"},  // bad inner
+		{"(foo,d0,a0)"}, // bad inner
 	}
 	for _, c := range cases {
 		_, _ = ParseOperand(c.in)
@@ -291,10 +291,10 @@ func TestExpandRegList_AllInputs(t *testing.T) {
 		{"d0/d2", false},
 		{"d0-d2", false},
 		{"a0-a3", false},
-		{"d5-d2", true},     // reversed range
-		{"foo", true},       // unknown reg
-		{"d0-foo", true},    // bad rhs of range
-		{"foo-d0", true},    // bad lhs of range
+		{"d5-d2", true},  // reversed range
+		{"foo", true},    // unknown reg
+		{"d0-foo", true}, // bad rhs of range
+		{"foo-d0", true}, // bad lhs of range
 		{"", false},
 	}
 	for _, c := range cases {
@@ -330,11 +330,11 @@ func TestMnemonicSet_DefaultPaths(t *testing.T) {
 
 func TestEmitJmp_EveryMode(t *testing.T) {
 	cases := map[string]string{
-		"\tjmp (a0)\n":             "jmp (r9)",
-		"\tjmp 8(a0)\n":             "jmp 8(r9)",
-		"\tjmp (8,a0,d0.l*4)\n":    "jmp (r16)",
-		"\tjmp $F2000\n":           "bra $F2000",
-		"\tjmp myfn\n":             "bra myfn",
+		"\tjmp (a0)\n":          "jmp (r9)",
+		"\tjmp 8(a0)\n":         "jmp 8(r9)",
+		"\tjmp (8,a0,d0.l*4)\n": "jmp (r16)",
+		"\tjmp $F2000\n":        "bra $F2000",
+		"\tjmp myfn\n":          "bra myfn",
 	}
 	for src, want := range cases {
 		out := convertSrc(t, src)
@@ -346,11 +346,11 @@ func TestEmitJmp_EveryMode(t *testing.T) {
 
 func TestEmitJsr_EveryMode(t *testing.T) {
 	cases := map[string]string{
-		"\tjsr (a0)\n":             "jmp (r9)",
-		"\tjsr 8(a0)\n":             "jmp 8(r9)",
-		"\tjsr (8,a0,d0.l*4)\n":    "jmp (r16)",
-		"\tjsr $F2000\n":           "bra $F2000",
-		"\tjsr myfn\n":             "bra myfn",
+		"\tjsr (a0)\n":          "jmp (r9)",
+		"\tjsr 8(a0)\n":         "jmp 8(r9)",
+		"\tjsr (8,a0,d0.l*4)\n": "jmp (r16)",
+		"\tjsr $F2000\n":        "bra $F2000",
+		"\tjsr myfn\n":          "bra myfn",
 	}
 	for src, want := range cases {
 		out := convertSrc(t, src)
@@ -358,6 +358,28 @@ func TestEmitJsr_EveryMode(t *testing.T) {
 			t.Errorf("%q: missing %q\n%s", strings.TrimSpace(src), want, out)
 		}
 	}
+}
+
+func TestEmitJsr_DoesNotRewriteLibraryVectorsByDefault(t *testing.T) {
+	out := convertSrc(t, "\tjsr _LVOWaitTOF(a6)\n")
+	mustContain(t, out, "jmp _LVOWaitTOF(r15)")
+	mustNotContain(t, out, "bra ie_wait_tof")
+}
+
+func TestEmitJsr_RewritesConfiguredOperand(t *testing.T) {
+	op, err := ParseOperand("_LVOWaitTOF(a6)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewConverter()
+	c.noHeader = true
+	c.directJSR = map[string]string{operandRewriteKey(op): "ie_wait_tof"}
+	out, errs := c.ConvertSource("\tjsr _LVOWaitTOF(a6)\n")
+	if errs != 0 {
+		t.Fatalf("conversion errors:\n%s", out)
+	}
+	mustContain(t, out, "bra ie_wait_tof")
+	mustNotContain(t, out, "jmp _LVOWaitTOF(r15)")
 }
 
 func TestEmitMovem_ErrorPaths(t *testing.T) {

@@ -58,6 +58,42 @@ func (m mmioRangeFlag) String() string {
 	return strings.Join(parts, ",")
 }
 
+type directJSRFlag struct {
+	rewrites map[string]string
+}
+
+func (d directJSRFlag) String() string {
+	if len(d.rewrites) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(d.rewrites))
+	for k, v := range d.rewrites {
+		parts = append(parts, fmt.Sprintf("%s=%s", k, v))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (d directJSRFlag) Set(v string) error {
+	if d.rewrites == nil {
+		return fmt.Errorf("directJSRFlag uninitialized")
+	}
+	eq := strings.LastIndexByte(v, '=')
+	if eq <= 0 || eq == len(v)-1 {
+		return fmt.Errorf("expected FROM=TARGET")
+	}
+	from := strings.TrimSpace(v[:eq])
+	target := strings.TrimSpace(v[eq+1:])
+	if from == "" || target == "" {
+		return fmt.Errorf("expected FROM=TARGET")
+	}
+	op, err := ParseOperand(from)
+	if err != nil {
+		return fmt.Errorf("invalid FROM operand %q: %w", from, err)
+	}
+	d.rewrites[operandRewriteKey(op)] = target
+	return nil
+}
+
 func (m mmioRangeFlag) Set(v string) error {
 	if m.vals == nil {
 		return fmt.Errorf("mmioRangeFlag uninitialized")
@@ -198,6 +234,8 @@ func run(args []string, stderrW io.Writer) int {
 	fs.BoolVar(&opts.WerrorUnknownMnem, "Werror-unknown-mnemonic", opts.WerrorUnknownMnem, "Treat unknown mnemonics as errors")
 	fs.BoolVar(&opts.NoDefaultSeeds, "no-default-seeds", false, "Skip IE-convenience symbol seeds (IS_IE=1)")
 	fs.Var(mmioRangeFlag{&mmioRanges}, "mmio-range", "Native-endian MMIO address range START-END (repeatable)")
+	directJSR := map[string]string{}
+	fs.Var(directJSRFlag{directJSR}, "direct-jsr", "Rewrite JSR operand to direct target FROM=TARGET (repeatable)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(stderrW, "Usage: m68kto64 [options] input.s\n\nSee sdk/docs/m68Kto64.md.\n\nOptions:\n")
@@ -221,6 +259,7 @@ func run(args []string, stderrW io.Writer) int {
 	c.labelSalt = *labelSalt
 	c.flagLiveness = *flagLiveness
 	c.mmioRanges = mmioRanges
+	c.directJSR = directJSR
 	source, errs := c.ConvertFile(in, opts, stderrW)
 	if errs > 0 && source == "" {
 		// Pure preprocessor failure (e.g. read error or lone-CR rejection);

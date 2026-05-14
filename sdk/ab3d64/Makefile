@@ -37,7 +37,7 @@ DEFINES := -D USE_16X16_TEXEL_MULS=1 -D IE_OVERDRIVE=1 -D IE_FIRST_FRAME_PRESENT
 # -flag-liveness elides shadow-CCR emission when N/Z/C/V/X are dead
 # (no downstream Bcc/DBcc/Scc/addx/etc. before the next producer).
 # Substantial throughput win for arith-heavy code without semantic change.
-export M68KTO64_EXTRA_FLAGS := -strip-cond -flag-liveness -mmio-range 0xF0000-0xF2FFF
+export M68KTO64_EXTRA_FLAGS := -strip-cond -flag-liveness -mmio-range 0xF0000-0xF2FFF -direct-jsr _LVOWaitTOF(a6)=ie_wait_tof
 
 SRCS := src/ie/ie_hires_platform.s src/ie/hires.s src/ie/ie_fake_vectors.s
 SRC_DEPS := $(shell find src -type f)
