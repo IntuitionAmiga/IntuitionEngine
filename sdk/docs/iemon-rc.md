@@ -1,5 +1,7 @@
 # IEMon Project RC Files
 
+*Last updated: 2026-05-14*
+
 IEMon looks for `.iemonrc` files by walking from the current working directory up to the file system root. Files are never executed on first sight. A file must be trusted by absolute path and SHA-256 hash before it can be loaded manually or auto-loaded later. Auto-loading only happens while the monitor has exactly one registered CPU; in multi-CPU sessions, use `rc load` explicitly after selecting the intended focus.
 
 `.iemonrc` trust management is host policy and is intentionally not exposed to IEScript; scripts should use typed `dbg.*` setup calls instead.

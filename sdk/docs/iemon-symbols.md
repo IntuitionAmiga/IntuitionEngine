@@ -1,5 +1,7 @@
 # IEMon Symbols
 
+*Last updated: 2026-05-14*
+
 IEMon keeps an in-memory symbol table per CPU address space. Symbols can come from manual monitor commands, VICE label files, `.iesym` files that use the same accepted label syntax, or ELF `.symtab` entries.
 
 ## Sources

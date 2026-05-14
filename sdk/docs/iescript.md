@@ -1,5 +1,7 @@
 # IEScript Lua Automation Manual
 
+*Last updated: 2026-05-14*
+
 IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
 Scripts use the `.ies` extension.
@@ -219,6 +221,8 @@ sys.print("frame_time:", sys.frame_time(), "ms")
 CPU lifecycle and mode.
 
 `cpu.load(path)` - Load a program binary from `path` into the active CPU. The file format must match the active CPU mode. The special values `"EMUTOS"` and `"AROS"` trigger OS boot without a file path (ROM resolved via CLI flags or embedded image). Returns: nothing. Raises on error.
+
+`cpu.load_stopped(path)` - Load an IE64 or IE32 program from an approved read path, reset that CPU, and leave it stopped. This is intended for scripts that need to set registers, memory, breakpoints, or JIT state before starting execution. It is supported only when the active CPU is IE64 or IE32; it does not accept the `"EMUTOS"` or `"AROS"` sentinel tokens. Returns: nothing. Raises on path, read, or unsupported-CPU errors.
 
 `cpu.reset()` - Perform a hard reset of the emulator (all CPUs and devices). Returns: nothing. Raises on error.
 
@@ -1414,11 +1418,12 @@ Compact reference for IEScript API functions.
 | `sys.capture_output(path)` | - |
 | `sys.capture_output_off()` | - |
 
-### cpu (11)
+### cpu (12)
 
 | Function | Returns |
 |----------|---------|
 | `cpu.load(path)` | - |
+| `cpu.load_stopped(path)` | - |
 | `cpu.reset()` | - |
 | `cpu.freeze()` | - |
 | `cpu.resume()` | - |

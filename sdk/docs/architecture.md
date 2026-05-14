@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last updated: 2026-05-13*
+*Last updated: 2026-05-14*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, 9 audio engines/players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve (see `memory_sizing.go`); each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -27,7 +27,7 @@ flowchart LR
         M68K["M68K 68020 interpreter"]
         Z80["Z80 interpreter"]
         C6502["6502 interpreter"]
-        X86["x86 interpreter / JIT-required amd64 path"]
+        X86["x86 interpreter / amd64 JIT path"]
         JIE64["IE64 JIT<br/>amd64 + arm64"]
         J6502["6502 JIT<br/>amd64"]
         JM68K["M68K JIT<br/>amd64"]
@@ -610,8 +610,8 @@ All three 8/16-bit CPUs share identical bank window architecture for accessing t
 | `$4000-$5FFF` | 8KB | Bank 2 (font data) | `$F702/$F703` (lo/hi) |
 | `$6000-$7FFF` | 8KB | Bank 3 (general) | `$F704/$F705` (lo/hi) |
 | `$8000-$BFFF` | 16KB | VRAM window | `$F7F0` (bank number) |
-| `$F000-$FFF9` | 4KB | I/O window | Hardwired: `$Fxxx` -> bus `$F0xxx` |
-| `$F200-$F23F` | 64B | Coprocessor gateway | Hardwired: -> bus `$F2340+offset` |
+| `$F000-$FFF9` | 4090B | I/O window, excluding 6502 vectors | Hardwired: `$Fxxx` -> bus `$F0xxx` |
+| `$F200-$F24F` | 80B | Coprocessor gateway subrange | Hardwired: -> bus `$F2340+offset` |
 | `$FFFA-$FFFF` | 6B | 6502 vectors (NMI/RESET/IRQ) | Identity mapped |
 
 ### 6502 I/O Chip Page Dispatch

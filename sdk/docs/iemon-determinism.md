@@ -1,5 +1,7 @@
 # IEMon Determinism Audit
 
+*Last updated: 2026-05-14*
+
 Whole-machine reverse debugging depends on restoring every source of guest-visible state and avoiding host-time drift during replay. IEMon has a whole-machine snapshot envelope for all registered CPUs, shared bus RAM, IE64 backing memory, and registered versioned device blobs. The production monitor registers the main video chip, sound chip, terminal MMIO, command-style host helpers, compatibility audio/video engines, and the AROS clipboard/audio-DMA host bridges when those bridges are present.
 
 ## Captured Today

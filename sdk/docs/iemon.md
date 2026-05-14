@@ -1,5 +1,7 @@
 # Intuition Engine Machine Monitor
 
+*Last updated: 2026-05-14*
+
 ## Overview
 
 The Machine Monitor is a built-in system-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge, HRTMon, the Commodore Plus/4 built-in monitor, NuMega SoftICE, MAME's debugger, and the VICE monitor. In interactive display builds, press **F9** to freeze the guest CPUs and enter the monitor. Press **x** or **Esc** to close the monitor and resume CPUs that were running when it was entered.

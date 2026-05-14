@@ -1,5 +1,7 @@
 # Coprocessor MMIO Contract
 
+*Last updated: 2026-05-14*
+
 The coprocessor subsystem lets guest code start secondary CPU workers, enqueue requests through mailbox rings, and poll or wait for completion.
 
 ## Register Map
@@ -103,11 +105,11 @@ Workers run from dedicated memory regions:
 
 ## 8-Bit Gateway
 
-6502 and Z80 workers cannot address the primary coprocessor MMIO range directly. Their adapters redirect CPU addresses `0xF200` through `0xF24F` to `COPROC_BASE` through `COPROC_END`.
+Non-worker 6502 and Z80 machine adapters expose a coprocessor gateway at CPU addresses `0xF200` through `0xF24F`, mapped to `COPROC_BASE` through `COPROC_END`. 6502 and Z80 coprocessor worker adapters do not expose that MMIO gateway; workers communicate through the shared mailbox window below.
 
 The 8-bit mailbox window is CPU address `0x2000` through `0x2000 + MAILBOX_SIZE - 1`. With the current `MAILBOX_SIZE` this is `0x2000` through `0x37FF`. Addresses `0x3800` through `0x3FFF` are normal worker RAM.
 
-All coprocessor registers are little-endian at byte level. For 6502 and Z80 gateway accesses, write byte 0 first when a register write should dispatch a command: writing byte 0 of `COPROC_CMD` triggers the command, while writes to bytes 1-3 only update the shadow register.
+All coprocessor registers are little-endian at byte level. For non-worker 6502 and Z80 gateway accesses, write byte 0 first when a register write should dispatch a command: writing byte 0 of `COPROC_CMD` triggers the command, while writes to bytes 1-3 only update the shadow register.
 
 ## IRQ And Completion
 
