@@ -768,6 +768,10 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"quit":               se.luaSysQuit(),
 		"exit":               se.luaSysExit(),
 		"emutos_drive":       se.luaSysEmutosDrive(),
+		"mkdir":              se.luaSysMkdir(),
+		"read_file":          se.luaSysReadFile(),
+		"write_file":         se.luaSysWriteFile(),
+		"copy_file":          se.luaSysCopyFile(),
 		"capture_output":     se.luaSysCaptureOutput(),
 		"capture_output_off": se.luaSysCaptureOutputOff(),
 	})
@@ -1313,6 +1317,179 @@ func (se *ScriptEngine) luaSysEmutosDrive() lua.LGFunction {
 			fn(path, driveNum)
 		}
 		return 0
+	}
+}
+
+func (se *ScriptEngine) validateScriptDirPath(path string) (string, error) {
+	clean := filepath.Clean(path)
+	if clean == "." || clean == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	if filepath.IsAbs(clean) {
+		return "", fmt.Errorf("absolute writes are not allowed from scripts")
+	}
+	root := se.scriptDir
+	if root == "" || root == "." {
+		return "", fmt.Errorf("script-relative write root unavailable")
+	}
+	canonRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+
+	current := canonRoot
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			return "", fmt.Errorf("path escapes approved root")
+		}
+		next := filepath.Join(current, part)
+		info, err := os.Lstat(next)
+		switch {
+		case err == nil:
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf("path uses symlinked directory component")
+			}
+			if !info.IsDir() {
+				return "", fmt.Errorf("path component is not a directory")
+			}
+			canonNext, err := filepath.EvalSymlinks(next)
+			if err != nil {
+				return "", err
+			}
+			rel, err := filepath.Rel(canonRoot, canonNext)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+				return "", fmt.Errorf("path escapes approved root")
+			}
+			current = canonNext
+		case errors.Is(err, os.ErrNotExist):
+			if err := os.Mkdir(next, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+				return "", err
+			}
+			info, err := os.Lstat(next)
+			if err != nil {
+				return "", err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf("path uses symlinked directory component")
+			}
+			if !info.IsDir() {
+				return "", fmt.Errorf("path component is not a directory")
+			}
+			current = next
+		default:
+			return "", err
+		}
+	}
+	return current, nil
+}
+
+func (se *ScriptEngine) validateScriptReadPath(path string) (string, error) {
+	if validated, err := se.validateScriptPath(path, pathOpRead); err == nil {
+		return validated, nil
+	}
+	clean := filepath.Clean(path)
+	if filepath.IsAbs(clean) {
+		return "", fmt.Errorf("path %q is outside approved script roots", path)
+	}
+	for _, root := range []string{
+		filepath.Join("sdk", "examples"),
+		filepath.Join("sdk", "ab3d64"),
+	} {
+		candidate := filepath.Join(root, clean)
+		if clean == root || strings.HasPrefix(clean, root+string(filepath.Separator)) {
+			candidate = clean
+		}
+		if validated, err := validatePathInRoot(root, candidate, pathOpRead); err == nil {
+			return validated, nil
+		}
+	}
+	return "", fmt.Errorf("path %q is outside approved script roots", path)
+}
+
+func (se *ScriptEngine) luaSysMkdir() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		validated, err := se.validateScriptDirPath(path)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		L.Push(lua.LString(validated))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaSysReadFile() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		validated, err := se.validateScriptReadPath(path)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		data, err := os.ReadFile(validated)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		L.Push(lua.LString(data))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaSysWriteFile() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		data := L.CheckString(2)
+		validated, err := se.validateScriptPath(path, pathOpWrite)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if err := os.MkdirAll(filepath.Dir(validated), 0o755); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if err := os.WriteFile(validated, []byte(data), 0o644); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaSysCopyFile() lua.LGFunction {
+	return func(L *lua.LState) int {
+		src := L.CheckString(1)
+		dst := L.CheckString(2)
+		validatedSrc, err := se.validateScriptReadPath(src)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		validatedDst, err := se.validateScriptPath(dst, pathOpWrite)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		data, err := os.ReadFile(validatedSrc)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if err := os.MkdirAll(filepath.Dir(validatedDst), 0o755); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if err := os.WriteFile(validatedDst, data, 0o644); err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		L.Push(lua.LString(validatedDst))
+		return 1
 	}
 }
 

@@ -1242,6 +1242,95 @@ func TestScriptEngine_SysCaptureOutput(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_SysFileAPIsStayInScriptRoot(t *testing.T) {
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	dir := t.TempDir()
+	script := `
+		local abs = sys.mkdir("out/nested")
+		if not string.find(abs, "out/nested", 1, true) then error("mkdir did not return output path") end
+		sys.write_file("out/nested/a.txt", "hello")
+		local data = sys.read_file("out/nested/a.txt")
+		if data ~= "hello" then error("read back mismatch: " .. tostring(data)) end
+	`
+	if err := se.RunString(script, filepath.Join(dir, "main.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "out", "nested", "a.txt")); err != nil || string(got) != "hello" {
+		t.Fatalf("written file = %q, %v", got, err)
+	}
+}
+
+func TestScriptEngine_SysFileAPIsRejectEscapes(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name   string
+		script string
+		target string
+	}{
+		{"mkdir_absolute", `sys.mkdir("` + filepath.Join(t.TempDir(), "out") + `")`, ""},
+		{"mkdir_traversal", `sys.mkdir("../out")`, filepath.Join(filepath.Dir(dir), "out")},
+		{"write_absolute", `sys.write_file("` + filepath.Join(t.TempDir(), "out.txt") + `", "x")`, ""},
+		{"write_traversal", `sys.write_file("../out.txt", "x")`, filepath.Join(filepath.Dir(dir), "out.txt")},
+		{"copy_traversal", `sys.copy_file("main.ies", "../out.txt")`, filepath.Join(filepath.Dir(dir), "out.txt")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+			if err := se.RunString(tc.script, filepath.Join(dir, "main.ies")); err != nil {
+				t.Fatalf("RunString failed: %v", err)
+			}
+			waitScriptStopped(t, se)
+			if err := se.LastError(); err == nil {
+				t.Fatal("expected script path validation error")
+			}
+			if tc.target != "" {
+				if _, err := os.Stat(tc.target); !os.IsNotExist(err) {
+					t.Fatalf("unexpected escaped target exists or stat failed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestScriptEngine_SysMkdirRejectsSymlinkedComponent(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dir, "out")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`sys.mkdir("out/nested")`, filepath.Join(dir, "main.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err == nil {
+		t.Fatal("expected symlinked mkdir component to be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "nested")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected directory created through symlink: %v", err)
+	}
+}
+
+func TestScriptEngine_ShowreelDiagModuleLoadsInSandbox(t *testing.T) {
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	script := `
+		local diag = require("showreel_diag")
+		if type(diag.run_raw_ab) ~= "function" then error("missing run_raw_ab") end
+		if type(diag.run_emutos_rotozoom) ~= "function" then error("missing run_emutos_rotozoom") end
+	`
+	if err := se.RunString(script, filepath.Join("sdk", "scripts", "showreel_probe.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
 func TestScript_SysCaptureOutputRejectsEscapes(t *testing.T) {
 	dir := t.TempDir()
 	for _, tc := range []struct {

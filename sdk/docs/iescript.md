@@ -166,9 +166,11 @@ If a script errors or is cancelled, script-owned CPU freezes, debugger opens, an
 
 ### Host file paths
 
-Host path access is restricted to approved roots. Relative reads search the current script directory first, then `sdk/scripts/`. Absolute read paths are allowed only when the resolved target is still inside one of those approved roots. Writes are script-relative only and cannot use absolute paths. Parent directories for writes must already exist. Existing output files and symlinks are resolved before the root check, so an output symlink cannot point outside the script root. Special `cpu.load("EMUTOS")` and `cpu.load("AROS")` tokens are unchanged.
+Host path access is restricted to approved roots. Relative reads search the current script directory first, then `sdk/scripts/`. The `sys.read_file` and `sys.copy_file` source path helpers also allow repository diagnostic assets under `sdk/examples/` and `sdk/ab3d64/`. Absolute read paths are allowed only when the resolved target is still inside an approved root. Writes are script-relative only and cannot use absolute paths. Parent directories for writes must already exist unless the script creates them first with `sys.mkdir`. Existing output files and symlinks are resolved before the root check, so an output symlink cannot point outside the script root. Special `cpu.load("EMUTOS")` and `cpu.load("AROS")` tokens are unchanged.
 
-The policy applies to `cpu.load`, audio loaders, recording and screenshots, output capture, debugger state/memory files, debugger trace files, monitor scripts launched through `dbg.run_script`, and the Lua `media.load` helpers. The lower media MMIO loader also treats its configured media base directory as an approved root: absolute paths are accepted only when their resolved target stays under that root, and traversal or symlink escapes are rejected.
+The policy applies to `cpu.load`, audio loaders, recording and screenshots, output capture, debugger state/memory files, debugger trace files, monitor scripts launched through `dbg.run_script`, the Lua `media.load` helpers, and the `sys.*_file` helpers. The lower media MMIO loader also treats its configured media base directory as an approved root: absolute paths are accepted only when their resolved target stays under that root, and traversal or symlink escapes are rejected.
+
+`sys.mkdir(path)` is the only script API that creates output directories. It accepts a script-relative directory path, creates missing components one at a time, and rejects absolute paths, `..` traversal, non-directory components, and symlinked directory components. This prevents a script from creating directories outside its write root through a symlink such as `out -> /tmp/outside`.
 
 `sys.emutos_drive(path [, drive])` is a host-directory mapping control, not a script asset loader. It passes `path` to the EmuTOS GEMDOS drive configuration for the next EmuTOS boot or mode switch and does not resolve it through the script-relative read/write policy above.
 
@@ -201,6 +203,14 @@ Timing, diagnostics, lifecycle.
 `sys.exit([code])` - Stop any active recording and exit the engine with optional integer `code` (default 0). Unlike `sys.quit`, this propagates an exit status to the host process via the engine's exit hook. Returns: nothing.
 
 `sys.emutos_drive(path [, drive])` - Set a GEMDOS drive host directory for the next EmuTOS boot. The optional `drive` parameter is the drive letter index (default 20 = drive U:; A:=0, C:=2, etc.). Updates both the program executor and the internal boot path so the next `EMUTOS` command (from BASIC) or EmuTOS mode switch will map the chosen drive to the specified directory. Returns: nothing.
+
+`sys.mkdir(path)` - Create a script-relative directory path and any missing parents. Returns the validated absolute host path that was created or already existed. Raises on absolute paths, `..` traversal, symlinked directory components, non-directory components, or filesystem errors.
+
+`sys.read_file(path)` - Read a file from an approved read root and return its contents as a Lua string. Relative paths search the current script directory and `sdk/scripts/`; this helper also permits repository diagnostic assets under `sdk/examples/` and `sdk/ab3d64/`. Raises on path validation or read errors.
+
+`sys.write_file(path, data)` - Write Lua string `data` to script-relative `path`. Parent directories must already exist; call `sys.mkdir` first when needed. Raises on absolute paths, traversal, symlink escapes, missing parents, or write errors. Returns: nothing.
+
+`sys.copy_file(src, dst)` - Copy file contents from approved read path `src` to script-relative write path `dst`. Source path rules match `sys.read_file`; destination path rules match `sys.write_file`. Returns the validated absolute destination path. Raises on path validation, missing parents, read, or write errors.
 
 `sys.capture_output(path)` - Redirect host stdout/stderr to script-relative `path`. Returns: nothing. Raises on path validation or file errors.
 
@@ -1400,7 +1410,7 @@ State *not* auto-released: breakpoints, watchpoints, monitor macros, trace watch
 
 Compact reference for IEScript API functions.
 
-### sys (13)
+### sys (17)
 
 | Function | Returns |
 |----------|---------|
@@ -1415,6 +1425,10 @@ Compact reference for IEScript API functions.
 | `sys.quit()` | - |
 | `sys.exit([code])` | - |
 | `sys.emutos_drive(path [, drive])` | - |
+| `sys.mkdir(path)` | string |
+| `sys.read_file(path)` | string |
+| `sys.write_file(path, data)` | - |
+| `sys.copy_file(src, dst)` | string |
 | `sys.capture_output(path)` | - |
 | `sys.capture_output_off()` | - |
 

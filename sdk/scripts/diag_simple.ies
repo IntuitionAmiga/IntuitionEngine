@@ -1,0 +1,16 @@
+-- Simple diagnostic: just print to confirm scripting works
+print("[diag] IEScript is alive")
+sys.wait_ms(3000)
+print("[diag] Checking CPU state after 3s...")
+local ok, err = pcall(function()
+    dbg.freeze()
+    local pc = dbg.get_reg("PC")
+    local r29 = dbg.get_reg("R29")
+    local sp = dbg.get_reg("SP")
+    print(string.format("[diag] PC=0x%X R29=0x%X SP=0x%X", pc or 0, r29 or 0, sp or 0))
+    dbg.resume()
+end)
+if not ok then
+    print("[diag] Error: " .. tostring(err))
+end
+print("[diag] Done")

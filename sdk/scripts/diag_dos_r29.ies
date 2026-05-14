@@ -1,0 +1,41 @@
+-- Diagnostic script: trace r29 at the shell launch point in dos.library
+-- The `add r23, r29, #offset` instruction is at VA 0x6009E8
+
+-- Wait for boot to reach DOS code
+sys.wait_ms(500)
+
+-- Set breakpoint at the critical instruction
+dbg.set_bp(0x6009E8)
+
+-- Wait for breakpoint to hit
+print("[diag] Breakpoint set at 0x6009E8 (add r23, r29, #offset)")
+print("[diag] Waiting for DOS to reach shell launch...")
+
+-- Poll until we hit the breakpoint (freeze and check PC)
+for i = 1, 200 do
+    sys.wait_ms(50)
+    dbg.freeze()
+    local pc = dbg.get_reg("PC")
+    if pc ~= nil and pc >= 0x600000 and pc <= 0x601000 then
+        local r29 = dbg.get_reg("R29")
+        local r30 = dbg.get_reg("R30")
+        local sp = dbg.get_reg("SP")
+        print(string.format("[diag] PC=0x%X R29=0x%X R30=0x%X SP=0x%X", pc, r29, r30, sp))
+        if pc == 0x6009E8 then
+            print("[diag] HIT! r29 at shell launch point")
+            -- Read stack value at (sp)
+            local stack_val = dbg.read_mem(sp, 8)
+            if stack_val then
+                print(string.format("[diag] stack[sp] raw bytes: %02X %02X %02X %02X %02X %02X %02X %02X",
+                    stack_val:byte(1), stack_val:byte(2), stack_val:byte(3), stack_val:byte(4),
+                    stack_val:byte(5), stack_val:byte(6), stack_val:byte(7), stack_val:byte(8)))
+            end
+            dbg.clear_all_bp()
+            dbg.resume()
+            break
+        end
+    end
+    dbg.resume()
+end
+
+print("[diag] Done")

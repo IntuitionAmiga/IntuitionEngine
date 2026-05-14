@@ -1,0 +1,9 @@
+local diag = require("showreel_diag")
+
+diag.run_emutos_rotozoom({
+    interpreter_only = true,
+    drive_x = 35,
+    drive_y = 44,
+    file_x = 149,
+    file_y = 155,
+})
