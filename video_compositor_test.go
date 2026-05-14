@@ -964,6 +964,7 @@ func TestDefaultVideoAndPresentationModes(t *testing.T) {
 func TestCompositor_AspectFit_BarsFourByThree(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	comp.LockResolution(1920, 1080)
+	comp.SetScaleMode(ScaleAspectFit)
 	src := &mockOpaqueSource{
 		layer: 0,
 		w:     640,
@@ -1034,7 +1035,7 @@ func TestCompositor_ScaleToggleOnlyForNon16x9Sources(t *testing.T) {
 	if comp.ToggleScaleModeIfNonNative() {
 		t.Fatal("16:9 source should not toggle scale mode")
 	}
-	if got := comp.GetScaleMode(); got != ScaleAspectFit {
+	if got := comp.GetScaleMode(); got != ScaleStretchFill {
 		t.Fatalf("scale mode changed for 16:9 source: %v", got)
 	}
 
@@ -1043,17 +1044,21 @@ func TestCompositor_ScaleToggleOnlyForNon16x9Sources(t *testing.T) {
 	if !comp.ActiveSourceNeedsScaleToggle() {
 		t.Fatal("4:3 source should need scale toggle")
 	}
+	if got := comp.GetScaleMode(); got != ScaleStretchFill {
+		t.Fatalf("default scale mode = %v, want stretch fill", got)
+	}
 	if !comp.ToggleScaleModeIfNonNative() {
 		t.Fatal("4:3 source should toggle scale mode")
 	}
-	if got := comp.GetScaleMode(); got != ScaleStretchFill {
-		t.Fatalf("scale mode = %v, want stretch", got)
+	if got := comp.GetScaleMode(); got != ScaleAspectFit {
+		t.Fatalf("scale mode = %v, want aspect fit", got)
 	}
 }
 
 func TestCompositor_MapPresentationPointToNative_AspectFitPillarbox(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	comp.LockResolution(1920, 1080)
+	comp.SetScaleMode(ScaleAspectFit)
 	src := &mockOpaqueSource{layer: 0, w: 640, h: 480, frame: solidTestFrame(640, 480, 1, 2, 3, 0xFF)}
 	src.enabled.Store(true)
 	comp.RegisterSource(src)
@@ -1079,6 +1084,7 @@ func TestCompositor_MapPresentationPointToNative_AspectFitPillarbox(t *testing.T
 func TestCompositor_MapNativePointToPresentation_AspectFitPillarbox(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	comp.LockResolution(1920, 1080)
+	comp.SetScaleMode(ScaleAspectFit)
 	src := &mockOpaqueSource{layer: 0, w: 640, h: 480, frame: solidTestFrame(640, 480, 1, 2, 3, 0xFF)}
 	src.enabled.Store(true)
 	comp.RegisterSource(src)

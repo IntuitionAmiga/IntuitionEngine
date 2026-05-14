@@ -115,7 +115,7 @@ func NewVideoCompositor(output VideoOutput) *VideoCompositor {
 		done:        make(chan struct{}),
 		frameWidth:  DefaultPresentationWidth,
 		frameHeight: DefaultPresentationHeight,
-		scaleMode:   ScaleAspectFit,
+		scaleMode:   ScaleStretchFill,
 	}
 }
 

@@ -280,8 +280,8 @@ Desktop builds use the Ebiten backend.
 
 Desktop builds start fullscreen with a 1920x1080 presentation frame. Native
 guest modes are composited into that frame; the default native text/OS mode is
-960x540 for exact 2x scaling, and non-16:9 modes use aspect-fit unless stretch
-is explicitly toggled.
+960x540 for exact 2x scaling, and non-16:9 modes stretch to fill the
+presentation frame unless aspect-fit is explicitly toggled.
 
 | Key | Action |
 |-----|--------|

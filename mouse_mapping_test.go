@@ -5,6 +5,7 @@ import "testing"
 func TestMapPresentationMouseToGuest_UsesTerminalNativeAspectFitRect(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	comp.LockResolution(1920, 1080)
+	comp.SetScaleMode(ScaleAspectFit)
 	tm := NewTerminalMMIO()
 	tm.SetMouseNativeResolution(640, 480)
 
