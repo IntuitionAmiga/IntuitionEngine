@@ -274,8 +274,8 @@ Total guest RAM is autodetected from host `/proc/meminfo` minus a per-platform r
 
 - **IE64**: large addressable; sees the full active visible RAM, which may exceed 4 GiB on hosts with sufficient memory. Discovers size via `CR_RAM_SIZE_BYTES` and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair.
 - **IE32 / x86 / M68K**: flat 32-bit guests; visible RAM is bounded by the 32-bit ceiling regardless of total guest RAM.
-- **6502 / Z80**: banked guests; banked window translates against the banked-CPU visible ceiling.
-- **EmuTOS / AROS / EhBASIC**: source-owned profiles (`profile_bounds.go`) declare explicit memory-map contracts independent of the underlying CPU's architectural visible range.
+- **6502 / Z80**: banked guests; the current bank-switching ABI caps visibility at 32 MiB.
+- **EmuTOS / AROS / EhBASIC**: source-owned profiles (`profile_bounds.go`) declare explicit memory-map contracts independent of the underlying CPU's architectural visible range. EmuTOS and AROS currently use a 2 GiB profile cap with a 32 MiB minimum.
 
 Guest software discovers RAM via the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI` for total guest RAM, `SYSINFO_ACTIVE_RAM_LO/HI` for active visible RAM). Each pair is a little-endian 64-bit byte value assembled from the low/high 32-bit registers. Do not hardcode the appliance RAM size.
 

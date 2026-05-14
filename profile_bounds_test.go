@@ -14,7 +14,7 @@ type fakeProfileBus struct {
 func (f fakeProfileBus) ProfileMemoryCap() uint64 { return f.activeVisible }
 
 func TestEmuTOSProfileBounds_HasExplicitContract(t *testing.T) {
-	bus := fakeProfileBus{activeVisible: 32 * 1024 * 1024}
+	bus := fakeProfileBus{activeVisible: uint64(EmuTOS_PROFILE_TOP)}
 	pb := EmuTOSProfileBounds(bus)
 	if pb.Err != nil {
 		t.Fatalf("unexpected err: %v", pb.Err)
@@ -53,6 +53,18 @@ func TestEmuTOSProfileBounds_DoesNotInheritFullM68KRange(t *testing.T) {
 	if pb.TopOfRAM != EmuTOS_PROFILE_TOP {
 		t.Fatalf("TopOfRAM=0x%X want EmuTOS_PROFILE_TOP=0x%X (must not inherit full 4 GiB)",
 			pb.TopOfRAM, EmuTOS_PROFILE_TOP)
+	}
+}
+
+func TestEmuTOSProfileBounds_ClampsToActiveBelow2GiB(t *testing.T) {
+	bus := fakeProfileBus{activeVisible: 256 * 1024 * 1024}
+	pb := EmuTOSProfileBounds(bus)
+	if pb.Err != nil {
+		t.Fatalf("unexpected err: %v", pb.Err)
+	}
+	if uint64(pb.TopOfRAM) != bus.activeVisible {
+		t.Fatalf("TopOfRAM=0x%X want 0x%X (clamped to bus active visible)",
+			pb.TopOfRAM, bus.activeVisible)
 	}
 }
 

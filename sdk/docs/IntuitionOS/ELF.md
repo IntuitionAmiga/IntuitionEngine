@@ -230,7 +230,7 @@ For every `PT_LOAD` segment:
 - `p_offset + p_filesz` stays inside the file
 - segment must lie inside IntuitionOS user image space:
   - `0x00600000 <= p_vaddr`
-  - `p_vaddr + p_memsz <= 0x02000000`
+  - `p_vaddr + p_memsz <= 0x02000000` (current IExec ABI user-VA limit, not a global IE memory limit)
 - segment flags may use only `R`, `W`, `X`
 - every segment must request at least one permission bit
 - `W`-only segments are currently rejected; the runtime still widens data pages to readable+writable, so write-only ELF data is not a stable contract yet

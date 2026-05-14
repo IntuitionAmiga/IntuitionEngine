@@ -67,6 +67,12 @@ const (
 	PAGE_MASK = 0x1FFFF00
 )
 
+const (
+	legacyDefaultBusRAMBytes  uint64 = uint64(DEFAULT_MEMORY_SIZE)
+	banked8BitVisibleRAMBytes uint64 = uint64(DEFAULT_MEMORY_SIZE)
+	m68kProfileTop2GiB        uint64 = 2 * 1024 * 1024 * 1024
+)
+
 // ------------------------------------------------------------------------------
 // Memory Map Boundaries
 // See registers.go for the complete I/O memory map reference.
@@ -765,7 +771,7 @@ const busMemMaxBytes uint64 = 0xFFFF0000
 // Used by tests and by callers that have not been migrated to the
 // autodetect sizing pipeline (PLAN_MAX_RAM.md slice 10).
 func NewMachineBus() *MachineBus {
-	bus, err := NewMachineBusSized(uint64(DEFAULT_MEMORY_SIZE))
+	bus, err := NewMachineBusSized(legacyDefaultBusRAMBytes)
 	if err != nil {
 		// 32 MiB is page-aligned, non-zero, and below the 4 GiB-page cap;
 		// validation always passes. Panic surfaces a programmer mistake
@@ -1055,8 +1061,8 @@ func (bus *MachineBus) SetSizing(ms MemorySizing) {
 
 // ApplyProfileVisibleCeiling clamps and re-publishes the active visible RAM
 // to the per-mode visible ceiling. Called from main.go after
-// bootGuestRAMFromComputed so source-owned profiles (EmuTOS at 32 MiB,
-// AROS at 2 GiB), banked CPUs (6502/Z80 at 32 MiB), and capped 32-bit
+// bootGuestRAMFromComputed so source-owned profiles (EmuTOS/AROS at 2 GiB),
+// banked CPUs (6502/Z80 at the 32 MiB bank-switching ABI), and capped 32-bit
 // runtimes (IE32/x86/bare-M68K at 4 GiB-page) advertise their profile
 // ceiling instead of the IE64-family backed total.
 //

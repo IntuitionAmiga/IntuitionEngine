@@ -602,7 +602,7 @@ x86 also directly accesses VGA VRAM at `$A0000-$AFFFF` in the memory path (no po
 
 ### Bank Windows (Z80 / 6502 / x86)
 
-All three 8/16-bit CPUs share identical bank window architecture for accessing the active visible RAM from a 16-bit address space; bank translation rejects addresses above the banked-CPU visible ceiling:
+The banked 6502/Z80 ABI uses bank windows to access a 32 MiB banked-CPU visible ceiling from a 16-bit address space; bank translation rejects addresses at or above that ceiling. x86 is flat 32-bit and does not use this banked visibility cap.
 
 | CPU Address | Size | Purpose | Bank Select Register |
 |-------------|------|---------|---------------------|

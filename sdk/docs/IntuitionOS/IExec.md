@@ -228,9 +228,9 @@ The IE64 addresses the autodetected active visible RAM (PLAN_MAX_RAM.md slice 4 
 
 **M15.5 MMIO carve-out table**: the current supervisor carve-outs are explicit: page `0xF0` (`$0F0000-$0F0FFF`) for terminal/low-I/O bootstrap text MMIO, the low VRAM/high-I/O slice already mapped by the kernel PT inside `$100000-$17FFFF`, the task page-table window `$800000-$9FFFFF`, and the allocator pool `$1200000-$1FFFFFF` as supervisor `P|R|W`. User tasks reach MMIO only through `SYS_MAP_IO` plus the hardware.resource/bootstrap grant path; there is no broad user MMIO mapping.
 
-### 2.1.1 Planned MAX RAM ABI Migration
+### 2.1.1 MAX RAM Boundary and Current IExec ABI
 
-The 32 MB layout above is the current M16-era IExec ABI. It is not compatible with the planned MAX RAM appliance profile without an ABI migration.
+The 32 MB layout above is the current M16-era IExec ABI. It is an IExec kernel/user ABI constraint, not a global Intuition Engine RAM limit: IE64 hardware and non-IExec runtimes use the autodetected guest RAM model and discover active visible RAM through `CR_RAM_SIZE_BYTES` plus `SYSINFO_ACTIVE_RAM_LO/HI`.
 
 The MAX RAM profile makes Intuition Engine choose effective guest RAM at boot from usable host memory minus a reserved system margin. IE64 is the only CPU required to address RAM above 4 GiB. IExec must treat that as a kernel/user ABI revision, not as a constants-only update.
 

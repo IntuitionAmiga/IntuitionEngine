@@ -331,7 +331,7 @@ This avoids inlining a full exit sequence at every memory access, keeping code c
 - mod=2: `[reg + disp32]` or `[SIB + disp32]`
 - SIB: base + index*scale with scale=1/2/4/8
 
-Result is masked to 25-bit address space (`AND reg, 0x01FFFFFF`).
+Historical note: older x86 JIT notes described masking effective addresses to a 25-bit / 32 MB space with `AND reg, 0x01FFFFFF`. That mask is retired; current x86 address checks use the bus/profile memory cap and must not alias addresses above 32 MiB into low memory.
 
 ---
 

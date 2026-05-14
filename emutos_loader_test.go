@@ -74,8 +74,18 @@ func TestEmuTOSLoader_VectorSetup(t *testing.T) {
 	}
 }
 
-func TestEmuTOSLoader_LoadROM_InstallsProfileTopOfRAM(t *testing.T) {
+func newSparseEmuTOSTopBus() *MachineBus {
 	bus := NewMachineBus()
+	bus.SetBacking(NewSparseBacking(uint64(EmuTOS_PROFILE_TOP)))
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    uint64(EmuTOS_PROFILE_TOP),
+		ActiveVisibleRAM: uint64(EmuTOS_PROFILE_TOP),
+	})
+	return bus
+}
+
+func TestEmuTOSLoader_LoadROM_InstallsProfileTopOfRAM(t *testing.T) {
+	bus := newSparseEmuTOSTopBus()
 	cpu := NewM68KCPU(bus)
 	loader := NewEmuTOSLoader(bus, cpu, nil)
 	rom := buildTestROM(emutosROM192K, 0x00120000, emutosBase192+0x100)
@@ -873,7 +883,14 @@ func TestEmuTOSLoader_IORECPumpRespectsScanStatus(t *testing.T) {
 }
 
 func TestEmuTOSLoader_IORECFallbackBufferDerivedFromProfileTop(t *testing.T) {
-	loader, _ := newIORECPumpTest(t)
+	bus := newSparseEmuTOSTopBus()
+	cpu := NewM68KCPU(bus)
+	loader := NewEmuTOSLoader(bus, cpu, nil)
+	loader.iorecBufBase = 0x2000
+	loader.iorecBufSize = 0x2004
+	loader.iorecReadIdx = 0x2008
+	loader.iorecWriteIdx = 0x200A
+	cpu.Write16(loader.iorecBufSize, 4)
 	loader.cpu.Write32(loader.iorecBufBase, 0)
 	loader.iorecDelay = 199
 	loader.fixIORECIfNeeded()

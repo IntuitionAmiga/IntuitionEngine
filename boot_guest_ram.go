@@ -41,8 +41,9 @@ const (
 )
 
 // EmuTOSProfileTopBytes is the upper bound EmuTOS guests see. EmuTOS is a
-// source-owned firmware profile that the appliance pins at 32 MiB.
-const EmuTOSProfileTopBytes uint64 = 32 * 1024 * 1024
+// source-owned firmware profile; its current appliance cap is 2 GiB with a
+// 32 MiB minimum enforced by profile_bounds.go.
+const EmuTOSProfileTopBytes uint64 = uint64(EmuTOS_PROFILE_TOP)
 
 // lowMemWindowBytes is the upper bound on len(bus.memory) for IE64-family
 // modes. PLAN_MAX_RAM slice 10 reviewer P1: bus.memory is the legacy
@@ -57,6 +58,13 @@ const lowMemWindowBytes uint64 = 256 * 1024 * 1024
 // boot. The cap resolver below reads from this var so slice 10h's AROS
 // 2 GiB raise can flip a single source of truth.
 var arosProfileTopBytes uint64 = uint64(AROS_PROFILE_TOP)
+
+func clampProfileCapToDetected(profileCap, autodetectedTotal uint64) uint64 {
+	if autodetectedTotal < profileCap {
+		return autodetectedTotal
+	}
+	return profileCap
+}
 
 // resolveModeCaps returns (busMemCap, backingMaxSize) for the given mode
 // per the slice-10 §A6 three-cap table. busMemCap is the upper bound on
@@ -73,11 +81,13 @@ func resolveModeCaps(mode runtimeMode, autodetectedTotal uint64) (busMemCap, bac
 		// — mmap-backed allocators keep this lazy on Linux/darwin.
 		return busMemMaxBytes, busMemMaxBytes
 	case modeEmuTOS:
-		return EmuTOSProfileTopBytes, EmuTOSProfileTopBytes
+		cap := clampProfileCapToDetected(EmuTOSProfileTopBytes, autodetectedTotal)
+		return cap, cap
 	case modeAros:
-		return arosProfileTopBytes, arosProfileTopBytes
+		cap := clampProfileCapToDetected(arosProfileTopBytes, autodetectedTotal)
+		return cap, cap
 	case mode6502, modeZ80:
-		return uint64(DEFAULT_MEMORY_SIZE), uint64(DEFAULT_MEMORY_SIZE)
+		return banked8BitVisibleRAMBytes, banked8BitVisibleRAMBytes
 	default:
 		// Defensive default: behave as if IE64 family (small low window
 		// + full backing).
@@ -104,7 +114,7 @@ func resolveActiveVisibleCeiling(mode runtimeMode, busTotalGuestRAM uint64) uint
 	case modeAros:
 		return arosProfileTopBytes
 	case mode6502, modeZ80:
-		return uint64(DEFAULT_MEMORY_SIZE)
+		return banked8BitVisibleRAMBytes
 	default:
 		return busTotalGuestRAM
 	}

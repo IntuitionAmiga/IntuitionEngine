@@ -3,7 +3,7 @@
 // Pins resolveModeCaps + resolveActiveVisibleCeiling row by row, the
 // per-mode boot ordering (ApplyProfileVisibleCeiling before SYSINFO
 // registration), and the discovery-path "all paths agree" smokes for
-// IE64 (8 GiB synthesised), EmuTOS (32 MiB), and EhBASIC.
+// IE64 (8 GiB synthesised), EmuTOS (2 GiB cap), and EhBASIC.
 
 package main
 
@@ -30,9 +30,11 @@ func TestResolveModeCaps_TableMatch(t *testing.T) {
 		{"x86-8gib", modeX86, eightGiB, busMemMaxBytes, busMemMaxBytes},
 		{"bare-m68k-8gib", modeM68KBare, eightGiB, busMemMaxBytes, busMemMaxBytes},
 		{"emutos-8gib", modeEmuTOS, eightGiB, EmuTOSProfileTopBytes, EmuTOSProfileTopBytes},
+		{"emutos-low-total", modeEmuTOS, lowMemWindowBytes, lowMemWindowBytes, lowMemWindowBytes},
 		{"aros-8gib", modeAros, eightGiB, arosProfileTopBytes, arosProfileTopBytes},
-		{"6502-banked", mode6502, eightGiB, uint64(DEFAULT_MEMORY_SIZE), uint64(DEFAULT_MEMORY_SIZE)},
-		{"z80-banked", modeZ80, eightGiB, uint64(DEFAULT_MEMORY_SIZE), uint64(DEFAULT_MEMORY_SIZE)},
+		{"aros-low-total", modeAros, lowMemWindowBytes, lowMemWindowBytes, lowMemWindowBytes},
+		{"6502-banked", mode6502, eightGiB, banked8BitVisibleRAMBytes, banked8BitVisibleRAMBytes},
+		{"z80-banked", modeZ80, eightGiB, banked8BitVisibleRAMBytes, banked8BitVisibleRAMBytes},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -60,10 +62,10 @@ func TestResolveActiveVisibleCeiling_TableMatch(t *testing.T) {
 		{"ie32-clamps-to-4gib-page", modeIE32, eightGiB, busMemMaxBytes},
 		{"x86-clamps-to-4gib-page", modeX86, eightGiB, busMemMaxBytes},
 		{"bare-m68k-clamps", modeM68KBare, eightGiB, busMemMaxBytes},
-		{"emutos-32mib", modeEmuTOS, eightGiB, EmuTOSProfileTopBytes},
+		{"emutos-profile-top", modeEmuTOS, eightGiB, EmuTOSProfileTopBytes},
 		{"aros-profile-top", modeAros, eightGiB, arosProfileTopBytes},
-		{"6502-banked", mode6502, eightGiB, uint64(DEFAULT_MEMORY_SIZE)},
-		{"z80-banked", modeZ80, eightGiB, uint64(DEFAULT_MEMORY_SIZE)},
+		{"6502-banked", mode6502, eightGiB, banked8BitVisibleRAMBytes},
+		{"z80-banked", modeZ80, eightGiB, banked8BitVisibleRAMBytes},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,16 +113,40 @@ func bootSimulate(t *testing.T, mode runtimeMode, autoTotal uint64, allocator fu
 	return bus
 }
 
-func TestBootMode_EmuTOS_AllocatesOnly32MiBBus_NoBacking(t *testing.T) {
-	bus := bootSimulate(t, modeEmuTOS, eightGiB, sparseAllocator)
-	if got := uint64(len(bus.GetMemory())); got != EmuTOSProfileTopBytes {
-		t.Fatalf("len(bus.memory) = %d, want %d (EmuTOS profile cap)", got, EmuTOSProfileTopBytes)
+func emutosBootExpectedTotal() uint64 {
+	if EmuTOSProfileTopBytes > busMemBootClamp {
+		return busMemBootClamp
+	}
+	return EmuTOSProfileTopBytes
+}
+
+func TestBootMode_EmuTOS_LowDetectedTotalDoesNotGrowBacking(t *testing.T) {
+	bus := bootSimulate(t, modeEmuTOS, lowMemWindowBytes, sparseAllocator)
+	if bus.Backing() != nil {
+		t.Fatal("EmuTOS low-total boot should not allocate backing above detected total")
+	}
+	if got := bus.TotalGuestRAM(); got != lowMemWindowBytes {
+		t.Fatalf("TotalGuestRAM = %d, want detected total %d", got, lowMemWindowBytes)
+	}
+	if got := bus.ActiveVisibleRAM(); got != lowMemWindowBytes {
+		t.Fatalf("ActiveVisibleRAM = %d, want detected total %d", got, lowMemWindowBytes)
+	}
+	if got := sysinfoTotalRAM(bus); got != lowMemWindowBytes {
+		t.Fatalf("SYSINFO_TOTAL_RAM = %d, want detected total %d", got, lowMemWindowBytes)
+	}
+}
+
+func TestBootMode_EmuTOS_AllocatesUpToProfileTop_NoBacking(t *testing.T) {
+	bus := bootSimulate(t, modeEmuTOS, eightGiB, mmapFaithfulSparseAllocator)
+	if got := uint64(len(bus.GetMemory())); got > EmuTOSProfileTopBytes {
+		t.Fatalf("len(bus.memory) = %d, want <= %d (EmuTOS profile cap)", got, EmuTOSProfileTopBytes)
 	}
 	if bus.Backing() != nil {
 		t.Fatal("EmuTOS mode should not allocate a high-range backing")
 	}
-	if got := bus.TotalGuestRAM(); got != EmuTOSProfileTopBytes {
-		t.Fatalf("TotalGuestRAM = %d, want %d", got, EmuTOSProfileTopBytes)
+	want := emutosBootExpectedTotal()
+	if got := bus.TotalGuestRAM(); got != want {
+		t.Fatalf("TotalGuestRAM = %d, want %d", got, want)
 	}
 }
 
@@ -344,19 +370,20 @@ func TestDiscovery_IE64_AllPathsAgreeOnFullBackedTotal(t *testing.T) {
 	}
 }
 
-func TestDiscovery_EmuTOS_AllPathsAgreeAt32MiB(t *testing.T) {
-	bus := bootSimulate(t, modeEmuTOS, eightGiB, sparseAllocator)
-	if got := bus.TotalGuestRAM(); got != EmuTOSProfileTopBytes {
-		t.Errorf("TotalGuestRAM = %d, want %d", got, EmuTOSProfileTopBytes)
+func TestDiscovery_EmuTOS_AllPathsAgreeAt2GiB(t *testing.T) {
+	bus := bootSimulate(t, modeEmuTOS, eightGiB, mmapFaithfulSparseAllocator)
+	want := emutosBootExpectedTotal()
+	if got := bus.TotalGuestRAM(); got != want {
+		t.Errorf("TotalGuestRAM = %d, want %d", got, want)
 	}
-	if got := bus.ActiveVisibleRAM(); got != EmuTOSProfileTopBytes {
-		t.Errorf("ActiveVisibleRAM = %d, want %d", got, EmuTOSProfileTopBytes)
+	if got := bus.ActiveVisibleRAM(); got != want {
+		t.Errorf("ActiveVisibleRAM = %d, want %d", got, want)
 	}
-	if got := sysinfoTotalRAM(bus); got != EmuTOSProfileTopBytes {
-		t.Errorf("SYSINFO_TOTAL_RAM = %d, want %d", got, EmuTOSProfileTopBytes)
+	if got := sysinfoTotalRAM(bus); got != want {
+		t.Errorf("SYSINFO_TOTAL_RAM = %d, want %d", got, want)
 	}
-	if got := sysinfoActiveRAM(bus); got != EmuTOSProfileTopBytes {
-		t.Errorf("SYSINFO_ACTIVE_RAM = %d, want %d", got, EmuTOSProfileTopBytes)
+	if got := sysinfoActiveRAM(bus); got != want {
+		t.Errorf("SYSINFO_ACTIVE_RAM = %d, want %d", got, want)
 	}
 }
 

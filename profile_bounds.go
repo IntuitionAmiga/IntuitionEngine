@@ -3,9 +3,9 @@
 // PLAN_MAX_RAM.md slice 6 locks down explicit memory-map contracts for
 // EmuTOS, AROS, and EhBASIC. The profiles are decoupled from the underlying
 // CPU's architectural visible range: EmuTOS and AROS run on M68K (4 GiB
-// addressable) but expose a much smaller profile-specific top-of-RAM by
-// design, preserving the historical low-memory layout that GEMDOS, IOREC,
-// the AROS audio DMA window, and direct VRAM placement all depend on.
+// addressable) but expose profile-specific top-of-RAM values by design,
+// preserving the stable low-memory layout that GEMDOS, IOREC, the AROS
+// audio DMA window, and direct VRAM placement all depend on.
 //
 // EhBASIC is an IE64 source/runtime profile and follows the bus-reported
 // active visible RAM, capped at uint32 for low-memory accounting paths.
@@ -18,13 +18,13 @@ import "fmt"
 
 const (
 	// EmuTOS_PROFILE_TOP is the explicit top-of-RAM the EmuTOS M68K profile
-	// exposes. Independent of detected guest RAM and independent of the M68K
-	// architectural 4 GiB visible range. Preserves the historical 32 MiB
-	// low-memory layout that EmuTOS boot, GEMDOS bridge, IOREC, and ROM
-	// validity checks all depend on. Any deliberate move requires source-
-	// coordinated updates to emutos_loader.go, the EmuTOS source tree, and
-	// the EmuTOS profile docs.
-	EmuTOS_PROFILE_TOP uint32 = 32 * 1024 * 1024
+	// exposes. PLAN_MAX_RAM slice 10 raises this from the historical 32 MiB
+	// appliance cap to 2 GiB while keeping a 32 MiB runtime minimum. The
+	// stable low-memory layout used by EmuTOS boot, GEMDOS bridge, IOREC, and
+	// ROM validity checks remains below the cap. Any deliberate move requires
+	// source-coordinated updates to emutos_loader.go, the EmuTOS source tree,
+	// and the EmuTOS profile docs.
+	EmuTOS_PROFILE_TOP uint32 = uint32(m68kProfileTop2GiB)
 
 	// AROS_PROFILE_TOP is the explicit top-of-RAM the AROS M68K profile
 	// exposes. PLAN_MAX_RAM slice 10h raised this from 32 MiB to 2 GiB.
@@ -35,7 +35,7 @@ const (
 	// representation. Any deliberate move requires source-coordinated
 	// updates to aros_loader.go, aros_runtime.go, aros_audio_dma.go,
 	// the AROS source tree, and the AROS profile docs.
-	AROS_PROFILE_TOP uint32 = 2 * 1024 * 1024 * 1024
+	AROS_PROFILE_TOP uint32 = uint32(m68kProfileTop2GiB)
 
 	// ehbasicMinRequiredRAM is the smallest active visible RAM that can
 	// host the EhBASIC IE64 source layout. STACK_TOP sits at 0x9F000;
@@ -56,6 +56,12 @@ const (
 	// gate, and clampM68KProfileToBus pulls TopOfRAM down to the bus
 	// size when smaller than the cap.
 	arosMinRequiredRAM uint32 = 32 * 1024 * 1024
+
+	// emutosMinRequiredRAM is the historical EmuTOS runtime floor — 32 MiB.
+	// EmuTOS_PROFILE_TOP is the maximum, not the minimum: a 32 MiB test bus
+	// still satisfies the profile gate, and clampM68KProfileToBus pulls
+	// TopOfRAM down to the bus size when smaller than the 2 GiB cap.
+	emutosMinRequiredRAM uint32 = 32 * 1024 * 1024
 )
 
 // ProfileBounds is the explicit memory-map contract a source-owned
@@ -92,7 +98,7 @@ func EmuTOSProfileBounds(bus profileBoundsBus) ProfileBounds {
 		LowVecBase:  0x00001000,
 		ROMBase:     emutosBaseStd,
 		ROMEnd:      emutosBaseStd + emutosROM256K,
-		MinRequired: EmuTOS_PROFILE_TOP,
+		MinRequired: emutosMinRequiredRAM,
 	}
 	return clampM68KProfileToBus(pb, bus)
 }

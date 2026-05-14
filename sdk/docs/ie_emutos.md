@@ -84,6 +84,12 @@ VRAM is RGBA32 packed as:
 
 Framebuffer base is `0x100000`. Default native mode is `960x540` (`stride=3840`) and desktop presentation scales it to 1920x1080. Programs can set `640x480` (`stride=2560`) via `VIDEO_MODE=0`.
 
+## Memory Profile
+
+EmuTOS sees a 2 GiB maximum active visible RAM profile on the IE M68K core, with a 32 MiB minimum gate for small test and embedded rigs. The M68K CPU can address a wider 32-bit range, but EmuTOS uses the source-owned `EmuTOS_PROFILE_TOP` contract instead of inheriting the full architectural range.
+
+The stable low VRAM/MMIO layout is unchanged: framebuffer VRAM remains at `0x100000`, ROM images still load at `0xFC0000` for 192K and `0xE00000` for 256K+/512K+, and IE MMIO stays in the existing low register map. Guest software should treat `SYSINFO_TOTAL_RAM_LO/HI` and `SYSINFO_ACTIVE_RAM_LO/HI` as the discovery path for total guest RAM and active visible RAM.
+
 ## IE Hardware Map (EmuTOS target)
 
 EmuTOS has full access to the complete IE hardware map. The key registers for EmuTOS-specific I/O are listed below; see `registers.go` and `ie68.inc` for the full map.

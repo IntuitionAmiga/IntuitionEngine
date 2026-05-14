@@ -31,11 +31,13 @@ import (
 var authoritativeDocs = []string{
 	"README.md",
 	"DEVELOPERS.md",
+	"PLAN_MAX_RAM.md",
 	"sdk/docs/architecture.md",
 	"sdk/docs/IE64_ISA.md",
 	"sdk/docs/IE64_ABI.md",
 	"sdk/docs/IE64_JIT.md",
 	"sdk/docs/IE64_COOKBOOK.md",
+	"sdk/docs/ie_emutos.md",
 	"sdk/docs/IntuitionOS/IExec.md",
 	"sdk/docs/IntuitionOS/ELF.md",
 	"sdk/docs/TUTORIAL.md",
@@ -178,5 +180,34 @@ func TestDocs_MentionAutodetectModel(t *testing.T) {
 					doc, requiredAutodetectMarkers)
 			}
 		})
+	}
+}
+
+func TestDocs_ModeCapTable_CurrentPolicy(t *testing.T) {
+	text := readDoc(t, "PLAN_MAX_RAM.md")
+	required := []string{
+		"| EmuTOS | 2 GiB (profile cap; 32 MiB minimum) | unused | 2 GiB |",
+		"| AROS | 2 GiB (profile cap; 32 MiB minimum) | unused | 2 GiB |",
+		"| 6502 / Z80 (banked) | 32 MiB (banked-CPU ABI) | unused | 32 MiB |",
+		"32 MiB remains current only for the 6502/Z80 bank-switching ABI",
+	}
+	for _, phrase := range required {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("PLAN_MAX_RAM.md missing current policy phrase: %q", phrase)
+		}
+	}
+}
+
+func TestDocs_EmuTOSProfilePolicy(t *testing.T) {
+	text := readDoc(t, "sdk/docs/ie_emutos.md")
+	required := []string{
+		"EmuTOS sees a 2 GiB maximum active visible RAM profile",
+		"32 MiB minimum",
+		"stable low VRAM/MMIO layout",
+	}
+	for _, phrase := range required {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("sdk/docs/ie_emutos.md missing EmuTOS policy phrase: %q", phrase)
+		}
 	}
 }
