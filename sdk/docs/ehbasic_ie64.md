@@ -118,6 +118,7 @@ Ready
 |---------|-------------|
 | `RUN` | Execute the stored program |
 | `LIST` | Display the program listing |
+| `DIR` / `DIR "path"` | Display a File I/O sandbox directory listing |
 | `NEW` | Clear the program from memory |
 | Line number followed by text | Store or replace a program line |
 | Line number alone | Delete that line |
@@ -403,6 +404,23 @@ Unlike `LOAD`, `BLOAD` does **not** clear program lines or variables. It only re
 ```basic
 BLOAD "Yummy_Pizza.sid", &H710000
 SID PLAY &H710000, 3725
+```
+
+### DIR
+
+List files in the File I/O sandbox. `DIR` is an immediate REPL command and is not stored as a tokenized BASIC statement.
+
+```
+DIR
+DIR "path"
+```
+
+Output is sorted one entry per line. Directories have a trailing `/`.
+
+**Example:**
+```basic
+DIR
+DIR "demos"
 ```
 
 ### BLIT
@@ -3049,6 +3067,8 @@ existing `<`/`>` tokens followed by a raw marker byte; see
 | DF | TK_LEFTS | LEFT$ | Function |
 | E0 | TK_RIGHTS | RIGHT$ | Function |
 | E1 | TK_MIDS | MID$ | Function |
+
+`DIR` is implemented as an immediate REPL command and intentionally has no token entry.
 
 #### Hardware Extension Tokens (`&HE2`-`&HFF`)
 

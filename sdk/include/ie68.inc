@@ -1927,13 +1927,14 @@ voodoo_clear      macro   color
 FILE_NAME_PTR     equ $F2200               ; Pointer to null-terminated filename (W)
 FILE_DATA_PTR     equ $F2204               ; Pointer to data buffer (W)
 FILE_DATA_LEN     equ $F2208               ; Data length for WRITE (W)
-FILE_CTRL         equ $F220C               ; 1=READ, 2=WRITE (W triggers)
+FILE_CTRL         equ $F220C               ; 1=READ, 2=WRITE, 3=LIST (W triggers)
 FILE_STATUS       equ $F2210               ; 0=OK, 1=ERROR (R)
 FILE_RESULT_LEN   equ $F2214               ; Bytes actually read (R)
 FILE_ERROR_CODE   equ $F2218               ; 0=OK, 1=NOT_FOUND, 2=PERMISSION, 3=TRAVERSAL (R)
 
 FILE_OP_READ      equ 1
 FILE_OP_WRITE     equ 2
+FILE_OP_LIST      equ 3
 
 ; ============================================================================
 ; PROGRAM EXECUTOR REGISTERS ($F2320-$F233F)

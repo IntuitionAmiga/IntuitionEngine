@@ -174,7 +174,7 @@ As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level kernel image/
 
 ### File I/O
 - `FILE_NAME_PTR` / `FILE_DATA_PTR` / `FILE_DATA_LEN` - Pointers and length (32-bit CPUs)
-- `FILE_CTRL` - Control register (write `FILE_OP_READ` or `FILE_OP_WRITE`)
+- `FILE_CTRL` - Control register (write `FILE_OP_READ`, `FILE_OP_WRITE`, or `FILE_OP_LIST`)
 - `FILE_STATUS` / `FILE_RESULT_LEN` / `FILE_ERROR_CODE` - Result registers
 - 8-bit CPUs (Z80/6502) use byte-addressable variants via bank3 window: `FIO_NAME_PTR_0`..`FIO_NAME_PTR_3`, `FIO_DATA_PTR_0`..`FIO_DATA_PTR_3`, `FIO_CTRL`, etc.
 

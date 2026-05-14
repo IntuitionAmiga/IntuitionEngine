@@ -21,6 +21,7 @@ Current aliases and problematic bindings:
 | `ELSE` | `TK_ELSE` (`0xAB`) | Repurposes the previously unimplemented `SPC` token slot. |
 | `TROFF` | `TK_DEF` (`0x97`) | Kept as a legacy tokenizer alias; the `DEF` handler treats bare `TK_DEF` without `FN` as `TROFF`. |
 | `BLOAD` | `TK_WIDTH` (`0xA3`) | Reuses `WIDTH`; no distinct BLOAD statement token. |
+| `DIR` | none | Immediate REPL command only; avoids consuming or renumbering the full one-byte token space. |
 | `WEND` | `TK_UNTIL` (`0xAF`) | Existing implementation treats this as a loop terminator alias. |
 | `TRON` | `TK_NULL` (`0x92`) | Existing implementation treats this as trace-on. |
 

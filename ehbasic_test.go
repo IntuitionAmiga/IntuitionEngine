@@ -7219,6 +7219,112 @@ func TestHW_LoadThenRun_REPL(t *testing.T) {
 	}
 }
 
+func newEhbasicREPLHarnessWithFileIO(t *testing.T, asmBin string, tmpDir string) *ehbasicTestHarness {
+	t.Helper()
+
+	repoRoot := repoRootDir(t)
+	srcPath := filepath.Join(repoRoot, "sdk", "examples", "asm", "ehbasic_ie64.asm")
+	incDir := filepath.Join(repoRoot, "sdk", "include")
+	cmd := exec.Command(asmBin, "-I", incDir, srcPath)
+	cmd.Dir = tmpDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("assembly failed: %v\n%s", err, out)
+	}
+
+	binPath := filepath.Join(tmpDir, "ehbasic_ie64.ie64")
+	if _, err := os.Stat(binPath); err != nil {
+		binPath = filepath.Join(repoRoot, "sdk", "examples", "asm", "ehbasic_ie64.ie64")
+	}
+	bin, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatalf("failed to read assembled binary: %v", err)
+	}
+
+	h := newEhbasicHarness(t)
+	fio := NewFileIODevice(h.bus, tmpDir)
+	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
+	h.cpu.jitEnabled = true
+	h.loadBytes(bin)
+
+	bootOutput := h.runUntilPrompt()
+	if !strings.Contains(bootOutput, "Ready") {
+		t.Fatalf("did not get Ready prompt after boot; got:\n%s", bootOutput)
+	}
+	return h
+}
+
+func TestHW_DIR_REPLListsRootDirectory(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "zeta.bas"), []byte("10 END\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "alpha.bas"), []byte("10 END\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(tmpDir, "Demos"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+	output := h.runCommand("DIR")
+	for _, want := range []string{"Demos/", "alpha.bas", "zeta.bas"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("DIR output missing %q: %q", want, output)
+		}
+	}
+}
+
+func TestHW_DIR_REPLListsQuotedSubdirectory(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "root.bas"), []byte("10 END\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(tmpDir, "basic"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "basic", "demo.bas"), []byte("10 END\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+	output := h.runCommand(`DIR "basic"`)
+	if !strings.Contains(output, "demo.bas") {
+		t.Fatalf("DIR quoted subdirectory output missing demo.bas: %q", output)
+	}
+	if strings.Contains(output, "root.bas") {
+		t.Fatalf("DIR quoted subdirectory leaked root entry: %q", output)
+	}
+}
+
+func TestHW_DIR_REPLIsCaseInsensitive(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "case.bas"), []byte("10 END\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+	output := h.runCommand("dir")
+	if !strings.Contains(output, "case.bas") {
+		t.Fatalf("lowercase dir output missing case.bas: %q", output)
+	}
+}
+
+func TestHW_DIR_REPLRejectsTraversal(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+
+	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+	output := h.runCommand(`DIR "../outside"`)
+	if !strings.Contains(output, "?FILE ERROR") {
+		t.Fatalf("DIR traversal should report file error: %q", output)
+	}
+}
+
 // TestHW_JIT_LoadThenRun tests LOAD+RUN via the full REPL with JIT enabled.
 // Regression test for the backward branch budget exit register save bug:
 // conditional branch forward exits in backward-branch blocks must save

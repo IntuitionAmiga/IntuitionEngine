@@ -2827,7 +2827,7 @@
 .set FIO_DATA_LEN_1,0x6209         ; Data length byte 1
 .set FIO_DATA_LEN_2,0x620A         ; Data length byte 2
 .set FIO_DATA_LEN_3,0x620B         ; Data length byte 3
-.set FIO_CTRL,0x620C               ; Control: write FILE_OP_READ or FILE_OP_WRITE
+.set FIO_CTRL,0x620C               ; Control: write FILE_OP_READ, FILE_OP_WRITE, or FILE_OP_LIST
 .set FIO_STATUS_0,0x6210           ; Status byte 0 (0=OK, 1=error)
 .set FIO_RESULT_LEN_0,0x6214       ; Result length byte 0
 .set FIO_RESULT_LEN_1,0x6215       ; Result length byte 1
@@ -2838,6 +2838,7 @@
 ; File I/O operations
 .set FILE_OP_READ,1                ; Read file to memory
 .set FILE_OP_WRITE,2               ; Write memory to file
+.set FILE_OP_LIST,3                ; List directory to memory
 
 ; File I/O error codes
 .set FILE_ERR_OK,0                 ; Success

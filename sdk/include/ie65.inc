@@ -2623,7 +2623,7 @@ FIO_DATA_LEN_0      = $6208         ; Data length byte 0 (for WRITE ops)
 FIO_DATA_LEN_1      = $6209         ; Data length byte 1
 FIO_DATA_LEN_2      = $620A         ; Data length byte 2
 FIO_DATA_LEN_3      = $620B         ; Data length byte 3
-FIO_CTRL            = $620C         ; Control: write FILE_OP_READ or FILE_OP_WRITE
+FIO_CTRL            = $620C         ; Control: write FILE_OP_READ, FILE_OP_WRITE, or FILE_OP_LIST
 FIO_STATUS_0        = $6210         ; Status byte 0 (0=OK, 1=error)
 FIO_RESULT_LEN_0    = $6214         ; Result length byte 0
 FIO_RESULT_LEN_1    = $6215         ; Result length byte 1
@@ -2634,6 +2634,7 @@ FIO_ERROR_CODE      = $6218         ; Error code byte 0
 ; File I/O operations
 FILE_OP_READ        = 1             ; Read file to memory
 FILE_OP_WRITE       = 2             ; Write memory to file
+FILE_OP_LIST        = 3             ; List directory to memory
 
 ; File I/O error codes
 FILE_ERR_OK         = 0             ; Success

@@ -247,6 +247,11 @@ repl_immediate:
     jsr     repl_check_run
     bnez    r8, repl_do_run
 
+    ; Check for DIR command
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_check_dir
+    bnez    r8, repl_do_dir
+
     ; Check for LIST command
     la      r1, BASIC_LINE_BUF
     jsr     repl_check_list
@@ -548,6 +553,58 @@ repl_do_list:
     bra     repl_loop
 
 ; ============================================================================
+; DIR command handler - display host directory listing through File I/O
+; ============================================================================
+; Supports:
+;   DIR
+;   DIR "path"
+
+repl_do_dir:
+    jsr     repl_parse_dir_path
+    beqz    r8, .dir_file_error
+
+    ; Setup MMIO
+    la      r1, FILE_NAME_PTR
+    la      r2, FILE_NAME_BUF
+    store.l r2, (r1)
+
+    la      r1, FILE_DATA_PTR
+    la      r2, FILE_DATA_BUF
+    store.l r2, (r1)
+
+    la      r1, FILE_CTRL
+    li      r2, #3                  ; OP_LIST
+    store.l r2, (r1)
+
+    ; Check status
+    la      r1, FILE_STATUS
+    load.l  r1, (r1)
+    beqz    r1, .dir_success
+
+    la      r1, FILE_ERROR_CODE
+    load.l  r1, (r1)
+    move.q  r2, #1                  ; FILE_ERR_NOT_FOUND
+    beq     r1, r2, .dir_not_found
+    bra     .dir_file_error
+
+.dir_success:
+    la      r8, FILE_DATA_BUF
+    jsr     print_string
+    bra     repl_loop
+
+.dir_not_found:
+    la      r8, repl_msg_file_not_found
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+
+.dir_file_error:
+    la      r8, repl_msg_file_error
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+
+; ============================================================================
 ; NEW command handler - clear programme and variables
 ; ============================================================================
 
@@ -692,6 +749,116 @@ repl_parse_run_filename:
     rts
 
 .no_file:
+    move.q  r8, r0
+    rts
+
+; ============================================================================
+; repl_check_dir - Check if input is "DIR" (case-insensitive)
+; ============================================================================
+; Input:  R1 = pointer to input buffer
+; Output: R8 = 1 if DIR, 0 otherwise
+; Clobbers: R2-R5
+
+repl_check_dir:
+    jsr     repl_skip_spaces
+
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x64               ; 'd'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x69               ; 'i'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x72               ; 'r'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    beqz    r2, .yes
+    move.q  r3, #0x20
+    beq     r2, r3, .yes
+    bra     .no
+
+.yes:
+    move.q  r8, #1
+    rts
+.no:
+    move.q  r8, r0
+    rts
+
+; ============================================================================
+; repl_parse_dir_path - Parse optional DIR "path" argument
+; ============================================================================
+; Input:  BASIC_LINE_BUF contains the line
+; Output: R8 = 1 if FILE_NAME_BUF was populated, 0 on malformed input
+; Clobbers: R1-R3, R10-R11
+
+repl_parse_dir_path:
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_skip_spaces
+
+    ; Match "DIR" prefix
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x64               ; 'd'
+    bne     r2, r3, .bad
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x69               ; 'i'
+    bne     r2, r3, .bad
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x72               ; 'r'
+    bne     r2, r3, .bad
+
+    add.q   r1, r1, #1
+    jsr     repl_skip_spaces
+
+    ; No argument: list base directory
+    load.b  r2, (r1)
+    bnez    r2, .maybe_quote
+    la      r10, FILE_NAME_BUF
+    store.b r0, (r10)
+    move.q  r8, #1
+    rts
+
+.maybe_quote:
+    move.q  r3, #0x22               ; '"'
+    bne     r2, r3, .bad
+    add.q   r1, r1, #1
+
+    ; Copy quoted path into FILE_NAME_BUF
+    la      r10, FILE_NAME_BUF
+    move.q  r11, #255
+.copy_path_loop:
+    load.b  r2, (r1)
+    beqz    r2, .bad                ; Unterminated quote
+    move.q  r3, #0x22
+    beq     r2, r3, .copy_done
+    beqz    r11, .bad
+    store.b r2, (r10)
+    add.q   r1, r1, #1
+    add.q   r10, r10, #1
+    sub.q   r11, r11, #1
+    bra     .copy_path_loop
+
+.copy_done:
+    store.b r0, (r10)
+    move.q  r8, #1
+    rts
+
+.bad:
     move.q  r8, r0
     rts
 
@@ -1010,6 +1177,10 @@ repl_str_ready:
 
 repl_msg_file_error:
     dc.b    "?FILE ERROR", 0
+    align 4
+
+repl_msg_file_not_found:
+    dc.b    "?FILE NOT FOUND", 0
     align 4
 
 repl_msg_emutos_error:

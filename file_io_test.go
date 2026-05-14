@@ -476,6 +476,122 @@ func TestFileIO_PathTraversal(t *testing.T) {
 	}
 }
 
+func TestFileIO_ListDirectory(t *testing.T) {
+	bus := NewMachineBus()
+	tmpDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "zeta.bas"), []byte("10 END\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "alpha.bas"), []byte("10 END\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(tmpDir, "Demos"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	fio := NewFileIODevice(bus, tmpDir)
+	fileNameAddr := uint32(0x1000)
+	dataBufAddr := uint32(0x2000)
+	bus.Write8(fileNameAddr, 0)
+
+	fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+	fio.HandleWrite(FILE_DATA_PTR, dataBufAddr)
+	fio.HandleWrite(FILE_CTRL, FILE_OP_LIST)
+
+	if got := fio.HandleRead(FILE_STATUS); got != 0 {
+		t.Fatalf("status: got %d, want 0 (error code %d)", got, fio.HandleRead(FILE_ERROR_CODE))
+	}
+	want := "Demos/\nalpha.bas\nzeta.bas\n"
+	if got := readFileIOBusString(bus, dataBufAddr, len(want)+1); got != want {
+		t.Fatalf("listing: got %q, want %q", got, want)
+	}
+	if got := fio.HandleRead(FILE_RESULT_LEN); got != uint32(len(want)) {
+		t.Fatalf("result len: got %d, want %d", got, len(want))
+	}
+}
+
+func TestFileIO_ListSubdirectory(t *testing.T) {
+	bus := NewMachineBus()
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, "basic"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "basic", "demo.bas"), []byte("10 END\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fio := NewFileIODevice(bus, tmpDir)
+	fileNameAddr := uint32(0x1000)
+	dataBufAddr := uint32(0x2000)
+	for i, b := range []byte("basic\x00") {
+		bus.Write8(fileNameAddr+uint32(i), b)
+	}
+
+	fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+	fio.HandleWrite(FILE_DATA_PTR, dataBufAddr)
+	fio.HandleWrite(FILE_CTRL, FILE_OP_LIST)
+
+	if got := fio.HandleRead(FILE_STATUS); got != 0 {
+		t.Fatalf("status: got %d, want 0 (error code %d)", got, fio.HandleRead(FILE_ERROR_CODE))
+	}
+	want := "demo.bas\n"
+	if got := readFileIOBusString(bus, dataBufAddr, len(want)+1); got != want {
+		t.Fatalf("listing: got %q, want %q", got, want)
+	}
+}
+
+func TestFileIO_ListRejectsUnsafePath(t *testing.T) {
+	bus := NewMachineBus()
+	tmpDir := t.TempDir()
+	fio := NewFileIODevice(bus, tmpDir)
+
+	for _, path := range []string{"../outside", "/etc"} {
+		fileNameAddr := uint32(0x1000)
+		for i, b := range append([]byte(path), 0) {
+			bus.Write8(fileNameAddr+uint32(i), b)
+		}
+		fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+		fio.HandleWrite(FILE_CTRL, FILE_OP_LIST)
+		if got := fio.HandleRead(FILE_STATUS); got != 1 {
+			t.Fatalf("%q status: got %d, want 1", path, got)
+		}
+		if got := fio.HandleRead(FILE_ERROR_CODE); got != FILE_ERR_PATH_TRAVERSAL {
+			t.Fatalf("%q error: got %d, want %d", path, got, FILE_ERR_PATH_TRAVERSAL)
+		}
+	}
+}
+
+func TestFileIO_ListMissingAndNonDirectory(t *testing.T) {
+	bus := NewMachineBus()
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("not a dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fio := NewFileIODevice(bus, tmpDir)
+	fileNameAddr := uint32(0x1000)
+
+	for _, tc := range []struct {
+		name string
+		want uint32
+	}{
+		{name: "missing", want: FILE_ERR_NOT_FOUND},
+		{name: "file.txt", want: FILE_ERR_PERMISSION},
+	} {
+		for i, b := range append([]byte(tc.name), 0) {
+			bus.Write8(fileNameAddr+uint32(i), b)
+		}
+		fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+		fio.HandleWrite(FILE_CTRL, FILE_OP_LIST)
+		if got := fio.HandleRead(FILE_STATUS); got != 1 {
+			t.Fatalf("%q status: got %d, want 1", tc.name, got)
+		}
+		if got := fio.HandleRead(FILE_ERROR_CODE); got != tc.want {
+			t.Fatalf("%q error: got %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestFileIODevice_HandleWrite8(t *testing.T) {
 	bus := NewMachineBus()
 	tmpDir, err := os.MkdirTemp("", "fileio_test")
@@ -557,6 +673,18 @@ func TestFileIODevice_HandleWrite8(t *testing.T) {
 	if fio.HandleRead(FILE_STATUS) != 0 {
 		t.Fatalf("upper CTRL byte write should not trigger operation, got status %d", fio.HandleRead(FILE_STATUS))
 	}
+}
+
+func readFileIOBusString(bus *MachineBus, addr uint32, max int) string {
+	var b []byte
+	for i := 0; i < max; i++ {
+		ch := bus.Read8(addr + uint32(i))
+		if ch == 0 {
+			break
+		}
+		b = append(b, ch)
+	}
+	return string(b)
 }
 
 func TestFileIO_MachineBusByteWritesUseHandleWrite8(t *testing.T) {

@@ -39,6 +39,7 @@ sdk/
 
    Or from the EhBASIC prompt:
    ```basic
+   DIR "sdk/examples/prebuilt"
    RUN "sdk/examples/prebuilt/vga_text_hello.iex"
    EMUTOS
    ```

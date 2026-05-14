@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -65,6 +66,8 @@ func (f *FileIODevice) HandleWrite(addr uint32, val uint32) {
 			f.doRead()
 		} else if val == FILE_OP_WRITE {
 			f.doWrite()
+		} else if val == FILE_OP_LIST {
+			f.doList()
 		}
 	}
 }
@@ -92,6 +95,8 @@ func (f *FileIODevice) HandleWrite8(addr uint32, value uint8) {
 				f.doRead()
 			} else if value == FILE_OP_WRITE {
 				f.doWrite()
+			} else if value == FILE_OP_LIST {
+				f.doList()
 			}
 		}
 	}
@@ -318,4 +323,58 @@ func (f *FileIODevice) doWrite() {
 
 	f.fileStatus = 0
 	f.fileErrorCode = FILE_ERR_OK
+}
+
+// doList writes a sorted, newline-delimited directory listing to FILE_DATA_PTR.
+func (f *FileIODevice) doList() {
+	dirName := f.readFileName()
+	fullPath, ok := f.sanitizePath(dirName)
+	if !ok {
+		f.fileStatus = 1
+		f.fileErrorCode = FILE_ERR_PATH_TRAVERSAL
+		f.fileResultLen = 0
+		return
+	}
+
+	entries, err := os.ReadDir(fullPath)
+	if os.IsNotExist(err) {
+		if resolved, resolvedOK := f.caseInsensitiveReadPath(fullPath); resolvedOK {
+			fullPath = resolved
+			entries, err = os.ReadDir(fullPath)
+		}
+	}
+	traceHostIO("FILEIO", fmt.Sprintf("LIST name_ptr=0x%08X", f.fileNamePtr), dirName, fullPath, err, len(entries))
+	if err != nil {
+		f.fileStatus = 1
+		if os.IsNotExist(err) {
+			f.fileErrorCode = FILE_ERR_NOT_FOUND
+		} else {
+			f.fileErrorCode = FILE_ERR_PERMISSION
+		}
+		f.fileResultLen = 0
+		return
+	}
+
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() {
+			name += "/"
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	data := []byte(strings.Join(names, "\n"))
+	if len(data) > 0 {
+		data = append(data, '\n')
+	}
+
+	for i, b := range data {
+		f.bus.Write8(f.fileDataPtr+uint32(i), b)
+	}
+	f.bus.Write8(f.fileDataPtr+uint32(len(data)), 0)
+
+	f.fileStatus = 0
+	f.fileErrorCode = FILE_ERR_OK
+	f.fileResultLen = uint32(len(data))
 }
