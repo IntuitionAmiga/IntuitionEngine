@@ -37,12 +37,19 @@ assembler/untracked/
 .codex
 
 # Local Go/build outputs
+build/
 /*.test
 /*.test.exe
 /*.exe
 /*.o
 /all_cpu_bench.tar
 /assembler/assembler
+
+# x64 live image artifacts (legacy top-level locations kept ignored too)
+/x64-img-build-work/
+/build-x64-live-*.log
+/intuition-engine-x64.img
+/intuition-engine-x64.img.zst
 
 # Release artifacts
 *.AppImage

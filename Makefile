@@ -175,6 +175,9 @@ NICE_LEVEL := 19
 PREFIX := /usr/local
 INSTALL_BIN_DIR := $(PREFIX)/bin
 SUDO ?= $(shell if [ -n "$(DESTDIR)" ] || [ -w "$(INSTALL_BIN_DIR)" ]; then echo ""; else echo "sudo"; fi)
+OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/qemu/ovmf-x86_64-4m.bin /usr/share/qemu/ovmf-x86_64-4m-code.bin))
+X64_LIVE_DIR ?= build/x64-live
+X64_LIVE_IMG ?= $(X64_LIVE_DIR)/intuition-engine-x64.img
 
 SHOWREEL_SCRIPT := ./sdk/scripts/ie_product_demo.ies
 SHOWREEL_PREBUILT_DIR := ./sdk/examples/prebuilt
@@ -285,7 +288,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live x64-live-rebuild-golden x64-live-qemu test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -324,6 +327,38 @@ intuition-engine: setup
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "Intuition Engine VM build complete"
+
+.PHONY: x86-64-v3
+x86-64-v3:
+	@echo "Building IE for x86-64-v3 (AVX2+FMA+BMI)..."
+	mkdir -p $(BIN_DIR)
+	GOOS=linux GOARCH=amd64 GOAMD64=v3 CGO_ENABLED=1 \
+	$(GO) build $(GO_FLAGS) -trimpath -pgo=default.pgo \
+	  -tags "$(VM_EMBED_TAGS)" \
+	  -o $(BIN_DIR)/IntuitionEngine_v3 .
+	@strip $(BIN_DIR)/IntuitionEngine_v3 || true
+	@ls -lh $(BIN_DIR)/IntuitionEngine_v3
+
+.PHONY: x64-live
+x64-live: x86-64-v3
+	@echo "Building IE x64 live USB image..."
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" ./build_x64_ie_img.sh
+
+.PHONY: x64-live-rebuild-golden
+x64-live-rebuild-golden: x86-64-v3
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" ./build_x64_ie_img.sh --rebuild-golden
+
+.PHONY: x64-live-qemu
+x64-live-qemu: $(X64_LIVE_IMG)
+	@test -n "$(OVMF_CODE)" || { echo "No OVMF firmware found; set OVMF_CODE=/path/to/OVMF_CODE.fd"; exit 1; }
+	qemu-system-x86_64 -enable-kvm -cpu host -m 4G -smp 4 \
+	  -bios $(OVMF_CODE) \
+	  -drive file=$(X64_LIVE_IMG),format=raw,if=virtio \
+	  -display gtk,gl=on -device virtio-vga-gl \
+	  -audiodev pipewire,id=snd0 -device intel-hda -device hda-output,audiodev=snd0
+
+$(X64_LIVE_IMG):
+	@test -f "$(X64_LIVE_IMG)" || $(MAKE) x64-live
 
 # Build without Vulkan (software Voodoo rasterizer only)
 novulkan: setup
