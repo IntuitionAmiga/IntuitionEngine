@@ -29,7 +29,7 @@ EXPANDED_IMG="${WORK_DIR}/ubuntu-26.04-ie-expanded.img"
 GOLDEN_IMG="ubuntu-26.04-lowlatency-cage-golden.img"
 GOLDEN_IMG_PATH="${WORK_DIR}/${GOLDEN_IMG}"
 GOLDEN_IMG_MAX_AGE_DAYS=30
-GOLDEN_STAMP_VERSION="x64-live-golden-v8-fat32-root-launch"
+GOLDEN_STAMP_VERSION="x64-live-golden-v9-emutos-fat32-drive"
 GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"
 KERNEL_PKG="linux-lowlatency"
 COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,mesa-utils,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core"
@@ -284,7 +284,7 @@ cd /var/ie/share
 pipewire >/tmp/ie-pipewire.log 2>&1 &
 wireplumber >/tmp/ie-wireplumber.log 2>&1 &
 pipewire-pulse >/tmp/ie-pipewire-pulse.log 2>&1 &
-exec /opt/ie/IntuitionEngine
+exec /opt/ie/IntuitionEngine -emutos-drive /var/ie/share
 EOF
     chmod +x "${WORK_DIR}/launch.sh"
 

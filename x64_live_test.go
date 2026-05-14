@@ -153,7 +153,7 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 		`pipewire >/tmp/ie-pipewire.log 2>&1 &`,
 		`wireplumber >/tmp/ie-wireplumber.log 2>&1 &`,
 		`pipewire-pulse >/tmp/ie-pipewire-pulse.log 2>&1 &`,
-		`exec /opt/ie/IntuitionEngine`,
+		`exec /opt/ie/IntuitionEngine -emutos-drive /var/ie/share`,
 		`systemctl mask getty@tty1.service`,
 		`systemctl enable greetd.service seatd.service`,
 		`systemctl enable getty@tty2.service`,
@@ -358,7 +358,7 @@ func TestX64LiveGoldenCacheHasContentStamp(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`GOLDEN_STAMP_VERSION="x64-live-golden-v8-fat32-root-launch"`,
+		`GOLDEN_STAMP_VERSION="x64-live-golden-v9-emutos-fat32-drive"`,
 		`GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"`,
 		`write_golden_stamp`,
 		`expected_golden_stamp`,
