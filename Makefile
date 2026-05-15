@@ -751,72 +751,16 @@ aros-rom:
 		workbench-devs-AHI-subsystem \
 		kernel-ie-m68k-ahidrv 2>&1 || \
 		echo "  Warning: additional targets had failures (non-fatal)"
-	@echo "Rebuilding broad AROS demo runtime targets (excluding Mesa-dependent libs)..."
-	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) \
-		workbench-directories \
+	@echo "Building required AROS desktop/runtime targets..."
+	@for target in \
 		workbench-c \
-		workbench-classes-complete \
-		workbench-gadgets-complete \
-		workbench-classes-zune \
-		workbench-datatypes-complete \
-		workbench-datatypes-heic \
 		workbench-datatypes-jpeg \
-		workbench-datatypes-png \
-		workbench-datatypes-tiff \
-		workbench-datatypes-webp \
-		workbench-devs \
-		workbench-devs-fdsk \
-		workbench-devs-ramdrive \
-		workbench-devs-monitors \
-		workbench-expansion \
-		workbench-fs-complete \
-		workbench-locale \
-		workbench-printers \
-		workbench-rexxc \
-		workbench-s \
-		workbench-storage \
-		workbench-system \
 		workbench-system-wanderer \
 		workbench-tools \
 		workbench-utilities \
-		workbench-prefs \
-		workbench-libs-amigaguide \
-		workbench-libs-asyncio \
-		workbench-libs-camd \
-		workbench-libs-cgfx \
-		workbench-libs-codesets \
-		workbench-libs-commodities \
-		workbench-libs-coolimages \
-		workbench-libs-datatypes \
-		workbench-libs-diskfont \
-		workbench-libs-expat \
-		workbench-libs-gadtools \
-		workbench-libs-identify \
-		workbench-libs-icon \
-		workbench-libs-jpeg \
-		workbench-libs-asl \
-		workbench-libs-lowlevel \
-		workbench-libs-lzma \
-		workbench-libs-mathffp \
-		workbench-libs-mathieeedoubbas \
-		workbench-libs-mathieeedoubtrans \
-		workbench-libs-mathieeesingbas \
-		workbench-libs-mathieeesingtrans \
-		workbench-libs-mathtrans \
-		workbench-libs-muimaster \
-		workbench-libs-muiscreen \
-		workbench-libs-png \
-		workbench-libs-popupmenu \
-		workbench-libs-reqtools \
-		workbench-libs-realtime \
-		workbench-libs-rexxsupport \
-		workbench-libs-tiff \
-		workbench-libs-utf8proc \
-		workbench-libs-version \
-		workbench-libs-z \
-		workbench-libs-zstd \
-		workbench-libs-workbench 2>&1 || \
-		echo "  Warning: broad demo runtime targets had failures (non-fatal)"
+		workbench-prefs-screenmode; do \
+		$(MAKE) -C "$(AROS_BUILD_DIR)" "$$target" || exit $$?; \
+	done
 	@echo "Finalising muimaster.library with a dedicated pass..."
 	@$(MAKE) -C "$(AROS_BUILD_DIR)" workbench-libs-muimaster 2>&1 || \
 		echo "  Warning: workbench-libs-muimaster had some failures (non-fatal)"
@@ -824,7 +768,7 @@ aros-rom:
 	@for target in \
 		workbench-devs-fdsk \
 		workbench-devs-ramdrive \
-		workbench-devs-monitors \
+		devs-monitors-compositor \
 		workbench-libs-amigaguide \
 		workbench-libs-asyncio \
 		workbench-libs-camd \
@@ -1073,6 +1017,7 @@ aros-rom:
 	for f in \
 		"S/Startup-Sequence" \
 		"C/IPrefs" \
+		"Prefs/ScreenMode" \
 		"System/FixFonts" \
 		"Devs/Mountlist" \
 		"Devs/DOSDrivers/DEBUG" \
