@@ -161,11 +161,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-resolution support, fullscreen mode, and display scaling.
 
 #### AROS Support
-- AROS boot with full Workbench desktop (12 tasks, 27.6MB RAM plus 16MB direct VRAM).
+- AROS boot with full Workbench desktop (12 tasks, 27.6MB RAM plus 64MB direct VRAM).
 - DOS handler: MMIO filesystem bridge at 0xF2220, host directory as IE: volume (lock/unlock/examine/read/write/seek/delete/rename/createdir/setfilesize/samelock).
 - battclock.resource via RTC_EPOCH MMIO register (0xF0750) providing host UTC seconds.
 - Amiga rawkey scancode mode for keyboard input.
-- Memory layout: 5.6MB chip + 22MB fast, direct VRAM at 0x1E00000-0x2DFFFFF (16MB).
+- Memory layout: 5.6MB chip + 22MB fast, direct VRAM at 0x1E00000-0x5DFFFFF (64MB).
 - Full workbench build system (`make aros-rom`) producing ROM + filesystem with 48 libs, 35 Zune classes, 115 C commands, 90 datatypes.
 - IEScript test harnesses: `aros_boot_test.ies`, `aros_path_test.ies`.
 

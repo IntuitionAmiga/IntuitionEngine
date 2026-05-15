@@ -187,7 +187,7 @@ func TestDocs_ModeCapTable_CurrentPolicy(t *testing.T) {
 	text := readDoc(t, "PLAN_MAX_RAM.md")
 	required := []string{
 		"| EmuTOS | 2 GiB (profile cap; 32 MiB minimum) | unused | 2 GiB |",
-		"| AROS | 2 GiB (profile cap; 32 MiB minimum) | unused | 2 GiB |",
+		"| AROS | 2 GiB (profile cap; 0x5E00000 minimum) | unused | 2 GiB |",
 		"| 6502 / Z80 (banked) | 32 MiB (banked-CPU ABI) | unused | 32 MiB |",
 		"32 MiB remains current only for the 6502/Z80 bank-switching ABI",
 	}

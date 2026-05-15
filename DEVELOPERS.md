@@ -275,7 +275,7 @@ Total guest RAM is autodetected from host `/proc/meminfo` minus a per-platform r
 - **IE64**: large addressable; sees the full active visible RAM, which may exceed 4 GiB on hosts with sufficient memory. Discovers size via `CR_RAM_SIZE_BYTES` and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair.
 - **IE32 / x86 / M68K**: flat 32-bit guests; visible RAM is bounded by the 32-bit ceiling regardless of total guest RAM.
 - **6502 / Z80**: banked guests; the current bank-switching ABI caps visibility at 32 MiB.
-- **EmuTOS / AROS / EhBASIC**: source-owned profiles (`profile_bounds.go`) declare explicit memory-map contracts independent of the underlying CPU's architectural visible range. EmuTOS currently uses a 2 GiB profile cap with a 32 MiB minimum; AROS uses a 2 GiB profile cap with a minimum large enough to back its 0x1E00000-0x2DFFFFF direct VRAM window.
+- **EmuTOS / AROS / EhBASIC**: source-owned profiles (`profile_bounds.go`) declare explicit memory-map contracts independent of the underlying CPU's architectural visible range. EmuTOS currently uses a 2 GiB profile cap with a 32 MiB minimum; AROS uses a 2 GiB profile cap with a minimum large enough to back its 0x1E00000-0x5DFFFFF direct VRAM window.
 
 Guest software discovers RAM via the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI` for total guest RAM, `SYSINFO_ACTIVE_RAM_LO/HI` for active visible RAM). Each pair is a little-endian 64-bit byte value assembled from the low/high 32-bit registers. Do not hardcode the appliance RAM size.
 
@@ -769,9 +769,9 @@ The `AROS` command at the BASIC prompt triggers boot via the `arosSentinel` path
 | Chip RAM B | `0x200000-0x6FFFFF` | 5MB |
 | ROM | `0x600000-0x7FFFFF` | 2MB |
 | Fast RAM | `0x800000-0x1DFFFFF` | 22MB |
-| VRAM | `0x1E00000-0x2DFFFFF` | 16MB |
+| VRAM | `0x1E00000-0x5DFFFFF` | 64MB |
 
-Total: 27.6MB RAM (5.6MB chip + 22MB fast) plus 16MB direct VRAM
+Total: 27.6MB RAM (5.6MB chip + 22MB fast) plus 64MB direct VRAM
 
 ### DOS Handler
 

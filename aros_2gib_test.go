@@ -39,15 +39,15 @@ func TestAROS_ProfileBoundsClampsToActiveBelow2GiB(t *testing.T) {
 }
 
 func TestAROS_DirectVRAMUnchanged(t *testing.T) {
-	// VRAM at 0x1E00000..0x2E00000 is well within the new 2 GiB
+	// VRAM at 0x1E00000..0x5E00000 is well within the new 2 GiB
 	// cap. Pin the contract so the raise does not silently move it.
 	bus := fakeProfileBus{activeVisible: uint64(AROS_PROFILE_TOP)}
 	pb := AROSProfileBounds(bus)
 	if pb.VRAMBase != 0x1E00000 {
 		t.Fatalf("VRAMBase = 0x%X, want 0x1E00000", pb.VRAMBase)
 	}
-	if pb.VRAMEnd != 0x2E00000 {
-		t.Fatalf("VRAMEnd = 0x%X, want 0x2E00000", pb.VRAMEnd)
+	if pb.VRAMEnd != 0x5E00000 {
+		t.Fatalf("VRAMEnd = 0x%X, want 0x5E00000", pb.VRAMEnd)
 	}
 }
 

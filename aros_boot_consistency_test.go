@@ -23,8 +23,8 @@ func TestConfigureArosVRAM_UsesDedicatedArosRange(t *testing.T) {
 	if len(got) != arosDirectVRAMSize {
 		t.Fatalf("direct VRAM len = %d, want %d", len(got), arosDirectVRAMSize)
 	}
-	if arosDirectVRAMBase != 0x1E00000 || arosDirectVRAMSize != 0x1000000 {
-		t.Fatalf("AROS direct VRAM contract got base=0x%X size=0x%X, want 0x1E00000/0x1000000",
+	if arosDirectVRAMBase != 0x1E00000 || arosDirectVRAMSize != 0x4000000 {
+		t.Fatalf("AROS direct VRAM contract got base=0x%X size=0x%X, want 0x1E00000/0x4000000",
 			arosDirectVRAMBase, arosDirectVRAMSize)
 	}
 	if len(videoChip.directVRAM) != arosDirectVRAMSize {

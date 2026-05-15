@@ -8,7 +8,7 @@ import (
 
 const (
 	arosDirectVRAMBase = 0x1E00000
-	arosDirectVRAMSize = 0x1000000
+	arosDirectVRAMSize = 0x4000000
 )
 
 func resolveAROSDrivePath(explicit, exePath string) (string, error) {

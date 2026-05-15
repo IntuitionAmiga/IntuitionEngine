@@ -28,7 +28,7 @@ const (
 
 	// AROS_PROFILE_TOP is the explicit top-of-RAM the AROS M68K profile
 	// exposes. PLAN_MAX_RAM slice 10h raised this from 32 MiB to 2 GiB.
-	// The direct VRAM window at 0x1E00000..0x2E00000 and the
+	// The direct VRAM window at 0x1E00000..0x5E00000 and the
 	// AROS audio DMA fetch guard are well inside the new ceiling. 2 GiB
 	// (= 0x80000000) still fits in uint32 — the value is the largest
 	// page-aligned quantity that survives the M68K profile's uint32
@@ -51,8 +51,9 @@ const (
 	ehbasicMaxTopOfRAM uint32 = 0xFFFFF000
 
 	// arosMinRequiredRAM backs the whole AROS direct VRAM contract:
-	// 0x1E00000..0x2E00000. 1920x1080 RGBA32 requires 8,294,400 bytes,
-	// so the old 2 MiB/32 MiB-floor contract is no longer sufficient.
+	// 0x1E00000..0x5E00000. 1920x1080 RGBA32 requires 8,294,400 bytes
+	// per screen-sized bitmap, so the old 2 MiB/32 MiB-floor contract
+	// and single-frame 16 MiB pool are not sufficient for Workbench.
 	arosMinRequiredRAM uint32 = arosDirectVRAMBase + arosDirectVRAMSize
 
 	// emutosMinRequiredRAM is the historical EmuTOS runtime floor — 32 MiB.

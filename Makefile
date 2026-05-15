@@ -343,7 +343,7 @@ x86-64-v3: x64-live-embed-assets
 	@ls -lh $(BIN_DIR)/IntuitionEngine_v3
 
 .PHONY: x64-live-embed-assets
-x64-live-embed-assets: sdk-build emutos-release-rom aros-iewarp-library intuitionos
+x64-live-embed-assets: sdk-build emutos-release-rom iewarp-runtime-assets intuitionos
 	@test -f "$(EMUTOS_ROM)" || { echo "Error: missing embedded EmuTOS ROM: $(EMUTOS_ROM)"; exit 1; }
 	@test -f "$(AROS_ROM)" || { echo "Error: missing embedded AROS ROM: $(AROS_ROM)"; exit 1; }
 	@test -f "sdk/examples/prebuilt/ehbasic_ie64.ie64" || { echo "Error: missing embedded EhBASIC image: sdk/examples/prebuilt/ehbasic_ie64.ie64"; exit 1; }
@@ -665,6 +665,37 @@ aros-rom:
 	@rm -f "$(AROS_BUILD_DIR)/bin/ie-m68k/gen/rom_objs.ld" \
 		"$(AROS_BUILD_DIR)/bin/ie-m68k/gen/ext_objs.ld" 2>/dev/null || true
 	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) kernel-ie-m68k-rom
+	@echo "Packaging rebuilt AROS ROM and IE graphics HIDD..."
+	@AROS_TARGETDIR="$(AROS_BUILD_DIR)/bin/ie-m68k"; \
+	AROSDIR="$$AROS_TARGETDIR/AROS"; \
+	ROM_ELF="$$AROS_TARGETDIR/gen/boot/aros-ie-m68k-rom.elf"; \
+	IEGFX_KO="$$AROS_TARGETDIR/gen/kobjs/iegfx_hidd.ko"; \
+	if [ ! -f "$$ROM_ELF" ]; then \
+		echo "Error: ROM ELF not found at $$ROM_ELF"; \
+		exit 1; \
+	fi; \
+	if [ ! -f "$$IEGFX_KO" ]; then \
+		echo "Error: rebuilt IEGfx HIDD not found at $$IEGFX_KO"; \
+		exit 1; \
+	fi; \
+	if command -v m68k-aros-objcopy >/dev/null 2>&1; then \
+		AROS_OBJCOPY="m68k-aros-objcopy"; \
+	elif command -v "$(AROS_BUILD_DIR)/bin/linux-x86_64/tools/crosstools/m68k-aros-objcopy" >/dev/null 2>&1; then \
+		AROS_OBJCOPY="$(AROS_BUILD_DIR)/bin/linux-x86_64/tools/crosstools/m68k-aros-objcopy"; \
+	elif command -v m68k-atari-mint-objcopy >/dev/null 2>&1; then \
+		AROS_OBJCOPY="m68k-atari-mint-objcopy"; \
+	elif command -v m68k-suse-linux-objcopy >/dev/null 2>&1; then \
+		AROS_OBJCOPY="m68k-suse-linux-objcopy"; \
+	else \
+		AROS_OBJCOPY="m68k-linux-gnu-objcopy"; \
+	fi; \
+	$(MKDIR) -p "$$(dirname "$(AROS_ROM)")" "$$AROSDIR/Devs/Drivers"; \
+	$$AROS_OBJCOPY --output-target binary \
+		--only-section=.rom --only-section=.ext --only-section=.ss \
+		--gap-fill 0xff "$$ROM_ELF" "$(AROS_ROM)"; \
+	cp -f "$$IEGFX_KO" "$$AROSDIR/Devs/Drivers/iegfx.hidd"; \
+	echo "AROS ROM prepared: $(AROS_ROM) ($$(wc -c < "$(AROS_ROM)") bytes)"; \
+	echo "IEGfx HIDD staged: $$AROSDIR/Devs/Drivers/iegfx.hidd"
 	@echo "Building AROS workbench components (S/, C/, Fonts/)..."
 	@# Fix m68k-amiga workbench-c targets: scope them to amiga arch only.
 	@# Without this, workbench-c-m68k pulls in amiga-specific gdbstub/SetPatch for ALL
@@ -752,20 +783,18 @@ aros-rom:
 		kernel-ie-m68k-ahidrv 2>&1 || \
 		echo "  Warning: additional targets had failures (non-fatal)"
 	@echo "Building required AROS desktop/runtime targets..."
-	@for target in \
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" \
 		workbench-c \
 		workbench-datatypes-jpeg \
 		workbench-system-wanderer \
 		workbench-tools \
 		workbench-utilities \
-		workbench-prefs-screenmode; do \
-		$(MAKE) -C "$(AROS_BUILD_DIR)" "$$target" || exit $$?; \
-	done
+		workbench-prefs-screenmode
 	@echo "Finalising muimaster.library with a dedicated pass..."
 	@$(MAKE) -C "$(AROS_BUILD_DIR)" workbench-libs-muimaster 2>&1 || \
 		echo "  Warning: workbench-libs-muimaster had some failures (non-fatal)"
 	@echo "Finalising required runtime devices, libraries, and monitor configs..."
-	@for target in \
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" \
 		workbench-devs-fdsk \
 		workbench-devs-ramdrive \
 		devs-monitors-compositor \
@@ -792,10 +821,8 @@ aros-rom:
 		workbench-libs-tiff \
 		workbench-libs-utf8proc \
 		workbench-libs-version \
-		workbench-libs-z; do \
-		$(MAKE) -C "$(AROS_BUILD_DIR)" "$$target" 2>&1 || \
-			echo "  Warning: $$target had some failures (non-fatal)"; \
-	done
+		workbench-libs-z 2>&1 || \
+		echo "  Warning: required runtime batch had some failures (final artifact check will decide)"
 	@echo "Installing stock AROS Startup-Sequence..."
 	@mkdir -p "$(AROS_BUILD_DIR)/bin/ie-m68k/AROS/S"
 	@cp -f "$(AROS_SRC_DIR)/workbench/s/Startup-Sequence" \
@@ -964,15 +991,23 @@ aros-rom:
 		cp -f "$$AROSDIR/Classes/Zune/"*.mui "$$AROSDIR/Libs/Zune/" 2>/dev/null; \
 		echo "  Copied $$(ls "$$AROSDIR/Libs/Zune/" 2>/dev/null | wc -l) Zune classes to Libs/Zune/"; \
 	fi
-	@echo "Extracting ROM binary..."
+	@echo "Refreshing packaged ROM and IE graphics HIDD..."
 	@AROS_TARGETDIR="$(AROS_BUILD_DIR)/bin/ie-m68k"; \
+	AROSDIR="$$AROS_TARGETDIR/AROS"; \
 	ROM_ELF="$$AROS_TARGETDIR/gen/boot/aros-ie-m68k-rom.elf"; \
+	IEGFX_KO="$$AROS_TARGETDIR/gen/kobjs/iegfx_hidd.ko"; \
 	if [ ! -f "$$ROM_ELF" ]; then \
 		echo "Error: ROM ELF not found at $$ROM_ELF"; \
 		exit 1; \
 	fi; \
+	if [ ! -f "$$IEGFX_KO" ]; then \
+		echo "Error: rebuilt IEGfx HIDD not found at $$IEGFX_KO"; \
+		exit 1; \
+	fi; \
 	if command -v m68k-aros-objcopy >/dev/null 2>&1; then \
 		AROS_OBJCOPY="m68k-aros-objcopy"; \
+	elif command -v "$(AROS_BUILD_DIR)/bin/linux-x86_64/tools/crosstools/m68k-aros-objcopy" >/dev/null 2>&1; then \
+		AROS_OBJCOPY="$(AROS_BUILD_DIR)/bin/linux-x86_64/tools/crosstools/m68k-aros-objcopy"; \
 	elif command -v m68k-atari-mint-objcopy >/dev/null 2>&1; then \
 		AROS_OBJCOPY="m68k-atari-mint-objcopy"; \
 	elif command -v m68k-suse-linux-objcopy >/dev/null 2>&1; then \
@@ -984,7 +1019,10 @@ aros-rom:
 	$$AROS_OBJCOPY --output-target binary \
 		--only-section=.rom --only-section=.ext --only-section=.ss \
 		--gap-fill 0xff "$$ROM_ELF" "$(AROS_ROM)"; \
-	echo "AROS ROM prepared: $(AROS_ROM) ($$(wc -c < "$(AROS_ROM)") bytes)"
+	$(MKDIR) -p "$$AROSDIR/Devs/Drivers"; \
+	cp -f "$$IEGFX_KO" "$$AROSDIR/Devs/Drivers/iegfx.hidd"; \
+	echo "AROS ROM prepared: $(AROS_ROM) ($$(wc -c < "$(AROS_ROM)") bytes)"; \
+	echo "IEGfx HIDD staged: $$AROSDIR/Devs/Drivers/iegfx.hidd"
 	@echo "Installing AHI artifacts..."
 	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
 	GENDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/gen"; \
@@ -1091,11 +1129,32 @@ aros-rom:
 
 .PHONY: aros-release-assets
 aros-release-assets:
-	@if [ -f "$(AROS_ROM)" ] && \
-		[ -f "$(AROS_RELEASE_DIR)/S/Startup-Sequence" ] && \
-		[ -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Tool.info" ] && \
-		[ -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Drawer.info" ] && \
-		[ -f "$(AROS_RELEASE_DIR)/Libs/iewarp.library" ]; then \
+	@rebuild=0; \
+	if [ ! -f "$(AROS_ROM)" ] || \
+		[ ! -f "$(AROS_RELEASE_DIR)/S/Startup-Sequence" ] || \
+		[ ! -f "$(AROS_RELEASE_DIR)/Prefs/ScreenMode" ] || \
+		[ ! -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Tool.info" ] || \
+		[ ! -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Drawer.info" ] || \
+		[ ! -f "$(AROS_RELEASE_DIR)/Devs/Drivers/iegfx.hidd" ] || \
+		[ ! -f "$(AROS_RELEASE_DIR)/Libs/iewarp.library" ]; then \
+		rebuild=1; \
+	fi; \
+	for src in \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/include/ie_hwreg.h" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/boot/rom_init.S" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/hidd/iegfx/iegfx.conf" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/hidd/iegfx/iegfx_bitmap.h" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/hidd/iegfx/iegfx_hidd.h" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/hidd/iegfx/iegfx_hiddclass.c" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/hidd/iegfx/iegfx_hw.c" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/hidd/iegfx/iegfx_hw.h" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/hidd/iegfx/iegfx_init.c" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/hidd/iegfx/iegfx_onbitmap.c"; do \
+		if [ -f "$$src" ] && { [ ! -f "$(AROS_RELEASE_DIR)/Devs/Drivers/iegfx.hidd" ] || [ ! -f "$(AROS_ROM)" ] || [ "$$src" -nt "$(AROS_RELEASE_DIR)/Devs/Drivers/iegfx.hidd" ] || [ "$$src" -nt "$(AROS_ROM)" ]; }; then \
+			rebuild=1; \
+		fi; \
+	done; \
+	if [ "$$rebuild" -eq 0 ]; then \
 		echo "Using existing AROS release assets: $(AROS_ROM), $(AROS_RELEASE_DIR)"; \
 	else \
 		echo "AROS release assets missing or incomplete; building them..."; \

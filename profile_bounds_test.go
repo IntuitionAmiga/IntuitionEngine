@@ -100,7 +100,7 @@ func TestAROSProfileBounds_HasExplicitContract(t *testing.T) {
 }
 
 func TestAROSProfileBounds_DirectVRAMGuaranteed(t *testing.T) {
-	// PLAN_MAX_RAM.md requires AROS direct VRAM at 0x1E00000..0x2E00000 to
+	// PLAN_MAX_RAM.md requires AROS direct VRAM at 0x1E00000..0x5E00000 to
 	// remain guaranteed by the M68K profile or be moved deliberately. The
 	// profile contract anchors this so any future move trips the test.
 	bus := fakeProfileBus{activeVisible: uint64(arosDirectVRAMBase + arosDirectVRAMSize)}
@@ -108,8 +108,8 @@ func TestAROSProfileBounds_DirectVRAMGuaranteed(t *testing.T) {
 	if pb.VRAMBase != 0x1E00000 {
 		t.Fatalf("VRAMBase=0x%X want 0x1E00000 (AROS direct VRAM contract)", pb.VRAMBase)
 	}
-	if pb.VRAMEnd != 0x2E00000 {
-		t.Fatalf("VRAMEnd=0x%X want 0x2E00000", pb.VRAMEnd)
+	if pb.VRAMEnd != 0x5E00000 {
+		t.Fatalf("VRAMEnd=0x%X want 0x5E00000", pb.VRAMEnd)
 	}
 	if pb.VRAMEnd > pb.TopOfRAM {
 		t.Fatalf("VRAM 0x%X..0x%X exceeds TopOfRAM 0x%X", pb.VRAMBase, pb.VRAMEnd, pb.TopOfRAM)

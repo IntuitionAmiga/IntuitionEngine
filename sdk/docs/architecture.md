@@ -1005,7 +1005,7 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xD0000-0xDFFFF` | 64KB | Voodoo Texture Memory |
 | `0x100000-0x5FFFFF` | 5MB | Video RAM |
 | `0x800000-0x1DFFFFF` | 22MB | AROS Fast Memory |
-| `0x1E00000-0x2DFFFFF` | 16MB | AROS Video RAM |
+| `0x1E00000-0x5DFFFFF` | 64MB | AROS Video RAM |
 
 Additional special regions used by the coprocessor subsystem:
 

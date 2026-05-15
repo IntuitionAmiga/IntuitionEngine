@@ -2383,6 +2383,7 @@ func main() {
 
 		// 7. Reset memory
 		sysBus.Reset()
+		applyRuntimeVisibleRAMForMode(sysBus, mode)
 
 		// 7b. VRAM I/O mapping for non-ROM profiles.
 		restoreROMVideoConfig := false

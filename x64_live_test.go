@@ -27,7 +27,7 @@ func TestX64LiveMakefileTargets(t *testing.T) {
 		"-tags \"$(VM_EMBED_TAGS)\"",
 		"-o $(BIN_DIR)/IntuitionEngine_v3 .",
 		"x86-64-v3: x64-live-embed-assets",
-		"x64-live-embed-assets: sdk-build emutos-release-rom aros-iewarp-library intuitionos",
+		"x64-live-embed-assets: sdk-build emutos-release-rom iewarp-runtime-assets intuitionos",
 		`test -f "$(EMUTOS_ROM)"`,
 		`test -f "$(AROS_ROM)"`,
 		`test -f "sdk/examples/prebuilt/ehbasic_ie64.ie64"`,
@@ -84,15 +84,48 @@ func TestX64LiveDemoPayloadTargets(t *testing.T) {
 		"AROS_CC ?=",
 		"-o sdk/examples/c/RotoAPIc",
 		"-o sdk/examples/c/RotoHWc",
-		`[ -f "$(AROS_ROM)" ] && \`,
-		`[ -f "$(AROS_RELEASE_DIR)/S/Startup-Sequence" ] && \`,
-		`[ -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Tool.info" ] && \`,
-		`[ -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Drawer.info" ] && \`,
-		`[ -f "$(AROS_RELEASE_DIR)/Libs/iewarp.library" ]`,
+		`[ ! -f "$(AROS_ROM)" ] || \`,
+		`[ ! -f "$(AROS_RELEASE_DIR)/S/Startup-Sequence" ] || \`,
+		`[ ! -f "$(AROS_RELEASE_DIR)/Prefs/ScreenMode" ] || \`,
+		`[ ! -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Tool.info" ] || \`,
+		`[ ! -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Drawer.info" ] || \`,
+		`[ ! -f "$(AROS_RELEASE_DIR)/Devs/Drivers/iegfx.hidd" ] || \`,
+		`[ ! -f "$(AROS_RELEASE_DIR)/Libs/iewarp.library" ]`,
+		`"$(AROS_SRC_DIR)/arch/m68k-ie/hidd/iegfx/iegfx_hiddclass.c"`,
+		"Packaging rebuilt AROS ROM and IE graphics HIDD...",
+		"Refreshing packaged ROM and IE graphics HIDD...",
+		`cp -f "$$IEGFX_KO" "$$AROSDIR/Devs/Drivers/iegfx.hidd"`,
+		`"$(AROS_BUILD_DIR)/bin/linux-x86_64/tools/crosstools/m68k-aros-objcopy"`,
 		"AROS release assets missing or incomplete; building them...",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Makefile missing live demo payload contract %q", want)
+		}
+	}
+}
+
+func TestAROSRomMakefileBatchesWorkbenchTargets(t *testing.T) {
+	makefile, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	text := string(makefile)
+
+	forbidden := []string{
+		"for target in \\\n\t\tworkbench-c",
+		"for target in \\\n\t\tworkbench-devs-fdsk",
+	}
+	for _, phrase := range forbidden {
+		if strings.Contains(text, phrase) {
+			t.Fatalf("aros-rom must batch AROS target groups instead of repeatedly rescanning via %q", phrase)
+		}
+	}
+	for _, want := range []string{
+		"@$(MAKE) -C \"$(AROS_BUILD_DIR)\" \\\n\t\tworkbench-c",
+		"@$(MAKE) -C \"$(AROS_BUILD_DIR)\" \\\n\t\tworkbench-devs-fdsk",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Makefile missing batched AROS target group %q", want)
 		}
 	}
 }
