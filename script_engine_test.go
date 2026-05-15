@@ -100,6 +100,7 @@ func TestScriptEngine_ShowreelDiagnosisScriptsParse(t *testing.T) {
 		filepath.Join("scripts", "diag_cpu_online.ies"),
 		filepath.Join("scripts", "diag_device_diff.ies"),
 		filepath.Join("scripts", "diag_bug_report.ies"),
+		filepath.Join("scripts", "diag_aros_black_screen.ies"),
 	}
 
 	for _, path := range paths {

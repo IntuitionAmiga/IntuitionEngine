@@ -1,0 +1,60 @@
+local VIDEO_CTRL = 0xF0000
+local VIDEO_MODE = 0xF0004
+local VIDEO_STATUS = 0xF0008
+local VIDEO_FB_BASE = 0xF0084
+local VIDEO_COLOR_MODE = 0xF0080
+
+local deadline = sys.time_ms() + 10000
+local nonblack = 0
+local hash = 0
+while sys.time_ms() < deadline do
+	hash = video.frame_hash()
+	local w, h = video.get_dimensions()
+	local points = {
+		{0, 0},
+		{math.floor(w / 2), math.floor(h / 2)},
+		{w - 1, h - 1},
+		{64, 64},
+		{320, 240},
+	}
+	nonblack = 0
+	for _, p in ipairs(points) do
+		local r, g, b, a = video.get_pixel(p[1], p[2])
+		if r ~= 0 or g ~= 0 or b ~= 0 then
+			nonblack = nonblack + 1
+		end
+	end
+	if nonblack > 0 then break end
+	sys.wait_ms(50)
+end
+
+local ctrl = video.read_reg(VIDEO_CTRL)
+local mode = video.read_reg(VIDEO_MODE)
+local status = video.read_reg(VIDEO_STATUS)
+local fb = video.read_reg(VIDEO_FB_BASE)
+local color = video.read_reg(VIDEO_COLOR_MODE)
+dbg.open()
+dbg.fault_on()
+local trace = dbg.tracering_show(32)
+dbg.close()
+
+local lines = {
+	string.format("VIDEO_CTRL=0x%X", ctrl),
+	string.format("VIDEO_MODE=0x%X", mode),
+	string.format("VIDEO_STATUS=0x%X", status),
+	string.format("VIDEO_FB_BASE=0x%X", fb),
+	string.format("VIDEO_COLOR_MODE=0x%X", color),
+	string.format("FRAME_HASH=0x%X", hash),
+	string.format("NONBLACK_SAMPLES=%d", nonblack),
+	"TRACE_TAIL:",
+}
+for _, entry in ipairs(trace) do
+	table.insert(lines, string.format("0x%X %s", entry.pc or entry.addr or 0, entry.mnemonic or ""))
+end
+
+local report = table.concat(lines, "\n") .. "\n"
+sys.write_file("aros_black_screen_report.txt", report)
+if ctrl == 0 or mode ~= 0x06 or fb < 0x1E00000 or fb >= 0x5E00000 or bit32.band(status, 0x04) ~= 0 or nonblack == 0 then
+	rec.screenshot("aros_black_screen.png")
+	error(report)
+end

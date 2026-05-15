@@ -7,7 +7,7 @@ import (
 
 func newTestArosAudioDMA(t *testing.T) (*MachineBus, *SoundChip, *M68KCPU, *ArosAudioDMA) {
 	t.Helper()
-	bus, err := NewMachineBusSized(32 * 1024 * 1024)
+	bus, err := NewMachineBusSized(arosDirectVRAMBase + arosDirectVRAMSize)
 	if err != nil {
 		t.Fatalf("NewMachineBusSized: %v", err)
 	}

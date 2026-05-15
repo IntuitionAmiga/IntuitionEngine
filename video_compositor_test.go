@@ -10,6 +10,20 @@ import (
 	"time"
 )
 
+func TestCompositorOpaquePixelTreatsRGBWithZeroAlphaAsOpaque(t *testing.T) {
+	got, ok := compositorOpaquePixel(0x00332211)
+	if !ok {
+		t.Fatal("RGB pixel with zero alpha was treated as transparent")
+	}
+	if got != 0xFF332211 {
+		t.Fatalf("opaque pixel=0x%08X, want 0xFF332211", got)
+	}
+
+	if _, ok := compositorOpaquePixel(0x00000000); ok {
+		t.Fatal("black zero-alpha pixel should remain transparent")
+	}
+}
+
 // BenchmarkFrameClear_Loop benchmarks the old loop-based frame clear
 func BenchmarkFrameClear_Loop(b *testing.B) {
 	// 640x480x4 = 1,228,800 bytes

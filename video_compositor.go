@@ -613,8 +613,8 @@ func (c *VideoCompositor) blendStrip(srcFrame []byte, width, startY, endY int) {
 			srcIdx := srcOffset + x
 			dstIdx := dstOffset + x
 			srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcIdx]))
-			if srcPixel&0xFF000000 != 0 {
-				*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = srcPixel
+			if pixel, ok := compositorOpaquePixel(srcPixel); ok {
+				*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = pixel
 			}
 		}
 		srcOffset += rowBytes
@@ -642,13 +642,22 @@ func (c *VideoCompositor) blendFrameScaled(srcFrame []byte, srcW, srcH int, rect
 
 			// Read uint32 directly using unsafe pointer
 			srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcIdx]))
-			// Check alpha (high byte in little-endian RGBA)
-			if srcPixel&0xFF000000 != 0 {
+			if pixel, ok := compositorOpaquePixel(srcPixel); ok {
 				// Write uint32 directly
-				*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = srcPixel
+				*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = pixel
 			}
 		}
 	}
+}
+
+func compositorOpaquePixel(srcPixel uint32) (uint32, bool) {
+	if srcPixel&0xFF000000 != 0 {
+		return srcPixel, true
+	}
+	if srcPixel&0x00FFFFFF != 0 {
+		return srcPixel | 0xFF000000, true
+	}
+	return 0, false
 }
 
 // SetFrameCallback installs a callback invoked after each composite() pass.
