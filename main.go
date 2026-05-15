@@ -598,8 +598,8 @@ func main() {
 		}
 	}
 
-	// Initialize sound first (used by all modes)
-	soundChip, err := NewSoundChip(AUDIO_BACKEND_OTO)
+	// Initialize sound first (used by all modes). Audio must not prevent the VM from booting.
+	soundChip, err := newRuntimeSoundChip(NewSoundChip)
 	if err != nil {
 		fmt.Printf("Failed to initialize sound: %v\n", err)
 		os.Exit(1)

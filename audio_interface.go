@@ -31,6 +31,7 @@ type AudioOutput interface {
 
 const (
 	AUDIO_BACKEND_OTO = iota
+	AUDIO_BACKEND_NULL
 )
 
 func NewAudioOutput(backend int, sampleRate int, chip *SoundChip) (AudioOutput, error) {
@@ -42,6 +43,8 @@ func NewAudioOutput(backend int, sampleRate int, chip *SoundChip) (AudioOutput, 
 		}
 		op.SetupPlayer(chip)
 		return op, nil
+	case AUDIO_BACKEND_NULL:
+		return NewNullAudioOutput(), nil
 	}
 	return nil, fmt.Errorf("unknown backend: %d", backend)
 }
