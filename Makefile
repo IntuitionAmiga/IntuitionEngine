@@ -857,6 +857,9 @@ aros-rom:
 		cp -f "$(AROS_SRC_DIR)/workbench/system/Wanderer/Env/default/backdrop.prefs" \
 			"$$AROSDIR/Prefs/Env-Archive/SYS/Wanderer/backdrop.prefs"; \
 	fi
+	@echo "Preseeding AROS ScreenMode prefs for IE 1920x1080x32..."
+	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	./scripts/write-aros-screenmode-prefs.sh "$$AROSDIR/Prefs/Env-Archive/SYS/screenmode.prefs" 1920 1080 32
 	@echo "Building AROS icons..."
 	@ILBMTOICON="$(AROS_BUILD_DIR)/bin/$$(uname -s | tr A-Z a-z)-$$(uname -m)/tools/ilbmtoicon"; \
 	AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
@@ -1073,6 +1076,7 @@ aros-rom:
 		"Libs/codesets.library" \
 		"Libs/commodities.library" \
 		"Libs/coolimages.library" \
+		"Prefs/Env-Archive/SYS/screenmode.prefs" \
 		"Prefs/Env-Archive/SYS/Wanderer/backdrop.prefs" \
 		"System/Wanderer/Wanderer" \
 		"Libs/asl.library" \
@@ -1133,6 +1137,7 @@ aros-release-assets:
 	if [ ! -f "$(AROS_ROM)" ] || \
 		[ ! -f "$(AROS_RELEASE_DIR)/S/Startup-Sequence" ] || \
 		[ ! -f "$(AROS_RELEASE_DIR)/Prefs/ScreenMode" ] || \
+		[ ! -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/screenmode.prefs" ] || \
 		[ ! -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Tool.info" ] || \
 		[ ! -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Drawer.info" ] || \
 		[ ! -f "$(AROS_RELEASE_DIR)/Devs/Drivers/iegfx.hidd" ] || \

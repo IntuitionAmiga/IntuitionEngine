@@ -87,6 +87,7 @@ func TestX64LiveDemoPayloadTargets(t *testing.T) {
 		`[ ! -f "$(AROS_ROM)" ] || \`,
 		`[ ! -f "$(AROS_RELEASE_DIR)/S/Startup-Sequence" ] || \`,
 		`[ ! -f "$(AROS_RELEASE_DIR)/Prefs/ScreenMode" ] || \`,
+		`[ ! -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/screenmode.prefs" ] || \`,
 		`[ ! -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Tool.info" ] || \`,
 		`[ ! -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Drawer.info" ] || \`,
 		`[ ! -f "$(AROS_RELEASE_DIR)/Devs/Drivers/iegfx.hidd" ] || \`,
@@ -97,6 +98,8 @@ func TestX64LiveDemoPayloadTargets(t *testing.T) {
 		`cp -f "$$IEGFX_KO" "$$AROSDIR/Devs/Drivers/iegfx.hidd"`,
 		`"$(AROS_BUILD_DIR)/bin/linux-x86_64/tools/crosstools/m68k-aros-objcopy"`,
 		"AROS release assets missing or incomplete; building them...",
+		"Preseeding AROS ScreenMode prefs for IE 1920x1080x32...",
+		`./scripts/write-aros-screenmode-prefs.sh "$$AROSDIR/Prefs/Env-Archive/SYS/screenmode.prefs" 1920 1080 32`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Makefile missing live demo payload contract %q", want)
