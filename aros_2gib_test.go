@@ -3,9 +3,9 @@
 // Pins the AROS profile-cap raise from 32 MiB to 2 GiB. AROS_PROFILE_TOP
 // is uint32; its new value (= 0x80000000) is the largest page-aligned
 // quantity that survives the M68K profile's uint32 representation. The
-// runtime minimum stays at 32 MiB so legacy test rigs still satisfy the
-// profile gate; clampM68KProfileToBus reduces TopOfRAM when the bus is
-// smaller than the new cap.
+// runtime minimum backs the full AROS direct VRAM window; clampM68KProfileToBus
+// reduces TopOfRAM when the bus is smaller than the new cap but large enough
+// for the profile contract.
 
 package main
 
@@ -39,15 +39,15 @@ func TestAROS_ProfileBoundsClampsToActiveBelow2GiB(t *testing.T) {
 }
 
 func TestAROS_DirectVRAMUnchanged(t *testing.T) {
-	// VRAM at 0x1E00000..0x2000000 is 30 MiB — well within the new 2 GiB
+	// VRAM at 0x1E00000..0x2E00000 is well within the new 2 GiB
 	// cap. Pin the contract so the raise does not silently move it.
 	bus := fakeProfileBus{activeVisible: uint64(AROS_PROFILE_TOP)}
 	pb := AROSProfileBounds(bus)
 	if pb.VRAMBase != 0x1E00000 {
 		t.Fatalf("VRAMBase = 0x%X, want 0x1E00000", pb.VRAMBase)
 	}
-	if pb.VRAMEnd != 0x2000000 {
-		t.Fatalf("VRAMEnd = 0x%X, want 0x2000000", pb.VRAMEnd)
+	if pb.VRAMEnd != 0x2E00000 {
+		t.Fatalf("VRAMEnd = 0x%X, want 0x2E00000", pb.VRAMEnd)
 	}
 }
 

@@ -16,8 +16,17 @@ func buildAROSTestROM(size int, sp uint32, pc uint32) []byte {
 	return rom
 }
 
+func newAROSLoaderTestBus(t *testing.T) *MachineBus {
+	t.Helper()
+	bus, err := NewMachineBusSized(arosDirectVRAMBase + arosDirectVRAMSize)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized failed: %v", err)
+	}
+	return bus
+}
+
 func TestAROSLoader_LoadROM(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 
@@ -49,7 +58,7 @@ func TestAROSLoader_LoadROM(t *testing.T) {
 }
 
 func TestAROSLoader_LoadROM_PreservesWordOffsets(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 
@@ -88,7 +97,7 @@ func TestAROSLoader_LoadROM_RealROMProbe(t *testing.T) {
 		t.Skipf("AROS ROM not available: %v", err)
 	}
 
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 	if err := loader.LoadROM(rom); err != nil {
@@ -123,7 +132,7 @@ func TestAROSLoader_LoadROM_RealROMProbe(t *testing.T) {
 }
 
 func TestAROSLoader_LoadROM_TooSmall(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 
@@ -134,7 +143,7 @@ func TestAROSLoader_LoadROM_TooSmall(t *testing.T) {
 }
 
 func TestAROSLoader_ROMPageNoIOCollision(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 
@@ -156,7 +165,7 @@ func TestAROSLoader_ROMPageNoIOCollision(t *testing.T) {
 }
 
 func TestAROSLoader_VectorSetup(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 
@@ -178,7 +187,7 @@ func TestAROSLoader_VectorSetup(t *testing.T) {
 }
 
 func TestAROSLoader_StackBoundsDisabled(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 
@@ -202,7 +211,7 @@ func TestAROSLoader_StackBoundsDisabled(t *testing.T) {
 }
 
 func TestAROSLoader_TimerFires(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 	defer loader.Stop()
@@ -225,7 +234,7 @@ func TestAROSLoader_TimerFires(t *testing.T) {
 }
 
 func TestAROSLoader_TimerArmingCheck(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 	defer loader.Stop()
@@ -255,7 +264,7 @@ func TestAROSLoader_TimerArmingCheck(t *testing.T) {
 }
 
 func TestAROSLoader_RevalidatesIRQArming(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 	cpu.Write32(uint32(M68K_VEC_LEVEL4)*4, 0x00001000)
@@ -272,7 +281,7 @@ func TestAROSLoader_RevalidatesIRQArming(t *testing.T) {
 
 func TestAROSLoader_DebugWatchOptIn(t *testing.T) {
 	t.Setenv("IE_AROS_DEBUG", "")
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 	rom := buildAROSTestROM(64*1024, 0x20000, arosROMBase+0x100)
@@ -285,7 +294,7 @@ func TestAROSLoader_DebugWatchOptIn(t *testing.T) {
 }
 
 func TestAROSLoader_TimerStopsOnCancel(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 
@@ -300,7 +309,7 @@ func TestAROSLoader_TimerStopsOnCancel(t *testing.T) {
 }
 
 func TestAROSLoader_TimerPausedWhileCPUStopped(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 	defer loader.Stop()
@@ -330,7 +339,7 @@ func TestAROSLoader_TimerPausedWhileCPUStopped(t *testing.T) {
 }
 
 func TestAROSLoader_IsValidVector(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 	tests := []struct {
@@ -354,7 +363,7 @@ func TestAROSLoader_IsValidVector(t *testing.T) {
 }
 
 func TestAROSLoader_LoadROM_InstallsProfileTopOfRAM(t *testing.T) {
-	bus := NewMachineBus()
+	bus := newAROSLoaderTestBus(t)
 	cpu := NewM68KCPU(bus)
 	loader := NewAROSLoader(bus, cpu, nil)
 	// Tiny synthetic ROM so the test never depends on a live image.
@@ -365,7 +374,7 @@ func TestAROSLoader_LoadROM_InstallsProfileTopOfRAM(t *testing.T) {
 		t.Fatalf("LoadROM failed: %v", err)
 	}
 	// PLAN_MAX_RAM slice 10h: AROS_PROFILE_TOP raised to 2 GiB; on a
-	// legacy 32 MiB test bus the profile clamp pulls TopOfRAM down to
+	// smaller-than-cap test bus the profile clamp pulls TopOfRAM down to
 	// len(bus.memory). Assert the loader installs the clamped value.
 	wantTop := uint32(len(bus.GetMemory()))
 	if got := cpu.ProfileTopOfRAM(); got != wantTop {

@@ -458,15 +458,22 @@ func TestVRAMReset_EmuTOSReloadPreservesBigEndianAndDirectVRAM(t *testing.T) {
 }
 
 func TestVRAMReset_ArosReloadPreservesConfig(t *testing.T) {
-	sysBus := NewMachineBus()
+	sysBus, err := NewMachineBusSized(arosDirectVRAMBase + arosDirectVRAMSize)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized failed: %v", err)
+	}
 	vc, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
 	if err != nil {
 		t.Skipf("NewVideoChip failed (expected in headless): %v", err)
 	}
 
-	applyArosVideoConfig(sysBus, vc)
+	if err := applyArosVideoConfig(sysBus, vc); err != nil {
+		t.Fatalf("applyArosVideoConfig failed: %v", err)
+	}
 	vc.Reset()
-	applyArosVideoConfig(sysBus, vc)
+	if err := applyArosVideoConfig(sysBus, vc); err != nil {
+		t.Fatalf("applyArosVideoConfig after reset failed: %v", err)
+	}
 
 	if !vc.bigEndianMode {
 		t.Fatal("AROS reload must leave VideoChip in big-endian mode")

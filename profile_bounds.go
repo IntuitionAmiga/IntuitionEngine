@@ -28,7 +28,7 @@ const (
 
 	// AROS_PROFILE_TOP is the explicit top-of-RAM the AROS M68K profile
 	// exposes. PLAN_MAX_RAM slice 10h raised this from 32 MiB to 2 GiB.
-	// The direct VRAM window at 0x1E00000..0x2000000 (30 MiB) and the
+	// The direct VRAM window at 0x1E00000..0x2E00000 and the
 	// AROS audio DMA fetch guard are well inside the new ceiling. 2 GiB
 	// (= 0x80000000) still fits in uint32 — the value is the largest
 	// page-aligned quantity that survives the M68K profile's uint32
@@ -50,12 +50,10 @@ const (
 	// representable in a uint32 without truncating a larger active visible.
 	ehbasicMaxTopOfRAM uint32 = 0xFFFFF000
 
-	// arosMinRequiredRAM is the historical AROS runtime floor — 32 MiB.
-	// AROS_PROFILE_TOP raised to 2 GiB in slice 10h is the maximum, not
-	// the minimum: a 32 MiB test bus still satisfies the AROS profile
-	// gate, and clampM68KProfileToBus pulls TopOfRAM down to the bus
-	// size when smaller than the cap.
-	arosMinRequiredRAM uint32 = 32 * 1024 * 1024
+	// arosMinRequiredRAM backs the whole AROS direct VRAM contract:
+	// 0x1E00000..0x2E00000. 1920x1080 RGBA32 requires 8,294,400 bytes,
+	// so the old 2 MiB/32 MiB-floor contract is no longer sufficient.
+	arosMinRequiredRAM uint32 = arosDirectVRAMBase + arosDirectVRAMSize
 
 	// emutosMinRequiredRAM is the historical EmuTOS runtime floor — 32 MiB.
 	// EmuTOS_PROFILE_TOP is the maximum, not the minimum: a 32 MiB test bus
@@ -106,9 +104,8 @@ func EmuTOSProfileBounds(bus profileBoundsBus) ProfileBounds {
 // AROSProfileBounds returns the explicit M68K AROS memory-map contract.
 //
 // PLAN_MAX_RAM slice 10h: TopOfRAM was raised from 32 MiB to 2 GiB so AROS
-// guests can address more RAM. MinRequired stays at the historical 32 MiB
-// runtime minimum so legacy 32 MiB test rigs and embedded boots still pass
-// the gate; clampM68KProfileToBus reduces TopOfRAM to the bus's active
+// guests can address more RAM. MinRequired is the end of the AROS direct
+// VRAM window; clampM68KProfileToBus reduces TopOfRAM to the bus's active
 // visible RAM when the bus is smaller than the profile cap.
 func AROSProfileBounds(bus profileBoundsBus) ProfileBounds {
 	pb := ProfileBounds{

@@ -1829,7 +1829,10 @@ func main() {
 			os.Exit(1)
 		}
 
-		applyArosVideoConfig(sysBus, videoChip)
+		if err := applyArosVideoConfig(sysBus, videoChip); err != nil {
+			fmt.Printf("Error configuring AROS video: %v\n", err)
+			os.Exit(1)
+		}
 		m68kCPU := NewM68KCPU(sysBus)
 		m68kRunner := NewM68KRunner(m68kCPU)
 		wireVideoInterruptSinks(videoChip, anticEngine, NewM68KInterruptSink(m68kCPU))
@@ -2406,7 +2409,9 @@ func main() {
 		videoChip.Reset()
 		if restoreROMVideoConfig {
 			if mode == "aros" {
-				applyArosVideoConfig(sysBus, videoChip)
+				if err := applyArosVideoConfig(sysBus, videoChip); err != nil {
+					return err
+				}
 			} else {
 				applyEmuTOSVideoConfig(sysBus, videoChip)
 			}
@@ -2888,6 +2893,7 @@ func applyIE64FlatProgramVideoConfig(sysBus *MachineBus, videoChip *VideoChip) {
 	videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
 }
 
-func applyArosVideoConfig(sysBus *MachineBus, videoChip *VideoChip) {
-	configureArosVRAM(sysBus, videoChip)
+func applyArosVideoConfig(sysBus *MachineBus, videoChip *VideoChip) error {
+	_, err := configureArosVRAM(sysBus, videoChip)
+	return err
 }

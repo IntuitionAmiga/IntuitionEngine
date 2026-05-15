@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func TestAROSRebootLifecycleTeardownUnmapsSingletonRegions(t *testing.T) {
-	bus, err := NewMachineBusSized(32 * 1024 * 1024)
+	bus, err := NewMachineBusSized(arosDirectVRAMBase + arosDirectVRAMSize)
 	if err != nil {
 		t.Fatalf("NewMachineBusSized: %v", err)
 	}

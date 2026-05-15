@@ -8,7 +8,7 @@ import (
 
 const (
 	arosDirectVRAMBase = 0x1E00000
-	arosDirectVRAMSize = 0x200000
+	arosDirectVRAMSize = 0x1000000
 )
 
 func resolveAROSDrivePath(explicit, exePath string) (string, error) {
@@ -68,11 +68,20 @@ func isAROSDrivePath(path string) bool {
 	return err == nil && !startupInfo.IsDir()
 }
 
-func configureArosVRAM(sysBus *MachineBus, videoChip *VideoChip) []byte {
+func configureArosVRAM(sysBus *MachineBus, videoChip *VideoChip) ([]byte, error) {
+	pb := AROSProfileBounds(sysBus)
+	if pb.Err != nil {
+		return nil, pb.Err
+	}
+	vramEnd := uint64(arosDirectVRAMBase) + uint64(arosDirectVRAMSize)
+	if uint64(len(sysBus.memory)) < vramEnd {
+		return nil, fmt.Errorf("AROS direct VRAM requires bus memory through 0x%X, got 0x%X",
+			vramEnd, len(sysBus.memory))
+	}
 	sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
 	videoChip.SetBusMemory(sysBus.memory)
 	videoChip.SetBigEndianMode(true)
 	directVRAM := sysBus.memory[arosDirectVRAMBase : arosDirectVRAMBase+arosDirectVRAMSize]
 	videoChip.SetDirectVRAM(directVRAM)
-	return directVRAM
+	return directVRAM, nil
 }

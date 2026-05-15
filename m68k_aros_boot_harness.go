@@ -461,14 +461,20 @@ func NewAROSInterpreterBootEnvironmentWithCoprocessor(rom []byte, hostRoot strin
 }
 
 func newAROSInterpreterBootEnvironment(rom []byte, hostRoot string, withCoprocessor bool) (*AROSInterpreterBootEnvironment, error) {
-	bus := NewMachineBus()
+	bus, err := NewMachineBusSized(arosDirectVRAMBase + arosDirectVRAMSize)
+	if err != nil {
+		return nil, fmt.Errorf("new AROS bus: %w", err)
+	}
 
 	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
 	if err != nil {
 		return nil, fmt.Errorf("new video chip: %w", err)
 	}
 	video.AttachBus(bus)
-	configureArosVRAM(bus, video)
+	if _, err := configureArosVRAM(bus, video); err != nil {
+		video.Stop()
+		return nil, fmt.Errorf("configure AROS VRAM: %w", err)
+	}
 	bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
 	bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
 	bus.SetVideoStatusReader(video.HandleRead)
