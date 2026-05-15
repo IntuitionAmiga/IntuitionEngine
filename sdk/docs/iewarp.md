@@ -20,7 +20,7 @@ Path 2 — iewarp.library public API (5 ops + all ops for app use):
     → ie_write32(IE_COPROC_*) → ring buffer → IE64 worker (JIT)
 ```
 
-The library opens at resident priority -5 during AROS boot. On init it starts the IE64 coprocessor worker from `sdk/examples/asm/iewarp_service.ie64`, calibrates dispatch overhead with a NOP round-trip, and installs a Level 6 completion interrupt handler.
+The library opens at resident priority -5 during AROS boot. On init it starts the IE64 coprocessor worker staged in AROS as `SYS:Libs/iewarp_service.ie64`. The coprocessor manager resolves worker filenames relative to the Intuition Engine runtime base, so the AROS-side library passes `Systems/AROS/Libs/iewarp_service.ie64` to `COPROC_NAME_PTR`. After the worker starts, the library calibrates dispatch overhead with a NOP round-trip and installs a Level 6 completion interrupt handler.
 
 ## API Reference
 
@@ -700,7 +700,15 @@ All 22 worker operations have AROS-integrated consumers. The consumer tiers are:
 
 ## IE64 Worker Service
 
-The IE64 worker binary is assembled from `sdk/examples/asm/iewarp_service.asm` and loaded as `iewarp_service.ie64`.
+The IE64 worker binary is assembled from `sdk/examples/asm/iewarp_service.asm`. The prebuilt output lives at `sdk/examples/prebuilt/iewarp_service.ie64`; live images stage it into the AROS SYS: tree as `Systems/AROS/Libs/iewarp_service.ie64`, visible inside AROS as `SYS:Libs/iewarp_service.ie64`.
+
+For development runs from the repository root, keep the same runtime-relative path available with:
+
+```bash
+make iewarp-runtime-assets
+```
+
+That target copies the worker to `Systems/AROS/Libs/iewarp_service.ie64` for repo-root runs and to `$(AROS_RELEASE_DIR)/Libs/iewarp_service.ie64` for the AROS release tree. If `iewarp.library` changes its hardcoded worker path, rebuild the AROS library/ROM so the live image and development tree stay in sync.
 
 The worker runs a simple poll loop on its assigned ring buffer (ring index 5, base address `MAILBOX_BASE + 5 * 0x300 = 0x820F00`). It spins comparing head vs tail bytes. When head != tail, it reads the request descriptor at the tail slot, dispatches the operation, writes the response descriptor, and advances the tail pointer.
 
@@ -899,6 +907,7 @@ Each ring has 768 bytes (`RING_STRIDE = 0x300`):
 | `AROS/arch/m68k-ie/libs/iewarp/iewarp_dispatch.c` | Core dispatch, Wait/Poll/Batch/Threshold/Stats |
 | `AROS/arch/m68k-ie/libs/iewarp/iewarp_ops.c` | Per-operation wrappers with threshold fallback |
 | `sdk/examples/asm/iewarp_service.asm` | IE64 worker source (poll loop + op handlers) |
+| `sdk/examples/prebuilt/iewarp_service.ie64` | Prebuilt IE64 worker staged to `Systems/AROS/Libs` |
 | `coprocessor_constants.go` | Go-side MMIO addresses, ring layout, worker regions |
 | `AROS/arch/m68k-ie/include/ie_hwreg.h` | C MMIO register definitions |
 | `AROS/arch/m68k-ie/utilities/IEWarpMon/` | IEWarpMon coprocessor monitor (MUI app) |

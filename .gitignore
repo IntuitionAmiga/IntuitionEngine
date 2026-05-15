@@ -71,6 +71,7 @@ sysroot/
 /embedded/ab3d2/*.zip
 
 # SDK build artifacts
+/Systems/
 sdk/bin/
 sdk/examples/prebuilt/
 sdk/ab3d64/bin/

@@ -29,12 +29,12 @@ EXPANDED_IMG="${WORK_DIR}/ubuntu-26.04-ie-expanded.img"
 GOLDEN_IMG="ubuntu-26.04-lowlatency-cage-golden.img"
 GOLDEN_IMG_PATH="${WORK_DIR}/${GOLDEN_IMG}"
 GOLDEN_IMG_MAX_AGE_DAYS=30
-GOLDEN_STAMP_VERSION="x64-live-golden-v9-emutos-fat32-drive"
+GOLDEN_STAMP_VERSION="x64-live-golden-v14-pipewire-pactl-ready"
 GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"
 KERNEL_PKG="linux-lowlatency"
 COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,mesa-utils,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core"
 X11_RUNTIME_PKGS="libxrandr2,libxxf86vm1,libxi6,libxcursor1,libxinerama1,libx11-6,libxext6,libxfixes3,libxrender1"
-AUDIO_PKGS="pipewire,pipewire-pulse,wireplumber,pipewire-alsa,alsa-utils"
+AUDIO_PKGS="pipewire,pipewire-pulse,wireplumber,pipewire-alsa,alsa-utils,pulseaudio-utils,dbus-user-session"
 SECUREBOOT_PKGS="shim-signed,grub-efi-amd64-signed,sbsigntool"
 OVERLAY_PKG="overlayroot"
 SHARE_GROW_PKGS="cloud-guest-utils,dosfstools,fatresize,parted"
@@ -42,6 +42,7 @@ NETWORK_PKGS="network-manager,wpasupplicant,wireless-regdb,iw"
 ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${SECUREBOOT_PKGS},${OVERLAY_PKG},${SHARE_GROW_PKGS},${NETWORK_PKGS}"
 IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"
 IE_INSTALL_NAME="IntuitionEngine"
+AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS/bin/ie-m68k/bin/ie-m68k/AROS}"
 FINAL_IMAGE_SIZE="8G"
 ROOT_PART_SIZE="5G"
 FATSHARE_LABEL="IESHARE"
@@ -49,13 +50,15 @@ OUTPUT_IMG="${X64_LIVE_OUTPUT_IMG:-${LIVE_OUT_DIR}/intuition-engine-x64.img}"
 
 FORCE_REBUILD_GOLDEN=false
 CREATE_SHARE=true
+PAYLOAD_CHECK_ONLY=false
 
 usage() {
     cat <<EOF
-Usage: $0 [--rebuild-golden] [--no-share]
+Usage: $0 [--rebuild-golden] [--no-share] [--check-payload]
 
   --rebuild-golden  Rebuild the cached Ubuntu package/config golden image.
   --no-share        Do not create the host-visible FAT32 IESHARE partition.
+  --check-payload   Validate live-image payload inputs without building an image.
 EOF
 }
 
@@ -66,6 +69,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-share)
             CREATE_SHARE=false
+            ;;
+        --check-payload)
+            PAYLOAD_CHECK_ONLY=true
             ;;
         -h|--help)
             usage
@@ -148,6 +154,26 @@ check_dependencies() {
         log_error "Run: make x64-live-demos"
         exit 1
     fi
+    if [[ "${CREATE_SHARE}" == "true" && ! -f "${AROS_RELEASE_DIR}/S/Startup-Sequence" ]]; then
+        log_error "AROS release tree not found: ${AROS_RELEASE_DIR}"
+        log_error "Run: make x64-live-demos"
+        exit 1
+    fi
+    if [[ "${CREATE_SHARE}" == "true" && ! -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Tool.info" ]]; then
+        log_error "AROS default tool icon not found: ${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Tool.info"
+        log_error "Run: make x64-live-demos"
+        exit 1
+    fi
+    if [[ "${CREATE_SHARE}" == "true" && ! -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" ]]; then
+        log_error "AROS default drawer icon not found: ${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info"
+        log_error "Run: make x64-live-demos"
+        exit 1
+    fi
+    if [[ "${CREATE_SHARE}" == "true" && ! -f "${AROS_RELEASE_DIR}/Libs/iewarp.library" ]]; then
+        log_error "AROS IEWarp library not found: ${AROS_RELEASE_DIR}/Libs/iewarp.library"
+        log_error "Run: make x64-live-demos"
+        exit 1
+    fi
 
     local available_space
     available_space="$(df -BG "$SCRIPT_DIR" | awk 'NR==2 {print $4}' | sed 's/G//')"
@@ -158,27 +184,285 @@ check_dependencies() {
     log_success "Sufficient disk space available (${available_space}GB)"
 }
 
+payload_require_file() {
+    local path="$1"
+    local producer="$2"
+    local label="$3"
+    if [[ ! -f "$path" ]]; then
+        log_error "Missing live payload input: $label"
+        log_error "Path: $path"
+        log_error "Producer: $producer"
+        exit 1
+    fi
+}
+
+payload_require_glob() {
+    local pattern="$1"
+    local producer="$2"
+    local label="$3"
+    if ! compgen -G "$pattern" >/dev/null; then
+        log_error "Missing live payload input set: $label"
+        log_error "Pattern: $pattern"
+        log_error "Producer: $producer"
+        exit 1
+    fi
+}
+
+check_live_payload_inputs() {
+    log_section "Checking live payload manifest inputs"
+    local payload_cmd
+    for payload_cmd in file python3; do
+        if ! command -v "$payload_cmd" >/dev/null 2>&1; then
+            log_error "$payload_cmd is required to validate the live payload manifest"
+            exit 1
+        fi
+    done
+
+    payload_require_file "$IE_BINARY" "make x86-64-v3" "x86-64-v3 Intuition Engine binary"
+    if ! file "$IE_BINARY" | grep -q "x86-64"; then
+        log_error "Live payload binary is not x86-64: $IE_BINARY"
+        log_error "Producer: make x86-64-v3"
+        exit 1
+    fi
+
+    payload_require_file "${SCRIPT_DIR}/embedded/ab3d2/_build.zip" "make x64-live-ab3d2-assets" "AB3D2 embedded runtime asset zip"
+    payload_require_file "${AROS_RELEASE_DIR}/S/Startup-Sequence" "make aros-release-assets" "AROS Startup-Sequence"
+    payload_require_file "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Tool.info" "make aros-release-assets" "AROS default tool icon"
+    payload_require_file "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "make aros-release-assets" "AROS default drawer icon"
+    payload_require_file "${AROS_RELEASE_DIR}/Libs/iewarp.library" "make aros-iewarp-library" "AROS IEWarp library"
+    if ! grep -a -q 'Systems/AROS/Libs/iewarp_service.ie64' "${AROS_RELEASE_DIR}/Libs/iewarp.library"; then
+        log_error "AROS IEWarp library does not contain Systems/AROS/Libs/iewarp_service.ie64"
+        log_error "Producer: make aros-iewarp-library"
+        exit 1
+    fi
+    payload_require_file "${SCRIPT_DIR}/sdk/examples/prebuilt/iewarp_service.ie64" "make iewarp-runtime-assets" "IEWarp IE64 worker"
+    payload_require_file "${AROS_RELEASE_DIR}/Libs/iewarp_service.ie64" "make iewarp-runtime-assets" "AROS release IEWarp worker copy"
+
+    payload_require_file "${SCRIPT_DIR}/sdk/examples/basic/rotozoomer_basic.bas" "make sdk-build" "EhBASIC live demo source"
+    payload_require_file "${SCRIPT_DIR}/sdk/examples/prebuilt/rotozoomer_gem.prg" "make gem-rotozoomer" "EmuTOS GEM rotozoomer demo"
+    payload_require_file "${SCRIPT_DIR}/sdk/examples/asm/RotoAPI" "make x64-live-aros-demos" "AROS RotoAPI demo"
+    payload_require_file "${SCRIPT_DIR}/sdk/examples/asm/RotoHW" "make x64-live-aros-demos" "AROS RotoHW demo"
+    payload_require_file "${SCRIPT_DIR}/sdk/examples/c/RotoAPIc" "make x64-live-aros-demos" "AROS RotoAPIc demo"
+    payload_require_file "${SCRIPT_DIR}/sdk/examples/c/RotoHWc" "make x64-live-aros-demos" "AROS RotoHWc demo"
+
+    payload_require_glob "${SCRIPT_DIR}/sdk/examples/prebuilt/*.ie*" "make sdk-build" "prebuilt Intuition Engine binaries"
+    payload_require_glob "${SCRIPT_DIR}/sdk/examples/prebuilt/coproc_*.ie*" "make sdk-build" "coprocessor support worker binaries"
+    payload_require_glob "${SCRIPT_DIR}/sdk/examples/asm/*.asm" "make sdk-build" "SDK assembly source examples"
+    payload_require_glob "${SCRIPT_DIR}/sdk/examples/basic/*.bas" "make sdk-build" "SDK BASIC source examples"
+    payload_require_glob "${SCRIPT_DIR}/sdk/examples/c/*.c" "make sdk-build" "SDK C source examples"
+
+    local include
+    for include in ie32.inc ie64.inc ie65.inc ie68.inc ie80.inc ie86.inc; do
+        payload_require_file "${SCRIPT_DIR}/sdk/include/${include}" "make sdk-build" "SDK include ${include}"
+    done
+
+    local doc
+    for doc in Coprocessor.md demo-matrix.md ehbasic_ie64.md ie_emutos.md iescript.md iewarp.md iemon.md include-files.md sdk-getting-started.md toolchains.md; do
+        payload_require_file "${SCRIPT_DIR}/sdk/docs/${doc}" "make sdk-build" "SDK doc ${doc}"
+    done
+
+    python3 - "${SCRIPT_DIR}/embedded/ab3d2/_build.zip" <<'PY'
+import sys
+import zipfile
+
+zip_path = sys.argv[1]
+roots = (
+    "ab3d2_source/_build/ie_media/redux-high/",
+    "ab3d2_source/_build/ie_unpacked/",
+)
+with zipfile.ZipFile(zip_path) as zf:
+    names = [info.filename for info in zf.infolist() if not info.is_dir()]
+    for name in names:
+        if name.startswith("/") or ".." in name.split("/"):
+            raise SystemExit(f"unsafe AB3D2 zip entry path: {name}")
+    if not any(any(name.startswith(root) for root in roots) for name in names):
+        raise SystemExit("AB3D2 zip does not contain live runtime roots")
+PY
+
+    log_success "Live payload manifest inputs are ready"
+}
+
+verify_staged_share_payload() {
+    local payload_root="$1"
+    log_section "Verifying staged IESHARE payload"
+
+    payload_require_file "${payload_root}/README.TXT" "build_x64_ie_img.sh stage_share_payload" "IESHARE root README"
+    payload_require_file "${payload_root}/Demos/README.TXT" "build_x64_ie_img.sh stage_share_payload" "Demos README"
+    payload_require_file "${payload_root}/IE/Coproc/README.TXT" "build_x64_ie_img.sh stage_share_payload" "IE/Coproc README"
+    payload_require_file "${payload_root}/SDK/README.TXT" "build_x64_ie_img.sh stage_share_payload" "SDK README"
+    payload_require_file "${payload_root}/Systems/README.TXT" "build_x64_ie_img.sh stage_share_payload" "Systems README"
+
+    payload_require_file "${payload_root}/Systems/AROS/S/Startup-Sequence" "make aros-release-assets" "staged AROS Startup-Sequence"
+    payload_require_file "${payload_root}/Systems/AROS/Libs/iewarp.library" "make aros-iewarp-library" "staged AROS IEWarp library"
+    payload_require_file "${payload_root}/Systems/AROS/Libs/iewarp_service.ie64" "make iewarp-runtime-assets" "staged AROS IEWarp worker"
+    payload_require_file "${payload_root}/Systems/AROS/Demos/RotoAPI" "make x64-live-aros-demos" "staged AROS RotoAPI demo"
+    payload_require_file "${payload_root}/Systems/AROS/Demos/RotoHW" "make x64-live-aros-demos" "staged AROS RotoHW demo"
+    payload_require_file "${payload_root}/Systems/AROS/Demos/RotoAPIc" "make x64-live-aros-demos" "staged AROS RotoAPIc demo"
+    payload_require_file "${payload_root}/Systems/AROS/Demos/RotoHWc" "make x64-live-aros-demos" "staged AROS RotoHWc demo"
+    payload_require_file "${payload_root}/Systems/EmuTOS/Demos/rotozoomer_gem.prg" "make gem-rotozoomer" "staged EmuTOS GEM demo"
+    payload_require_file "${payload_root}/Demos/rotozoomer_basic.bas" "make sdk-build" "staged BASIC demo"
+    payload_require_file "${payload_root}/IE/Coproc/coproc_service_ie32.iex" "make sdk-build" "staged IE32 coprocessor worker"
+    payload_require_file "${payload_root}/SDK/Docs/iewarp.md" "make sdk-build" "staged IEWarp documentation"
+    payload_require_file "${payload_root}/SDK/Include/ie64.inc" "make sdk-build" "staged IE64 include"
+
+    if find "${payload_root}/Demos" -maxdepth 1 -type f -name 'coproc_*.ie*' | grep -q .; then
+        log_error "Forbidden live payload location: coproc worker staged under Demos"
+        log_error "Producer: build_x64_ie_img.sh stage_share_payload"
+        exit 1
+    fi
+    if find "${payload_root}/Demos" -maxdepth 1 -type f \( -name 'RotoAPI' -o -name 'RotoHW' -o -name 'RotoAPIc' -o -name 'RotoHWc' -o -name 'iewarp_service.ie64' \) | grep -q .; then
+        log_error "Forbidden live payload location: AROS-only payload staged under Demos"
+        log_error "Producer: build_x64_ie_img.sh stage_share_payload"
+        exit 1
+    fi
+    if [[ -e "${payload_root}/IE/Warp" || -e "${payload_root}/sdk/examples/asm/iewarp_service.ie64" ]]; then
+        log_error "Forbidden legacy IEWarp worker path staged in live payload"
+        log_error "Expected: Systems/AROS/Libs/iewarp_service.ie64"
+        exit 1
+    fi
+    if ! grep -a -q 'Systems/AROS/Libs/iewarp_service.ie64' "${payload_root}/Systems/AROS/Libs/iewarp.library"; then
+        log_error "Staged AROS iewarp.library does not contain Systems/AROS/Libs/iewarp_service.ie64"
+        log_error "Producer: make aros-iewarp-library"
+        exit 1
+    fi
+
+    log_success "Staged IESHARE payload matches the live manifest"
+}
+
 stage_share_payload() {
     log_section "Staging IESHARE demo payload"
     local payload_root="${WORK_DIR}/ieshare-payload"
     local demos_dir="${payload_root}/Demos"
+    local coproc_dir="${payload_root}/IE/Coproc"
+    local sdk_dir="${payload_root}/SDK"
+    local systems_dir="${payload_root}/Systems"
+    local aros_system_dir="${systems_dir}/AROS"
+    local aros_demos_dir="${aros_system_dir}/Demos"
+    local emutos_system_dir="${systems_dir}/EmuTOS"
+    local emutos_demos_dir="${emutos_system_dir}/Demos"
     rm -rf "$payload_root"
-    mkdir -p "$demos_dir"
+    mkdir -p "$payload_root" "$aros_system_dir"
+    python3 - "${AROS_RELEASE_DIR}" "$aros_system_dir" <<'PY'
+import os
+import shutil
+import stat
+import sys
+
+src_root, dst_root = sys.argv[1], sys.argv[2]
+
+def choose_name(entries):
+    names = [entry.name for entry in entries]
+    exact_lower = [name for name in names if name == name.lower()]
+    if exact_lower:
+        return sorted(exact_lower)[0]
+    return sorted(names, key=lambda name: (sum(1 for ch in name if ch.isupper()), name.lower(), name))[0]
+
+def copy_group(entries, dst_dir):
+    dirs = [entry for entry in entries if entry.is_dir(follow_symlinks=False)]
+    files = [entry for entry in entries if entry.is_file(follow_symlinks=False)]
+    links = [entry for entry in entries if entry.is_symlink()]
+    if links:
+        raise SystemExit(f"AROS release tree contains unsupported symlink case collision: {links[0].path}")
+    if dirs and files:
+        raise SystemExit(f"AROS release tree contains file/directory case collision: {entries[0].path}")
+    dst_name = choose_name(entries)
+    dst_path = os.path.join(dst_dir, dst_name)
+    if dirs:
+        os.makedirs(dst_path, exist_ok=True)
+        merged = {}
+        for directory in dirs:
+            for child in os.scandir(directory.path):
+                merged.setdefault(child.name.lower(), []).append(child)
+        for key in sorted(merged):
+            copy_group(merged[key], dst_path)
+        return
+    if not files:
+        return
+    selected = next(entry for entry in files if entry.name == dst_name)
+    if len(files) > 1:
+        skipped = ", ".join(entry.path for entry in files if entry.path != selected.path)
+        print(f"case-colliding AROS file: keeping {selected.path}; skipping {skipped}", file=sys.stderr)
+    shutil.copy2(selected.path, dst_path)
+    mode = stat.S_IMODE(os.stat(selected.path, follow_symlinks=False).st_mode)
+    os.chmod(dst_path, mode)
+
+top = {}
+for entry in os.scandir(src_root):
+    top.setdefault(entry.name.lower(), []).append(entry)
+for key in sorted(top):
+    copy_group(top[key], dst_root)
+PY
+    mkdir -p "$demos_dir" "$coproc_dir" \
+        "$aros_system_dir/Libs" "$aros_demos_dir" "$emutos_demos_dir" \
+        "$sdk_dir/Include" "$sdk_dir/Docs" "$sdk_dir/Examples/asm" \
+        "$sdk_dir/Examples/basic" "$sdk_dir/Examples/c"
+    cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "${payload_root}/Demos.info"
+    cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "${systems_dir}/AROS.info"
+    cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "${systems_dir}/EmuTOS.info"
 
     shopt -s nullglob
-    local demo_files=(
+    local prebuilt_files=(
         "${SCRIPT_DIR}"/sdk/examples/prebuilt/*.ie*
         "${SCRIPT_DIR}"/sdk/examples/prebuilt/*.prg
     )
     shopt -u nullglob
 
-    if [[ ${#demo_files[@]} -eq 0 ]]; then
+    if [[ ${#prebuilt_files[@]} -eq 0 ]]; then
         log_error "No .ie* or .prg demos found in ${SCRIPT_DIR}/sdk/examples/prebuilt"
         log_error "Run: make x64-live-demos"
         exit 1
     fi
-    cp -f "${demo_files[@]}" "$demos_dir/"
+    local demo_files=()
+    local coproc_files=()
+    local emutos_demo_files=()
+    local iewarp_worker_files=()
+    local prebuilt_file
+    for prebuilt_file in "${prebuilt_files[@]}"; do
+        case "$(basename "$prebuilt_file")" in
+            coproc_*.ie*) coproc_files+=("$prebuilt_file") ;;
+            iewarp_service.ie64) iewarp_worker_files+=("$prebuilt_file") ;;
+            *.prg) emutos_demo_files+=("$prebuilt_file") ;;
+            *) demo_files+=("$prebuilt_file") ;;
+        esac
+    done
+    if [[ ${#demo_files[@]} -gt 0 ]]; then
+        cp -f "${demo_files[@]}" "$demos_dir/"
+    fi
+    if [[ ${#coproc_files[@]} -gt 0 ]]; then
+        cp -f "${coproc_files[@]}" "$coproc_dir/"
+    fi
+    if [[ ${#emutos_demo_files[@]} -gt 0 ]]; then
+        cp -f "${emutos_demo_files[@]}" "$emutos_demos_dir/"
+    fi
+    if [[ ${#iewarp_worker_files[@]} -gt 0 ]]; then
+        cp -f "${iewarp_worker_files[@]}" "$aros_system_dir/Libs/"
+    fi
     cp -f "${SCRIPT_DIR}/sdk/examples/basic/rotozoomer_basic.bas" "$demos_dir/"
+
+    cp -f \
+        "${SCRIPT_DIR}/sdk/include/ie32.inc" \
+        "${SCRIPT_DIR}/sdk/include/ie64.inc" \
+        "${SCRIPT_DIR}/sdk/include/ie65.inc" \
+        "${SCRIPT_DIR}/sdk/include/ie68.inc" \
+        "${SCRIPT_DIR}/sdk/include/ie80.inc" \
+        "${SCRIPT_DIR}/sdk/include/ie86.inc" \
+        "$sdk_dir/Include/"
+    cp -f "${SCRIPT_DIR}/sdk/README.md" "$sdk_dir/README.md"
+    cp -f \
+        "${SCRIPT_DIR}/sdk/docs/Coprocessor.md" \
+        "${SCRIPT_DIR}/sdk/docs/demo-matrix.md" \
+        "${SCRIPT_DIR}/sdk/docs/ehbasic_ie64.md" \
+        "${SCRIPT_DIR}/sdk/docs/ie_emutos.md" \
+        "${SCRIPT_DIR}/sdk/docs/iescript.md" \
+        "${SCRIPT_DIR}/sdk/docs/iewarp.md" \
+        "${SCRIPT_DIR}/sdk/docs/iemon.md" \
+        "${SCRIPT_DIR}/sdk/docs/include-files.md" \
+        "${SCRIPT_DIR}/sdk/docs/sdk-getting-started.md" \
+        "${SCRIPT_DIR}/sdk/docs/toolchains.md" \
+        "$sdk_dir/Docs/"
+    cp -f "${SCRIPT_DIR}"/sdk/examples/asm/*.asm "$sdk_dir/Examples/asm/"
+    cp -f "${SCRIPT_DIR}"/sdk/examples/basic/*.bas "$sdk_dir/Examples/basic/"
+    cp -f "${SCRIPT_DIR}"/sdk/examples/c/*.c "$sdk_dir/Examples/c/"
 
     local aros_demo
     for aros_demo in \
@@ -191,7 +475,8 @@ stage_share_payload() {
             log_error "Run: make x64-live-demos"
             exit 1
         fi
-        cp -f "$aros_demo" "$demos_dir/"
+        cp -f "$aros_demo" "$aros_demos_dir/"
+        cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Tool.info" "${aros_demos_dir}/$(basename "$aros_demo").info"
     done
 
     python3 - "${SCRIPT_DIR}/embedded/ab3d2/_build.zip" "$demos_dir" <<'PY'
@@ -235,11 +520,69 @@ PY
 Intuition Engine Live USB demos
 
 This folder is populated during make x64-live.
-It contains runnable Intuition Engine demo binaries, EmuTOS/AROS demo programs,
-and the AB3D2 runtime asset tree extracted from the embedded release payload.
+It contains runnable Intuition Engine demo binaries and the AB3D2 runtime asset
+tree extracted from the embedded release payload.
+
+OS-specific payloads live under Systems:
+
+Systems/AROS/Demos
+Systems/EmuTOS/Demos
+EOF
+
+    cat > "${payload_root}/README.TXT" <<'EOF'
+Intuition Engine Live USB share
+
+Top-level folders:
+
+Demos    Bare-metal Intuition Engine demos and shared runtime assets.
+IE       Intuition Engine runtime support files.
+SDK      Reference include files, docs, and source examples.
+Systems  Guest OS payloads.
+
+AROS files live under Systems/AROS.
+EmuTOS/GEMDOS demo files live under Systems/EmuTOS.
+EOF
+
+    cat > "${systems_dir}/README.TXT" <<'EOF'
+Guest OS payloads
+
+Systems/AROS is the AROS SYS: root used by the live image.
+Systems/AROS/Demos contains AROS-native demo programs.
+Systems/AROS/Libs contains AROS libraries and private library resources,
+including iewarp_service.ie64 for iewarp.library.
+
+Systems/EmuTOS is the EmuTOS GEMDOS drive root used by the live image.
+Systems/EmuTOS/Demos contains GEMDOS demo programs.
+EOF
+
+    cat > "${coproc_dir}/README.TXT" <<'EOF'
+Intuition Engine coprocessor support images
+
+These binaries are support payloads for software that starts coprocessor
+workers. They are resolved relative to the IESHARE root, for example:
+
+IE/Coproc/coproc_service_ie32.iex
+EOF
+
+    cat > "${sdk_dir}/README.TXT" <<'EOF'
+Intuition Engine reference SDK
+
+This is a documentation and source-reference snapshot for the live image. It
+contains include files, selected SDK docs, and source examples. It intentionally
+does not include sdk/bin or other host tool binaries; build programs on the
+host SDK, then copy runnable outputs to IESHARE.
+
+The live image keeps OS payloads under Systems/AROS and Systems/EmuTOS.
+The AROS IEWarp worker is a private runtime resource at
+Systems/AROS/Libs/iewarp_service.ie64, visible inside AROS as
+SYS:Libs/iewarp_service.ie64.
 EOF
 
     find "$demos_dir" -maxdepth 2 -type f | sort | sed "s#^${payload_root}/#  #" | tee -a "$LOG_FILE"
+    find "$systems_dir" -maxdepth 3 -type f | sort | sed "s#^${payload_root}/#  #" | tee -a "$LOG_FILE"
+    find "$coproc_dir" -maxdepth 1 -type f | sort | sed "s#^${payload_root}/#  #" | tee -a "$LOG_FILE"
+    find "$sdk_dir" -maxdepth 3 -type f | sort | sed "s#^${payload_root}/#  #" | tee -a "$LOG_FILE"
+    verify_staged_share_payload "$payload_root"
     SHARE_PAYLOAD_ROOT="$payload_root"
     export SHARE_PAYLOAD_ROOT
 }
@@ -280,11 +623,51 @@ generate_support_files() {
     log_section "Generating image support files"
 cat > "${WORK_DIR}/launch.sh" <<'EOF'
 #!/bin/sh
-cd /var/ie/share
+if [ -d /var/ie/share/Systems/EmuTOS ] && [ -d /var/ie/share/Systems/AROS ]; then
+    cd /var/ie/share || cd /opt/ie
+    set -- -emutos-drive /var/ie/share/Systems/EmuTOS -aros-drive /var/ie/share/Systems/AROS
+else
+    cd /opt/ie
+    set --
+fi
+if [ -z "${IE_LIVE_DBUS_SESSION:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+    export IE_LIVE_DBUS_SESSION=1
+    exec dbus-run-session -- "$0" "$@"
+fi
+if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    export XDG_RUNTIME_DIR="/tmp/ie-runtime-$(id -u)"
+fi
+export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+export PULSE_RUNTIME_PATH="$XDG_RUNTIME_DIR/pulse"
+export PULSE_SERVER="unix:${XDG_RUNTIME_DIR}/pulse/native"
+mkdir -p "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/pulse"
+chmod 700 "$XDG_RUNTIME_DIR"
 pipewire >/tmp/ie-pipewire.log 2>&1 &
+for _ in $(seq 1 100); do
+    [ -S "${XDG_RUNTIME_DIR}/pipewire-0" ] && break
+    sleep 0.05
+done
 wireplumber >/tmp/ie-wireplumber.log 2>&1 &
 pipewire-pulse >/tmp/ie-pipewire-pulse.log 2>&1 &
-exec /opt/ie/IntuitionEngine -emutos-drive /var/ie/share
+for _ in $(seq 1 100); do
+    [ -S "${XDG_RUNTIME_DIR}/pulse/native" ] && pactl info >/tmp/ie-pactl-info.log 2>&1 && break
+    sleep 0.05
+done
+if ! pactl info >/tmp/ie-pactl-info.log 2>&1; then
+    {
+        echo "pipewire-pulse did not become ready at ${XDG_RUNTIME_DIR}/pulse/native"
+        echo "PULSE_SERVER=${PULSE_SERVER}"
+        echo "--- pactl info ---"
+        cat /tmp/ie-pactl-info.log 2>/dev/null || true
+        echo "--- pipewire-pulse log ---"
+        cat /tmp/ie-pipewire-pulse.log 2>/dev/null || true
+        echo "--- pipewire log ---"
+        cat /tmp/ie-pipewire.log 2>/dev/null || true
+    } >/tmp/ie-pipewire-ready.log
+else
+    echo "pipewire-pulse ready at ${XDG_RUNTIME_DIR}/pulse/native" >/tmp/ie-pipewire-ready.log
+fi
+exec /opt/ie/IntuitionEngine "$@"
 EOF
     chmod +x "${WORK_DIR}/launch.sh"
 
@@ -753,7 +1136,8 @@ format_share_partition_rootless() {
     truncate -s "$IESHARE_SIZE_B" "$fat_img"
     mformat -i "$fat_img" -F -v "${FATSHARE_LABEL}" ::
     stage_share_payload
-    mcopy -i "$fat_img" -D A -s "${SHARE_PAYLOAD_ROOT}/Demos" ::/
+    local payload_entries=("${SHARE_PAYLOAD_ROOT}"/*)
+    mcopy -i "$fat_img" -D A -s "${payload_entries[@]}" ::/
     guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
 run
 upload "$fat_img" ${IESHARE_DEV}
@@ -779,7 +1163,14 @@ compress_image() {
 }
 
 main() {
+    if [[ "$PAYLOAD_CHECK_ONLY" == "true" ]]; then
+        check_live_payload_inputs
+        return 0
+    fi
     check_dependencies
+    if [[ "${CREATE_SHARE}" == "true" ]]; then
+        check_live_payload_inputs
+    fi
     mkdir -p "$WORK_DIR"
     if check_golden_image; then
         log "Using cached golden image"

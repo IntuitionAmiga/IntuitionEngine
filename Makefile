@@ -291,11 +291,11 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
-.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets emutos-probe emutos-release-rom basic basic-emutos cputest-musashi
+.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets aros-iewarp-library iewarp-runtime-assets emutos-probe emutos-release-rom basic basic-emutos cputest-musashi
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 m68kto64 ie64dis
@@ -332,7 +332,7 @@ intuition-engine: setup
 	@echo "Intuition Engine VM build complete"
 
 .PHONY: x86-64-v3
-x86-64-v3:
+x86-64-v3: x64-live-embed-assets
 	@echo "Building IE for x86-64-v3 (AVX2+FMA+BMI)..."
 	mkdir -p $(BIN_DIR)
 	GOOS=linux GOARCH=amd64 GOAMD64=v3 CGO_ENABLED=1 \
@@ -342,19 +342,30 @@ x86-64-v3:
 	@strip $(BIN_DIR)/IntuitionEngine_v3 || true
 	@ls -lh $(BIN_DIR)/IntuitionEngine_v3
 
+.PHONY: x64-live-embed-assets
+x64-live-embed-assets: sdk-build emutos-release-rom aros-iewarp-library
+	@test -f "$(EMUTOS_ROM)" || { echo "Error: missing embedded EmuTOS ROM: $(EMUTOS_ROM)"; exit 1; }
+	@test -f "$(AROS_ROM)" || { echo "Error: missing embedded AROS ROM: $(AROS_ROM)"; exit 1; }
+	@test -f "sdk/examples/prebuilt/ehbasic_ie64.ie64" || { echo "Error: missing embedded EhBASIC image: sdk/examples/prebuilt/ehbasic_ie64.ie64"; exit 1; }
+	@echo "x64 live embedded binary inputs are ready."
+
 .PHONY: x64-live
 x64-live: x86-64-v3 x64-live-demos
 	@echo "Building IE x64 live USB image..."
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" ./build_x64_ie_img.sh
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" ./build_x64_ie_img.sh
 
 .PHONY: x64-live-rebuild-golden
 x64-live-rebuild-golden: x86-64-v3 x64-live-demos
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" ./build_x64_ie_img.sh --rebuild-golden
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" ./build_x64_ie_img.sh --rebuild-golden
 
 .PHONY: x64-live-demos
-x64-live-demos: sdk-build gem-rotozoomer x64-live-aros-demos x64-live-ab3d2-assets
+x64-live-demos: x64-live-payload-check
 	@test -n "$$(find sdk/examples/prebuilt -maxdepth 1 -type f -name '*.ie*' -print -quit)" || { echo "Error: no .ie* demos found in sdk/examples/prebuilt"; exit 1; }
 	@echo "x64 live demo payload inputs are ready."
+
+.PHONY: x64-live-payload-check
+x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" ./build_x64_ie_img.sh --check-payload
 
 .PHONY: x64-live-ab3d2-assets
 x64-live-ab3d2-assets:
@@ -365,7 +376,7 @@ x64-live-ab3d2-assets:
 	fi
 
 .PHONY: x64-live-aros-demos
-x64-live-aros-demos:
+x64-live-aros-demos: aros-release-assets
 	@echo "Building AROS rotozoomer demos..."
 	@if ! command -v vasmm68k_mot >/dev/null 2>&1; then \
 		echo "Error: vasmm68k_mot not found. Required for AROS assembly demos."; \
@@ -1135,12 +1146,60 @@ aros-rom:
 
 .PHONY: aros-release-assets
 aros-release-assets:
-	@if [ -f "$(AROS_ROM)" ] && [ -d "$(AROS_RELEASE_DIR)" ] && [ -n "$$(find "$(AROS_RELEASE_DIR)" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then \
+	@if [ -f "$(AROS_ROM)" ] && \
+		[ -f "$(AROS_RELEASE_DIR)/S/Startup-Sequence" ] && \
+		[ -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Tool.info" ] && \
+		[ -f "$(AROS_RELEASE_DIR)/Prefs/Env-Archive/SYS/def_Drawer.info" ] && \
+		[ -f "$(AROS_RELEASE_DIR)/Libs/iewarp.library" ]; then \
 		echo "Using existing AROS release assets: $(AROS_ROM), $(AROS_RELEASE_DIR)"; \
 	else \
 		echo "AROS release assets missing or incomplete; building them..."; \
 		$(MAKE) aros-rom; \
 	fi
+
+.PHONY: aros-iewarp-library
+aros-iewarp-library: aros-release-assets
+	@lib="$(AROS_RELEASE_DIR)/Libs/iewarp.library"; \
+	src_dir="$(AROS_SRC_DIR)/arch/m68k-ie/libs/iewarp"; \
+	rebuild=0; \
+	if [ ! -f "$$lib" ]; then \
+		echo "AROS iewarp.library is missing; rebuilding kernel-iewarp..."; \
+		rebuild=1; \
+	fi; \
+	for src in "$$src_dir"/iewarp_init.c "$$src_dir"/iewarp_dispatch.c "$$src_dir"/iewarp_ops.c "$$src_dir"/iewarp.conf; do \
+		if [ -f "$$src" ] && { [ ! -f "$$lib" ] || [ "$$src" -nt "$$lib" ]; }; then \
+			echo "AROS iewarp source is newer than $$lib: $$src"; \
+			rebuild=1; \
+		fi; \
+	done; \
+	if [ -f "$$lib" ] && ! grep -a -q 'Systems/AROS/Libs/iewarp_service.ie64' "$$lib"; then \
+		echo "AROS iewarp.library does not contain the current worker path; rebuilding kernel-iewarp..."; \
+		rebuild=1; \
+	fi; \
+	if [ "$$rebuild" -eq 1 ]; then \
+		$(MAKE) -C "$(AROS_BUILD_DIR)" kernel-iewarp; \
+	fi; \
+	if [ ! -f "$$lib" ]; then \
+		echo "Error: AROS iewarp.library was not produced at $$lib"; \
+		exit 1; \
+	fi; \
+	if ! grep -a -q 'Systems/AROS/Libs/iewarp_service.ie64' "$$lib"; then \
+		echo "Error: AROS iewarp.library still does not contain Systems/AROS/Libs/iewarp_service.ie64"; \
+		exit 1; \
+	fi; \
+	echo "AROS iewarp.library is current."
+
+.PHONY: iewarp-runtime-assets
+iewarp-runtime-assets: sdk-build aros-iewarp-library
+	@if [ ! -f "sdk/examples/prebuilt/iewarp_service.ie64" ]; then \
+		echo "Error: missing sdk/examples/prebuilt/iewarp_service.ie64"; \
+		echo "Run: make sdk-build"; \
+		exit 1; \
+	fi
+	@mkdir -p Systems/AROS/Libs "$(AROS_RELEASE_DIR)/Libs"
+	@cp -f sdk/examples/prebuilt/iewarp_service.ie64 Systems/AROS/Libs/iewarp_service.ie64
+	@cp -f sdk/examples/prebuilt/iewarp_service.ie64 "$(AROS_RELEASE_DIR)/Libs/iewarp_service.ie64"
+	@echo "IEWarp runtime worker staged at Systems/AROS/Libs and $(AROS_RELEASE_DIR)/Libs."
 
 .PHONY: clean-aros
 clean-aros:

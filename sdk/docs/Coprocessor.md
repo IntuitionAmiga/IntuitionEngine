@@ -1,6 +1,6 @@
 # Coprocessor MMIO Contract
 
-*Last updated: 2026-05-14*
+*Last updated: 2026-05-15*
 
 The coprocessor subsystem lets guest code start secondary CPU workers, enqueue requests through mailbox rings, and poll or wait for completion.
 
@@ -60,6 +60,24 @@ IEMon `cpu online` and `cpu offline` commands use the same worker lifecycle as `
 Ticket states are `PENDING`, `RUNNING`, `OK`, `ERROR`, `TIMEOUT`, and `WORKER_DOWN`. `WORKER_DOWN` means the worker slot is empty or the worker goroutine exited before the ticket reached a terminal response.
 
 Command errors include invalid CPU type, missing worker binary, invalid path, load failure, full queue, no worker, and stale ticket.
+
+## Packaged Worker Images
+
+In the x64 live image, prebuilt `coproc_*.ie*` support binaries are installed under `IE/Coproc` on the `IESHARE` FAT32 partition, not under `Demos`. Worker paths are resolved relative to the runtime base directory, so guest code, Lua scripts, IEMon, and `-coproc-svc` should refer to these images with paths such as:
+
+```text
+IE/Coproc/coproc_service_ie32.iex
+```
+
+`iewarp_service.ie64` is intentionally not packaged with the generic `coproc_*` workers. It is a private runtime resource for AROS `iewarp.library` and is staged beside the library at:
+
+```text
+Systems/AROS/Libs/iewarp_service.ie64
+```
+
+Inside AROS this is visible as `SYS:Libs/iewarp_service.ie64`, but the string passed to `COPROC_NAME_PTR` must remain the runtime-base-relative `Systems/AROS/Libs/iewarp_service.ie64`. For repository-root development runs, refresh that path with `make iewarp-runtime-assets` before testing IEWarp acceleration.
+
+Absolute paths and paths containing `..` are rejected by the coprocessor manager.
 
 ## Ring Layout
 
