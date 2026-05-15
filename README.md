@@ -2,112 +2,142 @@
 
 ![68k VGA SID Copper Cube](68k-VGA-SID-Copper-Cube.png)
 
-Intuition Engine is a Go-based emulator and virtual machine for a retro computer design that never existed. It is built for demoscene-style hardware experiments, CPU bring-up, tracker playback, and operating-system work. One executable supports six guest CPU modes and can run them concurrently through the coprocessor subsystem, drive several classic-inspired video and audio devices, automate itself with Lua, and boot into BASIC, EmuTOS, AROS, or IntuitionOS development paths.
+Intuition Engine is a bootable retro-computing environment and Go emulator for a custom retro-style computer platform. The x64 live USB image is the primary end-user package: it boots straight into Intuition Engine, starts the BASIC environment, and includes demos plus guest OS payloads on a FAT32 share.
 
-Core capabilities:
+For developers, the same repository builds the emulator, SDK tools, live image, and guest integration assets used by that package.
 
-- Six guest CPU modes in one machine: IE64, IE32, M68K, Z80, 6502, and 32-bit x86.
-- An SDK with assemblers, include files, examples, prebuilt demos, and build scripts.
-- Multiple display devices in one compositor: IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, and Voodoo-style 3D.
-- Chiptune and module playback paths for PSG/AY/YM, SN76489 VGM, SID, POKEY/SAP, TED, AHX, MOD, and WAV.
-- Built-in Machine Monitor, Lua automation, REPL overlay, screenshots, recording support, and scripted test harnesses.
-- OS integration work for EmuTOS, AROS, and IntuitionOS rather than only bare-metal demos.
+## Live USB Quick Start
 
-Build it and run the default BASIC environment:
+The release archive contains:
+
+- `intuition-engine-x64.img` - raw bootable x64 UEFI image.
+- `README.md` - this file.
+
+Write the `.img` file to a USB stick with an image writer, then boot it on an x64 UEFI machine. Writing the image replaces the contents of the selected USB drive. From a repository checkout, this boots the locally built image in QEMU:
+
+```bash
+make x64-live
+make x64-live-qemu
+```
+
+On a normal boot, Intuition Engine starts fullscreen at the EhBASIC `Ready` prompt. The live image mounts its FAT32 share as the runtime file area, so paths in BASIC are relative to that share.
+
+Useful first commands:
+
+```basic
+DIR
+DIR "Demos"
+RUN
+EMUTOS
+AROS
+```
+
+Use the exact filenames shown by `DIR`; demo names vary between builds. `RUN "Demos/name.ie64"` and other typed executable files hand off to the matching guest CPU. `LOAD "Demos/name.bas"` loads a BASIC program, then `RUN` starts it. `EMUTOS` and `AROS` boot the bundled guest OS paths when their assets are present.
+
+Live share layout:
+
+| Folder | Purpose |
+|--------|---------|
+| `Demos` | Bare-metal Intuition Engine demos and shared runtime assets. |
+| `IE` | Runtime support files, including coprocessor worker payloads. |
+| `SDK` | Reference include files, selected docs, and source examples. Host tool binaries are not included. |
+| `Systems/AROS` | AROS `SYS:` root for the live image, including AROS-native demos under `Systems/AROS/Demos`. |
+| `Systems/EmuTOS` | EmuTOS GEMDOS drive root, including GEMDOS demos under `Systems/EmuTOS/Demos`. |
+
+Important keys:
+
+| Key | Action |
+|-----|--------|
+| `F8` | Toggle the Lua REPL overlay, unless the Machine Monitor is active. |
+| `F9` | Toggle the Machine Monitor. |
+| `F10` | Hard reset. |
+| `F11` | Toggle fullscreen. |
+| `Shift+F11` | Toggle fit/stretch scaling when the active native mode is not 16:9. |
+| `F12` | Toggle the runtime status bar. |
+| `Ctrl+Alt` | Release captured relative mouse mode. |
+
+The live image is intended to be usable without manually copying support files. If a bundled demo, OS mode, or service needs a payload, `make x64-live` should stage it automatically.
+
+The project provides:
+
+- Primary guest CPU modes for IE64, IE32, M68K, Z80, 6502, and 32-bit flat x86.
+- Optional coprocessor workers that let supported guest programs use more than one emulated CPU.
+- Video devices for IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, and a Voodoo-style 3D path.
+- Audio paths for the custom SoundChip, PSG/AY/YM, SN76489 VGM/VGZ, SID, POKEY/SAP, TED, AHX/THX, MOD, WAV, and AROS Paula-style DMA.
+- An SDK with assemblers, include files, examples, prebuilt demo outputs, scripts, and documentation.
+- Integration paths for EhBASIC, EmuTOS, AROS, and IntuitionOS development.
+- Runtime tooling including the Machine Monitor, Lua automation, REPL overlay, screenshots, recording support, and scripted test harnesses.
+
+## Repository Quick Start
+
+Build the VM and start the default BASIC environment:
 
 ```bash
 make
 ./bin/IntuitionEngine
 ```
 
-After the VM has been built, build the SDK assets and run a shipped demo:
+Build the SDK assets and run a shipped demo:
 
 ```bash
 make sdk
 ./bin/IntuitionEngine sdk/examples/prebuilt/vga_text_hello.iex
 ```
 
-Default runtime: in standard builds, launching with no mode and no filename starts EhBASIC on IE64.
+In standard builds, launching without a mode flag and without a filename starts EhBASIC on IE64.
 
 ## Contents
 
-1. [Current Scope](#current-scope)
-2. [Build](#build)
-3. [Run](#run)
-4. [Runtime Controls](#runtime-controls)
-5. [Architecture Summary](#architecture-summary)
-6. [SDK and Toolchains](#sdk-and-toolchains)
-7. [Testing](#testing)
-8. [Platform Support](#platform-support)
-9. [Documentation](#documentation)
-10. [Licence](#licence)
+1. [Live USB Quick Start](#live-usb-quick-start)
+2. [Repository Quick Start](#repository-quick-start)
+3. [Current Scope](#current-scope)
+4. [Build](#build)
+5. [Run](#run)
+6. [Runtime Controls](#runtime-controls)
+7. [Architecture Summary](#architecture-summary)
+8. [SDK and Toolchains](#sdk-and-toolchains)
+9. [Testing](#testing)
+10. [Platform Support](#platform-support)
+11. [Documentation](#documentation)
+12. [Licence](#licence)
 
 ## Current Scope
 
-### CPU Modes
+### CPU and OS Modes
 
-| Mode flag | Guest CPU | Input file | Notes |
-|-----------|-----------|------------|-------|
+| Mode flag | Guest/runtime | Positional file support | Notes |
+|-----------|---------------|-------------------------|-------|
 | `-ie64` | IE64 | `.ie64` | 64-bit RISC core. Used by EhBASIC and IntuitionOS work. |
-| `-ie32` | IE32 | `.iex`, `.ie32` | 32-bit RISC core with the built-in IE32 assembler. |
-| `-m68k` | Motorola 68020 | `.ie68` | 68020-oriented path used by native demos, EmuTOS, and AROS work. |
+| `-ie32` | IE32 | `.iex`, `.ie32` | 32-bit RISC core and the original `.iex` executable format. |
+| `-m68k` | Motorola 68020-oriented M68K | `.ie68` | Used by native demos, EmuTOS, and AROS work. |
 | `-z80` | Z80 | `.ie80` | Z80 guest mode with AY/PSG-oriented examples. |
 | `-m6502` | 6502 | `.ie65` | 6502 guest mode with cc65-style SDK support. |
 | `-x86` | 32-bit flat x86 | `.ie86` | Flat 32-bit x86 guest mode. |
-| `-basic` | EhBASIC on IE64 | none | Does not accept a positional filename. |
-| `-emutos` | EmuTOS on M68K | optional ROM image | Requires embedded EmuTOS, a discovered ROM, or `-emutos-image`. |
-| `-aros` | AROS on M68K | optional ROM image | Requires embedded or external AROS assets. |
+| `-basic` | EhBASIC on IE64 | none | Uses the embedded BASIC image unless `-basic-image` is supplied. |
+| `-emutos` | EmuTOS on M68K | optional ROM via flag | Uses embedded, discovered, or `-emutos-image` ROM assets. |
+| `-aros` | AROS on M68K | optional ROM via flag | Uses embedded or `-aros-image` ROM assets and an AROS host drive. |
 
-JIT support depends on host OS and architecture. Current coverage is documented in [Platform Compatibility](sdk/docs/platform-compatibility.md) and [Architecture](sdk/docs/architecture.md).
+JIT availability depends on the host OS, host architecture, and guest CPU. Check [Platform Compatibility](sdk/docs/platform-compatibility.md) before relying on JIT for a specific host and guest combination.
 
-### Audio
+### Audio and Video
 
-The audio system includes:
+Supported audio modes are exposed through `-psg`, `-sid`, `-pokey`, `-ted`, `-ahx`, `-mod`, and `-wav`. Enhanced player paths are enabled with `-psg+`, `-sid+`, `-pokey+`, `-ted+`, and `-ahx+`. SID playback also accepts `-sid-pal` and `-sid-ntsc`.
 
-- custom `SoundChip` with 10 mixed channels
-- AY-3-8910/YM2149 PSG
-- native SN76489 bus chip for VGM/VGZ SN writes
-- SID 6581/8580, including Multi-SID paths
-- POKEY/SAP
-- TED audio
-- AHX/THX replayer
-- ProTracker MOD player
-- WAV PCM player
-- AROS Paula-style audio DMA shim
+The desktop video path uses Ebiten. The default native video mode is 960x540 and the default presentation frame is 1920x1080 fullscreen. Guest code can select other supported modes through the video MMIO interface. Tests and batch workflows can use the headless backend.
 
-Supported playback modes are exposed through `-psg`, `-sid`, `-pokey`, `-ted`, `-ahx`, `-mod`, and `-wav`, with plus modes for selected enhanced render paths: `-psg+`, `-sid+`, `-pokey+`, `-ted+`, and `-ahx+`.
+Detailed audio and video references:
 
-Detailed audio references:
-
-- [Architecture audio overview](sdk/docs/architecture.md)
+- [Architecture](sdk/docs/architecture.md)
 - [Sound MMIO](sdk/docs/ie_sfx_mmio.md)
 - [WAV Player](sdk/docs/wav_player.md)
-
-### Video
-
-The video system includes:
-
-- IEVideoChip with copper, blitter, Mode7-style effects, and compositor integration
-- VGA
-- ZX Spectrum-style ULA
-- TED video, including copper-driven per-scanline background and border colour changes
-- Atari-style ANTIC/GTIA
-- 3DFX Voodoo-style 3D path
-- Ebiten display backend for normal desktop builds
-- headless display backend for tests and batch runs
-
-Detailed video references:
-
-- [Architecture video overview](sdk/docs/architecture.md)
 - [Compositor](sdk/docs/compositor.md)
 - [Voodoo ABI](sdk/docs/ie_voodoo_abi.md)
 
 ### Scripting and Debugging
 
-- IEScript uses Lua 5.1-compatible semantics through GopherLua.
-- Script modules include `sys`, `cpu`, `mem`, `term`, `audio`, `video`, `repl`, `rec`, `dbg`, `sym`, `regions`, `coproc`, and `media`. IEScript also exposes the `bit32` and `keys` global tables.
-- The Machine Monitor is available with `F9` in desktop builds and has CPU, memory, breakpoint, watchpoint, trace, I/O view, and scripting support.
-- In desktop builds, guests can request captured relative mouse mode. Press `Ctrl+Alt` to release the host mouse, then left-click inside the IE window to recapture while the guest still requests relative mode.
+IEScript uses Lua 5.1-compatible semantics through GopherLua. Script modules include `sys`, `cpu`, `mem`, `term`, `audio`, `video`, `repl`, `rec`, `dbg`, `sym`, `regions`, `coproc`, and `media`; scripts also receive `bit32` and `keys` globals.
+
+The Machine Monitor is available with `F9` in desktop builds. It provides CPU, memory, breakpoint, watchpoint, trace, I/O view, and scripting facilities. In desktop builds, guests can request captured relative mouse mode; press `Ctrl+Alt` to release the host mouse and left-click the IE window to recapture while the guest still requests relative mode.
 
 References:
 
@@ -117,7 +147,7 @@ References:
 
 ## Build
 
-Go 1.26 or later is required.
+Go 1.26 or later is required. The default Linux desktop build uses CGO and native display, audio, and Vulkan-capable dependencies. Use `novulkan`, `headless`, or `headless-novulkan` when those dependencies are not wanted.
 
 ```bash
 # Build the VM and core SDK tools
@@ -140,21 +170,12 @@ Build outputs:
 
 | Output | Produced by |
 |--------|-------------|
-| `bin/IntuitionEngine` | `make`, `make intuition-engine`, or VM profile targets |
-| `sdk/bin/ie32asm` | `make`, `make ie32asm`, `make sdk` |
-| `sdk/bin/ie64asm` | `make`, `make ie64asm`, `make sdk` |
-| `sdk/bin/ie32to64` | `make`, `make ie32to64`, `make sdk` |
-| `sdk/bin/m68kto64` | `make`, `make m68kto64`, `make sdk-build`, `make sdk` |
-| `sdk/bin/ie64dis` | `make`, `make ie64dis`, `make sdk` |
-
-Build profiles:
-
-| Profile | Command | Use |
-|---------|---------|-----|
-| full | `make` | Linux desktop build with Ebiten, Oto, and Vulkan-capable Voodoo support. Uses CGO and native system libraries. |
-| novulkan | `make novulkan` | Desktop build without the Vulkan dependency. |
-| headless | `make headless` | CI and test build with display and audio stubs. |
-| headless-novulkan | `make headless-novulkan` | `CGO_ENABLED=0` portable build with no display or audio backend. |
+| `bin/IntuitionEngine` | `make`, `make intuition-engine`, and VM profile targets |
+| `sdk/bin/ie32asm` | `make`, `make ie32asm`, `make sdk`, `make sdk-build` |
+| `sdk/bin/ie64asm` | `make`, `make ie64asm`, `make sdk`, `make sdk-build` |
+| `sdk/bin/ie32to64` | `make`, `make ie32to64`, `make sdk`, `make sdk-build` |
+| `sdk/bin/m68kto64` | `make`, `make m68kto64`, `make sdk`, `make sdk-build` |
+| `sdk/bin/ie64dis` | `make`, `make ie64dis`, `make sdk`, `make sdk-build` |
 
 Useful build targets:
 
@@ -171,11 +192,29 @@ make clean
 make distclean
 ```
 
+### x64 Live Image
+
+The x64 live-image workflow builds a bootable raw image and a compressed archive:
+
+```bash
+make x64-live
+make x64-live-qemu
+```
+
+Default outputs:
+
+| Output | Path |
+|--------|------|
+| Raw image | `build/x64-live/intuition-engine-x64.img` |
+| Archive | `build/x64-live/intuition-engine-x64.tar.zst` |
+
+The live-image script requires host image-building tools such as `libguestfs-tools`, `aria2`, `curl`, `qemu-utils`, `mtools`, and `zstd`. It stages the live runtime, SDK/demo payload, EmuTOS assets, AROS assets, and the files required by bundled services as part of `make x64-live`; these bundled payloads should not require manual copying.
+
 Use [DEVELOPERS.md](DEVELOPERS.md) for full build, release, and contribution details.
 
 ## Run
 
-Typed Intuition Engine binaries and IEScript files can be launched directly by extension. The `-script script.ies` option may appear before or after a typed program filename.
+Typed Intuition Engine binaries and IEScript files can be launched directly by extension. Raw binaries, extensionless files, ROM images, and media files require an explicit CPU, OS, or media flag.
 
 ### CPU and BASIC Modes
 
@@ -183,7 +222,7 @@ Typed Intuition Engine binaries and IEScript files can be launched directly by e
 # Default: start EhBASIC on IE64
 ./bin/IntuitionEngine
 
-# Run guest programs
+# Run typed guest programs
 ./bin/IntuitionEngine program.ie64
 ./bin/IntuitionEngine program.iex
 ./bin/IntuitionEngine program.ie68
@@ -208,7 +247,7 @@ Typed Intuition Engine binaries and IEScript files can be launched directly by e
 # Boot AROS
 ./bin/IntuitionEngine -aros
 ./bin/IntuitionEngine -aros -aros-image path/to/aros-ie-m68k.rom
-./bin/IntuitionEngine -aros -aros-drive ~/amiga-files
+./bin/IntuitionEngine -aros -aros-drive ~/aros-root
 ```
 
 EmuTOS and AROS availability depends on embedded assets, local default ROM paths, or explicit image paths. See [EmuTOS Integration](sdk/docs/ie_emutos.md) and the AROS sections in [DEVELOPERS.md](DEVELOPERS.md).
@@ -225,7 +264,7 @@ EmuTOS and AROS availability depends on embedded assets, local default ROM paths
 ./bin/IntuitionEngine -wav sound.wav
 ```
 
-The `+` variants (`-psg+`, `-sid+`, `-pokey+`, `-ted+`, and `-ahx+`) enable enhanced render paths for the corresponding player. SID playback also accepts `-sid-pal` or `-sid-ntsc` to force timing.
+The media loader recognises additional tracker and chiptune extensions internally, but the CLI does not auto-detect media files. Use the relevant media flag.
 
 ### Scripting, Performance, and Display Options
 
@@ -251,9 +290,9 @@ The `+` variants (`-psg+`, `-sid+`, `-pokey+`, `-ted+`, and `-ahx+`) enable enha
 ./bin/IntuitionEngine -features
 ```
 
-### Single-Instance File Opening
+### File Opening and Desktop Integration
 
-If a desktop build is already running, opening a supported file can hand it to the running instance through the IPC path. Supported extensions in the runtime helper are:
+CLI auto-detection supports these executable extensions:
 
 | Extension | Mode |
 |-----------|------|
@@ -265,9 +304,7 @@ If a desktop build is already running, opening a supported file can hand it to t
 | `.ie86` | x86 |
 | `.ies` | IEScript |
 
-Raw `.bin`, extensionless files, ROM images, and media files are not CLI auto-detected. Use the explicit CPU, OS, or media mode flag for those files.
-
-Desktop file association targets are Linux-oriented:
+If a desktop build is already running, the runtime helper can also receive `.tos` and `.img` as EmuTOS images through the single-instance path. Desktop file association targets are Linux-oriented:
 
 ```bash
 sudo make install-desktop-entry
@@ -275,13 +312,6 @@ make set-default-handler
 ```
 
 ## Runtime Controls
-
-Desktop builds use the Ebiten backend.
-
-Desktop builds start fullscreen with a 1920x1080 presentation frame. Native
-guest modes are composited into that frame; the default native text/OS mode is
-960x540 for exact 2x scaling, and non-16:9 modes stretch to fill the
-presentation frame unless aspect-fit is explicitly toggled.
 
 | Key | Action |
 |-----|--------|
@@ -303,17 +333,23 @@ The central runtime components are:
 - `MachineBus`: guest RAM, MMIO dispatch, I/O page fast paths, and guest RAM sizing.
 - CPU runners: IE64, IE32, M68K, Z80, 6502, and x86.
 - JIT infrastructure: host-specific JIT backends where available.
-- Audio engines and players: custom SoundChip plus chip-specific parsers, players, and MMIO handlers.
+- Audio engines and players: SoundChip plus chip-specific parsers, players, and MMIO handlers.
 - Video engines: IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, Voodoo, and compositor.
 - Debugging: Machine Monitor, disassemblers, breakpoints, watchpoints, traces, and CPU-local snapshots.
 - Scripting: IEScript Lua automation and REPL overlay.
 - OS integration: EmuTOS loader, AROS loader, GEMDOS/AROS DOS paths, and IntuitionOS runtime work.
 
-Guest RAM is sized at boot from the host and profile constraints. Guest software can query memory sizing through the SYSINFO MMIO registers and, on IE64, `CR_RAM_SIZE_BYTES`. The detailed memory and MMIO layout belongs in [Architecture](sdk/docs/architecture.md), [IE64 ISA](sdk/docs/IE64_ISA.md), [Sound MMIO](sdk/docs/ie_sfx_mmio.md), [Voodoo ABI](sdk/docs/ie_voodoo_abi.md), and [IntuitionOS IExec](sdk/docs/IntuitionOS/IExec.md).
+Guest RAM is sized at boot from host availability and profile constraints. Guest software can query memory sizing through the SYSINFO MMIO registers and, on IE64, `CR_RAM_SIZE_BYTES`. Detailed memory and MMIO layout information belongs in:
+
+- [Architecture](sdk/docs/architecture.md)
+- [IE64 ISA](sdk/docs/IE64_ISA.md)
+- [Sound MMIO](sdk/docs/ie_sfx_mmio.md)
+- [Voodoo ABI](sdk/docs/ie_voodoo_abi.md)
+- [IntuitionOS IExec](sdk/docs/IntuitionOS/IExec.md)
 
 ## SDK and Toolchains
 
-The SDK contains headers, examples, prebuilt demo outputs, assets, and scripts under [sdk/](sdk/).
+The SDK contains include files, examples, prebuilt demo outputs, assets, and scripts under [sdk/](sdk/).
 
 | Guest | Main toolchain | Typical output |
 |-------|----------------|----------------|
@@ -357,6 +393,8 @@ Makefile test and check targets:
 ```bash
 make test
 make vet
+make tidy
+make test-makefile
 make check-docs
 make test-race
 make test-harte-short
@@ -389,11 +427,9 @@ Summary from [Platform Compatibility](sdk/docs/platform-compatibility.md):
 | macOS | x86_64 | `novulkan` |
 | macOS | ARM64 | `novulkan` |
 
-Linux amd64 and arm64 support the full profile, including the Vulkan-backed Voodoo HLE path. The full Linux profile is a CGO build and depends on native display, audio, C runtime, and Vulkan libraries, so its binaries are not fully static.
+Linux amd64 and arm64 support the full profile, including the Vulkan-backed Voodoo HLE path. The full Linux profile is a CGO build and depends on native display, audio, C runtime, and Vulkan libraries.
 
-Windows and macOS release builds are maintained on amd64 and arm64 as Pure Go `novulkan` builds. They have no CGO or third-party native runtime dependencies, but the hardware-accelerated Vulkan Voodoo path is disabled; these builds use the software Voodoo rasteriser. Use `headless-novulkan` for a portable no-CGO build with no display or audio backend.
-
-JIT support is asymmetric by host platform. Check [Platform Compatibility](sdk/docs/platform-compatibility.md) before relying on JIT for a specific guest and host combination.
+Windows and macOS release builds are maintained on amd64 and arm64 as Pure Go `novulkan` builds. These builds have no CGO or third-party native runtime dependencies, but the Vulkan Voodoo path is disabled and the software Voodoo rasteriser is used instead. Use `headless-novulkan` for a portable no-CGO build with no display or audio backend.
 
 ## Documentation
 
@@ -403,9 +439,11 @@ JIT support is asymmetric by host platform. Check [Platform Compatibility](sdk/d
 - [SDK README](sdk/README.md)
 - [SDK Getting Started](sdk/docs/sdk-getting-started.md)
 - [Toolchains](sdk/docs/toolchains.md)
+- [Include Files](sdk/docs/include-files.md)
 - [Demo Matrix](sdk/docs/demo-matrix.md)
 - [IEScript](sdk/docs/iescript.md)
 - [Machine Monitor](sdk/docs/iemon.md)
+- [Coprocessor](sdk/docs/Coprocessor.md)
 - [IE64 ISA](sdk/docs/IE64_ISA.md)
 - [IE64 ABI](sdk/docs/IE64_ABI.md)
 - [EmuTOS Integration](sdk/docs/ie_emutos.md)
@@ -415,7 +453,7 @@ Additional hardware, JIT, OS, and tutorial references live under [sdk/docs/](sdk
 
 ## Licence
 
-Intuition Engine is under GPLv3 or later. See [LICENSE](LICENSE).
+Intuition Engine is distributed under GPLv3 or later. See [LICENSE](LICENSE).
 
 Project links:
 
