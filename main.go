@@ -222,6 +222,7 @@ func main() {
 	var (
 		modeIE32    bool
 		modeIE64    bool
+		modeIOS     bool
 		modeBasic   bool
 		modeTerm    bool
 		basicImage  string
@@ -259,12 +260,15 @@ func main() {
 		scriptFile  string
 		noJIT       bool
 		coprocSvc   string
+		iosRoot     string
+		iosImage    string
 	)
 
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	flagSet.SetOutput(io.Discard)
 	flagSet.BoolVar(&modeIE32, "ie32", false, "Run IE32 CPU mode")
 	flagSet.BoolVar(&modeIE64, "ie64", false, "Run IE64 CPU mode (64-bit RISC)")
+	flagSet.BoolVar(&modeIOS, "intuitionos", false, "Boot IntuitionOS")
 	flagSet.BoolVar(&modeBasic, "basic", false, "Run EhBASIC IE64 interpreter (embedded image)")
 	flagSet.BoolVar(&modeTerm, "term", false, "Use console terminal with -basic")
 	flagSet.StringVar(&basicImage, "basic-image", "", "Run EhBASIC IE64 from custom binary path")
@@ -303,6 +307,8 @@ func main() {
 	flagSet.StringVar(&emutosDrive, "emutos-drive", "", "Host directory to map as GEMDOS drive U: (default: ~/)")
 	var arosDrive string
 	flagSet.StringVar(&arosDrive, "aros-drive", "", "Host directory for AROS DOS volume (default: ~/)")
+	flagSet.StringVar(&iosRoot, "intuitionos-root", "", "Host-backed IntuitionOS SYS: root")
+	flagSet.StringVar(&iosImage, "intuitionos-image", "", "IExec kernel image path")
 	flagSet.Bool("version", false, "Print version information and exit")
 	loadAddr.value = "0x0600"
 	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
@@ -384,7 +390,7 @@ func main() {
 	if arosImage != "" {
 		modeAROS = true
 	}
-	if !modeIE32 && !modeIE64 && !modeBasic && !modeM68K && !modeEmuTOS && !modeAROS &&
+	if !modeIE32 && !modeIE64 && !modeIOS && !modeBasic && !modeM68K && !modeEmuTOS && !modeAROS &&
 		!modeM6502 && !modeZ80 && !modeX86 && !modePSG && !modeSID && !modePOKEY &&
 		!modeTED && !modeAHX && !modeMOD && !modeWAV && filename != "" {
 		mode, err := cliModeFromExtension(filename)
@@ -419,6 +425,15 @@ func main() {
 
 	// Resolve AROS drive config (host filesystem mapping).
 	exePath, _ := os.Executable()
+	intuitionOSResolved, err := resolveIntuitionOSPaths(intuitionOSPathOptions{
+		ExplicitRoot:  iosRoot,
+		ExplicitImage: iosImage,
+		Executable:    exePath,
+	})
+	if err != nil {
+		fmt.Printf("Error resolving IntuitionOS paths: %v\n", err)
+		os.Exit(1)
+	}
 	var arosHostRoot string
 	if modeAROS {
 		var err error
@@ -471,6 +486,9 @@ func main() {
 	if modeIE64 {
 		modeCount++
 	}
+	if modeIOS {
+		modeCount++
+	}
 	if modeM68K {
 		modeCount++
 	}
@@ -521,7 +539,7 @@ func main() {
 	}
 	useGraphicalTerm = modeBasic && !modeTerm
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -m68k, -emutos, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, -ahx+, -mod, or -wav")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -intuitionos, -m68k, -emutos, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, -ahx+, -mod, or -wav")
 		os.Exit(1)
 	}
 	if modeBasic && filename != "" {
@@ -555,6 +573,9 @@ func main() {
 		case modeIE64:
 			fmt.Println("Error: IE64 mode requires a filename (or use -basic)")
 			os.Exit(1)
+		case modeIOS:
+			// IntuitionOS resolves its kernel image from -intuitionos-image,
+			// the live share, or the developer build tree.
 		case modeM68K:
 			if !shouldAutostartAB3D2() {
 				fmt.Println("Error: M68K mode requires a filename")
@@ -910,7 +931,7 @@ func main() {
 	// than a 4 GiB-page mapping that the host would otherwise pressure.
 	bootMode := determineRuntimeMode(bootModeFlags{
 		IE32: modeIE32, IE64: modeIE64, M68K: modeM68K,
-		EmuTOS: modeEmuTOS, AROS: modeAROS, Basic: modeBasic,
+		IntuitionOS: modeIOS, EmuTOS: modeEmuTOS, AROS: modeAROS, Basic: modeBasic,
 		Z80: modeZ80, X86: modeX86, M6502: modeM6502,
 	})
 
@@ -1283,7 +1304,7 @@ func main() {
 	fileIO := NewFileIODevice(sysBus, runtimeBaseDir)
 	sysBus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
 	sysBus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fileIO.HandleWrite8)
-	bootHostFS := NewBootstrapHostFSDevice(sysBus, defaultBootstrapHostFSRoot())
+	bootHostFS := NewBootstrapHostFSDevice(sysBus, intuitionOSResolved.Root)
 	sysBus.MapIO(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END, bootHostFS.HandleRead, bootHostFS.HandleWrite)
 
 	// Attach bus memory to sound engines and SoundChip so register writes
@@ -1554,27 +1575,21 @@ func main() {
 	}
 
 	loadIntuitionOSImage := func() ([]byte, string, error) {
-		// Search candidate paths for the assembled IExec kernel binary
-		candidates := []string{
-			"sdk/intuitionos/iexec/iexec.ie64", // repo root
-			"iexec.ie64",                       // current directory
-			"bin/iexec.ie64",                   // bin directory
-			"sdk/examples/prebuilt/iexec.ie64", // prebuilt location
+		paths, err := resolveIntuitionOSPaths(intuitionOSPathOptions{
+			ExplicitRoot:  iosRoot,
+			ExplicitImage: iosImage,
+			Executable:    exePath,
+			RequireKernel: true,
+		})
+		if err != nil {
+			return nil, "", err
 		}
-		// Also try relative to the executable location
-		if exePath, err := os.Executable(); err == nil {
-			exeDir := filepath.Dir(exePath)
-			candidates = append(candidates,
-				filepath.Join(exeDir, "iexec.ie64"),
-				filepath.Join(exeDir, "..", "sdk", "intuitionos", "iexec", "iexec.ie64"),
-			)
+		intuitionOSResolved = paths
+		b, err := os.ReadFile(paths.Image)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to read IntuitionOS kernel %s: %w", paths.Image, err)
 		}
-		for _, p := range candidates {
-			if b, err := os.ReadFile(p); err == nil {
-				return b, p, nil
-			}
-		}
-		return nil, "", fmt.Errorf("IntuitionOS kernel not found (run 'make intuitionos' to build)")
+		return b, paths.Image, nil
 	}
 
 	if modeIE32 {
@@ -1608,7 +1623,7 @@ func main() {
 			ie32CPU.StartExecution()
 		}
 
-	} else if modeIE64 {
+	} else if modeIE64 || modeIOS {
 		sysBus.SetLegacyMMIO64Policy(MMIO64PolicySplit)
 		ie64CPU = NewCPU64(sysBus)
 		wireVideoInterruptSinks(videoChip, anticEngine, NewIE64InterruptSink(ie64CPU))
@@ -1617,7 +1632,18 @@ func main() {
 		runtimeStatus.setCPUs(runtimeCPUIE64, nil, ie64CPU, nil, nil, nil, nil)
 		progExec.SetCPU(ie64CPU)
 
-		if modeBasic {
+		if modeIOS {
+			imageBytes, imagePath, err := loadIntuitionOSImage()
+			if err != nil {
+				fmt.Printf("Error loading IntuitionOS image: %v\n", err)
+				os.Exit(1)
+			}
+			ie64CPU.LoadProgramBytes(imageBytes)
+			programBytes = append([]byte(nil), imageBytes...)
+			currentPath = imagePath
+			startExecution = true
+			fmt.Printf("Starting IntuitionOS (IExec image: %s, SYS: %s)\n", imagePath, intuitionOSResolved.Root)
+		} else if modeBasic {
 			if err := EnforceEhBASICProfile(sysBus); err != nil {
 				fmt.Printf("Error: EhBASIC profile bounds: %v\n", err)
 				os.Exit(1)

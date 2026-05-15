@@ -813,49 +813,17 @@ func pathWithinRoot(root, target string) (bool, error) {
 }
 
 func defaultBootstrapHostFSRoot() string {
-	if root := os.Getenv("INTUITIONOS_HOST_ROOT"); root != "" {
-		return root
+	paths, err := resolveIntuitionOSPaths(intuitionOSPathOptions{})
+	if err != nil {
+		return absOrSelf(intuitionOSDevRootRel)
 	}
-	if exe, err := os.Executable(); err == nil {
-		if root := defaultBootstrapHostFSRootFromExecutable(exe); bootstrapHostFSRootExists(root) {
-			return root
-		}
-	}
-	if wd, err := os.Getwd(); err == nil {
-		if abs, err := filepath.Abs(filepath.Join(wd, "sdk", "intuitionos", "system", "SYS")); err == nil {
-			if bootstrapHostFSRootExists(abs) {
-				return abs
-			}
-		}
-	}
-	if abs, err := filepath.Abs(filepath.Join("sdk", "intuitionos", "system", "SYS")); err == nil {
-		return abs
-	}
-	return filepath.Join("sdk", "intuitionos", "system", "SYS")
+	return paths.Root
 }
 
 func defaultBootstrapHostFSRootFromExecutable(exe string) string {
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = resolved
-	}
-	exeDir := filepath.Dir(exe)
-	for _, candidate := range []string{
-		filepath.Join(exeDir, "..", "sdk", "intuitionos", "system", "SYS"),
-		filepath.Join(exeDir, "sdk", "intuitionos", "system", "SYS"),
-	} {
-		if abs, err := filepath.Abs(candidate); err == nil {
-			if info, statErr := os.Stat(abs); statErr == nil && info.IsDir() {
-				return abs
-			}
-		}
-	}
-	if abs, err := filepath.Abs(filepath.Join(exeDir, "..", "sdk", "intuitionos", "system", "SYS")); err == nil {
-		return abs
-	}
-	return filepath.Join(exeDir, "..", "sdk", "intuitionos", "system", "SYS")
+	return chooseIntuitionOSRoot("", "", exe)
 }
 
 func bootstrapHostFSRootExists(root string) bool {
-	info, err := os.Stat(root)
-	return err == nil && info.IsDir()
+	return dirExists(root)
 }

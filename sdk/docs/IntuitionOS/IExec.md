@@ -114,6 +114,7 @@ IExec.library is a protected microkernel for the IE64 CPU, inspired by AmigaOS E
 - `dos.library` boots from `IOSSYS:LIBS/dos.library`.
 - `Shell` boots from `IOSSYS:Tools/Shell`.
 - the generated host system tree lives under `sdk/intuitionos/system/SYS/IOSSYS`.
+- on x64 live media, the same `SYS:` tree is staged at `Systems/IntuitionOS`; the host bootstrap kernel is `Systems/IntuitionOS/Boot/iexec.ie64`, while guest-visible `IOSSYS:` remains `SYS:IOSSYS`.
 - `RAM:` and `T:` remain writable provider-backed in-memory namespaces.
 - bootstrap hostfs stays read-only in M15.2.
 

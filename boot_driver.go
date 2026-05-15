@@ -12,15 +12,16 @@ package main
 // determineRuntimeMode consumes. Tests construct one directly; main.go
 // builds it from the parsed flag locals.
 type bootModeFlags struct {
-	IE32   bool
-	IE64   bool
-	M68K   bool
-	EmuTOS bool
-	AROS   bool
-	Basic  bool
-	Z80    bool
-	X86    bool
-	M6502  bool
+	IE32        bool
+	IE64        bool
+	IntuitionOS bool
+	M68K        bool
+	EmuTOS      bool
+	AROS        bool
+	Basic       bool
+	Z80         bool
+	X86         bool
+	M6502       bool
 }
 
 // determineRuntimeMode returns the runtimeMode driven by the boot flags.
@@ -39,6 +40,8 @@ func determineRuntimeMode(f bootModeFlags) runtimeMode {
 		return modeAros
 	case f.Basic:
 		return modeBasic
+	case f.IntuitionOS:
+		return modeIntuitionOS
 	case f.IE64:
 		return modeIE64
 	case f.IE32:

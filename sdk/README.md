@@ -202,7 +202,7 @@ Runtime Go constants/handlers are the implementation source of truth, and shared
 
 ## IntuitionOS SDK Notes
 
-IntuitionOS runtime ELFs carry IOSM metadata and use the runtime ELF contract documented under [IntuitionOS ELF](docs/IntuitionOS/ELF.md) and [IntuitionOS IExec](docs/IntuitionOS/IExec.md). Keep ABI-level details in those documents rather than in this SDK overview.
+IntuitionOS runtime ELFs carry IOSM metadata and use the runtime ELF contract documented under [IntuitionOS ELF](docs/IntuitionOS/ELF.md) and [IntuitionOS IExec](docs/IntuitionOS/IExec.md). Developer builds use `sdk/intuitionos/system/SYS` as `SYS:`, while x64 live media stages the same root at `Systems/IntuitionOS`; host SDK tool binaries from `sdk/bin` are not bundled on the live FAT32 share. Keep ABI-level details in those documents rather than in this SDK overview.
 
 ## Further Documentation
 

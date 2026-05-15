@@ -343,7 +343,7 @@ x86-64-v3: x64-live-embed-assets
 	@ls -lh $(BIN_DIR)/IntuitionEngine_v3
 
 .PHONY: x64-live-embed-assets
-x64-live-embed-assets: sdk-build emutos-release-rom aros-iewarp-library
+x64-live-embed-assets: sdk-build emutos-release-rom aros-iewarp-library intuitionos
 	@test -f "$(EMUTOS_ROM)" || { echo "Error: missing embedded EmuTOS ROM: $(EMUTOS_ROM)"; exit 1; }
 	@test -f "$(AROS_ROM)" || { echo "Error: missing embedded AROS ROM: $(AROS_ROM)"; exit 1; }
 	@test -f "sdk/examples/prebuilt/ehbasic_ie64.ie64" || { echo "Error: missing embedded EhBASIC image: sdk/examples/prebuilt/ehbasic_ie64.ie64"; exit 1; }
@@ -364,7 +364,7 @@ x64-live-demos: x64-live-payload-check
 	@echo "x64 live demo payload inputs are ready."
 
 .PHONY: x64-live-payload-check
-x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets
+x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets intuitionos
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" ./build_x64_ie_img.sh --check-payload
 
 .PHONY: x64-live-ab3d2-assets

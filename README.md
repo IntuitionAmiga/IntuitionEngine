@@ -43,6 +43,7 @@ Live share layout:
 | `SDK` | Reference include files, selected docs, and source examples. Host tool binaries are not included. |
 | `Systems/AROS` | AROS `SYS:` root for the live image, including AROS-native demos under `Systems/AROS/Demos`. |
 | `Systems/EmuTOS` | EmuTOS GEMDOS drive root, including GEMDOS demos under `Systems/EmuTOS/Demos`. |
+| `Systems/IntuitionOS` | IntuitionOS `SYS:` root for the live image; `IOSSYS` is the read-only system subtree and `Boot/iexec.ie64` is the bootstrap kernel. |
 
 Important keys:
 
@@ -57,6 +58,8 @@ Important keys:
 | `Ctrl+Alt` | Release captured relative mouse mode. |
 
 The live image is intended to be usable without manually copying support files. If a bundled demo, OS mode, or service needs a payload, `make x64-live` should stage it automatically.
+
+M15.2 host-backed boot status: `SYS:` is the mounted host-backed boot volume, and `IOSSYS:` as the built-in system assign rooted at `SYS:IOSSYS` contains the read-only IntuitionOS system subtree. The boot chain loads the shell from `IOSSYS:Tools/Shell`.
 
 The project provides:
 
@@ -208,7 +211,7 @@ Default outputs:
 | Raw image | `build/x64-live/intuition-engine-x64.img` |
 | Archive | `build/x64-live/intuition-engine-x64.tar.zst` |
 
-The live-image script requires host image-building tools such as `libguestfs-tools`, `aria2`, `curl`, `qemu-utils`, `mtools`, and `zstd`. It stages the live runtime, SDK/demo payload, EmuTOS assets, AROS assets, and the files required by bundled services as part of `make x64-live`; these bundled payloads should not require manual copying.
+The live-image script requires host image-building tools such as `libguestfs-tools`, `aria2`, `curl`, `qemu-utils`, `mtools`, and `zstd`. It stages the live runtime, SDK/demo payload, EmuTOS assets, AROS assets, IntuitionOS assets, and the files required by bundled services as part of `make x64-live`; these bundled payloads should not require manual copying. Host SDK tool binaries are not bundled on the FAT32 share.
 
 Use [DEVELOPERS.md](DEVELOPERS.md) for full build, release, and contribution details.
 

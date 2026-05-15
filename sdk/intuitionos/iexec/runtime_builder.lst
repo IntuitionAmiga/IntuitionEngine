@@ -731,6 +731,11 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
          = 00000000000F0004  VIDEO_MODE        equ 0xF0004
          = 00000000000F0008  VIDEO_STATUS      equ 0xF0008
          = 0000000000000002  STATUS_VBLANK     equ 2
+         = 0000000000000004  STATUS_FB_ERROR   equ 4
+         = 00000000000F0078  VIDEO_PAL_INDEX   equ 0xF0078
+         = 00000000000F007C  VIDEO_PAL_DATA    equ 0xF007C
+         = 00000000000F0080  VIDEO_COLOR_MODE  equ 0xF0080
+         = 00000000000F0084  VIDEO_FB_BASE     equ 0xF0084
          = 00000000000F000C  COPPER_CTRL       equ 0xF000C
          = 00000000000F0010  COPPER_PTR        equ 0xF0010
          = 00000000000F001C  BLT_CTRL          equ 0xF001C
@@ -850,6 +855,29 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
          = 00000000000F0E28  SID_PLAY_CTRL     equ 0xF0E28
          = 00000000000F0E2C  SID_PLAY_STATUS   equ 0xF0E2C
          = 00000000000F0E2D  SID_SUBSONG       equ 0xF0E2D
+         = 00000000000F0E80  IE_SFX_CH_BASE     equ 0xF0E80
+         = 0000000000000020  IE_SFX_CH_STRIDE   equ 0x20
+         = 00000000000F0E80  IE_SFX_CH0_BASE    equ 0xF0E80
+         = 00000000000F0EA0  IE_SFX_CH1_BASE    equ 0xF0EA0
+         = 00000000000F0EC0  IE_SFX_CH2_BASE    equ 0xF0EC0
+         = 00000000000F0EE0  IE_SFX_CH3_BASE    equ 0xF0EE0
+         = 0000000000000000  SFX_PTR            equ 0x00
+         = 0000000000000004  SFX_LEN            equ 0x04
+         = 0000000000000008  SFX_LOOP_PTR       equ 0x08
+         = 000000000000000C  SFX_LOOP_LEN       equ 0x0C
+         = 0000000000000010  SFX_FREQ           equ 0x10
+         = 0000000000000014  SFX_VOL            equ 0x14
+         = 0000000000000016  SFX_PAN_RESERVED   equ 0x16
+         = 0000000000000018  SFX_FORMAT         equ 0x18
+         = 000000000000001C  SFX_CTRL           equ 0x1C
+         = 0000000000000000  SFX_FORMAT_SIGNED8   equ 0
+         = 0000000000000001  SFX_FORMAT_UNSIGNED8 equ 1
+         = 0000000000000002  SFX_FORMAT_SIGNED16  equ 2
+         = 0000000000000001  SFX_CTRL_TRIGGER   equ 0x01
+         = 0000000000000002  SFX_CTRL_STOP      equ 0x02
+         = 0000000000000004  SFX_CTRL_LOOP_EN   equ 0x04
+         = 0000000000000001  SFX_STATUS_PLAYING equ 0x01
+         = 0000000000000002  SFX_STATUS_ERROR   equ 0x02
          = 00000000000F0D10  SAP_PLAY_PTR      equ 0xF0D10
          = 00000000000F0D14  SAP_PLAY_LEN      equ 0xF0D14
          = 00000000000F0D18  SAP_PLAY_CTRL     equ 0xF0D18
@@ -1080,13 +1108,17 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
          = 0000000000000070  SWEEP_PERIOD_MASK equ 0x70
          = 0000000000000007  SWEEP_SHIFT_MASK  equ 0x07
          = 0000000000100000  VRAM_START        equ 0x100000
-         = 0000000000000500  SCREEN_W          set 1280
-         = 00000000000003C0  SCREEN_H          set 960
-         = 0000000000001400  LINE_BYTES        set 5120
+         = 00000000000003C0  SCREEN_W          set 960
+         = 000000000000021C  SCREEN_H          set 540
+         = 0000000000000F00  LINE_BYTES        set 3840
          = 0000000000000000  MODE_640x480      equ 0x00
          = 0000000000000001  MODE_800x600      equ 0x01
          = 0000000000000002  MODE_1024x768     equ 0x02
          = 0000000000000003  MODE_1280x960     equ 0x03
+         = 0000000000000004  MODE_320x200      equ 0x04
+         = 0000000000000005  MODE_320x240      equ 0x05
+         = 0000000000000006  MODE_1920x1080    equ 0x06
+         = 0000000000000007  MODE_960x540      equ 0x07
          = 0000000000000000  BLT_OP_COPY       equ 0
          = 0000000000000001  BLT_OP_FILL       equ 1
          = 0000000000000002  BLT_OP_LINE       equ 2
@@ -1094,6 +1126,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
          = 0000000000000004  BLT_OP_ALPHA      equ 4
          = 0000000000000005  BLT_OP_MODE7      equ 5
          = 0000000000000006  BLT_OP_COLOR_EXPAND equ 6
+         = 0000000000000007  BLT_OP_SCALE      equ 7
          = 0000000000000000  BLT_FLAGS_BPP_RGBA32     equ 0x00
          = 0000000000000001  BLT_FLAGS_BPP_CLUT8      equ 0x01
          = 0000000000000003  BLT_FLAGS_BPP_MASK       equ 0x03
@@ -1437,6 +1470,9 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
          = 00000000000F2210  FILE_STATUS       equ 0xF2210
          = 00000000000F2214  FILE_RESULT_LEN   equ 0xF2214
          = 00000000000F2218  FILE_ERROR_CODE   equ 0xF2218
+         = 0000000000000001  FILE_OP_READ      equ 1
+         = 0000000000000002  FILE_OP_WRITE     equ 2
+         = 0000000000000003  FILE_OP_LIST      equ 3
          = 00000000006FF000  FILE_NAME_BUF     equ 0x6FF000
          = 0000000000700000  FILE_DATA_BUF     equ 0x700000
          = 00000000000F2300  MEDIA_NAME_PTR    equ 0xF2300
@@ -1451,9 +1487,31 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
          = 00000000000F232C  EXEC_TYPE         equ 0xF232C
          = 00000000000F2330  EXEC_ERROR        equ 0xF2330
          = 00000000000F2334  EXEC_SESSION      equ 0xF2334
+         = 0000000000000001  EXEC_OP_EXECUTE   equ 1
          = 0000000000000002  EXEC_OP_EMUTOS    equ 2
          = 0000000000000003  EXEC_OP_AROS      equ 3
          = 0000000000000004  EXEC_OP_IEXEC     equ 4
+         = 0000000000000005  EXEC_OP_HARD_RESET equ 5
+         = 0000000000000000  EXEC_STATUS_IDLE    equ 0
+         = 0000000000000001  EXEC_STATUS_LOADING equ 1
+         = 0000000000000002  EXEC_STATUS_RUNNING equ 2
+         = 0000000000000003  EXEC_STATUS_ERROR   equ 3
+         = 0000000000000000  EXEC_TYPE_NONE      equ 0
+         = 0000000000000001  EXEC_TYPE_IE32      equ 1
+         = 0000000000000002  EXEC_TYPE_IE64      equ 2
+         = 0000000000000003  EXEC_TYPE_6502      equ 3
+         = 0000000000000004  EXEC_TYPE_M68K      equ 4
+         = 0000000000000005  EXEC_TYPE_Z80       equ 5
+         = 0000000000000006  EXEC_TYPE_X86       equ 6
+         = 0000000000000007  EXEC_TYPE_EMUTOS    equ 7
+         = 0000000000000008  EXEC_TYPE_SCRIPT    equ 8
+         = 0000000000000009  EXEC_TYPE_AROS      equ 9
+         = 000000000000000A  EXEC_TYPE_IEXEC     equ 10
+         = 0000000000000000  EXEC_ERR_OK           equ 0
+         = 0000000000000001  EXEC_ERR_NOT_FOUND    equ 1
+         = 0000000000000002  EXEC_ERR_UNSUPPORTED  equ 2
+         = 0000000000000003  EXEC_ERR_PATH_INVALID equ 3
+         = 0000000000000004  EXEC_ERR_LOAD_FAILED  equ 4
          = 00000000000F2340  COPROC_CMD            equ 0xF2340
          = 00000000000F2344  COPROC_CPU_TYPE       equ 0xF2344
          = 00000000000F2348  COPROC_CMD_STATUS     equ 0xF2348
@@ -12915,7 +12973,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00015A00  42 06 10 00 D8 08 00 00... bne r2, r0, .gfx_halt
 00015A08  11 0F E8 00 98 00 00 00... store.q r1, 152(r29)
 00015A10  01 0D 00 00 00 01 00 00... move.l  r1, #0x100
-00015A18  01 15 00 00 D6 01 00 00... move.l  r2, #470
+00015A18  01 15 00 00 FB 01 00 00... move.l  r2, #507
 00015A20  EB 01 00 00 1C 00 00 00... syscall #SYS_MAP_IO
 00015A28  10 EE F8 00 00 00 00 00... load.q  r29, (sp)
 00015A30  42 06 10 00 A8 08 00 00... bne r2, r0, .gfx_halt
@@ -12997,12 +13055,12 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00015C50  42 06 70 00 E0 03 00 00... bne r14, r0, .gfx_reply_bad_handle
 00015C58  10 77 E8 00 D8 00 00 00... load.q  r14, 216(r29)
 00015C60  42 06 70 00 D0 03 00 00... bne r14, r0, .gfx_reply_bad_handle
-00015C68  01 1D 00 00 20 03 00 00... move.l  r3, #800
+00015C68  01 1D 00 00 C0 03 00 00... move.l  r3, #960
 00015C70  34 1F 18 00 10 00 00 00... lsl     r3, r3, #16
-00015C78  31 1F 18 00 58 02 00 00... or      r3, r3, #600
+00015C78  31 1F 18 00 1C 02 00 00... or      r3, r3, #540
 00015C80  01 25 00 00 01 00 00 00... move.l  r4, #GFX_FMT_RGBA32
 00015C88  34 27 20 00 20 00 00 00... lsl     r4, r4, #32
-00015C90  31 27 20 00 80 0C 00 00... or      r4, r4, #3200
+00015C90  31 27 20 00 00 0F 00 00... or      r4, r4, #3840
 00015C98  01 15 00 00 00 00 00 00... move.l  r2, #GFX_ERR_OK
 00015CA0  40 06 00 00 18 06 00 00... bra     .gfx_reply
                          .gfx_h_open_disp:
@@ -13014,7 +13072,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00015CD0  42 06 70 00 C0 03 00 00... bne r14, r0, .gfx_reply_busy
 00015CD8  10 7F E8 00 98 00 00 00... load.q  r15, 152(r29)
 00015CE0  20 87 78 00 04 00 00 00... add     r16, r15, #4
-00015CE8  01 8D 00 00 01 00 00 00... move.l  r17, #1
+00015CE8  01 8D 00 00 07 00 00 00... move.l  r17, #7
 00015CF0  11 8C 80 00 00 00 00 00... store.l r17, (r16)
 00015CF8  01 8D 00 00 01 00 00 00... move.l  r17, #1
 00015D00  11 8C 78 00 00 00 00 00... store.l r17, (r15)
@@ -13032,7 +13090,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00015D58  11 01 E8 00 B0 00 00 00... store.b r0, 176(r29)
 00015D60  10 7F E8 00 98 00 00 00... load.q  r15, 152(r29)
 00015D68  20 87 78 00 04 00 00 00... add     r16, r15, #4
-00015D70  01 8D 00 00 01 00 00 00... move.l  r17, #1
+00015D70  01 8D 00 00 07 00 00 00... move.l  r17, #7
 00015D78  11 8C 80 00 00 00 00 00... store.l r17, (r16)
 00015D80  11 04 78 00 00 00 00 00... store.l r0, (r15)
 00015D88  01 15 00 00 00 00 00 00... move.l  r2, #GFX_ERR_OK
@@ -13358,7 +13416,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 000166B0  40 06 00 00 C8 FF FF FF... bra     .gd_open_in
                          .gd_in_ok:
 000166B8  11 0F E8 00 90 00 00 00... store.q r1, 144(r29)
-000166C0  01 0D 00 00 00 4C 1D 00... move.l  r1, #1920000
+000166C0  01 0D 00 00 00 A4 1F 00... move.l  r1, #2073600
 000166C8  01 15 00 00 01 00 01 00... move.l  r2, #0x10001
 000166D0  EB 01 00 00 01 00 00 00... syscall #SYS_ALLOC_MEM
 000166D8  10 EE F8 00 00 00 00 00... load.q  r29, (sp)
@@ -13395,15 +13453,15 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 000167D0  10 0F E8 00 88 00 00 00... load.q  r1, 136(r29)
 000167D8  01 15 00 00 06 02 00 00... move.l  r2, #GFX_REGISTER_SURFACE
 000167E0  10 1F E8 00 B8 00 00 00... load.q  r3, 184(r29)
-000167E8  01 27 00 00 20 03 00 00... move.q  r4, #800
+000167E8  01 27 00 00 C0 03 00 00... move.q  r4, #960
 000167F0  34 27 20 00 30 00 00 00... lsl     r4, r4, #48
-000167F8  01 77 00 00 58 02 00 00... move.q  r14, #600
+000167F8  01 77 00 00 1C 02 00 00... move.q  r14, #540
 00016800  34 77 70 00 20 00 00 00... lsl     r14, r14, #32
 00016808  31 26 20 70 00 00 00 00... or      r4, r4, r14
 00016810  01 77 00 00 01 00 00 00... move.q  r14, #1
 00016818  34 77 70 00 10 00 00 00... lsl     r14, r14, #16
 00016820  31 26 20 70 00 00 00 00... or      r4, r4, r14
-00016828  31 27 20 00 80 0C 00 00... or      r4, r4, #3200
+00016828  31 27 20 00 00 0F 00 00... or      r4, r4, #3840
 00016830  10 2F E8 00 A8 00 00 00... load.q  r5, 168(r29)
 00016838  10 35 E8 00 A0 00 00 00... load.l  r6, 160(r29)
 00016840  EB 01 00 00 11 00 00 00... syscall #SYS_PUT_MSG
@@ -13437,14 +13495,14 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00016920  11 75 E8 00 D8 00 00 00... store.l r14, 216(r29)
 00016928  01 75 00 00 03 00 00 00... move.l  r14, #3
 00016930  11 75 E8 00 DC 00 00 00... store.l r14, 220(r29)
-00016938  01 75 00 00 40 01 00 00... move.l  r14, #320
+00016938  01 75 00 00 E0 01 00 00... move.l  r14, #480
 00016940  11 75 E8 00 E0 00 00 00... store.l r14, 224(r29)
-00016948  01 75 00 00 F0 00 00 00... move.l  r14, #240
+00016948  01 75 00 00 0E 01 00 00... move.l  r14, #270
 00016950  11 75 E8 00 E4 00 00 00... store.l r14, 228(r29)
                          .gd_frame:
 00016958  10 EE F8 00 00 00 00 00... load.q  r29, (sp)
 00016960  10 77 E8 00 98 00 00 00... load.q  r14, 152(r29)
-00016968  01 7D 00 00 00 4C 1D 00... move.l  r15, #1920000
+00016968  01 7D 00 00 00 A4 1F 00... move.l  r15, #2073600
 00016970  01 85 00 00 20 20 60 FF... move.l  r16, #0xFF602020
                          .gd_fill_bg:
 00016978  41 06 78 00 28 00 00 00... beq r15, r0, .gd_fill_bg_done
@@ -13457,7 +13515,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 000169A8  10 7D E8 00 D0 00 00 00... load.l  r15, 208(r29)
 000169B0  10 85 E8 00 D4 00 00 00... load.l  r16, 212(r29)
 000169B8  01 8D 00 00 FF FF FF FF... move.l  r17, #0xFFFFFFFF
-000169C0  01 95 00 00 80 0C 00 00... move.l  r18, #3200
+000169C0  01 95 00 00 00 0F 00 00... move.l  r18, #3840
 000169C8  22 9E 80 90 00 00 00 00... mulu    r19, r16, r18
 000169D0  34 A7 78 00 02 00 00 00... lsl     r20, r15, #2
 000169D8  20 9E 98 A0 00 00 00 00... add     r19, r19, r20
@@ -13474,29 +13532,29 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00016A20  21 AF A8 00 01 00 00 00... sub     r21, r21, #1
 00016A28  40 06 00 00 E0 FF FF FF... bra     .gd_rect_col
                          .gd_rect_row_done:
-00016A30  20 9F 98 00 80 0C 00 00... add     r19, r19, #3200
+00016A30  20 9F 98 00 00 0F 00 00... add     r19, r19, #3840
 00016A38  21 A7 A0 00 01 00 00 00... sub     r20, r20, #1
 00016A40  40 06 00 00 B0 FF FF FF... bra     .gd_rect_row
                          .gd_rect_done:
 00016A48  10 77 E8 00 98 00 00 00... load.q  r14, 152(r29)
 00016A50  10 7D E8 00 E0 00 00 00... load.l  r15, 224(r29)
 00016A58  10 85 E8 00 E4 00 00 00... load.l  r16, 228(r29)
-00016A60  01 E5 00 00 10 03 00 00... move.l  r28, #784
+00016A60  01 E5 00 00 B0 03 00 00... move.l  r28, #944
 00016A68  46 06 78 E0 10 00 00 00... ble     r15, r28, .gd_mp_x_ok
-00016A70  01 7D 00 00 10 03 00 00... move.l  r15, #784
+00016A70  01 7D 00 00 B0 03 00 00... move.l  r15, #944
                          .gd_mp_x_ok:
 00016A78  44 06 78 00 10 00 00 00... bge r15, r0, .gd_mp_x_pos
 00016A80  01 7D 00 00 00 00 00 00... move.l  r15, #0
                          .gd_mp_x_pos:
-00016A88  01 E5 00 00 48 02 00 00... move.l  r28, #584
+00016A88  01 E5 00 00 0C 02 00 00... move.l  r28, #524
 00016A90  46 06 80 E0 10 00 00 00... ble     r16, r28, .gd_mp_y_ok
-00016A98  01 85 00 00 48 02 00 00... move.l  r16, #584
+00016A98  01 85 00 00 0C 02 00 00... move.l  r16, #524
                          .gd_mp_y_ok:
 00016AA0  44 06 80 00 10 00 00 00... bge r16, r0, .gd_mp_y_pos
 00016AA8  01 85 00 00 00 00 00 00... move.l  r16, #0
                          .gd_mp_y_pos:
 00016AB0  01 8D 00 00 00 FF 00 FF... move.l  r17, #0xFF00FF00
-00016AB8  01 95 00 00 80 0C 00 00... move.l  r18, #3200
+00016AB8  01 95 00 00 00 0F 00 00... move.l  r18, #3840
 00016AC0  22 9E 80 90 00 00 00 00... mulu    r19, r16, r18
 00016AC8  34 A7 78 00 02 00 00 00... lsl     r20, r15, #2
 00016AD0  20 9E 98 A0 00 00 00 00... add     r19, r19, r20
@@ -13513,7 +13571,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00016B18  21 AF A8 00 01 00 00 00... sub     r21, r21, #1
 00016B20  40 06 00 00 E0 FF FF FF... bra     .gd_mp_col
                          .gd_mp_row_done:
-00016B28  20 9F 98 00 80 0C 00 00... add     r19, r19, #3200
+00016B28  20 9F 98 00 00 0F 00 00... add     r19, r19, #3840
 00016B30  21 A7 A0 00 01 00 00 00... sub     r20, r20, #1
 00016B38  40 06 00 00 B0 FF FF FF... bra     .gd_mp_row
                          .gd_mp_done:
@@ -13533,9 +13591,9 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00016BA8  10 75 E8 00 D0 00 00 00... load.l  r14, 208(r29)
 00016BB0  10 7D E8 00 D8 00 00 00... load.l  r15, 216(r29)
 00016BB8  20 76 70 78 00 00 00 00... add     r14, r14, r15
-00016BC0  01 E5 00 00 00 03 00 00... move.l  r28, #768
+00016BC0  01 E5 00 00 A0 03 00 00... move.l  r28, #928
 00016BC8  46 06 70 E0 20 00 00 00... ble     r14, r28, .gd_x_low_check
-00016BD0  01 75 00 00 00 03 00 00... move.l  r14, #768
+00016BD0  01 75 00 00 A0 03 00 00... move.l  r14, #928
 00016BD8  21 7E 00 78 00 00 00 00... sub     r15, r0, r15
 00016BE0  40 06 00 00 20 00 00 00... bra     .gd_x_save
                          .gd_x_low_check:
@@ -13548,9 +13606,9 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00016C10  10 75 E8 00 D4 00 00 00... load.l  r14, 212(r29)
 00016C18  10 7D E8 00 DC 00 00 00... load.l  r15, 220(r29)
 00016C20  20 76 70 78 00 00 00 00... add     r14, r14, r15
-00016C28  01 E5 00 00 38 02 00 00... move.l  r28, #568
+00016C28  01 E5 00 00 FC 01 00 00... move.l  r28, #508
 00016C30  46 06 70 E0 20 00 00 00... ble     r14, r28, .gd_y_low_check
-00016C38  01 75 00 00 38 02 00 00... move.l  r14, #568
+00016C38  01 75 00 00 FC 01 00 00... move.l  r14, #508
 00016C40  21 7E 00 78 00 00 00 00... sub     r15, r0, r15
 00016C48  40 06 00 00 20 00 00 00... bra     .gd_y_save
                          .gd_y_low_check:
@@ -13778,14 +13836,14 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 000172E8  11 7D E8 00 E4 00 00 00... store.l r15, 228(r29)
 000172F0  10 75 E8 00 E8 00 00 00... load.l  r14, 232(r29)
 000172F8  41 06 70 00 E8 0F 00 00... beq r14, r0, .intui_reply_badarg
-00017300  01 E5 00 00 20 03 00 00... move.l  r28, #800
+00017300  01 E5 00 00 C0 03 00 00... move.l  r28, #960
 00017308  45 06 70 E0 D8 0F 00 00... bgt     r14, r28, .intui_reply_badarg
 00017310  10 7D E8 00 E0 00 00 00... load.l  r15, 224(r29)
 00017318  20 76 70 78 00 00 00 00... add     r14, r14, r15
 00017320  45 06 70 E0 C0 0F 00 00... bgt     r14, r28, .intui_reply_badarg
 00017328  10 75 E8 00 EC 00 00 00... load.l  r14, 236(r29)
 00017330  41 06 70 00 B0 0F 00 00... beq r14, r0, .intui_reply_badarg
-00017338  01 E5 00 00 58 02 00 00... move.l  r28, #600
+00017338  01 E5 00 00 1C 02 00 00... move.l  r28, #540
 00017340  45 06 70 E0 A0 0F 00 00... bgt     r14, r28, .intui_reply_badarg
 00017348  10 7D E8 00 E4 00 00 00... load.l  r15, 228(r29)
 00017350  20 76 70 78 00 00 00 00... add     r14, r14, r15
@@ -13870,7 +13928,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00017588  40 06 00 00 C8 FF FF FF... bra     .intui_findin
                          .intui_findin_ok:
 00017590  11 0F E8 00 98 00 00 00... store.q r1, 152(r29)
-00017598  01 0D 00 00 00 4C 1D 00... move.l  r1, #1920000
+00017598  01 0D 00 00 00 A4 1F 00... move.l  r1, #2073600
 000175A0  01 15 00 00 01 00 01 00... move.l  r2, #0x10001
 000175A8  EB 01 00 00 01 00 00 00... syscall #SYS_ALLOC_MEM
 000175B0  10 EE F8 00 00 00 00 00... load.q  r29, (sp)
@@ -13878,7 +13936,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 000175C0  11 0F E8 00 C8 00 00 00... store.q r1, 200(r29)
 000175C8  11 1D E8 00 D0 00 00 00... store.l r3, 208(r29)
 000175D0  10 77 E8 00 C8 00 00 00... load.q  r14, 200(r29)
-000175D8  01 7D 00 00 00 4C 1D 00... move.l  r15, #1920000
+000175D8  01 7D 00 00 00 A4 1F 00... move.l  r15, #2073600
 000175E0  01 85 00 00 C8 D0 D4 FF... move.l  r16, #0xFFD4D0C8
                          .intui_screen_bg:
 000175E8  41 06 78 00 28 00 00 00... beq r15, r0, .intui_screen_bg_done
@@ -13905,15 +13963,15 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00017688  10 0F E8 00 90 00 00 00... load.q  r1, 144(r29)
 00017690  01 15 00 00 06 02 00 00... move.l  r2, #GFX_REGISTER_SURFACE
 00017698  10 1F E8 00 B8 00 00 00... load.q  r3, 184(r29)
-000176A0  01 27 00 00 20 03 00 00... move.q  r4, #800
+000176A0  01 27 00 00 C0 03 00 00... move.q  r4, #960
 000176A8  34 27 20 00 30 00 00 00... lsl     r4, r4, #48
-000176B0  01 77 00 00 58 02 00 00... move.q  r14, #600
+000176B0  01 77 00 00 1C 02 00 00... move.q  r14, #540
 000176B8  34 77 70 00 20 00 00 00... lsl     r14, r14, #32
 000176C0  31 26 20 70 00 00 00 00... or      r4, r4, r14
 000176C8  01 77 00 00 01 00 00 00... move.q  r14, #1
 000176D0  34 77 70 00 10 00 00 00... lsl     r14, r14, #16
 000176D8  31 26 20 70 00 00 00 00... or      r4, r4, r14
-000176E0  31 27 20 00 80 0C 00 00... or      r4, r4, #3200
+000176E0  31 27 20 00 00 0F 00 00... or      r4, r4, #3840
 000176E8  10 2F E8 00 A0 00 00 00... load.q  r5, 160(r29)
 000176F0  10 35 E8 00 D0 00 00 00... load.l  r6, 208(r29)
 000176F8  EB 01 00 00 11 00 00 00... syscall #SYS_PUT_MSG
@@ -13975,7 +14033,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 000178A0  10 BD E8 00 E4 00 00 00... load.l  r23, 228(r29)
 000178A8  10 C5 E8 00 E8 00 00 00... load.l  r24, 232(r29)
 000178B0  10 CD E8 00 EC 00 00 00... load.l  r25, 236(r29)
-000178B8  01 75 00 00 80 0C 00 00... move.l  r14, #3200
+000178B8  01 75 00 00 00 0F 00 00... move.l  r14, #3840
 000178C0  22 76 B8 70 00 00 00 00... mulu    r14, r23, r14
 000178C8  20 AE A8 70 00 00 00 00... add     r21, r21, r14
 000178D0  34 77 B0 00 02 00 00 00... lsl     r14, r22, #2
@@ -13996,7 +14054,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
                          .intui_blit_row_done:
 00017938  34 77 C0 00 02 00 00 00... lsl     r14, r24, #2
 00017940  20 A6 A0 70 00 00 00 00... add     r20, r20, r14
-00017948  20 AF A8 00 80 0C 00 00... add     r21, r21, #3200
+00017948  20 AF A8 00 00 0F 00 00... add     r21, r21, #3840
 00017950  21 CF C8 00 01 00 00 00... sub     r25, r25, #1
 00017958  40 06 00 00 88 FF FF FF... bra     .intui_blit_row
                          .intui_blit_done:
@@ -14286,7 +14344,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00018220  11 07 E8 00 08 01 00 00... store.q r0, 264(r29)
                          .intui_close_graphics_done:
 00018228  10 0F E8 00 C8 00 00 00... load.q  r1, 200(r29)
-00018230  01 15 00 00 00 4C 1D 00... move.l  r2, #1920000
+00018230  01 15 00 00 00 A4 1F 00... move.l  r2, #2073600
 00018238  EB 01 00 00 02 00 00 00... syscall #SYS_FREE_MEM
 00018240  10 EE F8 00 00 00 00 00... load.q  r29, (sp)
 00018248  11 07 E8 00 C8 00 00 00... store.q r0, 200(r29)
@@ -14570,7 +14628,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00018A18  46 06 40 00 A0 00 00 00... ble r8, r0, .intui_fr_ret
 00018A20  46 06 48 00 98 00 00 00... ble r9, r0, .intui_fr_ret
 00018A28  10 2F E8 00 C8 00 00 00... load.q  r5, 200(r29)
-00018A30  01 65 00 00 80 0C 00 00... move.l  r12, #3200
+00018A30  01 65 00 00 00 0F 00 00... move.l  r12, #3840
 00018A38  22 66 38 60 00 00 00 00... mulu    r12, r7, r12
 00018A40  20 2E 28 60 00 00 00 00... add     r5, r5, r12
 00018A48  34 67 30 00 02 00 00 00... lsl     r12, r6, #2
@@ -14587,14 +14645,14 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00018A90  21 7F 78 00 01 00 00 00... sub     r15, r15, #1
 00018A98  40 06 00 00 E0 FF FF FF... bra     .intui_fr_col
                          .intui_fr_row_done:
-00018AA0  20 2F 28 00 80 0C 00 00... add     r5, r5, #3200
+00018AA0  20 2F 28 00 00 0F 00 00... add     r5, r5, #3840
 00018AA8  21 6F 68 00 01 00 00 00... sub     r13, r13, #1
 00018AB0  40 06 00 00 B0 FF FF FF... bra     .intui_fr_row
                          .intui_fr_ret:
 00018AB8  51 00 00 00 00 00 00 00... rts
                          .intui_draw_char:
 00018AC0  10 27 E8 00 C8 00 00 00... load.q  r4, 200(r29)
-00018AC8  01 75 00 00 80 0C 00 00... move.l  r14, #3200
+00018AC8  01 75 00 00 00 0F 00 00... move.l  r14, #3840
 00018AD0  22 76 58 70 00 00 00 00... mulu    r14, r11, r14
 00018AD8  20 26 20 70 00 00 00 00... add     r4, r4, r14
 00018AE0  34 77 50 00 02 00 00 00... lsl     r14, r10, #2
@@ -14625,7 +14683,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 00018B90  20 4F 48 00 01 00 00 00... add     r9, r9, #1
 00018B98  40 06 00 00 A8 FF FF FF... bra     .intui_dc_col
                          .intui_dc_col_done:
-00018BA0  20 27 20 00 80 0C 00 00... add     r4, r4, #3200
+00018BA0  20 27 20 00 00 0F 00 00... add     r4, r4, #3840
 00018BA8  20 37 30 00 01 00 00 00... add     r6, r6, #1
 00018BB0  40 06 00 00 60 FF FF FF... bra     .intui_dc_row
                          .intui_dc_done:
@@ -14848,10 +14906,10 @@ Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 b
 0001A390  01 77 00 00 C8 00 00 00... move.q  r14, #200
 0001A398  34 77 70 00 20 00 00 00... lsl     r14, r14, #32
 0001A3A0  31 1E 18 70 00 00 00 00... or      r3, r3, r14
-0001A3A8  01 77 00 00 F0 00 00 00... move.q  r14, #240
+0001A3A8  01 77 00 00 40 01 00 00... move.q  r14, #320
 0001A3B0  34 77 70 00 10 00 00 00... lsl     r14, r14, #16
 0001A3B8  31 1E 18 70 00 00 00 00... or      r3, r3, r14
-0001A3C0  31 1F 18 00 C8 00 00 00... or      r3, r3, #200
+0001A3C0  31 1F 18 00 AA 00 00 00... or      r3, r3, #170
 0001A3C8  10 27 E8 00 98 00 00 00... load.q  r4, 152(r29)
 0001A3D0  10 2F E8 00 90 00 00 00... load.q  r5, 144(r29)
 0001A3D8  10 35 E8 00 A8 00 00 00... load.l  r6, 168(r29)

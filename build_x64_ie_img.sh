@@ -237,6 +237,11 @@ check_live_payload_inputs() {
     fi
     payload_require_file "${SCRIPT_DIR}/sdk/examples/prebuilt/iewarp_service.ie64" "make iewarp-runtime-assets" "IEWarp IE64 worker"
     payload_require_file "${AROS_RELEASE_DIR}/Libs/iewarp_service.ie64" "make iewarp-runtime-assets" "AROS release IEWarp worker copy"
+    payload_require_file "${SCRIPT_DIR}/sdk/intuitionos/iexec/iexec.ie64" "make intuitionos" "IntuitionOS IExec kernel"
+    payload_require_file "${SCRIPT_DIR}/sdk/intuitionos/system/SYS/IOSSYS/S/Startup-Sequence" "make intuitionos" "IntuitionOS Startup-Sequence"
+    payload_require_file "${SCRIPT_DIR}/sdk/intuitionos/system/SYS/IOSSYS/Tools/Shell" "make intuitionos" "IntuitionOS Shell"
+    payload_require_file "${SCRIPT_DIR}/sdk/intuitionos/system/SYS/IOSSYS/LIBS/dos.library" "make intuitionos" "IntuitionOS dos.library"
+    payload_require_file "${SCRIPT_DIR}/sdk/intuitionos/system/SYS/IOSSYS/L/console.handler" "make intuitionos" "IntuitionOS console.handler"
 
     payload_require_file "${SCRIPT_DIR}/sdk/examples/basic/rotozoomer_basic.bas" "make sdk-build" "EhBASIC live demo source"
     payload_require_file "${SCRIPT_DIR}/sdk/examples/prebuilt/rotozoomer_gem.prg" "make gem-rotozoomer" "EmuTOS GEM rotozoomer demo"
@@ -300,6 +305,11 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/Systems/AROS/Demos/RotoAPIc" "make x64-live-aros-demos" "staged AROS RotoAPIc demo"
     payload_require_file "${payload_root}/Systems/AROS/Demos/RotoHWc" "make x64-live-aros-demos" "staged AROS RotoHWc demo"
     payload_require_file "${payload_root}/Systems/EmuTOS/Demos/rotozoomer_gem.prg" "make gem-rotozoomer" "staged EmuTOS GEM demo"
+    payload_require_file "${payload_root}/Systems/IntuitionOS/Boot/iexec.ie64" "make intuitionos" "staged IntuitionOS IExec kernel"
+    payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/S/Startup-Sequence" "make intuitionos" "staged IntuitionOS Startup-Sequence"
+    payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/Tools/Shell" "make intuitionos" "staged IntuitionOS Shell"
+    payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/LIBS/dos.library" "make intuitionos" "staged IntuitionOS dos.library"
+    payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/L/console.handler" "make intuitionos" "staged IntuitionOS console.handler"
     payload_require_file "${payload_root}/Demos/rotozoomer_basic.bas" "make sdk-build" "staged BASIC demo"
     payload_require_file "${payload_root}/IE/Coproc/coproc_service_ie32.iex" "make sdk-build" "staged IE32 coprocessor worker"
     payload_require_file "${payload_root}/SDK/Docs/iewarp.md" "make sdk-build" "staged IEWarp documentation"
@@ -318,6 +328,16 @@ verify_staged_share_payload() {
     if [[ -e "${payload_root}/IE/Warp" || -e "${payload_root}/sdk/examples/asm/iewarp_service.ie64" ]]; then
         log_error "Forbidden legacy IEWarp worker path staged in live payload"
         log_error "Expected: Systems/AROS/Libs/iewarp_service.ie64"
+        exit 1
+    fi
+    if [[ -e "${payload_root}/Demos/iexec.ie64" ||
+          -e "${payload_root}/Demos/IOSSYS" ||
+          -e "${payload_root}/SDK/iexec.ie64" ||
+          -e "${payload_root}/SDK/IOSSYS" ||
+          -e "${payload_root}/Systems/AROS/Boot/iexec.ie64" ||
+          -e "${payload_root}/Systems/AROS/IOSSYS" ]]; then
+        log_error "Forbidden live payload location: IntuitionOS files staged outside Systems/IntuitionOS"
+        log_error "Expected: Systems/IntuitionOS"
         exit 1
     fi
     if ! grep -a -q 'Systems/AROS/Libs/iewarp_service.ie64' "${payload_root}/Systems/AROS/Libs/iewarp.library"; then
@@ -340,6 +360,7 @@ stage_share_payload() {
     local aros_demos_dir="${aros_system_dir}/Demos"
     local emutos_system_dir="${systems_dir}/EmuTOS"
     local emutos_demos_dir="${emutos_system_dir}/Demos"
+    local intuitionos_system_dir="${systems_dir}/IntuitionOS"
     rm -rf "$payload_root"
     mkdir -p "$payload_root" "$aros_system_dir"
     python3 - "${AROS_RELEASE_DIR}" "$aros_system_dir" <<'PY'
@@ -394,11 +415,15 @@ for key in sorted(top):
 PY
     mkdir -p "$demos_dir" "$coproc_dir" \
         "$aros_system_dir/Libs" "$aros_demos_dir" "$emutos_demos_dir" \
+        "$intuitionos_system_dir/Boot" \
         "$sdk_dir/Include" "$sdk_dir/Docs" "$sdk_dir/Examples/asm" \
         "$sdk_dir/Examples/basic" "$sdk_dir/Examples/c"
     cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "${payload_root}/Demos.info"
     cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "${systems_dir}/AROS.info"
     cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "${systems_dir}/EmuTOS.info"
+    cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "${systems_dir}/IntuitionOS.info"
+    cp -a "${SCRIPT_DIR}/sdk/intuitionos/system/SYS/." "$intuitionos_system_dir/"
+    cp -f "${SCRIPT_DIR}/sdk/intuitionos/iexec/iexec.ie64" "$intuitionos_system_dir/Boot/iexec.ie64"
 
     shopt -s nullglob
     local prebuilt_files=(
@@ -527,6 +552,7 @@ OS-specific payloads live under Systems:
 
 Systems/AROS/Demos
 Systems/EmuTOS/Demos
+Systems/IntuitionOS
 EOF
 
     cat > "${payload_root}/README.TXT" <<'EOF'
@@ -541,6 +567,7 @@ Systems  Guest OS payloads.
 
 AROS files live under Systems/AROS.
 EmuTOS/GEMDOS demo files live under Systems/EmuTOS.
+IntuitionOS SYS: lives under Systems/IntuitionOS.
 EOF
 
     cat > "${systems_dir}/README.TXT" <<'EOF'
@@ -553,6 +580,11 @@ including iewarp_service.ie64 for iewarp.library.
 
 Systems/EmuTOS is the EmuTOS GEMDOS drive root used by the live image.
 Systems/EmuTOS/Demos contains GEMDOS demo programs.
+
+Systems/IntuitionOS is the IntuitionOS SYS: root used by the live image.
+Systems/IntuitionOS/Boot/iexec.ie64 is the host bootstrap kernel image.
+Systems/IntuitionOS/IOSSYS is the read-only system subtree visible inside
+IntuitionOS as IOSSYS: through SYS:IOSSYS.
 EOF
 
     cat > "${coproc_dir}/README.TXT" <<'EOF'
@@ -572,7 +604,8 @@ contains include files, selected SDK docs, and source examples. It intentionally
 does not include sdk/bin or other host tool binaries; build programs on the
 host SDK, then copy runnable outputs to IESHARE.
 
-The live image keeps OS payloads under Systems/AROS and Systems/EmuTOS.
+The live image keeps OS payloads under Systems/AROS, Systems/EmuTOS, and
+Systems/IntuitionOS.
 The AROS IEWarp worker is a private runtime resource at
 Systems/AROS/Libs/iewarp_service.ie64, visible inside AROS as
 SYS:Libs/iewarp_service.ie64.
@@ -623,9 +656,21 @@ generate_support_files() {
     log_section "Generating image support files"
 cat > "${WORK_DIR}/launch.sh" <<'EOF'
 #!/bin/sh
-if [ -d /var/ie/share/Systems/EmuTOS ] && [ -d /var/ie/share/Systems/AROS ]; then
+if [ -d /var/ie/share ]; then
     cd /var/ie/share || cd /opt/ie
-    set -- -emutos-drive /var/ie/share/Systems/EmuTOS -aros-drive /var/ie/share/Systems/AROS
+    set --
+    if [ -d /var/ie/share/Systems/EmuTOS ]; then
+        set -- "$@" -emutos-drive /var/ie/share/Systems/EmuTOS
+    fi
+    if [ -d /var/ie/share/Systems/AROS ]; then
+        set -- "$@" -aros-drive /var/ie/share/Systems/AROS
+    fi
+    if [ -d /var/ie/share/Systems/IntuitionOS ]; then
+        set -- "$@" -intuitionos-root /var/ie/share/Systems/IntuitionOS
+    fi
+    if [ -f /var/ie/share/Systems/IntuitionOS/Boot/iexec.ie64 ]; then
+        set -- "$@" -intuitionos-image /var/ie/share/Systems/IntuitionOS/Boot/iexec.ie64
+    fi
 else
     cd /opt/ie
     set --
