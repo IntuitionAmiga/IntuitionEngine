@@ -2,25 +2,27 @@
 
 ## 0. Memory Model (PLAN_MAX_RAM.md)
 
-The IE64 is the platform's large-memory CPU. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve; IE64 sees the full active visible RAM (which may exceed 4 GiB on hosts with sufficient memory). Guest software must not hardcode the RAM size — it discovers IE64 active visible RAM via `CR_RAM_SIZE_BYTES` (read-only control register) and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair. Total guest RAM is read via `SYSINFO_TOTAL_RAM_LO/HI`. Each MMIO pair is a little-endian 64-bit byte value assembled from the low/high 32-bit halves. Old IE64/IExec binaries from before the MAX RAM migration are not supported.
+The IE64 is the platform's large-memory CPU. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve; IE64 sees the full active visible RAM (which may exceed 4 GiB on hosts with sufficient memory). Guest software must not hardcode the RAM size - it discovers IE64 active visible RAM via `CR_RAM_SIZE_BYTES` (read-only, supervisor-only control register) or the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair when that MMIO range is mapped for the caller. Total guest RAM is read via `SYSINFO_TOTAL_RAM_LO/HI`. Each MMIO pair is a little-endian 64-bit byte value assembled from the low/high 32-bit halves. Old IE64/IExec binaries from before the MAX RAM migration are not supported.
 
 ## 1. Scope and Status
 
 This document defines the application binary interface for IE64 code running
 under IntuitionOS. It covers register roles, function calling convention,
 syscall convention, task entry/exit, trap preservation guarantees, TLS, and
-binary interface assumptions.
+binary interface assumptions. The implementation on disk is the source of
+truth for any syscall-specific argument or return layout.
 
 This ABI is:
 - stable for handwritten assembly and kernel/userland interfaces
 - subject to one compatibility review before C compiler support
 
-This ABI does not yet standardize:
+This ABI does not yet standardise:
 - shared library calling convention
 - position-independent code
 - GOT/PLT conventions
 - ELF or object file format details
 - unwind table encoding
+- floating-point argument and return placement for language ABIs
 - aggregate (struct/union) passing rules
 - variadic function rules
 
@@ -28,7 +30,7 @@ This ABI does not yet standardize:
 
 - 64-bit little-endian architecture
 - Stack grows toward lower addresses
-- Code and data are separated by normal MMU policy (W^X)
+- Code and data are separated by kernel MMU policy (W^X)
 - User code runs in user mode; kernel is entered only by trap, syscall, or
   interrupt
 - Fixed 8-byte instruction width
@@ -45,7 +47,7 @@ This ABI does not yet standardize:
 | R2         | Secondary return value / error    | No                      |
 | R7-R12     | Caller-saved temporaries          | No (caller-saved)       |
 | R13-R15    | Callee-saved registers            | Yes (callee-saved)      |
-| R16-R30    | Unclassified in v0                | —                       |
+| R16-R30    | Unclassified in v0                | Unspecified             |
 | R31 / SP   | Stack pointer                     | Yes                     |
 
 R0 reads as zero; writes are discarded.
@@ -63,7 +65,9 @@ assume direct access to control registers except:
 - **TP (CR6)**: readable from user mode via `MFCR Rd, CR6`. Provides the
   thread/task-local storage base pointer.
 
-All other control registers require supervisor mode.
+All other control registers require supervisor mode. In particular,
+`CR_RAM_SIZE_BYTES` (CR15) is read-only but supervisor-only in the current CPU
+implementation; IntuitionOS user code must not issue `MFCR` against CR15.
 
 ### 3.3 Floating-Point Registers
 
@@ -91,8 +95,10 @@ double in the enclosing pair. Writing a `d*` register destroys both halves.
 ### 4.1 Argument Passing
 
 - Arguments are passed left to right in R1 through R6.
-- Additional arguments beyond the sixth are passed on the stack, in 8-byte
-  slots, in left-to-right order at increasing addresses from the stack pointer.
+- Additional arguments beyond the sixth are passed on the stack in 8-byte slots.
+  On callee entry, after `jsr` has pushed the return address, the seventh
+  argument is at `8(SP)` and later stack arguments follow at increasing
+  addresses.
 
 ### 4.2 Return Values
 
@@ -109,8 +115,9 @@ double in the enclosing pair. Writing a `d*` register destroys both halves.
 ### 4.4 Stack Alignment
 
 - SP must be 16-byte aligned immediately before every `jsr`.
-- SP must be 16-byte aligned at function entry (after the return address is
-  pushed by `jsr`, SP will be misaligned by 8; the callee adjusts if needed).
+- `jsr` pushes an 8-byte return address, so SP is 8 mod 16 at normal function
+  entry. A non-leaf callee adjusts SP as needed so SP is 16-byte aligned before
+  it issues another `jsr`.
 
 ### 4.5 Return Address
 
@@ -132,33 +139,42 @@ The syscall ABI is separate from the function calling convention.
 | Syscall number     | Encoded in the imm32 field                |
 | Arguments          | R1-R6                                     |
 | Primary return     | R1                                        |
-| Error return       | R2 (0 = success)                          |
+| Error return       | R2 by default (0 = success)               |
 | Caller-saved regs  | May be clobbered by the kernel            |
 | Callee-saved regs  | See note below                            |
 
 **Current implementation (IExec M9 onwards):** The kernel's syscall dispatch
-logic uses R10-R16 internally. Callee-saved registers (R13-R15) are **not
-preserved** across syscalls — the kernel does not save or restore GPRs in
-the TCB on the syscall entry path. (Timer interrupts DO save/restore the
-full GPR set as of M9; this section is about explicit syscalls only.)
+logic uses general-purpose registers internally. Callee-saved registers
+(R13-R15) are **not preserved** across syscalls - the kernel does not save
+or restore GPRs in the TCB on the syscall entry path. (Timer interrupts do
+save/restore the full GPR set as of M9; this section is about explicit
+syscalls only.)
 
 **ABI v0 target:** Once the kernel implements full GPR save/restore on the
 syscall entry path, callee-saved registers (R13-R15) and SP will be
 preserved across syscalls. Until then, user code must treat all registers
 except R1, R2, and SP as potentially clobbered after a syscall.
 
-After syscall return, R1 and R2 contain the return values. SP is preserved
+After syscall return, R1 and R2 normally contain the primary result and error
+status. Some IExec calls deliberately use a syscall-specific multi-register
+return layout - for example `GetMsg`/`WaitPort` return the error in R3 and
+message fields across R1, R2, R4, R5, R6, and R7. For each concrete syscall,
+use `sdk/include/iexec.inc`, `sdk/docs/IntuitionOS/IExec.md`, and
+`sdk/intuitionos/iexec/iexec.s` as the canonical contract. SP is preserved
 (via automatic USP swap). All other registers must be assumed clobbered
 until the kernel implements full GPR preservation in the syscall path.
 
-C code must reach syscalls through wrapper functions that save any live
-caller-saved state before issuing SYSCALL.
+C code must reach syscalls through wrapper functions that save any live state
+the compiler expects to survive the call. Until syscall GPR preservation is
+implemented, that includes live callee-saved registers as well as live
+caller-saved registers.
 
 ### 5.1 Error Convention
 
-- R2 = 0 means success.
-- R2 != 0 is an error code.
-- R1 holds the result value when R2 = 0.
+- Unless a syscall-specific contract says otherwise, R2 = 0 means success
+  and R2 != 0 is an error code.
+- Unless a syscall-specific contract says otherwise, R1 holds the result
+  value when the error register is zero.
 
 ## 6. Task Entry ABI
 
@@ -168,18 +184,21 @@ When a new task begins execution:
 |----------|---------------------------------------------------|
 | PC       | Task entry point                                  |
 | SP       | Top of task user stack                             |
-| TP (CR6) | Task-local block pointer, or 0 if unused           |
-| R1       | Optional startup argument pointer                  |
-| R2       | Optional startup argument value or count           |
-| All other GPRs | Undefined unless explicitly documented       |
+| TP (CR6) | 0 in the current implementation                    |
+| GPRs     | Undefined unless a specific loader contract documents otherwise |
+
+Current IExec task restore loads PC, USP, and PTBR from the task record before
+`ERET`; it does not initialise R1/R2 as a general task-entry argument channel.
+Loader-specific startup data is therefore outside this ABI table unless that
+loader's contract explicitly says otherwise.
 
 ## 7. Task Exit ABI
 
 A task must not return past its entry point. Falling off the end of a task
-entry function is undefined behavior.
+entry function is undefined behaviour.
 
 A task must exit by one of:
-- The `ExitTask` syscall (#34) — implemented since M5
+- The `ExitTask` syscall (#34) - implemented since M5
 - `HALT` instruction (early bootstrap and demo code only)
 
 ## 8. Trap and Interrupt Preservation Contract
@@ -188,7 +207,8 @@ A task must exit by one of:
 
 After a syscall returns to user mode via `ERET`:
 - SP is preserved (via automatic USP swap).
-- R1 and R2 contain the syscall return values.
+- R1 and R2 normally contain the syscall return values; syscall-specific
+  contracts can define additional or different return registers.
 - All other registers: see the current-implementation note in section 5.
   Once the kernel implements full GPR preservation, callee-saved registers
   (R13-R15) will be reliably preserved and caller-saved registers (R1-R12)
@@ -203,10 +223,11 @@ the timer resumes with its register state intact.
 
 **ABI v0 rule:** All user-visible GPRs (R1-R31) are preserved across timer
 interrupt preemption. User code does not need to defensively reload registers
-after a yield point — the timer interrupt is transparent.
+after a yield point - the timer interrupt is transparent.
 
 **Note:** The explicit syscall path (Section 5) is separate and still
-clobbers R10-R16 internally. Only timer interrupts have full GPR preservation.
+clobbers general-purpose registers internally. Only timer interrupts have full
+GPR preservation.
 A future milestone may extend GPR preservation to the syscall path as well.
 
 ### 8.3 Fault Delivery
@@ -224,13 +245,13 @@ If a fault is fatal, the task is terminated.
 ### 8.4 Supervisor Kernel-User Access Contract (M15.6)
 
 The kernel runs with the `MMU_CTRL.SKAC` bit set at boot (see
-`IE64_ISA.md` §12.2.1). Any supervisor-mode read or write on a page
+`IE64_ISA.md` section 12.2.1). Any supervisor-mode read or write on a page
 with `PTE_U==1` faults with `FAULT_SKAC` unless the `MMU_CTRL.SUA`
 latch is also set. `SUA` is mutated only by the privileged `SUAEN`
 and `SUADIS` opcodes.
 
-Supervisor code that must touch a user pointer therefore bracket
-every user-memory access with `SUAEN` / `SUADIS`:
+Supervisor code that must touch a user pointer must therefore bracket
+each user-memory access with `SUAEN` / `SUADIS`:
 
 ```
     suaen                       ; open the access window
@@ -243,7 +264,7 @@ Equivalently, kernel code calls the canonical usercopy helpers
 `copy_from_user` / `copy_to_user` / `copy_cstring_from_user` in
 `sdk/intuitionos/iexec/iexec.s`, which handle the bracketing and
 all permission/MMU-validation internally. User-mode code is never
-responsible for `SUAEN` / `SUADIS` — the opcodes are privileged.
+responsible for `SUAEN` / `SUADIS` - the opcodes are privileged.
 
 Nested-trap discipline: on trap entry the `SUA` latch is saved into
 the active trap frame's `cr14` (`CR_SAVED_SUA`) slot and then
@@ -251,7 +272,7 @@ forcibly cleared. A nested kernel handler therefore starts with
 `SUA == 0` and must re-open its own window if it needs user access.
 On `ERET`, the live latch is restored from the frame's saved value
 (supervisor return) or cleared unconditionally (user return). The
-trap-frame stack (see `IE64_ISA.md` §12.14) preserves
+trap-frame stack (see `IE64_ISA.md` section 12.14) preserves
 `CR_FAULT_PC` / `CR_FAULT_ADDR` / `CR_FAULT_CAUSE` / `CR_PREV_MODE`
 / `CR_SAVED_SUA` across nested traps automatically, so handlers
 that were previously required to save and restore these CRs around
@@ -268,15 +289,15 @@ interrupted supervisor latch value.
 
 - TP (CR6) is reserved for thread/task-local storage.
 - TP is readable from user mode via `MFCR Rd, CR6`.
-- **Current implementation:** TP is not yet initialized by the kernel. CR6
-  contains zero at task startup. The `SetTP` syscall (syscall #9) is listed as
-  future in the IExec syscall table and is not yet implemented.
+- **Current implementation:** TP is not yet initialised by the kernel. CR6
+  contains zero at task startup. Slot 9 is a reserved former `SYS_SET_TP`
+  slot in `sdk/include/iexec.inc`; it is not an implemented syscall.
 - **ABI v0 intent:** Once implemented, TP will be set by the kernel at task
   creation and will be stable for the lifetime of the task. TP will be
   per-task; if threading within a task is added in the future, TP becomes
   per-thread.
 - User code must not rely on TP containing a valid pointer until the kernel
-  initializes it. Code that needs TP today must check for zero.
+  initialises it. Code that needs TP today must check for zero.
 
 ## 10. Stack Frame Guidance
 
@@ -318,7 +339,7 @@ This layout is descriptive. The only mandatory invariants are:
   the load address (currently PROG_START = 0x1000).
 - Executable image: flat binary loaded at a fixed address for v0. Relocation
   model is not yet defined.
-- Object file format: not yet standardized. Current toolchain (ie64asm)
+- Object file format: not yet standardised. Current toolchain (ie64asm)
   produces flat binaries with no symbol or relocation information.
 
 ## 12. Versioning

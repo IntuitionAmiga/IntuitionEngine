@@ -1,10 +1,10 @@
 # IE64 Assembly Cookbook
 
-Canonical no-flags programming patterns for the IE64 64-bit RISC CPU.
+Practical no-flags programming patterns for the IE64 64-bit RISC CPU.
 
 The IE64 is a load-store RISC processor with 32 general-purpose 64-bit registers,
 fixed 8-byte instructions, and compare-and-branch semantics (no flags register).
-Assembly uses 68K-flavored lowercase syntax with `.b`/`.w`/`.l`/`.q` size suffixes
+Assembly uses 68K-flavoured lowercase syntax with `.b`/`.w`/`.l`/`.q` size suffixes
 (default `.q` for 64-bit).
 
 **Memory model (PLAN_MAX_RAM.md):** the IE64 is the platform's large-memory CPU. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve; IE64 sees the full active visible RAM. Examples in this cookbook discover RAM size via the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair (or `CR_RAM_SIZE_BYTES` from supervisor mode); never hardcode `0x2000000` (32 MB) or any other fixed total.
@@ -181,7 +181,7 @@ the stack, and `rts` (return from subroutine) which pops it. Callee-saved regist
 must be preserved by the called function.
 
 > **Conventions vs ISA guarantees**
-> - **ISA-guaranteed behavior**: `jsr`/`rts`/`push`/`pop` stack mechanics, register
+> - **ISA-guaranteed behaviour**: `jsr`/`rts`/`push`/`pop` stack mechanics, register
 >   widths, and branch semantics (as defined in `IE64_ISA.md`).
 > - **Legacy cookbook convention (these examples)**: which registers are caller-saved
 >   vs callee-saved, argument register assignments, and return-value registers.
@@ -203,7 +203,7 @@ add_two:
 ```asm
 ; void process(int *data, int count) - args in r8, r9
 process:
-                ; -- prologue --
+                ; prologue
                 push    r16             ; save callee-saved registers
                 push    r17
                 push    r18
@@ -222,7 +222,7 @@ process:
                 add.q   r18, r18, #1    ; index++
                 blt     r18, r17, .proc_loop
 
-                ; -- epilogue --
+                ; epilogue
                 pop     r18             ; restore callee-saved registers (reverse order)
                 pop     r17
                 pop     r16
@@ -278,8 +278,10 @@ negative value or for setting all-ones masks.
 ```
 
 Notes:
-- `li` is a pseudo-op. If the value fits in 32 bits, the assembler emits a single
-  `move.l`. Otherwise it emits `move.l` + `movt` (two instructions, 16 bytes).
+- `li` is a pseudo-op. The assembler always emits a layout-stable
+  `move.l` + `movt` pair (two instructions, 16 bytes), even when the
+  value would fit in 32 bits. Use `move.l` directly when a single
+  zero-extended 32-bit load is required.
 - `movt` replaces the upper 32 bits while preserving the lower 32 bits.
 - `move.l` (with `.l` size suffix) masks the result to 32 bits, which is necessary
   when `movt` will fill the upper half. Using `.q` with an immediate also works but
@@ -349,7 +351,7 @@ displacement.
 ### VGA mode selection
 
 ```asm
-; Set VGA to Mode 13h (320x200, 256 colors).
+; Set VGA to Mode 13h (320x200, 256 colours).
 ; VGA registers are at $F1000-$F13FF.
 
 VGA_BASE        equ     $F1000
@@ -381,7 +383,7 @@ VGA_STATUS      equ     $F1004
 ### Writing a pixel to VRAM (Mode 13h)
 
 ```asm
-; Plot pixel at (x=100, y=50) with color index 15.
+; Plot pixel at (x=100, y=50) with colour index 15.
 ; VRAM window is at $A0000, stride = 320 bytes in mode 13h.
 
 VRAM_BASE       equ     $A0000
@@ -391,17 +393,16 @@ VRAM_BASE       equ     $A0000
                 mulu.q  r3, r2, #320    ; y * stride
                 add.q   r3, r3, #100    ; + x
                 add.q   r3, r1, r3      ; absolute VRAM address
-                move.b  r4, #15         ; color index
+                move.b  r4, #15         ; colour index
                 store.b r4, (r3)        ; write pixel
 ```
 
 Notes:
 - `la rd, addr` is a pseudo-op that expands to `lea rd, addr(r0)`. Since `r0` is
   always zero, this loads the absolute address into the register.
-- `la` is lowered textually to `lea rd, expr(r0)`. Address expressions containing
-  inner parentheses can be parsed as addressing syntax and fail to assemble
-  (for example `la r1, BASE+(1*4)`). Prefer flattened expressions like `BASE+4`, or
-  compute complex address math in separate instructions.
+- `la` is lowered textually to `lea rd, expr(r0)`. The current assembler's
+  displacement parser uses the last parenthesised group as the base-register
+  group, so arithmetic parentheses inside `expr` are accepted.
 - I/O registers are typically 32-bit (`.l`), while VRAM pixels are byte (`.b`) in
   mode 13h.
 - There is no "volatile" keyword; the load/store instructions access the bus
@@ -409,7 +410,7 @@ Notes:
   addresses will always read fresh values.
 - Important for `.q` (64-bit) accesses: bus operations may be split into two 32-bit
   transactions when touching I/O regions. Treat `.q` MMIO accesses as potentially
-  non-atomic unless a device explicitly documents 64-bit atomic behavior.
+  non-atomic unless a device explicitly documents 64-bit atomic behaviour.
 
 ### Affine/Mode7 texture-mapped blitting
 
@@ -899,23 +900,23 @@ the stack.
 ;   sp+32 : saved r16 (array a pointer)
 
 dot_product:
-                ; -- prologue: save callee-saved registers --
+                ; prologue: save callee-saved registers
                 push    r16
                 push    r17
                 push    r18
                 push    r19
                 push    r20
 
-                ; -- copy arguments to callee-saved registers --
+                ; copy arguments to callee-saved registers
                 move.q  r16, r8         ; r16 = a
                 move.q  r17, r9         ; r17 = b
                 move.q  r18, r10        ; r18 = count
 
-                ; -- initialize locals --
+                ; initialise locals
                 move.q  r19, #0         ; accumulator = 0
                 move.q  r20, #0         ; index = 0
 
-                ; -- loop body --
+                ; loop body
 .dp_loop:
                 bge     r20, r18, .dp_done  ; if index >= count, exit loop
 
@@ -939,10 +940,10 @@ dot_product:
                 bra     .dp_loop
 
 .dp_done:
-                ; -- set return value --
+                ; set return value
                 move.q  r8, r19         ; return accumulator in r8
 
-                ; -- epilogue: restore callee-saved registers (reverse order) --
+                ; epilogue: restore callee-saved registers (reverse order)
                 pop     r20
                 pop     r19
                 pop     r18
@@ -1013,7 +1014,7 @@ Notes:
 
 ---
 
-## 11. File I/O
+## 14. File I/O
 
 The Intuition Engine provides a memory-mapped File I/O device for reading and writing files within a restricted sandbox directory on the host.
 
@@ -1059,11 +1060,11 @@ The Intuition Engine provides a memory-mapped File I/O device for reading and wr
 
 8-bit CPUs cannot write 32-bit values in a single instruction. The File I/O device supports byte-level writes: each 4-byte register can be written one byte at a time (little-endian), and the device assembles the bytes internally. Only writing byte 0 of `FILE_CTRL` triggers the operation.
 
-Access is via **bank3 switching** — set bank3 = `$0079` to map File I/O registers into the bank3 window at `$6200`:
+Access is via **bank3 switching** - set bank3 = `$0079` to map File I/O registers into the bank3 window at `$6200`:
 
 ```
-Bank3 = $0079 → bus base = $0079 × $2000 = $F2000
-FILE_IO_BASE = $F2200 → offset = $200
+Bank3 = $0079 -> bus base = $0079 * $2000 = $F2000
+FILE_IO_BASE = $F2200 -> offset = $200
 Z80/6502 address = $6000 + $200 = $6200
 ```
 
@@ -1087,12 +1088,17 @@ See `ie80.inc` / `ie65.inc` for the full set of `FIO_*` register byte addresses 
 
 ---
 
-## 14. Floating Point Operations
+## 15. Floating Point Operations
 
 The IE64 FPU provides 16 dedicated 32-bit registers (`f0`-`f15`) for high-performance
 IEEE-754 single-precision arithmetic.
 
 ### Register Conventions
+
+The table below is a legacy cookbook convention for these examples, not a
+completed IntuitionOS floating-point language ABI. `IE64_ABI.md` currently
+standardises FP preservation only; it does not yet standardise FP argument or
+return placement for language ABIs.
 
 | Register | Purpose |
 |----------|---------|
@@ -1212,67 +1218,19 @@ Double-precision uses even-odd register pairs. `f0:f1` is `d0`, `f2:f3` is
 
 ---
 
-## MMU Programming
+## 16. MMU Programming
 
-The IE64 MMU provides virtual memory with page-level access control. These examples
-show common kernel-level patterns for initializing and using the MMU. All MMU setup
-code runs in supervisor mode (the default after reset).
+The IE64 MMU provides virtual memory with page-level access control. Current
+hardware uses the 6-level sparse radix page table documented in
+`IE64_ISA.md` section 12. This cookbook intentionally does not include a
+hand-written page-table builder: the live kernel helpers in
+`sdk/intuitionos/iexec/iexec.s` are the canonical source for allocating,
+walking, and updating page tables.
 
-See `IE64_ISA.md` section 12 for the full MMU specification.
+The examples below are limited to trap mechanics and leaf-PTE flag handling.
+They assume supervisor mode.
 
-### 1. Kernel Bootstrap: Identity-Mapped Page Table
-
-Set up a page table that maps every virtual page to the same physical page (identity
-mapping), install the trap handler, and enable the MMU.
-
-```asm
-; Constants
-PAGE_TABLE      equ $00100000       ; 64 KiB page table at 1 MB
-TRAP_HANDLER    equ $00002000       ; trap vector address
-PTE_CODE        equ $07             ; P=1, R=1, W=1, NX=0 (RWX for bootstrap)
-PTE_SHIFT       equ 13             ; PPN starts at bit 13
-
-; Build identity-mapped page table: PTE[i] = (i << 13) | flags
-; 8192 entries x 8 bytes = 64 KiB
-
-                la      r1, PAGE_TABLE  ; r1 = page table base
-                move.q  r2, #0          ; r2 = VPN index (0..8191)
-                move.q  r3, #8192       ; r3 = entry count
-.build_pt:
-                ; PTE = (VPN << PTE_SHIFT) | PTE_CODE
-                lsl.q   r4, r2, #PTE_SHIFT
-                or.q    r4, r4, #PTE_CODE
-                ; Store PTE at PAGE_TABLE + VPN * 8
-                lsl.q   r5, r2, #3      ; r5 = VPN * 8
-                add.q   r5, r5, r1      ; r5 = &PTE[VPN]
-                store.q r4, (r5)
-                add.q   r2, r2, #1
-                blt     r2, r3, .build_pt
-
-; Set trap vector (CR4)
-                la      r1, TRAP_HANDLER
-                mtcr    cr4, r1
-
-; Set page table base (CR0)
-                la      r1, PAGE_TABLE
-                mtcr    cr0, r1
-
-; Enable MMU (CR5 bit 0)
-                move.q  r1, #1
-                mtcr    cr5, r1
-
-; MMU is now active. All memory accesses go through the page table.
-; With identity mapping, virtual addresses equal physical addresses.
-```
-
-Notes:
-- The page table must be set up in physical memory before enabling the MMU.
-- TRAP_VEC must be configured before enabling translation, or a fault will jump to
-  address 0.
-- The bootstrap uses RWX pages for simplicity. Production kernels should apply W^X
-  permissions (see example 4).
-
-### 2. Syscall Handler
+### 16.1 Syscall Handler
 
 User programs invoke `syscall #N` to request kernel services. The syscall number is
 encoded in the imm32 field and saved to CR1 (FAULT_ADDR) by hardware. The kernel
@@ -1292,8 +1250,8 @@ trap_entry:
                 move.q  r2, #6
                 bne     r1, r2, .not_syscall
 
-                ; It's a syscall -- read the syscall number
-                mfcr    r1, cr1         ; r1 = syscall number (from Rs)
+                ; It is a syscall - read the syscall number
+                mfcr    r1, cr1         ; r1 = syscall number (imm32)
 
                 ; Dispatch based on syscall number
                 beqz    r1, .sys_exit
@@ -1325,23 +1283,23 @@ trap_entry:
 User-mode syscall invocation:
 
 ```asm
-; Request syscall 1 (write)
-                move.q  r1, #1
-                syscall r1              ; traps to kernel; resumes here on eret
+; Request syscall 1. The syscall number is encoded in the instruction.
+                syscall #1              ; traps to kernel; resumes here on eret
 ```
 
 Notes:
 - ERET resumes at PC+8 (the instruction after SYSCALL) because hardware saved PC+8
   to FAULT_PC.
-- The trap handler runs in supervisor mode with full access to all pages and
-  privileged instructions.
+- The trap handler runs in supervisor mode. `SKEF`/`SKAC` still apply when
+  enabled, so supervisor code must use the documented `SUAEN`/`SUADIS`
+  usercopy discipline for user pages.
 
-### 3. Page Fault Handler
+### 16.2 Fault Return Rule
 
 When a fault occurs (cause codes 0-5), FAULT_PC holds the faulting instruction's PC.
-The handler reads FAULT_ADDR to determine which virtual address faulted, maps the
-page, invalidates the stale TLB entry, and returns. ERET re-executes the faulting
-instruction, which now succeeds.
+The handler reads FAULT_ADDR to determine which virtual address faulted. If the
+handler repairs the fault and returns without modifying FAULT_PC, ERET
+re-executes the faulting instruction.
 
 ```asm
 fault_handler:
@@ -1352,33 +1310,11 @@ fault_handler:
                 ; Check for page-not-present (cause 0)
                 bnez    r2, .not_page_fault
 
-                ; Extract VPN from faulting address: VPN = (addr >> 12) & 0x1FFF
-                lsr.q   r3, r1, #12     ; r3 = VPN
-                and.q   r3, r3, #$1FFF
+                ; Kernel-specific repair goes here. The live IExec code
+                ; uses its page-table helper routines rather than direct
+                ; single-level PTE indexing.
 
-                ; Allocate a physical page (kernel-specific logic)
-                ; For this example, assume alloc_page returns PPN in r8
-                push    r1
-                push    r3
-                jsr     alloc_page      ; r8 = allocated PPN
-                pop     r3
-                pop     r1
-
-                ; Build PTE: (PPN << 13) | P | R | W | NX
-                ; Map as data page: P=1, R=1, W=1, NX=1
-                lsl.q   r4, r8, #13     ; shift PPN into position
-                or.q    r4, r4, #$1B    ; flags: P|R|W|NX|U = 11011 = $1B
-
-                ; Write PTE to page table
-                mfcr    r5, cr0         ; r5 = PTBR
-                lsl.q   r6, r3, #3      ; r6 = VPN * 8
-                add.q   r6, r6, r5      ; r6 = &PTE[VPN]
-                store.q r4, (r6)
-
-                ; Invalidate the TLB entry for this VA
-                tlbinval r1
-
-                ; Return to re-execute the faulting instruction
+                tlbinval r1             ; invalidate the repaired VA if a PTE changed
                 eret
 
 .not_page_fault:
@@ -1390,85 +1326,51 @@ fault_handler:
 Notes:
 - ERET re-executes the faulting instruction because hardware saved the faulting PC
   (not PC+8) to FAULT_PC.
-- TLBINVAL is required after writing the PTE; without it, the TLB may still cache the
-  old (not-present) entry.
-- `alloc_page` is a kernel routine that manages the physical page free list. Its
-  implementation is outside the scope of this example.
+- TLBINVAL is required after changing a PTE that could already be cached.
+- Fault traps enter with `FAULT_PC` set to the faulting instruction.
+  `SYSCALL` is the exception: it stores `PC+8`, so ERET skips the syscall
+  instruction by default.
 
-### 4. W^X Page Mappings
+### 16.3 W^X Leaf-PTE Flags
 
-The IE64 MMU enforces Write XOR Execute: a page may be writable or executable, but
-not both. This prevents code injection by ensuring that writable memory cannot be
-executed.
+The IE64 page-table format supports a Write XOR Execute policy through separate
+W and X permission bits. Kernel page-table code must enforce W^X by avoiding
+leaf PTEs that set both bits; the current MMU walker checks the requested
+access against the relevant bit but does not reject a PTE merely because both
+W and X are set.
 
 ```asm
 ; PTE flag constants
 PTE_P           equ 1               ; Present
 PTE_R           equ 2               ; Read
 PTE_W           equ 4               ; Write
-PTE_NX          equ 8               ; No-Execute
+PTE_X           equ 8               ; Execute
 PTE_U           equ 16              ; User-accessible
 
 ; Code page: executable, optionally readable, never writable.
 ; M15.6 R4 allows execute-only user text, so this example uses X-only.
-; Flags = P | U = 1 | 16 = 17 ($11)
-CODE_FLAGS      equ PTE_P | PTE_U
+; Flags = P | X | U = 1 | 8 | 16 = 25 ($19)
+CODE_FLAGS      equ PTE_P | PTE_X | PTE_U
 
 ; Data/stack page: readable + writable (not executable)
-; Flags = P | R | W | NX | U = 1 | 2 | 4 | 8 | 16 = 31 ($1F)
-DATA_FLAGS      equ PTE_P | PTE_R | PTE_W | PTE_NX | PTE_U
+; Flags = P | R | W | U = 1 | 2 | 4 | 16 = 23 ($17)
+DATA_FLAGS      equ PTE_P | PTE_R | PTE_W | PTE_U
 
-; Map VPN in r1 as a code page with PPN in r2
-map_code_page:
-                lsl.q   r3, r2, #13     ; PPN << 13
-                or.q    r3, r3, #CODE_FLAGS
-                mfcr    r4, cr0         ; PTBR
-                lsl.q   r5, r1, #3      ; VPN * 8
-                add.q   r5, r5, r4
-                store.q r3, (r5)
-                tlbinval r1             ; flush stale TLB entry
-                rts
-
-; Map VPN in r1 as a data page with PPN in r2
-map_data_page:
-                lsl.q   r3, r2, #13
+; Build a leaf PTE for PPN in r2.
+                lsl.q   r3, r2, #12     ; PPN << PTE_PPN_SHIFT
                 or.q    r3, r3, #DATA_FLAGS
-                mfcr    r4, cr0
-                lsl.q   r5, r1, #3
-                add.q   r5, r5, r4
-                store.q r3, (r5)
-                tlbinval r1
-                rts
-```
-
-To load new code into memory (e.g., a dynamic loader), the kernel must:
-
-```asm
-; 1. Map target page as writable (for writing code bytes)
-                move.q  r1, r16         ; r1 = target VPN
-                move.q  r2, r17         ; r2 = target PPN
-                jsr     map_data_page
-
-; 2. Write code bytes to the page
-                ; ... store instructions to the mapped page ...
-
-; 3. Remap as executable (W^X transition)
-                move.q  r1, r16
-                move.q  r2, r17
-                jsr     map_code_page
-
-; The page is now executable but no longer writable.
 ```
 
 Notes:
-- Code pages have NX=0 (executable) and W=0 (not writable).
-- Data and stack pages have NX=1 (not executable) and W=1 (writable).
-- Both types have R=1 (readable) and U=1 (user-accessible).
+- Code pages have X=1 (executable) and W=0 (not writable).
+- Data and stack pages have X=0 (not executable) and W=1 (writable).
+- User code pages may be execute-only (`PTE_R` clear) or readable,
+  depending on the loader policy. Data pages are readable.
 - The W^X transition (writable -> executable) requires TLBINVAL after remapping to
   ensure the TLB does not serve stale permissions.
 - Supervisor code can also use pages without the U bit for kernel-only mappings.
 
-### 5. Spinlock Using CAS
+### 16.4 Spinlock Using CAS
 
 A simple test-and-set spinlock built on the CAS (compare-and-swap) instruction.
 
@@ -1482,7 +1384,7 @@ acquire_lock:
                 move.q  r2, #1          ; r2 = desired (locked)
 .spin:
                 cas     r1, (r16), r2   ; old = [lock]; if old==0 then [lock]=1; r1=old
-                bnez    r1, .spin_wait  ; if r1 != 0, lock was held -- retry
+                bnez    r1, .spin_wait  ; if r1 != 0, lock was held - retry
                 rts                     ; lock acquired
 
 .spin_wait:
@@ -1504,7 +1406,7 @@ Notes:
 - All atomic operations are 64-bit and require 8-byte aligned addresses. A misaligned
   address traps with FAULT_MISALIGNED (cause code 7).
 
-### 6. Atomic Counter Using FAA
+### 16.5 Atomic Counter Using FAA
 
 Atomically increment a shared counter and retrieve the previous value.
 
@@ -1528,13 +1430,13 @@ Notes:
   *after*, add the operand to the returned value: `add.q r8, r8, r1`.
 - Useful for reference counting, sequence numbers, and statistics counters.
 
-### 7. Thread-Local Storage Access
+### 16.6 Thread-Local Storage Access
 
 The TP (Thread Pointer) register is CR6. It is readable from user mode via MFCR,
 allowing efficient TLS access without a syscall.
 
 ```asm
-; Target behavior (not yet implemented in IExec M2):
+; Target behaviour (not yet implemented in current IExec):
 ; Kernel will set TP for each task during context switch:
 ;   mtcr cr6, r1        ; r1 = TLS base for this task (supervisor only)
 ; Currently CR6 is zero at task startup. See IE64_ABI.md section 9.
@@ -1559,7 +1461,7 @@ Notes:
 - The kernel must set CR6 via `mtcr cr6, Rs` (supervisor-only) before entering user
   mode. Typically this is done during thread creation or context switch.
 
-### 8. A/D Bit Inspection for Page Reclamation
+### 16.7 A/D Bit Inspection for Page Reclamation
 
 The MMU sets the Accessed (A) and Dirty (D) bits in each PTE during address
 translation. The kernel reads these bits to make page reclamation decisions.
@@ -1570,28 +1472,24 @@ PTE_A           equ $20             ; bit 5: Accessed
 PTE_D           equ $40             ; bit 6: Dirty
 PTE_AD_MASK     equ $60             ; bits 5-6: A|D
 
-; Check A/D bits for page at VPN in r1.
-; r16 = PTBR (from mfcr cr0)
+; Check A/D bits for a leaf PTE.
+; r16 = pointer to the leaf PTE returned by the kernel page-table walker
 ; Returns: r8 = A|D bits (isolated)
 
 check_page_ad:
-                lsl.q   r2, r1, #3      ; r2 = VPN * 8
-                add.q   r2, r2, r16     ; r2 = &PTE[VPN]
-                load.q  r3, (r2)        ; r3 = PTE
+                load.q  r3, (r16)       ; r3 = PTE
                 and.q   r8, r3, #PTE_AD_MASK ; r8 = A|D bits
                 rts
 
 ; Clear A/D bits for a page (kernel page scanner).
-; r1 = VPN, r16 = PTBR
+; r1 = virtual address for TLBINVAL, r16 = leaf PTE pointer
 
 clear_page_ad:
-                lsl.q   r2, r1, #3
-                add.q   r2, r2, r16
-                load.q  r3, (r2)        ; read current PTE
+                load.q  r3, (r16)       ; read current PTE
                 move.q  r4, #PTE_AD_MASK
                 not.q   r4, r4          ; r4 = ~(A|D)
                 and.q   r3, r3, r4      ; clear A and D bits
-                store.q r3, (r2)        ; write PTE back
+                store.q r3, (r16)       ; write PTE back
                 tlbinval r1             ; flush TLB entry so stale A/D are not cached
                 rts
 ```
@@ -1599,7 +1497,7 @@ clear_page_ad:
 Page reclamation decision logic:
 
 ```asm
-; Scan pages and categorize for reclamation.
+; Scan pages and categorise for reclamation.
 ; For each candidate VPN in r1:
 
                 jsr     check_page_ad
@@ -1626,7 +1524,7 @@ Notes:
 - Page tables must reside in normal RAM (below IO_REGION_START). This is an
   architectural constraint for A/D write-back correctness.
 
-## Supervisor-User Access Helpers (M15.6)
+## 17. Supervisor-User Access Helpers (M15.6)
 
 Once M15.6 boots the kernel with `MMU_CTRL.SKAC` enabled, every
 supervisor-mode load or store against a user page (`PTE_U==1`) faults
@@ -1635,38 +1533,41 @@ is mutated only by the privileged `SUAEN` / `SUADIS` opcodes. The only
 sanctioned way to touch a user pointer from supervisor code is one of
 the canonical helpers in `sdk/intuitionos/iexec/iexec.s`:
 
-- `copy_from_user(dst_kernel, src_user, len)` — copy `len` bytes from
-  user memory into kernel memory. Validates the user range and faults
-  cleanly on permission errors.
-- `copy_to_user(dst_user, src_kernel, len)` — copy `len` bytes from
-  kernel memory into user memory. Same validation and fault behaviour.
-- `copy_cstring_from_user(dst_kernel, src_user, max_len)` — copy a
+- `copy_from_user(dst_kernel, src_user, len)` - copy `len` bytes from
+  user memory into kernel memory. Validates the user range and returns
+  `ERR_BADARG` on validation or permission errors.
+- `copy_to_user(dst_user, src_kernel, len)` - copy `len` bytes from
+  kernel memory into user memory. Same validation and error-return behaviour.
+- `copy_cstring_from_user(dst_kernel, src_user, max_len)` - copy a
   NUL-terminated user string up to `max_len` bytes.
 
-Each helper opens its `SUA` window with `SUAEN`, performs validation
-and the access loop, then closes with `SUADIS`. Callers must not
-directly dereference a user pointer from supervisor mode even when
-the data is "small" — the syscall boundary is the only place that
-crosses user→kernel without a helper.
+Each helper owns the complete validation and `SUAEN` / `SUADIS` discipline.
+`copy_from_user` and `copy_to_user` validate the user range before opening
+`SUA`; `copy_cstring_from_user` opens `SUA` before calling its validator because
+the validator scans user bytes while looking for the terminator. Callers must
+not directly dereference a user pointer from supervisor mode even when the data
+is "small". A syscall handler may receive user pointer values, but it must not
+dereference them except through one of these helpers or an equivalently audited
+`SUAEN` / `SUADIS` region.
 
 ### Worked example: SYS_READ handler excerpt
 
 ```
-; r1 = user src, r2 = len, r4 = kernel-owned destination.
+; r1 = user src, r2 = len, r4 = kernel-owned destination, r19 = user PTBR.
 ; Validate bounds, then ask copy_from_user to do the transfer.
-                move.q  r5, r2                  ; length
-                move.q  r6, r1                  ; user source
-                move.q  r7, r4                  ; kernel destination
+                move.q  r3, r2                  ; byte count
+                move.q  r2, r1                  ; user source
+                move.q  r1, r4                  ; kernel destination
+                move.q  r4, r19                 ; caller's page table
                 jsr     copy_from_user
-                tst.q   r1                      ; r1 = status from helper
-                bne     .read_fault_from_user
+                bnez    r1, .read_fault_from_user ; r1 = status from helper
                 ...
 ```
 
 ### Anti-pattern: direct supervisor load/store against a user pointer
 
 The following sequence **faults cleanly** with `FAULT_SKAC` on the
-first `load.b` when SKAC is enabled, which is the whole point — the
+first `load.b` when SKAC is enabled, which is the whole point - the
 kernel is supposed to fail loudly in this case:
 
 ```
@@ -1687,11 +1588,11 @@ kernel really needs a single-byte touch (rare; prefer the helpers):
 
 ### Nested traps and the trap-frame stack
 
-`SUAEN` / `SUADIS` pair up lexically, not dynamically — a function
+`SUAEN` / `SUADIS` pair up lexically, not dynamically - a function
 that calls another function in between may take an interrupt or
 synchronous trap inside the called function. The CPU's trap-frame
-stack (`IE64_ISA.md` §12.14) preserves the outer `SUA` latch across
+stack (`IE64_ISA.md` section 12.14) preserves the outer `SUA` latch across
 trap entry / `ERET` automatically; handlers run with `SUA == 0` and
 do not need to save or restore `cr14` (the `CR_SAVED_SUA` slot) on
-the kernel stack. The legacy pattern of MFCR→stack→MTCR around the
+the kernel stack. The legacy pattern of MFCR-to-stack-to-MTCR around the
 call is redundant under M15.6 and can be dropped from new code.
