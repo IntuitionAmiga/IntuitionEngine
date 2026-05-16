@@ -1,6 +1,6 @@
 # IE64 Instruction Set Architecture Reference
 
-Intuition Engine 64-bit RISC CPU -- Complete ISA Specification
+Intuition Engine 64-bit RISC CPU - Complete ISA Specification
 
 (c) 2024-2026 Zayn Otley -- GPLv3 or later
 
@@ -8,7 +8,7 @@ Intuition Engine 64-bit RISC CPU -- Complete ISA Specification
 > source-level transpilers that target this ISA. The `syscall #n` mnemonic
 > (`assembler/ie64asm.go:3898`) is the canonical lowering target for m68k `TRAP #n`;
 > `m68Kto64.md` §11 documents the integer vector mapping and §11.FP the FTRAPcc
-> reservation. For 68881/68882 FPU coverage see `m68Kto64.md` §4.FP (FP0–FP7 →
+> reservation. For 68881/68882 FPU coverage see `m68Kto64.md` §4.FP (FP0-FP7 ->
 > f0/f2/.../f14 register mapping), §6.FP (FP addressing modes & size suffixes), and
 > §7.FP (ShadowFPCC + hardware-FPSR/FPCR access pattern).
 
@@ -47,12 +47,12 @@ The IE64 is a 64-bit RISC load-store CPU designed for the Intuition Engine platf
 - **Word size**: 64-bit registers, 64-bit data path
 - **Instruction width**: Fixed 8 bytes (64 bits) per instruction
 - **Byte order**: Little-endian throughout (instruction encoding, memory access, immediates)
-- **Architecture class**: Load-store (all computation on registers; memory accessed only via LOAD/STORE)
-- **Condition model**: Compare-and-branch (no flags register)
+- **Architecture class**: Load-store-style register machine (integer computation is register-register/register-immediate; memory is accessed by explicit memory, stack, FPU-memory, and atomic instructions)
+- **Integer condition model**: Compare-and-branch (no integer flags register)
 - **Register file**: 32 general-purpose 64-bit registers (R0 hardwired to zero)
 - **Address space**: 64-bit physical/virtual (PLAN_MAX_RAM.md slice 3 widened the bus to `uint64`); IE64 sees the full active visible RAM. The legacy 25-bit PC mask was retired in slice 3. Active visible RAM is reported through `CR_RAM_SIZE_BYTES` and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair; total guest RAM is reported through `SYSINFO_TOTAL_RAM_LO/HI`.
 - **Stack**: Full-descending, R31 serves as stack pointer. Hardware enforces 8-byte granularity for PUSH/POP; the IntuitionOS ABI requires 16-byte alignment at call boundaries (see [`IE64_ABI.md`](IE64_ABI.md))
-- **Interrupt model**: Single vector, maskable, with timer support
+- **Interrupt model**: Legacy single-vector timer interrupt, plus MMU trap/vector registers when the MMU is enabled
 
 ---
 
@@ -64,20 +64,22 @@ The IE64 has 32 general-purpose 64-bit registers, addressed by a 5-bit field (0-
 |----------|-------|-------------|
 | R0       | --    | Hardwired zero. Reads always return 0. Writes are silently discarded. |
 | R1-R30   | --    | General-purpose registers. 64-bit read/write. |
-| R31      | SP    | Stack pointer. Used implicitly by PUSH, POP, JSR, RTS, RTI, and interrupt entry. Initialized to `0x9F000` on reset. |
+| R31      | SP    | Stack pointer. Used implicitly by PUSH, POP, JSR, RTS, RTI, and interrupt entry. Initialised to `0x9F000` on reset. |
+
+Reset clears all general-purpose registers, then seeds both R31 and R30 to `STACK_START` (`0x9F000`). R30 is not architecturally special for native IE64 instructions, but the runtime initialises it as the legacy guest stack pointer used by transpiled programs.
 
 **Floating Point Registers (F0-F15)**:
 - 16 dedicated 32-bit registers for IEEE-754 single-precision floating point.
-- Accessed via dedicated FPU instructions (0x60-0x7C).
-- Initialized to 0.0 on reset.
+- Accessed via dedicated FPU instructions (single-precision opcodes 0x60-0x7C and double-precision opcodes 0x80-0x90).
+- Initialised to 0.0 on reset.
 
 **Program Counter (PC)**:
 - 64-bit internal register, not directly addressable.
 - Full 64-bit PC. The historical 25-bit `PC & 0x1FFFFFF` mask was retired in PLAN_MAX_RAM.md slice 3 along with the rest of the IE64 `uint32` plumbing; the CPU now reaches the full active visible RAM, which may exceed 4 GiB on hosts with sufficient memory.
-- Initialized to `0x1000` (PROG_START) on reset.
+- Initialised to `0x1000` (PROG_START) on reset.
 - Advanced by 8 after each non-branch instruction.
 
-**There is no flags register.** All conditional branches use explicit register-register comparison within the branch instruction itself.
+**There is no integer flags register.** All integer conditional branches use explicit register-register comparison within the branch instruction itself. FPU condition state is held separately in FPSR.
 
 ---
 
@@ -104,9 +106,9 @@ Bits:   [7:0]    [7:3][2:1][0] [7:3][2:0] [7:3][2:0]    [31:0]
 | Size   | 1    | [2:1]    | 2     | Operand size code |
 | X      | 1    | [0]      | 1     | Operand mode: 0 = register Rt, 1 = immediate imm32 |
 | Rs     | 2    | [7:3]    | 5     | First source register index (0-31) |
-| unused | 2    | [2:0]    | 3     | Reserved (must be 0) |
+| unused | 2    | [2:0]    | 3     | Reserved; assembler emits 0, current decoder ignores |
 | Rt     | 3    | [7:3]    | 5     | Second source register index (0-31) |
-| unused | 3    | [2:0]    | 3     | Reserved (must be 0) |
+| unused | 3    | [2:0]    | 3     | Reserved; assembler emits 0, current decoder ignores |
 | imm32  | 4-7  | [31:0]   | 32    | 32-bit immediate value (little-endian) |
 
 ### 3.3 Field Extraction Formulas
@@ -197,28 +199,28 @@ When X=1, the third operand is the immediate, zero-extended to 64 bits: `operand
 
 | Mnemonic | Opcode | Syntax | Operation | Mem | Size |
 |----------|--------|--------|-----------|-----|------|
-| LOAD     | `0x10` | `load.s Rd, (Rs)` | `Rd = mem[Rs]` | Read | B/W/L/Q |
-| LOAD     | `0x10` | `load.s Rd, disp(Rs)` | `Rd = mem[Rs + signExtend(disp)]` | Read | B/W/L/Q |
+| LOAD     | `0x10` | `load.s Rd, (Rs)` | `Rd = zeroExtend(mem[Rs], s)` | Read | B/W/L/Q |
+| LOAD     | `0x10` | `load.s Rd, disp(Rs)` | `Rd = zeroExtend(mem[Rs + signExtend(disp)], s)` | Read | B/W/L/Q |
 | STORE    | `0x11` | `store.s Rd, (Rs)` | `mem[Rs] = maskToSize(Rd, s)` | Write | B/W/L/Q |
 | STORE    | `0x11` | `store.s Rd, disp(Rs)` | `mem[Rs + signExtend(disp)] = maskToSize(Rd, s)` | Write | B/W/L/Q |
 
 **LOAD** (opcode `0x10`):
-- Reads from memory at address `Rs + signExtend32to64(imm32)`, truncated to 32-bit address.
+- Reads from memory at address `uint64(int64(Rs) + int64(int32(imm32)))`.
 - The displacement is sign-extended from 32 to 64 bits before being added to Rs.
 - The loaded value is zero-extended to 64 bits (for sizes B, W, L) and stored in Rd.
 - X bit is set to 1 by the assembler when displacement is non-zero.
 
 **STORE** (opcode `0x11`):
-- Writes to memory at address `Rs + signExtend32to64(imm32)`, truncated to 32-bit address.
+- Writes to memory at address `uint64(int64(Rs) + int64(int32(imm32)))`.
 - The value from Rd is masked to the specified size before writing.
-- VRAM direct-write fast path: stores to the VRAM region (`0xA0000`-end) bypass the bus for performance.
+- VRAM direct-write fast path: stores to an attached direct VRAM buffer bypass the bus for performance when the effective physical address is inside the configured VRAM range.
 
 #### Load/Store Semantics
 
 | Mnemonic | Direction | Sign-extend on Load | Size Mask on Store | Address Calculation |
 |----------|-----------|--------------------|--------------------|---------------------|
-| LOAD     | Mem -> Reg | No (zero-extended) | N/A | `uint32(int64(Rs) + int64(int32(imm32)))` |
-| STORE    | Reg -> Mem | N/A | Yes | `uint32(int64(Rs) + int64(int32(imm32)))` |
+| LOAD     | Mem -> Reg | No (zero-extended) | N/A | `uint64(int64(Rs) + int64(int32(imm32)))` |
+| STORE    | Reg -> Mem | N/A | Yes | `uint64(int64(Rs) + int64(int32(imm32)))` |
 
 #### Memory Access Widths
 
@@ -246,19 +248,21 @@ When X=1, the third operand is the immediate, zero-extended to 64 bits: `operand
 | MULU     | `0x22` | `mulu.s Rd, Rs, Rt` | `Rd = maskToSize(Rs * Rt, s)` (unsigned) | N | B/W/L/Q |
 | MULU     | `0x22` | `mulu.s Rd, Rs, #imm` | `Rd = maskToSize(Rs * imm32, s)` (unsigned) | N | B/W/L/Q |
 | MULS     | `0x23` | `muls.s Rd, Rs, Rt` | `Rd = maskToSize(int64(Rs) * int64(Rt), s)` (signed) | N | B/W/L/Q |
-| MULS     | `0x23` | `muls.s Rd, Rs, #imm` | `Rd = maskToSize(int64(Rs) * int64(imm32), s)` (signed) | N | B/W/L/Q |
+| MULS     | `0x23` | `muls.s Rd, Rs, #imm` | `Rd = maskToSize(int64(Rs) * int64(uint64(imm32)), s)` (signed) | N | B/W/L/Q |
 | DIVU     | `0x24` | `divu.s Rd, Rs, Rt` | `Rd = maskToSize(Rs / Rt, s)` (unsigned) | N | B/W/L/Q |
 | DIVU     | `0x24` | `divu.s Rd, Rs, #imm` | `Rd = maskToSize(Rs / imm32, s)` (unsigned) | N | B/W/L/Q |
 | DIVS     | `0x25` | `divs.s Rd, Rs, Rt` | `Rd = maskToSize(int64(Rs) / int64(Rt), s)` (signed) | N | B/W/L/Q |
-| DIVS     | `0x25` | `divs.s Rd, Rs, #imm` | `Rd = maskToSize(int64(Rs) / int64(imm32), s)` (signed) | N | B/W/L/Q |
+| DIVS     | `0x25` | `divs.s Rd, Rs, #imm` | `Rd = maskToSize(int64(Rs) / int64(uint64(imm32)), s)` (signed) | N | B/W/L/Q |
 | MOD      | `0x26` | `mod.s Rd, Rs, Rt` | `Rd = maskToSize(Rs % Rt, s)` (unsigned) | N | B/W/L/Q |
 | MOD      | `0x26` | `mod.s Rd, Rs, #imm` | `Rd = maskToSize(Rs % imm32, s)` (unsigned) | N | B/W/L/Q |
 | NEG      | `0x27` | `neg.s Rd, Rs` | `Rd = maskToSize(-int64(Rs), s)` | N | B/W/L/Q |
 | MODS     | `0x28` | `mods.s Rd, Rs, Rt/#imm` | Signed modulo with truncation-toward-zero semantics | N | B/W/L/Q |
-| MULHU    | `0x29` | `mulhu Rd, Rs, Rt` | Upper 64 bits of unsigned `Rs * Rt` | N | Q |
-| MULHS    | `0x2A` | `mulhs Rd, Rs, Rt` | Upper 64 bits of signed `Rs * Rt` | N | Q |
+| MULHU    | `0x29` | `mulhu Rd, Rs, Rt/#imm` | Upper 64 bits of unsigned `Rs * operand3` | N | Q |
+| MULHS    | `0x2A` | `mulhs Rd, Rs, Rt/#imm` | Upper 64 bits of signed `Rs * operand3` | N | Q |
 
-**Division by zero**: If the divisor (Rt or imm32) is zero, the result is 0 (no exception raised). This applies to DIVU, DIVS, and MOD.
+**Immediate operands**: ALU immediates are zero-extended to 64 bits before the operation. For signed immediate forms this means `#0xFFFFFFFF` is the positive value 4294967295 for MULS/DIVS `.q`; use MOVEQ or a register operand when a negative signed operand is required. MODS sign-extends the selected operand width after this zero-extension, so `.b/.w/.l` immediates are interpreted at the selected width.
+
+**Division by zero**: If the divisor (Rt or imm32) is zero, the result is 0 (no exception raised). This applies to DIVU, DIVS, MOD, and MODS.
 
 **NEG** is a 2-operand instruction: it reads Rs and writes the two's complement negation to Rd.
 
@@ -273,6 +277,7 @@ When X=1, the third operand is the immediate, zero-extended to 64 bits: `operand
 | DIVU     | No (unsigned divide) | Result = 0 | Yes |
 | DIVS     | Yes (signed divide) | Result = 0 | Yes |
 | MOD      | No (unsigned modulo) | Result = 0 | Yes |
+| MODS     | Yes (signed modulo) | Result = 0 | Yes |
 | NEG      | Yes (two's complement) | N/A | Yes |
 
 ---
@@ -313,7 +318,7 @@ When X=1, the third operand is the immediate, zero-extended to 64 bits: `operand
 
 **Shift amount masking**: The shift count is always masked to 6 bits (`& 63`), limiting the effective shift range to 0-63.
 
-**CLZ (Count Leading Zeros)**: A 2-operand instruction that counts the number of leading zero bits in the low 32 bits of Rs and stores the result in Rd. The result is an integer in the range 0–32: zero if the most-significant bit is set, 32 if the input is zero. Only the `.l` size suffix is supported. Writing to R0 is silently discarded (as with all instructions).
+**CLZ (Count Leading Zeros)**: A 2-operand instruction that counts the number of leading zero bits in the low 32 bits of Rs and stores the result in Rd. The result is an integer in the range 0-32: zero if the most-significant bit is set, 32 if the input is zero. Only the `.l` size suffix is supported. Writing to R0 is silently discarded (as with all instructions).
 
 This instruction is particularly useful for O(1) floating-point normalisation, integer log₂ computation, and highest-set-bit detection. See the IE64 Cookbook for worked examples.
 
@@ -330,13 +335,17 @@ The result is then masked to the specified size after the shift.
 
 **LSL and LSR** operate on the unsigned 64-bit value in Rs. The result is masked to the specified size.
 
+**ROL and ROR** first mask the source to the selected size, rotate within that width, then mask the result again. The effective rotate count is masked to 3 bits for `.B`, 4 bits for `.W`, 5 bits for `.L`, and 6 bits for `.Q`.
+
+**CTZ, POPCNT, and BSWAP** are 2-operand `.l`-only instructions. CTZ and POPCNT operate on `uint32(Rs)`. BSWAP stores `bits.ReverseBytes32(uint32(Rs))` zero-extended to 64 bits.
+
 ---
 
 ### 4.6 Floating Point (FPU)
 
 The IE64 FPU provides native single-precision (`f*`) and double-precision
 (`d*`) IEEE-754 operations. Single-precision values use the 16 scalar registers
-`f0`-`f15`. Double-precision values use even-odd register pairs:
+`f0`-`f15`. Double-precision values use even-odd register pairs. The conceptual pair names below describe storage; the assembler syntax still uses the even `f` register name (`f0`, `f2`, ..., `f14`) as the operand:
 
 - `d0` = `f0:f1`
 - `d1` = `f2:f3`
@@ -352,8 +361,7 @@ PC-relative branch and call targets using the full 64-bit PC, including code
 located at or above 4 GiB. `fcmp` and `dcmp` disassemble with the integer
 destination register first: `fcmp rd, fs, ft` and `dcmp rd, fs, ft`.
 
-All `d*` mnemonics require even-numbered FP operands in assembly. Writing a
-double clobbers both halves of the pair.
+All `d*` mnemonics require even-numbered FP operands in assembly. Odd FP operands are rejected by the assembler; the main `Execute()` interpreter reports an invalid FP register and stops if raw machine code reaches a double-precision opcode with an odd FP operand. Writing a double clobbers both halves of the pair.
 
 #### 4.6.1 FPU Data Movement
 
@@ -361,10 +369,10 @@ double clobbers both halves of the pair.
 |----------|--------|--------|-----------|
 | FMOV     | `0x60` | `fmov fd, fs` | `fd = fs` (FP copy) |
 | FLOAD    | `0x61` | `fload fd, disp(rs)` | `fd = mem32[rs + disp]` |
-| FSTORE   | `0x62` | `fstore fs, disp(rd)` | `mem32[rd + disp] = fs` |
+| FSTORE   | `0x62` | `fstore fs, disp(rs)` | `mem32[rs + disp] = fs` |
 | FMOVECR  | `0x78` | `fmovecr fd, #idx` | `fd = ROM_Constant[idx]` |
 
-**FLOAD/FSTORE** always transfer 4 bytes (32 bits) between memory and an FP register. The `disp` is a signed 32-bit immediate. **FSTORE** uses `fs` as the source floating-point register and `rd` as the base integer register for the effective address.
+**FLOAD/FSTORE** always transfer 4 bytes (32 bits) between memory and an FP register. The `disp` is a signed 32-bit immediate. **FSTORE** uses `fs` as the source floating-point register and `rs` as the base integer register for the effective address.
 
 **FMOVECR** loads a constant from the FPU ROM (indices 0-15). Indices outside this range load 0.0 and set the Z condition code.
 
@@ -439,6 +447,7 @@ double clobbers both halves of the pair.
   - 01: Toward Zero (truncate)
   - 10: Toward -Inf (floor)
   - 11: Toward +Inf (ceil)
+- **FMOVCC** stores the full 32-bit source value in FPCR. Current FPU operations read only bits 1:0; the remaining bits are preserved by FMOVCR but have no defined effect.
 
 #### 4.6.6 Double-Precision (Register Pairs)
 
@@ -493,12 +502,12 @@ If the branch is not taken, PC advances by 8 (one instruction).
 | BLS      | `0x48` | `bls Rs, Rt, label` | `Rs <= Rt` | Unsigned |
 | JMP      | `0x49` | `jmp (Rs)` / `jmp disp(Rs)` | `PC = Rs + signExtend(disp)` | Register-indirect |
 
-**Encoding note for conditional branches**: Rs is in byte 2[7:3], Rt is in byte 3[7:3], and the branch offset is in bytes 4-7 (imm32). The Rd field (byte 1[7:3]) is unused (set to 0). The assembler computes the offset as `target_address - current_PC`.
+**Encoding note for conditional branches**: Rs is in byte 2[7:3], Rt is in byte 3[7:3], and the branch offset is in bytes 4-7 (imm32). The Rd field (byte 1[7:3]) is unused (set to 0). The current assembler computes the offset from its 32-bit image address for the branch instruction and the target; see section 7.3 for the exact assembler-side limitation.
 
 **BRA** uses only the imm32 field. Rs and Rt fields are unused.
 
 **JMP** (opcode `0x49`):
-- Computes the effective address as `Rs + signExtend(imm32)`, masked to the 25-bit address space.
+- Computes the effective address as `uint64(int64(Rs) + int64(int32(imm32)))`.
 - Transfers control to the effective address.
 - Does not modify the stack. No return address is saved.
 - Rs is in byte 2[7:3], the optional displacement is in bytes 4-7 (imm32).
@@ -506,7 +515,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 ---
 
-### 4.7 Subroutine / Stack
+### 4.8 Subroutine / Stack
 
 | Mnemonic | Opcode | Syntax | Operation | Mem | Size |
 |----------|--------|--------|-----------|-----|------|
@@ -520,12 +529,12 @@ If the branch is not taken, PC advances by 8 (one instruction).
 - Decrements SP (R31) by 8.
 - Stores the return address (PC + 8, i.e., the instruction after the JSR) at the new SP.
 - Branches to `PC + signExtend32to64(offset)`.
-- Encoding: offset is `target_address - current_PC` in imm32.
+- Encoding: imm32 holds the signed PC-relative offset described in section 7.3.
 
 **JSR** (opcode `0x54`, register-indirect):
 - Decrements SP (R31) by 8.
 - Stores the return address (PC + 8) at the new SP.
-- Computes the effective address as `Rs + signExtend(imm32)`, masked to the 25-bit address space.
+- Computes the effective address as `uint64(int64(Rs) + int64(int32(imm32)))`.
 - Transfers control to the effective address.
 - Rs is in byte 2[7:3], the optional displacement is in bytes 4-7 (imm32).
 - The assembler disambiguates: `jsr label` emits opcode `0x50`, `jsr (Rs)` emits opcode `0x54`.
@@ -598,8 +607,7 @@ Pseudo-instructions are expanded by the assembler into one or more real instruct
 | Pseudo | Syntax | Expansion | Notes |
 |--------|--------|-----------|-------|
 | `la`   | `la Rd, addr` | `lea Rd, addr(r0)` | Load address into register |
-| `li`   | `li Rd, #imm32` | `move.l Rd, #imm32` | Load 32-bit immediate (fits in 32 bits) |
-| `li`   | `li Rd, #imm64` | `move.l Rd, #lo32` + `movt Rd, #hi32` | Load 64-bit immediate (2 instructions) |
+| `li`   | `li Rd, #imm` | `move.l Rd, #lo(imm)` + `movt Rd, #hi(imm)` | Load 64-bit immediate (fixed 2-instruction expansion) |
 | `beqz` | `beqz Rs, label` | `beq Rs, r0, label` | Branch if Rs == 0 |
 | `bnez` | `bnez Rs, label` | `bne Rs, r0, label` | Branch if Rs != 0 |
 | `bltz` | `bltz Rs, label` | `blt Rs, r0, label` | Branch if Rs < 0 (signed) |
@@ -617,18 +625,19 @@ lea r5, $A0000(r0)     ; r5 = r0 + $A0000 = 0 + $A0000 = $A0000
 
 Since R0 is hardwired to zero, `lea Rd, disp(r0)` effectively loads the displacement value as an absolute address.
 
-> **Limitation**: Because `la` expands textually to `lea Rd, expr(r0)`, the address expression must not contain parentheses. For example, `la r1, BASE+(1*4)` will fail because `(1*4)` is misinterpreted as a register addressing mode. To work around this, precompute the address with separate arithmetic instructions or restructure the expression to avoid inner parentheses (e.g., use `BASE+4` instead of `BASE+(1*4)`).
+`la` expands textually to `lea Rd, expr(r0)`. The `disp(Rs)` parser identifies the register using the final parenthesised group in the operand, so arithmetic parentheses inside `expr` are accepted.
 
 ### 5.2 `li` -- Load Immediate
 
-For values that fit in 32 bits (0 to 0xFFFFFFFF):
+`li` always expands to a layout-stable two-instruction sequence:
 ```
 li r3, #42
 ; Expands to:
 move.l r3, #42
+movt   r3, #0
 ```
 
-For values requiring 64 bits:
+For a full 64-bit value:
 ```
 li r3, #$DEADBEEF_CAFEBABE
 ; Expands to:
@@ -653,11 +662,11 @@ The IE64 supports the following addressing modes:
 
 | Mode | Syntax | Description | Used By |
 |------|--------|-------------|---------|
-| Immediate | `#imm` | 32-bit immediate value, zero-extended to 64 bits | MOVE, ALU ops, WAIT |
-| Register | `Rs` or `Rt` | Register contents (64-bit) | MOVE, ALU ops, branches |
-| Register-indirect (data) | `(Rs)` | Memory at address in Rs | LOAD, STORE |
+| Immediate | `#imm` | 32-bit immediate value, zero-extended to 64 bits | MOVE, ALU ops, FMOVECR, SYSCALL, WAIT |
+| Register | `Rs` or `Rt` | Register contents (64-bit) | MOVE, ALU ops, branches, control-register moves |
+| Register-indirect (data) | `(Rs)` | Memory at address in Rs | LOAD, STORE, FLOAD, FSTORE, DLOAD, DSTORE, atomics |
 | Register-indirect (control) | `(Rs)` | Transfer control to address in Rs | JMP, JSR |
-| Displacement | `disp(Rs)` | Memory at `Rs + signExtend(disp)` | LOAD, STORE, LEA, JMP, JSR |
+| Displacement | `disp(Rs)` | Address `Rs + signExtend(disp)` | LOAD, STORE, LEA, JMP, JSR, FLOAD, FSTORE, DLOAD, DSTORE, atomics |
 | PC-relative | `label` (assembler computes offset) | `PC + signExtend(offset)` | BRA, Bcc, JSR |
 
 ### 6.1 Immediate Addressing
@@ -670,13 +679,13 @@ The 32-bit immediate (imm32) is zero-extended to 64 bits when used as an operand
 
 ### 6.2 Displacement Addressing
 
-Used by LOAD, STORE, and LEA. The displacement is stored in imm32 and sign-extended to 64 bits before being added to the base register:
+Used by LOAD, STORE, LEA, JMP, JSR_IND, FLOAD, FSTORE, DLOAD, DSTORE, and atomic RMW instructions. The displacement is stored in imm32 and sign-extended to 64 bits before being added to the base register:
 
 ```
-addr = uint32(int64(Rs) + int64(int32(imm32)))
+addr = uint64(int64(Rs) + int64(int32(imm32)))
 ```
 
-This provides a +/- 2GB displacement range (though the effective address is truncated to 32 bits).
+This provides a +/- 2 GiB displacement range around the base register. The interpreter keeps the effective virtual address at full `uint64` width through optional MMU translation and physical memory dispatch.
 
 If displacement is zero, the assembler syntax `(Rs)` is used, and the X bit may be 0 or 1 (assembler sets X=1 only when displacement is non-zero).
 
@@ -695,7 +704,7 @@ The comparison and branch are performed atomically in a single instruction. This
 
 ### 7.2 Register-Indirect Transfer
 
-**JMP** (opcode `0x49`) provides register-indirect unconditional transfer. The target address is computed from a register plus an optional signed 32-bit displacement, then masked to the 25-bit address space. This enables computed jumps, jump tables, and dispatch through register-held addresses.
+**JMP** (opcode `0x49`) provides register-indirect unconditional transfer. The target address is computed from a register plus an optional signed 32-bit displacement. This enables computed jumps, jump tables, and dispatch through register-held addresses.
 
 **JSR** (opcode `0x54`) provides the same register-indirect addressing for subroutine calls. It pushes the return address before transferring control, so a standard `rts` returns to the caller.
 
@@ -709,9 +718,9 @@ target = PC + signExtend32to64(offset)
 
 Where `PC` is the address of the branch instruction itself (not PC+8).
 
-The assembler computes: `offset = target_address - branch_address`.
+The instruction encoding stores a signed 32-bit offset. The current assembler stores labels and branch PCs as `uint32` image addresses and computes `offset = int32(target_address) - int32(branch_address)` before writing the low 32 bits to imm32. Branching to targets outside the signed 32-bit PC-relative range is therefore not diagnosed by the assembler; it wraps in the encoded imm32 and executes according to the CPU's sign-extended offset semantics.
 
-### 7.3 R0-as-Zero Idioms
+### 7.4 R0-as-Zero Idioms
 
 Since R0 is hardwired to zero, comparisons against zero are natural:
 
@@ -728,7 +737,7 @@ Since R0 is hardwired to zero, comparisons against zero are natural:
 
 The `beqz`, `bnez`, `bltz`, `bgez`, `bgtz`, and `blez` pseudo-instructions automate these patterns.
 
-### 7.4 Signed vs. Unsigned Comparisons
+### 7.5 Signed vs. Unsigned Comparisons
 
 | Branch | Comparison Type | Condition |
 |--------|----------------|-----------|
@@ -785,7 +794,8 @@ MMIO visibility APIs are width-specific. `IsIOAddress` is the legacy narrow quer
 |----------------|-------|
 | PC | `$1000` (PROG_START) |
 | R0 | `0` (hardwired) |
-| R1-R30 | `0` |
+| R1-R29 | `0` |
+| R30 | `$9F000` (legacy guest SP seed for transpiled programs) |
 | R31 (SP) | `$9F000` (STACK_START) |
 | Interrupt enabled | `false` |
 | In-interrupt flag | `false` |
@@ -812,9 +822,9 @@ Low memory:
 
 ## 9. Interrupt/Timer System
 
-### 9.1 Interrupt Vector
+### 9.1 Legacy Interrupt Vector
 
-The IE64 uses a single interrupt vector stored in the internal `interruptVector` field of the CPU. This field is initialized to `0` on reset. There is currently no assembly-level instruction or memory-mapped mechanism to change `interruptVector` from user code. (By contrast, the IE32 reads the vector from a memory-mapped vector table via `cpu.Read32(VECTOR_TABLE)`, but the IE64 does not implement this pattern.)
+In the legacy, non-MMU timer-interrupt path, IE64 uses a single interrupt vector stored in the internal `interruptVector` field of the CPU. This field is initialised to `0` on reset. There is currently no assembly-level instruction or memory-mapped mechanism to change `interruptVector` from user code. When the MMU is enabled and CR7 (`INTR_VEC`) is nonzero, timer interrupts use the CR7/ERET model described in section 9.4 and section 12.12 instead. (By contrast, the IE32 reads the vector from a memory-mapped vector table via `cpu.Read32(VECTOR_TABLE)`, but the IE64 does not implement this pattern.)
 
 The vector table area at `$0000` in the memory map is reserved for future use. A future revision may add a memory-mapped vector table or a dedicated instruction to set the interrupt vector.
 
@@ -831,19 +841,17 @@ The IE64 timer is integrated into the CPU and uses atomic fields (not memory-map
 
 ### 9.3 Timer Operation
 
-The timer is decremented once every `SAMPLE_RATE` (44100) instruction cycles:
+The timer countdown is in retired IE64 instruction units:
 
-1. A cycle counter increments every instruction.
-2. When `cycleCounter >= 44100`, the counter resets to 0 and the timer count is decremented.
-3. When the count reaches 0:
-   - `timerState` is set to `TIMER_EXPIRED`.
-   - If interrupts are enabled and the CPU is not already servicing an interrupt, the interrupt handler fires.
-   - The count is reloaded from `timerPeriod` (if the timer is still enabled).
-4. If count is 0 but period is non-zero, the count is reloaded from period and the state becomes `TIMER_RUNNING`.
+1. When `timerEnabled` is true and `timerCount > 0`, the interpreter decrements `timerCount` by 1 before executing each instruction. The JIT decrements it by the number of retired instructions reported by each native block.
+2. When the count reaches 0, `timerState` is set to `TIMER_EXPIRED`.
+3. If interrupts are enabled and the CPU is not already servicing an interrupt, the interrupt handler fires.
+4. If the timer is still enabled, the count is reloaded from `timerPeriod`.
+5. If `timerCount == 0` and `timerPeriod > 0` on an interpreter iteration, the count is loaded from `timerPeriod` and `timerState` becomes `TIMER_RUNNING`.
 
-### 9.4 Interrupt Flow
+### 9.4 Legacy Interrupt Flow
 
-The following describes the internal CPU mechanics when an interrupt fires:
+The following describes the internal CPU mechanics when a legacy timer interrupt fires (MMU disabled, or INTR_VEC is zero):
 
 1. Check: `interruptEnabled == true` AND `inInterrupt == false`. If either fails, the interrupt is suppressed.
 2. Set `inInterrupt = true` (prevents nesting).
@@ -853,7 +861,7 @@ The following describes the internal CPU mechanics when an interrupt fires:
 6. `RTI` pops the return address: `PC = mem[SP]; SP += 8`.
 7. `RTI` clears `inInterrupt`, re-enabling interrupt delivery.
 
-> **Implementation note**: When the MMU is enabled and INTR_VEC (CR7) is nonzero, the unified timer interrupt model is used (see section 12.12). Timer interrupts save PC to FAULT_PC, set FAULT_CAUSE=8, perform automatic stack switching, and jump to INTR_VEC. The handler returns via ERET. When the MMU is off or INTR_VEC is zero, the legacy model is used: `handleInterrupt()` pushes PC and jumps to `interruptVector`, returning via RTI.
+> **Implementation note**: When the MMU is enabled and INTR_VEC (CR7) is nonzero, the unified timer interrupt model is used (see section 12.12). Timer interrupts save PC to FAULT_PC, set FAULT_CAUSE=8, perform automatic stack switching only when the interrupted code was in user mode, and jump to INTR_VEC. The handler returns via ERET. When the MMU is off or INTR_VEC is zero, the legacy model is used: the interpreter pushes PC and jumps to `interruptVector`, returning via RTI.
 
 ### 9.5 Interrupt Programming Patterns
 
@@ -862,13 +870,13 @@ The following describes the internal CPU mechanics when an interrupt fires:
 When the MMU is enabled, timer interrupts can be delivered through INTR_VEC (CR7) using the ERET-based trap model. The handler uses the same return path as syscalls and faults:
 
 ```
-    ; Kernel initialization (supervisor mode)
+    ; Kernel initialisation (supervisor mode)
     move.l r1, #kernel_stack_top
     mtcr 8, r1              ; KSP = kernel stack
     move.l r1, #timer_handler
     mtcr 7, r1              ; INTR_VEC = handler address
     move.l r1, #44100
-    mtcr 9, r1              ; TIMER_PERIOD = 44100 cycles
+    mtcr 9, r1              ; TIMER_PERIOD = 44100 retired instructions
     move.l r1, #3
     mtcr 11, r1             ; TIMER_CTRL = enable + interrupt enable
     ; ... set up page table, enable MMU, ERET to user mode ...
@@ -942,12 +950,7 @@ li r5, #$DEADBEEF_CAFEBABE
 ; Automatically expands to 2 instructions (16 bytes)
 ```
 
-For values that fit in 32 bits, `li` emits only one instruction:
-
-```
-li r5, #42
-; Expands to just: move.l r5, #42 (8 bytes)
-```
+`li` also uses this two-instruction form for values that fit in 32 bits, with `movt` loading zero into the upper half. This keeps label addresses and listing offsets stable regardless of the eventual immediate value.
 
 ### 10.3 MOVEQ Alternative
 
@@ -964,7 +967,7 @@ MOVEQ interprets imm32 as a signed 32-bit integer and sign-extends it: `Rd = int
 
 ## 11. Assembly Language Quick Reference
 
-The IE64 assembler uses 68K-flavored syntax. Mnemonics, register names, and directives are case-insensitive. Symbol names (labels, equates, sets) are case-sensitive.
+The IE64 assembler uses 68K-flavoured syntax. Mnemonics, register names, and directives are case-insensitive. Symbol names (labels, equates, sets) are case-sensitive.
 
 ### 11.1 Directives
 
@@ -1116,7 +1119,7 @@ The underscore `_` can be used as a visual separator in numeric literals and is 
 
 ### 11.7 String Escapes
 
-The following escape sequences are recognized in `dc.b` string literals and character literals:
+The following escape sequences are recognised in `dc.b` string literals and character literals:
 
 | Escape | Character |
 |--------|-----------|
@@ -1140,7 +1143,7 @@ dc.b "hello; world" ; the semicolon in the string is literal
 
 ## 12. Memory Management Unit
 
-The IE64 includes an optional single-level paged MMU that provides virtual-to-physical address translation, page-level access control, and a supervisor/user privilege model. When enabled, all instruction fetches, loads, and stores are translated through a software-managed page table. The MMU is disabled on reset; supervisor code must build a page table and explicitly enable translation.
+The IE64 includes an optional 6-level sparse radix paged MMU that provides virtual-to-physical address translation, page-level access control, and a supervisor/user privilege model. When enabled, instruction fetches and explicit memory operations are translated through a software-managed page table. The MMU is disabled on reset; supervisor code must build a page table and explicitly enable translation.
 
 ### 12.1 Privilege Levels
 
@@ -1148,7 +1151,7 @@ The IE64 operates in one of two privilege levels:
 
 | Level | MMU_CTRL.1 | Description |
 |-------|------------|-------------|
-| Supervisor | 1 | Full access. Can execute MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL. Can access all pages regardless of U bit. |
+| Supervisor | 1 | Privileged execution mode. Can execute MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SUAEN, and SUADIS. Page U-bit checks do not restrict supervisor access unless SKEF or SKAC is enabled. |
 | User | 0 | Restricted. Privileged instructions cause a fault (cause code 5). Can only access pages with U=1. |
 
 On reset the CPU is in supervisor mode. Transitioning to user mode is done via ERET (which clears supervisor mode and jumps to FAULT_PC). Returning to supervisor mode occurs only via a trap (fault or SYSCALL), which implicitly sets supervisor mode before jumping to the trap vector. The SMODE instruction reads the current mode into a register for introspection.
@@ -1163,26 +1166,26 @@ Sixteen control registers manage the MMU, thread state, timer, stack switching, 
 | CR1 | FAULT_ADDR | RW | Virtual address that caused the most recent fault, or the syscall number (imm32) for SYSCALL. Writable so handlers can communicate information back. See 12.14 for the trap-stack semantics. |
 | CR2 | FAULT_CAUSE | RW | Cause code of the most recent fault (see 12.7). Writable for handler flexibility. See 12.14 for the trap-stack semantics. |
 | CR3 | FAULT_PC | RW | PC saved at trap entry. Used by ERET to resume. **Writable**: trap handlers must be able to modify this before ERET (e.g., to skip a faulting instruction or redirect execution). See 12.14 for the trap-stack semantics. |
-| CR4 | TRAP_VEC | RW | Physical address of the trap handler entry point. Jumped to on any fault or SYSCALL. |
+| CR4 | TRAP_VEC | RW | Trap handler entry PC. Jumped to on any fault or SYSCALL. When the MMU is enabled this PC is translated like any other instruction fetch. |
 | CR5 | MMU_CTRL | Special | Bit 0: MMU enable (RW). Bit 1: supervisor mode (RO). Bit 2: SKEF enable (RW). Bit 3: SKAC enable (RW). Bit 4: SUA latch (RO via MTCR; mutated only by SUAEN/SUADIS). See 12.2.1. |
 | CR6 | TP | RW | Thread Pointer. User-readable via MFCR (exception to the normal supervisor-only rule). Writable only in supervisor mode via MTCR. Intended for thread-local storage (TLS) base address. |
-| CR7 | INTR_VEC | RW | Interrupt vector address. When MMU is enabled and INTR_VEC is nonzero, timer interrupts use the unified ERET-based entry model instead of the legacy push-PC/RTI model. Supervisor-only. |
+| CR7 | INTR_VEC | RW | Timer interrupt handler PC. When MMU is enabled and INTR_VEC is nonzero, timer interrupts use the unified ERET-based entry model instead of the legacy push-PC/RTI model. The PC is translated like any other instruction fetch. Supervisor-only. |
 | CR8 | KSP | RW | Kernel Stack Pointer. Automatically swapped with R31 on user-to-supervisor transitions. Supervisor-only. |
-| CR9 | TIMER_PERIOD | RW | Timer reload period in instruction-cycle units. Supervisor-only. |
+| CR9 | TIMER_PERIOD | RW | Timer reload period in retired-instruction units. Supervisor-only. |
 | CR10 | TIMER_COUNT | RW | Current timer countdown value. Supervisor-only. |
 | CR11 | TIMER_CTRL | RW | Bit 0 = timer enable, Bit 1 = interrupt enable. SEI/CLI are aliases for setting/clearing bit 1. Supervisor-only. |
 | CR12 | USP | RW | Saved User Stack Pointer. Readable/writable in supervisor mode for context switch. Set automatically on user-to-supervisor transition. Supervisor-only. |
 | CR13 | PREV_MODE | RO | Previous privilege mode saved by `trapEntry`: 0 = trap came from user mode, 1 = trap came from supervisor mode. Read-only; set automatically on any trap/interrupt entry. Used by fault handlers to distinguish user faults (kill task) from kernel faults (panic). See 12.14 for the trap-stack semantics. |
 | CR14 | SAVED_SUA | RW | SUA latch snapshot taken on trap entry and consumed on ERET. Readable by kernel handlers that observe the interrupted code path's SUA state; writable so handlers can stage a custom value before ERET. See 12.2.1 and 12.14. Supervisor-only. |
-| CR15 | RAM_SIZE_BYTES | RO | **Read-only, live read** of the active CPU/profile-visible guest RAM in bytes (`bus.ActiveVisibleRAM()`). Every MFCR observes the current value, so a later `ApplyProfileVisibleCeiling` is immediately visible to subsequent reads — no boot-time snapshot is taken. MTCR to CR15 raises `FAULT_ILLEGAL_INSTRUCTION` (cause 11). Supervisor-only. PLAN_MAX_RAM slice 10. |
+| CR15 | RAM_SIZE_BYTES | RO | **Read-only, live read** of the active CPU/profile-visible guest RAM in bytes (`bus.ActiveVisibleRAM()`). Every MFCR observes the current value, so a later `ApplyProfileVisibleCeiling` is immediately visible to subsequent reads - no boot-time snapshot is taken. MTCR to CR15 raises `FAULT_ILLEGAL_INSTRUCTION` (cause 11). Supervisor-only. PLAN_MAX_RAM slice 10. |
 
-**PTBR** must point to the start of the page table in physical memory. The page table is 64 KiB (8192 entries x 8 bytes) and must be naturally aligned.
+**PTBR** must point to the physical address of the level-0 page table. The current walker does not enforce alignment, but kernels should allocate the level-0 table on a natural boundary and zero-initialise it before installing entries.
 
 **TRAP_VEC** must be set before enabling the MMU, or faults will jump to address 0.
 
-**MMU_CTRL** bit 0 is the master enable. Writing 1 activates translation for all subsequent memory accesses. Bit 1 (supervisor mode) is read-only; it reflects the current privilege level and cannot be written by MTCR. Bits 2–4 are the M15.6 SMEP/SMAP-equivalent controls described below.
+**MMU_CTRL** bit 0 is the master enable. Writing 1 activates translation for all subsequent memory accesses. Bit 1 (supervisor mode) is read-only; it reflects the current privilege level and cannot be written by MTCR. Bits 2-4 are the M15.6 SMEP/SMAP-equivalent controls described below.
 
-#### 12.2.1 SKEF / SKAC / SUA (MMU_CTRL bits 2–4)
+#### 12.2.1 SKEF / SKAC / SUA (MMU_CTRL bits 2-4)
 
 These bits are the IE64 SMEP/SMAP-equivalent guards introduced by M15.6.
 
@@ -1218,25 +1221,28 @@ The canonical `copy_from_user` / `copy_to_user` /
 
 ### 12.3 Page Table Format
 
-The MMU uses a single-level page table with 8192 entries, covering a 13-bit virtual page number (VPN) space. Each page is 4 KiB (12-bit offset). The page table occupies 64 KiB of contiguous physical memory.
+The MMU uses a 6-level sparse radix page table for full 64-bit virtual addresses. Each page is 4 KiB, so virtual address bits 63:12 form a 52-bit VPN and bits 11:0 form the page offset.
 
-```
-Page Table (64 KiB at PTBR):
-  Entry 0:      PTE for VPN 0x0000
-  Entry 1:      PTE for VPN 0x0001
-  ...
-  Entry 8191:   PTE for VPN 0x1FFF
-```
+Level layout:
 
-Each entry is 8 bytes (64 bits), addressed as `PTBR + VPN * 8`.
+| Level | VPN Bits | Index Bits | Entries | Table Size |
+|-------|----------|------------|---------|------------|
+| 0 (top) | 51..45 | 7 | 128 | 1 KiB |
+| 1 | 44..36 | 9 | 512 | 4 KiB |
+| 2 | 35..27 | 9 | 512 | 4 KiB |
+| 3 | 26..18 | 9 | 512 | 4 KiB |
+| 4 | 17..9 | 9 | 512 | 4 KiB |
+| 5 (leaf) | 8..0 | 9 | 512 | 4 KiB |
+
+`CR_PTBR` points to the physical address of the level-0 table. Each entry is 8 bytes. Non-leaf entries use the same PTE encoding as leaf entries: the P bit marks the next-level table present, and the PPN field points to the next-level table. Permission and A/D bits in non-leaf entries are ignored by the current walker; the leaf entry controls access permissions.
 
 ### 12.4 Page Table Entry (PTE) Format
 
 ```
-Bit:  63                       26  25            13  12  7  6  5  4  3  2  1  0
-     +---------------------------+----------------+-----+--+--+--+--+--+--+--+
-     |        reserved (0)       |   PPN (13 bits)| rsvd| D| A| U| X| W| R| P|
-     +---------------------------+----------------+-----+--+--+--+--+--+--+--+
+Bit:  63                                                        12  11  7  6  5  4  3  2  1  0
+     +------------------------------------------------------------+------+--+--+--+--+--+--+--+
+     |                         PPN (52 bits)                      | rsvd | D| A| U| X| W| R| P|
+     +------------------------------------------------------------+------+--+--+--+--+--+--+--+
 ```
 
 | Bit(s) | Name | Description |
@@ -1248,9 +1254,8 @@ Bit:  63                       26  25            13  12  7  6  5  4  3  2  1  0
 | 4 | U (User) | User-accessible. If U=0, user-mode access faults with cause 4. |
 | 5 | A (Accessed) | Set by hardware on any successful translation (read, write, or execute). |
 | 6 | D (Dirty) | Set by hardware on write access. Only set when the access is a store; reads and fetches do not set D. |
-| 12:7 | -- | Reserved, must be 0. |
-| 25:13 | PPN | Physical Page Number (13 bits). Physical address = PPN << 12 | offset. |
-| 63:26 | -- | Reserved, must be 0. |
+| 11:7 | -- | Reserved; software should write 0. The current walker ignores these bits. |
+| 63:12 | PPN | Physical Page Number (52 bits). Physical address = `(PPN << 12) | offset`. |
 
 **A/D bit semantics:**
 
@@ -1258,25 +1263,19 @@ Bit:  63                       26  25            13  12  7  6  5  4  3  2  1  0
 - A is set on every successful translation regardless of access type (read, write, execute).
 - D is set only on write accesses.
 - The bits are written back to the page table entry in memory only when they change (i.e., when the bit was previously 0). This avoids unnecessary memory writes on repeated accesses to the same page.
-- **Architectural constraint**: Page tables must reside in normal RAM (below `IO_REGION_START`). The A/D write-back performs a direct memory store to the PTE; if the page table were in an I/O region, the write-back would corrupt device registers.
+- **Architectural constraint**: Page tables must reside in normal physical RAM/backing, not MMIO. The A/D write-back performs a physical store to the PTE; if the page table were placed over device registers, the write-back would corrupt device state.
 - Kernel software clears A/D bits by rewriting the PTE directly in memory and then flushing the TLB (via `TLBFLUSH` or `TLBINVAL`) to ensure the cached TLB entry is also updated. This is the basis for page reclamation and working-set estimation algorithms.
 
 ### 12.5 Virtual Address Format
 
 ```
-Bit:  24                    12  11                 0
-     +-----------------------+---------------------+
-     |    VPN (13 bits)      |   Offset (12 bits)  |
-     +-----------------------+---------------------+
+Bit:  63                                                    12  11                 0
+     +--------------------------------------------------------+---------------------+
+     |                       VPN (52 bits)                    |   Offset (12 bits)  |
+     +--------------------------------------------------------+---------------------+
 ```
 
-PLAN_MAX_RAM.md slice 4 widened the MMU to 64-bit virtual + 64-bit physical addressing with a 6-level sparse radix page table:
-
-- Top level: 7 bits, 128 entries.
-- Levels 1..5: 9 bits each, 512 entries × 8 bytes per intermediate/leaf table.
-- Total VPN width: 52 bits (top 7 + 5 × 9 = 52); page size remains 4 KiB.
-- PTE format: bits 0..6 are flags (P/R/W/X/U/A/D), bits 7..11 reserved, bits 12..63 are PPN (`PTE_PPN_SHIFT = 12`, `PTE_PPN_BITS = 52`).
-- Page count is no longer a fixed `MMU_NUM_PAGES = 8192`; it derives from active visible RAM (queried via `CR_RAM_SIZE_BYTES` or the SYSINFO MMIO pair).
+Page count is no longer a fixed `MMU_NUM_PAGES = 8192`; software should derive relevant bounds from active visible RAM (queried via `CR_RAM_SIZE_BYTES` or the SYSINFO MMIO pair).
 
 Historical: prior to slice 4 the IE64 used a single-level 8192-entry flat page table over a 25-bit / 32 MB virtual address space. That format is retired; old IE64/IExec binaries are not supported across the migration.
 
@@ -1298,21 +1297,21 @@ Nine opcodes in the System range. All except SYSCALL and SMODE are privileged (s
 
 **MTCR** (opcode `0xE6`):
 - Writes the value of general-purpose register Rs to control register CRn.
-- The CR index is encoded in the Rd field (0-12).
-- All CRs are writable except MMU_CTRL bit 1 (supervisor mode), which is silently ignored on write. This means trap handlers can modify FAULT_PC (CR3) before ERET to redirect execution.
+- The CR index is encoded in the Rd field (0-15).
+- CR15 (`RAM_SIZE_BYTES`) is read-only; MTCR to CR15 raises `FAULT_ILLEGAL_INSTRUCTION`. `CR_PREV_MODE` (CR13) is read-only in the current interpreter switch and MTCR leaves it unchanged. `MMU_CTRL` bit 1 (supervisor mode) and bit 4 (SUA latch) are read-only through MTCR; writes to those bits are ignored. Trap handlers can modify FAULT_PC (CR3) before ERET to redirect execution.
 - Writing to PTBR or MMU_CTRL bit 0 invalidates the JIT code cache and flushes the TLB.
 - `CR_FAULT_PC` is not a user-service escape hatch: user-mode `MTCR CR_FAULT_PC` faults with cause 5 (`FAULT_PRIV`) just like any other privileged MTCR. Only supervisor-mode trap handlers may rewrite it.
 
 **MFCR** (opcode `0xE7`):
 - Reads control register CRn into general-purpose register Rd.
-- The CR index is encoded in the Rs field (0-12).
+- The CR index is encoded in the Rs field (0-15).
 - **User-mode exception**: MFCR is normally supervisor-only, but reading CR6 (TP) is permitted in user mode. This allows user-space threads to access thread-local storage without a syscall. All other CR indices fault with cause code 5 (privilege violation) in user mode.
 
 **ERET** (opcode `0xE8`):
 - Returns from a trap handler. Sets PC to the value saved in CR3 (FAULT_PC) and pops the active trap frame (see 12.14).
 - If the previous mode (before the trap) was user: saves R31 to KSP (CR8), restores R31 from USP (CR12), switches to user mode, and clears the live `SUA` latch.
 - If the previous mode was supervisor: stays in supervisor mode with no stack swap and restores the live `SUA` latch from the active frame's `CR_SAVED_SUA`.
-- Does not pop a software stack. The trap entry does not push to the data stack — the push/pop here refers to the CPU's internal trap-frame stack (12.14).
+- Does not pop a software stack. The trap entry does not push to the data stack - the push/pop here refers to the CPU's internal trap-frame stack (12.14).
 - The handler can modify FAULT_PC via MTCR before ERET to redirect execution; this modifies the active frame, not an outer frame.
 - For fault traps, `FAULT_PC = faulting PC`, so `ERET` re-executes the faulting instruction unless the handler rewrites `CR_FAULT_PC` first.
 - For `SYSCALL`, `FAULT_PC = PC+8`, so `ERET` skips the trapping instruction by default.
@@ -1352,11 +1351,11 @@ Nine opcodes in the System range. All except SYSCALL and SMODE are privileged (s
 
 #### Encoding
 
-All seven opcodes use the standard 8-byte IE64 instruction format:
+All MMU/privilege opcodes use the standard 8-byte IE64 instruction format:
 
 ```
-MTCR:     [0xE6] [CRn<<3 | 0 | 0] [Rs<<3] [0] [0 0 0 0]       ; Rd field = CR index (0-12)
-MFCR:     [0xE7] [Rd<<3 | 0 | 0]  [CRn<<3] [0] [0 0 0 0]      ; Rs field = CR index (0-12)
+MTCR:     [0xE6] [CRn<<3 | 0 | 0] [Rs<<3] [0] [0 0 0 0]       ; Rd field = CR index (0-15)
+MFCR:     [0xE7] [Rd<<3 | 0 | 0]  [CRn<<3] [0] [0 0 0 0]      ; Rs field = CR index (0-15)
 ERET:     [0xE8] [0] [0] [0] [0 0 0 0]
 TLBFLUSH: [0xE9] [0] [0] [0] [0 0 0 0]
 TLBINVAL: [0xEA] [0] [Rs<<3] [0] [0 0 0 0]                     ; Rs = register holding VPN
@@ -1368,13 +1367,13 @@ SUADIS:   [0xF4] [0] [0] [0] [0 0 0 0]
 
 ### 12.7 Trap Model
 
-Traps are raised by faults (translation errors, permission violations) and by the SYSCALL instruction. On any trap:
+Traps are raised by faults (translation errors, permission violations) and by the SYSCALL instruction. On trap entry:
 
 1. CR1 (FAULT_ADDR) is set to the faulting virtual address (for faults) or the syscall number (for SYSCALL).
 2. CR2 (FAULT_CAUSE) is set to the cause code.
 3. CR3 (FAULT_PC) is set to the relevant PC (see below).
-4. Automatic stack switching occurs: user R31 is saved to USP (CR12), R31 is loaded from KSP (CR8). See section 12.11.
-5. The CPU switches to supervisor mode.
+4. If the trap came from user mode, automatic stack switching occurs: user R31 is saved to USP (CR12), R31 is loaded from KSP (CR8). Supervisor-origin traps do not swap stacks. See section 12.11.
+5. The CPU switches to supervisor mode, or remains in supervisor mode for supervisor-origin traps.
 6. PC is set to CR4 (TRAP_VEC).
 
 **Differentiated PC save:**
@@ -1398,7 +1397,7 @@ This distinction means trap handlers do not need to adjust the return address; E
 | 8 | Timer Interrupt | Timer interrupt (delivered via INTR_VEC when MMU enabled). |
 | 9 | SKEF | Supervisor instruction fetch from a page with `PTE_U==1` while `MMU_CTRL.SKEF` is set. |
 | 10 | SKAC | Supervisor data read or write on a page with `PTE_U==1` while `MMU_CTRL.SKAC` is set and `MMU_CTRL.SUA` is clear. |
-| 11 | Illegal Instruction | Opcode-level invariants the CPU cannot otherwise enforce. Currently raised only by `MTCR Rs, CR_RAM_SIZE_BYTES` (the CR is read-only — see 12.2). |
+| 11 | Illegal Instruction | Opcode-level invariants the CPU cannot otherwise enforce. Currently raised only by `MTCR Rs, CR_RAM_SIZE_BYTES` (the CR is read-only - see 12.2). |
 
 ### 12.9 Translation Lookaside Buffer (TLB)
 
@@ -1409,14 +1408,14 @@ The MMU maintains a 64-entry direct-mapped software TLB to cache page table look
 - **Invalidation**: TLBFLUSH clears all 64 entries. TLBINVAL clears only the entry matching the given VA's VPN. Writing PTBR or MMU_CTRL via MTCR also flushes the entire TLB.
 - **Coherency**: The TLB is not automatically coherent with page table memory. After modifying a PTE in memory, software must execute TLBINVAL for the affected page (or TLBFLUSH for bulk changes) before the new mapping takes effect.
 
-### 12.10 W^X Security Model
+### 12.10 W^X Page Policy
 
-The IE64 MMU enforces a Write XOR Execute policy at the page level. A page may be writable or executable, but not both simultaneously:
+The IE64 page-table format supports a Write XOR Execute page policy by giving each page independent W and X permission bits:
 
 - **Code pages**: P=1, X=1, W=0, with R optional. M15.6 R4 makes execute-only user text (`P=1, R=0, X=1`) a first-class contract.
 - **Data/stack pages**: P=1, R=1, W=1, X=0 (readable + writable, not executable).
 
-This prevents code injection attacks: an attacker who can write to memory cannot execute that memory, and executable memory cannot be modified. To load new code, supervisor software must map the target pages as writable, write the code, then remap as executable (with appropriate TLB invalidation between steps).
+Kernel page-table code should enforce the policy by avoiding PTEs that set both W and X. The current MMU walker checks the requested access against the relevant bit but does not reject a PTE merely because both W and X are set. To load new code under a W^X policy, supervisor software maps the target pages as writable, writes the code, then remaps them as executable with appropriate TLB invalidation between steps.
 
 ### 12.11 Automatic Stack Switching
 
@@ -1432,7 +1431,7 @@ On ERET:
 1. If the previous mode was user: R31 is saved to KSP (CR8), R31 is restored from USP (CR12), and the CPU returns to user mode.
 2. If the previous mode was supervisor: the CPU stays in supervisor mode with no stack swap.
 
-This allows trap handlers to execute on a dedicated kernel stack without any software stack-switching prologue. The kernel must initialize KSP (via MTCR) before entering user mode for the first time.
+This allows trap handlers to execute on a dedicated kernel stack without any software stack-switching prologue. The kernel must initialise KSP (via MTCR) before entering user mode for the first time.
 
 ### 12.12 Unified Timer Interrupt Model
 
@@ -1444,8 +1443,8 @@ Timer interrupts are delivered through the same trap mechanism as faults and SYS
 
 1. PC is saved to CR3 (FAULT_PC).
 2. CR2 (FAULT_CAUSE) is set to 8 (FAULT_TIMER).
-3. Automatic stack switching occurs (user R31 saved to USP, R31 loaded from KSP).
-4. The CPU switches to supervisor mode.
+3. If the interrupt interrupted user mode, automatic stack switching occurs (user R31 saved to USP, R31 loaded from KSP). Supervisor-origin timer interrupts do not swap stacks.
+4. The CPU switches to supervisor mode, or remains in supervisor mode for supervisor-origin interrupts.
 5. PC is set to INTR_VEC (CR7).
 
 The handler returns via ERET, which restores the stack and privilege mode automatically. This model eliminates the need for RTI and provides a consistent trap-return path for all supervisor entry points.
@@ -1479,7 +1478,7 @@ Byte:    0         1              2              3            4    5    6    7
 - **Rt**: Operand register (value to swap, add, or use in bitwise operation)
 - **imm32**: Signed displacement added to Rs to form the effective address
 
-Effective address: `addr = uint32(int64(Rs) + int64(int32(imm32)))`
+Effective address: `addr = uint64(int64(Rs) + int64(int32(imm32)))`
 
 #### Instruction Table
 
@@ -1498,9 +1497,9 @@ When the displacement is zero, the assembler accepts `(Rs)` syntax: `cas Rd, (Rs
 
 - **Size**: Always 64-bit (`.Q`). No size suffix is accepted; atomic operations operate on naturally-aligned 64-bit words only.
 - **Alignment**: The effective address must be 8-byte aligned (`addr & 7 == 0`). A misaligned address causes a trap with FAULT_MISALIGNED (cause code 7).
-- **I/O rejection**: Atomic operations are rejected if the effective address falls within the I/O region (`addr >= IO_REGION_START`). Attempting an atomic operation on an I/O address causes a trap.
+- **I/O rejection**: Atomic operations are rejected before MMU translation if the effective virtual address is in the low 32-bit I/O window (`addr >> 32 == 0 && uint32(addr) >= IO_REGION_START`). The current implementation reports this as `FAULT_MISALIGNED` (cause 7), the same cause used for alignment rejection.
 - **Ordering**: All atomic operations are sequentially consistent. They act as full memory barriers.
-- **MMU**: When the MMU is enabled, the effective address is translated as an `ACCESS_WRITE` operation through the normal page table translation path. A/D bits are set accordingly.
+- **MMU**: When the MMU is enabled, the effective address is translated as an `ACCESS_WRITE` operation through the normal page table translation path. A/D bits are set accordingly. After translation, the physical 8-byte word must lie inside the legacy `cpu.memory` window; high-memory backing-page atomics currently fault with `FAULT_NOT_PRESENT`.
 - **CAS (Compare-And-Swap)**: Reads the 64-bit value at `[addr]` into a temporary. If the temporary equals the current value of Rd, the value of Rt is written to `[addr]`. Regardless of whether the swap occurred, Rd receives the old value from memory. This allows the caller to detect success by comparing the returned old value against the expected value.
 - **JIT**: Atomic instructions always bail to the interpreter, even when the MMU is disabled. They are infrequent synchronisation operations where correctness outweighs compilation overhead.
 
@@ -1529,7 +1528,7 @@ stack is not directly visible to software.
               ┌────────────────────────┐
               │   frame depth-1        │
               │   ...                  │
-              │   frame 0              │ ← frame of first trap
+              │   frame 0              │ <- frame of first trap
               └────────────────────────┘
 ```
 
@@ -1556,7 +1555,7 @@ save and restore `CR_FAULT_PC` or `CR_SAVED_SUA` on the kernel
 stack to survive a nested synchronous trap. The trap stack
 preserves the outer context automatically. Existing kernel code
 that performs a manual `MFCR CR_FAULT_PC` / `MTCR CR_FAULT_PC`
-prologue around a possibly-faulting region still works — such
+prologue around a possibly-faulting region still works - such
 save/restore now writes the active frame, so the restore writes
 back the same value already preserved. The older handler pattern
 is thus redundant but harmless; new handlers should omit it.
@@ -1588,8 +1587,8 @@ frame from a previous run.
 | 0x26   | `$26`  | MOD      | Arithmetic | Rd, Rs, Rt/#imm |
 | 0x27   | `$27`  | NEG      | Arithmetic | Rd, Rs |
 | 0x28   | `$28`  | MODS     | Arithmetic | Rd, Rs, Rt/#imm |
-| 0x29   | `$29`  | MULHU    | Arithmetic | Rd, Rs, Rt |
-| 0x2A   | `$2A`  | MULHS    | Arithmetic | Rd, Rs, Rt |
+| 0x29   | `$29`  | MULHU    | Arithmetic | Rd, Rs, Rt/#imm |
+| 0x2A   | `$2A`  | MULHS    | Arithmetic | Rd, Rs, Rt/#imm |
 | 0x30   | `$30`  | AND      | Logical | Rd, Rs, Rt/#imm |
 | 0x31   | `$31`  | OR       | Logical | Rd, Rs, Rt/#imm |
 | 0x32   | `$32`  | EOR      | Logical | Rd, Rs, Rt/#imm |
@@ -1650,7 +1649,7 @@ frame from a previous run.
 | 0x7C   | `$7C`  | FMOVCC   | FPU | rs |
 | 0x80   | `$80`  | DMOV     | FPU64 | fd, fs |
 | 0x81   | `$81`  | DLOAD    | FPU64 | fd, disp(rs) |
-| 0x82   | `$82`  | DSTORE   | FPU64 | fd, disp(rs) |
+| 0x82   | `$82`  | DSTORE   | FPU64 | fs, disp(rs) |
 | 0x83   | `$83`  | DADD     | FPU64 | fd, fs, ft |
 | 0x84   | `$84`  | DSUB     | FPU64 | fd, fs, ft |
 | 0x85   | `$85`  | DMUL     | FPU64 | fd, fs, ft |
