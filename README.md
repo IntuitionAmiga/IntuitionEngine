@@ -22,6 +22,10 @@ make x64-live-qemu
 
 On a normal boot, Intuition Engine starts fullscreen at the EhBASIC `Ready` prompt. The live image mounts its FAT32 share as the runtime file area, so paths in BASIC are relative to that share.
 
+Live images that include the host helper enable the BASIC `HOST` command so the
+appliance can configure networking and run controlled maintenance actions from
+the `Ready` prompt. Use `HOST HELP` inside BASIC for the available subcommands.
+
 Useful first commands:
 
 ```basic
@@ -121,6 +125,11 @@ In standard builds, launching without a mode flag and without a filename starts 
 | `-aros` | AROS on M68K | optional ROM via flag | Uses embedded or `-aros-image` ROM assets and an AROS host drive. |
 
 JIT availability depends on the host OS, host architecture, and guest CPU. Check [Platform Compatibility](sdk/docs/platform-compatibility.md) before relying on JIT for a specific host and guest combination.
+
+EhBASIC can execute host maintenance commands with `-ehbasic-host`. The HOST
+register window is present in the VM bus, but command execution is disabled by
+default in normal emulator runs; `-ehbasic-host-appliance` skips the
+`HOST UPDATE` confirmation prompt for controlled appliance deployments.
 
 ### Audio and Video
 
@@ -236,6 +245,7 @@ Typed Intuition Engine binaries and IEScript files can be launched directly by e
 # Run EhBASIC
 ./bin/IntuitionEngine -basic
 ./bin/IntuitionEngine -basic -term
+./bin/IntuitionEngine -basic -ehbasic-host
 ./bin/IntuitionEngine -basic-image path/to/ehbasic_ie64.ie64
 ```
 

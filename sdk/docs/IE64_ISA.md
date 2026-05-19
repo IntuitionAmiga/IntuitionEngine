@@ -780,6 +780,7 @@ MMIO visibility APIs are width-specific. `IsIOAddress` is the legacy narrow quer
 | `$F0E00-$F0E2D` | 45 B | SID (6581/8580) registers |
 | `$F0F00-$F0F5F` | 96 B | TED registers |
 | `$F1000-$F13FF` | 1 KB | VGA registers |
+| `$F1400-$F140F` | 16 B | Host helper registers (security-sensitive; command execution gated by `-ehbasic-host`) |
 | `$F2000-$F2017` | 24 B | ULA registers |
 | `$F2100-$F213F` | 64 B | ANTIC registers |
 | `$F2140-$F21FB` | 188 B | GTIA registers |
@@ -787,6 +788,22 @@ MMIO visibility APIs are width-specific. `IsIOAddress` is the legacy narrow quer
 | `$FA000-$FBAFF` | 6912 B | ULA VRAM aperture |
 | `$F8000-$F87FF` | 1 KB | Voodoo 3D registers |
 | `$100000-$5FFFFF` | 5 MB | Video RAM (VRAM_START = `$100000`) |
+
+Host helper register layout:
+
+| Address | Name | Access | Description |
+|---------|------|--------|-------------|
+| `$F1400` | HOST_CMD | R/W | 1=NET, 2=UPDATE, 3=REBOOT, 4=POWEROFF |
+| `$F1404` | HOST_TRIGGER | W | Write non-zero to start the selected command |
+| `$F1408` | HOST_STATUS | R | 0=running, 1=ok, 2=error, 3=user cancel, 4=disabled, 5=idle |
+| `$F140C` | HOST_EXIT | R | 32-bit helper exit code |
+
+The HOST aperture is mapped in the normal VM bus. Without `-ehbasic-host`,
+triggers complete with disabled status instead of running a host command.
+Before the first trigger the status register reads idle (`5`). `HOST UPDATE`
+prompts for confirmation unless `-ehbasic-host-appliance` is also set. Guest
+code should poll `HOST_STATUS` until it is no longer running, then read
+`HOST_EXIT` for helper-specific detail.
 
 ### 8.2 Initial State After Reset
 

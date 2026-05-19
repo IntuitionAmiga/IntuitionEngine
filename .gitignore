@@ -39,7 +39,10 @@ __pycache__/
 .codex
 
 # Local Go/build outputs
-build/
+/build/*
+!/build/x64-live/
+/build/x64-live/*
+!/build/x64-live/README
 /*.test
 /*.test.exe
 /*.exe

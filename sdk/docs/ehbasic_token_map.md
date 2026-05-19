@@ -24,6 +24,8 @@ Current aliases and problematic bindings:
 | `DIR` | none | Immediate REPL command only; avoids consuming or renumbering the full one-byte token space. |
 | `WEND` | `TK_UNTIL` (`0xAF`) | Existing implementation treats this as a loop terminator alias. |
 | `TRON` | `TK_NULL` (`0x92`) | Existing implementation treats this as trace-on. |
+| `HOST` | `TK_HOST` (`0xDE`) | Shares the byte value with `TK_VPTR`; statement dispatch treats it as `HOST`. |
+| `VARPTR` | `TK_VPTR` (`0xDE`) | Preserved as a function; expression dispatch treats the same byte as `VARPTR`. |
 
 ## Chosen Scheme
 
@@ -56,6 +58,13 @@ container. If a future phase renumbers tokens, the migration must be procedural:
 5. Bump the EhBASIC banner so stale interpreter images are visible to users.
 
 Source `.bas` files are unaffected because they are tokenized on load.
+
+## HOST / VARPTR Compatibility
+
+`0xDE` is context-sensitive in the current interpreter. In statement position
+it dispatches to the HOST bridge. In expression/function position it remains
+`VARPTR(...)`. This preserves existing `VARPTR` programs while allowing `HOST`
+to use the only compatible legacy slot available to the statement dispatcher.
 
 ## R28 Runtime-Error Audit
 

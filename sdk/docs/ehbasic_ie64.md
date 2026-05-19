@@ -406,6 +406,35 @@ BLOAD "Yummy_Pizza.sid", &H710000
 SID PLAY &H710000, 3725
 ```
 
+### HOST
+
+Dispatch a controlled host-side maintenance command through the host-helper
+MMIO bridge. The command is only available when Intuition Engine is started
+with `-ehbasic-host`; otherwise command execution returns `?FC ERROR`.
+
+```
+HOST
+HOST HELP
+HOST NET
+HOST UPDATE
+HOST REBOOT
+HOST POWEROFF
+```
+
+`HOST` and `HOST HELP` print the command summary and do not touch the MMIO
+bridge. `HOST NET` opens the WiFi picker path. `HOST UPDATE` runs the
+privileged update helper; in non-appliance mode it requires operator
+confirmation before the helper is invoked. `HOST REBOOT` and `HOST POWEROFF`
+ask the helper to reboot or power off the host.
+
+The helper reports completion through the host-helper status and exit MMIO
+registers. `STATUS_OK` returns to BASIC normally. `STATUS_CANCEL`,
+`STATUS_ERR`, and `STATUS_DISABLED` raise `?FC ERROR` so BASIC programs cannot
+silently continue after a denied or failed host operation.
+
+`-ehbasic-host-appliance` skips the `HOST UPDATE` confirmation prompt and is
+intended only for controlled appliance deployments.
+
 ### DIR
 
 List files in the File I/O sandbox. `DIR` is an immediate REPL command and is not stored as a tokenized BASIC statement.
@@ -2367,7 +2396,25 @@ This section documents every I/O register accessible via POKE/PEEK or the hardwa
 | `&HF105C` | VGA_DAC_DATA | R/W | DAC data (R, G, B sequence) |
 | `&HF1100`-`&HF13FF` | VGA_PALETTE | R/W | 256 x 3 bytes palette RAM |
 
-### 9.3 ULA Registers (`&HF2000`-`&HF2017`)
+### 9.3 Host Helper MMIO (`&HF1400`-`&HF140F`)
+
+This security-sensitive aperture is mapped in the normal VM bus. Command
+execution is enabled only when the VM is launched with `-ehbasic-host`.
+
+| Address | Name | R/W | Description |
+|---------|------|-----|-------------|
+| `&HF1400` | HOST_CMD | R/W | Command: 1=NET, 2=UPDATE, 3=REBOOT, 4=POWEROFF |
+| `&HF1404` | HOST_TRIGGER | W | Write non-zero to start the selected command |
+| `&HF1408` | HOST_STATUS | R | 0=running, 1=ok, 2=error, 3=user cancel, 4=disabled, 5=idle |
+| `&HF140C` | HOST_EXIT | R | 32-bit helper exit code |
+
+Before the first trigger, `HOST_STATUS` reads idle (`5`). Without
+`-ehbasic-host`, a trigger reports disabled status instead of running a host
+command. Only one command may run at a time. A trigger while `HOST_STATUS` is
+running is ignored. Subword reads from `HOST_EXIT` return the corresponding
+shifted byte or word of the 32-bit exit code.
+
+### 9.4 ULA Registers (`&HF2000`-`&HF2017`)
 
 | Address | Name | R/W | Description |
 |---------|------|-----|-------------|
@@ -2380,7 +2427,7 @@ This section documents every I/O register accessible via POKE/PEEK or the hardwa
 
 ULA VRAM aperture at `&HFA000`: 6,144 bytes bitmap + 768 bytes attributes.
 
-### 9.4 Audio Chip Registers (`&HF0800`-`&HF0B7F`)
+### 9.5 Audio Chip Registers (`&HF0800`-`&HF0B7F`)
 
 #### Global Control
 
@@ -2435,7 +2482,7 @@ Offsets from channel base:
 | `&HF0A50` | REVERB_MIX | Dry/wet mix (0-255) |
 | `&HF0A54` | REVERB_DECAY | Decay time (0-255) |
 
-### 9.5 PSG Registers (`&HF0C00`-`&HF0C20`)
+### 9.6 PSG Registers (`&HF0C00`-`&HF0C20`)
 
 | Address | Name | Description |
 |---------|------|-------------|
@@ -2446,7 +2493,7 @@ Offsets from channel base:
 | `&HF0C18` | PSG_PLAY_CTRL | 1=start, 2=stop |
 | `&HF0C1C` | PSG_PLAY_STATUS | Playback status |
 
-### 9.6 POKEY Registers (`&HF0D00`-`&HF0D20`)
+### 9.7 POKEY Registers (`&HF0D00`-`&HF0D20`)
 
 | Address | Name | Description |
 |---------|------|-------------|
@@ -2456,7 +2503,7 @@ Offsets from channel base:
 | `&HF0D08` | POKEY_AUDCTL | Master audio control |
 | `&HF0D10`-`&HF0D20` | SAP_PLAY_* | SAP player registers |
 
-### 9.7 SID Registers (`&HF0E00`-`&HF0E2D`)
+### 9.8 SID Registers (`&HF0E00`-`&HF0E2D`)
 
 Each voice occupies 7 bytes:
 
@@ -2474,11 +2521,11 @@ Voice bases: V1=`&HF0E00`, V2=`&HF0E07`, V3=`&HF0E0E`.
 
 Filter and volume at `&HF0E15`-`&HF0E19`.
 
-### 9.8 TED Registers (`&HF0F00`-`&HF0F5F`)
+### 9.9 TED Registers (`&HF0F00`-`&HF0F5F`)
 
 Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. See sections 6.5 and 7.5 for details.
 
-### 9.9 ANTIC Registers (`&HF2100`-`&HF213F`)
+### 9.10 ANTIC Registers (`&HF2100`-`&HF213F`)
 
 | Address | Name | Description |
 |---------|------|-------------|
@@ -2496,7 +2543,7 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF2138` | ANTIC_ENABLE | Video enable (Bit 0), PAL mode (Bit 1) |
 | `&HF213C` | ANTIC_STATUS | Status (Bit 0: VBlank) |
 
-### 9.10 GTIA Registers (`&HF2140`-`&HF21FB`)
+### 9.11 GTIA Registers (`&HF2140`-`&HF21FB`)
 
 | Address Range | Description |
 |---------------|-------------|
@@ -2511,7 +2558,7 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF21B8`-`&HF21F4` | Collision latches |
 | `&HF21F8` | HITCLR collision latch clear |
 
-### 9.11 Voodoo 3DFX Registers (`&HF8000`-`&HF87FF`, texture memory `&HD0000`-`&HDFFFF`)
+### 9.12 Voodoo 3DFX Registers (`&HF8000`-`&HF87FF`, texture memory `&HD0000`-`&HDFFFF`)
 
 | Address | Name | Description |
 |---------|------|-------------|
@@ -2536,7 +2583,7 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF8334` | TEX_HEIGHT | Texture height |
 | `&HF8338` | TEX_UPLOAD | Texture upload trigger |
 
-### 9.12 Video Chip Registers (`&HF0000`-`&HF049B`)
+### 9.13 Video Chip Registers (`&HF0000`-`&HF049B`)
 
 | Address | Name | Description |
 |---------|------|-------------|
@@ -2555,7 +2602,7 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF0038` | BLT_DST_STRIDE | Destination stride |
 | `&HF003C` | BLT_COLOR | Fill/line colour; for scale, packed destination size `(height << 16) | width` |
 
-### 9.13 Media Loader Registers (`&HF2300`-`&HF231F`)
+### 9.14 Media Loader Registers (`&HF2300`-`&HF231F`)
 
 Used by `SOUND PLAY` to load and play music files.
 
@@ -2570,7 +2617,7 @@ Used by `SOUND PLAY` to load and play music files.
 
 Staging buffer: `&H800000`-`&H80FFFF` (64 KB) - transient copy of loaded file data.
 
-### 9.14 Program Executor Registers (`&HF2320`-`&HF233F`)
+### 9.15 Program Executor Registers (`&HF2320`-`&HF233F`)
 
 Used by `RUN "file"` to launch external CPU binaries and by guest programs that need to request the same full reset path as the F10 hard-reset hotkey.
 
@@ -2583,7 +2630,7 @@ Used by `RUN "file"` to launch external CPU binaries and by guest programs that 
 | `&HF2330` | EXEC_ERROR | R | 0=ok, 1=not-found, 2=unsupported, 3=path-invalid, 4=load-failed |
 | `&HF2334` | EXEC_SESSION | R | Monotonic session counter (increments per request) |
 
-### 9.15 System Control Registers (`&HF2380`-`&HF2383`)
+### 9.16 System Control Registers (`&HF2380`-`&HF2383`)
 
 | Address | Name | R/W | Description |
 |---------|------|-----|-------------|
@@ -3063,7 +3110,7 @@ existing `<`/`>` tokens followed by a raw marker byte; see
 | DB | TK_MIN | MIN | Function |
 | DC | TK_PI | PI | Function |
 | DD | TK_TWOPI | TWOPI | Function |
-| DE | TK_VPTR | VARPTR | Function |
+| DE | TK_VPTR/TK_HOST | VARPTR/HOST | Function/Statement |
 | DF | TK_LEFTS | LEFT$ | Function |
 | E0 | TK_RIGHTS | RIGHT$ | Function |
 | E1 | TK_MIDS | MID$ | Function |

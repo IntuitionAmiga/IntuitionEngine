@@ -1,0 +1,27 @@
+# Intuition Engine x64 Live Image
+
+This directory is the staging area for the bootable x64 live image built by
+`make x64-live`.
+
+The appliance image starts Intuition Engine at the EhBASIC `Ready` prompt and
+may enable the BASIC `HOST` helper path for controlled host maintenance
+commands. Host command execution is gated in the emulator by `-ehbasic-host`;
+normal desktop runs leave execution disabled unless that flag is supplied.
+
+## Firewall Baseline
+
+The live image firewall baseline is default deny for incoming traffic and
+default allow for outgoing traffic. The intended shipped unit is
+`ie-firewall.service`, a one-shot service that enables ufw with that policy at
+boot.
+
+`HOST NET` must not open inbound ports or change the default incoming policy.
+After network configuration, `ufw status verbose` should still report active
+ufw with incoming denied and outgoing allowed.
+
+## Host Helper
+
+The privileged helper binary is expected at
+`/usr/libexec/intuitionengine-host-helper`. PolicyKit and AppArmor rules should
+grant only the fixed helper action required by Intuition Engine, not a general
+root shell or broad NetworkManager access for the `ie` user.
