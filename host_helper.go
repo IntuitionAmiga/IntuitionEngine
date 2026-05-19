@@ -104,7 +104,7 @@ func (h *HostHelper) SetUpdateConfirmer(confirmer HostUpdateConfirmer) {
 }
 
 func (h *HostHelper) SetCommand(cmd HostCommand) {
-	if cmd < HostCommandNet || cmd > HostCommandPoweroff {
+	if !isValidHostCommand(cmd) {
 		h.cmd.Store(uint32(HostCommandNone))
 		return
 	}
@@ -123,7 +123,7 @@ func (h *HostHelper) Trigger() {
 	}
 
 	cmd := HostCommand(h.cmd.Load())
-	if cmd < HostCommandNet || cmd > HostCommandPoweroff || h.runner == nil {
+	if !isValidHostCommand(cmd) || h.runner == nil {
 		h.exit.Store(HostHelperExitBadInput)
 		h.status.Store(HostStatusErr)
 		return
@@ -196,6 +196,10 @@ func hostCommandVerb(cmd HostCommand) (string, bool) {
 	}
 }
 
+func isValidHostCommand(cmd HostCommand) bool {
+	return cmd >= HostCommandNet && cmd <= HostCommandPoweroff
+}
+
 func (h *HostHelper) runCommand(cmd HostCommand) {
 	ctx := context.Background()
 	if !h.confirmCommand(ctx, cmd) {
@@ -204,15 +208,17 @@ func (h *HostHelper) runCommand(cmd HostCommand) {
 		return
 	}
 
-	result := h.runner.RunHostCommand(ctx, cmd)
-	status := result.Status
-	switch status {
+	h.completeCommand(h.runner.RunHostCommand(ctx, cmd))
+}
+
+func (h *HostHelper) completeCommand(result HostCommandResult) {
+	switch result.Status {
 	case HostStatusOK, HostStatusErr, HostStatusUserCancel, HostStatusDisabled:
 	default:
-		status = HostStatusErr
+		result.Status = HostStatusErr
 	}
 	h.exit.Store(result.ExitCode)
-	h.status.Store(status)
+	h.status.Store(result.Status)
 }
 
 func (h *HostHelper) confirmCommand(ctx context.Context, cmd HostCommand) bool {
