@@ -2725,6 +2725,26 @@ EXEC_ERR_UNSUPPORTED  = 2
 EXEC_ERR_PATH_INVALID = 3
 EXEC_ERR_LOAD_FAILED  = 4
 
+; Host helper shared constants.
+; The 6502 profile does not currently expose a direct host-helper gateway
+; window, but these values match the main-bus HOST MMIO aperture.
+HOST_MMIO_BASE        = $F1400
+HOST_MMIO_CMD         = $F1400
+HOST_MMIO_TRIGGER     = $F1404
+HOST_MMIO_STATUS      = $F1408
+HOST_MMIO_EXIT        = $F140C
+
+HOST_CMD_NET          = 1
+HOST_CMD_UPDATE       = 2
+HOST_CMD_REBOOT       = 3
+HOST_CMD_POWEROFF     = 4
+
+HOST_STATUS_RUNNING   = 0
+HOST_STATUS_OK        = 1
+HOST_STATUS_ERR       = 2
+HOST_STATUS_CANCEL    = 3
+HOST_STATUS_DISABLED  = 4
+
 ; System control
 SYS_GC_TRIGGER        = $F2380            ; Write any value to trigger GC
 

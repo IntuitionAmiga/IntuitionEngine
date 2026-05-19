@@ -1209,6 +1209,7 @@ repl_msg_intuitionos_error:
 ;   hw_video     - SCREEN, CLS, PLOT, PALETTE, VSYNC commands
 ;   hw_audio     - SOUND, ENVELOPE, GATE, REVERB, OVERDRIVE commands
 ;   hw_system    - WAIT, POKE, PEEK, and system-level commands
+;   hw_host      - HOST NET/UPDATE/REBOOT/POWEROFF bridge
 ;   hw_voodoo    - VOODOO 3D graphics commands (TRIANGLE, TEXTURE, etc.)
 ;   file_io      - BLOAD/BSAVE file operations
 ;   hw_coproc    - Coprocessor management commands
@@ -1224,6 +1225,7 @@ include "ehbasic_exec.inc"
 include "ehbasic_hw_video.inc"
 include "ehbasic_hw_audio.inc"
 include "ehbasic_hw_system.inc"
+include "ehbasic_hw_host.inc"
 include "ehbasic_hw_voodoo.inc"
 include "ehbasic_file_io.inc"
 include "ehbasic_hw_coproc.inc"

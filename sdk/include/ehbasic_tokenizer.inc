@@ -327,6 +327,7 @@ tok_kw_table:
     dc.b    "RESTORE", 0, TK_RESTORE
     dc.b    "RETURN", 0, TK_RETURN
     dc.b    "VARPTR", 0, TK_VPTR
+    dc.b    "HOST", 0, TK_HOST
     dc.b    "UCASE$", 0, TK_UCASES
     dc.b    "LCASE$", 0, TK_LCASES
     dc.b    "RIGHT$", 0, TK_RIGHTS

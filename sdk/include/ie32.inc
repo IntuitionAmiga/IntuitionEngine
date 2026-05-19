@@ -599,6 +599,27 @@
 ; Palette RAM (256 x 3 bytes)
 .equ VGA_PALETTE       0xF1100          ; Palette base (768 bytes)
 
+; ============================================================================
+; HOST HELPER REGISTERS (0xF1400-0xF140F, gated by -ehbasic-host)
+; ============================================================================
+
+.equ HOST_MMIO_BASE        0xF1400
+.equ HOST_MMIO_CMD         0xF1400      ; w8: 1=NET,2=UPDATE,3=REBOOT,4=POWEROFF
+.equ HOST_MMIO_TRIGGER     0xF1404      ; w8: non-zero starts selected command
+.equ HOST_MMIO_STATUS      0xF1408      ; r8: 0=running,1=ok,2=err,3=cancel,4=disabled
+.equ HOST_MMIO_EXIT        0xF140C      ; r32: helper exit code
+
+.equ HOST_CMD_NET          1
+.equ HOST_CMD_UPDATE       2
+.equ HOST_CMD_REBOOT       3
+.equ HOST_CMD_POWEROFF     4
+
+.equ HOST_STATUS_RUNNING   0
+.equ HOST_STATUS_OK        1
+.equ HOST_STATUS_ERR       2
+.equ HOST_STATUS_CANCEL    3
+.equ HOST_STATUS_DISABLED  4
+
 ; VGA VRAM (64KB window)
 .equ VGA_VRAM          0xA0000          ; VRAM window (64KB)
 

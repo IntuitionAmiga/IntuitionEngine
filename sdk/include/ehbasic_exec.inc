@@ -1770,7 +1770,7 @@ stmt_jump_table:
     dc.l    exec_do_unknown      ; 91  (0xDB) TK_BITTST
     dc.l    exec_do_unknown      ; 92  (0xDC) TK_MAX
     dc.l    exec_do_unknown      ; 93  (0xDD) TK_MIN
-    dc.l    exec_do_unknown      ; 94  (0xDE)
+    dc.l    exec_do_host         ; 94  (0xDE) TK_HOST
     dc.l    exec_do_unknown      ; 95  (0xDF)
     dc.l    exec_do_unknown      ; 96  (0xE0)
     dc.l    exec_do_unknown      ; 97  (0xE1)

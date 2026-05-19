@@ -269,6 +269,45 @@ func TestSDKInclude_ProgramExecutorConstantParity(t *testing.T) {
 	}
 }
 
+func TestSDKInclude_HostHelperConstantParity(t *testing.T) {
+	shared := map[string]uint32{
+		"HOST_MMIO_BASE":       HostMMIOBase,
+		"HOST_MMIO_CMD":        HostMMIOBase + HostMMIOCommand,
+		"HOST_MMIO_TRIGGER":    HostMMIOBase + HostMMIOTrigger,
+		"HOST_MMIO_STATUS":     HostMMIOBase + HostMMIOStatus,
+		"HOST_MMIO_EXIT":       HostMMIOBase + HostMMIOExit,
+		"HOST_CMD_NET":         uint32(HostCommandNet),
+		"HOST_CMD_UPDATE":      uint32(HostCommandUpdate),
+		"HOST_CMD_REBOOT":      uint32(HostCommandReboot),
+		"HOST_CMD_POWEROFF":    uint32(HostCommandPoweroff),
+		"HOST_STATUS_RUNNING":  HostStatusRunning,
+		"HOST_STATUS_OK":       HostStatusOK,
+		"HOST_STATUS_ERR":      HostStatusErr,
+		"HOST_STATUS_CANCEL":   HostStatusUserCancel,
+		"HOST_STATUS_DISABLED": HostStatusDisabled,
+	}
+
+	for _, path := range []string{
+		filepath.Join("sdk", "include", "ie32.inc"),
+		filepath.Join("sdk", "include", "ie64.inc"),
+		filepath.Join("sdk", "include", "ie65.inc"),
+		filepath.Join("sdk", "include", "ie68.inc"),
+		filepath.Join("sdk", "include", "ie80.inc"),
+		filepath.Join("sdk", "include", "ie86.inc"),
+	} {
+		vals := parseIncConstants(t, path)
+		for key, want := range shared {
+			got, ok := vals[key]
+			if !ok {
+				t.Fatalf("%s: missing %s", path, key)
+			}
+			if got != want {
+				t.Fatalf("%s: %s mismatch: got 0x%X want 0x%X", path, key, got, want)
+			}
+		}
+	}
+}
+
 func TestSDKInclude_IE86POKEYPortBaseMatchesRuntime(t *testing.T) {
 	vals := parseIncConstants(t, filepath.Join("sdk", "include", "ie86.inc"))
 	got, ok := vals["POKEY_PORT_BASE"]

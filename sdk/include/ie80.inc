@@ -2929,6 +2929,26 @@
 .set EXEC_ERR_PATH_INVALID,3
 .set EXEC_ERR_LOAD_FAILED,4
 
+; Host helper shared constants.
+; The Z80 profile does not currently expose a direct host-helper gateway
+; window, but these values match the main-bus HOST MMIO aperture.
+.set HOST_MMIO_BASE,0xF1400
+.set HOST_MMIO_CMD,0xF1400
+.set HOST_MMIO_TRIGGER,0xF1404
+.set HOST_MMIO_STATUS,0xF1408
+.set HOST_MMIO_EXIT,0xF140C
+
+.set HOST_CMD_NET,1
+.set HOST_CMD_UPDATE,2
+.set HOST_CMD_REBOOT,3
+.set HOST_CMD_POWEROFF,4
+
+.set HOST_STATUS_RUNNING,0
+.set HOST_STATUS_OK,1
+.set HOST_STATUS_ERR,2
+.set HOST_STATUS_CANCEL,3
+.set HOST_STATUS_DISABLED,4
+
 ; System control
 .set SYS_GC_TRIGGER,0xF2380             ; Write any value to trigger GC
 

@@ -625,6 +625,7 @@ include "ehbasic_exec.inc"
 include "ehbasic_hw_video.inc"
 include "ehbasic_hw_audio.inc"
 include "ehbasic_hw_system.inc"
+include "ehbasic_hw_host.inc"
 include "ehbasic_hw_voodoo.inc"
 include "ehbasic_file_io.inc"
 include "ehbasic_hw_coproc.inc"
@@ -642,7 +643,7 @@ include "ie64_fp.inc"
 		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
 		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc", "ehbasic_exec.inc",
 		"ehbasic_hw_video.inc", "ehbasic_hw_audio.inc", "ehbasic_hw_system.inc",
-		"ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc", "ehbasic_hw_coproc.inc"} {
+		"ehbasic_hw_host.inc", "ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc", "ehbasic_hw_coproc.inc"} {
 		src := filepath.Join(incDir, inc)
 		dst := filepath.Join(dir, inc)
 		if err := os.Symlink(src, dst); err != nil {
@@ -1006,6 +1007,28 @@ func TestEhBASIC_Tokenize_Troff(t *testing.T) {
 	}
 }
 
+func TestEhBASIC_Tokenize_Host(t *testing.T) {
+	asmBin := buildAssembler(t)
+	result := tokeniserTest(t, asmBin, "HOST NET")
+	if len(result) < 5 || result[0] != 0xDE {
+		t.Fatalf("tokenize HOST NET: expected TK_HOST (0xDE) prefix, got %X", result)
+	}
+	if got := string(result[1:]); got != " NET" {
+		t.Fatalf("tokenize HOST NET: subverb should remain ASCII, got %q (%X)", got, result)
+	}
+}
+
+func TestEhBASIC_Tokenize_VARPTRStillUsesSharedToken(t *testing.T) {
+	asmBin := buildAssembler(t)
+	result := tokeniserTest(t, asmBin, "VARPTR(A)")
+	if len(result) < 4 || result[0] != 0xDE {
+		t.Fatalf("tokenize VARPTR(A): expected TK_VPTR (0xDE) prefix, got %X", result)
+	}
+	if got := string(result[1:]); got != "(A)" {
+		t.Fatalf("tokenize VARPTR(A): argument should remain ASCII after token, got %q (%X)", got, result)
+	}
+}
+
 func TestEhBASIC_Tokenize_DataPreservesRaw(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// DATA 1,PRINT,3 - after DATA token, no keyword matching
@@ -1060,6 +1083,7 @@ include "ehbasic_expr.inc"
 include "ehbasic_hw_video.inc"
 include "ehbasic_hw_audio.inc"
 include "ehbasic_hw_system.inc"
+include "ehbasic_hw_host.inc"
 include "ehbasic_hw_voodoo.inc"
 include "ehbasic_file_io.inc"
 include "ehbasic_hw_coproc.inc"
@@ -1077,7 +1101,7 @@ include "ie64_fp.inc"
 		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
 		"ehbasic_strings.inc", "ehbasic_exec.inc", "ehbasic_vars.inc",
 		"ehbasic_expr.inc", "ehbasic_hw_video.inc", "ehbasic_hw_audio.inc",
-		"ehbasic_hw_system.inc", "ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc",
+		"ehbasic_hw_system.inc", "ehbasic_hw_host.inc", "ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc",
 		"ehbasic_hw_coproc.inc"} {
 		src := filepath.Join(incDir, inc)
 		dst := filepath.Join(dir, inc)
@@ -1559,6 +1583,7 @@ include "ehbasic_exec.inc"
 include "ehbasic_hw_video.inc"
 include "ehbasic_hw_audio.inc"
 include "ehbasic_hw_system.inc"
+include "ehbasic_hw_host.inc"
 include "ehbasic_hw_voodoo.inc"
 include "ehbasic_file_io.inc"
 include "ehbasic_hw_coproc.inc"
@@ -1576,7 +1601,7 @@ include "ie64_fp.inc"
 		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
 		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc",
 		"ehbasic_exec.inc", "ehbasic_hw_video.inc", "ehbasic_hw_audio.inc",
-		"ehbasic_hw_system.inc", "ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc",
+		"ehbasic_hw_system.inc", "ehbasic_hw_host.inc", "ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc",
 		"ehbasic_hw_coproc.inc"} {
 		src := filepath.Join(incDir, inc)
 		dst := filepath.Join(dir, inc)
@@ -1836,6 +1861,7 @@ include "ehbasic_exec.inc"
 include "ehbasic_hw_video.inc"
 include "ehbasic_hw_audio.inc"
 include "ehbasic_hw_system.inc"
+include "ehbasic_hw_host.inc"
 include "ehbasic_hw_voodoo.inc"
 include "ehbasic_file_io.inc"
 include "ehbasic_hw_coproc.inc"
@@ -1853,7 +1879,7 @@ include "ie64_fp.inc"
 		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
 		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc", "ehbasic_exec.inc",
 		"ehbasic_hw_video.inc", "ehbasic_hw_audio.inc", "ehbasic_hw_system.inc",
-		"ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc", "ehbasic_hw_coproc.inc"} {
+		"ehbasic_hw_host.inc", "ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc", "ehbasic_hw_coproc.inc"} {
 		src := filepath.Join(incDir, inc)
 		dst := filepath.Join(dir, inc)
 		if err := os.Symlink(src, dst); err != nil {
@@ -2046,6 +2072,94 @@ func TestEhBASIC_PrintStringLiteral(t *testing.T) {
 	out = strings.TrimRight(out, "\r\n")
 	if out != "HELLO" {
 		t.Fatalf(`PRINT "HELLO": expected 'HELLO', got %q`, out)
+	}
+}
+
+func TestEhBASIC_HostNetTriggersMMIOAndReturns(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tests := []struct {
+		subverb string
+		command HostCommand
+	}{
+		{"NET", HostCommandNet},
+		{"UPDATE", HostCommandUpdate},
+		{"REBOOT", HostCommandReboot},
+		{"POWEROFF", HostCommandPoweroff},
+	}
+	for _, tt := range tests {
+		t.Run(tt.subverb, func(t *testing.T) {
+			runner := newScriptedHostCommandRunner(HostCommandResult{Status: HostStatusOK})
+			runner.release()
+
+			out, h := execStmtTestCore(t, asmBin, "10 HOST "+tt.subverb+"\n20 PRINT 7", func(h *ehbasicTestHarness) {
+				RegisterHostHelperMMIO(h.bus, NewHostHelperWithRunner(true, false, runner))
+			})
+			if strings.TrimSpace(out) != "7" {
+				t.Fatalf("HOST %s should return to BASIC and continue, got %q", tt.subverb, out)
+			}
+
+			select {
+			case got := <-runner.calls:
+				if got != tt.command {
+					t.Fatalf("HOST %s command = %d, want %d", tt.subverb, got, tt.command)
+				}
+			default:
+				t.Fatalf("HOST %s did not trigger host helper", tt.subverb)
+			}
+			if got := h.bus.Read32(HostMMIOBase + HostMMIOStatus); got != HostStatusOK {
+				t.Fatalf("HOST %s final status = %d, want OK", tt.subverb, got)
+			}
+		})
+	}
+}
+
+func TestEhBASIC_HostAllowsTrailingSpacesBeforeSeparator(t *testing.T) {
+	asmBin := buildAssembler(t)
+	runner := newScriptedHostCommandRunner(HostCommandResult{Status: HostStatusOK})
+	runner.release()
+
+	out, _ := execStmtTestCore(t, asmBin, "10 HOST NET  :PRINT 7", func(h *ehbasicTestHarness) {
+		RegisterHostHelperMMIO(h.bus, NewHostHelperWithRunner(true, false, runner))
+	})
+	if strings.TrimSpace(out) != "7" {
+		t.Fatalf("HOST NET with trailing spaces should continue, got %q", out)
+	}
+
+	select {
+	case got := <-runner.calls:
+		if got != HostCommandNet {
+			t.Fatalf("HOST NET command = %d, want %d", got, HostCommandNet)
+		}
+	default:
+		t.Fatal("HOST NET did not trigger host helper")
+	}
+}
+
+func TestEhBASIC_HostRequiresExactSubverb(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tests := []string{
+		"10 HOST NETS\n20 PRINT 7",
+		"10 HOST REFORMAT\n20 PRINT 7",
+		"10 HOST POWDEROFF\n20 PRINT 7",
+	}
+	for _, program := range tests {
+		t.Run(program, func(t *testing.T) {
+			runner := newScriptedHostCommandRunner(HostCommandResult{Status: HostStatusOK})
+			runner.release()
+
+			out, _ := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+				RegisterHostHelperMMIO(h.bus, NewHostHelperWithRunner(true, false, runner))
+			})
+			if strings.TrimSpace(out) == "7" {
+				t.Fatalf("invalid HOST subverb continued as success, output %q", out)
+			}
+
+			select {
+			case got := <-runner.calls:
+				t.Fatalf("invalid HOST subverb triggered host command %d", got)
+			default:
+			}
+		})
 	}
 }
 

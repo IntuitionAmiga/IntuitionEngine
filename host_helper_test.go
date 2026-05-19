@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -170,6 +173,134 @@ func TestHostHelperRejectsOverlappingTriggers(t *testing.T) {
 	waitForHostStatus(t, helper, HostStatusErr)
 	if got := helper.ExitCode(); got != 21 {
 		t.Fatalf("exit code after second completion = %d, want 21", got)
+	}
+}
+
+func TestNewHostHelperConfigInstallsRunnerOnlyWhenEnabled(t *testing.T) {
+	disabled := NewHostHelper(HostHelperConfig{})
+	if disabled.enabled {
+		t.Fatal("default host helper should be disabled")
+	}
+	if disabled.runner != nil {
+		t.Fatalf("disabled host helper runner = %#v, want nil", disabled.runner)
+	}
+
+	enabled := NewHostHelper(HostHelperConfig{
+		Enabled:    true,
+		Appliance:  true,
+		HelperPath: "/tmp/ie-host-helper-test",
+	})
+	if !enabled.enabled {
+		t.Fatal("enabled host helper should be enabled")
+	}
+	if !enabled.appliance {
+		t.Fatal("enabled host helper should preserve appliance mode")
+	}
+	runner, ok := enabled.runner.(ExternalHostCommandRunner)
+	if !ok {
+		t.Fatalf("enabled host helper runner = %T, want ExternalHostCommandRunner", enabled.runner)
+	}
+	if runner.Path != "/tmp/ie-host-helper-test" {
+		t.Fatalf("runner path = %q, want configured helper path", runner.Path)
+	}
+	if !runner.Appliance {
+		t.Fatal("runner appliance mode = false, want true")
+	}
+}
+
+func TestExternalHostCommandRunnerUsesFixedHelperArgv(t *testing.T) {
+	dir := t.TempDir()
+	helperPath := filepath.Join(dir, "helper")
+	argsPath := filepath.Join(dir, "args")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s|%%s|%%s' \"$0\" \"$1\" \"$#\" > %q\nexit 21\n", argsPath)
+	if err := os.WriteFile(helperPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write helper: %v", err)
+	}
+
+	result := (ExternalHostCommandRunner{Path: helperPath}).RunHostCommand(context.Background(), HostCommandUpdate)
+	if result.Status != HostStatusErr {
+		t.Fatalf("status = %d, want ERR", result.Status)
+	}
+	if result.ExitCode != 21 {
+		t.Fatalf("exit code = %d, want 21", result.ExitCode)
+	}
+
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read helper args: %v", err)
+	}
+	want := helperPath + "|update|1"
+	if string(args) != want {
+		t.Fatalf("helper args = %q, want %q", args, want)
+	}
+}
+
+func TestExternalHostCommandRunnerPassesApplianceArgForUpdateOnly(t *testing.T) {
+	tests := []struct {
+		name      string
+		cmd       HostCommand
+		appliance bool
+		want      string
+	}{
+		{
+			name:      "update appliance",
+			cmd:       HostCommandUpdate,
+			appliance: true,
+			want:      "update|--appliance|2",
+		},
+		{
+			name:      "update normal",
+			cmd:       HostCommandUpdate,
+			appliance: false,
+			want:      "update||1",
+		},
+		{
+			name:      "reboot appliance",
+			cmd:       HostCommandReboot,
+			appliance: true,
+			want:      "reboot||1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			helperPath := filepath.Join(dir, "helper")
+			argsPath := filepath.Join(dir, "args")
+			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s|%%s|%%s' \"$1\" \"$2\" \"$#\" > %q\n", argsPath)
+			if err := os.WriteFile(helperPath, []byte(script), 0o755); err != nil {
+				t.Fatalf("write helper: %v", err)
+			}
+
+			result := (ExternalHostCommandRunner{
+				Path:      helperPath,
+				Appliance: tt.appliance,
+			}).RunHostCommand(context.Background(), tt.cmd)
+			if result.Status != HostStatusOK {
+				t.Fatalf("status = %d, want OK", result.Status)
+			}
+			if result.ExitCode != 0 {
+				t.Fatalf("exit code = %d, want 0", result.ExitCode)
+			}
+
+			args, err := os.ReadFile(argsPath)
+			if err != nil {
+				t.Fatalf("read helper args: %v", err)
+			}
+			if string(args) != tt.want {
+				t.Fatalf("helper args = %q, want %q", args, tt.want)
+			}
+		})
+	}
+}
+
+func TestExternalHostCommandRunnerRejectsInvalidCommand(t *testing.T) {
+	result := (ExternalHostCommandRunner{Path: "/no/such/helper"}).RunHostCommand(context.Background(), HostCommandNone)
+	if result.Status != HostStatusErr {
+		t.Fatalf("status = %d, want ERR", result.Status)
+	}
+	if result.ExitCode != 2 {
+		t.Fatalf("exit code = %d, want 2", result.ExitCode)
 	}
 }
 

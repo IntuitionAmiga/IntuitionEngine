@@ -142,6 +142,27 @@ TERM_KEY_STATUS   equ 0xF072C               ; Bit 0: raw key available (R)
 TERM_SENTINEL     equ 0xF07F0               ; Write 0xDEAD to stop CPU (via OnSentinel callback)
 
 ; ============================================================================
+; HOST HELPER REGISTERS (0xF1400-0xF140F, gated by -ehbasic-host)
+; ============================================================================
+
+HOST_MMIO_BASE        equ 0xF1400
+HOST_MMIO_CMD         equ 0xF1400           ; w8: 1=NET,2=UPDATE,3=REBOOT,4=POWEROFF
+HOST_MMIO_TRIGGER     equ 0xF1404           ; w8: non-zero starts selected command
+HOST_MMIO_STATUS      equ 0xF1408           ; r8: 0=running,1=ok,2=err,3=cancel,4=disabled
+HOST_MMIO_EXIT        equ 0xF140C           ; r32: helper exit code
+
+HOST_CMD_NET          equ 1
+HOST_CMD_UPDATE       equ 2
+HOST_CMD_REBOOT       equ 3
+HOST_CMD_POWEROFF     equ 4
+
+HOST_STATUS_RUNNING   equ 0
+HOST_STATUS_OK        equ 1
+HOST_STATUS_ERR       equ 2
+HOST_STATUS_CANCEL    equ 3
+HOST_STATUS_DISABLED  equ 4
+
+; ============================================================================
 ; VIDEO HARDWARE REGISTERS (I/O region at 0xF0000)
 ; ============================================================================
 

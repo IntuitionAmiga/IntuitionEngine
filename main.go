@@ -220,48 +220,51 @@ func main() {
 	boilerPlate()
 
 	var (
-		modeIE32    bool
-		modeIE64    bool
-		modeIOS     bool
-		modeBasic   bool
-		modeTerm    bool
-		basicImage  string
-		modeM68K    bool
-		modeEmuTOS  bool
-		emutosImage string
-		modeAROS    bool
-		arosImage   string
-		modeM6502   bool
-		modeZ80     bool
-		modeX86     bool
-		modePSG     bool
-		modeSID     bool
-		psgPlus     bool
-		sidPlus     bool
-		modePOKEY   bool
-		pokeyPlus   bool
-		modeTED     bool
-		tedPlus     bool
-		modeAHX     bool
-		ahxPlus     bool
-		modeMOD     bool
-		modeWAV     bool
-		perfMode    bool
-		sidFile     string
-		sidDebug    int
-		sidPAL      bool
-		sidNTSC     bool
-		loadAddr    optionalStringFlag
-		entryAddr   optionalStringFlag
-		resWidth    int
-		resHeight   int
-		scale       int
-		fullscreen  bool
-		scriptFile  string
-		noJIT       bool
-		coprocSvc   string
-		iosRoot     string
-		iosImage    string
+		modeIE32              bool
+		modeIE64              bool
+		modeIOS               bool
+		modeBasic             bool
+		modeTerm              bool
+		basicImage            string
+		modeM68K              bool
+		modeEmuTOS            bool
+		emutosImage           string
+		modeAROS              bool
+		arosImage             string
+		modeM6502             bool
+		modeZ80               bool
+		modeX86               bool
+		modePSG               bool
+		modeSID               bool
+		psgPlus               bool
+		sidPlus               bool
+		modePOKEY             bool
+		pokeyPlus             bool
+		modeTED               bool
+		tedPlus               bool
+		modeAHX               bool
+		ahxPlus               bool
+		modeMOD               bool
+		modeWAV               bool
+		perfMode              bool
+		sidFile               string
+		sidDebug              int
+		sidPAL                bool
+		sidNTSC               bool
+		loadAddr              optionalStringFlag
+		entryAddr             optionalStringFlag
+		resWidth              int
+		resHeight             int
+		scale                 int
+		fullscreen            bool
+		scriptFile            string
+		noJIT                 bool
+		coprocSvc             string
+		iosRoot               string
+		iosImage              string
+		ehbasicHost           bool
+		ehbasicHostAppliance  bool
+		ehbasicHostHelperPath string
 	)
 
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
@@ -302,6 +305,9 @@ func main() {
 	flagSet.BoolVar(&fullscreen, "fullscreen", false, "Start in fullscreen mode")
 	flagSet.StringVar(&scriptFile, "script", "", "Run IES Lua script file after startup")
 	flagSet.BoolVar(&noJIT, "nojit", false, "Disable JIT compilation, use interpreter only")
+	flagSet.BoolVar(&ehbasicHost, "ehbasic-host", false, "Enable EhBASIC HOST commands through the host helper")
+	flagSet.BoolVar(&ehbasicHostAppliance, "ehbasic-host-appliance", false, "Skip HOST UPDATE confirmation prompts in appliance deployments")
+	flagSet.StringVar(&ehbasicHostHelperPath, "ehbasic-host-helper", DefaultHostHelperPath, "Host helper executable for -ehbasic-host")
 	registerCoprocServiceFlags(flagSet, &coprocSvc)
 	var emutosDrive string
 	flagSet.StringVar(&emutosDrive, "emutos-drive", "", "Host directory to map as GEMDOS drive U: (default: ~/)")
@@ -991,7 +997,11 @@ func main() {
 	// active value, not the zero placeholder bootGuestRAMFromComputed
 	// publishes during backing allocation.
 	RegisterSysInfoMMIOFromBus(sysBus)
-	hostHelper := NewHostHelperWithRunner(false, false, nil)
+	hostHelper := NewHostHelper(HostHelperConfig{
+		Enabled:    ehbasicHost,
+		Appliance:  ehbasicHostAppliance,
+		HelperPath: ehbasicHostHelperPath,
+	})
 	RegisterHostHelperMMIO(sysBus, hostHelper)
 	psgPlayer.AttachBus(sysBus)
 	sidPlayer.AttachBus(sysBus)

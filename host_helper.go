@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"os/exec"
 	"sync/atomic"
 )
 
@@ -9,6 +11,8 @@ const (
 	HostMMIOBase = HOST_MMIO_REGION_BASE
 	HostMMIOEnd  = HOST_MMIO_REGION_END
 )
+
+const DefaultHostHelperPath = "/usr/libexec/intuitionengine-host-helper"
 
 const (
 	HostMMIOCommand = 0x00
@@ -46,6 +50,12 @@ type HostCommandRunner interface {
 	RunHostCommand(ctx context.Context, cmd HostCommand) HostCommandResult
 }
 
+type HostHelperConfig struct {
+	Enabled    bool
+	Appliance  bool
+	HelperPath string
+}
+
 type HostHelper struct {
 	enabled   bool
 	appliance bool
@@ -54,6 +64,17 @@ type HostHelper struct {
 	cmd    atomic.Uint32
 	status atomic.Uint32
 	exit   atomic.Uint32
+}
+
+func NewHostHelper(config HostHelperConfig) *HostHelper {
+	var runner HostCommandRunner
+	if config.Enabled {
+		runner = ExternalHostCommandRunner{
+			Path:      config.HelperPath,
+			Appliance: config.Appliance,
+		}
+	}
+	return NewHostHelperWithRunner(config.Enabled, config.Appliance, runner)
 }
 
 func NewHostHelperWithRunner(enabled bool, appliance bool, runner HostCommandRunner) *HostHelper {
@@ -112,6 +133,57 @@ func (h *HostHelper) beginCommand() bool {
 		if h.status.CompareAndSwap(status, HostStatusRunning) {
 			return true
 		}
+	}
+}
+
+type ExternalHostCommandRunner struct {
+	Path      string
+	Appliance bool
+}
+
+func (r ExternalHostCommandRunner) RunHostCommand(ctx context.Context, cmd HostCommand) HostCommandResult {
+	verb, ok := hostCommandVerb(cmd)
+	if !ok {
+		return HostCommandResult{Status: HostStatusErr, ExitCode: 2}
+	}
+
+	path := r.Path
+	if path == "" {
+		path = DefaultHostHelperPath
+	}
+
+	args := []string{verb}
+	if cmd == HostCommandUpdate && r.Appliance {
+		args = append(args, "--appliance")
+	}
+
+	run := exec.CommandContext(ctx, path, args...)
+	if err := run.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return HostCommandResult{Status: HostStatusErr, ExitCode: 1, Err: ctxErr}
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return HostCommandResult{Status: HostStatusErr, ExitCode: uint32(exitErr.ExitCode()), Err: err}
+		}
+		return HostCommandResult{Status: HostStatusErr, ExitCode: 1, Err: err}
+	}
+
+	return HostCommandResult{Status: HostStatusOK, ExitCode: 0}
+}
+
+func hostCommandVerb(cmd HostCommand) (string, bool) {
+	switch cmd {
+	case HostCommandNet:
+		return "net", true
+	case HostCommandUpdate:
+		return "update", true
+	case HostCommandReboot:
+		return "reboot", true
+	case HostCommandPoweroff:
+		return "poweroff", true
+	default:
+		return "", false
 	}
 }
 
