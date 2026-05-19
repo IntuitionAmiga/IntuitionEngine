@@ -5,6 +5,7 @@
 ;   HOST UPDATE
 ;   HOST REBOOT
 ;   HOST POWEROFF
+;   HOST HELP
 ;
 ; The guest side only writes a command enum and trigger bit to the host helper
 ; MMIO aperture, then polls its status byte until the host-side helper reports
@@ -21,6 +22,10 @@ exec_do_host:
     load.b  r1, (r17)
     jsr     toupper
 
+    move.q  r2, #0
+    beq     r1, r2, .host_help
+    move.q  r2, #0x3A             ; ':'
+    beq     r1, r2, .host_help
     move.q  r2, #0x4E             ; 'N'
     beq     r1, r2, .host_net
     move.q  r2, #0x55             ; 'U'
@@ -29,6 +34,8 @@ exec_do_host:
     beq     r1, r2, .host_reboot
     move.q  r2, #0x50             ; 'P'
     beq     r1, r2, .host_poweroff
+    move.q  r2, #0x48             ; 'H'
+    beq     r1, r2, .host_help_word
     bra     exec_do_unknown
 
 .host_net:
@@ -175,6 +182,32 @@ exec_do_host:
 .host_done:
     rts
 
+.host_help_word:
+    load.b  r1, (r17)
+    jsr     toupper
+    move.q  r2, #0x48             ; 'H'
+    bne     r1, r2, exec_do_unknown
+    load.b  r1, 1(r17)
+    jsr     toupper
+    move.q  r2, #0x45             ; 'E'
+    bne     r1, r2, exec_do_unknown
+    load.b  r1, 2(r17)
+    jsr     toupper
+    move.q  r2, #0x4C             ; 'L'
+    bne     r1, r2, exec_do_unknown
+    load.b  r1, 3(r17)
+    jsr     toupper
+    move.q  r2, #0x50             ; 'P'
+    bne     r1, r2, exec_do_unknown
+    add.q   r17, r17, #4
+    jsr     .host_require_end
+    beqz    r6, exec_do_unknown
+
+.host_help:
+    la      r3, host_help_text
+    jsr     print_cstring_r3
+    rts
+
 .host_require_end:
     jsr     exec_skip_spaces
     load.b  r6, (r17)
@@ -187,3 +220,32 @@ exec_do_host:
 .host_require_end_ok:
     move.q  r6, #1
     rts
+
+; ============================================================================
+; print_cstring_r3 - Print null-terminated string without touching r17
+; ============================================================================
+; Input:  R3 = pointer to null-terminated string
+; Output: none
+; Clobbers: R2, R3, R8
+
+print_cstring_r3:
+.pcsr3_loop:
+    load.b  r2, (r3)
+    beqz    r2, .pcsr3_done
+    push    r3
+    move.q  r8, r2
+    jsr     term_putc
+    pop     r3
+    add.q   r3, r3, #1
+    bra     .pcsr3_loop
+.pcsr3_done:
+    rts
+
+host_help_text:
+    dc.b    "HOST commands:", 0x0D, 0x0A
+    dc.b    "HOST NET - configure WiFi", 0x0D, 0x0A
+    dc.b    "HOST UPDATE - update system packages", 0x0D, 0x0A
+    dc.b    "HOST REBOOT - reboot the host", 0x0D, 0x0A
+    dc.b    "HOST POWEROFF - power off the host", 0x0D, 0x0A
+    dc.b    "HOST HELP - show this help", 0x0D, 0x0A, 0
+    align   8

@@ -2163,6 +2163,43 @@ func TestEhBASIC_HostRequiresExactSubverb(t *testing.T) {
 	}
 }
 
+func TestEhBASIC_HostHelpAndBareHostPrintHelp(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tests := []struct {
+		name       string
+		program    string
+		wantPrint1 bool
+	}{
+		{"bare", "10 HOST", false},
+		{"help", "10 HOST HELP", false},
+		{"bare with separator", "10 HOST:PRINT 1", true},
+		{"help with separator", "10 HOST HELP:PRINT 1", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var hostMMIOWrites int
+			out, _ := execStmtTestCore(t, asmBin, tt.program, func(h *ehbasicTestHarness) {
+				h.bus.MapIO(HostMMIOBase, HostMMIOEnd, func(addr uint32) uint32 {
+					return uint32(HostStatusOK)
+				}, func(addr uint32, value uint32) {
+					hostMMIOWrites++
+				})
+			})
+
+			if !strings.Contains(out, "HOST NET") || !strings.Contains(out, "HOST UPDATE") ||
+				!strings.Contains(out, "HOST REBOOT") || !strings.Contains(out, "HOST POWEROFF") {
+				t.Fatalf("HOST help output missing subverbs: %q", out)
+			}
+			if tt.wantPrint1 && !strings.Contains(out, "1") {
+				t.Fatalf("HOST help did not preserve statement separator, output %q", out)
+			}
+			if hostMMIOWrites != 0 {
+				t.Fatalf("HOST help wrote to host MMIO %d times", hostMMIOWrites)
+			}
+		})
+	}
+}
+
 func TestEhBASIC_Let(t *testing.T) {
 	asmBin := buildAssembler(t)
 	out := execStmtTest(t, asmBin, `10 LET A=5
