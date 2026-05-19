@@ -6,8 +6,15 @@ import (
 )
 
 const (
-	HostMMIOBase = 0xF1400
-	HostMMIOEnd  = HostMMIOBase + 0x0F
+	HostMMIOBase = HOST_MMIO_REGION_BASE
+	HostMMIOEnd  = HOST_MMIO_REGION_END
+)
+
+const (
+	HostMMIOCommand = 0x00
+	HostMMIOTrigger = 0x04
+	HostMMIOStatus  = 0x08
+	HostMMIOExit    = 0x0C
 )
 
 type HostCommand uint32
@@ -57,6 +64,13 @@ func NewHostHelperWithRunner(enabled bool, appliance bool, runner HostCommandRun
 	}
 	h.status.Store(HostStatusIdle)
 	return h
+}
+
+func RegisterHostHelperMMIO(bus *MachineBus, helper *HostHelper) {
+	if bus == nil || helper == nil {
+		return
+	}
+	bus.MapIO(HostMMIOBase, HostMMIOEnd, helper.HandleRead, helper.HandleWrite)
 }
 
 func (h *HostHelper) SetCommand(cmd HostCommand) {
@@ -119,4 +133,40 @@ func (h *HostHelper) Status() uint32 {
 
 func (h *HostHelper) ExitCode() uint32 {
 	return h.exit.Load()
+}
+
+func (h *HostHelper) HandleRead(addr uint32) uint32 {
+	offset := hostMMIOOffset(addr)
+	switch offset {
+	case HostMMIOCommand:
+		return h.cmd.Load()
+	case HostMMIOStatus:
+		return h.Status()
+	case HostMMIOExit:
+		return h.ExitCode()
+	case HostMMIOExit + 1, HostMMIOExit + 2, HostMMIOExit + 3:
+		shift := (offset - HostMMIOExit) * 8
+		return h.ExitCode() >> shift
+	default:
+		return 0
+	}
+}
+
+func (h *HostHelper) HandleWrite(addr uint32, value uint32) {
+	offset := hostMMIOOffset(addr)
+	switch offset {
+	case HostMMIOCommand:
+		h.SetCommand(HostCommand(value))
+	case HostMMIOTrigger:
+		if value != 0 {
+			h.Trigger()
+		}
+	}
+}
+
+func hostMMIOOffset(addr uint32) uint32 {
+	if addr >= HostMMIOBase && addr <= HostMMIOEnd {
+		return addr - HostMMIOBase
+	}
+	return addr
 }

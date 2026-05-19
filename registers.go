@@ -46,6 +46,7 @@ Address Range       Size    Device              Constants File
 0xF0E80-0xF0EFF     128B    SFX Trigger         sfx_constants.go
 0xF0F00-0xF0F5F     96B     TED (audio+video)   ted_constants.go, ted_video_constants.go
 0xF1000-0xF13FF     1KB     VGA Registers       vga_constants.go
+0xF1400-0xF140F     16B     Host Helper         host_helper.go
 0xF2000-0xF2017     24B     ULA Registers       ula_constants.go
 0xF2100-0xF213F     64B     ANTIC (Atari 8-bit) antic_constants.go
 0xF2140-0xF21B7     120B    GTIA (Atari 8-bit)  antic_constants.go
@@ -207,6 +208,10 @@ const (
 	// VGA region
 	VGA_REGION_BASE = 0xF1000
 	VGA_REGION_END  = 0xF13FF
+
+	// Host helper region (appliance host actions)
+	HOST_MMIO_REGION_BASE = 0xF1400
+	HOST_MMIO_REGION_END  = 0xF140F
 
 	// ULA region (ZX Spectrum video)
 	ULA_REGION_BASE = 0xF2000
@@ -390,6 +395,8 @@ func GetIORegion(addr uint32) string {
 		return "TED"
 	case addr >= VGA_REGION_BASE && addr <= VGA_REGION_END:
 		return "VGA"
+	case addr >= HOST_MMIO_REGION_BASE && addr <= HOST_MMIO_REGION_END:
+		return "HostHelper"
 	case addr >= ULA_REGION_BASE && addr <= ULA_REGION_END:
 		return "ULA"
 	case addr >= ULA_VRAM_REGION_BASE && addr <= ULA_VRAM_REGION_END:

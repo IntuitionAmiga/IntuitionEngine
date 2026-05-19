@@ -136,6 +136,7 @@ func (rr *RegionRegistry) addDefaults() {
 	rr.Add(0xB8000, 0xBFFFF, "vga-text", RegionVRAM, common...)
 	rr.Add(0xD0000, 0xDFFFF, "voodoo-texture", RegionVRAM, common...)
 	rr.Add(0xF0000, 0xFFFFF, "mmio", RegionMMIO, common...)
+	rr.Add(HOST_MMIO_REGION_BASE, HOST_MMIO_REGION_END, "host-helper", RegionMMIO, common...)
 	rr.Add(0x100000, 0x5FFFFF, "video-ram", RegionVRAM, common...)
 
 	rr.Add(0x0000, 0xCFFF, "main-ram", RegionRAM, "6502", "Z80")

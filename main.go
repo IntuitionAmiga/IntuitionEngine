@@ -991,6 +991,8 @@ func main() {
 	// active value, not the zero placeholder bootGuestRAMFromComputed
 	// publishes during backing allocation.
 	RegisterSysInfoMMIOFromBus(sysBus)
+	hostHelper := NewHostHelperWithRunner(false, false, nil)
+	RegisterHostHelperMMIO(sysBus, hostHelper)
 	psgPlayer.AttachBus(sysBus)
 	sidPlayer.AttachBus(sysBus)
 
