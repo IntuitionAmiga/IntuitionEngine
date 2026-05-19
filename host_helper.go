@@ -13,6 +13,7 @@ const (
 )
 
 const DefaultHostHelperPath = "/usr/libexec/intuitionengine-host-helper"
+const DefaultPkexecPath = "/usr/bin/pkexec"
 
 const (
 	HostMMIOCommand = 0x00
@@ -146,8 +147,9 @@ func (h *HostHelper) beginCommand() bool {
 }
 
 type ExternalHostCommandRunner struct {
-	Path      string
-	Appliance bool
+	Path       string
+	PkexecPath string
+	Appliance  bool
 }
 
 func (r ExternalHostCommandRunner) RunHostCommand(ctx context.Context, cmd HostCommand) HostCommandResult {
@@ -161,12 +163,17 @@ func (r ExternalHostCommandRunner) RunHostCommand(ctx context.Context, cmd HostC
 		path = DefaultHostHelperPath
 	}
 
-	args := []string{verb}
+	pkexecPath := r.PkexecPath
+	if pkexecPath == "" {
+		pkexecPath = DefaultPkexecPath
+	}
+
+	args := []string{path, verb}
 	if cmd == HostCommandUpdate && r.Appliance {
 		args = append(args, "--appliance")
 	}
 
-	run := exec.CommandContext(ctx, path, args...)
+	run := exec.CommandContext(ctx, pkexecPath, args...)
 	if err := run.Run(); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return HostCommandResult{Status: HostStatusErr, ExitCode: 1, Err: ctxErr}

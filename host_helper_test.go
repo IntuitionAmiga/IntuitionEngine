@@ -215,13 +215,18 @@ func TestNewHostHelperConfigInstallsRunnerOnlyWhenEnabled(t *testing.T) {
 func TestExternalHostCommandRunnerUsesFixedHelperArgv(t *testing.T) {
 	dir := t.TempDir()
 	helperPath := filepath.Join(dir, "helper")
+	pkexecPath := filepath.Join(dir, "pkexec")
 	argsPath := filepath.Join(dir, "args")
-	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s|%%s|%%s' \"$0\" \"$1\" \"$#\" > %q\nexit 21\n", argsPath)
-	if err := os.WriteFile(helperPath, []byte(script), 0o755); err != nil {
+	helperScript := "#!/bin/sh\nexit 21\n"
+	if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
 		t.Fatalf("write helper: %v", err)
 	}
+	pkexecScript := fmt.Sprintf("#!/bin/sh\nprintf '%%s|%%s|%%s|%%s' \"$0\" \"$1\" \"$2\" \"$#\" > %q\nexec \"$@\"\n", argsPath)
+	if err := os.WriteFile(pkexecPath, []byte(pkexecScript), 0o755); err != nil {
+		t.Fatalf("write pkexec: %v", err)
+	}
 
-	result := (ExternalHostCommandRunner{Path: helperPath}).RunHostCommand(context.Background(), HostCommandUpdate)
+	result := (ExternalHostCommandRunner{Path: helperPath, PkexecPath: pkexecPath}).RunHostCommand(context.Background(), HostCommandUpdate)
 	if result.Status != HostStatusErr {
 		t.Fatalf("status = %d, want ERR", result.Status)
 	}
@@ -233,7 +238,7 @@ func TestExternalHostCommandRunnerUsesFixedHelperArgv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read helper args: %v", err)
 	}
-	want := helperPath + "|update|1"
+	want := pkexecPath + "|" + helperPath + "|update|2"
 	if string(args) != want {
 		t.Fatalf("helper args = %q, want %q", args, want)
 	}
@@ -250,19 +255,19 @@ func TestExternalHostCommandRunnerPassesApplianceArgForUpdateOnly(t *testing.T) 
 			name:      "update appliance",
 			cmd:       HostCommandUpdate,
 			appliance: true,
-			want:      "update|--appliance|2",
+			want:      "update|--appliance|3",
 		},
 		{
 			name:      "update normal",
 			cmd:       HostCommandUpdate,
 			appliance: false,
-			want:      "update||1",
+			want:      "update||2",
 		},
 		{
 			name:      "reboot appliance",
 			cmd:       HostCommandReboot,
 			appliance: true,
-			want:      "reboot||1",
+			want:      "reboot||2",
 		},
 	}
 
@@ -270,15 +275,21 @@ func TestExternalHostCommandRunnerPassesApplianceArgForUpdateOnly(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			helperPath := filepath.Join(dir, "helper")
+			pkexecPath := filepath.Join(dir, "pkexec")
 			argsPath := filepath.Join(dir, "args")
-			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s|%%s|%%s' \"$1\" \"$2\" \"$#\" > %q\n", argsPath)
-			if err := os.WriteFile(helperPath, []byte(script), 0o755); err != nil {
+			helperScript := "#!/bin/sh\nexit 0\n"
+			if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
 				t.Fatalf("write helper: %v", err)
+			}
+			pkexecScript := fmt.Sprintf("#!/bin/sh\nprintf '%%s|%%s|%%s' \"$2\" \"$3\" \"$#\" > %q\nexec \"$@\"\n", argsPath)
+			if err := os.WriteFile(pkexecPath, []byte(pkexecScript), 0o755); err != nil {
+				t.Fatalf("write pkexec: %v", err)
 			}
 
 			result := (ExternalHostCommandRunner{
-				Path:      helperPath,
-				Appliance: tt.appliance,
+				Path:       helperPath,
+				PkexecPath: pkexecPath,
+				Appliance:  tt.appliance,
 			}).RunHostCommand(context.Background(), tt.cmd)
 			if result.Status != HostStatusOK {
 				t.Fatalf("status = %d, want OK", result.Status)

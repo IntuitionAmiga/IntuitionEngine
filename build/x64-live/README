@@ -3,10 +3,11 @@
 This directory is the staging area for the bootable x64 live image built by
 `make x64-live`.
 
-The appliance image starts Intuition Engine at the EhBASIC `Ready` prompt and
-may enable the BASIC `HOST` helper path for controlled host maintenance
-commands. Host command execution is gated in the emulator by `-ehbasic-host`;
-normal desktop runs leave execution disabled unless that flag is supplied.
+The appliance image starts Intuition Engine at the EhBASIC `Ready` prompt with
+the BASIC `HOST` helper path and appliance update mode enabled for controlled
+host maintenance commands. Host command execution is gated in the emulator by
+`-ehbasic-host`; normal desktop runs leave execution disabled unless that flag
+is supplied.
 
 ## Firewall Baseline
 

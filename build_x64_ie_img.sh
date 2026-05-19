@@ -29,7 +29,7 @@ EXPANDED_IMG="${WORK_DIR}/ubuntu-26.04-ie-expanded.img"
 GOLDEN_IMG="ubuntu-26.04-lowlatency-cage-golden.img"
 GOLDEN_IMG_PATH="${WORK_DIR}/${GOLDEN_IMG}"
 GOLDEN_IMG_MAX_AGE_DAYS=30
-GOLDEN_STAMP_VERSION="x64-live-golden-v14-pipewire-pactl-ready"
+GOLDEN_STAMP_VERSION="x64-live-golden-v15-basic-host-launch"
 GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"
 KERNEL_PKG="linux-lowlatency"
 COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,mesa-utils,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core"
@@ -39,9 +39,11 @@ SECUREBOOT_PKGS="shim-signed,grub-efi-amd64-signed,sbsigntool"
 OVERLAY_PKG="overlayroot"
 SHARE_GROW_PKGS="cloud-guest-utils,dosfstools,fatresize,parted"
 NETWORK_PKGS="network-manager,wpasupplicant,wireless-regdb,iw"
-ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${SECUREBOOT_PKGS},${OVERLAY_PKG},${SHARE_GROW_PKGS},${NETWORK_PKGS}"
+HOST_HELPER_PKGS="policykit-1"
+ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${SECUREBOOT_PKGS},${OVERLAY_PKG},${SHARE_GROW_PKGS},${NETWORK_PKGS},${HOST_HELPER_PKGS}"
 IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"
 IE_INSTALL_NAME="IntuitionEngine"
+HOST_HELPER_BINARY="${WORK_DIR}/intuitionengine-host-helper"
 AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS/bin/ie-m68k/bin/ie-m68k/AROS}"
 FINAL_IMAGE_SIZE="8G"
 ROOT_PART_SIZE="5G"
@@ -118,7 +120,7 @@ trap cleanup EXIT
 
 check_dependencies() {
     log_section "Checking dependencies"
-    local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd tar python3)
+    local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd tar python3 go)
     if [[ "${CREATE_SHARE}" == "true" ]]; then
         required_cmds+=(mformat mcopy)
     fi
@@ -712,7 +714,7 @@ if ! pactl info >/tmp/ie-pactl-info.log 2>&1; then
 else
     echo "pipewire-pulse ready at ${XDG_RUNTIME_DIR}/pulse/native" >/tmp/ie-pipewire-ready.log
 fi
-exec /opt/ie/IntuitionEngine "$@"
+exec /opt/ie/IntuitionEngine -basic -ehbasic-host -ehbasic-host-appliance "$@"
 EOF
     chmod +x "${WORK_DIR}/launch.sh"
 
@@ -812,6 +814,38 @@ RemainAfterExit=yes
 
 [Install]
 WantedBy=sysinit.target
+EOF
+
+    cat > "${WORK_DIR}/org.intuitionengine.host.policy" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Intuition Engine</vendor>
+  <vendor_url>https://github.com/intuitionamiga/IntuitionEngine</vendor_url>
+  <action id="org.intuitionengine.host.run">
+    <description>Run Intuition Engine host helper</description>
+    <message>Authentication is required to run the Intuition Engine host helper</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/intuitionengine-host-helper</annotate>
+  </action>
+</policyconfig>
+EOF
+
+    cat > "${WORK_DIR}/49-intuitionengine.rules" <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (action.id === "org.intuitionengine.host.run" &&
+        subject.user === "ie" &&
+        subject.active === true &&
+        subject.local === true) {
+        return polkit.Result.YES;
+    }
+});
 EOF
 }
 
@@ -918,6 +952,7 @@ session=greetd-cage-default-basic-v1
 overlayroot=tmpfs
 network=${NETWORK_PKGS}
 audio=${AUDIO_PKGS}
+host_helper=${HOST_HELPER_PKGS}
 EOF
 }
 
@@ -961,7 +996,11 @@ build_golden_image() {
         --upload "${WORK_DIR}/90-ie-networkmanager.yaml:/etc/netplan/90-ie-networkmanager.yaml" \
         --upload "${WORK_DIR}/ie-grow-share.sh:/usr/local/sbin/ie-grow-share.sh" \
         --upload "${WORK_DIR}/ie-grow-share.service:/etc/systemd/system/ie-grow-share.service" \
+        --upload "${WORK_DIR}/org.intuitionengine.host.policy:/usr/share/polkit-1/actions/org.intuitionengine.host.policy" \
+        --upload "${WORK_DIR}/49-intuitionengine.rules:/etc/polkit-1/rules.d/49-intuitionengine.rules" \
         --run-command 'chmod +x /usr/local/sbin/ie-grow-share.sh' \
+        --run-command 'chmod 0644 /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules' \
+        --run-command 'chown root:root /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules' \
         --run-command 'systemctl mask getty@tty1.service' \
         --run-command 'systemctl enable greetd.service seatd.service' \
         --run-command 'systemctl enable NetworkManager.service' \
@@ -992,6 +1031,31 @@ install_ie_binary() {
         --run-command "mv /opt/ie/$(basename "${IE_BINARY}") /opt/ie/${IE_INSTALL_NAME}" \
         --run-command "chmod +x /opt/ie/${IE_INSTALL_NAME}" \
         --run-command 'chown -R 1000:1000 /var/ie /opt/ie' \
+        2>&1 | tee -a "$LOG_FILE"
+}
+
+build_host_helper_binary() {
+    log_section "Building HOST helper binary"
+    mkdir -p "$WORK_DIR"
+    (
+        cd "$SCRIPT_DIR"
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -pgo=off -ldflags "-s -w" -o "$HOST_HELPER_BINARY" ./cmd/host-helper
+    ) 2>&1 | tee -a "$LOG_FILE"
+    chmod 0755 "$HOST_HELPER_BINARY"
+    if ! file "$HOST_HELPER_BINARY" | grep -q "x86-64"; then
+        log_error "HOST helper binary is not x86-64: $HOST_HELPER_BINARY"
+        exit 1
+    fi
+}
+
+install_host_helper_binary() {
+    log_section "Installing HOST helper binary"
+    virt-customize -a "$OUTPUT_IMG" \
+        --mkdir /usr/libexec \
+        --copy-in "${HOST_HELPER_BINARY}:/usr/libexec/" \
+        --run-command 'chown root:root /usr/libexec/intuitionengine-host-helper' \
+        --run-command 'chmod 0755 /usr/libexec/intuitionengine-host-helper' \
+        --run-command 'test -x /usr/libexec/intuitionengine-host-helper' \
         2>&1 | tee -a "$LOG_FILE"
 }
 
@@ -1224,7 +1288,9 @@ main() {
         generate_support_files
         build_golden_image
     fi
+    build_host_helper_binary
     install_ie_binary
+    install_host_helper_binary
     append_partitions
     write_fstab
     format_share_partition_rootless
