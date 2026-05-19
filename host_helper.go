@@ -50,6 +50,10 @@ type HostCommandRunner interface {
 	RunHostCommand(ctx context.Context, cmd HostCommand) HostCommandResult
 }
 
+type HostUpdateConfirmer interface {
+	ConfirmHostUpdate(ctx context.Context) bool
+}
+
 type HostHelperConfig struct {
 	Enabled    bool
 	Appliance  bool
@@ -60,6 +64,7 @@ type HostHelper struct {
 	enabled   bool
 	appliance bool
 	runner    HostCommandRunner
+	confirmer HostUpdateConfirmer
 
 	cmd    atomic.Uint32
 	status atomic.Uint32
@@ -92,6 +97,10 @@ func RegisterHostHelperMMIO(bus *MachineBus, helper *HostHelper) {
 		return
 	}
 	bus.MapIO(HostMMIOBase, HostMMIOEnd, helper.HandleRead, helper.HandleWrite)
+}
+
+func (h *HostHelper) SetUpdateConfirmer(confirmer HostUpdateConfirmer) {
+	h.confirmer = confirmer
 }
 
 func (h *HostHelper) SetCommand(cmd HostCommand) {
@@ -188,7 +197,14 @@ func hostCommandVerb(cmd HostCommand) (string, bool) {
 }
 
 func (h *HostHelper) runCommand(cmd HostCommand) {
-	result := h.runner.RunHostCommand(context.Background(), cmd)
+	ctx := context.Background()
+	if !h.confirmCommand(ctx, cmd) {
+		h.exit.Store(0)
+		h.status.Store(HostStatusUserCancel)
+		return
+	}
+
+	result := h.runner.RunHostCommand(ctx, cmd)
 	status := result.Status
 	switch status {
 	case HostStatusOK, HostStatusErr, HostStatusUserCancel, HostStatusDisabled:
@@ -197,6 +213,13 @@ func (h *HostHelper) runCommand(cmd HostCommand) {
 	}
 	h.exit.Store(result.ExitCode)
 	h.status.Store(status)
+}
+
+func (h *HostHelper) confirmCommand(ctx context.Context, cmd HostCommand) bool {
+	if cmd != HostCommandUpdate || h.appliance || h.confirmer == nil {
+		return true
+	}
+	return h.confirmer.ConfirmHostUpdate(ctx)
 }
 
 func (h *HostHelper) Status() uint32 {
