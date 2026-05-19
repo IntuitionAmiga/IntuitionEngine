@@ -71,6 +71,10 @@ type TerminalMMIO struct {
 	// Callback is invoked outside tm.mu to avoid deadlocks/re-entrancy issues.
 	onCharOutput func(byte)
 
+	// hostKeyInterceptor, when set, can consume host-originated keystrokes before
+	// they enter the guest terminal queues.
+	hostKeyInterceptor func(byte) bool
+
 	// lastStatusRead stores unix nanos of the latest TERM_STATUS read.
 	lastStatusRead atomic.Int64
 }
@@ -102,6 +106,12 @@ func (tm *TerminalMMIO) OnSentinel(fn func()) {
 func (tm *TerminalMMIO) SetCharOutputCallback(fn func(byte)) {
 	tm.mu.Lock()
 	tm.onCharOutput = fn
+	tm.mu.Unlock()
+}
+
+func (tm *TerminalMMIO) SetHostKeyInterceptor(fn func(byte) bool) {
+	tm.mu.Lock()
+	tm.hostKeyInterceptor = fn
 	tm.mu.Unlock()
 }
 
@@ -218,10 +228,11 @@ func (tm *TerminalMMIO) HandleWrite(addr uint32, value uint32) {
 	switch addr {
 	case TERM_OUT, TERM_OUT_16BIT, TERM_OUT_SIGNEXT:
 		ch := byte(value & 0xFF)
-		tm.outputBuf = append(tm.outputBuf, ch)
 		if tm.onCharOutput != nil {
 			charFn = tm.onCharOutput
 			charArg = ch
+		} else {
+			tm.outputBuf = append(tm.outputBuf, ch)
 		}
 
 	case TERM_ECHO:
@@ -281,6 +292,9 @@ func (tm *TerminalMMIO) EnqueueScancode(code uint8) {
 func (tm *TerminalMMIO) RouteHostKey(b byte) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
+	if tm.hostKeyInterceptor != nil && tm.hostKeyInterceptor(b) {
+		return
+	}
 	if tm.lineInputMode {
 		tm.enqueueInputByteLocked(b)
 		return

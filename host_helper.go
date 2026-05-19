@@ -216,8 +216,11 @@ func (h *HostHelper) runCommand(cmd HostCommand) {
 }
 
 func (h *HostHelper) confirmCommand(ctx context.Context, cmd HostCommand) bool {
-	if cmd != HostCommandUpdate || h.appliance || h.confirmer == nil {
+	if cmd != HostCommandUpdate || h.appliance {
 		return true
+	}
+	if h.confirmer == nil {
+		return false
 	}
 	return h.confirmer.ConfirmHostUpdate(ctx)
 }

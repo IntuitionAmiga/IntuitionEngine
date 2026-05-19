@@ -2092,7 +2092,7 @@ func TestEhBASIC_HostNetTriggersMMIOAndReturns(t *testing.T) {
 			runner.release()
 
 			out, h := execStmtTestCore(t, asmBin, "10 HOST "+tt.subverb+"\n20 PRINT 7", func(h *ehbasicTestHarness) {
-				RegisterHostHelperMMIO(h.bus, NewHostHelperWithRunner(true, false, runner))
+				RegisterHostHelperMMIO(h.bus, newEhBASICTestHostHelper(runner))
 			})
 			if strings.TrimSpace(out) != "7" {
 				t.Fatalf("HOST %s should return to BASIC and continue, got %q", tt.subverb, out)
@@ -2119,7 +2119,7 @@ func TestEhBASIC_HostAllowsTrailingSpacesBeforeSeparator(t *testing.T) {
 	runner.release()
 
 	out, _ := execStmtTestCore(t, asmBin, "10 HOST NET  :PRINT 7", func(h *ehbasicTestHarness) {
-		RegisterHostHelperMMIO(h.bus, NewHostHelperWithRunner(true, false, runner))
+		RegisterHostHelperMMIO(h.bus, newEhBASICTestHostHelper(runner))
 	})
 	if strings.TrimSpace(out) != "7" {
 		t.Fatalf("HOST NET with trailing spaces should continue, got %q", out)
@@ -2148,7 +2148,7 @@ func TestEhBASIC_HostRequiresExactSubverb(t *testing.T) {
 			runner.release()
 
 			out, _ := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
-				RegisterHostHelperMMIO(h.bus, NewHostHelperWithRunner(true, false, runner))
+				RegisterHostHelperMMIO(h.bus, newEhBASICTestHostHelper(runner))
 			})
 			if strings.TrimSpace(out) == "7" {
 				t.Fatalf("invalid HOST subverb continued as success, output %q", out)
@@ -2161,6 +2161,12 @@ func TestEhBASIC_HostRequiresExactSubverb(t *testing.T) {
 			}
 		})
 	}
+}
+
+func newEhBASICTestHostHelper(runner HostCommandRunner) *HostHelper {
+	helper := NewHostHelperWithRunner(true, false, runner)
+	helper.SetUpdateConfirmer(newScriptedHostUpdateConfirmer(true))
+	return helper
 }
 
 func TestEhBASIC_HostHelpAndBareHostPrintHelp(t *testing.T) {

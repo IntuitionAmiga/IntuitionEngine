@@ -195,6 +195,35 @@ func boilerPlate() {
 //	}
 //}
 
+type hostHelperFlagConfig struct {
+	enabled    bool
+	appliance  bool
+	helperPath string
+}
+
+func registerHostHelperFlags(flagSet *flag.FlagSet, config *hostHelperFlagConfig) {
+	flagSet.BoolVar(&config.enabled, "ehbasic-host", false, "Enable EhBASIC HOST commands through the host helper")
+	flagSet.BoolVar(&config.appliance, "ehbasic-host-appliance", false, "Skip HOST UPDATE confirmation prompts in appliance deployments")
+	flagSet.StringVar(&config.helperPath, "ehbasic-host-helper", DefaultHostHelperPath, "Host helper executable for -ehbasic-host")
+}
+
+func (config hostHelperFlagConfig) HostHelperConfig() HostHelperConfig {
+	return HostHelperConfig{
+		Enabled:    config.enabled,
+		Appliance:  config.appliance,
+		HelperPath: config.helperPath,
+	}
+}
+
+func installHostHelperUpdateConfirmer(helper *HostHelper, config hostHelperFlagConfig, term *TerminalMMIO) *TerminalHostUpdateConfirmer {
+	if helper == nil || term == nil || !config.enabled || config.appliance {
+		return nil
+	}
+	confirmer := NewTerminalHostUpdateConfirmer(term)
+	helper.SetUpdateConfirmer(confirmer)
+	return confirmer
+}
+
 func main() {
 	// Pin the main goroutine to the OS main thread before any other goroutine
 	// can spawn. macOS Cocoa demands AppKit calls (Ebiten window creation)
@@ -220,51 +249,49 @@ func main() {
 	boilerPlate()
 
 	var (
-		modeIE32              bool
-		modeIE64              bool
-		modeIOS               bool
-		modeBasic             bool
-		modeTerm              bool
-		basicImage            string
-		modeM68K              bool
-		modeEmuTOS            bool
-		emutosImage           string
-		modeAROS              bool
-		arosImage             string
-		modeM6502             bool
-		modeZ80               bool
-		modeX86               bool
-		modePSG               bool
-		modeSID               bool
-		psgPlus               bool
-		sidPlus               bool
-		modePOKEY             bool
-		pokeyPlus             bool
-		modeTED               bool
-		tedPlus               bool
-		modeAHX               bool
-		ahxPlus               bool
-		modeMOD               bool
-		modeWAV               bool
-		perfMode              bool
-		sidFile               string
-		sidDebug              int
-		sidPAL                bool
-		sidNTSC               bool
-		loadAddr              optionalStringFlag
-		entryAddr             optionalStringFlag
-		resWidth              int
-		resHeight             int
-		scale                 int
-		fullscreen            bool
-		scriptFile            string
-		noJIT                 bool
-		coprocSvc             string
-		iosRoot               string
-		iosImage              string
-		ehbasicHost           bool
-		ehbasicHostAppliance  bool
-		ehbasicHostHelperPath string
+		modeIE32        bool
+		modeIE64        bool
+		modeIOS         bool
+		modeBasic       bool
+		modeTerm        bool
+		basicImage      string
+		modeM68K        bool
+		modeEmuTOS      bool
+		emutosImage     string
+		modeAROS        bool
+		arosImage       string
+		modeM6502       bool
+		modeZ80         bool
+		modeX86         bool
+		modePSG         bool
+		modeSID         bool
+		psgPlus         bool
+		sidPlus         bool
+		modePOKEY       bool
+		pokeyPlus       bool
+		modeTED         bool
+		tedPlus         bool
+		modeAHX         bool
+		ahxPlus         bool
+		modeMOD         bool
+		modeWAV         bool
+		perfMode        bool
+		sidFile         string
+		sidDebug        int
+		sidPAL          bool
+		sidNTSC         bool
+		loadAddr        optionalStringFlag
+		entryAddr       optionalStringFlag
+		resWidth        int
+		resHeight       int
+		scale           int
+		fullscreen      bool
+		scriptFile      string
+		noJIT           bool
+		coprocSvc       string
+		iosRoot         string
+		iosImage        string
+		hostHelperFlags hostHelperFlagConfig
 	)
 
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
@@ -305,9 +332,7 @@ func main() {
 	flagSet.BoolVar(&fullscreen, "fullscreen", false, "Start in fullscreen mode")
 	flagSet.StringVar(&scriptFile, "script", "", "Run IES Lua script file after startup")
 	flagSet.BoolVar(&noJIT, "nojit", false, "Disable JIT compilation, use interpreter only")
-	flagSet.BoolVar(&ehbasicHost, "ehbasic-host", false, "Enable EhBASIC HOST commands through the host helper")
-	flagSet.BoolVar(&ehbasicHostAppliance, "ehbasic-host-appliance", false, "Skip HOST UPDATE confirmation prompts in appliance deployments")
-	flagSet.StringVar(&ehbasicHostHelperPath, "ehbasic-host-helper", DefaultHostHelperPath, "Host helper executable for -ehbasic-host")
+	registerHostHelperFlags(flagSet, &hostHelperFlags)
 	registerCoprocServiceFlags(flagSet, &coprocSvc)
 	var emutosDrive string
 	flagSet.StringVar(&emutosDrive, "emutos-drive", "", "Host directory to map as GEMDOS drive U: (default: ~/)")
@@ -997,11 +1022,7 @@ func main() {
 	// active value, not the zero placeholder bootGuestRAMFromComputed
 	// publishes during backing allocation.
 	RegisterSysInfoMMIOFromBus(sysBus)
-	hostHelper := NewHostHelper(HostHelperConfig{
-		Enabled:    ehbasicHost,
-		Appliance:  ehbasicHostAppliance,
-		HelperPath: ehbasicHostHelperPath,
-	})
+	hostHelper := NewHostHelper(hostHelperFlags.HostHelperConfig())
 	RegisterHostHelperMMIO(sysBus, hostHelper)
 	psgPlayer.AttachBus(sysBus)
 	sidPlayer.AttachBus(sysBus)
@@ -1015,6 +1036,7 @@ func main() {
 
 	// Setup terminal MMIO device (host adapter started later, just before GUI loop)
 	termMMIO := NewTerminalMMIO()
+	hostUpdateConfirmer := installHostHelperUpdateConfirmer(hostHelper, hostHelperFlags, termMMIO)
 	if setter, ok := videoChip.GetOutput().(TerminalMMIOSetter); ok {
 		setter.SetTerminalMMIO(termMMIO)
 	}
@@ -1028,7 +1050,12 @@ func main() {
 		termMMIO.SetForceEchoOff(true)
 		videoTerm.Start()
 		if ki, ok := videoChip.GetOutput().(KeyboardInput); ok {
-			ki.SetKeyHandler(videoTerm.HandleKeyInput)
+			ki.SetKeyHandler(func(b byte) {
+				if hostUpdateConfirmer != nil && hostUpdateConfirmer.HandleInput(b) {
+					return
+				}
+				videoTerm.HandleKeyInput(b)
+			})
 		}
 		if si, ok := videoChip.GetOutput().(ScrollInput); ok {
 			si.SetScrollHandler(videoTerm.HandleScroll)
@@ -2472,7 +2499,12 @@ func main() {
 			}
 			termMMIO.SetForceEchoOff(true)
 			if ki, ok := videoChip.GetOutput().(KeyboardInput); ok {
-				ki.SetKeyHandler(videoTerm.HandleKeyInput)
+				ki.SetKeyHandler(func(b byte) {
+					if hostUpdateConfirmer != nil && hostUpdateConfirmer.HandleInput(b) {
+						return
+					}
+					videoTerm.HandleKeyInput(b)
+				})
 			}
 			if si, ok := videoChip.GetOutput().(ScrollInput); ok {
 				si.SetScrollHandler(videoTerm.HandleScroll)

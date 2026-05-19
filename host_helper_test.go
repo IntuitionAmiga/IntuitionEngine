@@ -89,6 +89,9 @@ func TestHostHelperStateTransitions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := newScriptedHostCommandRunner(tt.result)
 			helper := NewHostHelperWithRunner(tt.enabled, false, runner)
+			if tt.cmd == HostCommandUpdate && tt.wantCall {
+				helper.SetUpdateConfirmer(newScriptedHostUpdateConfirmer(true))
+			}
 
 			helper.SetCommand(tt.cmd)
 			helper.Trigger()
@@ -128,6 +131,7 @@ func TestHostHelperStateTransitions(t *testing.T) {
 func TestHostHelperRejectsOverlappingTriggers(t *testing.T) {
 	firstRunner := newScriptedHostCommandRunner(HostCommandResult{Status: HostStatusOK, ExitCode: 0})
 	helper := NewHostHelperWithRunner(true, false, firstRunner)
+	helper.SetUpdateConfirmer(newScriptedHostUpdateConfirmer(true))
 
 	helper.SetCommand(HostCommandUpdate)
 	helper.Trigger()

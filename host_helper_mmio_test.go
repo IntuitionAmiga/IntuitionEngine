@@ -9,6 +9,7 @@ import (
 func TestHostHelperMMIORegistersDirect(t *testing.T) {
 	runner := newScriptedHostCommandRunner(HostCommandResult{Status: HostStatusOK, ExitCode: 0x12345678})
 	helper := NewHostHelperWithRunner(true, false, runner)
+	helper.SetUpdateConfirmer(newScriptedHostUpdateConfirmer(true))
 
 	if got := helper.HandleRead(HostMMIOBase + HostMMIOStatus); got != HostStatusIdle {
 		t.Fatalf("status before trigger = %d, want IDLE", got)

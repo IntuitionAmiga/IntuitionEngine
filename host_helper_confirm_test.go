@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,6 +61,43 @@ func TestHostUpdateConfirmationDefaultsToCancelWhenUnanswered(t *testing.T) {
 	}
 }
 
+func TestTerminalHostUpdateConfirmerAcceptsHostKey(t *testing.T) {
+	term := NewTerminalMMIO()
+	confirm := NewTerminalHostUpdateConfirmer(term)
+	result := make(chan bool, 1)
+
+	go func() {
+		result <- confirm.ConfirmHostUpdate(context.Background())
+	}()
+
+	deadline := time.After(time.Second)
+	for {
+		if strings.Contains(term.DrainOutput(), "Proceed?") {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("confirmation prompt was not written")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	term.RouteHostKey('Y')
+
+	select {
+	case allowed := <-result:
+		if !allowed {
+			t.Fatal("confirmation rejected Y input")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("confirmation did not complete after Y input")
+	}
+	if got := term.HandleRead(TERM_IN); got != 0 {
+		t.Fatalf("confirmation key leaked to guest input: %#x", got)
+	}
+}
+
 func TestNewHostHelperDoesNotInstallUnanswerableUpdateConfirmer(t *testing.T) {
 	helper := NewHostHelper(HostHelperConfig{
 		Enabled:    true,
@@ -80,7 +118,7 @@ func TestNewHostHelperDoesNotInstallUnanswerableUpdateConfirmer(t *testing.T) {
 	}
 }
 
-func TestNewHostHelperUpdateRunsWhenNoConfirmerIsInstalled(t *testing.T) {
+func TestNewHostHelperUpdateFailsClosedWhenNoConfirmerIsInstalled(t *testing.T) {
 	runner := newScriptedHostCommandRunner(HostCommandResult{Status: HostStatusOK})
 	helper := NewHostHelper(HostHelperConfig{Enabled: true})
 	helper.runner = runner
@@ -88,16 +126,15 @@ func TestNewHostHelperUpdateRunsWhenNoConfirmerIsInstalled(t *testing.T) {
 
 	helper.Trigger()
 
+	waitForHostStatus(t, helper, HostStatusUserCancel)
+	if got := helper.ExitCode(); got != 0 {
+		t.Fatalf("exit code = %d, want 0", got)
+	}
 	select {
 	case got := <-runner.calls:
-		if got != HostCommandUpdate {
-			t.Fatalf("runner command = %d, want %d", got, HostCommandUpdate)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("runner was not invoked without an installed confirmer")
+		t.Fatalf("runner invoked without confirmation with command %d", got)
+	default:
 	}
-	runner.release()
-	waitForHostStatus(t, helper, HostStatusOK)
 }
 
 func TestHostHelperUpdateConfirmationAllowsRunner(t *testing.T) {
