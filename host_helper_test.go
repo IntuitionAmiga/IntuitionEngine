@@ -62,9 +62,9 @@ func TestHostHelperStateTransitions(t *testing.T) {
 			name:       "err",
 			enabled:    true,
 			cmd:        HostCommandUpdate,
-			result:     HostCommandResult{Status: HostStatusErr, ExitCode: 20, Err: errors.New("update failed")},
+			result:     HostCommandResult{Status: HostStatusErr, ExitCode: HostHelperExitAptUpdateFailed, Err: errors.New("update failed")},
 			wantStatus: HostStatusErr,
-			wantExit:   20,
+			wantExit:   HostHelperExitAptUpdateFailed,
 			wantCall:   true,
 		},
 		{
@@ -140,7 +140,7 @@ func TestHostHelperRejectsOverlappingTriggers(t *testing.T) {
 		t.Fatal("first runner was not invoked")
 	}
 
-	secondRunner := newScriptedHostCommandRunner(HostCommandResult{Status: HostStatusErr, ExitCode: 21})
+	secondRunner := newScriptedHostCommandRunner(HostCommandResult{Status: HostStatusErr, ExitCode: HostHelperExitAptUpgradeFailed})
 	helper.runner = secondRunner
 	helper.SetCommand(HostCommandPoweroff)
 	helper.Trigger()
@@ -171,8 +171,8 @@ func TestHostHelperRejectsOverlappingTriggers(t *testing.T) {
 	}
 	secondRunner.release()
 	waitForHostStatus(t, helper, HostStatusErr)
-	if got := helper.ExitCode(); got != 21 {
-		t.Fatalf("exit code after second completion = %d, want 21", got)
+	if got := helper.ExitCode(); got != HostHelperExitAptUpgradeFailed {
+		t.Fatalf("exit code after second completion = %d, want %d", got, HostHelperExitAptUpgradeFailed)
 	}
 }
 
@@ -221,8 +221,8 @@ func TestExternalHostCommandRunnerUsesFixedHelperArgv(t *testing.T) {
 	if result.Status != HostStatusErr {
 		t.Fatalf("status = %d, want ERR", result.Status)
 	}
-	if result.ExitCode != 21 {
-		t.Fatalf("exit code = %d, want 21", result.ExitCode)
+	if result.ExitCode != HostHelperExitAptUpgradeFailed {
+		t.Fatalf("exit code = %d, want %d", result.ExitCode, HostHelperExitAptUpgradeFailed)
 	}
 
 	args, err := os.ReadFile(argsPath)
@@ -299,8 +299,8 @@ func TestExternalHostCommandRunnerRejectsInvalidCommand(t *testing.T) {
 	if result.Status != HostStatusErr {
 		t.Fatalf("status = %d, want ERR", result.Status)
 	}
-	if result.ExitCode != 2 {
-		t.Fatalf("exit code = %d, want 2", result.ExitCode)
+	if result.ExitCode != HostHelperExitBadInput {
+		t.Fatalf("exit code = %d, want %d", result.ExitCode, HostHelperExitBadInput)
 	}
 }
 

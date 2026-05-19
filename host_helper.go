@@ -115,7 +115,7 @@ func (h *HostHelper) Trigger() {
 
 	cmd := HostCommand(h.cmd.Load())
 	if cmd < HostCommandNet || cmd > HostCommandPoweroff || h.runner == nil {
-		h.exit.Store(2)
+		h.exit.Store(HostHelperExitBadInput)
 		h.status.Store(HostStatusErr)
 		return
 	}
@@ -144,7 +144,7 @@ type ExternalHostCommandRunner struct {
 func (r ExternalHostCommandRunner) RunHostCommand(ctx context.Context, cmd HostCommand) HostCommandResult {
 	verb, ok := hostCommandVerb(cmd)
 	if !ok {
-		return HostCommandResult{Status: HostStatusErr, ExitCode: 2}
+		return HostCommandResult{Status: HostStatusErr, ExitCode: HostHelperExitBadInput}
 	}
 
 	path := r.Path
