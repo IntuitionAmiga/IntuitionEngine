@@ -1,0 +1,122 @@
+package main
+
+import (
+	"context"
+	"sync/atomic"
+)
+
+const (
+	HostMMIOBase = 0xF1400
+	HostMMIOEnd  = HostMMIOBase + 0x0F
+)
+
+type HostCommand uint32
+
+const (
+	HostCommandNone HostCommand = iota
+	HostCommandNet
+	HostCommandUpdate
+	HostCommandReboot
+	HostCommandPoweroff
+)
+
+const (
+	HostStatusRunning uint32 = iota
+	HostStatusOK
+	HostStatusErr
+	HostStatusUserCancel
+	HostStatusDisabled
+	HostStatusIdle
+)
+
+type HostCommandResult struct {
+	Status   uint32
+	ExitCode uint32
+	Err      error
+}
+
+type HostCommandRunner interface {
+	RunHostCommand(ctx context.Context, cmd HostCommand) HostCommandResult
+}
+
+type HostHelper struct {
+	enabled   bool
+	appliance bool
+	runner    HostCommandRunner
+
+	cmd    atomic.Uint32
+	status atomic.Uint32
+	exit   atomic.Uint32
+}
+
+func NewHostHelperWithRunner(enabled bool, appliance bool, runner HostCommandRunner) *HostHelper {
+	h := &HostHelper{
+		enabled:   enabled,
+		appliance: appliance,
+		runner:    runner,
+	}
+	h.status.Store(HostStatusIdle)
+	return h
+}
+
+func (h *HostHelper) SetCommand(cmd HostCommand) {
+	if cmd < HostCommandNet || cmd > HostCommandPoweroff {
+		h.cmd.Store(uint32(HostCommandNone))
+		return
+	}
+	h.cmd.Store(uint32(cmd))
+}
+
+func (h *HostHelper) Trigger() {
+	if !h.enabled {
+		h.exit.Store(0)
+		h.status.Store(HostStatusDisabled)
+		return
+	}
+
+	if !h.beginCommand() {
+		return
+	}
+
+	cmd := HostCommand(h.cmd.Load())
+	if cmd < HostCommandNet || cmd > HostCommandPoweroff || h.runner == nil {
+		h.exit.Store(2)
+		h.status.Store(HostStatusErr)
+		return
+	}
+
+	h.exit.Store(0)
+	go h.runCommand(cmd)
+}
+
+func (h *HostHelper) beginCommand() bool {
+	for {
+		status := h.status.Load()
+		if status == HostStatusRunning {
+			return false
+		}
+		if h.status.CompareAndSwap(status, HostStatusRunning) {
+			return true
+		}
+	}
+}
+
+func (h *HostHelper) runCommand(cmd HostCommand) {
+	result := h.runner.RunHostCommand(context.Background(), cmd)
+	status := result.Status
+	switch status {
+	case HostStatusOK, HostStatusErr, HostStatusUserCancel, HostStatusDisabled:
+	default:
+		status = HostStatusErr
+	}
+	h.exit.Store(result.ExitCode)
+	h.status.Store(status)
+}
+
+func (h *HostHelper) Status() uint32 {
+	return h.status.Load()
+}
+
+func (h *HostHelper) ExitCode() uint32 {
+	return h.exit.Load()
+}
