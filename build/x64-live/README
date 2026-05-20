@@ -24,7 +24,12 @@ ufw with incoming denied and outgoing allowed.
 The privileged helper binary is expected at
 `/usr/libexec/intuitionengine-host-helper`. PolicyKit grants only the fixed
 helper action required by Intuition Engine, not a general root shell or broad
-NetworkManager access for the `ie` user.
+NetworkManager access for the `ie` user. The live image also installs
+AppArmor profiles for `/opt/ie/IntuitionEngine` and the host helper transition
+path; `ie-apparmor.service` reloads and enforces them before the greetd
+session starts. `/opt/ie` remains root-owned so the AppArmor attachment target
+is not writable by the autologin user; writable appliance data lives under
+`/var/ie`.
 
 The passwordless fallback console is disabled in the shipped image by masking
 `getty@tty2.service`; the normal entry point is the greetd/cage session.
