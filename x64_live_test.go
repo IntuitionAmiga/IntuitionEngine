@@ -194,7 +194,7 @@ func TestX64LiveScriptContract(t *testing.T) {
 		`PAYLOAD_CHECK_ONLY=false`,
 		`--check-payload`,
 		`mformat -i "$fat_img" -F -v "${FATSHARE_LABEL}" ::`,
-		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd tar python3)`,
+		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd tar python3 go)`,
 		`tar -C "$archive_root" -I 'zstd --fast=31 -T0' -cf "$archive_path" "$(basename "$OUTPUT_IMG")" README.md`,
 	} {
 		if !strings.Contains(body, want) {
@@ -237,10 +237,10 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 		`[ -S "${XDG_RUNTIME_DIR}/pulse/native" ] && pactl info >/tmp/ie-pactl-info.log 2>&1 && break`,
 		`pipewire-pulse did not become ready at ${XDG_RUNTIME_DIR}/pulse/native`,
 		`pipewire-pulse ready at ${XDG_RUNTIME_DIR}/pulse/native`,
-		`exec /opt/ie/IntuitionEngine "$@"`,
+		`exec /opt/ie/IntuitionEngine -basic -ehbasic-host -ehbasic-host-appliance "$@"`,
 		`systemctl mask getty@tty1.service`,
+		`systemctl mask getty@tty1.service getty@tty2.service`,
 		`systemctl enable greetd.service seatd.service`,
-		`systemctl enable getty@tty2.service`,
 		`systemctl enable ie-grow-share.service`,
 		`systemctl enable NetworkManager.service`,
 		`renderer: NetworkManager`,
@@ -257,16 +257,72 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 	}
 }
 
-func TestX64LiveLaunchUsesDefaultBasicMode(t *testing.T) {
+func TestX64LiveLaunchEnablesBasicHostMode(t *testing.T) {
 	body := readX64LiveScript(t)
 
+	for _, want := range []string{
+		`exec /opt/ie/IntuitionEngine -basic -ehbasic-host -ehbasic-host-appliance "$@"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("live launcher must enable EhBASIC HOST appliance mode; missing %q", want)
+		}
+	}
+
 	for _, forbidden := range []string{
-		`exec /opt/ie/IntuitionEngine -basic`,
 		`exec /opt/ie/IntuitionEngine -fullscreen`,
 		`exec /opt/ie/IntuitionEngine -basic -fullscreen`,
+		`exec /opt/ie/IntuitionEngine -basic "$@"`,
+		`exec /opt/ie/IntuitionEngine -basic -ehbasic-host "$@"`,
 	} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("live launcher should rely on IntuitionEngine's default BASIC/fullscreen startup, found %q", forbidden)
+			t.Fatalf("live launcher has stale HOST/basic invocation %q", forbidden)
+		}
+	}
+}
+
+func TestX64LiveHostHelperSecurityContract(t *testing.T) {
+	body := readX64LiveScript(t)
+
+	for _, want := range []string{
+		`HOST_HELPER_PKGS="policykit-1,ufw,apparmor,apparmor-utils"`,
+		`host_helper=${HOST_HELPER_PKGS}`,
+		`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -pgo=off -ldflags "-s -w" -o "$HOST_HELPER_BINARY" ./cmd/host-helper`,
+		`--mkdir /usr/libexec`,
+		`--copy-in "${HOST_HELPER_BINARY}:/usr/libexec/"`,
+		`chown root:root /usr/libexec/intuitionengine-host-helper`,
+		`chmod 0755 /usr/libexec/intuitionengine-host-helper`,
+		`<annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/intuitionengine-host-helper</annotate>`,
+		`action.id === "org.intuitionengine.host.run"`,
+		`subject.user === "ie"`,
+		`polkit.Result.YES`,
+		`profile opt.ie.IntuitionEngine /opt/ie/IntuitionEngine flags=(attach_disconnected)`,
+		`/usr/bin/pkexec ix,`,
+		`/usr/libexec/intuitionengine-host-helper Px,`,
+		`profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-host-helper flags=(attach_disconnected)`,
+		`/usr/bin/apt-get Cx -> apt,`,
+		`/usr/bin/nmcli Cx -> nmcli,`,
+		`/usr/bin/systemctl Cx -> systemctl,`,
+		`/var/lib/dpkg/info/* ixr,`,
+		`capability chown,`,
+		`capability fowner,`,
+		`ExecStart=/usr/sbin/apparmor_parser -r /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper`,
+		`ExecStart=/usr/sbin/aa-enforce /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper`,
+		`Before=greetd.service`,
+		`systemctl enable ie-grow-share.service ie-firewall.service ie-apparmor.service`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("build_x64_ie_img.sh missing HOST helper security contract %q", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		`usermod -aG netdev ie`,
+		`systemctl enable getty@tty2.service`,
+		`chown 1000:1000 /opt/ie`,
+		`chown -R 1000:1000 /var/ie /opt/ie`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("build_x64_ie_img.sh contains forbidden HOST helper security pattern %q", forbidden)
 		}
 	}
 }
@@ -310,7 +366,7 @@ func TestX64LiveNoShareDoesNotRequireMtools(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd tar python3)`,
+		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd tar python3 go)`,
 		`if [[ "${CREATE_SHARE}" == "true" ]]; then`,
 		`required_cmds+=(mformat mcopy)`,
 	} {
@@ -456,7 +512,7 @@ func TestX64LiveScriptPartitionFlow(t *testing.T) {
 		`part-add /dev/sda p ${SHARE_START} ${SHARE_END}`,
 		`part-set-gpt-type /dev/sda ${IESHARE_NUM} EBD0A0A2-B9E5-4433-87C0-68B6B72699C7`,
 		`part-set-mbr-id /dev/sda ${IESHARE_NUM} 0x0c`,
-		`LABEL=IESHARE /var/ie/share vfat defaults,nofail,umask=0022,uid=1000,gid=1000 0 0\n`,
+		`LABEL=IESHARE /var/ie/share vfat defaults,relatime,nofail,umask=0022,uid=1000,gid=1000 0 0\n`,
 		`format_share_partition_rootless`,
 		`--no-share`,
 	} {
@@ -524,7 +580,7 @@ func TestX64LiveGoldenCacheHasContentStamp(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`GOLDEN_STAMP_VERSION="x64-live-golden-v14-pipewire-pactl-ready"`,
+		`GOLDEN_STAMP_VERSION="x64-live-golden-v17-basic-host-apparmor"`,
 		`GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"`,
 		`write_golden_stamp`,
 		`expected_golden_stamp`,
