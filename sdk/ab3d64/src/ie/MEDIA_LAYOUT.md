@@ -37,3 +37,11 @@ ie/tools/normalize_media.sh .
 The GLF database remains `media/includes/test.lnk`. Filenames stored inside the
 database are loaded relative to the current working directory after the source
 volume prefix has been stripped.
+
+The x64 live image follows the same current-working-directory rule. Its
+launcher runs Intuition Engine from the `IESHARE` root, stages the AB3D2 `.ie68`
+binaries under `Demos/`, and extracts the matching runtime media to top-level
+`_build/` so paths such as `_build/ie_unpacked/...`,
+`_build/ie_media/redux-high/...`, and `_build/ie_media/redux-low/...` resolve
+without changing the guest binaries. The live builder skips any AB3D2 binary
+whose required media profile is not present in the embedded asset zip.

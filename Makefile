@@ -282,6 +282,7 @@ AB3D2_BINARY_PREFIX ?= IntuitionEngine-AB3D2-Karlos-TKG-High
 AB3D2_SOURCE ?= ../alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68_redux_high.ie68
 AB3D2_OVERDRIVE_BINARY_PREFIX ?= IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive
 AB3D2_OVERDRIVE_SOURCE ?= ../alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68_redux_high_overdrive.ie68
+AB3D2_SOURCE_DIR ?= $(dir $(AB3D2_SOURCE))
 AB3D2_ASSET_ROOT ?= ../alienbreed3d2
 AB3D2_ASSET_TREE ?= ab3d2_source/_build
 AB3D2_START_FULLSCREEN ?= $(if $(findstring overdrive,$(notdir $(AB3D2_SOURCE))),1,0)
@@ -369,10 +370,25 @@ x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library i
 
 .PHONY: x64-live-ab3d2-assets
 x64-live-ab3d2-assets:
-	@if [ -f "$(AB3D2_EMBED_ZIP)" ]; then \
-		echo "Using existing AB3D2 asset zip: $(AB3D2_EMBED_ZIP)"; \
+	@if [ -d "$(AB3D2_SOURCE_DIR)" ] && [ -n "$$(find "$(AB3D2_SOURCE_DIR)" -maxdepth 1 -type f -name 'ab3d2_*.ie68' -print -quit)" ]; then \
+		$(MKDIR) -p "$(AB3D2_EMBED_DIR)"; \
+		rm -f "$(AB3D2_EMBED_DIR)"/ab3d2_*.ie68; \
+		cp "$(AB3D2_SOURCE_DIR)"/ab3d2_*.ie68 "$(AB3D2_EMBED_DIR)/"; \
+		if [ -f "$(AB3D2_EMBED_ZIP)" ]; then \
+			echo "Using existing AB3D2 asset zip: $(AB3D2_EMBED_ZIP)"; \
+		else \
+			if [ ! -d "$(AB3D2_ASSET_ROOT)/$(AB3D2_ASSET_TREE)" ]; then \
+				echo "missing AB3D2 asset tree: $(AB3D2_ASSET_ROOT)/$(AB3D2_ASSET_TREE)" >&2; \
+				exit 1; \
+			fi; \
+			$(MAKE) prepare-ab3d2-embed; \
+		fi; \
+	elif [ -f "$(AB3D2_EMBED_ZIP)" ] && [ -f "$(AB3D2_EMBED_FILE)" ]; then \
+		echo "Using existing AB3D2 embedded assets: $(AB3D2_EMBED_DIR)"; \
 	else \
-		$(MAKE) prepare-ab3d2-embed; \
+		echo "missing AB3D2 IE68 demos: $(AB3D2_SOURCE_DIR)/ab3d2_*.ie68" >&2; \
+		echo "missing cached AB3D2 embedded assets: $(AB3D2_EMBED_DIR)" >&2; \
+		exit 1; \
 	fi
 
 .PHONY: x64-live-aros-demos

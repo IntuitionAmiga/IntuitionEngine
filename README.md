@@ -47,12 +47,13 @@ Live share layout:
 
 | Folder | Purpose |
 |--------|---------|
-| `Demos` | Bare-metal Intuition Engine demos and shared runtime assets. |
+| `Demos` | Bare-metal Intuition Engine demos, including the AB3D2 `.ie68` binaries. |
 | `IE` | Runtime support files, including coprocessor worker payloads. |
 | `SDK` | Reference include files, selected docs, and source examples. Host tool binaries are not included. |
 | `Systems/AROS` | AROS `SYS:` root for the live image, including AROS-native demos under `Systems/AROS/Demos`. |
 | `Systems/EmuTOS` | EmuTOS GEMDOS drive root, including GEMDOS demos under `Systems/EmuTOS/Demos`. |
 | `Systems/IntuitionOS` | IntuitionOS `SYS:` root for the live image; `IOSSYS` is the read-only system subtree and `Boot/iexec.ie64` is the bootstrap kernel. |
+| `_build` | AB3D2 runtime media used by the staged AB3D2 `.ie68` demos. |
 
 Live USB security model:
 
@@ -196,6 +197,10 @@ Detailed audio and video references:
 IEScript uses Lua 5.1-compatible semantics through GopherLua. Script modules include `sys`, `cpu`, `mem`, `term`, `audio`, `video`, `repl`, `rec`, `dbg`, `sym`, `regions`, `coproc`, and `media`; scripts also receive `bit32` and `keys` globals.
 
 The Machine Monitor is available with `F9` in desktop builds. It provides CPU, memory, breakpoint, watchpoint, trace, I/O view, and scripting facilities. In desktop builds, guests can request captured relative mouse mode; press `Ctrl+Alt` to release the host mouse and left-click the IE window to recapture while the guest still requests relative mode.
+
+Host-backed media and file I/O tracing is available for diagnosing missing
+runtime assets. Use `-trace-host-io` to print trace lines to stderr, and
+`-trace-host-io-file path/to/log` to also append them to a file.
 
 References:
 

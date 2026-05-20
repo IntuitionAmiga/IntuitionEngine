@@ -207,6 +207,11 @@ func registerHostHelperFlags(flagSet *flag.FlagSet, config *hostHelperFlagConfig
 	flagSet.StringVar(&config.helperPath, "ehbasic-host-helper", DefaultHostHelperPath, "Host helper executable for -ehbasic-host")
 }
 
+func registerHostIOTraceFlags(flagSet *flag.FlagSet) {
+	flagSet.BoolVar(&hostIOTraceEnabled, "trace-host-io", false, "Trace host-backed media and file I/O to stderr")
+	flagSet.StringVar(&hostIOTraceFile, "trace-host-io-file", "", "Append host-backed media and file I/O trace lines to this file")
+}
+
 func (config hostHelperFlagConfig) HostHelperConfig() HostHelperConfig {
 	return HostHelperConfig{
 		Enabled:    config.enabled,
@@ -333,6 +338,7 @@ func main() {
 	flagSet.StringVar(&scriptFile, "script", "", "Run IES Lua script file after startup")
 	flagSet.BoolVar(&noJIT, "nojit", false, "Disable JIT compilation, use interpreter only")
 	registerHostHelperFlags(flagSet, &hostHelperFlags)
+	registerHostIOTraceFlags(flagSet)
 	registerCoprocServiceFlags(flagSet, &coprocSvc)
 	var emutosDrive string
 	flagSet.StringVar(&emutosDrive, "emutos-drive", "", "Host directory to map as GEMDOS drive U: (default: ~/)")

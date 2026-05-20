@@ -351,6 +351,11 @@ For raw `.ie68` runs with an external Intuition Engine binary, run from
 re-root the raw file-I/O MMIO loads used by this port. The packaged
 `IntuitionEngine-AB3D2-Karlos-TKG-High-*` runtimes are different: they extract
 their prepared assets beside the executable and run relative to that directory.
+The x64 live image also follows the current-working-directory rule: the live
+launcher runs from the `IESHARE` root, places the AB3D2 `.ie68` programs under
+`Demos/`, and extracts the required runtime media to top-level `_build/`. The
+live builder only stages AB3D2 binaries whose matching media profile is present
+in the embedded asset zip.
 
 Expected original-profile paths include:
 
@@ -397,6 +402,8 @@ on-disk save path follows the active media root:
 
 Packaged runtime builds store progress in the extracted
 `ab3d2_source/_build/ie_media/redux-high/boot.dat` tree beside the executable.
+Live-image runs store progress under the `IESHARE` root at
+`_build/ie_media/<profile>/boot.dat`.
 
 ## Redux Diagnostics
 

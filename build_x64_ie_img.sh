@@ -46,6 +46,7 @@ IE_INSTALL_NAME="IntuitionEngine"
 HOST_HELPER_BINARY="${WORK_DIR}/intuitionengine-host-helper"
 PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"
 AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS/bin/ie-m68k/bin/ie-m68k/AROS}"
+AB3D2_EMBED_DIR="${SCRIPT_DIR}/embedded/ab3d2"
 FINAL_IMAGE_SIZE="12G"
 ROOT_PART_SIZE="9G"
 FATSHARE_LABEL="IESHARE"
@@ -229,7 +230,15 @@ check_live_payload_inputs() {
     fi
     payload_require_file "$PLYMOUTH_SPLASH" "restore splash.png" "Plymouth splash image"
 
-    payload_require_file "${SCRIPT_DIR}/embedded/ab3d2/_build.zip" "make x64-live-ab3d2-assets" "AB3D2 embedded runtime asset zip"
+    payload_require_file "${AB3D2_EMBED_DIR}/_build.zip" "make x64-live-ab3d2-assets" "AB3D2 embedded runtime asset zip"
+    shopt -s nullglob
+    local ab3d2_demo_inputs=("${AB3D2_EMBED_DIR}"/ab3d2_*.ie68)
+    shopt -u nullglob
+    if [[ ${#ab3d2_demo_inputs[@]} -eq 0 ]]; then
+        log_error "AB3D2 IE68 demos not found: ${AB3D2_EMBED_DIR}/ab3d2_*.ie68"
+        log_error "Producer: make x64-live-ab3d2-assets"
+        exit 1
+    fi
     payload_require_file "${AROS_RELEASE_DIR}/S/Startup-Sequence" "make aros-release-assets" "AROS Startup-Sequence"
     payload_require_file "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Tool.info" "make aros-release-assets" "AROS default tool icon"
     payload_require_file "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "make aros-release-assets" "AROS default drawer icon"
@@ -314,6 +323,17 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/Tools/Shell" "make intuitionos" "staged IntuitionOS Shell"
     payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/LIBS/dos.library" "make intuitionos" "staged IntuitionOS dos.library"
     payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/L/console.handler" "make intuitionos" "staged IntuitionOS console.handler"
+    payload_require_file "${payload_root}/Demos/ab3d2_ie68_redux_high.ie68" "make x64-live-ab3d2-assets" "staged AB3D2 IE68 demo"
+    payload_require_file "${payload_root}/_build/ie_media/redux-high/boot.dat" "make x64-live-ab3d2-assets" "staged AB3D2 runtime media"
+    if find "${payload_root}/Demos" -maxdepth 1 -type f -name 'ab3d2_*.ie68' ! -name '*redux_high*' ! -name '*redux_low*' | grep -q .; then
+        payload_require_file "${payload_root}/_build/ie_unpacked/media/includes/test.lnk" "make x64-live-ab3d2-assets" "staged AB3D2 unpacked media"
+    fi
+    shopt -s nullglob
+    local ab3d2_low_demos=("${payload_root}"/Demos/ab3d2_ie68_redux_low*.ie68)
+    shopt -u nullglob
+    if [[ ${#ab3d2_low_demos[@]} -gt 0 ]]; then
+        payload_require_file "${payload_root}/_build/ie_media/redux-low/boot.dat" "make x64-live-ab3d2-assets" "staged AB3D2 redux-low runtime media"
+    fi
     payload_require_file "${payload_root}/Demos/rotozoomer_basic.bas" "make sdk-build" "staged BASIC demo"
     payload_require_file "${payload_root}/IE/Coproc/coproc_service_ie32.iex" "make sdk-build" "staged IE32 coprocessor worker"
     payload_require_file "${payload_root}/SDK/Docs/iewarp.md" "make sdk-build" "staged IEWarp documentation"
@@ -321,6 +341,11 @@ verify_staged_share_payload() {
 
     if find "${payload_root}/Demos" -maxdepth 1 -type f -name 'coproc_*.ie*' | grep -q .; then
         log_error "Forbidden live payload location: coproc worker staged under Demos"
+        log_error "Producer: build_x64_ie_img.sh stage_share_payload"
+        exit 1
+    fi
+    if find "${payload_root}/_build" -maxdepth 1 -type f \( -name '*.o' -o -name '*.map' -o -name 'diag_symbols_*.lua' \) | grep -q .; then
+        log_error "Forbidden live payload content: AB3D2 build intermediates staged in runtime asset root"
         log_error "Producer: build_x64_ie_img.sh stage_share_payload"
         exit 1
     fi
@@ -466,6 +491,43 @@ PY
     if [[ ${#iewarp_worker_files[@]} -gt 0 ]]; then
         cp -f "${iewarp_worker_files[@]}" "$aros_system_dir/Libs/"
     fi
+    python3 - "${AB3D2_EMBED_DIR}/_build.zip" "${AB3D2_EMBED_DIR}" "$demos_dir" <<'PY'
+import os
+import shutil
+import sys
+import zipfile
+
+zip_path, source_dir, demos_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+with zipfile.ZipFile(zip_path) as zf:
+    names = zf.namelist()
+
+available_roots = {
+    "original": any(name.startswith("ab3d2_source/_build/ie_unpacked/") for name in names),
+    "redux-high": any(name.startswith("ab3d2_source/_build/ie_media/redux-high/") for name in names),
+    "redux-low": any(name.startswith("ab3d2_source/_build/ie_media/redux-low/") for name in names),
+}
+
+def profile_for(filename):
+    if "redux_low" in filename:
+        return "redux-low"
+    if "redux_high" in filename:
+        return "redux-high"
+    return "original"
+
+copied = 0
+for filename in sorted(os.listdir(source_dir)):
+    if not (filename.startswith("ab3d2_") and filename.endswith(".ie68")):
+        continue
+    profile = profile_for(filename)
+    if not available_roots[profile]:
+        print(f"Skipping AB3D2 {filename}: missing {profile} runtime media in {zip_path}", file=sys.stderr)
+        continue
+    shutil.copy2(os.path.join(source_dir, filename), os.path.join(demos_dir, filename))
+    copied += 1
+
+if copied == 0:
+    raise SystemExit(f"no AB3D2 IE68 demos matched available runtime media in {zip_path}")
+PY
     cp -f "${SCRIPT_DIR}/sdk/examples/basic/rotozoomer_basic.bas" "$demos_dir/"
 
     cp -f \
@@ -508,7 +570,7 @@ PY
         cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Tool.info" "${aros_demos_dir}/$(basename "$aros_demo").info"
     done
 
-    python3 - "${SCRIPT_DIR}/embedded/ab3d2/_build.zip" "$demos_dir" <<'PY'
+    python3 - "${AB3D2_EMBED_DIR}/_build.zip" "$payload_root" <<'PY'
 import hashlib
 import os
 import sys
@@ -518,6 +580,7 @@ zip_path, dest = sys.argv[1], sys.argv[2]
 dest_real = os.path.realpath(dest)
 runtime_roots = (
     "ab3d2_source/_build/ie_media/redux-high/",
+    "ab3d2_source/_build/ie_media/redux-low/",
     "ab3d2_source/_build/ie_unpacked/",
 )
 seen = {}
@@ -528,7 +591,7 @@ with zipfile.ZipFile(zip_path) as zf:
             raise SystemExit(f"unsafe zip entry path: {name}")
         if info.is_dir() or not name.startswith(runtime_roots):
             continue
-        fat_name = name.lower()
+        fat_name = name.removeprefix("ab3d2_source/").lower()
         data = zf.read(info)
         digest = hashlib.sha256(data).hexdigest()
         existing = seen.get(fat_name)
@@ -550,7 +613,7 @@ Intuition Engine Live USB demos
 
 This folder is populated during make x64-live.
 It contains runnable Intuition Engine demo binaries and the AB3D2 runtime asset
-tree extracted from the embedded release payload.
+tree extracted at the IESHARE root as _build/.
 
 OS-specific payloads live under Systems:
 
@@ -564,10 +627,11 @@ Intuition Engine Live USB share
 
 Top-level folders:
 
-Demos    Bare-metal Intuition Engine demos and shared runtime assets.
+Demos    Bare-metal Intuition Engine demos.
 IE       Intuition Engine runtime support files.
 SDK      Reference include files, docs, and source examples.
 Systems  Guest OS payloads.
+_build   AB3D2 runtime assets used by the AB3D2 IE68 demos.
 
 AROS files live under Systems/AROS.
 EmuTOS/GEMDOS demo files live under Systems/EmuTOS.
@@ -1224,7 +1288,7 @@ packages=${ALL_PKGS}
 root_part_size=${ROOT_PART_SIZE}
 final_image_size=${FINAL_IMAGE_SIZE}
 share_grow=ie-grow-share-v1
-session=greetd-cage-default-basic-v1
+session=greetd-cage-default-basic-v2-no-forced-hostio-trace
 persistent_root=ext4
 network=${NETWORK_PKGS}
 audio=${AUDIO_PKGS}
