@@ -22,9 +22,12 @@ make x64-live-qemu
 
 On a normal boot, Intuition Engine starts fullscreen at the EhBASIC `Ready` prompt. The live image mounts its FAT32 share as the runtime file area, so paths in BASIC are relative to that share.
 
-Live images that include the host helper enable the BASIC `HOST` command so the
-appliance can configure networking and run controlled maintenance actions from
-the `Ready` prompt. Use `HOST HELP` inside BASIC for the available subcommands.
+Live images include the host helper binary and its security policy. BASIC
+`HOST` command execution is still gated by the emulator launch flags:
+`-ehbasic-host` enables the helper, and `-ehbasic-host-appliance` is reserved
+for controlled appliance deployments where `HOST UPDATE` should not prompt on
+the emulator terminal. Use `HOST HELP` inside BASIC for the available
+subcommands when the helper is enabled.
 
 Useful first commands:
 
@@ -48,6 +51,42 @@ Live share layout:
 | `Systems/AROS` | AROS `SYS:` root for the live image, including AROS-native demos under `Systems/AROS/Demos`. |
 | `Systems/EmuTOS` | EmuTOS GEMDOS drive root, including GEMDOS demos under `Systems/EmuTOS/Demos`. |
 | `Systems/IntuitionOS` | IntuitionOS `SYS:` root for the live image; `IOSSYS` is the read-only system subtree and `Boot/iexec.ie64` is the bootstrap kernel. |
+
+Live USB security model:
+
+The x64 live image is built as a single-purpose appliance, not as a general
+desktop distribution. The emulator and host helper are treated as separate
+security domains:
+
+- The graphical session is started by `greetd` as the unprivileged `ie` user.
+  It runs `cage`, `xwayland-run`, `/opt/ie/session.sh`, and then
+  `/opt/ie/launch.sh`.
+- `/opt/ie`, `/opt/ie/IntuitionEngine`, and the launch scripts are root-owned.
+  This keeps AppArmor path attachment meaningful for the emulator profile.
+- Intuition Engine is confined by an AppArmor profile. The profile allows the
+  display, input, audio, share, logging, and narrowly required Unix socket
+  access needed by Cage, Xwayland, PipeWire, and the emulator.
+- The external helper is installed separately as the root-owned
+  `/usr/libexec/intuitionengine-host-helper`.
+- Host helper elevation uses `pkexec` with a narrow polkit rule for the local,
+  active `ie` session. The emulator may request that helper, but it does not
+  run as root itself.
+- The host helper has its own AppArmor profile. Package maintenance and system
+  control paths run through constrained child profiles for tools such as
+  `apt-get`, `dpkg`, and `systemctl`.
+- The live image enables a UFW baseline with incoming connections denied and
+  outgoing connections allowed.
+- Spare virtual terminals are not exposed to the appliance user. The image
+  disables logind's spare VT reservation, masks gettys on tty1 through tty12,
+  and loads a console keymap that removes the VT switch key bindings before
+  the graphical session starts.
+- Audio uses PipeWire. `pipewire-pulse` is present only to provide the
+  Pulse-compatible socket required by libraries that speak that protocol.
+
+These measures are defence in depth around a deliberately powerful appliance
+feature. They do not turn BASIC `HOST` into a safe feature for arbitrary
+multi-user desktops. Normal emulator runs keep host command execution disabled
+unless `-ehbasic-host` is supplied.
 
 Important keys:
 

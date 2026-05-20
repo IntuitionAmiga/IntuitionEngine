@@ -177,7 +177,7 @@ func TestX64LiveScriptContract(t *testing.T) {
 		`UBUNTU_VERSION="26.04"`,
 		`UBUNTU_CLOUD_IMG_URL="https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img"`,
 		`KERNEL_PKG="linux-lowlatency"`,
-		`COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,mesa-utils,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core"`,
+		`COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,mesa-utils,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core,kbd"`,
 		`X11_RUNTIME_PKGS="libxrandr2,libxxf86vm1,libxi6,libxcursor1,libxinerama1,libx11-6,libxext6,libxfixes3,libxrender1"`,
 		`AUDIO_PKGS="pipewire,pipewire-pulse,wireplumber,pipewire-alsa,alsa-utils,pulseaudio-utils,dbus-user-session"`,
 		`SECUREBOOT_PKGS="shim-signed,grub-efi-amd64-signed,sbsigntool"`,
@@ -214,7 +214,9 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 		`GID 1000 occupied by unexpected group`,
 		`for g in video audio input render seat tty; do getent group "$g" >/dev/null || groupadd -r "$g"; done`,
 		`useradd -m -u 1000 -g 1000 -s /bin/bash -G video,audio,input,render,seat,tty ie`,
-		`command = "cage -s -- xwayland-run -- /opt/ie/launch.sh"`,
+		`command = "/opt/ie/session.sh"`,
+		`exec cage -s -- xwayland-run -- /opt/ie/launch.sh >>"$LOG_FILE" 2>&1`,
+		`install -d -m 1777 /var/log/ie-live`,
 		`if [ -d /var/ie/share ]; then`,
 		`cd /var/ie/share || cd /opt/ie`,
 		`set -- "$@" -emutos-drive /var/ie/share/Systems/EmuTOS`,
@@ -234,12 +236,18 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 		`[ -S "${XDG_RUNTIME_DIR}/pipewire-0" ] && break`,
 		`wireplumber >/tmp/ie-wireplumber.log 2>&1 &`,
 		`pipewire-pulse >/tmp/ie-pipewire-pulse.log 2>&1 &`,
-		`[ -S "${XDG_RUNTIME_DIR}/pulse/native" ] && pactl info >/tmp/ie-pactl-info.log 2>&1 && break`,
+		`[ -S "${XDG_RUNTIME_DIR}/pulse/native" ] && break`,
 		`pipewire-pulse did not become ready at ${XDG_RUNTIME_DIR}/pulse/native`,
-		`pipewire-pulse ready at ${XDG_RUNTIME_DIR}/pulse/native`,
-		`exec /opt/ie/IntuitionEngine -basic -ehbasic-host -ehbasic-host-appliance "$@"`,
-		`systemctl mask getty@tty1.service`,
-		`systemctl mask getty@tty1.service getty@tty2.service`,
+		`pipewire-pulse socket ready at ${XDG_RUNTIME_DIR}/pulse/native`,
+		`LOG_DIR=/var/ie/share/Logs`,
+		`ie-launch-env.log`,
+		`exec /opt/ie/IntuitionEngine "$@"`,
+		`for n in $(seq 1 12); do systemctl mask "getty@tty${n}.service"; done`,
+		`NAutoVTs=0`,
+		`ReserveVT=0`,
+		`control alt keycode  59 = VoidSymbol`,
+		`alt keycode 105 = VoidSymbol`,
+		`ExecStart=/usr/bin/loadkeys /usr/local/share/kbd/keymaps/ie-no-vt-switch.map`,
 		`systemctl enable greetd.service seatd.service`,
 		`systemctl enable ie-grow-share.service`,
 		`systemctl enable NetworkManager.service`,
@@ -257,14 +265,14 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 	}
 }
 
-func TestX64LiveLaunchEnablesBasicHostMode(t *testing.T) {
+func TestX64LiveLaunchMatchesDefaultRuntimeMode(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`exec /opt/ie/IntuitionEngine -basic -ehbasic-host -ehbasic-host-appliance "$@"`,
+		`exec /opt/ie/IntuitionEngine "$@"`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("live launcher must enable EhBASIC HOST appliance mode; missing %q", want)
+			t.Fatalf("live launcher must preserve the default runtime mode; missing %q", want)
 		}
 	}
 
@@ -273,9 +281,10 @@ func TestX64LiveLaunchEnablesBasicHostMode(t *testing.T) {
 		`exec /opt/ie/IntuitionEngine -basic -fullscreen`,
 		`exec /opt/ie/IntuitionEngine -basic "$@"`,
 		`exec /opt/ie/IntuitionEngine -basic -ehbasic-host "$@"`,
+		`exec /opt/ie/IntuitionEngine -basic -ehbasic-host -ehbasic-host-appliance "$@"`,
 	} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("live launcher has stale HOST/basic invocation %q", forbidden)
+			t.Fatalf("live launcher has stale forced mode invocation %q", forbidden)
 		}
 	}
 }
@@ -284,7 +293,7 @@ func TestX64LiveHostHelperSecurityContract(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`HOST_HELPER_PKGS="policykit-1,ufw,apparmor,apparmor-utils"`,
+		`HOST_HELPER_PKGS="polkitd,pkexec,ufw,apparmor,apparmor-utils"`,
 		`host_helper=${HOST_HELPER_PKGS}`,
 		`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -pgo=off -ldflags "-s -w" -o "$HOST_HELPER_BINARY" ./cmd/host-helper`,
 		`--mkdir /usr/libexec`,
@@ -296,6 +305,21 @@ func TestX64LiveHostHelperSecurityContract(t *testing.T) {
 		`subject.user === "ie"`,
 		`polkit.Result.YES`,
 		`profile opt.ie.IntuitionEngine /opt/ie/IntuitionEngine flags=(attach_disconnected)`,
+		`network unix stream,`,
+		`/dev/shm/** rwk,`,
+		`/tmp/.X11-unix/** rw,`,
+		`/tmp/.X[0-9]*-lock r,`,
+		`/tmp/dbus-* rw,`,
+		`/tmp/tmp*/** rwk,`,
+		`/tmp/xwayland-run*/** rwk,`,
+		`/tmp/ie-runtime-[0-9]*/** rw,`,
+		`/tmp/ie-*.log rw,`,
+		`/home/ie/.config/pulse/ rw,`,
+		`/home/ie/.config/pulse/** rwk,`,
+		`/proc/[0-9]*/cgroup r,`,
+		`/proc/sys/net/core/somaxconn r,`,
+		`/usr/lib/x86_64-linux-gnu/dri/** mr,`,
+		`/usr/share/glvnd/** r,`,
 		`/usr/bin/pkexec ix,`,
 		`/usr/libexec/intuitionengine-host-helper Px,`,
 		`profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-host-helper flags=(attach_disconnected)`,
@@ -308,7 +332,7 @@ func TestX64LiveHostHelperSecurityContract(t *testing.T) {
 		`ExecStart=/usr/sbin/apparmor_parser -r /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper`,
 		`ExecStart=/usr/sbin/aa-enforce /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper`,
 		`Before=greetd.service`,
-		`systemctl enable ie-grow-share.service ie-firewall.service ie-apparmor.service`,
+		`systemctl enable ie-grow-share.service ie-firewall.service ie-no-vt-switch.service ie-apparmor.service`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("build_x64_ie_img.sh missing HOST helper security contract %q", want)
@@ -333,7 +357,7 @@ func TestX64LiveLaunchesX11BinaryThroughXwayland(t *testing.T) {
 
 	for _, want := range []string{
 		`xwayland,xwayland-run`,
-		`command = "cage -s -- xwayland-run -- /opt/ie/launch.sh"`,
+		`exec cage -s -- xwayland-run -- /opt/ie/launch.sh >>"$LOG_FILE" 2>&1`,
 		`X11_RUNTIME_PKGS=`,
 	} {
 		if !strings.Contains(body, want) {
@@ -581,7 +605,7 @@ func TestX64LiveGoldenCacheHasContentStamp(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`GOLDEN_STAMP_VERSION="x64-live-golden-v17-basic-host-apparmor"`,
+		`GOLDEN_STAMP_VERSION="x64-live-golden-v23-basic-host-apparmor-vt-lockout"`,
 		`GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"`,
 		`write_golden_stamp`,
 		`expected_golden_stamp`,

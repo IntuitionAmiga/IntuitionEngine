@@ -29,17 +29,17 @@ EXPANDED_IMG="${WORK_DIR}/ubuntu-26.04-ie-expanded.img"
 GOLDEN_IMG="ubuntu-26.04-lowlatency-cage-golden.img"
 GOLDEN_IMG_PATH="${WORK_DIR}/${GOLDEN_IMG}"
 GOLDEN_IMG_MAX_AGE_DAYS=30
-GOLDEN_STAMP_VERSION="x64-live-golden-v17-basic-host-apparmor"
+GOLDEN_STAMP_VERSION="x64-live-golden-v23-basic-host-apparmor-vt-lockout"
 GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"
 KERNEL_PKG="linux-lowlatency"
-COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,mesa-utils,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core"
+COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,mesa-utils,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core,kbd"
 X11_RUNTIME_PKGS="libxrandr2,libxxf86vm1,libxi6,libxcursor1,libxinerama1,libx11-6,libxext6,libxfixes3,libxrender1"
 AUDIO_PKGS="pipewire,pipewire-pulse,wireplumber,pipewire-alsa,alsa-utils,pulseaudio-utils,dbus-user-session"
 SECUREBOOT_PKGS="shim-signed,grub-efi-amd64-signed,sbsigntool"
 OVERLAY_PKG="overlayroot"
 SHARE_GROW_PKGS="cloud-guest-utils,dosfstools,fatresize,parted"
 NETWORK_PKGS="network-manager,wpasupplicant,wireless-regdb,iw"
-HOST_HELPER_PKGS="policykit-1,ufw,apparmor,apparmor-utils"
+HOST_HELPER_PKGS="polkitd,pkexec,ufw,apparmor,apparmor-utils"
 ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${SECUREBOOT_PKGS},${OVERLAY_PKG},${SHARE_GROW_PKGS},${NETWORK_PKGS},${HOST_HELPER_PKGS}"
 IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"
 IE_INSTALL_NAME="IntuitionEngine"
@@ -677,6 +677,10 @@ else
     cd /opt/ie
     set --
 fi
+LOG_DIR=/var/ie/share/Logs
+if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+    LOG_DIR=/tmp
+fi
 if [ -z "${IE_LIVE_DBUS_SESSION:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
     export IE_LIVE_DBUS_SESSION=1
     exec dbus-run-session -- "$0" "$@"
@@ -697,38 +701,104 @@ done
 wireplumber >/tmp/ie-wireplumber.log 2>&1 &
 pipewire-pulse >/tmp/ie-pipewire-pulse.log 2>&1 &
 for _ in $(seq 1 100); do
-    [ -S "${XDG_RUNTIME_DIR}/pulse/native" ] && pactl info >/tmp/ie-pactl-info.log 2>&1 && break
+    [ -S "${XDG_RUNTIME_DIR}/pulse/native" ] && break
     sleep 0.05
 done
-if ! pactl info >/tmp/ie-pactl-info.log 2>&1; then
+if [ ! -S "${XDG_RUNTIME_DIR}/pulse/native" ]; then
     {
         echo "pipewire-pulse did not become ready at ${XDG_RUNTIME_DIR}/pulse/native"
         echo "PULSE_SERVER=${PULSE_SERVER}"
-        echo "--- pactl info ---"
-        cat /tmp/ie-pactl-info.log 2>/dev/null || true
         echo "--- pipewire-pulse log ---"
         cat /tmp/ie-pipewire-pulse.log 2>/dev/null || true
         echo "--- pipewire log ---"
         cat /tmp/ie-pipewire.log 2>/dev/null || true
     } >/tmp/ie-pipewire-ready.log
 else
-    echo "pipewire-pulse ready at ${XDG_RUNTIME_DIR}/pulse/native" >/tmp/ie-pipewire-ready.log
+    echo "pipewire-pulse socket ready at ${XDG_RUNTIME_DIR}/pulse/native" >/tmp/ie-pipewire-ready.log
 fi
-exec /opt/ie/IntuitionEngine -basic -ehbasic-host -ehbasic-host-appliance "$@"
+{
+    date
+    id
+    pwd
+    printf 'argv:'
+    for arg in "$@"; do
+        printf ' [%s]' "$arg"
+    done
+    printf '\n'
+    printf 'DISPLAY=%s\n' "${DISPLAY:-}"
+    printf 'WAYLAND_DISPLAY=%s\n' "${WAYLAND_DISPLAY:-}"
+    printf 'XDG_RUNTIME_DIR=%s\n' "${XDG_RUNTIME_DIR:-}"
+    printf 'DBUS_SESSION_BUS_ADDRESS=%s\n' "${DBUS_SESSION_BUS_ADDRESS:-}"
+    command -v aa-status >/dev/null 2>&1 && aa-status || true
+} >"$LOG_DIR/ie-launch-env.log" 2>&1
+cp /tmp/ie-*.log "$LOG_DIR"/ 2>/dev/null || true
+exec /opt/ie/IntuitionEngine "$@"
 EOF
     chmod +x "${WORK_DIR}/launch.sh"
+
+    cat > "${WORK_DIR}/session.sh" <<'EOF'
+#!/bin/sh
+LOG_DIR=/var/log/ie-live
+if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+    LOG_DIR=/tmp
+fi
+LOG_FILE="$LOG_DIR/session.log"
+{
+    date
+    id
+    printf 'session command: cage -s -- xwayland-run -- /opt/ie/launch.sh\n'
+} >>"$LOG_FILE" 2>&1
+exec cage -s -- xwayland-run -- /opt/ie/launch.sh >>"$LOG_FILE" 2>&1
+EOF
+    chmod +x "${WORK_DIR}/session.sh"
 
     cat > "${WORK_DIR}/greetd-config.toml" <<'EOF'
 [terminal]
 vt = 1
 
 [default_session]
-command = "cage -s -- xwayland-run -- /opt/ie/launch.sh"
+command = "/opt/ie/session.sh"
 user = "ie"
 EOF
 
     cat > "${WORK_DIR}/overlayroot.conf" <<'EOF'
 overlayroot="tmpfs"
+EOF
+
+    cat > "${WORK_DIR}/ie-logind.conf" <<'EOF'
+[Login]
+NAutoVTs=0
+ReserveVT=0
+EOF
+
+    cat > "${WORK_DIR}/ie-no-vt-switch.map" <<'EOF'
+# Disable virtual terminal switching chords in the live appliance.
+alt keycode  59 = VoidSymbol
+alt keycode  60 = VoidSymbol
+alt keycode  61 = VoidSymbol
+alt keycode  62 = VoidSymbol
+alt keycode  63 = VoidSymbol
+alt keycode  64 = VoidSymbol
+alt keycode  65 = VoidSymbol
+alt keycode  66 = VoidSymbol
+alt keycode  67 = VoidSymbol
+alt keycode  68 = VoidSymbol
+alt keycode  87 = VoidSymbol
+alt keycode  88 = VoidSymbol
+control alt keycode  59 = VoidSymbol
+control alt keycode  60 = VoidSymbol
+control alt keycode  61 = VoidSymbol
+control alt keycode  62 = VoidSymbol
+control alt keycode  63 = VoidSymbol
+control alt keycode  64 = VoidSymbol
+control alt keycode  65 = VoidSymbol
+control alt keycode  66 = VoidSymbol
+control alt keycode  67 = VoidSymbol
+control alt keycode  68 = VoidSymbol
+control alt keycode  87 = VoidSymbol
+control alt keycode  88 = VoidSymbol
+alt keycode 105 = VoidSymbol
+alt keycode 106 = VoidSymbol
 EOF
 
     cat > "${WORK_DIR}/90-ie-networkmanager.yaml" <<'EOF'
@@ -834,6 +904,22 @@ WantedBy=multi-user.target
 WantedBy=network-pre.target
 EOF
 
+    cat > "${WORK_DIR}/ie-no-vt-switch.service" <<'EOF'
+[Unit]
+Description=Disable Intuition Engine live image virtual terminal switch keys
+DefaultDependencies=no
+After=local-fs.target systemd-vconsole-setup.service
+Before=greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/loadkeys /usr/local/share/kbd/keymaps/ie-no-vt-switch.map
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
     cat > "${WORK_DIR}/ie-apparmor.service" <<'EOF'
 [Unit]
 Description=Enforce Intuition Engine AppArmor profiles
@@ -895,6 +981,8 @@ profile opt.ie.IntuitionEngine /opt/ie/IntuitionEngine flags=(attach_disconnecte
   capability setgid,
   capability setuid,
 
+  network unix stream,
+
   /opt/ie/ r,
   /opt/ie/** r,
   /opt/ie/IntuitionEngine mr,
@@ -904,10 +992,21 @@ profile opt.ie.IntuitionEngine /opt/ie/IntuitionEngine flags=(attach_disconnecte
 
   /dev/dri/** rw,
   /dev/input/** r,
+  /dev/shm/** rwk,
   /dev/snd/** rw,
+  /tmp/.X11-unix/** rw,
+  /tmp/.X[0-9]*-lock r,
+  /tmp/dbus-* rw,
+  /tmp/tmp*/ rw,
+  /tmp/tmp*/** rwk,
+  /tmp/xwayland-run*/** rwk,
+  /tmp/ie-runtime-[0-9]*/** rw,
+  /tmp/ie-*.log rw,
   /run/dbus/system_bus_socket rw,
   /run/user/[0-9]*/** rw,
   /run/seatd.sock rw,
+  /sys/class/drm/** r,
+  /sys/devices/** r,
 
   /etc/group r,
   /etc/login.defs r,
@@ -916,9 +1015,19 @@ profile opt.ie.IntuitionEngine /opt/ie/IntuitionEngine flags=(attach_disconnecte
   /etc/pam.d/** r,
   /etc/polkit-1/** r,
   /etc/security/** r,
+  /home/ r,
+  /home/ie/ r,
+  /home/ie/.config/ rw,
+  /home/ie/.config/pulse/ rw,
+  /home/ie/.config/pulse/** rwk,
+  /proc/[0-9]*/cgroup r,
   /proc/[0-9]*/stat r,
   /proc/[0-9]*/status r,
+  /proc/sys/net/core/somaxconn r,
   /usr/lib/x86_64-linux-gnu/security/** r,
+  /usr/lib/x86_64-linux-gnu/dri/** mr,
+  /usr/share/drirc.d/** r,
+  /usr/share/glvnd/** r,
   /usr/share/polkit-1/** r,
 
   /usr/bin/pkexec ix,
@@ -1183,29 +1292,38 @@ build_golden_image() {
         --mkdir /var/ie/share \
         --mkdir /var/ie/state \
         --upload "${WORK_DIR}/launch.sh:/opt/ie/launch.sh" \
-        --run-command 'chmod 0755 /opt/ie /opt/ie/launch.sh' \
-        --run-command 'chown root:root /opt/ie /opt/ie/launch.sh' \
+        --upload "${WORK_DIR}/session.sh:/opt/ie/session.sh" \
+        --run-command 'chmod 0755 /opt/ie /opt/ie/launch.sh /opt/ie/session.sh' \
+        --run-command 'chown root:root /opt/ie /opt/ie/launch.sh /opt/ie/session.sh' \
+        --run-command 'install -d -m 1777 /var/log/ie-live' \
         --run-command 'chown 1000:1000 /var/ie /var/ie/share /var/ie/state' \
         --upload "${WORK_DIR}/greetd-config.toml:/etc/greetd/config.toml" \
         --upload "${WORK_DIR}/overlayroot.conf:/etc/overlayroot.conf" \
+        --mkdir /etc/systemd/logind.conf.d \
+        --upload "${WORK_DIR}/ie-logind.conf:/etc/systemd/logind.conf.d/10-ie-live.conf" \
+        --mkdir /usr/local/share/kbd \
+        --mkdir /usr/local/share/kbd/keymaps \
+        --upload "${WORK_DIR}/ie-no-vt-switch.map:/usr/local/share/kbd/keymaps/ie-no-vt-switch.map" \
         --upload "${WORK_DIR}/90-ie-networkmanager.yaml:/etc/netplan/90-ie-networkmanager.yaml" \
         --upload "${WORK_DIR}/ie-grow-share.sh:/usr/local/sbin/ie-grow-share.sh" \
         --upload "${WORK_DIR}/ie-grow-share.service:/etc/systemd/system/ie-grow-share.service" \
         --upload "${WORK_DIR}/ie-firewall.service:/etc/systemd/system/ie-firewall.service" \
+        --upload "${WORK_DIR}/ie-no-vt-switch.service:/etc/systemd/system/ie-no-vt-switch.service" \
         --upload "${WORK_DIR}/ie-apparmor.service:/etc/systemd/system/ie-apparmor.service" \
         --upload "${WORK_DIR}/org.intuitionengine.host.policy:/usr/share/polkit-1/actions/org.intuitionengine.host.policy" \
         --upload "${WORK_DIR}/49-intuitionengine.rules:/etc/polkit-1/rules.d/49-intuitionengine.rules" \
         --upload "${WORK_DIR}/opt.ie.IntuitionEngine:/etc/apparmor.d/opt.ie.IntuitionEngine" \
         --upload "${WORK_DIR}/usr.libexec.intuitionengine-host-helper:/etc/apparmor.d/usr.libexec.intuitionengine-host-helper" \
         --run-command 'chmod +x /usr/local/sbin/ie-grow-share.sh' \
-        --run-command 'chmod 0644 /etc/systemd/system/ie-grow-share.service /etc/systemd/system/ie-firewall.service /etc/systemd/system/ie-apparmor.service' \
+        --run-command 'chmod 0644 /etc/systemd/logind.conf.d/10-ie-live.conf /usr/local/share/kbd/keymaps/ie-no-vt-switch.map' \
+        --run-command 'chmod 0644 /etc/systemd/system/ie-grow-share.service /etc/systemd/system/ie-firewall.service /etc/systemd/system/ie-no-vt-switch.service /etc/systemd/system/ie-apparmor.service' \
         --run-command 'chmod 0644 /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules' \
         --run-command 'chmod 0644 /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper' \
-        --run-command 'chown root:root /etc/systemd/system/ie-grow-share.service /etc/systemd/system/ie-firewall.service /etc/systemd/system/ie-apparmor.service /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper' \
-        --run-command 'systemctl mask getty@tty1.service getty@tty2.service' \
+        --run-command 'chown root:root /etc/systemd/logind.conf.d/10-ie-live.conf /usr/local/share/kbd/keymaps/ie-no-vt-switch.map /etc/systemd/system/ie-grow-share.service /etc/systemd/system/ie-firewall.service /etc/systemd/system/ie-no-vt-switch.service /etc/systemd/system/ie-apparmor.service /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper' \
+        --run-command 'for n in $(seq 1 12); do systemctl mask "getty@tty${n}.service"; done' \
         --run-command 'systemctl enable greetd.service seatd.service' \
         --run-command 'systemctl enable NetworkManager.service' \
-        --run-command 'systemctl enable ie-grow-share.service ie-firewall.service ie-apparmor.service' \
+        --run-command 'systemctl enable ie-grow-share.service ie-firewall.service ie-no-vt-switch.service ie-apparmor.service' \
         --run-command 'sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash=0 loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 mitigations=off\"/" /etc/default/grub' \
         --run-command 'sed -i "s/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/" /etc/default/grub' \
         --run-command 'grep -q "^GRUB_RECORDFAIL_TIMEOUT=" /etc/default/grub && sed -i "s/^GRUB_RECORDFAIL_TIMEOUT=.*/GRUB_RECORDFAIL_TIMEOUT=0/" /etc/default/grub || echo "GRUB_RECORDFAIL_TIMEOUT=0" >> /etc/default/grub' \

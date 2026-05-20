@@ -805,6 +805,10 @@ prompts for confirmation unless `-ehbasic-host-appliance` is also set. Guest
 code should poll `HOST_STATUS` until it is no longer running, then read
 `HOST_EXIT` for helper-specific detail.
 
+The x64 live USB image adds host-side AppArmor, polkit, and firewall controls
+around this helper path. See the live USB security model in
+[`README.md`](../../README.md#live-usb-quick-start).
+
 ### 8.2 Initial State After Reset
 
 | Register/State | Value |

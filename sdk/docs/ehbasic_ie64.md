@@ -435,6 +435,10 @@ silently continue after a denied or failed host operation.
 `-ehbasic-host-appliance` skips the `HOST UPDATE` confirmation prompt and is
 intended only for controlled appliance deployments.
 
+In the x64 live USB image, host-side AppArmor, polkit, and firewall controls
+are documented in the live USB security model in
+[`README.md`](../../README.md#live-usb-quick-start).
+
 ### DIR
 
 List files in the File I/O sandbox. `DIR` is an immediate REPL command and is not stored as a tokenized BASIC statement.

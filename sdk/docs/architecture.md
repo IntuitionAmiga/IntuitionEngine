@@ -1,10 +1,38 @@
 # Intuition Engine Architecture
 
-*Last updated: 2026-05-14*
+*Last updated: 2026-05-20*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, 9 audio engines/players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve (see `memory_sizing.go`); each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
 The diagrams below describe wired runtime behaviour. Source-file presence alone is not treated as support: for example, `jit_z80_emit_arm64.go` exists, but `jit_z80_dispatch.go` keeps Z80 JIT available only when `runtime.GOARCH == "amd64"`.
+
+## Live USB Deployment Security
+
+The x64 live USB image is a single-purpose appliance deployment of the engine.
+It adds host-side controls around the normal VM architecture:
+
+- The graphical session runs as the unprivileged `ie` user through `greetd`,
+  `cage`, `xwayland-run`, `/opt/ie/session.sh`, and `/opt/ie/launch.sh`.
+- `/opt/ie`, the emulator binary, and the launch scripts are root-owned so the
+  AppArmor profile attached to `/opt/ie/IntuitionEngine` cannot be bypassed by
+  replacing the attached path as the live user.
+- The emulator profile allows the display, input, audio, share, logging, and
+  Unix socket access needed by Cage, Xwayland, PipeWire, and the engine.
+- The external host helper is a separate root-owned binary at
+  `/usr/libexec/intuitionengine-host-helper`. Elevation uses `pkexec` and a
+  narrow polkit rule for the local active `ie` session.
+- The helper has its own AppArmor profile. Maintenance commands that need host
+  tools run through constrained child profiles for tools such as `apt-get`,
+  `dpkg`, and `systemctl`.
+- The live image enables a UFW baseline that denies incoming connections and
+  allows outgoing connections.
+- Spare virtual terminals are locked down by disabling logind's spare VT
+  reservation, masking gettys on tty1 through tty12, and loading a console
+  keymap that removes the VT switch key bindings before `greetd` starts.
+
+The README is the user-facing authority for this deployment contract. See
+[Live USB Quick Start](../../README.md#live-usb-quick-start) for the security
+model, HOST command gating, and PipeWire notes.
 
 ## Single Complete Architecture Diagram
 
