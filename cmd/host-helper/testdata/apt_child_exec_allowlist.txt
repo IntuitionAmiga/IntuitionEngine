@@ -1,0 +1,21 @@
+# Top-level apt/dpkg child execution rules required by the live-image
+# AppArmor profile. This fixture is intentionally conservative: it records
+# stable executables and directories apt/dpkg commonly execute during package
+# upgrades, plus maintainer scripts under /var/lib/dpkg/info.
+/usr/bin/apt-get Cx -> apt,
+/usr/bin/dpkg Cx -> apt,
+/usr/bin/gpg Cx -> apt,
+/usr/bin/gpgv Cx -> apt,
+/bin/dash Cx -> apt,
+/bin/sh Cx -> apt,
+/usr/lib/apt/methods/* Cx -> apt,
+/bin/gunzip Cx -> apt,
+/usr/bin/lzma Cx -> apt,
+/usr/bin/xz Cx -> apt,
+/usr/bin/zstd Cx -> apt,
+/bin/** mixr,
+/sbin/** mixr,
+/usr/bin/** mixr,
+/usr/sbin/** mixr,
+/usr/lib/** mixr,
+/var/lib/dpkg/info/* ixr,

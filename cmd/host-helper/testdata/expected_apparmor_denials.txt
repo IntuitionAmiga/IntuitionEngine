@@ -1,0 +1,3 @@
+# Expected AppArmor denials after a successful HOST UPDATE appliance run.
+# Empty by design: shipped live-image validation should treat any new
+# apparmor="DENIED" kernel log entry during HOST UPDATE as a review item.

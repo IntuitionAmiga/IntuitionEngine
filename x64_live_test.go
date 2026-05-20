@@ -300,8 +300,8 @@ func TestX64LiveHostHelperSecurityContract(t *testing.T) {
 		`/usr/libexec/intuitionengine-host-helper Px,`,
 		`profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-host-helper flags=(attach_disconnected)`,
 		`/usr/bin/apt-get Cx -> apt,`,
-		`/usr/bin/nmcli Cx -> nmcli,`,
 		`/usr/bin/systemctl Cx -> systemctl,`,
+		`/run/dbus/system_bus_socket rw,`,
 		`/var/lib/dpkg/info/* ixr,`,
 		`capability chown,`,
 		`capability fowner,`,
@@ -320,6 +320,7 @@ func TestX64LiveHostHelperSecurityContract(t *testing.T) {
 		`systemctl enable getty@tty2.service`,
 		`chown 1000:1000 /opt/ie`,
 		`chown -R 1000:1000 /var/ie /opt/ie`,
+		`/usr/bin/nmcli`,
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("build_x64_ie_img.sh contains forbidden HOST helper security pattern %q", forbidden)

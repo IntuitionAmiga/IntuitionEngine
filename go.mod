@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/ebitengine/oto/v3 v3.5.0-alpha.6
 	github.com/ebitengine/purego v0.11.0-alpha.2
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/goki/vulkan v1.0.8
 	github.com/hajimehoshi/ebiten/v2 v2.10.0-alpha.11.0.20260506111225-31737d6bfb13
 	golang.org/x/image v0.40.0

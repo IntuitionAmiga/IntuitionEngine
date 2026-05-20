@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/godbus/dbus/v5"
 )
 
 func TestRunUpdateExitCodes(t *testing.T) {
@@ -126,6 +128,31 @@ func TestNetworkManagerReasonMapping(t *testing.T) {
 	}
 }
 
+func TestNetworkManagerSecurityFlagMapping(t *testing.T) {
+	tests := []struct {
+		name     string
+		apFlags  uint32
+		wpaFlags uint32
+		rsnFlags uint32
+		want     string
+	}{
+		{name: "open", want: "open"},
+		{name: "wpa psk", wpaFlags: nmAPSecKeyMgmtPSK, want: "wpa2-psk"},
+		{name: "rsn psk", rsnFlags: nmAPSecKeyMgmtPSK, want: "wpa2-psk"},
+		{name: "sae", rsnFlags: nmAPSecKeyMgmtSAE, want: "wpa3-sae"},
+		{name: "8021x", rsnFlags: nmAPSecKeyMgmt8021X, want: string(wifiFailureUnsupportedAuth)},
+		{name: "privacy only", apFlags: nmAPFlagPrivacy, want: string(wifiFailureUnsupportedAuth)},
+		{name: "unknown secured", rsnFlags: 1, want: string(wifiFailureUnsupportedAuth)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := securityStringForNMFlags(tt.apFlags, tt.wpaFlags, tt.rsnFlags); got != tt.want {
+				t.Fatalf("securityStringForNMFlags() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunRejectsInvalidInputWithoutAction(t *testing.T) {
 	tests := []struct {
 		name string
@@ -200,41 +227,142 @@ func TestRunWiFiScanFormatsNetworkManagerOutput(t *testing.T) {
 	}
 }
 
-func TestNMCLIClientScansAndConnectsThroughNetworkManager(t *testing.T) {
-	runner := &recordingCommandRunner{
-		output: []byte("Office\\:Lab:92:wpa2-psk\nCafé:37:wpa3-sae\n"),
-	}
-	client := nmcliNetworkManagerClient{commands: runner}
+func TestNetworkManagerDBusClientScansAndConnects(t *testing.T) {
+	bus := newFakeNetworkManagerBus()
+	client := networkManagerDBusClient{bus: bus}
 
 	networks, err := client.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan() error = %v", err)
 	}
 	wantNetworks := []wifiNetwork{
-		{SSID: "Office:Lab", Signal: 92, Security: "wpa2-psk"},
+		{SSID: "Office", Signal: 92, Security: "wpa2-psk"},
 		{SSID: "Café", Signal: 37, Security: "wpa3-sae"},
 	}
 	if !reflect.DeepEqual(networks, wantNetworks) {
 		t.Fatalf("networks = %#v, want %#v", networks, wantNetworks)
 	}
 
-	result := client.Connect(context.Background(), "Bob's WiFi", []byte("secret"))
+	result := client.Connect(context.Background(), "Café", []byte("secret"))
 	if result.Err != nil {
 		t.Fatalf("Connect() error = %v", result.Err)
 	}
-	if len(runner.outputs) != 1 || runner.outputs[0].Path != "/usr/bin/nmcli" {
-		t.Fatalf("scan output commands = %#v", runner.outputs)
+	if !bus.called(nmWirelessInterface + ".RequestScan") {
+		t.Fatalf("NetworkManager RequestScan was not called: %#v", bus.calls)
 	}
-	if len(runner.commands) != 1 {
-		t.Fatalf("connect commands = %#v", runner.commands)
+	call := bus.firstCall(nmInterface + ".AddAndActivateConnection2")
+	if call == nil {
+		t.Fatalf("AddAndActivateConnection2 was not called: %#v", bus.calls)
 	}
-	connect := runner.commands[0]
-	wantArgs := []string{"--ask", "device", "wifi", "connect", "Bob's WiFi"}
-	if connect.Path != "/usr/bin/nmcli" || !reflect.DeepEqual(connect.Args, wantArgs) {
-		t.Fatalf("connect command = %#v, want path /usr/bin/nmcli args %#v", connect, wantArgs)
+	settings, ok := call.Args[0].(map[string]map[string]dbus.Variant)
+	if !ok {
+		t.Fatalf("settings arg = %T", call.Args[0])
 	}
-	if connect.Stdin != "secret\n" {
-		t.Fatalf("connect stdin = %q, want password on stdin", connect.Stdin)
+	if got := settings["802-11-wireless"]["ssid"].Value(); !reflect.DeepEqual(got, []byte("Café")) {
+		t.Fatalf("ssid setting = %#v", got)
+	}
+	if got := settings["802-11-wireless-security"]["key-mgmt"].Value(); got != "sae" {
+		t.Fatalf("key-mgmt = %#v, want sae", got)
+	}
+	if got := settings["802-11-wireless-security"]["psk"].Value(); got != "secret" {
+		t.Fatalf("psk = %#v, want secret", got)
+	}
+	if got := call.Args[3].(map[string]dbus.Variant)["persist"].Value(); got != "volatile" {
+		t.Fatalf("persist option = %#v, want volatile", got)
+	}
+}
+
+func TestNetworkManagerDBusClientReturnsStateReasonOnDeactivation(t *testing.T) {
+	bus := newFakeNetworkManagerBus()
+	bus.properties["/org/freedesktop/NetworkManager/ActiveConnection/1"][nmActiveInterface+".State"] = dbus.MakeVariant(nmActiveStateDeactivated)
+	bus.properties["/org/freedesktop/NetworkManager/ActiveConnection/1"][nmActiveInterface+".StateReason"] = dbus.MakeVariant([]uint32{
+		nmActiveStateDeactivated,
+		nmActiveReasonNoSecrets,
+	})
+
+	client := networkManagerDBusClient{bus: bus}
+	result := client.Connect(context.Background(), "Office", []byte("wrong"))
+	if result.Reason != wifiFailureBadPSK {
+		t.Fatalf("Connect() reason = %q, want %q (err=%v)", result.Reason, wifiFailureBadPSK, result.Err)
+	}
+}
+
+func TestNetworkManagerDBusClientRejectsPrivacyOnlyAP(t *testing.T) {
+	bus := newFakeNetworkManagerBus()
+	bus.properties["/org/freedesktop/NetworkManager/AccessPoint/0"][nmAPInterface+".Flags"] = dbus.MakeVariant(nmAPFlagPrivacy)
+	bus.properties["/org/freedesktop/NetworkManager/AccessPoint/0"][nmAPInterface+".WpaFlags"] = dbus.MakeVariant(uint32(0))
+	bus.properties["/org/freedesktop/NetworkManager/AccessPoint/0"][nmAPInterface+".RsnFlags"] = dbus.MakeVariant(uint32(0))
+
+	client := networkManagerDBusClient{bus: bus}
+	networks, err := client.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+	if networks[0].Security != string(wifiFailureUnsupportedAuth) {
+		t.Fatalf("privacy-only AP security = %q, want unsupported-auth", networks[0].Security)
+	}
+	result := client.Connect(context.Background(), "Office", []byte("password"))
+	if result.Reason != wifiFailureUnsupportedAuth {
+		t.Fatalf("Connect() reason = %q, want unsupported-auth", result.Reason)
+	}
+}
+
+func TestNetworkManagerDBusClientWaitsForScanCompletion(t *testing.T) {
+	bus := newFakeNetworkManagerBus()
+	bus.properties["/org/freedesktop/NetworkManager/Devices/0"][nmWirelessInterface+".LastScan"] = dbus.MakeVariant(int64(100))
+	bus.scanCompletesAfterLastScanReads = 2
+
+	client := networkManagerDBusClient{bus: bus}
+	if _, err := client.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+	if got := bus.propertyReads["/org/freedesktop/NetworkManager/Devices/0 "+nmWirelessInterface+".LastScan"]; got < 2 {
+		t.Fatalf("LastScan reads = %d, want at least 2", got)
+	}
+	if !bus.called(nmWirelessInterface + ".GetAllAccessPoints") {
+		t.Fatalf("GetAllAccessPoints was not called after scan completion: %#v", bus.calls)
+	}
+}
+
+func TestNetworkManagerDBusClientRefreshesAPListBeforeConnect(t *testing.T) {
+	bus := newFakeNetworkManagerBus()
+	bus.hideAPsUntilScan = true
+
+	client := networkManagerDBusClient{bus: bus}
+	result := client.Connect(context.Background(), "Office", []byte("secret"))
+	if result.Err != nil {
+		t.Fatalf("Connect() error = %v", result.Err)
+	}
+	requestScan := bus.firstCallIndex(nmWirelessInterface + ".RequestScan")
+	getAPs := bus.firstCallIndex(nmWirelessInterface + ".GetAllAccessPoints")
+	if requestScan < 0 || getAPs < 0 {
+		t.Fatalf("scan/AP calls missing: %#v", bus.calls)
+	}
+	if requestScan > getAPs {
+		t.Fatalf("GetAllAccessPoints ran before RequestScan: %#v", bus.calls)
+	}
+}
+
+func TestNetworkManagerDBusClientFallbackUsesUnsavedConnection(t *testing.T) {
+	bus := newFakeNetworkManagerBus()
+	bus.add2Unknown = true
+
+	client := networkManagerDBusClient{bus: bus}
+	result := client.Connect(context.Background(), "Office", []byte("secret"))
+	if result.Err != nil {
+		t.Fatalf("Connect() error = %v", result.Err)
+	}
+	if !bus.called(nmSettingsInterface + ".AddConnectionUnsaved") {
+		t.Fatalf("fallback AddConnectionUnsaved was not called: %#v", bus.calls)
+	}
+	if !bus.called(nmInterface + ".ActivateConnection") {
+		t.Fatalf("fallback ActivateConnection was not called: %#v", bus.calls)
+	}
+	if bus.called(nmInterface + ".AddAndActivateConnection") {
+		t.Fatalf("fallback used persistent AddAndActivateConnection: %#v", bus.calls)
+	}
+	if bus.called("org.freedesktop.NetworkManager.Settings.Connection.Delete") {
+		t.Fatalf("fallback deleted active settings connection before/during activation: %#v", bus.calls)
 	}
 }
 
@@ -302,4 +430,190 @@ func (c *scriptedNetworkManagerClient) Connect(_ context.Context, ssid string, p
 	c.connectedSSID = ssid
 	c.connectedPassword = append([]byte(nil), password...)
 	return c.connectResult
+}
+
+type fakeDBusCall struct {
+	Method string
+	Path   dbus.ObjectPath
+	Args   []any
+}
+
+type fakeNetworkManagerBus struct {
+	properties                      map[dbus.ObjectPath]map[string]dbus.Variant
+	propertyReads                   map[string]int
+	calls                           []fakeDBusCall
+	add2Unknown                     bool
+	hideAPsUntilScan                bool
+	scanned                         bool
+	scanCompletesAfterLastScanReads int
+}
+
+func newFakeNetworkManagerBus() *fakeNetworkManagerBus {
+	return &fakeNetworkManagerBus{
+		properties: map[dbus.ObjectPath]map[string]dbus.Variant{
+			"/org/freedesktop/NetworkManager/Devices/0": {
+				nmDeviceInterface + ".DeviceType": dbus.MakeVariant(nmDeviceTypeWiFi),
+			},
+			"/org/freedesktop/NetworkManager/AccessPoint/0": {
+				nmAPInterface + ".Ssid":     dbus.MakeVariant([]byte("Office")),
+				nmAPInterface + ".Strength": dbus.MakeVariant(byte(92)),
+				nmAPInterface + ".WpaFlags": dbus.MakeVariant(nmAPSecKeyMgmtPSK),
+				nmAPInterface + ".RsnFlags": dbus.MakeVariant(uint32(0)),
+			},
+			"/org/freedesktop/NetworkManager/AccessPoint/1": {
+				nmAPInterface + ".Ssid":     dbus.MakeVariant([]byte("Café")),
+				nmAPInterface + ".Strength": dbus.MakeVariant(byte(37)),
+				nmAPInterface + ".WpaFlags": dbus.MakeVariant(uint32(0)),
+				nmAPInterface + ".RsnFlags": dbus.MakeVariant(nmAPSecKeyMgmtSAE),
+			},
+			"/org/freedesktop/NetworkManager/ActiveConnection/1": {
+				nmActiveInterface + ".State": dbus.MakeVariant(nmActiveStateActivated),
+			},
+		},
+		propertyReads: map[string]int{},
+	}
+}
+
+func (b *fakeNetworkManagerBus) Object(dest string, path dbus.ObjectPath) dbus.BusObject {
+	return fakeDBusObject{bus: b, dest: dest, path: path}
+}
+
+func (b *fakeNetworkManagerBus) Close() error { return nil }
+
+func (b *fakeNetworkManagerBus) called(method string) bool {
+	return b.firstCall(method) != nil
+}
+
+func (b *fakeNetworkManagerBus) firstCall(method string) *fakeDBusCall {
+	for i := range b.calls {
+		if b.calls[i].Method == method {
+			return &b.calls[i]
+		}
+	}
+	return nil
+}
+
+func (b *fakeNetworkManagerBus) firstCallIndex(method string) int {
+	for i := range b.calls {
+		if b.calls[i].Method == method {
+			return i
+		}
+	}
+	return -1
+}
+
+type fakeDBusObject struct {
+	bus  *fakeNetworkManagerBus
+	dest string
+	path dbus.ObjectPath
+}
+
+func (o fakeDBusObject) Call(method string, flags dbus.Flags, args ...any) *dbus.Call {
+	return o.CallWithContext(context.Background(), method, flags, args...)
+}
+
+func (o fakeDBusObject) CallWithContext(_ context.Context, method string, _ dbus.Flags, args ...any) *dbus.Call {
+	o.bus.calls = append(o.bus.calls, fakeDBusCall{Method: method, Path: o.path, Args: append([]any(nil), args...)})
+	call := &dbus.Call{}
+	switch method {
+	case nmInterface + ".GetDevices":
+		call.Body = []any{[]dbus.ObjectPath{"/org/freedesktop/NetworkManager/Devices/0"}}
+	case nmWirelessInterface + ".GetAllAccessPoints":
+		if o.bus.hideAPsUntilScan && !o.bus.scanned {
+			call.Body = []any{[]dbus.ObjectPath{}}
+			break
+		}
+		call.Body = []any{[]dbus.ObjectPath{
+			"/org/freedesktop/NetworkManager/AccessPoint/0",
+			"/org/freedesktop/NetworkManager/AccessPoint/1",
+		}}
+	case nmWirelessInterface + ".RequestScan":
+		o.bus.scanned = true
+	case nmInterface + ".AddAndActivateConnection2":
+		if o.bus.add2Unknown {
+			call.Err = errors.New("org.freedesktop.DBus.Error.UnknownMethod: unknown method")
+			break
+		}
+		call.Body = []any{
+			dbus.ObjectPath("/org/freedesktop/NetworkManager/Settings/1"),
+			dbus.ObjectPath("/org/freedesktop/NetworkManager/ActiveConnection/1"),
+			map[string]dbus.Variant{},
+		}
+	case nmInterface + ".AddAndActivateConnection":
+		call.Body = []any{
+			dbus.ObjectPath("/org/freedesktop/NetworkManager/Settings/1"),
+			dbus.ObjectPath("/org/freedesktop/NetworkManager/ActiveConnection/1"),
+		}
+	case nmSettingsInterface + ".AddConnectionUnsaved":
+		call.Body = []any{
+			dbus.ObjectPath("/org/freedesktop/NetworkManager/Settings/1"),
+		}
+	case nmInterface + ".ActivateConnection":
+		call.Body = []any{
+			dbus.ObjectPath("/org/freedesktop/NetworkManager/ActiveConnection/1"),
+		}
+	case "org.freedesktop.NetworkManager.Settings.Connection.Delete":
+	default:
+		call.Err = errors.New("unexpected DBus call " + method)
+	}
+	return call
+}
+
+func (o fakeDBusObject) Go(method string, flags dbus.Flags, ch chan *dbus.Call, args ...any) *dbus.Call {
+	return o.GoWithContext(context.Background(), method, flags, ch, args...)
+}
+
+func (o fakeDBusObject) GoWithContext(ctx context.Context, method string, flags dbus.Flags, ch chan *dbus.Call, args ...any) *dbus.Call {
+	call := o.CallWithContext(ctx, method, flags, args...)
+	if ch != nil {
+		ch <- call
+	}
+	return call
+}
+
+func (o fakeDBusObject) AddMatchSignal(string, string, ...dbus.MatchOption) *dbus.Call {
+	return &dbus.Call{}
+}
+
+func (o fakeDBusObject) RemoveMatchSignal(string, string, ...dbus.MatchOption) *dbus.Call {
+	return &dbus.Call{}
+}
+
+func (o fakeDBusObject) GetProperty(name string) (dbus.Variant, error) {
+	key := string(o.path) + " " + name
+	o.bus.propertyReads[key]++
+	if name == nmWirelessInterface+".LastScan" && o.bus.scanCompletesAfterLastScanReads > 0 &&
+		o.bus.propertyReads[key] >= o.bus.scanCompletesAfterLastScanReads {
+		if o.bus.properties[o.path] == nil {
+			o.bus.properties[o.path] = map[string]dbus.Variant{}
+		}
+		o.bus.properties[o.path][name] = dbus.MakeVariant(int64(200))
+	}
+	if props := o.bus.properties[o.path]; props != nil {
+		if value, ok := props[name]; ok {
+			return value, nil
+		}
+	}
+	return dbus.Variant{}, errors.New("missing property " + name)
+}
+
+func (o fakeDBusObject) StoreProperty(name string, value any) error {
+	return o.SetProperty(name, value)
+}
+
+func (o fakeDBusObject) SetProperty(name string, value any) error {
+	variant, ok := value.(dbus.Variant)
+	if !ok {
+		variant = dbus.MakeVariant(value)
+	}
+	if o.bus.properties[o.path] == nil {
+		o.bus.properties[o.path] = map[string]dbus.Variant{}
+	}
+	o.bus.properties[o.path][name] = variant
+	return nil
+}
+
+func (o fakeDBusObject) Destination() string { return o.dest }
+func (o fakeDBusObject) Path() dbus.ObjectPath {
+	return o.path
 }

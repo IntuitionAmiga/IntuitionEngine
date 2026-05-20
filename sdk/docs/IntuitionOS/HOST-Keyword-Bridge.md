@@ -59,3 +59,8 @@ requires an installed confirmer in normal mode; `-ehbasic-host-appliance`
 bypasses that confirmation only for appliance deployments. The host process
 delegates privileged work to `/usr/libexec/intuitionengine-host-helper` using
 fixed command verbs.
+
+The helper handles WiFi through NetworkManager's system DBus API. It requests
+scans, reads access point objects, and activates volatile connection profiles
+directly; it does not invoke `nmcli` or grant NetworkManager control to the
+unprivileged `ie` session.

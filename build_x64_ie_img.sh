@@ -949,7 +949,6 @@ profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-hos
   /usr/bin/dpkg Cx -> apt,
   /usr/bin/gpg Cx -> apt,
   /usr/bin/gpgv Cx -> apt,
-  /usr/bin/nmcli Cx -> nmcli,
   /bin/dash Cx -> apt,
   /bin/sh Cx -> apt,
   /usr/lib/apt/methods/* Cx -> apt,
@@ -964,6 +963,7 @@ profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-hos
   /etc/dpkg/** r,
   /etc/resolv.conf r,
   /etc/ssl/** r,
+  /run/dbus/system_bus_socket rw,
   /run/NetworkManager/** rw,
   /run/systemd/** rw,
   /var/cache/apt/** rwk,
@@ -1019,23 +1019,6 @@ profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-hos
     /var/log/apt/** rwk,
     /var/log/dpkg.log rwk,
     /var/tmp/** rwk,
-  }
-
-  profile nmcli flags=(attach_disconnected) {
-    #include <abstractions/base>
-    #include <abstractions/dbus>
-    #include <abstractions/nameservice>
-
-    /usr/bin/nmcli mr,
-    /etc/NetworkManager/** r,
-    /etc/resolv.conf r,
-    /run/dbus/system_bus_socket rw,
-    /run/NetworkManager/** rw,
-    /usr/share/NetworkManager/** r,
-
-    dbus send
-         bus=system
-         peer=(name=org.freedesktop.NetworkManager),
   }
 
   profile systemctl flags=(attach_disconnected) {
