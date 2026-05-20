@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -18,18 +17,23 @@ func TestHostHelperLiveImageSecurityContracts(t *testing.T) {
 		`<annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/intuitionengine-host-helper</annotate>`,
 		`action.id === "org.intuitionengine.host.run"`,
 		`subject.user === "ie"`,
+		`chmod 0755 /usr/libexec/intuitionengine-host-helper`,
+		`ExecStart=/usr/libexec/intuitionengine-host-helper serve`,
+		`/run/intuitionengine-host-helper.sock rw,`,
 		`/usr/bin/pkexec ix,`,
 		`/usr/libexec/intuitionengine-host-helper Px,`,
 		`profile opt.ie.IntuitionEngine /opt/ie/IntuitionEngine flags=(attach_disconnected)`,
 		`profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-host-helper flags=(attach_disconnected)`,
 		`network unix stream,`,
+		`/var/ie/share/ rw,`,
 		`/tmp/tmp*/** rwk,`,
+		`/etc/shells r,`,
 		`/home/ie/.config/pulse/ rw,`,
 		`/home/ie/.config/pulse/** rwk,`,
 		`/run/dbus/system_bus_socket rw,`,
 		`dbus send`,
 		`peer=(name=org.freedesktop.NetworkManager),`,
-		`/usr/bin/apt-get Cx -> apt,`,
+		`/usr/bin/apt-get Ux,`,
 		`/usr/bin/systemctl Cx -> systemctl,`,
 		`Before=greetd.service`,
 		`ufw default deny incoming`,
@@ -48,6 +52,8 @@ func TestHostHelperLiveImageSecurityContracts(t *testing.T) {
 		`systemctl enable getty@tty2.service`,
 		`/usr/bin/nmcli`,
 		`pkexec /bin/bash`,
+		`subject.active === true`,
+		`subject.local === true`,
 		`chown 1000:1000 /opt/ie`,
 		`chown -R 1000:1000 /var/ie /opt/ie`,
 	} {
@@ -57,19 +63,12 @@ func TestHostHelperLiveImageSecurityContracts(t *testing.T) {
 	}
 }
 
-func TestHostHelperAptProfileCoversEmpiricalExecAllowlist(t *testing.T) {
+func TestHostHelperAptUsesUnconfinedTransition(t *testing.T) {
 	body := readX64LiveScript(t)
-	allowlist, err := os.ReadFile("cmd/host-helper/testdata/apt_child_exec_allowlist.txt")
-	if err != nil {
-		t.Fatalf("read apt allowlist fixture: %v", err)
+	if !strings.Contains(body, `/usr/bin/apt-get Ux,`) {
+		t.Fatal("host helper AppArmor profile must run apt-get with Ux")
 	}
-	for _, line := range strings.Split(string(allowlist), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if !strings.Contains(body, line) {
-			t.Fatalf("AppArmor apt profile missing empirical exec allowlist entry %q", line)
-		}
+	if strings.Contains(body, `profile apt `) {
+		t.Fatal("host helper AppArmor profile must not use a confined apt child profile")
 	}
 }

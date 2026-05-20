@@ -1040,6 +1040,11 @@ func main() {
 	if setter, ok := videoChip.GetOutput().(TerminalMMIOSetter); ok {
 		setter.SetTerminalMMIO(termMMIO)
 	}
+	if setter, ok := videoChip.GetOutput().(interface{ SetHostOverlay(*HostOverlay) }); ok {
+		hostOverlay := NewHostOverlay()
+		setter.SetHostOverlay(hostOverlay)
+		hostHelper.SetObserver(hostOverlay)
+	}
 	var termHost *TerminalHost
 	var videoTerm *VideoTerminal
 	var outputTicker *time.Ticker

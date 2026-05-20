@@ -24,7 +24,7 @@ func TestRunUpdateExitCodes(t *testing.T) {
 			want: exitOK,
 			wantRun: []recordedCommand{
 				{Path: "/usr/bin/apt-get", Args: []string{"update"}},
-				{Path: "/usr/bin/apt-get", Args: []string{"upgrade", "-y"}},
+				{Path: "/usr/bin/apt-get", Args: []string{"upgrade", "-y", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"}},
 			},
 		},
 		{
@@ -41,7 +41,7 @@ func TestRunUpdateExitCodes(t *testing.T) {
 			want:   exitAptUpgradeFailed,
 			wantRun: []recordedCommand{
 				{Path: "/usr/bin/apt-get", Args: []string{"update"}},
-				{Path: "/usr/bin/apt-get", Args: []string{"upgrade", "-y"}},
+				{Path: "/usr/bin/apt-get", Args: []string{"upgrade", "-y", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"}},
 			},
 		},
 	}

@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -241,6 +244,101 @@ func TestExternalHostCommandRunnerUsesFixedHelperArgv(t *testing.T) {
 	want := pkexecPath + "|" + helperPath + "|update|2"
 	if string(args) != want {
 		t.Fatalf("helper args = %q, want %q", args, want)
+	}
+}
+
+func TestExternalHostCommandRunnerUsesBrokerSocketWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	helperPath := filepath.Join(dir, "helper")
+	pkexecPath := filepath.Join(dir, "pkexec")
+	socketPath := filepath.Join(dir, "host-helper.sock")
+
+	if err := os.WriteFile(pkexecPath, []byte("#!/bin/sh\nexit 99\n"), 0o755); err != nil {
+		t.Fatalf("write pkexec: %v", err)
+	}
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen broker socket: %v", err)
+	}
+	defer ln.Close()
+
+	requests := make(chan hostBrokerRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var request hostBrokerRequest
+		if err := json.NewDecoder(conn).Decode(&request); err == nil {
+			requests <- request
+		}
+		_ = json.NewEncoder(conn).Encode(hostBrokerMessage{Type: "result", ExitCode: 0})
+	}()
+
+	result := (ExternalHostCommandRunner{Path: helperPath, PkexecPath: pkexecPath, SocketPath: socketPath}).RunHostCommand(context.Background(), HostCommandReboot)
+	if result.Status != HostStatusOK {
+		t.Fatalf("status = %d, want OK", result.Status)
+	}
+
+	select {
+	case request := <-requests:
+		if got, want := strings.Join(request.Args, "|"), "reboot"; got != want {
+			t.Fatalf("broker args = %q, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("broker did not receive request")
+	}
+}
+
+func TestExternalHostCommandRunnerLogsFailures(t *testing.T) {
+	dir := t.TempDir()
+	pkexecPath := filepath.Join(dir, "pkexec")
+	helperPath := filepath.Join(dir, "helper")
+	logPath := filepath.Join(dir, "ie-host-helper.log")
+
+	pkexecScript := "#!/bin/sh\necho pkexec denied >&2\nexit 127\n"
+	if err := os.WriteFile(pkexecPath, []byte(pkexecScript), 0o755); err != nil {
+		t.Fatalf("write pkexec: %v", err)
+	}
+
+	t.Setenv("IE_HOST_HELPER_LOG", logPath)
+	result := (ExternalHostCommandRunner{Path: helperPath, PkexecPath: pkexecPath}).RunHostCommand(context.Background(), HostCommandReboot)
+	if result.Status != HostStatusErr {
+		t.Fatalf("status = %d, want ERR", result.Status)
+	}
+	if result.ExitCode != 127 {
+		t.Fatalf("exit code = %d, want 127", result.ExitCode)
+	}
+
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read host helper log: %v", err)
+	}
+	for _, want := range []string{`exit=127`, `reboot`, `pkexec denied`} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("host helper log missing %q in %q", want, string(body))
+		}
+	}
+}
+
+func TestBoundedOutputKeepsOnlyTail(t *testing.T) {
+	output := newBoundedOutput(8)
+	if _, err := output.Write([]byte("abcdef")); err != nil {
+		t.Fatalf("write first chunk: %v", err)
+	}
+	if _, err := output.Write([]byte("ghijkl")); err != nil {
+		t.Fatalf("write second chunk: %v", err)
+	}
+	if got, want := string(output.Bytes()), "efghijkl"; got != want {
+		t.Fatalf("bounded output = %q, want %q", got, want)
+	}
+	if _, err := output.Write([]byte("0123456789")); err != nil {
+		t.Fatalf("write oversize chunk: %v", err)
+	}
+	if got, want := string(output.Bytes()), "23456789"; got != want {
+		t.Fatalf("bounded output after oversize write = %q, want %q", got, want)
 	}
 }
 

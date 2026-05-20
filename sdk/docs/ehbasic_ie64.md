@@ -427,6 +427,12 @@ privileged update helper; in non-appliance mode it requires operator
 confirmation before the helper is invoked. `HOST REBOOT` and `HOST POWEROFF`
 ask the helper to reboot or power off the host.
 
+Display builds show a full-screen HOST overlay for long-running helper output.
+`HOST NET` and `HOST UPDATE` stream helper output into that overlay with
+PageUp/PageDown and mouse-wheel scrollback. When the command reaches a terminal
+state, the overlay shows a five-second return-to-BASIC countdown; `Esc`,
+`Enter`, or `Space` returns immediately.
+
 The helper reports completion through the host-helper status and exit MMIO
 registers. `STATUS_OK` returns to BASIC normally. `STATUS_CANCEL`,
 `STATUS_ERR`, and `STATUS_DISABLED` raise `?FC ERROR` so BASIC programs cannot
@@ -435,8 +441,8 @@ silently continue after a denied or failed host operation.
 `-ehbasic-host-appliance` skips the `HOST UPDATE` confirmation prompt and is
 intended only for controlled appliance deployments.
 
-In the x64 live USB image, host-side AppArmor, polkit, and firewall controls
-are documented in the live USB security model in
+In the x64 live USB image, the root-owned HOST helper broker, host-side
+AppArmor, and firewall controls are documented in the live USB security model in
 [`README.md`](../../README.md#live-usb-quick-start).
 
 ### DIR

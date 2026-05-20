@@ -23,11 +23,10 @@ make x64-live-qemu
 On a normal boot, Intuition Engine starts fullscreen at the EhBASIC `Ready` prompt. The live image mounts its FAT32 share as the runtime file area, so paths in BASIC are relative to that share.
 
 Live images include the host helper binary and its security policy. BASIC
-`HOST` command execution is still gated by the emulator launch flags:
-`-ehbasic-host` enables the helper, and `-ehbasic-host-appliance` is reserved
-for controlled appliance deployments where `HOST UPDATE` should not prompt on
-the emulator terminal. Use `HOST HELP` inside BASIC for the available
-subcommands when the helper is enabled.
+`HOST` command execution is enabled by the live-image launcher with
+`-ehbasic-host -ehbasic-host-appliance`. Normal emulator runs outside the live
+image still keep host command execution disabled unless `-ehbasic-host` is
+supplied. Use `HOST HELP` inside BASIC for the available subcommands.
 
 Useful first commands:
 
@@ -68,12 +67,13 @@ security domains:
   access needed by Cage, Xwayland, PipeWire, and the emulator.
 - The external helper is installed separately as the root-owned
   `/usr/libexec/intuitionengine-host-helper`.
-- Host helper elevation uses `pkexec` with a narrow polkit rule for the local,
-  active `ie` session. The emulator may request that helper, but it does not
-  run as root itself.
-- The host helper has its own AppArmor profile. Package maintenance and system
-  control paths run through constrained child profiles for tools such as
-  `apt-get`, `dpkg`, and `systemctl`.
+- The live image starts a root-owned systemd HOST helper broker. The emulator
+  requests broker commands over `/run/intuitionengine-host-helper.sock`; it
+  does not run as root itself.
+- The host helper has its own AppArmor profile. System-control paths such as
+  `systemctl` remain confined, while `apt-get` transitions out of the helper
+  profile so future package maintainer scripts can update the persistent root
+  without an AppArmor allowlist chase.
 - The live image enables a UFW baseline with incoming connections denied and
   outgoing connections allowed.
 - Spare virtual terminals are not exposed to the appliance user. The image
@@ -168,7 +168,11 @@ JIT availability depends on the host OS, host architecture, and guest CPU. Check
 EhBASIC can execute host maintenance commands with `-ehbasic-host`. The HOST
 register window is present in the VM bus, but command execution is disabled by
 default in normal emulator runs; `-ehbasic-host-appliance` skips the
-`HOST UPDATE` confirmation prompt for controlled appliance deployments.
+`HOST UPDATE` confirmation prompt for controlled appliance deployments. In the
+x64 live image, `HOST NET` and `HOST UPDATE` display a full-screen status
+overlay with streamed helper output; completed commands show a five-second
+return-to-BASIC countdown and can be dismissed immediately with `Esc`, `Enter`,
+or `Space`.
 
 ### Audio and Video
 

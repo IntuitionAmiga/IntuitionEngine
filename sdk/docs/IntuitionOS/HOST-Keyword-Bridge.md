@@ -64,3 +64,10 @@ The helper handles WiFi through NetworkManager's system DBus API. It requests
 scans, reads access point objects, and activates volatile connection profiles
 directly; it does not invoke `nmcli` or grant NetworkManager control to the
 unprivileged `ie` session.
+
+In display builds, long-running helper commands can be observed through the
+HOST overlay. The overlay streams helper output for commands such as
+`HOST NET` and `HOST UPDATE`, supports PageUp/PageDown and mouse-wheel
+scrollback, and returns to BASIC automatically after a five-second completion
+countdown. The MMIO status and exit registers remain the authoritative guest
+programming contract.

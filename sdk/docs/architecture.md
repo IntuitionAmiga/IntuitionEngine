@@ -19,11 +19,17 @@ It adds host-side controls around the normal VM architecture:
 - The emulator profile allows the display, input, audio, share, logging, and
   Unix socket access needed by Cage, Xwayland, PipeWire, and the engine.
 - The external host helper is a separate root-owned binary at
-  `/usr/libexec/intuitionengine-host-helper`. Elevation uses `pkexec` and a
-  narrow polkit rule for the local active `ie` session.
-- The helper has its own AppArmor profile. Maintenance commands that need host
-  tools run through constrained child profiles for tools such as `apt-get`,
-  `dpkg`, and `systemctl`.
+  `/usr/libexec/intuitionengine-host-helper`. The live image starts it as a
+  root-owned systemd broker, and the emulator sends allowlisted requests over
+  `/run/intuitionengine-host-helper.sock` instead of running as root.
+- The helper has its own AppArmor profile. System-control paths such as
+  `systemctl` remain confined; package maintenance uses an unconfined
+  transition for `apt-get` so future package maintainer scripts can update the
+  persistent root without repeatedly extending the helper profile.
+- Display builds attach a HOST command overlay for long-running commands such
+  as `HOST NET` and `HOST UPDATE`. The overlay streams helper output, supports
+  scrollback, and auto-returns to BASIC after a five-second completion
+  countdown.
 - The live image enables a UFW baseline that denies incoming connections and
   allows outgoing connections.
 - Spare virtual terminals are locked down by disabling logind's spare VT

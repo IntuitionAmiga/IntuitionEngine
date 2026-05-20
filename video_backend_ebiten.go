@@ -74,6 +74,7 @@ type EbitenOutput struct {
 
 	monitorOverlay   *MonitorOverlay
 	luaOverlay       *LuaOverlay
+	hostOverlay      *HostOverlay
 	termMMIO         *TerminalMMIO
 	hideSystemCursor bool
 	relativeMouse    relativeMouseCaptureState
@@ -402,6 +403,10 @@ func (eo *EbitenOutput) Update() error {
 		eo.luaOverlay.HandleInput()
 		return nil
 	}
+	if eo.hostOverlay != nil && eo.hostOverlay.IsActive() {
+		eo.hostOverlay.HandleInput()
+		return nil
+	}
 
 	if inpututil.IsKeyJustPressed(ebiten.KeyF11) && (ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight)) {
 		eo.bufferMutex.RLock()
@@ -439,6 +444,12 @@ func (eo *EbitenOutput) SetMonitorOverlay(overlay *MonitorOverlay) {
 func (eo *EbitenOutput) SetLuaOverlay(overlay *LuaOverlay) {
 	eo.bufferMutex.Lock()
 	eo.luaOverlay = overlay
+	eo.bufferMutex.Unlock()
+}
+
+func (eo *EbitenOutput) SetHostOverlay(overlay *HostOverlay) {
+	eo.bufferMutex.Lock()
+	eo.hostOverlay = overlay
 	eo.bufferMutex.Unlock()
 }
 
@@ -1190,6 +1201,15 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	}
 	if eo.luaOverlay != nil && eo.luaOverlay.IsActive() {
 		eo.luaOverlay.Draw(screen)
+		eo.frameCount.Add(1)
+		select {
+		case eo.vsyncChan <- struct{}{}:
+		default:
+		}
+		return
+	}
+	if eo.hostOverlay != nil && eo.hostOverlay.IsActive() {
+		eo.hostOverlay.Draw(screen)
 		eo.frameCount.Add(1)
 		select {
 		case eo.vsyncChan <- struct{}{}:

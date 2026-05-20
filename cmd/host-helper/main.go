@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
+	"os/user"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -26,6 +31,8 @@ const (
 )
 
 const maxWiFiPasswordBytes = 64
+const defaultBrokerSocketPath = "/run/intuitionengine-host-helper.sock"
+const maxBrokerOutputBytes = 4096
 
 type commandRunner interface {
 	Run(ctx context.Context, path string, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error
@@ -59,7 +66,7 @@ type execCommandRunner struct{}
 
 func (execCommandRunner) Run(ctx context.Context, path string, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
 	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/bin", "LANG=C"}
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/bin", "LANG=C", "DEBIAN_FRONTEND=noninteractive"}
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -68,7 +75,7 @@ func (execCommandRunner) Run(ctx context.Context, path string, args []string, st
 
 func (execCommandRunner) Output(ctx context.Context, path string, args []string, stdin io.Reader, stderr io.Writer) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/bin", "LANG=C"}
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/bin", "LANG=C", "DEBIAN_FRONTEND=noninteractive"}
 	cmd.Stdin = stdin
 	cmd.Stderr = stderr
 	return cmd.Output()
@@ -469,9 +476,181 @@ func main() {
 		commands: commands,
 		nm:       nm,
 	}
-	code := run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr, deps)
+	args := os.Args[1:]
+	var code int
+	if len(args) > 0 && args[0] == "serve" {
+		code = runBroker(context.Background(), args[1:], os.Stderr, deps)
+	} else {
+		code = run(context.Background(), args, os.Stdin, os.Stdout, os.Stderr, deps)
+	}
 	log.Printf("intuitionengine-host-helper argv=%q exit=%d", os.Args[1:], code)
 	os.Exit(code)
+}
+
+type hostBrokerRequest struct {
+	Args []string `json:"args"`
+}
+
+type hostBrokerResponse struct {
+	Type     string `json:"type,omitempty"`
+	ExitCode int    `json:"exit_code"`
+	Output   string `json:"output,omitempty"`
+}
+
+func runBroker(ctx context.Context, args []string, stderr io.Writer, deps helperDeps) int {
+	socketPath := defaultBrokerSocketPath
+	if len(args) == 2 && args[0] == "--socket" {
+		socketPath = args[1]
+	} else if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: host-helper serve [--socket PATH]")
+		return exitBadInput
+	}
+
+	_ = os.Remove(socketPath)
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "listen %s: %v\n", socketPath, err)
+		return exitRuntimeFailure
+	}
+	defer func() {
+		_ = ln.Close()
+		_ = os.Remove(socketPath)
+	}()
+
+	if err := os.Chmod(socketPath, 0o660); err != nil {
+		fmt.Fprintf(stderr, "chmod %s: %v\n", socketPath, err)
+		return exitRuntimeFailure
+	}
+	group, err := user.LookupGroup("ie")
+	if err != nil {
+		fmt.Fprintf(stderr, "lookup ie group: %v\n", err)
+		return exitRuntimeFailure
+	}
+	gid, err := strconv.Atoi(group.Gid)
+	if err != nil {
+		fmt.Fprintf(stderr, "parse ie gid %q: %v\n", group.Gid, err)
+		return exitRuntimeFailure
+	}
+	if err := os.Chown(socketPath, 0, gid); err != nil {
+		fmt.Fprintf(stderr, "chown %s: %v\n", socketPath, err)
+		return exitRuntimeFailure
+	}
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return exitOK
+			}
+			fmt.Fprintf(stderr, "accept %s: %v\n", socketPath, err)
+			return exitRuntimeFailure
+		}
+		handleBrokerConn(ctx, conn, deps)
+	}
+}
+
+func handleBrokerConn(ctx context.Context, conn net.Conn, deps helperDeps) {
+	defer conn.Close()
+
+	var request hostBrokerRequest
+	if err := json.NewDecoder(conn).Decode(&request); err != nil {
+		_ = json.NewEncoder(conn).Encode(hostBrokerResponse{Type: "result", ExitCode: exitBadInput, Output: err.Error()})
+		return
+	}
+	if !brokerArgsAllowed(request.Args) {
+		_ = json.NewEncoder(conn).Encode(hostBrokerResponse{Type: "result", ExitCode: exitBadInput, Output: "disallowed host-helper command"})
+		return
+	}
+
+	output := newBrokerOutput(conn, maxBrokerOutputBytes)
+	exitCode := run(ctx, request.Args, nil, output, output, deps)
+	_ = output.EncodeResult(exitCode)
+}
+
+func brokerArgsAllowed(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "net", "reboot", "poweroff":
+		return len(args) == 1
+	case "update":
+		return len(args) == 1 || len(args) == 2 && args[1] == "--appliance"
+	default:
+		return false
+	}
+}
+
+type boundedOutput struct {
+	mu    sync.Mutex
+	buf   []byte
+	limit int
+}
+
+func newBoundedOutput(limit int) *boundedOutput {
+	return &boundedOutput{limit: limit}
+}
+
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.limit <= 0 {
+		return len(p), nil
+	}
+	if len(p) >= b.limit {
+		b.buf = append(b.buf[:0], p[len(p)-b.limit:]...)
+		return len(p), nil
+	}
+	b.buf = append(b.buf, p...)
+	if len(b.buf) > b.limit {
+		b.buf = append(b.buf[:0], b.buf[len(b.buf)-b.limit:]...)
+	}
+	return len(p), nil
+}
+
+func (b *boundedOutput) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf...)
+}
+
+type brokerOutput struct {
+	mu      sync.Mutex
+	encoder *json.Encoder
+	output  *boundedOutput
+}
+
+func newBrokerOutput(w io.Writer, limit int) *brokerOutput {
+	return &brokerOutput{
+		encoder: json.NewEncoder(w),
+		output:  newBoundedOutput(limit),
+	}
+}
+
+func (b *brokerOutput) Write(p []byte) (int, error) {
+	if b.output != nil {
+		_, _ = b.output.Write(p)
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err := b.encoder.Encode(hostBrokerResponse{Type: "output", Output: string(p)}); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (b *brokerOutput) EncodeResult(exitCode int) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.encoder.Encode(hostBrokerResponse{
+		Type:     "result",
+		ExitCode: exitCode,
+		Output:   string(b.output.Bytes()),
+	})
 }
 
 func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, deps helperDeps) int {
@@ -541,7 +720,13 @@ func runUpdate(ctx context.Context, stdout io.Writer, stderr io.Writer, commands
 	if err := commands.Run(ctx, "/usr/bin/apt-get", []string{"update"}, nil, stdout, stderr); err != nil {
 		return exitAptUpdateFailed
 	}
-	if err := commands.Run(ctx, "/usr/bin/apt-get", []string{"upgrade", "-y"}, nil, stdout, stderr); err != nil {
+	args := []string{
+		"upgrade",
+		"-y",
+		"-o", "Dpkg::Options::=--force-confdef",
+		"-o", "Dpkg::Options::=--force-confold",
+	}
+	if err := commands.Run(ctx, "/usr/bin/apt-get", args, nil, stdout, stderr); err != nil {
 		return exitAptUpgradeFailed
 	}
 	return exitOK
@@ -557,6 +742,9 @@ func runSystemctl(ctx context.Context, verb string, stdout io.Writer, stderr io.
 func runWiFiScan(ctx context.Context, stdout io.Writer, stderr io.Writer, nm networkManagerClient) int {
 	networks, err := nm.Scan(ctx)
 	if err != nil {
+		if strings.Contains(err.Error(), "no wifi device") {
+			return exitOK
+		}
 		fmt.Fprintf(stderr, "wifi scan failed: %v\n", err)
 		return exitRuntimeFailure
 	}
