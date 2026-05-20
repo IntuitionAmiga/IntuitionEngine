@@ -23,7 +23,6 @@ const DefaultHostHelperPath = "/usr/libexec/intuitionengine-host-helper"
 const DefaultPkexecPath = "/usr/bin/pkexec"
 const DefaultHostHelperSocketPath = "/run/intuitionengine-host-helper.sock"
 const DefaultHostHelperLogPath = "/tmp/ie-host-helper.log"
-const LiveHostHelperLogPath = "/var/ie/share/host-helper.log"
 
 const (
 	HostMMIOCommand = 0x00
@@ -375,7 +374,7 @@ func logHostHelperFailure(message string) {
 }
 
 func writeHostHelperLog(entry string) {
-	logPaths := []string{LiveHostHelperLogPath, DefaultHostHelperLogPath}
+	logPaths := []string{DefaultHostHelperLogPath}
 	if override := os.Getenv("IE_HOST_HELPER_LOG"); override != "" {
 		logPaths = []string{override}
 	}

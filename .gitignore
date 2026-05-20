@@ -55,7 +55,7 @@ __pycache__/
 /build-x64-live-*.log
 /intuition-engine-x64.img
 /intuition-engine-x64.img.zst
-/intuition-engine-x64.tar.zst
+/intuition-engine-x64.zip
 
 # Release artifacts
 *.AppImage

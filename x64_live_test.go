@@ -181,8 +181,10 @@ func TestX64LiveScriptContract(t *testing.T) {
 		`X11_RUNTIME_PKGS="libxrandr2,libxxf86vm1,libxi6,libxcursor1,libxinerama1,libx11-6,libxext6,libxfixes3,libxrender1"`,
 		`AUDIO_PKGS="pipewire,pipewire-pulse,wireplumber,pipewire-alsa,alsa-utils,dbus-user-session"`,
 		`SECUREBOOT_PKGS="shim-signed,grub-efi-amd64-signed,sbsigntool"`,
+		`PLYMOUTH_PKGS="plymouth,plymouth-themes"`,
 		`NETWORK_PKGS="network-manager,wpasupplicant,wireless-regdb,iw"`,
 		`IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"`,
+		`PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"`,
 		`FINAL_IMAGE_SIZE="12G"`,
 		`ROOT_PART_SIZE="9G"`,
 		`FATSHARE_LABEL="IESHARE"`,
@@ -192,9 +194,11 @@ func TestX64LiveScriptContract(t *testing.T) {
 		`OUTPUT_IMG="${X64_LIVE_OUTPUT_IMG:-${LIVE_OUT_DIR}/intuition-engine-x64.img}"`,
 		`PAYLOAD_CHECK_ONLY=false`,
 		`--check-payload`,
+		`payload_require_file "$PLYMOUTH_SPLASH" "restore splash.png" "Plymouth splash image"`,
 		`mformat -i "$fat_img" -F -v "${FATSHARE_LABEL}" ::`,
-		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd tar python3 go)`,
-		`tar -C "$archive_root" -I 'zstd --fast=31 -T0' -cf "$archive_path" "$(basename "$OUTPUT_IMG")" README.md`,
+		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum)`,
+		`local archive_path="${OUTPUT_IMG%.img}.zip"`,
+		`zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True)`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("build_x64_ie_img.sh missing %q", want)
@@ -258,6 +262,71 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("build_x64_ie_img.sh missing %q", want)
 		}
+	}
+}
+
+func TestX64LiveUsesPlymouthSplash(t *testing.T) {
+	body := readX64LiveScript(t)
+
+	for _, want := range []string{
+		`PLYMOUTH_PKGS="plymouth,plymouth-themes"`,
+		`ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${SECUREBOOT_PKGS},${PLYMOUTH_PKGS},${SHARE_GROW_PKGS},${NETWORK_PKGS},${HOST_HELPER_PKGS}"`,
+		`PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"`,
+		`cat > "${WORK_DIR}/intuition-engine.plymouth"`,
+		`ModuleName=script`,
+		`ImageDir=/usr/share/plymouth/themes/intuition-engine`,
+		`ScriptFile=/usr/share/plymouth/themes/intuition-engine/intuition-engine.script`,
+		`cat > "${WORK_DIR}/intuition-engine.script"`,
+		`logo = Image("splash.png");`,
+		`Plymouth.SetRefreshFunction(refresh_callback);`,
+		`cat > "${WORK_DIR}/zz-intuition-engine-grub.cfg"`,
+		`--mkdir /usr/share/plymouth/themes/intuition-engine`,
+		`--upload "${WORK_DIR}/intuition-engine.plymouth:/usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth"`,
+		`--upload "${WORK_DIR}/intuition-engine.script:/usr/share/plymouth/themes/intuition-engine/intuition-engine.script"`,
+		`--upload "${PLYMOUTH_SPLASH}:/usr/share/plymouth/themes/intuition-engine/splash.png"`,
+		`--upload "${WORK_DIR}/zz-intuition-engine-grub.cfg:/etc/default/grub.d/zz-intuition-engine.cfg"`,
+		`update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth 100`,
+		`update-alternatives --set default.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth`,
+		`update-initramfs -u -k all`,
+		`GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 mitigations=off"`,
+		`GRUB_CMDLINE_LINUX=""`,
+		`unset GRUB_TERMINAL`,
+		`plymouth=${PLYMOUTH_PKGS}`,
+		`plymouth_splash=splash.png`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("build_x64_ie_img.sh missing Plymouth splash contract %q", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		`splash=0`,
+		`GRUB_CMDLINE_LINUX="console=ttyS0`,
+		`GRUB_CMDLINE_LINUX_DEFAULT="console=tty1 console=ttyS0`,
+		`plymouth-set-default-theme intuition-engine`,
+		`plymouth-set-default-theme -R`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("build_x64_ie_img.sh contains forbidden verbose boot pattern %q", forbidden)
+		}
+	}
+}
+
+func TestX64LiveGoldenImageRunsAptUpgrade(t *testing.T) {
+	body := readX64LiveScript(t)
+
+	upgrade := `apt-get update; apt-get upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold; apt-get autoremove -y; apt-get clean`
+	verify := `dpkg-query -W linux-lowlatency`
+	if !strings.Contains(body, upgrade) {
+		t.Fatalf("build_x64_ie_img.sh missing golden apt upgrade contract %q", upgrade)
+	}
+	upgradeIdx := strings.Index(body, upgrade)
+	verifyIdx := strings.Index(body, verify)
+	if verifyIdx == -1 {
+		t.Fatalf("build_x64_ie_img.sh missing signed-kernel verification contract %q", verify)
+	}
+	if upgradeIdx > verifyIdx {
+		t.Fatalf("golden apt upgrade must run before signed-kernel verification")
 	}
 }
 
@@ -394,7 +463,7 @@ func TestX64LiveNoShareDoesNotRequireMtools(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd tar python3 go)`,
+		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum)`,
 		`if [[ "${CREATE_SHARE}" == "true" ]]; then`,
 		`required_cmds+=(mformat mcopy)`,
 	} {
@@ -608,12 +677,15 @@ func TestX64LiveGoldenCacheHasContentStamp(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`GOLDEN_STAMP_VERSION="x64-live-golden-v35-persistent-root-unconfined-apt"`,
+		`GOLDEN_STAMP_VERSION="x64-live-golden-v39-quiet-plymouth-splash"`,
 		`GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"`,
 		`write_golden_stamp`,
 		`expected_golden_stamp`,
 		`Golden image stamp mismatch; rebuilding`,
 		`write_golden_stamp`,
+		`plymouth_splash_sha256="$(sha256sum "$PLYMOUTH_SPLASH")"`,
+		`plymouth_splash_sha256="${plymouth_splash_sha256%% *}"`,
+		`plymouth_splash_sha256=${plymouth_splash_sha256}`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("build_x64_ie_img.sh missing golden stamp contract %q", want)
@@ -660,7 +732,7 @@ func TestX64LiveArtifactsAreIgnored(t *testing.T) {
 		"/x64-img-build-work/",
 		"/build-x64-live-*.log",
 		"/intuition-engine-x64.img",
-		"/intuition-engine-x64.tar.zst",
+		"/intuition-engine-x64.zip",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf(".gitignore missing live image artifact ignore %q", want)

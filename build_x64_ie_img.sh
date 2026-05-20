@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Ubuntu x64 Intuition Engine live USB image builder.
-# Produces build/x64-live/intuition-engine-x64.img and .tar.zst by default.
+# Produces build/x64-live/intuition-engine-x64.img and .zip by default.
 
 set -euo pipefail
 
@@ -29,20 +29,22 @@ EXPANDED_IMG="${WORK_DIR}/ubuntu-26.04-ie-expanded.img"
 GOLDEN_IMG="ubuntu-26.04-lowlatency-cage-golden.img"
 GOLDEN_IMG_PATH="${WORK_DIR}/${GOLDEN_IMG}"
 GOLDEN_IMG_MAX_AGE_DAYS=30
-GOLDEN_STAMP_VERSION="x64-live-golden-v35-persistent-root-unconfined-apt"
+GOLDEN_STAMP_VERSION="x64-live-golden-v39-quiet-plymouth-splash"
 GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"
 KERNEL_PKG="linux-lowlatency"
 COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core,kbd"
 X11_RUNTIME_PKGS="libxrandr2,libxxf86vm1,libxi6,libxcursor1,libxinerama1,libx11-6,libxext6,libxfixes3,libxrender1"
 AUDIO_PKGS="pipewire,pipewire-pulse,wireplumber,pipewire-alsa,alsa-utils,dbus-user-session"
 SECUREBOOT_PKGS="shim-signed,grub-efi-amd64-signed,sbsigntool"
+PLYMOUTH_PKGS="plymouth,plymouth-themes"
 SHARE_GROW_PKGS="cloud-guest-utils,dosfstools,fatresize,parted"
 NETWORK_PKGS="network-manager,wpasupplicant,wireless-regdb,iw"
 HOST_HELPER_PKGS="polkitd,pkexec,ufw,apparmor,apparmor-utils"
-ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${SECUREBOOT_PKGS},${SHARE_GROW_PKGS},${NETWORK_PKGS},${HOST_HELPER_PKGS}"
+ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${SECUREBOOT_PKGS},${PLYMOUTH_PKGS},${SHARE_GROW_PKGS},${NETWORK_PKGS},${HOST_HELPER_PKGS}"
 IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"
 IE_INSTALL_NAME="IntuitionEngine"
 HOST_HELPER_BINARY="${WORK_DIR}/intuitionengine-host-helper"
+PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"
 AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS/bin/ie-m68k/bin/ie-m68k/AROS}"
 FINAL_IMAGE_SIZE="12G"
 ROOT_PART_SIZE="9G"
@@ -119,7 +121,7 @@ trap cleanup EXIT
 
 check_dependencies() {
     log_section "Checking dependencies"
-    local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file zstd tar python3 go)
+    local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum)
     if [[ "${CREATE_SHARE}" == "true" ]]; then
         required_cmds+=(mformat mcopy)
     fi
@@ -135,8 +137,8 @@ check_dependencies() {
     done
     if [[ ${#missing_deps[@]} -gt 0 ]]; then
         log_error "Missing required dependencies: ${missing_deps[*]}"
-        log_error "Debian/Ubuntu packages: libguestfs-tools aria2 curl qemu-utils mtools zstd"
-        log_error "openSUSE packages: libguestfs guestfs-tools aria2 curl qemu-tools mtools zstd"
+        log_error "Debian/Ubuntu packages: libguestfs-tools aria2 curl qemu-utils mtools"
+        log_error "openSUSE packages: libguestfs guestfs-tools aria2 curl qemu-tools mtools"
         exit 1
     fi
 
@@ -225,6 +227,7 @@ check_live_payload_inputs() {
         log_error "Producer: make x86-64-v3"
         exit 1
     fi
+    payload_require_file "$PLYMOUTH_SPLASH" "restore splash.png" "Plymouth splash image"
 
     payload_require_file "${SCRIPT_DIR}/embedded/ab3d2/_build.zip" "make x64-live-ab3d2-assets" "AB3D2 embedded runtime asset zip"
     payload_require_file "${AROS_RELEASE_DIR}/S/Startup-Sequence" "make aros-release-assets" "AROS Startup-Sequence"
@@ -772,6 +775,41 @@ network:
   renderer: NetworkManager
 EOF
 
+    cat > "${WORK_DIR}/intuition-engine.plymouth" <<'EOF'
+[Plymouth Theme]
+Name=Intuition Engine
+Description=Intuition Engine live boot splash
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/intuition-engine
+ScriptFile=/usr/share/plymouth/themes/intuition-engine/intuition-engine.script
+EOF
+
+    cat > "${WORK_DIR}/intuition-engine.script" <<'EOF'
+Window.SetBackgroundTopColor(0, 0, 0);
+Window.SetBackgroundBottomColor(0, 0, 0);
+
+logo = Image("splash.png");
+logo_sprite = Sprite(logo);
+
+fun refresh_callback() {
+    logo_sprite.SetX(Window.GetWidth() / 2 - logo.GetWidth() / 2);
+    logo_sprite.SetY(Window.GetHeight() / 2 - logo.GetHeight() / 2);
+}
+
+Plymouth.SetRefreshFunction(refresh_callback);
+EOF
+
+    cat > "${WORK_DIR}/zz-intuition-engine-grub.cfg" <<'EOF'
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 mitigations=off"
+GRUB_CMDLINE_LINUX=""
+GRUB_TIMEOUT_STYLE=hidden
+GRUB_TIMEOUT=0
+GRUB_RECORDFAIL_TIMEOUT=0
+unset GRUB_TERMINAL
+EOF
+
     cat > "${WORK_DIR}/ie-grow-share.sh" <<'EOF'
 #!/bin/sh
 set -eu
@@ -1174,6 +1212,10 @@ check_golden_image() {
 }
 
 expected_golden_stamp() {
+    local plymouth_splash_sha256
+    plymouth_splash_sha256="$(sha256sum "$PLYMOUTH_SPLASH")"
+    plymouth_splash_sha256="${plymouth_splash_sha256%% *}"
+
     cat <<EOF
 version=${GOLDEN_STAMP_VERSION}
 ubuntu=${UBUNTU_CLOUD_IMG_URL}
@@ -1186,6 +1228,9 @@ session=greetd-cage-default-basic-v1
 persistent_root=ext4
 network=${NETWORK_PKGS}
 audio=${AUDIO_PKGS}
+plymouth=${PLYMOUTH_PKGS}
+plymouth_splash=splash.png
+plymouth_splash_sha256=${plymouth_splash_sha256}
 host_helper=${HOST_HELPER_PKGS}
 EOF
 }
@@ -1212,6 +1257,7 @@ build_golden_image() {
 
     virt-customize -a "$EXPANDED_IMG" \
         --install "${ALL_PKGS}" \
+        --run-command 'set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold; apt-get autoremove -y; apt-get clean' \
         --run-command 'set -e; dpkg-query -W linux-lowlatency >/dev/null; KIMG=$(find /boot -maxdepth 1 -type f -name "vmlinuz-*" | sort -V | tail -n1); test -n "$KIMG"; sbverify --list "$KIMG" | grep -q "image signature issuer" || (echo "FATAL: installed kernel is not signed; switch KERNEL_PKG to linux-generic"; exit 1)' \
         --run-command 'existing=$(getent passwd 1000 | cut -d: -f1); if [ -n "$existing" ]; then case " ubuntu cloud-user " in *" $existing "*) userdel -r "$existing" || { echo "FATAL: userdel $existing failed"; exit 1; } ;; *) echo "FATAL: UID 1000 occupied by unexpected user $existing; refusing to delete. Use a pristine Ubuntu cloud image."; exit 1 ;; esac; fi' \
         --run-command 'existing_g=$(getent group 1000 | cut -d: -f1); if [ -n "$existing_g" ]; then case " ubuntu cloud-user " in *" $existing_g "*) groupdel "$existing_g" || { echo "FATAL: groupdel $existing_g failed"; exit 1; } ;; *) echo "FATAL: GID 1000 occupied by unexpected group $existing_g"; exit 1 ;; esac; fi' \
@@ -1234,6 +1280,12 @@ build_golden_image() {
         --mkdir /usr/local/share/kbd \
         --mkdir /usr/local/share/kbd/keymaps \
         --upload "${WORK_DIR}/ie-no-vt-switch.map:/usr/local/share/kbd/keymaps/ie-no-vt-switch.map" \
+        --mkdir /usr/share/plymouth/themes/intuition-engine \
+        --upload "${WORK_DIR}/intuition-engine.plymouth:/usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth" \
+        --upload "${WORK_DIR}/intuition-engine.script:/usr/share/plymouth/themes/intuition-engine/intuition-engine.script" \
+        --upload "${PLYMOUTH_SPLASH}:/usr/share/plymouth/themes/intuition-engine/splash.png" \
+        --mkdir /etc/default/grub.d \
+        --upload "${WORK_DIR}/zz-intuition-engine-grub.cfg:/etc/default/grub.d/zz-intuition-engine.cfg" \
         --upload "${WORK_DIR}/90-ie-networkmanager.yaml:/etc/netplan/90-ie-networkmanager.yaml" \
         --upload "${WORK_DIR}/ie-grow-share.sh:/usr/local/sbin/ie-grow-share.sh" \
         --upload "${WORK_DIR}/ie-grow-share.service:/etc/systemd/system/ie-grow-share.service" \
@@ -1246,16 +1298,20 @@ build_golden_image() {
         --upload "${WORK_DIR}/opt.ie.IntuitionEngine:/etc/apparmor.d/opt.ie.IntuitionEngine" \
         --upload "${WORK_DIR}/usr.libexec.intuitionengine-host-helper:/etc/apparmor.d/usr.libexec.intuitionengine-host-helper" \
         --run-command 'chmod +x /usr/local/sbin/ie-grow-share.sh' \
-        --run-command 'chmod 0644 /etc/systemd/logind.conf.d/10-ie-live.conf /usr/local/share/kbd/keymaps/ie-no-vt-switch.map' \
+        --run-command 'chmod 0644 /etc/systemd/logind.conf.d/10-ie-live.conf /etc/default/grub.d/zz-intuition-engine.cfg /usr/local/share/kbd/keymaps/ie-no-vt-switch.map /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.script /usr/share/plymouth/themes/intuition-engine/splash.png' \
         --run-command 'chmod 0644 /etc/systemd/system/ie-grow-share.service /etc/systemd/system/ie-firewall.service /etc/systemd/system/ie-no-vt-switch.service /etc/systemd/system/ie-apparmor.service /etc/systemd/system/ie-host-helper.service' \
         --run-command 'chmod 0644 /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules' \
         --run-command 'chmod 0644 /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper' \
-        --run-command 'chown root:root /etc/systemd/logind.conf.d/10-ie-live.conf /usr/local/share/kbd/keymaps/ie-no-vt-switch.map /etc/systemd/system/ie-grow-share.service /etc/systemd/system/ie-firewall.service /etc/systemd/system/ie-no-vt-switch.service /etc/systemd/system/ie-apparmor.service /etc/systemd/system/ie-host-helper.service /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper' \
+        --run-command 'chown root:root /etc/systemd/logind.conf.d/10-ie-live.conf /etc/default/grub.d/zz-intuition-engine.cfg /usr/local/share/kbd/keymaps/ie-no-vt-switch.map /usr/share/plymouth/themes/intuition-engine /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.script /usr/share/plymouth/themes/intuition-engine/splash.png /etc/systemd/system/ie-grow-share.service /etc/systemd/system/ie-firewall.service /etc/systemd/system/ie-no-vt-switch.service /etc/systemd/system/ie-apparmor.service /etc/systemd/system/ie-host-helper.service /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper' \
         --run-command 'for n in $(seq 1 12); do systemctl mask "getty@tty${n}.service"; done' \
         --run-command 'systemctl enable greetd.service seatd.service' \
         --run-command 'systemctl enable NetworkManager.service' \
         --run-command 'systemctl enable ie-grow-share.service ie-firewall.service ie-no-vt-switch.service ie-apparmor.service ie-host-helper.service' \
-        --run-command 'sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash=0 loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 mitigations=off\"/" /etc/default/grub' \
+        --run-command 'update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth 100' \
+        --run-command 'update-alternatives --set default.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth' \
+        --run-command 'update-initramfs -u -k all' \
+        --run-command 'grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub && sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 mitigations=off\"/" /etc/default/grub || echo "GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 mitigations=off\"" >> /etc/default/grub' \
+        --run-command 'grep -q "^GRUB_CMDLINE_LINUX=" /etc/default/grub && sed -i "s/^GRUB_CMDLINE_LINUX=.*/GRUB_CMDLINE_LINUX=\"\"/" /etc/default/grub || echo "GRUB_CMDLINE_LINUX=\"\"" >> /etc/default/grub' \
         --run-command 'sed -i "s/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/" /etc/default/grub' \
         --run-command 'grep -q "^GRUB_RECORDFAIL_TIMEOUT=" /etc/default/grub && sed -i "s/^GRUB_RECORDFAIL_TIMEOUT=.*/GRUB_RECORDFAIL_TIMEOUT=0/" /etc/default/grub || echo "GRUB_RECORDFAIL_TIMEOUT=0" >> /etc/default/grub' \
         --run-command 'mkdir -p /boot/efi/EFI/BOOT' \
@@ -1514,14 +1570,25 @@ validate_image() {
 
 compress_image() {
     log_section "Creating compressed release archive"
-    local archive_path="${OUTPUT_IMG%.img}.tar.zst"
+    local archive_path="${OUTPUT_IMG%.img}.zip"
     local archive_root="${WORK_DIR}/x64-live-archive"
     rm -rf "$archive_root"
     mkdir -p "$archive_root"
     cp "$OUTPUT_IMG" "$archive_root/$(basename "$OUTPUT_IMG")"
     cp "${SCRIPT_DIR}/README.md" "$archive_root/README.md"
     rm -f "$archive_path"
-    tar -C "$archive_root" -I 'zstd --fast=31 -T0' -cf "$archive_path" "$(basename "$OUTPUT_IMG")" README.md 2>&1 | tee -a "$LOG_FILE"
+    python3 - "$archive_path" "$archive_root" "$(basename "$OUTPUT_IMG")" README.md <<'PY' 2>&1 | tee -a "$LOG_FILE"
+import os
+import sys
+import zipfile
+
+archive_path, archive_root = sys.argv[1], sys.argv[2]
+entries = sys.argv[3:]
+
+with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as zf:
+    for entry in entries:
+        zf.write(os.path.join(archive_root, entry), entry)
+PY
     log_success "Created ${archive_path}"
 }
 
@@ -1550,7 +1617,7 @@ main() {
     format_share_partition_rootless
     validate_image
     compress_image
-    log_success "x64 live image complete: ${OUTPUT_IMG%.img}.tar.zst"
+    log_success "x64 live image complete: ${OUTPUT_IMG%.img}.zip"
 }
 
 main "$@"

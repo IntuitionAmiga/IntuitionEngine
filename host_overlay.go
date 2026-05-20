@@ -91,7 +91,6 @@ func (o *HostOverlay) HostCommandCompleted(cmd HostCommand, result HostCommandRe
 	default:
 		o.status = "failed"
 		o.appendLineLocked(fmt.Sprintf("Command failed: %s", HostHelperExitStatusText(result.ExitCode)))
-		o.appendLineLocked("Details are also written to host-helper.log on the shared disk.")
 		o.appendLineLocked("Returning to BASIC in 5 seconds.")
 	}
 	o.scroll = 0

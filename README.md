@@ -20,7 +20,10 @@ make x64-live
 make x64-live-qemu
 ```
 
-On a normal boot, Intuition Engine starts fullscreen at the EhBASIC `Ready` prompt. The live image mounts its FAT32 share as the runtime file area, so paths in BASIC are relative to that share.
+On a normal boot, the live image uses a quiet Plymouth boot splash and then
+starts Intuition Engine fullscreen at the EhBASIC `Ready` prompt. The live image
+mounts its FAT32 share as the runtime file area, so paths in BASIC are relative
+to that share.
 
 Live images include the host helper binary and its security policy. BASIC
 `HOST` command execution is enabled by the live-image launcher with
@@ -261,9 +264,9 @@ Default outputs:
 | Output | Path |
 |--------|------|
 | Raw image | `build/x64-live/intuition-engine-x64.img` |
-| Archive | `build/x64-live/intuition-engine-x64.tar.zst` |
+| Archive | `build/x64-live/intuition-engine-x64.zip` |
 
-The live-image script requires host image-building tools such as `libguestfs-tools`, `aria2`, `curl`, `qemu-utils`, `mtools`, and `zstd`. It stages the live runtime, SDK/demo payload, EmuTOS assets, AROS assets, IntuitionOS assets, and the files required by bundled services as part of `make x64-live`; these bundled payloads should not require manual copying. Host SDK tool binaries are not bundled on the FAT32 share.
+The live-image script requires host image-building tools such as `libguestfs-tools`, `aria2`, `curl`, `qemu-utils`, and `mtools`. It stages the live runtime, SDK/demo payload, EmuTOS assets, AROS assets, IntuitionOS assets, the Plymouth splash theme, and the files required by bundled services as part of `make x64-live`; these bundled payloads should not require manual copying. The cached golden base is upgraded during rebuilds so first boot starts with fewer pending package updates. Host SDK tool binaries are not bundled on the FAT32 share.
 
 Use [DEVELOPERS.md](DEVELOPERS.md) for full build, release, and contribution details.
 
