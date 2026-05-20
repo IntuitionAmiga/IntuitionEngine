@@ -29,7 +29,7 @@ EXPANDED_IMG="${WORK_DIR}/ubuntu-26.04-ie-expanded.img"
 GOLDEN_IMG="ubuntu-26.04-lowlatency-cage-golden.img"
 GOLDEN_IMG_PATH="${WORK_DIR}/${GOLDEN_IMG}"
 GOLDEN_IMG_MAX_AGE_DAYS=30
-GOLDEN_STAMP_VERSION="x64-live-golden-v15-basic-host-launch"
+GOLDEN_STAMP_VERSION="x64-live-golden-v16-basic-host-hardening"
 GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"
 KERNEL_PKG="linux-lowlatency"
 COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,mesa-utils,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core"
@@ -39,7 +39,7 @@ SECUREBOOT_PKGS="shim-signed,grub-efi-amd64-signed,sbsigntool"
 OVERLAY_PKG="overlayroot"
 SHARE_GROW_PKGS="cloud-guest-utils,dosfstools,fatresize,parted"
 NETWORK_PKGS="network-manager,wpasupplicant,wireless-regdb,iw"
-HOST_HELPER_PKGS="policykit-1"
+HOST_HELPER_PKGS="policykit-1,ufw,apparmor,apparmor-utils"
 ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${SECUREBOOT_PKGS},${OVERLAY_PKG},${SHARE_GROW_PKGS},${NETWORK_PKGS},${HOST_HELPER_PKGS}"
 IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"
 IE_INSTALL_NAME="IntuitionEngine"
@@ -816,6 +816,24 @@ RemainAfterExit=yes
 WantedBy=sysinit.target
 EOF
 
+    cat > "${WORK_DIR}/ie-firewall.service" <<'EOF'
+[Unit]
+Description=Apply Intuition Engine live image firewall baseline
+Wants=network-pre.target
+Before=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/ufw default deny incoming
+ExecStart=/usr/sbin/ufw default allow outgoing
+ExecStart=/usr/sbin/ufw --force enable
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+WantedBy=network-pre.target
+EOF
+
     cat > "${WORK_DIR}/org.intuitionengine.host.policy" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE policyconfig PUBLIC
@@ -996,16 +1014,17 @@ build_golden_image() {
         --upload "${WORK_DIR}/90-ie-networkmanager.yaml:/etc/netplan/90-ie-networkmanager.yaml" \
         --upload "${WORK_DIR}/ie-grow-share.sh:/usr/local/sbin/ie-grow-share.sh" \
         --upload "${WORK_DIR}/ie-grow-share.service:/etc/systemd/system/ie-grow-share.service" \
+        --upload "${WORK_DIR}/ie-firewall.service:/etc/systemd/system/ie-firewall.service" \
         --upload "${WORK_DIR}/org.intuitionengine.host.policy:/usr/share/polkit-1/actions/org.intuitionengine.host.policy" \
         --upload "${WORK_DIR}/49-intuitionengine.rules:/etc/polkit-1/rules.d/49-intuitionengine.rules" \
         --run-command 'chmod +x /usr/local/sbin/ie-grow-share.sh' \
+        --run-command 'chmod 0644 /etc/systemd/system/ie-grow-share.service /etc/systemd/system/ie-firewall.service' \
         --run-command 'chmod 0644 /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules' \
-        --run-command 'chown root:root /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules' \
-        --run-command 'systemctl mask getty@tty1.service' \
+        --run-command 'chown root:root /etc/systemd/system/ie-grow-share.service /etc/systemd/system/ie-firewall.service /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules' \
+        --run-command 'systemctl mask getty@tty1.service getty@tty2.service' \
         --run-command 'systemctl enable greetd.service seatd.service' \
         --run-command 'systemctl enable NetworkManager.service' \
-        --run-command 'systemctl enable getty@tty2.service' \
-        --run-command 'systemctl enable ie-grow-share.service' \
+        --run-command 'systemctl enable ie-grow-share.service ie-firewall.service' \
         --run-command 'sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash=0 loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 mitigations=off\"/" /etc/default/grub' \
         --run-command 'sed -i "s/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/" /etc/default/grub' \
         --run-command 'grep -q "^GRUB_RECORDFAIL_TIMEOUT=" /etc/default/grub && sed -i "s/^GRUB_RECORDFAIL_TIMEOUT=.*/GRUB_RECORDFAIL_TIMEOUT=0/" /etc/default/grub || echo "GRUB_RECORDFAIL_TIMEOUT=0" >> /etc/default/grub' \
@@ -1221,12 +1240,16 @@ write_fstab() {
     os_root_dev="$(discover_root_device "$OUTPUT_IMG")"
     log "OS root partition: ${os_root_dev}"
 
+    virt-customize -a "$OUTPUT_IMG" \
+        --run-command "awk 'BEGIN{OFS=\"\t\"} /^#/ || NF < 4 {print; next} (\$2 == \"/\" || \$2 == \"/boot\") && \$4 !~ /(^|,)relatime(,|$)/ {\$4 = \$4 \",relatime\"} {print}' /etc/fstab > /etc/fstab.ie && mv /etc/fstab.ie /etc/fstab" \
+        2>&1 | tee -a "$LOG_FILE"
+
     if [[ "${CREATE_SHARE}" == "true" ]]; then
         guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
 run
 mount ${os_root_dev} /
 mkdir-p /var/ie/share
-write-append /etc/fstab "LABEL=IESHARE /var/ie/share vfat defaults,nofail,umask=0022,uid=1000,gid=1000 0 0\n"
+write-append /etc/fstab "LABEL=IESHARE /var/ie/share vfat defaults,relatime,nofail,umask=0022,uid=1000,gid=1000 0 0\n"
 umount /
 GUESTFISH_EOF
     fi
