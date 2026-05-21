@@ -228,6 +228,7 @@ repl_read:
     move.q  r8, r22                 ; R8 = line number
     la      r9, 0x021100            ; R9 = tokenised content
     jsr     line_store
+    bnez    r8, repl_loop
 
     bra     repl_read               ; Back to input (no "Ready" prompt)
 
@@ -237,6 +238,7 @@ repl_delete_line:
     move.q  r9, r0                  ; R9 = unused
     move.q  r10, r0                 ; R10 = 0 (signals deletion)
     jsr     line_store
+    bnez    r8, repl_loop
     bra     repl_read
 
 repl_immediate:

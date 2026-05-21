@@ -16,8 +16,8 @@ Comprehensive reference for the Enhanced BASIC interpreter running on the Intuit
 8. [Memory Map Reference](#8-memory-map-reference)
 9. [Hardware Register Reference](#9-hardware-register-reference)
 10. [Machine Code Interface](#10-machine-code-interface)
-11. [Error Messages](#11-error-messages)
-12. [Example Programs](#12-example-programs)
+11. [Runtime Errors](#11-runtime-errors)
+12. [Example Programmes](#12-example-programmes)
 13. [Appendices](#13-appendices)
 
 ---
@@ -26,7 +26,7 @@ Comprehensive reference for the Enhanced BASIC interpreter running on the Intuit
 
 EhBASIC IE64 is a port of Lee Davison's Enhanced BASIC (EhBASIC) to the Intuition Engine's IE64 RISC processor. The original EhBASIC was written in 6502 assembly and later ported to the Motorola 68000; this version is a ground-up reimplementation in IE64 assembly, preserving the language semantics whilst taking advantage of the IE64's 64-bit register file and compare-and-branch instructions.
 
-The Intuition Engine is a retro-inspired virtual machine that emulates multiple CPUs (6502, Z80, M68K, IE32, IE64) alongside IE-native and compatibility-inspired video/audio hardware: VGA with copper coprocessor and blitter, ULA (ZX Spectrum), TED (Commodore 16/Plus4), ANTIC/GTIA (Atari-inspired display list), Voodoo 3DFX, and a full complement of sound chips (SoundChip, PSG/AY-3-8910, SID/MOS 6581, POKEY, TED audio, AHX tracker). EhBASIC IE64 provides direct access to all of this hardware through extension commands.
+The Intuition Engine is a retro-inspired virtual machine that emulates multiple CPUs (6502, Z80, M68K, x86, IE32, IE64) alongside IE-native and compatibility-inspired video/audio hardware: VGA with copper coprocessor and blitter, ULA (ZX Spectrum), TED (Commodore 16|Plus/4), ANTIC/GTIA (Atari-inspired display list), Voodoo 3DFX, and a full complement of sound chips and players (SoundChip, PSG/AY-3-8910, SID/MOS 6581, POKEY, TED audio, AHX, MOD, WAV, SAP, VGM/VGZ, SNDH, VTX, AY, YM, and Z80 PSG tracker formats). EhBASIC IE64 provides direct access to all of this hardware through extension commands.
 
 ### Floating-Point Arithmetic: Important Note
 
@@ -40,7 +40,7 @@ EhBASIC IE64's FP32 representation gives:
 
 The trade-off is clear: FP32 sacrifices roughly 2 digits of precision compared to the original format, but gains IEEE 754 compatibility, hardware-friendly bit layouts, and simpler register handling (the 32-bit value sits in the lower half of a 64-bit IE64 register, leaving the upper 32 bits free for bit manipulation).
 
-For most BASIC programs, 7 digits is more than sufficient. Financial calculations or programs that chain many arithmetic operations may notice rounding differences compared to the original EhBASIC.
+For most BASIC programmes, 7 digits is more than sufficient. Financial calculations or programmes that chain many arithmetic operations may notice rounding differences compared to the original EhBASIC.
 
 ---
 
@@ -59,8 +59,9 @@ make basic
 ```
 
 The `make basic` target:
-1. Assembles `sdk/examples/asm/ehbasic_ie64.asm` into `sdk/examples/asm/ehbasic_ie64.ie64`
-2. Builds the Intuition Engine binary with the `embed_basic` build tag, which embeds the BASIC binary via Go's `//go:embed` directive
+1. Assembles `sdk/examples/asm/ehbasic_ie64.asm`
+2. Moves the generated image to `sdk/examples/prebuilt/ehbasic_ie64.ie64`
+3. Builds the Intuition Engine binary with the `embed_basic` build tag, which embeds that prebuilt BASIC image via Go's `//go:embed` directive
 
 Release builds always include `embed_basic`, so packaged Linux, Windows, and macOS archives can boot directly into the embedded BASIC prompt without an extra ROM file.
 
@@ -68,25 +69,27 @@ Release builds always include `embed_basic`, so packaged Linux, Windows, and mac
 
 ```bash
 # Run with embedded BASIC image
-./IntuitionEngine -basic
+./bin/IntuitionEngine -basic
 
 # Run with a custom BASIC binary
-./IntuitionEngine -basic-image path/to/custom.ie64
+./bin/IntuitionEngine -basic-image path/to/custom.ie64
 
 # Run with console terminal (stdin/stdout, no GUI window)
-./IntuitionEngine -basic -term
+./bin/IntuitionEngine -basic -term
 ```
 
 On startup, EhBASIC IE64 displays a banner and the `Ready` prompt:
 
 ```
 EhBASIC IE64 v1.0
+(c) Zayn Otley, 2024-2026
+Based on EhBASIC by Lee Davison
 Ready
 ```
 
-### Your First Program
+### Your First Programme
 
-Type lines with line numbers to store them in the program:
+Type lines with line numbers to store them in the programme:
 
 ```basic
 10 PRINT "Hello, World!"
@@ -116,11 +119,14 @@ Ready
 
 | Command | Description |
 |---------|-------------|
-| `RUN` | Execute the stored program |
-| `LIST` | Display the program listing |
+| `RUN` | Execute the stored programme |
+| `LIST` | Display the programme listing |
 | `DIR` / `DIR "path"` | Display a File I/O sandbox directory listing |
-| `NEW` | Clear the program from memory |
-| Line number followed by text | Store or replace a program line |
+| `NEW` | Clear the programme from memory |
+| `EMUTOS` | Boot EmuTOS through the programme executor |
+| `AROS` | Boot AROS through the programme executor |
+| `INTUITIONOS` | Boot IntuitionOS through the programme executor |
+| Line number followed by text | Store or replace a programme line |
 | Line number alone | Delete that line |
 
 ### Terminal Editor
@@ -171,7 +177,7 @@ Ctrl+U preserves the prompt text (e.g. `Ready`) and only clears user input. Ctrl
 | Ctrl+Shift+V | Paste from clipboard |
 | Middle mouse button | Paste selection (or clipboard if nothing selected) |
 
-Selected text is shown with inverted colors and is cleared on any non-selection input. Selection works on any visible text including scrollback. Selecting text automatically copies it to the OS clipboard. Middle mouse pastes the current selection if present, otherwise falls back to the OS clipboard. Cut removes text only from the current input line; output is read-only.
+Selected text is shown with inverted colours and is cleared on any non-selection input. Selection works on any visible text including scrollback. Selecting text automatically copies it to the OS clipboard. Middle mouse pastes the current selection if present, otherwise falls back to the OS clipboard. Cut removes text only from the current input line; output is read-only.
 
 #### Scrollback and Navigation
 
@@ -274,7 +280,7 @@ From lowest to highest:
 2. `AND` (bitwise)
 3. `NOT` (bitwise unary)
 4. `=`, `<`, `>` (comparison)
-5. `+`, `-` (addition, subtraction)
+5. `+`, `-`, `<<`, `>>` (addition, subtraction, logical shifts)
 6. `*`, `/` (multiplication, division)
 7. `^` (exponentiation)
 8. `-` (unary negation)
@@ -320,7 +326,7 @@ The `REM` statement introduces a comment; everything after `REM` to the end of t
 
 ## 4. Statement Reference
 
-Statements are listed alphabetically. Hardware extension statements (video, audio, system) are grouped under their primary keyword.
+Statements are grouped by primary keyword. Hardware extension statements (video, audio, system) list their sub-commands under the primary keyword.
 
 ### ANTIC
 
@@ -395,10 +401,10 @@ Load a binary file directly into memory (raw bytes, no tokenisation).
 BLOAD "filename", address
 ```
 
-- `filename` - string path resolved through the file I/O sandbox
+- `filename` - relative path resolved through the File I/O sandbox. Absolute paths and any path containing `..` are rejected.
 - `address` - destination memory address
 
-Unlike `LOAD`, `BLOAD` does **not** clear program lines or variables. It only reads file bytes into memory.
+Unlike `LOAD`, `BLOAD` does **not** clear programme lines or variables. It only reads file bytes into memory. If the read fails, it prints `?FILE NOT FOUND` and returns to BASIC.
 
 **Example:**
 ```basic
@@ -409,8 +415,9 @@ SID PLAY &H710000, 3725
 ### HOST
 
 Dispatch a controlled host-side maintenance command through the host-helper
-MMIO bridge. The command is only available when Intuition Engine is started
-with `-ehbasic-host`; otherwise command execution returns `?FC ERROR`.
+MMIO bridge. Helper-invoking subcommands are available only when Intuition
+Engine is started with `-ehbasic-host`; otherwise those subcommands return
+`?FC ERROR`.
 
 ```
 HOST
@@ -422,7 +429,7 @@ HOST POWEROFF
 ```
 
 `HOST` and `HOST HELP` print the command summary and do not touch the MMIO
-bridge. `HOST NET` opens the WiFi picker path. `HOST UPDATE` runs the
+bridge. `HOST NET` starts the host WiFi picker/helper flow. `HOST UPDATE` runs the
 privileged update helper; in non-appliance mode it requires operator
 confirmation before the helper is invoked. `HOST REBOOT` and `HOST POWEROFF`
 ask the helper to reboot or power off the host.
@@ -434,9 +441,13 @@ state, the overlay shows a five-second return-to-BASIC countdown; `Esc`,
 `Enter`, or `Space` returns immediately.
 
 The helper reports completion through the host-helper status and exit MMIO
-registers. `STATUS_OK` returns to BASIC normally. `STATUS_CANCEL`,
-`STATUS_ERR`, and `STATUS_DISABLED` raise `?FC ERROR` so BASIC programs cannot
-silently continue after a denied or failed host operation.
+registers. `HOST_STATUS_OK` and `HOST_STATUS_CANCEL` return to BASIC normally.
+`HOST_STATUS_ERR` and `HOST_STATUS_DISABLED` raise `?FC ERROR` so BASIC programmes cannot
+silently continue after a failed or disabled host operation. `HOST_STATUS_IDLE`
+(`5`) is the pre-trigger MMIO state described in [§9.3](#93-host-helper-mmio);
+a valid HOST command writes `HOST_MMIO_TRIGGER` before polling. Any unexpected
+terminal helper status other than OK or cancel follows the same `?FC ERROR`
+path.
 
 `-ehbasic-host-appliance` skips the `HOST UPDATE` confirmation prompt and is
 intended only for controlled appliance deployments.
@@ -447,7 +458,7 @@ AppArmor, and firewall controls are documented in the live USB security model in
 
 ### DIR
 
-List files in the File I/O sandbox. `DIR` is an immediate REPL command and is not stored as a tokenized BASIC statement.
+List files in the File I/O sandbox. `DIR` is an immediate REPL command and is not stored as a tokenised BASIC statement. Paths are relative to the File I/O sandbox; absolute paths and any path containing `..` are rejected.
 
 ```
 DIR
@@ -469,7 +480,7 @@ Blitter hardware operations for fast block transfers, fills, and line drawing.
 ```
 BLIT COPY src, dst, w, h [,srcstride, dststride]
 BLIT FILL dst, w, h, colour [,stride]
-BLIT LINE x1, y1, x2, y2, colour, stride
+BLIT LINE x1, y1, x2, y2, colour [,stride]
 BLIT MODE7 src, dst, dstW, dstH, u0, v0, duCol, dvCol, duRow, dvRow, texW, texH [,srcStride, dstStride]
 BLIT MEMCOPY src, dst, len
 BLIT WAIT
@@ -542,7 +553,7 @@ Reset all variables, the DATA pointer, and the GOSUB stack.
 CLEAR
 ```
 
-Program text is preserved; only runtime state is cleared.
+Programme text is preserved; only runtime state is cleared.
 
 ### CALL
 
@@ -552,7 +563,9 @@ Call a machine code subroutine at the given address. The address is evaluated as
 CALL addr
 ```
 
-The BASIC interpreter saves its internal registers (R14, R16, R17, R26) before calling the routine and restores them on return. The called routine must end with `rts`.
+The BASIC interpreter saves its internal registers (R14, R16, R17, R26, R28)
+before calling the routine and restores them on return. The called routine must
+end with `rts`.
 
 **Example:**
 ```basic
@@ -574,7 +587,7 @@ CLS [colour]
 
 Default colour is 0 (black). Behaviour depends on the active VGA mode:
 - Mode 13h: fills 320x200 pixels via blitter
-- Mode 12h: fills all four bitplanes
+- Mode 12h: fills 38,400 bytes through the current planar aperture and active VGA plane mask
 - Text mode: fills with spaces and attribute 0x07
 
 ### COLOR
@@ -589,7 +602,7 @@ Values are 0-15 (standard VGA text attributes).
 
 ### CONT
 
-Continue execution after a STOP statement. CONT resumes from the point where the program was interrupted.
+Continue execution after a STOP statement. CONT resumes from the point where the programme was interrupted.
 
 ```
 CONT
@@ -621,6 +634,36 @@ COPPER END
 COPPER ON
 ```
 
+### COSTART / COSTOP / COWAIT
+
+Control coprocessor worker slots from BASIC. These commands are recognised by
+the executor as raw keyword text before normal token dispatch, so they are not
+listed in the token table.
+
+```
+COSTART cpuType, "serviceFile"
+COSTOP cpuType
+COWAIT ticket [,timeoutMs]
+```
+
+- `cpuType` - 1=IE32, 2=IE64, 3=6502, 4=M68K, 5=Z80, 6=x86
+- `serviceFile` - relative path resolved under the coprocessor manager base directory. Absolute paths and any path containing `..` are rejected.
+- `ticket` - value returned by `COCALL(...)`
+- `timeoutMs` - optional timeout; omitted value defaults to 1000
+
+`COSTART` starts a service binary for the selected CPU type. `COSTOP` stops the
+selected worker. `COWAIT` blocks until the ticket completes or the timeout
+expires; use `COSTATUS(ticket)` after `COWAIT` to inspect the result.
+
+To inspect worker monitor registers directly, write `COPROC_CPU_TYPE` first,
+then read the 32-bit monitor registers:
+
+```basic
+POKE &HF2344, 2
+PRINT PEEK(&HF23B0)
+PRINT PEEK(&HF23B4)
+```
+
 ### DATA
 
 Define inline data values to be read by `READ`.
@@ -630,6 +673,24 @@ DATA value [,value ...]
 ```
 
 Values are numeric literals separated by commas. DATA statements are skipped during normal execution and only consumed by READ.
+
+### DEF FN
+
+Define a single-argument numeric function.
+
+```
+DEF FNname(parameter) = expression
+```
+
+Function names use the normal variable-name parser after the `FN` prefix.
+Definitions are stored in the interpreter's fixed DEF FN table, which has
+eight slots. Recursive invocation is rejected at runtime.
+
+**Example:**
+```basic
+10 DEF FND(X) = X * 2 + 1
+20 PRINT FND(3)       : REM prints 7
+```
 
 ### DEC
 
@@ -708,12 +769,15 @@ EMUTOS
 
 The ROM is resolved in this order:
 1. `-emutos-image <path>` command-line flag
-2. Embedded ROM (if built with `make basic-emutos`)
-3. Local `etos256us.img` file in the working directory
+2. Positional command-line ROM filename in direct `-emutos <file>` launches
+3. Embedded ROM (if built with `make basic-emutos` or a release build that includes `embed_emutos`)
+4. Local `etos256us.img`, `emutos.img`, `bin/etos256us.img`, or `bin/emutos.img`
 
 If no ROM is available, prints `?EMUTOS NOT AVAILABLE`.
 
-Once EmuTOS is running, press F10 to perform a hard reset back to EmuTOS.
+F10 performs a hard reset to the VM's original boot mode. If EmuTOS was
+launched from BASIC with the `EMUTOS` command, F10 returns to BASIC; if the VM
+was started in EmuTOS mode, F10 boots EmuTOS again.
 
 ### AROS
 
@@ -726,14 +790,33 @@ AROS
 
 The ROM is resolved in this order:
 1. `-aros-image <path>` command-line flag
-2. Embedded ROM (if built with `make aros`)
-3. Local `sdk/roms/aros-ie-m68k.rom`
+2. Positional command-line ROM filename in direct `-aros <file>` launches
+3. Embedded ROM (if built with `make aros` or a release build that includes `embed_aros`)
+4. Local `sdk/roms/aros-ie-m68k.rom`
 
 If no ROM is available, prints `?AROS NOT AVAILABLE`.
 
+F10 performs a hard reset to the VM's original boot mode. If AROS was launched
+from BASIC with the `AROS` command, F10 returns to BASIC; if the VM was started
+in AROS mode, F10 boots AROS again.
+
+### INTUITIONOS
+
+Boot IntuitionOS from the BASIC prompt through the programme executor.
+
+```
+INTUITIONOS
+```
+
+The kernel image is resolved from the IntuitionOS launch configuration: an
+explicit `-intuitionos-image`, a live-share `Systems/IntuitionOS/Boot/iexec.ie64`
+image, or the development image built by `make intuitionos`.
+
+If no image is available, prints `?INTUITIONOS NOT AVAILABLE`.
+
 ### END
 
-Terminate program execution.
+Terminate programme execution.
 
 ```
 END
@@ -896,11 +979,14 @@ Read one or more values from the terminal.
 
 ```
 INPUT ["prompt";] variable [,variable ...]
+INPUT ["prompt",] variable [,variable ...]
 ```
 
-Each variable reads one terminal line. Numeric variables parse the input as a
-numeric expression; string variables store the entered text. A quoted prompt can
-be printed before the first value.
+Each variable reads one terminal line of up to 80 characters. Additional typed
+characters are ignored once that per-variable input limit is reached. Numeric
+variables parse the input as a numeric expression; string variables store the
+entered text. A quoted prompt can be printed before the first value. Either `;`
+or `,` may separate the prompt from the first variable.
 
 **Example:**
 ```basic
@@ -943,14 +1029,28 @@ LINE 0, 0, 319, 199, 12
 
 ### LIST
 
-Display the stored program.
+Display the stored programme.
 
 ```
 LIST
 ```
 
-In a program line, `LIST` displays the current stored program and then continues
+In a programme line, `LIST` displays the current stored programme and then continues
 with the next statement or line.
+
+### LOAD
+
+Load a BASIC programme from a detokenised text file in the File I/O sandbox.
+
+```
+LOAD "filename"
+```
+
+The filename must be relative; absolute paths and any path containing `..` are
+rejected. `LOAD` reads the file as text, clears the current programme and
+variables, then stores numbered lines from the file. Lines without a leading
+decimal line number are skipped. On read failure it prints `?FILE NOT FOUND`
+and returns to BASIC.
 
 ### LOCATE
 
@@ -976,13 +1076,13 @@ See [DO...LOOP](#doloop).
 
 ### NEW
 
-Clear the program from memory.
+Clear the programme from memory.
 
 ```
 NEW
 ```
 
-In a program line, `NEW` clears program text and variables, then stops the
+In a programme line, `NEW` clears programme text and variables, then stops the
 current run.
 
 ### NEXT
@@ -1054,7 +1154,10 @@ POKE address, value
 POKE8 address, value
 ```
 
-Both address and value are evaluated as expressions and truncated to integers. `POKE` stores 32 bits; `POKE8` stores the low 8 bits.
+Both address and value are evaluated as expressions and truncated to integers.
+`POKE` stores 32 bits and requires a 4-byte aligned address; unaligned `POKE`
+raises `?FC ERROR`. `POKE8` stores the low 8 bits and has no alignment
+requirement.
 
 **Example:**
 ```basic
@@ -1101,10 +1204,14 @@ PSG channel, freq, vol           Set channel frequency and volume
 PSG PLUS ON                      Enable PSG+ enhanced mode
 PSG PLUS OFF                     Disable PSG+ mode
 PSG PLAY addr [,len]             Play PSG music data
-PSG STOP                         Stop playback
+PSG STOP                         Parsed, but see note below
 PSG MIXER value                  Set mixer register (tone/noise control)
 PSG ENVELOPE shape [,period]     Set envelope shape and optional period
 ```
+
+Current source note: `PSG STOP` writes `0` to `PSG_PLAY_CTRL`, while the PSG
+player stops only when bit 1 is written. To stop PSG file playback, use
+`SOUND STOP`/`SOUND PLAY STOP`, or `POKE &HF0C18, 2`.
 
 ### READ
 
@@ -1114,7 +1221,7 @@ Read the next value from DATA statements.
 READ variable [,variable ...]
 ```
 
-Values are read in program order across all DATA statements. Use RESTORE to reset the pointer.
+Values are read in programme order across all DATA statements. Use RESTORE to reset the pointer.
 
 **Example:**
 ```basic
@@ -1133,7 +1240,7 @@ REM comment text
 
 ### RESTORE
 
-Reset the DATA read pointer to the beginning of the program's DATA statements.
+Reset the DATA read pointer to the beginning of the programme's DATA statements.
 
 ```
 RESTORE
@@ -1145,31 +1252,36 @@ Return from a GOSUB subroutine. See [GOSUB...RETURN](#gosubreturn).
 
 ### RUN
 
-Execute the stored program or launch an external CPU binary.
+Execute the stored programme or launch an external programme or script.
 
 ```
 RUN
 RUN "file.ext"
 ```
 
-- `RUN` with no argument executes the stored BASIC program from the beginning.
-- `RUN "file.ext"` loads and launches an external CPU binary, handing off execution to the appropriate CPU emulator. The IE64 CPU stops and the new CPU takes over.
+- `RUN` with no argument executes the stored BASIC programme from the beginning.
+- `RUN "file.ext"` loads and launches an external file through the Program Executor. CPU binaries hand off execution to the appropriate CPU emulator; the IE64 CPU stops and the new CPU takes over.
 - `RUN "file.ies"` launches an IEScript Lua automation script. See [iescript.md](iescript.md) for the full scripting reference.
+
+The filename is resolved under the Program Executor base directory. Absolute
+paths and any path containing `..` are rejected.
 
 Supported extensions:
 
-| Extension | CPU Architecture |
-|-----------|-----------------|
+| Extension | Target |
+|-----------|--------|
 | `.iex`, `.ie32` | IE32 (custom 32-bit) |
 | `.ie64` | IE64 (custom 64-bit RISC) |
 | `.ie65` | 6502 (load at `&H0800`) |
 | `.ie68` | M68K (Motorola 68020) |
 | `.ie80` | Z80 |
 | `.ie86` | x86 (32-bit flat) |
+| `.tos`, `.img` | EmuTOS image |
+| `.ies` | IEScript Lua automation script |
 
 On error (file not found, unsupported extension), prints `?FILE ERROR` and returns to the REPL.
 
-In a program line, bare `RUN` restarts the stored BASIC program from the
+In a programme line, bare `RUN` restarts the stored BASIC programme from the
 beginning. Variables are preserved, while DATA and control stacks are reset.
 
 ### SAP
@@ -1180,6 +1292,19 @@ Control the SAP (Slight Atari Player) music player.
 SAP PLAY addr [,len [,subsong]]   Play SAP module
 SAP STOP                          Stop playback
 ```
+
+### SAVE
+
+Save the current tokenised BASIC programme as detokenised text through the File
+I/O sandbox.
+
+```
+SAVE "filename"
+```
+
+The filename must be relative; absolute paths and any path containing `..` are
+rejected. `SAVE` writes one numbered source line per output line. On write
+failure it raises `?FILE ERROR`.
 
 ### SCREEN
 
@@ -1218,12 +1343,12 @@ Sets the VGA CRTC start address offset for smooth scrolling.
 Control the SID (MOS 6581/8580) sound chip.
 
 ```
-SID VOICE num, freq, pw, ctrl, ad, sr   Program a voice (num 1-3)
+SID VOICE num, freq, pw, ctrl, ad, sr   Programme a voice (num 1-3)
 SID VOLUME vol                           Set master volume (0-15)
 SID FILTER cutoff, resonance, routing, mode   Configure filter
 SID PLUS ON                              Enable SID+ enhanced mode
 SID PLUS OFF                             Disable SID+ mode
-SID PLAY addr, len [,subsong]            Play SID music file
+SID PLAY addr [,len [,subsong]]          Play SID music data
 SID STOP                                 Stop playback
 ```
 
@@ -1242,6 +1367,7 @@ Configure a flexible audio channel.
 ```
 SOUND channel, freq, vol [,wave [,duty]]
 SOUND FILTER cutoff, resonance, type
+SOUND FILTER MOD source, amount
 ```
 
 - `channel` - 0 to 3
@@ -1254,6 +1380,10 @@ SOUND FILTER cutoff, resonance, type
 - `cutoff` - cutoff frequency (0-255, exponential 20Hz-20kHz)
 - `resonance` - resonance (0-255)
 - `type` - filter type (0=off, 1=lowpass, 2=highpass, 3=bandpass)
+
+**SOUND FILTER MOD** sets filter cutoff modulation:
+- `source` - modulation source channel (0-3)
+- `amount` - modulation depth (0-255)
 
 **SOUND REVERB** configures the reverb effect:
 ```
@@ -1268,12 +1398,18 @@ SOUND OVERDRIVE amount
 ```
 - `amount` - drive amount (0-255)
 
-**SOUND NOISE** sets noise mode using a channel-qualified command:
+**SOUND NOISE** sets the fixed noise-channel mode:
 ```
 SOUND NOISE channel, mode
 ```
-- `channel` - channel number
-- `mode` - noise mode value
+- `channel` - parsed by the current handler but not used for register
+  selection; the handler writes the fixed `NOISE_MODE` register at `&HF09E0`
+- `mode` - 0=white, 1=periodic, 2=metallic, 3=PSG-style, 4=TED 8-bit,
+  5=SN76489 15-bit white, 6=SN76489 15-bit periodic, 7=SN76489 16-bit white,
+  8=SN76489 16-bit periodic
+
+Use direct `POKE` to a flexible channel's `+&H2C` `NOISEMODE` register when a
+per-flex-channel noise mode is required.
 
 **SOUND WAVE** sets the waveform type for a flexible channel:
 ```
@@ -1292,19 +1428,38 @@ SOUND SWEEP channel, enable, period, shift
 
 Packed as `enable | (period << 8) | (shift << 16)` in the FLEX_OFF_SWEEP register.
 
-**SOUND SYNC** sets the hard-sync source for a channel:
+**SOUND SYNC** sets the legacy hard-sync source register for a channel:
 ```
 SOUND SYNC channel, source
 ```
 - `channel` - 0 to 3
 - `source` - source channel number
 
-**SOUND RINGMOD** sets the ring modulation source for a channel:
+The BASIC handler writes `SYNC_SOURCE_CH0 + channel*4`; it does not write the
+flexible channel `+&H38` `SYNC` offset. Direct flex-register sync uses bit 7 as
+the enable bit and bits 0-3 as the source channel.
+
+**SOUND RINGMOD** sets the legacy ring-modulation source register for a channel:
 ```
 SOUND RINGMOD channel, source
 ```
 - `channel` - 0 to 3
 - `source` - source channel number
+
+The BASIC handler writes `RING_MOD_SOURCE_CH0 + channel*4`; it does not write
+the flexible channel `+&H34` `RINGMOD` offset. Direct flex-register ring
+modulation uses bit 7 as the enable bit and bits 0-3 as the source channel.
+
+**SOUND MOD** controls the ProTracker MOD player:
+```
+SOUND MOD PLAY addr [,len]
+SOUND MOD PLAY STOP
+SOUND MOD STOP
+SOUND MOD FILTER model
+```
+- `addr` - bus-memory address of MOD data
+- `len` - optional data length; if omitted, the existing `MOD_PLAY_LEN` register value is used
+- `model` - filter model: 0=none, 1=A500, 2=A1200
 
 **SOUND PLAY** loads and plays a music file through the appropriate audio engine:
 ```
@@ -1312,24 +1467,39 @@ SOUND PLAY "filename.ext" [,subsong]
 SOUND PLAY STOP
 SOUND STOP
 ```
-- `filename` - path to a music file (relative to working directory)
-- `subsong` - optional subsong index (default 0, for SID/AHX formats)
+- `filename` - path to a music file resolved by the Media Loader sandbox. Relative paths resolve under the runtime base directory; absolute paths are accepted only when they remain inside that base directory.
+- `subsong` - optional subsong index (default 0, used by SID, AHX, and SAP)
 
-Supported formats:
+Supported formats are exactly those routed by `detectMediaType` in the Media
+Loader:
 
 | Extension | Engine |
 |-----------|--------|
 | `.sid` | SID (Commodore 64) |
-| `.ym`, `.ay`, `.vgm`, `.vgz`, `.vtx`, `.sndh`, `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc` | PSG (AY-3-8910) |
-| `.ted`, `.prg` | TED (Commodore 16) |
+| `.ym` | PSG/YM2149 frame dump |
+| `.ay` | PSG/AY file; ZXAYEMUL Z80 files are executed through the AY Z80 player |
+| `.vgm`, `.vgz` | VGM/VGZ; AY/YM and SN76489 streams are handled by the PSG player |
+| `.vtx`, `.vt` | VTX compressed PSG stream |
+| `.sndh`, `.snd` | Atari ST SNDH |
+| `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc` | Z80 PSG tracker formats; these require the filename extension for `SOUND PLAY` routing |
+| `.ted`, `.prg` | TED (Commodore 16|Plus/4) |
 | `.ahx` | AHX (Amiga tracker) |
+| `.sap` | POKEY/SAP |
 | `.mod` | MOD (ProTracker) |
+| `.wav` | WAV |
 
-`SOUND PLAY STOP` stops all audio engine playback.
+The direct `PSG PLAY addr [,len]` MMIO path receives only a memory pointer and
+length, so it can load formats that the PSG player can identify from their data
+headers. Use `SOUND PLAY "file.ext"` for extension-only tracker formats such as
+PT1/PT2/PT3, STC, SQT, ASC, and FTC.
+
+`SOUND PLAY STOP` stops Media Loader/player playback.
 
 `SOUND STOP` is a shorthand alias for `SOUND PLAY STOP`.
 
-On error (file not found, unsupported format, file too large), prints `?PLAY ERROR`.
+On an error that is visible during the command's bounded status poll, such as
+file not found, path rejection, unsupported extension, bad format, or an
+oversized staging-backed file, the command raises `?PLAY ERROR`.
 
 **Example:**
 ```basic
@@ -1339,13 +1509,13 @@ GATE 0, ON
 SOUND REVERB 100, 200        : REM add reverb
 SOUND PLAY "music.sid"       : REM play a SID tune
 SOUND PLAY "music.sid", 3    : REM play subsong 3
-SOUND PLAY STOP              : REM stop playback
+SOUND PLAY STOP              : REM stop media playback
 SOUND STOP                   : REM shorthand stop
 ```
 
 ### STOP
 
-Halt program execution. Saves the current line and text pointers so that CONT can resume execution from this point.
+Halt programme execution. Saves the current line and text pointers so that CONT can resume execution from this point.
 
 ```
 STOP
@@ -1403,7 +1573,7 @@ See also: [TRON](#tron).
 
 ### TED
 
-Control the TED (Commodore 16/Plus4) video and audio hardware.
+Control the TED (Commodore 16|Plus/4) video and audio hardware.
 
 **Video sub-commands:**
 ```
@@ -1426,8 +1596,12 @@ TED NOISE OFF                Disable noise generator
 TED PLUS ON                  Enable TED+ enhanced mode
 TED PLUS OFF                 Disable TED+ mode
 TED PLAY addr [,len]         Play TED music data
-TED STOP                     Stop playback
+TED STOP                     Parsed, but see note below
 ```
+
+Current source note: `TED STOP` writes `0` to `TED_PLAY_CTRL`, while the TED
+player stops only when bit 1 is written. To stop TED file playback, use
+`SOUND STOP`/`SOUND PLAY STOP`, or `POKE &HF0F18, 2`.
 
 ### TEXTURE
 
@@ -1503,6 +1677,10 @@ VOODOO COMBINE value         Set colour path blend mode
 VOODOO LFB mode              Set linear framebuffer mode
 VOODOO PIXEL x, y, colour   Write pixel to linear framebuffer
 VOODOO TRICOLOR r, g, b [,a] Set start colour (and optional alpha)
+VOODOO TRISHADE drdx, drdy, dgdx, dgdy, dbdx, dbdy
+VOODOO TRIDEPTH start_z, dzdx, dzdy
+VOODOO TRIUV start_s, start_t, dsdx, dtdx, dsdy, dtdy
+VOODOO TRIW start_w, dwdx, dwdy
 VOODOO ALPHA TEST ON/OFF     Enable/disable alpha testing
 VOODOO ALPHA FUNC n          Set alpha test function (0-7)
 VOODOO ALPHA BLEND ON/OFF    Enable/disable alpha blending
@@ -1521,6 +1699,12 @@ VOODOO RGB ON/OFF             Enable/disable RGB buffer writes
 VOODOO TRICOLOR 255, 0, 0         : REM solid red
 VOODOO TRICOLOR 128, 128, 0, 200  : REM with alpha
 ```
+
+**VOODOO TRI\*** sub-commands set interpolation state for triangle rasterisation:
+- `TRISHADE` writes colour gradients `DRDX`, `DRDY`, `DGDX`, `DGDY`, `DBDX`, and `DBDY`
+- `TRIDEPTH` writes `START_Z`, `DZDX`, and `DZDY`
+- `TRIUV` writes `START_S`, `START_T`, `DSDX`, `DTDX`, `DSDY`, and `DTDY`
+- `TRIW` writes `START_W`, `DWDX`, and `DWDY`
 
 **VOODOO ALPHA** sub-commands control alpha testing and blending in the ALPHA_MODE register:
 - `ALPHA TEST ON/OFF` toggles bit 0 (ALPHA_TEST_EN)
@@ -1664,6 +1848,20 @@ Returns a single-character string with the given ASCII code. (String function.)
 PRINT CHR$(65)     : REM prints "A"
 ```
 
+### COCALL
+
+```
+COCALL(cpuType, op, reqPtr, reqLen, respPtr, respCap)
+```
+
+Enqueues an asynchronous request to a running coprocessor worker and returns a
+ticket number. A return value of 0 means the request could not be enqueued.
+
+- `cpuType` - 1=IE32, 2=IE64, 3=6502, 4=M68K, 5=Z80, 6=x86
+- `op` - service-defined operation code
+- `reqPtr`, `reqLen` - request buffer address and byte length
+- `respPtr`, `respCap` - response buffer address and byte capacity
+
 ### COS
 
 ```
@@ -1672,32 +1870,24 @@ COS(x)
 
 Returns the cosine of `x` (in radians).
 
-### COSTATS
+### COSTATUS
 
 ```
-COSTATS(field)
+COSTATUS(ticket)
 ```
 
-Returns a coprocessor statistics value as a numeric result. The `field` parameter selects which statistic to read:
+Returns the status of a coprocessor request ticket:
 
-| Field | Description |
-|-------|-------------|
-| 0 | Total operations dispatched |
-| 1 | Total bytes processed |
-| 2 | Dispatch overhead in nanoseconds (calibrated on first IE64 worker start) |
-| 3 | Last completed ticket ID |
-| 4 | IRQ enabled (1 = enabled, 0 = disabled) |
+| Value | Meaning |
+|-------|---------|
+| 0 | Pending |
+| 1 | Running |
+| 2 | Completed successfully |
+| 3 | Error |
+| 4 | Timeout |
+| 5 | Worker down |
 
-Returns 0 for invalid field numbers.
-
-**Example:**
-```basic
-PRINT COSTATS(0)            : REM prints total operations dispatched
-PRINT COSTATS(2)            : REM prints calibrated dispatch overhead in ns
-IF COSTATS(4) THEN PRINT "IRQ enabled"
-```
-
-See also: [COCALL](#cocall), [COSTATUS](#costatus), [COSTART](#costart).
+See also: [COCALL](#cocall), [COSTART / COSTOP / COWAIT](#costart--costop--cowait).
 
 ### DEEK
 
@@ -1826,9 +2016,12 @@ Returns the smaller of the two values.
 
 ```
 PEEK(address)
+PEEK8(address)
 ```
 
-Reads a 32-bit value from the given memory address.
+`PEEK` reads a 32-bit value from the given memory address and requires a
+4-byte aligned address; unaligned `PEEK` raises `?FC ERROR`. `PEEK8` reads one
+byte and returns it as a value from 0 to 255.
 
 **Example:**
 ```basic
@@ -1842,6 +2035,15 @@ PI
 ```
 
 Returns the constant pi (approximately 3.1415927). No parentheses required.
+
+### POS
+
+```
+POS(x)
+```
+
+Returns the current terminal output column. The argument is evaluated but
+ignored.
 
 ### RIGHT$
 
@@ -1863,6 +2065,15 @@ Returns a pseudo-random number in the range [0, 1). Uses a linear congruential g
 ```basic
 PRINT INT(RND(1) * 100)  : REM random integer 0-99
 ```
+
+### SADD
+
+```
+SADD(stringVariable$)
+```
+
+Returns the address of the string data for a string variable. If the argument
+is not a string variable, it returns 0.
 
 ### SGN
 
@@ -1899,9 +2110,18 @@ POKEY STATUS
 TED STATUS
 AHX STATUS
 SAP STATUS
+MOD STATUS
 ```
 
-Returns 1 if the chip is currently playing, 0 otherwise. Used as an expression (function context).
+These are two-token expressions: write the chip keyword followed by `STATUS`,
+with no parentheses, wherever a numeric expression is accepted.
+
+Used as an expression (function context). `PSG STATUS`, `SID STATUS`,
+`POKEY STATUS`, `TED STATUS`, `AHX STATUS`, and `SAP STATUS` return the raw
+player status register value as FP32. In the current register layout, bit 0 is
+busy/playing and bit 1 is error. `POKEY STATUS` reads the shared SAP player
+status register because POKEY file playback is SAP-backed. `MOD STATUS` returns
+only bit 0 of `MOD_PLAY_STATUS` as 0 or 1.
 
 **Example:**
 ```basic
@@ -1934,6 +2154,16 @@ TWOPI
 
 Returns the constant 2*pi (approximately 6.2831855). No parentheses required.
 
+### UCASE$ / LCASE$
+
+```
+UCASE$(string$)
+LCASE$(string$)
+```
+
+Return an upper-case or lower-case copy of the input string. Non-letter bytes
+are copied unchanged.
+
 ### USR
 
 ```
@@ -1941,6 +2171,9 @@ USR(n)
 ```
 
 Calls a user-defined machine code routine at address `n` and returns the result. The address is evaluated, the routine is called via register-indirect JSR, and the value of R8 on return is converted to FP32 and returned as the function result.
+
+`USR` preserves R14, R16, R17, and R26 across the machine-code call. Unlike
+`CALL`, it does not preserve R28.
 
 **Example:**
 ```basic
@@ -1965,6 +2198,15 @@ Parses the string as a numeric expression and returns the result. Returns 0 if t
 PRINT VAL("42")     : REM prints 42
 ```
 
+### VARPTR
+
+```
+VARPTR(variable)
+```
+
+Returns the address of the variable storage slot. For a string variable, the
+slot contains the pointer to the string data.
+
 ---
 
 ## 6. Video Programming Guide
@@ -1978,12 +2220,16 @@ The VGA subsystem supports three modes:
 | Mode | Resolution | Colours | VRAM Address | Size |
 |------|-----------|---------|-------------|------|
 | `&H13` | 320x200 | 256 (palette) | `&HA0000` | 64,000 bytes |
-| `&H12` | 640x480 | 16 (planar) | `&HA0000` | 4 x 38,400 bytes |
+| `&H12` | 640x480 | 16 (planar) | `&HA0000` | 64 KB planar aperture |
 | `3` | 80x25 text | 16 fg + 8 bg | `&HB8000` | 4,000 bytes |
 
 **Mode 13h** (320x200x256) is the simplest: each byte at `&HA0000 + y*320 + x` is a palette index. This is the default mode for PLOT, LINE, BOX, and CIRCLE.
 
-**Mode 12h** (640x480x16) uses four bitplanes. Each pixel requires one bit from each plane. Use the blitter for drawing operations.
+**Mode 12h** (640x480x16) uses four bitplanes. Each plane contains 38,400
+bytes, but BASIC sees the 64 KB VGA aperture at `&HA0000`, not a flat
+153,600-byte framebuffer. Select writable planes through the VGA sequencer map
+mask (`VGA_SEQ_MAPMASK`, or `VGA_SEQ_INDEX`=`2` followed by `VGA_SEQ_DATA`) or
+use the blitter for drawing operations.
 
 **Text Mode** (80x25) stores character/attribute pairs at `&HB8000`. Each cell is 2 bytes: character code followed by attribute byte (bits 0-3 = foreground, bits 4-6 = background, bit 7 = blink).
 
@@ -2021,7 +2267,7 @@ The copper is a display-list coprocessor that executes instructions synchronised
 
 ### 6.3 Blitter Operations
 
-The blitter performs hardware-accelerated block operations: copy, fill, line drawing, alpha, Mode7, color expansion, and nearest-neighbour scaling. Rectangular operations use source/destination addresses, width, height, and stride. Scale blits use `BLT_WIDTH`/`BLT_HEIGHT` as the source size and pack the destination size in `BLT_COLOR` as `(height << 16) | width`.
+The blitter performs hardware-accelerated block operations: copy, fill, line drawing, alpha, Mode7, colour expansion, and nearest-neighbour scaling. Rectangular operations use source/destination addresses, width, height, and stride. Scale blits use `BLT_WIDTH`/`BLT_HEIGHT` as the source size and pack the destination size in `BLT_COLOR` as `(height << 16) | width`.
 
 ```basic
 REM Copy 100x50 block
@@ -2045,9 +2291,13 @@ BLIT MODE7 &H600000, &H900000, 640, 480, 0, 0, FP, 0, 0, FP, 255, 255, 1024, 256
 
 The ULA emulates the ZX Spectrum's 256x192 pixel display with a unique non-linear VRAM layout.
 
-**VRAM layout** at `&H4000`:
+**VRAM layout** at IE aperture `&HFA000`:
 - Bitmap: 6,144 bytes (three 2KB thirds, each with interleaved character rows)
-- Attributes: 768 bytes at `&H5800` (32x24 cells, each 8x8 pixels)
+- Attributes: 768 bytes at `&HFA000 + &H1800` (32x24 cells, each 8x8 pixels)
+
+The `&H4000` bitmap and `&H5800` attribute addresses are ZX Spectrum guest
+addresses. From EhBASIC on IE64, PEEK/POKE the `&HFA000` aperture or use the
+ULA commands.
 
 **Attribute byte format**: bits 0-2 = ink, bits 3-5 = paper, bit 6 = bright, bit 7 = flash.
 
@@ -2062,7 +2312,7 @@ ULA ATTR 16, 12, &H46     : REM bright red on black
 
 ### 6.5 TED Video Programming
 
-The TED emulates the Commodore 16/Plus4 video chip with 40x25 text mode and 121 colours (16 hues x 8 luminances, minus duplicates).
+The TED emulates the Commodore 16|Plus/4 video chip with 40x25 text mode and 121 colours (16 hues x 8 luminances, minus duplicates).
 
 ```basic
 TED ON
@@ -2137,7 +2387,12 @@ The Intuition Engine features multiple audio subsystems, each emulating a differ
 
 ### 7.1 SoundChip (Flexible 4-Channel Synthesiser)
 
-The main audio engine provides four fixed-waveform channels (square, triangle, sine, noise) plus four flexible channels with selectable waveforms, plus a sawtooth channel. All channels support ADSR envelopes, pulse-width modulation, sync, ring modulation, and global effects (filter, overdrive, reverb).
+The main audio engine provides four flexible channels addressed by `SOUND`
+channel numbers 0-3, plus fixed square, triangle, sine, noise, and sawtooth
+paths used by lower-level registers. Flexible channels support selectable
+waveforms, ADSR envelopes, duty/PWM control, sweep, sync, ring modulation,
+noise mode, phase reset, and DAC writes. Global effects include filter,
+overdrive, and reverb.
 
 **Waveform types for flexible channels:**
 | Value | Waveform |
@@ -2184,17 +2439,24 @@ PSG MIXER 56               : REM enable all tones, disable noise
 PSG ENVELOPE 0, 1000       : REM sawtooth envelope, period 1000
 ```
 
-**Playing .ay music files:**
+**Playing PSG music data from memory:**
 ```basic
-PSG PLAY &H100000, 4096   : REM play PSG data from VRAM
+PSG PLAY &H100000, 4096   : REM play header-detectable PSG data
 ```
+
+`PSG PLAY` has no filename extension, so use `SOUND PLAY` for PT1/PT2/PT3,
+STC, SQT, ASC, and FTC tracker files.
+
+Current source note: `PSG STOP` is parsed but only writes 0 to the player
+control register. Use `SOUND STOP`, `SOUND PLAY STOP`, or `POKE &HF0C18,2` to
+stop PSG media playback.
 
 ### 7.3 SID (MOS 6581/8580)
 
 The SID emulates the Commodore 64's famous MOS Technology 6581 (and later 8580) sound chip. Three voices with four selectable waveforms (triangle, sawtooth, pulse, noise), ring modulation, oscillator sync, and a multi-mode filter (lowpass, bandpass, highpass).
 
 ```basic
-REM Program voice 1: 440Hz, 50% pulse, gate on, ADSR
+REM Programme voice 1: 440Hz, 50% pulse, gate on, ADSR
 SID VOICE 1, 7217, 2048, 65, &H22, &HF8
 REM freq=7217 (440Hz SID freq), pw=2048 (50%), ctrl=65 (gate+pulse)
 REM AD=&H22 (attack 2, decay 2), SR=&HF8 (sustain 15, release 8)
@@ -2219,13 +2481,17 @@ POKEY CTRL &H00            : REM default audio control
 
 ### 7.5 TED Sound
 
-The TED audio section provides two tone generators and a noise generator, emulating the Commodore 16/Plus4 sound capabilities.
+The TED audio section provides two tone generators and a noise generator, emulating the Commodore 16|Plus/4 sound capabilities.
 
 ```basic
 TED TONE 1, 500            : REM voice 1 at 500Hz divider
 TED VOL 8                  : REM volume 8
 TED NOISE ON               : REM enable noise
 ```
+
+Current source note: `TED STOP` is parsed but only writes 0 to the player
+control register. Use `SOUND STOP`, `SOUND PLAY STOP`, or `POKE &HF0F18,2` to
+stop TED media playback.
 
 ### 7.6 AHX (Amiga Tracker)
 
@@ -2269,22 +2535,45 @@ The unified `SOUND PLAY` command provides the simplest way to play music files:
 ```basic
 SOUND PLAY "music.sid"        : REM auto-detect and play
 SOUND PLAY "music.ahx", 2    : REM play subsong 2
-SOUND PLAY STOP               : REM stop all playback
+SOUND PLAY STOP               : REM stop media playback
 SOUND STOP                    : REM shorthand stop
 ```
 
-For low-level control, per-engine playback commands are also available:
+`SOUND PLAY` chooses a player from the filename extension:
 
-| Command | Format | Origin |
-|---------|--------|--------|
-| `SID PLAY` | .sid | Commodore 64 |
-| `SAP PLAY` | .sap | Atari 8-bit |
-| `PSG PLAY` | .ay | ZX Spectrum/CPC |
-| `TED PLAY` | TED dumps | Commodore 16 |
-| `AHX PLAY` | .ahx | Amiga |
-| `SOUND MOD PLAY` | .mod | Amiga ProTracker |
+| Extension | Player route | Notes |
+|-----------|--------------|-------|
+| `.sid` | SID player | Commodore 64 PSID/RSID data; `MEDIA_SUBSONG` selects the subsong |
+| `.ym` | PSG player | Atari ST YM frame data |
+| `.ay` | PSG player | AY files; ZXAYEMUL files are rendered by the Z80 AY player |
+| `.vgm`, `.vgz` | PSG player | VGM/VGZ AY/YM data, with SN76489 stream support when present |
+| `.vtx`, `.vt` | PSG player | VTX compressed PSG streams; extension is used for direct file loading |
+| `.sndh`, `.snd` | PSG player | Atari ST SNDH data rendered through the 68000 SNDH player |
+| `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc` | PSG player | Z80 tracker formats; the extension is required because these formats do not have reliable magic bytes |
+| `.ted`, `.prg` | TED player | Commodore 16|Plus/4 TED music data; `.prg` is routed to the TED player |
+| `.ahx` | AHX player | Amiga AHX data; `SOUND PLAY` routes `.ahx` filenames only. `AHX PLAY addr [,len]` plays compatible AHX data already loaded in guest memory |
+| `.sap` | POKEY/SAP player | Atari SAP data; `MEDIA_SUBSONG` selects the subsong |
+| `.mod` | MOD player | ProTracker MOD data; MOD files are loaded directly by the MOD player instead of through the 64 KB staging buffer |
+| `.wav` | WAV player | WAV sample playback; WAV files are loaded directly by the WAV player instead of through the 64 KB staging buffer |
 
-All players support `STOP` to halt playback. SID and SAP players support subsong selection.
+For low-level control, per-engine playback commands and registers are also
+available:
+
+| Command or route | Data accepted | Notes |
+|------------------|---------------|-------|
+| `SID PLAY addr [,len [,subsong]]` | SID data | Writes `SID_PLAY_PTR`, `SID_PLAY_LEN`, `SID_SUBSONG`, then starts `SID_PLAY_CTRL` |
+| `SAP PLAY addr [,len [,subsong]]` | SAP data | Writes `SAP_PLAY_PTR`, `SAP_PLAY_LEN`, `SAP_SUBSONG`, then starts `SAP_PLAY_CTRL` |
+| `PSG PLAY addr [,len]` | Header-detectable PSG data | Handles VGM/VGZ, YM, VTX, LHA-wrapped data, ZXAYEMUL AY, SNDH, and AY data; use `SOUND PLAY` for extension-only tracker formats. `PSG STOP` does not assert the player stop bit in the current source; use `SOUND STOP` or `POKE &HF0C18, 2` |
+| `TED PLAY addr [,len]` | TED data | Starts `TED_PLAY_CTRL`; `SOUND PLAY` additionally routes `.prg` filenames to this player. `TED STOP` does not assert the player stop bit in the current source; use `SOUND STOP` or `POKE &HF0F18, 2` |
+| `AHX PLAY addr [,len]` | AHX data | Starts `AHX_PLAY_CTRL`; `AHX_PLUS ON/OFF` writes `AHX_PLUS_CTRL` |
+| `SOUND MOD PLAY addr [,len]` | MOD data already loaded in guest memory | Starts `MOD_PLAY_CTRL`; `SOUND MOD FILTER model` selects the MOD filter model |
+| Raw WAV MMIO | WAV data | Use `WAV_PLAY_PTR`, `WAV_PLAY_LEN`, `WAV_PLAY_CTRL`, and `WAV_PLAY_STATUS`; no BASIC `WAV PLAY` statement exists |
+
+`SID STOP`, `SAP STOP`, `AHX STOP`, and `SOUND MOD STOP` write the source-backed
+stop value. `PSG STOP` and `TED STOP` are parsed but currently write `0`, which
+does not stop their Go player implementations. WAV stop, pause, resume, loop,
+channel base, volume, and mono control are exposed through the WAV MMIO
+registers.
 
 ---
 
@@ -2292,17 +2581,23 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 
 ### Main Memory Layout
 
+This table shows the low-memory EhBASIC and legacy hardware apertures. Guest
+RAM may be larger than this visible layout; discover the active and total RAM
+sizes through the SYSINFO registers or, from IE64 machine code, `MFCR` control
+register 15.
+
 | Address Range | Size | Description |
 |---------------|------|-------------|
-| `&H00000`-`&H9EFFF` | 636 KB | Main RAM |
-| `&H9F000` | 4 KB | Hardware stack (IE32) |
+| `&H00000`-`&H96FFF` | 604 KB | Main RAM and EhBASIC workspace below the hardware stack |
+| `&H097000`-`&H09EFFF` | 32 KB | EhBASIC hardware stack region |
+| `&H09F000` | - | Initial hardware stack top |
 | `&HA0000`-`&HAFFFF` | 64 KB | VGA VRAM window |
 | `&HB8000`-`&HBFFFF` | 32 KB | VGA text buffer |
 | `&HF0000`-`&HFFFFF` | 64 KB | I/O region |
 | `&H100000`-`&H5FFFFF` | 5 MB | Video RAM |
 | `&H800000`-`&H80FFFF` | 64 KB | Media staging buffer (SOUND PLAY) |
 
-### I/O Region Map
+### I/O and Hardware Aperture Map
 
 | Address Range | Device |
 |---------------|--------|
@@ -2310,19 +2605,37 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 | `&HF0700`-`&HF07FF` | Terminal MMIO |
 | `&HF0800`-`&HF0B7F` | Audio Chip (SoundChip) |
 | `&HF0B80`-`&HF0B91` | AHX Player |
+| `&HF0BC0`-`&HF0BD7` | MOD Player |
+| `&HF0BD8`-`&HF0BF3` | WAV Player |
 | `&HF0C00`-`&HF0C20` | PSG (AY-3-8910/YM2149) |
+| `&HF0C30`-`&HF0C3F` | SN76489 |
+| `&HF0C40`-`&HF0CFF` | SID2 flexible audio channels |
 | `&HF0D00`-`&HF0D20` | POKEY |
+| `&HF0D40`-`&HF0DFF` | SID3 flexible audio channels |
 | `&HF0E00`-`&HF0E2D` | SID (MOS 6581) |
-| `&HF0F00`-`&HF0F5F` | TED (audio + video) |
+| `&HF0E30`-`&HF0E4C` | SID2 chip registers |
+| `&HF0E50`-`&HF0E6C` | SID3 chip registers |
+| `&HF0E80`-`&HF0EFF` | SFX Trigger |
+| `&HF0F00`-`&HF0F6B` | TED (audio + video) |
 | `&HF1000`-`&HF13FF` | VGA registers |
+| `&HF1400`-`&HF140F` | Host Helper |
 | `&HF2000`-`&HF2017` | ULA registers |
 | `&HF2100`-`&HF213F` | ANTIC |
 | `&HF2140`-`&HF21FB` | GTIA |
 | `&HF2200`-`&HF221F` | File I/O |
+| `&HF2220`-`&HF225F` | AROS DOS Handler (internal) |
+| `&HF2260`-`&HF22AF` | Paula DMA audio bridge |
 | `&HF2300`-`&HF231F` | Media Loader (SOUND PLAY) |
 | `&HF2320`-`&HF233F` | Program Executor (RUN "file") |
-| `&HF2380`-`&HF2383` | System Control (GC trigger) |
-| `&HF8000`-`&HD0000` | Voodoo 3DFX |
+| `&HF2340`-`&HF238F` | Coprocessor control |
+| `&HF2390`-`&HF23AF` | Clipboard Bridge (internal) |
+| `&HF23B0`-`&HF23BF` | Coprocessor monitor |
+| `&HF23C0`-`&HF23DF` | IRQ diagnostics (internal) |
+| `&HF23E0`-`&HF23FF` | Bootstrap HostFS (internal) |
+| `&HF2400`-`&HF24FF` | SYSINFO read-only RAM-size registers |
+| `&HD0000`-`&HDFFFF` | Voodoo texture memory |
+| `&HF8000`-`&HF87FF` | Voodoo 3DFX registers |
+| `&HFA000`-`&HFBAFF` | ULA VRAM aperture |
 
 ### EhBASIC Memory Layout
 
@@ -2331,7 +2644,7 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 | `&H001000`-`&H020FFF` | 128 KB | Interpreter code reservation |
 | `&H021000`-`&H021FFF` | 4 KB | Input line buffer |
 | `&H022000`-`&H022FFF` | 4 KB | Interpreter state block |
-| `&H023000`-`&H04FFFF` | 180 KB | Program text region (grows upward) |
+| `&H023000`-`&H04FFFF` | 180 KB | Programme text region (grows upward; capped by `BASIC_PROG_LIMIT`) |
 | `&H050000`-`&H057FFF` | 32 KB | Numeric variable table region start |
 | `&H058000`-`&H05FFFF` | 32 KB | String variable table region start |
 | `&H060000`-`&H08BFFF` | 176 KB | Array storage region start |
@@ -2340,7 +2653,10 @@ All players support `STOP` to halt playback. SID and SAP players support subsong
 | `&H097000`-`&H09EFFF` | 32 KB | Hardware stack region |
 | `&H09F000` | - | Initial stack top (SP) |
 
-`var_init` initialises variable/array pointers at fixed bases (`&H050000`, `&H058000`, `&H060000`) and the string heap at `&H08C000`.
+`line_store` rejects stored programme lines that would move `ST_PROG_END` beyond
+`BASIC_PROG_LIMIT` (`&H050000`) and reports `?OUT OF MEMORY ERROR`. `var_init`
+initialises variable/array pointers at fixed bases (`&H050000`, `&H058000`,
+`&H060000`) and the string heap at `&H08C000`.
 
 ### State Block Offsets
 
@@ -2348,8 +2664,8 @@ The interpreter state block at `&H022000` contains:
 
 | Offset | Field | Description |
 |--------|-------|-------------|
-| `+&H00` | ST_PROG_START | Start of BASIC program text |
-| `+&H04` | ST_PROG_END | End of program text |
+| `+&H00` | ST_PROG_START | Start of BASIC programme text |
+| `+&H04` | ST_PROG_END | End of programme text |
 | `+&H08` | ST_VAR_START | Simple variable table start |
 | `+&H0C` | ST_VAR_END | Simple variable table end |
 | `+&H10` | ST_ARRAY_START | Array storage start |
@@ -2367,6 +2683,14 @@ The interpreter state block at `&H022000` contains:
 | `+&H40` | ST_DIRECT_MODE | 1=immediate, 0=running |
 | `+&H44` | ST_SVAR_START | String variable table start |
 | `+&H48` | ST_SVAR_END | String variable table end |
+| `+&H4C` | ST_TEXT_ATTR | Text attribute used by `COLOR` |
+| `+&H50` | ST_COPPER_BUILD | Copper build pointer |
+| `+&H54` | ST_ULA_BRIGHT | ULA bright flag |
+| `+&H58` | ST_ULA_INK | ULA ink colour |
+| `+&H5C` | ST_ULA_PAPER | ULA paper colour |
+| `+&H60` | ST_ULA_FLASH | ULA flash flag |
+| `+&H64` | ST_CONT_LINE_PTR | Saved line pointer for `CONT` |
+| `+&H68` | ST_CONT_TEXT_PTR | Saved text pointer for `CONT` |
 | `+&H6C` | ST_ERROR_LINE | Last runtime error line |
 | `+&H70` | ST_TERM_COL | Current terminal output column |
 
@@ -2374,7 +2698,11 @@ The interpreter state block at `&H022000` contains:
 
 ## 9. Hardware Register Reference
 
-This section documents every I/O register accessible via POKE/PEEK or the hardware commands. Registers are grouped by subsystem.
+This section documents the I/O registers used directly by EhBASIC commands or
+commonly accessed from EhBASIC via POKE/PEEK. Registers are grouped by
+subsystem. Internal OS/debug bridge regions listed in the aperture map are
+intentionally not expanded here unless they are useful from EhBASIC or
+guest-side hardware code.
 
 ### 9.1 Terminal MMIO (`&HF0700`-`&HF07FF`)
 
@@ -2385,6 +2713,24 @@ This section documents every I/O register accessible via POKE/PEEK or the hardwa
 | `&HF0708` | TERM_IN | R | Read next input character (dequeues) |
 | `&HF070C` | TERM_LINE_STATUS | R | Bit 0: complete line available |
 | `&HF0710` | TERM_ECHO | R/W | Bit 0: local echo enable (default 1) |
+| `&HF0714` | TERM_CURSOR_X | Reserved | Defined constant; current terminal handler returns 0 and ignores writes |
+| `&HF0718` | TERM_CURSOR_Y | Reserved | Defined constant; current terminal handler returns 0 and ignores writes |
+| `&HF071C` | TERM_FG_COLOR | Reserved | Defined constant; current terminal handler returns 0 and ignores writes |
+| `&HF0720` | TERM_BG_COLOR | Reserved | Defined constant; current terminal handler returns 0 and ignores writes |
+| `&HF0724` | TERM_CTRL | R/W | Bit 0: line input mode; default 1 |
+| `&HF0728` | TERM_KEY_IN | R | Read next raw key (dequeues) |
+| `&HF072C` | TERM_KEY_STATUS | R | Bit 0: raw key available |
+| `&HF0730` | MOUSE_X | R | Absolute mouse X position, low 16 bits |
+| `&HF0734` | MOUSE_Y | R | Absolute mouse Y position, low 16 bits |
+| `&HF0738` | MOUSE_BUTTONS | R | Bit 0=left, bit 1=right, bit 2=middle |
+| `&HF073C` | MOUSE_STATUS | R | Bit 0=mouse changed since last `MOUSE_STATUS` read; read clears flag |
+| `&HF0740` | SCAN_CODE | R | Raw keyboard scancode dequeue |
+| `&HF0744` | SCAN_STATUS | R | Bit 0=scancode available |
+| `&HF0748` | SCAN_MODIFIERS | R | Bit 0=shift, bit 1=ctrl, bit 2=alt, bit 3=caps lock |
+| `&HF074C` | MOUSE_CTRL | R/W | Bit 0=request relative/captured mouse mode |
+| `&HF0750` | RTC_EPOCH | R | Host UTC seconds since Unix epoch |
+| `&HF0754` | MOUSE_DX | R | Signed accumulated relative X delta; read clears |
+| `&HF0758` | MOUSE_DY | R | Signed accumulated relative Y delta; read clears |
 | `&HF07F0` | TERM_SENTINEL | W | Write `&HDEAD` to stop CPU |
 
 ### 9.2 VGA Registers (`&HF1000`-`&HF13FF`)
@@ -2396,10 +2742,17 @@ This section documents every I/O register accessible via POKE/PEEK or the hardwa
 | `&HF1008` | VGA_CTRL | R/W | Bit 0: enable |
 | `&HF1010` | VGA_SEQ_INDEX | W | Sequencer index |
 | `&HF1014` | VGA_SEQ_DATA | R/W | Sequencer data |
+| `&HF1018` | VGA_SEQ_MAPMASK | R/W | Direct plane write mask for planar modes |
 | `&HF1020` | VGA_CRTC_INDEX | W | CRTC index |
 | `&HF1024` | VGA_CRTC_DATA | R/W | CRTC data |
-| `&HF1028` | VGA_CRTC_STARTHI | W | Display start address (high byte) |
-| `&HF102C` | VGA_CRTC_STARTLO | W | Display start address (low byte) |
+| `&HF1028` | VGA_CRTC_STARTHI | R/W | Display start address (high byte) |
+| `&HF102C` | VGA_CRTC_STARTLO | R/W | Display start address (low byte) |
+| `&HF1030` | VGA_GC_INDEX | W | Graphics Controller index |
+| `&HF1034` | VGA_GC_DATA | R/W | Graphics Controller data |
+| `&HF1038` | VGA_GC_READMAP | R/W | Direct read-plane select for planar modes |
+| `&HF103C` | VGA_GC_BITMASK | R/W | Direct VGA bit mask |
+| `&HF1040` | VGA_ATTR_INDEX | W | Attribute Controller index |
+| `&HF1044` | VGA_ATTR_DATA | R/W | Attribute Controller data |
 | `&HF1050` | VGA_DAC_MASK | R/W | Pixel mask |
 | `&HF1054` | VGA_DAC_RINDEX | W | DAC read index |
 | `&HF1058` | VGA_DAC_WINDEX | W | DAC write index |
@@ -2413,15 +2766,15 @@ execution is enabled only when the VM is launched with `-ehbasic-host`.
 
 | Address | Name | R/W | Description |
 |---------|------|-----|-------------|
-| `&HF1400` | HOST_CMD | R/W | Command: 1=NET, 2=UPDATE, 3=REBOOT, 4=POWEROFF |
-| `&HF1404` | HOST_TRIGGER | W | Write non-zero to start the selected command |
-| `&HF1408` | HOST_STATUS | R | 0=running, 1=ok, 2=error, 3=user cancel, 4=disabled, 5=idle |
-| `&HF140C` | HOST_EXIT | R | 32-bit helper exit code |
+| `&HF1400` | HOST_MMIO_CMD | R/W | Command: 1=NET, 2=UPDATE, 3=REBOOT, 4=POWEROFF |
+| `&HF1404` | HOST_MMIO_TRIGGER | W | Write non-zero to start the selected command |
+| `&HF1408` | HOST_MMIO_STATUS | R | 0=running, 1=ok, 2=error, 3=user cancel, 4=disabled, 5=idle |
+| `&HF140C` | HOST_MMIO_EXIT | R | 32-bit helper exit code |
 
-Before the first trigger, `HOST_STATUS` reads idle (`5`). Without
+Before the first trigger, `HOST_MMIO_STATUS` reads `HOST_STATUS_IDLE` (`5`). Without
 `-ehbasic-host`, a trigger reports disabled status instead of running a host
-command. Only one command may run at a time. A trigger while `HOST_STATUS` is
-running is ignored. Subword reads from `HOST_EXIT` return the corresponding
+command. Only one command may run at a time. A trigger while `HOST_MMIO_STATUS` is
+running is ignored. Subword reads from `HOST_MMIO_EXIT` return the corresponding
 shifted byte or word of the 32-bit exit code.
 
 ### 9.4 ULA Registers (`&HF2000`-`&HF2017`)
@@ -2448,6 +2801,9 @@ ULA VRAM aperture at `&HFA000`: 6,144 bytes bitmap + 768 bytes attributes.
 | `&HF0820` | FILTER_CUTOFF | Cutoff frequency (0-255) |
 | `&HF0824` | FILTER_RESONANCE | Resonance (0-255) |
 | `&HF0828` | FILTER_TYPE | 0=off, 1=LP, 2=HP, 3=BP |
+| `&HF082C` | FILTER_MOD_SOURCE | Modulation source channel, 0-3 |
+| `&HF0830` | FILTER_MOD_AMOUNT | Modulation depth, 0-255 |
+| `&HF0860` + `channel*4` | ENV_SHAPE_CH | Per-channel envelope shape |
 
 #### Fixed Channels
 
@@ -2460,6 +2816,28 @@ ULA VRAM aperture at `&HFA000`: 6,144 bytes bitmap + 768 bytes attributes.
 | Sawtooth | `&HF0A20` | `&HF0A24` | `&HF0A28` | `&HF0A30`-`&HF0A3C` |
 
 Frequency values are 16.8 fixed-point: Hz * 256.
+
+Additional fixed-channel registers:
+
+| Address | Name | Description |
+|---------|------|-------------|
+| `&HF090C` | SQUARE_DUTY | Duty cycle, 0-255 |
+| `&HF0910` | SQUARE_SWEEP | Square sweep control |
+| `&HF0914` | TRI_SWEEP | Triangle sweep control |
+| `&HF0918` | SINE_SWEEP | Sine sweep control |
+| `&HF0922` | SQUARE_PWM_CTRL | bit 7=PWM enable, bits 0-6=rate |
+| `&HF09E0` | NOISE_MODE | Fixed noise-channel mode: 0=white, 1=periodic, 2=metallic, 3=PSG-style, 4=TED 8-bit, 5=SN76489 15-bit white, 6=SN76489 15-bit periodic, 7=SN76489 16-bit white, 8=SN76489 16-bit periodic |
+| `&HF0A00`-`&HF0A0C` | SYNC_SOURCE_CH0-3 | Hard-sync sources for channels 0-3 |
+| `&HF0A10`-`&HF0A1C` | RING_MOD_SOURCE_CH0-3 | Ring-mod sources for channels 0-3 |
+| `&HF0A2C` | SAW_SWEEP | Sawtooth sweep control |
+| `&HF0A60` | SYNC_SOURCE_CH4 | Hard-sync source for sawtooth |
+| `&HF0A64` | RING_MOD_SOURCE_CH4 | Ring-mod source for sawtooth |
+
+`SQUARE_PWM_CTRL` is byte-oriented and lives at `&HF0922`. `POKE` and `LOKE`
+require 4-byte aligned addresses and therefore raise `?FC ERROR` for this
+register; use `POKE8 &HF0922,value` for normal writes. `DOKE &HF0922,value` is
+2-byte aligned and reaches the low byte, but also writes the neighbouring byte,
+so `POKE8` is the precise access form.
 
 #### Flexible Channels (64 bytes each)
 
@@ -2476,13 +2854,27 @@ Offsets from channel base:
 |--------|------|-------------|
 | `+&H00` | FREQ | Frequency (16.8 fixed-point) |
 | `+&H04` | VOL | Volume (0-255) |
-| `+&H08` | CTRL | Control (Bit 1: gate) |
+| `+&H08` | CTRL | Control: bit 0=enable, bit 1=gate |
 | `+&H0C` | DUTY | Duty cycle (0-255) |
+| `+&H10` | SWEEP | Packed pitch sweep: enable, period, shift |
 | `+&H14` | ATK | Attack time (ms) |
 | `+&H18` | DEC | Decay time (ms) |
 | `+&H1C` | SUS | Sustain level (0-255) |
 | `+&H20` | REL | Release time (ms) |
 | `+&H24` | WAVE_TYPE | Waveform (0-4) |
+| `+&H28` | PWM_CTRL | PWM control |
+| `+&H2C` | NOISEMODE | Noise mode |
+| `+&H30` | PHASE | Phase reset |
+| `+&H34` | RINGMOD | bit 7=enable, bits 0-2=source channel |
+| `+&H38` | SYNC | bit 7=enable, bits 0-2=source channel |
+| `+&H3C` | DAC | Signed 8-bit DAC sample value |
+
+SID2 and SID3 flexible banks use the same 64-byte channel layout:
+
+| Bank | Channels | Address Range |
+|------|----------|---------------|
+| SID2 flex | 3 channels | `&HF0C40`-`&HF0CFF` |
+| SID3 flex | 3 channels | `&HF0D40`-`&HF0DFF` |
 
 #### Effects
 
@@ -2492,50 +2884,188 @@ Offsets from channel base:
 | `&HF0A50` | REVERB_MIX | Dry/wet mix (0-255) |
 | `&HF0A54` | REVERB_DECAY | Decay time (0-255) |
 
-### 9.6 PSG Registers (`&HF0C00`-`&HF0C20`)
+### 9.6 SFX Trigger Registers (`&HF0E80`-`&HF0EFF`)
+
+SFX trigger channels play raw sample buffers through SoundChip DAC paths. There
+are four channels, 32 bytes each.
+
+| Channel | Base Address |
+|---------|--------------|
+| 0 | `&HF0E80` |
+| 1 | `&HF0EA0` |
+| 2 | `&HF0EC0` |
+| 3 | `&HF0EE0` |
+
+| Offset | Name | R/W | Description |
+|--------|------|-----|-------------|
+| `+&H00` | SFX_PTR | R/W | Sample pointer in guest memory |
+| `+&H04` | SFX_LEN | R/W | Sample length in bytes |
+| `+&H08` | SFX_LOOP_PTR | R/W | Loop sample pointer |
+| `+&H0C` | SFX_LOOP_LEN | R/W | Loop length in bytes |
+| `+&H10` | SFX_FREQ | R/W | Playback frequency |
+| `+&H14` | SFX_VOL | R/W | Volume |
+| `+&H16` | SFX_PAN_RESERVED | R/W | Reserved |
+| `+&H18` | SFX_FORMAT | R/W | 0=signed 8-bit, 1=unsigned 8-bit, 2=signed 16-bit |
+| `+&H1C` | SFX_CTRL | R/W | bit 0=trigger, bit 1=stop, bit 2=loop enable |
+
+### 9.7 Music Player Registers (`&HF0B80`-`&HF0BF3`)
+
+These blocks are used by `AHX`, `SOUND MOD`, `SOUND PLAY`, and machine-code
+programmes that load music data into guest memory themselves. Player control
+bits are consistent unless noted: bit 0=start, bit 1=stop, bit 2=loop.
+
+| Address | Name | R/W | Description |
+|---------|------|-----|-------------|
+| `&HF0B80` | AHX_PLUS_CTRL | R/W | AHX+ mode: 0=standard, 1=enhanced |
+| `&HF0B84` | AHX_PLAY_PTR | R/W | 32-bit pointer to AHX data |
+| `&HF0B88` | AHX_PLAY_LEN | R/W | 32-bit AHX data length |
+| `&HF0B8C` | AHX_PLAY_CTRL | R/W | Control bits: 1=start, 2=stop, 4=loop |
+| `&HF0B90` | AHX_PLAY_STATUS | R | bit 0=busy, bit 1=error |
+| `&HF0B91` | AHX_SUBSONG | R/W | Subsong selection, 0-255 |
+| `&HF0BC0` | MOD_PLAY_PTR | R/W | 32-bit pointer to MOD data |
+| `&HF0BC4` | MOD_PLAY_LEN | R/W | 32-bit MOD data length |
+| `&HF0BC8` | MOD_PLAY_CTRL | R/W | Control bits: 1=start, 2=stop, 4=loop |
+| `&HF0BCC` | MOD_PLAY_STATUS | R | bit 0=playing, bit 1=error |
+| `&HF0BD0` | MOD_FILTER_MODEL | R/W | 0=none, 1=A500 4.5 kHz, 2=A1200 28 kHz |
+| `&HF0BD4` | MOD_POSITION | R | Current song position |
+| `&HF0BD8` | WAV_PLAY_PTR | R/W | Low 32 bits of WAV data pointer |
+| `&HF0BDC` | WAV_PLAY_LEN | R/W | 32-bit WAV data length |
+| `&HF0BE0` | WAV_PLAY_CTRL | R/W | bit 0=start, bit 1=stop, bit 2=loop, bit 3=pause, bit 4=loop apply only |
+| `&HF0BE4` | WAV_PLAY_STATUS | R | bit 0=busy, bit 1=error, bit 2=paused, bit 3=stereo active |
+| `&HF0BE8` | WAV_POSITION | R | Current source frame position |
+| `&HF0BEC` | WAV_PLAY_PTR_HI | R/W | High 32 bits of WAV data pointer |
+| `&HF0BF0` | WAV_CHANNEL_BASE | R/W | Left DAC channel base; right uses base+1 |
+| `&HF0BF1` | WAV_VOLUME_L | R/W | Left volume, 0-255 |
+| `&HF0BF2` | WAV_VOLUME_R | R/W | Right volume, 0-255 |
+| `&HF0BF3` | WAV_FLAGS | R/W | bit 0=force mono |
+
+There is no BASIC `WAV STATUS` function. Use `SOUND PLAY` status indirectly
+through playback behaviour, or read `WAV_PLAY_STATUS` directly.
+
+### 9.8 PSG and SN76489 Registers (`&HF0C00`-`&HF0C3F`)
+
+The AY-3-8910/YM2149 register file is exposed directly at `&HF0C00`-`&HF0C0F`.
+IOA/IOB are storage-only on IE.
 
 | Address | Name | Description |
 |---------|------|-------------|
-| `&HF0C00`-`&HF0C0F` | PSG_BASE | AY-3-8910/YM2149 register array (16 registers; IOA/IOB storage-only on IE) |
-| `&HF0C20` | PSG_PLUS_CTRL | Enhanced mode (0=standard, 1=enhanced) |
-| `&HF0C10` | PSG_PLAY_PTR | Player pointer |
-| `&HF0C14` | PSG_PLAY_LEN | Player length |
-| `&HF0C18` | PSG_PLAY_CTRL | 1=start, 2=stop |
-| `&HF0C1C` | PSG_PLAY_STATUS | Playback status |
+| `&HF0C00` | PSG_REG0 | Channel A fine tune |
+| `&HF0C01` | PSG_REG1 | Channel A coarse tune |
+| `&HF0C02` | PSG_REG2 | Channel B fine tune |
+| `&HF0C03` | PSG_REG3 | Channel B coarse tune |
+| `&HF0C04` | PSG_REG4 | Channel C fine tune |
+| `&HF0C05` | PSG_REG5 | Channel C coarse tune |
+| `&HF0C06` | PSG_REG6 | Noise period |
+| `&HF0C07` | PSG_REG7 | Mixer enable register |
+| `&HF0C08` | PSG_REG8 | Channel A amplitude |
+| `&HF0C09` | PSG_REG9 | Channel B amplitude |
+| `&HF0C0A` | PSG_REG10 | Channel C amplitude |
+| `&HF0C0B` | PSG_REG11 | Envelope fine period |
+| `&HF0C0C` | PSG_REG12 | Envelope coarse period |
+| `&HF0C0D` | PSG_REG13 | Envelope shape |
+| `&HF0C0E` | PSG_REG14 | IOA storage |
+| `&HF0C0F` | PSG_REG15 | IOB storage |
+| `&HF0C10` | PSG_PLAY_PTR | 32-bit player data pointer |
+| `&HF0C14` | PSG_PLAY_LEN | 32-bit player data length |
+| `&HF0C18` | PSG_PLAY_CTRL | bit 0=start, bit 1=stop, bit 2=loop |
+| `&HF0C1C` | PSG_PLAY_STATUS | bit 0=busy, bit 1=error |
+| `&HF0C20` | PSG_PLUS_CTRL | Enhanced mode: 0=standard, 1=enhanced |
+| `&HF0C30` | SN_PORT_WRITE | W | SN76489 latch/data byte write |
+| `&HF0C31` | SN_PORT_READY | R | bit 0=ready |
+| `&HF0C32` | SN_PORT_MODE | R/W | 0=TI 15-bit LFSR, 1=Sega 16-bit LFSR |
 
-### 9.7 POKEY Registers (`&HF0D00`-`&HF0D20`)
+### 9.9 POKEY and SAP Registers (`&HF0D00`-`&HF0D20`)
 
 | Address | Name | Description |
 |---------|------|-------------|
 | `&HF0D00` | POKEY_AUDF1 | Channel 1 frequency divider |
-| `&HF0D01` | POKEY_AUDC1 | Channel 1 control (distortion + volume) |
-| `&HF0D02`-`&HF0D07` | AUDF2-4, AUDC2-4 | Channels 2-4 |
+| `&HF0D01` | POKEY_AUDC1 | Channel 1 control: bits 0-3 volume, bit 4 volume-only, bits 5-7 distortion |
+| `&HF0D02` | POKEY_AUDF2 | Channel 2 frequency divider |
+| `&HF0D03` | POKEY_AUDC2 | Channel 2 control |
+| `&HF0D04` | POKEY_AUDF3 | Channel 3 frequency divider |
+| `&HF0D05` | POKEY_AUDC3 | Channel 3 control |
+| `&HF0D06` | POKEY_AUDF4 | Channel 4 frequency divider |
+| `&HF0D07` | POKEY_AUDC4 | Channel 4 control |
 | `&HF0D08` | POKEY_AUDCTL | Master audio control |
-| `&HF0D10`-`&HF0D20` | SAP_PLAY_* | SAP player registers |
+| `&HF0D09` | POKEY_PLUS_CTRL | Enhanced mode: 0=standard, 1=enhanced |
+| `&HF0D0A` | POKEY_RANDOM | Readable polynomial/RNG tap |
+| `&HF0D10` | SAP_PLAY_PTR | 32-bit SAP data pointer |
+| `&HF0D14` | SAP_PLAY_LEN | 32-bit SAP data length |
+| `&HF0D18` | SAP_PLAY_CTRL | bit 0=start, bit 1=stop, bit 2=loop |
+| `&HF0D1C` | SAP_PLAY_STATUS | bit 0=busy, bit 1=error |
+| `&HF0D20` | SAP_SUBSONG | Subsong selection, 0-255 |
 
-### 9.8 SID Registers (`&HF0E00`-`&HF0E2D`)
+`POKEY_AUDCTL` bits: bit 0 selects 15 kHz base clock, bits 1-2 enable high-pass
+filters, bits 3-4 join channels for 16-bit modes, bits 5-6 select 1.79 MHz
+clocking for channels 3 and 1, and bit 7 selects 9-bit polynomial noise.
 
-Each voice occupies 7 bytes:
+### 9.10 SID Registers (`&HF0E00`-`&HF0E2D`)
 
-| Offset | Name | Description |
-|--------|------|-------------|
-| +0 | FREQ_LO | Frequency low byte |
-| +1 | FREQ_HI | Frequency high byte |
-| +2 | PW_LO | Pulse width low byte |
-| +3 | PW_HI | Pulse width high (bits 0-3) |
-| +4 | CTRL | Gate, waveform, sync, ring mod |
-| +5 | AD | Attack/Decay |
-| +6 | SR | Sustain/Release |
+Each SID voice occupies 7 bytes.
 
-Voice bases: V1=`&HF0E00`, V2=`&HF0E07`, V3=`&HF0E0E`.
+| Voice | Base | Registers |
+|-------|------|-----------|
+| 1 | `&HF0E00` | FREQ_LO, FREQ_HI, PW_LO, PW_HI, CTRL, AD, SR |
+| 2 | `&HF0E07` | FREQ_LO, FREQ_HI, PW_LO, PW_HI, CTRL, AD, SR |
+| 3 | `&HF0E0E` | FREQ_LO, FREQ_HI, PW_LO, PW_HI, CTRL, AD, SR |
 
-Filter and volume at `&HF0E15`-`&HF0E19`.
+| Address | Name | Description |
+|---------|------|-------------|
+| `&HF0E15` | SID_FC_LO | Filter cutoff low bits |
+| `&HF0E16` | SID_FC_HI | Filter cutoff high byte |
+| `&HF0E17` | SID_RES_FILT | bits 0-3 filter routing, bits 4-7 resonance |
+| `&HF0E18` | SID_MODE_VOL | bits 0-3 volume, bits 4-6 LP/BP/HP, bit 7 voice 3 off |
+| `&HF0E19` | SID_PLUS_CTRL | Enhanced mode: 0=standard, 1=enhanced |
+| `&HF0E1A` | SID_POT_Y | Potentiometer Y read register, not implemented |
+| `&HF0E1B` | SID_OSC3 | Oscillator 3 output |
+| `&HF0E1C` | SID_ENV3 | Envelope 3 output |
+| `&HF0E20` | SID_PLAY_PTR | 32-bit SID data pointer |
+| `&HF0E24` | SID_PLAY_LEN | 32-bit SID data length |
+| `&HF0E28` | SID_PLAY_CTRL | bit 0=start, bit 1=stop, bit 2=loop |
+| `&HF0E2C` | SID_PLAY_STATUS | bit 0=busy, bit 1=error |
+| `&HF0E2D` | SID_SUBSONG | Subsong selection, 0-255 |
 
-### 9.9 TED Registers (`&HF0F00`-`&HF0F5F`)
+SID voice `CTRL` bits: bit 0=gate, bit 1=sync, bit 2=ring modulation, bit
+3=test, bit 4=triangle, bit 5=sawtooth, bit 6=pulse, bit 7=noise.
 
-Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. See sections 6.5 and 7.5 for details.
+Secondary SID chip register windows are also mapped. `SID2_BASE` is `&HF0E30`
+through `&HF0E4C`; `SID3_BASE` is `&HF0E50` through `&HF0E6C`. Each secondary
+SID uses the same 29-byte voice/filter/read-register layout as `SID_BASE` with
+addresses relative to its own base. The BASIC `SID` statement targets the
+primary SID command path; use `POKE8`/`PEEK` for direct secondary SID access.
 
-### 9.10 ANTIC Registers (`&HF2100`-`&HF213F`)
+### 9.11 TED Registers (`&HF0F00`-`&HF0F6B`)
+
+| Address | Name | Description |
+|---------|------|-------------|
+| `&HF0F00` | TED_FREQ1_LO | Voice 1 frequency low byte |
+| `&HF0F01` | TED_FREQ2_LO | Voice 2 frequency low byte |
+| `&HF0F02` | TED_FREQ2_HI | Voice 2 frequency high bits |
+| `&HF0F03` | TED_SND_CTRL | bit 7=DAC mode, bit 6=voice 2 noise, bit 5=voice 2 enable, bit 4=voice 1 enable, bits 0-3 volume |
+| `&HF0F04` | TED_FREQ1_HI | Voice 1 frequency high bits |
+| `&HF0F05` | TED_PLUS_CTRL | Enhanced mode: 0=standard, 1=enhanced |
+| `&HF0F10` | TED_PLAY_PTR | 32-bit TED data pointer |
+| `&HF0F14` | TED_PLAY_LEN | 32-bit TED data length |
+| `&HF0F18` | TED_PLAY_CTRL | bit 0=start, bit 1=stop, bit 2=loop |
+| `&HF0F1C` | TED_PLAY_STATUS | bit 0=busy, bit 1=error |
+| `&HF0F20` | TED_V_CTRL1 | ECM/BMM/DEN/RSEL/YSCROLL |
+| `&HF0F24` | TED_V_CTRL2 | RES/MCM/CSEL/XSCROLL |
+| `&HF0F28` | TED_V_CHAR_BASE | Character/bitmap base address selector |
+| `&HF0F2C` | TED_V_VIDEO_BASE | Video matrix base address selector |
+| `&HF0F30`-`&HF0F3C` | TED_V_BG_COLOR0-3 | Background colours |
+| `&HF0F40` | TED_V_BORDER | Border colour |
+| `&HF0F44` | TED_V_CURSOR_HI | Cursor position high byte |
+| `&HF0F48` | TED_V_CURSOR_LO | Cursor position low byte |
+| `&HF0F4C` | TED_V_CURSOR_CLR | Cursor colour |
+| `&HF0F50` | TED_V_RASTER_LO | Raster line low byte |
+| `&HF0F54` | TED_V_RASTER_HI | Raster high bit and flags |
+| `&HF0F58` | TED_V_ENABLE | bit 0=video enable |
+| `&HF0F5C` | TED_V_STATUS | bit 0=VBlank |
+| `&HF0F60` | TED_V_RASTER_CMP_LO | Raster compare low byte |
+| `&HF0F64` | TED_V_RASTER_CMP_HI | Raster compare high bit in bit 0 |
+| `&HF0F68` | TED_V_RASTER_STATUS | bit 7=raster compare pending; write 1 to clear |
+
+### 9.12 ANTIC Registers (`&HF2100`-`&HF213F`)
 
 | Address | Name | Description |
 |---------|------|-------------|
@@ -2548,35 +3078,53 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF2118` | ANTIC_PMBASE | Player/missile base |
 | `&HF211C` | ANTIC_CHBASE | Character set base |
 | `&HF2120` | ANTIC_WSYNC | Wait for sync (write-only) |
-| `&HF2124` | ANTIC_VCOUNT | Vertical counter (read-only) |
-| `&HF2130` | ANTIC_NMIEN | NMI enable |
+| `&HF2124` | ANTIC_VCOUNT | Vertical counter, returns scanline/2 (read-only) |
+| `&HF2128` | ANTIC_PENH | Light pen horizontal position (read-only) |
+| `&HF212C` | ANTIC_PENV | Light pen vertical position (read-only) |
+| `&HF2130` | ANTIC_NMIEN | NMI enable: bit 6=VBI, bit 7=DLI |
+| `&HF2134` | ANTIC_NMIST | NMI status read / NMI reset write: bit 5=reset, bit 6=VBI pending, bit 7=DLI pending |
 | `&HF2138` | ANTIC_ENABLE | Video enable (Bit 0), PAL mode (Bit 1) |
 | `&HF213C` | ANTIC_STATUS | Status (Bit 0: VBlank) |
 
-### 9.11 GTIA Registers (`&HF2140`-`&HF21FB`)
+### 9.13 GTIA Registers (`&HF2140`-`&HF21FB`)
 
 | Address Range | Description |
 |---------------|-------------|
-| `&HF2140`-`&HF2150` | Playfield colours (COLPF0-3, COLBK) |
-| `&HF2154`-`&HF2160` | Player/missile colours (COLPM0-3) |
+| `&HF2140` | GTIA_COLPF0 - playfield colour 0 |
+| `&HF2144` | GTIA_COLPF1 - playfield colour 1 |
+| `&HF2148` | GTIA_COLPF2 - playfield colour 2 |
+| `&HF214C` | GTIA_COLPF3 - playfield colour 3 |
+| `&HF2150` | GTIA_COLBK - background/border colour |
+| `&HF2154`-`&HF2160` | GTIA_COLPM0-3 - player/missile colours |
 | `&HF2164` | GTIA_PRIOR (priority) |
 | `&HF2168` | GTIA_GRACTL (graphics control) |
+| `&HF216C` | GTIA_CONSOL (console switches, read) |
 | `&HF2170`-`&HF217C` | Player positions (HPOSP0-3) |
 | `&HF2180`-`&HF218C` | Missile positions (HPOSM0-3) |
-| `&HF2190`-`&HF21A0` | Player/missile sizes |
-| `&HF21A4`-`&HF21B4` | Player/missile graphics patterns |
-| `&HF21B8`-`&HF21F4` | Collision latches |
+| `&HF2190`-`&HF219C` | GTIA_SIZEP0-3 - player sizes |
+| `&HF21A0` | GTIA_SIZEM - missile sizes |
+| `&HF21A4`-`&HF21B0` | GTIA_GRAFP0-3 - player graphics patterns |
+| `&HF21B4` | GTIA_GRAFM - missile graphics pattern |
+| `&HF21B8`-`&HF21F4` | Collision latches: M0PF-M3PF, P0PF-P3PF, M0PL-M3PL, P0PL-P3PL |
 | `&HF21F8` | HITCLR collision latch clear |
 
-### 9.12 Voodoo 3DFX Registers (`&HF8000`-`&HF87FF`, texture memory `&HD0000`-`&HDFFFF`)
+### 9.14 Voodoo 3DFX Registers (`&HF8000`-`&HF87FF`, texture memory `&HD0000`-`&HDFFFF`)
 
 | Address | Name | Description |
 |---------|------|-------------|
 | `&HF8000` | VOODOO_STATUS | Status flags (read-only) |
 | `&HF8004` | VOODOO_ENABLE | Enable register |
 | `&HF8008`-`&HF801C` | VERTEX_AX..CY | Vertex coordinates (12.4 fixed-point) |
-| `&HF8020`-`&HF803C` | START_R..W | Vertex attributes (12.12 fixed-point) |
+| `&HF8020`-`&HF8028` | START_R/G/B | Vertex colour attributes (12.12 fixed-point) |
+| `&HF802C` | START_Z | Vertex Z attribute (20.12 fixed-point) |
+| `&HF8030` | START_A | Vertex alpha attribute (12.12 fixed-point) |
+| `&HF8034`-`&HF8038` | START_S/T | Texture coordinates (14.18 fixed-point) |
+| `&HF803C` | START_W | Perspective W / 1-Z attribute (2.30 fixed-point) |
+| `&HF8040`-`&HF805C` | DRDX..DWDX | Attribute gradients per X |
+| `&HF8060`-`&HF807C` | DRDY..DWDY | Attribute gradients per Y |
 | `&HF8080` | TRIANGLE_CMD | Submit triangle |
+| `&HF8084` | FTRIANGLE_CMD | Fast triangle / strip command |
+| `&HF8088` | COLOR_SELECT | Colour select |
 | `&HF8104` | FBZCOLOR_PATH | Colour path control |
 | `&HF8108` | FOG_MODE | Fog mode |
 | `&HF810C` | ALPHA_MODE | Alpha blending mode |
@@ -2584,16 +3132,43 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF8114` | LFB_MODE | Linear framebuffer mode |
 | `&HF8118` | CLIP_LEFT_RIGHT | Clip rectangle X |
 | `&HF811C` | CLIP_LOW_Y_HIGH | Clip rectangle Y |
+| `&HF8120` | NOP_CMD | No-op command |
 | `&HF8124` | FAST_FILL_CMD | Fast fill command |
 | `&HF8128` | SWAP_BUFFER_CMD | Swap buffers |
+| `&HF8140` | FOG_TABLE_BASE | Base of 64 32-bit fog table entries |
+| `&HF81C4` | FOG_COLOR | Fog colour |
+| `&HF81C8` | ZA_COLOR | Z/alpha colour |
+| `&HF81CC` | CHROMA_KEY | Chroma-key colour |
+| `&HF81D0` | CHROMA_RANGE | Chroma-key range |
+| `&HF81D4` | STIPPLE | Stipple pattern |
+| `&HF81D8` | COLOR0 | Constant colour 0 |
+| `&HF81DC` | COLOR1 | Constant colour 1 |
+| `&HF8200`-`&HF8210` | FBI_INIT0-4 | Framebuffer interface configuration |
 | `&HF8214` | VIDEO_DIM | Video dimensions |
+| `&HF8218` | BACK_PORCH | Back porch timing |
+| `&HF821C` | VIDEO_DIM_V | Vertical video dimensions |
+| `&HF8220` | H_SYNC | Horizontal sync |
+| `&HF8224` | V_SYNC | Vertical sync |
+| `&HF822C` | DAC_DATA | DAC data register |
 | `&HF8300` | TEXTURE_MODE | Texture mode |
+| `&HF8304` | TLOD | Texture LOD control |
+| `&HF8308` | TDETAIL | Texture detail control |
 | `&HF830C` | TEX_BASE0 | Texture base address |
+| `&HF8310`-`&HF832C` | TEX_BASE1-8 | Texture base addresses for LOD 1-8 |
 | `&HF8330` | TEX_WIDTH | Texture width |
 | `&HF8334` | TEX_HEIGHT | Texture height |
 | `&HF8338` | TEX_UPLOAD | Texture upload trigger |
+| `&HF8400`-`&HF87FF` | PALETTE_BASE | 256 32-bit texture palette entries |
 
-### 9.13 Video Chip Registers (`&HF0000`-`&HF049B`)
+`VOODOO_STATUS` bits: bit 0=FBI busy, bit 1=TMU busy, bit 2=SST busy, bit
+6=vertical retrace, bit 7=swap-buffer pending. `FBZ_MODE` uses bit
+0=clipping, bit 1=chroma key, bit 2=stipple, bit 3=W-buffer, bit 4=depth
+enable, bits 5-7=depth function, bit 8=dither, bit 9=RGB write, bit 10=depth
+write, bit 11=2x2 dither, bit 12=alpha write, bit 14=draw front, bit 15=draw
+back, bit 16=depth source, bit 17=Y origin, bit 18=alpha planes, bit 19=alpha
+dither, bits 20-31=depth offset.
+
+### 9.15 Video Chip Registers (`&HF0000`-`&HF049B`)
 
 | Address | Name | Description |
 |---------|------|-------------|
@@ -2602,8 +3177,10 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF0008` | VIDEO_STATUS | Video status |
 | `&HF000C` | COPPER_CTRL | Copper control (1=enable) |
 | `&HF0010` | COPPER_PTR | Copper list pointer |
+| `&HF0014` | COPPER_PC | Current copper programme counter |
+| `&HF0018` | COPPER_STATUS | Copper status |
 | `&HF001C` | BLT_CTRL | Control (write 1 to start) |
-| `&HF0020` | BLT_OP | Operation (0=copy, 1=fill, 2=line, 3=masked, 4=alpha, 5=Mode7, 6=color expand, 7=scale) |
+| `&HF0020` | BLT_OP | Operation (0=copy, 1=fill, 2=line, 3=masked, 4=alpha, 5=Mode7, 6=colour expand, 7=scale) |
 | `&HF0024` | BLT_SRC | Blitter source address |
 | `&HF0028` | BLT_DST | Blitter destination address |
 | `&HF002C` | BLT_WIDTH | Blitter width |
@@ -2611,8 +3188,64 @@ Audio registers at `&HF0F00`-`&HF0F05`. Video control at `&HF0F20`-`&HF0F5F`. Se
 | `&HF0034` | BLT_SRC_STRIDE | Source stride |
 | `&HF0038` | BLT_DST_STRIDE | Destination stride |
 | `&HF003C` | BLT_COLOR | Fill/line colour; for scale, packed destination size `(height << 16) | width` |
+| `&HF0040` | BLT_MASK | Mask address |
+| `&HF0044` | BLT_STATUS | Blitter status |
+| `&HF0048` | VIDEO_RASTER_Y | Raster Y position |
+| `&HF004C` | VIDEO_RASTER_HEIGHT | Raster height |
+| `&HF0050` | VIDEO_RASTER_COLOR | Raster colour, BGRA |
+| `&HF0054` | VIDEO_RASTER_CTRL | Raster control |
+| `&HF0058`-`&HF0074` | BLT_MODE7_* | Mode7 U/V origin, deltas, and texture masks |
+| `&HF0078` | VIDEO_PAL_INDEX | CLUT palette write index |
+| `&HF007C` | VIDEO_PAL_DATA | CLUT palette data, `0x00RRGGBB` |
+| `&HF0080` | VIDEO_COLOR_MODE | 0=RGBA32, 1=CLUT8 indexed |
+| `&HF0084` | VIDEO_FB_BASE | Bus-memory framebuffer base |
+| `&HF0088`-`&HF0487` | VIDEO_PAL_TABLE | 256 direct CLUT palette entries, 32 bits each |
+| `&HF0488` | BLT_FLAGS | Extended blitter flags |
+| `&HF048C` | BLT_FG | Blitter foreground colour |
+| `&HF0490` | BLT_BG | Blitter background colour |
+| `&HF0494` | BLT_MASK_MOD | Blitter mask modulo |
+| `&HF0498` | BLT_MASK_SRCX | Blitter mask source X |
 
-### 9.14 Media Loader Registers (`&HF2300`-`&HF231F`)
+### 9.16 File I/O Registers (`&HF2200`-`&HF221F`)
+
+Used by `BLOAD`, `LOAD`, `SAVE`, and `DIR`.
+
+| Address | Name | R/W | Description |
+|---------|------|-----|-------------|
+| `&HF2200` | FILE_NAME_PTR | W | Pointer to NUL-terminated filename |
+| `&HF2204` | FILE_DATA_PTR | W | Pointer to data buffer |
+| `&HF2208` | FILE_DATA_LEN | W | Data length for write |
+| `&HF220C` | FILE_CTRL | W | 1=read, 2=write, 3=list; write triggers operation |
+| `&HF2210` | FILE_STATUS | R | 0=OK, 1=error |
+| `&HF2214` | FILE_RESULT_LEN | R | Bytes read or listed |
+| `&HF2218` | FILE_ERROR_CODE | R | 0=OK, 1=not found, 2=permission, 3=traversal |
+
+### 9.17 Paula DMA Audio Bridge (`&HF2260`-`&HF22AF`)
+
+This Paula-style DMA shim is used by AROS audio and is also programmable from
+guest code. It drives SoundChip flex-channel DAC output from guest sample
+buffers.
+
+| Address Range | Description |
+|---------------|-------------|
+| `&HF2260`-`&HF226F` | Channel 0 registers |
+| `&HF2270`-`&HF227F` | Channel 1 registers |
+| `&HF2280`-`&HF228F` | Channel 2 registers |
+| `&HF2290`-`&HF229F` | Channel 3 registers |
+| `&HF22A0` | AROS_AUD_DMACON - bit 15=set/clear, bits 0-3=channels |
+| `&HF22A4` | AROS_AUD_STATUS - completion flags bits 0-3, write to clear |
+| `&HF22A8` | AROS_AUD_INTENA - bit 15=set/clear, bits 0-3=channel interrupt enables |
+
+Per-channel offsets:
+
+| Offset | Name | Description |
+|--------|------|-------------|
+| `+&H00` | PTR | Sample pointer in guest RAM |
+| `+&H04` | LEN | Length in words, 1 word = 2 bytes |
+| `+&H08` | PER | Paula-style period, frequency = 3546895 / period |
+| `+&H0C` | VOL | Volume, 0-64 |
+
+### 9.18 Media Loader Registers (`&HF2300`-`&HF231F`)
 
 Used by `SOUND PLAY` to load and play music files.
 
@@ -2622,14 +3255,34 @@ Used by `SOUND PLAY` to load and play music files.
 | `&HF2304` | MEDIA_SUBSONG | W | Subsong index (0=default) |
 | `&HF2308` | MEDIA_CTRL | W | Control: 1=play, 2=stop all |
 | `&HF230C` | MEDIA_STATUS | R | 0=idle, 1=loading, 2=playing, 3=error |
-| `&HF2310` | MEDIA_TYPE | R | Detected type: 1=SID, 2=PSG, 3=TED, 4=AHX |
+| `&HF2310` | MEDIA_TYPE | R | Detected type: 0=none, 1=SID, 2=PSG, 3=TED, 4=AHX, 5=POKEY/SAP, 6=MOD, 7=WAV |
 | `&HF2314` | MEDIA_ERROR | R | 0=ok, 1=not-found, 2=bad-format, 3=unsupported, 4=path-invalid, 5=too-large |
 
-Staging buffer: `&H800000`-`&H80FFFF` (64 KB) - transient copy of loaded file data.
+Staging buffer: `&H800000`-`&H80FFFF` (64 KB) - transient copy used for player
+paths that read through guest memory. SID, PSG, POKEY/SAP, MOD, and WAV are
+loaded directly from the host-side file bytes; MOD and WAV payloads may exceed
+the staging-buffer size. TED and AHX are staged at this address before their
+player control registers are started, so those payloads are limited by
+`MEDIA_STAGING_SIZE`.
 
-### 9.15 Program Executor Registers (`&HF2320`-`&HF233F`)
+`MEDIA_TYPE` is selected from the filename extension:
 
-Used by `RUN "file"` to launch external CPU binaries and by guest programs that need to request the same full reset path as the F10 hard-reset hotkey.
+| Extensions | MEDIA_TYPE |
+|------------|------------|
+| `.sid` | 1=SID |
+| `.ym`, `.ay`, `.sndh`, `.vtx`, `.vt`, `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc`, `.vgm`, `.vgz`, `.snd` | 2=PSG |
+| `.ted`, `.prg` | 3=TED |
+| `.ahx` | 4=AHX |
+| `.sap` | 5=POKEY/SAP |
+| `.mod` | 6=MOD |
+| `.wav` | 7=WAV |
+
+For PSG media, `.sndh` and `.snd` mean the Atari ST SNDH filename variants,
+not an arbitrary raw sound container.
+
+### 9.19 Program Executor Registers (`&HF2320`-`&HF233F`)
+
+Used by `RUN "file"` to launch external files and by guest programmes that need to request the same full reset path as the F10 hard-reset hotkey.
 
 | Address | Name | R/W | Description |
 |---------|------|-----|-------------|
@@ -2640,13 +3293,55 @@ Used by `RUN "file"` to launch external CPU binaries and by guest programs that 
 | `&HF2330` | EXEC_ERROR | R | 0=ok, 1=not-found, 2=unsupported, 3=path-invalid, 4=load-failed |
 | `&HF2334` | EXEC_SESSION | R | Monotonic session counter (increments per request) |
 
-### 9.16 System Control Registers (`&HF2380`-`&HF2383`)
+### 9.20 Coprocessor Control Registers (`&HF2340`-`&HF238F`)
 
 | Address | Name | R/W | Description |
 |---------|------|-----|-------------|
-| `&HF2380` | SYS_GC_TRIGGER | W | Write any value to trigger garbage collection |
+| `&HF2340` | COPROC_CMD | W | Command: 1=START, 2=STOP, 3=ENQUEUE, 4=POLL, 5=WAIT |
+| `&HF2344` | COPROC_CPU_TYPE | R/W | Worker type: 1=IE32, 2=IE64, 3=6502, 4=M68K, 5=Z80, 6=x86 |
+| `&HF2348` | COPROC_CMD_STATUS | R | Last command status: 0=ok, 1=error |
+| `&HF234C` | COPROC_CMD_ERROR | R | Error: 0=none, 1=invalid CPU, 2=not found, 3=path invalid, 4=load failed, 5=queue full, 6=no worker, 7=stale ticket |
+| `&HF2350` | COPROC_TICKET | R/W | ENQUEUE output ticket; POLL/WAIT input ticket |
+| `&HF2354` | COPROC_TICKET_STATUS | R | Ticket status: 0=pending, 1=running, 2=ok, 3=error, 4=timeout, 5=worker down |
+| `&HF2358` | COPROC_OP | R/W | Service-defined operation code |
+| `&HF235C` | COPROC_REQ_PTR | R/W | Request buffer address |
+| `&HF2360` | COPROC_REQ_LEN | R/W | Request byte length |
+| `&HF2364` | COPROC_RESP_PTR | R/W | Response buffer address |
+| `&HF2368` | COPROC_RESP_CAP | R/W | Response buffer capacity |
+| `&HF236C` | COPROC_TIMEOUT | R/W | WAIT timeout in milliseconds |
+| `&HF2370` | COPROC_NAME_PTR | R/W | NUL-terminated worker filename address |
+| `&HF2374` | COPROC_WORKER_STATE | R | Bitmask of running workers |
+| `&HF2378` | COPROC_STATS_OPS | R | Total dispatched operations |
+| `&HF237C` | COPROC_STATS_BYTES | R | Total request bytes dispatched |
+| `&HF2380` | COPROC_IRQ_CTRL | R/W | Bit 0 enables completion IRQs |
+| `&HF2384` | COPROC_DISPATCH_OVERHEAD | R | Calibrated dispatch overhead in nanoseconds |
+| `&HF2388` | COPROC_COMPLETED_TICKET | R | Most recent completed ticket |
 
-The GC trigger allows CPU-side code to request a garbage collection sweep at a safe moment. The `RUN` command writes to this register automatically before entering the main execution loop.
+`&HF2380` is also named `SYS_GC_TRIGGER` in some include files, but the VM maps
+that address to the coprocessor manager as `COPROC_IRQ_CTRL`.
+
+### 9.21 Coprocessor Monitor Registers (`&HF23B0`-`&HF23BF`)
+
+| Address | Name | R/W | Description |
+|---------|------|-----|-------------|
+| `&HF23B0` | COPROC_RING_DEPTH | R | Ring occupancy for the selected `COPROC_CPU_TYPE` |
+| `&HF23B4` | COPROC_WORKER_UPTIME | R | Seconds since the selected worker started |
+| `&HF23B8` | COPROC_STATS_RESET | W | Write 1 to clear global stats and busy buckets |
+| `&HF23BC` | COPROC_BUSY_PCT | R | Aggregate worker busy percentage, 0-100 |
+
+Write `COPROC_CPU_TYPE` before reading `COPROC_RING_DEPTH` or `COPROC_WORKER_UPTIME`.
+
+### 9.22 SYSINFO Registers (`&HF2400`-`&HF24FF`)
+
+SYSINFO is a read-only MMIO window for RAM-size discovery. Writes are ignored.
+Low and high registers form unsigned 64-bit byte counts.
+
+| Address | Name | R/W | Description |
+|---------|------|-----|-------------|
+| `&HF2400` | SYSINFO_TOTAL_RAM_LO | R | Low 32 bits of total guest RAM |
+| `&HF2404` | SYSINFO_TOTAL_RAM_HI | R | High 32 bits of total guest RAM |
+| `&HF2408` | SYSINFO_ACTIVE_RAM_LO | R | Low 32 bits of active CPU/profile visible RAM |
+| `&HF240C` | SYSINFO_ACTIVE_RAM_HI | R | High 32 bits of active CPU/profile visible RAM |
 
 ---
 
@@ -2661,12 +3356,15 @@ POKE &HF0700, 65    : REM write 'A' to terminal
 V = PEEK(&HF1000)   : REM read VGA mode register
 ```
 
-POKE writes a 32-bit value; `POKE8` writes an 8-bit value; DOKE writes 16-bit; LOKE writes 32-bit (same as POKE).  
+POKE writes a 32-bit value; `POKE8` writes an 8-bit value; DOKE writes 16-bit; LOKE writes 32-bit (same as POKE).
 PEEK reads 32-bit; `PEEK8(address)` reads an 8-bit value; DEEK reads 16-bit; LEEK reads 32-bit (same as PEEK).
+`POKE` and `LOKE` require 4-byte aligned addresses; use `POKE8` for byte-oriented or unaligned MMIO registers.
 
 ### Direct Memory Access
 
-All memory is accessible from BASIC. VRAM starts at `&H100000` and can be written directly:
+BASIC can access mapped guest memory and MMIO addresses with `PEEK` and `POKE`.
+VGA mode `&H13` exposes the legacy 320x200 VRAM window at `&HA0000`; the
+general Video RAM region starts at `&H100000`.
 
 ```basic
 REM Write directly to VGA VRAM
@@ -2690,8 +3388,15 @@ If you write IE64 assembly routines callable from BASIC (via CALL or USR), the f
 | R22 | Temporary value (BASIC expressions) |
 | R26 | Cached TERM_OUT address |
 | R27 | Cached TERM_STATUS address |
-| R28 | Return status code. `CALL` preserves this register across the machine-code call. |
+| R28 | Return status code. `CALL` preserves this register; `USR` does not. |
 | R31 | Hardware stack pointer |
+
+`CALL` saves R14, R16, R17, R26, and R28. `USR` saves R14, R16, R17, and R26
+only.
+
+IE64 machine code can also read control register 15 with `MFCR` to obtain the
+active CPU/profile visible RAM size in bytes. That control register is
+read-only; `MTCR` to register 15 raises an illegal-instruction fault.
 
 ### FP32 Calling Convention
 
@@ -2710,7 +3415,7 @@ Runtime errors are reported through the statement control channel. `R28=3`
 signals a runtime error inside the interpreter; `exec_line` returns that status
 in `R8`. `raise_error` stores the error code in `ST_ERROR_FLAG`, stores the
 current line in `ST_ERROR_LINE`, prints `?<message> ERROR IN <line>`, and stops
-the current program run.
+the current programme run.
 
 Current structured errors include:
 
@@ -2734,7 +3439,7 @@ Use `TRON` to trace line execution when debugging control-flow issues.
 
 ---
 
-## 12. Example Programs
+## 12. Example Programmes
 
 ### 12.1 Hello World
 
@@ -3018,11 +3723,17 @@ Atari colours use a hue-luminance system: `(hue << 4) | luminance`. 16 hues x 16
 
 #### Core Tokens (`&H80`-`&HE1`)
 
-Tokens marked with \* are tokenised (recognised by the tokeniser) but do not yet have execution dispatch. Using them in a program will silently have no effect or return 0.
+This table uses the token constants from `sdk/include/ehbasic_tokens.inc` and
+the keyword mappings from `sdk/include/ehbasic_tokenizer.inc`. Several entries
+are deliberate aliases because the core token range is full.
 
 The token space is fully assigned. Composite comparison operators use the
 existing `<`/`>` tokens followed by a raw marker byte; see
 `ehbasic_token_map.md` for the token-space audit and migration notes.
+
+`TK_WIDTH` is a historical symbol name from the original EhBASIC token space.
+In this port the live keyword mapped to that token is `BLOAD`; the original
+EhBASIC `WIDTH` command is not implemented.
 
 | Hex | Token | Keyword | Type |
 |-----|-------|---------|------|
@@ -3044,12 +3755,12 @@ existing `<`/`>` tokens followed by a raw marker byte; see
 | 8F | TK_REM | REM | Statement |
 | 90 | TK_STOP | STOP | Statement |
 | 91 | TK_ON | ON | Statement |
-| 92 | TK_NULL | NULL | Statement |
+| 92 | TK_NULL | TRON | Statement alias (`NULL` symbol reused) |
 | 93 | TK_INC | INC | Statement |
 | 94 | TK_WAIT | WAIT | Statement |
 | 95 | TK_LOAD | LOAD | Statement |
 | 96 | TK_SAVE | SAVE | Statement |
-| 97 | TK_DEF | DEF | Statement |
+| 97 | TK_DEF | DEF/TROFF | Statement/alias |
 | 98 | TK_POKE | POKE | Statement |
 | 99 | TK_DOKE | DOKE | Statement |
 | 9A | TK_LOKE | LOKE | Statement |
@@ -3066,14 +3777,14 @@ existing `<`/`>` tokens followed by a raw marker byte; see
 | A5 | TK_SWAP | SWAP | Statement |
 | A6 | TK_BITSET | BITSET | Statement |
 | A7 | TK_BITCLR | BITCLR | Statement |
-| A8 | TK_TAB | TAB | Function |
+| A8 | TK_TAB | TAB | Reserved token |
 | A9 | TK_TO | TO | Keyword |
 | AA | TK_FN | FN | Keyword |
 | AB | TK_ELSE | ELSE | Keyword |
 | AC | TK_THEN | THEN | Keyword |
 | AD | TK_NOT | NOT | Operator |
 | AE | TK_STEP | STEP | Keyword |
-| AF | TK_UNTIL | UNTIL/WEND | Keyword |
+| AF | TK_UNTIL | UNTIL/WEND | Keyword/statement alias |
 | B0 | TK_WHILE | WHILE | Statement |
 | B1 | TK_PLUS | + | Operator |
 | B2 | TK_MINUS | - | Operator |

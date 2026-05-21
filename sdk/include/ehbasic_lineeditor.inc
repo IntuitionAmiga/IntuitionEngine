@@ -18,6 +18,7 @@
 ;   line_new:    Clear all program text. R16 must be set.
 ;   line_store:  R8 = line number, R9 = tokenized content ptr,
 ;                R10 = content length (0 = delete line).
+;                Returns R8 = 0 on success, 3 on error.
 ;   line_search: R8 = target line number.
 ;                Returns R8 = pointer to line (0 if not found),
 ;                        R9 = pointer to previous line's next-ptr (for insertion).
@@ -119,7 +120,7 @@ line_search:
 ;         R9 = pointer to tokenized content (null-terminated)
 ;         R10 = content length (bytes, NOT including null terminator)
 ;               If R10 = 0, the line is deleted.
-; Output: none
+; Output: R8 = 0 on success, 3 on error.
 ; Clobbers: R1-R15
 ;
 ; Algorithm:
@@ -144,6 +145,23 @@ line_store:
     jsr     line_search             ; R8 = found line (or 0), R9 = prev_next_ptr
 
     move.q  r25, r9                 ; R25 = prev_next_ptr (saved for insertion)
+
+    ; Preflight storage for inserts/replacements before altering existing text.
+    beqz    r24, .ls_capacity_ok
+    add.q   r13, r24, #9            ; 8 header + content + 1 null
+    add.q   r13, r13, #3
+    and.q   r13, r13, #0xFFFFFFFC   ; R13 = aligned new line size
+    add.q   r1, r16, #ST_PROG_END
+    load.l  r2, (r1)                ; R2 = current prog_end
+    beqz    r8, .ls_capacity_append
+    load.l  r3, (r8)                ; R3 = existing line next-pointer
+    sub.q   r3, r3, r8              ; existing line size
+    sub.q   r2, r2, r3              ; prog_end after replacement delete
+.ls_capacity_append:
+    add.q   r2, r2, r13             ; prospective ST_PROG_END
+    move.l  r3, #BASIC_PROG_LIMIT
+    bgt     r2, r3, .ls_oom
+.ls_capacity_ok:
 
     ; --- Step 2: If found, delete old line ---
     beqz    r8, .ls_no_delete
@@ -195,11 +213,7 @@ line_store:
 .ls_insert:
 
     ; --- Step 4: Calculate new line size ---
-    ; size = 8 (header) + content_length + 1 (null) + padding to align 4
-    add.q   r14, r24, #9            ; 8 header + content + 1 null
-    ; Align to 4: (size + 3) & ~3
-    add.q   r14, r14, #3
-    and.q   r14, r14, #0xFFFFFFFC   ; R14 = aligned line size
+    move.q  r14, r13                ; R14 = aligned line size
 
     ; --- Step 5: Make room by shifting data down ---
     ; Everything from insertion point to prog_end needs to move down by R14 bytes
@@ -284,6 +298,9 @@ line_store:
     jsr     line_rechain
 
 .ls_done:
+    move.q  r8, r0
+
+.ls_return:
     pop     r25
     pop     r24
     pop     r23
@@ -291,6 +308,13 @@ line_store:
     pop     r15
     pop     r14
     rts
+
+.ls_oom:
+    move.q  r8, #ERR_OOM
+    la      r9, err_msg_oom
+    jsr     raise_error
+    move.q  r8, #3
+    bra     .ls_return
 
 ; ============================================================================
 ; line_rechain - Fix up all next-line pointers

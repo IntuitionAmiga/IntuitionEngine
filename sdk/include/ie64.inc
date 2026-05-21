@@ -95,8 +95,15 @@ ERR_FC            equ 10
 ERR_REDIM         equ 11
 
 ; BASIC program/variable storage
-BASIC_PROG_START  equ 0x023000              ; Program text + variables + heap (428KB)
-BASIC_PROG_END    equ 0x08BFFF
+BASIC_PROG_START  equ 0x023000              ; Program text start
+BASIC_PROG_LIMIT  equ 0x050000              ; First byte reserved for variables
+BASIC_PROG_END    equ 0x08BFFF              ; Last byte of fixed variable/array storage
+BASIC_VAR_START   equ 0x050000              ; Simple variables
+BASIC_VAR_END     equ 0x057FFF
+BASIC_SVAR_START  equ 0x058000              ; String variables
+BASIC_SVAR_END    equ 0x05FFFF
+BASIC_ARRAY_START equ 0x060000              ; Arrays
+BASIC_ARRAY_END   equ 0x08BFFF
 
 ; String temporary space
 BASIC_STR_TEMP    equ 0x08C000              ; String temporaries (16KB)
@@ -136,9 +143,24 @@ TERM_STATUS       equ 0xF0704               ; Bit 0: input available, Bit 1: out
 TERM_IN           equ 0xF0708               ; Read next input char, dequeues (R)
 TERM_LINE_STATUS  equ 0xF070C               ; Bit 0: complete line available (R)
 TERM_ECHO         equ 0xF0710               ; Bit 0: local echo enable (W, default 1)
+TERM_CURSOR_X     equ 0xF0714               ; Reserved terminal cursor X (R=0, W ignored)
+TERM_CURSOR_Y     equ 0xF0718               ; Reserved terminal cursor Y (R=0, W ignored)
+TERM_FG_COLOR     equ 0xF071C               ; Reserved terminal foreground colour
+TERM_BG_COLOR     equ 0xF0720               ; Reserved terminal background colour
 TERM_CTRL         equ 0xF0724               ; Bit 0: line input mode (W/R)
 TERM_KEY_IN       equ 0xF0728               ; Per-keystroke input for GET (R)
 TERM_KEY_STATUS   equ 0xF072C               ; Bit 0: raw key available (R)
+MOUSE_X           equ 0xF0730               ; Absolute mouse X position, low 16 bits (R)
+MOUSE_Y           equ 0xF0734               ; Absolute mouse Y position, low 16 bits (R)
+MOUSE_BUTTONS     equ 0xF0738               ; Bit 0=left, bit 1=right, bit 2=middle (R)
+MOUSE_STATUS      equ 0xF073C               ; Bit 0=changed since last read; read clears (R)
+SCAN_CODE         equ 0xF0740               ; Raw keyboard scancode dequeue (R)
+SCAN_STATUS       equ 0xF0744               ; Bit 0=scancode available (R)
+SCAN_MODIFIERS    equ 0xF0748               ; Bit 0=shift, bit 1=ctrl, bit 2=alt, bit 3=caps
+MOUSE_CTRL        equ 0xF074C               ; Bit 0=request relative/captured mouse mode (R/W)
+RTC_EPOCH         equ 0xF0750               ; Host UTC seconds since Unix epoch (R)
+MOUSE_DX          equ 0xF0754               ; Signed accumulated relative X delta; read clears (R)
+MOUSE_DY          equ 0xF0758               ; Signed accumulated relative Y delta; read clears (R)
 TERM_SENTINEL     equ 0xF07F0               ; Write 0xDEAD to stop CPU (via OnSentinel callback)
 
 ; ============================================================================
@@ -148,7 +170,7 @@ TERM_SENTINEL     equ 0xF07F0               ; Write 0xDEAD to stop CPU (via OnSe
 HOST_MMIO_BASE        equ 0xF1400
 HOST_MMIO_CMD         equ 0xF1400           ; w8: 1=NET,2=UPDATE,3=REBOOT,4=POWEROFF
 HOST_MMIO_TRIGGER     equ 0xF1404           ; w8: non-zero starts selected command
-HOST_MMIO_STATUS      equ 0xF1408           ; r8: 0=running,1=ok,2=err,3=cancel,4=disabled
+HOST_MMIO_STATUS      equ 0xF1408           ; r8: 0=running,1=ok,2=err,3=cancel,4=disabled,5=idle
 HOST_MMIO_EXIT        equ 0xF140C           ; r32: helper exit code
 
 HOST_CMD_NET          equ 1
@@ -161,6 +183,7 @@ HOST_STATUS_OK        equ 1
 HOST_STATUS_ERR       equ 2
 HOST_STATUS_CANCEL    equ 3
 HOST_STATUS_DISABLED  equ 4
+HOST_STATUS_IDLE      equ 5
 
 ; ============================================================================
 ; VIDEO HARDWARE REGISTERS (I/O region at 0xF0000)
@@ -2020,8 +2043,17 @@ MEDIA_NAME_PTR    equ 0xF2300               ; Pointer to null-terminated filenam
 MEDIA_SUBSONG     equ 0xF2304               ; Subsong (W)
 MEDIA_CTRL        equ 0xF2308               ; 1=play, 2=stop (W)
 MEDIA_STATUS      equ 0xF230C               ; 0=idle,1=loading,2=playing,3=error (R)
-MEDIA_TYPE        equ 0xF2310               ; 1=SID,2=PSG,3=TED,4=AHX (R)
+MEDIA_TYPE        equ 0xF2310               ; 0=none,1=SID,2=PSG,3=TED,4=AHX,5=POKEY,6=MOD,7=WAV (R)
 MEDIA_ERROR       equ 0xF2314               ; 0=ok,1=not-found,2=bad/io,3=unsupported,4=path,5=too-large (R)
+
+MEDIA_TYPE_NONE   equ 0
+MEDIA_TYPE_SID    equ 1
+MEDIA_TYPE_PSG    equ 2
+MEDIA_TYPE_TED    equ 3
+MEDIA_TYPE_AHX    equ 4
+MEDIA_TYPE_POKEY  equ 5
+MEDIA_TYPE_MOD    equ 6
+MEDIA_TYPE_WAV    equ 7
 
 ; ============================================================================
 ; PROGRAM EXECUTOR REGISTERS (0xF2320-0xF233F)

@@ -1249,14 +1249,14 @@ hw_ted_audio:
     jsr     skip_alpha
     la      r1, TED_SND_CTRL
     load.b  r2, (r1)
-    and.l   r2, r2, #0x7F       ; clear bit 7 (noise)
+    and.l   r2, r2, #0xBF       ; clear bit 6 (voice 2 noise)
     store.b r2, (r1)
     rts
 .teda_noise_on:
     add.q   r17, r17, #1
     la      r1, TED_SND_CTRL
     load.b  r2, (r1)
-    or.l    r2, r2, #0x80       ; set bit 7 (noise)
+    or.l    r2, r2, #TED_CTRL_SND2NOISE
     store.b r2, (r1)
     rts
 .teda_p_cmd:

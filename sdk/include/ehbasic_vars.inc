@@ -34,20 +34,20 @@
 ; ============================================================================
 
 var_init:
-    ; Simple variables: 0x050000 (above 128KB code reservation at 0x1000-0x20FFF)
-    la      r1, 0x050000
+    ; Simple variables start above the guarded program text region.
+    la      r1, BASIC_VAR_START
     add.q   r2, r16, #ST_VAR_START
     store.l r1, (r2)
     add.q   r2, r16, #ST_VAR_END
     store.l r1, (r2)
-    ; String variables: 0x058000
-    la      r1, 0x058000
+    ; String variables
+    la      r1, BASIC_SVAR_START
     add.q   r2, r16, #ST_SVAR_START
     store.l r1, (r2)
     add.q   r2, r16, #ST_SVAR_END
     store.l r1, (r2)
-    ; Arrays: 0x060000
-    la      r1, 0x060000
+    ; Arrays
+    la      r1, BASIC_ARRAY_START
     add.q   r2, r16, #ST_ARRAY_START
     store.l r1, (r2)
     add.q   r2, r16, #ST_ARRAY_END

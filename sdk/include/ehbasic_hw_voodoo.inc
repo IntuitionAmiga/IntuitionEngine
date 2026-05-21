@@ -1075,12 +1075,14 @@ hw_zbuffer:
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    ; Depth func goes in bits 3-1 of fbzMode
+    ; Depth func goes in bits 5-7 of fbzMode
     la      r1, VOODOO_FBZ_MODE
     load.l  r2, (r1)
-    and.l   r2, r2, #0xFFFFFFF1  ; clear bits 1-3
+    move.l  r3, #VOODOO_FBZ_DEPTH_FUNC
+    eor.l   r3, r3, #0xFFFFFFFF
+    and.l   r2, r2, r3           ; clear bits 5-7
     and.l   r3, r8, #7
-    lsl.l   r3, r3, #1
+    lsl.l   r3, r3, #5
     or.l    r2, r2, r3
     store.l r2, (r1)
     rts

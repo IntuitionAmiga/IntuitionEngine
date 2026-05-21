@@ -562,6 +562,7 @@ exec_do_load:
     move.q  r8, r27
     la      r9, 0x021800
     jsr     line_store
+    bnez    r8, .l_store_error
 
     pop     r26
     pop     r25
@@ -595,6 +596,14 @@ exec_do_load:
     pop     r25
     ; Signal end of execution
     move.q  r28, #2
+    rts
+
+.l_store_error:
+    pop     r26
+    pop     r25
+    pop     r27
+    pop     r26
+    pop     r25
     rts
 
 .msg_not_found: dc.b "?FILE NOT FOUND", 0
