@@ -193,6 +193,8 @@ func TestX64LiveScriptContract(t *testing.T) {
 		`NETWORK_PKGS="network-manager,wpasupplicant,wireless-regdb,iw"`,
 		`IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"`,
 		`PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"`,
+		`C64_MUSIC_SOURCE="${C64_MUSIC_SOURCE:-${HOME}/Music/C64Music}"`,
+		`PROJECTAY_MUSIC_SOURCE="${PROJECTAY_MUSIC_SOURCE:-${HOME}/Music/ProjectAY}"`,
 		`FINAL_IMAGE_SIZE="8G"`,
 		`ROOT_PART_SIZE="6G"`,
 		`FATSHARE_LABEL="IESHARE"`,
@@ -205,6 +207,7 @@ func TestX64LiveScriptContract(t *testing.T) {
 		`payload_require_file "$PLYMOUTH_SPLASH" "restore splash.png" "Plymouth splash image"`,
 		`mformat -i "$fat_img" -F -v "${FATSHARE_LABEL}" ::`,
 		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum)`,
+		`required_cmds+=(mformat mcopy rsync)`,
 		`local archive_path="${OUTPUT_IMG%.img}.zip"`,
 		`zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True)`,
 	} {
@@ -475,7 +478,7 @@ func TestX64LiveNoShareDoesNotRequireMtools(t *testing.T) {
 	for _, want := range []string{
 		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum)`,
 		`if [[ "${CREATE_SHARE}" == "true" ]]; then`,
-		`required_cmds+=(mformat mcopy)`,
+		`required_cmds+=(mformat mcopy rsync)`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("build_x64_ie_img.sh missing no-share dependency behavior %q", want)
@@ -516,6 +519,7 @@ func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
 		`case-colliding AROS file: keeping`,
 		`local demos_dir="${payload_root}/Demos"`,
 		`local coproc_dir="${payload_root}/IE/Coproc"`,
+		`local music_dir="${payload_root}/Music"`,
 		`local sdk_dir="${payload_root}/SDK"`,
 		`local systems_dir="${payload_root}/Systems"`,
 		`local aros_system_dir="${systems_dir}/AROS"`,
@@ -530,6 +534,12 @@ func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
 		`cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "${systems_dir}/IntuitionOS.info"`,
 		`cp -a "${SCRIPT_DIR}/sdk/intuitionos/system/SYS/." "$intuitionos_system_dir/"`,
 		`cp -f "${SCRIPT_DIR}/sdk/intuitionos/iexec/iexec.ie64" "$intuitionos_system_dir/Boot/iexec.ie64"`,
+		`"$demos_dir" "$coproc_dir" "$music_dir"`,
+		`rsync -a --delete "${C64_MUSIC_SOURCE}/" "${music_dir}/C64Music/"`,
+		`rsync -a --delete "${PROJECTAY_MUSIC_SOURCE}/" "${music_dir}/ProjectAY/"`,
+		`C64 music source not found; leaving Music/C64Music absent`,
+		`ProjectAY music source not found; leaving Music/ProjectAY absent`,
+		`Required staged payload directory missing: ${payload_root}/Music`,
 		`"$sdk_dir/Include" "$sdk_dir/Docs" "$sdk_dir/Examples/asm"`,
 		`"${SCRIPT_DIR}"/sdk/examples/prebuilt/*.ie*`,
 		`"${SCRIPT_DIR}"/sdk/examples/prebuilt/*.prg`,
@@ -591,6 +601,7 @@ func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
 		`"${systems_dir}/README.TXT"`,
 		`AROS files live under Systems/AROS.`,
 		`EmuTOS/GEMDOS demo files live under Systems/EmuTOS.`,
+		`Music    Music collections copied from the build host when available.`,
 		`Systems/AROS/Demos`,
 		`Systems/EmuTOS/Demos`,
 		`Systems/IntuitionOS`,

@@ -47,6 +47,8 @@ HOST_HELPER_BINARY="${WORK_DIR}/intuitionengine-host-helper"
 PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"
 AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS/bin/ie-m68k/bin/ie-m68k/AROS}"
 AB3D2_EMBED_DIR="${SCRIPT_DIR}/embedded/ab3d2"
+C64_MUSIC_SOURCE="${C64_MUSIC_SOURCE:-${HOME}/Music/C64Music}"
+PROJECTAY_MUSIC_SOURCE="${PROJECTAY_MUSIC_SOURCE:-${HOME}/Music/ProjectAY}"
 FINAL_IMAGE_SIZE="8G"
 ROOT_PART_SIZE="6G"
 FATSHARE_LABEL="IESHARE"
@@ -124,7 +126,7 @@ check_dependencies() {
     log_section "Checking dependencies"
     local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum)
     if [[ "${CREATE_SHARE}" == "true" ]]; then
-        required_cmds+=(mformat mcopy)
+        required_cmds+=(mformat mcopy rsync)
     fi
 
     local missing_deps=()
@@ -307,6 +309,11 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/README.TXT" "build_x64_ie_img.sh stage_share_payload" "IESHARE root README"
     payload_require_file "${payload_root}/Demos/README.TXT" "build_x64_ie_img.sh stage_share_payload" "Demos README"
     payload_require_file "${payload_root}/IE/Coproc/README.TXT" "build_x64_ie_img.sh stage_share_payload" "IE/Coproc README"
+    if [[ ! -d "${payload_root}/Music" ]]; then
+        log_error "Required staged payload directory missing: ${payload_root}/Music"
+        log_error "Producer: build_x64_ie_img.sh stage_share_payload"
+        exit 1
+    fi
     payload_require_file "${payload_root}/SDK/README.TXT" "build_x64_ie_img.sh stage_share_payload" "SDK README"
     payload_require_file "${payload_root}/Systems/README.TXT" "build_x64_ie_img.sh stage_share_payload" "Systems README"
 
@@ -383,6 +390,7 @@ stage_share_payload() {
     local payload_root="${WORK_DIR}/ieshare-payload"
     local demos_dir="${payload_root}/Demos"
     local coproc_dir="${payload_root}/IE/Coproc"
+    local music_dir="${payload_root}/Music"
     local sdk_dir="${payload_root}/SDK"
     local systems_dir="${payload_root}/Systems"
     local aros_system_dir="${systems_dir}/AROS"
@@ -442,11 +450,21 @@ for entry in os.scandir(src_root):
 for key in sorted(top):
     copy_group(top[key], dst_root)
 PY
-    mkdir -p "$demos_dir" "$coproc_dir" \
+    mkdir -p "$demos_dir" "$coproc_dir" "$music_dir" \
         "$aros_system_dir/Libs" "$aros_demos_dir" "$emutos_demos_dir" \
         "$intuitionos_system_dir/Boot" \
         "$sdk_dir/Include" "$sdk_dir/Docs" "$sdk_dir/Examples/asm" \
         "$sdk_dir/Examples/basic" "$sdk_dir/Examples/c"
+    if [[ -d "$C64_MUSIC_SOURCE" ]]; then
+        rsync -a --delete "${C64_MUSIC_SOURCE}/" "${music_dir}/C64Music/"
+    else
+        log_warn "C64 music source not found; leaving Music/C64Music absent: ${C64_MUSIC_SOURCE}"
+    fi
+    if [[ -d "$PROJECTAY_MUSIC_SOURCE" ]]; then
+        rsync -a --delete "${PROJECTAY_MUSIC_SOURCE}/" "${music_dir}/ProjectAY/"
+    else
+        log_warn "ProjectAY music source not found; leaving Music/ProjectAY absent: ${PROJECTAY_MUSIC_SOURCE}"
+    fi
     cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "${payload_root}/Demos.info"
     cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "${systems_dir}/AROS.info"
     cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "${systems_dir}/EmuTOS.info"
@@ -629,6 +647,7 @@ Top-level folders:
 
 Demos    Bare-metal Intuition Engine demos.
 IE       Intuition Engine runtime support files.
+Music    Music collections copied from the build host when available.
 SDK      Reference include files, docs, and source examples.
 Systems  Guest OS payloads.
 _build   AB3D2 runtime assets used by the AB3D2 IE68 demos.

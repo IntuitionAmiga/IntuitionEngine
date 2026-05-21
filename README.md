@@ -49,6 +49,7 @@ Live share layout:
 |--------|---------|
 | `Demos` | Bare-metal Intuition Engine demos, including the AB3D2 `.ie68` binaries. |
 | `IE` | Runtime support files, including coprocessor worker payloads. |
+| `Music` | Host music collections staged at build time, including `C64Music` and `ProjectAY` when present. |
 | `SDK` | Reference include files, selected docs, and source examples. Host tool binaries are not included. |
 | `Systems/AROS` | AROS `SYS:` root for the live image, including AROS-native demos under `Systems/AROS/Demos`. |
 | `Systems/EmuTOS` | EmuTOS GEMDOS drive root, including GEMDOS demos under `Systems/EmuTOS/Demos`. |
