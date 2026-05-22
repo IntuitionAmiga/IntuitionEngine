@@ -1,0 +1,120 @@
+
+# Appendix H - Per-CPU Symbol Index
+
+Entry points, ABI conventions, and reserved memory regions for
+each CPU. The detailed register descriptions and the per-CPU
+chapter give the full story; this appendix is the cheat sheet.
+
+## H.1 IE64
+
+| Symbol             | Value / role |
+|--------------------|--------------|
+| Reset vector       | `0x000000` (first instruction at start of RAM). |
+| Trap vector base   | `0x000400` (8-byte entries, indexed by trap number). |
+| Supervisor stack   | grows down from `0x0A0000`. |
+| User stack (`R31`) | grows down from BASIC's per-program stack region. |
+| Call ABI           | Arguments R1-R8; result R1; callee-saved R16-R23; caller-saved R1-R15, R24-R30; `R0 = 0` always. |
+| FPU regs           | F0-F31, doubles. F0-F7 argument / result, F16-F23 callee-saved. |
+| BASIC text         | `0x023000`-`0x04FFFF` (`BASIC_PROG_START`-`BASIC_PROG_LIMIT - 1`). |
+| Simple vars        | `0x050000`-`0x057FFF`. |
+| String vars        | `0x058000`-`0x05FFFF`. |
+| Arrays             | `0x060000`-`0x08BFFF`. |
+| String temps       | `0x08C000`-`0x08FFFF`. |
+| GOSUB / FOR stack  | `0x090000`-`0x096FFF`. |
+
+## H.2 IE32
+
+| Symbol             | Value / role |
+|--------------------|--------------|
+| Reset vector       | `0x000000`. |
+| Stack base         | `0x09F000` (`STACK_START`); grows down. |
+| Timer count        | MMIO `0xF0804`. |
+| Timer period       | MMIO `0xF0808`. |
+| Call ABI           | Arguments A,X,Y,Z; result A; B-W caller-saved; stack via PUSH / POP. |
+
+## H.3 6502
+
+| Symbol             | Value / role |
+|--------------------|--------------|
+| Reset vector       | `$FFFC` (low) / `$FFFD` (high). |
+| IRQ / BRK vector   | `$FFFE` / `$FFFF`. |
+| NMI vector         | `$FFFA` / `$FFFB`. |
+| Stack page         | `$0100`-`$01FF`, indexed by `S`. |
+| Zero page          | `$0000`-`$00FF`. |
+| Bank registers     | `$F700`-`$F705`, `$F7F0`. |
+| MMIO aperture      | `$F000`-`$FFF9`, mirrors `0xF0000`-`0xF0FF9`. |
+| VGA C64-style      | `$D700`-`$D70D`. |
+| ULA paged port     | `$D800`-`$D817`. |
+| PSG / SID          | `$D400`-`$D40F`, `$D500`-`$D55F`. |
+| POKEY              | `$D200`-`$D209`. |
+| TED audio          | `$D600`-`$D605`. |
+
+## H.4 Z80
+
+| Symbol             | Value / role |
+|--------------------|--------------|
+| Reset vector       | `0x0000`. |
+| NMI vector         | `0x0066`. |
+| RST n              | `n * 8` (`0x00`, `0x08`, ..., `0x38`). |
+| IM 2 vector base   | `(I << 8) | (data byte from device)`. |
+| Bank registers     | port-mapped through bus translation at `$F700`-`$F705`. |
+| MMIO aperture      | `0xF000`-`0xFFF9`. |
+| PSG / AY ports     | `$F0` select, `$F1` data. |
+| TED audio ports    | `$F2`, `$F3`. |
+| POKEY ports        | `$D0`, `$D1`. |
+| SID ports          | `$E0`, `$E1`. |
+| SN76489 ports      | `$E4` data, `$E5` status. |
+| VGA ports          | `$A0`-`$AA`. |
+
+## H.5 M68K 68020
+
+| Symbol             | Value / role |
+|--------------------|--------------|
+| Reset vector       | `$0000.0000` (initial SSP) / `$0000.0004` (initial PC). |
+| Vector table       | `$0000.0000`-`$0000.03FC` (256 entries, 4 bytes each). |
+| Bus error          | vector 2. |
+| Address error      | vector 3. |
+| Illegal            | vector 4. |
+| Zero divide        | vector 5. |
+| CHK                | vector 6. |
+| Trapv              | vector 7. |
+| Privilege violation| vector 8. |
+| Trace              | vector 9 (T1/T0 not enforced in IE; see Ch 28). |
+| Line A             | vector 10. |
+| Line F             | vector 11. |
+| TRAP #n            | vectors 32-47. |
+| Auto-vector IRQs   | vectors 25-31. |
+| Call ABI           | Arguments on stack; D0 / A0 caller-saved; D2-D7 / A2-A6 callee-saved. |
+
+## H.6 x86 (8086 + 386 extensions, real-mode only)
+
+| Symbol             | Value / role |
+|--------------------|--------------|
+| Reset vector       | `EIP = 0`, `CS = 0`, `DS = ES = SS = 0` (flat, not the 8086 `F000:FFF0` boot vector). |
+| IVT                | `0x0000`-`0x03FF` (256 entries, 4 bytes each: offset + segment). |
+| Stack              | `SS:ESP`, segments are zero so the stack lives in flat RAM. |
+| Call ABI           | Caller pushes arguments right-to-left; `EAX` returns; `EBX`, `ESI`, `EDI`, `EBP` callee-saved; `ECX`, `EDX` caller-saved. |
+| BIOS-style ints    | reserved; no BIOS ROM is provided. The IVT is initialised to a default IRET routine. |
+
+Real-mode 20-bit physical address calculation `(seg << 4) + ofs`
+is performed in software for compatibility; the 32-bit linear
+form (the result of the calculation) is what reaches the bus.
+Programs that use 32-bit immediate addressing reach the full
+flat address space directly.
+
+## H.7 Cross-CPU bus addresses (shared)
+
+These addresses are the same in every CPU's 32-bit view of the
+bus. The 8-bit CPUs reach them through the bank-window
+mechanism described in Chapters 26 and 27.
+
+| Address    | Meaning |
+|------------|---------|
+| `0xF0700`  | `TERM_OUT`. |
+| `0xF1400`  | HOST appliance block. |
+| `0xF2200`  | File I/O block. |
+| `0xF2300`  | Media loader. |
+| `0xF2320`  | Image executor. |
+| `0xF2340`  | Coprocessor. |
+| `0xF2400`  | SysInfo. |
+| `0xF8000`  | Voodoo 3D. |
