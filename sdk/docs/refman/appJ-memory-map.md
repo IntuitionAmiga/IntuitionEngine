@@ -55,13 +55,13 @@ views into it (Chapters 26 and 27).
 | `0xF0700`-`0xF07FF`       | 256 B  | Terminal / serial / input. |
 | `0xF0800`-`0xF0B7F`       | 896 B  | SoundChip. |
 | `0xF0BC0`-`0xF0BD7`       | 24 B   | MOD player. |
-| `0xF0BD8`-`0xF0BEB`       | 20 B   | WAV player. |
+| `0xF0BD8`-`0xF0BF3`       | 28 B   | WAV player. |
 | `0xF0C00`-`0xF0C20`       | 33 B   | PSG / AY. |
 | `0xF0C30`-`0xF0C37`       | 8 B    | SN76489. |
 | `0xF0C40`-`0xF0CFF`       | 192 B  | SID2 flex block. |
 | `0xF0D00`-`0xF0D20`       | 33 B   | POKEY. |
 | `0xF0D40`-`0xF0DFF`       | 192 B  | SID3 flex block. |
-| `0xF0E00`-`0xF0E2D`       | 45 B   | SID. |
+| `0xF0E00`-`0xF0E2D`       | 46 B   | SID. |
 | `0xF0E80`-`0xF0EFF`       | 128 B  | SFX triggers. |
 | `0xF0F00`-`0xF0F5F`       | 96 B   | TED audio + video. |
 | `0xF1000`-`0xF13FF`       | 1 KB   | VGA registers. |
@@ -86,7 +86,7 @@ views into it (Chapters 26 and 27).
 
 | Range                       | Size  | Purpose |
 |-----------------------------|-------|---------|
-| `0x100000`-`0x5FFFFF`       | 5 MB  | Main VRAM (video chip framebuffer, 1920x1080 RGBA). |
+| `0x100000`-`0x5FFFFF`       | 5 MB  | Main VRAM aperture for VideoChip framebuffers; large modes may point `VIDEO_FB_BASE` into ordinary RAM. |
 
 ## J.6 High RAM and reserved
 

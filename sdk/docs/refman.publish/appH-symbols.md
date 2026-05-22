@@ -13,8 +13,8 @@ chapter give the full story; this appendix is the cheat sheet.
 | Trap vector base   | `0x000400` (8-byte entries, indexed by trap number). |
 | Supervisor stack   | grows down from `0x0A0000`. |
 | User stack (`R31`) | grows down from BASIC's per-program stack region. |
-| Call ABI           | Arguments R1-R8; result R1; callee-saved R16-R23; caller-saved R1-R15, R24-R30; `R0 = 0` always. |
-| FPU regs           | F0-F31, doubles. F0-F7 argument / result, F16-F23 callee-saved. |
+| Call ABI           | Arguments `R8`-`R15`; result `R8`; caller-saved `R1`-`R7`; callee-saved `R16`-`R30`; `R0 = 0`; `R31 = SP`. |
+| FPU regs           | `F0`-`F15`; FP32 values, with double operations using register pairs. `F0`-`F7` are argument / result registers by convention. |
 | BASIC text         | `0x023000`-`0x04FFFF` (`BASIC_PROG_START`-`BASIC_PROG_LIMIT - 1`). |
 | Simple vars        | `0x050000`-`0x057FFF`. |
 | String vars        | `0x058000`-`0x05FFFF`. |
@@ -28,8 +28,7 @@ chapter give the full story; this appendix is the cheat sheet.
 |--------------------|--------------|
 | Reset vector       | `0x000000`. |
 | Stack base         | `0x09F000` (`STACK_START`); grows down. |
-| Timer count        | MMIO `0xF0804`. |
-| Timer period       | MMIO `0xF0808`. |
+| Timing             | `WAIT n` for short delays; use device status or interrupts for frame and audio timing. |
 | Call ABI           | Arguments A,X,Y,Z; result A; B-W caller-saved; stack via PUSH / POP. |
 
 ## H.3 6502
@@ -66,7 +65,7 @@ chapter give the full story; this appendix is the cheat sheet.
 | SN76489 ports      | `$E4` data, `$E5` status. |
 | VGA ports          | `$A0`-`$AA`. |
 
-## H.5 M68K 68020
+## H.5 M68K (MC68020-Class)
 
 | Symbol             | Value / role |
 |--------------------|--------------|
@@ -79,7 +78,7 @@ chapter give the full story; this appendix is the cheat sheet.
 | CHK                | vector 6. |
 | Trapv              | vector 7. |
 | Privilege violation| vector 8. |
-| Trace              | vector 9 (T1/T0 not enforced in IE; see Ch 28). |
+| Trace              | vector 9 (trace bits are stored; this chip does not raise trace traps). |
 | Line A             | vector 10. |
 | Line F             | vector 11. |
 | TRAP #n            | vectors 32-47. |

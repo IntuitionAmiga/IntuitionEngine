@@ -40,7 +40,7 @@
 25. IE32
 26. 6502
 27. Z80
-28. M68K
+28. M68K MC68020-Class
 29. x86
 30. Processor Timing, Traps, and Exceptions
 31. Coprocessor and Cross-CPU Calls

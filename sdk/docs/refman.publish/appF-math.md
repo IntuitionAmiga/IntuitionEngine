@@ -11,7 +11,7 @@ single-page reference.
 |------------|-----------------|--------|
 | `ABS(x)`   | any number      | Absolute value `|x|`. |
 | `SGN(x)`   | any number      | `-1` if `x < 0`, `0` if `x = 0`, `1` if `x > 0`. |
-| `INT(x)`   | any number      | Largest integer not exceeding `x`. |
+| `INT(x)`   | any number      | Integer part of `x`, truncated toward zero. |
 | `SQR(x)`   | `x >= 0`        | Square root. |
 | `EXP(x)`   | any number      | `e^x`. |
 | `LOG(x)`   | `x > 0`         | Natural logarithm. |
@@ -58,9 +58,8 @@ can rely on when composing the helpers above.
 | base-2 log      | `LOG(x) / LOG(2)`       |
 | arcsine of `x`  | `ATN(x / SQR(1 - x*x))` |
 | arccosine of `x`| `1.5707963 - ATN(x / SQR(1 - x*x))` |
-| modulo          | `x - INT(x / m) * m`    |
-| ceiling         | `-INT(-x)`              |
-| round to nearest| `INT(x + 0.5)` (for `x >= 0`) |
+| truncated remainder | `x - INT(x / m) * m` |
+| round to nearest| `INT(x + 0.5)` for `x >= 0`; `INT(x - 0.5)` for `x < 0` |
 | fractional part | `x - INT(x)`            |
 | min(a,b)        | `(a + b - ABS(a - b)) / 2` |
 | max(a,b)        | `(a + b + ABS(a - b)) / 2` |

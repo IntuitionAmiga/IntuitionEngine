@@ -38,7 +38,8 @@ forms of `RUN` (such as `RUN 100`) do not - they always restart
 the current BASIC program.
 
 The executor's MMIO registers are not normally accessed by user
-code. They are documented in the source for advanced use.
+code. Appendix D summarizes them for programs that need direct
+control.
 
 ## 31.2 Coprocessor model
 
@@ -213,7 +214,7 @@ reason.
 Each worker has a small ring buffer in shared RAM (`16` slots per
 CPU). The application program does not normally touch the ring
 directly; `COCALL` enqueues, `COSTATUS`/`COWAIT` read responses.
-The shared layout is documented in the source for callers that
+The shared layout is below for machine-language services that
 need to bypass the BASIC verbs:
 
 - Ring base for each CPU: `0x790000 + cputype * 0x300`.

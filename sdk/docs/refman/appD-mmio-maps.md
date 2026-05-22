@@ -23,7 +23,7 @@ sources:
 
 # Appendix D - Per-Engine MMIO Maps
 
-Every memory-mapped device, in address order. Each register is
+Every memory-mapped device, grouped by subsystem. Each register is
 `32`-bit on the bus unless noted; only the documented low bits
 carry information.
 
@@ -34,14 +34,28 @@ carry information.
 | `0xF0000`  | `VIDEO_CTRL`      | R/W | Enable, mode select, sync source. |
 | `0xF0004`  | `VIDEO_MODE`      | R/W | Mode encoding: 320x200, 320x240, 640x480, 800x600, 1024x768, 1280x960, 1920x1080. |
 | `0xF0008`  | `VIDEO_STATUS`    | R   | VBlank flag, HBlank flag, raster line. |
-| `0xF000C`  | `VIDEO_FB_BASE`   | R/W | Framebuffer base address. |
-| `0xF0010`  | `COPPER_CTRL`     | R/W | Copper enable. |
-| `0xF0014`  | `COPPER_PTR`      | R/W | Copper-list base address. |
-| `0xF0018`  | `COPPER_PC`       | R   | Current copper program counter. |
-| `0xF001C`  | `COPPER_STATUS`   | R   | Copper running / stopped. |
-| `0xF0020`-`0xF0044` | `BLT_*`  | R/W | Blitter source A/B/C/D, mask, modulo, control. |
+| `0xF000C`  | `COPPER_CTRL`     | R/W | Copper enable. |
+| `0xF0010`  | `COPPER_PTR`      | R/W | Copper-list base address. |
+| `0xF0014`  | `COPPER_PC`       | R   | Current copper program counter. |
+| `0xF0018`  | `COPPER_STATUS`   | R   | Copper running / stopped. |
+| `0xF001C`  | `BLT_CTRL`        | R/W | Blitter control. |
+| `0xF0020`  | `BLT_OP`          | R/W | Blitter operation. |
+| `0xF0024`  | `BLT_SRC`         | R/W | Source address. |
+| `0xF0028`  | `BLT_DST`         | R/W | Destination address. |
+| `0xF002C`  | `BLT_WIDTH`       | R/W | Width or packed endpoint. |
+| `0xF0030`  | `BLT_HEIGHT`      | R/W | Height or packed endpoint. |
+| `0xF0034`  | `BLT_SRC_STRIDE`  | R/W | Source stride. |
+| `0xF0038`  | `BLT_DST_STRIDE`  | R/W | Destination stride. |
+| `0xF003C`  | `BLT_COLOR`       | R/W | Fill colour or scale destination size. |
+| `0xF0040`  | `BLT_MASK`        | R/W | Mask address. |
+| `0xF0044`  | `BLT_STATUS`      | R   | Blitter busy / done. |
 | `0xF0048`-`0xF0054` | `VIDEO_RASTER_*` | R/W | Raster split lines and per-line palette swaps. |
-| `0xF0078`-`0xF0477` | palette  | R/W | 256-entry 32-bit RGBA palette. |
+| `0xF0058`-`0xF0074` | `BLT_MODE7_*` | R/W | Mode 7 affine texture registers. |
+| `0xF0078`  | `VIDEO_PAL_INDEX` | R/W | CLUT palette write index. |
+| `0xF007C`  | `VIDEO_PAL_DATA`  | R/W | CLUT palette data. |
+| `0xF0080`  | `VIDEO_COLOR_MODE`| R/W | `0` RGBA32, `1` CLUT8. |
+| `0xF0084`  | `VIDEO_FB_BASE`   | R/W | Framebuffer base address. |
+| `0xF0088`-`0xF0487` | palette  | R/W | 256-entry direct palette table. |
 | `0xF0488`-`0xF049B` | `BLT_EXT_*` | R/W | Extended blitter (large modes). |
 
 ## D.2 Terminal / serial / input (`0xF0700`-`0xF07FF`)
@@ -163,21 +177,36 @@ that wants SID2 / SID3 should program them at `0xF0E30` and
 | Offset | Register |
 |--------|----------|
 | `+0x00` | `POKEY_AUDF1`. |
-| `+0x04` | `POKEY_AUDC1`. |
-| `+0x08`-`+0x1C` | `AUDF2`-`AUDF4`, `AUDC2`-`AUDC4`. |
-| `+0x20` | `POKEY_AUDCTL`. |
-| `+0x24`-`+0x2F` | `SAP_PLAY_*` player. |
+| `+0x01` | `POKEY_AUDC1`. |
+| `+0x02` | `POKEY_AUDF2`. |
+| `+0x03` | `POKEY_AUDC2`. |
+| `+0x04` | `POKEY_AUDF3`. |
+| `+0x05` | `POKEY_AUDC3`. |
+| `+0x06` | `POKEY_AUDF4`. |
+| `+0x07` | `POKEY_AUDC4`. |
+| `+0x08` | `POKEY_AUDCTL`. |
+| `+0x09` | `POKEY_PLUS_CTRL`. |
+| `+0x0A` | `POKEY_RANDOM` (read). |
+| `+0x10` | `SAP_PLAY_PTR`. |
+| `+0x14` | `SAP_PLAY_LEN`. |
+| `+0x18` | `SAP_PLAY_CTRL`. |
+| `+0x1C` | `SAP_PLAY_STATUS`. |
+| `+0x20` | `SAP_SUBSONG`. |
 
 ## D.9 TED audio (`0xF0F00`-`0xF0F1F`)
 
 | Offset | Register |
 |--------|----------|
 | `+0x00` | `TED_FREQ1_LO`. |
+| `+0x01` | `TED_FREQ2_LO`. |
+| `+0x02` | `TED_FREQ2_HI`. |
+| `+0x03` | `TED_SND_CTRL`. |
 | `+0x04` | `TED_FREQ1_HI`. |
-| `+0x08` | `TED_FREQ2_LO`. |
-| `+0x0C` | `TED_FREQ2_HI`. |
-| `+0x10` | `TED_SND_CTRL`. |
-| `+0x14`-`+0x1F` | `TED_PLAY_*` player. |
+| `+0x05` | `TED_PLUS_CTRL`. |
+| `+0x10` | `TED_PLAY_PTR`. |
+| `+0x14` | `TED_PLAY_LEN`. |
+| `+0x18` | `TED_PLAY_CTRL`. |
+| `+0x1C` | `TED_PLAY_STATUS`. |
 
 ## D.10 TED video (`0xF0F20`-`0xF0F5F`)
 
@@ -187,13 +216,13 @@ that wants SID2 / SID3 should program them at `0xF0E30` and
 
 | Range | Subsystem |
 |-------|-----------|
-| `0xF1000`-`0xF103F` | `VGA_MODE`, `VGA_STATUS`, `VGA_CTRL`. |
-| `0xF1040`-`0xF107F` | Sequencer (`VGA_SEQ_*`). |
-| `0xF1080`-`0xF10FF` | CRTC (`VGA_CRTC_*`). |
-| `0xF1100`-`0xF113F` | Graphics controller (`VGA_GC_*`). |
-| `0xF1140`-`0xF117F` | Attribute controller (`VGA_ATTR_*`). |
-| `0xF1180`-`0xF11FF` | DAC + palette index/data. |
-| `0xF1200`-`0xF13FF` | Palette RAM. |
+| `0xF1000`-`0xF1008` | `VGA_MODE`, `VGA_STATUS`, `VGA_CTRL`. |
+| `0xF1010`-`0xF1018` | Sequencer (`VGA_SEQ_*`). |
+| `0xF1020`-`0xF102C` | CRTC (`VGA_CRTC_*`). |
+| `0xF1030`-`0xF103C` | Graphics controller (`VGA_GC_*`). |
+| `0xF1040`-`0xF1044` | Attribute controller (`VGA_ATTR_*`). |
+| `0xF1050`-`0xF105C` | DAC + palette index/data. |
+| `0xF1100`-`0xF13FF` | Palette RAM. |
 
 ## D.12 ULA (`0xF2000`-`0xF2017`)
 
@@ -229,8 +258,22 @@ ANTIC block at `0xF2100`-`0xF213F` with `DMACTL`, `CHACTL`,
 
 ## D.15 Amiga Paula DMA (`0xF2260`-`0xF22AF`)
 
-Four-channel DMA sample engine. Per-channel address, length,
-period, volume, and control registers. Documented in Chapter 21.
+Four-channel DMA sample engine. Each channel is `16` bytes:
+
+| Offset | Register |
+|--------|----------|
+| `+0x00` | `PTR` sample pointer. |
+| `+0x04` | `LEN` length in words. |
+| `+0x08` | `PER` period. |
+| `+0x0C` | `VOL` volume. |
+
+Global registers:
+
+| Address | Register |
+|---------|----------|
+| `0xF22A0` | `AROS_AUD_DMACON`. |
+| `0xF22A4` | `AROS_AUD_STATUS`. |
+| `0xF22A8` | `AROS_AUD_INTENA`. |
 
 ## D.16 Media loader (`0xF2300`-`0xF231F`)
 
@@ -245,9 +288,39 @@ fields shaped like the File I/O block.
 
 ## D.18 Coprocessor (`0xF2340`-`0xF238F`)
 
-`COSTART`, `COSTOP`, `COCALL`, `COSTATUS`, `COWAIT`, plus the
-ring-buffer base/head/tail registers. Six worker types
-(Chapter 31).
+`COSTART`, `COSTOP`, `COCALL`, `COSTATUS`, and `COWAIT` use this
+command block:
+
+| Offset | Register |
+|--------|----------|
+| `+0x00` | `COPROC_CMD`. |
+| `+0x04` | `COPROC_CPU_TYPE`. |
+| `+0x08` | `COPROC_CMD_STATUS`. |
+| `+0x0C` | `COPROC_CMD_ERROR`. |
+| `+0x10` | `COPROC_TICKET`. |
+| `+0x14` | `COPROC_TICKET_STATUS`. |
+| `+0x18` | `COPROC_OP`. |
+| `+0x1C` | `COPROC_REQ_PTR`. |
+| `+0x20` | `COPROC_REQ_LEN`. |
+| `+0x24` | `COPROC_RESP_PTR`. |
+| `+0x28` | `COPROC_RESP_CAP`. |
+| `+0x2C` | `COPROC_TIMEOUT`. |
+| `+0x30` | `COPROC_NAME_PTR`. |
+| `+0x34` | `COPROC_WORKER_STATE`. |
+| `+0x38` | `COPROC_STATS_OPS`. |
+| `+0x3C` | `COPROC_STATS_BYTES`. |
+| `+0x40` | `COPROC_IRQ_CTRL`. |
+| `+0x44` | `COPROC_DISPATCH_OVERHEAD`. |
+| `+0x48` | `COPROC_COMPLETED_TICKET`. |
+
+Extended monitor block (`0xF23B0`-`0xF23BF`):
+
+| Offset | Register |
+|--------|----------|
+| `+0x00` | `COPROC_RING_DEPTH`. |
+| `+0x04` | `COPROC_WORKER_UPTIME`. |
+| `+0x08` | `COPROC_STATS_RESET`. |
+| `+0x0C` | `COPROC_BUSY_PCT`. |
 
 ## D.19 IRQ diagnostics (`0xF23C0`-`0xF23DF`)
 
@@ -266,10 +339,10 @@ ring-buffer base/head/tail registers. Six worker types
 
 | Offset | Register |
 |--------|----------|
-| `+0x00` | Total RAM, low 32 bits. |
-| `+0x04` | Total RAM, high 32 bits. |
-| `+0x08` | Active RAM, low. |
-| `+0x0C` | Active RAM, high. |
+| `+0x00` | `SYSINFO_TOTAL_RAM_LO`. |
+| `+0x04` | `SYSINFO_TOTAL_RAM_HI`. |
+| `+0x08` | `SYSINFO_ACTIVE_RAM_LO`. |
+| `+0x0C` | `SYSINFO_ACTIVE_RAM_HI`. |
 
 ## D.21 HOST appliance block (`0xF1400`-`0xF140F`)
 

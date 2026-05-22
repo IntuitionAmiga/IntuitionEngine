@@ -43,7 +43,7 @@ Fixed `8`-byte instruction, 32 GPRs `R0`-`R31`, `R0 = 0`,
 | Immediate | `LDI A, #imm32`. |
 | Branch | `JMP`, `JSR`, `RTS`, `JZ rA`, `JNZ rA` (test single register against zero). |
 | Stack  | `PUSH rA`, `POP rA`. |
-| Timer  | direct MMIO (`IE32_TIMER_COUNT`, `IE32_TIMER_PERIOD`). |
+| Timing | `WAIT n` delays for `n` cycles. |
 
 ## G.3 6502 (Chapter 26)
 
@@ -66,8 +66,7 @@ indirect, (indirect,X), (indirect),Y, relative.
 | Undoc       | `LAX`, `SAX`, `DCP`, `ISC`, `RLA`, `RRA`, `SLO`, `SRE`, `ANC`, `ARR`, `ASR`, `AXS`, `XAA`. |
 
 Flag register `P`: bit `0` C, `1` Z, `2` I, `3` D, `4` B, `5` -,
-`6` V, `7` N (silicon convention; see AUTHOR_PROVENANCE for the
-MOS 1976 manual divergence).
+`6` V, `7` N (silicon convention used by this chip).
 
 ## G.4 Z80 (Chapter 27)
 
@@ -92,7 +91,7 @@ Main: `A,F,B,C,D,E,H,L`; alt: `A',F',B',C',D',E',H',L'`; index:
 Flag register: `S`, `Z`, `Y` (bit 5 undoc), `H`, `X` (bit 3
 undoc), `P/V`, `N`, `C`.
 
-## G.5 M68K 68020 (Chapter 28)
+## G.5 M68K (MC68020-Class, Chapter 28)
 
 `D0`-`D7`, `A0`-`A7`, `PC`, `SR`. CCR low byte: X N Z V C.
 Big-endian, byte-addressable, 32-bit address bus.
@@ -101,7 +100,7 @@ Big-endian, byte-addressable, 32-bit address bus.
 |-------|-----------|
 | Move        | `MOVE`, `MOVEA`, `MOVEM`, `MOVEP`, `MOVEQ`, `EXG`, `SWAP`, `LEA`, `PEA`. |
 | Arith       | `ADD`, `ADDA`, `ADDI`, `ADDQ`, `ADDX`, `SUB`, `SUBA`, `SUBI`, `SUBQ`, `SUBX`, `NEG`, `NEGX`, `CMP`, `CMPA`, `CMPI`, `CMPM`, `CLR`, `EXT`, `EXTB`. |
-| Mul / div   | `MULU`, `MULS`, `DIVU`, `DIVS` (68020 also `MULU.L`, `MULS.L`, `DIVUL`, `DIVSL`). |
+| Mul / div   | `MULU`, `MULS`, `DIVU`, `DIVS`; MC68020 long forms `MULU.L`, `MULS.L`, `DIVUL`, `DIVSL`. |
 | Logical     | `AND`, `ANDI`, `OR`, `ORI`, `EOR`, `EORI`, `NOT`. |
 | Shift / rot | `ASL`, `ASR`, `LSL`, `LSR`, `ROL`, `ROR`, `ROXL`, `ROXR`. |
 | Bit         | `BTST`, `BSET`, `BCLR`, `BCHG`. |
@@ -110,6 +109,7 @@ Big-endian, byte-addressable, 32-bit address bus.
 | BCD         | `ABCD`, `SBCD`, `NBCD`. |
 | Multiprocessor | `TAS`, `CAS`, `CAS2`. |
 | System      | `TRAP #n`, `TRAPV`, `CHK`, `CHK2`, `STOP`, `RESET`, `ILLEGAL`, `NOP`, `LINK`, `UNLK`, `MOVE USP`, `MOVEC`, `MOVES`, `BKPT`, `RTE`. |
+| FPU         | 68881-style `FMOVE`, `FADD`, `FSUB`, `FMUL`, `FDIV`, `FSQRT`, `FABS`, `FNEG`, `FCMP`, `FTST`, `FBcc`, `FDBcc`, `FScc`, `FMOVEM`, and control-register moves. |
 | Line A/F    | unassigned opcode trap. |
 
 ## G.6 x86 (Chapter 29, 8086 base + 386 extensions)

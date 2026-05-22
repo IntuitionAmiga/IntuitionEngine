@@ -33,27 +33,27 @@ chip's VBlank flag are usually enough. For machine code that wants
 precise control, each per-CPU chapter lists the published cycle
 counts for its instruction set; the cycle counts are accurate to
 the canonical manuals for the heritage chips and to the
-implementation for IE64 / IE32.
+the IE64 and IE32 chapters for the native chips.
 
 ## 30.2 Timer
 
-Every CPU sees the same `32`-bit hardware timer. On IE32 and the
-heritage CPUs it appears as two memory-mapped registers:
+IE64 has a cycle timer in its control-register bank:
 
-| Address     | Name             | Purpose                            |
-|-------------|------------------|------------------------------------|
-| `0xF0804`   | `TIMER_COUNT`    | Live count (decrements toward `0`) |
-| `0xF0808`   | `TIMER_PERIOD`   | Reload value when count reaches `0`|
+| CR index | Name             | Purpose                            |
+|----------|------------------|------------------------------------|
+| `9`      | `TIMER_PERIOD`   | Reload value                       |
+| `10`     | `TIMER_COUNT`    | Current countdown                  |
+| `11`     | `TIMER_CTRL`     | bit `0` enable, bit `1` IRQ enable |
 
-When the count reaches zero, the timer reloads from `PERIOD`. If
-the CPU's timer-interrupt-enable bit is set, the reload raises an
-interrupt on that CPU.
+When `TIMER_COUNT` reaches zero, it reloads from `TIMER_PERIOD`.
+If `TIMER_CTRL` has both enable bits set, the reload raises the
+IE64 timer interrupt through `CR_INTR_VEC`.
 
-IE64 has the timer wired into its control register bank as well:
-`CR9` is `TIMER_PERIOD`, `CR10` is `TIMER_COUNT`, `CR11` is the
-control word (bit 0 enable, bit 1 IRQ enable). IE32 has dedicated
-opcodes `SEI`/`CLI`/`RTI` that manipulate its single interrupt
-flag.
+The legacy `TIMER_*` MMIO names are reserved compatibility
+symbols, not the timer interface. The `0xF0800` block belongs to
+the SoundChip. Programs on the other CPUs should use `WAIT`,
+VBlank/status polling, device interrupts, or a chip-specific
+clock source instead of `0xF0804` and `0xF0808`.
 
 ## 30.3 Interrupt sources
 
@@ -66,13 +66,13 @@ There are four canonical hardware interrupt sources:
   level `5`.
 - **Audio** - raised by any audio engine that has reached the end
   of a loop or sample. Mapped to M68K level `4`.
-- **Timer** - raised when the shared timer reloads.
+- **Timer** - raised when the IE64 cycle timer reloads.
 
 For the heritage CPUs the system collapses these into one or two
 lines:
 
-- 6502: `IRQ` (maskable) and `NMI` (non-maskable). Audio and
-  timer share `IRQ`; VBlank uses `NMI` on platforms that need it.
+- 6502: `IRQ` (maskable) and `NMI` (non-maskable). Audio uses
+  `IRQ`; VBlank uses `NMI` on programs that need it.
 - Z80: `INT` (maskable) and `NMI`. The interrupt-mode setting
   (`IM 0`/`IM 1`/`IM 2`) chooses how the vector is formed.
 - M68K: seven prioritised levels. IE drives `L4` for audio and
@@ -178,14 +178,13 @@ a per-CPU scaling factor: the 6502 and Z80 each get roughly the
 same instruction throughput as a real `4`-MHz part on a busy
 period, but the master clock continues at the full IE rate so a
 6502 instruction does not stretch the VBlank interval. Programs
-that need very precise timing should use the timer or the
-copper-list rather than counting instructions.
+that need very precise timing should use a device clock, VBlank,
+or the copper-list rather than counting instructions.
 
 IE64's cycle counter is reported in `CR10` (the timer count) and
-the implementation increments it once per retired instruction.
+the CPU decrements it once per retired instruction.
 The published latencies in Chapter 24 are minimum bounds; modern
-implementations may retire instructions faster in straight-line
-code.
+hardware may retire instructions faster in straight-line code.
 
 ## 30.9 What comes next
 
