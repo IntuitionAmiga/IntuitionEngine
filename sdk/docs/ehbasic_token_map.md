@@ -24,8 +24,8 @@ Current aliases and problematic bindings:
 | `DIR` | none | Immediate REPL command only; avoids consuming or renumbering the full one-byte token space. |
 | `WEND` | `TK_UNTIL` (`0xAF`) | Existing implementation treats this as a loop terminator alias. |
 | `TRON` | `TK_NULL` (`0x92`) | Existing implementation treats this as trace-on. |
-| `HOST` | `TK_HOST` (`0xDE`) | Shares the byte value with `TK_VPTR`; statement dispatch treats it as `HOST`. |
-| `VARPTR` | `TK_VPTR` (`0xDE`) | Preserved as a function; expression dispatch treats the same byte as `VARPTR`. |
+| `HOST` | none | Not tokenized. Recognized as a raw statement in `exec_line` using the same word-boundary technique as `COSTART` / `COSTOP` / `COWAIT`. A previous draft assigned `HOST` the same byte (`0xDE`) as `TK_VPTR`, which collided with `VARPTR` in expression context; that draft has been retired. |
+| `VARPTR` | `TK_VPTR` (`0xDE`) | Function token. Sole owner of `0xDE`. If `VARPTR` is used in statement position the dispatcher routes it to `exec_do_unknown` (it has no statement semantics). |
 
 ## Chosen Scheme
 
@@ -61,10 +61,20 @@ Source `.bas` files are unaffected because they are tokenized on load.
 
 ## HOST / VARPTR Compatibility
 
-`0xDE` is context-sensitive in the current interpreter. In statement position
-it dispatches to the HOST bridge. In expression/function position it remains
-`VARPTR(...)`. This preserves existing `VARPTR` programs while allowing `HOST`
-to use the only compatible legacy slot available to the statement dispatcher.
+`0xDE` is the token byte for `TK_VPTR` only. `VARPTR(...)` in expression
+position evaluates the variable-address function. `VARPTR` used as a
+statement (it has no statement semantics) routes through the statement
+dispatcher to `exec_do_unknown`.
+
+`HOST` is not tokenized. It is recognized as a raw statement in
+`exec_line` using the same word-boundary technique as `COSTART`,
+`COSTOP`, and `COWAIT`. An earlier draft of this port assigned `HOST`
+the same byte (`0xDE`) as `TK_VPTR` and relied on context-sensitive
+dispatch to disambiguate them. That draft has been retired: it caused
+`HOST` in expression context to be parsed as `VARPTR` and `VARPTR` in
+statement position to invoke the `HOST` bridge. Untokenized raw
+recognition removes the collision without renumbering the one-byte
+token space.
 
 ## R28 Runtime-Error Audit
 

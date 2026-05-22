@@ -3831,12 +3831,21 @@ EhBASIC `WIDTH` command is not implemented.
 | DB | TK_MIN | MIN | Function |
 | DC | TK_PI | PI | Function |
 | DD | TK_TWOPI | TWOPI | Function |
-| DE | TK_VPTR/TK_HOST | VARPTR/HOST | Function/Statement |
+| DE | TK_VPTR | VARPTR | Function |
 | DF | TK_LEFTS | LEFT$ | Function |
 | E0 | TK_RIGHTS | RIGHT$ | Function |
 | E1 | TK_MIDS | MID$ | Function |
 
 `DIR` is implemented as an immediate REPL command and intentionally has no token entry.
+
+`HOST` is also intentionally untokenized. It is recognized as a raw
+statement in `exec_line` using the same word-boundary technique as
+`COSTART`, `COSTOP`, and `COWAIT`. An earlier draft assigned `HOST`
+the same byte (`0xDE`) as `TK_VPTR`, which caused `HOST` in expression
+context to be mistaken for `VARPTR` and `VARPTR` in statement context
+to invoke the `HOST` dispatcher. The token table now reserves `0xDE`
+for `TK_VPTR` alone; the statement dispatch slot for `0xDE` routes to
+`exec_do_unknown`.
 
 #### Hardware Extension Tokens (`&HE2`-`&HFF`)
 

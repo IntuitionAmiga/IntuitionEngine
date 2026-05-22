@@ -209,8 +209,12 @@ exec_line:
     move.q  r2, #0x7A            ; 'z'
     bgt     r1, r2, .el_done
 
-    ; --- Intercept coprocessor statements (COSTART, COSTOP, COWAIT) ---
+    ; --- Intercept coprocessor statements (COSTART, COSTOP, COWAIT)
+    ;     and the HOST statement. These are recognized as raw text in the
+    ;     line buffer because they are not tokenized. ---
     or.q    r3, r1, #0x20        ; normalize to lowercase
+    move.q  r2, #0x68            ; 'h' → HOST
+    beq     r3, r2, .el_check_host
     move.q  r2, #0x63            ; 'c'
     bne     r3, r2, .el_do_let
     load.b  r3, 1(r17)
@@ -322,6 +326,39 @@ exec_line:
 .el_is_cowait:
     add.q   r17, r17, #6         ; consume "COWAIT"
     jsr     exec_do_cowait
+    bra     .el_check_rc
+
+.el_check_host:
+    ; Match "HOST" (4 chars) starting at r17, with word boundary.
+    ; First char was already verified to be 'h'/'H' by the caller.
+    load.b  r3, 1(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x6F            ; 'o'
+    bne     r3, r2, .el_do_let
+    load.b  r3, 2(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x73            ; 's'
+    bne     r3, r2, .el_do_let
+    load.b  r3, 3(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x74            ; 't'
+    bne     r3, r2, .el_do_let
+    ; Word boundary: char after "HOST" must not be alpha, digit, or '$'
+    load.b  r3, 4(r17)
+    move.q  r2, #0x24            ; '$'
+    beq     r3, r2, .el_do_let   ; string suffix → variable
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x30            ; '0'
+    blt     r3, r2, .el_is_host
+    move.q  r2, #0x39            ; '9'
+    ble     r3, r2, .el_do_let   ; digit → variable
+    move.q  r2, #0x61            ; 'a'
+    blt     r3, r2, .el_is_host
+    move.q  r2, #0x7A            ; 'z'
+    ble     r3, r2, .el_do_let   ; alpha → variable
+.el_is_host:
+    add.q   r17, r17, #4         ; consume "HOST"
+    jsr     exec_do_host
     bra     .el_check_rc
 
 .el_do_let:
@@ -1770,7 +1807,13 @@ stmt_jump_table:
     dc.l    exec_do_unknown      ; 91  (0xDB) TK_BITTST
     dc.l    exec_do_unknown      ; 92  (0xDC) TK_MAX
     dc.l    exec_do_unknown      ; 93  (0xDD) TK_MIN
-    dc.l    exec_do_host         ; 94  (0xDE) TK_HOST
+    dc.l    exec_do_unknown      ; 94  (0xDE) TK_VPTR — VARPTR is an
+                                  ;     expression-context function, not a
+                                  ;     statement. Tokenized VARPTR used as
+                                  ;     a statement falls through to here.
+                                  ;     HOST is intercepted as a raw
+                                  ;     statement in exec_line, not via this
+                                  ;     dispatch slot.
     dc.l    exec_do_unknown      ; 95  (0xDF)
     dc.l    exec_do_unknown      ; 96  (0xE0)
     dc.l    exec_do_unknown      ; 97  (0xE1)

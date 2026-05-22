@@ -1009,17 +1009,24 @@ func TestEhBASIC_Tokenize_Troff(t *testing.T) {
 
 func TestEhBASIC_Tokenize_Host(t *testing.T) {
 	asmBin := buildAssembler(t)
+	// HOST is intentionally NOT a tokenized keyword: it collided with
+	// TK_VPTR at 0xDE. It is now recognized as a raw statement in
+	// exec_line (see the COSTART pattern). The tokenizer must leave
+	// "HOST NET" as literal ASCII.
 	result := tokeniserTest(t, asmBin, "HOST NET")
-	if len(result) < 5 || result[0] != 0xDE {
-		t.Fatalf("tokenize HOST NET: expected TK_HOST (0xDE) prefix, got %X", result)
+	if got := string(result); got != "HOST NET" {
+		t.Fatalf("tokenize HOST NET: expected raw ASCII passthrough, got %q (%X)", got, result)
 	}
-	if got := string(result[1:]); got != " NET" {
-		t.Fatalf("tokenize HOST NET: subverb should remain ASCII, got %q (%X)", got, result)
+	for i, b := range result {
+		if b >= 0x80 {
+			t.Fatalf("tokenize HOST NET: byte %d = 0x%02X is a token; HOST must not tokenize", i, b)
+		}
 	}
 }
 
-func TestEhBASIC_Tokenize_VARPTRStillUsesSharedToken(t *testing.T) {
+func TestEhBASIC_Tokenize_VARPTRSoleOwnerOf0xDE(t *testing.T) {
 	asmBin := buildAssembler(t)
+	// After removing TK_HOST, 0xDE belongs solely to TK_VPTR.
 	result := tokeniserTest(t, asmBin, "VARPTR(A)")
 	if len(result) < 4 || result[0] != 0xDE {
 		t.Fatalf("tokenize VARPTR(A): expected TK_VPTR (0xDE) prefix, got %X", result)

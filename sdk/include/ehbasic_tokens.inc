@@ -106,7 +106,10 @@ TK_MIN        equ 0xDB
 TK_PI         equ 0xDC
 TK_TWOPI      equ 0xDD
 TK_VPTR       equ 0xDE
-TK_HOST       equ 0xDE
+; NOTE: HOST is not a tokenized keyword. It is recognized as a raw statement
+; in exec_line (see COSTART pattern). This avoids a token-byte collision
+; with TK_VPTR and prevents HOST in expression context from being treated
+; as VARPTR.
 TK_LEFTS      equ 0xDF
 TK_RIGHTS     equ 0xE0
 TK_MIDS       equ 0xE1
