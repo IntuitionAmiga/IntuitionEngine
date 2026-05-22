@@ -1450,10 +1450,10 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	compositor := eo.compositor
 	eo.bufferMutex.RUnlock()
 	legendTokens := []statusToken{
-		{name: "F8:Lua", enabled: false},
-		{name: "F9:Dbg", enabled: false},
+		{name: "F8:IE Script", enabled: false},
+		{name: "F9:IE Monitor", enabled: false},
 		{name: "F10:Reset", enabled: false},
-		{name: "F11:FS/Win", enabled: false},
+		{name: "F11:Fullscreen/Windowed", enabled: false},
 	}
 	if compositor != nil && compositor.ActiveSourceNeedsScaleToggle() {
 		mode := compositor.GetScaleMode()
