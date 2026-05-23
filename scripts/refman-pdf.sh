@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# refman-pdf.sh - print each published PRM Markdown file to PDF.
+# refman-pdf.sh - print each published PRG Markdown file to PDF.
 #
 # Default input:  sdk/docs/refman.publish/
 # Default output: sdk/docs/refman.publish/pdf/
@@ -108,7 +108,33 @@ if [[ ${#md_files[@]} -eq 0 ]]; then
   exit 1
 fi
 
+if [[ -e "$src_dir/README.md" ]]; then
+  echo "refman-pdf: unexpected legacy input found: $src_dir/README.md" >&2
+  echo "refman-pdf: run scripts/refman-publish.sh --strict; the preface is now 00-Preface.md" >&2
+  exit 2
+fi
+
+if [[ ! -e "$src_dir/00-Preface.md" ]]; then
+  echo "refman-pdf: missing required preface input: $src_dir/00-Preface.md" >&2
+  echo "refman-pdf: run scripts/refman-publish.sh --strict before printing PDFs" >&2
+  exit 2
+fi
+
 mkdir -p "$out_dir"
+
+declare -A expected_pdfs=()
+for md_file in "${md_files[@]}"; do
+  base="$(basename "$md_file" .md)"
+  expected_pdfs["$out_dir/$base.pdf"]=1
+done
+
+while IFS= read -r -d '' pdf_file; do
+  if [[ -z "${expected_pdfs[$pdf_file]+x}" ]]; then
+    rm -f "$pdf_file"
+    printf 'removed stale %s\n' "$pdf_file"
+  fi
+done < <(find "$out_dir" -maxdepth 1 -type f -name '*.pdf' -print0)
+
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/intuition-refman-pdf.XXXXXX")"
 cleanup() {
   if [[ "$keep_html" -eq 1 ]]; then
