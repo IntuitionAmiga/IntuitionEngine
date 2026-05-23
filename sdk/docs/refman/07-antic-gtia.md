@@ -343,7 +343,26 @@ colour register (one register per pair).
 
 Each register holds an 8-bit colour byte in the form
 `HHHHLLLL`, where `H` selects one of `16` hues and `L` selects one
-of `16` luminance steps. The full table is in Appendix B.
+of `16` luminance steps. The high-nibble hue names are:
+
+| High nibble | Hue |
+|-------------|-----|
+| `$0` | Grey |
+| `$1` | Gold |
+| `$2` | Orange |
+| `$3` | Red-orange |
+| `$4` | Pink |
+| `$5` | Purple |
+| `$6` | Purple-blue |
+| `$7` | Blue |
+| `$8` | Blue 2 |
+| `$9` | Light blue |
+| `$A` | Turquoise |
+| `$B` | Green-blue |
+| `$C` | Green |
+| `$D` | Yellow-green |
+| `$E` | Orange-green |
+| `$F` | Light orange |
 
 ### 7.7.2 Control registers
 

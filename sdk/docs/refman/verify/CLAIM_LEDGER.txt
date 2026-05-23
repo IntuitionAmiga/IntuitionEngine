@@ -405,13 +405,22 @@ Entry format:
   Result: Ch 23 now avoids the false all-MMIO-is-32-bit rule and the stale 32-bit-system-bus wording, documents byte-wide devices accurately, uses the full GTIA range, keeps IE-native examples with discussion, and has British prose with no dash-style punctuation.
 
 - Area: App D, VideoChip map.
-  Claim: COPPER_* is at 0xF000C-0xF0018, VIDEO_FB_BASE is 0xF0084, palette table starts at 0xF0088.
+  Claim: COPPER_* is at 0xF000C-0xF0018, VIDEO_FB_BASE is 0xF0084, palette table starts at 0xF0088, and VIDEO_MODE values are $00 640 by 480, $01 800 by 600, $02 1024 by 768, $03 1280 by 960, $04 320 by 200, $05 320 by 240, $06 1920 by 1080, and $07 960 by 540.
   Canonical sources checked: video_chip.go, sdk/include/ie64.inc, sdk/include/ie68.inc.
   Reader workflow: BASIC POKE or machine-code MMIO writes to the documented addresses.
   Runnable example: Ch 4 VideoChip examples.
-  Expected result: VideoChip setup uses the corrected addresses.
-  Author verification workflow: compared maps against constants and handlers.
-  Result: App D map matches code.
+  Expected result: VideoChip setup uses the corrected addresses and mode values.
+  Author verification workflow: compared maps and mode constants against handlers.
+  Result: App D map and mode table match code.
+
+- Area: App B / Ch 6 / Ch 7, text and colour lookup consistency.
+  Claim: Appendix B describes screen and character codes only; TED text cells use an ASCII byte plus the 8-bit TED colour byte from Chapter 6, and Chapter 7 documents GTIA colour-byte hue names locally rather than pointing to Appendix B.
+  Canonical sources checked: ted_video_constants.go, video_ted.go, antic_constants.go, video_antic.go, Ch 6, Ch 7, App B.
+  Reader workflow: use Appendix B to understand character bytes; use Chapter 6 for TED colour-byte layout and Chapter 7 for GTIA colour-byte layout.
+  Runnable example: Ch 6 TED text examples and Ch 7 GTIA colour examples.
+  Expected result: Appendix B no longer claims a 4-bit TED colour nibble, and Chapter 7 no longer points GTIA colour lookup at Appendix B.
+  Author verification workflow: checked TED colour byte parsing, GTIA high-nibble hue constants, and the affected source/publish prose.
+  Result: screen-code and colour-byte references no longer cross-wire character-code and colour-table appendices.
 
 - Area: App D, VGA map.
   Claim: VGA core, sequencer, CRTC, GC, attribute, DAC, and palette ranges match the device constants.
@@ -531,13 +540,13 @@ Entry format:
   Result: App J wording repaired and stale 24-bit-looking upper-memory rows removed.
 
 - Area: App K, block diagrams for bus and audio order.
-  Claim: the system bus diagram describes a 64-bit physical bus with 64-bit addresses and 8/16/32/64-bit transfers through CPU and device adapters; the audio diagram shows the global post-mix order as overdrive, filter, then reverb.
-  Canonical sources checked: machine_bus.go, machine_bus_phys.go, cpu_ie64.go, profile_bounds.go, audio_chip.go.
+  Claim: the system bus diagram describes a 64-bit physical bus with 64-bit addresses and 8/16/32/64-bit transfers through CPU and device adapters; the audio diagram shows the global post-mix order as overdrive, filter, then reverb; the compositor diagram lists layers in the Chapter 3 and source-code order: VideoChip 0, VGA 10, TED video 12, ANTIC/GTIA 13, ULA 15, Voodoo 20.
+  Canonical sources checked: machine_bus.go, machine_bus_phys.go, cpu_ie64.go, profile_bounds.go, audio_chip.go, video_chip.go, video_vga.go, ted_video_constants.go, antic_constants.go, ula_constants.go, voodoo_constants.go.
   Reader workflow: use the diagrams as lookup aids after reading Chapter 11 and Chapter 23.
   Runnable example: Ch 11 first audio setup and Ch 23 SysInfo listing.
-  Expected result: Appendix K agrees with Chapter 11, Chapter 23, and source-owned bus/audio behaviour.
-  Author verification workflow: checked IE64 uint64 physical path, low-window device adapters, compatibility CPU profile notes, and SoundChip post-mix processing order against code.
-  Result: App K no longer describes the main system bus as 24-bit or 32-bit, and no longer disagrees with the audio processing order.
+  Expected result: Appendix K agrees with Chapter 3, Chapter 11, Chapter 23, and source-owned bus/audio/video behaviour.
+  Author verification workflow: checked IE64 uint64 physical path, low-window device adapters, compatibility CPU profile notes, SoundChip post-mix processing order, and each video source layer against code.
+  Result: App K no longer describes the main system bus as 24-bit or 32-bit, no longer disagrees with the audio processing order, and shows the compositor layers in the same order as Chapter 3.
 
 - Area: App D / App J, audio player and small-chip MMIO ranges.
   Claim: AHX, MOD, WAV, SN76489, SID primary/player/SID2/SID3, POKEY, TED audio, TED video, ANTIC, GTIA, SFX, and the 6502 small-chip views match the current MMIO handlers; SN76489 spans $F0C30-$F0C3F, GTIA spans $F2140-$F21FB, SID2 and SID3 live at $F0E30-$F0E4C and $F0E50-$F0E6C, SFX_VOL is 0-65535, and the 6502 POKEY and VGA windows are $D200-$D20A and $D700-$D70D.

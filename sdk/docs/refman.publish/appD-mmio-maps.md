@@ -10,7 +10,7 @@ carry information.
 | Address    | Name              | R/W | Notes |
 |------------|-------------------|-----|-------|
 | `$F0000`  | `VIDEO_CTRL`      | R/W | Enable, mode select, sync source. |
-| `$F0004`  | `VIDEO_MODE`      | R/W | Mode encoding: `320` by `200`, `320` by `240`, `640` by `480`, `800` by `600`, `1024` by `768`, `1280` by `960`, `1920` by `1080`. |
+| `$F0004`  | `VIDEO_MODE`      | R/W | Mode value selector. |
 | `$F0008`  | `VIDEO_STATUS`    | R   | VBlank flag, HBlank flag, raster line. |
 | `$F000C`  | `COPPER_CTRL`     | R/W | Copper enable. |
 | `$F0010`  | `COPPER_PTR`      | R/W | Copper-list base address. |
@@ -35,6 +35,19 @@ carry information.
 | `$F0084`  | `VIDEO_FB_BASE`   | R/W | Framebuffer base address. |
 | `$F0088`-`$F0487` | palette  | R/W | 256-entry direct palette table. |
 | `$F0488`-`$F049B` | `BLT_EXT_*` | R/W | Extended blitter (large modes). |
+
+`VIDEO_MODE` values:
+
+| Value | Frame size |
+|-------|------------|
+| `$00` | `640` by `480` |
+| `$01` | `800` by `600` |
+| `$02` | `1024` by `768` |
+| `$03` | `1280` by `960` |
+| `$04` | `320` by `200` |
+| `$05` | `320` by `240` |
+| `$06` | `1920` by `1080` |
+| `$07` | `960` by `540` |
 
 ## D.2 Terminal / serial / input (`$F0700`-`$F07FF`)
 

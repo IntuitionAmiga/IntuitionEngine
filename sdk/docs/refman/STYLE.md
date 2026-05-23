@@ -125,6 +125,12 @@ Current controlled polish pass:
   waits or queues, when pixels become visible, what flushes the queue,
   what happens when the batch is full, and what `FBI_BUSY`, `SST_BUSY`,
   `MEMFIFO`, and `PCIFIFO` actually mean in Intuition Engine.
+- Fix the appendix consistency review items: Appendix B must describe
+  TED text colour as the 8-bit TED colour byte used by Chapter 6,
+  Chapter 7 must not send GTIA colour lookup to Appendix B, Appendix D
+  must list the exact `VIDEO_MODE` value map from `video_chip.go`, and
+  Appendix K's compositor diagram must match the Chapter 3 layer order
+  and the source layer constants.
 - Add a small whole-machine capstone chapter that touches graphics,
   audio, file I/O, and the coprocessor status path from BASIC.
 - Add a traditional lookup index appendix and include it in the

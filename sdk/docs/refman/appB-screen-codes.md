@@ -47,8 +47,11 @@ own.
 
 The TED video block (Chapter 6) implements a `40` by `25` character grid
 with 121-colour cells. Each grid cell holds a single ASCII byte
-plus a 4-bit colour nibble. The font is an 8x8 PETSCII-shape font
-but indexed by ASCII code points, not by PETSCII screen codes.
+plus an 8-bit TED colour byte in colour RAM. Bits `0`-`3` select the
+hue, bits `4`-`6` select the luminance, and bit `7` is used by the
+text renderer as described in Chapter 6. The font is an 8x8
+PETSCII-shape font indexed by ASCII code points, not by PETSCII
+screen codes.
 The reader sees the same letter `A` whether the source byte is
 `$41` in a `PRINT` statement, a `POKE` to the cell, or a
 machine-code `MOVE.B`.
