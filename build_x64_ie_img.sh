@@ -45,6 +45,7 @@ IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"
 IE_INSTALL_NAME="IntuitionEngine"
 HOST_HELPER_BINARY="${WORK_DIR}/intuitionengine-host-helper"
 PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"
+REFMAN_PDF_DIR="${SCRIPT_DIR}/sdk/docs/refman.publish/pdf"
 AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS/bin/ie-m68k/bin/ie-m68k/AROS}"
 AB3D2_EMBED_DIR="${SCRIPT_DIR}/embedded/ab3d2"
 C64_MUSIC_SOURCE="${C64_MUSIC_SOURCE:-${HOME}/Music/C64Music}"
@@ -270,6 +271,15 @@ check_live_payload_inputs() {
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/asm/*.asm" "make sdk-build" "SDK assembly source examples"
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/basic/*.bas" "make sdk-build" "SDK BASIC source examples"
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/c/*.c" "make sdk-build" "SDK C source examples"
+    payload_require_glob "${REFMAN_PDF_DIR}/*.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide PDFs"
+    payload_require_file "${REFMAN_PDF_DIR}/00-Preface.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide preface PDF"
+    payload_require_file "${REFMAN_PDF_DIR}/37-serial.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final chapter PDF"
+    payload_require_file "${REFMAN_PDF_DIR}/appK-block-diagrams.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final appendix PDF"
+    if [[ -e "${REFMAN_PDF_DIR}/README.pdf" || -e "${REFMAN_PDF_DIR}/17-pokey-sap.pdf" ]]; then
+        log_error "Stale refman PDF output found under ${REFMAN_PDF_DIR}"
+        log_error "Producer: make x64-live-refman-pdfs"
+        exit 1
+    fi
 
     local include
     for include in ie32.inc ie64.inc ie65.inc ie68.inc ie80.inc ie86.inc; do
@@ -316,6 +326,9 @@ verify_staged_share_payload() {
     fi
     payload_require_file "${payload_root}/SDK/README.TXT" "build_x64_ie_img.sh stage_share_payload" "SDK README"
     payload_require_file "${payload_root}/Systems/README.TXT" "build_x64_ie_img.sh stage_share_payload" "Systems README"
+    payload_require_file "${payload_root}/Docs/IEProgRefGuide/00-Preface.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide preface"
+    payload_require_file "${payload_root}/Docs/IEProgRefGuide/37-serial.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide final chapter"
+    payload_require_file "${payload_root}/Docs/IEProgRefGuide/appK-block-diagrams.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide final appendix"
 
     payload_require_file "${payload_root}/Systems/AROS/S/Startup-Sequence" "make aros-release-assets" "staged AROS Startup-Sequence"
     payload_require_file "${payload_root}/Systems/AROS/Libs/iewarp.library" "make aros-iewarp-library" "staged AROS IEWarp library"
@@ -376,6 +389,12 @@ verify_staged_share_payload() {
         log_error "Expected: Systems/IntuitionOS"
         exit 1
     fi
+    if [[ -e "${payload_root}/Docs/IEProgRefGuide/README.pdf" ||
+          -e "${payload_root}/Docs/IEProgRefGuide/17-pokey-sap.pdf" ]]; then
+        log_error "Forbidden stale Programmer's Reference Guide PDF staged in live payload"
+        log_error "Expected: Docs/IEProgRefGuide/00-Preface.pdf and 17-pokey.pdf"
+        exit 1
+    fi
     if ! grep -a -q 'Systems/AROS/Libs/iewarp_service.ie64' "${payload_root}/Systems/AROS/Libs/iewarp.library"; then
         log_error "Staged AROS iewarp.library does not contain Systems/AROS/Libs/iewarp_service.ie64"
         log_error "Producer: make aros-iewarp-library"
@@ -391,6 +410,7 @@ stage_share_payload() {
     local demos_dir="${payload_root}/Demos"
     local coproc_dir="${payload_root}/IE/Coproc"
     local music_dir="${payload_root}/Music"
+    local docs_dir="${payload_root}/Docs/IEProgRefGuide"
     local sdk_dir="${payload_root}/SDK"
     local systems_dir="${payload_root}/Systems"
     local aros_system_dir="${systems_dir}/AROS"
@@ -453,7 +473,7 @@ PY
     mkdir -p "$demos_dir" "$coproc_dir" "$music_dir" \
         "$aros_system_dir/Libs" "$aros_demos_dir" "$emutos_demos_dir" \
         "$intuitionos_system_dir/Boot" \
-        "$sdk_dir/Include" "$sdk_dir/Docs" "$sdk_dir/Examples/asm" \
+        "$docs_dir" "$sdk_dir/Include" "$sdk_dir/Docs" "$sdk_dir/Examples/asm" \
         "$sdk_dir/Examples/basic" "$sdk_dir/Examples/c"
     if [[ -d "$C64_MUSIC_SOURCE" ]]; then
         rsync -a --delete "${C64_MUSIC_SOURCE}/" "${music_dir}/C64Music/"
@@ -572,6 +592,7 @@ PY
     cp -f "${SCRIPT_DIR}"/sdk/examples/asm/*.asm "$sdk_dir/Examples/asm/"
     cp -f "${SCRIPT_DIR}"/sdk/examples/basic/*.bas "$sdk_dir/Examples/basic/"
     cp -f "${SCRIPT_DIR}"/sdk/examples/c/*.c "$sdk_dir/Examples/c/"
+    cp -f "${REFMAN_PDF_DIR}"/*.pdf "$docs_dir/"
 
     local aros_demo
     for aros_demo in \
@@ -648,6 +669,7 @@ Top-level folders:
 Demos    Bare-metal Intuition Engine demos.
 IE       Intuition Engine runtime support files.
 Music    Music collections copied from the build host when available.
+Docs     Printable Programmer's Reference Guide PDFs.
 SDK      Reference include files, docs, and source examples.
 Systems  Guest OS payloads.
 _build   AB3D2 runtime assets used by the AB3D2 IE68 demos.
@@ -701,6 +723,7 @@ EOF
     find "$demos_dir" -maxdepth 2 -type f | sort | sed "s#^${payload_root}/#  #" | tee -a "$LOG_FILE"
     find "$systems_dir" -maxdepth 3 -type f | sort | sed "s#^${payload_root}/#  #" | tee -a "$LOG_FILE"
     find "$coproc_dir" -maxdepth 1 -type f | sort | sed "s#^${payload_root}/#  #" | tee -a "$LOG_FILE"
+    find "${payload_root}/Docs" -maxdepth 3 -type f | sort | sed "s#^${payload_root}/#  #" | tee -a "$LOG_FILE"
     find "$sdk_dir" -maxdepth 3 -type f | sort | sed "s#^${payload_root}/#  #" | tee -a "$LOG_FILE"
     verify_staged_share_payload "$payload_root"
     SHARE_PAYLOAD_ROOT="$payload_root"

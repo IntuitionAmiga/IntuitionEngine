@@ -32,14 +32,18 @@ assert_recipe_contains() {
   local target="$1"
   local regex="$2"
   shift 2
-  make_dry "$target" "$@" | rg -q "$regex" || fail "$target recipe does not match: $regex"
+  local dry
+  dry="$(make_dry "$target" "$@")"
+  printf '%s\n' "$dry" | rg -q "$regex" || fail "$target recipe does not match: $regex"
 }
 
 assert_recipe_not_contains() {
   local target="$1"
   local regex="$2"
   shift 2
-  if make_dry "$target" "$@" | rg -q "$regex"; then
+  local dry
+  dry="$(make_dry "$target" "$@")"
+  if printf '%s\n' "$dry" | rg -q "$regex"; then
     fail "$target recipe unexpectedly matches: $regex"
   fi
 }
@@ -157,7 +161,7 @@ assert_ab3d2_overdrive_starts_fullscreen() {
 assert_ab3d2_overdrive_target_packages_overdrive() {
   local dry cp_rom build_vm
   dry="$(make_dry ab3d2-overdrive)"
-  cp_rom="$(printf '%s\n' "$dry" | rg -n 'cp "\.\./alienbreed3d2/ab3d2_source/ab3d2_ie68_overdrive\.ie68" "embedded/ab3d2/ab3d2_ie68_redux_high\.ie68"' | head -n 1 | cut -d: -f1 || true)"
+  cp_rom="$(printf '%s\n' "$dry" | rg -n 'cp "\.\./alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68_redux_high_overdrive\.ie68" "embedded/ab3d2/ab3d2_ie68_redux_high\.ie68"' | head -n 1 | cut -d: -f1 || true)"
   build_vm="$(printf '%s\n' "$dry" | rg -n 'test-cross-binaries CROSS_BUILD_DIR=\./bin/ab3d2 CROSS_BINARY_PREFIX=IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=1' | head -n 1 | cut -d: -f1 || true)"
   [[ -n "$cp_rom" ]] || fail "ab3d2-overdrive dry-run does not embed the Overdrive IE68 ROM"
   [[ -n "$build_vm" ]] || fail "ab3d2-overdrive dry-run does not build Overdrive binaries with the expected prefix"
@@ -246,6 +250,11 @@ assert_recipe_contains install '/tmp/x/usr/local/bin' DESTDIR=/tmp/x
 assert_recipe_not_contains install 'sudo' DESTDIR=/tmp/x
 assert_recipe_contains install 'sudo' PREFIX=/root/intuition-engine-test
 assert_recipe_contains release-verify 'scripts/test-dist-layout\.sh'
+assert_target_exists x64-live-refman-pdfs
+assert_phony x64-live-refman-pdfs
+assert_makefile_contains '^x64-live-payload-check:.*x64-live-refman-pdfs'
+assert_recipe_contains x64-live-refman-pdfs 'scripts/refman-publish\.sh --strict'
+assert_recipe_contains x64-live-refman-pdfs 'scripts/refman-pdf\.sh'
 assert_makefile_contains 'define build-linux-vm-binary'
 assert_makefile_contains 'define build-purego-novulkan-vm-binary'
 assert_makefile_contains '/opt/ie-sysroots/tumbleweed-aarch64/usr'
