@@ -923,6 +923,9 @@ hw_ula:
     move.q  r22, r8
 .ula_cls_do:
     ; Clear bitmap (6144 bytes at ULA_VRAM)
+    la      r1, BLT_FLAGS
+    move.q  r2, #0x31             ; CLUT8 byte fill, copy draw mode
+    store.l r2, (r1)
     la      r1, BLT_COLOR
     store.l r0, (r1)
     la      r1, BLT_DST
@@ -944,6 +947,9 @@ hw_ula:
     move.q  r2, #1
     store.l r2, (r1)
     ; Set attributes (768 bytes at ULA_VRAM + 0x1800)
+    la      r1, BLT_FLAGS
+    move.q  r2, #0x31             ; CLUT8 byte fill, copy draw mode
+    store.l r2, (r1)
     la      r1, BLT_COLOR
     store.l r22, (r1)
     la      r1, BLT_DST
@@ -965,6 +971,8 @@ hw_ula:
     la      r1, BLT_CTRL
     move.q  r2, #1
     store.l r2, (r1)
+    la      r1, BLT_FLAGS
+    store.l r0, (r1)
     rts
 .ula_attr:
     ; Skip "ATTR" - skip first char + remaining alpha

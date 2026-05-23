@@ -140,7 +140,7 @@ func TestCopperWaitDefers(t *testing.T) {
 	}
 
 	video.StepCopperRasterForTest(2, 10)
-	if got := video.HandleRead(VIDEO_MODE); got != DEFAULT_VIDEO_MODE {
+	if got := video.HandleRead(VIDEO_MODE); got != MODE_800x600 {
 		t.Fatalf("expected VIDEO_MODE to update at wait point, got %d", got)
 	}
 }
@@ -161,7 +161,7 @@ func TestCopperLittleEndianListWrites(t *testing.T) {
 
 	video.RunCopperFrameForTest()
 
-	if got := video.HandleRead(VIDEO_MODE); got != DEFAULT_VIDEO_MODE {
+	if got := video.HandleRead(VIDEO_MODE); got != MODE_800x600 {
 		t.Fatalf("expected VIDEO_MODE=MODE_800x600, got %d", got)
 	}
 }
@@ -179,7 +179,7 @@ func TestCopperIE32ListExecution(t *testing.T) {
 
 	video.RunCopperFrameForTest()
 
-	if got := video.HandleRead(VIDEO_MODE); got != DEFAULT_VIDEO_MODE {
+	if got := video.HandleRead(VIDEO_MODE); got != MODE_800x600 {
 		t.Fatalf("expected VIDEO_MODE=MODE_800x600, got %d", got)
 	}
 }
@@ -200,7 +200,7 @@ func TestCopper6502ListExecution(t *testing.T) {
 
 	video.RunCopperFrameForTest()
 
-	if got := video.HandleRead(VIDEO_MODE); got != DEFAULT_VIDEO_MODE {
+	if got := video.HandleRead(VIDEO_MODE); got != MODE_800x600 {
 		t.Fatalf("expected VIDEO_MODE=MODE_800x600, got %d", got)
 	}
 }
@@ -221,7 +221,7 @@ func TestCopperZ80ListExecution(t *testing.T) {
 
 	video.RunCopperFrameForTest()
 
-	if got := video.HandleRead(VIDEO_MODE); got != DEFAULT_VIDEO_MODE {
+	if got := video.HandleRead(VIDEO_MODE); got != MODE_800x600 {
 		t.Fatalf("expected VIDEO_MODE=MODE_800x600, got %d", got)
 	}
 }
@@ -239,7 +239,7 @@ func TestCopperM68KListExecution(t *testing.T) {
 
 	video.RunCopperFrameForTest()
 
-	if got := video.HandleRead(VIDEO_MODE); got != DEFAULT_VIDEO_MODE {
+	if got := video.HandleRead(VIDEO_MODE); got != MODE_800x600 {
 		t.Fatalf("expected VIDEO_MODE=MODE_800x600, got %d", got)
 	}
 }
@@ -316,7 +316,7 @@ func TestCopperSetBaseResetsOnFrame(t *testing.T) {
 	video.RunCopperFrameForTest()
 
 	// VIDEO_MODE should be updated because base was reset to VIDEO_REG_BASE
-	if got := video.HandleRead(VIDEO_MODE); got != DEFAULT_VIDEO_MODE {
+	if got := video.HandleRead(VIDEO_MODE); got != MODE_800x600 {
 		t.Fatalf("expected VIDEO_MODE=MODE_800x600 after frame reset, got %d", got)
 	}
 }
@@ -408,7 +408,7 @@ func TestCopperSetBaseMultipleDevices(t *testing.T) {
 	if got := vga.HandleRead(VGA_MODE); got != VGA_MODE_13H {
 		t.Fatalf("expected VGA_MODE=0x%X, got 0x%X", VGA_MODE_13H, got)
 	}
-	if got := video.HandleRead(VIDEO_MODE); got != DEFAULT_VIDEO_MODE {
+	if got := video.HandleRead(VIDEO_MODE); got != MODE_800x600 {
 		t.Fatalf("expected VIDEO_MODE=MODE_800x600, got %d", got)
 	}
 }

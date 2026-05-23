@@ -632,10 +632,9 @@ expr_primary:
     add.q   r17, r17, #1
     bra     .mod_st_skip_alpha
 .mod_st_done:
-    ; Read MOD_PLAY_STATUS, return bit 0 as FP32
+    ; Read MOD_PLAY_STATUS, return full status byte as FP32
     move.l  r1, #MOD_PLAY_STATUS
     load.l  r8, (r1)
-    and.q   r8, r8, #1
     jsr     fp_float
     rts
 .mod_st_not_status:

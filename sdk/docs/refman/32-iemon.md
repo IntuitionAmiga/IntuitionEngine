@@ -9,23 +9,22 @@ sources:
 IE Mon is the interactive monitor built into Intuition Engine. It
 runs in the same terminal as BASIC and gives you direct access to
 the bus, the active CPU's registers, breakpoints, watchpoints, a
-disassembler, an assembler-less memory editor, a reverse-execution
+disassembler, a byte memory editor, a reverse-execution
 timeline, save and restore of memory ranges, and a small handful
 of more specialised tools.
 
 You enter the monitor from BASIC by typing `MON` at the prompt
 and leave it by typing `x`. Inside the monitor, each line is a
 command followed by space-separated arguments. Numeric arguments
-default to hexadecimal; prefix them with `&` for decimal or `%`
-for binary.
+default to hexadecimal; prefix them with `#` for decimal.
 
 ## 32.1 General conventions
 
 | Convention                | Example         | Meaning                       |
 |---------------------------|-----------------|-------------------------------|
-| Address                   | `1000`          | Hexadecimal `0x1000`          |
-| Address                   | `&4096`         | Decimal                       |
-| Address range             | `1000-10FF`     | Inclusive range               |
+| Address                   | `1000`          | Hexadecimal `$1000`           |
+| Address                   | `#4096`         | Decimal                       |
+| Address pair              | `1000 10FF`     | Inclusive range               |
 | Register                  | `r0`, `pc`, `a` | Active CPU's register         |
 | Hex byte literal          | `7E`            | Hex byte for write/fill       |
 
@@ -50,7 +49,7 @@ the monitor on the next breakpoint, watchpoint, or `Ctrl-C`.
 |-----------|-------------------------|-------------------------------------------------|
 | `r`       | `[reg] [value]`         | Show all registers, or set one register         |
 | `d`       | `[addr] [count]`        | Disassemble at `addr`                           |
-| `list`    | `[addr] [count]`        | List source lines (when symbols are loaded)     |
+| `list`    | `[addr] [count]`        | List annotated lines when line data is loaded   |
 | `cpu`     | `[name]`                | Show the active CPU or switch to `name`         |
 
 The argument to `cpu` is `ie64`, `ie32`, `6502`, `z80`, `m68k`, or
@@ -62,17 +61,127 @@ The argument to `cpu` is `ie64`, `ie32`, `6502`, `z80`, `m68k`, or
 |-----------|-------------------------|-------------------------------------------------|
 | `m`       | `addr [count]`          | Memory dump in hex + ASCII                      |
 | `w`       | `addr byte [byte...]`   | Write bytes at `addr`                           |
-| `f`       | `addr1-addr2 byte`      | Fill a range with one byte                      |
-| `h`       | `addr1-addr2 pattern`   | Hunt: search a range for a byte pattern         |
-| `c`       | `addr1-addr2 dest`      | Compare a range against `dest`                  |
-| `t`       | `addr1-addr2 dest`      | Transfer (block-copy) a range to `dest`         |
+| `e`       | `addr`                  | Enter interactive hex editor mode               |
+| `f`       | `start end byte`        | Fill a range with one byte                      |
+| `h`       | `start end pattern...`  | Hunt: search a range for a byte pattern         |
+| `c`       | `start end dest`        | Compare a range against `dest`                  |
+| `t`       | `start end dest`        | Transfer a range to `dest`                      |
 
-`w` enters a hex-edit minor mode if no bytes are supplied with the
-address: the monitor prompts for byte after byte until you hit
-Enter on an empty line.
+`w` is a one-line byte writer. Use `e addr` when you want
+interactive byte editing. Byte arguments should be `00` to `FF`;
+larger values are stored as their low byte.
 
-There is no `assemble` command. To enter machine code, write the
-bytes with `w` and confirm them with `d`.
+There is no mnemonic-entry command. To enter machine code, write
+the bytes with `w` and confirm them with `d`.
+
+### 32.4.1 Byte-entry audio workflow
+
+This is the standard machine-language programming loop in IE Mon:
+
+```
+(6502)> w 1000 A9 01 8D 00 F8 A9 00 8D 08 D2 A9 79 8D 00 D2 A9
+(6502)> w 1010 AF 8D 01 D2 4C 14 10
+(6502)> d 1000 9
+1000: A9 01     LDA #$01
+1002: 8D 00 F8  STA $F800
+1005: A9 00     LDA #$00
+1007: 8D 08 D2  STA $D208
+100A: A9 79     LDA #$79
+100C: 8D 00 D2  STA $D200
+100F: A9 AF     LDA #$AF
+1011: 8D 01 D2  STA $D201
+1014: 4C 14 10  JMP $1014
+(6502)> r pc 1000
+(6502)> b 1014
+(6502)> g
+(6502)> m D200 2
+D200: 79 AF
+(6502)> bc 1014
+```
+
+The `w` line enters bytes. The `d` line proves those bytes decode
+as the intended instructions. The breakpoint stops execution before
+the final self-loop, and the memory dump proves the POKEY frequency
+and control bytes were written. You should hear the tone while the
+audio engine is enabled. If the disassembly does not match the
+chapter transcript, fix the byte listing before running it.
+
+### 32.4.2 Byte-entry graphics workflow
+
+The same loop works for visible hardware. This 6502 example uses
+the ULA card: it sets the border, enables the ULA source, writes an
+8-byte bitmap motif through the ULA latch/data port, writes one
+attribute byte, and then loops. It is deliberately small, but it
+does more than poke a colour register: it teaches the latched VRAM
+entry path used by larger ULA programs.
+
+```
+(6502)> w 1100 A9 05 8D 00 D8 A9 05 8D 04 D8 A9 00 8D 0C D8 A9
+(6502)> w 1110 00 8D 10 D8 A9 FF 8D 14 D8 A9 81 8D 14 D8 A9 BD
+(6502)> w 1120 8D 14 D8 A9 A5 8D 14 D8 A9 A5 8D 14 D8 A9 BD 8D
+(6502)> w 1130 14 D8 A9 81 8D 14 D8 A9 FF 8D 14 D8 A9 00 8D 0C
+(6502)> w 1140 D8 A9 18 8D 10 D8 A9 46 8D 14 D8 4C 4B 11
+(6502)> d 1100 26
+1100: A9 05     LDA #$05
+1102: 8D 00 D8  STA $D800
+1105: A9 05     LDA #$05
+1107: 8D 04 D8  STA $D804
+110A: A9 00     LDA #$00
+110C: 8D 0C D8  STA $D80C
+110F: A9 00     LDA #$00
+1111: 8D 10 D8  STA $D810
+1114: A9 FF     LDA #$FF
+1116: 8D 14 D8  STA $D814
+1119: A9 81     LDA #$81
+111B: 8D 14 D8  STA $D814
+111E: A9 BD     LDA #$BD
+1120: 8D 14 D8  STA $D814
+1123: A9 A5     LDA #$A5
+1125: 8D 14 D8  STA $D814
+1128: A9 A5     LDA #$A5
+112A: 8D 14 D8  STA $D814
+112D: A9 BD     LDA #$BD
+112F: 8D 14 D8  STA $D814
+1132: A9 81     LDA #$81
+1134: 8D 14 D8  STA $D814
+1137: A9 FF     LDA #$FF
+1139: 8D 14 D8  STA $D814
+113C: A9 00     LDA #$00
+113E: 8D 0C D8  STA $D80C
+1141: A9 18     LDA #$18
+1143: 8D 10 D8  STA $D810
+1146: A9 46     LDA #$46
+1148: 8D 14 D8  STA $D814
+114B: 4C 4B 11  JMP $114B
+(6502)> r pc 1100
+(6502)> b 114B
+(6502)> g
+(6502)> m D800 1
+D800: 05
+(6502)> m D804 1
+D804: 05
+(6502)> w D80C 00
+(6502)> w D810 00
+(6502)> m D814 1
+D814: FF
+(6502)> m D814 1
+D814: 81
+(6502)> w D80C 00
+(6502)> w D810 18
+(6502)> m D814 1
+D814: 46
+(6502)> bc 114B
+```
+
+The writes to `$D80C` and `$D810` set the low and high halves of
+the ULA VRAM address latch. Each store to `$D814` writes one byte
+at the latched address and advances the latch. The first eight
+data bytes form the bitmap motif. The later latch value `$1800`
+selects the attribute area, and `$46` gives the cell yellow ink
+on black paper. The two `m D814 1` reads after resetting the latch
+show the first two bitmap bytes, and the final read shows the
+attribute byte. Try changing the first `$A5` byte to `$99`; the
+middle of the motif changes without moving the attribute cell.
 
 ## 32.5 Breakpoints
 
@@ -140,7 +249,7 @@ Be careful: `rg` is **reverse-continue**, not "register inspect".
 
 | Command     | Argument(s)         | Effect                                      |
 |-------------|---------------------|---------------------------------------------|
-| `trace`     | `on|off|file`       | Enable/disable instruction trace            |
+| `trace`     | `on|off|name`       | Enable or disable instruction trace         |
 | `tracering` | `[size]`            | Enable a ring-buffer trace of recent instructions |
 | `show`      |                     | Dump the ring trace                         |
 
@@ -166,14 +275,14 @@ To freeze every CPU at once, use `freeze *`.
 
 | Command  | Argument(s)              | Effect                                |
 |----------|--------------------------|---------------------------------------|
-| `save`   | `addr1-addr2 file`       | Save a memory range to a sidecar file |
-| `load`   | `addr file`              | Load a sidecar file at `addr`         |
-| `ss`     | `file`                   | Save full machine state               |
-| `sl`     | `file`                   | Load full machine state               |
+| `save`   | `start end name`         | Save a memory range                   |
+| `load`   | `name addr`              | Load a memory range at `addr`         |
+| `ss`     | `name`                   | Save full machine state               |
+| `sl`     | `name`                   | Load full machine state               |
 
 `save` and `load` move memory ranges. `ss` and `sl` move the whole
-CPU + bus + device state. A saved-state file can be reloaded into
-a freshly reset system to resume from the same point.
+CPU + bus + device state. A saved state can be reloaded into a
+freshly reset system to resume from the same point.
 
 ## 32.11 Symbols, addresses, maps
 
@@ -187,10 +296,11 @@ a freshly reset system to resume from the same point.
 
 | Command     | Argument(s)              | Effect                              |
 |-------------|--------------------------|-------------------------------------|
-| `io`        | `[addr]`                 | Show MMIO region map or a specific page |
-| `pg`        | `addr1-addr2 mode`       | Page guard: trap on access to a range |
-| `accesslog` | `on|off`                 | Enable per-page access logging       |
-| `who`       | `addr`                   | Report the last CPU that accessed `addr` |
+| `io`        | `[device | addr]`        | Show MMIO region map or a specific page |
+| `pg`        | `add start end mode`     | Page guard: trap on access to a range |
+| `pg`        | `list | clear`           | List or clear page guards            |
+| `accesslog` | `on|off|show [count]`    | Control per-page access logging      |
+| `who`       | `read|wrote|fetched addr`| Report the last matching access      |
 
 ## 32.13 Backtrace
 
@@ -198,7 +308,21 @@ a freshly reset system to resume from the same point.
 |----------|--------------------|-----------------------------------------------|
 | `bt`     |                    | Stack backtrace from the active CPU           |
 
-## 32.14 Quick reference card
+## 32.14 Command Results and Limits
+
+Commands that cannot parse an address, register, CPU name, or
+byte value print an error line and leave the monitor active.
+`d`, `m`, `r`, `io`, `bt`, `tl`, `wl`, and `bl` inspect state.
+`w`, `f`, `t`, `load`, `sl`, register writes through `r`, and
+execution commands can change state.
+
+`d` disassembles bytes; it never changes the program counter.
+`g` leaves the monitor until a breakpoint, watchpoint, manual
+break-in, or CPU stop brings control back. The reverse timeline is
+a recent-history tool, not permanent storage; use `ss` when you
+need a reloadable state.
+
+## 32.15 Quick Reference Card
 
 The single-letter and short commands you will use most:
 
@@ -214,13 +338,14 @@ ww/wr a     word watchpoint          tl          timeline
 wc [a|id]   watchpoint clear         x           exit
 wl          watchpoint list          cpu n       switch CPU
 freeze *    freeze all CPUs          thaw *      thaw all
-fa / ta     freeze / thaw audio      save a-b f  save range
-ss / sl f   save / load full state   load a f    load range at a
+fa / ta     freeze / thaw audio      save a b n  save range
+ss / sl n   save / load full state   load n a    load range at a
 ```
 
-## 32.15 What comes next
+## 32.16 What Comes Next
 
-Chapter 33 covers IE Script - a scripting language that drives the
-monitor from a file rather than from a terminal. IE Script is what
-you use to automate session setup, scripted breakpoint actions,
-data dumps after a fault, and similar batch debugging tasks.
+Chapter 33 covers IE Script, a command language that drives the
+monitor from stored command text rather than from a terminal. IE
+Script is what you use to automate session setup, breakpoint
+actions, data dumps after a fault, and similar batch debugging
+tasks.

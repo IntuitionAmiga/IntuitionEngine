@@ -12,10 +12,10 @@ There is no character translation between BASIC strings and the
 terminal. The byte you put in is the byte that goes out, and the byte
 the terminal sends in is the byte you get back.
 
-## C.1 Control codes (0–31)
+## C.1 Control codes (0-31)
 
 These bytes have no printed glyph. Three of them have meaning to the
-terminal; the rest pass through to TERM_OUT (Chapter 34) and have no
+terminal; the rest pass through to TERM_OUT (Chapter 37) and have no
 visible effect.
 
 | Dec | Hex   | Name | Effect on the terminal |
@@ -58,7 +58,7 @@ does not end with a semicolon or comma. INPUT reads characters until
 it receives CR or LF, and treats BS as "delete the previous
 character".
 
-## C.2 Printable characters (32–127)
+## C.2 Printable characters (32-127)
 
 The byte value of each printable character equals its ASCII code. The
 table below also gives the keyword form of the character for use in
@@ -104,7 +104,7 @@ string literal in source code. To include it in a string, use:
 20 PRINT "HE SAID "; A$; "HELLO"; A$
 ```
 
-## C.3 High codes (128–255)
+## C.3 High codes (128-255)
 
 Bytes 128 through 255 carry no defined character meaning. EhBASIC
 stores them in strings without modification and the terminal emits

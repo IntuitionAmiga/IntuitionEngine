@@ -35,6 +35,11 @@ type ehbasicTestHarness struct {
 func newEhbasicHarness(t testing.TB) *ehbasicTestHarness {
 	t.Helper()
 	bus := NewMachineBus()
+	return newEhbasicHarnessOnBus(t, bus)
+}
+
+func newEhbasicHarnessOnBus(t testing.TB, bus *MachineBus) *ehbasicTestHarness {
+	t.Helper()
 	cpu := NewCPU64(bus)
 	term := NewTerminalMMIO()
 
@@ -1989,6 +1994,11 @@ func execStmtTestWithBus(t *testing.T, asmBin string, program string) (string, *
 // created but before the program binary is loaded and executed.
 func execStmtTestCore(t *testing.T, asmBin string, program string, setup func(h *ehbasicTestHarness)) (string, *ehbasicTestHarness) {
 	t.Helper()
+	return execStmtTestCoreWithHarness(t, asmBin, program, setup, newEhbasicHarness)
+}
+
+func execStmtTestCoreWithHarness(t *testing.T, asmBin string, program string, setup func(h *ehbasicTestHarness), makeHarness func(testing.TB) *ehbasicTestHarness) (string, *ehbasicTestHarness) {
+	t.Helper()
 
 	lines := strings.Split(strings.TrimSpace(program), "\n")
 	var storeCode strings.Builder
@@ -2031,7 +2041,7 @@ func execStmtTestCore(t *testing.T, asmBin string, program string, setup func(h 
     jsr     exec_run
 `
 	binary := assembleExecTest(t, asmBin, body)
-	h := newEhbasicHarness(t)
+	h := makeHarness(t)
 	if setup != nil {
 		setup(h)
 	}
@@ -2048,6 +2058,12 @@ func readBusMem32(h *ehbasicTestHarness, addr uint32) uint32 {
 // readBusMem8 reads a single byte from bus memory.
 func readBusMem8(h *ehbasicTestHarness, addr uint32) byte {
 	return h.bus.Read8(addr)
+}
+
+func readRawBusMem32(h *ehbasicTestHarness, addr uint32) uint32 {
+	mem := h.bus.GetMemory()
+	i := int(addr)
+	return binary.LittleEndian.Uint32(mem[i : i+4])
 }
 
 func readBusString(h *ehbasicTestHarness, addr uint32, max int) string {
@@ -2210,6 +2226,97 @@ func TestEhBASIC_HostHelpAndBareHostPrintHelp(t *testing.T) {
 				t.Fatalf("HOST help wrote to host MMIO %d times", hostMMIOWrites)
 			}
 		})
+	}
+}
+
+func TestRefmanCh35HostHelpExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	var hostMMIOWrites int
+	out, _ := execStmtTestCore(t, asmBin, "10 HOST HELP\n20 PRINT \"AFTER HELP\"", func(h *ehbasicTestHarness) {
+		h.bus.MapIO(HostMMIOBase, HostMMIOEnd, func(addr uint32) uint32 {
+			return uint32(HostStatusOK)
+		}, func(addr uint32, value uint32) {
+			hostMMIOWrites++
+		})
+	})
+
+	for _, want := range []string{"HOST NET", "HOST UPDATE", "HOST REBOOT", "HOST POWEROFF", "HOST HELP", "AFTER HELP"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("Chapter 35 HOST HELP example missing %q in output %q", want, out)
+		}
+	}
+	if hostMMIOWrites != 0 {
+		t.Fatalf("Chapter 35 HOST HELP example wrote to HOST MMIO %d times", hostMMIOWrites)
+	}
+}
+
+func TestRefmanCh35HostStatusExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, _ := execStmtTestCore(t, asmBin, `10 PRINT "HOST STATUS ";PEEK(&H000F1408)`, func(h *ehbasicTestHarness) {
+		RegisterHostHelperMMIO(h.bus, NewHostHelperWithRunner(false, false, nil))
+	})
+
+	if !strings.Contains(out, "HOST STATUS 5") {
+		t.Fatalf("Chapter 35 HOST status example expected idle status 5, got %q", out)
+	}
+}
+
+func TestRefmanCh36InputMMIOExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 IF PEEK(&H000F072C)=0 THEN PRINT "NO KEY":GOTO 100
+20 K=PEEK(&H000F0728)
+30 C=0
+40 IF PEEK(&H000F0744)=0 THEN GOTO 60
+50 C=PEEK(&H000F0740)
+60 M=PEEK(&H000F0748)
+70 PRINT "KEY ";K;" SCAN ";C;" MOD ";M
+80 PRINT "MOUSE ";PEEK(&H000F0730);PEEK(&H000F0734);PEEK(&H000F0738);PEEK(&H000F073C)
+90 POKE &H000F074C,1
+100 PRINT "DELTA ";PEEK(&H000F0754);PEEK(&H000F0758)
+110 PRINT "SECONDS ";PEEK(&H000F0750)`
+
+	out, _ := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		h.terminal.EnqueueRawKey('A')
+		h.terminal.EnqueueScancode(30)
+		h.terminal.modifiers.Store(1)
+		h.terminal.mouseX.Store(123)
+		h.terminal.mouseY.Store(45)
+		h.terminal.mouseButtons.Store(3)
+		h.terminal.mouseChanged.Store(true)
+		h.terminal.HandleWrite(MOUSE_CTRL, 1)
+		h.terminal.AddMouseDelta(5, 6)
+	})
+
+	for _, want := range []string{"KEY", "65", "SCAN", "30", "MOD", "1", "MOUSE", "123", "45", "DELTA", "5", "6", "SECONDS"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("Chapter 36 input MMIO example missing %q in output %q", want, out)
+		}
+	}
+}
+
+func TestRefmanCh37TerminalSerialExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 POKE &H000F0700,ASC("?")
+20 PRINT "READY ";PEEK(&H000F0704)
+30 IF (PEEK(&H000F0704) AND 1)=0 THEN GOTO 30
+40 C=PEEK(&H000F0708)
+50 PRINT "GOT ";C
+60 PRINT "ECHO ";PEEK(&H000F0710)
+70 POKE &H000F0710,0
+80 PRINT "ECHO ";PEEK(&H000F0710)
+90 PRINT "LINE ";PEEK(&H000F0724)
+100 POKE &H000F0724,0
+110 PRINT "LINE ";PEEK(&H000F0724)
+120 POKE &H000F0724,1`
+
+	out, _ := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		h.terminal.EnqueueByte('A')
+	})
+
+	for _, want := range []string{"?", "READY", "GOT", "65", "ECHO", "1", "0", "LINE"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("Chapter 37 terminal serial example missing %q in output %q", want, out)
+		}
 	}
 }
 
@@ -3449,6 +3556,63 @@ func TestHW_Palette(t *testing.T) {
 	}
 }
 
+func TestRefmanCh5DirectPaletteWindowPoke8Example(t *testing.T) {
+	asmBin := buildAssembler(t)
+	var vga *VGAEngine
+	program := `200 POKE8 &H000F1100+1*3,63
+210 POKE8 &H000F1100+1*3+1,0
+220 POKE8 &H000F1100+1*3+2,0`
+
+	_, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		vga = NewVGAEngine(h.bus)
+		h.bus.MapIO(VGA_BASE, VGA_REG_END, vga.HandleRead, vga.HandleWrite)
+		h.bus.MapIO(VGA_VRAM_WINDOW, VGA_VRAM_WINDOW+VGA_VRAM_SIZE-1, vga.HandleVRAMRead, vga.HandleVRAMWrite)
+		h.bus.MapIO(VGA_TEXT_WINDOW, VGA_TEXT_WINDOW+VGA_TEXT_SIZE-1, vga.HandleTextRead, vga.HandleTextWrite)
+	})
+
+	if got := readBusMem8(h, 0x000F1103); got != 63 {
+		t.Fatalf("VGA direct palette shadow byte: got %d, want 63", got)
+	}
+	r, g, b := vga.GetPaletteEntry(1)
+	if r != 63 || g != 0 || b != 0 {
+		t.Fatalf("VGA direct palette POKE8 example: got (%d,%d,%d), want (63,0,0)", r, g, b)
+	}
+}
+
+func TestRefmanCh5Mode12PlanarPixelExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	var vga *VGAEngine
+	program := `10 SCREEN &H12
+20 X=100:Y=100
+30 A=&H000A0000+Y*80+INT(X/8)
+40 B=128/2^(X AND 7)
+50 POKE &H000F103C,B
+60 POKE &H000F1018,1
+70 POKE8 A,255
+80 POKE &H000F1018,4
+90 POKE8 A,255
+100 VSYNC`
+
+	execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		vga = NewVGAEngine(h.bus)
+		h.bus.MapIO(VGA_BASE, VGA_REG_END, vga.HandleRead, vga.HandleWrite)
+		h.bus.MapIO(VGA_VRAM_WINDOW, VGA_VRAM_WINDOW+VGA_VRAM_SIZE-1, vga.HandleVRAMRead, vga.HandleVRAMWrite)
+		h.bus.MapIO(VGA_TEXT_WINDOW, VGA_TEXT_WINDOW+VGA_TEXT_SIZE-1, vga.HandleTextRead, vga.HandleTextWrite)
+		vga.SetVSync(true)
+	})
+
+	offset := uint32(100*80 + 100/8)
+	if got := vga.ReadPlane(offset, 0); got&0x08 == 0 {
+		t.Fatalf("VGA Mode 12h plane 0 byte: got 0x%02X, want bit 0x08 set", got)
+	}
+	if got := vga.ReadPlane(offset, 2); got&0x08 == 0 {
+		t.Fatalf("VGA Mode 12h plane 2 byte: got 0x%02X, want bit 0x08 set", got)
+	}
+	if got := vga.ReadPlane(offset, 1); got&0x08 != 0 {
+		t.Fatalf("VGA Mode 12h plane 1 byte: got 0x%02X, want bit 0x08 clear", got)
+	}
+}
+
 func TestHW_Vsync(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// VSYNC polls VGA_STATUS for vsync bit. Pre-set the bit so it doesn't hang.
@@ -3548,6 +3712,18 @@ func TestHW_Wait(t *testing.T) {
 	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
 	if out != "1" {
 		t.Fatalf("WAIT: expected '1' after wait, got %q", out)
+	}
+}
+
+func TestRefmanCh30WaitExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, h := execStmtTestWithBus(t, asmBin,
+		"10 REM CHOOSE A WORD OF SHARED RAM\n20 A=&H00050000\n30 REM CLEAR IT, THEN SHOW THE STARTING VALUE\n40 POKE A,0\n50 PRINT \"BEFORE \";PEEK(A)\n60 REM SET BIT 2 AND WAIT FOR THAT BIT\n70 POKE A,4\n80 WAIT A,4\n90 PRINT \"AFTER \";PEEK(A)")
+	if !strings.Contains(out, "BEFORE") || !strings.Contains(out, "AFTER") {
+		t.Fatalf("chapter 30 WAIT example output missing labels: %q", out)
+	}
+	if got := readBusMem32(h, 0x50000); got != 4 {
+		t.Fatalf("chapter 30 WAIT example left $50000 = %#x, want 4", got)
 	}
 }
 
@@ -3936,6 +4112,113 @@ func TestEhBASIC_BlitMode7(t *testing.T) {
 	}
 }
 
+func TestRefmanCh4MaskedCopyDiamondExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM MASKED COPY DIAMOND
+20 FB=&H00100000:SPR=&H00600000:MSK=&H00610000
+30 ST=320*4:SS=8*4
+40 POKE &H000F0004,&H04
+50 POKE &H000F0080,0
+60 POKE &H000F0084,FB
+70 POKE &H000F0000,1
+80 BLIT FILL FB,320,200,&H00001020,ST
+90 BLIT FILL SPR,8,8,&H000000FF,SS
+100 BLIT FILL SPR+2*SS+2*4,4,4,&H0000FFFF,SS
+110 DATA 24,60,126,255,255,126,60,24
+120 FOR Y=0 TO 7
+130 READ M
+140 POKE8 MSK+Y,M
+150 NEXT Y
+160 POKE &H000F0024,SPR
+170 POKE &H000F0028,FB+80*ST+156*4
+180 POKE &H000F002C,8
+190 POKE &H000F0030,8
+200 POKE &H000F0034,SS
+210 POKE &H000F0038,ST
+220 POKE &H000F0040,MSK
+230 POKE &H000F0020,3
+240 POKE &H000F001C,1
+250 PRINT PEEK(&H000F0044)`
+
+	out, h, video := execStmtTestWithVideo(t, asmBin, program, 500_000_000)
+	if !slices.Equal(strings.Fields(out), []string{"2"}) {
+		t.Fatalf("masked-copy refman example: expected BLT_STATUS 2, got %q", out)
+	}
+	if got := readBusMem8(h, 0x00610000); got != 0x18 {
+		t.Fatalf("masked-copy mask byte: expected 0x18, got 0x%02X", got)
+	}
+	if got := readBusMem8(h, 0x00610002); got != 0x7E {
+		t.Fatalf("masked-copy row 2 mask byte: expected 0x7E, got 0x%02X", got)
+	}
+	if got := readBusMem32(h, 0x00600000); got != 0x000000FF {
+		t.Fatalf("masked-copy source pixel: expected 0x000000FF, got 0x%08X", got)
+	}
+	if got := readBusMem32(h, 0x00600000+2*32+2*4); got != 0x0000FFFF {
+		t.Fatalf("masked-copy source centre: expected 0x0000FFFF, got 0x%08X", got)
+	}
+
+	readPixel := func(x, y int) uint32 {
+		video.mu.Lock()
+		defer video.mu.Unlock()
+		off := (y*320 + x) * 4
+		if off+4 > len(video.frontBuffer) {
+			t.Fatalf("pixel %d,%d outside frontBuffer", x, y)
+		}
+		return binary.LittleEndian.Uint32(video.frontBuffer[off : off+4])
+	}
+
+	if got := readPixel(156, 80); got != 0x00001020 {
+		t.Fatalf("masked-copy background pixel: expected 0x00001020, got 0x%08X", got)
+	}
+	if got := readPixel(159, 80); got != 0x000000FF {
+		t.Fatalf("masked-copy red diamond pixel: expected 0x000000FF, got 0x%08X", got)
+	}
+	if got := readPixel(158, 82); got != 0x0000FFFF {
+		t.Fatalf("masked-copy yellow centre pixel: expected 0x0000FFFF, got 0x%08X", got)
+	}
+}
+
+func TestRefmanCh4AlphaCopyGlowExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM ALPHA COPY GLOW
+20 FB=&H00100000:SPR=&H00620000
+30 ST=320*4:SS=8*4
+40 POKE &H000F0004,&H04
+50 POKE &H000F0080,0
+60 POKE &H000F0084,FB
+70 POKE &H000F0000,1
+80 BLIT FILL FB,320,200,&H00400000,ST
+90 FOR Y=0 TO 7
+100 FOR X=0 TO 7
+110 A=SPR+(Y*8+X)*4
+120 POKE8 A,255:POKE8 A+1,0:POKE8 A+2,0:POKE8 A+3,128
+130 NEXT X:NEXT Y
+140 POKE &H000F0024,SPR
+150 POKE &H000F0028,FB+96*ST+156*4
+160 POKE &H000F002C,8
+170 POKE &H000F0030,8
+180 POKE &H000F0034,SS
+190 POKE &H000F0038,ST
+200 POKE &H000F0020,4
+210 POKE &H000F001C,1
+220 PRINT PEEK(&H000F0044)`
+
+	out, _, video := execStmtTestWithVideo(t, asmBin, program, 500_000_000)
+	if !slices.Equal(strings.Fields(out), []string{"2"}) {
+		t.Fatalf("alpha-copy refman example: expected BLT_STATUS 2, got %q", out)
+	}
+
+	video.mu.Lock()
+	defer video.mu.Unlock()
+	off := (96*320 + 156) * 4
+	if off+4 > len(video.frontBuffer) {
+		t.Fatalf("alpha-copy pixel outside frontBuffer")
+	}
+	if got := binary.LittleEndian.Uint32(video.frontBuffer[off : off+4]); got != 0x801F0080 {
+		t.Fatalf("alpha-copy blended pixel: expected 0x801F0080, got 0x%08X", got)
+	}
+}
+
 func TestEhBASIC_BlitMode7DispatchVsMemcopy(t *testing.T) {
 	asmBin := buildAssembler(t)
 
@@ -4053,6 +4336,166 @@ func TestHW_ULA_Border(t *testing.T) {
 	border := readBusMem32(h, 0xF2000) // ULA_BORDER
 	if border != 2 {
 		t.Fatalf("ULA BORDER: expected 2, got %d", border)
+	}
+}
+
+func execStmtTestWithULA(t *testing.T, asmBin string, program string) (string, *ehbasicTestHarness, *ULAEngine) {
+	t.Helper()
+	var ula *ULAEngine
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		if ula != nil {
+			return
+		}
+		video := videoChip
+		video.enabled.Store(false)
+		video.AttachBus(h.bus)
+		h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+		ula = NewULAEngine(h.bus)
+		h.bus.MapIO(ULA_BASE, ULA_REG_END, ula.HandleRead, ula.HandleWrite)
+		h.bus.MapIOByteRead(ULA_BASE, ULA_REG_END, ula.HandleRead8)
+		h.bus.MapIOByte(ULA_BASE, ULA_REG_END, ula.HandleWrite8)
+		h.bus.MapIO(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END, ula.HandleBusVRAMRead, ula.HandleBusVRAMWrite)
+		h.bus.MapIOByteRead(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END, ula.HandleRead8)
+		h.bus.MapIOByte(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END, ula.HandleWrite8)
+		h.bus.MapIO64(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END, ula.HandleRead64, ula.HandleWrite64)
+		h.bus.MapIOWideWriteFanout(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END)
+	})
+	return out, h, ula
+}
+
+func ulaTestPixel(frame []byte, x, y int) [4]byte {
+	offset := (y*ULA_FRAME_WIDTH + x) * 4
+	return [4]byte{frame[offset], frame[offset+1], frame[offset+2], frame[offset+3]}
+}
+
+func ulaRGBA(colour uint8, bright bool) [4]byte {
+	rgb := ULAColorNormal[colour&0x07]
+	if bright {
+		rgb = ULAColorBright[colour&0x07]
+	}
+	return [4]byte{rgb[0], rgb[1], rgb[2], 0xFF}
+}
+
+func TestRefmanCh8ULADiagonalExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 ULA ON
+20 ULA CLS &H02
+30 FOR I=0 TO 191
+40 ULA PLOT I, I
+50 NEXT I`
+
+	out, _, ula := execStmtTestWithULA(t, asmBin, program)
+	if out != "" {
+		t.Fatalf("ULA diagonal example produced output %q", out)
+	}
+	if got := ula.HandleRead(ULA_CTRL); got&ULA_CTRL_ENABLE == 0 {
+		t.Fatalf("ULA diagonal example: ULA not enabled, CTRL=0x%02X", got)
+	}
+	if got := ula.HandleVRAMRead(ula.GetBitmapAddress(0, 0)); got&0x80 == 0 {
+		t.Fatalf("ULA diagonal example: pixel (0,0) byte=0x%02X, want bit 7 set", got)
+	}
+	if got := ula.HandleVRAMRead(ULA_ATTR_OFFSET); got != 0x02 {
+		t.Fatalf("ULA diagonal example: attr[0]=0x%02X, want 0x02", got)
+	}
+	frame := ula.RenderFrame()
+	if got, want := ulaTestPixel(frame, ULA_BORDER_LEFT, ULA_BORDER_TOP), ulaRGBA(2, false); got != want {
+		t.Fatalf("ULA diagonal example: first pixel=%v, want %v", got, want)
+	}
+}
+
+func TestRefmanCh8ULAAttributeGridExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 ULA ON
+20 ULA CLS &H00
+30 FOR Y=0 TO 23
+40 FOR X=0 TO 31
+50 A=&H40+((Y AND 7)*8)+(X AND 7)
+60 ULA ATTR X,Y,A
+70 NEXT X
+80 NEXT Y
+90 FOR I=0 TO 191
+100 ULA PLOT I, I
+110 ULA PLOT 255-I, I
+120 NEXT I`
+
+	_, _, ula := execStmtTestWithULA(t, asmBin, program)
+	if got := ula.HandleVRAMRead(ULA_ATTR_OFFSET); got != 0x40 {
+		t.Fatalf("ULA attribute grid example: attr[0]=0x%02X, want 0x40", got)
+	}
+	if got := ula.HandleVRAMRead(ULA_ATTR_OFFSET + 1); got != 0x41 {
+		t.Fatalf("ULA attribute grid example: attr[1]=0x%02X, want 0x41", got)
+	}
+	if got := ula.HandleVRAMRead(ULA_ATTR_OFFSET + 32); got != 0x48 {
+		t.Fatalf("ULA attribute grid example: attr row 1=0x%02X, want 0x48", got)
+	}
+	if got := ula.HandleVRAMRead(ula.GetBitmapAddress(0, 0)); got&0x80 == 0 {
+		t.Fatalf("ULA attribute grid example: left diagonal bit not set")
+	}
+	if got := ula.HandleVRAMRead(ula.GetBitmapAddress(0, 255)); got&0x01 == 0 {
+		t.Fatalf("ULA attribute grid example: right diagonal bit not set")
+	}
+}
+
+func TestHW_ULA_Attr(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out, _, ula := execStmtTestWithULA(t, asmBin, "10 ULA ATTR 0,0,&H40")
+	if out != "" {
+		t.Fatalf("ULA ATTR produced output %q", out)
+	}
+	if got := ula.HandleVRAMRead(ULA_ATTR_OFFSET); got != 0x40 {
+		t.Fatalf("ULA ATTR: attr[0]=0x%02X, want 0x40", got)
+	}
+}
+
+func TestRefmanCh8ULADirectApertureLineExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 ULA ON
+20 ULA CLS &H02
+30 FOR X=0 TO 255
+40 Y=INT(X*3/4)
+50 A=((Y AND &HC0)*32)+((Y AND 7)*256)+((Y AND &H38)*4)+INT(X/8)
+60 B=7-(X AND 7)
+70 V=PEEK8(&H000FA000+A) OR 2^B
+80 POKE8 &H000FA000+A,V
+90 NEXT X`
+
+	_, _, ula := execStmtTestWithULA(t, asmBin, program)
+	if got := ula.HandleVRAMRead(ula.GetBitmapAddress(0, 0)); got&0x80 == 0 {
+		t.Fatalf("ULA direct aperture example: first bit not set")
+	}
+	if got := ula.HandleVRAMRead(ula.GetBitmapAddress(96, 128)); got&0x80 == 0 {
+		t.Fatalf("ULA direct aperture example: middle line bit not set")
+	}
+	if got := ula.HandleVRAMRead(ULA_ATTR_OFFSET); got != 0x02 {
+		t.Fatalf("ULA direct aperture example: attr[0]=0x%02X, want 0x02", got)
+	}
+}
+
+func TestRefmanCh8ULAPagedPortExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 POKE &H000F2004,5
+20 POKE &H000F200C,0
+30 POKE &H000F2010,0
+40 FOR I=0 TO 31
+50 POKE &H000F2014,&HFF
+60 NEXT I
+70 POKE &H000F200C,0
+80 POKE &H000F2010,&H18
+90 FOR I=0 TO 31
+100 POKE &H000F2014,&H56
+110 NEXT I`
+
+	_, _, ula := execStmtTestWithULA(t, asmBin, program)
+	if got := ula.HandleRead(ULA_CTRL); got != ULA_CTRL_ENABLE|ULA_CTRL_AUTO_INC {
+		t.Fatalf("ULA paged-port example: CTRL=0x%02X, want 0x05", got)
+	}
+	for i := uint16(0); i < 32; i++ {
+		if got := ula.HandleVRAMRead(i); got != 0xFF {
+			t.Fatalf("ULA paged-port example: bitmap[%d]=0x%02X, want 0xFF", i, got)
+		}
+		if got := ula.HandleVRAMRead(ULA_ATTR_OFFSET + i); got != 0x56 {
+			t.Fatalf("ULA paged-port example: attr[%d]=0x%02X, want 0x56", i, got)
+		}
 	}
 }
 
@@ -4253,10 +4696,10 @@ func TestHW_ZBuffer_On(t *testing.T) {
 
 func TestHW_ZBuffer_Func(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// Set depth func to LESS (1) → bits 1-3 = 1<<1 = 0x02
+	// Set depth func to LESS (1): bits 5-7 = 1<<5 = 0x20
 	_, h := execStmtTestWithBus(t, asmBin, "10 ZBUFFER ON\n20 ZBUFFER FUNC 1")
 	mode := readBusMem32(h, 0xF8110)
-	funcBits := (mode >> 1) & 7
+	funcBits := (mode >> 5) & 7
 	if funcBits != 1 {
 		t.Fatalf("ZBUFFER FUNC: expected func=1, got %d (mode=0x%08X)", funcBits, mode)
 	}
@@ -4284,18 +4727,833 @@ func TestHW_Texture_Mode(t *testing.T) {
 	}
 }
 
+func execStmtTestWithVoodoo(t *testing.T, asmBin string, program string) (string, *ehbasicTestHarness, *VoodooEngine) {
+	t.Helper()
+	var v *VoodooEngine
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		if v != nil {
+			return
+		}
+		var err error
+		v, err = NewVoodooEngine(h.bus)
+		if err != nil {
+			t.Fatalf("NewVoodooEngine failed: %v", err)
+		}
+		t.Cleanup(v.Destroy)
+		h.bus.MapIO(VOODOO_BASE, VOODOO_END, v.HandleRead, v.HandleWrite)
+		h.bus.MapIOByteRead(VOODOO_BASE, VOODOO_END, v.HandleRead8)
+		h.bus.MapIOByte(VOODOO_BASE, VOODOO_END, v.HandleWrite8)
+		h.bus.MapIO64(VOODOO_BASE, VOODOO_END, v.HandleRead64, v.HandleWrite64)
+		h.bus.MapIO(VOODOO_TEXMEM_BASE, VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE-1, v.HandleTexMemRead, v.HandleTexMemWrite)
+		h.bus.MapIOByteRead(VOODOO_TEXMEM_BASE, VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE-1, v.HandleTexMemRead8)
+		h.bus.MapIOByte(VOODOO_TEXMEM_BASE, VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE-1, v.HandleTexMemWrite8)
+	})
+	return out, h, v
+}
+
+func requireNoBasicError(t *testing.T, out string) {
+	t.Helper()
+	if strings.Contains(out, " ERROR") {
+		t.Fatalf("BASIC program failed: %q", out)
+	}
+}
+
+func voodooFrameForTest(t *testing.T, v *VoodooEngine) ([]byte, int, int) {
+	t.Helper()
+	frame := v.GetFrame()
+	if frame == nil {
+		t.Fatal("Voodoo frame is nil")
+	}
+	w, h := v.GetDimensions()
+	if len(frame) < w*h*4 {
+		t.Fatalf("Voodoo frame length = %d, want at least %d", len(frame), w*h*4)
+	}
+	return frame, w, h
+}
+
+func voodooPixelForTest(t *testing.T, frame []byte, width, x, y int) [4]byte {
+	t.Helper()
+	offset := (y*width + x) * 4
+	if offset+3 >= len(frame) {
+		t.Fatalf("pixel (%d,%d) is outside frame", x, y)
+	}
+	return [4]byte{frame[offset], frame[offset+1], frame[offset+2], frame[offset+3]}
+}
+
+func TestRefmanCh9FirstTriangleExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM VOODOO FIRST TRIANGLE
+20 VOODOO ON
+30 VOODOO DIM 640,480
+40 POKE &H000F8110,&H00008200
+50 VOODOO CLEAR &HFF101020
+60 VERTEX A 320,70
+70 VERTEX B 540,390
+80 VERTEX C 100,390
+90 VOODOO TRICOLOR 4096,0,0,4096
+100 TRIANGLE
+110 VOODOO SWAP`
+	out, _, v := execStmtTestWithVoodoo(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if !v.IsEnabled() {
+		t.Fatal("Voodoo was not enabled")
+	}
+	if w, h := v.GetDimensions(); w != 640 || h != 480 {
+		t.Fatalf("Voodoo dimensions = %dx%d, want 640x480", w, h)
+	}
+	frame, width, _ := voodooFrameForTest(t, v)
+	p := voodooPixelForTest(t, frame, width, 320, 200)
+	if p[0] < 200 || p[1] > 40 || p[2] > 40 || p[3] != 0xFF {
+		t.Fatalf("triangle centre pixel = %02X %02X %02X %02X, want red", p[0], p[1], p[2], p[3])
+	}
+}
+
+func TestRefmanCh9GouraudFanExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM VOODOO GOURAUD FAN
+20 VOODOO ON
+30 VOODOO DIM 640,480
+40 POKE &H000F8110,&H00008200
+50 VOODOO CLEAR &HFF000018
+60 VERTEX A 320,60
+70 VERTEX B 560,410
+80 VERTEX C 80,410
+90 POKE &H000F8088,0
+100 VOODOO TRICOLOR 4096,0,0,4096
+110 POKE &H000F8088,1
+120 VOODOO TRICOLOR 0,4096,0,4096
+130 POKE &H000F8088,2
+140 VOODOO TRICOLOR 0,0,4096,4096
+150 TRIANGLE
+160 VOODOO SWAP`
+	out, _, v := execStmtTestWithVoodoo(t, asmBin, program)
+	requireNoBasicError(t, out)
+	frame, width, _ := voodooFrameForTest(t, v)
+	top := voodooPixelForTest(t, frame, width, 320, 100)
+	right := voodooPixelForTest(t, frame, width, 470, 350)
+	left := voodooPixelForTest(t, frame, width, 170, 350)
+	if top[0] <= top[1] || top[0] <= top[2] {
+		t.Fatalf("top sample = %02X %02X %02X, want red-dominant", top[0], top[1], top[2])
+	}
+	if right[1] <= right[0] || right[1] <= right[2] {
+		t.Fatalf("right sample = %02X %02X %02X, want green-dominant", right[0], right[1], right[2])
+	}
+	if left[2] <= left[0] || left[2] <= left[1] {
+		t.Fatalf("left sample = %02X %02X %02X, want blue-dominant", left[0], left[1], left[2])
+	}
+}
+
+func TestRefmanCh9DepthOverlapExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM VOODOO Z OVERLAP
+20 VOODOO ON
+30 VOODOO DIM 640,480
+40 POKE &H000F8110,&H00008630
+50 VOODOO CLEAR &HFF000000
+60 VERTEX A 220,80
+70 VERTEX B 520,390
+80 VERTEX C 80,390
+90 VOODOO TRICOLOR 0,0,4096,4096
+100 VOODOO TRIDEPTH 3277,0,0
+110 TRIANGLE
+120 VERTEX A 330,120
+130 VERTEX B 560,350
+140 VERTEX C 160,350
+150 VOODOO TRICOLOR 4096,4096,0,4096
+160 VOODOO TRIDEPTH 819,0,0
+170 TRIANGLE
+180 VOODOO SWAP`
+	out, _, v := execStmtTestWithVoodoo(t, asmBin, program)
+	requireNoBasicError(t, out)
+	frame, width, _ := voodooFrameForTest(t, v)
+	p := voodooPixelForTest(t, frame, width, 330, 240)
+	if p[0] < 160 || p[1] < 160 || p[2] > 80 {
+		t.Fatalf("overlap sample = %02X %02X %02X, want nearer yellow triangle", p[0], p[1], p[2])
+	}
+}
+
+func TestRefmanCh9TextureUploadExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM VOODOO 2 BY 2 TEXTURE
+20 VOODOO ON
+30 VOODOO DIM 640,480
+40 POKE &H000F8110,&H00008200
+50 VOODOO CLEAR &HFF080808
+60 POKE &H000D0000,&HFF0000FF
+70 POKE &H000D0004,&HFF00FF00
+80 POKE &H000D0008,&HFFFF0000
+90 POKE &H000D000C,&HFFFFFFFF
+100 TEXTURE DIM 2,2
+110 TEXTURE MODE &H0A61
+120 TEXTURE UPLOAD
+130 TEXTURE ON
+140 VOODOO COMBINE 1
+150 VERTEX A 320,60
+160 VERTEX B 570,410
+170 VERTEX C 70,410
+180 POKE &H000F8088,0
+190 VOODOO TRICOLOR 4096,4096,4096,4096
+200 VOODOO TRIUV 0,0,0,0,0,0
+210 POKE &H000F8088,1
+220 VOODOO TRICOLOR 4096,4096,4096,4096
+230 VOODOO TRIUV 262144,0,0,0,0,0
+240 POKE &H000F8088,2
+250 VOODOO TRICOLOR 4096,4096,4096,4096
+260 VOODOO TRIUV 0,262144,0,0,0,0
+270 TRIANGLE
+280 VOODOO SWAP`
+	out, h, v := execStmtTestWithVoodoo(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem32(h, VOODOO_TEXMEM_BASE); got != 0xFF0000FF {
+		t.Fatalf("texture word 0 = %#08x, want 0xFF0000FF", got)
+	}
+	sw := testVoodooSoftwareBackend(t, v)
+	if sw.textureWidth != 2 || sw.textureHeight != 2 || sw.textureData == nil {
+		t.Fatalf("uploaded texture = %dx%d nil=%v, want 2x2 data", sw.textureWidth, sw.textureHeight, sw.textureData == nil)
+	}
+	wantTexels := []byte{
+		0xFF, 0x00, 0x00, 0xFF,
+		0x00, 0xFF, 0x00, 0xFF,
+		0x00, 0x00, 0xFF, 0xFF,
+		0xFF, 0xFF, 0xFF, 0xFF,
+	}
+	if !slices.Equal(sw.textureData[:len(wantTexels)], wantTexels) {
+		t.Fatalf("uploaded texture bytes = % X, want % X", sw.textureData[:len(wantTexels)], wantTexels)
+	}
+	frame, width, _ := voodooFrameForTest(t, v)
+	p := voodooPixelForTest(t, frame, width, 320, 100)
+	if p[0] <= 80 && p[1] <= 80 && p[2] <= 80 {
+		t.Fatalf("textured triangle top sample = %02X %02X %02X, want a visible texture texel", p[0], p[1], p[2])
+	}
+}
+
+func TestRefmanCh9LinearApertureInspectExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM VOODOO PIXEL INSPECT
+20 VOODOO ON
+30 VOODOO DIM 320,200
+40 VOODOO PIXEL 10,5,42
+50 PRINT PEEK(&H000D1928)`
+	out, h, _ := execStmtTestWithVoodoo(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if !strings.Contains(out, "42") {
+		t.Fatalf("linear aperture output = %q, want 42", out)
+	}
+	if got := readBusMem32(h, 0x000D1928); got != 42 {
+		t.Fatalf("linear aperture word = %d, want 42", got)
+	}
+}
+
+func TestRefmanCh9PipelineFlagsExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM VOODOO PIPELINE FLAGS
+20 VOODOO ON
+30 VOODOO DIM 640,480
+40 POKE &H000F8110,&H00048202
+50 VOODOO CLEAR &HFF202020
+60 VOODOO CHROMAKEY COLOR 0,255,0
+70 VOODOO CHROMAKEY ON
+80 VOODOO DITHER ON
+90 VOODOO FOG COLOR 40,40,80
+100 VOODOO FOG ON
+110 POKE &H000F810C,&H00005110
+120 VERTEX A 320,80
+130 VERTEX B 540,390
+140 VERTEX C 100,390
+150 VOODOO TRICOLOR 0,4096,0,4096
+160 VOODOO TRIDEPTH 3000,0,0
+170 TRIANGLE
+180 VOODOO CHROMAKEY OFF
+190 VERTEX A 330,110
+200 VERTEX B 520,360
+210 VERTEX C 140,360
+220 VOODOO TRICOLOR 4096,0,4096,2048
+230 VOODOO TRIDEPTH 1800,0,0
+240 TRIANGLE
+250 VOODOO SWAP`
+	out, h, v := execStmtTestWithVoodoo(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem32(h, VOODOO_CHROMA_KEY); got != 0x0000FF00 {
+		t.Fatalf("CHROMA_KEY = %#08x, want 0x0000FF00", got)
+	}
+	if got := readBusMem32(h, VOODOO_FOG_COLOR); got != 0x00502828 {
+		t.Fatalf("FOG_COLOR = %#08x, want 0x00502828", got)
+	}
+	if got := readBusMem32(h, VOODOO_FOG_MODE); got&VOODOO_FOG_ENABLE == 0 {
+		t.Fatalf("FOG_MODE = %#08x, want fog enable set", got)
+	}
+	if got := readBusMem32(h, VOODOO_ALPHA_MODE); got != 0x00005110 {
+		t.Fatalf("ALPHA_MODE = %#08x, want 0x00005110", got)
+	}
+	if got := readBusMem32(h, VOODOO_FBZ_MODE); got&VOODOO_FBZ_DITHER == 0 || got&VOODOO_FBZ_ALPHA_PLANES == 0 || got&VOODOO_FBZ_CHROMAKEY != 0 {
+		t.Fatalf("FBZ_MODE = %#08x, want dither and alpha planes set with chroma key cleared", got)
+	}
+	frame, width, _ := voodooFrameForTest(t, v)
+	p := voodooPixelForTest(t, frame, width, 330, 210)
+	if p[0] <= 0x30 || p[2] <= 0x30 {
+		t.Fatalf("pipeline sample = %02X %02X %02X, want visible fogged magenta", p[0], p[1], p[2])
+	}
+}
+
+func TestRefmanCh10VGATileBannerExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	var vga *VGAEngine
+	program := `10 REM VGA TILE BANNER
+20 SCREEN 3
+30 COLOR 15,1
+40 CLS
+50 DATA 86,71,65,32,84,73,76,69
+60 FOR I=0 TO 7
+70 READ C
+80 A=&H000B8000+(10*80+36+I)*2
+90 POKE8 A,C
+100 POKE8 A+1,&H1E
+110 NEXT I`
+	out, _ := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		vga = NewVGAEngine(h.bus)
+		h.bus.MapIO(VGA_BASE, VGA_REG_END, vga.HandleRead, vga.HandleWrite)
+		h.bus.MapIO(VGA_VRAM_WINDOW, VGA_VRAM_WINDOW+VGA_VRAM_SIZE-1, vga.HandleVRAMRead, vga.HandleVRAMWrite)
+		h.bus.MapIO(VGA_TEXT_WINDOW, VGA_TEXT_WINDOW+VGA_TEXT_SIZE-1, vga.HandleTextRead, vga.HandleTextWrite)
+	})
+	requireNoBasicError(t, out)
+
+	base := VGA_TEXT_WINDOW + uint32((10*80+36)*2)
+	want := []byte("VGA TILE")
+	for i, ch := range want {
+		addr := base + uint32(i*2)
+		if got := byte(vga.HandleTextRead(addr)); got != ch {
+			t.Fatalf("VGA banner char %d = %q, want %q", i, got, ch)
+		}
+		if got := byte(vga.HandleTextRead(addr + 1)); got != 0x1E {
+			t.Fatalf("VGA banner attr %d = 0x%02X, want 0x1E", i, got)
+		}
+	}
+}
+
+func TestRefmanCh10TEDCharacterGridExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	var ted *TEDVideoEngine
+	program := `10 REM TED CHARACTER GRID
+20 TED ON
+30 POKE &H000F0F20,&H18
+40 POKE &H000F0F24,&H08
+50 POKE &H000F0F30,&H06
+60 POKE &H000F0F40,&H5E
+70 FOR I=0 TO 999
+80 POKE8 &H000F3000+I,32
+90 POKE8 &H000F3400+I,&H71
+100 NEXT I
+110 T$="TED GRID"
+120 FOR I=1 TO LEN(T$)
+130 A=&H000F3000+12*40+16+I
+140 C=&H000F3400+12*40+16+I
+150 POKE8 A,ASC(MID$(T$,I,1))
+160 POKE8 C,&H10+I
+170 NEXT I`
+	out, _ := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		ted = NewTEDVideoEngine(h.bus)
+		h.bus.MapIO(TED_VIDEO_BASE, TED_VIDEO_END, ted.HandleRead, ted.HandleWrite)
+		h.bus.MapIO(TED_V_VRAM_BASE, TED_V_VRAM_BASE+TED_V_VRAM_SIZE-1, ted.HandleBusVRAMRead, ted.HandleBusVRAMWrite)
+	})
+	requireNoBasicError(t, out)
+
+	if got := ted.HandleRead(TED_V_ENABLE); got == 0 {
+		t.Fatal("TED character grid example did not enable TED video")
+	}
+	cell := uint16(12*40 + 17)
+	if got := ted.HandleVRAMRead(cell); got != 'T' {
+		t.Fatalf("TED message first char = 0x%02X, want 'T'", got)
+	}
+	if got := ted.HandleVRAMRead(TED_V_MATRIX_SIZE + cell); got != 0x11 {
+		t.Fatalf("TED message first colour = 0x%02X, want 0x11", got)
+	}
+	if got := ted.HandleVRAMRead(0); got != 32 {
+		t.Fatalf("TED blank cell = 0x%02X, want space", got)
+	}
+}
+
+func TestRefmanCh10ANTICCheckerboardTilesExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	var antic *ANTICEngine
+	program := `10 REM ANTIC CHECKERBOARD TILES
+20 DL=&H0200:SCR=&H0300:CH=&H0800
+30 FOR R=0 TO 7
+40 POKE8 CH+8+R,&HFF
+50 NEXT R
+60 POKE8 DL+0,&H42
+70 POKE8 DL+1,SCR AND 255
+80 POKE8 DL+2,INT(SCR/256)
+90 FOR I=0 TO 22
+100 POKE8 DL+3+I,2
+110 NEXT I
+120 POKE8 DL+26,&H41
+130 POKE8 DL+27,DL AND 255
+140 POKE8 DL+28,INT(DL/256)
+150 FOR Y=0 TO 23
+160 FOR X=0 TO 39
+170 POKE8 SCR+Y*40+X,(X+Y) AND 1
+180 NEXT X
+190 NEXT Y
+200 ANTIC CHBASE INT(CH/256)
+210 GTIA COLOR 0,&H04
+220 GTIA COLOR 1,&H9A
+230 GTIA COLOR 4,&H00
+240 ANTIC DLIST DL
+250 ANTIC MODE &H22
+260 ANTIC ON`
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		antic = NewANTICEngine(h.bus)
+		h.bus.MapIO(ANTIC_BASE, ANTIC_END, antic.HandleRead, antic.HandleWrite)
+		h.bus.MapIO(GTIA_BASE, GTIA_END, antic.HandleRead, antic.HandleWrite)
+	})
+	requireNoBasicError(t, out)
+
+	if got := readBusMem8(h, 0x0300); got != 0 {
+		t.Fatalf("ANTIC checkerboard SCR[0] = 0x%02X, want 0", got)
+	}
+	if got := readBusMem8(h, 0x0301); got != 1 {
+		t.Fatalf("ANTIC checkerboard SCR[1] = 0x%02X, want 1", got)
+	}
+	frame := antic.RenderFrame(nil)
+	if got, want := anticTestPixel(frame, ANTIC_BORDER_LEFT, ANTIC_BORDER_TOP), anticRGBA(0x04); got != want {
+		t.Fatalf("ANTIC checkerboard first cell pixel=%v, want %v", got, want)
+	}
+	if got, want := anticTestPixel(frame, ANTIC_BORDER_LEFT+8, ANTIC_BORDER_TOP), anticRGBA(0x9A); got != want {
+		t.Fatalf("ANTIC checkerboard second cell pixel=%v, want %v", got, want)
+	}
+}
+
+func TestRefmanCh10ULAAttributeTilesExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM ULA ATTRIBUTE TILES
+20 ULA ON
+30 ULA CLS &H00
+40 FOR Y=0 TO 23
+50 FOR X=0 TO 31
+60 A=((X+Y) AND 7)+64
+70 ULA ATTR X,Y,A
+80 NEXT X
+90 NEXT Y
+100 FOR I=0 TO 191
+110 ULA PLOT I,I
+120 ULA PLOT 255-I,I
+130 NEXT I`
+	out, _, ula := execStmtTestWithULA(t, asmBin, program)
+	requireNoBasicError(t, out)
+
+	if got := ula.HandleVRAMRead(ULA_ATTR_OFFSET); got != 0x40 {
+		t.Fatalf("ULA first attribute = 0x%02X, want 0x40", got)
+	}
+	if got := ula.HandleVRAMRead(ULA_ATTR_OFFSET + 1); got != 0x41 {
+		t.Fatalf("ULA second attribute = 0x%02X, want 0x41", got)
+	}
+	frame := ula.RenderFrame()
+	if got, want := ulaTestPixel(frame, ULA_BORDER_LEFT, ULA_BORDER_TOP), ulaRGBA(0, true); got != want {
+		t.Fatalf("ULA diagonal pixel=%v, want %v", got, want)
+	}
+}
+
+func TestRefmanCh10GTIAPlayerMissileExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	var antic *ANTICEngine
+	program := `10 REM GTIA PLAYER AND MISSILE
+20 DL=&H0200:SCR=&H0300:CH=&H0800
+30 FOR R=0 TO 7
+40 POKE8 CH+8+R,&HFF
+50 NEXT R
+60 POKE8 DL+0,&H42
+70 POKE8 DL+1,SCR AND 255
+80 POKE8 DL+2,INT(SCR/256)
+90 FOR I=0 TO 22
+100 POKE8 DL+3+I,2
+110 NEXT I
+120 POKE8 DL+26,&H41
+130 POKE8 DL+27,DL AND 255
+140 POKE8 DL+28,INT(DL/256)
+150 FOR Y=0 TO 23
+160 FOR X=0 TO 39
+170 POKE8 SCR+Y*40+X,(X+Y) AND 1
+180 NEXT X
+190 NEXT Y
+200 ANTIC CHBASE INT(CH/256)
+210 GTIA COLOR 0,&H04
+220 GTIA COLOR 1,&H9A
+230 GTIA COLOR 4,&H00
+240 GTIA COLOR 5,&H46
+250 GTIA COLOR 7,&HCE
+260 GTIA GRACTL 3
+270 GTIA PLAYER 0,110,1
+280 GTIA MISSILE 2,190
+290 FOR Y=0 TO 191
+300 GTIA GRAFP 0,&H3C
+310 GTIA GRAFM 4
+320 POKE &H000F2120,0
+330 NEXT Y
+340 ANTIC DLIST DL
+350 ANTIC MODE &H2E
+360 ANTIC ON`
+	out, _ := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		antic = NewANTICEngine(h.bus)
+		h.bus.MapIO(ANTIC_BASE, ANTIC_END, antic.HandleRead, antic.HandleWrite)
+		h.bus.MapIO(GTIA_BASE, GTIA_END, antic.HandleRead, antic.HandleWrite)
+	})
+	requireNoBasicError(t, out)
+
+	frame := antic.RenderFrame(nil)
+	playerX := ANTIC_BORDER_LEFT + 110 - 48 + 2*2
+	missileX := ANTIC_BORDER_LEFT + 190 - 48
+	if got, want := anticTestPixel(frame, playerX, ANTIC_BORDER_TOP), anticRGBA(0x46); got != want {
+		t.Fatalf("GTIA player pixel=%v, want %v", got, want)
+	}
+	if got, want := anticTestPixel(frame, missileX, ANTIC_BORDER_TOP), anticRGBA(0xCE); got != want {
+		t.Fatalf("GTIA missile pixel=%v, want %v", got, want)
+	}
+}
+
+func TestRefmanCh10VoodooTexturedQuadExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM VOODOO TEXTURED QUAD
+20 VOODOO ON
+30 VOODOO DIM 640,480
+40 POKE &H000F8110,&H00008200
+50 VOODOO CLEAR &HFF101010
+60 POKE &H000D0000,&HFF0000FF
+70 POKE &H000D0004,&HFF00FF00
+80 POKE &H000D0008,&HFFFF0000
+90 POKE &H000D000C,&HFFFFFFFF
+100 TEXTURE DIM 2,2
+110 TEXTURE MODE &H0A61
+120 TEXTURE UPLOAD
+130 TEXTURE ON
+140 VOODOO COMBINE 1
+150 VERTEX A 160,120
+160 VERTEX B 224,120
+170 VERTEX C 160,184
+180 POKE &H000F8088,0
+190 VOODOO TRICOLOR 4096,4096,4096,4096
+200 VOODOO TRIUV 0,0,0,0,0,0
+210 POKE &H000F8088,1
+220 VOODOO TRICOLOR 4096,4096,4096,4096
+230 VOODOO TRIUV 262144,0,0,0,0,0
+240 POKE &H000F8088,2
+250 VOODOO TRICOLOR 4096,4096,4096,4096
+260 VOODOO TRIUV 0,262144,0,0,0,0
+270 TRIANGLE
+280 VERTEX A 224,120
+290 VERTEX B 224,184
+300 VERTEX C 160,184
+310 POKE &H000F8088,0
+320 VOODOO TRICOLOR 4096,4096,4096,4096
+330 VOODOO TRIUV 262144,0,0,0,0,0
+340 POKE &H000F8088,1
+350 VOODOO TRICOLOR 4096,4096,4096,4096
+360 VOODOO TRIUV 262144,262144,0,0,0,0
+370 POKE &H000F8088,2
+380 VOODOO TRICOLOR 4096,4096,4096,4096
+390 VOODOO TRIUV 0,262144,0,0,0,0
+400 TRIANGLE
+410 VOODOO SWAP`
+	out, _, v := execStmtTestWithVoodoo(t, asmBin, program)
+	requireNoBasicError(t, out)
+	frame, width, _ := voodooFrameForTest(t, v)
+	p := voodooPixelForTest(t, frame, width, 180, 140)
+	if p[0] <= 0x20 && p[1] <= 0x20 && p[2] <= 0x20 {
+		t.Fatalf("Voodoo textured quad sample = %02X %02X %02X, want visible texel", p[0], p[1], p[2])
+	}
+}
+
+func TestRefmanCh11FirstAudioSetupExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	sound := newTestSoundChip()
+	psg := NewPSGEngine(sound, SAMPLE_RATE)
+	pokey := NewPOKEYEngine(sound, SAMPLE_RATE)
+	program := `10 REM FIRST AUDIO SETUP
+20 POKE &H000F0800,1
+30 PSG 0,142,12
+40 POKEY 1,96,&HA8
+50 SOUND 2,262,180,1,128
+60 SOUND 3,330,140,2
+70 ENVELOPE 2,4,8,200,12
+80 ENVELOPE 3,4,8,200,12
+90 GATE 2, ON
+100 GATE 3, ON
+110 SOUND FILTER 190,80,1
+120 SOUND REVERB 90,120`
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		sound.AttachBus(h.bus)
+		psg.AttachBusMemory(h.bus.GetMemory())
+		pokey.AttachBusMemory(h.bus.GetMemory())
+		h.bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
+		h.bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterWrite8)
+		h.bus.MapIO(PSG_BASE, PSG_END, psg.HandleRead, psg.HandleWrite)
+		h.bus.MapIOByte(PSG_BASE, PSG_END, psg.HandleWrite8)
+		h.bus.MapIOWideWriteFanout(PSG_BASE, PSG_END)
+		h.bus.MapIO(POKEY_BASE, POKEY_END, pokey.HandleRead, pokey.HandleWrite)
+		h.bus.MapIOByte(POKEY_BASE, POKEY_END, pokey.HandleWrite8)
+		h.bus.MapIOWideWriteFanout(POKEY_BASE, POKEY_END)
+	})
+	requireNoBasicError(t, out)
+	mem := h.bus.GetMemory()
+	raw32 := func(addr uint32) uint32 {
+		i := int(addr)
+		return binary.LittleEndian.Uint32(mem[i : i+4])
+	}
+
+	if got := readBusMem32(h, AUDIO_CTRL); got&1 == 0 {
+		t.Fatalf("AUDIO_CTRL = 0x%X, want bit 0 set", got)
+	}
+	ch2 := uint32(FLEX_CH0_BASE + 2*FLEX_CH_STRIDE)
+	if got := raw32(ch2 + FLEX_OFF_FREQ); got != 262*256 {
+		t.Fatalf("SoundChip ch2 frequency = %d, want %d", got, 262*256)
+	}
+	if got := raw32(ch2 + FLEX_OFF_VOL); got != 180 {
+		t.Fatalf("SoundChip ch2 volume = %d, want 180", got)
+	}
+	if got := raw32(ch2 + FLEX_OFF_DUTY); got != 128 {
+		t.Fatalf("SoundChip ch2 duty = %d, want 128", got)
+	}
+	if got := raw32(ch2 + FLEX_OFF_CTRL); got&2 == 0 {
+		t.Fatalf("SoundChip ch2 gate CTRL = 0x%X, want gate bit set", got)
+	}
+	ch3 := uint32(FLEX_CH0_BASE + 3*FLEX_CH_STRIDE)
+	if got := raw32(ch3 + FLEX_OFF_FREQ); got != 330*256 {
+		t.Fatalf("SoundChip ch3 frequency = %d, want %d", got, 330*256)
+	}
+	if got := raw32(ch3 + FLEX_OFF_VOL); got != 140 {
+		t.Fatalf("SoundChip ch3 volume = %d, want 140", got)
+	}
+	if got := raw32(ch3 + FLEX_OFF_CTRL); got&2 == 0 {
+		t.Fatalf("SoundChip ch3 gate CTRL = 0x%X, want gate bit set", got)
+	}
+	if got := readBusMem8(h, PSG_BASE); got != 142 {
+		t.Fatalf("PSG tone low byte = %d, want 142", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+8); got != 12 {
+		t.Fatalf("PSG level = %d, want 12", got)
+	}
+	if got := readBusMem8(h, POKEY_AUDF1); got != 96 {
+		t.Fatalf("POKEY AUDF1 = %d, want 96", got)
+	}
+	if got := readBusMem8(h, POKEY_AUDC1); got != 0xA8 {
+		t.Fatalf("POKEY AUDC1 = 0x%02X, want 0xA8", got)
+	}
+	if got := raw32(FILTER_CUTOFF); got != 190 {
+		t.Fatalf("FILTER_CUTOFF = %d, want 190", got)
+	}
+	if got := raw32(FILTER_RESONANCE); got != 80 {
+		t.Fatalf("FILTER_RESONANCE = %d, want 80", got)
+	}
+	if got := raw32(FILTER_TYPE); got != 1 {
+		t.Fatalf("FILTER_TYPE = %d, want 1", got)
+	}
+	if got := raw32(REVERB_MIX); got != 90 {
+		t.Fatalf("REVERB_MIX = %d, want 90", got)
+	}
+	if got := raw32(REVERB_DECAY); got != 120 {
+		t.Fatalf("REVERB_DECAY = %d, want 120", got)
+	}
+}
+
+func execStmtTestWithSoundChip(t *testing.T, asmBin string, program string, withSFX bool) (string, *ehbasicTestHarness, *SoundChip) {
+	t.Helper()
+	sound := newTestSoundChip()
+	if withSFX {
+		sound.sfx = NewSFXTrigger()
+	}
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		sound.AttachBus(h.bus)
+		h.bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
+		h.bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterWrite8)
+		if withSFX {
+			h.bus.MapIO(IE_SFX_REGION_BASE, IE_SFX_REGION_END, sound.sfx.HandleRead, sound.sfx.HandleWrite)
+			h.bus.MapIOByte(IE_SFX_REGION_BASE, IE_SFX_REGION_END, sound.sfx.HandleWrite8)
+		}
+	})
+	return out, h, sound
+}
+
+func TestRefmanCh12SoundChipFirstNoteExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SOUNDCHIP FIRST NOTE
+20 POKE &H000F0800,1
+30 ENVELOPE 0,50,100,200,100
+40 SOUND 0,440,200,0,128
+50 GATE 0, ON`
+	out, h, _ := execStmtTestWithSoundChip(t, asmBin, program, false)
+	requireNoBasicError(t, out)
+
+	if got := readRawBusMem32(h, AUDIO_CTRL); got != 1 {
+		t.Fatalf("AUDIO_CTRL = %d, want 1", got)
+	}
+	if got := readRawBusMem32(h, FLEX_CH0_BASE+FLEX_OFF_FREQ); got != 440*256 {
+		t.Fatalf("ch0 FREQ = %d, want %d", got, 440*256)
+	}
+	if got := readRawBusMem32(h, FLEX_CH0_BASE+FLEX_OFF_VOL); got != 200 {
+		t.Fatalf("ch0 VOL = %d, want 200", got)
+	}
+	if got := readRawBusMem32(h, FLEX_CH0_BASE+FLEX_OFF_WAVE_TYPE); got != 0 {
+		t.Fatalf("ch0 WAVE_TYPE = %d, want 0", got)
+	}
+	if got := readRawBusMem32(h, FLEX_CH0_BASE+FLEX_OFF_DUTY); got != 128 {
+		t.Fatalf("ch0 DUTY = %d, want 128", got)
+	}
+	if got := readRawBusMem32(h, FLEX_CH0_BASE+FLEX_OFF_ATK); got != 50 {
+		t.Fatalf("ch0 ATK = %d, want 50", got)
+	}
+	if got := readRawBusMem32(h, FLEX_CH0_BASE+FLEX_OFF_CTRL); got&2 == 0 {
+		t.Fatalf("ch0 CTRL = 0x%X, want gate bit set", got)
+	}
+}
+
+func TestRefmanCh12SoundChipNoiseBurstExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SOUNDCHIP NOISE BURST
+20 POKE &H000F0800,1
+30 SOUND 2,880,180,3
+40 SOUND NOISE 2,2
+50 ENVELOPE 2,1,40,0,40
+60 GATE 2, ON`
+	out, h, _ := execStmtTestWithSoundChip(t, asmBin, program, false)
+	requireNoBasicError(t, out)
+
+	base := uint32(FLEX_CH0_BASE + 2*FLEX_CH_STRIDE)
+	if got := readRawBusMem32(h, base+FLEX_OFF_FREQ); got != 880*256 {
+		t.Fatalf("ch2 FREQ = %d, want %d", got, 880*256)
+	}
+	if got := readRawBusMem32(h, base+FLEX_OFF_WAVE_TYPE); got != 3 {
+		t.Fatalf("ch2 WAVE_TYPE = %d, want 3", got)
+	}
+	if got := readRawBusMem32(h, base+FLEX_OFF_NOISEMODE); got != 2 {
+		t.Fatalf("ch2 NOISEMODE = %d, want 2", got)
+	}
+	if got := readRawBusMem32(h, base+FLEX_OFF_SUS); got != 0 {
+		t.Fatalf("ch2 SUS = %d, want 0", got)
+	}
+	if got := readRawBusMem32(h, base+FLEX_OFF_CTRL); got&2 == 0 {
+		t.Fatalf("ch2 CTRL = 0x%X, want gate bit set", got)
+	}
+}
+
+func TestRefmanCh12SoundChipSweepExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SOUNDCHIP SWEEP
+20 POKE &H000F0800,1
+30 SOUND 0,220,200,4
+40 SOUND SWEEP 0,1,7,3
+50 GATE 0, ON`
+	out, h, _ := execStmtTestWithSoundChip(t, asmBin, program, false)
+	requireNoBasicError(t, out)
+
+	if got := readRawBusMem32(h, FLEX_CH0_BASE+FLEX_OFF_WAVE_TYPE); got != 4 {
+		t.Fatalf("ch0 WAVE_TYPE = %d, want 4", got)
+	}
+	if got := readRawBusMem32(h, FLEX_CH0_BASE+FLEX_OFF_SWEEP); got != 0xF3 {
+		t.Fatalf("ch0 SWEEP = 0x%X, want 0xF3", got)
+	}
+}
+
+func TestRefmanCh12RingAndSyncExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM RING AND SYNC
+20 POKE &H000F0800,1
+30 SOUND 0,220,180,1
+40 SOUND 1,440,180,0,80
+50 SOUND RINGMOD 1,0
+60 SOUND SYNC 1,0
+70 GATE 0, ON
+80 GATE 1, ON`
+	out, h, sound := execStmtTestWithSoundChip(t, asmBin, program, false)
+	requireNoBasicError(t, out)
+
+	if got := readRawBusMem32(h, RING_MOD_SOURCE_CH1); got != 0 {
+		t.Fatalf("RING_MOD_SOURCE_CH1 = %d, want 0", got)
+	}
+	if got := readRawBusMem32(h, SYNC_SOURCE_CH1); got != 0 {
+		t.Fatalf("SYNC_SOURCE_CH1 = %d, want 0", got)
+	}
+	if sound.channels[1].ringModSource != sound.channels[0] {
+		t.Fatal("channel 1 ring modulation source was not channel 0")
+	}
+	if sound.channels[1].syncSource != sound.channels[0] {
+		t.Fatal("channel 1 sync source was not channel 0")
+	}
+}
+
+func TestRefmanCh12ManualDACClickExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM MANUAL DAC CLICK
+20 POKE &H000F0800,1
+30 POKE &H000F0A84,220
+40 POKE &H000F0A88,1
+50 POKE &H000F0ABC,127
+60 POKE &H000F0ABC,128
+70 POKE &H000F0ABC,0`
+	out, h, sound := execStmtTestWithSoundChip(t, asmBin, program, false)
+	requireNoBasicError(t, out)
+
+	if got := readRawBusMem32(h, FLEX_CH0_BASE+FLEX_OFF_VOL); got != 220 {
+		t.Fatalf("ch0 VOL = %d, want 220", got)
+	}
+	if got := readRawBusMem32(h, FLEX_CH0_BASE+FLEX_OFF_CTRL); got != 1 {
+		t.Fatalf("ch0 CTRL = %d, want 1", got)
+	}
+	if got := readRawBusMem32(h, FLEX_CH0_BASE+FLEX_OFF_DAC); got != 0 {
+		t.Fatalf("ch0 DAC = %d, want final value 0", got)
+	}
+	if !sound.channels[0].dacMode {
+		t.Fatal("DAC writes did not enable DAC mode")
+	}
+}
+
+func TestRefmanCh12SFXMemorySampleExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SFX MEMORY SAMPLE
+20 POKE &H000F0800,1
+30 BASE=&H00600000
+40 FOR I=0 TO 63
+50 V=80
+60 IF (I AND 8)=0 THEN V=200
+70 POKE8 BASE+I,V
+80 NEXT I
+90 POKE &H000F0E80,BASE
+100 POKE &H000F0E84,64
+110 POKE &H000F0E90,11025
+120 POKE &H000F0E94,60000
+130 POKE &H000F0E98,1
+140 POKE &H000F0E9C,1
+150 PRINT PEEK(&H000F0E9C) AND 1`
+	out, h, _ := execStmtTestWithSoundChip(t, asmBin, program, true)
+	requireNoBasicError(t, out)
+	if !strings.Contains(out, "1") {
+		t.Fatalf("SFX example output = %q, want status bit 1", out)
+	}
+	if got := readBusMem32(h, IE_SFX_CH_BASE+SFX_PTR); got != 0x00600000 {
+		t.Fatalf("SFX PTR = 0x%X, want 0x00600000", got)
+	}
+	if got := readBusMem32(h, IE_SFX_CH_BASE+SFX_LEN); got != 64 {
+		t.Fatalf("SFX LEN = %d, want 64", got)
+	}
+	if got := readBusMem32(h, IE_SFX_CH_BASE+SFX_CTRL); got&SFX_STATUS_PLAYING == 0 {
+		t.Fatalf("SFX CTRL status = 0x%X, want playing bit", got)
+	}
+}
+
 // =============================================================================
 // PSG tests
 // =============================================================================
 
 func TestHW_PSG_Channel(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// PSG ch, freq, vol → writes freq to PSG_BASE+ch*2, vol to PSG_BASE+ch*2+1
-	_, h := execStmtTestWithBus(t, asmBin, "10 PSG 0, 200, 15")
-	freq := readBusMem8(h, 0xF0C00) // PSG_BASE + 0*2
-	vol := readBusMem8(h, 0xF0C01)  // PSG_BASE + 0*2 + 1
-	if freq != 200 {
-		t.Fatalf("PSG ch0: freq expected 200, got %d", freq)
+	// PSG ch, divider, vol writes the 12-bit divider pair and the AY level register.
+	_, h := execStmtTestWithBus(t, asmBin, "10 PSG 0, 500, 15")
+	freqLo := readBusMem8(h, 0xF0C00) // PSG_BASE + 0*2
+	freqHi := readBusMem8(h, 0xF0C01) // PSG_BASE + 0*2 + 1
+	vol := readBusMem8(h, 0xF0C08)    // PSG_BASE + 8 + channel
+	if freqLo != 0xF4 {
+		t.Fatalf("PSG ch0: freq low expected 0xF4, got 0x%02X", freqLo)
+	}
+	if freqHi != 0x01 {
+		t.Fatalf("PSG ch0: freq high expected 0x01, got 0x%02X", freqHi)
 	}
 	if vol != 15 {
 		t.Fatalf("PSG ch0: vol expected 15, got %d", vol)
@@ -4330,6 +5588,171 @@ func TestHW_PSG_Envelope(t *testing.T) {
 	}
 }
 
+func execStmtTestWithPSG(t *testing.T, asmBin string, program string) (string, *ehbasicTestHarness, *PSGEngine) {
+	t.Helper()
+	sound := newTestSoundChip()
+	psg := NewPSGEngine(sound, SAMPLE_RATE)
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		sound.AttachBus(h.bus)
+		psg.AttachBusMemory(h.bus.GetMemory())
+		h.bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
+		h.bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterWrite8)
+		h.bus.MapIO(PSG_BASE, PSG_END, psg.HandleRead, psg.HandleWrite)
+		h.bus.MapIOByte(PSG_BASE, PSG_END, psg.HandleWrite8)
+		h.bus.MapIOWideWriteFanout(PSG_BASE, PSG_END)
+		h.bus.MapIO(PSG_PLUS_CTRL, PSG_PLUS_CTRL, psg.HandlePSGPlusRead, psg.HandlePSGPlusWrite)
+		h.bus.MapIOByte(PSG_PLUS_CTRL, PSG_PLUS_CTRL, func(addr uint32, value uint8) {
+			psg.HandlePSGPlusWrite(addr, uint32(value))
+		})
+	})
+	return out, h, psg
+}
+
+func TestRefmanCh13PSGFirstToneExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM PSG FIRST TONE
+20 POKE &H000F0800,1
+30 PSG MIXER &H3E
+40 PSG 0,284,15`
+	out, h, _ := execStmtTestWithPSG(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readRawBusMem32(h, AUDIO_CTRL); got != 1 {
+		t.Fatalf("AUDIO_CTRL = %d, want 1", got)
+	}
+	if got := readBusMem8(h, PSG_BASE); got != 28 {
+		t.Fatalf("PSG reg0 = %d, want 28", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+1); got != 1 {
+		t.Fatalf("PSG reg1 = %d, want 1", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+7); got != 0x3E {
+		t.Fatalf("PSG mixer = 0x%02X, want 0x3E", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+8); got != 15 {
+		t.Fatalf("PSG level A = %d, want 15", got)
+	}
+}
+
+func TestRefmanCh13PSGRawTonePeek8Example(t *testing.T) {
+	asmBin := buildAssembler(t)
+	out := execStmtTest(t, asmBin, `10 POKE &H000F0800,1
+20 REM SPLIT THE 12 BIT DIVIDER
+30 D=284
+40 POKE8 &H000F0C00,D AND 255
+50 POKE8 &H000F0C01,INT(D/256) AND 15
+60 REM LEVEL THEN MIXER
+70 POKE8 &H000F0C08,15
+80 POKE8 &H000F0C07,&H3E
+90 PRINT PEEK8(&H000F0C00)
+100 PRINT PEEK8(&H000F0C01)
+110 PRINT PEEK8(&H000F0C08)`)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"28", "1", "15"}) {
+		t.Fatalf("PSG raw tone PEEK8 example: expected 28, 1, 15; got %q", out)
+	}
+}
+
+func TestRefmanCh13PSGThreeVoicesExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM PSG THREE VOICES
+20 POKE &H000F0800,1
+30 REM OPEN TONE A, B, AND C
+40 PSG MIXER &H38
+50 REM THREE RELATED DIVIDERS
+60 PSG 0,284,14
+70 PSG 1,225,11
+80 PSG 2,190,9`
+	out, h, _ := execStmtTestWithPSG(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem8(h, PSG_BASE+7); got != 0x38 {
+		t.Fatalf("PSG mixer = 0x%02X, want 0x38", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+8); got != 14 {
+		t.Fatalf("PSG level A = %d, want 14", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+9); got != 11 {
+		t.Fatalf("PSG level B = %d, want 11", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+10); got != 9 {
+		t.Fatalf("PSG level C = %d, want 9", got)
+	}
+}
+
+func TestRefmanCh13PSGPulsingNoiseExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM PSG PULSING NOISE
+20 POKE &H000F0800,1
+30 REM NOISE PERIOD AND ROUTE
+40 POKE8 &H000F0C06,5
+50 PSG MIXER &H37
+60 REM ENVELOPE CONTROLS THE LEVEL
+70 POKE8 &H000F0C08,&H10
+80 PSG ENVELOPE 14,500`
+	out, h, _ := execStmtTestWithPSG(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem8(h, PSG_BASE+6); got != 5 {
+		t.Fatalf("PSG noise period = %d, want 5", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+7); got != 0x37 {
+		t.Fatalf("PSG mixer = 0x%02X, want 0x37", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+8); got != 0x10 {
+		t.Fatalf("PSG level A = 0x%02X, want 0x10", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+0x0D); got != 14 {
+		t.Fatalf("PSG envelope shape = %d, want 14", got)
+	}
+}
+
+func TestRefmanCh13PSGPlusCompareExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM COMPARE PSG PLUS
+20 POKE &H000F0800,1
+30 PSG MIXER &H3E
+40 PSG 0,284,15
+50 REM LISTEN TO THE PLAIN PSG FIRST
+60 FOR T=1 TO 3000
+70 NEXT T
+80 PSG PLUS ON
+90 PRINT PEEK8(&H000F0C20)
+100 REM NOW LISTEN TO THE ENHANCED PATH
+110 FOR T=1 TO 3000
+120 NEXT T
+130 PSG PLUS OFF
+140 PRINT PEEK8(&H000F0C20)`
+	out, h, psg := execStmtTestWithPSG(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"1", "0"}) {
+		t.Fatalf("PSG Plus compare output = %q, want 1 then 0", out)
+	}
+	if psg.PSGPlusEnabled() {
+		t.Fatal("PSG Plus still enabled after PSG PLUS OFF")
+	}
+	if got := readBusMem8(h, PSG_PLUS_CTRL); got != 0 {
+		t.Fatalf("PSG Plus readback = %d, want 0", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+7); got != 0x3E {
+		t.Fatalf("PSG Plus compare final mixer = 0x%02X, want 0x3E", got)
+	}
+}
+
+func TestRefmanCh13PSGMemoryPlaybackDoesNotStopImmediately(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM PSG MEMORY PLAYBACK
+20 REM START A BUFFER ALREADY IN MEMORY
+30 PSG PLAY &H00008000,2048
+40 S=PSG STATUS
+50 PRINT S
+60 IF S AND 2 THEN PRINT "PSG ERROR"`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem32(h, PSG_PLAY_CTRL); got != 1 {
+		t.Fatalf("PSG PLAY CTRL = %d, want 1 start command", got)
+	}
+	if strings.Contains(out, "PSG ERROR") {
+		t.Fatalf("PSG memory playback example printed unexpected error: %q", out)
+	}
+}
+
 func TestHW_PSG_PlusOn(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 PSG PLUS ON")
@@ -4340,8 +5763,374 @@ func TestHW_PSG_PlusOn(t *testing.T) {
 }
 
 // =============================================================================
+// SN76489 tests
+// =============================================================================
+
+func execStmtTestWithSN(t *testing.T, asmBin string, program string) (string, *ehbasicTestHarness, *SoundChip, *SN76489Chip) {
+	t.Helper()
+	sound := newTestSoundChip()
+	sn := NewSN76489Chip(sound)
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		sound.AttachBus(h.bus)
+		h.bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
+		h.bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterWrite8)
+		h.bus.MapIO(SN_BASE, SN_END, sn.HandleRead, sn.HandleWrite)
+		h.bus.MapIOByte(SN_BASE, SN_END, sn.HandleWrite8)
+	})
+	return out, h, sound, sn
+}
+
+func TestRefmanCh14SNFirstToneExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SN FIRST TONE
+20 POKE &H000F0800,1
+30 REM LATCH CHANNEL 0 DIVIDER
+40 D=254
+50 POKE8 &H000F0C30,&H80+(D AND 15)
+60 POKE8 &H000F0C30,INT(D/16) AND 63
+70 REM ATTENUATION 0 IS LOUDEST
+80 POKE8 &H000F0C30,&H90`
+	out, _, _, sn := execStmtTestWithSN(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := snDivider(sn, 0); got != 254 {
+		t.Fatalf("SN ch0 divider = %d, want 254", got)
+	}
+	if got := snAtten(sn, 0); got != 0 {
+		t.Fatalf("SN ch0 attenuation = %d, want 0", got)
+	}
+	if got := snLastWritten(sn); got != 0x90 {
+		t.Fatalf("SN last byte = 0x%02X, want 0x90", got)
+	}
+}
+
+func TestRefmanCh14SNArpeggioExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SN ARPEGGIO
+20 POKE &H000F0800,1
+30 REM TURN CHANNEL 0 ON
+40 POKE8 &H000F0C30,&H90
+50 FOR I=0 TO 95
+60 REM CHOOSE ONE OF FOUR DIVIDERS
+70 N=I-INT(I/4)*4
+80 IF N=0 THEN D=254
+90 IF N=1 THEN D=201
+100 IF N=2 THEN D=169
+110 IF N=3 THEN D=127
+120 POKE8 &H000F0C30,&H80+(D AND 15)
+130 POKE8 &H000F0C30,INT(D/16) AND 63
+140 FOR Q=1 TO 40
+150 NEXT Q
+160 NEXT I
+170 POKE8 &H000F0C30,&H9F`
+	out, _, _, sn := execStmtTestWithSN(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := snDivider(sn, 0); got != 127 {
+		t.Fatalf("SN arpeggio final divider = %d, want 127", got)
+	}
+	if got := snAtten(sn, 0); got != 15 {
+		t.Fatalf("SN arpeggio final attenuation = %d, want 15", got)
+	}
+}
+
+func TestRefmanCh14SNNoiseHitExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SN NOISE HIT
+20 POKE &H000F0800,1
+30 REM 15 BIT WHITE NOISE
+40 POKE8 &H000F0C32,0
+50 POKE8 &H000F0C30,&HE4
+60 REM FADE BY RAISING ATTENUATION
+70 FOR A=0 TO 15
+80 POKE8 &H000F0C30,&HF0+A
+90 FOR Q=1 TO 40
+100 NEXT Q
+110 NEXT A`
+	out, _, _, sn := execStmtTestWithSN(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := sn.HandleRead(SN_PORT_MODE); got != SN76489_MODE_LFSR_15 {
+		t.Fatalf("SN mode = %d, want 15-bit", got)
+	}
+	if got := sn.noiseReg; got != 4 {
+		t.Fatalf("SN noise register = %d, want 4", got)
+	}
+	if got := snAtten(sn, 3); got != 15 {
+		t.Fatalf("SN noise attenuation = %d, want 15", got)
+	}
+}
+
+func TestRefmanCh14SNToneLockedNoiseExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SN TONE-LOCKED NOISE
+20 POKE &H000F0800,1
+30 REM CHANNEL 2 SUPPLIES THE CLOCK
+40 D=96
+50 POKE8 &H000F0C30,&HC0+(D AND 15)
+60 POKE8 &H000F0C30,INT(D/16) AND 63
+70 REM NOISE RATE 3 FOLLOWS CHANNEL 2
+80 POKE8 &H000F0C30,&HE7
+90 POKE8 &H000F0C30,&HF2
+100 FOR T=1 TO 3000
+110 NEXT T
+120 POKE8 &H000F0C30,&HFF`
+	out, _, _, sn := execStmtTestWithSN(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := snDivider(sn, 2); got != 96 {
+		t.Fatalf("SN channel 2 divider = %d, want 96", got)
+	}
+	if got := sn.noiseReg; got != 7 {
+		t.Fatalf("SN tone-locked noise register = %d, want 7", got)
+	}
+	if got := snAtten(sn, 3); got != 15 {
+		t.Fatalf("SN tone-locked final attenuation = %d, want 15", got)
+	}
+}
+
+// =============================================================================
 // SID tests
 // =============================================================================
+
+func execStmtTestWithSID(t *testing.T, asmBin string, program string) (string, *ehbasicTestHarness, *SIDEngine, *SIDEngine, *SIDEngine) {
+	t.Helper()
+	sound := newTestSoundChip()
+	sid := NewSIDEngine(sound, SAMPLE_RATE)
+	sid2 := NewSIDEngineMulti(sound, SAMPLE_RATE, 4, SID2_BASE, SID2_END)
+	sid3 := NewSIDEngineMulti(sound, SAMPLE_RATE, 7, SID3_BASE, SID3_END)
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		sound.AttachBus(h.bus)
+		h.bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
+		h.bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterWrite8)
+		h.bus.MapIO(SID_BASE, SID_END, sid.HandleRead, sid.HandleWrite)
+		h.bus.MapIOByte(SID_BASE, SID_END, sid.HandleWrite8)
+		h.bus.MapIO(SID2_BASE, SID2_END, sid2.HandleRead, sid2.HandleWrite)
+		h.bus.MapIOByte(SID2_BASE, SID2_END, sid2.HandleWrite8)
+		h.bus.MapIO(SID3_BASE, SID3_END, sid3.HandleRead, sid3.HandleWrite)
+		h.bus.MapIOByte(SID3_BASE, SID3_END, sid3.HandleWrite8)
+	})
+	return out, h, sid, sid2, sid3
+}
+
+func TestRefmanCh15SIDFirstPulseExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SID FIRST PULSE
+20 POKE &H000F0800,1
+30 SID VOLUME 15
+40 REM START A GATED PULSE
+50 SID VOICE 1,8582,2048,&H41,&H88,&HF4
+60 FOR T=1 TO 3000
+70 NEXT T
+80 REM CLEAR GATE TO RELEASE
+90 SID VOICE 1,8582,2048,&H40,&H88,&HF4`
+	out, _, sid, _, _ := execStmtTestWithSID(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := sid.HandleRead(SID_V1_FREQ_LO); got != 0x86 {
+		t.Fatalf("SID first pulse freq lo = 0x%02X, want 0x86", got)
+	}
+	if got := sid.HandleRead(SID_V1_FREQ_HI); got != 0x21 {
+		t.Fatalf("SID first pulse freq hi = 0x%02X, want 0x21", got)
+	}
+	if got := sid.HandleRead(SID_V1_PW_LO); got != 0 {
+		t.Fatalf("SID first pulse pw lo = 0x%02X, want 0", got)
+	}
+	if got := sid.HandleRead(SID_V1_PW_HI); got != 8 {
+		t.Fatalf("SID first pulse pw hi = 0x%02X, want 8", got)
+	}
+	if got := sid.HandleRead(SID_V1_CTRL); got != 0x40 {
+		t.Fatalf("SID first pulse final ctrl = 0x%02X, want 0x40", got)
+	}
+	if got := sid.HandleRead(SID_V1_AD); got != 0x88 {
+		t.Fatalf("SID first pulse AD = 0x%02X, want 0x88", got)
+	}
+	if got := sid.HandleRead(SID_V1_SR); got != 0xF4 {
+		t.Fatalf("SID first pulse SR = 0x%02X, want 0xF4", got)
+	}
+}
+
+func TestRefmanCh15SIDThreeVoicesExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SID THREE VOICES
+20 POKE &H000F0800,1
+30 SID VOLUME 15
+40 REM START PULSE, SAWTOOTH, TRIANGLE
+50 SID VOICE 1,4291,2048,&H41,&H48,&HF5
+60 SID VOICE 2,5407,1024,&H21,&H46,&HC5
+70 SID VOICE 3,6430,0,&H11,&H26,&HA8
+80 FOR T=1 TO 4000
+90 NEXT T
+100 REM RELEASE ALL THREE GATES
+110 SID VOICE 1,4291,2048,&H40,&H48,&HF5
+120 SID VOICE 2,5407,1024,&H20,&H46,&HC5
+130 SID VOICE 3,6430,0,&H10,&H26,&HA8`
+	out, _, sid, _, _ := execStmtTestWithSID(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := sid.HandleRead(SID_MODE_VOL) & 0x0F; got != 15 {
+		t.Fatalf("SID three voices volume = %d, want 15", got)
+	}
+	if got := sid.HandleRead(SID_V1_CTRL); got != 0x40 {
+		t.Fatalf("SID voice 1 final ctrl = 0x%02X, want 0x40", got)
+	}
+	if got := sid.HandleRead(SID_V2_CTRL); got != 0x20 {
+		t.Fatalf("SID voice 2 final ctrl = 0x%02X, want 0x20", got)
+	}
+	if got := sid.HandleRead(SID_V3_CTRL); got != 0x10 {
+		t.Fatalf("SID voice 3 final ctrl = 0x%02X, want 0x10", got)
+	}
+}
+
+func TestRefmanCh15SIDSyncRingLeadExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SID SYNC RING LEAD
+20 POKE &H000F0800,1
+30 SID VOLUME 15
+40 REM VOICE 1 IS THE MODULATION SOURCE
+50 SID VOICE 1,3200,0,&H21,&H44,&HF6
+60 SID VOICE 2,6400,0,&H17,&H44,&HF6
+70 REM SWEEP THE MODULATED VOICE
+80 FOR F=5200 TO 9000 STEP 160
+90 SID VOICE 2,F,0,&H17,&H44,&HF6
+100 FOR Q=1 TO 30
+110 NEXT Q
+120 NEXT F
+130 REM RELEASE SOURCE AND LEAD
+140 SID VOICE 1,3200,0,&H20,&H44,&HF6
+150 SID VOICE 2,6400,0,&H16,&H44,&HF6`
+	out, _, sid, _, _ := execStmtTestWithSID(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := sid.HandleRead(SID_V1_CTRL); got != 0x20 {
+		t.Fatalf("SID source final ctrl = 0x%02X, want 0x20", got)
+	}
+	if got := sid.HandleRead(SID_V2_CTRL); got != 0x16 {
+		t.Fatalf("SID sync/ring final ctrl = 0x%02X, want 0x16", got)
+	}
+	if got := sid.HandleRead(SID_V2_FREQ_LO); got != 0 {
+		t.Fatalf("SID sync/ring freq lo = 0x%02X, want 0", got)
+	}
+	if got := sid.HandleRead(SID_V2_FREQ_HI); got != 25 {
+		t.Fatalf("SID sync/ring freq hi = 0x%02X, want 25", got)
+	}
+}
+
+func TestRefmanCh15SIDFilterSweepExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SID FILTER SWEEP
+20 POKE &H000F0800,1
+30 SID VOLUME 15
+40 REM ROUTE VOICE 1 THROUGH LOW PASS
+50 SID VOICE 1,4291,2048,&H41,&H44,&HF6
+60 FOR C=80 TO 1800 STEP 40
+70 SID FILTER C,12,1,1
+80 FOR Q=1 TO 30
+90 NEXT Q
+100 NEXT C
+110 REM RELEASE THE FILTERED VOICE
+120 SID VOICE 1,4291,2048,&H40,&H44,&HF6`
+	out, _, sid, _, _ := execStmtTestWithSID(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := sid.HandleRead(SID_FC_LO); got != 0 {
+		t.Fatalf("SID filter cutoff lo = %d, want 0", got)
+	}
+	if got := sid.HandleRead(SID_FC_HI); got != 225 {
+		t.Fatalf("SID filter cutoff hi = %d, want 225", got)
+	}
+	if got := sid.HandleRead(SID_RES_FILT); got != 0xC1 {
+		t.Fatalf("SID filter RES_FILT = 0x%02X, want 0xC1", got)
+	}
+	if got := sid.HandleRead(SID_MODE_VOL); got != 0x1F {
+		t.Fatalf("SID filter MODE_VOL = 0x%02X, want 0x1F", got)
+	}
+}
+
+func TestRefmanCh15SID2SawVoiceExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SID2 SAW VOICE
+20 POKE &H000F0800,1
+30 REM POINT B AT THE SID2 REGISTER BLOCK
+40 B=&H000F0E30
+50 F=4291
+60 POKE8 B+24,15
+70 REM VOICE 1 FREQUENCY AND PULSE WIDTH
+80 POKE8 B+0,F AND 255
+90 POKE8 B+1,INT(F/256) AND 255
+100 POKE8 B+2,0
+110 POKE8 B+3,0
+120 REM ENVELOPE THEN CONTROL
+130 POKE8 B+5,&H44
+140 POKE8 B+6,&HF6
+150 POKE8 B+4,&H21
+160 FOR T=1 TO 3000
+170 NEXT T
+180 POKE8 B+4,&H20`
+	out, _, _, sid2, _ := execStmtTestWithSID(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := sid2.HandleRead(SID2_BASE + 0); got != 0xC3 {
+		t.Fatalf("SID2 freq lo = 0x%02X, want 0xC3", got)
+	}
+	if got := sid2.HandleRead(SID2_BASE + 1); got != 0x10 {
+		t.Fatalf("SID2 freq hi = 0x%02X, want 0x10", got)
+	}
+	if got := sid2.HandleRead(SID2_BASE + 4); got != 0x20 {
+		t.Fatalf("SID2 final ctrl = 0x%02X, want 0x20", got)
+	}
+	if got := sid2.HandleRead(SID2_BASE + 24); got != 15 {
+		t.Fatalf("SID2 volume = %d, want 15", got)
+	}
+}
+
+func TestRefmanCh15SIDPlusCompareExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SID PLUS COMPARE
+20 POKE &H000F0800,1
+30 SID VOLUME 15
+40 SID VOICE 1,8582,2048,&H41,&H88,&HF4
+50 REM LISTEN TO THE PLAIN SID FIRST
+60 FOR T=1 TO 3000
+70 NEXT T
+80 SID PLUS ON
+90 PRINT PEEK8(&H000F0E19)
+100 REM NOW LISTEN TO SID PLUS
+110 FOR T=1 TO 3000
+120 NEXT T
+130 SID PLUS OFF
+140 PRINT PEEK8(&H000F0E19)
+150 SID VOICE 1,8582,2048,&H40,&H88,&HF4`
+	out, _, sid, _, _ := execStmtTestWithSID(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"1", "0"}) {
+		t.Fatalf("SID Plus compare output = %q, want 1 then 0", out)
+	}
+	if sid.SIDPlusEnabled() {
+		t.Fatal("SID Plus still enabled after SID PLUS OFF")
+	}
+	if got := sid.HandleRead(SID_PLUS_CTRL) & 1; got != 0 {
+		t.Fatalf("SID Plus readback = %d, want 0", got)
+	}
+	if got := sid.HandleRead(SID_V1_CTRL); got != 0x40 {
+		t.Fatalf("SID Plus final ctrl = 0x%02X, want 0x40", got)
+	}
+}
+
+func TestRefmanCh15SIDMemoryPlaybackDoesNotStopImmediately(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SID MEMORY PLAYBACK
+20 REM START SUBSONG 0 FROM MEMORY
+30 SID PLAY &H0000C000,4096,0
+40 S=SID STATUS
+50 PRINT S
+60 IF S AND 2 THEN PRINT "SID ERROR"`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem32(h, SID_PLAY_PTR); got != 0x0000C000 {
+		t.Fatalf("SID PLAY PTR = 0x%X, want 0x0000C000", got)
+	}
+	if got := readBusMem32(h, SID_PLAY_LEN); got != 4096 {
+		t.Fatalf("SID PLAY LEN = %d, want 4096", got)
+	}
+	if got := readBusMem32(h, SID_PLAY_CTRL); got != 1 {
+		t.Fatalf("SID PLAY CTRL = %d, want 1 start command", got)
+	}
+	if strings.Contains(out, "SID ERROR") {
+		t.Fatalf("SID memory playback example printed unexpected error: %q", out)
+	}
+}
 
 func TestHW_SID_Voice(t *testing.T) {
 	asmBin := buildAssembler(t)
@@ -4421,6 +6210,175 @@ func TestHW_SID_Volume(t *testing.T) {
 // POKEY tests
 // =============================================================================
 
+func execStmtTestWithPOKEY(t *testing.T, asmBin string, program string) (string, *ehbasicTestHarness, *POKEYEngine) {
+	t.Helper()
+	sound := newTestSoundChip()
+	pokey := NewPOKEYEngine(sound, SAMPLE_RATE)
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		sound.AttachBus(h.bus)
+		pokey.AttachBusMemory(h.bus.GetMemory())
+		h.bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
+		h.bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterWrite8)
+		h.bus.MapIO(POKEY_BASE, POKEY_END, pokey.HandleRead, pokey.HandleWrite)
+		h.bus.MapIOByte(POKEY_BASE, POKEY_END, pokey.HandleWrite8)
+		h.bus.MapIOWideWriteFanout(POKEY_BASE, POKEY_END)
+	})
+	return out, h, pokey
+}
+
+func TestRefmanCh17POKEYFirstToneExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM POKEY FIRST TONE
+20 POKE &H000F0800,1
+30 REM NORMAL 64 KHZ CLOCK PATH
+40 POKEY CTRL 0
+50 REM CHANNEL 1, PURE TONE, FULL VOLUME
+60 POKEY 1,121,&HAF`
+	out, h, _ := execStmtTestWithPOKEY(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem8(h, POKEY_AUDCTL); got != 0 {
+		t.Fatalf("POKEY first tone AUDCTL = 0x%02X, want 0", got)
+	}
+	if got := readBusMem8(h, POKEY_AUDF1); got != 121 {
+		t.Fatalf("POKEY first tone AUDF1 = %d, want 121", got)
+	}
+	if got := readBusMem8(h, POKEY_AUDC1); got != 0xAF {
+		t.Fatalf("POKEY first tone AUDC1 = 0x%02X, want 0xAF", got)
+	}
+}
+
+func TestRefmanCh17POKEYNoiseHitExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM POKEY NOISE HIT
+20 POKE &H000F0800,1
+30 REM UNPAIRED CHANNELS
+40 POKEY CTRL 0
+50 FOR V=15 TO 0 STEP -1
+60 REM DISTORTION 4 PLUS VOLUME V
+70 POKEY 2,8,&H80+V
+80 FOR Q=1 TO 60
+90 NEXT Q
+100 NEXT V
+110 POKEY 2,8,&H80`
+	out, h, _ := execStmtTestWithPOKEY(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem8(h, POKEY_AUDF2); got != 8 {
+		t.Fatalf("POKEY noise hit AUDF2 = %d, want 8", got)
+	}
+	if got := readBusMem8(h, POKEY_AUDC2); got != 0x80 {
+		t.Fatalf("POKEY noise hit AUDC2 = 0x%02X, want 0x80", got)
+	}
+}
+
+func TestRefmanCh17POKEY16BitBassExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM POKEY 16 BIT BASS
+20 POKE &H000F0800,1
+30 REM JOIN CHANNELS 1 AND 2
+40 POKEY CTRL &H50
+50 POKEY 1,&H40,&HAF
+60 REM CHANNEL 2 HOLDS THE HIGH PERIOD BYTE
+70 POKEY 2,&H20,0
+80 FOR T=1 TO 3000
+90 NEXT T
+100 POKEY 1,&H40,&HA0`
+	out, h, _ := execStmtTestWithPOKEY(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem8(h, POKEY_AUDCTL); got != 0x50 {
+		t.Fatalf("POKEY 16-bit bass AUDCTL = 0x%02X, want 0x50", got)
+	}
+	if got := readBusMem8(h, POKEY_AUDF1); got != 0x40 {
+		t.Fatalf("POKEY 16-bit bass AUDF1 = 0x%02X, want 0x40", got)
+	}
+	if got := readBusMem8(h, POKEY_AUDC1); got != 0xA0 {
+		t.Fatalf("POKEY 16-bit bass final AUDC1 = 0x%02X, want 0xA0", got)
+	}
+	if got := readBusMem8(h, POKEY_AUDF2); got != 0x20 {
+		t.Fatalf("POKEY 16-bit bass AUDF2 = 0x%02X, want 0x20", got)
+	}
+	if got := readBusMem8(h, POKEY_AUDC2); got != 0 {
+		t.Fatalf("POKEY 16-bit bass AUDC2 = 0x%02X, want 0", got)
+	}
+}
+
+func TestRefmanCh17POKEYRandomBytesExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM POKEY RANDOM BYTES
+20 REM EACH READ ADVANCES THE POLYNOMIAL
+30 FOR I=1 TO 8
+40 PRINT PEEK8(&H000F0D0A)
+50 NEXT I`
+	out, _, _ := execStmtTestWithPOKEY(t, asmBin, program)
+	requireNoBasicError(t, out)
+	fields := strings.Fields(out)
+	if len(fields) != 8 {
+		t.Fatalf("POKEY random example printed %d fields, want 8: %q", len(fields), out)
+	}
+	for _, field := range fields {
+		v, err := strconv.Atoi(field)
+		if err != nil || v < 0 || v > 255 {
+			t.Fatalf("POKEY random field %q is not a byte value in output %q", field, out)
+		}
+	}
+}
+
+func TestRefmanCh17POKEYPlusCompareExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM POKEY PLUS COMPARE
+20 POKE &H000F0800,1
+30 POKEY CTRL 0
+40 POKEY 1,121,&HAF
+50 REM LISTEN TO PLAIN POKEY FIRST
+60 FOR T=1 TO 2500
+70 NEXT T
+80 POKEY PLUS ON
+90 PRINT PEEK8(&H000F0D09)
+100 REM NOW LISTEN TO POKEY PLUS
+110 FOR T=1 TO 2500
+120 NEXT T
+130 POKEY PLUS OFF
+140 PRINT PEEK8(&H000F0D09)
+150 POKEY 1,121,&HA0`
+	out, h, pokey := execStmtTestWithPOKEY(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"1", "0"}) {
+		t.Fatalf("POKEY Plus compare output = %q, want 1 then 0", out)
+	}
+	if pokey.POKEYPlusEnabled() {
+		t.Fatal("POKEY Plus still enabled after POKEY PLUS OFF")
+	}
+	if got := readBusMem8(h, POKEY_PLUS_CTRL) & 1; got != 0 {
+		t.Fatalf("POKEY Plus readback = %d, want 0", got)
+	}
+	if got := readBusMem8(h, POKEY_AUDC1); got != 0xA0 {
+		t.Fatalf("POKEY Plus final AUDC1 = 0x%02X, want 0xA0", got)
+	}
+}
+
+func TestRefmanCh17POKEYMemoryPlaybackDoesNotStopImmediately(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM POKEY MEMORY PLAYBACK
+20 REM START SUBSONG 0 FROM MEMORY
+30 SAP PLAY &H00020000,8192,0
+40 S=POKEY STATUS
+50 PRINT S
+60 IF S AND 2 THEN PRINT "POKEY ERROR"`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem32(h, SAP_PLAY_PTR); got != 0x00020000 {
+		t.Fatalf("POKEY PLAY PTR = 0x%X, want 0x00020000", got)
+	}
+	if got := readBusMem32(h, SAP_PLAY_LEN); got != 8192 {
+		t.Fatalf("POKEY PLAY LEN = %d, want 8192", got)
+	}
+	if got := readBusMem32(h, SAP_PLAY_CTRL); got != 1 {
+		t.Fatalf("POKEY PLAY CTRL = %d, want 1 start command", got)
+	}
+	if strings.Contains(out, "POKEY ERROR") {
+		t.Fatalf("POKEY memory playback example printed unexpected error: %q", out)
+	}
+}
+
 func TestHW_POKEY_Channel(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// POKEY ch, freq, ctrl → AUDF at POKEY_AUDF1+ch*2, AUDC at POKEY_AUDC1+ch*2
@@ -4448,6 +6406,103 @@ func TestHW_POKEY_Ctrl(t *testing.T) {
 // AHX tests
 // =============================================================================
 
+func TestRefmanCh18AHXMemoryPlaybackExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM AHX MEMORY PLAYBACK
+20 POKE &H000F0800,1
+30 REM START SUBSONG 0 FROM MEMORY
+40 AHX PLAY &H00100000,&H00004000,0
+50 PRINT AHX STATUS`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem32(h, AHX_PLAY_PTR); got != 0x00100000 {
+		t.Fatalf("AHX PLAY PTR = 0x%X, want 0x00100000", got)
+	}
+	if got := readBusMem32(h, AHX_PLAY_LEN); got != 0x00004000 {
+		t.Fatalf("AHX PLAY LEN = 0x%X, want 0x00004000", got)
+	}
+	if got := readBusMem8(h, AHX_SUBSONG); got != 0 {
+		t.Fatalf("AHX SUBSONG = %d, want 0", got)
+	}
+	if got := readBusMem32(h, AHX_PLAY_CTRL); got != 1 {
+		t.Fatalf("AHX PLAY CTRL = %d, want 1 start command", got)
+	}
+}
+
+func TestRefmanCh18AHXRawStartExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM AHX RAW START
+20 POKE &H000F0800,1
+30 REM POINTER, LENGTH, SUBSONG
+40 POKE &H000F0B84,&H00100000
+50 POKE &H000F0B88,&H00004000
+60 POKE8 &H000F0B91,0
+70 REM START, THEN READ STATUS
+80 POKE &H000F0B8C,1
+90 PRINT PEEK(&H000F0B90)`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"0"}) {
+		t.Fatalf("AHX raw start output = %q, want status 0", out)
+	}
+	if got := readBusMem32(h, AHX_PLAY_PTR); got != 0x00100000 {
+		t.Fatalf("AHX raw PTR = 0x%X, want 0x00100000", got)
+	}
+	if got := readBusMem32(h, AHX_PLAY_LEN); got != 0x00004000 {
+		t.Fatalf("AHX raw LEN = 0x%X, want 0x00004000", got)
+	}
+	if got := readBusMem32(h, AHX_PLAY_CTRL); got != 1 {
+		t.Fatalf("AHX raw CTRL = %d, want 1", got)
+	}
+}
+
+func TestRefmanCh18AHXPlusToggleExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM AHX PLUS TOGGLE
+20 POKE &H000F0800,1
+30 AHX PLAY &H00100000,&H00004000,0
+40 REM LISTEN TO STANDARD AHX FIRST
+50 FOR T=1 TO 3000
+60 NEXT T
+70 AHX PLUS ON
+80 PRINT PEEK(&H000F0B80)
+90 REM NOW LISTEN TO AHX PLUS
+100 FOR T=1 TO 3000
+110 NEXT T
+120 AHX PLUS OFF
+130 PRINT PEEK(&H000F0B80)`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"1", "0"}) {
+		t.Fatalf("AHX Plus toggle output = %q, want 1 then 0", out)
+	}
+	if got := readBusMem32(h, AHX_PLUS_CTRL); got != 0 {
+		t.Fatalf("AHX PLUS CTRL = %d, want 0", got)
+	}
+	if got := readBusMem32(h, AHX_PLAY_CTRL); got != 1 {
+		t.Fatalf("AHX PLAY CTRL after plus toggle = %d, want 1", got)
+	}
+}
+
+func TestRefmanCh18AHXStatusCheckDoesNotStopImmediately(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM AHX STATUS CHECK
+20 REM START WITHOUT STOPPING IMMEDIATELY
+30 AHX PLAY &H00100000,&H00004000,0
+40 S=AHX STATUS
+50 PRINT S
+60 IF S AND 2 THEN PRINT "AHX ERROR"
+70 IF S AND 1 THEN PRINT "AHX BUSY"`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if strings.Contains(out, "AHX ERROR") {
+		t.Fatalf("AHX status check printed unexpected error: %q", out)
+	}
+	if got := readBusMem32(h, AHX_PLAY_CTRL); got != 1 {
+		t.Fatalf("AHX status check PLAY CTRL = %d, want 1 start command", got)
+	}
+}
+
 func TestHW_AHX_Play(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 AHX PLAY 65536, 4096")
@@ -4471,6 +6526,669 @@ func TestHW_AHX_Stop(t *testing.T) {
 	ctrl := readBusMem32(h, 0xF0B8C) // AHX_PLAY_CTRL
 	if ctrl != 2 {
 		t.Fatalf("AHX STOP: CTRL expected 2 (stop cmd), got %d", ctrl)
+	}
+}
+
+func TestRefmanCh19TinyFourVoiceMODExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM TINY FOUR VOICE MOD
+20 POKE &H000F0800,1
+30 A=&H00100000:L=2236
+40 REM CLEAR HEADER, PATTERN, AND SAMPLE AREA
+50 FOR I=0 TO L-1
+60 POKE8 A+I,0
+70 NEXT I
+80 REM SONG NAME
+90 T$="IE MOD CHORD"
+100 FOR I=1 TO LEN(T$)
+110 POKE8 A+I-1,ASC(MID$(T$,I,1))
+120 NEXT I
+130 REM FOUR 32 BYTE LOOPED SAMPLES
+140 FOR S=0 TO 3
+150 D=20+S*30
+160 POKE8 A+D+22,0
+170 POKE8 A+D+23,16
+180 POKE8 A+D+25,48
+190 POKE8 A+D+29,16
+200 NEXT S
+210 REM SONG LENGTH AND M.K. FORMAT ID
+220 POKE8 A+950,1
+230 POKE8 A+1080,77
+240 POKE8 A+1081,46
+250 POKE8 A+1082,75
+260 POKE8 A+1083,46
+270 REM FIRST ROW: C-2, E-2, G-2, C-3
+280 POKE8 A+1084,1
+290 POKE8 A+1085,172
+300 POKE8 A+1086,16
+310 POKE8 A+1088,1
+320 POKE8 A+1089,83
+330 POKE8 A+1090,32
+340 POKE8 A+1092,1
+350 POKE8 A+1093,29
+360 POKE8 A+1094,48
+370 POKE8 A+1096,0
+380 POKE8 A+1097,214
+390 POKE8 A+1098,64
+400 REM FOUR SHORT WAVEFORMS
+410 FOR S=0 TO 3
+420 FOR I=0 TO 31
+430 V=INT(SIN(I*TWOPI*(S+1)/32)*90)
+440 IF V<0 THEN V=V+256
+450 POKE8 A+2108+S*32+I,V
+460 NEXT I
+470 NEXT S
+480 REM FILTER, START, THEN CHECK STATUS
+490 SOUND MOD FILTER 1
+500 SOUND MOD PLAY A,L
+510 FOR T=1 TO 3000
+520 NEXT T
+530 PRINT MOD STATUS`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem32(h, MOD_FILTER_MODEL); got != 1 {
+		t.Fatalf("MOD filter model = %d, want 1", got)
+	}
+	if got := readBusMem32(h, MOD_PLAY_PTR); got != 0x00100000 {
+		t.Fatalf("MOD PLAY PTR = 0x%X, want 0x00100000", got)
+	}
+	if got := readBusMem32(h, MOD_PLAY_LEN); got != 2236 {
+		t.Fatalf("MOD PLAY LEN = %d, want 2236", got)
+	}
+	if got := readBusMem32(h, MOD_PLAY_CTRL); got != 1 {
+		t.Fatalf("MOD PLAY CTRL = %d, want 1 start command", got)
+	}
+
+	mem := h.bus.GetMemory()
+	modData := append([]byte(nil), mem[0x00100000:0x00100000+2236]...)
+	mod, err := ParseMOD(modData)
+	if err != nil {
+		t.Fatalf("Chapter 19 generated MOD did not parse: %v", err)
+	}
+	if mod.SongName != "IE MOD CHORD" {
+		t.Fatalf("MOD song name = %q, want IE MOD CHORD", mod.SongName)
+	}
+	if mod.FormatID != "M.K." || mod.NumChannels != 4 {
+		t.Fatalf("MOD format = %q channels=%d, want M.K. 4 channels", mod.FormatID, mod.NumChannels)
+	}
+	if mod.SongLength != 1 {
+		t.Fatalf("MOD song length = %d, want 1", mod.SongLength)
+	}
+	for i := range 4 {
+		if mod.Samples[i].Length != 32 || mod.Samples[i].Volume != 48 || mod.Samples[i].LoopLength != 32 {
+			t.Fatalf("MOD sample %d descriptor = len %d vol %d loop %d, want len 32 vol 48 loop 32",
+				i+1, mod.Samples[i].Length, mod.Samples[i].Volume, mod.Samples[i].LoopLength)
+		}
+	}
+	wantPeriods := []uint16{428, 339, 285, 214}
+	for ch, wantPeriod := range wantPeriods {
+		note := mod.Patterns[0].Notes[0][ch]
+		if note.SampleNum != uint8(ch+1) || note.Period != wantPeriod {
+			t.Fatalf("MOD row 0 ch %d = sample %d period %d, want sample %d period %d",
+				ch, note.SampleNum, note.Period, ch+1, wantPeriod)
+		}
+	}
+}
+
+func TestRefmanCh19MODFilterExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM MOD FILTER READBACK
+20 SOUND MOD FILTER 1
+30 PRINT PEEK(&H000F0BD0)
+40 SOUND MOD FILTER 2
+50 PRINT PEEK(&H000F0BD0)`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"1", "2"}) {
+		t.Fatalf("MOD filter example output = %q, want 1 then 2", out)
+	}
+	if got := readBusMem32(h, MOD_FILTER_MODEL); got != 2 {
+		t.Fatalf("MOD filter model = %d, want 2", got)
+	}
+}
+
+func TestRefmanCh19MODRawRegisterStartExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM MOD RAW LOOP START
+20 POKE &H000F0800,1
+30 REM POINTER, LENGTH, FILTER
+40 POKE &H000F0BC0,&H00100000
+50 POKE &H000F0BC4,2236
+60 POKE &H000F0BD0,1
+70 REM START WITH LOOP BIT SET
+80 POKE &H000F0BC8,5
+90 PRINT PEEK(&H000F0BCC)`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"0"}) {
+		t.Fatalf("MOD raw start output = %q, want status 0", out)
+	}
+	if got := readBusMem32(h, MOD_PLAY_PTR); got != 0x00100000 {
+		t.Fatalf("MOD raw PTR = 0x%X, want 0x00100000", got)
+	}
+	if got := readBusMem32(h, MOD_PLAY_LEN); got != 2236 {
+		t.Fatalf("MOD raw LEN = %d, want 2236", got)
+	}
+	if got := readBusMem32(h, MOD_FILTER_MODEL); got != 1 {
+		t.Fatalf("MOD raw filter = %d, want 1", got)
+	}
+	if got := readBusMem32(h, MOD_PLAY_CTRL); got != 5 {
+		t.Fatalf("MOD raw CTRL = %d, want 5", got)
+	}
+}
+
+func TestHW_MOD_Play(t *testing.T) {
+	asmBin := buildAssembler(t)
+	_, h := execStmtTestWithBus(t, asmBin, "10 SOUND MOD PLAY 65536, 4096")
+	ptr := readBusMem32(h, 0xF0BC0)  // MOD_PLAY_PTR
+	ln := readBusMem32(h, 0xF0BC4)   // MOD_PLAY_LEN
+	ctrl := readBusMem32(h, 0xF0BC8) // MOD_PLAY_CTRL
+	if ptr != 65536 {
+		t.Fatalf("MOD PLAY: PTR expected 65536, got %d", ptr)
+	}
+	if ln != 4096 {
+		t.Fatalf("MOD PLAY: LEN expected 4096, got %d", ln)
+	}
+	if ctrl != 1 {
+		t.Fatalf("MOD PLAY: CTRL expected 1, got %d", ctrl)
+	}
+}
+
+func TestHW_MOD_Stop(t *testing.T) {
+	asmBin := buildAssembler(t)
+	_, h := execStmtTestWithBus(t, asmBin, "10 SOUND MOD PLAY 65536, 4096\n20 SOUND MOD STOP")
+	ctrl := readBusMem32(h, 0xF0BC8) // MOD_PLAY_CTRL
+	if ctrl != 2 {
+		t.Fatalf("MOD STOP: CTRL expected 2, got %d", ctrl)
+	}
+}
+
+func TestHW_MOD_Filter(t *testing.T) {
+	asmBin := buildAssembler(t)
+	_, h := execStmtTestWithBus(t, asmBin, "10 SOUND MOD FILTER 1")
+	filter := readBusMem32(h, 0xF0BD0) // MOD_FILTER_MODEL
+	if filter != 1 {
+		t.Fatalf("MOD FILTER: expected 1, got %d", filter)
+	}
+}
+
+func TestRefmanCh20TinyWAVBeepExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM TINY WAV BEEP
+20 POKE &H000F0800,1
+30 A=&H00110000:N=800:L=44+N*2
+40 REM CLEAR THE WAV BLOCK
+50 FOR I=0 TO L-1
+60 POKE8 A+I,0
+70 NEXT I
+80 REM COPY THE 44 BYTE RIFF HEADER
+90 FOR I=0 TO 43
+100 READ B
+110 POKE8 A+I,B
+120 NEXT I
+130 REM 800 SAMPLES OF 440 HZ SINE
+140 FOR I=0 TO N-1
+150 V=INT(SIN(I*TWOPI*440/8000)*22000)
+160 IF V<0 THEN V=V+65536
+170 LO=V-INT(V/256)*256
+180 HI=INT(V/256)
+190 POKE8 A+44+I*2,LO
+200 POKE8 A+45+I*2,HI
+210 NEXT I
+220 REM OUTPUT PAIR, VOLUME, FORCE MONO
+230 POKE8 &H000F0BF0,0
+240 POKE8 &H000F0BF1,220
+250 POKE8 &H000F0BF2,220
+260 POKE8 &H000F0BF3,1
+270 REM POINTER, LENGTH, START PLUS LOOP
+280 POKE &H000F0BD8,A
+290 POKE &H000F0BDC,L
+300 POKE &H000F0BE0,5
+310 FOR T=1 TO 3000
+320 NEXT T
+330 PRINT PEEK(&H000F0BE4)
+350 DATA 82,73,70,70,100,6,0,0,87,65,86,69
+360 DATA 102,109,116,32,16,0,0,0,1,0,1,0
+370 DATA 64,31,0,0,128,62,0,0,2,0,16,0
+380 DATA 100,97,116,97,64,6,0,0`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem32(h, WAV_PLAY_PTR); got != 0x00110000 {
+		t.Fatalf("WAV PLAY PTR = 0x%X, want 0x00110000", got)
+	}
+	if got := readBusMem32(h, WAV_PLAY_LEN); got != 1644 {
+		t.Fatalf("WAV PLAY LEN = %d, want 1644", got)
+	}
+	if got := readBusMem32(h, WAV_PLAY_CTRL); got != 5 {
+		t.Fatalf("WAV PLAY CTRL = %d, want 5", got)
+	}
+	if got := readBusMem8(h, WAV_CHANNEL_BASE); got != 0 {
+		t.Fatalf("WAV channel base = %d, want 0", got)
+	}
+	if got := readBusMem8(h, WAV_VOLUME_L); got != 220 {
+		t.Fatalf("WAV volume L = %d, want 220", got)
+	}
+	if got := readBusMem8(h, WAV_VOLUME_R); got != 220 {
+		t.Fatalf("WAV volume R = %d, want 220", got)
+	}
+	if got := readBusMem8(h, WAV_FLAGS); got != 1 {
+		t.Fatalf("WAV flags = 0x%02X, want 1", got)
+	}
+
+	mem := h.bus.GetMemory()
+	wavData := append([]byte(nil), mem[0x00110000:0x00110000+1644]...)
+	wav, err := ParseWAV(wavData)
+	if err != nil {
+		t.Fatalf("Chapter 20 generated WAV did not parse: %v", err)
+	}
+	if wav.SampleRate != 8000 || wav.NumChannels != 1 || wav.BitsPerSample != 16 {
+		t.Fatalf("WAV format = %d Hz %d ch %d bit, want 8000 Hz mono 16-bit",
+			wav.SampleRate, wav.NumChannels, wav.BitsPerSample)
+	}
+	if len(wav.LeftSamples) != 800 || len(wav.RightSamples) != 800 {
+		t.Fatalf("WAV samples = L%d R%d, want 800 each", len(wav.LeftSamples), len(wav.RightSamples))
+	}
+	if wav.LeftSamples[10] == 0 {
+		t.Fatalf("WAV generated sample 10 is zero, expected audible sine data")
+	}
+}
+
+func TestRefmanCh20WAVOutputSettingsExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM WAV OUTPUT SETTINGS
+20 POKE8 &H000F0BF0,2
+30 POKE8 &H000F0BF1,255
+40 POKE8 &H000F0BF2,80
+50 POKE8 &H000F0BF3,0`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem8(h, WAV_CHANNEL_BASE); got != 2 {
+		t.Fatalf("WAV channel base = %d, want 2", got)
+	}
+	if got := readBusMem8(h, WAV_VOLUME_L); got != 255 {
+		t.Fatalf("WAV volume L = %d, want 255", got)
+	}
+	if got := readBusMem8(h, WAV_VOLUME_R); got != 80 {
+		t.Fatalf("WAV volume R = %d, want 80", got)
+	}
+	if got := readBusMem8(h, WAV_FLAGS); got != 0 {
+		t.Fatalf("WAV flags = %d, want 0", got)
+	}
+}
+
+func TestRefmanCh20WAVControlExamples(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM WAV PAUSE
+20 POKE &H000F0BE0,8
+30 PRINT PEEK(&H000F0BE4)
+40 REM WAV RESUME
+50 POKE &H000F0BE0,0
+60 REM WAV LOOP ON WITHOUT RESTART
+70 POKE &H000F0BE0,20
+80 REM WAV STOP
+90 POKE &H000F0BE0,2`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"0"}) {
+		t.Fatalf("WAV pause example output = %q, want status 0", out)
+	}
+	if got := readBusMem32(h, WAV_PLAY_CTRL); got != 2 {
+		t.Fatalf("WAV final CTRL = %d, want 2 stop command", got)
+	}
+}
+
+func execStmtTestWithPaula(t *testing.T, asmBin string, program string) (string, *ehbasicTestHarness, *ArosAudioDMA) {
+	t.Helper()
+	sound := newTestSoundChip()
+	var dma *ArosAudioDMA
+	makeHarness := func(tb testing.TB) *ehbasicTestHarness {
+		tb.Helper()
+		bus, err := NewMachineBusSized(arosDirectVRAMBase + arosDirectVRAMSize)
+		if err != nil {
+			tb.Fatalf("NewMachineBusSized: %v", err)
+		}
+		return newEhbasicHarnessOnBus(tb, bus)
+	}
+	out, h := execStmtTestCoreWithHarness(t, asmBin, program, func(h *ehbasicTestHarness) {
+		sound.AttachBus(h.bus)
+		h.bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
+		h.bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterWrite8)
+		var err error
+		dma, err = NewArosAudioDMA(h.bus, sound, nil)
+		if err != nil {
+			t.Fatalf("NewArosAudioDMA failed: %v", err)
+		}
+		h.bus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, dma.HandleRead, dma.HandleWrite)
+	}, makeHarness)
+	return out, h, dma
+}
+
+func TestRefmanCh21PaulaFourChannelChordExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM PAULA FOUR CHANNEL CHORD
+20 POKE &H000F0800,1
+30 A=&H00120000:N=4096:P=253
+40 REM BUILD FOUR SIGNED 8 BIT SAMPLES
+50 FOR C=0 TO 3
+60 F=220
+70 IF C=1 THEN F=277
+80 IF C=2 THEN F=330
+90 IF C=3 THEN F=440
+100 FOR I=0 TO N-1
+110 V=INT(SIN(I*TWOPI*F/14019)*100)
+120 IF V<0 THEN V=V+256
+130 POKE8 A+C*N+I,V
+140 NEXT I
+150 NEXT C
+160 REM PTR, LEN, PERIOD, VOLUME
+170 FOR C=0 TO 3
+180 B=&H000F2260+C*16
+190 POKE B,A+C*N
+200 POKE B+4,N/2
+210 POKE B+8,P
+220 POKE B+12,40
+230 NEXT C
+240 REM CLEAR STATUS, THEN ARM ALL CHANNELS
+250 POKE &H000F22A4,15
+260 POKE &H000F22A0,&H800F
+270 FOR T=1 TO 3000
+280 NEXT T
+290 PRINT PEEK(&H000F22A4)`
+	out, h, dma := execStmtTestWithPaula(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem32(h, AROS_AUD_DMACON) & 0x0F; got != 0x0F {
+		t.Fatalf("Paula DMACON active bits = 0x%X, want 0x0F", got)
+	}
+	for ch := uint32(0); ch < 4; ch++ {
+		base := AROS_AUD_REGION_BASE + ch*AROS_AUD_CH_STRIDE
+		if got := readBusMem32(h, base+AROS_AUD_OFF_PTR); got != 0x00120000+ch*4096 {
+			t.Fatalf("Paula ch%d PTR = 0x%X", ch, got)
+		}
+		if got := readBusMem32(h, base+AROS_AUD_OFF_LEN); got != 2048 {
+			t.Fatalf("Paula ch%d LEN = %d, want 2048", ch, got)
+		}
+		if got := readBusMem32(h, base+AROS_AUD_OFF_PER); got != 253 {
+			t.Fatalf("Paula ch%d PER = %d, want 253", ch, got)
+		}
+		if got := readBusMem32(h, base+AROS_AUD_OFF_VOL); got != 40 {
+			t.Fatalf("Paula ch%d VOL = %d, want 40", ch, got)
+		}
+	}
+	for i := 0; i < 20_000; i++ {
+		dma.TickSample()
+	}
+	if got := readBusMem32(h, AROS_AUD_STATUS) & 0x0F; got != 0x0F {
+		t.Fatalf("Paula completion status = 0x%X, want 0x0F", got)
+	}
+	if got := readBusMem32(h, AROS_AUD_DMACON) & 0x0F; got != 0 {
+		t.Fatalf("Paula DMACON after completion = 0x%X, want 0", got)
+	}
+}
+
+func TestRefmanCh21PaulaOneChannelSetupExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM PAULA CHANNEL 0 SETUP
+20 A=&H00124000:N=1024
+30 REM BUILD A SIGNED SAMPLE BUFFER
+40 FOR I=0 TO N-1
+50 V=INT(SIN(I*TWOPI*330/14019)*100)
+60 IF V<0 THEN V=V+256
+70 POKE8 A+I,V
+80 NEXT I
+90 REM PTR, LEN, PERIOD, VOLUME
+100 POKE &H000F2260,A
+110 POKE &H000F2264,N/2
+120 POKE &H000F2268,253
+130 POKE &H000F226C,64
+140 REM CLEAR OLD STATUS AND ARM CH0
+150 POKE &H000F22A4,1
+160 POKE &H000F22A0,&H8001`
+	out, h, _ := execStmtTestWithPaula(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem32(h, AROS_AUD_REGION_BASE+AROS_AUD_OFF_PTR); got != 0x00124000 {
+		t.Fatalf("Paula one-channel PTR = 0x%X, want 0x00124000", got)
+	}
+	if got := readBusMem32(h, AROS_AUD_REGION_BASE+AROS_AUD_OFF_LEN); got != 512 {
+		t.Fatalf("Paula one-channel LEN = %d, want 512", got)
+	}
+	if got := readBusMem32(h, AROS_AUD_REGION_BASE+AROS_AUD_OFF_VOL); got != 64 {
+		t.Fatalf("Paula one-channel VOL = %d, want 64", got)
+	}
+	if got := readBusMem32(h, AROS_AUD_DMACON) & 1; got != 1 {
+		t.Fatalf("Paula one-channel DMACON bit = %d, want 1", got)
+	}
+}
+
+func TestRefmanCh21PaulaStatusClearExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM PAULA STATUS CLEAR
+20 PRINT PEEK(&H000F22A4)
+30 POKE &H000F22A4,15
+40 PRINT PEEK(&H000F22A4)`
+	out, h, _ := execStmtTestWithPaula(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"0", "0"}) {
+		t.Fatalf("Paula status clear output = %q, want 0 then 0", out)
+	}
+	if got := readBusMem32(h, AROS_AUD_STATUS); got != 0 {
+		t.Fatalf("Paula status = %d, want 0", got)
+	}
+}
+
+func TestRefmanCh21PaulaDoubleBufferStagingExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM FIRST BUFFER IS ALREADY ARMED ON CH0
+20 REM STAGE NEXT PTR, LEN, PERIOD, VOLUME
+30 POKE &H000F2260,&H00126000
+40 POKE &H000F2264,512
+50 POKE &H000F2268,253
+60 POKE &H000F226C,48`
+	out, h, _ := execStmtTestWithPaula(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem32(h, AROS_AUD_REGION_BASE+AROS_AUD_OFF_PTR); got != 0x00126000 {
+		t.Fatalf("Paula staged PTR = 0x%X, want 0x00126000", got)
+	}
+	if got := readBusMem32(h, AROS_AUD_REGION_BASE+AROS_AUD_OFF_LEN); got != 512 {
+		t.Fatalf("Paula staged LEN = %d, want 512", got)
+	}
+	if got := readBusMem32(h, AROS_AUD_REGION_BASE+AROS_AUD_OFF_VOL); got != 48 {
+		t.Fatalf("Paula staged VOL = %d, want 48", got)
+	}
+}
+
+func TestRefmanCh22BasicMixerSketchExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	sound := newTestSoundChip()
+	psg := NewPSGEngine(sound, SAMPLE_RATE)
+	pokey := NewPOKEYEngine(sound, SAMPLE_RATE)
+	sid := NewSIDEngine(sound, SAMPLE_RATE)
+	ted := NewTEDEngine(sound, SAMPLE_RATE)
+	program := `10 REM BASIC MIXER SKETCH
+20 POKE &H000F0800,1
+30 REM SOUNDCHIP VOICE
+40 SOUND 0,440,160,2
+50 ENVELOPE 0,10,20,128,30
+60 GATE 0,ON
+70 REM SEVERAL BUS SOUND CHIPS
+80 PSG 0,500,15
+90 SID VOICE 1,1000,2048,65,136,240
+100 SID VOLUME 12
+110 POKEY 1,100,168
+120 TED TONE 1,440
+130 POKE8 &H000F0F03,&H18
+140 REM COMMON MIXER REVERB
+150 SOUND REVERB 120,160
+160 FOR T=1 TO 3000
+170 NEXT T
+180 GATE 0,OFF`
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		sound.AttachBus(h.bus)
+		psg.AttachBusMemory(h.bus.GetMemory())
+		pokey.AttachBusMemory(h.bus.GetMemory())
+		h.bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
+		h.bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterWrite8)
+		h.bus.MapIO(PSG_BASE, PSG_END, psg.HandleRead, psg.HandleWrite)
+		h.bus.MapIOByte(PSG_BASE, PSG_END, psg.HandleWrite8)
+		h.bus.MapIOWideWriteFanout(PSG_BASE, PSG_END)
+		h.bus.MapIO(POKEY_BASE, POKEY_END, pokey.HandleRead, pokey.HandleWrite)
+		h.bus.MapIOByte(POKEY_BASE, POKEY_END, pokey.HandleWrite8)
+		h.bus.MapIOWideWriteFanout(POKEY_BASE, POKEY_END)
+		h.bus.MapIO(SID_BASE, SID_END, sid.HandleRead, sid.HandleWrite)
+		h.bus.MapIOByte(SID_BASE, SID_END, sid.HandleWrite8)
+		h.bus.MapIO(TED_BASE, TED_END, ted.HandleRead, ted.HandleWrite)
+	})
+	requireNoBasicError(t, out)
+	if got := readRawBusMem32(h, AUDIO_CTRL); got&1 == 0 {
+		t.Fatalf("AUDIO_CTRL = 0x%X, want enabled", got)
+	}
+	if got := readBusMem8(h, PSG_BASE); got != 0xF4 {
+		t.Fatalf("PSG ch0 divider low = 0x%02X, want 0xF4", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+1); got != 1 {
+		t.Fatalf("PSG ch0 divider high = %d, want 1", got)
+	}
+	if got := readBusMem8(h, PSG_BASE+8); got != 15 {
+		t.Fatalf("PSG ch0 level = %d, want 15", got)
+	}
+	if got := sid.HandleRead(SID_V1_FREQ_LO); got != 0xE8 {
+		t.Fatalf("SID freq low = 0x%02X, want 0xE8", got)
+	}
+	if got := sid.HandleRead(SID_MODE_VOL) & 0x0F; got != 12 {
+		t.Fatalf("SID volume = %d, want 12", got)
+	}
+	if got := readBusMem8(h, POKEY_AUDF1); got != 100 {
+		t.Fatalf("POKEY AUDF1 = %d, want 100", got)
+	}
+	if got := readBusMem8(h, POKEY_AUDC1); got != 168 {
+		t.Fatalf("POKEY AUDC1 = %d, want 168", got)
+	}
+	if got := ted.HandleRead(TED_FREQ1_LO); got != 0xB8 {
+		t.Fatalf("TED freq1 low = 0x%02X, want 0xB8", got)
+	}
+	if got := ted.HandleRead(TED_SND_CTRL); got != 0x18 {
+		t.Fatalf("TED control = 0x%02X, want 0x18", got)
+	}
+	if got := readRawBusMem32(h, REVERB_MIX); got != 120 {
+		t.Fatalf("REVERB_MIX = %d, want 120", got)
+	}
+	if got := readRawBusMem32(h, REVERB_DECAY); got != 160 {
+		t.Fatalf("REVERB_DECAY = %d, want 160", got)
+	}
+}
+
+func TestRefmanCh22RawMediaLoaderStartExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM RAW MEDIA LOADER START
+20 A=&H00090000
+30 REM ZERO TERMINATED FILENAME
+40 POKE8 A+0,84
+50 POKE8 A+1,73
+60 POKE8 A+2,84
+70 POKE8 A+3,76
+80 POKE8 A+4,69
+90 POKE8 A+5,46
+100 POKE8 A+6,77
+110 POKE8 A+7,79
+120 POKE8 A+8,68
+130 POKE8 A+9,0
+140 REM POINTER, SUBSONG, PLAY COMMAND
+150 POKE &H000F2300,A
+160 POKE &H000F2304,0
+170 POKE &H000F2308,1
+180 PRINT PEEK(&H000F230C),PEEK(&H000F2310),PEEK(&H000F2314)`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"0", "0", "0"}) {
+		t.Fatalf("raw media loader output = %q, want zero status/type/error with no loader mapped", out)
+	}
+	name := []byte("TITLE.MOD")
+	for i, want := range name {
+		if got := readBusMem8(h, 0x00090000+uint32(i)); got != want {
+			t.Fatalf("filename byte %d = 0x%02X, want 0x%02X", i, got, want)
+		}
+	}
+	if got := readBusMem8(h, 0x00090000+uint32(len(name))); got != 0 {
+		t.Fatalf("filename terminator = 0x%02X, want 0", got)
+	}
+	if got := readBusMem32(h, MEDIA_NAME_PTR); got != 0x00090000 {
+		t.Fatalf("MEDIA_NAME_PTR = 0x%X, want 0x00090000", got)
+	}
+	if got := readBusMem32(h, MEDIA_SUBSONG); got != 0 {
+		t.Fatalf("MEDIA_SUBSONG = %d, want 0", got)
+	}
+	if got := readBusMem32(h, MEDIA_CTRL); got != MEDIA_OP_PLAY {
+		t.Fatalf("MEDIA_CTRL = %d, want play command", got)
+	}
+}
+
+func TestRefmanCh23MODPointerByteStagingExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	sound := newTestSoundChip()
+	player := NewMODPlayer(sound, SAMPLE_RATE)
+	program := `10 REM STAGE MOD POINTER $00100000
+20 POKE8 &H000F0BC0,0
+30 POKE8 &H000F0BC1,0
+40 POKE8 &H000F0BC2,16
+50 POKE8 &H000F0BC3,0
+60 PRINT PEEK8(&H000F0BC0),PEEK8(&H000F0BC1)
+70 PRINT PEEK8(&H000F0BC2),PEEK8(&H000F0BC3)`
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		player.AttachBus(h.bus)
+		h.bus.MapIO(MOD_PLAY_PTR, MOD_END, player.HandlePlayRead, player.HandlePlayWrite)
+	})
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"0", "0", "16", "0"}) {
+		t.Fatalf("MOD pointer byte-staging output = %q, want 0 0 then 16 0", out)
+	}
+	if got := readBusMem32(h, MOD_PLAY_PTR); got != 0x00100000 {
+		t.Fatalf("MOD staged PTR = 0x%X, want 0x00100000", got)
+	}
+}
+
+func TestRefmanCh23SysInfoRAMSizeWordsExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM SYSINFO RAM SIZE WORDS
+20 TL=PEEK(&H000F2400)
+30 TH=PEEK(&H000F2404)
+40 AL=PEEK(&H000F2408)
+50 AH=PEEK(&H000F240C)
+60 PRINT "TOTAL LO/HI ";TL,TH
+70 PRINT "ACTIVE LO/HI ";AL,AH`
+	out, _ := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		RegisterSysInfoMMIO(h.bus, 4096, 2048)
+	})
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"TOTAL", "LO/HI", "4096", "0", "ACTIVE", "LO/HI", "2048", "0"}) {
+		t.Fatalf("SysInfo output = %q, want total/active low and high words", out)
+	}
+}
+
+func TestRefmanCh23VBlankPollingExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM READ THE VBLANK FLAG FROM VIDEOCHIP
+20 V=PEEK(&H000F0008)
+30 IF (V AND 1)=0 THEN GOTO 20
+40 REM DO SOMETHING AT THE START OF VBLANK`
+	out, _ := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		h.bus.SetVideoStatusReader(func(addr uint32) uint32 {
+			return 1
+		})
+	})
+	requireNoBasicError(t, out)
+}
+
+func TestRefmanCh23TerminalByteOutputExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM EMIT A BANNER ONE BYTE AT A TIME
+20 B$="INTUITION ENGINE"
+30 FOR I=1 TO LEN(B$)
+40 POKE8 &H000F0700,ASC(MID$(B$,I,1))
+50 NEXT I
+60 POKE8 &H000F0700,13`
+	out, _ := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if !strings.Contains(out, "INTUITION ENGINE\r") {
+		t.Fatalf("terminal byte output = %q, want banner followed by carriage return", out)
 	}
 }
 
@@ -4618,6 +7336,44 @@ func TestHW_TED_Scroll(t *testing.T) {
 	}
 }
 
+func TestRefmanCh6TEDMulticolourTextExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	var ted *TEDVideoEngine
+	program := `10 TED ON
+20 POKE &H000F0F20, &H18
+30 POKE &H000F0F24, &H18
+40 POKE &H000F0F30, &H06
+50 POKE &H000F0F34, &H72
+60 POKE &H000F0F38, &H75
+70 POKE &H000F0F40, &H71
+80 FOR R=0 TO 7
+90 POKE8 &H000F3800+2*8+R,&H1B
+100 NEXT R
+110 FOR I=0 TO 999
+120 POKE8 &H000F3000+I,2
+130 POKE8 &H000F3400+I,&H77
+140 NEXT I`
+
+	execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		ted = NewTEDVideoEngine(h.bus)
+		h.bus.MapIO(TED_VIDEO_BASE, TED_VIDEO_END, ted.HandleRead, ted.HandleWrite)
+		h.bus.MapIO(TED_V_VRAM_BASE, TED_V_VRAM_BASE+TED_V_VRAM_SIZE-1, ted.HandleBusVRAMRead, ted.HandleBusVRAMWrite)
+	})
+
+	if got := ted.HandleRead(TED_V_CTRL2); got&TED_V_CTRL2_MCM == 0 {
+		t.Fatalf("TED multicolour text example: MCM bit not set, CTRL2=0x%02X", got)
+	}
+	if got := ted.HandleVRAMRead(0); got != 2 {
+		t.Fatalf("TED multicolour text example: matrix[0]=0x%02X, want 0x02", got)
+	}
+	if got := ted.HandleVRAMRead(TED_V_MATRIX_SIZE); got != 0x77 {
+		t.Fatalf("TED multicolour text example: colour[0]=0x%02X, want 0x77", got)
+	}
+	if got := ted.HandleVRAMRead(TED_V_MATRIX_SIZE + TED_V_COLOR_SIZE + 2*8); got != 0x1B {
+		t.Fatalf("TED multicolour text example: glyph byte=0x%02X, want 0x1B", got)
+	}
+}
+
 // =============================================================================
 // ANTIC: MODE, CHBASE, PMBASE, NMI tests
 // =============================================================================
@@ -4655,6 +7411,229 @@ func TestHW_ANTIC_Nmi(t *testing.T) {
 	nmien := readBusMem32(h, 0xF2130) // ANTIC_NMIEN
 	if nmien != 192 {
 		t.Fatalf("ANTIC NMI: expected 192, got %d", nmien)
+	}
+}
+
+func TestRefmanCh7ANTICTextCheckerboardExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	var antic *ANTICEngine
+	program := `10 DL=&H0200:SCR=&H0300:CH=&H0800
+20 FOR R=0 TO 7
+30 POKE8 CH+8+R,&HFF
+40 NEXT R
+50 POKE8 DL+0,&H42
+60 POKE8 DL+1,SCR AND 255
+70 POKE8 DL+2,INT(SCR/256)
+80 FOR I=0 TO 22
+90 POKE8 DL+3+I,2
+100 NEXT I
+110 POKE8 DL+26,&H41
+120 POKE8 DL+27,DL AND 255
+130 POKE8 DL+28,INT(DL/256)
+140 FOR Y=0 TO 23
+150 FOR X=0 TO 39
+160 POKE8 SCR+Y*40+X,(X+Y) AND 1
+170 NEXT X
+180 NEXT Y
+190 ANTIC CHBASE INT(CH/256)
+200 GTIA COLOR 0,&H04
+210 GTIA COLOR 1,&H9A
+220 GTIA COLOR 4,&H00
+230 ANTIC DLIST DL
+240 ANTIC MODE &H22
+250 ANTIC ON`
+
+	_, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		antic = NewANTICEngine(h.bus)
+		h.bus.MapIO(ANTIC_BASE, ANTIC_END, antic.HandleRead, antic.HandleWrite)
+		h.bus.MapIO(GTIA_BASE, GTIA_END, antic.HandleRead, antic.HandleWrite)
+	})
+
+	if got := antic.HandleRead(ANTIC_DMACTL); got != ANTIC_DMA_DL|ANTIC_DMA_NORMAL {
+		t.Fatalf("ANTIC checkerboard example: DMACTL=0x%02X, want 0x22", got)
+	}
+	if got := antic.HandleRead(ANTIC_CHBASE); got != 0x08 {
+		t.Fatalf("ANTIC checkerboard example: CHBASE=0x%02X, want 0x08", got)
+	}
+	if got := readBusMem8(h, 0x0200); got != DL_LMS|DL_MODE2 {
+		t.Fatalf("ANTIC checkerboard example: display-list first byte=0x%02X, want 0x42", got)
+	}
+	if got := readBusMem8(h, 0x0301); got != 1 {
+		t.Fatalf("ANTIC checkerboard example: screen byte 1=0x%02X, want 0x01", got)
+	}
+	if got := readBusMem8(h, 0x0808); got != 0xFF {
+		t.Fatalf("ANTIC checkerboard example: glyph byte=0x%02X, want 0xFF", got)
+	}
+
+	frame := antic.RenderFrame(nil)
+	if got, want := anticTestPixel(frame, ANTIC_BORDER_LEFT, ANTIC_BORDER_TOP), anticRGBA(0x04); got != want {
+		t.Fatalf("ANTIC checkerboard example: blank cell pixel=%v, want %v", got, want)
+	}
+	if got, want := anticTestPixel(frame, ANTIC_BORDER_LEFT+8, ANTIC_BORDER_TOP), anticRGBA(0x9A); got != want {
+		t.Fatalf("ANTIC checkerboard example: solid cell pixel=%v, want %v", got, want)
+	}
+}
+
+func TestRefmanCh7GTIALuminanceBarsExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	var antic *ANTICEngine
+	program := `10 DL=&H0200:SCR=&H0300
+20 POKE8 DL+0,&H48
+30 POKE8 DL+1,SCR AND 255
+40 POKE8 DL+2,INT(SCR/256)
+50 POKE8 DL+3,&H41
+60 POKE8 DL+4,DL AND 255
+70 POKE8 DL+5,INT(DL/256)
+80 FOR Y=0 TO 7
+90 FOR X=0 TO 39
+100 POKE8 SCR+Y*40+X,X AND 15
+110 NEXT X
+120 NEXT Y
+130 GTIA COLOR 0,&H00
+140 GTIA COLOR 1,&HA0
+150 GTIA COLOR 4,&H02
+160 GTIA PRIOR &H40
+170 ANTIC DLIST DL
+180 ANTIC MODE &H22
+190 ANTIC ON`
+
+	execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		antic = NewANTICEngine(h.bus)
+		h.bus.MapIO(ANTIC_BASE, ANTIC_END, antic.HandleRead, antic.HandleWrite)
+		h.bus.MapIO(GTIA_BASE, GTIA_END, antic.HandleRead, antic.HandleWrite)
+	})
+
+	if got := antic.HandleRead(GTIA_PRIOR); got != GTIA_PRIOR_GTIA1 {
+		t.Fatalf("GTIA luminance example: PRIOR=0x%02X, want 0x40", got)
+	}
+	frame := antic.RenderFrame(nil)
+	if got, want := anticTestPixel(frame, ANTIC_BORDER_LEFT, ANTIC_BORDER_TOP), anticRGBA(0x00); got != want {
+		t.Fatalf("GTIA luminance example: first bar=%v, want %v", got, want)
+	}
+	if got, want := anticTestPixel(frame, ANTIC_BORDER_LEFT+8, ANTIC_BORDER_TOP), anticRGBA(0xA1); got != want {
+		t.Fatalf("GTIA luminance example: second bar=%v, want %v", got, want)
+	}
+	if got, want := anticTestPixel(frame, ANTIC_BORDER_LEFT+15*8, ANTIC_BORDER_TOP), anticRGBA(0xAF); got != want {
+		t.Fatalf("GTIA luminance example: bright bar=%v, want %v", got, want)
+	}
+}
+
+func TestRefmanCh7ANTICMode14RibbonExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	var antic *ANTICEngine
+	program := `10 DL=&H0200:SCR=&H0300
+20 POKE8 DL+0,&H4E
+30 POKE8 DL+1,SCR AND 255
+40 POKE8 DL+2,INT(SCR/256)
+50 FOR I=0 TO 14
+60 POKE8 DL+3+I,&H0E
+70 NEXT I
+80 POKE8 DL+18,&H41
+90 POKE8 DL+19,DL AND 255
+100 POKE8 DL+20,INT(DL/256)
+110 FOR Y=0 TO 15
+120 FOR X=0 TO 39
+130 A=SCR+Y*40+X
+140 IF (X AND 1)=0 THEN POKE8 A,&H1B ELSE POKE8 A,&HE4
+150 NEXT X
+160 NEXT Y
+170 GTIA COLOR 0,&H24
+180 GTIA COLOR 1,&H46
+190 GTIA COLOR 2,&H9A
+200 GTIA COLOR 3,&HCE
+210 GTIA COLOR 4,&H00
+220 ANTIC DLIST DL
+230 ANTIC MODE &H22
+240 ANTIC ON`
+
+	_, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		antic = NewANTICEngine(h.bus)
+		h.bus.MapIO(ANTIC_BASE, ANTIC_END, antic.HandleRead, antic.HandleWrite)
+		h.bus.MapIO(GTIA_BASE, GTIA_END, antic.HandleRead, antic.HandleWrite)
+	})
+
+	if got := antic.HandleRead(ANTIC_DMACTL); got != ANTIC_DMA_DL|ANTIC_DMA_NORMAL {
+		t.Fatalf("ANTIC mode14 example: DMACTL=0x%02X, want 0x22", got)
+	}
+	if got := readBusMem8(h, 0x0300); got != 0x1B {
+		t.Fatalf("ANTIC mode14 example: first bitmap byte=0x%02X, want 0x1B", got)
+	}
+	frame := antic.RenderFrame(nil)
+	for _, tc := range []struct {
+		x    int
+		want uint8
+	}{
+		{0, 0x24},
+		{2, 0x46},
+		{4, 0x9A},
+		{6, 0xCE},
+		{8, 0xCE},
+	} {
+		if got, want := anticTestPixel(frame, ANTIC_BORDER_LEFT+tc.x, ANTIC_BORDER_TOP), anticRGBA(tc.want); got != want {
+			t.Fatalf("ANTIC mode14 example: pixel x=%d got %v, want %v", tc.x, got, want)
+		}
+	}
+}
+
+func TestRefmanCh7GTIAPlayerMissileExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	var antic *ANTICEngine
+	program := `10 DL=&H0200:SCR=&H0300:CH=&H0800
+20 FOR R=0 TO 7
+30 POKE8 CH+8+R,&HFF
+40 NEXT R
+50 POKE8 DL+0,&H42
+60 POKE8 DL+1,SCR AND 255
+70 POKE8 DL+2,INT(SCR/256)
+80 FOR I=0 TO 22
+90 POKE8 DL+3+I,2
+100 NEXT I
+110 POKE8 DL+26,&H41
+120 POKE8 DL+27,DL AND 255
+130 POKE8 DL+28,INT(DL/256)
+140 FOR Y=0 TO 23
+150 FOR X=0 TO 39
+160 POKE8 SCR+Y*40+X,(X+Y) AND 1
+170 NEXT X
+180 NEXT Y
+190 ANTIC CHBASE INT(CH/256)
+200 GTIA COLOR 0,&H04
+210 GTIA COLOR 1,&H9A
+220 GTIA COLOR 4,&H00
+230 GTIA COLOR 5,&H46
+240 GTIA COLOR 7,&HCE
+250 GTIA GRACTL 3
+260 GTIA PLAYER 0,110,1
+270 GTIA MISSILE 2,190
+280 FOR Y=0 TO 191
+290 GTIA GRAFP 0,&H3C
+300 GTIA GRAFM 4
+310 POKE &H000F2120,0
+320 NEXT Y
+330 ANTIC DLIST DL
+340 ANTIC MODE &H2E
+350 ANTIC ON`
+
+	execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		antic = NewANTICEngine(h.bus)
+		h.bus.MapIO(ANTIC_BASE, ANTIC_END, antic.HandleRead, antic.HandleWrite)
+		h.bus.MapIO(GTIA_BASE, GTIA_END, antic.HandleRead, antic.HandleWrite)
+	})
+
+	if got := antic.HandleRead(GTIA_GRACTL); got != GTIA_GRACTL_PLAYER|GTIA_GRACTL_MISSILE {
+		t.Fatalf("GTIA player/missile example: GRACTL=0x%02X, want 0x03", got)
+	}
+	if got := antic.HandleRead(GTIA_SIZEP0); got != 1 {
+		t.Fatalf("GTIA player/missile example: SIZEP0=0x%02X, want 0x01", got)
+	}
+	frame := antic.RenderFrame(nil)
+	playerX := ANTIC_BORDER_LEFT + 110 - 48 + 2*2
+	missileX := ANTIC_BORDER_LEFT + 190 - 48
+	if got, want := anticTestPixel(frame, playerX, ANTIC_BORDER_TOP), anticRGBA(0x46); got != want {
+		t.Fatalf("GTIA player/missile example: player pixel=%v, want %v", got, want)
+	}
+	if got, want := anticTestPixel(frame, missileX, ANTIC_BORDER_TOP), anticRGBA(0xCE); got != want {
+		t.Fatalf("GTIA player/missile example: missile pixel=%v, want %v", got, want)
 	}
 }
 
@@ -4832,8 +7811,8 @@ func TestHW_PSG_Stop(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 PSG PLAY 32768, 2048\n20 PSG STOP")
 	ctrl := readBusMem32(h, 0xF0C18) // PSG_PLAY_CTRL
-	if ctrl != 0 {
-		t.Fatalf("PSG STOP: CTRL expected 0, got %d", ctrl)
+	if ctrl != 2 {
+		t.Fatalf("PSG STOP: CTRL expected 2, got %d", ctrl)
 	}
 }
 
@@ -4911,6 +7890,178 @@ func TestHW_POKEY_PlusOff(t *testing.T) {
 // TED audio: TONE, VOL, NOISE, PLUS, PLAY, STOP tests
 // =============================================================================
 
+func execStmtTestWithTEDAudio(t *testing.T, asmBin string, program string) (string, *ehbasicTestHarness, *TEDEngine) {
+	t.Helper()
+	sound := newTestSoundChip()
+	ted := NewTEDEngine(sound, SAMPLE_RATE)
+	out, h := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
+		sound.AttachBus(h.bus)
+		h.bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
+		h.bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterWrite8)
+		h.bus.MapIO(TED_BASE, TED_END, ted.HandleRead, ted.HandleWrite)
+	})
+	return out, h, ted
+}
+
+func TestRefmanCh16TEDFirstToneExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM TED FIRST TONE
+20 POKE &H000F0800,1
+30 REM SET FREQUENCY, THEN ENABLE OUTPUT
+40 TED TONE 1,900
+50 POKE8 &H000F0F03,&H18`
+	out, _, ted := execStmtTestWithTEDAudio(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := ted.HandleRead(TED_FREQ1_LO); got != 0x84 {
+		t.Fatalf("TED first tone freq1 lo = 0x%02X, want 0x84", got)
+	}
+	if got := ted.HandleRead(TED_FREQ1_HI); got != 0x03 {
+		t.Fatalf("TED first tone freq1 hi = 0x%02X, want 0x03", got)
+	}
+	if got := ted.HandleRead(TED_SND_CTRL); got != 0x18 {
+		t.Fatalf("TED first tone ctrl = 0x%02X, want 0x18", got)
+	}
+}
+
+func TestRefmanCh16TEDTwoVoicesExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM TED TWO VOICES
+20 POKE &H000F0800,1
+30 REM LOAD BOTH 10 BIT FREQUENCIES
+40 TED TONE 1,900
+50 TED TONE 2,940
+60 REM ENABLE BOTH VOICES AT VOLUME 8
+70 POKE8 &H000F0F03,&H38`
+	out, _, ted := execStmtTestWithTEDAudio(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := ted.HandleRead(TED_FREQ1_LO); got != 0x84 {
+		t.Fatalf("TED two voices freq1 lo = 0x%02X, want 0x84", got)
+	}
+	if got := ted.HandleRead(TED_FREQ2_LO); got != 0xAC {
+		t.Fatalf("TED two voices freq2 lo = 0x%02X, want 0xAC", got)
+	}
+	if got := ted.HandleRead(TED_FREQ2_HI); got != 0x03 {
+		t.Fatalf("TED two voices freq2 hi = 0x%02X, want 0x03", got)
+	}
+	if got := ted.HandleRead(TED_SND_CTRL); got != 0x38 {
+		t.Fatalf("TED two voices ctrl = 0x%02X, want 0x38", got)
+	}
+}
+
+func TestRefmanCh16TEDNoiseHitExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM TED NOISE HIT
+20 POKE &H000F0800,1
+30 REM VOICE 2 CLOCKS THE NOISE
+40 TED TONE 2,990
+50 FOR V=8 TO 0 STEP -1
+60 REM VOICE 2 ON, NOISE ON, VOLUME V
+70 POKE8 &H000F0F03,&H60+V
+80 FOR Q=1 TO 80
+90 NEXT Q
+100 NEXT V
+110 POKE8 &H000F0F03,0`
+	out, _, ted := execStmtTestWithTEDAudio(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := ted.HandleRead(TED_FREQ2_LO); got != 0xDE {
+		t.Fatalf("TED noise hit freq2 lo = 0x%02X, want 0xDE", got)
+	}
+	if got := ted.HandleRead(TED_FREQ2_HI); got != 0x03 {
+		t.Fatalf("TED noise hit freq2 hi = 0x%02X, want 0x03", got)
+	}
+	if got := ted.HandleRead(TED_SND_CTRL); got != 0 {
+		t.Fatalf("TED noise hit final ctrl = 0x%02X, want 0", got)
+	}
+}
+
+func TestRefmanCh16TEDTinyArpExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM TED TINY ARP
+20 POKE &H000F0800,1
+30 REM VOICE 1 ON AT VOLUME 8
+40 POKE8 &H000F0F03,&H18
+50 FOR I=0 TO 127
+60 REM REPEAT FOUR REGISTER VALUES
+70 N=I-INT(I/4)*4
+80 IF N=0 THEN D=860
+90 IF N=1 THEN D=900
+100 IF N=2 THEN D=930
+110 IF N=3 THEN D=960
+120 TED TONE 1,D
+130 FOR Q=1 TO 40
+140 NEXT Q
+150 NEXT I
+160 POKE8 &H000F0F03,0`
+	out, _, ted := execStmtTestWithTEDAudio(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := ted.HandleRead(TED_FREQ1_LO); got != 0xC0 {
+		t.Fatalf("TED tiny arp final freq1 lo = 0x%02X, want 0xC0", got)
+	}
+	if got := ted.HandleRead(TED_FREQ1_HI); got != 0x03 {
+		t.Fatalf("TED tiny arp final freq1 hi = 0x%02X, want 0x03", got)
+	}
+	if got := ted.HandleRead(TED_SND_CTRL); got != 0 {
+		t.Fatalf("TED tiny arp final ctrl = 0x%02X, want 0", got)
+	}
+}
+
+func TestRefmanCh16TEDPlusCompareExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM TED PLUS COMPARE
+20 POKE &H000F0800,1
+30 TED TONE 1,920
+40 POKE8 &H000F0F03,&H18
+50 REM LISTEN TO PLAIN TED FIRST
+60 FOR T=1 TO 2500
+70 NEXT T
+80 TED PLUS ON
+90 PRINT PEEK8(&H000F0F05)
+100 REM NOW LISTEN TO TED PLUS
+110 FOR T=1 TO 2500
+120 NEXT T
+130 TED PLUS OFF
+140 PRINT PEEK8(&H000F0F05)
+150 POKE8 &H000F0F03,0`
+	out, _, ted := execStmtTestWithTEDAudio(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if fields := strings.Fields(out); !slices.Equal(fields, []string{"1", "0"}) {
+		t.Fatalf("TED Plus compare output = %q, want 1 then 0", out)
+	}
+	if ted.TEDPlusEnabled() {
+		t.Fatal("TED Plus still enabled after TED PLUS OFF")
+	}
+	if got := ted.HandleRead(TED_PLUS_CTRL) & 1; got != 0 {
+		t.Fatalf("TED Plus readback = %d, want 0", got)
+	}
+	if got := ted.HandleRead(TED_SND_CTRL); got != 0 {
+		t.Fatalf("TED Plus compare final ctrl = 0x%02X, want 0", got)
+	}
+}
+
+func TestRefmanCh16TEDMemoryPlaybackDoesNotStopImmediately(t *testing.T) {
+	asmBin := buildAssembler(t)
+	program := `10 REM TED MEMORY PLAYBACK
+20 REM START A TED MUSIC BLOCK
+30 TED PLAY &H00010000,4096
+40 S=TED STATUS
+50 PRINT S
+60 IF S AND 2 THEN PRINT "TED ERROR"`
+	out, h := execStmtTestWithBus(t, asmBin, program)
+	requireNoBasicError(t, out)
+	if got := readBusMem32(h, TED_PLAY_PTR); got != 0x00010000 {
+		t.Fatalf("TED PLAY PTR = 0x%X, want 0x00010000", got)
+	}
+	if got := readBusMem32(h, TED_PLAY_LEN); got != 4096 {
+		t.Fatalf("TED PLAY LEN = %d, want 4096", got)
+	}
+	if got := readBusMem32(h, TED_PLAY_CTRL); got != 1 {
+		t.Fatalf("TED PLAY CTRL = %d, want 1 start command", got)
+	}
+	if strings.Contains(out, "TED ERROR") {
+		t.Fatalf("TED memory playback example printed unexpected error: %q", out)
+	}
+}
+
 func TestHW_TED_Tone(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// TED TONE 1, 440 → freq 440=0x1B8, lo=0xB8, hi=0x01
@@ -4938,8 +8089,8 @@ func TestHW_TED_NoiseOn(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 TED NOISE ON")
 	ctrl := readBusMem8(h, 0xF0F03) // TED_SND_CTRL
-	if ctrl&0x80 == 0 {
-		t.Fatalf("TED NOISE ON: bit 7 not set, ctrl=0x%02X", ctrl)
+	if ctrl&0x40 == 0 {
+		t.Fatalf("TED NOISE ON: bit 6 not set, ctrl=0x%02X", ctrl)
 	}
 }
 
@@ -4947,8 +8098,8 @@ func TestHW_TED_NoiseOff(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 TED NOISE ON\n20 TED NOISE OFF")
 	ctrl := readBusMem8(h, 0xF0F03) // TED_SND_CTRL
-	if ctrl&0x80 != 0 {
-		t.Fatalf("TED NOISE OFF: bit 7 still set, ctrl=0x%02X", ctrl)
+	if ctrl&0x40 != 0 {
+		t.Fatalf("TED NOISE OFF: bit 6 still set, ctrl=0x%02X", ctrl)
 	}
 }
 
@@ -4991,8 +8142,8 @@ func TestHW_TED_AudioStop(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 TED PLAY 65536, 4096\n20 TED STOP")
 	ctrl := readBusMem32(h, 0xF0F18) // TED_PLAY_CTRL
-	if ctrl != 0 {
-		t.Fatalf("TED STOP: CTRL expected 0, got %d", ctrl)
+	if ctrl != 2 {
+		t.Fatalf("TED STOP: CTRL expected 2, got %d", ctrl)
 	}
 }
 
@@ -5818,7 +8969,7 @@ func TestHW_Sound_Overdrive(t *testing.T) {
 func TestHW_Sound_NoiseMode(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 SOUND NOISE 0, 2")
-	mode := readBusMem32(h, 0xF09E0) // NOISE_MODE
+	mode := readBusMem32(h, 0xF0A80+0x2C) // FLEX_CH0_BASE + FLEX_OFF_NOISEMODE
 	if mode != 2 {
 		t.Fatalf("SOUND NOISE mode: expected 2, got %d", mode)
 	}
@@ -5842,9 +8993,9 @@ func TestHW_Sound_Sweep(t *testing.T) {
 	asmBin := buildAssembler(t)
 	_, h := execStmtTestWithBus(t, asmBin, "10 SOUND SWEEP 0, 1, 7, 3")
 	// CH0 base = 0xF0A80, SWEEP at +0x10
-	// Packed: enable=1 | (period=7 << 8) | (shift=3 << 16) = 1 | 0x700 | 0x30000 = 0x30701
+	// Packed: bit 7 enable, bits 4-6 period, bits 0-2 shift.
 	sweep := readBusMem32(h, 0xF0A80+0x10)
-	expected := uint32(1 | (7 << 8) | (3 << 16))
+	expected := uint32(0x80 | (7 << 4) | 3)
 	if sweep != expected {
 		t.Fatalf("SOUND SWEEP: expected 0x%X, got 0x%X", expected, sweep)
 	}
@@ -6718,6 +9869,39 @@ func TestEhBASIC_SidStatus(t *testing.T) {
 	}
 }
 
+func TestEhBASIC_PokeyStatus(t *testing.T) {
+	asmBin := buildAssembler(t)
+	// POKEY STATUS reads the POKEY player status register (initially 0).
+	out := execStmtTest(t, asmBin,
+		"10 PRINT POKEY STATUS")
+	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
+	if out != "0" {
+		t.Fatalf("POKEY STATUS: expected '0', got %q", out)
+	}
+}
+
+func TestEhBASIC_AhxStatus(t *testing.T) {
+	asmBin := buildAssembler(t)
+	// AHX STATUS reads the AHX play status register (initially 0).
+	out := execStmtTest(t, asmBin,
+		"10 PRINT AHX STATUS")
+	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
+	if out != "0" {
+		t.Fatalf("AHX STATUS: expected '0', got %q", out)
+	}
+}
+
+func TestEhBASIC_ModStatus(t *testing.T) {
+	asmBin := buildAssembler(t)
+	// MOD STATUS reads the full MOD play status register (initially 0).
+	out := execStmtTest(t, asmBin,
+		"10 PRINT MOD STATUS")
+	out = strings.TrimSpace(strings.TrimRight(out, "\r\n"))
+	if out != "0" {
+		t.Fatalf("MOD STATUS: expected '0', got %q", out)
+	}
+}
+
 // execStmtTestWithVideo is like execStmtTestWithBus but also attaches the
 // global VideoChip to the bus so that BLIT and VRAM operations work.
 func execStmtTestWithVideo(t *testing.T, asmBin string, program string, maxCycles int) (string, *ehbasicTestHarness, *VideoChip) {
@@ -6982,6 +10166,56 @@ func TestHW_Save_Simple(t *testing.T) {
 	expected := "10 PRINT \"HELLO\"\n20 SAVE \"test.bas\"\n"
 	if string(got) != expected {
 		t.Errorf("expected %q, got %q", expected, string(got))
+	}
+}
+
+func TestRefmanCh34FileIOMMIOExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+
+	program := `10 REM NAME BUFFER AND DATA BUFFER
+20 N=&H00720000:D=&H00720100
+30 REM "NOTE.TXT",0
+40 POKE8 N,78:POKE8 N+1,79:POKE8 N+2,84:POKE8 N+3,69
+50 POKE8 N+4,46:POKE8 N+5,84:POKE8 N+6,88:POKE8 N+7,84
+60 POKE8 N+8,0
+70 REM FILE DATA "IE"
+80 POKE8 D,73:POKE8 D+1,69
+90 POKE &H000F2200,N
+100 POKE &H000F2204,D
+110 POKE &H000F2208,2
+120 POKE &H000F220C,2
+130 PRINT "WRITE ";PEEK(&H000F2210)
+140 REM CLEAR THE BUFFER AND READ THE FILE BACK
+150 POKE8 D,0:POKE8 D+1,0
+160 POKE &H000F220C,1
+170 PRINT "READ ";PEEK(&H000F2210)
+180 PRINT "LEN ";PEEK(&H000F2214)
+190 PRINT PEEK8(D);PEEK8(D+1)`
+
+	out, h := execStmtTestWithFileIO(t, asmBin, tmpDir, program)
+	if !strings.Contains(out, "WRITE") || !strings.Contains(out, "READ") || !strings.Contains(out, "LEN") {
+		t.Fatalf("Chapter 34 example did not print expected labels, got %q", out)
+	}
+
+	got, err := os.ReadFile(filepath.Join(tmpDir, "NOTE.TXT"))
+	if err != nil {
+		t.Fatalf("Chapter 34 example did not create NOTE.TXT: %v", err)
+	}
+	if string(got) != "IE" {
+		t.Fatalf("NOTE.TXT content expected %q, got %q", "IE", string(got))
+	}
+	if status := h.bus.Read32(FILE_STATUS); status != 0 {
+		t.Fatalf("FILE_STATUS expected 0, got %d", status)
+	}
+	if resultLen := h.bus.Read32(FILE_RESULT_LEN); resultLen != 2 {
+		t.Fatalf("FILE_RESULT_LEN expected 2, got %d", resultLen)
+	}
+	if got0 := h.bus.Read8(0x720100); got0 != 73 {
+		t.Fatalf("read-back byte 0 expected 73, got %d", got0)
+	}
+	if got1 := h.bus.Read8(0x720101); got1 != 69 {
+		t.Fatalf("read-back byte 1 expected 69, got %d", got1)
 	}
 }
 
@@ -7711,6 +10945,35 @@ func execStmtTestWithCoproc(t *testing.T, asmBin string, program string, baseDir
 		h.bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
 	})
 	return out, h, mgr
+}
+
+func TestRefmanCh31CoprocessorNoWorkerExample(t *testing.T) {
+	asmBin := buildAssembler(t)
+	prog := `10 REM PUT REQUEST AND RESPONSE BUFFERS IN SHARED RAM
+20 REQ=&H00030000:RESP=&H00030100
+30 POKE REQ,123
+40 REM ASK CPU TYPE 3, THE 6502, TO RUN OPERATION 1
+50 T=COCALL(3,1,REQ,4,RESP,4)
+60 PRINT "TICKET ";T
+70 PRINT "CMD ";PEEK(&H000F2348)
+80 PRINT "ERR ";PEEK(&H000F234C)
+90 PRINT "WORKERS ";PEEK(&H000F2374)`
+
+	out, h, _ := execStmtTestWithCoproc(t, asmBin, prog, t.TempDir())
+	for _, label := range []string{"TICKET", "CMD", "ERR", "WORKERS"} {
+		if !strings.Contains(out, label) {
+			t.Fatalf("chapter 31 coprocessor example output missing %q: %q", label, out)
+		}
+	}
+	if got := h.bus.Read32(COPROC_CMD_STATUS); got != COPROC_STATUS_ERROR {
+		t.Fatalf("chapter 31 coprocessor example CMD_STATUS = %d, want %d", got, COPROC_STATUS_ERROR)
+	}
+	if got := h.bus.Read32(COPROC_CMD_ERROR); got != COPROC_ERR_NO_WORKER {
+		t.Fatalf("chapter 31 coprocessor example CMD_ERROR = %d, want %d", got, COPROC_ERR_NO_WORKER)
+	}
+	if got := h.bus.Read32(COPROC_TICKET); got != 0 {
+		t.Fatalf("chapter 31 coprocessor example ticket = %d, want 0", got)
+	}
 }
 
 // TestEhBASIC_CocallReturnsZeroOnFailure verifies that COCALL() returns 0

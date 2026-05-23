@@ -81,7 +81,7 @@ base byte (`$BD` for `<`, `$BB` for `>`) followed by the raw second
 character (`=` or `>`). EhBASIC inspects the pair at run time. This
 keeps the token alphabet small.
 
-## A.4 Statement tokens (`$80`–`$E1`)
+## A.4 Statement tokens (`$80`-`$E1`)
 
 These tokens share their byte values with the 1980s 68K EhBASIC. Where a
 word is marked **Function**, it returns a value and may appear only in an
@@ -185,7 +185,7 @@ expression. Where it is marked **Statement**, it begins a command.
 `VARPTR` is a function. Using `VARPTR` in statement position is reported
 as an UNKNOWN STATEMENT error.
 
-## A.6 Hardware-extension tokens (`$E2`–`$FF`)
+## A.6 Hardware-extension tokens (`$E2`-`$FF`)
 
 The IE-specific commands live here. They begin a statement; the bytes
 that follow are arguments. See the chapters listed in the right-hand
@@ -199,11 +199,11 @@ column for the syntax of each one.
 | `$E5` | TK_PALETTE     | PALETTE    | 3  |
 | `$E6` | TK_VSYNC_CMD   | VSYNC      | 3  |
 | `$E7` | TK_LOCATE      | LOCATE     | 5  |
-| `$E8` | TK_COLOR       | COLOR      | 3  |
+| `$E8` | TK_COLOR       | COLOR      | 5  |
 | `$E9` | TK_LINE_CMD    | LINE       | 5  |
 | `$EA` | TK_CIRCLE      | CIRCLE     | 5  |
 | `$EB` | TK_BOX         | BOX        | 5  |
-| `$EC` | TK_SCROLL_CMD  | SCROLL     | 4  |
+| `$EC` | TK_SCROLL_CMD  | SCROLL     | 5  |
 | `$ED` | TK_COPPER      | COPPER     | 4  |
 | `$EE` | TK_BLIT        | BLIT       | 4  |
 | `$EF` | TK_SOUND       | SOUND      | 11 |

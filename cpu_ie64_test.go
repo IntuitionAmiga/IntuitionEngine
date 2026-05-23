@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -81,6 +84,356 @@ func (r *ie64TestRig) executeN(instructions ...[]byte) {
 	r.cpu.Execute()
 }
 
+func refmanCh24IE64SoundChipChordProgram() []byte {
+	var program []byte
+	emit := func(instr []byte) {
+		program = append(program, instr...)
+	}
+
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, AUDIO_CTRL))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 1))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 2, 0, 0))
+
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, SQUARE_FREQ))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 262*256))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, 0))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xBE))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 2, 0, 4))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 2))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 2, 0, 8))
+
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, TRI_FREQ))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 330*256))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, 0))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0x96))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 2, 0, 4))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 2))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 2, 0, 8))
+
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, SINE_FREQ))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 392*256))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, 0))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0x82))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 2, 0, 4))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 2))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_B, 0, 2, 0, 8))
+	emit(ie64Instr(OP_BRA, 0, IE64_SIZE_Q, 0, 0, 0, 0))
+
+	return program
+}
+
+func refmanCh24IE64Mode7Program() []byte {
+	var program []byte
+	emit := func(instr []byte) {
+		program = append(program, instr...)
+	}
+
+	const (
+		textureAddr = 0x1800
+	)
+
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, textureAddr))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0x00FF0000))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, 0))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0x0000FF00))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, 4))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0x000000FF))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, 8))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0x00FFFFFF))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, 12))
+
+	emit(ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, VIDEO_REG_BASE))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, bltOpMode7))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_OP))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, textureAddr))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_SRC))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, VRAM_START))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_DST))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 16))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_WIDTH))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_HEIGHT))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 8))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_SRC_STRIDE))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, uint32(VideoModes[DEFAULT_VIDEO_MODE].bytesPerRow)))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_DST_STRIDE))
+	emit(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_MODE7_U0))
+	emit(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_MODE7_V0))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0x4000))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_MODE7_DU_COL))
+	emit(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_MODE7_DV_COL))
+	emit(ie64Instr(OP_STORE, 0, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_MODE7_DU_ROW))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_MODE7_DV_ROW))
+	emit(ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 1))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_MODE7_TEX_W))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_MODE7_TEX_H))
+	emit(ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, VIDEO_REG_OFFSET_BLT_CTRL))
+	emit(ie64Instr(OP_BRA, 0, IE64_SIZE_Q, 0, 0, 0, 0))
+
+	return program
+}
+
+func extractRefmanCh24MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
+	t.Helper()
+	path := filepath.Join(repoRootDir(t), "sdk", "docs", "refman", "24-ie64.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+
+	text := string(data)
+	start := strings.Index(text, heading)
+	if start < 0 {
+		t.Fatalf("heading %q not found in %s", heading, path)
+	}
+	section := text[start:]
+	if next := strings.Index(section[len(heading):], "\n## "); next >= 0 {
+		section = section[:len(heading)+next]
+	}
+
+	var program []byte
+	wantAddr := startAddr
+	for _, rawLine := range strings.Split(section, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "(ie64)> w ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			t.Fatalf("malformed Chapter 24 monitor write line: %q", line)
+		}
+		addr, err := strconv.ParseUint(fields[2], 16, 64)
+		if err != nil {
+			t.Fatalf("parse monitor write address %q: %v", fields[2], err)
+		}
+		if addr != wantAddr {
+			t.Fatalf("Chapter 24 monitor write address = 0x%X, want 0x%X", addr, wantAddr)
+		}
+		for _, field := range fields[3:] {
+			value, err := strconv.ParseUint(field, 16, 8)
+			if err != nil {
+				t.Fatalf("parse monitor write byte %q: %v", field, err)
+			}
+			program = append(program, byte(value))
+			wantAddr++
+		}
+	}
+	if len(program) == 0 {
+		t.Fatal("no Chapter 24 monitor byte writes found")
+	}
+	return program
+}
+
+func TestRefmanCh24IE64SoundChipChordExample(t *testing.T) {
+	wantProgram := refmanCh24IE64SoundChipChordProgram()
+	docProgram := extractRefmanCh24MonitorBytes(t, "## 24.10 A small example", PROG_START)
+	if !bytes.Equal(docProgram, wantProgram) {
+		t.Fatalf("Chapter 24 byte listing does not match expected IE64 encoding\n got: % X\nwant: % X", docProgram, wantProgram)
+	}
+
+	readMem := func(addr uint64, size int) []byte {
+		start := int(addr - PROG_START)
+		end := start + size
+		if start < 0 || end > len(docProgram) {
+			return nil
+		}
+		return docProgram[start:end]
+	}
+	lines := disassembleIE64(readMem, PROG_START, len(docProgram)/IE64_INSTR_SIZE)
+	wantMnemonics := []string{
+		"move.q r2, #$F0800",
+		"move.q r1, #$1",
+		"store.b r1, (r2)",
+		"move.q r2, #$F0900",
+		"move.q r1, #$10600",
+		"store.l r1, (r2)",
+		"move.q r1, #$BE",
+		"store.b r1, 4(r2)",
+		"move.q r1, #$2",
+		"store.b r1, 8(r2)",
+		"move.q r2, #$F0940",
+		"move.q r1, #$14A00",
+		"store.l r1, (r2)",
+		"move.q r1, #$96",
+		"store.b r1, 4(r2)",
+		"move.q r1, #$2",
+		"store.b r1, 8(r2)",
+		"move.q r2, #$F0980",
+		"move.q r1, #$18800",
+		"store.l r1, (r2)",
+		"move.q r1, #$82",
+		"store.b r1, 4(r2)",
+		"move.q r1, #$2",
+		"store.b r1, 8(r2)",
+		"bra $0010C0",
+	}
+	if len(lines) != len(wantMnemonics) {
+		t.Fatalf("disassembled %d lines, want %d", len(lines), len(wantMnemonics))
+	}
+	for i, want := range wantMnemonics {
+		if lines[i].Mnemonic != want {
+			t.Fatalf("disassembly line %d = %q, want %q", i, lines[i].Mnemonic, want)
+		}
+	}
+
+	bus := NewMachineBus()
+	sound := newTestSoundChip()
+	sound.AttachBus(bus)
+	bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
+	bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterWrite8)
+	cpu := NewCPU64(bus)
+	copy(cpu.memory[PROG_START:], docProgram)
+	cpu.PC = PROG_START
+	adapter := NewDebugIE64(cpu)
+	for range len(wantMnemonics) - 1 {
+		adapter.Step()
+	}
+
+	if got := sound.HandleRegisterRead(AUDIO_CTRL); got&1 == 0 {
+		t.Fatalf("AUDIO_CTRL = 0x%X, want enabled", got)
+	}
+	mem := bus.GetMemory()
+	checkVoice := func(name string, channel int, base uint32, freq, volume uint32) {
+		t.Helper()
+		if got := binary.LittleEndian.Uint32(mem[base : base+4]); got != freq {
+			t.Fatalf("%s shadow frequency register = 0x%X, want 0x%X", name, got, freq)
+		}
+		if got := binary.LittleEndian.Uint32(mem[base+4 : base+8]); got != volume {
+			t.Fatalf("%s shadow volume register = 0x%X, want 0x%X", name, got, volume)
+		}
+		if got := binary.LittleEndian.Uint32(mem[base+8 : base+12]); got != 2 {
+			t.Fatalf("%s shadow control register = 0x%X, want 0x2", name, got)
+		}
+		sound.mu.Lock()
+		ch := sound.channels[channel]
+		gotFreq := ch.frequency
+		gotVolume := ch.volume
+		gotEnabled := ch.enabled
+		gotGate := ch.gate
+		sound.mu.Unlock()
+		if math.Abs(float64(gotFreq-float32(freq)/256.0)) > 0.001 {
+			t.Fatalf("%s channel frequency = %f, want %f", name, gotFreq, float32(freq)/256.0)
+		}
+		if math.Abs(float64(gotVolume-float32(volume)/255.0)) > 0.001 {
+			t.Fatalf("%s channel volume = %f, want %f", name, gotVolume, float32(volume)/255.0)
+		}
+		if !gotEnabled || !gotGate {
+			t.Fatalf("%s channel enabled=%v gate=%v, want both true", name, gotEnabled, gotGate)
+		}
+	}
+	checkVoice("square", 0, SQUARE_FREQ, 262*256, 0xBE)
+	checkVoice("triangle", 1, TRI_FREQ, 330*256, 0x96)
+	checkVoice("sine", 2, SINE_FREQ, 392*256, 0x82)
+	if cpu.PC != 0x10C0 {
+		t.Fatalf("PC after setup = 0x%X, want 0x10C0", cpu.PC)
+	}
+}
+
+func TestRefmanCh24IE64Mode7GraphicsExample(t *testing.T) {
+	const startAddr = 0x1100
+	wantProgram := refmanCh24IE64Mode7Program()
+	docProgram := extractRefmanCh24MonitorBytes(t, "## 24.11 VideoChip Mode 7 example", startAddr)
+	if !bytes.Equal(docProgram, wantProgram) {
+		t.Fatalf("Chapter 24 Mode 7 byte listing does not match expected IE64 encoding\n got: % X\nwant: % X", docProgram, wantProgram)
+	}
+
+	readMem := func(addr uint64, size int) []byte {
+		start := int(addr - startAddr)
+		end := start + size
+		if start < 0 || end > len(docProgram) {
+			return nil
+		}
+		return docProgram[start:end]
+	}
+	lines := disassembleIE64(readMem, startAddr, len(docProgram)/IE64_INSTR_SIZE)
+	wantMnemonics := []string{
+		"move.q r2, #$1800",
+		"move.q r1, #$FF0000",
+		"store.l r1, (r2)",
+		"move.q r1, #$FF00",
+		"store.l r1, 4(r2)",
+		"move.q r1, #$FF",
+		"store.l r1, 8(r2)",
+		"move.q r1, #$FFFFFF",
+		"store.l r1, 12(r2)",
+		"move.q r2, #$F0000",
+		"move.q r1, #$5",
+		"store.l r1, 32(r2)",
+		"move.q r1, #$1800",
+		"store.l r1, 36(r2)",
+		"move.q r1, #$100000",
+		"store.l r1, 40(r2)",
+		"move.q r1, #$10",
+		"store.l r1, 44(r2)",
+		"store.l r1, 48(r2)",
+		"move.q r1, #$8",
+		"store.l r1, 52(r2)",
+		"move.q r1, #$F00",
+		"store.l r1, 56(r2)",
+		"store.l r0, 88(r2)",
+		"store.l r0, 92(r2)",
+		"move.q r1, #$4000",
+		"store.l r1, 96(r2)",
+		"store.l r0, 100(r2)",
+		"store.l r0, 104(r2)",
+		"store.l r1, 108(r2)",
+		"move.q r1, #$1",
+		"store.l r1, 112(r2)",
+		"store.l r1, 116(r2)",
+		"store.l r1, 28(r2)",
+		"bra $001210",
+	}
+	if len(lines) != len(wantMnemonics) {
+		t.Fatalf("disassembled %d lines, want %d", len(lines), len(wantMnemonics))
+	}
+	for i, want := range wantMnemonics {
+		if lines[i].Mnemonic != want {
+			t.Fatalf("disassembly line %d = %q, want %q", i, lines[i].Mnemonic, want)
+		}
+	}
+
+	bus := NewMachineBus()
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(bus)
+	bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+
+	cpu := NewCPU64(bus)
+	copy(cpu.memory[startAddr:], docProgram)
+	cpu.PC = startAddr
+	adapter := NewDebugIE64(cpu)
+	for range len(wantMnemonics) - 1 {
+		adapter.Step()
+	}
+
+	wantTexture := []uint32{0x00FF0000, 0x0000FF00, 0x000000FF, 0x00FFFFFF}
+	for i, want := range wantTexture {
+		addr := uint32(0x1800 + i*4)
+		if got := binary.LittleEndian.Uint32(bus.GetMemory()[addr : addr+4]); got != want {
+			t.Fatalf("texture word %d = 0x%08X, want 0x%08X", i, got, want)
+		}
+	}
+	mode := VideoModes[DEFAULT_VIDEO_MODE]
+	checkPixel := func(x, y int, want uint32) {
+		t.Helper()
+		addr := VRAM_START + uint32((y*mode.width+x)*BYTES_PER_PIXEL)
+		if got := video.HandleRead(addr); got != want {
+			t.Fatalf("pixel %d,%d = 0x%08X, want 0x%08X", x, y, got, want)
+		}
+	}
+	checkPixel(0, 0, 0x00FF0000)
+	checkPixel(4, 0, 0x0000FF00)
+	checkPixel(0, 4, 0x000000FF)
+	checkPixel(4, 4, 0x00FFFFFF)
+	if got := video.HandleRead(BLT_STATUS); got&bltStatusErr != 0 {
+		t.Fatalf("BLT_STATUS = 0x%X, want no error", got)
+	}
+	if cpu.PC != 0x1210 {
+		t.Fatalf("PC after setup = 0x%X, want 0x1210", cpu.PC)
+	}
+}
+
 // ===========================================================================
 // Step 2a: Constructor and Basic State
 // ===========================================================================
@@ -95,11 +448,14 @@ func TestIE64_NewCPU(t *testing.T) {
 	if cpu.regs[31] != STACK_START {
 		t.Fatalf("R31 (SP) = 0x%X, want 0x%X", cpu.regs[31], STACK_START)
 	}
+	if cpu.regs[30] != STACK_START {
+		t.Fatalf("R30 (guest SP) = 0x%X, want 0x%X", cpu.regs[30], STACK_START)
+	}
 	if cpu.regs[0] != 0 {
 		t.Fatalf("R0 = %d, want 0", cpu.regs[0])
 	}
 	// All other registers should be zero
-	for i := 1; i < 31; i++ {
+	for i := 1; i < 30; i++ {
 		if cpu.regs[i] != 0 {
 			t.Fatalf("R%d = %d, want 0", i, cpu.regs[i])
 		}

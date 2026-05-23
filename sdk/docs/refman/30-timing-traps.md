@@ -17,7 +17,7 @@ exception machinery, but they all share one bus, one clock, and
 one shared set of interrupt sources. This chapter describes that
 common ground: how time is counted, how each CPU receives an
 interrupt, how exceptions are raised, and how the IRQ diagnostics
-block at `0xF23C0` makes all of it visible.
+block at `$F23C0` makes all of it visible.
 
 ## 30.1 The shared clock
 
@@ -31,9 +31,8 @@ For BASIC programs there is no need to count cycles directly: the
 `WAIT` statement, the audio engines' own clocks, and the video
 chip's VBlank flag are usually enough. For machine code that wants
 precise control, each per-CPU chapter lists the published cycle
-counts for its instruction set; the cycle counts are accurate to
-the canonical manuals for the heritage chips and to the
-the IE64 and IE32 chapters for the native chips.
+counts for its instruction set. Use those chapter tables and
+Appendix G as the Intuition Engine reference.
 
 ## 30.2 Timer
 
@@ -50,10 +49,43 @@ If `TIMER_CTRL` has both enable bits set, the reload raises the
 IE64 timer interrupt through `CR_INTR_VEC`.
 
 The legacy `TIMER_*` MMIO names are reserved compatibility
-symbols, not the timer interface. The `0xF0800` block belongs to
+symbols, not the timer interface. The `$F0800` block belongs to
 the SoundChip. Programs on the other CPUs should use `WAIT`,
 VBlank/status polling, device interrupts, or a chip-specific
-clock source instead of `0xF0804` and `0xF0808`.
+clock source instead of `$F0804` and `$F0808`.
+
+### 30.2.1 BASIC polling example
+
+`WAIT` is the native BASIC timing primitive for memory-visible
+events. The test is `((PEEK(addr) EOR xor) AND mask) <> 0`; omit
+`xor` when the comparison value is zero.
+
+Type this listing:
+
+```basic
+10 REM CHOOSE A WORD OF SHARED RAM
+20 A=&H00050000
+30 REM CLEAR IT, THEN SHOW THE STARTING VALUE
+40 POKE A,0
+50 PRINT "BEFORE ";PEEK(A)
+60 REM SET BIT 2 AND WAIT FOR THAT BIT
+70 POKE A,4
+80 WAIT A,4
+90 PRINT "AFTER ";PEEK(A)
+```
+
+Line `20` chooses an ordinary shared-memory word. Lines `40` and
+`50` prove the word starts clear. Line `70` sets bit `2`, and line
+`80` waits for that same bit. The program
+prints `BEFORE 0` and `AFTER 4`. Replace line `70` with a device
+action when you want to wait for a VBlank flag, a blitter done
+bit, or another hardware status bit.
+
+Do not use one-argument `WAIT` as a delay. BASIC `WAIT` always
+needs an address and a mask because it polls a memory-visible
+event. For a plain delay between two sound or video writes, use
+the device's own status bit, `VSYNC` where it is available, or a
+small `FOR ... NEXT` loop.
 
 ## 30.3 Interrupt sources
 
@@ -80,7 +112,7 @@ lines:
   non-maskable; IE does not raise it.
 - x86: a single `INTR` line plus `NMI` (vector `2`). The vector
   number is supplied by the interrupting device.
-- IE32: a single interrupt vector at memory `0x0004`.
+- IE32: a single interrupt vector at memory `$0004`.
 - IE64: the trap vector in `CR_TRAP_VEC`, or the timer-specific
   `CR_INTR_VEC`.
 
@@ -105,8 +137,8 @@ The five canonical trap causes that every CPU can raise:
 
 | Cause                  | 6502        | Z80         | M68K vector | x86 vector | IE32 / IE64          |
 |------------------------|-------------|-------------|-------------|------------|----------------------|
-| Reset                  | `0xFFFC`/`D`| `RESET` pin | `0`/`1`     | `EIP=0`    | `0x0000`              |
-| Divide by zero         | (none)      | (none)      | `5`         | `0`        | IE64 `FAULT_WRITE_DENIED` sibling fault |
+| Reset                  | `$FFFC`/`$FFFD` | `RESET` pin | `0`/`1` | `EIP=0`    | `$0000`              |
+| Divide by zero         | (none)      | (none)      | `5`         | `0`        | IE32 stops with a division-by-zero error; IE64 integer divide/modulo by zero writes `0` and does not trap |
 | Illegal opcode         | (none)      | (none)      | `4`         | `6`        | IE64 `FAULT_ILLEGAL_INSTRUCTION` |
 | Privilege violation    | (none)      | (none)      | `8`         | `13`       | IE64 `FAULT_PRIV`     |
 | Software trap          | `BRK`       | `RST n`     | `TRAP #n`   | `INT n`    | IE64 `SYSCALL`        |
@@ -116,24 +148,29 @@ The five canonical trap causes that every CPU can raise:
 
 The smaller CPUs simply do not have the silicon to detect some of
 these; an illegal opcode on the 6502, for example, just executes
-the corresponding undocumented operation (see Chapter 26 §26.6).
+the corresponding undocumented operation. See Chapter 26,
+section 26.6.
+
+IE64 floating-point divide-by-zero is an FPU status condition. Read the
+FPU status register described in Chapter 24 when a program needs to
+distinguish it from an ordinary finite result.
 
 ## 30.6 The IRQ diagnostics block
 
-The `32`-byte block at `0xF23C0` reports interrupt activity in
+The `32`-byte block at `$F23C0` reports interrupt activity in
 real time. Programs do not normally need it; it is here for
 debugging stuck handlers.
 
 | Address   | Name                | Reports                                     |
 |-----------|---------------------|---------------------------------------------|
-| `0xF23C0` | `IRQ_DIAG_ISR`      | Interrupt-in-service bitmask                |
-| `0xF23C4` | `IRQ_DIAG_FLAGS`    | b0 stopped, b1 in-exception, b2 INTENA, b3 running |
-| `0xF23C8` | `IRQ_DIAG_PENDING`  | Pending-interrupt bitmask                   |
-| `0xF23CC` | `IRQ_DIAG_COUNTERS` | L5 delivered (lo16) + L4 delivered (hi16)   |
-| `0xF23D0` | `IRQ_DIAG_BLOCKED`  | L5 blocked (lo16) + L4 blocked (hi16)       |
-| `0xF23D4` | `IRQ_DIAG_RTE`      | RTE count                                   |
-| `0xF23D8` | `IRQ_DIAG_STOP_SPINS`| Consecutive STOP iterations without wake   |
-| `0xF23DC` | `IRQ_DIAG_WATCHDOG` | Latched watchdog event count                |
+| `$F23C0` | `IRQ_DIAG_ISR`      | Interrupt-in-service bitmask                |
+| `$F23C4` | `IRQ_DIAG_FLAGS`    | b0 stopped, b1 in-exception, b2 INTENA, b3 running |
+| `$F23C8` | `IRQ_DIAG_PENDING`  | Pending-interrupt bitmask                   |
+| `$F23CC` | `IRQ_DIAG_COUNTERS` | L5 delivered (lo16) + L4 delivered (hi16)   |
+| `$F23D0` | `IRQ_DIAG_BLOCKED`  | L5 blocked (lo16) + L4 blocked (hi16)       |
+| `$F23D4` | `IRQ_DIAG_RTE`      | RTE count                                   |
+| `$F23D8` | `IRQ_DIAG_STOP_SPINS` | Consecutive STOP iterations without wake  |
+| `$F23DC` | `IRQ_DIAG_WATCHDOG` | Latched watchdog event count                |
 
 The counters are most useful when the M68K is the active CPU. A
 non-zero `IRQ_DIAG_BLOCKED` value plus a stable `STOP_SPINS`
@@ -146,32 +183,32 @@ the IRQ was deferred indefinitely.
 Reset is the universal exception: every CPU has one, and it always
 runs to completion before any other code executes.
 
-- **IE64** - `PC = 0x0000`, all GPRs zeroed, MMU disabled, mode =
-  supervisor. The reset vector is the first instruction of the
-  loaded image; convention is `JMP PROG_START`.
-- **IE32** - `PC = 0x0000`, `SP = STACK_START` (`0x9F000`),
-  interrupts disabled. Convention is `JMP 0x1000`.
-- **6502** - `PC` is loaded from `0xFFFC`/`0xFFFD`, `I` flag set.
-- **Z80** - `PC = 0x0000`, interrupt mode set to `0`, IFF1 and
+- **IE64** - `PC = $0000`, all GPRs zeroed, MMU disabled, mode =
+  supervisor. The low-RAM entry convention is `JMP PROG_START`.
+- **IE32** - `PC = $0000`, `SP = STACK_START` (`$9F000`),
+  interrupts disabled. Convention is `JMP $1000`.
+- **6502** - `PC` is loaded from `$FFFC`/`$FFFD`, `I` flag set.
+- **Z80** - `PC = $0000`, interrupt mode set to `0`, IFF1 and
   IFF2 cleared.
 - **M68K** - `SSP` loaded from vector `0`, `PC` loaded from
   vector `1`. Supervisor mode entered. `I2:I1:I0 = 7` (all
   interrupts masked).
-- **x86** - `EIP = 0x00000000`, all segments cleared to `0`,
+- **x86** - `EIP = $00000000`, all segments cleared to `0`,
   `IF = 1`.
 
-On Intuition Engine the boot sequence loads the program executable
-into low RAM and then issues a reset on the chosen CPU, which
-makes the program's first instruction the effective reset vector.
-Chapter 31 covers the executor in detail.
+On Intuition Engine the selected CPU is reset after memory has
+been prepared for the chosen profile. The first instruction seen
+by the CPU is therefore the profile's reset entry: low RAM for
+IE64 and IE32 examples, the 6502 reset vector, vectors `0` and `1`
+on M68K, or `EIP = 0` for x86. Chapter 31 covers cross-CPU
+cooperation.
 
 ## 30.8 Timing on the heritage CPUs
 
-The heritage chips have well-known cycle counts for every
-instruction; their canonical manuals are the authority. Intuition
-Engine's cycle counters tick at one master-clock tick per CPU
-cycle, so an instruction documented as `4` cycles consumes four
-ticks of the timer.
+The heritage chips have published cycle counts for every
+instruction in this guide. Intuition Engine's cycle counters tick
+at one master-clock tick per CPU cycle, so an instruction listed
+as `4` cycles consumes four ticks of the timer.
 
 The smaller CPUs run at the speed of the master clock divided by
 a per-CPU scaling factor: the 6502 and Z80 each get roughly the

@@ -37,6 +37,7 @@ __pycache__/
 # Local agent/tool state
 .claude/
 .codex
+.antigravitycli/
 
 # Local Go/build outputs
 /build/*

@@ -166,6 +166,23 @@ func TestWAVPlayerMMIOStatus(t *testing.T) {
 	}
 }
 
+func TestWAVPlayerMMIOPauseResume(t *testing.T) {
+	player, _ := newTestWAVPlayer(t)
+
+	player.HandlePlayWrite(WAV_PLAY_CTRL, 8) // pause
+	if status := player.HandlePlayRead(WAV_PLAY_STATUS); status&0x4 == 0 {
+		t.Fatalf("expected paused status bit after pause, got 0x%X", status)
+	}
+	if ctrl := player.HandlePlayRead(WAV_PLAY_CTRL); ctrl&0x8 == 0 {
+		t.Fatalf("expected paused control bit after pause, got 0x%X", ctrl)
+	}
+
+	player.HandlePlayWrite(WAV_PLAY_CTRL, 0) // resume without retriggering
+	if status := player.HandlePlayRead(WAV_PLAY_STATUS); status&0x4 != 0 {
+		t.Fatalf("expected paused status bit to clear after resume, got 0x%X", status)
+	}
+}
+
 func TestWAVPlayerMMIOPosition(t *testing.T) {
 	player, bus := newTestWAVPlayer(t)
 

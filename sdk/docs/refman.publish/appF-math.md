@@ -22,7 +22,7 @@ single-page reference.
 | `RND(x)`   | sign-sensitive  | `x > 0`: next pseudo-random in `[0,1)`. `x = 0`: repeat last value. `x < 0`: reseed with `INT(x)` and emit first draw. |
 | `FRE(x)`   | argument ignored | Bytes of free BASIC program / variable storage. |
 | `POS(x)`   | argument ignored | Current cursor column on the terminal. |
-| `USR(x)`   | any number      | Call user machine-code routine; see `DEF USR` in Chapter 2. |
+| `USR(x)`   | address         | Call an IE64 user machine-code routine; see Chapter 2. |
 | `PEEK(a)`  | address         | `32`-bit aligned read of memory at `a`. |
 | `PEEK8(a)` | address         | Byte-width read. |
 | `DEEK(a)`  | address         | `16`-bit aligned read (low half). |
@@ -40,11 +40,9 @@ single-page reference.
 | `LEFT$(s$,n)`     | First `n` bytes of `s$`. |
 | `RIGHT$(s$,n)`    | Last `n` bytes of `s$`. |
 | `MID$(s$,p[,n])`  | `n` bytes of `s$` starting at byte position `p` (1-based). With one argument, returns everything from `p` to the end. |
-| `SPC(n)`          | `n` spaces; only valid inside `PRINT`. |
 | `TAB(n)`          | Move cursor to column `n`; only valid inside `PRINT`. |
 | `HEX$(n)`         | Uppercase hexadecimal text form of `n`. |
 | `BIN$(n)`         | Binary text form of `n`. |
-| `OCT$(n)`         | Octal text form of `n`. |
 
 ## F.3 Derived identities
 

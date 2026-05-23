@@ -315,18 +315,24 @@ hw_sound:
     jsr     fp_int
     jsr     fp_fix
     move.q  r22, r8              ; R22 = channel
+    jsr     hw_calc_ch_base      ; R22 = base address
+    push    r22
     ; Parse comma + mode
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C
-    bne     r1, r2, .snd_done
+    bne     r1, r2, .snd_noise_done
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    la      r3, NOISE_MODE
+    pop     r22
+    add.q   r3, r22, #FLEX_OFF_NOISEMODE
     store.l r8, (r3)
+    rts
+.snd_noise_done:
+    pop     r22
     rts
 
 ; --- SOUND WAVE ch, type ---
@@ -398,10 +404,13 @@ hw_sound:
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    ; Pack sweep: enable | (period << 8) | (shift << 16)
-    lsl.l   r24, r24, #8
+    ; Pack sweep: bit 7 enable, bits 4-6 period, bits 0-2 shift.
+    and.l   r23, r23, #1
+    lsl.l   r23, r23, #7
+    and.l   r24, r24, #7
+    lsl.l   r24, r24, #4
     or.l    r23, r23, r24
-    lsl.l   r1, r8, #16
+    and.l   r1, r8, #7
     or.l    r23, r23, r1
 .snd_sweep_write:
     pop     r22
@@ -649,7 +658,7 @@ hw_filter:
     rts
 
 ; ============================================================================
-; hw_psg - PSG ch,freq,vol / PSG PLUS ON/OFF / PSG PLAY/STOP
+; hw_psg - PSG ch,divider,vol / PSG PLUS ON/OFF / PSG PLAY/STOP
 ; ============================================================================
 
 hw_psg:
@@ -672,28 +681,35 @@ hw_psg:
     beq     r1, r2, .psg_env
     move.q  r2, #0xF0
     beq     r1, r2, .psg_env
-    ; Otherwise it's PSG ch,freq,vol - numeric expression
+    ; Otherwise it's PSG ch,divider,vol - numeric expression
     ; Parse channel
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    move.q  r22, r8              ; ch (0-3)
+    move.q  r22, r8              ; ch (0-2)
+    move.q  r2, #2
+    bgt     r22, r2, .psg_done
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C
     bne     r1, r2, .psg_done
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
-    ; Parse freq
+    ; Parse 12-bit tone divider
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    ; PSG freq register: pairs at POKEY_AUDF1 + ch*2
-    ; (PSG uses the same register layout)
+    move.q  r23, r8
+    ; AY tone divider: low byte at reg ch*2, high nibble at reg ch*2+1.
     mulu.l  r1, r22, #2
     la      r2, PSG_BASE
     add.q   r1, r1, r2
-    store.b r8, (r1)             ; freq divider
+    and.l   r3, r23, #0xFF
+    store.b r3, (r1)
+    lsr.l   r3, r23, #8
+    and.l   r3, r3, #0x0F
+    add.q   r1, r1, #1
+    store.b r3, (r1)
     ; Parse vol
     jsr     exec_skip_spaces
     load.b  r1, (r17)
@@ -704,11 +720,11 @@ hw_psg:
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    ; Volume in control register: PSG_BASE + ch*2 + 1
-    mulu.l  r1, r22, #2
-    add.q   r1, r1, #1
-    la      r2, PSG_BASE
-    add.q   r1, r1, r2
+    ; Level register: PSG_BASE + 8 + ch, low 4 bits.
+    and.l   r8, r8, #0x0F
+    la      r1, PSG_BASE
+    add.q   r1, r1, #8
+    add.q   r1, r1, r22
     store.b r8, (r1)
     rts
 .psg_p_cmd:
@@ -770,7 +786,8 @@ hw_psg:
     add.q   r17, r17, #1
     jsr     skip_alpha
     la      r1, PSG_PLAY_CTRL
-    store.l r0, (r1)
+    move.q  r2, #2
+    store.l r2, (r1)
     rts
 .psg_mixer:
     ; Skip sub-command - write to PSG mixer register
@@ -1089,7 +1106,11 @@ hw_pokey:
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    move.q  r22, r8              ; ch (1-4) → 0-based
+    move.q  r22, r8              ; ch (1-4) -> 0-based
+    move.q  r2, #1
+    blt     r22, r2, .pokey_done
+    move.q  r2, #4
+    bgt     r22, r2, .pokey_done
     sub.l   r22, r22, #1
     jsr     exec_skip_spaces
     load.b  r1, (r17)
@@ -1312,7 +1333,8 @@ hw_ted_audio:
     add.q   r17, r17, #1
     jsr     skip_alpha
     la      r1, TED_PLAY_CTRL
-    store.l r0, (r1)
+    move.q  r2, #2
+    store.l r2, (r1)
 .teda_done:
     rts
 

@@ -59,8 +59,8 @@ one stereo output stream.
    SID  ------+
    SID2 ------+
    SID3 ------+
-   POKEY -----+--->  Mixer  --->  Filter ---> Reverb ---> Overdrive ---> Output
-   TED audio -+      (sum,         (per-       (global)    (global)
+   POKEY -----+--->  Mixer  --->  Overdrive ---> Filter ---> Reverb ---> Output
+   TED audio -+      (sum,         (global)      (global)    (global)
    AHX -------+       per-chip      voice)
    MOD -------+       gain,
    WAV -------+       per-chip
@@ -71,14 +71,16 @@ one stereo output stream.
 
 The SoundChip's own filter, the SID family's resonant filter, and
 the engine-internal effects all feed the mix before the global
-filter / reverb / overdrive stage; the global effects apply once
+overdrive / filter / reverb stage; the global effects apply once
 per output sample to the summed signal.
 
 ## K.3 The system bus
 
-Every CPU and every device hangs off one shared 32-bit bus. The
-bus arbitrates simultaneous accesses on a round-robin basis;
-there is no priority encoding above the CPU / DMA distinction.
+Every CPU and every device hangs off one shared `64`-bit physical bus.
+The bus carries `64`-bit physical addresses and supports `8`, `16`,
+`32`, and `64`-bit transfers through CPU and device adapters. It
+arbitrates simultaneous accesses on a round-robin basis; there is no
+priority encoding above the CPU / DMA distinction.
 
 ```
                   +--------------------+
@@ -94,8 +96,9 @@ there is no priority encoding above the CPU / DMA distinction.
                               |
                   +-----------+-----------+
                   |   System bus           |
-                  |   (32-bit data,        |
-                  |    24-bit address,     |
+                  |   (64-bit address,     |
+                  |    8/16/32/64-bit      |
+                  |    transfers,          |
                   |    arbitrated)         |
                   +-+---+---+---+---+---+--+
                     |   |   |   |   |   |
@@ -110,10 +113,11 @@ there is no priority encoding above the CPU / DMA distinction.
               Coprocessor ---------+
 ```
 
-The 8-bit CPUs (6502, Z80) reach the bus through an address
-translator that turns their 16-bit address space into the bus's
-24-bit form, with the bank registers described in Chapters 26
-and 27 selecting which translation applies.
+IE32, M68K, and x86 are `32`-bit bus clients. The 8-bit CPUs (6502,
+Z80) reach the bus through an address translator that turns their
+16-bit address space into selected low-window bus addresses, with the
+bank registers described in Chapters 26 and 27 selecting which
+translation applies.
 
 ## K.4 Coprocessor channels
 
@@ -145,7 +149,9 @@ others are available as workers when not booted.
 ## K.5 Bus translation for the small CPUs
 
 The 6502 and Z80 see the same overall bus through a 16-bit-to-
-24-bit translator. The translator has two independent functions:
+64-bit translator. In practice their documented apertures target the
+low memory and MMIO window. The translator has two independent
+functions:
 
 ```
    6502 / Z80 address (16-bit)
@@ -154,16 +160,16 @@ The 6502 and Z80 see the same overall bus through a 16-bit-to-
    +----+------------------------+
    | Decode page                 |
    |  - bank registers $F7xx? --> intercepted, never reach bus
-   |  - MMIO mirror $F0xx-$FFF9? -> +0xF0000 -> bus
+   |  - MMIO mirror $F000-$FFF9? -> +$F0000 -> bus
    |  - $E000-$EFFF banked window-> + bank * 4 KB -> bus
    |  - everything else --------- > main RAM page
    +----+------------------------+
         |
         v
-   bus address (24-bit)
+   bus address (64-bit, low-window value here)
 ```
 
 The bank registers at `$F700`-`$F705` (low/hi pairs for
 apertures 1, 2, 3) and `$F7F0` (aperture 0) are captured before the
 translator runs. A write to `$F700` does not reach
-`0xF0700`; it loads the low byte of bank register 1.
+`$F0700`; it loads the low byte of bank register 1.

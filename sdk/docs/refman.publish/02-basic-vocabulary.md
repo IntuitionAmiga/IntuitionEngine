@@ -7,6 +7,13 @@ short description, and an example. Hardware-related keywords give
 the chapter where the screen, sound, or input system they belong to
 is described in full.
 
+Do not read this chapter as a lesson. On a first pass, skim the
+headings so you know what BASIC can say, then continue to Chapter 3
+and make the machine draw. Return here when you need the exact spelling
+of a keyword or the argument order for a command. BASIC is the common
+door into the same bus machine used by the later graphics, sound, file,
+and processor chapters.
+
 ## 2.1 Notation
 
 The following conventions appear throughout this chapter and the
@@ -23,13 +30,14 @@ rest of the book:
 | *str-expr*     | Any string expression. |
 | *var*          | A numeric variable name. |
 | *str-var*      | A string variable name (ends with `$`). |
-| *line*         | A line number (0–4294967295). |
+| *line*         | A line number (0-4294967295). |
 | *addr*         | An integer expression interpreted as an address. |
 
 ## 2.2 Direct-mode commands
 
 These commands work only in direct mode. They are not part of the
-token table and may not appear inside a stored program line.
+stored program language and may not appear inside a stored program
+line.
 
 - **DIR** - list the names of files that BASIC can `LOAD`. See
   Chapter 34.
@@ -107,28 +115,42 @@ PRINT BIN$(10)
 
 `BITCLR `*addr*`, `*bit*
 
-Clears bit *bit* (0–7) of the byte at *addr*. *bit* outside that
+Clears bit *bit* (0-7) of the byte at *addr*. *bit* outside that
 range gives an unspecified result.
 
 ### BITSET
 
 `BITSET `*addr*`, `*bit*
 
-Sets bit *bit* (0–7) of the byte at *addr*.
+Sets bit *bit* (0-7) of the byte at *addr*.
 
 ### BITTST
 
 `BITTST(`*addr*`, `*bit*`)`
 
-Returns `-1` if bit *bit* (0–7) of the byte at *addr* is set, `0`
+Returns `-1` if bit *bit* (0-7) of the byte at *addr* is set, `0`
 if it is clear.
 
 ### BLIT
 
-`BLIT `*args*
+`BLIT COPY `*src*`, `*dst*`, `*w*`, `*h* [`,` *src-stride*`, `*dst-stride*]
 
-Copy a block of pixels from one display region to another. See
-Chapter 4.
+`BLIT FILL `*dst*`, `*w*`, `*h*`, `*colour* [`,` *dst-stride*]
+
+`BLIT LINE `*x0*`, `*y0*`, `*x1*`, `*y1*`, `*colour* [`,` *dst-stride*]
+
+`BLIT MEMCOPY `*src*`, `*dst*`, `*len*
+
+`BLIT M `*src*`, `*dst*`, `*len*
+
+`BLIT MODE7 `*src*`, `*dst*`, `*w*`, `*h*`, `*u0*`, `*v0*`, `*du-col*`, `*dv-col*`, `*du-row*`, `*dv-row*`, `*u-mask*`, `*v-mask* [`,` *src-stride*`, `*dst-stride*]
+
+`BLIT WAIT`
+
+Use the VideoChip blitter. `COPY` copies pixels, `FILL` fills a
+rectangle, `LINE` draws one line, `MEMCOPY` copies a byte span,
+`M` is the short form of `MEMCOPY`, `MODE7` performs affine texture
+mapping, and `WAIT` waits until the blitter is idle. See Chapter 4.
 
 ### BLOAD
 
@@ -136,8 +158,7 @@ Chapter 4.
 
 Load a binary file into memory beginning at *addr*. Both arguments
 are required; omitting the comma and address loads nothing. See
-Chapter 34. `BLOAD` shares the token byte `$A3`; `LIST` prints the
-byte as `BLOAD`.
+Chapter 34.
 
 ### BOX
 
@@ -187,9 +208,10 @@ Clear the screen. See Chapter 5.
 
 ### COLOR
 
-`COLOR `*args*
+`COLOR `*fg* [`,` *bg*]
 
-Set the active drawing colour. See Chapter 3.
+Set the VGA text-mode foreground and optional background colour used by
+`PRINT`. See Chapter 5.
 
 ### CONT
 
@@ -214,21 +236,20 @@ Returns the cosine of *expr*, where *expr* is in radians.
 
 `COSTART `*args*
 
-Start a coprocessor program. Not tokenised; recognised as a raw
-statement when the line runs. See Chapter 31.
+Start a coprocessor program. See Chapter 31.
 
 ### COSTOP
 
 `COSTOP `*args*
 
-Stop a coprocessor program. Not tokenised. See Chapter 31.
+Stop a coprocessor program. See Chapter 31.
 
 ### COWAIT
 
 `COWAIT `*args*
 
-Wait for a coprocessor to reach a synchronisation point. Not
-tokenised. See Chapter 31.
+Wait for a coprocessor to reach a synchronisation point. See
+Chapter 31.
 
 ### DATA
 
@@ -248,7 +269,7 @@ to the next colon, and parsed when `READ` consumes them.
 `DEC `*var*
 
 Subtract `1` from *var*. Equivalent to `LET `*var*` = `*var*` - 1`,
-but a single token.
+but shorter to type.
 
 ### DEEK
 
@@ -262,10 +283,8 @@ are zero.
 `DEF FN `*name*`(`*var*`) = `*expr*
 
 Define a user function with one parameter. The function is called
-later with `FN `*name*`(`*expr*`)`. `DEF` and `TROFF` share the
-token byte `$97`. When the byte stands alone (no `FN` follows), the
-statement handler treats it as `TROFF`. `LIST` always prints this
-byte as `TROFF`.
+later with `FN `*name*`(`*expr*`)`. Use the exact `DEF FN` form for
+user functions.
 
 ### DIM
 
@@ -411,8 +430,7 @@ FF
 `HOST `*subverb*
 
 Issue a HOST command. *subverb* is one of `NET`, `UPDATE`,
-`REBOOT`, `POWEROFF`, `HELP`. Not tokenised; recognised as a raw
-statement when the line runs. See Chapter 35.
+`REBOOT`, `POWEROFF`, `HELP`. See Chapter 35.
 
 ### IF
 
@@ -556,6 +574,13 @@ to the end.
 
 Returns the smaller of the two arguments.
 
+### MOD
+
+`MOD STATUS`
+
+Return the MOD player's status byte. Use `SOUND MOD PLAY`, `SOUND MOD
+STOP`, and `SOUND MOD FILTER` to control playback. See Chapter 19.
+
 ### NEW
 
 `NEW`
@@ -575,12 +600,6 @@ if omitted, the innermost loop is used.
 `NOT `*expr*
 
 Bitwise complement of `INT(`*expr*`)` as a signed 32-bit integer.
-
-### NULL
-
-There is no `NULL` keyword. The token byte `$92` is emitted only
-for the spelling `TRON`. The detokeniser also prints `TRON`. See
-**TRON**.
 
 ### ON
 
@@ -666,8 +685,8 @@ effects:
 | trailing `;`    | Suppress the closing newline. |
 | trailing `,`    | Insert one TAB byte; do not suppress the newline. |
 
-The single character `?` is recognised by the tokeniser as a short
-form of `PRINT`. `LIST` prints `PRINT`.
+The single character `?` is an alternate spelling of `PRINT`.
+`LIST` prints it as `PRINT`.
 
 ```basic
 PRINT "A"; "B"; "C"
@@ -731,9 +750,8 @@ always restarts from the first stored line. `RUN` preserves
 variables and arrays; only the `DATA` pointer and the control
 stack are reset.
 
-`RUN "`*filename*`"` is recognised as a direct-mode form by the
-prompt and hands off to external image execution (Chapter 34). It
-is not part of the BASIC keyword's own parser.
+`RUN "`*filename*`"` is a direct-mode form for running a saved
+program image. See Chapter 34.
 
 ### SADD
 
@@ -766,7 +784,7 @@ Select a screen mode. See Chapter 5.
 
 `SCROLL `*args*
 
-Scroll the screen. See Chapter 4.
+Scroll the VGA screen. See Chapter 5.
 
 ### SGN
 
@@ -862,18 +880,14 @@ See **FOR**.
 
 `TRIANGLE `*args*
 
-Rasterise a Voodoo triangle. See Chapter 9. The word `TRICOLOR` is
-recognised in argument position by the Voodoo dispatcher; it is
-left as literal characters by the tokeniser.
+Rasterise a Voodoo triangle. Use `TRICOLOR` in the argument list to
+give one colour for each vertex. See Chapter 9.
 
 ### TROFF
 
 `TROFF`
 
-Turn off line-by-line tracing. `TROFF` and `DEF` share the token
-byte `$97`. The handler treats a bare `$97` (no `FN` follows) as
-`TROFF`. `LIST` always prints this byte as `TROFF`, even if you
-typed `DEF`.
+Turn off line-by-line tracing.
 
 ### TRON
 
@@ -884,7 +898,7 @@ number is printed before its statements run.
 
 ### TWOPI
 
-The constant `6.283185` (two times π).
+The constant `6.283185` (two times pi).
 
 ### UCASE$
 
@@ -944,7 +958,7 @@ Program the Voodoo rasteriser. See Chapter 9.
 
 ### VSYNC
 
-`VSYNC `*args*
+`VSYNC`
 
 Wait for vertical retrace. See Chapter 3.
 
@@ -958,8 +972,9 @@ to `0`. `WAIT` returns after approximately one million polls if
 the condition is never met.
 
 ```basic
-REM Wait until bit 0 of the keyboard status is set
-WAIT &H00100004, 1
+REM WAIT UNTIL A COOKED KEY BYTE IS QUEUED
+WAIT &H000F072C,1
+PRINT PEEK(&H000F0728)
 ```
 
 ### WEND
@@ -967,8 +982,7 @@ WAIT &H00100004, 1
 `WEND`
 
 Alternate spelling of `UNTIL` when terminating a `WHILE` loop.
-`WEND` and `UNTIL` share the same token byte (`$AF`); `LIST`
-prints this byte as `UNTIL`.
+`LIST` prints this form as `UNTIL`.
 
 ### WHILE
 
@@ -977,11 +991,6 @@ prints this byte as `UNTIL`.
 Begin a loop that runs while *condition* is non-zero. The loop
 body runs until a matching `LOOP UNTIL` or `LOOP WHILE`. See
 **LOOP**.
-
-### WIDTH
-
-`WIDTH` is the internal name for token `$A3`. The tokeniser does
-not recognise the spelling `WIDTH`; use `BLOAD`. See **BLOAD**.
 
 ### XOR
 
@@ -1026,8 +1035,10 @@ those references:
 | Keyword                                       | Chapter |
 |-----------------------------------------------|---------|
 | SCREEN, CLS, PLOT, LINE, CIRCLE, BOX, LOCATE  | 5  |
-| PALETTE, VSYNC, COLOR                         | 3  |
-| SCROLL, COPPER, BLIT                          | 4  |
+| PALETTE, VSYNC                                | 3  |
+| COLOR                                         | 5  |
+| COPPER, BLIT                                  | 4  |
+| SCROLL                                        | 5  |
 | TED                                           | 6 (video), 16 (audio) |
 | ANTIC, GTIA                                   | 7  |
 | ULA                                           | 8  |
@@ -1037,6 +1048,7 @@ those references:
 | SID                                           | 15 |
 | POKEY, SAP                                    | 17 |
 | AHX                                           | 18 |
+| SOUND MOD, MOD STATUS                         | 19 |
 | HOST                                          | 35 |
 | COSTART, COSTOP, COWAIT                       | 31 |
 | CALL, USR                                     | 24 |

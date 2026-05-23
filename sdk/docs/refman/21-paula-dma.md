@@ -7,169 +7,267 @@ sources:
 
 # Chapter 21 - The Paula DMA Engine
 
-Paula is the Amiga's four-channel sample DMA chip. It reads
-signed-8-bit samples from main memory and streams them into the
-mixer at a pitch chosen by a per-channel **period** value. Unlike
-MOD (Chapter 19) which embeds and decodes a whole tracker file,
-the Paula engine is a low-level register interface: the program
-provides the sample bytes, the length, the period, and the
-volume, then enables DMA. The chip handles the rest.
+Paula is the four-channel sample DMA engine. It reads signed 8-bit
+sample bytes from memory and feeds them to four SoundChip DAC channels
+at rates chosen by Paula-style period values. The program supplies the
+sample address, length, period, and volume, then arms DMA with one
+control write.
 
-This is the engine of choice for ProTracker-style mixers written
-in CPU code, for streaming digitised audio (speech, custom
-samples), and for any program that wants direct DMA-driven sample
-playback without the overhead of a tracker engine.
+Use MOD playback in Chapter 19 for tracker modules. Use WAV playback in
+Chapter 20 for RIFF/WAVE files. Use Paula when you want exact control of
+raw sample buffers, completion status, double-buffering, and M68K level
+3 interrupts.
 
-## 21.1 What Paula can show
+## 21.1 First sound
 
-| Item              | Value                                  |
-|-------------------|----------------------------------------|
-| Channels          | `4`                                    |
-| Sample format     | Signed 8-bit                           |
-| Sample words      | 2 bytes per word (length is in words)  |
-| Period            | Paula PAL clock / period = sample rate |
-| Volume            | `0`–`64` per channel                   |
-| Interrupts        | One per channel on buffer completion   |
-| Clock             | `3,546,895` Hz (Paula PAL)             |
-
-## 21.2 The register block
-
-Paula lives in a 16-byte block per channel followed by three
-global registers, all at `0xF2260`–`0xF22AF`.
-
-### 21.2.1 Per-channel registers
-
-Each channel is 16 bytes; channel `n` (`n` = `0`–`3`) starts at
-`0xF2260 + n*16`.
-
-| Offset | Name              | Purpose |
-|--------|-------------------|---------|
-| `0x00` | `PTR`             | Sample data address (32-bit). |
-| `0x04` | `LEN`             | Length in **words** (1 word = 2 bytes). |
-| `0x08` | `PER`             | Period (output rate = `3,546,895 / PER`). |
-| `0x0C` | `VOL`             | Volume, `0`–`64`. Values above `64` clamp to `64`. |
-
-The channel base addresses are:
-
-| Channel | Base       | End        |
-|---------|------------|------------|
-| `0`     | `0xF2260`  | `0xF226F`  |
-| `1`     | `0xF2270`  | `0xF227F`  |
-| `2`     | `0xF2280`  | `0xF228F`  |
-| `3`     | `0xF2290`  | `0xF229F`  |
-
-### 21.2.2 Global registers
-
-| Address    | Name              | Purpose |
-|------------|-------------------|---------|
-| `0xF22A0`  | `AROS_AUD_DMACON` | DMA control. Set/clear bits select operation. |
-| `0xF22A4`  | `AROS_AUD_STATUS` | Per-channel completion flags (read; write `1` to clear). |
-| `0xF22A8`  | `AROS_AUD_INTENA` | Per-channel interrupt enable. |
-
-`DMACON` encoding:
-
-| Bit  | Meaning |
-|------|---------|
-| 15   | `1` = set the named bits; `0` = clear them. |
-| 0–3  | Channel mask (`1` = channel 0, `2` = channel 1, `4` = channel 2, `8` = channel 3). |
-
-To enable a channel, write `(0x8000 | mask)` to `DMACON`. To
-disable one, write `(mask)` with bit `15` clear.
-
-`STATUS` bits `0`–`3` are set by the chip when a channel's
-sample buffer is exhausted. The CPU clears them by writing the
-same bit back; a write of `0x0F` clears every flag.
-
-`INTENA` uses the same set-or-clear encoding as `DMACON`. Bit `15`
-chooses set (`1`) or clear (`0`); bits `0`–`3` are the channel
-mask. When `INTENA`'s bit for a channel is set and `STATUS`'s
-matching bit is raised, Paula asserts an interrupt on the M68K
-coprocessor (auto-vector level `3`).
-
-## 21.3 Programming model
-
-The shortest path to play one buffer on channel `0`:
-
-1. Place signed-8-bit sample data in memory.
-2. Write the data address to channel 0's `PTR`.
-3. Write the length in **words** (bytes / 2) to `LEN`.
-4. Write the period to `PER`. Period = `3,546,895 / desired_rate`.
-5. Write the volume (`0`–`64`) to `VOL`.
-6. Write `0x8001` to `DMACON` (set, channel 0).
-
-The chip reads samples at the chosen rate, sends them through the
-mixer, and on the last sample raises `STATUS` bit `0`. If
-`INTENA` bit `0` was also set, an interrupt is raised.
-
-### 21.3.1 Double-buffering
-
-After a channel starts, writing a new `PTR`/`LEN`/`PER`/`VOL`
-during playback stages those values as the **next** buffer.
-When the current buffer finishes, the chip switches to the
-staged buffer without a gap. This is the standard Amiga pattern
-for seamless streaming: the CPU prepares buffer N+1 while
-buffer N is playing.
-
-## 21.4 Period and pitch
-
-The Paula clock is `3,546,895` Hz. The output sample rate for
-period `PER` is
-
-```
-   rate = 3546895 / PER
-```
-
-A few useful periods:
-
-| Period | Rate (approx.) | Use |
-|--------|----------------|-----|
-| `124`  | `28,604` Hz    | High-quality sample. |
-| `253`  | `14,019` Hz    | ProTracker C-1 (PAL). |
-| `508`  | `6,983` Hz     | Lower-rate sample. |
-| `1015` | `3,494` Hz     | Speech, telephone-quality. |
-
-The minimum useful period is around `124`; values lower than
-that exceed the chip's ability to fetch samples at the right rate.
-
-## 21.5 Volume
-
-`VOL` is a 7-bit value in the range `0`–`64`. `0` mutes the
-channel; `64` is full volume. Writing more than `64` clamps to
-`64`. Volume changes apply at the start of the next sample.
-
-## 21.6 BASIC keywords
-
-There is no dedicated `PAULA` keyword. The chip is programmed by
-`POKE` from BASIC, or by direct stores from machine language.
-For higher-level playback, use the MOD player (Chapter 19),
-which builds its mixer on top of Paula-style sample logic; or
-load a tracker module through `SOUND PLAY` (Chapter 22).
-
-A BASIC fragment that plays a sample at the standard ProTracker
-C-1 rate:
+Type this program. It builds four signed 8-bit sine samples in memory
+and plays them as a short chord through all four Paula channels.
 
 ```basic
-10 POKE &H000F0800, 1                : REM AUDIO_CTRL = on
-20 BLOAD "sample.raw", &H200000
-30 POKE &H000F2260, &H00200000        : REM ch 0 PTR
-40 POKE &H000F2264, 8000              : REM 16000 bytes → 8000 words
-50 POKE &H000F2268, 253               : REM PER ≈ 14 kHz
-60 POKE &H000F226C, 64                : REM full volume
-70 POKE &H000F22A0, &H8001            : REM DMACON: set, channel 0
+10 REM PAULA FOUR CHANNEL CHORD
+20 POKE &H000F0800,1
+30 A=&H00120000:N=4096:P=253
+40 REM BUILD FOUR SIGNED 8 BIT SAMPLES
+50 FOR C=0 TO 3
+60 F=220
+70 IF C=1 THEN F=277
+80 IF C=2 THEN F=330
+90 IF C=3 THEN F=440
+100 FOR I=0 TO N-1
+110 V=INT(SIN(I*TWOPI*F/14019)*100)
+120 IF V<0 THEN V=V+256
+130 POKE8 A+C*N+I,V
+140 NEXT I
+150 NEXT C
+160 REM PTR, LEN, PERIOD, VOLUME
+170 FOR C=0 TO 3
+180 B=&H000F2260+C*16
+190 POKE B,A+C*N
+200 POKE B+4,N/2
+210 POKE B+8,P
+220 POKE B+12,40
+230 NEXT C
+240 REM CLEAR STATUS, THEN ARM ALL CHANNELS
+250 POKE &H000F22A4,15
+260 POKE &H000F22A0,&H800F
+270 FOR T=1 TO 3000
+280 NEXT T
+290 PRINT PEEK(&H000F22A4)
 ```
 
-To stop the channel, write `0x0001` to `DMACON` (clear, channel
-0). To clear the completion flag afterwards, write `1` to
-`STATUS`.
+You should hear a brief four-note chord. Line 290 prints the completion
+status; after the chord has ended, bits `0-3` are set.
 
-## 21.7 Putting it together
+Lines 40 to 150 build four separate sample buffers. Lines 160 to 230 write each
+channel's pointer, word length, period, and volume. Line 250 clears old
+completion bits, and line 260 arms all four DMA channels at once.
 
-Paula sits below every Amiga-style mixer in this machine. Use it
-directly when you want bit-exact ProTracker timing or when you
-need to stream large amounts of digitised audio that cannot live
-in a fixed-size SFX channel. The completion interrupt makes
-seamless looping (and double-buffering for longer-than-memory
-streams) straightforward.
+## 21.2 What Paula can produce
 
-The next chapter pulls every audio engine together and shows how
-to drive them from BASIC and from each of the six CPUs.
+| Item | Value |
+|------|-------|
+| Channels | `4` |
+| Sample format | Signed 8-bit PCM |
+| Length unit | Words, where one word is two sample bytes |
+| Period clock | `3546895 / period` samples per second |
+| Volume | `0-64` per channel |
+| Channel output | Paula channel `n` feeds SoundChip DAC channel `n` |
+| Completion status | One bit per channel |
+| Interrupt | Optional M68K level 3 interrupt on completion |
+
+Sample bytes are signed. `$00` is silence, `$7F` is a large positive
+sample, and `$80` is a large negative sample. In BASIC, add `256` before
+`POKE8` when a calculated sample is negative.
+
+## 21.3 Register block
+
+The Paula register block is `$F2260-$F22AF`. Channels are 16 bytes
+apart.
+
+| Channel | Base | End |
+|---------|------|-----|
+| `0` | `$F2260` | `$F226F` |
+| `1` | `$F2270` | `$F227F` |
+| `2` | `$F2280` | `$F228F` |
+| `3` | `$F2290` | `$F229F` |
+
+Each channel has the same layout:
+
+| Offset | Name | Access | Purpose |
+|--------|------|--------|---------|
+| `$00` | `PTR` | write/read | Sample start address. Odd addresses are masked down to even. |
+| `$04` | `LEN` | write/read | Length in words, so bytes divided by two. |
+| `$08` | `PER` | write/read | Paula period. Output rate is `3546895 / PER`. |
+| `$0C` | `VOL` | write/read | Volume `0-64`; larger writes clamp to `64`. |
+
+The global registers are:
+
+| Address | Name | Access | Purpose |
+|---------|------|--------|---------|
+| `$F22A0` | `AROS_AUD_DMACON` | write/read | Set or clear active DMA channel bits. |
+| `$F22A4` | `AROS_AUD_STATUS` | write/read | Completion and error-style channel flags. |
+| `$F22A8` | `AROS_AUD_INTENA` | write/read | Set or clear completion interrupt enables. |
+
+The `AROS_AUD_*` names are the canonical register names for this Paula
+block.
+
+## 21.4 DMACON and INTENA
+
+`AROS_AUD_DMACON` and `AROS_AUD_INTENA` use the same set-or-clear
+format.
+
+| Bit | Meaning |
+|-----|---------|
+| `15` | `1` means set the selected bits; `0` means clear them. |
+| `0` | Channel 0 mask. |
+| `1` | Channel 1 mask. |
+| `2` | Channel 2 mask. |
+| `3` | Channel 3 mask. |
+
+Examples:
+
+```basic
+10 POKE &H000F22A0,&H8001:REM ENABLE CHANNEL 0
+20 POKE &H000F22A0,&H800F:REM ENABLE CHANNELS 0-3
+30 POKE &H000F22A0,1:REM DISABLE CHANNEL 0
+40 POKE &H000F22A8,&H8001:REM ENABLE CH0 COMPLETION IRQ
+50 POKE &H000F22A8,1:REM DISABLE CH0 COMPLETION IRQ
+```
+
+When a channel reaches the end of its buffer, the matching bit in
+`AROS_AUD_STATUS` is set. Clear status bits by writing `1` bits back:
+
+```basic
+10 REM PAULA STATUS CLEAR
+20 PRINT PEEK(&H000F22A4)
+30 POKE &H000F22A4,15
+40 PRINT PEEK(&H000F22A4)
+```
+
+The status register is cleared by writing `1` bits back to it. Line 30 clears
+all four channel bits without changing `DMACON`.
+
+If `AROS_AUD_INTENA` has the matching channel bit set, a completed
+buffer also asserts M68K interrupt level `3`.
+
+## 21.5 Setup order
+
+To start one channel from a clean state:
+
+1. Enable audio with `POKE &H000F0800,1`.
+2. Write signed sample bytes to memory.
+3. Write `PTR`, `LEN`, `PER`, and `VOL`.
+4. Clear any old status bit by writing to `AROS_AUD_STATUS`.
+5. Write `$8000` plus the channel mask to `AROS_AUD_DMACON`.
+
+This is channel 0 only:
+
+```basic
+10 REM PAULA CHANNEL 0 SETUP
+20 A=&H00124000:N=1024
+30 REM BUILD A SIGNED SAMPLE BUFFER
+40 FOR I=0 TO N-1
+50 V=INT(SIN(I*TWOPI*330/14019)*100)
+60 IF V<0 THEN V=V+256
+70 POKE8 A+I,V
+80 NEXT I
+90 REM PTR, LEN, PERIOD, VOLUME
+100 POKE &H000F2260,A
+110 POKE &H000F2264,N/2
+120 POKE &H000F2268,253
+130 POKE &H000F226C,64
+140 REM CLEAR OLD STATUS AND ARM CH0
+150 POKE &H000F22A4,1
+160 POKE &H000F22A0,&H8001
+```
+
+If `LEN` is zero, or `PER` is still zero when the channel is armed, the
+channel is not accepted and its status bit is set. A direct write of
+zero to `PER` is ignored, so an existing non-zero period is not erased
+by accident.
+
+## 21.6 Period and pitch
+
+The sample rate is:
+
+```text
+rate = 3546895 / PER
+```
+
+Useful periods:
+
+| Period | Approximate rate | Use |
+|--------|------------------|-----|
+| `124` | `28604` Hz | Bright samples. |
+| `161` | `22030` Hz | Common sampled effects. |
+| `253` | `14019` Hz | Classic tracker note rate. |
+| `508` | `6982` Hz | Low-rate speech or drums. |
+| `1015` | `3494` Hz | Very low-rate speech. |
+
+The fetch engine runs from the Paula clock and writes to the mixer at
+the machine audio rate. Fractional phase is preserved across a staged
+next buffer, which keeps double-buffered streams smooth.
+
+## 21.7 Latching and double-buffering
+
+When `AROS_AUD_DMACON` arms a channel, Paula latches the current
+`PTR`, `LEN`, `PER`, and `VOL` as the active buffer. Writes to those
+registers while the channel is active do not disturb the current buffer.
+They stage the next buffer instead.
+
+When the active buffer ends:
+
+- The channel status bit is set.
+- If a staged next buffer has non-zero length and period, Paula switches
+  to it without clearing the channel's `DMACON` bit.
+- If there is no valid next buffer, the channel stops and its `DMACON`
+  bit clears.
+
+This fragment stages a second channel-0 buffer while the first is
+playing:
+
+```basic
+10 REM FIRST BUFFER IS ALREADY ARMED ON CH0
+20 REM STAGE NEXT PTR, LEN, PERIOD, VOLUME
+30 POKE &H000F2260,&H00126000
+40 POKE &H000F2264,512
+50 POKE &H000F2268,253
+60 POKE &H000F226C,48
+```
+
+The new values take effect only after the current buffer is exhausted.
+That is the normal way to stream audio without a gap.
+
+## 21.8 Stopping and error cases
+
+To stop channel 0:
+
+```basic
+10 POKE &H000F22A0,1
+```
+
+To stop all four channels:
+
+```basic
+10 POKE &H000F22A0,15
+```
+
+If the sample pointer is beyond readable memory, Paula mutes the
+channel, stops it, clears its `DMACON` bit, and sets the status bit. If
+the matching interrupt-enable bit is set, this also raises the level 3
+interrupt.
+
+Pointers are even-aligned by masking off bit `0`. Length is not rounded:
+`LEN=5` means ten sample bytes. Keep buffers even-sized unless you are
+deliberately using an odd word count.
+
+## 21.9 Limits
+
+Paula plays raw signed 8-bit samples only. It does not parse WAV
+headers, MOD patterns, or sample-loop metadata. Use the WAV and MOD
+chapters for those formats.
+
+Volume changes written during playback are staged with the next buffer,
+because the active buffer uses its latched volume. For an immediate
+volume effect, stop and re-arm the channel or use a SoundChip DAC path
+from Chapter 12.

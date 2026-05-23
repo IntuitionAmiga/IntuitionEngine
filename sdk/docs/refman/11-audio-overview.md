@@ -9,159 +9,266 @@ sources:
 
 # Chapter 11 - Audio Architecture Overview
 
-Where the picture side has six chips feeding one compositor, the
-audio side has ten sound engines and a sample player feeding one
-**mixer**. The mixer always runs at `44,100` samples per second and
-sums the contributions of every active engine into a single stereo
-output. The chips themselves are independent - turning one on does
-not affect any other - and they can play together.
+The picture side has several chips feeding one compositor. The audio
+side has several engines feeding one stereo mixer. Each engine owns
+its own register block on the shared bus. Several classic chip engines
+translate their direct tone registers through the SoundChip flexible
+voice backend, so their register blocks are independent even when the
+generated voices share mixer channels.
 
-This chapter sketches the architecture and lists what lives where.
-Chapters 12–21 cover the individual engines; Chapter 22 shows how
-to drive them all from BASIC and from each CPU.
+The mixer runs at `44100` samples per second. It sums active engines,
+applies the global overdrive, filter, and reverb stages, then sends the
+result to the audio output.
 
-## 11.1 The sound engines
+## 11.1 The engine map
 
-| Chip / Engine     | Chapter | Heritage                          |
-|-------------------|---------|-----------------------------------|
-| SoundChip + SFX   | 12      | IE-native 10-channel synth + 4 sample channels |
-| PSG / AY-3-8910   | 13      | Sinclair Spectrum / Amstrad CPC / Atari ST |
-| SN76489           | 14      | TI / Sega Master System / BBC Micro |
-| SID family        | 15      | Commodore 64 (three SID chips: original 6581, 8580, plus IE's "SID+" extensions) |
-| TED audio         | 16      | Commodore 16 / Plus-4             |
-| POKEY + SAP       | 17      | Atari 8-bit                       |
-| AHX               | 18      | Abyss High-Quality Music Format (Amiga) |
-| MOD               | 19      | Amiga ProTracker, four channels   |
-| WAV / sample      | 20      | Generic 8/16-bit sample player    |
-| Paula DMA         | 21      | Amiga Paula-style four-channel DMA sample player |
+| Engine        | Chapter | Main use |
+|---------------|---------|----------|
+| SoundChip and SFX | 12 | Ten IE-native synth channels and four raw sample SFX channels |
+| PSG           | 13 | AY-style square/noise tones and envelopes |
+| SN76489       | 14 | Four-channel tone/noise latch chip |
+| SID family    | 15 | Three-voice wavetable/filter-style chip sound |
+| TED audio     | 16 | Two square/noise voices |
+| POKEY         | 17 | Four Atari-style tone/noise channels |
+| AHX           | 18 | AHX song playback |
+| MOD           | 19 | Four-channel tracker playback |
+| WAV           | 20 | PCM sample playback |
+| Paula DMA     | 21 | Four DMA sample channels |
 
-Every engine has its own MMIO block. The SFX channels share a
-small block separate from the SoundChip's tone channels.
+Chapter 22 gives BASIC music recipes that combine these engines. The
+CPU chapters use different engines in their hand-entered machine-code
+examples so that the byte-entry programs are audibly different.
 
-## 11.2 The mixer
+## 11.2 Master control
 
-All engines write into the same output stream. The mixer:
+The master audio control register is `AUDIO_CTRL` at `$F0800`.
 
-- Sums each engine's stereo contribution after applying that
-  engine's own per-channel volume.
-- Applies a global filter (low-/high-/band-pass) selected through
-  the `FILTER_*` registers at `0xF0820`–`0xF0830`.
-- Applies optional overdrive (one `OVERDRIVE_CTRL` register at
-  `0xF0A40`) and reverb (`REVERB_MIX` at `0xF0A50` and
-  `REVERB_DECAY` at `0xF0A54`).
-- Sends the result to the audio output of the Intuition Engine at
-  `44,100` samples per second.
+| Bit | Meaning |
+|-----|---------|
+| `0` | Enable audio output. |
+| `1` | Freeze mixer state while changing presets. |
 
-The master enable register is `AUDIO_CTRL` at `0xF0800`. Bit `0`
-enables audio output; bit `1` freezes the mixer (useful while
-swapping presets).
+Turn audio on before starting raw register examples:
 
-## 11.3 The SoundChip channel block
+```basic
+10 POKE &H000F0800,1
+```
 
-The IE-native SoundChip exposes its channels through a uniform
-**flexible-channel** layout. Each channel is `0x40` bytes wide.
-Inside one channel:
+The engines still accept register writes while audio is disabled; they
+become audible when bit `0` is set.
+
+## 11.3 A first audio setup
+
+This typed program starts the mixer, writes PSG and POKEY tone
+registers, then finishes with two SoundChip voices on channels `2` and
+`3`. It puts a light low-pass filter and reverb over the resulting
+output:
+
+```basic
+10 REM FIRST AUDIO SETUP
+20 POKE &H000F0800,1
+30 PSG 0,142,12
+40 POKEY 1,96,&HA8
+50 SOUND 2,262,180,1,128
+60 SOUND 3,330,140,2
+70 ENVELOPE 2,4,8,200,12
+80 ENVELOPE 3,4,8,200,12
+90 GATE 2, ON
+100 GATE 3, ON
+110 SOUND FILTER 190,80,1
+120 SOUND REVERB 90,120
+```
+
+Expected result: the SoundChip, PSG, and POKEY register blocks contain
+the shown values, and the filter and reverb affect the active mixed
+output. PSG and POKEY direct tones use the shared flexible voice
+backend, so they can replace earlier flexible voice state rather than
+adding an unlimited separate set of voices. For that reason, this first
+tour writes PSG and POKEY before the final SoundChip chord.
+
+## 11.4 SoundChip channel block
+
+The IE-native SoundChip uses a flexible-channel layout. Each channel
+is `$40` bytes wide.
 
 | Offset | Field            | Meaning |
 |--------|------------------|---------|
-| `0x00` | `FREQ`           | Frequency in `16.8` fixed-point Hz (`value / 256.0` = Hz). |
-| `0x04` | `VOL`            | Volume, `0`–`255`. |
-| `0x08` | `CTRL`           | Gate / control. |
-| `0x0C` | `DUTY`           | PWM duty cycle. |
-| `0x10` | `SWEEP`          | Pitch sweep configuration. |
-| `0x14`–`0x20` | `ATK`/`DEC`/`SUS`/`REL` | ADSR envelope parameters. |
-| `0x24` | `WAVE_TYPE`      | Waveform select (square, triangle, sine, saw, noise). |
-| `0x28` | `PWM_CTRL`       | PWM rate and depth. |
-| `0x2C` | `NOISEMODE`      | Noise generator algorithm (8 modes; see Chapter 12). |
-| `0x30` | `PHASE`          | Write to reset the phase. |
-| `0x34` | `RINGMOD`        | Ring-modulation source. |
-| `0x38` | `SYNC`           | Hard-sync source. |
-| `0x3C` | `DAC`            | Signed 8-bit sample (bypasses oscillator). |
+| `$00` | `FREQ`           | Frequency in 16.8 fixed-point Hz. |
+| `$04` | `VOL`            | Volume, `0` to `255`. |
+| `$08` | `CTRL`           | Gate and control bits. |
+| `$0C` | `DUTY`           | PWM duty cycle. |
+| `$10` | `SWEEP`          | Pitch sweep. |
+| `$14` | `ATK`            | Attack. |
+| `$18` | `DEC`            | Decay. |
+| `$1C` | `SUS`            | Sustain. |
+| `$20` | `REL`            | Release. |
+| `$24` | `WAVE_TYPE`      | Waveform select. |
+| `$28` | `PWM_CTRL`       | PWM rate and depth. |
+| `$2C` | `NOISEMODE`      | Noise algorithm. |
+| `$30` | `PHASE`          | Write to reset phase. |
+| `$34` | `RINGMOD`        | Ring-modulation source. |
+| `$38` | `SYNC`           | Hard-sync source. |
+| `$3C` | `DAC`            | Signed 8-bit sample value. |
 
-There are ten such channels, mapped at three base addresses:
+The channel blocks are:
 
 | Channels | Base       | End        |
 |----------|------------|------------|
-| `0`–`3`  | `0xF0A80`  | `0xF0B7F`  |
-| `4`–`6`  | `0xF0C40`  | `0xF0CFF`  |
-| `7`–`9`  | `0xF0D40`  | `0xF0DFF`  |
+| `0` to `3` | `$F0A80` | `$F0B7F` |
+| `4` to `6` | `$F0C40` | `$F0CFF` |
+| `7` to `9` | `$F0D40` | `$F0DFF` |
 
-Channels `0`–`3` are the primary block used by BASIC's `SOUND`
-keyword. Channels `4`–`9` are reachable directly from machine
-language; they form the "SID2" and "SID3" voice groups described
-in Chapter 15.
+`SOUND`, `ENVELOPE`, and `GATE` drive channels `0` to `3`. The
+higher channels are direct-register channels used by expanded chip
+setups described later.
 
-## 11.4 The SFX channels
+The `SOUND ch,freq,vol[,wave[,duty]]` keyword writes:
 
-In addition to the synth channels, there are four dedicated
-**SFX** channels that play raw samples from main memory. They live
-at `0xF0E80`–`0xF0EFF`, with stride `0x20`. Each channel:
+| Argument | Register effect |
+|----------|-----------------|
+| `ch`     | Selects channel `0` to `3`. |
+| `freq`   | Stored as `freq * 256` in `FREQ`. |
+| `vol`    | Stored in `VOL`. |
+| `wave`   | Optional `WAVE_TYPE`. |
+| `duty`   | Optional `DUTY`. |
+
+## 11.5 SFX sample channels
+
+The SFX block is for short raw samples stored in memory. It has four
+channels at `$F0E80` to `$F0EFF`, with stride `$20`.
 
 | Offset | Field          | Meaning |
 |--------|----------------|---------|
-| `0x00` | `SFX_PTR`      | Address of the sample data. |
-| `0x04` | `SFX_LEN`      | Sample length in bytes. |
-| `0x08` | `SFX_LOOP_PTR` | Loop start (if looped). |
-| `0x0C` | `SFX_LOOP_LEN` | Loop length. |
-| `0x10` | `SFX_FREQ`     | Playback rate in Hz. |
-| `0x14` | `SFX_VOL`      | Volume, `0`–`255`. |
-| `0x18` | `SFX_FORMAT`   | `0` = signed 8-bit, `1` = unsigned 8-bit, `2` = signed 16-bit. |
-| `0x1C` | `SFX_CTRL`     | Bit `0` = trigger, bit `1` = stop, bit `2` = loop enable. |
+| `$00` | `SFX_PTR`      | Sample address. |
+| `$04` | `SFX_LEN`      | Sample length in bytes. |
+| `$08` | `SFX_LOOP_PTR` | Loop start address. |
+| `$0C` | `SFX_LOOP_LEN` | Loop length. |
+| `$10` | `SFX_FREQ`     | Playback rate in Hz. |
+| `$14` | `SFX_VOL`      | Volume, `0` to `65535`. |
+| `$18` | `SFX_FORMAT`   | `0` signed 8-bit, `1` unsigned 8-bit, `2` signed 16-bit. |
+| `$1C` | `SFX_CTRL`     | Bit `0` trigger, bit `1` stop, bit `2` loop. |
 
-A `SFX_STATUS` shadow register reads back bit `0` = playing, bit `1`
-= error.
+Status bits are exposed through the channel status shadow: bit `0`
+means playing and bit `1` means error. Chapter 12 gives the full
+typed setup for putting sample bytes in memory and triggering a
+channel.
 
-## 11.5 The music-file player
+## 11.6 Media loader
 
-Tracker and chip-tune music does not have to be poked into the
-audio chips one register at a time. Intuition Engine has a
-**media loader** that reads a file from disk, decodes it, and
-drives the appropriate audio engine on the program's behalf.
+Longer songs and sample files can be started through the media loader.
+`SOUND PLAY "name"` writes these registers for you:
 
 | Address    | Name             | Purpose |
 |------------|------------------|---------|
-| `0xF2300`  | `MEDIA_NAME_PTR` | Pointer to a null-terminated filename. |
-| `0xF2304`  | `MEDIA_SUBSONG`  | Subsong number. |
-| `0xF2308`  | `MEDIA_CTRL`     | `1` = play, `2` = stop. |
-| `0xF230C`  | `MEDIA_STATUS`   | `0` = idle, `1` = loading, `2` = playing, `3` = error. |
+| `$F2300`  | `MEDIA_NAME_PTR` | Pointer to a null-terminated filename. |
+| `$F2304`  | `MEDIA_SUBSONG`  | Subsong number. |
+| `$F2308`  | `MEDIA_CTRL`     | `1` play, `2` stop. |
+| `$F230C`  | `MEDIA_STATUS`   | `0` idle, `1` loading, `2` playing, `3` error. |
+| `$F2310`  | `MEDIA_TYPE`     | `1` SID, `2` PSG, `3` TED, `4` AHX, `5` POKEY, `6` MOD, `7` WAV. |
+| `$F2314`  | `MEDIA_ERROR`    | `0` ok, `1` not found, `2` bad format, `3` unsupported, `4` invalid path, `5` too large. |
 
-The BASIC keyword `SOUND PLAY "name"` uses this interface. The
-loader picks the right engine from the file extension. Chapter 22
-lists every supported extension.
+Native BASIC forms:
 
-## 11.6 The global effects
+```basic
+10 SOUND PLAY "SONG"
+20 SOUND PLAY "SONG",1
+30 SOUND STOP
+```
 
-| Register     | Address    | Range      | Purpose |
-|--------------|------------|------------|---------|
-| `FILTER_CUTOFF`     | `0xF0820` | `0`–`255` | Cutoff. |
-| `FILTER_RESONANCE`  | `0xF0824` | `0`–`255` | Q. |
-| `FILTER_TYPE`       | `0xF0828` | `0`–`3`   | `0` off, `1` LP, `2` HP, `3` BP. |
-| `FILTER_MOD_SOURCE` | `0xF082C` | `0`–`3`   | Modulation source channel. |
-| `FILTER_MOD_AMOUNT` | `0xF0830` | `0`–`255` | Modulation depth. |
-| `OVERDRIVE_CTRL`    | `0xF0A40` | `0`–`255` | Drive amount, `0` = off. |
-| `REVERB_MIX`        | `0xF0A50` | `0`–`255` | Dry/wet. |
-| `REVERB_DECAY`      | `0xF0A54` | `0`–`255` | Tail length. |
+If loading fails, `SOUND PLAY` raises a BASIC error after the status
+poll reports `MEDIA_STATUS` value `3`.
 
-These effects sit at the end of the mixer chain and apply to the
-summed output of every engine.
+## 11.7 Global effects
 
-## 11.7 BASIC keywords
+The global effects are shared by every engine.
 
-| Keyword                            | Routes to |
-|------------------------------------|-----------|
-| `SOUND `*ch*`, `*freq*`, `*vol*` …`| SoundChip (Chapter 12) |
-| `SOUND PLAY "`*file*`"`            | Media loader (Chapter 22) |
-| `SOUND STOP`                       | Media loader |
-| `SOUND FILTER`/`REVERB`/`OVERDRIVE`| Mixer effects |
-| `ENVELOPE`                         | SoundChip ADSR |
-| `GATE`                             | SoundChip gate |
-| `PSG `*…*                          | AY-3-8910 (Chapter 13) |
-| `SID `*…*                          | SID family (Chapter 15) |
-| `POKEY `*…*                        | POKEY (Chapter 17) |
-| `AHX `*…*                          | AHX engine (Chapter 18) |
-| `SAP`                              | POKEY SAP playback |
+| Register             | Address    | Range | Purpose |
+|----------------------|------------|-------|---------|
+| `FILTER_CUTOFF`      | `$F0820`  | `0` to `255` | Filter cutoff. |
+| `FILTER_RESONANCE`   | `$F0824`  | `0` to `255` | Resonance. |
+| `FILTER_TYPE`        | `$F0828`  | `0` to `3` | `0` off, `1` low-pass, `2` high-pass, `3` band-pass. |
+| `FILTER_MOD_SOURCE`  | `$F082C`  | `0` to `3` | Modulation source channel. |
+| `FILTER_MOD_AMOUNT`  | `$F0830`  | `0` to `255` | Modulation amount. |
+| `OVERDRIVE_CTRL`     | `$F0A40`  | `0` to `255` | Drive amount. |
+| `REVERB_MIX`         | `$F0A50`  | `0` to `255` | Dry/wet mix. |
+| `REVERB_DECAY`       | `$F0A54`  | `0` to `255` | Tail length. |
 
-## 11.8 What comes next
+The BASIC forms are:
 
-Chapter 12 covers the SoundChip and SFX in full. The remaining
-chapters of Part III take one chip each.
+```basic
+10 SOUND FILTER 200,128,1
+20 SOUND FILTER MOD 2,200
+30 SOUND OVERDRIVE 80
+40 SOUND REVERB 90,140
+```
+
+Effect changes are immediate. To make several changes as one audible
+step, set `AUDIO_CTRL` bit `1`, write the effect registers, then clear
+bit `1` again while leaving bit `0` set.
+
+## 11.8 Plus processing paths
+
+Several engines have a **Plus** switch. Plus mode is not a second
+register map and it is not a different chip. It is an enhanced output
+processing path for that engine: the tone, envelope, player, and data
+registers keep their normal meanings, while the mixer uses a different
+gain curve, per-voice balance, smoothing, drive, stereo spread, or room
+processing as implemented by that engine.
+
+The common programming rule is simple:
+
+1. Start the engine in its normal way.
+2. Switch Plus on with the engine's BASIC command or control register.
+3. Read the control register back if you need proof.
+4. Switch Plus off without rewriting the sound registers.
+
+| Engine | BASIC form | Control register |
+|--------|------------|------------------|
+| PSG    | `PSG PLUS ON` / `PSG PLUS OFF` | `PSG_PLUS_CTRL` at `$F0C20` |
+| SID    | `SID PLUS ON` / `SID PLUS OFF` | `SID_PLUS_CTRL` at `$F0E19` |
+| TED    | `TED PLUS ON` / `TED PLUS OFF` | `TED_PLUS_CTRL` at `$F0F05` |
+| POKEY  | `POKEY PLUS ON` / `POKEY PLUS OFF` | `POKEY_PLUS_CTRL` at `$F0D09` |
+| AHX    | `AHX PLUS ON` / `AHX PLUS OFF` | `AHX_PLUS_CTRL` at `$F0B80` |
+
+Individual chapters give the short compare listing and the
+engine-specific audible difference. This chapter is the rule that
+keeps those listings from becoming five copies of the same explanation.
+
+## 11.9 BASIC and direct access map
+
+| Form | Engine or block |
+|------|-----------------|
+| `SOUND ch,freq,vol[,wave[,duty]]` | SoundChip channel `0` to `3`. |
+| `ENVELOPE ch,atk,dec,sus,rel` | SoundChip ADSR. |
+| `GATE ch, ON` / `GATE ch, OFF` | SoundChip gate bit. |
+| `SOUND WAVE ch,type` | SoundChip waveform select. |
+| `SOUND NOISE ch,mode` | SoundChip noise mode. |
+| `SOUND SWEEP ch,enable,period,shift` | SoundChip sweep. |
+| `SOUND SYNC ch,source` | SoundChip hard sync. |
+| `SOUND RINGMOD ch,source` | SoundChip ring modulation. |
+| `SOUND FILTER ...` | Global filter. |
+| `SOUND REVERB ...` | Global reverb. |
+| `SOUND OVERDRIVE ...` | Global overdrive. |
+| `SOUND PLAY ...` / `SOUND STOP` | Media loader. |
+| `PSG ...` | PSG engine. |
+| `POKE8 &H000F0C30,value` | SN76489 latch/data port. |
+| `SID ...` | SID family. |
+| `TED ...` audio forms | TED audio. |
+| `POKEY ...` | POKEY. |
+| `AHX ...` | AHX playback. |
+| `SOUND MOD ...` / `MOD STATUS` | MOD playback. |
+| `SOUND PLAY` or raw WAV registers | WAV playback. |
+
+## 11.10 Limits
+
+- The mixer sums engines; it does not reserve exclusive ownership of
+  the output for any one engine.
+- Engine volume ranges are engine-specific; each engine chapter gives
+  its own register format.
+- Global effects apply to the full mix.
+- Media loading is asynchronous at the register level, so check
+  `MEDIA_STATUS` if you drive the media loader with `POKE`.
+- BASIC `SOUND PLAY` includes a bounded status poll and reports a
+  BASIC error if loading reaches the error state.
+
+Chapter 12 covers the SoundChip and SFX blocks in detail.

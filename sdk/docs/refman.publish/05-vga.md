@@ -25,9 +25,8 @@ the `VGA_MODE` register, or with the BASIC `SCREEN` statement.
 | `&H13`     | Mode 13h         | `320` × `200` pixels | 256       | Linear (chain-4). |
 | `&H14`     | Mode X           | `320` × `240` pixels | 256       | Four planes, unchained. |
 
-The mode numbers and memory layouts match the conventions of the
-IBM PC VGA, so existing PC programming literature is helpful - but
-the addresses are IE addresses, given in the table below.
+The mode names follow familiar VGA conventions, but the addresses
+and examples in this chapter are the ones to use on Intuition Engine.
 
 ## 5.2 BASIC keywords
 
@@ -40,8 +39,8 @@ entry in Chapter 2.
 | `SCREEN ON` / `SCREEN OFF` | Enable / disable VGA. |
 | `CLS [colour]`           | Clear the screen using the blitter. |
 | `PLOT x, y [, colour]`   | Plot a single pixel. Mode 13h only. Default colour is `15`. |
-| `PALETTE i, r, g, b`     | Set DAC palette entry `i` to (`r`, `g`, `b`). Each component is `0`–`63`. |
-| `COLOR fg [, bg]`        | Set the text-mode attribute byte used by `PRINT`. `fg` is `0`–`15`; `bg` is `0`–`15`. |
+| `PALETTE i, r, g, b`     | Set DAC palette entry `i` to (`r`, `g`, `b`). Each component is `0`-`63`. |
+| `COLOR fg [, bg]`        | Set the text-mode attribute byte used by `PRINT`. `fg` is `0`-`15`; `bg` is `0`-`15`. |
 | `LOCATE row, col`        | Place the text cursor at zero-based `(row, col)`. |
 | `SCROLL dx, dy`          | Shift the displayed start address by `dy` rows and `dx` characters. |
 | `VSYNC`                  | Wait for the vertical retrace by polling `VGA_STATUS`. |
@@ -55,20 +54,39 @@ red pixel at the centre of the screen:
 30 PLOT 160, 100, 1
 ```
 
+Line `10` selects the `320` x `200` linear 256-colour mode and turns
+the VGA source on. Line `20` makes palette entry `1` bright red.
+Line `30` writes colour index `1` into the byte for pixel `(160,100)`.
+You should see one red point near the centre of the picture.
+
+Text mode is just as direct:
+
+```basic
+10 SCREEN &H03
+20 COLOR 14, 1
+30 LOCATE 5, 10
+40 PRINT "VGA TEXT"
+```
+
+Here `SCREEN &H03` selects the `80` by `25` text buffer. `COLOR 14,1`
+sets yellow text on a blue background, and `LOCATE` moves the cursor
+before `PRINT` writes character/attribute pairs into `$B8000`.
+
 ## 5.3 The register block
 
-The VGA register block runs from `0xF1000` to `0xF13FF`. All
-registers are 32-bit words at 4-byte-aligned addresses. The block
-is laid out as a set of small index/data pairs, each one mirroring
-a section of the IBM VGA register file.
+The VGA register block runs from `$F1000` to `$F13FF`. The control
+registers are 32-bit words at 4-byte-aligned addresses. The direct
+palette window at `$F1100` is byte-addressed, so use `POKE8` and
+`PEEK8` there. The block is laid out as a set of small index/data
+pairs, each one mirroring a section of the IBM VGA register file.
 
 ### 5.3.1 Core control
 
 | Address    | Name        | Purpose |
 |------------|-------------|---------|
-| `0xF1000`  | `VGA_MODE`  | Mode select. Writing `&H03`, `&H12`, `&H13`, or `&H14` chooses a mode. |
-| `0xF1004`  | `VGA_STATUS`| Status (read-only). |
-| `0xF1008`  | `VGA_CTRL`  | Master enable. Bit `0` = on. |
+| `$F1000`  | `VGA_MODE`  | Mode select. Writing `&H03`, `&H12`, `&H13`, or `&H14` chooses a mode. |
+| `$F1004`  | `VGA_STATUS`| Status (read-only). |
+| `$F1008`  | `VGA_CTRL`  | Master enable. Bit `0` = on. |
 
 `VGA_STATUS` bits:
 
@@ -86,9 +104,9 @@ sequencer registers; bit-plane mask has its own direct port.
 
 | Address    | Name              | Purpose |
 |------------|-------------------|---------|
-| `0xF1010`  | `VGA_SEQ_INDEX`   | Index into the sequencer register file (`0`–`4`). |
-| `0xF1014`  | `VGA_SEQ_DATA`    | Read/write the register selected by `VGA_SEQ_INDEX`. |
-| `0xF1018`  | `VGA_SEQ_MAPMASK` | Direct port for the map-mask register (plane write enable, bits `0`–`3`). |
+| `$F1010`  | `VGA_SEQ_INDEX`   | Index into the sequencer register file (`0`-`4`). |
+| `$F1014`  | `VGA_SEQ_DATA`    | Read/write the register selected by `VGA_SEQ_INDEX`. |
+| `$F1018`  | `VGA_SEQ_MAPMASK` | Direct port for the map-mask register (plane write enable, bits `0`-`3`). |
 
 ### 5.3.3 CRT controller (CRTC)
 
@@ -98,13 +116,13 @@ registers; the most useful ones have direct ports.
 
 | Address    | Name                  | Purpose |
 |------------|-----------------------|---------|
-| `0xF1020`  | `VGA_CRTC_INDEX`      | Index (`0`–`24`). |
-| `0xF1024`  | `VGA_CRTC_DATA`       | Read/write the indexed register. |
-| `0xF1028`  | `VGA_CRTC_STARTHI`    | High byte of display start address (page flip). |
-| `0xF102C`  | `VGA_CRTC_STARTLO`    | Low byte of display start address. |
+| `$F1020`  | `VGA_CRTC_INDEX`      | Index (`0`-`24`). |
+| `$F1024`  | `VGA_CRTC_DATA`       | Read/write the indexed register. |
+| `$F1028`  | `VGA_CRTC_STARTHI`    | High byte of display start address (page flip). |
+| `$F102C`  | `VGA_CRTC_STARTLO`    | Low byte of display start address. |
 
-Cursor position is held in CRTC indices `0x0E` (high) and `0x0F`
-(low). The cursor scan lines are indices `0x0A` (start) and `0x0B`
+Cursor position is held in CRTC indices `$0E` (high) and `$0F`
+(low). The cursor scan lines are indices `$0A` (start) and `$0B`
 (end). The `LOCATE` BASIC statement writes the cursor low and high
 bytes through `VGA_CRTC_INDEX`/`DATA`.
 
@@ -115,10 +133,10 @@ existing VRAM bytes on a planar write.
 
 | Address    | Name              | Purpose |
 |------------|-------------------|---------|
-| `0xF1030`  | `VGA_GC_INDEX`    | Index (`0`–`8`). |
-| `0xF1034`  | `VGA_GC_DATA`     | Read/write the indexed register. |
-| `0xF1038`  | `VGA_GC_READMAP`  | Direct port for the read-map select (plane read selector). |
-| `0xF103C`  | `VGA_GC_BITMASK`  | Direct port for the bit-mask register. |
+| `$F1030`  | `VGA_GC_INDEX`    | Index (`0`-`8`). |
+| `$F1034`  | `VGA_GC_DATA`     | Read/write the indexed register. |
+| `$F1038`  | `VGA_GC_READMAP`  | Direct port for the read-map select (plane read selector). |
+| `$F103C`  | `VGA_GC_BITMASK`  | Direct port for the bit-mask register. |
 
 ### 5.3.5 Attribute controller
 
@@ -127,8 +145,8 @@ attribute control bits.
 
 | Address    | Name              | Purpose |
 |------------|-------------------|---------|
-| `0xF1040`  | `VGA_ATTR_INDEX`  | Index (`0`–`20`). |
-| `0xF1044`  | `VGA_ATTR_DATA`   | Read the indexed register. |
+| `$F1040`  | `VGA_ATTR_INDEX`  | Index (`0`-`20`). |
+| `$F1044`  | `VGA_ATTR_DATA`   | Read/write the indexed register. |
 
 ### 5.3.6 DAC and palette
 
@@ -139,11 +157,11 @@ sends the result to the compositor.
 
 | Address    | Name              | Purpose |
 |------------|-------------------|---------|
-| `0xF1050`  | `VGA_DAC_MASK`    | Pixel mask applied before lookup. |
-| `0xF1054`  | `VGA_DAC_RINDEX`  | Read index. |
-| `0xF1058`  | `VGA_DAC_WINDEX`  | Write index. |
-| `0xF105C`  | `VGA_DAC_DATA`    | DAC data port. Reads/writes one component per access in R, G, B order. |
-| `0xF1100`–`0xF13FF` | `VGA_PALETTE`/`VGA_PALETTE_END` | Direct window into 256 × 3 bytes of palette RAM. |
+| `$F1050`  | `VGA_DAC_MASK`    | Pixel mask applied before lookup. |
+| `$F1054`  | `VGA_DAC_RINDEX`  | Read index. |
+| `$F1058`  | `VGA_DAC_WINDEX`  | Write index. |
+| `$F105C`  | `VGA_DAC_DATA`    | DAC data port. Reads/writes one component per access in R, G, B order. |
+| `$F1100`-`$F13FF` | `VGA_PALETTE`/`VGA_PALETTE_END` | Direct window into 256 × 3 bytes of palette RAM. |
 
 The DAC ports are a small state machine. Write the entry number to
 `VGA_DAC_WINDEX`, then write `R`, `G`, `B` in succession to
@@ -161,12 +179,13 @@ The same entry can also be written directly through the palette
 window:
 
 ```basic
-200 POKE &H000F1100 + 1*3,     63       : REM red
-210 POKE &H000F1100 + 1*3 + 1, 0        : REM green
-220 POKE &H000F1100 + 1*3 + 2, 0        : REM blue
+200 POKE8 &H000F1100+1*3,63             : REM red
+210 POKE8 &H000F1100+1*3+1,0            : REM green
+220 POKE8 &H000F1100+1*3+2,0            : REM blue
 ```
 
-Each component is clamped to six bits on write.
+Each component is a byte in the window and is clamped to six bits on
+write.
 
 ## 5.4 The VRAM regions
 
@@ -174,18 +193,118 @@ VGA uses two separate regions of main memory:
 
 | Address       | Size     | Used by |
 |---------------|----------|---------|
-| `0xA0000`     | `64` KB  | Graphics modes (`12h`, `13h`, Mode X). |
-| `0xB8000`     | `32` KB  | Text mode (`03h`). |
+| `$A0000`     | `64` KB  | Graphics modes (`12h`, `13h`, Mode X). |
+| `$B8000`     | `32` KB  | Text mode (`03h`). |
 
-These are the same conventions as the IBM PC. The graphics region
-is divided into four 64 KB planes for planar modes; in linear modes
-(Mode 13h) the chip applies chain-4 to make consecutive bytes go
-to consecutive planes, giving an illusion of a flat 64000-byte
-buffer.
+The graphics region is divided into four 64 KB planes. The current
+mode decides how addresses in the window map onto those planes.
+
+### 5.4.1 Mode 13h linear pixels
+
+Mode 13h is the easiest bitmap mode. It is `320` x `200`, one byte
+per pixel. The visible byte address is:
+
+```
+$000A0000 + y * 320 + x
+```
+
+The byte value is a palette index. This BASIC program draws a yellow
+horizontal line by writing VRAM directly:
+
+```basic
+10 SCREEN &H13
+20 PALETTE 4, 63, 63, 0
+30 FOR X=40 TO 279
+40 POKE8 &H000A0000 + 100*320 + X, 4
+50 NEXT X
+60 VSYNC
+```
+
+Internally Mode 13h uses chain-4 addressing: address bits `0`-`1`
+choose the plane, and address bits `2` and above choose the byte
+inside that plane. You normally do not need to think about that,
+because consecutive `POKE8` addresses behave like a flat bitmap.
+
+### 5.4.2 Mode X unchained pixels
+
+Mode X is `320` x `240`, one byte per pixel, but it is unchained.
+Pixel `x,y` lives in plane `x AND 3`, at byte offset:
+
+```
+y * 80 + INT(x / 4)
+```
+
+Select the plane with `VGA_SEQ_MAPMASK` before writing the byte.
+This program draws a red horizontal line in Mode X:
+
+```basic
+10 SCREEN &H14
+20 PALETTE 1, 63, 0, 0
+30 FOR X=0 TO 319
+40 POKE &H000F1018, 2^(X AND 3)
+50 POKE8 &H000A0000 + 120*80 + INT(X/4), 1
+60 NEXT X
+70 VSYNC
+```
+
+### 5.4.3 Mode 12h bit planes
+
+Mode 12h is `640` x `480` with four one-bit planes, giving colour
+indices `0`-`15`. Each byte covers eight pixels. For pixel `x,y`,
+the byte offset is:
+
+```
+y * 80 + INT(x / 8)
+```
+
+The bit inside that byte is `7 - (x AND 7)`. Plane `0` supplies
+colour bit `0`, plane `1` supplies colour bit `1`, and so on.
+
+The key registers for planar writes are:
+
+| Register | Use |
+|----------|-----|
+| `VGA_SEQ_MAPMASK` | Bit mask of planes to write. |
+| `VGA_GC_READMAP` | Plane selected by `PEEK8` in planar modes. |
+| `VGA_GC_BITMASK` | Bit mask of pixels affected inside the byte. |
+| `VGA_GC_MODE` | Low bits select write mode `0`-`3`; bit `3` selects read mode. |
+
+The write modes are:
+
+| Mode | Effect |
+|------|--------|
+| `0` | Rotate the CPU byte, optionally use set/reset, combine with latches, then apply `VGA_GC_BITMASK`. |
+| `1` | Write the current latch contents. Read before writing if you want useful latch data. |
+| `2` | Expand the low four CPU bits across the four planes. |
+| `3` | Use set/reset through the rotated CPU byte and `VGA_GC_BITMASK`. |
+
+Mode 12h is best for code that wants classic four-plane VGA effects.
+For ordinary BASIC drawing, Mode 13h is simpler.
+
+This example writes one Mode 12h pixel directly. It sets colour index
+`5`, which means plane `0` and plane `2` are set for the selected bit:
+
+```basic
+10 SCREEN &H12
+20 X=100:Y=100
+30 A=&H000A0000+Y*80+INT(X/8)
+40 B=128/2^(X AND 7)
+50 POKE &H000F103C,B
+60 POKE &H000F1018,1
+70 POKE8 A,255
+80 POKE &H000F1018,4
+90 POKE8 A,255
+100 VSYNC
+```
+
+Line `50` selects the bit within the byte. Lines `60`-`90` write the
+same bit into plane `0` and plane `2`, giving colour index `5`.
+
+### 5.4.4 Text buffer
 
 In text mode the buffer holds pairs of bytes: character code, then
 attribute. The attribute's low nibble is the foreground colour
-(`0`–`15`); the next three bits are the background colour (`0`–`7`);
+(`0`-`15`); the next three bits are the background colour (`0`-`7`);
 the top bit, if set, makes the character blink (depending on the
 attribute-mode setting).
 
@@ -207,9 +326,31 @@ begins. By changing this offset between frames you can:
   (text mode) to scroll horizontally. The `SCROLL` BASIC keyword
   uses this in text mode.
 
-The CRTC also exposes a line-compare register (index `0x18`) that
+The CRTC also exposes a line-compare register (index `$18`) that
 splits the screen into two scrolling regions; this is the classic
 "status bar at the bottom" trick.
+
+This BASIC program demonstrates text-mode scrolling through the
+`SCROLL` keyword:
+
+```basic
+10 SCREEN &H03
+20 COLOR 15, 1
+30 FOR I=0 TO 30
+40 PRINT "SCROLL LINE "; I
+50 NEXT I
+60 VSYNC
+70 SCROLL 0, 1
+```
+
+For raw register control, write `VGA_CRTC_STARTHI` and
+`VGA_CRTC_STARTLO` directly. A start address of `80` begins the
+display one text row later:
+
+```basic
+100 POKE &H000F1028, 0
+110 POKE &H000F102C, 80
+```
 
 ## 5.6 The vertical retrace
 

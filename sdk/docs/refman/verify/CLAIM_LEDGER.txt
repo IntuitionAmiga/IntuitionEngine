@@ -1,0 +1,585 @@
+Refman claim and proof ledger (author-only; not published)
+Date: 2026-05-23
+
+Scope: sdk/docs/refman reader-facing chapters and appendices.
+
+Purpose: record the proof trail for technical claims. Each entry must
+separate the reader workflow from the author verification workflow.
+
+Entry format:
+
+- Area:
+  Claim:
+  Canonical sources checked:
+  Reader workflow:
+  Runnable example:
+  Expected result:
+  Author verification workflow:
+  Result:
+
+- Area: Whole guide, title, editorial spine, canonical-source rule, and execution order.
+  Claim: the published book is the Intuition Engine Programmer's Reference Guide; its controlling premise is a modern 64-bit RISC machine built as an homage to 1980s and 1990s home computing, re-imagining Commodore/Atari/Sinclair/BBC/Amstrad/IBM 8/16/32-bit home-computer ideas as one shared-memory backplane computer; chapters are rewritten in ascending order unless a recorded mechanical or blocking exception is needed; all technical claims are adversarially checked against code and source assets on disk as the canonical source of truth; reader-facing examples use IE-native BASIC, MMIO, or IE Mon workflows. The current pass also applies the final-review rules: add a first-session onramp before the Chapter 2 vocabulary wall, remove reader-facing tokeniser leaks from Chapter 2, centralise repeated audio Plus-mode teaching in Chapter 11, add cohesive cross-chip through-lines where they fit naturally, clarify trap/status wording, and make appendix consistency mechanically checked against canonical source and main chapters.
+  Canonical sources checked: sdk/docs/refman/STYLE.md, sdk/docs/refman/00-Preface.md, machine_bus.go, machine_bus_phys.go, cpu_ie64.go, profile_bounds.go, scripts/refman-publish.sh.
+  Reader workflow: start with the first-session path, then read the guide as one machine: BASIC prompt first, hardware cards and engines on the shared bus next, then machine-code byte entry and cross-CPU work.
+  Runnable example: not a single program; each chapter entry below records its typed example and expected result.
+  Expected result: the title, preface, chapter openings, examples, and appendices consistently say "guide", present Intuition Engine as one programmable bus machine, avoid host toolchains as the reader path, teach examples rather than dumping code, keep lookup tables consistent with source-owned constants and chapter prose, and remove raw external dump references from the author tree.
+  Author verification workflow: update STYLE.md before chapter edits, record this ledger entry, then run title, forbidden-term, dash, British-English, appendix-consistency, archive-reference, and chapter-specific scans before publishing.
+  Result: final-review editorial rule recorded; chapter-level entries remain the proof trail for technical claims.
+
+- Area: Ch 1, BASIC direct mode, program storage, values, expressions, and editing.
+  Claim: BASIC is the front panel for the same bus machine used by later hardware chapters; the chapter gives a first-session path before the full vocabulary wall; direct-mode statements run at the prompt; numbered lines are stored in ascending order; bare line numbers delete stored lines; numeric values are 32-bit single-precision values; integer-only operations truncate toward zero; variables, strings, arrays, expression precedence, PRINT formatting, comments, RUN/LIST/NEW/CLEAR/CONT/LOAD/SAVE/DIR, STOP/END, and error reporting behave as documented.
+  Canonical sources checked: sdk/include/ehbasic_lineeditor.inc, sdk/include/ehbasic_exec.inc, sdk/include/ehbasic_expr.inc, sdk/include/ehbasic_vars.inc, sdk/include/ehbasic_strings.inc, sdk/include/ehbasic_io.inc, sdk/include/ehbasic_file_io.inc, ehbasic_test.go REPL, tokeniser, expression, line editor, PRINT, array, STOP/END, and error tests.
+  Reader workflow: type direct-mode statements and numbered BASIC listings at the BASIC prompt; use LIST, RUN, NEW, CLEAR, CONT, LOAD, SAVE, and DIR from the prompt where documented.
+  Runnable example: Ch 1 first-session PRINT, stored two-line program, VGA pixel, SoundChip tone, SAVE/DIR actions; direct PRINT example, HELLO/WORLD line-order listing, line replacement/deletion listings, DIM examples, expression examples, PRINT examples, REM example, and division-by-zero error example.
+  Expected result: first-session PRINT returns 5, the stored program prints INTUITION ENGINE and 5, the VGA action marks a red centre pixel, the SoundChip action plays a tone, and SAVE/DIR use the file interface; direct PRINT returns 5; LIST shows lines sorted by number; replacement changes line 10; bare line 10 deletes it; DIM and array examples print 25 and 100; comparison examples print -1 and -10; PRINT separator examples match the shown output; division by zero reports DIVISION BY ZERO ERROR IN 10.
+  Author verification workflow: compared chapter behaviour against line editor, expression, variable/string, and execution code, plus targeted EhBASIC tests.
+  Result: Ch 1 is an IE-native BASIC chapter with typed prompt examples and a first-session onramp, introduces BASIC as the first way to touch the shared machine, and has no reader-facing assembler, build, source-path, or external-tool workflow.
+
+- Area: Ch 2, BASIC vocabulary and keyword cross-reference.
+  Claim: Chapter 2 is a skimmable reference, not a required beginner wall; it lists the BASIC vocabulary with reader-typed syntax, short behaviour notes, examples for representative numeric/string/control words, direct-mode-only DIR separation, reader-visible alternate spellings, and hardware keyword cross-references to the owning chapters. `VSYNC` is a no-argument statement, `COLOR fg[,bg]` is a VGA text-colour command, and `MOD STATUS` is documented as the reader-visible MOD status expression. Parser storage details and token-byte aliases are left to Appendix A.
+  Canonical sources checked: sdk/include/ehbasic_tokens.inc, sdk/include/ehbasic_tokenizer.inc, sdk/include/ehbasic_exec.inc, sdk/include/ehbasic_expr.inc, sdk/include/ehbasic_strings.inc, sdk/include/ehbasic_io.inc, sdk/include/ehbasic_vars.inc, sdk/include/ehbasic_lineeditor.inc, sdk/include/ehbasic_hw_system.inc, sdk/include/ehbasic_hw_video.inc, sdk/include/ehbasic_hw_audio.inc, sdk/include/ehbasic_file_io.inc, ehbasic_test.go tokeniser, expression, string, memory, control-flow, REPL, and hardware keyword tests.
+  Reader workflow: look up a keyword, type the shown syntax or BASIC example at the prompt, then follow the owning feature chapter for hardware-specific setup.
+  Runnable example: Ch 2 ABS, AND, ASC, BIN$, CHR$, DATA/READ, DIM, EOR, FOR/NEXT, HEX$, IF, INPUT, LOOP, PRINT, VAL, and WAIT examples.
+  Expected result: each listed example produces the shown value or behaviour; hardware keywords route readers to their feature chapters rather than requiring external tools; `BLIT MEMCOPY`, `BLIT M`, and `BLIT MODE7` syntax matches Chapter 4 and the implementation; `COLOR` and `SCROLL` point to Chapter 5, `VSYNC` points to Chapter 3, and `MOD STATUS` points to Chapter 19; Chapter 2 does not document internal spellings that the reader cannot type.
+  Author verification workflow: compared keyword names, token aliases, parser boundaries, examples, and cross-reference targets against source and targeted tests.
+  Result: Ch 2 remains a typed IE-native vocabulary chapter; the opening now tells first-time readers to skim and continue to the graphics chapter, the `TWOPI` entry uses valid ASCII text, tokeniser internals were removed from the reader-facing entries, and the chapter has no reader-facing source-path or toolchain workflow.
+
+- Area: Ch 24, IE64 instruction encoding, SoundChip byte-entry example, and VideoChip Mode 7 byte-entry example.
+  Claim: byte 1 encodes Rd in bits 7-3, size in bits 2-1, X in bit 0; byte 2 and byte 3 encode Rs/Rt in bits 7-3. The audio example enables AUDIO_CTRL and programs the legacy square, triangle, and sine SoundChip channel blocks for a three-voice C major chord. The graphics example writes a 2 by 2 RGBA texture at $1800, stages VideoChip Mode 7 blitter registers from $F0020 through $F0074, starts the blitter via BLT_CTRL, and scales the texture into a 16 by 16 block at VRAM $100000.
+  Canonical sources checked: cpu_ie64.go, debug_disasm_ie64.go, audio_chip.go, video_chip.go, video_blitter_test.go.
+  Reader workflow: IE Mon only: w, d, r pc, breakpoint at loop, g, m.
+  Runnable example: Ch 24 "A small example" audio byte transcript, starting at w 1000 01 17 00 00 00 08 0F 00; Ch 24 "VideoChip Mode 7 example" graphics byte transcript, starting at w 1100 01 17 00 00 00 18 00 00.
+  Expected result: audio disassembly matches the chapter; memory at $F0900, $F0940, and $F0980 shows the three frequency, volume, and control blocks; the SoundChip channel state has square 262 Hz, triangle 330 Hz, sine 392 Hz, and all three gates set. Graphics disassembly matches the chapter; texture memory at $1800 contains red, green, blue, white RGBA words, VRAM $100000 begins with red then green blocks, VRAM $103C00 begins with blue then white blocks, and BLT_STATUS has no error bit.
+  Author verification workflow: checked IE64 decode bit fields, SoundChip register offsets, VideoChip Mode 7 register offsets, default VideoChip stride, fixed-point step values, and monitor disassembler output against source; added TestRefmanCh24IE64SoundChipChordExample and TestRefmanCh24IE64Mode7GraphicsExample, which extract the manual's w lines, check the bytes, disassemble them, step the setup code, and verify device state.
+  Result: reader path is byte entry and monitor inspection; the chapter now annotates the instruction groups for both an audible SoundChip chord and a visible VideoChip Mode 7 block, and no assembler is assumed.
+
+- Area: Ch 25, IE32 SN76489 byte-entry example and VGA text byte-entry example.
+  Claim: IE32 instructions are 8 bytes: opcode, register, addressing mode, reserved byte, little-endian 32-bit operand. The audio example enables AUDIO_CTRL and writes SN76489 byte-stream values for a three-channel chord through the low byte of 32-bit stores. The graphics example sets VGA_MODE to text mode, enables VGA_CTRL, and writes character/attribute bytes for "IE32" into the VGA text window at $B8000-$B8007.
+  Canonical sources checked: cpu_ie32.go, debug_disasm_ie32.go, sn76489_constants.go, sn76489_chip.go, sn76489_chip_integration_test.go, vga_constants.go, video_vga.go, vga_bus_test.go.
+  Reader workflow: IE Mon only: w, d, r pc, breakpoint at loop, g, m.
+  Runnable example: Ch 25 "A small example" audio byte transcript, starting at w 1000 20 00 00 00 01 00 00 00; Ch 25 "VGA text example" graphics byte transcript, starting at w 1100 20 00 00 00 03 00 00 00.
+  Expected result: audio disassembly matches the chapter; SN_PORT_READY at $F0C31 reads 01 after the setup writes to $F0C30; tone dividers are $1AB, $153, and $11D with attenuation 0, 2, and 3. Graphics disassembly matches the chapter; VGA_MODE reads 03, VGA_CTRL reads 01, and $B8000-$B8007 reads 49 1E 45 2F 33 4E 32 5F.
+  Author verification workflow: checked opcode/addressing-mode constants, SN76489 port constants, latch/data/attenuation bytes, VGA register/text-window constants, and monitor disassembler formatting; added TestRefmanCh25IE32SN76489ChordExample and TestRefmanCh25IE32VGATextExample, which extract the manual's w lines, check the bytes, disassemble them, step the setup code, and verify device state.
+  Result: reader path is byte entry and monitor inspection; the chapter now annotates the instruction groups for both an audible SN76489 chord and a visible VGA text-mode result, documents low-byte MMIO behaviour, and no assembler is assumed.
+
+- Area: Ch 26 and Ch 32, 6502 POKEY byte-entry workflow and ULA graphics byte-entry workflow.
+  Claim: A9/8D/JMP bytes entered at $1000 enable audio, clear POKEY AUDCTL, set AUDF1/AUDC1, AUDF2/AUDC2, and AUDF3/AUDC3, and loop at $1028. A second A9/8D/JMP program entered at $1100 sets ULA_BORDER and ULA_CTRL through the 6502 $D800 window, writes eight bitmap bytes through the latched ULA_DATA port, writes attribute byte $46 at ULA VRAM offset $1800, and loops at $114B. The 6502 map is a 16-bit adapter into the low 32-bit hardware window on the 64-bit bus, exposing POKEY at $D200-$D20A, PSG at $D400-$D40F, SID at $D500-$D55F, TED audio at $D600-$D605, TED video at $D620-$D632, VGA at $D700-$D70D, ULA at $D800-$D817, Voodoo at $E000-$EFFF, and translated MMIO at $F000-$FFF9.
+  Canonical sources checked: debug_disasm_6502.go, cpu_six5go2.go, pokey_constants.go, psg_constants.go, sid_constants.go, ted_constants.go, ted_video_constants.go, vga_constants.go, ula_constants.go, video_ula.go, ula_bus_integration_test.go, voodoo_constants.go, pokey_engine.go.
+  Reader workflow: IE Mon only: w, d, r pc, breakpoint at loop, g, m.
+  Runnable example: Ch 26 "A small example" audio byte transcript, starting at w 1000 A9 01 8D 00 F8 A9 00 8D 08 D2; Ch 26 "ULA graphics example" byte transcript, starting at w 1100 A9 05 8D 00 D8 A9 05 8D 04 D8.
+  Expected result: audio disassembly matches the chapter; POKEY register window at $D200 begins 79 AF 5F AC 3F A8 and AUDCTL remains 00. Graphics disassembly matches the chapter; ULA_BORDER reads 05, ULA_CTRL reads 05, ULA VRAM offsets $0000-$0007 read FF 81 BD A5 A5 BD 81 FF, and ULA VRAM offset $1800 reads 46.
+  Author verification workflow: checked 6502 disassembler table, instruction sizes, POKEY register aliases, byte-wide MMIO fanout, SoundChip audio enable aliasing, ULA register aliases, latched ULA_DATA read/write auto-increment, and ULA VRAM layout; added TestRefmanCh26POKEYChordExample and TestRefmanCh26ULAGraphicsExample, which extract the manual's w lines, check the bytes, disassemble them, step the setup code, and verify device state.
+  Result: Ch 26 and Ch 32 show the no-assembler machine-code workflow with audible and visible device results; Ch 26 now annotates each variable-length byte group, explains the POKEY divider/control bytes, shows the ULA latch/data-port workflow, lists the device apertures used by 6502 code, and preserves the 64-bit bus / 16-bit adapter wording.
+
+- Area: Ch 27, Z80 PSG byte-entry example and ANTIC/GTIA graphics byte-entry example.
+  Claim: the audio example enables audio through $F800, then uses OUT ($F0),A and OUT ($F1),A to select and write PSG registers for a three-voice chord. The graphics example uses LDIR to copy 67 bytes to $2000, creating an ANTIC display list and bitmap row at $201B; it then uses Z80 ports $D6/$D7 for GTIA colours and $D4/$D5 for ANTIC DLISTL, DLISTH, DMACTL, and ENABLE. The Z80 map is a 16-bit adapter into the low 32-bit hardware window on the 64-bit bus, and the port table lists Z80 routes for VGA, Voodoo, POKEY, ANTIC, GTIA, SID, SN76489, PSG, TED, and ULA.
+  Canonical sources checked: debug_disasm_z80.go, cpu_z80.go, cpu_z80_runner.go, psg_constants.go, sid_constants.go, pokey_constants.go, ted_constants.go, sn76489_constants.go, antic_constants.go, video_antic.go, antic_dlist.go, antic_modes.go, antic_port_parity_test.go, vga_constants.go, voodoo_constants.go, ula_constants.go, psg_engine.go.
+  Reader workflow: IE Mon only: w, d, r pc, breakpoint at loop, g, m.
+  Runnable example: Ch 27 "A small example" audio byte transcript, starting at w 1000 3E 01 32 00 F8 21 17 10; Ch 27 "ANTIC graphics example" byte transcript, starting at w 1100 21 46 11 11 00 20 01 43.
+  Expected result: audio disassembly matches the chapter; PSG register window at $FC00 begins 71 00 5F 00 47 00 00 38 0F 0C 09. Graphics disassembly matches the chapter; $2000 contains eight 4F 1B 20 display-list entries followed by 41 18 20; $201B contains the 40-byte bitmap row; GTIA_COLPF0 is 02, GTIA_COLPF1 is CE, GTIA_COLBK is 24, ANTIC_DLISTL/H point at $2000, ANTIC_DMACTL is 22, ANTIC_ENABLE is 01, and the rendered first/eighth motif-row pixels use the expected playfield colours.
+  Author verification workflow: checked Z80 decode for LD r,n, LD rr,nn, LD (nn),A, OUT (n),A, DJNZ, LDIR, and JP nn; checked PSG, ANTIC, and GTIA Z80 port constants; added TestRefmanCh27Z80PSGChordExample and TestRefmanCh27Z80ANTICGraphicsExample, which extract the manual's w lines, check bytes, disassemble them, step setup code, and verify device state and rendered pixels.
+  Result: reader path is byte entry and monitor inspection; the chapter now annotates each variable-length instruction group, demonstrates Z80 block copy into a video data structure, gives the full useful Z80 port map, removes external-manual wording, and preserves the 64-bit bus / 16-bit adapter wording, with no assembler assumed.
+
+- Area: Ch 28, M68K SID byte-entry example and Voodoo triangle byte-entry example.
+  Claim: MOVE.B immediate-to-absolute-long instructions entered at $1000 enable audio and program SID voice 1 for a sawtooth tone; BRA.W loops at $1038. MOVE.L immediate-to-absolute-long instructions entered at $1100 enable Voodoo, clear COLOR0, program a 12.4 fixed-point triangle, set 12.12 fixed-point colour channels, submit TRIANGLE_CMD, swap the buffer, and loop at $1196.
+  Canonical sources checked: debug_disasm_m68k.go, cpu_m68k.go, sid_constants.go, sid_engine.go, voodoo_constants.go, video_voodoo.go, video_voodoo_bus_test.go, video_voodoo_test.go.
+  Reader workflow: IE Mon only: w, d, r pc, breakpoint at loop, g, m.
+  Runnable example: Ch 28 "A small example" audio byte transcript, starting at w 1000 13 FC 00 01 00 0F 08 00; Ch 28 "Voodoo triangle example" graphics byte transcript, starting at w 1100 23 FC 00 00 00 01 00 0F 80 04.
+  Expected result: audio disassembly matches the chapter; memory at $F0E00 begins C3 10 00 00 21 00 F0 and $F0E18 reads 0F. Graphics disassembly matches the chapter; Voodoo is enabled, COLOR0 is FF0000FF, vertices decode to A(320,100), B(500,380), C(140,380), the swap command renders a non-blue centre pixel, and the PC stops at $1196.
+  Author verification workflow: checked M68K disassembler MOVE.B, MOVE.L, and BRA.W decode paths; checked SID register constants and Voodoo register/fixed-point command paths; added TestRefmanCh28M68KSIDExample and TestRefmanCh28M68KVoodooTriangleExample, which extract the manual's w lines, check bytes, disassemble them, step setup code, and verify device state and rendered output.
+  Result: reader path is byte entry and monitor inspection; the chapter now annotates M68K opcode/extension-word groups for both an audible SID voice and a visible Voodoo triangle, describes the CPU as a full MC68020-class 32-bit Intuition Engine bus client, and no assembler is assumed.
+
+- Area: Ch 29, x86 TED audio byte-entry example and TED video byte-entry example.
+  Claim: MOV AL,imm8 and MOV [imm32],AL bytes entered at $1000 enable audio and program TED voice 1 and 2 frequency/control registers; EB FE loops at $102A. A second byte-store program entered at $1100 enables TED video, sets CTRL1, CTRL2, background and border colours, writes matrix and colour RAM bytes, installs an 8-byte glyph at $F3808-$F380F, and loops at $1169. The x86 port table lists direct POKEY, VGA, Voodoo, ANTIC, GTIA, SID, PSG, TED, and ULA routes.
+  Canonical sources checked: debug_disasm_x86.go, cpu_x86.go, cpu_x86_ops.go, cpu_x86_runner.go, ted_constants.go, ted_engine.go, ted_video_constants.go, video_ted.go, ted_video_test.go, pokey_constants.go, vga_constants.go, voodoo_constants.go, antic_constants.go, sid_constants.go, psg_constants.go, ula_constants.go.
+  Reader workflow: IE Mon only: w, d, r eip, breakpoint at loop, g, m.
+  Runnable example: Ch 29 "A small example" audio byte transcript, starting at w 1000 B0 01 A2 00 08 0F 00; Ch 29 "TED video example" graphics byte transcript, starting at w 1100 B0 01 A2 58 0F 0F 00.
+  Expected result: audio disassembly matches the chapter; TED register window at $F0F00 begins 1C 58 02 38 02. Graphics disassembly matches the chapter; TED_V_ENABLE is 01, CTRL1 is 18, CTRL2 is 08, BG_COLOR0 is 06, BORDER is 2E, VRAM $0000 is 01, VRAM $0400 is 4E, glyph bytes at VRAM $0808-$080F are FF 81 BD A5 A5 BD 81 FF, and rendered set/clear motif pixels use the expected TED palette entries.
+  Author verification workflow: checked x86 disassembler MOV AL,imm8, MOV moffs8,AL, and short JMP decode paths; checked TED audio and video register constants, TED VRAM layout, renderTextPixel behaviour, and x86 address translation; added TestRefmanCh29X86TEDAudioExample and TestRefmanCh29X86TEDGraphicsExample, which extract the manual's w lines, check bytes, disassemble them, step setup code, and verify audio/video device state plus rendered pixels.
+  Result: reader path is byte entry and monitor inspection; the chapter now annotates each x86 instruction byte group and explains little-endian absolute addresses for both an audible TED sound and a visible TED character-cell motif, with no assembler assumed.
+
+- Area: Ch 21 / App D, Paula DMA register names and layout.
+  Claim: AROS_AUD_DMACON, AROS_AUD_STATUS, and AROS_AUD_INTENA are the canonical register names.
+  Canonical sources checked: aros_audio_constants.go, aros_audio_dma.go.
+  Reader workflow: program the documented Paula DMA MMIO registers directly.
+  Runnable example: Ch 21 Paula setup listing.
+  Expected result: channel starts when pointer, length, period, volume, and DMA enable are written in order.
+  Author verification workflow: compared register names and offsets against code-owned constants.
+  Result: preserved canonical register names; avoided guest-OS prose.
+
+- Area: Ch 23 / App D / App J, SysInfo RAM-size ABI.
+  Claim: SYSINFO_TOTAL_RAM_LO/HI and SYSINFO_ACTIVE_RAM_LO/HI expose total and active visible RAM.
+  Canonical sources checked: registers.go, sysinfo_mmio.go, sysinfo_mmio_test.go, sdk/include/iexec.inc.
+  Reader workflow: BASIC PEEK or machine-code MMIO reads from the SysInfo block.
+  Runnable example: Ch 23 SysInfo memory-size listing.
+  Expected result: total and active values are readable as low/high pairs; App J keeps 0xF2400-0xF24FF.
+  Author verification workflow: checked constants and tests.
+  Result: maps and prose use the source-owned ABI names.
+
+- Area: Ch 24 / App H, IE64 ABI.
+  Claim: IE64 calling convention uses R8-R15 arguments, R8 return, R1-R7 caller-saved, R16-R30 callee-saved, R31 stack.
+  Canonical sources checked: Ch 24 calling convention text, sdk/include/ie64.inc, cpu_ie64.go.
+  Reader workflow: call/return conventions are applied by hand-entered or loaded IE64 programs.
+  Runnable example: Ch 24 byte-entry program uses scratch registers R1/R2 only.
+  Expected result: no callee-saved registers are disturbed by the example.
+  Author verification workflow: compared chapter, include symbols, and CPU register model.
+  Result: App H matches Ch 24 and implementation convention.
+
+- Area: Ch 25 / Ch 30 / App G / App H, IE32 timing.
+  Claim: IE32 publishes no timer MMIO block; use the IE32 WAIT instruction, device status registers, or interrupts.
+  Canonical sources checked: cpu_ie32.go, registers.go, sdk/include/ie32.inc, audio_chip.go.
+  Reader workflow: in IE32 machine code, use WAIT n or poll documented device status registers.
+  Runnable example: Ch 25 byte-entry example avoids timer MMIO.
+  Expected result: timing prose does not point at nonexistent IE32 timer MMIO.
+  Author verification workflow: searched constants and CPU implementation.
+  Result: removed published IE32 timer-MMIO claim.
+
+- Area: Ch 28 / App G / App H, M68K scope.
+  Claim: the M68K is MC68020-class for integer programming with documented boundaries.
+  Canonical sources checked: cpu_m68k.go, NXP MC68020UM PDF, NXP M68000PRM PDF.
+  Reader workflow: use documented M68K opcodes and monitor byte entry.
+  Runnable example: Ch 28 MOVEQ/BRA byte-entry program.
+  Expected result: D0 receives $42 and PC reaches the loop.
+  Author verification workflow: checked implementation and primary ISA references.
+  Result: chapter presents supported scope and bounded differences.
+
+- Area: Ch 28, 68881-style FPU path.
+  Claim: Line-F coprocessor ID 1 is the 68881-style FPU path; absent FPU, other coprocessor IDs, unsupported FPU sub-ops, and packed-decimal FPU memory operands are outside the accepted boundary.
+  Canonical sources checked: cpu_m68k.go Line-F decode, M68881FPU operations, NXP M68000PRM floating-point sections.
+  Reader workflow: use documented FP0-FP7/FPCR/FPSR/FPIAR groups; avoid unsupported packed-decimal memory operands.
+  Runnable example: Ch 28 integer byte-entry example; FPU examples are separate feature work.
+  Expected result: unsupported Line-F cpIDs and unsupported FPU sub-ops raise Line-F exception.
+  Author verification workflow: checked decode and FPU operation groups.
+  Result: chapter documents cpID 1 and its boundary.
+
+- Area: Ch 30 / Ch 24, IE64 cycle timer.
+  Claim: CR9/CR10/CR11 are the IE64 timer interface; legacy TIMER_* MMIO names are reserved compatibility symbols. BASIC WAIT polls memory-visible status bits with ((PEEK(addr) EOR xor) AND mask) non-zero. IE64 integer divide/modulo by zero writes 0 and does not trap; IE32 divide by zero stops the runner with a division-by-zero error.
+  Canonical sources checked: cpu_ie64.go CR_TIMER_PERIOD/COUNT/CTRL and OP_DIVU/OP_DIVS/OP_MOD64 handling, cpu_ie32.go DIV handling, Ch 24 control-register table, sdk/include/ehbasic_hw_system.inc WAIT handler, ehbasic_test.go WAIT tests, cpu_ie64_test.go divide-by-zero tests.
+  Reader workflow: use IE64 control registers for IE64 timer work; use BASIC WAIT or device status polling for the common IE-native timing path.
+  Runnable example: Ch 30 BASIC WAIT polling listing at $50000.
+  Expected result: the listing prints BEFORE 0 and AFTER 4; timer programming does not use the SoundChip block; the trap table does not claim an IE64 write-denied fault for divide by zero.
+  Author verification workflow: checked control-register constants, the WAIT expression path, IE64 and IE32 division behaviour, and the Chapter 30 refman WAIT test.
+  Result: Ch 30 now has a typed IE-native timing example, uses CR9/CR10/CR11, states the actual divide-by-zero behaviour, points readers to in-guide timing tables instead of external manuals, and avoids executor wording.
+
+- Area: Ch 3, display stack, palettes, retrace, and first picture.
+  Claim: Intuition Engine has six bus-visible picture sources composited in fixed layer order; the compositor scales source frames to 1920x1080 output, uses top-left coordinates, keeps palettes per chip, and exposes VSYNC as the BASIC retrace wait.
+  Canonical sources checked: video_compositor.go layer sorting, frame dimensions, scaling, blendFrame paths, SignalVSync calls; video_chip.go, video_vga.go, video_ted.go, video_antic.go, video_ula.go, video_voodoo.go source layers; sdk/include/ehbasic_hw_video.inc SCREEN/PALETTE/PLOT/CLS/VSYNC handlers; ehbasic_test.go VGA and VSYNC tests.
+  Reader workflow: type the Chapter 3 "DISPLAY MODEL FIRST PICTURE" BASIC listing at the BASIC prompt.
+  Runnable example: Ch 3 "DISPLAY MODEL FIRST PICTURE" selects VGA Mode 13h, sets palette entries, plots two diagonal lines and a horizontal line, then waits for VSYNC.
+  Expected result: a 320x200 indexed-colour picture appears with red and green diagonals crossing a blue horizontal line.
+  Author verification workflow: checked source layer numbers, output dimensions, palette ownership, coordinate convention, and VSYNC keyword path against code and tests.
+  Result: Ch 3 has a complete IE-native runnable example, presents the display chips as cards feeding one shared compositor, and records the compositor overview proof.
+
+- Area: Ch 3, VideoCompositor opacity rule.
+  Claim: the compositor treats all-zero RGBA as transparent; any non-zero alpha is opaque; zero-alpha pixels with non-zero RGB are promoted to full alpha and drawn; partial alpha is not blended.
+  Canonical sources checked: video_compositor.go compositorOpaquePixel, blendStrip, blendFrameScaled.
+  Reader workflow: use BASIC POKE or chip-specific drawing commands with either explicit alpha or BASIC-friendly 0x00RRGGBB direct-colour values.
+  Runnable example: Ch 4 Mode7 checkerboard uses 0x000000FF and 0x0000FFFF direct-colour pixels.
+  Expected result: non-black direct-colour pixels appear even though their high alpha byte is zero; 0x00000000 remains transparent.
+  Author verification workflow: compared Ch 3/Ch 4 wording against compositor source.
+  Result: Ch 3 and Ch 4 no longer contradict the implementation.
+
+- Area: Ch 4, VideoChip framebuffer and palette programming.
+  Claim: VideoChip exposes a 32-bit MMIO register block at 0xF0000, supports RGBA32 direct colour and CLUT8 indexed colour, reads from FB_BASE, and provides both indexed and direct palette writes.
+  Canonical sources checked: video_chip.go register constants and handleRegisterWriteLocked, video_compositor.go compositorOpaquePixel, sdk/include/ehbasic_hw_system.inc palette and blit helpers.
+  Reader workflow: BASIC typed setup using POKE for VIDEO_MODE, COLOR_MODE, FB_BASE, VIDEO_CTRL, PAL_INDEX, and PAL_DATA.
+  Runnable example: Ch 4 mode and palette setup listings.
+  Expected result: 320x200 or 960x540 output reads pixels from the selected framebuffer base, CLUT8 indices expand through the 256-entry palette, and direct-colour BASIC values display as described.
+  Author verification workflow: checked register addresses and compositor opacity behaviour against source.
+  Result: framebuffer, palette, data format, and large-framebuffer limitations are documented for the reader path.
+
+- Area: Ch 4, VideoChip blitter operations.
+  Claim: BLT_OP 0-7 select COPY, FILL, LINE, MASKED_COPY, ALPHA_COPY, MODE7, COLOR_EXPAND, and SCALE; BLT_FLAGS selects BPP, draw modes, and colour-expand flags; the blitter completes synchronously and reports DONE/ERR/IRQ_PENDING in BLT_STATUS.
+  Canonical sources checked: video_chip.go runBlitterLocked, executeBlitterLocked, blitCopyLocked, blitFillLocked, blitLineLocked, blitMaskedCopyLocked, blitAlphaCopyLocked, blitMode7Locked, blitColorExpandLocked, blitScaleLocked, bppFromFlags, drawModeFromFlags, handleBlitterWriteLocked; video_blitter_test.go; ehbasic_test.go BLIT tests.
+  Reader workflow: BASIC first for BLIT COPY/FILL/LINE/MEMCOPY/MODE7, then POKE raw blitter registers for operations without a BASIC keyword.
+  Runnable example: Ch 4 "VIDEOCHIP BLITTER POSTER", "MASKED COPY DIAMOND", "ALPHA COPY GLOW", "COLOUR EXPAND TEMPLATE", "NEAREST SCALE", and "MODE7 CHECKERBOARD" listings.
+  Expected result: the poster listing clears the framebuffer, draws bands, copies a sprite, draws diagonal lines, and prints BLT_STATUS 2; masked copy leaves background outside the diamond and copies red/yellow pixels inside it; alpha copy blends a half-opaque red sprite over a dark blue background and prints BLT_STATUS 2; colour-expand writes its one-byte template with POKE8 and prints BLT_STATUS 2; scale prints BLT_STATUS 2; Mode7 prints BLT_STATUS 2.
+  Author verification workflow: compared operation tables, flags, status bits, stride defaults, alignment errors, and examples against blitter tests and implementation.
+  Result: Ch 4 now treats the blitter as a complete programmable feature, not just a fact table.
+
+- Area: Ch 4, VideoChip Mode 7 affine texture unit.
+  Claim: BLT_OP=5 performs RGBA32 affine texture mapping with U/V = origin + x*column delta + y*row delta, signed 16.16 coordinates, power-of-two-minus-one texture masks, optional source/destination strides, synchronous completion, DONE/ERR status, and no CLUT8 Mode7 path.
+  Canonical sources checked: video_chip.go blitMode7Locked, handleBlitterWriteLocked, bppFromFlags/drawModeFromFlags boundaries, sdk/include/ehbasic_hw_system.inc BLIT MODE7 parser, ehbasic_test.go Mode7 tests, video_blitter_test.go Mode7 tests, video_chip_regressions_test.go stride overflow test.
+  Reader workflow: BASIC typed program builds a 64x64 checkerboard texture with POKE, enables VideoChip 320x200, and runs BLIT MODE7.
+  Runnable example: Ch 4 "MODE7 CHECKERBOARD" listing, ending with PRINT PEEK(&H000F0044).
+  Expected result: a rotated checkerboard appears in the VideoChip framebuffer; BLT_STATUS reads 2 (DONE set, ERR clear).
+  Author verification workflow: compared register constants and formulas against implementation; targeted Mode7 and EhBASIC BLIT MODE7 tests.
+  Result: Ch 4 now documents setup, data formats, affine formula, masks, stride defaults, status/error behaviour, limitations, and a typed IE-native example.
+
+- Area: Ch 4, VideoChip copper and raster band.
+  Claim: the copper executes 32-bit WAIT, MOVE, SETBASE, and END words, restarts from COPPER_PTR each frame, reports RUNNING/WAITING/HALTED, defaults IO_BASE to VIDEO_REG_BASE, can retarget MMIO through SETBASE, and can drive the raster-band registers for scanline colour bars.
+  Canonical sources checked: video_chip.go copperStartFrameLocked, copperAdvanceRasterLocked, copperRunLocked, copperStatusLocked, drawRasterBandLocked, handleRegisterWriteLocked; video_copper_test.go; sdk/include/ehbasic_hw_system.inc COPPER builder; ehbasic_test.go COPPER tests.
+  Reader workflow: BASIC typed COPPER LIST/WAIT/MOVE/END/ON for normal use, plus hand-packed POKE words for exact instruction encoding.
+  Runnable example: Ch 4 "COPPER RASTER BANDS" listing, hand-packed copper listing, and raster band POKE listing.
+  Expected result: the copper listing changes raster-band colour at selected scanlines, the hand-packed list writes BLT_COLOR after WAIT 100, and the raster-band listing fills scanlines 90-109 with cyan.
+  Author verification workflow: compared BASIC builder output, copper word layouts, status behaviour, SETBASE routing, and raster-band clipping against tests and source.
+  Result: Ch 4 now documents the copper and raster band as programmable systems with purpose, setup, words/registers, side effects, status, limitations, and typed IE-native examples.
+
+- Area: Ch 5, VGA controller.
+  Claim: VGA exposes text, Mode 12h, Mode 13h, and Mode X; BASIC SCREEN/CLS/PLOT/PALETTE/COLOR/LOCATE/SCROLL/VSYNC cover the common path; MMIO registers expose core control, sequencer, CRTC, graphics controller, attribute controller, DAC, palette window, VRAM, text buffer, planar writes, hardware scrolling, and vertical retrace status.
+  Canonical sources checked: vga_constants.go, video_vga.go setMode, HandleRead, HandleWrite, HandleVRAMRead, HandleVRAMWrite, renderMode13h, renderMode12h, renderModeX, renderTextMode, sdk/include/ehbasic_hw_video.inc VGA keyword handlers, ehbasic_test.go VGA keyword tests.
+  Reader workflow: BASIC typed SCREEN/PALETTE/PLOT/COLOR/LOCATE/SCROLL/VSYNC examples first, then POKE/POKE8 raw register, palette-window, and VRAM examples for direct pixel, DAC, Mode 12h, Mode X, and CRTC work.
+  Runnable example: Ch 5 Mode 13h red pixel, text-mode "VGA TEXT", DAC-port palette writes, byte-addressed direct palette-window writes, Mode 13h direct yellow line, Mode X red line, Mode 12h planar pixel, text scroll, and raw CRTC start-address listings.
+  Expected result: BASIC examples select the documented modes, write palette entries, draw visible pixels/lines/text, set Mode 12h planes 0 and 2 for colour index 5, scroll text mode, and expose VGA_STATUS retrace through VSYNC.
+  Author verification workflow: compared register addresses, mode dimensions, chain-4 and unchained addressing, planar write controls, text format, DAC sequencing, direct palette byte writes, and BASIC keyword side effects against code and tests.
+  Result: Ch 5 now documents VGA features through IE-native typed examples, with the opening examples explained before the register tour, and without sending readers to outside VGA references.
+
+- Area: Ch 6, TED video.
+  Claim: TED video exposes a 384x272 source with a 320x200 display area, 40x25 text cells, 121-colour bytes, 16 KB private VRAM at $F3000, text, extended-colour text, multicolour text, high-resolution bitmap, multicolour bitmap, cursor, fine scroll, VBlank status, raster compare, and copper-writable registers. TED_V_RASTER_STATUS bit 7 is acknowledged by writing $80.
+  Canonical sources checked: ted_video_constants.go, video_ted.go HandleRead, HandleWrite, HandleBusVRAMRead, HandleBusVRAMWrite, decodeCharsetBase, decodeMatrixBase, decodeBitmapBase, renderTextPixel, renderBitmapPixel, ProcessScanline, FinishFrame; sdk/include/ehbasic_hw_video.inc TED keyword handlers; ted_video_test.go; ehbasic_test.go TED video keyword tests.
+  Reader workflow: type BASIC programs using TED ON and POKE/POKE8 against TED registers and TED VRAM; use the Chapter 4 copper word format only when driving TED scanline bands.
+  Runnable example: Ch 6 text-banner, extended-colour panel, multicolour text glyph, high-resolution bitmap hatch, multicolour bitmap bars, fine-scroll loop, cursor-position listing, raster-compare polling listing, and hand-packed copper border-band listing.
+  Expected result: TED shows the text banner, four extended-colour panels, a repeated four-colour glyph, hires hatch stripes, multicolour bars, fine-scroll movement, cursor underline, raster-triggered background colour change, and copper-driven border split as described.
+  Author verification workflow: compared register addresses, byte formats, base decoding, bitmap addressing, multicolour pair mappings, status side effects, raster compare range, copper SETBASE/MOVE encodings, and BASIC keyword side effects against source and focused tests; ran TestRefmanCh6TEDMulticolourTextExample plus focused TED keyword and engine tests.
+  Result: Ch 6 now documents TED video as a complete programmable chip with IE-native typed examples, British prose, no dash-style punctuation, and no reader-facing toolchain workflow.
+
+- Area: Ch 7, ANTIC and GTIA.
+  Claim: ANTIC/GTIA expose a 384x240 source with a 320x192 playfield, display-list DMA, 16-bit LMS/JMP/JVB addresses, text and bitmap display-list modes, fine scrolling, WSYNC scanline capture, VBlank and NMI status, GTIA playfield/background/player/missile colours, GTIA PRIOR colour-remapping modes, direct player/missile graphics, priority controls, and collision latches. BASIC examples keep ANTIC-fetched display-list data below $1000 so they do not overwrite BASIC's work area.
+  Canonical sources checked: antic_constants.go, video_antic.go HandleRead, HandleWrite, renderDisplayList, renderDLMode, renderTextMode, renderBitmapMode, applyGTIAModeColor, WSYNC capture path; antic_dlist.go; antic_modes.go; antic_pmg.go; sdk/include/ehbasic_hw_video.inc ANTIC/GTIA keyword handlers; video_antic_test.go; video_antic_scanline_test.go; video_antic_irq_test.go; ehbasic_test.go ANTIC and GTIA keyword tests.
+  Reader workflow: type BASIC programs that build display lists and playfield data with POKE8, set colours and DMA with ANTIC/GTIA keywords, use WSYNC for scanline capture, and use direct GTIA player/missile registers for sprites.
+  Runnable example: Ch 7 checkerboard text display list, mode-14 four-colour bitmap ribbon, GTIA luminance bars, WSYNC raster-bar listing, and player/missile overlay listing.
+  Expected result: ANTIC displays the checkerboard text screen, a mode-14 four-colour top ribbon, GTIA red luminance bars, WSYNC background bars, and player/missile columns over the playfield.
+  Author verification workflow: compared register addresses, DMACTL bits, display-list opcodes, bytes-per-mode rules, GTIA colour byte format and PRIOR remapping, WSYNC side effects, player/missile register mapping, status clearing, and BASIC keyword side effects against source and focused tests; ran TestRefmanCh7ANTICTextCheckerboardExample, TestRefmanCh7ANTICMode14RibbonExample, TestRefmanCh7GTIALuminanceBarsExample, TestRefmanCh7GTIAPlayerMissileExample, and focused ANTIC/GTIA engine tests.
+  Result: Ch 7 now documents ANTIC/GTIA with IE-native typed examples and records the status, data-format, side-effect, and limitation claims.
+
+- Area: Ch 8, ULA display.
+  Claim: ULA exposes a 320x256 source with a 256x192 bitmap, 32x24 attribute cells, 6912 bytes of VRAM, ZX-style bitmap addressing, attribute bytes with INK/PAPER/BRIGHT/FLASH, a direct VRAM aperture at 0xFA000, a latched paged port through ULA_ADDR_LO/HI and ULA_DATA, VBlank status/IRQ control, border colour, auto-increment, and 32-frame flash toggling.
+  Canonical sources checked: ula_constants.go, video_ula.go HandleRead, HandleWrite, HandleRead8, HandleWrite8, HandleBusVRAMRead, HandleBusVRAMWrite, GetBitmapAddress, GetAttributeAddress, ParseAttribute, renderScanlineFromSnap, TickFrame; sdk/include/ehbasic_hw_video.inc ULA keyword handlers; video_ula_scanline_test.go; ehbasic_test.go ULA keyword and refman example tests.
+  Reader workflow: type BASIC ULA keyword programs first, then use POKE8/PEEK8 for direct aperture pixels or POKE through the latched ULA_DATA port for small-address CPU workflows.
+  Runnable example: Ch 8 diagonal plot, bright attribute-grid diagonals, direct-aperture shallow red line, paged-port first scanline, and VBlank border-cycle polling loop.
+  Expected result: ULA shows attribute-clash diagonals, a direct-poked red line, a bright top scanline from the paged port, and border changes synchronised to VBlank.
+  Author verification workflow: compared register addresses, latch masking, auto-increment wrap, bitmap address formula, attribute parsing, VBlank read-clear behaviour, flash timing, and BASIC keyword side effects against source and focused tests; ran TestRefmanCh8ULADiagonalExample, TestRefmanCh8ULAAttributeGridExample, TestRefmanCh8ULADirectApertureLineExample, TestRefmanCh8ULAPagedPortExample, TestHW_ULA_Attr, ULA keyword tests, and scanline render tests.
+  Result: Ch 8 now documents the ULA with typed IE-native examples, side effects, status behaviour, and limitations. The BASIC ULA CLS helper was corrected to force byte-wide blitter fill mode before clearing bitmap and attribute VRAM.
+
+- Area: Ch 9, Voodoo 3D rasteriser.
+  Claim: Voodoo exposes a 0xF8000-0xF87FF 32-bit register block, 64 KB texture memory at 0xD0000, a triangle command path with fixed-point vertex attributes, colour combine, depth test/write, alpha test/blend, fog, chroma key, stipple, dither, texture upload, LFB aperture writes, status bits, and swap/clear side effects.
+  Canonical sources checked: voodoo_constants.go, video_voodoo.go, voodoo_software.go, sdk/include/ehbasic_hw_voodoo.inc, ehbasic_test.go Voodoo, ZBUFFER, TEXTURE, VERTEX, and TRIANGLE tests; video_voodoo_* tests.
+  Reader workflow: type BASIC VOODOO, VERTEX, TRIANGLE, ZBUFFER, and TEXTURE programs first; use POKE/PEEK for raw Voodoo registers and texture memory when the chapter shows exact addresses.
+  Runnable example: Ch 9 first-triangle, Gouraud fan, depth overlap, 2x2 texture upload and textured triangle, linear aperture inspect, and alpha/fog/chroma/dither listings.
+  Expected result: Voodoo draws flat, Gouraud, depth-tested, textured, fogged, chroma-keyed, dithered, and alpha-blended pictures as described; VOODOO PIXEL 10,5,42 at 320x200 prints 42 from 0xD1928.
+  Author verification workflow: compared register maps, fixed-point formats, keyword side effects, colour packing, texture upload size checks, draw target rules, depth function bit placement, and command flush behaviour against code and focused tests; added mapped-Voodoo refman tests for the first triangle, Gouraud fan, depth overlap, 2x2 texture upload, linear aperture inspect, and alpha/fog/chroma/dither listings.
+  Result: Ch 9 is an IE-native feature chapter with typed BASIC and POKE examples, British prose, no dash-style punctuation, and exact reader examples verified through the real Voodoo MMIO handlers and rendered frame output.
+
+- Area: Ch 10, tile and sprite layers from BASIC.
+  Claim: VGA text cells, TED character cells, ANTIC display-list tiles, ULA attribute cells, GTIA players/missiles, VideoChip blitter sprites, and Voodoo textured quads are the IE-native tile/sprite-style paths available from BASIC and POKE/POKE8.
+  Canonical sources checked: sdk/include/ehbasic_hw_video.inc, sdk/include/ehbasic_hw_voodoo.inc, vga_constants.go, ted_video_constants.go, antic_constants.go, antic_pmg.go, ula_constants.go, voodoo_constants.go, ehbasic_test.go video keyword and refman example tests.
+  Reader workflow: type the BASIC cookbook listings directly; use POKE8 for text cells, TED matrices, ANTIC display lists, ULA attributes, and texture memory where the listing shows byte-level data.
+  Runnable example: Ch 10 VGA TILE BANNER, TED CHARACTER GRID, ANTIC CHECKERBOARD TILES, ULA ATTRIBUTE TILES, GTIA PLAYER AND MISSILE, and VOODOO TEXTURED QUAD listings.
+  Expected result: the examples display a VGA text banner, TED coloured text, ANTIC checkerboard, ULA diagonal attribute pattern, GTIA player/missile columns, and a Voodoo four-colour textured quad; the layer-combination table follows the compositor order, with Voodoo above VGA, ANTIC/GTIA above TED, and VGA above VideoChip.
+  Author verification workflow: compared syntax, addresses, layer order, fixed-point Voodoo values, player/missile side effects, and memory layouts against the owning feature chapters and focused video tests; ran exact Chapter 10 example tests for VGA text, TED cells, ANTIC tiles, ULA attributes, GTIA player/missile, and the Voodoo textured quad.
+  Result: Ch 10 is now a complete IE-native cookbook chapter with runnable examples, safe low-memory ANTIC/GTIA display-list data, line-range explanations for each listing, a whole-machine layer-combination exercise, British prose, and no dash-style punctuation.
+
+- Area: Ch 11, audio architecture overview.
+  Claim: the audio engines feed one 44100 Hz stereo mixer; AUDIO_CTRL controls master enable/freeze; SoundChip flexible channels, SFX sample channels with 16-bit SFX_VOL, media loader registers, global filter/overdrive/reverb registers, and the shared Plus-processing rule are available through BASIC and POKE; PSG and POKEY have independent register blocks but direct tone writes use the shared SoundChip flexible voice backend; POKEY is the uniform chapter-17 engine label.
+  Canonical sources checked: audio_chip.go, sfx_constants.go, sfx_trigger.go, media_loader_constants.go, sdk/include/ehbasic_hw_audio.inc, ehbasic_test.go SoundChip, PSG, POKEY, MOD/WAV, and mixer-effect keyword tests.
+  Reader workflow: type BASIC SOUND, ENVELOPE, GATE, PSG, POKEY, SOUND FILTER, SOUND REVERB, SOUND OVERDRIVE, SOUND PLAY, and POKE examples directly at the BASIC prompt.
+  Runnable example: Ch 11 "FIRST AUDIO SETUP" listing.
+  Expected result: AUDIO_CTRL is enabled; PSG and POKEY byte registers receive the shown tone values; SoundChip channels 2 and 3 receive frequency, volume, waveform, ADSR, and gate writes; filter and reverb registers apply to the active output; Plus controls are described as output-path switches that do not create a second register map; the access map names MOD as SOUND MOD/MOD STATUS and WAV as SOUND PLAY or raw WAV registers.
+  Author verification workflow: compared mixer register addresses, flexible-channel offsets, SFX layout, Plus control addresses, media-loader status/error values, direct-chip voice-backend translation, and BASIC keyword side effects against constants and focused tests; ran TestRefmanCh11FirstAudioSetupExample with real SoundChip, PSG, and POKEY MMIO handlers mapped.
+  Result: Ch 11 now uses uniform audio chapter naming, removes the combined POKEY and SAP title wording, fixes the keyword map, documents the shared flexible voice backend limitation, centralises Plus-mode teaching, and has an IE-native runnable audio setup example.
+
+- Area: Ch 12, SoundChip and SFX.
+  Claim: SoundChip exposes ten 0x40-byte flexible channels with waveform, ADSR, sweep, PWM, noise, phase, ring modulation, sync, and DAC registers; BASIC drives channels 0-3; SFX exposes four 0x20-byte sample-trigger channels at 0xF0E80-0xF0EFF.
+  Canonical sources checked: audio_chip.go flexible-channel constants and register handlers, sfx_constants.go, sfx_trigger.go, sdk/include/ehbasic_hw_audio.inc, ehbasic_test.go SoundChip keyword tests, sfx_trigger_test.go.
+  Reader workflow: type BASIC SOUND/ENVELOPE/GATE/SOUND NOISE/SOUND SWEEP/SOUND RINGMOD/SOUND SYNC examples first; use POKE/POKE8 for direct channel, DAC, and SFX sample-trigger examples.
+  Runnable example: Ch 12 SOUNDCHIP FIRST NOTE, SOUNDCHIP NOISE BURST, SOUNDCHIP SWEEP, RING AND SYNC, MANUAL DAC CLICK, and SFX MEMORY SAMPLE listings.
+  Expected result: channel registers receive the documented values; SOUND NOISE writes the selected channel's NOISEMODE; SOUND SWEEP packs bit 7 enable, bits 4-6 period, and bits 0-2 shift; SFX channel 0 reports playing through SFX_CTRL bit 0.
+  Author verification workflow: corrected BASIC SOUND NOISE and SOUND SWEEP handlers to match the flexible-channel contract, updated tests, and ran focused SoundChip and SFX tests; added exact refman tests for first note, noise burst, sweep, ring/sync, DAC, and SFX memory sample listings.
+  Result: Ch 12 now has accurate waveform numbering, working BASIC helper semantics, SFX status/error documentation, IE-native runnable examples using safe scratch memory, British prose, and no dash-style punctuation.
+
+- Area: Ch 13, PSG and AY-3-8910.
+  Claim: PSG exposes byte-contiguous AY registers at 0xF0C00-0xF0C0F, PSG Plus control at 0xF0C20, and playback pointer/length/control/status registers at 0xF0C10-0xF0C1F; BASIC PSG ch,divider,vol writes a 12-bit divider pair and the matching level register; PSG STOP writes the player stop command; substantial examples are annotated with purpose, sparse REM phase markers, how-it-works notes, and safe variations.
+  Canonical sources checked: psg_constants.go, psg_engine.go, psg_player.go, sdk/include/ehbasic_hw_audio.inc, sdk/include/ehbasic_expr.inc, ehbasic_test.go PSG keyword and status tests, PSG engine and player tests.
+  Reader workflow: type BASIC PSG and POKE8 examples directly; use raw PSG registers for exact AY register programming, PEEK8 for byte-wide inspection, and PSG STATUS for playback status.
+  Runnable example: Ch 13 PSG FIRST TONE, PSG RAW 12 BIT TONE, PSG THREE VOICES, PSG PULSING NOISE, COMPARE PSG PLUS, and PSG MEMORY PLAYBACK listings.
+  Expected result: PSG FIRST TONE and RAW 12 BIT TONE program divider 284 and level 15 for channel A; THREE VOICES enables all tone channels; PULSING NOISE routes envelope-controlled noise to channel A; PSG Plus toggles 0xF0C20 and reads back 1 then 0; playback status reports busy or error bits as documented without immediately stopping a successful start.
+  Author verification workflow: corrected the BASIC PSG channel helper and PSG STOP command, updated tests, checked register layout and engine bit handling, added exact refman tests for first tone, raw PEEK8 readback, three voices, pulsing noise, PSG Plus readback, and memory playback not stopping immediately, applied the annotated-example guide rule, then ran the chapter scan and focused PSG tests.
+  Result: Ch 13 documents PSG as a complete IE-native audio feature with correct byte-wide MMIO, working typed examples, British prose, and no dash-style punctuation.
+
+- Area: Ch 14, SN76489.
+  Claim: SN76489 exposes a byte-stream write port at 0xF0C30, ready status at 0xF0C31, noise mode at 0xF0C32, latch/data byte command encoding, 10-bit tone dividers, four-bit attenuation, 15-bit and 16-bit noise modes, ignored data bytes after a noise latch, and guided byte-stream examples that explain latch, data, attenuation, and noise-control phases.
+  Canonical sources checked: sn76489_constants.go, sn76489_chip.go, sn76489_chip_test.go, sn76489_chip_integration_test.go, sn76489_routing_test.go, audio_chip.go SN noise modes.
+  Reader workflow: type BASIC POKE8 byte-stream examples directly; poll PEEK8($F0C31) bit 0 if desired; use SoundChip NOISEMODE 5-8 only as a convenience path.
+  Runnable example: Ch 14 SN FIRST TONE, SN ARPEGGIO, SN NOISE HIT, and SN TONE-LOCKED NOISE listings.
+  Expected result: first tone and arpeggio program channel 0 tone divider bytes and attenuation; noise hit fades channel 3 from attenuation 0 to 15; tone-locked noise uses channel 2's divider for the noise clock.
+  Author verification workflow: compared command-byte bit layout, mode readback, ready behaviour, divider-zero handling, and noise side effects against source and tests; added exact refman tests for first tone, arpeggio, noise hit, and tone-locked noise; applied the annotated-example guide rule; ran the chapter scan and focused SN76489 tests.
+  Result: Ch 14 is an IE-native byte-port chapter with useful typed examples, corrected BASIC-safe arithmetic and loop formatting, British prose, and no dash-style punctuation.
+
+- Area: Ch 15, SID family.
+  Claim: SID, SID2, and SID3 expose 0x1D-byte register blocks with SID voice registers, filter registers, SID Plus control, OSC3/ENV3 readback, and a primary SID playback controller; BASIC SID VOICE/FILTER/VOLUME/PLUS/PLAY/STOP map to the documented primary SID registers; the examples explain setup, voice start, sweeps, release, SID2/SID3 register offsets, SID Plus readback, and playback status.
+  Canonical sources checked: sid_constants.go, sid_engine.go, audio_chip.go SID mixer and plus processing, sid_player.go, sdk/include/ehbasic_hw_audio.inc, sdk/include/ehbasic_expr.inc, ehbasic_test.go SID keyword and status tests, SID engine/filter/parser/player tests.
+  Reader workflow: type BASIC SID examples for the primary SID; use POKE8 against the SID2 and SID3 base addresses for extra chips; use SID STATUS for playback status.
+  Runnable example: Ch 15 SID FIRST PULSE, SID THREE VOICES, SID SYNC RING LEAD, SID FILTER SWEEP, SID2 SAW VOICE, SID PLUS COMPARE, and SID MEMORY PLAYBACK listings.
+  Expected result: the examples program primary SID voice, filter, volume, sync/ring, SID Plus, and playback registers as described; the SID2 example writes the same offset layout at 0xF0E30; SID Plus prints 1 then 0; the playback example starts playback and samples status without immediately stopping a successful start.
+  Author verification workflow: checked register layout, frequency and pulse-width formats, control bits, filter packing, SID Plus scope, player control/status, and BASIC helper side effects; added exact refman tests for first pulse, three voices, sync/ring, filter sweep, SID2, SID Plus, and memory playback; applied the annotated-example guide rule; ran the chapter scan and focused SID tests.
+  Result: Ch 15 removes inaccurate SID Plus claims, documents complete reader-facing SID use, has IE-native examples with expanded loop bodies, British prose, and no dash-style punctuation.
+
+- Area: Ch 16, TED audio.
+  Claim: TED audio exposes six byte registers at 0xF0F00-0xF0F05, 10-bit frequency values, SND_CTRL bit 6 for voice-2 noise, shared volume clamped to 0-8 in output, TED Plus control at 0xF0F05, and a TED playback controller at 0xF0F10-0xF0F1F; BASIC TED STOP writes the stop command; examples explain frequency setup, explicit voice enables, noise routing, arpeggio selection, TED Plus readback, and playback status.
+  Canonical sources checked: ted_constants.go, ted_engine.go, ted_player.go, sdk/include/ehbasic_hw_audio.inc, sdk/include/ehbasic_expr.inc, ehbasic_test.go TED audio keyword and status tests, TED engine/player/parser tests.
+  Reader workflow: type BASIC TED TONE/VOL/NOISE/PLUS/PLAY/STOP examples and POKE8 direct SND_CTRL examples; use TED STATUS for playback status.
+  Runnable example: Ch 16 TED FIRST TONE, TED TWO VOICES, TED NOISE HIT, TED TINY ARP, TED PLUS COMPARE, and TED MEMORY PLAYBACK listings.
+  Expected result: the examples program TED frequency and control bytes, enable voices explicitly, route noise through voice 2, toggle TED Plus and print 1 then 0, and use playback status as documented without immediately stopping a successful start.
+  Author verification workflow: corrected stale TED NOISE test expectations from bit 7 to bit 6, corrected BASIC TED STOP to write 2, checked frequency formula, control-byte side effects, TED Plus handling, and player status; added exact refman tests for first tone, two voices, noise hit, tiny arpeggio, TED Plus, and memory playback; applied the annotated-example guide rule; ran the chapter scan and focused TED tests.
+  Result: Ch 16 now documents TED audio byte-wide MMIO, the noise bit correctly, status/error behaviour, expanded loop bodies, typed IE-native examples, British prose, and no dash-style punctuation.
+
+- Area: Ch 17, POKEY.
+  Claim: POKEY exposes byte-wide channel registers at 0xF0D00-0xF0D0A, AUDC distortion/volume fields, AUDCTL clock/pair/filter bits, POKEY_RANDOM read behaviour, POKEY Plus control, and a POKEY register-music playback controller; BASIC POKEY ch,divider,ctrl accepts channels 1-4 and POKEY STATUS reads the playback status register; examples explain AUDCTL setup, distortion bytes, channel pairing, random reads, POKEY Plus readback, and SAP-format playback status.
+  Canonical sources checked: pokey_constants.go, pokey_engine.go, pokey_player.go, sap_6502_render.go, sdk/include/ehbasic_hw_audio.inc, sdk/include/ehbasic_expr.inc, ehbasic_test.go POKEY/SAP keyword and status tests, POKEY engine/player/SAP tests.
+  Reader workflow: type BASIC POKEY/POKEY CTRL/POKEY PLUS examples and POKE8 direct byte examples; use SAP PLAY/STOP only as POKEY's SAP-format memory playback command and POKEY STATUS for playback status.
+  Runnable example: Ch 17 POKEY FIRST TONE, POKEY NOISE HIT, POKEY 16 BIT BASS, POKEY RANDOM BYTES, POKEY PLUS COMPARE, and POKEY MEMORY PLAYBACK listings.
+  Expected result: examples program channel dividers/control bytes, AUDCTL pair mode, random reads, POKEY Plus readback as 1 then 0, and playback status as described; the playback example starts playback and samples status without immediately stopping a successful start.
+  Author verification workflow: corrected BASIC POKEY channel bounds, added POKEY STATUS coverage, checked frequency and pair-mode formulas, distortion mapping, plus processing, random reads, and SAP player control/status; added exact refman tests for first tone, noise hit, 16-bit bass, random bytes, POKEY Plus, and memory playback; applied the annotated-example guide rule; ran the chapter scan and focused POKEY/SAP tests.
+  Result: Ch 17 is now a uniform POKEY chapter with SAP named only as the POKEY file/playback format, accurate byte-wide MMIO wording, expanded loop bodies, typed IE-native examples, British prose, and no dash-style punctuation.
+
+- Area: Ch 18, AHX engine.
+  Claim: AHX exposes byte-wide AHX_PLUS_CTRL at 0xF0B80 and byte-wide playback pointer, length, control, status, and subsong registers at 0xF0B84-0xF0B91; BASIC AHX PLAY/STOP/PLUS and AHX STATUS map to those registers; AHX Plus changes processing rather than the AHX data format; examples explain keyword writes, raw register setup, Plus toggling, byte-wide PEEK8 readback, and status decoding.
+  Canonical sources checked: ahx_constants.go, ahx_engine.go, ahx_player.go, audio_chip.go AHX Plus path, sdk/include/ehbasic_hw_audio.inc, sdk/include/ehbasic_expr.inc, ehbasic_test.go AHX keyword and status tests, AHX parser/replayer/player/plus tests.
+  Reader workflow: type BASIC AHX PLAY/STOP/PLUS examples or POKE/POKE8 the playback registers directly; use AHX STATUS for busy/error state.
+  Runnable example: Ch 18 AHX MEMORY PLAYBACK, AHX RAW START, AHX PLUS TOGGLE, and AHX STATUS CHECK listings.
+  Expected result: examples program playback pointer, length, subsong, control, status, and plus control as documented; AHX Plus and raw AHX status inspections use PEEK8; the status check starts playback and samples status without immediately stopping a successful start.
+  Author verification workflow: added AHX STATUS coverage, checked player error conditions, plus readback and processing, and BASIC helper side effects; added exact refman tests for memory playback, raw start, plus toggle, and status check; applied the annotated-example guide rule; ran the chapter scan and focused AHX tests.
+  Result: Ch 18 is an IE-native playback-engine chapter with typed examples, expanded loop bodies, status/error behaviour, British prose, and no dash-style punctuation.
+
+- Area: Ch 19, MOD playback.
+  Claim: MOD exposes playback pointer, length, control, status, filter-model, and position registers at 0xF0BC0-0xF0BD7; BASIC SOUND MOD PLAY/STOP/FILTER and MOD STATUS map to those registers; supported MOD IDs, sample descriptors, note byte layout, filter models, status bits, error conditions, loop control, and output ownership are documented from the implementation; the large typed MOD builder is split into commented phases for clearing, naming, sample descriptors, pattern bytes, sample data, filter, start, and status.
+  Canonical sources checked: mod_constants.go, mod_player.go, mod_replayer.go, mod_engine.go, sdk/include/ehbasic_hw_audio.inc, sdk/include/ehbasic_expr.inc, ehbasic_test.go MOD keyword and status tests, MOD parser/player/engine tests.
+  Reader workflow: type a BASIC program that builds a small MOD in memory using POKE8, start it with SOUND MOD PLAY, inspect MOD STATUS, or use raw POKE for the loop bit.
+  Runnable example: Ch 19 TINY FOUR VOICE MOD, MOD STATUS, filter readback, and raw register loop listings.
+  Expected result: the first listing creates a valid M.K. four-channel module with one pattern and four looped samples, starts the A500 filter, and produces a short chord; status bit 0 reports playback and bit 1 reports failed starts.
+  Author verification workflow: corrected MOD STATUS to return the full status byte, added MOD BASIC keyword/status coverage, checked parser format IDs, note layout, MMIO status/control behaviour, filter readback, and player error conditions; added exact refman tests for the typed MOD builder, filter readback, and raw start-with-loop example; applied the annotated-example guide rule; ran the chapter scan and focused MOD tests.
+  Result: Ch 19 now documents the real SOUND MOD workflow, raw loop control, data formats, status/error behaviour, expanded loop bodies, typed IE-native examples, British prose, and no dash-style punctuation.
+
+- Area: Ch 20, WAV sample player.
+  Claim: WAV exposes pointer, length, control, status, position, high-pointer, channel-base, volume, and flags registers at 0xF0BD8-0xF0BF3; it accepts RIFF/WAVE PCM with mono/stereo 8-bit unsigned or 16-bit signed samples, plus 16-bit PCM extensible format; pause resumes with control value 0, not start value 1; force mono defaults on; status, error, loop, DAC routing, and source-copy lifetime are documented; examples explain the RIFF header, sample generation, output routing, start-plus-loop, and control writes.
+  Canonical sources checked: wav_constants.go, wav_player.go, wav_parser.go, wav_engine.go, music_common.go, wav_player_test.go, WAV parser/player/engine/integration tests.
+  Reader workflow: type a BASIC program that writes a small RIFF/WAVE block with POKE8, fills 16-bit PCM sine samples, starts playback with POKE, and inspects WAV_PLAY_STATUS.
+  Runnable example: Ch 20 TINY WAV BEEP, volume/stereo/channel, pause/resume, loop-apply, and stop listings.
+  Expected result: the first listing builds a valid 8000 Hz mono 16-bit WAV, loops a tone through DAC channels 0 and 1, and prints a status byte with playing bit set while active.
+  Author verification workflow: added pause/resume MMIO coverage, checked parser acceptance/rejection rules, control/status bit behaviour, default flags and volumes, channel-base clamping, DAC release, source-copy semantics; added exact refman tests for the typed WAV builder, output settings, and pause/resume/loop/stop controls; parsed the generated RIFF block with ParseWAV; applied the annotated-example guide rule; ran the chapter scan plus focused WAV tests.
+  Result: Ch 20 now has a self-contained IE-native WAV example, expanded loop bodies, correct resume semantics, accurate PCM-format wording, status/error behaviour, British prose, and no dash-style punctuation.
+
+- Area: Ch 21, Paula DMA engine.
+  Claim: Paula DMA exposes four 16-byte channel blocks and global DMACON, STATUS, and INTENA registers at 0xF2260-0xF22AF; PTR masks odd addresses down to even, LEN is a word count, PER zero writes are ignored, volume clamps to 64, arm-time values are latched, active-channel writes stage a next buffer, completion sets status and optionally asserts M68K level 3, bad pointers stop and mute the channel, and DMACON bits clear when no valid next buffer exists; examples explain sample-buffer generation, channel register setup, status clearing, DMA arming, and next-buffer staging.
+  Canonical sources checked: aros_audio_constants.go, aros_audio_dma.go, aros_audio_dma_test.go, aros_2gib_test.go.
+  Reader workflow: type BASIC POKE/POKE8 programs that build signed 8-bit sample buffers, write Paula channel registers, arm DMACON, inspect STATUS, clear flags, and stage next buffers.
+  Runnable example: Ch 21 PAULA FOUR CHANNEL CHORD, one-channel setup, DMACON/INTENA/status examples, double-buffer staging, and stop listings.
+  Expected result: the first listing builds four signed 8-bit sine buffers, plays a short chord on channels 0-3, and then reports completion bits 0-3 in STATUS.
+  Author verification workflow: checked register map, pointer alignment, word-count length, period-zero behaviour, volume clamp, latching, next-buffer handoff, bad-pointer handling, interrupt assertion, and focused Paula DMA tests; added exact refman tests for the four-channel chord, one-channel setup, status clear, and staging examples using a sized AROS-profile bus; applied the annotated-example guide rule; ran the chapter scan.
+  Result: Ch 21 now has useful IE-native Paula examples, expanded loop bodies, complete control/status/double-buffer documentation, British prose, and no dash-style punctuation.
+
+- Area: Ch 22, BASIC music and CPU audio maps.
+  Claim: SOUND PLAY dispatches by filename extension through MEDIA_* registers at 0xF2300-0xF231F; SOUND STOP stops media players but not manually written raw chip registers; status/type/error values match the media loader constants; direct BASIC verbs by engine are current; mixer-wide effect cross-references point back to Chapter 11; 6502, Z80, x86, and full-address CPU audio maps match the adapters and constants; examples explain mixed-engine setup, TED enable requirements, raw filename bytes, loader command registers, and status/type/error readback.
+  Canonical sources checked: media_loader_constants.go, media_loader.go, sdk/include/ehbasic_hw_audio.inc, cpu_six5go2.go, cpu_z80_runner.go, cpu_x86_runner.go, cpu_chip_matrix_test.go, PSG/SID/POKEY/TED/VGA constants, existing EhBASIC audio keyword tests.
+  Reader workflow: type BASIC mixer commands directly, use SOUND PLAY for machine-visible music files, inspect the media loader with POKE/PEEK, or write the documented CPU MMIO/port maps from monitor-entered code.
+  Runnable example: Ch 22 BASIC MIXER SKETCH and raw loader filename-string listing.
+  Expected result: the mixer sketch programs SoundChip, PSG, SID, POKEY, TED, and reverb registers; the TED tone is explicitly enabled through TED_SND_CTRL; the raw loader listing writes a zero-terminated filename, starts the loader, and prints status/type/error.
+  Author verification workflow: checked SOUND PLAY parser behaviour, media status refresh, stop semantics, extension dispatch, staging limits, 6502/Z80/x86 mappings, added exact tests for the mixer sketch and raw loader listing, applied the annotated-example guide rule, and ran the chapter scan.
+  Result: Ch 22 now uses uniform engine names, removes combined POKEY and SAP wording, documents media status/errors, gives IE-native BASIC examples, fixes the SID player range to $F0E20-$F0E2D, and avoids assembler/toolchain workflow.
+
+- Area: Ch 13-22, BASIC audio timing and byte-register reads.
+  Claim: BASIC audio examples do not use single-argument WAIT as a delay; byte-wide audio control and status registers that are not 32-bit aligned are inspected with PEEK8. BASIC WAIT is only WAIT addr,mask[,xor] and polls a 32-bit memory-visible value.
+  Canonical sources checked: sdk/include/ehbasic_hw_system.inc WAIT handler, sdk/include/ehbasic_expr.inc PEEK/PEEK8 path, sdk/docs/refman/13-psg-ay.md through sdk/docs/refman/22-music-from-basic.md.
+  Reader workflow: type the chapter listings directly; counted FOR ... NEXT loops keep sound examples alive, player examples start playback and sample STATUS without immediately stopping a successful start, STOP is shown separately, and byte registers use PEEK8/POKE8.
+  Runnable example: Ch 13 PSG RAW 12 BIT TONE, Ch 13 PSG MEMORY PLAYBACK, Ch 14 SN status readback, Ch 15 SID Plus readback, Ch 16 TED Plus readback, Ch 17 POKEY random/Plus readback, and first-sound examples in Ch 18-22.
+  Expected result: the byte-register inspections no longer raise an FC error on odd or otherwise unaligned addresses; playback examples do not return immediately because of a bare WAIT statement and do not stop immediately when the busy bit is set.
+  Author verification workflow: scanned the reader-facing refman for BASIC WAIT n delay forms and byte-wide audio PEEK calls, then rechecked the EhBASIC WAIT and PEEK8 implementation paths.
+  Result: audio examples now match EhBASIC behaviour for WAIT and byte-wide MMIO reads.
+
+- Area: Ch 23, memory model and MMIO access.
+  Claim: Intuition Engine has one 64-bit physical bus with 64-bit physical addresses and 8/16/32/64-bit transfer widths; the low 32-bit window contains the fixed legacy memory map, MMIO ranges, video apertures, and compatibility CPU working space; IE64 can reach backed RAM above the low window; IE32, M68K, and x86 are 32-bit clients; 6502 and Z80 use 16-bit adapters. The shared low-window map, sign-extended low-memory alias, SysInfo RAM-size block, BASIC PEEK/POKE alignment, byte-oriented POKE8/PEEK8 use, little-endian byte staging for multi-byte player registers, smaller-CPU address windows, GTIA range, and VGA 6502 range are documented against current constants and bus behaviour.
+  Canonical sources checked: registers.go, machine_bus.go, machine_bus_phys.go, memory_sizing.go, profile_bounds.go, cpu_ie64.go, sysinfo_mmio.go, sysinfo_mmio_test.go, machine_bus_test.go, machine_bus_64_test.go, cpu_six5go2.go, cpu_z80_runner.go, vga_constants.go, psg_constants.go, sid_constants.go, pokey_constants.go, ted_constants.go, antic_constants.go.
+  Reader workflow: type BASIC PEEK/POKE/POKE8 examples to inspect VBlank, emit terminal bytes, read SysInfo RAM sizes, and stage multi-byte player registers byte by byte.
+  Runnable example: Ch 23 VBlank polling, terminal byte output, SysInfo total/active RAM listing, and MOD pointer byte-staging listing.
+  Expected result: PEEK/POKE examples use aligned 32-bit accesses, byte-oriented examples use POKE8, SysInfo prints separated low/high total and active RAM words, byte staging of $00100000 writes bytes 00 00 10 00, and GTIA is listed as $F2140-$F21FB.
+  Author verification workflow: corrected the MMIO-width wording, added the SysInfo reader listing, fixed EhBASIC print separators and the VBlank IF condition, checked maps and smaller-CPU aliases, corrected the stale GTIA_REGION_END label constant, added exact tests TestRefmanCh23MODPointerByteStagingExample, TestRefmanCh23SysInfoRAMSizeWordsExample, TestRefmanCh23VBlankPollingExample, and TestRefmanCh23TerminalByteOutputExample, then ran the chapter scan and focused SysInfo/MachineBus tests.
+  Result: Ch 23 now avoids the false all-MMIO-is-32-bit rule and the stale 32-bit-system-bus wording, documents byte-wide devices accurately, uses the full GTIA range, keeps IE-native examples with discussion, and has British prose with no dash-style punctuation.
+
+- Area: App D, VideoChip map.
+  Claim: COPPER_* is at 0xF000C-0xF0018, VIDEO_FB_BASE is 0xF0084, palette table starts at 0xF0088.
+  Canonical sources checked: video_chip.go, sdk/include/ie64.inc, sdk/include/ie68.inc.
+  Reader workflow: BASIC POKE or machine-code MMIO writes to the documented addresses.
+  Runnable example: Ch 4 VideoChip examples.
+  Expected result: VideoChip setup uses the corrected addresses.
+  Author verification workflow: compared maps against constants and handlers.
+  Result: App D map matches code.
+
+- Area: App D, VGA map.
+  Claim: VGA core, sequencer, CRTC, GC, attribute, DAC, and palette ranges match the device constants.
+  Canonical sources checked: vga_constants.go, sdk/include/ie64.inc.
+  Reader workflow: BASIC POKE or machine-code MMIO writes to VGA registers.
+  Runnable example: Ch 5 VGA example.
+  Expected result: register writes affect the intended VGA block.
+  Author verification workflow: compared App D against constants.
+  Result: App D map matches core.
+
+- Area: App D, POKEY and TED audio maps.
+  Claim: POKEY and TED chip registers are byte-contiguous; player registers are 32-bit blocks.
+  Canonical sources checked: pokey_constants.go, ted_constants.go.
+  Reader workflow: BASIC POKE byte registers first; use 32-bit player registers only where documented.
+  Runnable example: Ch 16 and Ch 17 BASIC audio examples.
+  Expected result: no wording implies dword-wide access to chip-native byte registers.
+  Author verification workflow: compared constants.
+  Result: POKEY/TED byte-wide MMIO wording repaired.
+
+- Area: App D / App J, WAV range.
+  Claim: WAV player register range is 0xF0BD8-0xF0BF3 and 28 bytes.
+  Canonical sources checked: wav_constants.go.
+  Reader workflow: load WAV bytes into memory and program WAV registers.
+  Runnable example: Ch 20 WAV example.
+  Expected result: App J range matches the actual block.
+  Author verification workflow: compared constants.
+  Result: App J uses 0xF0BD8-0xF0BF3.
+
+- Area: App D / Ch 31, Coprocessor map.
+  Claim: Coprocessor command/status/request registers, extended status block, CPU type codes, worker memory ranges, ticket statuses, command values, error codes, COWAIT timeout semantics, and 6502/Z80 gateway offsets match the implementation. COCALL returns ticket 0 and COPROC_ERR_NO_WORKER when no worker is running.
+  Canonical sources checked: coprocessor_constants.go, sdk/include/ehbasic_hw_coproc.inc, coprocessor_manager.go, coprocessor_asm_test.go, ehbasic_test.go.
+  Reader workflow: type BASIC COSTART/COSTOP/COCALL/COSTATUS/COWAIT programmes or use documented POKE/PEEK registers; service creation is separate from the typed control examples.
+  Runnable example: Ch 31 no-worker COCALL status listing.
+  Expected result: the listing prints ticket 0, command status 1, error 6, and worker state 0.
+  Author verification workflow: compared constants, BASIC keyword handlers, manager error paths, gateway tests, and the Chapter 31 refman BASIC test.
+  Result: Ch 31 now documents the coprocessor as an IE-native control surface, removes image-executor prose, corrects COWAIT to a statement with a default 1000 ms timeout, and includes a runnable typed example.
+
+- Area: Ch 32, IE Mon byte-entry workflow and command syntax.
+  Claim: IE Mon parses bare addresses as hexadecimal, # values as decimal, writes bytes with w addr byte..., disassembles with d, sets registers with r, runs or steps with g/s, uses e for interactive hex editing, uses save start end name and load name addr for memory ranges, and reports command errors without leaving the monitor. The chapter's 6502 workflows show both audible POKEY output and visible ULA VRAM/attribute programming through monitor byte entry.
+  Canonical sources checked: debug_commands.go, debug_monitor.go, debug_monitor_test.go, debug_access_test.go, debug_disasm_6502.go, ula_constants.go, video_ula.go.
+  Reader workflow: enter MON, write bytes with w, verify with d, set pc with r, use b/g/s for execution, then inspect memory with m.
+  Runnable example: Ch 32 6502 POKEY byte-entry transcript and Ch 32 6502 ULA byte-entry graphics transcript.
+  Expected result: POKEY disassembly matches the transcript and the memory dump at $D200 shows 79 AF after running to the loop. ULA bytes match the verified Ch 26 ULA graphics program: ULA_BORDER reads 05, ULA_CTRL reads 05, ULA VRAM offsets $0000-$0007 read FF 81 BD A5 A5 BD 81 FF, and ULA VRAM offset $1800 reads 46.
+  Author verification workflow: compared command handlers and focused monitor tests for command parsing, memory write, disassembly, save/load, hex edit, watchpoints, and unknown-command errors; added TestRefmanCh32ULAGraphicsWorkflowBytes to extract the Chapter 32 ULA w lines and compare them with the stepped Chapter 26 ULA graphics program.
+  Result: Ch 32 now states the no mnemonic-entry workflow directly, shows both sound and graphics byte-entry workflows, and corrects monitor syntax details used by the reader examples.
+
+- Area: Ch 33, IE Script module surface and VideoChip example.
+  Claim: IE Script exposes sys, cpu, mem, term, audio, video, rec, dbg, sym, regions, and bit32 modules with the documented function names; raw RAM access requires cpu.freeze while MMIO access is allowed; dbg.on_fault takes a fault kind plus callback; the VideoChip example drives write_reg, blit_fill, blit_line, blit_wait, and read_reg; the SoundChip example uses audio.start, audio.write_reg, sys.wait_ms, and mem.read32 against MMIO.
+  Canonical sources checked: script_engine.go, feature_scripting.go, script_engine_test.go, debug_monitor_test.go, audio_chip.go.
+  Reader workflow: store the shown FIRST.IES text, run it from BASIC with RUN "FIRST.IES" or from IE Mon with script FIRST.IES.
+  Runnable example: Ch 33 VideoChip script example and Ch 33 SoundChip channel-0 script example.
+  Expected result: the video script selects VideoChip mode 4, framebuffer base $100000, starts the blitter, and prints BLT 2. The audio script enables audio, writes channel-0 frequency 262*256, volume 96, square waveform 0, control 3, and prints CH0 3.
+  Author verification workflow: compared registered module names against script_engine.go and added focused Chapter 33 script tests for the documented VideoChip and SoundChip scripts.
+  Result: Ch 33 now documents the actual IE Script API, removes stale sys.run and mem.peek/poke claims, avoids Lua wording, keeps code-related "program" wording consistent with the style guide, and gives useful IE-native video and audio examples.
+
+- Area: Ch 34, File I/O BASIC and MMIO workflow.
+  Claim: FILE_NAME_PTR, FILE_DATA_PTR, FILE_DATA_LEN, FILE_CTRL, FILE_STATUS, FILE_RESULT_LEN, and FILE_ERROR_CODE form a synchronous disk register block at $F2200; FILE_CTRL accepts read, write, and list commands; byte writes to FILE_CTRL low byte trigger the same commands; BASIC LOAD, SAVE, BLOAD, and DIR use the same block.
+  Canonical sources checked: file_io_constants.go, file_io.go, file_io_test.go, sdk/include/ehbasic_file_io.inc, ehbasic_test.go.
+  Reader workflow: use BASIC LOAD, SAVE, BLOAD, and DIR first; use BASIC POKE, POKE8, PEEK, and PEEK8 for direct register access.
+  Runnable example: Ch 34 NOTE.TXT typed MMIO listing.
+  Expected result: the listing writes NOTE.TXT containing IE, reads it back, leaves FILE_STATUS at 0, leaves FILE_RESULT_LEN at 2, and reads bytes 73 and 69 at the data buffer.
+  Author verification workflow: compared constants, register handlers, byte-write behaviour, BASIC file verbs, and the Chapter 34 refman BASIC test.
+  Result: Ch 34 now uses an IE-native file workflow and no reader-facing assembler fragment; the current ascending pass rechecked British prose, dash punctuation, and the chapter scan.
+
+- Area: Ch 35, HOST BASIC command and service-action register block.
+  Claim: HOST HELP is handled without touching HOST MMIO; HOST NET, UPDATE, REBOOT, and POWEROFF write command enums to $F1400, trigger at $F1404, poll status at $F1408, and read exit status at $F140C; status 5 is idle before a command.
+  Canonical sources checked: host_helper.go, host_helper_status.go, host_helper_mmio_test.go, sdk/include/ehbasic_hw_host.inc, ehbasic_test.go.
+  Reader workflow: type HOST HELP first; use BASIC PEEK to inspect HOST_MMIO_STATUS; use service subverbs only when the requested whole-machine action is intended.
+  Runnable example: Ch 35 HOST HELP listing and HOST STATUS PEEK listing.
+  Expected result: HOST HELP prints all five subverbs and then AFTER HELP; HOST STATUS prints 5 before a command has been fired.
+  Author verification workflow: compared register offsets, command/status enums, BASIC HOST parser tests, MMIO tests, and focused Chapter 35 refman BASIC tests.
+  Result: Ch 35 now removes the reader-facing assembly fragment and parser-internal wording, uses $ notation, documents the service register block through typed BASIC examples, and passed the current ascending chapter scan.
+
+- Area: Ch 36, keyboard, scancode, mouse, relative mouse, and time-of-day MMIO.
+  Claim: the terminal input block exposes cooked key queue, scancode queue, modifier byte, absolute mouse state, one-shot mouse changed status, relative mouse control and deltas, and RTC_EPOCH at the documented $F07xx addresses; MOUSE_DX and MOUSE_DY clear independently when read.
+  Canonical sources checked: registers.go, terminal_io.go, terminal_io_test.go, relative_mouse_capture.go, ehbasic_test.go.
+  Reader workflow: type BASIC PEEK and POKE polling loops against the terminal/input register block.
+  Runnable example: Ch 36 cooked key, scancode, mouse, relative delta, and seconds listings.
+  Expected result: queued key A prints key 65, scancode 30, modifier 1, mouse position 123/45 with buttons 3, delta 5/6, and a SECONDS line.
+  Author verification workflow: compared terminal constants and handlers, focused terminal input tests, relative mouse tests, and the Chapter 36 refman BASIC test with queued input.
+  Result: Ch 36 now removes assembly-only loops, gives typed BASIC examples for every input feature group, and passed the current ascending chapter scan.
+
+- Area: Ch 37, terminal serial stream MMIO.
+  Claim: TERM_OUT, TERM_STATUS, TERM_IN, TERM_LINE_STATUS, TERM_ECHO, TERM_CTRL, and TERM_SENTINEL live at the documented $F07xx addresses; TERM_STATUS bit 1 is always output ready; TERM_IN dequeues cooked bytes; TERM_ECHO and TERM_CTRL are readable control bits; writing $DEAD to TERM_SENTINEL stops the CPU.
+  Canonical sources checked: registers.go, terminal_io.go, terminal_io_test.go, video_terminal_integration_test.go, ehbasic_test.go.
+  Reader workflow: type BASIC POKE and PEEK listings for terminal output, cooked input, echo control, and line-mode control.
+  Runnable example: Ch 37 terminal serial POKE/PEEK listing.
+  Expected result: queued input A is read as 65; output status is printed; ECHO changes from 1 to 0; LINE changes from 1 to 0.
+  Author verification workflow: compared terminal register handlers, status/echo/line/sentinel tests, integration tests, and the Chapter 37 refman BASIC test.
+  Result: Ch 37 now removes the IE64 assembly-only terminal loop, uses $ notation, documents terminal work through typed BASIC examples, and passed the current ascending chapter scan.
+
+- Area: App F / Ch 2, BASIC helper summary.
+  Claim: BASIC INT truncates toward zero; Appendix F lists only helper functions documented in Chapter 2 and implemented by EhBASIC.
+  Canonical sources checked: sdk/include/ehbasic_expr.inc, sdk/include/ehbasic_strings.inc, Ch 2 vocabulary.
+  Reader workflow: type BASIC expressions using the listed numeric and string helpers.
+  Runnable example: Ch 2 INT, HEX$, BIN$, TAB, and string-function examples.
+  Expected result: negative values truncate toward zero, not floor; unsupported helpers such as SPC and OCT$ are not listed.
+  Author verification workflow: checked expression implementation and Chapter 2 vocabulary coverage.
+  Result: App F removes floor-based ceiling identity and removes unsupported SPC/OCT$ rows.
+
+- Area: App G, 6502 P flag note.
+  Claim: 6502 P flag follows silicon convention.
+  Canonical sources checked: cpu_six5go2.go and MOS MCS6500 Programming Manual record in AUTHOR_PROVENANCE.md.
+  Reader workflow: use documented flags in 6502 programs.
+  Runnable example: Ch 26 byte-entry program affects N/Z through LDA.
+  Expected result: reader-facing prose contains no author provenance reference.
+  Author verification workflow: checked implementation and recorded primary reference.
+  Result: silicon convention remains documented.
+
+- Area: App J, main VRAM capacity wording.
+  Claim: the 5 MB aperture is an address range, not a promise that every large RGBA framebuffer fits inside it; the upper low-window map runs from dynamic extended RAM at $00600000-$FFFEFFFF to the sign-extended alias at $FFFF0000-$FFFFFFFF.
+  Canonical sources checked: registers.go, machine_bus.go, machine_bus_phys.go, video_chip.go, Ch 4 large-mode framebuffer notes, Ch 23 memory model.
+  Reader workflow: choose framebuffer base and mode using Ch 4 rules.
+  Runnable example: Ch 4 framebuffer examples.
+  Expected result: no 1920x1080 RGBA capacity claim is attached to the 5 MB aperture; App J agrees with Ch 23 on extended RAM and the top 64 KB sign-extended alias.
+  Author verification workflow: checked memory map, sign-extended alias handling, and VideoChip sizing.
+  Result: App J wording repaired and stale 24-bit-looking upper-memory rows removed.
+
+- Area: App K, block diagrams for bus and audio order.
+  Claim: the system bus diagram describes a 64-bit physical bus with 64-bit addresses and 8/16/32/64-bit transfers through CPU and device adapters; the audio diagram shows the global post-mix order as overdrive, filter, then reverb.
+  Canonical sources checked: machine_bus.go, machine_bus_phys.go, cpu_ie64.go, profile_bounds.go, audio_chip.go.
+  Reader workflow: use the diagrams as lookup aids after reading Chapter 11 and Chapter 23.
+  Runnable example: Ch 11 first audio setup and Ch 23 SysInfo listing.
+  Expected result: Appendix K agrees with Chapter 11, Chapter 23, and source-owned bus/audio behaviour.
+  Author verification workflow: checked IE64 uint64 physical path, low-window device adapters, compatibility CPU profile notes, and SoundChip post-mix processing order against code.
+  Result: App K no longer describes the main system bus as 24-bit or 32-bit, and no longer disagrees with the audio processing order.
+
+- Area: App D / App J, audio player and small-chip MMIO ranges.
+  Claim: AHX, MOD, WAV, SN76489, SID player, POKEY, TED audio, TED video, ANTIC, GTIA, SFX, and the 6502 small-chip views match the current MMIO handlers; SN76489 spans $F0C30-$F0C3F, GTIA spans $F2140-$F21FB, SFX_VOL is 0-65535, and the 6502 POKEY and VGA windows are $D200-$D20A and $D700-$D70D.
+  Canonical sources checked: registers.go, sn76489_constants.go, sid_constants.go, pokey_constants.go, ted_constants.go, ted_video_constants.go, antic_constants.go, vga_constants.go, sfx_constants.go, sfx_trigger.go, audio player constants, video_antic.go, cpu_six5go2.go.
+  Reader workflow: use BASIC POKE/PEEK, POKE8/PEEK8, or monitor-entered machine code against the published ranges.
+  Runnable example: Chapters 6, 7, 14, 15, 17, 18, 19, and 20 typed examples.
+  Expected result: byte-wide chip registers and player control blocks are addressed at the documented ranges; appendices do not preserve stale $D209, $A0-$AA, or 0-64 SFX volume wording.
+  Author verification workflow: compared Appendix D and Appendix J rows against code-owned constants and handler ranges; ran refman forbidden-term scans and the strict spelling/dash probe on changed appendices.
+  Result: App D and App J now use the current ranges, $ notation, British prose, and no dash-style punctuation.
+
+- Area: App G, opcode byte-entry crib.
+  Claim: each CPU quick-reference section includes the byte encodings needed to type the Chapter 24-29 machine-code examples directly into IE Mon, and mnemonic summaries match the chapter names for IE64 ALU/system operations, IE32 registers and branches, M68K bus wording, and x86 386-extension names.
+  Canonical sources checked: CPU chapters 24-29, cpu_ie64.go, cpu_ie32.go, cpu_m68k.go, cpu_x86.go, debug disassemblers for IE64, IE32, 6502, Z80, M68K, and x86.
+  Reader workflow: type the bytes with IE Mon w, inspect with d, set the PC, and run or step.
+  Runnable example: the Chapter 24-29 byte-entered sound examples.
+  Expected result: the crib rows explain the immediate, address, and branch byte order used by each chapter example; the lookup rows do not contain stale IE64 opcode aliases, stale IE32 register names, or unsupported x86 wording.
+  Author verification workflow: compared crib bytes against chapter transcripts and disassembler output; ran appendix scans.
+  Result: App G now supports hand entry instead of only mnemonic lookup and matches the current CPU chapter terminology.
+
+- Area: App H / App I, RUN loader, HOST, coprocessor, CPU trap, and symbol/error references.
+  Claim: published symbols and status/error tables use reader-facing names and current addresses: HOST status at $F1408, HOST exit code at $F140C, the $F2320 block as the RUN loader block with status 0-3 and error 0-4, coprocessor ticket status values 0-5, 6502 POKEY $D200-$D20A, Z80 VGA ports $A0-$AD, and the current IE64/IE32 divide-by-zero behaviour.
+  Canonical sources checked: host_helper.go, host_helper_status.go, program_executor_constants.go, program_executor.go, coprocessor_constants.go, cpu_ie64.go, cpu_ie32.go, Ch 30, Ch 31, Ch 34, and Ch 35.
+  Reader workflow: use HOST HELP or BASIC PEEK for HOST status; use RUN syntax for loaded images and scripts rather than programming the loader block directly.
+  Runnable example: Ch 35 HOST HELP/status listings and Ch 33 RUN "FIRST.IES" script example.
+  Expected result: HOST status reads 5 before a command has run; RUN loader status and error meanings match the constants; COSTATUS rows match COPROC_TICKET_*; App H small-CPU ranges match Ch 26 and Ch 27; IE64 integer divide/modulo by zero is not described as a trap.
+  Author verification workflow: compared appendix rows against source constants, Chapter 30, and Chapter 31, then ran appendix scans.
+  Result: App H and App I no longer use stale image-executor wording or C-style hex notation, and App I matches coprocessor and divide-by-zero source behaviour.
+
+- Area: App A, BASIC token map cross-references.
+  Claim: Appendix A keeps parser and token-byte details out of Chapter 2 while its reader-visible chapter pointers match the vocabulary and owning feature chapters; COLOR and SCROLL point to Chapter 5.
+  Canonical sources checked: sdk/include/ehbasic_tokens.inc, sdk/include/ehbasic_hw_video.inc, Ch 2, Ch 5.
+  Reader workflow: use Appendix A only as a token lookup, then follow the owning chapter for syntax.
+  Runnable example: Ch 5 COLOR and SCROLL BASIC listings.
+  Expected result: Appendix A no longer sends COLOR to Chapter 3 or SCROLL to Chapter 4.
+  Author verification workflow: compared token rows and cross-reference rows against Ch 2/Ch 5 and the video keyword handlers.
+  Result: App A cross-references now match the current vocabulary table.
+
+- Area: App K, block diagrams.
+  Claim: the small-CPU translation diagram uses the documented $F000-$FFF9 mirror and $F0000 bus offset.
+  Canonical sources checked: cpu_six5go2.go, cpu_z80_runner.go, registers.go, Ch 26, Ch 27.
+  Reader workflow: follow the diagram when translating 6502 or Z80 addresses to the shared bus.
+  Runnable example: Ch 26 and Ch 27 byte-entry sound examples.
+  Expected result: 6502 and Z80 MMIO mirrors reach the published shared-bus ranges.
+  Author verification workflow: checked diagram wording against the CPU chapters and ran appendix scans.
+  Result: App K no longer contains C-style hex notation in reader-facing diagrams.
+
+- Area: Ch 29 / debug_disasm_x86.go, x86 monitor notation.
+  Claim: IE Mon x86 disassembly uses the manual's $ hex notation for immediates, addresses, branch targets, and unknown-opcode bytes.
+  Canonical sources checked: debug_disasm_x86.go and Ch 29 byte-entry transcript.
+  Reader workflow: type the Chapter 29 byte stream with IE Mon w and inspect it with d.
+  Runnable example: Ch 29 TED two-voice example.
+  Expected result: the d transcript shows MOV AL, $01, MOV [$000F0800], AL, and JMP SHORT $0000102A.
+  Author verification workflow: changed the x86 disassembler formatting, then ran the focused headless x86/disassembly test selection.
+  Result: Ch 29 transcript and monitor output now agree while keeping the published manual free of C-style hex notation.

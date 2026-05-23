@@ -17,11 +17,11 @@ sources:
 
 # Chapter 3 - Display Model Overview
 
-Intuition Engine has six independent picture-making chips. Each one
-draws a frame in its own format and gives that frame to a single
-piece of hardware called the **VideoCompositor**. The compositor
-stacks the six frames on top of each other and sends the result to
-the screen.
+Intuition Engine has six picture-making chips on the same machine.
+Each one is a display card on the shared bus. It draws a frame in its
+own format and gives that frame to a single piece of hardware called
+the **VideoCompositor**. The compositor stacks the six frames on top
+of each other and sends the result to the screen.
 
 This chapter explains how the stack works, what the output looks
 like, and how colours are chosen. Each of the six chips has a
@@ -54,9 +54,11 @@ and `1080` pixels tall.
 | ULA       | ZX-class attribute display                        | 8 |
 | Voodoo 3D | Triangle rasterisation with Z-buffer and texture  | 9 |
 
-You may use any of the six at the same time. You may also leave
-some of them switched off. A source that is disabled or that
-returns no frame contributes no pixels.
+You may use any of the six at the same time. You may also leave some
+of them switched off. A source that is disabled or that returns no
+frame contributes no pixels. The question is not which computer you
+are using, but which display card should own this part of the final
+picture.
 
 ## 3.2 The layer stack
 
@@ -86,13 +88,17 @@ sources above exist.
 ## 3.3 Mask blending
 
 The compositor does not mix colours. It treats each source pixel as
-either **opaque** or **transparent**. A pixel is opaque if its
-alpha byte is non-zero, and transparent if its alpha byte is zero.
+either **opaque** or **transparent**. A pixel is opaque if its alpha
+byte is non-zero. A pixel whose alpha byte is zero is also treated as
+opaque if any red, green, or blue byte is non-zero; in that case the
+compositor promotes the pixel to full alpha before drawing it. The
+only transparent direct-colour pixel is all zero.
 
-| Source alpha | What the compositor does |
+| Source pixel | What the compositor does |
 |--------------|--------------------------|
-| `0`          | Leave the destination pixel as it was. |
-| any non-zero | Replace the destination pixel with the source's RGB. |
+| `$00000000` | Leave the destination pixel as it was. |
+| non-zero alpha | Replace the destination pixel with the source's RGB. |
+| zero alpha, non-zero RGB | Replace the destination pixel and force alpha to `$FF`. |
 
 The result is the same as if you had laid one transparent acetate
 on top of another and looked at the stack from above: the topmost
@@ -185,7 +191,36 @@ The `VSYNC` statement waits for the next vertical retrace:
 Every chip exposes its own retrace status flag in its MMIO map. See
 Appendix D for the addresses.
 
-## 3.8 Choosing a chip
+## 3.8 A first display program
+
+This short program uses the VGA source because it is the quickest
+way to draw from BASIC. It selects 320 x 200 indexed-colour graphics,
+loads three palette entries, draws diagonal lines, and waits for the
+next retrace before returning to the prompt.
+
+```basic
+10 REM DISPLAY MODEL FIRST PICTURE
+20 SCREEN &H13
+30 PALETTE 1,63,0,0
+40 PALETTE 2,0,63,0
+50 PALETTE 3,0,0,63
+60 CLS 0
+70 FOR I=0 TO 199
+80 PLOT I,I,1
+90 PLOT 319-I,I,2
+100 NEXT I
+110 FOR X=0 TO 319
+120 PLOT X,100,3
+130 NEXT X
+140 VSYNC
+```
+
+The two diagonal lines show the top-left origin and downward-growing
+Y coordinate. The horizontal line shows that colour comes from the
+VGA palette entry selected by the pixel value. `VSYNC` gives the
+next frame a clean point at which to appear.
+
+## 3.9 Choosing a chip
 
 You normally pick a chip first and then program it for the rest of
 the picture. Reasons to pick each one:
@@ -212,10 +247,11 @@ the picture. Reasons to pick each one:
 You can layer two chips for tricks the compositor allows for free:
 draw a bitmap on the VideoChip and place text from the VGA on top,
 or use the ULA to overlay an attribute grid on an ANTIC display.
-The compositor handles the stacking; you do not write any blending
-code yourself.
+Because all six cards feed the same compositor, the final picture is
+still one Intuition Engine screen. The compositor handles the stacking;
+you do not write any blending code yourself.
 
-## 3.9 What comes next
+## 3.10 What comes next
 
 The remaining chapters of Part II describe each chip in turn. Each
 chapter follows the same plan:

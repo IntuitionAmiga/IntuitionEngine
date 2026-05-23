@@ -1875,6 +1875,98 @@ func TestScriptEngine_VideoDeviceWrappers(t *testing.T) {
 	}
 }
 
+func TestRefmanCh33ScriptVideoExample(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	regs := make(map[uint32]uint32)
+	bus.MapIO(VIDEO_REG_BASE, VIDEO_REG_END,
+		func(addr uint32) uint32 { return regs[addr] },
+		func(addr uint32, value uint32) {
+			regs[addr] = value
+			if addr == BLT_CTRL && value&bltCtrlStart != 0 {
+				regs[BLT_STATUS] = 2
+			}
+		},
+	)
+
+	script := `
+		sys.print("IE SCRIPT VIDEO")
+		video.write_reg(983044, 4)
+		video.write_reg(983172, 1048576)
+		video.write_reg(983040, 1)
+		video.blit_fill(1048576, 320, 200, 255, 1280)
+		video.blit_line(0, 0, 319, 199, 65280)
+		video.blit_wait()
+		if video.read_reg(983108) ~= 2 then error("blit status") end
+		sys.print("BLT " .. video.read_reg(983108))
+		sys.quit()
+	`
+	if err := se.RunString(script, "refman_ch33_video"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if regs[VIDEO_MODE] != MODE_320x200 {
+		t.Fatalf("VIDEO_MODE = %d, want %d", regs[VIDEO_MODE], MODE_320x200)
+	}
+	if regs[VIDEO_FB_BASE] != VRAM_START {
+		t.Fatalf("VIDEO_FB_BASE = %#x, want %#x", regs[VIDEO_FB_BASE], uint32(VRAM_START))
+	}
+	if regs[BLT_STATUS] != 2 {
+		t.Fatalf("BLT_STATUS = %d, want 2", regs[BLT_STATUS])
+	}
+}
+
+func TestRefmanCh33ScriptAudioExample(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+	sound := newTestSoundChip()
+
+	bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
+	runtimeStatus.setChips(nil, nil, nil, nil, nil, nil, sound, nil, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(func() {
+		runtimeStatus.setChips(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	})
+
+	script := `
+		audio.start()
+		audio.write_reg(0xF0A80, 262 * 256)
+		audio.write_reg(0xF0A84, 96)
+		audio.write_reg(0xF0AA4, 0)
+		audio.write_reg(0xF0A88, 3)
+		sys.wait_ms(250)
+		if mem.read32(0xF0A88) ~= 3 then error("channel gate") end
+		sys.print("CH0 " .. mem.read32(0xF0A88))
+		sys.quit()
+	`
+	if err := se.RunString(script, "refman_ch33_audio"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if got := sound.HandleRegisterRead(AUDIO_CTRL); got&1 == 0 {
+		t.Fatalf("AUDIO_CTRL = %#x, want enabled", got)
+	}
+	if got := bus.Read32(FLEX_CH0_BASE + FLEX_OFF_FREQ); got != 262*256 {
+		t.Fatalf("FLEX_CH0_FREQ = %d, want %d", got, 262*256)
+	}
+	if got := bus.Read32(FLEX_CH0_BASE + FLEX_OFF_VOL); got != 96 {
+		t.Fatalf("FLEX_CH0_VOL = %d, want 96", got)
+	}
+	if got := bus.Read32(FLEX_CH0_BASE + FLEX_OFF_CTRL); got != 3 {
+		t.Fatalf("FLEX_CH0_CTRL = %d, want 3", got)
+	}
+}
+
 func TestScriptEngine_DbgExtendedWrappers(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()

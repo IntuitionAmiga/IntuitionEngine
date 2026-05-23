@@ -13,10 +13,14 @@ sources:
 
 One table per CPU. Each table is a single-line summary of every
 mnemonic; the full encoding, addressing modes, flag effects, and
-cycle counts are in the per-CPU chapter (Ch 24-29). This appendix
-is for the reader who has the chapter open already and only needs
-to look up "is this mnemonic spelled this way" or "what does this
-opcode do at a glance".
+timing notes are in the per-CPU chapter (Chapters 24-29). This
+appendix is for the reader who has the chapter open already and
+only needs to look up "is this mnemonic spelled this way" or "what
+does this opcode do at a glance".
+
+The byte-entry crib under each CPU is deliberately small. It covers
+the encodings used by the chapter example so a reader can type,
+disassemble, and check the machine-code program directly in IE Mon.
 
 ## G.1 IE64 (Chapter 24)
 
@@ -25,25 +29,43 @@ Fixed `8`-byte instruction, 32 GPRs `R0`-`R31`, `R0 = 0`,
 
 | Group | Mnemonics |
 |-------|-----------|
-| ALU   | `ADD`, `SUB`, `MUL`, `DIV`, `MOD`, `AND`, `OR`, `XOR`, `NOT`, `NEG`, `SHL`, `SHR`, `SAR`, `ROL`, `ROR`. Each has `.Q` (full register) and `.L`/`.W`/`.B` width variants for memory ops. |
-| Load / store | `LOAD.B/.W/.L/.Q`, `STORE.B/.W/.L/.Q`. Address modes: register, register + immediate, register + register, PC-relative. |
-| Immediate | `MOVE.Q rd, #imm32`, `LI rd, #imm`. |
-| Branch   | `BRA`, `JSR`, `RTS`, `BEQ`, `BNE`, `BLT`, `BLE`, `BGT`, `BGE`, `BEQZ`, `BNEZ`. All compare-and-branch forms take two GPRs and a target. |
-| FPU      | `FADD`, `FSUB`, `FMUL`, `FDIV`, `FNEG`, `FABS`, `FSQRT`, `FCMP`, `FTOI`, `ITOF`, single and double precision. |
-| System   | `SYSCALL`, `BREAK`, `HALT`, `CRMOV` (move to/from CR0-CR15), `TLBI` (invalidate one TLB entry), `MFENCE`. |
+| ALU   | `ADD`, `SUB`, `MULU`, `MULS`, `DIVU`, `DIVS`, `MOD`, `MODS`, `AND`, `OR`, `EOR`, `NOT`, `NEG`, `LSL`, `LSR`, `ASR`, `ROL`, `ROR`, `CLZ`, `CTZ`, `POPCNT`, `BSWAP`. |
+| Load / store | `LOAD.B/.W/.L/.Q`, `STORE.B/.W/.L/.Q`. Address modes: register indirect, register plus displacement, and absolute. |
+| Immediate | `MOVE.Q rd, #imm32`, `MOVT rd, #imm32`, `MOVEQ rd, rs`, `LEA rd, disp(rs)`. |
+| Branch   | `BRA`, `JSR`, `RTS`, `JMP`, `BEQ`, `BNE`, `BLT`, `BLE`, `BGT`, `BGE`, `BHI`, `BLS`. Conditional forms compare two GPRs and a target. |
+| FPU      | `FADD`, `FSUB`, `FMUL`, `FDIV`, `FMOD`, `FNEG`, `FABS`, `FSQRT`, `FCMP`, `FCVTIF`, `FCVTFI`, single and double precision. |
+| System   | `SYSCALL`, `HALT`, `WAIT`, `MTCR`, `MFCR`, `ERET`, `TLBFLUSH`, `TLBINVAL`, `SMODE`. |
+
+Byte-entry crib for Chapter 24:
+
+| Bytes | Meaning | Hand-entry note |
+|-------|---------|-----------------|
+| `01 17 00 00 ii ii ii ii` | `MOVE.Q R2,#imm32` | Byte `1` is `(2 << 3) | (3 << 1) | 1`; the immediate is little-endian. |
+| `01 0F 00 00 ii ii ii ii` | `MOVE.Q R1,#imm32` | Byte `1` is `(1 << 3) | (3 << 1) | 1`; use this for small values before a store. |
+| `11 08 10 00 dd dd dd dd` | `STORE.B R1,disp(R2)` | Byte `1` selects `R1` and byte size; byte `2` selects base register `R2`; displacement is little-endian. |
+| `11 0C 10 00 dd dd dd dd` | `STORE.L R1,disp(R2)` | Same register fields, size code `L`; used for `32`-bit frequency or address registers. |
+| `40 06 00 00 dd dd dd dd` | `BRA disp32` | The Chapter 24 example uses displacement `0`, which branches back to the branch instruction itself. |
 
 ## G.2 IE32 (Chapter 25)
 
-`8`-byte instruction, 16 named registers `A,X,Y,Z,B,C,D,E,F,G,H,I,J,K,L,W`, no MMU, no FPU.
+`8`-byte instruction, 16 named registers `A,X,Y,Z,B,C,D,E,F,G,H,S,T,U,V,W`, no MMU, no FPU.
 
 | Group | Mnemonics |
 |-------|-----------|
-| ALU   | `ADD`, `SUB`, `MUL`, `DIV`, `AND`, `OR`, `XOR`, `NOT`, `NEG`, `SHL`, `SHR`. |
-| Memory | `LOAD`, `STORE`, with `.B`/`.W`/`.L` width suffixes. |
-| Immediate | `LDI A, #imm32`. |
-| Branch | `JMP`, `JSR`, `RTS`, `JZ rA`, `JNZ rA` (test single register against zero). |
+| ALU   | `ADD`, `SUB`, `MUL`, `DIV`, `MOD`, `AND`, `OR`, `XOR`, `NOT`, `NEG`, `SHL`, `SHR`. |
+| Load / store | `LDA`/`LDX`/`LDY`/`LDZ`, `LDB`-`LDW`, `STA`/`STX`/`STY`/`STZ`, `STB`-`STW`, plus generic `LOAD`/`STORE`. |
+| Immediate | Immediate addressing mode on load and ALU instructions. |
+| Branch | `JMP`, `JSR`, `RTS`, `JZ`, `JNZ`, `JGT`, `JGE`, `JLT`, `JLE`. |
 | Stack  | `PUSH rA`, `POP rA`. |
 | Timing | `WAIT n` delays for `n` cycles. |
+
+Byte-entry crib for Chapter 25:
+
+| Bytes | Meaning | Hand-entry note |
+|-------|---------|-----------------|
+| `20 00 00 00 vv vv vv vv` | `LDA A,#imm32` | Opcode `$20`, register `A`, immediate mode, little-endian value. |
+| `24 00 04 00 aa aa aa aa` | `STA A,M:addr32` | Opcode `$24`, register `A`, direct-memory mode, little-endian address. |
+| `06 00 00 00 aa aa aa aa` | `JMP addr32` | Opcode `$06`; the Chapter 25 example jumps to its own address to keep the tone alive. |
 
 ## G.3 6502 (Chapter 26)
 
@@ -68,6 +90,14 @@ indirect, (indirect,X), (indirect),Y, relative.
 Flag register `P`: bit `0` C, `1` Z, `2` I, `3` D, `4` B, `5` -,
 `6` V, `7` N (silicon convention used by this chip).
 
+Byte-entry crib for Chapter 26:
+
+| Bytes | Meaning | Hand-entry note |
+|-------|---------|-----------------|
+| `A9 nn` | `LDA #nn` | Immediate load into accumulator. |
+| `8D ll hh` | `STA $hhll` | Absolute store; address operand is low byte then high byte. |
+| `4C ll hh` | `JMP $hhll` | Absolute jump; the Chapter 26 example jumps to its own address to leave POKEY sounding. |
+
 ## G.4 Z80 (Chapter 27)
 
 Main: `A,F,B,C,D,E,H,L`; alt: `A',F',B',C',D',E',H',L'`; index:
@@ -91,10 +121,20 @@ Main: `A,F,B,C,D,E,H,L`; alt: `A',F',B',C',D',E',H',L'`; index:
 Flag register: `S`, `Z`, `Y` (bit 5 undoc), `H`, `X` (bit 3
 undoc), `P/V`, `N`, `C`.
 
+Byte-entry crib for Chapter 27:
+
+| Bytes | Meaning | Hand-entry note |
+|-------|---------|-----------------|
+| `3E nn` | `LD A,nn` | Immediate load into accumulator. |
+| `32 ll hh` | `LD ($hhll),A` | Direct memory store; address operand is low byte then high byte. |
+| `D3 pp` | `OUT (pp),A` | Immediate port output; Chapter 27 uses PSG ports `$F0` and `$F1`. |
+| `C3 ll hh` | `JP $hhll` | Absolute jump; address operand is low byte then high byte. |
+
 ## G.5 M68K (MC68020-Class, Chapter 28)
 
 `D0`-`D7`, `A0`-`A7`, `PC`, `SR`. CCR low byte: X N Z V C.
-Big-endian, byte-addressable, 32-bit address bus.
+Big-endian, byte-addressable, full `32`-bit client path on the
+Intuition Engine bus.
 
 | Group | Mnemonics |
 |-------|-----------|
@@ -111,6 +151,13 @@ Big-endian, byte-addressable, 32-bit address bus.
 | System      | `TRAP #n`, `TRAPV`, `CHK`, `CHK2`, `STOP`, `RESET`, `ILLEGAL`, `NOP`, `LINK`, `UNLK`, `MOVE USP`, `MOVEC`, `MOVES`, `BKPT`, `RTE`. |
 | FPU         | 68881-style `FMOVE`, `FADD`, `FSUB`, `FMUL`, `FDIV`, `FSQRT`, `FABS`, `FNEG`, `FCMP`, `FTST`, `FBcc`, `FDBcc`, `FScc`, `FMOVEM`, and control-register moves. |
 | Line A/F    | unassigned opcode trap. |
+
+Byte-entry crib for Chapter 28:
+
+| Bytes | Meaning | Hand-entry note |
+|-------|---------|-----------------|
+| `13 FC 00 vv aa aa aa aa` | `MOVE.B #vv,$aaaaaaaa` | Opcode and extension words are big-endian; the byte immediate sits in the low byte of the `$00vv` extension word. |
+| `60 00 dd dd` | `BRA.W disp16` | Signed big-endian displacement from the following word; Chapter 28 uses `$FFFE` for a self-loop. |
 
 ## G.6 x86 (Chapter 29, 8086 base + 386 extensions)
 
@@ -131,9 +178,17 @@ Big-endian, byte-addressable, 32-bit address bus.
 | Flag        | `STC`, `CLC`, `CMC`, `STD`, `CLD`, `STI`, `CLI`, `LAHF`, `SAHF`. |
 | Segment     | `LDS`, `LES`, `LFS`, `LGS`, `LSS`. |
 | System      | `HLT`, `WAIT`, `NOP`, `ESC`, `LOCK`. |
-| 386 extras  | `BSWAP`, `MOVSXD`, dword forms of all 16-bit ops via `66h` / `67h` prefixes. |
+| 386 extras  | `BSWAP`, `MOVSX`, `MOVZX`, dword forms of `16`-bit ops via `66h` / `67h` prefixes. |
 
 Omitted (Chapter 29): all protected-mode opcodes (`LGDT`,
 `LIDT`, `LLDT`, `LTR`, `LMSW`, `SMSW`, `ARPL`, `LAR`, `LSL`,
 `VERR`, `VERW`, `STR`, `SLDT`), `CR` and `DR` register moves,
 `INVLPG`, `WBINVD`, `INVD`.
+
+Byte-entry crib for Chapter 29:
+
+| Bytes | Meaning | Hand-entry note |
+|-------|---------|-----------------|
+| `B0 nn` | `MOV AL,nn` | Immediate load into `AL`. |
+| `A2 aa aa aa aa` | `MOV [addr32],AL` | Absolute store from `AL`; address operand is little-endian. |
+| `EB dd` | `JMP SHORT disp8` | Signed displacement from the next byte; `$FE` loops to the jump instruction itself. |

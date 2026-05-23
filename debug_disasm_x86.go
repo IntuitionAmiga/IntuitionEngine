@@ -74,7 +74,7 @@ func (d *x86Disasm) decodeModRM(wide bool) (string, bool) {
 		if !ok {
 			return "[???]", false
 		}
-		return fmt.Sprintf("[0x%08X]", dw), true
+		return fmt.Sprintf("[$%08X]", dw), true
 	}
 
 	if rm == 4 {
@@ -93,9 +93,9 @@ func (d *x86Disasm) decodeModRM(wide bool) (string, bool) {
 				return "[???]", false
 			}
 			if sibIdx == 4 {
-				return fmt.Sprintf("[0x%08X]", dw), true
+				return fmt.Sprintf("[$%08X]", dw), true
 			}
-			return fmt.Sprintf("[%s*%d+0x%08X]", x86Reg32[sibIdx], 1<<sibScale, dw), true
+			return fmt.Sprintf("[%s*%d+$%08X]", x86Reg32[sibIdx], 1<<sibScale, dw), true
 		}
 
 		base = x86Reg32[sibBase]
@@ -116,9 +116,9 @@ func (d *x86Disasm) decodeModRM(wide bool) (string, bool) {
 		}
 		off := int8(db)
 		if off >= 0 {
-			disp = fmt.Sprintf("+0x%02X", off)
+			disp = fmt.Sprintf("+$%02X", off)
 		} else {
-			disp = fmt.Sprintf("-0x%02X", -off)
+			disp = fmt.Sprintf("-$%02X", -off)
 		}
 		return fmt.Sprintf("[%s%s]", base, disp), true
 	case 2:
@@ -126,7 +126,7 @@ func (d *x86Disasm) decodeModRM(wide bool) (string, bool) {
 		if !ok {
 			return fmt.Sprintf("[%s+?]", base), false
 		}
-		return fmt.Sprintf("[%s+0x%08X]", base, dw), true
+		return fmt.Sprintf("[%s+$%08X]", base, dw), true
 	}
 	return "???", false
 }
@@ -259,13 +259,13 @@ func decodeX86Opcode(d *x86Disasm, op byte, instrAddr uint64, segOverride string
 		return "RET"
 	case 0xC2:
 		imm, _ := d.readWord()
-		return fmt.Sprintf("RET 0x%04X", imm)
+		return fmt.Sprintf("RET $%04X", imm)
 	// INT
 	case 0xCC:
 		return "INT 3"
 	case 0xCD:
 		imm, _ := d.readByte()
-		return fmt.Sprintf("INT 0x%02X", imm)
+		return fmt.Sprintf("INT $%02X", imm)
 	// IRET
 	case 0xCF:
 		return "IRET"
@@ -290,91 +290,91 @@ func decodeX86Opcode(d *x86Disasm, op byte, instrAddr uint64, segOverride string
 	case 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF:
 		if hasOpSize {
 			imm, _ := d.readWord()
-			return fmt.Sprintf("MOV %s, 0x%04X", regStr[op-0xB8], imm)
+			return fmt.Sprintf("MOV %s, $%04X", regStr[op-0xB8], imm)
 		}
 		imm, _ := d.readDword()
-		return fmt.Sprintf("MOV %s, 0x%08X", regStr[op-0xB8], imm)
+		return fmt.Sprintf("MOV %s, $%08X", regStr[op-0xB8], imm)
 
 	// MOV reg8, imm8
 	case 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7:
 		imm, _ := d.readByte()
-		return fmt.Sprintf("MOV %s, 0x%02X", x86Reg8[op-0xB0], imm)
+		return fmt.Sprintf("MOV %s, $%02X", x86Reg8[op-0xB0], imm)
 
 	// MOV EAX, [moffs]
 	case 0xA1:
 		if hasOpSize {
 			addr, _ := d.readDword()
-			return fmt.Sprintf("MOV AX, [0x%08X]", addr)
+			return fmt.Sprintf("MOV AX, [$%08X]", addr)
 		}
 		addr, _ := d.readDword()
-		return fmt.Sprintf("MOV EAX, [0x%08X]", addr)
+		return fmt.Sprintf("MOV EAX, [$%08X]", addr)
 	// MOV [moffs], EAX
 	case 0xA3:
 		if hasOpSize {
 			addr, _ := d.readDword()
-			return fmt.Sprintf("MOV [0x%08X], AX", addr)
+			return fmt.Sprintf("MOV [$%08X], AX", addr)
 		}
 		addr, _ := d.readDword()
-		return fmt.Sprintf("MOV [0x%08X], EAX", addr)
+		return fmt.Sprintf("MOV [$%08X], EAX", addr)
 	// MOV AL, [moffs]
 	case 0xA0:
 		addr, _ := d.readDword()
-		return fmt.Sprintf("MOV AL, [0x%08X]", addr)
+		return fmt.Sprintf("MOV AL, [$%08X]", addr)
 	// MOV [moffs], AL
 	case 0xA2:
 		addr, _ := d.readDword()
-		return fmt.Sprintf("MOV [0x%08X], AL", addr)
+		return fmt.Sprintf("MOV [$%08X], AL", addr)
 
 	// JMP rel8
 	case 0xEB:
 		off, _ := d.readByte()
 		target := d.pos + uint64(int8(off))
-		return fmt.Sprintf("JMP SHORT 0x%08X", target)
+		return fmt.Sprintf("JMP SHORT $%08X", target)
 	// JMP rel32
 	case 0xE9:
 		if hasOpSize {
 			off, _ := d.readWord()
 			target := d.pos + uint64(int16(off))
-			return fmt.Sprintf("JMP 0x%08X", target)
+			return fmt.Sprintf("JMP $%08X", target)
 		}
 		off, _ := d.readDword()
 		target := d.pos + uint64(int32(off))
-		return fmt.Sprintf("JMP 0x%08X", target)
+		return fmt.Sprintf("JMP $%08X", target)
 	// CALL rel32
 	case 0xE8:
 		if hasOpSize {
 			off, _ := d.readWord()
 			target := d.pos + uint64(int16(off))
-			return fmt.Sprintf("CALL 0x%08X", target)
+			return fmt.Sprintf("CALL $%08X", target)
 		}
 		off, _ := d.readDword()
 		target := d.pos + uint64(int32(off))
-		return fmt.Sprintf("CALL 0x%08X", target)
+		return fmt.Sprintf("CALL $%08X", target)
 
 	// Jcc rel8
 	case 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77,
 		0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F:
 		off, _ := d.readByte()
 		target := d.pos + uint64(int8(off))
-		return fmt.Sprintf("J%s SHORT 0x%08X", x86Cond[op-0x70], target)
+		return fmt.Sprintf("J%s SHORT $%08X", x86Cond[op-0x70], target)
 
 	// LOOP/LOOPNZ/LOOPZ/JCXZ
 	case 0xE0:
 		off, _ := d.readByte()
 		target := d.pos + uint64(int8(off))
-		return fmt.Sprintf("LOOPNZ 0x%08X", target)
+		return fmt.Sprintf("LOOPNZ $%08X", target)
 	case 0xE1:
 		off, _ := d.readByte()
 		target := d.pos + uint64(int8(off))
-		return fmt.Sprintf("LOOPZ 0x%08X", target)
+		return fmt.Sprintf("LOOPZ $%08X", target)
 	case 0xE2:
 		off, _ := d.readByte()
 		target := d.pos + uint64(int8(off))
-		return fmt.Sprintf("LOOP 0x%08X", target)
+		return fmt.Sprintf("LOOP $%08X", target)
 	case 0xE3:
 		off, _ := d.readByte()
 		target := d.pos + uint64(int8(off))
-		return fmt.Sprintf("JECXZ 0x%08X", target)
+		return fmt.Sprintf("JECXZ $%08X", target)
 
 	// ALU r/m8, r8
 	case 0x00:
@@ -451,28 +451,28 @@ func decodeX86Opcode(d *x86Disasm, op byte, instrAddr uint64, segOverride string
 	// ALU AL, imm8
 	case 0x04:
 		imm, _ := d.readByte()
-		return fmt.Sprintf("ADD AL, 0x%02X", imm)
+		return fmt.Sprintf("ADD AL, $%02X", imm)
 	case 0x0C:
 		imm, _ := d.readByte()
-		return fmt.Sprintf("OR AL, 0x%02X", imm)
+		return fmt.Sprintf("OR AL, $%02X", imm)
 	case 0x14:
 		imm, _ := d.readByte()
-		return fmt.Sprintf("ADC AL, 0x%02X", imm)
+		return fmt.Sprintf("ADC AL, $%02X", imm)
 	case 0x1C:
 		imm, _ := d.readByte()
-		return fmt.Sprintf("SBB AL, 0x%02X", imm)
+		return fmt.Sprintf("SBB AL, $%02X", imm)
 	case 0x24:
 		imm, _ := d.readByte()
-		return fmt.Sprintf("AND AL, 0x%02X", imm)
+		return fmt.Sprintf("AND AL, $%02X", imm)
 	case 0x2C:
 		imm, _ := d.readByte()
-		return fmt.Sprintf("SUB AL, 0x%02X", imm)
+		return fmt.Sprintf("SUB AL, $%02X", imm)
 	case 0x34:
 		imm, _ := d.readByte()
-		return fmt.Sprintf("XOR AL, 0x%02X", imm)
+		return fmt.Sprintf("XOR AL, $%02X", imm)
 	case 0x3C:
 		imm, _ := d.readByte()
-		return fmt.Sprintf("CMP AL, 0x%02X", imm)
+		return fmt.Sprintf("CMP AL, $%02X", imm)
 
 	// ALU EAX, imm32
 	case 0x05:
@@ -526,15 +526,15 @@ func decodeX86Opcode(d *x86Disasm, op byte, instrAddr uint64, segOverride string
 	// TEST AL, imm8
 	case 0xA8:
 		imm, _ := d.readByte()
-		return fmt.Sprintf("TEST AL, 0x%02X", imm)
+		return fmt.Sprintf("TEST AL, $%02X", imm)
 	// TEST EAX, imm32
 	case 0xA9:
 		if hasOpSize {
 			imm, _ := d.readWord()
-			return fmt.Sprintf("TEST AX, 0x%04X", imm)
+			return fmt.Sprintf("TEST AX, $%04X", imm)
 		}
 		imm, _ := d.readDword()
-		return fmt.Sprintf("TEST EAX, 0x%08X", imm)
+		return fmt.Sprintf("TEST EAX, $%08X", imm)
 
 	// XCHG r/m8, r8
 	case 0x86:
@@ -547,15 +547,15 @@ func decodeX86Opcode(d *x86Disasm, op byte, instrAddr uint64, segOverride string
 	case 0xC6: // MOV r/m8, imm8
 		rm, _ := d.decodeModRM(false)
 		imm, _ := d.readByte()
-		return fmt.Sprintf("MOV %s, 0x%02X", rm, imm)
+		return fmt.Sprintf("MOV %s, $%02X", rm, imm)
 	case 0xC7: // MOV r/m32, imm32
 		rm, _ := d.decodeModRM(true)
 		if hasOpSize {
 			imm, _ := d.readWord()
-			return fmt.Sprintf("MOV %s, 0x%04X", rm, imm)
+			return fmt.Sprintf("MOV %s, $%04X", rm, imm)
 		}
 		imm, _ := d.readDword()
-		return fmt.Sprintf("MOV %s, 0x%08X", rm, imm)
+		return fmt.Sprintf("MOV %s, $%08X", rm, imm)
 
 	// Shift/rotate group
 	case 0xC0: // r/m8, imm8
@@ -585,13 +585,13 @@ func decodeX86Opcode(d *x86Disasm, op byte, instrAddr uint64, segOverride string
 	case 0x68:
 		if hasOpSize {
 			imm, _ := d.readWord()
-			return fmt.Sprintf("PUSH 0x%04X", imm)
+			return fmt.Sprintf("PUSH $%04X", imm)
 		}
 		imm, _ := d.readDword()
-		return fmt.Sprintf("PUSH 0x%08X", imm)
+		return fmt.Sprintf("PUSH $%08X", imm)
 	case 0x6A:
 		imm, _ := d.readByte()
-		return fmt.Sprintf("PUSH 0x%02X", imm)
+		return fmt.Sprintf("PUSH $%02X", imm)
 
 	// Segment pushes/pops
 	case 0x06:
@@ -685,22 +685,22 @@ func decodeX86Opcode(d *x86Disasm, op byte, instrAddr uint64, segOverride string
 	// IN/OUT
 	case 0xE4:
 		port, _ := d.readByte()
-		return fmt.Sprintf("IN AL, 0x%02X", port)
+		return fmt.Sprintf("IN AL, $%02X", port)
 	case 0xE5:
 		port, _ := d.readByte()
 		if hasOpSize {
-			return fmt.Sprintf("IN AX, 0x%02X", port)
+			return fmt.Sprintf("IN AX, $%02X", port)
 		}
-		return fmt.Sprintf("IN EAX, 0x%02X", port)
+		return fmt.Sprintf("IN EAX, $%02X", port)
 	case 0xE6:
 		port, _ := d.readByte()
-		return fmt.Sprintf("OUT 0x%02X, AL", port)
+		return fmt.Sprintf("OUT $%02X, AL", port)
 	case 0xE7:
 		port, _ := d.readByte()
 		if hasOpSize {
-			return fmt.Sprintf("OUT 0x%02X, AX", port)
+			return fmt.Sprintf("OUT $%02X, AX", port)
 		}
-		return fmt.Sprintf("OUT 0x%02X, EAX", port)
+		return fmt.Sprintf("OUT $%02X, EAX", port)
 	case 0xEC:
 		return "IN AL, DX"
 	case 0xED:
@@ -720,7 +720,7 @@ func decodeX86Opcode(d *x86Disasm, op byte, instrAddr uint64, segOverride string
 	case 0xC8:
 		size, _ := d.readWord()
 		level, _ := d.readByte()
-		return fmt.Sprintf("ENTER 0x%04X, %d", size, level)
+		return fmt.Sprintf("ENTER $%04X, %d", size, level)
 	case 0xC9:
 		return "LEAVE"
 
@@ -768,13 +768,13 @@ func decodeX86Opcode(d *x86Disasm, op byte, instrAddr uint64, segOverride string
 		return fmt.Sprintf("MOV %s, %s", segName, rmStr)
 	}
 
-	return fmt.Sprintf("db 0x%02X", op)
+	return fmt.Sprintf("db $%02X", op)
 }
 
 func decodeX86TwoByteOpcode(d *x86Disasm, hasOpSize bool) string {
 	op, ok := d.readByte()
 	if !ok {
-		return "db 0x0F, ??"
+		return "db $0F, ??"
 	}
 
 	switch op {
@@ -784,11 +784,11 @@ func decodeX86TwoByteOpcode(d *x86Disasm, hasOpSize bool) string {
 		if hasOpSize {
 			off, _ := d.readWord()
 			target := d.pos + uint64(int16(off))
-			return fmt.Sprintf("J%s 0x%08X", x86Cond[op-0x80], target)
+			return fmt.Sprintf("J%s $%08X", x86Cond[op-0x80], target)
 		}
 		off, _ := d.readDword()
 		target := d.pos + uint64(int32(off))
-		return fmt.Sprintf("J%s 0x%08X", x86Cond[op-0x80], target)
+		return fmt.Sprintf("J%s $%08X", x86Cond[op-0x80], target)
 
 	// SETcc r/m8
 	case 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
@@ -857,7 +857,7 @@ func decodeX86TwoByteOpcode(d *x86Disasm, hasOpSize bool) string {
 		return "INVD"
 	}
 
-	return fmt.Sprintf("db 0x0F, 0x%02X", op)
+	return fmt.Sprintf("db $0F, $%02X", op)
 }
 
 func decodeX86ALURM(d *x86Disasm, name string, wide bool, regIsSource bool) string {
@@ -902,10 +902,10 @@ func decodeX86ALURM(d *x86Disasm, name string, wide bool, regIsSource bool) stri
 func decodeX86ALUAXImm(d *x86Disasm, name string, hasOpSize bool) string {
 	if hasOpSize {
 		imm, _ := d.readWord()
-		return fmt.Sprintf("%s AX, 0x%04X", name, imm)
+		return fmt.Sprintf("%s AX, $%04X", name, imm)
 	}
 	imm, _ := d.readDword()
-	return fmt.Sprintf("%s EAX, 0x%08X", name, imm)
+	return fmt.Sprintf("%s EAX, $%08X", name, imm)
 }
 
 func decodeX86Group1(d *x86Disasm, wide bool, signExtend bool) string {
@@ -932,14 +932,14 @@ func decodeX86Group1(d *x86Disasm, wide bool, signExtend bool) string {
 
 	if !wide {
 		imm, _ := d.readByte()
-		return fmt.Sprintf("%s %s, 0x%02X", ops[op], rmStr, imm)
+		return fmt.Sprintf("%s %s, $%02X", ops[op], rmStr, imm)
 	}
 	if signExtend {
 		imm, _ := d.readByte()
-		return fmt.Sprintf("%s %s, 0x%02X", ops[op], rmStr, imm)
+		return fmt.Sprintf("%s %s, $%02X", ops[op], rmStr, imm)
 	}
 	imm, _ := d.readDword()
-	return fmt.Sprintf("%s %s, 0x%08X", ops[op], rmStr, imm)
+	return fmt.Sprintf("%s %s, $%08X", ops[op], rmStr, imm)
 }
 
 func decodeX86ShiftGroup(d *x86Disasm, wide bool, countType int) string {
@@ -1000,10 +1000,10 @@ func decodeX86Group3(d *x86Disasm, wide bool) string {
 	case 0: // TEST
 		if wide {
 			imm, _ := d.readDword()
-			return fmt.Sprintf("TEST %s, 0x%08X", rmStr, imm)
+			return fmt.Sprintf("TEST %s, $%08X", rmStr, imm)
 		}
 		imm, _ := d.readByte()
-		return fmt.Sprintf("TEST %s, 0x%02X", rmStr, imm)
+		return fmt.Sprintf("TEST %s, $%02X", rmStr, imm)
 	case 2:
 		return fmt.Sprintf("NOT %s", rmStr)
 	case 3:

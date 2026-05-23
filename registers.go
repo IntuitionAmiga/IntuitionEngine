@@ -49,7 +49,7 @@ Address Range       Size    Device              Constants File
 0xF1400-0xF140F     16B     Host Helper         host_helper.go
 0xF2000-0xF2017     24B     ULA Registers       ula_constants.go
 0xF2100-0xF213F     64B     ANTIC (Atari 8-bit) antic_constants.go
-0xF2140-0xF21B7     120B    GTIA (Atari 8-bit)  antic_constants.go
+0xF2140-0xF21FB     188B    GTIA (Atari 8-bit)  antic_constants.go
 0xF2200-0xF221F     32B     File I/O            registers.go
 0xF2220-0xF225F     64B     AROS DOS Handler    aros_dos_constants.go
 0xF2260-0xF22AF     80B     AROS Audio DMA      aros_audio_constants.go
@@ -128,7 +128,7 @@ ANTIC (0xF2100-0xF213F) - antic_constants.go
   ANTIC_DMACTL, ANTIC_CHACTL, ANTIC_DLISTL/H, ANTIC_HSCROL, ANTIC_VSCROL
   ANTIC_PMBASE, ANTIC_CHBASE, ANTIC_WSYNC, ANTIC_VCOUNT, ANTIC_NMIEN, ANTIC_NMIST, ANTIC_NMIRES
 
-GTIA (0xF2140-0xF21B7) - antic_constants.go
+GTIA (0xF2140-0xF21FB) - antic_constants.go
   GTIA_COLPM0-3, GTIA_COLPF0-3, GTIA_COLBK
   GTIA_PRIOR, GTIA_GRACTL, GTIA_CONSOL
 
@@ -247,7 +247,7 @@ const (
 
 	// GTIA region (Atari 8-bit color control)
 	GTIA_REGION_BASE = 0xF2140
-	GTIA_REGION_END  = 0xF21B7
+	GTIA_REGION_END  = 0xF21FB
 
 	// Coprocessor region
 	COPROC_REGION_BASE = 0xF2340

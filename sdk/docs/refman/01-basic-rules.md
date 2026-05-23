@@ -24,10 +24,74 @@ with a number, the rest of the line is stored in memory as part of a
 program; this is **program mode**. The same statements work in both
 modes, with a small number of exceptions noted later.
 
+BASIC is the front panel of the Intuition Engine. The same language
+that prints numbers can also read memory, write hardware registers,
+draw pictures, start sound, load files, and call machine code. Later
+chapters use those powers to reach each card on the shared bus. This
+chapter gives you the rules you need before you start touching that
+hardware.
+
 This chapter describes how BASIC stores and manipulates information.
 It tells you what kinds of values BASIC understands, how to name them,
 how to build expressions, and how to enter a program one line at a
 time. The keywords themselves are described one by one in Chapter 2.
+
+## First session
+
+If this is your first time at the prompt, type these lines before
+reading the vocabulary chapter. They are not a full lesson in display,
+sound, or files. They show the shape of the machine: the same BASIC
+prompt can calculate, remember a program, draw through a video card,
+make sound through an audio engine, and save what you typed.
+
+First try one direct-mode calculation:
+
+```basic
+PRINT 2+3
+ 5
+Ready
+.
+```
+
+Now enter a two-line program. Numbered lines are stored until you run,
+list, save, or clear them:
+
+```basic
+10 PRINT "INTUITION ENGINE"
+20 PRINT 2+3
+RUN
+INTUITION ENGINE
+ 5
+Ready
+.
+```
+
+Make one visible mark on the VGA card:
+
+```basic
+SCREEN &H13
+PALETTE 1,63,0,0
+PLOT 160,100,1
+```
+
+You should see a red pixel near the centre of the screen. Now make
+one sound through the SoundChip:
+
+```basic
+SOUND 0,440,200,0,128
+```
+
+You should hear a steady tone. Finally save the little program and ask
+the machine to list the files it can see:
+
+```basic
+SAVE "FIRST.BAS"
+DIR
+```
+
+Later chapters explain every register behind those statements. For
+now, remember the important rule: BASIC is not just a calculator. It is
+the first way into the shared bus.
 
 ## 1.1 Direct mode and program mode
 
@@ -120,7 +184,7 @@ You may write numeric literals in four forms:
 | Hexadecimal         | `&H710000`    |
 
 The `&H` prefix introduces a hexadecimal literal. The digits after
-`&H` are `0`–`9` and `A`–`F` (upper or lower case). Hexadecimal
+`&H` are `0`-`9` and `A`-`F` (upper or lower case). Hexadecimal
 literals are useful for addresses and MMIO register values: `PEEK
 (&H001F0000)` and `&HFF00` are equivalent to `PEEK(2031616)` and
 `65280`. There is no separate integer literal syntax. `42` and
@@ -391,6 +455,8 @@ Appendix I lists every error message and its meaning.
 
 Chapter 2 lists every BASIC keyword in alphabetical order, with its
 syntax, an example, and the chapter where the related hardware
-appears. Once you can write a short program in direct mode and
-understand what each operator does, Chapters 3 through 10 show how
-to use the screen, and Chapters 11 through 21 show how to use sound.
+appears. You do not need to memorise it. Skim it once, then keep
+going. Once you can write a short program in direct mode and
+understand what each operator does, Chapters 3 through 10 show how to
+use the display cards, and Chapters 11 through 21 show how to use the
+sound engines on the same machine.

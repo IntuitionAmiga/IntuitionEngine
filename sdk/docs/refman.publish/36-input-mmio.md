@@ -1,160 +1,144 @@
 
 # Chapter 36 - Keyboard, Mouse, and Time of Day
 
-Input on the Intuition Engine is keyboard plus mouse, plus a small
-real-time clock. Every input register lives in the terminal /
-serial block (`0xF0700`-`0xF07FF`). Each is `32`-bit on the bus;
-only the documented low bits carry information.
+Input arrives through the terminal register block at
+`$F0700`-`$F07FF`. BASIC usually reads characters with `GET` and
+`INPUT`; games, editors, and music tools can also poll the raw
+registers directly.
 
-This chapter documents the raw register interface. BASIC programs
-that want characters typically read them through `GET` and `INPUT`
-(Chapter 2) and never touch these registers directly. Games and
-graphic programs use them.
+All registers in this chapter are `32`-bit on the bus. Most values
+use only the low byte. Mouse X and Y use the low `16` bits. Relative
+mouse movement uses signed `32`-bit values.
 
-## 36.1 The keyboard
+## 36.1 Register Map
 
-Two paths from the keyboard reach a running program: a cooked
-character stream (the same one BASIC uses) and a raw scancode
-stream.
+| Address | Name | R/W | Meaning |
+|---------|------|-----|---------|
+| `$F0728` | `TERM_KEY_IN` | R | Read one cooked key byte and advance the key queue. |
+| `$F072C` | `TERM_KEY_STATUS` | R | Bit `0` set when a cooked key byte is queued. |
+| `$F0740` | `SCAN_CODE` | R | Read one physical-key scancode and advance the scancode queue. |
+| `$F0744` | `SCAN_STATUS` | R | Bit `0` set when a scancode is queued. |
+| `$F0748` | `SCAN_MODIFIERS` | R | Bit `0` shift, bit `1` ctrl, bit `2` alt, bit `3` capslock. |
+| `$F0730` | `MOUSE_X` | R | Absolute mouse X, low `16` bits. |
+| `$F0734` | `MOUSE_Y` | R | Absolute mouse Y, low `16` bits. |
+| `$F0738` | `MOUSE_BUTTONS` | R | Bit `0` left, bit `1` right, bit `2` middle. |
+| `$F073C` | `MOUSE_STATUS` | R | Bit `0` set after a mouse change; reading clears it. |
+| `$F074C` | `MOUSE_CTRL` | R/W | Bit `0` requests relative captured mouse mode. |
+| `$F0750` | `RTC_EPOCH` | R | Seconds since `1970-01-01 00:00:00` UTC. |
+| `$F0754` | `MOUSE_DX` | R | Signed accumulated relative X movement; reading clears it. |
+| `$F0758` | `MOUSE_DY` | R | Signed accumulated relative Y movement; reading clears it. |
 
-### 36.1.1 Cooked keys
+## 36.2 Cooked Key Queue
 
-| Address    | Name              | R/W | Meaning |
-|------------|-------------------|-----|---------|
-| `0xF0728`  | raw-key dequeue   | R   | Read one raw key code, then advance the queue. |
-| `0xF072C`  | raw-key status    | R   | Bit `0` is set when at least one raw key is queued. |
+The cooked key queue contains one byte per key after keyboard layout
+and shift handling. It is not line-buffered and it is not echoed.
+Use it when a program wants immediate key presses but still wants the
+usual character values.
 
-The "raw key" here is the cooked key character (already mapped
-from the keyboard layout, with the shift state applied, but not
-echoed and not line-buffered). A typical input loop:
-
-```ie64
-.loop:
-    load.l  r1, 0xF072C
-    beqz    r1, .loop
-    load.l  r2, 0xF0728
-    ; R2 = key code
+```basic
+10 REM WAIT FOR ONE COOKED KEY BYTE
+20 PRINT "PRESS A KEY"
+30 IF PEEK(&H000F072C)=0 THEN GOTO 30
+40 K=PEEK(&H000F0728)
+50 PRINT "KEY ";K
 ```
 
-Reading `0xF0728` when no key is queued returns `0`. Reading the
-status first avoids losing track of the queue's empty state.
+If you press `A`, the final line prints `KEY 65`. Reading
+`$F0728` when the queue is empty returns `0`, so check `$F072C`
+first when zero is a meaningful key value for your program.
+Line `30` is the guard. Line `40` consumes the byte, so reading it
+again would move on to the next queued key.
 
-### 36.1.2 Raw scancodes
+## 36.3 Physical Scancodes
 
-For programs that want the physical key, not its character (a game
-remap screen, a music tracker, an editor's keymap), the scancode
-path is the right one:
+The scancode queue reports physical key events. A press and release
+both appear in the queue. The high bit marks release, so `30` and
+`158` are the press and release forms of the same key code.
 
-| Address    | Name                | R/W | Meaning |
-|------------|---------------------|-----|---------|
-| `0xF0740`  | scancode dequeue    | R   | Read one raw scancode, then advance the queue. |
-| `0xF0744`  | scancode status     | R   | Bit `0` is set when at least one scancode is queued. |
-| `0xF0748`  | modifier byte       | R   | Bit `0` = shift, bit `1` = ctrl, bit `2` = alt, bit `3` = capslock. |
-
-Scancodes are the keyboard's own numbering, not the cooked
-character. A scancode arrives once on press and once on release;
-press and release are distinguished by the high bit of the value
-(the high bit set means "release"). The modifier byte is a
-snapshot of the current modifier state at the moment of the read
-and is not queued; it reflects what is being held now.
-
-## 36.2 The mouse
-
-The mouse has two interfaces: an absolute one (where on the screen
-the cursor is) and a relative one (how far the mouse has moved
-since the last read).
-
-### 36.2.1 Absolute mode
-
-| Address    | Name           | R/W | Meaning |
-|------------|----------------|-----|---------|
-| `0xF0730`  | mouse X        | R   | Absolute X in screen pixels, low `16` bits. |
-| `0xF0734`  | mouse Y        | R   | Absolute Y in screen pixels, low `16` bits. |
-| `0xF0738`  | mouse buttons  | R   | Bit `0` = left, bit `1` = right, bit `2` = middle. |
-| `0xF073C`  | mouse status   | R   | Bit `0` is set when the mouse state has changed since the last read of this register. Clears on read. |
-
-The status register's "changed" bit is a one-shot. A program that
-wants to know it has the latest position polls `0xF073C`, and on a
-non-zero result reads X, Y, and buttons.
-
-### 36.2.2 Relative mode
-
-For first-person 3-D games and pointer-locking work, the relative
-interface is the right one. It uses three registers:
-
-| Address    | Name            | R/W | Meaning |
-|------------|-----------------|-----|---------|
-| `0xF074C`  | mouse control   | W   | Bit `0` = request relative / captured mouse mode. |
-| `0xF0754`  | accumulated dX  | R   | Signed accumulated relative X movement since the last read. Clears on read. |
-| `0xF0758`  | accumulated dY  | R   | Signed accumulated relative Y movement since the last read. Clears on read. |
-
-The program writes `1` to bit `0` of the control register to ask
-for relative mode. The cursor disappears and movement is reported
-through the dX / dY registers. Writing `0` returns to absolute
-mode and the cursor reappears at its last known position.
-
-dX and dY are signed 32-bit values that accumulate between reads.
-A game loop that polls once per frame sees the total movement
-since the previous frame.
-
-## 36.3 Time of day
-
-A single register reads back the wall-clock time:
-
-| Address    | Name        | R/W | Meaning |
-|------------|-------------|-----|---------|
-| `0xF0750`  | epoch time  | R   | Seconds since the Unix epoch (1970-01-01 00:00:00 UTC), as a signed `32`-bit count. |
-
-The register is updated continuously; two reads taken a second
-apart differ by one. There is no separate sub-second register and
-no per-CPU latch. Programs that want a finer granularity should
-combine this with a CPU timer (Chapter 30).
-
-The value rolls over to a negative number in the year 2038, after
-which it counts back toward zero, and through zero into positive
-territory again, like any signed 32-bit second counter.
-
-## 36.4 An input loop
-
-A polling game loop that uses keyboard and relative mouse:
-
-```ie64
-.frame:
-    ; Drain key queue
-.key_loop:
-    load.l  r1, 0xF072C
-    beqz    r1, .key_done
-    load.l  r2, 0xF0728
-    jsr     handle_key
-    bra     .key_loop
-.key_done:
-
-    ; Read accumulated mouse motion
-    load.l  r1, 0xF0754   ; signed dX
-    load.l  r2, 0xF0758   ; signed dY
-    jsr     handle_motion
-
-    ; ... rest of frame ...
-    bra     .frame
+```basic
+10 REM SHOW PRESS AND RELEASE SCANCODES
+20 PRINT "PRESS AND RELEASE A KEY"
+30 IF PEEK(&H000F0744)=0 THEN GOTO 30
+40 C=PEEK(&H000F0740)
+50 M=PEEK(&H000F0748)
+60 PRINT "SCAN ";C;" MOD ";M
+70 IF (C AND 128)=0 THEN GOTO 30
 ```
 
-The key drain is unbounded: the program keeps consuming until the
-status register reads `0`. The mouse reads happen exactly once per
-frame because the dX / dY registers clear themselves on read.
+The modifier byte is not queued. It reports the modifier state at
+the moment it is read.
+Line `70` keeps the loop alive until the release form of the
+scancode appears. That release form is the press code plus `128`.
 
-## 36.5 Use from the small CPUs
+## 36.4 Absolute Mouse
 
-The 6502 and Z80 reach every register here through the same
-bank-window mechanism that exposes the rest of the
-`0xF0000`-`0xFFFFF` region. Each `32`-bit register is read by
-the 8-bit CPUs as four byte-aligned bytes; the meaningful bits
-sit in the low byte of every register except the mouse position
-registers (which use bits `0`-`15` and so span the low two
-bytes). The bank-window scheme and exact 16-bit addresses are
-described in Chapters 26 and 27.
+Absolute mouse mode reports the current pointer position and button
+state. `MOUSE_STATUS` is a one-shot changed bit: it reads `1` after
+a change and clears to `0` when read.
 
-The cooked-key path at `0xF0728` is also the path that the
-terminal uses (Chapter 37). A program that calls `INPUT` from
-BASIC, or that reads the terminal input register from machine
-code, is competing with `0xF0728` for the same queue; pick one
-consumer per key stream.
+```basic
+10 REM READ STATUS FIRST, BECAUSE IT CLEARS ON READ
+20 S=PEEK(&H000F073C)
+30 X=PEEK(&H000F0730)
+40 Y=PEEK(&H000F0734)
+50 B=PEEK(&H000F0738)
+60 PRINT "MOUSE ";X;Y;B;" CHANGED ";S
+```
+
+The button value is a bit field. Left is `1`, right is `2`, middle is
+`4`, and combined buttons add those values.
+Read `$F073C` once per sample. A second read before the next mouse
+event returns `0`.
+
+## 36.5 Relative Mouse
+
+Relative mode is for games and editors that care about movement
+rather than pointer position. Write `1` to `$F074C` to request
+captured relative mode. Write `0` to return to normal absolute mode.
+
+```basic
+10 REM CAPTURE RELATIVE MOVEMENT UNTIL A KEY IS PRESSED
+20 POKE &H000F074C,1
+30 PRINT "MOVE MOUSE, THEN PRESS A KEY"
+40 IF PEEK(&H000F072C)=0 THEN GOTO 40
+50 K=PEEK(&H000F0728)
+60 DX=PEEK(&H000F0754):DY=PEEK(&H000F0758)
+70 PRINT "DELTA ";DX;DY;" KEY ";K
+80 POKE &H000F074C,0
+```
+
+`MOUSE_DX` and `MOUSE_DY` clear independently when read. Poll once per
+frame if you want frame-by-frame movement. Negative movement is
+reported as a signed `32`-bit value. If BASIC prints a value greater
+than `2147483647`, subtract `4294967296` to view it as a negative
+number.
+
+## 36.6 Time Of Day
+
+`RTC_EPOCH` reads whole seconds since `1970-01-01 00:00:00` UTC.
+There is no sub-second register and no per-CPU latch.
+
+```basic
+10 T=PEEK(&H000F0750)
+20 PRINT "SECONDS ";T
+```
+
+Two reads about a second apart normally differ by one. For shorter
+intervals, use a CPU timer or a device status bit, as described in
+Chapter 30.
+
+The value is a signed `32`-bit seconds counter. In 2038 it crosses
+from positive to negative, then keeps counting in signed arithmetic.
+
+## 36.7 Small-CPU Access
+
+The 6502 and Z80 reach these registers through their terminal and
+MMIO apertures described in Chapters 26 and 27. A `32`-bit register
+appears as four byte lanes. For most registers the useful bits are in
+the low byte. For `MOUSE_X` and `MOUSE_Y`, read the low two bytes for
+the `16`-bit coordinate.
+
+The cooked-key register at `$F0728` shares its queue with terminal
+character input. A program should choose one consumer for that queue:
+BASIC `GET`, BASIC `INPUT`, terminal reads, or direct reads from
+`$F0728`.

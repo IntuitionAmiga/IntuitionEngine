@@ -526,7 +526,7 @@ func (c *VideoCompositor) updateOutput(out VideoOutput, frame []byte) {
 }
 
 // blendFrame blends a source frame into the final frame with scaling.
-// Alpha is a binary mask: any nonzero alpha overwrites the destination.
+// All-zero pixels are transparent; any nonzero alpha or RGB value is opaque.
 func (c *VideoCompositor) blendFrame(srcFrame []byte, srcW, srcH int) {
 	dstW := c.frameWidth
 	dstH := c.frameHeight
@@ -602,7 +602,8 @@ func (c *VideoCompositor) blendFrame1to1(srcFrame []byte, width, height int) {
 }
 
 // blendStrip blends rows [startY, endY) from srcFrame into finalFrame.
-// Alpha is tested as a mask; partial alpha is intentionally treated opaque.
+// Partial alpha is intentionally treated opaque, and zero-alpha colour is
+// promoted to opaque so BASIC-friendly 0x00RRGGBB pixels are visible.
 func (c *VideoCompositor) blendStrip(srcFrame []byte, width, startY, endY int) {
 	rowBytes := width * BYTES_PER_PIXEL
 	srcOffset := startY * rowBytes

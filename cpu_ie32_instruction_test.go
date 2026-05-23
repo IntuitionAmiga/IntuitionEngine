@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +64,267 @@ func (r *ie32TestRig) executeN(n int, instructions ...[]byte) {
 	r.loadInstructions(allInstrs...)
 	r.cpu.running.Store(true)
 	r.cpu.Execute()
+}
+
+func refmanCh25IE32SNChordProgram() []byte {
+	var program []byte
+	emit := func(instr []byte) {
+		program = append(program, instr...)
+	}
+	emit(createInstruction(LDA, 0, ADDR_IMMEDIATE, 1))
+	emit(createInstruction(STA, 0, ADDR_DIRECT, AUDIO_CTRL))
+
+	for _, value := range []uint32{
+		0x8B, 0x1A, 0x90,
+		0xA3, 0x15, 0xB2,
+		0xCD, 0x11, 0xD3,
+	} {
+		emit(createInstruction(LDA, 0, ADDR_IMMEDIATE, value))
+		emit(createInstruction(STA, 0, ADDR_DIRECT, SN_PORT_WRITE))
+	}
+	emit(createInstruction(JMP, 0, ADDR_IMMEDIATE, 0x10A0))
+	return program
+}
+
+func refmanCh25IE32VGATextProgram() []byte {
+	var program []byte
+	emit := func(instr []byte) {
+		program = append(program, instr...)
+	}
+	emit(createInstruction(LDA, 0, ADDR_IMMEDIATE, VGA_MODE_TEXT))
+	emit(createInstruction(STA, 0, ADDR_DIRECT, VGA_MODE))
+	emit(createInstruction(LDA, 0, ADDR_IMMEDIATE, VGA_CTRL_ENABLE))
+	emit(createInstruction(STA, 0, ADDR_DIRECT, VGA_CTRL))
+
+	for i, value := range []uint32{
+		'I', 0x1E,
+		'E', 0x2F,
+		'3', 0x4E,
+		'2', 0x5F,
+	} {
+		emit(createInstruction(LDA, 0, ADDR_IMMEDIATE, value))
+		emit(createInstruction(STA, 0, ADDR_DIRECT, VGA_TEXT_WINDOW+uint32(i)))
+	}
+	emit(createInstruction(JMP, 0, ADDR_IMMEDIATE, 0x11A0))
+	return program
+}
+
+func extractRefmanCh25MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
+	t.Helper()
+	path := filepath.Join(repoRootDir(t), "sdk", "docs", "refman", "25-ie32.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+
+	text := string(data)
+	start := strings.Index(text, heading)
+	if start < 0 {
+		t.Fatalf("heading %q not found in %s", heading, path)
+	}
+	section := text[start:]
+	if next := strings.Index(section[len(heading):], "\n## "); next >= 0 {
+		section = section[:len(heading)+next]
+	}
+
+	var program []byte
+	wantAddr := startAddr
+	for _, rawLine := range strings.Split(section, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "(ie32)> w ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			t.Fatalf("malformed Chapter 25 monitor write line: %q", line)
+		}
+		addr, err := strconv.ParseUint(fields[2], 16, 64)
+		if err != nil {
+			t.Fatalf("parse monitor write address %q: %v", fields[2], err)
+		}
+		if addr != wantAddr {
+			t.Fatalf("Chapter 25 monitor write address = 0x%X, want 0x%X", addr, wantAddr)
+		}
+		for _, field := range fields[3:] {
+			value, err := strconv.ParseUint(field, 16, 8)
+			if err != nil {
+				t.Fatalf("parse monitor write byte %q: %v", field, err)
+			}
+			program = append(program, byte(value))
+			wantAddr++
+		}
+	}
+	if len(program) == 0 {
+		t.Fatal("no Chapter 25 monitor byte writes found")
+	}
+	return program
+}
+
+func TestRefmanCh25IE32SN76489ChordExample(t *testing.T) {
+	wantProgram := refmanCh25IE32SNChordProgram()
+	docProgram := extractRefmanCh25MonitorBytes(t, "## 25.7 A small example", PROG_START)
+	if !bytes.Equal(docProgram, wantProgram) {
+		t.Fatalf("Chapter 25 byte listing does not match expected IE32 encoding\n got: % X\nwant: % X", docProgram, wantProgram)
+	}
+
+	readMem := func(addr uint64, size int) []byte {
+		start := int(addr - PROG_START)
+		end := start + size
+		if start < 0 || end > len(docProgram) {
+			return nil
+		}
+		return docProgram[start:end]
+	}
+	lines := disassembleIE32(readMem, PROG_START, len(docProgram)/INSTRUCTION_SIZE)
+	wantMnemonics := []string{
+		"LDA A, #$00000001",
+		"STA A, M:$000F0800",
+		"LDA A, #$0000008B",
+		"STA A, M:$000F0C30",
+		"LDA A, #$0000001A",
+		"STA A, M:$000F0C30",
+		"LDA A, #$00000090",
+		"STA A, M:$000F0C30",
+		"LDA A, #$000000A3",
+		"STA A, M:$000F0C30",
+		"LDA A, #$00000015",
+		"STA A, M:$000F0C30",
+		"LDA A, #$000000B2",
+		"STA A, M:$000F0C30",
+		"LDA A, #$000000CD",
+		"STA A, M:$000F0C30",
+		"LDA A, #$00000011",
+		"STA A, M:$000F0C30",
+		"LDA A, #$000000D3",
+		"STA A, M:$000F0C30",
+		"JMP $000010A0",
+	}
+	if len(lines) != len(wantMnemonics) {
+		t.Fatalf("disassembled %d lines, want %d", len(lines), len(wantMnemonics))
+	}
+	for i, want := range wantMnemonics {
+		if lines[i].Mnemonic != want {
+			t.Fatalf("disassembly line %d = %q, want %q", i, lines[i].Mnemonic, want)
+		}
+	}
+
+	bus := NewMachineBus()
+	sound := newTestSoundChip()
+	sound.AttachBus(bus)
+	sn := NewSN76489Chip(sound)
+	bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
+	bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterWrite8)
+	bus.MapIO(SN_BASE, SN_END, sn.HandleRead, sn.HandleWrite)
+	bus.MapIOByte(SN_BASE, SN_END, sn.HandleWrite8)
+
+	cpu := NewCPU(bus)
+	copy(cpu.memory[PROG_START:], docProgram)
+	cpu.PC = PROG_START
+	adapter := NewDebugIE32(cpu)
+	for range len(wantMnemonics) - 1 {
+		adapter.Step()
+	}
+
+	if got := sound.HandleRegisterRead(AUDIO_CTRL); got&1 == 0 {
+		t.Fatalf("AUDIO_CTRL = 0x%X, want enabled", got)
+	}
+	sn.mu.Lock()
+	tones := sn.tone
+	atten := sn.atten
+	lastWritten := sn.lastWritten
+	writeCount := sn.writeCount
+	sn.mu.Unlock()
+	if tones != [3]uint16{0x1AB, 0x153, 0x11D} {
+		t.Fatalf("SN76489 tone dividers = %#v, want [0x1AB 0x153 0x11D]", tones)
+	}
+	if atten != [4]uint8{0, 2, 3, 15} {
+		t.Fatalf("SN76489 attenuation = %#v, want [0 2 3 15]", atten)
+	}
+	if lastWritten != 0xD3 || writeCount != 9 {
+		t.Fatalf("SN76489 last/writeCount = 0x%02X/%d, want 0xD3/9", lastWritten, writeCount)
+	}
+	if cpu.PC != 0x10A0 {
+		t.Fatalf("PC after setup = 0x%X, want 0x10A0", cpu.PC)
+	}
+}
+
+func TestRefmanCh25IE32VGATextExample(t *testing.T) {
+	const startAddr = 0x1100
+	wantProgram := refmanCh25IE32VGATextProgram()
+	docProgram := extractRefmanCh25MonitorBytes(t, "## 25.8 VGA text example", startAddr)
+	if !bytes.Equal(docProgram, wantProgram) {
+		t.Fatalf("Chapter 25 VGA byte listing does not match expected IE32 encoding\n got: % X\nwant: % X", docProgram, wantProgram)
+	}
+
+	readMem := func(addr uint64, size int) []byte {
+		start := int(addr - startAddr)
+		end := start + size
+		if start < 0 || end > len(docProgram) {
+			return nil
+		}
+		return docProgram[start:end]
+	}
+	lines := disassembleIE32(readMem, startAddr, len(docProgram)/INSTRUCTION_SIZE)
+	wantMnemonics := []string{
+		"LDA A, #$00000003",
+		"STA A, M:$000F1000",
+		"LDA A, #$00000001",
+		"STA A, M:$000F1008",
+		"LDA A, #$00000049",
+		"STA A, M:$000B8000",
+		"LDA A, #$0000001E",
+		"STA A, M:$000B8001",
+		"LDA A, #$00000045",
+		"STA A, M:$000B8002",
+		"LDA A, #$0000002F",
+		"STA A, M:$000B8003",
+		"LDA A, #$00000033",
+		"STA A, M:$000B8004",
+		"LDA A, #$0000004E",
+		"STA A, M:$000B8005",
+		"LDA A, #$00000032",
+		"STA A, M:$000B8006",
+		"LDA A, #$0000005F",
+		"STA A, M:$000B8007",
+		"JMP $000011A0",
+	}
+	if len(lines) != len(wantMnemonics) {
+		t.Fatalf("disassembled %d lines, want %d", len(lines), len(wantMnemonics))
+	}
+	for i, want := range wantMnemonics {
+		if lines[i].Mnemonic != want {
+			t.Fatalf("disassembly line %d = %q, want %q", i, lines[i].Mnemonic, want)
+		}
+	}
+
+	bus := NewMachineBus()
+	vga := NewVGAEngine(bus)
+	bus.MapIO(VGA_BASE, VGA_REG_END, vga.HandleRead, vga.HandleWrite)
+	bus.MapIO(VGA_TEXT_WINDOW, VGA_TEXT_WINDOW+VGA_TEXT_SIZE-1, vga.HandleTextRead, vga.HandleTextWrite)
+
+	cpu := NewCPU(bus)
+	copy(cpu.memory[startAddr:], docProgram)
+	cpu.PC = startAddr
+	adapter := NewDebugIE32(cpu)
+	for range len(wantMnemonics) - 1 {
+		adapter.Step()
+	}
+
+	if got := vga.HandleRead(VGA_MODE); got != VGA_MODE_TEXT {
+		t.Fatalf("VGA_MODE = 0x%X, want 0x%X", got, VGA_MODE_TEXT)
+	}
+	if got := vga.HandleRead(VGA_CTRL); got != VGA_CTRL_ENABLE {
+		t.Fatalf("VGA_CTRL = 0x%X, want 0x%X", got, VGA_CTRL_ENABLE)
+	}
+	wantText := []uint8{'I', 0x1E, 'E', 0x2F, '3', 0x4E, '2', 0x5F}
+	for i, want := range wantText {
+		if got := uint8(vga.HandleTextRead(VGA_TEXT_WINDOW + uint32(i))); got != want {
+			t.Fatalf("VGA text byte %d = 0x%02X, want 0x%02X", i, got, want)
+		}
+	}
+	if cpu.PC != 0x11A0 {
+		t.Fatalf("PC after setup = 0x%X, want 0x11A0", cpu.PC)
+	}
 }
 
 // write32At writes a 32-bit value at the specified address in CPU memory.

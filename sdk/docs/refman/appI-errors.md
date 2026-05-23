@@ -5,6 +5,9 @@ sources:
   - sdk/include/ehbasic_strings.inc
   - file_io_constants.go
   - host_helper.go
+  - coprocessor_constants.go
+  - cpu_ie64.go
+  - cpu_ie32.go
 ---
 
 # Appendix I - Error Message Index
@@ -22,7 +25,7 @@ than from direct mode) ` IN ` followed by the line number.
 
 | Code | Printed text       | Meaning |
 |------|--------------------|---------|
-| `1`  | `SYNTAX`           | The tokenizer or parser cannot make sense of the statement. |
+| `1`  | `SYNTAX`           | The tokeniser or parser cannot make sense of the statement. |
 | `2`  | `DIVISION BY ZERO` | A `/`, `\`, or `MOD` operator saw a zero denominator. |
 | `3`  | `UNDEFINED LINE`   | `GOTO`, `GOSUB`, `THEN`, or `RESTORE` referenced a line that does not exist. |
 | `4`  | `NEXT WITHOUT FOR` | `NEXT` did not match a pending `FOR`. |
@@ -76,7 +79,7 @@ When the File I/O block (Chapter 34) fails, `FILE_STATUS` reads
 
 ## I.4 HOST appliance block
 
-The status byte at `0xF1408` (Chapter 35) reads one of:
+The status byte at `$F1408` (Chapter 35) reads one of:
 
 | Code | Meaning |
 |------|---------|
@@ -87,20 +90,30 @@ The status byte at `0xF1408` (Chapter 35) reads one of:
 | `4`  | Disabled (the system-action bridge is off). |
 | `5`  | Idle (no command has been fired). |
 
-A non-zero exit code at `0xF140C` after a terminal status of `2`
+A non-zero exit code at `$F140C` after a terminal status of `2`
 gives the underlying action's exit value; the meaning is
 action-specific and is not normalised across subverbs.
 
-## I.5 Image executor
+## I.5 RUN loader block
 
-The image executor (`RUN "<name>.ie*"`, Chapter 31) reports one of:
+The RUN loader block (`RUN "<name>"`, Chapter 34) reports status:
 
 | Code | Meaning |
 |------|---------|
-| `0`  | OK (image loaded and started). |
-| `1`  | Not supported (image type unknown on this CPU profile). |
-| `2`  | Unsupported (extension recognised but the matching CPU is disabled). |
-| `3`  | File error (the underlying File I/O read failed). |
+| `0`  | Idle. |
+| `1`  | Loading. |
+| `2`  | Running. |
+| `3`  | Error. |
+
+On error, the error register reports:
+
+| Code | Meaning |
+|------|---------|
+| `0`  | OK. |
+| `1`  | Not found. |
+| `2`  | Unsupported type. |
+| `3`  | Path invalid. |
+| `4`  | Load failed. |
 
 `RUN` translates a non-zero result into `?FILE ERROR` for the
 file-error cases and `?FC ERROR` for the unsupported cases.
@@ -109,15 +122,18 @@ file-error cases and `?FC ERROR` for the unsupported cases.
 
 `COSTATUS` (Chapter 31) reports:
 
-| Code | Meaning |
-|------|---------|
-| `0`  | Idle. |
-| `1`  | Running. |
-| `2`  | Stopped cleanly (the worker exited). |
-| `3`  | Faulted (the worker raised an exception). |
+| Code | Constant | Meaning |
+|------|----------|---------|
+| `0`  | `COPROC_TICKET_PENDING` | Queued, not yet started. |
+| `1`  | `COPROC_TICKET_RUNNING` | Worker is processing. |
+| `2`  | `COPROC_TICKET_OK` | Completed successfully. |
+| `3`  | `COPROC_TICKET_ERROR` | Worker returned an error. |
+| `4`  | `COPROC_TICKET_TIMEOUT` | Wait deadline expired. |
+| `5`  | `COPROC_TICKET_WORKER_DOWN` | Worker is no longer running. |
 
-`COWAIT` blocks until the status leaves `1`; the status then
-encodes the outcome.
+`COWAIT` blocks until the ticket reaches a terminal state or the
+timeout expires; call `COSTATUS(ticket)` afterwards to read the
+final code.
 
 ## I.7 Raised by the CPU itself
 
@@ -126,8 +142,11 @@ vectors and their meanings. The monitor's `r` command displays
 the current trap source when a CPU has stopped at one. Common
 cross-CPU shapes:
 
-- Division by zero raises the CPU's divide-by-zero exception
-  (M68K vector 5, x86 `INT 0`, IE64 trap with `cause = DIV0`).
+- Division by zero raises the CPU's divide-by-zero exception on
+  M68K (vector `5`) and x86 (`INT 0`). IE32 stops with a
+  division-by-zero error. IE64 integer divide and modulo by zero
+  write `0` and do not trap; IE64 floating-point divide-by-zero is
+  reported in the FPU status register.
 - An unaligned `32`-bit access on the IE64 raises an alignment
   fault; the address that caused it is in `CR_FAULT_ADDR`.
 - An undefined opcode raises the CPU's illegal-instruction
