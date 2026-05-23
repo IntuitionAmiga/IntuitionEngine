@@ -300,6 +300,11 @@ Define a user function with one parameter. The function is called
 later with `FN `*name*`(`*expr*`)`. Use the exact `DEF FN` form for
 user functions.
 
+NOTE: `DEF` shares stored token byte `$97` with `TROFF`. Type
+`DEF FN` exactly. If you `LIST` a stored function definition, the
+listing may show `TROFF` in place of `DEF`; the line still behaves as
+`DEF FN`. Appendix A records the token map.
+
 ### DIM
 
 `DIM `*name*`(`*size*`)` [`, `*name*`(`*size*[`, `*size*]*`)`]*
@@ -903,6 +908,10 @@ give one colour for each vertex. See Chapter 9.
 `TROFF`
 
 Turn off line-by-line tracing.
+
+NOTE: `TROFF` shares stored token byte `$97` with `DEF`. When the token
+appears before `FN`, BASIC treats it as a function definition. Appendix
+A records the token map.
 
 ### TRON
 

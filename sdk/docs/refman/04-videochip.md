@@ -204,6 +204,14 @@ blitter's colour-expand operation.
 
 ## 4.6 The blitter
 
+The framebuffer and palette are enough for pixels you place yourself.
+The blitter is for work you would rather not do one pixel at a time:
+moving rectangles, building sprites from masks, expanding 1-bit
+templates, scaling pictures, drawing lines, and treating a texture as a
+rotating floor. Think of this section as the VideoChip's workbench. The
+tables give the exact knobs; each example shows the visible job those
+knobs do.
+
 The blitter is VideoChip's 2D drawing engine. It can copy memory,
 fill rectangles, draw lines, apply raster operations, expand 1-bit
 templates, alpha-blend sprites, scale bitmaps, and run the Mode 7
@@ -827,6 +835,12 @@ destination stride (`320 * 4`). The final `PRINT` should show `2`,
 meaning `BLT_STATUS.DONE` is set and `ERR` is clear.
 
 ## 4.7 The copper list
+
+The blitter changes memory when your program asks it to. The copper
+changes registers while the display is being drawn. Use it when a
+horizontal split, colour bar, palette change, or per-scanline effect
+must happen at a raster position instead of at the next convenient BASIC
+line.
 
 The copper is a scanline-driven register writer. It reads a list of
 32-bit words from main memory. During each frame it waits for raster

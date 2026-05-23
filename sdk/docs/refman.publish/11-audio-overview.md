@@ -31,7 +31,28 @@ Chapter 22 gives BASIC music recipes that combine these engines. The
 CPU chapters use different engines in their hand-entered machine-code
 examples so that the byte-entry programs are audibly different.
 
-## 11.2 Master control
+## 11.2 Which engine to choose
+
+The IE-native SoundChip is the general synthesiser and effects core.
+The other engines are separate sound cards on the same mixer: some are
+best for period-chip tone colour, some for tracker songs, and some for
+sample playback.
+
+| Engine | Characteristic features | Use it when |
+|--------|-------------------------|-------------|
+| SoundChip | Ten flexible channels; sine, triangle, saw, square, pulse, noise, ring modulation, hard sync, PWM, ADSR envelopes, sweeps, DAC writes, per-channel filter, global overdrive, filter, and reverb | You want IE-native synthesis, layered effects, or a shared backend for richer sounds |
+| SFX | Four raw sample trigger channels with pointer, length, loop, rate, volume, and sample-format control | You have short PCM effects and want trigger-and-forget playback |
+| PSG | Three square-tone channels, one noise source, and AY-style envelopes | You want crisp AY/YM arcade or microcomputer tones |
+| SN76489 | Three tone channels and one noise channel through a latch/data port | You want simple console-style square waves and noise |
+| SID family | Three SID voices per chip, pulse width, ADSR, sync/ring options, and resonant filter behaviour | You want C64-style lead, bass, pulse, and filter movement |
+| TED audio | Two compact square/noise voices | You want the small TED sound beside TED video |
+| POKEY | Four Atari-style tone/noise channels and AUDCTL pairing modes | You want metallic, buzzy, or percussive Atari colour |
+| AHX | Four synthetic music voices from AHX or THX module data | You want a chip-tune song format without sample data |
+| MOD | Four-channel sample tracker playback with pattern and effect data | You want Amiga-style tracker music from one memory block |
+| WAV | RIFF/WAVE PCM parsing, resampling, and stereo or mono output | You want recorded audio, speech, stings, or test tones |
+| Paula DMA | Four low-level signed 8-bit sample DMA channels with period and completion bits | You want exact sample-buffer control or Amiga-style DMA timing |
+
+## 11.3 Master control
 
 The master audio control register is `AUDIO_CTRL` at `$F0800`.
 
@@ -49,7 +70,7 @@ Turn audio on before starting raw register examples:
 The engines still accept register writes while audio is disabled; they
 become audible when bit `0` is set.
 
-## 11.3 A first audio setup
+## 11.4 A first audio setup
 
 This typed program starts the mixer, writes PSG and POKEY tone
 registers, then finishes with two SoundChip voices on channels `2` and
@@ -78,7 +99,7 @@ backend, so they can replace earlier flexible voice state rather than
 adding an unlimited separate set of voices. For that reason, this first
 tour writes PSG and POKEY before the final SoundChip chord.
 
-## 11.4 SoundChip channel block
+## 11.5 SoundChip channel block
 
 The IE-native SoundChip uses a flexible-channel layout. Each channel
 is `$40` bytes wide.
@@ -124,7 +145,7 @@ The `SOUND ch,freq,vol[,wave[,duty]]` keyword writes:
 | `wave`   | Optional `WAVE_TYPE`. |
 | `duty`   | Optional `DUTY`. |
 
-## 11.5 SFX sample channels
+## 11.6 SFX sample channels
 
 The SFX block is for short raw samples stored in memory. It has four
 channels at `$F0E80` to `$F0EFF`, with stride `$20`.
@@ -145,7 +166,7 @@ means playing and bit `1` means error. Chapter 12 gives the full
 typed setup for putting sample bytes in memory and triggering a
 channel.
 
-## 11.6 Media loader
+## 11.7 Media loader
 
 Longer songs and sample files can be started through the media loader.
 `SOUND PLAY "name"` writes these registers for you:
@@ -170,7 +191,7 @@ Native BASIC forms:
 If loading fails, `SOUND PLAY` raises a BASIC error after the status
 poll reports `MEDIA_STATUS` value `3`.
 
-## 11.7 Global effects
+## 11.8 Global effects
 
 The global effects are shared by every engine.
 
@@ -198,7 +219,7 @@ Effect changes are immediate. To make several changes as one audible
 step, set `AUDIO_CTRL` bit `1`, write the effect registers, then clear
 bit `1` again while leaving bit `0` set.
 
-## 11.8 Plus processing paths
+## 11.9 Plus processing paths
 
 Several engines have a **Plus** switch. Plus mode is not a second
 register map and it is not a different chip. It is an enhanced output
@@ -226,7 +247,7 @@ Individual chapters give the short compare listing and the
 engine-specific audible difference. This chapter is the rule that
 keeps those listings from becoming five copies of the same explanation.
 
-## 11.9 BASIC and direct access map
+## 11.10 BASIC and direct access map
 
 | Form | Engine or block |
 |------|-----------------|
@@ -251,7 +272,7 @@ keeps those listings from becoming five copies of the same explanation.
 | `SOUND MOD ...` / `MOD STATUS` | MOD playback. |
 | `SOUND PLAY` or raw WAV registers | WAV playback. |
 
-## 11.10 Limits
+## 11.11 Limits
 
 - The mixer sums engines; it does not reserve exclusive ownership of
   the output for any one engine.

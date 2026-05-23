@@ -26,6 +26,15 @@ Entry format:
   Author verification workflow: update STYLE.md before chapter edits, record this ledger entry, then run title, forbidden-term, dash, British-English, appendix-consistency, archive-reference, and chapter-specific scans before publishing.
   Result: final-review editorial rule recorded; chapter-level entries remain the proof trail for technical claims.
 
+- Area: Controlled polish pass, Chapter 2 token note, Chapter 11 comparison table, Chapters 4 and 9 framing, Chapter 38 capstone, and Appendix L index.
+  Claim: Chapter 2 now warns readers about the reader-visible `DEF` / `TROFF` token collision; Chapter 11 compares IE-native SoundChip and SFX features with the legacy tone chips, tracker engines, sample players, and Paula DMA; Chapters 4 and 9 add purpose-first framing before dense register sections; Chapter 38 gives one BASIC capstone touching VideoChip, SoundChip, file I/O, and the coprocessor status path; Appendix L provides a traditional lookup index.
+  Canonical sources checked: sdk/include/ehbasic_tokens.inc, sdk/include/ehbasic_tokenizer.inc, sdk/include/ehbasic_hw_audio.inc, audio_chip.go, sfx_constants.go, media_loader_constants.go, file_io.go, file_io_constants.go, sdk/include/ehbasic_file_io.inc, sdk/include/ehbasic_hw_coproc.inc, video_chip.go, voodoo_constants.go, video_voodoo.go, sdk/docs/refman/appD-mmio-maps.md, sdk/docs/refman/appJ-memory-map.md.
+  Reader workflow: type Chapter 38 at the BASIC prompt, use Chapter 11 to choose an audio engine, and use Appendix L as a paper-style lookup route into chapters and appendices.
+  Runnable example: Chapter 38 whole-machine capstone BASIC listing.
+  Expected result: VideoChip shows a filled panel with crossed lines; SoundChip plays a short filtered and reverberated two-voice chord; the file block write prints FILE 0; on a clean machine with no 6502 worker running, the coprocessor path prints COP 6.
+  Author verification workflow: checked token, audio, file, coprocessor, VideoChip, Voodoo, and map claims against source-owned files, then ran publish and scan checks after editing.
+  Result: controlled polish pass recorded before publication.
+
 - Area: Ch 1, BASIC direct mode, program storage, values, expressions, and editing.
   Claim: BASIC is the front panel for the same bus machine used by later hardware chapters; the chapter gives a first-session path before the full vocabulary wall; direct-mode statements run at the prompt; numbered lines are stored in ascending order; bare line numbers delete stored lines; numeric values are 32-bit single-precision values; integer-only operations truncate toward zero; variables, strings, arrays, expression precedence, PRINT formatting, comments, RUN/LIST/NEW/CLEAR/CONT/LOAD/SAVE/DIR, STOP/END, and error reporting behave as documented.
   Canonical sources checked: sdk/include/ehbasic_lineeditor.inc, sdk/include/ehbasic_exec.inc, sdk/include/ehbasic_expr.inc, sdk/include/ehbasic_vars.inc, sdk/include/ehbasic_strings.inc, sdk/include/ehbasic_io.inc, sdk/include/ehbasic_file_io.inc, ehbasic_test.go REPL, tokeniser, expression, line editor, PRINT, array, STOP/END, and error tests.

@@ -81,6 +81,10 @@ the same Intuition Engine.
 36. Keyboard, Mouse, Controller MMIO
 37. Serial Devices
 
+### Part VI - Whole-Machine Project
+
+38. Whole-Machine Capstone
+
 ### Appendices
 
 - A. EhBASIC Keyword Abbreviations and Token Map
@@ -94,3 +98,4 @@ the same Intuition Engine.
 - I. Error Message Index
 - J. Full Memory Map
 - K. Block Diagrams
+- L. Index

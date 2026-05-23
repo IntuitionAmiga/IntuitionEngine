@@ -23,6 +23,13 @@ below are the Intuition Engine contract.
 
 ## 9.1 What Voodoo can show
 
+Use Voodoo when a picture is easier to describe as triangles than as
+tiles or rectangles: a spinning sign, a shaded cockpit panel, a textured
+floor, a depth-tested overlay, or a sprite-like quad that needs alpha.
+It is still one card on the same bus. BASIC sets up the state, vertices
+become fixed-point register values, and the compositor places the
+finished frame above the other display chips.
+
 | Item                | Value                                  |
 |---------------------|----------------------------------------|
 | Output              | RGBA framebuffer with depth buffer     |
