@@ -286,11 +286,6 @@ check_live_payload_inputs() {
         payload_require_file "${SCRIPT_DIR}/sdk/include/${include}" "make sdk-build" "SDK include ${include}"
     done
 
-    local doc
-    for doc in Coprocessor.md demo-matrix.md ehbasic_ie64.md ie_emutos.md iescript.md iewarp.md iemon.md include-files.md sdk-getting-started.md toolchains.md; do
-        payload_require_file "${SCRIPT_DIR}/sdk/docs/${doc}" "make sdk-build" "SDK doc ${doc}"
-    done
-
     python3 - "${SCRIPT_DIR}/embedded/ab3d2/_build.zip" <<'PY'
 import sys
 import zipfile
@@ -324,7 +319,6 @@ verify_staged_share_payload() {
         log_error "Producer: build_x64_ie_img.sh stage_share_payload"
         exit 1
     fi
-    payload_require_file "${payload_root}/SDK/README.TXT" "build_x64_ie_img.sh stage_share_payload" "SDK README"
     payload_require_file "${payload_root}/Systems/README.TXT" "build_x64_ie_img.sh stage_share_payload" "Systems README"
     payload_require_file "${payload_root}/Docs/IEProgRefGuide/00-Preface.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide preface"
     payload_require_file "${payload_root}/Docs/IEProgRefGuide/37-serial.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide final chapter"
@@ -356,8 +350,22 @@ verify_staged_share_payload() {
     fi
     payload_require_file "${payload_root}/Demos/rotozoomer_basic.bas" "make sdk-build" "staged BASIC demo"
     payload_require_file "${payload_root}/IE/Coproc/coproc_service_ie32.iex" "make sdk-build" "staged IE32 coprocessor worker"
-    payload_require_file "${payload_root}/SDK/Docs/iewarp.md" "make sdk-build" "staged IEWarp documentation"
     payload_require_file "${payload_root}/SDK/Include/ie64.inc" "make sdk-build" "staged IE64 include"
+    if find "${payload_root}/Docs" -type f -name '*.md' | grep -q .; then
+        log_error "Forbidden live payload content: Markdown staged under Docs"
+        log_error "Expected: Docs/IEProgRefGuide contains PDFs only"
+        exit 1
+    fi
+    if [[ -e "${payload_root}/SDK/README.TXT" || -e "${payload_root}/SDK/README.md" ]]; then
+        log_error "Forbidden live payload content: SDK root README staged"
+        log_error "Expected: SDK contains include files and source examples only"
+        exit 1
+    fi
+    if find "${payload_root}/SDK" -type f -name '*.md' | grep -q .; then
+        log_error "Forbidden live payload content: Markdown staged under SDK"
+        log_error "Expected: printable guide PDFs live under Docs/IEProgRefGuide"
+        exit 1
+    fi
 
     if find "${payload_root}/Demos" -maxdepth 1 -type f -name 'coproc_*.ie*' | grep -q .; then
         log_error "Forbidden live payload location: coproc worker staged under Demos"
@@ -473,7 +481,7 @@ PY
     mkdir -p "$demos_dir" "$coproc_dir" "$music_dir" \
         "$aros_system_dir/Libs" "$aros_demos_dir" "$emutos_demos_dir" \
         "$intuitionos_system_dir/Boot" \
-        "$docs_dir" "$sdk_dir/Include" "$sdk_dir/Docs" "$sdk_dir/Examples/asm" \
+        "$docs_dir" "$sdk_dir/Include" "$sdk_dir/Examples/asm" \
         "$sdk_dir/Examples/basic" "$sdk_dir/Examples/c"
     if [[ -d "$C64_MUSIC_SOURCE" ]]; then
         rsync -a --delete "${C64_MUSIC_SOURCE}/" "${music_dir}/C64Music/"
@@ -576,19 +584,6 @@ PY
         "${SCRIPT_DIR}/sdk/include/ie80.inc" \
         "${SCRIPT_DIR}/sdk/include/ie86.inc" \
         "$sdk_dir/Include/"
-    cp -f "${SCRIPT_DIR}/sdk/README.md" "$sdk_dir/README.md"
-    cp -f \
-        "${SCRIPT_DIR}/sdk/docs/Coprocessor.md" \
-        "${SCRIPT_DIR}/sdk/docs/demo-matrix.md" \
-        "${SCRIPT_DIR}/sdk/docs/ehbasic_ie64.md" \
-        "${SCRIPT_DIR}/sdk/docs/ie_emutos.md" \
-        "${SCRIPT_DIR}/sdk/docs/iescript.md" \
-        "${SCRIPT_DIR}/sdk/docs/iewarp.md" \
-        "${SCRIPT_DIR}/sdk/docs/iemon.md" \
-        "${SCRIPT_DIR}/sdk/docs/include-files.md" \
-        "${SCRIPT_DIR}/sdk/docs/sdk-getting-started.md" \
-        "${SCRIPT_DIR}/sdk/docs/toolchains.md" \
-        "$sdk_dir/Docs/"
     cp -f "${SCRIPT_DIR}"/sdk/examples/asm/*.asm "$sdk_dir/Examples/asm/"
     cp -f "${SCRIPT_DIR}"/sdk/examples/basic/*.bas "$sdk_dir/Examples/basic/"
     cp -f "${SCRIPT_DIR}"/sdk/examples/c/*.c "$sdk_dir/Examples/c/"
@@ -670,7 +665,7 @@ Demos    Bare-metal Intuition Engine demos.
 IE       Intuition Engine runtime support files.
 Music    Music collections copied from the build host when available.
 Docs     Printable Programmer's Reference Guide PDFs.
-SDK      Reference include files, docs, and source examples.
+SDK      Reference include files and source examples.
 Systems  Guest OS payloads.
 _build   AB3D2 runtime assets used by the AB3D2 IE68 demos.
 
@@ -703,21 +698,6 @@ These binaries are support payloads for software that starts coprocessor
 workers. They are resolved relative to the IESHARE root, for example:
 
 IE/Coproc/coproc_service_ie32.iex
-EOF
-
-    cat > "${sdk_dir}/README.TXT" <<'EOF'
-Intuition Engine reference SDK
-
-This is a documentation and source-reference snapshot for the live image. It
-contains include files, selected SDK docs, and source examples. It intentionally
-does not include sdk/bin or other host tool binaries; build programs on the
-host SDK, then copy runnable outputs to IESHARE.
-
-The live image keeps OS payloads under Systems/AROS, Systems/EmuTOS, and
-Systems/IntuitionOS.
-The AROS IEWarp worker is a private runtime resource at
-Systems/AROS/Libs/iewarp_service.ie64, visible inside AROS as
-SYS:Libs/iewarp_service.ie64.
 EOF
 
     find "$demos_dir" -maxdepth 2 -type f | sort | sed "s#^${payload_root}/#  #" | tee -a "$LOG_FILE"
