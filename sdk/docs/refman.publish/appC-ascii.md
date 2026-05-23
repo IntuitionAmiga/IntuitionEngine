@@ -137,7 +137,7 @@ This loop should print nothing.
 ```basic
 10 PRINT ASC("A")
 RUN
- 65
+65
 
 20 PRINT CHR$(65)
 RUN
@@ -145,8 +145,8 @@ A
 
 30 FOR N = 32 TO 47 : PRINT N; CHR$(N); : NEXT : PRINT
 RUN
- 32   33 !  34 "  35 #  36 $  37 %  38 &  39 '
- 40 (  41 )  42 *  43 +  44 ,  45 -  46 .  47 /
+32   33 !  34 "  35 #  36 $  37 %  38 &  39 '
+40 (  41 )  42 *  43 +  44 ,  45 -  46 .  47 /
 ```
 
 `ASC("")` returns 0 (the null terminator of the empty string). `CHR$(n)`

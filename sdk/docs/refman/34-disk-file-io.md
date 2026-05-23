@@ -157,9 +157,9 @@ DIR "subdir"
 ```
 
 `DIR` is a direct-mode command. It lists the root or the named
-directory and prints entries separated by `CR` `LF`. Its output is
-the live host filesystem, so it is shown here as a syntax template
-rather than a transcript with fixed expected output.
+directory and prints entries separated by `CR` `LF`. Its output
+depends on the current disk volume, so it is shown here as a syntax
+template rather than a transcript with fixed expected output.
 
 ## 34.7 Typed MMIO Example
 

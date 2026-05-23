@@ -531,11 +531,11 @@ Entry format:
   Result: App K no longer describes the main system bus as 24-bit or 32-bit, and no longer disagrees with the audio processing order.
 
 - Area: App D / App J, audio player and small-chip MMIO ranges.
-  Claim: AHX, MOD, WAV, SN76489, SID player, POKEY, TED audio, TED video, ANTIC, GTIA, SFX, and the 6502 small-chip views match the current MMIO handlers; SN76489 spans $F0C30-$F0C3F, GTIA spans $F2140-$F21FB, SFX_VOL is 0-65535, and the 6502 POKEY and VGA windows are $D200-$D20A and $D700-$D70D.
+  Claim: AHX, MOD, WAV, SN76489, SID primary/player/SID2/SID3, POKEY, TED audio, TED video, ANTIC, GTIA, SFX, and the 6502 small-chip views match the current MMIO handlers; SN76489 spans $F0C30-$F0C3F, GTIA spans $F2140-$F21FB, SID2 and SID3 live at $F0E30-$F0E4C and $F0E50-$F0E6C, SFX_VOL is 0-65535, and the 6502 POKEY and VGA windows are $D200-$D20A and $D700-$D70D.
   Canonical sources checked: registers.go, sn76489_constants.go, sid_constants.go, pokey_constants.go, ted_constants.go, ted_video_constants.go, antic_constants.go, vga_constants.go, sfx_constants.go, sfx_trigger.go, audio player constants, video_antic.go, cpu_six5go2.go.
   Reader workflow: use BASIC POKE/PEEK, POKE8/PEEK8, or monitor-entered machine code against the published ranges.
   Runnable example: Chapters 6, 7, 14, 15, 17, 18, 19, and 20 typed examples.
-  Expected result: byte-wide chip registers and player control blocks are addressed at the documented ranges; appendices do not preserve stale $D209, $A0-$AA, or 0-64 SFX volume wording.
+  Expected result: byte-wide chip registers and player control blocks are addressed at the documented ranges; appendices do not preserve stale $D209, $A0-$AA, missing SID2/SID3 rows, or 0-64 SFX volume wording.
   Author verification workflow: compared Appendix D and Appendix J rows against code-owned constants and handler ranges; ran refman forbidden-term scans and the strict spelling/dash probe on changed appendices.
   Result: App D and App J now use the current ranges, $ notation, British prose, and no dash-style punctuation.
 

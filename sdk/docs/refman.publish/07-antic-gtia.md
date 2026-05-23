@@ -86,7 +86,7 @@ solid-block character:
 ```
 
 The result is a blue-on-black ANTIC text screen. Nothing in that
-listing depends on a loader or assembler: the display list, the
+listing depends on any outside tool: the display list, the
 character set, and the screen matrix are all typed as bytes.
 The addresses are below `$1000` so the 16-bit ANTIC fetch address
 can reach them without overwriting BASIC's own work area.
@@ -212,8 +212,8 @@ Set the display-list pointer with `ANTIC_DLISTL`/`DLISTH` and
 enable display-list DMA with bit `5` of `DMACTL`.
 
 Display-list fetch addresses are 16-bit. Keep display lists and their
-screen data below `$10000` unless a later chapter gives the CPU you
-are using a wider loader of its own. `LMS` supplies a new fetch
+screen data below `$10000` unless the CPU chapter you are using
+documents a wider ANTIC data path. `LMS` supplies a new fetch
 address; entries without `LMS` continue from the next byte after the
 previous region's data.
 

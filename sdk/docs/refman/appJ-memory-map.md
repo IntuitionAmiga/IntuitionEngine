@@ -60,10 +60,13 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | `$F0BD8`-`$F0BF3`       | 28 B   | WAV player. |
 | `$F0C00`-`$F0C20`       | 33 B   | PSG / AY. |
 | `$F0C30`-`$F0C3F`       | 16 B   | SN76489. |
-| `$F0C40`-`$F0CFF`       | 192 B  | SID2 flex block. |
+| `$F0C40`-`$F0CFF`       | 192 B  | SoundChip flex channels 4-6. |
 | `$F0D00`-`$F0D20`       | 33 B   | POKEY. |
-| `$F0D40`-`$F0DFF`       | 192 B  | SID3 flex block. |
-| `$F0E00`-`$F0E2D`       | 46 B   | SID. |
+| `$F0D40`-`$F0DFF`       | 192 B  | SoundChip flex channels 7-9. |
+| `$F0E00`-`$F0E1C`       | 29 B   | SID primary registers. |
+| `$F0E20`-`$F0E2D`       | 14 B   | SID player block. |
+| `$F0E30`-`$F0E4C`       | 29 B   | SID2 registers. |
+| `$F0E50`-`$F0E6C`       | 29 B   | SID3 registers. |
 | `$F0E80`-`$F0EFF`       | 128 B  | SFX triggers. |
 | `$F0F00`-`$F0F5F`       | 96 B   | TED audio + video. |
 | `$F1000`-`$F13FF`       | 1 KB   | VGA registers. |

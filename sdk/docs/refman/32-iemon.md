@@ -108,7 +108,7 @@ current PC, and `* ` for an active breakpoint. The `d` count
 argument is parsed as hexadecimal by default (so `d 1000 9` gives
 nine lines and `d 1000 10` would give sixteen); prefix the count
 with `#` for decimal. The `m` count argument is decimal by default
-and counts *rows of sixteen bytes*, not bytes — `m D200 2` shows
+and counts *rows of sixteen bytes*, not bytes. `m D200 2` shows
 two sixteen-byte rows starting at `$D200`, and the values written
 by the program appear in the first few columns of the first row.
 
@@ -180,11 +180,11 @@ at the latched address and advances the latch. The first eight
 data bytes form the bitmap motif. The later latch value `$1800`
 selects the attribute area, and `$46` gives the cell yellow ink
 on black paper. The `d` count of `#31` is decimal (the `#` prefix
-forces decimal — without it the count is parsed as hexadecimal,
+forces decimal. Without it the count is parsed as hexadecimal,
 which is the default for `d`); the single `m D800 1` shows the
 sixteen-byte row that starts at `$D800` so the writes to `$D800`
 (`05`) and `$D804` (`05`) appear in the first row. The `$D814`
-register is a write-only auto-incrementing latch port — reading
+register is a write-only auto-incrementing latch port; reading
 it does not step through the bitmap data the program wrote, so
 the verification is the visible stripe on the ULA display, not
 a follow-on `m D814` read. Try changing the first `$A5` byte to

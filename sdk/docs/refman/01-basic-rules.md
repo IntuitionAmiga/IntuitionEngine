@@ -89,8 +89,8 @@ the machine to list the files it can see:
 SAVE "FIRST.BAS"
 ```
 
-Then `DIR` (direct mode only) lists the filenames the runtime can
-see. Its output depends on the host directory, so it is not shown
+Then `DIR` (direct mode only) lists the filenames the machine can
+see. Its output depends on the current file area, so it is not shown
 here.
 
 Later chapters explain every register behind those statements. For

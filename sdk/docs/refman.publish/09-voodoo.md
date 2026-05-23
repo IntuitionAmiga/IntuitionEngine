@@ -7,7 +7,7 @@ fogged, chroma-keyed, and dithered triangles into an RGBA framebuffer
 with an associated Z buffer. Voodoo is compositor layer `20`, so its
 visible pixels sit above the other picture sources.
 
-The programmer's path is the same as the rest of this manual: type
+The programmer's path is the same as the rest of this guide: type
 BASIC commands first, then use `POKE`, `PEEK`, `POKE8`, and `PEEK8`
 when direct register control is useful. The register names keep their
 Voodoo heritage, but the addresses, formats, side effects, and examples

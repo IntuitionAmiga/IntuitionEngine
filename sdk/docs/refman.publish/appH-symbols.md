@@ -96,8 +96,8 @@ chapter give the full story; this appendix is the cheat sheet.
 | BIOS-style ints    | reserved; no BIOS ROM is provided. The IVT is initialised to a default IRET routine. |
 
 Real-mode 20-bit physical address calculation `(seg << 4) + ofs`
-is performed in software for compatibility; the 32-bit linear
-form (the result of the calculation) is what reaches the bus.
+is part of the CPU address path. The 32-bit linear form (the result
+of the calculation) is what reaches the bus.
 Programs that use 32-bit immediate addressing reach the full
 flat address space directly.
 
