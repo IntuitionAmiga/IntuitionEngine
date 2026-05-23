@@ -922,11 +922,29 @@ exec_do_next:
     beq     r8, r3, .next_done
 
 .next_loop_back:
-    ; Loop continues: jump back to the line after FOR
-    ; R25 = line pointer of the FOR line
-    ; We need to go to the NEXT line after the FOR line
-    load.l  r14, (r25)          ; R14 = next line after FOR line
-    move.q  r28, #1              ; signal R14 changed
+    ; Loop continues: restore execution to the body of the FOR.
+    ;
+    ; R25 = the FOR statement's BASIC line pointer.
+    ; R15 = saved text ptr (the byte immediately after the FOR/TO/STEP
+    ;       clause).  For a one-liner FOR (e.g.
+    ;         20 FOR I=0 TO 10:A(I)=I*I:NEXT
+    ;       ) this is the ':' before the body, so exec_line continues
+    ;       on the same line and the body re-runs.  For a multi-line
+    ;       FOR (FOR alone on its line, body on subsequent lines, NEXT
+    ;       further down) this is the end-of-line null byte; exec_line
+    ;       sees it and returns, and the outer exec_next_line walker
+    ;       advances R14 via `load.l r14, (r14)` to the line after FOR
+    ;       — i.e. the first body line.
+    ;
+    ; The previous implementation set R14 directly to "(R25)" (the line
+    ; after FOR) and returned R28=1.  That worked for the multi-line
+    ; shape but skipped the body for the one-liner shape, because the
+    ; on-line body sits between the FOR clause and the closing NEXT
+    ; and was never revisited.  The new implementation drives both
+    ; shapes through the same R17-restore path.
+    move.q  r14, r25            ; current line = FOR line
+    move.q  r17, r15            ; text ptr  = body start
+    move.q  r28, r0             ; R28 = 0: continue exec_line normally
     rts
 
 .next_done:

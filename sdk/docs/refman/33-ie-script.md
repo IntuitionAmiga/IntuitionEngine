@@ -20,7 +20,7 @@ machine while a program is running.
 
 A stored script uses the `.IES` suffix. From BASIC, run it with:
 
-```basic
+```text
 RUN "FIRST.IES"
 ```
 

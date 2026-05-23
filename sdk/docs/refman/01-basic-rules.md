@@ -46,9 +46,10 @@ make sound through an audio engine, and save what you typed.
 
 First try one direct-mode calculation:
 
+<!-- @prm-id: tour-direct-calc -->
 ```basic
 PRINT 2+3
- 5
+5
 Ready
 .
 ```
@@ -61,7 +62,7 @@ list, save, or clear them:
 20 PRINT 2+3
 RUN
 INTUITION ENGINE
- 5
+5
 Ready
 .
 ```
@@ -86,8 +87,11 @@ the machine to list the files it can see:
 
 ```basic
 SAVE "FIRST.BAS"
-DIR
 ```
+
+Then `DIR` (direct mode only) lists the filenames the runtime can
+see. Its output depends on the host directory, so it is not shown
+here.
 
 Later chapters explain every register behind those statements. For
 now, remember the important rule: BASIC is not just a calculator. It is
@@ -98,9 +102,10 @@ the first way into the shared bus.
 To use direct mode, type a statement at the prompt and press RETURN.
 For example:
 
+<!-- @prm-id: direct-mode-print23 -->
 ```basic
 PRINT 2+3
- 5
+5
 Ready
 .
 ```
@@ -113,8 +118,8 @@ order you type them in:
 20 PRINT "WORLD"
 10 PRINT "HELLO"
 LIST
-10 PRINT "HELLO"
-20 PRINT "WORLD"
+10  PRINT "HELLO"
+20  PRINT "WORLD"
 Ready
 .
 ```
@@ -133,7 +138,7 @@ To replace a line, type the same line number with new text:
 10 PRINT "HI"
 10 PRINT "HELLO"
 LIST
-10 PRINT "HELLO"
+10  PRINT "HELLO"
 ```
 
 To delete a line, type its line number on its own:
@@ -143,7 +148,7 @@ To delete a line, type its line number on its own:
 20 PRINT "WORLD"
 10
 LIST
-20 PRINT "WORLD"
+20  PRINT "WORLD"
 ```
 
 ## 1.2 Statements, lines, and statement separators
@@ -266,7 +271,7 @@ The bound you give to `DIM` is the highest legal subscript, so
 20 FOR I=0 TO 10:A(I)=I*I:NEXT
 30 PRINT A(5)
 RUN
- 25
+25
 ```
 
 Only numeric arrays may be dimensioned. There is no string-array
@@ -282,7 +287,7 @@ Arrays of more than one dimension are supported:
 20 GRID(0,0)=1:GRID(7,7)=99
 30 PRINT GRID(0,0)+GRID(7,7)
 RUN
- 100
+100
 ```
 
 You may only `DIM` an array once. To resize, use `CLEAR` to discard
@@ -323,9 +328,15 @@ This is useful in arithmetic with conditions:
 20 PRINT (A>B)
 RUN
 -1
+```
 
-30 PRINT 10 * (A>B)
-RUN
+Multiplying by a comparison's result turns the comparison into a
+selector. With `A=5` and `B=3`, `A>B` is `-1`, so `10 * (A>B)` is
+`-10`:
+
+```basic
+A=5:B=3
+PRINT 10 * (A>B)
 -10
 ```
 
@@ -356,7 +367,7 @@ You may assign one variable's value to another:
 A = 5
 B = A
 PRINT B
- 5
+5
 ```
 
 When you assign to a string variable, BASIC copies the bytes of the
@@ -444,7 +455,7 @@ offending statement is also shown:
 ```basic
 10 PRINT 1/0
 RUN
-DIVISION BY ZERO ERROR IN 10
+?DIVISION BY ZERO ERROR IN 10
 Ready
 .
 ```

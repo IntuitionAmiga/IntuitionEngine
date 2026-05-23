@@ -77,22 +77,35 @@ This is the standard machine-language programming loop in IE Mon:
 (6502)> w 1000 A9 01 8D 00 F8 A9 00 8D 08 D2 A9 79 8D 00 D2 A9
 (6502)> w 1010 AF 8D 01 D2 4C 14 10
 (6502)> d 1000 9
-1000: A9 01     LDA #$01
-1002: 8D 00 F8  STA $F800
-1005: A9 00     LDA #$00
-1007: 8D 08 D2  STA $D208
-100A: A9 79     LDA #$79
-100C: 8D 00 D2  STA $D200
-100F: A9 AF     LDA #$AF
-1011: 8D 01 D2  STA $D201
-1014: 4C 14 10  JMP $1014
+  1000: A9 01                    LDA #$01
+  1002: 8D 00 F8                 STA $F800
+  1005: A9 00                    LDA #$00
+  1007: 8D 08 D2                 STA $D208
+  100A: A9 79                    LDA #$79
+  100C: 8D 00 D2                 STA $D200
+  100F: A9 AF                    LDA #$AF
+  1011: 8D 01 D2                 STA $D201
+T 1014: 4C 14 10                 JMP $1014
 (6502)> r pc 1000
 (6502)> b 1014
 (6502)> g
 (6502)> m D200 2
-D200: 79 AF
+D200: 79 AF 00 00 00 00 00 00  00 00 C0 00 00 00 00 00  y...............
+D210: 00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  ................
 (6502)> bc 1014
 ```
+
+The leading prefix in each disassembly line tells you what the
+monitor thinks about that address: two spaces for an ordinary
+instruction, `T ` for a branch target that another line in the
+window references (the self-loop at `$1014` here), `> ` for the
+current PC, and `* ` for an active breakpoint. The `d` count
+argument is parsed as hexadecimal by default (so `d 1000 9` gives
+nine lines and `d 1000 10` would give sixteen); prefix the count
+with `#` for decimal. The `m` count argument is decimal by default
+and counts *rows of sixteen bytes*, not bytes — `m D200 2` shows
+two sixteen-byte rows starting at `$D200`, and the values written
+by the program appear in the first few columns of the first row.
 
 The `w` line enters bytes. The `d` line proves those bytes decode
 as the intended instructions. The breakpoint stops execution before
@@ -116,55 +129,43 @@ entry path used by larger ULA programs.
 (6502)> w 1120 8D 14 D8 A9 A5 8D 14 D8 A9 A5 8D 14 D8 A9 BD 8D
 (6502)> w 1130 14 D8 A9 81 8D 14 D8 A9 FF 8D 14 D8 A9 00 8D 0C
 (6502)> w 1140 D8 A9 18 8D 10 D8 A9 46 8D 14 D8 4C 4B 11
-(6502)> d 1100 26
-1100: A9 05     LDA #$05
-1102: 8D 00 D8  STA $D800
-1105: A9 05     LDA #$05
-1107: 8D 04 D8  STA $D804
-110A: A9 00     LDA #$00
-110C: 8D 0C D8  STA $D80C
-110F: A9 00     LDA #$00
-1111: 8D 10 D8  STA $D810
-1114: A9 FF     LDA #$FF
-1116: 8D 14 D8  STA $D814
-1119: A9 81     LDA #$81
-111B: 8D 14 D8  STA $D814
-111E: A9 BD     LDA #$BD
-1120: 8D 14 D8  STA $D814
-1123: A9 A5     LDA #$A5
-1125: 8D 14 D8  STA $D814
-1128: A9 A5     LDA #$A5
-112A: 8D 14 D8  STA $D814
-112D: A9 BD     LDA #$BD
-112F: 8D 14 D8  STA $D814
-1132: A9 81     LDA #$81
-1134: 8D 14 D8  STA $D814
-1137: A9 FF     LDA #$FF
-1139: 8D 14 D8  STA $D814
-113C: A9 00     LDA #$00
-113E: 8D 0C D8  STA $D80C
-1141: A9 18     LDA #$18
-1143: 8D 10 D8  STA $D810
-1146: A9 46     LDA #$46
-1148: 8D 14 D8  STA $D814
-114B: 4C 4B 11  JMP $114B
+(6502)> d 1100 #31
+  1100: A9 05                    LDA #$05
+  1102: 8D 00 D8                 STA $D800
+  1105: A9 05                    LDA #$05
+  1107: 8D 04 D8                 STA $D804
+  110A: A9 00                    LDA #$00
+  110C: 8D 0C D8                 STA $D80C
+  110F: A9 00                    LDA #$00
+  1111: 8D 10 D8                 STA $D810
+  1114: A9 FF                    LDA #$FF
+  1116: 8D 14 D8                 STA $D814
+  1119: A9 81                    LDA #$81
+  111B: 8D 14 D8                 STA $D814
+  111E: A9 BD                    LDA #$BD
+  1120: 8D 14 D8                 STA $D814
+  1123: A9 A5                    LDA #$A5
+  1125: 8D 14 D8                 STA $D814
+  1128: A9 A5                    LDA #$A5
+  112A: 8D 14 D8                 STA $D814
+  112D: A9 BD                    LDA #$BD
+  112F: 8D 14 D8                 STA $D814
+  1132: A9 81                    LDA #$81
+  1134: 8D 14 D8                 STA $D814
+  1137: A9 FF                    LDA #$FF
+  1139: 8D 14 D8                 STA $D814
+  113C: A9 00                    LDA #$00
+  113E: 8D 0C D8                 STA $D80C
+  1141: A9 18                    LDA #$18
+  1143: 8D 10 D8                 STA $D810
+  1146: A9 46                    LDA #$46
+  1148: 8D 14 D8                 STA $D814
+T 114B: 4C 4B 11                 JMP $114B
 (6502)> r pc 1100
 (6502)> b 114B
 (6502)> g
 (6502)> m D800 1
-D800: 05
-(6502)> m D804 1
-D804: 05
-(6502)> w D80C 00
-(6502)> w D810 00
-(6502)> m D814 1
-D814: FF
-(6502)> m D814 1
-D814: 81
-(6502)> w D80C 00
-(6502)> w D810 18
-(6502)> m D814 1
-D814: 46
+D800: 05 00 00 00 05 00 00 00  01 00 00 00 02 00 00 00  ................
 (6502)> bc 114B
 ```
 
@@ -173,10 +174,17 @@ the ULA VRAM address latch. Each store to `$D814` writes one byte
 at the latched address and advances the latch. The first eight
 data bytes form the bitmap motif. The later latch value `$1800`
 selects the attribute area, and `$46` gives the cell yellow ink
-on black paper. The two `m D814 1` reads after resetting the latch
-show the first two bitmap bytes, and the final read shows the
-attribute byte. Try changing the first `$A5` byte to `$99`; the
-middle of the motif changes without moving the attribute cell.
+on black paper. The `d` count of `#31` is decimal (the `#` prefix
+forces decimal — without it the count is parsed as hexadecimal,
+which is the default for `d`); the single `m D800 1` shows the
+sixteen-byte row that starts at `$D800` so the writes to `$D800`
+(`05`) and `$D804` (`05`) appear in the first row. The `$D814`
+register is a write-only auto-incrementing latch port — reading
+it does not step through the bitmap data the program wrote, so
+the verification is the visible stripe on the ULA display, not
+a follow-on `m D814` read. Try changing the first `$A5` byte to
+`$99`; the middle of the motif changes without moving the
+attribute cell.
 
 ## 32.5 Breakpoints
 

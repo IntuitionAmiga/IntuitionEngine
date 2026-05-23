@@ -356,7 +356,7 @@ instead of `1`. The operation still completes synchronously, and
 the source or destination is a small off-screen bitmap rather than a
 full framebuffer row:
 
-```basic
+```text
 BLIT COPY src, dst, w, h, srcStride, dstStride
 ```
 
@@ -394,7 +394,7 @@ through the selected raster operation.
 
 The BASIC form is:
 
-```basic
+```text
 BLIT LINE x0, y0, x1, y1, colour
 ```
 
@@ -758,7 +758,7 @@ The raw-register setup order is:
 
 The BASIC helper has the same shape:
 
-```basic
+```text
 BLIT MODE7 src, dst, w, h, u0, v0, duCol, dvCol, duRow, dvRow, uMask, vMask
 BLIT MODE7 src, dst, w, h, u0, v0, duCol, dvCol, duRow, dvRow, uMask, vMask, srcStride, dstStride
 ```

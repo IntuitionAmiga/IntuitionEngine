@@ -297,6 +297,7 @@ func main() {
 		iosRoot         string
 		iosImage        string
 		hostHelperFlags hostHelperFlagConfig
+		scriptOwnedTerm bool
 	)
 
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
@@ -337,6 +338,7 @@ func main() {
 	flagSet.BoolVar(&fullscreen, "fullscreen", false, "Start in fullscreen mode")
 	flagSet.StringVar(&scriptFile, "script", "", "Run IES Lua script file after startup")
 	flagSet.BoolVar(&noJIT, "nojit", false, "Disable JIT compilation, use interpreter only")
+	flagSet.BoolVar(&scriptOwnedTerm, "script-owned-term", false, "Disable host terminal I/O; the script drives TerminalMMIO directly. Use with -script in PRM/test harness mode.")
 	registerHostHelperFlags(flagSet, &hostHelperFlags)
 	registerHostIOTraceFlags(flagSet)
 	registerCoprocServiceFlags(flagSet, &coprocSvc)
@@ -1076,7 +1078,7 @@ func main() {
 			ci.SetCutHandler(videoTerm.CutSelection)
 			ci.SetMiddleMouseHandler(videoTerm.MiddleMousePaste)
 		}
-	} else if !modeEmuTOS {
+	} else if !modeEmuTOS && !scriptOwnedTerm {
 		termHost = NewTerminalHost(termMMIO)
 	}
 

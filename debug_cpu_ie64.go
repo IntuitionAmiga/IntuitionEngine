@@ -398,14 +398,20 @@ func (d *DebugIE64) ReadMemory(addr uint64, size int) []byte {
 	if size <= 0 {
 		return nil
 	}
-	// Fast path: span fits inside the legacy bus.memory window.
-	if addr <= 0xFFFFFFFF && addr+uint64(size) <= uint64(len(d.cpu.memory)) {
+	// Fast path: span fits inside the legacy bus.memory window AND
+	// contains no MMIO. The MMIO check is needed because raw access to
+	// memory[] bypasses chip HandleRead callbacks; a `m` dump of a
+	// status register like SN_PORT_READY would otherwise return the
+	// stale RAM shadow instead of the chip's live state (see
+	// IE-PRM-0003).
+	if addr <= 0xFFFFFFFF && addr+uint64(size) <= uint64(len(d.cpu.memory)) && !d.memoryRangeHasIO(addr, size) {
 		start := uint32(addr)
 		return append([]byte{}, d.cpu.memory[start:int(start)+size]...)
 	}
 	// Slow path: route per-byte through the bus so high-address Backing
-	// reads work. Preserves the full 64-bit address (PLAN_MAX_RAM.md
-	// slice 3 retired the IE64_ADDR_MASK 25-bit truncation).
+	// reads work AND MMIO chips get consulted. Preserves the full
+	// 64-bit address (PLAN_MAX_RAM.md slice 3 retired the
+	// IE64_ADDR_MASK 25-bit truncation).
 	out := make([]byte, size)
 	for i := 0; i < size; i++ {
 		out[i] = d.readByte(addr + uint64(i))
@@ -414,8 +420,10 @@ func (d *DebugIE64) ReadMemory(addr uint64, size int) []byte {
 }
 
 func (d *DebugIE64) WriteMemory(addr uint64, data []byte) {
-	// Fast path: span fits inside the legacy bus.memory window.
-	if addr <= 0xFFFFFFFF && addr+uint64(len(data)) <= uint64(len(d.cpu.memory)) {
+	// Fast path: span fits inside the legacy bus.memory window AND
+	// contains no MMIO. Same MMIO-skip reasoning as ReadMemory: raw
+	// writes to memory[] would not trigger chip HandleWrite callbacks.
+	if addr <= 0xFFFFFFFF && addr+uint64(len(data)) <= uint64(len(d.cpu.memory)) && !d.memoryRangeHasIO(addr, len(data)) {
 		copy(d.cpu.memory[uint32(addr):], data)
 		return
 	}
@@ -426,6 +434,35 @@ func (d *DebugIE64) WriteMemory(addr uint64, data []byte) {
 	for i, b := range data {
 		d.cpu.bus.WritePhys8(addr+uint64(i), b)
 	}
+}
+
+// memoryRangeHasIO returns true when the given address range overlaps
+// at least one MMIO region registered on MachineBus. Used by the debug
+// ReadMemory/WriteMemory fast path to decide whether the raw memory
+// slice is safe to use; if the range hits MMIO, we must go through the
+// bus so chip HandleRead/HandleWrite callbacks fire.
+func (d *DebugIE64) memoryRangeHasIO(addr uint64, size int) bool {
+	bus := d.cpu.bus
+	if bus == nil || size <= 0 || addr > 0xFFFFFFFF {
+		return false
+	}
+	start := uint32(addr)
+	end64 := addr + uint64(size) - 1
+	if end64 > 0xFFFFFFFF {
+		end64 = 0xFFFFFFFF
+	}
+	end := uint32(end64)
+	for page := start & PAGE_MASK; ; page += PAGE_SIZE {
+		for _, region := range bus.mapping[page] {
+			if start <= region.end && end >= region.start {
+				return true
+			}
+		}
+		if page >= end&PAGE_MASK {
+			break
+		}
+	}
+	return false
 }
 
 func (d *DebugIE64) SetBreakpointChannel(ch chan<- BreakpointEvent, cpuID int) {

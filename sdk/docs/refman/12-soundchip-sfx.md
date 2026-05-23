@@ -21,6 +21,7 @@ map or the SFX sample trigger block.
 
 Always enable the mixer first:
 
+<!-- @prm-id: ch12-audio-enable -->
 ```basic
 10 POKE &H000F0800,1
 ```

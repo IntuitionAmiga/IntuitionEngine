@@ -1,0 +1,242 @@
+-- prm_runner.ies — PRM doc-as-test harness, BASIC-side driver.
+--
+-- Reads sdk/scripts/prm-runner/cases.lua (mirror of cases.json emitted
+-- by tools/prm-extract) and replays every basic case against EhBASIC,
+-- diffing captured output against the inline expected blocks.
+--
+-- IES lint-only cases are copied through to report.json so the renderer
+-- sees their api_lint result. IES runnable and iemon cases are emitted
+-- with status:"PENDING" so the orchestrator's per-kind child phases can
+-- overwrite their entries when they run after this script exits.
+--
+-- Launch contract (orchestrator):
+--   ./bin/IntuitionEngine -basic -term -script-owned-term \
+--       -script sdk/scripts/prm-runner/prm_runner.ies
+--
+-- Exit codes: 0 = all-green basic pass, 1 = at least one FAIL or ERROR.
+-- The full PASS/FAIL/SKIP counts live in report.json so the renderer
+-- shows the breakdown (8-bit POSIX exit cap is intentional).
+
+local prm   = require("prm_lib")
+local cases = require("cases").cases
+
+-- ---- BASIC capture loop ----
+
+local READY_CRLF = "Ready\r\n"
+local READY_LF   = "Ready\n"
+
+local function drain()
+  -- Best-effort drain of pending output before a fresh step.
+  for _ = 1, 50 do
+    local s = term.read()
+    if s == nil or s == "" then break end
+  end
+end
+
+local function endswith(s, suf)
+  return #s >= #suf and s:sub(-#suf) == suf
+end
+
+local function capture_until_ready(input, timeout_ms)
+  -- Mirrors runUntilPrompt at ehbasic_test.go:175. Literal string ops
+  -- only — BASIC inputs contain Lua-pattern metacharacters (? $ ( + ...)
+  -- so anything regex-based would mis-strip.
+  term.type(input .. "\n")
+  local buf = ""
+  local deadline = sys.time_ms() + (timeout_ms or 5000)
+  while sys.time_ms() < deadline do
+    local chunk = term.read()
+    if chunk and #chunk > 0 then buf = buf .. chunk end
+    if endswith(buf, READY_CRLF) or endswith(buf, READY_LF) then break end
+    sys.wait_ms(10)
+  end
+  -- Strip the echoed input (BASIC echoes typed bytes + CRLF or LF).
+  local echo_crlf = input .. "\r\n"
+  local echo_lf   = input .. "\n"
+  if buf:sub(1, #echo_crlf) == echo_crlf then
+    buf = buf:sub(#echo_crlf + 1)
+  elseif buf:sub(1, #echo_lf) == echo_lf then
+    buf = buf:sub(#echo_lf + 1)
+  end
+  -- Strip the trailing Ready delimiter.
+  if endswith(buf, READY_CRLF) then
+    buf = buf:sub(1, #buf - #READY_CRLF)
+  elseif endswith(buf, READY_LF) then
+    buf = buf:sub(1, #buf - #READY_LF)
+  end
+  return buf
+end
+
+local function strip_prompt_artifacts(lines)
+  -- Mirrors the extractor: a trailing single dot or blank line is a
+  -- BASIC prompt artifact, never load-bearing output.
+  while #lines > 0 do
+    local last = lines[#lines]
+    if last == "" or last == "." then
+      lines[#lines] = nil
+    else
+      break
+    end
+  end
+  return lines
+end
+
+local function reset_basic()
+  -- `NEW` + `CLEAR` resets the program and variables in-place. We
+  -- intentionally avoid `cpu.reset()` here — under -basic, a hard reset
+  -- runs forceBasicBoot which rewires VideoTerminal as the consumer
+  -- (main.go:2491), bypassing the outputBuf path that term.read()
+  -- depends on (terminal_io.go:104). If `NEW`/`CLEAR` cannot recover
+  -- (BASIC wedged mid-INPUT), the harness aborts via sys.exit(2).
+  drain()
+  local _ = capture_until_ready("NEW", 2000)
+  local _ = capture_until_ready("CLEAR", 2000)
+end
+
+-- Wait for the very first Ready prompt on boot before driving any case.
+local function wait_initial_ready()
+  if term.wait_output ~= nil then
+    if not term.wait_output("Ready", 10000) then
+      sys.print("PRM: BASIC did not reach Ready prompt within 10s")
+      sys.exit(2)
+    end
+    drain()
+    return
+  end
+  -- Fallback: poll term.read() for the substring.
+  local buf = ""
+  local deadline = sys.time_ms() + 10000
+  while sys.time_ms() < deadline do
+    local chunk = term.read()
+    if chunk then buf = buf .. chunk end
+    if buf:find("Ready", 1, true) then drain(); return end
+    sys.wait_ms(50)
+  end
+  sys.print("PRM: BASIC did not reach Ready prompt within 10s")
+  sys.exit(2)
+end
+
+-- ---- Step replay ----
+
+local function diff_strict(expected, actual_lines)
+  if #expected ~= #actual_lines then return false end
+  for i = 1, #expected do
+    if expected[i] ~= actual_lines[i] then return false end
+  end
+  return true
+end
+
+local function diff_loose(expected, actual_lines)
+  -- Collapse runs of internal spaces before compare.
+  local function collapse(s) return (s:gsub("[ \t]+", " ")) end
+  if #expected ~= #actual_lines then return false end
+  for i = 1, #expected do
+    if collapse(expected[i]) ~= collapse(actual_lines[i]) then return false end
+  end
+  return true
+end
+
+local function run_basic_case(case)
+  reset_basic()
+  local report_steps = {}
+  local case_status = "PASS"
+  for i, step in ipairs(case.basic_steps or {}) do
+    local captured = capture_until_ready(step.input or "", 3000)
+    local actual = prm.splitlines(captured)
+    actual = strip_prompt_artifacts(actual)
+    local expected = step.expected or {}
+    local expected_norm = {}
+    for _, e in ipairs(expected) do
+      expected_norm[#expected_norm+1] = e
+    end
+    local ok
+    if step.loose then
+      ok = diff_loose(expected_norm, actual)
+    else
+      ok = diff_strict(expected_norm, actual)
+    end
+    local status = ok and "PASS" or "FAIL"
+    if step.expects_output ~= true and #expected_norm == 0 then
+      -- Numbered source lines and similar setup steps produce no output.
+      -- The capture loop already swallowed the prompt; treat as PASS
+      -- regardless of any incidental output.
+      status = "PASS"
+    end
+    if status ~= "PASS" then case_status = "FAIL" end
+    report_steps[i] = {
+      input = step.input,
+      expected = expected_norm,
+      actual = actual,
+      status = status,
+    }
+  end
+  return {
+    id = case.id,
+    source = case.source,
+    fence_start_line = case.fence_start_line,
+    kind = case.kind,
+    status = case_status,
+    steps = report_steps,
+  }
+end
+
+-- ---- Monitor dump on FAIL ----
+
+local function monitor_dump()
+  dbg.open()
+  local regs = prm.flatten(dbg.command_output("r"))
+  local bt   = prm.flatten(dbg.command_output("bt"))
+  local mem  = prm.flatten(dbg.command_output("m 0x1000"))
+  dbg.close()
+  return regs .. "\n--- backtrace ---\n" .. bt .. "\n--- mem 0x1000 ---\n" .. mem
+end
+
+-- ---- Main ----
+
+wait_initial_ready()
+
+local report = { cases = {} }
+local fail_count = 0
+local total = #cases
+
+for case_idx, case in ipairs(cases) do
+  sys.print(string.format("PRM: [%d/%d] %s (%s)", case_idx, total, case.id, case.kind))
+  if case.status == "SKIP" then
+    report.cases[#report.cases+1] = {
+      id = case.id,
+      source = case.source,
+      fence_start_line = case.fence_start_line,
+      kind = case.kind,
+      cpu = case.cpu,
+      status = "SKIP",
+      skip_reason = case.skip_reason,
+    }
+  elseif case.kind == "basic" then
+    local rc = run_basic_case(case)
+    if rc.status ~= "PASS" then
+      fail_count = fail_count + 1
+      rc.monitor_dump = monitor_dump()
+    end
+    report.cases[#report.cases+1] = rc
+  elseif case.kind == "ies" then
+    if case.mode == "lint" then
+      local lint = case.api_lint or {status="PASS"}
+      report.cases[#report.cases+1] = {
+        id = case.id,
+        source = case.source,
+        fence_start_line = case.fence_start_line,
+        kind = case.kind,
+        status = (lint.status == "PASS") and "LINT_PASS" or "LINT_FAIL",
+        api_lint = lint,
+      }
+      if lint.status ~= "PASS" then fail_count = fail_count + 1 end
+    end
+    -- Runnable IES cases are dispatched by the orchestrator after we exit.
+  end
+  -- iemon cases are dispatched by the orchestrator after we exit.
+end
+
+local body = prm.encode_report(report)
+sys.write_file("report.json", body)
+sys.print(string.format("PRM: report.json written (%d cases, %d failures)", total, fail_count))
+sys.exit(fail_count == 0 and 0 or 1)

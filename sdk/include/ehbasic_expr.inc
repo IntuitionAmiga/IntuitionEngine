@@ -166,7 +166,15 @@ expr_compare:
     jsr     expr_add
     move.q  r22, r8
 .cmp_loop:
+    ; Skip spaces before checking for a comparison token. Without this,
+    ; `PRINT A > B` (with spaces) would mis-parse as two separate
+    ; PRINT items because the operator check only sees the space.
     load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .cmp_check
+    add.q   r17, r17, #1
+    bra     .cmp_loop
+.cmp_check:
     move.q  r2, #TK_LT
     beq     r1, r2, .do_lt
     move.q  r2, #TK_GT
@@ -389,7 +397,15 @@ expr_add:
     jsr     expr_mul
     move.q  r22, r8
 .add_loop:
+    ; Skip spaces before checking for +/-/<</>> operator. Without this,
+    ; `PRINT 1 + 2` mis-parses: expr_add sees space, returns 1; PRINT
+    ; restarts and prints +2 as a separate item, yielding `1 2` not `3`.
     load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .add_check
+    add.q   r17, r17, #1
+    bra     .add_loop
+.add_check:
     move.q  r2, #TK_PLUS
     beq     r1, r2, .do_add
     move.q  r2, #TK_MINUS
@@ -454,7 +470,18 @@ expr_mul:
     jsr     expr_power
     move.q  r22, r8
 .mul_loop:
+    ; Skip spaces before checking for `*` or `/`. Without this,
+    ; `PRINT 10 * (A>B)` mis-parses because the operator check at
+    ; this point reads the space between `10` and `*`, returns the
+    ; left operand alone, and PRINT then re-enters expr_eval on `*`
+    ; (which expr_primary cannot evaluate, yielding the famous
+    ; `100-1` artefact for the chapter-1 comparison example).
     load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .mul_check
+    add.q   r17, r17, #1
+    bra     .mul_loop
+.mul_check:
     move.q  r2, #TK_MULT
     beq     r1, r2, .do_mul
     move.q  r2, #TK_DIV
@@ -496,7 +523,15 @@ expr_power:
     jsr     expr_unary
     move.q  r22, r8
 .pow_loop:
+    ; Skip spaces before checking for the power operator `^`. Same
+    ; pattern as expr_add/expr_mul/expr_compare — without it,
+    ; `2 ^ 10` would stop at the first space.
     load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .pow_check
+    add.q   r17, r17, #1
+    bra     .pow_loop
+.pow_check:
     move.q  r2, #TK_POWER
     bne     r1, r2, .pow_done
     add.q   r17, r17, #1
@@ -514,8 +549,23 @@ expr_power:
 
 ; --- Level 8: Unary minus ---
 expr_unary:
+    ; Skip any leading spaces before reading the operand. The
+    ; operator-level loops (expr_add/mul/power/compare) each call
+    ; their right-recursion through this path; if those callers
+    ; consume `<op>` and then the operand starts with a space (as it
+    ; will whenever the source has spaces around the operator, e.g.
+    ; `10 * (A>B)`), we must absorb the space before expr_primary
+    ; tries to classify the byte. Without this skip, expr_primary
+    ; reads the space, treats it as an unknown token, returns 0 with
+    ; R17 unchanged, and the caller multiplies/adds against 0.
+.unary_skip_sp:
     load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .unary_check
+    add.q   r17, r17, #1
+    bra     .unary_skip_sp
 
+.unary_check:
     ; Check for unary minus (raw '-' character 0x2D OR TK_MINUS token 0xB2)
     move.q  r2, #TK_MINUS
     beq     r1, r2, .do_neg

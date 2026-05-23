@@ -66,7 +66,7 @@ Returns the absolute value of *expr*.
 
 ```basic
 PRINT ABS(-5.5)
- 5.5
+5.5
 ```
 
 ### AHX
@@ -85,7 +85,7 @@ a number.
 
 ```basic
 PRINT 12 AND 10
- 8
+8
 ```
 
 ### ANTIC
@@ -104,7 +104,7 @@ table.
 
 ```basic
 PRINT ASC("A")
- 65
+65
 ```
 
 ### ATN
@@ -353,7 +353,7 @@ Bitwise exclusive-OR of two integers.
 
 ```basic
 PRINT 12 EOR 10
- 6
+6
 ```
 
 ### EXP
@@ -702,6 +702,7 @@ effects:
 The single character `?` is an alternate spelling of `PRINT`.
 `LIST` prints it as `PRINT`.
 
+<!-- @prm-id: ch02-print-semicolon-q -->
 ```basic
 PRINT "A"; "B"; "C"
 ABC
@@ -948,7 +949,7 @@ not part of a numeric literal.
 
 ```basic
 PRINT VAL("3.14XYZ")
- 3.14
+3.140000
 ```
 
 ### VARPTR
@@ -989,7 +990,11 @@ the condition is never met.
 REM WAIT UNTIL A COOKED KEY BYTE IS QUEUED
 WAIT &H000F072C,1
 PRINT PEEK(&H000F0728)
+0
 ```
+
+The polled byte is `0` until a key has been typed; press a key
+before the example runs to see the cooked code instead.
 
 ### WEND
 

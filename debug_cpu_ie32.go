@@ -382,8 +382,26 @@ func (d *DebugIE32) ValidateAddress(addr uint64) error {
 }
 
 func (d *DebugIE32) ReadMemory(addr uint64, size int) []byte {
-	mem := d.cpu.memory
+	if size <= 0 {
+		return nil
+	}
 	start := uint32(addr)
+	// Route through the bus so MMIO chip HandleRead callbacks fire and
+	// status registers like SN_PORT_READY return the chip's live state
+	// instead of an uninitialised RAM shadow. Matches DebugX86 /
+	// DebugZ80 (debug_cpu_x86.go, debug_cpu_z80.go) so monitor `m`
+	// observability is uniform across CPUs that share the IE bus.
+	if d.cpu.bus != nil {
+		result := make([]byte, size)
+		for i := 0; i < size; i++ {
+			result[i] = d.cpu.bus.Read8(start + uint32(i))
+		}
+		return result
+	}
+	// Fallback (unit-test rigs that wire DebugIE32 without a bus):
+	// preserve the previous raw-memory behaviour so existing tests
+	// continue to work.
+	mem := d.cpu.memory
 	if int(start)+size > len(mem) {
 		end := len(mem)
 		if int(start) >= end {
@@ -395,8 +413,16 @@ func (d *DebugIE32) ReadMemory(addr uint64, size int) []byte {
 }
 
 func (d *DebugIE32) WriteMemory(addr uint64, data []byte) {
-	mem := d.cpu.memory
 	start := uint32(addr)
+	// Same reasoning as ReadMemory: route through the bus so MMIO
+	// chips see writes via HandleWrite.
+	if d.cpu.bus != nil {
+		for i, b := range data {
+			d.cpu.bus.Write8(start+uint32(i), b)
+		}
+		return
+	}
+	mem := d.cpu.memory
 	if int(start)+len(data) > len(mem) {
 		return
 	}

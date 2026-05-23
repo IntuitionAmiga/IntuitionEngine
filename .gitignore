@@ -84,3 +84,13 @@ sdk/ab3d64/build/
 sdk/ab3d64/_build/
 sdk/ab3d64/tools/generated/
 sdk/ab3d64/tools/shots/
+
+# PRM doc-as-test harness scratch / accidental artifacts.
+# - FIRST.BAS comes from EhBASIC `SAVE "FIRST.BAS"` in chapter 1's
+#   tour fence (sandboxed save lands in the launch cwd).
+# - /prm-extract is a root-level binary if someone runs
+#   `go build ./tools/prm-extract` from the repo root by mistake; the
+#   harness invokes the package via `go run`, so this binary is never
+#   needed in-tree.
+FIRST.BAS
+/prm-extract

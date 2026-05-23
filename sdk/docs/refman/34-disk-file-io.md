@@ -142,7 +142,7 @@ text. The saved text round-trips through `LOAD`.
 
 ### 34.6.3 BLOAD
 
-```basic
+```text
 BLOAD "name", addr
 ```
 
@@ -151,13 +151,15 @@ tokenise and it does not clear variables.
 
 ### 34.6.4 DIR
 
-```basic
+```text
 DIR
 DIR "subdir"
 ```
 
 `DIR` is a direct-mode command. It lists the root or the named
-directory and prints entries separated by `CR` `LF`.
+directory and prints entries separated by `CR` `LF`. Its output is
+the live host filesystem, so it is shown here as a syntax template
+rather than a transcript with fixed expected output.
 
 ## 34.7 Typed MMIO Example
 
