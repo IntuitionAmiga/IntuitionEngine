@@ -162,12 +162,21 @@ are 32-bit words at 4-byte aligned addresses.
 | 2      | `SST_BUSY`   | Overall chip busy. |
 | 6      | `VRETRACE`   | Vertical retrace active. |
 | 7      | `SWAPBUF`    | Buffer swap pending. |
-| 12-19  | `MEMFIFO`    | Memory FIFO free count. |
-| 20-24  | `PCIFIFO`    | Command FIFO free count. |
+| 12-19  | `MEMFIFO`    | Coarse memory FIFO free-space field. |
+| 20-24  | `PCIFIFO`    | Command FIFO free-space field. |
 
-`MEMFIFO` reports free space while the queued triangle batch is not
-full. `VOODOO SWAP` flushes the batch, clears the pending swap bit, and
-calls the swap-complete side effect.
+`MEMFIFO` is useful as a ready/not-ready field, not as a cycle-accurate
+historical FIFO depth. It is non-zero while the queued triangle batch
+can accept more triangles. It reads zero once the batch reaches its
+`4096` triangle limit. `PCIFIFO` reports command space for the current
+high-level engine path.
+
+`FBI_BUSY` and `SST_BUSY` are set while `SWAP_BUFFER_CMD` is flushing
+queued triangles, swapping buffers, and publishing the frame. A simple
+BASIC program may not see these bits because the command completes
+before the next `PEEK`, but machine code and IE Mon can still poll them
+around a large swap. `TRIANGLE_CMD` itself does not set these busy bits;
+it only appends work to the batch.
 
 ### 9.5.2 Vertex and attribute registers
 
@@ -202,8 +211,17 @@ After `TRIANGLE`, Gouraud selection is reset for the next triangle.
 | `$F8124`  | `FAST_FILL_CMD`       | Clear the drawing buffer with `COLOR0`. |
 | `$F8128`  | `SWAP_BUFFER_CMD`     | Flush triangles and publish the frame. Bit `0` waits for retrace; bit `1` clears after swap. |
 
-`TRIANGLE_CMD` queues work. Pixels appear after `SWAP_BUFFER_CMD`,
-which flushes queued triangles, swaps buffers, and publishes the frame.
+`TRIANGLE_CMD` queues work. It does not rasterise visible pixels and it
+does not wait for the rasteriser to draw the triangle. The current
+vertex and attribute state is copied into the triangle batch, up to
+`4096` triangles. If the batch is already full, further `TRIANGLE_CMD`
+writes are ignored until a swap flushes the batch.
+
+Pixels appear after `SWAP_BUFFER_CMD`. That command updates dirty
+pipeline state, flushes the queued triangles into the Voodoo backend,
+clears the batch, swaps buffers, and publishes the frame to the
+compositor. During that flush the status register reports `FBI_BUSY`
+and `SST_BUSY`.
 
 ### 9.5.4 Mode and state
 
@@ -561,8 +579,8 @@ Voodoo has these programming boundaries:
 | `VOODOO OFF` | Voodoo contributes no picture to the compositor. |
 | `VOODOO DIM w,h` | Ignored unless both dimensions are positive and no larger than `800` by `600`. |
 | `VOODOO CLEAR colour` | Clears the drawing buffer and resets depth to a far value for `LESS` style depth functions. |
-| `TRIANGLE` | Queues one triangle, up to `4096` queued triangles. |
-| `VOODOO SWAP` | Flushes queued triangles, swaps buffers, publishes the frame, and clears the batch. |
+| `TRIANGLE` | Queues one triangle, up to `4096` queued triangles; extra submissions are ignored until swap. |
+| `VOODOO SWAP` | Flushes queued triangles, sets busy while the flush runs, swaps buffers, publishes the frame, and clears the batch. |
 | `SWAP_BUFFER_CMD` bit `1` | Clears the drawing buffer after the swap using current `COLOR0`. |
 | `POKE8` to registers | Updates the shadow byte immediately, but command side effects run only when byte `3` of the word is written. |
 | Texture upload | Copies `w * h * 4` bytes from `$D0000` if the size fits in `64` KB. |

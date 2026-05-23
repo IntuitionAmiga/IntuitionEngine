@@ -120,6 +120,11 @@ Current controlled polish pass:
   tracker engines, sample players, and Paula DMA.
 - Add short framing before dense VideoChip and Voodoo sections so the
   reader knows why the feature matters before the register truth.
+- In Chapter 9, document the Voodoo command pipeline against
+  `video_voodoo.go` and `voodoo_constants.go`: whether `TRIANGLE_CMD`
+  waits or queues, when pixels become visible, what flushes the queue,
+  what happens when the batch is full, and what `FBI_BUSY`, `SST_BUSY`,
+  `MEMFIFO`, and `PCIFIFO` actually mean in Intuition Engine.
 - Add a small whole-machine capstone chapter that touches graphics,
   audio, file I/O, and the coprocessor status path from BASIC.
 - Add a traditional lookup index appendix and include it in the
