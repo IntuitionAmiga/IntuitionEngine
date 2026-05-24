@@ -3,7 +3,7 @@
 ## Summary
 
 First land the required engine/SDK ABI changes in this IntuitionEngine clone.
-After that ABI is real and tested, create or use `../IEDoom` as a Chocolate
+After that ABI is real and tested, use `../chocolate-doom` as the Chocolate
 Doom-based x86 guest port for Intuition Engine. Use the engine-level SMF/MUS
 support from commit `0ff06b22c9bc36f21e8fce2cc03a78c6c9aeeaba` for Doom music.
 Do not add an IEDoom-specific MIDI synth or curated music override layer.
@@ -27,6 +27,10 @@ Engine owns MIDI/MUS parsing, synthesis, playback MMIO, and SoundChip output.
   timing, CLUT8 video, keyboard/mouse input, original MUS/MIDI playback, DMX
   sound-effect triggering, setup music mode selection, and WAD reads via IE File
   I/O MMIO.
+- The Chocolate Doom host helper test now covers the planned IE dependency
+  constants, timer retry reads, video setup/palette writes, input setup and
+  scancode translation, MIDI control/loading/error/no-music paths, DMX SFX parse
+  and trigger edge cases, and File I/O read-all register/error handling.
 
 ## Key Changes
 
@@ -150,47 +154,49 @@ Engine owns MIDI/MUS parsing, synthesis, playback MMIO, and SoundChip output.
 
 ### IEDoom Music Tests
 
-- WAD lump `d_e1m1` is passed to MIDI MMIO as MUS data.
-- Looped music writes `MIDI_PLAY_CTRL = 5`.
-- Stop writes `MIDI_PLAY_CTRL = 2`.
-- Pause writes `MIDI_PLAY_CTRL = 8`.
-- Resume writes `MIDI_PLAY_CTRL = 0` and does not restart the song.
-- `MIDI_VOLUME` follows Doom music volume settings.
-- MIDI start waits for `MIDI_STATUS_LOADING` to clear before
+- [ ] WAD lump `d_e1m1` is passed to MIDI MMIO as MUS data.
+- [x] Looped music writes `MIDI_PLAY_CTRL = 5`.
+- [x] Non-looped music writes `MIDI_PLAY_CTRL = 1`.
+- [x] Stop writes `MIDI_PLAY_CTRL = 2`.
+- [x] Pause writes `MIDI_PLAY_CTRL = 8`.
+- [x] Resume writes `MIDI_PLAY_CTRL = 0` and does not restart the song.
+- [x] `MIDI_VOLUME` follows Doom music volume settings.
+- [x] MIDI start waits for `MIDI_STATUS_LOADING` to clear before
   checking error status.
-- MIDI status bit `1` after load completion falls back to silence without
+- [x] MIDI status bit `1` after load completion falls back to silence without
   crashing.
-- `None` mode suppresses all MIDI playback writes.
+- [x] `None` mode suppresses all MIDI playback writes and status reads.
 
 ### IEDoom Sound Effect Tests
 
-- Firing a Doom sound effect writes the expected `SFX_PTR`.
-- Firing a Doom sound effect writes the expected `SFX_LEN`.
-- `SFX_PTR` points to the first decoded PCM payload byte, not the DMX lump
+- [x] Firing a Doom sound effect writes the expected `SFX_PTR`.
+- [x] Firing a Doom sound effect writes the expected `SFX_LEN`.
+- [x] `SFX_PTR` points to the first decoded PCM payload byte, not the DMX lump
   header.
-- `SFX_LEN` is the decoded PCM payload length, not the full lump length.
-- `SFX_FREQ` is copied from the Doom sound lump sample-rate field in Hz.
-- `SFX_VOL` is scaled as `doomVolume * 65535 / maxDoomVolume`.
-- Maximum Doom effect volume maps to `SFX_VOL = 65535`.
-- Firing a Doom sound effect writes `SFX_FORMAT_UNSIGNED8 = 1` to the channel
+- [x] `SFX_LEN` is the decoded PCM payload length, not the full lump length.
+- [x] `SFX_FREQ` is copied from the Doom sound lump sample-rate field in Hz.
+- [x] `SFX_VOL` is scaled as `doomVolume * 65535 / maxDoomVolume`.
+- [x] Maximum Doom effect volume maps to `SFX_VOL = 65535`.
+- [x] Firing a Doom sound effect writes `SFX_FORMAT_UNSIGNED8 = 1` to the channel
   `SFX_FORMAT` offset for native DMX sound lumps.
-- Firing a Doom sound effect writes `SFX_CTRL_TRIGGER = 1` to the channel
+- [x] Firing a Doom sound effect writes `SFX_CTRL_TRIGGER = 1` to the channel
   `SFX_CTRL` offset.
-- Tests compute SFX MMIO addresses as
+- [x] Tests compute SFX MMIO addresses as
   `IE_SFX_CH_BASE + channel * IE_SFX_CH_STRIDE + offset`.
-- Overlapping one-shot sound effects use separate IE SFX channels when
+- [x] Overlapping one-shot sound effects use separate IE SFX channels when
   available.
 
 ### IEDoom Video Tests
 
-- Startup writes `VIDEO_CTRL = 1`.
-- Startup configures `VIDEO_MODE = MODE_320x200`.
-- Startup configures `VIDEO_COLOR_MODE = 1`.
-- Startup writes `VIDEO_FB_BASE` to Doom's stable screen buffer address.
-- Doom palette updates are propagated to the VideoChip palette table.
-- One known Doom palette entry is packed as `0x00RRGGBB`, using
+- [x] Startup writes `VIDEO_CTRL = 1`.
+- [x] Startup configures `VIDEO_MODE = MODE_320x200`.
+- [x] Startup configures `VIDEO_COLOR_MODE = 1`.
+- [x] Startup writes `VIDEO_FB_BASE` to Doom's stable screen buffer address.
+- [x] Doom palette updates are propagated to the VideoChip palette table.
+- [x] One known Doom palette entry is packed as `0x00RRGGBB`, using
   `(r << 16) | (g << 8) | b`.
-- The `320x200x8` Doom framebuffer remains byte-identical before presentation.
+- [ ] The `320x200x8` Doom framebuffer remains byte-identical before
+  presentation.
 
 ### Engine Dependency Checks
 
