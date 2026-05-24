@@ -2316,6 +2316,7 @@ func main() {
 		if monitor.IsActive() {
 			monitor.Deactivate()
 		}
+		mediaLoader.stopPlayersOnly()
 
 		// 1. Stop CPU
 		cpuRunner.Stop()
