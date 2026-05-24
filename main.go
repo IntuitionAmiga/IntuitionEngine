@@ -298,6 +298,7 @@ func main() {
 		coprocSvc       string
 		iosRoot         string
 		iosImage        string
+		fileRoot        string
 		hostHelperFlags hostHelperFlagConfig
 		scriptOwnedTerm bool
 	)
@@ -351,6 +352,7 @@ func main() {
 	flagSet.StringVar(&arosDrive, "aros-drive", "", "Host directory for AROS DOS volume (default: ~/)")
 	flagSet.StringVar(&iosRoot, "intuitionos-root", "", "Host-backed IntuitionOS SYS: root")
 	flagSet.StringVar(&iosImage, "intuitionos-image", "", "IExec kernel image path")
+	flagSet.StringVar(&fileRoot, "file-root", "", "Host directory exposed to guest File I/O")
 	flagSet.Bool("version", false, "Print version information and exit")
 	loadAddr.value = "0x0600"
 	flagSet.Var(&loadAddr, "load-addr", "6502/Z80 load address (hex or decimal, defaults: 6502=0x0600, Z80=0x0000)")
@@ -1400,8 +1402,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	runtimeBaseDir := "."
-	if shouldAutostartAB3D2() {
+	runtimeBaseDir, err := resolveRuntimeFileRoot(fileRoot, ".")
+	if err != nil {
+		fmt.Printf("Error resolving guest file root: %v\n", err)
+		os.Exit(1)
+	}
+	if fileRoot == "" && shouldAutostartAB3D2() {
 		ab3d2RuntimeDir, err := ensureEmbeddedAB3D2Assets()
 		if err != nil {
 			fmt.Printf("Error preparing AB3D2 assets: %v\n", err)

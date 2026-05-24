@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestCLIModeFromExtension_AcceptsTypedBinariesAndScripts(t *testing.T) {
 	tests := []struct {
@@ -101,6 +105,41 @@ func TestExtractScriptFlag_OrderIndependent(t *testing.T) {
 func TestExtractScriptFlag_MissingValue(t *testing.T) {
 	if _, _, err := extractScriptFlag([]string{"program.ie64", "-script"}); err == nil {
 		t.Fatal("expected missing -script value error")
+	}
+}
+
+func TestResolveRuntimeFileRoot_DefaultsToFallback(t *testing.T) {
+	got, err := resolveRuntimeFileRoot("", ".")
+	if err != nil {
+		t.Fatalf("resolveRuntimeFileRoot: %v", err)
+	}
+	if got != "." {
+		t.Fatalf("root = %q, want fallback", got)
+	}
+}
+
+func TestResolveRuntimeFileRoot_UsesAbsoluteExplicitDirectory(t *testing.T) {
+	dir := t.TempDir()
+	got, err := resolveRuntimeFileRoot(dir, ".")
+	if err != nil {
+		t.Fatalf("resolveRuntimeFileRoot: %v", err)
+	}
+	want, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("root = %q, want %q", got, want)
+	}
+}
+
+func TestResolveRuntimeFileRoot_RejectsFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(path, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveRuntimeFileRoot(path, "."); err == nil {
+		t.Fatal("expected file root rejection")
 	}
 }
 

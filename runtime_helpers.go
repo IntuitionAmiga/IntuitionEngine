@@ -20,6 +20,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -72,6 +73,27 @@ func cliModeFromExtension(path string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported extension %q for auto-detect; supported extensions: %s. Raw binaries require an explicit CPU mode flag", filepath.Ext(path), cliAutoDetectExtensions)
 	}
+}
+
+func resolveRuntimeFileRoot(explicitRoot, fallback string) (string, error) {
+	if explicitRoot == "" {
+		return fallback, nil
+	}
+
+	absRoot, err := filepath.Abs(explicitRoot)
+	if err != nil {
+		return "", err
+	}
+
+	info, err := os.Stat(absRoot)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("guest file root is not a directory: %s", absRoot)
+	}
+
+	return absRoot, nil
 }
 
 func extractScriptFlag(args []string) ([]string, string, error) {

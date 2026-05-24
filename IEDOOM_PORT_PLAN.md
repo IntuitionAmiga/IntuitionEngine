@@ -44,11 +44,21 @@ Engine owns MIDI/MUS parsing, synthesis, playback MMIO, and SoundChip output.
 - `../chocolate-doom/src/iedoom_main.c` now provides the Doom-facing C handoff:
   the linked image calls it from `iedoom_entry`, it initializes Chocolate Doom's
   minimal argument globals, and it calls `D_DoomMain()`.
-- The freestanding compile frontier now includes scoped IE headers for the first
-  backend/startup objects, plus smoke tests that compile `i_timer.c`,
-  `i_intuition.c`, `iedoom_main.c`, `m_argv.c`, `m_misc.c`, and `d_iwad.c` as
-  32-bit freestanding code and link those IE backend/startup objects into a flat
-  image without unresolved symbols.
+- The freestanding compile frontier now includes scoped IE headers for the IE
+  startup/backend/WAD objects, shared Doom support modules, and all
+  `../chocolate-doom/src/doom/*.c` files except `doom_icon.c`.
+- `../chocolate-doom/src/iedoom_build.sh` now emits a local
+  `build/iedoom.ie86` test artifact. The current artifact links the real Doom
+  `d_main.c` path plus shared fixed-point, video, config, event-loop, DEH, net,
+  WAD, zone, and IE backend objects, with guest stubs only for host-only
+  facilities such as textscreen UI, SDL input/joystick setup, SDL_net,
+  DeHackEd patch parsing, and host config file probing. The guest currently
+  passes `-iwad doom1.wad` to Doom startup, and Intuition Engine now has
+  `-file-root` to expose a host directory containing that IWAD to IE File I/O.
+  The local loader smoke command
+  `bin/IntuitionEngine -file-root /path/to/doom-wad-directory -x86 ../chocolate-doom/build/iedoom.ie86`
+  reaches engine startup in this environment; display/audio initialization is
+  blocked by the sandboxed GUI/audio environment.
 
 ## Key Changes
 
