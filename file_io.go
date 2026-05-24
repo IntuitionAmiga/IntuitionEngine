@@ -284,6 +284,7 @@ func (f *FileIODevice) doRead() {
 		} else {
 			f.fileErrorCode = FILE_ERR_PERMISSION
 		}
+		f.fileResultLen = 0
 		return
 	}
 

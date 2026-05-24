@@ -21,8 +21,12 @@ Engine owns MIDI/MUS parsing, synthesis, playback MMIO, and SoundChip output.
   cover monotonic high-low-high reads, MIDI loading status clear behavior, and
   the `.ie86` load-at-0/start-at-0 contract.
 - Refman docs were intentionally not edited per the repository task constraint.
-- The Chocolate Doom guest port work remains external to this repo and should
-  be implemented in `../IEDoom` or an equivalent IEDoom workspace.
+- The Chocolate Doom guest port work is being implemented in
+  `../chocolate-doom`.
+- The Intuition backend in `../chocolate-doom` currently covers monotonic
+  timing, CLUT8 video, keyboard/mouse input, original MUS/MIDI playback, DMX
+  sound-effect triggering, setup music mode selection, and WAD reads via IE File
+  I/O MMIO.
 
 ## Key Changes
 
@@ -55,6 +59,9 @@ Engine owns MIDI/MUS parsing, synthesis, playback MMIO, and SoundChip output.
   `ESP = STACK_TOP`, initializes the C runtime, and jumps to the IEDoom entry.
 - Add a freestanding C runtime shim for the IE guest environment.
 - Add IE MMIO shims for files, input, timing, video, sound effects, and music.
+- For WAD file access under `INTUITION_ENGINE`, use IE File I/O MMIO to load the
+  complete WAD into guest memory once and serve Chocolate Doom's offset reads
+  from that cached buffer.
 - Implement Doom's `I_GetTime` and tic loop from `RTC_MONO_USEC_*` using the
   documented high-low-high retry read protocol.
 
