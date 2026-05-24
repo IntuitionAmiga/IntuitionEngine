@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func refmanCh26POKEYChordProgram() []byte {
+func refmanCh27POKEYChordProgram() []byte {
 	return []byte{
 		0xA9, 0x01, 0x8D, 0x00, 0xF8,
 		0xA9, 0x00, 0x8D, 0x08, 0xD2,
@@ -23,7 +23,7 @@ func refmanCh26POKEYChordProgram() []byte {
 	}
 }
 
-func refmanCh26ULAGraphicsProgram() []byte {
+func refmanCh27ULAGraphicsProgram() []byte {
 	return []byte{
 		0xA9, 0x05, 0x8D, 0x00, 0xD8,
 		0xA9, 0x05, 0x8D, 0x04, 0xD8,
@@ -98,21 +98,21 @@ func extractRefman6502MonitorBytesFromFile(t *testing.T, path string, heading st
 	return program
 }
 
-func extractRefmanCh26MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
+func extractRefmanCh27MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
 	t.Helper()
-	path := filepath.Join("sdk", "docs", "refman", "26-6502.md")
+	path := filepath.Join("sdk", "docs", "refman", "27-6502.md")
 	return extractRefman6502MonitorBytesFromFile(t, path, heading, startAddr)
 }
 
-func extractRefmanCh32MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
+func extractRefmanCh33MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
 	t.Helper()
-	path := filepath.Join("sdk", "docs", "refman", "32-iemon.md")
+	path := filepath.Join("sdk", "docs", "refman", "33-iemon.md")
 	return extractRefman6502MonitorBytesFromFile(t, path, heading, startAddr)
 }
 
-func TestRefmanCh26POKEYChordExample(t *testing.T) {
-	wantProgram := refmanCh26POKEYChordProgram()
-	docProgram := extractRefmanCh26MonitorBytes(t, "## 26.8 A small example", uint64(PROG_START))
+func TestRefmanCh27POKEYChordExample(t *testing.T) {
+	wantProgram := refmanCh27POKEYChordProgram()
+	docProgram := extractRefmanCh27MonitorBytes(t, "## 27.8 A small example", uint64(PROG_START))
 	if !bytes.Equal(docProgram, wantProgram) {
 		t.Fatalf("manual monitor bytes = % X, want % X", docProgram, wantProgram)
 	}
@@ -211,11 +211,11 @@ func TestRefmanCh26POKEYChordExample(t *testing.T) {
 	}
 }
 
-func TestRefmanCh26ULAGraphicsExample(t *testing.T) {
+func TestRefmanCh27ULAGraphicsExample(t *testing.T) {
 	const start = 0x1100
 
-	wantProgram := refmanCh26ULAGraphicsProgram()
-	docProgram := extractRefmanCh26MonitorBytes(t, "## 26.9 ULA graphics example", start)
+	wantProgram := refmanCh27ULAGraphicsProgram()
+	docProgram := extractRefmanCh27MonitorBytes(t, "## 27.9 ULA graphics example", start)
 	if !bytes.Equal(docProgram, wantProgram) {
 		t.Fatalf("manual monitor bytes = % X, want % X", docProgram, wantProgram)
 	}
@@ -315,12 +315,12 @@ func TestRefmanCh26ULAGraphicsExample(t *testing.T) {
 	}
 }
 
-func TestRefmanCh32ULAGraphicsWorkflowBytes(t *testing.T) {
+func TestRefmanCh33ULAGraphicsWorkflowBytes(t *testing.T) {
 	const start = 0x1100
 
-	wantProgram := refmanCh26ULAGraphicsProgram()
-	docProgram := extractRefmanCh32MonitorBytes(t, "### 32.4.2 Byte-entry graphics workflow", start)
+	wantProgram := refmanCh27ULAGraphicsProgram()
+	docProgram := extractRefmanCh33MonitorBytes(t, "### 33.4.3 Byte-entry graphics workflow", start)
 	if !bytes.Equal(docProgram, wantProgram) {
-		t.Fatalf("Chapter 32 ULA workflow bytes = % X, want % X", docProgram, wantProgram)
+		t.Fatalf("Chapter 33 ULA workflow bytes = % X, want % X", docProgram, wantProgram)
 	}
 }

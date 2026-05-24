@@ -427,8 +427,8 @@ direct-mode prompt:
 | `CLEAR`           | Delete all variables and arrays; keep the program. |
 | `RUN`             | Run the program from the lowest line. Numeric line arguments are not parsed, so `RUN 100` behaves like `RUN`. |
 | `CONT`            | Continue from where `STOP` halted. |
-| `SAVE "name"`     | Save the program to a file (Chapter 34). |
-| `LOAD "name"`     | Load a program from a file (Chapter 34). |
+| `SAVE "name"`     | Save the program to a file (Chapter 35). |
+| `LOAD "name"`     | Load a program from a file (Chapter 35). |
 | `DIR`             | Show available filenames (direct mode only). |
 
 `DIR` is a direct-mode command. It cannot appear inside a program

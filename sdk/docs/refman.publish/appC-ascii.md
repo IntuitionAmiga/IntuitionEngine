@@ -15,7 +15,7 @@ the terminal sends in is the byte you get back.
 ## C.1 Control codes (0-31)
 
 These bytes have no printed glyph. Three of them have meaning to the
-terminal; the rest pass through to TERM_OUT (Chapter 37) and have no
+terminal; the rest pass through to TERM_OUT (Chapter 38) and have no
 visible effect.
 
 | Dec | Hex   | Name | Effect on the terminal |

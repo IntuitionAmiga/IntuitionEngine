@@ -2229,7 +2229,7 @@ func TestEhBASIC_HostHelpAndBareHostPrintHelp(t *testing.T) {
 	}
 }
 
-func TestRefmanCh35HostHelpExample(t *testing.T) {
+func TestRefmanCh36HostHelpExample(t *testing.T) {
 	asmBin := buildAssembler(t)
 	var hostMMIOWrites int
 	out, _ := execStmtTestCore(t, asmBin, "10 HOST HELP\n20 PRINT \"AFTER HELP\"", func(h *ehbasicTestHarness) {
@@ -2242,26 +2242,26 @@ func TestRefmanCh35HostHelpExample(t *testing.T) {
 
 	for _, want := range []string{"HOST NET", "HOST UPDATE", "HOST REBOOT", "HOST POWEROFF", "HOST HELP", "AFTER HELP"} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("Chapter 35 HOST HELP example missing %q in output %q", want, out)
+			t.Fatalf("Chapter 36 HOST HELP example missing %q in output %q", want, out)
 		}
 	}
 	if hostMMIOWrites != 0 {
-		t.Fatalf("Chapter 35 HOST HELP example wrote to HOST MMIO %d times", hostMMIOWrites)
+		t.Fatalf("Chapter 36 HOST HELP example wrote to HOST MMIO %d times", hostMMIOWrites)
 	}
 }
 
-func TestRefmanCh35HostStatusExample(t *testing.T) {
+func TestRefmanCh36HostStatusExample(t *testing.T) {
 	asmBin := buildAssembler(t)
 	out, _ := execStmtTestCore(t, asmBin, `10 PRINT "HOST STATUS ";PEEK(&H000F1408)`, func(h *ehbasicTestHarness) {
 		RegisterHostHelperMMIO(h.bus, NewHostHelperWithRunner(false, false, nil))
 	})
 
 	if !strings.Contains(out, "HOST STATUS 5") {
-		t.Fatalf("Chapter 35 HOST status example expected idle status 5, got %q", out)
+		t.Fatalf("Chapter 36 HOST status example expected idle status 5, got %q", out)
 	}
 }
 
-func TestRefmanCh36InputMMIOExample(t *testing.T) {
+func TestRefmanCh37InputMMIOExample(t *testing.T) {
 	asmBin := buildAssembler(t)
 	program := `10 IF PEEK(&H000F072C)=0 THEN PRINT "NO KEY":GOTO 100
 20 K=PEEK(&H000F0728)
@@ -2289,12 +2289,12 @@ func TestRefmanCh36InputMMIOExample(t *testing.T) {
 
 	for _, want := range []string{"KEY", "65", "SCAN", "30", "MOD", "1", "MOUSE", "123", "45", "DELTA", "5", "6", "SECONDS"} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("Chapter 36 input MMIO example missing %q in output %q", want, out)
+			t.Fatalf("Chapter 37 input MMIO example missing %q in output %q", want, out)
 		}
 	}
 }
 
-func TestRefmanCh37TerminalSerialExample(t *testing.T) {
+func TestRefmanCh38TerminalSerialExample(t *testing.T) {
 	asmBin := buildAssembler(t)
 	program := `10 POKE &H000F0700,ASC("?")
 20 PRINT "READY ";PEEK(&H000F0704)
@@ -2315,7 +2315,7 @@ func TestRefmanCh37TerminalSerialExample(t *testing.T) {
 
 	for _, want := range []string{"?", "READY", "GOT", "65", "ECHO", "1", "0", "LINE"} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("Chapter 37 terminal serial example missing %q in output %q", want, out)
+			t.Fatalf("Chapter 38 terminal serial example missing %q in output %q", want, out)
 		}
 	}
 }
@@ -3715,7 +3715,7 @@ func TestHW_Wait(t *testing.T) {
 	}
 }
 
-func TestRefmanCh30WaitExample(t *testing.T) {
+func TestRefmanCh31WaitExample(t *testing.T) {
 	asmBin := buildAssembler(t)
 	out, h := execStmtTestWithBus(t, asmBin,
 		"10 REM CHOOSE A WORD OF SHARED RAM\n20 A=&H00050000\n30 REM CLEAR IT, THEN SHOW THE STARTING VALUE\n40 POKE A,0\n50 PRINT \"BEFORE \";PEEK(A)\n60 REM SET BIT 2 AND WAIT FOR THAT BIT\n70 POKE A,4\n80 WAIT A,4\n90 PRINT \"AFTER \";PEEK(A)")
@@ -10169,7 +10169,7 @@ func TestHW_Save_Simple(t *testing.T) {
 	}
 }
 
-func TestRefmanCh34FileIOMMIOExample(t *testing.T) {
+func TestRefmanCh35FileIOMMIOExample(t *testing.T) {
 	asmBin := buildAssembler(t)
 	tmpDir := t.TempDir()
 
@@ -10195,12 +10195,12 @@ func TestRefmanCh34FileIOMMIOExample(t *testing.T) {
 
 	out, h := execStmtTestWithFileIO(t, asmBin, tmpDir, program)
 	if !strings.Contains(out, "WRITE") || !strings.Contains(out, "READ") || !strings.Contains(out, "LEN") {
-		t.Fatalf("Chapter 34 example did not print expected labels, got %q", out)
+		t.Fatalf("Chapter 35 example did not print expected labels, got %q", out)
 	}
 
 	got, err := os.ReadFile(filepath.Join(tmpDir, "NOTE.TXT"))
 	if err != nil {
-		t.Fatalf("Chapter 34 example did not create NOTE.TXT: %v", err)
+		t.Fatalf("Chapter 35 example did not create NOTE.TXT: %v", err)
 	}
 	if string(got) != "IE" {
 		t.Fatalf("NOTE.TXT content expected %q, got %q", "IE", string(got))
@@ -10947,7 +10947,7 @@ func execStmtTestWithCoproc(t *testing.T, asmBin string, program string, baseDir
 	return out, h, mgr
 }
 
-func TestRefmanCh31CoprocessorNoWorkerExample(t *testing.T) {
+func TestRefmanCh32CoprocessorNoWorkerExample(t *testing.T) {
 	asmBin := buildAssembler(t)
 	prog := `10 REM PUT REQUEST AND RESPONSE BUFFERS IN SHARED RAM
 20 REQ=&H00030000:RESP=&H00030100

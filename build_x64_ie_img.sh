@@ -273,7 +273,7 @@ check_live_payload_inputs() {
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/c/*.c" "make sdk-build" "SDK C source examples"
     payload_require_glob "${REFMAN_PDF_DIR}/*.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide PDFs"
     payload_require_file "${REFMAN_PDF_DIR}/00-Preface.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide preface PDF"
-    payload_require_file "${REFMAN_PDF_DIR}/37-serial.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final chapter PDF"
+    payload_require_file "${REFMAN_PDF_DIR}/39-whole-machine-capstone.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final chapter PDF"
     payload_require_file "${REFMAN_PDF_DIR}/appK-block-diagrams.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final appendix PDF"
     if [[ -e "${REFMAN_PDF_DIR}/README.pdf" || -e "${REFMAN_PDF_DIR}/17-pokey-sap.pdf" ]]; then
         log_error "Stale refman PDF output found under ${REFMAN_PDF_DIR}"
@@ -321,7 +321,7 @@ verify_staged_share_payload() {
     fi
     payload_require_file "${payload_root}/Systems/README.TXT" "build_x64_ie_img.sh stage_share_payload" "Systems README"
     payload_require_file "${payload_root}/Docs/IEProgRefGuide/00-Preface.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide preface"
-    payload_require_file "${payload_root}/Docs/IEProgRefGuide/37-serial.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide final chapter"
+    payload_require_file "${payload_root}/Docs/IEProgRefGuide/39-whole-machine-capstone.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide final chapter"
     payload_require_file "${payload_root}/Docs/IEProgRefGuide/appK-block-diagrams.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide final appendix"
 
     payload_require_file "${payload_root}/Systems/AROS/S/Startup-Sequence" "make aros-release-assets" "staged AROS Startup-Sequence"

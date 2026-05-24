@@ -57,33 +57,34 @@ the same Intuition Engine.
 18. AHX Engine
 19. MOD Playback
 20. WAV Sample Player
-21. Paula DMA Engine
-22. Music from BASIC and from each CPU
+21. MIDI/MUS and RawlandMini GM Synth
+22. Paula DMA Engine
+23. Music from BASIC and from each CPU
 
 ### Part IV - BASIC to Machine Language
 
-23. Memory Model and MMIO Map
-24. IE64
-25. IE32
-26. 6502
-27. Z80
-28. M68K MC68020-Class
-29. x86
-30. Processor Timing, Traps, and Exceptions
-31. Coprocessor and Cross-CPU Calls
-32. IE Mon - the Machine Monitor
-33. IE Script
+24. Memory Model and MMIO Map
+25. IE64
+26. IE32
+27. 6502
+28. Z80
+29. M68K MC68020-Class
+30. x86
+31. Processor Timing, Traps, and Exceptions
+32. Coprocessor and Cross-CPU Calls
+33. IE Mon - the Machine Monitor
+34. IE Script
 
 ### Part V - Input / Output Guide
 
-34. Disk and File I/O
-35. The HOST Command
-36. Keyboard, Mouse, Controller MMIO
-37. Serial Devices
+35. Disk and File I/O
+36. The HOST Command
+37. Keyboard, Mouse, Controller MMIO
+38. Serial Devices
 
 ### Part VI - Whole-Machine Project
 
-38. Whole-Machine Capstone
+39. Whole-Machine Capstone
 
 ### Appendices
 

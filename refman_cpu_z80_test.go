@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func refmanCh27PSGChordProgram() []byte {
+func refmanCh28PSGChordProgram() []byte {
 	return []byte{
 		0x3E, 0x01, 0x32, 0x00, 0xF8,
 		0x21, 0x17, 0x10, 0x06, 0x0A,
@@ -21,7 +21,7 @@ func refmanCh27PSGChordProgram() []byte {
 	}
 }
 
-func refmanCh27ANTICGraphicsProgram() []byte {
+func refmanCh28ANTICGraphicsProgram() []byte {
 	return []byte{
 		0x21, 0x46, 0x11,
 		0x11, 0x00, 0x20,
@@ -46,10 +46,10 @@ func refmanCh27ANTICGraphicsProgram() []byte {
 	}
 }
 
-func extractRefmanCh27MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
+func extractRefmanCh28MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
 	t.Helper()
 
-	path := filepath.Join("sdk", "docs", "refman", "27-z80.md")
+	path := filepath.Join("sdk", "docs", "refman", "28-z80.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -101,9 +101,9 @@ func extractRefmanCh27MonitorBytes(t *testing.T, heading string, startAddr uint6
 	return program
 }
 
-func TestRefmanCh27Z80PSGChordExample(t *testing.T) {
-	wantProgram := refmanCh27PSGChordProgram()
-	docProgram := extractRefmanCh27MonitorBytes(t, "## 27.7 A small example", uint64(PROG_START))
+func TestRefmanCh28Z80PSGChordExample(t *testing.T) {
+	wantProgram := refmanCh28PSGChordProgram()
+	docProgram := extractRefmanCh28MonitorBytes(t, "## 28.7 A small example", uint64(PROG_START))
 	if !bytes.Equal(docProgram, wantProgram) {
 		t.Fatalf("manual monitor bytes = % X, want % X", docProgram, wantProgram)
 	}
@@ -193,11 +193,11 @@ func TestRefmanCh27Z80PSGChordExample(t *testing.T) {
 	}
 }
 
-func TestRefmanCh27Z80ANTICGraphicsExample(t *testing.T) {
+func TestRefmanCh28Z80ANTICGraphicsExample(t *testing.T) {
 	const start = 0x1100
 
-	wantProgram := refmanCh27ANTICGraphicsProgram()
-	docProgram := extractRefmanCh27MonitorBytes(t, "## 27.8 ANTIC graphics example", start)
+	wantProgram := refmanCh28ANTICGraphicsProgram()
+	docProgram := extractRefmanCh28MonitorBytes(t, "## 28.8 ANTIC graphics example", start)
 	if !bytes.Equal(docProgram, wantProgram) {
 		t.Fatalf("manual monitor bytes = % X, want % X", docProgram, wantProgram)
 	}

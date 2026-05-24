@@ -84,7 +84,7 @@ func (r *ie64TestRig) executeN(instructions ...[]byte) {
 	r.cpu.Execute()
 }
 
-func refmanCh24IE64SoundChipChordProgram() []byte {
+func refmanCh25IE64SoundChipChordProgram() []byte {
 	var program []byte
 	emit := func(instr []byte) {
 		program = append(program, instr...)
@@ -122,7 +122,7 @@ func refmanCh24IE64SoundChipChordProgram() []byte {
 	return program
 }
 
-func refmanCh24IE64Mode7Program() []byte {
+func refmanCh25IE64Mode7Program() []byte {
 	var program []byte
 	emit := func(instr []byte) {
 		program = append(program, instr...)
@@ -172,9 +172,9 @@ func refmanCh24IE64Mode7Program() []byte {
 	return program
 }
 
-func extractRefmanCh24MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
+func extractRefmanCh25MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
 	t.Helper()
-	path := filepath.Join(repoRootDir(t), "sdk", "docs", "refman", "24-ie64.md")
+	path := filepath.Join(repoRootDir(t), "sdk", "docs", "refman", "25-ie64.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", path, err)
@@ -199,14 +199,14 @@ func extractRefmanCh24MonitorBytes(t *testing.T, heading string, startAddr uint6
 		}
 		fields := strings.Fields(line)
 		if len(fields) < 4 {
-			t.Fatalf("malformed Chapter 24 monitor write line: %q", line)
+			t.Fatalf("malformed Chapter 25 monitor write line: %q", line)
 		}
 		addr, err := strconv.ParseUint(fields[2], 16, 64)
 		if err != nil {
 			t.Fatalf("parse monitor write address %q: %v", fields[2], err)
 		}
 		if addr != wantAddr {
-			t.Fatalf("Chapter 24 monitor write address = 0x%X, want 0x%X", addr, wantAddr)
+			t.Fatalf("Chapter 25 monitor write address = 0x%X, want 0x%X", addr, wantAddr)
 		}
 		for _, field := range fields[3:] {
 			value, err := strconv.ParseUint(field, 16, 8)
@@ -218,16 +218,16 @@ func extractRefmanCh24MonitorBytes(t *testing.T, heading string, startAddr uint6
 		}
 	}
 	if len(program) == 0 {
-		t.Fatal("no Chapter 24 monitor byte writes found")
+		t.Fatal("no Chapter 25 monitor byte writes found")
 	}
 	return program
 }
 
-func TestRefmanCh24IE64SoundChipChordExample(t *testing.T) {
-	wantProgram := refmanCh24IE64SoundChipChordProgram()
-	docProgram := extractRefmanCh24MonitorBytes(t, "## 24.10 A small example", PROG_START)
+func TestRefmanCh25IE64SoundChipChordExample(t *testing.T) {
+	wantProgram := refmanCh25IE64SoundChipChordProgram()
+	docProgram := extractRefmanCh25MonitorBytes(t, "## 25.10 A small example", PROG_START)
 	if !bytes.Equal(docProgram, wantProgram) {
-		t.Fatalf("Chapter 24 byte listing does not match expected IE64 encoding\n got: % X\nwant: % X", docProgram, wantProgram)
+		t.Fatalf("Chapter 25 byte listing does not match expected IE64 encoding\n got: % X\nwant: % X", docProgram, wantProgram)
 	}
 
 	readMem := func(addr uint64, size int) []byte {
@@ -328,12 +328,12 @@ func TestRefmanCh24IE64SoundChipChordExample(t *testing.T) {
 	}
 }
 
-func TestRefmanCh24IE64Mode7GraphicsExample(t *testing.T) {
+func TestRefmanCh25IE64Mode7GraphicsExample(t *testing.T) {
 	const startAddr = 0x1100
-	wantProgram := refmanCh24IE64Mode7Program()
-	docProgram := extractRefmanCh24MonitorBytes(t, "## 24.11 VideoChip Mode 7 example", startAddr)
+	wantProgram := refmanCh25IE64Mode7Program()
+	docProgram := extractRefmanCh25MonitorBytes(t, "## 25.11 VideoChip Mode 7 example", startAddr)
 	if !bytes.Equal(docProgram, wantProgram) {
-		t.Fatalf("Chapter 24 Mode 7 byte listing does not match expected IE64 encoding\n got: % X\nwant: % X", docProgram, wantProgram)
+		t.Fatalf("Chapter 25 Mode 7 byte listing does not match expected IE64 encoding\n got: % X\nwant: % X", docProgram, wantProgram)
 	}
 
 	readMem := func(addr uint64, size int) []byte {

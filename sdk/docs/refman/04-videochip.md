@@ -1041,6 +1041,6 @@ machine language looks like this:
 6. Optionally start the copper to change registers per-scanline,
    start the blitter for fast copies, or program a raster band.
 
-Chapter 23 describes how the address constants above appear in
+Chapter 24 describes how the address constants above appear in
 machine-language programs. Chapter 10 shows how tile and sprite
 layers map onto the framebuffer.

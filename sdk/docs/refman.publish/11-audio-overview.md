@@ -25,9 +25,10 @@ result to the audio output.
 | AHX           | 18 | AHX song playback |
 | MOD           | 19 | Four-channel tracker playback |
 | WAV           | 20 | PCM sample playback |
-| Paula DMA     | 21 | Four DMA sample channels |
+| MIDI/MUS      | 21 | SMF and Doom MUS playback through RawlandMini |
+| Paula DMA     | 22 | Four DMA sample channels |
 
-Chapter 22 gives BASIC music recipes that combine these engines. The
+Chapter 23 gives BASIC music recipes that combine these engines. The
 CPU chapters use different engines in their hand-entered machine-code
 examples so that the byte-entry programs are audibly different.
 
@@ -50,6 +51,7 @@ sample playback.
 | AHX | Four synthetic music voices from AHX or THX module data | You want a chip-tune song format without sample data |
 | MOD | Four-channel sample tracker playback with pattern and effect data | You want Amiga-style tracker music from one memory block |
 | WAV | RIFF/WAVE PCM parsing, resampling, and stereo or mono output | You want recorded audio, speech, stings, or test tones |
+| MIDI/MUS | SMF type 0/1 and Doom MUS parsing, 16 MIDI channels, 10 active RawlandMini voices, GM-style programme families, drum channel, tempo, volume, loop, pause, and pitch bend | You want file-based melodic music with a built-in GM-style patch table |
 | Paula DMA | Four low-level signed 8-bit sample DMA channels with period and completion bits | You want exact sample-buffer control or Amiga-style DMA timing |
 
 ## 11.3 Master control
@@ -177,7 +179,7 @@ Longer songs and sample files can be started through the media loader.
 | `$F2304`  | `MEDIA_SUBSONG`  | Subsong number. |
 | `$F2308`  | `MEDIA_CTRL`     | `1` play, `2` stop. |
 | `$F230C`  | `MEDIA_STATUS`   | `0` idle, `1` loading, `2` playing, `3` error. |
-| `$F2310`  | `MEDIA_TYPE`     | `1` SID, `2` PSG, `3` TED, `4` AHX, `5` POKEY, `6` MOD, `7` WAV. |
+| `$F2310`  | `MEDIA_TYPE`     | `1` SID, `2` PSG, `3` TED, `4` AHX, `5` POKEY, `6` MOD, `7` WAV, `8` MIDI/MUS. |
 | `$F2314`  | `MEDIA_ERROR`    | `0` ok, `1` not found, `2` bad format, `3` unsupported, `4` invalid path, `5` too large. |
 
 Native BASIC forms:
@@ -271,6 +273,7 @@ keeps those listings from becoming five copies of the same explanation.
 | `AHX ...` | AHX playback. |
 | `SOUND MOD ...` / `MOD STATUS` | MOD playback. |
 | `SOUND PLAY` or raw WAV registers | WAV playback. |
+| `SOUND PLAY` or raw MIDI registers | MIDI/MUS playback. |
 
 ## 11.11 Limits
 

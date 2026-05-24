@@ -7,9 +7,10 @@ music. The program supplies a complete WAV block, including header and
 sample bytes; the player parses it, resamples it, and writes the result
 to two adjacent SoundChip DAC channels.
 
-Use Paula DMA in Chapter 21 when you want lower-level timing control.
-Use the SFX sample trigger in Chapter 12 when you already have raw PCM
-bytes and do not want a WAV header.
+Use MIDI/MUS playback in Chapter 21 when the source is note music rather
+than sampled audio. Use Paula DMA in Chapter 22 when you want lower-level
+timing control. Use the SFX sample trigger in Chapter 12 when you already
+have raw PCM bytes and do not want a WAV header.
 
 ## 20.1 First sound
 

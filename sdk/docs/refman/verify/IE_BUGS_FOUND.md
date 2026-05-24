@@ -94,7 +94,7 @@ Format:
     following the FOR line) and returned R28=1 to the outer
     exec_next_line walker. That worked for multi-line FOR (body on
     later lines) but unconditionally skipped any body that sat on the
-    FOR statement's own line behind a colon — and also bypassed the
+    FOR statement's own line behind a colon, and also bypassed the
     statement after NEXT on a one-liner, hence the
     `?NEXT WITHOUT FOR` from the second iteration when run in direct
     mode.
@@ -111,7 +111,7 @@ Format:
       before.
     Same code path drives both shapes; no special-case for the
     one-liner.
-  rebuild: `make basic` (canonical target — `ie64asm` + ROM rebuild + Go binary with `-tags embed_basic`)
+  rebuild: `make basic` (canonical target: `ie64asm` + ROM rebuild + Go binary with `-tags embed_basic`)
   notes: |
     Confirmed via chapter 01 PRM sweep: the case
       `RUN` against `10 DIM A(10) / 20 FOR I=0 TO 10:A(I)=I*I:NEXT /
@@ -124,7 +124,7 @@ Format:
   short: spaces around binary operators in expressions break operator recognition
   status: FIXED
   found-by: PRM harness, sweep 2026-05-23, sdk/docs/refman/01-basic-rules.md (chapter 1 comparisons-as-numbers example)
-  fixed-by: sdk/include/ehbasic_expr.inc — added space-skip pre-checks to expr_compare, expr_add, expr_mul, expr_power and a space-skip at the head of expr_unary, sweep 2026-05-23
+  fixed-by: sdk/include/ehbasic_expr.inc, added space-skip pre-checks to expr_compare, expr_add, expr_mul, expr_power and a space-skip at the head of expr_unary, sweep 2026-05-23
   component: ehbasic-rom (embedded image `sdk/examples/prebuilt/ehbasic_ie64.ie64`, built from sdk/include/ehbasic_*.inc via `make basic`)
   reproducer: |
     NEW
@@ -145,7 +145,7 @@ Format:
     -10
     (Original spaced form passes unchanged; chapter 1 keeps the
     readable `PRINT 10 * (A>B)` shape. Same fix also rescues the
-    general case — `PRINT 1 + 2`, `PRINT 2 ^ 10`, `PRINT A > B`
+    general case: `PRINT 1 + 2`, `PRINT 2 ^ 10`, `PRINT A > B`
     with arbitrary whitespace around the operator all work now.)
   fix-location: |
     sdk/include/ehbasic_expr.inc.
@@ -171,18 +171,18 @@ Format:
     (.cmp_loop / .add_loop / .mul_loop / .pow_loop) and at the
     head of expr_unary, matching the pattern already used by
     expr_or/expr_and/expr_not_inline.
-  rebuild: `make basic` (canonical target — `ie64asm` + ROM rebuild + Go binary with `-tags embed_basic`)
+  rebuild: `make basic` (canonical target: `ie64asm` + ROM rebuild + Go binary with `-tags embed_basic`)
   notes: |
     Confirmed via chapter 01 PRM sweep: the case
       `PRINT 10 * (A>B)`
     transitions from FAIL to PASS while every other chapter 01 case
     stays green (25/25). Manual probes on chapters 02 (`PRINT 12 AND
-    10`, `PRINT 12 EOR 10`) still pass — the AND/OR/EOR space-skip
+    10`, `PRINT 12 EOR 10`) still pass; the AND/OR/EOR space-skip
     that was already present is unchanged, and the new arithmetic
     space-skips do not introduce ambiguity with those operators.
 
 - id: IE-PRM-0003
-  short: IE32 monitor `m` bypasses bus — MMIO chip state never visible
+  short: IE32 monitor `m` bypasses bus, MMIO chip state never visible
   status: FIXED
   fixed-by: |
     debug_cpu_ie32.go DebugIE32.ReadMemory/WriteMemory rewritten
@@ -190,19 +190,19 @@ Format:
     ReadMemory/WriteMemory fast path now skips raw access when the
     target range overlaps an MMIO region (new helper
     DebugIE64.memoryRangeHasIO mirrors DebugM68K.memoryRangeHasIO).
-    Confirmed against chapter 25 fixture: `m F0C31 1` now returns
+    Confirmed against chapter 26 fixture: `m F0C31 1` now returns
     a row whose first byte is `01` (SN_PORT_READY ready bit, sourced
     from sn76489_chip.go HandleRead) instead of the pre-fix `00`
-    RAM shadow. Remaining chapter 25 `m F0C31 1` diff is pure
+    RAM shadow. Remaining chapter 26 `m F0C31 1` diff is pure
     doc-format (count semantic + address-width digits) and is
     handled by the standard doc-bug correction pass, not by IE.
-  found-by: PRM harness, sweep 2026-05-23, sdk/docs/refman/25-ie32.md (chapter 25 SN_PORT_READY readback at $F0C31)
+  found-by: PRM harness, sweep 2026-05-23, sdk/docs/refman/26-ie32.md (chapter 26 SN_PORT_READY readback at $F0C31)
   component: ie-core debug layer (`debug_cpu_ie32.go`, possibly also `debug_cpu_ie64.go` low-address fast path)
   reproducer: |
-    Run the iemon child for chapter 25's chord example, halt at the
+    Run the iemon child for chapter 26's chord example, halt at the
     self-loop, then:
       (ie32)> m F0C31 1
-    Expected (per chapter 25 prose and per `sn76489_chip.go`
+    Expected (per chapter 26 prose and per `sn76489_chip.go`
     HandleRead which always returns 1 for SN_PORT_READY):
       F0C31: 01
     Actual:
@@ -215,7 +215,7 @@ Format:
     The monitor reads return zero (or any RAM-shadow value) instead
     of the chip's HandleRead response. Confirmed by tracing the read
     path: `debug_cpu_ie32.go:384` (`DebugIE32.ReadMemory`) returns
-    `cpu.memory[start:start+size]` directly — a raw RAM slice. The
+    `cpu.memory[start:start+size]` directly, a raw RAM slice. The
     chip's HandleRead is never consulted. Compare with
     `debug_cpu_x86.go:384` and `debug_cpu_z80.go:385`, both of which
     correctly route through `cpu.bus.Read`. The IE64 fast path
@@ -224,22 +224,21 @@ Format:
     certainly affects IE64 chapters too once any IE64 example needs
     to inspect a chip status register through `m`.
   fix-location: |
-    `debug_cpu_ie32.go` — `DebugIE32.ReadMemory` (and matching
+    `debug_cpu_ie32.go`, `DebugIE32.ReadMemory` (and matching
     `WriteMemory`) must route through `d.cpu.bus.Read8` /
     `bus.Write8` so MMIO chips get their HandleRead / HandleWrite
-    callbacks. Verify against the chapter 25 example and any
+    callbacks. Verify against the chapter 26 example and any
     additional ie32 chapter cases that read status registers via
     `m`. Repeat the same audit on `debug_cpu_ie64.go` and add the
     bus route for low addresses that overlap MMIO regions.
-  rebuild: standard Go rebuild — `go build -tags embed_basic .`
+  rebuild: standard Go rebuild: `go build -tags embed_basic .`
     (the debug layer is part of the host binary, not the embedded
     EhBASIC ROM, so `make basic`'s asm step is not required).
   notes: |
-    Not a CPU exec bug — the IE32 / IE64 CPU exec paths already use
+    Not a CPU exec bug. The IE32 / IE64 CPU exec paths already use
     bus access for loads, and the issue is confined to the
     monitor's diagnostic ReadMemory shortcut. The CPU-core "fix in
     every interpreter and JIT" rule (plan §7) therefore does not
-    apply here; this is a single debug-layer fix. Re-run chapters
-    24, 25 (and any other IE32/IE64 iemon chapters) after the fix
+    apply here; this is a single debug-layer fix. Re-run chapters 25, 25 (and any other IE32/IE64 iemon chapters) after the fix
     and confirm the chip-status reads now return the documented
     values.

@@ -1875,7 +1875,7 @@ func TestScriptEngine_VideoDeviceWrappers(t *testing.T) {
 	}
 }
 
-func TestRefmanCh33ScriptVideoExample(t *testing.T) {
+func TestRefmanCh34ScriptVideoExample(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()
 	comp := NewVideoCompositor(nil)
@@ -1922,7 +1922,7 @@ func TestRefmanCh33ScriptVideoExample(t *testing.T) {
 	}
 }
 
-func TestRefmanCh33ScriptAudioExample(t *testing.T) {
+func TestRefmanCh34ScriptAudioExample(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()
 	comp := NewVideoCompositor(nil)

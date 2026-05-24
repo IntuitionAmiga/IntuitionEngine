@@ -133,15 +133,15 @@ Current controlled polish pass:
   and the source layer constants.
 - Fix the final consistency review items: Appendix D must describe
   `VIDEO_STATUS` with the `HAS_CONTENT`, `VBLANK`, and `FB_ERR` bits
-  from `video_chip.go`; Chapter 23, Appendix D, and Appendix J must use
-  the TED video range ending at `$F0F6B`; Chapter 23 must not label the
+  from `video_chip.go`; Chapter 24, Appendix D, and Appendix J must use
+  the TED video range ending at `$F0F6B`; Chapter 24 must not label the
   `$F0C40` and `$F0D40` SoundChip flex blocks as real SID2/SID3
   registers; Appendix E must use the TED `1024 - register` pitch model
   from Chapter 16 and `ted_engine.go`; and Appendix L must include the
   common register-level lookup terms raised by review.
 - Integrate the IE64 monitor assembler added in commit `9868100`.
   This is an IE-native monitor feature, not a host toolchain. Chapter
-  24 and Chapter 32 may teach `A addr` as the readable way to enter
+  25 and Chapter 33 may teach `A addr` as the readable way to enter
   IE64 one-instruction-at-a-time code, but the book must keep emitted
   bytes, `d` disassembly, and run/inspection results as the proof path.
   Non-IE64 CPU chapters remain byte-entry chapters unless IE Mon gains
@@ -150,6 +150,21 @@ Current controlled polish pass:
   monitor wrappers, so published `A` transcripts are marked as text and
   verified against `debug_asm` and `internal/asm/ie64` tests. The
   paired byte-entry transcript remains the runnable PRM sweep path.
+- Integrate SMF, Doom MUS, and the RawlandMini GM synth path added in
+  commit `0ff06b2`. This is a first-class audio player/synth path, not
+  a footnote under the media loader. Insert a new Chapter 21,
+  "MIDI/MUS and RawlandMini GM Synth", after WAV and before Paula DMA.
+  Renumber Paula and every following chapter by one, update all
+  reader-facing chapter references, update the preface contents, and
+  regenerate the publish tree and PDFs only after the source tree is
+  internally consistent. Claims about this feature must be checked
+  against `midi_constants.go`, `midi_parser.go`, `midi_engine.go`,
+  `midi_player.go`, `media_loader.go`, `media_loader_constants.go`,
+  `script_engine.go`, `registers.go`, the SDK include files, and the
+  MIDI/media ABI tests. The book may describe the built-in table as
+  `RawlandMini`, with GM program and drum mapping, but must not imply
+  external soundfont loading or exact external GM hardware emulation
+  unless the source implements it.
 - Add a small whole-machine capstone chapter that touches graphics,
   audio, file I/O, and the coprocessor status path from BASIC.
 - Add a traditional lookup index appendix and include it in the
@@ -305,7 +320,7 @@ byte stream would be hard to follow. The `A` transcript must be
 native to IE Mon and must show the monitor's emitted bytes for each
 instruction shown. Do not present standalone source-file assembly as
 the reader workflow, and do not remove the byte-entry proof unless the
-example is a tiny local demonstration of `A` itself in Chapter 32.
+  example is a tiny local demonstration of `A` itself in Chapter 33.
 
 CPU chapter examples should do visible and audible machine tasks, not
 only store a sentinel byte in RAM. Each CPU chapter needs two native
@@ -324,17 +339,17 @@ commentary for every instruction group and data table. The text should
 tell the reader what they should see, what memory or registers prove it,
 and what one safe visual parameter they can change.
 
-Use this target spread for Chapters 24-29 unless source truth forces a
+Use this target spread for Chapters 25-30 unless source truth forces a
 better assignment:
 
 | Chapter | CPU  | Audio proof target | Graphics showcase target |
 |---------|------|--------------------|--------------------------|
-| 24 | IE64 | SoundChip chord | VideoChip Mode 7 affine texture or, if that is too large for hand entry, VideoChip blitter/copper with visible raster output |
-| 25 | IE32 | SN76489 chord | VGA text/attribute or palette display |
-| 26 | 6502 | POKEY chord | ULA bitmap plus attribute memory |
-| 27 | Z80 | PSG chord | ANTIC/GTIA display-list or playfield-colour setup |
-| 28 | M68K | SID voice | Voodoo textured or shaded primitive |
-| 29 | x86 | TED audio | TED video colour or raster feature |
+| 25 | IE64 | SoundChip chord | VideoChip Mode 7 affine texture or, if that is too large for hand entry, VideoChip blitter/copper with visible raster output |
+| 26 | IE32 | SN76489 chord | VGA text/attribute or palette display |
+| 27 | 6502 | POKEY chord | ULA bitmap plus attribute memory |
+| 28 | Z80 | PSG chord | ANTIC/GTIA display-list or playfield-colour setup |
+| 29 | M68K | SID voice | Voodoo textured or shaded primitive |
+| 30 | x86 | TED audio | TED video colour or raster feature |
 
 Across the CPU chapters, vary both the sound engines and the video
 chips where practical so the examples teach the shared hardware map.
@@ -397,9 +412,17 @@ book-level structural targets:
   renumbering.
 - Turn Chapter 10 into a whole-machine graphics cookbook.
 - Make Chapter 11 the owner of common audio architecture, including
-  Plus processing as a shared pattern. Per-chip Plus sections should be
+  Plus processing as a shared pattern and the top-level audio engine
+  comparison. The comparison must include IE-native SoundChip/SFX,
+  MIDI/MUS with RawlandMini, legacy tone chips, tracker engines,
+  sample players, and Paula DMA. Per-chip Plus sections should be
   concise and non-repetitive.
-- Rewrite Chapter 31 as an identity chapter about cross-CPU work on
+- Insert the MIDI/MUS chapter as Chapter 21, then renumber the former
+  Chapter 21 Paula DMA through the whole-machine capstone by one.
+  Cross-references, section numbers, Appendix G CPU chapter labels,
+  Appendix L index entries, publish filenames, and generated PDFs must
+  agree with the new numbering.
+- Rewrite Chapter 32 as an identity chapter about cross-CPU work on
   one bus before documenting the ticket protocol.
 - Add examples where multiple CPUs and cards cooperate.
 - Run a strict appendix consistency pass against source-owned
@@ -414,7 +437,7 @@ format, player, or helper layered on top of it. A chapter about POKEY is
 `POKEY`; SAP playback is a section inside that chapter. A chapter about
 SID is `The SID Family`; SID player details are a section inside it.
 Apply the same pattern to PSG, SN76489, TED audio, AHX, MOD, WAV,
-VideoChip, VGA, ANTIC/GTIA, ULA, and Voodoo.
+MIDI/MUS, VideoChip, VGA, ANTIC/GTIA, ULA, and Voodoo.
 
 Use the same section order for programmable chips unless a chapter has a
 specific reason to differ:
@@ -472,7 +495,7 @@ The reader owns a real computer named Intuition Engine. The book never tells the
 
 ## Workflow per chapter
 
-1. Read the appropriate canonical source(s) - `.inc` files, EhBASIC asm, Go source, primary CPU manual for Ch 25-28.
+1. Read the appropriate canonical source(s) - `.inc` files, EhBASIC asm, Go source, primary CPU manual for Ch 26-29.
 2. Compose in the appropriate voice.
 3. Pick the reader workflow first: BASIC prompt, `POKE`/`PEEK`, IE
    Mon byte entry, or IE64 `A` mode paired with byte proof. Do not
@@ -511,7 +534,7 @@ A chapter is not complete until all of these are true:
 
 Within a chapter:
 
-> The accumulator is described in Chapter 24.
+> The accumulator is described in Chapter 25.
 > See Appendix G for the full opcode table.
 
 Never:

@@ -56,7 +56,7 @@ disassembler prints `???` for an unknown opcode.
 
 ## I.3 File I/O block
 
-When the File I/O block (Chapter 34) fails, `FILE_STATUS` reads
+When the File I/O block (Chapter 35) fails, `FILE_STATUS` reads
 `1` and `FILE_ERROR_CODE` is one of:
 
 | Code | Meaning |
@@ -68,7 +68,7 @@ When the File I/O block (Chapter 34) fails, `FILE_STATUS` reads
 
 ## I.4 HOST appliance block
 
-The status byte at `$F1408` (Chapter 35) reads one of:
+The status byte at `$F1408` (Chapter 36) reads one of:
 
 | Code | Meaning |
 |------|---------|
@@ -85,7 +85,7 @@ action-specific and is not normalised across subverbs.
 
 ## I.5 RUN loader block
 
-The RUN loader block (`RUN "<name>"`, Chapter 34) reports status:
+The RUN loader block (`RUN "<name>"`, Chapter 35) reports status:
 
 | Code | Meaning |
 |------|---------|
@@ -107,9 +107,35 @@ On error, the error register reports:
 `RUN` translates a non-zero result into `?FILE ERROR` for the
 file-error cases and `?FC ERROR` for the unsupported cases.
 
-## I.6 Coprocessor
+## I.6 Media loader
 
-`COSTATUS` (Chapter 31) reports:
+The media loader (`SOUND PLAY`, Chapter 23) reports status:
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Idle. |
+| `1`  | Loading. |
+| `2`  | Playing. |
+| `3`  | Error. |
+
+On error, `MEDIA_ERROR` reports:
+
+| Code | Meaning |
+|------|---------|
+| `0`  | OK. |
+| `1`  | File not found. |
+| `2`  | Bad format or read failure. |
+| `3`  | Unsupported extension. |
+| `4`  | Invalid filename. |
+| `5`  | File too large for the staging buffer. |
+
+For MIDI/MUS, bad SMF headers, unsupported SMF type `2`, SMPTE timing,
+bad MUS score ranges, and unsupported MUS event types all report as bad
+format.
+
+## I.7 Coprocessor
+
+`COSTATUS` (Chapter 32) reports:
 
 | Code | Constant | Meaning |
 |------|----------|---------|
@@ -124,9 +150,9 @@ file-error cases and `?FC ERROR` for the unsupported cases.
 timeout expires; call `COSTATUS(ticket)` afterwards to read the
 final code.
 
-## I.7 Raised by the CPU itself
+## I.8 Raised by the CPU itself
 
-Per CPU, the chapter (Ch 24-29) lists the trap and exception
+Per CPU, the chapter (Ch 25-30) lists the trap and exception
 vectors and their meanings. The monitor's `r` command displays
 the current trap source when a CPU has stopped at one. Common
 cross-CPU shapes:
@@ -141,4 +167,4 @@ cross-CPU shapes:
 - An undefined opcode raises the CPU's illegal-instruction
   vector (M68K vector 4, x86 `INT 6`, Z80 silently re-executes
   on most undocumented prefixes, 6502 documents the undocumented
-  opcodes - see Chapter 26).
+  opcodes - see Chapter 27).

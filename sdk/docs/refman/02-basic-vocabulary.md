@@ -54,7 +54,7 @@ stored program language and may not appear inside a stored program
 line.
 
 - **DIR** - list the names of files that BASIC can `LOAD`. See
-  Chapter 34.
+  Chapter 35.
 
 ## 2.3 Alphabetical reference
 
@@ -172,7 +172,7 @@ mapping, and `WAIT` waits until the blitter is idle. See Chapter 4.
 
 Load a binary file into memory beginning at *addr*. Both arguments
 are required; omitting the comma and address loads nothing. See
-Chapter 34.
+Chapter 35.
 
 ### BOX
 
@@ -185,7 +185,7 @@ Draw a rectangle. See Chapter 5.
 `CALL `*addr*
 
 Call IE64 machine code at *addr*. Returns to BASIC when the called
-code executes `RTS`. See Chapter 24 for the calling convention.
+code executes `RTS`. See Chapter 25 for the calling convention.
 
 ### CHR$
 
@@ -250,20 +250,20 @@ Returns the cosine of *expr*, where *expr* is in radians.
 
 `COSTART `*args*
 
-Start a coprocessor program. See Chapter 31.
+Start a coprocessor program. See Chapter 32.
 
 ### COSTOP
 
 `COSTOP `*args*
 
-Stop a coprocessor program. See Chapter 31.
+Stop a coprocessor program. See Chapter 32.
 
 ### COWAIT
 
 `COWAIT `*args*
 
 Wait for a coprocessor to reach a synchronisation point. See
-Chapter 31.
+Chapter 32.
 
 ### DATA
 
@@ -449,7 +449,7 @@ FF
 `HOST `*subverb*
 
 Issue a HOST command. *subverb* is one of `NET`, `UPDATE`,
-`REBOOT`, `POWEROFF`, `HELP`. See Chapter 35.
+`REBOOT`, `POWEROFF`, `HELP`. See Chapter 36.
 
 ### IF
 
@@ -537,7 +537,7 @@ ignored; BASIC always lists every line.
 
 `LOAD `*filename*
 
-Load a program file. See Chapter 34.
+Load a program file. See Chapter 35.
 
 ### LOCATE
 
@@ -771,7 +771,7 @@ variables and arrays; only the `DATA` pointer and the control
 stack are reset.
 
 `RUN "`*filename*`"` is a direct-mode form for running a saved
-program image. See Chapter 34.
+program image. See Chapter 35.
 
 ### SADD
 
@@ -792,7 +792,7 @@ Play a SAP music file through the POKEY. See Chapter 17.
 
 `SAVE `*filename*
 
-Save the program to a file. See Chapter 34.
+Save the program to a file. See Chapter 35.
 
 ### SCREEN
 
@@ -947,7 +947,7 @@ See **LOOP**.
 
 Call IE64 machine code at *addr*. The routine returns an integer
 value through the result register; `USR` returns that value as a
-number. See Chapter 24 for the calling convention.
+number. See Chapter 25 for the calling convention.
 
 ### VAL
 
@@ -1072,12 +1072,13 @@ those references:
 | ULA                                           | 8  |
 | VOODOO, ZBUFFER, VERTEX, TRIANGLE, TEXTURE    | 9  |
 | SOUND, ENVELOPE, GATE                         | 11 |
+| SOUND PLAY, SOUND STOP                        | 23 |
 | PSG                                           | 13 |
 | SID                                           | 15 |
 | POKEY, SAP                                    | 17 |
 | AHX                                           | 18 |
 | SOUND MOD, MOD STATUS                         | 19 |
-| HOST                                          | 35 |
-| COSTART, COSTOP, COWAIT                       | 31 |
-| CALL, USR                                     | 24 |
-| LOAD, SAVE, BLOAD, RUN "*.ie*"                | 34 |
+| HOST                                          | 36 |
+| COSTART, COSTOP, COWAIT                       | 32 |
+| CALL, USR                                     | 25 |
+| LOAD, SAVE, BLOAD, RUN "*.ie*"                | 35 |

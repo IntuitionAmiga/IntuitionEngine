@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func refmanCh29TEDAudioProgram() []byte {
+func refmanCh30TEDAudioProgram() []byte {
 	return []byte{
 		0xB0, 0x01, 0xA2, 0x00, 0x08, 0x0F, 0x00,
 		0xB0, 0x1C, 0xA2, 0x00, 0x0F, 0x0F, 0x00,
@@ -21,7 +21,7 @@ func refmanCh29TEDAudioProgram() []byte {
 	}
 }
 
-func refmanCh29TEDGraphicsProgram() []byte {
+func refmanCh30TEDGraphicsProgram() []byte {
 	return []byte{
 		0xB0, 0x01, 0xA2, 0x58, 0x0F, 0x0F, 0x00,
 		0xB0, 0x18, 0xA2, 0x20, 0x0F, 0x0F, 0x00,
@@ -42,10 +42,10 @@ func refmanCh29TEDGraphicsProgram() []byte {
 	}
 }
 
-func extractRefmanCh29MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
+func extractRefmanCh30MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
 	t.Helper()
 
-	path := filepath.Join("sdk", "docs", "refman", "29-x86.md")
+	path := filepath.Join("sdk", "docs", "refman", "30-x86.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -116,9 +116,9 @@ func readX86DocProgram(program []byte, start uint64) func(uint64, int) []byte {
 	}
 }
 
-func TestRefmanCh29X86TEDAudioExample(t *testing.T) {
-	wantProgram := refmanCh29TEDAudioProgram()
-	docProgram := extractRefmanCh29MonitorBytes(t, "## 29.7 A small example", uint64(PROG_START))
+func TestRefmanCh30X86TEDAudioExample(t *testing.T) {
+	wantProgram := refmanCh30TEDAudioProgram()
+	docProgram := extractRefmanCh30MonitorBytes(t, "## 30.7 A small example", uint64(PROG_START))
 	if !bytes.Equal(docProgram, wantProgram) {
 		t.Fatalf("manual monitor bytes = % X, want % X", docProgram, wantProgram)
 	}
@@ -184,11 +184,11 @@ func TestRefmanCh29X86TEDAudioExample(t *testing.T) {
 	}
 }
 
-func TestRefmanCh29X86TEDGraphicsExample(t *testing.T) {
+func TestRefmanCh30X86TEDGraphicsExample(t *testing.T) {
 	const start = 0x1100
 
-	wantProgram := refmanCh29TEDGraphicsProgram()
-	docProgram := extractRefmanCh29MonitorBytes(t, "## 29.8 TED video example", start)
+	wantProgram := refmanCh30TEDGraphicsProgram()
+	docProgram := extractRefmanCh30MonitorBytes(t, "## 30.8 TED video example", start)
 	if !bytes.Equal(docProgram, wantProgram) {
 		t.Fatalf("manual monitor bytes = % X, want % X", docProgram, wantProgram)
 	}

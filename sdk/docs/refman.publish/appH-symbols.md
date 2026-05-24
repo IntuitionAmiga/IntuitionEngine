@@ -105,7 +105,7 @@ flat address space directly.
 
 These addresses are the same in every CPU's 32-bit view of the
 bus. The 8-bit CPUs reach them through the bank-window
-mechanism described in Chapters 26 and 27.
+mechanism described in Chapters 27 and 28.
 
 | Address    | Meaning |
 |------------|---------|

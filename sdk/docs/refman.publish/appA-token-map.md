@@ -49,10 +49,10 @@ recognises them as literal characters at run time:
 - `DIR` is a direct-mode command. It is recognised only at the BASIC
   prompt and has no token byte. It cannot appear inside a program line.
 - `HOST` is recognised as a raw statement when the line runs. It has
-  no token byte. See Chapter 35 for the form and use of the HOST
+  no token byte. See Chapter 36 for the form and use of the HOST
   command.
 - `COSTART`, `COSTOP`, and `COWAIT` are recognised as raw statements
-  when the line runs. They have no token bytes. See Chapter 31.
+  when the line runs. They have no token bytes. See Chapter 32.
 - `TRICOLOR` is left as literal characters so the Voodoo dispatcher
   can recognise it at run time. See Chapter 9.
 

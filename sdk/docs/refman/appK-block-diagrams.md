@@ -49,7 +49,7 @@ pixels.
 
 ## K.2 The audio mixer
 
-The audio mixer has ten engine inputs (plus the SFX channels) and
+The audio mixer has separate engine inputs, plus the SFX channels, and
 one stereo output stream.
 
 ```
@@ -62,9 +62,10 @@ one stereo output stream.
    POKEY -----+--->  Mixer  --->  Overdrive ---> Filter ---> Reverb ---> Output
    TED audio -+      (sum,         (global)      (global)    (global)
    AHX -------+       per-chip      voice)
-   MOD -------+       gain,
-   WAV -------+       per-chip
-   Paula DMA -+       mute)
+   MIDI/MUS --+       gain,
+   MOD -------+       per-chip
+   WAV -------+       mute)
+   Paula DMA -+
               |
    SFX ch 0-3 +
 ```
@@ -116,12 +117,12 @@ priority encoding above the CPU / DMA distinction.
 IE32, M68K, and x86 are `32`-bit bus clients. The 8-bit CPUs (6502,
 Z80) reach the bus through an address translator that turns their
 16-bit address space into selected low-window bus addresses, with the
-bank registers described in Chapters 26 and 27 selecting which
+bank registers described in Chapters 27 and 28 selecting which
 translation applies.
 
 ## K.4 Coprocessor channels
 
-The coprocessor block (Chapter 31) is a many-to-many channel
+The coprocessor block (Chapter 32) is a many-to-many channel
 between the main CPU and a pool of worker CPUs. Each worker
 listens on its own ring buffer; the main CPU posts work items
 into the ring and reads the result back.

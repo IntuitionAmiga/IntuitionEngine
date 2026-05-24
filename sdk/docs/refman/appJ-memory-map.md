@@ -15,7 +15,7 @@ The fixed low regions of the Intuition Engine `64`-bit physical bus,
 in address order, with their size and purpose. IE64 can address beyond
 this low window when RAM is present. IE32, M68K, and x86 see the low
 `4` GB window directly; the 6502 and Z80 see windowed views into it
-(Chapters 26 and 27).
+(Chapters 27 and 28).
 
 ## J.1 Low RAM and stacks
 
@@ -56,6 +56,7 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | `$F0700`-`$F07FF`       | 256 B  | Terminal / serial / input. |
 | `$F0800`-`$F0B7F`       | 896 B  | SoundChip channel registers. |
 | `$F0B80`-`$F0B91`       | 18 B   | AHX player. |
+| `$F0BA0`-`$F0BBF`       | 32 B   | MIDI/MUS player. |
 | `$F0BC0`-`$F0BD7`       | 24 B   | MOD player. |
 | `$F0BD8`-`$F0BF3`       | 28 B   | WAV player. |
 | `$F0C00`-`$F0C20`       | 33 B   | PSG / AY. |
@@ -101,7 +102,7 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | `$FFFF0000`-`$FFFFFFFF` | 64 KB  | Sign-extended alias of `$00000000`-`$0000FFFF`. |
 
 Guest RAM can extend beyond these fixed low ranges. Use the SysInfo
-registers in Chapter 23 to discover total and active visible RAM. IE64
+registers in Chapter 24 to discover total and active visible RAM. IE64
 can address backed RAM above `$FFFFFFFF`; the compatibility CPUs remain
 inside the low window or their documented profile caps.
 

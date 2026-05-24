@@ -7,6 +7,7 @@ sources:
   - sid_engine.go
   - ted_engine.go
   - pokey_engine.go
+  - midi_engine.go
 ---
 
 # Appendix E - Music Note and Frequency Tables
@@ -30,6 +31,8 @@ The reference frequencies are:
   `110,840` Hz, register `1024 - sound_clock / f`.
 - **POKEY:** master clock `1,789,773` Hz (NTSC) divided by `28`,
   divisor `clock / 28 / f - 1`.
+- **MIDI/MUS:** use MIDI note numbers. The player converts note `69`
+  to A4 = `440` Hz and applies pitch bend internally.
 
 ## E.1 Octave 4 (middle C through B), equal temperament A4 = 440 Hz
 
@@ -71,13 +74,19 @@ than four become noticeably flat or sharp on the small-divisor chips
 (SN76489, POKEY, and high TED values) and need a tempered correction
 table for accurate music.
 
-## E.3 SoundChip and modern engines
+## E.3 SoundChip, MIDI/MUS, and modern engines
 
-The SoundChip channels and the sample-based engines (WAV, MOD,
-SFX, Amiga Paula DMA) take frequency in Hertz directly through
-the `FREQ` register of the channel block. A program writes
-`int(round(f))` into that register and the engine plays at that
-frequency. No table is needed: middle C is `262`, A4 is `440`.
+The SoundChip channels and the sample-based engines (WAV, MOD, SFX,
+Amiga Paula DMA) take frequency in Hertz directly through the `FREQ`
+register or period model owned by that engine. A program writes
+`int(round(f))` into a SoundChip `FREQ` register and the channel plays
+at that frequency. No table is needed: middle C is `262`, A4 is `440`.
+
+MIDI/MUS does not expose note pitch as a divider register. The file
+stores note numbers, programme changes, volume/expression controllers,
+tempo, and pitch bend. The RawlandMini synth converts those note
+numbers to frequency internally, with note `60` as middle C and note
+`69` as A4.
 
 ## E.4 Tuning notes
 

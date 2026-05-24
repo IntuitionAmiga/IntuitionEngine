@@ -161,6 +161,6 @@ the memory block after `AHX PLAY` does not change the already loaded song.
 `AHX_SUBSONG` is an eight-bit value. `AHX STOP` writes control value `2` and
 clears the busy state.
 
-For loading named music files from BASIC, use the media loader in Chapter 22.
+For loading named music files from BASIC, use the media loader in Chapter 23.
 
 The next chapter covers MOD playback, the sample-based four-channel music path.

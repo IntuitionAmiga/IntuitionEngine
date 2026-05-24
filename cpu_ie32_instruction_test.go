@@ -66,7 +66,7 @@ func (r *ie32TestRig) executeN(n int, instructions ...[]byte) {
 	r.cpu.Execute()
 }
 
-func refmanCh25IE32SNChordProgram() []byte {
+func refmanCh26IE32SNChordProgram() []byte {
 	var program []byte
 	emit := func(instr []byte) {
 		program = append(program, instr...)
@@ -86,7 +86,7 @@ func refmanCh25IE32SNChordProgram() []byte {
 	return program
 }
 
-func refmanCh25IE32VGATextProgram() []byte {
+func refmanCh26IE32VGATextProgram() []byte {
 	var program []byte
 	emit := func(instr []byte) {
 		program = append(program, instr...)
@@ -109,9 +109,9 @@ func refmanCh25IE32VGATextProgram() []byte {
 	return program
 }
 
-func extractRefmanCh25MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
+func extractRefmanCh26MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
 	t.Helper()
-	path := filepath.Join(repoRootDir(t), "sdk", "docs", "refman", "25-ie32.md")
+	path := filepath.Join(repoRootDir(t), "sdk", "docs", "refman", "26-ie32.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", path, err)
@@ -136,14 +136,14 @@ func extractRefmanCh25MonitorBytes(t *testing.T, heading string, startAddr uint6
 		}
 		fields := strings.Fields(line)
 		if len(fields) < 4 {
-			t.Fatalf("malformed Chapter 25 monitor write line: %q", line)
+			t.Fatalf("malformed Chapter 26 monitor write line: %q", line)
 		}
 		addr, err := strconv.ParseUint(fields[2], 16, 64)
 		if err != nil {
 			t.Fatalf("parse monitor write address %q: %v", fields[2], err)
 		}
 		if addr != wantAddr {
-			t.Fatalf("Chapter 25 monitor write address = 0x%X, want 0x%X", addr, wantAddr)
+			t.Fatalf("Chapter 26 monitor write address = 0x%X, want 0x%X", addr, wantAddr)
 		}
 		for _, field := range fields[3:] {
 			value, err := strconv.ParseUint(field, 16, 8)
@@ -155,16 +155,16 @@ func extractRefmanCh25MonitorBytes(t *testing.T, heading string, startAddr uint6
 		}
 	}
 	if len(program) == 0 {
-		t.Fatal("no Chapter 25 monitor byte writes found")
+		t.Fatal("no Chapter 26 monitor byte writes found")
 	}
 	return program
 }
 
-func TestRefmanCh25IE32SN76489ChordExample(t *testing.T) {
-	wantProgram := refmanCh25IE32SNChordProgram()
-	docProgram := extractRefmanCh25MonitorBytes(t, "## 25.7 A small example", PROG_START)
+func TestRefmanCh26IE32SN76489ChordExample(t *testing.T) {
+	wantProgram := refmanCh26IE32SNChordProgram()
+	docProgram := extractRefmanCh26MonitorBytes(t, "## 26.7 A small example", PROG_START)
 	if !bytes.Equal(docProgram, wantProgram) {
-		t.Fatalf("Chapter 25 byte listing does not match expected IE32 encoding\n got: % X\nwant: % X", docProgram, wantProgram)
+		t.Fatalf("Chapter 26 byte listing does not match expected IE32 encoding\n got: % X\nwant: % X", docProgram, wantProgram)
 	}
 
 	readMem := func(addr uint64, size int) []byte {
@@ -248,12 +248,12 @@ func TestRefmanCh25IE32SN76489ChordExample(t *testing.T) {
 	}
 }
 
-func TestRefmanCh25IE32VGATextExample(t *testing.T) {
+func TestRefmanCh26IE32VGATextExample(t *testing.T) {
 	const startAddr = 0x1100
-	wantProgram := refmanCh25IE32VGATextProgram()
-	docProgram := extractRefmanCh25MonitorBytes(t, "## 25.8 VGA text example", startAddr)
+	wantProgram := refmanCh26IE32VGATextProgram()
+	docProgram := extractRefmanCh26MonitorBytes(t, "## 26.8 VGA text example", startAddr)
 	if !bytes.Equal(docProgram, wantProgram) {
-		t.Fatalf("Chapter 25 VGA byte listing does not match expected IE32 encoding\n got: % X\nwant: % X", docProgram, wantProgram)
+		t.Fatalf("Chapter 26 VGA byte listing does not match expected IE32 encoding\n got: % X\nwant: % X", docProgram, wantProgram)
 	}
 
 	readMem := func(addr uint64, size int) []byte {

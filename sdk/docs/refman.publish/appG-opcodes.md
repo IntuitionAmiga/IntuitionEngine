@@ -3,7 +3,7 @@
 
 One table per CPU. Each table is a single-line summary of every
 mnemonic; the full encoding, addressing modes, flag effects, and
-timing notes are in the per-CPU chapter (Chapters 24-29). This
+timing notes are in the per-CPU chapter (Chapters 25-30). This
 appendix is for the reader who has the chapter open already and
 only needs to look up "is this mnemonic spelled this way" or "what
 does this opcode do at a glance".
@@ -15,7 +15,7 @@ For IE64, IE Mon can also assemble one instruction at a time with
 `A addr`; the emitted bytes are still shown here because the bytes and
 the `d` listing are the permanent check.
 
-## G.1 IE64 (Chapter 24)
+## G.1 IE64 (Chapter 25)
 
 Fixed `8`-byte instruction, 32 GPRs `R0`-`R31`, `R0 = 0`,
 `R31 = SP`. Compare-and-branch ISA; no separate flag register.
@@ -23,7 +23,7 @@ Fixed `8`-byte instruction, 32 GPRs `R0`-`R31`, `R0 = 0`,
 With IE64 as the focussed CPU, `A addr` accepts one mnemonic
 instruction and prints the `8` bytes it wrote. Use it for short IE64
 programs when the mnemonic form is easier to type, then confirm with
-`d` just as Chapter 24 does.
+`d` just as Chapter 25 does.
 
 | Group | Mnemonics |
 |-------|-----------|
@@ -34,7 +34,7 @@ programs when the mnemonic form is easier to type, then confirm with
 | FPU      | `FADD`, `FSUB`, `FMUL`, `FDIV`, `FMOD`, `FNEG`, `FABS`, `FSQRT`, `FCMP`, `FCVTIF`, `FCVTFI`, single and double precision. |
 | System   | `SYSCALL`, `HALT`, `WAIT`, `MTCR`, `MFCR`, `ERET`, `TLBFLUSH`, `TLBINVAL`, `SMODE`. |
 
-Byte-entry crib for Chapter 24:
+Byte-entry crib for Chapter 25:
 
 | Bytes | Meaning | Hand-entry note |
 |-------|---------|-----------------|
@@ -42,9 +42,9 @@ Byte-entry crib for Chapter 24:
 | `01 0F 00 00 ii ii ii ii` | `MOVE.Q R1,#imm32` | Byte `1` is `(1 << 3) | (3 << 1) | 1`; use this for small values before a store. |
 | `11 08 10 00 dd dd dd dd` | `STORE.B R1,disp(R2)` | Byte `1` selects `R1` and byte size; byte `2` selects base register `R2`; displacement is little-endian. |
 | `11 0C 10 00 dd dd dd dd` | `STORE.L R1,disp(R2)` | Same register fields, size code `L`; used for `32`-bit frequency or address registers. |
-| `40 06 00 00 dd dd dd dd` | `BRA disp32` | The Chapter 24 example uses displacement `0`, which branches back to the branch instruction itself. |
+| `40 06 00 00 dd dd dd dd` | `BRA disp32` | The Chapter 25 example uses displacement `0`, which branches back to the branch instruction itself. |
 
-## G.2 IE32 (Chapter 25)
+## G.2 IE32 (Chapter 26)
 
 `8`-byte instruction, 16 named registers `A,X,Y,Z,B,C,D,E,F,G,H,S,T,U,V,W`, no MMU, no FPU.
 
@@ -57,15 +57,15 @@ Byte-entry crib for Chapter 24:
 | Stack  | `PUSH rA`, `POP rA`. |
 | Timing | `WAIT n` delays for `n` cycles. |
 
-Byte-entry crib for Chapter 25:
+Byte-entry crib for Chapter 26:
 
 | Bytes | Meaning | Hand-entry note |
 |-------|---------|-----------------|
 | `20 00 00 00 vv vv vv vv` | `LDA A,#imm32` | Opcode `$20`, register `A`, immediate mode, little-endian value. |
 | `24 00 04 00 aa aa aa aa` | `STA A,M:addr32` | Opcode `$24`, register `A`, direct-memory mode, little-endian address. |
-| `06 00 00 00 aa aa aa aa` | `JMP addr32` | Opcode `$06`; the Chapter 25 example jumps to its own address to keep the tone alive. |
+| `06 00 00 00 aa aa aa aa` | `JMP addr32` | Opcode `$06`; the Chapter 26 example jumps to its own address to keep the tone alive. |
 
-## G.3 6502 (Chapter 26)
+## G.3 6502 (Chapter 27)
 
 `A`, `X`, `Y`, `S`, `P`, `PC`. Addressing modes: implied,
 accumulator, immediate, zero-page (+ X, + Y), absolute (+ X, + Y),
@@ -88,15 +88,15 @@ indirect, (indirect,X), (indirect),Y, relative.
 Flag register `P`: bit `0` C, `1` Z, `2` I, `3` D, `4` B, `5` -,
 `6` V, `7` N (silicon convention used by this chip).
 
-Byte-entry crib for Chapter 26:
+Byte-entry crib for Chapter 27:
 
 | Bytes | Meaning | Hand-entry note |
 |-------|---------|-----------------|
 | `A9 nn` | `LDA #nn` | Immediate load into accumulator. |
 | `8D ll hh` | `STA $hhll` | Absolute store; address operand is low byte then high byte. |
-| `4C ll hh` | `JMP $hhll` | Absolute jump; the Chapter 26 example jumps to its own address to leave POKEY sounding. |
+| `4C ll hh` | `JMP $hhll` | Absolute jump; the Chapter 27 example jumps to its own address to leave POKEY sounding. |
 
-## G.4 Z80 (Chapter 27)
+## G.4 Z80 (Chapter 28)
 
 Main: `A,F,B,C,D,E,H,L`; alt: `A',F',B',C',D',E',H',L'`; index:
 `IX`, `IY`; refresh / interrupt: `I`, `R`; stack: `SP`. Prefixes:
@@ -119,16 +119,16 @@ Main: `A,F,B,C,D,E,H,L`; alt: `A',F',B',C',D',E',H',L'`; index:
 Flag register: `S`, `Z`, `Y` (bit 5 undoc), `H`, `X` (bit 3
 undoc), `P/V`, `N`, `C`.
 
-Byte-entry crib for Chapter 27:
+Byte-entry crib for Chapter 28:
 
 | Bytes | Meaning | Hand-entry note |
 |-------|---------|-----------------|
 | `3E nn` | `LD A,nn` | Immediate load into accumulator. |
 | `32 ll hh` | `LD ($hhll),A` | Direct memory store; address operand is low byte then high byte. |
-| `D3 pp` | `OUT (pp),A` | Immediate port output; Chapter 27 uses PSG ports `$F0` and `$F1`. |
+| `D3 pp` | `OUT (pp),A` | Immediate port output; Chapter 28 uses PSG ports `$F0` and `$F1`. |
 | `C3 ll hh` | `JP $hhll` | Absolute jump; address operand is low byte then high byte. |
 
-## G.5 M68K (MC68020-Class, Chapter 28)
+## G.5 M68K (MC68020-Class, Chapter 29)
 
 `D0`-`D7`, `A0`-`A7`, `PC`, `SR`. CCR low byte: X N Z V C.
 Big-endian, byte-addressable, full `32`-bit client path on the
@@ -150,14 +150,14 @@ Intuition Engine bus.
 | FPU         | 68881-style `FMOVE`, `FADD`, `FSUB`, `FMUL`, `FDIV`, `FSQRT`, `FABS`, `FNEG`, `FCMP`, `FTST`, `FBcc`, `FDBcc`, `FScc`, `FMOVEM`, and control-register moves. |
 | Line A/F    | unassigned opcode trap. |
 
-Byte-entry crib for Chapter 28:
+Byte-entry crib for Chapter 29:
 
 | Bytes | Meaning | Hand-entry note |
 |-------|---------|-----------------|
 | `13 FC 00 vv aa aa aa aa` | `MOVE.B #vv,$aaaaaaaa` | Opcode and extension words are big-endian; the byte immediate sits in the low byte of the `$00vv` extension word. |
-| `60 00 dd dd` | `BRA.W disp16` | Signed big-endian displacement from the following word; Chapter 28 uses `$FFFE` for a self-loop. |
+| `60 00 dd dd` | `BRA.W disp16` | Signed big-endian displacement from the following word; Chapter 29 uses `$FFFE` for a self-loop. |
 
-## G.6 x86 (Chapter 29, 8086 base + 386 extensions)
+## G.6 x86 (Chapter 30, 8086 base + 386 extensions)
 
 `EAX`, `EBX`, `ECX`, `EDX`, `ESI`, `EDI`, `EBP`, `ESP`, plus
 16-bit and 8-bit subregisters. Segments `CS`, `DS`, `ES`, `FS`,
@@ -178,12 +178,12 @@ Byte-entry crib for Chapter 28:
 | System      | `HLT`, `WAIT`, `NOP`, `ESC`, `LOCK`. |
 | 386 extras  | `BSWAP`, `MOVSX`, `MOVZX`, dword forms of `16`-bit ops via `66h` / `67h` prefixes. |
 
-Omitted (Chapter 29): all protected-mode opcodes (`LGDT`,
+Omitted (Chapter 30): all protected-mode opcodes (`LGDT`,
 `LIDT`, `LLDT`, `LTR`, `LMSW`, `SMSW`, `ARPL`, `LAR`, `LSL`,
 `VERR`, `VERW`, `STR`, `SLDT`), `CR` and `DR` register moves,
 `INVLPG`, `WBINVD`, `INVD`.
 
-Byte-entry crib for Chapter 29:
+Byte-entry crib for Chapter 30:
 
 | Bytes | Meaning | Hand-entry note |
 |-------|---------|-----------------|

@@ -60,7 +60,7 @@ table at any 1-KB-aligned address and writes that address to
 
 ## B.5 The terminal
 
-The terminal (Chapter 37) ingests one byte at a time through
+The terminal (Chapter 38) ingests one byte at a time through
 `$F0700`. Bytes `$0A` (line feed) and `$0D` (carriage return)
 move the cursor; `$08` (backspace) erases the previous cell; all
 other printable bytes draw at the cursor position. Bytes outside

@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func refmanCh28SIDProgram() []byte {
+func refmanCh29SIDProgram() []byte {
 	return []byte{
 		0x13, 0xFC, 0x00, 0x01, 0x00, 0x0F, 0x08, 0x00,
 		0x13, 0xFC, 0x00, 0x0F, 0x00, 0x0F, 0x0E, 0x18,
@@ -24,7 +24,7 @@ func refmanCh28SIDProgram() []byte {
 	}
 }
 
-func refmanCh28VoodooTriangleProgram() []byte {
+func refmanCh29VoodooTriangleProgram() []byte {
 	return []byte{
 		0x23, 0xFC, 0x00, 0x00, 0x00, 0x01, 0x00, 0x0F, 0x80, 0x04,
 		0x23, 0xFC, 0xFF, 0x00, 0x00, 0xFF, 0x00, 0x0F, 0x81, 0xD8,
@@ -45,10 +45,10 @@ func refmanCh28VoodooTriangleProgram() []byte {
 	}
 }
 
-func extractRefmanCh28MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
+func extractRefmanCh29MonitorBytes(t *testing.T, heading string, startAddr uint64) []byte {
 	t.Helper()
 
-	path := filepath.Join("sdk", "docs", "refman", "28-m68k.md")
+	path := filepath.Join("sdk", "docs", "refman", "29-m68k.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -119,9 +119,9 @@ func readM68KDocProgram(program []byte, start uint64) func(uint64, int) []byte {
 	}
 }
 
-func TestRefmanCh28M68KSIDExample(t *testing.T) {
-	wantProgram := refmanCh28SIDProgram()
-	docProgram := extractRefmanCh28MonitorBytes(t, "## 28.9 A small example", uint64(PROG_START))
+func TestRefmanCh29M68KSIDExample(t *testing.T) {
+	wantProgram := refmanCh29SIDProgram()
+	docProgram := extractRefmanCh29MonitorBytes(t, "## 29.9 A small example", uint64(PROG_START))
 	if !bytes.Equal(docProgram, wantProgram) {
 		t.Fatalf("manual monitor bytes = % X, want % X", docProgram, wantProgram)
 	}
@@ -186,11 +186,11 @@ func TestRefmanCh28M68KSIDExample(t *testing.T) {
 	}
 }
 
-func TestRefmanCh28M68KVoodooTriangleExample(t *testing.T) {
+func TestRefmanCh29M68KVoodooTriangleExample(t *testing.T) {
 	const start = 0x1100
 
-	wantProgram := refmanCh28VoodooTriangleProgram()
-	docProgram := extractRefmanCh28MonitorBytes(t, "## 28.10 Voodoo triangle example", start)
+	wantProgram := refmanCh29VoodooTriangleProgram()
+	docProgram := extractRefmanCh29MonitorBytes(t, "## 29.10 Voodoo triangle example", start)
 	if !bytes.Equal(docProgram, wantProgram) {
 		t.Fatalf("manual monitor bytes = % X, want % X", docProgram, wantProgram)
 	}

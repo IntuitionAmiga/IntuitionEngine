@@ -16,6 +16,7 @@ sources:
   - voodoo_constants.go
   - mod_constants.go
   - wav_constants.go
+  - midi_constants.go
   - sfx_constants.go
   - file_io_constants.go
   - coprocessor_constants.go
@@ -114,6 +115,7 @@ Audio player control blocks in the same area:
 | Range | Block | Registers |
 |-------|-------|-----------|
 | `$F0B80`-`$F0B91` | AHX | `AHX_PLUS_CTRL`, `AHX_PLAY_PTR`, `AHX_PLAY_LEN`, `AHX_PLAY_CTRL`, `AHX_PLAY_STATUS`, `AHX_SUBSONG`. |
+| `$F0BA0`-`$F0BBF` | MIDI/MUS | `MIDI_PLAY_PTR`, `MIDI_PLAY_LEN`, `MIDI_PLAY_CTRL`, `MIDI_PLAY_STATUS`, `MIDI_POSITION`, `MIDI_VOLUME`, `MIDI_TEMPO_BPM`. |
 | `$F0BC0`-`$F0BD7` | MOD | `MOD_PLAY_PTR`, `MOD_PLAY_LEN`, `MOD_PLAY_CTRL`, `MOD_PLAY_STATUS`, `MOD_FILTER_MODEL`, `MOD_POSITION`. |
 | `$F0BD8`-`$F0BF3` | WAV | `WAV_PLAY_PTR`, `WAV_PLAY_LEN`, `WAV_PLAY_CTRL`, `WAV_PLAY_STATUS`, `WAV_POSITION`, `WAV_PLAY_PTR_HI`, `WAV_CHANNEL_BASE`, `WAV_VOLUME_L`, `WAV_VOLUME_R`, `WAV_FLAGS`. |
 
@@ -306,7 +308,7 @@ Global registers:
 ## D.16 Media loader (`$F2300`-`$F231F`)
 
 Dispatches by file extension into the matching audio engine. Used
-by `SOUND PLAY` (Chapter 22).
+by `SOUND PLAY` (Chapter 23).
 
 | Offset | Register |
 |--------|----------|
@@ -314,7 +316,7 @@ by `SOUND PLAY` (Chapter 22).
 | `+$04` | `MEDIA_SUBSONG`. |
 | `+$08` | `MEDIA_CTRL` (`1` play, `2` stop). |
 | `+$0C` | `MEDIA_STATUS` (`0` idle, `1` loading, `2` playing, `3` error). |
-| `+$10` | `MEDIA_TYPE` (`1` SID, `2` PSG, `3` TED, `4` AHX, `5` POKEY, `6` MOD, `7` WAV). |
+| `+$10` | `MEDIA_TYPE` (`1` SID, `2` PSG, `3` TED, `4` AHX, `5` POKEY, `6` MOD, `7` WAV, `8` MIDI/MUS). |
 | `+$14` | `MEDIA_ERROR` (`0` OK, `1` not found, `2` bad format, `3` unsupported, `4` name invalid, `5` too large). |
 
 ## D.17 RUN loader block (`$F2320`-`$F233F`)
@@ -399,7 +401,7 @@ Extended monitor block (`$F23B0`-`$F23BF`):
 | `+$08` | status   | byte   | Terminal-state enum (R). |
 | `+$0C` | exit     | 32-bit | Full `32`-bit exit code from the underlying action (R); byte lanes at `+$0C`-`+$0F` return successive bytes of the same value. |
 
-See Chapter 35 for the subverb enum and the state machine.
+See Chapter 36 for the subverb enum and the state machine.
 Reachable from IE64, IE32, M68K, and x86; not reachable from the
 6502 or Z80.
 
