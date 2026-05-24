@@ -1,6 +1,5 @@
-# Intuition Engine
+![splash](splash.png)
 
-![68k VGA SID Copper Cube](68k-VGA-SID-Copper-Cube.png)
 
 Intuition Engine is a bootable retro-computing environment and Go emulator for a custom retro-style computer platform. The x64 live USB image is the primary end-user package: it boots straight into Intuition Engine, starts the BASIC environment, and includes demos plus guest OS payloads on a FAT32 share.
 
