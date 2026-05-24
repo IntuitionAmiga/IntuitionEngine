@@ -396,22 +396,22 @@ Entry format:
   Result: audio examples now match EhBASIC behaviour for WAIT and byte-wide MMIO reads.
 
 - Area: Ch 23, memory model and MMIO access.
-  Claim: Intuition Engine has one 64-bit physical bus with 64-bit physical addresses and 8/16/32/64-bit transfer widths; the low 32-bit window contains the fixed legacy memory map, MMIO ranges, video apertures, and compatibility CPU working space; IE64 can reach backed RAM above the low window; IE32, M68K, and x86 are 32-bit clients; 6502 and Z80 use 16-bit adapters. The shared low-window map, sign-extended low-memory alias, SysInfo RAM-size block, BASIC PEEK/POKE alignment, byte-oriented POKE8/PEEK8 use, little-endian byte staging for multi-byte player registers, smaller-CPU address windows, GTIA range, and VGA 6502 range are documented against current constants and bus behaviour.
-  Canonical sources checked: registers.go, machine_bus.go, machine_bus_phys.go, memory_sizing.go, profile_bounds.go, cpu_ie64.go, sysinfo_mmio.go, sysinfo_mmio_test.go, machine_bus_test.go, machine_bus_64_test.go, cpu_six5go2.go, cpu_z80_runner.go, vga_constants.go, psg_constants.go, sid_constants.go, pokey_constants.go, ted_constants.go, antic_constants.go.
+  Claim: Intuition Engine has one 64-bit physical bus with 64-bit physical addresses and 8/16/32/64-bit transfer widths; the low 32-bit window contains the fixed legacy memory map, MMIO ranges, video apertures, and compatibility CPU working space; IE64 can reach backed RAM above the low window; IE32, M68K, and x86 are 32-bit clients; 6502 and Z80 use 16-bit adapters. The shared low-window map, sign-extended low-memory alias, SysInfo RAM-size block, BASIC PEEK/POKE alignment, byte-oriented POKE8/PEEK8 use, little-endian byte staging for multi-byte player registers, smaller-CPU address windows, SoundChip flex-channel naming, TED video range, GTIA range, and VGA 6502 range are documented against current constants and bus behaviour.
+  Canonical sources checked: registers.go, machine_bus.go, machine_bus_phys.go, memory_sizing.go, profile_bounds.go, cpu_ie64.go, sysinfo_mmio.go, sysinfo_mmio_test.go, machine_bus_test.go, machine_bus_64_test.go, cpu_six5go2.go, cpu_z80_runner.go, audio_chip.go, vga_constants.go, psg_constants.go, sid_constants.go, pokey_constants.go, ted_constants.go, ted_video_constants.go, antic_constants.go.
   Reader workflow: type BASIC PEEK/POKE/POKE8 examples to inspect VBlank, emit terminal bytes, read SysInfo RAM sizes, and stage multi-byte player registers byte by byte.
   Runnable example: Ch 23 VBlank polling, terminal byte output, SysInfo total/active RAM listing, and MOD pointer byte-staging listing.
-  Expected result: PEEK/POKE examples use aligned 32-bit accesses, byte-oriented examples use POKE8, SysInfo prints separated low/high total and active RAM words, byte staging of $00100000 writes bytes 00 00 10 00, and GTIA is listed as $F2140-$F21FB.
-  Author verification workflow: corrected the MMIO-width wording, added the SysInfo reader listing, fixed EhBASIC print separators and the VBlank IF condition, checked maps and smaller-CPU aliases, corrected the stale GTIA_REGION_END label constant, added exact tests TestRefmanCh23MODPointerByteStagingExample, TestRefmanCh23SysInfoRAMSizeWordsExample, TestRefmanCh23VBlankPollingExample, and TestRefmanCh23TerminalByteOutputExample, then ran the chapter scan and focused SysInfo/MachineBus tests.
-  Result: Ch 23 now avoids the false all-MMIO-is-32-bit rule and the stale 32-bit-system-bus wording, documents byte-wide devices accurately, uses the full GTIA range, keeps IE-native examples with discussion, and has British prose with no dash-style punctuation.
+  Expected result: PEEK/POKE examples use aligned 32-bit accesses, byte-oriented examples use POKE8, SysInfo prints separated low/high total and active RAM words, byte staging of $00100000 writes bytes 00 00 10 00, GTIA is listed as $F2140-$F21FB, TED video is listed as $F0F20-$F0F6B, and $F0C40/$F0D40 are SoundChip flex blocks rather than real SID2/SID3 registers.
+  Author verification workflow: corrected the MMIO-width wording, added the SysInfo reader listing, fixed EhBASIC print separators and the VBlank IF condition, checked maps and smaller-CPU aliases, corrected the stale GTIA_REGION_END label constant, checked TED video constants and SoundChip flex ranges, added exact tests TestRefmanCh23MODPointerByteStagingExample, TestRefmanCh23SysInfoRAMSizeWordsExample, TestRefmanCh23VBlankPollingExample, and TestRefmanCh23TerminalByteOutputExample, then ran the chapter scan and focused SysInfo/MachineBus tests.
+  Result: Ch 23 now avoids the false all-MMIO-is-32-bit rule and the stale 32-bit-system-bus wording, documents byte-wide devices accurately, uses the full GTIA and TED video ranges, keeps the SoundChip flex/SID2/SID3 distinction clear, keeps IE-native examples with discussion, and has British prose with no dash-style punctuation.
 
 - Area: App D, VideoChip map.
-  Claim: COPPER_* is at 0xF000C-0xF0018, VIDEO_FB_BASE is 0xF0084, palette table starts at 0xF0088, and VIDEO_MODE values are $00 640 by 480, $01 800 by 600, $02 1024 by 768, $03 1280 by 960, $04 320 by 200, $05 320 by 240, $06 1920 by 1080, and $07 960 by 540.
+  Claim: COPPER_* is at 0xF000C-0xF0018, VIDEO_FB_BASE is 0xF0084, palette table starts at 0xF0088, VIDEO_STATUS bits are 0 HAS_CONTENT, 1 VBLANK, and 2 FB_ERR, and VIDEO_MODE values are $00 640 by 480, $01 800 by 600, $02 1024 by 768, $03 1280 by 960, $04 320 by 200, $05 320 by 240, $06 1920 by 1080, and $07 960 by 540.
   Canonical sources checked: video_chip.go, sdk/include/ie64.inc, sdk/include/ie68.inc.
   Reader workflow: BASIC POKE or machine-code MMIO writes to the documented addresses.
   Runnable example: Ch 4 VideoChip examples.
-  Expected result: VideoChip setup uses the corrected addresses and mode values.
-  Author verification workflow: compared maps and mode constants against handlers.
-  Result: App D map and mode table match code.
+  Expected result: VideoChip setup uses the corrected addresses, status bits, and mode values.
+  Author verification workflow: compared maps, status bits, and mode constants against handlers.
+  Result: App D map, status summary, and mode table match code.
 
 - Area: App B / Ch 6 / Ch 7, text and colour lookup consistency.
   Claim: Appendix B describes screen and character codes only; TED text cells use an ASCII byte plus the 8-bit TED colour byte from Chapter 6, and Chapter 7 documents GTIA colour-byte hue names locally rather than pointing to Appendix B.
@@ -431,14 +431,14 @@ Entry format:
   Author verification workflow: compared App D against constants.
   Result: App D map matches core.
 
-- Area: App D, POKEY and TED audio maps.
-  Claim: POKEY and TED chip registers are byte-contiguous; player registers are 32-bit blocks.
-  Canonical sources checked: pokey_constants.go, ted_constants.go.
-  Reader workflow: BASIC POKE byte registers first; use 32-bit player registers only where documented.
+- Area: App D, POKEY and TED audio/video maps.
+  Claim: POKEY and TED chip registers are byte-contiguous; player registers are 32-bit blocks; the TED video register block spans $F0F20-$F0F6B because TED_V_RASTER_STATUS is the last 32-bit word at $F0F68.
+  Canonical sources checked: pokey_constants.go, ted_constants.go, ted_video_constants.go.
+  Reader workflow: BASIC POKE byte registers first; use 32-bit player and TED video registers only where documented.
   Runnable example: Ch 16 and Ch 17 BASIC audio examples.
-  Expected result: no wording implies dword-wide access to chip-native byte registers.
-  Author verification workflow: compared constants.
-  Result: POKEY/TED byte-wide MMIO wording repaired.
+  Expected result: no wording implies dword-wide access to chip-native byte registers, and TED video lookup rows do not truncate the raster-status word at $F0F5F.
+  Author verification workflow: compared constants and the TED video register count.
+  Result: POKEY/TED byte-wide MMIO wording repaired and TED video range rows use $F0F20-$F0F6B.
 
 - Area: App D / App J, WAV range.
   Claim: WAV player register range is 0xF0BD8-0xF0BF3 and 28 bytes.
@@ -530,14 +530,14 @@ Entry format:
   Author verification workflow: checked implementation and recorded primary reference.
   Result: silicon convention remains documented.
 
-- Area: App J, main VRAM capacity wording.
-  Claim: the 5 MB aperture is an address range, not a promise that every large RGBA framebuffer fits inside it; the upper low-window map runs from dynamic extended RAM at $00600000-$FFFEFFFF to the sign-extended alias at $FFFF0000-$FFFFFFFF.
-  Canonical sources checked: registers.go, machine_bus.go, machine_bus_phys.go, video_chip.go, Ch 4 large-mode framebuffer notes, Ch 23 memory model.
+- Area: App J, main VRAM capacity wording and TED range.
+  Claim: the 5 MB aperture is an address range, not a promise that every large RGBA framebuffer fits inside it; the upper low-window map runs from dynamic extended RAM at $00600000-$FFFEFFFF to the sign-extended alias at $FFFF0000-$FFFFFFFF; the TED audio and video combined row runs $F0F00-$F0F6B.
+  Canonical sources checked: registers.go, machine_bus.go, machine_bus_phys.go, video_chip.go, ted_constants.go, ted_video_constants.go, Ch 4 large-mode framebuffer notes, Ch 23 memory model.
   Reader workflow: choose framebuffer base and mode using Ch 4 rules.
   Runnable example: Ch 4 framebuffer examples.
-  Expected result: no 1920x1080 RGBA capacity claim is attached to the 5 MB aperture; App J agrees with Ch 23 on extended RAM and the top 64 KB sign-extended alias.
-  Author verification workflow: checked memory map, sign-extended alias handling, and VideoChip sizing.
-  Result: App J wording repaired and stale 24-bit-looking upper-memory rows removed.
+  Expected result: no 1920x1080 RGBA capacity claim is attached to the 5 MB aperture; App J agrees with Ch 23 on extended RAM, the top 64 KB sign-extended alias, and TED video ending at $F0F6B.
+  Author verification workflow: checked memory map, sign-extended alias handling, VideoChip sizing, and TED video register constants.
+  Result: App J wording repaired, stale 24-bit-looking upper-memory rows removed, and the TED audio/video row uses the current range.
 
 - Area: App K, block diagrams for bus and audio order.
   Claim: the system bus diagram describes a 64-bit physical bus with 64-bit addresses and 8/16/32/64-bit transfers through CPU and device adapters; the audio diagram shows the global post-mix order as overdrive, filter, then reverb; the compositor diagram lists layers in the Chapter 3 and source-code order: VideoChip 0, VGA 10, TED video 12, ANTIC/GTIA 13, ULA 15, Voodoo 20.
@@ -549,13 +549,31 @@ Entry format:
   Result: App K no longer describes the main system bus as 24-bit or 32-bit, no longer disagrees with the audio processing order, and shows the compositor layers in the same order as Chapter 3.
 
 - Area: App D / App J, audio player and small-chip MMIO ranges.
-  Claim: AHX, MOD, WAV, SN76489, SID primary/player/SID2/SID3, POKEY, TED audio, TED video, ANTIC, GTIA, SFX, and the 6502 small-chip views match the current MMIO handlers; SN76489 spans $F0C30-$F0C3F, GTIA spans $F2140-$F21FB, SID2 and SID3 live at $F0E30-$F0E4C and $F0E50-$F0E6C, SFX_VOL is 0-65535, and the 6502 POKEY and VGA windows are $D200-$D20A and $D700-$D70D.
+  Claim: AHX, MOD, WAV, SN76489, SID primary/player/SID2/SID3, POKEY, TED audio, TED video, ANTIC, GTIA, SFX, and the 6502 small-chip views match the current MMIO handlers; SN76489 spans $F0C30-$F0C3F, TED video spans $F0F20-$F0F6B, GTIA spans $F2140-$F21FB, SID2 and SID3 live at $F0E30-$F0E4C and $F0E50-$F0E6C, SFX_VOL is 0-65535, and the 6502 POKEY and VGA windows are $D200-$D20A and $D700-$D70D.
   Canonical sources checked: registers.go, sn76489_constants.go, sid_constants.go, pokey_constants.go, ted_constants.go, ted_video_constants.go, antic_constants.go, vga_constants.go, sfx_constants.go, sfx_trigger.go, audio player constants, video_antic.go, cpu_six5go2.go.
   Reader workflow: use BASIC POKE/PEEK, POKE8/PEEK8, or monitor-entered machine code against the published ranges.
   Runnable example: Chapters 6, 7, 14, 15, 17, 18, 19, and 20 typed examples.
-  Expected result: byte-wide chip registers and player control blocks are addressed at the documented ranges; appendices do not preserve stale $D209, $A0-$AA, missing SID2/SID3 rows, or 0-64 SFX volume wording.
+  Expected result: byte-wide chip registers and player control blocks are addressed at the documented ranges; appendices do not preserve stale $D209, $A0-$AA, $F0F20-$F0F5F TED video, missing SID2/SID3 rows, or 0-64 SFX volume wording.
   Author verification workflow: compared Appendix D and Appendix J rows against code-owned constants and handler ranges; ran refman forbidden-term scans and the strict spelling/dash probe on changed appendices.
   Result: App D and App J now use the current ranges, $ notation, British prose, and no dash-style punctuation.
+
+- Area: App E, TED pitch table.
+  Claim: TED audio pitch is documented with the implemented frequency = sound_clock / (1024 - register) model, using PAL sound clock 110840 Hz derived from TED_CLOCK_PAL / TED_SOUND_CLOCK_DIV; Appendix E table values are TED register values, not old period values.
+  Canonical sources checked: ted_constants.go, ted_engine.go, Ch 16 TED audio formula.
+  Reader workflow: choose a note from Appendix E, write the listed TED register value with the Chapter 16 BASIC or MMIO workflow, and use the octave rules to derive nearby notes.
+  Runnable example: Ch 16 TED first-sound and direct-register examples.
+  Expected result: Appendix E agrees with Chapter 16 and the implementation formula; octave-up and octave-down rules transform the distance from 1024 rather than treating the register as a plain divider.
+  Author verification workflow: recalculated C4-B4 register values from the source constants and checked the table wording against ted_engine.go.
+  Result: TED pitch terminology now matches the implemented model.
+
+- Area: App L, register-level index coverage.
+  Claim: the index includes common register-level lookup terms raised by review, including AUDCTL, BLT_FLAGS, BLT_STATUS, COPROC_CMD_ERROR, FBZ_MODE, SID2, SID3, SoundChip flex channels, SYSINFO_ACTIVE_RAM_LO, SYSINFO_TOTAL_RAM_LO, TED frequency register, TED_V_RASTER_STATUS, TERM_SENTINEL, and VIDEO_STATUS.
+  Canonical sources checked: appL-index.md, Ch 4, Ch 9, Ch 16, Ch 17, Ch 23, Ch 31, Ch 37, App D, App E.
+  Reader workflow: use Appendix L as a paper-style index for named registers and architectural lookup terms.
+  Runnable example: n/a, index lookup only.
+  Expected result: readers can find the reviewed register names without falling back immediately to a full-text search or Appendix D scan.
+  Author verification workflow: compared the added index rows against source chapter headings, register tables, and the reviewed missing-term list.
+  Result: Appendix L now covers the missing common register lookup terms.
 
 - Area: App G, opcode byte-entry crib.
   Claim: each CPU quick-reference section includes the byte encodings needed to type the Chapter 24-29 machine-code examples directly into IE Mon, and mnemonic summaries match the chapter names for IE64 ALU/system operations, IE32 registers and branches, M68K bus wording, and x86 386-extension names.

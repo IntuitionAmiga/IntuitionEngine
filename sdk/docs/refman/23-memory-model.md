@@ -133,14 +133,14 @@ The full map:
 | `$F0BC0`-`$F0BD7` | `24B`  | MOD player                   |
 | `$F0BD8`-`$F0BF3` | `28B`  | WAV sample player            |
 | `$F0C00`-`$F0C20` | `33B`  | PSG (AY-3-8910/YM2149)       |
-| `$F0C40`-`$F0CFF` | `192B` | SID2 flex channels (4-6)     |
+| `$F0C40`-`$F0CFF` | `192B` | SoundChip flex channels 4-6  |
 | `$F0D00`-`$F0D20` | `33B`  | POKEY                        |
-| `$F0D40`-`$F0DFF` | `192B` | SID3 flex channels (7-9)     |
+| `$F0D40`-`$F0DFF` | `192B` | SoundChip flex channels 7-9  |
 | `$F0E00`-`$F0E2D` | `46B`  | SID (6581/8580)              |
 | `$F0E80`-`$F0EFF` | `128B` | SFX trigger block            |
 | `$D0000`-`$DFFFF` | `64K`  | Voodoo texture memory        |
 | `$F0F00`-`$F0F1F` | `32B`  | TED audio                    |
-| `$F0F20`-`$F0F5F` | `64B`  | TED video                    |
+| `$F0F20`-`$F0F6B` | `76B`  | TED video                    |
 | `$F1000`-`$F13FF` | `1K`   | VGA registers                |
 | `$F1400`-`$F140F` | `16B`  | System helper MMIO           |
 | `$F2000`-`$F2017` | `24B`  | ULA registers                |

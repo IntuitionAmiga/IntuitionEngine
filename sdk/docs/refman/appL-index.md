@@ -20,6 +20,7 @@ symbols, and Appendix J gives the full memory map.
 | Alpha blending | Chapter 4, Chapter 9 |
 | ANTIC | Chapter 7, Chapter 27, Appendix D, Appendix H |
 | ASCII | Appendix C |
+| AUDCTL | Chapter 17, Chapter 26, Appendix D |
 | Audio mixer | Chapter 11, Chapter 22, Appendix K |
 
 ## B
@@ -29,6 +30,8 @@ symbols, and Appendix J gives the full memory map.
 | BASIC direct mode | Chapter 1 |
 | BASIC vocabulary | Chapter 2 |
 | Blitter | Chapter 4, Appendix D |
+| BLT_FLAGS | Chapter 4 |
+| BLT_STATUS | Chapter 4, Appendix D |
 | Block diagrams | Appendix K |
 | Bus model | Preface, Chapter 23, Appendix K |
 
@@ -40,6 +43,7 @@ symbols, and Appendix J gives the full memory map.
 | Compositor | Chapter 3, Appendix K |
 | Copper | Chapter 4 |
 | Coprocessor | Chapter 31, Chapter 38, Appendix I |
+| COPROC_CMD_ERROR | Chapter 31, Appendix D |
 | COCALL | Chapter 31 |
 
 ## D
@@ -63,6 +67,7 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | File I/O | Chapter 34, Chapter 38, Appendix D |
+| FBZ_MODE | Chapter 9 |
 | Fixed-point maths | Chapter 4, Chapter 9, Appendix F |
 | Frequency tables | Appendix E |
 
@@ -127,8 +132,13 @@ symbols, and Appendix J gives the full memory map.
 | Serial devices | Chapter 37 |
 | SFX | Chapter 11, Chapter 12, Appendix D |
 | SID | Chapter 15, Chapter 28, Appendix D |
+| SID2 | Chapter 15, Appendix D, Appendix J |
+| SID3 | Chapter 15, Appendix D, Appendix J |
 | SN76489 | Chapter 14, Chapter 25, Appendix D |
 | SoundChip | Chapter 11, Chapter 12, Chapter 38, Appendix D |
+| SoundChip flex channels | Chapter 11, Appendix D, Appendix J |
+| SYSINFO_ACTIVE_RAM_LO | Chapter 23, Appendix D, Appendix J |
+| SYSINFO_TOTAL_RAM_LO | Chapter 23, Appendix D, Appendix J |
 | SysInfo | Chapter 23, Appendix D, Appendix J |
 
 ## T
@@ -136,7 +146,10 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | TED audio | Chapter 16, Chapter 29, Appendix D |
+| TED frequency register | Chapter 16, Appendix E |
+| TED_V_RASTER_STATUS | Chapter 6, Appendix D |
 | TED video | Chapter 6, Chapter 29, Appendix D |
+| TERM_SENTINEL | Chapter 37, Appendix D |
 | Tile and sprite layers | Chapter 10 |
 | Timing | Chapter 30 |
 | Traps | Chapter 30, Appendix I |
@@ -153,6 +166,7 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | VGA | Chapter 5, Chapter 25, Appendix D, Appendix H |
 | VideoChip | Chapter 4, Chapter 24, Chapter 38, Appendix D |
+| VIDEO_STATUS | Chapter 4, Appendix D |
 | Voodoo | Chapter 9, Chapter 28, Appendix D, Appendix H |
 | VRAM | Chapter 3, Chapter 4, Chapter 23, Appendix J |
 

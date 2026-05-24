@@ -11,7 +11,7 @@ carry information.
 |------------|-------------------|-----|-------|
 | `$F0000`  | `VIDEO_CTRL`      | R/W | Enable, mode select, sync source. |
 | `$F0004`  | `VIDEO_MODE`      | R/W | Mode value selector. |
-| `$F0008`  | `VIDEO_STATUS`    | R   | VBlank flag, HBlank flag, raster line. |
+| `$F0008`  | `VIDEO_STATUS`    | R   | Bit `0` `HAS_CONTENT`, bit `1` `VBLANK`, bit `2` `FB_ERR`. |
 | `$F000C`  | `COPPER_CTRL`     | R/W | Copper enable. |
 | `$F0010`  | `COPPER_PTR`      | R/W | Copper-list base address. |
 | `$F0014`  | `COPPER_PC`       | R   | Current copper program counter. |
@@ -211,9 +211,10 @@ that wants SID2 / SID3 should program them at `$F0E30` and
 | `+$18` | `TED_PLAY_CTRL`. |
 | `+$1C` | `TED_PLAY_STATUS`. |
 
-## D.10 TED video (`$F0F20`-`$F0F5F`)
+## D.10 TED video (`$F0F20`-`$F0F6B`)
 
-`40` by `25` text with 121-colour cells; see Chapter 6.
+`40` by `25` text with 121-colour cells, raster position registers,
+raster compare registers, and raster pending status; see Chapter 6.
 
 ## D.11 VGA (`$F1000`-`$F13FF`)
 

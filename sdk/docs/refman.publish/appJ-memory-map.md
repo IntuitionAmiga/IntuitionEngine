@@ -58,7 +58,7 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | `$F0E30`-`$F0E4C`       | 29 B   | SID2 registers. |
 | `$F0E50`-`$F0E6C`       | 29 B   | SID3 registers. |
 | `$F0E80`-`$F0EFF`       | 128 B  | SFX triggers. |
-| `$F0F00`-`$F0F5F`       | 96 B   | TED audio + video. |
+| `$F0F00`-`$F0F6B`       | 108 B  | TED audio + video. |
 | `$F1000`-`$F13FF`       | 1 KB   | VGA registers. |
 | `$F1400`-`$F140F`       | 16 B   | HOST appliance block. |
 | `$F2000`-`$F2017`       | 24 B   | ULA registers. |

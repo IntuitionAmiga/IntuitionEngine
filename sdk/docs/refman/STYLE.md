@@ -131,6 +131,14 @@ Current controlled polish pass:
   must list the exact `VIDEO_MODE` value map from `video_chip.go`, and
   Appendix K's compositor diagram must match the Chapter 3 layer order
   and the source layer constants.
+- Fix the final consistency review items: Appendix D must describe
+  `VIDEO_STATUS` with the `HAS_CONTENT`, `VBLANK`, and `FB_ERR` bits
+  from `video_chip.go`; Chapter 23, Appendix D, and Appendix J must use
+  the TED video range ending at `$F0F6B`; Chapter 23 must not label the
+  `$F0C40` and `$F0D40` SoundChip flex blocks as real SID2/SID3
+  registers; Appendix E must use the TED `1024 - register` pitch model
+  from Chapter 16 and `ted_engine.go`; and Appendix L must include the
+  common register-level lookup terms raised by review.
 - Add a small whole-machine capstone chapter that touches graphics,
   audio, file I/O, and the coprocessor status path from BASIC.
 - Add a traditional lookup index appendix and include it in the
