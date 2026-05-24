@@ -620,8 +620,42 @@ func TestTerminalMMIO_RegisterConstants(t *testing.T) {
 	if MOUSE_DY != 0xF0758 {
 		t.Fatalf("MOUSE_DY mismatch: 0x%X", MOUSE_DY)
 	}
+	if RTC_MONO_USEC_LO != 0xF075C {
+		t.Fatalf("RTC_MONO_USEC_LO mismatch: 0x%X", RTC_MONO_USEC_LO)
+	}
+	if RTC_MONO_USEC_HI != 0xF0760 {
+		t.Fatalf("RTC_MONO_USEC_HI mismatch: 0x%X", RTC_MONO_USEC_HI)
+	}
 	if SCAN_CODE != 0xF0740 {
 		t.Fatalf("SCAN_CODE mismatch: 0x%X", SCAN_CODE)
+	}
+}
+
+func TestTerminalMMIO_MonotonicUsecHighLowHighRead(t *testing.T) {
+	tm := NewTerminalMMIO()
+
+	read := func() uint64 {
+		for {
+			hi1 := tm.HandleRead(RTC_MONO_USEC_HI)
+			lo := tm.HandleRead(RTC_MONO_USEC_LO)
+			hi2 := tm.HandleRead(RTC_MONO_USEC_HI)
+			if hi1 == hi2 {
+				return uint64(hi2)<<32 | uint64(lo)
+			}
+		}
+	}
+
+	prev := read()
+	time.Sleep(time.Millisecond)
+	for range 128 {
+		next := read()
+		if next < prev {
+			t.Fatalf("monotonic counter regressed: prev=%d next=%d", prev, next)
+		}
+		prev = next
+	}
+	if prev == 0 {
+		t.Fatal("monotonic counter stayed at zero")
 	}
 }
 

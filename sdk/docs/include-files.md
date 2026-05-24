@@ -161,7 +161,8 @@ As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level kernel image/
 - POKEY: `POKEY_*`, `SAP_PLAY_*`
 - TED: `TED_*`
 - AHX: `AHX_*`
-- MIDI: `MIDI_PLAY_PTR`, `MIDI_PLAY_LEN`, `MIDI_PLAY_CTRL`, `MIDI_PLAY_STATUS`, `MIDI_POSITION`, `MIDI_VOLUME`, `MIDI_TEMPO_BPM`
+- MIDI: `MIDI_PLAY_PTR`, `MIDI_PLAY_LEN`, `MIDI_PLAY_CTRL`, `MIDI_PLAY_STATUS`, `MIDI_STATUS_LOADING`, `MIDI_POSITION`, `MIDI_VOLUME`, `MIDI_TEMPO_BPM`
+- Terminal/input timing: `TERM_KEY_IN`, `TERM_KEY_STATUS`, `SCAN_CODE`, `SCAN_STATUS`, `SCAN_MODIFIERS`, `MOUSE_CTRL`, `MOUSE_DX`, `MOUSE_DY`, `RTC_MONO_USEC_LO`, `RTC_MONO_USEC_HI`
 - MOD: `MOD_PLAY_PTR`, `MOD_PLAY_LEN`, `MOD_PLAY_CTRL`, `MOD_PLAY_STATUS`, `MOD_FILTER_MODEL`, `MOD_POSITION`
 - WAV: `WAV_PLAY_PTR`, `WAV_PLAY_LEN`, `WAV_PLAY_CTRL`, `WAV_PLAY_STATUS`, `WAV_POSITION`, `WAV_PLAY_PTR_HI`, `WAV_CHANNEL_BASE`, `WAV_VOLUME_L`, `WAV_VOLUME_R`, `WAV_FLAGS`
 - SFX: `IE_SFX_CH_BASE`, `IE_SFX_CH_STRIDE`, `SFX_*`
@@ -300,6 +301,10 @@ start:
 - SID: ports `0xE0`-`0xE1`
 - TED: ports `0xF2`-`0xF3`
 - VGA: standard PC ports (`0x3C4`-`0x3DA`)
+
+Flat `.ie86` images load with their first byte at address `0` and start with
+`EIP=0`. Guests that link their main code higher in memory must provide a reset
+trampoline at address `0`.
 
 **Macros:** `wait_vblank`, `vga_wait_vsync`, `psg_write`, `sid_write`, `pokey_write`, coprocessor helpers.
 

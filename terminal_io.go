@@ -77,6 +77,9 @@ type TerminalMMIO struct {
 
 	// lastStatusRead stores unix nanos of the latest TERM_STATUS read.
 	lastStatusRead atomic.Int64
+
+	// monoStart is the monotonic epoch for RTC_MONO_USEC_*.
+	monoStart time.Time
 }
 
 // TerminalMMIOSetter allows video backends to receive a terminal MMIO pointer.
@@ -92,6 +95,7 @@ func NewTerminalMMIO() *TerminalMMIO {
 		echoEnabled:   true,
 		lineInputMode: true,
 		outputBuf:     make([]byte, 0, 256),
+		monoStart:     time.Now(),
 	}
 }
 
@@ -212,10 +216,22 @@ func (tm *TerminalMMIO) HandleRead(addr uint32) uint32 {
 
 	case RTC_EPOCH:
 		return uint32(time.Now().Unix())
+	case RTC_MONO_USEC_LO:
+		return uint32(tm.monotonicUsecLocked())
+	case RTC_MONO_USEC_HI:
+		return uint32(tm.monotonicUsecLocked() >> 32)
 
 	default:
 		return 0
 	}
+}
+
+func (tm *TerminalMMIO) monotonicUsecLocked() uint64 {
+	if tm.monoStart.IsZero() {
+		tm.monoStart = time.Now()
+		return 0
+	}
+	return uint64(time.Since(tm.monoStart).Microseconds())
 }
 
 // HandleWrite processes writes to terminal registers.

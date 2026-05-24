@@ -29,12 +29,15 @@ func TestMIDIPlayer_MMIOStartPauseLoopVolumeTempoAndStop(t *testing.T) {
 	player.HandlePlayWrite(MIDI_PLAY_LEN, uint32(len(data)))
 	player.HandlePlayWrite(MIDI_VOLUME, 128)
 	player.HandlePlayWrite(MIDI_PLAY_CTRL, 1|4)
+	if status := player.HandlePlayRead(MIDI_PLAY_STATUS); status&MIDI_STATUS_LOADING == 0 {
+		t.Fatalf("status immediately after async start=%#x, want loading bit", status)
+	}
 
 	deadline := time.Now().Add(time.Second)
-	for player.HandlePlayRead(MIDI_PLAY_STATUS)&1 == 0 && time.Now().Before(deadline) {
+	for player.HandlePlayRead(MIDI_PLAY_STATUS)&MIDI_STATUS_LOADING != 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if status := player.HandlePlayRead(MIDI_PLAY_STATUS); status&1 == 0 || status&2 != 0 {
+	if status := player.HandlePlayRead(MIDI_PLAY_STATUS); status&MIDI_STATUS_BUSY == 0 || status&MIDI_STATUS_ERROR != 0 || status&MIDI_STATUS_LOADING != 0 {
 		t.Fatalf("status after start=%#x, want busy without error", status)
 	}
 	if got := player.HandlePlayRead(MIDI_VOLUME); got != 128 {
@@ -48,16 +51,46 @@ func TestMIDIPlayer_MMIOStartPauseLoopVolumeTempoAndStop(t *testing.T) {
 		t.Fatalf("tempo write changed readback to %d", got)
 	}
 	player.HandlePlayWrite(MIDI_PLAY_CTRL, 8)
-	if status := player.HandlePlayRead(MIDI_PLAY_STATUS); status&4 == 0 {
+	if status := player.HandlePlayRead(MIDI_PLAY_STATUS); status&MIDI_STATUS_PAUSED == 0 {
 		t.Fatalf("status after pause=%#x, want paused bit", status)
 	}
 	player.HandlePlayWrite(MIDI_PLAY_CTRL, 0)
-	if status := player.HandlePlayRead(MIDI_PLAY_STATUS); status&4 != 0 {
+	if status := player.HandlePlayRead(MIDI_PLAY_STATUS); status&MIDI_STATUS_PAUSED != 0 {
 		t.Fatalf("status after resume=%#x, want paused cleared", status)
 	}
 	player.HandlePlayWrite(MIDI_PLAY_CTRL, 2)
-	if status := player.HandlePlayRead(MIDI_PLAY_STATUS); status&1 != 0 {
+	if status := player.HandlePlayRead(MIDI_PLAY_STATUS); status&MIDI_STATUS_BUSY != 0 {
 		t.Fatalf("status after stop=%#x, want not busy", status)
+	}
+}
+
+func TestMIDIPlayer_LoadingBitClearsAfterParseFailure(t *testing.T) {
+	sound, err := NewSoundChip(AUDIO_BACKEND_NULL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	player := NewMIDIPlayer(sound, 44100)
+	bus, err := NewMachineBusSized(1 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	player.AttachBus(bus)
+
+	copy(bus.GetMemory()[0x2000:], []byte("not midi"))
+	player.HandlePlayWrite(MIDI_PLAY_PTR, 0x2000)
+	player.HandlePlayWrite(MIDI_PLAY_LEN, 8)
+	player.HandlePlayWrite(MIDI_PLAY_CTRL, 1)
+
+	deadline := time.Now().Add(time.Second)
+	for player.HandlePlayRead(MIDI_PLAY_STATUS)&MIDI_STATUS_LOADING != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	status := player.HandlePlayRead(MIDI_PLAY_STATUS)
+	if status&MIDI_STATUS_LOADING != 0 {
+		t.Fatalf("loading bit remained set after parse failure: status=%#x", status)
+	}
+	if status&MIDI_STATUS_ERROR == 0 {
+		t.Fatalf("parse failure status=%#x, want error bit", status)
 	}
 }
 

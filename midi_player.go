@@ -251,13 +251,16 @@ func (p *MIDIPlayer) playCtrlStatusLocked() uint32 {
 func (p *MIDIPlayer) playStatusLocked() uint32 {
 	var status uint32
 	if p.PlayBusy || p.engine.IsPlaying() {
-		status |= 1
+		status |= MIDI_STATUS_BUSY
 	}
 	if p.PlayErr {
-		status |= 2
+		status |= MIDI_STATUS_ERROR
 	}
 	if p.paused {
-		status |= 4
+		status |= MIDI_STATUS_PAUSED
+	}
+	if p.PlayBusy {
+		status |= MIDI_STATUS_LOADING
 	}
 	return status
 }

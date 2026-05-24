@@ -27,6 +27,28 @@ func TestX86_LoadProgramDataRespectsBusMemory(t *testing.T) {
 	}
 }
 
+func TestX86_IE86LoaderContractLoadAndStartAtZero(t *testing.T) {
+	bus, err := NewMachineBusSized(1 << 20)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized: %v", err)
+	}
+	runner := NewCPUX86Runner(bus, &CPUX86Config{LoadAddr: 0, Entry: 0})
+	data := []byte{0x90, 0xF4} // NOP; HLT
+
+	if err := runner.LoadProgramData(data); err != nil {
+		t.Fatalf("LoadProgramData: %v", err)
+	}
+	if got := bus.Read8(0); got != 0x90 {
+		t.Fatalf("first .ie86 byte loaded at 0x%X, want 0x90 at address 0", got)
+	}
+	if got := bus.Read8(1); got != 0xF4 {
+		t.Fatalf("second .ie86 byte loaded at 0x%X, want 0xF4 at address 1", got)
+	}
+	if runner.cpu.EIP != 0 {
+		t.Fatalf("x86 entry EIP=0x%X, want 0", runner.cpu.EIP)
+	}
+}
+
 // TestX86_AccessAt64MiB_RoundTripsAfterCapRetired uses the bus directly
 // (the x86 interpreter routes through the same MachineBus) to confirm a
 // 64 MiB byte address round-trips on a grown bus.

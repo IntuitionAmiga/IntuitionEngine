@@ -162,7 +162,7 @@ In standard builds, launching without a mode flag and without a filename starts 
 | `-m68k` | Motorola 68020-oriented M68K | `.ie68` | Used by native demos, EmuTOS, and AROS work. |
 | `-z80` | Z80 | `.ie80` | Z80 guest mode with AY/PSG-oriented examples. |
 | `-m6502` | 6502 | `.ie65` | 6502 guest mode with cc65-style SDK support. |
-| `-x86` | 32-bit flat x86 | `.ie86` | Flat 32-bit x86 guest mode. |
+| `-x86` | 32-bit flat x86 | `.ie86` | Flat 32-bit x86 guest mode; images load at address `0` and start at `EIP=0`. |
 | `-basic` | EhBASIC on IE64 | none | Uses the embedded BASIC image unless `-basic-image` is supplied. |
 | `-emutos` | EmuTOS on M68K | optional ROM via flag | Uses embedded, discovered, or `-emutos-image` ROM assets. |
 | `-aros` | AROS on M68K | optional ROM via flag | Uses embedded or `-aros-image` ROM assets and an AROS host drive. |

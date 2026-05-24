@@ -10,13 +10,14 @@ import (
 
 func TestMIDI_ABI_Drift(t *testing.T) {
 	expected := map[string]uint32{
-		"MIDI_PLAY_PTR":    MIDI_PLAY_PTR,
-		"MIDI_PLAY_LEN":    MIDI_PLAY_LEN,
-		"MIDI_PLAY_CTRL":   MIDI_PLAY_CTRL,
-		"MIDI_PLAY_STATUS": MIDI_PLAY_STATUS,
-		"MIDI_POSITION":    MIDI_POSITION,
-		"MIDI_VOLUME":      MIDI_VOLUME,
-		"MIDI_TEMPO_BPM":   MIDI_TEMPO_BPM,
+		"MIDI_PLAY_PTR":       MIDI_PLAY_PTR,
+		"MIDI_PLAY_LEN":       MIDI_PLAY_LEN,
+		"MIDI_PLAY_CTRL":      MIDI_PLAY_CTRL,
+		"MIDI_PLAY_STATUS":    MIDI_PLAY_STATUS,
+		"MIDI_POSITION":       MIDI_POSITION,
+		"MIDI_VOLUME":         MIDI_VOLUME,
+		"MIDI_TEMPO_BPM":      MIDI_TEMPO_BPM,
+		"MIDI_STATUS_LOADING": MIDI_STATUS_LOADING,
 	}
 	files := []string{
 		"sdk/include/ie32.inc",
@@ -40,7 +41,7 @@ func TestMIDI_ABI_Drift(t *testing.T) {
 				if !ok {
 					t.Fatalf("missing %s", name)
 				}
-				if file == "sdk/include/ie65.inc" {
+				if file == "sdk/include/ie65.inc" && want >= 0xE1000 {
 					want -= 0xE1000
 				}
 				if got != want {

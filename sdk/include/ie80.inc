@@ -29,6 +29,28 @@
 .set VRAM_BANK_REG,0xF7F0
 
 ; ============================================================================
+; TERMINAL / INPUT / RTC REGISTERS (16-bit mapped view)
+; ============================================================================
+
+.set TERM_OUT,0xF700
+.set TERM_STATUS,0xF704
+.set TERM_IN,0xF708
+.set TERM_LINE_STATUS,0xF70C
+.set TERM_ECHO,0xF710
+.set TERM_CTRL,0xF724
+.set TERM_KEY_IN,0xF728
+.set TERM_KEY_STATUS,0xF72C
+.set MOUSE_CTRL,0xF74C
+.set MOUSE_DX,0xF754
+.set MOUSE_DY,0xF758
+.set SCAN_CODE,0xF740
+.set SCAN_STATUS,0xF744
+.set SCAN_MODIFIERS,0xF748
+.set RTC_EPOCH,0xF750
+.set RTC_MONO_USEC_LO,0xF75C
+.set RTC_MONO_USEC_HI,0xF760
+
+; ============================================================================
 ; VIDEO HARDWARE REGISTERS
 ; ============================================================================
 
@@ -713,6 +735,7 @@
 .set MIDI_PLAY_LEN_3,0xF0BA7
 .set MIDI_PLAY_CTRL,0xF0BA8
 .set MIDI_PLAY_STATUS,0xF0BAC
+.set MIDI_STATUS_LOADING,0x08
 .set MIDI_POSITION,0xF0BB0
 .set MIDI_VOLUME,0xF0BB4
 .set MIDI_TEMPO_BPM,0xF0BB8

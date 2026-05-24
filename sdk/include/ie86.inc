@@ -38,6 +38,28 @@ BANK3_REG_HI    equ 0x00F705             ; Bank 3 select (high byte)
 VRAM_BANK_REG   equ 0x00F7F0             ; VRAM bank select
 
 ; ============================================================================
+; TERMINAL / INPUT / RTC REGISTERS (0xF0700-0xF07FF)
+; ============================================================================
+
+TERM_OUT        equ 0xF0700              ; Character output (W)
+TERM_STATUS     equ 0xF0704              ; Bit 0=input available, bit 1=output ready (R)
+TERM_IN         equ 0xF0708              ; Read next input char, dequeues (R)
+TERM_LINE_STATUS equ 0xF070C             ; Bit 0=complete line available (R)
+TERM_ECHO       equ 0xF0710              ; Bit 0=local echo enable (R/W)
+TERM_CTRL       equ 0xF0724              ; Bit 0=line input mode (R/W)
+TERM_KEY_IN     equ 0xF0728              ; Per-keystroke input for GET (R)
+TERM_KEY_STATUS equ 0xF072C              ; Bit 0=raw key available (R)
+MOUSE_CTRL      equ 0xF074C              ; Bit 0=request relative/captured mouse mode (R/W)
+MOUSE_DX        equ 0xF0754              ; Signed accumulated relative X delta; read clears (R)
+MOUSE_DY        equ 0xF0758              ; Signed accumulated relative Y delta; read clears (R)
+SCAN_CODE       equ 0xF0740              ; Raw keyboard scancode dequeue (R)
+SCAN_STATUS     equ 0xF0744              ; Bit 0=scancode available (R)
+SCAN_MODIFIERS  equ 0xF0748              ; Bit 0=shift, bit 1=ctrl, bit 2=alt, bit 3=caps
+RTC_EPOCH       equ 0xF0750              ; Host UTC seconds since Unix epoch (R)
+RTC_MONO_USEC_LO equ 0xF075C             ; Low 32 bits of monotonic microseconds since engine start (R)
+RTC_MONO_USEC_HI equ 0xF0760             ; High 32 bits of monotonic microseconds since engine start (R)
+
+; ============================================================================
 ; VIDEO HARDWARE REGISTERS (I/O region at 0xF0000)
 ; ============================================================================
 
@@ -365,10 +387,11 @@ AHX_SUBSONG     equ 0xF0B91              ; Subsong selection (0-255)
 MIDI_PLAY_PTR   equ 0xF0BA0              ; Pointer to MIDI/MUS data (32-bit)
 MIDI_PLAY_LEN   equ 0xF0BA4              ; Length of MIDI/MUS data (32-bit)
 MIDI_PLAY_CTRL  equ 0xF0BA8              ; bit 0=start, bit 1=stop, bit 2=loop, bit 3=pause, bit 4=loop apply
-MIDI_PLAY_STATUS equ 0xF0BAC             ; bit 0=busy, bit 1=error, bit 2=paused
+MIDI_PLAY_STATUS equ 0xF0BAC             ; bit 0=busy, bit 1=error, bit 2=paused, bit 3=loading
 MIDI_POSITION   equ 0xF0BB0              ; Current sample position (read-only)
 MIDI_VOLUME     equ 0xF0BB4              ; Global MIDI volume (0-255)
 MIDI_TEMPO_BPM  equ 0xF0BB8              ; Current effective tempo BPM (read-only)
+MIDI_STATUS_LOADING equ 0x08             ; MIDI_PLAY_STATUS bit 3: async parse/load in progress
 
 ; ============================================================================
 ; MOD AUDIO REGISTERS (ProTracker .mod player)

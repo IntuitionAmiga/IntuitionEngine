@@ -349,6 +349,8 @@ const (
 	RTC_EPOCH           = 0xF0750    // Read: host UTC seconds since Unix epoch
 	MOUSE_DX            = 0xF0754    // Signed accumulated relative X delta, clears on read
 	MOUSE_DY            = 0xF0758    // Signed accumulated relative Y delta, clears on read
+	RTC_MONO_USEC_LO    = 0xF075C    // Read: low 32 bits of monotonic microseconds since engine start
+	RTC_MONO_USEC_HI    = 0xF0760    // Read: high 32 bits of monotonic microseconds since engine start
 	TERM_SENTINEL       = 0xF07F0    // Write 0xDEAD to stop CPU (via OnSentinel callback)
 	TERMINAL_REGION_END = 0xF07FF    // Reserve 256 bytes for future expansion
 )

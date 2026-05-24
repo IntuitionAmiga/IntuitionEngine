@@ -161,6 +161,8 @@ MOUSE_CTRL        equ 0xF074C               ; Bit 0=request relative/captured mo
 RTC_EPOCH         equ 0xF0750               ; Host UTC seconds since Unix epoch (R)
 MOUSE_DX          equ 0xF0754               ; Signed accumulated relative X delta; read clears (R)
 MOUSE_DY          equ 0xF0758               ; Signed accumulated relative Y delta; read clears (R)
+RTC_MONO_USEC_LO  equ 0xF075C               ; Low 32 bits of monotonic microseconds since engine start (R)
+RTC_MONO_USEC_HI  equ 0xF0760               ; High 32 bits of monotonic microseconds since engine start (R)
 TERM_SENTINEL     equ 0xF07F0               ; Write 0xDEAD to stop CPU (via OnSentinel callback)
 
 ; ============================================================================
@@ -501,10 +503,11 @@ AHX_SUBSONG       equ 0xF0B91               ; Subsong selection (0-255)
 MIDI_PLAY_PTR     equ 0xF0BA0               ; Pointer to MIDI/MUS data (32-bit)
 MIDI_PLAY_LEN     equ 0xF0BA4               ; Length of MIDI/MUS data (32-bit)
 MIDI_PLAY_CTRL    equ 0xF0BA8               ; bit 0=start, bit 1=stop, bit 2=loop, bit 3=pause, bit 4=loop apply
-MIDI_PLAY_STATUS  equ 0xF0BAC               ; bit 0=busy, bit 1=error, bit 2=paused
+MIDI_PLAY_STATUS  equ 0xF0BAC               ; bit 0=busy, bit 1=error, bit 2=paused, bit 3=loading
 MIDI_POSITION     equ 0xF0BB0               ; Current sample position (read-only)
 MIDI_VOLUME       equ 0xF0BB4               ; Global MIDI volume (0-255)
 MIDI_TEMPO_BPM    equ 0xF0BB8               ; Current effective tempo BPM (read-only)
+MIDI_STATUS_LOADING equ 0x08                 ; MIDI_PLAY_STATUS bit 3: async parse/load in progress
 
 ; ============================================================================
 ; MOD AUDIO REGISTERS (ProTracker .mod player)

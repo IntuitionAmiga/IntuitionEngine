@@ -2927,7 +2927,7 @@ bits are consistent unless noted: bit 0=start, bit 1=stop, bit 2=loop.
 | `&HF0BA0` | MIDI_PLAY_PTR | R/W | 32-bit pointer to MIDI/MUS data |
 | `&HF0BA4` | MIDI_PLAY_LEN | R/W | 32-bit MIDI/MUS data length |
 | `&HF0BA8` | MIDI_PLAY_CTRL | R/W | bit 0=start, bit 1=stop, bit 2=loop, bit 3=pause, bit 4=loop apply only |
-| `&HF0BAC` | MIDI_PLAY_STATUS | R | bit 0=busy, bit 1=error, bit 2=paused |
+| `&HF0BAC` | MIDI_PLAY_STATUS | R | bit 0=busy, bit 1=error, bit 2=paused, bit 3=loading |
 | `&HF0BB0` | MIDI_POSITION | R | Current sample position |
 | `&HF0BB4` | MIDI_VOLUME | R/W | Global MIDI volume, 0-255 |
 | `&HF0BB8` | MIDI_TEMPO_BPM | R | Current effective tempo; writes do not override tempo |

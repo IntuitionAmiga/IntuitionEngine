@@ -108,6 +108,8 @@ EmuTOS has full access to the complete IE hardware map. The key registers for Em
 | `MOUSE_CTRL` | `0xF074C` | bit0 requests captured relative mouse mode |
 | `MOUSE_DX` | `0xF0754` | signed accumulated relative X delta, clears on read |
 | `MOUSE_DY` | `0xF0758` | signed accumulated relative Y delta, clears on read |
+| `RTC_MONO_USEC_LO` | `0xF075C` | low 32 bits of monotonic microseconds since engine start |
+| `RTC_MONO_USEC_HI` | `0xF0760` | high 32 bits of monotonic microseconds since engine start |
 | `SCAN_CODE` | `0xF0740` | dequeues make/break scancode |
 | `SCAN_STATUS` | `0xF0744` | bit0 available |
 | `SCAN_MODIFIERS` | `0xF0748` | bit0 shift bit1 ctrl bit2 alt bit3 caps |
@@ -150,6 +152,11 @@ All unsupported XBIOS calls return -1. Calls that imply Atari ST hardware such a
 The EmuTOS loader discovers the keyboard IOREC fields from the ROM pattern scan and initializes a fallback ring buffer if the ROM leaves it unset. The fallback buffer is placed below the EmuTOS profile top-of-RAM, not at a fixed low-memory address.
 
 During the existing 5 ms level-5 timer cadence, IE drains up to 16 queued `SCAN_CODE` values into the discovered IOREC ring. The pump reads `SCAN_STATUS` first and only reads `SCAN_CODE` when a scancode is available, so it does not inject zero scancodes. If the IOREC ring is full, the scancode has already been dequeued from TerminalMMIO and is dropped; TerminalMMIO does not support peek-before-dequeue. This is the documented drop-on-full behavior.
+
+Guests reading `RTC_MONO_USEC_LO`/`RTC_MONO_USEC_HI` should use a high-low-high
+retry: read high, read low, read high again, and retry if the high values differ.
+The counter is monotonic elapsed time since the engine process started, not wall
+clock time.
 
 ## GEM Application Programming (.PRG)
 
