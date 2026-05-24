@@ -35,6 +35,8 @@ mouse movement uses signed `32`-bit values.
 | `$F0750` | `RTC_EPOCH` | R | Seconds since `1970-01-01 00:00:00` UTC. |
 | `$F0754` | `MOUSE_DX` | R | Signed accumulated relative X movement; reading clears it. |
 | `$F0758` | `MOUSE_DY` | R | Signed accumulated relative Y movement; reading clears it. |
+| `$F075C` | `RTC_MONO_USEC_LO` | R | Low `32` bits of monotonic microseconds since engine start. |
+| `$F0760` | `RTC_MONO_USEC_HI` | R | High `32` bits of monotonic microseconds since engine start. |
 
 ## 37.2 Cooked Key Queue
 
@@ -124,7 +126,8 @@ number.
 ## 37.6 Time Of Day
 
 `RTC_EPOCH` reads whole seconds since `1970-01-01 00:00:00` UTC.
-There is no sub-second register and no per-CPU latch.
+This is wall-clock time. It can jump if the clock is changed outside
+the machine, so use it for dates, not for measuring short intervals.
 
 ```basic
 10 T=PEEK(&H000F0750)
@@ -132,13 +135,37 @@ There is no sub-second register and no per-CPU latch.
 ```
 
 Two reads about a second apart normally differ by one. For shorter
-intervals, use a CPU timer or a device status bit, as described in
-Chapter 31.
+elapsed-time measurements, use the monotonic microsecond registers in
+the next section, a CPU timer, or a device status bit.
 
 The value is a signed `32`-bit seconds counter. In 2038 it crosses
 from positive to negative, then keeps counting in signed arithmetic.
 
-## 37.7 Small-CPU Access
+## 37.7 Monotonic Elapsed Time
+
+`RTC_MONO_USEC_LO` and `RTC_MONO_USEC_HI` form a `64`-bit
+microsecond counter since Intuition Engine started. It is monotonic:
+it is for intervals and timeouts, not for calendar time.
+
+Read the high word, then the low word, then the high word again. If
+the two high reads differ, the low word crossed `$FFFFFFFF` while you
+were reading and you should try again.
+
+```basic
+10 REM READ MONOTONIC MICROSECOND TIMER
+20 H1=PEEK(&H000F0760)
+30 L=PEEK(&H000F075C)
+40 H2=PEEK(&H000F0760)
+50 IF H1<>H2 THEN GOTO 20
+60 PRINT "USEC ";H2;L
+```
+
+On a short run the high word is usually `0`, and the low word is the
+elapsed microsecond count. For long-running programs, keep the value
+as two words. BASIC's single-precision numeric value cannot hold every
+`64`-bit integer exactly.
+
+## 37.8 Small-CPU Access
 
 The 6502 and Z80 reach these registers through their terminal and
 MMIO apertures described in Chapters 27 and 28. A `32`-bit register

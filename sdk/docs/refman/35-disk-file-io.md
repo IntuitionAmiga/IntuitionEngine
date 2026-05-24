@@ -43,7 +43,7 @@ The block starts at `$F2200` and spans `32` bytes. Registers are
 |----------|-------------------|--------|---------|
 | `$F2200` | `FILE_NAME_PTR`   | W      | Pointer to a `NUL`-terminated name string |
 | `$F2204` | `FILE_DATA_PTR`   | W      | Pointer to the data buffer |
-| `$F2208` | `FILE_DATA_LEN`   | W      | Byte count for write |
+| `$F2208` | `FILE_DATA_LEN`   | W      | Byte count for write; ignored by read |
 | `$F220C` | `FILE_CTRL`       | W      | Write `1` read, `2` write, `3` list |
 | `$F2210` | `FILE_STATUS`     | R      | `0` OK, `1` error |
 | `$F2214` | `FILE_RESULT_LEN` | R      | Bytes transferred by read or list |
@@ -86,6 +86,12 @@ read `FILE_ERROR_CODE`.
 
 The reader must provide enough destination memory. The disk block
 does not receive a destination capacity for reads.
+
+`FILE_DATA_LEN` is write-side state. A read ignores it, even if it
+still contains the length from an earlier write. On a successful read,
+`FILE_RESULT_LEN` is the actual number of bytes copied. If the name is
+accepted but the read itself fails, `FILE_RESULT_LEN` is cleared to
+`0`; use `FILE_STATUS` and `FILE_ERROR_CODE` as the final error test.
 
 ## 35.4 Write
 
@@ -219,9 +225,12 @@ not trigger an operation.
 ## 35.9 Limits and Side Effects
 
 Names longer than `255` bytes are truncated before lookup. Reads
-and lists set `FILE_RESULT_LEN` on success. Lists set
-`FILE_RESULT_LEN` to `0` on failure. After a failed read or write,
-do not rely on `FILE_RESULT_LEN`.
+ignore `FILE_DATA_LEN`; writes use it as the number of bytes to copy
+from `FILE_DATA_PTR`. Successful reads and lists set
+`FILE_RESULT_LEN` to the number of bytes returned. Lists set
+`FILE_RESULT_LEN` to `0` on failure. Reads whose path is accepted but
+whose file cannot be read also set `FILE_RESULT_LEN` to `0`. After a
+failed write, do not rely on `FILE_RESULT_LEN`.
 
 The block is synchronous and single-operation. Program code
 should not change `FILE_NAME_PTR`, `FILE_DATA_PTR`, or

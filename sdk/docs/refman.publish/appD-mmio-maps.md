@@ -72,6 +72,8 @@ carry information.
 | `$F0750`  | `RTC_EPOCH`       | R   | Seconds since `1970-01-01 00:00:00` UTC. |
 | `$F0754`  | `MOUSE_DX`        | R   | Signed accumulated dX (clears on read). |
 | `$F0758`  | `MOUSE_DY`        | R   | Signed accumulated dY. |
+| `$F075C`  | `RTC_MONO_USEC_LO` | R   | Low `32` bits of monotonic microseconds since engine start. |
+| `$F0760`  | `RTC_MONO_USEC_HI` | R   | High `32` bits of monotonic microseconds since engine start. |
 | `$F07F0`  | `TERM_SENTINEL`   | W   | Write `$DEAD` to stop CPU. |
 
 ## D.3 SoundChip (`$F0800`-`$F0B7F`)
@@ -92,7 +94,7 @@ Audio player control blocks in the same area:
 | Range | Block | Registers |
 |-------|-------|-----------|
 | `$F0B80`-`$F0B91` | AHX | `AHX_PLUS_CTRL`, `AHX_PLAY_PTR`, `AHX_PLAY_LEN`, `AHX_PLAY_CTRL`, `AHX_PLAY_STATUS`, `AHX_SUBSONG`. |
-| `$F0BA0`-`$F0BBF` | MIDI/MUS | `MIDI_PLAY_PTR`, `MIDI_PLAY_LEN`, `MIDI_PLAY_CTRL`, `MIDI_PLAY_STATUS`, `MIDI_POSITION`, `MIDI_VOLUME`, `MIDI_TEMPO_BPM`. |
+| `$F0BA0`-`$F0BBF` | MIDI/MUS | `MIDI_PLAY_PTR`, `MIDI_PLAY_LEN`, `MIDI_PLAY_CTRL`, `MIDI_PLAY_STATUS` (bit `0` busy, bit `1` error, bit `2` paused, bit `3` loading), `MIDI_POSITION`, `MIDI_VOLUME`, `MIDI_TEMPO_BPM`. |
 | `$F0BC0`-`$F0BD7` | MOD | `MOD_PLAY_PTR`, `MOD_PLAY_LEN`, `MOD_PLAY_CTRL`, `MOD_PLAY_STATUS`, `MOD_FILTER_MODEL`, `MOD_POSITION`. |
 | `$F0BD8`-`$F0BF3` | WAV | `WAV_PLAY_PTR`, `WAV_PLAY_LEN`, `WAV_PLAY_CTRL`, `WAV_PLAY_STATUS`, `WAV_POSITION`, `WAV_PLAY_PTR_HI`, `WAV_CHANNEL_BASE`, `WAV_VOLUME_L`, `WAV_VOLUME_R`, `WAV_FLAGS`. |
 
@@ -257,10 +259,10 @@ and `HITCLR`.
 |--------|----------|
 | `+$00` | `FILE_NAME_PTR`. |
 | `+$04` | `FILE_DATA_PTR`. |
-| `+$08` | `FILE_DATA_LEN`. |
+| `+$08` | `FILE_DATA_LEN` (write byte count; ignored by read). |
 | `+$0C` | `FILE_CTRL` (write triggers). |
 | `+$10` | `FILE_STATUS`. |
-| `+$14` | `FILE_RESULT_LEN`. |
+| `+$14` | `FILE_RESULT_LEN` (actual read/list byte count; `0` after accepted-path read failure). |
 | `+$18` | `FILE_ERROR_CODE`. |
 
 ## D.15 Amiga Paula DMA (`$F2260`-`$F22AF`)

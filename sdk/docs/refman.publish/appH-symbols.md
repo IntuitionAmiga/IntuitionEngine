@@ -90,6 +90,7 @@ chapter give the full story; this appendix is the cheat sheet.
 | Symbol             | Value / role |
 |--------------------|--------------|
 | Reset vector       | `EIP = 0`, `CS = 0`, `DS = ES = SS = 0` (flat, not the 8086 `F000:FFF0` boot vector). |
+| `.ie86` image start | bytes loaded at `$00000000`, execution starts with `EIP = 0`; use an entry stub at `0` if the body lives elsewhere. |
 | IVT                | `$0000`-`$03FF` (`256` entries, `4` bytes each: offset + segment). |
 | Stack              | `SS:ESP`, segments are zero so the stack lives in flat RAM. |
 | Call ABI           | Caller pushes arguments right-to-left; `EAX` returns; `EBX`, `ESI`, `EDI`, `EBP` callee-saved; `ECX`, `EDX` caller-saved. |
@@ -110,6 +111,7 @@ mechanism described in Chapters 27 and 28.
 | Address    | Meaning |
 |------------|---------|
 | `$F0700`  | `TERM_OUT`. |
+| `$F075C`/`$F0760` | `RTC_MONO_USEC_LO` / `RTC_MONO_USEC_HI`, monotonic elapsed microseconds. |
 | `$F1400`  | HOST appliance block. |
 | `$F2200`  | File I/O block. |
 | `$F2300`  | Media loader. |

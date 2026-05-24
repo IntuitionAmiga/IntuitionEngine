@@ -60,7 +60,9 @@ enough to inspect the status and tempo registers.
 
 You should hear a short three-note chord. Line 140 normally prints
 `1  120`: status bit `0` means the player is busy or playing, and the
-tempo register reports `120` BPM.
+tempo register reports `120` BPM. If you read the status register
+immediately after line `110`, bit `3` may also be set while the player
+is still parsing the file.
 
 Lines 40 to 70 copy the file bytes into ordinary RAM. Lines 80 to 110
 set the global MIDI volume, stage the pointer and length, then start
@@ -145,7 +147,7 @@ The MIDI player register block is `$F0BA0-$F0BBF`.
 | `$F0BA0` | `MIDI_PLAY_PTR` | write/read | Low `32` bits of the SMF or MUS block address. |
 | `$F0BA4` | `MIDI_PLAY_LEN` | write/read | Length of the SMF or MUS block, in bytes. |
 | `$F0BA8` | `MIDI_PLAY_CTRL` | write/read | Start, stop, loop, pause, and resume control. |
-| `$F0BAC` | `MIDI_PLAY_STATUS` | read | Busy, error, and pause status bits. |
+| `$F0BAC` | `MIDI_PLAY_STATUS` | read | Busy, error, pause, and loading status bits. |
 | `$F0BB0` | `MIDI_POSITION` | read | Current playback position in output samples. |
 | `$F0BB4` | `MIDI_VOLUME` | write/read | Global MIDI volume, `0-255`. |
 | `$F0BB8` | `MIDI_TEMPO_BPM` | read | Current effective tempo in BPM. |
@@ -184,9 +186,29 @@ Read `MIDI_PLAY_STATUS` for player state:
 | `0` | Busy or playing. |
 | `1` | Last start request failed. |
 | `2` | Paused. |
+| `3` | Loading: an asynchronous parse/load request is still in progress. |
 
 The error bit is set when the block cannot be read or cannot be parsed
 as SMF or MUS. A successful new start clears the old error.
+
+The busy bit is broad: it is set while the player is loading and also
+while a song is playing. The loading bit is narrower. It is set only
+for the parse/load step started by `MIDI_PLAY_CTRL`. Poll it if your
+program needs to know when the source bytes have been accepted:
+
+```basic
+10 REM WAIT FOR MIDI OR MUS LOAD TO FINISH
+20 S=PEEK(&H000F0BAC)
+30 IF (S AND 8)<>0 THEN GOTO 20
+40 IF (S AND 2)<>0 THEN GOTO 70
+50 PRINT "READY ";S
+60 END
+70 PRINT "BAD MIDI"
+```
+
+When the loop reaches line `50`, bit `3` is clear. If bit `1` is set,
+the file was rejected and the old song, if any, should not be trusted
+as the result of the new start request.
 
 ## 21.6 Setup order
 
@@ -197,7 +219,9 @@ From a clean state:
 3. Write `MIDI_PLAY_PTR` and `MIDI_PLAY_LEN`.
 4. Optionally write `MIDI_VOLUME`.
 5. Write `1` to `MIDI_PLAY_CTRL`, or `5` for start plus loop.
-6. Read `MIDI_PLAY_STATUS` and `MIDI_TEMPO_BPM` if you need proof.
+6. Poll `MIDI_PLAY_STATUS` bit `3` until it clears if the program must
+   wait for parsing to finish.
+7. Read `MIDI_PLAY_STATUS` and `MIDI_TEMPO_BPM` if you need proof.
 
 The player parses the bytes when start is written. Changing the source
 memory after start does not alter the currently loaded song. Stop and

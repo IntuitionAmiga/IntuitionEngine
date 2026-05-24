@@ -66,6 +66,10 @@ When the File I/O block (Chapter 35) fails, `FILE_STATUS` reads
 | `2`  | Permission. |
 | `3`  | Path traversal. |
 
+For a read whose name passes path validation but whose file cannot be
+opened, `FILE_RESULT_LEN` is cleared to `0`. A program should still
+test `FILE_STATUS` first and then read `FILE_ERROR_CODE`.
+
 ## I.4 HOST appliance block
 
 The status byte at `$F1408` (Chapter 36) reads one of:

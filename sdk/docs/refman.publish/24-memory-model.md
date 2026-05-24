@@ -221,6 +221,8 @@ text terminal, mouse, keyboard scancodes, and a real-time clock.
 | `$F0750`  | `RTC_EPOCH`     | UTC seconds since `1970-01-01`       |
 | `$F0754`  | `MOUSE_DX`      | Signed relative X delta (clears)     |
 | `$F0758`  | `MOUSE_DY`      | Signed relative Y delta (clears)     |
+| `$F075C`  | `RTC_MONO_USEC_LO` | Low `32` bits of monotonic microseconds since engine start |
+| `$F0760`  | `RTC_MONO_USEC_HI` | High `32` bits of monotonic microseconds since engine start |
 | `$F07F0`  | `TERM_SENTINEL` | Write `$DEAD` to halt the CPU       |
 
 The M68K reaches `TERM_OUT` through a second alias as well:

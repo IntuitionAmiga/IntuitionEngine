@@ -1,5 +1,5 @@
 Refman claim and proof ledger (author-only; not published)
-Date: 2026-05-23
+Date: 2026-05-24
 
 Scope: sdk/docs/refman reader-facing chapters and appendices.
 
@@ -43,6 +43,15 @@ Entry format:
   Expected result: the SMF listing plays a looping three-note RawlandMini chord and reports status bit 0 plus 120 BPM; the MUS listing plays a looping blip and reports status bit 0 plus 140 BPM; Chapter 11, Chapter 23, Appendix D, Appendix I, Appendix J, Appendix K, and Appendix L all expose the same media type, range, and chapter number.
   Author verification workflow: checked parser support for SMF type 0/type 1, MUS score headers, tempo handling, channel/drum mapping, RawlandMini voice budget, player control/status bits, media-loader extension dispatch, script audio functions, SDK include constants, and renumbered cross-references.
   Result: MIDI/MUS is now documented in the same guide style as the other audio player engines, with IE-native examples and source-backed limits.
+
+- Area: Commit f8c3570 and 3b9c91d ABI follow-up, MIDI loading status, monotonic timer, x86 flat-image start, and File I/O read compatibility.
+  Claim: MIDI_PLAY_STATUS bit 3 is MIDI_STATUS_LOADING and is set while an asynchronous MIDI/MUS parse/load request is in progress; RTC_MONO_USEC_LO at $F075C and RTC_MONO_USEC_HI at $F0760 expose a 64-bit monotonic microsecond counter since engine start; .ie86 flat images are loaded at address 0 and start at EIP = 0; FILE_DATA_LEN is write-side state ignored by reads, successful reads report their actual byte count through FILE_RESULT_LEN, and accepted-path read failures clear FILE_RESULT_LEN to 0.
+  Canonical sources checked: midi_constants.go, midi_player.go, midi_player_test.go, midi_abi_drift_test.go, registers.go, terminal_io.go, terminal_abi_drift_test.go, terminal_io_test.go, file_io.go, file_io_test.go, sdk/include/ie64.inc, sdk/include/ie32.inc, sdk/include/ie65.inc, sdk/include/ie68.inc, sdk/include/ie80.inc, sdk/include/ie86.inc, x86_address_space_retired_test.go.
+  Reader workflow: use BASIC PEEK/POKE to start MIDI/MUS playback and poll MIDI_PLAY_STATUS; use BASIC PEEK high-low-high reads for the monotonic timer; use IE Mon or loaded .ie86 images knowing EIP = 0 is the image start; use File I/O registers with FILE_DATA_LEN only for writes and FILE_RESULT_LEN as the read/list result count.
+  Runnable example: Ch 21 MIDI/MUS loading poll listing, Ch 37 monotonic microsecond timer listing, Ch 35 NOTE.TXT typed MMIO listing.
+  Expected result: the MIDI polling loop waits until bit 3 clears, then reports READY or BAD MIDI; the timer listing prints the high and low words of the monotonic microsecond counter; the File I/O listing writes and reads NOTE.TXT, then prints FILE_STATUS 0 and FILE_RESULT_LEN 2.
+  Author verification workflow: updated STYLE.md first with the ordered ABI pass; checked the code-owned constants, handlers, include files, and drift tests; updated Chapters 21, 24, 30, 35, and 37 plus Appendices D, H, I, and L; then publish and PDF generation are run after source consistency checks.
+  Result: ABI changes from the two commits are now captured in reader-facing chapters and lookup appendices without adding host-toolchain workflow.
 
 - Area: Ch 1, BASIC direct mode, program storage, values, expressions, and editing.
   Claim: BASIC is the front panel for the same bus machine used by later hardware chapters; the chapter gives a first-session path before the full vocabulary wall; direct-mode statements run at the prompt; numbered lines are stored in ascending order; bare line numbers delete stored lines; numeric values are 32-bit single-precision values; integer-only operations truncate toward zero; variables, strings, arrays, expression precedence, PRINT formatting, comments, RUN/LIST/NEW/CLEAR/CONT/LOAD/SAVE/DIR, STOP/END, and error reporting behave as documented.

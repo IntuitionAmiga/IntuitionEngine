@@ -111,6 +111,7 @@ symbols, and Appendix J gives the full memory map.
 | MIDI/MUS | Chapter 21, Chapter 23, Appendix D |
 | MIDI_PLAY_CTRL | Chapter 21, Appendix D |
 | MIDI_PLAY_STATUS | Chapter 21, Appendix D |
+| MIDI_STATUS_LOADING | Chapter 21, Appendix D |
 | MIDI_TEMPO_BPM | Chapter 21, Appendix D |
 | MIDI_VOLUME | Chapter 21, Appendix D |
 | Mode 7 | Chapter 4, Chapter 25 |
@@ -134,6 +135,8 @@ symbols, and Appendix J gives the full memory map.
 | Raster bands | Chapter 4 |
 | RawlandMini | Chapter 21 |
 | Registers | Chapter 24, Appendix D |
+| RTC_MONO_USEC_HI | Chapter 37, Appendix D, Appendix H |
+| RTC_MONO_USEC_LO | Chapter 37, Appendix D, Appendix H |
 | RUN loader | Chapter 35, Appendix I |
 
 ## S
@@ -195,6 +198,7 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | x86 | Chapter 30, Chapter 31, Appendix G, Appendix H |
+| x86 .ie86 flat images | Chapter 30, Appendix H |
 
 ## Z
 

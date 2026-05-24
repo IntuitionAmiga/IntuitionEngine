@@ -169,6 +169,62 @@ Current controlled polish pass:
   audio, file I/O, and the coprocessor status path from BASIC.
 - Add a traditional lookup index appendix and include it in the
   preface contents.
+- Integrate the ABI changes from commits `f8c3570` and `3b9c91d`.
+  MIDI/MUS status bit `3` is now `MIDI_STATUS_LOADING`, set while an
+  asynchronous parse/load request is still in progress. The terminal
+  input block exposes `RTC_MONO_USEC_LO` and `RTC_MONO_USEC_HI` as a
+  monotonic microsecond timer since engine start. The x86 flat image
+  start contract is `EIP = 0` for `.ie86` images. File reads ignore
+  stale `FILE_DATA_LEN`; successful reads report the actual byte count
+  in `FILE_RESULT_LEN`, and accepted-path read failures clear
+  `FILE_RESULT_LEN` to `0`. Update Chapters 21, 24, 30, 35, and 37,
+  then Appendices D, H, I, and L, checking the wording against
+  `midi_constants.go`, `midi_player.go`, `registers.go`,
+  `terminal_io.go`, `file_io.go`, `file_io_test.go`, the SDK include
+  files, and the ABI drift tests.
+
+  Execute this ABI pass in this order:
+
+  1. Chapter 21: add `MIDI_STATUS_LOADING` to the register and status
+     explanation; add a native BASIC polling example that waits for bit
+     `3` to clear and checks the error bit.
+  2. Chapter 24: add `RTC_MONO_USEC_LO` and `RTC_MONO_USEC_HI` to the
+     terminal block; mention MIDI/MUS loading status in the player map
+     only where a status summary is already present.
+  3. Chapter 30: clarify the x86 `.ie86` flat-image start contract:
+     loaded images start at `EIP = 0`; monitor examples may still set
+     `EIP` to another address by hand.
+  4. Chapter 35: clarify that `FILE_DATA_LEN` is write-side state and is
+     ignored by reads; successful reads set `FILE_RESULT_LEN` to the
+     actual byte count, and accepted-path read failures clear it to `0`.
+  5. Chapter 37: add a monotonic elapsed-time section after `RTC_EPOCH`,
+     with high-low-high read guidance and a typed BASIC example.
+  6. Appendix D: update Terminal/Input, MIDI/MUS, and File I/O rows.
+  7. Appendix H: add the new shared terminal timing symbols and the x86
+     image start note.
+  8. Appendix I: record the File I/O failed-read `FILE_RESULT_LEN = 0`
+     behaviour where file block errors are summarised.
+  9. Appendix L: add lookup entries for `MIDI_STATUS_LOADING`,
+     `RTC_MONO_USEC_LO`, `RTC_MONO_USEC_HI`, and `.ie86`.
+  10. Claim ledger: record the checked canonical sources and the
+      reader-facing examples affected by this pass.
+  11. Publish and print PDFs only after the source pass and checks are
+      complete.
+- Run a full source-tree editorial audit after any manually edited
+  refman Markdown. Classify every `.md` file under `sdk/docs/refman/`
+  before checking it:
+  - Reader-facing files are `00-Preface.md`, numbered chapter files, and
+    `appA` through `appL`. They must pass the forbidden-term scan with
+    front matter stripped, the no-em/en-dash rule, British-English prose
+    checks, valid chapter/appendix cross-reference checks, and publish
+    consistency checks.
+  - Author-only files are `STYLE.md`, `AUTHOR_PROVENANCE.md`, and
+    files under `verify/`. They may contain source paths, implementation
+    notes, and external provenance where the plan allows it, but they
+    must not be copied to the publish tree. Do not rewrite author-only
+    evidence files merely to satisfy reader-facing wording rules.
+  - If this pass changes any reader-facing source file, regenerate the
+    publish tree and PDFs only after the source tree is clean.
 
 ## Reader Contract
 
