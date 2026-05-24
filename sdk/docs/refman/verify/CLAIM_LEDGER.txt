@@ -53,14 +53,14 @@ Entry format:
   Author verification workflow: compared keyword names, token aliases, parser boundaries, examples, and cross-reference targets against source and targeted tests.
   Result: Ch 2 remains a typed IE-native vocabulary chapter; the opening now tells first-time readers to skim and continue to the graphics chapter, the `TWOPI` entry uses valid ASCII text, tokeniser internals were removed from the reader-facing entries, and the chapter has no reader-facing source-path or toolchain workflow.
 
-- Area: Ch 24, IE64 instruction encoding, SoundChip byte-entry example, and VideoChip Mode 7 byte-entry example.
-  Claim: byte 1 encodes Rd in bits 7-3, size in bits 2-1, X in bit 0; byte 2 and byte 3 encode Rs/Rt in bits 7-3. The audio example enables AUDIO_CTRL and programs the legacy square, triangle, and sine SoundChip channel blocks for a three-voice C major chord. The graphics example writes a 2 by 2 RGBA texture at $1800, stages VideoChip Mode 7 blitter registers from $F0020 through $F0074, starts the blitter via BLT_CTRL, and scales the texture into a 16 by 16 block at VRAM $100000.
-  Canonical sources checked: cpu_ie64.go, debug_disasm_ie64.go, audio_chip.go, video_chip.go, video_blitter_test.go.
-  Reader workflow: IE Mon only: w, d, r pc, breakpoint at loop, g, m.
+- Area: Ch 24, IE64 instruction encoding, native assemble-mode entry, SoundChip byte-entry example, and VideoChip Mode 7 byte-entry example.
+  Claim: byte 1 encodes Rd in bits 7-3, size in bits 2-1, X in bit 0; byte 2 and byte 3 encode Rs/Rt in bits 7-3. IE Mon A mode is IE64-only, accepts one instruction per line, writes exactly 8 bytes to physical RAM, prints the emitted bytes and disassembly, advances by 8 bytes, and rejects labels/directives/multi-instruction source features. The audio example enables AUDIO_CTRL and programs the legacy square, triangle, and sine SoundChip channel blocks for a three-voice C major chord. The graphics example writes a 2 by 2 RGBA texture at $1800, stages VideoChip Mode 7 blitter registers from $F0020 through $F0074, starts the blitter via BLT_CTRL, and scales the texture into a 16 by 16 block at VRAM $100000.
+  Canonical sources checked: cpu_ie64.go, debug_asm.go, debug_asm_monitor_test.go, internal/asm/ie64/assembler.go, debug_disasm_ie64.go, audio_chip.go, video_chip.go, video_blitter_test.go.
+  Reader workflow: IE Mon only: optional IE64 A mode for readable one-instruction entry, w byte-entry proof, d, r pc, breakpoint at loop, g, m. A mode is interactive-only and is verified by monitor assembler tests; the byte-entry proof remains the runnable PRM sweep path.
   Runnable example: Ch 24 "A small example" audio byte transcript, starting at w 1000 01 17 00 00 00 08 0F 00; Ch 24 "VideoChip Mode 7 example" graphics byte transcript, starting at w 1100 01 17 00 00 00 18 00 00.
   Expected result: audio disassembly matches the chapter; memory at $F0900, $F0940, and $F0980 shows the three frequency, volume, and control blocks; the SoundChip channel state has square 262 Hz, triangle 330 Hz, sine 392 Hz, and all three gates set. Graphics disassembly matches the chapter; texture memory at $1800 contains red, green, blue, white RGBA words, VRAM $100000 begins with red then green blocks, VRAM $103C00 begins with blue then white blocks, and BLT_STATUS has no error bit.
-  Author verification workflow: checked IE64 decode bit fields, SoundChip register offsets, VideoChip Mode 7 register offsets, default VideoChip stride, fixed-point step values, and monitor disassembler output against source; added TestRefmanCh24IE64SoundChipChordExample and TestRefmanCh24IE64Mode7GraphicsExample, which extract the manual's w lines, check the bytes, disassemble them, step the setup code, and verify device state.
-  Result: reader path is byte entry and monitor inspection; the chapter now annotates the instruction groups for both an audible SoundChip chord and a visible VideoChip Mode 7 block, and no assembler is assumed.
+  Author verification workflow: checked IE64 monitor assemble-mode command handling and representative encodings, IE64 decode bit fields, SoundChip register offsets, VideoChip Mode 7 register offsets, default VideoChip stride, fixed-point step values, and monitor disassembler output against source; added TestRefmanCh24IE64SoundChipChordExample and TestRefmanCh24IE64Mode7GraphicsExample, which extract the manual's w lines, check the bytes, disassemble them, step the setup code, and verify device state.
+  Result: reader path is native IE Mon entry and monitor inspection; the chapter now shows IE64 A mode as a readability aid, keeps the byte-entry proof, annotates the instruction groups for both an audible SoundChip chord and a visible VideoChip Mode 7 block, and does not require a host assembler.
 
 - Area: Ch 25, IE32 SN76489 byte-entry example and VGA text byte-entry example.
   Claim: IE32 instructions are 8 bytes: opcode, register, addressing mode, reserved byte, little-endian 32-bit operand. The audio example enables AUDIO_CTRL and writes SN76489 byte-stream values for a three-channel chord through the low byte of 32-bit stores. The graphics example sets VGA_MODE to text mode, enables VGA_CTRL, and writes character/attribute bytes for "IE32" into the VGA text window at $B8000-$B8007.
@@ -458,14 +458,14 @@ Entry format:
   Author verification workflow: compared constants, BASIC keyword handlers, manager error paths, gateway tests, and the Chapter 31 refman BASIC test.
   Result: Ch 31 now documents the coprocessor as an IE-native control surface, removes image-executor prose, corrects COWAIT to a statement with a default 1000 ms timeout, and includes a runnable typed example.
 
-- Area: Ch 32, IE Mon byte-entry workflow and command syntax.
-  Claim: IE Mon parses bare addresses as hexadecimal, # values as decimal, writes bytes with w addr byte..., disassembles with d, sets registers with r, runs or steps with g/s, uses e for interactive hex editing, uses save start end name and load name addr for memory ranges, and reports command errors without leaving the monitor. The chapter's 6502 workflows show both audible POKEY output and visible ULA VRAM/attribute programming through monitor byte entry.
-  Canonical sources checked: debug_commands.go, debug_monitor.go, debug_monitor_test.go, debug_access_test.go, debug_disasm_6502.go, ula_constants.go, video_ula.go.
-  Reader workflow: enter MON, write bytes with w, verify with d, set pc with r, use b/g/s for execution, then inspect memory with m.
-  Runnable example: Ch 32 6502 POKEY byte-entry transcript and Ch 32 6502 ULA byte-entry graphics transcript.
-  Expected result: POKEY disassembly matches the transcript and the memory dump at $D200 shows 79 AF after running to the loop. ULA bytes match the verified Ch 26 ULA graphics program: ULA_BORDER reads 05, ULA_CTRL reads 05, ULA VRAM offsets $0000-$0007 read FF 81 BD A5 A5 BD 81 FF, and ULA VRAM offset $1800 reads 46.
-  Author verification workflow: compared command handlers and focused monitor tests for command parsing, memory write, disassembly, save/load, hex edit, watchpoints, and unknown-command errors; added TestRefmanCh32ULAGraphicsWorkflowBytes to extract the Chapter 32 ULA w lines and compare them with the stepped Chapter 26 ULA graphics program.
-  Result: Ch 32 now states the no mnemonic-entry workflow directly, shows both sound and graphics byte-entry workflows, and corrects monitor syntax details used by the reader examples.
+- Area: Ch 32, IE Mon byte-entry workflow, IE64 assemble workflow, and command syntax.
+  Claim: IE Mon parses bare addresses as hexadecimal, # values as decimal, writes bytes with w addr byte..., disassembles with d, sets registers with r, runs or steps with g/s, uses e for interactive hex editing, uses save start end name and load name addr for memory ranges, and reports command errors without leaving the monitor. IE64 A mode assembles one instruction per line, writes physical RAM only, prints the emitted bytes and disassembly, advances by 8 bytes, and rejects source-file features. The chapter's 6502 workflows show both audible POKEY output and visible ULA VRAM/attribute programming through monitor byte entry.
+  Canonical sources checked: debug_commands.go, debug_asm.go, debug_asm_monitor_test.go, internal/asm/ie64/assembler.go, debug_monitor.go, debug_monitor_test.go, debug_access_test.go, debug_disasm_6502.go, ula_constants.go, video_ula.go, tools/prm-extract/segment_iemon.go.
+  Reader workflow: enter MON, write bytes with w or use IE64 A mode for one-instruction mnemonic entry, verify with d, set pc with r, use b/g/s for execution, then inspect memory with m. A mode is interactive-only, so the published A transcript is marked as text and the paired byte-entry transcripts remain the runnable PRM sweep path.
+  Runnable example: Ch 32 IE64 A mode RAM-write transcript, Ch 32 6502 POKEY byte-entry transcript, and Ch 32 6502 ULA byte-entry graphics transcript.
+  Expected result: IE64 A mode emits the shown bytes for move/store/bra, the d listing matches, and memory at $2000 contains 78 56 34 12. POKEY disassembly matches the transcript and the memory dump at $D200 shows 79 AF after running to the loop. ULA bytes match the verified Ch 26 ULA graphics program: ULA_BORDER reads 05, ULA_CTRL reads 05, ULA VRAM offsets $0000-$0007 read FF 81 BD A5 A5 BD 81 FF, and ULA VRAM offset $1800 reads 46.
+  Author verification workflow: compared command handlers and focused monitor tests for assemble mode, command parsing, memory write, disassembly, save/load, hex edit, watchpoints, and unknown-command errors; updated the PRM extractor so explicit `text` fences opt out of monitor auto-detection for interactive-only A transcripts; added TestRefmanCh32ULAGraphicsWorkflowBytes to extract the Chapter 32 ULA w lines and compare them with the stepped Chapter 26 ULA graphics program.
+  Result: Ch 32 now teaches both byte entry and the native IE64 one-instruction assembler, shows sound and graphics byte-entry workflows, removes reader-facing host-assembler advice, and corrects monitor syntax details used by the reader examples.
 
 - Area: Ch 33, IE Script module surface and VideoChip example.
   Claim: IE Script exposes sys, cpu, mem, term, audio, video, rec, dbg, sym, regions, and bit32 modules with the documented function names; raw RAM access requires cpu.freeze while MMIO access is allowed; dbg.on_fault takes a fault kind plus callback; the VideoChip example drives write_reg, blit_fill, blit_line, blit_wait, and read_reg; the SoundChip example uses audio.start, audio.write_reg, sys.wait_ms, and mem.read32 against MMIO.
@@ -566,23 +566,23 @@ Entry format:
   Author verification workflow: recalculated C4-B4 register values from the source constants and checked the table wording against ted_engine.go.
   Result: TED pitch terminology now matches the implemented model.
 
-- Area: App L, register-level index coverage.
-  Claim: the index includes common register-level lookup terms raised by review, including AUDCTL, BLT_FLAGS, BLT_STATUS, COPROC_CMD_ERROR, FBZ_MODE, SID2, SID3, SoundChip flex channels, SYSINFO_ACTIVE_RAM_LO, SYSINFO_TOTAL_RAM_LO, TED frequency register, TED_V_RASTER_STATUS, TERM_SENTINEL, and VIDEO_STATUS.
-  Canonical sources checked: appL-index.md, Ch 4, Ch 9, Ch 16, Ch 17, Ch 23, Ch 31, Ch 37, App D, App E.
+- Area: App L, register-level and IE64 assemble-mode index coverage.
+  Claim: the index includes common register-level lookup terms raised by review, including AUDCTL, BLT_FLAGS, BLT_STATUS, COPROC_CMD_ERROR, FBZ_MODE, SID2, SID3, SoundChip flex channels, SYSINFO_ACTIVE_RAM_LO, SYSINFO_TOTAL_RAM_LO, TED frequency register, TED_V_RASTER_STATUS, TERM_SENTINEL, VIDEO_STATUS, Assemble mode, IE64 monitor assembler, and Monitor assemble command.
+  Canonical sources checked: appL-index.md, Ch 4, Ch 9, Ch 16, Ch 17, Ch 23, Ch 24, Ch 31, Ch 32, Ch 37, App D, App E, App G.
   Reader workflow: use Appendix L as a paper-style index for named registers and architectural lookup terms.
   Runnable example: n/a, index lookup only.
   Expected result: readers can find the reviewed register names without falling back immediately to a full-text search or Appendix D scan.
   Author verification workflow: compared the added index rows against source chapter headings, register tables, and the reviewed missing-term list.
-  Result: Appendix L now covers the missing common register lookup terms.
+  Result: Appendix L now covers the missing common register lookup terms and the new native IE64 monitor assembly path.
 
-- Area: App G, opcode byte-entry crib.
-  Claim: each CPU quick-reference section includes the byte encodings needed to type the Chapter 24-29 machine-code examples directly into IE Mon, and mnemonic summaries match the chapter names for IE64 ALU/system operations, IE32 registers and branches, M68K bus wording, and x86 386-extension names.
-  Canonical sources checked: CPU chapters 24-29, cpu_ie64.go, cpu_ie32.go, cpu_m68k.go, cpu_x86.go, debug disassemblers for IE64, IE32, 6502, Z80, M68K, and x86.
-  Reader workflow: type the bytes with IE Mon w, inspect with d, set the PC, and run or step.
+- Area: App G, opcode byte-entry crib and IE64 assemble-mode note.
+  Claim: each CPU quick-reference section includes the byte encodings needed to type the Chapter 24-29 machine-code examples directly into IE Mon, IE64 notes that A mode can produce one instruction and print the emitted bytes, and mnemonic summaries match the chapter names for IE64 ALU/system operations, IE32 registers and branches, M68K bus wording, and x86 386-extension names.
+  Canonical sources checked: CPU chapters 24-29, cpu_ie64.go, debug_asm.go, internal/asm/ie64/assembler.go, cpu_ie32.go, cpu_m68k.go, cpu_x86.go, debug disassemblers for IE64, IE32, 6502, Z80, M68K, and x86.
+  Reader workflow: type the bytes with IE Mon w, or for IE64 use A mode and compare its printed bytes, inspect with d, set the PC, and run or step.
   Runnable example: the Chapter 24-29 byte-entered sound examples.
   Expected result: the crib rows explain the immediate, address, and branch byte order used by each chapter example; the lookup rows do not contain stale IE64 opcode aliases, stale IE32 register names, or unsupported x86 wording.
   Author verification workflow: compared crib bytes against chapter transcripts and disassembler output; ran appendix scans.
-  Result: App G now supports hand entry instead of only mnemonic lookup and matches the current CPU chapter terminology.
+  Result: App G now supports hand entry, documents the native IE64 assemble convenience without making it a host-tool workflow, and matches the current CPU chapter terminology.
 
 - Area: App H / App I, RUN loader, HOST, coprocessor, CPU trap, and symbol/error references.
   Claim: published symbols and status/error tables use reader-facing names and current addresses: HOST status at $F1408, HOST exit code at $F140C, the $F2320 block as the RUN loader block with status 0-3 and error 0-4, coprocessor ticket status values 0-5, 6502 POKEY $D200-$D20A, Z80 VGA ports $A0-$AD, and the current IE64/IE32 divide-by-zero behaviour.

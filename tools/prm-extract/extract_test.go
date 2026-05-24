@@ -185,6 +185,16 @@ func TestExtractFile_IemonExplicitCPUWithBarePrompt(t *testing.T) {
 	}
 }
 
+func TestExtractFile_TextFenceOptOutOfIemonAutoDetect(t *testing.T) {
+	body := "```text\n(ie64)> A 1000\nIE64 assemble at $0000000000001000; empty line exits\n```\n"
+	path, root := writeTempMD(t, body)
+	fences, _ := extractFile(path, root)
+	kind, cpu := classifyFence(fences[0])
+	if kind != "" || cpu != "" {
+		t.Fatalf("want text opt-out, got %s/%s", kind, cpu)
+	}
+}
+
 func TestExtractFile_IemonMixedCPURejected(t *testing.T) {
 	body := "```\n(6502)> r\n(z80)> r\n```\n"
 	path, root := writeTempMD(t, body)

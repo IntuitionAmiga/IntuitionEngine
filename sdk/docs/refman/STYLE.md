@@ -139,6 +139,17 @@ Current controlled polish pass:
   registers; Appendix E must use the TED `1024 - register` pitch model
   from Chapter 16 and `ted_engine.go`; and Appendix L must include the
   common register-level lookup terms raised by review.
+- Integrate the IE64 monitor assembler added in commit `9868100`.
+  This is an IE-native monitor feature, not a host toolchain. Chapter
+  24 and Chapter 32 may teach `A addr` as the readable way to enter
+  IE64 one-instruction-at-a-time code, but the book must keep emitted
+  bytes, `d` disassembly, and run/inspection results as the proof path.
+  Non-IE64 CPU chapters remain byte-entry chapters unless IE Mon gains
+  native assemblers for those CPUs.
+  `A` mode is interactive only and cannot be fed by IE Script or
+  monitor wrappers, so published `A` transcripts are marked as text and
+  verified against `debug_asm` and `internal/asm/ie64` tests. The
+  paired byte-entry transcript remains the runnable PRM sweep path.
 - Add a small whole-machine capstone chapter that touches graphics,
   audio, file I/O, and the coprocessor status path from BASIC.
 - Add a traditional lookup index appendix and include it in the
@@ -156,6 +167,11 @@ The reader-facing workflow is:
 - Use IE Mon `w` to write machine-code bytes, `d` to inspect the
   disassembly, `r` to set or read registers, `s` to step, `g` to run,
   and `b`/`bc` for breakpoints.
+- For IE64 only, use IE Mon `A addr` when a readable mnemonic entry
+  path helps the reader. `A` is part of the machine monitor and accepts
+  one IE64 instruction per line. It does not change the requirement to
+  show the emitted bytes, confirm them with `d`, and run or inspect the
+  result.
 - Inspect results through registers, memory dumps, visible screen
   changes, terminal output, or documented status registers.
 
@@ -283,6 +299,14 @@ Machine-language examples must include all three of these parts:
 2. The expected `d` disassembly.
 3. The expected result after `s`, `g`, or a breakpoint-assisted run.
 
+IE64 examples may include an `A addr` transcript before the byte-entry
+form. Use it to make the program readable, especially when the old
+byte stream would be hard to follow. The `A` transcript must be
+native to IE Mon and must show the monitor's emitted bytes for each
+instruction shown. Do not present standalone source-file assembly as
+the reader workflow, and do not remove the byte-entry proof unless the
+example is a tiny local demonstration of `A` itself in Chapter 32.
+
 CPU chapter examples should do visible and audible machine tasks, not
 only store a sentinel byte in RAM. Each CPU chapter needs two native
 monitor-entered programmes unless the implementation makes one
@@ -319,10 +343,13 @@ listing would have given: what register or port is being written, what
 value is being encoded, and what the reader should see, hear, or
 inspect afterward.
 
-The reader is not assumed to have an assembler. Longer assembly
-listings may appear only when they are clearly labelled as explanatory
-mnemonics and are paired with byte entry, or when they are moved to
-author verification notes outside the published reader path.
+The reader is not assumed to have a host assembler. For IE64, IE Mon's
+`A` command is an allowed native convenience because it runs inside the
+monitor and immediately prints bytes. For IE32, 6502, Z80, M68K, and
+x86, longer assembly listings may appear only when they are clearly
+labelled as explanatory mnemonics and are paired with byte entry, or
+when they are moved to author verification notes outside the published
+reader path.
 
 For each CPU ISA chapter, document enough encoding for hand entry of
 small programs: instruction size, byte order, operand byte layout,
@@ -447,8 +474,9 @@ The reader owns a real computer named Intuition Engine. The book never tells the
 
 1. Read the appropriate canonical source(s) - `.inc` files, EhBASIC asm, Go source, primary CPU manual for Ch 25-28.
 2. Compose in the appropriate voice.
-3. Pick the reader workflow first: BASIC prompt, `POKE`/`PEEK`, or IE
-   Mon byte entry. Do not start from a host assembler workflow.
+3. Pick the reader workflow first: BASIC prompt, `POKE`/`PEEK`, IE
+   Mon byte entry, or IE64 `A` mode paired with byte proof. Do not
+   start from a host assembler workflow.
 4. Adversarially check every technical claim against its canonical
    source. If a prose doc was reused, fix the prose doc first in its
    own PR.

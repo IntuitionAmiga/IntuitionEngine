@@ -7,6 +7,8 @@ sources:
   - cpu_z80_runner.go
   - cpu_m68k.go
   - cpu_x86.go
+  - debug_asm.go
+  - internal/asm/ie64/assembler.go
 ---
 
 # Appendix G - Per-CPU Opcode Quick Reference
@@ -21,11 +23,19 @@ does this opcode do at a glance".
 The byte-entry crib under each CPU is deliberately small. It covers
 the encodings used by the chapter example so a reader can type,
 disassemble, and check the machine-code program directly in IE Mon.
+For IE64, IE Mon can also assemble one instruction at a time with
+`A addr`; the emitted bytes are still shown here because the bytes and
+the `d` listing are the permanent check.
 
 ## G.1 IE64 (Chapter 24)
 
 Fixed `8`-byte instruction, 32 GPRs `R0`-`R31`, `R0 = 0`,
 `R31 = SP`. Compare-and-branch ISA; no separate flag register.
+
+With IE64 as the focussed CPU, `A addr` accepts one mnemonic
+instruction and prints the `8` bytes it wrote. Use it for short IE64
+programs when the mnemonic form is easier to type, then confirm with
+`d` just as Chapter 24 does.
 
 | Group | Mnemonics |
 |-------|-----------|

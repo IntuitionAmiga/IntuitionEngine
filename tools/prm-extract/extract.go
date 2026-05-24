@@ -209,6 +209,12 @@ func classifyFence(f RawFence) (kind, cpu string) {
 	if kind == "" && f.Directives.CPU != "" {
 		kind = KindIemon
 	}
+	if kind == "" && f.InfoString != "" {
+		// Unknown info strings such as `text` are an explicit opt-out from
+		// auto-detection. This lets the manual show explanatory transcripts
+		// for interactive-only features that the PRM runner cannot feed.
+		return
+	}
 	if kind == "" {
 		for _, ln := range strings.Split(f.Body, "\n") {
 			t := strings.TrimSpace(ln)

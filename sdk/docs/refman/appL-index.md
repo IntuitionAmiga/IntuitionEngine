@@ -20,6 +20,7 @@ symbols, and Appendix J gives the full memory map.
 | Alpha blending | Chapter 4, Chapter 9 |
 | ANTIC | Chapter 7, Chapter 27, Appendix D, Appendix H |
 | ASCII | Appendix C |
+| Assemble mode | Chapter 24, Chapter 32, Appendix G |
 | AUDCTL | Chapter 17, Chapter 26, Appendix D |
 | Audio mixer | Chapter 11, Chapter 22, Appendix K |
 
@@ -92,6 +93,7 @@ symbols, and Appendix J gives the full memory map.
 | IE Script | Chapter 33 |
 | IE32 | Chapter 25, Chapter 30, Appendix G, Appendix H |
 | IE64 | Chapter 24, Chapter 30, Appendix G, Appendix H |
+| IE64 monitor assembler | Chapter 24, Chapter 32, Appendix G |
 | Index | Appendix L |
 | Input MMIO | Chapter 36, Appendix D |
 
@@ -101,6 +103,7 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | M68K | Chapter 28, Chapter 30, Appendix G, Appendix H |
 | Machine-code byte entry | Chapters 24-29, Chapter 32 |
+| Monitor assemble command | Chapter 24, Chapter 32, Appendix G |
 | Media loader | Chapter 11, Appendix D |
 | Memory map | Chapter 23, Appendix J |
 | Mode 7 | Chapter 4, Chapter 24 |

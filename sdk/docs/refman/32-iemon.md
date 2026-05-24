@@ -2,6 +2,8 @@
 title: "IE Mon - the Machine Monitor"
 sources:
   - debug_commands.go
+  - debug_asm.go
+  - internal/asm/ie64/assembler.go
 ---
 
 # Chapter 32 - IE Mon
@@ -77,16 +79,17 @@ checked unsigned physical address. The prompt becomes
 `asm $0000000000001000> ` and each non-empty line must assemble to
 exactly one 8-byte IE64 instruction. On success the monitor writes
 physical RAM only, prints the address, bytes, and disassembly,
-advances by eight bytes, and flushes the full IE64 JIT/code cache.
+advances by eight bytes, and makes the new instruction visible to IE64
+execution.
 Errors leave memory and the current assemble address unchanged.
 Press Enter on an empty line to exit.
 
 Monitor assemble mode rejects source-file features: labels,
 directives, `include`, `incbin`, output formats, files, and
-multi-instruction pseudo-ops such as `li`. Use the standalone
-`ie64asm` CLI for full source-file assembly. Scripts, macros,
-`.iemonrc` files, and IEScript raw monitor wrappers cannot enter or
-feed assemble mode.
+multi-instruction pseudo-ops such as `li`. It is a monitor entry tool
+for short IE64 code, patches, and examples, not a stored source-file
+language. Scripts, macros, `.iemonrc` files, and IEScript raw monitor
+wrappers cannot enter or feed assemble mode.
 
 ### 32.4.1 Byte-entry audio workflow
 
@@ -133,7 +136,49 @@ and control bytes were written. You should hear the tone while the
 audio engine is enabled. If the disassembly does not match the
 chapter transcript, fix the byte listing before running it.
 
-### 32.4.2 Byte-entry graphics workflow
+### 32.4.2 IE64 assemble workflow
+
+For IE64 only, `A addr` lets you type one mnemonic instruction at a
+time. The monitor writes exactly one `8`-byte instruction, prints the
+emitted bytes, then moves the assemble prompt forward by `8` bytes.
+That makes small IE64 programs easier to read without leaving the
+monitor.
+
+This example writes one `32`-bit value into RAM at `$2000`, then stops
+at a self-loop:
+
+```text
+(ie64)> A 1000
+IE64 assemble at $0000000000001000; empty line exits
+asm $0000000000001000> move.q r2,#$2000
+$0000000000001000: 01 17 00 00 00 20 00 00  move.q r2, #$2000
+asm $0000000000001008> move.q r1,#$12345678
+$0000000000001008: 01 0F 00 00 78 56 34 12  move.q r1, #$12345678
+asm $0000000000001010> store.l r1,(r2)
+$0000000000001010: 11 0C 10 00 00 00 00 00  store.l r1, (r2)
+asm $0000000000001018> bra $1018
+$0000000000001018: 40 06 00 00 00 00 00 00  bra $001018
+asm $0000000000001020>
+Exited IE64 assemble mode
+(ie64)> d 1000 #4
+  00001000: 01 17 00 00 00 20 00 00  move.q r2, #$2000
+  00001008: 01 0F 00 00 78 56 34 12  move.q r1, #$12345678
+  00001010: 11 0C 10 00 00 00 00 00  store.l r1, (r2)
+T 00001018: 40 06 00 00 00 00 00 00  bra $001018
+(ie64)> r pc 1000
+(ie64)> b 1018
+(ie64)> g
+(ie64)> m 2000 1
+0000000000002000: 78 56 34 12 00 00 00 00  00 00 00 00 00 00 00 00  xV4.............
+(ie64)> bc 1018
+```
+
+The `A` lines are not separate source code. They are monitor commands.
+The bytes printed after each line are the same bytes `w` would have
+written. The `d` command is still the proof step, and the memory dump
+shows little-endian storage of `$12345678`.
+
+### 32.4.3 Byte-entry graphics workflow
 
 The same loop works for visible hardware. This 6502 example uses
 the ULA card: it sets the border, enables the ULA source, writes an
