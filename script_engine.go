@@ -555,6 +555,31 @@ func redOutputError(lines []OutputLine) error {
 
 func validateSandboxedMonitorCommand(input string, mon *MachineMonitor) error {
 	cmd := ParseCommand(input)
+	if cmd.Name == "a" {
+		return fmt.Errorf("IEScript cannot use monitor assemble mode")
+	}
+	if mon != nil {
+		mon.mu.Lock()
+		assembleActive := mon.assembleMode
+		resolved := cmd
+		if cmd.Name != "" {
+			seen := make(map[string]bool)
+			for resolved.Name != "" && !seen[resolved.Name] {
+				seen[resolved.Name] = true
+				expanded, ok := mon.aliases[resolved.Name]
+				if !ok {
+					break
+				}
+				pieces := []string{expanded}
+				pieces = append(pieces, resolved.Args...)
+				resolved = ParseCommand(strings.Join(pieces, " "))
+			}
+		}
+		mon.mu.Unlock()
+		if assembleActive || resolved.Name == "a" {
+			return fmt.Errorf("IEScript cannot use monitor assemble mode")
+		}
+	}
 	switch cmd.Name {
 	case "save", "load", "ss", "sl", "script", "macro":
 		return fmt.Errorf("dbg.command cannot run host-file monitor command %q; use the typed dbg wrapper", cmd.Name)

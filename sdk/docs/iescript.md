@@ -1,6 +1,6 @@
 # IEScript Lua Automation Manual
 
-*Last updated: 2026-05-14*
+*Last updated: 2026-05-24*
 
 IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
@@ -1032,6 +1032,8 @@ nothing.
 `dbg.command(cmd)` - Execute a monitor command string after sandbox filtering. Host-file-capable monitor commands are rejected (`save`, `load`, `ss`, `sl`, `script`, `macro`, and `trace file`; `trace file off` is allowed). Invoking monitor macros through this raw API is rejected. Returns: nothing.
 
 `dbg.command_output(cmd)` - Execute a sandbox-filtered monitor command string and return newly appended monitor output lines as `{text, color}` entries. The field is named `color` because that is the exported Lua table key. The same command restrictions as `dbg.command` apply. Returns: table.
+
+The raw monitor wrappers cannot enter or feed IEMon IE64 assemble mode. `A <addr>` is interactive-only, so `dbg.command`, `dbg.command_output`, `dbg.run_script`, and `dbg.macro` reject it and also reject attempts to send instruction text while the monitor is already in assemble mode.
 
 Example - breakpoint workflow:
 

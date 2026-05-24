@@ -59,6 +59,54 @@ func TestMonitorCut_PromptPrefix(t *testing.T) {
 	}
 }
 
+func TestMonitorCut_AssemblePromptPrefix(t *testing.T) {
+	o, m := newTestMonitorOverlay(t)
+	m.mu.Lock()
+	m.assembleMode = true
+	m.assembleAddr = 0x1000
+	m.inputLine = []byte("move.l r1,#1")
+	m.cursorPos = len(m.inputLine)
+	promptLen := monitorInputStartColLocked(m)
+	m.mu.Unlock()
+
+	inputRow := overlayRows - 1
+	o.selActive = true
+	o.selAnchorCol = 0
+	o.selAnchorRow = inputRow
+	o.selEndCol = promptLen - 1
+	o.selEndRow = inputRow
+
+	m.mu.Lock()
+	o.handleMonitorCut(m)
+	got := string(m.inputLine)
+	m.mu.Unlock()
+	if got != "move.l r1,#1" {
+		t.Fatalf("expected inputLine unchanged when cutting assemble prompt prefix, got %q", got)
+	}
+}
+
+func TestMonitorSelectionAnchorUsesAssemblePrompt(t *testing.T) {
+	o, m := newTestMonitorOverlay(t)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.assembleMode = true
+	m.assembleAddr = 0x1000
+	m.inputLine = []byte("nop")
+	m.cursorPos = 2
+
+	inputRow := overlayRows - 1
+	o.beginInputSelectionLocked(m, inputRow)
+
+	wantCol := len("asm $0000000000001000> ") + m.cursorPos
+	if o.selAnchorCol != wantCol || o.selEndCol != wantCol {
+		t.Fatalf("selection col = anchor %d end %d, want %d", o.selAnchorCol, o.selEndCol, wantCol)
+	}
+	if o.selAnchorRow != inputRow || o.selEndRow != inputRow {
+		t.Fatalf("selection row = anchor %d end %d, want %d", o.selAnchorRow, o.selEndRow, inputRow)
+	}
+}
+
 func TestMonitorCut_SpanOutputAndInput(t *testing.T) {
 	o, m := newTestMonitorOverlay(t)
 	m.mu.Lock()

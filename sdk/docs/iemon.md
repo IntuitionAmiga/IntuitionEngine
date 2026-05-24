@@ -1,6 +1,6 @@
 # Intuition Engine Machine Monitor
 
-*Last updated: 2026-05-14*
+*Last updated: 2026-05-24*
 
 ## Overview
 
@@ -44,7 +44,7 @@ Several address arguments support simple expressions with register names and ari
 
 Operators: `+` and `-` only. Each term is either a register name or a numeric address.
 
-Expression support is command-specific. It is available for `d`, `m`, `b`, `g`, `save`, the destination address in `load`, `u`, `ww`, `wc`, `trace watch`, `trace history`, and `e`. The low-level byte/range commands `w`, `f`, `h`, `c`, `t`, and `bc` parse literal addresses only.
+Expression support is command-specific. It is available for `d`, `m`, `b`, `g`, `save`, the destination address in `load`, `u`, `ww`, `wc`, `trace watch`, `trace history`, and `e`. The low-level byte/range commands `w`, `f`, `h`, `c`, `t`, and `bc` parse literal addresses only. The IE64 assembler command `A` also parses a checked unsigned literal physical address only.
 
 Symbols loaded with `sym add`, `sym loadlbl`, or `sym loadelf` can be used as expression terms, for example `b main+0x10`. See [iemon-symbols.md](iemon-symbols.md) for symbol sources and per-CPU scope.
 
@@ -118,7 +118,7 @@ Scripted equivalents: `dbg.history_horizon()`, `dbg.history_config([opts])`, `db
 
 IEMon can load project-local `.iemonrc` files after they have been explicitly trusted. `rc list` searches from the current directory up to the file system root and prints each candidate with its SHA-256 hash and trust state. `rc trust [file]` records the current absolute path and hash in the IEMon trust store, and `rc load [file]` runs the file only while the stored hash still matches. Trusted rc files are auto-loaded once per matching hash when the monitor has exactly one registered CPU; multi-CPU monitor sessions require explicit `rc load` to avoid applying setup to the wrong focus.
 
-RC files are deliberately limited to debugger setup commands: `b`, `bc`, `ww`, `wc`, `bpm*`, `pg add|clear|list`, `sym add`, `history config`, `layout`, and safe `alias` definitions whose target command is also allowed. Commands that load host files, run scripts, continue execution, or modify guest memory are rejected.
+RC files are deliberately limited to debugger setup commands: `b`, `bc`, `ww`, `wc`, `bpm*`, `pg add|clear|list`, `sym add`, `history config`, `layout`, and safe `alias` definitions whose target command is also allowed. Commands that load host files, run scripts, continue execution, enter assemble mode, or modify guest memory are rejected.
 
 See [iemon-rc.md](iemon-rc.md) for the file format and trust-store details.
 
@@ -315,6 +315,26 @@ Write individual bytes to memory. Byte values are parsed as monitor values and t
 > w $1000 DE AD BE EF
 Wrote 4 byte(s) at $1000
 ```
+
+#### `A <addr>` - IE64 Assemble Mode
+
+Enter IE64-only one-instruction assemble mode at a checked unsigned physical address. The prompt changes to the current write address:
+
+```
+> A $1000
+IE64 assemble at $0000000000001000; empty line exits
+asm $0000000000001000> move.l r2,#42
+$0000000000001000: 01 15 00 00 2A 00 00 00  move.l r2, #$2A
+asm $0000000000001008>
+```
+
+Each non-empty line must assemble to exactly one IE64 instruction. A successful line writes 8 bytes, prints the address, bytes, and disassembly, advances the prompt by 8, and flushes the full IE64 JIT/code cache. A failed line leaves memory and the current address unchanged. Press Enter on an empty line to exit; empty assemble-mode input is not repeated through command history.
+
+The write path is physical RAM-only. MMIO ranges, unmapped addresses, and addresses outside the backing RAM are rejected instead of invoking device side effects. The command is available only when the focussed CPU is IE64.
+
+Monitor assemble mode intentionally excludes source-file features: labels, directives, `include`, `incbin`, output-format controls, files, and multi-instruction pseudo-ops are rejected. Pseudo-ops that still encode as one instruction, such as `la`, may assemble, but `li` is rejected because it expands to more than one instruction. The standalone `ie64asm` CLI remains the full source-file assembler.
+
+Assemble mode is interactive only. Monitor scripts, macros, project `.iemonrc` files, and IEScript raw monitor wrappers such as `dbg.command`, `dbg.command_output`, `dbg.run_script`, and `dbg.macro` cannot enter or feed it.
 
 #### `f <start> <end> <byte>` - Fill Memory
 

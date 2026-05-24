@@ -56,6 +56,7 @@ The argument to `cpu` is `ie64`, `ie32`, `6502`, `z80`, `m68k`, or
 |-----------|-------------------------|-------------------------------------------------|
 | `m`       | `addr [count]`          | Memory dump in hex + ASCII                      |
 | `w`       | `addr byte [byte...]`   | Write bytes at `addr`                           |
+| `A`       | `addr`                  | IE64 assemble one instruction at `addr`         |
 | `e`       | `addr`                  | Enter interactive hex editor mode               |
 | `f`       | `start end byte`        | Fill a range with one byte                      |
 | `h`       | `start end pattern...`  | Hunt: search a range for a byte pattern         |
@@ -66,8 +67,21 @@ The argument to `cpu` is `ie64`, `ie32`, `6502`, `z80`, `m68k`, or
 interactive byte editing. Byte arguments should be `00` to `FF`;
 larger values are stored as their low byte.
 
-There is no mnemonic-entry command. To enter machine code, write
-the bytes with `w` and confirm them with `d`.
+`A addr` enters IE64-only one-instruction assemble mode at a
+checked unsigned physical address. The prompt becomes
+`asm $0000000000001000> ` and each non-empty line must assemble to
+exactly one 8-byte IE64 instruction. On success the monitor writes
+physical RAM only, prints the address, bytes, and disassembly,
+advances by eight bytes, and flushes the full IE64 JIT/code cache.
+Errors leave memory and the current assemble address unchanged.
+Press Enter on an empty line to exit.
+
+Monitor assemble mode rejects source-file features: labels,
+directives, `include`, `incbin`, output formats, files, and
+multi-instruction pseudo-ops such as `li`. Use the standalone
+`ie64asm` CLI for full source-file assembly. Scripts, macros,
+`.iemonrc` files, and IEScript raw monitor wrappers cannot enter or
+feed assemble mode.
 
 ### 32.4.1 Byte-entry audio workflow
 
@@ -334,6 +348,7 @@ r           show registers           bt          backtrace
 d  [a]      disassemble              s  [n]      step
 m  [a]      memory dump              g  [a]      go
 w  a b...   write bytes              u  a        run until
+A  a        IE64 assemble            e  a        hex editor
 b  a        breakpoint set           bs [n]      back-step
 bc [a|id]   breakpoint clear         rg          reverse-continue
 bl          breakpoint list          rt a        reverse-run-until

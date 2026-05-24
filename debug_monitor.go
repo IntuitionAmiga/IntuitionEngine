@@ -196,6 +196,10 @@ type MachineMonitor struct {
 	hexEditNibble int
 	hexEditDirty  map[uint64]byte
 
+	// IE64 monitor assembler mode
+	assembleMode bool
+	assembleAddr uint64
+
 	// Scripting (Feature 13)
 	macros      map[string][]string
 	scriptDepth int
@@ -345,6 +349,7 @@ func (m *MachineMonitor) ResetCPUs() {
 	m.stepHistory = make(map[int][]*MachineSnapshot)
 	m.wholeHistory = nil
 	m.loadedRC = make(map[string]string)
+	m.clearAssembleModeLocked()
 }
 
 // UnregisterCPU removes a CPU by its stable ID.
@@ -405,6 +410,7 @@ func (m *MachineMonitor) Activate() {
 		return
 	}
 	m.state = MonitorActive
+	m.clearAssembleModeLocked()
 	m.wasRunning = make(map[int]bool)
 
 	for id, entry := range m.cpus {
@@ -454,6 +460,7 @@ func (m *MachineMonitor) Deactivate() {
 		return
 	}
 	m.state = MonitorInactive
+	m.clearAssembleModeLocked()
 
 	for id, entry := range m.cpus {
 		if m.wasRunning[id] {

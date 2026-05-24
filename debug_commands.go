@@ -248,6 +248,9 @@ func (m *MachineMonitor) ExecuteCommandResult(input string) (bool, []OutputLine)
 // executeCommand is the lock-free implementation of ExecuteCommand.
 // Caller must hold m.mu.
 func (m *MachineMonitor) executeCommand(input string) bool {
+	if m.assembleMode {
+		return m.executeAssembleModeInput(input)
+	}
 	rawInput := strings.TrimSpace(input)
 	cmd := ParseCommand(input)
 	if cmd.Name == "" {
@@ -278,6 +281,8 @@ func (m *MachineMonitor) executeCommand(input string) bool {
 	m.rememberRepeatCommand(rawInput, cmd.Name)
 
 	switch cmd.Name {
+	case "a":
+		return m.cmdAssemble(cmd)
 	case "r":
 		return m.cmdRegisters(cmd)
 	case "d":
@@ -1725,6 +1730,7 @@ func (m *MachineMonitor) cmdCPU(cmd MonitorCommand) bool {
 	// Try numeric ID first
 	if id, err := strconv.Atoi(target); err == nil {
 		if _, ok := m.cpus[id]; ok {
+			m.clearAssembleModeLocked()
 			m.focusedID = id
 			m.saveCurrentRegs()
 			m.appendOutput(fmt.Sprintf("Focussed on id:%d %s", id, m.cpus[id].Label), colorCyan)
@@ -1745,6 +1751,7 @@ func (m *MachineMonitor) cmdCPU(cmd MonitorCommand) bool {
 	}
 
 	if len(matches) == 1 {
+		m.clearAssembleModeLocked()
 		m.focusedID = matches[0].ID
 		m.saveCurrentRegs()
 		m.appendOutput(fmt.Sprintf("Focussed on id:%d %s", matches[0].ID, matches[0].Label), colorCyan)
@@ -1997,6 +2004,7 @@ type monitorHelpEntry struct {
 func monitorHelpRegistry() []monitorHelpEntry {
 	return []monitorHelpEntry{
 		{Name: "r", Summary: "Show or change registers", Syntax: []string{"r", "r <name> <value>"}, Examples: []string{"r", "r pc $1000", "r d0 #42"}},
+		{Name: "a", Summary: "Enter IE64 one-instruction assemble mode", Syntax: []string{"A <addr>", "a <addr>"}, Examples: []string{"A $1000", "a $2000"}},
 		{Name: "d", Summary: "Disassemble memory; /s shows source lines when available", Syntax: []string{"d [/s] [addr] [count]"}, Examples: []string{"d", "d main #12", "d /s pc #8"}},
 		{Name: "list", Summary: "Show source location for an address", Syntax: []string{"list [addr]"}, Examples: []string{"list", "list main", "list pc"}},
 		{Name: "m", Summary: "Dump memory as hex and ASCII", Syntax: []string{"m [addr] [lines]"}, Examples: []string{"m pc", "m $4000 8", "m main+4 2"}},

@@ -239,12 +239,13 @@ func (o *MonitorOverlay) drawCommandMode() {
 	// Input line
 	inputRow := overlayRows - 1
 	o.fillRow(inputRow)
-	o.drawStringSel("> ", 0, inputRow, colorWhite)
+	prompt := m.currentPromptLocked()
+	o.drawStringSel(prompt, 0, inputRow, colorWhite)
 	if len(m.inputLine) > 0 {
-		o.drawStringSel(string(m.inputLine), 2, inputRow, colorWhite)
+		o.drawStringSel(string(m.inputLine), len(prompt), inputRow, colorWhite)
 	}
 	// Cursor (only show if not in selection at cursor position)
-	cursorCol := 2 + m.cursorPos
+	cursorCol := len(prompt) + m.cursorPos
 	if cursorCol < overlayCols && !o.isInSelection(cursorCol, inputRow) {
 		o.drawGlyph('_', cursorCol, inputRow, colorWhite, 0x0055AAFF)
 	}
@@ -348,6 +349,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 	shiftHandled := false
 	if shift {
 		inputRow := overlayRows - 1
+		inputStartCol := monitorInputStartColLocked(m)
 		type selKey struct {
 			key ebiten.Key
 		}
@@ -366,12 +368,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 			}
 			if inpututil.IsKeyJustPressed(sk.key) || monitorShouldRepeat(sk.key) {
 				if !o.selActive {
-					// Anchor at current cursor position
-					o.selAnchorCol = 2 + m.cursorPos
-					o.selAnchorRow = inputRow
-					o.selEndCol = o.selAnchorCol
-					o.selEndRow = o.selAnchorRow
-					o.selActive = true
+					o.beginInputSelectionLocked(m, inputRow)
 				}
 				col, row := o.selEndCol, o.selEndRow
 				switch sk.key {
@@ -384,9 +381,17 @@ func (o *MonitorOverlay) HandleInput() bool {
 				case ebiten.KeyArrowDown:
 					row++
 				case ebiten.KeyHome:
-					col = 0
+					if row == inputRow {
+						col = inputStartCol
+					} else {
+						col = 0
+					}
 				case ebiten.KeyEnd:
-					col = overlayCols - 1
+					if row == inputRow {
+						col = monitorInputEndColLocked(m)
+					} else {
+						col = overlayCols - 1
+					}
 				}
 				o.selExtendTo(col, row)
 				o.autoClipboardCopy(m)
@@ -422,6 +427,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
 		o.selClear()
 		m.state = MonitorInactive
+		m.clearAssembleModeLocked()
 		for id, entry := range m.cpus {
 			if m.wasRunning[id] {
 				entry.CPU.Resume()
@@ -497,7 +503,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
 		o.selClear()
 		input := string(m.inputLine)
-		m.appendOutput("> "+input, colorDim)
+		m.appendOutput(m.currentPromptLocked()+input, colorDim)
 		m.inputLine = nil
 		m.cursorPos = 0
 		m.scrollOffset = 0
@@ -679,6 +685,22 @@ func (o *MonitorOverlay) selClear() {
 	o.selText = ""
 }
 
+func monitorInputStartColLocked(m *MachineMonitor) int {
+	return len(m.currentPromptLocked())
+}
+
+func monitorInputEndColLocked(m *MachineMonitor) int {
+	return monitorInputStartColLocked(m) + len(m.inputLine)
+}
+
+func (o *MonitorOverlay) beginInputSelectionLocked(m *MachineMonitor, inputRow int) {
+	o.selAnchorCol = monitorInputStartColLocked(m) + m.cursorPos
+	o.selAnchorRow = inputRow
+	o.selEndCol = o.selAnchorCol
+	o.selEndRow = o.selAnchorRow
+	o.selActive = true
+}
+
 func (o *MonitorOverlay) selExtendTo(col, row int) {
 	if col < 0 {
 		col = 0
@@ -727,7 +749,7 @@ func (o *MonitorOverlay) monitorExtractText(m *MachineMonitor) string {
 		}
 		inputRow := overlayRows - 1
 		if row == inputRow {
-			line := "> " + string(m.inputLine)
+			line := m.currentPromptLocked() + string(m.inputLine)
 			for len(line) < overlayCols {
 				line += " "
 			}
@@ -869,12 +891,13 @@ func (o *MonitorOverlay) handleMonitorCut(m *MachineMonitor) {
 				m.outputLines[idx].Text = line[:end]
 			}
 		} else if row == inputRow {
-			// Input line: protect "> " prompt prefix
-			if delStart < 2 {
-				delStart = 2
+			// Input line: protect the current prompt prefix.
+			promptLen := len(m.currentPromptLocked())
+			if delStart < promptLen {
+				delStart = promptLen
 			}
-			idxStart := delStart - 2
-			idxEnd := delEnd - 2
+			idxStart := delStart - promptLen
+			idxEnd := delEnd - promptLen
 			if idxEnd >= len(m.inputLine) {
 				idxEnd = len(m.inputLine) - 1
 			}

@@ -24,6 +24,8 @@
 
 package main
 
+import "fmt"
+
 // Bus64Phys is the uint64-addressed physical-memory bus interface used by
 // the IE64 large-address path. Implementations must accept any uint64
 // address; out-of-range reads return zero and out-of-range writes are
@@ -95,6 +97,79 @@ func (bus *MachineBus) addrInBacking(addr, length uint64) bool {
 // non-fault Read/Write helpers' silent zero/no-op behavior.
 func (bus *MachineBus) PhysMapped(addr, length uint64) bool {
 	return bus.addrInLowMemory(addr, length) || bus.addrInBacking(addr, length)
+}
+
+// WritableRAMSpan validates that [addr, addr+length) is mapped writable RAM
+// and does not overlap any legacy or 64-bit MMIO/device mapping.
+func (bus *MachineBus) WritableRAMSpan(addr, length uint64) error {
+	if bus == nil {
+		return fmt.Errorf("machine bus unavailable")
+	}
+	if length == 0 {
+		return nil
+	}
+	end := addr + length
+	if end < addr {
+		return fmt.Errorf("address range overflows uint64: $%016X + %d", addr, length)
+	}
+	if bus.addrInLowMemory(addr, length) {
+		if bus.lowRAMSpanHasMMIO(addr, length) {
+			return fmt.Errorf("span $%016X-$%016X overlaps MMIO/device mapping", addr, end-1)
+		}
+		return nil
+	}
+	if bus.addrInBacking(addr, length) {
+		return nil
+	}
+	return fmt.Errorf("span $%016X-$%016X is not mapped writable RAM", addr, end-1)
+}
+
+// WritePhysRAMOnly writes bytes only after WritableRAMSpan has validated the
+// entire span. It bypasses MMIO dispatch by copying into RAM/backing directly.
+func (bus *MachineBus) WritePhysRAMOnly(addr uint64, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if err := bus.WritableRAMSpan(addr, uint64(len(data))); err != nil {
+		return err
+	}
+	if bus.addrInLowMemory(addr, uint64(len(data))) {
+		start := int(addr)
+		copy(bus.memory[start:start+len(data)], data)
+		return nil
+	}
+	for i, b := range data {
+		bus.backing.Write8(addr+uint64(i), b)
+	}
+	return nil
+}
+
+func (bus *MachineBus) lowRAMSpanHasMMIO(addr, length uint64) bool {
+	if length == 0 || addr > 0xFFFFFFFF {
+		return false
+	}
+	start := uint32(addr)
+	end := uint32(addr + length - 1)
+	for page := start & PAGE_MASK; ; page += PAGE_SIZE {
+		if regions, ok := bus.mapping[page]; ok {
+			for _, region := range regions {
+				if uint64(start) <= uint64(region.end) && uint64(end) >= uint64(region.start) {
+					return true
+				}
+			}
+		}
+		if regions, ok := bus.mapping64[page]; ok {
+			for _, region := range regions {
+				if uint64(start) <= uint64(region.end) && uint64(end) >= uint64(region.start) {
+					return true
+				}
+			}
+		}
+		if page >= end&PAGE_MASK {
+			break
+		}
+	}
+	return false
 }
 
 func (bus *MachineBus) debugOnPhysRead(addr uint64, width int) {
