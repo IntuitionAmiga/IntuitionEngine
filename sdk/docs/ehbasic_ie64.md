@@ -81,7 +81,7 @@ Release builds always include `embed_basic`, so packaged Linux, Windows, and mac
 On startup, EhBASIC IE64 displays a banner and the `Ready` prompt:
 
 ```
-EhBASIC IE64 v1.0
+EhBASIC IE64 v1.3
 (c) Zayn Otley, 2024-2026
 Based on EhBASIC by Lee Davison
 Ready
