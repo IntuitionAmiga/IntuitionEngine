@@ -41,6 +41,14 @@ Engine owns MIDI/MUS parsing, synthesis, playback MMIO, and SoundChip output.
   places reset code at address `0` and C code at `PROGRAM_START`, and
   `src/iedoom_runtime.c` currently supplies the entry placeholder plus
   reset-time `.bss` clearing and freestanding memory/string primitives.
+- `../chocolate-doom/src/iedoom_main.c` now provides the Doom-facing C handoff:
+  the linked image calls it from `iedoom_entry`, it initializes Chocolate Doom's
+  minimal argument globals, and it calls `D_DoomMain()`.
+- The freestanding compile frontier now includes scoped IE headers for the first
+  backend/startup objects, plus smoke tests that compile `i_timer.c`,
+  `i_intuition.c`, `iedoom_main.c`, `m_argv.c`, `m_misc.c`, and `d_iwad.c` as
+  32-bit freestanding code and link those IE backend/startup objects into a flat
+  image without unresolved symbols.
 
 ## Key Changes
 
