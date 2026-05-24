@@ -15,6 +15,9 @@ func TestCLIModeFromExtension_AcceptsTypedBinariesAndScripts(t *testing.T) {
 		{"program.ie80", "z80"},
 		{"program.ie86", "x86"},
 		{"demo.ies", "script"},
+		{"song.mid", "midi"},
+		{"song.midi", "midi"},
+		{"song.mus", "midi"},
 		{"PROGRAM.IE68", "m68k"},
 	}
 

@@ -15,7 +15,7 @@ Whole-machine reverse debugging depends on restoring every source of guest-visib
 | Registered devices | Versioned blobs keyed by stable device name; restore fails if a captured device is absent |
 | Video chip | Mode registers, frame buffers, CLUT/palette state, copper state, blitter state, raster registers, and status latches |
 | Sound chip | Main mixer/filter state, FLEX-register shadow, voice phase/envelope state, SN76489 voice state, delay/reverb buffers, and master compressor/normaliser state |
-| Compatibility audio engines | PSG/AY, SN76489, SID/SID2/SID3, TED audio, and POKEY register shadows, playback cursors, loop state, enabled flags, chip-sync state, oscillator/noise state |
+| Compatibility audio engines | PSG/AY, SN76489, SID/SID2/SID3, TED audio, POKEY, and MIDI/MUS register shadows, playback cursors, loop/pause state, enabled flags, chip-sync state, oscillator/noise state |
 | Compatibility video engines | VGA, ULA, TED video, ANTIC/GTIA, and Voodoo register shadows, VRAM/texture memory, palette/colour state, scanline/compositor state, frame buffers, and status latches |
 | Terminal MMIO | Input/output rings, raw-key/scancode queues, echo and line-mode flags, mouse state, modifiers, sentinel state |
 | Command-style host helpers | File I/O, media loader, program executor, and coprocessor-manager MMIO shadow registers, result/status latches, and completion-ticket state |

@@ -488,6 +488,33 @@ These functions tune the sound chip's master output stage (post-mix gain, auto-l
 
 `audio.ahx_is_playing()` - Check whether the AHX engine is currently playing. Returns: boolean.
 
+### MIDI/MUS
+
+`audio.midi_load(path)` - Load an SMF `.mid`/`.midi` or Doom `.mus` file from an approved read path. Returns: nothing. Raises on error.
+
+`audio.midi_play()` - Start MIDI playback. Returns: nothing.
+
+`audio.midi_stop()` - Stop MIDI playback. Returns: nothing.
+
+`audio.midi_pause()` - Pause MIDI playback. Returns: nothing.
+
+`audio.midi_resume()` - Resume MIDI playback. Returns: nothing.
+
+`audio.midi_set_volume(0..255)` - Set global MIDI volume. Returns: nothing.
+
+`audio.midi_is_playing()` - Check whether the MIDI player is currently playing. Returns: boolean.
+
+`audio.midi_metadata()` - Return metadata for the currently loaded MIDI/MUS file. Returns: table with fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `title` | string | Track title when present |
+| `system` | string | `MIDI` or `Doom MUS` |
+| `duration` | string | Duration text |
+| `format` | string | `SMF type 0`, `SMF type 1`, or `MUS` |
+| `tracks` | number | SMF track count |
+| `patch_table` | string | Always `RawlandMini` in v1 |
+
 Example:
 
 ```lua
@@ -1119,6 +1146,7 @@ coproc.stop("ie32")
 ## `media`
 
 Format-agnostic media loader. Supports SID, PSG/VGM, TED, AHX, POKEY/SAP, MOD, and WAV formats. WAV routing supports mono/stereo PCM through the WAV MMIO control surface.
+MIDI routing supports SMF `.mid`/`.midi` and Doom `.mus` through the fixed built-in RawlandMini IE SoundChip GM-style/chiptune interpretation. It is not GM hardware emulation, with up to 10 active MIDI voices and deterministic voice stealing.
 
 `media.load(filename)` - Load and start playing a music file from an approved read path, auto-detecting format. Returns: nothing. Raises on path validation or immediate setup failures (e.g. scratch memory unavailable); format detection and decode errors are reported asynchronously via `media.status()` and `media.error()`.
 
@@ -1398,7 +1426,7 @@ State *not* auto-released: breakpoints, watchpoints, monitor macros, trace watch
 ## Common Pitfalls
 
 - **`raw memory access requires cpu.freeze()`** - every `mem.read*` / `mem.write*` / `mem.read_block` / `mem.write_block` / `mem.fill` on a RAM address must be inside a `cpu.freeze()` / `cpu.resume()` bracket. MMIO addresses are exempt, but block operations that span MMIO into RAM still require a freeze.
-- **`audio.*_load` format mismatch** - each player accepts only its own file types. Use the format-agnostic `media.load` if you need auto-detection across SID, PSG/VGM, TED, AHX, POKEY, MOD, and WAV.
+- **`audio.*_load` format mismatch** - each player accepts only its own file types. Use the format-agnostic `media.load` if you need auto-detection across SID, PSG/VGM, TED, AHX, POKEY, MOD, WAV, and MIDI/MUS.
 - **Host-FS denial outside script roots** - relative reads search the current script directory then `sdk/scripts/`; absolute reads succeed only when the resolved target remains under an approved root. Writes are script-relative only. Traversal and symlink escapes are rejected.
 - **`require` only loads Lua modules from approved roots** - native modules and `package.loadlib` are unavailable.
 - **`rec.start*` needs FFmpeg in `PATH`** - `rec.screenshot` is pure Go and has no external dependency.

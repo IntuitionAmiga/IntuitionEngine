@@ -519,6 +519,17 @@ AHX_PLAY_STATUS equ $F0B90              ; Play status
 AHX_SUBSONG     equ $F0B91              ; Subsong selection (0-255)
 
 ; ============================================================================
+; MIDI AUDIO REGISTERS (SMF .mid/.midi and Doom .mus player)
+; ============================================================================
+MIDI_PLAY_PTR   equ $F0BA0              ; Pointer to MIDI/MUS data (32-bit)
+MIDI_PLAY_LEN   equ $F0BA4              ; Length of MIDI/MUS data (32-bit)
+MIDI_PLAY_CTRL  equ $F0BA8              ; bit 0=start, bit 1=stop, bit 2=loop, bit 3=pause, bit 4=loop apply
+MIDI_PLAY_STATUS equ $F0BAC             ; bit 0=busy, bit 1=error, bit 2=paused
+MIDI_POSITION   equ $F0BB0              ; Current sample position (read-only)
+MIDI_VOLUME     equ $F0BB4              ; Global MIDI volume (0-255)
+MIDI_TEMPO_BPM  equ $F0BB8              ; Current effective tempo BPM (read-only)
+
+; ============================================================================
 ; MOD AUDIO REGISTERS (ProTracker .mod player)
 ;
 ; The MOD player provides ProTracker/NoiseTracker .mod playback:

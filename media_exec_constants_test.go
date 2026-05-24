@@ -21,6 +21,37 @@ func TestMediaExecMMIORegionsDoNotOverlap(t *testing.T) {
 	}
 }
 
+func TestAudioMMIORegionsDoNotOverlap(t *testing.T) {
+	regions := []struct {
+		name      string
+		base, end uint32
+	}{
+		{"AUDIO", AUDIO_REGION_BASE, AUDIO_REGION_END},
+		{"AHX", AHX_BASE, AHX_SUBSONG},
+		{"MIDI", MIDI_PLAY_PTR, MIDI_END},
+		{"MOD", MOD_PLAY_PTR, MOD_END},
+		{"WAV", WAV_PLAY_PTR, WAV_END},
+		{"PSG", PSG_BASE, PSG_END},
+		{"SID2_FLEX", SID2_FLEX_BASE, SID2_FLEX_END},
+		{"POKEY", POKEY_BASE, POKEY_END},
+		{"SID3_FLEX", SID3_FLEX_BASE, SID3_FLEX_END},
+		{"SID", SID_BASE, SID_END},
+		{"SFX", IE_SFX_REGION_BASE, IE_SFX_REGION_END},
+		{"TED", TED_REGION_BASE, TED_REGION_END},
+	}
+	for i := range regions {
+		if regions[i].base > regions[i].end {
+			t.Fatalf("%s region inverted: %#x-%#x", regions[i].name, regions[i].base, regions[i].end)
+		}
+		for j := i + 1; j < len(regions); j++ {
+			a, b := regions[i], regions[j]
+			if a.base <= b.end && a.end >= b.base {
+				t.Fatalf("audio MMIO region %s %#x-%#x overlaps %s %#x-%#x", a.name, a.base, a.end, b.name, b.base, b.end)
+			}
+		}
+	}
+}
+
 func TestMediaStagingRegionBounds(t *testing.T) {
 	if MEDIA_STAGING_SIZE != 0x10000 {
 		t.Fatalf("MEDIA_STAGING_SIZE=%#x, want 0x10000", MEDIA_STAGING_SIZE)

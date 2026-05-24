@@ -885,6 +885,14 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"ahx_play":                       se.luaAudioAHXPlay(),
 		"ahx_stop":                       se.luaAudioAHXStop(),
 		"ahx_is_playing":                 se.luaAudioAHXIsPlaying(),
+		"midi_load":                      se.luaAudioMIDILoad(),
+		"midi_play":                      se.luaAudioMIDIPlay(),
+		"midi_stop":                      se.luaAudioMIDIStop(),
+		"midi_pause":                     se.luaAudioMIDIPause(),
+		"midi_resume":                    se.luaAudioMIDIResume(),
+		"midi_set_volume":                se.luaAudioMIDISetVolume(),
+		"midi_is_playing":                se.luaAudioMIDIIsPlaying(),
+		"midi_metadata":                  se.luaAudioMIDIMetadata(),
 	})
 	L.SetGlobal("audio", audio)
 
@@ -2712,6 +2720,106 @@ func (se *ScriptEngine) luaAudioAHXLoad() lua.LGFunction {
 			L.RaiseError("%v", err)
 		}
 		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioMIDILoad() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpRead)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		p := runtimeStatus.snapshot().midiPlayer
+		if p == nil {
+			L.RaiseError("midi player unavailable")
+			return 0
+		}
+		if err := p.Load(validated); err != nil {
+			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioMIDIPlay() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if p := runtimeStatus.snapshot().midiPlayer; p != nil {
+			p.Play()
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioMIDIStop() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if p := runtimeStatus.snapshot().midiPlayer; p != nil {
+			p.Stop()
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioMIDIPause() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if p := runtimeStatus.snapshot().midiPlayer; p != nil {
+			p.Pause()
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioMIDIResume() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if p := runtimeStatus.snapshot().midiPlayer; p != nil {
+			p.Resume()
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioMIDISetVolume() lua.LGFunction {
+	return func(L *lua.LState) int {
+		vol := L.CheckInt(1)
+		if vol < 0 || vol > 255 {
+			L.RaiseError("volume out of range")
+			return 0
+		}
+		if p := runtimeStatus.snapshot().midiPlayer; p != nil {
+			p.SetVolume(uint8(vol))
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaAudioMIDIIsPlaying() lua.LGFunction {
+	return func(L *lua.LState) int {
+		playing := false
+		if p := runtimeStatus.snapshot().midiPlayer; p != nil {
+			playing = p.IsPlaying()
+		}
+		L.Push(lua.LBool(playing))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaAudioMIDIMetadata() lua.LGFunction {
+	return func(L *lua.LState) int {
+		t := L.NewTable()
+		if p := runtimeStatus.snapshot().midiPlayer; p != nil {
+			meta := p.Metadata()
+			t.RawSetString("title", lua.LString(meta.Title))
+			t.RawSetString("system", lua.LString(meta.System))
+			t.RawSetString("duration", lua.LString(p.DurationText()))
+			if mf := p.MIDIFile(); mf != nil {
+				t.RawSetString("format", lua.LString(mf.FormatName))
+				t.RawSetString("tracks", lua.LNumber(mf.TrackCount))
+				t.RawSetString("patch_table", lua.LString(mf.PatchTableName))
+			}
+		}
+		L.Push(t)
+		return 1
 	}
 }
 
@@ -6333,6 +6441,8 @@ func mediaTypeToString(typ uint32) string {
 		return "mod"
 	case MEDIA_TYPE_WAV:
 		return "wav"
+	case MEDIA_TYPE_MIDI:
+		return "midi"
 	default:
 		return "none"
 	}

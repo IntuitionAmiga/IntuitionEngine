@@ -24,7 +24,7 @@ import (
 	"strings"
 )
 
-const cliAutoDetectExtensions = ".iex, .ie32, .ie64, .ie65, .ie68, .ie80, .ie86, .ies"
+const cliAutoDetectExtensions = ".iex, .ie32, .ie64, .ie65, .ie68, .ie80, .ie86, .ies, .mid, .midi, .mus"
 
 func modeFromExtension(path string) (string, error) {
 	switch strings.ToLower(filepath.Ext(path)) {
@@ -44,6 +44,8 @@ func modeFromExtension(path string) (string, error) {
 		return "x86", nil
 	case ".ies":
 		return "script", nil
+	case ".mid", ".midi", ".mus":
+		return "midi", nil
 	default:
 		return "", fmt.Errorf("unsupported extension: %s", filepath.Ext(path))
 	}
@@ -65,6 +67,8 @@ func cliModeFromExtension(path string) (string, error) {
 		return "x86", nil
 	case ".ies":
 		return "script", nil
+	case ".mid", ".midi", ".mus":
+		return "midi", nil
 	default:
 		return "", fmt.Errorf("unsupported extension %q for auto-detect; supported extensions: %s. Raw binaries require an explicit CPU mode flag", filepath.Ext(path), cliAutoDetectExtensions)
 	}

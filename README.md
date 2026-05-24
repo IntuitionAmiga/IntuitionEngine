@@ -113,7 +113,7 @@ The project provides:
 - Primary guest CPU modes for IE64, IE32, M68K, Z80, 6502, and 32-bit flat x86.
 - Optional coprocessor workers that let supported guest programs use more than one emulated CPU.
 - Video devices for IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, and a Voodoo-style 3D path.
-- Audio paths for the custom SoundChip, PSG/AY/YM, SN76489 VGM/VGZ, SID, POKEY/SAP, TED, AHX/THX, MOD, WAV, and AROS Paula-style DMA.
+- Audio paths for the custom SoundChip, PSG/AY/YM, SN76489 VGM/VGZ, SID, POKEY/SAP, TED, AHX/THX, MOD, WAV, MIDI/MUS, and AROS Paula-style DMA.
 - An SDK with assemblers, include files, examples, prebuilt demo outputs, scripts, and documentation.
 - Integration paths for EhBASIC, EmuTOS, AROS, and IntuitionOS development.
 - Runtime tooling including the Machine Monitor, Lua automation, REPL overlay, screenshots, recording support, and scripted test harnesses.
@@ -180,7 +180,7 @@ or `Space`.
 
 ### Audio and Video
 
-Supported audio modes are exposed through `-psg`, `-sid`, `-pokey`, `-ted`, `-ahx`, `-mod`, and `-wav`. Enhanced player paths are enabled with `-psg+`, `-sid+`, `-pokey+`, `-ted+`, and `-ahx+`. SID playback also accepts `-sid-pal` and `-sid-ntsc`.
+Supported audio modes are exposed through `-psg`, `-sid`, `-pokey`, `-ted`, `-ahx`, `-mod`, `-wav`, and `-midi` (`.mid`, `.midi`, Doom `.mus`). Enhanced player paths are enabled with `-psg+`, `-sid+`, `-pokey+`, `-ted+`, and `-ahx+`. SID playback also accepts `-sid-pal` and `-sid-ntsc`.
 
 The desktop video path uses Ebiten. The default native video mode is 960x540 and the default presentation frame is 1920x1080 fullscreen. Guest code can select other supported modes through the video MMIO interface. Tests and batch workflows can use the headless backend.
 
@@ -328,7 +328,7 @@ EmuTOS and AROS availability depends on embedded assets, local default ROM paths
 ./bin/IntuitionEngine -wav sound.wav
 ```
 
-The media loader recognises additional tracker and chiptune extensions internally, but the CLI does not auto-detect media files. Use the relevant media flag.
+The media loader recognises additional tracker and chiptune extensions internally. The CLI auto-detects typed VM/script files and MIDI/MUS files; use the relevant media flag for other audio formats.
 
 ### Scripting, Performance, and Display Options
 

@@ -595,6 +595,27 @@ AHX_PLAY_STATUS = $FB90         ; Play status (IE32 $F0B90)
 AHX_SUBSONG     = $FB91         ; Subsong selection (0-255)
 
 ; ============================================================================
+; MIDI AUDIO REGISTERS (SMF .mid/.midi and Doom .mus player)
+; For 6502: MIDI registers are at $FBA0-$FBBF (IE32 $F0BA0-$F0BBF)
+; ============================================================================
+MIDI_PLAY_PTR_0 = $FBA0
+MIDI_PLAY_PTR_1 = $FBA1
+MIDI_PLAY_PTR_2 = $FBA2
+MIDI_PLAY_PTR_3 = $FBA3
+MIDI_PLAY_LEN_0 = $FBA4
+MIDI_PLAY_LEN_1 = $FBA5
+MIDI_PLAY_LEN_2 = $FBA6
+MIDI_PLAY_LEN_3 = $FBA7
+MIDI_PLAY_CTRL  = $FBA8
+MIDI_PLAY_STATUS = $FBAC
+MIDI_POSITION_0 = $FBB0
+MIDI_POSITION_1 = $FBB1
+MIDI_POSITION_2 = $FBB2
+MIDI_POSITION_3 = $FBB3
+MIDI_VOLUME     = $FBB4
+MIDI_TEMPO_BPM  = $FBB8
+
+; ============================================================================
 ; MOD AUDIO REGISTERS (ProTracker .mod player)
 ;
 ; The MOD player provides ProTracker/NoiseTracker .mod playback:

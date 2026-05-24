@@ -26,7 +26,7 @@ Comprehensive reference for the Enhanced BASIC interpreter running on the Intuit
 
 EhBASIC IE64 is a port of Lee Davison's Enhanced BASIC (EhBASIC) to the Intuition Engine's IE64 RISC processor. The original EhBASIC was written in 6502 assembly and later ported to the Motorola 68000; this version is a ground-up reimplementation in IE64 assembly, preserving the language semantics whilst taking advantage of the IE64's 64-bit register file and compare-and-branch instructions.
 
-The Intuition Engine is a retro-inspired virtual machine that emulates multiple CPUs (6502, Z80, M68K, x86, IE32, IE64) alongside IE-native and compatibility-inspired video/audio hardware: VGA with copper coprocessor and blitter, ULA (ZX Spectrum), TED (Commodore 16|Plus/4), ANTIC/GTIA (Atari-inspired display list), Voodoo 3DFX, and a full complement of sound chips and players (SoundChip, PSG/AY-3-8910, SID/MOS 6581, POKEY, TED audio, AHX, MOD, WAV, SAP, VGM/VGZ, SNDH, VTX, AY, YM, and Z80 PSG tracker formats). EhBASIC IE64 provides direct access to all of this hardware through extension commands.
+The Intuition Engine is a retro-inspired virtual machine that emulates multiple CPUs (6502, Z80, M68K, x86, IE32, IE64) alongside IE-native and compatibility-inspired video/audio hardware: VGA with copper coprocessor and blitter, ULA (ZX Spectrum), TED (Commodore 16|Plus/4), ANTIC/GTIA (Atari-inspired display list), Voodoo 3DFX, and a full complement of sound chips and players (SoundChip, PSG/AY-3-8910, SID/MOS 6581, POKEY, TED audio, AHX, MOD, WAV, MIDI/MUS, SAP, VGM/VGZ, SNDH, VTX, AY, YM, and Z80 PSG tracker formats). EhBASIC IE64 provides direct access to all of this hardware through extension commands.
 
 ### Floating-Point Arithmetic: Important Note
 
@@ -1487,6 +1487,7 @@ Loader:
 | `.sap` | POKEY/SAP |
 | `.mod` | MOD (ProTracker) |
 | `.wav` | WAV |
+| `.mid`, `.midi`, `.mus` | MIDI/MUS through SoundChip RawlandMini |
 
 The direct `PSG PLAY addr [,len]` MMIO path receives only a memory pointer and
 length, so it can load formats that the PSG player can identify from their data
@@ -2555,6 +2556,7 @@ SOUND STOP                    : REM shorthand stop
 | `.sap` | POKEY/SAP player | Atari SAP data; `MEDIA_SUBSONG` selects the subsong |
 | `.mod` | MOD player | ProTracker MOD data; MOD files are loaded directly by the MOD player instead of through the 64 KB staging buffer |
 | `.wav` | WAV player | WAV sample playback; WAV files are loaded directly by the WAV player instead of through the 64 KB staging buffer |
+| `.mid`, `.midi`, `.mus` | MIDI player | SMF type 0/1 and Doom MUS are rendered as a fixed IE SoundChip GM-style/chiptune interpretation using the RawlandMini patch table; this is not GM hardware emulation |
 
 For low-level control, per-engine playback commands and registers are also
 available:
@@ -2922,6 +2924,13 @@ bits are consistent unless noted: bit 0=start, bit 1=stop, bit 2=loop.
 | `&HF0B8C` | AHX_PLAY_CTRL | R/W | Control bits: 1=start, 2=stop, 4=loop |
 | `&HF0B90` | AHX_PLAY_STATUS | R | bit 0=busy, bit 1=error |
 | `&HF0B91` | AHX_SUBSONG | R/W | Subsong selection, 0-255 |
+| `&HF0BA0` | MIDI_PLAY_PTR | R/W | 32-bit pointer to MIDI/MUS data |
+| `&HF0BA4` | MIDI_PLAY_LEN | R/W | 32-bit MIDI/MUS data length |
+| `&HF0BA8` | MIDI_PLAY_CTRL | R/W | bit 0=start, bit 1=stop, bit 2=loop, bit 3=pause, bit 4=loop apply only |
+| `&HF0BAC` | MIDI_PLAY_STATUS | R | bit 0=busy, bit 1=error, bit 2=paused |
+| `&HF0BB0` | MIDI_POSITION | R | Current sample position |
+| `&HF0BB4` | MIDI_VOLUME | R/W | Global MIDI volume, 0-255 |
+| `&HF0BB8` | MIDI_TEMPO_BPM | R | Current effective tempo; writes do not override tempo |
 | `&HF0BC0` | MOD_PLAY_PTR | R/W | 32-bit pointer to MOD data |
 | `&HF0BC4` | MOD_PLAY_LEN | R/W | 32-bit MOD data length |
 | `&HF0BC8` | MOD_PLAY_CTRL | R/W | Control bits: 1=start, 2=stop, 4=loop |
@@ -3255,11 +3264,11 @@ Used by `SOUND PLAY` to load and play music files.
 | `&HF2304` | MEDIA_SUBSONG | W | Subsong index (0=default) |
 | `&HF2308` | MEDIA_CTRL | W | Control: 1=play, 2=stop all |
 | `&HF230C` | MEDIA_STATUS | R | 0=idle, 1=loading, 2=playing, 3=error |
-| `&HF2310` | MEDIA_TYPE | R | Detected type: 0=none, 1=SID, 2=PSG, 3=TED, 4=AHX, 5=POKEY/SAP, 6=MOD, 7=WAV |
+| `&HF2310` | MEDIA_TYPE | R | Detected type: 0=none, 1=SID, 2=PSG, 3=TED, 4=AHX, 5=POKEY/SAP, 6=MOD, 7=WAV, 8=MIDI |
 | `&HF2314` | MEDIA_ERROR | R | 0=ok, 1=not-found, 2=bad-format, 3=unsupported, 4=path-invalid, 5=too-large |
 
 Staging buffer: `&H800000`-`&H80FFFF` (64 KB) - transient copy used for player
-paths that read through guest memory. SID, PSG, POKEY/SAP, MOD, and WAV are
+paths that read through guest memory. SID, PSG, POKEY/SAP, MOD, WAV, and MIDI/MUS are
 loaded directly from the host-side file bytes; MOD and WAV payloads may exceed
 the staging-buffer size. TED and AHX are staged at this address before their
 player control registers are started, so those payloads are limited by
@@ -3276,6 +3285,7 @@ player control registers are started, so those payloads are limited by
 | `.sap` | 5=POKEY/SAP |
 | `.mod` | 6=MOD |
 | `.wav` | 7=WAV |
+| `.mid`, `.midi`, `.mus` | 8=MIDI |
 
 For PSG media, `.sndh` and `.snd` mean the Atari ST SNDH filename variants,
 not an arbitrary raw sound container.

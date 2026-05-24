@@ -38,6 +38,7 @@ const (
 	MEDIA_TYPE_POKEY
 	MEDIA_TYPE_MOD
 	MEDIA_TYPE_WAV
+	MEDIA_TYPE_MIDI
 )
 
 // Media error values.

@@ -78,7 +78,7 @@ IE32, IE64, M68020, Z80, 6502, x86 (32-bit)
 - **TED audio** (Commodore Plus/4) - M68K rotozoomer
 - **AHX** (Amiga tracker) - IE32 rotozoomer, 6502 rotozoomer, ULA cube
 
-### Audio File Formats (20 formats)
+### Audio File Formats (23 formats)
 - `.ym` - Atari ST YM format (PSG)
 - `.ay` - ZXAYEMUL with embedded Z80 player (PSG; ZX Spectrum/Amstrad CPC/MSX auto-detected)
 - `.vgm` / `.vgz` - Video Game Music streams (PSG, SN76489)
@@ -95,3 +95,5 @@ IE32, IE64, M68020, Z80, 6502, x86 (32-bit)
 - `.ahx` - Amiga AHX/THX tracker modules
 - `.mod` - ProTracker MOD modules (4/6/8/xxCH up to 32 channels)
 - `.wav` - PCM WAV audio via SoundChip FLEX DAC mode (mono/stereo, 8-bit unsigned, 16-bit signed, 16-bit PCM extensible)
+- `.mid`, `.midi` - Standard MIDI File type 0/1 through the RawlandMini IE SoundChip GM-style/chiptune interpreter
+- `.mus` - Doom MUS through the same MIDI event pipeline

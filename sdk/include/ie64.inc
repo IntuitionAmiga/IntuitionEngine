@@ -495,6 +495,18 @@ AHX_PLAY_STATUS   equ 0xF0B90               ; Play status
 AHX_SUBSONG       equ 0xF0B91               ; Subsong selection (0-255)
 
 ; ============================================================================
+; MIDI AUDIO REGISTERS (SMF .mid/.midi and Doom .mus player)
+; ============================================================================
+
+MIDI_PLAY_PTR     equ 0xF0BA0               ; Pointer to MIDI/MUS data (32-bit)
+MIDI_PLAY_LEN     equ 0xF0BA4               ; Length of MIDI/MUS data (32-bit)
+MIDI_PLAY_CTRL    equ 0xF0BA8               ; bit 0=start, bit 1=stop, bit 2=loop, bit 3=pause, bit 4=loop apply
+MIDI_PLAY_STATUS  equ 0xF0BAC               ; bit 0=busy, bit 1=error, bit 2=paused
+MIDI_POSITION     equ 0xF0BB0               ; Current sample position (read-only)
+MIDI_VOLUME       equ 0xF0BB4               ; Global MIDI volume (0-255)
+MIDI_TEMPO_BPM    equ 0xF0BB8               ; Current effective tempo BPM (read-only)
+
+; ============================================================================
 ; MOD AUDIO REGISTERS (ProTracker .mod player)
 ;
 ; The MOD player provides ProTracker/NoiseTracker .mod playback:
@@ -2043,7 +2055,7 @@ MEDIA_NAME_PTR    equ 0xF2300               ; Pointer to null-terminated filenam
 MEDIA_SUBSONG     equ 0xF2304               ; Subsong (W)
 MEDIA_CTRL        equ 0xF2308               ; 1=play, 2=stop (W)
 MEDIA_STATUS      equ 0xF230C               ; 0=idle,1=loading,2=playing,3=error (R)
-MEDIA_TYPE        equ 0xF2310               ; 0=none,1=SID,2=PSG,3=TED,4=AHX,5=POKEY,6=MOD,7=WAV (R)
+MEDIA_TYPE        equ 0xF2310               ; 0=none,1=SID,2=PSG,3=TED,4=AHX,5=POKEY,6=MOD,7=WAV,8=MIDI (R)
 MEDIA_ERROR       equ 0xF2314               ; 0=ok,1=not-found,2=bad/io,3=unsupported,4=path,5=too-large (R)
 
 MEDIA_TYPE_NONE   equ 0
@@ -2054,6 +2066,7 @@ MEDIA_TYPE_AHX    equ 4
 MEDIA_TYPE_POKEY  equ 5
 MEDIA_TYPE_MOD    equ 6
 MEDIA_TYPE_WAV    equ 7
+MEDIA_TYPE_MIDI   equ 8
 
 ; ============================================================================
 ; PROGRAM EXECUTOR REGISTERS (0xF2320-0xF233F)

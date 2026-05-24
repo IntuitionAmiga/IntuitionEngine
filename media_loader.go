@@ -21,6 +21,7 @@ type MediaLoader struct {
 	pokeyPlayer *POKEYPlayer
 	modPlayer   *MODPlayer
 	wavPlayer   *WAVPlayer
+	midiPlayer  *MIDIPlayer
 	symbols     *SymbolTable
 
 	namePtr uint32
@@ -40,10 +41,14 @@ func (m *MediaLoader) SetSymbolTable(symbols *SymbolTable) {
 	m.symbols = symbols
 }
 
-func NewMediaLoader(bus *MachineBus, soundChip *SoundChip, baseDir string, psgPlayer *PSGPlayer, sidPlayer *SIDPlayer, tedPlayer *TEDPlayer, ahxPlayer *AHXPlayer, pokeyPlayer *POKEYPlayer, modPlayer *MODPlayer, wavPlayer *WAVPlayer) *MediaLoader {
+func NewMediaLoader(bus *MachineBus, soundChip *SoundChip, baseDir string, psgPlayer *PSGPlayer, sidPlayer *SIDPlayer, tedPlayer *TEDPlayer, ahxPlayer *AHXPlayer, pokeyPlayer *POKEYPlayer, modPlayer *MODPlayer, wavPlayer *WAVPlayer, midiPlayer ...*MIDIPlayer) *MediaLoader {
 	absBase, err := filepath.Abs(baseDir)
 	if err != nil {
 		absBase = baseDir
+	}
+	var midi *MIDIPlayer
+	if len(midiPlayer) > 0 {
+		midi = midiPlayer[0]
 	}
 	return &MediaLoader{
 		bus:         bus,
@@ -56,6 +61,7 @@ func NewMediaLoader(bus *MachineBus, soundChip *SoundChip, baseDir string, psgPl
 		pokeyPlayer: pokeyPlayer,
 		modPlayer:   modPlayer,
 		wavPlayer:   wavPlayer,
+		midiPlayer:  midi,
 		status:      MEDIA_STATUS_IDLE,
 		typ:         MEDIA_TYPE_NONE,
 		errCode:     MEDIA_ERR_OK,
@@ -101,6 +107,23 @@ func (m *MediaLoader) HandleWrite(addr uint32, val uint32) {
 			m.stopAll()
 		}
 	}
+}
+
+func (m *MediaLoader) PlayHostPath(path string, subsong uint32) error {
+	typ := detectMediaType(path)
+	if typ == MEDIA_TYPE_NONE {
+		return mediaLoaderError(MEDIA_ERR_UNSUPPORTED)
+	}
+	m.mu.Lock()
+	m.reqGen++
+	reqGen := m.reqGen
+	m.status = MEDIA_STATUS_LOADING
+	m.errCode = MEDIA_ERR_OK
+	m.typ = typ
+	m.subsong = subsong
+	m.mu.Unlock()
+	go m.loadAndStart(reqGen, filepath.Base(path), path, typ, subsong)
+	return nil
 }
 
 func (m *MediaLoader) startPlay() {
@@ -186,6 +209,35 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fileName, fullPath string, typ
 				return
 			}
 			m.wavPlayer.Play()
+			m.status = MEDIA_STATUS_PLAYING
+			m.errCode = MEDIA_ERR_OK
+		}
+		m.mu.Unlock()
+		return
+	}
+
+	if typ == MEDIA_TYPE_MIDI {
+		m.mu.Lock()
+		if reqGen != m.reqGen {
+			m.mu.Unlock()
+			return
+		}
+		if m.midiPlayer != nil {
+			m.stopPlayersOnly()
+			m.mu.Unlock()
+			loadErr := m.midiPlayer.LoadData(data)
+			m.mu.Lock()
+			if reqGen != m.reqGen {
+				m.mu.Unlock()
+				return
+			}
+			if loadErr != nil {
+				m.status = MEDIA_STATUS_ERROR
+				m.errCode = MEDIA_ERR_BAD_FORMAT
+				m.mu.Unlock()
+				return
+			}
+			m.midiPlayer.Play()
 			m.status = MEDIA_STATUS_PLAYING
 			m.errCode = MEDIA_ERR_OK
 		}
@@ -398,6 +450,9 @@ func (m *MediaLoader) stopPlayersOnly() {
 	if m.wavPlayer != nil {
 		m.wavPlayer.Stop()
 	}
+	if m.midiPlayer != nil {
+		m.midiPlayer.Stop()
+	}
 	// Force GC to reclaim large event/frame slices released by player Stop()
 	// calls. Without this, deferred collection can spike during the next
 	// song's audio callback, causing choppy playback or memory pressure.
@@ -465,6 +520,12 @@ func (m *MediaLoader) refreshStatusLocked() {
 			busy = m.wavPlayer.IsPlaying() || (status&0x1) != 0
 			playerErr = (status & 0x2) != 0
 		}
+	case MEDIA_TYPE_MIDI:
+		if m.midiPlayer != nil {
+			status := m.midiPlayer.HandlePlayRead(MIDI_PLAY_STATUS)
+			busy = m.midiPlayer.IsPlaying() || (status&0x1) != 0
+			playerErr = (status & 0x2) != 0
+		}
 	}
 
 	if playerErr {
@@ -496,6 +557,8 @@ func detectMediaType(path string) uint32 {
 		return MEDIA_TYPE_MOD
 	case ".wav":
 		return MEDIA_TYPE_WAV
+	case ".mid", ".midi", ".mus":
+		return MEDIA_TYPE_MIDI
 	default:
 		return MEDIA_TYPE_NONE
 	}
@@ -511,6 +574,21 @@ func mediaSymbolCPU(typ uint32) string {
 		return "M68K"
 	default:
 		return ""
+	}
+}
+
+func (e mediaLoaderError) asError() error {
+	return e
+}
+
+type mediaLoaderError uint32
+
+func (e mediaLoaderError) Error() string {
+	switch uint32(e) {
+	case MEDIA_ERR_UNSUPPORTED:
+		return "unsupported media type"
+	default:
+		return "media loader error"
 	}
 }
 

@@ -23,6 +23,9 @@ func TestDetectMediaType(t *testing.T) {
 		{name: "ted", path: "song.ted", want: MEDIA_TYPE_TED},
 		{name: "prg alias", path: "song.prg", want: MEDIA_TYPE_TED},
 		{name: "ahx", path: "song.ahx", want: MEDIA_TYPE_AHX},
+		{name: "mid", path: "song.mid", want: MEDIA_TYPE_MIDI},
+		{name: "midi", path: "song.midi", want: MEDIA_TYPE_MIDI},
+		{name: "mus", path: "song.mus", want: MEDIA_TYPE_MIDI},
 		{name: "unknown", path: "song.bin", want: MEDIA_TYPE_NONE},
 	}
 
@@ -627,6 +630,7 @@ func TestMediaLoader_TypeDetectedOnPlay(t *testing.T) {
 		{"ym", "test.ym", MEDIA_TYPE_PSG},
 		{"ahx", "test.ahx", MEDIA_TYPE_AHX},
 		{"ted", "test.ted", MEDIA_TYPE_TED},
+		{"midi", "test.mid", MEDIA_TYPE_MIDI},
 	}
 
 	for _, tc := range tests {
@@ -657,6 +661,41 @@ func TestMediaLoader_TypeDetectedOnPlay(t *testing.T) {
 			// Clean up for next subtest
 			loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_STOP)
 		})
+	}
+}
+
+func TestMediaLoader_DirectMIDIPath_Playback(t *testing.T) {
+	dir := t.TempDir()
+	midiData := testSMF(0, 96, [][]byte{testMTrk(
+		0x00, 0x90, 0x3C, 0x64,
+		0x60, 0x80, 0x3C, 0x00,
+		0x00, 0xFF, 0x2F, 0x00,
+	)})
+	if err := os.WriteFile(filepath.Join(dir, "song.mid"), midiData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	bus := NewMachineBus()
+	sound := newTestSoundChip()
+	midiPlayer := NewMIDIPlayer(sound, SAMPLE_RATE)
+	loader := NewMediaLoader(bus, sound, dir, nil, nil, nil, nil, nil, nil, nil, midiPlayer)
+
+	nameAddr := uint32(0x1000)
+	writeFilenameToBus(bus, nameAddr, "song.mid")
+	loader.HandleWrite(MEDIA_NAME_PTR, nameAddr)
+	loader.HandleWrite(MEDIA_CTRL, MEDIA_OP_PLAY)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if loader.HandleRead(MEDIA_STATUS) == MEDIA_STATUS_PLAYING && midiPlayer.IsPlaying() {
+			break
+		}
+		runtime.Gosched()
+	}
+	if got := loader.HandleRead(MEDIA_TYPE); got != MEDIA_TYPE_MIDI {
+		t.Fatalf("media type=%d, want MIDI", got)
+	}
+	if !midiPlayer.IsPlaying() {
+		t.Fatal("MIDI player did not start")
 	}
 }
 

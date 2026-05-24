@@ -22,28 +22,30 @@ type runtimeStatusSnapshot struct {
 	x86   *CPUX86Runner
 	cpu65 *CPU6502Runner
 
-	video     *VideoChip
-	vga       *VGAEngine
-	ula       *ULAEngine
-	tedVideo  *TEDVideoEngine
-	antic     *ANTICEngine
-	voodoo    *VoodooEngine
-	sound     *SoundChip
-	psgEngine *PSGEngine
-	sidEngine *SIDEngine
-	pokey     *POKEYEngine
-	tedEngine *TEDEngine
-	ahxEngine *AHXEngine
-	modEngine *MODEngine
-	wavEngine *WAVEngine
-	paulaDMA  *ArosAudioDMA
-	arosDOS   *ArosDOSDevice
-	arosClip  *ClipboardBridge
+	video      *VideoChip
+	vga        *VGAEngine
+	ula        *ULAEngine
+	tedVideo   *TEDVideoEngine
+	antic      *ANTICEngine
+	voodoo     *VoodooEngine
+	sound      *SoundChip
+	psgEngine  *PSGEngine
+	sidEngine  *SIDEngine
+	pokey      *POKEYEngine
+	tedEngine  *TEDEngine
+	ahxEngine  *AHXEngine
+	modEngine  *MODEngine
+	wavEngine  *WAVEngine
+	midiEngine *MIDIEngine
+	paulaDMA   *ArosAudioDMA
+	arosDOS    *ArosDOSDevice
+	arosClip   *ClipboardBridge
 
 	psgPlayer   *PSGPlayer
 	sidPlayer   *SIDPlayer
 	pokeyPlayer *POKEYPlayer
 	tedPlayer   *TEDPlayer
+	midiPlayer  *MIDIPlayer
 
 	coprocManager *CoprocessorManager
 }
@@ -114,6 +116,17 @@ func (s *runtimeStatusStore) setPlayers(psg *PSGPlayer, sid *SIDPlayer, pokey *P
 	s.sidPlayer = sid
 	s.pokeyPlayer = pokey
 	s.tedPlayer = ted
+	s.mu.Unlock()
+}
+
+func (s *runtimeStatusStore) setMIDI(midi *MIDIPlayer) {
+	s.mu.Lock()
+	s.midiPlayer = midi
+	if midi != nil {
+		s.midiEngine = midi.engine
+	} else {
+		s.midiEngine = nil
+	}
 	s.mu.Unlock()
 }
 

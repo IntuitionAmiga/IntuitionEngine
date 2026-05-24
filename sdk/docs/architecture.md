@@ -136,6 +136,7 @@ flowchart LR
         AHXPLAYER["AHX player"]
         MOD["MOD player"]
         WAV["WAV player"]
+        MIDI["MIDI/MUS player"]
     end
 
     subgraph BACKENDS["Host backends"]
@@ -254,6 +255,7 @@ flowchart LR
     AHXPLAYER --> AHX
     BUS <--> MOD
     BUS <--> WAV
+    BUS <--> MIDI
     PSG --> SOUND
     SN --> SOUND
     SID1 --> SOUND
@@ -264,6 +266,7 @@ flowchart LR
     AHX --> SOUND
     MOD --> SOUND
     WAV --> SOUND
+    MIDI --> SOUND
     ADMA --> SOUND
 
     COMP --> EB
@@ -287,7 +290,7 @@ flowchart LR
     class BUS,RAM,SYSINFO,VGAMEM,VRAM,ULAMEM,VOOTEX,AROSMEM,COPMEM,MAILBOX,STAGING bus
     class EMUTOS,GEMDOS,XBIOS,AROS,ADOS,ADMA,HOSTFS,FILEIO,MEDIA,CLIP,TERM,IRQD os
     class VCHIP,COPPER,BLITTER,VCHPAL,VGA,VGASEQ,VGACRTC,VGAGC,VGADAC,TEDV,ANTIC,GTIA,ULA,VOO,VOORAST,COMP video
-    class SOUND,SFX,PSG,AYPLAYER,SN,SID1,SID2,SID3,SIDPLAYER,POKEY,SAP,TEDA,TEDPLAYER,AHX,AHXPLAYER,MOD,WAV audio
+    class SOUND,SFX,PSG,AYPLAYER,SN,SID1,SID2,SID3,SIDPLAYER,POKEY,SAP,TEDA,TEDPLAYER,AHX,AHXPLAYER,MOD,WAV,MIDI audio
     class EB,HV,OTO,HA,VULKAN,VSOFT backend
 ```
 
@@ -302,7 +305,7 @@ flowchart TB
     MEM["Memory discovery<br/>SYSINFO_TOTAL_RAM_LO/HI<br/>SYSINFO_ACTIVE_RAM_LO/HI<br/>IE64 CR_RAM_SIZE_BYTES"]
     OS["OS and loader shims<br/>EmuTOS + GEMDOS/XBIOS<br/>AROS + DOS/audio DMA<br/>Boot HostFS"]
     VIDEO["6 video systems<br/>VideoChip, VGA, TED video,<br/>ANTIC/GTIA, ULA, Voodoo 3D<br/>VideoCompositor layers 0/10/12/13/15/20"]
-    AUDIO["9 audio engines/players<br/>SoundChip/SFX, PSG/AY, SN76489,<br/>SID x3, TED, POKEY/SAP,<br/>AHX, MOD, WAV"]
+    AUDIO["10 audio engines/players<br/>SoundChip/SFX, PSG/AY, SN76489,<br/>SID x3, TED, POKEY/SAP,<br/>AHX, MOD, WAV, MIDI/MUS"]
     IO["I/O MMIO<br/>terminal, file I/O, media loader,<br/>clipboard bridge, program executor"]
     BACKEND["Host backends<br/>Ebiten or headless video<br/>OTO or headless audio<br/>Vulkan or software Voodoo"]
 
@@ -358,7 +361,7 @@ flowchart TB
 
     subgraph L3["Device layer"]
         VIDEO2["Video MMIO<br/>VideoChip, VGA, TED, ANTIC/GTIA, ULA, Voodoo"]
-        AUDIO2["Audio MMIO<br/>SoundChip, SFX, PSG, SN76489, SID, TED, POKEY, AHX, MOD, WAV"]
+        AUDIO2["Audio MMIO<br/>SoundChip, SFX, PSG, SN76489, SID, TED, POKEY, AHX, MOD, WAV, MIDI/MUS"]
         IO2["I/O MMIO<br/>terminal, file, HostFS, media, clipboard, exec"]
         OS2["OS shims<br/>GEMDOS, AROS DOS, AROS audio DMA"]
     end
@@ -466,7 +469,7 @@ flowchart LR
 | JIT | IE64 on amd64/arm64; 6502, M68K, Z80, x86 on amd64 | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` | Build tags plus `runtime.GOARCH` gates; non-supported hosts use dispatch stubs |
 | Bus and RAM | Host-sized guest RAM, profile clamps, MMIO, byte/64-bit handlers | `machine_bus.go`, `memory_sizing.go`, `profile_bounds.go`, `sysinfo_mmio.go` | `main.go` registers devices before execution; `MachineBus.SealMappings` prevents late maps |
 | Video | VideoChip, VGA, TED video, ANTIC/GTIA, ULA, Voodoo | `video_chip.go`, `video_vga.go`, `video_ted.go`, `video_antic.go`, `video_ula.go`, `video_voodoo.go` | `main.go` maps each register/VRAM block and registers compositor layers 0/10/12/13/15/20 |
-| Audio | SoundChip/SFX, PSG/AY, SN76489, SID x3, TED, POKEY/SAP, AHX, MOD, WAV | `audio_chip.go`, `sfx_trigger.go`, `psg_engine.go`, `sn76489_chip.go`, `sid_engine.go`, `ted_engine.go`, `pokey_engine.go`, `ahx_player.go`, `mod_player.go`, `wav_player.go` | `main.go` maps chip/player MMIO and registers sample tickers into SoundChip |
+| Audio | SoundChip/SFX, PSG/AY, SN76489, SID x3, TED, POKEY/SAP, AHX, MOD, WAV, MIDI/MUS | `audio_chip.go`, `sfx_trigger.go`, `psg_engine.go`, `sn76489_chip.go`, `sid_engine.go`, `ted_engine.go`, `pokey_engine.go`, `ahx_player.go`, `mod_player.go`, `wav_player.go`, `midi_player.go` | `main.go` maps chip/player MMIO and registers sample tickers/mixers into SoundChip |
 | OS integration | EmuTOS, AROS, GEMDOS/XBIOS, AROS DOS, Paula-style DMA | `emutos_loader.go`, `aros_loader.go`, `gemdos_intercept.go`, `aros_dos_intercept.go`, `aros_audio_dma.go` | OS modes install intercept MMIO and loader state during boot/reset |
 | Tooling | Assemblers, disassembler, transpiler, generators | `assembler/`, `cmd/ie32to64/`, `cmd/gen_m68k_cputest/`, `cmd/gen_interp6502/` | Makefile builds SDK tools into `sdk/bin/` |
 
@@ -917,6 +920,7 @@ graph LR
     end
 
     subgraph PLAYERS["Music Players (PTR/LEN/CTRL/STATUS/POSITION protocol)"]
+        MIDI_P["MIDI/MUS Player<br/>0xF0BA0<br/>RawlandMini"]
         MOD_P["MOD Player<br/>0xF0BC0<br/>+ FILTER_MODEL"]
         WAV_P["WAV Player<br/>0xF0BD8<br/>+ POSITION"]
         AY_P["AY Player<br/>0xF0C10<br/>VGM/VGZ auto-convert"]
@@ -940,6 +944,7 @@ graph LR
     AHX_E -->|"Ch 0-3"| SC
     PDMA -->|"DAC bypass"| SC
 
+    MIDI_P --> SC
     MOD_P --> SC
     WAV_P --> SC
     AY_P --> PSG_E
@@ -952,7 +957,7 @@ graph LR
     classDef player fill:#CD853F,stroke:#333,color:#fff
     classDef chip fill:#B8860B,stroke:#333,color:#fff
     class PSG_E,SN_E,SID_E,POK_E,TED_E,AHX_E audio
-    class MOD_P,WAV_P,AY_P,SID_P,SAP_P,TED_P,AHX_P player
+    class MOD_P,WAV_P,MIDI_P,AY_P,SID_P,SAP_P,TED_P,AHX_P player
     class SC,PDMA chip
 ```
 
@@ -1001,6 +1006,7 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 | `0xF0700-0xF07FF` | 256B | Terminal / Serial / Mouse / Keyboard / RTC_EPOCH (0xF0750) |
 | `0xF0800-0xF0B7F` | 896B | SoundChip (10 channels, incl. FLEX) |
 | `0xF0B80-0xF0B91` | 18B | AHX Engine / Player |
+| `0xF0BA0-0xF0BBF` | 32B | MIDI/MUS Player |
 | `0xF0BC0-0xF0BD7` | 24B | MOD Player |
 | `0xF0BD8-0xF0BF3` | 28B | WAV Player |
 | `0xF0C00-0xF0C0F` | 16B | PSG Engine (AY-3-8910/YM2149 registers) |
@@ -1147,7 +1153,7 @@ graph LR
 graph LR
     EX["CPU Execute"]
     BW["Bus Write<br/>Audio MMIO"]
-    ET["Engine Translate<br/>PSG/SN/SID/POKEY/TED/AHX/MOD/WAV"]
+    ET["Engine Translate<br/>PSG/SN/SID/POKEY/TED/AHX/MOD/WAV/MIDI"]
     SC["SoundChip Params<br/>Updated"]
     OTO["OTO Callback<br/>ReadSample()"]
     TS["TickSample()<br/>All engines"]
@@ -1254,6 +1260,7 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 | `ahx_engine.go` | AHX replayer |
 | `mod_player.go` | MOD player |
 | `wav_player.go` | WAV player |
+| `midi_player.go` / `midi_engine.go` / `midi_parser.go` | SMF `.mid`/`.midi` and Doom `.mus`; fixed RawlandMini IE SoundChip GM-style/chiptune interpretation, 10 active MIDI voices with deterministic stealing |
 | `cpu_ie32.go` | IE32 CPU |
 | `cpu_ie64.go` | IE64 CPU + interpreter |
 | `fpu_ie64.go` | IE64 FPU (16 x float32) |

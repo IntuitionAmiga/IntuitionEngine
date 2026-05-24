@@ -36,6 +36,7 @@ Address Range       Size    Device              Constants File
 0xF0000-0xF0487     1160B   Video Chip (+palette) video_chip.go
 0xF0700-0xF07FF     256B    Terminal/Serial     registers.go
 0xF0800-0xF0B7F     896B    Audio Chip          audio_chip.go
+0xF0BA0-0xF0BBF     32B     MIDI Player         midi_constants.go
 0xF0BC0-0xF0BD7     24B     MOD Player          mod_constants.go
 0xF0BD8-0xF0BEB     20B     WAV Player          wav_constants.go
 0xF0C00-0xF0C20     33B     PSG (AY-3-8910/YM2149) psg_constants.go

@@ -701,6 +701,23 @@
 .set AHX_SUBSONG,0xF0B91
 
 ; ============================================================================
+; MIDI AUDIO REGISTERS (SMF .mid/.midi and Doom .mus player)
+; ============================================================================
+.set MIDI_PLAY_PTR_0,0xF0BA0
+.set MIDI_PLAY_PTR_1,0xF0BA1
+.set MIDI_PLAY_PTR_2,0xF0BA2
+.set MIDI_PLAY_PTR_3,0xF0BA3
+.set MIDI_PLAY_LEN_0,0xF0BA4
+.set MIDI_PLAY_LEN_1,0xF0BA5
+.set MIDI_PLAY_LEN_2,0xF0BA6
+.set MIDI_PLAY_LEN_3,0xF0BA7
+.set MIDI_PLAY_CTRL,0xF0BA8
+.set MIDI_PLAY_STATUS,0xF0BAC
+.set MIDI_POSITION,0xF0BB0
+.set MIDI_VOLUME,0xF0BB4
+.set MIDI_TEMPO_BPM,0xF0BB8
+
+; ============================================================================
 ; MOD AUDIO REGISTERS (ProTracker .mod player)
 ;
 ; The MOD player provides ProTracker/NoiseTracker .mod playback:

@@ -895,8 +895,18 @@ type SampleTicker interface {
 	TickSample()
 }
 
+// SampleMixer allows independent engines to contribute samples without
+// mutating SoundChip channel registers.
+type SampleMixer interface {
+	MixSample() float32
+}
+
 type sampleTickerListHolder struct {
 	tickers []SampleTicker
+}
+
+type sampleMixerListHolder struct {
+	mixers []SampleMixer
 }
 
 type sampleTapHolder struct {
@@ -937,6 +947,8 @@ type SoundChip struct {
 
 	sampleTicker  atomic.Value // Optional per-sample tickers ([]SampleTicker)
 	sampleTickers map[string]SampleTicker
+	sampleMixer   atomic.Value
+	sampleMixers  map[string]SampleMixer
 	sampleTap     atomic.Value // Optional tap callback fed with each generated sample
 	audioFrozen   atomic.Bool  // When true, ReadSample returns 0 (hard pause)
 	sfx           *SFXTrigger  // Independent trigger-and-forget sample mixer
@@ -1005,6 +1017,7 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 		sampleRateRecip:  1.0 / float32(SAMPLE_RATE),
 		masterGainLinear: 1.0,
 		sampleTickers:    make(map[string]SampleTicker),
+		sampleMixers:     make(map[string]SampleMixer),
 		sfx:              NewSFXTrigger(),
 	}
 	chip.sampleTicker.Store(&sampleTickerListHolder{})
@@ -2821,6 +2834,13 @@ func (chip *SoundChip) GenerateSample() float32 {
 	if chip.sfx != nil {
 		sample = clampF32(sample+chip.sfx.MixSample(), MIN_SAMPLE, MAX_SAMPLE)
 	}
+	if holder, ok := chip.sampleMixer.Load().(*sampleMixerListHolder); ok {
+		for _, mixer := range holder.mixers {
+			if mixer != nil {
+				sample = clampF32(sample+mixer.MixSample(), MIN_SAMPLE, MAX_SAMPLE)
+			}
+		}
+	}
 
 	// Apply SID mixer mode (DC offset and soft saturation)
 	if sidMixerEnabled {
@@ -3053,6 +3073,58 @@ func (chip *SoundChip) HasSampleTicker(key string) bool {
 	defer chip.mu.Unlock()
 	ticker, ok := chip.sampleTickers[key]
 	return ok && ticker != nil
+}
+
+func (chip *SoundChip) RegisterSampleMixer(key string, mixer SampleMixer) {
+	if key == "" {
+		key = "default"
+	}
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	if chip.sampleMixers == nil {
+		chip.sampleMixers = make(map[string]SampleMixer)
+	}
+	if mixer == nil {
+		delete(chip.sampleMixers, key)
+	} else {
+		chip.sampleMixers[key] = mixer
+	}
+	chip.rebuildSampleMixerCacheLocked()
+}
+
+func (chip *SoundChip) UnregisterSampleMixer(key string) {
+	if key == "" {
+		key = "default"
+	}
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	delete(chip.sampleMixers, key)
+	chip.rebuildSampleMixerCacheLocked()
+}
+
+func (chip *SoundChip) HasSampleMixer(key string) bool {
+	if key == "" {
+		key = "default"
+	}
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	mixer, ok := chip.sampleMixers[key]
+	return ok && mixer != nil
+}
+
+func (chip *SoundChip) rebuildSampleMixerCacheLocked() {
+	keys := make([]string, 0, len(chip.sampleMixers))
+	for key := range chip.sampleMixers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	mixers := make([]SampleMixer, 0, len(keys))
+	for _, key := range keys {
+		if mixer := chip.sampleMixers[key]; mixer != nil {
+			mixers = append(mixers, mixer)
+		}
+	}
+	chip.sampleMixer.Store(&sampleMixerListHolder{mixers: mixers})
 }
 
 func (chip *SoundChip) rebuildSampleTickerCacheLocked() {

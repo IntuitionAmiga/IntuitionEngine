@@ -280,8 +280,10 @@ func main() {
 		ahxPlus         bool
 		modeMOD         bool
 		modeWAV         bool
+		modeMIDI        bool
 		perfMode        bool
 		sidFile         string
+		midiFile        string
 		sidDebug        int
 		sidPAL          bool
 		sidNTSC         bool
@@ -331,6 +333,7 @@ func main() {
 	flagSet.BoolVar(&ahxPlus, "ahx+", false, "Enable AHX+ enhanced mode")
 	flagSet.BoolVar(&modeMOD, "mod", false, "Play ProTracker MOD file (Amiga 4-channel)")
 	flagSet.BoolVar(&modeWAV, "wav", false, "Play WAV file (PCM audio)")
+	flagSet.StringVar(&midiFile, "midi", "", "Play MIDI file (.mid, .midi, or Doom .mus)")
 	flagSet.BoolVar(&perfMode, "perf", false, "Enable performance measurement (MIPS reporting)")
 	flagSet.IntVar(&resWidth, "width", 0, "Override output width (0 = auto)")
 	flagSet.IntVar(&resHeight, "height", 0, "Override output height (0 = auto)")
@@ -360,7 +363,7 @@ func main() {
 		fmt.Println("Six heterogeneous CPU cores : IE64 RISC(JIT), IE32 RISC, M68020(JIT), x86(JIT), Z80(JIT) and 6502(JIT).")
 		fmt.Println("Six independent video chips : IEVideoChip + SNES Mode7 + Blitter + Copper, VGA, ZX Spectrum ULA, TED Video, Atari ANTIC/GTIA, 3DFX Voodoo.")
 		fmt.Println("Seven discrete audio chips  : IESoundChip, AY/YM/PSG, SID, POKEY, TED Audio, TI SN76489, Paula DMA.")
-		fmt.Println("20+ retro chiptune formats  : ProTracker MOD 4/6/8 channel, PCM WAV, AHX/THX (Resynthesized), PSID/RSID/MultiSID, TED/TMF/PRG, SAP A/B/C, YM2/YM3/YM3b/YM4/YM5/YM6/LHA, AY, VGM/VGZ, SNDH/SND, VTX/VT, PT1/PT2/PT3, STC, SQT, ASC, FTC.")
+		fmt.Println("20+ retro chiptune formats  : ProTracker MOD 4/6/8 channel, PCM WAV, MIDI SMF .mid/.midi and Doom .mus, AHX/THX (Resynthesized), PSID/RSID/MultiSID, TED/TMF/PRG, SAP A/B/C, YM2/YM3/YM3b/YM4/YM5/YM6/LHA, AY, VGM/VGZ, SNDH/SND, VTX/VT, PT1/PT2/PT3, STC, SQT, ASC, FTC.")
 		flagSet.PrintDefaults()
 	}
 
@@ -402,6 +405,9 @@ func main() {
 	if sidFile != "" {
 		modeSID = true
 	}
+	if midiFile != "" {
+		modeMIDI = true
+	}
 	if psgPlus && !modePSG {
 		modePSG = true
 	}
@@ -431,7 +437,7 @@ func main() {
 	}
 	if !modeIE32 && !modeIE64 && !modeIOS && !modeBasic && !modeM68K && !modeEmuTOS && !modeAROS &&
 		!modeM6502 && !modeZ80 && !modeX86 && !modePSG && !modeSID && !modePOKEY &&
-		!modeTED && !modeAHX && !modeMOD && !modeWAV && filename != "" {
+		!modeTED && !modeAHX && !modeMOD && !modeWAV && !modeMIDI && filename != "" {
 		mode, err := cliModeFromExtension(filename)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -459,6 +465,8 @@ func main() {
 			filename = ""
 			modeBasic = true
 			modeIE64 = true
+		case "midi":
+			modeMIDI = true
 		}
 	}
 
@@ -567,6 +575,9 @@ func main() {
 	if modeWAV {
 		modeCount++
 	}
+	if modeMIDI {
+		modeCount++
+	}
 	if modeCount == 0 && filename == "" {
 		if shouldAutostartAB3D2() {
 			modeM68K = true
@@ -578,7 +589,7 @@ func main() {
 	}
 	useGraphicalTerm = modeBasic && !modeTerm
 	if modeCount != 1 {
-		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -intuitionos, -m68k, -emutos, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, -ahx+, -mod, or -wav")
+		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -intuitionos, -m68k, -emutos, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, -ahx+, -mod, -wav, or -midi")
 		os.Exit(1)
 	}
 	if modeBasic && filename != "" {
@@ -602,6 +613,13 @@ func main() {
 	}
 	if modeSID && sidFile == "" {
 		fmt.Println("Error: SID mode requires a filename")
+		os.Exit(1)
+	}
+	if modeMIDI && midiFile == "" {
+		midiFile = filename
+	}
+	if modeMIDI && midiFile == "" {
+		fmt.Println("Error: MIDI mode requires a filename")
 		os.Exit(1)
 	}
 	if filename == "" && !modeBasic {
@@ -964,6 +982,40 @@ func main() {
 		os.Exit(0)
 	}
 
+	if modeMIDI {
+		midiPlayerStandalone := NewMIDIPlayer(soundChip, SAMPLE_RATE)
+		if err := midiPlayerStandalone.Load(midiFile); err != nil {
+			fmt.Printf("Error loading MIDI file: %v\n", err)
+			os.Exit(1)
+		}
+		mf := midiPlayerStandalone.MIDIFile()
+		meta := midiPlayerStandalone.Metadata()
+		if meta.Title != "" {
+			fmt.Printf("Playing: %s", meta.Title)
+		} else {
+			fmt.Printf("Playing: %s", midiFile)
+		}
+		if mf != nil {
+			if mf.IsMUS {
+				fmt.Print(" [MUS]")
+			} else {
+				fmt.Printf(" [%s, %d track(s)]", mf.FormatName, mf.TrackCount)
+			}
+			fmt.Printf(" patch=%s", mf.PatchTableName)
+		}
+		if dur := midiPlayerStandalone.DurationText(); dur != "" {
+			fmt.Printf(" [%s]", dur)
+		}
+		fmt.Println()
+		soundChip.Start()
+		midiPlayerStandalone.Play()
+		for midiPlayerStandalone.IsPlaying() {
+			time.Sleep(100 * time.Millisecond)
+		}
+		soundChip.Stop()
+		os.Exit(0)
+	}
+
 	// PLAN_MAX_RAM.md slice 10f: mode-aware boot. Resolve the runtime
 	// mode from the parsed flags BEFORE allocating the bus so capped
 	// modes (EmuTOS/AROS/banked) only commit a small bus.memory rather
@@ -1191,6 +1243,13 @@ func main() {
 		wavPlayer.HandlePlayRead,
 		wavPlayer.HandlePlayWrite)
 
+	// Map MIDI registers (SMF and Doom MUS player)
+	midiPlayer := NewMIDIPlayer(soundChip, SAMPLE_RATE)
+	midiPlayer.AttachBus(sysBus)
+	sysBus.MapIO(MIDI_PLAY_PTR, MIDI_END,
+		midiPlayer.HandlePlayRead,
+		midiPlayer.HandlePlayWrite)
+
 	// Map POKEY registers (Atari POKEY chip for SAP playback)
 	pokeyEngine := NewPOKEYEngine(soundChip, SAMPLE_RATE)
 	pokeyPlayer := NewPOKEYPlayer(pokeyEngine)
@@ -1330,6 +1389,7 @@ func main() {
 		wavPlayer.engine,
 	)
 	runtimeStatus.setPlayers(psgPlayer, sidPlayer, pokeyPlayer, tedPlayer)
+	runtimeStatus.setMIDI(midiPlayer)
 
 	output := videoChip.GetOutput()
 	outputConfig := output.GetDisplayConfig()
@@ -1372,7 +1432,7 @@ func main() {
 	tedEngine.AttachBusMemory(busMem)
 
 	// Initialize unified SOUND PLAY media loader
-	mediaLoader := NewMediaLoader(sysBus, soundChip, runtimeBaseDir, psgPlayer, sidPlayer, tedPlayer, ahxPlayerCPU, pokeyPlayer, modPlayer, wavPlayer)
+	mediaLoader := NewMediaLoader(sysBus, soundChip, runtimeBaseDir, psgPlayer, sidPlayer, tedPlayer, ahxPlayerCPU, pokeyPlayer, modPlayer, wavPlayer, midiPlayer)
 	sysBus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, mediaLoader.HandleRead, mediaLoader.HandleWrite)
 
 	// Initialize coprocessor subsystem MMIO (available to all CPU modes)
@@ -2680,6 +2740,12 @@ func main() {
 	launchProgramOrScript := func(path string) error {
 		if strings.EqualFold(filepath.Ext(path), ".ies") {
 			return scriptEngine.RunFile(path)
+		}
+		if detectMediaType(path) != MEDIA_TYPE_NONE {
+			if mediaLoader == nil {
+				return fmt.Errorf("media loader unavailable")
+			}
+			return mediaLoader.PlayHostPath(path, 0)
 		}
 		return runProgramWithFullReset(path)
 	}
