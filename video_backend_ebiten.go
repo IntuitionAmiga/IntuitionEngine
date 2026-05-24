@@ -1383,15 +1383,11 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	anticOn := s.antic != nil && s.antic.IsEnabled()
 	voodooOn := s.voodoo != nil && s.voodoo.IsEnabled()
 
-	soundOn := s.sound != nil && s.sound.IsEnabled()
-	psgOn := s.psgEngine != nil && s.psgEngine.IsPlaying()
-	sidOn := s.sidEngine != nil && s.sidEngine.IsPlaying()
-	pokeyOn := s.pokey != nil && s.pokey.IsPlaying()
-	tedOn := s.tedEngine != nil && s.tedEngine.IsPlaying()
-	ahxOn := s.ahxEngine != nil && s.ahxEngine.IsPlaying()
-	modOn := s.modEngine != nil && s.modEngine.IsPlaying()
-	wavOn := s.wavEngine != nil && s.wavEngine.IsPlaying()
-	paulaOn := s.paulaDMA != nil && s.paulaDMA.enabled.Load()
+	audioStatus := runtimeAudioStatusIndicators(s)
+	audioTokens := make([]statusToken, 0, len(audioStatus))
+	for _, indicator := range audioStatus {
+		audioTokens = append(audioTokens, statusToken{name: indicator.name, enabled: indicator.enabled})
+	}
 
 	barHeight := 44
 	if barHeight >= eo.height {
@@ -1426,25 +1422,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 		{name: "|", enabled: false},
 		{name: "VOODOO", enabled: voodooOn},
 	})
-	drawStatusLine(screen, 6, y+39, "AUDIO", []statusToken{
-		{name: "IESND", enabled: soundOn},
-		{name: "|", enabled: false},
-		{name: "PSG", enabled: psgOn},
-		{name: "|", enabled: false},
-		{name: "TED", enabled: tedOn},
-		{name: "|", enabled: false},
-		{name: "SID", enabled: sidOn},
-		{name: "|", enabled: false},
-		{name: "POKEY", enabled: pokeyOn},
-		{name: "|", enabled: false},
-		{name: "AHX", enabled: ahxOn},
-		{name: "|", enabled: false},
-		{name: "MOD", enabled: modOn},
-		{name: "|", enabled: false},
-		{name: "WAV", enabled: wavOn},
-		{name: "|", enabled: false},
-		{name: "PAULA", enabled: paulaOn},
-	})
+	drawStatusLine(screen, 6, y+39, "AUDIO", audioTokens)
 
 	eo.bufferMutex.RLock()
 	compositor := eo.compositor
