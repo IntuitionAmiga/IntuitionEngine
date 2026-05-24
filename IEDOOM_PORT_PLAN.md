@@ -30,7 +30,17 @@ Engine owns MIDI/MUS parsing, synthesis, playback MMIO, and SoundChip output.
 - The Chocolate Doom host helper test now covers the planned IE dependency
   constants, timer retry reads, video setup/palette writes, input setup and
   scancode translation, MIDI control/loading/error/no-music paths, DMX SFX parse
-  and trigger edge cases, and File I/O read-all register/error handling.
+  and trigger edge cases, File I/O read-all register/error handling, direct WAD
+  MUS data registration, and CLUT8 framebuffer identity through presentation.
+- `../chocolate-doom/src/iedoom_start.asm` now provides a tested reset
+  trampoline smoke image that starts at byte `0`, sets `ESP = STACK_TOP`, jumps
+  to `PROGRAM_START`, and pads the flat image so the entry placeholder is at
+  offset `0x1000`.
+- The Chocolate Doom tree also has a tested linked-image path:
+  `src/iedoom_boot.asm` supplies the ELF reset section, `src/iedoom_link.ld`
+  places reset code at address `0` and C code at `PROGRAM_START`, and
+  `src/iedoom_runtime.c` currently supplies the entry placeholder plus
+  reset-time `.bss` clearing and freestanding memory/string primitives.
 
 ## Key Changes
 
@@ -154,7 +164,8 @@ Engine owns MIDI/MUS parsing, synthesis, playback MMIO, and SoundChip output.
 
 ### IEDoom Music Tests
 
-- [ ] WAD lump `d_e1m1` is passed to MIDI MMIO as MUS data.
+- [x] WAD music lump bytes are registered by pointer/length and passed to MIDI
+  MMIO as MUS data.
 - [x] Looped music writes `MIDI_PLAY_CTRL = 5`.
 - [x] Non-looped music writes `MIDI_PLAY_CTRL = 1`.
 - [x] Stop writes `MIDI_PLAY_CTRL = 2`.
@@ -195,7 +206,7 @@ Engine owns MIDI/MUS parsing, synthesis, playback MMIO, and SoundChip output.
 - [x] Doom palette updates are propagated to the VideoChip palette table.
 - [x] One known Doom palette entry is packed as `0x00RRGGBB`, using
   `(r << 16) | (g << 8) | b`.
-- [ ] The `320x200x8` Doom framebuffer remains byte-identical before
+- [x] The `320x200x8` Doom framebuffer remains byte-identical before
   presentation.
 
 ### Engine Dependency Checks
