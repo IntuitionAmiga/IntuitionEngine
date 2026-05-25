@@ -43,7 +43,7 @@ carry information.
 | `$F0020`  | `BLT_OP`          | R/W | Blitter operation. |
 | `$F0024`  | `BLT_SRC`         | R/W | Source address. |
 | `$F0028`  | `BLT_DST`         | R/W | Destination address. |
-| `$F002C`  | `BLT_WIDTH`       | R/W | Width or packed endpoint. |
+| `$F002C`  | `BLT_WIDTH`       | R/W | Width, byte count for `MEMCOPY`, or packed endpoint. |
 | `$F0030`  | `BLT_HEIGHT`      | R/W | Height or packed endpoint. |
 | `$F0034`  | `BLT_SRC_STRIDE`  | R/W | Source stride. |
 | `$F0038`  | `BLT_DST_STRIDE`  | R/W | Destination stride. |
@@ -71,6 +71,23 @@ carry information.
 | `$05` | `320` by `240` |
 | `$06` | `1920` by `1080` |
 | `$07` | `960` by `540` |
+
+`BLT_OP` values:
+
+| Value | Operation |
+|-------|-----------|
+| `0` | `COPY` |
+| `1` | `FILL` |
+| `2` | `LINE` |
+| `3` | `MASKED_COPY` |
+| `4` | `ALPHA_COPY` |
+| `5` | `MODE7` |
+| `6` | `COLOR_EXPAND` |
+| `7` | `SCALE` |
+| `8` | `MEMCOPY` |
+
+For `MEMCOPY`, `BLT_SRC` is the source byte address, `BLT_DST` is the
+destination byte address, and `BLT_WIDTH` is the byte count.
 
 ## D.2 Terminal / serial / input (`$F0700`-`$F07FF`)
 

@@ -30,8 +30,11 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | BASIC direct mode | Chapter 1 |
 | BASIC vocabulary | Chapter 2 |
+| BLIT M | Chapter 2, Chapter 4 |
+| BLIT MEMCOPY | Chapter 2, Chapter 4, Appendix D |
 | Blitter | Chapter 4, Appendix D |
 | BLT_FLAGS | Chapter 4 |
+| BLT_OP_MEMCOPY | Chapter 4, Appendix D |
 | BLT_STATUS | Chapter 4, Appendix D |
 | Block diagrams | Appendix K |
 | Bus model | Preface, Chapter 24, Appendix K |

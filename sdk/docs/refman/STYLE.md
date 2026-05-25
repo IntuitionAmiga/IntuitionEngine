@@ -210,6 +210,34 @@ Current controlled polish pass:
       reader-facing examples affected by this pass.
   11. Publish and print PDFs only after the source pass and checks are
       complete.
+- Integrate the VideoChip blitter MEMCOPY change from commit
+  `72fd188`. This commit added a demo program, but the reader-facing
+  book must not mention that demo, its title, its asset paths, or its
+  host-side run instructions. The book-relevant claim is only the
+  VideoChip ABI change: `BLT_OP = 8` is a distinct byte-counted linear
+  memory-copy operation, exposed from BASIC as `BLIT MEMCOPY` and
+  `BLIT M`.
+
+  Execute this MEMCOPY pass in this order:
+
+  1. Check `video_chip.go`, `video_blitter_test.go`,
+     `sdk/include/ehbasic_hw_system.inc`, the SDK include files, and
+     the BASIC BLIT tests before writing claims.
+  2. Chapter 2: make sure `BLIT MEMCOPY` and `BLIT M` are described as
+     byte-span operations, not pixel rectangles.
+  3. Chapter 4: document `MEMCOPY` as operation `8`, separate it from
+     rectangular `COPY`, state that `BLT_WIDTH` is the byte count for
+     this operation, state which registers matter, and add a small
+     IE-native BASIC example that copies an off-screen buffer into the
+     visible framebuffer and reads `BLT_STATUS`.
+  4. Appendix D: make the VideoChip blitter map and operation summary
+     include `MEMCOPY`.
+  5. Appendix L: add lookup entries for `BLIT MEMCOPY`, `BLIT M`, and
+     `BLT_OP_MEMCOPY`.
+  6. Claim ledger: record the canonical sources checked and the typed
+     reader example.
+  7. Publish and print PDFs only after the source pass and checks are
+     complete.
 - Run a full source-tree editorial audit after any manually edited
   refman Markdown. Classify every `.md` file under `sdk/docs/refman/`
   before checking it:

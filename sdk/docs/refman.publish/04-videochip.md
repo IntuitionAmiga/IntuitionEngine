@@ -55,8 +55,8 @@ are aligned to 4 bytes.
 | `$F0020`   | `BLT_OP`          | Blitter operation. |
 | `$F0024`   | `BLT_SRC`         | Blitter source address. |
 | `$F0028`   | `BLT_DST`         | Blitter destination address. |
-| `$F002C`   | `BLT_WIDTH`       | Blitter rectangle width, in pixels (or bytes for CLUT8). |
-| `$F0030`   | `BLT_HEIGHT`      | Blitter rectangle height, in pixels. |
+| `$F002C`   | `BLT_WIDTH`       | Blitter rectangle width in pixels, or byte count for `MEMCOPY`. |
+| `$F0030`   | `BLT_HEIGHT`      | Blitter rectangle height in rows. |
 | `$F0034`   | `BLT_SRC_STRIDE`  | Source stride in bytes per row. |
 | `$F0038`   | `BLT_DST_STRIDE`  | Destination stride in bytes per row. |
 | `$F003C`   | `BLT_COLOR`       | Fill colour or line colour. |
@@ -229,7 +229,7 @@ values and starts the transfer.
 | Register | Used for |
 |----------|----------|
 | `BLT_CTRL` | Bit `0` starts the operation. Bit `2` enables blitter IRQs. Reads return `BUSY` in bit `1` and IRQ-enable in bit `2`. |
-| `BLT_OP` | Operation number, `0`-`7`. |
+| `BLT_OP` | Operation number, `0`-`8`. |
 | `BLT_SRC` | Source address, or packed start coordinate for legacy line drawing. |
 | `BLT_DST` | Destination address, or packed end coordinate for legacy line drawing. |
 | `BLT_WIDTH` | Width in pixels for rectangles, source width for scale, or packed end coordinate for extended line drawing. |
@@ -349,8 +349,8 @@ instead of `1`. The operation still completes synchronously, and
 |----------|---------|
 | `BLT_SRC` | Source base address. |
 | `BLT_DST` | Destination base address. |
-| `BLT_WIDTH` | Width in pixels for RGBA32/CLUT8 rectangles, or byte count for `BLIT MEMCOPY`. |
-| `BLT_HEIGHT` | Height in rows. `BLIT MEMCOPY` sets this to `1`. |
+| `BLT_WIDTH` | Width in pixels for RGBA32/CLUT8 rectangles. |
+| `BLT_HEIGHT` | Height in rows. |
 | `BLT_SRC_STRIDE` | Source bytes per row. |
 | `BLT_DST_STRIDE` | Destination bytes per row. |
 | `BLT_FLAGS` | Pixel size and draw mode. |
@@ -364,13 +364,40 @@ BLIT COPY src, dst, w, h, srcStride, dstStride
 ```
 
 `BLIT MEMCOPY src,dst,len` and its shorthand `BLIT M src,dst,len`
-are one-row `COPY` operations: width is `len`, height is `1`, and
-both strides are `len`.
+select operation `8`. This is not a rectangle copy. It copies `len`
+bytes from `src` to `dst` as one linear span. `BLT_SRC`, `BLT_DST`,
+and `BLT_WIDTH` are the registers that matter. `BLT_HEIGHT`,
+`BLT_SRC_STRIDE`, `BLT_DST_STRIDE`, and `BLT_FLAGS` are ignored by
+the hardware operation, although the BASIC keyword stores `1` in
+`BLT_HEIGHT` and `len` in both stride registers before it starts the
+blitter.
 
-Overlapping VRAM copies are handled in the safe direction when the
-bulk path can see both rectangles. For portable code, still prefer
-non-overlapping source and destination rectangles when copying
-within the same row.
+Use `COPY` when the source is a rectangle with a row stride. Use
+`MEMCOPY` when the source is a flat block, such as a saved RGBA
+screen, a work buffer, or a full back buffer. The length is always
+bytes. A `640` by `480` RGBA32 screen is therefore `640*480*4`,
+or `1228800` bytes.
+
+#### MEMCOPY back buffer
+
+This listing fills an off-screen buffer, copies it into the visible
+framebuffer, then prints the blitter status:
+
+```basic
+10 FB=&H00100000:BB=&H00230000:ST=640*4
+20 POKE &H000F0004,0:POKE &H000F0080,0:POKE &H000F0000,1
+30 BLIT FILL BB,640,480,&H00002040,ST
+40 BLIT MEMCOPY BB,FB,640*480*4
+50 PRINT PEEK(&H000F0044)
+```
+
+The screen shows the filled buffer after line `40`. The status print
+is `2`, meaning `DONE` is set and `ERR` is clear.
+
+Overlapping RAM and VRAM copies preserve the original source bytes in
+the normal memory paths. For portable programs, still prefer
+non-overlapping source and destination spans unless you are deliberately
+moving a buffer in place.
 
 ### 4.6.6 FILL
 
