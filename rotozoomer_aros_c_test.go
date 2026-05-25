@@ -11,17 +11,20 @@ import (
 
 func TestRotozoomerArosC_TextureLoadChecksOpenAndShortRead(t *testing.T) {
 	root := assemblerExamplesRepoRoot(t)
-	for _, rel := range []string{
-		"sdk/examples/c/rotozoomer_aros_api.c",
-		"sdk/examples/c/rotozoomer_aros_hw.c",
+	for _, tc := range []struct {
+		rel     string
+		texture string
+	}{
+		{rel: "sdk/examples/c/rotozoomer_aros_api.c", texture: "rotozoomtexture_api_c.raw"},
+		{rel: "sdk/examples/c/rotozoomer_aros_hw.c", texture: "rotozoomtexture_hw_c.raw"},
 	} {
-		t.Run(filepath.Base(rel), func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join(root, rel))
+		t.Run(filepath.Base(tc.rel), func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(root, tc.rel))
 			if err != nil {
 				t.Fatal(err)
 			}
 			src := string(data)
-			open := strings.Index(src, `Open("PROGDIR:rotozoomtexture.raw"`)
+			open := strings.Index(src, `Open("PROGDIR:`+tc.texture+`"`)
 			if open < 0 {
 				t.Fatal("texture Open call not found")
 			}

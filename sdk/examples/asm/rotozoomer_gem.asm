@@ -953,7 +953,7 @@ recip_table:
 ; ============================================================================
                 even
 texture_data:
-                incbin  "../assets/rotozoomtexture.raw"
+                incbin  "../assets/rotozoomtexture_emutos.raw"
 
                 even
 ahx_data:

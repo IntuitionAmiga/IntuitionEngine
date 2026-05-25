@@ -593,7 +593,7 @@ recip_table:
 ; ============================================================================
                 even
 texture_data:
-                incbin  "../assets/rotozoomtexture.raw"
+                incbin  "../assets/rotozoomtexture_api_asm.raw"
 
 music_path:
                 dc.b    "sdk/examples/assets/music/chopper.ahx",0

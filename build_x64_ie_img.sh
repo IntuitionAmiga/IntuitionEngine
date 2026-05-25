@@ -265,6 +265,8 @@ check_live_payload_inputs() {
     payload_require_file "${SCRIPT_DIR}/sdk/examples/asm/RotoHW" "make x64-live-aros-demos" "AROS RotoHW demo"
     payload_require_file "${SCRIPT_DIR}/sdk/examples/c/RotoAPIc" "make x64-live-aros-demos" "AROS RotoAPIc demo"
     payload_require_file "${SCRIPT_DIR}/sdk/examples/c/RotoHWc" "make x64-live-aros-demos" "AROS RotoHWc demo"
+    payload_require_file "${SCRIPT_DIR}/sdk/examples/assets/rotozoomtexture_api_c.raw" "make rotozoom-textures" "AROS API C rotozoomer texture"
+    payload_require_file "${SCRIPT_DIR}/sdk/examples/assets/rotozoomtexture_hw_c.raw" "make rotozoom-textures" "AROS HW C rotozoomer texture"
 
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/prebuilt/*.ie*" "make sdk-build" "prebuilt Intuition Engine binaries"
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/prebuilt/coproc_*.ie*" "make sdk-build" "coprocessor support worker binaries"
@@ -331,6 +333,8 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/Systems/AROS/Demos/RotoHW" "make x64-live-aros-demos" "staged AROS RotoHW demo"
     payload_require_file "${payload_root}/Systems/AROS/Demos/RotoAPIc" "make x64-live-aros-demos" "staged AROS RotoAPIc demo"
     payload_require_file "${payload_root}/Systems/AROS/Demos/RotoHWc" "make x64-live-aros-demos" "staged AROS RotoHWc demo"
+    payload_require_file "${payload_root}/Systems/AROS/Demos/rotozoomtexture_api_c.raw" "make rotozoom-textures" "staged AROS API C texture"
+    payload_require_file "${payload_root}/Systems/AROS/Demos/rotozoomtexture_hw_c.raw" "make rotozoom-textures" "staged AROS HW C texture"
     payload_require_file "${payload_root}/Systems/EmuTOS/Demos/rotozoomer_gem.prg" "make gem-rotozoomer" "staged EmuTOS GEM demo"
     payload_require_file "${payload_root}/Systems/IntuitionOS/Boot/iexec.ie64" "make intuitionos" "staged IntuitionOS IExec kernel"
     payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/S/Startup-Sequence" "make intuitionos" "staged IntuitionOS Startup-Sequence"
@@ -614,6 +618,10 @@ PY
         cp -f "$aros_demo" "$aros_demos_dir/"
         cp -f "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Tool.info" "${aros_demos_dir}/$(basename "$aros_demo").info"
     done
+    cp -f \
+        "${SCRIPT_DIR}/sdk/examples/assets/rotozoomtexture_api_c.raw" \
+        "${SCRIPT_DIR}/sdk/examples/assets/rotozoomtexture_hw_c.raw" \
+        "$aros_demos_dir/"
 
     python3 - "${AB3D2_EMBED_DIR}/_build.zip" "$payload_root" <<'PY'
 import hashlib

@@ -159,7 +159,7 @@ static void render_mode7(APTR texture_buf, APTR back_buf)
 
 static int load_texture(APTR texture_buf)
 {
-    BPTR fh = Open("PROGDIR:rotozoomtexture.raw", MODE_OLDFILE);
+    BPTR fh = Open("PROGDIR:rotozoomtexture_api_c.raw", MODE_OLDFILE);
     LONG bytes_read;
     if (!fh) {
         return 0;

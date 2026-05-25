@@ -190,7 +190,13 @@ ROTOZOOM_VARIANT_TEXTURES := \
 	./sdk/examples/assets/rotozoomtexture_ehbasic.raw \
 	./sdk/examples/assets/rotozoomtexture_ie32.raw \
 	./sdk/examples/assets/rotozoomtexture_ie64.raw \
+	./sdk/examples/assets/rotozoomtexture_ies.raw \
 	./sdk/examples/assets/rotozoomtexture_m68k.raw \
+	./sdk/examples/assets/rotozoomtexture_emutos.raw \
+	./sdk/examples/assets/rotozoomtexture_api_asm.raw \
+	./sdk/examples/assets/rotozoomtexture_hw_asm.raw \
+	./sdk/examples/assets/rotozoomtexture_api_c.raw \
+	./sdk/examples/assets/rotozoomtexture_hw_c.raw \
 	./sdk/examples/assets/rotozoomtexture_6502.raw \
 	./sdk/examples/assets/rotozoomtexture_z80.raw \
 	./sdk/examples/assets/rotozoomtexture_x86.raw
@@ -397,7 +403,7 @@ x64-live-ab3d2-assets:
 	fi
 
 .PHONY: x64-live-aros-demos
-x64-live-aros-demos: aros-release-assets
+x64-live-aros-demos: aros-release-assets rotozoom-textures
 	@echo "Building AROS rotozoomer demos..."
 	@if ! command -v vasmm68k_mot >/dev/null 2>&1; then \
 		echo "Error: vasmm68k_mot not found. Required for AROS assembly demos."; \
@@ -1459,7 +1465,7 @@ run-showreel: build-showreel-deps
 	@$(BIN_DIR)/IntuitionEngine -script $(SHOWREEL_SCRIPT)
 
 .PHONY: gem-rotozoomer
-gem-rotozoomer:
+gem-rotozoomer: rotozoom-textures
 	@echo "Building GEM rotozoomer .PRG..."
 	@$(MKDIR) -p sdk/examples/prebuilt
 	vasmm68k_mot -Ftos -m68020 -devpac -Isdk/include \
