@@ -337,18 +337,18 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/Tools/Shell" "make intuitionos" "staged IntuitionOS Shell"
     payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/LIBS/dos.library" "make intuitionos" "staged IntuitionOS dos.library"
     payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/L/console.handler" "make intuitionos" "staged IntuitionOS console.handler"
-    payload_require_file "${payload_root}/Demos/ab3d2_ie68_redux_high.ie68" "make x64-live-ab3d2-assets" "staged AB3D2 IE68 demo"
+    payload_require_file "${payload_root}/Demos/m68k/ab3d2_ie68_redux_high.ie68" "make x64-live-ab3d2-assets" "staged AB3D2 IE68 demo"
     payload_require_file "${payload_root}/_build/ie_media/redux-high/boot.dat" "make x64-live-ab3d2-assets" "staged AB3D2 runtime media"
-    if find "${payload_root}/Demos" -maxdepth 1 -type f -name 'ab3d2_*.ie68' ! -name '*redux_high*' ! -name '*redux_low*' | grep -q .; then
+    if find "${payload_root}/Demos/m68k" -maxdepth 1 -type f -name 'ab3d2_*.ie68' ! -name '*redux_high*' ! -name '*redux_low*' | grep -q .; then
         payload_require_file "${payload_root}/_build/ie_unpacked/media/includes/test.lnk" "make x64-live-ab3d2-assets" "staged AB3D2 unpacked media"
     fi
     shopt -s nullglob
-    local ab3d2_low_demos=("${payload_root}"/Demos/ab3d2_ie68_redux_low*.ie68)
+    local ab3d2_low_demos=("${payload_root}"/Demos/m68k/ab3d2_ie68_redux_low*.ie68)
     shopt -u nullglob
     if [[ ${#ab3d2_low_demos[@]} -gt 0 ]]; then
         payload_require_file "${payload_root}/_build/ie_media/redux-low/boot.dat" "make x64-live-ab3d2-assets" "staged AB3D2 redux-low runtime media"
     fi
-    payload_require_file "${payload_root}/Demos/rotozoomer_basic.bas" "make sdk-build" "staged BASIC demo"
+    payload_require_file "${payload_root}/SDK/Examples/basic/rotozoomer_basic.bas" "make sdk-build" "staged BASIC example"
     payload_require_file "${payload_root}/IE/Coproc/coproc_service_ie32.iex" "make sdk-build" "staged IE32 coprocessor worker"
     payload_require_file "${payload_root}/SDK/Include/ie64.inc" "make sdk-build" "staged IE64 include"
     if find "${payload_root}/Docs" -type f -name '*.md' | grep -q .; then
@@ -367,7 +367,7 @@ verify_staged_share_payload() {
         exit 1
     fi
 
-    if find "${payload_root}/Demos" -maxdepth 1 -type f -name 'coproc_*.ie*' | grep -q .; then
+    if find "${payload_root}/Demos" -type f -name 'coproc_*.ie*' | grep -q .; then
         log_error "Forbidden live payload location: coproc worker staged under Demos"
         log_error "Producer: build_x64_ie_img.sh stage_share_payload"
         exit 1
@@ -377,7 +377,7 @@ verify_staged_share_payload() {
         log_error "Producer: build_x64_ie_img.sh stage_share_payload"
         exit 1
     fi
-    if find "${payload_root}/Demos" -maxdepth 1 -type f \( -name 'RotoAPI' -o -name 'RotoHW' -o -name 'RotoAPIc' -o -name 'RotoHWc' -o -name 'iewarp_service.ie64' \) | grep -q .; then
+    if find "${payload_root}/Demos" -type f \( -name 'RotoAPI' -o -name 'RotoHW' -o -name 'RotoAPIc' -o -name 'RotoHWc' -o -name 'iewarp_service.ie64' \) | grep -q .; then
         log_error "Forbidden live payload location: AROS-only payload staged under Demos"
         log_error "Producer: build_x64_ie_img.sh stage_share_payload"
         exit 1
@@ -416,6 +416,12 @@ stage_share_payload() {
     log_section "Staging IESHARE demo payload"
     local payload_root="${WORK_DIR}/ieshare-payload"
     local demos_dir="${payload_root}/Demos"
+    local demos_ie32_dir="${demos_dir}/ie32"
+    local demos_ie64_dir="${demos_dir}/ie64"
+    local demos_m68k_dir="${demos_dir}/m68k"
+    local demos_z80_dir="${demos_dir}/z80"
+    local demos_m6502_dir="${demos_dir}/m6502"
+    local demos_x86_dir="${demos_dir}/x86"
     local coproc_dir="${payload_root}/IE/Coproc"
     local music_dir="${payload_root}/Music"
     local docs_dir="${payload_root}/Docs/IEProgRefGuide"
@@ -478,7 +484,9 @@ for entry in os.scandir(src_root):
 for key in sorted(top):
     copy_group(top[key], dst_root)
 PY
-    mkdir -p "$demos_dir" "$coproc_dir" "$music_dir" \
+    mkdir -p "$demos_dir" "$demos_ie32_dir" "$demos_ie64_dir" \
+        "$demos_m68k_dir" "$demos_z80_dir" "$demos_m6502_dir" \
+        "$demos_x86_dir" "$coproc_dir" "$music_dir" \
         "$aros_system_dir/Libs" "$aros_demos_dir" "$emutos_demos_dir" \
         "$intuitionos_system_dir/Boot" \
         "$docs_dir" "$sdk_dir/Include" "$sdk_dir/Examples/asm" \
@@ -512,7 +520,6 @@ PY
         log_error "Run: make x64-live-demos"
         exit 1
     fi
-    local demo_files=()
     local coproc_files=()
     local emutos_demo_files=()
     local iewarp_worker_files=()
@@ -522,12 +529,18 @@ PY
             coproc_*.ie*) coproc_files+=("$prebuilt_file") ;;
             iewarp_service.ie64) iewarp_worker_files+=("$prebuilt_file") ;;
             *.prg) emutos_demo_files+=("$prebuilt_file") ;;
-            *) demo_files+=("$prebuilt_file") ;;
+            *.iex|*.ie32) cp -f "$prebuilt_file" "$demos_ie32_dir/" ;;
+            *.ie64) cp -f "$prebuilt_file" "$demos_ie64_dir/" ;;
+            *.ie68) cp -f "$prebuilt_file" "$demos_m68k_dir/" ;;
+            *.ie80) cp -f "$prebuilt_file" "$demos_z80_dir/" ;;
+            *.ie65) cp -f "$prebuilt_file" "$demos_m6502_dir/" ;;
+            *.ie86) cp -f "$prebuilt_file" "$demos_x86_dir/" ;;
+            *)
+                log_error "Unsupported prebuilt demo extension: $prebuilt_file"
+                exit 1
+                ;;
         esac
     done
-    if [[ ${#demo_files[@]} -gt 0 ]]; then
-        cp -f "${demo_files[@]}" "$demos_dir/"
-    fi
     if [[ ${#coproc_files[@]} -gt 0 ]]; then
         cp -f "${coproc_files[@]}" "$coproc_dir/"
     fi
@@ -537,7 +550,7 @@ PY
     if [[ ${#iewarp_worker_files[@]} -gt 0 ]]; then
         cp -f "${iewarp_worker_files[@]}" "$aros_system_dir/Libs/"
     fi
-    python3 - "${AB3D2_EMBED_DIR}/_build.zip" "${AB3D2_EMBED_DIR}" "$demos_dir" <<'PY'
+    python3 - "${AB3D2_EMBED_DIR}/_build.zip" "${AB3D2_EMBED_DIR}" "$demos_m68k_dir" <<'PY'
 import os
 import shutil
 import sys
@@ -574,8 +587,6 @@ for filename in sorted(os.listdir(source_dir)):
 if copied == 0:
     raise SystemExit(f"no AB3D2 IE68 demos matched available runtime media in {zip_path}")
 PY
-    cp -f "${SCRIPT_DIR}/sdk/examples/basic/rotozoomer_basic.bas" "$demos_dir/"
-
     cp -f \
         "${SCRIPT_DIR}/sdk/include/ie32.inc" \
         "${SCRIPT_DIR}/sdk/include/ie64.inc" \
@@ -646,8 +657,16 @@ PY
 Intuition Engine Live USB demos
 
 This folder is populated during make x64-live.
-It contains runnable Intuition Engine demo binaries and the AB3D2 runtime asset
-tree extracted at the IESHARE root as _build/.
+It contains runnable Intuition Engine demos grouped by guest CPU:
+
+ie32
+ie64
+m68k
+z80
+m6502
+x86
+
+AB3D2 IE68 demos live under m68k.
 
 OS-specific payloads live under Systems:
 
