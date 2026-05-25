@@ -1,0 +1,86 @@
+local out_root = "iedoom_diag"
+local tag = cpu.execution_mode() .. "_buildnewtic"
+
+local SYM = {
+    BuildNewTic_indirect_call = 0x00006616,
+    NetUpdate_after_buildnewtic = 0x00006749,
+    net_loop_interface = 0x00105D30,
+}
+
+local function join_lines(lines)
+    local out = {}
+    for i = 1, #lines do out[#out + 1] = lines[i].text end
+    return table.concat(out, "\n")
+end
+
+local function mon(cmd)
+    local ok, result = pcall(function() return dbg.command_output(cmd) end)
+    if not ok then return "ERROR " .. tostring(result) end
+    return join_lines(result)
+end
+
+local function u32(addr)
+    local ok, data = pcall(function() return dbg.read_mem(addr, 4) end)
+    if not ok or #data < 4 then return 0 end
+    return string.byte(data, 1) + string.byte(data, 2) * 0x100 +
+        string.byte(data, 3) * 0x10000 + string.byte(data, 4) * 0x1000000
+end
+
+local function wait_break(max_ms)
+    local waited = 0
+    while waited < max_ms do
+        if dbg.is_open() then return true end
+        sys.wait_ms(25)
+        waited = waited + 25
+    end
+    return false
+end
+
+local function dump(label)
+    local esp = dbg.get_reg("ESP") or 0
+    local iface = u32(SYM.net_loop_interface)
+    local buildtic = u32(iface + 4)
+    local lines = {}
+    lines[#lines + 1] = "[" .. label .. "]"
+    lines[#lines + 1] = string.format("pc=0x%X eax=0x%X ecx=0x%X edx=0x%X esp=0x%X ebp=0x%X flags=0x%X",
+        dbg.get_pc() or 0,
+        dbg.get_reg("EAX") or 0,
+        dbg.get_reg("ECX") or 0,
+        dbg.get_reg("EDX") or 0,
+        esp,
+        dbg.get_reg("EBP") or 0,
+        dbg.get_reg("FLAGS") or 0)
+    lines[#lines + 1] = string.format("net_loop_interface=0x%X buildtic=0x%X stack_top=0x%X",
+        iface, buildtic, u32(esp))
+    lines[#lines + 1] = "iface_mem=\n" .. mon(string.format("m $%X 8", iface))
+    lines[#lines + 1] = "stack=\n" .. mon(string.format("m $%X 16", esp))
+    lines[#lines + 1] = "disasm=\n" .. mon("d pc 10")
+    lines[#lines + 1] = "bt=\n" .. mon("bt 10")
+    return table.concat(lines, "\n")
+end
+
+sys.mkdir(out_root)
+sys.mkdir(out_root .. "/" .. tag)
+
+local report = {}
+
+dbg.open()
+dbg.set_bp(SYM.BuildNewTic_indirect_call)
+dbg.continue(true)
+if wait_break(30000) then
+    report[#report + 1] = dump("before_indirect_call")
+else
+    report[#report + 1] = "timeout waiting for BuildNewTic indirect call"
+end
+
+dbg.clear_bp(SYM.BuildNewTic_indirect_call)
+dbg.set_bp(SYM.NetUpdate_after_buildnewtic)
+dbg.continue(true)
+if wait_break(10000) then
+    report[#report + 1] = dump("after_buildnewtic_return")
+else
+    report[#report + 1] = "timeout waiting for NetUpdate after BuildNewTic"
+end
+
+sys.write_file(out_root .. "/" .. tag .. "/buildnewtic.txt", table.concat(report, "\n\n"))
+sys.exit(0)

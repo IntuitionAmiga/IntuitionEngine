@@ -1,0 +1,98 @@
+local out_root = "iedoom_diag"
+local tag = cpu.execution_mode() .. "_milestones"
+
+local SYM = {
+    after_D_CheckNetGame = 0x000095C4,
+    before_D_DoomLoop = 0x00009788,
+    D_DoomLoop = 0x000078FB,
+    NetUpdate = 0x000066C6,
+    NetUpdate_call_BuildNewTic = 0x00006744,
+    BuildNewTic = 0x00006551,
+}
+
+local GLOBAL = {
+    playeringame = 0x00105F88,
+    local_playeringame = 0x00105D40,
+    net_loop_interface = 0x00105D30,
+    gamestate = 0x00105F48,
+}
+
+local function join_lines(lines)
+    local out = {}
+    for i = 1, #lines do out[#out + 1] = lines[i].text end
+    return table.concat(out, "\n")
+end
+
+local function mon(cmd)
+    local ok, result = pcall(function() return dbg.command_output(cmd) end)
+    if not ok then return "ERROR " .. tostring(result) end
+    return join_lines(result)
+end
+
+local function u32(addr)
+    local ok, data = pcall(function() return dbg.read_mem(addr, 4) end)
+    if not ok or #data < 4 then return 0 end
+    return string.byte(data, 1) + string.byte(data, 2) * 0x100 +
+        string.byte(data, 3) * 0x10000 + string.byte(data, 4) * 0x1000000
+end
+
+local function wait_break(max_ms)
+    local waited = 0
+    while waited < max_ms do
+        if dbg.is_open() then return true end
+        sys.wait_ms(25)
+        waited = waited + 25
+    end
+    return false
+end
+
+local function dump(label)
+    local lines = {}
+    lines[#lines + 1] = "[" .. label .. "]"
+    lines[#lines + 1] = string.format("pc=0x%X eax=0x%X ecx=0x%X edx=0x%X esp=0x%X ebp=0x%X flags=0x%X",
+        dbg.get_pc() or 0,
+        dbg.get_reg("EAX") or 0,
+        dbg.get_reg("ECX") or 0,
+        dbg.get_reg("EDX") or 0,
+        dbg.get_reg("ESP") or 0,
+        dbg.get_reg("EBP") or 0,
+        dbg.get_reg("FLAGS") or 0)
+    lines[#lines + 1] = string.format("playeringame0=%u local_playeringame0=%u net_loop_interface=0x%X gamestate=%u",
+        u32(GLOBAL.playeringame),
+        u32(GLOBAL.local_playeringame),
+        u32(GLOBAL.net_loop_interface),
+        u32(GLOBAL.gamestate))
+    lines[#lines + 1] = "disasm=\n" .. mon("d pc 8")
+    lines[#lines + 1] = "bt=\n" .. mon("bt 10")
+    return table.concat(lines, "\n")
+end
+
+sys.mkdir(out_root)
+sys.mkdir(out_root .. "/" .. tag)
+
+local order = {
+    {"after_D_CheckNetGame", SYM.after_D_CheckNetGame, 30000},
+    {"before_D_DoomLoop", SYM.before_D_DoomLoop, 30000},
+    {"D_DoomLoop", SYM.D_DoomLoop, 30000},
+    {"NetUpdate", SYM.NetUpdate, 30000},
+    {"NetUpdate_call_BuildNewTic", SYM.NetUpdate_call_BuildNewTic, 30000},
+    {"BuildNewTic", SYM.BuildNewTic, 30000},
+}
+
+local report = {}
+dbg.open()
+for i = 1, #order do
+    local item = order[i]
+    dbg.set_bp(item[2])
+    dbg.continue(true)
+    if wait_break(item[3]) then
+        report[#report + 1] = dump(item[1])
+        dbg.clear_bp(item[2])
+    else
+        report[#report + 1] = "timeout waiting for " .. item[1]
+        break
+    end
+end
+
+sys.write_file(out_root .. "/" .. tag .. "/milestones.txt", table.concat(report, "\n\n"))
+sys.exit(0)

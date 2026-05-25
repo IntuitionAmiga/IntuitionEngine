@@ -120,6 +120,41 @@ func TestX86JIT_IDIVFallsBackToInterpreter(t *testing.T) {
 	}
 }
 
+func TestX86JIT_BoundedModeStopsBeforeOversizedBlock(t *testing.T) {
+	if !x86JitAvailable {
+		t.Skip("x86 JIT not available on this platform")
+	}
+
+	code := []byte{
+		0x31, 0xC0, // XOR EAX,EAX
+		0xBF, 0x00, 0x00, 0x10, 0x00, // MOV EDI,0x100000
+		0xB9, 0x10, 0x00, 0x10, 0x00, // MOV ECX,0x100010
+		0x29, 0xF9, // SUB ECX,EDI
+		0xF3, 0xAA, // REP STOSB
+		0xF4, // HLT
+	}
+
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	cpu.memory = adapter.GetMemory()
+	cpu.x86JitIOBitmap = buildX86IOBitmap(adapter, bus)
+	cpu.x86JitEnabled = true
+	cpu.EIP = 0x1000
+	for i, b := range code {
+		cpu.memory[cpu.EIP+uint32(i)] = b
+	}
+
+	x86ShadowStepBudget(t, cpu, true, 1, 5*time.Second)
+
+	if cpu.EIP != 0x1002 {
+		t.Fatalf("bounded JIT EIP = %#x, want %#x after one instruction", cpu.EIP, 0x1002)
+	}
+	if cpu.EAX != 0 || cpu.EDI != 0 || cpu.ECX != 0 {
+		t.Fatalf("bounded JIT executed past first instruction: EAX=%#x EDI=%#x ECX=%#x", cpu.EAX, cpu.EDI, cpu.ECX)
+	}
+}
+
 func TestX86JIT_Exec_MOV_HLT(t *testing.T) {
 	// MOV EAX, 42; HLT
 	cpu := runX86JITProgram(t, 0x1000,

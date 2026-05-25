@@ -1,0 +1,136 @@
+-- Break at Doom's LoadGameSettings path and capture the live values that
+-- populate playeringame[]. This is intentionally tied to the current linked
+-- iedoom.elf symbol addresses and is a diagnostic, not runtime logic.
+
+local out_root = "iedoom_diag"
+local tag = cpu.execution_mode() .. "_loadgame"
+
+local SYM = {
+    LoadGameSettings = 0x00009B97,
+    LoadGameSettings_loop = 0x00009C38,
+    LoadGameSettings_store = 0x00009C4A,
+    LoadGameSettings_after_store = 0x00009C51,
+    LoadGameSettings_ret = 0x00009C5D,
+    playeringame = 0x00105F88,
+    local_playeringame = 0x00105D40,
+}
+
+local function join_lines(lines)
+    local out = {}
+    for i = 1, #lines do
+        out[#out + 1] = lines[i].text
+    end
+    return table.concat(out, "\n")
+end
+
+local function mon(cmd)
+    local ok, result = pcall(function()
+        return dbg.command_output(cmd)
+    end)
+    if not ok then
+        return "ERROR running `" .. cmd .. "`: " .. tostring(result)
+    end
+    return join_lines(result)
+end
+
+local function u32(addr)
+    local ok, data = pcall(function()
+        return dbg.read_mem(addr, 4)
+    end)
+    if not ok or #data < 4 then
+        return nil
+    end
+    local b0 = string.byte(data, 1)
+    local b1 = string.byte(data, 2)
+    local b2 = string.byte(data, 3)
+    local b3 = string.byte(data, 4)
+    return b0 + b1 * 0x100 + b2 * 0x10000 + b3 * 0x1000000
+end
+
+local function hex(v)
+    return string.format("0x%X", v or 0)
+end
+
+local function dump(label)
+    local ebp = dbg.get_reg("EBP") or 0
+    local settings = u32(ebp + 8)
+    local lines = {}
+    lines[#lines + 1] = "[" .. label .. "]"
+    lines[#lines + 1] = string.format("pc=%s eax=%s edx=%s ebp=%s esp=%s flags=%s",
+        hex(dbg.get_pc() or 0),
+        hex(dbg.get_reg("EAX") or 0),
+        hex(dbg.get_reg("EDX") or 0),
+        hex(ebp),
+        hex(dbg.get_reg("ESP") or 0),
+        hex(dbg.get_reg("FLAGS") or 0))
+    lines[#lines + 1] = string.format("settings=%s settings.num_players=%s i=%s",
+        hex(settings),
+        hex(settings and u32(settings + 0x3C) or 0),
+        hex(u32(ebp - 0x0C)))
+    lines[#lines + 1] = string.format("playeringame.u32=%s %s %s %s local_playeringame.u32=%s %s %s %s",
+        hex(u32(SYM.playeringame)),
+        hex(u32(SYM.playeringame + 4)),
+        hex(u32(SYM.playeringame + 8)),
+        hex(u32(SYM.playeringame + 12)),
+        hex(u32(SYM.local_playeringame)),
+        hex(u32(SYM.local_playeringame + 4)),
+        hex(u32(SYM.local_playeringame + 8)),
+        hex(u32(SYM.local_playeringame + 12)))
+    lines[#lines + 1] = "playeringame=" .. mon(string.format("m $%X 16", SYM.playeringame))
+    lines[#lines + 1] = "local_playeringame=" .. mon(string.format("m $%X 16", SYM.local_playeringame))
+    lines[#lines + 1] = "disasm=" .. mon("d pc 8")
+    lines[#lines + 1] = "bt=" .. mon("bt 8")
+    return table.concat(lines, "\n")
+end
+
+local function wait_break(max_ms)
+    local waited = 0
+    while waited < max_ms do
+        if dbg.is_open() then
+            return true
+        end
+        sys.wait_ms(25)
+        waited = waited + 25
+    end
+    return false
+end
+
+sys.mkdir(out_root)
+sys.mkdir(out_root .. "/" .. tag)
+
+dbg.open()
+dbg.set_bp(SYM.LoadGameSettings_loop)
+dbg.continue(true)
+
+if not wait_break(30000) then
+    sys.write_file(out_root .. "/" .. tag .. "/loadgame.txt", "timeout waiting for LoadGameSettings loop\n")
+    sys.exit(2)
+end
+
+local report = {}
+report[#report + 1] = dump("hit_loop")
+
+dbg.clear_bp(SYM.LoadGameSettings_loop)
+dbg.set_bp(SYM.LoadGameSettings_store)
+dbg.continue(true)
+if wait_break(5000) then
+    report[#report + 1] = dump("before_store")
+else
+    report[#report + 1] = "timeout waiting for first store"
+end
+
+dbg.clear_bp(SYM.LoadGameSettings_store)
+dbg.step(1)
+report[#report + 1] = dump("after_store_step")
+
+dbg.set_wp_ex(SYM.playeringame, "w", 4)
+dbg.set_bp(SYM.LoadGameSettings_ret)
+dbg.continue(true)
+if wait_break(5000) then
+    report[#report + 1] = dump("after_continue")
+else
+    report[#report + 1] = "timeout waiting for LoadGameSettings return"
+end
+
+sys.write_file(out_root .. "/" .. tag .. "/loadgame.txt", table.concat(report, "\n\n"))
+sys.exit(0)

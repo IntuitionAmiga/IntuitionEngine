@@ -1,0 +1,68 @@
+local out_root = "iedoom_diag"
+local tag = cpu.execution_mode() .. "_playeringame_watch"
+
+local SYM = {
+    playeringame = 0x00105F88,
+    local_playeringame = 0x00105D40,
+}
+
+local function join_lines(lines)
+    local out = {}
+    for i = 1, #lines do out[#out + 1] = lines[i].text end
+    return table.concat(out, "\n")
+end
+
+local function mon(cmd)
+    local ok, result = pcall(function() return dbg.command_output(cmd) end)
+    if not ok then return "ERROR " .. tostring(result) end
+    return join_lines(result)
+end
+
+local function wait_break(max_ms)
+    local waited = 0
+    while waited < max_ms do
+        if dbg.is_open() then return true end
+        sys.wait_ms(25)
+        waited = waited + 25
+    end
+    return false
+end
+
+local function dump(label)
+    local lines = {}
+    lines[#lines + 1] = "[" .. label .. "]"
+    lines[#lines + 1] = string.format("pc=0x%X eax=0x%X ecx=0x%X edx=0x%X esp=0x%X ebp=0x%X flags=0x%X",
+        dbg.get_pc() or 0,
+        dbg.get_reg("EAX") or 0,
+        dbg.get_reg("ECX") or 0,
+        dbg.get_reg("EDX") or 0,
+        dbg.get_reg("ESP") or 0,
+        dbg.get_reg("EBP") or 0,
+        dbg.get_reg("FLAGS") or 0)
+    lines[#lines + 1] = "playeringame=\n" .. mon(string.format("m $%X 4", SYM.playeringame))
+    lines[#lines + 1] = "local_playeringame=\n" .. mon(string.format("m $%X 4", SYM.local_playeringame))
+    lines[#lines + 1] = "disasm=\n" .. mon("d pc 8")
+    lines[#lines + 1] = "bt=\n" .. mon("bt 8")
+    return table.concat(lines, "\n")
+end
+
+sys.mkdir(out_root)
+sys.mkdir(out_root .. "/" .. tag)
+
+local report = {}
+dbg.open()
+dbg.set_wp_ex(SYM.playeringame, "w", 16)
+dbg.set_wp_ex(SYM.local_playeringame, "w", 16)
+dbg.continue(true)
+
+for i = 1, 12 do
+    if not wait_break(30000) then
+        report[#report + 1] = "timeout waiting for watchpoint " .. tostring(i)
+        break
+    end
+    report[#report + 1] = dump("watch_" .. tostring(i))
+    dbg.continue(true)
+end
+
+sys.write_file(out_root .. "/" .. tag .. "/watch.txt", table.concat(report, "\n\n"))
+sys.exit(0)

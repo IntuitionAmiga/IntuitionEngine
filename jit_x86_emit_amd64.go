@@ -251,7 +251,7 @@ func x86EmitComputeEA(cb *CodeBuffer, ji *X86JITInstr, memory []byte, dstReg byt
 	// Find the byte position after opcode+modrm in the instruction
 	// We need to locate displacement bytes within memory
 	// The modrm byte is at a fixed offset from opcodePC depending on prefixes/opcode size
-	modrmPC := x86FindModRMPC(ji)
+	modrmPC := x86FindModRMPC(ji, memory)
 
 	if rm == 4 {
 		// SIB byte follows ModR/M
@@ -331,19 +331,27 @@ func x86EmitComputeEA(cb *CodeBuffer, ji *X86JITInstr, memory []byte, dstReg byt
 }
 
 // x86FindModRMPC returns the absolute memory address of the ModR/M byte.
-func x86FindModRMPC(ji *X86JITInstr) uint32 {
+func x86FindModRMPC(ji *X86JITInstr, memory []byte) uint32 {
 	pc := ji.opcodePC
-	// Skip prefixes
-	opcode := ji.opcode
-	if opcode >= 0x0F00 {
-		// Two-byte opcode: prefixes + 0x0F + opcode2 + modrm
-		// modrm is at opcodePC + (length - instruction_body_after_modrm)
-		// Simpler: count prefix bytes, then skip opcode bytes
-		return ji.opcodePC + uint32(ji.length) - x86ModRMBodyLen(ji)
+	memSize := uint32(len(memory))
+
+	for pc < memSize {
+		switch memory[pc] {
+		case 0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF0, 0xF2, 0xF3:
+			pc++
+			continue
+		}
+		break
 	}
-	// Single-byte opcode: prefixes + opcode + modrm
-	_ = pc
-	return ji.opcodePC + uint32(ji.length) - x86ModRMBodyLen(ji)
+
+	if pc >= memSize {
+		return ji.opcodePC
+	}
+
+	if memory[pc] == 0x0F {
+		return pc + 2
+	}
+	return pc + 1
 }
 
 // x86ModRMBodyLen returns the number of bytes from (and including) the ModR/M byte
@@ -4598,12 +4606,12 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 			break
 		}
 
-		// RET (0xC3): stop before the return so the dispatcher executes
-		// it through the interpreter. Native RET remains available for
-		// focused emitter tests, but default x86 JIT execution keeps
-		// linked-C return semantics on the canonical interpreter path
-		// until the RTS path has full parity coverage.
-		if byte(ji.opcode) == 0xC3 && ji.opcode < 0x100 {
+		// Stack/control instructions: stop before the instruction so the
+		// dispatcher executes it through the interpreter. Native emitters
+		// remain available to focused tests, but production JIT execution
+		// keeps linked-C frame and return-address semantics on the
+		// canonical path.
+		if x86ShouldStepInInterpreter(*ji) {
 			break
 		}
 

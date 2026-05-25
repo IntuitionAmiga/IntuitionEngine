@@ -759,6 +759,10 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 
 	opcode := instrs[0].opcode
 
+	if x86ShouldStepInInterpreter(instrs[0]) {
+		return true
+	}
+
 	switch opcode {
 	// Segment register writes
 	case 0x8E: // MOV Sreg, Ew
@@ -811,13 +815,6 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 	case 0xF4: // HLT
 		return true
 
-	// RET — keep returns on the interpreter path during the x86 Doom
-	// bring-up. The native RET/RTS path is performance-oriented and still
-	// has unresolved stack/return parity gaps in linked C workloads; a
-	// single-instruction Step preserves architectural CALL/RET semantics
-	// without disabling the default JIT for surrounding straight-line code.
-	case 0xC3, 0xC2:
-		return true
 	}
 
 	// Two-byte opcodes
@@ -837,6 +834,35 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 		}
 	}
 
+	return false
+}
+
+// x86ShouldStepInInterpreter identifies stack/control instructions that are
+// deliberately routed through CPU_X86.Step in the production dispatcher. The
+// x86 linked-C workloads are sensitive to exact frame and return-address
+// semantics; keeping these instructions on the canonical interpreter path
+// preserves correctness while the JIT still handles surrounding straight-line
+// ALU/memory blocks by default.
+func x86ShouldStepInInterpreter(ji X86JITInstr) bool {
+	if ji.opcode >= 0x0F00 {
+		return false
+	}
+	op := byte(ji.opcode)
+	switch {
+	case op == 0xE8 || op == 0xC3 || op == 0xC2: // CALL rel, RET, RET imm16
+		return true
+	case op == 0xC9: // LEAVE
+		return true
+	case op >= 0x50 && op <= 0x5F: // PUSH/POP r32
+		return true
+	case op == 0x68 || op == 0x6A: // PUSH imm32/imm8
+		return true
+	case op == 0x9C || op == 0x9D: // PUSHF/POPF
+		return true
+	case op == 0xFF:
+		sub := (ji.modrm >> 3) & 7
+		return ji.hasModRM && (sub == 2 || sub == 3 || sub == 4 || sub == 5 || sub == 6)
+	}
 	return false
 }
 

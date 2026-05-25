@@ -4,7 +4,7 @@
 -- command. Use the same binary and file root for JIT and -nojit oracle runs.
 
 local out_root = "iedoom_diag"
-local tag = "run"
+local tag = cpu.execution_mode()
 local waits = { 1000, 3000, 10000, 20000, 40000 }
 
 local VIDEO_CTRL = 0x000F0000
@@ -13,6 +13,27 @@ local VIDEO_COLOR_MODE = 0x000F0080
 local VIDEO_FB_BASE = 0x000F0084
 local MIDI_CTRL = 0x000F0BAC
 local MIDI_POS = 0x000F0BB0
+
+-- Symbol addresses from ../chocolate-doom/build/iedoom.elf for the linked
+-- IEDoom image under diagnosis. Keep these as diagnostics only; runtime logic
+-- must not depend on them.
+local SYM = {
+    screenvisible = 0x00078FC0,
+    gametic = 0x00100D00,
+    ticdup = 0x00100D08,
+    maketic = 0x00105D20,
+    recvtic = 0x00105D24,
+    localplayer = 0x00105D28,
+    local_playeringame = 0x00105D40,
+    gamestate = 0x00105F48,
+    nodrawers = 0x00105F74,
+    playeringame = 0x00105F88,
+    I_VideoBuffer = 0x00107660,
+    ie_framebuffer = 0x00107680,
+    viewheight = 0x00190E0C,
+    setsizeneeded = 0x0019A258,
+    dest_screen = 0x001BF5D4,
+}
 
 local function join_lines(lines)
     local out = {}
@@ -44,12 +65,109 @@ local function hex(v)
     return string.format("0x%X", v or 0)
 end
 
+local function mon_addr(v)
+    return string.format("$%X", v or 0)
+end
+
+local function summarize_bytes(data)
+    local nonzero = 0
+    local first = nil
+    local last = nil
+    local sample = {}
+    for i = 1, #data do
+        local b = string.byte(data, i)
+        if b ~= 0 then
+            nonzero = nonzero + 1
+            if first == nil then first = i - 1 end
+            last = i - 1
+        end
+        if i <= 32 then
+            sample[#sample + 1] = string.format("%02X", b)
+        end
+    end
+    return string.format("len=%d nonzero=%d first=%s last=%s sample=%s",
+        #data, nonzero, tostring(first), tostring(last), table.concat(sample, " "))
+end
+
+local function summarize_rows(data, width)
+    local rows = {}
+    local active = 0
+    local first_row = nil
+    local last_row = nil
+    if width <= 0 then
+        return "invalid width"
+    end
+    local row_count = math.floor(#data / width)
+    for y = 0, row_count - 1 do
+        local nonzero = 0
+        local base = y * width
+        for x = 1, width do
+            if string.byte(data, base + x) ~= 0 then
+                nonzero = nonzero + 1
+            end
+        end
+        if nonzero ~= 0 then
+            active = active + 1
+            if first_row == nil then first_row = y end
+            last_row = y
+            if #rows < 16 then
+                rows[#rows + 1] = string.format("row=%d nonzero=%d", y, nonzero)
+            end
+        end
+    end
+    return string.format("rows=%d active=%d first=%s last=%s\n%s",
+        row_count, active, tostring(first_row), tostring(last_row), table.concat(rows, "\n"))
+end
+
+local function read_summary(addr, n)
+    if addr == nil or addr == 0 then
+        return "addr=0"
+    end
+    local ok, data = pcall(function()
+        return dbg.read_mem(addr, n)
+    end)
+    if not ok then
+        return "ERROR " .. tostring(data)
+    end
+    return summarize_bytes(data)
+end
+
+local function u32_at(addr)
+    local ok, data = pcall(function()
+        return dbg.read_mem(addr, 4)
+    end)
+    if not ok or #data < 4 then
+        return nil
+    end
+    local b0 = string.byte(data, 1)
+    local b1 = string.byte(data, 2)
+    local b2 = string.byte(data, 3)
+    local b3 = string.byte(data, 4)
+    return b0 + b1 * 0x100 + b2 * 0x10000 + b3 * 0x1000000
+end
+
+local function read_framebuffer_summary(addr, width, height)
+    local n = width * height
+    if addr == nil or addr == 0 then
+        return "addr=0"
+    end
+    local ok, data = pcall(function()
+        return dbg.read_mem(addr, n)
+    end)
+    if not ok then
+        return "ERROR " .. tostring(data)
+    end
+    return summarize_bytes(data) .. "\n" .. summarize_rows(data, width)
+end
+
 local function sample(ms)
     dbg.open()
 
     local pc = dbg.get_pc() or 0
     local esp = reg("ESP")
     local ebp = reg("EBP")
+    local fb = video.read_reg(VIDEO_FB_BASE)
+    local frame_hash = video.frame_hash()
     local cpu_entries = dbg.cpu_list()
     local cpus = {}
     for i = 1, #cpu_entries do
@@ -65,22 +183,47 @@ local function sample(ms)
 
     local report = {}
     report[#report + 1] = string.format("elapsed_ms=%d", ms)
+    report[#report + 1] = string.format("execution_mode=%s frame_hash=%s", cpu.execution_mode(), tostring(frame_hash))
     report[#report + 1] = string.format("pc=%s esp=%s ebp=%s", hex(pc), hex(esp), hex(ebp))
     report[#report + 1] = string.format(
         "video ctrl=%s mode=%s fb=%s color_mode=%s midi_ctrl=%s midi_pos=%s",
         hex(video.read_reg(VIDEO_CTRL)),
         hex(video.read_reg(VIDEO_MODE)),
-        hex(video.read_reg(VIDEO_FB_BASE)),
+        hex(fb),
         hex(video.read_reg(VIDEO_COLOR_MODE)),
         hex(video.read_reg(MIDI_CTRL)),
         hex(video.read_reg(MIDI_POS))
     )
+    local i_video_buffer = u32_at(SYM.I_VideoBuffer)
+    local dest_screen = u32_at(SYM.dest_screen)
+    report[#report + 1] = string.format(
+        "doom screenvisible=%s gametic=%s maketic=%s recvtic=%s ticdup=%s localplayer=%s gamestate=%s nodrawers=%s viewheight=%s setsizeneeded=%s I_VideoBuffer=%s dest_screen=%s ie_framebuffer=%s",
+        hex(u32_at(SYM.screenvisible)),
+        hex(u32_at(SYM.gametic)),
+        hex(u32_at(SYM.maketic)),
+        hex(u32_at(SYM.recvtic)),
+        hex(u32_at(SYM.ticdup)),
+        hex(u32_at(SYM.localplayer)),
+        hex(u32_at(SYM.gamestate)),
+        hex(u32_at(SYM.nodrawers)),
+        hex(u32_at(SYM.viewheight)),
+        hex(u32_at(SYM.setsizeneeded)),
+        hex(i_video_buffer),
+        hex(dest_screen),
+        hex(SYM.ie_framebuffer)
+    )
+    report[#report + 1] = "\n[framebuffer_summary]\n" .. read_framebuffer_summary(fb, 320, 200)
+    report[#report + 1] = "\n[playeringame]\nplayeringame " .. read_summary(SYM.playeringame, 16) ..
+        "\nlocal_playeringame " .. read_summary(SYM.local_playeringame, 16)
+    report[#report + 1] = "\n[framebuffer_prefix]\n" .. read_summary(fb, 4096)
+    report[#report + 1] = "\n[i_video_buffer_summary]\n" .. read_framebuffer_summary(i_video_buffer, 320, 200)
+    report[#report + 1] = "\n[dest_screen_summary]\n" .. read_framebuffer_summary(dest_screen, 320, 200)
     report[#report + 1] = "\n[cpu_list]\n" .. table.concat(cpus, "\n")
     report[#report + 1] = "\n[registers]\n" .. mon("r")
     report[#report + 1] = "\n[disasm_pc]\n" .. mon("d pc 16")
-    report[#report + 1] = "\n[stack_esp]\n" .. mon("m esp 16")
-    report[#report + 1] = "\n[frame_ebp]\n" .. mon("m ebp 16")
-    report[#report + 1] = "\n[framebuffer]\n" .. mon("m 0x107680 32")
+    report[#report + 1] = "\n[stack_esp]\n" .. mon("m " .. mon_addr(esp) .. " 16")
+    report[#report + 1] = "\n[frame_ebp]\n" .. mon("m " .. mon_addr(ebp) .. " 16")
+    report[#report + 1] = "\n[framebuffer]\n" .. mon("m " .. mon_addr(fb) .. " 32")
     report[#report + 1] = "\n[backtrace]\n" .. mon("bt 12")
     report[#report + 1] = "\n[trace_ring]\n" .. mon("show 64")
     report[#report + 1] = "\n[accesslog]\n" .. mon("accesslog show 64")

@@ -364,6 +364,28 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			ctx.RTSCache1RegMap = 0
 		}
 
+		if bounded && int64(block.instrCount) > cpu.x86InstrBudget {
+			cpu.syncJITRegsToNamed()
+			var stepT0 time.Time
+			if perfAcctOn {
+				stepT0 = time.Now()
+			}
+			cpu.Step()
+			if perfAcctOn {
+				cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
+			}
+			cpu.syncJITRegsFromNamed()
+			instructionCount++
+			if perfAcctOn {
+				cpu.perfAcct.AddInstrs(1)
+			}
+			diagFallbackInstr++
+			if cpu.Halted || !cpu.Running() {
+				break
+			}
+			continue
+		}
+
 		// Execute native code block -- jitRegs is already canonical, no sync needed
 		ctx.NeedInval = 0
 		ctx.NeedIOFallback = 0

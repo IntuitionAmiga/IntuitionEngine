@@ -10,8 +10,8 @@ import (
 
 // TestBus provides a simple bus implementation for testing
 type TestX86Bus struct {
-	memory [1024 * 1024]byte // 1MB test memory
-	ports  [65536]byte       // Port I/O space
+	memory [2 * 1024 * 1024]byte // 2MB test memory
+	ports  [65536]byte           // Port I/O space
 }
 
 func NewTestX86Bus() *TestX86Bus {
@@ -752,6 +752,114 @@ func TestX86_LEA(t *testing.T) {
 	}
 }
 
+func TestX86_LoadGameSettingsPlayeringameLoop(t *testing.T) {
+	bus := NewTestX86Bus()
+	cpu := NewCPU_X86(bus)
+
+	code := []byte{
+		0x8B, 0x45, 0x08, // mov 0x8(%ebp),%eax
+		0x8B, 0x40, 0x3C, // mov 0x3c(%eax),%eax
+		0x39, 0x45, 0xF4, // cmp %eax,-0xc(%ebp)
+		0x0F, 0x92, 0xC0, // setb %al
+		0x0F, 0xB6, 0xD0, // movzbl %al,%edx
+		0x8B, 0x45, 0xF4, // mov -0xc(%ebp),%eax
+		0x89, 0x14, 0x85, 0x88, 0x5F, 0x10, 0x00, // mov %edx,0x105f88(,%eax,4)
+		0xFF, 0x45, 0xF4, // incl -0xc(%ebp)
+		0x83, 0x7D, 0xF4, 0x03, // cmpl $0x3,-0xc(%ebp)
+		0x76, 0xDE, // jbe loop
+		0xF4, // hlt
+	}
+	copy(bus.memory[:], code)
+
+	const (
+		frame        = 0x8000
+		settings     = 0x9000
+		playeringame = 0x105f88
+	)
+
+	cpu.EIP = 0
+	cpu.EBP = frame
+	cpu.write32(frame+8, settings)
+	cpu.write32(frame-0xc, 0)
+	cpu.write32(settings+0x3c, 1)
+
+	for i := 0; i < 100 && !cpu.Halted; i++ {
+		cpu.Step()
+	}
+	if !cpu.Halted {
+		t.Fatalf("loop did not halt: eip=0x%08x i=%d", cpu.EIP, cpu.read32(frame-0xc))
+	}
+
+	got := []uint32{
+		cpu.read32(playeringame),
+		cpu.read32(playeringame + 4),
+		cpu.read32(playeringame + 8),
+		cpu.read32(playeringame + 12),
+	}
+	want := []uint32{1, 0, 0, 0}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("playeringame[%d] = %d, want %d; all=%v flags=0x%08x", i, got[i], want[i], got, cpu.Flags)
+		}
+	}
+}
+
+func TestX86_LoadGameSettingsPlayeringameLoopOnMachineBus(t *testing.T) {
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+
+	code := []byte{
+		0x8B, 0x45, 0x08,
+		0x8B, 0x40, 0x3C,
+		0x39, 0x45, 0xF4,
+		0x0F, 0x92, 0xC0,
+		0x0F, 0xB6, 0xD0,
+		0x8B, 0x45, 0xF4,
+		0x89, 0x14, 0x85, 0x88, 0x5F, 0x10, 0x00,
+		0xFF, 0x45, 0xF4,
+		0x83, 0x7D, 0xF4, 0x03,
+		0x76, 0xDE,
+		0xF4,
+	}
+	for i, b := range code {
+		bus.Write8(uint32(i), b)
+	}
+
+	const (
+		frame        = 0x8000
+		settings     = 0x9000
+		playeringame = 0x105f88
+	)
+
+	cpu.SetRunning(true)
+	cpu.EIP = 0
+	cpu.EBP = frame
+	bus.Write32(frame+8, settings)
+	bus.Write32(frame-0xc, 0)
+	bus.Write32(settings+0x3c, 1)
+
+	for i := 0; i < 100 && !cpu.Halted; i++ {
+		cpu.Step()
+	}
+	if !cpu.Halted {
+		t.Fatalf("loop did not halt: eip=0x%08x i=%d", cpu.EIP, bus.Read32(frame-0xc))
+	}
+
+	got := []uint32{
+		bus.Read32(playeringame),
+		bus.Read32(playeringame + 4),
+		bus.Read32(playeringame + 8),
+		bus.Read32(playeringame + 12),
+	}
+	want := []uint32{1, 0, 0, 0}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("playeringame[%d] = %d, want %d; all=%v flags=0x%08x", i, got[i], want[i], got, cpu.Flags)
+		}
+	}
+}
+
 func TestX86_INC_DEC(t *testing.T) {
 	bus := NewTestX86Bus()
 	cpu := NewCPU_X86(bus)
@@ -957,6 +1065,12 @@ func TestX86_NativeMMIOWriteDoesNotCorruptUnrelatedRAM(t *testing.T) {
 	video.AttachBus(bus)
 	bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
 	bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	compositor := NewVideoCompositor(video.GetOutput())
+	term := NewTerminalMMIO()
+	video.SetResolutionChangeCallback(func(w, h int) {
+		compositor.NotifyResolutionChange(w, h)
+		term.SetMouseNativeResolution(w, h)
+	})
 
 	adapter := NewX86BusAdapter(bus)
 	cpu := NewCPU_X86(adapter)
@@ -976,6 +1090,48 @@ func TestX86_NativeMMIOWriteDoesNotCorruptUnrelatedRAM(t *testing.T) {
 
 	if got := bus.Read8(watchAddr); got != 0xA8 {
 		t.Fatalf("unrelated RAM byte changed after native MMIO write: got 0x%02X, want 0xA8", got)
+	}
+	if got := video.HandleRead(VIDEO_MODE); got != 4 {
+		t.Fatalf("VIDEO_MODE: got %d, want 4", got)
+	}
+}
+
+func TestX86_NativeMMIOWritePreservesLinkedDoomVideoPointer(t *testing.T) {
+	bus := NewMachineBus()
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(bus)
+	bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	compositor := NewVideoCompositor(video.GetOutput())
+	term := NewTerminalMMIO()
+	video.SetResolutionChangeCallback(func(w, h int) {
+		compositor.NotifyResolutionChange(w, h)
+		term.SetMouseNativeResolution(w, h)
+	})
+
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+
+	const iVideoBuffer = 0x00107660
+	const framebuffer = 0x00107680
+	bus.Write32(iVideoBuffer, framebuffer)
+
+	program := []byte{
+		0xB8, 0x04, 0x00, 0x0F, 0x00, // mov eax, 0x000f0004
+		0xBA, 0x04, 0x00, 0x00, 0x00, // mov edx, 4
+		0x89, 0x10, // mov [eax], edx
+	}
+	copy(bus.memory[:], program)
+
+	for range 3 {
+		cpu.Step()
+	}
+
+	if got := bus.Read32(iVideoBuffer); got != framebuffer {
+		t.Fatalf("I_VideoBuffer changed after native MMIO write: got 0x%08X, want 0x%08X", got, uint32(framebuffer))
 	}
 	if got := video.HandleRead(VIDEO_MODE); got != 4 {
 		t.Fatalf("VIDEO_MODE: got %d, want 4", got)

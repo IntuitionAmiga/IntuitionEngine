@@ -1,0 +1,62 @@
+local out_root = "iedoom_diag"
+local tag = cpu.execution_mode() .. "_end"
+
+local VIDEO_FB_BASE = 0x000F0084
+local MIDI_CTRL = 0x000F0BAC
+local SYM = {
+    playeringame = 0x00105F88,
+    local_playeringame = 0x00105D40,
+    I_VideoBuffer = 0x00107660,
+    dest_screen = 0x001BF5D4,
+}
+
+local function join_lines(lines)
+    local out = {}
+    for i = 1, #lines do out[#out + 1] = lines[i].text end
+    return table.concat(out, "\n")
+end
+
+local function mon(cmd)
+    local ok, result = pcall(function() return dbg.command_output(cmd) end)
+    if not ok then return "ERROR " .. tostring(result) end
+    return join_lines(result)
+end
+
+local function u32(addr)
+    local ok, data = pcall(function() return dbg.read_mem(addr, 4) end)
+    if not ok or #data < 4 then return 0 end
+    return string.byte(data, 1) + string.byte(data, 2) * 0x100 +
+        string.byte(data, 3) * 0x10000 + string.byte(data, 4) * 0x1000000
+end
+
+local function summarize(data)
+    local nonzero = 0
+    local sample = {}
+    for i = 1, #data do
+        local b = string.byte(data, i)
+        if b ~= 0 then nonzero = nonzero + 1 end
+        if i <= 32 then sample[#sample + 1] = string.format("%02X", b) end
+    end
+    return string.format("len=%d nonzero=%d sample=%s", #data, nonzero, table.concat(sample, " "))
+end
+
+sys.mkdir(out_root)
+sys.mkdir(out_root .. "/" .. tag)
+sys.wait_ms(120000)
+dbg.open()
+
+local fb = video.read_reg(VIDEO_FB_BASE)
+local fb_data = dbg.read_mem(fb, 320 * 200)
+local report = {}
+report[#report + 1] = string.format("mode=%s pc=0x%X fb=0x%X midi=0x%X frame_hash=%s",
+    cpu.execution_mode(), dbg.get_pc() or 0, fb, video.read_reg(MIDI_CTRL), tostring(video.frame_hash()))
+report[#report + 1] = string.format("I_VideoBuffer=0x%X dest_screen=0x%X", u32(SYM.I_VideoBuffer), u32(SYM.dest_screen))
+report[#report + 1] = "playeringame=" .. mon(string.format("m $%X 16", SYM.playeringame))
+report[#report + 1] = "local_playeringame=" .. mon(string.format("m $%X 16", SYM.local_playeringame))
+report[#report + 1] = "framebuffer=" .. summarize(fb_data)
+report[#report + 1] = "regs=\n" .. mon("r")
+report[#report + 1] = "disasm=\n" .. mon("d pc 12")
+report[#report + 1] = "bt=\n" .. mon("bt 12")
+sys.write_file(out_root .. "/" .. tag .. "/state.txt", table.concat(report, "\n"))
+pcall(function() rec.screenshot(out_root .. "/" .. tag .. "/frame.png") end)
+sys.exit(0)

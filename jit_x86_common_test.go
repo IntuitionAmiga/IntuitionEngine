@@ -801,6 +801,31 @@ func TestX86NeedsFallback(t *testing.T) {
 		t.Error("far CALL should need fallback")
 	}
 
+	// Near CALL needs fallback during linked-C bring-up so CALL/RET stack
+	// semantics stay on the canonical interpreter path.
+	nearCall := X86JITInstr{opcode: 0x00E8}
+	if !x86NeedsFallback([]X86JITInstr{nearCall}) {
+		t.Error("near CALL should need fallback")
+	}
+
+	for _, tt := range []struct {
+		name string
+		ji   X86JITInstr
+	}{
+		{"RET", X86JITInstr{opcode: 0x00C3}},
+		{"LEAVE", X86JITInstr{opcode: 0x00C9}},
+		{"PUSH r32", X86JITInstr{opcode: 0x0050}},
+		{"POP r32", X86JITInstr{opcode: 0x0058}},
+		{"PUSH imm32", X86JITInstr{opcode: 0x0068}},
+		{"PUSH imm8", X86JITInstr{opcode: 0x006A}},
+		{"PUSH Ev", X86JITInstr{opcode: 0x00FF, hasModRM: true, modrm: 0x30}},
+		{"CALL Ev", X86JITInstr{opcode: 0x00FF, hasModRM: true, modrm: 0x10}},
+	} {
+		if !x86NeedsFallback([]X86JITInstr{tt.ji}) {
+			t.Errorf("%s should need fallback", tt.name)
+		}
+	}
+
 	// IRET needs fallback
 	iret := X86JITInstr{opcode: 0x00CF}
 	if !x86NeedsFallback([]X86JITInstr{iret}) {
@@ -831,6 +856,31 @@ func TestX86NeedsFallback(t *testing.T) {
 		t.Error("ADD should not need fallback")
 	}
 
+	regMOV := X86JITInstr{opcode: 0x0089, hasModRM: true, modrm: 0xC2}
+	if x86NeedsFallback([]X86JITInstr{regMOV}) {
+		t.Error("register-only MOV should not need fallback")
+	}
+
+	memRead := X86JITInstr{opcode: 0x008B, hasModRM: true, modrm: 0x02}
+	if x86NeedsFallback([]X86JITInstr{memRead}) {
+		t.Error("memory-read MOV should not need fallback")
+	}
+
+	memCMP := X86JITInstr{opcode: 0x0039, hasModRM: true, modrm: 0x02}
+	if x86NeedsFallback([]X86JITInstr{memCMP}) {
+		t.Error("memory-read CMP should not need fallback")
+	}
+
+	memWrite := X86JITInstr{opcode: 0x0089, hasModRM: true, modrm: 0x02}
+	if x86NeedsFallback([]X86JITInstr{memWrite}) {
+		t.Error("memory-write MOV should not need fallback")
+	}
+
+	jcc := X86JITInstr{opcode: 0x0075}
+	if x86NeedsFallback([]X86JITInstr{jcc}) {
+		t.Error("Jcc rel8 should not need fallback")
+	}
+
 	// PUSH segment reg needs fallback
 	pushES := X86JITInstr{opcode: 0x0006}
 	if !x86NeedsFallback([]X86JITInstr{pushES}) {
@@ -841,6 +891,18 @@ func TestX86NeedsFallback(t *testing.T) {
 	popES := X86JITInstr{opcode: 0x0007}
 	if !x86NeedsFallback([]X86JITInstr{popES}) {
 		t.Error("POP ES should need fallback")
+	}
+}
+
+func TestX86FindModRMPC_SIBNoBaseDisp32(t *testing.T) {
+	memory := []byte{0x8B, 0x04, 0x85, 0x24, 0x4F, 0x08, 0x00}
+	ji := x86DecodeInstr(memory, 0, uint16(len(memory)))
+
+	if !ji.hasModRM {
+		t.Fatal("expected ModR/M")
+	}
+	if got := x86FindModRMPC(&ji, memory); got != 1 {
+		t.Fatalf("x86FindModRMPC = %d, want 1", got)
 	}
 }
 
