@@ -780,6 +780,55 @@ func TestFileIO_MachineBusByteWritesUseHandleWrite8(t *testing.T) {
 	}
 }
 
+func TestFileIO_ReadCopiesAcrossLegacyMemoryIntoBacking(t *testing.T) {
+	bus := NewMachineBus()
+	backingSize := uint64(len(bus.GetMemory())) + uint64(MMU_PAGE_SIZE)
+	bus.SetBacking(NewSparseBacking(backingSize))
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    backingSize,
+		ActiveVisibleRAM: backingSize,
+		VisibleCeiling:   backingSize,
+	})
+
+	tmpDir, err := os.MkdirTemp("", "fileio_backing_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	content := []byte("header bytes before high directory")
+	if err := os.WriteFile(filepath.Join(tmpDir, "wad.bin"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fio := NewFileIODevice(bus, tmpDir)
+	fileNameAddr := uint32(0x1000)
+	dataBufAddr := uint32(len(bus.GetMemory()) - 4)
+
+	for i, b := range []byte("wad.bin\x00") {
+		bus.Write8(fileNameAddr+uint32(i), b)
+	}
+
+	fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+	fio.HandleWrite(FILE_DATA_PTR, dataBufAddr)
+	fio.HandleWrite(FILE_CTRL, FILE_OP_READ)
+
+	if got := fio.HandleRead(FILE_STATUS); got != 0 {
+		t.Fatalf("status: got %d, want 0 (error code %d)", got, fio.HandleRead(FILE_ERROR_CODE))
+	}
+	if got := fio.HandleRead(FILE_RESULT_LEN); got != uint32(len(content)) {
+		t.Fatalf("result len: got %d, want %d", got, len(content))
+	}
+
+	got := make([]byte, len(content))
+	for i := range got {
+		got[i] = bus.Read8(dataBufAddr + uint32(i))
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("content mismatch across backing boundary: got %q want %q", got, content)
+	}
+}
+
 func TestFileIO_ReadEmptyFile(t *testing.T) {
 	bus := NewMachineBus()
 	tmpDir, err := os.MkdirTemp("", "fileio_test")

@@ -205,6 +205,252 @@ func TestX86_ADD(t *testing.T) {
 	}
 }
 
+func TestX86_Grp1EvIbMemoryAddConsumesDisplacementBeforeImmediate(t *testing.T) {
+	bus := NewTestX86Bus()
+	cpu := NewCPU_X86(bus)
+
+	// ADD DWORD PTR [EBP+8], +1; HLT
+	bus.memory[0] = 0x83
+	bus.memory[1] = 0x45
+	bus.memory[2] = 0x08
+	bus.memory[3] = 0x01
+	bus.memory[4] = 0xF4
+	cpu.EBP = 0x2000
+	cpu.write32(0x2008, 0x0005C619)
+	cpu.write32(0x2001, 0xA5A5A5A5)
+	cpu.EIP = 0
+
+	cpu.Step()
+
+	if got := cpu.read32(0x2008); got != 0x0005C61A {
+		t.Fatalf("[EBP+8] = 0x%08X, want 0x0005C61A", got)
+	}
+	if got := cpu.read32(0x2001); got != 0xA5A5A5A5 {
+		t.Fatalf("[EBP+1] changed to 0x%08X; displacement was decoded as immediate", got)
+	}
+	if cpu.EIP != 4 {
+		t.Fatalf("EIP after ADD = 0x%08X, want 0x00000004", cpu.EIP)
+	}
+}
+
+func TestX86_Grp1EvIbMemoryAddReusesEffectiveAddressForWriteback(t *testing.T) {
+	bus := NewTestX86Bus()
+	cpu := NewCPU_X86(bus)
+
+	// ADD DWORD PTR [EBP+8], +1; HLT. If writeback recalculates the
+	// effective address after the immediate, it will consume HLT as a
+	// bogus displacement and write to [EBP-12].
+	bus.memory[0] = 0x83
+	bus.memory[1] = 0x45
+	bus.memory[2] = 0x08
+	bus.memory[3] = 0x01
+	bus.memory[4] = 0xF4
+	cpu.EBP = 0x2000
+	cpu.write32(0x2008, 0x10)
+	cpu.write32(0x1FF4, 0xDEADBEEF)
+	cpu.EIP = 0
+
+	cpu.Step()
+
+	if got := cpu.read32(0x2008); got != 0x11 {
+		t.Fatalf("[EBP+8] = 0x%08X, want 0x00000011", got)
+	}
+	if got := cpu.read32(0x1FF4); got != 0xDEADBEEF {
+		t.Fatalf("[EBP-12] changed to 0x%08X; writeback recomputed the effective address", got)
+	}
+}
+
+func TestX86_Grp1EvIbMemoryAddViaIEScriptDebugger(t *testing.T) {
+	bus := NewTestX86Bus()
+	cpu := NewCPU_X86(bus)
+
+	mon := NewMachineMonitor(NewMachineBus())
+	mon.RegisterCPU("X86", NewDebugX86(cpu, nil))
+
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	se.SetMonitor(mon)
+
+	script := `
+		dbg.set_reg("EIP", 0)
+		dbg.set_reg("EBP", 0x2000)
+		dbg.write_mem(0, string.char(0x83, 0x45, 0x08, 0x01, 0xF4))
+		dbg.write_mem(0x2008, string.char(0x19, 0xC6, 0x05, 0x00))
+		dbg.step(1)
+		local v = dbg.read_mem(0x2008, 4)
+		local b1, b2, b3, b4 = string.byte(v, 1, 4)
+		local got = b1 + (b2 * 0x100) + (b3 * 0x10000) + (b4 * 0x1000000)
+		if got ~= 0x0005C61A then
+			error(string.format("debugger step wrote 0x%08X, want 0x0005C61A", got))
+		end
+		if dbg.get_pc() ~= 4 then
+			error(string.format("debugger step pc=0x%X, want 0x4", dbg.get_pc()))
+		end
+	`
+	if err := se.RunString(script, "x86_grp1_ev_ib_debugger"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestX86_CMOVAERegisterTakenAndNotTaken(t *testing.T) {
+	bus := NewTestX86Bus()
+	cpu := NewCPU_X86(bus)
+
+	// CMOVAE EAX, EDX; HLT
+	bus.memory[0] = 0x0F
+	bus.memory[1] = 0x43
+	bus.memory[2] = 0xC2
+	bus.memory[3] = 0xF4
+	cpu.EAX = 0x11111111
+	cpu.EDX = 0x22222222
+	cpu.setFlag(x86FlagCF, false)
+
+	cpu.Step()
+
+	if cpu.Halted {
+		t.Fatal("CMOVAE halted as an undefined opcode")
+	}
+	if cpu.EAX != 0x22222222 {
+		t.Fatalf("taken CMOVAE EAX = 0x%08X, want 0x22222222", cpu.EAX)
+	}
+	if cpu.EIP != 3 {
+		t.Fatalf("EIP after taken CMOVAE = 0x%08X, want 0x00000003", cpu.EIP)
+	}
+
+	cpu.EIP = 0
+	cpu.Halted = false
+	cpu.EAX = 0x33333333
+	cpu.EDX = 0x44444444
+	cpu.setFlag(x86FlagCF, true)
+
+	cpu.Step()
+
+	if cpu.Halted {
+		t.Fatal("untaken CMOVAE halted as an undefined opcode")
+	}
+	if cpu.EAX != 0x33333333 {
+		t.Fatalf("untaken CMOVAE EAX = 0x%08X, want original 0x33333333", cpu.EAX)
+	}
+	if cpu.EIP != 3 {
+		t.Fatalf("EIP after untaken CMOVAE = 0x%08X, want 0x00000003", cpu.EIP)
+	}
+}
+
+func TestX86_CMOVMemorySourceReadsWhenNotTaken(t *testing.T) {
+	bus := NewMachineBus()
+	reads := 0
+	bus.MapIO(0xF1000, 0xF1003, func(addr uint32) uint32 {
+		reads++
+		return 0xAABBCCDD
+	}, nil)
+
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+
+	// CMOVZ EAX, DWORD PTR [0x000F1000]; HLT.  ZF is clear, so the
+	// destination must not change, but the memory source still has to read.
+	bus.Write8(0, 0x0F)
+	bus.Write8(1, 0x44)
+	bus.Write8(2, 0x05)
+	bus.Write32(3, 0x000F1000)
+	bus.Write8(7, 0xF4)
+	cpu.EAX = 0x11223344
+	cpu.setFlag(x86FlagZF, false)
+
+	cpu.Step()
+
+	if reads == 0 {
+		t.Fatal("untaken CMOVZ skipped memory-source read")
+	}
+	if cpu.EAX != 0x11223344 {
+		t.Fatalf("untaken CMOVZ EAX = 0x%08X, want original 0x11223344", cpu.EAX)
+	}
+}
+
+func TestX86_CMOVAEViaIEScriptDebugger(t *testing.T) {
+	bus := NewTestX86Bus()
+	cpu := NewCPU_X86(bus)
+
+	mon := NewMachineMonitor(NewMachineBus())
+	mon.RegisterCPU("X86", NewDebugX86(cpu, nil))
+
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	se.SetMonitor(mon)
+
+	script := `
+		dbg.set_reg("EIP", 0)
+		dbg.set_reg("EAX", 0x11111111)
+		dbg.set_reg("EDX", 0x22222222)
+		dbg.write_mem(0, string.char(0x0F, 0x43, 0xC2, 0xF4))
+		dbg.step(1)
+		local eax = dbg.get_reg("EAX")
+		if eax ~= 0x22222222 then
+			error(string.format("CMOVAE left EAX=0x%08X", eax))
+		end
+		if dbg.get_pc() ~= 3 then
+			error(string.format("CMOVAE pc=0x%X, want 0x3", dbg.get_pc()))
+		end
+	`
+	if err := se.RunString(script, "x86_cmovae_debugger"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestX86_MovMoffs32ReadsFullSystemMMIORegister(t *testing.T) {
+	bus := NewMachineBus()
+	fio := NewFileIODevice(bus, ".")
+	bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+	bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
+	fio.fileResultLen = 0x004006B4
+
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+
+	// MOV EAX, [FILE_RESULT_LEN]; HLT
+	bus.Write8(0, 0xA1)
+	bus.Write32(1, FILE_RESULT_LEN)
+	bus.Write8(5, 0xF4)
+
+	cpu.Step()
+
+	if cpu.EAX != 0x004006B4 {
+		t.Fatalf("EAX = 0x%08X, want full FILE_RESULT_LEN 0x004006B4", cpu.EAX)
+	}
+}
+
+func TestX86_InstructionFetchDoesNotTranslateLegacyIORange(t *testing.T) {
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+
+	// MOV EAX, 0x12345678; HLT, deliberately placed in the legacy
+	// 0xF000-0xFFFF I/O mirror range used for data accesses.
+	bus.Write8(0xF000, 0xB8)
+	bus.Write32(0xF001, 0x12345678)
+	bus.Write8(0xF005, 0xF4)
+	bus.Write8(adapter.translateIO(0xF000), 0xF4)
+	cpu.EIP = 0xF000
+
+	cpu.Step()
+
+	if cpu.Halted {
+		t.Fatal("instruction fetch used the legacy I/O mirror instead of flat program memory")
+	}
+	if cpu.EAX != 0x12345678 {
+		t.Fatalf("EAX = 0x%08X, want 0x12345678", cpu.EAX)
+	}
+	if cpu.EIP != 0xF005 {
+		t.Fatalf("EIP = 0x%08X, want 0x0000F005", cpu.EIP)
+	}
+}
+
 func TestX86_ADD_overflow(t *testing.T) {
 	bus := NewTestX86Bus()
 	cpu := NewCPU_X86(bus)
@@ -699,5 +945,39 @@ func TestX86_CLD_STD(t *testing.T) {
 	cpu.Step()
 	if !cpu.DF() {
 		t.Error("STD: DF should be set")
+	}
+}
+
+func TestX86_NativeMMIOWriteDoesNotCorruptUnrelatedRAM(t *testing.T) {
+	bus := NewMachineBus()
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(bus)
+	bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	watchAddr := uint32(0x00115548)
+	bus.Write8(watchAddr, 0xA8)
+
+	program := []byte{
+		0xB8, 0x04, 0x00, 0x0F, 0x00, // mov eax, 0x000f0004
+		0xBA, 0x04, 0x00, 0x00, 0x00, // mov edx, 4
+		0x89, 0x10, // mov [eax], edx
+	}
+	copy(bus.memory[:], program)
+
+	for range 3 {
+		cpu.Step()
+	}
+
+	if got := bus.Read8(watchAddr); got != 0xA8 {
+		t.Fatalf("unrelated RAM byte changed after native MMIO write: got 0x%02X, want 0xA8", got)
+	}
+	if got := video.HandleRead(VIDEO_MODE); got != 4 {
+		t.Fatalf("VIDEO_MODE: got %d, want 4", got)
 	}
 }

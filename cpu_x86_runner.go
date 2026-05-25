@@ -142,7 +142,13 @@ func (b *X86BusAdapter) debugOnFetch(addr uint32, width int) {
 }
 
 func (b *X86BusAdapter) fetchRead(addr uint32) byte {
-	return b.readNoDebug(addr)
+	if translated, ok := b.translateExtendedBank(addr); ok {
+		return b.readBus8NoDebug(translated)
+	}
+	if translated, ok := b.translateVRAM(addr); ok {
+		return b.readBus8NoDebug(translated)
+	}
+	return b.readBus8NoDebug(addr)
 }
 
 func (b *X86BusAdapter) readNoDebug(addr uint32) byte {

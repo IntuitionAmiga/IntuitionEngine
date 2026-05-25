@@ -159,11 +159,11 @@ func (c *CPU_X86) opGrp1_Ev_Iv() {
 func (c *CPU_X86) opGrp1_Ev_Ib() {
 	c.fetchModRM()
 	op := c.getModRMReg()
-	// Sign-extended immediate
-	imm := int8(c.fetch8())
 
 	if c.prefixOpSize {
 		a := c.readRM16()
+		// Sign-extended immediate follows any ModR/M displacement.
+		imm := int8(c.fetch8())
 		b := uint16(int16(imm))
 
 		switch op {
@@ -209,6 +209,8 @@ func (c *CPU_X86) opGrp1_Ev_Ib() {
 		}
 	} else {
 		a := c.readRM32()
+		// Sign-extended immediate follows any ModR/M displacement.
+		imm := int8(c.fetch8())
 		b := uint32(int32(imm))
 
 		switch op {

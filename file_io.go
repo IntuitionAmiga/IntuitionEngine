@@ -292,6 +292,16 @@ func (f *FileIODevice) doRead() {
 	for i, b := range data {
 		f.bus.Write8(f.fileDataPtr+uint32(i), b)
 	}
+	if len(data) > 12 && string(data[:4]) == "IWAD" {
+		dir := uint32(data[8]) | uint32(data[9])<<8 | uint32(data[10])<<16 | uint32(data[11])<<24
+		if int(dir)+16 <= len(data) {
+			sample := make([]byte, 8)
+			for i := range sample {
+				sample[i] = f.bus.Read8(f.fileDataPtr + dir + uint32(8+i))
+			}
+			traceHostIO("FILEIO", fmt.Sprintf("IWAD sample data_ptr=0x%08X dir=0x%08X name=%q", f.fileDataPtr, dir, sample), fileName, fullPath, nil, len(data))
+		}
+	}
 
 	f.fileStatus = 0
 	f.fileErrorCode = FILE_ERR_OK

@@ -79,6 +79,8 @@ type CPU_X86 struct {
 	modrmLoaded    bool // ModR/M already fetched
 	sib            byte // SIB byte
 	sibLoaded      bool // SIB already fetched
+	rmEA           uint32
+	rmEALoaded     bool
 
 	// Bus interface
 	bus X86Bus
@@ -220,6 +222,7 @@ func (c *CPU_X86) Reset() {
 	c.lastEASeg = x86SegDS
 	c.modrmLoaded = false
 	c.sibLoaded = false
+	c.rmEALoaded = false
 
 	// Clear interrupt state
 	c.irqLine = false
@@ -829,6 +832,9 @@ func (c *CPU_X86) read32(addr uint32) uint32 {
 		if addr >= 0xF000 && addr < 0x10000 {
 			return adapter.readBus32(adapter.translateIO(addr))
 		}
+		if addr >= 0xF0000 && addr < 0x100000 {
+			return adapter.readBus32(addr)
+		}
 	}
 	b0 := c.bus.Read(addr)
 	b1 := c.bus.Read(addr + 1)
@@ -853,6 +859,10 @@ func (c *CPU_X86) write32(addr uint32, v uint32) {
 	if adapter, ok := c.bus.(*X86BusAdapter); ok {
 		if addr >= 0xF000 && addr < 0x10000 {
 			adapter.writeBus32(adapter.translateIO(addr), v)
+			return
+		}
+		if addr >= 0xF0000 && addr < 0x100000 {
+			adapter.writeBus32(addr, v)
 			return
 		}
 	}
@@ -1184,12 +1194,20 @@ func (c *CPU_X86) getEffectiveAddress() uint32 {
 	return c.calcEffectiveAddress32()
 }
 
+func (c *CPU_X86) getRMEffectiveAddress() uint32 {
+	if !c.rmEALoaded {
+		c.rmEA = c.getEffectiveAddress()
+		c.rmEALoaded = true
+	}
+	return c.rmEA
+}
+
 // readRM8 reads an 8-bit value from register or memory based on ModR/M
 func (c *CPU_X86) readRM8() byte {
 	if c.getModRMMod() == 3 {
 		return c.getReg8(c.getModRMRM())
 	}
-	return c.read8(c.getEffectiveAddress())
+	return c.read8(c.getRMEffectiveAddress())
 }
 
 // writeRM8 writes an 8-bit value to register or memory based on ModR/M
@@ -1197,7 +1215,7 @@ func (c *CPU_X86) writeRM8(v byte) {
 	if c.getModRMMod() == 3 {
 		c.setReg8(c.getModRMRM(), v)
 	} else {
-		c.write8(c.getEffectiveAddress(), v)
+		c.write8(c.getRMEffectiveAddress(), v)
 	}
 }
 
@@ -1206,7 +1224,7 @@ func (c *CPU_X86) readRM16() uint16 {
 	if c.getModRMMod() == 3 {
 		return c.getReg16(c.getModRMRM())
 	}
-	return c.read16(c.getEffectiveAddress())
+	return c.read16(c.getRMEffectiveAddress())
 }
 
 // writeRM16 writes a 16-bit value to register or memory based on ModR/M
@@ -1214,7 +1232,7 @@ func (c *CPU_X86) writeRM16(v uint16) {
 	if c.getModRMMod() == 3 {
 		c.setReg16(c.getModRMRM(), v)
 	} else {
-		c.write16(c.getEffectiveAddress(), v)
+		c.write16(c.getRMEffectiveAddress(), v)
 	}
 }
 
@@ -1223,7 +1241,7 @@ func (c *CPU_X86) readRM32() uint32 {
 	if c.getModRMMod() == 3 {
 		return c.getReg32(c.getModRMRM())
 	}
-	return c.read32(c.getEffectiveAddress())
+	return c.read32(c.getRMEffectiveAddress())
 }
 
 // writeRM32 writes a 32-bit value to register or memory based on ModR/M
@@ -1231,7 +1249,7 @@ func (c *CPU_X86) writeRM32(v uint32) {
 	if c.getModRMMod() == 3 {
 		c.setReg32(c.getModRMRM(), v)
 	} else {
-		c.write32(c.getEffectiveAddress(), v)
+		c.write32(c.getRMEffectiveAddress(), v)
 	}
 }
 
@@ -1264,6 +1282,7 @@ func (c *CPU_X86) Step() int {
 	c.prefixAddrSize = false
 	c.modrmLoaded = false
 	c.sibLoaded = false
+	c.rmEALoaded = false
 
 	startCycles := c.Cycles
 
@@ -1817,6 +1836,24 @@ func (c *CPU_X86) initExtendedOps() {
 	for i := range c.extendedOps {
 		c.extendedOps[i] = nil
 	}
+
+	// 0x40-0x4F: CMOVcc Gv,Ev
+	c.extendedOps[0x40] = (*CPU_X86).opCMOVO_Gv_Ev
+	c.extendedOps[0x41] = (*CPU_X86).opCMOVNO_Gv_Ev
+	c.extendedOps[0x42] = (*CPU_X86).opCMOVB_Gv_Ev
+	c.extendedOps[0x43] = (*CPU_X86).opCMOVNB_Gv_Ev
+	c.extendedOps[0x44] = (*CPU_X86).opCMOVZ_Gv_Ev
+	c.extendedOps[0x45] = (*CPU_X86).opCMOVNZ_Gv_Ev
+	c.extendedOps[0x46] = (*CPU_X86).opCMOVBE_Gv_Ev
+	c.extendedOps[0x47] = (*CPU_X86).opCMOVNBE_Gv_Ev
+	c.extendedOps[0x48] = (*CPU_X86).opCMOVS_Gv_Ev
+	c.extendedOps[0x49] = (*CPU_X86).opCMOVNS_Gv_Ev
+	c.extendedOps[0x4A] = (*CPU_X86).opCMOVP_Gv_Ev
+	c.extendedOps[0x4B] = (*CPU_X86).opCMOVNP_Gv_Ev
+	c.extendedOps[0x4C] = (*CPU_X86).opCMOVL_Gv_Ev
+	c.extendedOps[0x4D] = (*CPU_X86).opCMOVNL_Gv_Ev
+	c.extendedOps[0x4E] = (*CPU_X86).opCMOVLE_Gv_Ev
+	c.extendedOps[0x4F] = (*CPU_X86).opCMOVNLE_Gv_Ev
 
 	// 0x80-0x8F: Jcc rel16/rel32
 	c.extendedOps[0x80] = (*CPU_X86).opJO_rel16

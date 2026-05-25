@@ -1557,6 +1557,46 @@ func (c *CPU_X86) opJCXZ() {
 }
 
 // =============================================================================
+// Conditional Move Instructions
+// =============================================================================
+
+func (c *CPU_X86) opCMOVcc_Gv_Ev(cond bool) {
+	c.fetchModRM()
+	dst := c.getModRMReg()
+
+	if c.prefixOpSize {
+		value := c.readRM16()
+		if cond {
+			c.setReg16(dst, value)
+		}
+	} else {
+		value := c.readRM32()
+		if cond {
+			c.setReg32(dst, value)
+		}
+	}
+
+	c.Cycles += 2
+}
+
+func (c *CPU_X86) opCMOVO_Gv_Ev()   { c.opCMOVcc_Gv_Ev(c.OF()) }
+func (c *CPU_X86) opCMOVNO_Gv_Ev()  { c.opCMOVcc_Gv_Ev(!c.OF()) }
+func (c *CPU_X86) opCMOVB_Gv_Ev()   { c.opCMOVcc_Gv_Ev(c.CF()) }
+func (c *CPU_X86) opCMOVNB_Gv_Ev()  { c.opCMOVcc_Gv_Ev(!c.CF()) }
+func (c *CPU_X86) opCMOVZ_Gv_Ev()   { c.opCMOVcc_Gv_Ev(c.ZF()) }
+func (c *CPU_X86) opCMOVNZ_Gv_Ev()  { c.opCMOVcc_Gv_Ev(!c.ZF()) }
+func (c *CPU_X86) opCMOVBE_Gv_Ev()  { c.opCMOVcc_Gv_Ev(c.CF() || c.ZF()) }
+func (c *CPU_X86) opCMOVNBE_Gv_Ev() { c.opCMOVcc_Gv_Ev(!c.CF() && !c.ZF()) }
+func (c *CPU_X86) opCMOVS_Gv_Ev()   { c.opCMOVcc_Gv_Ev(c.SF()) }
+func (c *CPU_X86) opCMOVNS_Gv_Ev()  { c.opCMOVcc_Gv_Ev(!c.SF()) }
+func (c *CPU_X86) opCMOVP_Gv_Ev()   { c.opCMOVcc_Gv_Ev(c.PF()) }
+func (c *CPU_X86) opCMOVNP_Gv_Ev()  { c.opCMOVcc_Gv_Ev(!c.PF()) }
+func (c *CPU_X86) opCMOVL_Gv_Ev()   { c.opCMOVcc_Gv_Ev(c.SF() != c.OF()) }
+func (c *CPU_X86) opCMOVNL_Gv_Ev()  { c.opCMOVcc_Gv_Ev(c.SF() == c.OF()) }
+func (c *CPU_X86) opCMOVLE_Gv_Ev()  { c.opCMOVcc_Gv_Ev(c.ZF() || c.SF() != c.OF()) }
+func (c *CPU_X86) opCMOVNLE_Gv_Ev() { c.opCMOVcc_Gv_Ev(!c.ZF() && c.SF() == c.OF()) }
+
+// =============================================================================
 // CALL/RET Instructions
 // =============================================================================
 

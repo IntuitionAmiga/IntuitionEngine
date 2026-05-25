@@ -335,6 +335,81 @@ func (bus *MachineBus) shadowWrite8(region IORegion, addr uint32, value uint8) {
 	}
 }
 
+func (bus *MachineBus) backingCovers(addr uint32, width uint64) bool {
+	start := uint64(addr)
+	end := start + width
+	return end >= start &&
+		bus.backing != nil &&
+		start >= uint64(len(bus.memory)) &&
+		end <= bus.backing.Size()
+}
+
+func (bus *MachineBus) ramSpanCovers(addr uint32, width uint64) bool {
+	start := uint64(addr)
+	end := start + width
+	return end >= start && end <= bus.backingVisibleSize()
+}
+
+func (bus *MachineBus) backingVisibleSize() uint64 {
+	if bus.backing != nil {
+		return bus.backing.Size()
+	}
+	return uint64(len(bus.memory))
+}
+
+func (bus *MachineBus) readRAM8(addr uint32) uint8 {
+	if addr < uint32(len(bus.memory)) {
+		return bus.memory[addr]
+	}
+	if bus.backing != nil && uint64(addr) < bus.backing.Size() {
+		return bus.backing.Read8(uint64(addr))
+	}
+	return 0
+}
+
+func (bus *MachineBus) writeRAM8(addr uint32, value uint8) bool {
+	if addr < uint32(len(bus.memory)) {
+		bus.memory[addr] = value
+		return true
+	}
+	if bus.backing != nil && uint64(addr) < bus.backing.Size() {
+		bus.backing.Write8(uint64(addr), value)
+		return true
+	}
+	return false
+}
+
+func (bus *MachineBus) readRAM16(addr uint32) uint16 {
+	return uint16(bus.readRAM8(addr)) | uint16(bus.readRAM8(addr+1))<<8
+}
+
+func (bus *MachineBus) writeRAM16(addr uint32, value uint16) bool {
+	if !bus.ramSpanCovers(addr, 2) {
+		return false
+	}
+	bus.writeRAM8(addr, uint8(value))
+	bus.writeRAM8(addr+1, uint8(value>>8))
+	return true
+}
+
+func (bus *MachineBus) readRAM32(addr uint32) uint32 {
+	return uint32(bus.readRAM8(addr)) |
+		uint32(bus.readRAM8(addr+1))<<8 |
+		uint32(bus.readRAM8(addr+2))<<16 |
+		uint32(bus.readRAM8(addr+3))<<24
+}
+
+func (bus *MachineBus) writeRAM32(addr uint32, value uint32) bool {
+	if !bus.ramSpanCovers(addr, 4) {
+		return false
+	}
+	bus.writeRAM8(addr, uint8(value))
+	bus.writeRAM8(addr+1, uint8(value>>8))
+	bus.writeRAM8(addr+2, uint8(value>>16))
+	bus.writeRAM8(addr+3, uint8(value>>24))
+	return true
+}
+
 func (bus *MachineBus) shadowWrite64(region IORegion64, addr uint32, value uint64) {
 	if region.Shadow && uint64(addr)+8 <= uint64(len(bus.memory)) {
 		*(*uint64)(unsafe.Pointer(&bus.memory[addr])) = value
@@ -867,7 +942,7 @@ func (bus *MachineBus) debugOldValueNoCallback(addr uint32, width int) (uint64, 
 	} else if base+uint64(width) > 0x100000000 {
 		return 0, false
 	}
-	if base+uint64(width) > uint64(len(bus.memory)) {
+	if !bus.ramSpanCovers(uint32(base), uint64(width)) {
 		return 0, false
 	}
 	var value uint64
@@ -879,7 +954,7 @@ func (bus *MachineBus) debugOldValueNoCallback(addr uint32, width int) (uint64, 
 		if region := bus.findIORegion(a); region != nil && !region.Shadow {
 			return 0, false
 		}
-		value |= uint64(bus.memory[a]) << (8 * i)
+		value |= uint64(bus.readRAM8(a)) << (8 * i)
 	}
 	return value, true
 }
@@ -1548,6 +1623,14 @@ func (bus *MachineBus) Write32(addr uint32, value uint32) {
 
 	// Bounds check
 	if addr+4 > uint32(len(bus.memory)) {
+		old, oldKnown := uint64(0), false
+		if bus.debugWriteActive() {
+			old, oldKnown = bus.debugOldValueNoCallback(addr, 4)
+		}
+		if bus.writeRAM32(addr, value) {
+			bus.debugOnWriteKnown(addr, 4, old, uint64(value), oldKnown)
+			return
+		}
 		fmt.Printf("Warning: Write32 to out-of-bounds address 0x%08X\n", addr)
 		return
 	}
@@ -1622,6 +1705,9 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 
 	// Normal bounds check for regular memory
 	if addr+4 > uint32(len(bus.memory)) {
+		if bus.writeRAM32(addr, value) {
+			return
+		}
 		fmt.Printf("Warning: Write32 to out-of-bounds address 0x%08X\n", addr)
 		return
 	}
@@ -1666,6 +1752,11 @@ func (bus *MachineBus) Read32(addr uint32) uint32 {
 
 	// Bounds check
 	if addr+4 > uint32(len(bus.memory)) {
+		if bus.ramSpanCovers(addr, 4) {
+			value := bus.readRAM32(addr)
+			bus.debugOnRead(addr, 4)
+			return value
+		}
 		fmt.Printf("Warning: Read32 from out-of-bounds address 0x%08X\n", addr)
 		return 0
 	}
@@ -1729,6 +1820,9 @@ func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 
 	// Check for out-of-bounds access
 	if addr+4 > uint32(len(bus.memory)) {
+		if bus.ramSpanCovers(addr, 4) {
+			return bus.readRAM32(addr)
+		}
 		fmt.Printf("Warning: Read32 from out-of-bounds address 0x%08X\n", addr)
 		return 0
 	}
@@ -1769,6 +1863,14 @@ func (bus *MachineBus) Write16(addr uint32, value uint16) {
 
 	// Bounds check
 	if addr+2 > uint32(len(bus.memory)) {
+		old, oldKnown := uint64(0), false
+		if bus.debugWriteActive() {
+			old, oldKnown = bus.debugOldValueNoCallback(addr, 2)
+		}
+		if bus.writeRAM16(addr, value) {
+			bus.debugOnWriteKnown(addr, 2, old, uint64(value), oldKnown)
+			return
+		}
 		fmt.Printf("Warning: Write16 to out-of-bounds address 0x%08X\n", addr)
 		return
 	}
@@ -1851,6 +1953,9 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 
 	// Normal bounds check for regular memory
 	if addr+2 > uint32(len(bus.memory)) {
+		if bus.writeRAM16(addr, value) {
+			return
+		}
 		fmt.Printf("Warning: Write16 to out-of-bounds address 0x%08X\n", addr)
 		return
 	}
@@ -1891,6 +1996,11 @@ func (bus *MachineBus) Read16(addr uint32) uint16 {
 
 	// Bounds check
 	if addr+2 > uint32(len(bus.memory)) {
+		if bus.ramSpanCovers(addr, 2) {
+			value := bus.readRAM16(addr)
+			bus.debugOnRead(addr, 2)
+			return value
+		}
 		fmt.Printf("Warning: Read16 from out-of-bounds address 0x%08X\n", addr)
 		return 0
 	}
@@ -1954,6 +2064,9 @@ func (bus *MachineBus) read16Slow(addr uint32) uint16 {
 
 	// Check for out-of-bounds access
 	if addr+2 > uint32(len(bus.memory)) {
+		if bus.ramSpanCovers(addr, 2) {
+			return bus.readRAM16(addr)
+		}
 		fmt.Printf("Warning: Read16 from out-of-bounds address 0x%08X\n", addr)
 		return 0
 	}
@@ -1994,6 +2107,14 @@ func (bus *MachineBus) Write8(addr uint32, value uint8) {
 
 	// Bounds check
 	if addr >= uint32(len(bus.memory)) {
+		old, oldKnown := uint64(0), false
+		if bus.debugWriteActive() {
+			old, oldKnown = bus.debugOldValueNoCallback(addr, 1)
+		}
+		if bus.writeRAM8(addr, value) {
+			bus.debugOnWriteKnown(addr, 1, old, uint64(value), oldKnown)
+			return
+		}
 		fmt.Printf("Warning: Write8 to out-of-bounds address 0x%08X\n", addr)
 		return
 	}
@@ -2089,6 +2210,9 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 
 	// Normal bounds check for regular memory
 	if addr >= uint32(len(bus.memory)) {
+		if bus.writeRAM8(addr, value) {
+			return
+		}
 		fmt.Printf("Warning: Write8 to out-of-bounds address 0x%08X\n", addr)
 		return
 	}
@@ -2123,6 +2247,11 @@ func (bus *MachineBus) Read8(addr uint32) uint8 {
 
 	// Bounds check
 	if addr >= uint32(len(bus.memory)) {
+		if bus.backingCovers(addr, 1) {
+			value := bus.readRAM8(addr)
+			bus.debugOnRead(addr, 1)
+			return value
+		}
 		fmt.Printf("Warning: Read8 from out-of-bounds address 0x%08X\n", addr)
 		return 0
 	}
@@ -2146,6 +2275,9 @@ func (bus *MachineBus) Read8NoDebug(addr uint32) uint8 {
 		return bus.read8Slow(addr)
 	}
 	if addr >= uint32(len(bus.memory)) {
+		if bus.backingCovers(addr, 1) {
+			return bus.readRAM8(addr)
+		}
 		fmt.Printf("Warning: Read8 from out-of-bounds address 0x%08X\n", addr)
 		return 0
 	}
@@ -2205,6 +2337,9 @@ func (bus *MachineBus) read8Slow(addr uint32) uint8 {
 
 	// Check for out-of-bounds access
 	if addr >= uint32(len(bus.memory)) {
+		if bus.backingCovers(addr, 1) {
+			return bus.readRAM8(addr)
+		}
 		fmt.Printf("Warning: Read8 from out-of-bounds address 0x%08X\n", addr)
 		return 0
 	}

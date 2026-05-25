@@ -192,6 +192,32 @@ func TestAccessLog_WriteEventsCaptureOldValues(t *testing.T) {
 	}
 }
 
+func TestAccessLog_BackedRAMWriteEventsCaptureOldValues(t *testing.T) {
+	bus := NewMachineBus()
+	base := uint32(len(bus.GetMemory())) + 0x2000
+	bus.SetBacking(NewSparseBacking(uint64(base) + 0x1000))
+	mon := NewMachineMonitor(bus)
+	mon.ExecuteCommand("accesslog on 16")
+
+	bus.Write8(base, 0x12)
+	bus.Write8(base, 0x34)
+	if ev, ok := mon.access.LastAccess(AccessWrite, uint64(base)); !ok || !ev.OldValueKnown || ev.OldValue != 0x12 || ev.NewValue != 0x34 {
+		t.Fatalf("backed write8 event = %+v, ok=%v; want old=$12 new=$34", ev, ok)
+	}
+
+	bus.Write16(base+2, 0x1122)
+	bus.Write16(base+2, 0x3344)
+	if ev, ok := mon.access.LastAccess(AccessWrite, uint64(base+3)); !ok || !ev.OldValueKnown || ev.OldValue != 0x1122 || ev.NewValue != 0x3344 {
+		t.Fatalf("backed write16 event = %+v, ok=%v; want old=$1122 new=$3344", ev, ok)
+	}
+
+	bus.Write32(base+4, 0x11223344)
+	bus.Write32(base+4, 0x55667788)
+	if ev, ok := mon.access.LastAccess(AccessWrite, uint64(base+7)); !ok || !ev.OldValueKnown || ev.OldValue != 0x11223344 || ev.NewValue != 0x55667788 {
+		t.Fatalf("backed write32 event = %+v, ok=%v; want old=$11223344 new=$55667788", ev, ok)
+	}
+}
+
 func TestAccessWatchpointsClearedWhenCPUUnregistered(t *testing.T) {
 	bus := NewMachineBus()
 	mon := NewMachineMonitor(bus)
