@@ -15,7 +15,14 @@ import (
 var (
 	x86TurboDisabled = os.Getenv("X86_JIT_TURBO") == "0"
 	x86TurboStatsOn  = os.Getenv("X86_JIT_STATS") == "1"
-	x86TurboStats    x86TurboCounters
+	// Multi-block x86 regions currently have unresolved CALL/RET stack
+	// corner cases in real linked C images. Keep the x86 JIT default on,
+	// but require explicit opt-in for region promotion until those region
+	// stack semantics have complete parity coverage.
+	x86RegionPromotionEnabled = os.Getenv("X86_JIT_REGIONS") == "1"
+	x86RTSChainingEnabled     = os.Getenv("X86_JIT_RTS") == "1"
+	x86BlockChainingEnabled   = os.Getenv("X86_JIT_CHAINS") == "1"
+	x86TurboStats             x86TurboCounters
 )
 
 type x86TurboCounters struct {

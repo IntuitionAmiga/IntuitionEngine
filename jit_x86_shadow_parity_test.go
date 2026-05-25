@@ -200,3 +200,11 @@ func TestX86JIT_ShadowParity_AnticPlasma(t *testing.T) {
 	rom := filepath.Join("sdk", "examples", "prebuilt", "antic_plasma_x86.ie86")
 	x86ShadowParityCheckpoints(t, rom, 50_000, 4)
 }
+
+func TestX86JIT_ShadowParity_IEDoomLinkedImage(t *testing.T) {
+	rom := filepath.Join("..", "chocolate-doom", "build", "iedoom.ie86")
+	if _, err := os.Stat(rom); err != nil {
+		t.Skipf("IEDoom linked image not present: %v", err)
+	}
+	x86ShadowParityCheckpoints(t, rom, 1, 2_000)
+}

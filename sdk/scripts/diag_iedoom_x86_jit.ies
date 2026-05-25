@@ -1,0 +1,112 @@
+-- Capture reproducible IEDoom x86 startup diagnostics for the current run.
+--
+-- Launch this script with the desired CPU execution mode selected by the host
+-- command. Use the same binary and file root for JIT and -nojit oracle runs.
+
+local out_root = "iedoom_diag"
+local tag = "run"
+local waits = { 1000, 3000, 10000, 20000, 40000 }
+
+local VIDEO_CTRL = 0x000F0000
+local VIDEO_MODE = 0x000F0004
+local VIDEO_COLOR_MODE = 0x000F0080
+local VIDEO_FB_BASE = 0x000F0084
+local MIDI_CTRL = 0x000F0BAC
+local MIDI_POS = 0x000F0BB0
+
+local function join_lines(lines)
+    local out = {}
+    for i = 1, #lines do
+        out[#out + 1] = lines[i].text
+    end
+    return table.concat(out, "\n")
+end
+
+local function mon(cmd)
+    local ok, result = pcall(function()
+        return dbg.command_output(cmd)
+    end)
+    if not ok then
+        return "ERROR running `" .. cmd .. "`: " .. tostring(result)
+    end
+    return join_lines(result)
+end
+
+local function reg(name)
+    local v = dbg.get_reg(name)
+    if v == nil then
+        return 0
+    end
+    return v
+end
+
+local function hex(v)
+    return string.format("0x%X", v or 0)
+end
+
+local function sample(ms)
+    dbg.open()
+
+    local pc = dbg.get_pc() or 0
+    local esp = reg("ESP")
+    local ebp = reg("EBP")
+    local cpu_entries = dbg.cpu_list()
+    local cpus = {}
+    for i = 1, #cpu_entries do
+        cpus[#cpus + 1] = string.format(
+            "cpu[%d] id=%s label=%s name=%s running=%s",
+            i,
+            tostring(cpu_entries[i].id),
+            tostring(cpu_entries[i].label),
+            tostring(cpu_entries[i].cpu_name),
+            tostring(cpu_entries[i].is_running)
+        )
+    end
+
+    local report = {}
+    report[#report + 1] = string.format("elapsed_ms=%d", ms)
+    report[#report + 1] = string.format("pc=%s esp=%s ebp=%s", hex(pc), hex(esp), hex(ebp))
+    report[#report + 1] = string.format(
+        "video ctrl=%s mode=%s fb=%s color_mode=%s midi_ctrl=%s midi_pos=%s",
+        hex(video.read_reg(VIDEO_CTRL)),
+        hex(video.read_reg(VIDEO_MODE)),
+        hex(video.read_reg(VIDEO_FB_BASE)),
+        hex(video.read_reg(VIDEO_COLOR_MODE)),
+        hex(video.read_reg(MIDI_CTRL)),
+        hex(video.read_reg(MIDI_POS))
+    )
+    report[#report + 1] = "\n[cpu_list]\n" .. table.concat(cpus, "\n")
+    report[#report + 1] = "\n[registers]\n" .. mon("r")
+    report[#report + 1] = "\n[disasm_pc]\n" .. mon("d pc 16")
+    report[#report + 1] = "\n[stack_esp]\n" .. mon("m esp 16")
+    report[#report + 1] = "\n[frame_ebp]\n" .. mon("m ebp 16")
+    report[#report + 1] = "\n[framebuffer]\n" .. mon("m 0x107680 32")
+    report[#report + 1] = "\n[backtrace]\n" .. mon("bt 12")
+    report[#report + 1] = "\n[trace_ring]\n" .. mon("show 64")
+    report[#report + 1] = "\n[accesslog]\n" .. mon("accesslog show 64")
+    report[#report + 1] = "\n[io_video]\n" .. mon("io video")
+    report[#report + 1] = "\n[bug]\n" .. mon("bug 64")
+
+    sys.write_file(string.format("%s/%s/state_%05dms.txt", out_root, tag, ms), table.concat(report, "\n"))
+    pcall(function()
+        rec.screenshot(string.format("%s/%s/frame_%05dms.png", out_root, tag, ms))
+    end)
+
+    dbg.close()
+end
+
+sys.mkdir(out_root)
+sys.mkdir(out_root .. "/" .. tag)
+sys.write_file(out_root .. "/" .. tag .. "/start.txt", "IEDoom x86 diagnostic run\n")
+
+local elapsed = 0
+for i = 1, #waits do
+    local delta = waits[i] - elapsed
+    if delta > 0 then
+        sys.wait_ms(delta)
+        elapsed = waits[i]
+    end
+    sample(elapsed)
+end
+
+sys.exit(0)

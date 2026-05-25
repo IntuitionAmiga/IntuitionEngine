@@ -103,6 +103,23 @@ func TestX86JIT_Exec_HLT(t *testing.T) {
 	}
 }
 
+func TestX86JIT_IDIVFallsBackToInterpreter(t *testing.T) {
+	cpu := runX86JITProgram(t, 0x1000,
+		0xB8, 0x9C, 0xFF, 0xFF, 0xFF, // MOV EAX,-100
+		0xBA, 0xFF, 0xFF, 0xFF, 0xFF, // MOV EDX,-1
+		0xBB, 0xF9, 0xFF, 0xFF, 0xFF, // MOV EBX,-7
+		0xF7, 0xFB, // IDIV EBX
+		0xF4, // HLT
+	)
+
+	if int32(cpu.EAX) != 14 {
+		t.Fatalf("EAX quotient = %d, want 14", int32(cpu.EAX))
+	}
+	if int32(cpu.EDX) != -2 {
+		t.Fatalf("EDX remainder = %d, want -2", int32(cpu.EDX))
+	}
+}
+
 func TestX86JIT_Exec_MOV_HLT(t *testing.T) {
 	// MOV EAX, 42; HLT
 	cpu := runX86JITProgram(t, 0x1000,

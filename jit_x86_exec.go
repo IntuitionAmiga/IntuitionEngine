@@ -292,14 +292,16 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			}
 
 			// Patch chain slots bidirectionally -- only for compatible register maps
-			if block.chainEntry != 0 {
+			if x86BlockChainingEnabled && block.chainEntry != 0 {
 				x86PatchCompatibleChainsTo(cpu.x86JitCache, block)
 			}
-			for i := range block.chainSlots {
-				slot := &block.chainSlots[i]
-				if target := cpu.x86JitCache.Get(slot.targetPC); target != nil && target.chainEntry != 0 {
-					if target.regMap == block.regMap {
-						PatchRel32At(slot.patchAddr, target.chainEntry)
+			if x86BlockChainingEnabled {
+				for i := range block.chainSlots {
+					slot := &block.chainSlots[i]
+					if target := cpu.x86JitCache.Get(slot.targetPC); target != nil && target.chainEntry != 0 {
+						if target.regMap == block.regMap {
+							PatchRel32At(slot.patchAddr, target.chainEntry)
+						}
 					}
 				}
 			}
@@ -312,7 +314,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			// Equivalent arithmetic to the prior inline gate (execCount >=
 			// 64 && lastPromoteAt == 0 && ioBails*4 < execCount).
 			block.execCount++
-			if x86TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
+			if x86RegionPromotionEnabled && x86TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
 				block.lastPromoteAt = block.execCount
 				// Try multi-block region compilation first (only for 3+ block regions)
 				x86CompileIOBitmap = cpu.x86JitIOBitmap
@@ -326,7 +328,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 					if err == nil {
 						newBlock.execCount = block.execCount
 						cpu.x86JitCache.Put(newBlock)
-						if newBlock.chainEntry != 0 {
+						if x86BlockChainingEnabled && newBlock.chainEntry != 0 {
 							x86PatchCompatibleChainsTo(cpu.x86JitCache, newBlock)
 						}
 						block = newBlock
@@ -346,13 +348,20 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// the running block — without that gate, a Tier-2 callee could
 		// chain back into a Tier-1 caller (or vice versa) with mapped
 		// guest registers reading the wrong host registers.
-		if block.chainEntry != 0 {
+		if x86RTSChainingEnabled && block.chainEntry != 0 {
 			ctx.RTSCache1PC = ctx.RTSCache0PC
 			ctx.RTSCache1Addr = ctx.RTSCache0Addr
 			ctx.RTSCache1RegMap = ctx.RTSCache0RegMap
 			ctx.RTSCache0PC = block.startPC
 			ctx.RTSCache0Addr = block.chainEntry
 			ctx.RTSCache0RegMap = x86RegMapToUint64(block.regMap)
+		} else if !x86RTSChainingEnabled {
+			ctx.RTSCache0PC = 0
+			ctx.RTSCache0Addr = 0
+			ctx.RTSCache0RegMap = 0
+			ctx.RTSCache1PC = 0
+			ctx.RTSCache1Addr = 0
+			ctx.RTSCache1RegMap = 0
 		}
 
 		// Execute native code block -- jitRegs is already canonical, no sync needed

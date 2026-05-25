@@ -247,6 +247,58 @@ func TestMapIOShadow_MirrorsReadWrite(t *testing.T) {
 	}
 }
 
+func TestBusScalarAccess_StraddlingBackingSeamIsUnmapped(t *testing.T) {
+	bus := NewMachineBus()
+	seam := uint32(len(bus.GetMemory()))
+	backing := NewSparseBacking(uint64(seam) + 0x1000)
+	bus.SetBacking(backing)
+
+	bus.Write8(seam-2, 0xAA)
+	bus.Write8(seam-1, 0xAA)
+	backing.Write32(uint64(seam), 0xBBBBBBBB)
+
+	bus.Write16(seam-1, 0x1122)
+	if got := bus.Read8(seam - 1); got != 0xAA {
+		t.Fatalf("Write16 straddling seam clobbered low byte: 0x%02X", got)
+	}
+	if got := backing.Read32(uint64(seam)); got != 0xBBBBBBBB {
+		t.Fatalf("Write16 straddling seam clobbered backing: 0x%08X", got)
+	}
+	if got := bus.Read16(seam - 1); got != 0 {
+		t.Fatalf("Read16 straddling seam = 0x%04X, want unmapped zero", got)
+	}
+
+	bus.Write32(seam-2, 0x55667788)
+	if got := bus.Read8(seam - 2); got != 0xAA {
+		t.Fatalf("Write32 straddling seam clobbered low byte 0: 0x%02X", got)
+	}
+	if got := bus.Read8(seam - 1); got != 0xAA {
+		t.Fatalf("Write32 straddling seam clobbered low byte 1: 0x%02X", got)
+	}
+	if got := backing.Read32(uint64(seam)); got != 0xBBBBBBBB {
+		t.Fatalf("Write32 straddling seam clobbered backing: 0x%08X", got)
+	}
+	if got := bus.Read32(seam - 2); got != 0 {
+		t.Fatalf("Read32 straddling seam = 0x%08X, want unmapped zero", got)
+	}
+}
+
+func TestBusScalarAccess_FullyBackedSpanWorksAtSeam(t *testing.T) {
+	bus := NewMachineBus()
+	seam := uint32(len(bus.GetMemory()))
+	bus.SetBacking(NewSparseBacking(uint64(seam) + 0x1000))
+
+	bus.Write16(seam, 0x1122)
+	if got := bus.Read16(seam); got != 0x1122 {
+		t.Fatalf("fully backed Read16 = 0x%04X, want 0x1122", got)
+	}
+
+	bus.Write32(seam+4, 0x55667788)
+	if got := bus.Read32(seam + 4); got != 0x55667788 {
+		t.Fatalf("fully backed Read32 = 0x%08X, want 0x55667788", got)
+	}
+}
+
 func TestMapIO64NoShadow_DoesNotMirrorWrite(t *testing.T) {
 	bus := NewMachineBus()
 	const addr uint32 = 0xF5800

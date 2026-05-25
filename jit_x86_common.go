@@ -810,6 +810,14 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 	// it costs nothing on real workloads (HLT runs once per program).
 	case 0xF4: // HLT
 		return true
+
+	// RET — keep returns on the interpreter path during the x86 Doom
+	// bring-up. The native RET/RTS path is performance-oriented and still
+	// has unresolved stack/return parity gaps in linked C workloads; a
+	// single-instruction Step preserves architectural CALL/RET semantics
+	// without disabling the default JIT for surrounding straight-line code.
+	case 0xC3, 0xC2:
+		return true
 	}
 
 	// Two-byte opcodes
@@ -1162,7 +1170,15 @@ func x86FormRegion(hotPC uint32, cache *CodeCache, memory []byte) *x86Region {
 			continue
 		}
 
-		// For JMP/CALL with known target, follow the chain
+		// CALL/RET stack effects are handled by the per-block CALL/RET
+		// emitters. The region compiler only models branch-style control
+		// flow, so accepting an external CALL as the final region block
+		// would compile it as fall-through and skip the callee.
+		if byte(last.opcode) == 0xE8 {
+			return nil
+		}
+
+		// For JMP/Jcc with known target, follow the chain
 		targetPC, hasTarget := x86ResolveTerminatorTarget(last, memory, region.blockPCs[blockIdx])
 		if !hasTarget {
 			break // indirect control flow, stop

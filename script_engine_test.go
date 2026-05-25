@@ -94,6 +94,7 @@ func TestScriptEngine_ShowreelDiagnosisScriptsParse(t *testing.T) {
 		filepath.Join("sdk", "scripts", "diag_voodoo_cube_68k.ies"),
 		filepath.Join("sdk", "scripts", "diag_voodoo_3dfx_logo_68k.ies"),
 		filepath.Join("sdk", "scripts", "diag_emutos_rotozoomer_gem.ies"),
+		filepath.Join("sdk", "scripts", "diag_iedoom_x86_jit.ies"),
 		filepath.Join("scripts", "diag_tracering.ies"),
 		filepath.Join("scripts", "diag_source_step.ies"),
 		filepath.Join("scripts", "diag_history_horizon.ies"),

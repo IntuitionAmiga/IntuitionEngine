@@ -24,7 +24,7 @@
 //
 // Encoding cheatsheet:
 //   - BT m32, imm8 = 0x0F 0xBA /4 [SIB+disp32] imm8.
-//     For [RSP+disp32]: ModRM=0x84, SIB=0x24, disp32-le, imm8=00.
+//     For [RSP+disp32]: ModRM=0xA4, SIB=0x24, disp32-le, imm8=00.
 //   - PUSHFQ = 0x9C; POP = 0x58 (RAX); MOV [RSP+disp], EAX = pattern.
 
 //go:build amd64 && (linux || windows || darwin)
@@ -38,10 +38,10 @@ import (
 )
 
 // btCFRestoreSequence returns the byte sequence x86EmitRestoreGuestCF
-// emits: 0F BA 84 24 [disp32-le] 00. Tests scan for this in emitter
+// emits: 0F BA A4 24 [disp32-le] 00. Tests scan for this in emitter
 // output to confirm the CF restore landed.
 func btCFRestoreSequence() []byte {
-	seq := []byte{0x0F, 0xBA, 0x84, 0x24, 0, 0, 0, 0, 0x00}
+	seq := []byte{0x0F, 0xBA, 0xA4, 0x24, 0, 0, 0, 0, 0x00}
 	binary.LittleEndian.PutUint32(seq[4:8], uint32(x86AMD64OffSavedEFlags))
 	return seq
 }

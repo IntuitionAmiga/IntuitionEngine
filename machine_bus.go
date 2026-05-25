@@ -347,7 +347,14 @@ func (bus *MachineBus) backingCovers(addr uint32, width uint64) bool {
 func (bus *MachineBus) ramSpanCovers(addr uint32, width uint64) bool {
 	start := uint64(addr)
 	end := start + width
-	return end >= start && end <= bus.backingVisibleSize()
+	if end < start {
+		return false
+	}
+	legacyEnd := uint64(len(bus.memory))
+	if end <= legacyEnd {
+		return true
+	}
+	return bus.backing != nil && start >= legacyEnd && end <= bus.backing.Size()
 }
 
 func (bus *MachineBus) backingVisibleSize() uint64 {

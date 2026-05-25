@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"testing"
 	"unsafe"
 )
@@ -148,6 +149,112 @@ func TestX86JIT_MOV_multiple(t *testing.T) {
 	}
 	if r.cpu.EDX != 3 {
 		t.Errorf("EDX = %d, want 3", r.cpu.EDX)
+	}
+}
+
+func TestX86JIT_MOV_EbGb_RegisterDoesNotClobberIOBitmapRegister(t *testing.T) {
+	r := newX86JITTestRig(t)
+	startPC := uint32(0x1000)
+	r.cpu.memory[startPC] = 0x88   // MOV r/m8, r8
+	r.cpu.memory[startPC+1] = 0xD0 // MOV AL, DL
+	r.cpu.memory[startPC+2] = 0xF4
+
+	r.cpu.syncJITRegsFromNamed()
+	instrs := x86ScanBlock(r.cpu.memory, startPC)
+	block, err := x86CompileBlock(instrs[:1], startPC, r.execMem, r.cpu.memory)
+	if err != nil {
+		t.Fatalf("x86CompileBlock: %v", err)
+	}
+	code, ok := lookupExecBytes(block.execAddr, block.execSize)
+	if !ok {
+		t.Fatal("compiled x86 block bytes not available")
+	}
+	body := code[block.chainEntry-block.execAddr:]
+	if bytes.Contains(body, []byte{0x45, 0x89, 0xE1}) {
+		t.Fatalf("MOV Eb,Gb register path uses R9 as scratch, clobbering the IO bitmap pointer: % X", body)
+	}
+}
+
+func TestX86JIT_Region_InternalCallPushesReturnAddress(t *testing.T) {
+	r := newX86JITTestRig(t)
+	entryPC := uint32(0x1000)
+	calleePC := uint32(0x1100)
+	r.cpu.memory[entryPC] = 0xE8 // CALL rel32 0x1100
+	rel := calleePC - (entryPC + 5)
+	r.cpu.memory[entryPC+1] = byte(rel)
+	r.cpu.memory[entryPC+2] = byte(rel >> 8)
+	r.cpu.memory[entryPC+3] = byte(rel >> 16)
+	r.cpu.memory[entryPC+4] = byte(rel >> 24)
+	r.cpu.memory[calleePC] = 0xC3 // RET
+
+	callBlock := x86ScanBlock(r.cpu.memory, entryPC)
+	retBlock := x86ScanBlock(r.cpu.memory, calleePC)
+	region := &x86Region{
+		blocks:    [][]X86JITInstr{callBlock, retBlock},
+		blockPCs:  []uint32{entryPC, calleePC},
+		entryPC:   entryPC,
+		backEdges: map[int]int{},
+	}
+
+	r.cpu.ESP = 0x8000
+	r.cpu.syncJITRegsFromNamed()
+	block, err := x86CompileRegion(region, r.execMem, r.cpu.memory)
+	if err != nil {
+		t.Fatalf("x86CompileRegion: %v", err)
+	}
+	r.ctx.JITRegsPtr = uintptr(unsafe.Pointer(&r.cpu.jitRegs[0]))
+	r.ctx.MemPtr = uintptr(unsafe.Pointer(&r.cpu.memory[0]))
+	r.ctx.FlagsPtr = uintptr(unsafe.Pointer(&r.cpu.Flags))
+	r.ctx.EIPPtr = uintptr(unsafe.Pointer(&r.cpu.EIP))
+	r.ctx.SegRegsPtr = uintptr(unsafe.Pointer(&r.cpu.jitSegRegs[0]))
+
+	callNative(block.execAddr, uintptr(unsafe.Pointer(r.ctx)))
+	r.cpu.syncJITRegsToNamed()
+
+	if r.ctx.RetPC != entryPC+5 {
+		t.Fatalf("region CALL/RET returned to 0x%08X, want 0x%08X", r.ctx.RetPC, entryPC+5)
+	}
+	if r.cpu.ESP != 0x8000 {
+		t.Fatalf("ESP after region CALL/RET = 0x%08X, want 0x00008000", r.cpu.ESP)
+	}
+}
+
+func TestX86JIT_CMP_EbGb_RegisterFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		al   byte
+		dl   byte
+		zf   bool
+	}{
+		{name: "equal", al: 'm', dl: 'm', zf: true},
+		{name: "different", al: 'm', dl: 'n', zf: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newX86JITTestRig(t)
+			startPC := uint32(0x1000)
+			r.cpu.memory[startPC+0] = 0x38
+			r.cpu.memory[startPC+1] = 0xC2 // CMP DL, AL
+			r.cpu.EAX = uint32(tc.al)
+			r.cpu.EDX = uint32(tc.dl)
+			r.cpu.syncJITRegsFromNamed()
+
+			instrs := x86ScanBlock(r.cpu.memory, startPC)
+			block, err := x86CompileBlock(instrs[:1], startPC, r.execMem, r.cpu.memory)
+			if err != nil {
+				t.Fatalf("x86CompileBlock: %v", err)
+			}
+			r.ctx.JITRegsPtr = uintptr(unsafe.Pointer(&r.cpu.jitRegs[0]))
+			r.ctx.MemPtr = uintptr(unsafe.Pointer(&r.cpu.memory[0]))
+			r.ctx.FlagsPtr = uintptr(unsafe.Pointer(&r.cpu.Flags))
+			r.ctx.EIPPtr = uintptr(unsafe.Pointer(&r.cpu.EIP))
+			r.ctx.SegRegsPtr = uintptr(unsafe.Pointer(&r.cpu.jitSegRegs[0]))
+
+			callNative(block.execAddr, uintptr(unsafe.Pointer(r.ctx)))
+			gotZF := r.cpu.Flags&x86FlagZF != 0
+			if gotZF != tc.zf {
+				t.Fatalf("ZF after CMP DL,AL = %v, want %v (Flags=0x%08X)", gotZF, tc.zf, r.cpu.Flags)
+			}
+		})
 	}
 }
 

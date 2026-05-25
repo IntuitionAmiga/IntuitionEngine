@@ -1068,6 +1068,126 @@ func TestBuildX86IOBitmap_VGAVRAMRegion(t *testing.T) {
 	}
 }
 
+func TestX86FormRegion_DoesNotFollowCallEdges(t *testing.T) {
+	mem := make([]byte, 0x11020)
+	start := uint32(0x10000)
+	mem[start+0] = 0xE8
+	mem[start+1] = 0x05
+	mem[start+2] = 0x00
+	mem[start+3] = 0x00
+	mem[start+4] = 0x00 // CALL 0x1000A
+	mem[start+5] = 0xF4 // HLT
+	mem[start+0x0A] = 0xB8
+	mem[start+0x0B] = 0x01
+	mem[start+0x0C] = 0x00
+	mem[start+0x0D] = 0x00
+	mem[start+0x0E] = 0x00 // MOV EAX, 1
+	mem[start+0x0F] = 0xC3 // RET
+
+	if region := x86FormRegion(start, NewCodeCache(), mem); region != nil {
+		t.Fatalf("x86FormRegion followed CALL edge into %d-block region", len(region.blocks))
+	}
+}
+
+func TestX86FormRegion_RejectsExternalCallTerminator(t *testing.T) {
+	mem := make([]byte, 0x11040)
+	start := uint32(0x10000)
+
+	// Block 0: MOV EAX,1; JMP block 1.
+	mem[start+0] = 0xB8
+	mem[start+1] = 0x01
+	mem[start+2] = 0x00
+	mem[start+3] = 0x00
+	mem[start+4] = 0x00
+	mem[start+5] = 0xE9
+	mem[start+6] = 0x06
+	mem[start+7] = 0x00
+	mem[start+8] = 0x00
+	mem[start+9] = 0x00
+
+	// Block 1: MOV EBX,2; CALL external callee outside the region.
+	block1 := start + 0x10
+	mem[block1+0] = 0xBB
+	mem[block1+1] = 0x02
+	mem[block1+2] = 0x00
+	mem[block1+3] = 0x00
+	mem[block1+4] = 0x00
+	mem[block1+5] = 0xE8
+	mem[block1+6] = 0x06
+	mem[block1+7] = 0x00
+	mem[block1+8] = 0x00
+	mem[block1+9] = 0x00
+
+	// External callee. If block1 is accepted, x86CompileRegion would
+	// fall through past the CALL instead of pushing the return address
+	// and entering this target.
+	mem[start+0x20] = 0xB9
+	mem[start+0x21] = 0x03
+	mem[start+0x22] = 0x00
+	mem[start+0x23] = 0x00
+	mem[start+0x24] = 0x00
+	mem[start+0x25] = 0xC3
+
+	if region := x86FormRegion(start, NewCodeCache(), mem); region != nil {
+		t.Fatalf("x86FormRegion accepted external CALL terminator with %d blocks", len(region.blocks))
+	}
+}
+
+func TestX86FormRegion_RejectsPredecessorChainToExternalCall(t *testing.T) {
+	mem := make([]byte, 0x11050)
+	start := uint32(0x10000)
+
+	// Block 0: MOV EAX,1; JMP block 1.
+	mem[start+0] = 0xB8
+	mem[start+1] = 0x01
+	mem[start+2] = 0x00
+	mem[start+3] = 0x00
+	mem[start+4] = 0x00
+	mem[start+5] = 0xE9
+	mem[start+6] = 0x06
+	mem[start+7] = 0x00
+	mem[start+8] = 0x00
+	mem[start+9] = 0x00
+
+	// Block 1: MOV EBX,2; JMP block 2.
+	block1 := start + 0x10
+	mem[block1+0] = 0xBB
+	mem[block1+1] = 0x02
+	mem[block1+2] = 0x00
+	mem[block1+3] = 0x00
+	mem[block1+4] = 0x00
+	mem[block1+5] = 0xE9
+	mem[block1+6] = 0x06
+	mem[block1+7] = 0x00
+	mem[block1+8] = 0x00
+	mem[block1+9] = 0x00
+
+	// Block 2: MOV ECX,3; CALL external callee.
+	block2 := start + 0x20
+	mem[block2+0] = 0xB9
+	mem[block2+1] = 0x03
+	mem[block2+2] = 0x00
+	mem[block2+3] = 0x00
+	mem[block2+4] = 0x00
+	mem[block2+5] = 0xE8
+	mem[block2+6] = 0x06
+	mem[block2+7] = 0x00
+	mem[block2+8] = 0x00
+	mem[block2+9] = 0x00
+
+	// External callee outside the region.
+	mem[start+0x30] = 0xBA
+	mem[start+0x31] = 0x04
+	mem[start+0x32] = 0x00
+	mem[start+0x33] = 0x00
+	mem[start+0x34] = 0x00
+	mem[start+0x35] = 0xC3
+
+	if region := x86FormRegion(start, NewCodeCache(), mem); region != nil {
+		t.Fatalf("x86FormRegion returned dangling predecessor chain with %d blocks", len(region.blocks))
+	}
+}
+
 func TestBuildX86IOBitmap_LowRAMClean(t *testing.T) {
 	bus := NewMachineBus()
 	adapter := NewX86BusAdapter(bus)

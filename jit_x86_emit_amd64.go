@@ -725,12 +725,12 @@ func x86EmitMergeFlagsToGuest(cb *CodeBuffer) {
 //
 // Encoding: BT DWORD PTR [RSP+slot], 0  =  0x0F 0xBA /4 [SIB+disp32] imm8.
 //
-//	ModRM = 0x84 (mod=10, reg=4 (/4), r/m=100 → SIB),
+//	ModRM = 0xA4 (mod=10, reg=4 (/4), r/m=100 → SIB),
 //	SIB   = 0x24 (scale=00, index=100 (none), base=100 (RSP)),
 //	disp32 = OffSavedEFlags (little-endian),
 //	imm8 = 0 (bit index for CF).
 func x86EmitRestoreGuestCF(cb *CodeBuffer) {
-	cb.EmitBytes(0x0F, 0xBA, 0x84, 0x24)
+	cb.EmitBytes(0x0F, 0xBA, 0xA4, 0x24)
 	cb.Emit32(uint32(x86AMD64OffSavedEFlags))
 	cb.EmitBytes(0x00)
 }
@@ -765,7 +765,7 @@ func x86InstrFlagOpKind(opcode uint16, modrm byte) x86FlagOpKind {
 	op := byte(opcode)
 	switch op {
 	// ADD/OR/AND/SUB/XOR/CMP r/m, r and r, r/m
-	case 0x01, 0x03, 0x29, 0x2B, 0x39, 0x3B:
+	case 0x01, 0x03, 0x29, 0x2B, 0x38, 0x39, 0x3A, 0x3B:
 		return x86FlagOpArith // ADD/SUB/CMP
 	case 0x09, 0x0B, 0x21, 0x23, 0x31, 0x33:
 		return x86FlagOpLogic // OR/AND/XOR
@@ -970,6 +970,9 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 	}
 
 	op := byte(opcode)
+	if ji.prefixes&x86PrefOpSize != 0 && (op < 0xB8 || op > 0xBF) {
+		return false
+	}
 
 	switch {
 	// NOP
@@ -1036,6 +1039,10 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		return x86EmitALU_Ev_Gv(cb, ji, 0x39, cs, memory, instrIdx)
 	case op == 0x3B:
 		return x86EmitALU_Gv_Ev(cb, ji, 7, cs, memory, instrIdx) // CMP
+	case op == 0x38:
+		return x86EmitByteRegFlagOp(cb, ji, 0x38, false, cs, x86FlagsLiveArith) // CMP Eb,Gb
+	case op == 0x3A:
+		return x86EmitByteRegFlagOp(cb, ji, 0x38, true, cs, x86FlagsLiveArith) // CMP Gb,Eb
 
 	// MOV Eb, Gb (0x88)
 	case op == 0x88:
@@ -1110,7 +1117,7 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 
 	// TEST Eb,Gb (0x84) and TEST Ev,Gv (0x85)
 	case op == 0x84:
-		return false // 8-bit TEST -- TODO
+		return x86EmitByteRegFlagOp(cb, ji, 0x84, false, cs, x86FlagsLiveLogic)
 	case op == 0x85:
 		return x86EmitTEST_Ev_Gv(cb, ji, cs)
 
@@ -1354,25 +1361,25 @@ func x86EmitMOV_Eb_Gb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 		dstHigh := dstR8 >= 4
 
 		x86EmitLoadGuestReg32(cb, amd64R8, dstGuestReg)
-		x86EmitLoadGuestReg32(cb, amd64R9, srcGuestReg)
+		x86EmitLoadGuestReg32(cb, amd64R11, srcGuestReg)
 		if srcHigh {
-			amd64SHR_imm32(cb, amd64R9, 8)
+			amd64SHR_imm32(cb, amd64R11, 8)
 		}
 		if dstHigh {
 			emitREX(cb, false, 0, amd64R8)
 			cb.EmitBytes(0x81, modRM(3, 4, amd64R8))
 			cb.Emit32(0xFFFF00FF)
-			emitREX(cb, false, amd64R9, amd64R9)
-			cb.EmitBytes(0x0F, 0xB6, modRM(3, amd64R9, amd64R9))
-			amd64SHL_imm32(cb, amd64R9, 8)
+			emitREX(cb, false, amd64R11, amd64R11)
+			cb.EmitBytes(0x0F, 0xB6, modRM(3, amd64R11, amd64R11))
+			amd64SHL_imm32(cb, amd64R11, 8)
 		} else {
 			emitREX(cb, false, 0, amd64R8)
 			cb.EmitBytes(0x81, modRM(3, 4, amd64R8))
 			cb.Emit32(0xFFFFFF00)
-			emitREX(cb, false, amd64R9, amd64R9)
-			cb.EmitBytes(0x0F, 0xB6, modRM(3, amd64R9, amd64R9))
+			emitREX(cb, false, amd64R11, amd64R11)
+			cb.EmitBytes(0x0F, 0xB6, modRM(3, amd64R11, amd64R11))
 		}
-		amd64ALU_reg_reg32(cb, 0x09, amd64R8, amd64R9) // OR
+		amd64ALU_reg_reg32(cb, 0x09, amd64R8, amd64R11) // OR
 		x86EmitStoreGuestReg32(cb, dstGuestReg, amd64R8)
 		return true
 	}
@@ -1387,6 +1394,37 @@ func x86EmitMOV_Eb_Gb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	}
 	x86EmitMemStore8(cb, amd64R10, amd64R8)
 	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
+	return true
+}
+
+func x86EmitLoadGuestByteReg(cb *CodeBuffer, dstHost byte, guestR8 byte) {
+	guestReg := guestR8 & 3
+	x86EmitLoadGuestReg32(cb, dstHost, guestReg)
+	if guestR8 >= 4 {
+		amd64SHR_imm32(cb, dstHost, 8)
+	}
+	emitREX(cb, false, dstHost, dstHost)
+	cb.EmitBytes(0x0F, 0xB6, modRM(3, dstHost, dstHost))
+}
+
+func x86EmitByteRegFlagOp(cb *CodeBuffer, ji *X86JITInstr, nativeOp byte, regFieldIsLeft bool, cs *x86CompileState, flagState x86FlagState) bool {
+	if !ji.hasModRM || ji.modrm>>6 != 3 {
+		return false
+	}
+	regField := (ji.modrm >> 3) & 7
+	rmField := ji.modrm & 7
+	left := rmField
+	right := regField
+	if regFieldIsLeft {
+		left = regField
+		right = rmField
+	}
+
+	x86EmitLoadGuestByteReg(cb, amd64R8, left)
+	x86EmitLoadGuestByteReg(cb, amd64R11, right)
+	emitREX(cb, false, amd64R11, amd64R8)
+	cb.EmitBytes(nativeOp, modRM(3, amd64R11, amd64R8))
+	cs.flagState = flagState
 	return true
 }
 
@@ -2025,15 +2063,10 @@ func x86EmitGrp3_Ev(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Compi
 		return true
 
 	case 7: // IDIV Ev (signed)
-		x86EmitLoadGuestReg32(cb, amd64RAX, 0)
-		x86EmitLoadGuestReg32(cb, amd64RDX, 2)
-		x86EmitLoadGuestReg32(cb, amd64R8, rmReg)
-		emitREX(cb, false, 0, amd64R8)
-		cb.EmitBytes(0xF7, modRM(3, 7, amd64R8))
-		cs.flagState = x86FlagsDead
-		x86EmitStoreGuestReg32(cb, 0, amd64RAX)
-		x86EmitStoreGuestReg32(cb, 2, amd64RDX)
-		return true
+		// Native IDIV raises host SIGFPE for divide-by-zero and quotient
+		// overflow. Until the JIT has explicit fault guards, let the
+		// interpreter handle IDIV so guest #DE cannot terminate the VM.
+		return false
 	}
 
 	return false
@@ -2135,11 +2168,14 @@ func x86EmitPUSH_r32(cb *CodeBuffer, ji *X86JITInstr) bool {
 	guestReg := byte(ji.opcode) - 0x50
 	x86MarkDirty(4) // ESP modified
 
+	if guestReg == 4 {
+		amd64MOV_reg_reg32(cb, amd64R8, x86AMD64RegGuestESP)
+	} else {
+		x86EmitLoadGuestReg32(cb, amd64R8, guestReg)
+	}
+
 	// ESP -= 4
 	amd64ALU_reg_imm32_32bit(cb, 5, x86AMD64RegGuestESP, 4) // SUB R14d, 4
-
-	// Load value to push
-	x86EmitLoadGuestReg32(cb, amd64R8, guestReg)
 
 	// Write to [memory + ESP]
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
@@ -2164,6 +2200,10 @@ func x86EmitPOP_r32(cb *CodeBuffer, ji *X86JITInstr) bool {
 
 	// Store to guest register
 	x86EmitStoreGuestReg32(cb, guestReg, amd64R8)
+
+	if guestReg == 4 {
+		return true
+	}
 
 	// ESP += 4
 	amd64ALU_reg_imm32_32bit(cb, 0, x86AMD64RegGuestESP, 4) // ADD R14d, 4
@@ -3972,7 +4012,8 @@ func x86EmitLEA(cb *CodeBuffer, ji *X86JITInstr, memory []byte) bool {
 		disp := int32(int8(memory[dispPC]))
 
 		x86EmitLoadGuestReg32(cb, amd64R8, baseReg)
-		amd64ALU_reg_imm32_32bit(cb, 0, amd64R8, disp) // ADD R8d, disp
+		emitREX(cb, false, amd64R8, amd64R8)
+		cb.EmitBytes(0x8D, modRM(1, amd64R8, amd64R8), byte(disp))
 		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
 		return true
 	}
@@ -4557,15 +4598,13 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 			break
 		}
 
-		// RET (0xC3): native emit with 2-entry RTS inline cache. Closes
-		// the cross-block CALL/RET chain — caller's CALL chains forward
-		// to the callee, callee's RET hits the cache on caller's
-		// continuation block on the next return.
+		// RET (0xC3): stop before the return so the dispatcher executes
+		// it through the interpreter. Native RET remains available for
+		// focused emitter tests, but default x86 JIT execution keeps
+		// linked-C return semantics on the canonical interpreter path
+		// until the RTS path has full parity coverage.
 		if byte(ji.opcode) == 0xC3 && ji.opcode < 0x100 {
-			instrCount++
-			lastPC = ji.opcodePC + uint32(ji.length)
-			x86EmitRET(cb, uint32(instrCount))
-			goto done
+			break
 		}
 
 		// Check if this is a block terminator that can use a chain exit
@@ -4756,21 +4795,35 @@ func x86CompileRegion(region *x86Region, execMem *ExecMem, memory []byte) (*JITB
 	var fwdFixups []fwdFixup
 
 	// Emit all blocks
+	terminated := false
+emitBlocks:
 	for bi, block := range region.blocks {
 		blockLabels[bi] = cb.Len()
 		instrCountAtBlock[bi] = totalInstrCount
 
+		lastEmitted := false
 		for ii := range block {
 			ji := &block[ii]
 			if !x86EmitInstruction(cb, ji, memory, region.blockPCs[bi], cs, totalInstrCount) {
 				break
 			}
 			totalInstrCount++
+			if ii == len(block)-1 {
+				lastEmitted = true
+			}
 		}
 
 		// Handle block terminator
 		if len(block) > 0 {
 			last := &block[len(block)-1]
+			if byte(last.opcode) == 0xC3 && last.opcode < 0x100 {
+				if !lastEmitted {
+					totalInstrCount++
+				}
+				x86EmitRET(cb, uint32(totalInstrCount))
+				terminated = true
+				break emitBlocks
+			}
 			if x86IsBlockTerminator(last.opcode) {
 				targetPC, hasTarget := x86ResolveTerminatorTarget(last, memory, region.blockPCs[bi])
 				if hasTarget {
@@ -4783,6 +4836,18 @@ func x86CompileRegion(region *x86Region, execMem *ExecMem, memory []byte) (*JITB
 						}
 					}
 					if targetBlockIdx >= 0 {
+						if !lastEmitted {
+							totalInstrCount++
+						}
+						if byte(last.opcode) == 0xE8 {
+							x86MarkDirty(4)
+							retAddr := last.opcodePC + uint32(last.length)
+							espHost, _ := x86GuestRegToHost(4)
+							amd64ALU_reg_imm32_32bit(cb, 5, espHost, 4)
+							amd64MOV_reg_reg32(cb, amd64R8, espHost)
+							emitMemOpSIB(cb, false, 0xC7, 0, x86AMD64RegMemBase, amd64R8, 0)
+							cb.Emit32(retAddr)
+						}
 						// Internal jump: emit native JMP to target block label
 						if _, isBackEdge := region.backEdges[bi]; isBackEdge {
 							// Back-edge: budget check + native loop
@@ -4836,7 +4901,9 @@ func x86CompileRegion(region *x86Region, execMem *ExecMem, memory []byte) (*JITB
 	// fold as the per-block compiler: if this region was reached via a
 	// chained predecessor, RetCount must include that prior count or
 	// the dispatcher will undercount retired instructions.
-	if hasBackEdge {
+	if terminated {
+		// Terminator emitted its own full epilogue.
+	} else if hasBackEdge {
 		x86EmitRetPC(cb, region.blockPCs[len(region.blocks)-1], 0)
 		amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(x86AMD64OffLoopRetired))
 		amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(totalInstrCount))
@@ -4853,7 +4920,9 @@ func x86CompileRegion(region *x86Region, execMem *ExecMem, memory []byte) (*JITB
 		amd64ALU_reg_reg32(cb, 0x01, amd64RDX, amd64RAX) // ADD EDX, EAX
 		amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffRetCount), amd64RDX)
 	}
-	x86EmitEpilogue(cb, cs)
+	if !terminated {
+		x86EmitEpilogue(cb, cs)
+	}
 
 	// Emit deferred bails
 	x86EmitDeferredBails(cb)
