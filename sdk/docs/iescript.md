@@ -114,6 +114,8 @@ The compositor calls back into the script engine once for every composite pass, 
 
 Use `sys.frame_time()` to check how many host milliseconds have elapsed since the last yield. If this value consistently exceeds your frame period (e.g. 16 ms at 60 fps), your inter-yield work is too heavy and frames are being dropped.
 
+IEScript can also drive hardware-style demos directly through MMIO. See `sdk/scripts/rotozoomer_ies.ies` for a standalone VideoChip Mode7 rotozoomer that stages a texture with `mem.write_block`, configures blitter registers, and starts MIDI playback through the MIDI MMIO registers.
+
 ### Important behaviour
 
 - `sys.wait_frames(1)` consumes one compositor frame notification. A notification may already be buffered when the wait begins. The callback still fires when sources are idle, so frame waits continue to advance on a blank display.

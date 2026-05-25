@@ -26,6 +26,7 @@ var rotoVariants = []rotoVariant{
 	{label: "BASIC", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_ehbasic.raw", pngPath: "sdk/examples/assets/rotozoomtexture_ehbasic.png"},
 	{label: "IE32", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_ie32.raw", pngPath: "sdk/examples/assets/rotozoomtexture_ie32.png"},
 	{label: "IE64", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_ie64.raw", pngPath: "sdk/examples/assets/rotozoomtexture_ie64.png"},
+	{label: "IES", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_ies.raw", pngPath: "sdk/examples/assets/rotozoomtexture_ies.png"},
 	{label: "M68K", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_m68k.raw", pngPath: "sdk/examples/assets/rotozoomtexture_m68k.png"},
 	{label: "6502", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_6502.raw", pngPath: "sdk/examples/assets/rotozoomtexture_6502.png"},
 	{label: "Z80", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_z80.raw", pngPath: "sdk/examples/assets/rotozoomtexture_z80.png"},

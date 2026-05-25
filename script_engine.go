@@ -1825,6 +1825,8 @@ func (se *ScriptEngine) luaCPUJITEnabled() lua.LGFunction {
 			enabled = snap.m68k != nil && snap.m68k.cpu != nil && snap.m68k.cpu.m68kJitEnabled
 		case runtimeCPUZ80:
 			enabled = snap.z80 != nil && snap.z80.cpu != nil && snap.z80.cpu.jitEnabled
+		case runtimeCPUX86:
+			enabled = snap.x86 != nil && snap.x86.cpu != nil && snap.x86.cpu.x86JitEnabled
 		case runtimeCPU6502:
 			enabled = snap.cpu65 != nil && snap.cpu65.JITEnabled
 		case runtimeCPUIE64:
@@ -1885,6 +1887,22 @@ func (se *ScriptEngine) luaCPUSetJITEnabled() lua.LGFunction {
 				return 0
 			}
 			return 0
+		case runtimeCPUX86:
+			if snap.x86 == nil || snap.x86.cpu == nil {
+				L.RaiseError("x86 cpu unavailable")
+				return 0
+			}
+			if snap.x86.IsRunning() {
+				L.RaiseError("cannot change x86 JIT while CPU is running")
+				return 0
+			}
+			snap.x86.cpu.x86JitEnabled = enabled && x86JitAvailable
+			snap.x86.jit = snap.x86.cpu.x86JitEnabled
+			if enabled && !x86JitAvailable {
+				L.RaiseError("x86 JIT unavailable on this platform")
+				return 0
+			}
+			return 0
 		case runtimeCPUIE64:
 			if snap.ie64 == nil {
 				L.RaiseError("ie64 cpu unavailable")
@@ -1918,6 +1936,10 @@ func (se *ScriptEngine) luaCPUExecutionMode() lua.LGFunction {
 			}
 		case runtimeCPUZ80:
 			if snap.z80 != nil && snap.z80.cpu != nil && snap.z80.cpu.jitEnabled {
+				mode = "jit"
+			}
+		case runtimeCPUX86:
+			if snap.x86 != nil && snap.x86.cpu != nil && snap.x86.cpu.x86JitEnabled {
 				mode = "jit"
 			}
 		case runtimeCPU6502:

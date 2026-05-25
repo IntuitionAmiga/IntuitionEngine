@@ -1343,8 +1343,7 @@ func statusTokensWidth(tokens []statusToken) int {
 	return width
 }
 
-func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
-	s := runtimeStatus.snapshot()
+func runtimeCPUStatusTokens(s runtimeStatusSnapshot) []statusToken {
 	playIE32, playIE64, playM68K, playZ80, playX86, play6502 := playbackCPUFlags(s)
 
 	ie32On := (s.selectedCPU == runtimeCPUIE32 && s.ie32 != nil && s.ie32.IsRunning()) || playIE32
@@ -1375,6 +1374,27 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 			cpu65On = true
 		}
 	}
+	iesOn := s.scriptEngine != nil && s.scriptEngine.IsRunning()
+
+	return []statusToken{
+		{name: "IE32 ", enabled: ie32On},
+		{name: "|", enabled: false},
+		{name: "Z80", enabled: z80On},
+		{name: "|", enabled: false},
+		{name: "X86", enabled: x86On},
+		{name: "|", enabled: false},
+		{name: "68K", enabled: m68kOn},
+		{name: "|", enabled: false},
+		{name: "IE64 ", enabled: ie64On},
+		{name: "|", enabled: false},
+		{name: "6502", enabled: cpu65On},
+		{name: "|", enabled: false},
+		{name: "IES", enabled: iesOn},
+	}
+}
+
+func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
+	s := runtimeStatus.snapshot()
 
 	videoOn := s.video != nil && s.video.IsEnabled()
 	vgaOn := s.vga != nil && s.vga.IsEnabled()
@@ -1396,19 +1416,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	y := eo.height - barHeight
 	ebitenutil.DrawRect(screen, 0, float64(y), float64(eo.width), float64(barHeight), color.RGBA{0, 0, 0, runtimeStatusBarAlpha})
 
-	drawStatusLine(screen, 6, y+13, "CPU  ", []statusToken{
-		{name: "IE32 ", enabled: ie32On},
-		{name: "|", enabled: false},
-		{name: "Z80", enabled: z80On},
-		{name: "|", enabled: false},
-		{name: "X86", enabled: x86On},
-		{name: "|", enabled: false},
-		{name: "68K", enabled: m68kOn},
-		{name: "|", enabled: false},
-		{name: "IE64 ", enabled: ie64On},
-		{name: "|", enabled: false},
-		{name: "6502", enabled: cpu65On},
-	})
+	drawStatusLine(screen, 6, y+13, "CPU  ", runtimeCPUStatusTokens(s))
 	drawStatusLine(screen, 6, y+26, "VIDEO", []statusToken{
 		{name: "IEVID", enabled: videoOn},
 		{name: "|", enabled: false},

@@ -120,6 +120,7 @@ The rotozoomer examples demonstrate a hardware-accelerated rotating/zooming text
 | `rotozoomer_x86.asm` | x86 | IEVideoChip | PSG | Mode7 blitter + AY-3-8910 music |
 | `rotozoomer_basic.bas` | IE64 (BASIC) | IEVideoChip | SID | Mode7 blitter from EhBASIC |
 | `rotozoomer_gem.asm` | M68K (EmuTOS) | IEVideoChip | -- | Mode7 blitter in a GEM desktop window |
+| `rotozoomer_ies.ies` | IEScript | IEVideoChip | MIDI | Standalone Mode7 blitter demo driven from Lua |
 
 ### Video Chip Showcases
 

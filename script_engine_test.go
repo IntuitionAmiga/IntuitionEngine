@@ -115,6 +115,33 @@ func TestScriptEngine_ShowreelDiagnosisScriptsParse(t *testing.T) {
 	}
 }
 
+func TestIEDoomDiagnosticScriptCapturesDynamicLaunchEvidence(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("sdk", "scripts", "diag_iedoom_x86_jit.ies"))
+	if err != nil {
+		t.Fatalf("read IEDoom diagnostic script: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"tag = cpu.execution_mode()",
+		"video.frame_hash()",
+		"[framebuffer_summary]",
+		"read_framebuffer_summary(fb, 320, 200)",
+		"summarize_rows(data, width)",
+		"read_summary(fb, 4096)",
+		"SYM.I_VideoBuffer",
+		"[playeringame]",
+		"[dest_screen_summary]",
+		`mon("m " .. mon_addr(fb) .. " 32")`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("IEDoom diagnostic script missing %q", want)
+		}
+	}
+	if strings.Contains(text, "m 0x107680") {
+		t.Fatal("IEDoom diagnostic script must not use a hard-coded framebuffer dump address")
+	}
+}
+
 func TestScriptEngine_MemoryRequiresFreezeForRawRAM(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()
@@ -1451,6 +1478,44 @@ func TestScriptEngine_CPUJITControls_M68K(t *testing.T) {
 	}
 	if runner.cpu.m68kJitEnabled != wantJIT {
 		t.Fatalf("final m68k jit enabled=%v, want %v", runner.cpu.m68kJitEnabled, wantJIT)
+	}
+}
+
+func TestScriptEngine_CPUJITControls_X86(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	runner := NewCPUX86Runner(bus, &CPUX86Config{JITEnabled: x86JitAvailable})
+	runner.cpu.SetRunning(false)
+	runner.cpu.Halted = false
+	runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, runner, nil)
+	t.Cleanup(func() {
+		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	})
+
+	script := `
+		if cpu.jit_enabled() ~= ` + strconv.FormatBool(x86JitAvailable) + ` then error("initial x86 jit state") end
+		if cpu.execution_mode() ~= "` + map[bool]string{true: "jit", false: "interpreter"}[x86JitAvailable] + `" then error("initial x86 execution mode") end
+		cpu.set_jit_enabled(false)
+		if cpu.jit_enabled() then error("expected x86 jit disabled") end
+		if cpu.execution_mode() ~= "interpreter" then error("expected x86 interpreter mode") end
+	`
+	if x86JitAvailable {
+		script += `
+			cpu.set_jit_enabled(true)
+			if not cpu.jit_enabled() then error("expected x86 jit enabled") end
+			if cpu.execution_mode() ~= "jit" then error("expected x86 jit mode") end
+		`
+	}
+
+	if err := se.RunString(script, "cpu_jit_controls_x86"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
 	}
 }
 

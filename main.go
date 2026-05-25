@@ -2717,6 +2717,7 @@ func main() {
 	}
 
 	scriptEngine = NewScriptEngine(sysBus, compositor, termMMIO)
+	runtimeStatus.setScriptEngine(scriptEngine)
 	scriptEngine.SetProgramLoader(runProgramWithFullReset)
 	scriptEngine.SetEmutosSentinel(emutosSentinel)
 	scriptEngine.SetArosSentinel(arosSentinel)

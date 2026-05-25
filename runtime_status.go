@@ -48,6 +48,7 @@ type runtimeStatusSnapshot struct {
 	midiPlayer  *MIDIPlayer
 
 	coprocManager *CoprocessorManager
+	scriptEngine  *ScriptEngine
 }
 
 type runtimeStatusStore struct {
@@ -147,6 +148,12 @@ func (s *runtimeStatusStore) setAROSClipboard(cb *ClipboardBridge) {
 func (s *runtimeStatusStore) setCoprocManager(cm *CoprocessorManager) {
 	s.mu.Lock()
 	s.coprocManager = cm
+	s.mu.Unlock()
+}
+
+func (s *runtimeStatusStore) setScriptEngine(se *ScriptEngine) {
+	s.mu.Lock()
+	s.scriptEngine = se
 	s.mu.Unlock()
 }
 

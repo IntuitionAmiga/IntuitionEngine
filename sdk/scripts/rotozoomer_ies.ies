@@ -1,0 +1,170 @@
+-- Standalone IEScript Mode7 rotozoomer.
+
+local VIDEO_CTRL = 0xF0000
+local VIDEO_MODE = 0xF0004
+local BLT_CTRL = 0xF001C
+local BLT_OP = 0xF0020
+local BLT_SRC = 0xF0024
+local BLT_DST = 0xF0028
+local BLT_WIDTH = 0xF002C
+local BLT_HEIGHT = 0xF0030
+local BLT_SRC_STRIDE = 0xF0034
+local BLT_DST_STRIDE = 0xF0038
+local BLT_MODE7_U0 = 0xF0058
+local BLT_MODE7_V0 = 0xF005C
+local BLT_MODE7_DU_COL = 0xF0060
+local BLT_MODE7_DV_COL = 0xF0064
+local BLT_MODE7_DU_ROW = 0xF0068
+local BLT_MODE7_DV_ROW = 0xF006C
+local BLT_MODE7_TEX_W = 0xF0070
+local BLT_MODE7_TEX_H = 0xF0074
+local VIDEO_COLOR_MODE = 0xF0080
+local VIDEO_FB_BASE = 0xF0084
+local BLT_FLAGS = 0xF0488
+
+local MIDI_PLAY_PTR = 0xF0BA0
+local MIDI_PLAY_LEN = 0xF0BA4
+local MIDI_PLAY_CTRL = 0xF0BA8
+local MIDI_VOLUME = 0xF0BB4
+
+local MODE_640x480 = 0
+local BLT_START = 1
+local BLT_BUSY = 2
+local BLT_OP_COPY = 0
+local BLT_OP_MODE7 = 5
+
+local WIDTH = 640
+local HEIGHT = 480
+local BYTES_PER_PIXEL = 4
+local TEXTURE_WIDTH = 256
+local TEXTURE_HEIGHT = 256
+local TEXTURE_BASE = 0x600000
+local VRAM_BASE = 0x100000
+local BACK_BUFFER = 0x900000
+local MIDI_DATA_BASE = 0xA40000
+local FRAME_BYTES = WIDTH * HEIGHT * BYTES_PER_PIXEL
+local FRAME_STRIDE = WIDTH * BYTES_PER_PIXEL
+local TEXTURE_STRIDE = TEXTURE_WIDTH * BYTES_PER_PIXEL
+
+local audio_started = false
+
+local function write32(addr, value)
+    mem.write32(addr, value)
+end
+
+local function fixed(n)
+    if n >= 0 then
+        return math.floor(n * 65536 + 0.5)
+    end
+    return math.floor(n * 65536 - 0.5)
+end
+
+local function blit_wait()
+    while bit32.band(mem.read32(BLT_CTRL), BLT_BUSY) ~= 0 do
+        sys.wait_ms(1)
+    end
+end
+
+local function stop_midi()
+    if audio_started then
+        write32(MIDI_PLAY_CTRL, 2)
+        audio_started = false
+    end
+end
+
+local function stage_assets()
+    local texture = sys.read_file("sdk/examples/assets/rotozoomtexture_ies.raw")
+    cpu.freeze()
+    mem.write_block(TEXTURE_BASE, texture)
+    cpu.resume()
+
+    if IE_ROTO_DISABLE_AUDIO then
+        return
+    end
+
+    local midi = sys.read_file("sdk/examples/assets/music/yourlove.mid")
+    cpu.freeze()
+    mem.write_block(MIDI_DATA_BASE, midi)
+    cpu.resume()
+
+    write32(MIDI_PLAY_PTR, MIDI_DATA_BASE)
+    write32(MIDI_PLAY_LEN, string.len(midi))
+    write32(MIDI_VOLUME, 180)
+    write32(MIDI_PLAY_CTRL, 1 + 4)
+    audio_started = true
+end
+
+local function configure_video()
+    video.write_reg(VIDEO_MODE, MODE_640x480)
+    video.write_reg(VIDEO_COLOR_MODE, 0)
+    video.write_reg(VIDEO_FB_BASE, 0)
+    video.write_reg(BLT_FLAGS, 0)
+    video.write_reg(VIDEO_CTRL, 1)
+end
+
+local function render_frame(angle, scale_phase)
+    local zoom = 0.85 + math.sin(scale_phase) * 0.35
+    local ca = math.cos(angle) * zoom
+    local sa = math.sin(angle) * zoom
+
+    local du_col = fixed(ca)
+    local dv_col = fixed(sa)
+    local du_row = fixed(-sa)
+    local dv_row = fixed(ca)
+    local u0 = fixed(TEXTURE_WIDTH / 2) - (WIDTH / 2) * du_col - (HEIGHT / 2) * du_row
+    local v0 = fixed(TEXTURE_HEIGHT / 2) - (WIDTH / 2) * dv_col - (HEIGHT / 2) * dv_row
+
+    write32(BLT_OP, BLT_OP_MODE7)
+    write32(BLT_SRC, TEXTURE_BASE)
+    write32(BLT_DST, BACK_BUFFER)
+    write32(BLT_WIDTH, WIDTH)
+    write32(BLT_HEIGHT, HEIGHT)
+    write32(BLT_SRC_STRIDE, TEXTURE_STRIDE)
+    write32(BLT_DST_STRIDE, FRAME_STRIDE)
+    write32(BLT_MODE7_U0, u0)
+    write32(BLT_MODE7_V0, v0)
+    write32(BLT_MODE7_DU_COL, du_col)
+    write32(BLT_MODE7_DV_COL, dv_col)
+    write32(BLT_MODE7_DU_ROW, du_row)
+    write32(BLT_MODE7_DV_ROW, dv_row)
+    write32(BLT_MODE7_TEX_W, TEXTURE_WIDTH - 1)
+    write32(BLT_MODE7_TEX_H, TEXTURE_HEIGHT - 1)
+    write32(BLT_CTRL, BLT_START)
+    blit_wait()
+
+    write32(BLT_OP, BLT_OP_COPY)
+    write32(BLT_SRC, BACK_BUFFER)
+    write32(BLT_DST, VRAM_BASE)
+    write32(BLT_WIDTH, WIDTH)
+    write32(BLT_HEIGHT, HEIGHT)
+    write32(BLT_SRC_STRIDE, FRAME_STRIDE)
+    write32(BLT_DST_STRIDE, FRAME_STRIDE)
+    write32(BLT_CTRL, BLT_START)
+    blit_wait()
+end
+
+local function main()
+    stage_assets()
+    configure_video()
+
+    local angle = 0
+    local scale_phase = 0
+    local frame = 0
+    while true do
+        angle = angle + 0.03
+        scale_phase = scale_phase + 0.01
+        render_frame(angle, scale_phase)
+        frame = frame + 1
+        if IE_ROTO_MAX_FRAMES and frame >= IE_ROTO_MAX_FRAMES then
+            break
+        end
+        sys.wait_frames(1)
+    end
+    stop_midi()
+end
+
+local ok, err = pcall(main)
+stop_midi()
+if not ok then
+    error(err)
+end
