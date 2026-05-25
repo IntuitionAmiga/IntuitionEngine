@@ -761,7 +761,7 @@ hw_memcopy:
     la      r3, BLT_DST_STRIDE
     store.l r8, (r3)
     la      r3, BLT_OP
-    move.q  r1, #BLT_OP_COPY
+    move.q  r1, #BLT_OP_MEMCOPY
     store.l r1, (r3)
     la      r3, BLT_CTRL
     move.q  r1, #1

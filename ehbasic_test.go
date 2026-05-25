@@ -4229,8 +4229,8 @@ func TestEhBASIC_BlitMode7DispatchVsMemcopy(t *testing.T) {
 	}
 
 	_, hMemcopy := execStmtTestWithBus(t, asmBin, "10 BLIT MEMCOPY 4096, 8192, 256")
-	if op := readBusMem32(hMemcopy, 0xF0020); op != 0 {
-		t.Fatalf("BLIT MEMCOPY dispatch: expected BLT_OP=0, got %d", op)
+	if op := readBusMem32(hMemcopy, 0xF0020); op != bltOpMemcopy {
+		t.Fatalf("BLIT MEMCOPY dispatch: expected BLT_OP=%d, got %d", bltOpMemcopy, op)
 	}
 }
 
@@ -4303,8 +4303,8 @@ func TestEhBASIC_BlitMemcopyMShorthandStillWorks(t *testing.T) {
 	if got := readBusMem32(h, 0xF002C); got != 256 {
 		t.Fatalf("BLIT M len: expected 256, got %d", got)
 	}
-	if got := readBusMem32(h, 0xF0020); got != 0 {
-		t.Fatalf("BLIT M should dispatch to MEMCOPY (BLT_OP=0), got %d", got)
+	if got := readBusMem32(h, 0xF0020); got != bltOpMemcopy {
+		t.Fatalf("BLIT M should dispatch to MEMCOPY (BLT_OP=%d), got %d", bltOpMemcopy, got)
 	}
 }
 

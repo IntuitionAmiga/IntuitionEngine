@@ -208,6 +208,8 @@ const (
 	bltCtrlBusy      = 1 << 1
 	bltCtrlIRQEnable = 1 << 2
 	bltCtrlIRQ       = bltCtrlIRQEnable
+
+	bltMemcopyFallbackLimit = 64 * 1024
 )
 
 const (
@@ -219,6 +221,7 @@ const (
 	bltOpMode7     // Affine texture mapping
 	bltOpColorExpand
 	bltOpScale // Nearest-neighbour scaling
+	bltOpMemcopy
 )
 
 // BLT_FLAGS bit definitions
@@ -1363,6 +1366,8 @@ func (chip *VideoChip) executeBlitterLocked(mode VideoMode) {
 		chip.blitColorExpandLocked(mode)
 	case bltOpScale:
 		chip.blitScaleLocked(mode)
+	case bltOpMemcopy:
+		chip.blitMemcopyLocked(mode)
 	default:
 		chip.bltErr = true
 	}
@@ -1514,6 +1519,26 @@ func (chip *VideoChip) blitBulkFill32Locked(dst uint32, width, height int, strid
 		bufLen := uint64(len(chip.frontBuffer))
 		lastOffset := uint64(offset) + uint64(stride)*uint64(height-1) + uint64(rowBytes)
 		if lastOffset > bufLen || offset%BYTES_PER_PIXEL != BUFFER_REMAINDER {
+			if offset >= uint32(len(chip.frontBuffer)) && chip.busMemory != nil {
+				endAddr := uint64(dst) + uint64(stride)*uint64(height-1) + uint64(rowBytes)
+				if endAddr <= uint64(len(chip.busMemory)) {
+					addr := dst
+					for range width {
+						binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], color)
+						addr += BYTES_PER_PIXEL
+					}
+					firstRow := chip.busMemory[dst : dst+rowBytes]
+					rowAddr := dst + stride
+					for y := 1; y < height; y++ {
+						copy(chip.busMemory[rowAddr:rowAddr+rowBytes], firstRow)
+						rowAddr += stride
+					}
+					if !chip.resetting && !chip.hasContent.Load() {
+						chip.hasContent.Store(true)
+					}
+					return
+				}
+			}
 			chip.bltErr = true
 			return
 		}
@@ -1561,16 +1586,16 @@ func (chip *VideoChip) blitBulkFill8Locked(dst uint32, width, height int, stride
 		if chip.busMemory == nil {
 			return
 		}
-		endAddr := dst + stride*uint32(height-1) + rowBytes
-		if endAddr > uint32(len(chip.busMemory)) {
+		endAddr := uint64(dst) + uint64(stride)*uint64(height-1) + uint64(rowBytes)
+		if endAddr > uint64(len(chip.busMemory)) {
 			return
 		}
-		rowAddr := dst
+		rowAddr := uint64(dst)
 		for range height {
 			for i := range width {
-				chip.busMemory[rowAddr+uint32(i)] = color
+				chip.busMemory[int(rowAddr+uint64(i))] = color
 			}
-			rowAddr += stride
+			rowAddr += uint64(stride)
 		}
 		if !chip.resetting && !chip.hasContent.Load() {
 			chip.hasContent.Store(true)
@@ -1581,8 +1606,24 @@ func (chip *VideoChip) blitBulkFill8Locked(dst uint32, width, height int, stride
 	if dst >= VRAM_START && dst < VRAM_START+VRAM_SIZE {
 		offset := dst - BUFFER_OFFSET
 		bufLen := uint32(len(chip.frontBuffer))
-		lastOffset := offset + stride*uint32(height-1) + rowBytes
-		if lastOffset > bufLen {
+		lastOffset := uint64(offset) + uint64(stride)*uint64(height-1) + uint64(rowBytes)
+		if lastOffset > uint64(bufLen) {
+			if offset >= uint32(len(chip.frontBuffer)) && chip.busMemory != nil {
+				endAddr := uint64(dst) + uint64(stride)*uint64(height-1) + uint64(rowBytes)
+				if endAddr <= uint64(len(chip.busMemory)) {
+					rowAddr := uint64(dst)
+					for range height {
+						for i := range width {
+							chip.busMemory[int(rowAddr+uint64(i))] = color
+						}
+						rowAddr += uint64(stride)
+					}
+					if !chip.resetting && !chip.hasContent.Load() {
+						chip.hasContent.Store(true)
+					}
+					return
+				}
+			}
 			chip.bltErr = true
 			return
 		}
@@ -1850,6 +1891,140 @@ func (chip *VideoChip) blitRectInBoundsLocked(addr uint32, width, height int, st
 		return end <= uint64(len(chip.busMemory))
 	}
 	return false
+}
+
+func (chip *VideoChip) blitMemcopyLocked(mode VideoMode) {
+	length := chip.bltWidth
+	if length == 0 {
+		return
+	}
+
+	src := chip.bltSrc
+	dst := chip.bltDst
+	if srcSlice, srcOK := chip.blitMemcopySliceLocked(src, length); srcOK {
+		if dstSlice, dstOK := chip.blitMemcopySliceLocked(dst, length); dstOK {
+			copy(dstSlice, srcSlice)
+			chip.markMemcopyWriteLocked(dst, length, mode)
+			return
+		}
+		if length > bltMemcopyFallbackLimit {
+			chip.bltErr = true
+			return
+		}
+		buf := make([]byte, int(length))
+		copy(buf, srcSlice)
+		for i, b := range buf {
+			chip.blitWrite8Locked(dst+uint32(i), b, mode)
+		}
+		return
+	}
+
+	if dstSlice, dstOK := chip.blitMemcopySliceLocked(dst, length); dstOK {
+		if length > bltMemcopyFallbackLimit {
+			chip.bltErr = true
+			return
+		}
+		buf := make([]byte, int(length))
+		for i := range buf {
+			buf[i] = chip.blitRead8Locked(src + uint32(i))
+		}
+		copy(dstSlice, buf)
+		chip.markMemcopyWriteLocked(dst, length, mode)
+		return
+	}
+
+	if length > bltMemcopyFallbackLimit {
+		chip.bltErr = true
+		return
+	}
+
+	// Mixed or non-slice-backed paths keep memmove semantics with a bounded
+	// temporary. The common VRAM/RAM paths above avoid per-frame allocation.
+	buf := make([]byte, int(length))
+	for i := range buf {
+		buf[i] = chip.blitRead8Locked(src + uint32(i))
+	}
+	for i, b := range buf {
+		chip.blitWrite8Locked(dst+uint32(i), b, mode)
+	}
+}
+
+func (chip *VideoChip) blitMemcopySliceLocked(addr uint32, length uint32) ([]byte, bool) {
+	if length == 0 {
+		return nil, true
+	}
+	end := uint64(addr) + uint64(length)
+	if end > uint64(int(^uint(0)>>1)) {
+		return nil, false
+	}
+	startIdx := int(addr)
+	endIdx := int(end)
+
+	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		if end > uint64(VRAM_START+VRAM_SIZE) {
+			return nil, false
+		}
+		if chip.directVRAM != nil {
+			if chip.busMemory == nil || end > uint64(len(chip.busMemory)) {
+				return nil, false
+			}
+			return chip.busMemory[startIdx:endIdx], true
+		}
+		offset := addr - BUFFER_OFFSET
+		offsetEnd := uint64(offset) + uint64(length)
+		if uint64(offset) < uint64(len(chip.frontBuffer)) {
+			if offsetEnd <= uint64(len(chip.frontBuffer)) {
+				return chip.frontBuffer[int(offset):int(offsetEnd)], true
+			}
+			return nil, false
+		}
+		if chip.busMemory != nil && end <= uint64(len(chip.busMemory)) {
+			return chip.busMemory[startIdx:endIdx], true
+		}
+		return nil, false
+	}
+
+	if chip.busMemory != nil && end <= uint64(len(chip.busMemory)) {
+		visibleEnd := uint64(VRAM_START) + uint64(len(chip.frontBuffer))
+		if chip.directVRAM == nil && uint64(addr) < visibleEnd && end > uint64(VRAM_START) {
+			return nil, false
+		}
+		return chip.busMemory[startIdx:endIdx], true
+	}
+	return nil, false
+}
+
+func (chip *VideoChip) markMemcopyWriteLocked(dst uint32, length uint32, mode VideoMode) {
+	if length == 0 {
+		return
+	}
+	if dst >= VRAM_START && dst < VRAM_START+VRAM_SIZE {
+		if !chip.resetting && !chip.hasContent.Load() {
+			chip.hasContent.Store(true)
+		}
+		if chip.directVRAM != nil {
+			return
+		}
+		offset := dst - BUFFER_OFFSET
+		if offset >= uint32(len(chip.frontBuffer)) {
+			return
+		}
+		visibleLen := length
+		if uint64(offset)+uint64(visibleLen) > uint64(len(chip.frontBuffer)) {
+			visibleLen = uint32(len(chip.frontBuffer)) - offset
+		}
+		startPixel := int(offset) / BYTES_PER_PIXEL
+		endPixel := int(offset+visibleLen-1) / BYTES_PER_PIXEL
+		startX := startPixel % mode.width
+		startY := startPixel / mode.width
+		endX := endPixel % mode.width
+		endY := endPixel / mode.width
+		if endY == startY {
+			chip.markRectDirty(startX, startY, endX-startX+1, 1)
+			return
+		}
+		chip.markRectDirty(0, startY, mode.width, endY-startY+1)
+	}
 }
 
 func (chip *VideoChip) blitMaskedCopyLocked(mode VideoMode) {

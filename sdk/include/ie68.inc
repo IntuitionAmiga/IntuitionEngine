@@ -1129,6 +1129,7 @@ BLT_OP_ALPHA    equ 4                   ; Alpha blending
 BLT_OP_MODE7    equ 5                   ; Affine texture mapping
 BLT_OP_COLOR_EXPAND equ 6              ; Color expansion blit
 BLT_OP_SCALE    equ 7                   ; Nearest-neighbour scale blit
+BLT_OP_MEMCOPY  equ 8                   ; Byte-counted memory copy
 
 ; BLT_FLAGS bit definitions
 BLT_FLAGS_BPP_RGBA32     equ $00       ; Bits 0-1: 4 bytes per pixel (default)

@@ -483,10 +483,11 @@ BLIT FILL dst, w, h, colour [,stride]
 BLIT LINE x1, y1, x2, y2, colour [,stride]
 BLIT MODE7 src, dst, dstW, dstH, u0, v0, duCol, dvCol, duRow, dvRow, texW, texH [,srcStride, dstStride]
 BLIT MEMCOPY src, dst, len
+BLIT M src, dst, len
 BLIT WAIT
 ```
 
-**BLIT COPY** - Copy a rectangular block of pixels from source to destination.
+**BLIT COPY** - Copy a rectangular block of pixels from source to destination. Width and height are measured in pixels; strides are measured in bytes.
 
 **BLIT FILL** - Fill a rectangular area with a solid colour.
 
@@ -494,7 +495,7 @@ BLIT WAIT
 
 **BLIT MODE7** - Affine texture-mapped blit (Mode7). Renders a rotated/scaled texture into a destination rectangle at per-pixel resolution. Texture coordinates use signed 16.16 fixed-point. `texW`/`texH` are power-of-2 masks (for example `255` for a 256x256 texture).
 
-**BLIT MEMCOPY** - Copy a contiguous block of bytes.
+**BLIT MEMCOPY** - Copy a contiguous linear block of bytes. `len` is a byte count, not a pixel count; for a full 640x480 RGBA32 framebuffer use `640*480*4` bytes. `BLIT M` is shorthand for `BLIT MEMCOPY`.
 
 **BLIT WAIT** - Poll until the blitter has finished its current operation (includes timeout).
 
@@ -2268,7 +2269,7 @@ The copper is a display-list coprocessor that executes instructions synchronised
 
 ### 6.3 Blitter Operations
 
-The blitter performs hardware-accelerated block operations: copy, fill, line drawing, alpha, Mode7, colour expansion, and nearest-neighbour scaling. Rectangular operations use source/destination addresses, width, height, and stride. Scale blits use `BLT_WIDTH`/`BLT_HEIGHT` as the source size and pack the destination size in `BLT_COLOR` as `(height << 16) | width`.
+The blitter performs hardware-accelerated block operations: copy, fill, line drawing, alpha, Mode7, colour expansion, nearest-neighbour scaling, and byte-counted memory copy. Rectangular operations use source/destination addresses, width, height, and stride. `BLIT MEMCOPY` uses source, destination, and a byte length. Scale blits use `BLT_WIDTH`/`BLT_HEIGHT` as the source size and pack the destination size in `BLT_COLOR` as `(height << 16) | width`.
 
 ```basic
 REM Copy 100x50 block
@@ -2282,6 +2283,9 @@ BLIT LINE 0, 0, 319, 199, 15, 320
 
 REM Wait for completion
 BLIT WAIT
+
+REM Copy a full 640x480 RGBA32 backbuffer into the front buffer
+BLIT MEMCOPY &H230000, &H100000, 640 * 480 * 4
 
 REM Mode7 affine texture map (256x256 texture, 16.16 fixed-point UVs)
 FP=65536

@@ -140,6 +140,264 @@ func TestBlitterCopy(t *testing.T) {
 	}
 }
 
+func TestBlitterFillOffscreenVRAMWritesBusMemory(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	video.HandleWrite(VIDEO_MODE, 0)
+	const (
+		dst    = uint32(0x360000)
+		stride = uint32(4096)
+		color  = uint32(0x0010182A)
+	)
+	if dst < VRAM_START+uint32(len(video.frontBuffer)) {
+		t.Fatalf("test destination %#x must be outside frontBuffer end %#x", dst, VRAM_START+uint32(len(video.frontBuffer)))
+	}
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 3)
+	bus.Write32(BLT_DST_STRIDE, stride)
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	for y := 0; y < 3; y++ {
+		for x := 0; x < 4; x++ {
+			addr := dst + uint32(y)*stride + uint32(x)*4
+			if got := binary.LittleEndian.Uint32(bus.memory[addr : addr+4]); got != color {
+				t.Fatalf("offscreen fill pixel (%d,%d) = 0x%08X, want 0x%08X", x, y, got, color)
+			}
+		}
+	}
+	if got := video.HandleRead(BLT_STATUS); got&bltStatusErr != 0 {
+		t.Fatalf("offscreen fill set BLT_STATUS error: 0x%X", got)
+	}
+}
+
+func TestBlitterFillOffscreenCLUT8RejectsWrappedBounds(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	video.HandleWrite(VIDEO_MODE, 0)
+	const (
+		dst = uint32(0x360000)
+	)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("offscreen CLUT8 fill panicked on wrapped bounds: %v", r)
+		}
+	}()
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 3)
+	bus.Write32(BLT_DST_STRIDE, 0x80000000)
+	bus.Write32(BLT_COLOR, 0x7F)
+	bus.Write32(BLT_FLAGS, IE_BLT_MAKE_FLAGS(bltFlagsBPP_CLUT8, 0x03))
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	if got := video.HandleRead(BLT_STATUS); got&bltStatusErr == 0 {
+		t.Fatalf("wrapped offscreen CLUT8 fill did not set BLT_STATUS error: 0x%X", got)
+	}
+}
+
+func TestBlitterMemcopyUsesByteLength(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	const (
+		src = uint32(0x2000)
+		dst = uint32(0x3000)
+		n   = 7
+	)
+	for i := 0; i < 32; i++ {
+		bus.Write8(src+uint32(i), byte(0xA0+i))
+		bus.Write8(dst+uint32(i), 0xCC)
+	}
+
+	bus.Write32(BLT_OP, bltOpMemcopy)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, n)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	video.RunBlitterForTest()
+
+	for i := 0; i < n; i++ {
+		if got, want := bus.Read8(dst+uint32(i)), byte(0xA0+i); got != want {
+			t.Fatalf("byte %d copied as 0x%02X, want 0x%02X", i, got, want)
+		}
+	}
+	if got := bus.Read8(dst + n); got != 0xCC {
+		t.Fatalf("byte after MEMCOPY changed to 0x%02X; MEMCOPY must copy exactly %d bytes", got, n)
+	}
+}
+
+func TestBlitterMemcopyFramebufferFlipUsesBulkPath(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	video.HandleWrite(VIDEO_MODE, 0)
+	const (
+		src = uint32(0x230000)
+		dst = uint32(0x100000)
+		n   = 640 * 480 * 4
+	)
+	if src < VRAM_START+uint32(len(video.frontBuffer)) {
+		t.Fatalf("test source %#x must be outside frontBuffer end %#x", src, VRAM_START+uint32(len(video.frontBuffer)))
+	}
+	for i := 0; i < n; i++ {
+		bus.memory[src+uint32(i)] = byte(i)
+	}
+	bus.memory[src+n] = 0xA5
+	video.frontBuffer[n-1] = 0
+
+	bus.Write32(BLT_OP, bltOpMemcopy)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, n)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	if got := video.frontBuffer[0]; got != 0 {
+		t.Fatalf("front buffer first byte = 0x%02X, want 0x00", got)
+	}
+	wantLast := byte((n - 1) & 0xFF)
+	if got := video.frontBuffer[n-1]; got != wantLast {
+		t.Fatalf("front buffer last byte = 0x%02X, want 0x%02X", got, wantLast)
+	}
+	if got := bus.memory[src+n]; got != 0xA5 {
+		t.Fatalf("source guard changed to 0x%02X; MEMCOPY copied past byte length", got)
+	}
+
+	allocs := testing.AllocsPerRun(5, func() {
+		bus.Write32(BLT_CTRL, bltCtrlStart)
+		video.RunBlitterForTest()
+	})
+	if allocs != 0 {
+		t.Fatalf("framebuffer MEMCOPY allocated %.1f times per run, want 0", allocs)
+	}
+}
+
+func TestBlitterMemcopyOversizedFallbackSetsErrorWithoutAllocating(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+
+	bus.Write32(BLT_OP, bltOpMemcopy)
+	bus.Write32(BLT_SRC, 0xFFFF0000)
+	bus.Write32(BLT_DST, 0x000F0000)
+	bus.Write32(BLT_WIDTH, ^uint32(0))
+	bus.Write32(BLT_HEIGHT, 1)
+
+	allocs := testing.AllocsPerRun(5, func() {
+		bus.Write32(BLT_CTRL, bltCtrlStart)
+		video.RunBlitterForTest()
+	})
+	if allocs != 0 {
+		t.Fatalf("oversized invalid MEMCOPY allocated %.1f times per run, want 0", allocs)
+	}
+	if got := video.HandleRead(BLT_STATUS); got&bltStatusErr == 0 {
+		t.Fatalf("oversized invalid MEMCOPY did not set BLT_STATUS error: 0x%X", got)
+	}
+}
+
+func TestBlitterMemcopyCrossingVisibleVRAMMapsFrontBuffer(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	video.HandleWrite(VIDEO_MODE, 0)
+	const (
+		src = uint32(0x2000)
+		dst = uint32(VRAM_START - 16)
+		n   = 32
+	)
+	for i := 0; i < n; i++ {
+		bus.Write8(src+uint32(i), byte(0x50+i))
+		bus.memory[dst+uint32(i)] = 0
+	}
+
+	bus.Write32(BLT_OP, bltOpMemcopy)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, n)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	for i := 0; i < 16; i++ {
+		if got, want := bus.memory[dst+uint32(i)], byte(0x50+i); got != want {
+			t.Fatalf("pre-VRAM byte %d = 0x%02X, want 0x%02X", i, got, want)
+		}
+	}
+	for i := 0; i < 16; i++ {
+		if got, want := video.frontBuffer[i], byte(0x60+i); got != want {
+			t.Fatalf("frontBuffer byte %d = 0x%02X, want 0x%02X", i, got, want)
+		}
+		if got := bus.memory[VRAM_START+uint32(i)]; got != 0 {
+			t.Fatalf("visible VRAM busMemory byte %d changed to 0x%02X; expected frontBuffer mapping", i, got)
+		}
+	}
+}
+
+func TestBlitterMemcopySourceCrossingVisibleVRAMReadsFrontBuffer(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	video.HandleWrite(VIDEO_MODE, 0)
+	const (
+		src = uint32(VRAM_START - 16)
+		dst = uint32(0x3000)
+		n   = 32
+	)
+	for i := 0; i < 16; i++ {
+		bus.memory[src+uint32(i)] = byte(0x20 + i)
+		video.frontBuffer[i] = byte(0xA0 + i)
+		bus.memory[VRAM_START+uint32(i)] = byte(0xE0 + i)
+	}
+
+	bus.Write32(BLT_OP, bltOpMemcopy)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, n)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	for i := 0; i < 16; i++ {
+		if got, want := bus.Read8(dst+uint32(i)), byte(0x20+i); got != want {
+			t.Fatalf("copied pre-VRAM byte %d = 0x%02X, want 0x%02X", i, got, want)
+		}
+	}
+	for i := 0; i < 16; i++ {
+		if got, want := bus.Read8(dst+16+uint32(i)), byte(0xA0+i); got != want {
+			t.Fatalf("copied frontBuffer byte %d = 0x%02X, want 0x%02X", i, got, want)
+		}
+	}
+}
+
+func TestBlitterMemcopyOverlapCrossingVisibleVRAMPreservesSource(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	video.HandleWrite(VIDEO_MODE, 0)
+	const (
+		src = uint32(VRAM_START - 32)
+		dst = uint32(VRAM_START - 16)
+		n   = 32
+	)
+	for i := 0; i < n; i++ {
+		bus.memory[src+uint32(i)] = byte(0x30 + i)
+	}
+
+	bus.Write32(BLT_OP, bltOpMemcopy)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, n)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	for i := 0; i < 16; i++ {
+		if got, want := bus.memory[dst+uint32(i)], byte(0x30+i); got != want {
+			t.Fatalf("overlap pre-VRAM byte %d = 0x%02X, want original source 0x%02X", i, got, want)
+		}
+	}
+	for i := 0; i < 16; i++ {
+		if got, want := video.frontBuffer[i], byte(0x40+i); got != want {
+			t.Fatalf("overlap frontBuffer byte %d = 0x%02X, want original source 0x%02X", i, got, want)
+		}
+	}
+}
+
 func TestBlitterScaleCLUT8Exact2x(t *testing.T) {
 	_, bus := newBlitterTestRig(t)
 	src := uint32(0x20000)

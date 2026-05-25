@@ -152,6 +152,7 @@ BLT_MASK_SRCX_2   = $F49A
 BLT_MASK_SRCX_3   = $F49B
 BLT_OP_COLOR_EXPAND = 6           ; Color expansion blit
 BLT_OP_SCALE      = 7             ; Nearest-neighbour scale blit
+BLT_OP_MEMCOPY    = 8             ; Byte-counted memory copy
 
 ; BLT_FLAGS bit definitions
 BLT_FLAGS_BPP_RGBA32     = $00   ; Bits 0-1: 4 bytes per pixel (default)
@@ -1599,6 +1600,7 @@ BLT_OP_ALPHA    = 4             ; Alpha blending
 BLT_OP_MODE7_OP = 5             ; Affine texture mapping
 BLT_OP_COLOR_EXPAND_OP = 6      ; Color expansion blit
 BLT_OP_SCALE_OP = 7             ; Nearest-neighbour scale blit
+BLT_OP_MEMCOPY_OP = 8           ; Byte-counted memory copy
 
 ; Background color (black with alpha)
 BACKGROUND_0    = $00           ; Blue

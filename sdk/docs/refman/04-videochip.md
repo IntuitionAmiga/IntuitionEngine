@@ -270,7 +270,7 @@ is the rectangle width times bytes per pixel.
 
 | `BLT_OP` | Operation | Reader path | Summary |
 |----------|-----------|-------------|---------|
-| `0` | `COPY` | `BLIT COPY`, `BLIT MEMCOPY`, or `POKE` | Copy a rectangle or one-row memory span. |
+| `0` | `COPY` | `BLIT COPY` or `POKE` | Copy a rectangle. |
 | `1` | `FILL` | `BLIT FILL` or `POKE` | Fill a rectangle with `BLT_COLOR`. |
 | `2` | `LINE` | `BLIT LINE` or `POKE` | Draw a Bresenham line. |
 | `3` | `MASKED_COPY` | `POKE` | Copy RGBA32 source pixels where a 1-bit mask is set. |
@@ -278,6 +278,7 @@ is the rectangle width times bytes per pixel.
 | `5` | `MODE7` | `BLIT MODE7` or `POKE` | Affine RGBA32 texture mapper. |
 | `6` | `COLOR_EXPAND` | `POKE` | Expand a 1-bit template into CLUT8 or RGBA32 pixels. |
 | `7` | `SCALE` | `POKE` | Nearest-neighbour scale from source rectangle to destination rectangle. |
+| `8` | `MEMCOPY` | `BLIT MEMCOPY` or `BLIT M` | Copy a byte-counted linear memory span. |
 
 ### 4.6.3 `BLT_FLAGS`
 

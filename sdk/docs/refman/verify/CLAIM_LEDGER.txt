@@ -216,8 +216,8 @@ Entry format:
   Result: framebuffer, palette, data format, and large-framebuffer limitations are documented for the reader path.
 
 - Area: Ch 4, VideoChip blitter operations.
-  Claim: BLT_OP 0-7 select COPY, FILL, LINE, MASKED_COPY, ALPHA_COPY, MODE7, COLOR_EXPAND, and SCALE; BLT_FLAGS selects BPP, draw modes, and colour-expand flags; the blitter completes synchronously and reports DONE/ERR/IRQ_PENDING in BLT_STATUS.
-  Canonical sources checked: video_chip.go runBlitterLocked, executeBlitterLocked, blitCopyLocked, blitFillLocked, blitLineLocked, blitMaskedCopyLocked, blitAlphaCopyLocked, blitMode7Locked, blitColorExpandLocked, blitScaleLocked, bppFromFlags, drawModeFromFlags, handleBlitterWriteLocked; video_blitter_test.go; ehbasic_test.go BLIT tests.
+  Claim: BLT_OP 0-8 select COPY, FILL, LINE, MASKED_COPY, ALPHA_COPY, MODE7, COLOR_EXPAND, SCALE, and MEMCOPY; BLT_FLAGS selects BPP, draw modes, and colour-expand flags; the blitter completes synchronously and reports DONE/ERR/IRQ_PENDING in BLT_STATUS.
+  Canonical sources checked: video_chip.go runBlitterLocked, executeBlitterLocked, blitCopyLocked, blitFillLocked, blitLineLocked, blitMaskedCopyLocked, blitAlphaCopyLocked, blitMode7Locked, blitColorExpandLocked, blitScaleLocked, blitMemcopyLocked, bppFromFlags, drawModeFromFlags, handleBlitterWriteLocked; video_blitter_test.go; ehbasic_test.go BLIT tests.
   Reader workflow: BASIC first for BLIT COPY/FILL/LINE/MEMCOPY/MODE7, then POKE raw blitter registers for operations without a BASIC keyword.
   Runnable example: Ch 4 "VIDEOCHIP BLITTER POSTER", "MASKED COPY DIAMOND", "ALPHA COPY GLOW", "COLOUR EXPAND TEMPLATE", "NEAREST SCALE", and "MODE7 CHECKERBOARD" listings.
   Expected result: the poster listing clears the framebuffer, draws bands, copies a sprite, draws diagonal lines, and prints BLT_STATUS 2; masked copy leaves background outside the diamond and copies red/yellow pixels inside it; alpha copy blends a half-opaque red sprite over a dark blue background and prints BLT_STATUS 2; colour-expand writes its one-byte template with POKE8 and prints BLT_STATUS 2; scale prints BLT_STATUS 2; Mode7 prints BLT_STATUS 2.

@@ -194,14 +194,13 @@
 1105 REM  display controller reads it. This ensures the viewer never
 1106 REM  sees a partially-rendered frame.
 1107 REM
-1108 REM  307200 = 640 * 480 pixels, but each pixel is 4 bytes, so the
-1109 REM  actual byte count is 1,228,800. The BLIT MEMCOPY command takes
-1110 REM  a count in pixels (not bytes) for 32-bit framebuffer copies.
+1108 REM  The BLIT MEMCOPY command takes a byte count, not a pixel count.
+1109 REM  640 * 480 * 4 = 1,228,800 bytes for a full RGBA32 framebuffer.
 1111 REM
 1112 REM  VSYNC waits for the vertical blanking interval before the next
 1113 REM  frame, locking the animation to the display refresh rate (60Hz)
 1114 REM  and preventing tearing during the copy.
-1120 BLIT MEMCOPY &H900000, &H100000, 307200
+1120 BLIT MEMCOPY &H900000, &H100000, 1228800
 1130 VSYNC
 
 1200 REM ----------------------------------------------------------------
