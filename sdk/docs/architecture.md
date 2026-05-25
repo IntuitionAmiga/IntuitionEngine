@@ -800,7 +800,7 @@ The rasteriser walks each destination pixel, computes the source UV from the aff
 
 ### Video Compositor
 
-The compositor collects immutable frame snapshots from all enabled video sources and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, both mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing. Desktop startup locks the presentation output to 1920x1080 fullscreen while native sources keep their requested dimensions. The default native mode is 960x540 for exact 2x 1080p presentation. Non-16:9 sources are aspect-fit by default and can be stretch-filled with `Shift+F11`.
+The compositor collects immutable frame snapshots from all enabled video sources and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, both mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing. Desktop startup uses a 1920x1080 fullscreen presentation by default, and the x64 live-image launcher locks it fullscreen through `IE_LIVE_IMAGE=1`. Native sources keep their requested dimensions. The default native mode is 960x540 for exact 2x 1080p presentation. Non-16:9 sources are aspect-fit by default and can be stretch-filled with `F11`; `Shift+F11` toggles fullscreen/windowed mode when that mode is not locked.
 
 Two rendering paths:
 

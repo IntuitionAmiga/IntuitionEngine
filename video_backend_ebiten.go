@@ -46,6 +46,7 @@ type EbitenOutput struct {
 	height             int
 	format             PixelFormat
 	fullscreen         bool
+	lockFullscreen     bool
 	scale              int
 	windowedW          int
 	windowedH          int
@@ -208,6 +209,10 @@ func (eo *EbitenOutput) UpdateFrame(data []byte) error {
 func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
 	eo.bufferMutex.Lock()
 	defer eo.bufferMutex.Unlock()
+	if config.LockFullscreen || eo.lockFullscreen {
+		config.LockFullscreen = true
+		config.Fullscreen = true
+	}
 
 	width := config.Width
 	height := config.Height
@@ -236,6 +241,7 @@ func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
 	eo.windowedW = eo.width * eo.scale
 	eo.windowedH = eo.height * eo.scale
 	eo.fullscreen = config.Fullscreen
+	eo.lockFullscreen = config.LockFullscreen
 	if eo.running.Load() {
 		ebiten.SetFullscreen(eo.fullscreen)
 		if !eo.fullscreen {
@@ -254,13 +260,14 @@ func (eo *EbitenOutput) GetDisplayConfig() DisplayConfig {
 	eo.bufferMutex.RLock()
 	defer eo.bufferMutex.RUnlock()
 	return DisplayConfig{
-		Width:       eo.width,
-		Height:      eo.height,
-		Scale:       eo.scale,
-		PixelFormat: eo.format,
-		RefreshRate: eo.refreshRate,
-		VSync:       true,
-		Fullscreen:  eo.fullscreen,
+		Width:          eo.width,
+		Height:         eo.height,
+		Scale:          eo.scale,
+		PixelFormat:    eo.format,
+		RefreshRate:    eo.refreshRate,
+		VSync:          true,
+		Fullscreen:     eo.fullscreen,
+		LockFullscreen: eo.lockFullscreen,
 	}
 }
 
@@ -408,22 +415,30 @@ func (eo *EbitenOutput) Update() error {
 		return nil
 	}
 
-	if inpututil.IsKeyJustPressed(ebiten.KeyF11) && (ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight)) {
+	if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
+		shiftPressed := ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight)
 		eo.bufferMutex.RLock()
 		compositor := eo.compositor
+		lockFullscreen := eo.lockFullscreen
+		scaleToggleAvailable := compositor != nil && compositor.ActiveSourceNeedsScaleToggle()
 		eo.bufferMutex.RUnlock()
-		if compositor != nil {
-			compositor.ToggleScaleModeIfNonNative()
+		switch decideEbitenF11Action(true, shiftPressed, lockFullscreen, scaleToggleAvailable) {
+		case ebitenF11ActionToggleScale:
+			if compositor != nil {
+				compositor.ToggleScaleModeIfNonNative()
+			}
+		case ebitenF11ActionToggleFullscreen:
+			eo.bufferMutex.Lock()
+			if !eo.lockFullscreen {
+				eo.fullscreen = !eo.fullscreen
+				ebiten.SetFullscreen(eo.fullscreen)
+				if !eo.fullscreen {
+					ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
+				}
+				eo.applySystemCursorMode(shouldHideSystemCursor(eo.fullscreen, eo.hideSystemCursor))
+			}
+			eo.bufferMutex.Unlock()
 		}
-	} else if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
-		eo.bufferMutex.Lock()
-		eo.fullscreen = !eo.fullscreen
-		ebiten.SetFullscreen(eo.fullscreen)
-		if !eo.fullscreen {
-			ebiten.SetWindowSize(eo.windowedW, eo.windowedH)
-		}
-		eo.applySystemCursorMode(shouldHideSystemCursor(eo.fullscreen, eo.hideSystemCursor))
-		eo.bufferMutex.Unlock()
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyF12) {
 		eo.bufferMutex.Lock()
@@ -627,6 +642,30 @@ const (
 	keyRepeatDelay    = 24 // ticks (~400ms at 60TPS)
 	keyRepeatInterval = 2  // ticks (~33ms)
 )
+
+type ebitenF11Action int
+
+const (
+	ebitenF11ActionNone ebitenF11Action = iota
+	ebitenF11ActionToggleScale
+	ebitenF11ActionToggleFullscreen
+)
+
+func decideEbitenF11Action(f11JustPressed, shiftPressed, lockFullscreen, scaleToggleAvailable bool) ebitenF11Action {
+	if !f11JustPressed {
+		return ebitenF11ActionNone
+	}
+	if shiftPressed {
+		if lockFullscreen {
+			return ebitenF11ActionNone
+		}
+		return ebitenF11ActionToggleFullscreen
+	}
+	if scaleToggleAvailable {
+		return ebitenF11ActionToggleScale
+	}
+	return ebitenF11ActionNone
+}
 
 var ebitenToSTScancode = map[ebiten.Key]uint8{
 	ebiten.KeyEscape:       0x01,
@@ -1393,6 +1432,29 @@ func runtimeCPUStatusTokens(s runtimeStatusSnapshot) []statusToken {
 	}
 }
 
+func ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable bool, scaleMode PresentationScaleMode) []statusToken {
+	tokens := []statusToken{
+		{name: "F8:IE Script", enabled: false},
+		{name: "F9:IE Monitor", enabled: false},
+		{name: "F10:Reset", enabled: false},
+	}
+	if !lockFullscreen {
+		tokens = append(tokens, statusToken{name: "Shift+F11:Fullscreen/Windowed", enabled: false})
+	}
+	if scaleToggleAvailable {
+		tokens = append(tokens,
+			statusToken{name: "F11:", enabled: false},
+			statusToken{name: "fit", enabled: scaleMode == ScaleAspectFit},
+			statusToken{name: "/", enabled: false},
+			statusToken{name: "stretch", enabled: scaleMode == ScaleStretchFill},
+		)
+	}
+	return append(tokens,
+		statusToken{name: "F12:Status", enabled: false},
+		statusToken{name: "Ctrl+Alt:Mouse", enabled: false},
+	)
+}
+
 func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	s := runtimeStatus.snapshot()
 
@@ -1434,26 +1496,15 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 
 	eo.bufferMutex.RLock()
 	compositor := eo.compositor
+	lockFullscreen := eo.lockFullscreen
 	eo.bufferMutex.RUnlock()
-	legendTokens := []statusToken{
-		{name: "F8:IE Script", enabled: false},
-		{name: "F9:IE Monitor", enabled: false},
-		{name: "F10:Reset", enabled: false},
-		{name: "F11:Fullscreen/Windowed", enabled: false},
-	}
+	scaleToggleAvailable := false
+	scaleMode := ScaleAspectFit
 	if compositor != nil && compositor.ActiveSourceNeedsScaleToggle() {
-		mode := compositor.GetScaleMode()
-		legendTokens = append(legendTokens,
-			statusToken{name: "Shift+F11:", enabled: false},
-			statusToken{name: "fit", enabled: mode == ScaleAspectFit},
-			statusToken{name: "/", enabled: false},
-			statusToken{name: "stretch", enabled: mode == ScaleStretchFill},
-		)
+		scaleToggleAvailable = true
+		scaleMode = compositor.GetScaleMode()
 	}
-	legendTokens = append(legendTokens,
-		statusToken{name: "F12:Status", enabled: false},
-		statusToken{name: "Ctrl+Alt:Mouse", enabled: false},
-	)
+	legendTokens := ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable, scaleMode)
 	legendW := statusTokensWidth(legendTokens)
 	legendX := max(eo.width-legendW-6, 6)
 	drawStatusTokens(screen, legendX, y+39, legendTokens)

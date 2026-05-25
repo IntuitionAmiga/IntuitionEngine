@@ -44,3 +44,19 @@ func TestEmbeddedAB3D2StartFullscreenEnabledParsesBuildFlag(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveImageModeEnabledParsesEnv(t *testing.T) {
+	for _, value := range []string{"1", "true", "TRUE", "yes", "on"} {
+		t.Setenv("IE_LIVE_IMAGE", value)
+		if !liveImageModeEnabled() {
+			t.Fatalf("IE_LIVE_IMAGE=%q should enable live image mode", value)
+		}
+	}
+
+	for _, value := range []string{"", "0", "false", "off", "live"} {
+		t.Setenv("IE_LIVE_IMAGE", value)
+		if liveImageModeEnabled() {
+			t.Fatalf("IE_LIVE_IMAGE=%q should not enable live image mode", value)
+		}
+	}
+}

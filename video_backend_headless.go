@@ -54,6 +54,10 @@ func (h *HeadlessVideoOutput) IsStarted() bool {
 func (h *HeadlessVideoOutput) SetDisplayConfig(config DisplayConfig) error {
 	h.configMu.Lock()
 	defer h.configMu.Unlock()
+	if config.LockFullscreen || h.config.LockFullscreen {
+		config.LockFullscreen = true
+		config.Fullscreen = true
+	}
 	h.config = config
 	return nil
 }

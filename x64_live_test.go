@@ -238,6 +238,7 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 		`set -- "$@" -intuitionos-root /var/ie/share/Systems/IntuitionOS`,
 		`set -- "$@" -intuitionos-image /var/ie/share/Systems/IntuitionOS/Boot/iexec.ie64`,
 		`cd /opt/ie`,
+		`export IE_LIVE_IMAGE=1`,
 		`exec dbus-run-session -- "$0" "$@"`,
 		`export XDG_RUNTIME_DIR="/tmp/ie-runtime-$(id -u)"`,
 		`export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"`,
@@ -273,6 +274,19 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("build_x64_ie_img.sh missing %q", want)
 		}
+	}
+
+	exportIdx := strings.Index(body, `export IE_LIVE_IMAGE=1`)
+	dbusIdx := strings.Index(body, `exec dbus-run-session -- "$0" "$@"`)
+	execIdx := strings.Index(body, `exec /opt/ie/IntuitionEngine "$@"`)
+	if exportIdx < 0 || dbusIdx < 0 || execIdx < 0 {
+		t.Fatalf("live launcher missing IE_LIVE_IMAGE/dbus/final exec contract")
+	}
+	if exportIdx > dbusIdx {
+		t.Fatalf("IE_LIVE_IMAGE export must happen before dbus-run-session re-exec")
+	}
+	if exportIdx > execIdx {
+		t.Fatalf("IE_LIVE_IMAGE export must happen before final IntuitionEngine exec")
 	}
 }
 

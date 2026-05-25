@@ -56,6 +56,15 @@ func embeddedAB3D2StartFullscreenEnabled() bool {
 	}
 }
 
+func liveImageModeEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("IE_LIVE_IMAGE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func isOverdriveAB3D2Launch(modeM68K bool, filename string) bool {
 	if !modeM68K || filename == "" {
 		return false
@@ -1397,6 +1406,10 @@ func main() {
 	outputConfig := output.GetDisplayConfig()
 	outputConfig.Scale = ClampScale(scale)
 	outputConfig.Fullscreen = shouldStartFullscreen(fullscreen, modeM68K, filename)
+	if liveImageModeEnabled() {
+		outputConfig.Fullscreen = true
+		outputConfig.LockFullscreen = true
+	}
 	if err := output.SetDisplayConfig(outputConfig); err != nil {
 		fmt.Printf("Failed to configure video output: %v\n", err)
 		os.Exit(1)

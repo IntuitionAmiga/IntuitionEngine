@@ -793,9 +793,11 @@ else
     set -- -ehbasic-host -ehbasic-host-appliance
 fi
 if [ -z "${IE_LIVE_DBUS_SESSION:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+    export IE_LIVE_IMAGE=1
     export IE_LIVE_DBUS_SESSION=1
     exec dbus-run-session -- "$0" "$@"
 fi
+export IE_LIVE_IMAGE=1
 if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "$XDG_RUNTIME_DIR" ]; then
     export XDG_RUNTIME_DIR="/tmp/ie-runtime-$(id -u)"
 fi

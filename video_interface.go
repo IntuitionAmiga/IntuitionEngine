@@ -56,6 +56,8 @@ type DisplayConfig struct {
 	PixelFormat PixelFormat
 	VSync       bool // Whether to sync frame updates to display refresh
 	Fullscreen  bool
+	// LockFullscreen forces fullscreen on and prevents runtime fullscreen toggles.
+	LockFullscreen bool
 }
 
 func ClampScale(s int) int {

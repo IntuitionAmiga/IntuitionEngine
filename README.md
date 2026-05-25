@@ -99,8 +99,8 @@ Important keys:
 | `F8` | Toggle the Lua REPL overlay, unless the Machine Monitor is active. |
 | `F9` | Toggle the Machine Monitor. |
 | `F10` | Hard reset. |
-| `F11` | Toggle fullscreen. |
-| `Shift+F11` | Toggle fit/stretch scaling when the active native mode is not 16:9. |
+| `F11` | Toggle fit/stretch scaling when the active native mode is not 16:9. |
+| `Shift+F11` | Toggle fullscreen/windowed mode outside locked live-image sessions. |
 | `F12` | Toggle the runtime status bar. |
 | `Ctrl+Alt` | Release captured relative mouse mode. |
 
@@ -382,8 +382,8 @@ make set-default-handler
 | `F8` | Toggle the Lua REPL overlay, unless the Machine Monitor is active. |
 | `F9` | Toggle the Machine Monitor. |
 | `F10` | Hard reset. |
-| `F11` | Toggle fullscreen. |
-| `Shift+F11` | Toggle fit/stretch scaling when the active native mode is not 16:9. |
+| `F11` | Toggle fit/stretch scaling when the active native mode is not 16:9. |
+| `Shift+F11` | Toggle fullscreen/windowed mode outside locked live-image sessions. |
 | `F12` | Toggle the runtime status bar. |
 | `Page Up` / `Page Down` | Scroll terminal scrollback where supported. |
 | Mouse wheel | Scroll terminal scrollback where supported. |

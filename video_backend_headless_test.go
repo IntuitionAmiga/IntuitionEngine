@@ -41,6 +41,25 @@ func TestHeadlessOutput_DisplayConfig_ScaleAndFullscreen(t *testing.T) {
 	}
 }
 
+func TestHeadlessOutput_DisplayConfig_LockFullscreen(t *testing.T) {
+	out := &HeadlessVideoOutput{}
+	if err := out.SetDisplayConfig(DisplayConfig{Width: 320, Height: 240, LockFullscreen: true}); err != nil {
+		t.Fatalf("SetDisplayConfig returned error: %v", err)
+	}
+	got := out.GetDisplayConfig()
+	if !got.LockFullscreen || !got.Fullscreen {
+		t.Fatalf("locked config = LockFullscreen %v Fullscreen %v, want both true", got.LockFullscreen, got.Fullscreen)
+	}
+
+	if err := out.SetDisplayConfig(DisplayConfig{Width: 320, Height: 240, Fullscreen: false}); err != nil {
+		t.Fatalf("second SetDisplayConfig returned error: %v", err)
+	}
+	got = out.GetDisplayConfig()
+	if !got.LockFullscreen || !got.Fullscreen {
+		t.Fatalf("sticky locked config = LockFullscreen %v Fullscreen %v, want both true", got.LockFullscreen, got.Fullscreen)
+	}
+}
+
 func TestHeadlessOutput_UpdateFrame_RejectsWrongSize(t *testing.T) {
 	out, err := NewEbitenOutput()
 	if err != nil {

@@ -45,7 +45,7 @@ Default desktop boot starts locked at `DefaultPresentationWidth` by `DefaultPres
 
 `LockResolution` pins a presentation size and ignores later notifications until `UnlockResolution`. `SetDimensions` is also ignored while locked. Runtime notifications still update native mouse-coordinate mapping outside the compositor.
 
-The default scale mode is aspect-fit. Non-16:9 sources are letterboxed or pillarboxed; `Shift+F11` toggles stretch-fill only when the active native source is not already 16:9.
+The default scale mode is aspect-fit. Non-16:9 sources are letterboxed or pillarboxed; `F11` toggles stretch-fill only when the active native source is not already 16:9. `Shift+F11` toggles fullscreen/windowed mode unless fullscreen is locked by the live image launcher.
 
 `pendingResolution` is a packed `uint64` with zero as the no-pending sentinel. Public resolution-change paths reject non-positive dimensions before packing, so a valid pending resolution cannot be zero.
 
