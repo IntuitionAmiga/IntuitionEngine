@@ -150,7 +150,7 @@ Current controlled polish pass:
   monitor wrappers, so published `A` transcripts are marked as text and
   verified against `debug_asm` and `internal/asm/ie64` tests. The
   paired byte-entry transcript remains the runnable PRM sweep path.
-- Integrate SMF, Doom MUS, and the RawlandMini GM synth path added in
+- Integrate SMF, MUS, and the RawlandMini GM synth path added in
   commit `0ff06b2`. This is a first-class audio player/synth path, not
   a footnote under the media loader. Insert a new Chapter 21,
   "MIDI/MUS and RawlandMini GM Synth", after WAV and before Paula DMA.
@@ -237,6 +237,45 @@ Current controlled polish pass:
   6. Claim ledger: record the canonical sources checked and the typed
      reader example.
   7. Publish and print PDFs only after the source pass and checks are
+     complete.
+- Integrate the x86 and backed-RAM behaviour changes from commit
+  `794d368`. This commit also contains runtime diagnostics and
+  compatibility-oriented fixes that are not book features. Do not add
+  file-format lore or game-specific prose while documenting this pass.
+  The reader-facing changes are:
+
+  - x86 implements `CMOVcc` (`0F 40`-`0F 4F`) in the flat-mode
+    instruction set. The source operand is still read when the
+    condition is false.
+  - x86 data accesses can reach native MMIO addresses at
+    `$000F0000`-`$000FFFFF` directly, and the `$F000`-`$FFFF`
+    compatibility mirror remains a data-access mirror only.
+    Instruction fetch at `$F000` reads flat program RAM at `$0000F000`.
+  - Byte, word, and long RAM accesses through the bus can cross from
+    the low memory slice into backed active RAM, so File I/O reads may
+    copy into any valid active-RAM destination span.
+
+  Execute this x86/backed-RAM pass in this order:
+
+  1. Check `cpu_x86.go`, `cpu_x86_ops.go`, `cpu_x86_runner.go`,
+     `cpu_x86_test.go`, `machine_bus.go`, `file_io.go`,
+     `file_io_test.go`, and `debug_access_test.go` before writing
+     claims.
+  2. Chapter 24: clarify that ordinary byte, word, and long RAM spans
+     may live in backed active RAM, not only in the low memory slice.
+  3. Chapter 30: update the x86 overview, memory model, and instruction
+     list for `CMOVcc`, native MMIO data access, and fetch-vs-data
+     treatment of the `$F000` compatibility mirror.
+  4. Chapter 35: state that `FILE_DATA_PTR` may point to any valid
+     active-RAM destination span and that reads may cross the low/backed
+     RAM boundary.
+  5. Appendix G: add `CMOVcc` to the x86 opcode quick reference.
+  6. Appendix H: add the x86 MMIO/fetch-address rule.
+  7. Appendix L: add lookup entries for backed RAM, `CMOVcc`,
+     `FILE_DATA_PTR`, and x86 MMIO access.
+  8. Claim ledger: record the canonical sources checked and the
+     affected reader-facing examples.
+  9. Publish and print PDFs only after the source pass and checks are
      complete.
 - Run a full source-tree editorial audit after any manually edited
   refman Markdown. Classify every `.md` file under `sdk/docs/refman/`

@@ -74,6 +74,12 @@ words at `$F2400`/`$F2404` (`SYSINFO_TOTAL_RAM_LO`/`HI`) report the
 byte size of total guest RAM as a `64`-bit value; `$F2408`/`$F240C`
 report the size visible to the currently executing CPU profile.
 
+The low memory slice and the backed RAM above it behave as one active
+RAM space for ordinary byte, word, and long bus accesses. A valid span
+may start in the low slice and end in backed RAM; each byte is copied
+in little-endian order. Device MMIO is still MMIO, not RAM, even when
+its address lies inside the low `32`-bit window.
+
 ### 24.1.2 The sign-extended alias
 
 The top `64` kilobytes (`$FFFF0000` - `$FFFFFFFF`) are not real
@@ -400,9 +406,13 @@ For them, the I/O region appears at the top of the 16-bit space:
 
 IE32, M68K, and x86 see the low `32`-bit bus window directly. IE64
 sees that same low window and can also reach RAM above it through its
-`64`-bit physical path. A `POKE` at `$F0700` from BASIC and a 68K
-`MOVE.L D0, ($F0700).L` reach the same register because both names land
-inside the common low MMIO window.
+`64`-bit physical path. x86 data accesses may use the native MMIO
+addresses at `$000F0000`-`$000FFFFF`; the `$F000`-`$FFFF`
+compatibility mirror is a data-access mirror only. Instruction fetch
+at `$F000` reads program RAM at `$0000F000`. A `POKE` at `$000F0700`
+from BASIC, a 68K `MOVE.L D0, ($F0700).L`, and an x86 data store to
+`$000F0700` reach the same terminal register because all three names
+land inside the common low MMIO window.
 
 ## 24.10 What comes next
 

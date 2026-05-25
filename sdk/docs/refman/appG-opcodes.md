@@ -169,7 +169,7 @@ Byte-entry crib for Chapter 29:
 | `13 FC 00 vv aa aa aa aa` | `MOVE.B #vv,$aaaaaaaa` | Opcode and extension words are big-endian; the byte immediate sits in the low byte of the `$00vv` extension word. |
 | `60 00 dd dd` | `BRA.W disp16` | Signed big-endian displacement from the following word; Chapter 29 uses `$FFFE` for a self-loop. |
 
-## G.6 x86 (Chapter 30, 8086 base + 386 extensions)
+## G.6 x86 (Chapter 30, 8086 base + 386 and selected later extensions)
 
 `EAX`, `EBX`, `ECX`, `EDX`, `ESI`, `EDI`, `EBP`, `ESP`, plus
 16-bit and 8-bit subregisters. Segments `CS`, `DS`, `ES`, `FS`,
@@ -177,7 +177,7 @@ Byte-entry crib for Chapter 29:
 
 | Group | Mnemonics |
 |-------|-----------|
-| Move        | `MOV`, `MOVZX`, `MOVSX`, `LEA`, `XCHG`, `XLAT`, `PUSH`, `POP`, `PUSHA`, `POPA`, `PUSHAD`, `POPAD`, `PUSHF`, `POPF`, `PUSHFD`, `POPFD`. |
+| Move        | `MOV`, `MOVZX`, `MOVSX`, `CMOVcc`, `LEA`, `XCHG`, `XLAT`, `PUSH`, `POP`, `PUSHA`, `POPA`, `PUSHAD`, `POPAD`, `PUSHF`, `POPF`, `PUSHFD`, `POPFD`. |
 | Arith       | `ADD`, `ADC`, `SUB`, `SBB`, `INC`, `DEC`, `CMP`, `NEG`, `MUL`, `IMUL`, `DIV`, `IDIV`, `DAA`, `DAS`, `AAA`, `AAS`, `AAM`, `AAD`, `CBW`, `CWD`, `CWDE`, `CDQ`. |
 | Logical     | `AND`, `OR`, `XOR`, `NOT`, `TEST`. |
 | Shift / rot | `SHL`, `SHR`, `SAR`, `SAL`, `ROL`, `ROR`, `RCL`, `RCR`, `SHLD`, `SHRD`. |
@@ -188,7 +188,7 @@ Byte-entry crib for Chapter 29:
 | Flag        | `STC`, `CLC`, `CMC`, `STD`, `CLD`, `STI`, `CLI`, `LAHF`, `SAHF`. |
 | Segment     | `LDS`, `LES`, `LFS`, `LGS`, `LSS`. |
 | System      | `HLT`, `WAIT`, `NOP`, `ESC`, `LOCK`. |
-| 386 extras  | `BSWAP`, `MOVSX`, `MOVZX`, dword forms of `16`-bit ops via `66h` / `67h` prefixes. |
+| Flat-mode extras | `BSWAP`, `CMOVcc`, `MOVSX`, `MOVZX`, dword forms of `16`-bit ops via `66h` / `67h` prefixes. |
 
 Omitted (Chapter 30): all protected-mode opcodes (`LGDT`,
 `LIDT`, `LLDT`, `LTR`, `LMSW`, `SMSW`, `ARPL`, `LAR`, `LSL`,

@@ -92,6 +92,7 @@ chapter give the full story; this appendix is the cheat sheet.
 | Reset vector       | `EIP = 0`, `CS = 0`, `DS = ES = SS = 0` (flat, not the 8086 `F000:FFF0` boot vector). |
 | `.ie86` image start | bytes loaded at `$00000000`, execution starts with `EIP = 0`; use an entry stub at `0` if the body lives elsewhere. |
 | IVT                | `$0000`-`$03FF` (`256` entries, `4` bytes each: offset + segment). |
+| MMIO data access   | `$000F0000`-`$000FFFFF` is native MMIO. Data accesses in `$F000`-`$FFFF` mirror `$000F0000`-`$000F0FFF`. Instruction fetch at `$F000` reads flat RAM at `$0000F000`. |
 | Stack              | `SS:ESP`, segments are zero so the stack lives in flat RAM. |
 | Call ABI           | Caller pushes arguments right-to-left; `EAX` returns; `EBX`, `ESI`, `EDI`, `EBP` callee-saved; `ECX`, `EDX` caller-saved. |
 | BIOS-style ints    | reserved; no BIOS ROM is provided. The IVT is initialised to a default IRET routine. |

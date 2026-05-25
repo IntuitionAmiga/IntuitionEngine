@@ -68,7 +68,7 @@ filename and, when the format has subsongs, an optional subsong number:
 30 SOUND PLAY "INTRO.SID",0
 40 SOUND PLAY "TUNE.AHX",1
 50 SOUND PLAY "SONG.MID"
-60 SOUND PLAY "E1M1.MUS"
+60 SOUND PLAY "SONG.MUS"
 70 SOUND PLAY STOP
 ```
 
@@ -279,7 +279,7 @@ x86 can use the full-address MMIO map, and it also has chip-style ports:
 - For Atari 8-bit music, use POKEY or `SOUND PLAY` on a SAP file.
 - For AHX music, use AHX.
 - For ProTracker music, use MOD.
-- For Standard MIDI Files or Doom MUS files, use MIDI/MUS.
+- For Standard MIDI Files or MUS files, use MIDI/MUS.
 - For sampled speech and recorded effects, use WAV.
 - For raw sample streaming and double-buffering, use Paula DMA.
 

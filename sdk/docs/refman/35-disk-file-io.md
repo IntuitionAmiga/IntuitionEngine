@@ -85,7 +85,11 @@ buffer and `FILE_RESULT_LEN` is the byte count. If status is `1`,
 read `FILE_ERROR_CODE`.
 
 The reader must provide enough destination memory. The disk block
-does not receive a destination capacity for reads.
+does not receive a destination capacity for reads. `FILE_DATA_PTR` may
+point anywhere in active RAM. If the destination begins near the end of
+the low memory slice and continues into backed extended RAM, the bytes
+are still copied as one ordinary RAM span, provided the whole span is
+inside active RAM.
 
 `FILE_DATA_LEN` is write-side state. A read ignores it, even if it
 still contains the length from an earlier write. On a successful read,
@@ -231,6 +235,11 @@ from `FILE_DATA_PTR`. Successful reads and lists set
 `FILE_RESULT_LEN` to `0` on failure. Reads whose path is accepted but
 whose file cannot be read also set `FILE_RESULT_LEN` to `0`. After a
 failed write, do not rely on `FILE_RESULT_LEN`.
+
+Read destinations are ordinary bus addresses. They may be in low RAM
+or backed extended RAM, and the transfer may cross that boundary. The
+program must still choose an address range that is large enough for the
+file.
 
 The block is synchronous and single-operation. Program code
 should not change `FILE_NAME_PTR`, `FILE_DATA_PTR`, or

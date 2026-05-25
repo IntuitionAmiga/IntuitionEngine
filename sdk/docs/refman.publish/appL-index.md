@@ -23,6 +23,7 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | BASIC direct mode | Chapter 1 |
 | BASIC vocabulary | Chapter 2 |
+| Backed RAM | Chapter 24, Chapter 35 |
 | BLIT M | Chapter 2, Chapter 4 |
 | BLIT MEMCOPY | Chapter 2, Chapter 4, Appendix D |
 | Blitter | Chapter 4, Appendix D |
@@ -37,6 +38,7 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | CLUT8 | Chapter 4 |
+| CMOVcc | Chapter 30, Appendix G |
 | Compositor | Chapter 3, Appendix K |
 | Copper | Chapter 4 |
 | Coprocessor | Chapter 32, Chapter 39, Appendix I |
@@ -64,6 +66,7 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | File I/O | Chapter 35, Chapter 39, Appendix D |
+| FILE_DATA_PTR | Chapter 35, Appendix D |
 | FBZ_MODE | Chapter 9 |
 | Fixed-point maths | Chapter 4, Chapter 9, Appendix F |
 | Frequency tables | Appendix E |
@@ -195,6 +198,7 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | x86 | Chapter 30, Chapter 31, Appendix G, Appendix H |
 | x86 .ie86 flat images | Chapter 30, Appendix H |
+| x86 MMIO data access | Chapter 24, Chapter 30, Appendix H |
 
 ## Z
 

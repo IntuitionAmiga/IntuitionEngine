@@ -36,7 +36,7 @@ result to the audio output.
 | AHX           | 18 | AHX song playback |
 | MOD           | 19 | Four-channel tracker playback |
 | WAV           | 20 | PCM sample playback |
-| MIDI/MUS      | 21 | SMF and Doom MUS playback through RawlandMini |
+| MIDI/MUS      | 21 | SMF and MUS playback through RawlandMini |
 | Paula DMA     | 22 | Four DMA sample channels |
 
 Chapter 23 gives BASIC music recipes that combine these engines. The
@@ -62,7 +62,7 @@ sample playback.
 | AHX | Four synthetic music voices from AHX or THX module data | You want a chip-tune song format without sample data |
 | MOD | Four-channel sample tracker playback with pattern and effect data | You want Amiga-style tracker music from one memory block |
 | WAV | RIFF/WAVE PCM parsing, resampling, and stereo or mono output | You want recorded audio, speech, stings, or test tones |
-| MIDI/MUS | SMF type 0/1 and Doom MUS parsing, 16 MIDI channels, 10 active RawlandMini voices, GM-style programme families, drum channel, tempo, volume, loop, pause, and pitch bend | You want file-based melodic music with a built-in GM-style patch table |
+| MIDI/MUS | SMF type 0/1 and MUS parsing, 16 MIDI channels, 10 active RawlandMini voices, GM-style programme families, drum channel, tempo, volume, loop, pause, and pitch bend | You want file-based melodic music with a built-in GM-style patch table |
 | Paula DMA | Four low-level signed 8-bit sample DMA channels with period and completion bits | You want exact sample-buffer control or Amiga-style DMA timing |
 
 ## 11.3 Master control

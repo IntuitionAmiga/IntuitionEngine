@@ -2,7 +2,7 @@
 # Chapter 21 - MIDI/MUS and RawlandMini GM Synth
 
 The MIDI/MUS player is the bridge between file music and the
-IE-native mixer. It accepts Standard MIDI Files and Doom MUS data,
+IE-native mixer. It accepts Standard MIDI Files and MUS data,
 turns their notes, programmes, controllers, tempo changes, and pitch
 bends into events, then renders them with the built-in RawlandMini
 patch table.
@@ -59,14 +59,14 @@ and end the track.
 Try changing line 80 to a smaller value such as `90`. The same notes
 play with the same patch table, but the whole MIDI player is quieter.
 
-## 21.2 First Doom MUS sound
+## 21.2 First MUS sound
 
-Doom MUS uses a smaller event stream. This example builds the shortest
-useful MUS block: one note-on event, one note-off event, and an end
-event. It uses the same player registers as the SMF example.
+MUS uses a smaller event stream than SMF. This example builds the
+shortest useful MUS block: one note-on event, one note-off event, and
+an end event. It uses the same player registers as the SMF example.
 
 ```basic
-10 REM TINY DOOM MUS BLIP
+10 REM TINY MUS BLIP
 20 POKE &H000F0800,1
 30 A=&H00120100:L=24
 40 FOR I=0 TO L-1
@@ -104,7 +104,7 @@ of the MUS score.
 | SMF tempo | Tempo meta-events, default `120` BPM |
 | SMF title | First track-name meta-event |
 | SMF unsupported | Type `2`, SMPTE division |
-| MUS format | Doom MUS header `MUS` plus byte `$1A` |
+| MUS format | Header `MUS` plus byte `$1A` |
 | MUS timing | `140` ticks per second |
 | Patch table | Built-in `RawlandMini` |
 | Output voices | Up to `10` active voices |
@@ -242,10 +242,10 @@ From BASIC, the shortest path is:
 20 SOUND STOP
 ```
 
-The same `SOUND PLAY` form also accepts Doom MUS files:
+The same `SOUND PLAY` form also accepts MUS files:
 
 ```basic
-10 SOUND PLAY "E1M1.MUS"
+10 SOUND PLAY "SONG.MUS"
 20 SOUND STOP
 ```
 
