@@ -21,6 +21,10 @@ type IODeviceDesc struct {
 	Registers []IORegisterDesc
 }
 
+type ioRegisterReader interface {
+	ReadIORegister(addr uint64, width int) (uint32, bool)
+}
+
 var ioDevices = map[string]*IODeviceDesc{
 	"video": {
 		Name: "VideoChip",
@@ -225,6 +229,44 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"SUBSONG", 0xF0B91, 1, "RW"},
 		},
 	},
+	"midiplay": {
+		Name: "MIDI/MUS Player",
+		Registers: []IORegisterDesc{
+			{"PLAY_PTR", MIDI_PLAY_PTR, 4, "RW"},
+			{"PLAY_LEN", MIDI_PLAY_LEN, 4, "RW"},
+			{"PLAY_CTRL", MIDI_PLAY_CTRL, 4, "RW"},
+			{"PLAY_STATUS", MIDI_PLAY_STATUS, 4, "RO"},
+			{"POSITION", MIDI_POSITION, 4, "RO"},
+			{"VOLUME", MIDI_VOLUME, 4, "RW"},
+			{"TEMPO_BPM", MIDI_TEMPO_BPM, 4, "RO"},
+		},
+	},
+	"mod": {
+		Name: "MOD Player",
+		Registers: []IORegisterDesc{
+			{"PLAY_PTR", MOD_PLAY_PTR, 4, "RW"},
+			{"PLAY_LEN", MOD_PLAY_LEN, 4, "RW"},
+			{"PLAY_CTRL", MOD_PLAY_CTRL, 4, "RW"},
+			{"PLAY_STATUS", MOD_PLAY_STATUS, 4, "RO"},
+			{"FILTER_MODEL", MOD_FILTER_MODEL, 4, "RW"},
+			{"POSITION", MOD_POSITION, 4, "RO"},
+		},
+	},
+	"wav": {
+		Name: "WAV Player",
+		Registers: []IORegisterDesc{
+			{"PLAY_PTR", WAV_PLAY_PTR, 4, "RW"},
+			{"PLAY_LEN", WAV_PLAY_LEN, 4, "RW"},
+			{"PLAY_CTRL", WAV_PLAY_CTRL, 4, "RW"},
+			{"PLAY_STATUS", WAV_PLAY_STATUS, 4, "RO"},
+			{"POSITION", WAV_POSITION, 4, "RO"},
+			{"PLAY_PTR_HI", WAV_PLAY_PTR_HI, 4, "RW"},
+			{"CHANNEL_BASE", WAV_CHANNEL_BASE, 1, "RW"},
+			{"VOLUME_L", WAV_VOLUME_L, 1, "RW"},
+			{"VOLUME_R", WAV_VOLUME_R, 1, "RW"},
+			{"FLAGS", WAV_FLAGS, 1, "RW"},
+		},
+	},
 	"sn76489": {
 		Name: "SN76489",
 		Registers: []IORegisterDesc{
@@ -387,6 +429,43 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"ENV3", 0xF0E6C, 1, "RO"},
 		},
 	},
+	"sfx": {
+		Name: "SFX Trigger",
+		Registers: []IORegisterDesc{
+			{"CH0_PTR", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_PTR, 4, "RW"},
+			{"CH0_LEN", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_LEN, 4, "RW"},
+			{"CH0_LOOP_PTR", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_LOOP_PTR, 4, "RW"},
+			{"CH0_LOOP_LEN", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_LOOP_LEN, 4, "RW"},
+			{"CH0_FREQ", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_FREQ, 4, "RW"},
+			{"CH0_VOL", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_VOL, 2, "RW"},
+			{"CH0_FORMAT", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_FORMAT, 1, "RW"},
+			{"CH0_CTRL", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_CTRL, 4, "RW"},
+			{"CH1_PTR", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_PTR, 4, "RW"},
+			{"CH1_LEN", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_LEN, 4, "RW"},
+			{"CH1_LOOP_PTR", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_LOOP_PTR, 4, "RW"},
+			{"CH1_LOOP_LEN", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_LOOP_LEN, 4, "RW"},
+			{"CH1_FREQ", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_FREQ, 4, "RW"},
+			{"CH1_VOL", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_VOL, 2, "RW"},
+			{"CH1_FORMAT", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_FORMAT, 1, "RW"},
+			{"CH1_CTRL", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_CTRL, 4, "RW"},
+			{"CH2_PTR", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_PTR, 4, "RW"},
+			{"CH2_LEN", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_LEN, 4, "RW"},
+			{"CH2_LOOP_PTR", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_LOOP_PTR, 4, "RW"},
+			{"CH2_LOOP_LEN", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_LOOP_LEN, 4, "RW"},
+			{"CH2_FREQ", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_FREQ, 4, "RW"},
+			{"CH2_VOL", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_VOL, 2, "RW"},
+			{"CH2_FORMAT", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_FORMAT, 1, "RW"},
+			{"CH2_CTRL", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_CTRL, 4, "RW"},
+			{"CH3_PTR", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_PTR, 4, "RW"},
+			{"CH3_LEN", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_LEN, 4, "RW"},
+			{"CH3_LOOP_PTR", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_LOOP_PTR, 4, "RW"},
+			{"CH3_LOOP_LEN", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_LOOP_LEN, 4, "RW"},
+			{"CH3_FREQ", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_FREQ, 4, "RW"},
+			{"CH3_VOL", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_VOL, 2, "RW"},
+			{"CH3_FORMAT", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_FORMAT, 1, "RW"},
+			{"CH3_CTRL", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_CTRL, 4, "RW"},
+		},
+	},
 	"ted": {
 		Name: "TED",
 		Registers: []IORegisterDesc{
@@ -523,6 +602,43 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"FILE_ERROR_CODE", 0xF2218, 4, "RO"},
 		},
 	},
+	"arosdos": {
+		Name: "AROS DOS",
+		Registers: []IORegisterDesc{
+			{"CMD", AROS_DOS_CMD, 4, "WO"},
+			{"ARG1", AROS_DOS_ARG1, 4, "RW"},
+			{"ARG2", AROS_DOS_ARG2, 4, "RW"},
+			{"ARG3", AROS_DOS_ARG3, 4, "RW"},
+			{"ARG4", AROS_DOS_ARG4, 4, "RW"},
+			{"RESULT1", AROS_DOS_RESULT1, 4, "RO"},
+			{"RESULT2", AROS_DOS_RESULT2, 4, "RO"},
+			{"STATUS", AROS_DOS_STATUS, 4, "RO"},
+		},
+	},
+	"paula": {
+		Name: "Paula DMA",
+		Registers: []IORegisterDesc{
+			{"CH0_PTR", AROS_AUD_REGION_BASE + 0*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_PTR, 4, "RW"},
+			{"CH0_LEN", AROS_AUD_REGION_BASE + 0*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_LEN, 4, "RW"},
+			{"CH0_PERIOD", AROS_AUD_REGION_BASE + 0*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_PER, 4, "RW"},
+			{"CH0_VOLUME", AROS_AUD_REGION_BASE + 0*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_VOL, 4, "RW"},
+			{"CH1_PTR", AROS_AUD_REGION_BASE + 1*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_PTR, 4, "RW"},
+			{"CH1_LEN", AROS_AUD_REGION_BASE + 1*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_LEN, 4, "RW"},
+			{"CH1_PERIOD", AROS_AUD_REGION_BASE + 1*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_PER, 4, "RW"},
+			{"CH1_VOLUME", AROS_AUD_REGION_BASE + 1*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_VOL, 4, "RW"},
+			{"CH2_PTR", AROS_AUD_REGION_BASE + 2*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_PTR, 4, "RW"},
+			{"CH2_LEN", AROS_AUD_REGION_BASE + 2*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_LEN, 4, "RW"},
+			{"CH2_PERIOD", AROS_AUD_REGION_BASE + 2*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_PER, 4, "RW"},
+			{"CH2_VOLUME", AROS_AUD_REGION_BASE + 2*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_VOL, 4, "RW"},
+			{"CH3_PTR", AROS_AUD_REGION_BASE + 3*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_PTR, 4, "RW"},
+			{"CH3_LEN", AROS_AUD_REGION_BASE + 3*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_LEN, 4, "RW"},
+			{"CH3_PERIOD", AROS_AUD_REGION_BASE + 3*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_PER, 4, "RW"},
+			{"CH3_VOLUME", AROS_AUD_REGION_BASE + 3*AROS_AUD_CH_STRIDE + AROS_AUD_OFF_VOL, 4, "RW"},
+			{"DMACON", AROS_AUD_DMACON, 4, "RW"},
+			{"STATUS", AROS_AUD_STATUS, 4, "RW"},
+			{"INTENA", AROS_AUD_INTENA, 4, "RW"},
+		},
+	},
 	"media": {
 		Name: "Media Loader",
 		Registers: []IORegisterDesc{
@@ -543,6 +659,15 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"EXEC_TYPE", 0xF232C, 4, "RW"},
 			{"EXEC_ERROR", 0xF2330, 4, "RO"},
 			{"EXEC_SESSION", 0xF2334, 4, "RO"},
+		},
+	},
+	"hosthelper": {
+		Name: "Host Helper",
+		Registers: []IORegisterDesc{
+			{"COMMAND", HostMMIOBase + HostMMIOCommand, 4, "RW"},
+			{"TRIGGER", HostMMIOBase + HostMMIOTrigger, 4, "WO"},
+			{"STATUS", HostMMIOBase + HostMMIOStatus, 4, "RO"},
+			{"EXIT", HostMMIOBase + HostMMIOExit, 4, "RO"},
 		},
 	},
 	"coproc": {
@@ -573,6 +698,17 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"COPROC_BUSY_PCT", 0xF23BC, 4, "RO"},
 		},
 	},
+	"clipboard": {
+		Name: "Clipboard Bridge",
+		Registers: []IORegisterDesc{
+			{"DATA_PTR", CLIP_DATA_PTR, 4, "RW"},
+			{"DATA_LEN", CLIP_DATA_LEN, 4, "RW"},
+			{"CTRL", CLIP_CTRL, 4, "WO"},
+			{"STATUS", CLIP_STATUS, 4, "RO"},
+			{"RESULT_LEN", CLIP_RESULT_LEN, 4, "RO"},
+			{"FORMAT", CLIP_FORMAT, 4, "RW"},
+		},
+	},
 	"irqdiag": {
 		Name: "IRQ Diagnostics",
 		Registers: []IORegisterDesc{
@@ -584,6 +720,19 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"IRQ_DIAG_RTE", 0xF23D4, 4, "RO"},
 			{"IRQ_DIAG_STOP_SPINS", 0xF23D8, 4, "RO"},
 			{"IRQ_DIAG_WATCHDOG", 0xF23DC, 4, "RO"},
+		},
+	},
+	"boothostfs": {
+		Name: "Bootstrap HostFS",
+		Registers: []IORegisterDesc{
+			{"CMD", BOOT_HOSTFS_CMD, 4, "WO"},
+			{"ARG1", BOOT_HOSTFS_ARG1, 4, "RW"},
+			{"ARG2", BOOT_HOSTFS_ARG2, 4, "RW"},
+			{"ARG3", BOOT_HOSTFS_ARG3, 4, "RW"},
+			{"ARG4", BOOT_HOSTFS_ARG4, 4, "RW"},
+			{"RES1", BOOT_HOSTFS_RES1, 4, "RO"},
+			{"RES2", BOOT_HOSTFS_RES2, 4, "RO"},
+			{"ERR", BOOT_HOSTFS_ERR, 4, "RO"},
 		},
 	},
 	"voodoo": {
@@ -709,27 +858,46 @@ func formatIOView(cpu DebuggableCPU, deviceName string) []string {
 	lines = append(lines, fmt.Sprintf("--- %s Registers ---", dev.Name))
 
 	for _, reg := range dev.Registers {
-		data := cpu.ReadMemory(uint64(reg.Addr), reg.Width)
-		if len(data) < reg.Width {
+		val, ok := readIORegisterValue(cpu, reg)
+		if !ok {
 			lines = append(lines, fmt.Sprintf("  %-20s ($%05X) = ??       [%s]", reg.Name, reg.Addr, reg.Access))
 			continue
 		}
 
-		var val uint32
 		switch reg.Width {
 		case 1:
-			val = uint32(data[0])
 			lines = append(lines, fmt.Sprintf("  %-20s ($%05X) = $%02X       [%d] %s", reg.Name, reg.Addr, val, val, reg.Access))
 		case 2:
-			val = uint32(data[0]) | uint32(data[1])<<8
 			lines = append(lines, fmt.Sprintf("  %-20s ($%05X) = $%04X     [%d] %s", reg.Name, reg.Addr, val, val, reg.Access))
 		case 4:
-			val = uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
 			lines = append(lines, fmt.Sprintf("  %-20s ($%05X) = $%08X [%d] %s", reg.Name, reg.Addr, val, val, reg.Access))
 		}
 	}
 
 	return lines
+}
+
+func readIORegisterValue(cpu DebuggableCPU, reg IORegisterDesc) (uint32, bool) {
+	if reader, ok := cpu.(ioRegisterReader); ok {
+		if val, ok := reader.ReadIORegister(uint64(reg.Addr), reg.Width); ok {
+			return val, true
+		}
+	}
+
+	data := cpu.ReadMemory(uint64(reg.Addr), reg.Width)
+	if len(data) < reg.Width {
+		return 0, false
+	}
+	switch reg.Width {
+	case 1:
+		return uint32(data[0]), true
+	case 2:
+		return uint32(data[0]) | uint32(data[1])<<8, true
+	case 4:
+		return uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24, true
+	default:
+		return 0, false
+	}
 }
 
 // listIODevices returns the names of all available IO devices.

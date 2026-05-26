@@ -2062,8 +2062,27 @@ func TestScriptEngine_DbgExtendedWrappers(t *testing.T) {
 		if #cpus < 1 then error("cpus") end
 		local devs = dbg.io_devices()
 		if #devs < 1 then error("devs") end
+		local saw_midiplay, saw_paula, saw_clipboard = false, false, false
+		for _, name in ipairs(devs) do
+			if name == "midiplay" then saw_midiplay = true end
+			if name == "paula" then saw_paula = true end
+			if name == "clipboard" then saw_clipboard = true end
+		end
+		if not saw_midiplay or not saw_paula or not saw_clipboard then error("new io devices") end
 		local io = dbg.io("video")
 		if type(io) ~= "table" then error("io") end
+		local midiplay = dbg.io("midiplay")
+		local saw_tempo = false
+		for _, reg in ipairs(midiplay) do
+			if reg.name == "TEMPO_BPM" then saw_tempo = true end
+		end
+		if not saw_tempo then error("midiplay io") end
+		local paula = dbg.io("paula")
+		local saw_dmacon = false
+		for _, reg in ipairs(paula) do
+			if reg.name == "DMACON" then saw_dmacon = true end
+		end
+		if not saw_dmacon then error("paula io") end
 		dbg.freeze_audio()
 		dbg.thaw_audio()
 		dbg.clear_all_bp()
@@ -2071,6 +2090,45 @@ func TestScriptEngine_DbgExtendedWrappers(t *testing.T) {
 		dbg.close()
 	`
 	if err := se.RunString(script, "dbg_extended"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngineDbgIOReadsWordWideMMIORegistersAtNativeWidth(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	mon := NewMachineMonitor(bus)
+	cpu := NewCPU(bus)
+	mon.RegisterCPU("IE32", NewDebugIE32(cpu))
+	se.SetMonitor(mon)
+
+	bus.MapIO(AROS_DOS_ARG1, AROS_DOS_ARG1+3, func(addr uint32) uint32 {
+		if addr == AROS_DOS_ARG1 {
+			return 0x12345678
+		}
+		return 0
+	}, nil)
+
+	script := `
+		local regs = dbg.io("arosdos")
+		for _, reg in ipairs(regs) do
+			if reg.name == "ARG1" then
+				if reg.value ~= 0x12345678 then
+					error(string.format("ARG1 = 0x%08X", reg.value))
+				end
+				return
+			end
+		end
+		error("missing ARG1")
+	`
+	if err := se.RunString(script, "dbg_io_native_width"); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}
 	waitScriptStopped(t, se)

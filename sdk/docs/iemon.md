@@ -1014,19 +1014,27 @@ Display formatted I/O register values for a hardware device. Without arguments, 
 Available I/O devices:
   ahx
   antic
+  arosdos
   audio
+  boothostfs
+  clipboard
   coproc
   exec
   fileio
   gtia
+  hosthelper
   irqdiag
   media
+  midiplay
+  mod
+  paula
   pokey
   psg
   sid
   sid2
   sid3
   sn76489
+  sfx
   sysinfo
   ted
   terminal
@@ -1034,6 +1042,7 @@ Available I/O devices:
   vga
   video
   voodoo
+  wav
 
 > io vga
 --- VGA Registers ---
@@ -1043,10 +1052,31 @@ Available I/O devices:
 ...
 
 > io all
-(dumps all 22 devices)
+(dumps all listed devices)
 ```
 
-Register widths are per-register (1, 2, or 4 bytes). Values are displayed in the appropriate width with both hex and decimal representations, followed by the access mode (`RO`, `WO`, or `RW`). Unknown devices print `Unknown device: <name>`.
+Register widths are per-register (1, 2, or 4 bytes). Values are displayed in the appropriate width with both hex and decimal representations, followed by the access mode (`RO`, `WO`, or `RW`). The monitor and Lua `dbg.io()` use the same native-width MMIO read path for these registers, including when the focussed CPU is 6502, so word and long registers are not reconstructed through byte reads from the CPU memory view. Unknown devices print `Unknown device: <name>`.
+
+The audio/player views mirror the MMIO layout. `psg`, `sid`, `ted`, and `pokey` are combined chip/player views, so their playback control registers are shown alongside chip registers. `ahx`, `midiplay`, `mod`, and `wav` are independent player/control views. `midiplay` is the file-backed SMF `.mid`/`.midi` and Doom `.mus` player backed by the `MIDI_PLAY_*` MMIO block.
+
+`sfx` shows the trigger-channel sample MMIO block. Bridge and profile integration views such as `hosthelper`, `arosdos`, `paula`, `clipboard`, and `boothostfs` expose their register blocks; values depend on the active runtime/profile and may indicate disabled or idle state. `paula` is the Paula-style DMA shim, and `boothostfs` is Bootstrap HostFS.
+
+```
+> io midiplay
+--- MIDI/MUS Player Registers ---
+  PLAY_PTR             ($F0BA0) = $00000000 [0] RW
+...
+
+> io mod
+--- MOD Player Registers ---
+  FILTER_MODEL         ($F0BD0) = $00000000 [0] RW
+...
+
+> io paula
+--- Paula DMA Registers ---
+  CH0_PTR              ($F2260) = $00000000 [0] RW
+...
+```
 
 ### Hex Editor
 

@@ -5625,11 +5625,7 @@ func (se *ScriptEngine) luaDbgIO() lua.LGFunction {
 			return 0
 		}
 		for i, reg := range desc.Registers {
-			data := cpu.ReadMemory(uint64(reg.Addr), reg.Width)
-			val := uint32(0)
-			for j := 0; j < len(data) && j < 4; j++ {
-				val |= uint32(data[j]) << (8 * j)
-			}
+			val, _ := readIORegisterValue(cpu, reg)
 			e := L.NewTable()
 			e.RawSetString("name", lua.LString(reg.Name))
 			e.RawSetString("addr", lua.LNumber(reg.Addr))

@@ -3943,18 +3943,316 @@ func TestIOViewUnknownDevice(t *testing.T) {
 
 func TestListIODevices(t *testing.T) {
 	devices := listIODevices()
-	if len(devices) < 19 {
-		t.Errorf("Expected at least 19 devices, got %d", len(devices))
-	}
-	essentials := []string{"video", "audio", "terminal", "fileio", "exec"}
 	have := make(map[string]bool, len(devices))
 	for _, name := range devices {
 		have[name] = true
 	}
+	essentials := []string{"video", "audio", "terminal", "fileio", "exec"}
 	for _, name := range essentials {
 		if !have[name] {
 			t.Errorf("essential IO device %q missing from listIODevices()", name)
 		}
+	}
+	newDevices := []string{"midiplay", "mod", "wav", "sfx", "hosthelper", "arosdos", "paula", "clipboard", "boothostfs"}
+	for _, name := range newDevices {
+		if !have[name] {
+			t.Errorf("new IO device %q missing from listIODevices()", name)
+		}
+	}
+	for _, name := range []string{"midi", "arosaudio"} {
+		if have[name] {
+			t.Errorf("reserved/ambiguous IO device %q should not be listed", name)
+		}
+	}
+}
+
+func TestIOViewNewDeviceDescriptors(t *testing.T) {
+	tests := []struct {
+		device string
+		header string
+		regs   []IORegisterDesc
+	}{
+		{
+			device: "midiplay",
+			header: "MIDI/MUS Player",
+			regs: []IORegisterDesc{
+				{"PLAY_PTR", MIDI_PLAY_PTR, 4, "RW"},
+				{"PLAY_LEN", MIDI_PLAY_LEN, 4, "RW"},
+				{"PLAY_CTRL", MIDI_PLAY_CTRL, 4, "RW"},
+				{"PLAY_STATUS", MIDI_PLAY_STATUS, 4, "RO"},
+				{"POSITION", MIDI_POSITION, 4, "RO"},
+				{"VOLUME", MIDI_VOLUME, 4, "RW"},
+				{"TEMPO_BPM", MIDI_TEMPO_BPM, 4, "RO"},
+			},
+		},
+		{
+			device: "mod",
+			header: "MOD Player",
+			regs: []IORegisterDesc{
+				{"PLAY_PTR", MOD_PLAY_PTR, 4, "RW"},
+				{"PLAY_LEN", MOD_PLAY_LEN, 4, "RW"},
+				{"PLAY_CTRL", MOD_PLAY_CTRL, 4, "RW"},
+				{"PLAY_STATUS", MOD_PLAY_STATUS, 4, "RO"},
+				{"FILTER_MODEL", MOD_FILTER_MODEL, 4, "RW"},
+				{"POSITION", MOD_POSITION, 4, "RO"},
+			},
+		},
+		{
+			device: "wav",
+			header: "WAV Player",
+			regs: []IORegisterDesc{
+				{"PLAY_PTR", WAV_PLAY_PTR, 4, "RW"},
+				{"PLAY_LEN", WAV_PLAY_LEN, 4, "RW"},
+				{"PLAY_CTRL", WAV_PLAY_CTRL, 4, "RW"},
+				{"PLAY_STATUS", WAV_PLAY_STATUS, 4, "RO"},
+				{"POSITION", WAV_POSITION, 4, "RO"},
+				{"PLAY_PTR_HI", WAV_PLAY_PTR_HI, 4, "RW"},
+				{"CHANNEL_BASE", WAV_CHANNEL_BASE, 1, "RW"},
+				{"VOLUME_L", WAV_VOLUME_L, 1, "RW"},
+				{"VOLUME_R", WAV_VOLUME_R, 1, "RW"},
+				{"FLAGS", WAV_FLAGS, 1, "RW"},
+			},
+		},
+		{
+			device: "hosthelper",
+			header: "Host Helper",
+			regs: []IORegisterDesc{
+				{"COMMAND", HostMMIOBase + HostMMIOCommand, 4, "RW"},
+				{"TRIGGER", HostMMIOBase + HostMMIOTrigger, 4, "WO"},
+				{"STATUS", HostMMIOBase + HostMMIOStatus, 4, "RO"},
+				{"EXIT", HostMMIOBase + HostMMIOExit, 4, "RO"},
+			},
+		},
+		{
+			device: "arosdos",
+			header: "AROS DOS",
+			regs: []IORegisterDesc{
+				{"CMD", AROS_DOS_CMD, 4, "WO"},
+				{"ARG1", AROS_DOS_ARG1, 4, "RW"},
+				{"ARG2", AROS_DOS_ARG2, 4, "RW"},
+				{"ARG3", AROS_DOS_ARG3, 4, "RW"},
+				{"ARG4", AROS_DOS_ARG4, 4, "RW"},
+				{"RESULT1", AROS_DOS_RESULT1, 4, "RO"},
+				{"RESULT2", AROS_DOS_RESULT2, 4, "RO"},
+				{"STATUS", AROS_DOS_STATUS, 4, "RO"},
+			},
+		},
+		{
+			device: "clipboard",
+			header: "Clipboard Bridge",
+			regs: []IORegisterDesc{
+				{"DATA_PTR", CLIP_DATA_PTR, 4, "RW"},
+				{"DATA_LEN", CLIP_DATA_LEN, 4, "RW"},
+				{"CTRL", CLIP_CTRL, 4, "WO"},
+				{"STATUS", CLIP_STATUS, 4, "RO"},
+				{"RESULT_LEN", CLIP_RESULT_LEN, 4, "RO"},
+				{"FORMAT", CLIP_FORMAT, 4, "RW"},
+			},
+		},
+		{
+			device: "boothostfs",
+			header: "Bootstrap HostFS",
+			regs: []IORegisterDesc{
+				{"CMD", BOOT_HOSTFS_CMD, 4, "WO"},
+				{"ARG1", BOOT_HOSTFS_ARG1, 4, "RW"},
+				{"ARG2", BOOT_HOSTFS_ARG2, 4, "RW"},
+				{"ARG3", BOOT_HOSTFS_ARG3, 4, "RW"},
+				{"ARG4", BOOT_HOSTFS_ARG4, 4, "RW"},
+				{"RES1", BOOT_HOSTFS_RES1, 4, "RO"},
+				{"RES2", BOOT_HOSTFS_RES2, 4, "RO"},
+				{"ERR", BOOT_HOSTFS_ERR, 4, "RO"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.device, func(t *testing.T) {
+			dev := requireIODeviceDesc(t, tt.device)
+			if dev.Name != tt.header {
+				t.Fatalf("%s header = %q, want %q", tt.device, dev.Name, tt.header)
+			}
+			assertIORegisters(t, dev, tt.regs, true)
+		})
+	}
+}
+
+func TestIOViewSFXAndPaulaDescriptors(t *testing.T) {
+	sfx := requireIODeviceDesc(t, "sfx")
+	if sfx.Name != "SFX Trigger" {
+		t.Fatalf("sfx header = %q, want SFX Trigger", sfx.Name)
+	}
+	var wantSFX []IORegisterDesc
+	for ch := 0; ch < IE_SFX_CHANNELS; ch++ {
+		base := IE_SFX_CH_BASE + uint32(ch)*IE_SFX_CH_STRIDE
+		prefix := fmt.Sprintf("CH%d_", ch)
+		wantSFX = append(wantSFX,
+			IORegisterDesc{prefix + "PTR", base + SFX_PTR, 4, "RW"},
+			IORegisterDesc{prefix + "LEN", base + SFX_LEN, 4, "RW"},
+			IORegisterDesc{prefix + "LOOP_PTR", base + SFX_LOOP_PTR, 4, "RW"},
+			IORegisterDesc{prefix + "LOOP_LEN", base + SFX_LOOP_LEN, 4, "RW"},
+			IORegisterDesc{prefix + "FREQ", base + SFX_FREQ, 4, "RW"},
+			IORegisterDesc{prefix + "VOL", base + SFX_VOL, 2, "RW"},
+			IORegisterDesc{prefix + "FORMAT", base + SFX_FORMAT, 1, "RW"},
+			IORegisterDesc{prefix + "CTRL", base + SFX_CTRL, 4, "RW"},
+		)
+	}
+	assertIORegisters(t, sfx, wantSFX, false)
+
+	paula := requireIODeviceDesc(t, "paula")
+	if paula.Name != "Paula DMA" {
+		t.Fatalf("paula header = %q, want Paula DMA", paula.Name)
+	}
+	var wantPaula []IORegisterDesc
+	for ch := 0; ch < 4; ch++ {
+		base := AROS_AUD_REGION_BASE + uint32(ch)*AROS_AUD_CH_STRIDE
+		prefix := fmt.Sprintf("CH%d_", ch)
+		wantPaula = append(wantPaula,
+			IORegisterDesc{prefix + "PTR", base + AROS_AUD_OFF_PTR, 4, "RW"},
+			IORegisterDesc{prefix + "LEN", base + AROS_AUD_OFF_LEN, 4, "RW"},
+			IORegisterDesc{prefix + "PERIOD", base + AROS_AUD_OFF_PER, 4, "RW"},
+			IORegisterDesc{prefix + "VOLUME", base + AROS_AUD_OFF_VOL, 4, "RW"},
+		)
+	}
+	wantPaula = append(wantPaula,
+		IORegisterDesc{"DMACON", AROS_AUD_DMACON, 4, "RW"},
+		IORegisterDesc{"STATUS", AROS_AUD_STATUS, 4, "RW"},
+		IORegisterDesc{"INTENA", AROS_AUD_INTENA, 4, "RW"},
+	)
+	assertIORegisters(t, paula, wantPaula, true)
+}
+
+func TestIOViewExistingCombinedPlayerCoverage(t *testing.T) {
+	tests := []struct {
+		device string
+		reg    IORegisterDesc
+	}{
+		{"pokey", IORegisterDesc{"SAP_SUBSONG", SAP_SUBSONG, 1, "RW"}},
+		{"psg", IORegisterDesc{"PLAY_STATUS", PSG_PLAY_STATUS, 4, "RO"}},
+		{"sid", IORegisterDesc{"SUBSONG", SID_SUBSONG, 1, "RW"}},
+		{"ted", IORegisterDesc{"PLAY_STATUS", TED_PLAY_STATUS, 4, "RO"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.device, func(t *testing.T) {
+			assertIORegisters(t, requireIODeviceDesc(t, tt.device), []IORegisterDesc{tt.reg}, false)
+		})
+	}
+}
+
+func TestIOViewNewDeviceCommandsSmoke(t *testing.T) {
+	tests := []struct {
+		command string
+		header  string
+		reg     string
+	}{
+		{"io midiplay", "--- MIDI/MUS Player Registers ---", "TEMPO_BPM"},
+		{"io mod", "--- MOD Player Registers ---", "FILTER_MODEL"},
+		{"io wav", "--- WAV Player Registers ---", "VOLUME_L"},
+		{"io sfx", "--- SFX Trigger Registers ---", "CH0_PTR"},
+		{"io hosthelper", "--- Host Helper Registers ---", "COMMAND"},
+		{"io arosdos", "--- AROS DOS Registers ---", "RESULT1"},
+		{"io paula", "--- Paula DMA Registers ---", "DMACON"},
+		{"io clipboard", "--- Clipboard Bridge Registers ---", "RESULT_LEN"},
+		{"io boothostfs", "--- Bootstrap HostFS Registers ---", "RES1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			mon, _ := newTestMonitor()
+			_, out := mon.ExecuteCommandResult(tt.command)
+			text := monitorText(out)
+			if !strings.Contains(text, tt.header) || !strings.Contains(text, tt.reg) {
+				t.Fatalf("%s output = %q, want header %q and reg %q", tt.command, text, tt.header, tt.reg)
+			}
+		})
+	}
+}
+
+func TestIOViewReadsWordWideMMIORegistersAtNativeWidth(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		reg     string
+		addr    uint32
+		width   int
+		value   uint32
+		want    string
+	}{
+		{"midiplay", "io midiplay", "PLAY_PTR", MIDI_PLAY_PTR, 4, 0x12345678, "$12345678"},
+		{"mod", "io mod", "PLAY_PTR", MOD_PLAY_PTR, 4, 0x23456789, "$23456789"},
+		{"wav", "io wav", "PLAY_PTR", WAV_PLAY_PTR, 4, 0x3456789A, "$3456789A"},
+		{"sfx", "io sfx", "CH0_FREQ", IE_SFX_CH_BASE + SFX_FREQ, 4, 0x456789AB, "$456789AB"},
+		{"sfx16", "io sfx", "CH0_VOL", IE_SFX_CH_BASE + SFX_VOL, 2, 0xBEEF, "$BEEF"},
+		{"hosthelper", "io hosthelper", "COMMAND", HostMMIOBase + HostMMIOCommand, 4, 0x56789ABC, "$56789ABC"},
+		{"arosdos", "io arosdos", "ARG1", AROS_DOS_ARG1, 4, 0x6789ABCD, "$6789ABCD"},
+		{"paula", "io paula", "CH0_PTR", AROS_AUD_REGION_BASE + AROS_AUD_OFF_PTR, 4, 0x789ABCDE, "$789ABCDE"},
+		{"clipboard", "io clipboard", "DATA_PTR", CLIP_DATA_PTR, 4, 0x89ABCDEF, "$89ABCDEF"},
+		{"boothostfs", "io boothostfs", "ARG1", BOOT_HOSTFS_ARG1, 4, 0x9ABCDEF0, "$9ABCDEF0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mon, cpu := newTestMonitor()
+			cpu.bus.MapIO(tt.addr, tt.addr+uint32(tt.width)-1, func(addr uint32) uint32 {
+				if addr == tt.addr {
+					return tt.value
+				}
+				return 0
+			}, nil)
+
+			_, out := mon.ExecuteCommandResult(tt.command)
+			text := monitorText(out)
+			if !strings.Contains(text, tt.reg) || !strings.Contains(text, tt.want) {
+				t.Fatalf("%s output = %q, want register %s value %s", tt.command, text, tt.reg, tt.want)
+			}
+		})
+	}
+}
+
+func TestIOView6502ReadsWordWideMMIORegistersAtNativeWidth(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("6502", NewDebug6502(cpu, nil))
+
+	bus.MapIO(WAV_PLAY_PTR, WAV_PLAY_PTR+3, func(addr uint32) uint32 {
+		if addr == WAV_PLAY_PTR {
+			return 0x12345678
+		}
+		return 0
+	}, nil)
+
+	_, out := mon.ExecuteCommandResult("io wav")
+	text := monitorText(out)
+	if !strings.Contains(text, "PLAY_PTR") || !strings.Contains(text, "$12345678") {
+		t.Fatalf("io wav output = %q, want PLAY_PTR value $12345678", text)
+	}
+}
+
+func requireIODeviceDesc(t *testing.T, name string) *IODeviceDesc {
+	t.Helper()
+	dev, ok := ioDevices[name]
+	if !ok {
+		t.Fatalf("missing ioDevices[%q]", name)
+	}
+	return dev
+}
+
+func assertIORegisters(t *testing.T, dev *IODeviceDesc, want []IORegisterDesc, exact bool) {
+	t.Helper()
+	have := make(map[string]IORegisterDesc, len(dev.Registers))
+	for _, reg := range dev.Registers {
+		have[reg.Name] = reg
+	}
+	for _, reg := range want {
+		got, ok := have[reg.Name]
+		if !ok {
+			t.Fatalf("%s missing register %s", dev.Name, reg.Name)
+		}
+		if got != reg {
+			t.Fatalf("%s register %s = %#v, want %#v", dev.Name, reg.Name, got, reg)
+		}
+	}
+	if exact && len(dev.Registers) != len(want) {
+		t.Fatalf("%s register count = %d, want %d", dev.Name, len(dev.Registers), len(want))
 	}
 }
 
