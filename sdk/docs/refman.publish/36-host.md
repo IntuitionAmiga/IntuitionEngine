@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 36 - The HOST Command
 
 `HOST` is the BASIC verb for whole-machine service actions. It can

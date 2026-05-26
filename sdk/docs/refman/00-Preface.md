@@ -1,5 +1,7 @@
 # Intuition Engine Programmer's Reference Guide
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 ## Preface
 
 Intuition Engine is a modern 64-bit RISC machine: a re-imagining of

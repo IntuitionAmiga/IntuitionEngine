@@ -10,6 +10,8 @@ sources:
   - midi_engine.go
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Appendix E - Music Note and Frequency Tables
 
 Each audio engine programs pitch through either a direct Hertz value,

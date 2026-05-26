@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 23 - Music from BASIC and from each CPU
 
 Part III has covered the audio engines one at a time. This chapter is

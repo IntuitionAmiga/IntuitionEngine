@@ -1,5 +1,7 @@
 # Intuition Engine Programmer's Reference Guide - Author Style Guide
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 Author-only. Stripped at publish time. Never shipped to readers.
 
 This file is the binding plan for the Programmer's Reference Guide. If
@@ -30,6 +32,17 @@ same pass and verified. Record the exact files checked in
 
 The published title is **Intuition Engine Programmer's Reference
 Guide**.
+
+## Copyright And Licence
+
+The Programmer's Reference Guide is proprietary book text, not GPL and
+not free or open licence documentation. Every reader-facing source file
+and every published Markdown file must carry the notice shown at the
+top of this file.
+
+Place the notice after stripped front matter and before the first
+reader-facing section. Do not replace it with project licence wording.
+Do not imply that the book text is covered by the repository licence.
 
 The book is a guide and a reference, not a cold hardware dump. Its
 central premise is that Intuition Engine is one shared-memory
@@ -251,9 +264,12 @@ Current controlled polish pass:
     `$000F0000`-`$000FFFFF` directly, and the `$F000`-`$FFFF`
     compatibility mirror remains a data-access mirror only.
     Instruction fetch at `$F000` reads flat program RAM at `$0000F000`.
-  - Byte, word, and long RAM accesses through the bus can cross from
-    the low memory slice into backed active RAM, so File I/O reads may
-    copy into any valid active-RAM destination span.
+  - Backed RAM above the low memory slice is ordinary active RAM, but
+    scalar word and long bus accesses must fit wholly inside low RAM or
+    wholly inside backed RAM. A scalar word or long access that
+    straddles the seam is unmapped and does not partly update either
+    side. Byte-by-byte copies, including File I/O reads, may still cross
+    the seam when every byte lies inside active RAM.
 
   Execute this x86/backed-RAM pass in this order:
 
@@ -261,14 +277,16 @@ Current controlled polish pass:
      `cpu_x86_test.go`, `machine_bus.go`, `file_io.go`,
      `file_io_test.go`, and `debug_access_test.go` before writing
      claims.
-  2. Chapter 24: clarify that ordinary byte, word, and long RAM spans
-     may live in backed active RAM, not only in the low memory slice.
+  2. Chapter 24: clarify that ordinary byte access may live in backed
+     active RAM, and that scalar word and long accesses may live there
+     only when the whole access is contained on one side of the low-RAM
+     to backed-RAM seam.
   3. Chapter 30: update the x86 overview, memory model, and instruction
      list for `CMOVcc`, native MMIO data access, and fetch-vs-data
      treatment of the `$F000` compatibility mirror.
   4. Chapter 35: state that `FILE_DATA_PTR` may point to any valid
      active-RAM destination span and that reads may cross the low/backed
-     RAM boundary.
+     RAM boundary because the file block copies one byte at a time.
   5. Appendix G: add `CMOVcc` to the x86 opcode quick reference.
   6. Appendix H: add the x86 MMIO/fetch-address rule.
   7. Appendix L: add lookup entries for backed RAM, `CMOVcc`,
@@ -277,6 +295,14 @@ Current controlled polish pass:
      affected reader-facing examples.
   9. Publish and print PDFs only after the source pass and checks are
      complete.
+- Integrate the later backed-RAM seam correction. The book must no
+  longer imply that all multi-byte RAM accesses can straddle the seam
+  between the low memory slice and backed RAM. Check `machine_bus.go`,
+  `machine_bus_test.go`, `file_io.go`, and `file_io_test.go` before
+  writing claims. Chapter 24 owns the scalar bus-access rule. Chapter
+  35 owns the File I/O byte-copy exception. The claim ledger must record
+  both facts together so the File I/O exception is not mistaken for a
+  general scalar bus rule.
 - Run a full source-tree editorial audit after any manually edited
   refman Markdown. Classify every `.md` file under `sdk/docs/refman/`
   before checking it:

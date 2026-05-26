@@ -305,8 +305,9 @@ type Bus6502Adapter struct {
 
 	   Purpose:
 	   Provides translation layer between 8-bit 6502 and 32-bit memory system.
-	   Extended banking allows 6502 programs to access the full 16MB address
-	   space through three additional 8KB bank windows at $2000, $4000, $6000.
+	   Extended banking allows 6502 programs to access the current banked
+	   CPU-visible ceiling through three additional 8KB bank windows at
+	   $2000, $4000, $6000.
 	*/
 
 	bus            Bus32
@@ -3447,7 +3448,7 @@ func (adapter *Bus6502Adapter) Read(addr uint16) (result byte) {
 		return adapter.readBus8(ULA_BASE + ulaReg)
 	}
 
-	// Handle VGA register reads ($D700-$D70A)
+	// Handle VGA register reads ($D700-$D70D)
 	if adapter.vgaEngine != nil && addr >= C6502_VGA_BASE && addr <= C6502_VGA_END {
 		switch addr {
 		case C6502_VGA_MODE:
@@ -3605,7 +3606,7 @@ func (adapter *Bus6502Adapter) Write(addr uint16, value byte) {
 		return
 	}
 
-	// Handle VGA register writes ($D700-$D70A)
+	// Handle VGA register writes ($D700-$D70D)
 	if adapter.vgaEngine != nil && addr >= C6502_VGA_BASE && addr <= C6502_VGA_END {
 		switch addr {
 		case C6502_VGA_MODE:

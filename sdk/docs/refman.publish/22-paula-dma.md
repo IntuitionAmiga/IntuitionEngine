@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 22 - The Paula DMA Engine
 
 Paula is the four-channel sample DMA engine. It reads signed 8-bit

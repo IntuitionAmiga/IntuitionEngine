@@ -29,23 +29,33 @@ EXPANDED_IMG="${WORK_DIR}/ubuntu-26.04-ie-expanded.img"
 GOLDEN_IMG="ubuntu-26.04-lowlatency-cage-golden.img"
 GOLDEN_IMG_PATH="${WORK_DIR}/${GOLDEN_IMG}"
 GOLDEN_IMG_MAX_AGE_DAYS=30
-GOLDEN_STAMP_VERSION="x64-live-golden-v39-quiet-plymouth-splash"
+GOLDEN_STAMP_VERSION="x64-live-golden-v40-ffmpeg-recording"
 GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"
 KERNEL_PKG="linux-lowlatency"
 COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core,kbd"
 X11_RUNTIME_PKGS="libxrandr2,libxxf86vm1,libxi6,libxcursor1,libxinerama1,libx11-6,libxext6,libxfixes3,libxrender1"
 AUDIO_PKGS="pipewire,pipewire-pulse,wireplumber,pipewire-alsa,alsa-utils,dbus-user-session"
+MEDIA_PKGS="ffmpeg"
 SECUREBOOT_PKGS="shim-signed,grub-efi-amd64-signed,sbsigntool"
 PLYMOUTH_PKGS="plymouth,plymouth-themes"
 SHARE_GROW_PKGS="cloud-guest-utils,dosfstools,fatresize,parted"
 NETWORK_PKGS="network-manager,wpasupplicant,wireless-regdb,iw"
 HOST_HELPER_PKGS="polkitd,pkexec,ufw,apparmor,apparmor-utils"
-ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${SECUREBOOT_PKGS},${PLYMOUTH_PKGS},${SHARE_GROW_PKGS},${NETWORK_PKGS},${HOST_HELPER_PKGS}"
+ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${MEDIA_PKGS},${SECUREBOOT_PKGS},${PLYMOUTH_PKGS},${SHARE_GROW_PKGS},${NETWORK_PKGS},${HOST_HELPER_PKGS}"
 IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"
 IE_INSTALL_NAME="IntuitionEngine"
 HOST_HELPER_BINARY="${WORK_DIR}/intuitionengine-host-helper"
 PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"
 REFMAN_PDF_DIR="${SCRIPT_DIR}/sdk/docs/refman.publish/pdf"
+SDK_TOOLS_BUILD_DIR="${LIVE_OUT_DIR}/sdk-tools"
+SDK_TOOLS_README_TEMPLATE="${SCRIPT_DIR}/sdk/tools/README.md"
+SDK_COMPANION_PDFS=(
+    "${SCRIPT_DIR}/sdk/docs/IE64_ISA.pdf"
+    "${SCRIPT_DIR}/sdk/docs/IE32_ISA.pdf"
+    "${SCRIPT_DIR}/sdk/docs/iemon.pdf"
+    "${SCRIPT_DIR}/sdk/docs/iescript.pdf"
+    "${SCRIPT_DIR}/sdk/docs/architecture.pdf"
+)
 AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS/bin/ie-m68k/bin/ie-m68k/AROS}"
 AB3D2_EMBED_DIR="${SCRIPT_DIR}/embedded/ab3d2"
 C64_MUSIC_SOURCE="${C64_MUSIC_SOURCE:-${HOME}/Music/C64Music}"
@@ -218,7 +228,7 @@ payload_require_glob() {
 check_live_payload_inputs() {
     log_section "Checking live payload manifest inputs"
     local payload_cmd
-    for payload_cmd in file python3; do
+    for payload_cmd in file python3 rsync sha256sum; do
         if ! command -v "$payload_cmd" >/dev/null 2>&1; then
             log_error "$payload_cmd is required to validate the live payload manifest"
             exit 1
@@ -282,11 +292,38 @@ check_live_payload_inputs() {
         log_error "Producer: make x64-live-refman-pdfs"
         exit 1
     fi
+    local companion_pdf
+    for companion_pdf in "${SDK_COMPANION_PDFS[@]}"; do
+        payload_require_file "$companion_pdf" "make x64-live-sdk-companion-pdfs" "SDK companion PDF $(basename "$companion_pdf")"
+    done
 
     local include
-    for include in ie32.inc ie64.inc ie65.inc ie68.inc ie80.inc ie86.inc; do
+    for include in ie32.inc ie64.inc ie64_fp.inc ie65.inc ie65.cfg ie65_bindata.cfg ie65_service.cfg ie68.inc ie80.inc ie86.inc; do
         payload_require_file "${SCRIPT_DIR}/sdk/include/${include}" "make sdk-build" "SDK include ${include}"
     done
+
+    payload_require_file "$SDK_TOOLS_README_TEMPLATE" "tracked source file" "SDK tools README template"
+    payload_require_file "${SDK_TOOLS_BUILD_DIR}/SHA256SUMS.txt" "make x64-live-sdk-tools" "SDK host tools checksum manifest"
+    local sdk_tool_platform sdk_tool_name sdk_tool_ext
+    for sdk_tool_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64 windows-arm64; do
+        if [[ ! -d "${SDK_TOOLS_BUILD_DIR}/${sdk_tool_platform}" ]]; then
+            log_error "Required SDK host tools directory missing: ${SDK_TOOLS_BUILD_DIR}/${sdk_tool_platform}"
+            log_error "Producer: make x64-live-sdk-tools"
+            exit 1
+        fi
+        sdk_tool_ext=""
+        if [[ "$sdk_tool_platform" == windows-* ]]; then
+            sdk_tool_ext=".exe"
+        fi
+        for sdk_tool_name in ie32asm ie64asm ie64dis ie32to64 m68kto64; do
+            payload_require_file "${SDK_TOOLS_BUILD_DIR}/${sdk_tool_platform}/${sdk_tool_name}${sdk_tool_ext}" "make x64-live-sdk-tools" "SDK host tool ${sdk_tool_platform}/${sdk_tool_name}${sdk_tool_ext}"
+        done
+    done
+    if ! (cd "$SDK_TOOLS_BUILD_DIR" && sha256sum -c SHA256SUMS.txt); then
+        log_error "SDK host tools checksum validation failed: ${SDK_TOOLS_BUILD_DIR}/SHA256SUMS.txt"
+        log_error "Producer: make x64-live-sdk-tools"
+        exit 1
+    fi
 
     python3 - "${SCRIPT_DIR}/embedded/ab3d2/_build.zip" <<'PY'
 import sys
@@ -325,6 +362,11 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/Docs/IEProgRefGuide/00-Preface.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide preface"
     payload_require_file "${payload_root}/Docs/IEProgRefGuide/39-whole-machine-capstone.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide final chapter"
     payload_require_file "${payload_root}/Docs/IEProgRefGuide/appK-block-diagrams.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide final appendix"
+    payload_require_file "${payload_root}/Docs/IE64_ISA.pdf" "make x64-live-sdk-companion-pdfs" "staged IE64 ISA companion PDF"
+    payload_require_file "${payload_root}/Docs/IE32_ISA.pdf" "make x64-live-sdk-companion-pdfs" "staged IE32 ISA companion PDF"
+    payload_require_file "${payload_root}/Docs/iemon.pdf" "make x64-live-sdk-companion-pdfs" "staged IEMon companion PDF"
+    payload_require_file "${payload_root}/Docs/iescript.pdf" "make x64-live-sdk-companion-pdfs" "staged IEScript companion PDF"
+    payload_require_file "${payload_root}/Docs/architecture.pdf" "make x64-live-sdk-companion-pdfs" "staged architecture companion PDF"
 
     payload_require_file "${payload_root}/Systems/AROS/S/Startup-Sequence" "make aros-release-assets" "staged AROS Startup-Sequence"
     payload_require_file "${payload_root}/Systems/AROS/Libs/iewarp.library" "make aros-iewarp-library" "staged AROS IEWarp library"
@@ -355,9 +397,33 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/SDK/Examples/basic/rotozoomer_basic.bas" "make sdk-build" "staged BASIC example"
     payload_require_file "${payload_root}/IE/Coproc/coproc_service_ie32.iex" "make sdk-build" "staged IE32 coprocessor worker"
     payload_require_file "${payload_root}/SDK/Include/ie64.inc" "make sdk-build" "staged IE64 include"
+    payload_require_file "${payload_root}/SDK/Include/ie64_fp.inc" "make sdk-build" "staged IE64 floating-point include"
+    payload_require_file "${payload_root}/SDK/Include/ie65.cfg" "make sdk-build" "staged 6502 linker configuration"
+    payload_require_file "${payload_root}/SDK/Tools/README.md" "build_x64_ie_img.sh stage_share_payload" "staged SDK tools README"
+    payload_require_file "${payload_root}/SDK/Tools/SHA256SUMS.txt" "make x64-live-sdk-tools" "staged SDK host tools checksum manifest"
+    local sdk_tool_platform sdk_tool_name sdk_tool_ext
+    for sdk_tool_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64 windows-arm64; do
+        if [[ ! -d "${payload_root}/SDK/Tools/${sdk_tool_platform}" ]]; then
+            log_error "Required staged SDK host tools directory missing: ${payload_root}/SDK/Tools/${sdk_tool_platform}"
+            log_error "Producer: build_x64_ie_img.sh stage_share_payload"
+            exit 1
+        fi
+        sdk_tool_ext=""
+        if [[ "$sdk_tool_platform" == windows-* ]]; then
+            sdk_tool_ext=".exe"
+        fi
+        for sdk_tool_name in ie32asm ie64asm ie64dis ie32to64 m68kto64; do
+            payload_require_file "${payload_root}/SDK/Tools/${sdk_tool_platform}/${sdk_tool_name}${sdk_tool_ext}" "make x64-live-sdk-tools" "staged SDK host tool ${sdk_tool_platform}/${sdk_tool_name}${sdk_tool_ext}"
+        done
+    done
+    if ! (cd "${payload_root}/SDK/Tools" && sha256sum -c SHA256SUMS.txt); then
+        log_error "Staged SDK host tools checksum validation failed: ${payload_root}/SDK/Tools/SHA256SUMS.txt"
+        log_error "Producer: build_x64_ie_img.sh stage_share_payload"
+        exit 1
+    fi
     if find "${payload_root}/Docs" -type f -name '*.md' | grep -q .; then
         log_error "Forbidden live payload content: Markdown staged under Docs"
-        log_error "Expected: Docs/IEProgRefGuide contains PDFs only"
+        log_error "Expected: Docs contains PDFs only"
         exit 1
     fi
     if [[ -e "${payload_root}/SDK/README.TXT" || -e "${payload_root}/SDK/README.md" ]]; then
@@ -365,9 +431,14 @@ verify_staged_share_payload() {
         log_error "Expected: SDK contains include files and source examples only"
         exit 1
     fi
-    if find "${payload_root}/SDK" -type f -name '*.md' | grep -q .; then
+    if find "${payload_root}/SDK" -type f -name '*.md' ! -path "${payload_root}/SDK/Tools/README.md" | grep -q .; then
         log_error "Forbidden live payload content: Markdown staged under SDK"
-        log_error "Expected: printable guide PDFs live under Docs/IEProgRefGuide"
+        log_error "Expected: only SDK/Tools/README.md is staged as Markdown under SDK"
+        exit 1
+    fi
+    if find "${payload_root}/SDK" -type f -name 'SHA256SUMS.txt' ! -path "${payload_root}/SDK/Tools/SHA256SUMS.txt" | grep -q .; then
+        log_error "Forbidden live payload content: unexpected SHA256SUMS.txt staged under SDK"
+        log_error "Expected: only SDK/Tools/SHA256SUMS.txt is staged as a checksum manifest under SDK"
         exit 1
     fi
 
@@ -428,8 +499,10 @@ stage_share_payload() {
     local demos_x86_dir="${demos_dir}/x86"
     local coproc_dir="${payload_root}/IE/Coproc"
     local music_dir="${payload_root}/Music"
-    local docs_dir="${payload_root}/Docs/IEProgRefGuide"
+    local docs_dir="${payload_root}/Docs"
+    local refman_docs_dir="${docs_dir}/IEProgRefGuide"
     local sdk_dir="${payload_root}/SDK"
+    local sdk_tools_dir="${sdk_dir}/Tools"
     local systems_dir="${payload_root}/Systems"
     local aros_system_dir="${systems_dir}/AROS"
     local aros_demos_dir="${aros_system_dir}/Demos"
@@ -493,8 +566,8 @@ PY
         "$demos_x86_dir" "$coproc_dir" "$music_dir" \
         "$aros_system_dir/Libs" "$aros_demos_dir" "$emutos_demos_dir" \
         "$intuitionos_system_dir/Boot" \
-        "$docs_dir" "$sdk_dir/Include" "$sdk_dir/Examples/asm" \
-        "$sdk_dir/Examples/basic" "$sdk_dir/Examples/c"
+        "$docs_dir" "$refman_docs_dir" "$sdk_dir/Include" "$sdk_dir/Examples/asm" \
+        "$sdk_dir/Examples/basic" "$sdk_dir/Examples/c" "$sdk_tools_dir"
     if [[ -d "$C64_MUSIC_SOURCE" ]]; then
         rsync -a --delete "${C64_MUSIC_SOURCE}/" "${music_dir}/C64Music/"
     else
@@ -594,7 +667,11 @@ PY
     cp -f \
         "${SCRIPT_DIR}/sdk/include/ie32.inc" \
         "${SCRIPT_DIR}/sdk/include/ie64.inc" \
+        "${SCRIPT_DIR}/sdk/include/ie64_fp.inc" \
         "${SCRIPT_DIR}/sdk/include/ie65.inc" \
+        "${SCRIPT_DIR}/sdk/include/ie65.cfg" \
+        "${SCRIPT_DIR}/sdk/include/ie65_bindata.cfg" \
+        "${SCRIPT_DIR}/sdk/include/ie65_service.cfg" \
         "${SCRIPT_DIR}/sdk/include/ie68.inc" \
         "${SCRIPT_DIR}/sdk/include/ie80.inc" \
         "${SCRIPT_DIR}/sdk/include/ie86.inc" \
@@ -602,7 +679,10 @@ PY
     cp -f "${SCRIPT_DIR}"/sdk/examples/asm/*.asm "$sdk_dir/Examples/asm/"
     cp -f "${SCRIPT_DIR}"/sdk/examples/basic/*.bas "$sdk_dir/Examples/basic/"
     cp -f "${SCRIPT_DIR}"/sdk/examples/c/*.c "$sdk_dir/Examples/c/"
-    cp -f "${REFMAN_PDF_DIR}"/*.pdf "$docs_dir/"
+    cp -a "${SDK_TOOLS_BUILD_DIR}/." "$sdk_tools_dir/"
+    cp -f "$SDK_TOOLS_README_TEMPLATE" "$sdk_tools_dir/README.md"
+    cp -f "${REFMAN_PDF_DIR}"/*.pdf "$refman_docs_dir/"
+    cp -f "${SDK_COMPANION_PDFS[@]}" "$docs_dir/"
 
     local aros_demo
     for aros_demo in \
@@ -692,7 +772,7 @@ Demos    Bare-metal Intuition Engine demos.
 IE       Intuition Engine runtime support files.
 Music    Music collections copied from the build host when available.
 Docs     Printable Programmer's Reference Guide PDFs.
-SDK      Reference include files and source examples.
+SDK      Reference include files, source examples, and host SDK tools.
 Systems  Guest OS payloads.
 _build   AB3D2 runtime assets used by the AB3D2 IE68 demos.
 
@@ -1343,6 +1423,7 @@ session=greetd-cage-default-basic-v2-no-forced-hostio-trace
 persistent_root=ext4
 network=${NETWORK_PKGS}
 audio=${AUDIO_PKGS}
+media=${MEDIA_PKGS}
 plymouth=${PLYMOUTH_PKGS}
 plymouth_splash=splash.png
 plymouth_splash_sha256=${plymouth_splash_sha256}
@@ -1687,12 +1768,23 @@ compress_image() {
     log_section "Creating compressed release archive"
     local archive_path="${OUTPUT_IMG%.img}.zip"
     local archive_root="${WORK_DIR}/x64-live-archive"
+    local archive_docs_dir="${archive_root}/Docs"
+    local archive_refman_docs_dir="${archive_docs_dir}/IEProgRefMan"
     rm -rf "$archive_root"
-    mkdir -p "$archive_root"
+    mkdir -p "$archive_root" "$archive_docs_dir" "$archive_refman_docs_dir"
     cp "$OUTPUT_IMG" "$archive_root/$(basename "$OUTPUT_IMG")"
-    cp "${SCRIPT_DIR}/README.md" "$archive_root/README.md"
+    local companion_pdf
+    for companion_pdf in "${SDK_COMPANION_PDFS[@]}"; do
+        payload_require_file "$companion_pdf" "make x64-live-sdk-companion-pdfs" "SDK companion PDF $(basename "$companion_pdf")"
+    done
+    payload_require_glob "${REFMAN_PDF_DIR}/*.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide PDFs"
+    payload_require_file "${REFMAN_PDF_DIR}/00-Preface.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide preface PDF"
+    payload_require_file "${REFMAN_PDF_DIR}/39-whole-machine-capstone.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final chapter PDF"
+    payload_require_file "${REFMAN_PDF_DIR}/appK-block-diagrams.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final appendix PDF"
+    cp -f "${SDK_COMPANION_PDFS[@]}" "$archive_docs_dir/"
+    cp -f "${REFMAN_PDF_DIR}"/*.pdf "$archive_refman_docs_dir/"
     rm -f "$archive_path"
-    python3 - "$archive_path" "$archive_root" "$(basename "$OUTPUT_IMG")" README.md <<'PY' 2>&1 | tee -a "$LOG_FILE"
+    python3 - "$archive_path" "$archive_root" "$(basename "$OUTPUT_IMG")" Docs <<'PY' 2>&1 | tee -a "$LOG_FILE"
 import os
 import sys
 import zipfile
@@ -1702,7 +1794,15 @@ entries = sys.argv[3:]
 
 with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as zf:
     for entry in entries:
-        zf.write(os.path.join(archive_root, entry), entry)
+        entry_path = os.path.join(archive_root, entry)
+        if os.path.isdir(entry_path):
+            for dirpath, dirnames, filenames in os.walk(entry_path):
+                dirnames.sort()
+                for filename in sorted(filenames):
+                    path = os.path.join(dirpath, filename)
+                    zf.write(path, os.path.relpath(path, archive_root))
+        else:
+            zf.write(entry_path, entry)
 PY
     log_success "Created ${archive_path}"
 }
@@ -1710,6 +1810,7 @@ PY
 main() {
     if [[ "$PAYLOAD_CHECK_ONLY" == "true" ]]; then
         check_live_payload_inputs
+        stage_share_payload
         return 0
     fi
     check_dependencies

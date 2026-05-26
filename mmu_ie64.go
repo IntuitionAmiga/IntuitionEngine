@@ -12,10 +12,10 @@ import (
 
 // makePTE builds a 64-bit page table entry from a physical page number and flags.
 //
-// PLAN_MAX_RAM.md slice 4a: ppn is uint64 to cover the 51-bit PPN field. The
-// caller is responsible for masking out bits beyond PTE_PPN_BITS; passing a
-// PPN that exceeds the field is a kernel/loader bug, not silently truncated
-// here, so callers see the corrupted PTE during testing rather than at boot.
+// ppn is uint64 to cover the PPN field. The caller is responsible for masking
+// out bits beyond PTE_PPN_BITS; passing a PPN that exceeds the field is a
+// kernel/loader bug, not silently truncated here, so callers see the corrupted
+// PTE during testing rather than at boot.
 func makePTE(ppn uint64, flags byte) uint64 {
 	return uint64(flags) | (ppn << PTE_PPN_SHIFT)
 }
@@ -33,14 +33,12 @@ func parsePTE(pte uint64) (ppn uint64, flags byte) {
 
 // TLBEntry caches a single page table translation.
 //
-// PLAN_MAX_RAM.md slice 4a: vpn/ppn are uint64. The TLB is still a 64-entry
-// direct-mapped cache indexed by the low VPN bits, but the stored key/value
-// are full-width so two VPNs that share the same index but differ above the
-// uint16 ceiling do not alias.
+// vpn/ppn are uint64. The TLB is a 64-entry direct-mapped cache indexed by
+// the low VPN bits, but the stored key/value are full-width so two VPNs that
+// share the same index but differ in high bits do not alias.
 //
-// PLAN_MAX_RAM.md slice 4 design: leafAddr caches the physical address of
-// the leaf PTE in the multi-level walk so A/D writebacks on TLB hits do
-// not have to redo the 6-level walk.
+// leafAddr caches the physical address of the leaf PTE in the multi-level
+// walk so A/D writebacks on TLB hits do not have to redo the 6-level walk.
 type TLBEntry struct {
 	vpn      uint64
 	ppn      uint64
@@ -124,9 +122,9 @@ func ppnToPhysChecked(ppn uint64) (uint64, bool) {
 // leaf PTE plus the physical address it was read from. The caller decodes
 // permissions and applies A/D writes through leafAddr.
 //
-// PLAN_MAX_RAM.md slice 4 design: every level uses overflow-checked address
-// arithmetic. A wrap or a corrupted next-level PPN fails the walk with
-// FAULT_NOT_PRESENT rather than aliasing into low memory.
+// Every level uses overflow-checked address arithmetic. A wrap or a corrupted
+// next-level PPN fails the walk with FAULT_NOT_PRESENT rather than aliasing
+// into low memory.
 func (cpu *CPU64) walkPageTable(vpn uint64) (leafPTE uint64, leafAddr uint64, fault bool, cause uint32) {
 	tableAddr := cpu.ptbr
 	for level := 0; level < PT_LEVELS; level++ {
@@ -164,11 +162,11 @@ func (cpu *CPU64) walkPageTable(vpn uint64) (leafPTE uint64, leafAddr uint64, fa
 // current page table. Returns the physical address and fault information.
 // accessType is ACCESS_READ, ACCESS_WRITE, or ACCESS_EXEC.
 //
-// PLAN_MAX_RAM.md slice 4 design: vaddr and physAddr are uint64. The walk
-// is a 6-level sparse radix tree (top=7 bits, levels 1..5=9 bits) read
-// through bus.ReadPhys64WithFault, so PTBRs and intermediate tables that
-// live above the legacy 32 MB bus.memory[] window are reachable via the
-// bound Backing. Address arithmetic at every level is overflow-checked.
+// vaddr and physAddr are uint64. The walk is a 6-level sparse radix tree
+// (top=7 bits, levels 1..5=9 bits) read through bus.ReadPhys64WithFault, so
+// PTBRs and intermediate tables that live above the legacy 32 MiB
+// bus.memory[] window are reachable via the bound Backing. Address arithmetic
+// at every level is overflow-checked.
 func (cpu *CPU64) translateAddr(vaddr uint64, accessType byte) (physAddr uint64, fault bool, faultCause uint32) {
 	vpn := (vaddr >> MMU_PAGE_SHIFT) & PTE_PPN_MASK
 	offset := vaddr & MMU_PAGE_MASK
@@ -223,9 +221,9 @@ func (cpu *CPU64) translateAddr(vaddr uint64, accessType byte) (physAddr uint64,
 		return 0, true, FAULT_USER_SUPER
 	}
 
-	// M15.6 G2: SMEP/SMAP-equivalent supervisor guards on user pages.
-	// Both only fire when the supervisor is touching a PTE_U=1 page;
-	// user-mode accesses are governed by the check above.
+	// Supervisor execute/access guards on user pages. Both only fire when
+	// the supervisor is touching a PTE_U=1 page; user-mode accesses are
+	// governed by the check above.
 	//
 	//   - SKEF (supervisor-kernel-execute-fault): blocks supervisor
 	//     instruction fetch from any user page. Eliminates the
@@ -279,12 +277,11 @@ func (cpu *CPU64) translateAddr(vaddr uint64, accessType byte) (physAddr uint64,
 // mmuStackWrite pushes a value to the stack with MMU translation.
 // Returns false on MMU fault (cpu.trapped is set, trap handler activated).
 //
-// PLAN_MAX_RAM.md slice 4: sp is uint64 so above-4-GiB stacks reach the
-// correct VPN instead of the truncated low-32-bit alias. The legacy
-// unsafe.Pointer fast path is preserved for translated phys addresses
-// inside the legacy bus.memory[] window; high-phys results route
-// through bus.WritePhys64WithFault so unmapped or out-of-backing
-// addresses fault loudly instead of silently no-op'ing.
+// sp is uint64 so above-4-GiB stacks reach the correct VPN instead of the
+// truncated low-32-bit alias. The legacy unsafe.Pointer fast path is preserved
+// for translated phys addresses inside the legacy bus.memory[] window;
+// high-phys results route through bus.WritePhys64WithFault so unmapped or
+// out-of-backing addresses fault loudly instead of silently no-op'ing.
 func (cpu *CPU64) mmuStackWrite(sp uint64, val uint64, memBase unsafe.Pointer, memSize uint64) bool {
 	addr := sp
 	if cpu.mmuEnabled {

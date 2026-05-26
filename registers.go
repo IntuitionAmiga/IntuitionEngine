@@ -33,19 +33,19 @@ Address Range       Size    Device              Constants File
 0xA0000-0xAFFFF     64KB    VGA VRAM Window     vga_constants.go
 0xB8000-0xBFFFF     32KB    VGA Text Buffer     vga_constants.go
 
-0xF0000-0xF0487     1160B   Video Chip (+palette) video_chip.go
+0xF0000-0xF049B     1180B   Video Chip (+palette + extended blitter) video_chip.go
 0xF0700-0xF07FF     256B    Terminal/Serial     registers.go
 0xF0800-0xF0B7F     896B    Audio Chip          audio_chip.go
 0xF0BA0-0xF0BBF     32B     MIDI Player         midi_constants.go
 0xF0BC0-0xF0BD7     24B     MOD Player          mod_constants.go
-0xF0BD8-0xF0BEB     20B     WAV Player          wav_constants.go
+0xF0BD8-0xF0BF3     28B     WAV Player          wav_constants.go
 0xF0C00-0xF0C20     33B     PSG (AY-3-8910/YM2149) psg_constants.go
 0xF0C40-0xF0CFF     192B    SID2 Flex Audio     audio_chip.go
 0xF0D00-0xF0D20     33B     POKEY               pokey_constants.go
 0xF0D40-0xF0DFF     192B    SID3 Flex Audio     audio_chip.go
 0xF0E00-0xF0E2D     45B     SID (6581/8580)     sid_constants.go
 0xF0E80-0xF0EFF     128B    SFX Trigger         sfx_constants.go
-0xF0F00-0xF0F5F     96B     TED (audio+video)   ted_constants.go, ted_video_constants.go
+0xF0F00-0xF0F6B     108B    TED (audio+video)   ted_constants.go, ted_video_constants.go
 0xF1000-0xF13FF     1KB     VGA Registers       vga_constants.go
 0xF1400-0xF140F     16B     Host Helper         host_helper.go
 0xF2000-0xF2017     24B     ULA Registers       ula_constants.go
@@ -108,10 +108,10 @@ SFX Trigger (0xF0E80-0xF0EFF) - sfx_constants.go
   4 channels, 32-byte stride
   SFX_PTR/LEN/LOOP_PTR/LOOP_LEN/FREQ/VOL/FORMAT/CTRL
 
-TED (0xF0F00-0xF0F5F) - ted_constants.go, ted_video_constants.go
+TED (0xF0F00-0xF0F6B) - ted_constants.go, ted_video_constants.go
   Audio: TED_FREQ1_*, TED_FREQ2_*, TED_SND_CTRL (0xF0F00-0xF0F05)
   Player: TED_PLAY_* (0xF0F10-0xF0F1F)
-  Video: TED_V_* (0xF0F20-0xF0F5F) - 40x25 text mode, 121 colors
+  Video: TED_V_* (0xF0F20-0xF0F6B) - 40x25 text mode, 121 colors
 
 VGA (0xF1000-0xF13FF) - vga_constants.go
   VGA_MODE, VGA_STATUS, VGA_CTRL
@@ -146,12 +146,12 @@ CPU-SPECIFIC I/O MAPPINGS
 
 6502 (16-bit address space, directly mapped)
   See cpu_six5go2.go - addresses 0xF000-0xF0FF map to 0xF0000-0xF00FF
-  VGA at 0xD700-0xD70A (see vga_constants.go C6502_VGA_*)
+  VGA at 0xD700-0xD70D (see vga_constants.go C6502_VGA_*)
   ULA at 0xD800-0xD817 with paged VRAM data port (see ula_constants.go)
 
 Z80 (16-bit address with bank windows)
   See cpu_z80_runner.go - addresses 0xF000-0xF0FF map to 0xF0000-0xF00FF
-  VGA via port I/O 0xA0-0xAA (see vga_constants.go Z80_VGA_PORT_*)
+  VGA via port I/O 0xA0-0xAD (see vga_constants.go Z80_VGA_PORT_*)
   ULA via ports 0xFE/0xFD/0xBE/0xFA-0xFC with paged VRAM data port
 
 M68K (32-bit address space, direct access)
@@ -159,7 +159,7 @@ M68K (32-bit address space, direct access)
 
 IE32 (32-bit address space, direct access)
   Full 32-bit addressing to all I/O regions
-  Timer registers at IO_BASE+0x04, IO_BASE+0x08
+  Timer state is CPU-integrated; IO_BASE timer mirrors are not a stable bus ABI
 */
 
 package main
@@ -202,9 +202,9 @@ const (
 	SID_REGION_BASE = 0xF0E00
 	SID_REGION_END  = 0xF0E2D
 
-	// TED region (audio 0xF0F00-0xF0F1F, video 0xF0F20-0xF0F5F)
+	// TED region (audio 0xF0F00-0xF0F1F, video 0xF0F20-0xF0F6B)
 	TED_REGION_BASE = 0xF0F00
-	TED_REGION_END  = 0xF0F5F
+	TED_REGION_END  = 0xF0F6B
 
 	// VGA region
 	VGA_REGION_BASE = 0xF1000
@@ -274,10 +274,8 @@ const (
 	IRQ_DIAG_STOP_SPINS  = 0xF23D8 // Consecutive STOP iterations without wake (R)
 	IRQ_DIAG_WATCHDOG    = 0xF23DC // Latched watchdog event count (R)
 
-	// System information block (RAM-size discovery)
-	// PLAN_MAX_RAM.md: low-MMIO RAM-size ABI lives in the gap between the
-	// IRQ diagnostics / bootstrap HostFS regions (ending at 0xF23FF) and
-	// Voodoo registers (starting at 0xF8000).
+	// System information block (RAM-size discovery). This low-MMIO ABI lives
+	// in the gap between bootstrap HostFS and the Voodoo register aperture.
 	SYSINFO_REGION_BASE   = 0xF2400
 	SYSINFO_REGION_END    = 0xF24FF
 	SYSINFO_TOTAL_RAM_LO  = 0xF2400 // low 32 bits of total guest RAM (bytes, LE)

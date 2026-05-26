@@ -7,6 +7,8 @@ sources:
   - sdk/include/ehbasic_hw_audio.inc
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 16 - TED Audio
 
 TED audio is a small two-voice sound generator. Voice 1 is a square wave. Voice

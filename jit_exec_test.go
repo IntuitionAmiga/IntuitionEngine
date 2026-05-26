@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"testing"
 	"time"
 )
@@ -104,6 +105,106 @@ func TestJIT_SingleALU(t *testing.T) {
 	)
 	if cpu.regs[1] != 150 {
 		t.Fatalf("R1 = %d, want 150", cpu.regs[1])
+	}
+}
+
+func TestExecuteJIT_TimerInterruptsBeforeMidBlockInstruction(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available")
+	}
+
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+
+	handler := uint64(PROG_START + 0x100)
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 1))
+	copy(cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, 2))
+	copy(cpu.memory[PROG_START+2*IE64_INSTR_SIZE:], ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 1, 0, 0, 3))
+	copy(cpu.memory[PROG_START+3*IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[handler:], ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 1, 0, 0, 0xBEEF))
+	copy(cpu.memory[handler+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	cpu.PC = PROG_START
+	cpu.interruptVector = handler
+	cpu.regs[31] = STACK_START
+	cpu.timerPeriod.Store(100)
+	cpu.timerCount.Store(2)
+	cpu.timerEnabled.Store(true)
+	cpu.interruptEnabled.Store(true)
+	cpu.running.Store(true)
+
+	done := make(chan struct{})
+	go func() {
+		cpu.ExecuteJIT()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cpu.running.Store(false)
+		waitDoneWithGuard(t, done)
+		t.Fatal("JIT timer interrupt test timed out")
+	}
+
+	if got := cpu.regs[1]; got != 1 {
+		t.Fatalf("R1 = %d, want first instruction to execute before timer interrupt", got)
+	}
+	if got := cpu.regs[2]; got != 0 {
+		t.Fatalf("R2 = %d, want second instruction skipped by timer interrupt before body", got)
+	}
+	if got := cpu.regs[3]; got != 0 {
+		t.Fatalf("R3 = %d, want later block instruction skipped by timer interrupt", got)
+	}
+	if got := cpu.regs[10]; got != 0xBEEF {
+		t.Fatalf("R10 = 0x%X, want interrupt handler to execute", got)
+	}
+	if got, want := binary.LittleEndian.Uint64(cpu.memory[STACK_START-8:]), uint64(PROG_START+IE64_INSTR_SIZE); got != want {
+		t.Fatalf("saved timer PC = 0x%X, want 0x%X", got, want)
+	}
+}
+
+func TestExecuteJIT_TimerArmedInvalidFPURegisterStopsWithoutAdvancingPC(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available")
+	}
+
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_FMOV, 16, 0, 0, 1, 0, 0))
+	copy(cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_MOVE, 5, IE64_SIZE_Q, 1, 0, 0, 0xCAFE))
+	copy(cpu.memory[PROG_START+2*IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	cpu.PC = PROG_START
+	cpu.timerPeriod.Store(100)
+	cpu.timerCount.Store(100)
+	cpu.timerEnabled.Store(true)
+	cpu.running.Store(true)
+
+	done := make(chan struct{})
+	go func() {
+		cpu.ExecuteJIT()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cpu.running.Store(false)
+		waitDoneWithGuard(t, done)
+		t.Fatal("JIT invalid-FPU test timed out")
+	}
+
+	if cpu.running.Load() {
+		t.Fatal("invalid FPU register encoding should stop armed-timer JIT execution")
+	}
+	if cpu.PC != PROG_START {
+		t.Fatalf("PC = 0x%X, want unchanged 0x%X", cpu.PC, uint64(PROG_START))
+	}
+	if got := cpu.regs[5]; got != 0 {
+		t.Fatalf("R5 = 0x%X, want following instruction not executed", got)
 	}
 }
 

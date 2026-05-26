@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Appendix B - Screen and Character Codes
 
 The Intuition Engine uses ASCII (Appendix C) throughout. There is

@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 9 - The Voodoo 3D Rasteriser
 
 Voodoo is Intuition Engine's hardware triangle rasteriser. It draws

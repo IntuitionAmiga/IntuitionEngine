@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Appendix C - ASCII and CHR$ Tables
 
 Intuition Engine uses standard 7-bit ASCII for character codes and 8-bit

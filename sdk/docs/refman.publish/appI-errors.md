@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Appendix I - Error Message Index
 
 The printable errors a running Intuition Engine produces.

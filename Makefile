@@ -181,6 +181,13 @@ SUDO ?= $(shell if [ -n "$(DESTDIR)" ] || [ -w "$(INSTALL_BIN_DIR)" ]; then echo
 OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/qemu/ovmf-x86_64-4m.bin /usr/share/qemu/ovmf-x86_64-4m-code.bin))
 X64_LIVE_DIR ?= build/x64-live
 X64_LIVE_IMG ?= $(X64_LIVE_DIR)/intuition-engine-x64.img
+X64_LIVE_SDK_TOOLS_DIR := $(X64_LIVE_DIR)/sdk-tools
+SDK_COMPANION_PDFS := \
+	sdk/docs/IE64_ISA.pdf \
+	sdk/docs/IE32_ISA.pdf \
+	sdk/docs/iemon.pdf \
+	sdk/docs/iescript.pdf \
+	sdk/docs/architecture.pdf
 
 SHOWREEL_SCRIPT := ./sdk/scripts/ie_product_demo.ies
 SHOWREEL_PREBUILT_DIR := ./sdk/examples/prebuilt
@@ -298,7 +305,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-refman-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -371,13 +378,46 @@ x64-live-demos: x64-live-payload-check
 	@echo "x64 live demo payload inputs are ready."
 
 .PHONY: x64-live-payload-check
-x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs intuitionos
+x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs intuitionos
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" ./build_x64_ie_img.sh --check-payload
+
+.PHONY: x64-live-sdk-tools
+x64-live-sdk-tools:
+	@echo "Building cross-platform SDK host tools..."
+	@rm -rf "$(X64_LIVE_SDK_TOOLS_DIR)"
+	@$(MKDIR) -p "$(X64_LIVE_SDK_TOOLS_DIR)"
+	@set -e; for target in \
+		linux-x64:linux:amd64 \
+		linux-arm64:linux:arm64 \
+		macos-x64:darwin:amd64 \
+		macos-arm64:darwin:arm64 \
+		windows-x64:windows:amd64 \
+		windows-arm64:windows:arm64; do \
+		folder=$${target%%:*}; rest=$${target#*:}; goos=$${rest%%:*}; goarch=$${rest##*:}; \
+		outdir="$(X64_LIVE_SDK_TOOLS_DIR)/$$folder"; ext=""; \
+		if [ "$$goos" = "windows" ]; then ext=".exe"; fi; \
+		$(MKDIR) -p "$$outdir"; \
+		echo "  $$folder"; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -trimpath -o "$$outdir/ie32asm$$ext" assembler/ie32asm.go; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -trimpath -tags ie64 -o "$$outdir/ie64asm$$ext" assembler/ie64asm.go; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -trimpath -tags ie64dis -o "$$outdir/ie64dis$$ext" assembler/ie64dis.go; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -trimpath -o "$$outdir/ie32to64$$ext" ./cmd/ie32to64/; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -trimpath -o "$$outdir/m68kto64$$ext" ./cmd/m68kto64/; \
+	done
+	@cd "$(X64_LIVE_SDK_TOOLS_DIR)" && find linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64 windows-arm64 -type f | LC_ALL=C sort | xargs sha256sum > SHA256SUMS.txt
+	@echo "x64 live SDK host tools are ready."
 
 .PHONY: x64-live-refman-pdfs
 x64-live-refman-pdfs:
 	@scripts/refman-publish.sh --strict
 	@scripts/refman-pdf.sh
+
+.PHONY: x64-live-sdk-companion-pdfs
+x64-live-sdk-companion-pdfs:
+	@set -e; for pdf in $(SDK_COMPANION_PDFS); do \
+		test -s "$$pdf" || { echo "Error: missing SDK companion PDF: $$pdf"; exit 1; }; \
+	done
+	@echo "x64 live SDK companion PDFs are ready."
 
 .PHONY: x64-live-ab3d2-assets
 x64-live-ab3d2-assets:

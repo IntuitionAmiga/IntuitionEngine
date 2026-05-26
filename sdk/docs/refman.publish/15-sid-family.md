@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 15 - The SID Family
 
 The SID family gives Intuition Engine three MOS 6581/8580 style sound chips:

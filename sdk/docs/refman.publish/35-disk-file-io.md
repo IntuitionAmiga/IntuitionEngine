@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 35 - Disk and File I/O
 
 Intuition Engine exposes one disk volume through a small MMIO
@@ -77,8 +79,9 @@ The reader must provide enough destination memory. The disk block
 does not receive a destination capacity for reads. `FILE_DATA_PTR` may
 point anywhere in active RAM. If the destination begins near the end of
 the low memory slice and continues into backed extended RAM, the bytes
-are still copied as one ordinary RAM span, provided the whole span is
-inside active RAM.
+are still copied, provided every byte of the span is inside active RAM.
+This is a byte-copy rule. It does not make a scalar word or long
+`PEEK`/`POKE` valid when that one access straddles the same boundary.
 
 `FILE_DATA_LEN` is write-side state. A read ignores it, even if it
 still contains the length from an earlier write. On a successful read,
@@ -226,9 +229,9 @@ whose file cannot be read also set `FILE_RESULT_LEN` to `0`. After a
 failed write, do not rely on `FILE_RESULT_LEN`.
 
 Read destinations are ordinary bus addresses. They may be in low RAM
-or backed extended RAM, and the transfer may cross that boundary. The
-program must still choose an address range that is large enough for the
-file.
+or backed extended RAM, and the transfer may cross that boundary
+because the file block writes one byte at a time. The program must
+still choose an address range that is large enough for the file.
 
 The block is synchronous and single-operation. Program code
 should not change `FILE_NAME_PTR`, `FILE_DATA_PTR`, or

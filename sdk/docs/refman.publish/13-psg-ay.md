@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 13 - PSG and AY-3-8910
 
 The PSG is the General Instrument AY-3-8910 and Yamaha YM2149 style sound

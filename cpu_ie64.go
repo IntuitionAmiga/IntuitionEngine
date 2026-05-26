@@ -34,7 +34,7 @@ Core Features:
 - Load-store architecture
 - Size-annotated operations (.B, .W, .L, .Q)
 - Hardware timer with interrupt support
-- PC masked to 32MB address space
+- Full PC/virtual-address path, with physical fetch bounded by active RAM
 
 Instruction Encoding (8 bytes, little-endian):
   Byte 0: Opcode      (8 bits)
@@ -81,21 +81,23 @@ const (
 )
 
 // ------------------------------------------------------------------------------
-// IE64 Address Space
+// IE64 Legacy Address Mask
 // ------------------------------------------------------------------------------
 const (
-	IE64_ADDR_MASK = 0x1FFFFFF // 32MB address space mask
+	// Retained as a legacy compatibility marker. Execution no longer masks
+	// the PC or data addresses to this retired 32 MiB limit.
+	IE64_ADDR_MASK = 0x1FFFFFF
 )
 
 // ------------------------------------------------------------------------------
 // IE64 MMU Constants
 // ------------------------------------------------------------------------------
 //
-// PLAN_MAX_RAM.md slice 4c: the fixed MMU_NUM_PAGES = 8192 constant (which
-// encoded the old 32 MB ABI) has been removed. Code that needs the IE64 MMU
-// page count must call MachineBus.ActiveVisiblePages(), which derives the
-// count from active_visible_ram and MMU_PAGE_SIZE so it tracks the runtime
-// guest RAM sizing decision.
+// The fixed MMU_NUM_PAGES = 8192 constant encoded the old 32 MiB ABI and has
+// been removed. Code that needs the IE64 MMU page count must call
+// MachineBus.ActiveVisiblePages(), which derives the count from
+// active_visible_ram and MMU_PAGE_SIZE so it tracks the runtime guest RAM
+// sizing decision.
 const (
 	MMU_PAGE_SIZE  = 0x1000            // 4 KiB virtual pages
 	MMU_PAGE_SHIFT = 12                // log2(MMU_PAGE_SIZE)
@@ -115,11 +117,10 @@ const (
 
 // PTE physical page number field
 //
-// PLAN_MAX_RAM.md slice 4 design (per design review): PPN is 52 bits wide
-// (PTE bits 12..63). Bits 0..6 are P/R/W/X/U/A/D flags; bits 7..11 are
-// reserved for future PTE metadata. With 4 KiB pages (12-bit offset) the
-// 52-bit PPN gives a full 64-bit physical address range, matching the
-// architectural decision to use full uint64 phys/virt plumbing.
+// PPN is 52 bits wide (PTE bits 12..63). Bits 0..6 are P/R/W/X/U/A/D flags;
+// bits 7..11 are reserved for future PTE metadata. With 4 KiB pages (12-bit
+// offset) the 52-bit PPN gives a full 64-bit physical address range, matching
+// the architectural decision to use full uint64 phys/virt plumbing.
 const (
 	PTE_PPN_SHIFT       = 12                              // PPN starts at bit 12
 	PTE_PPN_BITS        = 52                              // bits in the PPN field
@@ -139,10 +140,10 @@ const IE64_VIRT_ADDR_MAX uint64 = ^uint64(0)
 
 // IE64 multi-level sparse radix page table layout.
 //
-// PLAN_MAX_RAM.md slice 4 design pick #2: 6 levels, top is 7 bits of VPN
-// (128 entries × 8 bytes = 1 KiB), levels 1..5 are 9 bits each (512
-// entries × 8 bytes = 4 KiB per intermediate/leaf table). Total VPN
-// width = 7 + 5*9 = 52 bits, matching PTE_PPN_BITS.
+// The sparse radix page table has 6 levels. The top level is 7 bits of VPN
+// (128 entries * 8 bytes = 1 KiB), and levels 1..5 are 9 bits each (512
+// entries * 8 bytes = 4 KiB per intermediate/leaf table). Total VPN width is
+// 7 + 5*9 = 52 bits, matching PTE_PPN_BITS.
 //
 // VPN bit layout (level 0 is the top, level 5 is the leaf):
 //
@@ -181,23 +182,23 @@ const (
 	CR_TP           = 6  // Thread Pointer (user-readable, supervisor-writable)
 	CR_INTR_VEC     = 7  // Interrupt vector (MMU-mode timer interrupts)
 	CR_KSP          = 8  // Kernel Stack Pointer (auto-swap on user→supervisor)
-	CR_TIMER_PERIOD = 9  // Timer reload period (instruction cycles)
+	CR_TIMER_PERIOD = 9  // Timer reload period in decoded-instruction timer steps
 	CR_TIMER_COUNT  = 10 // Current timer countdown
 	CR_TIMER_CTRL   = 11 // Bit 0 = timer enable, Bit 1 = interrupt enable
 	CR_USP          = 12 // Saved User Stack Pointer (for context switch)
 	CR_PREV_MODE    = 13 // Previous privilege mode (0=user, 1=supervisor) saved by trapEntry
-	CR_SAVED_SUA    = 14 // Saved SUA latch (stashed on trap entry; mirrors FAULT_PC for save/restore discipline)
+	CR_SAVED_SUA    = 14 // Saved SUA latch for the active trap frame; restored by ERET on supervisor return
 	// CR_RAM_SIZE_BYTES is read-only and live-read from
 	// cpu.bus.ActiveVisibleRAM(). MTCR raises FAULT_ILLEGAL_INSTRUCTION.
 	// Guests use this to discover the active CPU/profile visible RAM
 	// without going through the SYSINFO MMIO window.
-	CR_RAM_SIZE_BYTES = 15 // PLAN_MAX_RAM slice 10e2: live read of ActiveVisibleRAM
+	CR_RAM_SIZE_BYTES = 15 // Live read of MachineBus.ActiveVisibleRAM().
 	CR_COUNT          = 16 // Number of control registers
 )
 
 // Fault cause codes
 const (
-	FAULT_NOT_PRESENT  = 0  // PTE P bit = 0
+	FAULT_NOT_PRESENT  = 0  // page is not present, physical memory is unavailable, or atomic backing is unavailable
 	FAULT_READ_DENIED  = 1  // PTE R bit = 0 on read access
 	FAULT_WRITE_DENIED = 2  // PTE W bit = 0 on write access
 	FAULT_EXEC_DENIED  = 3  // PTE X bit = 0 on instruction fetch
@@ -227,13 +228,12 @@ const (
 //     and restored from it on ERET (supervisor return); user-mode ERET
 //     clears SUA unconditionally.
 //
-// Nested-trap discipline (matches FAULT_PC / PREV_MODE): trap entry
-// overwrites CR_SAVED_SUA with the current latch. Kernel handlers that
-// can take a nested synchronous trap must MFCR CR_SAVED_SUA into a GPR
-// on entry, save it to the kernel stack, and MTCR it back before ERET —
-// the same discipline already used for CR_FAULT_PC. A single-slot save
-// is sufficient when this discipline is followed; skipping it loses the
-// outer value on the next nested trap.
+// Trap entry pushes the current active frame before updating
+// CR_SAVED_SUA, CR_FAULT_PC, CR_PREV_MODE, CR_FAULT_ADDR, and
+// CR_FAULT_CAUSE. ERET consumes the active frame and restores the next
+// outer frame. Nested trap preservation is therefore architectural;
+// kernel handlers do not need to save and restore CR_SAVED_SUA or
+// CR_FAULT_PC manually to survive nested synchronous traps.
 const (
 	MMU_CTRL_ENABLE = 1 << 0 // Bit 0: MMU translation active (RW, supervisor)
 	MMU_CTRL_SUPER  = 1 << 1 // Bit 1: supervisor mode (RO)
@@ -373,7 +373,7 @@ const (
 	OP_MFCR     = 0xE7 // Move From Control Register (rd=dest_reg, rs=CR#)
 	OP_ERET     = 0xE8 // Exception Return (PC = faultPC, switch to user mode)
 	OP_TLBFLUSH = 0xE9 // Flush entire software TLB + invalidate JIT cache
-	OP_TLBINVAL = 0xEA // Invalidate single TLB entry (rs=vpn_reg)
+	OP_TLBINVAL = 0xEA // Invalidate single TLB entry (rs=virtual address)
 	OP_SYSCALL  = 0xEB // Trap into supervisor (imm32 = syscall number)
 	OP_SMODE    = 0xEC // Read current mode into Rd (0=user, 1=supervisor)
 
@@ -395,6 +395,14 @@ const (
 // ------------------------------------------------------------------------------
 // CPU64 - 64-bit RISC CPU
 // ------------------------------------------------------------------------------
+
+type ie64TimerStepAction uint8
+
+const (
+	ie64TimerStepContinue ie64TimerStepAction = iota
+	ie64TimerStepRestart
+	ie64TimerStepStop
+)
 
 type CPU64 struct {
 	// Cache Lines 0-3 (256 bytes): Register file
@@ -464,11 +472,11 @@ type CPU64 struct {
 	mmuEnabled     bool         // MMU translation active
 	supervisorMode bool         // true = supervisor, false = user
 	previousMode   bool         // privilege level before last trap/interrupt entry
-	ptbr           uint64       // Page Table Base Register (physical address; PLAN_MAX_RAM.md slice 4b)
+	ptbr           uint64       // Page Table Base Register (physical address)
 	trapVector     uint64       // Trap handler entry point
 	intrVector     uint64       // Interrupt vector (CR_INTR_VEC, for MMU-mode interrupts)
 	faultPC        uint64       // PC saved at trap entry
-	faultAddr      uint64       // Virtual address that caused fault (PLAN_MAX_RAM.md slice 4b)
+	faultAddr      uint64       // Virtual address that caused fault
 	faultCause     uint32       // Fault cause code
 	trapped        bool         // Set by memory helpers on MMU fault; checked by Execute/StepOne
 	jitNeedInval   bool         // Set by MMU ops; consumed by JIT dispatcher
@@ -514,6 +522,67 @@ type CPU64 struct {
 	// cross-goroutine "please stop" signalling still goes through the
 	// existing cpu.running atomic.
 	trapHalted bool
+}
+
+func (cpu *CPU64) timerStepBeforeInstruction(memBase unsafe.Pointer, memSize uint64) ie64TimerStepAction {
+	if !cpu.timerEnabled.Load() {
+		return ie64TimerStepContinue
+	}
+
+	// IE64 timer handling: decrement TIMER_COUNT once per decoded instruction step.
+	count := cpu.timerCount.Load()
+	if count > 0 {
+		newCount := count - 1
+		cpu.timerCount.Store(newCount)
+		if newCount != 0 {
+			return ie64TimerStepContinue
+		}
+
+		cpu.timerState.Store(TIMER_EXPIRED)
+		// Timer expiry: reload from TIMER_PERIOD before dispatching any interrupt
+		// so handlers observe the reloaded count.
+		if cpu.timerEnabled.Load() {
+			cpu.timerCount.Store(cpu.timerPeriod.Load())
+		}
+		if !cpu.interruptEnabled.Load() || cpu.inInterrupt.Load() {
+			return ie64TimerStepContinue
+		}
+
+		if cpu.mmuEnabled && cpu.intrVector != 0 {
+			if !cpu.trapEntry() {
+				return ie64TimerStepStop
+			}
+			cpu.faultPC = cpu.PC
+			cpu.faultAddr = 0
+			cpu.faultCause = FAULT_TIMER
+			cpu.PC = cpu.intrVector
+			return ie64TimerStepRestart
+		}
+
+		cpu.inInterrupt.Store(true)
+		cpu.regs[31] -= 8
+		sp := cpu.regs[31]
+		if !cpu.mmuStackWrite(sp, cpu.PC, memBase, memSize) {
+			if cpu.trapped {
+				cpu.trapped = false
+				cpu.regs[31] += 8
+				cpu.inInterrupt.Store(false)
+				return ie64TimerStepRestart
+			}
+			cpu.running.Store(false)
+			return ie64TimerStepStop
+		}
+		cpu.PC = cpu.interruptVector
+		return ie64TimerStepRestart
+	}
+
+	// Auto-start: if count is 0 but period is set, load initial count.
+	period := cpu.timerPeriod.Load()
+	if period > 0 {
+		cpu.timerCount.Store(period)
+		cpu.timerState.Store(TIMER_RUNNING)
+	}
+	return ie64TimerStepContinue
 }
 
 // trapFrame captures everything that a trap entry overwrites. On
@@ -783,13 +852,12 @@ func atomicRMW64(ptr *uint64, rdVal, rtVal uint64, op byte) uint64 {
 // op selects the operation: OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR.
 // Sets cpu.trapped on fault (misalignment, MMU, I/O region).
 //
-// PLAN_MAX_RAM.md slice 4: vaddr is uint64. Truncating cpu.regs[31] to
-// uint32 before MMU translation aliased above-4-GiB VAs onto low-32-bit
-// pages, so the walker would resolve the wrong VPN; keep the effective
-// address full-width through translation, then fault if the resulting
-// physical address falls outside the legacy bus.memory[] window
-// (atomicRMW64 requires *uint64 in host RAM; backing-page atomics are
-// not yet wired).
+// vaddr is uint64. Truncating cpu.regs[31] to uint32 before MMU translation
+// aliased above-4-GiB VAs onto low-32-bit pages, so the walker would resolve
+// the wrong VPN; keep the effective address full-width through translation,
+// then fault if the resulting physical address falls outside the legacy
+// bus.memory[] window (atomicRMW64 requires *uint64 in host RAM; backing-page
+// atomics are not yet wired).
 func (cpu *CPU64) execAtomic(rd, rs, rt byte, imm32 uint32, op byte) {
 	vaddr := uint64(int64(cpu.regs[rs]) + int64(int32(imm32)))
 
@@ -925,14 +993,72 @@ func isValidDPairReg(idx byte) bool {
 	return idx <= 15 && (idx&1) == 0
 }
 
+func isIE64FPUOpcode(opcode byte) bool {
+	return (opcode >= OP_FMOV && opcode <= OP_FMOVCC) || (opcode >= OP_DMOV && opcode <= OP_FCVTDS)
+}
+
+func validIE64FPUEncoding(opcode, rd, rs, rt byte) bool {
+	switch opcode {
+	case OP_FMOV:
+		return rd <= 15 && rs <= 15
+	case OP_FLOAD, OP_FSTORE, OP_FCVTIF, OP_FMOVI, OP_FMOVECR:
+		return rd <= 15
+	case OP_FADD, OP_FSUB, OP_FMUL, OP_FDIV, OP_FMOD, OP_FPOW:
+		return rd <= 15 && rs <= 15 && rt <= 15
+	case OP_FABS, OP_FNEG, OP_FSQRT, OP_FINT, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP:
+		return rd <= 15 && rs <= 15
+	case OP_FCMP:
+		return rs <= 15 && rt <= 15
+	case OP_FCVTFI, OP_FMOVO:
+		return rs <= 15
+	case OP_FMOVSR, OP_FMOVCR, OP_FMOVSC, OP_FMOVCC:
+		return true
+	case OP_DMOV:
+		return isValidDPairReg(rd) && isValidDPairReg(rs)
+	case OP_DLOAD, OP_DSTORE, OP_DCVTIF:
+		return isValidDPairReg(rd)
+	case OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD:
+		return isValidDPairReg(rd) && isValidDPairReg(rs) && isValidDPairReg(rt)
+	case OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT:
+		return isValidDPairReg(rd) && isValidDPairReg(rs)
+	case OP_DCMP:
+		return isValidDPairReg(rs) && isValidDPairReg(rt)
+	case OP_DCVTFI:
+		return isValidDPairReg(rs)
+	case OP_FCVTSD:
+		return isValidDPairReg(rd) && rs <= 15
+	case OP_FCVTDS:
+		return rd <= 15 && isValidDPairReg(rs)
+	default:
+		return true
+	}
+}
+
+func (cpu *CPU64) stepOneFPUEncodingOK(opcode, rd, rs, rt byte) bool {
+	if !isIE64FPUOpcode(opcode) {
+		return true
+	}
+	if cpu.FPU == nil {
+		fmt.Printf("IE64: FPU instruction executed but FPU is missing at PC=0x%X\n", cpu.PC)
+		cpu.running.Store(false)
+		return false
+	}
+	if !validIE64FPUEncoding(opcode, rd, rs, rt) {
+		fmt.Printf("IE64: Invalid FP register index at PC=0x%X\n", cpu.PC)
+		cpu.running.Store(false)
+		return false
+	}
+	return true
+}
+
 // ------------------------------------------------------------------------------
 // Memory Access
 // ------------------------------------------------------------------------------
 
 func (cpu *CPU64) loadMem(vaddr uint64, size byte) uint64 {
-	// MMU translation. PLAN_MAX_RAM.md slice 4 design: vaddr is uint64;
-	// translateAddr returns uint64 phys; high-phys results route through
-	// the bus phys helpers without truncating back to uint32.
+	// MMU translation uses full-width virtual and physical addresses.
+	// High-phys results route through the bus phys helpers without truncating
+	// back to uint32.
 	physWide := vaddr
 	if cpu.mmuEnabled {
 		phys, fault, cause := cpu.translateAddr(vaddr, ACCESS_READ)
@@ -945,10 +1071,9 @@ func (cpu *CPU64) loadMem(vaddr uint64, size byte) uint64 {
 	}
 
 	// High-phys path: physical address above the legacy bus.memory[] window.
-	// PLAN_MAX_RAM.md slice 4 fault-on-unmapped: data accesses to a
-	// translated phys outside the bound backing must fault, not silently
-	// return zero. The non-fault ReadPhys* helpers are only safe when
-	// the address is inside the low window or the backing's range.
+	// Data accesses to a translated phys outside the bound backing must fault,
+	// not silently return zero. The non-fault ReadPhys* helpers are only safe
+	// when the address is inside the low window or the backing's range.
 	if physWide >= uint64(len(cpu.memory)) {
 		var sizeBytes uint64
 		switch size {
@@ -1124,7 +1249,7 @@ func (cpu *CPU64) debugOnFetch(addr uint64, width int) {
 }
 
 func (cpu *CPU64) storeMem(vaddr uint64, val uint64, size byte) {
-	// MMU translation. PLAN_MAX_RAM.md slice 4 design: vaddr is uint64.
+	// MMU translation uses full-width virtual addresses.
 	physWide := vaddr
 	if cpu.mmuEnabled {
 		phys, fault, cause := cpu.translateAddr(vaddr, ACCESS_WRITE)
@@ -1137,10 +1262,9 @@ func (cpu *CPU64) storeMem(vaddr uint64, val uint64, size byte) {
 	}
 
 	// High-phys path: physical address above the legacy bus.memory[] window.
-	// PLAN_MAX_RAM.md slice 4 fault-on-unmapped: WritePhys* helpers
-	// silently no-op outside the backing window; gate them on
-	// PhysMapped so a translated phys outside the backing faults
-	// loudly instead of accepting the write into the void.
+	// WritePhys* helpers silently no-op outside the backing window; gate them
+	// on PhysMapped so a translated phys outside the backing faults loudly
+	// instead of accepting the write into the void.
 	if physWide >= uint64(len(cpu.memory)) {
 		var sizeBytes uint64
 		switch size {
@@ -1262,8 +1386,8 @@ func (cpu *CPU64) LoadFlatProgram(filename string) error {
 
 // LoadProgramBytes loads raw machine code bytes at PROG_START and resets PC.
 // Touches only the fixed program load window [PROG_START, STACK_START); never
-// the open-ended slice tail. PLAN_MAX_RAM slice 10 invariant: no boot path may
-// touch advertised guest RAM, only the legacy program staging area.
+// the open-ended slice tail. Boot paths must not touch advertised guest RAM;
+// they only touch the legacy program staging area.
 func (cpu *CPU64) LoadProgramBytes(program []byte) {
 	progEnd := STACK_START
 	if progEnd > len(cpu.memory) {
@@ -1379,11 +1503,10 @@ func (cpu *CPU64) Reset() {
 		}
 	}
 
-	// PLAN_MAX_RAM slice 10 invariant: CPU reset MUST NOT iterate over
-	// guest RAM. With mmap-backed bus.memory at multi-GiB sizes the loop
-	// would touch every page and eagerly commit RSS for the whole bus
-	// window. Memory zeroing belongs to MachineBus.Reset, which routes
-	// through madvise on mmap-allocated slices.
+	// CPU reset must not iterate over guest RAM. With mmap-backed bus.memory
+	// at multi-GiB sizes the loop would touch every page and eagerly commit
+	// RSS for the whole bus window. Memory zeroing belongs to
+	// MachineBus.Reset, which routes through madvise on mmap-allocated slices.
 
 	cpu.running.Store(true)
 }
@@ -1460,10 +1583,10 @@ func (cpu *CPU64) Execute() {
 			}
 		}
 
-		// PLAN_MAX_RAM.md slice 4 design: full 64-bit virtual PC. The
-		// legacy IE64_ADDR_MASK truncation aliased high VAs into the low
-		// 32 MB window and made high-VA execution impossible regardless
-		// of how wide the MMU walk became. The mask is gone here; the
+		// Full 64-bit virtual PC. The legacy IE64_ADDR_MASK truncation
+		// aliased high VAs into the low 32 MiB window and made high-VA
+		// execution impossible regardless of how wide the MMU walk became.
+		// The mask is gone here; the
 		// MMU walk receives cpu.PC directly. After translation, high
 		// physical addresses (above the legacy bus.memory[] window)
 		// fetch the 8-byte instruction word through bus.ReadPhys64
@@ -1521,65 +1644,12 @@ func (cpu *CPU64) Execute() {
 			operand3 = cpu.regs[rt]
 		}
 
-		// Timer handling: decrement TIMER_COUNT every instruction cycle.
-		// When it reaches 0, fire interrupt and reload from TIMER_PERIOD.
-		if cpu.timerEnabled.Load() {
-			count := cpu.timerCount.Load()
-			if count > 0 {
-				newCount := count - 1
-				cpu.timerCount.Store(newCount)
-				if newCount == 0 {
-					cpu.timerState.Store(TIMER_EXPIRED)
-					// Reload timer before dispatching interrupt (handler may disable it)
-					if cpu.timerEnabled.Load() {
-						cpu.timerCount.Store(cpu.timerPeriod.Load())
-					}
-					// Handle timer interrupt
-					if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
-						if cpu.mmuEnabled && cpu.intrVector != 0 {
-							// ERET-model interrupt entry (unified with trap path).
-							// If trapEntry overflows, the CPU is halted and PC
-							// must not be redirected to the interrupt vector:
-							// the next loop iteration's trapHalted check will
-							// break out.
-							if !cpu.trapEntry() {
-								running = false
-								continue
-							}
-							cpu.faultPC = cpu.PC
-							cpu.faultAddr = 0
-							cpu.faultCause = FAULT_TIMER
-							cpu.PC = cpu.intrVector
-							continue // re-enter loop at interrupt handler
-						} else {
-							// Legacy push-PC/RTI model (MMU off or INTR_VEC not set)
-							cpu.inInterrupt.Store(true)
-							cpu.regs[31] -= 8
-							sp := cpu.regs[31]
-							if !cpu.mmuStackWrite(sp, cpu.PC, memBase, memSize) {
-								if cpu.trapped {
-									cpu.trapped = false
-									cpu.regs[31] += 8
-									cpu.inInterrupt.Store(false)
-									continue
-								}
-								cpu.running.Store(false)
-								running = false
-								continue
-							}
-							cpu.PC = cpu.interruptVector
-							continue // re-enter loop at interrupt handler
-						}
-					}
-				}
-			} else {
-				// Auto-start: if count is 0 but period is set, load initial count
-				period := cpu.timerPeriod.Load()
-				if period > 0 {
-					cpu.timerCount.Store(period)
-					cpu.timerState.Store(TIMER_RUNNING)
-				}
-			}
+		switch cpu.timerStepBeforeInstruction(memBase, memSize) {
+		case ie64TimerStepRestart:
+			continue
+		case ie64TimerStepStop:
+			running = false
+			continue
 		}
 
 		switch opcode {
@@ -2703,6 +2773,8 @@ func (cpu *CPU64) Stop() {
 
 // StepOne executes a single instruction at the current PC and returns 1 (cycle count).
 // Must only be called when the CPU is frozen (not running in its Execute loop).
+// Debugger single-step semantics intentionally step WAIT without sleeping; the
+// normal Execute loop applies WAIT's real-time delay.
 func (cpu *CPU64) StepOne() int {
 	memSize := uint64(len(cpu.memory))
 	memBase := unsafe.Pointer(&cpu.memory[0])
@@ -2748,6 +2820,17 @@ func (cpu *CPU64) StepOne() int {
 		operand3 = uint64(imm32)
 	} else {
 		operand3 = cpu.regs[rt]
+	}
+
+	switch cpu.timerStepBeforeInstruction(memBase, memSize) {
+	case ie64TimerStepRestart:
+		return 1
+	case ie64TimerStepStop:
+		return 0
+	}
+
+	if !cpu.stepOneFPUEncodingOK(opcode, rd, rs, rt) {
+		return 1
 	}
 
 	// pcAdvanced tracks whether the opcode set PC itself
@@ -3022,6 +3105,8 @@ func (cpu *CPU64) StepOne() int {
 				cpu.trapped = false
 				cpu.regs[31] += 8
 				pcAdvanced = true // trap set PC
+			} else {
+				return 1
 			}
 		}
 	case OP_POP64:
@@ -3035,6 +3120,8 @@ func (cpu *CPU64) StepOne() int {
 		} else if cpu.trapped {
 			cpu.trapped = false
 			pcAdvanced = true // trap set PC
+		} else {
+			return 1
 		}
 	case OP_JSR_IND:
 		cpu.regs[31] -= 8
@@ -3277,6 +3364,7 @@ func (cpu *CPU64) StepOne() int {
 		// advance PC
 	case OP_HALT64:
 		// don't advance, CPU halted
+		cpu.running.Store(false)
 		return 1
 	case OP_SEI64:
 		cpu.interruptEnabled.Store(true)
@@ -3291,6 +3379,8 @@ func (cpu *CPU64) StepOne() int {
 			cpu.inInterrupt.Store(false)
 		} else if cpu.trapped {
 			cpu.trapped = false
+		} else {
+			return 1
 		}
 		pcAdvanced = true
 	case OP_WAIT64:

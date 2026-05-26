@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 11 - Audio Architecture Overview
 
 The picture side has several chips feeding one compositor. The audio

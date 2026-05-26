@@ -9,6 +9,8 @@ sources:
   - sdk/include/ehbasic_io.inc
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 1 - BASIC Programming Rules
 
 When you turn on the Intuition Engine, you see the BASIC prompt:

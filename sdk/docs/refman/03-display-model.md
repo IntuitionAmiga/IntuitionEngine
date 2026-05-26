@@ -15,6 +15,8 @@ sources:
   - sdk/include/ehbasic_hw_video.inc
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 3 - Display Model Overview
 
 Intuition Engine has six picture-making chips on the same machine.

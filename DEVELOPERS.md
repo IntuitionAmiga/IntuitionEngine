@@ -67,6 +67,7 @@ make uninstall         # Remove installed binaries
 
 # Housekeeping
 make clean             # Remove all build artifacts
+make distclean         # Remove generated/downloaded rebuild artifacts
 make list              # List compiled binaries with sizes
 make help              # Show all available targets
 ```
@@ -406,6 +407,12 @@ AHX playback is a native synthesis mapping, not an Amiga DMA sample stream: the 
 # All tests (headless recommended for CI)
 go test -tags headless ./...
 
+# Makefile quality gates
+make test
+make vet
+make tidy
+make test-makefile
+
 # Single test
 go test -tags headless -run TestName
 
@@ -413,6 +420,11 @@ go test -tags headless -run TestName
 make testdata-harte                       # Download test data (one-time)
 make test-harte                           # Full suite (~30 min)
 make test-harte-short                     # Sampling mode (~5 min)
+
+# x86 Harte test suite
+make testdata-x86
+make test-x86-harte
+make test-x86-harte-short
 
 # Long-running demonstrations
 go test -tags audiolong -run TestSineWave_BasicWaveforms

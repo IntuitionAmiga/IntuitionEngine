@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 12 - SoundChip and SFX
 
 The SoundChip is Intuition Engine's IE-native synthesiser. It has ten

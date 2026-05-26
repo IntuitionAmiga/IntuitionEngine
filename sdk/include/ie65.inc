@@ -481,8 +481,8 @@ TED_PLAY_STATUS = $FF1C         ; Play status (IE32 $F0F1C)
 ; - Hardware cursor support
 ; - Compositor layer 12 (between VGA=10 and ULA=15)
 ;
-; For 6502: TED video registers are memory-mapped at $D620-$D62F
-; IE32/M68K address: $F0F20-$F0F5F (4-byte aligned)
+; For 6502: TED video registers are memory-mapped at $D620-$D632
+; IE32/M68K address: $F0F20-$F0F6B (4-byte aligned)
 ; ============================================================================
 TED_V_BASE      = $D620         ; TED video register base
 
@@ -509,6 +509,9 @@ TED_V_RASTER_LO = $D62C         ; Raster line low (read-only)
 TED_V_RASTER_HI = $D62D         ; Raster line high (read-only)
 TED_V_ENABLE    = $D62E         ; Video enable (bit 0)
 TED_V_STATUS    = $D62F         ; Status (bit 0 = VBlank)
+TED_V_RASTER_CMP_LO = $D630     ; Raster compare low byte
+TED_V_RASTER_CMP_HI = $D631     ; Raster compare high bit
+TED_V_RASTER_STATUS = $D632     ; Raster compare pending latch
 
 ; TED_V_CTRL1 bits
 TED_V_CTRL1_ECM     = $40       ; Bit 6: Extended Color Mode
@@ -526,6 +529,7 @@ TED_V_CTRL2_XSCROLL = $07       ; Bits 0-2: Horizontal scroll mask
 ; Enable/Status bits
 TED_V_ENABLE_VIDEO  = $01       ; Bit 0: Video enable
 TED_V_STATUS_VBLANK = $01       ; Bit 0: VBlank active
+TED_V_RASTER_STATUS_PENDING = $80 ; Bit 7: raster compare pending
 
 ; ----------------------------------------------------------------------------
 ; SAP Player Registers

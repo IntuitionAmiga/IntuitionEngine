@@ -7,6 +7,8 @@ sources:
   - wav_engine.go
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 20 - The WAV Sample Player
 
 The WAV player plays RIFF/WAVE PCM data from memory. It is the direct

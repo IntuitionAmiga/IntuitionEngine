@@ -45,6 +45,9 @@ const (
 	X86_PORT_POKEY_BASE = 0x60 // 0x60-0x69 direct POKEY register window
 	X86_PORT_TED_SELECT = 0xF2
 	X86_PORT_TED_DATA   = 0xF3
+
+	X86_TED_V_INDEX_BASE = TED_V_INDEX_BASE
+	X86_TED_V_INDEX_END  = TED_V_INDEX_END
 )
 
 // CPUX86Config holds configuration for the x86 runner
@@ -52,7 +55,7 @@ type CPUX86Config struct {
 	LoadAddr     uint32
 	Entry        uint32
 	JITEnabled   bool
-	VGAEngine    *VGAEngine    // Optional VGA engine for port I/O
+	VGAEngine    *VGAEngine    // Optional VGA engine for VRAM-window access
 	VoodooEngine *VoodooEngine // Optional Voodoo engine for port I/O
 }
 
@@ -84,7 +87,7 @@ type X86BusAdapter struct {
 	tedRegSelect   byte       // Currently selected TED register for port I/O
 	anticRegSelect byte       // Currently selected ANTIC register for port I/O
 	gtiaRegSelect  byte       // Currently selected GTIA register for port I/O
-	vgaEngine      *VGAEngine // VGA engine for port I/O access
+	vgaEngine      *VGAEngine // VGA engine for VRAM-window access
 
 	// Voodoo 32-bit register access via 8-bit ports
 	voodooAddr   uint16        // Target register offset from VOODOO_BASE
@@ -450,12 +453,12 @@ func (b *X86BusAdapter) In(port uint16) byte {
 		return b.tedRegSelect
 	}
 	if port == X86_PORT_TED_DATA {
-		// Audio registers 0x00-0x05, video registers 0x20-0x2F
+		// Audio registers 0x00-0x05, video registers 0x20-0x32.
 		if b.tedRegSelect < 0x06 {
 			return b.readBus8(0xF0F00 + uint32(b.tedRegSelect))
-		} else if b.tedRegSelect >= 0x20 && b.tedRegSelect < 0x30 {
-			// Video registers at 0xF0F20-0xF0F5F (4-byte aligned)
-			return b.readBus8(0xF0F20 + uint32(b.tedRegSelect-0x20)*4)
+		} else if b.tedRegSelect >= X86_TED_V_INDEX_BASE && b.tedRegSelect <= X86_TED_V_INDEX_END {
+			// Video registers at 0xF0F20-0xF0F6B (4-byte aligned).
+			return b.readBus8(TED_VIDEO_BASE + uint32(b.tedRegSelect-X86_TED_V_INDEX_BASE)*4)
 		}
 		return 0
 	}
@@ -549,14 +552,14 @@ func (b *X86BusAdapter) Out(port uint16, value byte) {
 
 	// TED port I/O
 	if port == X86_PORT_TED_SELECT {
-		b.tedRegSelect = value
+		b.tedRegSelect = value & 0x3F
 		return
 	}
 	if port == X86_PORT_TED_DATA {
 		if b.tedRegSelect < 0x06 {
 			b.writeBus8(0xF0F00+uint32(b.tedRegSelect), value)
-		} else if b.tedRegSelect >= 0x20 && b.tedRegSelect < 0x30 {
-			b.writeBus8(0xF0F20+uint32(b.tedRegSelect-0x20)*4, value)
+		} else if b.tedRegSelect >= X86_TED_V_INDEX_BASE && b.tedRegSelect <= X86_TED_V_INDEX_END {
+			b.writeBus8(TED_VIDEO_BASE+uint32(b.tedRegSelect-X86_TED_V_INDEX_BASE)*4, value)
 		}
 		return
 	}

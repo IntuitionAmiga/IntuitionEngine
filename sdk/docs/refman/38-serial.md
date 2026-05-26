@@ -5,6 +5,8 @@ sources:
   - terminal_io.go
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 38 - The Terminal Serial Stream
 
 The terminal is the Intuition Engine's byte-stream console. BASIC

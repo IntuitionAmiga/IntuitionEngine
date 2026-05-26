@@ -485,13 +485,13 @@
 ; - Hardware cursor support
 ; - Compositor layer 12 (between VGA=10 and ULA=15)
 ;
-; For Z80: Use OUT (TED_PORT_SELECT),A to select video register index (0x20-0x2F),
+; For Z80: Use OUT (TED_PORT_SELECT),A to select video register index (0x20-0x32),
 ;          then OUT (TED_PORT_DATA),A to write data or IN A,(TED_PORT_DATA) to read.
 ;
-; IE32/M68K address: 0xF0F20-0xF0F5F (4-byte aligned)
+; IE32/M68K address: 0xF0F20-0xF0F6B (4-byte aligned)
 ; ============================================================================
 
-; TED video register indices (for port I/O, indices 0x20-0x2F)
+; TED video register indices (for port I/O, indices 0x20-0x32)
 .set TED_V_CTRL1,0x20                   ; Control 1 (ECM/BMM/DEN/RSEL/YSCROLL)
 .set TED_V_CTRL2,0x21                   ; Control 2 (RES/MCM/CSEL/XSCROLL)
 .set TED_V_CHAR_BASE,0x22               ; Character/bitmap base address
@@ -508,6 +508,9 @@
 .set TED_V_RASTER_HI,0x2D               ; Raster line high (read-only)
 .set TED_V_ENABLE,0x2E                  ; Video enable (bit 0)
 .set TED_V_STATUS,0x2F                  ; Status (bit 0 = VBlank)
+.set TED_V_RASTER_CMP_LO,0x30           ; Raster compare low byte
+.set TED_V_RASTER_CMP_HI,0x31           ; Raster compare high bit
+.set TED_V_RASTER_STATUS,0x32           ; Raster compare pending latch
 
 ; TED_V_CTRL1 bits
 .set TED_V_CTRL1_ECM,0x40               ; Bit 6: Extended Color Mode
@@ -525,6 +528,7 @@
 ; Enable/Status bits
 .set TED_V_ENABLE_VIDEO,0x01            ; Bit 0: Video enable
 .set TED_V_STATUS_VBLANK,0x01           ; Bit 0: VBlank active
+.set TED_V_RASTER_STATUS_PENDING,0x80   ; Bit 7: raster compare pending
 
 ; ----------------------------------------------------------------------------
 ; SAP Player Registers
@@ -1866,7 +1870,7 @@
 ; ============================================================================
 
 ; Write TED video register via port I/O
-; Note: TED video uses indices 0x20-0x2F on the same port pair as TED audio
+; Note: TED video uses indices 0x20-0x32 on the same port pair as TED audio
 .macro TED_V_WRITE reg,val
     ld a,\reg
     out (TED_PORT_SELECT),a

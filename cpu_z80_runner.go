@@ -35,7 +35,7 @@ const (
 type CPUZ80Config struct {
 	LoadAddr     uint16
 	Entry        uint16
-	JITEnabled   bool          // Enable Z80 JIT compiler (x86-64/ARM64)
+	JITEnabled   bool          // Enable Z80 JIT compiler on supported amd64 hosts
 	VGAEngine    *VGAEngine    // Optional VGA engine for port I/O
 	VoodooEngine *VoodooEngine // Optional Voodoo engine for port I/O
 }
@@ -471,7 +471,7 @@ func (b *Z80BusAdapter) In(port uint16) byte {
 	}
 
 	// Handle TED port I/O (0xF2-0xF3)
-	// Register indices 0x00-0x05 = TED audio, 0x20-0x2F = TED video
+	// Register indices 0x00-0x05 = TED audio, 0x20-0x32 = TED video.
 	switch lowPort {
 	case Z80_TED_PORT_SELECT:
 		return b.tedRegSelect
@@ -480,7 +480,7 @@ func (b *Z80BusAdapter) In(port uint16) byte {
 			// TED audio registers (0x00-0x05)
 			return b.readBus8(TED_BASE + uint32(b.tedRegSelect))
 		} else if b.tedRegSelect >= Z80_TED_V_INDEX_BASE && b.tedRegSelect <= Z80_TED_V_INDEX_END {
-			// TED video registers (0x20-0x2F) - map to 4-byte aligned addresses
+			// TED video registers (0x20-0x32) map to 4-byte aligned addresses.
 			vidReg := uint32(b.tedRegSelect - Z80_TED_V_INDEX_BASE)
 			return b.readBus8(TED_VIDEO_BASE + (vidReg * 4))
 		}
@@ -536,7 +536,7 @@ func (b *Z80BusAdapter) In(port uint16) byte {
 		return b.readBus8(ULA_DATA)
 	}
 
-	// Handle VGA port I/O (0xA0-0xAA)
+	// Handle VGA port I/O (0xA0-0xAD)
 	if b.vgaEngine != nil {
 		switch lowPort {
 		case Z80_VGA_PORT_MODE:
@@ -637,7 +637,7 @@ func (b *Z80BusAdapter) Out(port uint16, value byte) {
 	}
 
 	// Handle TED port I/O (0xF2-0xF3)
-	// Register indices 0x00-0x05 = TED audio, 0x20-0x2F = TED video
+	// Register indices 0x00-0x05 = TED audio, 0x20-0x32 = TED video.
 	switch lowPort {
 	case Z80_TED_PORT_SELECT:
 		b.tedRegSelect = value & 0x3F // Allow 0x00-0x3F for audio + video indices
@@ -647,7 +647,7 @@ func (b *Z80BusAdapter) Out(port uint16, value byte) {
 			// TED audio registers (0x00-0x05)
 			b.writeBus8(TED_BASE+uint32(b.tedRegSelect), value)
 		} else if b.tedRegSelect >= Z80_TED_V_INDEX_BASE && b.tedRegSelect <= Z80_TED_V_INDEX_END {
-			// TED video registers (0x20-0x2F) - map to 4-byte aligned addresses
+			// TED video registers (0x20-0x32) map to 4-byte aligned addresses.
 			vidReg := uint32(b.tedRegSelect - Z80_TED_V_INDEX_BASE)
 			b.writeBus8(TED_VIDEO_BASE+(vidReg*4), value)
 		}
@@ -713,7 +713,7 @@ func (b *Z80BusAdapter) Out(port uint16, value byte) {
 		return
 	}
 
-	// Handle VGA port I/O (0xA0-0xAA)
+	// Handle VGA port I/O (0xA0-0xAD)
 	if b.vgaEngine != nil {
 		switch lowPort {
 		case Z80_VGA_PORT_MODE:

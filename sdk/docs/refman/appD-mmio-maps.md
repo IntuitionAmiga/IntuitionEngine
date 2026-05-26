@@ -22,6 +22,8 @@ sources:
   - coprocessor_constants.go
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Appendix D - Per-Engine MMIO Maps
 
 Every memory-mapped device, grouped by subsystem. Each register is

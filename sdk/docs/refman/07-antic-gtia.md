@@ -9,6 +9,8 @@ sources:
   - sdk/include/ehbasic_hw_video.inc
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 7 - ANTIC and GTIA
 
 ANTIC and GTIA together produce the Atari 8-bit picture model. They

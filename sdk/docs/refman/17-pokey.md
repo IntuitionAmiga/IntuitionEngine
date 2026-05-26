@@ -7,6 +7,8 @@ sources:
   - sdk/include/ehbasic_hw_audio.inc
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 17 - POKEY
 
 POKEY is a four-channel sound chip with byte frequency dividers, per-channel

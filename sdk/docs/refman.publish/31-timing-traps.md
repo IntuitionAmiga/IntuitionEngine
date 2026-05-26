@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 31 - Processor Timing, Traps, and Exceptions
 
 The six processors of Part IV each have their own trap and

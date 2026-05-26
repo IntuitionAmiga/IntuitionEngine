@@ -9,6 +9,8 @@ sources:
   - sdk/include/ehbasic_expr.inc
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 19 - MOD Playback
 
 MOD playback is the sample-based music engine. A MOD carries its

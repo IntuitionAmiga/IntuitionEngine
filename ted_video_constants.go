@@ -36,10 +36,10 @@ Memory Layout (Plus/4):
 - Color memory: integrated (each character has foreground color)
 
 Register Map:
-- TED video registers extend the TED audio range at 0xF0F20-0xF0F3F
+- TED video registers extend the TED audio range at 0xF0F20-0xF0F6B
 - TED audio: 0xF0F00-0xF0F05 (see ted_constants.go)
 - TED player: 0xF0F10-0xF0F1F (see ted_constants.go)
-- TED video: 0xF0F20-0xF0F3F (this file)
+- TED video: 0xF0F20-0xF0F6B (this file)
 
 Color System:
 - 16 hues: black, white, red, cyan, purple, green, blue, yellow,
@@ -270,7 +270,7 @@ const (
 // =============================================================================
 
 const (
-	// 6502: TED video registers at 0xD620-0xD65F
+	// 6502: TED video registers at 0xD620-0xD632.
 	C6502_TED_V_BASE          = 0xD620
 	C6502_TED_V_CTRL1         = 0xD620
 	C6502_TED_V_CTRL2         = 0xD621
@@ -299,10 +299,14 @@ const (
 // =============================================================================
 
 const (
-	// Z80: Uses same port select/data pair as TED audio (0xF2/0xF3)
-	// Register indices 0x20-0x2F select TED video registers
-	Z80_TED_V_INDEX_BASE = 0x20
-	Z80_TED_V_INDEX_END  = 0x32
+	// TED video register indices for select/data CPU port bridges.
+	TED_V_INDEX_BASE = 0x20
+	TED_V_INDEX_END  = 0x32
+
+	// Z80: Uses same port select/data pair as TED audio (0xF2/0xF3).
+	// Register indices 0x20-0x32 select TED video registers.
+	Z80_TED_V_INDEX_BASE = TED_V_INDEX_BASE
+	Z80_TED_V_INDEX_END  = TED_V_INDEX_END
 )
 
 // =============================================================================

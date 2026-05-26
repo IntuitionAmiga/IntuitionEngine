@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Appendix A - EhBASIC Keyword Abbreviations and Token Map
 
 When you type a BASIC line and press RETURN, EhBASIC takes the text apart

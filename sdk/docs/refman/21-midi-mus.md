@@ -15,6 +15,8 @@ sources:
   - sdk/include/ie86.inc
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 21 - MIDI/MUS and RawlandMini GM Synth
 
 The MIDI/MUS player is the bridge between file music and the

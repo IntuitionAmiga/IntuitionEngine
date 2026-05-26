@@ -63,7 +63,14 @@ func TestX64LiveDemoPayloadTargets(t *testing.T) {
 		".PHONY: x64-live-demos",
 		"x64-live-demos: x64-live-payload-check",
 		".PHONY: x64-live-payload-check",
-		"x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs intuitionos",
+		"x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs intuitionos",
+		".PHONY: x64-live-sdk-tools",
+		"CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -trimpath -o \"$$outdir/ie32asm$$ext\" assembler/ie32asm.go",
+		"CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -trimpath -tags ie64 -o \"$$outdir/ie64asm$$ext\" assembler/ie64asm.go",
+		"CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -trimpath -tags ie64dis -o \"$$outdir/ie64dis$$ext\" assembler/ie64dis.go",
+		"CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -trimpath -o \"$$outdir/ie32to64$$ext\" ./cmd/ie32to64/",
+		"CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -trimpath -o \"$$outdir/m68kto64$$ext\" ./cmd/m68kto64/",
+		"find linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64 windows-arm64 -type f | LC_ALL=C sort | xargs sha256sum > SHA256SUMS.txt",
 		`X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" ./build_x64_ie_img.sh --check-payload`,
 		".PHONY: aros-iewarp-library",
 		"aros-iewarp-library: aros-release-assets",
@@ -188,6 +195,7 @@ func TestX64LiveScriptContract(t *testing.T) {
 		`COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core,kbd"`,
 		`X11_RUNTIME_PKGS="libxrandr2,libxxf86vm1,libxi6,libxcursor1,libxinerama1,libx11-6,libxext6,libxfixes3,libxrender1"`,
 		`AUDIO_PKGS="pipewire,pipewire-pulse,wireplumber,pipewire-alsa,alsa-utils,dbus-user-session"`,
+		`MEDIA_PKGS="ffmpeg"`,
 		`SECUREBOOT_PKGS="shim-signed,grub-efi-amd64-signed,sbsigntool"`,
 		`PLYMOUTH_PKGS="plymouth,plymouth-themes"`,
 		`NETWORK_PKGS="network-manager,wpasupplicant,wireless-regdb,iw"`,
@@ -295,7 +303,7 @@ func TestX64LiveUsesPlymouthSplash(t *testing.T) {
 
 	for _, want := range []string{
 		`PLYMOUTH_PKGS="plymouth,plymouth-themes"`,
-		`ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${SECUREBOOT_PKGS},${PLYMOUTH_PKGS},${SHARE_GROW_PKGS},${NETWORK_PKGS},${HOST_HELPER_PKGS}"`,
+		`ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${MEDIA_PKGS},${SECUREBOOT_PKGS},${PLYMOUTH_PKGS},${SHARE_GROW_PKGS},${NETWORK_PKGS},${HOST_HELPER_PKGS}"`,
 		`PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"`,
 		`cat > "${WORK_DIR}/intuition-engine.plymouth"`,
 		`ModuleName=script`,
@@ -738,7 +746,7 @@ func TestX64LiveGoldenCacheHasContentStamp(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`GOLDEN_STAMP_VERSION="x64-live-golden-v39-quiet-plymouth-splash"`,
+		`GOLDEN_STAMP_VERSION="x64-live-golden-v40-ffmpeg-recording"`,
 		`GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"`,
 		`write_golden_stamp`,
 		`expected_golden_stamp`,

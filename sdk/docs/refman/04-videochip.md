@@ -5,6 +5,8 @@ sources:
   - video_compositor.go
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 4 - VideoChip
 
 VideoChip is the IE's general-purpose framebuffer chip. It sits at

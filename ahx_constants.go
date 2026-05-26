@@ -1,16 +1,16 @@
-// ahx_constants.go - AHX engine register constants
+// ahx_constants.go - AHX engine/player register constants
 
 package main
 
-// AHX Engine registers (memory-mapped at 0xF0B80-0xF0B94)
-// The AHX engine provides Amiga AHX module playback
+// AHX engine/control register (memory-mapped at 0xF0B80)
+// The AHX engine/player register block spans 0xF0B80-0xF0B91.
 const (
 	AHX_BASE      = 0xF0B80
 	AHX_PLUS_CTRL = 0xF0B80 // AHX+ mode (0=standard, 1=enhanced)
 	AHX_END       = 0xF0B80
 )
 
-// AHX Player registers (memory-mapped at 0xF0B84-0xF0B94)
+// AHX Player registers (memory-mapped at 0xF0B84-0xF0B91)
 // Used to load and play .ahx files
 const (
 	AHX_PLAY_PTR    = 0xF0B84 // 32-bit pointer to AHX data (little-endian)

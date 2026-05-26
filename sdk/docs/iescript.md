@@ -1,12 +1,12 @@
 # IEScript Lua Automation Manual
 
-*Last updated: 2026-05-24*
+*Last modified: 2026-05-26*
 
 IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
 Scripts use the `.ies` extension.
 
-This manual documents the Lua API exposed by `script_engine.go`. It is a developer-facing reference, not a tutorial for Lua itself or for the guest CPU instruction sets.
+This manual documents the IE Script Lua API exposed to scripts. It is a developer-facing reference, not a tutorial for Lua itself or for the guest CPU instruction sets.
 
 ## Contents
 
@@ -16,6 +16,7 @@ This manual documents the Lua API exposed by `script_engine.go`. It is a develop
 4. [Script Runtime Model](#script-runtime-model)
 5. [Safety and Concurrency Rules](#safety-and-concurrency-rules)
 6. [Module Reference](#module-reference)
+   - [Module Reference Conventions](#module-reference-conventions)
    - [sys](#sys) - Timing, diagnostics, lifecycle
    - [cpu](#cpu) - CPU lifecycle and mode
    - [mem](#mem) - Memory/bus operations
@@ -178,6 +179,51 @@ The policy applies to `cpu.load`, audio loaders, recording and screenshots, outp
 
 ## Module Reference
 
+### Module Reference Conventions
+
+Each API entry is written as a Lua call signature followed by its
+side effects and return contract.
+
+| Notation | Meaning |
+|----------|---------|
+| `name(arg)` | Required argument |
+| `name([arg])` | Optional argument |
+| `name(arg [, optional])` | Required argument followed by an optional argument |
+| `Returns: nothing` | The function leaves no Lua value on the stack |
+| `Returns: value` | The function pushes the named value or table |
+| `Raises on ...` | The binding calls the Lua error path and aborts the current script unless caught by Lua code |
+
+Path-taking functions use the script sandbox rules from section 5 unless
+the entry explicitly says that the path is a host mapping control. Raw
+RAM reads and writes require the CPU freeze contract described in
+section 5. MMIO helpers are separate from raw RAM helpers: they go
+through the bus-visible I/O path and may trigger device side effects.
+
+### Error and Result Rules
+
+Bindings reject malformed arguments through the Lua error path. Unless the
+entry documents a returned status table or boolean, an invalid argument, missing
+file, rejected path, unsupported selected CPU, failed monitor command, or
+out-of-range device field aborts the current script and is reported as the
+script's last error.
+
+Return values use Lua types directly:
+
+| Contract | Lua result |
+|----------|------------|
+| `Returns: nothing` | No value is pushed; assigning the call result yields `nil` |
+| `Returns: boolean` | `true` or `false` |
+| `Returns: number` | Lua number, usually converted from an unsigned guest or host value |
+| `Returns: string` | UTF-8 host string or byte string as described by the entry |
+| `Returns: table` | Plain Lua table with field names documented in the entry |
+
+Monitor integration has an additional filter. `dbg.command` and
+`dbg.command_output` reject monitor commands that read or write arbitrary host
+files or mutate monitor script state: `save`, `load`, `ss`, `sl`, `script`,
+`macro`, and `trace file`; `trace file off` is allowed. Use the specific
+IEScript file, snapshot, symbol, trace, and debugger helpers instead, because
+those helpers apply the script path policy described earlier.
+
 ---
 
 ## `sys`
@@ -250,9 +296,9 @@ CPU lifecycle and mode.
 
 `cpu.mode()` - Return the active CPU type as a string. Returns: one of `"ie32"`, `"ie64"`, `"m68k"`, `"z80"`, `"x86"`, `"6502"`, or `"none"`.
 
-`cpu.jit_enabled()` - Check whether JIT compilation is currently enabled for the active CPU. Supported for m68k, z80, 6502, and ie64; returns `false` for any other CPU. Returns: boolean.
+`cpu.jit_enabled()` - Check whether JIT compilation is currently enabled for the active CPU. Supported for m68k, z80, x86, 6502, and ie64 when the current host build includes that CPU's JIT backend; returns `false` for any other CPU or unavailable backend. Returns: boolean.
 
-`cpu.set_jit_enabled(enabled)` - Enable or disable JIT for the active CPU. Raises if the CPU is currently running, if the platform build does not provide a JIT for that CPU, or if the selected CPU does not support script-controlled JIT (currently only m68k, z80, 6502, and ie64 are supported). On a successful disable the JIT is turned off immediately. Returns: nothing.
+`cpu.set_jit_enabled(enabled)` - Enable or disable JIT for the active CPU. Raises if the CPU is currently running, if the platform build does not provide a JIT for that CPU, or if the selected CPU does not support script-controlled JIT (currently m68k, z80, x86, 6502, and ie64). x86, m68k, z80, and 6502 JIT backends are amd64 host paths; IE64 also has arm64 host paths as described in architecture.md. On a successful disable the JIT is turned off immediately. Returns: nothing.
 
 `cpu.execution_mode()` - Report the effective execution mode for the active CPU. Returns: `"jit"` if a JIT is enabled and available for that CPU, otherwise `"interpreter"`.
 
@@ -274,23 +320,41 @@ cpu.resume()
 
 Memory/bus operations. All `mem.*` functions require `cpu.freeze()` for raw RAM addresses. MMIO addresses (device registers) are allowed without freezing.
 
-`mem.read8(addr)` - Read one byte from bus address `addr`. Returns: number (0..255).
+The `mem.*` module is a raw 32-bit shared-bus API. Each address argument is
+converted to `uint32` before access and the functions call the shared bus
+directly, not the focussed CPU adapter. Addresses above `0xFFFFFFFF` are
+truncated to their low 32 bits. This module is for bus-visible 32-bit physical
+RAM/MMIO ranges; it is not an above-4GiB IE64 RAM or CPU-virtual-address API.
 
-`mem.read16(addr)` - Read a 16-bit word from bus address `addr`. Returns: number.
+`mem.read8(addr)` - Read one byte from bus address `uint32(addr)`. Returns: number (0..255).
 
-`mem.read32(addr)` - Read a 32-bit word from bus address `addr`. Returns: number.
+`mem.read16(addr)` - Read a 16-bit word from bus address `uint32(addr)`. Returns: number.
 
-`mem.write8(addr, value)` - Write one byte `value` to bus address `addr`. Returns: nothing.
+`mem.read32(addr)` - Read a 32-bit word from bus address `uint32(addr)`. Returns: number.
 
-`mem.write16(addr, value)` - Write a 16-bit word `value` to bus address `addr`. Returns: nothing.
+`mem.write8(addr, value)` - Write one byte `value` to bus address `uint32(addr)`. Returns: nothing.
 
-`mem.write32(addr, value)` - Write a 32-bit word `value` to bus address `addr`. Returns: nothing.
+`mem.write16(addr, value)` - Write a 16-bit word `value` to bus address `uint32(addr)`. Returns: nothing.
 
-`mem.read_block(addr, len)` - Read `len` bytes starting at `addr`. Returns: string (raw bytes).
+`mem.write32(addr, value)` - Write a 32-bit word `value` to bus address `uint32(addr)`. Returns: nothing.
 
-`mem.write_block(addr, bytes)` - Write the raw byte string `bytes` starting at `addr`. Returns: nothing.
+`mem.read_block(addr, len)` - Read `len` bytes starting at bus address `uint32(addr)`. Returns: string (raw bytes).
 
-`mem.fill(addr, len, value)` - Fill `len` bytes starting at `addr` with byte `value`. Returns: nothing.
+`mem.write_block(addr, bytes)` - Write the raw byte string `bytes` starting at bus address `uint32(addr)`. Returns: nothing.
+
+`mem.fill(addr, len, value)` - Fill `len` bytes starting at bus address `uint32(addr)` with byte `value`. Returns: nothing.
+
+Detailed `mem.*` contracts:
+
+- `mem.read8(addr) returns number and truncates addr to uint32`
+- `mem.read16(addr) returns number and truncates addr to uint32`
+- `mem.read32(addr) returns number and truncates addr to uint32`
+- `mem.write8(addr, value) returns nothing and truncates addr to uint32`
+- `mem.write16(addr, value) returns nothing and truncates addr to uint32`
+- `mem.write32(addr, value) returns nothing and truncates addr to uint32`
+- `mem.read_block(addr, len) returns a raw byte string; len must be >= 0`
+- `mem.write_block(addr, bytes) writes a raw byte string and returns nothing`
+- `mem.fill(addr, len, value) fills bytes, returns nothing, and requires len >= 0`
 
 Example:
 
@@ -375,13 +439,33 @@ Global constant table of Atari ST scancodes for use with `term.scancode()` and `
 | `keys.TAB` | 0x0F | `keys.ENTER` | 0x1C |
 | `keys.SPACE` | 0x39 | `keys.LSHIFT` | 0x2A |
 | `keys.RSHIFT` | 0x36 | `keys.LCTRL` | 0x1D |
-| `keys.CAPSLOCK` | 0x3A | | |
-| `keys.F1`..`keys.F10` | 0x3B..0x44 | | |
-| `keys.UP` | 0x48 | `keys.DOWN` | 0x50 |
-| `keys.LEFT` | 0x4B | `keys.RIGHT` | 0x4D |
-| `keys.A`..`keys.Z` | (standard AT layout) | | |
-| `keys.DIGIT_0`..`keys.DIGIT_9` | 0x0B, 0x02..0x0A | | |
-| `keys.MINUS` | 0x0C | `keys.EQUAL` | 0x0D |
+| `keys.CAPSLOCK` | 0x3A | `keys.F1` | 0x3B |
+| `keys.F2` | 0x3C | `keys.F3` | 0x3D |
+| `keys.F4` | 0x3E | `keys.F5` | 0x3F |
+| `keys.F6` | 0x40 | `keys.F7` | 0x41 |
+| `keys.F8` | 0x42 | `keys.F9` | 0x43 |
+| `keys.F10` | 0x44 | `keys.UP` | 0x48 |
+| `keys.DOWN` | 0x50 | `keys.LEFT` | 0x4B |
+| `keys.RIGHT` | 0x4D | `keys.A` | 0x1E |
+| `keys.B` | 0x30 | `keys.C` | 0x2E |
+| `keys.D` | 0x20 | `keys.E` | 0x12 |
+| `keys.F` | 0x21 | `keys.G` | 0x22 |
+| `keys.H` | 0x23 | `keys.I` | 0x17 |
+| `keys.J` | 0x24 | `keys.K` | 0x25 |
+| `keys.L` | 0x26 | `keys.M` | 0x32 |
+| `keys.N` | 0x31 | `keys.O` | 0x18 |
+| `keys.P` | 0x19 | `keys.Q` | 0x10 |
+| `keys.R` | 0x13 | `keys.S` | 0x1F |
+| `keys.T` | 0x14 | `keys.U` | 0x16 |
+| `keys.V` | 0x2F | `keys.W` | 0x11 |
+| `keys.X` | 0x2D | `keys.Y` | 0x15 |
+| `keys.Z` | 0x2C | `keys.DIGIT_1` | 0x02 |
+| `keys.DIGIT_2` | 0x03 | `keys.DIGIT_3` | 0x04 |
+| `keys.DIGIT_4` | 0x05 | `keys.DIGIT_5` | 0x06 |
+| `keys.DIGIT_6` | 0x07 | `keys.DIGIT_7` | 0x08 |
+| `keys.DIGIT_8` | 0x09 | `keys.DIGIT_9` | 0x0A |
+| `keys.DIGIT_0` | 0x0B | `keys.MINUS` | 0x0C |
+| `keys.EQUAL` | 0x0D | | |
 
 ---
 
@@ -425,7 +509,7 @@ These functions tune the sound chip's master output stage (post-mix gain, auto-l
 
 ### PSG (AY-3-8910 / YM2149)
 
-`audio.psg_load(path)` - Load a PSG music file from an approved read path. Supported extensions: `.vgm`, `.vgz`, `.vtx`, `.vt`, `.ym`, `.ay`, `.snd`, `.sndh`, `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc`. See `psg_player.go` for the authoritative list. Returns: nothing. Raises on error.
+`audio.psg_load(path)` - Load a PSG music file from an approved read path. Supported extensions: `.vgm`, `.vgz`, `.vtx`, `.vt`, `.ym`, `.ay`, `.snd`, `.sndh`, `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc`. Returns: nothing. Raises on error.
 
 `audio.psg_play()` - Start PSG playback. Returns: nothing.
 
@@ -928,11 +1012,11 @@ nothing.
 
 `dbg.write_mem(addr, data)` - Write raw byte string `data` to the focussed CPU's memory at `addr`. Returns: nothing.
 
-`dbg.fill_mem(addr, len, value)` - Fill `len` bytes starting at `addr` with byte `value`. Returns: nothing.
+`dbg.fill_mem(addr, len, value)` - Raw 32-bit bus helper: fill `len` bytes starting at `uint32(addr)` with byte `value` through the shared bus. Addresses above `0xFFFFFFFF` are truncated to their low 32 bits before access. Returns: nothing.
 
-`dbg.hunt_mem(start, len, pattern)` - Search for byte pattern `pattern` within `len` bytes starting at `start`. Returns: table (array) of matching addresses.
+`dbg.hunt_mem(start, len, pattern)` - Raw 32-bit bus helper: search for byte pattern `pattern` within `len` bytes starting at `uint32(start)` through the shared bus. Addresses above `0xFFFFFFFF` are truncated to their low 32 bits before access. Returns: table (array) of matching addresses.
 
-`dbg.compare_mem(start, len, dest)` - Compare `len` bytes between `start` and `dest`, reporting differences. Returns: table (array) of entries, each with fields:
+`dbg.compare_mem(start, len, dest)` - Raw 32-bit bus helper: compare `len` bytes between `uint32(start)` and `uint32(dest)`, reporting differences. Addresses above `0xFFFFFFFF` are truncated to their low 32 bits before access. Returns: table (array) of entries, each with fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -940,7 +1024,14 @@ nothing.
 | `val1` | number | Byte value at `start + offset` |
 | `val2` | number | Byte value at `dest + offset` |
 
-`dbg.transfer_mem(start, len, dest)` - Copy `len` bytes from `start` to `dest` (safe for overlapping regions). Returns: nothing.
+`dbg.transfer_mem(start, len, dest)` - Raw 32-bit bus helper: copy `len` bytes from `uint32(start)` to `uint32(dest)` through a temporary buffer, so overlapping regions are safe. Addresses above `0xFFFFFFFF` are truncated to their low 32 bits before access. Returns: nothing.
+
+`dbg.read_mem` and `dbg.write_mem` use the focussed CPU adapter and therefore
+follow that CPU's address-width and adapter semantics. `dbg.fill_mem`,
+`dbg.hunt_mem`, `dbg.compare_mem`, and `dbg.transfer_mem` use the raw shared
+bus path after converting their address arguments to `uint32`; use them for
+bus-visible 32-bit physical ranges, not for CPU-virtual or above-4GiB IE64
+addresses.
 
 ### Disassembly and Trace
 
@@ -961,6 +1052,35 @@ nothing.
 | `reg_changes` | table | Register changes (currently empty table) |
 
 `dbg.backtrace([depth])` - Return a call stack backtrace up to `depth` frames (default 8). Returns: table (array) of strings.
+
+`dbg.backtrace_frames([depth])` - Return a structured call stack backtrace up to `depth` frames (default 8, minimum 1). Raises if no monitor or CPU is available. Returns: table (array) of entries, each with fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `frame` | number | Zero-based frame index |
+| `pc` | number | Frame program counter / return address |
+| `sym` | string/nil | Symbol name when symbol resolution succeeds; `nil` otherwise |
+| `offset` | number | Offset from `sym`, or 0 when `sym` is `nil` |
+
+`dbg.tracering_on([size])` - Enable the focussed CPU trace ring. `size` defaults to 4096 and must be positive. Returns: nothing. Raises if no monitor or CPU is available or the monitor command reports an error.
+
+`dbg.tracering_off()` - Disable and clear the focussed CPU trace ring. Returns: nothing. Raises if no monitor or CPU is available or the monitor command reports an error.
+
+`dbg.tracering_show([count])` - Return the last `count` trace-ring entries for the focussed CPU. `count` defaults to 16 and must be non-negative. Returns: table (array) of entries, each with fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cpu` | string | CPU name recorded with the trace entry |
+| `pc` | number | Program counter for the recorded instruction |
+| `hex` | string | Raw instruction bytes in hex |
+| `mnemonic` | string | Disassembled instruction text |
+
+`dbg.source_at(addr)` - Resolve `addr` through the focussed CPU's loaded source map. Returns `nil` when no monitor or CPU is available or no source record covers the address. Otherwise returns a table with fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `file` | string | Source file path recorded in the symbol/source map |
+| `line` | number | One-based source line number |
 
 `dbg.trace_file(path)` - Start logging execution trace to script-relative `path`. Returns: nothing. Raises on path validation or monitor errors.
 
@@ -998,15 +1118,57 @@ nothing.
 
 `dbg.timeline([count])` - Return `tl [count]` output lines as a table of strings. Returns: table.
 
+`dbg.history_horizon()` - Return whole-machine reverse-history retention state. Raises if no monitor or CPU is available. Returns: table with fields:
+
+`dbg.history_horizon()` returns `snapshots`, `checkpoints`, `deltas`, `capacity`, `delta_bytes`, `checkpoint_interval`, `checkpoint_mib`, `retained_checkpoints`, and `devices`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `snapshots` | number | Retained snapshot count |
+| `checkpoints` | number | Retained full checkpoint count |
+| `deltas` | number | Retained delta count |
+| `capacity` | number | Configured maximum retained snapshot count |
+| `delta_bytes` | number | Approximate retained delta bytes |
+| `checkpoint_interval` | number | Instructions between full checkpoints |
+| `checkpoint_mib` | number | MiB cap for checkpoint storage |
+| `retained_checkpoints` | number | Configured maximum retained checkpoint count |
+| `devices` | number | Registered snapshot-capable device count |
+
+`dbg.history_config([opts])` - Read or update whole-machine reverse-history configuration. `opts`, when supplied, is a table with optional positive-number fields `delta_interval`, `delta_mib`, `checkpoints`, and `snapshots`. Raises if no monitor or CPU is available or any supplied value is non-positive. Returns: table with fields:
+
+`dbg.history_config([opts])` accepts `delta_interval`, `delta_mib`, `checkpoints`, and `snapshots` as positive table fields.
+`dbg.history_config([opts])` returns `delta_interval`, `delta_mib`, `checkpoints`, and `snapshots`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `delta_interval` | number | Instructions between retained deltas |
+| `delta_mib` | number | MiB cap for retained deltas |
+| `checkpoints` | number | Maximum retained checkpoint count |
+| `snapshots` | number | Maximum retained snapshot count |
+
 ### State Save/Load
 
-`dbg.save_state(path)` - Save the current machine state to script-relative `path`. Returns: nothing. Raises on monitor errors.
+`dbg.save_state(path)` - Save a CPU-local monitor snapshot for the currently focussed CPU to script-relative `path` by using IEMon's `ss` command. This captures that CPU adapter's registers and snapshot memory span; it does not save other CPUs, device/chip runtime state, audio/video state, timers, DMA, or monitor reverse-history state. Returns: nothing. Raises on monitor errors.
 
-`dbg.load_state(path)` - Restore machine state from an approved read path. Returns: nothing.
+`dbg.load_state(path)` - Restore a CPU-local monitor snapshot for the currently focussed CPU from an approved read path. The snapshot CPU type must match the focussed CPU. This restores the same CPU-local scope saved by `dbg.save_state`; it does not restore whole-machine state. Use `dbg.reverse_continue()` (`rg`) or `dbg.reverse_until(expr)` (`rt <expr>`) for IEMon's whole-machine reverse-history semantics. Returns: nothing.
 
 `dbg.save_mem_file(start, length, path)` - Save `length` bytes starting at `start` to script-relative `path`. Returns: nothing. Raises on monitor errors.
 
 `dbg.load_mem_file(path, addr)` - Load a binary file from an approved read path into memory at `addr`. Returns: nothing. Raises on monitor errors.
+
+### Device Snapshots
+
+`dbg.device_list()` - Return the sorted names of devices registered with IEMon's versioned snapshot service. Returns an empty table when no monitor is available.
+
+`dbg.device_snapshot(name)` - Capture one registered device snapshot. Raises if no monitor is available or the device snapshot callback fails. Returns `nil` when `name` is not registered. Otherwise returns a table with fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Device name passed to `dbg.device_snapshot` |
+| `version` | number | Device snapshot format version |
+| `data` | string | Opaque byte string containing the device snapshot payload |
+
+`dbg.device_diff(a, b)` - Compare two device snapshot tables, usually returned by `dbg.device_snapshot`. Arguments must contain `name`, `version`, and `data`. Raises an argument error if either table is missing those fields. Returns: string diff summary.
 
 ### Multi-CPU
 
@@ -1058,6 +1220,12 @@ nothing.
 
 `dbg.macro(name, cmds)` - Define a monitor macro. `name` is the macro name; `cmds` is the semicolon-aware command string. Each command is sandbox-validated before registration. Macro names cannot contain whitespace or semicolons. Returns: nothing.
 
+`dbg.layout(name)` - Run IEMon `layout <name>` and return the monitor output as one string joined with newlines. Raises if no monitor is available or the monitor command reports an error.
+
+`dbg.bug_report([trace_count])` - Run IEMon `bug <trace_count>` and return the report text as one newline-joined string. `trace_count` defaults to 16 and must be positive. Raises if no monitor is available or the monitor command reports an error.
+
+`dbg.help([topic])` - Run IEMon `help` or `help <topic>` and return the help text as one newline-joined string. Raises if no monitor is available or the monitor command reports an error.
+
 `dbg.command(cmd)` - Execute a monitor command string after sandbox filtering. Host-file-capable monitor commands are rejected (`save`, `load`, `ss`, `sl`, `script`, `macro`, and `trace file`; `trace file off` is allowed). Invoking monitor macros through this raw API is rejected. Returns: nothing.
 
 `dbg.command_output(cmd)` - Execute a sandbox-filtered monitor command string and return newly appended monitor output lines as `{text, color}` entries. The field is named `color` because that is the exported Lua table key. The same command restrictions as `dbg.command` apply. Returns: table.
@@ -1089,7 +1257,7 @@ dbg.close()
 
 ## `coproc`
 
-Coprocessor manager for offloading work to secondary CPU instances. The low-level MMIO and mailbox contract is documented in [Coprocessor.md](Coprocessor.md).
+Coprocessor manager for offloading work to secondary CPU instances. This section documents the Lua-facing ticket API; script callers do not need the low-level MMIO and mailbox contract.
 
 Supported CPU types: `"ie32"`, `"6502"`, `"m68k"`, `"z80"`, `"x86"`, `"ie64"`.
 
@@ -1160,7 +1328,7 @@ MIDI routing supports SMF `.mid`/`.midi` and Doom `.mus` through the fixed built
 
 `media.status()` - Get the current playback status. Returns: string - one of `"idle"`, `"loading"`, `"playing"`, `"error"`.
 
-`media.type()` - Get the detected media type. Returns: string - one of `"sid"`, `"psg"`, `"ted"`, `"ahx"`, `"pokey"`, `"mod"`, `"wav"`, `"none"`.
+`media.type()` - Get the detected media type. `media.type() returns sid, psg, ted, ahx, pokey, mod, wav, midi, or none`. Returns: string.
 
 `media.error()` - Get the last error code (0 if no error). Returns: number.
 
@@ -1188,21 +1356,21 @@ Lua 5.1 does not include a bitwise library. IEScript provides a `bit32` global t
 
 `bit32.bnot(x)` - Bitwise NOT (ones complement). Returns: number.
 
-`bit32.lshift(x, disp)` - Logical left shift by `disp` bits (masked to 0..31). Returns: number.
+`bit32.lshift(x, disp)` - Logical left shift by `disp` bits. `bit32.lshift(x, disp) masks disp to 0..31 and returns number`.
 
-`bit32.rshift(x, disp)` - Logical right shift by `disp` bits (masked to 0..31). Returns: number.
+`bit32.rshift(x, disp)` - Logical right shift by `disp` bits. `bit32.rshift(x, disp) masks disp to 0..31 and returns number`.
 
-`bit32.arshift(x, disp)` - Arithmetic right shift by `disp` bits (sign-extending). Returns: number.
+`bit32.arshift(x, disp)` - Arithmetic right shift by `disp` bits. `bit32.arshift(x, disp) masks disp to 0..31, sign-extends, and returns number`.
 
-`bit32.lrotate(x, disp)` - Left rotation by `disp` bits. Returns: number.
+`bit32.lrotate(x, disp)` - Left rotation by `disp` bits. `bit32.lrotate(x, disp) masks disp to 0..31 and returns number`.
 
-`bit32.rrotate(x, disp)` - Right rotation by `disp` bits. Returns: number.
+`bit32.rrotate(x, disp)` - Right rotation by `disp` bits. `bit32.rrotate(x, disp) masks disp to 0..31 and returns number`.
 
-`bit32.extract(x, field[, width])` - Extract `width` bits starting at zero-based bit `field` (default width 1). Returns: number.
+`bit32.extract(x, field[, width])` - Extract `width` bits starting at zero-based bit `field` (default width 1). `bit32.extract(x, field[, width]) raises an error for field < 0, width <= 0, or field + width > 32`. Returns: number.
 
-`bit32.replace(x, v, field[, width])` - Replace `width` bits in `x` starting at zero-based bit `field` with low bits from `v` (default width 1). Returns: number.
+`bit32.replace(x, v, field[, width])` - Replace `width` bits in `x` starting at zero-based bit `field` with low bits from `v` (default width 1). `bit32.replace(x, v, field[, width]) raises an error for field < 0, width <= 0, or field + width > 32`. Returns: number.
 
-`bit32.btest(...)` - Bitwise AND of all arguments, returned as boolean true if any resulting bit is set. Returns: boolean.
+`bit32.btest(...)` - Bitwise AND of all arguments. `bit32.btest(...) returns boolean true when the bitwise AND result is non-zero`.
 
 Example:
 
@@ -1517,7 +1685,7 @@ Compact reference for IEScript API functions.
 
 `keys` is a global table of Atari ST make-code constants for use with `term.scancode()` and `term.key_press()`. It contains `ESCAPE`, `BACKSPACE`, `TAB`, `ENTER`, `SPACE`, `LSHIFT`, `RSHIFT`, `LCTRL`, `CAPSLOCK`, `F1` through `F10`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `A` through `Z`, `DIGIT_0` through `DIGIT_9`, `MINUS`, and `EQUAL`.
 
-### audio (36)
+### audio (44)
 
 | Function | Returns |
 |----------|---------|
@@ -1557,6 +1725,14 @@ Compact reference for IEScript API functions.
 | `audio.ahx_play()` | - |
 | `audio.ahx_stop()` | - |
 | `audio.ahx_is_playing()` | boolean |
+| `audio.midi_load(path)` | - |
+| `audio.midi_play()` | - |
+| `audio.midi_stop()` | - |
+| `audio.midi_pause()` | - |
+| `audio.midi_resume()` | - |
+| `audio.midi_set_volume(0..255)` | - |
+| `audio.midi_is_playing()` | boolean |
+| `audio.midi_metadata()` | table |
 
 ### video (65)
 

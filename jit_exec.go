@@ -88,8 +88,8 @@ func compileBlockMMU(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITB
 // interpretOne executes one IE64 instruction at cpu.PC using the interpreter.
 // Unlike StepOne(), this is designed to be called from within the JIT execution
 // loop for instructions that can't be JIT-compiled (FPU, WAIT, HALT).
-func (cpu *CPU64) interpretOne() {
-	cpu.StepOne()
+func (cpu *CPU64) interpretOne() int {
+	return cpu.StepOne()
 }
 
 // ExecuteJIT is the main JIT execution loop. It replaces Execute() when
@@ -166,6 +166,20 @@ func (cpu *CPU64) ExecuteJIT() {
 			cpu.jitCtx.RTSCache2Addr = 0
 			cpu.jitCtx.RTSCache3PC = 0
 			cpu.jitCtx.RTSCache3Addr = 0
+		}
+
+		if cpu.timerEnabled.Load() {
+			executed := cpu.interpretOne()
+			if executed == 0 {
+				cpu.running.Store(false)
+				break
+			}
+			cpu.InstructionCount += uint64(executed)
+			diagFallbackInstr += uint64(executed)
+			if !cpu.running.Load() {
+				break
+			}
+			continue
 		}
 
 		// PLAN_MAX_RAM.md slice 4 design: drop the legacy IE64_ADDR_MASK
@@ -490,19 +504,6 @@ func (cpu *CPU64) ExecuteJIT() {
 			}
 		}
 
-		// Timer check: decrement by number of executed instructions
-		if cpu.timerEnabled.Load() {
-			count := cpu.timerCount.Load()
-			if count > 0 {
-				if executed >= count {
-					cpu.timerCount.Store(0)
-					cpu.handleTimerJIT()
-				} else {
-					cpu.timerCount.Store(count - executed)
-				}
-			}
-		}
-
 		// Retired instruction count (uniform with interpreter)
 		cpu.InstructionCount += executed
 
@@ -532,42 +533,5 @@ func (cpu *CPU64) ExecuteJIT() {
 	}
 	if statsEnabled {
 		ie64TurboStatsLoad().Sub(statsBase).Print()
-	}
-}
-
-// handleTimerJIT handles timer expiry at JIT block boundaries.
-// Called when TIMER_COUNT has reached 0.
-func (cpu *CPU64) handleTimerJIT() {
-	cpu.timerState.Store(TIMER_EXPIRED)
-	if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
-		if cpu.mmuEnabled && cpu.intrVector != 0 {
-			// ERET-model interrupt entry. On trap-frame stack overflow
-			// trapEntry halts the CPU (sets trapHalted + cpu.running=false);
-			// leave PC alone so the dispatcher's trapHalted check breaks
-			// out on the next iteration rather than vectoring into the
-			// interrupt handler on top of a halted CPU.
-			if !cpu.trapEntry() {
-				return
-			}
-			cpu.faultPC = cpu.PC
-			cpu.faultAddr = 0
-			cpu.faultCause = FAULT_TIMER
-			cpu.PC = cpu.intrVector
-		} else {
-			// Legacy push-PC/RTI model
-			cpu.inInterrupt.Store(true)
-			cpu.regs[31] -= 8
-			sp := uint32(cpu.regs[31])
-			memSize := uint64(len(cpu.memory))
-			if uint64(sp)+8 <= memSize {
-				memBase := unsafe.Pointer(&cpu.memory[0])
-				*(*uint64)(unsafe.Pointer(uintptr(memBase) + uintptr(sp))) = cpu.PC
-				cpu.PC = cpu.interruptVector
-			}
-		}
-	}
-	// Reload timer
-	if cpu.timerEnabled.Load() {
-		cpu.timerCount.Store(cpu.timerPeriod.Load())
 	}
 }

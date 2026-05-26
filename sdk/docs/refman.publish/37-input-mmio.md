@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 37 - Keyboard, Mouse, and Time of Day
 
 Input arrives through the terminal register block at

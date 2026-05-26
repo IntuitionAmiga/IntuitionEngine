@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 33 - IE Mon
 
 IE Mon is the interactive monitor built into Intuition Engine. It

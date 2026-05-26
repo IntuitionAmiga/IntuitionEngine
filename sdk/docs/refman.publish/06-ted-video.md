@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 6 - TED Video
 
 The TED chip reproduces the picture model of the C16 and Plus/4. It

@@ -7,6 +7,8 @@ sources:
   - sdk/include/ie64.inc
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 8 - The ULA Display
 
 The ULA reproduces the picture model of the ZX Spectrum: a single

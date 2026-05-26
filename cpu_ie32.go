@@ -222,7 +222,7 @@ const (
 	RTI = 0x1C // Return from interrupt
 
 	// Timing
-	WAIT = 0x17 // Wait specified cycles
+	WAIT = 0x17 // Wait specified microseconds
 
 	// System Control
 	NOP  = 0xEE // No operation
@@ -406,7 +406,7 @@ func NewCPU(bus Bus32) *CPU {
 	   - *CPU: Initialised CPU instance
 
 	   The function:
-	   1. Allocates main memory
+	   1. Uses the supplied bus's shared memory slice
 	   2. Sets default register values
 	   3. Configures interrupt state
 	   4. Initialises stack pointer
@@ -757,25 +757,15 @@ func (cpu *CPU) DumpStack() {
 
 func (cpu *CPU) resolveOperand(addrMode byte, operand uint32) uint32 {
 	/*
-	   resolveOperand handles address mode resolution and memory access.
+	   resolveOperand applies read-style IE32 operand resolution:
+	      - Immediate: direct value
+	      - Register: register contents
+	      - Register indirect: memory at register + byte offset
+	      - Memory indirect: memory at operand address
+	      - Direct: memory at operand address
 
-	   Parameters:
-	   - addrMode: Addressing mode (IMMEDIATE/REGISTER/REG_IND/MEM_IND)
-	   - operand: Raw operand value
-
-	   Returns:
-	   - uint32: Resolved value based on addressing mode
-
-	   Resolution Process:
-	   1. Checks I/O region access (IO_BASE to IO_LIMIT)
-	   2. Resolves based on addressing mode:
-	      - Immediate: Direct value
-	      - Register: Register contents
-	      - Register Indirect: Memory at register + offset
-	      - Memory Indirect: Memory at address
-
-	   Thread Safety:
-	   Protected by memory read mutex during resolution.
+	   Reserved addressing-mode bytes resolve to zero on read-style operands.
+	   The Read32 path routes I/O-region addresses through the shared bus.
 	*/
 
 	switch addrMode {
@@ -1542,7 +1532,9 @@ func (cpu *CPU) Stop() {
 }
 
 // StepOne executes a single IE32 instruction at the current PC and returns 1.
-// Must only be called when the CPU is frozen.
+// Must only be called when the CPU is frozen. Debugger single-step semantics
+// intentionally step WAIT without sleeping; the normal Execute loop applies
+// WAIT's real-time delay.
 func (cpu *CPU) StepOne() int {
 	memBase := cpu.memBase
 	memSize := uint32(len(cpu.memory))
@@ -1623,55 +1615,55 @@ func (cpu *CPU) StepOne() int {
 		cpu.Z = resolvedOperand
 		cpu.PC += INSTRUCTION_SIZE
 	case STORE:
-		cpu.Write32(operand, *cpu.regs[reg&REG_INDEX_MASK])
+		cpu.storeRegister(*cpu.regs[reg&REG_INDEX_MASK], addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STA:
-		cpu.Write32(operand, cpu.A)
+		cpu.storeRegister(cpu.A, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STB:
-		cpu.Write32(operand, cpu.B)
+		cpu.storeRegister(cpu.B, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STC:
-		cpu.Write32(operand, cpu.C)
+		cpu.storeRegister(cpu.C, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STD:
-		cpu.Write32(operand, cpu.D)
+		cpu.storeRegister(cpu.D, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STE:
-		cpu.Write32(operand, cpu.E)
+		cpu.storeRegister(cpu.E, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STF:
-		cpu.Write32(operand, cpu.F)
+		cpu.storeRegister(cpu.F, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STG:
-		cpu.Write32(operand, cpu.G)
+		cpu.storeRegister(cpu.G, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STH:
-		cpu.Write32(operand, cpu.H)
+		cpu.storeRegister(cpu.H, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STS:
-		cpu.Write32(operand, cpu.S)
+		cpu.storeRegister(cpu.S, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STT:
-		cpu.Write32(operand, cpu.T)
+		cpu.storeRegister(cpu.T, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STU:
-		cpu.Write32(operand, cpu.U)
+		cpu.storeRegister(cpu.U, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STV:
-		cpu.Write32(operand, cpu.V)
+		cpu.storeRegister(cpu.V, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STW:
-		cpu.Write32(operand, cpu.W)
+		cpu.storeRegister(cpu.W, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STX:
-		cpu.Write32(operand, cpu.X)
+		cpu.storeRegister(cpu.X, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STY:
-		cpu.Write32(operand, cpu.Y)
+		cpu.storeRegister(cpu.Y, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case STZ:
-		cpu.Write32(operand, cpu.Z)
+		cpu.storeRegister(cpu.Z, addrMode, operand)
 		cpu.PC += INSTRUCTION_SIZE
 	case ADD:
 		*cpu.regs[reg&REG_INDEX_MASK] += resolvedOperand
@@ -1683,14 +1675,20 @@ func (cpu *CPU) StepOne() int {
 		*cpu.regs[reg&REG_INDEX_MASK] *= resolvedOperand
 		cpu.PC += INSTRUCTION_SIZE
 	case DIV:
-		if resolvedOperand != 0 {
-			*cpu.regs[reg&REG_INDEX_MASK] /= resolvedOperand
+		if resolvedOperand == 0 {
+			fmt.Printf("Division by zero error at PC=%08x\n", cpu.PC)
+			cpu.running.Store(false)
+			return 1
 		}
+		*cpu.regs[reg&REG_INDEX_MASK] /= resolvedOperand
 		cpu.PC += INSTRUCTION_SIZE
 	case MOD:
-		if resolvedOperand != 0 {
-			*cpu.regs[reg&REG_INDEX_MASK] %= resolvedOperand
+		if resolvedOperand == 0 {
+			fmt.Printf("Modulo by zero error at PC=%08x\n", cpu.PC)
+			cpu.running.Store(false)
+			return 1
 		}
+		*cpu.regs[reg&REG_INDEX_MASK] %= resolvedOperand
 		cpu.PC += INSTRUCTION_SIZE
 	case AND:
 		*cpu.regs[reg&REG_INDEX_MASK] &= resolvedOperand
@@ -1702,73 +1700,108 @@ func (cpu *CPU) StepOne() int {
 		*cpu.regs[reg&REG_INDEX_MASK] ^= resolvedOperand
 		cpu.PC += INSTRUCTION_SIZE
 	case NOT:
-		*cpu.regs[reg&REG_INDEX_MASK] = ^resolvedOperand
+		r := cpu.regs[reg&REG_INDEX_MASK]
+		*r = ^(*r)
 		cpu.PC += INSTRUCTION_SIZE
 	case SHL:
-		*cpu.regs[reg&REG_INDEX_MASK] <<= resolvedOperand & 31
+		*cpu.regs[reg&REG_INDEX_MASK] <<= resolvedOperand
 		cpu.PC += INSTRUCTION_SIZE
 	case SHR:
-		*cpu.regs[reg&REG_INDEX_MASK] >>= resolvedOperand & 31
+		*cpu.regs[reg&REG_INDEX_MASK] >>= resolvedOperand
 		cpu.PC += INSTRUCTION_SIZE
 	case INC:
-		*cpu.regs[reg&REG_INDEX_MASK]++
+		if addrMode == ADDR_REGISTER {
+			(*cpu.regs[operand&REG_INDEX_MASK])++
+		} else if addrMode == ADDR_REG_IND {
+			addr := *cpu.regs[operand&REG_INDEX_MASK] + (operand & ^uint32(REG_INDEX_MASK))
+			val := cpu.Read32(addr)
+			cpu.Write32(addr, val+1)
+		} else if addrMode == ADDR_MEM_IND {
+			addr := cpu.Read32(operand)
+			val := cpu.Read32(addr)
+			cpu.Write32(addr, val+1)
+		} else {
+			val := cpu.Read32(operand)
+			cpu.Write32(operand, val+1)
+		}
 		cpu.PC += INSTRUCTION_SIZE
 	case DEC:
-		*cpu.regs[reg&REG_INDEX_MASK]--
+		if addrMode == ADDR_REGISTER {
+			(*cpu.regs[operand&REG_INDEX_MASK])--
+		} else if addrMode == ADDR_REG_IND {
+			addr := *cpu.regs[operand&REG_INDEX_MASK] + (operand & ^uint32(REG_INDEX_MASK))
+			val := cpu.Read32(addr)
+			cpu.Write32(addr, val-1)
+		} else if addrMode == ADDR_MEM_IND {
+			addr := cpu.Read32(operand)
+			val := cpu.Read32(addr)
+			cpu.Write32(addr, val-1)
+		} else {
+			val := cpu.Read32(operand)
+			cpu.Write32(operand, val-1)
+		}
 		cpu.PC += INSTRUCTION_SIZE
 	case JMP:
-		cpu.PC = resolvedOperand
+		cpu.PC = operand
 	case JNZ:
 		if *cpu.regs[reg&REG_INDEX_MASK] != 0 {
-			cpu.PC = resolvedOperand
+			cpu.PC = operand
 		} else {
 			cpu.PC += INSTRUCTION_SIZE
 		}
 	case JZ:
 		if *cpu.regs[reg&REG_INDEX_MASK] == 0 {
-			cpu.PC = resolvedOperand
+			cpu.PC = operand
 		} else {
 			cpu.PC += INSTRUCTION_SIZE
 		}
 	case JGT:
-		if int32(*cpu.regs[reg&REG_INDEX_MASK]) > int32(resolvedOperand) {
+		if int32(*cpu.regs[reg&REG_INDEX_MASK]) > 0 {
 			cpu.PC = operand
 		} else {
 			cpu.PC += INSTRUCTION_SIZE
 		}
 	case JGE:
-		if int32(*cpu.regs[reg&REG_INDEX_MASK]) >= int32(resolvedOperand) {
+		if int32(*cpu.regs[reg&REG_INDEX_MASK]) >= 0 {
 			cpu.PC = operand
 		} else {
 			cpu.PC += INSTRUCTION_SIZE
 		}
 	case JLT:
-		if int32(*cpu.regs[reg&REG_INDEX_MASK]) < int32(resolvedOperand) {
+		if int32(*cpu.regs[reg&REG_INDEX_MASK]) < 0 {
 			cpu.PC = operand
 		} else {
 			cpu.PC += INSTRUCTION_SIZE
 		}
 	case JLE:
-		if int32(*cpu.regs[reg&REG_INDEX_MASK]) <= int32(resolvedOperand) {
+		if int32(*cpu.regs[reg&REG_INDEX_MASK]) <= 0 {
 			cpu.PC = operand
 		} else {
 			cpu.PC += INSTRUCTION_SIZE
 		}
 	case PUSH:
-		cpu.SP -= WORD_SIZE
-		cpu.Write32(cpu.SP, *cpu.regs[reg&REG_INDEX_MASK])
+		if !cpu.Push(*cpu.regs[reg&REG_INDEX_MASK]) {
+			return 1
+		}
 		cpu.PC += INSTRUCTION_SIZE
 	case POP:
-		*cpu.regs[reg&REG_INDEX_MASK] = cpu.Read32(cpu.SP)
-		cpu.SP += WORD_SIZE
+		value, ok := cpu.Pop()
+		if !ok {
+			return 1
+		}
+		*cpu.regs[reg&REG_INDEX_MASK] = value
 		cpu.PC += INSTRUCTION_SIZE
 	case JSR:
-		cpu.SP -= WORD_SIZE
-		cpu.Write32(cpu.SP, cpu.PC+INSTRUCTION_SIZE)
-		cpu.PC = resolvedOperand
+		if !cpu.Push(cpu.PC + INSTRUCTION_SIZE) {
+			return 1
+		}
+		cpu.PC = operand
 	case RTS:
-		cpu.PC = cpu.Read32(cpu.SP)
-		cpu.SP += WORD_SIZE
+		returnPC, ok := cpu.Pop()
+		if !ok {
+			return 1
+		}
+		cpu.PC = returnPC
 	case SEI:
 		cpu.interruptEnabled.Store(true)
 		cpu.PC += INSTRUCTION_SIZE
@@ -1776,8 +1809,11 @@ func (cpu *CPU) StepOne() int {
 		cpu.interruptEnabled.Store(false)
 		cpu.PC += INSTRUCTION_SIZE
 	case RTI:
-		cpu.PC = cpu.Read32(cpu.SP)
-		cpu.SP += WORD_SIZE
+		returnPC, ok := cpu.Pop()
+		if !ok {
+			return 1
+		}
+		cpu.PC = returnPC
 		cpu.inInterrupt.Store(false)
 	case WAIT:
 		cpu.PC += INSTRUCTION_SIZE

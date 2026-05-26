@@ -748,6 +748,8 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 00000000000F0750  RTC_EPOCH         equ 0xF0750
          = 00000000000F0754  MOUSE_DX          equ 0xF0754
          = 00000000000F0758  MOUSE_DY          equ 0xF0758
+         = 00000000000F075C  RTC_MONO_USEC_LO  equ 0xF075C
+         = 00000000000F0760  RTC_MONO_USEC_HI  equ 0xF0760
          = 00000000000F07F0  TERM_SENTINEL     equ 0xF07F0
          = 00000000000F1400  HOST_MMIO_BASE        equ 0xF1400
          = 00000000000F1400  HOST_MMIO_CMD         equ 0xF1400
@@ -978,6 +980,14 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 00000000000F0B8C  AHX_PLAY_CTRL     equ 0xF0B8C
          = 00000000000F0B90  AHX_PLAY_STATUS   equ 0xF0B90
          = 00000000000F0B91  AHX_SUBSONG       equ 0xF0B91
+         = 00000000000F0BA0  MIDI_PLAY_PTR     equ 0xF0BA0
+         = 00000000000F0BA4  MIDI_PLAY_LEN     equ 0xF0BA4
+         = 00000000000F0BA8  MIDI_PLAY_CTRL    equ 0xF0BA8
+         = 00000000000F0BAC  MIDI_PLAY_STATUS  equ 0xF0BAC
+         = 00000000000F0BB0  MIDI_POSITION     equ 0xF0BB0
+         = 00000000000F0BB4  MIDI_VOLUME       equ 0xF0BB4
+         = 00000000000F0BB8  MIDI_TEMPO_BPM    equ 0xF0BB8
+         = 0000000000000008  MIDI_STATUS_LOADING equ 0x08
          = 00000000000F0BC0  MOD_PLAY_PTR      equ 0xF0BC0
          = 00000000000F0BC4  MOD_PLAY_LEN      equ 0xF0BC4
          = 00000000000F0BC8  MOD_PLAY_CTRL     equ 0xF0BC8
@@ -1164,6 +1174,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 0000000000000005  BLT_OP_MODE7      equ 5
          = 0000000000000006  BLT_OP_COLOR_EXPAND equ 6
          = 0000000000000007  BLT_OP_SCALE      equ 7
+         = 0000000000000008  BLT_OP_MEMCOPY    equ 8
          = 0000000000000000  BLT_FLAGS_BPP_RGBA32     equ 0x00
          = 0000000000000001  BLT_FLAGS_BPP_CLUT8      equ 0x01
          = 0000000000000003  BLT_FLAGS_BPP_MASK       equ 0x03
@@ -1526,6 +1537,7 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 0000000000000005  MEDIA_TYPE_POKEY  equ 5
          = 0000000000000006  MEDIA_TYPE_MOD    equ 6
          = 0000000000000007  MEDIA_TYPE_WAV    equ 7
+         = 0000000000000008  MEDIA_TYPE_MIDI   equ 8
          = 00000000000F2320  EXEC_NAME_PTR     equ 0xF2320
          = 00000000000F2324  EXEC_CTRL         equ 0xF2324
          = 00000000000F2328  EXEC_STATUS       equ 0xF2328

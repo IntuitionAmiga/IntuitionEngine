@@ -1037,6 +1037,13 @@ func TestIE64Asm_System(t *testing.T) {
 	}
 }
 
+func TestIE64Asm_WAIT(t *testing.T) {
+	bin := assembleString(t, "wait #42")
+	assertLen(t, bin, 8, "wait")
+	want := encodeInstr(opWAIT, 0, 0, 1, 0, 0, 42)
+	assertBytes(t, bin, 0, want, "wait #42")
+}
+
 // ---------------------------------------------------------------------------
 // Step 3d: Local labels
 // ---------------------------------------------------------------------------
@@ -2078,6 +2085,11 @@ func TestIE64Asm_MFCR(t *testing.T) {
 	// rd=5, rs=CR0=0
 	want := encodeInstr(opMFCR, 5, 0, 0, 0, 0, 0)
 	assertBytes(t, bin, 0, want, "mfcr r5, cr0")
+
+	bin = assembleString(t, "mfcr r5, ram_size_bytes")
+	assertLen(t, bin, 8, "mfcr ram_size_bytes")
+	want = encodeInstr(opMFCR, 5, 0, 0, 15, 0, 0)
+	assertBytes(t, bin, 0, want, "mfcr r5, ram_size_bytes")
 }
 
 func TestIE64Asm_TLBINVAL(t *testing.T) {
@@ -2196,6 +2208,8 @@ func TestIE64Asm_CRNames(t *testing.T) {
 		{"mtcr trap_vec, r1", 4},
 		{"mtcr cr5, r1", 5},
 		{"mtcr mmu_ctrl, r1", 5},
+		{"mtcr cr15, r1", 15},
+		{"mtcr ram_size_bytes, r1", 15},
 	}
 	for _, tc := range cases {
 		bin := assembleString(t, tc.src)

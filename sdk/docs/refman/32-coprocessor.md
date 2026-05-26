@@ -7,6 +7,8 @@ sources:
   - registers.go
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 32 - Coprocessor and Cross-CPU Calls
 
 The six processors of Part IV sit on the same Intuition Engine

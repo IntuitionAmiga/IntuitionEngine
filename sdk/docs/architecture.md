@@ -1,44 +1,31 @@
 # Intuition Engine Architecture
 
-*Last updated: 2026-05-20*
+*Last modified: 2026-05-26*
 
-Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, 9 audio engines/players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is autodetected at boot from host `/proc/meminfo` minus a per-platform reserve (see `memory_sizing.go`); each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
+Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
-The diagrams below describe wired runtime behaviour. Source-file presence alone is not treated as support: for example, `jit_z80_emit_arm64.go` exists, but `jit_z80_dispatch.go` keeps Z80 JIT available only when `runtime.GOARCH == "amd64"`.
+The diagrams below describe wired runtime behaviour. Platform availability
+follows the runtime dispatch path; for example, the Z80 JIT is available
+on amd64 builds only.
 
-## Live USB Deployment Security
+## Reading the Architecture Tables and Diagrams
 
-The x64 live USB image is a single-purpose appliance deployment of the engine.
-It adds host-side controls around the normal VM architecture:
+Boxes represent runtime components. Arrows represent operational paths:
+direct calls, bus mappings, shared-memory paths, queues, or host-service
+dependencies. Memory-map rows describe guest-visible address ranges and
+the device or subsystem that owns each range.
 
-- The graphical session runs as the unprivileged `ie` user through `greetd`,
-  `cage`, `xwayland-run`, `/opt/ie/session.sh`, and `/opt/ie/launch.sh`.
-- `/opt/ie`, the emulator binary, and the launch scripts are root-owned so the
-  AppArmor profile attached to `/opt/ie/IntuitionEngine` cannot be bypassed by
-  replacing the attached path as the live user.
-- The emulator profile allows the display, input, audio, share, logging, and
-  Unix socket access needed by Cage, Xwayland, PipeWire, and the engine.
-- The external host helper is a separate root-owned binary at
-  `/usr/libexec/intuitionengine-host-helper`. The live image starts it as a
-  root-owned systemd broker, and the emulator sends allowlisted requests over
-  `/run/intuitionengine-host-helper.sock` instead of running as root.
-- The helper has its own AppArmor profile. System-control paths such as
-  `systemctl` remain confined; package maintenance uses an unconfined
-  transition for `apt-get` so future package maintainer scripts can update the
-  persistent root without repeatedly extending the helper profile.
-- Display builds attach a HOST command overlay for long-running commands such
-  as `HOST NET` and `HOST UPDATE`. The overlay streams helper output, supports
-  scrollback, and auto-returns to BASIC after a five-second completion
-  countdown.
-- The live image enables a UFW baseline that denies incoming connections and
-  allows outgoing connections.
-- Spare virtual terminals are locked down by disabling logind's spare VT
-  reservation, masking gettys on tty1 through tty12, and loading a console
-  keymap that removes the VT switch key bindings before `greetd` starts.
+| Diagram/table item | Meaning |
+|--------------------|---------|
+| Address range | Guest-visible range plus decoded mapping, owner, and reservation/use semantics |
+| Visible RAM size | RAM visible to the current CPU/profile, as reported by SYSINFO and CPU-specific discovery paths |
+| CPU or JIT entry | CPU core or JIT backend available through the runtime dispatch path |
+| Audio, video, or peripheral box | Engine, player, device, or bridge that participates in the running machine |
+| Debugger or scripting path | Monitor, debug adapter, or Lua binding path used for inspection or automation |
 
-The README is the user-facing authority for this deployment contract. See
-[Live USB Quick Start](../../README.md#live-usb-quick-start) for the security
-model, HOST command gating, and PipeWire notes.
+If a feature is platform-limited, the table or diagram names the
+supported platform path instead of implying that every implementation
+file is active in every build.
 
 ## Single Complete Architecture Diagram
 
@@ -81,7 +68,7 @@ flowchart LR
         AROSMEM["AROS memory<br/>Fast RAM + video RAM"]
         COPMEM["Coprocessor memory slices<br/>IE32, IE64, M68K,<br/>Z80, 6502, x86"]
         MAILBOX["Coprocessor mailboxes<br/>0x790000-0x7917FF"]
-        STAGING["Media staging buffer<br/>0x800000"]
+        STAGING["Media staging buffer<br/>0x800000-0x80FFFF"]
     end
 
     subgraph OSLOAD["OS and loader shims"]
@@ -349,7 +336,7 @@ flowchart TB
 
     subgraph L1["Execution layer"]
         RUNNERS["CPU runners<br/>file extension or OS mode"]
-        JITS["JIT dispatch gates<br/>build tags + runtime GOARCH"]
+        JITS["JIT dispatch selectors<br/>build tags + runtime GOARCH"]
         WORKERS["Coprocessor workers<br/>shared bus"]
     end
 
@@ -437,7 +424,7 @@ flowchart LR
 
     HOSTLOOP -->|"allocate guest RAM and register MMIO"| BUSFLOWNODE
     HOSTLOOP -->|"load selected program/profile"| CPUFLOW
-    CPUFLOW -->|"execute if platform gate and CPU setting allow"| JITFLOW
+    CPUFLOW -->|"execute when platform support and CPU setting allow"| JITFLOW
     JITFLOW -. "interpreter fallback or native block exits" .-> CPUFLOW
     CPUFLOW -->|"read/write RAM and MMIO"| BUSFLOWNODE
     BUSFLOWNODE -->|"dispatch mapped register access"| DEVFLOW
@@ -466,7 +453,7 @@ flowchart LR
 | Subsystem | Runtime surface | Primary files | Wired registration / dispatch |
 |-----------|-----------------|---------------|-------------------------------|
 | CPU cores | IE32, IE64, M68K, Z80, 6502, x86 | `cpu_*.go`, `cpu_*_runner.go` | `main.go` selects runners by file extension, OS mode, or EXEC MMIO |
-| JIT | IE64 on amd64/arm64; 6502, M68K, Z80, x86 on amd64 | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` | Build tags plus `runtime.GOARCH` gates; non-supported hosts use dispatch stubs |
+| JIT | IE64 on amd64/arm64; 6502, M68K, Z80, x86 on amd64 | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` | Build tags plus `runtime.GOARCH`; non-supported hosts use dispatch stubs |
 | Bus and RAM | Host-sized guest RAM, profile clamps, MMIO, byte/64-bit handlers | `machine_bus.go`, `memory_sizing.go`, `profile_bounds.go`, `sysinfo_mmio.go` | `main.go` registers devices before execution; `MachineBus.SealMappings` prevents late maps |
 | Video | VideoChip, VGA, TED video, ANTIC/GTIA, ULA, Voodoo | `video_chip.go`, `video_vga.go`, `video_ted.go`, `video_antic.go`, `video_ula.go`, `video_voodoo.go` | `main.go` maps each register/VRAM block and registers compositor layers 0/10/12/13/15/20 |
 | Audio | SoundChip/SFX, PSG/AY, SN76489, SID x3, TED, POKEY/SAP, AHX, MOD, WAV, MIDI/MUS | `audio_chip.go`, `sfx_trigger.go`, `psg_engine.go`, `sn76489_chip.go`, `sid_engine.go`, `ted_engine.go`, `pokey_engine.go`, `ahx_player.go`, `mod_player.go`, `wav_player.go`, `midi_player.go` | `main.go` maps chip/player MMIO and registers sample tickers/mixers into SoundChip |
@@ -477,8 +464,8 @@ flowchart LR
 
 The host-side JIT support is intentionally asymmetric and follows the dispatch files, not emitter-file presence:
 
-| Host platform | JIT-enabled guest cores | Dispatch authority |
-|---------------|-------------------------|--------------------|
+| Host platform | JIT-enabled guest cores | Dispatch files |
+|---------------|-------------------------|----------------|
 | Linux amd64 | IE64, 6502, M68K, Z80, x86 | `jit_dispatch.go`, amd64 per-core dispatch files |
 | Linux arm64 | IE64 | `jit_dispatch.go`; Z80 dispatch compiles but keeps `z80JitAvailable` false |
 | Windows amd64 | IE64, 6502, M68K, Z80, x86 | amd64 per-core dispatch files |
@@ -487,6 +474,25 @@ The host-side JIT support is intentionally asymmetric and follows the dispatch f
 | macOS arm64 | IE64 | IE64 dispatch plus Darwin arm64 JIT write-protect helpers |
 
 On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles, and non-IE64 guest cores remain interpreter-only on arm64 hosts.
+
+## Build Profiles and Observable Runtime
+
+Build tags change host backends, not the guest-visible ISA contract. The main
+guest bus, CPU cores, MMIO register addresses, assemblers, and script binding
+names remain the reference surface unless a specific backend is absent from the
+build.
+
+| Profile | Build tags / knobs | Runtime effect visible to users |
+|---------|--------------------|---------------------------------|
+| Default VM | no special tag | Ebiten display, Oto audio, Vulkan-backed Voodoo where available, and normal host integrations. |
+| `novulkan` | `-tags novulkan` | Voodoo uses the software backend and does not require the Vulkan SDK. Guest Voodoo registers remain mapped. |
+| `headless` | `-tags headless` | Display, audio backend, overlay, clipboard, and GUI integrations use stubs suitable for CI. CPU, bus, MMIO, scripting, and most device state paths still compile for tests. |
+| `headless-novulkan` | `CGO_ENABLED=0 -tags "novulkan headless"` | Pure-Go portable VM build with headless stubs and software Voodoo path. |
+
+Headless stubs should be treated as backend substitutes, not as a different
+machine model. A test can still write video or audio MMIO and inspect guest
+state, but there is no host window, host audio device, or GUI overlay to observe
+the result directly.
 
 ## 3. CPU Subsystem
 
@@ -569,7 +575,15 @@ graph LR
 
 Both IE32 and IE64 use CPU-internal countdown timers backed by atomic fields on the CPU structs.
 
-- The timer decrements once per `SAMPLE_RATE` instructions.
+- IE32 increments an internal cycle counter once per decoded instruction step,
+  after fetch and operand resolution and before the decoded instruction body
+  executes; when that counter reaches `SAMPLE_RATE`, it resets the counter and
+  decrements the timer count by one.
+- IE64 decrements the timer count once per decoded instruction step, after
+  fetch/decode and before the decoded instruction body executes. When the IE64
+  timer is armed, JIT dispatch uses the CPU single-instruction path so an
+  interrupt can be delivered before the body of the instruction whose decoded
+  step expires the timer.
 - On expiry, it sets timer state to expired and can trigger a CPU interrupt.
 - If still enabled after interrupt handling, the count auto-reloads from the configured period.
 
@@ -581,12 +595,14 @@ There is no stable bus/MMIO timer control ABI at present. Legacy include symbols
 |-----------|-----|---------------|-------|
 | `.iex` / `.ie32` | IE32 | 32-bit flat (clamped to active visible RAM) | Native RISC, 8-byte fixed instructions |
 | `.ie64` | IE64 | 64-bit (sees full active visible RAM) | 64-bit RISC, R0=zero, JIT on ARM64 + x86-64 |
-| `.ie68` | M68K | 32-bit flat (clamped to M68K profile bound) | 68020, big-endian with LE bus adapter |
+| `.ie68` | M68K | 32-bit flat (clamped to active visible RAM) | Bare 68020, big-endian with LE bus adapter |
 | `.ie65` | 6502 | 16-bit + bank windows | Bank windows reach the banked-CPU visible ceiling |
 | `.ie80` | Z80 | 16-bit + bank windows + port I/O bridge | Bank windows reach the banked-CPU visible ceiling |
-| `.ie86` | x86 | 32-bit flat (clamped to active visible RAM) | Flat model, port I/O bridge |
+| `.ie86` | x86 | 32-bit flat (clamped to active visible RAM) + compatibility bank windows | Ordinary addressing is flat; bank/VRAM windows are compatibility overlays |
 | `.tos` / `.img` | M68K | EmuTOS profile (`EmuTOS_PROFILE_TOP`) | EmuTOS boot with GEMDOS intercept |
 | `.ies` | Script | N/A | Lua scripting engine (IE Script) |
+
+Bare `.ie68` uses the active-visible RAM ceiling; EmuTOS and AROS M68K loader modes use profile bounds.
 
 AROS boot is selected by CLI mode (`-aros`, optional `-aros-image`), not file extension.
 
@@ -596,15 +612,16 @@ Z80 `IN`/`OUT` instructions are translated to bus MMIO accesses by the `Z80BusAd
 
 | Z80 Port | Chip | Bus Target | Protocol |
 |----------|------|------------|----------|
-| `$A0-$AA` | VGA | `0xF1000` | Direct register map (MODE, STATUS, CTRL, SEQ, CRTC, GC, DAC) |
+| `$A0-$AD` | VGA | `0xF1000` | Direct register map (MODE, STATUS, CTRL, SEQ, CRTC, GC, DAC, DAC read index, DAC mask, VRAM bank) |
 | `$B0-$B7` | Voodoo 3D | `0xF8000` | Addr lo/hi + 4 data bytes (write to `$B5` triggers 32-bit bus write) |
 | `$D0/$D1` | POKEY | `0xF0D00` | Register select / data |
 | `$D4/$D5` | ANTIC | `0xF2100` | Register select / data (x4 stride) |
 | `$D6/$D7` | GTIA | `0xF2140` | Register select / data (x4 stride, collision regs through `0xF21F8`) |
 | `$E0/$E1` | SID | `0xF0E00/0xF0E30/0xF0E50` | Register select / data; select bits 5-6 choose SID1/SID2/SID3 |
+| `$E4/$E5` | SN76489 | `0xF0C30/0xF0C31` | Data write / last-written read and ready-status read |
 | `$F0/$F1` | PSG | `0xF0C00` | Register select / data |
-| `$F2/$F3` | TED | `0xF0F00` / `0xF0F20` | Register select / data (audio / video x4 stride) |
-| `$FE` | ULA | `0xF2000` | Border colour (bits 0-2). Bits 3-4 currently ignored. |
+| `$F2/$F3` | TED | `0xF0F00` / `0xF0F20-0xF0F6B` | Register select / data (audio indices `$00-$05`, video indices `$20-$32` x4 stride) |
+| `$FE/$FD/$BE/$FA/$FB/$FC` | ULA | `0xF2000-0xF2014` | Border, control, status, VRAM address latch low/high, and paged VRAM data |
 
 ### Z80 16-bit Memory Translation
 
@@ -612,26 +629,18 @@ Z80 memory accesses in `0xF000-0xFFFF` are translated to bus `0xF0000-0xF0FFF`. 
 
 ### x86 Port I/O Bridge
 
-x86 shares the Z80 Voodoo port mapping (`$B0-$B7`) and most sound-chip port mappings, but **POKEY uses direct port-to-register mapping** (not the Z80's select/data protocol). It also adds standard PC VGA ports:
+x86 shares the Z80 Voodoo port mapping (`$B0-$B7`) and most sound-chip port mappings, but **POKEY uses direct port-to-register mapping** (not the Z80's select/data protocol). x86 does not implement standard PC VGA I/O ports; VGA access is through the shared bus MMIO aperture and the direct `$A0000-$AFFFF` VRAM memory window.
 
 | x86 Port | Chip | Bus Target | Protocol |
 |----------|------|------------|----------|
-| `$3C4` | VGA Sequencer index | `VGA_SEQ_INDEX` | Standard PC port |
-| `$3C5` | VGA Sequencer data | `VGA_SEQ_DATA` | Standard PC port |
-| `$3C6-$3C9` | VGA DAC | mask / read idx / write idx / data | R/G/B cycled in sequence |
-| `$3CE` | VGA GC index | `VGA_GC_INDEX` | Standard PC port |
-| `$3CF` | VGA GC data | `VGA_GC_DATA` | Standard PC port |
-| `$3D4` | VGA CRTC index | `VGA_CRTC_INDEX` | Standard PC port |
-| `$3D5` | VGA CRTC data | `VGA_CRTC_DATA` | Standard PC port |
-| `$3DA` | VGA Status | Returns `0x08` if vsync | Standard PC port |
 | `$B0-$B7` | Voodoo 3D | `0xF8000` | Addr lo/hi + 4 data bytes |
 | `$60-$69` | POKEY | `0xF0D00+(port-0x60)` | **Direct** - port offset maps to writable register |
 | `$D4/$D5` | ANTIC | `0xF2100` | Register select / data (x4 stride) |
 | `$D6/$D7` | GTIA | `0xF2140` | Register select / data (x4 stride, collision regs through `0xF21F8`) |
 | `$E0/$E1` | SID | `0xF0E00/0xF0E30/0xF0E50` | Register select / data; select bits 5-6 choose SID1/SID2/SID3 |
 | `$F0/$F1` | PSG | `0xF0C00` | Register select / data |
-| `$F2/$F3` | TED | `0xF0F00` / `0xF0F20` | Register select / data (audio / video x4 stride) |
-| `$FE` | ULA | `0xF2000` | Border colour (bits 0-2) |
+| `$F2/$F3` | TED | `0xF0F00` / `0xF0F20-0xF0F6B` | Register select / data (audio indices `$00-$05`, video indices `$20-$32` x4 stride) |
+| `$FE` | ULA | `0xF2000` | Border colour only (bits 0-2) |
 
 **Key difference from Z80**: x86 POKEY access is direct - ports `$60-$69` map one-to-one onto writable POKEY registers at `0xF0D00+(port-0x60)`. ANTIC (`$D4/$D5`) and GTIA (`$D6/$D7`) keep their own select/data pairs.
 
@@ -639,7 +648,7 @@ x86 also directly accesses VGA VRAM at `$A0000-$AFFFF` in the memory path (no po
 
 ### Bank Windows (Z80 / 6502 / x86)
 
-The banked 6502/Z80 ABI uses bank windows to access a 32 MiB banked-CPU visible ceiling from a 16-bit address space; bank translation rejects addresses at or above that ceiling. x86 is flat 32-bit and does not use this banked visibility cap.
+The banked 6502/Z80 ABI uses bank windows to access a 32 MiB banked-CPU visible ceiling from a 16-bit address space; bank translation rejects addresses at or above that ceiling. x86 ordinary addressing remains flat 32-bit, but the x86 bus adapter also implements the same compatibility bank windows plus a VRAM bank window. Those x86 window translations are capped at the legacy `DEFAULT_MEMORY_SIZE` ceiling; ordinary x86 addressing remains clamped by the active visible RAM exposed through the shared bus.
 
 | CPU Address | Size | Purpose | Bank Select Register |
 |-------------|------|---------|---------------------|
@@ -663,8 +672,8 @@ The 6502 uses `ioTable[page]` to route memory-mapped I/O through the bus:
 | `$D520-$D53F` | SID2 | `0xF0E30+offset` | 32-byte window |
 | `$D540-$D55F` | SID3 | `0xF0E50+offset` | 32-byte window |
 | `$D600-$D605` | TED Audio | `0xF0F00+offset` | |
-| `$D620-$D62F` | TED Video | `0xF0F20+offset x4` | Stride-4 register mapping |
-| `$D700-$D70A` | VGA | `0xF1000` | Direct handler call |
+| `$D620-$D632` | TED Video | `0xF0F20+offset x4` | Stride-4 register mapping including raster compare registers |
+| `$D700-$D70D` | VGA | `0xF1000` | Direct handler call plus DAC read index, DAC mask, and VRAM bank |
 | `$D800-$D817` | ULA | `0xF2000+offset` | Registers plus paged VRAM data port |
 
 ANTIC/GTIA intentionally has no 6502 `$D400/$D000` compatibility surface; `$D400-$D40F` is PSG on the 6502 map.
@@ -800,14 +809,14 @@ The rasteriser walks each destination pixel, computes the source UV from the aff
 
 ### Video Compositor
 
-The compositor collects immutable frame snapshots from all enabled video sources and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, both mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing. Desktop startup uses a 1920x1080 fullscreen presentation by default, and the x64 live-image launcher locks it fullscreen through `IE_LIVE_IMAGE=1`. Native sources keep their requested dimensions. The default native mode is 960x540 for exact 2x 1080p presentation. Non-16:9 sources are aspect-fit by default and can be stretch-filled with `F11`; `Shift+F11` toggles fullscreen/windowed mode when that mode is not locked.
+The compositor collects immutable frame snapshots from all enabled video sources and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, both mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing. Desktop startup uses a 1920x1080 fullscreen presentation by default, and the x64 live-image launcher locks it fullscreen through `IE_LIVE_IMAGE=1`. Native sources keep their requested dimensions. The default native mode is 960x540 for exact 2x 1080p presentation. Video compositor default scale mode is stretch-fill; F11 toggles non-16:9 sources to aspect-fit. `Shift+F11` toggles fullscreen/windowed mode when that mode is not locked.
 
 Two rendering paths:
 
 1. **Scanline-aware path** - used when at least one enabled source implements `ScanlineAware`. The compositor advances scanline-capable sources in sorted layer order for each scanline, then blends all enabled sources in the global layer order. Opaque full-frame sources can sit below, between, or above scanline-aware sources without breaking copper/VGA per-scanline effects.
 2. **Full-frame fallback** - used when no enabled source is scanline-aware. It collects complete frames and blends them in sorted layer order. Same-size frame blending uses parallel goroutines with 60-line strips via `sync.WaitGroup`.
 
-Frame alpha is currently an alpha-mask test: alpha 0 is transparent and any nonzero alpha overwrites the destination. The compositor tick remains fixed at 60 Hz for guest VBlank compatibility; `GetRefreshRate()` reports the output backend rate, while `GetTickRate()` reports the compositor tick.
+All-zero frame pixels are transparent; any nonzero alpha or RGB value is opaque. During compositing, zero-alpha nonzero-RGB pixels are promoted to opaque `0xFFRRGGBB` before they overwrite the destination. The compositor tick remains fixed at 60 Hz for guest VBlank compatibility; `GetRefreshRate()` reports the output backend rate, while `GetTickRate()` reports the compositor tick.
 
 ### Triple-Buffer Protocol
 
@@ -872,15 +881,19 @@ graph LR
 
 The SoundChip exposes two register interfaces for its channels:
 
-**Legacy per-waveform interface** (`0xF0900-0xF09FF`) - 5 dedicated register blocks, each hardwired to one waveform type:
+**Legacy per-waveform interface** (`0xF0900-0xF09FF`) - dedicated register blocks with two decoded sweep-register exceptions:
+
+Decoded ranges: `0xF0900-0xF093F except 0xF0914 and 0xF0918`, `0xF0940-0xF097F plus 0xF0914`, and `0xF0980-0xF09BF plus 0xF0918`.
 
 | Range | Channel | Default Waveform |
 |-------|---------|-----------------|
-| `0xF0900-0xF093F` | Ch 0 | Square |
-| `0xF0940-0xF097F` | Ch 1 | Triangle |
-| `0xF0980-0xF09BF` | Ch 2 | Sine |
+| `0xF0900-0xF093F` | Ch 0 | Square, except `0xF0914` is triangle sweep and `0xF0918` is sine sweep |
+| `0xF0940-0xF097F` plus `0xF0914` | Ch 1 | Triangle |
+| `0xF0980-0xF09BF` plus `0xF0918` | Ch 2 | Sine |
 | `0xF09C0-0xF09FF` | Ch 3 | Noise |
 | `0xF0A00-0xF0A6F` | - | Sawtooth + modulation/effects |
+
+Within the modulation/effects window, `0xF0A00-0xF0A1C` holds the sync-source and ring-modulation-source registers, `0xF0A20-0xF0A6F` holds the sawtooth legacy registers, and `0xF0A40`, `0xF0A50`, and `0xF0A54` hold overdrive and reverb controls.
 
 **FLEX unified interface** (`0xF0A80-0xF0B7F`) - 4 channels with identical 64-byte register blocks. Each channel can be any waveform type:
 
@@ -904,7 +917,7 @@ FLEX channels are at `FLEX_CH0_BASE = 0xF0A80`, stride = `0x40`. Primary channel
 
 ### Filter and Modulation
 
-The SoundChip's global resonant filter (`0xF0A00-0xF0A30`) supports low-pass, band-pass, and high-pass modes with cutoff frequency, resonance, and optional filter modulation source/amount registers. Cutoff and resonance smooth toward register targets at the same 0.02 coefficient used by per-channel filters. SID 12-bit DAC quantization truncates to remove half-LSB DC bias.
+The SoundChip's global resonant filter (`0xF0820-0xF0830`) supports low-pass, band-pass, and high-pass modes with cutoff frequency, resonance, and optional filter modulation source/amount registers. Cutoff and resonance smooth toward register targets at the same 0.02 coefficient used by per-channel filters. SID 12-bit DAC quantization truncates to remove half-LSB DC bias.
 
 ### Engine and Player Routing
 
@@ -912,7 +925,7 @@ The SoundChip's global resonant filter (`0xF0A00-0xF0A30`) supports low-pass, ba
 graph LR
     subgraph ENGINES["Sound Engines"]
         PSG_E["PSG / AY-3-8910<br/>0xF0C00-0xF0C0F<br/>3 Tone + Noise + Envelope"]
-        SID_E["SID 6581/8580 x3<br/>0xF0E00-0xF0E6C<br/>3 Voices x 3 Chips = 9 Voices"]
+        SID_E["SID 6581/8580 x3<br/>0xF0E00/0xF0E30/0xF0E50<br/>3 Voices x 3 Chips = 9 Voices"]
         POK_E["POKEY<br/>0xF0D00-0xF0D0A<br/>4 Channels + Poly Counters"]
         TED_E["TED Audio<br/>0xF0F00-0xF0F05<br/>2 Voices (square + noise)"]
         SN_E["SN76489<br/>0xF0C30-0xF0C3F<br/>3 Tone + Noise"]
@@ -973,7 +986,7 @@ All five classic-style sound engines have a "Plus" enhanced mode, activated by w
 | TED+ | `0xF0F05` | Enhanced render path plus TED-specific response shaping |
 | AHX+ | `0xF0B80` | AHX voice-state mapping with stereo spread/panning and room processing |
 
-The PSG uses the AY/YM logarithmic 16-step volume curve by default. A legacy linear curve is retained only for compatibility audits.
+The PSG uses the AY/YM logarithmic 16-step volume curve by default. A legacy linear curve is retained for older material that depends on it.
 
 When Plus mode is enabled, the engine retains full backward compatibility with the standard register set while exposing additional capabilities. AHX maps tracker state to native SoundChip channels instead of producing an AROS audio DMA stream; AHX+ uses a 64-sample crossfade when enabling/disabling to prevent audio glitches.
 
@@ -996,69 +1009,79 @@ SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-
 
 ## 6. Memory Map
 
-| Range | Size | Device |
-|-------|------|--------|
-| `0x00000-0x9EFFF` | 636KB | Main RAM |
-| `0x9F000-0x9FFFF` | 4KB | Stack |
-| `0xA0000-0xAFFFF` | 64KB | VGA VRAM Window |
-| `0xB8000-0xBFFFF` | 32KB | VGA Text Buffer |
-| `0xF0000-0xF049B` | 1180B | VideoChip + Copper + Blitter + Palette + extended blitter |
-| `0xF0700-0xF07FF` | 256B | Terminal / Serial / Mouse / Keyboard / RTC_EPOCH (0xF0750) |
-| `0xF0800-0xF0B7F` | 896B | SoundChip (10 channels, incl. FLEX) |
-| `0xF0B80-0xF0B91` | 18B | AHX Engine / Player |
-| `0xF0BA0-0xF0BBF` | 32B | MIDI/MUS Player |
-| `0xF0BC0-0xF0BD7` | 24B | MOD Player |
-| `0xF0BD8-0xF0BF3` | 28B | WAV Player |
-| `0xF0C00-0xF0C0F` | 16B | PSG Engine (AY-3-8910/YM2149 registers) |
-| `0xF0C10-0xF0C1F` | 16B | PSG / AY Player |
-| `0xF0C20` | 1B | PSG+ control |
-| `0xF0C30-0xF0C3F` | 16B | Native SN76489 latch/data, ready, and LFSR mode registers |
-| `0xF0C40-0xF0CFF` | 192B | SID2 flex-style SoundChip channels 4-6 |
-| `0xF0D00-0xF0D0A` | 11B | POKEY Engine |
-| `0xF0D10-0xF0D20` | 17B | SAP Player |
-| `0xF0D40-0xF0DFF` | 192B | SID3 flex-style SoundChip channels 7-9 |
-| `0xF0E00-0xF0E19` | 26B | SID1 Engine (6581/8580) |
-| `0xF0E20-0xF0E2D` | 14B | SID Player |
-| `0xF0E30-0xF0E6C` | 61B | SID2 + SID3 (Multi-SID) |
-| `0xF0E80-0xF0EFF` | 128B | SoundChip SFX trigger channels |
-| `0xF0F00-0xF0F05` | 6B | TED Audio Engine |
-| `0xF0F10-0xF0F1C` | 13B | TED Player |
-| `0xF0F20-0xF0F6B` | 76B | TED Video |
-| `0xF1000-0xF13FF` | 1KB | VGA Registers |
-| `0xF2000-0xF2017` | 24B | ULA Registers |
-| `0xFA000-0xFBAFF` | 6912B | ULA VRAM Aperture |
-| `0xF2100-0xF213F` | 64B | ANTIC |
-| `0xF2140-0xF21FB` | 188B | GTIA |
-| `0xF2200-0xF221F` | 32B | File I/O |
-| `0xF2220-0xF225F` | 64B | AROS DOS Handler |
-| `0xF2260-0xF22AF` | 80B | AROS Paula-style DMA shim |
-| `0xF2300-0xF231F` | 32B | Media Loader |
-| `0xF2320-0xF233F` | 32B | Program Executor |
-| `0xF2340-0xF238F` | 80B | Coprocessor Manager |
-| `0xF2390-0xF23AF` | 32B | Clipboard Bridge |
-| `0xF23B0-0xF23BF` | 16B | Coprocessor Extended (monitor registers) |
-| `0xF23C0-0xF23DF` | 32B | IRQ diagnostic registers |
-| `0xF23E0-0xF23FF` | 32B | Bootstrap HostFS |
-| `0xF2400-0xF24FF` | 256B | SYSINFO RAM-size discovery |
-| `0xF8000-0xF87FF` | 2KB | Voodoo 3D Registers + palette |
-| `0xF8140-0xF823F` | 256B | Voodoo Fog Table (64 entries × 4B) |
-| `0xD0000-0xDFFFF` | 64KB | Voodoo Texture Memory |
-| `0x100000-0x5FFFFF` | 5MB | Video RAM |
-| `0x800000-0x1DFFFFF` | 22MB | AROS Fast Memory |
-| `0x1E00000-0x5DFFFFF` | 64MB | AROS Video RAM |
+All CPU cores observe the same guest physical address space. Address ranges in
+this table are not per-core private maps unless explicitly stated. Some ranges
+have multiple architectural uses: for example, a decoded RAM range may also
+contain conventional worker buffers, framebuffer memory, or OS/profile-owned
+allocations. In those cases, the table describes reservations within the shared
+physical map, not separate mappings.
 
-Additional special regions used by the coprocessor subsystem:
+The `Decoded as` column describes how the bus routes a physical access. The
+`Architectural use` and `Owner / lifetime` columns describe the guest contract
+or current subsystem reservation inside that decoded mapping. Overlapping rows
+are intentional when a reservation lives inside a broader shared-RAM range.
 
-| Range | Size | Purpose |
-|-------|------|---------|
-| `0x200000-0x27FFFF` | 512KB | Coprocessor: IE32 worker memory |
-| `0x280000-0x2FFFFF` | 512KB | Coprocessor: M68K worker memory |
-| `0x300000-0x30FFFF` | 64KB | Coprocessor: 6502 worker memory |
-| `0x310000-0x31FFFF` | 64KB | Coprocessor: Z80 worker memory |
-| `0x320000-0x39FFFF` | 512KB | Coprocessor: x86 worker memory |
-| `0x3A0000-0x41FFFF` | 512KB | Coprocessor: IE64 worker memory |
-| `0x800000` | 64KB | Media loader staging buffer |
-| `0x790000-0x7917FF` | 6KB | Coprocessor mailbox ring buffers |
+| Range | Size | Decoded as | Architectural use | Visible to | Owner / lifetime | Notes |
+|-------|------|------------|-------------------|------------|------------------|-------|
+| `0x00000-0x9EFFF` | 636KB | Shared RAM | Main low-memory programme/data area | All CPU cores | Guest and boot-profile convention | Includes IE32 vector table base at `0x00000` and programme load convention at `0x01000`. |
+| `0x9F000-0x9FFFF` | 4KB | Shared RAM | Default stack seed region | All CPU cores | CPU reset convention | IE32 and IE64 seed stack pointers at `0x9F000`; it is still ordinary shared RAM. |
+| `0xA0000-0xAFFFF` | 64KB | VGA VRAM window | VGA graphics aperture | All CPU cores | VGA subsystem | x86 can also access this as conventional VGA graphics memory. |
+| `0xB8000-0xBFFFF` | 32KB | VGA text buffer | VGA text aperture | All CPU cores | VGA subsystem | Conventional text-memory range. |
+| `0xD0000-0xDFFFF` | 64KB | Voodoo texture memory | Voodoo texture upload/storage window | All CPU cores | Voodoo subsystem | Shared physical texture-memory aperture. |
+| `0xF0000-0xF049B` | 1180B | MMIO | VideoChip, copper, blitter, palette, and extended blitter registers | All CPU cores | Video subsystem | Layer-0 video control and DMA-style graphics operations. |
+| `0xF0700-0xF07FF` | 256B | MMIO | Terminal, serial, mouse, keyboard, and `RTC_EPOCH` (`0xF0750`) | All CPU cores | I/O subsystem | Input, terminal, and clock-facing low MMIO. |
+| `0xF0800-0xF0B7F` | 896B | MMIO | SoundChip channels, including FLEX | All CPU cores | Audio subsystem | Runtime audio-chip register block. |
+| `0xF0B80-0xF0B91` | 18B | MMIO | AHX engine/player | All CPU cores | Audio subsystem | Player-facing register block. |
+| `0xF0BA0-0xF0BBF` | 32B | MMIO | MIDI/MUS player | All CPU cores | Audio subsystem | Player-facing register block. |
+| `0xF0BC0-0xF0BD7` | 24B | MMIO | MOD player | All CPU cores | Audio subsystem | Player-facing register block. |
+| `0xF0BD8-0xF0BF3` | 28B | MMIO | WAV player | All CPU cores | Audio subsystem | Player-facing register block. |
+| `0xF0C00-0xF0C0F` | 16B | MMIO | PSG engine (AY-3-8910/YM2149 registers) | All CPU cores | Audio subsystem | Register-select/data-compatible PSG block. |
+| `0xF0C10-0xF0C1F` | 16B | MMIO | PSG / AY player | All CPU cores | Audio subsystem | Player-facing register block. |
+| `0xF0C20` | 1B | MMIO | PSG+ control | All CPU cores | Audio subsystem | Extended PSG control byte. |
+| `0xF0C30-0xF0C3F` | 16B | MMIO | Native SN76489 latch/data, ready, and LFSR mode registers | All CPU cores | Audio subsystem | Native SN76489-compatible control block. |
+| `0xF0C40-0xF0CFF` | 192B | MMIO | SID2 flex-style SoundChip channels 4-6 | All CPU cores | Audio subsystem | Multi-SID/FLEX channel range. |
+| `0xF0D00-0xF0D0A` | 11B | MMIO | POKEY engine | All CPU cores | Audio subsystem | POKEY register block. |
+| `0xF0D10-0xF0D20` | 17B | MMIO | SAP player | All CPU cores | Audio subsystem | Player-facing register block. |
+| `0xF0D40-0xF0DFF` | 192B | MMIO | SID3 flex-style SoundChip channels 7-9 | All CPU cores | Audio subsystem | Multi-SID/FLEX channel range. |
+| `0xF0E00-0xF0E1C` | 29B | MMIO | SID1 engine (6581/8580) | All CPU cores | Audio subsystem | Primary SID register block. |
+| `0xF0E20-0xF0E2D` | 14B | MMIO | SID player | All CPU cores | Audio subsystem | Player-facing register block. |
+| `0xF0E30-0xF0E4C` | 29B | MMIO | SID2 engine (6581/8580) | All CPU cores | Audio subsystem | Secondary SID register block. |
+| `0xF0E50-0xF0E6C` | 29B | MMIO | SID3 engine (6581/8580) | All CPU cores | Audio subsystem | Tertiary SID register block. |
+| `0xF0E80-0xF0EFF` | 128B | MMIO | SoundChip SFX trigger channels | All CPU cores | Audio subsystem | Trigger-oriented SFX range. |
+| `0xF0F00-0xF0F05` | 6B | MMIO | TED audio engine | All CPU cores | Audio subsystem | TED audio registers. |
+| `0xF0F10-0xF0F1F` | 16B | MMIO | TED player | All CPU cores | Audio subsystem | Player-facing register block. |
+| `0xF0F20-0xF0F6B` | 76B | MMIO | TED video | All CPU cores | TED video subsystem | Stride-4 TED video register mapping. |
+| `0xF3000-0xF6FFF` | 16KB | MMIO / TED VRAM aperture | TED private video RAM | All CPU cores | TED video subsystem | Bus-routed TED character, colour, and screen memory. |
+| `0xF1000-0xF13FF` | 1KB | MMIO | VGA registers | All CPU cores | VGA subsystem | Sequencer, CRTC, graphics-controller, attribute-controller, and DAC state. |
+| `0xF1400-0xF140F` | 16B | MMIO | Host helper | All CPU cores | Host-helper subsystem | Security-sensitive command helper gated by runtime configuration. |
+| `0xF2000-0xF2017` | 24B | MMIO | ULA registers | All CPU cores | ULA subsystem | Includes paged VRAM data port. |
+| `0xFA000-0xFBAFF` | 6912B | ULA VRAM aperture | ULA display memory | All CPU cores | ULA subsystem | Separate decoded aperture for ULA VRAM access. |
+| `0xF2100-0xF213F` | 64B | MMIO | ANTIC registers | All CPU cores | ANTIC subsystem | ANTIC display-list and DMA control block. |
+| `0xF2140-0xF21FB` | 188B | MMIO | GTIA registers | All CPU cores | GTIA subsystem | GTIA colour, player/missile, priority, and collision state. |
+| `0xF2200-0xF221F` | 32B | MMIO | File I/O | All CPU cores | File-I/O bridge | Host-file bridge register block. |
+| `0xF2220-0xF225F` | 64B | MMIO | AROS DOS handler | All CPU cores | AROS profile | AROS DOS integration register block. |
+| `0xF2260-0xF22AF` | 80B | MMIO | AROS Paula-style DMA shim | All CPU cores | AROS profile | Audio/DMA compatibility shim. |
+| `0xF2300-0xF231F` | 32B | MMIO | Media loader | All CPU cores | Media-loader subsystem | Format-agnostic media loading control block. |
+| `0xF2320-0xF233F` | 32B | MMIO | Program executor | All CPU cores | Program executor | CPU/program switching control block. |
+| `0xF2340-0xF238F` | 80B | MMIO | Coprocessor manager | All CPU cores | Coprocessor subsystem | Worker lifecycle, dispatch, and ticket registers. |
+| `0xF2390-0xF23AF` | 32B | MMIO | Clipboard bridge | All CPU cores | Clipboard bridge | Host clipboard integration register block. |
+| `0xF23B0-0xF23BF` | 16B | MMIO | Coprocessor extended monitor registers | All CPU cores | Coprocessor subsystem | Per-worker monitor/status extension. |
+| `0xF23C0-0xF23DF` | 32B | MMIO | AROS IRQ diagnostic registers | AROS M68K profile while AROS loader is active | AROS profile | Read-only diagnostic MMIO mapped by the AROS loader and unmapped during AROS DMA teardown; not a universal interrupt-controller ABI. |
+| `0xF23E0-0xF23FF` | 32B | MMIO | Bootstrap HostFS | All CPU cores | Bootstrap profile | HostFS boot helper register block. |
+| `0xF2400-0xF24FF` | 256B | MMIO | SYSINFO RAM-size discovery | All CPU cores | System information ABI | Reports total and active visible RAM. |
+| `0xF8000-0xF87FF` | 2KB | MMIO | Voodoo 3D registers and palette | All CPU cores | Voodoo subsystem | 3D control, state, and palette register block. |
+| `0xF8140-0xF823F` | 256B | MMIO | Voodoo fog table | All CPU cores | Voodoo subsystem | 64 entries x 4 bytes. |
+| `0x100000-0x5FFFFF` | 5MB | Shared RAM / VRAM-backed region | Main video framebuffer and graphics-visible memory | All CPU cores | Video subsystem plus guest convention | Subranges may be reserved for coprocessor worker buffers. |
+| `0x200000-0x27FFFF` | 512KB | Shared RAM | IE32 worker area | All CPU cores | Coprocessor convention | Lies inside the graphics-visible shared-memory range; not a separate address space. |
+| `0x280000-0x2FFFFF` | 512KB | Shared RAM | M68K worker area | All CPU cores | Coprocessor convention | Lies inside the graphics-visible shared-memory range; not a separate address space. |
+| `0x300000-0x30FFFF` | 64KB | Shared RAM | 6502 worker area | All CPU cores | Coprocessor convention | Lies inside the graphics-visible shared-memory range; not a separate address space. |
+| `0x310000-0x31FFFF` | 64KB | Shared RAM | Z80 worker area | All CPU cores | Coprocessor convention | Lies inside the graphics-visible shared-memory range; not a separate address space. |
+| `0x320000-0x39FFFF` | 512KB | Shared RAM | x86 worker area | All CPU cores | Coprocessor convention | Lies inside the graphics-visible shared-memory range; not a separate address space. |
+| `0x3A0000-0x41FFFF` | 512KB | Shared RAM | IE64 worker area | All CPU cores | Coprocessor convention | Lies inside the graphics-visible shared-memory range; not a separate address space. |
+| `0x790000-0x7917FF` | 6KB | Shared RAM | Coprocessor mailbox ring buffers | All CPU cores | Coprocessor subsystem | Shared request/completion rings; outside the main graphics-visible range. |
+| `0x800000-0x80FFFF` | 64KB | Shared RAM | Media-loader staging buffer | All CPU cores | Media-loader subsystem | Reservation at the base of the AROS fast-memory range when that profile is active. |
+| `0x800000-0x1DFFFFF` | 22MB | Shared RAM | AROS fast memory | All CPU cores | AROS profile | Profile-owned allocation range, not a distinct per-core map. |
+| `0x1E00000-0x5DFFFFF` | 64MB | Shared RAM / video-profile memory | AROS video RAM | All CPU cores | AROS profile / video subsystem | Profile-owned video allocation range within shared physical memory. |
 
 ## 7. I/O Peripherals
 
@@ -1071,7 +1094,7 @@ graph LR
     subgraph DEVS["I/O Devices"]
         TERM["Terminal/Serial<br/>0xF0700-0xF07FF<br/>Input ring buffer, echo,<br/>raw keys, mouse, scancodes"]
         FIO["File I/O<br/>0xF2200-0xF221F<br/>Name/data ptrs, R/W ops,<br/>sandboxed"]
-        PEXEC["Program Executor<br/>0xF2320-0xF233F<br/>CPU mode detect,<br/>full reset orchestration<br/>EXEC_OP: 1=Execute, 2=EmuTOS, 3=AROS, 4=IExec, 5=Reset"]
+        PEXEC["Program Executor<br/>0xF2320-0xF233F<br/>CPU mode detect,<br/>full reset orchestration<br/>EXEC_CTRL operation values: 1=Execute, 2=EmuTOS, 3=AROS, 4=IntuitionOS IExec, 5=Hard reset"]
         COPRO["Coprocessor Manager<br/>0xF2340-0xF238F + 0xF23B0-0xF23BF<br/>6 worker CPU types,<br/>ticket-based dispatch + monitor"]
         CLIP["Clipboard Bridge<br/>0xF2390-0xF23AF<br/>Data ptr/len, get/put"]
         DOS["DOS Handler<br/>0xF2220-0xF225F<br/>AmigaDOS packet protocol,<br/>lock/file handles,<br/>ACTION_SAME_LOCK,<br/>DupLock of root (key=0)"]
@@ -1114,11 +1137,16 @@ graph LR
 
 ### Coprocessor Worker Dispatch
 
-The coprocessor manager supports 6 worker CPU types (IE32, IE64, 6502, M68K, Z80, x86) with ticket-based job dispatch and mailbox ring buffers at `0x790000`. Each worker type has its own dedicated memory region (see memory map above). The main CPU enqueues work via MMIO writes; workers execute independently and post results back through their mailbox slots. Each ring has 16 descriptor slots but uses one slot to distinguish full from empty, so it can hold 15 queued requests at once. When `COPROC_IRQ_CTRL` bit 0 is set and an M68K IRQ target plus completion watcher have been configured, the coprocessor asserts M68K interrupt level 6 on job completion, with the finished ticket ID readable from `COPROC_COMPLETED_TICKET`. Non-M68K modes should observe completion through `POLL` or `WAIT`.
+The coprocessor manager supports 6 worker CPU types (IE32, IE64, 6502, M68K, Z80, x86) with ticket-based job dispatch and mailbox ring buffers at `0x790000`. Each worker type has a dedicated shared-memory reservation in the unified physical map (see memory map above), not a private per-core address space. The main CPU enqueues work via MMIO writes; workers execute independently and post results back through their mailbox slots. Each ring has 16 descriptor slots but uses one slot to distinguish full from empty, so it can hold 15 queued requests at once. When `COPROC_IRQ_CTRL` bit 0 is set and an M68K IRQ target plus completion watcher have been configured, the coprocessor asserts M68K interrupt level 6 on job completion, with the finished ticket ID readable from `COPROC_COMPLETED_TICKET`. Non-M68K modes should observe completion through `POLL` or `WAIT`.
 
 ### Lua Scripting
 
-The Lua scripting engine (`script_engine.go`) runs in its own goroutine and provides host-side access to the entire bus. It supports an F8 REPL for interactive debugging, video recording, and direct chip register manipulation. Scripts use the `.ies` extension and are loaded via the IE Script Engine.
+The Lua scripting engine (`script_engine.go`) runs in its own goroutine and
+provides host-side automation over the shared 32-bit bus/MMIO surface plus
+CPU-adapter debugger APIs. Its `mem.*` helpers are raw 32-bit bus helpers, not
+an above-4GiB IE64 RAM or CPU-virtual-address API. It supports an F8 REPL for
+interactive debugging, video recording, and direct chip register manipulation.
+Scripts use the `.ies` extension and are loaded via the IE Script Engine.
 
 ### IEMon Reverse-Debug Snapshot Contract
 
@@ -1272,7 +1300,7 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 | `cpu_z80_runner.go` | Z80 bus adapter, port I/O bridge, bank windows |
 | `cpu_six5go2.go` | 6502 + bus adapter, ioTable dispatch, bank windows |
 | `cpu_x86.go` | x86 |
-| `cpu_x86_runner.go` | x86 bus adapter, port I/O bridge (PC VGA + shared ports) |
+| `cpu_x86_runner.go` | x86 bus adapter, shared port I/O bridge, bank windows, and VGA VRAM window |
 | `fpu_x87.go` | x87 FPU (8 x float64 stack) |
 | `terminal_io.go` | Terminal / Serial / Mouse / Keyboard |
 | `file_io.go` | File I/O |
@@ -1284,64 +1312,3 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 | `aros_loader.go` | AROS ROM boot manager |
 | `aros_dos_intercept.go` | AmigaDOS packet handler (MMIO) |
 | `aros_audio_dma.go` | AROS Paula-style DMA shim |
-
-## 10. IntuitionOS Hardening Story
-
-IntuitionOS runs inside the IE64 virtual machine, so the security model has
-two sides: the **guest** (IE64 MMU + `iexec.library` microkernel) and
-the **host** (the Go engine process that executes the guest and
-its JIT output). M15.4 closed the major guest-side gaps; M15.6
-extends both sides so nothing the kernel relies on is contradicted
-by the engine one layer down.
-
-- **Guest W^X** - every page is exclusively writable or executable
-  (see `IE64_ISA.md` §12.10). Code pages map `P|R|X`, data pages
-  map `P|R|W`, `PTE.X` and `PTE.W` are never set together.
-- **Host W^X** - as of M15.6 the JIT memory region is dual-mapped
-  (see `IE64_JIT.md`). The writable view (`PROT_READ|PROT_WRITE`)
-  is where `ExecMem.Write` and `PatchRel32At` emit bytes; the
-  execution view (`PROT_READ|PROT_EXEC`) is the VA the JIT
-  dispatcher jumps to. At no point does any host mapping hold
-  both write and execute permission. Prior releases mapped the
-  region RWX permanently; that contradiction with the guest W^X
-  story is resolved.
-- **SMEP / SMAP equivalent** - the IE64 MMU gained `SKEF` and
-  `SKAC` bits in M15.6. `SKEF` stops supervisor instruction fetch
-  from user-accessible pages (`FAULT_SKEF`). `SKAC` stops
-  supervisor data access to user pages (`FAULT_SKAC`) unless the
-  kernel has explicitly opened a supervisor-user-access window
-  via the `SUAEN` privileged opcode. See `IE64_ISA.md` §12.2.1
-  for the complete model.
-- **User↔kernel copy contract** - kernel touches of user memory
-  are funnelled through named helpers (`copy_from_user`,
-  `copy_to_user`, `copy_cstring_from_user`) that bracket every
-  access in `SUAEN` / `SUADIS`. Any missed call site faults with
-  `FAULT_SKAC` and is loud rather than silent. See
-  `IE64_COOKBOOK.md` for the worked idiom and anti-patterns.
-- **Trap-frame stack** - nested-trap state (`CR_FAULT_PC`,
-  `CR_FAULT_ADDR`, `CR_FAULT_CAUSE`, `CR_PREV_MODE`,
-  `CR_SAVED_SUA`) is preserved by the CPU across trap entry and
-  ERET so kernel handlers survive a nested synchronous trap
-  without a manual MFCR/MTCR save/restore dance. See
-  `IE64_ISA.md` §12.14.
-- **Stack guard pages** - as of R1 in M15.6, both user stacks and
-  the kernel stack reserve one unmapped page below the downward-growing
-  stack floor. Overflow is therefore a deterministic `FAULT_NOT_PRESENT`
-  instead of silent adjacent-page corruption.
-- **Heap guard pages** - as of R2 in M15.6, `AllocMem(MEMF_GUARD)`
-  reserves one unmapped page on each side of the mapped allocation.
-  The per-task VA allocator treats those guard slots as occupied for the
-  life of the region, so a neighbouring allocation cannot consume them.
-- **Cross-task confidentiality** - private and shared allocator
-  pages are zeroed on free before release, so a later owner cannot
-  observe prior-task bytes. `MapShared` then narrows consumer-side
-  access further with an explicit permission bitmask. See
-  `sdk/docs/IntuitionOS/M15.6-plan.md`.
-
-The hardening story is layered rather than siloed: what the guest
-kernel enforces (W^X, per-task quotas, exit-time sweeps,
-permission-preserving shared mappings) and what the host enforces
-(JIT W^X, bootstrap HostFS confinement) are complementary. Treat the
-linked ISA and IntuitionOS documents as authoritative for guest ABI
-details; this architecture document summarises how the engine wires
-those mechanisms into the runtime.

@@ -393,6 +393,9 @@ func needsFallback(instrs []JITInstr) bool {
 		case OP_DLOAD, OP_DSTORE:
 			return true
 		}
+		if isIE64FPUOpcode(instrs[i].opcode) && !validIE64FPUEncoding(instrs[i].opcode, instrs[i].rd, instrs[i].rs, instrs[i].rt) {
+			return true
+		}
 	}
 	return false
 }

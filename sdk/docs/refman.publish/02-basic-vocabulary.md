@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 2 - BASIC Language Vocabulary
 
 This chapter is a reference to every word in BASIC. The words are

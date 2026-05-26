@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Appendix L - Index
 
 This index is a quick route back into the guide. Appendix D gives the

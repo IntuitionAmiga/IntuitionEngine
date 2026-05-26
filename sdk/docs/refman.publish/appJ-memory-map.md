@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Appendix J - Full Memory Map
 
 The fixed low regions of the Intuition Engine `64`-bit physical bus,

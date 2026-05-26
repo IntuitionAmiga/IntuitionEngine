@@ -1,5 +1,7 @@
 # IE bugs found by PRM doc-as-test harness
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 Author-only ledger. Stripped at publish time. **Temporary scratch
 record** of defects in the embedded EhBASIC IE64 interpreter (or the
 IE core) that the `tools/prm-extract` harness exposed while sweeping

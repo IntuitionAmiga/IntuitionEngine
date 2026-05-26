@@ -5,6 +5,8 @@ sources:
   - feature_scripting.go
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 34 - IE Script
 
 IE Script is the batch-control partner to IE Mon. IE Mon is typed

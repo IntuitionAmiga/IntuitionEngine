@@ -1,10 +1,10 @@
 # Intuition Engine Machine Monitor
 
-*Last updated: 2026-05-24*
+*Last modified: 2026-05-26*
 
 ## Overview
 
-The Machine Monitor is a built-in system-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge, HRTMon, the Commodore Plus/4 built-in monitor, NuMega SoftICE, MAME's debugger, and the VICE monitor. In interactive display builds, press **F9** to freeze the guest CPUs and enter the monitor. Press **x** or **Esc** to close the monitor and resume CPUs that were running when it was entered.
+The Machine Monitor is a built-in hardware-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge, HRTMon, the Commodore Plus/4 built-in monitor, NuMega SoftICE, MAME's debugger, and the VICE monitor. In interactive display builds, press **F9** to freeze the guest CPUs and enter the monitor. Press **x** or **Esc** to close the monitor and resume CPUs that were running when it was entered.
 
 The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and handles multi-CPU scenarios, including coprocessors.
 It is also exposed to IEScript Lua via the `dbg.*` API for scripted debugging workflows. See [iescript.md](iescript.md) for the full `dbg.*` module reference.
@@ -46,11 +46,26 @@ Operators: `+` and `-` only. Each term is either a register name or a numeric ad
 
 Expression support is command-specific. It is available for `d`, `m`, `b`, `g`, `save`, the destination address in `load`, `u`, `ww`, `wc`, `trace watch`, `trace history`, and `e`. The low-level byte/range commands `w`, `f`, `h`, `c`, `t`, and `bc` parse literal addresses only. The IE64 assembler command `A` also parses a checked unsigned literal physical address only.
 
-Symbols loaded with `sym add`, `sym loadlbl`, or `sym loadelf` can be used as expression terms, for example `b main+0x10`. See [iemon-symbols.md](iemon-symbols.md) for symbol sources and per-CPU scope.
+Symbols loaded with `sym add`, `sym loadlbl`, or `sym loadelf` can be used as expression terms, for example `b main+0x10`. Symbols are scoped per CPU name.
 
 `d /s [addr] [count]` asks the monitor to interleave source locations from DWARF line data when available. `list [addr]` prints the nearest source location, or a no-source message for CPUs/builds without line information.
 
 Scripted equivalents: `sym.load_dwarf(path)` and `dbg.source_at(addr)`.
+
+### Argument Parsing Matrix
+
+| Command or argument group | Expression support | Literal-only parts |
+|---------------------------|--------------------|--------------------|
+| `d`, `m`, `b`, `g`, `u`, `ww`, `wc`, `trace watch`, `trace history`, `e` | Address argument accepts register, symbol, `+`, and `-` terms | Counts, widths, and non-address switches remain command-specific literals |
+| `save <start> <end> <file>` | Start and end address operands both accept register, symbol, `+`, and `-` terms | Filename is a host path argument, not an expression |
+| `load` | Destination address accepts expressions | Filename is a host path argument, not an expression |
+| `w`, `f`, `h`, `c`, `t`, `bc` | None | Low-level byte/range addresses are parsed as literal addresses |
+| `A` | None | IE64 assembly address is a checked unsigned physical-address literal |
+
+The matrix is intentionally command-facing: condition expressions for
+breakpoints, reverse timeline queries, page guards, and access filters
+use their own grammar and are documented in the relevant command
+sections below.
 
 ## Conditional Breakpoints
 
@@ -110,7 +125,7 @@ Scripted equivalents: `dbg.tracering_on([size])`, `dbg.tracering_off()`, and `db
 
 `rg` targets the latest retained whole-machine snapshot, including snapshots captured when the monitor stops for a breakpoint, watchpoint, guard, break-in, or fault. When a retained predecessor exists, IEMon restores that predecessor and deterministically re-executes to the target boundary; when the target is the oldest retained state, it restores it directly. `rt <expr>` walks backwards through retained whole-machine snapshots and uses the same replay path for the newest snapshot where the focussed CPU satisfies the breakpoint-expression syntax. `tl back` is a timeline-view shorthand for `rg`. `history horizon` reports the retained reverse snapshot horizon, checkpoint count, delta count, and approximate retained bytes. `history config` prints the current snapshot-chain settings; `history config <delta-interval> <delta-miB> <checkpoints> [snapshots]` changes them and can be placed in a trusted `.iemonrc`. `tl [count]` shows the merged timeline from access events, instruction trace entries, and monitor stop events using the shared sequence assigned when each event is recorded; stop events include `snap=N` when they captured a reverse boundary.
 
-Whole-machine snapshots cover all monitor-registered CPUs, shared bus RAM, sparse IE64 backing memory, and registered versioned device blobs. The history stores full sparse checkpoints plus sparse deltas anchored to a retained checkpoint; `rg` and `rt` materialise deltas before replay or restore. The production monitor registers the main video chip, sound chip, terminal MMIO, command-style host helpers (file I/O, media loader, program executor, and coprocessor manager), compatibility audio/video engines (PSG/AY, SN76489, SID/SID2/SID3, TED audio, POKEY, VGA, ULA, TED video, ANTIC/GTIA, and Voodoo), and AROS guest-visible host bridges when present. Additional devices join the same contract through `RegisterSnapshotDevice`. Timeline replay still depends on deterministic device code, which is audited in [iemon-determinism.md](iemon-determinism.md).
+Whole-machine snapshots cover all monitor-registered CPUs, shared bus RAM, sparse IE64 backing memory, and registered versioned device blobs. The history stores full sparse checkpoints plus sparse deltas anchored to a retained checkpoint; `rg` and `rt` materialise deltas before replay or restore. The production monitor registers the main video chip, sound chip, terminal MMIO, command-style host helpers (file I/O, media loader, program executor, and coprocessor manager), compatibility audio/video engines (PSG/AY, SN76489, SID/SID2/SID3, TED audio, POKEY, VGA, ULA, TED video, ANTIC/GTIA, and Voodoo), and optional host bridges when present. Additional devices join the same contract through `RegisterSnapshotDevice`. Timeline replay depends on deterministic device snapshot and restore behaviour.
 
 Scripted equivalents: `dbg.history_horizon()`, `dbg.history_config([opts])`, `dbg.device_list()`, `dbg.device_snapshot(name)`, and `dbg.device_diff(a,b)`.
 
@@ -119,8 +134,6 @@ Scripted equivalents: `dbg.history_horizon()`, `dbg.history_config([opts])`, `db
 IEMon can load project-local `.iemonrc` files after they have been explicitly trusted. `rc list` searches from the current directory up to the file system root and prints each candidate with its SHA-256 hash and trust state. `rc trust [file]` records the current absolute path and hash in the IEMon trust store, and `rc load [file]` runs the file only while the stored hash still matches. Trusted rc files are auto-loaded once per matching hash when the monitor has exactly one registered CPU; multi-CPU monitor sessions require explicit `rc load` to avoid applying setup to the wrong focus.
 
 RC files are deliberately limited to debugger setup commands: `b`, `bc`, `ww`, `wc`, `bpm*`, `pg add|clear|list`, `sym add`, `history config`, `layout`, and safe `alias` definitions whose target command is also allowed. Commands that load host files, run scripts, continue execution, enter assemble mode, or modify guest memory are rejected.
-
-See [iemon-rc.md](iemon-rc.md) for the file format and trust-store details.
 
 | Command | Description |
 |---------|-------------|
@@ -164,7 +177,7 @@ Read and read/write watchpoints are backed by CPU access-site instrumentation. W
 | `pg list` | List guards |
 | `pg clear` | Clear guards |
 
-The shared debug access service stores guard policy and emits monitor events with CPU id and access kind. Bus-mediated `Read8/16/32` and `Write8/16/32` paths are instrumented. CPU-local direct memory paths and instruction fetch hooks are tracked in [iemon-access-audit.md](iemon-access-audit.md), and supported builds fail closed when live access coverage is unavailable.
+The shared debug access service stores guard policy and emits monitor events with CPU id and access kind. Bus-mediated `Read8/16/32` and `Write8/16/32` paths are instrumented. CPU-local direct memory paths and instruction fetch hooks must route through the access service for guard and history coverage.
 
 ## Access History
 
@@ -183,13 +196,198 @@ The access service can retain a bounded event log for read/write/fetch hooks. Da
 
 Wide accesses are matched by range, so `who wrote $4003` reports a prior 4-byte write at `$4000`. Like page guards, this depends on CPU and bus access sites calling the shared debug access service.
 
-See [iemon-timeline.md](iemon-timeline.md) for the access-event time model and reverse-debugging snapshot contract.
-
 Count arguments for `s`, `m`, `trace`, and `bt` are decimal by default. Use `$` or `0x` for hexadecimal counts. The `d` (disassemble) line count is the exception: it is parsed with the address parser, so a bare count is hexadecimal and `#decimal` is accepted (for example, `d $2000 10` disassembles 0x10 = 16 lines, while `d $2000 #10` disassembles 10 lines). Bare address arguments remain hexadecimal by default. The `#decimal` prefix is recognised for address/value arguments and for the `d` line count, but not for other count arguments.
 
 Arguments containing spaces can be wrapped in double quotes, for example `save $1000 $1FFF "my dump.bin"`. Inside double quotes, a backslash escapes the following character.
 
 ## Command Reference
+
+### Command Surface
+
+The command surface below reflects the monitor command registry plus
+dispatch-level aliases. Detailed sections later in this chapter expand the
+commands that need longer notes.
+
+| Command | Purpose |
+|---------|---------|
+| `r` | Show or change registers |
+| `a` / `A` | Enter IE64 one-instruction assemble mode |
+| `d` | Disassemble memory; `/s` shows source lines when available |
+| `list` | Show source location for an address |
+| `m` | Dump memory as hex and ASCII |
+| `s` | Single-step the focussed CPU |
+| `bs` / `rs` | Step the focussed CPU backwards using CPU-local history |
+| `rg` | Replay or restore to the previous whole-machine reverse boundary |
+| `rt` | Replay or restore to the latest reverse boundary matching an expression |
+| `tl` | Show the merged timeline or scrub backwards |
+| `g` | Continue execution, optionally from a new PC |
+| `u` | Run until an address is reached |
+| `x` | Close the monitor and resume CPUs that were running |
+| `b` | Set a breakpoint with an optional condition |
+| `bc` | Clear one breakpoint or all breakpoints |
+| `bl` | List breakpoints |
+| `ww` | Set a legacy one-byte write watchpoint |
+| `wr` / `wrw` | Set a legacy one-byte read/write watchpoint |
+| `bpm` | Set read/write watchpoints by access mode and width |
+| `bpmbr` / `bpmrb` | Set a byte read watchpoint |
+| `bpmbw` / `bpmwb` | Set a byte write watchpoint |
+| `bpmb` / `bpmba` / `bpmab` | Set a byte read/write watchpoint |
+| `bpmwr` / `bpmrw` | Set a word read watchpoint |
+| `bpmww` | Set a word write watchpoint |
+| `bpmw` / `bpmwa` / `bpmaw` | Set a word read/write watchpoint |
+| `bpmdr` / `bpmrd` | Set a long read watchpoint |
+| `bpmdw` / `bpmwd` | Set a long write watchpoint |
+| `bpmd` / `bpmda` / `bpmad` | Set a long read/write watchpoint |
+| `bpmqr` / `bpmrq` | Set a quad read watchpoint |
+| `bpmqw` / `bpmwq` | Set a quad write watchpoint |
+| `bpmq` / `bpmqa` / `bpmaq` | Set a quad read/write watchpoint |
+| `wc` | Clear one watchpoint or all watchpoints |
+| `wl` | List watchpoints |
+| `bt` | Show a symbol-aware stack backtrace |
+| `sym` | Manage symbols for the focussed CPU |
+| `map` | List the memory map for the focussed CPU |
+| `addr` | Describe the memory region containing an address |
+| `pg` | Add, list, or clear page-access guards |
+| `accesslog` | Record read/write/fetch access events |
+| `who` | Find the last reader, writer, or fetcher of an address |
+| `bfirst` | Break once on the first access to a named region |
+| `trace` | Trace instructions, files, write history, or MMIO access events |
+| `history` | Show or tune reverse-debugging snapshot history |
+| `tracering` | Enable or disable the per-CPU instruction trace ring |
+| `show` | Show the tail of the instruction trace ring |
+| `fault` | Break before selected guest fault handlers run |
+| `cpu` | List CPUs, change focus, or manage coprocessor worker slots |
+| `freeze` | Freeze a CPU or all CPUs |
+| `thaw` | Resume a frozen CPU or all CPUs |
+| `layout` | Render a named monitor view preset |
+| `alias` | Create or list command aliases |
+| `rc` | List, trust, or load project-local IEMon rc files |
+| `bug` | Print a copyable debugger report bundle |
+| `io` | Show I/O registers |
+| `e` | Enter hex editor mode |
+| `f` | Fill memory |
+| `w` | Write bytes to memory |
+| `h` | Hunt for a byte pattern |
+| `c` | Compare two memory ranges |
+| `t` | Transfer memory |
+| `save` | Save memory to a host file |
+| `load` | Load a host file into memory |
+| `ss` | Save a CPU-local state snapshot |
+| `sl` | Load a CPU-local state snapshot |
+| `fa` | Freeze audio output |
+| `ta` | Thaw audio output |
+| `script` | Run a monitor command script |
+| `macro` | Define a semicolon-separated command macro |
+| `?` / `help` | Show command help |
+
+### Registry Syntax Inventory
+
+This compact syntax inventory mirrors the command help registry. Detailed
+sections below describe argument meaning, output, errors, and side effects.
+
+- `r`
+- `r <name> <value>`
+- `A <addr>`
+- `a <addr>`
+- `d [/s] [addr] [count]`
+- `list [addr]`
+- `m [addr] [lines]`
+- `s [count]`
+- `bs`
+- `rs`
+- `rg`
+- `rt <expr>`
+- `tl [count]`
+- `tl back`
+- `g [addr]`
+- `u <addr>`
+- `x`
+- `b <addr> [if <expr>]`
+- `b <addr> <legacy-condition>`
+- `bc <addr|*>`
+- `bl`
+- `ww <addr>`
+- `bpmbr|bpmbw|bpmb <addr>`
+- `bpmwr|bpmww|bpmw <addr>`
+- `bpmdr|bpmdw|bpmd <addr>`
+- `bpmqr|bpmqw|bpmq <addr>`
+- `wc <addr|*>`
+- `wl`
+- `bt [depth]`
+- `sym add <name> <addr> [func|object|label]`
+- `sym loadlbl <file> [base]`
+- `sym loadelf <file>`
+- `sym lookup|resolve|list ...`
+- `map`
+- `addr <addr>`
+- `pg add <start> <end> <rwx> [cpu=all|current]`
+- `pg list`
+- `pg clear`
+- `accesslog on [size]`
+- `accesslog off`
+- `accesslog show [count]`
+- `who read|wrote|fetched <addr>`
+- `bfirst read|write|fetch <region-name>`
+- `trace <count>`
+- `trace file <path|off>`
+- `trace watch add|del|list <addr>`
+- `trace history show|clear <addr|*>`
+- `trace mmio <region> [count]`
+- `history horizon`
+- `history config [delta-interval] [delta-miB] [checkpoints] [snapshots]`
+- `tracering on|off [size]`
+- `show [count]`
+- `fault on|off|list`
+- `fault break <kind>`
+- `fault clear <kind>`
+- `cpu`
+- `cpu <id|label>`
+- `cpu online [--replace] <type|path.ie*> [path.ie*]`
+- `cpu offline <id|label|type>`
+- `freeze <id|label|*>`
+- `thaw <id|label|*>`
+- `layout cpu|trace|debug`
+- `layout list`
+- `layout save <name>`
+- `alias`
+- `alias <name> <command...>`
+- `rc list`
+- `rc trust [file]`
+- `rc load [file]`
+- `bug [trace-count]`
+- `io [device|all]`
+- `e <addr>`
+- `f <start> <end> <byte>`
+- `w <addr> <bytes..>`
+- `h <start> <end> <bytes..>`
+- `c <start> <end> <dest>`
+- `t <start> <end> <dest>`
+- `save <start> <end> <file>`
+- `load <file> <addr>`
+- `ss [file]`
+- `sl [file]`
+- `fa`
+- `ta`
+- `script <file>`
+- `macro <name> <cmds..>`
+
+### Command Effect Matrix
+
+Commands fall into four operational classes. This matrix is intended for
+scripts, transcripts, and debugger sessions where the difference between
+inspection and state mutation matters.
+
+| Class | Commands | Effect |
+|-------|----------|--------|
+| Inspection only | `r`, `d`, `list`, `m`, `bl`, `wl`, `bt`, `map`, `addr`, `pg list`, `accesslog show`, `who`, `history horizon`, `show`, `io`, `layout`, `alias`, `rc list`, `bug`, `?`, `help` | Read monitor, CPU, memory, trace, or device state and append output. |
+| CPU execution control | `s`, `g`, `u`, `x`, `bs`, `rg`, `rt`, `freeze`, `thaw`, `cpu` | Step, resume, stop, reverse, change focus, or change worker lifecycle. These commands can change PC, CPU running state, reverse-history position, or focussed CPU. |
+| Memory and debugger mutation | `r <name> <value>`, `w`, `f`, `t`, `load`, `e`, `b`, `bc`, `ww`, `bpm*`, `wc`, `pg add`, `pg clear`, `accesslog on`, `accesslog off`, `bfirst`, `trace watch`, `trace history clear`, `tracering`, `fault`, `sym`, `ss`, `sl` | Modify guest memory, register values, monitor break/watch state, trace settings, page guards, symbol tables, or CPU-local snapshot state. |
+| Host file or session mutation | `save`, `trace file`, `script`, `macro`, `alias <name>`, `layout save`, `rc trust`, `rc load`, `fa`, `ta` | Read or write host files, execute monitor command files, define session helpers, trust project rc files, or change host audio output state. |
+
+State-changing commands are intentionally not hidden behind confirmation in the
+monitor command line. When the same operation is exposed through IEScript debug
+helpers, the script sandbox and debugger command filter may impose additional
+path or command restrictions.
 
 ### Execution Control
 
@@ -208,16 +406,16 @@ Host-side break-in requests stop the focussed execution path through the same ev
 
 ### Memory Map
 
-The `map` command lists named memory regions for the focussed CPU. The `addr <addr>` command resolves one address to a region and accepts the same symbol-aware address expressions as `d` and `b`.
+The `map` command lists named memory regions for the focussed CPU. The `addr <addr>` command resolves one address to a region and accepts the same symbol-aware address expressions as `d` and `b`. The regions are views of the shared MachineBus memory map; CPU adapters may translate addresses, but they do not create private RAM.
 
 | CPU | Region divergence |
 |-----|-------------------|
-| IE64 | Standard host-visible RAM, stack, VRAM, and `0xF0000-0xFFFFF` MMIO regions |
-| IE32 | Standard host-visible RAM, stack, VRAM, and `0xF0000-0xFFFFF` MMIO regions |
-| M68K | Standard host-visible RAM, stack, VRAM, and `0xF0000-0xFFFFF` MMIO regions |
+| IE64 | Standard shared machine RAM, stack, VRAM, and `0xF0000-0xFFFFF` MMIO regions |
+| IE32 | Standard shared machine RAM, stack, VRAM, and `0xF0000-0xFFFFF` MMIO regions |
+| M68K | Standard shared machine RAM, stack, VRAM, and `0xF0000-0xFFFFF` MMIO regions |
 | X86 | Standard regions plus x86 runner bank windows translated by the bus adapter |
-| Z80 | `0xF000-0xF0FF` direct MMIO window and `0xA0-0xAA` VGA port range |
-| 6502 | Page-1 stack, `0xF000-0xF0FF` direct MMIO, VGA at `0xD700-0xD70A`, and ULA at `0xD800-0xD817` |
+| Z80 | `0xF000-0xF0FF` direct MMIO window and `0xA0-0xAD` VGA port range |
+| 6502 | Page-1 stack, `0xF000-0xF0FF` direct MMIO, VGA at `0xD700-0xD70D`, and ULA at `0xD800-0xD817` |
 
 #### `s [count]` - Single-Step
 
@@ -235,6 +433,11 @@ Step 10 instructions (counts are decimal):
 > s 10
 Step: 10 instruction(s), 10 cycle(s)
 ```
+
+Single-step uses frozen-debug execution semantics. `WAIT` instructions count as
+one stepped instruction and do not consume their requested real-time delay while
+the monitor is active; continued execution with `g` uses normal processor wait
+timing.
 
 #### `g [addr]` - Go/Continue
 
@@ -666,7 +869,7 @@ Stack walking is CPU-specific and best-effort. A missing frame does not prove th
 | 6502 | SP (page 1) | 2 bytes (LE) | Each frame is tagged `(low confidence)` in output; reads from `$0100 + ((SP+1) & 0xFF)` upward, adding +1 because JSR pushes return-1 |
 | X86 | EBP chain, then ESP scan | 4 bytes (LE) | Uses an EBP frame chain when it looks valid, otherwise scans ESP |
 
-### Save/Load Machine State
+### CPU-Local Snapshot Save/Load
 
 #### `ss [filename]` - Save State
 
@@ -782,6 +985,23 @@ Clear write history for a specific address or all addresses.
 > trace history clear $1000
 > trace history clear *
 ```
+
+#### `trace mmio <region> [count]` - Show Region Access Events
+
+Show the most recent access-history events whose address range overlaps a named
+memory or MMIO region for the focussed CPU. The command uses the monitor region
+registry for the current CPU; unknown region names are rejected. If `count` is
+omitted, the monitor prints up to 16 matching events. Count parsing uses the
+same count syntax as `trace <count>`.
+
+```
+> trace mmio mmio
+> trace mmio vram 32
+```
+
+The command requires the debug access service. If the service is unavailable,
+no CPU is focussed, the region is unknown, or the count is invalid, IEMon prints
+an error and does not change execution state.
 
 ### I/O Register Viewer
 
@@ -1112,11 +1332,13 @@ The monitor overlay is a character grid sized to the current native video mode (
 - **Magenta**: Backward branch / loop markers
 - **Dim blue**: Inactive/separator text
 
-## IE64 Fault Reports
+## IE64 Fault Interception
 
 ### Fault Interception
 
-`fault` lets IEMon break before a guest fault or exception is dispatched to the guest handler. It is off by default so operating-system boots keep their normal exception flow.
+`fault` lets IEMon break when a CPU fault or exception is detected. It is off
+by default so the normal CPU exception path continues unless interception is
+enabled.
 
 ```
 > fault list
@@ -1143,18 +1365,13 @@ Supported fault kinds:
 | 6502 | `6502.brk` |
 | X86 | `x86.ud` |
 
-When an IE64 fault escapes the IntuitionOS / `iexec` kernel, the kernel
-itself prints a `GURU MEDITATION` line on the host console with the
-full fault context. The machine monitor does **not** synthesise this
-line; it only helps you inspect the CPU and memory state after you stop
-the machine.
-
 The cause-code table below is reproduced here for convenience when
-reading those reports; the canonical source is `IE64_ISA.md` section 12.8.
+interpreting IE64 fault interception and stopped-CPU state. For the processor
+reference context, see `IE64_ISA.md` section 11.8.
 
 | Cause | Label | Trigger |
 |------:|-------|---------|
-| 0     | `page-not-present` | PTE `P==0` |
+| 0     | `page-not-present` | Absent PTE mapping or unavailable physical/atomic backing |
 | 1     | `read-denied`      | PTE `R==0` on load |
 | 2     | `write-denied`     | PTE `W==0` on store |
 | 3     | `exec-denied`      | PTE `X==0` on instruction fetch |
@@ -1165,34 +1382,26 @@ reading those reports; the canonical source is `IE64_ISA.md` section 12.8.
 | 8     | `timer`            | Timer interrupt (via INTR_VEC) |
 | 9     | `skef`             | Supervisor instruction fetch from user page (`MMU_CTRL.SKEF`) |
 | 10    | `skac`             | Supervisor data access to user page with `MMU_CTRL.SKAC` set and `MMU_CTRL.SUA` clear |
+| 11    | `illegal`          | Opcode-level invariant or illegal-instruction trap, currently including `MTCR` to read-only `CR_RAM_SIZE_BYTES` |
 
 The CPU raises `FAULT_SKEF` (9) and `FAULT_SKAC` (10) with the correct
-numeric `cause=` value. The current IntuitionOS fault printer may still
-show the class word as `unknown` for those two causes, so use the numeric
-cause when triaging supervisor-guard faults.
+numeric cause value. Use the numeric cause when triaging supervisor-guard
+faults.
 
-`SKEF` and `SKAC` usually indicate a kernel bug: either a stray
-supervisor fetch into a user page or a missing `SUAEN` / `SUADIS`
-bracket around a kernel user-memory access. See `IE64_COOKBOOK.md`
-"Supervisor-User Access Helpers" and `IntuitionOS/IExec.md` for the
-canonical usercopy helpers.
-
-The emitted line includes `cause`, `PC`, `ADDR`, `task`, `ACCESS`,
-`MODE`, `CLASS`, and `PTE` bits. Nested-trap state (outer `FAULT_PC`,
-`CR_SAVED_SUA`) is preserved architecturally by the CPU's trap-frame
-stack and is not part of the printed line.
+`SKEF` and `SKAC` usually indicate a supervisor-mode memory access bug:
+either a stray supervisor fetch into a user page or a missing `SUAEN` /
+`SUADIS` bracket around supervisor access to a user page.
 
 The monitor's IE64 disassembler recognises the `suaen` and `suadis`
-mnemonics, so listings of the shipped `iexec` kernel show the helper
-brackets at their real source locations rather than as raw `dc.b $F3`
-or `dc.b $F4`.
+mnemonics, so disassembly listings show the helper brackets at their real
+source locations rather than as raw `dc.b $F3` or `dc.b $F4`.
 
 ## Common Pitfalls
 
 - **Bare `d` counts are hexadecimal.** `d $1000 10` shows 0x10 = 16 lines, not 10. Use `d $1000 #10` for decimal 10. Counts for `s`, `m`, `trace`, and `bt` are decimal.
 - **`#N` does not work for most count arguments.** It is honoured for address/value parsing and for the `d` line count because `d` uses the address parser for that argument. For other counts, use bare decimal, `$hex`, or `0xhex`. For example, `s #10` silently steps one instruction because the invalid count is ignored.
 - **Legacy `ww` is a one-byte write watchpoint.** Use `bpm*` commands for read, write, read/write, and wider overlapping access watchpoints.
-- **Access-backed watchpoints require instrumentation.** In normal supported builds the CPU access hooks drive read/write/fetch watchpoints. If a future build disables those hooks, commands that need live access coverage fail closed instead of advertising partial behaviour.
+- **Access-backed watchpoints require instrumentation.** In normal supported builds the CPU access hooks drive read/write/fetch watchpoints. When access instrumentation is not enabled, access-backed commands fail closed instead of advertising partial behaviour.
 - **`ss`/`sl` are focussed-CPU only.** Other CPUs, video/audio/timer device state, and coprocessor state are not in the snapshot. `sl` will refuse a snapshot whose CPU type differs from the focussed CPU.
 - **`bs` (backstep) is focussed-CPU only.** It restores that adapter's registers and memory view from the per-CPU ring (max 32 entries). It does not roll back device state or other CPUs.
 - **M68K backtrace prefers A6 frame links.** Code that does not use LINK/UNLK falls back to an A7 stack scan, so symbol coverage strongly affects how much noise is filtered.

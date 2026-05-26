@@ -6,6 +6,8 @@ sources:
   - machine_bus.go
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Appendix K - Block Diagrams
 
 Schematic-level layout of the three internal buses that connect

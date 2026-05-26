@@ -1226,6 +1226,17 @@ func TestINC_RegisterIndirect(t *testing.T) {
 	}
 }
 
+func TestINC_MemoryIndirect(t *testing.T) {
+	r := newIE32TestRig()
+	r.write32At(0x5000, 0x7000)
+	r.write32At(0x7000, 50)
+	r.executeOne(createInstruction(INC, 0, ADDR_MEM_IND, 0x5000))
+	got := r.read32At(0x7000)
+	if got != 51 {
+		t.Fatalf("memory[0x7000] = %d, want 51", got)
+	}
+}
+
 func TestDEC_Register(t *testing.T) {
 	r := newIE32TestRig()
 	r.cpu.X = 20
@@ -1251,6 +1262,152 @@ func TestDEC_RegisterIndirect(t *testing.T) {
 	got := r.read32At(0x6000)
 	if got != 74 {
 		t.Fatalf("memory[0x6000] = %d, want 74", got)
+	}
+}
+
+func TestDEC_MemoryIndirect(t *testing.T) {
+	r := newIE32TestRig()
+	r.write32At(0x5000, 0x7000)
+	r.write32At(0x7000, 75)
+	r.executeOne(createInstruction(DEC, 0, ADDR_MEM_IND, 0x5000))
+	got := r.read32At(0x7000)
+	if got != 74 {
+		t.Fatalf("memory[0x7000] = %d, want 74", got)
+	}
+}
+
+func TestIE32StepOneMatchesExecuteForINCDECMemoryTargets(t *testing.T) {
+	r := newIE32TestRig()
+	r.write32At(0x5000, 100)
+	r.loadInstructions(createInstruction(INC, REG_A, ADDR_DIRECT, 0x5000))
+	r.cpu.A = 9
+	r.cpu.StepOne()
+	if got := r.read32At(0x5000); got != 101 {
+		t.Fatalf("StepOne INC direct memory = %d, want 101", got)
+	}
+	if r.cpu.A != 9 {
+		t.Fatalf("StepOne INC direct changed byte-1 register A = %d, want 9", r.cpu.A)
+	}
+
+	r.write32At(0x5000, 100)
+	r.loadInstructions(createInstruction(DEC, REG_A, ADDR_DIRECT, 0x5000))
+	r.cpu.A = 9
+	r.cpu.StepOne()
+	if got := r.read32At(0x5000); got != 99 {
+		t.Fatalf("StepOne DEC direct memory = %d, want 99", got)
+	}
+	if r.cpu.A != 9 {
+		t.Fatalf("StepOne DEC direct changed byte-1 register A = %d, want 9", r.cpu.A)
+	}
+}
+
+func TestIE32StepOneUsesAbsoluteBranchOperand(t *testing.T) {
+	r := newIE32TestRig()
+	r.write32At(0x5000, 0x6000)
+	r.loadInstructions(createInstruction(JMP, 0, ADDR_DIRECT, 0x5000))
+	r.cpu.StepOne()
+	if r.cpu.PC != 0x5000 {
+		t.Fatalf("StepOne JMP PC = 0x%X, want absolute operand 0x5000", r.cpu.PC)
+	}
+
+	r.loadInstructions(createInstruction(JNZ, REG_A, ADDR_DIRECT, 0x5000))
+	r.cpu.A = 1
+	r.cpu.StepOne()
+	if r.cpu.PC != 0x5000 {
+		t.Fatalf("StepOne JNZ PC = 0x%X, want absolute operand 0x5000", r.cpu.PC)
+	}
+
+	r.loadInstructions(createInstruction(JZ, REG_A, ADDR_DIRECT, 0x5000))
+	r.cpu.A = 0
+	r.cpu.StepOne()
+	if r.cpu.PC != 0x5000 {
+		t.Fatalf("StepOne JZ PC = 0x%X, want absolute operand 0x5000", r.cpu.PC)
+	}
+}
+
+func TestIE32StepOneSignedBranchesCompareAgainstZero(t *testing.T) {
+	tests := []struct {
+		name   string
+		opcode byte
+		reg    uint32
+		wantPC uint32
+	}{
+		{"JGT positive", JGT, 1, 0x5000},
+		{"JGT zero", JGT, 0, PROG_START + INSTRUCTION_SIZE},
+		{"JGE zero", JGE, 0, 0x5000},
+		{"JLT negative", JLT, 0xFFFFFFFF, 0x5000},
+		{"JLE positive", JLE, 1, PROG_START + INSTRUCTION_SIZE},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newIE32TestRig()
+			r.write32At(0x5000, 0xFFFFFFFF)
+			r.loadInstructions(createInstruction(tt.opcode, REG_A, ADDR_DIRECT, 0x5000))
+			r.cpu.A = tt.reg
+			r.cpu.StepOne()
+			if r.cpu.PC != tt.wantPC {
+				t.Fatalf("StepOne %s PC = 0x%X, want 0x%X", tt.name, r.cpu.PC, tt.wantPC)
+			}
+		})
+	}
+}
+
+func TestIE32StepOneNOTIgnoresOperandFields(t *testing.T) {
+	r := newIE32TestRig()
+	r.cpu.A = 0x12345678
+	r.write32At(0x5000, 0)
+	r.loadInstructions(createInstruction(NOT, REG_A, ADDR_DIRECT, 0x5000))
+	r.cpu.StepOne()
+	if r.cpu.A != 0xEDCBA987 {
+		t.Fatalf("StepOne NOT A = 0x%08X, want 0xEDCBA987", r.cpu.A)
+	}
+}
+
+func TestIE32StepOneShiftCountsAreUnmasked(t *testing.T) {
+	r := newIE32TestRig()
+	r.cpu.A = 1
+	r.loadInstructions(createInstruction(SHL, REG_A, ADDR_IMMEDIATE, 32))
+	r.cpu.StepOne()
+	if r.cpu.A != 0 {
+		t.Fatalf("StepOne SHL by 32 = 0x%08X, want 0", r.cpu.A)
+	}
+
+	r = newIE32TestRig()
+	r.cpu.A = 0x80000000
+	r.loadInstructions(createInstruction(SHR, REG_A, ADDR_IMMEDIATE, 32))
+	r.cpu.StepOne()
+	if r.cpu.A != 0 {
+		t.Fatalf("StepOne SHR by 32 = 0x%08X, want 0", r.cpu.A)
+	}
+}
+
+func TestIE32StepOneStackBoundsMatchExecute(t *testing.T) {
+	r := newIE32TestRig()
+	r.cpu.SP = STACK_BOTTOM
+	r.loadInstructions(createInstruction(PUSH, REG_A, 0, 0))
+	r.cpu.running.Store(true)
+	r.cpu.StepOne()
+	if r.cpu.running.Load() {
+		t.Fatal("StepOne PUSH at stack bottom should enter stopped processor state")
+	}
+
+	r = newIE32TestRig()
+	r.cpu.SP = STACK_START
+	r.loadInstructions(createInstruction(POP, REG_A, 0, 0))
+	r.cpu.running.Store(true)
+	r.cpu.StepOne()
+	if r.cpu.running.Load() {
+		t.Fatal("StepOne POP at stack start should enter stopped processor state")
+	}
+
+	r = newIE32TestRig()
+	r.cpu.SP = STACK_START
+	r.loadInstructions(createInstruction(RTI, 0, 0, 0))
+	r.cpu.running.Store(true)
+	r.cpu.StepOne()
+	if r.cpu.running.Load() {
+		t.Fatal("StepOne RTI at stack start should enter stopped processor state")
 	}
 }
 
@@ -1337,6 +1494,17 @@ func TestSTORE_Generic_RegisterIndirect(t *testing.T) {
 	}
 }
 
+func TestSTORE_Generic_MemoryIndirect(t *testing.T) {
+	r := newIE32TestRig()
+	r.cpu.A = 0xFACE1234
+	r.write32At(0x5000, 0x7000)
+	r.executeOne(createInstruction(STORE, REG_A, ADDR_MEM_IND, 0x5000))
+	got := r.read32At(0x7000)
+	if got != 0xFACE1234 {
+		t.Fatalf("memory[0x7000] = 0x%08X, want 0xFACE1234", got)
+	}
+}
+
 // ==============================================================================
 // NOP and HALT Tests
 // ==============================================================================
@@ -1361,6 +1529,30 @@ func TestHALT(t *testing.T) {
 	// Running should be false after HALT
 	if r.cpu.running.Load() {
 		t.Fatal("CPU should not be running after HALT")
+	}
+}
+
+func TestIE32_TimerExpiresAndReloads(t *testing.T) {
+	r := newIE32TestRig()
+	r.loadInstructions(
+		createInstruction(NOP, 0, 0, 0),
+		createInstruction(HALT, 0, 0, 0),
+	)
+	r.cpu.timerEnabled.Store(true)
+	r.cpu.timerCount.Store(1)
+	r.cpu.timerPeriod.Store(7)
+	r.cpu.cycleCounter = SAMPLE_RATE - 1
+	r.cpu.running.Store(true)
+	r.cpu.Execute()
+
+	if got := r.cpu.timerState.Load(); got != TIMER_EXPIRED {
+		t.Fatalf("timerState = %d, want TIMER_EXPIRED", got)
+	}
+	if got := r.cpu.timerCount.Load(); got != 7 {
+		t.Fatalf("timerCount = %d, want reload period 7", got)
+	}
+	if got := binary.LittleEndian.Uint32(r.cpu.memory[TIMER_COUNT:]); got != 7 {
+		t.Fatalf("TIMER_COUNT memory mirror = %d, want 7", got)
 	}
 }
 

@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 10 - Tile and Sprite Layers from BASIC
 
 Several picture chips build a screen from small repeatable elements

@@ -11,6 +11,8 @@ sources:
   - internal/asm/ie64/assembler.go
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Appendix G - Per-CPU Opcode Quick Reference
 
 One table per CPU. Each table is a single-line summary of every

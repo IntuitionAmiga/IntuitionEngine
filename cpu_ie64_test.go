@@ -25,8 +25,8 @@ type ie64TestRig struct {
 
 func newIE64TestRig() *ie64TestRig {
 	bus := NewMachineBus()
-	// PLAN_MAX_RAM.md slice 4: publish a fixed 32 MiB sizing so SYSINFO
-	// MMIO returns non-zero guest-RAM pages. Without this, the avail
+	// Publish a fixed 32 MiB sizing so SYSINFO MMIO returns non-zero
+	// guest-RAM pages. Without this, the avail
 	// command (which now reads SYSINFO_GUEST_RAM_PAGES instead of the
 	// retired flat MMU_NUM_PAGES constant) reports "Phys: 0 KB" in test
 	// boots. Live VMs publish via main.go ComputeMemorySizing/SetSizing.
@@ -38,12 +38,11 @@ func newIE64TestRig() *ie64TestRig {
 	})
 	RegisterSysInfoMMIOFromBus(bus)
 	cpu := NewCPU64(bus)
-	// PLAN_MAX_RAM.md slice 4 design: install this rig's CPU as the
-	// multi-level test mapper target so mapUserPage / setupKernelPTEs
-	// route through bus.WritePhys64 instead of indexing a flat single-
-	// level PT layout that no longer matches the production walk. Also
-	// reset the per-PTBR pool cursors so a previous test's allocator
-	// state does not leak in.
+	// Install this rig's CPU as the multi-level test mapper target so
+	// mapUserPage / setupKernelPTEs route through bus.WritePhys64 instead
+	// of indexing a flat single-level PT layout that no longer matches the
+	// production walk. Also reset the per-PTBR pool cursors so a previous
+	// test's allocator state does not leak in.
 	setMapUserPageCPU(cpu)
 	mmuTestResetPools()
 	return &ie64TestRig{bus: bus, cpu: cpu}
@@ -1488,6 +1487,69 @@ func TestIE64_PUSH_POP(t *testing.T) {
 	}
 }
 
+func TestIE64StepOneStackOutOfBackingDoesNotAdvancePC(t *testing.T) {
+	r := newIE64TestRig()
+	push := ie64Instr(OP_PUSH64, 0, 0, 0, 5, 0, 0)
+	r.loadInstructions(push)
+	r.cpu.regs[31] = uint64(DEFAULT_MEMORY_SIZE) + 8
+
+	r.cpu.StepOne()
+
+	if r.cpu.PC != PROG_START {
+		t.Fatalf("PUSH out-of-backing StepOne PC = 0x%X, want 0x%X", r.cpu.PC, uint64(PROG_START))
+	}
+	if r.cpu.regs[31] != uint64(DEFAULT_MEMORY_SIZE) {
+		t.Fatalf("PUSH out-of-backing StepOne SP = 0x%X, want 0x%X", r.cpu.regs[31], uint64(DEFAULT_MEMORY_SIZE))
+	}
+
+	r = newIE64TestRig()
+	pop := ie64Instr(OP_POP64, 6, 0, 0, 0, 0, 0)
+	r.loadInstructions(pop)
+	r.cpu.regs[31] = uint64(DEFAULT_MEMORY_SIZE)
+
+	r.cpu.StepOne()
+
+	if r.cpu.PC != PROG_START {
+		t.Fatalf("POP out-of-backing StepOne PC = 0x%X, want 0x%X", r.cpu.PC, uint64(PROG_START))
+	}
+	if r.cpu.regs[31] != uint64(DEFAULT_MEMORY_SIZE) {
+		t.Fatalf("POP out-of-backing StepOne SP = 0x%X, want 0x%X", r.cpu.regs[31], uint64(DEFAULT_MEMORY_SIZE))
+	}
+	if r.cpu.regs[6] != 0 {
+		t.Fatalf("POP out-of-backing StepOne R6 = 0x%X, want 0", r.cpu.regs[6])
+	}
+}
+
+func TestIE64StepOneInvalidFPURegisterStopsWithoutAdvancingPC(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		instr []byte
+	}{
+		{name: "single_precision_rd_above_f15", instr: ie64Instr(OP_FMOV, 16, 0, 0, 1, 0, 0)},
+		{name: "single_precision_rs_above_f15", instr: ie64Instr(OP_FADD, 1, 0, 0, 16, 2, 0)},
+		{name: "double_precision_odd_pair", instr: ie64Instr(OP_DMOV, 1, 0, 0, 2, 0, 0)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newIE64TestRig()
+			r.loadInstructions(tc.instr, ie64Instr(OP_MOVE, 5, IE64_SIZE_Q, 1, 0, 0, 0xCAFE))
+			r.cpu.running.Store(true)
+
+			if got := r.cpu.StepOne(); got != 1 {
+				t.Fatalf("StepOne return = %d, want decoded stopped instruction count 1", got)
+			}
+			if r.cpu.running.Load() {
+				t.Fatal("invalid FPU register encoding should enter stopped processor state")
+			}
+			if r.cpu.PC != PROG_START {
+				t.Fatalf("PC = 0x%X, want unchanged 0x%X", r.cpu.PC, uint64(PROG_START))
+			}
+			if got := r.cpu.regs[5]; got != 0 {
+				t.Fatalf("R5 = 0x%X, want following instruction not executed", got)
+			}
+		})
+	}
+}
+
 func TestIE64_Nested_JSR(t *testing.T) {
 	r := newIE64TestRig()
 	spBefore := r.cpu.regs[31]
@@ -1659,6 +1721,14 @@ func TestIE64_RTI(t *testing.T) {
 
 	if r.cpu.inInterrupt.Load() {
 		t.Fatal("inInterrupt should be false after RTI")
+	}
+}
+
+func TestIE64_WAIT_ZeroAdvancesPC(t *testing.T) {
+	r := newIE64TestRig()
+	r.executeOne(ie64Instr(OP_WAIT64, 0, 0, 1, 0, 0, 0))
+	if r.cpu.PC != PROG_START+IE64_INSTR_SIZE {
+		t.Fatalf("PC = 0x%X, want 0x%X after WAIT #0", r.cpu.PC, PROG_START+IE64_INSTR_SIZE)
 	}
 }
 
@@ -2122,8 +2192,8 @@ func TestIE64_JMP_NegativeDisplacement(t *testing.T) {
 }
 
 func TestIE64_JMP_NoAddrMask(t *testing.T) {
-	// PLAN_MAX_RAM.md slice 4: full 64-bit VA. The legacy 32 MB
-	// IE64_ADDR_MASK no longer truncates jump targets, so a JMP to
+	// Full 64-bit VA. The legacy 32 MiB IE64_ADDR_MASK no longer truncates
+	// jump targets, so a JMP to
 	// 0x2000000 + PROG_START + 24 lands at the high address and does
 	// NOT alias back to PROG_START + 24. The high target is unmapped
 	// and out-of-bounds, so execution stops cleanly without the
@@ -2314,8 +2384,8 @@ func TestIE64_JSR_Indirect_Nested(t *testing.T) {
 }
 
 func TestIE64_JSR_Indirect_NoAddrMask(t *testing.T) {
-	// PLAN_MAX_RAM.md slice 4: JSR_IND targets are not masked by the
-	// legacy 32 MB IE64_ADDR_MASK. The high target is preserved and the
+	// JSR_IND targets are not masked by the legacy 32 MiB IE64_ADDR_MASK.
+	// The high target is preserved and the
 	// fetch fails out-of-bounds rather than aliasing back to low memory.
 	r := newIE64TestRig()
 	bigAddr := uint64(0x2000000 + PROG_START + 24) // bit 25 set
@@ -3043,7 +3113,7 @@ func TestIE64_Atomic_RdZero(t *testing.T) {
 	rig.executeN(
 		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, addr),
 		ie64Instr(OP_MOVE, 3, IE64_SIZE_L, 1, 0, 0, 42),
-		ie64Instr(OP_CAS, 0, 0, 0, 1, 3, 0), // cas r0, (r1), r3 — compare with R0=0
+		ie64Instr(OP_CAS, 0, 0, 0, 1, 3, 0), // cas r0, (r1), r3; compare with R0=0
 	)
 	got := binary.LittleEndian.Uint64(rig.cpu.memory[addr:])
 	if got != 42 {
@@ -3355,7 +3425,7 @@ func TestIE64_SEI_CLI_BackedByTimerCtrl(t *testing.T) {
 		t.Fatal("SEI should enable interrupts")
 	}
 
-	// Read TIMER_CTRL — bit 1 should be set
+	// Read TIMER_CTRL; bit 1 should be set
 	rig.executeOne(ie64Instr(OP_MFCR, 1, 0, 0, CR_TIMER_CTRL, 0, 0))
 	if rig.cpu.regs[1]&2 == 0 {
 		t.Fatal("TIMER_CTRL bit 1 should reflect SEI")

@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 24 - Memory Model and MMIO Map
 
 Part IV of this guide is the bridge between BASIC and machine
@@ -62,11 +64,18 @@ words at `$F2400`/`$F2404` (`SYSINFO_TOTAL_RAM_LO`/`HI`) report the
 byte size of total guest RAM as a `64`-bit value; `$F2408`/`$F240C`
 report the size visible to the currently executing CPU profile.
 
-The low memory slice and the backed RAM above it behave as one active
-RAM space for ordinary byte, word, and long bus accesses. A valid span
-may start in the low slice and end in backed RAM; each byte is copied
-in little-endian order. Device MMIO is still MMIO, not RAM, even when
-its address lies inside the low `32`-bit window.
+The low memory slice and the backed RAM above it are both active RAM,
+but the boundary between them matters for scalar accesses. Byte reads
+and writes work on either side. Word and long reads and writes must fit
+wholly inside the low slice or wholly inside backed RAM. If a word or
+long starts before the boundary and ends after it, the access is
+unmapped: a read returns zero and a write does not partly update either
+side.
+
+Byte-copy devices can still cross the same boundary one byte at a time.
+The File I/O block in Chapter 35 uses that rule when it copies a file
+into a destination buffer. Device MMIO is still MMIO, not RAM, even
+when its address lies inside the low `32`-bit window.
 
 ### 24.1.2 The sign-extended alias
 

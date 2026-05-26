@@ -1105,7 +1105,7 @@ func (bus *MachineBus) SetStrictMMIOWindows(windows []AddrRange) {
 
 // SetSizing publishes the resolved guest RAM sizing on this bus. Called once
 // after ComputeMemorySizing and any AllocateGuestRAM retry has settled. All
-// guest discovery paths (sysinfo MMIO, future IE64 CR_RAM_SIZE_BYTES, IExec
+// guest discovery paths (sysinfo MMIO, IE64 CR_RAM_SIZE_BYTES, IExec
 // sysinfo) must read from these accessors so they agree on the final values.
 //
 // PLAN_MAX_RAM.md slice 9 invariant: production discovery must never report
@@ -1212,7 +1212,7 @@ func (bus *MachineBus) VisibleCeiling() uint64 {
 // ActiveVisiblePages returns the IE64 MMU page count derived from
 // active_visible_ram and MMU_PAGE_SIZE. PLAN_MAX_RAM.md slice 4c replaces
 // the fixed MMU_NUM_PAGES = 8192 (32 MB / 4 KiB) ABI constant with this
-// runtime accessor; allocator sizing, guest sysinfo, and the future IE64
+// runtime accessor; allocator sizing, guest sysinfo, and the IE64
 // CR_RAM_SIZE_BYTES path all read from this single source of truth.
 //
 // The result is rounded down to whole pages so a stale or hand-built sizing

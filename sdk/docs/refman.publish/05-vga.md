@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 5 - The VGA Controller
 
 The VGA is the second of Intuition Engine's six picture sources. It

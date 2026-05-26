@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Appendix H - Per-CPU Symbol Index
 
 Entry points, ABI conventions, and reserved memory regions for

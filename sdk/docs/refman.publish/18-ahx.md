@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 18 - The AHX Engine
 
 AHX is a four-voice chip-tune music engine. It plays AHX module data from

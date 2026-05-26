@@ -3460,19 +3460,19 @@ func (a *IE64Assembler) asmPushPop(opcode byte, operands []string) ([]byte, erro
 	return encodeInstruction(opcode, reg, SIZE_Q, 0, 0, 0, 0), nil
 }
 
-// asmWait handles: wait #cycles
+// asmWait handles: wait #usec
 func (a *IE64Assembler) asmWait(operands []string) ([]byte, error) {
 	if len(operands) != 1 {
-		return nil, fmt.Errorf("wait requires 1 operand (#cycles)")
+		return nil, fmt.Errorf("wait requires 1 operand (#usec)")
 	}
 	src := strings.TrimSpace(operands[0])
 	if !strings.HasPrefix(src, "#") {
-		return nil, fmt.Errorf("wait requires immediate operand (#cycles)")
+		return nil, fmt.Errorf("wait requires immediate operand (#usec)")
 	}
 	immStr := strings.TrimSpace(src[1:])
 	val, err := a.evalExpr(immStr)
 	if err != nil {
-		return nil, fmt.Errorf("wait cycles: %v", err)
+		return nil, fmt.Errorf("wait usec: %v", err)
 	}
 	return encodeInstruction(OP64_WAIT, 0, 0, 1, 0, 0, uint32(val)), nil
 }
@@ -3908,7 +3908,7 @@ func (a *IE64Assembler) asmFCVTDS(operands []string) ([]byte, error) {
 // MMU / Privilege Instructions
 // ===========================================================================
 
-// parseCR parses a control register name (cr0-cr5 or symbolic names).
+// parseCR parses a control register name (cr0-cr15 or symbolic names).
 func parseCR(name string) (byte, bool) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	switch name {
@@ -3942,6 +3942,8 @@ func parseCR(name string) (byte, bool) {
 		return 13, true
 	case "cr14", "saved_sua":
 		return 14, true
+	case "cr15", "ram_size_bytes":
+		return 15, true
 	}
 	return 0, false
 }

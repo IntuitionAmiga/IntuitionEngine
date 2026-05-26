@@ -1,4 +1,6 @@
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Chapter 39 - Whole-Machine Capstone
 
 The previous chapters describe cards one at a time. This last program

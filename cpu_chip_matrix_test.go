@@ -269,6 +269,16 @@ func TestZ80_TED_PortIO(t *testing.T) {
 	if z80Bus.In(Z80_TED_PORT_DATA) != 0xEF {
 		t.Errorf("Z80 TED port read: got 0x%02X, want 0xEF", z80Bus.In(Z80_TED_PORT_DATA))
 	}
+
+	// The Z80 bridge exposes the complete TED video index range through 0x32.
+	z80Bus.Out(Z80_TED_PORT_SELECT, TED_V_INDEX_END)
+	z80Bus.Out(Z80_TED_PORT_DATA, 0x5A)
+	if got := bus.Read8(TED_V_RASTER_STATUS); got != 0x5A {
+		t.Fatalf("Z80 TED video index 0x%02X wrote 0x%02X, want 0x5A", TED_V_INDEX_END, got)
+	}
+	if got := z80Bus.In(Z80_TED_PORT_DATA); got != 0x5A {
+		t.Fatalf("Z80 TED video index 0x%02X read 0x%02X, want 0x5A", TED_V_INDEX_END, got)
+	}
 }
 
 func TestZ80_ULA_PortIO(t *testing.T) {
@@ -287,6 +297,44 @@ func TestZ80_ULA_PortIO(t *testing.T) {
 	// Test read back via port I/O (should return border color)
 	if z80Bus.In(Z80_ULA_PORT) != 0x05 {
 		t.Errorf("Z80 ULA port read: got 0x%02X, want 0x05", z80Bus.In(Z80_ULA_PORT))
+	}
+
+	z80Bus.Out(Z80_ULA_PORT_CTRL, ULA_CTRL_ENABLE|ULA_CTRL_AUTO_INC)
+	z80Bus.Out(Z80_ULA_PORT_STATUS, ULA_STATUS_VBLANK)
+	z80Bus.Out(Z80_ULA_PORT_ADDR_LO, 0x34)
+	z80Bus.Out(Z80_ULA_PORT_ADDR_HI, 0x12)
+	z80Bus.Out(Z80_ULA_PORT_DATA, 0xAA)
+	for _, tc := range []struct {
+		name string
+		addr uint32
+		want byte
+	}{
+		{name: "ctrl", addr: ULA_CTRL, want: ULA_CTRL_ENABLE | ULA_CTRL_AUTO_INC},
+		{name: "status", addr: ULA_STATUS, want: ULA_STATUS_VBLANK},
+		{name: "addr_lo", addr: ULA_ADDR_LO, want: 0x34},
+		{name: "addr_hi", addr: ULA_ADDR_HI, want: 0x12},
+		{name: "data", addr: ULA_DATA, want: 0xAA},
+	} {
+		if got := bus.Read8(tc.addr); got != tc.want {
+			t.Fatalf("Z80 ULA %s bus value = 0x%02X, want 0x%02X", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestZ80_SN76489_PortIO(t *testing.T) {
+	bus := NewMachineBus()
+	z80Bus := NewZ80BusAdapter(bus)
+
+	z80Bus.Out(Z80_SN_PORT_DATA, 0x9F)
+	if got := bus.Read8(SN_PORT_WRITE); got != 0x9F {
+		t.Fatalf("Z80 SN76489 data write = 0x%02X, want 0x9F", got)
+	}
+	if got := z80Bus.In(Z80_SN_PORT_DATA); got != 0x9F {
+		t.Fatalf("Z80 SN76489 data read = 0x%02X, want last-written 0x9F", got)
+	}
+	bus.Write8(SN_PORT_READY, 1)
+	if got := z80Bus.In(Z80_SN_PORT_STATUS); got != 1 {
+		t.Fatalf("Z80 SN76489 status read = 0x%02X, want ready bit 1", got)
 	}
 }
 

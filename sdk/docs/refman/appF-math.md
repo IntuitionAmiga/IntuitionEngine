@@ -6,6 +6,8 @@ sources:
   - sdk/include/ehbasic_strings.inc
 ---
 
+Copyright (c) 2026 Zayn Otley. All rights reserved.
+
 # Appendix F - Math and Derivative Helpers
 
 Numeric and string helpers BASIC provides at the prompt. Each one
