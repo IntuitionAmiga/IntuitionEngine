@@ -203,7 +203,7 @@ func TestX64LiveScriptContract(t *testing.T) {
 		`PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"`,
 		`C64_MUSIC_SOURCE="${C64_MUSIC_SOURCE:-${HOME}/Music/C64Music}"`,
 		`PROJECTAY_MUSIC_SOURCE="${PROJECTAY_MUSIC_SOURCE:-${HOME}/Music/ProjectAY}"`,
-		`FINAL_IMAGE_SIZE="8G"`,
+		`FINAL_IMAGE_SIZE="10G"`,
 		`ROOT_PART_SIZE="6G"`,
 		`FATSHARE_LABEL="IESHARE"`,
 		`LIVE_OUT_DIR="${X64_LIVE_OUT_DIR:-${SCRIPT_DIR}/build/x64-live}"`,
@@ -759,7 +759,7 @@ func TestX64LiveGoldenCacheHasContentStamp(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`GOLDEN_STAMP_VERSION="x64-live-golden-v40-ffmpeg-recording"`,
+		`GOLDEN_STAMP_VERSION="x64-live-golden-v41-share-headroom"`,
 		`GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"`,
 		`write_golden_stamp`,
 		`expected_golden_stamp`,
