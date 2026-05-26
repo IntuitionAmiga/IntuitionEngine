@@ -48,9 +48,9 @@ const (
 	// SID+ control register
 	SID_PLUS_CTRL = 0xF0E19 // SID+ mode enable (0=standard, 1=enhanced)
 
-	// Read-only registers (on real SID, we can emulate these)
-	SID_POT_X = 0xF0E19 // Potentiometer X (not implemented)
-	SID_POT_Y = 0xF0E1A // Potentiometer Y (not implemented)
+	// Readback registers. Offset 0x19 is SID+ control state in Intuition Engine;
+	// OSC3 and ENV3 return live voice 3 state.
+	SID_POT_Y = 0xF0E1A // Potentiometer Y backing register
 	SID_OSC3  = 0xF0E1B // Oscillator 3 output
 	SID_ENV3  = 0xF0E1C // Envelope 3 output
 
