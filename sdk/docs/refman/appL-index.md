@@ -53,12 +53,17 @@ symbols, and Appendix J gives the full memory map.
 | Coprocessor | Chapter 32, Chapter 39, Appendix I |
 | COPROC_CMD_ERROR | Chapter 32, Appendix D |
 | COCALL | Chapter 32 |
+| CPU-local snapshots | Chapter 33, Chapter 34 |
+| CR_RAM_SIZE_BYTES | Chapter 25, Appendix I |
 
 ## D
 
 | Term | See |
 |------|-----|
 | DEF / TROFF token collision | Chapter 2, Appendix A |
+| dbg.history_horizon | Chapter 34 |
+| dbg.save_state | Chapter 34 |
+| dbg.tracering_show | Chapter 34 |
 | Disk I/O | Chapter 35 |
 | DMA | Chapter 22, Chapter 24, Appendix D |
 
@@ -143,6 +148,7 @@ symbols, and Appendix J gives the full memory map.
 | Raster bands | Chapter 4 |
 | RawlandMini | Chapter 21 |
 | Registers | Chapter 24, Appendix D |
+| Reverse history | Chapter 33, Chapter 34 |
 | RTC_MONO_USEC_HI | Chapter 37, Appendix D, Appendix H |
 | RTC_MONO_USEC_LO | Chapter 37, Appendix D, Appendix H |
 | RUN loader | Chapter 35, Appendix I |
@@ -176,6 +182,10 @@ symbols, and Appendix J gives the full memory map.
 | TERM_SENTINEL | Chapter 38, Appendix D |
 | Tile and sprite layers | Chapter 10 |
 | Timing | Chapter 31 |
+| TIMER_COUNT | Chapter 25, Chapter 31 |
+| TIMER_PERIOD | Chapter 25, Chapter 31 |
+| TLBINVAL | Chapter 25 |
+| trace mmio | Chapter 33 |
 | Traps | Chapter 31, Appendix I |
 
 ## U
@@ -198,6 +208,7 @@ symbols, and Appendix J gives the full memory map.
 
 | Term | See |
 |------|-----|
+| WAIT | Chapter 26, Chapter 31, Appendix G, Appendix H |
 | WAV | Chapter 20, Appendix D |
 | Whole-machine capstone | Chapter 39 |
 

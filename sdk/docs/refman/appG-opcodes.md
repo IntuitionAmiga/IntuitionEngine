@@ -69,7 +69,7 @@ Byte-entry crib for Chapter 25:
 | Immediate | Immediate addressing mode on load and ALU instructions. |
 | Branch | `JMP`, `JSR`, `RTS`, `JZ`, `JNZ`, `JGT`, `JGE`, `JLT`, `JLE`. |
 | Stack  | `PUSH rA`, `POP rA`. |
-| Timing | `WAIT n` delays for `n` cycles. |
+| Timing | `WAIT n` delays for approximately `n` microseconds during normal execution. |
 
 Byte-entry crib for Chapter 26:
 

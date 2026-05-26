@@ -212,13 +212,31 @@ inspection:
 | `dbg.read_mem(addr, n)`, `dbg.write_mem(addr, data)` | Memory access through the monitor. |
 | `dbg.disasm(addr, count)` | Disassemble instructions. |
 | `dbg.backtrace()` | Return a stack backtrace. |
+| `dbg.backtrace_frames(depth)` | Return structured backtrace frames. |
 | `dbg.timeline(count)` | Return recent timeline entries. |
+| `dbg.history_horizon()`, `dbg.history_config(opts)` | Inspect or configure whole-machine reverse-history retention. |
+| `dbg.tracering_on(size)`, `dbg.tracering_off()`, `dbg.tracering_show(count)` | Control the focussed CPU trace ring. |
+| `dbg.device_list()`, `dbg.device_snapshot(name)`, `dbg.device_diff(a,b)` | Inspect versioned device snapshots. |
+| `dbg.save_state(path)`, `dbg.load_state(path)` | Save or load a CPU-local monitor snapshot. |
 | `dbg.on_fault(kind, fn)` | Call `fn` when a selected fault occurs. |
 | `dbg.poll_faults()` | Poll pending fault events. |
 | `dbg.command(line)` | Run one IE Mon command. |
 
 Fault callbacks receive a table with `cpu_id`, `pc`, `addr`,
 `kind`, and `info` fields.
+
+The debug module mirrors the monitor where scripts need repeatable
+inspection. Trace-ring helpers return structured recent-instruction
+entries, `dbg.backtrace_frames()` returns one table per call frame, and
+the history helpers report or configure the whole-machine reverse
+timeline used by IE Mon `rg` and `rt`. Device helpers snapshot
+registered versioned devices and compare two snapshots without forcing
+the script to parse monitor text.
+
+`dbg.save_state` and `dbg.load_state` use IE Mon `ss` and `sl`, so
+they are CPU-local snapshots. They are not whole-machine save files and
+do not include other CPUs, device state, audio/video state, timers, DMA,
+or reverse-history retention.
 
 ## 34.11 Symbols, Regions, and Bits
 

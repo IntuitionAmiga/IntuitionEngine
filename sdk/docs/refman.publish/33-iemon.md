@@ -37,8 +37,10 @@ greater-than sign: `(ie64)> `, `(6502)> `, `(z80)> `, etc.
 | `u`       | `addr`                            | Run until: resume, stop one-shot at `addr` |
 | `x`       |                                   | Exit the monitor (return to BASIC)         |
 
-`s` always re-prints the registers after the step. `g` returns to
-the monitor on the next breakpoint, watchpoint, or `Ctrl-C`.
+`s` always re-prints the registers after the step. When stepping,
+processor `WAIT` instructions count as one instruction and do not
+sleep; `g` resumes normal timing. `g` returns to the monitor on the
+next breakpoint, watchpoint, or `Ctrl-C`.
 
 ## 33.3 Registers and disassembly
 
@@ -293,8 +295,11 @@ with byte writers - they are not.
 
 ## 33.7 Reverse execution
 
-The monitor records a per-instruction history of the active CPU's
-state. You can rewind, replay forward, and search the timeline.
+The monitor keeps two kinds of history. `bs` and `rs` use a
+CPU-local step snapshot for the focussed CPU only. `rg`, `rt`, `tl`,
+and `history` use the retained whole-machine reverse-history
+timeline, which includes registered CPUs, bus RAM, backed RAM, and
+versioned device snapshots.
 
 | Command   | Argument(s)         | Effect                                        |
 |-----------|---------------------|-----------------------------------------------|
@@ -312,6 +317,7 @@ Be careful: `rg` is **reverse-continue**, not "register inspect".
 | Command     | Argument(s)         | Effect                                      |
 |-------------|---------------------|---------------------------------------------|
 | `trace`     | `on|off|name`       | Enable or disable instruction trace         |
+| `trace mmio`| `region [count]`    | Show recent access events in a named MMIO or memory region |
 | `tracering` | `[size]`            | Enable a ring-buffer trace of recent instructions |
 | `show`      |                     | Dump the ring trace                         |
 
@@ -339,12 +345,17 @@ To freeze every CPU at once, use `freeze *`.
 |----------|--------------------------|---------------------------------------|
 | `save`   | `start end name`         | Save a memory range                   |
 | `load`   | `name addr`              | Load a memory range at `addr`         |
-| `ss`     | `name`                   | Save full machine state               |
-| `sl`     | `name`                   | Load full machine state               |
+| `ss`     | `name`                   | Save CPU-local state                  |
+| `sl`     | `name`                   | Load CPU-local state                  |
 
-`save` and `load` move memory ranges. `ss` and `sl` move the whole
-CPU + bus + device state. A saved state can be reloaded into a
-freshly reset system to resume from the same point.
+`save` and `load` move memory ranges. `ss` and `sl` save and restore
+the focussed CPU adapter's registers plus its fixed CPU-local memory
+snapshot span. They do not save other CPUs, audio envelopes, video
+state, timers, DMA engines, coprocessor state, or monitor
+reverse-history state. `sl` refuses a snapshot saved for another CPU
+type. For whole-machine reverse debugging, use `rg`, `rt`, `tl`, and
+`history`; that history is a retained timeline, not a permanent file
+format.
 
 ## 33.11 Symbols, addresses, maps
 
@@ -363,6 +374,7 @@ freshly reset system to resume from the same point.
 | `pg`        | `list | clear`           | List or clear page guards            |
 | `accesslog` | `on|off|show [count]`    | Control per-page access logging      |
 | `who`       | `read|wrote|fetched addr`| Report the last matching access      |
+| `trace mmio`| `region [count]`         | Show recent access events in a named region |
 
 ## 33.13 Backtrace
 
@@ -402,7 +414,7 @@ wc [a|id]   watchpoint clear         x           exit
 wl          watchpoint list          cpu n       switch CPU
 freeze *    freeze all CPUs          thaw *      thaw all
 fa / ta     freeze / thaw audio      save a b n  save range
-ss / sl n   save / load full state   load n a    load range at a
+ss / sl n   save / load CPU state    load n a    load range at a
 ```
 
 ## 33.16 What Comes Next

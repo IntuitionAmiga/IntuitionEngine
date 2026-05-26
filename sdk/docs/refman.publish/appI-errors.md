@@ -174,3 +174,5 @@ cross-CPU shapes:
   vector (M68K vector 4, x86 `INT 6`, Z80 silently re-executes
   on most undocumented prefixes, 6502 documents the undocumented
   opcodes - see Chapter 27).
+- On IE64, `MTCR` to the read-only `CR_RAM_SIZE_BYTES` control
+  register raises `FAULT_ILLEGAL_INSTRUCTION` (cause `11`).

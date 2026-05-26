@@ -318,6 +318,44 @@ Current controlled polish pass:
     evidence files merely to satisfy reader-facing wording rules.
   - If this pass changes any reader-facing source file, regenerate the
     publish tree and PDFs only after the source tree is clean.
+- Integrate the documentation-facing changes from commit `1300567`.
+  This is a focused consistency pass, not a renumbering or feature
+  expansion pass. Check `cpu_ie32.go`, `cpu_ie64.go`,
+  `debug_commands.go`, `debug_snapshot.go`, `script_engine.go`,
+  `sdk/docs/IE32_ISA.md`, `sdk/docs/IE64_ISA.md`,
+  `sdk/docs/iemon.md`, and `sdk/docs/iescript.md` before writing
+  claims. Execute this pass in this order:
+
+  1. Chapter 25: state that IE64 `TIMER_PERIOD` and `TIMER_COUNT`
+     use decoded-instruction timer-step units, not host cycles or
+     wall-clock time. State that `MTCR` to `CR_RAM_SIZE_BYTES`
+     raises `FAULT_ILLEGAL_INSTRUCTION`. State that `TLBINVAL Rs`
+     treats `Rs` as a virtual address and invalidates that address's
+     VPN. State that nested trap preservation is architectural through
+     the trap-frame stack, so a normal handler need not save
+     `CR_FAULT_PC` or `CR_SAVED_SUA` merely to survive nesting.
+  2. Chapter 26: state that IE32 `WAIT n` waits approximately `n`
+     microseconds during normal execution. Also state that IE Mon
+     single-step advances past `WAIT` without sleeping.
+  3. Chapter 31: replace IE64 cycle-timer wording with
+     decoded-instruction-step timer wording, while keeping heritage CPU
+     cycle-count prose separate from IE64 control-register timing.
+  4. Chapter 33: state that IE Mon `ss` and `sl` are CPU-local
+     snapshots, not whole-machine save states. Point whole-machine
+     reverse-history work at `rg`, `rt`, `tl`, and `history`. Add the
+     `trace mmio <region> [count]` monitor command where bus/MMIO
+     inspection is summarised.
+  5. Chapter 34: add the monitor-parity IE Script helpers for history
+     configuration, device snapshots and diffs, trace rings,
+     structured backtraces, and CPU-local state save/load. State that
+     `dbg.save_state` and `dbg.load_state` follow IE Mon `ss`/`sl`
+     scope and do not save the whole machine.
+  6. Appendices G, H, I, and L: update IE32 `WAIT`, IE64 illegal
+     instruction wording, and lookup summaries to match the chapters.
+  7. Claim ledger: record the checked canonical sources and the
+     reader-facing claims changed by this pass.
+  8. Publish and print PDFs only after the source pass and checks are
+     complete.
 
 ## Reader Contract
 

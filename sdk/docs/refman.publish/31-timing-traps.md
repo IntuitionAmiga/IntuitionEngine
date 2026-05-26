@@ -14,9 +14,11 @@ block at `$F23C0` makes all of it visible.
 
 Intuition Engine has a single master clock. Each processor draws
 from it at its own rate; instructions on the smaller CPUs cost a
-few cycles each, while IE64 retires one instruction per cycle in
-steady state. The compositor, audio mixer, and timer count cycles
-of the master clock independently of which CPU is active.
+few cycles each, while IE64 retires one instruction per decoded
+step in steady state. The compositor, audio mixer, and device timing
+paths derive their own clocks from the machine, independently of
+which CPU is active. The IE64 control-register timer in section 31.2
+counts decoded IE64 instruction steps.
 
 For BASIC programs there is no need to count cycles directly: the
 `WAIT` statement, the audio engines' own clocks, and the video
@@ -27,17 +29,18 @@ Appendix G as the Intuition Engine reference.
 
 ## 31.2 Timer
 
-IE64 has a cycle timer in its control-register bank:
+IE64 has a decoded-instruction-step timer in its control-register bank:
 
 | CR index | Name             | Purpose                            |
 |----------|------------------|------------------------------------|
-| `9`      | `TIMER_PERIOD`   | Reload value                       |
-| `10`     | `TIMER_COUNT`    | Current countdown                  |
+| `9`      | `TIMER_PERIOD`   | Reload value in timer steps        |
+| `10`     | `TIMER_COUNT`    | Current timer-step countdown       |
 | `11`     | `TIMER_CTRL`     | bit `0` enable, bit `1` IRQ enable |
 
-When `TIMER_COUNT` reaches zero, it reloads from `TIMER_PERIOD`.
-If `TIMER_CTRL` has both enable bits set, the reload raises the
-IE64 timer interrupt through `CR_INTR_VEC`.
+When the timer is enabled, `TIMER_COUNT` is decremented once before
+each decoded IE64 instruction step. When the count reaches zero, it
+reloads from `TIMER_PERIOD`. If `TIMER_CTRL` has both enable bits set,
+the reload raises the IE64 timer interrupt through `CR_INTR_VEC`.
 
 The legacy `TIMER_*` MMIO names are reserved compatibility
 symbols, not the timer interface. The `$F0800` block belongs to
@@ -89,7 +92,7 @@ There are four canonical hardware interrupt sources:
   level `5`.
 - **Audio** - raised by any audio engine that has reached the end
   of a loop or sample. Mapped to M68K level `4`.
-- **Timer** - raised when the IE64 cycle timer reloads.
+- **Timer** - raised when the IE64 timer-step counter reloads.
 
 For the heritage CPUs the system collapses these into one or two
 lines:
@@ -197,9 +200,11 @@ cooperation.
 ## 31.8 Timing on the heritage CPUs
 
 The heritage chips have published cycle counts for every
-instruction in this guide. Intuition Engine's cycle counters tick
-at one master-clock tick per CPU cycle, so an instruction listed
-as `4` cycles consumes four ticks of the timer.
+instruction in this guide. Their schedulers account for those CPU
+cycles against the shared master clock, so an instruction listed as
+`4` cycles consumes four heritage-CPU cycle units. This is separate
+from the IE64 control-register timer in section 31.2, which counts
+decoded IE64 instruction steps.
 
 The smaller CPUs run at the speed of the master clock divided by
 a per-CPU scaling factor: the 6502 and Z80 each get roughly the
@@ -209,8 +214,8 @@ period, but the master clock continues at the full IE rate so a
 that need very precise timing should use a device clock, VBlank,
 or the copper-list rather than counting instructions.
 
-IE64's cycle counter is reported in `CR10` (the timer count) and
-the CPU decrements it once per retired instruction.
+IE64's timer-step countdown is reported in `CR10` (the timer count)
+and the CPU decrements it once per decoded instruction step.
 The published latencies in Chapter 25 are minimum bounds; modern
 hardware may retire instructions faster in straight-line code.
 

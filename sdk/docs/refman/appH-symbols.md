@@ -46,7 +46,7 @@ chapter give the full story; this appendix is the cheat sheet.
 |--------------------|--------------|
 | Reset vector       | `$000000`. |
 | Stack base         | `$09F000` (`STACK_START`); grows down. |
-| Timing             | `WAIT n` for short delays; use device status or interrupts for frame and audio timing. |
+| Timing             | `WAIT n` for short microsecond delays; use device status or interrupts for frame and audio timing. |
 | Call ABI           | Arguments A,X,Y,Z; result A; B-W caller-saved; stack via PUSH / POP. |
 
 ## H.3 6502
