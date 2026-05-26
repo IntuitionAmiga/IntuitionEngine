@@ -44,7 +44,7 @@ Several address arguments support simple expressions with register names and ari
 
 Operators: `+` and `-` only. Each term is either a register name or a numeric address.
 
-Expression support is command-specific. It is available for `d`, `m`, `b`, `g`, `save`, the destination address in `load`, `u`, `ww`, `wc`, `trace watch`, `trace history`, and `e`. The low-level byte/range commands `w`, `f`, `h`, `c`, `t`, and `bc` parse literal addresses only. The IE64 assembler command `A` also parses a checked unsigned literal physical address only.
+Expression support is command-specific. It is available for `d`, `list`, `m`, `b`, `g`, `save`, the destination address in `load`, `u`, `ww`, `wc`, `sym add`, `sym resolve`, the optional base in `sym loadlbl`, `addr`, `pg add`, `who`, `trace watch`, `trace history`, and `e`. The low-level byte/range commands `w`, `f`, `h`, `c`, `t`, and `bc` parse literal addresses only. The IE64 assembler command `A` also parses a checked unsigned literal physical address only.
 
 Symbols loaded with `sym add`, `sym loadlbl`, or `sym loadelf` can be used as expression terms, for example `b main+0x10`. Symbols are scoped per CPU name.
 
@@ -56,9 +56,11 @@ Scripted equivalents: `sym.load_dwarf(path)` and `dbg.source_at(addr)`.
 
 | Command or argument group | Expression support | Literal-only parts |
 |---------------------------|--------------------|--------------------|
-| `d`, `m`, `b`, `g`, `u`, `ww`, `wc`, `trace watch`, `trace history`, `e` | Address argument accepts register, symbol, `+`, and `-` terms | Counts, widths, and non-address switches remain command-specific literals |
+| `d`, `list`, `m`, `b`, `g`, `u`, `ww`, `wc`, `addr`, `who`, `trace watch`, `trace history`, `e` | Address argument accepts register, symbol, `+`, and `-` terms | Counts, widths, and non-address switches remain command-specific literals |
 | `save <start> <end> <file>` | Start and end address operands both accept register, symbol, `+`, and `-` terms | Filename is a host path argument, not an expression |
 | `load` | Destination address accepts expressions | Filename is a host path argument, not an expression |
+| `sym add`, `sym resolve`, `sym loadlbl` | `sym add` address, `sym resolve` address, and `sym loadlbl` optional base accept register, symbol, `+`, and `-` terms | Symbol names, symbol kinds, and filenames are not expressions |
+| `pg add <start> <end> <rwx> [cpu=...]` | Start and end operands accept register, symbol, `+`, and `-` terms | Permission string and CPU scope are parsed by the page-guard grammar |
 | `w`, `f`, `h`, `c`, `t`, `bc` | None | Low-level byte/range addresses are parsed as literal addresses |
 | `A` | None | IE64 assembly address is a checked unsigned physical-address literal |
 
@@ -1178,8 +1180,10 @@ Examples:
   pg list
 ```
 
-Every user-facing command is expected to have at least one example; this is
-covered by the IEMon UX tests.
+Every command in the monitor help registry is expected to have at least one
+example; this is covered by the IEMon UX tests. Dispatch-level aliases that are
+documented separately, such as `wr` and `wrw`, are not separate help-registry
+entries.
 
 ### Command History, Aliases, Layouts, and Reports
 
