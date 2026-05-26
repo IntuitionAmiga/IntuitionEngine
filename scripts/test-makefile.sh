@@ -267,6 +267,7 @@ assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch.*m68kto64
 assert_recipe_contains x64-live-sdk-tools 'SHA256SUMS\.txt'
 assert_recipe_contains x64-live-refman-pdfs 'scripts/refman-publish\.sh --strict'
 assert_recipe_contains x64-live-refman-pdfs 'scripts/refman-pdf\.sh'
+assert_recipe_contains x64-live-sdk-companion-pdfs 'scripts/sdk-companion-pdf\.sh'
 assert_recipe_contains x64-live-sdk-companion-pdfs 'IE64_ISA\.pdf'
 assert_recipe_contains x64-live-sdk-companion-pdfs 'architecture\.pdf'
 rg -q 'local archive_docs_dir="\$\{archive_root\}/Docs"' build_x64_ie_img.sh || fail "x64 live archive does not create Docs directory"

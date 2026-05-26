@@ -414,6 +414,7 @@ x64-live-refman-pdfs:
 
 .PHONY: x64-live-sdk-companion-pdfs
 x64-live-sdk-companion-pdfs:
+	@scripts/sdk-companion-pdf.sh
 	@set -e; for pdf in $(SDK_COMPANION_PDFS); do \
 		test -s "$$pdf" || { echo "Error: missing SDK companion PDF: $$pdf"; exit 1; }; \
 	done
