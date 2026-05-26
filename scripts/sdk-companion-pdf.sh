@@ -11,6 +11,7 @@ Print the five SDK companion Markdown manuals to sdk/docs/*.pdf.
 
 Options:
   --chrome PATH   Chrome/Chromium executable to use
+  --mmdc PATH     Mermaid CLI executable to use for ```mermaid fences
   -h, --help      Show this help
 
 Requirements are the same as scripts/refman-pdf.sh.
@@ -19,12 +20,18 @@ EOF
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chrome_args=()
+mmdc_args=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --chrome)
       [[ $# -ge 2 ]] || { echo "sdk-companion-pdf: --chrome requires a path" >&2; exit 2; }
       chrome_args=(--chrome "$2")
+      shift 2
+      ;;
+    --mmdc)
+      [[ $# -ge 2 ]] || { echo "sdk-companion-pdf: --mmdc requires a path" >&2; exit 2; }
+      mmdc_args=(--mmdc "$2")
       shift 2
       ;;
     -h|--help)
@@ -75,7 +82,7 @@ for manual in "${manuals[@]}"; do
   cp -f "$md_file" "$src_dir/$manual.md"
 done
 
-"$root_dir/scripts/refman-pdf.sh" --src "$src_dir" --out "$out_dir" "${chrome_args[@]}"
+"$root_dir/scripts/refman-pdf.sh" --src "$src_dir" --out "$out_dir" "${chrome_args[@]}" "${mmdc_args[@]}"
 
 for manual in "${manuals[@]}"; do
   pdf_file="$out_dir/$manual.pdf"

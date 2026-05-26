@@ -646,3 +646,12 @@ Entry format:
   Expected result: the d transcript shows MOV AL, $01, MOV [$000F0800], AL, and JMP SHORT $0000102A.
   Author verification workflow: changed the x86 disassembler formatting, then ran the focused headless x86/disassembly test selection.
   Result: Ch 30 transcript and monitor output now agree while keeping the published manual free of C-style hex notation.
+
+- Area: Ch 33 / Ch 34 / App L, IE Mon I/O register viewer and IE Script I/O helpers.
+  Claim: IE Mon `io` lists I/O register views, `io all` prints every listed view, and `io <device>` prints register values using each register's native 1/2/4-byte width. Player and bridge/profile inspection views include `midiplay`, `mod`, `wav`, `sfx`, `paula`, `hosthelper`, `arosdos`, `clipboard`, and `boothostfs`. IE Script `dbg.io_devices()` and `dbg.io(name)` expose the same named register views and use the same native-width MMIO read path; unknown script view names return an empty table. IEMon address expressions are accepted by `list`, symbol-address forms, `addr`, `pg add`, and `who` as documented in Chapter 33.
+  Canonical sources checked: debug_ioview.go, debug_ioview_read.go, debug_commands.go, debug_monitor_test.go, script_engine.go, script_engine_test.go, sdk/docs/iemon.md, sdk/docs/iescript.md.
+  Reader workflow: enter IE Mon with `MON`, type `io` to list views, type `io midiplay` to inspect the MIDI/MUS player registers, or use IE Script `dbg.io_devices()` and `dbg.io(name)` when a repeatable script needs the same register table.
+  Runnable example: Ch 33 `io midiplay` transcript and Ch 34 `dbg.io_devices()` / `dbg.io(name)` reference.
+  Expected result: register values are displayed at their declared width, long player pointers are not reconstructed through a narrow CPU byte view, `TEMPO_BPM` appears in the MIDI/MUS player view, and script callers get one table entry per register.
+  Author verification workflow: compared the Chapter 33 view list and Chapter 34 helper wording against the monitor descriptor table, native-width read adapters, monitor command dispatch, and script binding tests.
+  Result: the reference guide now matches the monitor and script I/O inspection surfaces added by commits 50ea299 and 2558371 without turning bridge/profile views into ordinary reader programming APIs.

@@ -16,12 +16,14 @@ Options:
   --src DIR       Markdown source directory (default: sdk/docs/refman.publish)
   --out DIR       PDF output directory (default: SRC/pdf)
   --chrome PATH   Chrome/Chromium executable to use
+  --mmdc PATH     Mermaid CLI executable to use for ```mermaid fences
   --keep-html     Keep temporary rendered HTML files
   -h, --help      Show this help
 
 Requirements:
   python3 with the "markdown" module
   google-chrome, chromium, or chromium-browser
+  mmdc from @mermaid-js/mermaid-cli, or npx to run it on demand, when input contains Mermaid diagrams
 EOF
 }
 
@@ -29,6 +31,7 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 src_dir="$root_dir/sdk/docs/refman.publish"
 out_dir=""
 chrome_path="${CHROME:-}"
+mmdc_path="${MMDC:-}"
 keep_html=0
 
 while [[ $# -gt 0 ]]; do
@@ -46,6 +49,11 @@ while [[ $# -gt 0 ]]; do
     --chrome)
       [[ $# -ge 2 ]] || { echo "refman-pdf: --chrome requires a path" >&2; exit 2; }
       chrome_path="$2"
+      shift 2
+      ;;
+    --mmdc)
+      [[ $# -ge 2 ]] || { echo "refman-pdf: --mmdc requires a path" >&2; exit 2; }
+      mmdc_path="$2"
       shift 2
       ;;
     --keep-html)
@@ -102,6 +110,17 @@ if [[ -z "$chrome_path" || ! -x "$chrome_path" ]]; then
   exit 2
 fi
 
+if [[ -z "$mmdc_path" ]]; then
+  if command -v mmdc >/dev/null 2>&1; then
+    mmdc_path="$(command -v mmdc)"
+  fi
+fi
+
+if [[ -n "$mmdc_path" && ! -x "$mmdc_path" ]]; then
+  echo "refman-pdf: Mermaid CLI executable is not executable: $mmdc_path" >&2
+  exit 2
+fi
+
 mapfile -d '' md_files < <(find "$src_dir" -maxdepth 1 -type f -name '*.md' -print0 | sort -z)
 if [[ ${#md_files[@]} -eq 0 ]]; then
   echo "refman-pdf: no .md files found in $src_dir" >&2
@@ -119,6 +138,14 @@ if [[ ! -e "$src_dir/00-Preface.md" ]]; then
   echo "refman-pdf: run scripts/refman-publish.sh --strict before printing PDFs" >&2
   exit 2
 fi
+
+has_mermaid=0
+for md_file in "${md_files[@]}"; do
+  if grep -Eq '^```[[:space:]]*mermaid([[:space:]]|$)' "$md_file"; then
+    has_mermaid=1
+    break
+  fi
+done
 
 mkdir -p "$out_dir"
 
@@ -145,16 +172,39 @@ cleanup() {
 }
 trap cleanup EXIT
 
-python3 - "$src_dir" "$tmp_dir/html" <<'PY'
+if [[ "$has_mermaid" -eq 1 && -z "$mmdc_path" ]]; then
+  if ! command -v npx >/dev/null 2>&1; then
+    echo 'refman-pdf: Mermaid diagrams found, but neither "mmdc" nor "npx" was found' >&2
+    echo 'refman-pdf: install @mermaid-js/mermaid-cli, install npx, or pass --mmdc /path/to/mmdc' >&2
+    exit 2
+  fi
+  mmdc_path="$tmp_dir/mmdc-npx"
+  cat >"$mmdc_path" <<'SH'
+#!/usr/bin/env bash
+exec npx --yes @mermaid-js/mermaid-cli "$@"
+SH
+  chmod +x "$mmdc_path"
+fi
+
+python3 - "$src_dir" "$tmp_dir/html" "$mmdc_path" "$chrome_path" "$tmp_dir/mermaid-work" <<'PY'
 from pathlib import Path
 import html
+import json
+import re
+import subprocess
 import sys
 
 import markdown
 
 src_dir = Path(sys.argv[1])
 html_dir = Path(sys.argv[2])
+mmdc_path = sys.argv[3]
+chrome_path = sys.argv[4]
+mermaid_work_dir = Path(sys.argv[5])
 html_dir.mkdir(parents=True, exist_ok=True)
+asset_dir = html_dir / "assets"
+asset_dir.mkdir(parents=True, exist_ok=True)
+mermaid_work_dir.mkdir(parents=True, exist_ok=True)
 
 css = r'''
 @page { size: Letter; margin: 0.65in; }
@@ -234,11 +284,59 @@ hr {
   margin: 1em 0;
 }
 img { max-width: 100%; }
+.mermaid-diagram {
+  display: block;
+  max-width: 100%;
+  margin: 0.7em auto;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
 '''
+
+mermaid_fence = re.compile(r'^```[ \t]*mermaid[^\n]*\n(.*?)^```[ \t]*$', re.MULTILINE | re.DOTALL)
+puppeteer_config = mermaid_work_dir / "puppeteer-config.json"
+puppeteer_config.write_text(json.dumps({
+    "executablePath": chrome_path,
+    "args": ["--no-sandbox", "--disable-dev-shm-usage"],
+}) + "\n", encoding="utf-8")
+
+def render_mermaid_diagrams(md_file: Path, text: str) -> str:
+    diagram_index = 0
+
+    def replace(match) -> str:
+        nonlocal diagram_index
+        diagram_index += 1
+        source = match.group(1).strip() + "\n"
+        stem = f"{md_file.stem}-mermaid-{diagram_index:02d}"
+        input_file = mermaid_work_dir / f"{stem}.mmd"
+        output_file = asset_dir / f"{stem}.svg"
+        input_file.write_text(source, encoding="utf-8")
+        command = [
+            mmdc_path,
+            "--input", str(input_file),
+            "--output", str(output_file),
+            "--backgroundColor", "white",
+            "--puppeteerConfigFile", str(puppeteer_config),
+        ]
+        try:
+            subprocess.run(command, check=True, text=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or "").strip()
+            raise RuntimeError(f"failed to render Mermaid diagram {diagram_index} in {md_file.name}: {detail}") from exc
+        alt = html.escape(f"{md_file.stem} diagram {diagram_index}", quote=True)
+        src = html.escape(f"assets/{output_file.name}", quote=True)
+        return f'<img class="mermaid-diagram" src="{src}" alt="{alt}">'
+
+    return mermaid_fence.sub(replace, text)
 
 extensions = ["extra", "toc", "tables", "fenced_code", "sane_lists"]
 for md_file in sorted(src_dir.glob("*.md")):
     text = md_file.read_text(encoding="utf-8")
+    if mermaid_fence.search(text):
+        try:
+            text = render_mermaid_diagrams(md_file, text)
+        except RuntimeError as exc:
+            sys.exit(f"refman-pdf: {exc}")
     body = markdown.markdown(text, extensions=extensions, output_format="html5")
     title = next((line.lstrip("#").strip() for line in text.splitlines() if line.startswith("#")), md_file.stem)
     rendered = f'''<!doctype html>

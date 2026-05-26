@@ -356,6 +356,34 @@ Current controlled polish pass:
      reader-facing claims changed by this pass.
   8. Publish and print PDFs only after the source pass and checks are
      complete.
+- Integrate the documentation-facing monitor changes from commits
+  `50ea299` and `2558371`. This is a focused IE Mon and IE Script
+  pass, not a new hardware chapter and not a reader-facing host bridge
+  programming route. Check `debug_ioview.go`, `debug_ioview_read.go`,
+  `debug_commands.go`, `debug_monitor_test.go`, `script_engine.go`,
+  `script_engine_test.go`, `sdk/docs/iemon.md`, and
+  `sdk/docs/iescript.md` before writing claims. Execute this pass in
+  this order:
+
+  1. Chapter 33: update the `io` command as the I/O register viewer,
+     including `io`, `io all`, `io <device>`, native-width MMIO reads,
+     and the player, sample, DMA, and bridge/profile inspection views.
+     Update monitor address-expression wording for `list`, `sym add`,
+     `sym resolve`, `sym loadlbl`, `addr`, `pg add`, and `who`.
+  2. Chapter 34: add `dbg.io_devices()` and `dbg.io(device)` to the
+     debug module, including the empty-table behaviour for unknown
+     names and the shared native-width MMIO read path.
+  3. Appendix L: add lookup entries for the monitor `io` command, the
+     script I/O helpers, the new player/DMA/sample views, and the
+     bridge/profile inspection views exposed by IE Mon.
+  4. Do not add new reader examples to the audio/player chapters unless
+     a source claim in those chapters is now wrong. The commits expose
+     inspection surfaces; they do not change the underlying player
+     programming ABIs.
+  5. Claim ledger: record the checked canonical sources and the
+     affected reader-facing examples.
+  6. Publish and print PDFs only after the source pass and checks are
+     complete.
 
 ## Reader Contract
 

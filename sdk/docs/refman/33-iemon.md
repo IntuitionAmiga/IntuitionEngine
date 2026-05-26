@@ -3,6 +3,8 @@ title: "IE Mon - the Machine Monitor"
 sources:
   - debug_commands.go
   - debug_asm.go
+  - debug_ioview.go
+  - debug_ioview_read.go
   - internal/asm/ie64/assembler.go
 ---
 
@@ -34,6 +36,17 @@ default to hexadecimal; prefix them with `#` for decimal.
 
 The monitor's prompt is the active CPU's short name followed by a
 greater-than sign: `(ie64)> `, `(6502)> `, `(z80)> `, etc.
+
+Many address arguments accept a small expression form. The terms may
+be numbers, registers, or loaded symbols, joined with `+` or `-`.
+This applies to `d`, `list`, `m`, `b`, `g`, `u`, `ww`, `wc`,
+`addr`, `who`, `trace watch`, `trace history`, `e`, the start and
+end addresses in `save`, and the destination address in `load`.
+It also applies to `sym add`, `sym resolve`, the optional base in
+`sym loadlbl`, and the start and end addresses in `pg add`.
+The byte-range commands `w`, `f`, `h`, `c`, `t`, and `bc` take
+literal addresses. IE64 assemble mode `A` also takes a checked
+literal physical address.
 
 ## 33.2 Execution control
 
@@ -372,16 +385,73 @@ format.
 | `map`    |                          | Show the active loaded symbol map     |
 | `addr`   | `addr`                   | Resolve `addr` to a symbol if any     |
 
+`sym add name addr [kind]` records a symbol for the active CPU.
+`sym resolve addr` searches by address. `sym loadlbl name [base]`
+loads a label file and optionally relocates it by `base`. The address
+operands in these forms accept the expression syntax from section
+33.1; symbol names, kinds, and filenames are plain text arguments.
+
 ## 33.12 Bus, MMIO, page-level access
 
 | Command     | Argument(s)              | Effect                              |
 |-------------|--------------------------|-------------------------------------|
-| `io`        | `[device | addr]`        | Show MMIO region map or a specific page |
+| `io`        | `[device | all]`         | List I/O views or show register values |
 | `pg`        | `add start end mode`     | Page guard: trap on access to a range |
 | `pg`        | `list | clear`           | List or clear page guards            |
 | `accesslog` | `on|off|show [count]`    | Control per-page access logging      |
 | `who`       | `read|wrote|fetched addr`| Report the last matching access      |
 | `trace mmio`| `region [count]`         | Show recent access events in a named region |
+
+`io` is an I/O register viewer. With no argument it lists the named
+views known to the monitor. `io all` prints every listed view.
+`io name` prints the registers in one view, using the register width
+from the monitor's I/O table. A byte register is shown as two hex
+digits, a word as four, and a long as eight, followed by decimal value
+and access mode.
+
+The monitor reads these registers through the native bus width for
+the register, not through the active CPU's ordinary byte memory view.
+That matters when the focussed CPU is a 6502 or another narrow client:
+a long player pointer is still read as one long register on the shared
+bus.
+
+Useful view groups are:
+
+| Group | Views |
+|-------|-------|
+| Core machine | `video`, `terminal`, `audio`, `fileio`, `media`, `exec`, `coproc`, `sysinfo`, `irqdiag` |
+| Video cards | `vga`, `ted`, `antic`, `gtia`, `ula`, `voodoo`, `voodoo_depth` |
+| Sound chips and players | `ahx`, `midiplay`, `mod`, `wav`, `sn76489`, `psg`, `pokey`, `sid`, `sid2`, `sid3`, `sfx`, `paula` |
+| Bridge/profile inspection | `arosdos`, `clipboard`, and other service bridge views shown by `io` |
+
+The player views mirror their MMIO control blocks. `midiplay` shows
+the MIDI/MUS player registers, including `TEMPO_BPM`. `mod` and `wav`
+show the MOD and WAV player blocks. `sfx` shows the trigger-channel
+sample registers. `psg`, `sid`, `ted`, and `pokey` are combined
+chip/player views, so their playback registers appear beside their
+chip registers.
+
+Bridge/profile views are inspection aids for machine services that may
+be idle or unavailable in a particular running profile. Use the BASIC
+keywords and main chapters for ordinary file, `HOST`, and coprocessor
+work; use `io` when you need to see the register state.
+
+```text
+(ie64)> io midiplay
+--- MIDI/MUS Player Registers ---
+  PLAY_PTR             ($F0BA0) = $00000000 [0] RW
+  PLAY_LEN             ($F0BA4) = $00000000 [0] RW
+  PLAY_CTRL            ($F0BA8) = $00000000 [0] RW
+  PLAY_STATUS          ($F0BAC) = $00000000 [0] RO
+  POSITION             ($F0BB0) = $00000000 [0] RO
+  VOLUME               ($F0BB4) = $000000FF [255] RW
+  TEMPO_BPM            ($F0BB8) = $00000000 [0] RO
+```
+
+The exact values depend on what the player is doing. The important
+point is that the monitor shows each register at its natural width,
+so this view is a safe way to inspect mixed byte, word, and long
+MMIO blocks.
 
 ## 33.13 Backtrace
 

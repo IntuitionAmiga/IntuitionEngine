@@ -2,6 +2,8 @@
 title: "Index"
 sources:
   - sdk/docs/refman/00-Preface.md
+  - sdk/docs/refman/33-iemon.md
+  - sdk/docs/refman/34-ie-script.md
   - sdk/docs/refman/appD-mmio-maps.md
   - sdk/docs/refman/appJ-memory-map.md
 ---
@@ -21,6 +23,7 @@ symbols, and Appendix J gives the full memory map.
 | AHX | Chapter 18, Appendix D |
 | Alpha blending | Chapter 4, Chapter 9 |
 | ANTIC | Chapter 7, Chapter 28, Appendix D, Appendix H |
+| arosdos monitor view | Chapter 33 |
 | ASCII | Appendix C |
 | Assemble mode | Chapter 25, Chapter 33, Appendix G |
 | AUDCTL | Chapter 17, Chapter 27, Appendix D |
@@ -40,6 +43,7 @@ symbols, and Appendix J gives the full memory map.
 | BLT_OP_MEMCOPY | Chapter 4, Appendix D |
 | BLT_STATUS | Chapter 4, Appendix D |
 | Block diagrams | Appendix K |
+| Bridge/profile inspection views | Chapter 33 |
 | Bus model | Preface, Chapter 24, Appendix K |
 
 ## C
@@ -48,6 +52,7 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | CLUT8 | Chapter 4 |
 | CMOVcc | Chapter 30, Appendix G |
+| Clipboard bridge monitor view | Chapter 33 |
 | Compositor | Chapter 3, Appendix K |
 | Copper | Chapter 4 |
 | Coprocessor | Chapter 32, Chapter 39, Appendix I |
@@ -62,6 +67,8 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | DEF / TROFF token collision | Chapter 2, Appendix A |
 | dbg.history_horizon | Chapter 34 |
+| dbg.io | Chapter 34 |
+| dbg.io_devices | Chapter 34 |
 | dbg.save_state | Chapter 34 |
 | dbg.tracering_show | Chapter 34 |
 | Disk I/O | Chapter 35 |
@@ -108,8 +115,10 @@ symbols, and Appendix J gives the full memory map.
 | IE32 | Chapter 26, Chapter 31, Appendix G, Appendix H |
 | IE64 | Chapter 25, Chapter 31, Appendix G, Appendix H |
 | IE64 monitor assembler | Chapter 25, Chapter 33, Appendix G |
+| I/O register viewer | Chapter 33, Chapter 34 |
 | Index | Appendix L |
 | Input MMIO | Chapter 37, Appendix D |
+| io command | Chapter 33 |
 
 ## M
 
@@ -122,6 +131,7 @@ symbols, and Appendix J gives the full memory map.
 | MEDIA_TYPE_MIDI | Chapter 21, Chapter 23, Appendix D |
 | Memory map | Chapter 24, Appendix J |
 | MIDI/MUS | Chapter 21, Chapter 23, Appendix D |
+| MIDI/MUS player view | Chapter 33, Chapter 34 |
 | MIDI_PLAY_CTRL | Chapter 21, Appendix D |
 | MIDI_PLAY_STATUS | Chapter 21, Appendix D |
 | MIDI_STATUS_LOADING | Chapter 21, Appendix D |
@@ -137,6 +147,7 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | Palette | Chapter 3, Chapter 4 |
 | Paula DMA | Chapter 22, Appendix D |
+| Paula DMA monitor view | Chapter 33 |
 | PEEK and POKE | Chapter 1, Chapter 24 |
 | POKEY | Chapter 17, Chapter 27, Appendix D |
 | PSG | Chapter 13, Chapter 28, Appendix D |
@@ -160,6 +171,7 @@ symbols, and Appendix J gives the full memory map.
 | Screen codes | Appendix B |
 | Serial devices | Chapter 38 |
 | SFX | Chapter 11, Chapter 12, Appendix D |
+| SFX Trigger monitor view | Chapter 33 |
 | SID | Chapter 15, Chapter 29, Appendix D |
 | SID2 | Chapter 15, Appendix D, Appendix J |
 | SID3 | Chapter 15, Appendix D, Appendix J |

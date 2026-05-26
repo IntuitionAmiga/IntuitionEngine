@@ -3,6 +3,8 @@ title: "IE Script - Scripted Control and Live Debugging"
 sources:
   - script_engine.go
   - feature_scripting.go
+  - debug_ioview.go
+  - debug_ioview_read.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
@@ -214,6 +216,7 @@ inspection:
 | `dbg.backtrace()` | Return a stack backtrace. |
 | `dbg.backtrace_frames(depth)` | Return structured backtrace frames. |
 | `dbg.timeline(count)` | Return recent timeline entries. |
+| `dbg.io_devices()`, `dbg.io(name)` | Inspect IE Mon I/O register views. |
 | `dbg.history_horizon()`, `dbg.history_config(opts)` | Inspect or configure whole-machine reverse-history retention. |
 | `dbg.tracering_on(size)`, `dbg.tracering_off()`, `dbg.tracering_show(count)` | Control the focussed CPU trace ring. |
 | `dbg.device_list()`, `dbg.device_snapshot(name)`, `dbg.device_diff(a,b)` | Inspect versioned device snapshots. |
@@ -226,7 +229,16 @@ Fault callbacks receive a table with `cpu_id`, `pc`, `addr`,
 `kind`, and `info` fields.
 
 The debug module mirrors the monitor where scripts need repeatable
-inspection. Trace-ring helpers return structured recent-instruction
+inspection. `dbg.io_devices()` returns the monitor's named I/O register
+views, and `dbg.io(name)` returns one table entry per register with
+`name`, `addr`, `value`, and `access` fields. The values use the same
+native-width MMIO read path as IE Mon `io`, so a script inspecting a
+long register gets a long register value even when the focussed CPU is a
+narrow bus client. An unknown view name returns an empty table rather
+than raising an error; check `dbg.io_devices()` before relying on a
+view name.
+
+Trace-ring helpers return structured recent-instruction
 entries, `dbg.backtrace_frames()` returns one table per call frame, and
 the history helpers report or configure the whole-machine reverse
 timeline used by IE Mon `rg` and `rt`. Device helpers snapshot
