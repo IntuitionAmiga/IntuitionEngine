@@ -1,0 +1,214 @@
+-- Shared IEDoom oracle diagnostic for IE68 and IE86 runs.
+--
+-- Set IEDOOM_ELF to the linked iedoom.elf for the image under test. When the
+-- variable is unset, the script also probes the usual adjacent build path.
+
+local out_root = "iedoom_diag"
+local mode = cpu.mode()
+local tag = mode .. "_" .. cpu.execution_mode() .. "_oracle"
+local waits = { 1000, 3000, 10000, 20000, 40000 }
+
+local VIDEO_CTRL = 0x000F0000
+local VIDEO_MODE = 0x000F0004
+local VIDEO_COLOR_MODE = 0x000F0080
+local VIDEO_FB_BASE = 0x000F0084
+local MIDI_CTRL = 0x000F0BAC
+local MIDI_POS = 0x000F0BB0
+
+local function join_lines(lines)
+    local out = {}
+    for i = 1, #lines do
+        out[#out + 1] = lines[i].text
+    end
+    return table.concat(out, "\n")
+end
+
+local function mon(cmd)
+    local ok, result = pcall(function()
+        return dbg.command_output(cmd)
+    end)
+    if not ok then
+        return "ERROR running `" .. cmd .. "`: " .. tostring(result)
+    end
+    return join_lines(result)
+end
+
+local function hex(v)
+    return string.format("0x%X", v or 0)
+end
+
+local function read_bytes(addr, n)
+    if addr == nil or addr == 0 then
+        return nil
+    end
+    local ok, data = pcall(function()
+        return dbg.read_mem(addr, n)
+    end)
+    if not ok then
+        return nil
+    end
+    return data
+end
+
+local function read_u32(addr)
+    local data = read_bytes(addr, 4)
+    if data == nil or #data < 4 then
+        return 0
+    end
+    local b0 = string.byte(data, 1)
+    local b1 = string.byte(data, 2)
+    local b2 = string.byte(data, 3)
+    local b3 = string.byte(data, 4)
+    if mode == "m68k" then
+        return b0 * 0x1000000 + b1 * 0x10000 + b2 * 0x100 + b3
+    end
+    return b0 + b1 * 0x100 + b2 * 0x10000 + b3 * 0x1000000
+end
+
+local function summarize_bytes(data)
+    if data == nil then
+        return "unreadable"
+    end
+    local nonzero = 0
+    local hash = 2166136261
+    for i = 1, #data do
+        local b = string.byte(data, i)
+        if b ~= 0 then
+            nonzero = nonzero + 1
+        end
+        hash = bit32.band((bit32.bxor(hash, b) * 16777619), 0xFFFFFFFF)
+    end
+    return string.format("len=%d nonzero=%d fnv1a=0x%08X", #data, nonzero, hash)
+end
+
+local function lookup_any(names)
+    for i = 1, #names do
+        local addr = sym.lookup(names[i])
+        if addr ~= nil then
+            return addr, names[i]
+        end
+    end
+    return nil, names[1]
+end
+
+local function load_symbols()
+    local candidates = {}
+    local env = os.getenv("IEDOOM_ELF")
+    if env ~= nil and env ~= "" then
+        candidates[#candidates + 1] = env
+    end
+    candidates[#candidates + 1] = "../chocolate-doom/build/iedoom.elf"
+    candidates[#candidates + 1] = "chocolate-doom/build/iedoom.elf"
+
+    for i = 1, #candidates do
+        local ok = pcall(function()
+            sym.load_elf(candidates[i])
+        end)
+        if ok then
+            return candidates[i]
+        end
+    end
+    return ""
+end
+
+local function reg_any(names)
+    for i = 1, #names do
+        local v = dbg.get_reg(names[i])
+        if v ~= nil then
+            return v, names[i]
+        end
+    end
+    return 0, names[1]
+end
+
+local symbols_loaded = load_symbols()
+local SYM = {}
+SYM.gamestate = lookup_any({ "gamestate" })
+SYM.ticcount = lookup_any({ "ticcount", "gametic" })
+SYM.playeringame = lookup_any({ "playeringame" })
+SYM.I_VideoBuffer = lookup_any({ "I_VideoBuffer" })
+SYM.dest_screen = lookup_any({ "dest_screen" })
+
+local milestones = {
+    { "D_DoomLoop", lookup_any({ "D_DoomLoop" }), 30000 },
+    { "NetUpdate", lookup_any({ "NetUpdate" }), 30000 },
+    { "BuildNewTic", lookup_any({ "BuildNewTic" }), 30000 },
+}
+
+local function state(label, elapsed_ms)
+    local sp, sp_name = reg_any({ "ESP", "A7", "SP" })
+    local fp, fp_name = reg_any({ "EBP", "A6", "FP" })
+    local fb = video.read_reg(VIDEO_FB_BASE)
+    local i_video_buffer = read_u32(SYM.I_VideoBuffer)
+    local dest_screen = read_u32(SYM.dest_screen)
+
+    local lines = {}
+    lines[#lines + 1] = "[" .. label .. "]"
+    lines[#lines + 1] = string.format("mode=%s execution_mode=%s elapsed_ms=%d", mode, cpu.execution_mode(), elapsed_ms or 0)
+    lines[#lines + 1] = string.format("pc=%s %s=%s %s=%s", hex(dbg.get_pc() or 0), sp_name, hex(sp), fp_name, hex(fp))
+    lines[#lines + 1] = string.format("gamestate=%s ticcount=%s playeringame0=%s",
+        hex(read_u32(SYM.gamestate)),
+        hex(read_u32(SYM.ticcount)),
+        hex(read_u32(SYM.playeringame)))
+    lines[#lines + 1] = string.format("I_VideoBuffer=%s dest_screen=%s VIDEO_FB_BASE=%s",
+        hex(i_video_buffer), hex(dest_screen), hex(fb))
+    lines[#lines + 1] = string.format("video ctrl=%s mode=%s color_mode=%s frame_hash=%s",
+        hex(video.read_reg(VIDEO_CTRL)),
+        hex(video.read_reg(VIDEO_MODE)),
+        hex(video.read_reg(VIDEO_COLOR_MODE)),
+        tostring(video.frame_hash()))
+    lines[#lines + 1] = string.format("midi_playing=%s midi_ctrl=%s midi_pos=%s",
+        tostring(audio.midi_is_playing()),
+        hex(video.read_reg(MIDI_CTRL)),
+        hex(video.read_reg(MIDI_POS)))
+    lines[#lines + 1] = "fb_summary=" .. summarize_bytes(read_bytes(fb, 320 * 200))
+    lines[#lines + 1] = "I_VideoBuffer_summary=" .. summarize_bytes(read_bytes(i_video_buffer, 320 * 200))
+    lines[#lines + 1] = "dest_screen_summary=" .. summarize_bytes(read_bytes(dest_screen, 320 * 200))
+    lines[#lines + 1] = "\n[registers]\n" .. mon("r")
+    lines[#lines + 1] = "\n[backtrace]\n" .. mon("bt 12")
+    return table.concat(lines, "\n")
+end
+
+sys.mkdir(out_root)
+sys.mkdir(out_root .. "/" .. tag)
+dbg.open()
+
+local report = {
+    "IEDoom shared oracle diagnostic",
+    "symbols=" .. symbols_loaded,
+}
+
+local elapsed = 0
+for i = 1, #waits do
+    local delta = waits[i] - elapsed
+    if delta > 0 then
+        dbg.close()
+        sys.wait_ms(delta)
+        elapsed = waits[i]
+        dbg.open()
+    end
+    report[#report + 1] = state("sample_" .. tostring(elapsed) .. "ms", elapsed)
+    pcall(function()
+        rec.screenshot(string.format("%s/%s/frame_%05dms.png", out_root, tag, elapsed))
+    end)
+end
+
+for i = 1, #milestones do
+    local item = milestones[i]
+    local addr = item[2]
+    if addr ~= nil and addr ~= 0 then
+        dbg.set_bp(addr)
+        dbg.continue(true)
+        sys.wait_ms(item[3])
+        report[#report + 1] = state("milestone_" .. item[1], elapsed)
+        dbg.clear_bp(addr)
+    else
+        report[#report + 1] = "missing milestone symbol " .. item[1]
+    end
+end
+
+pcall(function()
+    rec.screenshot(out_root .. "/" .. tag .. "/final.png")
+end)
+sys.write_file(out_root .. "/" .. tag .. "/oracle.txt", table.concat(report, "\n\n"))
+sys.exit(0)

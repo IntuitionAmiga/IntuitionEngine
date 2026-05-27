@@ -380,6 +380,9 @@ func (e *ProgramExecutor) launchProgram(fullPath string, data []byte, typ uint32
 
 func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 	e.stopRunningCPUs()
+	if e.bus != nil {
+		e.bus.UnsealMappings()
+	}
 	if e.emuTOSLoader != nil {
 		e.emuTOSLoader.Stop()
 		e.emuTOSLoader = nil
@@ -389,7 +392,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 	switch typ {
 	case EXEC_TYPE_IE32:
 		if e.videoChip != nil {
-			e.videoChip.SetBigEndianMode(false)
+			restoreLegacyVideoConfig(e.bus, e.videoChip)
 		}
 		cpu := NewCPU(e.bus)
 		mem := e.bus.GetMemory()
@@ -402,7 +405,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		copy(mem[PROG_START:], data)
 		cpu.PC = PROG_START
 		runtimeStatus.setCPUs(runtimeCPUIE32, cpu, nil, nil, nil, nil, nil)
-		go cpu.Execute()
+		cpu.StartExecution()
 		return nil
 
 	case EXEC_TYPE_IE64:
@@ -413,12 +416,12 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		cpu.jitEnabled = jitAvailable
 		cpu.LoadProgramBytes(data)
 		runtimeStatus.setCPUs(runtimeCPUIE64, nil, cpu, nil, nil, nil, nil)
-		go cpu.jitExecute()
+		cpu.StartExecution()
 		return nil
 
 	case EXEC_TYPE_6502:
 		if e.videoChip != nil {
-			e.videoChip.SetBigEndianMode(false)
+			restoreLegacyVideoConfig(e.bus, e.videoChip)
 		}
 		runner := NewCPU6502Runner(e.bus, CPU6502Config{
 			LoadAddr:     0x0800,
@@ -443,23 +446,23 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		runner.cpu.Reset()
 		runner.cpu.SetRDYLine(true)
 		runtimeStatus.setCPUs(runtimeCPU6502, nil, nil, nil, nil, nil, runner)
-		go runner.Execute()
+		runner.StartExecution()
 		return nil
 
 	case EXEC_TYPE_M68K:
 		if e.videoChip != nil {
-			e.videoChip.SetBigEndianMode(true)
+			applyM68KFlatProgramVideoConfig(e.bus, e.videoChip)
 		}
 		cpu := NewM68KCPU(e.bus)
 		cpu.LoadProgramBytes(data)
 		runner := NewM68KRunner(cpu)
 		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, runner, nil, nil, nil)
-		go runner.Execute()
+		runner.StartExecution()
 		return nil
 
 	case EXEC_TYPE_Z80:
 		if e.videoChip != nil {
-			e.videoChip.SetBigEndianMode(false)
+			restoreLegacyVideoConfig(e.bus, e.videoChip)
 		}
 		runner := NewCPUZ80Runner(e.bus, CPUZ80Config{
 			LoadAddr:     0,
@@ -479,12 +482,12 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		runner.cpu.Reset()
 		runner.cpu.PC = 0
 		runtimeStatus.setCPUs(runtimeCPUZ80, nil, nil, nil, runner, nil, nil)
-		go runner.Execute()
+		runner.StartExecution()
 		return nil
 
 	case EXEC_TYPE_X86:
 		if e.videoChip != nil {
-			e.videoChip.SetBigEndianMode(false)
+			applyX86FlatProgramVideoConfig(e.bus, e.videoChip)
 		}
 		runner := NewCPUX86Runner(e.bus, &CPUX86Config{
 			LoadAddr:     0,
@@ -497,7 +500,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 			return err
 		}
 		runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, runner, nil)
-		go runner.Execute()
+		runner.StartExecution()
 		return nil
 
 	case EXEC_TYPE_EMUTOS:
@@ -519,7 +522,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 
 		runner := NewM68KRunner(cpu)
 		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, runner, nil, nil, nil)
-		go runner.Execute()
+		runner.StartExecution()
 		return nil
 	}
 

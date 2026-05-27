@@ -58,6 +58,13 @@ SDK_COMPANION_PDFS=(
 )
 AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS/bin/ie-m68k/bin/ie-m68k/AROS}"
 AB3D2_EMBED_DIR="${SCRIPT_DIR}/embedded/ab3d2"
+CHOCOLATE_DOOM_DIR="${CHOCOLATE_DOOM_DIR:-${SCRIPT_DIR}/../chocolate-doom}"
+IEDOOM_IE86="${IEDOOM_IE86:-build/iedoom.ie86}"
+IEDOOM_IE68="${IEDOOM_IE68:-build/iedoom.ie68}"
+IEDOOM_WAD="${IEDOOM_WAD:-DOOM1.WAD}"
+IEDOOM_IE86_PATH="${CHOCOLATE_DOOM_DIR}/${IEDOOM_IE86}"
+IEDOOM_IE68_PATH="${CHOCOLATE_DOOM_DIR}/${IEDOOM_IE68}"
+IEDOOM_WAD_PATH="${CHOCOLATE_DOOM_DIR}/${IEDOOM_WAD}"
 C64_MUSIC_SOURCE="${C64_MUSIC_SOURCE:-${HOME}/Music/C64Music}"
 PROJECTAY_MUSIC_SOURCE="${PROJECTAY_MUSIC_SOURCE:-${HOME}/Music/ProjectAY}"
 FINAL_IMAGE_SIZE="10G"
@@ -283,6 +290,9 @@ check_live_payload_inputs() {
     payload_require_file "${SCRIPT_DIR}/sdk/examples/c/RotoHWc" "make x64-live-aros-demos" "AROS RotoHWc demo"
     payload_require_file "${SCRIPT_DIR}/sdk/examples/assets/rotozoomtexture_api_c.raw" "make rotozoom-textures" "AROS API C rotozoomer texture"
     payload_require_file "${SCRIPT_DIR}/sdk/examples/assets/rotozoomtexture_hw_c.raw" "make rotozoom-textures" "AROS HW C rotozoomer texture"
+    payload_require_file "${IEDOOM_IE86_PATH}" "make iedoom-ie86" "IEDoom x86 guest image"
+    payload_require_file "${IEDOOM_IE68_PATH}" "make iedoom-ie68" "IEDoom M68K guest image"
+    payload_require_file "${IEDOOM_WAD_PATH}" "copy DOOM1.WAD into CHOCOLATE_DOOM_DIR" "IEDoom shareware WAD"
 
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/prebuilt/*.ie*" "make sdk-build" "prebuilt Intuition Engine binaries"
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/prebuilt/coproc_*.ie*" "make sdk-build" "coprocessor support worker binaries"
@@ -390,6 +400,9 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/LIBS/dos.library" "make intuitionos" "staged IntuitionOS dos.library"
     payload_require_file "${payload_root}/Systems/IntuitionOS/IOSSYS/L/console.handler" "make intuitionos" "staged IntuitionOS console.handler"
     payload_require_file "${payload_root}/Demos/m68k/ab3d2_ie68_redux_high.ie68" "make x64-live-ab3d2-assets" "staged AB3D2 IE68 demo"
+    payload_require_file "${payload_root}/Demos/m68k/iedoom.ie68" "make iedoom-ie68" "staged IEDoom M68K guest image"
+    payload_require_file "${payload_root}/Demos/x86/iedoom.ie86" "make iedoom-ie86" "staged IEDoom x86 guest image"
+    payload_require_file "${payload_root}/doom1.wad" "copy DOOM1.WAD into CHOCOLATE_DOOM_DIR" "staged IEDoom shareware WAD"
     payload_require_file "${payload_root}/_build/ie_media/redux-high/boot.dat" "make x64-live-ab3d2-assets" "staged AB3D2 runtime media"
     if find "${payload_root}/Demos/m68k" -maxdepth 1 -type f -name 'ab3d2_*.ie68' ! -name '*redux_high*' ! -name '*redux_low*' | grep -q .; then
         payload_require_file "${payload_root}/_build/ie_unpacked/media/includes/test.lnk" "make x64-live-ab3d2-assets" "staged AB3D2 unpacked media"
@@ -639,6 +652,9 @@ PY
     if [[ ${#iewarp_worker_files[@]} -gt 0 ]]; then
         cp -f "${iewarp_worker_files[@]}" "$aros_system_dir/Libs/"
     fi
+    cp -f "${IEDOOM_IE86_PATH}" "$demos_x86_dir/iedoom.ie86"
+    cp -f "${IEDOOM_IE68_PATH}" "$demos_m68k_dir/iedoom.ie68"
+    cp -f "${IEDOOM_WAD_PATH}" "$payload_root/doom1.wad"
     python3 - "${AB3D2_EMBED_DIR}/_build.zip" "${AB3D2_EMBED_DIR}" "$demos_m68k_dir" <<'PY'
 import os
 import shutil

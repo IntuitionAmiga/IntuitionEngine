@@ -1003,6 +1003,31 @@ func TestX86_DIV(t *testing.T) {
 	}
 }
 
+func TestX86_SHRD_EAX_EDX_One(t *testing.T) {
+	bus := NewTestX86Bus()
+	cpu := NewCPU_X86(bus)
+
+	cpu.EAX = 33
+	cpu.EDX = 0
+	// SHRD EAX, EDX, 1
+	bus.memory[0] = 0x0F
+	bus.memory[1] = 0xAC
+	bus.memory[2] = 0xD0
+	bus.memory[3] = 0x01
+	cpu.EIP = 0
+
+	cpu.Step()
+	if cpu.EAX != 16 {
+		t.Fatalf("SHRD EAX,EDX,1 EAX = %d, want 16", cpu.EAX)
+	}
+	if !cpu.CF() {
+		t.Fatalf("SHRD EAX,EDX,1 CF = false, want true")
+	}
+	if cpu.EIP != 4 {
+		t.Fatalf("EIP = %d, want 4", cpu.EIP)
+	}
+}
+
 // =============================================================================
 // Flag Instruction Tests
 // =============================================================================

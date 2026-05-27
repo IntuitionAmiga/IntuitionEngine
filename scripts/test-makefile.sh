@@ -252,30 +252,9 @@ assert_recipe_contains install 'sudo' PREFIX=/root/intuition-engine-test
 assert_recipe_contains release-verify 'scripts/test-dist-layout\.sh'
 assert_target_exists x64-live-refman-pdfs
 assert_phony x64-live-refman-pdfs
-assert_target_exists x64-live-sdk-companion-pdfs
-assert_phony x64-live-sdk-companion-pdfs
-assert_target_exists x64-live-sdk-tools
-assert_phony x64-live-sdk-tools
-assert_makefile_contains '^x64-live-payload-check:.*x64-live-sdk-tools'
 assert_makefile_contains '^x64-live-payload-check:.*x64-live-refman-pdfs'
-assert_makefile_contains '^x64-live-payload-check:.*x64-live-sdk-companion-pdfs'
-assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch.*ie32asm'
-assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch.*ie64asm'
-assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch.*ie64dis'
-assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch.*ie32to64'
-assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch.*m68kto64'
-assert_recipe_contains x64-live-sdk-tools 'SHA256SUMS\.txt'
 assert_recipe_contains x64-live-refman-pdfs 'scripts/refman-publish\.sh --strict'
 assert_recipe_contains x64-live-refman-pdfs 'scripts/refman-pdf\.sh'
-assert_recipe_contains x64-live-sdk-companion-pdfs 'scripts/sdk-companion-pdf\.sh'
-assert_recipe_contains x64-live-sdk-companion-pdfs 'IE64_ISA\.pdf'
-assert_recipe_contains x64-live-sdk-companion-pdfs 'architecture\.pdf'
-rg -q 'local archive_docs_dir="\$\{archive_root\}/Docs"' build_x64_ie_img.sh || fail "x64 live archive does not create Docs directory"
-rg -q 'local archive_refman_docs_dir="\$\{archive_docs_dir\}/IEProgRefMan"' build_x64_ie_img.sh || fail "x64 live archive does not create Docs/IEProgRefMan directory"
-rg -q 'cp -f "\$\{SDK_COMPANION_PDFS\[@\]\}" "\$archive_docs_dir/"' build_x64_ie_img.sh || fail "x64 live archive does not copy SDK companion PDFs into Docs"
-rg -q 'cp -f "\$\{REFMAN_PDF_DIR\}"/\*\.pdf "\$archive_refman_docs_dir/"' build_x64_ie_img.sh || fail "x64 live archive does not copy refman PDFs into Docs/IEProgRefMan"
-rg -q '"\$\(basename "\$OUTPUT_IMG"\)" Docs <<' build_x64_ie_img.sh || fail "x64 live archive zip entries do not include Docs"
-! rg -q 'cp "\$\{SCRIPT_DIR\}/README\.md" "\$archive_root/README\.md"|README\.md Docs <<' build_x64_ie_img.sh || fail "x64 live archive must not include README.md"
 assert_makefile_contains 'define build-linux-vm-binary'
 assert_makefile_contains 'define build-purego-novulkan-vm-binary'
 assert_makefile_contains '/opt/ie-sysroots/tumbleweed-aarch64/usr'

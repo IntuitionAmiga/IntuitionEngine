@@ -95,6 +95,7 @@ func TestScriptEngine_ShowreelDiagnosisScriptsParse(t *testing.T) {
 		filepath.Join("sdk", "scripts", "diag_voodoo_3dfx_logo_68k.ies"),
 		filepath.Join("sdk", "scripts", "diag_emutos_rotozoomer_gem.ies"),
 		filepath.Join("sdk", "scripts", "diag_iedoom_x86_jit.ies"),
+		filepath.Join("sdk", "scripts", "diag_iedoom_oracle.ies"),
 		filepath.Join("scripts", "diag_tracering.ies"),
 		filepath.Join("scripts", "diag_source_step.ies"),
 		filepath.Join("scripts", "diag_history_horizon.ies"),
@@ -139,6 +140,35 @@ func TestIEDoomDiagnosticScriptCapturesDynamicLaunchEvidence(t *testing.T) {
 	}
 	if strings.Contains(text, "m 0x107680") {
 		t.Fatal("IEDoom diagnostic script must not use a hard-coded framebuffer dump address")
+	}
+}
+
+func TestIEDoomOracleDiagnosticScriptIsSharedAcrossIE68AndIE86(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("sdk", "scripts", "diag_iedoom_oracle.ies"))
+	if err != nil {
+		t.Fatalf("read IEDoom oracle diagnostic script: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"mode = cpu.mode()",
+		"cpu.execution_mode()",
+		"sym.load_elf",
+		"gamestate",
+		"ticcount",
+		"playeringame",
+		"I_VideoBuffer",
+		"dest_screen",
+		"VIDEO_FB_BASE",
+		"audio.midi_is_playing()",
+		"summarize_bytes(read_bytes(fb, 320 * 200))",
+		"rec.screenshot(out_root .. \"/\" .. tag .. \"/final.png\")",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("IEDoom oracle diagnostic script missing %q", want)
+		}
+	}
+	if strings.Contains(text, "0x00107680") {
+		t.Fatal("IEDoom oracle diagnostic script must not use x86-only hard-coded framebuffer addresses")
 	}
 }
 
