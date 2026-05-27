@@ -75,6 +75,12 @@ AROS_DEVELOPER_DIR ?= $(AROS_BUILD_DIR)/bin/ie-m68k/AROS/Developer
 AROS_ARCH_INCLUDE ?= $(AROS_SRC_DIR)/arch/m68k-ie/include
 AROS_CC ?= $(firstword $(wildcard $(AROS_BUILD_DIR)/bin/*/tools/crosstools/m68k-aros-gcc))
 
+# IEDoom guest image build configuration
+CHOCOLATE_DOOM_DIR ?= ../chocolate-doom
+IEDOOM_IE86 ?= build/iedoom.ie86
+IEDOOM_IE68 ?= build/iedoom.ie68
+IEDOOM_WAD ?= DOOM1.WAD
+
 # Detect number of CPU cores for parallel compilation
 NCORES := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
@@ -298,11 +304,11 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-refman-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
-.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets aros-iewarp-library iewarp-runtime-assets emutos-probe emutos-release-rom basic basic-emutos cputest-musashi
+.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets aros-iewarp-library iewarp-runtime-assets emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos cputest-musashi
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 m68kto64 ie64dis
@@ -359,11 +365,11 @@ x64-live-embed-assets: sdk-build emutos-release-rom iewarp-runtime-assets intuit
 .PHONY: x64-live
 x64-live: x86-64-v3 x64-live-demos
 	@echo "Building IE x64 live USB image..."
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" ./build_x64_ie_img.sh
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh
 
 .PHONY: x64-live-rebuild-golden
 x64-live-rebuild-golden: x86-64-v3 x64-live-demos
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" ./build_x64_ie_img.sh --rebuild-golden
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --rebuild-golden
 
 .PHONY: x64-live-demos
 x64-live-demos: x64-live-payload-check
@@ -371,8 +377,37 @@ x64-live-demos: x64-live-payload-check
 	@echo "x64 live demo payload inputs are ready."
 
 .PHONY: x64-live-payload-check
-x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs intuitionos
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" ./build_x64_ie_img.sh --check-payload
+x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs x64-live-sdk-tools intuitionos iedoom
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --check-payload
+
+.PHONY: x64-live-sdk-tools
+x64-live-sdk-tools:
+	@echo "Building live SDK host tools..."
+	@rm -rf "$(X64_LIVE_DIR)/sdk-tools"
+	@$(MKDIR) -p "$(X64_LIVE_DIR)/sdk-tools"
+	@set -e; \
+	old_ifs="$$IFS"; \
+	for spec in \
+		linux:amd64:linux-x64: \
+		linux:arm64:linux-arm64: \
+		darwin:amd64:macos-x64: \
+		darwin:arm64:macos-arm64: \
+		windows:amd64:windows-x64:.exe \
+		windows:arm64:windows-arm64:.exe; do \
+		IFS=:; set -- $$spec; IFS="$$old_ifs"; \
+		goos="$$1"; goarch="$$2"; platform="$$3"; ext="$${4:-}"; \
+		outdir="$(X64_LIVE_DIR)/sdk-tools/$$platform"; \
+		echo "== SDK tools $$goos/$$goarch =="; \
+		$(MKDIR) -p "$$outdir"; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o "$$outdir/ie32asm$$ext" assembler/ie32asm.go; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o "$$outdir/ie64asm$$ext" assembler/ie64asm.go; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64dis -o "$$outdir/ie64dis$$ext" assembler/ie64dis.go; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o "$$outdir/ie32to64$$ext" ./cmd/ie32to64/; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o "$$outdir/m68kto64$$ext" ./cmd/m68kto64/; \
+	done
+	@set -e; \
+	cd "$(X64_LIVE_DIR)/sdk-tools"; \
+	find . -type f ! -name SHA256SUMS.txt -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS.txt
 
 .PHONY: x64-live-refman-pdfs
 x64-live-refman-pdfs:
@@ -439,6 +474,27 @@ x64-live-aros-demos: aros-release-assets rotozoom-textures
 	  -o sdk/examples/c/RotoHWc \
 	  sdk/examples/c/rotozoomer_aros_hw.c -lamiga -larossupport
 	@echo "AROS rotozoomer demos built: sdk/examples/asm/RotoAPI sdk/examples/asm/RotoHW sdk/examples/c/RotoAPIc sdk/examples/c/RotoHWc"
+
+iedoom: iedoom-ie86 iedoom-ie68
+	@echo "IEDoom guest images are ready: $(CHOCOLATE_DOOM_DIR)/$(IEDOOM_IE86) $(CHOCOLATE_DOOM_DIR)/$(IEDOOM_IE68)"
+
+iedoom-ie86:
+	@if [ ! -f "$(CHOCOLATE_DOOM_DIR)/src/iedoom_build.sh" ]; then \
+		echo "Error: missing IEDoom x86 builder: $(CHOCOLATE_DOOM_DIR)/src/iedoom_build.sh"; \
+		exit 1; \
+	fi
+	@echo "Building IEDoom x86 guest image..."
+	@cd "$(CHOCOLATE_DOOM_DIR)" && sh src/iedoom_build.sh "$(IEDOOM_IE86)"
+	@test -f "$(CHOCOLATE_DOOM_DIR)/$(IEDOOM_IE86)" || { echo "Error: IEDoom x86 image was not produced: $(CHOCOLATE_DOOM_DIR)/$(IEDOOM_IE86)"; exit 1; }
+
+iedoom-ie68:
+	@if [ ! -f "$(CHOCOLATE_DOOM_DIR)/src/iedoom_build_m68k.sh" ]; then \
+		echo "Error: missing IEDoom M68K builder: $(CHOCOLATE_DOOM_DIR)/src/iedoom_build_m68k.sh"; \
+		exit 1; \
+	fi
+	@echo "Building IEDoom M68K guest image..."
+	@cd "$(CHOCOLATE_DOOM_DIR)" && sh src/iedoom_build_m68k.sh "$(IEDOOM_IE68)"
+	@test -f "$(CHOCOLATE_DOOM_DIR)/$(IEDOOM_IE68)" || { echo "Error: IEDoom M68K image was not produced: $(CHOCOLATE_DOOM_DIR)/$(IEDOOM_IE68)"; exit 1; }
 
 .PHONY: x64-live-qemu
 x64-live-qemu: $(X64_LIVE_IMG)
