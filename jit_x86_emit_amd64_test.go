@@ -1091,6 +1091,20 @@ func TestX86JIT_REP_STOSB(t *testing.T) {
 	}
 }
 
+func TestX86JIT_REP_STOSBPreservesFlags(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0x42
+	r.cpu.ECX = 8
+	r.cpu.EDI = 0x5000
+	r.cpu.Flags = x86FlagCF | x86FlagZF | x86FlagOF
+
+	r.compileAndRun(t, 0x1000, 0xF3, 0xAA) // REP STOSB
+
+	if got := r.cpu.Flags & x86VisibleFlagsMask; got != x86FlagCF|x86FlagZF|x86FlagOF {
+		t.Fatalf("visible flags after REP STOSB = %#x, want CF|ZF|OF", got)
+	}
+}
+
 func TestX86JIT_REP_MOVSB(t *testing.T) {
 	r := newX86JITTestRig(t)
 	// Write source data
@@ -1111,6 +1125,23 @@ func TestX86JIT_REP_MOVSB(t *testing.T) {
 	}
 	if r.cpu.ECX != 0 {
 		t.Errorf("ECX = %d, want 0", r.cpu.ECX)
+	}
+}
+
+func TestX86JIT_REP_MOVSBPreservesFlags(t *testing.T) {
+	r := newX86JITTestRig(t)
+	for i := byte(0); i < 16; i++ {
+		r.cpu.memory[0x5000+uint32(i)] = i + 1
+	}
+	r.cpu.ESI = 0x5000
+	r.cpu.EDI = 0x6000
+	r.cpu.ECX = 16
+	r.cpu.Flags = x86FlagCF | x86FlagZF | x86FlagOF
+
+	r.compileAndRun(t, 0x1000, 0xF3, 0xA4) // REP MOVSB
+
+	if got := r.cpu.Flags & x86VisibleFlagsMask; got != x86FlagCF|x86FlagZF|x86FlagOF {
+		t.Fatalf("visible flags after REP MOVSB = %#x, want CF|ZF|OF", got)
 	}
 }
 
@@ -1240,6 +1271,30 @@ func TestX86JIT_SETcc(t *testing.T) {
 
 	if r.cpu.ECX&0xFF != 1 {
 		t.Errorf("CL = %d, want 1 (equal)", r.cpu.ECX&0xFF)
+	}
+}
+
+func TestX86JIT_SETccAfterMemoryMOVUsesGuestFlags(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 42
+	r.cpu.EBX = 42
+	r.cpu.ESI = 0x5000
+	r.cpu.memory[0x5004] = 0xEF
+	r.cpu.memory[0x5005] = 0xBE
+	r.cpu.memory[0x5006] = 0xAD
+	r.cpu.memory[0x5007] = 0xDE
+
+	r.compileAndRun(t, 0x1000,
+		0x39, 0xD8, // CMP EAX, EBX (ZF=1)
+		0x8B, 0x56, 0x04, // MOV EDX, [ESI+4] (native EA calc clobbers host flags)
+		0x0F, 0x94, 0xC1, // SETE CL, must observe guest ZF from CMP
+	)
+
+	if r.cpu.ECX&0xFF != 1 {
+		t.Fatalf("CL = %d, want 1 (guest ZF preserved across memory MOV)", r.cpu.ECX&0xFF)
+	}
+	if r.cpu.EDX != 0xDEADBEEF {
+		t.Fatalf("EDX = 0x%08X, want 0xDEADBEEF", r.cpu.EDX)
 	}
 }
 

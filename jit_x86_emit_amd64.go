@@ -51,7 +51,7 @@ const (
 	x86AMD64OffLoopRetired = 8  // [RSP+8]:  loop retired instruction counter (int32)
 	x86AMD64OffLoopStartPC = 16 // [RSP+16]: loop start PC for budget-exhaustion exit
 	x86AMD64OffSavedEFlags = 24 // [RSP+24]: captured host EFLAGS after last guest flag-modifying instr
-	// [RSP+32..39]: reserved / alignment
+	x86AMD64OffScratch     = 32 // [RSP+32]: temporary emitter scratch (8 bytes)
 )
 
 // x86VisibleFlagsMask is the EFLAGS subset that maps 1:1 to guest x86 Flags
@@ -2799,6 +2799,7 @@ func x86EmitSETcc(cb *CodeBuffer, ji *X86JITInstr, cond byte, cs *x86CompileStat
 	if cs.flagState != x86FlagsLiveArith && cs.flagState != x86FlagsLiveLogic && cs.flagState != x86FlagsLiveInc {
 		return false // flags not live
 	}
+	x86EmitRestoreGuestVisibleFlags(cb)
 
 	// SETcc into R8b (use R8 which has no REX conflict for SETcc)
 	// Actually SETcc with REX uses the low byte of extended registers
@@ -2832,6 +2833,7 @@ func x86EmitCMOVcc(cb *CodeBuffer, ji *X86JITInstr, cond byte, cs *x86CompileSta
 	if cs.flagState != x86FlagsLiveArith && cs.flagState != x86FlagsLiveLogic && cs.flagState != x86FlagsLiveInc {
 		return false
 	}
+	x86EmitRestoreGuestVisibleFlags(cb)
 
 	dstReg := (ji.modrm >> 3) & 7
 	srcReg := ji.modrm & 7
@@ -3439,29 +3441,28 @@ func x86EmitREP_MOVSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	cb.EmitBytes(0x85, modRM(3, amd64RCX, amd64RCX))
 	doneJmp := amd64Jcc_rel32(cb, amd64CondE)
 
-	// Range-safety: check src and dst page ranges
-	// Save src/dst since range check clobbers R8/R11
-	amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, 0)  // save RSP[0] to RDX temp (will restore)
-	amd64MOV_mem_reg32(cb, amd64RSP, 0, amd64R8) // save src to stack[0]
+	// Range-safety: check src and dst page ranges. Save src since the range
+	// checker clobbers R8/R11.
+	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffScratch), amd64R8)
 	x86EmitRangePageCheck(cb, amd64R8, amd64RCX, 1)
 	slowJmpSrc := amd64Jcc_rel32(cb, amd64CondNE)
-	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, 0) // restore src
+	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffScratch))
 	x86EmitRangePageCheck(cb, amd64R10, amd64RCX, 1)
 	slowJmpDst := amd64Jcc_rel32(cb, amd64CondNE)
-	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, 0) // restore src again after 2nd check
+	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffScratch))
 
 	// Fast path: both ranges safe
 	if x86CurrentCS != nil && x86CurrentCS.host.HasERMS {
 		// Hardware REP MOVSB: save RSI, set up RDI/RSI/RCX, REP MOVSB, restore
-		amd64MOV_mem_reg(cb, amd64RSP, 24, x86AMD64RegMemBase) // save RSI
+		amd64MOV_mem_reg(cb, amd64RSP, int32(x86AMD64OffScratch), x86AMD64RegMemBase)
 
 		// RSI = memBase + masked_src
 		amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
 		amd64MOV_reg_reg(cb, x86AMD64RegMemBase, x86AMD64RegMemBase) // keep RSI as 64-bit
 		// Actually need: host RSI = memBase + masked_src_offset
-		amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, 24)   // RDX = original RSI (memBase)
-		amd64MOV_reg_reg(cb, amd64RSI, amd64RDX)       // host RSI = memBase
-		amd64ALU_reg_reg(cb, 0x01, amd64RSI, amd64R11) // RSI += masked_src
+		amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, int32(x86AMD64OffScratch)) // RDX = original RSI (memBase)
+		amd64MOV_reg_reg(cb, amd64RSI, amd64RDX)                            // host RSI = memBase
+		amd64ALU_reg_reg(cb, 0x01, amd64RSI, amd64R11)                      // RSI += masked_src
 
 		// RDI = memBase + masked_dst
 		amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
@@ -3477,7 +3478,7 @@ func x86EmitREP_MOVSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 		amd64MOV_reg_reg(cb, amd64RDX, amd64RDI) // RDX = post-REP dest pointer
 
 		// Restore RSI (memBase)
-		amd64MOV_reg_mem(cb, x86AMD64RegMemBase, amd64RSP, 24)
+		amd64MOV_reg_mem(cb, x86AMD64RegMemBase, amd64RSP, int32(x86AMD64OffScratch))
 
 		// Compute new guest offsets: postPtr - memBase
 		amd64ALU_reg_reg(cb, 0x29, amd64R11, x86AMD64RegMemBase) // R11 = postSrc - memBase = new ESI
@@ -3508,7 +3509,7 @@ func x86EmitREP_MOVSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	slowLabel := cb.Len()
 	patchRel32(cb, slowJmpSrc, slowLabel)
 	patchRel32(cb, slowJmpDst, slowLabel)
-	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, 0) // restore src from stack
+	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffScratch))
 	slowLoopLabel := cb.Len()
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
 	x86EmitMemLoad8(cb, amd64RAX, amd64R11)
@@ -3542,13 +3543,13 @@ func x86EmitREP_MOVSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	doneJmp := amd64Jcc_rel32(cb, amd64CondE)
 
 	// Range-safety: save src, check pages for 4-byte stride
-	amd64MOV_mem_reg32(cb, amd64RSP, 0, amd64R8) // save src
+	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffScratch), amd64R8)
 	x86EmitRangePageCheck(cb, amd64R8, amd64RCX, 4)
 	slowJmpSrc := amd64Jcc_rel32(cb, amd64CondNE)
-	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, 0) // restore src
+	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffScratch))
 	x86EmitRangePageCheck(cb, amd64R10, amd64RCX, 4)
 	slowJmpDst := amd64Jcc_rel32(cb, amd64CondNE)
-	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, 0) // restore src
+	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffScratch))
 
 	// Fast path
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
@@ -3569,7 +3570,7 @@ func x86EmitREP_MOVSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	slowLabel := cb.Len()
 	patchRel32(cb, slowJmpSrc, slowLabel)
 	patchRel32(cb, slowJmpDst, slowLabel)
-	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, 0) // restore src
+	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffScratch))
 	slowLoopLabel := cb.Len()
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
 	x86EmitMemLoad32(cb, amd64RAX, amd64R11)
@@ -3716,7 +3717,7 @@ func x86EmitREP_STOSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	// Hardware REP STOSB fast path: when ERMS available and DF=0, use native REP STOSB
 	if x86CurrentCS != nil && x86CurrentCS.host.HasERMS {
 		// Save RSI (our memory base) to stack
-		amd64MOV_mem_reg(cb, amd64RSP, 24, x86AMD64RegMemBase) // [RSP+24] = RSI
+		amd64MOV_mem_reg(cb, amd64RSP, int32(x86AMD64OffScratch), x86AMD64RegMemBase)
 
 		// Set up for native REP STOSB: RDI = memBase + masked_dest, AL = fill, RCX = count
 		amd64MOV_reg_reg(cb, amd64RDI, x86AMD64RegMemBase)
@@ -3729,7 +3730,7 @@ func x86EmitREP_STOSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 		cb.EmitBytes(0xF3, 0xAA)
 
 		// Restore RSI
-		amd64MOV_reg_mem(cb, x86AMD64RegMemBase, amd64RSP, 24)
+		amd64MOV_reg_mem(cb, x86AMD64RegMemBase, amd64RSP, int32(x86AMD64OffScratch))
 
 		// Update guest EDI: R10 = R11 + bytes_written. Since RCX=0 after REP,
 		// RDI = original RDI + count. We can compute: R10 = RDI - memBase
@@ -3999,6 +4000,7 @@ func x86EmitJcc_rel8(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC uin
 	if cs.flagState != x86FlagsLiveArith && cs.flagState != x86FlagsLiveLogic && cs.flagState != x86FlagsLiveInc {
 		return false // flags not live
 	}
+	x86EmitRestoreGuestVisibleFlags(cb)
 
 	// Self-loop: backward Jcc to startPC → native loop with budget counter
 	if cs.isLoop && targetPC == startPC && cs.loopStartLabel > 0 {
