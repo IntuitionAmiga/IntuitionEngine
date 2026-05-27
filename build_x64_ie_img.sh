@@ -29,7 +29,7 @@ EXPANDED_IMG="${WORK_DIR}/ubuntu-26.04-ie-expanded.img"
 GOLDEN_IMG="ubuntu-26.04-lowlatency-cage-golden.img"
 GOLDEN_IMG_PATH="${WORK_DIR}/${GOLDEN_IMG}"
 GOLDEN_IMG_MAX_AGE_DAYS=30
-GOLDEN_STAMP_VERSION="x64-live-golden-v41-share-headroom"
+GOLDEN_STAMP_VERSION="x64-live-golden-v42-audio-session-dracut"
 GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"
 KERNEL_PKG="linux-lowlatency"
 COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core,kbd"
@@ -901,27 +901,62 @@ else
     cd /opt/ie
     set -- -ehbasic-host -ehbasic-host-appliance
 fi
-if [ -z "${IE_LIVE_DBUS_SESSION:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -z "${IE_LIVE_DBUS_SESSION:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
     export IE_LIVE_IMAGE=1
     export IE_LIVE_DBUS_SESSION=1
     exec dbus-run-session -- "$0" "$@"
 fi
 export IE_LIVE_IMAGE=1
 if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "$XDG_RUNTIME_DIR" ]; then
-    export XDG_RUNTIME_DIR="/tmp/ie-runtime-$(id -u)"
+    if [ -d "/run/user/$(id -u)" ]; then
+        export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    else
+        export XDG_RUNTIME_DIR="/tmp/ie-runtime-$(id -u)"
+    fi
 fi
 export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
 export PULSE_RUNTIME_PATH="$XDG_RUNTIME_DIR/pulse"
 export PULSE_SERVER="unix:${XDG_RUNTIME_DIR}/pulse/native"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/pulse"
+mkdir -p "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/pulse" /var/ie/state
 chmod 700 "$XDG_RUNTIME_DIR"
-pipewire >/tmp/ie-pipewire.log 2>&1 &
+audio_log=/tmp/ie-pipewire-ready.log
+ie_log=/var/ie/state/intuition-engine.log
+: > "$audio_log"
+: > "$ie_log"
+chmod 0644 "$audio_log" "$ie_log" 2>/dev/null || true
+{
+    echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
+    echo "PULSE_SERVER=${PULSE_SERVER}"
+    if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+        echo "DBUS_SESSION_BUS_ADDRESS is set"
+    else
+        echo "DBUS_SESSION_BUS_ADDRESS is not set"
+    fi
+} >>"$audio_log" 2>&1
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user start pipewire.service wireplumber.service pipewire-pulse.service >>"$audio_log" 2>&1 || true
+fi
+
+if [ ! -S "${XDG_RUNTIME_DIR}/pipewire-0" ]; then
+    pipewire >/tmp/ie-pipewire.log 2>&1 &
+else
+    echo "pipewire socket already present at ${XDG_RUNTIME_DIR}/pipewire-0" >>"$audio_log"
+fi
 for _ in $(seq 1 100); do
     [ -S "${XDG_RUNTIME_DIR}/pipewire-0" ] && break
     sleep 0.05
 done
-wireplumber >/tmp/ie-wireplumber.log 2>&1 &
-pipewire-pulse >/tmp/ie-pipewire-pulse.log 2>&1 &
+if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user is-active --quiet wireplumber.service; then
+    wireplumber >/tmp/ie-wireplumber.log 2>&1 &
+else
+    echo "wireplumber.service already active" >>"$audio_log"
+fi
+if [ ! -S "${XDG_RUNTIME_DIR}/pulse/native" ]; then
+    pipewire-pulse >/tmp/ie-pipewire-pulse.log 2>&1 &
+else
+    echo "pipewire-pulse socket already present at ${XDG_RUNTIME_DIR}/pulse/native" >>"$audio_log"
+fi
 for _ in $(seq 1 100); do
     [ -S "${XDG_RUNTIME_DIR}/pulse/native" ] && break
     sleep 0.05
@@ -934,11 +969,25 @@ if [ ! -S "${XDG_RUNTIME_DIR}/pulse/native" ]; then
         cat /tmp/ie-pipewire-pulse.log 2>/dev/null || true
         echo "--- pipewire log ---"
         cat /tmp/ie-pipewire.log 2>/dev/null || true
-    } >/tmp/ie-pipewire-ready.log
+    } >>"$audio_log"
 else
-    echo "pipewire-pulse socket ready at ${XDG_RUNTIME_DIR}/pulse/native" >/tmp/ie-pipewire-ready.log
+    echo "pipewire-pulse socket ready at ${XDG_RUNTIME_DIR}/pulse/native" >>"$audio_log"
 fi
-exec /opt/ie/IntuitionEngine "$@"
+{
+    command -v aplay >/dev/null 2>&1 && aplay -l || true
+    if command -v wpctl >/dev/null 2>&1; then
+        wpctl status || true
+        wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 || true
+        wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.90 || true
+    fi
+} >>"$audio_log" 2>&1
+{
+    echo "launching IntuitionEngine at $(date -Is)"
+    echo "args: $*"
+    echo "PULSE_SERVER=${PULSE_SERVER}"
+    echo "audio readiness log: ${audio_log}"
+} >>"$ie_log"
+exec /opt/ie/IntuitionEngine "$@" >>"$ie_log" 2>&1
 EOF
     chmod +x "${WORK_DIR}/launch.sh"
 
@@ -1026,7 +1075,7 @@ Plymouth.SetRefreshFunction(refresh_callback);
 EOF
 
     cat > "${WORK_DIR}/zz-intuition-engine-grub.cfg" <<'EOF'
-GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 mitigations=off"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 rd.driver.export=0 mitigations=off"
 GRUB_CMDLINE_LINUX=""
 GRUB_TIMEOUT_STYLE=hidden
 GRUB_TIMEOUT=0
@@ -1041,6 +1090,8 @@ set -eu
 log() {
     printf '%s\n' "ie-grow-share: $*"
 }
+
+udevadm settle --timeout=10 2>/dev/null || true
 
 share="$(blkid -L IESHARE 2>/dev/null || true)"
 if [ -z "$share" ]; then
@@ -1100,8 +1151,7 @@ EOF
 [Unit]
 Description=Grow Intuition Engine host share partition
 DefaultDependencies=no
-Wants=systemd-udev-settle.service
-After=systemd-udev-settle.service
+After=systemd-udevd.service
 Before=local-fs-pre.target
 
 [Service]
@@ -1448,7 +1498,7 @@ packages=${ALL_PKGS}
 root_part_size=${ROOT_PART_SIZE}
 final_image_size=${FINAL_IMAGE_SIZE}
 share_grow=ie-grow-share-v1
-session=greetd-cage-default-basic-v2-no-forced-hostio-trace
+session=greetd-cage-default-basic-v3-systemd-user-audio
 persistent_root=ext4
 network=${NETWORK_PKGS}
 audio=${AUDIO_PKGS}
@@ -1482,7 +1532,7 @@ build_golden_image() {
 
     virt-customize -a "$EXPANDED_IMG" \
         --install "${ALL_PKGS}" \
-        --run-command 'set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold; apt-get autoremove -y; apt-get clean' \
+        --run-command 'set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get purge -y overlayroot || true; apt-get upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold; apt-get purge -y overlayroot || true; apt-get autoremove -y; apt-get clean' \
         --run-command 'set -e; dpkg-query -W linux-lowlatency >/dev/null; KIMG=$(find /boot -maxdepth 1 -type f -name "vmlinuz-*" | sort -V | tail -n1); test -n "$KIMG"; sbverify --list "$KIMG" | grep -q "image signature issuer" || (echo "FATAL: installed kernel is not signed; switch KERNEL_PKG to linux-generic"; exit 1)' \
         --run-command 'existing=$(getent passwd 1000 | cut -d: -f1); if [ -n "$existing" ]; then case " ubuntu cloud-user " in *" $existing "*) userdel -r "$existing" || { echo "FATAL: userdel $existing failed"; exit 1; } ;; *) echo "FATAL: UID 1000 occupied by unexpected user $existing; refusing to delete. Use a pristine Ubuntu cloud image."; exit 1 ;; esac; fi' \
         --run-command 'existing_g=$(getent group 1000 | cut -d: -f1); if [ -n "$existing_g" ]; then case " ubuntu cloud-user " in *" $existing_g "*) groupdel "$existing_g" || { echo "FATAL: groupdel $existing_g failed"; exit 1; } ;; *) echo "FATAL: GID 1000 occupied by unexpected group $existing_g"; exit 1 ;; esac; fi' \
@@ -1524,10 +1574,11 @@ build_golden_image() {
         --upload "${WORK_DIR}/usr.libexec.intuitionengine-host-helper:/etc/apparmor.d/usr.libexec.intuitionengine-host-helper" \
         --run-command 'chmod +x /usr/local/sbin/ie-grow-share.sh' \
         --run-command 'chmod 0644 /etc/systemd/logind.conf.d/10-ie-live.conf /etc/default/grub.d/zz-intuition-engine.cfg /usr/local/share/kbd/keymaps/ie-no-vt-switch.map /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.script /usr/share/plymouth/themes/intuition-engine/splash.png' \
+        --run-command 'chmod 0600 /etc/netplan/90-ie-networkmanager.yaml' \
         --run-command 'chmod 0644 /etc/systemd/system/ie-grow-share.service /etc/systemd/system/ie-firewall.service /etc/systemd/system/ie-no-vt-switch.service /etc/systemd/system/ie-apparmor.service /etc/systemd/system/ie-host-helper.service' \
         --run-command 'chmod 0644 /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules' \
         --run-command 'chmod 0644 /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper' \
-        --run-command 'chown root:root /etc/systemd/logind.conf.d/10-ie-live.conf /etc/default/grub.d/zz-intuition-engine.cfg /usr/local/share/kbd/keymaps/ie-no-vt-switch.map /usr/share/plymouth/themes/intuition-engine /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.script /usr/share/plymouth/themes/intuition-engine/splash.png /etc/systemd/system/ie-grow-share.service /etc/systemd/system/ie-firewall.service /etc/systemd/system/ie-no-vt-switch.service /etc/systemd/system/ie-apparmor.service /etc/systemd/system/ie-host-helper.service /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper' \
+        --run-command 'chown root:root /etc/systemd/logind.conf.d/10-ie-live.conf /etc/default/grub.d/zz-intuition-engine.cfg /etc/netplan/90-ie-networkmanager.yaml /usr/local/share/kbd/keymaps/ie-no-vt-switch.map /usr/share/plymouth/themes/intuition-engine /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.script /usr/share/plymouth/themes/intuition-engine/splash.png /etc/systemd/system/ie-grow-share.service /etc/systemd/system/ie-firewall.service /etc/systemd/system/ie-no-vt-switch.service /etc/systemd/system/ie-apparmor.service /etc/systemd/system/ie-host-helper.service /usr/share/polkit-1/actions/org.intuitionengine.host.policy /etc/polkit-1/rules.d/49-intuitionengine.rules /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper' \
         --run-command 'for n in $(seq 1 12); do systemctl mask "getty@tty${n}.service"; done' \
         --run-command 'systemctl enable greetd.service seatd.service' \
         --run-command 'systemctl enable NetworkManager.service' \
@@ -1535,7 +1586,7 @@ build_golden_image() {
         --run-command 'update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth 100' \
         --run-command 'update-alternatives --set default.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth' \
         --run-command 'update-initramfs -u -k all' \
-        --run-command 'grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub && sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 mitigations=off\"/" /etc/default/grub || echo "GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 mitigations=off\"" >> /etc/default/grub' \
+        --run-command 'grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub && sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 rd.driver.export=0 mitigations=off\"/" /etc/default/grub || echo "GRUB_CMDLINE_LINUX_DEFAULT=\"quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 rd.driver.export=0 mitigations=off\"" >> /etc/default/grub' \
         --run-command 'grep -q "^GRUB_CMDLINE_LINUX=" /etc/default/grub && sed -i "s/^GRUB_CMDLINE_LINUX=.*/GRUB_CMDLINE_LINUX=\"\"/" /etc/default/grub || echo "GRUB_CMDLINE_LINUX=\"\"" >> /etc/default/grub' \
         --run-command 'sed -i "s/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/" /etc/default/grub' \
         --run-command 'grep -q "^GRUB_RECORDFAIL_TIMEOUT=" /etc/default/grub && sed -i "s/^GRUB_RECORDFAIL_TIMEOUT=.*/GRUB_RECORDFAIL_TIMEOUT=0/" /etc/default/grub || echo "GRUB_RECORDFAIL_TIMEOUT=0" >> /etc/default/grub' \

@@ -262,13 +262,18 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 		`set -- "$@" -intuitionos-image /var/ie/share/Systems/IntuitionOS/Boot/iexec.ie64`,
 		`cd /opt/ie`,
 		`export IE_LIVE_IMAGE=1`,
+		`if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -z "${IE_LIVE_DBUS_SESSION:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then`,
 		`exec dbus-run-session -- "$0" "$@"`,
+		`export XDG_RUNTIME_DIR="/run/user/$(id -u)"`,
 		`export XDG_RUNTIME_DIR="/tmp/ie-runtime-$(id -u)"`,
 		`export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"`,
 		`export PULSE_RUNTIME_PATH="$XDG_RUNTIME_DIR/pulse"`,
 		`export PULSE_SERVER="unix:${XDG_RUNTIME_DIR}/pulse/native"`,
 		`mkdir -p "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/pulse"`,
 		`chmod 700 "$XDG_RUNTIME_DIR"`,
+		`audio_log=/tmp/ie-pipewire-ready.log`,
+		`ie_log=/var/ie/state/intuition-engine.log`,
+		`systemctl --user start pipewire.service wireplumber.service pipewire-pulse.service`,
 		`pipewire >/tmp/ie-pipewire.log 2>&1 &`,
 		`[ -S "${XDG_RUNTIME_DIR}/pipewire-0" ] && break`,
 		`wireplumber >/tmp/ie-wireplumber.log 2>&1 &`,
@@ -276,7 +281,10 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 		`[ -S "${XDG_RUNTIME_DIR}/pulse/native" ] && break`,
 		`pipewire-pulse did not become ready at ${XDG_RUNTIME_DIR}/pulse/native`,
 		`pipewire-pulse socket ready at ${XDG_RUNTIME_DIR}/pulse/native`,
-		`exec /opt/ie/IntuitionEngine "$@"`,
+		`aplay -l`,
+		`wpctl set-mute @DEFAULT_AUDIO_SINK@ 0`,
+		`wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.90`,
+		`exec /opt/ie/IntuitionEngine "$@" >>"$ie_log" 2>&1`,
 		`for n in $(seq 1 12); do systemctl mask "getty@tty${n}.service"; done`,
 		`NAutoVTs=0`,
 		`ReserveVT=0`,
@@ -301,7 +309,7 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 
 	exportIdx := strings.Index(body, `export IE_LIVE_IMAGE=1`)
 	dbusIdx := strings.Index(body, `exec dbus-run-session -- "$0" "$@"`)
-	execIdx := strings.Index(body, `exec /opt/ie/IntuitionEngine "$@"`)
+	execIdx := strings.Index(body, `exec /opt/ie/IntuitionEngine "$@" >>"$ie_log" 2>&1`)
 	if exportIdx < 0 || dbusIdx < 0 || execIdx < 0 {
 		t.Fatalf("live launcher missing IE_LIVE_IMAGE/dbus/final exec contract")
 	}
@@ -310,6 +318,15 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 	}
 	if exportIdx > execIdx {
 		t.Fatalf("IE_LIVE_IMAGE export must happen before final IntuitionEngine exec")
+	}
+
+	for _, forbidden := range []string{
+		`if [ -z "${IE_LIVE_DBUS_SESSION:-}" ] && command -v dbus-run-session`,
+		`systemd-udev-settle.service`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("build_x64_ie_img.sh contains forbidden stale session pattern %q", forbidden)
+		}
 	}
 }
 
@@ -336,7 +353,7 @@ func TestX64LiveUsesPlymouthSplash(t *testing.T) {
 		`update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth 100`,
 		`update-alternatives --set default.plymouth /usr/share/plymouth/themes/intuition-engine/intuition-engine.plymouth`,
 		`update-initramfs -u -k all`,
-		`GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 mitigations=off"`,
+		`GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 rd.driver.export=0 mitigations=off"`,
 		`GRUB_CMDLINE_LINUX=""`,
 		`unset GRUB_TERMINAL`,
 		`plymouth=${PLYMOUTH_PKGS}`,
@@ -363,7 +380,7 @@ func TestX64LiveUsesPlymouthSplash(t *testing.T) {
 func TestX64LiveGoldenImageRunsAptUpgrade(t *testing.T) {
 	body := readX64LiveScript(t)
 
-	upgrade := `apt-get update; apt-get upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold; apt-get autoremove -y; apt-get clean`
+	upgrade := `apt-get update; apt-get purge -y overlayroot || true; apt-get upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold; apt-get purge -y overlayroot || true; apt-get autoremove -y; apt-get clean`
 	verify := `dpkg-query -W linux-lowlatency`
 	if !strings.Contains(body, upgrade) {
 		t.Fatalf("build_x64_ie_img.sh missing golden apt upgrade contract %q", upgrade)
@@ -382,7 +399,7 @@ func TestX64LiveLaunchMatchesDefaultRuntimeMode(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`exec /opt/ie/IntuitionEngine "$@"`,
+		`exec /opt/ie/IntuitionEngine "$@" >>"$ie_log" 2>&1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("live launcher must preserve the default runtime mode; missing %q", want)
@@ -777,7 +794,7 @@ func TestX64LiveGoldenCacheHasContentStamp(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`GOLDEN_STAMP_VERSION="x64-live-golden-v41-share-headroom"`,
+		`GOLDEN_STAMP_VERSION="x64-live-golden-v42-audio-session-dracut"`,
 		`GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"`,
 		`write_golden_stamp`,
 		`expected_golden_stamp`,
