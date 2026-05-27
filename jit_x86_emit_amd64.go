@@ -6,9 +6,7 @@
 
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 // ===========================================================================
 // x86-64 Register Mapping for x86 Guest JIT (Tier 1: Fixed Allocation)
@@ -905,19 +903,110 @@ func x86InstrFlagOpKindForInstr(ji *X86JITInstr) x86FlagOpKind {
 	return x86InstrFlagOpKind(ji.opcode, ji.modrm)
 }
 
+func x86FlagAnalysisCanCompileInstruction(ji *X86JITInstr) bool {
+	if ji == nil {
+		return false
+	}
+	if ji.prefixes&x86PrefSeg != 0 || x86ShouldStepInInterpreter(*ji) {
+		return false
+	}
+	if ji.prefixes&(x86PrefAddrSize|x86PrefLock) != 0 {
+		return false
+	}
+
+	opcode := ji.opcode
+	if opcode >= 0x0F00 {
+		op2 := byte(opcode)
+		if ji.prefixes&x86PrefOpSize != 0 {
+			return false
+		}
+		switch {
+		case op2 == 0xB6 || op2 == 0xB7 || op2 == 0xBE || op2 == 0xBF:
+			return ji.hasModRM && ji.modrm>>6 == 3
+		case op2 == 0xAF:
+			return ji.hasModRM && ji.modrm>>6 == 3
+		case op2 == 0xA4 || op2 == 0xA5 || op2 == 0xAC || op2 == 0xAD:
+			return ji.hasModRM && ji.modrm>>6 == 3
+		case op2 >= 0x90 && op2 <= 0x9F:
+			return ji.hasModRM && ji.modrm>>6 == 3
+		case op2 >= 0x40 && op2 <= 0x4F:
+			return ji.hasModRM && ji.modrm>>6 == 3
+		case op2 == 0xBC || op2 == 0xBD:
+			return ji.hasModRM && ji.modrm>>6 == 3
+		}
+		return false
+	}
+
+	op := byte(opcode)
+	if ji.prefixes&x86PrefOpSize != 0 && (op < 0xB8 || op > 0xBF) {
+		return false
+	}
+
+	switch {
+	case op == 0x90:
+		return ji.prefixes&x86PrefOpSize == 0
+	case op >= 0xB8 && op <= 0xBF:
+		return true
+	case op == 0xA1 || op == 0xA2 || op == 0xA3:
+		return true
+	case op >= 0xB0 && op <= 0xB7:
+		return true
+	case op >= 0x40 && op <= 0x4F:
+		return true
+	case op == 0x01 || op == 0x03 || op == 0x09 || op == 0x0B ||
+		op == 0x11 || op == 0x13 || op == 0x19 || op == 0x1B ||
+		op == 0x21 || op == 0x23 || op == 0x29 || op == 0x2B ||
+		op == 0x31 || op == 0x33 || op == 0x39 || op == 0x3B:
+		return ji.hasModRM
+	case op == 0x38 || op == 0x3A || op == 0x84:
+		return ji.hasModRM && ji.modrm>>6 == 3
+	case op == 0x88 || op == 0x89 || op == 0x8B:
+		return ji.hasModRM
+	case op == 0x8D:
+		return ji.hasModRM && ji.modrm>>6 == 1 && ji.modrm&7 != 4
+	case op == 0x05 || op == 0x0D || op == 0x25 || op == 0x2D ||
+		op == 0x35 || op == 0x3D:
+		return true
+	case op == 0x04 || op == 0x0C || op == 0x14 || op == 0x1C ||
+		op == 0x24 || op == 0x2C || op == 0x34 || op == 0x3C:
+		return true
+	case op == 0x80 || op == 0x82:
+		return ji.hasModRM && ji.modrm>>6 == 3
+	case op == 0x81 || op == 0x83:
+		return ji.hasModRM && ji.modrm>>6 == 3
+	case op >= 0x91 && op <= 0x97:
+		return true
+	case op == 0x98 || op == 0x99:
+		return true
+	case op == 0xC1 || op == 0xD1 || op == 0xD3:
+		return ji.hasModRM && ji.modrm>>6 == 3
+	case op == 0xF7:
+		return ji.hasModRM && ji.modrm>>6 == 3 && ((ji.modrm>>3)&7) != 7
+	case op == 0x85:
+		return ji.hasModRM && ji.modrm>>6 == 3
+	case op == 0xA8 || op == 0xA9:
+		return true
+	case op == 0x8C:
+		return ji.hasModRM && ji.modrm>>6 == 3 && ((ji.modrm>>3)&7) <= 5
+	case op == 0xC6 || op == 0xC7:
+		return ji.hasModRM && ji.grpOp == 0
+	case op == 0xE2:
+		return true
+	case op >= 0x70 && op <= 0x7F:
+		return true
+	case op == 0xA4 || op == 0xA5 || op == 0xAA || op == 0xAB:
+		return ji.prefixes&x86PrefRep != 0
+	case op == 0xA6 || op == 0xAE:
+		return ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0
+	}
+
+	return false
+}
+
 func x86FlagAnalysisCompiledPrefix(instrs []X86JITInstr) []X86JITInstr {
 	for i := range instrs {
-		ji := &instrs[i]
-		if ji.prefixes&x86PrefSeg != 0 || x86ShouldStepInInterpreter(*ji) {
+		if !x86FlagAnalysisCanCompileInstruction(&instrs[i]) {
 			return instrs[:i]
-		}
-		if ji.opcode >= 0x0F00 {
-			op2 := byte(ji.opcode)
-			if op2 == 0xA4 || op2 == 0xA5 || op2 == 0xAC || op2 == 0xAD {
-				if ji.prefixes&x86PrefOpSize != 0 || !ji.hasModRM || ji.modrm>>6 != 3 {
-					return instrs[:i]
-				}
-			}
 		}
 	}
 	return instrs
@@ -2539,6 +2628,7 @@ func x86EmitGrp1_Eb_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Co
 
 	if isHigh {
 		// Extract high byte to R8, operate, merge back
+		amd64MOV_reg_reg32(cb, amd64R11, amd64RAX)
 		amd64MOV_reg_reg32(cb, amd64R8, amd64RAX)
 		amd64SHR_imm32(cb, amd64R8, 8)
 
@@ -2566,6 +2656,7 @@ func x86EmitGrp1_Eb_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Co
 		}
 
 		if aluOp != 7 { // not CMP
+			amd64MOV_reg_reg32(cb, amd64RAX, amd64R11)
 			// Merge back: clear bits 15:8 of EAX, insert R8 << 8
 			emitREX(cb, false, 0, amd64RAX)
 			cb.EmitBytes(0x81, modRM(3, 4, amd64RAX)) // AND EAX, ~0xFF00

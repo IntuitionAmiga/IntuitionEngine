@@ -1298,6 +1298,36 @@ func TestX86JIT_SETccAfterMemoryMOVUsesGuestFlags(t *testing.T) {
 	}
 }
 
+func TestX86JIT_SETccConsumesFlagsBeforeLaterProducer(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 42
+	r.cpu.EBX = 42
+	r.cpu.EDX = 1
+
+	r.compileAndRun(t, 0x1000,
+		0x39, 0xD8, // CMP EAX, EBX (ZF=1)
+		0x0F, 0x94, 0xC1, // SETE CL, must consume CMP flags
+		0x29, 0xD2, // SUB EDX, EDX; later flag producer must not shadow CMP
+	)
+
+	if r.cpu.ECX&0xFF != 1 {
+		t.Fatalf("CL = %d, want 1 from CMP flags before later SUB", r.cpu.ECX&0xFF)
+	}
+}
+
+func TestX86JIT_Grp1HighByteALUImmediatePreservesRegisterValue(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0x00008067
+
+	r.compileAndRun(t, 0x1000,
+		0x80, 0xE4, 0x7F, // AND AH, 0x7F
+	)
+
+	if r.cpu.EAX != 0x00000067 {
+		t.Fatalf("EAX = 0x%08X, want 0x00000067", r.cpu.EAX)
+	}
+}
+
 func TestX86JIT_BSF(t *testing.T) {
 	r := newX86JITTestRig(t)
 	r.cpu.EBX = 0x80 // bit 7 is lowest set bit
@@ -1538,6 +1568,29 @@ func TestX86JIT_FallbackBeforeMemoryDoubleShiftPreservesPriorFlags(t *testing.T)
 	r.compileAndRun(t, 0x1000,
 		0x01, 0xD0, // ADD EAX, EDX ; EAX=0, CF=1
 		0x0F, 0xAC, 0x16, 0x01, // SHRD dword ptr [ESI], EDX, 1; fallback boundary
+		0x29, 0xD3, // SUB EBX, EDX; must not shadow ADD before fallback
+	)
+
+	if r.cpu.EIP != 0x1002 {
+		t.Fatalf("EIP = %#x, want fallback boundary %#x", r.cpu.EIP, uint32(0x1002))
+	}
+	if r.cpu.Flags&x86FlagCF == 0 {
+		t.Fatalf("CF cleared at fallback boundary, flags=%#x", r.cpu.Flags)
+	}
+}
+
+func TestX86JIT_FallbackBeforeUnsupportedMOVZXPreservesPriorFlags(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0xFFFFFFFF
+	r.cpu.EDX = 1
+	r.cpu.EBX = 5
+	r.cpu.ESI = 0x2000
+	r.cpu.memory[0x2000] = 0x34
+	r.cpu.memory[0x2001] = 0x12
+
+	r.compileAndRun(t, 0x1000,
+		0x01, 0xD0, // ADD EAX, EDX ; EAX=0, CF=1
+		0x0F, 0xB7, 0x0E, // MOVZX ECX, word ptr [ESI]; fallback boundary
 		0x29, 0xD3, // SUB EBX, EDX; must not shadow ADD before fallback
 	)
 

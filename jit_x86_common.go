@@ -1267,7 +1267,16 @@ func x86PeepholeFlags(instrs []X86JITInstr) []bool {
 func x86InstrReadsFlags(ji *X86JITInstr) bool {
 	op := byte(ji.opcode)
 	if ji.opcode >= 0x0F00 {
-		return ji.opcode >= 0x0F80 && ji.opcode <= 0x0F8F // Jcc rel32
+		op2 := byte(ji.opcode)
+		switch {
+		case op2 >= 0x80 && op2 <= 0x8F: // Jcc rel32
+			return true
+		case op2 >= 0x90 && op2 <= 0x9F: // SETcc
+			return true
+		case op2 >= 0x40 && op2 <= 0x4F: // CMOVcc
+			return true
+		}
+		return false
 	}
 	switch {
 	case op >= 0x70 && op <= 0x7F: // Jcc rel8
