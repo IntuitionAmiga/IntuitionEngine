@@ -33,9 +33,9 @@ func TestX64LiveMakefileTargets(t *testing.T) {
 		`test -f "sdk/examples/prebuilt/ehbasic_ie64.ie64"`,
 		"x64-live: x86-64-v3",
 		"x64-live-demos",
-		`X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" ./build_x64_ie_img.sh`,
+		`X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh`,
 		"x64-live-rebuild-golden: x86-64-v3",
-		`X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" ./build_x64_ie_img.sh --rebuild-golden`,
+		`X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --rebuild-golden`,
 		".PHONY: x64-live-payload-check",
 		"x64-live-qemu: $(X64_LIVE_IMG)",
 		"$(X64_LIVE_IMG):",
@@ -58,13 +58,18 @@ func TestX64LiveDemoPayloadTargets(t *testing.T) {
 		t.Fatalf("read Makefile: %v", err)
 	}
 	text := string(makefile)
+	builder, err := os.ReadFile("build_x64_ie_img.sh")
+	if err != nil {
+		t.Fatalf("read build_x64_ie_img.sh: %v", err)
+	}
+	builderText := string(builder)
 
 	for _, want := range []string{
 		".PHONY: x64-live-demos",
 		"x64-live-demos: x64-live-payload-check",
 		".PHONY: x64-live-payload-check",
 		"x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs intuitionos iedoom",
-		`X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" ./build_x64_ie_img.sh --check-payload`,
+		`X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --check-payload`,
 		".PHONY: aros-iewarp-library",
 		"aros-iewarp-library: aros-release-assets",
 		`$(MAKE) -C "$(AROS_BUILD_DIR)" kernel-iewarp`,
@@ -115,6 +120,19 @@ func TestX64LiveDemoPayloadTargets(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Makefile missing live demo payload contract %q", want)
 		}
+	}
+
+	for _, want := range []string{
+		`IEDOOM_WAD_PATH="${CHOCOLATE_DOOM_DIR}/${IEDOOM_WAD}"`,
+		`payload_require_file "${payload_root}/doom1.wad"`,
+		`cp -f "${IEDOOM_WAD_PATH}" "$payload_root/doom1.wad"`,
+	} {
+		if !strings.Contains(builderText, want) {
+			t.Fatalf("live image builder missing IEDoom WAD root-staging contract %q", want)
+		}
+	}
+	if strings.Contains(builderText, `Demos/DOOM1.WAD`) {
+		t.Fatal("live image builder must not stage IEDoom WAD only under Demos")
 	}
 }
 

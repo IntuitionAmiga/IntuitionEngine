@@ -79,6 +79,7 @@ AROS_CC ?= $(firstword $(wildcard $(AROS_BUILD_DIR)/bin/*/tools/crosstools/m68k-
 CHOCOLATE_DOOM_DIR ?= ../chocolate-doom
 IEDOOM_IE86 ?= build/iedoom.ie86
 IEDOOM_IE68 ?= build/iedoom.ie68
+IEDOOM_WAD ?= DOOM1.WAD
 
 # Detect number of CPU cores for parallel compilation
 NCORES := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
@@ -364,11 +365,11 @@ x64-live-embed-assets: sdk-build emutos-release-rom iewarp-runtime-assets intuit
 .PHONY: x64-live
 x64-live: x86-64-v3 x64-live-demos
 	@echo "Building IE x64 live USB image..."
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" ./build_x64_ie_img.sh
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh
 
 .PHONY: x64-live-rebuild-golden
 x64-live-rebuild-golden: x86-64-v3 x64-live-demos
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" ./build_x64_ie_img.sh --rebuild-golden
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --rebuild-golden
 
 .PHONY: x64-live-demos
 x64-live-demos: x64-live-payload-check
@@ -377,7 +378,7 @@ x64-live-demos: x64-live-payload-check
 
 .PHONY: x64-live-payload-check
 x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs intuitionos iedoom
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" ./build_x64_ie_img.sh --check-payload
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --check-payload
 
 .PHONY: x64-live-refman-pdfs
 x64-live-refman-pdfs:

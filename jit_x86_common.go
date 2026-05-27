@@ -1244,39 +1244,8 @@ func x86PeepholeFlags(instrs []X86JITInstr) []bool {
 
 	for i := n - 1; i >= 0; i-- {
 		ji := &instrs[i]
-		op := byte(ji.opcode)
 
-		// Does this instruction READ flags?
-		readsFlags := false
-		if ji.opcode < 0x0F00 {
-			switch {
-			case op >= 0x70 && op <= 0x7F: // Jcc
-				readsFlags = true
-			case op == 0x9C: // PUSHF
-				readsFlags = true
-			case op == 0x9E: // SAHF
-				readsFlags = false // writes, not reads
-			case op == 0x9F: // LAHF
-				readsFlags = true
-			case op == 0x10 || op == 0x11 || op == 0x12 || op == 0x13: // ADC
-				readsFlags = true
-			case op == 0x14 || op == 0x15: // ADC AL/EAX, imm
-				readsFlags = true
-			case op == 0x18 || op == 0x19 || op == 0x1A || op == 0x1B: // SBB
-				readsFlags = true
-			case op == 0x1C || op == 0x1D: // SBB AL/EAX, imm
-				readsFlags = true
-			case op == 0xD0 || op == 0xD1 || op == 0xD2 || op == 0xD3: // Shifts (RCL/RCR read CF)
-				if ji.hasModRM {
-					shiftOp := (ji.modrm >> 3) & 7
-					if shiftOp == 2 || shiftOp == 3 { // RCL, RCR
-						readsFlags = true
-					}
-				}
-			}
-		}
-
-		if readsFlags {
+		if x86InstrReadsFlags(ji) {
 			needFlags = true
 		}
 
@@ -1290,6 +1259,31 @@ func x86PeepholeFlags(instrs []X86JITInstr) []bool {
 	}
 
 	return flagsNeeded
+}
+
+// x86InstrReadsFlags returns true for instructions whose architectural result
+// depends on the incoming guest EFLAGS. This is separate from writes-flags:
+// ADC/SBB and RCL/RCR both consume CF before defining new flags.
+func x86InstrReadsFlags(ji *X86JITInstr) bool {
+	op := byte(ji.opcode)
+	if ji.opcode >= 0x0F00 {
+		return ji.opcode >= 0x0F80 && ji.opcode <= 0x0F8F // Jcc rel32
+	}
+	switch {
+	case op >= 0x70 && op <= 0x7F: // Jcc rel8
+		return true
+	case op == 0x9C || op == 0x9F: // PUSHF, LAHF
+		return true
+	case op >= 0x10 && op <= 0x15: // ADC
+		return true
+	case op >= 0x18 && op <= 0x1D: // SBB
+		return true
+	case op == 0x80 || op == 0x81 || op == 0x82 || op == 0x83: // Grp1 ADC/SBB
+		return ji.hasModRM && (ji.grpOp == 2 || ji.grpOp == 3)
+	case op == 0xD0 || op == 0xD1 || op == 0xD2 || op == 0xD3: // Grp2 RCL/RCR
+		return ji.hasModRM && (ji.grpOp == 2 || ji.grpOp == 3)
+	}
+	return false
 }
 
 // x86InstrWritesFlags returns true if the instruction modifies EFLAGS.

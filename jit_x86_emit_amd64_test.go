@@ -706,6 +706,102 @@ func TestX86JIT_DIV_r32(t *testing.T) {
 	}
 }
 
+func TestX86JIT_DIV_SpilledDivisorPreservesDividend(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 33
+	r.cpu.EDX = 0
+	r.cpu.EDI = 5
+
+	// DIV EDI: F7 F7 (EAX = EDX:EAX / EDI, EDX = remainder).
+	// EDI is spilled in the default x86 JIT register map; loading it must not
+	// clobber the host RAX dividend.
+	r.compileAndRun(t, 0x1000, 0xF7, 0xF7)
+
+	if r.cpu.EAX != 6 {
+		t.Errorf("EAX (quotient) = %d, want 6", r.cpu.EAX)
+	}
+	if r.cpu.EDX != 3 {
+		t.Errorf("EDX (remainder) = %d, want 3", r.cpu.EDX)
+	}
+}
+
+func TestX86JIT_ADCConsumesCarryFromPreviousADD(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0xFFFFFFFF
+	r.cpu.ESI = 1
+
+	r.compileAndRun(t, 0x1000,
+		0x01, 0xF0, // ADD EAX, ESI ; EAX=0, CF=1
+		0x83, 0xD0, 0x00, // ADC EAX, 0
+	)
+
+	if r.cpu.EAX != 1 {
+		t.Fatalf("EAX = 0x%08X, want 0x00000001", r.cpu.EAX)
+	}
+}
+
+func TestX86JIT_DirectADCConsumesCarryFromPreviousADD(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0xFFFFFFFF
+	r.cpu.EDX = 1
+
+	r.compileAndRun(t, 0x1000,
+		0x01, 0xD0, // ADD EAX, EDX ; EAX=0, CF=1
+		0x13, 0xD0, // ADC EDX, EAX
+	)
+
+	if r.cpu.EDX != 2 {
+		t.Fatalf("EDX = %d, want 2", r.cpu.EDX)
+	}
+}
+
+func TestX86JIT_MappedADCConsumesInitialCarry(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 1
+	r.cpu.EDX = 2
+	r.cpu.Flags = x86FlagCF
+
+	r.compileAndRun(t, 0x1000,
+		0x11, 0xD0, // ADC EAX, EDX
+	)
+
+	if r.cpu.EAX != 4 {
+		t.Fatalf("EAX = %d, want 4", r.cpu.EAX)
+	}
+}
+
+func TestX86JIT_DirectSBBConsumesCarryFromPreviousCMP(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 2
+	r.cpu.ESI = 1
+	r.cpu.EDX = 0
+	r.cpu.EBX = 7
+
+	r.compileAndRun(t, 0x1000,
+		0x39, 0xC6, // CMP ESI, EAX ; CF=1
+		0x19, 0xD3, // SBB EBX, EDX ; EBX=7-0-CF
+	)
+
+	if r.cpu.EBX != 6 {
+		t.Fatalf("EBX = %d, want 6", r.cpu.EBX)
+	}
+}
+
+func TestX86JIT_MappedSBBConsumesInitialCarry(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EBX = 7
+	r.cpu.EDX = 2
+	r.cpu.Flags = x86FlagCF
+
+	r.compileAndRun(t, 0x1000,
+		0x19, 0xD3, // SBB EBX, EDX
+	)
+
+	if r.cpu.EBX != 4 {
+		t.Fatalf("EBX = %d, want 4", r.cpu.EBX)
+	}
+}
+
 // ===========================================================================
 // Phase 5: MOVZX/MOVSX Tests
 // ===========================================================================
@@ -1215,6 +1311,202 @@ func TestX86JIT_BSF_Zero_DestUnchanged(t *testing.T) {
 
 	if r.cpu.EAX != 0x42 {
 		t.Errorf("EAX = 0x%X, want 0x42 (destination unchanged on zero input)", r.cpu.EAX)
+	}
+}
+
+func TestX86JIT_SHRD_EAX_EDX_OneFallsBackCorrectly(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 33
+	r.cpu.EDX = 0
+
+	// SHRD EAX, EDX, 1. This is emitted by GCC -Ofast in 64-bit division
+	// helpers used by the x86 Doom runtime. SETB consumes CF so the test also
+	// covers live-flag propagation from the emitted SHRD.
+	r.compileAndRun(t, 0x1000,
+		0x0F, 0xAC, 0xD0, 0x01, // SHRD EAX, EDX, 1
+		0x0F, 0x92, 0xC3, // SETB BL
+	)
+
+	if r.cpu.EAX != 16 {
+		t.Fatalf("EAX = %d, want 16", r.cpu.EAX)
+	}
+	if r.cpu.BL() != 1 {
+		t.Fatalf("BL = %d, want 1", r.cpu.BL())
+	}
+}
+
+func TestX86JIT_SHRDCapturesFlagsBeforeNonFlagClobber(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 33
+	r.cpu.EDX = 0
+
+	r.compileAndRun(t, 0x1000,
+		0x0F, 0xAC, 0xD0, 0x01, // SHRD EAX, EDX, 1; CF=1
+		0xB9, 0x00, 0x00, 0x00, 0x00, // MOV ECX, 0; must not kill guest CF
+		0x0F, 0x92, 0xC3, // SETB BL
+	)
+
+	if r.cpu.EAX != 16 {
+		t.Fatalf("EAX = %d, want 16", r.cpu.EAX)
+	}
+	if r.cpu.BL() != 1 {
+		t.Fatalf("BL = %d, want 1", r.cpu.BL())
+	}
+}
+
+func TestX86JIT_SHRDImmZeroPreservesFlags(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 33
+	r.cpu.EDX = 0x12345678
+	r.cpu.Flags = x86FlagCF
+
+	r.compileAndRun(t, 0x1000,
+		0x0F, 0xAC, 0xD0, 0x00, // SHRD EAX, EDX, 0
+		0x0F, 0x92, 0xC3, // SETB BL
+	)
+
+	if r.cpu.EAX != 33 {
+		t.Fatalf("EAX = %d, want 33", r.cpu.EAX)
+	}
+	if r.cpu.BL() != 1 {
+		t.Fatalf("BL = %d, want 1", r.cpu.BL())
+	}
+}
+
+func TestX86JIT_SHRDCLZeroPreservesFlags(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 33
+	r.cpu.ECX = 0
+	r.cpu.EDX = 0x12345678
+	r.cpu.Flags = x86FlagCF
+
+	r.compileAndRun(t, 0x1000,
+		0x0F, 0xAD, 0xD0, // SHRD EAX, EDX, CL
+		0x0F, 0x92, 0xC3, // SETB BL
+	)
+
+	if r.cpu.EAX != 33 {
+		t.Fatalf("EAX = %d, want 33", r.cpu.EAX)
+	}
+	if r.cpu.BL() != 1 {
+		t.Fatalf("BL = %d, want 1", r.cpu.BL())
+	}
+}
+
+func TestX86JIT_SHLDImmZeroPreservesFlags(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 33
+	r.cpu.EDX = 0x12345678
+	r.cpu.Flags = x86FlagCF
+
+	r.compileAndRun(t, 0x1000,
+		0x0F, 0xA4, 0xD0, 0x00, // SHLD EAX, EDX, 0
+		0x0F, 0x92, 0xC3, // SETB BL
+	)
+
+	if r.cpu.EAX != 33 {
+		t.Fatalf("EAX = %d, want 33", r.cpu.EAX)
+	}
+	if r.cpu.BL() != 1 {
+		t.Fatalf("BL = %d, want 1", r.cpu.BL())
+	}
+}
+
+func TestX86JIT_SHLDCLZeroPreservesFlags(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 33
+	r.cpu.ECX = 0
+	r.cpu.EDX = 0x12345678
+	r.cpu.Flags = x86FlagCF
+
+	r.compileAndRun(t, 0x1000,
+		0x0F, 0xA5, 0xD0, // SHLD EAX, EDX, CL
+		0x0F, 0x92, 0xC3, // SETB BL
+	)
+
+	if r.cpu.EAX != 33 {
+		t.Fatalf("EAX = %d, want 33", r.cpu.EAX)
+	}
+	if r.cpu.BL() != 1 {
+		t.Fatalf("BL = %d, want 1", r.cpu.BL())
+	}
+}
+
+func TestX86JIT_DoubleShiftOpSizePrefixFallsBack(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.memory[0x1000] = 0x66
+	r.cpu.memory[0x1001] = 0x0F
+	r.cpu.memory[0x1002] = 0xAC
+	r.cpu.memory[0x1003] = 0xD0
+	r.cpu.memory[0x1004] = 0x01
+
+	instrs := x86ScanBlock(r.cpu.memory, 0x1000)
+	if len(instrs) == 0 {
+		t.Fatal("x86ScanBlock returned 0 instructions")
+	}
+	block, err := x86CompileBlock(instrs, 0x1000, r.execMem, r.cpu.memory)
+	if err == nil {
+		t.Fatalf("operand-size SHRD compiled to block %#v, want fallback", block)
+	}
+	if err.Error() != "no instructions compiled" {
+		t.Fatalf("compile error = %v, want no instructions compiled", err)
+	}
+}
+
+func TestX86JIT_FallbackBeforeOpSizeDoubleShiftPreservesPriorFlags(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0xFFFFFFFF
+	r.cpu.EDX = 1
+	r.cpu.EBX = 5
+
+	r.compileAndRun(t, 0x1000,
+		0x01, 0xD0, // ADD EAX, EDX ; EAX=0, CF=1
+		0x66, 0x0F, 0xAC, 0xD0, 0x01, // SHRD AX, DX, 1; fallback boundary
+		0x29, 0xD3, // SUB EBX, EDX; must not shadow ADD before fallback
+	)
+
+	if r.cpu.EIP != 0x1002 {
+		t.Fatalf("EIP = %#x, want fallback boundary %#x", r.cpu.EIP, uint32(0x1002))
+	}
+	if r.cpu.Flags&x86FlagCF == 0 {
+		t.Fatalf("CF cleared at fallback boundary, flags=%#x", r.cpu.Flags)
+	}
+}
+
+func TestX86JIT_FallbackBeforeMemoryDoubleShiftPreservesPriorFlags(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0xFFFFFFFF
+	r.cpu.EDX = 1
+	r.cpu.EBX = 5
+	r.cpu.ESI = 0x2000
+
+	r.compileAndRun(t, 0x1000,
+		0x01, 0xD0, // ADD EAX, EDX ; EAX=0, CF=1
+		0x0F, 0xAC, 0x16, 0x01, // SHRD dword ptr [ESI], EDX, 1; fallback boundary
+		0x29, 0xD3, // SUB EBX, EDX; must not shadow ADD before fallback
+	)
+
+	if r.cpu.EIP != 0x1002 {
+		t.Fatalf("EIP = %#x, want fallback boundary %#x", r.cpu.EIP, uint32(0x1002))
+	}
+	if r.cpu.Flags&x86FlagCF == 0 {
+		t.Fatalf("CF cleared at fallback boundary, flags=%#x", r.cpu.Flags)
+	}
+}
+
+func TestX86JIT_SHRDPreservesOFForSETO(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 2
+	r.cpu.EDX = 0
+	r.cpu.Flags = x86FlagOF
+
+	r.compileAndRun(t, 0x1000,
+		0x0F, 0xAC, 0xD0, 0x01, // SHRD EAX, EDX, 1
+		0x0F, 0x90, 0xC3, // SETO BL; interpreter leaves OF unchanged
+	)
+
+	if r.cpu.BL() != 1 {
+		t.Fatalf("BL = %d, want 1 from preserved OF", r.cpu.BL())
 	}
 }
 
