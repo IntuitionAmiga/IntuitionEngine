@@ -1838,7 +1838,7 @@ func main() {
 
 	} else if modeM68K {
 		m68kCPU := NewM68KCPU(sysBus)
-		videoChip.SetBigEndianMode(true)
+		applyM68KFlatProgramVideoConfig(sysBus, videoChip)
 
 		if filename != "" {
 			if err := m68kCPU.LoadProgram(filename); err != nil {
@@ -2527,20 +2527,18 @@ func main() {
 			if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
 				hider.HideSystemCursor()
 			}
-		} else if mode == "ie64" {
-			applyIE64FlatProgramVideoConfig(sysBus, videoChip)
-		} else if currentMode == "emutos" || currentMode == "aros" {
-			// Leaving M68K ROM mode: restore VRAM I/O mapping and VideoChip defaults.
-			sysBus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1,
-				videoChip.HandleRead, videoChip.HandleWrite)
-			sysBus.MapIOByte(VRAM_START, VRAM_START+VRAM_SIZE-1, videoChip.HandleWrite8)
-			videoChip.SetBigEndianMode(false)
-			videoChip.SetDirectVRAM(nil)
+		} else if mode != "ie64" && mode != "m68k" && (currentMode == "emutos" || currentMode == "aros" || currentMode == "m68k") {
+			// Leaving M68K RAM-owned video mode: restore legacy VRAM I/O mapping.
+			restoreLegacyVideoConfig(sysBus, videoChip)
 		}
 
 		// 8. Reset video chips
 		videoChip.Reset()
-		if restoreROMVideoConfig {
+		if mode == "ie64" {
+			applyIE64FlatProgramVideoConfig(sysBus, videoChip)
+		} else if mode == "m68k" {
+			applyM68KFlatProgramVideoConfig(sysBus, videoChip)
+		} else if restoreROMVideoConfig {
 			if mode == "aros" {
 				if err := applyArosVideoConfig(sysBus, videoChip); err != nil {
 					return err
@@ -3036,6 +3034,26 @@ func applyIE64FlatProgramVideoConfig(sysBus *MachineBus, videoChip *VideoChip) {
 	videoChip.SetBusMemory(sysBus.memory)
 	videoChip.SetBigEndianMode(false)
 	videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
+}
+
+func applyM68KFlatProgramVideoConfig(sysBus *MachineBus, videoChip *VideoChip) {
+	// Bare M68K flat programs share the large-image contract used by IE64:
+	// the legacy VRAM aperture is normal guest RAM and VideoChip samples it
+	// through VIDEO_FB_BASE/direct bus memory, not through MMIO dispatch.
+	sysBus.UnmapIO(VRAM_START, VRAM_START+VRAM_SIZE-1)
+	videoChip.SetBusMemory(sysBus.memory)
+	videoChip.SetBigEndianMode(true)
+	videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
+}
+
+func restoreLegacyVideoConfig(sysBus *MachineBus, videoChip *VideoChip) {
+	if !sysBus.IsIOAddress(VRAM_START) {
+		sysBus.MapIO(VRAM_START, VRAM_START+VRAM_SIZE-1,
+			videoChip.HandleRead, videoChip.HandleWrite)
+		sysBus.MapIOByte(VRAM_START, VRAM_START+VRAM_SIZE-1, videoChip.HandleWrite8)
+	}
+	videoChip.SetBigEndianMode(false)
+	videoChip.SetDirectVRAM(nil)
 }
 
 func applyArosVideoConfig(sysBus *MachineBus, videoChip *VideoChip) error {

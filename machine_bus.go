@@ -1385,6 +1385,12 @@ func (bus *MachineBus) SealMappings() {
 	bus.sealed.CompareAndSwap(false, true)
 }
 
+// UnsealMappings permits runtime owners that have stopped all CPU runners to
+// update MMIO mappings before launching the next runner.
+func (bus *MachineBus) UnsealMappings() {
+	bus.sealed.Store(false)
+}
+
 func (bus *MachineBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32)) {
 	bus.mapIOWithShadow(start, end, onRead, onWrite, true)
 }
