@@ -220,7 +220,7 @@ assert_makefile_contains 'Drivers/Makefile\.in" 2>/dev/null \|\| true'
 for target in \
   all setup intuition-engine ie32asm ie64asm ie64dis ie32to64 clean clean-sdk distclean \
   rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets emutos-probe \
-  emutos-release-rom basic basic-emutos cputest-musashi sdk sdk-build test vet tidy \
+  emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos cputest-musashi sdk sdk-build test vet tidy \
   test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs testdata-harte testdata-x86 test-harte test-harte-short \
   test-x86-harte test-x86-harte-short release-verify; do
   assert_phony "$target"
@@ -239,6 +239,10 @@ assert_recipe_contains test-harte 'go test -tags headless .* -count=1'
 assert_recipe_contains test-harte-short 'go test -tags headless .* -count=1'
 assert_recipe_contains test-x86-harte 'go test -tags headless .*TestHarte8086.* -count=1'
 assert_recipe_contains cputest-musashi 'go test -tags "headless musashi m68k_test".* -count=1'
+assert_var CHOCOLATE_DOOM_DIR ../chocolate-doom
+assert_recipe_contains iedoom-ie86 'cd "\.\./chocolate-doom" && sh src/iedoom_build\.sh "build/iedoom\.ie86"'
+assert_recipe_contains iedoom-ie68 'cd "\.\./chocolate-doom" && sh src/iedoom_build_m68k\.sh "build/iedoom\.ie68"'
+assert_makefile_contains '^iedoom: iedoom-ie86 iedoom-ie68'
 assert_recipe_contains clean 'IntuitionEngine\.exe'
 assert_recipe_not_contains clean 'intuitionos-clean'
 assert_recipe_not_contains clean 'clean-testdata'
@@ -253,8 +257,15 @@ assert_recipe_contains release-verify 'scripts/test-dist-layout\.sh'
 assert_target_exists x64-live-refman-pdfs
 assert_phony x64-live-refman-pdfs
 assert_makefile_contains '^x64-live-payload-check:.*x64-live-refman-pdfs'
+assert_makefile_contains '^x64-live-payload-check:.*iedoom'
+assert_recipe_contains x64-live-payload-check 'CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" \./build_x64_ie_img\.sh --check-payload'
+assert_recipe_contains x64-live 'CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" \./build_x64_ie_img\.sh'
 assert_recipe_contains x64-live-refman-pdfs 'scripts/refman-publish\.sh --strict'
 assert_recipe_contains x64-live-refman-pdfs 'scripts/refman-pdf\.sh'
+assert_makefile_contains 'IEDOOM_IE86 \?= build/iedoom\.ie86'
+assert_makefile_contains 'IEDOOM_IE68 \?= build/iedoom\.ie68'
+assert_makefile_contains 'iedoom\.ie68'
+assert_makefile_contains 'iedoom\.ie86'
 assert_makefile_contains 'define build-linux-vm-binary'
 assert_makefile_contains 'define build-purego-novulkan-vm-binary'
 assert_makefile_contains '/opt/ie-sysroots/tumbleweed-aarch64/usr'

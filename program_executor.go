@@ -487,7 +487,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 
 	case EXEC_TYPE_X86:
 		if e.videoChip != nil {
-			restoreLegacyVideoConfig(e.bus, e.videoChip)
+			applyX86FlatProgramVideoConfig(e.bus, e.videoChip)
 		}
 		runner := NewCPUX86Runner(e.bus, &CPUX86Config{
 			LoadAddr:     0,
