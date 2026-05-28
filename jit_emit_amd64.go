@@ -270,6 +270,13 @@ func amd64MOV_mem_imm32(cb *CodeBuffer, base byte, disp int32, val uint32) {
 	cb.Emit32(val)
 }
 
+// amd64CMP_mem32_imm0 emits CMP DWORD [base + disp32], 0.
+// Encoding: 0x83 /7 mem imm8 (sign-extended imm8 of 0x00 vs 32-bit mem).
+func amd64CMP_mem32_imm0(cb *CodeBuffer, base byte, disp int32) {
+	emitMemOp(cb, false, 0x83, 7, base, disp) // /7 = CMP opcode extension
+	cb.EmitBytes(0x00)
+}
+
 // ===========================================================================
 // Emit Helpers — Index-Scaled Memory Operations [base + index*1]
 // ===========================================================================
@@ -2128,15 +2135,21 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 		return
 	}
 
-	emitMemAddr(cb, ji)
+	emitMemAddr(cb, ji) // RAX = effective addr (full 64-bit)
 
-	// Compare with IO_REGION_START (R8). 64-bit CMP so any address with
-	// upper bits set routes to the slow path; R8 was loaded via 32-bit
-	// load which zero-extends to the full register.
+	// Phase 5 cycle 5.3: MMU-on check. The dispatcher refreshes
+	// ctx.MMUEnabled before every callNative, so any non-zero value here
+	// means virtual addresses must be translated by the interpreter
+	// helper — direct [memBase + addr] would be wrong.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
+	mmuHelperOff := amd64Jcc_rel32(cb, amd64CondNE) // JNE → helper exit
+
+	// Fast path: addr < IO_REGION_START (R8). 64-bit CMP so any address
+	// with upper bits set routes to the slow path.
 	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RegIOStart) // CMP RAX, R8
 	slowPathOff := amd64Jcc_rel32(cb, amd64CondAE)
 
-	// Fast path
 	dstReg, mapped := ie64ToAMD64Reg(ji.rd)
 	if !mapped {
 		dstReg = amd64R10
@@ -2145,25 +2158,35 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 	if !mapped {
 		emitStoreSpilledRegAMD64(cb, dstReg, ji.rd)
 	}
-	doneOff := amd64JMP_rel32(cb)
+	doneOff1 := amd64JMP_rel32(cb)
 
 	// Slow path
 	slowPathPC := cb.Len()
 	patchRel32(cb, slowPathOff, slowPathPC)
 
-	// PLAN_MAX_RAM slice 10b: bail to interpreter if addr+accessSize
-	// escapes MemSize. The slow path below indexes ioPageBitmap[addr>>8]
-	// without a bounds check; for high or end-of-memory accesses that
-	// index would be OOB. Size-aware 64-bit check catches both high bits
-	// set and last-byte-past-MemSize.
-	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar, ie64AccessBytes(ji.size))
+	// Phase 5 cycle 5.3: size-aware high-addr check → helper exit (was
+	// NeedIOFallback). RAX holds the address; load MemSize into RCX and
+	// compare addr < MemSize - (accessBytes-1) for the in-range branch.
+	accessBytes := ie64AccessBytes(ji.size)
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize))
+	if accessBytes > 1 {
+		amd64ALU_reg_imm32(cb, 5, amd64RCX, int32(accessBytes-1)) // SUB RCX, accessBytes-1
+	}
+	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RCX) // CMP RAX, RCX
+	inRangeOff := amd64Jcc_rel32(cb, 0x2)          // JB → in-range
+	highHelperOff := amd64JMP_rel32(cb)            // out-of-range → helper exit
+
+	inRangePC := cb.Len()
+	patchRel32(cb, inRangeOff, inRangePC)
 
 	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
 	if !ok {
 		panic("missing FPBitmapDenseRAM shape")
 	}
 
-	emitIOBail(cb, instrPC, ji.pcOffset, br, writtenSoFar)
+	// Bitmap fell through: I/O page → helper exit.
+	ioHelperOff := amd64JMP_rel32(cb)
 
 	nonIOPC := cb.Len()
 	patchRel32(cb, nonIOOff, nonIOPC)
@@ -2171,9 +2194,41 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 	if !mapped {
 		emitStoreSpilledRegAMD64(cb, dstReg, ji.rd)
 	}
+	doneOff2 := amd64JMP_rel32(cb)
+
+	// Helper exit. All three bail paths (MMU on, high addr, I/O page)
+	// converge here. emitLOADHelperExit ends with emitEpilogue → RET,
+	// so there is no fallthrough into the post-block done label.
+	helperPC := cb.Len()
+	patchRel32(cb, mmuHelperOff, helperPC)
+	patchRel32(cb, highHelperOff, helperPC)
+	patchRel32(cb, ioHelperOff, helperPC)
+	emitLOADHelperExit(cb, ji, instrPC, br, writtenSoFar)
 
 	donePC := cb.Len()
-	patchRel32(cb, doneOff, donePC)
+	patchRel32(cb, doneOff1, donePC)
+	patchRel32(cb, doneOff2, donePC)
+}
+
+// emitLOADHelperExit writes the JITContext HELPER_LOAD protocol fields
+// and exits the block. The Go-side dispatcher (handleJITHelper) reads
+// the request, calls cpu.loadMem(HelperAddr, HelperSize) → writes the
+// result into Rd, advances PC, and re-enters the JIT loop.
+//
+// RAX must hold the effective virtual address on entry.
+func emitLOADHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(amd64OffCtxPtr))                       // R10 = ctx
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperAddr), amd64RAX)                  // HelperAddr = RAX
+	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffHelperSize), uint32(ji.size))         // HelperSize
+	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffHelperRd), uint32(ji.rd))             // HelperRd
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffLiveSP), amd64RegIE64SP)                // LiveSP = R14
+	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)                                             // RCX = instrPC
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperPC), amd64RCX)                    // HelperPC
+	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffNeedHelper), HELPER_LOAD)             // NeedHelper
+
+	bailCount := ji.pcOffset / IE64_INSTR_SIZE
+	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
 // emitHighAddrBailCheckAMD64 emits a size-aware 64-bit bail check at the top

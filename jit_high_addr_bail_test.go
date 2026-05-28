@@ -33,8 +33,9 @@ func TestJIT_AMD64_IE64Load_AboveMemSize_BailsToInterpreter(t *testing.T) {
 	// LOAD.Q R1, 0(R2)
 	r.compileAndRun(t, ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 2, 0, 0))
 
-	if r.ctx.NeedIOFallback != 1 {
-		t.Fatalf("NeedIOFallback = %d, want 1 (clean bail above MemSize)", r.ctx.NeedIOFallback)
+	// Phase 5 cycle 5.3: LOAD high-addr now routes to HELPER_LOAD.
+	if r.ctx.NeedHelper != HELPER_LOAD {
+		t.Fatalf("NeedHelper = %d, want HELPER_LOAD (high addr must helper-exit)", r.ctx.NeedHelper)
 	}
 }
 
@@ -63,8 +64,8 @@ func TestJIT_AMD64_IE64Load_AtMemSize_BailsToInterpreter(t *testing.T) {
 
 	r.compileAndRun(t, ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 2, 0, 0))
 
-	if r.ctx.NeedIOFallback != 1 {
-		t.Fatalf("NeedIOFallback = %d, want 1 (boundary bail at addr==MemSize)", r.ctx.NeedIOFallback)
+	if r.ctx.NeedHelper != HELPER_LOAD {
+		t.Fatalf("NeedHelper = %d, want HELPER_LOAD (boundary helper-exit at addr==MemSize)", r.ctx.NeedHelper)
 	}
 }
 
@@ -103,8 +104,8 @@ func TestJIT_AMD64_IE64Load_Above4GiB_MustNotAlias(t *testing.T) {
 	if r.cpu.regs[1] != sentinel {
 		t.Fatalf("R1 = 0x%016X, want sentinel 0x%016X (bail must leave dest untouched)", r.cpu.regs[1], sentinel)
 	}
-	if r.ctx.NeedIOFallback != 1 {
-		t.Fatalf("NeedIOFallback = %d, want 1 (high addr must bail)", r.ctx.NeedIOFallback)
+	if r.ctx.NeedHelper != HELPER_LOAD {
+		t.Fatalf("NeedHelper = %d, want HELPER_LOAD (high addr must helper-exit)", r.ctx.NeedHelper)
 	}
 }
 
@@ -202,8 +203,8 @@ func TestJIT_AMD64_IE64Load_Above4GiB_SlowPathRange(t *testing.T) {
 
 	r.compileAndRun(t, ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 2, 0, 0))
 
-	if r.ctx.NeedIOFallback != 1 {
-		t.Fatalf("NeedIOFallback = %d, want 1 (slow-path range high addr must bail)", r.ctx.NeedIOFallback)
+	if r.ctx.NeedHelper != HELPER_LOAD {
+		t.Fatalf("NeedHelper = %d, want HELPER_LOAD (slow-path range high addr must helper-exit)", r.ctx.NeedHelper)
 	}
 }
 
@@ -232,9 +233,9 @@ func TestJIT_AMD64_IE64Load_NearEndOfMemory_Bails(t *testing.T) {
 
 			r.compileAndRun(t, ie64Instr(OP_LOAD, 1, c.size, 0, 2, 0, 0))
 
-			if r.ctx.NeedIOFallback != 1 {
-				t.Fatalf("size=%s addr=MemSize-%d+1: NeedIOFallback = %d, want 1",
-					c.name, c.bytes, r.ctx.NeedIOFallback)
+			if r.ctx.NeedHelper != HELPER_LOAD {
+				t.Fatalf("size=%s addr=MemSize-%d+1: NeedHelper = %d, want HELPER_LOAD",
+					c.name, c.bytes, r.ctx.NeedHelper)
 			}
 		})
 	}

@@ -25,14 +25,18 @@ func TestJIT_IE64_LoadStoreAt64MiB(t *testing.T) {
 
 	for i := 0; i < jitHighAddrIters; i++ {
 		r.ctx.NeedIOFallback = 0
+		r.ctx.NeedHelper = HELPER_NONE
 		r.cpu.regs[1] = uint64(i)
-		// LOAD.Q R1, 0(R2)
+		// LOAD.Q R1, 0(R2) — Phase 5 cycle 5.3: high-addr LOAD now routes
+		// to HELPER_LOAD, not NeedIOFallback.
 		r.compileAndRun(t, ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 2, 0, 0))
-		if r.ctx.NeedIOFallback != 1 {
-			t.Fatalf("iter %d: load NeedIOFallback = %d, want 1", i, r.ctx.NeedIOFallback)
+		if r.ctx.NeedHelper != HELPER_LOAD {
+			t.Fatalf("iter %d: load NeedHelper = %d, want HELPER_LOAD", i, r.ctx.NeedHelper)
 		}
 		r.ctx.NeedIOFallback = 0
-		// STORE.Q R1, 0(R2)
+		r.ctx.NeedHelper = HELPER_NONE
+		// STORE.Q R1, 0(R2) — STORE emitter still uses NeedIOFallback
+		// (rewrite scheduled in a later 5.x cycle).
 		r.compileAndRun(t, ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 2, 0, 0))
 		if r.ctx.NeedIOFallback != 1 {
 			t.Fatalf("iter %d: store NeedIOFallback = %d, want 1", i, r.ctx.NeedIOFallback)
