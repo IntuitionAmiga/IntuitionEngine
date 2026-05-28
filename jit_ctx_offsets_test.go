@@ -47,6 +47,7 @@ func TestJITContext_FieldOffsets(t *testing.T) {
 		{"RTSCache3Addr", jitCtxOffRTSCache3Addr, unsafe.Offsetof(ctx.RTSCache3Addr)},
 		{"RetPC", jitCtxOffRetPC, unsafe.Offsetof(ctx.RetPC)},
 		{"RetCount", jitCtxOffRetCount, unsafe.Offsetof(ctx.RetCount)},
+		{"MMUEnabled", jitCtxOffMMUEnabled, unsafe.Offsetof(ctx.MMUEnabled)},
 	}
 	for _, c := range cases {
 		if c.want != c.got {

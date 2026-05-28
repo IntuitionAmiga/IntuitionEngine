@@ -182,68 +182,24 @@ func (cpu *CPU64) ExecuteJIT() {
 			continue
 		}
 
-		// PLAN_MAX_RAM.md slice 4 design: drop the legacy IE64_ADDR_MASK
-		// truncation so fault reporting and the MMU walk see the full
-		// 64-bit VA. The JIT compiler still works in uint32 VA / phys
-		// space; falls back to the interpreter for any VA or translated
-		// physical address that does not fit in the legacy 32 MB window.
-		// JIT-side widening to uint64 PC and high-phys block fetch is a
-		// later phase; this change just removes the aliasing hazard.
-		if cpu.PC > 0xFFFFFFFF {
-			cpu.interpretOne()
-			cpu.InstructionCount++
-			diagFallbackInstr++
-			if !cpu.running.Load() {
-				break
-			}
-			continue
-		}
-		pcVirt := uint32(cpu.PC)
+		// Phase 4: full uint64 virtual PC through the JIT dispatcher.
+		// Earlier phases (1/2/3) widened the emitter and block
+		// infrastructure but kept ExecuteJIT in uint32 PC space, falling
+		// back to the interpreter whenever cpu.PC > 0xFFFFFFFF or
+		// translated phys > len(cpu.memory). With block fetch widened to
+		// bus.ReadPhys64WithFault, the JIT now compiles code at any
+		// physical address that the bus can serve.
+		pcVirt := cpu.PC
 
-		// MMU: translate virtual PC to physical for block fetch
+		// MMU: translate virtual PC to full 64-bit physical for block fetch.
 		pcPhys := pcVirt
 		if cpu.mmuEnabled {
-			phys, fault, cause := cpu.translateAddr(uint64(pcVirt), ACCESS_EXEC)
+			phys, fault, cause := cpu.translateAddr(pcVirt, ACCESS_EXEC)
 			if fault {
-				cpu.trapFault(cause, uint64(pcVirt))
+				cpu.trapFault(cause, pcVirt)
 				continue // re-enter loop at trap handler PC
 			}
-			memLen := uint64(len(cpu.memory))
-			// Subtraction form: phys+8 wraps near MaxUint64 and would
-			// admit a high physical address into the cpu.memory fast
-			// path. memLen is always >= IE64_INSTR_SIZE so the
-			// subtraction never underflows.
-			if phys > memLen-IE64_INSTR_SIZE {
-				// High-phys executable page: fall back to the interpreter,
-				// whose fetch path routes through bus.ReadPhys64. The JIT
-				// block builder is not yet wired for high-phys fetch.
-				cpu.interpretOne()
-				cpu.InstructionCount++
-				diagFallbackInstr++
-				if !cpu.running.Load() {
-					break
-				}
-				continue
-			}
-			pcPhys = uint32(phys)
-		}
-
-		// Bounds check (on physical address). PLAN_MAX_RAM.md slice 4:
-		// when the MMU is disabled and pcPhys lands above the legacy
-		// bus.memory[] window, fall back to the interpreter rather
-		// than halting. The interpreter fetch path routes high-phys
-		// reads through bus.ReadPhys64WithFault and can execute code
-		// placed in backed RAM above 32 MB; the JIT block builder
-		// scans cpu.memory[] directly and is not yet wired for high
-		// phys.
-		if uint64(pcPhys)+IE64_INSTR_SIZE > uint64(len(cpu.memory)) {
-			cpu.interpretOne()
-			cpu.InstructionCount++
-			diagFallbackInstr++
-			if !cpu.running.Load() {
-				break
-			}
-			continue
+			pcPhys = phys
 		}
 
 		if matched, retired := cpu.tryFastIE64MMIOPollLoop(); matched {
@@ -253,15 +209,45 @@ func (cpu *CPU64) ExecuteJIT() {
 			continue
 		}
 
-		// Check for HALT at current PC (physical)
-		opcode := cpu.memory[pcPhys]
+		// HALT detection. For low pcPhys inside the cpu.memory window,
+		// keep the cheap byte index; for high pcPhys, fetch the 8-byte
+		// instruction word through the bus so an unmapped page stops
+		// the JIT cleanly rather than panicking on an out-of-range
+		// slice index.
+		memLen := uint64(len(cpu.memory))
+		var opcode byte
+		var instrWord uint64
+		fetchedFromBus := false
+		if pcPhys <= memLen-IE64_INSTR_SIZE {
+			opcode = cpu.memory[pcPhys]
+		} else {
+			fetched, ok := cpu.bus.ReadPhys64WithFault(pcPhys)
+			if !ok {
+				// Unmapped physical instruction fetch — matches
+				// interpreter behaviour (cpu_ie64.go fetch path) by
+				// stopping execution. trapFault is not raised here
+				// because translateAddr already returned ok for the
+				// virtual page; an unmapped backing at the physical
+				// address surfaces as a halt, not a translation trap.
+				cpu.running.Store(false)
+				break
+			}
+			instrWord = fetched
+			opcode = byte(instrWord)
+			fetchedFromBus = true
+		}
 		if opcode == OP_HALT64 {
 			cpu.running.Store(false)
 			break
 		}
 
-		if !cpu.mmuEnabled && opcode == OP_MOVE && ie64TurboStartCandidate(cpu.memory, pcPhys) && ie64TurboEnabled() {
-			if matched, retired := cpu.tryIE64TurboProgram(pcPhys, statsEnabled); matched {
+		// Turbo-program fast path is a low-memory specialisation: it
+		// indexes cpu.memory[] directly and only matches a narrow
+		// recognised pattern at PROG_START-aligned offsets. Skip it
+		// for high pcPhys (which is necessarily outside cpu.memory)
+		// and let the normal JIT block builder run.
+		if !cpu.mmuEnabled && !fetchedFromBus && opcode == OP_MOVE && ie64TurboStartCandidate(cpu.memory, uint32(pcPhys)) && ie64TurboEnabled() {
+			if matched, retired := cpu.tryIE64TurboProgram(uint32(pcPhys), statsEnabled); matched {
 				if statsEnabled {
 					globalIE64TurboStats.turboRegions.Add(1)
 				}
@@ -272,6 +258,7 @@ func (cpu *CPU64) ExecuteJIT() {
 				continue
 			}
 		}
+		_ = instrWord
 
 		// Under MMU, different address spaces can execute different physical
 		// code at the same virtual PC. Use the dedicated MMU cache map with
@@ -279,19 +266,51 @@ func (cpu *CPU64) ExecuteJIT() {
 		// collide distinct {ptbr, pc} pairs into the same slot.
 		var block *JITBlock
 		if cpu.mmuEnabled {
-			block = cpu.jitCache.GetMMU(cpu.ptbr, uint64(pcVirt))
+			block = cpu.jitCache.GetMMU(cpu.ptbr, pcVirt)
 		} else {
-			block = cpu.jitCache.Get(uint64(pcVirt))
+			block = cpu.jitCache.Get(pcVirt)
 		}
 		if block == nil {
-			// Scan from physical memory
+			// Scan: low pcPhys uses the cpu.memory[] fast path;
+			// high pcPhys (sparse backing or MMU mapping above the
+			// legacy window) routes per-instruction through the
+			// bus phys helper.
 			var instrs []JITInstr
+			highPhys := pcPhys > memLen-IE64_INSTR_SIZE
 			if cpu.mmuEnabled {
 				// Page boundary limit: don't scan past end of current 4 KiB page
-				pageEnd := (pcPhys & ^uint32(MMU_PAGE_MASK)) + MMU_PAGE_SIZE
-				instrs = scanBlockWithLimit(cpu.memory, uint64(pcPhys), uint64(pageEnd))
+				pageEnd := (pcPhys & ^uint64(MMU_PAGE_MASK)) + MMU_PAGE_SIZE
+				if !highPhys && pageEnd <= memLen {
+					instrs = scanBlockWithLimit(cpu.memory, pcPhys, pageEnd)
+				} else {
+					instrs = scanBlockBusWithLimit(cpu.bus, pcPhys, pageEnd)
+				}
 			} else {
-				instrs = scanBlock(cpu.memory, uint64(pcPhys))
+				if !highPhys {
+					instrs = scanBlock(cpu.memory, pcPhys)
+				} else {
+					instrs = scanBlockBus(cpu.bus, pcPhys)
+				}
+			}
+
+			// Phase 4 interim guard. The non-MMU stack emitters
+			// (PUSH/POP/JSR/RTS/JSR_IND) still emit raw [memBase+SP]
+			// loads/stores with no high-address bail. With Phase 4
+			// now JIT-compiling code at high pcPhys, a stack op
+			// inside such a block whose SP is also in high RAM
+			// would read/write past cpu.memory and corrupt or
+			// crash the host. Until Phase 5 routes stack ops
+			// through bus-aware helpers, bail any high-phys block
+			// containing a stack op back to the interpreter
+			// (which uses cpu.mmuStackRead/Write through the bus).
+			if highPhys && containsStackOp(instrs) {
+				cpu.interpretOne()
+				cpu.InstructionCount++
+				diagFallbackInstr++
+				if !cpu.running.Load() {
+					break
+				}
+				continue
 			}
 
 			if needsFallback(instrs) {
@@ -308,9 +327,9 @@ func (cpu *CPU64) ExecuteJIT() {
 			var err error
 			if cpu.mmuEnabled {
 				// Compile with virtual startPC (branch offsets are virtual)
-				block, err = compileBlockMMU(instrs, uint64(pcVirt), execMem)
+				block, err = compileBlockMMU(instrs, pcVirt, execMem)
 			} else {
-				block, err = compileBlock(instrs, uint64(pcPhys), execMem)
+				block, err = compileBlock(instrs, pcPhys, execMem)
 			}
 			if err != nil {
 				// Compilation failed (e.g., exec mem exhausted) — interpret
@@ -331,7 +350,7 @@ func (cpu *CPU64) ExecuteJIT() {
 				block.ptbr = cpu.ptbr
 			}
 			if cpu.mmuEnabled {
-				cpu.jitCache.PutMMU(cpu.ptbr, uint64(pcVirt), block)
+				cpu.jitCache.PutMMU(cpu.ptbr, pcVirt, block)
 			} else {
 				cpu.jitCache.Put(block)
 			}
@@ -386,12 +405,12 @@ func (cpu *CPU64) ExecuteJIT() {
 			// different physical page) or silently disable valid
 			// regions. Keep region promotion to non-MMU mode until the
 			// scanner gains MMU awareness.
-			if !cpu.mmuEnabled && block.tier == ie64JITTier1 && ie64TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
+			if !cpu.mmuEnabled && pcPhys <= memLen-IE64_INSTR_SIZE && block.tier == ie64JITTier1 && ie64TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
 				globalIE64TurboStats.turboCandidates.Add(1)
 				block.lastPromoteAt = block.execCount
 				if !ie64TurboEnabled() {
 					globalIE64TurboStats.turboRejected.Add(1)
-				} else if region := ie64FormRegion(uint64(pcPhys), cpu.memory); region != nil && len(region.blocks) >= 2 {
+				} else if region := ie64FormRegion(pcPhys, cpu.memory); region != nil && len(region.blocks) >= 2 {
 					newBlock, err := ie64CompileRegion(region, execMem, cpu.memory)
 					if err == nil {
 						newBlock.execCount = block.execCount
@@ -400,7 +419,7 @@ func (cpu *CPU64) ExecuteJIT() {
 							newBlock.ptbr = cpu.ptbr
 						}
 						if cpu.mmuEnabled {
-							cpu.jitCache.PutMMU(cpu.ptbr, uint64(pcVirt), newBlock)
+							cpu.jitCache.PutMMU(cpu.ptbr, pcVirt, newBlock)
 						} else {
 							cpu.jitCache.Put(newBlock)
 						}
@@ -457,6 +476,17 @@ func (cpu *CPU64) ExecuteJIT() {
 			cpu.jitCtx.RTSCache1Addr = cpu.jitCtx.RTSCache0Addr
 			cpu.jitCtx.RTSCache0PC = block.startPC
 			cpu.jitCtx.RTSCache0Addr = block.chainEntry
+		}
+
+		// Phase 4: refresh MMU mode for the native code. Phase 5 will
+		// wire the emitted memory/stack helpers to check this field, so
+		// the dispatcher must keep it in sync with cpu.mmuEnabled before
+		// every callNative — a stale value would let an MMU-on block
+		// direct-index virtual addresses as physical memory.
+		if cpu.mmuEnabled {
+			cpu.jitCtx.MMUEnabled = 1
+		} else {
+			cpu.jitCtx.MMUEnabled = 0
 		}
 
 		// Execute the native code block

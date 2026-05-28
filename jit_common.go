@@ -67,7 +67,11 @@ type JITContext struct {
 	// extract count from R15.
 	RetPC    uint64 // 152: next PC after block exit (full 64-bit)
 	RetCount uint32 // 160: retired instruction count for the exiting block
-	_pad4    uint32 // 164: padding for alignment
+	// Phase 4: refreshed by the Go dispatcher before every callNative. The
+	// native emitters will start checking this in Phase 5 to route MMU-on
+	// memory/stack ops through a helper exit; it lives here now so the
+	// field offset is stable before any emitter wires it up.
+	MMUEnabled uint32 // 164: 1 when MMU translation is active for the next block
 }
 
 // JITContext field offsets (must match struct layout above)
@@ -96,6 +100,7 @@ const (
 	jitCtxOffRTSCache3Addr  = 144
 	jitCtxOffRetPC          = 152
 	jitCtxOffRetCount       = 160
+	jitCtxOffMMUEnabled     = 164
 )
 
 // ie64ChainBudget is the per-callNative chain dispatch budget (number of
@@ -331,6 +336,105 @@ func isLeafFusionSafe(opcode byte, instr uint64) bool {
 	return false
 }
 
+// scanBlockBus is the high-physical-address variant of scanBlock. It fetches
+// every 8-byte instruction word through bus.ReadPhys64WithFault so that code
+// placed in sparse / high-physical backing (above the legacy cpu.memory[]
+// window) can be JITed. For low-PC fast path callers that already hold a
+// memory slice, prefer the older scanBlock — this routine pays a per-instr
+// bus dispatch.
+//
+// Scanning stops on the first unmapped fetch (matches the interpreter, which
+// halts execution on unmapped instruction fetches). The terminating
+// instruction is included in the returned slice when valid.
+func scanBlockBus(bus *MachineBus, startPC uint64) []JITInstr {
+	instrs := make([]JITInstr, 0, 32)
+	pc := startPC
+
+	for len(instrs) < jitMaxBlockSize {
+		instrWord, ok := bus.ReadPhys64WithFault(pc)
+		if !ok {
+			break
+		}
+		opcode := byte(instrWord)
+		byte1 := byte(instrWord >> 8)
+		byte2 := byte(instrWord >> 16)
+		byte3 := byte(instrWord >> 24)
+		imm32 := uint32(instrWord >> 32)
+
+		ji := JITInstr{
+			opcode:   opcode,
+			rd:       byte1 >> 3,
+			size:     (byte1 >> 1) & 0x03,
+			xbit:     byte1 & 1,
+			rs:       byte2 >> 3,
+			rt:       byte3 >> 3,
+			imm32:    imm32,
+			pcOffset: uint32(pc - startPC),
+		}
+		instrs = append(instrs, ji)
+
+		if isBlockTerminator(opcode) {
+			break
+		}
+		// Subtraction-form guard: pc+IE64_INSTR_SIZE wraps near
+		// MaxUint64 and would re-enter low addresses. Stop instead.
+		if pc > ^uint64(0)-IE64_INSTR_SIZE {
+			break
+		}
+		pc += IE64_INSTR_SIZE
+	}
+
+	return instrs
+}
+
+// scanBlockBusWithLimit is the bus-aware variant of scanBlockWithLimit, used
+// for MMU-on scanning where the high physical page is reached via bus phys.
+func scanBlockBusWithLimit(bus *MachineBus, startPC, maxPC uint64) []JITInstr {
+	instrs := make([]JITInstr, 0, 32)
+	pc := startPC
+
+	for len(instrs) < jitMaxBlockSize {
+		// Subtraction-form bound: pc+IE64_INSTR_SIZE wraps near
+		// MaxUint64; use maxPC - IE64_INSTR_SIZE so the bound check is
+		// safe regardless of how high startPC sits. maxPC is required
+		// to be >= IE64_INSTR_SIZE by callers (page-aligned).
+		if maxPC < IE64_INSTR_SIZE || pc > maxPC-IE64_INSTR_SIZE {
+			break
+		}
+		instrWord, ok := bus.ReadPhys64WithFault(pc)
+		if !ok {
+			break
+		}
+		opcode := byte(instrWord)
+		byte1 := byte(instrWord >> 8)
+		byte2 := byte(instrWord >> 16)
+		byte3 := byte(instrWord >> 24)
+		imm32 := uint32(instrWord >> 32)
+
+		ji := JITInstr{
+			opcode:   opcode,
+			rd:       byte1 >> 3,
+			size:     (byte1 >> 1) & 0x03,
+			xbit:     byte1 & 1,
+			rs:       byte2 >> 3,
+			rt:       byte3 >> 3,
+			imm32:    imm32,
+			pcOffset: uint32(pc - startPC),
+		}
+		instrs = append(instrs, ji)
+
+		if isBlockTerminator(opcode) {
+			break
+		}
+		if pc > ^uint64(0)-IE64_INSTR_SIZE {
+			break
+		}
+		pc += IE64_INSTR_SIZE
+	}
+
+	return instrs
+}
+
 // scanBlockWithLimit is like scanBlock but stops at maxPC (exclusive).
 // Used when MMU is enabled to prevent scanning across page boundaries.
 func scanBlockWithLimit(memory []byte, startPC, maxPC uint64) []JITInstr {
@@ -364,10 +468,28 @@ func scanBlockWithLimit(memory []byte, startPC, maxPC uint64) []JITInstr {
 		if isBlockTerminator(opcode) {
 			break
 		}
+		if pc > ^uint64(0)-IE64_INSTR_SIZE {
+			break
+		}
 		pc += IE64_INSTR_SIZE
 	}
 
 	return instrs
+}
+
+// containsStackOp returns true if any instruction in the block touches
+// the stack (PUSH/POP/JSR/RTS/JSR_IND). The non-MMU stack emitters
+// still address the stack as raw [memBase+R31], so a high-phys block
+// whose SP is also in high RAM would read/write past cpu.memory. Used
+// as a Phase 4 interim guard until Phase 5 wires bus-aware helpers.
+func containsStackOp(instrs []JITInstr) bool {
+	for i := range instrs {
+		switch instrs[i].opcode {
+		case OP_PUSH64, OP_POP64, OP_JSR64, OP_RTS64, OP_JSR_IND:
+			return true
+		}
+	}
+	return false
 }
 
 // needsFallback returns true if the block contains any instruction that
