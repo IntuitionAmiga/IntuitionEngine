@@ -72,7 +72,41 @@ type JITContext struct {
 	// memory/stack ops through a helper exit; it lives here now so the
 	// field offset is stable before any emitter wires it up.
 	MMUEnabled uint32 // 164: 1 when MMU translation is active for the next block
+	// Phase 5: helper-exit protocol. Native emitted code writes these
+	// fields and returns when it hits a high address, MMU-on operation,
+	// or unsupported addressing mode. The Go-side dispatcher in
+	// ExecuteJIT inspects NeedHelper, performs the equivalent semantic
+	// operation via the interpreter helpers (loadMem/storeMem/
+	// mmuStackRead/mmuStackWrite), advances PC, and re-enters JIT.
+	NeedHelper uint32 // 168: helper opcode (HELPER_* constants); 0 = no helper request
+	HelperSize uint32 // 172: IE64_SIZE_B/W/L/Q for memory ops
+	HelperRd   uint32 // 176: destination/source register or FP register index
+	HelperAddr uint64 // 184: virtual address (data ops) or call target (control flow)
+	HelperVal  uint64 // 192: value to store/push; receives load/pop result on re-entry
+	HelperPC   uint64 // 200: PC of the requesting instruction for trapFault.faultPC
+	LiveSP     uint64 // 208: SP flushed from host register before helper exit
 }
+
+// HELPER_* opcodes for the JITContext.NeedHelper field. Phase 5: native
+// emitted code sets NeedHelper to one of these values and exits when it
+// cannot service a memory/stack/control-flow operation locally (MMU on,
+// high physical address, etc.). The Go-side dispatcher then performs
+// the equivalent operation via the interpreter helpers and re-enters
+// the JIT loop.
+const (
+	HELPER_NONE    uint32 = 0
+	HELPER_LOAD    uint32 = 1  // integer load → setReg(HelperRd, loadMem(HelperAddr, HelperSize))
+	HELPER_STORE   uint32 = 2  // integer store → storeMem(HelperAddr, HelperVal, HelperSize)
+	HELPER_FLOAD   uint32 = 3  // 32-bit FP load → FPU.FPRegs[HelperRd] = loadMem(HelperAddr, L)
+	HELPER_FSTORE  uint32 = 4  // 32-bit FP store → storeMem(HelperAddr, FPU.FPRegs[HelperRd], L)
+	HELPER_DLOAD   uint32 = 5  // 64-bit FP load via storeFP64Pair
+	HELPER_DSTORE  uint32 = 6  // 64-bit FP store via loadFP64Pair
+	HELPER_PUSH    uint32 = 7  // mmuStackWrite(SP-8, HelperVal); SP -= 8
+	HELPER_POP     uint32 = 8  // val = mmuStackRead(SP); SP += 8 → setReg(HelperRd, val)
+	HELPER_JSR     uint32 = 9  // push retAddr (HelperVal); PC = HelperAddr (call target)
+	HELPER_RTS     uint32 = 10 // pop val; PC = val
+	HELPER_JSR_IND uint32 = 11 // push retAddr (HelperVal); PC = HelperAddr (rs + imm32)
+)
 
 // JITContext field offsets (must match struct layout above)
 const (
@@ -101,6 +135,13 @@ const (
 	jitCtxOffRetPC          = 152
 	jitCtxOffRetCount       = 160
 	jitCtxOffMMUEnabled     = 164
+	jitCtxOffNeedHelper     = 168
+	jitCtxOffHelperSize     = 172
+	jitCtxOffHelperRd       = 176
+	jitCtxOffHelperAddr     = 184
+	jitCtxOffHelperVal      = 192
+	jitCtxOffHelperPC       = 200
+	jitCtxOffLiveSP         = 208
 )
 
 // ie64ChainBudget is the per-callNative chain dispatch budget (number of

@@ -48,6 +48,13 @@ func TestJITContext_FieldOffsets(t *testing.T) {
 		{"RetPC", jitCtxOffRetPC, unsafe.Offsetof(ctx.RetPC)},
 		{"RetCount", jitCtxOffRetCount, unsafe.Offsetof(ctx.RetCount)},
 		{"MMUEnabled", jitCtxOffMMUEnabled, unsafe.Offsetof(ctx.MMUEnabled)},
+		{"NeedHelper", jitCtxOffNeedHelper, unsafe.Offsetof(ctx.NeedHelper)},
+		{"HelperSize", jitCtxOffHelperSize, unsafe.Offsetof(ctx.HelperSize)},
+		{"HelperRd", jitCtxOffHelperRd, unsafe.Offsetof(ctx.HelperRd)},
+		{"HelperAddr", jitCtxOffHelperAddr, unsafe.Offsetof(ctx.HelperAddr)},
+		{"HelperVal", jitCtxOffHelperVal, unsafe.Offsetof(ctx.HelperVal)},
+		{"HelperPC", jitCtxOffHelperPC, unsafe.Offsetof(ctx.HelperPC)},
+		{"LiveSP", jitCtxOffLiveSP, unsafe.Offsetof(ctx.LiveSP)},
 	}
 	for _, c := range cases {
 		if c.want != c.got {
