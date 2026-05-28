@@ -7,6 +7,23 @@ import (
 	"unsafe"
 )
 
+// ie64AccessBytes returns the byte count for an IE64 size encoding
+// (B=1, W=2, L=4, Q=8). Used by size-aware high-address bail checks on
+// both AMD64 and ARM64.
+func ie64AccessBytes(size byte) uint32 {
+	switch size {
+	case IE64_SIZE_B:
+		return 1
+	case IE64_SIZE_W:
+		return 2
+	case IE64_SIZE_L:
+		return 4
+	case IE64_SIZE_Q:
+		return 8
+	}
+	return 8
+}
+
 // ===========================================================================
 // JITContext — Bridge between Go and JIT-compiled native code
 // ===========================================================================

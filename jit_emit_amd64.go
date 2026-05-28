@@ -2022,14 +2022,16 @@ func emitNEG_AMD64(cb *CodeBuffer, ji *JITInstr) {
 // Memory Access Emitters (LOAD / STORE)
 // ===========================================================================
 
-// emitMemAddr computes address into RAX: uint32(int64(rs) + int64(int32(imm32)))
+// emitMemAddr computes address into RAX: int64(rs) + int64(int32(imm32)).
+// Result is the full 64-bit effective address; downstream IOStart and
+// MemSize comparisons use 64-bit operands so high addresses correctly route
+// to the slow path / bail instead of silently aliasing into low memory.
 func emitMemAddr(cb *CodeBuffer, ji *JITInstr) {
 	rsReg := resolveRegAMD64(cb, ji.rs, amd64RCX)
 	amd64MOV_reg_imm32(cb, amd64RDX, ji.imm32)
 	amd64MOVSXD(cb, amd64RDX, amd64RDX)
 	amd64MOV_reg_reg(cb, amd64RAX, rsReg)
 	amd64ALU_reg_reg(cb, 0x01, amd64RAX, amd64RDX) // ADD RAX, RDX
-	amd64MOV_reg_reg32(cb, amd64RAX, amd64RAX)     // truncate to uint32
 }
 
 // emitMemLoad emits a sized load from [RSI + RAX] into dstReg.
@@ -2072,8 +2074,10 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs,
 
 	emitMemAddr(cb, ji)
 
-	// Compare with IO_REGION_START (R8)
-	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, amd64RegIOStart) // CMP EAX, R8d
+	// Compare with IO_REGION_START (R8). 64-bit CMP so any address with
+	// upper bits set routes to the slow path; R8 was loaded via 32-bit
+	// load which zero-extends to the full register.
+	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RegIOStart) // CMP RAX, R8
 	slowPathOff := amd64Jcc_rel32(cb, amd64CondAE)
 
 	// Fast path
@@ -2091,12 +2095,12 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs,
 	slowPathPC := cb.Len()
 	patchRel32(cb, slowPathOff, slowPathPC)
 
-	// PLAN_MAX_RAM slice 10b: bail to interpreter if addr >= MemSize. The
-	// existing slow path below indexes ioPageBitmap[addr>>8] without a
-	// bounds check; for addr >= len(bus.memory) that index is OOB on the
-	// bitmap. Compare addr against ctx.MemSize and bail cleanly when the
-	// access escapes the backed window.
-	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar)
+	// PLAN_MAX_RAM slice 10b: bail to interpreter if addr+accessSize
+	// escapes MemSize. The slow path below indexes ioPageBitmap[addr>>8]
+	// without a bounds check; for high or end-of-memory accesses that
+	// index would be OOB. Size-aware 64-bit check catches both high bits
+	// set and last-byte-past-MemSize.
+	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar, ie64AccessBytes(ji.size))
 
 	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
 	if !ok {
@@ -2116,16 +2120,29 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs,
 	patchRel32(cb, doneOff, donePC)
 }
 
-// emitHighAddrBailCheckAMD64 emits a `if EAX >= ctx.MemSize → bail` check
-// at the top of an IE64 LOAD/STORE slow path. EAX holds the computed
-// address; RCX is used as scratch to load the ctx pointer and MemSize.
-// The bail follow-up reuses emitIOBail so NeedIOFallback is set and the
-// epilogue restores guest state cleanly.
-func emitHighAddrBailCheckAMD64(cb *CodeBuffer, instrPC uint32, pcOffset uint32, br *blockRegs, writtenSoFar uint32) {
+// emitHighAddrBailCheckAMD64 emits a size-aware 64-bit bail check at the top
+// of an IE64 LOAD/STORE slow path: if addr > MemSize - accessBytes → bail.
+// This catches both addresses with high bits set (would silently alias if
+// the previous 32-bit check were used) and accesses near MemSize whose end
+// byte would escape the low window. accessBytes is 1/2/4/8 for B/W/L/Q.
+//
+// RAX holds the full 64-bit effective address; RCX is scratch.
+func emitHighAddrBailCheckAMD64(cb *CodeBuffer, instrPC uint32, pcOffset uint32, br *blockRegs, writtenSoFar uint32, accessBytes uint32) {
 	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))     // RCX = ctx ptr
-	amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize)) // ECX = ctx.MemSize
-	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, amd64RCX)                    // CMP EAX, ECX
-	inRangeOff := amd64Jcc_rel32(cb, 0x2)                               // JB in_range (B = below)
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize)) // ECX = ctx.MemSize (zero-extends to RCX)
+	if accessBytes > 1 {
+		// RCX = MemSize - (accessBytes - 1) so that the in-range test
+		// becomes `addr <= MemSize - accessBytes` (last byte of access
+		// fits inside [0, MemSize)). MemSize is always >> accessBytes,
+		// so no underflow.
+		amd64ALU_reg_imm32(cb, 5, amd64RCX, int32(accessBytes-1)) // SUB RCX, accessBytes-1 (64-bit)
+	}
+	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RCX) // CMP RAX, RCX (64-bit)
+	// JB in_range: addr < RCX → in range.
+	// RCX = MemSize - accessBytes + 1 (when accessBytes > 1, after SUB above),
+	// so addr < RCX ⇔ addr + accessBytes <= MemSize. For accessBytes==1 RCX
+	// is unmodified MemSize, so addr < MemSize.
+	inRangeOff := amd64Jcc_rel32(cb, 0x2)
 	emitIOBail(cb, instrPC, pcOffset, br, writtenSoFar)
 	inRangePC := cb.Len()
 	patchRel32(cb, inRangeOff, inRangePC)
@@ -2141,7 +2158,7 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs
 		srcReg = amd64R11
 	}
 
-	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, amd64RegIOStart)
+	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RegIOStart) // CMP RAX, R8 (64-bit)
 	slowPathOff := amd64Jcc_rel32(cb, amd64CondAE)
 
 	emitMemStore(cb, srcReg, ji.size)
@@ -2151,7 +2168,7 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs
 	patchRel32(cb, slowPathOff, slowPathPC)
 
 	// PLAN_MAX_RAM slice 10b: see emitLOAD_AMD64 for the rationale.
-	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar)
+	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar, ie64AccessBytes(ji.size))
 
 	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
 	if !ok {
@@ -2855,9 +2872,9 @@ func emitFCVTIF_AMD64(cb *CodeBuffer, ji *JITInstr) {
 // ===========================================================================
 
 func emitFLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
-	emitMemAddr(cb, ji) // address in RAX
+	emitMemAddr(cb, ji) // address in RAX (full 64-bit)
 
-	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, amd64RegIOStart)
+	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RegIOStart) // CMP RAX, R8 (64-bit)
 	slowPathOff := amd64Jcc_rel32(cb, amd64CondAE)
 
 	// Fast path: 32-bit load
@@ -2867,6 +2884,11 @@ func emitFLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs
 	// Slow path
 	slowPathPC := cb.Len()
 	patchRel32(cb, slowPathOff, slowPathPC)
+
+	// Size-aware high-address bail before the bitmap probe so that an FP
+	// access (L-sized = 4 bytes) whose end byte escapes MemSize bails
+	// cleanly instead of indexing the bitmap OOB or aliasing into low RAM.
+	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar, 4)
 
 	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
 	if !ok {
@@ -2890,12 +2912,12 @@ func emitFLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs
 }
 
 func emitFSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
-	emitMemAddr(cb, ji) // address in RAX
+	emitMemAddr(cb, ji) // address in RAX (full 64-bit)
 
 	// Load FP source value
 	emitLoadFPRegAMD64(cb, amd64R10, ji.rd)
 
-	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, amd64RegIOStart)
+	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RegIOStart) // CMP RAX, R8 (64-bit)
 	slowPathOff := amd64Jcc_rel32(cb, amd64CondAE)
 
 	// Fast path
@@ -2905,6 +2927,10 @@ func emitFSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockReg
 	// Slow path
 	slowPathPC := cb.Len()
 	patchRel32(cb, slowPathOff, slowPathPC)
+
+	// Size-aware high-address bail before the bitmap probe; FSTORE is
+	// L-sized (4 bytes).
+	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar, 4)
 
 	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
 	if !ok {
