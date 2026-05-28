@@ -36,8 +36,9 @@ func TestJIT_ARM64_IE64Load_Above4GiB_MustNotAlias(t *testing.T) {
 	if r.cpu.regs[1] != sentinel {
 		t.Fatalf("R1 = 0x%016X, want sentinel 0x%016X", r.cpu.regs[1], sentinel)
 	}
-	if r.ctx.NeedIOFallback != 1 {
-		t.Fatalf("NeedIOFallback = %d, want 1", r.ctx.NeedIOFallback)
+	// Phase 5 cycle 5.4: high-addr LOAD routes through HELPER_LOAD.
+	if r.ctx.NeedHelper != HELPER_LOAD {
+		t.Fatalf("NeedHelper = %d, want HELPER_LOAD", r.ctx.NeedHelper)
 	}
 }
 
@@ -126,8 +127,8 @@ func TestJIT_ARM64_IE64Load_Above4GiB_SlowPathRange(t *testing.T) {
 
 	r.compileAndRun(t, ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 2, 0, 0))
 
-	if r.ctx.NeedIOFallback != 1 {
-		t.Fatalf("NeedIOFallback = %d, want 1 (slow-path range high addr must bail)", r.ctx.NeedIOFallback)
+	if r.ctx.NeedHelper != HELPER_LOAD {
+		t.Fatalf("NeedHelper = %d, want HELPER_LOAD (slow-path range high addr must helper-exit)", r.ctx.NeedHelper)
 	}
 }
 
@@ -152,9 +153,9 @@ func TestJIT_ARM64_IE64Load_NearEndOfMemory_Bails(t *testing.T) {
 
 			r.compileAndRun(t, ie64Instr(OP_LOAD, 1, c.size, 0, 2, 0, 0))
 
-			if r.ctx.NeedIOFallback != 1 {
-				t.Fatalf("size=%s addr=MemSize-%d+1: NeedIOFallback = %d, want 1",
-					c.name, c.bytes, r.ctx.NeedIOFallback)
+			if r.ctx.NeedHelper != HELPER_LOAD {
+				t.Fatalf("size=%s addr=MemSize-%d+1: NeedHelper = %d, want HELPER_LOAD",
+					c.name, c.bytes, r.ctx.NeedHelper)
 			}
 		})
 	}
