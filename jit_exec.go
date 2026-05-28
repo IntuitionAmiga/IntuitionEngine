@@ -508,11 +508,53 @@ func (cpu *CPU64) ExecuteJIT() {
 		// uniform with interpreter mode.
 		executed += uint64(cpu.jitCtx.ChainCount)
 		cpu.jitCtx.ChainCount = 0
-		if executed == 0 {
-			executed = uint64(block.instrCount) // safety fallback
+
+		// Phase 5: helper-exit dispatch. Emitted code that hit an MMU
+		// translation, a high physical address, or any other case it
+		// could not service locally has written a structured request to
+		// JITContext via the HELPER_* protocol. Service it now via the
+		// interpreter helpers. While Phase 5 is still in flight no
+		// emitter sets NeedHelper, so the no-op fast path returns
+		// immediately. Helpers handle their own PC advance and fault
+		// propagation; we just account for the retired instruction and
+		// suppress the I/O fallback below since the helper already
+		// re-executed the bailing op.
+		//
+		// The dispatch happens BEFORE the legacy zero-count safety
+		// fallback. A helper exit on the first instruction of a block
+		// legitimately reports RetCount = 0; conflating that with a
+		// missing return-channel write would synthesize a fake
+		// block.instrCount on top of the helper's 0 or 1 and over-count
+		// instructions that never ran.
+		helperRetired, helperHandled := cpu.handleJITHelper()
+		if helperHandled {
+			executed += helperRetired
+		} else if executed == 0 {
+			// Legacy safety fallback for compiled blocks that did not
+			// write the return channel. Suppressed when a helper has
+			// already supplied authoritative accounting.
+			executed = uint64(block.instrCount)
+		}
+
+		// Helpers can halt the CPU directly: missing/invalid FPU
+		// (haltFPUFault) and non-trapping stack failures
+		// (haltStackFault) call cpu.running.Store(false). The
+		// dispatch loop's running check only fires every 4096
+		// iterations, which would let the JIT execute more blocks
+		// after the interpreter would have stopped. Promote the
+		// retired count and exit immediately.
+		if helperHandled && !cpu.running.Load() {
+			cpu.InstructionCount += executed
+			break
 		}
 
 		ioBail := cpu.jitCtx.NeedIOFallback != 0
+		if helperHandled {
+			// Helper already advanced past the offending instruction;
+			// avoid double-handling via the I/O fallback path.
+			ioBail = false
+			cpu.jitCtx.NeedIOFallback = 0
+		}
 		if ioBail {
 			diagIOBails++
 			globalIE64TurboStats.ioBails.Add(1)
