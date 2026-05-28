@@ -79,7 +79,7 @@ func (cpu *M68KCPU) tryM68KTurboTrace(execMem *ExecMem) (uint64, bool) {
 		return 0, false
 	}
 	pc := cpu.PC
-	if cpu.m68kJitCache != nil && cpu.m68kJitCache.Get(pc) != nil {
+	if cpu.m68kJitCache != nil && cpu.m68kJitCache.Get(uint64(pc)) != nil {
 		return 0, false
 	}
 	op := m68kTurboRead16(cpu.memory, pc)
@@ -139,7 +139,7 @@ func (cpu *M68KCPU) m68kInstallTurboBlock(block *JITBlock) {
 			startPage := r[0] >> 12
 			endPage := (r[1] - 1) >> 12
 			for p := startPage; p <= endPage; p++ {
-				if p < uint32(len(cpu.m68kJitCodeBitmap)) {
+				if p < uint64(len(cpu.m68kJitCodeBitmap)) {
 					cpu.m68kJitCodeBitmap[p] = 1
 				}
 			}
@@ -180,8 +180,8 @@ func m68kFinishNativeTurboBlock(cb *CodeBuffer, br *m68kBlockRegs, execMem *Exec
 		return nil, false
 	}
 	return &JITBlock{
-		startPC:    startPC,
-		endPC:      endPC,
+		startPC:    uint64(startPC),
+		endPC:      uint64(endPC),
 		instrCount: instrCount,
 		execAddr:   addr,
 		execSize:   len(code),

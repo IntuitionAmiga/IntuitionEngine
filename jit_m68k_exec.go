@@ -184,7 +184,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		}
 
 		// Try cache lookup
-		block := cpu.m68kJitCache.Get(pc)
+		block := cpu.m68kJitCache.Get(uint64(pc))
 		if block == nil {
 			// Scan block
 			instrs := m68kScanBlock(cpu.memory, pc)
@@ -225,7 +225,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				startPage := block.startPC >> 12
 				endPage := (block.endPC - 1) >> 12
 				for p := startPage; p <= endPage; p++ {
-					if p < uint32(len(cpu.m68kJitCodeBitmap)) {
+					if p < uint64(len(cpu.m68kJitCodeBitmap)) {
 						cpu.m68kJitCodeBitmap[p] = 1
 					}
 				}
@@ -283,7 +283,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 								startPage := r[0] >> 12
 								endPage := (r[1] - 1) >> 12
 								for p := startPage; p <= endPage; p++ {
-									if p < uint32(len(cpu.m68kJitCodeBitmap)) {
+									if p < uint64(len(cpu.m68kJitCodeBitmap)) {
 										cpu.m68kJitCodeBitmap[p] = 1
 									}
 								}
@@ -305,7 +305,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			ctx.RTSCache2Addr = ctx.RTSCache1Addr
 			ctx.RTSCache1PC = ctx.RTSCache0PC
 			ctx.RTSCache1Addr = ctx.RTSCache0Addr
-			ctx.RTSCache0PC = block.startPC
+			ctx.RTSCache0PC = uint32(block.startPC)
 			ctx.RTSCache0Addr = block.chainEntry
 		}
 

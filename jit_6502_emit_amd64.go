@@ -2745,14 +2745,14 @@ done:
 	var slots []chainSlot
 	for _, ce := range chainExits {
 		slots = append(slots, chainSlot{
-			targetPC:  ce.targetPC,
+			targetPC:  uint64(ce.targetPC),
 			patchAddr: addr + uintptr(ce.jmpDispOffset),
 		})
 	}
 
 	return &JITBlock{
-		startPC:    uint32(startPC),
-		endPC:      uint32(lastByte) + 1, // first byte after block (for cache invalidation)
+		startPC:    uint64(startPC),
+		endPC:      uint64(lastByte) + 1, // first byte after block (for cache invalidation)
 		instrCount: len(instrs),
 		execAddr:   addr,
 		execSize:   len(code),

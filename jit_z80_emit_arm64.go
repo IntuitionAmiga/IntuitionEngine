@@ -67,8 +67,8 @@ func compileBlockZ80Stub(instrs []JITZ80Instr, startPC, endPC uint16, execMem *E
 	flushICache(addr, uintptr(len(code)))
 
 	block := &JITBlock{
-		startPC:     uint32(startPC),
-		endPC:       uint32(endPC),
+		startPC:     uint64(startPC),
+		endPC:       uint64(endPC),
 		instrCount:  len(instrs),
 		execAddr:    addr,
 		execSize:    len(code),

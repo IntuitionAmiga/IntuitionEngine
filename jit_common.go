@@ -45,18 +45,18 @@ type JITContext struct {
 	FPUPtr         uintptr // 72: &cpu.FPU (pointer to IE64FPU struct)
 	ChainBudget    uint32  // 80: blocks remaining before returning to Go
 	ChainCount     uint32  // 84: accumulated instruction count during chaining
-	RTSCache0PC    uint32  // 88: MRU entry 0 - return PC
-	_pad0          uint32  // 92: padding for alignment
-	RTSCache0Addr  uintptr // 96: MRU entry 0 - chain entry address
-	RTSCache1PC    uint32  // 104: MRU entry 1 - return PC
-	_pad1          uint32  // 108: padding for alignment
-	RTSCache1Addr  uintptr // 112: MRU entry 1 - chain entry address
-	RTSCache2PC    uint32  // 120: MRU entry 2 - return PC
-	_pad2          uint32  // 124: padding for alignment
-	RTSCache2Addr  uintptr // 128: MRU entry 2 - chain entry address
-	RTSCache3PC    uint32  // 136: MRU entry 3 - return PC
-	_pad3          uint32  // 140: padding for alignment
-	RTSCache3Addr  uintptr // 144: MRU entry 3 - chain entry address
+	// Phase 3: RTS cache PC fields widened to uint64. Cache compares are
+	// 64-bit on AMD64; the high-bit bypass from Phase 2 is no longer
+	// required because the cache PC field now matches the full popped
+	// return address.
+	RTSCache0PC   uint64  // 88:  MRU entry 0 - return PC
+	RTSCache0Addr uintptr // 96:  MRU entry 0 - chain entry address
+	RTSCache1PC   uint64  // 104: MRU entry 1 - return PC
+	RTSCache1Addr uintptr // 112: MRU entry 1 - chain entry address
+	RTSCache2PC   uint64  // 120: MRU entry 2 - return PC
+	RTSCache2Addr uintptr // 128: MRU entry 2 - chain entry address
+	RTSCache3PC   uint64  // 136: MRU entry 3 - return PC
+	RTSCache3Addr uintptr // 144: MRU entry 3 - chain entry address
 	// Phase 2: explicit 64-bit PC return channel.
 	//
 	// Replaces the legacy regs[0]-packed (lowerPC | upperCount) format with
@@ -173,9 +173,9 @@ func isBlockTerminator(opcode byte) bool {
 // scanBlock decodes IE64 instructions starting at startPC until a block
 // terminator is found or the max block size is reached. The terminating
 // instruction IS included in the block (branches need to be compiled).
-func scanBlock(memory []byte, startPC uint32) []JITInstr {
+func scanBlock(memory []byte, startPC uint64) []JITInstr {
 	instrs := make([]JITInstr, 0, 32)
-	memSize := uint32(len(memory))
+	memSize := uint64(len(memory))
 	pc := startPC
 
 	for len(instrs) < jitMaxBlockSize {
@@ -198,7 +198,7 @@ func scanBlock(memory []byte, startPC uint32) []JITInstr {
 			rs:       byte2 >> 3,
 			rt:       byte3 >> 3,
 			imm32:    imm32,
-			pcOffset: pc - startPC,
+			pcOffset: uint32(pc - startPC),
 		}
 
 		// JSR with fusable register-only leaf: inline leaf body in place
@@ -216,7 +216,7 @@ func scanBlock(memory []byte, startPC uint32) []JITInstr {
 		// emit a real call+inlined-body+real-return, corrupting stack
 		// semantics. Set per-arch in jit_common_{amd64,arm64}.go.
 		if opcode == OP_JSR64 && ie64ScanJSRLeafFusionEnabled {
-			targetPC := uint32(int64(pc) + int64(int32(imm32)))
+			targetPC := uint64(int64(pc) + int64(int32(imm32)))
 			if leafBody, ok := analyzeJSRLeafFusion(memory, targetPC); ok {
 				// Skip fusion if the resulting fused sequence (JSR
 				// marker + body + synthetic RTS marker) plus at least
@@ -266,9 +266,15 @@ func scanBlock(memory []byte, startPC uint32) []JITInstr {
 // Restricting to register-only ops keeps bail semantics simple — none of
 // the inlined instructions can fault mid-block, so the dispatcher never
 // has to re-execute the leaf, only the JSR (which never executed in JIT).
-func analyzeJSRLeafFusion(memory []byte, targetPC uint32) ([]JITInstr, bool) {
+func analyzeJSRLeafFusion(memory []byte, targetPC uint64) ([]JITInstr, bool) {
 	const maxBodyInstrs = 4
-	memSize := uint32(len(memory))
+	memSize := uint64(len(memory))
+	// Region promotion / leaf fusion is gated to low memory at the call
+	// site, but defensively refuse fusion for targets that escape the
+	// memory slice so the byte read below cannot panic.
+	if targetPC >= memSize {
+		return nil, false
+	}
 	pc := targetPC
 	body := make([]JITInstr, 0, maxBodyInstrs)
 
@@ -327,7 +333,7 @@ func isLeafFusionSafe(opcode byte, instr uint64) bool {
 
 // scanBlockWithLimit is like scanBlock but stops at maxPC (exclusive).
 // Used when MMU is enabled to prevent scanning across page boundaries.
-func scanBlockWithLimit(memory []byte, startPC, maxPC uint32) []JITInstr {
+func scanBlockWithLimit(memory []byte, startPC, maxPC uint64) []JITInstr {
 	instrs := make([]JITInstr, 0, 32)
 	pc := startPC
 
@@ -351,7 +357,7 @@ func scanBlockWithLimit(memory []byte, startPC, maxPC uint32) []JITInstr {
 			rs:       byte2 >> 3,
 			rt:       byte3 >> 3,
 			imm32:    imm32,
-			pcOffset: pc - startPC,
+			pcOffset: uint32(pc - startPC),
 		}
 		instrs = append(instrs, ji)
 
@@ -604,7 +610,7 @@ func instrWrittenRegs(ji *JITInstr) uint32 {
 // detectBackwardBranches returns true if any conditional branch (BEQ-BLS) or
 // BRA targets an earlier instruction within the same block. Used to enable
 // native backward branches with budget-based timer safety.
-func detectBackwardBranches(instrs []JITInstr, startPC uint32) bool {
+func detectBackwardBranches(instrs []JITInstr, startPC uint64) bool {
 	for _, ji := range instrs {
 		var isBranch bool
 		switch ji.opcode {
@@ -614,8 +620,8 @@ func detectBackwardBranches(instrs []JITInstr, startPC uint32) bool {
 		if !isBranch {
 			continue
 		}
-		instrPC := startPC + ji.pcOffset
-		targetPC := uint32(int64(instrPC) + int64(int32(ji.imm32)))
+		instrPC := startPC + uint64(ji.pcOffset)
+		targetPC := uint64(int64(instrPC) + int64(int32(ji.imm32)))
 		if targetPC >= startPC && targetPC < instrPC && (targetPC-startPC)%IE64_INSTR_SIZE == 0 {
 			return true
 		}
@@ -733,13 +739,13 @@ func (cb *CodeBuffer) PatchUint32(offset int, val uint32) {
 
 // chainSlot records a patchable chain exit point within a compiled block.
 type chainSlot struct {
-	targetPC  uint32  // 6502/IE64 PC this exit targets
+	targetPC  uint64  // 6502/IE64 PC this exit targets (full uint64 for IE64)
 	patchAddr uintptr // address of JMP rel32 displacement in ExecMem
 }
 
 type JITBlock struct {
-	startPC        uint32
-	endPC          uint32
+	startPC        uint64
+	endPC          uint64
 	instrCount     int
 	execAddr       uintptr
 	execSize       int
@@ -767,7 +773,7 @@ type JITBlock struct {
 	// described by a single [startPC, endPC) span and would silently
 	// miss SMC invalidation for the 0x5000 block. Nil means the
 	// canonical [startPC, endPC) span is exact.
-	coveredRanges [][2]uint32
+	coveredRanges [][2]uint64
 }
 
 // JITBlockCoveredRanges returns the guest PC ranges the block's native
@@ -776,11 +782,11 @@ type JITBlock struct {
 // constituent blocks are non-contiguous it is the explicit list set
 // at compile time. SMC invalidation and code-page bitmap marking must
 // iterate this slice rather than [startPC, endPC) directly.
-func JITBlockCoveredRanges(b *JITBlock) [][2]uint32 {
+func JITBlockCoveredRanges(b *JITBlock) [][2]uint64 {
 	if b.coveredRanges != nil {
 		return b.coveredRanges
 	}
-	return [][2]uint32{{b.startPC, b.endPC}}
+	return [][2]uint64{{b.startPC, b.endPC}}
 }
 
 // ie64ResolveTerminatorTarget computes the static branch target for a
@@ -793,35 +799,57 @@ func JITBlockCoveredRanges(b *JITBlock) [][2]uint32 {
 // — region formation does not follow them.
 //
 // instrPC is the PC of the terminating instruction itself.
-func ie64ResolveTerminatorTarget(opcode byte, rs byte, imm32 uint32, instrPC uint32) (uint32, bool) {
+func ie64ResolveTerminatorTarget(opcode byte, rs byte, imm32 uint32, instrPC uint64) (uint64, bool) {
 	switch opcode {
 	case OP_BRA:
-		return uint32(int64(instrPC) + int64(int32(imm32))), true
+		return uint64(int64(instrPC) + int64(int32(imm32))), true
 	case OP_JMP:
 		if rs != 0 {
 			return 0, false
 		}
-		return uint32(int64(int32(imm32))), true
+		return uint64(int64(int32(imm32))), true
 	}
 	return 0, false
 }
 
+// ie64CacheKey is the exact composite key used by IE64's MMU mode so that
+// two address spaces sharing the same virtual PC cannot collide on the
+// JIT cache. The legacy `(ptbr * golden_ratio) ^ pcVirt` hash was lossy
+// and could produce identical keys for distinct {ptbr, pc} pairs, causing
+// the dispatcher to execute the wrong physical block on context switch.
+type ie64CacheKey struct {
+	ptbr uint64
+	pc   uint64
+}
+
 type CodeCache struct {
-	blocks map[uint64]*JITBlock
+	blocks    map[uint64]*JITBlock       // non-MMU: keyed by guest PC
+	mmuBlocks map[ie64CacheKey]*JITBlock // MMU mode: exact (ptbr, vPC) composite
 }
 
 func NewCodeCache() *CodeCache {
 	return &CodeCache{
-		blocks: make(map[uint64]*JITBlock),
+		blocks:    make(map[uint64]*JITBlock),
+		mmuBlocks: make(map[ie64CacheKey]*JITBlock),
 	}
 }
 
-func (cc *CodeCache) Get(pc uint32) *JITBlock {
-	return cc.blocks[uint64(pc)]
+// GetMMU looks up an MMU-scoped block with an exact composite key.
+func (cc *CodeCache) GetMMU(ptbr, pc uint64) *JITBlock {
+	return cc.mmuBlocks[ie64CacheKey{ptbr: ptbr, pc: pc}]
+}
+
+// PutMMU stores an MMU-scoped block under its exact composite key.
+func (cc *CodeCache) PutMMU(ptbr, pc uint64, block *JITBlock) {
+	cc.mmuBlocks[ie64CacheKey{ptbr: ptbr, pc: pc}] = block
+}
+
+func (cc *CodeCache) Get(pc uint64) *JITBlock {
+	return cc.blocks[pc]
 }
 
 func (cc *CodeCache) Put(block *JITBlock) {
-	cc.blocks[uint64(block.startPC)] = block
+	cc.blocks[block.startPC] = block
 }
 
 func (cc *CodeCache) GetKey(key uint64) *JITBlock {
@@ -832,9 +860,10 @@ func (cc *CodeCache) PutKey(key uint64, block *JITBlock) {
 	cc.blocks[key] = block
 }
 
-// Invalidate clears the entire code cache.
+// Invalidate clears the entire code cache (both non-MMU and MMU maps).
 func (cc *CodeCache) Invalidate() {
 	clear(cc.blocks)
+	clear(cc.mmuBlocks)
 }
 
 // InvalidateRange removes any blocks whose covered guest PC ranges
@@ -842,7 +871,7 @@ func (cc *CodeCache) Invalidate() {
 // covered ranges; iterating JITBlockCoveredRanges catches an SMC write
 // to a region's middle block that the canonical [startPC, endPC)
 // span would miss.
-func (cc *CodeCache) InvalidateRange(lo, hi uint32) {
+func (cc *CodeCache) InvalidateRange(lo, hi uint64) {
 	for key, block := range cc.blocks {
 		for _, r := range JITBlockCoveredRanges(block) {
 			if r[1] > lo && r[0] < hi {
@@ -851,12 +880,27 @@ func (cc *CodeCache) InvalidateRange(lo, hi uint32) {
 			}
 		}
 	}
+	for key, block := range cc.mmuBlocks {
+		for _, r := range JITBlockCoveredRanges(block) {
+			if r[1] > lo && r[0] < hi {
+				delete(cc.mmuBlocks, key)
+				break
+			}
+		}
+	}
 }
 
 // PatchChainsTo scans all cached blocks for chain slots targeting targetPC
 // and patches their JMP rel32 to jump to chainEntry.
-func (cc *CodeCache) PatchChainsTo(targetPC uint32, chainEntry uintptr) {
+func (cc *CodeCache) PatchChainsTo(targetPC uint64, chainEntry uintptr) {
 	for _, block := range cc.blocks {
+		for _, slot := range block.chainSlots {
+			if slot.targetPC == targetPC && slot.patchAddr != 0 {
+				PatchRel32At(slot.patchAddr, chainEntry)
+			}
+		}
+	}
+	for _, block := range cc.mmuBlocks {
 		for _, slot := range block.chainSlots {
 			if slot.targetPC == targetPC && slot.patchAddr != 0 {
 				PatchRel32At(slot.patchAddr, chainEntry)
@@ -872,8 +916,22 @@ func (cc *CodeCache) PatchChainsTo(targetPC uint32, chainEntry uintptr) {
 // link to chain slots from another address space sharing the same
 // virtual PC, executing the wrong physical code on the next chained
 // transition.
-func (cc *CodeCache) PatchChainsToScoped(targetPC uint32, chainEntry uintptr, scopePtbr uint64) {
+func (cc *CodeCache) PatchChainsToScoped(targetPC uint64, chainEntry uintptr, scopePtbr uint64) {
 	for _, block := range cc.blocks {
+		if block.ptbr != scopePtbr {
+			continue
+		}
+		for _, slot := range block.chainSlots {
+			if slot.targetPC == targetPC && slot.patchAddr != 0 {
+				PatchRel32At(slot.patchAddr, chainEntry)
+			}
+		}
+	}
+	// MMU-scoped chain patching: the mmuBlocks map already separates
+	// blocks by (ptbr, pc), so an iteration here is naturally PTBR-aware.
+	// We still filter by scopePtbr to keep the contract identical to the
+	// non-MMU path.
+	for _, block := range cc.mmuBlocks {
 		if block.ptbr != scopePtbr {
 			continue
 		}
@@ -890,10 +948,15 @@ func (cc *CodeCache) PatchChainsToScoped(targetPC uint32, chainEntry uintptr, sc
 // condition used by InvalidateRange, so that every block about to be removed
 // has all inbound chain jumps reset to their unchained fallback first.
 // Must be called BEFORE InvalidateRange.
-func (cc *CodeCache) UnpatchChainsInRange(lo, hi uint32) {
+func (cc *CodeCache) UnpatchChainsInRange(lo, hi uint64) {
 	// Collect the startPCs of all blocks that will be removed.
-	var doomed []uint32
+	var doomed []uint64
 	for _, block := range cc.blocks {
+		if block.endPC > lo && block.startPC < hi {
+			doomed = append(doomed, block.startPC)
+		}
+	}
+	for _, block := range cc.mmuBlocks {
 		if block.endPC > lo && block.startPC < hi {
 			doomed = append(doomed, block.startPC)
 		}
@@ -903,13 +966,23 @@ func (cc *CodeCache) UnpatchChainsInRange(lo, hi uint32) {
 	}
 
 	// Build a set for O(1) lookup.
-	doomedSet := make(map[uint32]struct{}, len(doomed))
+	doomedSet := make(map[uint64]struct{}, len(doomed))
 	for _, pc := range doomed {
 		doomedSet[pc] = struct{}{}
 	}
 
 	// Unpatch every chain slot in every surviving block that targets a doomed block.
 	for _, block := range cc.blocks {
+		for _, slot := range block.chainSlots {
+			if slot.patchAddr == 0 {
+				continue
+			}
+			if _, ok := doomedSet[slot.targetPC]; ok {
+				PatchRel32At(slot.patchAddr, slot.patchAddr+4)
+			}
+		}
+	}
+	for _, block := range cc.mmuBlocks {
 		for _, slot := range block.chainSlots {
 			if slot.patchAddr == 0 {
 				continue

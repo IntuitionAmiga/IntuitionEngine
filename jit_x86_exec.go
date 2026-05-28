@@ -191,7 +191,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		}
 
 		// Try cache lookup
-		block := cpu.x86JitCache.Get(pc)
+		block := cpu.x86JitCache.Get(uint64(pc))
 		if block == nil {
 			// Scan block
 			instrs := x86ScanBlock(cpu.memory, pc)
@@ -285,7 +285,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				startPage := block.startPC >> 8
 				endPage := (block.endPC - 1) >> 8
 				for p := startPage; p <= endPage; p++ {
-					if p < uint32(len(cpu.x86JitCodeBM)) {
+					if p < uint64(len(cpu.x86JitCodeBM)) {
 						cpu.x86JitCodeBM[p] = 1
 					}
 				}
@@ -352,7 +352,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			ctx.RTSCache1PC = ctx.RTSCache0PC
 			ctx.RTSCache1Addr = ctx.RTSCache0Addr
 			ctx.RTSCache1RegMap = ctx.RTSCache0RegMap
-			ctx.RTSCache0PC = block.startPC
+			ctx.RTSCache0PC = uint32(block.startPC)
 			ctx.RTSCache0Addr = block.chainEntry
 			ctx.RTSCache0RegMap = x86RegMapToUint64(block.regMap)
 		} else if !x86RTSChainingEnabled {

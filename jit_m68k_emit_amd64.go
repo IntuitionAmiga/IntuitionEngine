@@ -730,6 +730,11 @@ func amd64ALU_reg_mem32_cmp(cb *CodeBuffer, reg, base byte, disp int32) {
 	emitMemOp(cb, false, 0x3B, reg, base, disp)
 }
 
+// amd64ALU_reg_mem_cmp emits CMP reg64, [base + disp] (opcode 0x3B with REX.W).
+func amd64ALU_reg_mem_cmp(cb *CodeBuffer, reg, base byte, disp int32) {
+	emitMemOp(cb, true, 0x3B, reg, base, disp)
+}
+
 // amd64DEC_mem32 emits DEC DWORD [base+disp]. Opcode FF /1.
 func amd64DEC_mem32(cb *CodeBuffer, base byte, disp int32) {
 	emitMemOp(cb, false, 0xFF, 1, base, disp)
@@ -4025,14 +4030,14 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 		var slots []chainSlot
 		for _, ce := range chainExits {
 			slots = append(slots, chainSlot{
-				targetPC:  ce.targetPC,
+				targetPC:  uint64(ce.targetPC),
 				patchAddr: addr + uintptr(ce.jmpDispOffset),
 			})
 		}
 
 		return &JITBlock{
-			startPC:    startPC,
-			endPC:      endPC,
+			startPC:    uint64(startPC),
+			endPC:      uint64(endPC),
 			instrCount: len(instrs),
 			execAddr:   addr,
 			execSize:   len(code),
@@ -4139,14 +4144,14 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 	var slots []chainSlot
 	for _, ce := range chainExits {
 		slots = append(slots, chainSlot{
-			targetPC:  ce.targetPC,
+			targetPC:  uint64(ce.targetPC),
 			patchAddr: addr + uintptr(ce.jmpDispOffset),
 		})
 	}
 
 	return &JITBlock{
-		startPC:    startPC,
-		endPC:      endPC,
+		startPC:    uint64(startPC),
+		endPC:      uint64(endPC),
 		instrCount: len(instrs),
 		execAddr:   addr,
 		execSize:   len(code),
@@ -4351,7 +4356,7 @@ func m68kCompileRegion(region *m68kRegion, execMem *ExecMem, memory []byte) (*JI
 			continue
 		}
 		slots = append(slots, chainSlot{
-			targetPC:  ce.targetPC,
+			targetPC:  uint64(ce.targetPC),
 			patchAddr: addr + uintptr(ce.jmpDispOffset),
 		})
 	}
@@ -4365,7 +4370,7 @@ func m68kCompileRegion(region *m68kRegion, execMem *ExecMem, memory []byte) (*JI
 	// [startPC, endPC) of [0x100, 0x202) which would silently miss
 	// guest writes to 0x5000. CodeCache.InvalidateRange and the
 	// exec-loop code-page bitmap walk consult this list.
-	covered := make([][2]uint32, 0, len(region.blocks))
+	covered := make([][2]uint64, 0, len(region.blocks))
 	for bi, blk := range region.blocks {
 		if len(blk) == 0 {
 			continue
@@ -4373,12 +4378,12 @@ func m68kCompileRegion(region *m68kRegion, execMem *ExecMem, memory []byte) (*JI
 		blockStart := region.blockPCs[bi]
 		lastJI := &blk[len(blk)-1]
 		blockEnd := blockStart + lastJI.pcOffset + uint32(lastJI.length)
-		covered = append(covered, [2]uint32{blockStart, blockEnd})
+		covered = append(covered, [2]uint64{uint64(blockStart), uint64(blockEnd)})
 	}
 
 	return &JITBlock{
-		startPC:       region.entryPC,
-		endPC:         endPC,
+		startPC:       uint64(region.entryPC),
+		endPC:         uint64(endPC),
 		instrCount:    totalInstrCount,
 		execAddr:      addr,
 		execSize:      len(code),

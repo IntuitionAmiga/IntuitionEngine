@@ -230,9 +230,9 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 		}
 
 		// ── Block lookup ──
-		block := cpu.jitCache.Get(uint32(pc))
+		block := cpu.jitCache.Get(uint64(pc))
 		if cpu.z80IsNativeTurboBlock(block) && !cpu.z80ValidateNativeTurboBlock(pc, adapter) {
-			cpu.jitCache.InvalidateRange(uint32(pc), uint32(pc)+1)
+			cpu.jitCache.InvalidateRange(uint64(pc), uint64(pc)+1)
 			block = nil
 		}
 		if cpu.z80IsTurboSentinel(block) {
@@ -248,7 +248,7 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 				}
 				continue
 			}
-			cpu.jitCache.InvalidateRange(uint32(pc), uint32(pc)+1)
+			cpu.jitCache.InvalidateRange(uint64(pc), uint64(pc)+1)
 			block = nil
 		}
 		if block == nil {
@@ -332,7 +332,7 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 		if block.chainEntry != 0 {
 			ctx.RTSCache1PC = ctx.RTSCache0PC
 			ctx.RTSCache1Addr = ctx.RTSCache0Addr
-			ctx.RTSCache0PC = block.startPC
+			ctx.RTSCache0PC = uint32(block.startPC)
 			ctx.RTSCache0Addr = block.chainEntry
 		}
 
@@ -365,8 +365,8 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 			lo := page << 8
 			hi := lo + 256
 			// Unpatch chain slots targeting invalidated range, then remove blocks
-			cpu.jitCache.UnpatchChainsInRange(lo, hi)
-			cpu.jitCache.InvalidateRange(lo, hi)
+			cpu.jitCache.UnpatchChainsInRange(uint64(lo), uint64(hi))
+			cpu.jitCache.InvalidateRange(uint64(lo), uint64(hi))
 			cpu.jitTurboCache = nil
 			if st, ok := cpu.jitTurboStats.(*z80TurboStats); ok {
 				st.selfModInvalid++

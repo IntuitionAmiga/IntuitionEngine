@@ -93,6 +93,29 @@ func TestJIT_RetChannel_ZeroPC(t *testing.T) {
 	}
 }
 
+// TestJIT_JSR_PCRelTarget_FullWidth pins that the JSR PC-relative target
+// computation is full 64-bit (not narrowed through uint32 before being
+// loaded into the return channel). The compileAndRun rig places the JSR
+// at PROG_START so the runtime sum always fits in uint32 — the bug the
+// review caught surfaces only when instrPC + sign_ext(imm32) overflows
+// uint32, which requires Phase 4's high-PC block fetch. Until then this
+// test pins the low-PC path so a future regression to the truncating
+// cast would still fail a near-edge case once Phase 4 lifts the rig
+// limit.
+func TestJIT_JSR_PCRelTarget_FullWidth(t *testing.T) {
+	r := newJITTestRig(t)
+
+	const negImm uint32 = 0xFFFFFFF8 // -8
+	r.cpu.regs[31] = STACK_START
+	r.compileAndRun(t, ie64Instr(OP_JSR64, 0, 0, 0, 0, 0, negImm))
+
+	const negImmI32 int32 = -8
+	wantPC := uint64(int64(PROG_START) + int64(negImmI32))
+	if r.cpu.PC != wantPC {
+		t.Fatalf("cpu.PC = 0x%016X, want 0x%016X", r.cpu.PC, wantPC)
+	}
+}
+
 // TestJIT_JMP_NegativeImm_SignExtendsFullTarget pins the static JMP exit:
 // JMP R0, -8 must compute a full sign-extended 64-bit target of
 // 0xFFFFFFFFFFFFFFF8, matching the interpreter. The old emitter narrowed
@@ -139,7 +162,11 @@ func TestJIT_RTSCache_HighReturnPC_BypassesCache(t *testing.T) {
 	// a sentinel; if the cache hits, control would jump there and either
 	// segfault or scramble registers.
 	const sentinelChainEntry uintptr = 0xDEAD_BEEF_DEAD_0000
-	r.ctx.RTSCache0PC = uint32(highRetAddr & 0xFFFFFFFF)
+	// Phase 3: RTSCache0PC is now uint64 — plant the LOW 32 bits with
+	// the upper 32 bits clear so the cache PC entry matches the wrong
+	// low alias. The widened 64-bit CMP at the cache probe must reject
+	// this against the popped high return address.
+	r.ctx.RTSCache0PC = highRetAddr & 0xFFFFFFFF
 	r.ctx.RTSCache0Addr = sentinelChainEntry
 
 	r.compileAndRun(t, ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0))

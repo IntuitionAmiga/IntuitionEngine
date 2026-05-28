@@ -72,7 +72,7 @@ func (cpu *CPU64) freeJIT() {
 
 // compileBlockMMU wraps compileBlock, marking all guest-memory-touching
 // instructions for interpreter bail. Used when MMU is enabled.
-func compileBlockMMU(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITBlock, error) {
+func compileBlockMMU(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBlock, error) {
 	compileBlockMMUInvocations.Add(1)
 	for i := range instrs {
 		switch instrs[i].opcode {
@@ -274,28 +274,24 @@ func (cpu *CPU64) ExecuteJIT() {
 		}
 
 		// Under MMU, different address spaces can execute different physical
-		// code at the same virtual PC. Scope cache entries by PTBR to avoid
-		// cross-task aliasing when the OS switches page tables.
-		// PLAN_MAX_RAM.md slice 4: cpu.ptbr is uint64; the legacy
-		// `(ptbr<<32) | pcVirt` packing dropped any PTBR bits above bit 31
-		// and aliased two tasks whose page tables share the low 32 bits
-		// of their physical address. Mix the full 64-bit PTBR via a
-		// golden-ratio multiplicative hash so high-memory PTBRs produce
-		// distinct cache keys.
-		cacheKey := uint64(pcVirt)
+		// code at the same virtual PC. Use the dedicated MMU cache map with
+		// an exact (ptbr, vPC) composite key; the legacy lossy hash could
+		// collide distinct {ptbr, pc} pairs into the same slot.
+		var block *JITBlock
 		if cpu.mmuEnabled {
-			cacheKey = (cpu.ptbr * 0x9E3779B97F4A7C15) ^ uint64(pcVirt)
+			block = cpu.jitCache.GetMMU(cpu.ptbr, uint64(pcVirt))
+		} else {
+			block = cpu.jitCache.Get(uint64(pcVirt))
 		}
-		block := cpu.jitCache.GetKey(cacheKey)
 		if block == nil {
 			// Scan from physical memory
 			var instrs []JITInstr
 			if cpu.mmuEnabled {
 				// Page boundary limit: don't scan past end of current 4 KiB page
 				pageEnd := (pcPhys & ^uint32(MMU_PAGE_MASK)) + MMU_PAGE_SIZE
-				instrs = scanBlockWithLimit(cpu.memory, pcPhys, pageEnd)
+				instrs = scanBlockWithLimit(cpu.memory, uint64(pcPhys), uint64(pageEnd))
 			} else {
-				instrs = scanBlock(cpu.memory, pcPhys)
+				instrs = scanBlock(cpu.memory, uint64(pcPhys))
 			}
 
 			if needsFallback(instrs) {
@@ -312,9 +308,9 @@ func (cpu *CPU64) ExecuteJIT() {
 			var err error
 			if cpu.mmuEnabled {
 				// Compile with virtual startPC (branch offsets are virtual)
-				block, err = compileBlockMMU(instrs, pcVirt, execMem)
+				block, err = compileBlockMMU(instrs, uint64(pcVirt), execMem)
 			} else {
-				block, err = compileBlock(instrs, pcPhys, execMem)
+				block, err = compileBlock(instrs, uint64(pcPhys), execMem)
 			}
 			if err != nil {
 				// Compilation failed (e.g., exec mem exhausted) — interpret
@@ -334,7 +330,11 @@ func (cpu *CPU64) ExecuteJIT() {
 			if cpu.mmuEnabled {
 				block.ptbr = cpu.ptbr
 			}
-			cpu.jitCache.PutKey(cacheKey, block)
+			if cpu.mmuEnabled {
+				cpu.jitCache.PutMMU(cpu.ptbr, uint64(pcVirt), block)
+			} else {
+				cpu.jitCache.Put(block)
+			}
 
 			// Bidirectional chain patching, scoped by MMU PTBR when
 			// enabled. Two address spaces can share a virtual PC; without
@@ -353,11 +353,13 @@ func (cpu *CPU64) ExecuteJIT() {
 			}
 			for i := range block.chainSlots {
 				slot := &block.chainSlots[i]
-				targetKey := uint64(slot.targetPC)
+				var target *JITBlock
 				if cpu.mmuEnabled {
-					targetKey = (cpu.ptbr * 0x9E3779B97F4A7C15) ^ uint64(slot.targetPC)
+					target = cpu.jitCache.GetMMU(cpu.ptbr, slot.targetPC)
+				} else {
+					target = cpu.jitCache.Get(slot.targetPC)
 				}
-				if target := cpu.jitCache.GetKey(targetKey); target != nil && target.chainEntry != 0 {
+				if target != nil && target.chainEntry != 0 {
 					PatchRel32At(slot.patchAddr, target.chainEntry)
 				}
 			}
@@ -389,7 +391,7 @@ func (cpu *CPU64) ExecuteJIT() {
 				block.lastPromoteAt = block.execCount
 				if !ie64TurboEnabled() {
 					globalIE64TurboStats.turboRejected.Add(1)
-				} else if region := ie64FormRegion(pcPhys, cpu.memory); region != nil && len(region.blocks) >= 2 {
+				} else if region := ie64FormRegion(uint64(pcPhys), cpu.memory); region != nil && len(region.blocks) >= 2 {
 					newBlock, err := ie64CompileRegion(region, execMem, cpu.memory)
 					if err == nil {
 						newBlock.execCount = block.execCount
@@ -397,7 +399,11 @@ func (cpu *CPU64) ExecuteJIT() {
 						if cpu.mmuEnabled {
 							newBlock.ptbr = cpu.ptbr
 						}
-						cpu.jitCache.PutKey(cacheKey, newBlock)
+						if cpu.mmuEnabled {
+							cpu.jitCache.PutMMU(cpu.ptbr, uint64(pcVirt), newBlock)
+						} else {
+							cpu.jitCache.Put(newBlock)
+						}
 						if newBlock.chainEntry != 0 {
 							if cpu.mmuEnabled {
 								cpu.jitCache.PatchChainsToScoped(newBlock.startPC, newBlock.chainEntry, cpu.ptbr)
@@ -407,11 +413,13 @@ func (cpu *CPU64) ExecuteJIT() {
 						}
 						for i := range newBlock.chainSlots {
 							slot := &newBlock.chainSlots[i]
-							targetKey := uint64(slot.targetPC)
+							var target *JITBlock
 							if cpu.mmuEnabled {
-								targetKey = (cpu.ptbr * 0x9E3779B97F4A7C15) ^ uint64(slot.targetPC)
+								target = cpu.jitCache.GetMMU(cpu.ptbr, slot.targetPC)
+							} else {
+								target = cpu.jitCache.Get(slot.targetPC)
 							}
-							if target := cpu.jitCache.GetKey(targetKey); target != nil && target.chainEntry != 0 {
+							if target != nil && target.chainEntry != 0 {
 								PatchRel32At(slot.patchAddr, target.chainEntry)
 							}
 						}

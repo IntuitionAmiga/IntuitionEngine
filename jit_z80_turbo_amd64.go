@@ -46,15 +46,19 @@ func z80CompileTurboNative(tb *z80TurboBlock, execMem *ExecMem) (*JITBlock, bool
 		_ = fmt.Errorf("Z80 turbo native compile: %w", err)
 		return nil, false
 	}
+	covered := make([][2]uint64, len(tb.coveredRanges))
+	for i, r := range tb.coveredRanges {
+		covered[i] = [2]uint64{uint64(r[0]), uint64(r[1])}
+	}
 	return &JITBlock{
-		startPC:       uint32(tb.startPC),
-		endPC:         uint32(tb.endPC),
+		startPC:       uint64(tb.startPC),
+		endPC:         uint64(tb.endPC),
 		instrCount:    1,
 		execAddr:      addr,
 		execSize:      len(code),
 		tier:          z80TurboTier,
 		rIncrements:   z80TurboNativeRIncrements(tb.kind),
-		coveredRanges: tb.coveredRanges,
+		coveredRanges: covered,
 	}, true
 }
 

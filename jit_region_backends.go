@@ -115,7 +115,7 @@ func ScanRegionIE64(memory []byte, startPC uint32) RegionScanResult {
 		if pc >= uint32(len(memory)) {
 			break
 		}
-		instrs := scanBlock(memory, pc)
+		instrs := scanBlock(memory, uint64(pc))
 		if len(instrs) == 0 || needsFallback(instrs) {
 			break
 		}
@@ -137,11 +137,16 @@ func ScanRegionIE64(memory []byte, startPC uint32) RegionScanResult {
 			break
 		}
 		instrPC := pc + last.pcOffset
-		target, ok := ie64ResolveTerminatorTarget(last.opcode, last.rs, last.imm32, instrPC)
+		target, ok := ie64ResolveTerminatorTarget(last.opcode, last.rs, last.imm32, uint64(instrPC))
 		if !ok {
 			break
 		}
-		pc = target
+		// ScanRegionIE64 keeps its uint32 internal PC; the region promotion
+		// guard at the dispatch site ensures we never reach this with a
+		// >4 GiB target. If a future caller bypasses the gate the cast
+		// would alias — keep the uint32 surface narrow until Phase 4
+		// widens region scanning.
+		pc = uint32(target)
 	}
 	if len(res.BlockPCs) < 2 {
 		res.BlockPCs = nil

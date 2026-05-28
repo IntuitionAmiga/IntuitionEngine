@@ -678,7 +678,7 @@ func emitPackedPCAndCount(cb *CodeBuffer, targetPC uint64, staticCount uint32, b
 
 // emitPrologue emits the block entry sequence, saving/loading only
 // registers the block actually uses (determined by analyzeBlockRegs).
-func emitPrologue(cb *CodeBuffer, blockPC uint32, br *blockRegs) {
+func emitPrologue(cb *CodeBuffer, blockPC uint64, br *blockRegs) {
 	// Frame is always 112 bytes (fixed layout for I/O bail path compatibility)
 	cb.Emit32(arm64SUB_imm(31, 31, 112))
 
@@ -790,7 +790,7 @@ func emitEpilogue(cb *CodeBuffer, storeRegs uint32, calleeSaved uint32) {
 // ===========================================================================
 
 // compileBlock compiles a scanned block of IE64 instructions to ARM64 machine code.
-func compileBlock(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITBlock, error) {
+func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBlock, error) {
 	cb := NewCodeBuffer(len(instrs) * 256) // FPU ops can emit 30-60 ARM64 instructions with CC setting
 
 	br := analyzeBlockRegs(instrs)
@@ -814,8 +814,8 @@ func compileBlock(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITBloc
 	// Emit final epilogue (if the last instruction doesn't have its own)
 	lastOp := instrs[len(instrs)-1].opcode
 	if !isBlockTerminator(lastOp) {
-		endPC := startPC + uint32(len(instrs))*IE64_INSTR_SIZE
-		emitPackedPCAndCount(cb, uint64(endPC), uint32(len(instrs)), &br)
+		endPC := startPC + uint64(len(instrs))*IE64_INSTR_SIZE
+		emitPackedPCAndCount(cb, endPC, uint32(len(instrs)), &br)
 		emitEpilogue(cb, br.written, br.used)
 	}
 
@@ -827,7 +827,7 @@ func compileBlock(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITBloc
 
 	return &JITBlock{
 		startPC:    startPC,
-		endPC:      startPC + uint32(len(instrs))*IE64_INSTR_SIZE,
+		endPC:      startPC + uint64(len(instrs))*IE64_INSTR_SIZE,
 		instrCount: len(instrs),
 		execAddr:   addr,
 		execSize:   len(code),
@@ -839,8 +839,8 @@ func compileBlock(instrs []JITInstr, startPC uint32, execMem *ExecMem) (*JITBloc
 // have been written by instructions emitted before this one (for I/O bail).
 // instrIdx is the 0-based index within the block; instrOffsets maps instruction
 // indices to ARM64 code byte offsets (for backward branch targets).
-func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint32, isLast bool, br *blockRegs, writtenSoFar uint32, instrIdx int, instrOffsets []int) {
-	instrPC := blockStartPC + ji.pcOffset
+func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast bool, br *blockRegs, writtenSoFar uint32, instrIdx int, instrOffsets []int) {
+	instrPC := blockStartPC + uint64(ji.pcOffset)
 
 	switch ji.opcode {
 	// ======================================================================
@@ -1626,7 +1626,7 @@ func emitCLZ(cb *CodeBuffer, ji *JITInstr) {
 // ===========================================================================
 
 // emitLOAD handles LOAD rd, disp(rs)
-func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
+func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	if ji.rd == 0 {
 		return
 	}
@@ -1724,7 +1724,7 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writt
 // whose end byte would escape the low window. accessBytes is 1/2/4/8.
 //
 // X0 holds the full 64-bit effective address; X1 is scratch.
-func emitHighAddrBailCheckARM64(cb *CodeBuffer, instrPC uint32, pcOffset uint32, br *blockRegs, writtenSoFar uint32, accessBytes uint32) {
+func emitHighAddrBailCheckARM64(cb *CodeBuffer, instrPC uint64, pcOffset uint32, br *blockRegs, writtenSoFar uint32, accessBytes uint32) {
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                        // X1 = JITContext ptr (from [SP, #96])
 	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4))) // W1 = ctx.MemSize (zero-extends to X1)
 	if accessBytes > 1 {
@@ -1748,7 +1748,7 @@ func emitHighAddrBailCheckARM64(cb *CodeBuffer, instrPC uint32, pcOffset uint32,
 }
 
 // emitSTORE handles STORE rd, disp(rs)
-func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
+func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	// Compute address: int64(rs) + int64(int32(imm32)).
 	// Full 64-bit effective address; downstream 64-bit CMPs route high
 	// addresses to the slow path.
@@ -1836,8 +1836,8 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writ
 // ===========================================================================
 
 // emitBRA handles BRA (unconditional branch)
-func emitBRA(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, instrIdx int, instrOffsets []int, blockStartPC uint32) {
-	targetPC := uint32(int64(instrPC) + int64(int32(ji.imm32)))
+func emitBRA(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, instrIdx int, instrOffsets []int, blockStartPC uint64) {
+	targetPC := uint64(int64(instrPC) + int64(int32(ji.imm32)))
 	staticCount := uint32(instrIdx + 1)
 
 	// Check for backward branch within block
@@ -1863,14 +1863,14 @@ func emitBRA(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, instrI
 			cb.PatchUint32(budgetExitOffset, arm64Bcond(arm64CondHS, int32(budgetExitPC-budgetExitOffset)))
 			// SUB X7, X7, #bodySize (rollback)
 			cb.Emit32(arm64SUB_imm(arm64RegLoopCount, arm64RegLoopCount, bodySize))
-			emitPackedPCAndCount(cb, uint64(targetPC), staticCount, br)
+			emitPackedPCAndCount(cb, targetPC, staticCount, br)
 			emitEpilogue(cb, br.written, br.used)
 			return
 		}
 	}
 
 	// Forward/external branch
-	emitPackedPCAndCount(cb, uint64(targetPC), staticCount, br)
+	emitPackedPCAndCount(cb, targetPC, staticCount, br)
 	emitEpilogue(cb, br.written, br.used)
 }
 
@@ -1882,8 +1882,8 @@ func emitBRA(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, instrI
 // 1. Backward branch in backward-branch block: native loop with budget
 // 2. Forward exit in backward-branch block: dynamic count via X7
 // 3. Non-backward-branch block: static packed immediate (original path)
-func emitBcc(cb *CodeBuffer, ji *JITInstr, instrPC uint32, cond byte, br *blockRegs, writtenSoFar uint32, blockStartPC uint32, instrIdx int, instrOffsets []int) {
-	targetPC := uint32(int64(instrPC) + int64(int32(ji.imm32)))
+func emitBcc(cb *CodeBuffer, ji *JITInstr, instrPC uint64, cond byte, br *blockRegs, writtenSoFar uint32, blockStartPC uint64, instrIdx int, instrOffsets []int) {
+	targetPC := uint64(int64(instrPC) + int64(int32(ji.imm32)))
 	staticCount := uint32(instrIdx + 1)
 
 	rsReg := resolveReg(cb, ji.rs, 0)
@@ -1916,7 +1916,7 @@ func emitBcc(cb *CodeBuffer, ji *JITInstr, instrPC uint32, cond byte, br *blockR
 			cb.PatchUint32(budgetExitOffset, arm64Bcond(arm64CondHS, int32(budgetExitPC-budgetExitOffset)))
 			// SUB X7, X7, #bodySize (rollback — re-execution won't happen)
 			cb.Emit32(arm64SUB_imm(arm64RegLoopCount, arm64RegLoopCount, bodySize))
-			emitPackedPCAndCount(cb, uint64(targetPC), staticCount, br)
+			emitPackedPCAndCount(cb, targetPC, staticCount, br)
 			// Use br.written (not writtenSoFar): in a backward branch loop,
 			// instructions AFTER this branch may have executed in prior iterations,
 			// modifying registers not yet in writtenSoFar at this instruction index.
@@ -1933,7 +1933,7 @@ func emitBcc(cb *CodeBuffer, ji *JITInstr, instrPC uint32, cond byte, br *blockR
 	skipOffset := cb.Len()
 	cb.Emit32(0) // placeholder for B.NOT_cond
 
-	emitPackedPCAndCount(cb, uint64(targetPC), staticCount, br)
+	emitPackedPCAndCount(cb, targetPC, staticCount, br)
 	// In a backward-branch block, prior loop iterations may have written
 	// registers that appear after this branch — use br.written to capture all.
 	exitRegs := writtenSoFar
@@ -1965,7 +1965,7 @@ func emitJMP(cb *CodeBuffer, ji *JITInstr, br *blockRegs, instrCount uint32) {
 }
 
 // emitJSR handles JSR (jump to subroutine, PC-relative)
-func emitJSR(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs) {
+func emitJSR(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs) {
 	cb.Emit32(arm64SUB_imm(arm64RegIE64SP, arm64RegIE64SP, 8))
 
 	retAddr := uint64(instrPC + IE64_INSTR_SIZE)
@@ -1973,7 +1973,11 @@ func emitJSR(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs) {
 	cb.Emit32(arm64STR_reg(0, arm64RegMemBase, arm64RegIE64SP))
 
 	staticCount := uint32(ji.pcOffset/IE64_INSTR_SIZE + 1)
-	targetPC := uint64(uint32(int64(instrPC) + int64(int32(ji.imm32))))
+	// Phase 3: keep the full 64-bit PC-relative target. The legacy
+	// uint32(...) cast aliased a high (>4 GiB) call target down to its
+	// low 32 bits, misdirecting the chain exit while AMD64 JSR and the
+	// other ARM64 branch paths already preserve the full PC.
+	targetPC := uint64(int64(instrPC) + int64(int32(ji.imm32)))
 	emitPackedPCAndCount(cb, targetPC, staticCount, br)
 
 	emitEpilogue(cb, br.written, br.used)
@@ -1994,7 +1998,7 @@ func emitRTS(cb *CodeBuffer, br *blockRegs, instrCount uint32) {
 // RTI modifies PC (pops from stack) and clears the inInterrupt atomic flag,
 // both of which require Go runtime interaction. We bail to the interpreter
 // to handle it, storing all registers written by prior instructions.
-func emitRTI(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
+func emitRTI(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	// Same bail pattern as emitFPUBail: set NeedIOFallback, store PC, epilogue
 	cb.Emit32(arm64LDR_imm(0, 31, 96/8)) // X0 = JITContext from stack
 	emitLoadImm32(cb, 1, 1)
@@ -2007,7 +2011,7 @@ func emitRTI(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writte
 // emitWAIT handles WAIT (sleep for imm32 microseconds) by bailing to the interpreter.
 // WAIT requires time.Sleep from the Go runtime. In step mode the sleep is skipped,
 // which is the expected JIT behavior. We bail so the interpreter can handle it.
-func emitWAIT(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
+func emitWAIT(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	cb.Emit32(arm64LDR_imm(0, 31, 96/8)) // X0 = JITContext from stack
 	emitLoadImm32(cb, 1, 1)
 	cb.Emit32(arm64STR_W_imm(1, 0, uint32(jitCtxOffNeedIOFallback/4)))
@@ -2044,7 +2048,7 @@ func emitPOP(cb *CodeBuffer, ji *JITInstr) {
 }
 
 // emitJSR_IND handles JSR_IND (register-indirect subroutine call)
-func emitJSR_IND(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, instrCount uint32) {
+func emitJSR_IND(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, instrCount uint32) {
 	cb.Emit32(arm64SUB_imm(arm64RegIE64SP, arm64RegIE64SP, 8))
 
 	retAddr := uint64(instrPC + IE64_INSTR_SIZE)
@@ -2451,7 +2455,7 @@ func emitFCVTFI(cb *CodeBuffer, ji *JITInstr) {
 // FPU — Memory operations
 // ===========================================================================
 
-func emitFLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
+func emitFLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	// Compute address: int64(rs) + int64(int32(imm32)). Full 64-bit.
 	rsReg := resolveReg(cb, ji.rs, 0)
 	emitLoadImm32(cb, 1, ji.imm32)
@@ -2504,7 +2508,7 @@ func emitFLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writ
 	emitSetFPCondCodes(cb)
 }
 
-func emitFSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
+func emitFSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	// Compute address: int64(rs) + int64(int32(imm32)). Full 64-bit.
 	rsReg := resolveReg(cb, ji.rs, 0)
 	emitLoadImm32(cb, 1, ji.imm32)
@@ -2556,7 +2560,7 @@ func emitFSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, wri
 // FPU — Category C: Transcendentals (bail to interpreter)
 // ===========================================================================
 
-func emitFPUBail(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
+func emitFPUBail(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	cb.Emit32(arm64LDR_imm(0, 31, 96/8))
 	emitLoadImm32(cb, 1, 1)
 	cb.Emit32(arm64STR_W_imm(1, 0, uint32(jitCtxOffNeedIOFallback/4)))
@@ -2565,7 +2569,7 @@ func emitFPUBail(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, wr
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
-func emitBailToInterpreter(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, writtenSoFar uint32) {
+func emitBailToInterpreter(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	emitFPUBail(cb, ji, instrPC, br, writtenSoFar)
 }
 
@@ -2589,7 +2593,7 @@ type ie64Region struct {
 
 var ie64CurrentInstrCountBase uint32
 
-func ie64FormRegion(hotPC uint32, memory []byte) *ie64Region {
+func ie64FormRegion(hotPC uint64, memory []byte) *ie64Region {
 	return nil
 }
 

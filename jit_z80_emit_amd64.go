@@ -1534,14 +1534,14 @@ func compileBlockZ80Stub(instrs []JITZ80Instr, startPC, endPC uint16, execMem *E
 	var slots []chainSlot
 	for _, ce := range cs.chainExits {
 		slots = append(slots, chainSlot{
-			targetPC:  ce.targetPC,
+			targetPC:  uint64(ce.targetPC),
 			patchAddr: addr + uintptr(ce.jmpDispOffset),
 		})
 	}
 
 	block := &JITBlock{
-		startPC:     uint32(startPC),
-		endPC:       uint32(endPC),
+		startPC:     uint64(startPC),
+		endPC:       uint64(endPC),
 		instrCount:  len(instrs),
 		execAddr:    addr,
 		execSize:    len(code),

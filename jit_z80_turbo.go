@@ -105,12 +105,16 @@ func (cpu *CPU_Z80) z80InstallTurboBlock(tb *z80TurboBlock) {
 			return
 		}
 	}
+	covered := make([][2]uint64, len(tb.coveredRanges))
+	for i, r := range tb.coveredRanges {
+		covered[i] = [2]uint64{uint64(r[0]), uint64(r[1])}
+	}
 	block := &JITBlock{
-		startPC:       uint32(tb.startPC),
-		endPC:         uint32(tb.endPC),
+		startPC:       uint64(tb.startPC),
+		endPC:         uint64(tb.endPC),
 		instrCount:    1,
 		tier:          z80TurboTier,
-		coveredRanges: tb.coveredRanges,
+		coveredRanges: covered,
 	}
 	cpu.jitCache.Put(block)
 	for _, r := range tb.coveredRanges {

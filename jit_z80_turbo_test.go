@@ -181,7 +181,7 @@ func TestZ80JITTurboNativeRuntimeGuardRejectsNewCodePage(t *testing.T) {
 		t.Fatal("memory turbo candidate rejected unexpectedly")
 	}
 	cpu.z80InstallTurboBlock(tb)
-	block := cpu.jitCache.Get(uint32(startPC))
+	block := cpu.jitCache.Get(uint64(startPC))
 	if block == nil || block.tier != z80TurboTier {
 		t.Fatal("turbo block was not installed in cache")
 	}
