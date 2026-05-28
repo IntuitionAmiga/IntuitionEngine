@@ -454,12 +454,17 @@ func (cpu *CPU64) ExecuteJIT() {
 		// Execute the native code block
 		callNative(block.execAddr, uintptr(unsafe.Pointer(cpu.jitCtx)))
 
-		// Read packed PC+count from regs[0] (return channel).
-		// Lower 32 bits = next PC, upper 32 bits = retired instruction count.
-		combined := cpu.regs[0]
+		// Phase 2 return channel: read full 64-bit PC from ctx.RetPC and
+		// retired count from ctx.RetCount. The emitted native code writes
+		// both before returning; the legacy regs[0]-packed channel is
+		// still populated as a fallback signal for blocks compiled before
+		// the Phase 2 rebuild (none exist after this commit, but keeping
+		// the read defensive costs nothing).
+		cpu.PC = cpu.jitCtx.RetPC
+		cpu.jitCtx.RetPC = 0
+		executed := uint64(cpu.jitCtx.RetCount)
+		cpu.jitCtx.RetCount = 0
 		cpu.regs[0] = 0
-		cpu.PC = uint64(uint32(combined))
-		executed := combined >> 32
 		// ChainCount accumulates instruction counts retired by chained
 		// predecessor blocks. Add it so retired-instruction accounting is
 		// uniform with interpreter mode.

@@ -86,11 +86,12 @@ func (r *jitTestRig) compileAndRun(t *testing.T, instructions ...[]byte) {
 	// Execute native code
 	callNative(block.execAddr, uintptr(unsafe.Pointer(r.ctx)))
 
-	// The epilogue stores R15 to regs[0]. R15 contains:
-	//   lower 32 bits = target PC, upper 32 bits = instruction count.
-	// Extract PC (lower 32 bits) and restore R0 = 0.
-	combined := r.cpu.regs[0]
-	r.cpu.PC = uint64(uint32(combined))
+	// Phase 2 return channel: epilogue writes full 64-bit PC to
+	// ctx.RetPC and retired count to ctx.RetCount. Read PC here; reset
+	// the legacy regs[0] mirror so subsequent runs see a clean slot.
+	r.cpu.PC = r.ctx.RetPC
+	r.ctx.RetPC = 0
+	r.ctx.RetCount = 0
 	r.cpu.regs[0] = 0
 
 	runtime.KeepAlive(r.ctx)

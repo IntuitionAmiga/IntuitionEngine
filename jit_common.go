@@ -57,6 +57,17 @@ type JITContext struct {
 	RTSCache3PC    uint32  // 136: MRU entry 3 - return PC
 	_pad3          uint32  // 140: padding for alignment
 	RTSCache3Addr  uintptr // 144: MRU entry 3 - chain entry address
+	// Phase 2: explicit 64-bit PC return channel.
+	//
+	// Replaces the legacy regs[0]-packed (lowerPC | upperCount) format with
+	// dedicated fields so that block exits can return a full 64-bit PC and
+	// the retired-instruction count without colliding in a single host
+	// register. Chain accumulation now happens via ADD to ChainCount at the
+	// source block's chain exit, so the chain entry no longer needs to
+	// extract count from R15.
+	RetPC    uint64 // 152: next PC after block exit (full 64-bit)
+	RetCount uint32 // 160: retired instruction count for the exiting block
+	_pad4    uint32 // 164: padding for alignment
 }
 
 // JITContext field offsets (must match struct layout above)
@@ -83,6 +94,8 @@ const (
 	jitCtxOffRTSCache2Addr  = 128
 	jitCtxOffRTSCache3PC    = 136
 	jitCtxOffRTSCache3Addr  = 144
+	jitCtxOffRetPC          = 152
+	jitCtxOffRetCount       = 160
 )
 
 // ie64ChainBudget is the per-callNative chain dispatch budget (number of

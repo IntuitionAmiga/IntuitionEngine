@@ -627,24 +627,49 @@ func emitSizeMask(cb *CodeBuffer, rd byte, size byte) {
 
 const jitBudget = 4095 // max ARM64 CMP imm12
 
-// emitDynamicCount packs X7 + staticCount into upper 32 bits of X28.
-// Used at exit points in blocks with backward branches.
-func emitDynamicCount(cb *CodeBuffer, staticCount uint32) {
-	cb.Emit32(arm64ADD_imm(0, arm64RegLoopCount, staticCount))
-	cb.Emit32(arm64LSL_imm(0, 0, 32))
-	cb.Emit32(arm64ORR(arm64RegIE64PC, arm64RegIE64PC, 0))
+// emitStoreRetCount writes the retired instruction count to ctx.RetCount.
+// Phase 2: replaces the legacy upper-32-bit packing into X28 so that X28
+// can carry a full 64-bit PC across the return channel.
+//
+// arm64RegCtx (X0) holds the JITContext pointer on block entry but may be
+// clobbered by instructions in the block body, so we reload it from
+// [SP, #96] (where the prologue stashed it) into a scratch register
+// before writing RetCount.
+//
+// X1 is used as scratch for the count value; X2 holds the reloaded ctx
+// pointer. Neither is a stable IE64 register file mapping, so clobbering
+// them at block-exit time is safe.
+func emitStoreRetCount(cb *CodeBuffer, staticCount uint32, br *blockRegs) {
+	// X2 = ctx ptr (reloaded from [SP, #96]).
+	cb.Emit32(arm64LDR_imm(2, 31, 96/8))
+	if br.hasBackwardBranch {
+		// W1 = X7 (loop counter) + staticCount.
+		if staticCount > 0 {
+			cb.Emit32(arm64ADD_imm(1, arm64RegLoopCount, staticCount))
+		} else {
+			cb.Emit32(arm64MOV_W(1, arm64RegLoopCount))
+		}
+		cb.Emit32(arm64STR_W_imm(1, 2, uint32(jitCtxOffRetCount/4)))
+	} else {
+		// Static count: load into W1 then store.
+		emitLoadImm32(cb, 1, staticCount)
+		cb.Emit32(arm64STR_W_imm(1, 2, uint32(jitCtxOffRetCount/4)))
+	}
 }
 
-// emitPackedPCAndCount loads targetPC into X28 and packs instruction count.
-// For backward-branch blocks: dynamic count via X7.
-// For normal blocks: static count packed into upper 32 bits of immediate.
+// emitDynamicCount retained for ABI compatibility — rewritten to write
+// to ctx.RetCount instead of packing into X28.
+func emitDynamicCount(cb *CodeBuffer, staticCount uint32) {
+	emitStoreRetCount(cb, staticCount, &blockRegs{hasBackwardBranch: true})
+}
+
+// emitPackedPCAndCount sets up the block-exit return channel.
+// Phase 2 redesign: X28 carries the full 64-bit target PC (no packing);
+// the retired instruction count is written to ctx.RetCount via a separate
+// store so that PCs above 4 GiB can survive the channel intact.
 func emitPackedPCAndCount(cb *CodeBuffer, targetPC uint64, staticCount uint32, br *blockRegs) {
-	if br.hasBackwardBranch {
-		emitLoadImm64(cb, arm64RegIE64PC, targetPC)
-		emitDynamicCount(cb, staticCount)
-	} else {
-		emitLoadImm64(cb, arm64RegIE64PC, targetPC|(uint64(staticCount)<<32))
-	}
+	emitLoadImm64(cb, arm64RegIE64PC, targetPC)
+	emitStoreRetCount(cb, staticCount, br)
 }
 
 // ===========================================================================
@@ -729,7 +754,15 @@ func emitEpilogue(cb *CodeBuffer, storeRegs uint32, calleeSaved uint32) {
 		cb.Emit32(arm64STR_imm(arm64RegIE64SP, arm64RegBase, 31))
 	}
 
-	// Always store PC to regs[0] (return channel to dispatcher)
+	// Phase 2 return channel: write X28 (full 64-bit PC) to ctx.RetPC.
+	// Count was already written to ctx.RetCount at the call site. The
+	// legacy packed regs[0] channel is retained as belt-and-suspenders
+	// but is no longer the source of truth.
+	//
+	// arm64RegCtx (X0) may have been clobbered during block execution, so
+	// reload the ctx pointer from [SP, #96] into X2 before storing RetPC.
+	cb.Emit32(arm64LDR_imm(2, 31, 96/8))
+	cb.Emit32(arm64STR_imm(arm64RegIE64PC, 2, uint32(jitCtxOffRetPC/8)))
 	cb.Emit32(arm64STR_imm(arm64RegIE64PC, arm64RegBase, 0))
 
 	// Restore callee-saved pairs that were saved in prologue
@@ -1925,13 +1958,8 @@ func emitJMP(cb *CodeBuffer, ji *JITInstr, br *blockRegs, instrCount uint32) {
 	// here. The PC widened to 64-bit in slice 3; clamping to 25 bits
 	// silently aliased high targets into low memory.
 
-	// Pack instruction count into upper 32 bits of X28
-	if br.hasBackwardBranch {
-		emitDynamicCount(cb, instrCount)
-	} else {
-		emitLoadImm64(cb, 0, uint64(instrCount)<<32)
-		cb.Emit32(arm64ORR(arm64RegIE64PC, arm64RegIE64PC, 0))
-	}
+	// Phase 2: count to ctx.RetCount; X28 already carries full 64-bit PC.
+	emitStoreRetCount(cb, instrCount, br)
 
 	emitEpilogue(cb, br.written, br.used)
 }
@@ -1956,13 +1984,8 @@ func emitRTS(cb *CodeBuffer, br *blockRegs, instrCount uint32) {
 	cb.Emit32(arm64LDR_reg(arm64RegIE64PC, arm64RegMemBase, arm64RegIE64SP))
 	cb.Emit32(arm64ADD_imm(arm64RegIE64SP, arm64RegIE64SP, 8))
 
-	// Pack instruction count into upper 32 bits of X28
-	if br.hasBackwardBranch {
-		emitDynamicCount(cb, instrCount)
-	} else {
-		emitLoadImm64(cb, 0, uint64(instrCount)<<32)
-		cb.Emit32(arm64ORR(arm64RegIE64PC, arm64RegIE64PC, 0))
-	}
+	// Phase 2: count to ctx.RetCount; X28 carries the popped 64-bit PC.
+	emitStoreRetCount(cb, instrCount, br)
 
 	emitEpilogue(cb, br.written, br.used)
 }
@@ -2035,13 +2058,8 @@ func emitJSR_IND(cb *CodeBuffer, ji *JITInstr, instrPC uint32, br *blockRegs, in
 
 	// PLAN_MAX_RAM.md slice 8 phase 8 retired the IE64_ADDR_MASK AND.
 
-	// Pack instruction count into upper 32 bits of X28
-	if br.hasBackwardBranch {
-		emitDynamicCount(cb, instrCount)
-	} else {
-		emitLoadImm64(cb, 0, uint64(instrCount)<<32)
-		cb.Emit32(arm64ORR(arm64RegIE64PC, arm64RegIE64PC, 0))
-	}
+	// Phase 2: count to ctx.RetCount; X28 already carries full 64-bit PC.
+	emitStoreRetCount(cb, instrCount, br)
 
 	emitEpilogue(cb, br.written, br.used)
 }
