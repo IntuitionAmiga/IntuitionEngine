@@ -162,6 +162,14 @@ func createCPURunner(mode string, sysBus *MachineBus, videoChip *VideoChip,
 	}
 }
 
+func buildBasicBootReloadClosure(runner EmulatorCPU, bytes []byte) func() {
+	return func() {
+		cpu := runner.(*CPU64)
+		cpu.Reset()
+		cpu.LoadProgramBytes(bytes)
+	}
+}
+
 func buildReloadClosure(mode string, runner EmulatorCPU, bytes []byte, bus *MachineBus) func() {
 	switch mode {
 	case "ie32":

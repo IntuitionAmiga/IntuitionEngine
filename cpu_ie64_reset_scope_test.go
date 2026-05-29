@@ -162,3 +162,26 @@ func TestCPU64LoadFlatProgram_LoadsLargeImageFromFilePastStackStart(t *testing.T
 		t.Fatalf("PC=%#x, want PROG_START %#x", cpu.PC, PROG_START)
 	}
 }
+
+func TestBasicBootReloadClosureUsesLegacyIE64LoaderWindow(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+
+	const sentinel byte = 0x7B
+	cpu.memory[STACK_START] = sentinel
+
+	program := make([]byte, int(STACK_START-PROG_START)+1024)
+	for i := range program {
+		program[i] = 0xCC
+	}
+
+	reload := buildBasicBootReloadClosure(cpu, program)
+	reload()
+
+	if got := cpu.memory[STACK_START]; got != sentinel {
+		t.Fatalf("BASIC reload spilled to STACK_START: got %#x, want sentinel %#x", got, sentinel)
+	}
+	if cpu.PC != PROG_START {
+		t.Fatalf("PC=%#x, want PROG_START %#x", cpu.PC, PROG_START)
+	}
+}

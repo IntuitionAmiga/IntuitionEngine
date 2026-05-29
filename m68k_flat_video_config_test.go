@@ -2,7 +2,10 @@
 
 package main
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 func newM68KFlatTestVideoChip(t *testing.T) *VideoChip {
 	t.Helper()
@@ -199,6 +202,62 @@ func TestRestoreLegacyVideoConfigClearsFlatFramebufferBase(t *testing.T) {
 	}
 	if got := frame[:4]; got[0] != 0x44 || got[1] != 0x33 || got[2] != 0x22 || got[3] != 0x11 {
 		t.Fatalf("legacy frame prefix = %02X %02X %02X %02X, want 44 33 22 11", got[0], got[1], got[2], got[3])
+	}
+}
+
+func TestResetVideoProfileBasicBootRestoresTerminalFrontBuffer(t *testing.T) {
+	bus := NewMachineBus()
+	video := newM68KFlatTestVideoChip(t)
+	defer video.Stop()
+
+	applyX86FlatProgramVideoConfig(bus, video)
+	video.Reset()
+
+	if err := applyResetVideoConfigAfterVideoReset(bus, video, "ie64", true, false); err != nil {
+		t.Fatalf("applyResetVideoConfigAfterVideoReset BASIC: %v", err)
+	}
+	if video.directVRAM != nil {
+		t.Fatalf("BASIC reset left direct VRAM enabled")
+	}
+	if !bus.IsIOAddress(VRAM_START) {
+		t.Fatalf("BASIC reset did not restore legacy VRAM I/O mapping")
+	}
+	if got := video.HandleRead(VIDEO_FB_BASE); got != 0 {
+		t.Fatalf("BASIC reset VIDEO_FB_BASE = 0x%X, want 0", got)
+	}
+
+	term := NewTerminalMMIO()
+	vt := NewVideoTerminal(video, term)
+	defer vt.Stop()
+	video.HandleWrite(VIDEO_CTRL, 1)
+	term.HandleWrite(TERM_OUT, uint32('R'))
+
+	frame := video.GetFrame()
+	front := video.GetFrontBuffer()
+	if len(frame) == 0 {
+		t.Fatalf("GetFrame returned an empty frame after terminal output")
+	}
+	if !bytes.Equal(frame, front) {
+		t.Fatalf("BASIC reset frame is not the terminal front buffer; frame len=%d front len=%d", len(frame), len(front))
+	}
+}
+
+func TestResetVideoProfileBareIE64KeepsFlatProgramVideoPath(t *testing.T) {
+	bus := NewMachineBus()
+	video := newM68KFlatTestVideoChip(t)
+	defer video.Stop()
+
+	restoreLegacyVideoConfig(bus, video)
+	video.Reset()
+
+	if err := applyResetVideoConfigAfterVideoReset(bus, video, "ie64", false, false); err != nil {
+		t.Fatalf("applyResetVideoConfigAfterVideoReset IE64: %v", err)
+	}
+	if video.directVRAM == nil {
+		t.Fatalf("bare IE64 reset did not install direct VRAM")
+	}
+	if bus.IsIOAddress(VRAM_START) {
+		t.Fatalf("bare IE64 reset left legacy VRAM mapped as I/O")
 	}
 }
 

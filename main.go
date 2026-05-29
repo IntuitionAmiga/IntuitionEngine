@@ -2536,20 +2536,8 @@ func main() {
 
 		// 8. Reset video chips
 		videoChip.Reset()
-		if mode == "ie64" {
-			applyIE64FlatProgramVideoConfig(sysBus, videoChip)
-		} else if mode == "m68k" {
-			applyM68KFlatProgramVideoConfig(sysBus, videoChip)
-		} else if mode == "x86" {
-			applyX86FlatProgramVideoConfig(sysBus, videoChip)
-		} else if restoreROMVideoConfig {
-			if mode == "aros" {
-				if err := applyArosVideoConfig(sysBus, videoChip); err != nil {
-					return err
-				}
-			} else {
-				applyEmuTOSVideoConfig(sysBus, videoChip)
-			}
+		if err := applyResetVideoConfigAfterVideoReset(sysBus, videoChip, mode, forceBasicBoot, restoreROMVideoConfig); err != nil {
+			return err
 		}
 		if vgaEngine != nil {
 			vgaEngine.Reset()
@@ -2620,7 +2608,11 @@ func main() {
 		currentPath = path
 		currentMode = mode
 		if mode != "emutos" {
-			reloadProgram = buildReloadClosure(mode, cpuRunner, bytes, sysBus)
+			if forceBasicBoot {
+				reloadProgram = buildBasicBootReloadClosure(cpuRunner, bytes)
+			} else {
+				reloadProgram = buildReloadClosure(mode, cpuRunner, bytes, sysBus)
+			}
 		}
 
 		// 11. Load program
@@ -3059,6 +3051,32 @@ func applyX86FlatProgramVideoConfig(sysBus *MachineBus, videoChip *VideoChip) {
 	videoChip.SetBusMemory(sysBus.memory)
 	videoChip.SetBigEndianMode(false)
 	videoChip.SetDirectVRAM(sysBus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
+}
+
+func applyResetVideoConfigAfterVideoReset(sysBus *MachineBus, videoChip *VideoChip, mode string, forceBasicBoot bool, restoreROMVideoConfig bool) error {
+	if forceBasicBoot {
+		restoreLegacyVideoConfig(sysBus, videoChip)
+		return nil
+	}
+
+	switch mode {
+	case "ie64":
+		applyIE64FlatProgramVideoConfig(sysBus, videoChip)
+	case "m68k":
+		applyM68KFlatProgramVideoConfig(sysBus, videoChip)
+	case "x86":
+		applyX86FlatProgramVideoConfig(sysBus, videoChip)
+	case "aros":
+		if restoreROMVideoConfig {
+			return applyArosVideoConfig(sysBus, videoChip)
+		}
+	case "emutos":
+		if restoreROMVideoConfig {
+			applyEmuTOSVideoConfig(sysBus, videoChip)
+		}
+	}
+
+	return nil
 }
 
 func restoreLegacyVideoConfig(sysBus *MachineBus, videoChip *VideoChip) {

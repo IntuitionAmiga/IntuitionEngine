@@ -777,8 +777,9 @@ The ROM is resolved in this order:
 If no ROM is available, prints `?EMUTOS NOT AVAILABLE`.
 
 F10 performs a hard reset to the VM's original boot mode. If EmuTOS was
-launched from BASIC with the `EMUTOS` command, F10 returns to BASIC; if the VM
-was started in EmuTOS mode, F10 boots EmuTOS again.
+launched from BASIC with the `EMUTOS` command, F10 returns to BASIC with the
+BASIC terminal video path restored; if the VM was started in EmuTOS mode, F10
+boots EmuTOS again.
 
 ### AROS
 
@@ -798,8 +799,9 @@ The ROM is resolved in this order:
 If no ROM is available, prints `?AROS NOT AVAILABLE`.
 
 F10 performs a hard reset to the VM's original boot mode. If AROS was launched
-from BASIC with the `AROS` command, F10 returns to BASIC; if the VM was started
-in AROS mode, F10 boots AROS again.
+from BASIC with the `AROS` command, F10 returns to BASIC with the BASIC
+terminal video path restored; if the VM was started in AROS mode, F10 boots
+AROS again.
 
 ### INTUITIONOS
 
@@ -3296,7 +3298,11 @@ not an arbitrary raw sound container.
 
 ### 9.19 Program Executor Registers (`&HF2320`-`&HF233F`)
 
-Used by `RUN "file"` to launch external files and by guest programmes that need to request the same full reset path as the F10 hard-reset hotkey.
+Used by `RUN "file"` to launch external files and by guest programmes that need
+to request the same full reset path as the F10 hard-reset hotkey. The
+hard-reset-to-BASIC control reloads BASIC through the bounded BASIC loader and
+restores the terminal/front-buffer video profile, so it does not retain
+direct-VRAM display state from launched flat programmes.
 
 | Address | Name | R/W | Description |
 |---------|------|-----|-------------|

@@ -118,7 +118,7 @@ Useful runtime flags:
 |-----|--------|
 | `F8` | Toggle the Lua REPL overlay, unless the Machine Monitor is active. |
 | `F9` | Toggle the Machine Monitor. |
-| `F10` | Hard reset. |
+| `F10` | Hard reset to the configured boot profile; normal BASIC-launched sessions return to BASIC. |
 | `F11` | Toggle fit/stretch scaling when the active native mode is not 16:9. |
 | `Shift+F11` | Toggle fullscreen/windowed mode outside locked live-image sessions. |
 | `F12` | Toggle the runtime status bar. |
