@@ -1360,13 +1360,13 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 			return
 		}
-		emitJSR_AMD64(cb, ji, instrPC, br, pendingChains)
+		emitJSR_AMD64(cb, ji, instrPC, br, pendingChains, writtenSoFar)
 	case OP_RTS64:
 		if ji.mmuBail {
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 			return
 		}
-		emitRTS_AMD64(cb, br, ji.pcOffset/IE64_INSTR_SIZE+1)
+		emitRTS_AMD64(cb, ji, instrPC, br, ji.pcOffset/IE64_INSTR_SIZE+1, writtenSoFar)
 	case OP_PUSH64:
 		if ji.mmuBail {
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
@@ -1384,7 +1384,7 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 			return
 		}
-		emitJSR_IND_AMD64(cb, ji, instrPC, br, ji.pcOffset/IE64_INSTR_SIZE+1)
+		emitJSR_IND_AMD64(cb, ji, instrPC, br, ji.pcOffset/IE64_INSTR_SIZE+1, writtenSoFar)
 
 	// ======================================================================
 	// System
@@ -2647,19 +2647,68 @@ func emitPOPHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRe
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
-func emitJSR_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, pendingChains *[]ie64PendingChainSlot) {
+// emitJSR_AMD64 emits JSR (pre-decrement subroutine call). Phase 5: the
+// return-address push goes through the HELPER_JSR protocol when MMU is on
+// or the target slot escapes the low window; otherwise it writes directly
+// to [memBase+SP-8] and chains to the call target. HelperVal carries the
+// return address, HelperAddr the call target; the Go dispatcher decrements
+// cpu.regs[31] and sets cpu.PC = target.
+func emitJSR_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, pendingChains *[]ie64PendingChainSlot, writtenSoFar uint32) {
+	targetPC := uint64(int64(instrPC) + int64(int32(ji.imm32)))
+	instrCount := uint32(ji.pcOffset/IE64_INSTR_SIZE + 1)
+
+	// MMU-on → helper.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
+	mmuHelperOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+	// Underflow guard: need SP >= 8 (pre-decrement must not wrap).
+	amd64ALU_reg_imm32(cb, 7, amd64RegIE64SP, 8) // CMP R14, 8
+	underflowOff := amd64Jcc_rel32(cb, amd64CondB)
+
+	// High-slot guard: effective addr = SP-8 must satisfy SP <= MemSize.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize)) // RCX = MemSize
+	amd64ALU_reg_reg(cb, 0x39, amd64RegIE64SP, amd64RCX)                // CMP R14, RCX
+	highHelperOff := amd64Jcc_rel32(cb, amd64CondA)                     // SP > MemSize → helper
+
+	// Fast path: pre-decrement, store return addr, chain to target.
 	amd64ALU_reg_imm32(cb, 5, amd64RegIE64SP, 8)
 	retAddr := uint64(instrPC + IE64_INSTR_SIZE)
 	emitLoadImm64AMD64(cb, amd64RAX, retAddr)
 	emitMemOpSIB(cb, true, 0x89, amd64RAX, amd64RegMemBase, amd64RegIE64SP, 0)
 
-	targetPC := uint64(int64(instrPC) + int64(int32(ji.imm32)))
-	instrCount := uint32(ji.pcOffset/IE64_INSTR_SIZE + 1)
 	emitPackedPCAndCount(cb, targetPC, instrCount, br)
 	slot := emitChainExit(cb, br, targetPC, instrCount)
 	if pendingChains != nil {
 		*pendingChains = append(*pendingChains, slot)
 	}
+
+	// Helper exit (block exit; reached only via the guard jumps above).
+	helperPC := cb.Len()
+	patchRel32(cb, mmuHelperOff, helperPC)
+	patchRel32(cb, underflowOff, helperPC)
+	patchRel32(cb, highHelperOff, helperPC)
+	emitJSRHelperExit(cb, ji, instrPC, targetPC, br, writtenSoFar)
+}
+
+// emitJSRHelperExit writes the JITContext HELPER_JSR protocol fields.
+func emitJSRHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC, targetPC uint64, br *blockRegs, writtenSoFar uint32) {
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(amd64OffCtxPtr))
+	// HelperVal = return address (PC + IE64_INSTR_SIZE).
+	amd64MOV_reg_imm64(cb, amd64RCX, instrPC+IE64_INSTR_SIZE)
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperVal), amd64RCX)
+	// HelperAddr = call target.
+	amd64MOV_reg_imm64(cb, amd64RCX, targetPC)
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperAddr), amd64RCX)
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffLiveSP), amd64RegIE64SP)
+	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperPC), amd64RCX)
+	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffNeedHelper), HELPER_JSR)
+
+	bailCount := ji.pcOffset / IE64_INSTR_SIZE
+	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
 // emitRTS_AMD64 emits RTS (return from subroutine).
@@ -2670,7 +2719,21 @@ func emitJSR_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, 
 // reg store, ChainCount, DEC ChainBudget, NeedInval check) and JMPs
 // directly into the caller's continuation block. On miss, the unchained
 // full epilogue runs with the popped PC packed into R15.
-func emitRTS_AMD64(cb *CodeBuffer, br *blockRegs, instrCount uint32) {
+func emitRTS_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, instrCount uint32, writtenSoFar uint32) {
+	// Phase 5: MMU-on or high SP routes the stack read through HELPER_RTS.
+	// Guards emitted before either fast path; the helper exit lands after
+	// both (every fast path ends in a block exit, no fallthrough).
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
+	mmuHelperOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+	// High-slot guard: read at SP needs SP <= MemSize-8.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize))
+	amd64ALU_reg_imm32(cb, 5, amd64RCX, 8)               // RCX = MemSize - 8
+	amd64ALU_reg_reg(cb, 0x39, amd64RegIE64SP, amd64RCX) // CMP R14, RCX
+	highHelperOff := amd64Jcc_rel32(cb, amd64CondA)      // SP > MemSize-8 → helper
+
 	if br.hasBackwardBranch {
 		// Backward-branch blocks need dynamic count; fall back to the
 		// simple unchained epilogue path. (Block-level RTSes inside a
@@ -2679,6 +2742,11 @@ func emitRTS_AMD64(cb *CodeBuffer, br *blockRegs, instrCount uint32) {
 		amd64ALU_reg_imm32(cb, 0, amd64RegIE64SP, 8)
 		emitDynamicCountAMD64(cb, instrCount)
 		emitEpilogue(cb, br.written, br.used)
+
+		helperPC := cb.Len()
+		patchRel32(cb, mmuHelperOff, helperPC)
+		patchRel32(cb, highHelperOff, helperPC)
+		emitRTSHelperExit(cb, ji, instrPC, br, writtenSoFar)
 		return
 	}
 
@@ -2803,9 +2871,50 @@ func emitRTS_AMD64(cb *CodeBuffer, br *blockRegs, instrCount uint32) {
 	amd64MOV_reg_mem(cb, amd64RDI, amd64RSP, int32(amd64OffCtxPtr))
 	amd64MOV_reg_mem(cb, amd64RDI, amd64RDI, int32(jitCtxOffRegsPtr))
 	emitEpilogue(cb, br.written, br.used)
+
+	// Helper exit (block exit; reached only via the guard jumps at top).
+	helperPC := cb.Len()
+	patchRel32(cb, mmuHelperOff, helperPC)
+	patchRel32(cb, highHelperOff, helperPC)
+	emitRTSHelperExit(cb, ji, instrPC, br, writtenSoFar)
 }
 
-func emitJSR_IND_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, instrCount uint32) {
+// emitRTSHelperExit writes the JITContext HELPER_RTS protocol fields. The
+// dispatcher reads the return PC via mmuStackRead, increments cpu.regs[31],
+// and sets cpu.PC to the popped value.
+func emitRTSHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffLiveSP), amd64RegIE64SP)
+	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperPC), amd64RCX)
+	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffNeedHelper), HELPER_RTS)
+
+	bailCount := ji.pcOffset / IE64_INSTR_SIZE
+	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
+}
+
+// emitJSR_IND_AMD64 emits JSR_IND (register-indirect subroutine call,
+// target = rs + sext(imm32)). Phase 5: routes the return-address push
+// through HELPER_JSR_IND on MMU-on / high SP; HelperVal carries the
+// return address, HelperAddr the computed target.
+func emitJSR_IND_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, instrCount uint32, writtenSoFar uint32) {
+	// MMU-on → helper.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
+	mmuHelperOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+	// Underflow guard: SP >= 8.
+	amd64ALU_reg_imm32(cb, 7, amd64RegIE64SP, 8) // CMP R14, 8
+	underflowOff := amd64Jcc_rel32(cb, amd64CondB)
+
+	// High-slot guard: SP <= MemSize.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize))
+	amd64ALU_reg_reg(cb, 0x39, amd64RegIE64SP, amd64RCX) // CMP R14, RCX
+	highHelperOff := amd64Jcc_rel32(cb, amd64CondA)
+
+	// Fast path.
 	amd64ALU_reg_imm32(cb, 5, amd64RegIE64SP, 8)
 	retAddr := uint64(instrPC + IE64_INSTR_SIZE)
 	emitLoadImm64AMD64(cb, amd64RAX, retAddr)
@@ -2822,6 +2931,46 @@ func emitJSR_IND_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRe
 	// Phase 2: count to ctx.RetCount; R15 already carries full 64-bit PC.
 	emitStoreRetCountAMD64(cb, instrCount, br)
 	emitEpilogue(cb, br.written, br.used)
+
+	// Helper exit (block exit; reached only via the guard jumps above).
+	helperPC := cb.Len()
+	patchRel32(cb, mmuHelperOff, helperPC)
+	patchRel32(cb, underflowOff, helperPC)
+	patchRel32(cb, highHelperOff, helperPC)
+	emitJSR_INDHelperExit(cb, ji, instrPC, br, writtenSoFar)
+}
+
+// emitJSR_INDHelperExit writes the JITContext HELPER_JSR_IND protocol
+// fields. The target (rs + sext(imm32)) is computed into RAX and stored to
+// HelperAddr; HelperVal carries the return address.
+func emitJSR_INDHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	// Compute target = base + sext(imm32) into RAX before touching ctx (R10).
+	rsReg := resolveRegAMD64(cb, ji.rs, amd64RAX)
+	amd64MOV_reg_imm32(cb, amd64RCX, ji.imm32)
+	amd64MOVSXD(cb, amd64RCX, amd64RCX)
+	amd64MOV_reg_reg(cb, amd64RAX, rsReg) // RAX = rs (no-op if rsReg==RAX)
+	if ji.rs == 31 {
+		// JSR_IND R31: the interpreter decrements SP before resolving the
+		// SP-relative target (cpu_ie64.go:1998-2010), and so does the fast
+		// path. rsReg here is the live pre-decrement SP, so subtract 8 to
+		// match before adding the displacement. The dispatcher decrements
+		// cpu.regs[31] but jumps to HelperAddr verbatim.
+		amd64ALU_reg_imm32(cb, 5, amd64RAX, 8) // RAX = SP - 8
+	}
+	amd64ALU_reg_reg(cb, 0x01, amd64RAX, amd64RCX) // RAX = base + imm32
+
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperAddr), amd64RAX) // target
+	amd64MOV_reg_imm64(cb, amd64RCX, instrPC+IE64_INSTR_SIZE)
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperVal), amd64RCX) // return addr
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffLiveSP), amd64RegIE64SP)
+	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperPC), amd64RCX)
+	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffNeedHelper), HELPER_JSR_IND)
+
+	bailCount := ji.pcOffset / IE64_INSTR_SIZE
+	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
 // ===========================================================================

@@ -1001,13 +1001,17 @@ func TestAMD64_MMUJsrBail_PreservesSpilledRegsWrittenEarlierInBlock(t *testing.T
 
 	r.ctx.RegsPtr = uintptr(unsafe.Pointer(&r.cpu.regs[0]))
 	r.ctx.MemPtr = uintptr(unsafe.Pointer(&r.cpu.memory[0]))
+	// Phase 5: JSR no longer carries a compile-time mmuBail; it helper-exits
+	// at runtime when MMUEnabled is set. The helper exit flushes the same
+	// earlier-written registers via emitEpilogue and reports the JSR's own PC
+	// (RetPC) so the dispatcher re-executes it through the MMU-aware helper.
+	r.ctx.MMUEnabled = 1
 	callNative(block.execAddr, uintptr(unsafe.Pointer(r.ctx)))
 
-	combined := r.cpu.regs[0]
-	r.cpu.PC = uint64(uint32(combined))
-	r.cpu.regs[0] = 0
+	r.cpu.PC = r.ctx.RetPC
+	r.ctx.RetPC = 0
 
-	// Bail target should be the JSR itself so the interpreter can execute it.
+	// Exit PC should be the JSR itself so the helper can service it.
 	if r.cpu.PC != PROG_START+32 {
 		t.Fatalf("PC = 0x%X, want 0x%X", r.cpu.PC, uint64(PROG_START+32))
 	}
@@ -1054,11 +1058,13 @@ func TestAMD64_MMUPushBail_PreservesSpilledRegsWrittenEarlierInBlock(t *testing.
 
 	r.ctx.RegsPtr = uintptr(unsafe.Pointer(&r.cpu.regs[0]))
 	r.ctx.MemPtr = uintptr(unsafe.Pointer(&r.cpu.memory[0]))
+	// Phase 5: PUSH helper-exits at runtime under MMU; emitEpilogue flushes
+	// earlier-written regs and RetPC reports the PUSH's own PC.
+	r.ctx.MMUEnabled = 1
 	callNative(block.execAddr, uintptr(unsafe.Pointer(r.ctx)))
 
-	combined := r.cpu.regs[0]
-	r.cpu.PC = uint64(uint32(combined))
-	r.cpu.regs[0] = 0
+	r.cpu.PC = r.ctx.RetPC
+	r.ctx.RetPC = 0
 
 	if r.cpu.PC != PROG_START+8 {
 		t.Fatalf("PC = 0x%X, want 0x%X", r.cpu.PC, uint64(PROG_START+8))
@@ -1097,11 +1103,13 @@ func TestAMD64_MMUJsrBail_PreservesMappedArgWrittenFromSpilledSource(t *testing.
 
 	r.ctx.RegsPtr = uintptr(unsafe.Pointer(&r.cpu.regs[0]))
 	r.ctx.MemPtr = uintptr(unsafe.Pointer(&r.cpu.memory[0]))
+	// Phase 5: JSR helper-exits at runtime under MMU; emitEpilogue flushes
+	// the mapped arg written from a spilled source, RetPC reports the JSR PC.
+	r.ctx.MMUEnabled = 1
 	callNative(block.execAddr, uintptr(unsafe.Pointer(r.ctx)))
 
-	combined := r.cpu.regs[0]
-	r.cpu.PC = uint64(uint32(combined))
-	r.cpu.regs[0] = 0
+	r.cpu.PC = r.ctx.RetPC
+	r.ctx.RetPC = 0
 
 	if r.cpu.PC != PROG_START+24 {
 		t.Fatalf("PC = 0x%X, want 0x%X", r.cpu.PC, uint64(PROG_START+24))
@@ -1137,13 +1145,15 @@ func TestAMD64_MMUJsrBail_FlushesMappedR1WrittenEarlierInBlock(t *testing.T) {
 		t.Fatalf("compileBlockMMU: %v", err)
 	}
 
+	// setupIdentityMMU already enabled the MMU on the CPU; mirror it into the
+	// JITContext so the JSR takes the Phase 5 helper-exit path at runtime.
 	r.ctx.RegsPtr = uintptr(unsafe.Pointer(&r.cpu.regs[0]))
 	r.ctx.MemPtr = uintptr(unsafe.Pointer(&r.cpu.memory[0]))
+	r.ctx.MMUEnabled = 1
 	callNative(block.execAddr, uintptr(unsafe.Pointer(r.ctx)))
 
-	combined := r.cpu.regs[0]
-	r.cpu.PC = uint64(uint32(combined))
-	r.cpu.regs[0] = 0
+	r.cpu.PC = r.ctx.RetPC
+	r.ctx.RetPC = 0
 
 	if r.cpu.PC != PROG_START+16 {
 		t.Fatalf("PC = 0x%X, want 0x%X", r.cpu.PC, uint64(PROG_START+16))

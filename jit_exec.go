@@ -70,15 +70,32 @@ func (cpu *CPU64) freeJIT() {
 	cpu.jitCtx = nil
 }
 
-// compileBlockMMU wraps compileBlock, marking all guest-memory-touching
-// instructions for interpreter bail. Used when MMU is enabled.
+// compileBlockMMU wraps compileBlock for MMU-enabled execution. Phase 5:
+// all data, stack, and control-flow memory ops (LOAD/STORE/FLOAD/FSTORE/
+// DLOAD/DSTORE/JSR/RTS/PUSH/POP/JSR_IND) now carry a runtime MMUEnabled
+// check in their native emitters and route through the JITContext HELPER_*
+// protocol when MMU is on (the dispatcher in jit_helper_dispatch.go services
+// them via the interpreter's MMU-aware loadMem/storeMem/mmuStack* helpers).
+// They no longer need a compile-time mmuBail.
+//
+// Atomics (CAS/XCHG/FAA/FAND/FOR/FXOR) remain an explicit interpreter-bail
+// carveout: sequential consistency requires the Go runtime, and no helper
+// op exists for them.
+//
+// Fused JSR/RTS leaf markers (ie64FusedJSRLeafCall / ie64FusedRTSLeafReturn,
+// set at scan time on amd64) also still bail: their inlined fast path
+// (jit_emit_amd64.go:1231) emits raw [MemBase+SP] stack traffic with no
+// runtime MMUEnabled check, so under MMU it would bypass VA translation.
+// Flagging mmuBail makes the fused fast path fall through to the normal
+// OP_JSR64 / OP_RTS64 case, which bails to the interpreter.
 func compileBlockMMU(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBlock, error) {
 	compileBlockMMUInvocations.Add(1)
 	for i := range instrs {
 		switch instrs[i].opcode {
-		case OP_LOAD, OP_STORE, OP_FLOAD, OP_FSTORE, OP_DLOAD, OP_DSTORE,
-			OP_JSR64, OP_RTS64, OP_PUSH64, OP_POP64, OP_JSR_IND,
-			OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
+		case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
+			instrs[i].mmuBail = true
+		}
+		if instrs[i].fusedFlag&(ie64FusedJSRLeafCall|ie64FusedRTSLeafReturn) != 0 {
 			instrs[i].mmuBail = true
 		}
 	}

@@ -950,13 +950,13 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 			return
 		}
-		emitJSR(cb, ji, instrPC, br)
+		emitJSR(cb, ji, instrPC, br, writtenSoFar)
 	case OP_RTS64:
 		if ji.mmuBail {
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 			return
 		}
-		emitRTS(cb, br, ji.pcOffset/IE64_INSTR_SIZE+1)
+		emitRTS(cb, ji, instrPC, br, ji.pcOffset/IE64_INSTR_SIZE+1, writtenSoFar)
 	case OP_PUSH64:
 		if ji.mmuBail {
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
@@ -974,7 +974,7 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 			return
 		}
-		emitJSR_IND(cb, ji, instrPC, br, ji.pcOffset/IE64_INSTR_SIZE+1)
+		emitJSR_IND(cb, ji, instrPC, br, ji.pcOffset/IE64_INSTR_SIZE+1, writtenSoFar)
 
 	// ======================================================================
 	// System
@@ -2070,34 +2070,111 @@ func emitJMP(cb *CodeBuffer, ji *JITInstr, br *blockRegs, instrCount uint32) {
 	emitEpilogue(cb, br.written, br.used)
 }
 
-// emitJSR handles JSR (jump to subroutine, PC-relative)
-func emitJSR(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs) {
-	cb.Emit32(arm64SUB_imm(arm64RegIE64SP, arm64RegIE64SP, 8))
-
-	retAddr := uint64(instrPC + IE64_INSTR_SIZE)
-	emitLoadImm64(cb, 0, retAddr)
-	cb.Emit32(arm64STR_reg(0, arm64RegMemBase, arm64RegIE64SP))
-
-	staticCount := uint32(ji.pcOffset/IE64_INSTR_SIZE + 1)
+// emitJSR handles JSR (jump to subroutine, PC-relative). Phase 5: the
+// return-address push routes through HELPER_JSR on MMU-on / high SP;
+// HelperVal carries the return address, HelperAddr the call target.
+func emitJSR(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	// Phase 3: keep the full 64-bit PC-relative target. The legacy
 	// uint32(...) cast aliased a high (>4 GiB) call target down to its
 	// low 32 bits, misdirecting the chain exit while AMD64 JSR and the
 	// other ARM64 branch paths already preserve the full PC.
 	targetPC := uint64(int64(instrPC) + int64(int32(ji.imm32)))
-	emitPackedPCAndCount(cb, targetPC, staticCount, br)
+	staticCount := uint32(ji.pcOffset/IE64_INSTR_SIZE + 1)
 
+	// MMU-on → helper.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
+	mmuHelperOff := cb.Len()
+	cb.Emit32(0) // CBNZ X1, helper
+
+	// Underflow guard: SP >= 8 (the pre-decrement must not wrap).
+	cb.Emit32(arm64CMP_imm(arm64RegIE64SP, 8))
+	underflowOff := cb.Len()
+	cb.Emit32(0) // B.LO helper
+
+	// High-slot guard: SP-8 <= MemSize-8 ⇔ SP <= MemSize.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4)))
+	cb.Emit32(arm64CMP(arm64RegIE64SP, 1))
+	highHelperOff := cb.Len()
+	cb.Emit32(0) // B.HI helper
+
+	// Fast path: SP -= 8; mem[SP] = retAddr; exit toward target.
+	cb.Emit32(arm64SUB_imm(arm64RegIE64SP, arm64RegIE64SP, 8))
+	retAddr := uint64(instrPC + IE64_INSTR_SIZE)
+	emitLoadImm64(cb, 0, retAddr)
+	cb.Emit32(arm64STR_reg(0, arm64RegMemBase, arm64RegIE64SP))
+	emitPackedPCAndCount(cb, targetPC, staticCount, br)
 	emitEpilogue(cb, br.written, br.used)
+
+	// Helper exit (block exit; reached only via the guard jumps above).
+	helperPC := cb.Len()
+	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+	cb.PatchUint32(underflowOff, arm64Bcond(arm64CondLO, int32(helperPC-underflowOff)))
+	cb.PatchUint32(highHelperOff, arm64Bcond(arm64CondHI, int32(helperPC-highHelperOff)))
+	emitJSRHelperExitARM64(cb, ji, instrPC, targetPC, br, writtenSoFar)
 }
 
-// emitRTS handles RTS (return from subroutine)
-func emitRTS(cb *CodeBuffer, br *blockRegs, instrCount uint32) {
+// emitJSRHelperExitARM64 writes the JITContext HELPER_JSR protocol fields.
+func emitJSRHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC, targetPC uint64, br *blockRegs, writtenSoFar uint32) {
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                  // X1 = ctx ptr
+	emitLoadImm64(cb, 2, instrPC+IE64_INSTR_SIZE)                         //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperVal/8)))           // HelperVal = retAddr
+	emitLoadImm64(cb, 2, targetPC)                                        //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperAddr/8)))          // HelperAddr = target
+	cb.Emit32(arm64STR_imm(arm64RegIE64SP, 1, uint32(jitCtxOffLiveSP/8))) // LiveSP = X27
+	emitLoadImm64(cb, 2, instrPC)                                         //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))            // HelperPC
+	emitLoadImm32(cb, 2, HELPER_JSR)                                      //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))        // NeedHelper
+
+	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
+	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
+}
+
+// emitRTS handles RTS (return from subroutine). Phase 5: routes the stack
+// read through HELPER_RTS on MMU-on / high SP; otherwise pops directly.
+func emitRTS(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, instrCount uint32, writtenSoFar uint32) {
+	// MMU-on → helper.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
+	mmuHelperOff := cb.Len()
+	cb.Emit32(0) // CBNZ X1, helper
+
+	// High-slot guard: read at SP needs SP <= MemSize-8.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4)))
+	cb.Emit32(arm64SUB_imm(1, 1, 8)) // X1 = MemSize - 8
+	cb.Emit32(arm64CMP(arm64RegIE64SP, 1))
+	highHelperOff := cb.Len()
+	cb.Emit32(0) // B.HI helper
+
+	// Fast path: PC = mem[SP]; SP += 8.
 	cb.Emit32(arm64LDR_reg(arm64RegIE64PC, arm64RegMemBase, arm64RegIE64SP))
 	cb.Emit32(arm64ADD_imm(arm64RegIE64SP, arm64RegIE64SP, 8))
-
-	// Phase 2: count to ctx.RetCount; X28 carries the popped 64-bit PC.
 	emitStoreRetCount(cb, instrCount, br)
-
 	emitEpilogue(cb, br.written, br.used)
+
+	// Helper exit (block exit; reached only via the guard jumps above).
+	helperPC := cb.Len()
+	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+	cb.PatchUint32(highHelperOff, arm64Bcond(arm64CondHI, int32(helperPC-highHelperOff)))
+	emitRTSHelperExitARM64(cb, ji, instrPC, br, writtenSoFar)
+}
+
+// emitRTSHelperExitARM64 writes the JITContext HELPER_RTS protocol fields.
+func emitRTSHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                  // X1 = ctx ptr
+	cb.Emit32(arm64STR_imm(arm64RegIE64SP, 1, uint32(jitCtxOffLiveSP/8))) // LiveSP = X27
+	emitLoadImm64(cb, 2, instrPC)                                         //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))            // HelperPC
+	emitLoadImm32(cb, 2, HELPER_RTS)                                      //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))        // NeedHelper
+
+	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
+	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
 // emitRTI handles RTI (return from interrupt) by bailing to the interpreter.
@@ -2256,10 +2333,31 @@ func emitPOPHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *bl
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
-// emitJSR_IND handles JSR_IND (register-indirect subroutine call)
-func emitJSR_IND(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, instrCount uint32) {
-	cb.Emit32(arm64SUB_imm(arm64RegIE64SP, arm64RegIE64SP, 8))
+// emitJSR_IND handles JSR_IND (register-indirect subroutine call,
+// target = rs + sext(imm32)). Phase 5: routes the return-address push
+// through HELPER_JSR_IND on MMU-on / high SP; HelperVal carries the
+// return address, HelperAddr the computed target.
+func emitJSR_IND(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, instrCount uint32, writtenSoFar uint32) {
+	// MMU-on → helper.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
+	mmuHelperOff := cb.Len()
+	cb.Emit32(0) // CBNZ X1, helper
 
+	// Underflow guard: SP >= 8.
+	cb.Emit32(arm64CMP_imm(arm64RegIE64SP, 8))
+	underflowOff := cb.Len()
+	cb.Emit32(0) // B.LO helper
+
+	// High-slot guard: SP <= MemSize.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4)))
+	cb.Emit32(arm64CMP(arm64RegIE64SP, 1))
+	highHelperOff := cb.Len()
+	cb.Emit32(0) // B.HI helper
+
+	// Fast path.
+	cb.Emit32(arm64SUB_imm(arm64RegIE64SP, arm64RegIE64SP, 8))
 	retAddr := uint64(instrPC + IE64_INSTR_SIZE)
 	emitLoadImm64(cb, 0, retAddr)
 	cb.Emit32(arm64STR_reg(0, arm64RegMemBase, arm64RegIE64SP))
@@ -2273,8 +2371,47 @@ func emitJSR_IND(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, in
 
 	// Phase 2: count to ctx.RetCount; X28 already carries full 64-bit PC.
 	emitStoreRetCount(cb, instrCount, br)
-
 	emitEpilogue(cb, br.written, br.used)
+
+	// Helper exit (block exit; reached only via the guard jumps above).
+	helperPC := cb.Len()
+	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+	cb.PatchUint32(underflowOff, arm64Bcond(arm64CondLO, int32(helperPC-underflowOff)))
+	cb.PatchUint32(highHelperOff, arm64Bcond(arm64CondHI, int32(helperPC-highHelperOff)))
+	emitJSR_INDHelperExitARM64(cb, ji, instrPC, br, writtenSoFar)
+}
+
+// emitJSR_INDHelperExitARM64 writes the JITContext HELPER_JSR_IND protocol
+// fields. The target (rs + sext(imm32)) is computed into X2 and stored to
+// HelperAddr; HelperVal carries the return address.
+func emitJSR_INDHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	// Compute target = base + sext(imm32) into X2 before loading ctx into X1.
+	rsReg := resolveReg(cb, ji.rs, 0)
+	emitLoadImm32(cb, 1, ji.imm32)
+	cb.Emit32(arm64SXTW(1, 1))
+	if ji.rs == 31 {
+		// JSR_IND R31: the interpreter decrements SP before resolving the
+		// SP-relative target (cpu_ie64.go:1998-2010), as does the fast path.
+		// rsReg (X27) is the live pre-decrement SP, so subtract 8 first.
+		cb.Emit32(arm64SUB_imm(2, rsReg, 8)) // X2 = SP - 8
+		cb.Emit32(arm64ADD(2, 2, 1))         // X2 = (SP-8) + imm32
+	} else {
+		cb.Emit32(arm64ADD(2, rsReg, 1)) // X2 = rs + imm32 (target)
+	}
+
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                  // X1 = ctx ptr
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperAddr/8)))          // HelperAddr = target
+	emitLoadImm64(cb, 2, instrPC+IE64_INSTR_SIZE)                         //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperVal/8)))           // HelperVal = retAddr
+	cb.Emit32(arm64STR_imm(arm64RegIE64SP, 1, uint32(jitCtxOffLiveSP/8))) // LiveSP = X27
+	emitLoadImm64(cb, 2, instrPC)                                         //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))            // HelperPC
+	emitLoadImm32(cb, 2, HELPER_JSR_IND)                                  //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))        // NeedHelper
+
+	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
+	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
 // ===========================================================================
