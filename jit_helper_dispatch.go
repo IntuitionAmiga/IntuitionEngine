@@ -95,6 +95,19 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 	// PC the emitter wrote into RetPC.
 	cpu.PC = cpu.jitCtx.HelperPC
 
+	// Poll for a pending external interrupt at this instruction boundary,
+	// before servicing the helper op. cpu.PC and SP are now staged at the
+	// bailing instruction, exactly the interpreter's poll-before-instruction
+	// point, so a device IRQ recorded during the native block is taken here
+	// (vectoring at HelperPC) instead of after the helper op runs. The helper
+	// request was already cleared above; after RTI/ERET returns to HelperPC the
+	// block re-runs and re-requests the helper. handled=true so the caller
+	// suppresses the I/O fallback; retired=0 since the bailing instruction did
+	// not run.
+	if cpu.deliverPendingExternalInterrupt() {
+		return 0, true
+	}
+
 	addr := cpu.jitCtx.HelperAddr
 	size := byte(cpu.jitCtx.HelperSize)
 	rd := byte(cpu.jitCtx.HelperRd)

@@ -426,7 +426,12 @@ type CPU64 struct {
 	interruptVector  uint64
 	interruptEnabled atomic.Bool
 	inInterrupt      atomic.Bool
-	_pad6            [46]byte
+	// pendingIRQMask records external device interrupts that have been raised
+	// but not yet delivered. Device goroutines only OR bits in here (record
+	// only); the CPU goroutine consumes it at instruction/block boundaries via
+	// deliverPendingExternalInterrupt. Nonzero means at least one cause pending.
+	pendingIRQMask atomic.Uint32
+	_pad6          [42]byte
 
 	// Beyond cache lines:
 	memory  []byte
@@ -467,6 +472,12 @@ type CPU64 struct {
 	debugBreakIn           func(pc uint64) bool
 	debugBreakpointsActive func() bool
 	debugCPUID             int
+
+	// preBlockHook, when set, is called by ExecuteJIT immediately before each
+	// native block is entered. Test-only seam (nil in production) used to
+	// inject a device interrupt pulse inside the native execution window so
+	// the RetPC-clobber path can be exercised deterministically.
+	preBlockHook func()
 
 	// MMU state
 	mmuEnabled     bool         // MMU translation active
@@ -583,6 +594,80 @@ func (cpu *CPU64) timerStepBeforeInstruction(memBase unsafe.Pointer, memSize uin
 		cpu.timerState.Store(TIMER_RUNNING)
 	}
 	return ie64TimerStepContinue
+}
+
+// deliverPendingExternalInterrupt delivers a previously-recorded external device
+// interrupt. It is the single CPU-goroutine owner of the PC/stack mutation for
+// external interrupts (device goroutines only record into pendingIRQMask via
+// handleExternalInterrupt), which removes the data race on architectural state
+// and the RetPC clobber that lost async deliveries under the JIT.
+//
+// Callers poll this at instruction/block boundaries before the next fetch, so a
+// delivered interrupt pushes the current (not-yet-executed) PC and the deferred
+// instruction re-runs after RTI/ERET. Delivery mirrors the timer model: MMU-on
+// takes a trap frame and vectors to intrVector; MMU-off pushes PC and vectors to
+// interruptVector.
+//
+// Returns true when the caller must NOT execute the next instruction this
+// iteration: an interrupt was taken, a fault trap was taken on the push, or the
+// CPU was halted (trap-stack overflow or a non-trapping stack failure). In the
+// halt cases trapHalted/running are already set, and the caller's continue/return
+// yields to the loop-top trapHalted/running check. Returns false only when
+// execution should continue normally: nothing pending, or the interrupt was
+// dropped because interrupts were disabled / already in flight at delivery.
+func (cpu *CPU64) deliverPendingExternalInterrupt() bool {
+	// Cheap fast path: a plain atomic load (no bus lock) on the common
+	// no-interrupt case, polled once per instruction/block. Only take the more
+	// expensive swap when something is actually pending.
+	if cpu.pendingIRQMask.Load() == 0 {
+		return false
+	}
+	mask := cpu.pendingIRQMask.Swap(0)
+	if mask == 0 {
+		return false
+	}
+	// Re-check the gate at delivery time. The record-time gate already dropped
+	// raises that arrived while masked; this catches a disable/enter-interrupt
+	// that happened between recording and this poll. The mask was consumed by
+	// Swap above, so a masked state here drops it (pulse semantics).
+	if !cpu.interruptEnabled.Load() || cpu.inInterrupt.Load() {
+		return false
+	}
+	if cpu.mmuEnabled && cpu.intrVector != 0 {
+		if !cpu.trapEntry() {
+			// Trap-stack overflow: trapEntry set trapHalted and running=false
+			// without applying any side effect. Return true (not false) so the
+			// caller yields via continue/return to the loop-top trapHalted check
+			// and halts immediately, instead of treating false as "no interrupt"
+			// and executing the interrupted instruction. Mirrors the timer path's
+			// ie64TimerStepStop.
+			return true
+		}
+		cpu.faultPC = cpu.PC
+		cpu.faultAddr = uint64(mask)
+		cpu.faultCause = FAULT_TIMER
+		cpu.PC = cpu.intrVector
+		return true
+	}
+	cpu.inInterrupt.Store(true)
+	cpu.regs[31] -= 8
+	if !cpu.mmuStackWriteU64(cpu.regs[31], cpu.PC) {
+		cpu.regs[31] += 8
+		cpu.inInterrupt.Store(false)
+		if cpu.trapped {
+			// Trapping fault on the push: trapFault already redirected PC to the
+			// trap vector. Treat as taken so the caller resumes at the handler.
+			cpu.trapped = false
+			return true
+		}
+		// Non-trapping stack failure (e.g. an SP outside backing): halt like the
+		// interpreter timer path rather than silently dropping the interrupt and
+		// running on.
+		cpu.running.Store(false)
+		return true
+	}
+	cpu.PC = cpu.interruptVector
+	return true
 }
 
 // trapFrame captures everything that a trap entry overwrites. On
@@ -1447,6 +1532,7 @@ func (cpu *CPU64) Reset() {
 	cpu.interruptVector = 0
 	cpu.interruptEnabled.Store(false)
 	cpu.inInterrupt.Store(false)
+	cpu.pendingIRQMask.Store(0) // drop any undelivered external IRQ from the prior run
 	cpu.timerCount.Store(0)
 	cpu.timerPeriod.Store(0)
 	cpu.timerState.Store(TIMER_STOPPED)
@@ -1567,6 +1653,23 @@ func (cpu *CPU64) Execute() {
 		checkCounter++
 		if checkCounter&0xFFF == 0 && !cpu.running.Load() {
 			break
+		}
+
+		// External interrupt delivery, before PC translation and instruction
+		// fetch. Delivering here (rather than beside the timer hook, which runs
+		// after translate/fetch/decode) gives the interrupt priority over an
+		// execute-fault or fetch at the interrupted PC, matching hardware where
+		// the interrupt is taken at the instruction boundary before the next
+		// fetch.
+		if cpu.deliverPendingExternalInterrupt() {
+			// A fatal stack failure during delivery clears running without
+			// setting trapHalted; break now rather than relying on the periodic
+			// running poll, which would let the guest run on for up to 4095
+			// more instructions.
+			if !cpu.running.Load() {
+				break
+			}
+			continue
 		}
 
 		// Performance measurement: count instructions and report periodically
@@ -2776,6 +2879,12 @@ func (cpu *CPU64) Stop() {
 // Debugger single-step semantics intentionally step WAIT without sleeping; the
 // normal Execute loop applies WAIT's real-time delay.
 func (cpu *CPU64) StepOne() int {
+	// External interrupt delivery before fetch, same priority rule as Execute.
+	// A delivered interrupt consumes this step (PC now points at the handler).
+	if cpu.deliverPendingExternalInterrupt() {
+		return 1
+	}
+
 	memSize := uint64(len(cpu.memory))
 	memBase := unsafe.Pointer(&cpu.memory[0])
 

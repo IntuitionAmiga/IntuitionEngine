@@ -40,6 +40,45 @@ func TestIE64JITFastMMIOPollLoop_AND_BNE(t *testing.T) {
 	}
 }
 
+// TestIE64JITFastMMIOPollLoop_ExitsOnPendingIRQ: a guest spinning on an MMIO
+// status flag must yield to the dispatcher when an external interrupt is
+// recorded. External IRQs now set pendingIRQMask only (they no longer flip
+// inInterrupt), so the poll loop must watch the pending mask. The MMIO read
+// callback records the interrupt on the first read; the loop must then exit with
+// cpu.PC left at the loop head so the dispatcher can deliver and resume there.
+func TestIE64JITFastMMIOPollLoop_ExitsOnPendingIRQ(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	sink := NewIE64InterruptSink(cpu)
+	bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 {
+		// Record an external interrupt during the poll; value stays nonzero so
+		// the loop would otherwise continue spinning.
+		sink.Pulse(IntMaskBlitter)
+		return 0x80
+	}, nil)
+	cpu.PC = PROG_START
+	cpu.regs[1] = 0xF0008
+	cpu.interruptEnabled.Store(true)
+	cpu.running.Store(true)
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_LOAD, 2, IE64_SIZE_L, 0, 1, 0, 0))
+	copy(cpu.memory[PROG_START+8:], ie64Instr(OP_AND64, 2, IE64_SIZE_L, 1, 2, 0, 0x80))
+	copy(cpu.memory[PROG_START+16:], ie64Instr(OP_BNE, 0, IE64_SIZE_Q, 0, 2, 0, 0xFFFFFFF0))
+
+	matched, retired := cpu.tryFastIE64MMIOPollLoop()
+	if !matched {
+		t.Fatal("expected IE64 MMIO poll loop to match")
+	}
+	if cpu.pendingIRQMask.Load() == 0 {
+		t.Fatal("expected the MMIO read to have recorded a pending IRQ")
+	}
+	if cpu.PC != PROG_START {
+		t.Fatalf("PC = 0x%08X, want loop head 0x%08X so the dispatcher can deliver", cpu.PC, uint64(PROG_START))
+	}
+	if retired != 3 {
+		t.Fatalf("retired = %d, want 3 (one iteration before the pending-IRQ exit)", retired)
+	}
+}
+
 func TestIE64JITFastMMIOPollLoopRejectsRegisterAND(t *testing.T) {
 	bus := NewMachineBus()
 	bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 { return 0x80 }, nil)

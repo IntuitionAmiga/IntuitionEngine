@@ -484,6 +484,12 @@ branch targets, or chain targets. The one stack exception is the amd64 non-MMU
 fused-leaf path (documented below): it raw-indexes `[MemBase+SP]` and so assumes
 the SP is in the low window.
 
+`SEI64` and `CLI64` are emitted as per-instruction interpreter bails (not NOPs) so
+they mutate `interruptEnabled` under the JIT. External device interrupts are
+delivered through a record-only sink and a pending mask polled at instruction and
+block boundaries by both the interpreter and the JIT dispatcher; see the "External
+Interrupt Delivery" section of `IE64_JIT.md` for the full model.
+
 - **Low memory window**: each guest sees a contiguous low RAM window backed by
   the dense `cpu.memory[]` slice, capped at 256 MiB for the IE64 family
   (`lowMemWindowBytes`). The actual `len(bus.memory)` is

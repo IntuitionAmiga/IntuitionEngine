@@ -411,11 +411,37 @@ The JIT falls back to the interpreter in these cases:
 | FMOD/transcendentals and double-precision arithmetic/conversion FPU opcodes | Bail to interpreter (DLOAD/DSTORE are JIT-emitted via helper exit, not bailed) |
 | Atomic RMW (CAS, XCHG, FAA, FAND, FOR, FXOR) | Always bail to interpreter (MMU-on and MMU-off; centralised SC semantics) |
 | MODS, MULHU, MULHS | Bail to interpreter |
+| SEI64, CLI64 | Emitted as bail-to-interpreter (`emitBailToInterpreter`) so `interruptEnabled` is mutated; compiling them as NOPs silently dropped the state change under timer-off native execution |
 | MMU/privilege opcodes (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE, SUAEN, SUADIS) | Block terminators; first-instruction fallback in `needsFallback()`, otherwise emitted as bail-to-interpreter |
 | FINT (x86-64 only) | Bail to interpreter (ROUNDSS requires SSE4.1) |
 | FCVTFI (x86-64 only) | Bail to interpreter (saturating + NaN semantics) |
 | ExecMem exhausted | `compileBlock` returns error, dispatcher calls `interpretOne()` |
 | Self-modifying code | `NeedInval` flag, cache + ExecMem reset |
+
+---
+
+## External Interrupt Delivery
+
+External device interrupts (video VBI, display-list, blitter) reach the IE64 CPU through `IE64InterruptSink`. The sink is record-only: device goroutines never write architectural CPU state (`PC`, the stack, `inInterrupt`) directly. Instead they record a pending cause and the CPU goroutine performs delivery at a safe boundary. This removes both the data race on CPU-owned state and the lost-delivery bug under the JIT, where the dispatcher overwrites `cpu.PC` from `ctx.RetPC` after a native block returns and would have clobbered any asynchronous PC write.
+
+Recording (`CPU64.handleExternalInterrupt`):
+
+- The cause is OR-ed into the atomic `pendingIRQMask` field on `CPU64`.
+- A gate is applied at record time: if interrupts are disabled (`interruptEnabled` false) or one is already in flight (`inInterrupt` true), the raise is dropped, not latched. This preserves the original edge-pulse drop timing.
+- `Pulse` (edge) records the call argument. The level paths (`Assert`, `Deassert`, `Ack`, `SetMask`) reconcile the latch with the current level state: they record the derived unmasked-active set `pendingMask()` rather than the call argument, so acknowledging or masking one source does not lose another that is still active, and they clear from the latch any cause that is no longer pending (deasserted or masked) so a level change before the CPU polls does not deliver a stale cause. The level state and the latch reconcile are guarded by a mutex on the sink because device goroutines may call concurrently.
+
+Delivery (`CPU64.deliverPendingExternalInterrupt`):
+
+- Consumes `pendingIRQMask` with an atomic swap, re-checks the enable and in-flight gate (dropping if masked between recording and the poll), then vectors. MMU-on takes a trap frame and jumps to `intrVector` with the cause recorded in `faultAddr`. MMU-off pushes the current PC and jumps to `interruptVector`. The sequence mirrors the timer interrupt model.
+
+Poll sites, all before the next instruction or block fetch so the interrupt takes priority over a fault or fetch at the interrupted PC, matching a hardware instruction boundary:
+
+- Interpreter `Execute()`: at the top of the loop, before PC translation and fetch.
+- `StepOne()`: at entry, before fetch. A delivered interrupt consumes the step.
+- JIT `ExecuteJIT()`: a single poll at the top of the dispatcher loop, reached only after a native block's helper, IO-bail, and retired-count handling have completed. The helper dispatcher (`handleJITHelper`) also polls before it services a bailed memory/stack/control op, so helper-exit blocks (DLOAD/DSTORE, MMU-on memory, high/IO helpers) take the interrupt at the bailing instruction's PC like the interpreter rather than after the op runs.
+- JIT fast paths (amd64): the MMIO poll-loop shortcut exits its spin when `pendingIRQMask` is set (leaving the PC at the loop head so the dispatcher delivers and resumes there), and the benchmark turbo shortcut refuses to start while an interrupt is pending. These watch `pendingIRQMask` because external IRQs no longer flip `inInterrupt`.
+
+IE64 native code can chain up to `ie64ChainBudget` (256) block transitions inside one `callNative` without returning to Go, so a pending interrupt raised mid-chain is observed when the chain returns to the dispatcher rather than between every guest instruction. This is a latency difference from the interpreter, not a correctness one, and is acceptable for the video-class interrupts in scope. Tighter latency would require a pending check in the chain-dispatch epilogue.
 
 ---
 

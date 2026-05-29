@@ -34,7 +34,13 @@ func TestIE64InterruptSinkVectorsToLegacyHandler(t *testing.T) {
 	cpu.interruptVector = handler
 	cpu.interruptEnabled.Store(true)
 
+	// The IE64 sink now records only; the CPU goroutine delivers at an
+	// instruction/block boundary. Pump that delivery directly here since the
+	// test exercises sink wiring rather than the dispatch loop.
 	NewIE64InterruptSink(cpu).Pulse(IntMaskBlitter)
+	if !cpu.deliverPendingExternalInterrupt() {
+		t.Fatal("IE64 pending interrupt was not delivered")
+	}
 
 	if cpu.PC != handler {
 		t.Fatalf("IE64 interrupt PC = 0x%X, want 0x%X", cpu.PC, handler)

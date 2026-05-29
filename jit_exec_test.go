@@ -263,6 +263,215 @@ func TestJIT_vs_Interpreter_SEI_CLI(t *testing.T) {
 	}
 }
 
+// runConfiguredCPU runs cpu.ExecuteJIT or cpu.Execute with a timeout. The caller
+// has already loaded memory and set up CPU state.
+func runConfiguredCPU(t *testing.T, cpu *CPU64, jit bool) {
+	t.Helper()
+	cpu.running.Store(true)
+	done := make(chan struct{})
+	go func() {
+		if jit {
+			cpu.ExecuteJIT()
+		} else {
+			cpu.Execute()
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cpu.running.Store(false)
+		waitDoneWithGuard(t, done)
+		t.Fatal("execution timed out")
+	}
+}
+
+// TestExecuteJIT_ExternalIRQ_NotClobberedByRetPC proves the pending model is not
+// lost to the RetPC write-back. The preBlockHook pulses an interrupt inside the
+// native execution window (just before callNative); the block runs and writes
+// ctx.RetPC, the dispatcher reads it into cpu.PC, and the top-of-loop poll must
+// then deliver, pushing the block-exit PC. The old synchronous path would have
+// vectored cpu.PC before the block ran and had it overwritten by RetPC.
+func TestExecuteJIT_ExternalIRQ_NotClobberedByRetPC(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available")
+	}
+
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+
+	handler := uint64(PROG_START + 0x100)
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[PROG_START+2*IE64_INSTR_SIZE:], ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[PROG_START+3*IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[handler:], ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 1, 0, 0, 0xBEEF))
+	copy(cpu.memory[handler+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	cpu.PC = PROG_START
+	cpu.interruptVector = handler
+	cpu.regs[31] = STACK_START
+	cpu.interruptEnabled.Store(true)
+
+	fired := false
+	cpu.preBlockHook = func() {
+		if fired {
+			return
+		}
+		fired = true
+		NewIE64InterruptSink(cpu).Pulse(IntMaskBlitter)
+	}
+
+	runConfiguredCPU(t, cpu, true)
+
+	if cpu.regs[10] != 0xBEEF {
+		t.Fatalf("R10 = 0x%X, want handler to run (0xBEEF); pending delivery was lost", cpu.regs[10])
+	}
+	wantPushed := uint64(PROG_START + 3*IE64_INSTR_SIZE)
+	if got := binary.LittleEndian.Uint64(cpu.memory[cpu.regs[31]:]); got != wantPushed {
+		t.Fatalf("pushed PC = 0x%X, want block-exit PC 0x%X (RetPC must not have won)", got, wantPushed)
+	}
+}
+
+// TestExecuteJIT_ExternalIRQ_AtIOBailPC pins the IO-bail interaction: a CLI64
+// that bails to the interpreter, with a pending IRQ injected inside the native
+// window so the StepOne entry poll delivers at the bail PC. The handler RTIs back
+// to the bail PC, after which CLI64 re-executes and clears interruptEnabled.
+func TestExecuteJIT_ExternalIRQ_AtIOBailPC(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available")
+	}
+
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+
+	handler := uint64(PROG_START + 0x100)
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_CLI64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[handler:], ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 1, 0, 0, 0xBEEF))
+	copy(cpu.memory[handler+IE64_INSTR_SIZE:], ie64Instr(OP_RTI64, 0, 0, 0, 0, 0, 0))
+
+	cpu.PC = PROG_START
+	cpu.interruptVector = handler
+	cpu.regs[31] = STACK_START
+	cpu.interruptEnabled.Store(true)
+
+	fired := false
+	cpu.preBlockHook = func() {
+		if fired {
+			return
+		}
+		fired = true
+		NewIE64InterruptSink(cpu).Pulse(IntMaskBlitter)
+	}
+
+	runConfiguredCPU(t, cpu, true)
+
+	if cpu.regs[10] != 0xBEEF {
+		t.Fatalf("R10 = 0x%X, want handler to run (0xBEEF)", cpu.regs[10])
+	}
+	if cpu.interruptEnabled.Load() {
+		t.Fatal("interruptEnabled should be false: CLI64 must re-execute after RTI")
+	}
+	if got := binary.LittleEndian.Uint64(cpu.memory[STACK_START-8:]); got != PROG_START {
+		t.Fatalf("pushed PC = 0x%X, want bail PC 0x%X", got, uint64(PROG_START))
+	}
+}
+
+// TestExecuteJIT_ExternalIRQ_AtHelperPC pins parity for helper-exit blocks: a
+// DLOAD bails to the JIT helper dispatcher, and a device IRQ recorded during the
+// native block must be taken at the DLOAD PC (before the helper op runs), exactly
+// as the interpreter polls before each instruction. Without the poll inside
+// handleJITHelper the DLOAD would be serviced first and the interrupt would
+// return one instruction late (or be lost on a helper fault).
+func TestExecuteJIT_ExternalIRQ_AtHelperPC(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available")
+	}
+
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+
+	dataAddr := uint64(PROG_START + 0x600)
+	handler := uint64(PROG_START + 0x100)
+	// Block: DLOAD F4, [R2]; HALT. DLOAD always routes through the helper exit.
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_DLOAD, 4, IE64_SIZE_Q, 0, 2, 0, 0))
+	copy(cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[handler:], ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 1, 0, 0, 0xBEEF))
+	copy(cpu.memory[handler+IE64_INSTR_SIZE:], ie64Instr(OP_RTI64, 0, 0, 0, 0, 0, 0))
+	binary.LittleEndian.PutUint64(cpu.memory[dataAddr:], 0x4045000000000000) // 42.0
+
+	cpu.regs[2] = dataAddr
+	cpu.PC = PROG_START
+	cpu.interruptVector = handler
+	cpu.regs[31] = STACK_START
+	cpu.interruptEnabled.Store(true)
+
+	fired := false
+	cpu.preBlockHook = func() {
+		if fired {
+			return
+		}
+		fired = true
+		NewIE64InterruptSink(cpu).Pulse(IntMaskBlitter)
+	}
+
+	runConfiguredCPU(t, cpu, true)
+
+	if cpu.regs[10] != 0xBEEF {
+		t.Fatalf("R10 = 0x%X, want handler to run (0xBEEF)", cpu.regs[10])
+	}
+	if got := binary.LittleEndian.Uint64(cpu.memory[STACK_START-8:]); got != PROG_START {
+		t.Fatalf("pushed PC = 0x%X, want DLOAD (helper) PC 0x%X", got, uint64(PROG_START))
+	}
+}
+
+// TestJIT_vs_Interpreter_ExternalIRQ asserts the JIT and interpreter deliver an
+// external interrupt identically.
+func TestJIT_vs_Interpreter_ExternalIRQ(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available")
+	}
+
+	build := func(jit bool) *CPU64 {
+		bus := NewMachineBus()
+		cpu := NewCPU64(bus)
+		cpu.jitEnabled = jit
+		handler := uint64(PROG_START + 0x100)
+		copy(cpu.memory[PROG_START:], ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0))
+		copy(cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0))
+		copy(cpu.memory[PROG_START+2*IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+		copy(cpu.memory[handler:], ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 1, 0, 0, 0xBEEF))
+		copy(cpu.memory[handler+IE64_INSTR_SIZE:], ie64Instr(OP_RTI64, 0, 0, 0, 0, 0, 0))
+		cpu.PC = PROG_START
+		cpu.interruptVector = handler
+		cpu.regs[31] = STACK_START
+		cpu.interruptEnabled.Store(true)
+		NewIE64InterruptSink(cpu).Pulse(IntMaskBlitter)
+		return cpu
+	}
+
+	jitCPU := build(true)
+	runConfiguredCPU(t, jitCPU, true)
+	interpCPU := build(false)
+	runConfiguredCPU(t, interpCPU, false)
+
+	if jitCPU.regs[10] != interpCPU.regs[10] {
+		t.Fatalf("R10 mismatch: JIT=0x%X Interp=0x%X", jitCPU.regs[10], interpCPU.regs[10])
+	}
+	if jitCPU.regs[10] != 0xBEEF {
+		t.Fatalf("handler did not run: R10=0x%X", jitCPU.regs[10])
+	}
+	jitPushed := binary.LittleEndian.Uint64(jitCPU.memory[STACK_START-8:])
+	interpPushed := binary.LittleEndian.Uint64(interpCPU.memory[STACK_START-8:])
+	if jitPushed != interpPushed {
+		t.Fatalf("pushed PC mismatch: JIT=0x%X Interp=0x%X", jitPushed, interpPushed)
+	}
+}
+
 func TestExecuteJIT_TimerArmedInvalidFPURegisterStopsWithoutAdvancingPC(t *testing.T) {
 	if !jitAvailable {
 		t.Skip("JIT not available")

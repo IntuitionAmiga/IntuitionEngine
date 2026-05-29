@@ -199,6 +199,24 @@ func (cpu *CPU64) ExecuteJIT() {
 			continue
 		}
 
+		// External interrupt delivery at a Go dispatcher boundary: cpu.PC is in
+		// memory and no native block is live here. A device goroutine that
+		// pulsed during the previous native block (or chain) only recorded a
+		// pending mask; deliver it now, before the next block lookup. This is
+		// the single JIT poll site: the loop reaches the top only after all
+		// exit handling (helper dispatch, IO-bail re-exec, retired-count
+		// accounting) of the previous block has run, so polling here is safe
+		// for the post-block case too.
+		if cpu.deliverPendingExternalInterrupt() {
+			// A fatal stack failure during delivery clears running without
+			// setting trapHalted; break now rather than relying on the periodic
+			// running poll, which would otherwise execute more blocks.
+			if !cpu.running.Load() {
+				break
+			}
+			continue
+		}
+
 		// Phase 4: full uint64 virtual PC through the JIT dispatcher.
 		// Earlier phases (1/2/3) widened the emitter and block
 		// infrastructure but kept ExecuteJIT in uint32 PC space, falling
@@ -504,6 +522,13 @@ func (cpu *CPU64) ExecuteJIT() {
 			cpu.jitCtx.MMUEnabled = 1
 		} else {
 			cpu.jitCtx.MMUEnabled = 0
+		}
+
+		// Test-only seam: inject work (e.g. a device interrupt pulse) inside the
+		// native execution window so the RetPC-clobber path can be exercised
+		// deterministically. Nil in production.
+		if cpu.preBlockHook != nil {
+			cpu.preBlockHook()
 		}
 
 		// Execute the native code block

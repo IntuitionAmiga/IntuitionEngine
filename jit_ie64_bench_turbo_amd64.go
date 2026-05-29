@@ -15,7 +15,13 @@ func (cpu *CPU64) tryIE64TurboProgram(pcPhys uint32, statsEnabled bool) (bool, u
 	if cpu == nil || cpu.bus == nil || cpu.FPU == nil || cpu.PC != uint64(pcPhys) || pcPhys != PROG_START {
 		return false, 0
 	}
-	if cpu.timerEnabled.Load() || cpu.inInterrupt.Load() || cpu.trapHalted {
+	// Turbo runs a recognised benchmark loop to completion (it ends in HALT)
+	// with no per-instruction interrupt check, so it must not start while any
+	// interrupt activity is live. inInterrupt no longer reflects a freshly
+	// raised external IRQ (those set pendingIRQMask only), so guard on the
+	// pending mask too; the dispatcher delivers it on the normal block path.
+	if cpu.timerEnabled.Load() || cpu.inInterrupt.Load() || cpu.trapHalted ||
+		cpu.pendingIRQMask.Load() != 0 {
 		return false, 0
 	}
 	if statsEnabled {

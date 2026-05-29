@@ -55,7 +55,12 @@ func (cpu *CPU64) tryFastIE64MMIOPollLoop() (bool, uint32) {
 		iterCap = DefaultPollIterationCap
 	}
 	iterations := 0
-	for cpu.running.Load() && !cpu.inInterrupt.Load() {
+	// Exit the spin when a device records an external interrupt: it only sets
+	// pendingIRQMask now (no longer flips inInterrupt), so without this check a
+	// guest polling an MMIO status flag while expecting that interrupt would
+	// never yield to the dispatcher to deliver it. Leaving cpu.PC at the loop
+	// head lets the dispatcher's top-of-loop poll vector and resume here.
+	for cpu.running.Load() && !cpu.inInterrupt.Load() && cpu.pendingIRQMask.Load() == 0 {
 		value := maskToSize(cpu.loadMem(addr, size0), size0)
 		if cpu.trapped {
 			cpu.trapped = false

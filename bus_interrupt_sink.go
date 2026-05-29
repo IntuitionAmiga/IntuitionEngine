@@ -50,3 +50,10 @@ func (s *interruptLevelState) setMask(mask InterruptMask, masked bool) bool {
 func (s *interruptLevelState) pending() bool {
 	return s.active&^s.masked != 0
 }
+
+// pendingMask returns the set of currently-active, unmasked causes. Level-
+// triggered sinks record this (not the call argument) so that acknowledging or
+// masking one source does not lose another that is still pending.
+func (s *interruptLevelState) pendingMask() InterruptMask {
+	return s.active &^ s.masked
+}

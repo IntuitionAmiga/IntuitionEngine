@@ -559,23 +559,22 @@ func needsFallback(instrs []JITInstr) bool {
 	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 		return true
 	}
-	// Full-block scan for opcodes the JIT memory/branch emitters do not
-	// handle yet:
+	// Full-block scan. The only remaining whole-block bail trigger is an
+	// invalid FPU register encoding (below). The memory and branch opcodes
+	// are NOT block-bail:
 	//
-	// - DLOAD / DSTORE: 64-bit memory access not implemented in the
-	//   AMD64 or ARM64 emitters; emitter would fall through. Bail the
-	//   whole block to keep dispatch state consistent.
-	//
-	// LOAD / STORE / FLOAD / FSTORE were re-enabled by PLAN_MAX_RAM.md
-	// slice 8 phase 7: with MMU off the emitters use uint32 addressing,
-	// which is correct for the legacy 32-bit window; with MMU on
-	// compileBlockMMU sets mmuBail per-instruction so each access bails
-	// individually back to the interpreter.
-	//
-	// JMP / JSR_IND were re-enabled by PLAN_MAX_RAM.md slice 8 phase 8:
-	// emitJMP / emitJSR_IND no longer AND the target with the legacy
-	// IE64_ADDR_MASK so jumps reach the full uint32 PC. With MMU on,
-	// compileBlockMMU still bails JSR_IND per-instruction.
+	// - DLOAD / DSTORE are emitted as helper-only paths (emitDLOAD /
+	//   emitDSTORE -> HELPER_DLOAD / HELPER_DSTORE), serviced per instruction
+	//   by the interpreter memory helpers; they do not force a whole-block
+	//   bail.
+	// - LOAD / STORE / FLOAD / FSTORE (PLAN_MAX_RAM.md slice 8 phase 7): with
+	//   MMU off the emitters use uint32 addressing, correct for the legacy
+	//   32-bit window; with MMU on compileBlockMMU sets mmuBail per
+	//   instruction so each access bails individually to the interpreter.
+	// - JMP / JSR_IND (PLAN_MAX_RAM.md slice 8 phase 8): emitJMP / emitJSR_IND
+	//   no longer AND the target with the legacy IE64_ADDR_MASK, so jumps
+	//   reach the full uint32 PC; with MMU on compileBlockMMU still bails
+	//   JSR_IND per instruction.
 	//
 	// Phase4d safety boundary (mmu_ie64_phase4b_test.go):
 	//   (a) MMU-off uint32 window — direct emit, asserted parity vs
@@ -585,8 +584,6 @@ func needsFallback(instrs []JITInstr) bool {
 	//       by TestPhase4d_MMU_BailsAllMemOps + TestPhase4d_MMU_BailsAllAtomics.
 	//   (c) Dispatch — exec.go selects compileBlockMMU vs compileBlock
 	//       on cpu.mmuEnabled, asserted by TestPhase4d_DispatchSelectsMMUCompiler.
-	// Only DLOAD/DSTORE remain block-bail because the 64-bit memory
-	// emitter has not landed yet.
 	for i := range instrs {
 		if isIE64FPUOpcode(instrs[i].opcode) && !validIE64FPUEncoding(instrs[i].opcode, instrs[i].rd, instrs[i].rs, instrs[i].rt) {
 			return true
