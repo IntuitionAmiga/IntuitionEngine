@@ -1372,13 +1372,13 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 			return
 		}
-		emitPUSH_AMD64(cb, ji)
+		emitPUSH_AMD64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_POP64:
 		if ji.mmuBail {
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 			return
 		}
-		emitPOP_AMD64(cb, ji)
+		emitPOP_AMD64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_JSR_IND:
 		if ji.mmuBail {
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
@@ -2518,26 +2518,133 @@ func emitJMP_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, 
 // Subroutine / Stack Emitters
 // ===========================================================================
 
-func emitPUSH_AMD64(cb *CodeBuffer, ji *JITInstr) {
-	amd64ALU_reg_imm32(cb, 5, amd64RegIE64SP, 8) // SUB R14, 8
-	srcReg := resolveRegAMD64(cb, ji.rs, amd64RAX)
-	emitMemOpSIB(cb, true, 0x89, srcReg, amd64RegMemBase, amd64RegIE64SP, 0) // MOV [RSI+R14], src
+// emitPUSH_AMD64 emits PUSH (pre-decrement). Phase 5 cycle 5.8: the
+// stack write now goes through the JITContext helper protocol whenever
+// MMU is on or the target slot escapes the low window. The fast path
+// (MMU off, SP-8 inside [0, MemSize)) writes directly to [memBase+SP-8].
+//
+// HelperVal carries the value to push; the Go dispatcher decrements
+// cpu.regs[31] itself, so LiveSP is flushed pre-decrement.
+func emitPUSH_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	srcReg := resolveRegAMD64(cb, ji.rs, amd64RAX) // value to push (pre-decrement)
+
+	// MMU-on → helper.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
+	mmuHelperOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+	// Underflow guard: need SP >= 8 (the pre-decrement must not wrap).
+	amd64ALU_reg_imm32(cb, 7, amd64RegIE64SP, 8) // CMP R14, 8
+	underflowOff := amd64Jcc_rel32(cb, amd64CondB)
+
+	// High-slot guard: effective addr = SP-8 must satisfy SP-8 <= MemSize-8,
+	// i.e. SP <= MemSize. Compare SP against MemSize directly.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize)) // RCX = MemSize
+	amd64ALU_reg_reg(cb, 0x39, amd64RegIE64SP, amd64RCX)                // CMP R14, RCX
+	highHelperOff := amd64Jcc_rel32(cb, amd64CondA)                     // SP > MemSize → helper
+
+	// Fast path: SUB R14, 8 then MOV [memBase+R14], src.
+	amd64ALU_reg_imm32(cb, 5, amd64RegIE64SP, 8)
+	emitMemOpSIB(cb, true, 0x89, srcReg, amd64RegMemBase, amd64RegIE64SP, 0)
+	doneOff := amd64JMP_rel32(cb)
+
+	helperPC := cb.Len()
+	patchRel32(cb, mmuHelperOff, helperPC)
+	patchRel32(cb, underflowOff, helperPC)
+	patchRel32(cb, highHelperOff, helperPC)
+	emitPUSHHelperExit(cb, ji, instrPC, srcReg, br, writtenSoFar)
+
+	donePC := cb.Len()
+	patchRel32(cb, doneOff, donePC)
 }
 
-func emitPOP_AMD64(cb *CodeBuffer, ji *JITInstr) {
+// emitPUSHHelperExit writes the JITContext HELPER_PUSH protocol fields.
+// The dispatcher decrements cpu.regs[31] and writes HelperVal via
+// mmuStackWrite, then advances PC. srcReg holds the value to push; the
+// ctx-pointer scratch avoids colliding with it.
+func emitPUSHHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32) {
+	ctxReg := byte(amd64R10)
+	if srcReg == amd64R10 {
+		ctxReg = amd64R11
+	}
+	amd64MOV_reg_mem(cb, ctxReg, amd64RSP, int32(amd64OffCtxPtr))
+	valReg := srcReg
+	if ji.rs == 31 {
+		// PUSH R31: the interpreter decrements SP before reading R31, so
+		// the pushed value is SP-8. The Go dispatcher decrements
+		// cpu.regs[31] but writes HelperVal verbatim, so pre-compute SP-8
+		// here. (The fast path stores the already-decremented R14, so this
+		// only affects the helper exit.) RCX is reused for instrPC below,
+		// after HelperVal is written.
+		amd64MOV_reg_reg(cb, amd64RCX, amd64RegIE64SP) // RCX = SP
+		amd64ALU_reg_imm32(cb, 5, amd64RCX, 8)         // RCX = SP-8
+		valReg = amd64RCX
+	}
+	amd64MOV_mem_reg(cb, ctxReg, int32(jitCtxOffHelperVal), valReg)
+	amd64MOV_mem_reg(cb, ctxReg, int32(jitCtxOffLiveSP), amd64RegIE64SP)
+	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)
+	amd64MOV_mem_reg(cb, ctxReg, int32(jitCtxOffHelperPC), amd64RCX)
+	amd64MOV_mem_imm32(cb, ctxReg, int32(jitCtxOffNeedHelper), HELPER_PUSH)
+
+	bailCount := ji.pcOffset / IE64_INSTR_SIZE
+	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
+}
+
+// emitPOP_AMD64 emits POP (post-increment). Phase 5 cycle 5.8: routes
+// through the HELPER_POP protocol when MMU is on or SP escapes the low
+// window; otherwise reads directly from [memBase+SP] then ADD R14, 8.
+func emitPOP_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	// MMU-on → helper.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
+	mmuHelperOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+	// High-slot guard: read at SP needs SP <= MemSize-8.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize))
+	amd64ALU_reg_imm32(cb, 5, amd64RCX, 8)               // RCX = MemSize - 8
+	amd64ALU_reg_reg(cb, 0x39, amd64RegIE64SP, amd64RCX) // CMP R14, RCX
+	highHelperOff := amd64Jcc_rel32(cb, amd64CondA)      // SP > MemSize-8 → helper
+
+	// Fast path.
 	dstReg, mapped := ie64ToAMD64Reg(ji.rd)
 	if !mapped {
-		dstReg = amd64RAX
+		dstReg = amd64R10
 	}
-
 	if ji.rd != 0 {
 		emitMemOpSIB(cb, true, 0x8B, dstReg, amd64RegMemBase, amd64RegIE64SP, 0)
 	}
 	amd64ALU_reg_imm32(cb, 0, amd64RegIE64SP, 8) // ADD R14, 8
-
 	if ji.rd != 0 && !mapped {
 		emitStoreSpilledRegAMD64(cb, dstReg, ji.rd)
 	}
+	doneOff := amd64JMP_rel32(cb)
+
+	helperPC := cb.Len()
+	patchRel32(cb, mmuHelperOff, helperPC)
+	patchRel32(cb, highHelperOff, helperPC)
+	emitPOPHelperExit(cb, ji, instrPC, br, writtenSoFar)
+
+	donePC := cb.Len()
+	patchRel32(cb, doneOff, donePC)
+}
+
+// emitPOPHelperExit writes the JITContext HELPER_POP protocol fields.
+// The dispatcher reads via mmuStackRead, writes the result into HelperRd,
+// increments cpu.regs[31], and advances PC.
+func emitPOPHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffHelperRd), uint32(ji.rd))
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffLiveSP), amd64RegIE64SP)
+	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperPC), amd64RCX)
+	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffNeedHelper), HELPER_POP)
+
+	bailCount := ji.pcOffset / IE64_INSTR_SIZE
+	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
 func emitJSR_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, pendingChains *[]ie64PendingChainSlot) {

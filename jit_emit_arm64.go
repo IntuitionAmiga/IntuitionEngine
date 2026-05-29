@@ -962,13 +962,13 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 			return
 		}
-		emitPUSH(cb, ji)
+		emitPUSH(cb, ji, instrPC, br, writtenSoFar)
 	case OP_POP64:
 		if ji.mmuBail {
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 			return
 		}
-		emitPOP(cb, ji)
+		emitPOP(cb, ji, instrPC, br, writtenSoFar)
 	case OP_JSR_IND:
 		if ji.mmuBail {
 			emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
@@ -2126,31 +2126,134 @@ func emitWAIT(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
-// emitPUSH handles PUSH rs
-func emitPUSH(cb *CodeBuffer, ji *JITInstr) {
-	// SP -= 8; mem[SP] = Rs
-	cb.Emit32(arm64SUB_imm(arm64RegIE64SP, arm64RegIE64SP, 8))
+// emitPUSH handles PUSH rs. Phase 5 cycle 5.8: the stack write goes
+// through the HELPER_PUSH protocol when MMU is on or the target slot
+// (SP-8) escapes the low window; otherwise it writes directly. The Go
+// dispatcher decrements cpu.regs[31] itself, so LiveSP is flushed
+// pre-decrement and HelperVal carries the value to push.
+func emitPUSH(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	srcReg := resolveReg(cb, ji.rs, 0) // value to push (pre-decrement)
 
-	srcReg := resolveReg(cb, ji.rs, 0)
+	// MMU-on → helper.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
+	mmuHelperOff := cb.Len()
+	cb.Emit32(0) // CBNZ X1, helper
+
+	// Underflow guard: SP >= 8 (the pre-decrement must not wrap).
+	cb.Emit32(arm64CMP_imm(arm64RegIE64SP, 8))
+	underflowOff := cb.Len()
+	cb.Emit32(0) // B.LO helper (SP < 8)
+
+	// High-slot guard: SP-8 <= MemSize-8 ⇔ SP <= MemSize.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4))) // X1 = MemSize
+	cb.Emit32(arm64CMP(arm64RegIE64SP, 1))
+	highHelperOff := cb.Len()
+	cb.Emit32(0) // B.HI helper (SP > MemSize)
+
+	// Fast path: SP -= 8; mem[SP] = Rs.
+	cb.Emit32(arm64SUB_imm(arm64RegIE64SP, arm64RegIE64SP, 8))
 	cb.Emit32(arm64STR_reg(srcReg, arm64RegMemBase, arm64RegIE64SP))
+	doneOff := cb.Len()
+	cb.Emit32(0) // B done
+
+	helperPC := cb.Len()
+	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+	cb.PatchUint32(underflowOff, arm64Bcond(arm64CondLO, int32(helperPC-underflowOff)))
+	cb.PatchUint32(highHelperOff, arm64Bcond(arm64CondHI, int32(helperPC-highHelperOff)))
+	emitPUSHHelperExitARM64(cb, ji, instrPC, srcReg, br, writtenSoFar)
+
+	donePC := cb.Len()
+	cb.PatchUint32(doneOff, arm64B(int32(donePC-doneOff)))
 }
 
-// emitPOP handles POP rd
-func emitPOP(cb *CodeBuffer, ji *JITInstr) {
+// emitPUSHHelperExitARM64 writes the JITContext HELPER_PUSH protocol
+// fields. srcReg holds the value to push; X1 is the ctx pointer and
+// never aliases a mapped IE64 register.
+func emitPUSHHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32) {
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8)) // X1 = ctx ptr
+	valReg := srcReg
+	if ji.rs == 31 {
+		// PUSH R31: the interpreter decrements SP before reading R31, so
+		// the pushed value is SP-8. The dispatcher decrements cpu.regs[31]
+		// but writes HelperVal verbatim, so pre-compute SP-8. (The fast
+		// path stores the already-decremented X27, so this only affects
+		// the helper exit.) X2 is reused for instrPC below, after
+		// HelperVal is written.
+		cb.Emit32(arm64SUB_imm(2, arm64RegIE64SP, 8)) // X2 = SP-8
+		valReg = 2
+	}
+	cb.Emit32(arm64STR_imm(valReg, 1, uint32(jitCtxOffHelperVal/8)))      // HelperVal
+	cb.Emit32(arm64STR_imm(arm64RegIE64SP, 1, uint32(jitCtxOffLiveSP/8))) // LiveSP = X27
+	emitLoadImm64(cb, 2, instrPC)                                         //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))            // HelperPC
+	emitLoadImm32(cb, 2, HELPER_PUSH)                                     //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))        // NeedHelper
+
+	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
+	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
+}
+
+// emitPOP handles POP rd. Phase 5 cycle 5.8: routes through HELPER_POP
+// when MMU is on or SP escapes the low window; otherwise reads directly
+// then SP += 8.
+func emitPOP(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	// MMU-on → helper.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
+	mmuHelperOff := cb.Len()
+	cb.Emit32(0) // CBNZ X1, helper
+
+	// High-slot guard: read at SP needs SP <= MemSize-8.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4)))
+	cb.Emit32(arm64SUB_imm(1, 1, 8)) // X1 = MemSize - 8
+	cb.Emit32(arm64CMP(arm64RegIE64SP, 1))
+	highHelperOff := cb.Len()
+	cb.Emit32(0) // B.HI helper (SP > MemSize-8)
+
+	// Fast path: Rd = mem[SP]; SP += 8.
 	dstReg, mapped := ie64ToARM64Reg(ji.rd)
 	if !mapped {
 		dstReg = 2
 	}
-
-	// Rd = mem[SP]; SP += 8
 	if ji.rd != 0 {
 		cb.Emit32(arm64LDR_reg(dstReg, arm64RegMemBase, arm64RegIE64SP))
 	}
 	cb.Emit32(arm64ADD_imm(arm64RegIE64SP, arm64RegIE64SP, 8))
-
 	if ji.rd != 0 && !mapped {
 		emitStoreSpilledReg(cb, dstReg, ji.rd)
 	}
+	doneOff := cb.Len()
+	cb.Emit32(0) // B done
+
+	helperPC := cb.Len()
+	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+	cb.PatchUint32(highHelperOff, arm64Bcond(arm64CondHI, int32(helperPC-highHelperOff)))
+	emitPOPHelperExitARM64(cb, ji, instrPC, br, writtenSoFar)
+
+	donePC := cb.Len()
+	cb.PatchUint32(doneOff, arm64B(int32(donePC-doneOff)))
+}
+
+// emitPOPHelperExitARM64 writes the JITContext HELPER_POP protocol
+// fields. The dispatcher reads via mmuStackRead, writes into HelperRd,
+// increments cpu.regs[31], and advances PC.
+func emitPOPHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                  // X1 = ctx ptr
+	emitLoadImm32(cb, 2, uint32(ji.rd))                                   //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperRd/4)))          // HelperRd
+	cb.Emit32(arm64STR_imm(arm64RegIE64SP, 1, uint32(jitCtxOffLiveSP/8))) // LiveSP = X27
+	emitLoadImm64(cb, 2, instrPC)                                         //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))            // HelperPC
+	emitLoadImm32(cb, 2, HELPER_POP)                                      //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))        // NeedHelper
+
+	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
+	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
 // emitJSR_IND handles JSR_IND (register-indirect subroutine call)
