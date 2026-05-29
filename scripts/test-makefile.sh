@@ -252,11 +252,16 @@ assert_recipe_contains install 'sudo' PREFIX=/root/intuition-engine-test
 assert_recipe_contains release-verify 'scripts/test-dist-layout\.sh'
 assert_target_exists x64-live-refman-pdfs
 assert_phony x64-live-refman-pdfs
+assert_target_exists x64-live-sdk-companion-pdfs
+assert_phony x64-live-sdk-companion-pdfs
 assert_makefile_contains '^x64-live-payload-check:.*x64-live-refman-pdfs'
+assert_makefile_contains '^x64-live-payload-check:.*x64-live-sdk-companion-pdfs'
 assert_makefile_contains '^x64-live-payload-check:.*x64-live-sdk-tools'
 assert_makefile_contains '^x64-live-payload-check:.*iedoom'
+assert_makefile_contains '^x64-live-sdk-companion-pdfs:.*x64-live-refman-pdfs'
 assert_recipe_contains x64-live-refman-pdfs 'scripts/refman-publish\.sh --strict'
 assert_recipe_contains x64-live-refman-pdfs 'scripts/refman-pdf\.sh'
+assert_recipe_contains x64-live-sdk-companion-pdfs 'scripts/sdk-companion-pdf\.sh'
 assert_var CHOCOLATE_DOOM_DIR ../chocolate-doom
 assert_var IEDOOM_IE86 build/iedoom.ie86
 assert_var IEDOOM_IE68 build/iedoom.ie68

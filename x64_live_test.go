@@ -67,8 +67,15 @@ func TestX64LiveDemoPayloadTargets(t *testing.T) {
 		".PHONY: x64-live-demos",
 		"x64-live-demos: x64-live-payload-check",
 		".PHONY: x64-live-payload-check",
-		"x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs x64-live-sdk-tools intuitionos iedoom",
+		"x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-sdk-tools intuitionos iedoom",
 		`X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --check-payload`,
+		".PHONY: x64-live-refman-pdfs",
+		"x64-live-refman-pdfs:",
+		`scripts/refman-publish.sh --strict`,
+		`scripts/refman-pdf.sh`,
+		".PHONY: x64-live-sdk-companion-pdfs",
+		"x64-live-sdk-companion-pdfs: x64-live-refman-pdfs",
+		`scripts/sdk-companion-pdf.sh`,
 		".PHONY: x64-live-sdk-tools",
 		"x64-live-sdk-tools:",
 		"linux:amd64:linux-x64:",
@@ -551,6 +558,12 @@ func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
 		`Staged IESHARE payload matches the live manifest`,
 		`payload_require_file "$IE_BINARY" "make x86-64-v3"`,
 		`AB3D2_EMBED_DIR="${SCRIPT_DIR}/embedded/ab3d2"`,
+		`SDK_COMPANION_PDFS=(`,
+		`"${SCRIPT_DIR}/sdk/docs/IE64_ISA.pdf"`,
+		`"${SCRIPT_DIR}/sdk/docs/IE32_ISA.pdf"`,
+		`"${SCRIPT_DIR}/sdk/docs/iemon.pdf"`,
+		`"${SCRIPT_DIR}/sdk/docs/iescript.pdf"`,
+		`"${SCRIPT_DIR}/sdk/docs/architecture.pdf"`,
 		`CHOCOLATE_DOOM_DIR="${CHOCOLATE_DOOM_DIR:-${SCRIPT_DIR}/../chocolate-doom}"`,
 		`IEDOOM_IE86="${IEDOOM_IE86:-build/iedoom.ie86}"`,
 		`IEDOOM_IE68="${IEDOOM_IE68:-build/iedoom.ie68}"`,
@@ -653,6 +666,14 @@ func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
 		`cp -f "${SCRIPT_DIR}"/sdk/examples/asm/*.asm "$sdk_dir/Examples/asm/"`,
 		`cp -f "${SCRIPT_DIR}"/sdk/examples/basic/*.bas "$sdk_dir/Examples/basic/"`,
 		`cp -f "${SCRIPT_DIR}"/sdk/examples/c/*.c "$sdk_dir/Examples/c/"`,
+		`cp -f "${REFMAN_PDF_DIR}"/*.pdf "$refman_docs_dir/"`,
+		`cp -f "${SDK_COMPANION_PDFS[@]}" "$docs_dir/"`,
+		`payload_require_file "$companion_pdf" "make x64-live-sdk-companion-pdfs" "SDK companion PDF $(basename "$companion_pdf")"`,
+		`payload_require_file "${payload_root}/Docs/IE64_ISA.pdf" "make x64-live-sdk-companion-pdfs" "staged IE64 ISA companion PDF"`,
+		`payload_require_file "${payload_root}/Docs/IE32_ISA.pdf" "make x64-live-sdk-companion-pdfs" "staged IE32 ISA companion PDF"`,
+		`payload_require_file "${payload_root}/Docs/iemon.pdf" "make x64-live-sdk-companion-pdfs" "staged IEMon companion PDF"`,
+		`payload_require_file "${payload_root}/Docs/iescript.pdf" "make x64-live-sdk-companion-pdfs" "staged IEScript companion PDF"`,
+		`payload_require_file "${payload_root}/Docs/architecture.pdf" "make x64-live-sdk-companion-pdfs" "staged architecture companion PDF"`,
 		`"${SCRIPT_DIR}/sdk/examples/asm/RotoAPI"`,
 		`"${SCRIPT_DIR}/sdk/examples/asm/RotoHW"`,
 		`"${SCRIPT_DIR}/sdk/examples/c/RotoAPIc"`,
@@ -695,6 +716,25 @@ func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("build_x64_ie_img.sh missing IESHARE demo payload behavior %q", want)
+		}
+	}
+}
+
+func TestX64LivePackagesDocsIntoReleaseArchive(t *testing.T) {
+	body := readX64LiveScript(t)
+
+	for _, want := range []string{
+		`compress_image`,
+		`local archive_docs_dir="${archive_root}/Docs"`,
+		`local archive_refman_docs_dir="${archive_docs_dir}/IEProgRefMan"`,
+		`payload_require_file "$companion_pdf" "make x64-live-sdk-companion-pdfs" "SDK companion PDF $(basename "$companion_pdf")"`,
+		`payload_require_glob "${REFMAN_PDF_DIR}/*.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide PDFs"`,
+		`cp -f "${SDK_COMPANION_PDFS[@]}" "$archive_docs_dir/"`,
+		`cp -f "${REFMAN_PDF_DIR}"/*.pdf "$archive_refman_docs_dir/"`,
+		`python3 - "$archive_path" "$archive_root" "$(basename "$OUTPUT_IMG")" Docs`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("build_x64_ie_img.sh missing release archive docs behavior %q", want)
 		}
 	}
 }
