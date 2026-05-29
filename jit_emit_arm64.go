@@ -340,6 +340,16 @@ func arm64MUL_W(rd, rn, rm byte) uint32 {
 	return 0x1B007C00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
 }
 
+// umulh Xd, Xn, Xm (unsigned high 64 bits of 64x64 multiply)
+func arm64UMULH(rd, rn, rm byte) uint32 {
+	return 0x9BC07C00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
+}
+
+// smulh Xd, Xn, Xm (signed high 64 bits of 64x64 multiply)
+func arm64SMULH(rd, rn, rm byte) uint32 {
+	return 0x9B407C00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
+}
+
 // smull Xd, Wn, Wm (signed multiply long — W×W→X)
 func arm64SMULL(rd, rn, rm byte) uint32 {
 	return 0x9B207C00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
@@ -373,6 +383,26 @@ func arm64CLZ(rd, rn byte) uint32 {
 // clz Wd, Wn
 func arm64CLZ_W(rd, rn byte) uint32 {
 	return 0x5AC01000 | uint32(rn)<<5 | uint32(rd)
+}
+
+// rbit Wd, Wn
+func arm64RBIT_W(rd, rn byte) uint32 {
+	return 0x5AC00000 | uint32(rn)<<5 | uint32(rd)
+}
+
+// rev Wd, Wn (reverse byte order in low 32 bits)
+func arm64REV_W(rd, rn byte) uint32 {
+	return 0x5AC00800 | uint32(rn)<<5 | uint32(rd)
+}
+
+// ror Xd, Xn, Xm (alias for RORV)
+func arm64ROR(rd, rn, rm byte) uint32 {
+	return 0x9AC02C00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
+}
+
+// ror Wd, Wn, Wm
+func arm64ROR_W(rd, rn, rm byte) uint32 {
+	return 0x1AC02C00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
 }
 
 // cmp Xn, Xm (alias for SUBS XZR, Xn, Xm)
@@ -893,8 +923,12 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitMOD(cb, ji)
 	case OP_NEG:
 		emitNEG(cb, ji)
-	case OP_MODS, OP_MULHU, OP_MULHS:
+	case OP_MODS:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+	case OP_MULHU:
+		emitMULHU(cb, ji)
+	case OP_MULHS:
+		emitMULHS(cb, ji)
 
 	// ======================================================================
 	// Logic
@@ -915,8 +949,18 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitASR(cb, ji)
 	case OP_CLZ:
 		emitCLZ(cb, ji)
-	case OP_SEXT, OP_ROL, OP_ROR, OP_CTZ, OP_POPCNT, OP_BSWAP:
-		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+	case OP_SEXT:
+		emitSEXT(cb, ji)
+	case OP_ROL:
+		emitRotate(cb, ji, true)
+	case OP_ROR:
+		emitRotate(cb, ji, false)
+	case OP_CTZ:
+		emitCTZ(cb, ji)
+	case OP_POPCNT:
+		emitPOPCNT(cb, ji)
+	case OP_BSWAP:
+		emitBSWAP(cb, ji)
 
 	// ======================================================================
 	// Branches
@@ -1085,6 +1129,9 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 		return
+
+	default:
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 	}
 }
 
@@ -1340,6 +1387,60 @@ func emitMULS(cb *CodeBuffer, ji *JITInstr) {
 	if ji.size == IE64_SIZE_B || ji.size == IE64_SIZE_W {
 		emitSizeMask(cb, dstReg, ji.size)
 	}
+
+	if !mapped {
+		emitStoreSpilledReg(cb, dstReg, ji.rd)
+	}
+}
+
+// emitMULHU handles MULHU rd, rs, rt/imm (unsigned high multiply).
+func emitMULHU(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveReg(cb, ji.rs, 0)
+	var opReg byte
+	if ji.xbit == 1 {
+		emitLoadImm64(cb, 1, uint64(ji.imm32))
+		opReg = 1
+	} else {
+		opReg = resolveReg(cb, ji.rt, 1)
+	}
+
+	dstReg, mapped := ie64ToARM64Reg(ji.rd)
+	if !mapped {
+		dstReg = 2
+	}
+
+	cb.Emit32(arm64UMULH(dstReg, rsReg, opReg))
+
+	if !mapped {
+		emitStoreSpilledReg(cb, dstReg, ji.rd)
+	}
+}
+
+// emitMULHS handles MULHS rd, rs, rt/imm (signed high multiply).
+func emitMULHS(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveReg(cb, ji.rs, 0)
+	var opReg byte
+	if ji.xbit == 1 {
+		emitLoadImm64(cb, 1, uint64(ji.imm32))
+		opReg = 1
+	} else {
+		opReg = resolveReg(cb, ji.rt, 1)
+	}
+
+	dstReg, mapped := ie64ToARM64Reg(ji.rd)
+	if !mapped {
+		dstReg = 2
+	}
+
+	cb.Emit32(arm64SMULH(dstReg, rsReg, opReg))
 
 	if !mapped {
 		emitStoreSpilledReg(cb, dstReg, ji.rd)
@@ -1623,6 +1724,207 @@ func emitCLZ(cb *CodeBuffer, ji *JITInstr) {
 
 	// IE64 CLZ always operates on 32-bit value (LeadingZeros32)
 	cb.Emit32(arm64CLZ_W(dstReg, rsReg))
+
+	if !mapped {
+		emitStoreSpilledReg(cb, dstReg, ji.rd)
+	}
+}
+
+// emitSEXT handles SEXT rd, rs.
+func emitSEXT(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveReg(cb, ji.rs, 0)
+	dstReg, mapped := ie64ToARM64Reg(ji.rd)
+	if !mapped {
+		dstReg = 2
+	}
+
+	switch ji.size {
+	case IE64_SIZE_B:
+		cb.Emit32(arm64SXTB(dstReg, rsReg))
+	case IE64_SIZE_W:
+		cb.Emit32(arm64SXTH(dstReg, rsReg))
+	case IE64_SIZE_L:
+		cb.Emit32(arm64SXTW(dstReg, rsReg))
+	case IE64_SIZE_Q:
+		cb.Emit32(arm64MOV(dstReg, rsReg))
+	}
+
+	if !mapped {
+		emitStoreSpilledReg(cb, dstReg, ji.rd)
+	}
+}
+
+func arm64RotateMask(size byte) uint32 {
+	switch size {
+	case IE64_SIZE_B:
+		return 7
+	case IE64_SIZE_W:
+		return 15
+	case IE64_SIZE_L:
+		return 31
+	default:
+		return 63
+	}
+}
+
+func emitRotateCount(cb *CodeBuffer, ji *JITInstr, scratch byte, size byte) {
+	if ji.xbit == 1 {
+		emitLoadImm32(cb, scratch, ji.imm32&arm64RotateMask(size))
+		return
+	}
+
+	opReg := resolveReg(cb, ji.rt, scratch)
+	if opReg != scratch {
+		cb.Emit32(arm64MOV_W(scratch, opReg))
+	}
+	mask := arm64RotateMask(size)
+	if mask != 31 {
+		emitLoadImm32(cb, 1, mask)
+		cb.Emit32(arm64AND_W(scratch, scratch, 1))
+	}
+}
+
+// emitRotate handles ROL/ROR. ROL is implemented as ROR by the negated count
+// for 32/64-bit operands; byte/word use explicit shifts so the width is exact.
+func emitRotate(cb *CodeBuffer, ji *JITInstr, left bool) {
+	if ji.rd == 0 {
+		return
+	}
+
+	emitRotateCount(cb, ji, 0, ji.size)
+
+	dstReg, mapped := ie64ToARM64Reg(ji.rd)
+	if !mapped {
+		dstReg = 2
+	}
+
+	rsReg := resolveReg(cb, ji.rs, 3)
+	if ji.size == IE64_SIZE_Q {
+		cb.Emit32(arm64MOV(dstReg, rsReg))
+	} else {
+		cb.Emit32(arm64MOV_W(dstReg, rsReg))
+		if ji.size == IE64_SIZE_B || ji.size == IE64_SIZE_W {
+			emitSizeMask(cb, dstReg, ji.size)
+		}
+	}
+
+	switch ji.size {
+	case IE64_SIZE_B, IE64_SIZE_W:
+		width := uint32(8)
+		if ji.size == IE64_SIZE_W {
+			width = 16
+		}
+		if left {
+			cb.Emit32(arm64MOV_W(1, dstReg))
+			cb.Emit32(arm64LSL_W(1, 1, 0))
+			emitLoadImm32(cb, 3, width)
+			cb.Emit32(arm64SUB_W(3, 3, 0))
+			cb.Emit32(arm64LSR_W(dstReg, dstReg, 3))
+		} else {
+			cb.Emit32(arm64MOV_W(1, dstReg))
+			cb.Emit32(arm64LSR_W(1, 1, 0))
+			emitLoadImm32(cb, 3, width)
+			cb.Emit32(arm64SUB_W(3, 3, 0))
+			cb.Emit32(arm64LSL_W(dstReg, dstReg, 3))
+		}
+		cb.Emit32(arm64ORR_W(dstReg, dstReg, 1))
+		emitSizeMask(cb, dstReg, ji.size)
+	case IE64_SIZE_L:
+		if left {
+			cb.Emit32(arm64SUB_W(0, 31, 0))
+		}
+		cb.Emit32(arm64ROR_W(dstReg, dstReg, 0))
+	case IE64_SIZE_Q:
+		if left {
+			cb.Emit32(arm64SUB(0, 31, 0))
+		}
+		cb.Emit32(arm64ROR(dstReg, dstReg, 0))
+	}
+
+	if !mapped {
+		emitStoreSpilledReg(cb, dstReg, ji.rd)
+	}
+}
+
+// emitCTZ handles CTZ rd, rs over the low 32 bits.
+func emitCTZ(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveReg(cb, ji.rs, 0)
+	dstReg, mapped := ie64ToARM64Reg(ji.rd)
+	if !mapped {
+		dstReg = 2
+	}
+
+	cb.Emit32(arm64RBIT_W(dstReg, rsReg))
+	cb.Emit32(arm64CLZ_W(dstReg, dstReg))
+
+	if !mapped {
+		emitStoreSpilledReg(cb, dstReg, ji.rd)
+	}
+}
+
+// emitPOPCNT handles POPCNT rd, rs over the low 32 bits.
+func emitPOPCNT(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveReg(cb, ji.rs, 0)
+	dstReg, mapped := ie64ToARM64Reg(ji.rd)
+	if !mapped {
+		dstReg = 2
+	}
+
+	cb.Emit32(arm64MOV_W(dstReg, rsReg))
+
+	cb.Emit32(arm64MOV_W(0, dstReg))
+	cb.Emit32(arm64LSR_W_imm(0, 0, 1))
+	emitLoadImm32(cb, 1, 0x55555555)
+	cb.Emit32(arm64AND_W(0, 0, 1))
+	cb.Emit32(arm64SUB_W(dstReg, dstReg, 0))
+
+	cb.Emit32(arm64MOV_W(0, dstReg))
+	emitLoadImm32(cb, 1, 0x33333333)
+	cb.Emit32(arm64AND_W(dstReg, dstReg, 1))
+	cb.Emit32(arm64LSR_W_imm(0, 0, 2))
+	cb.Emit32(arm64AND_W(0, 0, 1))
+	cb.Emit32(arm64ADD_W(dstReg, dstReg, 0))
+
+	cb.Emit32(arm64MOV_W(0, dstReg))
+	cb.Emit32(arm64LSR_W_imm(0, 0, 4))
+	cb.Emit32(arm64ADD_W(dstReg, dstReg, 0))
+	emitLoadImm32(cb, 1, 0x0F0F0F0F)
+	cb.Emit32(arm64AND_W(dstReg, dstReg, 1))
+
+	emitLoadImm32(cb, 1, 0x01010101)
+	cb.Emit32(arm64MUL_W(dstReg, dstReg, 1))
+	cb.Emit32(arm64LSR_W_imm(dstReg, dstReg, 24))
+
+	if !mapped {
+		emitStoreSpilledReg(cb, dstReg, ji.rd)
+	}
+}
+
+// emitBSWAP handles BSWAP rd, rs over the low 32 bits.
+func emitBSWAP(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveReg(cb, ji.rs, 0)
+	dstReg, mapped := ie64ToARM64Reg(ji.rd)
+	if !mapped {
+		dstReg = 2
+	}
+
+	cb.Emit32(arm64REV_W(dstReg, rsReg))
 
 	if !mapped {
 		emitStoreSpilledReg(cb, dstReg, ji.rd)

@@ -323,6 +323,18 @@ func amd64MOVZX_W(cb *CodeBuffer, dst, src byte) {
 	cb.EmitBytes(0x0F, 0xB7, modRM(3, dst, src))
 }
 
+// amd64MOVSX_B emits MOVSX dst64, src8.
+func amd64MOVSX_B(cb *CodeBuffer, dst, src byte) {
+	emitREX(cb, true, dst, src)
+	cb.EmitBytes(0x0F, 0xBE, modRM(3, dst, src))
+}
+
+// amd64MOVSX_W emits MOVSX dst64, src16.
+func amd64MOVSX_W(cb *CodeBuffer, dst, src byte) {
+	emitREX(cb, true, dst, src)
+	cb.EmitBytes(0x0F, 0xBF, modRM(3, dst, src))
+}
+
 // amd64MOVSXD emits MOVSXD dst64, src32 (sign-extend dword to qword).
 func amd64MOVSXD(cb *CodeBuffer, dst, src byte) {
 	emitREX(cb, true, dst, src)
@@ -443,6 +455,42 @@ func amd64SHR_CL32(cb *CodeBuffer, dst byte) {
 func amd64SAR_CL32(cb *CodeBuffer, dst byte) {
 	emitREX(cb, false, 0, dst)
 	cb.EmitBytes(0xD3, modRM(3, 7, dst))
+}
+
+func amd64ROT_CL(cb *CodeBuffer, dst byte, size byte, op byte) {
+	if size == IE64_SIZE_W {
+		cb.EmitBytes(0x66)
+	}
+	emitREX(cb, size == IE64_SIZE_Q, op, dst)
+	if size == IE64_SIZE_B {
+		cb.EmitBytes(0xD2, modRM(3, op, dst))
+	} else {
+		cb.EmitBytes(0xD3, modRM(3, op, dst))
+	}
+}
+
+func amd64ROT_imm(cb *CodeBuffer, dst byte, size byte, op byte, imm8 byte) {
+	if size == IE64_SIZE_W {
+		cb.EmitBytes(0x66)
+	}
+	emitREX(cb, size == IE64_SIZE_Q, op, dst)
+	if size == IE64_SIZE_B {
+		cb.EmitBytes(0xC0, modRM(3, op, dst), imm8)
+	} else {
+		cb.EmitBytes(0xC1, modRM(3, op, dst), imm8)
+	}
+}
+
+func amd64BSF32(cb *CodeBuffer, dst, src byte) {
+	emitREX(cb, false, dst, src)
+	cb.EmitBytes(0x0F, 0xBC, modRM(3, dst, src))
+}
+
+func amd64BSWAP32(cb *CodeBuffer, reg byte) {
+	if isExtReg(reg) {
+		cb.EmitBytes(rexByte(false, false, false, true))
+	}
+	cb.EmitBytes(0x0F, 0xC8+regBits(reg))
 }
 
 // ===========================================================================
@@ -1269,8 +1317,12 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitALU_AMD64(cb, ji, 0x29, 5) // SUB opcode=0x29, aluOp=5
 	case OP_NEG:
 		emitNEG_AMD64(cb, ji)
-	case OP_MODS, OP_MULHU, OP_MULHS:
+	case OP_MODS:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+	case OP_MULHU:
+		emitMULHU_AMD64(cb, ji)
+	case OP_MULHS:
+		emitMULHS_AMD64(cb, ji)
 
 	// ======================================================================
 	// Logic
@@ -1309,8 +1361,18 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitASR_AMD64(cb, ji)
 	case OP_CLZ:
 		emitCLZ_AMD64(cb, ji)
-	case OP_SEXT, OP_ROL, OP_ROR, OP_CTZ, OP_POPCNT, OP_BSWAP:
-		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+	case OP_SEXT:
+		emitSEXT_AMD64(cb, ji)
+	case OP_ROL:
+		emitRotate_AMD64(cb, ji, 0)
+	case OP_ROR:
+		emitRotate_AMD64(cb, ji, 1)
+	case OP_CTZ:
+		emitCTZ_AMD64(cb, ji)
+	case OP_POPCNT:
+		emitPOPCNT_AMD64(cb, ji)
+	case OP_BSWAP:
+		emitBSWAP_AMD64(cb, ji)
 
 	// ======================================================================
 	// Memory Access
@@ -1497,7 +1559,7 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		return
 
 	default:
-		amd64NOP(cb)
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 	}
 
 	_ = isLast
@@ -1695,6 +1757,18 @@ func amd64IDIV32(cb *CodeBuffer, src byte) {
 	cb.EmitBytes(0xF7, modRM(3, 7, src))
 }
 
+// amd64MUL_RAX emits MUL src (unsigned: RDX:RAX = RAX * src).
+func amd64MUL_RAX(cb *CodeBuffer, src byte) {
+	emitREX(cb, true, 0, src)
+	cb.EmitBytes(0xF7, modRM(3, 4, src))
+}
+
+// amd64IMUL_RAX emits IMUL src (signed: RDX:RAX = RAX * src).
+func amd64IMUL_RAX(cb *CodeBuffer, src byte) {
+	emitREX(cb, true, 0, src)
+	cb.EmitBytes(0xF7, modRM(3, 5, src))
+}
+
 // amd64CQO emits CQO (sign-extend RAX into RDX:RAX).
 func amd64CQO(cb *CodeBuffer) {
 	cb.EmitBytes(0x48, 0x99) // REX.W CQO
@@ -1748,6 +1822,58 @@ func emitMULU_AMD64(cb *CodeBuffer, ji *JITInstr) {
 func emitMULS_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	// IMUL gives same low-half result for signed and unsigned
 	emitMULU_AMD64(cb, ji)
+}
+
+func emitMULHU_AMD64(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveRegAMD64(cb, ji.rs, amd64RCX)
+	amd64MOV_reg_reg(cb, amd64RAX, rsReg)
+
+	var opReg byte
+	if ji.xbit == 1 {
+		emitLoadImm64AMD64(cb, amd64R10, uint64(ji.imm32))
+		opReg = amd64R10
+	} else {
+		opReg = resolveRegAMD64(cb, ji.rt, amd64R10)
+	}
+
+	amd64MUL_RAX(cb, opReg)
+
+	dstReg, mapped := ie64ToAMD64Reg(ji.rd)
+	if mapped {
+		amd64MOV_reg_reg(cb, dstReg, amd64RDX)
+	} else {
+		emitStoreSpilledRegAMD64(cb, amd64RDX, ji.rd)
+	}
+}
+
+func emitMULHS_AMD64(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveRegAMD64(cb, ji.rs, amd64RCX)
+	amd64MOV_reg_reg(cb, amd64RAX, rsReg)
+
+	var opReg byte
+	if ji.xbit == 1 {
+		emitLoadImm64AMD64(cb, amd64R10, uint64(ji.imm32))
+		opReg = amd64R10
+	} else {
+		opReg = resolveRegAMD64(cb, ji.rt, amd64R10)
+	}
+
+	amd64IMUL_RAX(cb, opReg)
+
+	dstReg, mapped := ie64ToAMD64Reg(ji.rd)
+	if mapped {
+		amd64MOV_reg_reg(cb, dstReg, amd64RDX)
+	} else {
+		emitStoreSpilledRegAMD64(cb, amd64RDX, ji.rd)
+	}
 }
 
 func emitDIVU_AMD64(cb *CodeBuffer, ji *JITInstr) {
@@ -2052,6 +2178,162 @@ func emitCLZ_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	// .clz_done:
 	clzDonePC := cb.Len()
 	patchRel32(cb, clzDoneOff, clzDonePC)
+
+	dstReg, mapped := ie64ToAMD64Reg(ji.rd)
+	if mapped {
+		amd64MOV_reg_reg(cb, dstReg, amd64RAX)
+	} else {
+		emitStoreSpilledRegAMD64(cb, amd64RAX, ji.rd)
+	}
+}
+
+func emitSEXT_AMD64(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveRegAMD64(cb, ji.rs, amd64RAX)
+	switch ji.size {
+	case IE64_SIZE_B:
+		amd64MOVSX_B(cb, amd64RAX, rsReg)
+	case IE64_SIZE_W:
+		amd64MOVSX_W(cb, amd64RAX, rsReg)
+	case IE64_SIZE_L:
+		amd64MOVSXD(cb, amd64RAX, rsReg)
+	case IE64_SIZE_Q:
+		amd64MOV_reg_reg(cb, amd64RAX, rsReg)
+	}
+
+	dstReg, mapped := ie64ToAMD64Reg(ji.rd)
+	if mapped {
+		amd64MOV_reg_reg(cb, dstReg, amd64RAX)
+	} else {
+		emitStoreSpilledRegAMD64(cb, amd64RAX, ji.rd)
+	}
+}
+
+func rotateMaskForSize(size byte) uint32 {
+	switch size {
+	case IE64_SIZE_B:
+		return 7
+	case IE64_SIZE_W:
+		return 15
+	case IE64_SIZE_L:
+		return 31
+	default:
+		return 63
+	}
+}
+
+// emitRotate_AMD64 handles ROL/ROR. rotOp is the x86 group-2 extension:
+// 0 for ROL, 1 for ROR.
+func emitRotate_AMD64(cb *CodeBuffer, ji *JITInstr, rotOp byte) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveRegAMD64(cb, ji.rs, amd64RAX)
+	amd64MOV_reg_reg(cb, amd64RAX, rsReg)
+	if ji.size == IE64_SIZE_B || ji.size == IE64_SIZE_W || ji.size == IE64_SIZE_L {
+		emitSizeMaskAMD64(cb, amd64RAX, ji.size)
+	}
+
+	if ji.xbit == 1 {
+		imm := byte(ji.imm32 & rotateMaskForSize(ji.size))
+		amd64ROT_imm(cb, amd64RAX, ji.size, rotOp, imm)
+	} else {
+		countReg := resolveRegAMD64(cb, ji.rt, amd64RDX)
+		amd64MOV_reg_reg(cb, amd64RCX, countReg)
+		amd64ROT_CL(cb, amd64RAX, ji.size, rotOp)
+	}
+
+	if ji.size == IE64_SIZE_B || ji.size == IE64_SIZE_W || ji.size == IE64_SIZE_L {
+		emitSizeMaskAMD64(cb, amd64RAX, ji.size)
+	}
+
+	dstReg, mapped := ie64ToAMD64Reg(ji.rd)
+	if mapped {
+		amd64MOV_reg_reg(cb, dstReg, amd64RAX)
+	} else {
+		emitStoreSpilledRegAMD64(cb, amd64RAX, ji.rd)
+	}
+}
+
+func emitCTZ_AMD64(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveRegAMD64(cb, ji.rs, amd64RCX)
+	amd64MOV_reg_reg32(cb, amd64RAX, rsReg)
+
+	emitREX(cb, false, amd64RAX, amd64RAX)
+	cb.EmitBytes(0x85, modRM(3, amd64RAX, amd64RAX)) // TEST EAX, EAX
+	ctzZeroOff := amd64Jcc_rel32(cb, amd64CondE)
+
+	amd64BSF32(cb, amd64RCX, amd64RAX)
+	amd64MOV_reg_reg(cb, amd64RAX, amd64RCX)
+	ctzDoneOff := amd64JMP_rel32(cb)
+
+	ctzZeroPC := cb.Len()
+	patchRel32(cb, ctzZeroOff, ctzZeroPC)
+	amd64MOV_reg_imm32(cb, amd64RAX, 32)
+
+	ctzDonePC := cb.Len()
+	patchRel32(cb, ctzDoneOff, ctzDonePC)
+
+	dstReg, mapped := ie64ToAMD64Reg(ji.rd)
+	if mapped {
+		amd64MOV_reg_reg(cb, dstReg, amd64RAX)
+	} else {
+		emitStoreSpilledRegAMD64(cb, amd64RAX, ji.rd)
+	}
+}
+
+func emitPOPCNT_AMD64(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveRegAMD64(cb, ji.rs, amd64RCX)
+	amd64MOV_reg_reg32(cb, amd64RAX, rsReg)
+
+	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX)
+	amd64SHR_imm32(cb, amd64RCX, 1)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 0x55555555)
+	amd64ALU_reg_reg32(cb, 0x29, amd64RAX, amd64RCX)
+
+	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, 0x33333333)
+	amd64SHR_imm32(cb, amd64RCX, 2)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 0x33333333)
+	amd64ALU_reg_reg32(cb, 0x01, amd64RAX, amd64RCX)
+
+	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX)
+	amd64SHR_imm32(cb, amd64RCX, 4)
+	amd64ALU_reg_reg32(cb, 0x01, amd64RAX, amd64RCX)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, 0x0F0F0F0F)
+
+	amd64MOV_reg_imm32(cb, amd64RCX, 0x01010101)
+	amd64IMUL_reg_reg32(cb, amd64RAX, amd64RCX)
+	amd64SHR_imm32(cb, amd64RAX, 24)
+
+	dstReg, mapped := ie64ToAMD64Reg(ji.rd)
+	if mapped {
+		amd64MOV_reg_reg(cb, dstReg, amd64RAX)
+	} else {
+		emitStoreSpilledRegAMD64(cb, amd64RAX, ji.rd)
+	}
+}
+
+func emitBSWAP_AMD64(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveRegAMD64(cb, ji.rs, amd64RCX)
+	amd64MOV_reg_reg32(cb, amd64RAX, rsReg)
+	amd64BSWAP32(cb, amd64RAX)
 
 	dstReg, mapped := ie64ToAMD64Reg(ji.rd)
 	if mapped {

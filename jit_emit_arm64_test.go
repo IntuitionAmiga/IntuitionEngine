@@ -282,6 +282,25 @@ func TestARM64_MULS(t *testing.T) {
 	}
 }
 
+func TestARM64_MULHU_MULHS(t *testing.T) {
+	r := newJITTestRig(t)
+
+	r.cpu.regs[2] = ^uint64(0)
+	r.cpu.regs[3] = 2
+	r.compileAndRun(t, ie64Instr(OP_MULHU, 1, IE64_SIZE_Q, 0, 2, 3, 0))
+	if r.cpu.regs[1] != 1 {
+		t.Fatalf("MULHU R1 = 0x%X, want 1", r.cpu.regs[1])
+	}
+
+	r.cpu.regs[1] = 0
+	r.cpu.regs[2] = negU64(-2)
+	r.cpu.regs[3] = 3
+	r.compileAndRun(t, ie64Instr(OP_MULHS, 1, IE64_SIZE_Q, 0, 2, 3, 0))
+	if r.cpu.regs[1] != ^uint64(0) {
+		t.Fatalf("MULHS R1 = 0x%X, want 0xFFFFFFFFFFFFFFFF", r.cpu.regs[1])
+	}
+}
+
 func TestARM64_DIVU(t *testing.T) {
 	r := newJITTestRig(t)
 	r.cpu.regs[2] = 42
@@ -433,6 +452,97 @@ func TestARM64_CLZ(t *testing.T) {
 	// CLZ operates on 32-bit value: leading zeros of 0x00010000 = 15
 	if r.cpu.regs[1] != 15 {
 		t.Fatalf("R1 = %d, want 15", r.cpu.regs[1])
+	}
+}
+
+func TestARM64_SEXT(t *testing.T) {
+	r := newJITTestRig(t)
+
+	tests := []struct {
+		name string
+		size byte
+		in   uint64
+		want uint64
+	}{
+		{"byte", IE64_SIZE_B, 0x80, 0xFFFFFFFFFFFFFF80},
+		{"word", IE64_SIZE_W, 0x8000, 0xFFFFFFFFFFFF8000},
+		{"long", IE64_SIZE_L, 0x80000000, 0xFFFFFFFF80000000},
+		{"quad", IE64_SIZE_Q, 0x8000000000000000, 0x8000000000000000},
+	}
+
+	for _, tt := range tests {
+		r.cpu.regs[1] = 0
+		r.cpu.regs[2] = tt.in
+		r.compileAndRun(t, ie64Instr(OP_SEXT, 1, tt.size, 0, 2, 0, 0))
+		if r.cpu.regs[1] != tt.want {
+			t.Fatalf("SEXT.%s R1 = 0x%X, want 0x%X", tt.name, r.cpu.regs[1], tt.want)
+		}
+	}
+}
+
+func TestARM64_Rotate(t *testing.T) {
+	r := newJITTestRig(t)
+
+	tests := []struct {
+		name   string
+		opcode byte
+		size   byte
+		xbit   byte
+		in     uint64
+		count  uint64
+		want   uint64
+	}{
+		{"rol_byte_wrap_imm", OP_ROL, IE64_SIZE_B, 1, 0x81, 9, 0x03},
+		{"ror_word_imm", OP_ROR, IE64_SIZE_W, 1, 0x1234, 4, 0x4123},
+		{"rol_long_reg", OP_ROL, IE64_SIZE_L, 0, 0x80000001, 1, 0x00000003},
+		{"ror_quad_reg", OP_ROR, IE64_SIZE_Q, 0, 1, 1, 0x8000000000000000},
+	}
+
+	for _, tt := range tests {
+		r.cpu.regs[1] = 0
+		r.cpu.regs[2] = tt.in
+		r.cpu.regs[3] = tt.count
+		imm := uint32(0)
+		rt := byte(3)
+		if tt.xbit == 1 {
+			imm = uint32(tt.count)
+			rt = 0
+		}
+		r.compileAndRun(t, ie64Instr(tt.opcode, 1, tt.size, tt.xbit, 2, rt, imm))
+		if r.cpu.regs[1] != tt.want {
+			t.Fatalf("%s R1 = 0x%X, want 0x%X", tt.name, r.cpu.regs[1], tt.want)
+		}
+	}
+}
+
+func TestARM64_CTZ_POPCNT_BSWAP(t *testing.T) {
+	r := newJITTestRig(t)
+
+	r.cpu.regs[2] = 0
+	r.compileAndRun(t, ie64Instr(OP_CTZ, 1, IE64_SIZE_Q, 0, 2, 0, 0))
+	if r.cpu.regs[1] != 32 {
+		t.Fatalf("CTZ zero R1 = %d, want 32", r.cpu.regs[1])
+	}
+
+	r.cpu.regs[1] = 0
+	r.cpu.regs[2] = 0x00100000
+	r.compileAndRun(t, ie64Instr(OP_CTZ, 1, IE64_SIZE_Q, 0, 2, 0, 0))
+	if r.cpu.regs[1] != 20 {
+		t.Fatalf("CTZ R1 = %d, want 20", r.cpu.regs[1])
+	}
+
+	r.cpu.regs[1] = 0
+	r.cpu.regs[2] = 0xF0F0F00F
+	r.compileAndRun(t, ie64Instr(OP_POPCNT, 1, IE64_SIZE_Q, 0, 2, 0, 0))
+	if r.cpu.regs[1] != 16 {
+		t.Fatalf("POPCNT R1 = %d, want 16", r.cpu.regs[1])
+	}
+
+	r.cpu.regs[1] = 0
+	r.cpu.regs[2] = 0xAABBCCDD
+	r.compileAndRun(t, ie64Instr(OP_BSWAP, 1, IE64_SIZE_Q, 0, 2, 0, 0))
+	if r.cpu.regs[1] != 0xDDCCBBAA {
+		t.Fatalf("BSWAP R1 = 0x%X, want 0xDDCCBBAA", r.cpu.regs[1])
 	}
 }
 

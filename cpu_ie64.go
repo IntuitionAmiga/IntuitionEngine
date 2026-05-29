@@ -3694,6 +3694,8 @@ func (cpu *CPU64) StepOne() int {
 		}
 
 	default:
+		fmt.Printf("IE64: Invalid opcode 0x%02X at PC=0x%X\n", opcode, cpu.PC)
+		cpu.running.Store(false)
 		return 0
 	}
 
