@@ -992,11 +992,12 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 	case OP_NOP64:
 		cb.Emit32(arm64NOP())
 
-	case OP_SEI64:
-		cb.Emit32(arm64NOP())
-
-	case OP_CLI64:
-		cb.Emit32(arm64NOP())
+	// SEI64/CLI64 mutate interruptEnabled, which lives in the CPU struct and is
+	// read by the interrupt-delivery gate. Bail to the interpreter per instruction
+	// so the architectural flag is updated; compiling them as NOPs would silently
+	// drop the state change under JIT (timer-off native execution).
+	case OP_SEI64, OP_CLI64:
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 
 	// ======================================================================
 	// FPU — Category A (pure integer bitwise on FP registers)

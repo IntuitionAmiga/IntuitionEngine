@@ -165,6 +165,104 @@ func TestExecuteJIT_TimerInterruptsBeforeMidBlockInstruction(t *testing.T) {
 	}
 }
 
+// TestExecuteJIT_SEI64_EnablesInterrupts pins that SEI64 inside a JIT block updates
+// interruptEnabled. With the timer off, native blocks run; SEI64 must bail to the
+// interpreter (not compile to a NOP) so the architectural flag is mutated.
+func TestExecuteJIT_SEI64_EnablesInterrupts(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available")
+	}
+
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_SEI64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	cpu.PC = PROG_START
+	cpu.interruptEnabled.Store(false)
+	cpu.running.Store(true)
+
+	done := make(chan struct{})
+	go func() {
+		cpu.ExecuteJIT()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cpu.running.Store(false)
+		waitDoneWithGuard(t, done)
+		t.Fatal("JIT SEI64 test timed out")
+	}
+
+	if !cpu.interruptEnabled.Load() {
+		t.Fatal("interruptEnabled should be true after SEI64 under JIT")
+	}
+}
+
+// TestExecuteJIT_CLI64_DisablesInterrupts pins the CLI64 companion: a CLI64 in a JIT
+// block must clear interruptEnabled rather than compile to a NOP.
+func TestExecuteJIT_CLI64_DisablesInterrupts(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available")
+	}
+
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_CLI64, 0, 0, 0, 0, 0, 0))
+	copy(cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	cpu.PC = PROG_START
+	cpu.interruptEnabled.Store(true)
+	cpu.running.Store(true)
+
+	done := make(chan struct{})
+	go func() {
+		cpu.ExecuteJIT()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cpu.running.Store(false)
+		waitDoneWithGuard(t, done)
+		t.Fatal("JIT CLI64 test timed out")
+	}
+
+	if cpu.interruptEnabled.Load() {
+		t.Fatal("interruptEnabled should be false after CLI64 under JIT")
+	}
+}
+
+// TestJIT_vs_Interpreter_SEI_CLI asserts SEI64/CLI64 leave identical interrupt-enable
+// state under the JIT dispatcher and the interpreter.
+func TestJIT_vs_Interpreter_SEI_CLI(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available")
+	}
+
+	instrs := [][]byte{
+		ie64Instr(OP_SEI64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_CLI64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_SEI64, 0, 0, 0, 0, 0, 0),
+	}
+
+	jitCPU := runJITProgram(t, instrs...)
+	interpCPU := runInterpreterProgram(t, instrs...)
+
+	if jitCPU.interruptEnabled.Load() != interpCPU.interruptEnabled.Load() {
+		t.Fatalf("interruptEnabled mismatch: JIT=%v Interp=%v",
+			jitCPU.interruptEnabled.Load(), interpCPU.interruptEnabled.Load())
+	}
+	if !jitCPU.interruptEnabled.Load() {
+		t.Fatal("interruptEnabled should be true after SEI64; CLI64; SEI64")
+	}
+}
+
 func TestExecuteJIT_TimerArmedInvalidFPURegisterStopsWithoutAdvancingPC(t *testing.T) {
 	if !jitAvailable {
 		t.Skip("JIT not available")
