@@ -588,10 +588,6 @@ func needsFallback(instrs []JITInstr) bool {
 	// Only DLOAD/DSTORE remain block-bail because the 64-bit memory
 	// emitter has not landed yet.
 	for i := range instrs {
-		switch instrs[i].opcode {
-		case OP_DLOAD, OP_DSTORE:
-			return true
-		}
 		if isIE64FPUOpcode(instrs[i].opcode) && !validIE64FPUEncoding(instrs[i].opcode, instrs[i].rd, instrs[i].rs, instrs[i].rt) {
 			return true
 		}

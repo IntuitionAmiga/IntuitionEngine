@@ -1469,7 +1469,11 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 	// ======================================================================
 	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
-	case OP_DMOV, OP_DLOAD, OP_DSTORE, OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD,
+	case OP_DLOAD:
+		emitDLOAD_AMD64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DSTORE:
+		emitDSTORE_AMD64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DMOV, OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD,
 		OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT, OP_DCMP, OP_DCVTIF, OP_DCVTFI, OP_FCVTSD, OP_FCVTDS:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 
@@ -2217,14 +2221,14 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 //
 // RAX must hold the effective virtual address on entry.
 func emitLOADHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
-	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(amd64OffCtxPtr))                       // R10 = ctx
-	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperAddr), amd64RAX)                  // HelperAddr = RAX
-	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffHelperSize), uint32(ji.size))         // HelperSize
-	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffHelperRd), uint32(ji.rd))             // HelperRd
-	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffLiveSP), amd64RegIE64SP)                // LiveSP = R14
-	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)                                             // RCX = instrPC
-	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperPC), amd64RCX)                    // HelperPC
-	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffNeedHelper), HELPER_LOAD)             // NeedHelper
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(amd64OffCtxPtr))               // R10 = ctx
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperAddr), amd64RAX)          // HelperAddr = RAX
+	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffHelperSize), uint32(ji.size)) // HelperSize
+	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffHelperRd), uint32(ji.rd))     // HelperRd
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffLiveSP), amd64RegIE64SP)        // LiveSP = R14
+	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)                                     // RCX = instrPC
+	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperPC), amd64RCX)            // HelperPC
+	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffNeedHelper), HELPER_LOAD)     // NeedHelper
 
 	bailCount := ji.pcOffset / IE64_INSTR_SIZE
 	emitPackedPCAndCount(cb, instrPC, bailCount, br)
@@ -3094,7 +3098,7 @@ func emitFLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 	patchRel32(cb, mmuHelperOff, helperPC)
 	patchRel32(cb, highHelperOff, helperPC)
 	patchRel32(cb, ioHelperOff, helperPC)
-	emitFPMemHelperExit(cb, ji, instrPC, HELPER_FLOAD, br, writtenSoFar)
+	emitFPMemHelperExit(cb, ji, instrPC, HELPER_FLOAD, uint32(IE64_SIZE_L), br, writtenSoFar)
 
 	donePC := cb.Len()
 	patchRel32(cb, doneOff1, donePC)
@@ -3153,23 +3157,41 @@ func emitFSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockReg
 	patchRel32(cb, mmuHelperOff, helperPC)
 	patchRel32(cb, highHelperOff, helperPC)
 	patchRel32(cb, ioHelperOff, helperPC)
-	emitFPMemHelperExit(cb, ji, instrPC, HELPER_FSTORE, br, writtenSoFar)
+	emitFPMemHelperExit(cb, ji, instrPC, HELPER_FSTORE, uint32(IE64_SIZE_L), br, writtenSoFar)
 
 	donePC := cb.Len()
 	patchRel32(cb, doneOff1, donePC)
 	patchRel32(cb, doneOff2, donePC)
 }
 
+// emitDLOAD_AMD64 / emitDSTORE_AMD64 emit DLOAD/DSTORE as helper-only:
+// the effective address is computed and the block exits to the Go
+// dispatcher, which performs the 64-bit FP64-pair load/store with
+// interpreter parity (setDPair + condition codes for DLOAD; getDPair for
+// DSTORE). No direct [memBase+addr] fast path — every access, low or
+// high, MMU on or off, goes through the helper.
+func emitDLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	emitMemAddr(cb, ji) // address in RAX (full 64-bit)
+	emitFPMemHelperExit(cb, ji, instrPC, HELPER_DLOAD, uint32(IE64_SIZE_Q), br, writtenSoFar)
+}
+
+func emitDSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	emitMemAddr(cb, ji) // address in RAX (full 64-bit)
+	emitFPMemHelperExit(cb, ji, instrPC, HELPER_DSTORE, uint32(IE64_SIZE_Q), br, writtenSoFar)
+}
+
 // emitFPMemHelperExit writes the JITContext helper-exit fields for an
-// FLOAD or FSTORE bail and returns from the block. The Go dispatcher
-// reads the FP register from cpu.FPU directly for HELPER_FSTORE and
-// writes it back for HELPER_FLOAD, so no HelperVal staging is needed.
+// FLOAD/FSTORE/DLOAD/DSTORE bail and returns from the block. The Go
+// dispatcher reads the FP register from cpu.FPU directly for the store
+// ops and writes it back for the load ops, so no HelperVal staging is
+// needed. size is IE64_SIZE_L for FLOAD/FSTORE, IE64_SIZE_Q for
+// DLOAD/DSTORE.
 //
 // RAX must hold the effective virtual address on entry.
-func emitFPMemHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, op uint32, br *blockRegs, writtenSoFar uint32) {
+func emitFPMemHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, op uint32, size uint32, br *blockRegs, writtenSoFar uint32) {
 	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffCtxPtr)) // R11 ≠ srcReg holder R10 used by FSTORE
 	amd64MOV_mem_reg(cb, amd64R11, int32(jitCtxOffHelperAddr), amd64RAX)
-	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffHelperSize), uint32(IE64_SIZE_L))
+	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffHelperSize), size)
 	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffHelperRd), uint32(ji.rd))
 	amd64MOV_mem_reg(cb, amd64R11, int32(jitCtxOffLiveSP), amd64RegIE64SP)
 	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)

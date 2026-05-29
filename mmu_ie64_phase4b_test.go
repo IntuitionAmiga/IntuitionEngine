@@ -309,22 +309,17 @@ func TestPhase4d_FetchHighPhysThroughBus(t *testing.T) {
 // TestPhase4d_NonMMU_AllowsMemOps_NoBlockBail asserts (a): the slice-8
 // re-enable. needsFallback must NOT cause the whole block to bail just
 // because it contains LOAD / STORE / FLOAD / FSTORE / JMP / JSR_IND.
-// These ops compile natively in the MMU-off uint32 window. DLOAD and
-// DSTORE remain block-bail because the 64-bit memory emitter is absent.
+// These ops compile natively in the MMU-off uint32 window. As of Phase 5
+// cycle 5.7, DLOAD / DSTORE also JIT: they emit helper-only (every access
+// exits to the Go dispatcher for the 64-bit FP64-pair load/store), so the
+// block must no longer bail on their presence.
 func TestPhase4d_NonMMU_AllowsMemOps_NoBlockBail(t *testing.T) {
-	allowable := []byte{OP_LOAD, OP_STORE, OP_FLOAD, OP_FSTORE, OP_JMP, OP_JSR_IND}
+	allowable := []byte{OP_LOAD, OP_STORE, OP_FLOAD, OP_FSTORE, OP_JMP, OP_JSR_IND, OP_DLOAD, OP_DSTORE}
 	for _, op := range allowable {
 		if needsFallback([]JITInstr{{opcode: op}}) {
 			t.Errorf("needsFallback(0x%02X) = true; slice-8 contract requires this op to JIT in the MMU-off uint32 window. "+
 				"If the emitter cannot prove safety, prefer per-instruction mmuBail in compileBlockMMU over a blunt block-bail in needsFallback.",
 				op)
-		}
-	}
-	// DLOAD / DSTORE: 64-bit memory emitter not landed yet; block-bail
-	// stays correct here.
-	for _, op := range []byte{OP_DLOAD, OP_DSTORE} {
-		if !needsFallback([]JITInstr{{opcode: op}}) {
-			t.Errorf("needsFallback(0x%02X) = false; 64-bit memory emitter is absent — must block-bail until DLOAD/DSTORE land", op)
 		}
 	}
 }

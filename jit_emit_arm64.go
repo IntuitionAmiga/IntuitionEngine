@@ -1065,7 +1065,11 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 	// ======================================================================
 	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW:
 		emitFPUBail(cb, ji, instrPC, br, writtenSoFar)
-	case OP_DMOV, OP_DLOAD, OP_DSTORE, OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD,
+	case OP_DLOAD:
+		emitDLOAD(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DSTORE:
+		emitDSTORE(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DMOV, OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD,
 		OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT, OP_DCMP, OP_DCVTIF, OP_DCVTFI, OP_FCVTSD, OP_FCVTDS:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 
@@ -1646,7 +1650,7 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 	// the Go dispatcher before every callNative; any non-zero value
 	// means virtual addresses must be translated by the interpreter
 	// helper. Branch to helper exit.
-	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                          // X1 = ctx ptr (SP+96)
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                           // X1 = ctx ptr (SP+96)
 	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4))) // W1 = MMUEnabled (zero-extends)
 	mmuHelperOff := cb.Len()
 	cb.Emit32(0) // placeholder CBNZ X1, helperLabel
@@ -1689,7 +1693,7 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 
 	// Size-aware 64-bit high-addr check → helper exit (was NeedIOFallback).
 	accessBytes := ie64AccessBytes(ji.size)
-	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                       // X1 = ctx ptr
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                        // X1 = ctx ptr
 	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4))) // W1 = MemSize (zero-extends)
 	if accessBytes > 1 {
 		cb.Emit32(arm64SUB_imm(1, 1, accessBytes-1)) // X1 = MemSize - (accessBytes-1)
@@ -1756,17 +1760,17 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 //
 // X0 must hold the effective virtual address on entry.
 func emitLOADHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
-	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                              // X1 = ctx ptr (SP+96)
-	cb.Emit32(arm64STR_imm(0, 1, uint32(jitCtxOffHelperAddr/8)))      // HelperAddr = X0
-	emitLoadImm32(cb, 2, uint32(ji.size))                             //
-	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperSize/4)))    // HelperSize
-	emitLoadImm32(cb, 2, uint32(ji.rd))                               //
-	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperRd/4)))      // HelperRd
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                  // X1 = ctx ptr (SP+96)
+	cb.Emit32(arm64STR_imm(0, 1, uint32(jitCtxOffHelperAddr/8)))          // HelperAddr = X0
+	emitLoadImm32(cb, 2, uint32(ji.size))                                 //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperSize/4)))        // HelperSize
+	emitLoadImm32(cb, 2, uint32(ji.rd))                                   //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperRd/4)))          // HelperRd
 	cb.Emit32(arm64STR_imm(arm64RegIE64SP, 1, uint32(jitCtxOffLiveSP/8))) // LiveSP = X27
-	emitLoadImm64(cb, 2, instrPC)                                     //
-	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))        // HelperPC
-	emitLoadImm32(cb, 2, HELPER_LOAD)                                 //
-	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))    // NeedHelper
+	emitLoadImm64(cb, 2, instrPC)                                         //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))            // HelperPC
+	emitLoadImm32(cb, 2, HELPER_LOAD)                                     //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))        // NeedHelper
 
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
@@ -1915,18 +1919,18 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 // fields and exits the block. X0 = effective virtual address, srcReg =
 // value to store (already size-masked).
 func emitSTOREHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32) {
-	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                 // X1 = ctx ptr
-	cb.Emit32(arm64STR_imm(0, 1, uint32(jitCtxOffHelperAddr/8)))         // HelperAddr = X0
-	cb.Emit32(arm64STR_imm(srcReg, 1, uint32(jitCtxOffHelperVal/8)))     // HelperVal
-	emitLoadImm32(cb, 2, uint32(ji.size))                                //
-	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperSize/4)))       // HelperSize
-	emitLoadImm32(cb, 2, uint32(ji.rd))                                  //
-	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperRd/4)))         // HelperRd
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                  // X1 = ctx ptr
+	cb.Emit32(arm64STR_imm(0, 1, uint32(jitCtxOffHelperAddr/8)))          // HelperAddr = X0
+	cb.Emit32(arm64STR_imm(srcReg, 1, uint32(jitCtxOffHelperVal/8)))      // HelperVal
+	emitLoadImm32(cb, 2, uint32(ji.size))                                 //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperSize/4)))        // HelperSize
+	emitLoadImm32(cb, 2, uint32(ji.rd))                                   //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperRd/4)))          // HelperRd
 	cb.Emit32(arm64STR_imm(arm64RegIE64SP, 1, uint32(jitCtxOffLiveSP/8))) // LiveSP = X27
-	emitLoadImm64(cb, 2, instrPC)                                        //
-	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))           // HelperPC
-	emitLoadImm32(cb, 2, HELPER_STORE)                                   //
-	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))       // NeedHelper
+	emitLoadImm64(cb, 2, instrPC)                                         //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))            // HelperPC
+	emitLoadImm32(cb, 2, HELPER_STORE)                                    //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))        // NeedHelper
 
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
@@ -2616,7 +2620,7 @@ func emitFLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
 	cb.PatchUint32(highHelperOff, arm64B(int32(helperPC-highHelperOff)))
 	cb.PatchUint32(ioHelperOff, arm64B(int32(helperPC-ioHelperOff)))
-	emitFPMemHelperExitARM64(cb, ji, instrPC, HELPER_FLOAD, br, writtenSoFar)
+	emitFPMemHelperExitARM64(cb, ji, instrPC, HELPER_FLOAD, uint32(IE64_SIZE_L), br, writtenSoFar)
 
 	// done:
 	donePC := cb.Len()
@@ -2686,20 +2690,22 @@ func emitFSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, wri
 	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
 	cb.PatchUint32(highHelperOff, arm64B(int32(helperPC-highHelperOff)))
 	cb.PatchUint32(ioHelperOff, arm64B(int32(helperPC-ioHelperOff)))
-	emitFPMemHelperExitARM64(cb, ji, instrPC, HELPER_FSTORE, br, writtenSoFar)
+	emitFPMemHelperExitARM64(cb, ji, instrPC, HELPER_FSTORE, uint32(IE64_SIZE_L), br, writtenSoFar)
 
 	donePC := cb.Len()
 	cb.PatchUint32(doneOff1, arm64B(int32(donePC-doneOff1)))
 	cb.PatchUint32(doneOff2, arm64B(int32(donePC-doneOff2)))
 }
 
-// emitFPMemHelperExitARM64 writes JITContext fields for an FLOAD/FSTORE
-// helper exit. X0 = effective address; FP register is read/written by
-// the Go dispatcher directly via cpu.FPU, no HelperVal needed.
-func emitFPMemHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, op uint32, br *blockRegs, writtenSoFar uint32) {
+// emitFPMemHelperExitARM64 writes JITContext fields for an
+// FLOAD/FSTORE/DLOAD/DSTORE helper exit. X0 = effective address; FP
+// register is read/written by the Go dispatcher directly via cpu.FPU, no
+// HelperVal needed. size is IE64_SIZE_L for FLOAD/FSTORE, IE64_SIZE_Q for
+// DLOAD/DSTORE.
+func emitFPMemHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, op uint32, size uint32, br *blockRegs, writtenSoFar uint32) {
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                  // X1 = ctx ptr
 	cb.Emit32(arm64STR_imm(0, 1, uint32(jitCtxOffHelperAddr/8)))          // HelperAddr = X0
-	emitLoadImm32(cb, 2, uint32(IE64_SIZE_L))                             //
+	emitLoadImm32(cb, 2, size)                                            //
 	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperSize/4)))        // HelperSize
 	emitLoadImm32(cb, 2, uint32(ji.rd))                                   //
 	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperRd/4)))          // HelperRd
@@ -2712,6 +2718,26 @@ func emitFPMemHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, op u
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
+}
+
+// emitDLOAD / emitDSTORE emit DLOAD/DSTORE as helper-only: the effective
+// address is computed in X0 and the block exits to the Go dispatcher,
+// which performs the 64-bit FP64-pair load/store with interpreter parity.
+// No direct fast path — every access goes through the helper.
+func emitDLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	rsReg := resolveReg(cb, ji.rs, 0)
+	emitLoadImm32(cb, 1, ji.imm32)
+	cb.Emit32(arm64SXTW(1, 1))
+	cb.Emit32(arm64ADD(0, rsReg, 1)) // X0 = rs + sext(imm32)
+	emitFPMemHelperExitARM64(cb, ji, instrPC, HELPER_DLOAD, uint32(IE64_SIZE_Q), br, writtenSoFar)
+}
+
+func emitDSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	rsReg := resolveReg(cb, ji.rs, 0)
+	emitLoadImm32(cb, 1, ji.imm32)
+	cb.Emit32(arm64SXTW(1, 1))
+	cb.Emit32(arm64ADD(0, rsReg, 1)) // X0 = rs + sext(imm32)
+	emitFPMemHelperExitARM64(cb, ji, instrPC, HELPER_DSTORE, uint32(IE64_SIZE_Q), br, writtenSoFar)
 }
 
 // ===========================================================================
