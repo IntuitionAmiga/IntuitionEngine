@@ -93,3 +93,12 @@ sdk/ab3d64/tools/shots/
 #   needed in-tree.
 FIRST.BAS
 /prm-extract
+
+# - /IntuitionEngine is a root-level VM binary if someone runs `go build .`
+#   from the repo root; the documented build output is ./bin/IntuitionEngine
+#   (Makefile), so a root-level binary is a stray host-specific artifact and
+#   must never be committed.
+/IntuitionEngine
+# - sdk/scripts/iedoom_diag holds generated IEDoom diagnostic output (run
+#   logs + PNG frames). Local scratch; no source consumes it.
+sdk/scripts/iedoom_diag/
