@@ -8,7 +8,7 @@ Technical reference for the IE64 Just-In-Time compiler. Covers the shared infras
 
 The IE64 JIT compiler translates blocks of IE64 machine code into native ARM64 or x86-64 instructions at runtime, executing them directly on the host CPU. This bypasses the Go interpreter loop and yields significant performance improvements for compute-heavy workloads.
 
-PLAN_MAX_RAM.md slice 3 widened the interpreter, bus, and MMU address plumbing to 64-bit. The current IE64 JIT block builder and return channel remain `uint32` PC based. The dispatcher therefore falls back to the interpreter before block scanning when the virtual PC is above `0xFFFFFFFF`, when the translated executable physical address is outside `cpu.memory`, or when an MMU instruction fetch would require the high-physical bus fetch path. Correctness is preserved for high active visible RAM by using the interpreter for those cases. `LOAD`, `STORE`, `FLOAD`, `FSTORE`, `JMP`, and `JSR_IND` are still JIT-emitted for low-window, MMU-off code; under MMU, memory-touching instructions are marked `mmuBail` and re-executed by the interpreter for full virtual-address translation. `DLOAD` and `DSTORE` still force whole-block fallback because native 64-bit double memory transfer emitters have not landed.
+The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and stack addresses, branch targets, and chain targets are all `uint64` — there is no `uint32` truncation. High virtual/physical PCs are scanned and compiled: `scanBlockBus` fetches instruction words through `bus.ReadPhys64WithFault` when the physical address is outside the low `cpu.memory` window, and stops cleanly on an unmapped page. High-address and MMU-on data, FP, and control-flow memory operations, plus unfused stack operations, route through the JITContext helper-exit protocol rather than bailing the whole instruction; the amd64 non-MMU fused JSR/RTS leaf high-SP case is the stack exception because it raw-indexes `[MemBase+SP]` before those guards (see "IE64 JIT 64-bit Execution Model" in `architecture.md` for the authoritative contract). `DLOAD`/`DSTORE` are JIT-emitted through the helper protocol. The remaining interpreter fallbacks are: atomics (always), fused JSR/RTS leaves under MMU (`compileBlockMMU` sets `mmuBail` → `emitBailToInterpreter`), MMU/privilege and transcendental/double opcodes, and any block *fetched from* a high physical PC that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`) — a Phase-4 safety boundary, because the fused/raw stack fast path addresses `[memBase+SP]` directly and a high SP in such a high-PC block could escape `cpu.memory[]`. The low `cpu.memory[]` window is `min(autodetected total guest RAM, busMemCap)` (capped at 256 MiB for IE64); addresses above it cover the guest's full active visible RAM through the bus / `Backing` interface, so JIT-executed code reaches the same address space the interpreter sees.
 
 **Supported platforms:** ARM64/Linux, ARM64/macOS, ARM64/Windows, x86-64/Linux, x86-64/macOS, x86-64/Windows
 
@@ -40,7 +40,7 @@ IE64 Machine Code (at PROG_START)
   callNative()            jit_call.go      Execute via runtime.asmcgocall
         |
         v
-  Dispatcher unpack       jit_exec.go      Extract uint32 PC + instruction count from regs[0]
+  Dispatcher read         jit_exec.go      Read RetPC (uint64) + RetCount from JITContext
 ```
 
 ### File Inventory
@@ -101,6 +101,10 @@ IE64 Machine Code (at PROG_START)
 
 Bridge between Go and native code. Passed as the sole argument to every JIT block.
 
+The offsets below are mirrored as `jitCtxOff*` constants in `jit_common.go` and
+verified against `unsafe.Offsetof` by `TestJITContext_*Offset` tests; treat
+`jit_common.go` as the source of truth.
+
 ```
 Offset  Type      Field            Description
 0       uintptr   RegsPtr          &cpu.regs[0]
@@ -117,23 +121,31 @@ Offset  Type      Field            Description
 72      uintptr   FPUPtr           &cpu.FPU
 80      uint32    ChainBudget      Chained block-transition budget
 84      uint32    ChainCount       Retired count accumulated while chaining
-88      uint32    RTSCache0PC      MRU RTS target PC 0
-92      uint32    _pad0            Alignment padding
+88      uint64    RTSCache0PC      MRU RTS target PC 0 (full 64-bit)
 96      uintptr   RTSCache0Addr    MRU RTS target native entry 0
-104     uint32    RTSCache1PC      MRU RTS target PC 1
-108     uint32    _pad1            Alignment padding
+104     uint64    RTSCache1PC      MRU RTS target PC 1
 112     uintptr   RTSCache1Addr    MRU RTS target native entry 1
-120     uint32    RTSCache2PC      MRU RTS target PC 2
-124     uint32    _pad2            Alignment padding
+120     uint64    RTSCache2PC      MRU RTS target PC 2
 128     uintptr   RTSCache2Addr    MRU RTS target native entry 2
-136     uint32    RTSCache3PC      MRU RTS target PC 3
-140     uint32    _pad3            Alignment padding
+136     uint64    RTSCache3PC      MRU RTS target PC 3
 144     uintptr   RTSCache3Addr    MRU RTS target native entry 3
+152     uint64    RetPC            Next PC after block exit (full 64-bit)
+160     uint32    RetCount         Retired instruction count for the exiting block
+164     uint32    MMUEnabled       1 when MMU translation is active for the next block
+168     uint32    NeedHelper       Helper opcode (HELPER_*; 0 = none)
+172     uint32    HelperSize       IE64_SIZE_B/W/L/Q for memory ops
+176     uint32    HelperRd         Destination/source register or FP-register index
+184     uint64    HelperAddr       Virtual address (data ops) or call target (control flow)
+192     uint64    HelperVal        Store/push value (input only); LOAD/POP -> integer reg via setReg, FLOAD/DLOAD -> FPU via FP setters. Never written back here
+200     uint64    HelperPC         PC of the requesting instruction (for trapFault.faultPC)
+208     uint64    LiveSP           SP flushed from the host register before helper exit
 ```
 
 ### Block Scanner
 
 `scanBlock()` decodes IE64 instructions starting at a given physical PC until a block terminator is found or 256 instructions are reached. Terminators are included in the returned block. Current terminators are BRA, JMP, JSR64, RTS64, JSR_IND, HALT64, RTI64, WAIT64, all MMU/privilege opcodes (SYSCALL, ERET, MTCR, MFCR, TLBFLUSH, TLBINVAL, SMODE, SUAEN, SUADIS), and all atomic RMW opcodes (CAS, XCHG, FAA, FAND, FOR, FXOR).
+
+`scanBlockBus()` / `scanBlockBusWithLimit()` are the 64-bit-aware fetch path: when the physical PC is outside the low `cpu.memory` window they read each instruction word through `bus.ReadPhys64WithFault`, stop cleanly when a page is unmapped (`ok == false`), and use the subtraction-form bound so a PC in the last bytes of `uint64` space does not wrap into a low page.
 
 On AMD64 only, the scanner may replace a small register-only JSR leaf with fused markers plus the leaf body. The ARM64 scanner gate disables that fusion because its emitter does not honour those markers.
 
@@ -150,7 +162,7 @@ Variable-length byte buffer with label/fixup support for forward references:
 
 ### CodeCache
 
-Maps a dispatcher key to `*JITBlock` for O(1) lookup. In non-MMU mode the key is the physical `startPC`; in MMU mode the key is the PTBR-mixed virtual PC described in [MMU Integration](#mmu-integration). Invalidated on self-modifying code (writes to [PROG_START, STACK_START)).
+Maps a dispatcher key to `*JITBlock` for O(1) lookup. In non-MMU mode the key is the physical `startPC`; in MMU mode the cache uses `GetMMU`/`PutMMU` with the **exact** composite key `ie64CacheKey{ptbr, pc}` (not a lossy hash), described in [MMU Integration](#mmu-integration). Invalidated on self-modifying code (writes to [PROG_START, STACK_START)).
 
 ### Turbo Region Tier
 
@@ -200,22 +212,22 @@ On macOS amd64, the allocator uses a simple executable mapping shared by the x86
 
 ## Return-Channel Contract
 
-Every JIT block exit stores a **packed 64-bit value** into `regs[0]` (the R0 slot, which is otherwise hardwired to zero):
+Every JIT block exit writes two **dedicated** `JITContext` fields — a full 64-bit next PC and a 32-bit retired-instruction count. This replaced the legacy `regs[0]`-packed `nextPC | (count << 32)` format, which truncated the PC to 32 bits.
 
 ```
-regs[0] = nextPC | (retiredInstructionCount << 32)
+ctx.RetPC    uint64   // next PC after the block exit (full 64-bit)
+ctx.RetCount uint32   // retired instruction count for the exiting block
 ```
 
-The dispatcher (`jit_exec.go`) unpacks this:
+The dispatcher (`jit_exec.go`) reads them directly after `callNative`:
 ```go
-combined := cpu.regs[0]
-cpu.PC = uint64(uint32(combined))          // lower 32 bits
-executed := combined >> 32                  // upper 32 bits
+cpu.PC = cpu.jitCtx.RetPC
+executed := uint64(cpu.jitCtx.RetCount)
 ```
 
-The lower half is intentionally `uint32` in the current JIT. The dispatcher avoids native execution for PCs above `0xFFFFFFFF`; such instructions use the interpreter until the JIT PC and return-channel path is widened.
+Native emitters load `RetPC` into the PC host register (`R15`/`X28`) as a full 64-bit immediate, so block exits and branch/JSR targets above `0xFFFFFFFF` round-trip without truncation. Chain transitions accumulate their predecessor counts into `ctx.ChainCount` (added by the dispatcher), so a chain entry no longer extracts a count from the PC register.
 
-**Every exit path must pack both values:**
+**Every exit path must set `RetPC` and the count:**
 - Normal block end: `staticCount = len(instrs)`
 - Branch taken: `staticCount = instrIdx + 1`
 - I/O bail: `bailCount = ji.pcOffset / IE64_INSTR_SIZE`
@@ -223,7 +235,7 @@ The lower half is intentionally `uint32` in the current JIT. The dispatcher avoi
 - Chained block exits: predecessor counts accumulated in `JITContext.ChainCount` are added by the dispatcher after `callNative` returns.
 
 **Important distinction for bail paths:**
-- `bailCount` (retired instruction count) goes into the packed return channel
+- `bailCount` (retired instruction count) goes into `RetCount` (via the count argument)
 - `writtenSoFar` (register bitmask) goes into `emitEpilogue` to control which registers are stored back
 - These are two unrelated values
 
@@ -337,12 +349,12 @@ In low-window, MMU-off blocks, LOAD and STORE use a two-path strategy:
 1. **Fast path** (addr < IO_REGION_START): Direct memory access via base+index. Falls through on the common path.
 2. **Slow path** (addr >= IO_REGION_START):
    - Check `ioPageBitmap[addr >> 8]`
-   - If I/O page: set `NeedIOFallback=1`, pack PC + bailCount, store writtenSoFar registers, return to dispatcher
+   - If I/O page: set `NeedIOFallback=1`, write `ctx.RetPC` (the bailing instruction's PC) and the retired count via `emitPackedPCAndCount` (`RetCount`/`ChainCount`), store writtenSoFar registers, return to dispatcher
    - If non-I/O page (e.g., VRAM): direct memory access
 
 The dispatcher re-executes the bailing instruction via the interpreter after the block returns.
 
-The native memory emitters use the low `cpu.memory` window. If dispatch starts from a high virtual PC or a translated executable physical address outside that window, the dispatcher does not scan or compile a native block and calls `interpretOne()` instead. Under MMU, `compileBlockMMU()` marks memory-touching instructions as `mmuBail`; those instructions return to the dispatcher and are re-executed through the interpreter so full `uint64` virtual-address translation and fault semantics remain canonical.
+The direct `[memBase+addr]` fast path is taken only when the MMU is off **and** `addr` is inside the low `cpu.memory` window (size-aware bound `addr <= MemSize - accessBytes`). Otherwise — a high address, or any access while the MMU is on — the emitter takes the JITContext helper exit (`HELPER_LOAD`/`HELPER_STORE` etc.): it writes the request fields, flushes `LiveSP` and `HelperPC`, returns through the epilogue, and the dispatcher services the op via `cpu.loadMem`/`storeMem` (full `uint64` translation + fault semantics) before re-entering the JIT. High-PC code is itself scanned and compiled via the bus fetch path; the one exception is a block fetched from a high physical PC that contains a stack op, which is run through `interpretOne()` (see Overview).
 
 ### Fast MMIO Poll Shortcut
 
@@ -379,7 +391,7 @@ FINT, FCVTFI (native on ARM64; bail to interpreter on x86-64)
 ### Category C: Interpreter Bail
 FMOD, FSIN, FCOS, FTAN, FATAN, FLOG, FEXP, FPOW, and all double-precision opcodes (`DMOV` through `FCVTDS`)
 
-The double-precision ISA is implemented by the interpreter. The current IE64 JIT emitters bail for those opcodes rather than duplicating the interpreter FPU status, conversion, and memory semantics. `DLOAD` and `DSTORE` additionally force whole-block fallback in `needsFallback()` because the native emitters do not implement 64-bit double memory transfers.
+The double-precision *arithmetic/conversion* ISA (`DMOV` through `FCVTDS`) is implemented by the interpreter; the JIT emitters bail for those opcodes rather than duplicating the interpreter FPU status, conversion, and memory semantics. `DLOAD` and `DSTORE` are the exception: they are now JIT-emitted through the helper-exit protocol (`HELPER_DLOAD`/`HELPER_DSTORE`), so the dispatcher performs the 64-bit double memory transfer and FP64-pair / condition-code update with interpreter parity. They are no longer in `needsFallback()` and no longer force whole-block fallback.
 
 ---
 
@@ -391,10 +403,12 @@ The JIT falls back to the interpreter in these cases:
 |-----------|-----------|
 | HALT, WAIT, RTI as first instruction | `needsFallback()` in scanner, dispatcher calls `interpretOne()` |
 | HALT, WAIT, RTI mid-block | Emitted as bail-to-interpreter (set NeedIOFallback, epilogue) |
-| PC > `0xFFFFFFFF` | Dispatcher calls `interpretOne()` before scanning |
-| Executable physical address outside `cpu.memory` | Dispatcher calls `interpretOne()` before scanning |
+| High virtual/physical PC | Scanned and compiled via `scanBlockBus` (bus fetch) — **not** a fallback |
+| Unmapped physical instruction fetch | Scan/dispatch stops cleanly (`ReadPhys64WithFault` returns `ok=false`) |
+| High-PC block containing a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`) | `highPhys && containsStackOp` → dispatcher runs the block via `interpretOne()` |
+| High address or MMU-on data/stack/FP/control op | JITContext helper exit (serviced by the dispatcher) — **not** a whole-instruction bail |
 | I/O page memory access | Dual-path: bail to interpreter on I/O bitmap hit |
-| FMOD/transcendentals and double-precision FPU opcodes | Bail to interpreter; DLOAD/DSTORE force whole-block fallback |
+| FMOD/transcendentals and double-precision arithmetic/conversion FPU opcodes | Bail to interpreter (DLOAD/DSTORE are JIT-emitted via helper exit, not bailed) |
 | Atomic RMW (CAS, XCHG, FAA, FAND, FOR, FXOR) | Always bail to interpreter (MMU-on and MMU-off; centralised SC semantics) |
 | MODS, MULHU, MULHS | Bail to interpreter |
 | MMU/privilege opcodes (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE, SUAEN, SUADIS) | Block terminators; first-instruction fallback in `needsFallback()`, otherwise emitted as bail-to-interpreter |
@@ -438,7 +452,7 @@ Tests block scanning, register analysis, code cache, and ExecMem.
 Both backends use an identical `jitTestRig` pattern:
 1. Create MachineBus + CPU64 + AllocExecMem(1MB) + newJITContext
 2. `compileAndRun()` loads instructions at PROG_START, appends HALT, scans, strips terminal HALT, compiles, executes via callNative
-3. Extracts packed PC from regs[0], zeros regs[0]
+3. Reads `ctx.RetPC` into `cpu.PC` (and clears it); `ctx.NeedHelper` can be inspected to assert helper-exit requests
 
 Mid-block RTI/WAIT tests use manual scan+compile (no HALT stripping) to verify bail behaviour.
 
@@ -456,8 +470,7 @@ Mid-block RTI/WAIT tests use manual scan+compile (no HALT stripping) to verify b
 - Non-MMU AMD64 recognised-pattern shortcuts for selected IE64 benchmark loops
 
 ### Deferred
-- Widening the JIT block builder and return channel to full `uint64` PC
-- High-physical instruction fetch and direct data access in native blocks
+- Direct (non-helper) native fast path for high-physical data/stack access: high addresses currently route through the JITContext helper exit; inlining the sparse-backing / MMU translation into native code is a future perf item
 - Native double-precision FPU emission
 - MMU-aware IE64 region scanning and native region compilation
 - ARM64 IE64 turbo-region compilation
@@ -500,23 +513,27 @@ The Call workload is intentionally JIT-hostile: every JSR and RTS terminates the
 
 ## MMU Integration
 
-When the IE64 MMU is enabled (MMU_CTRL bit 0 = 1), the JIT compiler adapts its behaviour to maintain correct virtual memory semantics. The current implementation is Stage 1: a conservative bail-to-interpreter strategy that prioritises correctness over performance.
+When the IE64 MMU is enabled (MMU_CTRL bit 0 = 1), the JIT compiler keeps virtual-memory semantics correct by routing memory-touching work through the JITContext helper exit instead of inline `[memBase+addr]` accesses. The native emitters check `ctx.MMUEnabled` (refreshed by the dispatcher before every `callNative`); when it is set, **all** data, stack, FP, and control-flow memory operations take the helper exit, and the dispatcher services them through `cpu.loadMem`/`storeMem` and `cpu.mmuStackRead`/`mmuStackWrite` — the same code paths (and full virtual-address translation, permission checks, and fault semantics) the interpreter uses.
 
-### Stage 1: Interpreter Bail for Memory Operations
+### Helper Exit for Memory Operations Under MMU
 
-When MMU is active, the JIT compiler sets the `mmuBail` flag during block compilation via the `compileBlockMMU` wrapper. With this flag set, memory-touching and atomic instructions are emitted as immediate bail-to-interpreter exits rather than inline memory accesses:
+The following are routed through the helper exit when the MMU is on (and also when an address escapes the low window with the MMU off):
 
 - **LOAD, STORE** (general-purpose memory access)
 - **PUSH, POP** (stack operations)
-- **JSR, RTS** (subroutine call/return -- both touch the stack)
-- **FLOAD, FSTORE** (FPU memory access)
-- **CAS, XCHG, FAA, FAND, FOR, FXOR** (atomic memory RMW operations)
+- **JSR, RTS, JSR_IND** (subroutine call/return -- both touch the stack)
+- **FLOAD, FSTORE, DLOAD, DSTORE** (FP / FP64 memory access)
 
-Each bailed instruction packs the current PC and retired instruction count into the return channel, stores back any modified registers, and returns to the dispatcher. The dispatcher then re-executes that single instruction through the interpreter, which performs full virtual address translation and permission checking.
+These do **not** re-execute through the interpreter as whole instructions; the dispatcher performs only the memory semantic via the shared helpers, advances PC, and re-enters the JIT (see the Return-Channel and `architecture.md` helper-exit description).
+
+Two cases still take a whole-instruction `mmuBail` → `emitBailToInterpreter` under MMU rather than the helper exit:
+
+- **Atomics** (CAS, XCHG, FAA, FAND, FOR, FXOR) — always bailed, MMU-on or off (see note below).
+- **Fused JSR/RTS leaf markers** — `compileBlockMMU` sets `mmuBail` on them so the raw `[memBase+SP]` fused fast path is suppressed and the guarded `OP_JSR64`/`OP_RTS64` bail path runs instead.
 
 RTI is a block terminator and normally reaches the interpreter through `needsFallback()` when it is the first instruction or through an emitted bail path when it appears after earlier instructions in a block.
 
-Non-memory instructions (ALU, single-precision FPU arithmetic, branches, moves) are still compiled to native code where the emitters support them and execute at full JIT speed within the block.
+Non-memory instructions (ALU, single-precision FPU arithmetic, branches, moves) are compiled to native code where the emitters support them and execute at full JIT speed within the block.
 
 **Note on atomics**: The six atomic memory operations (CAS, XCHG, FAA, FAND, FOR, FXOR) always bail to the interpreter regardless of whether the MMU is enabled. They are infrequent synchronisation operations where correctness outweighs compilation overhead, and the interpreter now owns the canonical sequentially-consistent implementation via `atomicRMW64` in `cpu_ie64.go`. Both JIT backends deliberately preserve that single source of truth rather than growing separate host-atomic sequences with subtly different semantics. The bail applies in both MMU-on and MMU-off modes.
 
@@ -525,7 +542,7 @@ Non-memory instructions (ALU, single-precision FPU arithmetic, branches, moves) 
 Block scanning requires special handling under MMU:
 
 - **Virtual PC translation**: Before scanning a block, the virtual PC is translated to a physical address through the MMU page table. The physical address is used to read instruction bytes from memory.
-- **Cache key**: In MMU mode, the code cache key is `(PTBR * 0x9E3779B97F4A7C15) ^ virtualPC`, not the physical address alone. This prevents two address spaces with the same virtual PC but different page tables from sharing a stale native block.
+- **Cache key**: In MMU mode the code cache is keyed on the **exact** `(PTBR, virtualPC)` pair (`GetMMU`/`PutMMU`), not the physical address alone and not a lossy hash. This prevents two address spaces with the same virtual PC but different page tables from colliding on a stale native block.
 - **Page boundary limit**: Blocks are limited to the current 4 KiB physical page during scanning. This prevents a single scanned block from crossing into bytes that may not correspond to the next virtual page mapping.
 
 ### Cache Invalidation

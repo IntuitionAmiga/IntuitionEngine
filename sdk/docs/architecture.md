@@ -475,6 +475,83 @@ The host-side JIT support is intentionally asymmetric and follows the dispatch f
 
 On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles, and non-IE64 guest cores remain interpreter-only on arm64 hosts.
 
+### IE64 JIT 64-bit Execution Model
+
+The IE64 JIT (amd64 and arm64) executes code, accesses data, and operates the
+stack at any `uint64` virtual or physical address, matching the interpreter.
+There is no `uint32` truncation on the PC, data addresses, stack pointer,
+branch targets, or chain targets. The one stack exception is the amd64 non-MMU
+fused-leaf path (documented below): it raw-indexes `[MemBase+SP]` and so assumes
+the SP is in the low window.
+
+- **Low memory window**: each guest sees a contiguous low RAM window backed by
+  the dense `cpu.memory[]` slice, capped at 256 MiB for the IE64 family
+  (`lowMemWindowBytes`). The actual `len(bus.memory)` is
+  `min(autodetected TotalGuestRAM, busMemCap)` (main.go), so on a small host the
+  window can be smaller than the cap. Addresses above the window resolve through
+  the bus's 64-bit physical path, backed by the `Backing` interface -- production
+  IE64 boots on Linux/darwin bind high RAM via `MmapBacking`; `SparseBacking` is
+  the test implementation. High physical addresses are supported for code fetch
+  and for data / stack *operands* (the latter via the helper exit, including a
+  high SP), with one caveat below.
+- **High-PC stack-op caveat**: a block *fetched from* high physical backing
+  that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`) is not
+  JIT-compiled -- `ExecuteJIT` takes the `highPhys && containsStackOp(instrs)`
+  path and runs the block one instruction at a time through `interpretOne()`
+  (which routes the stack through the bus). This is pinned by
+  `TestJIT_HighPC_StackOpBlock_BailsToInterpreter`. Stack ops in blocks fetched
+  from the low window are JIT-compiled and, for a high SP, route through the
+  helper exit -- **except** the fused-leaf path below.
+- **Fused-leaf high-SP exception**: on amd64 with the MMU off,
+  `scanBlock` may fuse a `JSR64` to a small leaf subroutine
+  (`ie64FusedJSRLeafCall` / `ie64FusedRTSLeafReturn`, gated by
+  `ie64ScanJSRLeafFusionEnabled` -- amd64 only). The fused emit
+  (`jit_emit_amd64.go`) handles the call/return push/pop as **raw**
+  `[MemBase+SP]` traffic *before* the normal `emitJSR_AMD64`/`emitRTS_AMD64`
+  high-SP guards, so it does **not** take the helper exit. This is safe only
+  because the marker is suppressed whenever `mmuBail` is set, but `mmuBail` for
+  fused leaves is set by `compileBlockMMU` (MMU mode) only -- in non-MMU mode a
+  fused leaf with an SP outside the low window would read/write past
+  `cpu.memory[]`. Non-MMU guests are therefore expected to keep the stack in
+  the low window; high-SP correctness via the helper exit holds for unfused
+  stack ops, not for fused leaves.
+- **Direct fast path vs. helper exit**: native code uses a direct
+  `[memBase+addr]` access only when the MMU is off **and** the address is in the
+  low window (size-aware bound: `addr <= MemSize - accessBytes`). Otherwise it
+  takes the JITContext-mediated *helper exit*.
+- **Helper exit protocol**: native code cannot safely call back into Go (it runs
+  on g0 via `asmcgocall`), so on a high/MMU access it writes a structured request
+  to the `JITContext` (`NeedHelper`, `HelperAddr`, `HelperSize`, `HelperVal`,
+  `HelperRd`, `HelperPC`, `LiveSP`), flushes the live SP and the faulting
+  instruction's PC, and returns through the epilogue. `ExecuteJIT` dispatches the
+  request (`handleJITHelper`) and re-enters the JIT. Helper ops cover
+  `LOAD`/`STORE`, `FLOAD`/`FSTORE`, `DLOAD`/`DSTORE`, `PUSH`/`POP`, and the
+  control-flow `JSR`/`RTS`/`JSR_IND`.
+- **Interpreter parity**: helpers use `cpu.loadMem`/`storeMem` for data and
+  `cpu.mmuStackWrite`/`mmuStackRead` for the stack -- the same paths as the
+  interpreter. JSR sets PC to the call target, RTS sets PC to the popped return
+  address, and JSR_IND sets PC to `rs + sext(imm32)` -- the displacement is
+  sign-extended, so a negative `imm32` (bit 31 set) subtracts (with `rs == R31`
+  based on the decremented SP). The FP load/store side effects differ: FLOAD and
+  DLOAD set the destination FP register **and** the FP condition codes; FSTORE
+  and DSTORE read the FP register and write memory, leaving FP registers and
+  condition codes unchanged -- matching the interpreter in each case.
+- **MMU rule**: when the MMU is enabled, **all** data/stack ops take the helper
+  exit (virtual→physical mapping is not a direct offset). The dispatcher refreshes
+  `ctx.MMUEnabled` before every `callNative` so the native guards are never stale.
+- **Fault contract**: the handler sets `cpu.PC = HelperPC` before the operation,
+  so `trapFault` records the correct `faultPC`; faulting instructions are not
+  counted and re-execute after the trap. Pre-decrement ops (PUSH/JSR/JSR_IND)
+  roll the SP back on a trapping fault.
+- **Atomics carve-out**: atomics (CAS/XCHG/FAA/FAND/FOR/FXOR) are an explicit
+  interpreter bail (`compileBlockMMU` sets `mmuBail`) -- sequential consistency
+  requires the Go runtime. `compileBlockMMU` also sets `mmuBail` on fused JSR/RTS
+  leaf markers, so under MMU the `OP_JSR64`/`OP_RTS64` emit takes the `mmuBail`
+  branch to `emitBailToInterpreter` (a whole-instruction interpreter bail with
+  its own fault/accounting path) -- neither the raw fused fast path nor the
+  guarded helper exit runs. In non-MMU mode `mmuBail` is unset, so the raw fused
+  fast path is used (see the fused-leaf high-SP exception above).
+
 ## Build Profiles and Observable Runtime
 
 Build tags change host backends, not the guest-visible ISA contract. The main

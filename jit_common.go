@@ -82,7 +82,7 @@ type JITContext struct {
 	HelperSize uint32 // 172: IE64_SIZE_B/W/L/Q for memory ops
 	HelperRd   uint32 // 176: destination/source register or FP register index
 	HelperAddr uint64 // 184: virtual address (data ops) or call target (control flow)
-	HelperVal  uint64 // 192: value to store/push; receives load/pop result on re-entry
+	HelperVal  uint64 // 192: value to store/push (input only); LOAD/POP results go to an integer reg via setReg and FLOAD/DLOAD results go to the FPU via FP setters, never returned through this field
 	HelperPC   uint64 // 200: PC of the requesting instruction for trapFault.faultPC
 	LiveSP     uint64 // 208: SP flushed from host register before helper exit
 }
