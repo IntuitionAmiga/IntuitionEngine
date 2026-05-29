@@ -3053,39 +3053,57 @@ func emitFCVTIF_AMD64(cb *CodeBuffer, ji *JITInstr) {
 func emitFLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	emitMemAddr(cb, ji) // address in RAX (full 64-bit)
 
+	// Phase 5 cycle 5.6: MMU-on check → helper exit.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
+	mmuHelperOff := amd64Jcc_rel32(cb, amd64CondNE)
+
 	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RegIOStart) // CMP RAX, R8 (64-bit)
 	slowPathOff := amd64Jcc_rel32(cb, amd64CondAE)
 
-	// Fast path: 32-bit load
 	emitMemOpSIB(cb, false, 0x8B, amd64RDX, amd64RegMemBase, amd64RAX, 0) // MOV EDX, [RSI+RAX]
-	doneOff := amd64JMP_rel32(cb)
+	doneOff1 := amd64JMP_rel32(cb)
 
 	// Slow path
 	slowPathPC := cb.Len()
 	patchRel32(cb, slowPathOff, slowPathPC)
 
-	// Size-aware high-address bail before the bitmap probe so that an FP
-	// access (L-sized = 4 bytes) whose end byte escapes MemSize bails
-	// cleanly instead of indexing the bitmap OOB or aliasing into low RAM.
-	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar, 4)
+	// High-addr (4-byte access) → helper exit.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize))
+	amd64ALU_reg_imm32(cb, 5, amd64RCX, 3) // SUB RCX, 3 (accessBytes-1 for L)
+	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RCX)
+	inRangeOff := amd64Jcc_rel32(cb, 0x2)
+	highHelperOff := amd64JMP_rel32(cb)
+	inRangePC := cb.Len()
+	patchRel32(cb, inRangeOff, inRangePC)
 
 	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
 	if !ok {
 		panic("missing FPBitmapDenseRAM shape")
 	}
-
-	emitIOBail(cb, instrPC, ji.pcOffset, br, writtenSoFar)
+	ioHelperOff := amd64JMP_rel32(cb)
 
 	nonIOPC := cb.Len()
 	patchRel32(cb, nonIOOff, nonIOPC)
 	emitMemOpSIB(cb, false, 0x8B, amd64RDX, amd64RegMemBase, amd64RAX, 0)
+	doneOff2 := amd64JMP_rel32(cb)
+
+	// Helper exit. All three bail paths converge here.
+	helperPC := cb.Len()
+	patchRel32(cb, mmuHelperOff, helperPC)
+	patchRel32(cb, highHelperOff, helperPC)
+	patchRel32(cb, ioHelperOff, helperPC)
+	emitFPMemHelperExit(cb, ji, instrPC, HELPER_FLOAD, br, writtenSoFar)
 
 	donePC := cb.Len()
-	patchRel32(cb, doneOff, donePC)
+	patchRel32(cb, doneOff1, donePC)
+	patchRel32(cb, doneOff2, donePC)
 
-	// Store to FP register
+	// Direct-load success path: store EDX to FP register and set
+	// condition codes. Helper path does not reach here — the dispatcher
+	// performs the FP register write and condition-code update.
 	emitStoreFPRegAMD64(cb, amd64RDX, ji.rd)
-	// Set condition codes from loaded value
 	amd64MOV_reg_reg32(cb, amd64RAX, amd64RDX)
 	emitSetFPCondCodesAMD64(cb)
 }
@@ -3096,32 +3114,69 @@ func emitFSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockReg
 	// Load FP source value
 	emitLoadFPRegAMD64(cb, amd64R10, ji.rd)
 
+	// MMU-on check → helper exit.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
+	mmuHelperOff := amd64Jcc_rel32(cb, amd64CondNE)
+
 	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RegIOStart) // CMP RAX, R8 (64-bit)
 	slowPathOff := amd64Jcc_rel32(cb, amd64CondAE)
 
-	// Fast path
 	emitMemOpSIB(cb, false, 0x89, amd64R10, amd64RegMemBase, amd64RAX, 0)
-	doneOff := amd64JMP_rel32(cb)
+	doneOff1 := amd64JMP_rel32(cb)
 
-	// Slow path
 	slowPathPC := cb.Len()
 	patchRel32(cb, slowPathOff, slowPathPC)
 
-	// Size-aware high-address bail before the bitmap probe; FSTORE is
-	// L-sized (4 bytes).
-	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar, 4)
+	// High-addr → helper exit.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize))
+	amd64ALU_reg_imm32(cb, 5, amd64RCX, 3)
+	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RCX)
+	inRangeOff := amd64Jcc_rel32(cb, 0x2)
+	highHelperOff := amd64JMP_rel32(cb)
+	inRangePC := cb.Len()
+	patchRel32(cb, inRangeOff, inRangePC)
 
 	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
 	if !ok {
 		panic("missing FPBitmapDenseRAM shape")
 	}
-
-	emitIOBail(cb, instrPC, ji.pcOffset, br, writtenSoFar)
+	ioHelperOff := amd64JMP_rel32(cb)
 
 	nonIOPC := cb.Len()
 	patchRel32(cb, nonIOOff, nonIOPC)
 	emitMemOpSIB(cb, false, 0x89, amd64R10, amd64RegMemBase, amd64RAX, 0)
+	doneOff2 := amd64JMP_rel32(cb)
+
+	helperPC := cb.Len()
+	patchRel32(cb, mmuHelperOff, helperPC)
+	patchRel32(cb, highHelperOff, helperPC)
+	patchRel32(cb, ioHelperOff, helperPC)
+	emitFPMemHelperExit(cb, ji, instrPC, HELPER_FSTORE, br, writtenSoFar)
 
 	donePC := cb.Len()
-	patchRel32(cb, doneOff, donePC)
+	patchRel32(cb, doneOff1, donePC)
+	patchRel32(cb, doneOff2, donePC)
+}
+
+// emitFPMemHelperExit writes the JITContext helper-exit fields for an
+// FLOAD or FSTORE bail and returns from the block. The Go dispatcher
+// reads the FP register from cpu.FPU directly for HELPER_FSTORE and
+// writes it back for HELPER_FLOAD, so no HelperVal staging is needed.
+//
+// RAX must hold the effective virtual address on entry.
+func emitFPMemHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, op uint32, br *blockRegs, writtenSoFar uint32) {
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffCtxPtr)) // R11 ≠ srcReg holder R10 used by FSTORE
+	amd64MOV_mem_reg(cb, amd64R11, int32(jitCtxOffHelperAddr), amd64RAX)
+	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffHelperSize), uint32(IE64_SIZE_L))
+	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffHelperRd), uint32(ji.rd))
+	amd64MOV_mem_reg(cb, amd64R11, int32(jitCtxOffLiveSP), amd64RegIE64SP)
+	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)
+	amd64MOV_mem_reg(cb, amd64R11, int32(jitCtxOffHelperPC), amd64RCX)
+	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffNeedHelper), op)
+
+	bailCount := ji.pcOffset / IE64_INSTR_SIZE
+	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
 }

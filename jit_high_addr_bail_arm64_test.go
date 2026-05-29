@@ -87,8 +87,8 @@ func TestJIT_ARM64_IE64FLoad_Above4GiB_MustNotAlias(t *testing.T) {
 	if r.cpu.FPU.FPRegs[0] != sentinel {
 		t.Fatalf("F0 = 0x%08X, want sentinel 0x%08X", r.cpu.FPU.FPRegs[0], sentinel)
 	}
-	if r.ctx.NeedIOFallback != 1 {
-		t.Fatalf("NeedIOFallback = %d, want 1", r.ctx.NeedIOFallback)
+	if r.ctx.NeedHelper != HELPER_FLOAD {
+		t.Fatalf("NeedHelper = %d, want HELPER_FLOAD", r.ctx.NeedHelper)
 	}
 }
 
@@ -113,8 +113,8 @@ func TestJIT_ARM64_IE64FStore_Above4GiB_MustNotCorrupt(t *testing.T) {
 	if stored != 0 {
 		t.Fatalf("bus.memory[0x%X] = 0x%08X, want 0", phase1LowAlias, stored)
 	}
-	if r.ctx.NeedIOFallback != 1 {
-		t.Fatalf("NeedIOFallback = %d, want 1", r.ctx.NeedIOFallback)
+	if r.ctx.NeedHelper != HELPER_FSTORE {
+		t.Fatalf("NeedHelper = %d, want HELPER_FSTORE", r.ctx.NeedHelper)
 	}
 }
 
@@ -173,8 +173,8 @@ func TestJIT_ARM64_IE64FLoad_NearEndOfMemory_Bails(t *testing.T) {
 
 	r.compileAndRun(t, ie64Instr(OP_FLOAD, 0, IE64_SIZE_L, 0, 2, 0, 0))
 
-	if r.ctx.NeedIOFallback != 1 {
-		t.Fatalf("FLOAD addr=MemSize-3: NeedIOFallback = %d, want 1", r.ctx.NeedIOFallback)
+	if r.ctx.NeedHelper != HELPER_FLOAD {
+		t.Fatalf("FLOAD addr=MemSize-3: NeedHelper = %d, want HELPER_FLOAD", r.ctx.NeedHelper)
 	}
 }
 
