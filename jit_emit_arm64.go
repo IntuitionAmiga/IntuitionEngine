@@ -355,6 +355,11 @@ func arm64SMULL(rd, rn, rm byte) uint32 {
 	return 0x9B207C00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
 }
 
+// msub Xd, Xn, Xm, Xa: Xd = Xa - Xn*Xm
+func arm64MSUB(rd, rn, rm, ra byte) uint32 {
+	return 0x9B008000 | uint32(rm)<<16 | uint32(ra)<<10 | uint32(rn)<<5 | uint32(rd)
+}
+
 // udiv Xd, Xn, Xm
 func arm64UDIV(rd, rn, rm byte) uint32 {
 	return 0x9AC00800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
@@ -447,6 +452,18 @@ func arm64CBNZ(rt byte, offset int32) uint32 {
 // ret (X30)
 func arm64RET() uint32 {
 	return 0xD65F03C0
+}
+
+func arm64CLREX() uint32 {
+	return 0xD503305F
+}
+
+func arm64LDAXR(rt, rn byte) uint32 {
+	return 0xC85FFC00 | uint32(rn)<<5 | uint32(rt)
+}
+
+func arm64STLXR(rs, rt, rn byte) uint32 {
+	return 0xC800FC00 | uint32(rs)<<16 | uint32(rn)<<5 | uint32(rt)
 }
 
 // lsr Xd, Xn, #shift (immediate, alias for UBFM Xd, Xn, #shift, #63)
@@ -924,7 +941,7 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 	case OP_NEG:
 		emitNEG(cb, ji)
 	case OP_MODS:
-		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		emitMODS(cb, ji)
 	case OP_MULHU:
 		emitMULHU(cb, ji)
 	case OP_MULHS:
@@ -1124,10 +1141,8 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 		return
 
-	// Atomic RMW: always bail to interpreter so IE64 atomics keep the
-	// centralized sequentially-consistent atomicRMW64 semantics.
 	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
-		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		emitAtomic(cb, ji, instrPC, br, writtenSoFar)
 		return
 
 	default:
@@ -1558,6 +1573,65 @@ func emitMOD(cb *CodeBuffer, ji *JITInstr) {
 
 	if !mapped {
 		emitStoreSpilledReg(cb, dstReg, ji.rd)
+	}
+}
+
+func emitSignExtendForSize(cb *CodeBuffer, dst, src byte, size byte) {
+	switch size {
+	case IE64_SIZE_B:
+		cb.Emit32(arm64SXTB(dst, src))
+	case IE64_SIZE_W:
+		cb.Emit32(arm64SXTH(dst, src))
+	case IE64_SIZE_L:
+		cb.Emit32(arm64SXTW(dst, src))
+	case IE64_SIZE_Q:
+		if dst != src {
+			cb.Emit32(arm64MOV(dst, src))
+		}
+	}
+}
+
+// emitMODS handles signed modulo with IE64 size-based sign extension.
+func emitMODS(cb *CodeBuffer, ji *JITInstr) {
+	if ji.rd == 0 {
+		return
+	}
+
+	rsReg := resolveReg(cb, ji.rs, 0)
+	emitSignExtendForSize(cb, 0, rsReg, ji.size) // X0 = dividend
+
+	if ji.xbit == 1 {
+		emitLoadImm64(cb, 1, uint64(ji.imm32))
+		emitSignExtendForSize(cb, 1, 1, ji.size)
+	} else {
+		opReg := resolveReg(cb, ji.rt, 1)
+		emitSignExtendForSize(cb, 1, opReg, ji.size) // X1 = divisor
+	}
+
+	zeroOff := cb.Len()
+	cb.Emit32(0) // CBZ X1, zero
+
+	cb.Emit32(arm64SDIV(3, 0, 1))    // X3 = X0 / X1
+	cb.Emit32(arm64MSUB(2, 3, 1, 0)) // X2 = X0 - X3*X1
+	doneOff1 := cb.Len()
+	cb.Emit32(0) // B done
+
+	zeroPC := cb.Len()
+	cb.PatchUint32(zeroOff, arm64CBZ(1, int32(zeroPC-zeroOff)))
+	cb.Emit32(arm64MOV(2, 31)) // X2 = 0
+
+	donePC := cb.Len()
+	cb.PatchUint32(doneOff1, arm64B(int32(donePC-doneOff1)))
+
+	if ji.size != IE64_SIZE_Q {
+		emitSizeMask(cb, 2, ji.size)
+	}
+
+	dstReg, mapped := ie64ToARM64Reg(ji.rd)
+	if mapped {
+		cb.Emit32(arm64MOV(dstReg, 2))
+	} else {
+		emitStoreSpilledReg(cb, 2, ji.rd)
 	}
 }
 
@@ -2240,6 +2314,111 @@ func emitSTOREHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcR
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
+func emitStoreAtomicOld(cb *CodeBuffer, oldReg byte, rd byte) {
+	if rd == 0 {
+		return
+	}
+	dstReg, mapped := ie64ToARM64Reg(rd)
+	if mapped {
+		cb.Emit32(arm64MOV(dstReg, oldReg))
+	} else {
+		emitStoreSpilledReg(cb, oldReg, rd)
+	}
+}
+
+func emitAtomic(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	rsReg := resolveReg(cb, ji.rs, 0)
+	emitLoadImm32(cb, 1, ji.imm32)
+	cb.Emit32(arm64SXTW(1, 1))
+	cb.Emit32(arm64ADD(0, rsReg, 1)) // X0 = effective address
+
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
+	mmuOff := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64AND_imm(1, 0, 0, 2, 1)) // X1 = addr & 7
+	alignOff := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64CMP(0, arm64RegIOStart))
+	ioOff := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4)))
+	cb.Emit32(arm64SUB_imm(1, 1, 7))
+	cb.Emit32(arm64CMP(0, 1))
+	highOff := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64ADD(0, arm64RegMemBase, 0)) // X0 = host pointer
+	rtReg := resolveReg(cb, ji.rt, 3)
+	if rtReg != 3 {
+		cb.Emit32(arm64MOV(3, rtReg))
+	}
+
+	switch ji.opcode {
+	case OP_CAS:
+		rdReg := resolveReg(cb, ji.rd, 4)
+		if rdReg != 4 {
+			cb.Emit32(arm64MOV(4, rdReg))
+		}
+		loopPC := cb.Len()
+		cb.Emit32(arm64LDAXR(2, 0))
+		cb.Emit32(arm64CMP(2, 4))
+		failOff := cb.Len()
+		cb.Emit32(0)
+		cb.Emit32(arm64STLXR(5, 3, 0))
+		retryOff := cb.Len()
+		cb.Emit32(0)
+		doneCasOff := cb.Len()
+		cb.Emit32(0)
+		failPC := cb.Len()
+		cb.PatchUint32(failOff, arm64Bcond(arm64CondNE, int32(failPC-failOff)))
+		cb.Emit32(arm64CLREX())
+		doneCasPC := cb.Len()
+		cb.PatchUint32(doneCasOff, arm64B(int32(doneCasPC-doneCasOff)))
+		cb.PatchUint32(retryOff, arm64CBNZ(5, int32(loopPC-retryOff)))
+		emitStoreAtomicOld(cb, 2, ji.rd)
+	case OP_XCHG:
+		loopPC := cb.Len()
+		cb.Emit32(arm64LDAXR(2, 0))
+		cb.Emit32(arm64STLXR(5, 3, 0))
+		retryOff := cb.Len()
+		cb.Emit32(0)
+		cb.PatchUint32(retryOff, arm64CBNZ(5, int32(loopPC-retryOff)))
+		emitStoreAtomicOld(cb, 2, ji.rd)
+	case OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
+		loopPC := cb.Len()
+		cb.Emit32(arm64LDAXR(2, 0))
+		switch ji.opcode {
+		case OP_FAA:
+			cb.Emit32(arm64ADD(4, 2, 3))
+		case OP_FAND:
+			cb.Emit32(arm64AND(4, 2, 3))
+		case OP_FOR:
+			cb.Emit32(arm64ORR(4, 2, 3))
+		case OP_FXOR:
+			cb.Emit32(arm64EOR(4, 2, 3))
+		}
+		cb.Emit32(arm64STLXR(5, 4, 0))
+		retryOff := cb.Len()
+		cb.Emit32(0)
+		cb.PatchUint32(retryOff, arm64CBNZ(5, int32(loopPC-retryOff)))
+		emitStoreAtomicOld(cb, 2, ji.rd)
+	}
+	emitPackedPCAndCount(cb, instrPC+IE64_INSTR_SIZE, ji.pcOffset/IE64_INSTR_SIZE+1, br)
+	emitEpilogue(cb, writtenSoFar|instrWrittenRegs(ji), br.used)
+
+	bailPC := cb.Len()
+	cb.PatchUint32(mmuOff, arm64CBNZ(1, int32(bailPC-mmuOff)))
+	cb.PatchUint32(alignOff, arm64CBNZ(1, int32(bailPC-alignOff)))
+	cb.PatchUint32(ioOff, arm64Bcond(arm64CondHS, int32(bailPC-ioOff)))
+	cb.PatchUint32(highOff, arm64Bcond(arm64CondHS, int32(bailPC-highOff)))
+	emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+}
+
 // ===========================================================================
 // Control Flow
 // ===========================================================================
@@ -2808,6 +2987,65 @@ func emitSetFPCondCodes(cb *CodeBuffer) {
 	cb.Emit32(arm64STR_W_imm(1, arm64RegFPUBase, fpuOffFPSR))
 }
 
+// emitSetFPCondCodes64 classifies IEEE-754 binary64 bits in X0 and updates
+// FPSR condition codes. It preserves exception flags.
+func emitSetFPCondCodes64(cb *CodeBuffer) {
+	cb.Emit32(arm64LSR_imm(1, 0, 52))       // exponent
+	cb.Emit32(arm64AND_imm(1, 1, 0, 10, 1)) // X1 &= 0x7FF
+	emitLoadImm32(cb, 3, 0)                 // W3 = CC
+	cb.Emit32(arm64CMP_imm(1, 0x7FF))
+	notSpecialOff := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64LSL_imm(2, 0, 12)) // fraction bits; exp/sign shifted out
+	isNanOff := cb.Len()
+	cb.Emit32(0)
+
+	emitLoadImm32(cb, 3, IE64_FPU_CC_I)
+	cb.Emit32(arm64LSR_imm(2, 0, 63))
+	storeCCFromInfOff := cb.Len()
+	cb.Emit32(0)
+	emitLoadImm32(cb, 1, IE64_FPU_CC_N)
+	cb.Emit32(arm64ORR_W(3, 3, 1))
+	storeCCFromNegInfOff := cb.Len()
+	cb.Emit32(0)
+
+	isNanPC := cb.Len()
+	cb.PatchUint32(isNanOff, arm64CBNZ(2, int32(isNanPC-isNanOff)))
+	emitLoadImm32(cb, 3, IE64_FPU_CC_NAN)
+	storeCCFromNanOff := cb.Len()
+	cb.Emit32(0)
+
+	notSpecialPC := cb.Len()
+	cb.PatchUint32(notSpecialOff, arm64Bcond(arm64CondNE, int32(notSpecialPC-notSpecialOff)))
+	cb.Emit32(arm64LSL_imm(2, 0, 1)) // abs-zero check
+	isZeroOff := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64LSR_imm(3, 0, 63))
+	storeCCFromPosOff := cb.Len()
+	cb.Emit32(0)
+	emitLoadImm32(cb, 3, IE64_FPU_CC_N)
+	storeCCFromNegOff := cb.Len()
+	cb.Emit32(0)
+
+	isZeroPC := cb.Len()
+	cb.PatchUint32(isZeroOff, arm64CBZ(2, int32(isZeroPC-isZeroOff)))
+	emitLoadImm32(cb, 3, IE64_FPU_CC_Z)
+
+	storeCCPC := cb.Len()
+	cb.PatchUint32(storeCCFromInfOff, arm64CBZ(2, int32(storeCCPC-storeCCFromInfOff)))
+	cb.PatchUint32(storeCCFromNegInfOff, arm64B(int32(storeCCPC-storeCCFromNegInfOff)))
+	cb.PatchUint32(storeCCFromNanOff, arm64B(int32(storeCCPC-storeCCFromNanOff)))
+	cb.PatchUint32(storeCCFromPosOff, arm64CBZ(3, int32(storeCCPC-storeCCFromPosOff)))
+	cb.PatchUint32(storeCCFromNegOff, arm64B(int32(storeCCPC-storeCCFromNegOff)))
+
+	cb.Emit32(arm64LDR_W_imm(1, arm64RegFPUBase, fpuOffFPSR))
+	cb.Emit32(arm64UBFX_W(1, 1, 0, 4))
+	cb.Emit32(arm64ORR_W(1, 1, 3))
+	cb.Emit32(arm64STR_W_imm(1, arm64RegFPUBase, fpuOffFPSR))
+}
+
 // ===========================================================================
 // FPU — Category A: Pure integer bitwise on FP registers
 // ===========================================================================
@@ -3084,19 +3322,74 @@ func emitFCVTIF(cb *CodeBuffer, ji *JITInstr) {
 	emitSetFPCondCodes(cb)
 }
 
+func emitSetFPUInvalid(cb *CodeBuffer) {
+	cb.Emit32(arm64LDR_W_imm(2, arm64RegFPUBase, fpuOffFPSR))
+	emitLoadImm32(cb, 3, IE64_FPU_EX_IO)
+	cb.Emit32(arm64ORR_W(2, 2, 3))
+	cb.Emit32(arm64STR_W_imm(2, arm64RegFPUBase, fpuOffFPSR))
+}
+
 func emitFCVTFI(cb *CodeBuffer, ji *JITInstr) {
-	if ji.rd == 0 {
-		return
-	}
 	emitLoadFPReg(cb, 0, ji.rs)
 	cb.Emit32(arm64FMOV_WtoS(0, 0))
-	cb.Emit32(arm64FCVTZS_SW(0, 0)) // W0 = int32(S0), saturating
-	cb.Emit32(arm64SXTW(0, 0))      // sign-extend to int64
-	dstReg, mapped := ie64ToARM64Reg(ji.rd)
-	if mapped {
-		cb.Emit32(arm64MOV(dstReg, 0))
-	} else {
-		emitStoreSpilledReg(cb, 0, ji.rd)
+
+	cb.Emit32(arm64MOV_W(1, 0))
+	emitLoadImm32(cb, 2, 0x7FFFFFFF)
+	cb.Emit32(arm64AND_W(1, 1, 2))
+	emitLoadImm32(cb, 2, 0x7F800000)
+	cb.Emit32(arm64CMP_W(1, 2))
+	nanOff := cb.Len()
+	cb.Emit32(0)
+
+	emitLoadImm32(cb, 1, 0x4F000000)
+	cb.Emit32(arm64FMOV_WtoS(1, 1))
+	cb.Emit32(arm64FCMP_S(0, 1))
+	highOff := cb.Len()
+	cb.Emit32(0)
+
+	emitLoadImm32(cb, 1, 0xCF000000)
+	cb.Emit32(arm64FMOV_WtoS(1, 1))
+	cb.Emit32(arm64FCMP_S(0, 1))
+	lowOff := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64FCVTZS_SW(0, 0))
+	cb.Emit32(arm64SXTW(0, 0))
+	storeOff1 := cb.Len()
+	cb.Emit32(0)
+
+	nanPC := cb.Len()
+	cb.PatchUint32(nanOff, arm64Bcond(arm64CondHI, int32(nanPC-nanOff)))
+	emitLoadImm32(cb, 0, 0)
+	emitSetFPUInvalid(cb)
+	storeOff2 := cb.Len()
+	cb.Emit32(0)
+
+	highPC := cb.Len()
+	cb.PatchUint32(highOff, arm64Bcond(arm64CondGT, int32(highPC-highOff)))
+	emitLoadImm32(cb, 0, 0x7FFFFFFF)
+	cb.Emit32(arm64SXTW(0, 0))
+	emitSetFPUInvalid(cb)
+	storeOff3 := cb.Len()
+	cb.Emit32(0)
+
+	lowPC := cb.Len()
+	cb.PatchUint32(lowOff, arm64Bcond(arm64CondMI, int32(lowPC-lowOff)))
+	emitLoadImm32(cb, 0, 0x80000000)
+	cb.Emit32(arm64SXTW(0, 0))
+	emitSetFPUInvalid(cb)
+
+	storePC := cb.Len()
+	cb.PatchUint32(storeOff1, arm64B(int32(storePC-storeOff1)))
+	cb.PatchUint32(storeOff2, arm64B(int32(storePC-storeOff2)))
+	cb.PatchUint32(storeOff3, arm64B(int32(storePC-storeOff3)))
+	if ji.rd != 0 {
+		dstReg, mapped := ie64ToARM64Reg(ji.rd)
+		if mapped {
+			cb.Emit32(arm64MOV(dstReg, 0))
+		} else {
+			emitStoreSpilledReg(cb, 0, ji.rd)
+		}
 	}
 }
 
@@ -3263,16 +3556,71 @@ func emitFPMemHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, op u
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
-// emitDLOAD / emitDSTORE emit DLOAD/DSTORE as helper-only: the effective
-// address is computed in X0 and the block exits to the Go dispatcher,
-// which performs the 64-bit FP64-pair load/store with interpreter parity.
-// No direct fast path — every access goes through the helper.
 func emitDLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	rsReg := resolveReg(cb, ji.rs, 0)
 	emitLoadImm32(cb, 1, ji.imm32)
 	cb.Emit32(arm64SXTW(1, 1))
 	cb.Emit32(arm64ADD(0, rsReg, 1)) // X0 = rs + sext(imm32)
+
+	if !isValidDPairReg(ji.rd) {
+		emitFPMemHelperExitARM64(cb, ji, instrPC, HELPER_DLOAD, uint32(IE64_SIZE_Q), br, writtenSoFar)
+		return
+	}
+
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
+	mmuHelperOff := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64CMP(0, arm64RegIOStart))
+	slowPathOffset := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64LDR_reg(2, arm64RegMemBase, 0))
+	doneOff1 := cb.Len()
+	cb.Emit32(0)
+
+	slowPathPC := cb.Len()
+	cb.PatchUint32(slowPathOffset, arm64Bcond(arm64CondHS, int32(slowPathPC-slowPathOffset)))
+
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4)))
+	cb.Emit32(arm64SUB_imm(1, 1, 7))
+	cb.Emit32(arm64CMP(0, 1))
+	inRangeOff := cb.Len()
+	cb.Emit32(0)
+	highHelperOff := cb.Len()
+	cb.Emit32(0)
+	inRangePC := cb.Len()
+	cb.PatchUint32(inRangeOff, arm64Bcond(arm64CondLO, int32(inRangePC-inRangeOff)))
+
+	cb.Emit32(arm64LSR_imm(1, 0, 8))
+	cb.Emit32(arm64LDRB_reg(1, arm64RegIOBitmap, 1))
+	cb.Emit32(arm64CBZ(1, 0))
+	nonIOOffset := cb.Len() - 4
+
+	ioHelperOff := cb.Len()
+	cb.Emit32(0)
+
+	nonIOPC := cb.Len()
+	cb.PatchUint32(nonIOOffset, arm64CBZ(1, int32(nonIOPC-nonIOOffset)))
+	cb.Emit32(arm64LDR_reg(2, arm64RegMemBase, 0))
+	doneOff2 := cb.Len()
+	cb.Emit32(0)
+
+	helperPC := cb.Len()
+	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+	cb.PatchUint32(highHelperOff, arm64B(int32(helperPC-highHelperOff)))
+	cb.PatchUint32(ioHelperOff, arm64B(int32(helperPC-ioHelperOff)))
 	emitFPMemHelperExitARM64(cb, ji, instrPC, HELPER_DLOAD, uint32(IE64_SIZE_Q), br, writtenSoFar)
+
+	donePC := cb.Len()
+	cb.PatchUint32(doneOff1, arm64B(int32(donePC-doneOff1)))
+	cb.PatchUint32(doneOff2, arm64B(int32(donePC-doneOff2)))
+
+	emitStoreDPairBits(cb, 2, ji.rd)
+	cb.Emit32(arm64MOV(0, 2))
+	emitSetFPCondCodes64(cb)
 }
 
 func emitDSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
@@ -3280,7 +3628,79 @@ func emitDSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, wri
 	emitLoadImm32(cb, 1, ji.imm32)
 	cb.Emit32(arm64SXTW(1, 1))
 	cb.Emit32(arm64ADD(0, rsReg, 1)) // X0 = rs + sext(imm32)
+
+	if !isValidDPairReg(ji.rd) {
+		emitFPMemHelperExitARM64(cb, ji, instrPC, HELPER_DSTORE, uint32(IE64_SIZE_Q), br, writtenSoFar)
+		return
+	}
+
+	emitLoadDPairBits(cb, 3, ji.rd)
+
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
+	mmuHelperOff := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64CMP(0, arm64RegIOStart))
+	slowPathOffset := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64STR_reg(3, arm64RegMemBase, 0))
+	doneOff1 := cb.Len()
+	cb.Emit32(0)
+
+	slowPathPC := cb.Len()
+	cb.PatchUint32(slowPathOffset, arm64Bcond(arm64CondHS, int32(slowPathPC-slowPathOffset)))
+
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4)))
+	cb.Emit32(arm64SUB_imm(1, 1, 7))
+	cb.Emit32(arm64CMP(0, 1))
+	inRangeOff := cb.Len()
+	cb.Emit32(0)
+	highHelperOff := cb.Len()
+	cb.Emit32(0)
+	inRangePC := cb.Len()
+	cb.PatchUint32(inRangeOff, arm64Bcond(arm64CondLO, int32(inRangePC-inRangeOff)))
+
+	cb.Emit32(arm64LSR_imm(1, 0, 8))
+	cb.Emit32(arm64LDRB_reg(1, arm64RegIOBitmap, 1))
+	cb.Emit32(arm64CBZ(1, 0))
+	nonIOOffset := cb.Len() - 4
+
+	ioHelperOff := cb.Len()
+	cb.Emit32(0)
+
+	nonIOPC := cb.Len()
+	cb.PatchUint32(nonIOOffset, arm64CBZ(1, int32(nonIOPC-nonIOOffset)))
+	cb.Emit32(arm64STR_reg(3, arm64RegMemBase, 0))
+	doneOff2 := cb.Len()
+	cb.Emit32(0)
+
+	helperPC := cb.Len()
+	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+	cb.PatchUint32(highHelperOff, arm64B(int32(helperPC-highHelperOff)))
+	cb.PatchUint32(ioHelperOff, arm64B(int32(helperPC-ioHelperOff)))
 	emitFPMemHelperExitARM64(cb, ji, instrPC, HELPER_DSTORE, uint32(IE64_SIZE_Q), br, writtenSoFar)
+
+	donePC := cb.Len()
+	cb.PatchUint32(doneOff1, arm64B(int32(donePC-doneOff1)))
+	cb.PatchUint32(doneOff2, arm64B(int32(donePC-doneOff2)))
+}
+
+func emitStoreDPairBits(cb *CodeBuffer, srcReg byte, fpIdx byte) {
+	base := fpIdx & 0x0E
+	cb.Emit32(arm64STR_W_imm(srcReg, arm64RegFPUBase, uint32(base)))
+	cb.Emit32(arm64LSR_imm(1, srcReg, 32))
+	cb.Emit32(arm64STR_W_imm(1, arm64RegFPUBase, uint32(base+1)))
+}
+
+func emitLoadDPairBits(cb *CodeBuffer, dstReg byte, fpIdx byte) {
+	base := fpIdx & 0x0E
+	cb.Emit32(arm64LDR_W_imm(dstReg, arm64RegFPUBase, uint32(base)))
+	cb.Emit32(arm64LDR_W_imm(1, arm64RegFPUBase, uint32(base+1)))
+	cb.Emit32(arm64LSL_imm(1, 1, 32))
+	cb.Emit32(arm64ORR(dstReg, dstReg, 1))
 }
 
 // ===========================================================================

@@ -81,6 +81,9 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 	if op == HELPER_NONE {
 		return 0, false
 	}
+	if op <= HELPER_JSR_IND {
+		globalIE64TurboStats.helperExits[op].Add(1)
+	}
 	cpu.jitCtx.NeedHelper = HELPER_NONE
 
 	// Sync host SP back into the architectural register file. The

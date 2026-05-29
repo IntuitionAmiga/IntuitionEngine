@@ -160,6 +160,11 @@ GO_FLAGS := -ldflags "-s -w -X main.Version=$(APP_VERSION) -X main.Commit=$(COMM
 VM_EMBED_TAGS := embed_basic embed_emutos embed_aros
 VM_NOVULKAN_TAGS := novulkan $(VM_EMBED_TAGS)
 
+# All supported amd64 VM builds target x86-64-v3. Keep this exported so
+# Makefile-driven builds/tests match the source-level amd64.v3 guard.
+override GOAMD64 := v3
+export GOAMD64
+
 # Shared VM binary build recipes used by both direct binary checks and releases.
 # $(1) = GOARCH, $(2) = CC, $(3) = CXX, $(4) = extra env, $(5) = output path
 define build-linux-vm-binary
@@ -603,7 +608,7 @@ ab3d2-all:
 	@$(MAKE) ab3d2
 	@$(MAKE) ab3d2-overdrive
 
-# AB3D64 — IE64 source-port of AB3D2 Redux High Overdrive via m68kto64.
+# AB3D64 - IE64 source-port of AB3D2 Redux High Overdrive via m68kto64.
 # Single-variant build; see sdk/ab3d64/README.md and sdk/docs/AB3D64.md.
 ab3d64: m68kto64 ie64asm
 	@$(MAKE) -C sdk/ab3d64 all
@@ -1305,7 +1310,7 @@ iewarp-runtime-assets: sdk-build aros-iewarp-library
 .PHONY: clean-aros
 clean-aros:
 	@if [ ! -d "$(AROS_BUILD_DIR)" ]; then \
-		echo "Nothing to clean — AROS build directory does not exist."; \
+		echo "Nothing to clean - AROS build directory does not exist."; \
 		exit 0; \
 	fi
 	@echo "Cleaning AROS ROM link + module objects..."
@@ -1318,11 +1323,11 @@ clean-aros-all:
 	@RESOLVED=$$(cd "$(AROS_BUILD_DIR)" 2>/dev/null && pwd || echo ""); \
 	SRCBASE=$$(cd "$(AROS_SRC_DIR)" 2>/dev/null && pwd || echo ""); \
 	if [ -z "$$RESOLVED" ]; then \
-		echo "Nothing to clean — AROS build directory does not exist."; \
+		echo "Nothing to clean - AROS build directory does not exist."; \
 		exit 0; \
 	fi; \
 	if [ -z "$$SRCBASE" ] || ! echo "$$RESOLVED" | grep -q "^$$SRCBASE/"; then \
-		echo "Error: AROS_BUILD_DIR ($$RESOLVED) is not under AROS_SRC_DIR ($(AROS_SRC_DIR)) — refusing to delete."; \
+		echo "Error: AROS_BUILD_DIR ($$RESOLVED) is not under AROS_SRC_DIR ($(AROS_SRC_DIR)) - refusing to delete."; \
 		exit 1; \
 	fi; \
 	echo "Removing AROS build directory: $$RESOLVED"; \
@@ -1873,7 +1878,7 @@ sdk-build: ie32asm ie64asm ie32to64 m68kto64 ie64dis
 # $(1) = GOARCH (amd64 or arm64)
 # $(2) = CC
 # $(3) = CXX
-# $(4) = extra env vars (CGO_CFLAGS, PKG_CONFIG_*, etc. — empty for native)
+# $(4) = extra env vars (CGO_CFLAGS, PKG_CONFIG_*, etc. - empty for native)
 define build-linux-release
 	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-linux-$(1); \
 	echo ""; \
@@ -2320,6 +2325,7 @@ help:
 	@echo ""
 	@echo "Build flags:"
 	@echo "  GO_FLAGS       = $(GO_FLAGS)"
+	@echo "  GOAMD64       = $(GOAMD64)"
 	@echo "  NCORES        = $(NCORES)"
 	@echo "  NICE_LEVEL    = $(NICE_LEVEL)"
 	@echo ""

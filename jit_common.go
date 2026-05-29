@@ -556,21 +556,16 @@ func needsFallback(instrs []JITInstr) bool {
 	case OP_SYSCALL, OP_ERET, OP_MTCR, OP_MFCR, OP_TLBFLUSH, OP_TLBINVAL, OP_SMODE,
 		OP_SUAEN, OP_SUADIS:
 		return true
-	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
-		return true
 	}
 	// Full-block scan. The only remaining whole-block bail trigger is an
 	// invalid FPU register encoding (below). The memory and branch opcodes
 	// are NOT block-bail:
 	//
-	// - DLOAD / DSTORE are emitted as helper-only paths (emitDLOAD /
-	//   emitDSTORE -> HELPER_DLOAD / HELPER_DSTORE), serviced per instruction
-	//   by the interpreter memory helpers; they do not force a whole-block
-	//   bail.
-	// - LOAD / STORE / FLOAD / FSTORE (PLAN_MAX_RAM.md slice 8 phase 7): with
-	//   MMU off the emitters use uint32 addressing, correct for the legacy
-	//   32-bit window; with MMU on compileBlockMMU sets mmuBail per
-	//   instruction so each access bails individually to the interpreter.
+	// - LOAD / STORE / FLOAD / FSTORE / DLOAD / DSTORE use native low-RAM
+	//   fast paths and helper exits for MMU/high-address/MMIO cases; they do
+	//   not force a whole-block bail.
+	// - Atomic RMW ops use native non-MMU low-RAM fast paths and interpreter
+	//   exits for MMU, high-address, MMIO, or alignment-trap cases.
 	// - JMP / JSR_IND (PLAN_MAX_RAM.md slice 8 phase 8): emitJMP / emitJSR_IND
 	//   no longer AND the target with the legacy IE64_ADDR_MASK, so jumps
 	//   reach the full uint32 PC; with MMU on compileBlockMMU still bails
@@ -654,6 +649,15 @@ func analyzeBlockRegs(instrs []JITInstr) blockRegs {
 		case OP_STORE:
 			read |= 1 << ji.rs
 			read |= 1 << ji.rd // rd is value to store (read)
+		case OP_CAS:
+			read |= 1 << ji.rs // address base
+			read |= 1 << ji.rt // replacement value
+			read |= 1 << ji.rd // expected value
+			written |= 1 << ji.rd
+		case OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
+			read |= 1 << ji.rs // address base
+			read |= 1 << ji.rt // RMW operand
+			written |= 1 << ji.rd
 		case OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BGT, OP_BLE, OP_BHI, OP_BLS:
 			read |= 1 << ji.rs
 			read |= 1 << ji.rt
@@ -741,6 +745,8 @@ func instrWrittenRegs(ji *JITInstr) uint32 {
 	var w uint32
 	switch ji.opcode {
 	case OP_MOVE, OP_MOVT, OP_MOVEQ, OP_LEA, OP_LOAD:
+		w = 1 << ji.rd
+	case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
 		w = 1 << ji.rd
 	case OP_ADD, OP_SUB, OP_AND64, OP_OR64, OP_EOR,
 		OP_MULU, OP_MULS, OP_DIVU, OP_DIVS, OP_MOD64, OP_MODS, OP_MULHU, OP_MULHS,

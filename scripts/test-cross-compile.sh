@@ -3,6 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+export GOAMD64=v3
+
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags novulkan .
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags novulkan .
 CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags novulkan .

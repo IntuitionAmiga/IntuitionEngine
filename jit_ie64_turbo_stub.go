@@ -22,6 +22,7 @@ type ie64TurboStats struct {
 	turboRejected   atomic.Uint64
 	ioBails         atomic.Uint64
 	invalidations   atomic.Uint64
+	helperExits     [HELPER_JSR_IND + 1]atomic.Uint64
 }
 
 var globalIE64TurboStats ie64TurboStats

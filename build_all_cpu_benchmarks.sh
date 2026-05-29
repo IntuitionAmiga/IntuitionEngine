@@ -6,8 +6,8 @@
 # another machine and run there without a Go toolchain, Vulkan SDK,
 # audio libraries, libc, or the IntuitionEngine source tree.
 #
-# Sister of build_6502_benchmarks.sh — same static-binary recipe, same
-# PGO two-pass option — but the resulting binary contains the full set
+# Sister of build_6502_benchmarks.sh - same static-binary recipe, same
+# PGO two-pass option - but the resulting binary contains the full set
 # of CPU benches the run_all_cpu_benches.sh report consumes.
 #
 # Both interpreter AND JIT benchmarks run in the static binary. JIT
@@ -53,7 +53,7 @@
 #     CGO_ENABLED   0 (default, fully static; JIT still works via
 #                   runtime.asmcgocall) or 1 (dynamic libc).
 #     PGO           1 (default) two-pass profile-guided build:
-#                     pass 1: build unoptimized profiling binary
+#                     pass 1: build unoptimised profiling binary
 #                     pass 2: collect profile across all CPU benches
 #                     pass 3: rebuild with -pgo=<profile>
 #                   0 disables PGO entirely (single-pass).
@@ -68,6 +68,8 @@
 set -eu
 
 cd "$(dirname "$0")"
+
+export GOAMD64=v3
 
 BENCH_BIN="${BENCH_BIN:-./all_cpu_bench.test}"
 BENCH_TAGS="${BENCH_TAGS:-osusergo netgo headless novulkan}"
@@ -134,7 +136,7 @@ else
 
     if [ ! -s "${PGO_PROFILE}" ]; then
         echo "error: ${PGO_PROFILE} is missing or empty after profile run" >&2
-        echo "set PGO=0 to skip PGO and produce a non-optimized binary" >&2
+        echo "set PGO=0 to skip PGO and produce a non-optimised binary" >&2
         exit 1
     fi
     profile_size=$(wc -c < "${PGO_PROFILE}")

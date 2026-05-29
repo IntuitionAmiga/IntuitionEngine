@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"math"
 	"testing"
 )
@@ -44,21 +45,24 @@ func TestJIT_ARM64_DLOAD_HighAddr_SetsHelper(t *testing.T) {
 	}
 }
 
-func TestJIT_ARM64_DLOAD_LowAddr_AlsoHelper(t *testing.T) {
+func TestJIT_ARM64_DLOAD_LowAddr_NoHelper(t *testing.T) {
 	r := newJITTestRig(t)
 	if r.cpu.FPU == nil {
 		t.Skip("FPU not initialised")
 	}
-	r.cpu.regs[2] = 0x4000
+	const addr uint32 = 0x4000
+	const want = -2.5
+	binary.LittleEndian.PutUint64(r.cpu.memory[addr:], math.Float64bits(want))
+	r.cpu.regs[2] = uint64(addr)
 	r.ctx.NeedHelper = HELPER_NONE
 
 	r.compileAndRun(t, ie64Instr(OP_DLOAD, 4, IE64_SIZE_Q, 0, 2, 0, 0))
 
-	if r.ctx.NeedHelper != HELPER_DLOAD {
-		t.Fatalf("NeedHelper = %d, want HELPER_DLOAD (helper-only path)", r.ctx.NeedHelper)
+	if r.ctx.NeedHelper != HELPER_NONE {
+		t.Fatalf("NeedHelper = %d, want HELPER_NONE (low DLOAD should be native)", r.ctx.NeedHelper)
 	}
-	if r.ctx.HelperAddr != 0x4000 {
-		t.Fatalf("HelperAddr = 0x%016X, want 0x4000", r.ctx.HelperAddr)
+	if got := r.cpu.FPU.getDPair(4); got != want {
+		t.Fatalf("D4 = %v, want %v", got, want)
 	}
 }
 
@@ -88,6 +92,27 @@ func TestJIT_ARM64_DSTORE_HighAddr_SetsHelper(t *testing.T) {
 	}
 	if r.ctx.LiveSP != 0xBEEFFEED {
 		t.Fatalf("LiveSP = 0x%016X, want 0xBEEFFEED", r.ctx.LiveSP)
+	}
+}
+
+func TestJIT_ARM64_DSTORE_LowAddr_NoHelper(t *testing.T) {
+	r := newJITTestRig(t)
+	if r.cpu.FPU == nil {
+		t.Skip("FPU not initialised")
+	}
+	const addr uint32 = 0x4000
+	const want = 6.25
+	r.cpu.FPU.setDPair(6, want)
+	r.cpu.regs[2] = uint64(addr)
+	r.ctx.NeedHelper = HELPER_NONE
+
+	r.compileAndRun(t, ie64Instr(OP_DSTORE, 6, IE64_SIZE_Q, 0, 2, 0, 0))
+
+	if r.ctx.NeedHelper != HELPER_NONE {
+		t.Fatalf("NeedHelper = %d, want HELPER_NONE (low DSTORE should be native)", r.ctx.NeedHelper)
+	}
+	if gotBits := binary.LittleEndian.Uint64(r.cpu.memory[addr:]); gotBits != math.Float64bits(want) {
+		t.Fatalf("mem[0x%X] bits = 0x%016X, want 0x%016X", addr, gotBits, math.Float64bits(want))
 	}
 }
 

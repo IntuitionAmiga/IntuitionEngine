@@ -26,6 +26,8 @@ func TestX64LiveMakefileTargets(t *testing.T) {
 		"IEDOOM_IE86 ?= build/iedoom.ie86",
 		"IEDOOM_IE68 ?= build/iedoom.ie68",
 		"IEDOOM_WAD ?= DOOM1.WAD",
+		"override GOAMD64 := v3",
+		"export GOAMD64",
 		"GOOS=linux GOARCH=amd64 GOAMD64=v3 CGO_ENABLED=1",
 		"$(GO) build $(GO_FLAGS) -trimpath -pgo=default.pgo",
 		"-tags \"$(VM_EMBED_TAGS)\"",
@@ -435,7 +437,7 @@ func TestX64LiveHostHelperSecurityContract(t *testing.T) {
 		`HOST_HELPER_PKGS="polkitd,pkexec,ufw,apparmor,apparmor-utils"`,
 		`host_helper=${HOST_HELPER_PKGS}`,
 		`set -- -ehbasic-host -ehbasic-host-appliance`,
-		`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -pgo=off -ldflags "-s -w" -o "$HOST_HELPER_BINARY" ./cmd/host-helper`,
+		`GOAMD64=v3 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -pgo=off -ldflags "-s -w" -o "$HOST_HELPER_BINARY" ./cmd/host-helper`,
 		`--mkdir /usr/libexec`,
 		`--copy-in "${HOST_HELPER_BINARY}:/usr/libexec/"`,
 		`chown root:root /usr/libexec/intuitionengine-host-helper`,
@@ -542,7 +544,7 @@ func TestX64LiveNoShareDoesNotRequireMtools(t *testing.T) {
 		`required_cmds+=(mformat mcopy rsync)`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("build_x64_ie_img.sh missing no-share dependency behavior %q", want)
+			t.Fatalf("build_x64_ie_img.sh missing no-share dependency behaviour %q", want)
 		}
 	}
 }
@@ -715,7 +717,7 @@ func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
 		`mcopy -i "$fat_img" -D A -s "${payload_entries[@]}" ::/`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("build_x64_ie_img.sh missing IESHARE demo payload behavior %q", want)
+			t.Fatalf("build_x64_ie_img.sh missing IESHARE demo payload behaviour %q", want)
 		}
 	}
 }
@@ -734,7 +736,7 @@ func TestX64LivePackagesDocsIntoReleaseArchive(t *testing.T) {
 		`python3 - "$archive_path" "$archive_root" "$(basename "$OUTPUT_IMG")" Docs`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("build_x64_ie_img.sh missing release archive docs behavior %q", want)
+			t.Fatalf("build_x64_ie_img.sh missing release archive docs behaviour %q", want)
 		}
 	}
 }

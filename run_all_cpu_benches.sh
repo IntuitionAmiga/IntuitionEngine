@@ -41,6 +41,8 @@ set -eu
 
 cd "$(dirname "$0")"
 
+export GOAMD64=v3
+
 BENCH_TIME="${BENCH_TIME:-3s}"
 BENCH_COUNT="${BENCH_COUNT:-1}"
 GO_BUILD_TAGS="${GO_BUILD_TAGS:-headless}"
@@ -72,7 +74,7 @@ run_sweep() {
 }
 
 # Pass 1: every backend with default interpreter selection. For 6502
-# this means the asm interpreter (cpu_6502_interp_amd64.s) — its init()
+# this means the asm interpreter (cpu_6502_interp_amd64.s) - its init()
 # enables itself unless IE6502_ASM_INTERP is set to 0/false/off.
 PASS1=$(run_sweep "asm-interp")
 

@@ -220,8 +220,8 @@ func TestNeedsFallback_BranchBlock(t *testing.T) {
 func TestNeedsFallback_AtomicRMW(t *testing.T) {
 	for _, op := range []byte{OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR} {
 		instrs := []JITInstr{{opcode: op}}
-		if !needsFallback(instrs) {
-			t.Fatalf("opcode 0x%02X should need fallback (atomic RMW must stay on interpreter path)", op)
+		if needsFallback(instrs) {
+			t.Fatalf("opcode 0x%02X should not need whole-block fallback; native emitter has slow exits", op)
 		}
 	}
 }

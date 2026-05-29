@@ -8,9 +8,9 @@ Technical reference for the IE64 Just-In-Time compiler. Covers the shared infras
 
 The IE64 JIT compiler translates blocks of IE64 machine code into native ARM64 or x86-64 instructions at runtime, executing them directly on the host CPU. This bypasses the Go interpreter loop and yields significant performance improvements for compute-heavy workloads.
 
-The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and stack addresses, branch targets, and chain targets are all `uint64` — there is no `uint32` truncation. High virtual/physical PCs are scanned and compiled: `scanBlockBus` fetches instruction words through `bus.ReadPhys64WithFault` when the physical address is outside the low `cpu.memory` window, and stops cleanly on an unmapped page. High-address and MMU-on data, FP, and control-flow memory operations, plus unfused stack operations, route through the JITContext helper-exit protocol rather than bailing the whole instruction; the amd64 non-MMU fused JSR/RTS leaf high-SP case is the stack exception because it raw-indexes `[MemBase+SP]` before those guards (see "IE64 JIT 64-bit Execution Model" in `architecture.md` for the authoritative contract). `DLOAD`/`DSTORE` are JIT-emitted through the helper protocol. The remaining interpreter fallbacks are: atomics (always), fused JSR/RTS leaves under MMU (`compileBlockMMU` sets `mmuBail` → `emitBailToInterpreter`), MMU/privilege and transcendental/double opcodes, and any block *fetched from* a high physical PC that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`) — a Phase-4 safety boundary, because the fused/raw stack fast path addresses `[memBase+SP]` directly and a high SP in such a high-PC block could escape `cpu.memory[]`. The low `cpu.memory[]` window is `min(autodetected total guest RAM, busMemCap)` (capped at 256 MiB for IE64); addresses above it cover the guest's full active visible RAM through the bus / `Backing` interface, so JIT-executed code reaches the same address space the interpreter sees.
+The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and stack addresses, branch targets, and chain targets are all `uint64`; there is no `uint32` truncation. High virtual/physical PCs are scanned and compiled: `scanBlockBus` fetches instruction words through `bus.ReadPhys64WithFault` when the physical address is outside the low `cpu.memory` window, and stops cleanly on an unmapped page. High-address and MMU-on data, FP, and control-flow memory operations, plus unfused stack operations, route through the JITContext helper-exit protocol rather than bailing the whole instruction; the amd64 non-MMU fused JSR/RTS leaf high-SP case is the stack exception because it raw-indexes `[MemBase+SP]` before those guards (see "IE64 JIT 64-bit Execution Model" in `architecture.md` for the authoritative contract). `DLOAD`/`DSTORE` use native low-window fast paths and helper exits for MMU/high/MMIO cases. The remaining interpreter fallbacks are: atomics outside aligned non-MMU low-window RAM, fused JSR/RTS leaves under MMU (`compileBlockMMU` sets `mmuBail` for `emitBailToInterpreter`), MMU/privilege and transcendental/double opcodes, and any block *fetched from* a high physical PC that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`). The high-PC stack-op case is a Phase-4 safety boundary, because the fused/raw stack fast path addresses `[memBase+SP]` directly and a high SP in such a high-PC block could escape `cpu.memory[]`. The low `cpu.memory[]` window is `min(autodetected total guest RAM, busMemCap)` (capped at 256 MiB for IE64); addresses above it cover the guest's full active visible RAM through the bus / `Backing` interface, so JIT-executed code reaches the same address space the interpreter sees.
 
-**Supported platforms:** ARM64/Linux, ARM64/macOS, ARM64/Windows, x86-64/Linux, x86-64/macOS, x86-64/Windows
+**Supported platforms:** ARM64/Linux, ARM64/macOS, ARM64/Windows, x86-64-v3/Linux, x86-64-v3/macOS, x86-64-v3/Windows
 
 **Activation:** JIT is enabled by default on supported platforms. Disable with the `-nojit` flag.
 
@@ -212,7 +212,7 @@ On macOS amd64, the allocator uses a simple executable mapping shared by the x86
 
 ## Return-Channel Contract
 
-Every JIT block exit writes two **dedicated** `JITContext` fields — a full 64-bit next PC and a 32-bit retired-instruction count. This replaced the legacy `regs[0]`-packed `nextPC | (count << 32)` format, which truncated the PC to 32 bits.
+Every JIT block exit writes two **dedicated** `JITContext` fields - a full 64-bit next PC and a 32-bit retired-instruction count. This replaced the legacy `regs[0]`-packed `nextPC | (count << 32)` format, which truncated the PC to 32 bits.
 
 ```
 ctx.RetPC    uint64   // next PC after the block exit (full 64-bit)
@@ -354,7 +354,7 @@ In low-window, MMU-off blocks, LOAD and STORE use a two-path strategy:
 
 The dispatcher re-executes the bailing instruction via the interpreter after the block returns.
 
-The direct `[memBase+addr]` fast path is taken only when the MMU is off **and** `addr` is inside the low `cpu.memory` window (size-aware bound `addr <= MemSize - accessBytes`). Otherwise — a high address, or any access while the MMU is on — the emitter takes the JITContext helper exit (`HELPER_LOAD`/`HELPER_STORE` etc.): it writes the request fields, flushes `LiveSP` and `HelperPC`, returns through the epilogue, and the dispatcher services the op via `cpu.loadMem`/`storeMem` (full `uint64` translation + fault semantics) before re-entering the JIT. High-PC code is itself scanned and compiled via the bus fetch path; the one exception is a block fetched from a high physical PC that contains a stack op, which is run through `interpretOne()` (see Overview).
+The direct `[memBase+addr]` fast path is taken only when the MMU is off **and** `addr` is inside the low `cpu.memory` window (size-aware bound `addr <= MemSize - accessBytes`). Otherwise - a high address, or any access while the MMU is on - the emitter takes the JITContext helper exit (`HELPER_LOAD`/`HELPER_STORE` etc.): it writes the request fields, flushes `LiveSP` and `HelperPC`, returns through the epilogue, and the dispatcher services the op via `cpu.loadMem`/`storeMem` (full `uint64` translation + fault semantics) before re-entering the JIT. High-PC code is itself scanned and compiled via the bus fetch path; the one exception is a block fetched from a high physical PC that contains a stack op, which is run through `interpretOne()` (see Overview).
 
 ### Fast MMIO Poll Shortcut
 
@@ -382,16 +382,15 @@ FMOV, FABS, FNEG, FMOVI, FMOVO, FMOVECR, FMOVSR, FMOVCR, FMOVSC, FMOVCC
 Operate on the FP register file (16 x 32-bit at FPUPtr) using integer bit manipulation.
 
 ### Category B: Native FP Instructions
-FADD, FSUB, FMUL, FDIV, FSQRT, FCMP, FCVTIF (native on both platforms)
-FINT, FCVTFI (native on ARM64; bail to interpreter on x86-64)
+FADD, FSUB, FMUL, FDIV, FSQRT, FINT, FCMP, FCVTIF, FCVTFI (native on both platforms)
 
 - **ARM64:** Uses S-register instructions (FADD, FSUB, FRINTN/M/Z/P for FINT, FCVTZS for FCVTFI) via FMOV W<->S transfers
-- **x86-64:** Uses SSE scalar instructions (ADDSS, SUBSS, UCOMISS, CVTSI2SS, etc.) via MOVD XMM<->GPR transfers. FINT bails to interpreter because ROUNDSS requires SSE4.1 which cannot be assumed on all amd64 targets. FCVTFI bails because the interpreter implements saturating conversion with NaN handling and IO exception flags that CVTTSS2SI cannot replicate.
+- **x86-64:** Uses SSE scalar instructions (ADDSS, SUBSS, ROUNDSS, UCOMISS, CVTSI2SS, CVTTSS2SI, etc.) via MOVD XMM<->GPR transfers. AMD64 builds are required to target x86-64-v3 (`GOAMD64=v3`), so SSE4.1 is part of the supported baseline. FCVTFI emits saturating and NaN checks around CVTTSS2SI to preserve interpreter exception behaviour.
 
 ### Category C: Interpreter Bail
 FMOD, FSIN, FCOS, FTAN, FATAN, FLOG, FEXP, FPOW, and all double-precision opcodes (`DMOV` through `FCVTDS`)
 
-The double-precision *arithmetic/conversion* ISA (`DMOV` through `FCVTDS`) is implemented by the interpreter; the JIT emitters bail for those opcodes rather than duplicating the interpreter FPU status, conversion, and memory semantics. `DLOAD` and `DSTORE` are the exception: they are now JIT-emitted through the helper-exit protocol (`HELPER_DLOAD`/`HELPER_DSTORE`), so the dispatcher performs the 64-bit double memory transfer and FP64-pair / condition-code update with interpreter parity. They are no longer in `needsFallback()` and no longer force whole-block fallback.
+The double-precision *arithmetic/conversion* ISA (`DMOV` through `FCVTDS`) is implemented by the interpreter; the JIT emitters bail for those opcodes rather than duplicating the interpreter FPU status, conversion, and memory semantics. `DLOAD` and `DSTORE` are the exception: they are JIT-emitted with native low-window fast paths and helper exits (`HELPER_DLOAD`/`HELPER_DSTORE`) for MMU, high-address, MMIO, or invalid-pair cases. They are no longer in `needsFallback()` and no longer force whole-block fallback.
 
 ---
 
@@ -403,18 +402,15 @@ The JIT falls back to the interpreter in these cases:
 |-----------|-----------|
 | HALT, WAIT, RTI as first instruction | `needsFallback()` in scanner, dispatcher calls `interpretOne()` |
 | HALT, WAIT, RTI mid-block | Emitted as bail-to-interpreter (set NeedIOFallback, epilogue) |
-| High virtual/physical PC | Scanned and compiled via `scanBlockBus` (bus fetch) — **not** a fallback |
+| High virtual/physical PC | Scanned and compiled via `scanBlockBus` (bus fetch) - **not** a fallback |
 | Unmapped physical instruction fetch | Scan/dispatch stops cleanly (`ReadPhys64WithFault` returns `ok=false`) |
-| High-PC block containing a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`) | `highPhys && containsStackOp` → dispatcher runs the block via `interpretOne()` |
-| High address or MMU-on data/stack/FP/control op | JITContext helper exit (serviced by the dispatcher) — **not** a whole-instruction bail |
+| High-PC block containing a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`) | `highPhys && containsStackOp`, so the dispatcher runs the block via `interpretOne()` |
+| High address or MMU-on data/stack/FP/control op | JITContext helper exit (serviced by the dispatcher) - **not** a whole-instruction bail |
 | I/O page memory access | Dual-path: bail to interpreter on I/O bitmap hit |
 | FMOD/transcendentals and double-precision arithmetic/conversion FPU opcodes | Bail to interpreter (DLOAD/DSTORE are JIT-emitted via helper exit, not bailed) |
-| Atomic RMW (CAS, XCHG, FAA, FAND, FOR, FXOR) | Always bail to interpreter (MMU-on and MMU-off; centralised SC semantics) |
-| MODS, MULHU, MULHS | Bail to interpreter |
+| Atomic RMW (CAS, XCHG, FAA, FAND, FOR, FXOR) | Native only for aligned non-MMU low-window RAM; MMU-on, high-address, MMIO, or unaligned cases bail to interpreter |
 | SEI64, CLI64 | Emitted as bail-to-interpreter (`emitBailToInterpreter`) so `interruptEnabled` is mutated; compiling them as NOPs silently dropped the state change under timer-off native execution |
 | MMU/privilege opcodes (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE, SUAEN, SUADIS) | Block terminators; first-instruction fallback in `needsFallback()`, otherwise emitted as bail-to-interpreter |
-| FINT (x86-64 only) | Bail to interpreter (ROUNDSS requires SSE4.1) |
-| FCVTFI (x86-64 only) | Bail to interpreter (saturating + NaN semantics) |
 | ExecMem exhausted | `compileBlock` returns error, dispatcher calls `interpretOne()` |
 | Self-modifying code | `NeedInval` flag, cache + ExecMem reset |
 
@@ -539,7 +535,7 @@ The Call workload is intentionally JIT-hostile: every JSR and RTS terminates the
 
 ## MMU Integration
 
-When the IE64 MMU is enabled (MMU_CTRL bit 0 = 1), the JIT compiler keeps virtual-memory semantics correct by routing memory-touching work through the JITContext helper exit instead of inline `[memBase+addr]` accesses. The native emitters check `ctx.MMUEnabled` (refreshed by the dispatcher before every `callNative`); when it is set, **all** data, stack, FP, and control-flow memory operations take the helper exit, and the dispatcher services them through `cpu.loadMem`/`storeMem` and `cpu.mmuStackRead`/`mmuStackWrite` — the same code paths (and full virtual-address translation, permission checks, and fault semantics) the interpreter uses.
+When the IE64 MMU is enabled (MMU_CTRL bit 0 = 1), the JIT compiler keeps virtual-memory semantics correct by routing memory-touching work through the JITContext helper exit instead of inline `[memBase+addr]` accesses. The native emitters check `ctx.MMUEnabled` (refreshed by the dispatcher before every `callNative`); when it is set, non-atomic data, stack, FP, and control-flow memory operations take the helper exit, and the dispatcher services them through `cpu.loadMem`/`storeMem` and `cpu.mmuStackRead`/`mmuStackWrite`, the same code paths (and full virtual-address translation, permission checks, and fault semantics) the interpreter uses.
 
 ### Helper Exit for Memory Operations Under MMU
 
@@ -552,16 +548,16 @@ The following are routed through the helper exit when the MMU is on (and also wh
 
 These do **not** re-execute through the interpreter as whole instructions; the dispatcher performs only the memory semantic via the shared helpers, advances PC, and re-enters the JIT (see the Return-Channel and `architecture.md` helper-exit description).
 
-Two cases still take a whole-instruction `mmuBail` → `emitBailToInterpreter` under MMU rather than the helper exit:
+Two cases still take a whole-instruction `mmuBail` path to `emitBailToInterpreter` under MMU rather than the helper exit:
 
-- **Atomics** (CAS, XCHG, FAA, FAND, FOR, FXOR) — always bailed, MMU-on or off (see note below).
-- **Fused JSR/RTS leaf markers** — `compileBlockMMU` sets `mmuBail` on them so the raw `[memBase+SP]` fused fast path is suppressed and the guarded `OP_JSR64`/`OP_RTS64` bail path runs instead.
+- **Atomics** (CAS, XCHG, FAA, FAND, FOR, FXOR) - bailed under MMU (see note below).
+- **Fused JSR/RTS leaf markers** - `compileBlockMMU` sets `mmuBail` on them so the raw `[memBase+SP]` fused fast path is suppressed and the guarded `OP_JSR64`/`OP_RTS64` bail path runs instead.
 
 RTI is a block terminator and normally reaches the interpreter through `needsFallback()` when it is the first instruction or through an emitted bail path when it appears after earlier instructions in a block.
 
 Non-memory instructions (ALU, single-precision FPU arithmetic, branches, moves) are compiled to native code where the emitters support them and execute at full JIT speed within the block.
 
-**Note on atomics**: The six atomic memory operations (CAS, XCHG, FAA, FAND, FOR, FXOR) always bail to the interpreter regardless of whether the MMU is enabled. They are infrequent synchronisation operations where correctness outweighs compilation overhead, and the interpreter now owns the canonical sequentially-consistent implementation via `atomicRMW64` in `cpu_ie64.go`. Both JIT backends deliberately preserve that single source of truth rather than growing separate host-atomic sequences with subtly different semantics. The bail applies in both MMU-on and MMU-off modes.
+**Note on atomics**: The six atomic memory operations (CAS, XCHG, FAA, FAND, FOR, FXOR) have native sequentially-consistent fast paths on both JIT backends for aligned, non-MMU, low-window RAM. MMU-on, high-address, MMIO, or unaligned cases bail to the interpreter so `atomicRMW64` remains the canonical trap and bus-semantics implementation.
 
 ### Block Fetch and Page Boundaries
 

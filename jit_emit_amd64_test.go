@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/binary"
+	"math"
 	"runtime"
 	"testing"
 	"unsafe"
@@ -379,6 +380,44 @@ func TestAMD64_MULHU_MULHS(t *testing.T) {
 	r.compileAndRun(t, ie64Instr(OP_MULHS, 1, IE64_SIZE_Q, 0, 2, 3, 0))
 	if r.cpu.regs[1] != ^uint64(0) {
 		t.Fatalf("MULHS R1 = 0x%X, want 0xFFFFFFFFFFFFFFFF", r.cpu.regs[1])
+	}
+}
+
+func TestAMD64_MODS_NativeSizes(t *testing.T) {
+	tests := []struct {
+		name string
+		size byte
+		a    uint64
+		b    uint64
+		want uint64
+	}{
+		{"byte negative", IE64_SIZE_B, 0xFB, 0x03, 0xFE},                               // -5 % 3 = -2
+		{"word negative", IE64_SIZE_W, 0xFED4, 0x0007, 0xFFFA},                         // -300 % 7 = -6
+		{"long negative", IE64_SIZE_L, 0xFFFE7960, 0x0000012C, 0xFFFFFF9C},             // -100000 % 300 = -100
+		{"quad negative", IE64_SIZE_Q, negU64(-10), 3, negU64(-1)},                     // -10 % 3 = -1
+		{"zero divisor", IE64_SIZE_Q, 1234, 0, 0},                                      // defined IE64 behavior
+		{"min overflow pair", IE64_SIZE_Q, uint64(1) << 63, negU64(-1), 0},             // avoid host IDIV trap
+		{"immediate divisor", IE64_SIZE_L, uint64(uint32(negU64(-25))), 7, 0xFFFFFFFC}, // -25 % 7 = -4
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newJITTestRig(t)
+			r.cpu.regs[2] = tt.a
+			r.cpu.regs[3] = tt.b
+			if tt.name == "immediate divisor" {
+				r.compileAndRun(t, ie64Instr(OP_MODS, 1, tt.size, 1, 2, 0, uint32(tt.b)))
+			} else {
+				r.compileAndRun(t, ie64Instr(OP_MODS, 1, tt.size, 0, 2, 3, 0))
+			}
+
+			if r.ctx.NeedIOFallback != 0 {
+				t.Fatalf("NeedIOFallback = %d, want 0 (MODS should be native)", r.ctx.NeedIOFallback)
+			}
+			if r.cpu.regs[1] != tt.want {
+				t.Fatalf("R1 = 0x%016X, want 0x%016X", r.cpu.regs[1], tt.want)
+			}
+		})
 	}
 }
 
@@ -1617,9 +1656,78 @@ func TestAMD64_FCVTIF(t *testing.T) {
 	}
 }
 
-// Note: FCVTFI and FINT bail to interpreter for correctness (saturation/NaN
-// semantics for FCVTFI, SSE4.1 dependency for FINT). Testing these requires
-// the full dispatcher loop which re-executes bailed instructions via interpretOne().
+func TestAMD64_FINT_RoundingModes(t *testing.T) {
+	tests := []struct {
+		name string
+		fpcr uint32
+		in   float32
+		want float32
+	}{
+		{"nearest even", uint32(IE64_FPU_RND_NEAREST), 2.5, 2.0},
+		{"truncate", uint32(IE64_FPU_RND_ZERO), -3.9, -3.0},
+		{"floor", uint32(IE64_FPU_RND_FLOOR), -3.1, -4.0},
+		{"ceil", uint32(IE64_FPU_RND_CEIL), 3.1, 4.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newJITTestRig(t)
+			r.cpu.FPU.FPCR = tt.fpcr
+			r.cpu.FPU.FPRegs[2] = math.Float32bits(tt.in)
+
+			r.compileAndRun(t, ie64Instr(OP_FINT, 1, 0, 0, 2, 0, 0))
+
+			if r.ctx.NeedIOFallback != 0 {
+				t.Fatalf("NeedIOFallback = %d, want 0 (FINT should be native)", r.ctx.NeedIOFallback)
+			}
+			if got := math.Float32frombits(r.cpu.FPU.FPRegs[1]); got != tt.want {
+				t.Fatalf("F1 = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAMD64_FCVTFI_NativeExceptionParity(t *testing.T) {
+	tests := []struct {
+		name     string
+		bits     uint32
+		rd       byte
+		want     uint64
+		wantIO   bool
+		wantKeep uint64
+	}{
+		{"truncate positive", math.Float32bits(42.7), 1, 42, false, 0},
+		{"truncate negative", math.Float32bits(-42.7), 1, negU64(-42), false, 0},
+		{"nan to zero with invalid", 0x7FC00000, 1, 0, true, 0},
+		{"large positive saturates", math.Float32bits(1e20), 1, uint64(math.MaxInt32), true, 0},
+		{"large negative saturates", math.Float32bits(-1e20), 1, negU64(int64(math.MinInt32)), true, 0},
+		{"rd zero still sets invalid", 0x7FC00000, 0, 0, true, 0xCAFE},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newJITTestRig(t)
+			r.cpu.FPU.FPRegs[2] = tt.bits
+			r.cpu.regs[1] = tt.wantKeep
+
+			r.compileAndRun(t, ie64Instr(OP_FCVTFI, tt.rd, 0, 0, 2, 0, 0))
+
+			if r.ctx.NeedIOFallback != 0 {
+				t.Fatalf("NeedIOFallback = %d, want 0 (FCVTFI should be native)", r.ctx.NeedIOFallback)
+			}
+			if tt.rd != 0 && r.cpu.regs[tt.rd] != tt.want {
+				t.Fatalf("R%d = 0x%016X, want 0x%016X", tt.rd, r.cpu.regs[tt.rd], tt.want)
+			}
+			if tt.rd == 0 && r.cpu.regs[1] != tt.wantKeep {
+				t.Fatalf("R1 = 0x%016X, want preserved 0x%016X", r.cpu.regs[1], tt.wantKeep)
+			}
+			gotIO := r.cpu.FPU.FPSR&IE64_FPU_EX_IO != 0
+			if gotIO != tt.wantIO {
+				t.Fatalf("FPSR IO flag = %v, want %v (FPSR=0x%08X)", gotIO, tt.wantIO, r.cpu.FPU.FPSR)
+			}
+		})
+	}
+}
 
 func TestAMD64_FLOAD(t *testing.T) {
 	r := newJITTestRig(t)
@@ -1647,6 +1755,49 @@ func TestAMD64_FSTORE(t *testing.T) {
 	got := binary.LittleEndian.Uint32(r.cpu.memory[addr:])
 	if got != 0x40400000 {
 		t.Fatalf("mem = 0x%08X, want 0x40400000", got)
+	}
+}
+
+func TestAMD64_AtomicLowRAMNative(t *testing.T) {
+	tests := []struct {
+		name    string
+		op      byte
+		initial uint64
+		rd      uint64
+		rt      uint64
+		wantMem uint64
+		wantRd  uint64
+	}{
+		{"cas success", OP_CAS, 0x11, 0x11, 0x22, 0x22, 0x11},
+		{"cas fail", OP_CAS, 0x33, 0x11, 0x22, 0x33, 0x33},
+		{"xchg", OP_XCHG, 0x11, 0, 0x44, 0x44, 0x11},
+		{"faa", OP_FAA, 5, 0, 7, 12, 5},
+		{"fand", OP_FAND, 0xF0F0, 0, 0x0FF0, 0x00F0, 0xF0F0},
+		{"for", OP_FOR, 0x1000, 0, 0x0001, 0x1001, 0x1000},
+		{"fxor", OP_FXOR, 0xAAAA, 0, 0x0F0F, 0xA5A5, 0xAAAA},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newJITTestRig(t)
+			addr := uint32(PROG_START + 0x800)
+			binary.LittleEndian.PutUint64(r.cpu.memory[addr:], tt.initial)
+			r.cpu.regs[1] = tt.rd
+			r.cpu.regs[2] = uint64(addr)
+			r.cpu.regs[3] = tt.rt
+
+			r.compileAndRun(t, ie64Instr(tt.op, 1, IE64_SIZE_Q, 0, 2, 3, 0))
+
+			if r.ctx.NeedIOFallback != 0 {
+				t.Fatalf("NeedIOFallback = %d, want 0 (atomic should be native)", r.ctx.NeedIOFallback)
+			}
+			if got := binary.LittleEndian.Uint64(r.cpu.memory[addr:]); got != tt.wantMem {
+				t.Fatalf("mem = 0x%016X, want 0x%016X", got, tt.wantMem)
+			}
+			if r.cpu.regs[1] != tt.wantRd {
+				t.Fatalf("R1 = 0x%016X, want old value 0x%016X", r.cpu.regs[1], tt.wantRd)
+			}
+		})
 	}
 }
 

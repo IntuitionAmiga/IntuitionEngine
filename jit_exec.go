@@ -78,9 +78,9 @@ func (cpu *CPU64) freeJIT() {
 // them via the interpreter's MMU-aware loadMem/storeMem/mmuStack* helpers).
 // They no longer need a compile-time mmuBail.
 //
-// Atomics (CAS/XCHG/FAA/FAND/FOR/FXOR) remain an explicit interpreter-bail
-// carveout: sequential consistency requires the Go runtime, and no helper
-// op exists for them.
+// Atomics (CAS/XCHG/FAA/FAND/FOR/FXOR) stay on the interpreter path while
+// MMU translation is active; the non-MMU emitters provide native low-RAM
+// sequentially-consistent operations and slow exits for trapping cases.
 //
 // Fused JSR/RTS leaf markers (ie64FusedJSRLeafCall / ie64FusedRTSLeafReturn,
 // set at scan time on amd64) also still bail: their inlined fast path

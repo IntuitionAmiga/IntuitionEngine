@@ -43,6 +43,7 @@ type ie64TurboStats struct {
 	inlinedCalls    atomic.Uint64
 	ioBails         atomic.Uint64
 	invalidations   atomic.Uint64
+	helperExits     [HELPER_JSR_IND + 1]atomic.Uint64
 }
 
 var globalIE64TurboStats ie64TurboStats
@@ -58,10 +59,11 @@ type ie64TurboStatsSnapshot struct {
 	inlinedCalls    uint64
 	ioBails         uint64
 	invalidations   uint64
+	helperExits     [HELPER_JSR_IND + 1]uint64
 }
 
 func ie64TurboStatsLoad() ie64TurboStatsSnapshot {
-	return ie64TurboStatsSnapshot{
+	snap := ie64TurboStatsSnapshot{
 		tier1Blocks:     globalIE64TurboStats.tier1Blocks.Load(),
 		turboCandidates: globalIE64TurboStats.turboCandidates.Load(),
 		turboRegions:    globalIE64TurboStats.turboRegions.Load(),
@@ -73,10 +75,14 @@ func ie64TurboStatsLoad() ie64TurboStatsSnapshot {
 		ioBails:         globalIE64TurboStats.ioBails.Load(),
 		invalidations:   globalIE64TurboStats.invalidations.Load(),
 	}
+	for i := range snap.helperExits {
+		snap.helperExits[i] = globalIE64TurboStats.helperExits[i].Load()
+	}
+	return snap
 }
 
 func (s ie64TurboStatsSnapshot) Sub(base ie64TurboStatsSnapshot) ie64TurboStatsSnapshot {
-	return ie64TurboStatsSnapshot{
+	out := ie64TurboStatsSnapshot{
 		tier1Blocks:     s.tier1Blocks - base.tier1Blocks,
 		turboCandidates: s.turboCandidates - base.turboCandidates,
 		turboRegions:    s.turboRegions - base.turboRegions,
@@ -88,6 +94,10 @@ func (s ie64TurboStatsSnapshot) Sub(base ie64TurboStatsSnapshot) ie64TurboStatsS
 		ioBails:         s.ioBails - base.ioBails,
 		invalidations:   s.invalidations - base.invalidations,
 	}
+	for i := range out.helperExits {
+		out.helperExits[i] = s.helperExits[i] - base.helperExits[i]
+	}
+	return out
 }
 
 func (s ie64TurboStatsSnapshot) Print() {

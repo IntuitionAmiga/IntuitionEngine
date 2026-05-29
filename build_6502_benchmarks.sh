@@ -11,7 +11,7 @@
 #
 # Both the interpreter AND JIT benchmarks run in the static binary. This
 # is possible because the JIT call trampoline (jit_call.go) dispatches
-# through runtime.asmcgocall — the raw g0 stack-switch primitive — rather
+# through runtime.asmcgocall - the raw g0 stack-switch primitive - rather
 # than runtime.cgocall, which has an iscgo guard that fatals in
 # CGO_ENABLED=0 builds. The asm trampolines in jit_call_{amd64,arm64}.s
 # are already written to the asmcgocall contract ("called on the g0
@@ -29,7 +29,7 @@
 #
 # The runner script is intentionally self-contained: bash + awk only, no
 # Python, Go, or codebase dependency. Your friend unpacks the tarball and
-# runs ./run_6502_bench_report.sh — they get both Interpreter and JIT
+# runs ./run_6502_bench_report.sh - they get both Interpreter and JIT
 # columns side by side.
 #
 # Environment variables:
@@ -41,24 +41,26 @@
 #                     binary reaches for libc and the Go linker produces
 #                     a fully static ELF.
 #     CGO_ENABLED   - 0 (default, fully static; JIT still works via
-#                     runtime.asmcgocall) or 1 (dynamically links libc —
+#                     runtime.asmcgocall) or 1 (dynamically links libc -
 #                     not needed for the JIT path since asmcgocall works
 #                     in both modes, but provided as an escape hatch if
 #                     you ever need cgo packages in a future benchmark).
 #     PGO           - 1 (default) two-pass profile-guided build:
-#                       pass 1: build an unoptimized profiling binary
+#                       pass 1: build an unoptimised profiling binary
 #                       pass 2: rebuild with -pgo=<profile>
-#                     0 disables PGO entirely (single-pass, old behavior).
+#                     0 disables PGO entirely (single-pass, old behaviour).
 #     PGO_PROFILE   - path for the collected CPU profile
-#                     (default: ./default.pgo — Go's auto-detected name,
+#                     (default: ./default.pgo - Go's auto-detected name,
 #                     so plain `go build` from the repo also picks it up).
 #     PGO_TIME      - -test.benchtime for the profile-collection run
-#                     (default: 1s — long enough for stable samples,
+#                     (default: 1s - long enough for stable samples,
 #                     short enough to keep two-pass build time reasonable).
 #
 # Exits non-zero if the Go test binary fails to build.
 
 set -eu
+
+export GOAMD64=v3
 
 BENCH_BIN="${BENCH_BIN:-./6502_bench.test}"
 BENCH_TAGS="${BENCH_TAGS:-osusergo netgo headless novulkan}"
@@ -107,7 +109,7 @@ if [ "${PGO}" = "0" ]; then
 else
     # Pass 1: build an unstripped profiling binary. No -ldflags strip
     # here because symbol tables help pprof attribute samples to funcs,
-    # and this binary is throwaway — the final -pgo= build strips.
+    # and this binary is throwaway - the final -pgo= build strips.
     echo "[pgo 1/3] building profiling binary" >&2
     go test \
         -c \
@@ -122,7 +124,7 @@ else
     fi
 
     # Pass 2: collect a representative CPU profile. We run all five
-    # workloads — the profile is one merged sample set that covers the
+    # workloads - the profile is one merged sample set that covers the
     # whole fusion dispatcher, not per-bench profiles. go test accepts
     # PGO pprof output directly via -test.cpuprofile.
     echo "[pgo 2/3] collecting profile from ${PGO_PATTERN} (benchtime=${PGO_TIME})" >&2
@@ -135,7 +137,7 @@ else
 
     if [ ! -s "${PGO_PROFILE}" ]; then
         echo "error: ${PGO_PROFILE} is missing or empty after profile run" >&2
-        echo "set PGO=0 to skip PGO and produce a non-optimized binary" >&2
+        echo "set PGO=0 to skip PGO and produce a non-optimised binary" >&2
         exit 1
     fi
     profile_size=$(wc -c < "${PGO_PROFILE}")

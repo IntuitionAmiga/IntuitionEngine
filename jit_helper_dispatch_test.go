@@ -53,6 +53,7 @@ func TestHandleJITHelper_LOAD_HighAddr_LoadsAndAdvances(t *testing.T) {
 	const highAddr = phase4HighPC + 0x100
 	const want uint64 = 0xCAFEBABEDEADBEEF
 	cpu.bus.WritePhys64WithFault(highAddr, want)
+	before := globalIE64TurboStats.helperExits[HELPER_LOAD].Load()
 
 	cpu.jitCtx.NeedHelper = HELPER_LOAD
 	cpu.jitCtx.HelperAddr = highAddr
@@ -76,6 +77,10 @@ func TestHandleJITHelper_LOAD_HighAddr_LoadsAndAdvances(t *testing.T) {
 	}
 	if cpu.jitCtx.NeedHelper != HELPER_NONE {
 		t.Fatalf("NeedHelper not cleared")
+	}
+	after := globalIE64TurboStats.helperExits[HELPER_LOAD].Load()
+	if after-before != 1 {
+		t.Fatalf("HELPER_LOAD counter delta = %d, want 1", after-before)
 	}
 }
 

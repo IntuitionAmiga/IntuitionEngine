@@ -1621,7 +1621,7 @@ build_host_helper_binary() {
     mkdir -p "$WORK_DIR"
     (
         cd "$SCRIPT_DIR"
-        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -pgo=off -ldflags "-s -w" -o "$HOST_HELPER_BINARY" ./cmd/host-helper
+        GOAMD64=v3 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -pgo=off -ldflags "-s -w" -o "$HOST_HELPER_BINARY" ./cmd/host-helper
     ) 2>&1 | tee -a "$LOG_FILE"
     chmod 0755 "$HOST_HELPER_BINARY"
     if ! file "$HOST_HELPER_BINARY" | grep -q "x86-64"; then

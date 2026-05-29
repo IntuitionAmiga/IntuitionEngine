@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-05-26*
+*Last modified: 2026-05-29*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -463,6 +463,9 @@ flowchart LR
 ## Platform JIT Matrix
 
 The host-side JIT support is intentionally asymmetric and follows the dispatch files, not emitter-file presence:
+all amd64 entries below are supported only as x86-64-v3 builds (`GOAMD64=v3`).
+The Makefile exports that baseline for build and test targets, and
+`require_amd64_v3.go` rejects direct amd64 root-package builds below v3.
 
 | Host platform | JIT-enabled guest cores | Dispatch files |
 |---------------|-------------------------|----------------|
@@ -542,28 +545,33 @@ Interrupt Delivery" section of `IE64_JIT.md` for the full model.
   DLOAD set the destination FP register **and** the FP condition codes; FSTORE
   and DSTORE read the FP register and write memory, leaving FP registers and
   condition codes unchanged -- matching the interpreter in each case.
-- **MMU rule**: when the MMU is enabled, **all** data/stack ops take the helper
-  exit (virtual→physical mapping is not a direct offset). The dispatcher refreshes
-  `ctx.MMUEnabled` before every `callNative` so the native guards are never stale.
+- **MMU rule**: when the MMU is enabled, non-atomic data/stack ops take the
+  helper exit (virtual-to-physical mapping is not a direct offset). The
+  dispatcher refreshes `ctx.MMUEnabled` before every `callNative` so the native
+  guards are never stale.
 - **Fault contract**: the handler sets `cpu.PC = HelperPC` before the operation,
   so `trapFault` records the correct `faultPC`; faulting instructions are not
   counted and re-execute after the trap. Pre-decrement ops (PUSH/JSR/JSR_IND)
   roll the SP back on a trapping fault.
-- **Atomics carve-out**: atomics (CAS/XCHG/FAA/FAND/FOR/FXOR) are an explicit
-  interpreter bail (`compileBlockMMU` sets `mmuBail`) -- sequential consistency
-  requires the Go runtime. `compileBlockMMU` also sets `mmuBail` on fused JSR/RTS
-  leaf markers, so under MMU the `OP_JSR64`/`OP_RTS64` emit takes the `mmuBail`
-  branch to `emitBailToInterpreter` (a whole-instruction interpreter bail with
-  its own fault/accounting path) -- neither the raw fused fast path nor the
-  guarded helper exit runs. In non-MMU mode `mmuBail` is unset, so the raw fused
-  fast path is used (see the fused-leaf high-SP exception above).
+- **Atomics carve-out**: atomics (CAS/XCHG/FAA/FAND/FOR/FXOR) do not use the
+  helper-exit protocol. The native emitters run sequentially-consistent
+  host-atomic fast paths only for aligned, non-MMU, low-window RAM addresses;
+  MMU-on, high-address, MMIO, or unaligned cases bail to the interpreter so the
+  canonical `atomicRMW64` trap and bus semantics apply. `compileBlockMMU` also
+  sets `mmuBail` on fused JSR/RTS leaf markers, so under MMU the `OP_JSR64`/
+  `OP_RTS64` emit takes the `mmuBail` branch to `emitBailToInterpreter` (a
+  whole-instruction interpreter bail with its own fault/accounting path) --
+  neither the raw fused fast path nor the guarded helper exit runs. In non-MMU
+  mode `mmuBail` is unset, so the raw fused fast path is used (see the
+  fused-leaf high-SP exception above).
 
 ## Build Profiles and Observable Runtime
 
 Build tags change host backends, not the guest-visible ISA contract. The main
 guest bus, CPU cores, MMIO register addresses, assemblers, and script binding
 names remain the reference surface unless a specific backend is absent from the
-build.
+build. On amd64, every supported profile is an x86-64-v3 profile; lower
+`GOAMD64` levels are outside the supported build matrix.
 
 | Profile | Build tags / knobs | Runtime effect visible to users |
 |---------|--------------------|---------------------------------|
