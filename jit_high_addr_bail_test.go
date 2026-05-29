@@ -49,8 +49,8 @@ func TestJIT_AMD64_IE64Store_AboveMemSize_BailsToInterpreter(t *testing.T) {
 	// STORE.Q R1, 0(R2)
 	r.compileAndRun(t, ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 2, 0, 0))
 
-	if r.ctx.NeedIOFallback != 1 {
-		t.Fatalf("NeedIOFallback = %d, want 1 (clean bail above MemSize)", r.ctx.NeedIOFallback)
+	if r.ctx.NeedHelper != HELPER_STORE {
+		t.Fatalf("NeedHelper = %d, want HELPER_STORE (clean helper-exit above MemSize)", r.ctx.NeedHelper)
 	}
 }
 
@@ -128,8 +128,8 @@ func TestJIT_AMD64_IE64Store_Above4GiB_MustNotCorrupt(t *testing.T) {
 	if stored != 0 {
 		t.Fatalf("bus.memory[0x%X] = 0x%016X, want 0 (JIT must not alias high store into low memory)", phase1LowAlias, stored)
 	}
-	if r.ctx.NeedIOFallback != 1 {
-		t.Fatalf("NeedIOFallback = %d, want 1", r.ctx.NeedIOFallback)
+	if r.ctx.NeedHelper != HELPER_STORE {
+		t.Fatalf("NeedHelper = %d, want HELPER_STORE", r.ctx.NeedHelper)
 	}
 }
 
@@ -393,9 +393,9 @@ func TestJIT_AMD64_IE64Store_NearEndOfMemory_Bails(t *testing.T) {
 
 			r.compileAndRun(t, ie64Instr(OP_STORE, 1, c.size, 0, 2, 0, 0))
 
-			if r.ctx.NeedIOFallback != 1 {
-				t.Fatalf("size=%s addr=MemSize-%d+1: NeedIOFallback = %d, want 1",
-					c.name, c.bytes, r.ctx.NeedIOFallback)
+			if r.ctx.NeedHelper != HELPER_STORE {
+				t.Fatalf("size=%s addr=MemSize-%d+1: NeedHelper = %d, want HELPER_STORE",
+					c.name, c.bytes, r.ctx.NeedHelper)
 			}
 		})
 	}

@@ -35,11 +35,11 @@ func TestJIT_IE64_LoadStoreAt64MiB(t *testing.T) {
 		}
 		r.ctx.NeedIOFallback = 0
 		r.ctx.NeedHelper = HELPER_NONE
-		// STORE.Q R1, 0(R2) — STORE emitter still uses NeedIOFallback
-		// (rewrite scheduled in a later 5.x cycle).
+		// STORE.Q R1, 0(R2) — Phase 5 cycle 5.5: STORE high-addr also
+		// routes to HELPER_STORE.
 		r.compileAndRun(t, ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 2, 0, 0))
-		if r.ctx.NeedIOFallback != 1 {
-			t.Fatalf("iter %d: store NeedIOFallback = %d, want 1", i, r.ctx.NeedIOFallback)
+		if r.ctx.NeedHelper != HELPER_STORE {
+			t.Fatalf("iter %d: store NeedHelper = %d, want HELPER_STORE", i, r.ctx.NeedHelper)
 		}
 	}
 }

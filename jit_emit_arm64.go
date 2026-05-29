@@ -1822,6 +1822,12 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 		srcReg = 4
 	}
 
+	// Phase 5 cycle 5.5: MMU-on check → helper exit.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
+	mmuHelperOff := cb.Len()
+	cb.Emit32(0) // CBNZ X1, helperLabel
+
 	// Compare address with IO_REGION_START
 	cb.Emit32(arm64CMP(0, arm64RegIOStart))
 
@@ -1841,30 +1847,39 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 		cb.Emit32(arm64STR_reg(srcReg, arm64RegMemBase, 0))
 	}
 
-	// Branch over slow path
-	doneOffset := cb.Len()
-	cb.Emit32(0) // placeholder for B
+	// Branch over slow path / helper to converged done.
+	doneOff1 := cb.Len()
+	cb.Emit32(0) // placeholder B done
 
 	// Slow path: addr >= IO_REGION_START
 	slowPathPC := cb.Len()
 	cb.PatchUint32(slowPathOffset, arm64Bcond(arm64CondHS, int32(slowPathPC-slowPathOffset)))
 
-	// PLAN_MAX_RAM slice 10b: size-aware 64-bit bail. See emitLOAD.
-	emitHighAddrBailCheckARM64(cb, instrPC, ji.pcOffset, br, writtenSoFar, ie64AccessBytes(ji.size))
+	// Size-aware high-addr check → helper exit (was NeedIOFallback).
+	accessBytes := ie64AccessBytes(ji.size)
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4)))
+	if accessBytes > 1 {
+		cb.Emit32(arm64SUB_imm(1, 1, accessBytes-1))
+	}
+	cb.Emit32(arm64CMP(0, 1))
+	inRangeOff := cb.Len()
+	cb.Emit32(0) // placeholder B.LO in_range
+	highHelperOff := cb.Len()
+	cb.Emit32(0) // placeholder B helperLabel
 
-	// Check ioPageBitmap[addr >> 8] — X5 holds IOBitmapPtr (loaded in prologue)
-	cb.Emit32(arm64LSR_imm(1, 0, 8))                 // X1 = addr >> 8
-	cb.Emit32(arm64LDRB_reg(1, arm64RegIOBitmap, 1)) // W1 = ioPageBitmap[page]
-	cb.Emit32(arm64CBZ(1, 0))                        // placeholder: CBZ → non-I/O fast path
+	inRangePC := cb.Len()
+	cb.PatchUint32(inRangeOff, arm64Bcond(arm64CondLO, int32(inRangePC-inRangeOff)))
+
+	// Check ioPageBitmap[addr >> 8].
+	cb.Emit32(arm64LSR_imm(1, 0, 8))
+	cb.Emit32(arm64LDRB_reg(1, arm64RegIOBitmap, 1))
+	cb.Emit32(arm64CBZ(1, 0)) // placeholder CBZ → non-I/O direct store
 	nonIOOffset := cb.Len() - 4
 
-	// I/O page → bail to interpreter (store only regs written so far)
-	cb.Emit32(arm64LDR_imm(0, 31, 96/8))                               // X0 = JITContext ptr
-	emitLoadImm32(cb, 1, 1)                                            // W1 = 1
-	cb.Emit32(arm64STR_W_imm(1, 0, uint32(jitCtxOffNeedIOFallback/4))) // NeedIOFallback = 1
-	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
-	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br) // PC + count
-	emitEpilogue(cb, writtenSoFar, br.used)
+	// I/O page → helper exit.
+	ioHelperOff := cb.Len()
+	cb.Emit32(0) // placeholder B helperLabel
 
 	// Non-I/O page (e.g. VRAM) → direct memory store
 	nonIOPC := cb.Len()
@@ -1880,10 +1895,42 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 	case IE64_SIZE_Q:
 		cb.Emit32(arm64STR_reg(srcReg, arm64RegMemBase, 0))
 	}
+	doneOff2 := cb.Len()
+	cb.Emit32(0) // placeholder B done
 
-	// Patch done branch
+	// Helper exit label.
+	helperPC := cb.Len()
+	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+	cb.PatchUint32(highHelperOff, arm64B(int32(helperPC-highHelperOff)))
+	cb.PatchUint32(ioHelperOff, arm64B(int32(helperPC-ioHelperOff)))
+	emitSTOREHelperExitARM64(cb, ji, instrPC, srcReg, br, writtenSoFar)
+
+	// Converged done label.
 	donePC := cb.Len()
-	cb.PatchUint32(doneOffset, arm64B(int32(donePC-doneOffset)))
+	cb.PatchUint32(doneOff1, arm64B(int32(donePC-doneOff1)))
+	cb.PatchUint32(doneOff2, arm64B(int32(donePC-doneOff2)))
+}
+
+// emitSTOREHelperExitARM64 writes the JITContext HELPER_STORE protocol
+// fields and exits the block. X0 = effective virtual address, srcReg =
+// value to store (already size-masked).
+func emitSTOREHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32) {
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                 // X1 = ctx ptr
+	cb.Emit32(arm64STR_imm(0, 1, uint32(jitCtxOffHelperAddr/8)))         // HelperAddr = X0
+	cb.Emit32(arm64STR_imm(srcReg, 1, uint32(jitCtxOffHelperVal/8)))     // HelperVal
+	emitLoadImm32(cb, 2, uint32(ji.size))                                //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperSize/4)))       // HelperSize
+	emitLoadImm32(cb, 2, uint32(ji.rd))                                  //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperRd/4)))         // HelperRd
+	cb.Emit32(arm64STR_imm(arm64RegIE64SP, 1, uint32(jitCtxOffLiveSP/8))) // LiveSP = X27
+	emitLoadImm64(cb, 2, instrPC)                                        //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))           // HelperPC
+	emitLoadImm32(cb, 2, HELPER_STORE)                                   //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))       // NeedHelper
+
+	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
+	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
 // ===========================================================================

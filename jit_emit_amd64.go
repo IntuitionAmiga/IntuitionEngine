@@ -2260,7 +2260,7 @@ func emitHighAddrBailCheckAMD64(cb *CodeBuffer, instrPC uint64, pcOffset uint32,
 }
 
 func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
-	emitMemAddr(cb, ji)
+	emitMemAddr(cb, ji) // RAX = effective addr (full 64-bit)
 
 	srcReg := resolveRegAMD64(cb, ji.rd, amd64R10)
 	if ji.size != IE64_SIZE_Q {
@@ -2269,31 +2269,91 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 		srcReg = amd64R11
 	}
 
+	// Phase 5 cycle 5.5: MMU-on check. Branch to helper exit if MMU is
+	// active so the interpreter helper translates the virtual address.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
+	mmuHelperOff := amd64Jcc_rel32(cb, amd64CondNE)
+
 	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RegIOStart) // CMP RAX, R8 (64-bit)
 	slowPathOff := amd64Jcc_rel32(cb, amd64CondAE)
 
 	emitMemStore(cb, srcReg, ji.size)
-	doneOff := amd64JMP_rel32(cb)
+	doneOff1 := amd64JMP_rel32(cb)
 
 	slowPathPC := cb.Len()
 	patchRel32(cb, slowPathOff, slowPathPC)
 
-	// PLAN_MAX_RAM slice 10b: see emitLOAD_AMD64 for the rationale.
-	emitHighAddrBailCheckAMD64(cb, instrPC, ji.pcOffset, br, writtenSoFar, ie64AccessBytes(ji.size))
+	// High-addr check → helper exit (was NeedIOFallback).
+	accessBytes := ie64AccessBytes(ji.size)
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize))
+	if accessBytes > 1 {
+		amd64ALU_reg_imm32(cb, 5, amd64RCX, int32(accessBytes-1))
+	}
+	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RCX)
+	inRangeOff := amd64Jcc_rel32(cb, 0x2)
+	highHelperOff := amd64JMP_rel32(cb)
+
+	inRangePC := cb.Len()
+	patchRel32(cb, inRangeOff, inRangePC)
 
 	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
 	if !ok {
 		panic("missing FPBitmapDenseRAM shape")
 	}
 
-	emitIOBail(cb, instrPC, ji.pcOffset, br, writtenSoFar)
+	// Bitmap fell through: I/O page → helper exit.
+	ioHelperOff := amd64JMP_rel32(cb)
 
 	nonIOPC := cb.Len()
 	patchRel32(cb, nonIOOff, nonIOPC)
 	emitMemStore(cb, srcReg, ji.size)
+	doneOff2 := amd64JMP_rel32(cb)
+
+	// Helper exit. All three bail paths converge here.
+	helperPC := cb.Len()
+	patchRel32(cb, mmuHelperOff, helperPC)
+	patchRel32(cb, highHelperOff, helperPC)
+	patchRel32(cb, ioHelperOff, helperPC)
+	emitSTOREHelperExit(cb, ji, instrPC, srcReg, br, writtenSoFar)
 
 	donePC := cb.Len()
-	patchRel32(cb, doneOff, donePC)
+	patchRel32(cb, doneOff1, donePC)
+	patchRel32(cb, doneOff2, donePC)
+}
+
+// emitSTOREHelperExit writes the JITContext HELPER_STORE protocol
+// fields and exits the block. The Go-side dispatcher calls
+// cpu.storeMem(HelperAddr, HelperVal, HelperSize), advances PC, and
+// re-enters the JIT loop.
+//
+// RAX must hold the effective virtual address and srcReg the value.
+// srcReg is one of: a mapped IE64 reg (RBX/RBP/R12/R13/R14), R10
+// (resolveRegAMD64's spilled-fallback scratch when ji.rd is unmapped),
+// or R11 (the size-mask path's copy of srcReg for non-Q stores). The
+// dispatcher's ctx-pointer scratch must therefore avoid colliding with
+// srcReg — otherwise the helper would pass the JITContext address into
+// cpu.storeMem instead of the guest value (P1 data-corruption regression
+// for unmapped STORE.Q sources).
+func emitSTOREHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32) {
+	ctxReg := byte(amd64R10)
+	if srcReg == amd64R10 {
+		ctxReg = amd64R11
+	}
+	amd64MOV_reg_mem(cb, ctxReg, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_mem_reg(cb, ctxReg, int32(jitCtxOffHelperAddr), amd64RAX)
+	amd64MOV_mem_reg(cb, ctxReg, int32(jitCtxOffHelperVal), srcReg)
+	amd64MOV_mem_imm32(cb, ctxReg, int32(jitCtxOffHelperSize), uint32(ji.size))
+	amd64MOV_mem_imm32(cb, ctxReg, int32(jitCtxOffHelperRd), uint32(ji.rd))
+	amd64MOV_mem_reg(cb, ctxReg, int32(jitCtxOffLiveSP), amd64RegIE64SP)
+	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)
+	amd64MOV_mem_reg(cb, ctxReg, int32(jitCtxOffHelperPC), amd64RCX)
+	amd64MOV_mem_imm32(cb, ctxReg, int32(jitCtxOffNeedHelper), HELPER_STORE)
+
+	bailCount := ji.pcOffset / IE64_INSTR_SIZE
+	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
 // emitIOBail emits the I/O bail path.
