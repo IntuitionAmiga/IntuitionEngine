@@ -1527,9 +1527,10 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 	case OP_FSQRT:
 		emitFSQRT_AMD64(cb, ji)
 	case OP_FINT:
-		// emitFINT_AMD64 uses ROUNDSS (SSE4.1). All supported amd64 builds
-		// are forced to GOAMD64=v3/x86-64-v3, so no runtime feature gate is
-		// needed here.
+		// emitFINT_AMD64 uses ROUNDSS (SSE4.1). initJIT refuses to enable the
+		// JIT on hosts without SSE4.1 (checkJITHostFeatures) and falls back to
+		// the interpreter, so the feature is guaranteed here without a per-emit
+		// gate.
 		emitFINT_AMD64(cb, ji)
 	case OP_FCMP:
 		emitFCMP_AMD64(cb, ji)

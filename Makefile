@@ -160,8 +160,11 @@ GO_FLAGS := -ldflags "-s -w -X main.Version=$(APP_VERSION) -X main.Commit=$(COMM
 VM_EMBED_TAGS := embed_basic embed_emutos embed_aros
 VM_NOVULKAN_TAGS := novulkan $(VM_EMBED_TAGS)
 
-# All supported amd64 VM builds target x86-64-v3. Keep this exported so
-# Makefile-driven builds/tests match the source-level amd64.v3 guard.
+# Release amd64 VM builds target x86-64-v3 for the best Go codegen (AVX2/BMI/
+# FMA). This is a perf default, not a hard requirement: the JIT only needs
+# SSE4.1, checked at runtime in checkJITHostFeatures (older hosts fall back to
+# the interpreter), so lower GOAMD64 levels also build and run. Kept exported so
+# Makefile-driven builds/tests are consistent.
 override GOAMD64 := v3
 export GOAMD64
 

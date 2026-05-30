@@ -10,7 +10,7 @@ The IE64 JIT compiler translates blocks of IE64 machine code into native ARM64 o
 
 The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and stack addresses, branch targets, and chain targets are all `uint64`; there is no `uint32` truncation. High virtual/physical PCs are scanned and compiled: `scanBlockBus` fetches instruction words through `bus.ReadPhys64WithFault` when the physical address is outside the low `cpu.memory` window, and stops cleanly on an unmapped page. High-address and MMU-on data, FP, and control-flow memory operations, plus unfused stack operations, route through the JITContext helper-exit protocol rather than bailing the whole instruction; the amd64 non-MMU fused JSR/RTS leaf high-SP case is the stack exception because it raw-indexes `[MemBase+SP]` before those guards (see "IE64 JIT 64-bit Execution Model" in `architecture.md` for the authoritative contract). `DLOAD`/`DSTORE` use native low-window fast paths and helper exits for MMU/high/MMIO cases. The remaining interpreter fallbacks are: atomics outside aligned non-MMU low-window RAM, fused JSR/RTS leaves under MMU (`compileBlockMMU` sets `mmuBail` for `emitBailToInterpreter`), MMU/privilege and transcendental/double opcodes, and any block *fetched from* a high physical PC that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`). The high-PC stack-op case is a Phase-4 safety boundary, because the fused/raw stack fast path addresses `[memBase+SP]` directly and a high SP in such a high-PC block could escape `cpu.memory[]`. The low `cpu.memory[]` window is `min(autodetected total guest RAM, busMemCap)` (capped at 256 MiB for IE64); addresses above it cover the guest's full active visible RAM through the bus / `Backing` interface, so JIT-executed code reaches the same address space the interpreter sees.
 
-**Supported platforms:** ARM64/Linux, ARM64/macOS, ARM64/Windows, x86-64-v3/Linux, x86-64-v3/macOS, x86-64-v3/Windows
+**Supported platforms:** ARM64/Linux, ARM64/macOS, ARM64/Windows, x86-64/Linux, x86-64/macOS, x86-64/Windows (x86-64 requires SSE4.1; release builds target x86-64-v3)
 
 **Activation:** JIT is enabled by default on supported platforms. Disable with the `-nojit` flag.
 
@@ -385,7 +385,7 @@ Operate on the FP register file (16 x 32-bit at FPUPtr) using integer bit manipu
 FADD, FSUB, FMUL, FDIV, FSQRT, FINT, FCMP, FCVTIF, FCVTFI (native on both platforms)
 
 - **ARM64:** Uses S-register instructions (FADD, FSUB, FRINTN/M/Z/P for FINT, FCVTZS for FCVTFI) via FMOV W<->S transfers
-- **x86-64:** Uses SSE scalar instructions (ADDSS, SUBSS, ROUNDSS, UCOMISS, CVTSI2SS, CVTTSS2SI, etc.) via MOVD XMM<->GPR transfers. AMD64 builds are required to target x86-64-v3 (`GOAMD64=v3`), so SSE4.1 is part of the supported baseline. FCVTFI emits saturating and NaN checks around CVTTSS2SI to preserve interpreter exception behaviour.
+- **x86-64:** Uses SSE scalar instructions (ADDSS, SUBSS, ROUNDSS, UCOMISS, CVTSI2SS, CVTTSS2SI, etc.) via MOVD XMM<->GPR transfers. SSE4.1 (ROUNDSS) is the runtime baseline for the amd64 JIT: `initJIT` checks for it (`checkJITHostFeatures`) and, if absent, falls back to the interpreter instead of enabling the JIT. Release builds still target x86-64-v3 (`GOAMD64=v3`) for codegen quality, but lower `GOAMD64` levels build and run fine. FCVTFI emits saturating and NaN checks around CVTTSS2SI to preserve interpreter exception behaviour.
 
 ### Category C: Interpreter Bail
 FMOD, FSIN, FCOS, FTAN, FATAN, FLOG, FEXP, FPOW, and all double-precision opcodes (`DMOV` through `FCVTDS`)

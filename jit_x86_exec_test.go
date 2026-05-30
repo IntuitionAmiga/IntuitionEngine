@@ -643,7 +643,13 @@ func TestX86JIT_Exec_TEST_JZ_Fusion(t *testing.T) {
 
 func TestX86JIT_Available(t *testing.T) {
 	if !x86JitAvailable {
-		t.Error("x86JitAvailable should be true on this platform")
+		// The backend is disabled on hosts lacking LAHF/SAHF (the gate's
+		// intended fallback hardware). Treat that as a skip unless a perf lane
+		// has demanded the native path via IE_REQUIRE_JIT.
+		if requireJIT {
+			t.Fatal("x86JitAvailable is false but IE_REQUIRE_JIT=1 (host lacks LAHF/SAHF?)")
+		}
+		t.Skip("x86 JIT unavailable on this host (no LAHF/SAHF); interpreter fallback in use")
 	}
 }
 

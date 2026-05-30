@@ -462,10 +462,16 @@ flowchart LR
 
 ## Platform JIT Matrix
 
-The host-side JIT support is intentionally asymmetric and follows the dispatch files, not emitter-file presence:
-all amd64 entries below are supported only as x86-64-v3 builds (`GOAMD64=v3`).
-The Makefile exports that baseline for build and test targets, and
-`require_amd64_v3.go` rejects direct amd64 root-package builds below v3.
+The host-side JIT support is intentionally asymmetric and follows the dispatch files, not emitter-file presence.
+Release amd64 builds target x86-64-v3 (`GOAMD64=v3`, the Makefile default) for the
+best Go-compiler codegen (AVX2, BMI1/2, FMA), but this is a recommendation, not a
+hard requirement: the JIT only *requires* SSE4.1, which it emits unconditionally
+for IE64 FINT (ROUNDSS). The amd64 backend detects this at runtime via CPUID; on a
+host without SSE4.1 `initJIT` (via `checkJITHostFeatures`) declines to enable the JIT
+and the CPU falls back to the interpreter rather than aborting, so plain `go run .` /
+`go build` at the default `GOAMD64=v1` works on any x86-64 CPU (older hosts simply run
+interpreted). AVX2/BMI2/LZCNT paths are separately runtime-gated via `x86Host` and are
+never emitted unless the host supports them.
 
 | Host platform | JIT-enabled guest cores | Dispatch files |
 |---------------|-------------------------|----------------|
@@ -570,8 +576,8 @@ Interrupt Delivery" section of `IE64_JIT.md` for the full model.
 Build tags change host backends, not the guest-visible ISA contract. The main
 guest bus, CPU cores, MMIO register addresses, assemblers, and script binding
 names remain the reference surface unless a specific backend is absent from the
-build. On amd64, every supported profile is an x86-64-v3 profile; lower
-`GOAMD64` levels are outside the supported build matrix.
+build. On amd64, release profiles target x86-64-v3 for codegen quality; lower
+`GOAMD64` levels still build and run, with SSE4.1 as the enforced runtime floor.
 
 | Profile | Build tags / knobs | Runtime effect visible to users |
 |---------|--------------------|---------------------------------|

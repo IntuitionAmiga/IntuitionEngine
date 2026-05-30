@@ -8,13 +8,20 @@ package main
 
 // x86HostFeatures records which host CPU extensions are available.
 type x86HostFeatures struct {
-	HasBMI1  bool
-	HasBMI2  bool
-	HasAVX2  bool
-	HasLZCNT bool
-	HasERMS  bool
-	HasFSRM  bool
+	HasSSE41    bool
+	HasLAHFSAHF bool
+	HasBMI1     bool
+	HasBMI2     bool
+	HasAVX2     bool
+	HasLZCNT    bool
+	HasERMS     bool
+	HasFSRM     bool
 }
 
 // x86Host is always empty on non-amd64 platforms.
 var x86Host x86HostFeatures
+
+// checkJITHostFeatures is a no-op on non-amd64 hosts: the x86 SSE4.1
+// requirement only applies to the amd64 JIT backend. The arm64 JIT has no
+// equivalent unconditional feature dependency.
+func checkJITHostFeatures() error { return nil }

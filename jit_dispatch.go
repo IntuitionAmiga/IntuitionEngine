@@ -15,5 +15,11 @@ func (cpu *CPU64) jitExecute() {
 }
 
 func init() {
-	jitAvailable = true
+	// jitAvailable is the single signal main, scripts, benchmarks, and the
+	// IE_REQUIRE_JIT tests use to decide whether the IE64 JIT is usable. Gate it
+	// on the host actually supporting every instruction the JIT emits
+	// unconditionally (amd64: SSE4.1/ROUNDSS; no-op on arm64) so it reflects
+	// reality: on a host that would fall back, jitAvailable is false and callers
+	// never report or rely on JIT.
+	jitAvailable = checkJITHostFeatures() == nil
 }

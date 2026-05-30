@@ -46,6 +46,13 @@ func (cpu *CPU64) initJIT() error {
 	if cpu.jitExecMem != nil {
 		return nil // already initialized
 	}
+	// Bail (to the caller's interpreter fallback) on hosts missing a CPU
+	// feature the JIT emits unconditionally (amd64: SSE4.1/ROUNDSS). No-op on
+	// arm64. Runs only when the JIT is being turned on, so interpreter-only
+	// runs are unaffected; ExecuteJIT turns this error into cpu.Execute().
+	if err := checkJITHostFeatures(); err != nil {
+		return fmt.Errorf("JIT unsupported on this host: %w", err)
+	}
 	execMem, err := AllocExecMem(jitExecMemSize)
 	if err != nil {
 		return fmt.Errorf("JIT init failed: %w", err)
