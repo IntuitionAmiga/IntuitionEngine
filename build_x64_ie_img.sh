@@ -295,7 +295,6 @@ check_live_payload_inputs() {
     payload_require_file "${IEDOOM_WAD_PATH}" "copy DOOM1.WAD into CHOCOLATE_DOOM_DIR" "IEDoom shareware WAD"
 
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/prebuilt/*.ie*" "make sdk-build" "prebuilt Intuition Engine binaries"
-    payload_require_glob "${SCRIPT_DIR}/sdk/examples/prebuilt/coproc_*.ie*" "make sdk-build" "coprocessor support worker binaries"
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/asm/*.asm" "make sdk-build" "SDK assembly source examples"
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/basic/*.bas" "make sdk-build" "SDK BASIC source examples"
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/c/*.c" "make sdk-build" "SDK C source examples"
@@ -420,7 +419,6 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/SDK/Examples/assets/splash_640x92.rgba" "make sdk-build" "staged EhBASIC splash image asset"
     payload_require_file "${payload_root}/SDK/Examples/assets/music/adagioforstrings.mid" "make sdk-build" "staged EhBASIC resonance MIDI asset"
     payload_require_file "${payload_root}/SDK/Examples/assets/resonance_scroll.rgba" "make sdk-build" "staged EhBASIC resonance scroll asset"
-    payload_require_file "${payload_root}/IE/Coproc/coproc_service_ie32.iex" "make sdk-build" "staged IE32 coprocessor worker"
     payload_require_file "${payload_root}/SDK/Include/ie64.inc" "make sdk-build" "staged IE64 include"
     payload_require_file "${payload_root}/SDK/Include/ie64_fp.inc" "make sdk-build" "staged IE64 floating-point include"
     payload_require_file "${payload_root}/SDK/Include/ie65.cfg" "make sdk-build" "staged 6502 linker configuration"
@@ -470,6 +468,16 @@ verify_staged_share_payload() {
     if find "${payload_root}/Demos" -type f -name 'coproc_*.ie*' | grep -q .; then
         log_error "Forbidden live payload location: coproc worker staged under Demos"
         log_error "Producer: build_x64_ie_img.sh stage_share_payload"
+        exit 1
+    fi
+    if find "${payload_root}" -type f \( \
+        -name 'coproc_*.ie*' -o \
+        -name 'rotozoomer_aros_api.ie68' -o \
+        -name 'rotozoomer_aros_hw.ie68' -o \
+        -name 'voodoo_smoketest_*.ie*' \
+    \) | grep -q .; then
+        log_error "Forbidden live payload content: non-user-facing prebuilt .ie* staged under IESHARE"
+        log_error "Expected: coprocessor examples, bare-metal AROS duplicate demos, and smoke tests stay out of IESHARE"
         exit 1
     fi
     if find "${payload_root}/_build" -maxdepth 1 -type f \( -name '*.o' -o -name '*.map' -o -name 'diag_symbols_*.lua' \) | grep -q .; then
@@ -641,15 +649,16 @@ PY
         log_error "Run: make x64-live-demos"
         exit 1
     fi
-    local coproc_files=()
     local emutos_demo_files=()
     local iewarp_worker_files=()
     local prebuilt_file
     for prebuilt_file in "${prebuilt_files[@]}"; do
         case "$(basename "$prebuilt_file")" in
             ehbasic_ie64.ie64) ;;
-            coproc_*.ie*) coproc_files+=("$prebuilt_file") ;;
+            coproc_*.ie*) ;;
             iewarp_service.ie64) iewarp_worker_files+=("$prebuilt_file") ;;
+            rotozoomer_aros_api.ie68|rotozoomer_aros_hw.ie68) ;;
+            voodoo_smoketest_*.ie*) ;;
             *.prg) emutos_demo_files+=("$prebuilt_file") ;;
             *.iex|*.ie32) cp -f "$prebuilt_file" "$demos_ie32_dir/" ;;
             *.ie64) cp -f "$prebuilt_file" "$demos_ie64_dir/" ;;
@@ -663,9 +672,6 @@ PY
                 ;;
         esac
     done
-    if [[ ${#coproc_files[@]} -gt 0 ]]; then
-        cp -f "${coproc_files[@]}" "$coproc_dir/"
-    fi
     if [[ ${#emutos_demo_files[@]} -gt 0 ]]; then
         cp -f "${emutos_demo_files[@]}" "$emutos_demos_dir/"
     fi
@@ -850,10 +856,8 @@ EOF
     cat > "${coproc_dir}/README.TXT" <<'EOF'
 Intuition Engine coprocessor support images
 
-These binaries are support payloads for software that starts coprocessor
-workers. They are resolved relative to the IESHARE root, for example:
-
-IE/Coproc/coproc_service_ie32.iex
+No coprocessor service images are staged here by default. Coprocessor caller
+and service examples are included as source under SDK/Examples/asm.
 EOF
 
     find "$demos_dir" -maxdepth 2 -type f | sort | sed "s#^${payload_root}/#  #" | tee -a "$LOG_FILE"
