@@ -487,6 +487,16 @@ verify_staged_share_payload() {
         log_error "Expected: Systems/AROS/Libs/iewarp_service.ie64"
         exit 1
     fi
+    if find "${payload_root}" -type f \( \
+        -name 'ehbasic_ie64.ie64' -o \
+        -name 'etos256us.img' -o \
+        -name 'emutos.img' -o \
+        -name 'aros-ie-m68k.rom' \
+    \) | grep -q .; then
+        log_error "Forbidden live payload content: embedded boot image staged under IESHARE"
+        log_error "Expected: BASIC, EmuTOS, and AROS boot images are embedded in IntuitionEngine"
+        exit 1
+    fi
     if [[ -e "${payload_root}/Demos/iexec.ie64" ||
           -e "${payload_root}/Demos/IOSSYS" ||
           -e "${payload_root}/SDK/iexec.ie64" ||
@@ -543,6 +553,12 @@ import stat
 import sys
 
 src_root, dst_root = sys.argv[1], sys.argv[2]
+embedded_boot_images = {
+    "aros-ie-m68k.rom",
+    "emutos.img",
+    "etos256us.img",
+    "ehbasic_ie64.ie64",
+}
 
 def choose_name(entries):
     names = [entry.name for entry in entries]
@@ -552,6 +568,9 @@ def choose_name(entries):
     return sorted(names, key=lambda name: (sum(1 for ch in name if ch.isupper()), name.lower(), name))[0]
 
 def copy_group(entries, dst_dir):
+    entries = [entry for entry in entries if entry.name.lower() not in embedded_boot_images]
+    if not entries:
+        return
     dirs = [entry for entry in entries if entry.is_dir(follow_symlinks=False)]
     files = [entry for entry in entries if entry.is_file(follow_symlinks=False)]
     links = [entry for entry in entries if entry.is_symlink()]
@@ -628,6 +647,7 @@ PY
     local prebuilt_file
     for prebuilt_file in "${prebuilt_files[@]}"; do
         case "$(basename "$prebuilt_file")" in
+            ehbasic_ie64.ie64) ;;
             coproc_*.ie*) coproc_files+=("$prebuilt_file") ;;
             iewarp_service.ie64) iewarp_worker_files+=("$prebuilt_file") ;;
             *.prg) emutos_demo_files+=("$prebuilt_file") ;;
