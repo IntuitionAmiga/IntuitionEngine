@@ -266,6 +266,12 @@ repl_immediate:
     jsr     repl_check_transpile
     bnez    r8, repl_do_transpile
 
+    ; Check for ASSEMBLE command (direct-only: assemble NAME.asm from disk to
+    ; NAME.ie64 with the in-guest assembler; general user-asm, not BASIC).
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_check_assemble
+    bnez    r8, repl_do_assemble
+
     ; Native CONT: only when a RUN AOT STOP left a pending continuation
     ; (AOT_CONT_PC != 0). A typed CONT then re-enters the compiled arena. With no
     ; pending continuation, CONT falls through to tokenise + interpreted exec_do_cont.
@@ -618,6 +624,52 @@ repl_do_transpile:
     jsr     print_crlf
     bra     repl_loop
 .transpile_fc:
+    la      r8, repl_msg_fc_in0
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+
+; ============================================================================
+; ASSEMBLE command handler - assemble NAME.asm from disk to NAME.ie64
+; ============================================================================
+; Direct-only. ASSEMBLE "name" reads name.asm (beside the most recently LOADed
+; programme, or the File I/O root), assembles it at PROGRAM_START with the
+; in-guest private assembler and writes name.ie64. The source is general
+; user-written IE64 assembly, independent of any stored BASIC programme, so the
+; stored programme is left untouched and aot_compile_check is not run.
+repl_do_assemble:
+    move.q  r7, #8                      ; skip "ASSEMBLE" in repl_parse_compile_name
+    jsr     repl_parse_compile_name     ; R8: 0=syntax, 1=ok, 2=bad name
+    beqz    r8, .assemble_syntax
+    move.q  r3, #2
+    beq     r8, r3, .assemble_fc
+    ; R8 == 1: FILE_NAME_BUF holds the validated name.ie64 output name.
+    jsr     aot_do_assemble         ; read name.asm, assemble, write name.ie64
+    beqz    r8, repl_loop           ; 0 = success (name.ie64 written)
+    move.q  r3, #2
+    beq     r8, r3, .assemble_oom
+    move.q  r3, #3
+    beq     r8, r3, .assemble_asmerr
+    la      r8, repl_msg_fileerr_in0   ; 4 = file read/write error
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.assemble_oom:
+    la      r8, repl_msg_aot_oom
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.assemble_asmerr:
+    la      r8, repl_msg_aot_asm_err
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.assemble_syntax:
+    la      r8, repl_msg_syntax_in0
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.assemble_fc:
     la      r8, repl_msg_fc_in0
     jsr     print_string
     jsr     print_crlf
@@ -1203,6 +1255,69 @@ repl_check_transpile:
     rts
 
 ; ============================================================================
+; repl_check_assemble - Check if input is "ASSEMBLE" (case-insensitive)
+; ============================================================================
+; Input:  R1 = pointer to input buffer
+; Output: R8 = 1 if ASSEMBLE, 0 otherwise
+; Clobbers: R2, R3
+
+repl_check_assemble:
+    jsr     repl_skip_spaces
+
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x61               ; 'a'
+    bne     r2, r3, .ano
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x73               ; 's'
+    bne     r2, r3, .ano
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x73               ; 's'
+    bne     r2, r3, .ano
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x65               ; 'e'
+    bne     r2, r3, .ano
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6D               ; 'm'
+    bne     r2, r3, .ano
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x62               ; 'b'
+    bne     r2, r3, .ano
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6C               ; 'l'
+    bne     r2, r3, .ano
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x65               ; 'e'
+    bne     r2, r3, .ano
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    beqz    r2, .ayes
+    move.q  r3, #0x20
+    beq     r2, r3, .ayes
+    bra     .ano
+
+.ayes:
+    move.q  r8, #1
+    rts
+.ano:
+    move.q  r8, r0
+    rts
+
+; ============================================================================
 ; repl_parse_compile_name - Parse and validate COMPILE/TRANSPILE "name"
 ; ============================================================================
 ; Copies the quoted filename into FILE_NAME_BUF and validates it. A ".ie64"
@@ -1210,7 +1325,7 @@ repl_check_transpile:
 ;
 ; Input:  BASIC_LINE_BUF contains the COMPILE/TRANSPILE line
 ;         R7 = length of the matched leading keyword to skip (7 for COMPILE,
-;              9 for TRANSPILE)
+;              9 for TRANSPILE, 8 for ASSEMBLE)
 ; Output: R8 = 0 missing argument (syntax error)
 ;              1 valid (FILE_NAME_BUF populated)
 ;              2 bad name (?FC ERROR): empty, absolute, "..", separator, or

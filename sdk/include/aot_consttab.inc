@@ -301,6 +301,8 @@ aot_consttab:
     dc.l FILE_RESULT_LEN
     dc.b 15, "FILE_ERROR_CODE"
     dc.l FILE_ERROR_CODE
+    dc.b 13, "FILE_READ_MAX"
+    dc.l FILE_READ_MAX
     dc.b 12, "FILE_OP_READ"
     dc.l FILE_OP_READ
     dc.b 13, "FILE_OP_WRITE"

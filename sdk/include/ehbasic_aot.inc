@@ -1685,6 +1685,99 @@ aot_line_class:
     move.q  r8, r0
     rts
 
+; aot_inc_class - classify a possible "include" pseudo-op at R8 (the first
+; significant char of a line). The in-guest assembler has the ie64.inc constants
+; baked in via aot_consttab, so a user source that opens with `include "ie64.inc"`
+; is honoured as a no-op (emit nothing); any other include is rejected. Every
+; other directive/mnemonic (incbin, equ, org, macros, conditionals, ...) is not
+; recognised by the assembler and already fails as an unknown mnemonic, so only
+; include needs special handling here.
+; Output: R8 = 0 not an include (assemble the line normally)
+;              1 include "ie64.inc" (recognised no-op)
+;              2 any other / malformed include (assembler error)
+; Clobbers: R1-R4. Preserves R5-R31 (notably R17/R18/R19 in the pass loops).
+aot_inc_class:
+    move.q  r2, r8                 ; working cursor (R8 reused for the result)
+    la      r3, aot_str_kw_include
+.ic_kw:
+    load.b  r4, (r3)
+    beqz    r4, .ic_kw_done
+    load.b  r1, (r2)
+    or.q    r1, r1, #0x20          ; case-insensitive
+    bne     r1, r4, .ic_not
+    add.q   r2, r2, #1
+    add.q   r3, r3, #1
+    bra     .ic_kw
+.ic_kw_done:
+    ; "include" must be followed by whitespace, else it is some other token.
+    load.b  r1, (r2)
+    move.q  r4, #0x20
+    beq     r1, r4, .ic_sp
+    move.q  r4, #0x09
+    beq     r1, r4, .ic_sp
+    bra     .ic_not
+.ic_sp:
+    load.b  r1, (r2)
+    move.q  r4, #0x20
+    beq     r1, r4, .ic_sp_adv
+    move.q  r4, #0x09
+    beq     r1, r4, .ic_sp_adv
+    bra     .ic_q
+.ic_sp_adv:
+    add.q   r2, r2, #1
+    bra     .ic_sp
+.ic_q:
+    move.q  r4, #0x22              ; opening '"'
+    bne     r1, r4, .ic_reject
+    add.q   r2, r2, #1
+    la      r3, aot_str_ie64inc
+.ic_cmp:
+    load.b  r4, (r3)
+    beqz    r4, .ic_cmp_end
+    load.b  r1, (r2)
+    or.q    r1, r1, #0x20
+    bne     r1, r4, .ic_reject
+    add.q   r2, r2, #1
+    add.q   r3, r3, #1
+    bra     .ic_cmp
+.ic_cmp_end:
+    load.b  r1, (r2)               ; must be the closing '"'
+    move.q  r4, #0x22
+    bne     r1, r4, .ic_reject
+    add.q   r2, r2, #1             ; past the closing quote
+.ic_tail:
+    load.b  r1, (r2)               ; only whitespace then end-of-line/comment may follow
+    move.q  r4, #0x20
+    beq     r1, r4, .ic_tail_adv
+    move.q  r4, #0x09
+    beq     r1, r4, .ic_tail_adv
+    beqz    r1, .ic_ok             ; end of text
+    move.q  r4, #0x0A
+    beq     r1, r4, .ic_ok         ; end of line
+    move.q  r4, #0x0D
+    beq     r1, r4, .ic_ok
+    move.q  r4, #0x3B              ; ';' comment
+    beq     r1, r4, .ic_ok
+    bra     .ic_reject             ; trailing junk after include "ie64.inc"
+.ic_tail_adv:
+    add.q   r2, r2, #1
+    bra     .ic_tail
+.ic_ok:
+    move.q  r8, #1
+    rts
+.ic_reject:
+    move.q  r8, #2
+    rts
+.ic_not:
+    move.q  r8, r0
+    rts
+
+aot_str_kw_include:
+    dc.b    "include", 0
+aot_str_ie64inc:
+    dc.b    "ie64.inc", 0
+    align 4
+
 ; aot_asm_program - assemble multi-line asm text into machine code.
 ; Lines are '\n'-separated; the text is null-terminated. Labels ("name:") may
 ; stand alone or precede an instruction. Pass 1 records label addresses; pass 2
@@ -1790,6 +1883,12 @@ aot_asm_program:
     ; fall through to size the instruction/directive
 .p1_instr:
     move.q  r8, r19
+    jsr     aot_inc_class           ; R8: 0 normal, 1 include-noop, 2 reject
+    move.q  r1, #1
+    beq     r8, r1, .p1_loop        ; include "ie64.inc" -> emit nothing
+    move.q  r1, #2
+    beq     r8, r1, .p1_err         ; any other include -> assembler error
+    move.q  r8, r19
     jsr     aot_is_directive        ; R8 = 1 if dc/align
     beqz    r8, .p1_fixed
     ; size the directive by emitting it (lenient) into its real slot
@@ -1853,6 +1952,12 @@ aot_asm_program:
     jsr     aot_scope_enter
     ; fall through to assemble the instruction
 .p2_instr:
+    move.q  r8, r19
+    jsr     aot_inc_class           ; R8: 0 normal, 1 include-noop, 2 reject
+    move.q  r1, #1
+    beq     r8, r1, .p2_loop        ; include "ie64.inc" -> emit nothing
+    move.q  r1, #2
+    beq     r8, r1, .p_err          ; any other include -> assembler error
     move.q  r8, r19
     jsr     aot_is_directive
     move.q  r20, r8                 ; isDirective
@@ -4126,6 +4231,190 @@ aot_emit_uint:
 .eu_done:
     rts
 
+; aot_emit_dcb - append the R10 bytes at R9 to the asm text at R8 as `dc.b` lines
+; (16 decimal values per line), so a binary payload (the fp_print closure, the
+; runtime blob, the tokenised programme) becomes self-contained assembler source.
+; Keeps the text null-terminated. Bounds-checked against AOT_TEXT_END (0 =
+; unbounded). R8 = text cursor (advanced and returned). R9 = source. R10 = count.
+; Output R11 = 1 ok, 0 text overflow. Clobbers R1-R7 (via aot_emit_uint), R13-R15.
+aot_emit_dcb:
+    move.q  r13, r9                ; source cursor
+    move.q  r14, r10               ; remaining bytes
+    move.q  r15, r0                ; values emitted on the current line
+    move.q  r11, #1
+.ed_loop:
+    beqz    r14, .ed_done
+    ; Headroom: a value never needs more than "    dc.b " + "255, " + "\n" + null.
+    la      r1, AOT_TEXT_END
+    load.q  r1, (r1)
+    beqz    r1, .ed_room_ok
+    add.q   r2, r8, #16
+    bgt     r2, r1, .ed_oflow
+.ed_room_ok:
+    bnez    r15, .ed_sep           ; mid-line -> separate from the previous value
+    la      r9, aot_str_dcb_kw     ; start a new "    dc.b " line
+    jsr     aot_emit_str
+    bra     .ed_num
+.ed_sep:
+    move.q  r1, #0x2C              ; ','
+    store.b r1, (r8)
+    add.q   r8, r8, #1
+    move.q  r1, #0x20              ; ' '
+    store.b r1, (r8)
+    add.q   r8, r8, #1
+.ed_num:
+    load.b  r9, (r13)              ; R9 = value for aot_emit_uint
+    jsr     aot_emit_uint
+    add.q   r13, r13, #1
+    sub.q   r14, r14, #1
+    add.q   r15, r15, #1
+    move.q  r1, #16
+    blt     r15, r1, .ed_loop      ; line not yet full
+    move.q  r1, #0x0A              ; end the line
+    store.b r1, (r8)
+    add.q   r8, r8, #1
+    move.q  r15, r0
+    bra     .ed_loop
+.ed_done:
+    beqz    r15, .ed_term          ; terminate a partial final line
+    move.q  r1, #0x0A
+    store.b r1, (r8)
+    add.q   r8, r8, #1
+.ed_term:
+    store.b r0, (r8)               ; keep the text null-terminated
+    rts
+.ed_oflow:
+    move.q  r11, r0
+    store.b r0, (r8)
+    rts
+
+; aot_emit_bundled_data - append the standalone bundled payloads to the
+; transpiled text at R8 as labelled `dc.b` data, in the order the bytes occupy
+; the image: the fp_print closure (PRINT of a number), the runtime blob, then the
+; tokenised programme (READ/DATA). Each section is gated on its AOT_USE_* flag, so
+; a literal-only programme emits nothing. The assembler then resolves fp_print/
+; __rtpay/__rtprog as ordinary forward labels, making the .asm fully self-contained
+; and eliminating COMPILE's sizing pass and address injection. The programme is
+; relocated (next-pointers -> AOT_RT_PROG) into the code buffer (used as scratch
+; before assembly overwrites it) prior to emission. R8 = text cursor in/out.
+; AOT_RT_PROG_LEN must already hold the programme length. AOT_TEXT_END bounds it.
+; Output R11 = 1 ok, 0 text overflow. Clobbers R1-R15.
+aot_emit_bundled_data:
+    move.q  r11, #1
+    ; --- fp_print closure (split so the fp_print label lands at its entry) ---
+    la      r1, AOT_USE_FP
+    load.q  r1, (r1)
+    beqz    r1, .bd_no_fp
+    move.q  r9, #fp_neg
+    move.q  r10, #(fp_print - fp_neg)
+    jsr     aot_emit_dcb
+    beqz    r11, .bd_done
+    la      r9, aot_str_lbl_fp_print
+    jsr     aot_emit_label_chk
+    beqz    r11, .bd_done
+    move.q  r9, #fp_print
+    move.q  r10, #(fp_print_to_buf - fp_print)
+    jsr     aot_emit_dcb
+    beqz    r11, .bd_done
+.bd_no_fp:
+    ; --- runtime blob ---
+    la      r1, AOT_USE_RT
+    load.q  r1, (r1)
+    beqz    r1, .bd_no_rt
+    la      r9, aot_str_lbl_rtpay
+    jsr     aot_emit_label_chk
+    beqz    r11, .bd_done
+    la      r1, AOT_RT_BUF
+    load.q  r9, (r1)
+    la      r1, AOT_RT_LEN
+    load.q  r10, (r1)
+    jsr     aot_emit_dcb
+    beqz    r11, .bd_done
+.bd_no_rt:
+    ; --- tokenised programme (READ/DATA): relocate next-pointers into the code
+    ;     buffer (scratch), then emit ---
+    la      r1, AOT_USE_PROG
+    load.q  r1, (r1)
+    beqz    r1, .bd_done
+    la      r1, AOT_RT_PROG_LEN
+    load.q  r12, (r1)              ; programme length
+    la      r1, AOT_DC_CODE
+    load.q  r13, (r1)              ; scratch base (overwritten by assembly later)
+    la      r1, AOT_CODE_END       ; bound the scratch copy (0 = unbounded)
+    load.q  r2, (r1)
+    beqz    r2, .bd_scratch_ok
+    sub.q   r2, r2, r13            ; scratch capacity
+    bgt     r12, r2, .bd_oflow
+.bd_scratch_ok:
+    move.q  r4, r13
+    move.q  r5, #BASIC_PROG_START
+    move.q  r6, r12
+.bd_copy:
+    beqz    r6, .bd_reloc
+    load.b  r1, (r5)
+    store.b r1, (r4)
+    add.q   r4, r4, #1
+    add.q   r5, r5, #1
+    sub.q   r6, r6, #1
+    bra     .bd_copy
+.bd_reloc:
+    move.q  r6, #AOT_RT_PROG
+    move.q  r5, #BASIC_PROG_START
+    sub.q   r6, r6, r5             ; relocation delta
+    move.q  r4, r13                ; walk = scratch base
+.bd_reloc_loop:
+    load.l  r1, (r4)               ; original next-pointer (0 = end)
+    beqz    r1, .bd_reloc_done
+    add.q   r2, r1, r6
+    store.l r2, (r4)
+    move.q  r5, #BASIC_PROG_START
+    sub.q   r1, r1, r5             ; offset into the programme
+    add.q   r4, r13, r1            ; scratch address of the next record
+    bra     .bd_reloc_loop
+.bd_reloc_done:
+    la      r9, aot_str_lbl_rtprog
+    jsr     aot_emit_label_chk
+    beqz    r11, .bd_done
+    move.q  r9, r13                ; scratch base
+    la      r1, AOT_RT_PROG_LEN
+    load.q  r10, (r1)
+    jsr     aot_emit_dcb
+.bd_done:
+    rts
+.bd_oflow:
+    move.q  r11, r0
+    rts
+
+; aot_emit_label_chk - emit the null-terminated label at R9 to the text at R8,
+; but only if there are >= 16 bytes of headroom before AOT_TEXT_END (0 =
+; unbounded). Used for the bundled-data labels (fp_print/__rtpay/__rtprog), whose
+; aot_emit_str writes would otherwise be unbounded between checked dc.b blocks.
+; R8 advanced. Output R11 = 1 emitted, 0 overflow (nothing emitted). Clobbers R1,R2,R9.
+aot_emit_label_chk:
+    la      r1, AOT_TEXT_END
+    load.q  r1, (r1)
+    beqz    r1, .elc_emit
+    add     r2, r8, #16
+    bgt     r2, r1, .elc_oflow
+.elc_emit:
+    jsr     aot_emit_str
+    move.q  r11, #1
+    rts
+.elc_oflow:
+    move.q  r11, r0
+    store.b r0, (r8)               ; keep the text null-terminated
+    rts
+
+aot_str_dcb_kw:
+    dc.b    "    dc.b ", 0
+aot_str_lbl_fp_print:
+    dc.b    "fp_print:", 0x0A, 0
+aot_str_lbl_rtpay:
+    dc.b    "__rtpay:", 0x0A, 0
+aot_str_lbl_rtprog:
+    dc.b    "__rtprog:", 0x0A, 0
+    align 4
+
 ; ============================================================================
 ; COMPILE write path
 ; ============================================================================
@@ -4538,6 +4827,178 @@ aot_str_asmext:
     dc.b    ".asm", 0
     align 4
 
+; aot_do_assemble - the ASSEMBLE "name" backend: read NAME.asm, assemble it at
+; PROGRAM_START with the in-guest private assembler, and write NAME.ie64. This is
+; a general user-assembly assembler: it assembles self-contained IE64 source
+; (labels, dc.b/w/l/q, align, and ie64.inc named constants resolved through the
+; baked aot_consttab). `include "ie64.inc"` is accepted as a no-op because those
+; constants are already available; any other include, or an unknown directive/
+; mnemonic, is a clean assembler error. It performs no bundling of its own, so it
+; only assembles what the source defines - but because COMPILE/TRANSPILE now emit
+; the runtime blob, fp_print closure and programme as in-source dc.b data (with
+; the fp_print/__rtpay/__rtprog labels), ASSEMBLE reassembles a transpiled .asm
+; into the same image COMPILE writes directly. A handwritten source that merely
+; references __rtpay/__rtprog/fp_print without defining them still fails as an
+; unresolved symbol, like any other. Both files sit beside the most recently
+; LOADed programme (or the File I/O root). FILE_NAME_BUF holds the validated
+; ".ie64" output name on entry. Uses R16; saves/restores callee-saved registers.
+; Source files are limited to just under 1 MiB (AOT_ASM_SRC_CAP); a larger file
+; is refused as a file error, never staged into the compiler workspace.
+; Output R8 = status: 0 success, 2 out of memory, 3 assembler error,
+;                     4 file error (input unreadable, over-large, or unwritable).
+aot_do_assemble:
+    push r14
+    push r17
+    push r18
+    push r19
+    push r20
+    push r21
+    push r22
+    push r23
+    push r24
+    push r25
+    push r26
+    push r27
+    push r28
+    push r29
+    jsr     aot_do_assemble_inner
+    pop r29
+    pop r28
+    pop r27
+    pop r26
+    pop r25
+    pop r24
+    pop r23
+    pop r22
+    pop r21
+    pop r20
+    pop r19
+    pop r18
+    pop r17
+    pop r14
+    rts
+; Maximum ASSEMBLE source size (just under 1 MiB; the source buffer is sized to
+; this and is the topmost low32 allocation, so the File I/O range guard rejects
+; any larger file - see the staging comment below).
+AOT_ASM_SRC_CAP equ 0x100000
+
+aot_do_assemble_inner:
+    jsr     aot_alloc_reset
+    ; Allocate the source-text buffer FIRST so it is the topmost low32 allocation;
+    ; the code and symbol buffers go BELOW it. The read into this buffer is bounded
+    ; at the device by FILE_READ_MAX (set before the OP_READ below), so an over-large
+    ; file is refused before a single byte is staged - that is the real cap. The
+    ; topmost placement is secondary defence: even if the device cap were ever
+    ; bypassed, the read only writes UPWARD from the buffer base and all compiler
+    ; workspace sits strictly BELOW it, so workspace can never be corrupted.
+    move.q  r8, #AOT_ASM_SRC_CAP
+    jsr     aot_alloc_low32
+    bnez    r9, .as_oom
+    la      r1, AOT_DC_TEXT
+    store.q r8, (r1)
+    move.q  r8, #0x18000           ; 96 KiB machine-code buffer (low32, writable)
+    jsr     aot_alloc_low32
+    bnez    r9, .as_oom
+    la      r1, AOT_DC_CODE
+    store.q r8, (r1)
+    add.q   r2, r8, #0x18000
+    la      r1, AOT_CODE_END
+    store.q r2, (r1)               ; bound the buffer so a big source reports OOM
+    move.q  r8, #AOT_SYMTAB_BYTES   ; private-assembler symbol table
+    jsr     aot_alloc64
+    bnez    r9, .as_oom
+    la      r1, AOT_SYMTAB_PTR
+    store.q r8, (r1)
+
+    ; Clear COMPILE bundling state so aot_asm_program injects no helper symbols:
+    ; ASSEMBLE source is self-contained, with no blob, fp_print closure or
+    ; programme appended. __rtpay/__rtprog/fp_print therefore stay unresolved
+    ; unless the source defines them.
+    la      r1, AOT_HELPER_FP
+    store.q r0, (r1)
+    la      r1, AOT_USE_RT
+    store.q r0, (r1)
+    la      r1, AOT_USE_PROG
+    store.q r0, (r1)
+
+    ; Derive NAME.asm (the input) from FILE_NAME_BUF (NAME.ie64), in the source
+    ; directory, exactly where COMPILE/TRANSPILE place their .asm sidecar.
+    jsr     aot_apply_src_dir
+    jsr     aot_make_asm_name       ; AOT_ASM_NAME_BUF = "...asm"
+
+    ; Cap the read at the device BEFORE it copies anything: FILE_READ_MAX makes the
+    ; File I/O device refuse a file larger than the source buffer (room kept for the
+    ; null terminator) without staging a single byte into guest memory, so an
+    ; over-large source cannot overrun the buffer regardless of the active/backing
+    ; RAM relationship. The cap is one-shot (the device consumes it per read).
+    la      r1, FILE_READ_MAX
+    move.q  r2, #(AOT_ASM_SRC_CAP - 1)
+    store.l r2, (r1)
+
+    ; Read NAME.asm into the source buffer via the File I/O MMIO (OP_READ). The
+    ; data pointer is the 32-bit File I/O ABI field; the buffer base is a low32
+    ; allocation (< AOT_LOW32_CAP), so it fits.
+    la      r1, FILE_NAME_PTR
+    la      r2, AOT_ASM_NAME_BUF
+    store.l r2, (r1)
+    la      r1, FILE_DATA_PTR
+    la      r2, AOT_DC_TEXT
+    load.q  r2, (r2)
+    store.l r2, (r1)
+    la      r1, FILE_CTRL
+    move.q  r2, #FILE_OP_READ
+    store.l r2, (r1)
+    la      r1, FILE_STATUS
+    load.l  r1, (r1)
+    bnez    r1, .as_file_err        ; not found, or over the FILE_READ_MAX cap
+
+    ; Defence in depth: FILE_READ_MAX already rejected anything >= the cap, so this
+    ; never trips, but it keeps the terminator write below provably in-bounds.
+    la      r1, FILE_RESULT_LEN
+    load.l  r2, (r1)
+    move.q  r4, #AOT_ASM_SRC_CAP
+    bge     r2, r4, .as_file_err
+
+    ; Null-terminate the source text at buffer + bytesRead so the assembler line
+    ; scanner stops at the end of file.
+    la      r3, AOT_DC_TEXT
+    load.q  r3, (r3)
+    add.q   r3, r3, r2
+    store.b r0, (r3)
+
+    ; Assemble at PROGRAM_START into the code buffer.
+    la      r8, AOT_DC_TEXT
+    load.q  r8, (r8)
+    move.q  r9, #PROGRAM_START
+    la      r1, AOT_DC_CODE
+    load.q  r10, (r1)
+    jsr     aot_asm_program         ; R8=status R9=codeLen
+    move.q  r1, #2
+    beq     r8, r1, .as_oom         ; output overflow
+    beqz    r8, .as_asm_err         ; unknown mnemonic / unresolved symbol / bad operand
+    la      r1, AOT_DC_CLEN
+    store.q r9, (r1)
+
+    ; Write NAME.ie64 (machine code).
+    la      r8, FILE_NAME_BUF
+    la      r1, AOT_DC_CODE
+    load.q  r9, (r1)
+    la      r1, AOT_DC_CLEN
+    load.q  r10, (r1)
+    jsr     aot_file_write
+    bnez    r8, .as_file_err
+    move.q  r8, r0                  ; 0 = success
+    rts
+.as_oom:
+    move.q  r8, #2
+    rts
+.as_asm_err:
+    move.q  r8, #3
+    rts
+.as_file_err:
+    move.q  r8, #4
+    rts
+
 ; aot_do_transpile - the TRANSPILE "name" backend: transpile the stored
 ; programme to IE64 assembly text and write NAME.asm, the first half of COMPILE
 ; with no assembly or NAME.ie64. FILE_NAME_BUF holds the validated ".ie64" name
@@ -4578,11 +5039,20 @@ aot_do_transpile:
     rts
 aot_do_transpile_inner:
     jsr     aot_alloc_reset
-    move.q  r8, #0x10000           ; 64 KiB asm-text buffer (low32, writable)
+    move.q  r8, #0x40000           ; 256 KiB asm-text buffer (holds the self-contained
+                                   ; dc.b'd closure/blob/programme, like COMPILE)
     jsr     aot_alloc_low32
     bnez    r9, .tp_oom
     la      r1, AOT_DC_TEXT
     store.q r8, (r1)
+    move.q  r8, #0x18000           ; 96 KiB scratch buffer for programme relocation
+    jsr     aot_alloc_low32        ; (aot_emit_bundled_data uses AOT_DC_CODE as scratch)
+    bnez    r9, .tp_oom
+    la      r1, AOT_DC_CODE
+    store.q r8, (r1)
+    add.q   r2, r8, #0x18000
+    la      r1, AOT_CODE_END
+    store.q r2, (r1)               ; bound the scratch so a big programme reports OOM
 
     ; Transpile the live programme in standalone mode (ends with halt), exactly
     ; as COMPILE does, so the written asm matches COMPILE's NAME.asm sidecar.
@@ -4590,7 +5060,7 @@ aot_do_transpile_inner:
     la      r1, AOT_DC_TEXT
     load.q  r9, (r1)
     move.q  r10, #1                ; standalone
-    add.q   r11, r9, #0x10000      ; text buffer end (64 KiB)
+    add.q   r11, r9, #0x40000      ; text buffer end (256 KiB)
     jsr     aot_transpile          ; R8=status R9=textLen
     move.q  r1, #2
     beq     r8, r1, .tp_oom        ; text buffer overflow
@@ -4608,11 +5078,40 @@ aot_do_transpile_inner:
     beqz    r1, .tp_file_err
 .tp_rt_present:
 
-    ; Append any source-bundled runtime helpers the programme requested, so the
-    ; emitted asm is the complete COMPILE input text.
+    ; Append any source-bundled runtime helpers the programme requested.
     la      r1, AOT_DC_TEXT
     load.q  r8, (r1)
     jsr     aot_append_helpers     ; R8=buf, R9=len -> R8=new len
+    la      r1, AOT_DC_TLEN
+    store.q r8, (r1)
+
+    ; Compute the bundled programme length (READ/DATA) before emitting it.
+    la      r1, AOT_RT_PROG_LEN
+    store.q r0, (r1)
+    la      r1, AOT_USE_PROG
+    load.q  r1, (r1)
+    beqz    r1, .tp_proglen_done
+    add.q   r1, r16, #ST_PROG_END
+    load.l  r2, (r1)
+    move.q  r3, #BASIC_PROG_START
+    sub.q   r2, r2, r3
+    la      r1, AOT_RT_PROG_LEN
+    store.q r2, (r1)
+.tp_proglen_done:
+
+    ; Emit the bundled payloads (fp_print closure, runtime blob, programme) as
+    ; labelled dc.b data, so the .asm is fully self-contained and reassembles to a
+    ; working image via ASSEMBLE - identical to COMPILE's sidecar.
+    la      r1, AOT_DC_TEXT
+    load.q  r8, (r1)
+    la      r1, AOT_DC_TLEN
+    load.q  r9, (r1)
+    add.q   r8, r8, r9
+    jsr     aot_emit_bundled_data  ; R8 advanced, R11 = 1 ok / 0 overflow
+    beqz    r11, .tp_oom
+    la      r1, AOT_DC_TEXT
+    load.q  r1, (r1)
+    sub.q   r8, r8, r1
     la      r1, AOT_DC_TLEN
     store.q r8, (r1)
 
@@ -4679,7 +5178,10 @@ aot_do_compile:
     rts
 aot_do_compile_inner:
     jsr     aot_alloc_reset
-    move.q  r8, #0x10000           ; 64 KiB asm-text buffer (low32, writable)
+    move.q  r8, #0x40000           ; 256 KiB asm-text buffer (low32, writable): holds
+                                   ; the user code plus the fp_print closure, runtime
+                                   ; blob (~34 KiB -> ~190 KiB as dc.b) and programme
+                                   ; emitted as self-contained dc.b data.
     jsr     aot_alloc_low32
     bnez    r9, .dc_oom
     la      r1, AOT_DC_TEXT
@@ -4709,7 +5211,7 @@ aot_do_compile_inner:
     la      r1, AOT_DC_TEXT
     load.q  r9, (r1)
     move.q  r10, #1                ; standalone
-    add.q   r11, r9, #0x10000      ; text buffer end (64 KiB)
+    add.q   r11, r9, #0x40000      ; text buffer end (256 KiB)
     jsr     aot_transpile          ; R8=status R9=textLen
     move.q  r1, #2
     beq     r8, r1, .dc_oom        ; text buffer overflow
@@ -4759,186 +5261,44 @@ aot_do_compile_inner:
     la      r1, AOT_RT_PROG_LEN
     store.q r2, (r1)
 .dc_proglen_done:
-    la      r1, AOT_USE_FP
+    ; Emit the bundled payloads (fp_print closure, runtime blob, tokenised
+    ; programme) into the text as labelled dc.b data, so the assembler resolves
+    ; fp_print/__rtpay/__rtprog as ordinary forward labels. This makes the .asm
+    ; fully self-contained and removes the old sizing pass + address injection.
+    la      r1, AOT_DC_TEXT
+    load.q  r8, (r1)
+    la      r1, AOT_DC_TLEN
+    load.q  r9, (r1)
+    add.q   r8, r8, r9             ; cursor = end of the helper-appended text
+    jsr     aot_emit_bundled_data  ; R8 advanced, R11 = 1 ok / 0 overflow
+    beqz    r11, .dc_oom
+    la      r1, AOT_DC_TEXT
     load.q  r1, (r1)
-    la      r2, AOT_USE_RT
-    load.q  r2, (r2)
-    or.q    r3, r1, r2
-    beqz    r3, .dc_assemble       ; neither bundle -> single assembly at PROGRAM_START
-    beqz    r1, .dc_prov_nofp      ; fp_print placeholder address (sizing only)
+    sub.q   r8, r8, r1
+    la      r1, AOT_DC_TLEN
+    store.q r8, (r1)               ; full self-contained text length (for the .asm)
+
+    ; The text now defines fp_print/__rtpay/__rtprog, so disable the assembler's
+    ; symbol injection (it would otherwise duplicate those labels).
     la      r1, AOT_HELPER_FP
-    move.q  r2, #1
-    store.q r2, (r1)
-    la      r1, AOT_HELPER_FP_ADDR
-    move.q  r2, #PROGRAM_START
-    store.q r2, (r1)
-.dc_prov_nofp:
-    la      r1, AOT_DC_TEXT
-    load.q  r8, (r1)
-    move.q  r9, #PROGRAM_START
-    la      r1, AOT_DC_CODE
-    load.q  r10, (r1)
-    jsr     aot_asm_program        ; R8=status R9=userLen
-    move.q  r1, #2
-    beq     r8, r1, .dc_oom
-    beqz    r8, .dc_asm_err
-    move.q  r29, r9                ; userLen (survives the copies below)
-    la      r1, AOT_USE_FP
-    load.q  r1, (r1)
-    beqz    r1, .dc_no_fpcopy
-    ; Bounds-check user code + closure against the code buffer capacity.
-    move.q  r2, #(fp_print_to_buf - fp_neg)
-    add.q   r2, r2, r29            ; userLen + closureLen
-    la      r1, AOT_CODE_END
-    load.q  r1, (r1)
-    la      r3, AOT_DC_CODE
-    load.q  r3, (r3)
-    sub.q   r1, r1, r3             ; buffer capacity
-    bgt     r2, r1, .dc_oom
-    ; Copy the position-independent closure to code_buf + userLen.
-    la      r1, AOT_DC_CODE
-    load.q  r4, (r1)
-    add.q   r4, r4, r29
-    move.q  r5, #fp_neg
-    move.q  r3, #(fp_print_to_buf - fp_neg)
-.dc_fp_copy:
-    beqz    r3, .dc_fp_copied
-    load.b  r1, (r5)
-    store.b r1, (r4)
-    add.q   r4, r4, #1
-    add.q   r5, r5, #1
-    sub.q   r3, r3, #1
-    bra     .dc_fp_copy
-.dc_fp_copied:
-    ; fp_print link address = PROGRAM_START + userLen + (fp_print - fp_neg).
-    move.q  r2, r29
-    add.q   r2, r2, #PROGRAM_START
-    add.q   r2, r2, #(fp_print - fp_neg)
-    la      r1, AOT_HELPER_FP_ADDR
-    store.q r2, (r1)
-    move.q  r2, #(fp_print_to_buf - fp_neg)
-    la      r1, AOT_HELPER_LEN
-    store.q r2, (r1)
-.dc_no_fpcopy:
-    ; Runtime-blob payload address = PROGRAM_START + userLen + closureLen (the blob is
-    ; appended after the user code and the fp_print closure). Injected as __rtpay for
-    ; the real assembly so the bootstrap's copy source resolves correctly.
+    store.q r0, (r1)
     la      r1, AOT_USE_RT
-    load.q  r1, (r1)
-    beqz    r1, .dc_assemble
-    move.q  r2, r29
-    add.q   r2, r2, #PROGRAM_START
-    la      r1, AOT_HELPER_LEN
-    load.q  r3, (r1)
-    add.q   r2, r2, r3             ; + closureLen
-    la      r1, AOT_RT_PAYLOAD
-    store.q r2, (r1)               ; R2 = blob payload address
-    ; Programme payload (if bundled) = blob payload + blobLen (appended after the blob).
+    store.q r0, (r1)
     la      r1, AOT_USE_PROG
-    load.q  r1, (r1)
-    beqz    r1, .dc_assemble
-    la      r1, AOT_RT_LEN
-    load.q  r3, (r1)
-    add.q   r2, r2, r3             ; + blobLen
-    la      r1, AOT_RT_PROG_PAY
-    store.q r2, (r1)
-.dc_assemble:
-    ; Assemble at link base PROGRAM_START (the standalone image entry point).
+    store.q r0, (r1)
+
+    ; Assemble once at link base PROGRAM_START (the standalone image entry point).
+    ; The returned length already covers the user code plus the dc.b'd closure,
+    ; blob and programme, so it is the complete image length.
     la      r1, AOT_DC_TEXT
     load.q  r8, (r1)
     move.q  r9, #PROGRAM_START
     la      r1, AOT_DC_CODE
     load.q  r10, (r1)
-    jsr     aot_asm_program        ; R8=status R9=userLen
+    jsr     aot_asm_program        ; R8=status R9=imageLen
     move.q  r1, #2
     beq     r8, r1, .dc_oom        ; code buffer overflow
     beqz    r8, .dc_asm_err
-    ; Total = user code length + fp_print closure length.
-    la      r1, AOT_HELPER_LEN
-    load.q  r2, (r1)
-    add.q   r9, r9, r2
-    ; Append the runtime blob payload (if used) at code_buf + total, then add its
-    ; length, so the image carries the blob and is fully self-contained at run time.
-    la      r1, AOT_USE_RT
-    load.q  r1, (r1)
-    beqz    r1, .dc_no_blob
-    la      r1, AOT_RT_LEN
-    load.q  r3, (r1)
-    add.q   r4, r9, r3             ; total + blobLen
-    la      r1, AOT_CODE_END
-    load.q  r1, (r1)
-    la      r5, AOT_DC_CODE
-    load.q  r5, (r5)
-    sub.q   r1, r1, r5             ; capacity
-    bgt     r4, r1, .dc_oom
-    la      r1, AOT_DC_CODE
-    load.q  r4, (r1)
-    add.q   r4, r4, r9             ; dest = code_buf + total
-    la      r1, AOT_RT_BUF
-    load.q  r5, (r1)               ; src = blob staging buffer
-    la      r1, AOT_RT_LEN
-    load.q  r3, (r1)               ; count
-.dc_blob_copy:
-    beqz    r3, .dc_blob_copied
-    load.b  r1, (r5)
-    store.b r1, (r4)
-    add.q   r4, r4, #1
-    add.q   r5, r5, #1
-    sub.q   r3, r3, #1
-    bra     .dc_blob_copy
-.dc_blob_copied:
-    la      r1, AOT_RT_LEN
-    load.q  r2, (r1)
-    add.q   r9, r9, r2             ; total += blobLen
-    ; Append the bundled tokenised programme (READ/DATA) at code_buf + total, copying
-    ; the contiguous line records from BASIC_PROG_START and relocating their next-
-    ; pointers to AOT_RT_PROG (where the bootstrap copies them at run time).
-    la      r1, AOT_USE_PROG
-    load.q  r1, (r1)
-    beqz    r1, .dc_no_blob
-    la      r1, AOT_RT_PROG_LEN
-    load.q  r3, (r1)
-    add.q   r4, r9, r3             ; total + progLen
-    la      r1, AOT_CODE_END
-    load.q  r1, (r1)
-    la      r5, AOT_DC_CODE
-    load.q  r5, (r5)
-    sub.q   r1, r1, r5             ; capacity
-    bgt     r4, r1, .dc_oom
-    la      r1, AOT_DC_CODE
-    load.q  r4, (r1)
-    add.q   r4, r4, r9             ; dest = code_buf + total
-    move.q  r12, r4                ; R12 = programme payload base (for relocation)
-    move.q  r5, #BASIC_PROG_START  ; src = the live tokenised programme
-    la      r1, AOT_RT_PROG_LEN
-    load.q  r3, (r1)               ; count
-.dc_prog_copy:
-    beqz    r3, .dc_prog_copied
-    load.b  r1, (r5)
-    store.b r1, (r4)
-    add.q   r4, r4, #1
-    add.q   r5, r5, #1
-    sub.q   r3, r3, #1
-    bra     .dc_prog_copy
-.dc_prog_copied:
-    move.q  r6, #AOT_RT_PROG       ; relocation delta = AOT_RT_PROG - BASIC_PROG_START
-    move.q  r7, #BASIC_PROG_START
-    sub.q   r6, r6, r7
-    move.q  r4, r12                ; walk = payload base
-.dc_prog_reloc:
-    load.l  r1, (r4)               ; original next-pointer (0 = end)
-    beqz    r1, .dc_prog_reloc_done
-    add.q   r2, r1, r6             ; relocated next-pointer
-    store.l r2, (r4)
-    move.q  r5, #BASIC_PROG_START
-    sub.q   r1, r1, r5             ; offset into the programme
-    add.q   r4, r12, r1            ; payload address of the next record
-    bra     .dc_prog_reloc
-.dc_prog_reloc_done:
-    la      r1, AOT_RT_PROG_LEN
-    load.q  r2, (r1)
-    add.q   r9, r9, r2             ; total += progLen
-.dc_no_blob:
     la      r1, AOT_DC_CLEN
     store.q r9, (r1)
 

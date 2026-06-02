@@ -52,6 +52,7 @@ The block starts at `$F2200` and spans `32` bytes. Registers are
 | `$F2210` | `FILE_STATUS`     | R      | `0` OK, `1` error |
 | `$F2214` | `FILE_RESULT_LEN` | R      | Bytes transferred by read or list |
 | `$F2218` | `FILE_ERROR_CODE` | R      | Error code |
+| `$F221C` | `FILE_READ_MAX`   | W      | One-shot read cap; `0` is unbounded |
 
 `FILE_CTRL` fires the operation immediately. There is no busy bit
 and no interrupt. When the write to `FILE_CTRL` returns, the
@@ -102,6 +103,15 @@ still contains the length from an earlier write. On a successful read,
 `FILE_RESULT_LEN` is the actual number of bytes copied. If the name is
 accepted but the read itself fails, `FILE_RESULT_LEN` is cleared to
 `0`; use `FILE_STATUS` and `FILE_ERROR_CODE` as the final error test.
+
+`FILE_READ_MAX` is an optional read cap. By default it is `0`, which
+means unbounded: a read transfers the whole file. If you write a
+non-zero byte count to `FILE_READ_MAX` before triggering a read, a file
+larger than that count is refused with `FILE_ERR_RANGE` and **no bytes
+are copied** into the buffer, so a caller can bound a read to its own
+buffer size without first knowing the file length. The cap is one-shot:
+each read consumes it (it resets to `0`), so it applies only to the very
+next read and never leaks into a later one. Writes and lists ignore it.
 
 The read is refused with `FILE_ERR_RANGE` if the destination span would
 reach `$FFFF0000`, wrap the `32`-bit address field, or run past active

@@ -2167,6 +2167,9 @@ FILE_CTRL         equ 0xF220C               ; 1=READ, 2=WRITE, 3=LIST (W trigger
 FILE_STATUS       equ 0xF2210               ; 0=OK, 1=ERROR (R)
 FILE_RESULT_LEN   equ 0xF2214               ; Bytes actually read (R)
 FILE_ERROR_CODE   equ 0xF2218               ; 0=OK, 1=NOT_FOUND, 2=PERMISSION, 3=TRAVERSAL (R)
+FILE_READ_MAX     equ 0xF221C               ; W: nonzero caps the next READ to this many
+                                            ; bytes (file larger -> FILE_ERR_RANGE, no copy);
+                                            ; consumed per read, 0 = unbounded (default)
 
 FILE_OP_READ      equ 1
 FILE_OP_WRITE     equ 2

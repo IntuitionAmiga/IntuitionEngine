@@ -306,6 +306,7 @@ and `HITCLR`.
 | `+$10` | `FILE_STATUS`. |
 | `+$14` | `FILE_RESULT_LEN` (actual read/list byte count; `0` after accepted-path read failure). |
 | `+$18` | `FILE_ERROR_CODE`. |
+| `+$1C` | `FILE_READ_MAX` (one-shot read cap in bytes; larger file refused with no copy; `0` unbounded). |
 
 `FILE_ERROR_CODE` values:
 

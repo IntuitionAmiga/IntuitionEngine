@@ -1756,6 +1756,276 @@ func TestREPL_Transpile(t *testing.T) {
 	}
 }
 
+// TestREPL_CompileTranspileAssemble_RoundTrip proves the self-contained .asm is a
+// true source artifact: for a programme that needs the runtime blob (variables)
+// and the fp_print closure (PRINT of a number), TRANSPILE then ASSEMBLE produces
+// the same .ie64 image as COMPILE does directly. This exercises the full
+// pipeline split (transpile -> assemble) on the case that previously could not
+// round-trip, because the blob/closure/programme are now inlined as dc.b data.
+func TestREPL_CompileTranspileAssemble_RoundTrip(t *testing.T) {
+	asmBin := buildAssembler(t)
+
+	prog := []string{
+		`10 DIM A(3)`,
+		`20 FOR I = 0 TO 3`,
+		`30 A(I) = I * I`,
+		`40 PRINT A(I)`,
+		`50 NEXT I`,
+		`60 DATA 7, 8, 9`,
+		`70 READ X`,
+		`80 PRINT X`,
+	}
+
+	// COMPILE: the reference image and its self-contained sidecar.
+	dir := t.TempDir()
+	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, l := range prog {
+		storeLine(t, h, l)
+	}
+	if out := h.runCommand(`COMPILE "ref"`); strings.Contains(out, "ERROR") {
+		t.Fatalf("COMPILE failed: %q", out)
+	}
+	wantIe64, err := os.ReadFile(filepath.Join(dir, "ref.ie64"))
+	if err != nil {
+		t.Fatalf("COMPILE ref.ie64 not written: %v", err)
+	}
+
+	// TRANSPILE the same programme to a separate name, then ASSEMBLE that .asm.
+	if out := h.runCommand(`TRANSPILE "rt"`); strings.Contains(out, "ERROR") {
+		t.Fatalf("TRANSPILE failed: %q", out)
+	}
+	if out := h.runCommand(`ASSEMBLE "rt"`); strings.Contains(out, "ERROR") {
+		t.Fatalf("ASSEMBLE of transpiled .asm failed: %q", out)
+	}
+	gotIe64, err := os.ReadFile(filepath.Join(dir, "rt.ie64"))
+	if err != nil {
+		t.Fatalf("ASSEMBLE did not write rt.ie64: %v", err)
+	}
+
+	if !bytes.Equal(gotIe64, wantIe64) {
+		t.Fatalf("TRANSPILE+ASSEMBLE image differs from COMPILE: got %d bytes, want %d bytes",
+			len(gotIe64), len(wantIe64))
+	}
+	if len(wantIe64) < 0x8000 {
+		t.Fatalf("self-contained image unexpectedly small (%d bytes); the runtime blob may not be bundled", len(wantIe64))
+	}
+}
+
+// TestREPL_Assemble covers the ASSEMBLE command: it reads a user-written
+// NAME.asm from the File I/O root, assembles it at PROGRAM_START with the
+// in-guest private assembler, and writes NAME.ie64. The output must match the
+// host ie64asm oracle byte-for-byte for the same self-contained source, which
+// exercises labels, immediates, PC-relative branches, ie64.inc named constants
+// (via the baked aot_consttab), dc.b/l + align, and the `include "ie64.inc"`
+// no-op. The source is deliberately base-independent (no absolute label refs)
+// so PROGRAM_START (0x1000) and the oracle agree regardless of base.
+func TestREPL_Assemble(t *testing.T) {
+	asmBin := buildAssembler(t)
+
+	const src = `include "ie64.inc"
+start:
+    move.l r26, #TERM_OUT
+    move.q r1, #72
+    store.b r1, (r26)
+    move.q r1, #73
+    store.b r1, (r26)
+    move.q r2, #3
+loop:
+    sub.q r2, r2, #1
+    bne r2, r0, loop
+    halt
+    align 8
+table:
+    dc.l 1, 2, 3
+    dc.b 65, 66, 0
+    align 4
+`
+
+	t.Run("matches_ie64asm_oracle", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "foo.asm"), []byte(src), 0644); err != nil {
+			t.Fatal(err)
+		}
+		// Oracle: assemble the identical source with the host ie64asm.
+		inc := filepath.Join(repoRootDir(t), "sdk", "include")
+		oracle := filepath.Join(dir, "oracle.asm")
+		if err := os.WriteFile(oracle, []byte(src), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(asmBin, "-I", inc, oracle).CombinedOutput(); err != nil {
+			t.Fatalf("oracle assembly failed: %v\n%s", err, out)
+		}
+		want, err := os.ReadFile(filepath.Join(dir, "oracle.ie64"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		if out := h.runCommand(`ASSEMBLE "foo"`); strings.Contains(out, "ERROR") {
+			t.Fatalf("ASSEMBLE failed: %q", out)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "foo.ie64"))
+		if err != nil {
+			t.Fatalf("ASSEMBLE did not write foo.ie64: %v", err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("ASSEMBLE output differs from ie64asm oracle: got %d bytes, want %d bytes\ngot=%x\nwant=%x",
+				len(got), len(want), got, want)
+		}
+	})
+
+	t.Run("unknown_directive_rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		// org is not part of the in-guest assembler -> clean assembler error.
+		if err := os.WriteFile(filepath.Join(dir, "bad.asm"), []byte("    org 0x2000\n    halt\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		if out := h.runCommand(`ASSEMBLE "bad"`); !strings.Contains(out, "ERROR") {
+			t.Fatalf("ASSEMBLE of org source: want assembler error, got %q", out)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "bad.ie64")); !os.IsNotExist(err) {
+			t.Fatalf("ASSEMBLE wrote bad.ie64 despite assembler error (err=%v)", err)
+		}
+	})
+
+	t.Run("foreign_include_rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "inc.asm"), []byte("include \"other.inc\"\n    halt\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		if out := h.runCommand(`ASSEMBLE "inc"`); !strings.Contains(out, "ERROR") {
+			t.Fatalf("ASSEMBLE of foreign include: want assembler error, got %q", out)
+		}
+	})
+
+	t.Run("include_trailing_junk_rejected", func(t *testing.T) {
+		// include "ie64.inc" with trailing non-comment text must error, not be
+		// silently dropped (which could hide a typo or lost source line).
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "jnk.asm"), []byte("include \"ie64.inc\" bogus\n    halt\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		if out := h.runCommand(`ASSEMBLE "jnk"`); !strings.Contains(out, "ERROR") {
+			t.Fatalf("ASSEMBLE of include with trailing junk: want assembler error, got %q", out)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "jnk.ie64")); !os.IsNotExist(err) {
+			t.Fatalf("ASSEMBLE wrote jnk.ie64 despite trailing junk on the include line")
+		}
+	})
+
+	t.Run("include_trailing_comment_ok", func(t *testing.T) {
+		// A trailing comment after include "ie64.inc" is fine (still a no-op).
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "cmt.asm"), []byte("include \"ie64.inc\"  ; constants\n    halt\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		if out := h.runCommand(`ASSEMBLE "cmt"`); strings.Contains(out, "ERROR") {
+			t.Fatalf("ASSEMBLE of include with trailing comment: %q", out)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "cmt.ie64")); err != nil {
+			t.Fatalf("ASSEMBLE did not write cmt.ie64: %v", err)
+		}
+	})
+
+	t.Run("missing_file_is_file_error", func(t *testing.T) {
+		dir := t.TempDir()
+		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		if out := h.runCommand(`ASSEMBLE "nope"`); !strings.Contains(out, "?FILE ERROR") {
+			t.Fatalf("ASSEMBLE of missing file: want ?FILE ERROR, got %q", out)
+		}
+	})
+
+	t.Run("oversized_source_rejected", func(t *testing.T) {
+		// A source larger than the ASSEMBLE buffer (just under 1 MiB) must be
+		// refused cleanly by the File I/O range guard (the staging buffer is the
+		// topmost low32 allocation, so an over-read runs past visible RAM, never
+		// into the code/symbol workspace) rather than corrupting AOT workspace.
+		dir := t.TempDir()
+		big := append(bytes.Repeat([]byte("    halt\n"), 0x100000/9+512), 0)
+		if len(big) <= 0x100000 {
+			t.Fatalf("test source not larger than the cap: %d", len(big))
+		}
+		if err := os.WriteFile(filepath.Join(dir, "big.asm"), big, 0644); err != nil {
+			t.Fatal(err)
+		}
+		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		if out := h.runCommand(`ASSEMBLE "big"`); !strings.Contains(out, "?FILE ERROR") {
+			t.Fatalf("ASSEMBLE of oversized source: want ?FILE ERROR, got %q", out)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "big.ie64")); !os.IsNotExist(err) {
+			t.Fatalf("ASSEMBLE wrote big.ie64 for an oversized source (err=%v)", err)
+		}
+		// The REPL must still work afterwards: a normal command runs unscathed.
+		if err := os.WriteFile(filepath.Join(dir, "ok.asm"), []byte("    halt\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if out := h.runCommand(`ASSEMBLE "ok"`); strings.Contains(out, "ERROR") {
+			t.Fatalf("REPL did not survive an oversized ASSEMBLE: %q", out)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "ok.ie64")); err != nil {
+			t.Fatalf("post-oversized ASSEMBLE did not write ok.ie64: %v", err)
+		}
+	})
+
+	t.Run("oversized_backing_gt_active_rejected", func(t *testing.T) {
+		// The case the address-range guard alone would miss: active visible RAM (the
+		// alloc frontier, CR_RAM_SIZE_BYTES) is smaller than the bus backing, so a file
+		// that overruns the source buffer would still fit under backingVisibleSize. The
+		// device-side FILE_READ_MAX cap must refuse it before any byte is copied, so the
+		// command reports ?FILE ERROR, writes no .ie64, and leaves the workspace intact.
+		dir := t.TempDir()
+		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		const active = 0x1000000 // 16 MiB active ceiling, below the 32 MiB bus backing
+		h.bus.ApplyProfileVisibleCeiling(active)
+		// 4 MiB source: larger than the 1 MiB cap, but base+len would stay under the
+		// 32 MiB backing, so only the FILE_READ_MAX cap (not the range guard) stops it.
+		big := append(bytes.Repeat([]byte("    halt\n"), 4*1024*1024/9), 0)
+		if err := os.WriteFile(filepath.Join(dir, "huge.asm"), big, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if out := h.runCommand(`ASSEMBLE "huge"`); !strings.Contains(out, "?FILE ERROR") {
+			t.Fatalf("ASSEMBLE oversized (backing>active): want ?FILE ERROR, got %q", out)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "huge.ie64")); !os.IsNotExist(err) {
+			t.Fatalf("ASSEMBLE wrote huge.ie64 for an oversized source")
+		}
+		// Workspace intact: a normal ASSEMBLE still produces a correct image.
+		if err := os.WriteFile(filepath.Join(dir, "ok.asm"), []byte("    halt\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if out := h.runCommand(`ASSEMBLE "ok"`); strings.Contains(out, "ERROR") {
+			t.Fatalf("workspace corrupted by oversized ASSEMBLE (backing>active): %q", out)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "ok.ie64")); err != nil {
+			t.Fatalf("post-oversized ASSEMBLE did not write ok.ie64: %v", err)
+		}
+	})
+
+	t.Run("bad_name_and_syntax", func(t *testing.T) {
+		dir := t.TempDir()
+		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		if out := h.runCommand(`ASSEMBLE "../escape"`); !strings.Contains(out, "?FC ERROR") {
+			t.Fatalf("ASSEMBLE bad name: want ?FC ERROR, got %q", out)
+		}
+		if out := h.runCommand(`ASSEMBLE`); !strings.Contains(out, "?SYNTAX ERROR") {
+			t.Fatalf("ASSEMBLE no arg: want ?SYNTAX ERROR, got %q", out)
+		}
+	})
+}
+
 // TestREPL_RunAOT_ReturnWithoutGosub: a RETURN reached without a matching
 // compiled GOSUB frame must report "?RETURN WITHOUT GOSUB" (like the interpreter
 // raising ERR_RET_NO_GOSUB), not silently end with success. Following statements

@@ -53,6 +53,113 @@ func TestFileIO_ReadFile(t *testing.T) {
 	}
 }
 
+// TestFileIO_ReadMaxCap checks the FILE_READ_MAX one-shot read cap: a file larger
+// than the cap is refused before any byte reaches guest memory; a file within the
+// cap reads normally; a zero cap is unbounded (BLOAD/LOAD behaviour); and the cap
+// is consumed by each read attempt - including a miss - so it never leaks into a
+// later read.
+func TestFileIO_ReadMaxCap(t *testing.T) {
+	tmpDir := t.TempDir()
+	big := bytes.Repeat([]byte{0xAB}, 4096)
+	small := bytes.Repeat([]byte{0xCD}, 100)
+	if err := os.WriteFile(filepath.Join(tmpDir, "big.bin"), big, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "small.bin"), small, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	const nameAddr = uint32(0x1000)
+	const dataAddr = uint32(0x2000)
+	setName := func(bus *MachineBus, name string) {
+		for i, b := range append([]byte(name), 0) {
+			bus.Write8(nameAddr+uint32(i), b)
+		}
+	}
+
+	read := func(t *testing.T, cap uint32, name string) (*MachineBus, *FileIODevice) {
+		t.Helper()
+		bus := NewMachineBus()
+		fio := NewFileIODevice(bus, tmpDir)
+		setName(bus, name)
+		fio.HandleWrite(FILE_NAME_PTR, nameAddr)
+		fio.HandleWrite(FILE_DATA_PTR, dataAddr)
+		if cap != 0 {
+			fio.HandleWrite(FILE_READ_MAX, cap)
+		}
+		fio.HandleWrite(FILE_CTRL, FILE_OP_READ)
+		return bus, fio
+	}
+
+	t.Run("over_cap_refused_without_copy", func(t *testing.T) {
+		bus, fio := read(t, 1024, "big.bin") // 4096 > 1024
+		if fio.HandleRead(FILE_STATUS) != 1 {
+			t.Fatalf("status: want 1, got %d", fio.HandleRead(FILE_STATUS))
+		}
+		if fio.HandleRead(FILE_ERROR_CODE) != FILE_ERR_RANGE {
+			t.Fatalf("error code: want %d, got %d", FILE_ERR_RANGE, fio.HandleRead(FILE_ERROR_CODE))
+		}
+		if fio.HandleRead(FILE_RESULT_LEN) != 0 {
+			t.Fatalf("result len: want 0, got %d", fio.HandleRead(FILE_RESULT_LEN))
+		}
+		if bus.Read8(dataAddr) != 0 {
+			t.Fatalf("over-cap read copied bytes into guest memory: byte0=%#x", bus.Read8(dataAddr))
+		}
+	})
+
+	t.Run("within_cap_reads", func(t *testing.T) {
+		bus, fio := read(t, 1024, "small.bin") // 100 <= 1024
+		if fio.HandleRead(FILE_STATUS) != 0 {
+			t.Fatalf("status: want 0, got %d", fio.HandleRead(FILE_STATUS))
+		}
+		if fio.HandleRead(FILE_RESULT_LEN) != uint32(len(small)) {
+			t.Fatalf("result len: want %d, got %d", len(small), fio.HandleRead(FILE_RESULT_LEN))
+		}
+		if bus.Read8(dataAddr) != 0xCD {
+			t.Fatalf("within-cap read did not stage data: byte0=%#x", bus.Read8(dataAddr))
+		}
+	})
+
+	t.Run("zero_cap_is_unbounded", func(t *testing.T) {
+		bus, fio := read(t, 0, "big.bin") // no cap -> full read
+		if fio.HandleRead(FILE_STATUS) != 0 {
+			t.Fatalf("status: want 0, got %d", fio.HandleRead(FILE_STATUS))
+		}
+		if fio.HandleRead(FILE_RESULT_LEN) != uint32(len(big)) {
+			t.Fatalf("result len: want %d, got %d", len(big), fio.HandleRead(FILE_RESULT_LEN))
+		}
+		_ = bus
+	})
+
+	t.Run("cap_consumed_by_a_miss", func(t *testing.T) {
+		// Set a small cap, then read a missing file (the cap path is not taken, but
+		// the cap must still be consumed). A subsequent uncapped read of a large file
+		// must succeed - the cap must not have leaked.
+		bus := NewMachineBus()
+		fio := NewFileIODevice(bus, tmpDir)
+		setName(bus, "nope.bin")
+		fio.HandleWrite(FILE_NAME_PTR, nameAddr)
+		fio.HandleWrite(FILE_DATA_PTR, dataAddr)
+		fio.HandleWrite(FILE_READ_MAX, 16)
+		fio.HandleWrite(FILE_CTRL, FILE_OP_READ) // miss -> status 1
+		if fio.HandleRead(FILE_STATUS) != 1 {
+			t.Fatalf("missing-file status: want 1, got %d", fio.HandleRead(FILE_STATUS))
+		}
+		if got := fio.HandleRead(FILE_READ_MAX); got != 0 {
+			t.Fatalf("cap not consumed by the miss: FILE_READ_MAX=%d", got)
+		}
+		setName(bus, "big.bin")
+		fio.HandleWrite(FILE_NAME_PTR, nameAddr)
+		fio.HandleWrite(FILE_CTRL, FILE_OP_READ) // no cap set -> full read
+		if fio.HandleRead(FILE_STATUS) != 0 {
+			t.Fatalf("leaked cap blocked a later read: status=%d", fio.HandleRead(FILE_STATUS))
+		}
+		if fio.HandleRead(FILE_RESULT_LEN) != uint32(len(big)) {
+			t.Fatalf("later read len: want %d, got %d", len(big), fio.HandleRead(FILE_RESULT_LEN))
+		}
+	})
+}
+
 // TestFileIO_ReadRejectsOutOfRangeDestination checks the read-staging safety
 // guard: a destination whose [FILE_DATA_PTR, +len) span overflows the 32-bit
 // address space or runs past guest RAM is refused whole (status 1, range error,

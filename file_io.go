@@ -19,6 +19,10 @@ type FileIODevice struct {
 	fileStatus    uint32
 	fileResultLen uint32
 	fileErrorCode uint32
+	// fileReadMax, when non-zero, caps the next read: a file larger than this is
+	// refused before any bytes reach guest memory. Consumed (reset to 0) by each
+	// read. See FILE_READ_MAX.
+	fileReadMax uint32
 	// runtimeBlob, when set, is served for reads of runtimeBlobFileName regardless
 	// of the File I/O root. It is the standalone COMPILE runtime blob, provided by
 	// the host (embedded image or generated) so COMPILE can bundle it without the
@@ -65,6 +69,8 @@ func (f *FileIODevice) HandleRead(addr uint32) uint32 {
 		return f.fileResultLen
 	case FILE_ERROR_CODE:
 		return f.fileErrorCode
+	case FILE_READ_MAX:
+		return f.fileReadMax
 	}
 	return 0
 }
@@ -78,6 +84,8 @@ func (f *FileIODevice) HandleWrite(addr uint32, val uint32) {
 		f.fileDataPtr = val
 	case FILE_DATA_LEN:
 		f.fileDataLen = val
+	case FILE_READ_MAX:
+		f.fileReadMax = val
 	case FILE_CTRL:
 		if val == FILE_OP_READ {
 			f.doRead()
@@ -106,6 +114,8 @@ func (f *FileIODevice) HandleWrite8(addr uint32, value uint8) {
 		f.fileDataPtr = (f.fileDataPtr &^ mask) | assembled
 	case FILE_DATA_LEN:
 		f.fileDataLen = (f.fileDataLen &^ mask) | assembled
+	case FILE_READ_MAX:
+		f.fileReadMax = (f.fileReadMax &^ mask) | assembled
 	case FILE_CTRL:
 		if addr == FILE_CTRL {
 			if value == FILE_OP_READ {
@@ -271,12 +281,16 @@ func (f *FileIODevice) readHostFile(fileName string) ([]byte, string, error, boo
 
 // doRead performs the actual file read operation.
 func (f *FileIODevice) doRead() {
+	// Consume the one-shot read cap up front so it applies to exactly this read,
+	// regardless of which path (hit, miss, error) the read takes.
+	readMax := f.fileReadMax
+	f.fileReadMax = 0
 	rawName := f.readFileName()
 	// Serve the reserved runtime-blob virtual file from the host-provided bytes,
 	// regardless of the File I/O root, so COMPILE never depends on a sidecar in the
 	// user's working directory.
 	if f.runtimeBlob != nil && rawName == runtimeBlobFileName {
-		f.writeReadResult(f.runtimeBlob, rawName, "<embedded>")
+		f.writeReadResult(f.runtimeBlob, rawName, "<embedded>", readMax)
 		return
 	}
 	fileName := f.resolveReadFileName(rawName)
@@ -313,7 +327,7 @@ func (f *FileIODevice) doRead() {
 		return
 	}
 
-	f.writeReadResult(data, fileName, fullPath)
+	f.writeReadResult(data, fileName, fullPath, readMax)
 }
 
 // writeReadResult stages read data into the FILE_DATA_PTR buffer, applying the
@@ -325,7 +339,16 @@ func (f *FileIODevice) doRead() {
 // addresses >= busMemMaxBytes (0xFFFF0000) to low memory, so a span whose exclusive
 // end exceeds that cap would have its high bytes silently written to low RAM (this
 // also covers the uint32 2^32 wrap). Reject against the cap and backingVisibleSize.
-func (f *FileIODevice) writeReadResult(data []byte, fileName, fullPath string) {
+func (f *FileIODevice) writeReadResult(data []byte, fileName, fullPath string, readMax uint32) {
+	// Honour the read cap (FILE_READ_MAX, consumed by the caller) before copying
+	// anything into guest memory, so a caller (ASSEMBLE) can bound the read to its
+	// staging buffer rather than relying on the address-range guard below.
+	if readMax != 0 && uint64(len(data)) > uint64(readMax) {
+		f.fileStatus = 1
+		f.fileErrorCode = FILE_ERR_RANGE
+		f.fileResultLen = 0
+		return
+	}
 	if end := uint64(f.fileDataPtr) + uint64(len(data)); end > busMemMaxBytes || end > f.bus.backingVisibleSize() {
 		f.fileStatus = 1
 		f.fileErrorCode = FILE_ERR_RANGE

@@ -123,6 +123,7 @@ Ready
 | `RUN AOT` | Compile the stored programme to native IE64 code, then run it (see [Native Compilation](#native-compilation)) |
 | `COMPILE "name"` | Compile the stored programme to a standalone `name.ie64` file |
 | `TRANSPILE "name"` | Transpile the stored programme to `name.asm` only (no assembly, no `.ie64`) |
+| `ASSEMBLE "name"` | Assemble a user-written `name.asm` from disk to `name.ie64` with the in-guest assembler |
 | `LIST` | Display the programme listing |
 | `DIR` / `DIR "path"` | Display a File I/O sandbox directory listing |
 | `NEW` | Clear the programme from memory |
@@ -162,6 +163,30 @@ Alongside `name.ie64`, `COMPILE` also writes `name.asm`, the transpiled IE64 ass
 #### TRANSPILE
 
 `TRANSPILE "name"` runs only the first half of `COMPILE`: it transpiles the stored programme to IE64 assembly text and writes `name.asm`, without assembling it or producing a `.ie64` image. The `.asm` it writes is byte-for-byte identical to the sidecar `COMPILE` would write for the same programme, and it is placed in the same location (beside the most recently `LOAD`ed programme, or the File I/O root). Name validation, the direct-only/raw-root rejection and the unsupported-statement reporting are the same as `COMPILE`. Use it to read the generated assembly without producing a binary.
+
+The emitted `.asm` is fully self-contained: any runtime support the programme needs (the runtime blob, the `fp_print` number-formatting closure, and the tokenised programme for `READ`/`DATA`) is inlined as `dc.b` data under the `__rtpay`, `__rtprog` and `fp_print` labels, exactly as `COMPILE` assembles it. This makes the `.asm` a true source artifact that `ASSEMBLE` reassembles back into the same `.ie64` image (`COMPILE "x"` and `TRANSPILE "x"` then `ASSEMBLE "x"` produce identical binaries). The trade-off is size: a programme that uses the runtime blob produces an `.asm` of roughly 190 KiB regardless of how short the BASIC is, because the ~34 KiB blob is written out as decimal `dc.b` bytes.
+
+#### ASSEMBLE
+
+`ASSEMBLE "name"` reads a user-written `name.asm` from disk, assembles it at `PROGRAM_START` with the in-guest private assembler, and writes `name.ie64`. Both files sit beside the most recently `LOADed` programme (or the File I/O root). It is a general assembler for IE64 source, independent of any stored BASIC programme (the stored programme is left untouched). Because `COMPILE`/`TRANSPILE` now emit fully self-contained assembly (the runtime blob and other support inlined as `dc.b` data), `ASSEMBLE` is the true inverse of `TRANSPILE`: a transpiled `.asm` reassembles into the same `.ie64` image that `COMPILE` produces directly. It also assembles hand-written IE64 source.
+
+The in-guest assembler supports a deliberate subset:
+
+- Instructions from the IE64 instruction set, with labels (`name:`) and PC-relative branches/`jsr`.
+- Data directives `dc.b`/`dc.w`/`dc.l`/`dc.q` (comma-separated values and quoted strings) and `align`.
+- Named constants from `ie64.inc` (for example `TERM_OUT`, `VGA_STATUS`), resolved through a build-time-baked constant table, so source can use the symbolic names directly.
+- `include "ie64.inc"` is accepted as a no-op, because those constants are already available, so the normal source shape works:
+
+```
+include "ie64.inc"
+start:
+    move.l r26, #TERM_OUT
+    move.q r1, #65
+    store.b r1, (r26)
+    halt
+```
+
+Anything outside that subset (any other `include`, `incbin`, `equ`, `org`, macros, conditionals, an unknown mnemonic, or an unresolved label/constant) is reported as a `?COMPILE ERROR` and no `.ie64` is written. A missing or unreadable `name.asm`, or a source larger than the assembler's limit (just under 1 MiB), raises `?FILE ERROR`.
 
 #### Supported statements
 
@@ -3311,6 +3336,7 @@ Used by `BLOAD`, `LOAD`, `SAVE`, and `DIR`.
 | `&HF2210` | FILE_STATUS | R | 0=OK, 1=error |
 | `&HF2214` | FILE_RESULT_LEN | R | Bytes read or listed |
 | `&HF2218` | FILE_ERROR_CODE | R | 0=OK, 1=not found, 2=permission, 3=traversal |
+| `&HF221C` | FILE_READ_MAX | W | One-shot read cap in bytes; a larger file is refused (no copy); 0=unbounded |
 
 ### 9.17 Paula DMA Audio Bridge (`&HF2260`-`&HF22AF`)
 

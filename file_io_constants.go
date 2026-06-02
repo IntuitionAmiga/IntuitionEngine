@@ -11,6 +11,12 @@ const (
 	FILE_STATUS     = FILE_IO_BASE + 0x10 // 0=OK, 1=ERROR
 	FILE_RESULT_LEN = FILE_IO_BASE + 0x14 // Bytes actually read
 	FILE_ERROR_CODE = FILE_IO_BASE + 0x18 // 0=OK, 1=NOT_FOUND, 2=PERMISSION, 3=PATH_TRAVERSAL
+	// FILE_READ_MAX caps the next READ: if set non-zero before triggering FILE_OP_READ,
+	// a file larger than this many bytes is refused (FILE_ERR_RANGE) BEFORE any bytes
+	// are copied into guest memory. It is consumed (reset to 0) by each read, so it
+	// affects only the read that set it; 0 means unbounded (the default for
+	// BLOAD/LOAD/runtime-blob reads). Used by ASSEMBLE to bound its staging buffer.
+	FILE_READ_MAX = FILE_IO_BASE + 0x1C
 
 	FILE_IO_END = FILE_IO_BASE + 0x1F
 )
