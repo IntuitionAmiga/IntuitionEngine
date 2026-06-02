@@ -4538,6 +4538,107 @@ aot_str_asmext:
     dc.b    ".asm", 0
     align 4
 
+; aot_do_transpile - the TRANSPILE "name" backend: transpile the stored
+; programme to IE64 assembly text and write NAME.asm, the first half of COMPILE
+; with no assembly or NAME.ie64. FILE_NAME_BUF holds the validated ".ie64" name
+; (aot_make_asm_name derives NAME.asm from it, identical to COMPILE).
+; Uses R16 (the live interpreter state base); does not clobber it. Saves/restores
+; the interpreter's callee-saved registers so the REPL survives.
+; Output R8 = status: 0 success, 1 unsupported, 2 out of memory, 4 file error.
+aot_do_transpile:
+    push r14
+    push r17
+    push r18
+    push r19
+    push r20
+    push r21
+    push r22
+    push r23
+    push r24
+    push r25
+    push r26
+    push r27
+    push r28
+    push r29
+    jsr     aot_do_transpile_inner
+    pop r29
+    pop r28
+    pop r27
+    pop r26
+    pop r25
+    pop r24
+    pop r23
+    pop r22
+    pop r21
+    pop r20
+    pop r19
+    pop r18
+    pop r17
+    pop r14
+    rts
+aot_do_transpile_inner:
+    jsr     aot_alloc_reset
+    move.q  r8, #0x10000           ; 64 KiB asm-text buffer (low32, writable)
+    jsr     aot_alloc_low32
+    bnez    r9, .tp_oom
+    la      r1, AOT_DC_TEXT
+    store.q r8, (r1)
+
+    ; Transpile the live programme in standalone mode (ends with halt), exactly
+    ; as COMPILE does, so the written asm matches COMPILE's NAME.asm sidecar.
+    load.l  r8, (r16)              ; first line record (state[ST_PROG_START])
+    la      r1, AOT_DC_TEXT
+    load.q  r9, (r1)
+    move.q  r10, #1                ; standalone
+    add.q   r11, r9, #0x10000      ; text buffer end (64 KiB)
+    jsr     aot_transpile          ; R8=status R9=textLen
+    move.q  r1, #2
+    beq     r8, r1, .tp_oom        ; text buffer overflow
+    beqz    r8, .tp_unsupported    ; unsupported statement
+
+    ; Match COMPILE's failure modes: if the programme needs the standalone runtime
+    ; blob but it could not be read at compile time (missing/unreadable sidecar in
+    ; the File I/O root), report a file error and write nothing, exactly as COMPILE
+    ; does, rather than emitting an asm for a programme COMPILE would have rejected.
+    la      r1, AOT_USE_RT
+    load.q  r1, (r1)
+    beqz    r1, .tp_rt_present
+    la      r1, AOT_RT_LEN
+    load.q  r1, (r1)
+    beqz    r1, .tp_file_err
+.tp_rt_present:
+
+    ; Append any source-bundled runtime helpers the programme requested, so the
+    ; emitted asm is the complete COMPILE input text.
+    la      r1, AOT_DC_TEXT
+    load.q  r8, (r1)
+    jsr     aot_append_helpers     ; R8=buf, R9=len -> R8=new len
+    la      r1, AOT_DC_TLEN
+    store.q r8, (r1)
+
+    ; Write NAME.asm beside the most recently LOADed programme (or the File I/O
+    ; root if none), identical to COMPILE's sidecar placement.
+    jsr     aot_apply_src_dir
+    jsr     aot_make_asm_name
+    la      r8, AOT_ASM_NAME_BUF
+    la      r1, AOT_DC_TEXT
+    load.q  r9, (r1)
+    la      r1, AOT_DC_TLEN
+    load.q  r10, (r1)
+    jsr     aot_file_write
+    bnez    r8, .tp_file_err
+    move.q  r8, r0                 ; 0 = success
+    rts
+.tp_unsupported:
+    move.q  r8, #1
+    rts
+.tp_oom:
+    move.q  r8, #2
+    rts
+.tp_file_err:
+    move.q  r8, #4
+    rts
+
 ; aot_do_compile - the COMPILE "name" backend: transpile the stored programme,
 ; assemble a standalone image at PROGRAM_START, and write both NAME.ie64 (the
 ; machine code) and NAME.asm (the transpiled source). FILE_NAME_BUF holds the

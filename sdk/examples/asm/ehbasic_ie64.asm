@@ -260,6 +260,12 @@ repl_immediate:
     jsr     repl_check_compile
     bnez    r8, repl_do_compile
 
+    ; Check for TRANSPILE command (direct-only: transpile to NAME.asm only,
+    ; the first half of COMPILE without assembling or writing NAME.ie64).
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_check_transpile
+    bnez    r8, repl_do_transpile
+
     ; Native CONT: only when a RUN AOT STOP left a pending continuation
     ; (AOT_CONT_PC != 0). A typed CONT then re-enters the compiled arena. With no
     ; pending continuation, CONT falls through to tokenise + interpreted exec_do_cont.
@@ -521,6 +527,7 @@ aot_cont_enter:
 ; appended case-insensitively when absent.
 
 repl_do_compile:
+    move.q  r7, #7                      ; skip "COMPILE" in repl_parse_compile_name
     jsr     repl_parse_compile_name     ; R8: 0=syntax, 1=ok, 2=bad name
     beqz    r8, .compile_syntax
     move.q  r3, #2
@@ -563,6 +570,54 @@ repl_do_compile:
     bra     repl_loop
 
 .compile_fc:
+    la      r8, repl_msg_fc_in0
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+
+; ============================================================================
+; TRANSPILE command handler - transpile the stored programme to NAME.asm
+; ============================================================================
+; Direct-only. TRANSPILE "name" does the first half of COMPILE: it transpiles
+; the stored programme to IE64 assembly text and writes NAME.asm, without
+; assembling or producing NAME.ie64. The validated name (with its ".ie64"
+; suffix) is reused so aot_make_asm_name derives NAME.asm exactly as COMPILE
+; would, leaving both commands' sidecar names in step.
+repl_do_transpile:
+    move.q  r7, #9                      ; skip "TRANSPILE" in repl_parse_compile_name
+    jsr     repl_parse_compile_name     ; R8: 0=syntax, 1=ok, 2=bad name
+    beqz    r8, .transpile_syntax
+    move.q  r3, #2
+    beq     r8, r3, .transpile_fc
+    ; R8 == 1: FILE_NAME_BUF holds the validated output name.
+    jsr     aot_compile_check       ; reject direct-only/raw roots first
+    bnez    r8, repl_loop           ; reasoned error already printed
+    jsr     aot_do_transpile        ; transpile + write NAME.asm
+    beqz    r8, repl_loop           ; 0 = success (NAME.asm written)
+    move.q  r3, #1
+    beq     r8, r3, .transpile_unsupported
+    move.q  r3, #2
+    beq     r8, r3, .transpile_oom
+    la      r8, repl_msg_fileerr_in0   ; 4 = file write error
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.transpile_unsupported:
+    la      r8, repl_msg_aot_stub
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.transpile_oom:
+    la      r8, repl_msg_aot_oom
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.transpile_syntax:
+    la      r8, repl_msg_syntax_in0
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.transpile_fc:
     la      r8, repl_msg_fc_in0
     jsr     print_string
     jsr     print_crlf
@@ -1080,12 +1135,82 @@ repl_check_compile:
     rts
 
 ; ============================================================================
-; repl_parse_compile_name - Parse and validate COMPILE "name"
+; repl_check_transpile - Check if input is "TRANSPILE" (case-insensitive)
+; ============================================================================
+; Input:  R1 = pointer to input buffer
+; Output: R8 = 1 if TRANSPILE, 0 otherwise
+; Clobbers: R2, R3
+
+repl_check_transpile:
+    jsr     repl_skip_spaces
+
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x74               ; 't'
+    bne     r2, r3, .tno
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x72               ; 'r'
+    bne     r2, r3, .tno
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x61               ; 'a'
+    bne     r2, r3, .tno
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6E               ; 'n'
+    bne     r2, r3, .tno
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x73               ; 's'
+    bne     r2, r3, .tno
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x70               ; 'p'
+    bne     r2, r3, .tno
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x69               ; 'i'
+    bne     r2, r3, .tno
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6C               ; 'l'
+    bne     r2, r3, .tno
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x65               ; 'e'
+    bne     r2, r3, .tno
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    beqz    r2, .tyes
+    move.q  r3, #0x20
+    beq     r2, r3, .tyes
+    bra     .tno
+
+.tyes:
+    move.q  r8, #1
+    rts
+.tno:
+    move.q  r8, r0
+    rts
+
+; ============================================================================
+; repl_parse_compile_name - Parse and validate COMPILE/TRANSPILE "name"
 ; ============================================================================
 ; Copies the quoted filename into FILE_NAME_BUF and validates it. A ".ie64"
 ; suffix is appended (case-insensitively) when absent.
 ;
-; Input:  BASIC_LINE_BUF contains the COMPILE line
+; Input:  BASIC_LINE_BUF contains the COMPILE/TRANSPILE line
+;         R7 = length of the matched leading keyword to skip (7 for COMPILE,
+;              9 for TRANSPILE)
 ; Output: R8 = 0 missing argument (syntax error)
 ;              1 valid (FILE_NAME_BUF populated)
 ;              2 bad name (?FC ERROR): empty, absolute, "..", separator, or
@@ -1095,7 +1220,7 @@ repl_check_compile:
 repl_parse_compile_name:
     la      r1, BASIC_LINE_BUF
     jsr     repl_skip_spaces
-    add.q   r1, r1, #7              ; skip the matched "COMPILE" keyword
+    add.q   r1, r1, r7             ; skip the matched keyword (COMPILE=7/TRANSPILE=9)
     jsr     repl_skip_spaces
 
     ; Require an opening quote; anything else is a missing-argument syntax error

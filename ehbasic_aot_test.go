@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1690,6 +1691,68 @@ func TestREPL_Compile_WaitVsyncEmitsLoop(t *testing.T) {
 		if !strings.Contains(vs, want) {
 			t.Fatalf("VSYNC asm missing %q in:\n%s", want, vs)
 		}
+	}
+}
+
+// TestREPL_Transpile writes only the NAME.asm sidecar (the first half of
+// COMPILE) and no NAME.ie64. The emitted asm must be byte-for-byte identical to
+// what COMPILE writes for the same programme, so TRANSPILE is a faithful
+// transpile-only front-end.
+func TestREPL_Transpile(t *testing.T) {
+	asmBin := buildAssembler(t)
+
+	prog := []string{
+		`10 FOR I = 1 TO 10`,
+		`20 PRINT I`,
+		`30 NEXT I`,
+		`40 PRINT "DONE"`,
+	}
+
+	// COMPILE reference: capture the .asm it writes.
+	compileDir := t.TempDir()
+	hc := newEhbasicREPLHarnessWithFileIO(t, asmBin, compileDir)
+	hc.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, l := range prog {
+		storeLine(t, hc, l)
+	}
+	if out := hc.runCommand(`COMPILE "demo"`); strings.Contains(out, "ERROR") {
+		t.Fatalf("COMPILE failed: %q", out)
+	}
+	wantAsm, err := os.ReadFile(filepath.Join(compileDir, "demo.asm"))
+	if err != nil {
+		t.Fatalf("COMPILE demo.asm not written: %v", err)
+	}
+
+	// TRANSPILE: writes demo.asm, not demo.ie64.
+	transDir := t.TempDir()
+	ht := newEhbasicREPLHarnessWithFileIO(t, asmBin, transDir)
+	ht.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, l := range prog {
+		storeLine(t, ht, l)
+	}
+	if out := ht.runCommand(`TRANSPILE "demo"`); strings.Contains(out, "ERROR") {
+		t.Fatalf("TRANSPILE failed: %q", out)
+	}
+	gotAsm, err := os.ReadFile(filepath.Join(transDir, "demo.asm"))
+	if err != nil {
+		t.Fatalf("TRANSPILE demo.asm not written: %v", err)
+	}
+	if !bytes.Equal(gotAsm, wantAsm) {
+		t.Fatalf("TRANSPILE asm differs from COMPILE asm:\n--- transpile ---\n%s\n--- compile ---\n%s", gotAsm, wantAsm)
+	}
+	if _, err := os.Stat(filepath.Join(transDir, "demo.ie64")); !os.IsNotExist(err) {
+		t.Fatalf("TRANSPILE wrote demo.ie64 (err=%v); it must only emit the .asm sidecar", err)
+	}
+
+	// A bad name still raises ?FC ERROR, and an unsupported root still rejects.
+	hb := newEhbasicREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+	hb.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	storeLine(t, hb, `10 PRINT "X"`)
+	if out := hb.runCommand(`TRANSPILE "../escape"`); !strings.Contains(out, "?FC ERROR") {
+		t.Fatalf("TRANSPILE bad name: want ?FC ERROR, got %q", out)
+	}
+	if out := hb.runCommand(`TRANSPILE`); !strings.Contains(out, "?SYNTAX ERROR") {
+		t.Fatalf("TRANSPILE no arg: want ?SYNTAX ERROR, got %q", out)
 	}
 }
 

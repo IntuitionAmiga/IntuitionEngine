@@ -122,6 +122,7 @@ Ready
 | `RUN` | Execute the stored programme (interpreted) |
 | `RUN AOT` | Compile the stored programme to native IE64 code, then run it (see [Native Compilation](#native-compilation)) |
 | `COMPILE "name"` | Compile the stored programme to a standalone `name.ie64` file |
+| `TRANSPILE "name"` | Transpile the stored programme to `name.asm` only (no assembly, no `.ie64`) |
 | `LIST` | Display the programme listing |
 | `DIR` / `DIR "path"` | Display a File I/O sandbox directory listing |
 | `NEW` | Clear the programme from memory |
@@ -155,6 +156,12 @@ Because the arena sits alongside the resident interpreter, `RUN AOT` may delegat
 `COMPILE "name"` writes a standalone flat `.ie64` image whose entry point is the programme start. The `.ie64` extension is appended case-insensitively when absent, so `COMPILE "DEMO"` writes `DEMO.ie64` and `COMPILE "DEMO.IE64"` is left unchanged. The file is written beside the most recently `LOAD`ed programme; if no programme has been loaded, it is written to the File I/O root.
 
 A standalone image has no resident interpreter to delegate to. The image opens with a small bootstrap that sets the stack and the terminal pointer. Programmes that use only literal operands (for example `PRINT` of a string or number, `POKE`, unconditional `GOTO`) bundle just the few print helpers they need and stay lean. Programmes that use expressions, variables, arrays, strings or the `DATA`/`INPUT`/`LIST`/`SAVE` runtime bundle a position-fixed runtime image (the expression evaluator and the variable, array, string, floating-point and statement-execution routines) into the `.ie64` and call into it through a fixed jump table, so the compiled programme runs the same evaluator and statement handlers as the interpreter with no resident interpreter present. The bundled runtime makes the image self-contained: it runs in a bare machine with no host services, no sidecar files and (except for `SAVE`) no File I/O device.
+
+Alongside `name.ie64`, `COMPILE` also writes `name.asm`, the transpiled IE64 assembly source it assembled, so you can inspect or reassemble the generated code.
+
+#### TRANSPILE
+
+`TRANSPILE "name"` runs only the first half of `COMPILE`: it transpiles the stored programme to IE64 assembly text and writes `name.asm`, without assembling it or producing a `.ie64` image. The `.asm` it writes is byte-for-byte identical to the sidecar `COMPILE` would write for the same programme, and it is placed in the same location (beside the most recently `LOAD`ed programme, or the File I/O root). Name validation, the direct-only/raw-root rejection and the unsupported-statement reporting are the same as `COMPILE`. Use it to read the generated assembly without producing a binary.
 
 #### Supported statements
 
