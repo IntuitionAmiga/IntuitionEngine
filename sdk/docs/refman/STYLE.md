@@ -451,6 +451,66 @@ Current controlled polish pass:
      source behaviour.
   10. Publish and print PDFs only after the source pass and checks are
       complete.
+- Integrate the split BASIC native-compilation pipeline and File I/O
+  read-cap changes from commit `b5a60840`. This is a focused BASIC,
+  IE64 source, and File I/O pass. Do not add a new chapter. Do not
+  expose host SDK assembler commands, build commands, repository paths,
+  generator internals, private workspace addresses, or implementation
+  scaffolding in reader-facing prose. The reader-facing idea is:
+  BASIC can make native IE64 programs from inside the machine.
+
+  Reader-facing changes from this commit:
+
+  - `TRANSPILE "name"` is a direct-mode form. It runs the first half
+    of `COMPILE`, writes the generated IE64 assembly as `name.asm`, and
+    does not write `name.ie64`.
+  - `ASSEMBLE "name"` is a direct-mode form. It reads `name.asm`,
+    assembles it inside the machine at `PROGRAM_START`, and writes
+    `name.ie64`. It is independent of the stored BASIC program.
+  - `COMPILE` and `TRANSPILE` now emit self-contained IE64 assembly.
+    Runtime support, the number-print helper, and bundled tokenised
+    program data appear as labelled `dc.b` data when required, so
+    `TRANSPILE "x"` followed by `ASSEMBLE "x"` produces the same flat
+    image as `COMPILE "x"` for the same program.
+  - The in-machine assembler accepts IE64 instructions, labels,
+    PC-relative branches and calls, `dc.b` / `dc.w` / `dc.l` / `dc.q`,
+    `align`, named constants from `ie64.inc`, and
+    `include "ie64.inc"` as a no-op compatibility line. Other include
+    files, `org`, `equ`, macros, conditionals, unknown mnemonics, and
+    unresolved symbols are errors.
+  - `FILE_READ_MAX` at `$F221C` is a one-shot File I/O read cap. A
+    larger file is refused with `FILE_ERR_RANGE` before any byte is
+    copied, and the cap is consumed by the next read.
+
+  Execute this TRANSPILE / ASSEMBLE pass in this order:
+
+  1. Check `sdk/examples/asm/ehbasic_ie64.asm`,
+     `sdk/include/ehbasic_aot.inc`, `sdk/include/ie64.inc`,
+     `sdk/include/aot_consttab.inc`, `file_io.go`,
+     `file_io_constants.go`, `ehbasic_aot_test.go`, and
+     `file_io_test.go` before writing claims.
+  2. Chapter 1: add `TRANSPILE` and `ASSEMBLE` to the direct-mode
+     editing/build command table and keep the wording short.
+  3. Chapter 2: add `ASSEMBLE` and `TRANSPILE` entries, and list both
+     as direct-mode commands. Keep `COMPILE`, `TRANSPILE`, and
+     `ASSEMBLE` as prompt commands, not stored-program statements.
+  4. Chapter 25: state that BASIC can assemble IE64 source from inside
+     the machine, that `ASSEMBLE` starts at `PROGRAM_START`, and that
+     it is the inverse path for self-contained `TRANSPILE` output. Keep
+     host SDK assemblers out of the reader workflow.
+  5. Chapter 35: update the opening and BASIC verb section for
+     `TRANSPILE` and `ASSEMBLE`; document output placement, suffix
+     behaviour, supported in-machine assembly subset, source-size/file
+     errors, and the `FILE_READ_MAX` reason.
+  6. Appendices A, D, H, I, and L: update prompt-only command notes,
+     File I/O register summaries, symbol summaries, error summaries,
+     and lookup entries.
+  7. Claim ledger: record the checked canonical sources and the
+     reader-facing examples affected by this pass.
+  8. Run reader-facing scans and targeted tests for the changed source
+     behaviour.
+  9. Publish and print PDFs only after the source pass and checks are
+     complete.
 
 ## Reader Contract
 

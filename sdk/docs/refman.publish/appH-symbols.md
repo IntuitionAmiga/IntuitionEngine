@@ -13,6 +13,7 @@ chapter give the full story; this appendix is the cheat sheet.
 |--------------------|--------------|
 | Reset vector       | `$000000` (first instruction at start of RAM). |
 | `.ie64` image start | flat image copied at `PROG_START = $001000`; execution starts there. Oversized images are refused before memory or PC changes. |
+| In-machine assembly | `ASSEMBLE "name"` reads the matching assembly source, assembles at `PROG_START = $001000`, and writes `name.ie64`. |
 | Trap vector base   | `$000400` (`8`-byte entries, indexed by trap number). |
 | Supervisor stack   | grows down from `$0A0000`. |
 | User stack (`R31`) | grows down from BASIC's per-program stack region. |
@@ -117,7 +118,7 @@ mechanism described in Chapters 27 and 28.
 | `$F0700`  | `TERM_OUT`. |
 | `$F075C`/`$F0760` | `RTC_MONO_USEC_LO` / `RTC_MONO_USEC_HI`, monotonic elapsed microseconds. |
 | `$F1400`  | HOST appliance block. |
-| `$F2200`  | File I/O block. |
+| `$F2200`  | File I/O block. `FILE_READ_MAX` is at `$F221C`. |
 | `$F2300`  | Media loader. |
 | `$F2320`  | RUN loader block. |
 | `$F2340`  | Coprocessor. |

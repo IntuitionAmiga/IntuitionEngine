@@ -47,6 +47,10 @@ line.
   it immediately.
 - **COMPILE** - write the stored program as a standalone `.ie64`
   image. See Chapter 35.
+- **TRANSPILE** - write the stored program as IE64 assembly text. See
+  Chapter 35.
+- **ASSEMBLE** - assemble IE64 source text into a standalone `.ie64`
+  image. See Chapter 35.
 
 ## 2.3 Alphabetical reference
 
@@ -98,6 +102,20 @@ table.
 PRINT ASC("A")
 65
 ```
+
+### ASSEMBLE
+
+`ASSEMBLE "`*filename*`"`
+
+Direct-mode command. Read the assembly source matching *filename* from
+the disk volume, assemble it inside the machine as IE64 source at
+`PROG_START`, and write *filename*`.ie64`. The stored BASIC program is
+not changed.
+
+`ASSEMBLE` accepts the IE64 instruction set, labels, branch and call
+targets, `dc.b`, `dc.w`, `dc.l`, `dc.q`, `align`, and the symbolic
+constants known to the IE64 assembler. See Chapter 35 for the file
+behaviour and Chapter 25 for the IE64 image form.
 
 ### ATN
 
@@ -950,6 +968,18 @@ A records the token map.
 Turn on line-by-line tracing. While tracing is on, each line
 number is printed before its statements run.
 
+### TRANSPILE
+
+`TRANSPILE "`*filename*`"`
+
+Direct-mode command. Convert the stored BASIC program to IE64 assembly
+text and write the matching assembly source file. It does not assemble
+the text and it does not write a `.ie64` image.
+
+The assembly text is the same self-contained source that `COMPILE`
+writes beside its image. `ASSEMBLE "`*filename*`"` can assemble it
+later into the same kind of flat IE64 image. See Chapter 35.
+
 ### TWOPI
 
 The constant `6.283185` (two times pi).
@@ -1111,4 +1141,4 @@ those references:
 | HOST                                          | 36 |
 | COSTART, COSTOP, COWAIT                       | 32 |
 | CALL, USR                                     | 25 |
-| LOAD, SAVE, BLOAD, RUN "*.ie*", RUN AOT, COMPILE | 35 |
+| LOAD, SAVE, BLOAD, RUN "*.ie*", RUN AOT, COMPILE, TRANSPILE, ASSEMBLE | 35 |

@@ -274,6 +274,10 @@ and `HITCLR`.
 
 ## D.14 File I/O (`$F2200`-`$F221F`)
 
+Used by `LOAD`, `SAVE`, `BLOAD`, `COMPILE`, `TRANSPILE`,
+`ASSEMBLE`, and `DIR`, and by machine code that talks to the disk
+volume directly.
+
 | Offset | Register |
 |--------|----------|
 | `+$00` | `FILE_NAME_PTR`. |
@@ -283,6 +287,7 @@ and `HITCLR`.
 | `+$10` | `FILE_STATUS`. |
 | `+$14` | `FILE_RESULT_LEN` (actual read/list byte count; `0` after accepted-path read failure). |
 | `+$18` | `FILE_ERROR_CODE`. |
+| `+$1C` | `FILE_READ_MAX` (one-shot read cap in bytes; larger file refused with `FILE_ERR_RANGE` before any byte is copied; `0` unbounded). |
 
 `FILE_ERROR_CODE` values:
 

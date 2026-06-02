@@ -35,10 +35,12 @@ Additional message strings produced by specific verbs:
 | `LOAD`       | `?FILE NOT FOUND`. |
 | `SAVE`       | `?FILE ERROR` (printed as a soft error; `SAVE` does not raise into the runtime). |
 | `RUN AOT`    | `Compiling to native code...` before compilation begins. |
-| `RUN AOT` / `COMPILE` | `?COMPILE ERROR IN <line>: <reason>` when a stored line cannot become native IE64 code. |
-| `RUN AOT` / `COMPILE` | `?OUT OF MEMORY ERROR IN <line-or-0>: <reason>` when the native-code arena or output image is too large. |
-| `COMPILE`    | `?FC ERROR IN 0` for a bad output name. |
-| `COMPILE`    | `?FILE ERROR IN 0` when the output image cannot be written. |
+| `RUN AOT` / `COMPILE` / `TRANSPILE` | `?COMPILE ERROR IN <line>: <reason>` when a stored line cannot become native IE64 code. |
+| `RUN AOT` / `COMPILE` / `TRANSPILE` / `ASSEMBLE` | `?OUT OF MEMORY ERROR IN <line-or-0>: <reason>` when the native-code arena, generated source, or output image is too large. |
+| `COMPILE` / `TRANSPILE` / `ASSEMBLE` | `?FC ERROR IN 0` for a bad output name. |
+| `COMPILE` / `TRANSPILE` | `?FILE ERROR IN 0` when the output image or generated source cannot be written. |
+| `ASSEMBLE`   | `?FILE ERROR IN 0` when the matching assembly source is missing, unreadable, or too large. |
+| `ASSEMBLE`   | `?COMPILE ERROR IN 0` when the IE64 source cannot be assembled. |
 
 ## I.2 Machine monitor (IE Mon)
 

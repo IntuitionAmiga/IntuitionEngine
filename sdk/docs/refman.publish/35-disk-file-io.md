@@ -5,9 +5,10 @@ Copyright (c) 2026 Zayn Otley. All rights reserved.
 
 Intuition Engine exposes one disk volume through a small MMIO
 block. BASIC uses the same block for `LOAD`, `SAVE`, `BLOAD`,
-`COMPILE`, and direct-mode `DIR`. Machine code can use the registers
-directly, but the examples here use BASIC `POKE`, `POKE8`, `PEEK`,
-and `PEEK8` so they can be typed on the machine.
+`COMPILE`, `TRANSPILE`, `ASSEMBLE`, and direct-mode `DIR`. Machine
+code can use the registers directly, but the examples here use BASIC
+`POKE`, `POKE8`, `PEEK`, and `PEEK8` so they can be typed on the
+machine.
 
 ## 35.1 Names and Volume Rules
 
@@ -39,6 +40,7 @@ The block starts at `$F2200` and spans `32` bytes. Registers are
 | `$F2210` | `FILE_STATUS`     | R      | `0` OK, `1` error |
 | `$F2214` | `FILE_RESULT_LEN` | R      | Bytes transferred by read or list |
 | `$F2218` | `FILE_ERROR_CODE` | R      | Error code |
+| `$F221C` | `FILE_READ_MAX`   | W      | One-shot read cap; `0` is unbounded |
 
 `FILE_CTRL` fires the operation immediately. There is no busy bit
 and no interrupt. When the write to `FILE_CTRL` returns, the
@@ -89,6 +91,18 @@ still contains the length from an earlier write. On a successful read,
 `FILE_RESULT_LEN` is the actual number of bytes copied. If the name is
 accepted but the read itself fails, `FILE_RESULT_LEN` is cleared to
 `0`; use `FILE_STATUS` and `FILE_ERROR_CODE` as the final error test.
+
+`FILE_READ_MAX` is an optional read cap. By default it is `0`, which
+means unbounded: a read transfers the whole file. If you write a
+non-zero byte count to `FILE_READ_MAX` before triggering a read, a file
+larger than that count is refused with `FILE_ERR_RANGE` and **no bytes
+are copied** into the buffer, so a caller can bound a read to its own
+buffer size without first knowing the file length. The cap is one-shot:
+each read consumes it (it resets to `0`), so it applies only to the very
+next read and never leaks into a later one. Writes and lists ignore it.
+The BASIC `ASSEMBLE` command uses this register to make sure an
+oversized assembly source is rejected before it can reach the
+assembler staging buffer.
 
 The read is refused with `FILE_ERR_RANGE` if the destination span would
 reach `$FFFF0000`, wrap the `32`-bit address field, or run past active
@@ -182,16 +196,75 @@ beside that loaded program. If no program has been loaded, it is
 written at the root of the disk volume.
 
 `COMPILE` also writes a same-name text listing of the generated IE64
-instructions. That listing is for inspection. `RUN` uses the `.ie64`
-image.
+instructions. That assembly text is self-contained: when the program
+needs runtime support, the support bytes and any bundled tokenised
+program data are written as labelled `dc.b` data. The listing is for
+inspection or later assembly. `RUN` uses the `.ie64` image.
 
 Not every stored line can become a standalone image. Direct-mode
-commands such as `RUN AOT`, `COMPILE`, and `DIR` are rejected. A
-standalone image cannot use `LOAD`. For `POKE`, `POKE8`, `DOKE`, and
-`LOKE` inside a standalone image, use integer-literal operands rather
-than variables or expressions.
+commands such as `RUN AOT`, `COMPILE`, `TRANSPILE`, `ASSEMBLE`, and
+`DIR` are rejected. A standalone image cannot use `LOAD`. For `POKE`,
+`POKE8`, `DOKE`, and `LOKE` inside a standalone image, use
+integer-literal operands rather than variables or expressions.
 
-### 35.6.5 DIR
+### 35.6.5 TRANSPILE
+
+```text
+TRANSPILE "name"
+```
+
+`TRANSPILE` is a direct-mode command. It runs the first half of
+`COMPILE`: BASIC converts the stored program to IE64 assembly text and
+writes the matching assembly source file. It does not assemble that
+source and it does not write `name.ie64`.
+
+The output name follows the same rule as `COMPILE`. If the current
+program was loaded from a subdirectory, the assembly source is written
+beside that loaded program. If no program has been loaded, it is
+written at the root of the disk volume.
+
+Use `TRANSPILE` when you want to inspect the native IE64 source that
+BASIC would compile, or when you want to assemble it later with
+`ASSEMBLE`.
+
+### 35.6.6 ASSEMBLE
+
+```text
+ASSEMBLE "name"
+```
+
+`ASSEMBLE` is a direct-mode command. It reads the matching assembly
+source file, assembles it inside the machine at `PROG_START`, and
+writes `name.ie64`. The stored BASIC program is not used and is not
+changed.
+
+The source may contain IE64 instructions, labels, branch and `JSR`
+targets, `dc.b`, `dc.w`, `dc.l`, `dc.q`, `align`, and the standard
+symbolic constants known to the in-machine assembler. A conventional
+constants include line is accepted as a no-op so the same source can
+still name those constants. Other include files, `org`, `equ`, macros,
+conditionals, unknown mnemonics, and unresolved symbols are rejected.
+
+A missing source file, an unreadable source file, or a source file of
+about `1` MB or larger reports `?FILE ERROR IN 0`. An assembly error
+reports `?COMPILE ERROR IN 0`, and no `.ie64` file is written.
+
+This short prompt session shows the three related commands:
+
+```text
+10 PRINT "MADE INSIDE IE"
+COMPILE "MADE"
+TRANSPILE "MADE"
+ASSEMBLE "MADE"
+RUN "MADE.IE64"
+```
+
+`COMPILE` writes both the flat image and the generated assembly source.
+`TRANSPILE` writes only the assembly source. `ASSEMBLE` reads that
+source and writes `MADE.ie64` again. The final `RUN` starts the flat
+IE64 image.
+
+### 35.6.7 DIR
 
 ```text
 DIR

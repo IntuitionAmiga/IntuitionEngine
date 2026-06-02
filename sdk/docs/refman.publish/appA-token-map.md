@@ -52,6 +52,10 @@ recognises them as literal characters at run time:
   prompt and has no token byte. It cannot appear inside a program line.
 - `COMPILE` is a direct-mode command. It is recognised only at the
   BASIC prompt and has no token byte.
+- `TRANSPILE` is a direct-mode command. It is recognised only at the
+  BASIC prompt and has no token byte.
+- `ASSEMBLE` is a direct-mode command. It is recognised only at the
+  BASIC prompt and has no token byte.
 - `RUN AOT` is a direct-mode form. `RUN` itself has token byte `$8A`,
   but the prompt recognises the following `AOT` word before ordinary
   `RUN` handling. There is no separate `RUN AOT` token.

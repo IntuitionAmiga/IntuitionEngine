@@ -28,6 +28,7 @@ symbols, and Appendix J gives the full memory map.
 | ANTIC | Chapter 7, Chapter 28, Appendix D, Appendix H |
 | arosdos monitor view | Chapter 33 |
 | ASCII | Appendix C |
+| ASSEMBLE command | Chapter 2, Chapter 25, Chapter 35, Appendix A, Appendix I |
 | Assemble mode | Chapter 25, Chapter 33, Appendix G |
 | AUDCTL | Chapter 17, Chapter 27, Appendix D |
 | Audio mixer | Chapter 11, Chapter 23, Appendix K |
@@ -95,6 +96,7 @@ symbols, and Appendix J gives the full memory map.
 | File I/O | Chapter 35, Chapter 39, Appendix D |
 | FILE_DATA_PTR | Chapter 35, Appendix D |
 | FILE_ERR_RANGE | Chapter 35, Appendix D, Appendix I |
+| FILE_READ_MAX | Chapter 35, Appendix D, Appendix H |
 | FBZ_MODE | Chapter 9 |
 | Fixed-point maths | Chapter 4, Chapter 9, Appendix F |
 | Frequency tables | Appendix E |
@@ -103,7 +105,7 @@ symbols, and Appendix J gives the full memory map.
 
 | Term | See |
 |------|-----|
-| General MIDI-style programmes | Chapter 21 |
+| General MIDI-style programs | Chapter 21 |
 | GTIA | Chapter 7, Chapter 28, Appendix D, Appendix H |
 | Graphics overview | Chapter 3 |
 
@@ -122,6 +124,7 @@ symbols, and Appendix J gives the full memory map.
 | IE32 | Chapter 26, Chapter 31, Appendix G, Appendix H |
 | IE64 | Chapter 25, Chapter 31, Appendix G, Appendix H |
 | IE64 flat images | Chapter 25, Chapter 35, Appendix H |
+| IE64 in-machine assembler | Chapter 25, Chapter 35 |
 | IE64 monitor assembler | Chapter 25, Chapter 33, Appendix G |
 | I/O register viewer | Chapter 33, Chapter 34 |
 | Index | Appendix L |
@@ -207,6 +210,7 @@ symbols, and Appendix J gives the full memory map.
 | TIMER_PERIOD | Chapter 25, Chapter 31 |
 | TLBINVAL | Chapter 25 |
 | trace mmio | Chapter 33 |
+| TRANSPILE | Chapter 2, Chapter 25, Chapter 35, Appendix A, Appendix I |
 | Traps | Chapter 31, Appendix I |
 
 ## U
