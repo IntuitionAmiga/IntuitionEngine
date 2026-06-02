@@ -28,4 +28,8 @@ const (
 	FILE_ERR_NOT_FOUND      = 1
 	FILE_ERR_PERMISSION     = 2
 	FILE_ERR_PATH_TRAVERSAL = 3
+	// FILE_ERR_RANGE: the staging buffer [FILE_DATA_PTR, +len) overflows the
+	// 32-bit address space or exceeds guest RAM. The transfer is refused whole
+	// rather than wrapping or partially writing out of bounds.
+	FILE_ERR_RANGE = 4
 )

@@ -182,7 +182,10 @@ func buildReloadClosure(mode string, runner EmulatorCPU, bytes []byte, bus *Mach
 		return func() {
 			cpu := runner.(*CPU64)
 			cpu.Reset()
-			cpu.LoadFlatProgramBytes(bytes)
+			// Overflow is preflighted before teardown in the checked
+			// flat-load paths (runProgramWithFullReset / executor), so a
+			// fitting image is guaranteed here; ignore the residual error.
+			_ = cpu.LoadFlatProgramBytes(bytes)
 		}
 	case "m68k":
 		return func() {

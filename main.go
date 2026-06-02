@@ -1433,6 +1433,7 @@ func main() {
 
 	// Initialize File I/O
 	fileIO := NewFileIODevice(sysBus, runtimeBaseDir)
+	fileIO.SetRuntimeBlob(embeddedRuntimeBlob) // serve the COMPILE runtime blob virtually
 	sysBus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
 	sysBus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fileIO.HandleWrite8)
 	bootHostFS := NewBootstrapHostFSDevice(sysBus, intuitionOSResolved.Root)
@@ -2237,14 +2238,132 @@ func main() {
 		resetMu.Lock()
 		defer resetMu.Unlock()
 
+		var bytes []byte
+		var mode string
+		forceBasicBoot := false
+
+		// Resolve and size-check IE64 flat images BEFORE any quiescing or
+		// teardown, so a rejected oversized load leaves the previous machine
+		// fully intact (CPU/bus/peripherals untouched). Both the IExec sentinel
+		// and real .ie64 files route through the checked LoadFlatProgramBytes;
+		// the empty-path boot trampoline (legacy clamped loader) and the
+		// EmuTOS/AROS sentinels do not, so they are resolved later as usual.
+		ie64FlatResolved := false
+		if path == intuitionOSSentinel {
+			var err error
+			bytes, path, err = loadIntuitionOSImage()
+			if err != nil {
+				return err
+			}
+			mode = "ie64"
+			ie64FlatResolved = true
+		} else if path != "" && path != emutosSentinel && path != arosSentinel {
+			if m, err := modeFromExtension(path); err == nil && m == "ie64" {
+				b, readErr := os.ReadFile(path)
+				if readErr != nil {
+					return readErr
+				}
+				bytes = b
+				mode = "ie64"
+				ie64FlatResolved = true
+			}
+		}
+		if ie64FlatResolved {
+			if !flatProgramFitsRAM(len(sysBus.GetMemory()), len(bytes)) {
+				return fmt.Errorf("IE64 program too large: %d bytes exceeds guest RAM", len(bytes))
+			}
+		}
+
+		// Resolve all remaining boot modes. IE64 flat images were already
+		// resolved and size-checked above (ie64FlatResolved). Every fallible
+		// resolution/dispatch below (missing EmuTOS/AROS/IExec image, unreadable
+		// file, unsupported extension, .ies script handoff) MUST stay ahead of
+		// the quiescing block so a failed load leaves the running machine intact.
+		if !ie64FlatResolved {
+			if path == "" {
+				// F10 hard reset: reload the original CLI boot mode, not the
+				// current mode. EmuTOS launched via BASIC's EMUTOS command
+				// should reset back to BASIC, not EmuTOS.
+				if ab3d2DefaultBoot {
+					bytes = append([]byte(nil), embeddedAB3D2Image...)
+					mode = "m68k"
+				} else if modeEmuTOS {
+					var err error
+					bytes, path, err = loadEmuTOSImage()
+					if err != nil {
+						return err
+					}
+					mode = "emutos"
+				} else {
+					forceBasicBoot = true
+					var err error
+					bytes, path, err = loadBasicBootImage()
+					if err != nil {
+						return err
+					}
+					mode = "ie64"
+				}
+			} else if path == emutosSentinel {
+				// BASIC EMUTOS command: boot EmuTOS from embedded/flag/local ROM.
+				var err error
+				bytes, path, err = loadEmuTOSImage()
+				if err != nil {
+					return err
+				}
+				mode = "emutos"
+			} else if path == arosSentinel {
+				var err error
+				bytes, path, err = loadAROSImage()
+				if err != nil {
+					return err
+				}
+				mode = "aros"
+			} else {
+				var err error
+				bytes, err = os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				mode, err = modeFromExtension(path)
+				if err != nil {
+					return err
+				}
+				if mode == "script" {
+					if scriptEngine == nil {
+						return fmt.Errorf("script engine unavailable")
+					}
+					return scriptEngine.RunFile(path)
+				}
+				if mode == "midi" {
+					// .mid/.midi/.mus are media, not a CPU mode:
+					// createRunnerForMode would reject "midi" after teardown.
+					// Dispatch to the Media Loader here (before quiescing); it
+					// plays alongside the running machine without a reset. The
+					// normal RUN path media-dispatches in launchProgramOrScript;
+					// this covers direct entry via cpu.load / SetProgramLoader.
+					if mediaLoader == nil {
+						return fmt.Errorf("media loader unavailable")
+					}
+					return mediaLoader.PlayHostPath(path, 0)
+				}
+				// Preserve CLI/default 6502 semantics for .ie65 reload/launch paths.
+				// In BASIC/IPC mode we don't parse --load-addr, so apply the standard
+				// .ie65 default load address when no explicit load address was provided.
+				if mode == "6502" && !loadAddr.set && cpu6502LoadAddr == 0 {
+					cpu6502LoadAddr = 0x0800
+				}
+			}
+		}
+
+		// All fallible resolution/dispatch is now complete (the .ies path has
+		// already returned); from here on the load is committed. Quiesce live
+		// video producers before the in-place device reset below. The script
+		// engine's own runScript cancels any prior script, so the conditional
+		// Cancel here only matters for non-script reloads (and is skipped while a
+		// running script is itself loading a program).
 		if scriptEngine != nil && !scriptEngine.IsLoadingProgram() {
 			scriptEngine.Cancel()
 		}
-
-		// Quiesce all live video producers before hot-reloading a new program.
-		// Manual demo runs start from a fresh process; showreel/scripted loads do not.
-		// Stopping the compositor and standalone render loops here prevents stale
-		// frames from being composed while devices are being reset in-place.
 		compositor.Stop()
 		if vgaEngine != nil {
 			vgaEngine.StopRenderLoop()
@@ -2257,79 +2376,6 @@ func main() {
 		}
 		if anticEngine != nil {
 			anticEngine.StopRenderLoop()
-		}
-
-		var bytes []byte
-		var mode string
-		forceBasicBoot := false
-
-		if path == "" {
-			// F10 hard reset: reload the original CLI boot mode, not the
-			// current mode. EmuTOS launched via BASIC's EMUTOS command
-			// should reset back to BASIC, not EmuTOS.
-			if ab3d2DefaultBoot {
-				bytes = append([]byte(nil), embeddedAB3D2Image...)
-				mode = "m68k"
-			} else if modeEmuTOS {
-				var err error
-				bytes, path, err = loadEmuTOSImage()
-				if err != nil {
-					return err
-				}
-				mode = "emutos"
-			} else {
-				forceBasicBoot = true
-				var err error
-				bytes, path, err = loadBasicBootImage()
-				if err != nil {
-					return err
-				}
-				mode = "ie64"
-			}
-		} else if path == emutosSentinel {
-			// BASIC EMUTOS command: boot EmuTOS from embedded/flag/local ROM.
-			var err error
-			bytes, path, err = loadEmuTOSImage()
-			if err != nil {
-				return err
-			}
-			mode = "emutos"
-		} else if path == arosSentinel {
-			var err error
-			bytes, path, err = loadAROSImage()
-			if err != nil {
-				return err
-			}
-			mode = "aros"
-		} else if path == intuitionOSSentinel {
-			var err error
-			bytes, path, err = loadIntuitionOSImage()
-			if err != nil {
-				return err
-			}
-			mode = "ie64"
-		} else {
-			var err error
-			bytes, err = os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			mode, err = modeFromExtension(path)
-			if err != nil {
-				return err
-			}
-			if mode == "script" {
-				if scriptEngine == nil {
-					return fmt.Errorf("script engine unavailable")
-				}
-				return scriptEngine.RunFile(path)
-			}
-			// Preserve CLI/default 6502 semantics for .ie65 reload/launch paths.
-			// In BASIC/IPC mode we don't parse --load-addr, so apply the standard
-			// .ie65 default load address when no explicit load address was provided.
-			if mode == "6502" && !loadAddr.set && cpu6502LoadAddr == 0 {
-				cpu6502LoadAddr = 0x0800
-			}
 		}
 
 		// 0. Deactivate monitor if active (prevents freeze/resume interference)

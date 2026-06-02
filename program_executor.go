@@ -379,6 +379,13 @@ func (e *ProgramExecutor) launchProgram(fullPath string, data []byte, typ uint32
 }
 
 func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
+	// Preflight checked flat-load paths before any teardown so a rejected
+	// image leaves the previous CPU/bus/peripheral state untouched.
+	if typ == EXEC_TYPE_IE64 && e.bus != nil {
+		if !flatProgramFitsRAM(len(e.bus.GetMemory()), len(data)) {
+			return fmt.Errorf("program too large")
+		}
+	}
 	e.stopRunningCPUs()
 	if e.bus != nil {
 		e.bus.UnsealMappings()
@@ -409,12 +416,32 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		return nil
 
 	case EXEC_TYPE_IE64:
+		// LoadFlatProgramBytes only overwrites [PROG_START, PROG_START+len).
+		// Unlike runProgramWithFullReset this path does not reset the bus, so
+		// clear stale RAM first; otherwise a shorter or empty .ie64 launched
+		// after a larger one would leave old bytes past the new image that the
+		// CPU could execute or read. Mirrors the 6502 case below and the
+		// full-reset path. Bus reset is the mmap-backed clear (low RSS).
+		if e.bus != nil {
+			e.bus.Reset()
+		}
+		// Flat IE64 images may place code/data in the legacy VRAM aperture and
+		// expect it to behave as RAM. Without this, a still-installed VRAM MMIO
+		// mapping would intercept aperture writes instead of routing them to
+		// RAM/direct VRAM, so the program would render/read the wrong backing.
+		// Mirrors the CLI (applyIE64FlatProgramVideoConfig) and full-reset paths.
 		if e.videoChip != nil {
-			e.videoChip.SetBigEndianMode(false)
+			if e.bus != nil {
+				applyIE64FlatProgramVideoConfig(e.bus, e.videoChip)
+			} else {
+				e.videoChip.SetBigEndianMode(false)
+			}
 		}
 		cpu := NewCPU64(e.bus)
 		cpu.jitEnabled = jitAvailable
-		cpu.LoadProgramBytes(data)
+		if err := cpu.LoadFlatProgramBytes(data); err != nil {
+			return err
+		}
 		runtimeStatus.setCPUs(runtimeCPUIE64, nil, cpu, nil, nil, nil, nil)
 		cpu.StartExecution()
 		return nil

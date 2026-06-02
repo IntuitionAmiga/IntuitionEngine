@@ -244,10 +244,32 @@ repl_delete_line:
 repl_immediate:
     ; --- Immediate mode: check for special commands, then tokenise and execute ---
 
+    ; Check for RUN AOT command (must precede plain RUN, which would also
+    ; match the "RUN" prefix and run interpreted instead of compiling).
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_check_run_aot
+    bnez    r8, repl_do_run_aot
+
     ; Check for RUN command (before tokenising)
     la      r1, BASIC_LINE_BUF
     jsr     repl_check_run
     bnez    r8, repl_do_run
+
+    ; Check for COMPILE command (direct-only AOT to standalone .ie64)
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_check_compile
+    bnez    r8, repl_do_compile
+
+    ; Native CONT: only when a RUN AOT STOP left a pending continuation
+    ; (AOT_CONT_PC != 0). A typed CONT then re-enters the compiled arena. With no
+    ; pending continuation, CONT falls through to tokenise + interpreted exec_do_cont.
+    la      r1, AOT_CONT_PC
+    load.q  r2, (r1)
+    beqz    r2, .no_aot_cont
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_check_cont
+    bnez    r8, repl_do_cont_aot
+.no_aot_cont:
 
     ; Check for DIR command
     la      r1, BASIC_LINE_BUF
@@ -374,11 +396,174 @@ repl_do_run:
     bra     repl_loop
 
 .run_internal:
+    ; Interpreted RUN restarts the programme; any RUN AOT STOP continuation is stale.
+    la      r1, AOT_CONT_PC
+    store.q r0, (r1)
     jsr     exec_run
     bra     repl_loop
 
 .run_file_error:
     la      r8, repl_msg_file_error
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+
+; ============================================================================
+; RUN AOT command handler - compile the stored programme to native IE64 code
+; ============================================================================
+; Direct-only. Prints the compile banner, then compiles the stored programme
+; into a top-of-RAM arena and runs it in place (the native code ends with rts).
+
+repl_do_run_aot:
+    ; RUN AOT takes no arguments. Re-walk past "AOT" and reject any trailing
+    ; token (the file form "RUN AOT \"file\"" is explicitly unsupported); only
+    ; trailing spaces before end-of-line are allowed.
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_skip_spaces
+    add.q   r1, r1, #3              ; past "RUN"
+    jsr     repl_skip_spaces
+    add.q   r1, r1, #3              ; past "AOT"
+    jsr     repl_skip_spaces
+    load.b  r2, (r1)
+    bnez    r2, .run_aot_extra
+
+    la      r8, repl_msg_compiling
+    jsr     print_string
+    jsr     print_crlf
+    jsr     aot_compile_check       ; reject direct-only/raw roots first
+    bnez    r8, repl_loop           ; reasoned error already printed
+    jsr     aot_do_run_aot          ; compile into the arena and execute it
+    beqz    r8, repl_loop           ; 0 = success (native code ran)
+    move.q  r3, #1
+    beq     r8, r3, .run_aot_unsupported
+    move.q  r3, #2
+    beq     r8, r3, .run_aot_oom
+    move.q  r3, #4
+    beq     r8, r3, .run_aot_ret_no_gosub
+    la      r8, repl_msg_aot_asm_err   ; 3 = assembler error
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.run_aot_ret_no_gosub:
+    ; 4 = RETURN without GOSUB at runtime. The compiled code set ST_CURRENT_LINE
+    ; to the offending line; raise_error persists ST_ERROR_FLAG/ST_ERROR_LINE and
+    ; prints "?RETURN WITHOUT GOSUB ERROR IN <line>", matching exec_do_return.
+    move.q  r8, #ERR_RET_NO_GOSUB
+    la      r9, err_msg_ret_no_gosub
+    jsr     raise_error
+    bra     repl_loop
+.run_aot_unsupported:
+    la      r8, repl_msg_aot_stub
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.run_aot_oom:
+    la      r8, repl_msg_aot_oom
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+
+.run_aot_extra:
+    la      r8, repl_msg_syntax_in0
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+
+; ============================================================================
+; CONT (native) - resume a RUN AOT programme stopped by STOP
+; ============================================================================
+; Reached only when AOT_CONT_PC != 0 (a prior RUN AOT hit STOP). Re-enters the
+; compiled arena at the saved resume address with variables, DATA, FOR and GOSUB
+; state preserved. The arena code is still resident: the compiler allocator is
+; deterministic, so unless a fresh RUN AOT/COMPILE ran (which clears AOT_CONT_PC)
+; the bytes are unchanged.
+
+repl_do_cont_aot:
+    la      r1, AOT_CONT_PC
+    load.q  r8, (r1)               ; R8 = saved resume address
+    store.q r0, (r1)               ; consume it (a fresh STOP re-arms CONT)
+    la      r1, AOT_RT_ERR
+    store.q r0, (r1)               ; clear the runtime-error slot
+    ; Re-establish the register conventions the arena code and bundled helpers use.
+    la      r26, TERM_OUT
+    la      r27, TERM_STATUS
+    ; Do NOT reset ST_GOSUB_SP / AOT_GOSUB_SP / variables / DATA: CONT continues.
+    jsr     aot_cont_enter         ; saves the entry SP, then jumps to R8
+    ; Returns here on END or another STOP (the arena unwinds to the saved SP).
+    la      r1, AOT_RT_ERR
+    load.q  r1, (r1)
+    bnez    r1, .cont_runtime_err
+    bra     repl_loop
+.cont_runtime_err:
+    ; A RETURN without GOSUB during the resumed run. The arena set ST_CURRENT_LINE;
+    ; raise_error prints "?RETURN WITHOUT GOSUB ERROR IN <line>" like the interpreter.
+    move.q  r8, #ERR_RET_NO_GOSUB
+    la      r9, err_msg_ret_no_gosub
+    jsr     raise_error
+    bra     repl_loop
+
+; aot_cont_enter - establish a call frame whose return lands back in
+; repl_do_cont_aot, record that frame's stack pointer as the arena unwind target
+; (AOT_SAVED_SP), then tail-jump to the CONT resume address in R8. This mirrors the
+; RUN AOT entry (jsr (r8) -> the prologue saves r31), so a later END/STOP
+; "load.q r31, (AOT_SAVED_SP) ; rts" returns cleanly to the REPL.
+aot_cont_enter:
+    la      r1, AOT_SAVED_SP
+    store.q r31, (r1)              ; SP here = inside this frame (after the jsr)
+    jmp     (r8)
+
+; ============================================================================
+; COMPILE command handler - compile the stored programme to a standalone .ie64
+; ============================================================================
+; Direct-only. COMPILE "name" validates the filename and (later) writes a flat
+; standalone image. Missing argument is a syntax error; empty, absolute, "..",
+; or separator-containing names raise ?FC ERROR IN 0. A ".ie64" suffix is
+; appended case-insensitively when absent.
+
+repl_do_compile:
+    jsr     repl_parse_compile_name     ; R8: 0=syntax, 1=ok, 2=bad name
+    beqz    r8, .compile_syntax
+    move.q  r3, #2
+    beq     r8, r3, .compile_fc
+    ; R8 == 1: FILE_NAME_BUF holds the validated output name.
+    jsr     aot_compile_check       ; reject direct-only/raw roots first
+    bnez    r8, repl_loop           ; reasoned error already printed (no banner)
+    jsr     aot_do_compile          ; transpile + assemble + write .ie64 and .asm
+    beqz    r8, repl_loop           ; 0 = success (files written)
+    move.q  r3, #1
+    beq     r8, r3, .compile_unsupported
+    move.q  r3, #2
+    beq     r8, r3, .compile_oom
+    move.q  r3, #3
+    beq     r8, r3, .compile_asmerr
+    la      r8, repl_msg_fileerr_in0   ; 4 = file write error
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.compile_unsupported:
+    la      r8, repl_msg_aot_stub
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.compile_oom:
+    la      r8, repl_msg_aot_oom
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.compile_asmerr:
+    la      r8, repl_msg_aot_asm_err
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+
+.compile_syntax:
+    la      r8, repl_msg_syntax_in0
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+
+.compile_fc:
+    la      r8, repl_msg_fc_in0
     jsr     print_string
     jsr     print_crlf
     bra     repl_loop
@@ -616,6 +801,9 @@ repl_do_new:
     ; Reset DATA pointer
     add.q   r1, r16, #ST_DATA_PTR
     store.l r0, (r1)
+    ; NEW clears the programme, so drop any pending RUN AOT STOP continuation.
+    la      r1, AOT_CONT_PC
+    store.q r0, (r1)
     bra     repl_loop
 
 ; ============================================================================
@@ -753,6 +941,707 @@ repl_parse_run_filename:
 .no_file:
     move.q  r8, r0
     rts
+
+; ============================================================================
+; repl_check_run_aot - Check if input is "RUN AOT" (case-insensitive)
+; ============================================================================
+; Matches "RUN" followed by at least one space and then "AOT", terminated by a
+; space or end of line. Must be tried before repl_check_run.
+; Input:  R1 = pointer to input buffer
+; Output: R8 = 1 if RUN AOT, 0 otherwise
+; Clobbers: R2, R3
+
+repl_check_run_aot:
+    jsr     repl_skip_spaces
+
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x72               ; 'r'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x75               ; 'u'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6E               ; 'n'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    ; "RUN" must be followed by a space to introduce the AOT argument
+    load.b  r2, (r1)
+    move.q  r3, #0x20
+    bne     r2, r3, .no
+    jsr     repl_skip_spaces
+
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x61               ; 'a'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6F               ; 'o'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x74               ; 't'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    ; Word boundary after "AOT": claim the line for end-of-line, space, or any
+    ; punctuation (':', ',', '=', '"', ...) so the handler can reject the tail.
+    ; Only an identifier continuation (alpha/digit/'$', i.e. "AOTx") is NOT the
+    ; AOT command and falls through to the plain RUN check.
+    move.q  r3, #0x24               ; '$' string-var suffix -> longer identifier
+    beq     r2, r3, .no
+    or.l    r2, r2, #0x20           ; fold case for the letter test
+    move.q  r3, #0x30               ; '0'
+    blt     r2, r3, .yes            ; null / space / punctuation below '0'
+    move.q  r3, #0x39               ; '9'
+    ble     r2, r3, .no             ; digit -> identifier
+    move.q  r3, #0x61               ; 'a'
+    blt     r2, r3, .yes            ; punctuation between '9' and 'a' (':', '=', ...)
+    move.q  r3, #0x7A               ; 'z'
+    ble     r2, r3, .no             ; letter -> identifier
+    bra     .yes                    ; punctuation above 'z'
+
+.yes:
+    move.q  r8, #1
+    rts
+.no:
+    move.q  r8, r0
+    rts
+
+; ============================================================================
+; repl_check_compile - Check if input is "COMPILE" (case-insensitive)
+; ============================================================================
+; Input:  R1 = pointer to input buffer
+; Output: R8 = 1 if COMPILE, 0 otherwise
+; Clobbers: R2, R3
+
+repl_check_compile:
+    jsr     repl_skip_spaces
+
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x63               ; 'c'
+    bne     r2, r3, .no
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6F               ; 'o'
+    bne     r2, r3, .no
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6D               ; 'm'
+    bne     r2, r3, .no
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x70               ; 'p'
+    bne     r2, r3, .no
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x69               ; 'i'
+    bne     r2, r3, .no
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6C               ; 'l'
+    bne     r2, r3, .no
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x65               ; 'e'
+    bne     r2, r3, .no
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    beqz    r2, .yes
+    move.q  r3, #0x20
+    beq     r2, r3, .yes
+    bra     .no
+
+.yes:
+    move.q  r8, #1
+    rts
+.no:
+    move.q  r8, r0
+    rts
+
+; ============================================================================
+; repl_parse_compile_name - Parse and validate COMPILE "name"
+; ============================================================================
+; Copies the quoted filename into FILE_NAME_BUF and validates it. A ".ie64"
+; suffix is appended (case-insensitively) when absent.
+;
+; Input:  BASIC_LINE_BUF contains the COMPILE line
+; Output: R8 = 0 missing argument (syntax error)
+;              1 valid (FILE_NAME_BUF populated)
+;              2 bad name (?FC ERROR): empty, absolute, "..", separator, or
+;                unterminated/over-length
+; Clobbers: R1-R5, R10-R12, R20
+
+repl_parse_compile_name:
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_skip_spaces
+    add.q   r1, r1, #7              ; skip the matched "COMPILE" keyword
+    jsr     repl_skip_spaces
+
+    ; Require an opening quote; anything else is a missing-argument syntax error
+    load.b  r2, (r1)
+    move.q  r3, #0x22               ; '"'
+    bne     r2, r3, .syntax
+    add.q   r1, r1, #1              ; past opening quote
+
+    la      r10, FILE_NAME_BUF
+    move.q  r11, #240               ; cap chars (room for ".ie64" + null)
+    move.q  r12, r0                 ; copied length
+    move.q  r20, r0                 ; previous char (for ".." detection)
+.cpy:
+    load.b  r2, (r1)
+    beqz    r2, .fc                 ; unterminated quote
+    move.q  r3, #0x22
+    beq     r2, r3, .cpy_done       ; closing quote
+    beqz    r11, .fc                ; over-length
+    ; reject path separators (covers absolute "/..." and "sub/..." and "\")
+    move.q  r3, #0x2F               ; '/'
+    beq     r2, r3, .fc
+    move.q  r3, #0x5C               ; '\'
+    beq     r2, r3, .fc
+    ; reject ".." (previous char and current char both '.')
+    move.q  r3, #0x2E               ; '.'
+    bne     r2, r3, .store
+    move.q  r3, #0x2E
+    beq     r20, r3, .fc
+.store:
+    store.b r2, (r10)
+    add.q   r10, r10, #1
+    add.q   r12, r12, #1
+    sub.q   r11, r11, #1
+    move.q  r20, r2
+    add.q   r1, r1, #1
+    bra     .cpy
+
+.cpy_done:
+    store.b r0, (r10)              ; null-terminate
+    beqz    r12, .fc               ; empty name
+    ; Only trailing spaces may follow the closing quote; anything else is a
+    ; syntax error (COMPILE "name" takes no further arguments).
+    add.q   r1, r1, #1             ; advance past the closing quote
+.cd_tail:
+    load.b  r2, (r1)
+    move.q  r3, #0x20
+    bne     r2, r3, .cd_tail_end
+    add.q   r1, r1, #1
+    bra     .cd_tail
+.cd_tail_end:
+    bnez    r2, .syntax            ; trailing junk after the filename
+    jsr     aot_append_ie64        ; append ".ie64" if absent (R12 = length)
+    move.q  r8, #1
+    rts
+
+.syntax:
+    move.q  r8, r0
+    rts
+.fc:
+    move.q  r8, #2
+    rts
+
+; ============================================================================
+; aot_append_ie64 - Append ".ie64" to FILE_NAME_BUF unless already present
+; ============================================================================
+; The suffix check is case-insensitive, so "DEMO.IE64" is left unchanged.
+; Input:  FILE_NAME_BUF null-terminated, R12 = current length
+; Clobbers: R2-R5
+
+aot_append_ie64:
+    move.q  r3, #5
+    blt     r12, r3, .append       ; too short to already carry ".ie64"
+
+    la      r4, FILE_NAME_BUF
+    add.q   r4, r4, r12
+    sub.q   r4, r4, #5             ; R4 -> last 5 chars
+    la      r5, aot_str_ie64ext
+.cmp_loop:
+    load.b  r3, (r5)
+    beqz    r3, .already           ; matched all 5 -> suffix present
+    load.b  r2, (r4)
+    or.l    r2, r2, #0x20          ; lower-case the filename char
+    bne     r2, r3, .append
+    add.q   r4, r4, #1
+    add.q   r5, r5, #1
+    bra     .cmp_loop
+.already:
+    rts
+
+.append:
+    la      r4, FILE_NAME_BUF
+    add.q   r4, r4, r12
+    la      r5, aot_str_ie64ext
+.app_loop:
+    load.b  r2, (r5)
+    beqz    r2, .app_done
+    store.b r2, (r4)
+    add.q   r4, r4, #1
+    add.q   r5, r5, #1
+    bra     .app_loop
+.app_done:
+    store.b r0, (r4)
+    rts
+
+aot_str_ie64ext:
+    dc.b    ".ie64", 0
+    align 4
+
+; ============================================================================
+; aot_compile_check - Reject direct-only/raw-root statements before compiling
+; ============================================================================
+; Walks the stored programme and rejects any statement whose root is a
+; direct-only or non-compilable raw keyword: DIR, HOST, COSTART, COSTOP,
+; COWAIT, COCALL, COSTATUS, COMPILE, and RUN AOT. Tokenised roots (PRINT, FOR,
+; SOUND, ...) are accepted, including their documented raw subverbs such as
+; SOUND PLAY. On the first offending statement it prints the canonical
+; ?COMPILE ERROR IN <line>: <reason> and returns.
+;
+; Output: R8 = 0 if all statements are compilable, 1 if rejected (error printed)
+; Clobbers: R1-R5, R8, R20
+
+aot_compile_check:
+    push    r14                     ; current line pointer
+    push    r15                     ; next-line pointer
+    push    r17                     ; statement cursor
+    push    r18                     ; current line number
+
+    load.l  r14, (r16)              ; first line
+
+.acc_line:
+    beqz    r14, .acc_ok
+    ; Stop on the in-memory empty/end sentinel (mirror line_list).
+    add.q   r1, r16, #4
+    load.l  r1, (r1)
+    sub.q   r1, r1, #4
+    bne     r14, r1, .acc_real
+    load.l  r15, (r14)
+    beqz    r15, .acc_ok
+.acc_real:
+    load.l  r15, (r14)              ; next-line pointer
+    add.q   r1, r14, #4
+    load.l  r18, (r1)               ; R18 = line number
+    add.q   r17, r14, #8            ; R17 = tokenised content
+
+.acc_stmt:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    beqz    r1, .acc_next_line
+    ; ':' and the IF clause keywords THEN/ELSE introduce a fresh statement
+    ; root, so reclassify after each (the interpreter executes THEN/ELSE tails
+    ; as statements). The IF condition itself contains no separators and is
+    ; skipped by aot_scan_stmt_body up to THEN.
+    move.q  r2, #0x3A               ; ':'
+    beq     r1, r2, .acc_sep
+    move.q  r2, #TK_THEN
+    beq     r1, r2, .acc_sep
+    move.q  r2, #TK_ELSE
+    beq     r1, r2, .acc_sep
+    bra     .acc_classify
+.acc_sep:
+    add.q   r17, r17, #1
+    bra     .acc_stmt
+
+.acc_classify:
+    move.q  r2, #0x80
+    bge     r1, r2, .acc_token_root
+
+    ; Raw root: match against the rejected raw keywords.
+    jsr     aot_check_raw_root      ; R8 = reason ptr (0 if none)
+    bnez    r8, .acc_reject
+    bra     .acc_allowed
+
+.acc_token_root:
+    move.q  r2, #TK_RUN
+    bne     r1, r2, .acc_check_data
+    ; RUN token: reject only the "RUN AOT" form; bare RUN is allowed.
+    jsr     aot_run_is_aot          ; R8 = 1 if RUN AOT
+    beqz    r8, .acc_allowed
+    la      r8, aot_rsn_runaot
+    bra     .acc_reject
+
+.acc_check_data:
+    ; DATA payload is literal data, not an expression. Skip it like the
+    ; interpreter (to ':' or end-of-line) so values such as DATA COCALL(1) are
+    ; not mistaken for a coprocessor call.
+    move.q  r2, #TK_DATA
+    bne     r1, r2, .acc_allowed
+    jsr     aot_skip_data
+    bra     .acc_stmt
+
+.acc_allowed:
+    jsr     aot_scan_stmt_body      ; advance R17 to separator; reject banned fns
+    bnez    r8, .acc_reject         ; COCALL/COSTATUS in an expression
+    bra     .acc_stmt
+
+.acc_next_line:
+    move.q  r14, r15
+    bra     .acc_line
+
+.acc_reject:
+    jsr     aot_reject              ; R8 = reason ptr, R18 = line; prints error
+    bra     .acc_epilogue           ; R8 = 1
+
+.acc_ok:
+    move.q  r8, r0
+
+.acc_epilogue:
+    pop     r18
+    pop     r17
+    pop     r15
+    pop     r14
+    rts
+
+; aot_reject - print "?COMPILE ERROR IN <line>: <reason>" (R8=reason, R18=line)
+aot_reject:
+    move.q  r20, r8                 ; save reason pointer
+    la      r8, aot_err_prefix
+    jsr     print_string
+    move.q  r8, r18
+    jsr     io_print_uint32
+    la      r8, aot_err_colon
+    jsr     print_string
+    move.q  r8, r20
+    jsr     print_string
+    jsr     print_crlf
+    move.q  r8, #1
+    rts
+
+; aot_scan_stmt_body - advance R17 to the next statement separator (':' or the
+; IF keywords THEN/ELSE) or null, skipping string literals and REM bodies. At
+; each identifier boundary it also rejects the coprocessor functions COCALL and
+; COSTATUS, which are non-compilable even when used inside an expression
+; (X=COCALL(...), PRINT COSTATUS(1)). String/REM contents are not inspected, so
+; PRINT "COCALL" is fine.
+; Output: R8 = 0 (reached separator, R17 left at it) or reason ptr if rejected.
+; Clobbers: R1-R5, R20
+aot_scan_stmt_body:
+    move.q  r20, r0                 ; previous char = 0 (treated as a boundary)
+.sts_loop:
+    load.b  r1, (r17)
+    beqz    r1, .sts_sep
+    move.q  r2, #0x3A               ; ':'
+    beq     r1, r2, .sts_sep
+    move.q  r2, #TK_THEN            ; end of IF condition / before THEN body
+    beq     r1, r2, .sts_sep
+    move.q  r2, #TK_ELSE            ; before ELSE body
+    beq     r1, r2, .sts_sep
+    move.q  r2, #TK_REM
+    beq     r1, r2, .sts_rem
+    move.q  r2, #0x22               ; '"'
+    beq     r1, r2, .sts_str
+
+    ; Only test for a function name at an identifier boundary: the previous
+    ; char must not be alpha/digit/'$' (else we are mid-identifier).
+    move.q  r2, r20
+    move.q  r3, #0x24               ; '$'
+    beq     r2, r3, .sts_advance
+    or.q    r2, r2, #0x20
+    move.q  r3, #0x30               ; '0'
+    blt     r2, r3, .sts_try
+    move.q  r3, #0x39               ; '9'
+    ble     r2, r3, .sts_advance    ; prev digit
+    move.q  r3, #0x61               ; 'a'
+    blt     r2, r3, .sts_try
+    move.q  r3, #0x7A               ; 'z'
+    ble     r2, r3, .sts_advance    ; prev alpha
+.sts_try:
+    or.q    r2, r1, #0x20
+    move.q  r3, #0x63               ; 'c' - COCALL / COSTATUS both start with C
+    bne     r2, r3, .sts_advance
+    ; Require call syntax: the interpreter only treats these names as
+    ; coprocessor functions when followed by '(' (so a variable COCALL is fine).
+    la      r5, aot_kw_costatus
+    jsr     aot_match_fn
+    bnez    r8, .sts_costatus
+    la      r5, aot_kw_cocall
+    jsr     aot_match_fn
+    bnez    r8, .sts_cocall
+
+.sts_advance:
+    move.q  r20, r1
+    add.q   r17, r17, #1
+    bra     .sts_loop
+
+.sts_str:
+    add.q   r17, r17, #1
+.sts_str_loop:
+    load.b  r1, (r17)
+    beqz    r1, .sts_sep
+    move.q  r2, #0x22
+    beq     r1, r2, .sts_str_close
+    add.q   r17, r17, #1
+    bra     .sts_str_loop
+.sts_str_close:
+    add.q   r17, r17, #1
+    move.q  r20, #0x22              ; prev = '"' (a boundary)
+    bra     .sts_loop
+
+.sts_rem:
+    load.b  r1, (r17)
+    beqz    r1, .sts_sep
+    add.q   r17, r17, #1
+    bra     .sts_rem
+
+.sts_sep:
+    move.q  r8, r0
+    rts
+.sts_costatus:
+    la      r8, aot_rsn_costatus
+    rts
+.sts_cocall:
+    la      r8, aot_rsn_cocall
+    rts
+
+; aot_run_is_aot - R17 points at TK_RUN. Returns R8=1 if "RUN AOT". Clobbers R2-R4.
+aot_run_is_aot:
+    add.q   r4, r17, #1            ; past the RUN token
+.ria_sp:
+    load.b  r2, (r4)
+    move.q  r3, #0x20
+    bne     r2, r3, .ria_chk
+    add.q   r4, r4, #1
+    bra     .ria_sp
+.ria_chk:
+    or.q    r2, r2, #0x20
+    move.q  r3, #0x61              ; 'a'
+    bne     r2, r3, .ria_no
+    load.b  r2, 1(r4)
+    or.q    r2, r2, #0x20
+    move.q  r3, #0x6F              ; 'o'
+    bne     r2, r3, .ria_no
+    load.b  r2, 2(r4)
+    or.q    r2, r2, #0x20
+    move.q  r3, #0x74              ; 't'
+    bne     r2, r3, .ria_no
+    ; Word boundary after "AOT": anything that is not an identifier continuation
+    ; (alpha/digit/'$') is the direct-only RUN AOT form. Mirrors the immediate
+    ; matcher repl_check_run_aot so punctuation tails (RUN AOT,1 / =1 / "...")
+    ; are rejected, not treated as a plain RUN statement.
+    load.b  r2, 3(r4)
+    move.q  r3, #0x24              ; '$' -> identifier suffix
+    beq     r2, r3, .ria_no
+    or.q    r2, r2, #0x20
+    move.q  r3, #0x30              ; '0'
+    blt     r2, r3, .ria_yes       ; null / space / punctuation below '0'
+    move.q  r3, #0x39              ; '9'
+    ble     r2, r3, .ria_no        ; digit
+    move.q  r3, #0x61              ; 'a'
+    blt     r2, r3, .ria_yes       ; punctuation between '9' and 'a'
+    move.q  r3, #0x7A              ; 'z'
+    ble     r2, r3, .ria_no        ; letter
+    bra     .ria_yes               ; punctuation above 'z' (incl. tokens >= 0x80)
+.ria_yes:
+    move.q  r8, #1
+    rts
+.ria_no:
+    move.q  r8, r0
+    rts
+
+; aot_match_kw - match lowercase keyword at R5 against text at R17 with a word
+; boundary. Returns R8=1 on match. Does not advance R17. Clobbers R2-R5.
+aot_match_kw:
+    move.q  r4, r17
+.mk_loop:
+    load.b  r3, (r5)
+    beqz    r3, .mk_boundary       ; consumed whole keyword
+    load.b  r2, (r4)
+    or.q    r2, r2, #0x20
+    bne     r2, r3, .mk_no
+    add.q   r4, r4, #1
+    add.q   r5, r5, #1
+    bra     .mk_loop
+.mk_boundary:
+    load.b  r2, (r4)
+    move.q  r3, #0x24              ; '$'
+    beq     r2, r3, .mk_no
+    or.q    r2, r2, #0x20
+    move.q  r3, #0x30              ; '0'
+    blt     r2, r3, .mk_yes        ; null/space/':'/etc
+    move.q  r3, #0x39              ; '9'
+    ble     r2, r3, .mk_no         ; digit
+    move.q  r3, #0x61              ; 'a'
+    blt     r2, r3, .mk_yes
+    move.q  r3, #0x7A              ; 'z'
+    ble     r2, r3, .mk_no         ; alpha
+.mk_yes:
+    move.q  r8, #1
+    rts
+.mk_no:
+    move.q  r8, r0
+    rts
+
+; aot_match_fn - like aot_match_kw, but only succeeds when the matched keyword
+; is in function-call form: the next non-space char must be '('. This matches
+; the interpreter, which treats COCALL/COSTATUS as coprocessor functions only
+; when called, leaving plain identifiers (X=COCALL+1) as ordinary variables.
+; Input: R5 = lowercase keyword, R17 = text. Output: R8 = 1 on a call. Clobbers R2-R5.
+aot_match_fn:
+    move.q  r4, r17
+.mf_loop:
+    load.b  r3, (r5)
+    beqz    r3, .mf_paren
+    load.b  r2, (r4)
+    or.q    r2, r2, #0x20
+    bne     r2, r3, .mf_no
+    add.q   r4, r4, #1
+    add.q   r5, r5, #1
+    bra     .mf_loop
+.mf_paren:
+    load.b  r2, (r4)
+    move.q  r3, #0x20               ; skip spaces between name and '('
+    bne     r2, r3, .mf_chk
+    add.q   r4, r4, #1
+    bra     .mf_paren
+.mf_chk:
+    move.q  r3, #0x28               ; '('
+    beq     r2, r3, .mf_yes
+.mf_no:
+    move.q  r8, r0
+    rts
+.mf_yes:
+    move.q  r8, #1
+    rts
+
+; aot_skip_data - advance R17 past a DATA payload to the next ':' or end of
+; line, mirroring exec_do_data exactly (no string awareness). Clobbers R1, R2.
+aot_skip_data:
+.skd_loop:
+    load.b  r1, (r17)
+    beqz    r1, .skd_end
+    move.q  r2, #0x3A               ; ':'
+    beq     r1, r2, .skd_end
+    add.q   r17, r17, #1
+    bra     .skd_loop
+.skd_end:
+    rts
+
+; aot_check_raw_root - R17 at a raw alpha root. Returns R8 = reason string ptr
+; for a rejected keyword, or 0 if the root is an allowed statement (variable /
+; implied LET). Clobbers R2-R5.
+; COCALL and COSTATUS are not checked here: they are functions, valid as
+; variable names without a following '(', so the call-syntax-aware body scan
+; (aot_match_fn) handles them whether they appear as a root or in an expression.
+aot_check_raw_root:
+    la      r5, aot_kw_compile
+    jsr     aot_match_kw
+    bnez    r8, .crr_compile
+    la      r5, aot_kw_costart
+    jsr     aot_match_kw
+    bnez    r8, .crr_costart
+    la      r5, aot_kw_costop
+    jsr     aot_match_kw
+    bnez    r8, .crr_costop
+    la      r5, aot_kw_cowait
+    jsr     aot_match_kw
+    bnez    r8, .crr_cowait
+    la      r5, aot_kw_host
+    jsr     aot_match_kw
+    bnez    r8, .crr_host
+    la      r5, aot_kw_dir
+    jsr     aot_match_kw
+    bnez    r8, .crr_dir
+    move.q  r8, r0
+    rts
+.crr_compile:
+    ; DIR and COMPILE are not intercepted by exec_line, so the interpreter
+    ; accepts COMPILE=... / COMPILE(...) as an implied-LET variable or array.
+    ; Only flag them as direct-only when not used in assignment/array form.
+    ; (HOST/COSTART/COSTOP/COWAIT are intercepted as commands regardless, so
+    ; they are not exempted.)
+    jsr     aot_root_is_var
+    bnez    r8, .crr_allow
+    la      r8, aot_rsn_compile
+    rts
+.crr_costart:
+    la      r8, aot_rsn_costart
+    rts
+.crr_costop:
+    la      r8, aot_rsn_costop
+    rts
+.crr_cowait:
+    la      r8, aot_rsn_cowait
+    rts
+.crr_host:
+    la      r8, aot_rsn_host
+    rts
+.crr_dir:
+    jsr     aot_root_is_var
+    bnez    r8, .crr_allow
+    la      r8, aot_rsn_dir
+    rts
+.crr_allow:
+    move.q  r8, r0
+    rts
+
+; aot_root_is_var - R4 = pointer just past a matched DIR/COMPILE root keyword
+; (left there by aot_match_kw). Returns R8=1 if the keyword is an implied-LET
+; variable: the next non-space token is '=' (raw or TK_EQUAL) or '(' (array).
+; Clobbers R2, R3, R4.
+aot_root_is_var:
+.riv_sp:
+    load.b  r2, (r4)
+    move.q  r3, #0x20               ; space
+    bne     r2, r3, .riv_chk
+    add.q   r4, r4, #1
+    bra     .riv_sp
+.riv_chk:
+    move.q  r3, #0x3D               ; raw '='
+    beq     r2, r3, .riv_yes
+    move.q  r3, #TK_EQUAL           ; tokenised '='
+    beq     r2, r3, .riv_yes
+    move.q  r3, #0x28               ; '(' array subscript
+    beq     r2, r3, .riv_yes
+    move.q  r8, r0
+    rts
+.riv_yes:
+    move.q  r8, #1
+    rts
+
+aot_err_prefix:
+    dc.b    "?COMPILE ERROR IN ", 0
+    align 4
+aot_err_colon:
+    dc.b    ": ", 0
+    align 4
+
+aot_kw_dir:      dc.b "dir", 0
+aot_kw_host:     dc.b "host", 0
+aot_kw_costart:  dc.b "costart", 0
+aot_kw_costop:   dc.b "costop", 0
+aot_kw_cowait:   dc.b "cowait", 0
+aot_kw_cocall:   dc.b "cocall", 0
+aot_kw_costatus: dc.b "costatus", 0
+aot_kw_compile:  dc.b "compile", 0
+    align 4
+
+aot_rsn_dir:      dc.b "DIR is direct-only", 0
+aot_rsn_host:     dc.b "HOST cannot be compiled", 0
+aot_rsn_costart:  dc.b "COSTART cannot be compiled", 0
+aot_rsn_costop:   dc.b "COSTOP cannot be compiled", 0
+aot_rsn_cowait:   dc.b "COWAIT cannot be compiled", 0
+aot_rsn_cocall:   dc.b "COCALL cannot be compiled", 0
+aot_rsn_costatus: dc.b "COSTATUS cannot be compiled", 0
+aot_rsn_compile:  dc.b "COMPILE is direct-only", 0
+aot_rsn_runaot:   dc.b "RUN AOT is direct-only", 0
+    align 4
 
 ; ============================================================================
 ; repl_check_dir - Check if input is "DIR" (case-insensitive)
@@ -936,6 +1825,53 @@ repl_check_new:
     load.b  r2, (r1)
     or.l    r2, r2, #0x20
     move.q  r3, #0x77               ; 'w'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    beqz    r2, .yes
+    move.q  r3, #0x20
+    beq     r2, r3, .yes
+    bra     .no
+
+.yes:
+    move.q  r8, #1
+    rts
+.no:
+    move.q  r8, r0
+    rts
+
+; ============================================================================
+; repl_check_cont - Check if input is "CONT" (case-insensitive)
+; ============================================================================
+; Input:  R1 = pointer to input buffer
+; Output: R8 = 1 if CONT, 0 otherwise
+; Clobbers: R2-R5
+
+repl_check_cont:
+    jsr     repl_skip_spaces
+
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x63               ; 'c'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6F               ; 'o'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x6E               ; 'n'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x74               ; 't'
     bne     r2, r3, .no
 
     add.q   r1, r1, #1
@@ -1168,7 +2104,7 @@ repl_skip_spaces:
 ; ============================================================================
 
 repl_str_banner:
-    dc.b    "EhBASIC IE64 v1.3", 0x0D, 0x0A
+    dc.b    "EhBASIC IE64 v3.1", 0x0D, 0x0A
     dc.b    "(c) Zayn Otley, 2024-2026", 0x0D, 0x0A
     dc.b    "Based on EhBASIC by Lee Davison", 0
     align 4
@@ -1196,6 +2132,37 @@ repl_msg_aros_error:
 repl_msg_intuitionos_error:
     dc.b    "?INTUITIONOS NOT AVAILABLE", 0
     align 4
+
+repl_msg_compiling:
+    dc.b    "Compiling to native code...", 0
+    align 4
+
+repl_msg_syntax_in0:
+    dc.b    "?SYNTAX ERROR IN 0", 0
+    align 4
+
+repl_msg_fc_in0:
+    dc.b    "?FC ERROR IN 0", 0
+    align 4
+
+; Temporary front-end placeholder for statements the transpiler cannot yet
+; lower. RUN AOT still uses it; COMPILE reaches it only for unsupported programs.
+repl_msg_aot_stub:
+    dc.b    "?COMPILE ERROR IN 0: native code generation not yet implemented", 0
+    align 4
+
+repl_msg_aot_oom:
+    dc.b    "?OUT OF MEMORY ERROR IN 0: out of compiler memory", 0
+    align 4
+
+repl_msg_fileerr_in0:
+    dc.b    "?FILE ERROR IN 0", 0
+    align 4
+
+repl_msg_aot_asm_err:
+    dc.b    "?COMPILE ERROR IN 0: internal assembler error", 0
+    align 4
+
 
 ; ============================================================================
 ; INCLUDE ALL INTERPRETER MODULES
@@ -1232,3 +2199,4 @@ include "ehbasic_hw_voodoo.inc"
 include "ehbasic_file_io.inc"
 include "ehbasic_hw_coproc.inc"
 include "ie64_fp.inc"
+include "ehbasic_aot.inc"

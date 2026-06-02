@@ -466,9 +466,40 @@ exec_do_load:
     rts
 
 .load_process:
-    ; NEW (clear current program first)
+    ; NEW (clear current program first; line_init also clears AOT_SRC_DIR)
     jsr     line_init
     jsr     var_init
+
+    ; Record the source directory: the FILE_NAME_BUF prefix up to and including
+    ; the last '/'. COMPILE writes its output beside this directory. No '/' means
+    ; the File I/O root (AOT_SRC_DIR left empty).
+    la      r1, FILE_NAME_BUF
+    move.q  r2, r0                 ; R2 = directory length (bytes up to last '/')
+    move.q  r3, r0                 ; R3 = scan index
+.load_dir_scan:
+    add.q   r4, r1, r3
+    load.b  r5, (r4)
+    beqz    r5, .load_dir_copy
+    move.q  r6, #0x2F              ; '/'
+    bne     r5, r6, .load_dir_next
+    add.q   r2, r3, #1             ; include the separator
+.load_dir_next:
+    add.q   r3, r3, #1
+    bra     .load_dir_scan
+.load_dir_copy:
+    la      r7, AOT_SRC_DIR
+    move.q  r3, r0
+.load_dir_cpy_loop:
+    beq     r3, r2, .load_dir_done
+    add.q   r4, r1, r3
+    load.b  r5, (r4)
+    add.q   r6, r7, r3
+    store.b r5, (r6)
+    add.q   r3, r3, #1
+    bra     .load_dir_cpy_loop
+.load_dir_done:
+    add.q   r6, r7, r2
+    store.b r0, (r6)              ; null-terminate
 
     ; State management: R25=read ptr, R26=end ptr, R27=line#
     push    r25
@@ -632,7 +663,20 @@ exec_do_bload:
     bne     r1, r2, .bload_syntax_err
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
-    jsr     expr_eval
+    jsr     expr_eval               ; R8 = destination (FP32)
+
+    ; The File I/O ABI carries the destination through the 32-bit FILE_DATA_PTR,
+    ; so a destination of 2^32 or more cannot be represented. fp_fix would saturate
+    ; it silently (fcvtfi is a signed int32 truncation), so test the FP value here,
+    ; before the conversion, and raise ?FC ERROR rather than loading to a bad
+    ; address. 2^32 = 0x4F800000 in FP32.
+    move.q  r10, r8                 ; preserve the destination value
+    move.l  r9, #0x4F800000         ; 2^32
+    jsr     fp_cmp                  ; R8 = -1 (less), 0 (equal), 1 (greater)
+    move.l  r1, #0xFFFFFFFF         ; -1 -> destination < 2^32 (representable)
+    bne     r8, r1, .bload_range_err
+    move.q  r8, r10                 ; restore the destination value
+
     jsr     fp_int
     jsr     fp_fix                  ; R8 = destination address
     move.q  r11, r8
@@ -661,6 +705,12 @@ exec_do_bload:
 
 .bload_syntax_err:
     ; Match existing interpreter style: fail silently on malformed statement.
+    rts
+
+.bload_range_err:
+    move.q  r8, #ERR_FC
+    la      r9, err_msg_fc
+    jsr     raise_error
     rts
 
 .bload_success:

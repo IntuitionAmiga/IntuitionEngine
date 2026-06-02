@@ -120,7 +120,9 @@ func TestCPU64LoadFlatProgramBytes_LoadsLargeImagePastStackStart(t *testing.T) {
 	tailAddr := uint32(PROG_START + programLen + 16)
 	cpu.memory[tailAddr] = sentinel
 
-	cpu.LoadFlatProgramBytes(program)
+	if err := cpu.LoadFlatProgramBytes(program); err != nil {
+		t.Fatalf("LoadFlatProgramBytes: %v", err)
+	}
 
 	pastStack := STACK_START + 256
 	want := program[int(pastStack-PROG_START)]

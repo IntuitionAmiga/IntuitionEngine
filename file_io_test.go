@@ -53,6 +53,218 @@ func TestFileIO_ReadFile(t *testing.T) {
 	}
 }
 
+// TestFileIO_ReadRejectsOutOfRangeDestination checks the read-staging safety
+// guard: a destination whose [FILE_DATA_PTR, +len) span overflows the 32-bit
+// address space or runs past guest RAM is refused whole (status 1, range error,
+// zero result length) instead of wrapping the address counter or dropping bytes
+// out of bounds. The normal in-range ABI is exercised by TestFileIO_ReadFile.
+func TestFileIO_ReadRejectsOutOfRangeDestination(t *testing.T) {
+	tmpDir := t.TempDir()
+	content := bytes.Repeat([]byte{0xAB}, 64)
+	if err := os.WriteFile(filepath.Join(tmpDir, "blob.bin"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name    string
+		dataPtr func(memLen int) uint32
+	}{
+		// Near the top of the 32-bit space: ptr+len overflows uint32.
+		{"address_overflow", func(int) uint32 { return 0xFFFFFFF0 }},
+		// Just below the end of guest RAM: ptr+len runs past the backing memory.
+		{"exceeds_guest_ram", func(memLen int) uint32 { return uint32(memLen) - 8 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := NewMachineBus()
+			fio := NewFileIODevice(bus, tmpDir)
+
+			fileNameAddr := uint32(0x1000)
+			for i, b := range []byte("blob.bin\x00") {
+				bus.Write8(fileNameAddr+uint32(i), b)
+			}
+
+			fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+			fio.HandleWrite(FILE_DATA_PTR, tc.dataPtr(len(bus.memory)))
+			fio.HandleWrite(FILE_CTRL, FILE_OP_READ)
+
+			if got := fio.HandleRead(FILE_STATUS); got != 1 {
+				t.Fatalf("status = %d, want 1 (refused)", got)
+			}
+			if got := fio.HandleRead(FILE_ERROR_CODE); got != FILE_ERR_RANGE {
+				t.Fatalf("error code = %d, want FILE_ERR_RANGE (%d)", got, FILE_ERR_RANGE)
+			}
+			if got := fio.HandleRead(FILE_RESULT_LEN); got != 0 {
+				t.Fatalf("result len = %d, want 0 (nothing transferred)", got)
+			}
+			// Low memory must be untouched (no wrapped writes).
+			for a := uint32(0); a < 64; a++ {
+				if v := bus.Read8(a); v != 0 {
+					t.Fatalf("low memory corrupted at 0x%X = 0x%02X, want 0", a, v)
+				}
+			}
+		})
+	}
+}
+
+// TestFileIO_ReadRejectsWrapWithLargeBacking covers the case the guest-RAM bound
+// alone misses: with sparse backing larger than 4 GiB, a destination near the top
+// of the 32-bit space (e.g. 0xFFFFFFF0 + 64 = 0x100000030) is below
+// backingVisibleSize yet still wraps the uint32 write address into low memory.
+// The read must be refused because the write loop is uint32-addressed.
+func TestFileIO_ReadRejectsWrapWithLargeBacking(t *testing.T) {
+	bus := NewMachineBus()
+	const backingSize = uint64(5) << 30 // 5 GiB, sparse (no physical allocation)
+	bus.SetBacking(NewSparseBacking(backingSize))
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    backingSize,
+		ActiveVisibleRAM: backingSize,
+		VisibleCeiling:   backingSize,
+	})
+
+	tmpDir := t.TempDir()
+	content := bytes.Repeat([]byte{0xCD}, 64)
+	if err := os.WriteFile(filepath.Join(tmpDir, "blob.bin"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fio := NewFileIODevice(bus, tmpDir)
+	fileNameAddr := uint32(0x1000)
+	for i, b := range []byte("blob.bin\x00") {
+		bus.Write8(fileNameAddr+uint32(i), b)
+	}
+
+	fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+	fio.HandleWrite(FILE_DATA_PTR, 0xFFFFFFF0) // +64 = 0x100000030, wraps uint32
+	fio.HandleWrite(FILE_CTRL, FILE_OP_READ)
+
+	if got := fio.HandleRead(FILE_STATUS); got != 1 {
+		t.Fatalf("status = %d, want 1 (refused)", got)
+	}
+	if got := fio.HandleRead(FILE_ERROR_CODE); got != FILE_ERR_RANGE {
+		t.Fatalf("error code = %d, want FILE_ERR_RANGE (%d)", got, FILE_ERR_RANGE)
+	}
+	// The wrapped low-memory region must be untouched.
+	for a := uint32(0); a < 64; a++ {
+		if v := bus.Read8(a); v != 0 {
+			t.Fatalf("low memory corrupted by wrap at 0x%X = 0x%02X, want 0", a, v)
+		}
+	}
+}
+
+// TestFileIO_ListRejectsWrapWithLargeBacking covers the directory-listing path:
+// doList is uint32-addressed (f.fileDataPtr+uint32(i) plus a trailing NUL at
+// +uint32(len(data))), so a listing staged near the top of the 32-bit space wraps
+// into low memory exactly like a read. With sparse backing larger than 4 GiB the
+// guest-RAM bound alone does not catch this; the listing must be refused because
+// the staging span [FILE_DATA_PTR, +len+1) crosses 2^32.
+func TestFileIO_ListRejectsWrapWithLargeBacking(t *testing.T) {
+	bus := NewMachineBus()
+	const backingSize = uint64(5) << 30 // 5 GiB, sparse (no physical allocation)
+	bus.SetBacking(NewSparseBacking(backingSize))
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    backingSize,
+		ActiveVisibleRAM: backingSize,
+		VisibleCeiling:   backingSize,
+	})
+
+	tmpDir := t.TempDir()
+	// Several files so the joined listing exceeds 16 bytes: with ptr 0xFFFFFFF0
+	// the trailing NUL alone lands at 0x100000000 once len reaches 16.
+	for _, name := range []string{"alpha.txt", "bravo.txt", "charlie.txt"} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fio := NewFileIODevice(bus, tmpDir)
+	fileNameAddr := uint32(0x1000)
+	for i, b := range []byte(".\x00") {
+		bus.Write8(fileNameAddr+uint32(i), b)
+	}
+
+	fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+	fio.HandleWrite(FILE_DATA_PTR, 0xFFFFFFF0) // listing length wraps the NUL store
+	fio.HandleWrite(FILE_CTRL, FILE_OP_LIST)
+
+	if got := fio.HandleRead(FILE_STATUS); got != 1 {
+		t.Fatalf("status = %d, want 1 (refused)", got)
+	}
+	if got := fio.HandleRead(FILE_ERROR_CODE); got != FILE_ERR_RANGE {
+		t.Fatalf("error code = %d, want FILE_ERR_RANGE (%d)", got, FILE_ERR_RANGE)
+	}
+	if got := fio.HandleRead(FILE_RESULT_LEN); got != 0 {
+		t.Fatalf("result len = %d, want 0 (nothing transferred)", got)
+	}
+	// The wrapped low-memory region must be untouched.
+	for a := uint32(0); a < 64; a++ {
+		if v := bus.Read8(a); v != 0 {
+			t.Fatalf("low memory corrupted by wrap at 0x%X = 0x%02X, want 0", a, v)
+		}
+	}
+}
+
+// TestFileIO_ReadRejectsSignExtendWindow covers the exact boundary the 2^32-only
+// guard missed: a staging span whose bytes fall in the bus sign-extended alias
+// window [busMemMaxBytes (0xFFFF0000), 2^32). Every bus access aliases those
+// addresses to low memory, so even a span ending exactly at 2^32 (which is not a
+// uint32 wrap past 2^32) writes low RAM. The guard must reject against
+// busMemMaxBytes, not just 2^32.
+func TestFileIO_ReadRejectsSignExtendWindow(t *testing.T) {
+	cases := []struct {
+		name    string
+		dataPtr uint32
+		size    int
+	}{
+		// end == exactly 2^32: old `end > 1<<32` let this through.
+		{"end_exactly_2pow32", 0xFFFFFFF0, 16},
+		// start at the window base, end < 2^32: never near 2^32 yet still aliases.
+		{"start_at_window_base", 0xFFFF0000, 8},
+		// span straddling the window base.
+		{"straddles_window_base", 0xFFFEFFF8, 64},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := NewMachineBus()
+			const backingSize = uint64(5) << 30 // 5 GiB sparse: backing alone would not catch these
+			bus.SetBacking(NewSparseBacking(backingSize))
+			bus.SetSizing(MemorySizing{
+				TotalGuestRAM:    backingSize,
+				ActiveVisibleRAM: backingSize,
+				VisibleCeiling:   backingSize,
+			})
+
+			tmpDir := t.TempDir()
+			content := bytes.Repeat([]byte{0xEE}, tc.size)
+			if err := os.WriteFile(filepath.Join(tmpDir, "blob.bin"), content, 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			fio := NewFileIODevice(bus, tmpDir)
+			fileNameAddr := uint32(0x1000)
+			for i, b := range []byte("blob.bin\x00") {
+				bus.Write8(fileNameAddr+uint32(i), b)
+			}
+			fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+			fio.HandleWrite(FILE_DATA_PTR, tc.dataPtr)
+			fio.HandleWrite(FILE_CTRL, FILE_OP_READ)
+
+			if got := fio.HandleRead(FILE_STATUS); got != 1 {
+				t.Fatalf("status = %d, want 1 (refused)", got)
+			}
+			if got := fio.HandleRead(FILE_ERROR_CODE); got != FILE_ERR_RANGE {
+				t.Fatalf("error code = %d, want FILE_ERR_RANGE (%d)", got, FILE_ERR_RANGE)
+			}
+			// The aliased low-memory region must be untouched.
+			for a := uint32(0); a < 64; a++ {
+				if v := bus.Read8(a); v != 0 {
+					t.Fatalf("low memory corrupted by sign-extend alias at 0x%X = 0x%02X, want 0", a, v)
+				}
+			}
+		})
+	}
+}
+
 func TestFileIO_ReadFileIgnoresStaleDataLen(t *testing.T) {
 	bus := NewMachineBus()
 	tmpDir, err := os.MkdirTemp("", "fileio_test")

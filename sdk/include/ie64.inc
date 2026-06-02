@@ -41,6 +41,69 @@ STACK_TOP         equ 0x09F000              ; Top of stack (grows downward)
 ; Interpreter code: placed by assembler from org 0x1000
 ; Reserve 0x1000-0x20FFF (128KB) for code growth.
 
+; --- Standalone COMPILE runtime blob (placement B) --------------------------
+; The COMPILE runtime blob (expr/var/string/maths/exec closure) is linked at
+; AOT_RT_BASE and copied there by the standalone bootstrap. Placement B puts it in
+; the program-text gap [BASIC_PROG_START, BASIC_PROG_LIMIT), which is free RAM in a
+; standalone image (Phases 2-4) because bundled token spans pack low and are
+; addressed by R17. The trimmed blob measures ~35 KiB (it bundles exec.inc for the
+; exec_do_* statement helpers, with hardware/file handlers stubbed). This leaves the
+; full 0x1000-0x021000 PROGRAM region for user code + bundled token spans and a wide
+; destination margin to BASIC_PROG_LIMIT. Layout/budget rules and assertions are in
+; COMPILE_RUNTIME_BUNDLE_PLAN.md. Placement B couples to a future standalone
+; LIST/SAVE/LOAD source region (Phase 5), to be reconciled when that lands.
+AOT_RT_BASE       equ 0x023000              ; runtime blob link ORG and copy dest (= BASIC_PROG_START)
+AOT_RT_LIMIT      equ 0x050000              ; blob must end at or below here (= BASIC_PROG_LIMIT)
+; Maximum runtime-blob byte size. This is BOTH the compile-time low-32 staging
+; allocation (aot_read_rt_blob) AND the hard cap the generator/tests enforce
+; (tools/gen_runtime_blob, TestAOTRuntimeBlob). Tying them together guarantees a
+; valid blob can never exceed the staging buffer (a File I/O read writes the whole
+; file before FILE_RESULT_LEN is checked, so an over-large blob would otherwise
+; corrupt the neighbouring AOT workspace). Current blob ~35 KiB.
+AOT_RT_BLOB_MAX   equ 0x10000               ; 64 KiB
+
+; Jump-table entry addresses (blob base + slot*8); order matches aot_runtime_blob.asm.
+; Slots are dc.q entries the standalone transpiler calls/derefs through, so generated
+; code is decoupled from the blob's internal layout.
+RT_EXPR_EVAL      equ AOT_RT_BASE + 0x00
+RT_VAR_LOOKUP     equ AOT_RT_BASE + 0x08
+RT_VAR_LOOKUP_TAG equ AOT_RT_BASE + 0x10
+RT_VAR_READ       equ AOT_RT_BASE + 0x18
+RT_VAR_PARSE_NAME equ AOT_RT_BASE + 0x20
+RT_ARR_FIND       equ AOT_RT_BASE + 0x28
+RT_ARR_CREATE     equ AOT_RT_BASE + 0x30
+RT_ARR_DIM        equ AOT_RT_BASE + 0x38
+RT_SVAR_LOOKUP    equ AOT_RT_BASE + 0x40
+RT_SVAR_READ      equ AOT_RT_BASE + 0x48
+RT_STR_EVAL       equ AOT_RT_BASE + 0x50
+RT_STR_ALLOC      equ AOT_RT_BASE + 0x58
+RT_VAR_INIT       equ AOT_RT_BASE + 0x60
+RT_RAISE_ERROR    equ AOT_RT_BASE + 0x68
+RT_EXEC_DO_FOR    equ AOT_RT_BASE + 0x70
+RT_EXEC_DO_NEXT   equ AOT_RT_BASE + 0x78
+RT_STMT_JUMP_TAB  equ AOT_RT_BASE + 0x80    ; deref -> base of the blob's stmt_jump_table
+RT_IF_ELSE_BOUND  equ AOT_RT_BASE + 0x88    ; deref -> address of the blob's if_else_boundary
+RT_EXEC_DO_LET    equ AOT_RT_BASE + 0x90
+RT_EXEC_DO_PRINT  equ AOT_RT_BASE + 0x98
+RT_EXEC_DO_DIM    equ AOT_RT_BASE + 0xA0
+RT_EXEC_DO_READ   equ AOT_RT_BASE + 0xA8
+RT_EXEC_DO_RESTORE equ AOT_RT_BASE + 0xB0
+RT_EXEC_DO_INPUT  equ AOT_RT_BASE + 0xB8
+RT_EXEC_DO_LIST   equ AOT_RT_BASE + 0xC0
+RT_EXEC_DO_SAVE   equ AOT_RT_BASE + 0xC8
+RT_EXEC_DO_BLOAD  equ AOT_RT_BASE + 0xD0
+
+; Standalone READ/DATA: the bundled DATA reader scans the tokenised programme via
+; state[ST_PROG_START]. A standalone image has no programme text, so COMPILE bundles
+; the tokenised programme (line records) into the output and the bootstrap copies it
+; to AOT_RT_PROG (above the runtime blob, below the variable region) and points
+; ST_PROG_START at it. The line-record next-pointers are relocated by COMPILE when it
+; copies them (they were absolute at BASIC_PROG_START).
+AOT_RT_PROG       equ 0x034000              ; bundled programme dest (after the max blob, below vars)
+AOT_USE_PROG      equ 0x022B18              ; q: nonzero -> bundle the tokenised programme (READ/DATA)
+AOT_RT_PROG_LEN   equ 0x022B20              ; q: bundled programme byte length
+AOT_RT_PROG_PAY   equ 0x022B28              ; q: guest address of the bundled programme payload (__rtprog)
+
 ; Working buffers
 BASIC_LINE_BUF    equ 0x021000              ; Input line buffer (4KB, 1024 chars max)
 BASIC_LINE_BUFLEN equ 1024
@@ -80,6 +143,68 @@ ST_CONT_LINE_PTR  equ 0x64                  ; CONT: saved line pointer (R14)
 ST_CONT_TEXT_PTR  equ 0x68                  ; CONT: saved text pointer (R17)
 ST_ERROR_LINE     equ 0x6C                  ; Last runtime error line
 ST_TERM_COL       equ 0x70                  ; Current terminal output column
+
+; ----------------------------------------------------------------------------
+; AOT compiler-time memory allocators (RUN AOT / COMPILE)
+; ----------------------------------------------------------------------------
+; Two top-down 4 KiB-aligned bump allocators carve scratch/output space out of
+; guest RAM above every fixed EhBASIC region. The reserved low regions per the
+; engine memory map (registers.go) - BASIC code/data/stacks, the I/O page,
+; VGA/ULA/Voodoo apertures, and the 5 MiB main VRAM aperture (0x100000-0x5FFFFF)
+; - end at or below 0x5FFFFF, but the fixed LOAD/SAVE scratch buffers sit higher:
+; FILE_NAME_BUF at 0x6FF000 and FILE_DATA_BUF at 0x700000 (~1 MiB). The floor is
+; therefore set above all of these, at 0x800000, so a large compile workspace can
+; never descend into the resident file buffers.
+AOT_ALLOC_FLOOR   equ 0x00800000            ; lowest address either allocator may return (above file buffers)
+AOT_LOW32_CAP     equ 0xFFFF0000            ; allocLow32 stays below this (32-bit ABI margin)
+; Both modes share ONE descending high-water pointer so the two windows can
+; never overlap (alloc64 and allocLow32 carve disjoint blocks from the same
+; frontier). allocLow32 additionally clamps its base down to AOT_LOW32_CAP so
+; its spans stay 32-bit-addressable. State lives in spare BASIC_STATE space
+; (offsets <= 0x70 are used).
+AOT_ARENA_NEXT    equ 0x022100              ; q: shared arena frontier (top-down)
+AOT_MNEM_BUF      equ 0x022200              ; 8-byte scratch for the parsed mnemonic/label (q-aligned)
+AOT_SYMCNT        equ 0x022300              ; q: number of symbols defined
+AOT_SYMTAB        equ 0x022400              ; legacy fixed 1 KiB symbol slot (default for unit tests)
+AOT_SYMTAB_PTR    equ 0x022890              ; q: base of the active symbol table (set by the caller)
+AOT_SYM_MAX       equ 4096                  ; symbol table capacity (16 bytes/entry)
+AOT_SYMTAB_BYTES  equ 0x10000               ; AOT_SYM_MAX * 16 = allocation size for the symbol table
+AOT_ASM_SRC       equ 0x022800              ; q: program assembler source pointer
+AOT_ASM_BASE      equ 0x022808             ; q: program link base address
+AOT_ASM_DEST      equ 0x022810             ; q: program output buffer base
+AOT_DC_TEXT       equ 0x022820             ; q: COMPILE asm-text buffer (low32)
+AOT_DC_CODE       equ 0x022828             ; q: COMPILE machine-code buffer (low32)
+AOT_DC_TLEN       equ 0x022830             ; q: COMPILE asm-text length
+AOT_DC_CLEN       equ 0x022838             ; q: COMPILE machine-code length
+AOT_TEXT_END      equ 0x022840             ; q: asm-text buffer end limit (0 = unbounded)
+AOT_CODE_END      equ 0x022848             ; q: machine-code buffer end limit (0 = unbounded)
+AOT_LBLCNT        equ 0x022850             ; q: compiler label id counter (unique branch labels per RUN AOT/COMPILE)
+AOT_SAVED_SP      equ 0x022858             ; q: RUN AOT arena entry stack pointer (END/STOP unwind target)
+AOT_LENIENT       equ 0x022860             ; q: nonzero -> private assembler resolves unknown labels to 0 (pass 1 sizing)
+AOT_RT_ERR        equ 0x022868             ; q: RUN AOT runtime error code set by compiled code (0 = none)
+AOT_CUR_SCOPE     equ 0x022870             ; q: private assembler current local-label scope (enclosing global label id)
+AOT_SCOPE_NEXT    equ 0x022878             ; q: private assembler next scope id to allocate
+AOT_QSCOPE        equ 0x022880             ; q: private assembler scratch for the current lookup's query scope
+AOT_USE_PRINT     equ 0x022888             ; q: transpiler flag - nonzero if the programme uses the bundled print helper
+AOT_USE_FP        equ 0x022898             ; q: transpiler flag - nonzero if the programme uses the bundled fp_print helper
+AOT_HELPER_FP     equ 0x0228A0             ; q: assembler flag - inject the fp_print symbol during pass 1
+AOT_HELPER_FP_ADDR equ 0x0228A8            ; q: bundled address of fp_print (link base + offset in the copied closure)
+AOT_HELPER_LEN    equ 0x0228B0             ; q: byte length of machine-code helpers copied ahead of the user code
+AOT_IF_LABEL      equ 0x0228B8             ; q: per-line IF skip-label id (0 = none); all IFs on a line skip to line end
+AOT_FOR_SP        equ 0x022A00             ; q: compile-time FOR-stack pointer (count of open FOR loops)
+AOT_FOR_STACK     equ 0x022A08             ; 8 q entries: loop-label ids for open FOR loops (NEXT branches back)
+AOT_FOR_SP_SAVE   equ 0x022A48             ; q: NEXT saves ST_GOSUB_SP here to detect loop (frame kept) vs done (popped)
+AOT_WHILE_SP      equ 0x022A50             ; q: compile-time WHILE-stack pointer
+AOT_WHILE_STACK   equ 0x022A58             ; 8 q entries: WHILE loop-label ids (WEND pops)
+AOT_DO_SP         equ 0x022AA0             ; q: compile-time DO-stack pointer
+AOT_DO_STACK      equ 0x022AA8             ; 8 q entries: DO loop-label ids (LOOP pops)
+AOT_IF_ELSE       equ 0x022AF0             ; q: pending IF ELSE-clause label id (0 = no ELSE on this IF)
+AOT_USE_RT        equ 0x022AF8             ; q: nonzero -> standalone programme calls the COMPILE runtime blob
+AOT_RT_BUF        equ 0x022B00             ; q: pointer to the low-32 buffer holding the blob bytes (File I/O read)
+AOT_RT_LEN        equ 0x022B08             ; q: blob byte length read from aot_runtime_blob.bin
+AOT_RT_PAYLOAD    equ 0x022B10             ; q: guest address of the bundled blob payload in the output image
+AOT_CONT_PC       equ 0x0228C0             ; q: RUN AOT STOP saved 64-bit native resume address (0 = no pending CONT)
+AOT_ASM_NAME_BUF  equ 0x022900             ; 256 bytes: derived "NAME.asm" filename
 
 ; EhBASIC runtime error codes
 ERR_SYNTAX        equ 1
@@ -2049,6 +2174,11 @@ FILE_OP_LIST      equ 3
 
 ; Scratch buffer addresses for EhBASIC LOAD/SAVE
 FILE_NAME_BUF     equ 0x6FF000              ; 256 bytes
+; Source directory of the most recently LOADed programme (the path prefix up to
+; and including the last '/'). Set on successful LOAD, cleared by NEW/line_init,
+; preserved on failed LOAD. COMPILE writes its output beside this directory; an
+; empty string means the File I/O root. Lives in the gap before FILE_DATA_BUF.
+AOT_SRC_DIR       equ 0x6FF100              ; 256 bytes
 FILE_DATA_BUF     equ 0x700000              ; Up to ~1MB safe area
 
 ; ============================================================================

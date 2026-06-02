@@ -35,6 +35,12 @@
 ; Clobbers: R1, R2
 
 line_init:
+    ; Clearing the program also clears the tracked LOAD source directory, so a
+    ; NEW or fresh program compiles to the File I/O root. A successful LOAD calls
+    ; line_init and then re-sets the directory from the loaded path.
+    la      r1, AOT_SRC_DIR
+    store.b r0, (r1)
+
     ; Write BASIC_PROG_START to ST_PROG_START in state block
     la      r1, BASIC_PROG_START
     store.l r1, (r16)               ; state[ST_PROG_START] = BASIC_PROG_START
@@ -140,6 +146,11 @@ line_store:
     move.q  r22, r8                 ; R22 = line number
     move.q  r23, r9                 ; R23 = content pointer
     move.q  r24, r10                ; R24 = content length
+
+    ; A programme edit (typed line, delete, or LOAD) invalidates any pending RUN AOT
+    ; STOP continuation: the resident compiled arena no longer matches the programme.
+    la      r1, AOT_CONT_PC
+    store.q r0, (r1)
 
     ; --- Step 1: Search for existing line ---
     jsr     line_search             ; R8 = found line (or 0), R9 = prev_next_ptr

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -83,16 +84,37 @@ func assertF32Equal(t *testing.T, label string, got, want uint32, ulpTolerance u
 }
 
 // buildAssembler compiles the IE64 assembler binary and returns its path.
+// The ie64asm binary is deterministic for a test run, so build it once and
+// share it across every caller. Dozens of tests call buildAssembler; rebuilding
+// per call dominated the suite's wall time (and pushed go test ./... toward the
+// package timeout). The temp dir lives for the test process (OS reclaims it).
+var (
+	asmBinOnce sync.Once
+	asmBinPath string
+	asmBinErr  error
+)
+
 func buildAssembler(t testing.TB) string {
 	t.Helper()
-	binPath := filepath.Join(t.TempDir(), "ie64asm")
-	cmd := exec.Command("go", "build", "-tags", "ie64", "-o", binPath,
-		filepath.Join(repoRootDir(t), "assembler", "ie64asm.go"))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to build ie64asm: %v\n%s", err, out)
+	asmBinOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "ie64asm")
+		if err != nil {
+			asmBinErr = err
+			return
+		}
+		bin := filepath.Join(dir, "ie64asm")
+		cmd := exec.Command("go", "build", "-tags", "ie64", "-o", bin,
+			filepath.Join(repoRootDir(t), "assembler", "ie64asm.go"))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			asmBinErr = fmt.Errorf("failed to build ie64asm: %v\n%s", err, out)
+			return
+		}
+		asmBinPath = bin
+	})
+	if asmBinErr != nil {
+		t.Fatalf("%v", asmBinErr)
 	}
-	return binPath
+	return asmBinPath
 }
 
 func repoRootDir(t testing.TB) string {
@@ -342,17 +364,9 @@ include "ehbasic_io.inc"
 		t.Fatalf("failed to write source: %v", err)
 	}
 
-	// Symlink include files
+	// Resolve includes via -I (portable; os.Symlink needs privileges on Windows).
 	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
-	for _, inc := range []string{"ie64.inc", "ie64_fp.inc", "ehbasic_io.inc"} {
-		src := filepath.Join(incDir, inc)
-		dst := filepath.Join(dir, inc)
-		if err := os.Symlink(src, dst); err != nil {
-			t.Fatalf("failed to symlink %s: %v", inc, err)
-		}
-	}
-
-	cmd := exec.Command(asmBin, srcPath)
+	cmd := exec.Command(asmBin, "-I", incDir, srcPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("assembly failed: %v\n%s\nSource:\n%s", err, out, source)
@@ -644,19 +658,7 @@ include "ie64_fp.inc"
 	}
 
 	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
-	for _, inc := range []string{"ie64.inc", "ie64_fp.inc", "ehbasic_io.inc",
-		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
-		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc", "ehbasic_exec.inc",
-		"ehbasic_hw_video.inc", "ehbasic_hw_audio.inc", "ehbasic_hw_system.inc",
-		"ehbasic_hw_host.inc", "ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc", "ehbasic_hw_coproc.inc"} {
-		src := filepath.Join(incDir, inc)
-		dst := filepath.Join(dir, inc)
-		if err := os.Symlink(src, dst); err != nil {
-			t.Fatalf("failed to symlink %s: %v", inc, err)
-		}
-	}
-
-	cmd := exec.Command(asmBin, srcPath)
+	cmd := exec.Command(asmBin, "-I", incDir, srcPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("assembly failed: %v\n%s\nSource:\n%s", err, out, source)
@@ -1109,20 +1111,7 @@ include "ie64_fp.inc"
 	}
 
 	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
-	for _, inc := range []string{"ie64.inc", "ie64_fp.inc", "ehbasic_io.inc",
-		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
-		"ehbasic_strings.inc", "ehbasic_exec.inc", "ehbasic_vars.inc",
-		"ehbasic_expr.inc", "ehbasic_hw_video.inc", "ehbasic_hw_audio.inc",
-		"ehbasic_hw_system.inc", "ehbasic_hw_host.inc", "ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc",
-		"ehbasic_hw_coproc.inc"} {
-		src := filepath.Join(incDir, inc)
-		dst := filepath.Join(dir, inc)
-		if err := os.Symlink(src, dst); err != nil {
-			t.Fatalf("failed to symlink %s: %v", inc, err)
-		}
-	}
-
-	cmd := exec.Command(asmBin, srcPath)
+	cmd := exec.Command(asmBin, "-I", incDir, srcPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("assembly failed: %v\n%s\nSource:\n%s", err, out, source)
@@ -1609,20 +1598,7 @@ include "ie64_fp.inc"
 	}
 
 	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
-	for _, inc := range []string{"ie64.inc", "ie64_fp.inc", "ehbasic_io.inc",
-		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
-		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc",
-		"ehbasic_exec.inc", "ehbasic_hw_video.inc", "ehbasic_hw_audio.inc",
-		"ehbasic_hw_system.inc", "ehbasic_hw_host.inc", "ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc",
-		"ehbasic_hw_coproc.inc"} {
-		src := filepath.Join(incDir, inc)
-		dst := filepath.Join(dir, inc)
-		if err := os.Symlink(src, dst); err != nil {
-			t.Fatalf("failed to symlink %s: %v", inc, err)
-		}
-	}
-
-	cmd := exec.Command(asmBin, srcPath)
+	cmd := exec.Command(asmBin, "-I", incDir, srcPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("assembly failed: %v\n%s\nSource:\n%s", err, out, source)
@@ -1887,19 +1863,7 @@ include "ie64_fp.inc"
 	}
 
 	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
-	for _, inc := range []string{"ie64.inc", "ie64_fp.inc", "ehbasic_io.inc",
-		"ehbasic_tokens.inc", "ehbasic_tokenizer.inc", "ehbasic_lineeditor.inc",
-		"ehbasic_expr.inc", "ehbasic_vars.inc", "ehbasic_strings.inc", "ehbasic_exec.inc",
-		"ehbasic_hw_video.inc", "ehbasic_hw_audio.inc", "ehbasic_hw_system.inc",
-		"ehbasic_hw_host.inc", "ehbasic_hw_voodoo.inc", "ehbasic_file_io.inc", "ehbasic_hw_coproc.inc"} {
-		src := filepath.Join(incDir, inc)
-		dst := filepath.Join(dir, inc)
-		if err := os.Symlink(src, dst); err != nil {
-			t.Fatalf("failed to symlink %s: %v", inc, err)
-		}
-	}
-
-	cmd := exec.Command(asmBin, srcPath)
+	cmd := exec.Command(asmBin, "-I", incDir, srcPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("assembly failed: %v\n%s\nSource:\n%s", err, out, source)
@@ -8174,27 +8138,39 @@ func TestHW_AHX_PlusOff(t *testing.T) {
 // =============================================================================
 
 // assembleREPL assembles the full ehbasic_ie64.asm REPL and returns the binary.
+// The REPL image is deterministic, so assemble it once and reuse the bytes.
+// Avoids ~dozens of redundant assemblies (and concurrent writes to the same
+// repo output path) across startREPL callers.
+var (
+	replBinOnce  sync.Once
+	replBinBytes []byte
+	replBinErr   error
+)
+
 func assembleREPL(t *testing.T) []byte {
 	t.Helper()
-	asmBin := buildAssembler(t)
-
-	exDir := filepath.Join(repoRootDir(t), "sdk", "examples", "asm")
-	incDir := filepath.Join(repoRootDir(t), "sdk", "include")
-	srcPath := filepath.Join(exDir, "ehbasic_ie64.asm")
-
-	cmd := exec.Command(asmBin, "-I", incDir, srcPath)
-	cmd.Dir = exDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("REPL assembly failed: %v\n%s", err, out)
+	replBinOnce.Do(func() {
+		asmBin := buildAssembler(t)
+		exDir := filepath.Join(repoRootDir(t), "sdk", "examples", "asm")
+		incDir := filepath.Join(repoRootDir(t), "sdk", "include")
+		srcPath := filepath.Join(exDir, "ehbasic_ie64.asm")
+		cmd := exec.Command(asmBin, "-I", incDir, srcPath)
+		cmd.Dir = exDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			replBinErr = fmt.Errorf("REPL assembly failed: %v\n%s", err, out)
+			return
+		}
+		b, err := os.ReadFile(filepath.Join(exDir, "ehbasic_ie64.ie64"))
+		if err != nil {
+			replBinErr = fmt.Errorf("failed to read REPL binary: %v", err)
+			return
+		}
+		replBinBytes = b
+	})
+	if replBinErr != nil {
+		t.Fatalf("%v", replBinErr)
 	}
-
-	outPath := filepath.Join(exDir, "ehbasic_ie64.ie64")
-	binary, err := os.ReadFile(outPath)
-	if err != nil {
-		t.Fatalf("failed to read REPL binary: %v", err)
-	}
-	return binary
+	return replBinBytes
 }
 
 // startREPL loads the REPL binary, starts the CPU, and waits for the first
@@ -8203,6 +8179,10 @@ func startREPL(t *testing.T) (*ehbasicTestHarness, string) {
 	t.Helper()
 	binary := assembleREPL(t)
 	h := newEhbasicHarness(t)
+	// Publish a guest RAM size so CR_RAM_SIZE_BYTES (mfcr cr15) is non-zero, as
+	// it is on the real VM; the AOT compiler (RUN AOT / COMPILE) needs it to
+	// allocate its arena. NewMachineBus leaves it 0 by default.
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	h.loadBytes(binary)
 
 	// Run until we see the first "Ready" prompt
@@ -8213,7 +8193,7 @@ func startREPL(t *testing.T) (*ehbasicTestHarness, string) {
 func TestREPL_BootBanner(t *testing.T) {
 	_, bootOutput := startREPL(t)
 
-	if !strings.Contains(bootOutput, "EhBASIC IE64 v1.3") {
+	if !strings.Contains(bootOutput, "EhBASIC IE64 v3.1") {
 		t.Fatalf("expected boot banner, got: %q", bootOutput)
 	}
 	if !strings.Contains(bootOutput, "Lee Davison") {
@@ -8396,7 +8376,7 @@ func TestLaunch_BasicImage_LoadAndRun(t *testing.T) {
 	// Run until boot banner + Ready prompt
 	output := h.runUntilPrompt()
 
-	if !strings.Contains(output, "EhBASIC IE64 v1.3") {
+	if !strings.Contains(output, "EhBASIC IE64 v3.1") {
 		t.Fatalf("expected boot banner from -basic-image load, got: %q", output)
 	}
 	if !strings.Contains(output, "Ready") {
@@ -8417,7 +8397,7 @@ func TestLaunch_BasicImage_FileLoad(t *testing.T) {
 	}
 
 	output := h.runUntilPrompt()
-	if !strings.Contains(output, "EhBASIC IE64 v1.3") {
+	if !strings.Contains(output, "EhBASIC IE64 v3.1") {
 		t.Fatalf("expected boot banner from file load, got: %q", output)
 	}
 }
@@ -10455,6 +10435,20 @@ func TestHW_BLoad_FileNotFound(t *testing.T) {
 	}
 }
 
+// BLOAD carries its destination through the 32-bit FILE_DATA_PTR ABI, so a
+// destination above 0xFFFFFFFF cannot be represented and must raise ?FC ERROR
+// instead of silently truncating the high address bits.
+func TestHW_BLoad_HighDestinationIsFCError(t *testing.T) {
+	asmBin := buildAssembler(t)
+	tmpDir := t.TempDir()
+
+	// 1E10 = 10,000,000,000, well above the representable 32-bit range (2^32).
+	out, _ := execStmtTestWithFileIO(t, asmBin, tmpDir, `10 BLOAD "x.bin", 1E10`)
+	if !strings.Contains(out, "?FC ERROR") {
+		t.Fatalf("BLOAD to a >=2^32 destination: expected ?FC ERROR, got %q", out)
+	}
+}
+
 func TestHW_BLoad_DoesNotResetProgramState(t *testing.T) {
 	asmBin := buildAssembler(t)
 	tmpDir := t.TempDir()
@@ -10641,6 +10635,7 @@ func newEhbasicREPLHarnessWithFileIO(t *testing.T, asmBin string, tmpDir string)
 
 	h := newEhbasicHarness(t)
 	fio := NewFileIODevice(h.bus, tmpDir)
+	fio.SetRuntimeBlob(runtimeBlobForTests(t)) // mirror the host serving the embedded blob
 	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
 	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
 	h.cpu.jitEnabled = true
@@ -10765,6 +10760,7 @@ func TestHW_JIT_LoadThenRun(t *testing.T) {
 
 	h := newEhbasicHarness(t)
 	fio := NewFileIODevice(h.bus, tmpDir)
+	fio.SetRuntimeBlob(runtimeBlobForTests(t)) // mirror the host serving the embedded blob
 	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
 	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
 	h.cpu.jitEnabled = true

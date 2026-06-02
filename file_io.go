@@ -19,6 +19,23 @@ type FileIODevice struct {
 	fileStatus    uint32
 	fileResultLen uint32
 	fileErrorCode uint32
+	// runtimeBlob, when set, is served for reads of runtimeBlobFileName regardless
+	// of the File I/O root. It is the standalone COMPILE runtime blob, provided by
+	// the host (embedded image or generated) so COMPILE can bundle it without the
+	// user having to place a sidecar file in their working directory.
+	runtimeBlob []byte
+}
+
+// runtimeBlobFileName is the reserved virtual filename the in-guest COMPILE path
+// reads to obtain the runtime blob. A read of this name is served from
+// FileIODevice.runtimeBlob (host-provided), not from disk, when that is set.
+const runtimeBlobFileName = "aot_runtime_blob.bin"
+
+// SetRuntimeBlob installs the host-provided runtime blob served for the reserved
+// virtual filename. Passing nil disables the virtual file (reads fall through to
+// disk). Used by main wiring (embedded blob) and tests (generated blob).
+func (f *FileIODevice) SetRuntimeBlob(blob []byte) {
+	f.runtimeBlob = blob
 }
 
 // NewFileIODevice creates a new File I/O device.
@@ -254,7 +271,15 @@ func (f *FileIODevice) readHostFile(fileName string) ([]byte, string, error, boo
 
 // doRead performs the actual file read operation.
 func (f *FileIODevice) doRead() {
-	fileName := f.resolveReadFileName(f.readFileName())
+	rawName := f.readFileName()
+	// Serve the reserved runtime-blob virtual file from the host-provided bytes,
+	// regardless of the File I/O root, so COMPILE never depends on a sidecar in the
+	// user's working directory.
+	if f.runtimeBlob != nil && rawName == runtimeBlobFileName {
+		f.writeReadResult(f.runtimeBlob, rawName, "<embedded>")
+		return
+	}
+	fileName := f.resolveReadFileName(rawName)
 	data, fullPath, err, ok := f.readHostFile(fileName)
 	if !ok {
 		f.fileStatus = 1
@@ -288,7 +313,25 @@ func (f *FileIODevice) doRead() {
 		return
 	}
 
-	// Write data to bus
+	f.writeReadResult(data, fileName, fullPath)
+}
+
+// writeReadResult stages read data into the FILE_DATA_PTR buffer, applying the
+// sign-extended-window / guest-RAM range guard, and sets the read result status.
+// Shared by disk reads and the host-provided runtime-blob virtual file.
+//
+// Refuse a staging buffer [FILE_DATA_PTR, +len) that reaches into the bus
+// sign-extended alias window or runs past guest RAM. Every bus access aliases
+// addresses >= busMemMaxBytes (0xFFFF0000) to low memory, so a span whose exclusive
+// end exceeds that cap would have its high bytes silently written to low RAM (this
+// also covers the uint32 2^32 wrap). Reject against the cap and backingVisibleSize.
+func (f *FileIODevice) writeReadResult(data []byte, fileName, fullPath string) {
+	if end := uint64(f.fileDataPtr) + uint64(len(data)); end > busMemMaxBytes || end > f.bus.backingVisibleSize() {
+		f.fileStatus = 1
+		f.fileErrorCode = FILE_ERR_RANGE
+		f.fileResultLen = 0
+		return
+	}
 	for i, b := range data {
 		f.bus.Write8(f.fileDataPtr+uint32(i), b)
 	}
@@ -302,7 +345,6 @@ func (f *FileIODevice) doRead() {
 			traceHostIO("FILEIO", fmt.Sprintf("IWAD sample data_ptr=0x%08X dir=0x%08X name=%q", f.fileDataPtr, dir, sample), fileName, fullPath, nil, len(data))
 		}
 	}
-
 	f.fileStatus = 0
 	f.fileErrorCode = FILE_ERR_OK
 	f.fileResultLen = uint32(len(data))
@@ -315,6 +357,17 @@ func (f *FileIODevice) doWrite() {
 	if !ok {
 		f.fileStatus = 1
 		f.fileErrorCode = FILE_ERR_PATH_TRAVERSAL
+		return
+	}
+
+	// Refuse a write whose source buffer [FILE_DATA_PTR, +len) reaches into the bus
+	// sign-extended alias window or runs past guest RAM. Addresses >= busMemMaxBytes
+	// (0xFFFF0000) alias to low memory on every access, so a span whose exclusive end
+	// exceeds that cap would read low RAM as the file contents (this also covers the
+	// uint32 2^32 wrap). Reject it rather than writing wrapped/out-of-bounds data.
+	if end := uint64(f.fileDataPtr) + uint64(f.fileDataLen); end > busMemMaxBytes || end > f.bus.backingVisibleSize() {
+		f.fileStatus = 1
+		f.fileErrorCode = FILE_ERR_RANGE
 		return
 	}
 
@@ -378,6 +431,19 @@ func (f *FileIODevice) doList() {
 	data := []byte(strings.Join(names, "\r\n"))
 	if len(data) > 0 {
 		data = append(data, '\r', '\n')
+	}
+
+	// Refuse a listing whose staging buffer [FILE_DATA_PTR, +len+1) reaches into the
+	// bus sign-extended alias window or runs past guest RAM. The write loop and
+	// trailing-NUL store are uint32-addressed (f.fileDataPtr+uint32(i) and
+	// +uint32(len(data))); addresses >= busMemMaxBytes (0xFFFF0000) alias to low
+	// memory on every access (this also covers the uint32 2^32 wrap). Account for the
+	// trailing NUL with len+1 and reject against the cap and backingVisibleSize.
+	if end := uint64(f.fileDataPtr) + uint64(len(data)) + 1; end > busMemMaxBytes || end > f.bus.backingVisibleSize() {
+		f.fileStatus = 1
+		f.fileErrorCode = FILE_ERR_RANGE
+		f.fileResultLen = 0
+		return
 	}
 
 	for i, b := range data {

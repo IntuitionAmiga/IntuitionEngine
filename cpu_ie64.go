@@ -1465,8 +1465,7 @@ func (cpu *CPU64) LoadFlatProgram(filename string) error {
 	if err != nil {
 		return err
 	}
-	cpu.LoadFlatProgramBytes(program)
-	return nil
+	return cpu.LoadFlatProgramBytes(program)
 }
 
 // LoadProgramBytes loads raw machine code bytes at PROG_START and resets PC.
@@ -1493,24 +1492,42 @@ func (cpu *CPU64) LoadProgramBytes(program []byte) {
 	cpu.PC = PROG_START
 }
 
+// flatProgramFitsRAM reports whether a flat image of n bytes fits in guest RAM
+// of memLen bytes when loaded at PROG_START. Checked flat-load paths use it to
+// preflight before tearing down CPU/bus/peripheral state, so a failed load
+// leaves the previous machine state untouched.
+func flatProgramFitsRAM(memLen, n int) bool {
+	return n <= memLen-PROG_START
+}
+
+// FlatProgramFits reports whether a flat image of n bytes fits in this CPU's
+// guest RAM at PROG_START. Preflight with this before mutating live state.
+func (cpu *CPU64) FlatProgramFits(n int) bool {
+	return flatProgramFitsRAM(len(cpu.memory), n)
+}
+
 // LoadFlatProgramBytes loads a large flat IE64 image at PROG_START without
 // applying the legacy stack-window clamp. It is intentionally separate from
 // LoadProgramBytes so normal boot/reload paths keep their bounded RSS behavior.
-func (cpu *CPU64) LoadFlatProgramBytes(program []byte) {
+//
+// It returns an error when the image overruns guest RAM rather than silently
+// truncating. On error it mutates neither guest memory nor PC, so callers that
+// preflight can rely on previous state surviving a rejected load.
+func (cpu *CPU64) LoadFlatProgramBytes(program []byte) error {
+	if !cpu.FlatProgramFits(len(program)) {
+		avail := len(cpu.memory) - PROG_START
+		if avail < 0 {
+			avail = 0
+		}
+		return fmt.Errorf("flat IE64 image too large: %d bytes exceeds %d bytes available at PROG_START", len(program), avail)
+	}
 	progEnd := PROG_START + len(program)
-	if progEnd > len(cpu.memory) {
-		progEnd = len(cpu.memory)
-	}
-	if progEnd < PROG_START {
-		progEnd = PROG_START
-	}
 	for i := PROG_START; i < progEnd; i++ {
 		cpu.memory[i] = 0
 	}
-	if progEnd > PROG_START {
-		copy(cpu.memory[PROG_START:progEnd], program[:progEnd-PROG_START])
-	}
+	copy(cpu.memory[PROG_START:progEnd], program)
 	cpu.PC = PROG_START
+	return nil
 }
 
 // ------------------------------------------------------------------------------

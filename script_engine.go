@@ -1641,9 +1641,18 @@ func (se *ScriptEngine) luaCPULoadStopped() lua.LGFunction {
 				L.RaiseError("%v", err)
 				return 0
 			}
+			// Preflight image size before stopping/resetting the CPU so a
+			// rejected load leaves the running program untouched.
+			if !snap.ie64.FlatProgramFits(len(program)) {
+				L.RaiseError("IE64 program too large for guest RAM: %d bytes", len(program))
+				return 0
+			}
 			snap.ie64.Stop()
 			snap.ie64.Reset()
-			snap.ie64.LoadFlatProgramBytes(program)
+			if err := snap.ie64.LoadFlatProgramBytes(program); err != nil {
+				L.RaiseError("%v", err)
+				return 0
+			}
 			snap.ie64.running.Store(false)
 		case runtimeCPUIE32:
 			if snap.ie32 == nil {

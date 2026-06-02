@@ -316,7 +316,7 @@ AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
-.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets aros-iewarp-library iewarp-runtime-assets emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos cputest-musashi
+.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets aros-iewarp-library iewarp-runtime-assets emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos aot-runtime-blob cputest-musashi
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 m68kto64 ie64dis
@@ -344,7 +344,7 @@ setup:
 	@$(MKDIR) -p $(BIN_DIR)
 
 # Build the Intuition Engine VM
-intuition-engine: setup
+intuition-engine: setup aot-runtime-blob
 	@echo "Building Intuition Engine VM..."
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) .
 	@echo "Stripping debug symbols..."
@@ -521,7 +521,7 @@ $(X64_LIVE_IMG):
 	@test -f "$(X64_LIVE_IMG)" || $(MAKE) x64-live
 
 # Build without Vulkan (software Voodoo rasterizer only)
-novulkan: setup
+novulkan: setup aot-runtime-blob
 	@echo "Building Intuition Engine VM (novulkan)..."
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags novulkan .
 	@echo "Stripping debug symbols..."
@@ -530,7 +530,7 @@ novulkan: setup
 	@echo "Intuition Engine VM (novulkan) build complete"
 
 # Build headless (no display, no audio, no Vulkan - for CI/testing)
-headless: setup
+headless: setup aot-runtime-blob
 	@echo "Building Intuition Engine VM (headless)..."
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags headless .
 	@echo "Stripping debug symbols..."
@@ -539,7 +539,7 @@ headless: setup
 	@echo "Intuition Engine VM (headless) build complete"
 
 # Build headless+novulkan with CGO disabled (fully portable, cross-compile safe)
-headless-novulkan: setup
+headless-novulkan: setup aot-runtime-blob
 	@echo "Building Intuition Engine VM (headless-novulkan, CGO_ENABLED=0)..."
 	@CGO_ENABLED=0 $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "novulkan headless" .
 	@mv IntuitionEngine $(BIN_DIR)/
@@ -685,9 +685,20 @@ intuitionos-clean:
 	@echo "Cleaning IExec kernel and runtime images..."
 	@rm -f $(IEXEC_DIR)/*.elf $(IEXEC_IMG) $(IEXEC_LST) $(IEXEC_RUNTIME_IMG) $(IEXEC_RUNTIME_LST)
 
+# Regenerate the AOT private-assembler constant table from ie64.inc.
+# The output (sdk/include/aot_consttab.inc) is committed; run this after editing
+# constant definitions in ie64.inc.
+.PHONY: gen-aot-consttab
+gen-aot-consttab:
+	@$(GO) run ./tools/gen_aot_consttab
+
 # Build with embedded EhBASIC BASIC interpreter
 .PHONY: basic
-basic: ie64asm
+aot-runtime-blob: ie64asm
+	@echo "Generating standalone COMPILE runtime blob..."
+	@$(GO) run ./tools/gen_runtime_blob
+
+basic: ie64asm aot-runtime-blob
 	@echo "Assembling EhBASIC IE64 interpreter..."
 	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 	@$(MKDIR) -p sdk/examples/prebuilt
@@ -701,7 +712,7 @@ basic: ie64asm
 
 # Build with embedded BASIC + EmuTOS ROM (type EMUTOS at the BASIC prompt).
 .PHONY: basic-emutos
-basic-emutos: ie64asm emutos-rom
+basic-emutos: ie64asm aot-runtime-blob emutos-rom
 	@echo "Assembling EhBASIC IE64 interpreter..."
 	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 	@$(MKDIR) -p sdk/examples/prebuilt

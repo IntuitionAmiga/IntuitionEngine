@@ -588,6 +588,45 @@ func TestProgramExecutor_6502UsesVoodooAwareAdapter(t *testing.T) {
 	t.Fatalf("program-executed 6502 did not write Voodoo texture byte; got %#02x", v.textureMemory[0])
 }
 
+// Regression: the direct ProgramExecutor IE64 path (launchExternal == nil)
+// must clear stale RAM before flat loading. LoadFlatProgramBytes only
+// overwrites the new image window, so a shorter program launched after a
+// larger one previously left old bytes past the image that the CPU could read
+// or execute. The fix routes this path through bus.Reset() first.
+func TestProgramExecutor_IE64FlatLoadClearsStaleTail(t *testing.T) {
+	bus := NewMachineBus()
+	exec := NewProgramExecutor(bus, NewCPU64(bus), nil, nil, nil, ".")
+
+	mem := bus.GetMemory()
+	staleAddr := PROG_START + 0x200000 // well past any tiny image
+	if staleAddr+1 >= len(mem) {
+		t.Skipf("guest RAM too small for test: len=%d", len(mem))
+	}
+	const stale byte = 0xAB
+	mem[staleAddr] = stale
+	mem[staleAddr+1] = stale
+
+	// Single HALT so the launched CPU stops itself promptly.
+	program := []byte{OP_HALT64, 0, 0, 0}
+	if err := exec.prepareAndLaunch(program, EXEC_TYPE_IE64); err != nil {
+		t.Fatalf("prepareAndLaunch IE64: %v", err)
+	}
+	t.Cleanup(func() {
+		snap := runtimeStatus.snapshot()
+		if snap.ie64 != nil {
+			snap.ie64.Stop()
+		}
+		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	})
+
+	if got := mem[staleAddr]; got != 0 {
+		t.Fatalf("stale byte past image not cleared at %#x: got %#x, want 0", staleAddr, got)
+	}
+	if got := mem[staleAddr+1]; got != 0 {
+		t.Fatalf("stale byte past image not cleared at %#x: got %#x, want 0", staleAddr+1, got)
+	}
+}
+
 func newProgramExecutorMappedTestVoodoo(t *testing.T) (*MachineBus, *VoodooEngine) {
 	t.Helper()
 	bus := NewMachineBus()

@@ -278,6 +278,15 @@ func (tm *TerminalMMIO) HandleWrite(addr uint32, value uint32) {
 }
 
 // EnqueueByte adds a byte to the input ring buffer.
+// InputPending reports the number of queued input bytes not yet consumed by
+// the guest. Used by tests to wait for the REPL to drain a submitted line
+// without a fixed sleep.
+func (tm *TerminalMMIO) InputPending() int {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.inputLen
+}
+
 func (tm *TerminalMMIO) EnqueueByte(b byte) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()

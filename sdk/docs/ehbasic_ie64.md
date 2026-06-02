@@ -81,7 +81,7 @@ Release builds always include `embed_basic`, so packaged Linux, Windows, and mac
 On startup, EhBASIC IE64 displays a banner and the `Ready` prompt:
 
 ```
-EhBASIC IE64 v1.3
+EhBASIC IE64 v3.1
 (c) Zayn Otley, 2024-2026
 Based on EhBASIC by Lee Davison
 Ready
@@ -119,7 +119,9 @@ Ready
 
 | Command | Description |
 |---------|-------------|
-| `RUN` | Execute the stored programme |
+| `RUN` | Execute the stored programme (interpreted) |
+| `RUN AOT` | Compile the stored programme to native IE64 code, then run it (see [Native Compilation](#native-compilation)) |
+| `COMPILE "name"` | Compile the stored programme to a standalone `name.ie64` file |
 | `LIST` | Display the programme listing |
 | `DIR` / `DIR "path"` | Display a File I/O sandbox directory listing |
 | `NEW` | Clear the programme from memory |
@@ -128,6 +130,74 @@ Ready
 | `INTUITIONOS` | Boot IntuitionOS through the programme executor |
 | Line number followed by text | Store or replace a programme line |
 | Line number alone | Delete that line |
+
+### Native Compilation
+
+In addition to the interpreter, EhBASIC IE64 can compile your stored programme to native IE64 machine code. Compilation is performed entirely inside the guest: a transpiler lowers the tokenised BASIC to an IE64 assembly text stream, and a private in-guest assembler encodes that stream to machine code. No host services or external tools are involved.
+
+There are two entry points.
+
+#### RUN AOT
+
+`RUN AOT` compiles the current stored programme and runs the result immediately. It prints `Compiling to native code...`, emits native code into a top-of-RAM arena, and jumps to it. Variables, arrays, strings and the DATA pointer behave exactly as under interpreted `RUN`: execution restarts from the first line with control stacks reset.
+
+```
+10 FOR I=1 TO 5
+20 PRINT I
+30 NEXT I
+RUN AOT
+```
+
+Because the arena sits alongside the resident interpreter, `RUN AOT` may delegate a statement to the resident runtime helper for that statement when a native lowering is not provided. This keeps behaviour identical to the interpreter for the full statement set whilst the control flow itself runs as native code.
+
+#### COMPILE
+
+`COMPILE "name"` writes a standalone flat `.ie64` image whose entry point is the programme start. The `.ie64` extension is appended case-insensitively when absent, so `COMPILE "DEMO"` writes `DEMO.ie64` and `COMPILE "DEMO.IE64"` is left unchanged. The file is written beside the most recently `LOAD`ed programme; if no programme has been loaded, it is written to the File I/O root.
+
+A standalone image has no resident interpreter to delegate to. The image opens with a small bootstrap that sets the stack and the terminal pointer. Programmes that use only literal operands (for example `PRINT` of a string or number, `POKE`, unconditional `GOTO`) bundle just the few print helpers they need and stay lean. Programmes that use expressions, variables, arrays, strings or the `DATA`/`INPUT`/`LIST`/`SAVE` runtime bundle a position-fixed runtime image (the expression evaluator and the variable, array, string, floating-point and statement-execution routines) into the `.ie64` and call into it through a fixed jump table, so the compiled programme runs the same evaluator and statement handlers as the interpreter with no resident interpreter present. The bundled runtime makes the image self-contained: it runs in a bare machine with no host services, no sidecar files and (except for `SAVE`) no File I/O device.
+
+#### Supported statements
+
+These lower to native code and run under both `RUN AOT` and standalone `COMPILE`:
+
+- `GOTO`, `GOSUB`, `RETURN`.
+- `POKE`/`POKE8`/`DOKE`/`LOKE`, `BITSET`, `BITCLR`, `CALL`, `WAIT`, `VSYNC`.
+- `PRINT` of a string literal or a numeric literal.
+- `END`, `STOP`.
+
+These use the bundled runtime (expressions, variables, arrays, strings, `DATA`) and now run under standalone `COMPILE` as well as `RUN AOT`:
+
+- `IF ... THEN ...`, including `THEN <line>` (a jump) and `IF ... THEN ... ELSE ...` on a single line.
+- `FOR ... NEXT`.
+- `WHILE ... WEND` and `DO ... LOOP` with a bottom test (`LOOP UNTIL`, `LOOP WHILE`).
+- `ON <expr> GOTO`/`GOSUB`.
+- Implied `LET` (numeric, string and array-element assignment) and `DIM`.
+- `PRINT` of any form (variables, expressions, `;` and `,` separators).
+- `READ`/`DATA`/`RESTORE` (the tokenised programme is bundled so the `DATA` reader can scan it).
+- `INPUT` (optional prompt and a variable list; reads from the terminal).
+- `LIST` (detokenises and prints the bundled programme) and `SAVE "name"` (detokenises the bundled programme and writes it through the File I/O ABI).
+- `BLOAD "name", addr` loads raw bytes to `addr` through the File I/O MMIO (the same `FILE_NAME_PTR`/`FILE_DATA_PTR`/`FILE_CTRL` path the interpreter uses), with the destination 2^32 range check. `RUN AOT` delegates to the resident handler; standalone bundles it. A standalone image needs a File I/O device mapped in the machine it runs on.
+
+Direct-only commands (`RUN AOT`, `COMPILE`, `DIR`) and roots with no BASIC token (`HOST`, `COSTART`, `COSTOP`, `COWAIT`, `COCALL`, `COSTATUS`) cannot be compiled at all and are reported as such. Every remaining tokenised statement still runs under `RUN AOT` through resident delegation. `POKE`/`POKE8`/`DOKE`/`LOKE` with expression operands (variables or arithmetic) compile under `RUN AOT` by delegating to the resident handler; with integer-literal operands they take a faster inline store.
+
+#### Limitations
+
+- `LOAD` is rejected by a standalone `COMPILE`: it reconstructs a tokenised programme in memory, which needs the resident tokeniser and a REPL loop to run what was loaded, and a standalone image has neither. Use `RUN AOT` or the interpreter for programmes that load other programmes. (`BLOAD`, a raw binary load, is supported in both modes.)
+- `POKE`/`POKE8`/`DOKE`/`LOKE` with expression operands compile under `RUN AOT` but not in a standalone `COMPILE` (which has no resident handler to delegate to); use integer-literal operands for standalone images.
+- `ELSE` is supported for a single, non-nested `IF` per line. An `IF` whose `THEN` clause contains a second `IF` with its own `ELSE` is not lowered.
+- `DO WHILE`/`DO UNTIL` (a top test) is not lowered; use `DO ... LOOP UNTIL`/`LOOP WHILE`.
+- `STOP` under `RUN AOT` saves a native continuation and returns to the prompt; a typed `CONT` re-enters the compiled code where it stopped, with variables, `DATA` position, and open `FOR` loops preserved. Editing the programme, `NEW`, `LOAD`, or a fresh `RUN`/`RUN AOT` discards the pending continuation. A `STOP` reached *inside* an active `GOSUB` is not resumable: compiled `GOSUB`/`RETURN` use the hardware return stack, which is unwound when `STOP` returns to the prompt, so `CONT` resumes the post-`STOP` statements but the following `RETURN` reports `?RETURN WITHOUT GOSUB`. Use top-level `STOP`/`CONT`. A standalone `.ie64` has no REPL to return to, so it halts on `STOP` or `END`.
+- `SAVE` in a standalone image needs a File I/O device mapped in the machine it runs on; `LIST` and all other bundled statements need no host services.
+
+#### Errors
+
+| Message | Cause |
+|---------|-------|
+| `Compiling to native code...` | Printed by `RUN AOT` before compilation begins |
+| `?COMPILE ERROR IN <line>: <reason>` | A statement could not be compiled (for example a direct-only or non-token root) |
+| `?FC ERROR IN 0` | A bad `COMPILE` filename (empty, path-like, absolute, contains `..` or a separator) |
+| `?OUT OF MEMORY ERROR IN <line-or-0>: <reason>` | The compiler ran out of arena or the native image is too large |
+| `?FILE ERROR IN 0` | The `COMPILE` write failed |
 
 ### Terminal Editor
 

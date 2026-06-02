@@ -102,3 +102,4 @@ FIRST.BAS
 # - sdk/scripts/iedoom_diag holds generated IEDoom diagnostic output (run
 #   logs + PNG frames). Local scratch; no source consumes it.
 sdk/scripts/iedoom_diag/
+!sdk/include/aot_runtime_blob.bin
