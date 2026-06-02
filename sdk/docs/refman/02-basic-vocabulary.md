@@ -59,6 +59,7 @@ line.
 
 - **DIR** - list the names of files that BASIC can `LOAD`. See
   Chapter 35.
+- **TYPE** - print a text file from the disk volume. See Chapter 35.
 - **RUN AOT** - compile the stored program to native IE64 code and run
   it immediately.
 - **COMPILE** - write the stored program as a standalone `.ie64`
@@ -1000,6 +1001,19 @@ later into the same kind of flat IE64 image. See Chapter 35.
 
 The constant `6.283185` (two times pi).
 
+### TYPE
+
+`TYPE "`*filename*`"`
+
+Direct-mode command. Print a text file from the disk volume to the
+screen. The name must be quoted. The file must be text; if it contains
+binary control bytes, BASIC prints `?NOT A TEXT FILE` and leaves the
+screen untouched by the file contents.
+
+`TYPE` is not a stored-program statement and cannot be compiled. It is
+useful at the prompt for reading saved listings, notes, and generated
+source text. See Chapter 35.
+
 ### UCASE$
 
 `UCASE$(`*str-expr*`)`
@@ -1157,4 +1171,4 @@ those references:
 | HOST                                          | 36 |
 | COSTART, COSTOP, COWAIT                       | 32 |
 | CALL, USR                                     | 25 |
-| LOAD, SAVE, BLOAD, RUN "*.ie*", RUN AOT, COMPILE, TRANSPILE, ASSEMBLE | 35 |
+| LOAD, SAVE, BLOAD, RUN "*.ie*", RUN AOT, COMPILE, TRANSPILE, ASSEMBLE, TYPE | 35 |

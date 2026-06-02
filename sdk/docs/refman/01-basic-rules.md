@@ -453,8 +453,9 @@ direct-mode prompt:
 | `TRANSPILE "name"` | Write the stored program as IE64 assembly text (Chapter 35). |
 | `ASSEMBLE "name"` | Assemble IE64 source text into a standalone image (Chapter 35). |
 | `DIR`             | Show available filenames (direct mode only). |
+| `TYPE "name"`     | Print a text file from the disk volume (direct mode only). |
 
-`DIR`, `RUN AOT`, `COMPILE`, `TRANSPILE`, and `ASSEMBLE` are
+`DIR`, `TYPE`, `RUN AOT`, `COMPILE`, `TRANSPILE`, and `ASSEMBLE` are
 direct-mode forms. They cannot appear inside a program line. See
 Appendix A for the list of words that work only at the prompt.
 

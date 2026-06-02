@@ -673,3 +673,12 @@ Entry format:
   Expected result: `TRANSPILE` writes only `.asm`; `ASSEMBLE` reads `.asm` and writes `.ie64`; generated self-contained source can be reassembled inside IE; an over-cap File I/O read reports range error with no partial copy.
   Author verification workflow: compared the prompt dispatch, name parser, TRANSPILE backend, ASSEMBLE backend, private assembler subset, constant table, FILE_READ_MAX handler, and AOT/File I/O tests against the changed chapter and appendix wording.
   Result: the reference guide now documents the split on-machine BASIC native-compilation pipeline from commit b5a60840 without making host SDK assemblers or source checkout paths part of the reader workflow.
+
+- Area: Ch 1 / Ch 2 / Ch 24 / Ch 35 / App A / App D / App I / App L, BASIC TYPE command.
+  Claim: BASIC recognises `TYPE "path"` as a direct-mode command that reads a required quoted file path from the File I/O volume, uses `FILE_READ_MAX` to cap the read before staging bytes, refuses over-large files with `?FILE TOO LARGE`, refuses files containing binary control bytes with `?NOT A TEXT FILE`, accepts tab, LF, CR, printable ASCII, and bytes $80-$FF as text, normalises line endings for terminal output, prints a final line break when needed, and rejects stored compiled `TYPE` lines with `?COMPILE ERROR IN <line>: TYPE is direct-only` while leaving `TYPE=...` and `TYPE(...)` available as implied-LET variable and array forms.
+  Canonical sources checked: sdk/examples/asm/ehbasic_ie64.asm, ehbasic_aot_test.go, file_io.go, file_io_constants.go, sdk/docs/ehbasic_ie64.md.
+  Reader workflow: at the BASIC prompt, type `TYPE "name"` to display a text file from the disk volume; use Chapter 35 for errors and File I/O buffer limits.
+  Runnable example: Ch 35 prompt sequence `SAVE "NOTE.BAS"` then `TYPE "NOTE.BAS"`; Ch 1, Ch 2, App A, App D, App I, and App L are lookup surfaces.
+  Expected result: `TYPE` prints the saved text file, returns the `Ready` prompt on a fresh line, rejects binary files before printing their bytes, reports missing files as `?FILE NOT FOUND`, and reports over-cap files as `?FILE TOO LARGE`.
+  Author verification workflow: compared the prompt dispatch, path parser, File I/O read-cap setup, text classifier, line-ending normaliser, printed error strings, AOT direct-only checks, and TYPE tests against the changed chapter and appendix wording.
+  Result: the reference guide now documents the on-machine text-file display command from commit e4ab4a08 without presenting it as a host shell feature or a stored-program statement.

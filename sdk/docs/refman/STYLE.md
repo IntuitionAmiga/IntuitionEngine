@@ -511,6 +511,54 @@ Current controlled polish pass:
      behaviour.
   9. Publish and print PDFs only after the source pass and checks are
      complete.
+- Integrate the BASIC `TYPE` command from commit `e4ab4a08`. This is
+  a focused BASIC and File I/O pass. Do not add a new chapter. Do not
+  describe it as a host command, a shell command, or a modern operating
+  system feature. The reader-facing idea is: BASIC can print text files
+  from the Intuition Engine disk volume at the prompt.
+
+  Reader-facing changes from this commit:
+
+  - `TYPE "path"` is a direct-mode form. It reads a text file from the
+    File I/O volume and prints it to the terminal.
+  - The quoted path is required. Path separators are allowed, and the
+    File I/O device still enforces the volume boundary.
+  - `TYPE` uses the resident File I/O data buffer and writes
+    `FILE_READ_MAX` before the read. A file that is too large is
+    refused before any bytes are staged and prints `?FILE TOO LARGE`.
+  - Files containing binary control bytes are refused with
+    `?NOT A TEXT FILE`. Tab, line feed, carriage return, printable
+    ASCII, and bytes `$80` through `$FF` are accepted as text.
+  - Line endings are normalised for terminal output. A final line break
+    is supplied when the file does not already end with one, so the
+    prompt resumes on a fresh line.
+  - `TYPE` is direct-only. Stored lines that try to compile it report
+    `?COMPILE ERROR IN <line>: TYPE is direct-only`, while `TYPE=...`
+    and `TYPE(...)` remain valid implied-LET variable and array forms.
+
+  Execute this `TYPE` pass in this order:
+
+  1. Check `sdk/examples/asm/ehbasic_ie64.asm`,
+     `ehbasic_aot_test.go`, `file_io.go`, `file_io_constants.go`, and
+     `sdk/docs/ehbasic_ie64.md` before writing claims.
+  2. Chapter 1: add `TYPE` to the direct-mode editing/file command
+     table and to the direct-only sentence.
+  3. Chapter 2: add `TYPE` to the direct-mode command list and add an
+     alphabetical `TYPE` entry.
+  4. Chapter 24: include `TYPE` in the File I/O users list.
+  5. Chapter 35: update the opening, read-cap note, direct-only
+     compile-rejection wording, and the BASIC file-command section.
+     Add a `TYPE` subsection covering syntax, text validation, read-cap
+     errors, and newline output behaviour.
+  6. Appendices A, D, I, and L: update prompt-only command notes, File
+     I/O user summaries, error summaries, and lookup entries. Update
+     Appendix H only if a symbol lookup would otherwise become stale.
+  7. Claim ledger: record the checked canonical sources and the
+     reader-facing examples affected by this pass.
+  8. Run reader-facing scans and targeted tests for the changed source
+     behaviour.
+  9. Publish and print PDFs only after the source pass and checks are
+     complete.
 
 ## Reader Contract
 

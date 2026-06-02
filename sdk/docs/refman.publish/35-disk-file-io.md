@@ -5,10 +5,10 @@ Copyright (c) 2026 Zayn Otley. All rights reserved.
 
 Intuition Engine exposes one disk volume through a small MMIO
 block. BASIC uses the same block for `LOAD`, `SAVE`, `BLOAD`,
-`COMPILE`, `TRANSPILE`, `ASSEMBLE`, and direct-mode `DIR`. Machine
-code can use the registers directly, but the examples here use BASIC
-`POKE`, `POKE8`, `PEEK`, and `PEEK8` so they can be typed on the
-machine.
+`COMPILE`, `TRANSPILE`, `ASSEMBLE`, direct-mode `DIR`, and
+direct-mode `TYPE`. Machine code can use the registers directly, but
+the examples here use BASIC `POKE`, `POKE8`, `PEEK`, and `PEEK8` so
+they can be typed on the machine.
 
 ## 35.1 Names and Volume Rules
 
@@ -102,7 +102,8 @@ each read consumes it (it resets to `0`), so it applies only to the very
 next read and never leaks into a later one. Writes and lists ignore it.
 The BASIC `ASSEMBLE` command uses this register to make sure an
 oversized assembly source is rejected before it can reach the
-assembler staging buffer.
+assembler staging buffer. The BASIC `TYPE` command uses the same cap
+so an oversized text file is refused before any byte is printed.
 
 The read is refused with `FILE_ERR_RANGE` if the destination span would
 reach `$FFFF0000`, wrap the `32`-bit address field, or run past active
@@ -203,8 +204,8 @@ inspection or later assembly. `RUN` uses the `.ie64` image.
 
 Not every stored line can become a standalone image. Direct-mode
 commands such as `RUN AOT`, `COMPILE`, `TRANSPILE`, `ASSEMBLE`, and
-`DIR` are rejected. A standalone image cannot use `LOAD`. For `POKE`,
-`POKE8`, `DOKE`, and `LOKE` inside a standalone image, use
+`DIR` or `TYPE` are rejected. A standalone image cannot use `LOAD`.
+For `POKE`, `POKE8`, `DOKE`, and `LOKE` inside a standalone image, use
 integer-literal operands rather than variables or expressions.
 
 ### 35.6.5 TRANSPILE
@@ -275,6 +276,45 @@ DIR "subdir"
 directory and prints entries separated by `CR` `LF`. Its output
 depends on the current disk volume, so it is shown here as a syntax
 template rather than a transcript with fixed expected output.
+
+### 35.6.8 TYPE
+
+```text
+TYPE "name"
+```
+
+`TYPE` is a direct-mode command. It reads a text file from the disk
+volume and prints it to the screen. The name is required and must be
+quoted. It may name a file in a subdirectory, subject to the same
+volume rules as `LOAD`, `SAVE`, and `DIR`.
+
+Before printing anything, BASIC reads the file into the resident File
+I/O buffer and checks that it is text. Tab, line feed, carriage return,
+ordinary printable characters, and bytes `$80` through `$FF` are
+accepted. `NUL`, `DEL`, and other low control bytes are treated as
+binary data. If such a byte is found, BASIC prints `?NOT A TEXT FILE`
+and does not print the file contents.
+
+Line endings are made suitable for the terminal as the file is printed.
+A file with line feed, carriage return, or carriage return plus line
+feed line endings displays with each new line at the left edge. If the
+file does not end with a line break, BASIC adds one before returning to
+the `Ready` prompt.
+
+The file must fit in the File I/O buffer. If it is too large, BASIC
+prints `?FILE TOO LARGE` before any byte is staged. If the name is not
+found, BASIC prints `?FILE NOT FOUND`; other file errors print
+`?FILE ERROR`.
+
+This is a prompt session, not a stored program:
+
+```text
+SAVE "NOTE.BAS"
+TYPE "NOTE.BAS"
+```
+
+The first command writes the current program as text. The second
+command prints that saved text file back to the screen.
 
 ## 35.7 Typed MMIO Example
 

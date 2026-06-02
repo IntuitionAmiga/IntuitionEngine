@@ -50,6 +50,8 @@ recognises them as literal characters at run time:
 
 - `DIR` is a direct-mode command. It is recognised only at the BASIC
   prompt and has no token byte. It cannot appear inside a program line.
+- `TYPE` is a direct-mode command. It is recognised only at the BASIC
+  prompt and has no token byte. It cannot appear inside a program line.
 - `COMPILE` is a direct-mode command. It is recognised only at the
   BASIC prompt and has no token byte.
 - `TRANSPILE` is a direct-mode command. It is recognised only at the

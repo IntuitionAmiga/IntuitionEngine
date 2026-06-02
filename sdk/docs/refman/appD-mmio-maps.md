@@ -298,8 +298,8 @@ and `HITCLR`.
 ## D.14 File I/O (`$F2200`-`$F221F`)
 
 Used by `LOAD`, `SAVE`, `BLOAD`, `COMPILE`, `TRANSPILE`,
-`ASSEMBLE`, and `DIR`, and by machine code that talks to the disk
-volume directly.
+`ASSEMBLE`, `DIR`, and `TYPE`, and by machine code that talks to the
+disk volume directly.
 
 | Offset | Register |
 |--------|----------|

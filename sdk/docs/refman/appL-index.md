@@ -97,6 +97,7 @@ symbols, and Appendix J gives the full memory map.
 | FILE_DATA_PTR | Chapter 35, Appendix D |
 | FILE_ERR_RANGE | Chapter 35, Appendix D, Appendix I |
 | FILE_READ_MAX | Chapter 35, Appendix D, Appendix H |
+| FILE TOO LARGE | Chapter 35, Appendix I |
 | FBZ_MODE | Chapter 9 |
 | Fixed-point maths | Chapter 4, Chapter 9, Appendix F |
 | Frequency tables | Appendix E |
@@ -151,6 +152,12 @@ symbols, and Appendix J gives the full memory map.
 | Mode 7 | Chapter 4, Chapter 25 |
 | MOD | Chapter 19, Appendix D |
 | MUS | Chapter 21, Chapter 23 |
+
+## N
+
+| Term | See |
+|------|-----|
+| NOT A TEXT FILE | Chapter 35, Appendix I |
 
 ## P
 
@@ -212,6 +219,7 @@ symbols, and Appendix J gives the full memory map.
 | trace mmio | Chapter 33 |
 | TRANSPILE | Chapter 2, Chapter 25, Chapter 35, Appendix A, Appendix I |
 | Traps | Chapter 31, Appendix I |
+| TYPE command | Chapter 1, Chapter 2, Chapter 35, Appendix A, Appendix I |
 
 ## U
 

@@ -1,6 +1,7 @@
 ---
 title: "EhBASIC Keyword Abbreviations and Token Map"
 sources:
+  - sdk/examples/asm/ehbasic_ie64.asm
   - sdk/include/ehbasic_tokens.inc
   - sdk/include/ehbasic_tokenizer.inc
   - sdk/include/ehbasic_exec.inc
@@ -57,6 +58,8 @@ The following reserved words are *not* tokenised at all. EhBASIC
 recognises them as literal characters at run time:
 
 - `DIR` is a direct-mode command. It is recognised only at the BASIC
+  prompt and has no token byte. It cannot appear inside a program line.
+- `TYPE` is a direct-mode command. It is recognised only at the BASIC
   prompt and has no token byte. It cannot appear inside a program line.
 - `COMPILE` is a direct-mode command. It is recognised only at the
   BASIC prompt and has no token byte.

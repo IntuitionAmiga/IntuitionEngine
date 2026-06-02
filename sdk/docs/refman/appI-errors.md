@@ -1,6 +1,7 @@
 ---
 title: "Error Message Index"
 sources:
+  - sdk/examples/asm/ehbasic_ie64.asm
   - sdk/include/ie64.inc
   - sdk/include/ehbasic_aot.inc
   - sdk/include/ehbasic_strings.inc
@@ -55,6 +56,10 @@ Additional message strings produced by specific verbs:
 | `COMPILE` / `TRANSPILE` | `?FILE ERROR IN 0` when the output image or generated source cannot be written. |
 | `ASSEMBLE`   | `?FILE ERROR IN 0` when the matching assembly source is missing, unreadable, or too large. |
 | `ASSEMBLE`   | `?COMPILE ERROR IN 0` when the IE64 source cannot be assembled. |
+| `TYPE`       | `?SYNTAX ERROR IN 0` when the quoted filename is missing or malformed. |
+| `TYPE`       | `?FILE NOT FOUND`, `?FILE TOO LARGE`, or `?FILE ERROR` when the text file cannot be read. |
+| `TYPE`       | `?NOT A TEXT FILE` when the file contains binary control bytes. |
+| `RUN AOT` / `COMPILE` / `TRANSPILE` | `?COMPILE ERROR IN <line>: TYPE is direct-only` when a stored line tries to compile `TYPE`. |
 
 ## I.2 Machine monitor (IE Mon)
 

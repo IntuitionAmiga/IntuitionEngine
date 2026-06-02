@@ -315,9 +315,9 @@ Command codes are `0` `DISCOVER`, `1` `OPEN`, `2` `READ`, `3`
 `WRITE`. Chapter 35 has the full protocol.
 
 Most programs never touch this region directly. BASIC's `LOAD`,
-`SAVE`, `BLOAD`, `COMPILE`, and `DIR` go through it, as does the
-program loader. It is here for the rare case where you are writing
-your own loader.
+`SAVE`, `BLOAD`, `COMPILE`, `TRANSPILE`, `ASSEMBLE`, `DIR`, and
+`TYPE` go through it, as does the program loader. It is here for the
+rare case where you are writing your own loader.
 
 The File I/O block carries its data address through a `32`-bit
 register. A read, write, or directory listing is refused if the staged
