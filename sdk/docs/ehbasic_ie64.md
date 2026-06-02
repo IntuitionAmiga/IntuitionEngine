@@ -126,6 +126,7 @@ Ready
 | `ASSEMBLE "name"` | Assemble a user-written `name.asm` from disk to `name.ie64` with the in-guest assembler |
 | `LIST` | Display the programme listing |
 | `DIR` / `DIR "path"` | Display a File I/O sandbox directory listing |
+| `TYPE "path"` | Print a text file to the screen (refuses non-text files) |
 | `NEW` | Clear the programme from memory |
 | `EMUTOS` | Boot EmuTOS through the programme executor |
 | `AROS` | Boot AROS through the programme executor |
@@ -210,7 +211,7 @@ These use the bundled runtime (expressions, variables, arrays, strings, `DATA`) 
 - `LIST` (detokenises and prints the bundled programme) and `SAVE "name"` (detokenises the bundled programme and writes it through the File I/O ABI).
 - `BLOAD "name", addr` loads raw bytes to `addr` through the File I/O MMIO (the same `FILE_NAME_PTR`/`FILE_DATA_PTR`/`FILE_CTRL` path the interpreter uses), with the destination 2^32 range check. `RUN AOT` delegates to the resident handler; standalone bundles it. A standalone image needs a File I/O device mapped in the machine it runs on.
 
-Direct-only commands (`RUN AOT`, `COMPILE`, `DIR`) and roots with no BASIC token (`HOST`, `COSTART`, `COSTOP`, `COWAIT`, `COCALL`, `COSTATUS`) cannot be compiled at all and are reported as such. Every remaining tokenised statement still runs under `RUN AOT` through resident delegation. `POKE`/`POKE8`/`DOKE`/`LOKE` with expression operands (variables or arithmetic) compile under `RUN AOT` by delegating to the resident handler; with integer-literal operands they take a faster inline store.
+Direct-only commands (`RUN AOT`, `COMPILE`, `DIR`, `TYPE`) and roots with no BASIC token (`HOST`, `COSTART`, `COSTOP`, `COWAIT`, `COCALL`, `COSTATUS`) cannot be compiled at all and are reported as such. Every remaining tokenised statement still runs under `RUN AOT` through resident delegation. `POKE`/`POKE8`/`DOKE`/`LOKE` with expression operands (variables or arithmetic) compile under `RUN AOT` by delegating to the resident handler; with integer-literal operands they take a faster inline store.
 
 #### Limitations
 
@@ -573,6 +574,24 @@ Output is sorted one entry per line. Directories have a trailing `/`.
 ```basic
 DIR
 DIR "demos"
+```
+
+### TYPE
+
+Print a text file to the screen, in the style of the MS-DOS `TYPE` command. `TYPE` is an immediate REPL command and is not stored as a tokenised BASIC statement. The quoted path is required and is relative to the File I/O sandbox; path separators are allowed (the device enforces sandbox traversal protection).
+
+```
+TYPE "path"
+```
+
+`TYPE` reads the whole file into the resident File I/O buffer and refuses to print it unless every byte is printable text, so a binary file (for example a `.ie64` image) never dumps control bytes to the terminal. Tab, carriage return and line feed are allowed; NUL and every other control byte, along with `DEL`, cause the file to be rejected with `?NOT A TEXT FILE` and nothing is printed. Bytes in the range `0x80`-`0xFF` are accepted as printable extended characters, so UTF-8 as well as legacy 8-bit encodings such as ISO-8859-1 (Latin-1, used by classic AmigaOS) and Windows-1252 all render. Line endings are normalised to CR+LF on output, so files saved on Linux, macOS, Windows or AmigaOS all display left-aligned. A trailing newline is added only when the file does not already end in one, so the `Ready` prompt always resumes on a fresh line.
+
+The file must fit in the buffer (just under 1 MiB); a larger file is refused with `?FILE TOO LARGE` before any byte is read. A missing file reports `?FILE NOT FOUND`.
+
+**Example:**
+```basic
+TYPE "demos/readme.txt"
+TYPE "sub/notes.asm"
 ```
 
 ### BLIT

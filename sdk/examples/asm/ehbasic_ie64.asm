@@ -288,6 +288,11 @@ repl_immediate:
     jsr     repl_check_dir
     bnez    r8, repl_do_dir
 
+    ; Check for TYPE command (direct-only: print a text file to the screen)
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_check_type
+    bnez    r8, repl_do_type
+
     ; Check for LIST command
     la      r1, BASIC_LINE_BUF
     jsr     repl_check_list
@@ -897,6 +902,212 @@ repl_do_dir:
     jsr     print_string
     jsr     print_crlf
     bra     repl_loop
+
+; ============================================================================
+; TYPE command handler - print a text file to the screen (MSDOS-style)
+; ============================================================================
+; Direct-only. TYPE "path" reads the file (relative to the File I/O root, path
+; separators allowed) into the resident File I/O buffer FILE_DATA_BUF, refuses
+; to print it unless the whole file is valid ASCII/UTF-8, and writes it to the
+; terminal. Binary files are rejected so their control bytes never reach the
+; screen. The read is capped at the device to the buffer's usable span less one
+; byte (room for a null terminator); a larger file is refused as ?FILE TOO LARGE
+; before a single byte is staged. No allocation, no compiler state touched.
+
+repl_do_type:
+    jsr     repl_parse_type_path        ; R8: 1 = ok (FILE_NAME_BUF = path), 0 = syntax
+    beqz    r8, .type_syntax
+
+    ; Cap the read so an over-large file is refused before any byte is staged. The
+    ; buffer spans FILE_DATA_BUF .. AOT_ALLOC_FLOOR; keep one byte for the null
+    ; terminator. The cap is one-shot (consumed by the device per read).
+    la      r1, FILE_READ_MAX
+    move.q  r2, #(AOT_ALLOC_FLOOR - FILE_DATA_BUF - 1)
+    store.l r2, (r1)
+
+    ; OP_READ "path" -> FILE_DATA_BUF.
+    la      r1, FILE_NAME_PTR
+    la      r2, FILE_NAME_BUF
+    store.l r2, (r1)
+    la      r1, FILE_DATA_PTR
+    la      r2, FILE_DATA_BUF
+    store.l r2, (r1)
+    la      r1, FILE_CTRL
+    move.q  r2, #FILE_OP_READ
+    store.l r2, (r1)
+
+    la      r1, FILE_STATUS
+    load.l  r1, (r1)
+    bnez    r1, .type_read_err
+
+    ; Validate the bytes as text before anything reaches the terminal.
+    la      r8, FILE_DATA_BUF
+    la      r1, FILE_RESULT_LEN
+    load.l  r9, (r1)
+    jsr     type_is_text                ; R8 = 1 text, 0 binary
+    beqz    r8, .type_binary
+
+    ; Print the file, normalising line endings to CR+LF (the terminal needs a CR
+    ; to return to column 0; a Unix file carries bare LFs which would otherwise
+    ; staircase across the screen).
+    la      r8, FILE_DATA_BUF
+    la      r1, FILE_RESULT_LEN
+    load.l  r9, (r1)
+    jsr     type_print
+
+    ; Resume the prompt on a fresh line unless the file already ended with a line
+    ; break (type_print emitted the CRLF). An empty file (length 0) also gets one.
+    la      r1, FILE_RESULT_LEN
+    load.l  r2, (r1)
+    beqz    r2, .type_crlf
+    la      r1, FILE_DATA_BUF
+    add.q   r1, r1, r2
+    sub.q   r1, r1, #1
+    load.b  r1, (r1)
+    move.q  r3, #0x0A
+    beq     r1, r3, repl_loop
+    move.q  r3, #0x0D
+    beq     r1, r3, repl_loop
+.type_crlf:
+    jsr     print_crlf
+    bra     repl_loop
+
+.type_read_err:
+    la      r1, FILE_ERROR_CODE
+    load.l  r1, (r1)
+    move.q  r2, #1                      ; FILE_ERR_NOT_FOUND
+    beq     r1, r2, .type_not_found
+    move.q  r2, #4                      ; FILE_ERR_RANGE (over the size cap)
+    beq     r1, r2, .type_too_large
+    bra     .type_file_err
+.type_not_found:
+    la      r8, repl_msg_file_not_found
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.type_too_large:
+    la      r8, repl_msg_file_too_large
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.type_file_err:
+    la      r8, repl_msg_file_error
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.type_binary:
+    la      r8, repl_msg_not_text
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.type_syntax:
+    la      r8, repl_msg_syntax_in0
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+
+; ============================================================================
+; type_print - print a byte range, normalising line endings to CR+LF
+; ============================================================================
+; The terminal needs a CR to return to column 0, but a text file may use bare
+; LF (Unix), bare CR (classic Mac) or CR+LF (DOS). Each of those is emitted as a
+; single CR+LF, so the file always renders left-aligned regardless of origin.
+; Input:  R8 = buffer base, R9 = byte length
+; Clobbers: R1-R6, R8 (preserves nothing; caller reloads as needed)
+
+type_print:
+    move.q  r3, r8                      ; R3 = cursor
+    move.q  r4, r9                      ; R4 = remaining bytes
+.tp_loop:
+    beqz    r4, .tp_done
+    load.b  r5, (r3)
+    move.q  r6, #0x0D
+    beq     r5, r6, .tp_cr
+    move.q  r6, #0x0A
+    beq     r5, r6, .tp_nl
+    ; Ordinary byte: emit verbatim.
+    push    r3
+    push    r4
+    move.q  r8, r5
+    jsr     term_putc
+    pop     r4
+    pop     r3
+    add.q   r3, r3, #1
+    sub.q   r4, r4, #1
+    bra     .tp_loop
+.tp_cr:
+    ; CR (optionally followed by LF): emit one CR+LF and swallow a paired LF.
+    push    r3
+    push    r4
+    jsr     print_crlf
+    pop     r4
+    pop     r3
+    add.q   r3, r3, #1
+    sub.q   r4, r4, #1
+    beqz    r4, .tp_loop
+    load.b  r5, (r3)
+    move.q  r6, #0x0A
+    bne     r5, r6, .tp_loop
+    add.q   r3, r3, #1                  ; consume the LF of a CR+LF pair
+    sub.q   r4, r4, #1
+    bra     .tp_loop
+.tp_nl:
+    ; Bare LF: emit CR+LF.
+    push    r3
+    push    r4
+    jsr     print_crlf
+    pop     r4
+    pop     r3
+    add.q   r3, r3, #1
+    sub.q   r4, r4, #1
+    bra     .tp_loop
+.tp_done:
+    rts
+
+; ============================================================================
+; type_is_text - classify a byte range as printable text
+; ============================================================================
+; Input:  R8 = buffer base, R9 = byte length
+; Output: R8 = 1 if the whole range is printable text, 0 if any byte is binary
+; A byte is binary only if it is a control char other than tab/LF/CR (this
+; includes NUL and every other 0x00..0x1F code) or DEL (0x7F). Bytes 0x20..0x7E
+; are ASCII; bytes 0x80..0xFF are accepted as printable extended characters, so
+; both UTF-8 (multibyte) and legacy 8-bit encodings such as ISO-8859-1 (Latin-1,
+; classic AmigaOS) and Windows-1252 render. No UTF-8 structure is required: the
+; high range is intentionally permissive. Binary files are still caught because
+; machine code and images almost always contain NUL or low control bytes.
+; Clobbers: R3-R6
+
+type_is_text:
+    move.q  r3, r8                      ; R3 = cursor
+    move.q  r4, r9                      ; R4 = remaining bytes
+.it_loop:
+    beqz    r4, .it_text
+    load.b  r5, (r3)
+    move.q  r6, #0x20
+    bge     r5, r6, .it_geq20           ; >= 0x20: printable, DEL handled below
+    ; control char < 0x20: allow tab / LF / CR only
+    move.q  r6, #0x09
+    beq     r5, r6, .it_adv
+    move.q  r6, #0x0A
+    beq     r5, r6, .it_adv
+    move.q  r6, #0x0D
+    beq     r5, r6, .it_adv
+    bra     .it_binary
+.it_geq20:
+    move.q  r6, #0x7F
+    beq     r5, r6, .it_binary          ; DEL (0x80..0xFF fall through as printable)
+.it_adv:
+    add.q   r3, r3, #1
+    sub.q   r4, r4, #1
+    bra     .it_loop
+
+.it_text:
+    move.q  r8, #1
+    rts
+.it_binary:
+    move.q  r8, r0
+    rts
 
 ; ============================================================================
 ; NEW command handler - clear programme and variables
@@ -1798,6 +2009,9 @@ aot_check_raw_root:
     la      r5, aot_kw_dir
     jsr     aot_match_kw
     bnez    r8, .crr_dir
+    la      r5, aot_kw_type
+    jsr     aot_match_kw
+    bnez    r8, .crr_type
     move.q  r8, r0
     rts
 .crr_compile:
@@ -1826,6 +2040,13 @@ aot_check_raw_root:
     jsr     aot_root_is_var
     bnez    r8, .crr_allow
     la      r8, aot_rsn_dir
+    rts
+.crr_type:
+    ; TYPE, like DIR/COMPILE, is direct-only and not intercepted by exec_line, so
+    ; the interpreter accepts TYPE=... / TYPE(...) as an implied-LET variable.
+    jsr     aot_root_is_var
+    bnez    r8, .crr_allow
+    la      r8, aot_rsn_type
     rts
 .crr_allow:
     move.q  r8, r0
@@ -1870,6 +2091,7 @@ aot_kw_cowait:   dc.b "cowait", 0
 aot_kw_cocall:   dc.b "cocall", 0
 aot_kw_costatus: dc.b "costatus", 0
 aot_kw_compile:  dc.b "compile", 0
+aot_kw_type:     dc.b "type", 0
     align 4
 
 aot_rsn_dir:      dc.b "DIR is direct-only", 0
@@ -1880,6 +2102,7 @@ aot_rsn_cowait:   dc.b "COWAIT cannot be compiled", 0
 aot_rsn_cocall:   dc.b "COCALL cannot be compiled", 0
 aot_rsn_costatus: dc.b "COSTATUS cannot be compiled", 0
 aot_rsn_compile:  dc.b "COMPILE is direct-only", 0
+aot_rsn_type:     dc.b "TYPE is direct-only", 0
 aot_rsn_runaot:   dc.b "RUN AOT is direct-only", 0
     align 4
 
@@ -1986,6 +2209,135 @@ repl_parse_dir_path:
 
 .copy_done:
     store.b r0, (r10)
+    move.q  r8, #1
+    rts
+
+.bad:
+    move.q  r8, r0
+    rts
+
+; ============================================================================
+; repl_check_type - Check if input is "TYPE" (case-insensitive)
+; ============================================================================
+; Input:  R1 = pointer to input buffer
+; Output: R8 = 1 if TYPE, 0 otherwise
+; Clobbers: R2, R3
+
+repl_check_type:
+    jsr     repl_skip_spaces
+
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x74               ; 't'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x79               ; 'y'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x70               ; 'p'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x65               ; 'e'
+    bne     r2, r3, .no
+
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    beqz    r2, .yes
+    move.q  r3, #0x20
+    beq     r2, r3, .yes
+    bra     .no
+
+.yes:
+    move.q  r8, #1
+    rts
+.no:
+    move.q  r8, r0
+    rts
+
+; ============================================================================
+; repl_parse_type_path - Parse the required TYPE "path" argument
+; ============================================================================
+; Copies the quoted path into FILE_NAME_BUF. Unlike COMPILE/TRANSPILE/ASSEMBLE
+; the path may contain separators (TYPE views a file anywhere under the File I/O
+; root); the device enforces traversal protection. The argument is mandatory.
+; Input:  BASIC_LINE_BUF contains the TYPE line
+; Output: R8 = 1 if FILE_NAME_BUF was populated, 0 on syntax error
+;              (missing/unquoted/empty/over-length path, or trailing junk)
+; Clobbers: R1-R3, R10-R11
+
+repl_parse_type_path:
+    la      r1, BASIC_LINE_BUF
+    jsr     repl_skip_spaces
+
+    ; Match "TYPE" prefix
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x74               ; 't'
+    bne     r2, r3, .bad
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x79               ; 'y'
+    bne     r2, r3, .bad
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x70               ; 'p'
+    bne     r2, r3, .bad
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    or.l    r2, r2, #0x20
+    move.q  r3, #0x65               ; 'e'
+    bne     r2, r3, .bad
+    add.q   r1, r1, #1
+    jsr     repl_skip_spaces
+
+    ; Require an opening quote (the argument is mandatory).
+    load.b  r2, (r1)
+    move.q  r3, #0x22               ; '"'
+    bne     r2, r3, .bad
+    add.q   r1, r1, #1
+
+    ; Copy the quoted path into FILE_NAME_BUF.
+    la      r10, FILE_NAME_BUF
+    move.q  r11, #255
+.copy_loop:
+    load.b  r2, (r1)
+    beqz    r2, .bad                ; unterminated quote
+    move.q  r3, #0x22
+    beq     r2, r3, .copy_done
+    beqz    r11, .bad               ; over-length
+    store.b r2, (r10)
+    add.q   r1, r1, #1
+    add.q   r10, r10, #1
+    sub.q   r11, r11, #1
+    bra     .copy_loop
+
+.copy_done:
+    store.b r0, (r10)              ; null-terminate
+    ; Reject an empty path ("").
+    la      r3, FILE_NAME_BUF
+    load.b  r3, (r3)
+    beqz    r3, .bad
+    ; Only trailing spaces may follow the closing quote.
+    add.q   r1, r1, #1
+.tail:
+    load.b  r2, (r1)
+    move.q  r3, #0x20
+    bne     r2, r3, .tail_end
+    add.q   r1, r1, #1
+    bra     .tail
+.tail_end:
+    bnez    r2, .bad               ; trailing junk after the path
     move.q  r8, #1
     rts
 
@@ -2359,6 +2711,14 @@ repl_msg_file_error:
 
 repl_msg_file_not_found:
     dc.b    "?FILE NOT FOUND", 0
+    align 4
+
+repl_msg_file_too_large:
+    dc.b    "?FILE TOO LARGE", 0
+    align 4
+
+repl_msg_not_text:
+    dc.b    "?NOT A TEXT FILE", 0
     align 4
 
 repl_msg_emutos_error:

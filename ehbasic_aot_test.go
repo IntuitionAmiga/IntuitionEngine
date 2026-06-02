@@ -2026,6 +2026,205 @@ table:
 	})
 }
 
+// TestREPL_Type drives the direct TYPE "path" command: it prints valid
+// ASCII/UTF-8 files to the terminal and refuses binary ones, mapping File I/O
+// failures to the usual REPL messages. The whole file is read into the resident
+// FILE_DATA_BUF, capped at the device by FILE_READ_MAX, so an over-large file is
+// refused as ?FILE TOO LARGE before any byte is staged.
+func TestREPL_Type(t *testing.T) {
+	asmBin := buildAssembler(t)
+
+	newH := func(t *testing.T, dir string) *ehbasicTestHarness {
+		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		return h
+	}
+
+	t.Run("prints_text_file", func(t *testing.T) {
+		dir := t.TempDir()
+		const body = "Hello, TYPE!\nsecond line\n"
+		if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+		out := newH(t, dir).runCommand(`TYPE "hello.txt"`)
+		if strings.Contains(out, "ERROR") || strings.Contains(out, "?") {
+			t.Fatalf("TYPE of a text file reported an error: %q", out)
+		}
+		// type_print normalises line endings to CR+LF, so assert the lines
+		// individually rather than depending on a bare '\n' between them.
+		if !strings.Contains(out, "Hello, TYPE!") || !strings.Contains(out, "second line") {
+			t.Fatalf("TYPE did not print the file body: %q", out)
+		}
+		if !strings.Contains(out, "Hello, TYPE!\r\nsecond line") {
+			t.Fatalf("TYPE did not normalise LF to CR+LF: %q", out)
+		}
+	})
+
+	t.Run("path_separators_allowed", func(t *testing.T) {
+		dir := t.TempDir()
+		sub := filepath.Join(dir, "sub")
+		if err := os.MkdirAll(sub, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sub, "inner.txt"), []byte("NESTED\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		out := newH(t, dir).runCommand(`TYPE "sub/inner.txt"`)
+		if !strings.Contains(out, "NESTED") || strings.Contains(out, "?") {
+			t.Fatalf("TYPE of a nested path: want NESTED, got %q", out)
+		}
+	})
+
+	t.Run("no_trailing_newline_gets_one", func(t *testing.T) {
+		// repl_do_type appends a CRLF when the file lacks a final LF, so the
+		// "Ready" prompt is never glued onto the last line of the file.
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "noeol.txt"), []byte("NOEOL"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		out := newH(t, dir).runCommand(`TYPE "noeol.txt"`)
+		if !strings.Contains(out, "NOEOL") {
+			t.Fatalf("TYPE did not print the file body: %q", out)
+		}
+		if strings.Contains(out, "NOEOLReady") {
+			t.Fatalf("TYPE glued the prompt to the file (no separating newline): %q", out)
+		}
+	})
+
+	t.Run("trailing_newline_no_double", func(t *testing.T) {
+		// A file that already ends in LF must not gain an extra blank line.
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "eol.txt"), []byte("LINE1\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		out := newH(t, dir).runCommand(`TYPE "eol.txt"`)
+		if !strings.Contains(out, "LINE1") {
+			t.Fatalf("TYPE did not print the file body: %q", out)
+		}
+		if strings.Contains(out, "LINE1\n\r\nReady") || strings.Contains(out, "LINE1\n\nReady") {
+			t.Fatalf("TYPE added an extra blank line after an LF-terminated file: %q", out)
+		}
+	})
+
+	t.Run("prints_utf8", func(t *testing.T) {
+		dir := t.TempDir()
+		// "café ✓ 𝓍" - 2-, 3- and 4-byte UTF-8 sequences.
+		body := "café ✓ \U0001D4CD\n"
+		if err := os.WriteFile(filepath.Join(dir, "utf8.txt"), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+		out := newH(t, dir).runCommand(`TYPE "utf8.txt"`)
+		if strings.Contains(out, "?NOT A TEXT FILE") {
+			t.Fatalf("TYPE rejected a valid UTF-8 file: %q", out)
+		}
+		if !strings.Contains(out, "caf") {
+			t.Fatalf("TYPE did not print the UTF-8 file: %q", out)
+		}
+	})
+
+	t.Run("rejects_binary", func(t *testing.T) {
+		dir := t.TempDir()
+		// A NUL and a 0xFF make this unambiguously non-text; the ASCII MARKER must
+		// never reach the screen because nothing is printed on rejection.
+		blob := []byte("MARKER\x00\xff\x01\x02binary")
+		if err := os.WriteFile(filepath.Join(dir, "blob.bin"), blob, 0644); err != nil {
+			t.Fatal(err)
+		}
+		out := newH(t, dir).runCommand(`TYPE "blob.bin"`)
+		if !strings.Contains(out, "?NOT A TEXT FILE") {
+			t.Fatalf("TYPE of a binary file: want ?NOT A TEXT FILE, got %q", out)
+		}
+		if strings.Contains(out, "MARKER") {
+			t.Fatalf("TYPE printed bytes from a rejected binary file: %q", out)
+		}
+	})
+
+	t.Run("prints_latin1", func(t *testing.T) {
+		dir := t.TempDir()
+		// ISO-8859-1 (Latin-1): "café" with é = 0xE9, a lone high byte that is NOT
+		// valid UTF-8 but is accepted as a printable extended character.
+		if err := os.WriteFile(filepath.Join(dir, "latin1.txt"), []byte("caf\xe9 \xa9 ok\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		out := newH(t, dir).runCommand(`TYPE "latin1.txt"`)
+		if strings.Contains(out, "?NOT A TEXT FILE") {
+			t.Fatalf("TYPE rejected a Latin-1 file: %q", out)
+		}
+		if !strings.Contains(out, "caf") || !strings.Contains(out, "ok") {
+			t.Fatalf("TYPE did not print the Latin-1 file: %q", out)
+		}
+	})
+
+	t.Run("rejects_control_without_nul", func(t *testing.T) {
+		dir := t.TempDir()
+		// No NUL, but ESC (0x1B) and BEL (0x07) are control bytes -> still binary.
+		if err := os.WriteFile(filepath.Join(dir, "ctrl.txt"), []byte("text\x1bmore\x07end"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		out := newH(t, dir).runCommand(`TYPE "ctrl.txt"`)
+		if !strings.Contains(out, "?NOT A TEXT FILE") {
+			t.Fatalf("TYPE of a control-byte file: want ?NOT A TEXT FILE, got %q", out)
+		}
+		if strings.Contains(out, "text") && strings.Contains(out, "more") {
+			t.Fatalf("TYPE printed bytes from a rejected control file: %q", out)
+		}
+	})
+
+	t.Run("missing_file", func(t *testing.T) {
+		dir := t.TempDir()
+		out := newH(t, dir).runCommand(`TYPE "nope.txt"`)
+		if !strings.Contains(out, "?FILE NOT FOUND") {
+			t.Fatalf("TYPE of a missing file: want ?FILE NOT FOUND, got %q", out)
+		}
+	})
+
+	t.Run("too_large", func(t *testing.T) {
+		dir := t.TempDir()
+		// Larger than the FILE_DATA_BUF span (just under 1 MiB), so the device
+		// FILE_READ_MAX cap refuses it before staging a byte.
+		big := bytes.Repeat([]byte("A"), 0x100000+0x100)
+		if err := os.WriteFile(filepath.Join(dir, "big.txt"), big, 0644); err != nil {
+			t.Fatal(err)
+		}
+		out := newH(t, dir).runCommand(`TYPE "big.txt"`)
+		if !strings.Contains(out, "?FILE TOO LARGE") {
+			t.Fatalf("TYPE of an over-large file: want ?FILE TOO LARGE, got %q", out)
+		}
+		// The REPL must survive: a normal TYPE still works afterwards.
+		if err := os.WriteFile(filepath.Join(dir, "ok.txt"), []byte("STILL OK\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if out := newH(t, dir).runCommand(`TYPE "ok.txt"`); !strings.Contains(out, "STILL OK") {
+			t.Fatalf("REPL did not survive an over-large TYPE: %q", out)
+		}
+	})
+
+	t.Run("empty_file", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "empty.txt"), nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+		out := newH(t, dir).runCommand(`TYPE "empty.txt"`)
+		if strings.Contains(out, "?") {
+			t.Fatalf("TYPE of an empty file reported an error: %q", out)
+		}
+	})
+
+	t.Run("no_argument_is_syntax_error", func(t *testing.T) {
+		dir := t.TempDir()
+		h := newH(t, dir)
+		if out := h.runCommand(`TYPE`); !strings.Contains(out, "?SYNTAX ERROR") {
+			t.Fatalf("TYPE no arg: want ?SYNTAX ERROR, got %q", out)
+		}
+		if out := h.runCommand(`TYPE hello`); !strings.Contains(out, "?SYNTAX ERROR") {
+			t.Fatalf("TYPE unquoted arg: want ?SYNTAX ERROR, got %q", out)
+		}
+		if out := h.runCommand(`TYPE ""`); !strings.Contains(out, "?SYNTAX ERROR") {
+			t.Fatalf("TYPE empty path: want ?SYNTAX ERROR, got %q", out)
+		}
+	})
+}
+
 // TestREPL_RunAOT_ReturnWithoutGosub: a RETURN reached without a matching
 // compiled GOSUB frame must report "?RETURN WITHOUT GOSUB" (like the interpreter
 // raising ERR_RET_NO_GOSUB), not silently end with success. Following statements
@@ -4475,7 +4674,8 @@ func storeLine(t *testing.T, h *ehbasicTestHarness, line string) {
 }
 
 // Direct-only / non-compilable raw roots must be rejected with the canonical
-// ?COMPILE ERROR IN <line>: <reason>, by both RUN AOT and COMPILE.
+// ?COMPILE ERROR IN <line>: <reason>. Exercised through RUN AOT; COMPILE shares
+// the same aot_compile_check precheck, so it rejects identically.
 func TestREPL_AOT_RejectsDirectOnlyRoots(t *testing.T) {
 	cases := []struct {
 		name string
@@ -4490,6 +4690,7 @@ func TestREPL_AOT_RejectsDirectOnlyRoots(t *testing.T) {
 		{"cocall", "10 COCALL(2,0,0,0,0,0)", "?COMPILE ERROR IN 10: COCALL cannot be compiled"},
 		{"costatus", "10 COSTATUS(1)", "?COMPILE ERROR IN 10: COSTATUS cannot be compiled"},
 		{"compile", `10 COMPILE "x"`, "?COMPILE ERROR IN 10: COMPILE is direct-only"},
+		{"type", `10 TYPE "readme.txt"`, "?COMPILE ERROR IN 10: TYPE is direct-only"},
 		{"runaot", "10 RUN AOT", "?COMPILE ERROR IN 10: RUN AOT is direct-only"},
 	}
 	for _, tc := range cases {
@@ -4717,6 +4918,8 @@ func TestREPL_AOT_AcceptsDirCompileAsVariables(t *testing.T) {
 		"10 DIR(2)=5",
 		"10 COMPILE(0)=9",
 		"10 DIR = 7", // space before '='
+		"10 TYPE=3:PRINT TYPE",
+		"10 TYPE(1)=8",
 	}
 	for _, prog := range progs {
 		t.Run(prog, func(t *testing.T) {
