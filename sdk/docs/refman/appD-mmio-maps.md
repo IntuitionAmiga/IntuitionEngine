@@ -307,6 +307,16 @@ and `HITCLR`.
 | `+$14` | `FILE_RESULT_LEN` (actual read/list byte count; `0` after accepted-path read failure). |
 | `+$18` | `FILE_ERROR_CODE`. |
 
+`FILE_ERROR_CODE` values:
+
+| Value | Meaning |
+|-------|---------|
+| `0` | OK. |
+| `1` | Not found. |
+| `2` | Permission. |
+| `3` | Path traversal. |
+| `4` | Range error: staged data would reach `$FFFF0000`, wrap the `32`-bit pointer, or exceed active RAM. |
+
 ## D.15 Amiga Paula DMA (`$F2260`-`$F22AF`)
 
 Four-channel DMA sample engine. Each channel is `16` bytes:

@@ -43,6 +43,10 @@ line.
 
 - **DIR** - list the names of files that BASIC can `LOAD`. See
   Chapter 35.
+- **RUN AOT** - compile the stored program to native IE64 code and run
+  it immediately.
+- **COMPILE** - write the stored program as a standalone `.ie64`
+  image. See Chapter 35.
 
 ## 2.3 Alphabetical reference
 
@@ -159,7 +163,9 @@ mapping, and `WAIT` waits until the blitter is idle. See Chapter 4.
 `BLOAD `*filename*`, `*addr*
 
 Load a binary file into memory beginning at *addr*. Both arguments
-are required; omitting the comma and address loads nothing. See
+are required; omitting the comma and address loads nothing. The
+destination is carried through the File I/O block's `32`-bit data
+pointer; an address of `2^32` or greater reports `?FC ERROR`. See
 Chapter 35.
 
 ### BOX
@@ -208,6 +214,22 @@ preserved.
 
 Clear the screen. See Chapter 5.
 
+### COMPILE
+
+`COMPILE "`*filename*`"`
+
+Direct-mode command. Compile the stored BASIC program into a
+standalone IE64 image. If *filename* has no `.ie64` suffix, BASIC
+adds it. If the current program was loaded from a subdirectory, the
+compiled image is written beside that loaded program; otherwise it is
+written at the root of the disk volume.
+
+`COMPILE` is a prompt command, not a stored-program statement. It
+rejects direct-mode-only commands and other raw prompt forms. When a
+statement cannot be compiled, BASIC prints `?COMPILE ERROR IN ` followed
+by the line number and the reason. See Chapter 35 for the File I/O
+side and Chapter 25 for flat IE64 images.
+
 ### COLOR
 
 `COLOR `*fg* [`,` *bg*]
@@ -220,7 +242,10 @@ Set the VGA text-mode foreground and optional background colour used by
 `CONT`
 
 Resume execution after a `STOP`. Has no effect if there is no saved
-state.
+state. After `RUN AOT`, a top-level `STOP` saves a native IE64
+continuation, and `CONT` re-enters the compiled code. Editing the
+program, `NEW`, `LOAD`, or a fresh `RUN` or `RUN AOT` discards that
+saved continuation.
 
 ### COPPER
 
@@ -758,6 +783,19 @@ always restarts from the first stored line. `RUN` preserves
 variables and arrays; only the `DATA` pointer and the control
 stack are reset.
 
+`RUN AOT`
+
+Direct-mode form. Compile the stored program to native IE64 code
+inside the machine and run the compiled code immediately. The visible
+program result should match `RUN`, but BASIC first prints:
+
+```text
+Compiling to native code...
+```
+
+`RUN AOT` restarts from the first stored line, resets the same program
+state as `RUN`, and discards any older compiled `STOP` continuation.
+
 `RUN "`*filename*`"` is a direct-mode form for running a saved
 program image. See Chapter 35.
 
@@ -833,6 +871,10 @@ See **FOR**.
 `STOP`
 
 Stop the program and save its position so that `CONT` can resume.
+For `RUN AOT`, this is a native continuation inside the compiled IE64
+code. A `STOP` reached inside active compiled `GOSUB` nesting is not
+a resumable subroutine state; `CONT` resumes after the `STOP`, but a
+following `RETURN` reports `?RETURN WITHOUT GOSUB`.
 
 ### STR$
 
@@ -1069,4 +1111,4 @@ those references:
 | HOST                                          | 36 |
 | COSTART, COSTOP, COWAIT                       | 32 |
 | CALL, USR                                     | 25 |
-| LOAD, SAVE, BLOAD, RUN "*.ie*"                | 35 |
+| LOAD, SAVE, BLOAD, RUN "*.ie*", RUN AOT, COMPILE | 35 |

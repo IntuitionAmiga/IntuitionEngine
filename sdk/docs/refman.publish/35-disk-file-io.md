@@ -4,10 +4,10 @@ Copyright (c) 2026 Zayn Otley. All rights reserved.
 # Chapter 35 - Disk and File I/O
 
 Intuition Engine exposes one disk volume through a small MMIO
-block. BASIC uses the same block for `LOAD`, `SAVE`, `BLOAD`, and
-direct-mode `DIR`. Machine code can use the registers directly,
-but the examples here use BASIC `POKE`, `POKE8`, `PEEK`, and
-`PEEK8` so they can be typed on the machine.
+block. BASIC uses the same block for `LOAD`, `SAVE`, `BLOAD`,
+`COMPILE`, and direct-mode `DIR`. Machine code can use the registers
+directly, but the examples here use BASIC `POKE`, `POKE8`, `PEEK`,
+and `PEEK8` so they can be typed on the machine.
 
 ## 35.1 Names and Volume Rules
 
@@ -60,6 +60,7 @@ Error codes:
 | `1` | `FILE_ERR_NOT_FOUND` | Entry does not exist |
 | `2` | `FILE_ERR_PERMISSION` | Operation was refused |
 | `3` | `FILE_ERR_PATH_TRAVERSAL` | Name escaped the volume |
+| `4` | `FILE_ERR_RANGE` | Staged data span is outside the File I/O address contract |
 
 ## 35.3 Read
 
@@ -89,6 +90,10 @@ still contains the length from an earlier write. On a successful read,
 accepted but the read itself fails, `FILE_RESULT_LEN` is cleared to
 `0`; use `FILE_STATUS` and `FILE_ERROR_CODE` as the final error test.
 
+The read is refused with `FILE_ERR_RANGE` if the destination span would
+reach `$FFFF0000`, wrap the `32`-bit address field, or run past active
+RAM. In that case no partial copy is made and `FILE_RESULT_LEN` is `0`.
+
 ## 35.4 Write
 
 Set up a write like this:
@@ -103,6 +108,10 @@ Set up a write like this:
 
 Writing creates the entry if it does not exist and replaces it if
 it does. The register block has no append mode.
+
+The write is refused with `FILE_ERR_RANGE` if the source span would
+reach `$FFFF0000`, wrap the `32`-bit address field, or run past active
+RAM. The file is not partly written.
 
 ## 35.5 List
 
@@ -119,6 +128,9 @@ On success, the buffer receives sorted text with `CR` `LF` after
 each entry and a final `NUL` byte. Directory entries have a
 trailing `/`. `FILE_RESULT_LEN` counts the text bytes but not the
 final `NUL`.
+
+A listing is refused with `FILE_ERR_RANGE` if the text plus its final
+`NUL` byte would not fit in the staged destination span.
 
 ## 35.6 BASIC Verbs
 
@@ -149,9 +161,37 @@ BLOAD "name", addr
 ```
 
 `BLOAD` reads raw bytes into memory at `addr`. It does not
-tokenise and it does not clear variables.
+tokenise and it does not clear variables. Because the File I/O block
+uses a `32`-bit `FILE_DATA_PTR`, `addr` must be below `2^32`; otherwise
+BASIC reports `?FC ERROR`.
 
-### 35.6.4 DIR
+### 35.6.4 COMPILE
+
+```text
+COMPILE "name"
+```
+
+`COMPILE` is a direct-mode command. It takes the stored BASIC program,
+makes a native IE64 image from it inside the machine, and writes the
+result as a flat `.ie64` file. `COMPILE "DEMO"` writes `DEMO.ie64`;
+`COMPILE "DEMO.IE64"` keeps the suffix already supplied.
+
+The output name is a simple filename, not a path. If the current
+program was loaded from a subdirectory, the compiled image is written
+beside that loaded program. If no program has been loaded, it is
+written at the root of the disk volume.
+
+`COMPILE` also writes a same-name text listing of the generated IE64
+instructions. That listing is for inspection. `RUN` uses the `.ie64`
+image.
+
+Not every stored line can become a standalone image. Direct-mode
+commands such as `RUN AOT`, `COMPILE`, and `DIR` are rejected. A
+standalone image cannot use `LOAD`. For `POKE`, `POKE8`, `DOKE`, and
+`LOKE` inside a standalone image, use integer-literal operands rather
+than variables or expressions.
+
+### 35.6.5 DIR
 
 ```text
 DIR
@@ -227,6 +267,11 @@ from `FILE_DATA_PTR`. Successful reads and lists set
 `FILE_RESULT_LEN` to `0` on failure. Reads whose path is accepted but
 whose file cannot be read also set `FILE_RESULT_LEN` to `0`. After a
 failed write, do not rely on `FILE_RESULT_LEN`.
+
+`FILE_ERR_RANGE` (`4`) means the staged transfer span could not be
+represented safely: it would reach the sign-extended alias guard at
+`$FFFF0000`, wrap the `32`-bit data pointer, or run past active RAM.
+The block refuses the whole transfer.
 
 Read destinations are ordinary bus addresses. They may be in low RAM
 or backed extended RAM, and the transfer may cross that boundary

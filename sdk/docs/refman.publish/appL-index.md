@@ -25,8 +25,10 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | BASIC direct mode | Chapter 1 |
+| BASIC native compilation | Chapter 1, Chapter 2, Chapter 35 |
 | BASIC vocabulary | Chapter 2 |
 | Backed RAM | Chapter 24, Chapter 35 |
+| BLOAD | Chapter 2, Chapter 35 |
 | BLIT M | Chapter 2, Chapter 4 |
 | BLIT MEMCOPY | Chapter 2, Chapter 4, Appendix D |
 | Blitter | Chapter 4, Appendix D |
@@ -44,6 +46,7 @@ symbols, and Appendix J gives the full memory map.
 | CLUT8 | Chapter 4 |
 | CMOVcc | Chapter 30, Appendix G |
 | Clipboard bridge monitor view | Chapter 33 |
+| COMPILE | Chapter 2, Chapter 35, Appendix I |
 | Compositor | Chapter 3, Appendix K |
 | Copper | Chapter 4 |
 | Coprocessor | Chapter 32, Chapter 39, Appendix I |
@@ -79,6 +82,7 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | File I/O | Chapter 35, Chapter 39, Appendix D |
 | FILE_DATA_PTR | Chapter 35, Appendix D |
+| FILE_ERR_RANGE | Chapter 35, Appendix D, Appendix I |
 | FBZ_MODE | Chapter 9 |
 | Fixed-point maths | Chapter 4, Chapter 9, Appendix F |
 | Frequency tables | Appendix E |
@@ -105,6 +109,7 @@ symbols, and Appendix J gives the full memory map.
 | IE Script | Chapter 34 |
 | IE32 | Chapter 26, Chapter 31, Appendix G, Appendix H |
 | IE64 | Chapter 25, Chapter 31, Appendix G, Appendix H |
+| IE64 flat images | Chapter 25, Chapter 35, Appendix H |
 | IE64 monitor assembler | Chapter 25, Chapter 33, Appendix G |
 | I/O register viewer | Chapter 33, Chapter 34 |
 | Index | Appendix L |
@@ -153,6 +158,7 @@ symbols, and Appendix J gives the full memory map.
 | Reverse history | Chapter 33, Chapter 34 |
 | RTC_MONO_USEC_HI | Chapter 37, Appendix D, Appendix H |
 | RTC_MONO_USEC_LO | Chapter 37, Appendix D, Appendix H |
+| RUN AOT | Chapter 1, Chapter 2, Chapter 35, Appendix I |
 | RUN loader | Chapter 35, Appendix I |
 
 ## S

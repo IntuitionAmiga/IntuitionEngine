@@ -4,6 +4,7 @@ sources:
   - sdk/include/ehbasic_tokens.inc
   - sdk/include/ehbasic_tokenizer.inc
   - sdk/include/ehbasic_exec.inc
+  - sdk/include/ehbasic_aot.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
@@ -57,6 +58,11 @@ recognises them as literal characters at run time:
 
 - `DIR` is a direct-mode command. It is recognised only at the BASIC
   prompt and has no token byte. It cannot appear inside a program line.
+- `COMPILE` is a direct-mode command. It is recognised only at the
+  BASIC prompt and has no token byte.
+- `RUN AOT` is a direct-mode form. `RUN` itself has token byte `$8A`,
+  but the prompt recognises the following `AOT` word before ordinary
+  `RUN` handling. There is no separate `RUN AOT` token.
 - `HOST` is recognised as a raw statement when the line runs. It has
   no token byte. See Chapter 36 for the form and use of the HOST
   command.

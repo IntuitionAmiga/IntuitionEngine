@@ -245,7 +245,7 @@ The M68K reaches `TERM_OUT` through a second alias as well:
 - `TERM_OUT_SIGNEXT` = `$FFFFF700`: the sign-extended `.W` form
   that an M68K `MOVE.B D0, ($F700).W` resolves to. The bus folds
   this back onto the same `$F0700` register through the
-  sign-extended mirror described in section 23.1.2.
+  sign-extended mirror described in section 24.1.2.
 
 The 6502 and Z80 have no equivalent 16-bit alias for `TERM_OUT`:
 the only 16-bit address that would translate to `$F0700` is
@@ -315,9 +315,16 @@ Command codes are `0` `DISCOVER`, `1` `OPEN`, `2` `READ`, `3`
 `WRITE`. Chapter 35 has the full protocol.
 
 Most programs never touch this region directly. BASIC's `LOAD`,
-`SAVE`, `BLOAD` and `DIR` go through it, as does the program
-executor. It is here for the rare case where you are writing
+`SAVE`, `BLOAD`, `COMPILE`, and `DIR` go through it, as does the
+program loader. It is here for the rare case where you are writing
 your own loader.
+
+The File I/O block carries its data address through a `32`-bit
+register. A read, write, or directory listing is refused if the staged
+buffer would cross the sign-extended alias guard at `$FFFF0000` or run
+past active RAM. In that case the file block reports `FILE_ERR_RANGE`
+instead of wrapping into low memory or copying only part of the
+transfer. Chapter 35 gives the register-level details.
 
 ## 24.7 The IRQ diagnostics block
 

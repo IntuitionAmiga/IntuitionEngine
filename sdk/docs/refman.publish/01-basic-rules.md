@@ -59,6 +59,22 @@ Ready
 .
 ```
 
+BASIC can make native IE64 programs from inside the machine. Type
+this while the two-line program is still in memory:
+
+```basic
+RUN AOT
+Compiling to native code...
+INTUITION ENGINE
+5
+Ready
+.
+```
+
+The printed result is the same. The difference is the path through the
+machine: BASIC compiles the stored lines into native IE64 instructions
+inside Intuition Engine, then starts those instructions.
+
 Make one visible mark on the VGA card:
 
 ```basic
@@ -418,14 +434,16 @@ direct-mode prompt:
 | `NEW`             | Delete the program and all variables. |
 | `CLEAR`           | Delete all variables and arrays; keep the program. |
 | `RUN`             | Run the program from the lowest line. Numeric line arguments are not parsed, so `RUN 100` behaves like `RUN`. |
+| `RUN AOT`         | Compile the stored program to native IE64 code, then run it. |
 | `CONT`            | Continue from where `STOP` halted. |
 | `SAVE "name"`     | Save the program to a file (Chapter 35). |
 | `LOAD "name"`     | Load a program from a file (Chapter 35). |
+| `COMPILE "name"`  | Write the stored program as a standalone IE64 image (Chapter 35). |
 | `DIR`             | Show available filenames (direct mode only). |
 
-`DIR` is a direct-mode command. It cannot appear inside a program
-line. See Appendix A for the list of words that work only at the
-prompt.
+`DIR`, `RUN AOT`, and `COMPILE` are direct-mode forms. They cannot
+appear inside a program line. See Appendix A for the list of words
+that work only at the prompt.
 
 ## 1.13 Stopping a program
 
@@ -437,6 +455,14 @@ A program stops in two ways:
 After `STOP`, you can examine variables in direct mode and then type
 `CONT` to resume from the next statement. After `END`, you must
 `RUN` again to start over.
+
+The same rule applies to a program started with `RUN AOT`: a top-level
+`STOP` saves a native IE64 continuation, and `CONT` re-enters the
+compiled code. Editing the program, `NEW`, `LOAD`, or a fresh `RUN`
+or `RUN AOT` discards that continuation. If a compiled `STOP` is
+reached inside an active `GOSUB`, the following `RETURN` cannot be
+resumed as a subroutine return; use top-level `STOP` points when you
+want to continue a compiled run.
 
 ## 1.14 Error handling
 

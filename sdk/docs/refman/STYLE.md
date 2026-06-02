@@ -384,6 +384,73 @@ Current controlled polish pass:
      affected reader-facing examples.
   6. Publish and print PDFs only after the source pass and checks are
      complete.
+- Integrate the BASIC native-compilation and File I/O range changes
+  from commit `9e58b6b6`. This is a focused BASIC, IE64 loader, and
+  File I/O pass. Do not add a new chapter. Do not expose private
+  runtime-blob filenames, generator tools, source paths, build
+  commands, or implementation scaffolding in reader-facing prose. The
+  reader-facing idea is: BASIC can make native IE64 programs from
+  inside the machine.
+
+  Reader-facing changes from this commit:
+
+  - `RUN AOT` is a direct-mode form that compiles the current stored
+    BASIC program to native IE64 code in a top-of-RAM arena, then runs
+    it immediately.
+  - `COMPILE "name"` is a direct-mode form that writes a standalone
+    flat `.ie64` image. The `.ie64` suffix is appended when absent, and
+    output is written beside the most recently `LOAD`ed program, or to
+    the File I/O root if no program has been loaded.
+  - `STOP` under `RUN AOT` saves a native continuation. `CONT`
+    re-enters the compiled code unless the program was edited, `NEW`,
+    `LOAD`, or a fresh `RUN` / `RUN AOT` discarded the continuation.
+    A `STOP` reached inside active compiled `GOSUB` nesting is not a
+    resumable subroutine state.
+  - `BLOAD` still uses the File I/O MMIO path and rejects destinations
+    that cannot be represented by the `32`-bit `FILE_DATA_PTR` ABI.
+  - File I/O error code `4` is `FILE_ERR_RANGE`: the staged transfer
+    span overflows the `32`-bit File I/O address contract, reaches the
+    sign-extended alias guard, or exceeds active RAM. The transfer is
+    refused whole.
+  - Oversized flat IE64 images are rejected before loading. A rejected
+    flat image does not partially overwrite RAM and does not change
+    the IE64 program counter.
+
+  Execute this AOT / COMPILE pass in this order:
+
+  1. Check `sdk/examples/asm/ehbasic_ie64.asm`,
+     `sdk/include/ehbasic_aot.inc`,
+     `sdk/include/ehbasic_file_io.inc`,
+     `sdk/include/ehbasic_lineeditor.inc`, `sdk/include/ie64.inc`,
+     `file_io.go`, `file_io_constants.go`, `cpu_ie64.go`,
+     `program_executor.go`, `ehbasic_aot_test.go`,
+     `ehbasic_aot_runtime_blob_test.go`, `file_io_test.go`,
+     `program_executor_test.go`, and `cpu_ie64_flat_load_test.go`
+     before writing claims.
+  2. Chapter 1: add a short first-session `RUN AOT` transcript after
+     the ordinary `RUN` example, keeping it as a visible continuation
+     of the beginner path rather than a compiler tutorial.
+  3. Chapter 2: add `COMPILE`, expand `RUN`, and update `STOP` /
+     `CONT` wording. Keep `RUN AOT` and `COMPILE` as direct-mode
+     forms, not ordinary stored-program vocabulary.
+  4. Chapter 24: add a small note that the File I/O staging guard also
+     protects the sign-extended alias boundary and the active-RAM
+     limit. Do not list private AOT workspaces.
+  5. Chapter 25: state that BASIC `COMPILE` writes ordinary flat IE64
+     images and that flat-image loads are rejected whole when the
+     image cannot fit at `PROG_START`.
+  6. Chapter 35: add `COMPILE` to the BASIC File I/O verbs, document
+     output placement and suffix behaviour, add `FILE_ERR_RANGE = 4`,
+     and explain the range refusal for reads, writes, and listings.
+  7. Appendices A, D, H, I, and L: update direct-mode command notes,
+     File I/O error tables, IE64 image notes, error summaries, and
+     lookup entries.
+  8. Claim ledger: record the checked canonical sources and the
+     reader-facing examples affected by this pass.
+  9. Run the reader-facing scans and targeted tests for the changed
+     source behaviour.
+  10. Publish and print PDFs only after the source pass and checks are
+      complete.
 
 ## Reader Contract
 

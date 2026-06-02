@@ -2,6 +2,7 @@
 title: "Error Message Index"
 sources:
   - sdk/include/ie64.inc
+  - sdk/include/ehbasic_aot.inc
   - sdk/include/ehbasic_strings.inc
   - file_io_constants.go
   - media_loader_constants.go
@@ -9,6 +10,7 @@ sources:
   - coprocessor_constants.go
   - cpu_ie64.go
   - cpu_ie32.go
+  - program_executor.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
@@ -46,6 +48,11 @@ Additional message strings produced by specific verbs:
 |--------------|--------------|
 | `LOAD`       | `?FILE NOT FOUND`. |
 | `SAVE`       | `?FILE ERROR` (printed as a soft error; `SAVE` does not raise into the runtime). |
+| `RUN AOT`    | `Compiling to native code...` before compilation begins. |
+| `RUN AOT` / `COMPILE` | `?COMPILE ERROR IN <line>: <reason>` when a stored line cannot become native IE64 code. |
+| `RUN AOT` / `COMPILE` | `?OUT OF MEMORY ERROR IN <line-or-0>: <reason>` when the native-code arena or output image is too large. |
+| `COMPILE`    | `?FC ERROR IN 0` for a bad output name. |
+| `COMPILE`    | `?FILE ERROR IN 0` when the output image cannot be written. |
 
 ## I.2 Machine monitor (IE Mon)
 
@@ -79,10 +86,13 @@ When the File I/O block (Chapter 35) fails, `FILE_STATUS` reads
 | `1`  | Not found. |
 | `2`  | Permission. |
 | `3`  | Path traversal. |
+| `4`  | Range error: the staged data span would reach `$FFFF0000`, wrap the `32`-bit pointer, or exceed active RAM. |
 
 For a read whose name passes path validation but whose file cannot be
 opened, `FILE_RESULT_LEN` is cleared to `0`. A program should still
 test `FILE_STATUS` first and then read `FILE_ERROR_CODE`.
+The same `0` length is reported when a read or directory listing is
+refused with range error `4`.
 
 ## I.4 HOST appliance block
 
@@ -124,6 +134,9 @@ On error, the error register reports:
 
 `RUN` translates a non-zero result into `?FILE ERROR` for the
 file-error cases and `?FC ERROR` for the unsupported cases.
+For `.ie64` images, load failed includes an image too large to fit at
+`PROG_START`; the image is rejected before it can partially overwrite
+memory.
 
 ## I.6 Media loader
 

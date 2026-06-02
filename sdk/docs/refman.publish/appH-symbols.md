@@ -12,6 +12,7 @@ chapter give the full story; this appendix is the cheat sheet.
 | Symbol             | Value / role |
 |--------------------|--------------|
 | Reset vector       | `$000000` (first instruction at start of RAM). |
+| `.ie64` image start | flat image copied at `PROG_START = $001000`; execution starts there. Oversized images are refused before memory or PC changes. |
 | Trap vector base   | `$000400` (`8`-byte entries, indexed by trap number). |
 | Supervisor stack   | grows down from `$0A0000`. |
 | User stack (`R31`) | grows down from BASIC's per-program stack region. |
