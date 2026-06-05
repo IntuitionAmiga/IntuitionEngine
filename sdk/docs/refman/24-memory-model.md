@@ -5,6 +5,8 @@ sources:
   - machine_bus.go
   - file_io_constants.go
   - file_io.go
+  - sdk/include/ie64.inc
+  - sdk/include/ehbasic_expr.inc
   - sdk/include/iexec.inc
   - sdk/include/ehbasic_hw_system.inc
   - sdk/include/ehbasic_hw_audio.inc
@@ -77,6 +79,14 @@ Intuition Engine was started with and on the active CPU profile. The two
 words at `$F2400`/`$F2404` (`SYSINFO_TOTAL_RAM_LO`/`HI`) report the
 byte size of total guest RAM as a `64`-bit value; `$F2408`/`$F240C`
 report the size visible to the currently executing CPU profile.
+
+IE64 BASIC keeps its own programme text, variables, stacks, file
+bridges, and compiler scratch areas in dynamic reservations inside the
+same address space. Reader programmes should not depend on those
+private reservations. When BASIC needs a public buffer for a copper
+list, coprocessor request, file staging area, or DMA-style hardware
+block, use `MEMALLOC(size[,align])`. It allocates from public low32
+ranges that are meant to be shared with devices and other CPUs.
 
 The low memory slice and the backed RAM above it are both active RAM,
 but the boundary between them matters for scalar accesses. Byte reads
@@ -167,7 +177,7 @@ The full map:
 | `$F2200`-`$F221F` | `32B`  | File I/O                     |
 | `$F2260`-`$F22AF` | `80B`  | Paula DMA (audio)            |
 | `$F2300`-`$F231F` | `32B`  | Media loader                 |
-| `$F2320`-`$F233F` | `32B`  | Image executor               |
+| `$F2320`-`$F233F` | `32B`  | RUN loader block             |
 | `$F2340`-`$F238F` | `80B`  | Coprocessor control          |
 | `$F2390`-`$F23AF` | `32B`  | Clipboard bridge             |
 | `$F23B0`-`$F23BF` | `16B`  | Coprocessor extended monitor |
@@ -187,7 +197,7 @@ MMIO width depends on the device.
 | Width | BASIC form | Typical use |
 |-------|------------|-------------|
 | `8` bits | `POKE8` / `PEEK8` | SID, TED audio, POKEY, PSG, SN76489 ports, palette bytes, character memory. |
-| `16` bits | CPU word stores where the chapter says so | Some CPU-friendly aliases and split register writes. |
+| `16` bits | `POKE16` / `PEEK16` | Some CPU-friendly aliases and split register writes. |
 | `32` bits | `POKE32` / `PEEK32` | Pointers, lengths, control words, status words, framebuffer bases, blitter registers. |
 | `64` bits | `POKE64` / `PEEK64` or CPU doubleword stores where documented | Native 64-bit memory blocks and split high/low register pairs. |
 

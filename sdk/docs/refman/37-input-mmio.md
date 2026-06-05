@@ -164,8 +164,8 @@ were reading and you should try again.
 
 On a short run the high word is usually `0`, and the low word is the
 elapsed microsecond count. For long-running programs, keep the value
-as two words. BASIC's single-precision numeric value cannot hold every
-`64`-bit integer exactly.
+as two words. Even though BASIC uses double-precision numbers, not
+every `64`-bit integer can be represented as one exact decimal value.
 
 ## 37.8 Small-CPU Access
 

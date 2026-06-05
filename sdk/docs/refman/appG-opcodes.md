@@ -2,12 +2,16 @@
 title: "Per-CPU Opcode Quick Reference"
 sources:
   - cpu_ie64.go
+  - fpu_ie64.go
   - cpu_ie32.go
   - cpu_six5go2.go
   - cpu_z80_runner.go
   - cpu_m68k.go
   - cpu_x86.go
   - debug_asm.go
+  - debug_disasm_ie64.go
+  - assembler/ie64asm.go
+  - assembler/ie64dis.go
   - internal/asm/ie64/assembler.go
 ---
 
@@ -45,8 +49,27 @@ programs when the mnemonic form is easier to type, then confirm with
 | Load / store | `LOAD.B/.W/.L/.Q`, `STORE.B/.W/.L/.Q`. Address modes: register indirect, register plus displacement, and absolute. |
 | Immediate | `MOVE.Q rd, #imm32`, `MOVT rd, #imm32`, `MOVEQ rd, rs`, `LEA rd, disp(rs)`. |
 | Branch   | `BRA`, `JSR`, `RTS`, `JMP`, `BEQ`, `BNE`, `BLT`, `BLE`, `BGT`, `BGE`, `BHI`, `BLS`. Conditional forms compare two GPRs and a target. |
-| FPU      | `FADD`, `FSUB`, `FMUL`, `FDIV`, `FMOD`, `FNEG`, `FABS`, `FSQRT`, `FCMP`, `FCVTIF`, `FCVTFI`, single and double precision. |
+| FPU      | `FLOAD`, `FSTORE`, `FADD`, `FSUB`, `FMUL`, `FDIV`, `FMOD`, `FNEG`, `FABS`, `FSQRT`, `FCMP`, `FCVTIF`, `FCVTFI`, `FSIN`, `FCOS`, `FTAN`, `FATAN`, `FLOG`, `FEXP`, `FPOW`, `DMOV`, `DLOAD`, `DSTORE`, `DADD`, `DSUB`, `DMUL`, `DDIV`, `DMOD`, `DABS`, `DNEG`, `DSQRT`, `DINT`, `DCMP`, `DCVTIF`, `DCVTFI`, `FCVTSD`, `FCVTDS`, `DSIN`, `DCOS`, `DTAN`, `DATAN`, `DLOG`, `DEXP`, `DPOW`. |
 | System   | `SYSCALL`, `HALT`, `WAIT`, `MTCR`, `MFCR`, `ERET`, `TLBFLUSH`, `TLBINVAL`, `SMODE`. |
+
+Selected IE64 FP64 opcode bytes:
+
+| Opcode | Mnemonic | Notes |
+|--------|----------|-------|
+| `$80`  | `DMOV`   | Copy an FP64 register pair. |
+| `$81`  | `DLOAD`  | Load a `64`-bit FP value from memory. |
+| `$82`  | `DSTORE` | Store a `64`-bit FP value to memory. |
+| `$83`-`$87` | `DADD` ... `DMOD` | FP64 arithmetic. |
+| `$88`-`$8B` | `DABS` ... `DINT` | FP64 unary operations. |
+| `$8C`  | `DCMP`   | FP64 compare. |
+| `$8D`-`$90` | `DCVTIF`, `DCVTFI`, `FCVTSD`, `FCVTDS` | Integer and width conversions. |
+| `$91`  | `DSIN`   | FP64 sine. |
+| `$92`  | `DCOS`   | FP64 cosine. |
+| `$93`  | `DTAN`   | FP64 tangent. |
+| `$94`  | `DATAN`  | FP64 arctangent. |
+| `$95`  | `DLOG`   | FP64 natural logarithm. |
+| `$96`  | `DEXP`   | FP64 exponent. |
+| `$97`  | `DPOW`   | FP64 power. |
 
 Byte-entry crib for Chapter 25:
 

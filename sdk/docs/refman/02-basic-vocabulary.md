@@ -600,6 +600,33 @@ non-zero; `LOOP WHILE` repeats while *condition* is non-zero.
 
 Returns the larger of the two arguments.
 
+### MEMALLOC
+
+`MEMALLOC(`*size*`[, `*align*`])`
+
+Allocates a public low-memory buffer and returns its address. Use it
+when a BASIC program needs a buffer that hardware, the copper, a
+coprocessor request, or a DMA-style register block can read.
+
+*size* is the number of bytes to reserve. *align* is optional; it
+defaults to `4096`. If supplied, *align* must be a power of two from
+`1` through `1048576`. A zero size, zero alignment, fractional value,
+negative value, or out-of-range value gives an FC error. If the public
+BASIC allocation ranges are exhausted, BASIC reports an OM error.
+
+```basic
+10 B=MEMALLOC(256,16)
+20 POKE32 B,&H12345678
+30 PRINT HEX$(PEEK32(B))
+```
+
+The final line prints `12345678`, showing that the allocated buffer can
+be used by the ordinary memory helpers.
+
+The address returned by `MEMALLOC` is an exact integer value. It may be
+stored in a numeric variable and used later with `PEEK`, `POKE`,
+`PEEK32`, `POKE32`, or `POKE64`.
+
 ### MID$
 
 `MID$(`*str-expr*`, `*start*`[, `*len*`])`
@@ -717,8 +744,9 @@ Write the low 32 bits of *expr* at *addr*. *addr* must be 4-byte aligned.
 
 Write a 64-bit value at *addr*. *addr* must be 8-byte aligned. A direct
 integer-compatible literal expression such as `&H1122334455667788` is
-preserved for the store, but ordinary BASIC variables still use the
-single FP32 numeric type described in Chapter 1.
+preserved for the store. Values returned by `PEEK64` and `MEMALLOC`
+also keep the exact integer payload needed for address and qword
+round-trips.
 
 ### POKEY
 

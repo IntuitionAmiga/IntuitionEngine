@@ -1023,6 +1023,15 @@ palette index. If `Y` is outside the current mode, the request is
 ignored. If the band extends past the bottom of the screen, it is
 clipped at the bottom.
 
+The band follows the active framebuffer path. If `VIDEO_FB_BASE` points
+at a valid RAM or VRAM framebuffer, the band writes that memory. If the
+chip is using direct VRAM without a separate base, it writes direct
+VRAM. If neither path is active, it writes the internal front buffer.
+During compositor-managed copper rendering of a high framebuffer
+outside the legacy VRAM aperture, raster-band writes are skipped for
+that high buffer so that the compositor's per-scanline path remains in
+charge.
+
 Example:
 
 ```basic

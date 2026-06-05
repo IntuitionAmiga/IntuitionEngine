@@ -32,6 +32,7 @@ single-page reference.
 | `FRE(x)`   | argument ignored | Bytes of free BASIC program / variable storage. |
 | `POS(x)`   | argument ignored | Current cursor column on the terminal. |
 | `USR(x)`   | address         | Call an IE64 user machine-code routine; see Chapter 2. |
+| `MEMALLOC(size[,align])` | byte count, optional alignment | Allocate a public low32 buffer and return its exact address. |
 | `PEEK(a)`   | address        | Byte-width read; alias for `PEEK8(a)`. |
 | `PEEK8(a)`  | address        | Byte-width read. |
 | `PEEK16(a)` | address        | `16`-bit aligned read. |
@@ -76,13 +77,13 @@ can rely on when composing the helpers above.
 
 ## F.4 Range and precision
 
-All numeric functions return BASIC's `32`-bit float. The
-trigonometric helpers accept any radian argument; large arguments
-lose precision in the usual way (the result is reduced modulo
-`2*pi` before the polynomial evaluation, so an argument of `1E9`
-gives a value with very few correct significant digits). Programs
-that need accuracy across many octaves of input should fold the
-argument into `[-pi, pi]` themselves.
+Numeric functions return BASIC double-precision values, except for
+helpers such as `PEEK64` and `MEMALLOC` that deliberately return exact
+integer payloads for hardware work. The trigonometric helpers accept
+any radian argument; very large arguments lose precision in the usual
+way during range reduction. Programs that need accuracy across many
+octaves of input should fold the argument into `[-pi, pi]`
+themselves.
 
 `RND` is a 32-bit linear-congruential generator. Its sequence is
 deterministic and reproducible after a `RND(-seed)` reseed; the

@@ -188,15 +188,17 @@ typed line. There is no continuation character.
 
 ## 1.3 Numeric values
 
-Every numeric value in BASIC is stored as a 32-bit IEEE single-
-precision floating-point number. There is **one** numeric type. The
-same variable can hold `1`, `-1`, `3.14159`, or `1.23E+10`.
+Every ordinary numeric calculation in BASIC uses IEEE double-precision
+floating point. There is **one** visible numeric type at the prompt.
+The same variable can hold `1`, `-1`, `3.14159`, or `1.23E+10`.
 
 The approximate range of a numeric value is from about
-`3.4 x 10^-38` to about `3.4 x 10^+38`, with about seven significant
-decimal digits of precision. Operations that need an integer (`POKE`,
-`PEEK`, `CHR$`, `ASC`, array subscripts, etc.) truncate the value
-toward zero.
+`2.2 x 10^-308` to about `1.8 x 10^+308`, with about fifteen
+significant decimal digits of precision. Operations that need an
+integer (`POKE`, `PEEK`, `CHR$`, `ASC`, array subscripts, etc.)
+truncate the value toward zero. The explicit `64`-bit helpers such as
+`PEEK64`, `POKE64`, and `MEMALLOC` preserve exact integer payloads
+where the hardware interface requires them.
 
 You may write numeric literals in four forms:
 

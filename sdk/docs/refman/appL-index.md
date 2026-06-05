@@ -4,6 +4,8 @@ sources:
   - sdk/docs/refman/00-Preface.md
   - sdk/docs/refman/02-basic-vocabulary.md
   - sdk/docs/refman/25-ie64.md
+  - sdk/docs/refman/appF-math.md
+  - sdk/docs/refman/appG-opcodes.md
   - sdk/docs/refman/33-iemon.md
   - sdk/docs/refman/34-ie-script.md
   - sdk/docs/refman/35-disk-file-io.md
@@ -80,6 +82,8 @@ symbols, and Appendix J gives the full memory map.
 | dbg.tracering_show | Chapter 34 |
 | Disk I/O | Chapter 35 |
 | DMA | Chapter 22, Chapter 24, Appendix D |
+| Double-precision FPU | Chapter 25, Appendix G |
+| DPOW | Chapter 25, Appendix G |
 
 ## E
 
@@ -141,6 +145,7 @@ symbols, and Appendix J gives the full memory map.
 | Monitor assemble command | Chapter 25, Chapter 33, Appendix G |
 | Media loader | Chapter 11, Appendix D |
 | MEDIA_TYPE_MIDI | Chapter 21, Chapter 23, Appendix D |
+| MEMALLOC | Chapter 2, Chapter 24, Chapter 32, Appendix A, Appendix F, Appendix J |
 | Memory map | Chapter 24, Appendix J |
 | MIDI/MUS | Chapter 21, Chapter 23, Appendix D |
 | MIDI/MUS player view | Chapter 33, Chapter 34 |
@@ -166,7 +171,8 @@ symbols, and Appendix J gives the full memory map.
 | Palette | Chapter 3, Chapter 4 |
 | Paula DMA | Chapter 22, Appendix D |
 | Paula DMA monitor view | Chapter 33 |
-| PEEK and POKE | Chapter 1, Chapter 24 |
+| PEEK and POKE | Chapter 1, Chapter 24, Appendix F |
+| PEEK64 | Chapter 2, Chapter 24, Appendix F |
 | POKEY | Chapter 17, Chapter 27, Appendix D |
 | PSG | Chapter 13, Chapter 28, Appendix D |
 

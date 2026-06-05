@@ -295,6 +295,46 @@ Current controlled polish pass:
      affected reader-facing examples.
   9. Publish and print PDFs only after the source pass and checks are
      complete.
+- Integrate the IE64 BASIC FP64 and dynamic memory layout changes from
+  commit `c8e987c`. This is a book-wide correctness pass because the
+  old manual described BASIC as FP32 and fixed-layout in several
+  places. Claims must be checked against `sdk/include/ie64.inc`,
+  `sdk/include/ehbasic_expr.inc`, `sdk/include/ehbasic_vars.inc`,
+  `sdk/include/ehbasic_exec.inc`, `sdk/include/ehbasic_file_io.inc`,
+  `sdk/include/ehbasic_tokens.inc`, `cpu_ie64.go`, `fpu_ie64.go`,
+  `debug_disasm_ie64.go`, `assembler/ie64asm.go`,
+  `assembler/ie64dis.go`, `video_chip.go`, `registers.go`, and the
+  relevant FP64, assembler, memory-layout, VideoChip, and refman
+  tests. Reader-facing wording must state that BASIC numbers are
+  double precision, that exact qword payloads are preserved by the
+  explicit 64-bit memory helpers where the implementation does so, and
+  that `MEMALLOC(size[,align])` allocates public low32 buffers for
+  MMIO, copper, coprocessor, and DMA examples. Do not expose private
+  internal names such as `EHBASIC_PRIV_*` in reader prose.
+
+  Execute this FP64/dynamic-layout pass in this order:
+
+  1. Chapter 1: replace the FP32 numeric model with the FP64 model and
+     keep the integer-truncation rule for integer-only operations.
+  2. Chapter 2: add the missing `MEMALLOC` vocabulary entry and remove
+     stale POKE64 wording that says ordinary variables are FP32.
+  3. Chapter 4: document current raster-band behaviour for configured
+     framebuffer bases, direct VRAM, and compositor-managed high
+     framebuffers.
+  4. Chapter 24: update the MMIO map wording, width table, program
+     executor label, and BASIC public allocation notes against current
+     constants.
+  5. Chapter 25 and Appendix G: add the IE64 FP64 load/store,
+     arithmetic, conversion, and transcendental instruction families,
+     including `DSIN`, `DCOS`, `DTAN`, `DATAN`, `DLOG`, `DEXP`, and
+     `DPOW`.
+  6. Appendices F, H, I, and J: remove stale FP32 BASIC wording and add
+     `MEMALLOC` or dynamic-layout lookup notes only where they belong.
+  7. `verify/CLAIM_LEDGER.txt`: update claims and canonical sources for
+     this pass.
+  8. Run stale-term scans for FP32/single-precision BASIC claims, run
+     the forbidden-term and dash scans, publish, and print PDFs only
+     after the source tree is consistent.
 - Integrate the later backed-RAM seam correction. The book must no
   longer imply that all multi-byte RAM accesses can straddle the seam
   between the low memory slice and backed RAM. Check `machine_bus.go`,
