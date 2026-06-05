@@ -58,6 +58,9 @@ aot_rt_jump_table:
     dc.q    exec_do_list            ; RT_EXEC_DO_LIST
     dc.q    exec_do_save            ; RT_EXEC_DO_SAVE
     dc.q    exec_do_bload           ; RT_EXEC_DO_BLOAD
+    dc.q    exec_reset_control_stack ; RT_EXEC_RESET_CONTROL_STACK
+    dc.q    expr_truthy             ; RT_EXPR_TRUTHY
+    dc.q    expr_to_i64             ; RT_EXPR_TO_I64
 
 ; --- Runtime closure -----------------------------------------------------------
 include "ie64_fp.inc"
@@ -76,3 +79,9 @@ include "ehbasic_exec.inc"
 include "ehbasic_lineeditor.inc"
 include "ehbasic_file_io.inc"
 include "aot_runtime_stubs.inc"
+
+expr_to_i64:
+    jsr     fp_int
+    jsr     fp_fix
+    move.q  r9, #VAL_I64
+    rts

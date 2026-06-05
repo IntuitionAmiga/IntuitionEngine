@@ -16,7 +16,7 @@ ring modulation, hard sync, PWM, noise selection, and DAC input. The
 same audio block also owns four SFX channels for raw sample playback.
 
 Use the BASIC `SOUND`, `ENVELOPE`, and `GATE` commands for channels
-`0` to `3`. Use `POKE` when you need the full ten-channel register
+`0` to `3`. Use `POKE32` when you need the full ten-channel register
 map or the SFX sample trigger block.
 
 ## 12.1 Setup
@@ -25,7 +25,7 @@ Always enable the mixer first:
 
 <!-- @prm-id: ch12-audio-enable -->
 ```basic
-10 POKE &H000F0800,1
+10 POKE32 &H000F0800,1
 ```
 
 Then write channel parameters, open the gate, and let the mixer run.
@@ -33,7 +33,7 @@ This first program plays a square-wave A4:
 
 ```basic
 10 REM SOUNDCHIP FIRST NOTE
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 ENVELOPE 0,50,100,200,100
 40 SOUND 0,440,200,0,128
 50 GATE 0, ON
@@ -113,7 +113,7 @@ This program plays a noise burst on channel `2`:
 
 ```basic
 10 REM SOUNDCHIP NOISE BURST
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 SOUND 2,880,180,3
 40 SOUND NOISE 2,2
 50 ENVELOPE 2,1,40,0,40
@@ -138,7 +138,7 @@ at `$F0860`, with one 32-bit register per channel.
 | `4` | SID-style exponential ADSR. |
 
 `ENVELOPE ch,atk,dec,sus,rel` writes the ADSR registers for channels
-`0` to `3`. Use `POKE` for higher channels.
+`0` to `3`. Use `POKE32` for higher channels.
 
 ## 12.5 Sweep, ring modulation, and sync
 
@@ -147,7 +147,7 @@ channels `0` to `3`:
 
 ```basic
 10 REM SOUNDCHIP SWEEP
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 SOUND 0,220,200,4
 40 SOUND SWEEP 0,1,7,3
 50 GATE 0, ON
@@ -157,7 +157,7 @@ The BASIC form sets the enable bit, period, and shift. Direction is
 available through direct register writes. To sweep down, add bit `3`:
 
 ```basic
-10 POKE &H000F0A90,&HF3 OR 8
+10 POKE32 &H000F0A90,&HF3 OR 8
 ```
 
 Ring modulation multiplies one channel by another. Hard sync resets
@@ -165,7 +165,7 @@ one oscillator when the source wraps.
 
 ```basic
 10 REM RING AND SYNC
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 SOUND 0,220,180,1
 40 SOUND 1,440,180,0,80
 50 SOUND RINGMOD 1,0
@@ -179,7 +179,7 @@ channel `0` modulates and syncs it.
 
 The BASIC `SOUND RINGMOD` and `SOUND SYNC` forms write the source
 registers at `$F0A10` and `$F0A00`. The per-channel flexible offsets
-`$34` and `$38` are also valid for direct `POKE`; set bit `7` and put
+`$34` and `$38` are also valid for direct `POKE32`; set bit `7` and put
 the source channel in the low nibble.
 
 ## 12.6 DAC mode
@@ -190,12 +190,12 @@ channel. The low byte is interpreted as signed: `0` is silence,
 
 ```basic
 10 REM MANUAL DAC CLICK
-20 POKE &H000F0800,1
-30 POKE &H000F0A84,220
-40 POKE &H000F0A88,1
-50 POKE &H000F0ABC,127
-60 POKE &H000F0ABC,128
-70 POKE &H000F0ABC,0
+20 POKE32 &H000F0800,1
+30 POKE32 &H000F0A84,220
+40 POKE32 &H000F0A88,1
+50 POKE32 &H000F0ABC,127
+60 POKE32 &H000F0ABC,128
+70 POKE32 &H000F0ABC,0
 ```
 
 Line `30` sets channel `0` volume. Line `40` enables the channel.
@@ -226,20 +226,20 @@ triggers SFX channel `0`:
 
 ```basic
 10 REM SFX MEMORY SAMPLE
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 BASE=&H00600000
 40 FOR I=0 TO 63
 50 V=80
 60 IF (I AND 8)=0 THEN V=200
 70 POKE8 BASE+I,V
 80 NEXT I
-90 POKE &H000F0E80,BASE
-100 POKE &H000F0E84,64
-110 POKE &H000F0E90,11025
-120 POKE &H000F0E94,60000
-130 POKE &H000F0E98,1
-140 POKE &H000F0E9C,1
-150 PRINT PEEK(&H000F0E9C) AND 1
+90 POKE32 &H000F0E80,BASE
+100 POKE32 &H000F0E84,64
+110 POKE32 &H000F0E90,11025
+120 POKE32 &H000F0E94,60000
+130 POKE32 &H000F0E98,1
+140 POKE32 &H000F0E9C,1
+150 PRINT PEEK32(&H000F0E9C) AND 1
 ```
 
 Expected result: the sample starts playing and line `150` prints `1`
@@ -267,7 +267,7 @@ bit `1` is set instead.
 
 - `SOUND`, `ENVELOPE`, `GATE`, `SOUND WAVE`, `SOUND NOISE`, and
   `SOUND SWEEP` target channels `0` to `3`.
-- Direct `POKE` reaches all ten channels.
+- Direct `POKE32` reaches all ten channels.
 - Writing `PHASE` resets the oscillator phase.
 - Writing `DAC` enables DAC mode for that channel; writing
   `WAVE_TYPE` returns the channel to oscillator mode.

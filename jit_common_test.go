@@ -171,11 +171,20 @@ func TestNeedsFallback_FPU_Compilable(t *testing.T) {
 }
 
 func TestNeedsFallback_FPU_Transcendental(t *testing.T) {
-	// Transcendentals still need fallback when they're the sole instruction
+	// FP32 transcendentals still need fallback when they're the sole instruction.
 	for _, op := range []byte{OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW} {
 		instrs := []JITInstr{{opcode: op}}
 		if !needsFallback(instrs) {
 			t.Fatalf("opcode 0x%02X should need fallback (transcendental)", op)
+		}
+	}
+}
+
+func TestNeedsFallback_FP64TranscendentalsUseHelperExit(t *testing.T) {
+	for _, op := range []byte{OP_DSIN, OP_DCOS, OP_DTAN, OP_DATAN, OP_DLOG, OP_DEXP, OP_DPOW} {
+		instrs := []JITInstr{{opcode: op, rd: 0, rs: 2, rt: 4}}
+		if needsFallback(instrs) {
+			t.Fatalf("opcode 0x%02X should use helper exit, not whole-block fallback", op)
 		}
 	}
 }

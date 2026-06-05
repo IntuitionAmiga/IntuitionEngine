@@ -32,10 +32,11 @@ single-page reference.
 | `FRE(x)`   | argument ignored | Bytes of free BASIC program / variable storage. |
 | `POS(x)`   | argument ignored | Current cursor column on the terminal. |
 | `USR(x)`   | address         | Call an IE64 user machine-code routine; see Chapter 2. |
-| `PEEK(a)`  | address         | `32`-bit aligned read of memory at `a`. |
-| `PEEK8(a)` | address         | Byte-width read. |
-| `DEEK(a)`  | address         | `16`-bit aligned read (low half). |
-| `LEEK(a)`  | address         | `32`-bit aligned read (same as `PEEK`). |
+| `PEEK(a)`   | address        | Byte-width read; alias for `PEEK8(a)`. |
+| `PEEK8(a)`  | address        | Byte-width read. |
+| `PEEK16(a)` | address        | `16`-bit aligned read. |
+| `PEEK32(a)` | address        | `32`-bit aligned read. |
+| `PEEK64(a)` | address        | `64`-bit aligned read; returns an exact integer qword. |
 
 ## F.2 String functions
 

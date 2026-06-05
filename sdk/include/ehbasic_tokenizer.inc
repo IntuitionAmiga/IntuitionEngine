@@ -1,10 +1,11 @@
-; ehbasic_tokenizer.inc - EhBASIC IE64 Tokenizer
+; ehbasic_tokenizer.inc - IE64 BASIC Tokenizer
 ;
 ; Converts BASIC source text into compact token representation.
 ; Ported from ehbasic68k.asm LAB_13A6 ("crunch" routine).
 ;
 ; Uses a flat keyword table (tok_kw_table from ehbasic_tokens.inc).
-; Each entry: null-terminated keyword string + token byte.
+; Each entry: null-terminated keyword string + token byte. Extended entries
+; append a subtoken byte after TK_EXT.
 ; Table ends with a lone 0x00 byte.
 ;
 ; Calling convention:
@@ -118,7 +119,7 @@ tokenize:
     move.q  r2, #0x5B              ; 'Z' + 1
     bge     r15, r2, .tok_emit     ; not uppercase letter, skip check
 
-    ; Check char AFTER keyword - reject if alpha follows
+    ; Check char AFTER keyword - reject if alpha, digit, '$', or '_' follows.
     load.b  r7, (r5)
     ; Convert to uppercase for check
     move.q  r2, #0x61              ; 'a'
@@ -127,13 +128,22 @@ tokenize:
     bge     r7, r2, .tok_bnd_after_upper
     sub.q   r7, r7, #0x20          ; to uppercase
 .tok_bnd_after_upper:
+    move.q  r2, #0x30              ; '0'
+    blt     r7, r2, .tok_bnd_after_dollar
+    move.q  r2, #0x3A              ; '9' + 1
+    blt     r7, r2, .tok_skip_entry ; digit follows → reject match
+.tok_bnd_after_dollar:
+    move.q  r2, #0x24              ; '$'
+    beq     r7, r2, .tok_skip_entry
+    move.q  r2, #0x5F              ; '_'
+    beq     r7, r2, .tok_skip_entry
     move.q  r2, #0x41              ; 'A'
     blt     r7, r2, .tok_bnd_before
     move.q  r2, #0x5B              ; 'Z' + 1
     blt     r7, r2, .tok_skip_entry ; letter follows → reject match
 
 .tok_bnd_before:
-    ; Check char BEFORE keyword - reject if alpha precedes
+    ; Check char BEFORE keyword - reject if alpha, digit, '$', or '_' precedes.
     beq     r14, r8, .tok_emit     ; at input start, no char before
     sub.q   r7, r14, #1
     load.b  r7, (r7)
@@ -144,6 +154,15 @@ tokenize:
     bge     r7, r2, .tok_bnd_pre_upper
     sub.q   r7, r7, #0x20
 .tok_bnd_pre_upper:
+    move.q  r2, #0x30              ; '0'
+    blt     r7, r2, .tok_bnd_before_dollar
+    move.q  r2, #0x3A              ; '9' + 1
+    blt     r7, r2, .tok_skip_entry ; digit before → reject match
+.tok_bnd_before_dollar:
+    move.q  r2, #0x24              ; '$'
+    beq     r7, r2, .tok_skip_entry
+    move.q  r2, #0x5F              ; '_'
+    beq     r7, r2, .tok_skip_entry
     move.q  r2, #0x41              ; 'A'
     blt     r7, r2, .tok_emit
     move.q  r2, #0x5B              ; 'Z' + 1
@@ -155,6 +174,13 @@ tokenize:
     load.b  r4, (r6)              ; read token byte
     store.b r4, (r12)             ; emit token
     add.q   r12, r12, #1
+    move.q  r2, #TK_EXT
+    bne     r4, r2, .tok_emit_done
+    add.q   r6, r6, #1
+    load.b  r4, (r6)              ; read extended subtoken
+    store.b r4, (r12)
+    add.q   r12, r12, #1
+.tok_emit_done:
     move.q  r10, r5               ; advance input past matched keyword
 
     ; Check for REM or DATA
@@ -178,7 +204,12 @@ tokenize:
     add.q   r6, r6, #1
     bnez    r4, .tok_skip_entry
     ; r6 now points past the null; next byte is the token
+    load.b  r4, (r6)
     add.q   r6, r6, #1            ; skip token byte
+    move.q  r2, #TK_EXT
+    bne     r4, r2, .tok_skip_done
+    add.q   r6, r6, #1            ; skip extended subtoken byte
+.tok_skip_done:
     move.q  r3, r6                ; update table pointer
     bra     .tok_scan_table
 
@@ -301,8 +332,8 @@ tokenize:
 ; ============================================================================
 ;
 ; Format: Each entry is the FULL keyword as null-terminated uppercase ASCII,
-; immediately followed by the token byte. The table ends with a 0x00 byte
-; where a keyword would start.
+; immediately followed by the token byte. Extended entries store TK_EXT and
+; one subtoken byte. The table ends with a 0x00 byte where a keyword would start.
 ;
 ; Keywords are sorted longest-first within the table to ensure greedy
 ; matching (e.g. RESTORE before REM, GOSUB before GOTO, etc.).
@@ -326,6 +357,7 @@ tok_kw_table:
     ; Multi-char keywords (longest first for greedy matching)
     dc.b    "RESTORE", 0, TK_RESTORE
     dc.b    "RETURN", 0, TK_RETURN
+    dc.b    "MEMALLOC", 0, TK_EXT, EXT_MEMALLOC
     dc.b    "VARPTR", 0, TK_VPTR
     ; HOST is recognized as a raw statement in exec_line; it is intentionally
     ; absent from this token table.
@@ -336,7 +368,13 @@ tok_kw_table:
     dc.b    "BITSET", 0, TK_BITSET
     dc.b    "BITCLR", 0, TK_BITCLR
     dc.b    "CLEAR", 0, TK_CLEAR
-    dc.b    "TROFF", 0, TK_DEF
+    dc.b    "TROFF", 0, TK_EXT, EXT_TROFF
+    dc.b    "POKE64", 0, TK_EXT, EXT_POKE64
+    dc.b    "POKE32", 0, TK_EXT, EXT_POKE32
+    dc.b    "POKE16", 0, TK_EXT, EXT_POKE16
+    dc.b    "PEEK64", 0, TK_EXT, EXT_PEEK64
+    dc.b    "PEEK32", 0, TK_EXT, EXT_PEEK32
+    dc.b    "PEEK16", 0, TK_EXT, EXT_PEEK16
     dc.b    "GOSUB", 0, TK_GOSUB
     dc.b    "INPUT", 0, TK_INPUT
     dc.b    "PRINT", 0, TK_PRINT
@@ -349,19 +387,17 @@ tok_kw_table:
     dc.b    "CHR$", 0, TK_CHRS
     dc.b    "CONT", 0, TK_CONT
     dc.b    "DATA", 0, TK_DATA
-    dc.b    "DEEK", 0, TK_DEEK
-    dc.b    "DOKE", 0, TK_DOKE
     dc.b    "ELSE", 0, TK_ELSE
     dc.b    "GOTO", 0, TK_GOTO
     dc.b    "HEX$", 0, TK_HEXS
     dc.b    "BIN$", 0, TK_BINS
-    dc.b    "LEEK", 0, TK_LEEK
     dc.b    "LIST", 0, TK_LIST
     dc.b    "LOAD", 0, TK_LOAD
-    dc.b    "LOKE", 0, TK_LOKE
     dc.b    "LOOP", 0, TK_LOOP
     dc.b    "NEXT", 0, TK_NEXT
-    dc.b    "TRON", 0, TK_NULL
+    dc.b    "TRON", 0, TK_EXT, EXT_TRON
+    dc.b    "POKE8", 0, TK_EXT, EXT_POKE8
+    dc.b    "PEEK8", 0, TK_EXT, EXT_PEEK8
     dc.b    "PEEK", 0, TK_PEEK
     dc.b    "POKE", 0, TK_POKE
     dc.b    "READ", 0, TK_READ

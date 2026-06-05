@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"os"
 	"runtime"
 	"strings"
@@ -46,17 +47,18 @@ func TestResonanceProgramShape(t *testing.T) {
 		t.Fatal("resonance.bas must start MIDI before entering the main loop")
 	}
 	if strings.Contains(text, "&HF0084") || strings.Contains(text, "&H000F0084") {
-		t.Fatal("resonance.bas must leave FB_BASE unset")
+		t.Fatal("resonance.bas must leave FB_BASE unset for the legacy visible framebuffer")
 	}
 	for _, want := range []string{
+		"FB=&H100000:BB=&H230000:TX=&H360000:CP=&H5E0000:SR=&H600000:SB=&H668000",
 		"BLIT MODE7",
 		"BLIT MEMCOPY BB,FB,1228800",
 		"VSYNC",
 		"SOUND PLAY",
 		"COPPER",
-		"PEEK(&H000F0BB0)",
-		"PEEK(&H000F075C)",
-		"PM=0:RT0=PEEK(&H000F075C)/1000000",
+		"PEEK32(&H000F0BB0)",
+		"PEEK32(&H000F075C)",
+		"PM=0:RT0=PEEK32(&H000F075C)/1000000",
 		"IF MP>PM THEN TM=MP/44100:PM=MP:GOTO 560",
 		"TM=RT-RT0",
 		"IF TM>=45 THEN GOSUB 2800",
@@ -66,7 +68,6 @@ func TestResonanceProgramShape(t *testing.T) {
 		"SA=SIN(A):SZ=SIN(Z):CZ=COS(A):AB=INT(A*40.743665) AND 255:AB2=INT(A*2*40.743665) AND 255",
 		"GOSUB 3500",
 		"IF TM>=218 THEN GOTO 3700",
-		"IF PM>0 THEN MS=PEEK(&H000F0BAC) AND 1:IF MS=0 THEN GOTO 3700",
 		`SOUND PLAY "sdk/examples/assets/music/adagioforstrings.mid"`,
 		"GOSUB 1500",
 		"970 GOTO 510",
@@ -146,8 +147,8 @@ func TestResonanceProgramShape(t *testing.T) {
 		"FOR I=0 TO 24",
 		"SX=(SC+I*16) AND 16383:IF SX>16368 THEN SX=0",
 		"X=124+I*16:Y=405+INT(7*SN((AB2+I*14) AND 255)/1024)",
-		"POKE &HF0024,SB+SX*4:POKE &HF0028,BB+Y*ST+X*4:POKE &HF002C,16:POKE &HF0030,33",
-		"POKE &HF0034,SS:POKE &HF0038,ST:POKE &HF0020,4:POKE &HF001C,1",
+		"POKE32 &HF0024,SB+SX*4:POKE32 &HF0028,BB+Y*ST+X*4:POKE32 &HF002C,16:POKE32 &HF0030,33",
+		"POKE32 &HF0034,SS:POKE32 &HF0038,ST:POKE32 &HF0020,4:POKE32 &HF001C,1",
 		"WELCOME TO RESONANCE BY INTUITION",
 		"IE64 BASIC JIT-COMPILED TO NATIVE CODE DRIVES A MIDI-SYNCHRONISED MODE7 ROTOZOOM",
 		"BARBER'S ADAGIO FOR STRINGS BY WILLIAM ORBIT (1995)",
@@ -162,8 +163,8 @@ func TestResonanceProgramShape(t *testing.T) {
 		"BLIT FILL FB,640,480,CC,ST",
 		"SOUND PLAY STOP",
 		"COPPER OFF",
-		"POKE &HF0004,7",
-		"POKE &HF0000,1",
+		"POKE32 &HF0004,7",
+		"POKE32 &HF0000,1",
 		`PRINT "INTUITION ENGINE"`,
 	} {
 		if !strings.Contains(text, want) {
@@ -173,12 +174,15 @@ func TestResonanceProgramShape(t *testing.T) {
 	if strings.Contains(text, "TE=F") || strings.Contains(text, "TE=FR") {
 		t.Fatal("timeline must not be driven only by the frame counter")
 	}
+	if strings.Contains(text, "PEEK32(&H000F0BAC)") {
+		t.Fatal("demo must not end on a transient raw MIDI busy-bit read")
+	}
 	for _, forbidden := range []string{"CATHEDRAL", "GOTHIC", "ROSE WINDOW", "STAINED GLASS", "CRUCIFIX", "ADAGIO COMPLETE", "MONOLITH", "DATA WINDOWS", "RAVE LASER"} {
 		if strings.Contains(strings.ToUpper(text), forbidden) {
 			t.Fatalf("demo must not contain religious/incorrect outro marker %q", forbidden)
 		}
 	}
-	if strings.Contains(text, "POKE &HF0488,48") || strings.Contains(text, "GOSUB 3610") {
+	if strings.Contains(text, "POKE32 &HF0488,48") || strings.Contains(text, "GOSUB 3610") {
 		t.Fatal("demo must not reintroduce the arbitrary vector-line overlay")
 	}
 	if strings.Contains(text, "BLIT FILL BB+(Y+H)*ST+X*4,10,2,C,ST") {
@@ -220,7 +224,7 @@ func TestResonanceProgramShape(t *testing.T) {
 	}
 	for _, stale := range []string{
 		"BLIT COPY SR+108*ST+SX*4,BB+Y*ST+X*4,8,33,ST,ST",
-		"POKE &HF0024,SR+108*ST+SX*4",
+		"POKE32 &HF0024,SR+108*ST+SX*4",
 		"LC=&HFFA09078:MC=&HFF403828",
 		"BLIT COPY SR,TX+LY*TS+LX*4,640,92,ST,TS",
 		"BLIT MEMCOPY TB,TX,2097152",
@@ -275,27 +279,41 @@ func TestResonanceProgramShape(t *testing.T) {
 	}
 }
 
-func TestResonanceSpansStayInVRAM(t *testing.T) {
+func TestResonanceSpansStayInLegacyLowMemory(t *testing.T) {
 	const (
 		frontBase = 0x100000
 		backBase  = 0x230000
 		workBase  = 0x360000
 		copper    = 0x5E0000
-		vramBase  = 0x100000
-		vramEnd   = 0x600000
+		source    = 0x600000
+		scroll    = 0x668000
+		lowEnd    = 0x01000000
 		screen    = 640 * 480 * 4
 		work      = 1024 * 512 * 4
 		copperLen = 4096
+		sourceLen = 640 * 92 * 4
+		scrollLen = 2162688
 	)
 
-	for name, span := range map[string][2]int{
+	spans := map[string][2]int{
 		"front":  {frontBase, frontBase + screen},
 		"back":   {backBase, backBase + screen},
 		"work":   {workBase, workBase + work},
 		"copper": {copper, copper + copperLen},
-	} {
-		if span[0] < vramBase || span[1] > vramEnd {
-			t.Fatalf("%s span [%#x,%#x) outside VRAM [%#x,%#x)", name, span[0], span[1], vramBase, vramEnd)
+		"source": {source, source + sourceLen},
+		"scroll": {scroll, scroll + scrollLen},
+	}
+	for name, span := range spans {
+		if span[0] <= 0 || span[1] > lowEnd {
+			t.Fatalf("%s span [%#x,%#x) outside low memory end %#x", name, span[0], span[1], lowEnd)
+		}
+		for otherName, other := range spans {
+			if name >= otherName {
+				continue
+			}
+			if span[0] < other[1] && other[0] < span[1] {
+				t.Fatalf("%s span [%#x,%#x) overlaps %s span [%#x,%#x)", name, span[0], span[1], otherName, other[0], other[1])
+			}
 		}
 	}
 }
@@ -353,14 +371,37 @@ func TestResonanceInitialEhBASICPath(t *testing.T) {
 	asmBin := buildAssembler(t)
 	var loader *MediaLoader
 	var midiPlayer *MIDIPlayer
-	out, _ := execStmtTestCore(t, asmBin, text, func(h *ehbasicTestHarness) {
+	var video *VideoChip
+	makeResonanceHarness := func(tb testing.TB) *ehbasicTestHarness {
+		tb.Helper()
+		bus, err := NewMachineBusSized(256 * 1024 * 1024)
+		if err != nil {
+			tb.Fatalf("NewMachineBusSized: %v", err)
+		}
+		bus.ApplyProfileVisibleCeiling(256 * 1024 * 1024)
+		return newEhbasicHarnessOnBus(tb, bus)
+	}
+	out, _ := execStmtTestCoreWithHarness(t, asmBin, text, func(h *ehbasicTestHarness) {
+		var err error
+		video, err = NewVideoChip(VIDEO_BACKEND_EBITEN)
+		if err != nil {
+			t.Fatalf("NewVideoChip: %v", err)
+		}
+		video.AttachBus(h.bus)
+		video.SetBigEndianMode(false)
+		h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+		h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+
 		sound := newTestSoundChip()
 		midiPlayer = NewMIDIPlayer(sound, SAMPLE_RATE)
 		midiPlayer.AttachBus(h.bus)
 		h.bus.MapIO(MIDI_PLAY_PTR, MIDI_TEMPO_BPM+3, midiPlayer.HandlePlayRead, midiPlayer.HandlePlayWrite)
 		loader = NewMediaLoader(h.bus, sound, ".", nil, nil, nil, nil, nil, nil, nil, midiPlayer)
 		h.bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
-	})
+		fileIO := NewFileIODevice(h.bus, ".")
+		h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
+		h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fileIO.HandleWrite8)
+	}, makeResonanceHarness)
 	if strings.Contains(out, "?") {
 		t.Fatalf("initial Resonance EhBASIC path produced an error: %q", out)
 	}
@@ -377,5 +418,37 @@ func TestResonanceInitialEhBASICPath(t *testing.T) {
 	if status := loader.HandleRead(MEDIA_STATUS); status != MEDIA_STATUS_PLAYING {
 		t.Fatalf("EhBASIC SOUND PLAY status=%d, want PLAYING=%d, err=%d, type=%d",
 			status, MEDIA_STATUS_PLAYING, loader.HandleRead(MEDIA_ERROR), loader.HandleRead(MEDIA_TYPE))
+	}
+	if video == nil {
+		t.Fatal("video chip was not initialized")
+	}
+	if fbBase := video.HandleRead(VIDEO_FB_BASE); fbBase != 0 {
+		t.Fatalf("Resonance should leave VIDEO_FB_BASE unset, got %#x", fbBase)
+	}
+	frame := video.FinishFrame()
+	if len(frame) == 0 {
+		t.Fatal("Resonance visible framebuffer produced an empty frame")
+	}
+	nonzero := 0
+	for off := uint32(0); off < 1228800; off += 4096 {
+		if binary.LittleEndian.Uint32(frame[off:]) != 0 {
+			nonzero++
+		}
+	}
+	if nonzero == 0 {
+		t.Fatal("Resonance visible framebuffer stayed black after initial BASIC path")
+	}
+	const scrollFirstColor = 0xFFA09078
+	scrollPixels := 0
+	for y := 380; y < 440; y++ {
+		for x := 100; x < 540; x++ {
+			off := uint32(y*640+x) * 4
+			if binary.LittleEndian.Uint32(frame[off:]) == scrollFirstColor {
+				scrollPixels++
+			}
+		}
+	}
+	if scrollPixels < 100 {
+		t.Fatalf("Resonance scroll text absent: found %d expected-color pixels in scroll band", scrollPixels)
 	}
 }

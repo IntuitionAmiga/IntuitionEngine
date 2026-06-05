@@ -311,7 +311,7 @@ it useful from BASIC for raster-bar experiments:
 10 ANTIC ON
 20 FOR Y=0 TO 191
 30 IF (Y AND 16)=0 THEN GTIA COLOR 4,&H36 ELSE GTIA COLOR 4,&H74
-40 POKE &H000F2120,0              : REM WSYNC
+40 POKE32 &H000F2120,0              : REM WSYNC
 50 NEXT Y
 ```
 
@@ -494,7 +494,7 @@ player column and a green missile column across the visible frame:
 280 FOR Y=0 TO 191
 290 GTIA GRAFP 0,&H3C
 300 GTIA GRAFM 4
-310 POKE &H000F2120,0              : REM capture one scanline
+310 POKE32 &H000F2120,0              : REM capture one scanline
 320 NEXT Y
 330 ANTIC DLIST DL
 340 ANTIC MODE &H2E                : REM playfield + player + missile DMA

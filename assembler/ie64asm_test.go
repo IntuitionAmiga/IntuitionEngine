@@ -239,6 +239,13 @@ const (
 	opDCVTFI  = 0x8E
 	opFCVTSD  = 0x8F
 	opFCVTDS  = 0x90
+	opDSIN    = 0x91
+	opDCOS    = 0x92
+	opDTAN    = 0x93
+	opDATAN   = 0x94
+	opDLOG    = 0x95
+	opDEXP    = 0x96
+	opDPOW    = 0x97
 
 	opNOP      = 0xE0
 	opHALT     = 0xE1
@@ -2170,6 +2177,13 @@ func TestIE64Asm_FP64Encodings(t *testing.T) {
 		{"dcvtfi r1, f2", encodeInstr(opDCVTFI, 1, szL, 0, 2, 0, 0)},
 		{"fcvtsd f0, f3", encodeInstr(opFCVTSD, 0, szL, 0, 3, 0, 0)},
 		{"fcvtds f5, f2", encodeInstr(opFCVTDS, 5, szL, 0, 2, 0, 0)},
+		{"dsin f0, f2", encodeInstr(opDSIN, 0, szL, 0, 2, 0, 0)},
+		{"dcos f0, f2", encodeInstr(opDCOS, 0, szL, 0, 2, 0, 0)},
+		{"dtan f0, f2", encodeInstr(opDTAN, 0, szL, 0, 2, 0, 0)},
+		{"datan f0, f2", encodeInstr(opDATAN, 0, szL, 0, 2, 0, 0)},
+		{"dlog f0, f2", encodeInstr(opDLOG, 0, szL, 0, 2, 0, 0)},
+		{"dexp f0, f2", encodeInstr(opDEXP, 0, szL, 0, 2, 0, 0)},
+		{"dpow f0, f2, f4", encodeInstr(opDPOW, 0, szL, 0, 2, 4, 0)},
 	}
 	for _, tc := range tests {
 		bin := assembleString(t, tc.src)

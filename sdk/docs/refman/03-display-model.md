@@ -157,7 +157,7 @@ between chips. A palette entry is a 24-bit value made of three
 
 From BASIC, the `PALETTE` and `PLOT` statements operate on the VGA
 chip (see Chapter 5). The other chips are programmed through their
-own MMIO registers - either with `POKE` from BASIC or directly from
+own MMIO registers - either with `POKE32` from BASIC or directly from
 machine language. Each chip's chapter lists the addresses.
 
 The number of palette entries available depends on the chip. The

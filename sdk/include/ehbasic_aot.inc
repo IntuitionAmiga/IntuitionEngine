@@ -2,22 +2,17 @@
 ; ============================================================================
 ; Phase: compiler-time memory allocators.
 ;
-; alloc64    - top-down from CR_RAM_SIZE_BYTES (total guest RAM). 64-bit arena
-;              for compiler workspace, asm text, symbols, fixups, literals, and
-;              generated AOT code.
-; allocLow32 - 32-bit-addressable spans for File I/O and Media Loader staging:
-;              top-down below min(CR_RAM_SIZE_BYTES, AOT_LOW32_CAP).
+; alloc64    - top-down retained AOT arena for compiler workspace, asm text,
+;              symbols, fixups, literals, and generated AOT code.
+; allocLow32 - bottom-up AOT public low32 scratch in [AOT_LOW32_BASE,
+;              AOT_LOW32_END). This is deliberately small and separate from
+;              public MEMALLOC.
+; fileBridge - top-down private low32 staging for File I/O calls, restored by
+;              callers after single-operation use.
 ;
-; Both modes draw from a SINGLE shared descending frontier (AOT_ARENA_NEXT), so
-; the blocks they hand out are always disjoint - even when guest RAM is below
-; AOT_LOW32_CAP and both windows would otherwise start at the same top.
-; allocLow32 first clamps the frontier down to AOT_LOW32_CAP when it is higher,
-; so its spans stay within the 32-bit ABI; the abandoned region above the cap is
-; simply left unused.
-;
-; Both are 4 KiB-aligned, never return an address below AOT_ALLOC_FLOOR (so they
-; never overlap live BASIC/runtime state, MMIO registers, or the VRAM aperture),
-; reset per RUN AOT / COMPILE attempt, and fail only on genuine exhaustion.
+; The cursors are reset per RUN AOT / COMPILE attempt and live in the AOT half
+; of BASIC_STATE. Retained buffers must never be allocated from the temporary
+; file bridge.
 ;
 ; Self-contained (depends only on ie64.inc constants and the mfcr instruction)
 ; so it can be unit-tested in isolation before being wired into the pipeline.
@@ -32,42 +27,104 @@
 ; ============================================================================
 
 ; --- aot_alloc_reset --------------------------------------------------------
-; Reset the shared frontier to the top of guest RAM, aligned down to 4 KiB.
+; Reset AOT retained, public low32, and private file-bridge cursors.
 ; Call once at the start of every RUN AOT / COMPILE attempt.
-; Clobbers: R1-R3, R8
+; Clobbers: R1-R5, R8
 aot_alloc_reset:
     mfcr    r8, cr15                ; R8 = CR_RAM_SIZE_BYTES (total guest RAM)
     and.q   r2, r8, #0xFFF
     sub.q   r1, r8, r2             ; R1 = RAM size & ~0xFFF
-    la      r3, AOT_ARENA_NEXT
+    ; Keep retained allocations below BASIC stacks when the stacks are in the
+    ; same high arena window. Resident high-RAM BASIC caps its stacks into the
+    ; low32 window, so those low32 stack cursors must not pull the retained RUN
+    ; AOT arena down from a high/sparse RAM frontier.
+    add.q   r3, r16, #ST_CTRL_LOW
+    load.q  r4, (r3)
+    beqz    r4, .aar_have_arena_top
+    bge     r4, r1, .aar_have_arena_top
+    move.q  r5, #AOT_LOW32_CAP
+    blt     r1, r5, .aar_use_ctrl_low
+    bgt     r4, r5, .aar_use_ctrl_low
+    bra     .aar_have_arena_top
+.aar_use_ctrl_low:
+    move.q  r1, r4                  ; retained arena shares stack window
+.aar_have_arena_top:
+    la      r3, AOT_ARENA_HIGH_NEXT
     store.q r1, (r3)
+    move.q  r4, #AOT_LOW32_BASE
+    la      r3, AOT_LOW32_NEXT
+    store.q r4, (r3)
+    move.q  r4, #AOT_LOW32_CAP
+    blt     r1, r4, .aar_bridge_from_arena
+    move.q  r2, r4
+    bra     .aar_bridge_apply_ctrl_low
+.aar_bridge_from_arena:
+    move.q  r2, r1
+.aar_bridge_apply_ctrl_low:
+    add.q   r3, r16, #ST_CTRL_LOW
+    load.q  r4, (r3)
+    beqz    r4, .aar_bridge_top_ok
+    bge     r4, r2, .aar_bridge_top_ok
+    move.q  r2, r4                  ; file bridge must stay below BASIC stacks
+.aar_bridge_top_ok:
+    la      r3, AOT_FILE_BRIDGE_NEXT
+    store.q r2, (r3)
+    move.q  r4, #AOT_FILE_BRIDGE_LOW_DEFAULT
+    la      r3, AOT_FILE_BRIDGE_LOW
+    store.q r4, (r3)
+    la      r3, AOT_RESET_GENERATION
+    load.q  r4, (r3)
+    add.q   r4, r4, #1
+    store.q r4, (r3)
     rts
 
-; --- aot_alloc64 / aot_alloc_low32 ------------------------------------------
-; Allocate a 4 KiB-aligned block from the shared frontier.
+; --- aot_alloc64 / aot_alloc_low32 / aot_alloc_file_bridge -------------------
+; Allocate a 4 KiB-aligned block from the requested AOT cursor.
 ; Input:  R8 = requested byte size
 ; Output: R8 = allocated base address (0 on failure)
 ;         R9 = 0 on success, 1 if exhausted
 ; Clobbers: R1-R5
 aot_alloc64:
-    la      r4, AOT_ARENA_NEXT
+    la      r4, AOT_ARENA_HIGH_NEXT
     load.q  r2, (r4)               ; R2 = current frontier (no clamp for 64-bit)
-    bra     aot_alloc_finish
-aot_alloc_low32:
-    la      r4, AOT_ARENA_NEXT
+    move.q  r5, #AOT_ALLOC_FLOOR
+    bra     aot_alloc_topdown_finish
+
+aot_alloc_file_bridge:
+    la      r4, AOT_FILE_BRIDGE_NEXT
     load.q  r2, (r4)
-    ; Clamp the base down to the 32-bit cap so the span is addressable. The cap
-    ; is already 4 KiB-aligned. Region above the cap is abandoned.
-    move.q  r5, #AOT_LOW32_CAP
-    blt     r2, r5, aot_alloc_finish
-    move.q  r2, r5
-aot_alloc_finish:
-    ; R2 = base (frontier top to allocate beneath), R4 = &AOT_ARENA_NEXT.
+    la      r1, AOT_ARENA_HIGH_NEXT
+    load.q  r3, (r1)
+    blt     r2, r3, .afb_top_ok
+    move.q  r2, r3
+.afb_top_ok:
+    la      r1, AOT_FILE_BRIDGE_LOW
+    load.q  r5, (r1)
+    bra     aot_alloc_topdown_finish
+
+aot_alloc_low32:
+    blt     r8, r0, aot_alloc_fail
+    add.q   r1, r8, #0xFFF
+    and.q   r3, r1, #0xFFF
+    sub.q   r1, r1, r3             ; R1 = aligned size
+    la      r4, AOT_LOW32_NEXT
+    load.q  r2, (r4)               ; R2 = current bottom-up cursor
+    add.q   r3, r2, r1             ; R3 = new cursor
+    move.q  r5, #AOT_LOW32_END
+    bgt     r3, r5, aot_alloc_fail
+    blt     r3, r2, aot_alloc_fail
+    store.q r3, (r4)
+    move.q  r8, r2                 ; return old cursor as base
+    move.q  r9, r0
+    rts
+
+aot_alloc_topdown_finish:
+    ; R2 = base (frontier top to allocate beneath), R4 = &cursor, R5 = floor.
     ; Reject absurd sizes before aligning: only requests with bit 63 set can
     ; make (size + 0xFFF) wrap, and those would otherwise align to a tiny value
     ; and falsely succeed. Any positive (signed) size is far below 2^63 and
     ; cannot overflow the alignment add.
-    blt     r8, r0, .alloc_fail
+    blt     r8, r0, aot_alloc_fail
     ; Round the request up to a 4 KiB multiple: (size + 0xFFF) & ~0xFFF.
     add.q   r1, r8, #0xFFF
     and.q   r3, r1, #0xFFF
@@ -77,14 +134,30 @@ aot_alloc_finish:
     ; remaining window wraps R3 far above R2 (huge unsigned), which is also
     ; < FLOOR under signed comparison, so this single check covers both; the
     ; bgt is a defensive underflow guard.
-    move.q  r5, #AOT_ALLOC_FLOOR
-    blt     r3, r5, .alloc_fail
-    bgt     r3, r2, .alloc_fail
-    store.q r3, (r4)               ; commit the shared frontier downward
+    blt     r3, r5, aot_alloc_fail
+    bgt     r3, r2, aot_alloc_fail
+    store.q r3, (r4)               ; commit the requested frontier downward
+    ; When active RAM is below the low32 bridge cap, the retained AOT arena and
+    ; private file bridge share the same top-down window. Keep both cursors at
+    ; the lowest successful allocation frontier so mixed COMPILE allocations do
+    ; not overlap. On high-RAM hosts the retained arena lives above low32, so the
+    ; bridge must not drag it down.
+    la      r1, AOT_ARENA_HIGH_NEXT
+    load.q  r2, (r1)
+    move.q  r5, #AOT_LOW32_CAP
+    bgt     r2, r5, .atd_done
+    bge     r3, r2, .atd_bridge_sync
+    store.q r3, (r1)
+.atd_bridge_sync:
+    la      r1, AOT_FILE_BRIDGE_NEXT
+    load.q  r2, (r1)
+    bge     r3, r2, .atd_done
+    store.q r3, (r1)
+.atd_done:
     move.q  r8, r3
     move.q  r9, r0
     rts
-.alloc_fail:
+aot_alloc_fail:
     move.q  r8, r0
     move.q  r9, #1
     rts
@@ -368,6 +441,7 @@ AOT_CLS_MFCR  equ 15     ; mfcr rd, crN
 AOT_CLS_FP2   equ 16     ; 2-operand FPU op (dst, src); fp-ness per mnemtab flags
 AOT_CLS_FP3   equ 17     ; 3-FP-register op (fd, fs, ft)
 AOT_CLS_FCMP  equ 18     ; fcmp rd, fs, ft  (rd integer, fs/ft FP)
+AOT_CLS_FPMEM equ 19     ; fload/fstore/dload/dstore fN, disp(rN)
 
 ; aot_parse_mnem - read a mnemonic and optional ".b/.w/.l/.q" size suffix, then
 ; resolve it through the mnemonic table.
@@ -387,7 +461,7 @@ aot_parse_mnem:
     add.q   r8, r8, #1
     bra     .pm_sp
 .pm_copy:
-    la      r3, AOT_MNEM_BUF
+    la      r3, EHBASIC_PRIV_MNEM_BUF
     store.q r0, (r3)              ; clear the 8-byte name field (null padding)
     move.q  r4, r0               ; letter count
 .pm_cl:
@@ -454,7 +528,7 @@ aot_parse_mnem:
     beq     r1, r2, .pm_sep_ok
     bra     .pm_notfound
 .pm_sep_ok:
-    la      r3, AOT_MNEM_BUF
+    la      r3, EHBASIC_PRIV_MNEM_BUF
     load.q  r6, (r3)             ; parsed name as one 8-byte word
     la      r5, aot_mnemtab
 .pm_scan:
@@ -509,6 +583,32 @@ aot_mnemtab:
     dc.b "fdiv", 0,0,0,0,   0x66, AOT_CLS_FP3,   0,0,0,0,0,0
     dc.b "fpow", 0,0,0,0,   0x77, AOT_CLS_FP3,   0,0,0,0,0,0
     dc.b "fcmp", 0,0,0,0,   0x6C, AOT_CLS_FCMP,  0,0,0,0,0,0
+    dc.b "fload",0,0,0,     0x61, AOT_CLS_FPMEM, 0,0,0,0,0,0
+    dc.b "fstore",0,0,      0x62, AOT_CLS_FPMEM, 0,0,0,0,0,0
+    dc.b "dmov", 0,0,0,0,   0x80, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "dload",0,0,0,     0x81, AOT_CLS_FPMEM, 0,0,0,0,0,0
+    dc.b "dstore",0,0,      0x82, AOT_CLS_FPMEM, 0,0,0,0,0,0
+    dc.b "dadd", 0,0,0,0,   0x83, AOT_CLS_FP3,   0,0,0,0,0,0
+    dc.b "dsub", 0,0,0,0,   0x84, AOT_CLS_FP3,   0,0,0,0,0,0
+    dc.b "dmul", 0,0,0,0,   0x85, AOT_CLS_FP3,   0,0,0,0,0,0
+    dc.b "ddiv", 0,0,0,0,   0x86, AOT_CLS_FP3,   0,0,0,0,0,0
+    dc.b "dmod", 0,0,0,0,   0x87, AOT_CLS_FP3,   0,0,0,0,0,0
+    dc.b "dabs", 0,0,0,0,   0x88, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "dneg", 0,0,0,0,   0x89, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "dsqrt",0,0,0,     0x8A, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "dint", 0,0,0,0,   0x8B, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "dcmp", 0,0,0,0,   0x8C, AOT_CLS_FCMP,  0,0,0,0,0,0
+    dc.b "dcvtif",0,0,      0x8D, AOT_CLS_FP2,   1,0,0,0,0,0
+    dc.b "dcvtfi",0,0,      0x8E, AOT_CLS_FP2,   0,1,0,0,0,0
+    dc.b "fcvtsd",0,0,      0x8F, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "fcvtds",0,0,      0x90, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "dsin", 0,0,0,0,   0x91, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "dcos", 0,0,0,0,   0x92, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "dtan", 0,0,0,0,   0x93, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "datan",0,0,0,     0x94, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "dlog", 0,0,0,0,   0x95, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "dexp", 0,0,0,0,   0x96, AOT_CLS_FP2,   1,1,0,0,0,0
+    dc.b "dpow", 0,0,0,0,   0x97, AOT_CLS_FP3,   0,0,0,0,0,0
     dc.b "add",  0,0,0,0,0, 0x20, AOT_CLS_ALU3,  0,0,0,0,0,0
     dc.b "sub",  0,0,0,0,0, 0x21, AOT_CLS_ALU3,  0,0,0,0,0,0
     dc.b "mulu", 0,0,0,0,   0x22, AOT_CLS_ALU3,  0,0,0,0,0,0
@@ -916,6 +1016,8 @@ aot_asm_line:
     beq     r23, r1, .al_fp3
     move.q  r1, #AOT_CLS_FCMP
     beq     r23, r1, .al_fcmp
+    move.q  r1, #AOT_CLS_FPMEM
+    beq     r23, r1, .al_fpmem
 
     ; Non-branch: operand 1 = rd.
     move.q  r8, r20
@@ -1234,6 +1336,27 @@ aot_asm_line:
     move.q  r20, r10
     bra     .al_endchk
 
+; FPU memory: fload/fstore/dload/dstore fN, disp(rN). Size .L, FP operand in rd,
+; memory base in rs, displacement in imm.
+.al_fpmem:
+    move.q  r24, #2
+    move.q  r8, r20
+    jsr     aot_parse_freg
+    beqz    r9, .al_err
+    move.q  r25, r8                ; FP register in rd
+    move.q  r20, r10
+    jsr     aot_skip_comma
+    beqz    r9, .al_err
+    move.q  r8, r20
+    jsr     aot_parse_memref
+    beqz    r10, .al_err
+    move.q  r29, r8                ; displacement
+    move.q  r27, r9                ; memory base
+    move.q  r20, r11
+    beqz    r29, .al_endchk
+    move.q  r26, #1
+    bra     .al_endchk
+
 ; lea rd, disp(rs) -> OP 0x04, size .q, xbit 1 (matches ie64asm asmLea).
 .al_lea:
     move.q  r24, #3                 ; lea is always size .q
@@ -1373,13 +1496,13 @@ aot_parse_value:
     move.q  r7, r8                  ; save start (survives aot_parse_label)
     jsr     aot_parse_label         ; R8=nameptr R9=valid R10=past R11=len
     beqz    r9, .pv_num
-    la      r1, AOT_MNEM_BUF
+    la      r1, EHBASIC_PRIV_MNEM_BUF
     store.q r8, (r1)               ; save name pointer (operand phase: buffer free)
     move.q  r9, r11                ; R9 = name length for the lookup
     jsr     aot_sym_lookup          ; R8=addr R9=found (R10, R11 preserved)
     bnez    r9, .pv_ok
     ; not a program label -> try a named assembler constant
-    la      r1, AOT_MNEM_BUF
+    la      r1, EHBASIC_PRIV_MNEM_BUF
     load.q  r8, (r1)
     move.q  r9, r11
     jsr     aot_const_lookup        ; R8=value R9=found (R10 preserved)
@@ -2043,7 +2166,8 @@ aot_text_room:
 ; First slice: supports the empty programme and programmes whose statements are
 ; only END / REM. Any other statement is not yet lowerable.
 ;
-; The line list is the live EhBASIC format: records [next:l, lineNo:l, tokens..]
+; The line list is the live IE64 BASIC format: records
+; [next:q, lineNo:l, reserved:l, tokens..]
 ; chained by next; the terminator record has next == 0. A real line always has
 ; a non-zero next, so next == 0 marks the end without a body to lower.
 ;
@@ -2086,9 +2210,9 @@ aot_transpile:
     beqz    r21, .tr_no_prescan
     move.q  r1, r18                ; first line record
 .tr_ps_line:
-    load.l  r2, (r1)               ; next pointer
+    load.q  r2, (r1)               ; next pointer
     beqz    r2, .tr_ps_done
-    add.q   r3, r1, #8             ; statement tokens
+    add.q   r3, r1, #16            ; statement tokens
 .tr_ps_tok:
     load.b  r4, (r3)
     beqz    r4, .tr_ps_next
@@ -2174,14 +2298,15 @@ aot_transpile:
     ; otherwise-supported programme (an unsupported statement is reported first).
     jsr     aot_read_rt_blob
     ; If the tokenised programme is bundled (READ/DATA), measure its byte length now
-    ; (state[ST_PROG_END] - BASIC_PROG_START) so the bootstrap copy length baked during
+    ; (state[ST_PROG_END] - state[ST_PROG_START]) so the bootstrap copy length baked during
     ; transpile is correct. The sizing phase recomputes the same value for the append.
     la      r1, AOT_USE_PROG
     load.q  r1, (r1)
     beqz    r1, .tr_no_prescan
     move.q  r2, #(BASIC_STATE + ST_PROG_END)
-    load.l  r2, (r2)
-    move.q  r3, #BASIC_PROG_START
+    load.q  r2, (r2)
+    move.q  r3, #(BASIC_STATE + ST_PROG_START)
+    load.q  r3, (r3)
     sub.q   r2, r2, r3
     la      r1, AOT_RT_PROG_LEN
     store.q r2, (r1)
@@ -2194,17 +2319,16 @@ aot_transpile:
     jsr     aot_text_room
     beqz    r8, .tr_oflow
     move.q  r8, r17
-    la      r9, aot_str_movel_r31  ; move.l r31, #STACK_TOP
-    move.q  r10, #STACK_TOP
+    la      r9, aot_str_movel_r16  ; move.l r16, #BASIC_STATE
+    move.q  r10, #BASIC_STATE
     jsr     aot_emit_movel
+    la      r9, aot_str_basic_layout_init
+    jsr     aot_emit_str
     la      r9, aot_str_movel_r26  ; move.l r26, #TERM_OUT
     move.q  r10, #TERM_OUT
     jsr     aot_emit_movel
     la      r9, aot_str_movel_r27  ; move.l r27, #TERM_STATUS
     move.q  r10, #TERM_STATUS
-    jsr     aot_emit_movel
-    la      r9, aot_str_movel_r16  ; move.l r16, #BASIC_STATE
-    move.q  r10, #BASIC_STATE
     jsr     aot_emit_movel
     ; If the programme needs the runtime blob, read it into AOT_RT_BASE and run
     ; var_init (R16/R26/R27/R31 are set above). aot_emit_rt_bootstrap threads R8.
@@ -2229,7 +2353,7 @@ aot_transpile:
     jsr     aot_emit_str
     move.q  r17, r8
 .tr_line:
-    load.l  r1, (r18)              ; next pointer
+    load.q  r1, (r18)              ; next pointer
     beqz    r1, .tr_finish          ; next == 0 -> terminator, no body
     la      r1, AOT_IF_LABEL       ; no pending IF end/else labels at the line start
     store.q r0, (r1)
@@ -2239,10 +2363,10 @@ aot_transpile:
     jsr     aot_text_room
     beqz    r8, .tr_oflow
     move.q  r8, r17
-    load.l  r9, 4(r18)             ; line number
+    load.l  r9, 8(r18)             ; line number
     jsr     aot_emit_label_def
     move.q  r17, r8
-    add.q   r20, r18, #8           ; statement cursor = tokens
+    add.q   r20, r18, #16          ; statement cursor = tokens
 .tr_stmt:
     load.b  r1, (r20)
     move.q  r2, #0x20
@@ -2265,12 +2389,10 @@ aot_transpile:
     beq     r1, r2, .tr_gosub
     move.q  r2, #0x8E               ; TK_RETURN
     beq     r1, r2, .tr_return
+    move.q  r2, #0x92               ; TK_EXT
+    beq     r1, r2, .tr_ext
     move.q  r2, #0x98               ; TK_POKE
     beq     r1, r2, .tr_poke
-    move.q  r2, #0x99               ; TK_DOKE
-    beq     r1, r2, .tr_doke
-    move.q  r2, #0x9A               ; TK_LOKE
-    beq     r1, r2, .tr_loke
     move.q  r2, #0x9B               ; TK_CALL
     beq     r1, r2, .tr_call
     move.q  r2, #0xA6               ; TK_BITSET
@@ -2389,7 +2511,7 @@ aot_transpile:
     move.q  r17, r8
     bra     .tr_skip_stmt
 ; SAVE: bundle the filename string expression and call the bundled exec_do_save, which
-; detokenises the bundled programme to FILE_DATA_BUF and writes it via the File I/O ABI.
+; detokenises the bundled programme to a transient low32 bridge and writes it via the File I/O ABI.
 .tr_save_standalone:
     add.q   r20, r20, #1           ; consume TK_SAVE -> R20 at the filename expression
     jsr     aot_emit_cond_span     ; bundle the filename -> move.l r17, #Q<id>
@@ -2519,46 +2641,89 @@ aot_transpile:
     move.q  r8, #2                  ; output buffer overflow
     rts
 
-; POKE addr,val (32-bit; POKE8 -> byte) / DOKE (16-bit) / LOKE (32-bit). With integer
-; literal operands the fast path emits the store directly:
-;   move.l r1, #addr / move.l r2, #val / store.<sz> r2, (r1)
-; With expression operands (variables/arithmetic) the literal parse fails; the arena
-; then delegates the whole statement to the resident exec_do_poke/doke/loke (which run
-; expr_eval), keeping RUN AOT's "every tokenised statement runs" contract. R25 holds the
-; statement start (the POKE/DOKE/LOKE token) for that fallback; it survives the parse.
+; POKE addr,val is intentionally a byte alias, matching the 8-bit home computer
+; BASIC convention; wider native stores must use explicit POKE16/32/64.
+; With complete integer
+; literal operands the fast path emits the store directly. POKE64 materialises
+; the value from low/high 32-bit immediates because the private decimal emitter
+; and move.l immediates are intentionally 32-bit.
+; With expression operands (variables/arithmetic), including arithmetic that starts
+; with a numeric literal, the arena delegates the whole statement to the resident
+; statement handler, keeping RUN AOT's "every tokenised statement runs" contract. R25
+; holds the statement start for that fallback; it survives the parse.
 .tr_poke:
     move.q  r25, r20               ; save the statement start for the delegate fallback
     add.q   r20, r20, #1           ; consume TK_POKE
-    load.b  r1, (r20)
-    move.q  r2, #0x38               ; '8' -> byte form (POKE8)
-    bne     r1, r2, .tr_poke_l
-    add.q   r20, r20, #1
     la      r24, aot_str_store_b
+    move.q  r26, r0
     bra     .tr_store2
-.tr_poke_l:
-    la      r24, aot_str_store_l
-    bra     .tr_store2
-.tr_doke:
+
+.tr_ext:
     move.q  r25, r20               ; save the statement start
+    add.q   r20, r20, #1           ; consume TK_EXT
+    load.b  r1, (r20)              ; subtoken
+    move.q  r2, #0x03               ; EXT_POKE8
+    beq     r1, r2, .tr_ext_poke8
+    move.q  r2, #0x04               ; EXT_POKE16
+    beq     r1, r2, .tr_ext_poke16
+    move.q  r2, #0x05               ; EXT_POKE32
+    beq     r1, r2, .tr_ext_poke32
+    move.q  r2, #0x06               ; EXT_POKE64
+    beq     r1, r2, .tr_ext_poke64
+    sub.q   r20, r20, #1           ; rewind to TK_EXT for generic delegation
+    load.b  r1, (r20)
+    bra     .tr_delegate_token
+.tr_ext_poke8:
+    add.q   r20, r20, #1           ; consume subtoken
+    la      r24, aot_str_store_b
+    move.q  r26, r0
+    bra     .tr_store2
+.tr_ext_poke16:
     add.q   r20, r20, #1
     la      r24, aot_str_store_w
+    move.q  r26, r0
     bra     .tr_store2
-.tr_loke:
-    move.q  r25, r20               ; save the statement start
+.tr_ext_poke32:
     add.q   r20, r20, #1
     la      r24, aot_str_store_l
+    move.q  r26, r0
+    bra     .tr_store2
+.tr_ext_poke64:
+    add.q   r20, r20, #1
+    la      r24, aot_str_store_q
+    move.q  r26, #1
 .tr_store2:
     jsr     aot_text_room
     beqz    r8, .tr_oflow
-    jsr     aot_parse_two_uints     ; R22=addr, R23=val (R24, R25 survive)
+    jsr     aot_parse_two_uints     ; R22=addr, R23=val (R24-R26 survive)
     beqz    r8, .tr_poke_expr       ; non-literal operands -> delegate (arena)
+    jsr     aot_at_stmt_boundary
+    beqz    r8, .tr_poke_expr       ; numeric-prefix expression -> delegate
     move.q  r8, r17
     la      r9, aot_str_movel_r1
     move.q  r10, r22
     jsr     aot_emit_movel
+    bnez    r26, .tr_store2_val64
     la      r9, aot_str_movel_r2
     move.q  r10, r23
     jsr     aot_emit_movel
+    bra     .tr_store2_store
+.tr_store2_val64:
+    move.q  r10, r23               ; low 32
+    lsl.q   r10, r10, #32
+    lsr.q   r10, r10, #32
+    la      r9, aot_str_movel_r2
+    jsr     aot_emit_movel
+    move.q  r10, r23               ; high 32
+    lsr.q   r10, r10, #32
+    beqz    r10, .tr_store2_store
+    la      r9, aot_str_movel_r3
+    jsr     aot_emit_movel
+    la      r9, aot_str_lslq_r3_32
+    jsr     aot_emit_str
+    la      r9, aot_str_orq_r2_r3
+    jsr     aot_emit_str
+.tr_store2_store:
     move.q  r9, r24
     jsr     aot_emit_str
     move.q  r17, r8
@@ -2567,7 +2732,7 @@ aot_transpile:
     ; Expression operands: standalone has no resident handler to delegate to, so it
     ; reports the statement unsupported; the arena delegates to the resident handler.
     bnez    r21, .tr_unsup
-    move.q  r20, r25                ; rewind to the POKE/DOKE/LOKE token
+    move.q  r20, r25                ; rewind to the POKE/TK_EXT token
     load.b  r1, (r20)               ; token byte (drives the jump-table index)
     bra     .tr_delegate_token
 
@@ -2680,7 +2845,7 @@ aot_transpile:
     ; standalone RETURN semantics arrive with the bundled runtime.
     bnez    r21, .tr_return_bare
     move.q  r8, r17
-    load.l  r9, 4(r18)             ; current line number (for the error report)
+    load.l  r9, 8(r18)             ; current line number (for the error report)
     jsr     aot_emit_return
     move.q  r17, r8
     bra     .tr_stmt
@@ -2720,7 +2885,7 @@ aot_transpile:
     bra     .tr_if_cond_ready
 .tr_if_cond_bundle:
     ; Standalone: the program text is absent and the blob occupies
-    ; BASIC_PROG_START, so bundle the condition tokens inline and point R17 at
+    ; the live program-text segment, so bundle the condition tokens inline and point R17 at
     ; them (R20 preserved for the THEN seek below).
     jsr     aot_emit_cond_span
     beqz    r9, .tr_oflow
@@ -2730,14 +2895,14 @@ aot_transpile:
     la      r9, aot_str_movel_r6   ; move.l r6, #expr_eval (resident, RUN AOT)
     move.q  r10, #expr_eval
     jsr     aot_emit_movel
-    la      r9, aot_str_jsr_r6     ; jsr (r6)  -> R8 = FP32 condition
+    la      r9, aot_str_jsr_r6     ; jsr (r6)  -> R8 payload, R9 tag
     jsr     aot_emit_str
     bra     .tr_if_eval_done
 .tr_if_eval_blob:
     jsr     aot_emit_eval_call     ; move.l r6, #RT_EXPR_EVAL / load.q / jsr (r6)
 .tr_if_eval_done:
-    la      r9, aot_str_and_r8_mask ; mask the FP sign bit for the zero test
-    jsr     aot_emit_str
+    jsr     aot_emit_truthy_call    ; tagged condition -> R8=0/1
+    beqz    r9, .tr_oflow
     move.q  r17, r8
     ; skip the condition tokens to TK_THEN (quote-aware) and consume it
 .tr_if_seek_then:
@@ -2897,8 +3062,7 @@ aot_transpile:
     move.q  r8, r17
     jsr     aot_emit_expr          ; index expr -> R8 (resident or blob expr_eval)
     beqz    r9, .tr_oflow
-    la      r9, aot_str_fp_to_int  ; convert to integer in R8
-    jsr     aot_emit_str
+    jsr     aot_emit_expr_to_i64
     move.q  r17, r8
 .on_seek:
     load.b  r1, (r20)
@@ -3047,9 +3211,9 @@ aot_transpile:
     add.q   r3, r3, r4
     load.q  r25, (r3)              ; loop-label id
     move.q  r8, r17
-    ; save ST_GOSUB_SP (exec_do_next pops the FOR frame only when the loop ends)
+    ; save ST_FOR_SP (exec_do_next pops the FOR frame only when the loop ends)
     la      r9, aot_str_addq_r1_gosub
-    move.q  r10, #ST_GOSUB_SP
+    move.q  r10, #ST_FOR_SP
     jsr     aot_emit_movel
     la      r9, aot_str_load_r1_r1
     jsr     aot_emit_str
@@ -3077,14 +3241,14 @@ aot_transpile:
     move.q  r10, #RT_EXEC_DO_NEXT  ; call exec_do_next (checked: halt on error)
     jsr     aot_emit_rt_call
 .tr_next_called:
-    ; reload ST_GOSUB_SP; if unchanged the frame is still active -> loop to F<id>
+    ; reload ST_FOR_SP; if unchanged the frame is still active -> loop to F<id>
     la      r9, aot_str_movel_r2
     move.q  r10, #AOT_FOR_SP_SAVE
     jsr     aot_emit_movel
     la      r9, aot_str_load_r2_r2
     jsr     aot_emit_str
     la      r9, aot_str_addq_r1_gosub
-    move.q  r10, #ST_GOSUB_SP
+    move.q  r10, #ST_FOR_SP
     jsr     aot_emit_movel
     la      r9, aot_str_load_r1_r1
     jsr     aot_emit_str
@@ -3119,8 +3283,8 @@ aot_transpile:
     jsr     aot_emit_label_named
     jsr     aot_emit_expr          ; condition -> R8 (resident or blob expr_eval)
     beqz    r9, .tr_oflow
-    la      r9, aot_str_and_r8_mask
-    jsr     aot_emit_str
+    jsr     aot_emit_truthy_call
+    beqz    r9, .tr_oflow
     la      r9, aot_str_beqz_we    ; beqz r8, WE<id>  (false -> exit loop)
     move.q  r10, r25
     jsr     aot_emit_movel
@@ -3228,8 +3392,8 @@ aot_transpile:
     move.q  r8, r17
     jsr     aot_emit_expr          ; condition -> R8 (resident or blob expr_eval)
     beqz    r9, .tr_oflow
-    la      r9, aot_str_and_r8_mask
-    jsr     aot_emit_str
+    jsr     aot_emit_truthy_call
+    beqz    r9, .tr_oflow
     bnez    r26, .tr_loop_until_br
     la      r9, aot_str_bnez_d     ; LOOP WHILE: true -> bnez r8, D<id>
     bra     .tr_loop_emit
@@ -3242,7 +3406,7 @@ aot_transpile:
     bra     .tr_skip_stmt          ; skip the condition tokens
 ; WAIT addr, mask [, xor] -> poll [addr] until ((v EOR xor) AND mask) != 0, with
 ; a ~1M-iteration timeout (matching the interpreter's hw_wait). VSYNC -> the same
-; loop with addr = VGA_STATUS, mask = VGA_STATUS_VSYNC, xor = 0.
+; loop with addr = VIDEO_STATUS, mask = STATUS_VBLANK, xor = 0.
 .tr_wait:
     add.q   r20, r20, #1           ; consume TK_WAIT
     jsr     aot_text_room
@@ -3274,8 +3438,8 @@ aot_transpile:
     add.q   r20, r20, #1           ; consume TK_VSYNC_CMD
     jsr     aot_text_room
     beqz    r8, .tr_oflow
-    move.q  r22, #VGA_STATUS
-    move.q  r23, #VGA_STATUS_VSYNC
+    move.q  r22, #VIDEO_STATUS
+    move.q  r23, #STATUS_VBLANK
     move.q  r24, r0
     move.q  r8, r17
     jsr     aot_emit_wait_loop
@@ -3393,7 +3557,7 @@ aot_transpile:
     move.q  r2, #1
     store.q r2, (r1)
     bra     .tr_pr_semi_sp
-; PRINT <integer literal>: load the int, convert to FP32, call bundled fp_print.
+; PRINT <integer literal>: load the int, convert to FP64, call bundled fp_print.
 .tr_pr_num:
     move.q  r8, r20
     jsr     aot_parse_uint         ; R8 = value, R10 = past
@@ -3406,7 +3570,7 @@ aot_transpile:
     la      r9, aot_str_movel_r8   ; move.l r8, #<value>
     move.q  r10, r24
     jsr     aot_emit_movel
-    la      r9, aot_str_fp_seq     ; fcvtif f0, r8 / fmovo r8, f0 / jsr fp_print
+    la      r9, aot_str_fp_seq     ; jsr fp_float / jsr fp_print
     jsr     aot_emit_str
     move.q  r17, r8
     la      r1, AOT_USE_FP         ; request the bundled fp_print closure
@@ -3478,7 +3642,7 @@ aot_transpile:
     la      r1, AOT_IF_LABEL
     store.q r0, (r1)
 .tr_advance_next:
-    load.l  r18, (r18)             ; follow the next-line pointer
+    load.q  r18, (r18)             ; follow the next-line pointer
     bra     .tr_line
 .tr_finish:
     jsr     aot_text_room          ; room for the trailing rts/halt
@@ -3540,6 +3704,15 @@ aot_str_movel_r1_rtprog:
 aot_str_movel_r2:
     dc.b    "move.l r2, #", 0
     align 4
+aot_str_movel_r3:
+    dc.b    "move.l r3, #", 0
+    align 4
+aot_str_lslq_r3_32:
+    dc.b    "lsl.q r3, r3, #32", 0x0A, 0
+    align 4
+aot_str_orq_r2_r3:
+    dc.b    "or.q r2, r2, r3", 0x0A, 0
+    align 4
 aot_str_store_b:
     dc.b    "store.b r2, (r1)", 0x0A, 0
     align 4
@@ -3548,6 +3721,9 @@ aot_str_store_w:
     align 4
 aot_str_store_l:
     dc.b    "store.l r2, (r1)", 0x0A, 0
+    align 4
+aot_str_store_q:
+    dc.b    "store.q r2, (r1)", 0x0A, 0
     align 4
 aot_str_loadb_r2:
     dc.b    "load.b r2, (r1)", 0x0A, 0
@@ -3575,9 +3751,6 @@ aot_str_jsr_l:
     align 4
 ; WAIT/VSYNC poll-loop fragments. Registers: r1=addr, r2=value, r3=mask,
 ; r4=xor, r5=timeout. Loop label "W<id>", done label "X<id>".
-aot_str_movel_r3:
-    dc.b    "move.l r3, #", 0
-    align 4
 aot_str_movel_r4:
     dc.b    "move.l r4, #", 0
     align 4
@@ -3615,9 +3788,49 @@ aot_str_movel_r6:
     dc.b    "move.l r6, #", 0
     align 4
 ; Standalone (COMPILE) bootstrap prologue: a flat .ie64 boots with no resident
-; setup, so the image establishes its own stack and the TERM_OUT pointer that the
-; bundled fp_print / aot_print_str helpers write through (R26), plus the state
-; base (R16) and TERM_STATUS pointer (R27) for parity with the resident runtime.
+; setup, so the image establishes its own dynamic stack/control reservations and
+; the TERM_OUT pointer that the bundled fp_print / aot_print_str helpers write
+; through (R26), plus the state base (R16) and TERM_STATUS pointer (R27) for
+; parity with the resident runtime.
+aot_str_basic_layout_init:
+    dc.b    "mfcr r1, cr15", 0x0A
+    dc.b    "bnez r1, B1", 0x0A
+    dc.b    "move.q r1, #0x02000000", 0x0A
+    dc.b    "B1:", 0x0A
+    dc.b    "lsr.q r1, r1, #12", 0x0A
+    dc.b    "lsl.q r1, r1, #12", 0x0A
+    dc.b    "sub.q r1, r1, #0x1000", 0x0A
+    dc.b    "move.q r31, r1", 0x0A
+    dc.b    "move.l r2, #0x420A8", 0x0A
+    dc.b    "store.q r31, (r2)", 0x0A
+    dc.b    "move.q r3, r31", 0x0A
+    dc.b    "sub.q r3, r3, #0x10000", 0x0A
+    dc.b    "move.l r2, #0x420A0", 0x0A
+    dc.b    "store.q r3, (r2)", 0x0A
+    dc.b    "move.l r2, #0x420B8", 0x0A
+    dc.b    "store.q r3, (r2)", 0x0A
+    dc.b    "move.q r4, r3", 0x0A
+    dc.b    "sub.q r4, r4, #0x10000", 0x0A
+    dc.b    "move.l r2, #0x420B0", 0x0A
+    dc.b    "store.q r4, (r2)", 0x0A
+    dc.b    "move.l r2, #0x42060", 0x0A
+    dc.b    "store.q r4, (r2)", 0x0A
+    dc.b    "move.l r2, #0x42068", 0x0A
+    dc.b    "store.q r3, (r2)", 0x0A
+    dc.b    "move.q r5, #0xFFFF0000", 0x0A
+    dc.b    "blt r4, r5, B2", 0x0A
+    dc.b    "move.q r4, r5", 0x0A
+    dc.b    "B2:", 0x0A
+    dc.b    "move.l r2, #0x420C0", 0x0A
+    dc.b    "store.q r4, (r2)", 0x0A
+    dc.b    "move.q r6, #0x01000000", 0x0A
+    dc.b    "move.l r2, #0x420C8", 0x0A
+    dc.b    "store.q r6, (r2)", 0x0A
+    dc.b    "move.l r2, #0x42038", 0x0A
+    dc.b    "store.q r6, (r2)", 0x0A
+    dc.b    "move.l r2, #0x42030", 0x0A
+    dc.b    "store.q r4, (r2)", 0x0A, 0
+    align 4
 aot_str_movel_r31:
     dc.b    "move.l r31, #", 0
     align 4
@@ -3708,13 +3921,13 @@ aot_str_crlf:
     dc.b    "move.q r1, #13", 0x0A, "store.b r1, (r26)", 0x0A
     dc.b    "move.q r1, #10", 0x0A, "store.b r1, (r26)", 0x0A, 0
     align 4
-; PRINT <integer literal>: convert to FP32 at runtime and call the bundled
+; PRINT <integer literal>: convert to FP64 at runtime and call the bundled
 ; fp_print (so formatting matches the interpreter's expr_eval -> fp_print path).
 aot_str_movel_r8:
     dc.b    "move.l r8, #", 0
     align 4
 aot_str_fp_seq:
-    dc.b    "fcvtif f0, r8", 0x0A, "fmovo r8, f0", 0x0A, "jsr fp_print", 0x0A, 0
+    dc.b    "jsr fp_float", 0x0A, "jsr fp_print", 0x0A, 0
     align 4
 aot_str_fp_print_name:
     dc.b    "fp_print"
@@ -3766,9 +3979,6 @@ aot_str_movel_r2_rtname:
 aot_str_rtname_data:
     dc.b    "__rtname:", 0x0A, "    dc.b ", 0x22, "aot_runtime_blob.bin", 0x22, ", 0", 0x0A, 0
     align 4
-aot_str_and_r8_mask:
-    dc.b    "and.l r8, r8, #2147483647", 0x0A, 0
-    align 4
 aot_str_beqz_ie:
     dc.b    "beqz r8, IE", 0
     align 4
@@ -3785,10 +3995,6 @@ aot_str_bra_ie:
     align 4
 aot_str_lbl_el:
     dc.b    "EL", 0
-    align 4
-; ON <expr> GOTO/GOSUB: convert the FP index to an integer, then compare.
-aot_str_fp_to_int:
-    dc.b    "fmovi f0, r8", 0x0A, "fcvtfi r8, f0", 0x0A, 0
     align 4
 aot_str_moveq_r1:
     dc.b    "move.q r1, #", 0
@@ -4184,6 +4390,31 @@ aot_parse_two_uints:
     move.q  r8, r0
     rts
 
+; aot_at_stmt_boundary - after a literal fast-path parse, verify the cursor is at
+; a real statement boundary, not at the tail of an expression such as "1+2".
+; Input: R20 = cursor after parsed operands.
+; Output: R8 = 1 at end / ':' / TK_ELSE after optional spaces, else 0.
+;         R20 advances over spaces to the boundary/tail byte.
+; Clobbers R1-R2.
+aot_at_stmt_boundary:
+.asb_sp:
+    load.b  r1, (r20)
+    move.q  r2, #0x20
+    bne     r1, r2, .asb_check
+    add.q   r20, r20, #1
+    bra     .asb_sp
+.asb_check:
+    beqz    r1, .asb_ok
+    move.q  r2, #0x3A               ; ':'
+    beq     r1, r2, .asb_ok
+    move.q  r2, #0xAB               ; TK_ELSE
+    beq     r1, r2, .asb_ok
+    move.q  r8, r0
+    rts
+.asb_ok:
+    move.q  r8, #1
+    rts
+
 ; aot_parse_one_uint - parse "<uint>" at R20. R22 = value, R20 advanced.
 ; R8 = 1 on success, 0 on failure. Clobbers R1-R6, R8-R10.
 aot_parse_one_uint:
@@ -4347,7 +4578,7 @@ aot_emit_bundled_data:
     bgt     r12, r2, .bd_oflow
 .bd_scratch_ok:
     move.q  r4, r13
-    move.q  r5, #BASIC_PROG_START
+    load.q  r5, (r16)              ; live ST_PROG_START
     move.q  r6, r12
 .bd_copy:
     beqz    r6, .bd_reloc
@@ -4359,15 +4590,15 @@ aot_emit_bundled_data:
     bra     .bd_copy
 .bd_reloc:
     move.q  r6, #AOT_RT_PROG
-    move.q  r5, #BASIC_PROG_START
+    load.q  r5, (r16)              ; live ST_PROG_START
     sub.q   r6, r6, r5             ; relocation delta
     move.q  r4, r13                ; walk = scratch base
 .bd_reloc_loop:
-    load.l  r1, (r4)               ; original next-pointer (0 = end)
+    load.q  r1, (r4)               ; original next-pointer (0 = end)
     beqz    r1, .bd_reloc_done
     add.q   r2, r1, r6
-    store.l r2, (r4)
-    move.q  r5, #BASIC_PROG_START
+    store.q r2, (r4)
+    load.q  r5, (r16)              ; live ST_PROG_START
     sub.q   r1, r1, r5             ; offset into the programme
     add.q   r4, r13, r1            ; scratch address of the next record
     bra     .bd_reloc_loop
@@ -4437,26 +4668,30 @@ aot_file_write:
     rts
 
 ; aot_read_rt_blob - read aot_runtime_blob.bin (the standalone COMPILE runtime blob)
-; from the File I/O root into a low-32 staging buffer, recording the buffer pointer
-; (AOT_RT_BUF) and byte length (AOT_RT_LEN). The blob must stage low-32: FILE_DATA_PTR
-; is 32-bit and the File I/O range guard rejects spans reaching the sign-extended
-; window, so the buffer comes from aot_alloc_low32.
-; Output R8 = 0 success, 2 out of memory (no low-32 buffer), 4 file error (missing
+; from the File I/O root into a retained AOT arena buffer, recording the buffer
+; pointer (AOT_RT_BUF) and byte length (AOT_RT_LEN). File MMIO still receives a
+; private low32 bridge pointer; the retained blob bytes are copied out before the
+; bridge cursor may be reset by the next AOT file operation.
+; Output R8 = 0 success, 2 out of memory (no buffer/bridge), 4 file error (missing
 ; or unreadable .bin). Clobbers R1-R3, R14.
 aot_read_rt_blob:
     la      r1, AOT_RT_LEN
     store.q r0, (r1)               ; 0 until a successful read sets it
-    move.q  r8, #AOT_RT_BLOB_MAX   ; staging = the enforced max blob size (see ie64.inc)
-    jsr     aot_alloc_low32
+    move.q  r8, #AOT_RT_BLOB_MAX   ; retained buffer = enforced max blob size
+    jsr     aot_alloc64
     bnez    r9, .rrb_oom
     la      r1, AOT_RT_BUF
     store.q r8, (r1)
-    move.q  r14, r8                ; R14 = blob staging buffer
+    move.q  r14, r8                ; R14 = retained blob buffer
+    move.q  r8, #AOT_RT_BLOB_MAX
+    jsr     aot_alloc_file_bridge
+    bnez    r9, .rrb_oom
+    move.q  r3, r8                 ; R3 = low32 file bridge staging buffer
     la      r1, FILE_NAME_PTR
     move.q  r2, #aot_rt_blob_name
     store.l r2, (r1)
     la      r1, FILE_DATA_PTR
-    store.l r14, (r1)
+    store.l r3, (r1)
     la      r1, FILE_CTRL
     move.q  r2, #FILE_OP_READ
     store.l r2, (r1)               ; read triggers on FILE_CTRL
@@ -4471,6 +4706,19 @@ aot_read_rt_blob:
     ; corrupt image from being written).
     move.q  r3, #AOT_RT_BLOB_MAX
     bgt     r2, r3, .rrb_err
+    la      r1, FILE_DATA_PTR
+    load.l  r3, (r1)               ; R3 = bridge base used by the read
+    move.q  r1, r14                ; R1 = retained destination
+    move.q  r14, r2                ; R14 = bytes remaining
+.rrb_copy:
+    beqz    r14, .rrb_copied
+    load.b  r8, (r3)
+    store.b r8, (r1)
+    add.q   r3, r3, #1
+    add.q   r1, r1, #1
+    sub.q   r14, r14, #1
+    bra     .rrb_copy
+.rrb_copied:
     la      r1, AOT_RT_LEN
     store.q r2, (r1)
     move.q  r8, r0                 ; success
@@ -4488,7 +4736,7 @@ aot_rt_blob_name:
 ; aot_emit_rt_bootstrap - emit the standalone runtime-blob bootstrap into the
 ; transpiled text (R8 = cursor in/out). The standalone image, at boot, reads the
 ; runtime blob from the File I/O root straight into AOT_RT_BASE (its link address;
-; 0x023000 fits FILE_DATA_PTR and clears the File I/O range guard), then calls the
+; AOT_RT_BASE fits FILE_DATA_PTR and clears the File I/O range guard), then calls the
 ; bundled var_init through the jump table to set up variable/array/string state.
 ; Emitted only when the programme needs the blob (AOT_USE_RT), after the register
 ; bootstrap (R16/R26/R27/R31), before the first line. __rtname is a forward label to
@@ -4513,15 +4761,13 @@ aot_emit_rt_bootstrap:
     jsr     aot_emit_str
     la      r9, aot_str_jsr_r6          ; jsr (r6)
     jsr     aot_emit_str
-    ; Initialise ST_GOSUB_SP = BASIC_GOSUB_STACK so FOR/GOSUB frames have a valid
-    ; stack (exec_do_for/exec_do_gosub push onto it); var_init does not set it.
-    la      r9, aot_str_movel_r1        ; move.l r1, #(BASIC_STATE + ST_GOSUB_SP)
-    move.q  r10, #(BASIC_STATE + ST_GOSUB_SP)
+    ; Initialise the resident control-flow stack for delegated FOR/GOSUB helpers.
+    la      r9, aot_str_movel_r6        ; move.l r6, #RT_EXEC_RESET_CONTROL_STACK
+    move.q  r10, #RT_EXEC_RESET_CONTROL_STACK
     jsr     aot_emit_movel
-    la      r9, aot_str_movel_r2        ; move.l r2, #BASIC_GOSUB_STACK
-    move.q  r10, #BASIC_GOSUB_STACK
-    jsr     aot_emit_movel
-    la      r9, aot_str_store_r2_r1     ; store.l r2, (r1)
+    la      r9, aot_str_loadq_r6_r6     ; load.q r6, (r6)
+    jsr     aot_emit_str
+    la      r9, aot_str_jsr_r6          ; jsr (r6)
     jsr     aot_emit_str
     ; Clear state[ST_ERROR_FLAG] so the post-runtime-call error check (aot_emit_rt_call)
     ; starts from a clean slate; only the bundled raise_error writes a non-zero code there.
@@ -4556,10 +4802,10 @@ aot_emit_rt_bootstrap:
     la      r9, aot_str_movel_r2        ; move.l r2, #AOT_RT_PROG
     move.q  r10, #AOT_RT_PROG
     jsr     aot_emit_movel
-    la      r9, aot_str_store_r2_r1     ; store.l r2, (r1)  -> ST_PROG_START
+    la      r9, aot_str_store_q         ; store.q r2, (r1)  -> ST_PROG_START
     jsr     aot_emit_str
     ; ST_PROG_END = AOT_RT_PROG + progLen, so the bundled LIST's end-of-programme
-    ; sentinel (line_list compares the walk pointer against state[ST_PROG_END] - 4)
+    ; sentinel (line_list compares the walk pointer against state[ST_PROG_END] - 8)
     ; matches the relocated terminator. READ/SAVE walk the next-pointer chain and do
     ; not need it, but setting it is harmless for them.
     la      r9, aot_str_movel_r1        ; move.l r1, #(BASIC_STATE + ST_PROG_END)
@@ -4570,7 +4816,7 @@ aot_emit_rt_bootstrap:
     load.q  r10, (r1)
     add.q   r10, r10, #AOT_RT_PROG
     jsr     aot_emit_movel
-    la      r9, aot_str_store_r2_r1     ; store.l r2, (r1)  -> ST_PROG_END
+    la      r9, aot_str_store_q         ; store.q r2, (r1)  -> ST_PROG_END
     jsr     aot_emit_str
     la      r9, aot_str_movel_r1        ; move.l r1, #(BASIC_STATE + ST_DATA_PTR)
     move.q  r10, #(BASIC_STATE + ST_DATA_PTR)
@@ -4578,7 +4824,7 @@ aot_emit_rt_bootstrap:
     la      r9, aot_str_movel_r2        ; move.l r2, #0
     move.q  r10, r0
     jsr     aot_emit_movel
-    la      r9, aot_str_store_r2_r1     ; store.l r2, (r1)  -> ST_DATA_PTR = 0
+    la      r9, aot_str_store_q         ; store.q r2, (r1)  -> ST_DATA_PTR = 0
     jsr     aot_emit_str
 .aerb_no_prog:
     rts
@@ -4625,7 +4871,48 @@ aot_emit_eval_call:
     jsr     aot_emit_rt_call
     rts
 
-; aot_emit_expr - emit an expression evaluation that leaves the FP32 result in R8.
+; aot_emit_truthy_call - emit tagged BASIC truthiness for the last expr_eval result.
+; RUN AOT calls resident expr_truthy; standalone calls RT_EXPR_TRUTHY in the blob.
+; R8 = output cursor (in/out). Output R9 = 1 ok / 0 buffer overflow.
+aot_emit_truthy_call:
+    bnez    r21, .etc_blob
+    la      r9, aot_str_movel_r6   ; move.l r6, #expr_truthy
+    move.q  r10, #expr_truthy
+    jsr     aot_emit_movel
+    la      r9, aot_str_jsr_r6     ; jsr (r6)
+    jsr     aot_emit_str
+    move.q  r9, #1
+    rts
+.etc_blob:
+    move.q  r10, #RT_EXPR_TRUTHY
+    jsr     aot_emit_rt_call
+    move.q  r9, #1
+    rts
+
+; aot_emit_expr_to_i64 - convert the last tagged expression result to an I64
+; selector. RUN AOT calls resident fp_int/fp_fix; standalone calls the blob slot.
+; R8 = output cursor (in/out). Output R9 = 1 ok.
+aot_emit_expr_to_i64:
+    bnez    r21, .eti_blob
+    la      r9, aot_str_movel_r6
+    move.q  r10, #fp_int
+    jsr     aot_emit_movel
+    la      r9, aot_str_jsr_r6
+    jsr     aot_emit_str
+    la      r9, aot_str_movel_r6
+    move.q  r10, #fp_fix
+    jsr     aot_emit_movel
+    la      r9, aot_str_jsr_r6
+    jsr     aot_emit_str
+    move.q  r9, #1
+    rts
+.eti_blob:
+    move.q  r10, #RT_EXPR_TO_I64
+    jsr     aot_emit_rt_call
+    move.q  r9, #1
+    rts
+
+; aot_emit_expr - emit an expression evaluation that leaves the tagged numeric payload in R8.
 ; Arena (RUN AOT): move.l r17, #<resident tokens> / move.l r6, #expr_eval / jsr (r6).
 ; Standalone (COMPILE): bundle the tokens (aot_emit_cond_span) and call expr_eval
 ; through the blob jump table. R8 = output cursor (in/out, == R17 at entry), R20 =
@@ -4647,14 +4934,14 @@ aot_emit_expr:
     jsr     aot_emit_cond_span     ; bundle -> move.l r17, #Q<id>; R9 = status
     move.q  r8, r17
     beqz    r9, .ee_ret            ; overflow -> propagate
-    jsr     aot_emit_eval_call     ; expr_eval through the blob -> R8 (FP32)
+    jsr     aot_emit_eval_call     ; expr_eval through the blob -> R8 payload, R9 tag
     move.q  r9, #1
 .ee_ret:
     rts
 
 ; aot_emit_cond_span - bundle the expression token span at R20 as inline image data
 ; and emit "move.l r17, #Q<id>" so the bundled expr_eval reads it (standalone: the
-; program text is absent and the blob occupies BASIC_PROG_START). The span runs from
+; program text is absent and the blob occupies the private standalone runtime area). The span runs from
 ; R20 up to the first separator (null / THEN / ':' / ';' / ','), quote-aware so a
 ; string literal copies verbatim. R20 is preserved (the caller still scans the line).
 ; R17 is the output cursor (threaded). Output R9 = 1 ok / 0 buffer overflow.
@@ -4728,14 +5015,14 @@ aot_emit_cond_span:
     move.q  r9, r0
     rts
 
-; aot_apply_src_dir - prepend the tracked LOAD source directory (AOT_SRC_DIR) to
-; the validated output name in FILE_NAME_BUF, so COMPILE writes beside the most
-; recently LOADed programme. An empty AOT_SRC_DIR (no LOAD, or after NEW) leaves
+; aot_apply_src_dir - prepend the tracked LOAD source directory (EHBASIC_PRIV_LOAD_DIR_BUF) to
+; the validated output name in EHBASIC_PRIV_NAME_BUF, so COMPILE writes beside the most
+; recently LOADed programme. An empty EHBASIC_PRIV_LOAD_DIR_BUF (no LOAD, or after NEW) leaves
 ; the name unchanged, so output goes to the File I/O root. The name is shifted
-; right in place; if the combined path would not fit FILE_NAME_BUF (256 bytes)
+; right in place; if the combined path would not fit EHBASIC_PRIV_NAME_BUF (256 bytes)
 ; the prefix is skipped and the bare name is used. Clobbers R1-R7.
 aot_apply_src_dir:
-    la      r1, AOT_SRC_DIR
+    la      r1, EHBASIC_PRIV_LOAD_DIR_BUF
     load.b  r2, (r1)
     beqz    r2, .asd_done          ; empty -> File I/O root, no change
     move.q  r3, r0                 ; R3 = dirLen
@@ -4746,7 +5033,7 @@ aot_apply_src_dir:
     add.q   r3, r3, #1
     bra     .asd_dlen
 .asd_dlen_done:
-    la      r6, FILE_NAME_BUF
+    la      r6, EHBASIC_PRIV_NAME_BUF
     move.q  r4, r0                 ; R4 = nameLen (excluding the null)
 .asd_nlen:
     add.q   r7, r6, r4
@@ -4772,7 +5059,7 @@ aot_apply_src_dir:
     sub.q   r7, r7, #1
     bra     .asd_shift
 .asd_prepend:
-    la      r1, AOT_SRC_DIR
+    la      r1, EHBASIC_PRIV_LOAD_DIR_BUF
     move.q  r7, r0
 .asd_pre_loop:
     beq     r7, r3, .asd_done
@@ -4785,12 +5072,12 @@ aot_apply_src_dir:
 .asd_done:
     rts
 
-; aot_make_asm_name - derive AOT_ASM_NAME_BUF = "NAME.asm" from FILE_NAME_BUF
+; aot_make_asm_name - derive EHBASIC_PRIV_ASM_NAME_BUF = "NAME.asm" from EHBASIC_PRIV_NAME_BUF
 ; ("NAME.ie64"). The validated COMPILE name always ends in ".ie64" (case-
 ; insensitive), so the last five characters are stripped and ".asm" appended.
 ; Clobbers R1-R7
 aot_make_asm_name:
-    la      r1, FILE_NAME_BUF
+    la      r1, EHBASIC_PRIV_NAME_BUF
     move.q  r2, r0                  ; length
 .mn_len:
     load.b  r3, (r1)
@@ -4800,8 +5087,8 @@ aot_make_asm_name:
     bra     .mn_len
 .mn_copy:
     sub.q   r4, r2, #5             ; characters to copy (strip ".ie64")
-    la      r5, FILE_NAME_BUF
-    la      r6, AOT_ASM_NAME_BUF
+    la      r5, EHBASIC_PRIV_NAME_BUF
+    la      r6, EHBASIC_PRIV_ASM_NAME_BUF
     move.q  r7, r0
 .mn_cp:
     bge     r7, r4, .mn_ext
@@ -4840,7 +5127,7 @@ aot_str_asmext:
 ; into the same image COMPILE writes directly. A handwritten source that merely
 ; references __rtpay/__rtprog/fp_print without defining them still fails as an
 ; unresolved symbol, like any other. Both files sit beside the most recently
-; LOADed programme (or the File I/O root). FILE_NAME_BUF holds the validated
+; LOADed programme (or the File I/O root). EHBASIC_PRIV_NAME_BUF holds the validated
 ; ".ie64" output name on entry. Uses R16; saves/restores callee-saved registers.
 ; Source files are limited to just under 1 MiB (AOT_ASM_SRC_CAP); a larger file
 ; is refused as a file error, never staged into the compiler workspace.
@@ -4892,12 +5179,12 @@ aot_do_assemble_inner:
     ; bypassed, the read only writes UPWARD from the buffer base and all compiler
     ; workspace sits strictly BELOW it, so workspace can never be corrupted.
     move.q  r8, #AOT_ASM_SRC_CAP
-    jsr     aot_alloc_low32
+    jsr     aot_alloc_file_bridge
     bnez    r9, .as_oom
     la      r1, AOT_DC_TEXT
     store.q r8, (r1)
-    move.q  r8, #0x18000           ; 96 KiB machine-code buffer (low32, writable)
-    jsr     aot_alloc_low32
+    move.q  r8, #0x18000           ; 96 KiB machine-code buffer for File I/O
+    jsr     aot_alloc_file_bridge
     bnez    r9, .as_oom
     la      r1, AOT_DC_CODE
     store.q r8, (r1)
@@ -4921,10 +5208,10 @@ aot_do_assemble_inner:
     la      r1, AOT_USE_PROG
     store.q r0, (r1)
 
-    ; Derive NAME.asm (the input) from FILE_NAME_BUF (NAME.ie64), in the source
+    ; Derive NAME.asm (the input) from EHBASIC_PRIV_NAME_BUF (NAME.ie64), in the source
     ; directory, exactly where COMPILE/TRANSPILE place their .asm sidecar.
     jsr     aot_apply_src_dir
-    jsr     aot_make_asm_name       ; AOT_ASM_NAME_BUF = "...asm"
+    jsr     aot_make_asm_name       ; EHBASIC_PRIV_ASM_NAME_BUF = "...asm"
 
     ; Cap the read at the device BEFORE it copies anything: FILE_READ_MAX makes the
     ; File I/O device refuse a file larger than the source buffer (room kept for the
@@ -4939,7 +5226,7 @@ aot_do_assemble_inner:
     ; data pointer is the 32-bit File I/O ABI field; the buffer base is a low32
     ; allocation (< AOT_LOW32_CAP), so it fits.
     la      r1, FILE_NAME_PTR
-    la      r2, AOT_ASM_NAME_BUF
+    la      r2, EHBASIC_PRIV_ASM_NAME_BUF
     store.l r2, (r1)
     la      r1, FILE_DATA_PTR
     la      r2, AOT_DC_TEXT
@@ -4980,7 +5267,7 @@ aot_do_assemble_inner:
     store.q r9, (r1)
 
     ; Write NAME.ie64 (machine code).
-    la      r8, FILE_NAME_BUF
+    la      r8, EHBASIC_PRIV_NAME_BUF
     la      r1, AOT_DC_CODE
     load.q  r9, (r1)
     la      r1, AOT_DC_CLEN
@@ -5001,7 +5288,7 @@ aot_do_assemble_inner:
 
 ; aot_do_transpile - the TRANSPILE "name" backend: transpile the stored
 ; programme to IE64 assembly text and write NAME.asm, the first half of COMPILE
-; with no assembly or NAME.ie64. FILE_NAME_BUF holds the validated ".ie64" name
+; with no assembly or NAME.ie64. EHBASIC_PRIV_NAME_BUF holds the validated ".ie64" name
 ; (aot_make_asm_name derives NAME.asm from it, identical to COMPILE).
 ; Uses R16 (the live interpreter state base); does not clobber it. Saves/restores
 ; the interpreter's callee-saved registers so the REPL survives.
@@ -5041,12 +5328,12 @@ aot_do_transpile_inner:
     jsr     aot_alloc_reset
     move.q  r8, #0x40000           ; 256 KiB asm-text buffer (holds the self-contained
                                    ; dc.b'd closure/blob/programme, like COMPILE)
-    jsr     aot_alloc_low32
+    jsr     aot_alloc_file_bridge
     bnez    r9, .tp_oom
     la      r1, AOT_DC_TEXT
     store.q r8, (r1)
     move.q  r8, #0x18000           ; 96 KiB scratch buffer for programme relocation
-    jsr     aot_alloc_low32        ; (aot_emit_bundled_data uses AOT_DC_CODE as scratch)
+    jsr     aot_alloc_file_bridge  ; (aot_emit_bundled_data uses AOT_DC_CODE as scratch)
     bnez    r9, .tp_oom
     la      r1, AOT_DC_CODE
     store.q r8, (r1)
@@ -5056,7 +5343,7 @@ aot_do_transpile_inner:
 
     ; Transpile the live programme in standalone mode (ends with halt), exactly
     ; as COMPILE does, so the written asm matches COMPILE's NAME.asm sidecar.
-    load.l  r8, (r16)              ; first line record (state[ST_PROG_START])
+    load.q  r8, (r16)              ; first line record (state[ST_PROG_START])
     la      r1, AOT_DC_TEXT
     load.q  r9, (r1)
     move.q  r10, #1                ; standalone
@@ -5092,8 +5379,8 @@ aot_do_transpile_inner:
     load.q  r1, (r1)
     beqz    r1, .tp_proglen_done
     add.q   r1, r16, #ST_PROG_END
-    load.l  r2, (r1)
-    move.q  r3, #BASIC_PROG_START
+    load.q  r2, (r1)
+    load.q  r3, (r16)              ; live ST_PROG_START
     sub.q   r2, r2, r3
     la      r1, AOT_RT_PROG_LEN
     store.q r2, (r1)
@@ -5119,7 +5406,7 @@ aot_do_transpile_inner:
     ; root if none), identical to COMPILE's sidecar placement.
     jsr     aot_apply_src_dir
     jsr     aot_make_asm_name
-    la      r8, AOT_ASM_NAME_BUF
+    la      r8, EHBASIC_PRIV_ASM_NAME_BUF
     la      r1, AOT_DC_TEXT
     load.q  r9, (r1)
     la      r1, AOT_DC_TLEN
@@ -5140,7 +5427,7 @@ aot_do_transpile_inner:
 
 ; aot_do_compile - the COMPILE "name" backend: transpile the stored programme,
 ; assemble a standalone image at PROGRAM_START, and write both NAME.ie64 (the
-; machine code) and NAME.asm (the transpiled source). FILE_NAME_BUF holds the
+; machine code) and NAME.asm (the transpiled source). EHBASIC_PRIV_NAME_BUF holds the
 ; validated ".ie64" output name. Prints its own diagnostics on failure.
 ; Uses R16 (the live interpreter state base); does not clobber it.
 ; Saves/restores the interpreter's callee-saved registers (see aot_do_run_aot)
@@ -5182,14 +5469,14 @@ aot_do_compile_inner:
                                    ; the user code plus the fp_print closure, runtime
                                    ; blob (~34 KiB -> ~190 KiB as dc.b) and programme
                                    ; emitted as self-contained dc.b data.
-    jsr     aot_alloc_low32
+    jsr     aot_alloc_file_bridge
     bnez    r9, .dc_oom
     la      r1, AOT_DC_TEXT
     store.q r8, (r1)
     move.q  r8, #0x18000           ; 96 KiB machine-code buffer (low32, writable):
                                    ; holds user code + fp_print closure + the ~34 KiB
                                    ; bundled runtime blob payload.
-    jsr     aot_alloc_low32
+    jsr     aot_alloc_file_bridge
     bnez    r9, .dc_oom
     la      r1, AOT_DC_CODE
     store.q r8, (r1)
@@ -5207,7 +5494,7 @@ aot_do_compile_inner:
     store.q r2, (r1)
 
     ; Transpile the live programme in standalone mode (ends with halt).
-    load.l  r8, (r16)              ; first line record (state[ST_PROG_START])
+    load.q  r8, (r16)              ; first line record (state[ST_PROG_START])
     la      r1, AOT_DC_TEXT
     load.q  r9, (r1)
     move.q  r10, #1                ; standalone
@@ -5247,7 +5534,7 @@ aot_do_compile_inner:
     la      r1, AOT_RT_PROG_PAY
     store.q r0, (r1)
     ; Programme bundling (READ/DATA): measure the tokenised programme length now
-    ; (state[ST_PROG_END] - BASIC_PROG_START); it is appended after the blob and its
+    ; (state[ST_PROG_END] - state[ST_PROG_START]); it is appended after the blob and its
     ; line-record next-pointers are relocated when copied.
     la      r1, AOT_RT_PROG_LEN
     store.q r0, (r1)
@@ -5255,8 +5542,8 @@ aot_do_compile_inner:
     load.q  r1, (r1)
     beqz    r1, .dc_proglen_done
     add.q   r1, r16, #ST_PROG_END
-    load.l  r2, (r1)
-    move.q  r3, #BASIC_PROG_START
+    load.q  r2, (r1)
+    load.q  r3, (r16)              ; live ST_PROG_START
     sub.q   r2, r2, r3             ; programme byte length
     la      r1, AOT_RT_PROG_LEN
     store.q r2, (r1)
@@ -5307,7 +5594,7 @@ aot_do_compile_inner:
     jsr     aot_apply_src_dir
 
     ; Write NAME.ie64 (machine code).
-    la      r8, FILE_NAME_BUF
+    la      r8, EHBASIC_PRIV_NAME_BUF
     la      r1, AOT_DC_CODE
     load.q  r9, (r1)
     la      r1, AOT_DC_CLEN
@@ -5317,7 +5604,7 @@ aot_do_compile_inner:
 
     ; Write NAME.asm (transpiled source) beside it.
     jsr     aot_make_asm_name
-    la      r8, AOT_ASM_NAME_BUF
+    la      r8, EHBASIC_PRIV_ASM_NAME_BUF
     la      r1, AOT_DC_TEXT
     load.q  r9, (r1)
     la      r1, AOT_DC_TLEN
@@ -5416,7 +5703,7 @@ aot_do_run_aot_inner:
     store.q r2, (r1)
 
     ; Transpile in arena mode (ends with rts so control returns here).
-    load.l  r8, (r16)              ; first line record
+    load.q  r8, (r16)              ; first line record
     la      r1, AOT_DC_TEXT
     load.q  r9, (r1)
     move.q  r10, r0                ; arena mode
@@ -5485,14 +5772,12 @@ aot_do_run_aot_inner:
     ; first line for error reporting.
     add.q   r1, r16, #ST_DIRECT_MODE
     store.l r0, (r1)
-    la      r2, BASIC_GOSUB_STACK
-    add.q   r1, r16, #ST_GOSUB_SP
-    store.l r2, (r1)
+    jsr     exec_reset_control_stack
     add.q   r1, r16, #ST_DATA_PTR
-    store.l r0, (r1)
+    store.q r0, (r1)
     la      r1, if_else_boundary
     store.l r0, (r1)
-    load.l  r14, (r16)             ; R14 = first line record
+    load.q  r14, (r16)             ; R14 = first line record
     ; Clear any pending native continuation: a fresh RUN AOT restarts the programme,
     ; so a stale STOP resume address from a previous run must not be honoured by CONT.
     la      r1, AOT_CONT_PC

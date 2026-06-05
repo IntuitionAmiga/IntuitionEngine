@@ -333,13 +333,6 @@ to the next colon, and parsed when `READ` consumes them.
 Subtract `1` from *var*. Equivalent to `LET `*var*` = `*var*` - 1`,
 but shorter to type.
 
-### DEEK
-
-`DEEK(`*addr*`)`
-
-Read 16 bits at *addr* (unsigned). The high 16 bits of the result
-are zero.
-
 ### DEF
 
 `DEF FN `*name*`(`*var*`) = `*expr*
@@ -371,13 +364,6 @@ DIM A(10), GRID(7,7)
 
 Begin a structured loop. End the loop with `LOOP UNTIL `*condition*
 or `LOOP WHILE `*condition*. See **LOOP**.
-
-### DOKE
-
-`DOKE `*addr*`, `*expr*
-
-Write 16 bits at *addr*. *addr* may be any byte address; alignment
-is not required.
 
 ### ELSE
 
@@ -441,8 +427,8 @@ ends when *var* passes *end*.
 
 `FRE(`*expr*`)`
 
-Returns the approximate number of bytes of free string heap. The
-argument is ignored; use `FRE(0)`.
+Returns the approximate number of free bytes in the internal BASIC
+arena. The argument is ignored; use `FRE(0)`.
 
 ### GATE
 
@@ -543,12 +529,6 @@ Returns the integer part of *expr*, truncated toward `0`.
 Returns *str-expr* with every uppercase letter replaced by its
 lowercase equivalent. Non-letter bytes are unchanged.
 
-### LEEK
-
-`LEEK(`*addr*`)`
-
-Read 32 bits at *addr*. Equivalent to `PEEK(`*addr*`)`.
-
 ### LEFT$
 
 `LEFT$(`*str-expr*`, `*n*`)`
@@ -598,13 +578,6 @@ Move the text cursor. See Chapter 5.
 `LOG(`*expr*`)`
 
 Returns the natural logarithm of *expr*. *expr* must be positive.
-
-### LOKE
-
-`LOKE `*addr*`, `*expr*
-
-Write 32 bits at *addr*. *addr* must be a multiple of 4.
-Equivalent to `POKE `*addr*`, `*expr*.
 
 ### LOOP
 
@@ -696,11 +669,18 @@ Set entries in the colour palette. See Chapter 3.
 
 `PEEK(`*addr*`)`
 
-Returns the 32-bit value at *addr*. *addr* must be a multiple of 4.
+Returns the byte value at *addr*. `PEEK` is the historical byte alias for
+`PEEK8`.
 
 `PEEK8(`*addr*`)`
 
 Returns the byte value at *addr*. *addr* may be any byte address.
+
+`PEEK16(`*addr*`)`, `PEEK32(`*addr*`)`, and `PEEK64(`*addr*`)`
+
+Return 16-, 32-, and 64-bit integer values from aligned addresses. `PEEK64`
+preserves the exact qword payload, so `HEX$(PEEK64(addr))` and
+`POKE64 dst, PEEK64(src)` can round-trip 64-bit pointers and bitfields.
 
 ### PI
 
@@ -715,15 +695,30 @@ Set a single pixel. See Chapter 5.
 
 ### POKE
 
-`POKE `*addr*`, `*expr*
+`POKE `*addr*`, `*expr*`
 
-Write 32 bits at *addr*. *addr* must be a multiple of 4. If the
-address is not aligned, BASIC reports ILLEGAL FUNCTION CALL.
+Write the low byte of *expr* at *addr*. `POKE` is the historical byte
+alias for `POKE8`.
 
-`POKE8 `*addr*`, `*expr*
+`POKE8 `*addr*`, `*expr*`
 
 Write the low byte of *expr* at *addr*. *addr* may be any byte
 address.
+
+`POKE16 `*addr*`, `*expr*`
+
+Write the low 16 bits of *expr* at *addr*. *addr* must be 2-byte aligned.
+
+`POKE32 `*addr*`, `*expr*`
+
+Write the low 32 bits of *expr* at *addr*. *addr* must be 4-byte aligned.
+
+`POKE64 `*addr*`, `*expr*`
+
+Write a 64-bit value at *addr*. *addr* must be 8-byte aligned. A direct
+integer-compatible literal expression such as `&H1122334455667788` is
+preserved for the store, but ordinary BASIC variables still use the
+single FP32 numeric type described in Chapter 1.
 
 ### POKEY
 
@@ -839,9 +834,9 @@ program image. See Chapter 35.
 `SADD(`*str-var*`)`
 
 Returns the address of the byte buffer that holds the current
-value of *str-var*. The address is invalidated by the next string
-allocation, so save the bytes you need before BASIC creates a new
-string.
+value of *str-var*. Byte writes through this address mutate the string
+variable. Re-read `SADD` after assigning a new value to the variable, since the
+variable may then point at a different byte buffer.
 
 ### SAP
 
@@ -1056,7 +1051,10 @@ PRINT VAL("3.14XYZ")
 `VARPTR(`*var*`)`
 
 Returns the address of the storage slot that holds the value of
-*var*. The slot is four bytes wide.
+*var*. Numeric scalar variables expose a 16-byte public cell:
+tag at `+0`, reserved at `+4`, and payload at `+8`. Tag `1` is FP32
+and tag `2` is I64. Direct writes through `VARPTR` must keep the tag
+and payload consistent.
 
 ### VERTEX
 
@@ -1088,7 +1086,7 @@ the condition is never met.
 ```basic
 REM WAIT UNTIL A COOKED KEY BYTE IS QUEUED
 WAIT &H000F072C,1
-PRINT PEEK(&H000F0728)
+PRINT PEEK32(&H000F0728)
 0
 ```
 

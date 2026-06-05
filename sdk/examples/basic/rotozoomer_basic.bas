@@ -1,13 +1,13 @@
 1 REM ============================================================================
 2 REM ROTOZOOMER DEMO - HARDWARE BLITTER MODE7 IN BASIC
-3 REM EhBASIC for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
+3 REM IE64 BASIC for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
 4 REM ============================================================================
 5 REM
 6 REM === SDK QUICK REFERENCE ===
-7 REM Target CPU:    IE64 (custom 64-bit RISC, running EhBASIC interpreter)
+7 REM Target CPU:    IE64 (custom 64-bit RISC, running IE64 BASIC)
 8 REM Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
 9 REM Audio Engine:  SID (MOS 6581/8580 - Commodore 64 sound chip)
-10 REM Prerequisites: Build EhBASIC with 'make basic'
+10 REM Prerequisites: Build IE64 BASIC with 'make basic'
 11 REM Run:           bin/IntuitionEngine -basic
 12 REM                Then type: LOAD "rotozoomer_basic.bas"
 13 REM                Then type: RUN
@@ -30,11 +30,11 @@
 19 REM for 60fps. The Mode7 blitter does this in hardware: we just
 20 REM supply 6 affine parameters and it handles every pixel.
 21 REM
-22 REM MEMORY MAP:
-23 REM   0x100000  VRAM front buffer (640x480x4 = 1,228,800 bytes)
-24 REM   0x600000  Texture source (256x256x4 = 262,144 bytes)
-25 REM   0x900000  Back buffer for Mode7 output (same size as VRAM)
-26 REM   0x710000  SID music file (loaded via BLOAD)
+22 REM MEMORY:
+23 REM   MEMALLOC front buffer (640x480x4 = 1,228,800 bytes)
+24 REM   MEMALLOC texture source (256x256x4 = 262,144 bytes)
+25 REM   MEMALLOC back buffer for Mode7 output
+26 REM   MEMALLOC SID music file staging
 27 REM
 28 REM AFFINE TRANSFORMATION:
 29 REM   For each output pixel (x,y), the blitter computes:
@@ -52,24 +52,23 @@
 100 REM ================================================================
 101 REM  HARDWARE INITIALISATION
 102 REM ================================================================
-103 REM  POKE &HF0000,1 enables the VideoChip (register 0 = enable).
-104 REM  POKE &HF0004,0 selects mode 0 (640x480 true colour).
+103 REM  POKE32 &HF0000,1 enables the VideoChip (register 0 = enable).
+104 REM  POKE32 &HF0004,0 selects mode 0 (640x480 true colour).
 105 REM  Both must be set before any rendering is visible.
-110 POKE &HF0000, 1: POKE &HF0004, 0
+110 FB=MEMALLOC(1228800):BB=MEMALLOC(1228800):TB=MEMALLOC(262144):SA=MEMALLOC(4096)
+120 POKE32 &HF0004,0:POKE32 &HF0084,FB:POKE32 &HF0000,1
 
 200 REM ================================================================
 201 REM  SID MUSIC PLAYBACK
 202 REM ================================================================
-203 REM  BLOAD loads a binary file into bus memory at address SA.
-204 REM  We place it at 0x710000 - well above VRAM and textures so
-205 REM  there is no overlap. The SID player parses the file header
+203 REM  BLOAD loads a binary file into MEMALLOC memory at address SA.
+204 REM  The SID player parses the file header
 206 REM  and drives the SID chip emulation in the background.
 207 REM
 208 REM  SID PLAY addr, length starts playback from memory.
 209 REM  3725 bytes is the size of the Yummy_Pizza.sid file.
 210 REM  SID STATUS returns 1 if playing, 0 if stopped.
 211 REM  POKE8 &HF0E18,15 sets SID master volume to maximum (0-15).
-220 SA=&H710000
 230 BLOAD "sdk/examples/assets/music/Yummy_Pizza.sid", SA
 240 SID PLAY SA, 3725
 250 PRINT "SID STATUS=";SID STATUS
@@ -82,7 +81,7 @@
 304 REM  into bus memory at TB. ST is the texture stride in bytes
 305 REM  (256 pixels * 4 bytes = 1024). Both TB and ST are used by
 306 REM  the Mode7 blit on line 1030.
-330 TB=&H600000: ST=1024
+330 ST=1024
 340 BLOAD "sdk/examples/assets/rotozoomtexture_ehbasic.raw", TB
 
 400 REM ================================================================
@@ -96,7 +95,7 @@
 408 REM       it to 16.16 fixed-point format for the blitter hardware.
 409 REM  A  = rotation angle in radians (starts at 0).
 410 REM  SI = zoom oscillation phase in radians (starts at 0).
-420 BB=&H900000: FP=65536
+420 FP=65536
 430 A=0: SI=0
 
 500 REM ================================================================
@@ -189,8 +188,8 @@
 1100 REM ----------------------------------------------------------------
 1101 REM  STEP 6: COPY BACK BUFFER TO VRAM (DOUBLE BUFFER FLIP)
 1102 REM ----------------------------------------------------------------
-1103 REM  The Mode7 blit rendered into the back buffer at 0x900000.
-1104 REM  Now we copy the finished frame to VRAM at 0x100000 where the
+1103 REM  The Mode7 blit rendered into the back buffer.
+1104 REM  Now we copy the finished frame to the configured front buffer where the
 1105 REM  display controller reads it. This ensures the viewer never
 1106 REM  sees a partially-rendered frame.
 1107 REM
@@ -200,7 +199,7 @@
 1112 REM  VSYNC waits for the vertical blanking interval before the next
 1113 REM  frame, locking the animation to the display refresh rate (60Hz)
 1114 REM  and preventing tearing during the copy.
-1120 BLIT MEMCOPY &H900000, &H100000, 1228800
+1120 BLIT MEMCOPY BB, FB, 1228800
 1130 VSYNC
 
 1200 REM ----------------------------------------------------------------

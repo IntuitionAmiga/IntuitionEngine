@@ -13,7 +13,7 @@ VideoChip is the IE's general-purpose framebuffer chip. It sits at
 the bottom of the compositor stack (layer `0`) and provides three
 things: a framebuffer in main memory, a programmable raster engine
 called the **copper list**, and a 2D drawing accelerator called the
-**blitter**. From BASIC, use `POKE` for raw register programming and
+**blitter**. From BASIC, use `POKE32` for raw register programming and
 the `BLIT` and `COPPER` commands for the common accelerated paths.
 From machine code, ordinary stores to the same MMIO registers do the
 same work.
@@ -126,12 +126,12 @@ Below is a BASIC fragment that turns the chip on at `960` × `540`
 and sets the framebuffer base at the start of VRAM:
 
 ```basic
-10 POKE &H000F0004, &H07              : REM VIDEO_MODE = 960 BY 540
-20 POKE &H000F0084, &H00100000        : REM FB_BASE   = VRAM start
-30 POKE &H000F0000, 1                 : REM VIDEO_CTRL = on
+10 POKE32 &H000F0004, &H07              : REM VIDEO_MODE = 960 BY 540
+20 POKE32 &H000F0084, &H00100000        : REM FB_BASE   = VRAM start
+30 POKE32 &H000F0000, 1                 : REM VIDEO_CTRL = on
 ```
 
-`POKE` writes the four bytes of a 32-bit word at the given aligned
+`POKE32` writes the four bytes of a 32-bit word at the given aligned
 address (see Chapter 2).
 
 ## 4.4 The framebuffer
@@ -152,8 +152,8 @@ In **RGBA32** mode every pixel is four bytes, little-endian, in
 the order red, green, blue, alpha. The compositor uses the alpha
 byte for mask blending as described in Chapter 3.
 
-When you write an RGBA32 pixel with BASIC `POKE`, remember that
-`POKE` writes a 32-bit little-endian word: alpha in the high byte,
+When you write an RGBA32 pixel with BASIC `POKE32`, remember that
+`POKE32` writes a 32-bit little-endian word: alpha in the high byte,
 then blue, green, and red in the low byte. BASIC examples often use
 values below `&H01000000`, such as `&H000000FF` for red, because
 those integers are exact in BASIC's numeric format. The compositor
@@ -190,10 +190,10 @@ the value, increments `PAL_INDEX`, and wraps at 256. This is the
 shortest way to load a whole palette:
 
 ```basic
-100 POKE &H000F0078, 0          : REM PAL_INDEX = 0
-110 POKE &H000F007C, &HFF0000   : REM entry 0 = red
-120 POKE &H000F007C, &H00FF00   : REM entry 1 = green
-130 POKE &H000F007C, &H0000FF   : REM entry 2 = blue
+100 POKE32 &H000F0078, 0          : REM PAL_INDEX = 0
+110 POKE32 &H000F007C, &HFF0000   : REM entry 0 = red
+120 POKE32 &H000F007C, &H00FF00   : REM entry 1 = green
+130 POKE32 &H000F007C, &H0000FF   : REM entry 2 = blue
 ```
 
 **Direct window.** Each entry is also visible at
@@ -219,11 +219,11 @@ fill rectangles, draw lines, apply raster operations, expand 1-bit
 templates, alpha-blend sprites, scale bitmaps, and run the Mode 7
 affine texture unit. BASIC exposes the common copy, fill, line,
 memcopy, wait, and Mode 7 paths through `BLIT`. The other operations
-are still native to the machine: enter them with `POKE` to the
+are still native to the machine: enter them with `POKE32` to the
 blitter registers.
 
 The blitter is synchronous. Starting it with `BLT_CTRL.START` runs
-the operation before the `POKE` or machine-code store returns. A
+the operation before the `POKE32` or machine-code store returns. A
 program may still poll `BLT_STATUS` or use `BLIT WAIT`; in normal
 BASIC use the operation has already finished.
 
@@ -272,14 +272,14 @@ is the rectangle width times bytes per pixel.
 
 | `BLT_OP` | Operation | Reader path | Summary |
 |----------|-----------|-------------|---------|
-| `0` | `COPY` | `BLIT COPY` or `POKE` | Copy a rectangle. |
-| `1` | `FILL` | `BLIT FILL` or `POKE` | Fill a rectangle with `BLT_COLOR`. |
-| `2` | `LINE` | `BLIT LINE` or `POKE` | Draw a Bresenham line. |
-| `3` | `MASKED_COPY` | `POKE` | Copy RGBA32 source pixels where a 1-bit mask is set. |
-| `4` | `ALPHA_COPY` | `POKE` | Copy or blend RGBA32 source pixels using source alpha. |
-| `5` | `MODE7` | `BLIT MODE7` or `POKE` | Affine RGBA32 texture mapper. |
-| `6` | `COLOR_EXPAND` | `POKE` | Expand a 1-bit template into CLUT8 or RGBA32 pixels. |
-| `7` | `SCALE` | `POKE` | Nearest-neighbour scale from source rectangle to destination rectangle. |
+| `0` | `COPY` | `BLIT COPY` or `POKE32` | Copy a rectangle. |
+| `1` | `FILL` | `BLIT FILL` or `POKE32` | Fill a rectangle with `BLT_COLOR`. |
+| `2` | `LINE` | `BLIT LINE` or `POKE32` | Draw a Bresenham line. |
+| `3` | `MASKED_COPY` | `POKE32` | Copy RGBA32 source pixels where a 1-bit mask is set. |
+| `4` | `ALPHA_COPY` | `POKE32` | Copy or blend RGBA32 source pixels using source alpha. |
+| `5` | `MODE7` | `BLIT MODE7` or `POKE32` | Affine RGBA32 texture mapper. |
+| `6` | `COLOR_EXPAND` | `POKE32` | Expand a 1-bit template into CLUT8 or RGBA32 pixels. |
+| `7` | `SCALE` | `POKE32` | Nearest-neighbour scale from source rectangle to destination rectangle. |
 | `8` | `MEMCOPY` | `BLIT MEMCOPY` or `BLIT M` | Copy a byte-counted linear memory span. |
 
 ### 4.6.3 `BLT_FLAGS`
@@ -393,10 +393,10 @@ framebuffer, then prints the blitter status:
 
 ```basic
 10 FB=&H00100000:BB=&H00230000:ST=640*4
-20 POKE &H000F0004,0:POKE &H000F0080,0:POKE &H000F0000,1
+20 POKE32 &H000F0004,0:POKE32 &H000F0080,0:POKE32 &H000F0000,1
 30 BLIT FILL BB,640,480,&H00002040,ST
 40 BLIT MEMCOPY BB,FB,640*480*4
-50 PRINT PEEK(&H000F0044)
+50 PRINT PEEK32(&H000F0044)
 ```
 
 The screen shows the filled buffer after line `40`. The status print
@@ -482,10 +482,10 @@ part through:
 10 REM MASKED COPY DIAMOND
 20 FB=&H00100000:SPR=&H00600000:MSK=&H00610000
 30 ST=320*4:SS=8*4
-40 POKE &H000F0004,&H04
-50 POKE &H000F0080,0
-60 POKE &H000F0084,FB
-70 POKE &H000F0000,1
+40 POKE32 &H000F0004,&H04
+50 POKE32 &H000F0080,0
+60 POKE32 &H000F0084,FB
+70 POKE32 &H000F0000,1
 80 BLIT FILL FB,320,200,&H00001020,ST
 90 BLIT FILL SPR,8,8,&H000000FF,SS
 100 BLIT FILL SPR+2*SS+2*4,4,4,&H0000FFFF,SS
@@ -494,16 +494,16 @@ part through:
 130 READ M
 140 POKE8 MSK+Y,M
 150 NEXT Y
-160 POKE &H000F0024,SPR
-170 POKE &H000F0028,FB+80*ST+156*4
-180 POKE &H000F002C,8
-190 POKE &H000F0030,8
-200 POKE &H000F0034,SS
-210 POKE &H000F0038,ST
-220 POKE &H000F0040,MSK
-230 POKE &H000F0020,3
-240 POKE &H000F001C,1
-250 PRINT PEEK(&H000F0044)
+160 POKE32 &H000F0024,SPR
+170 POKE32 &H000F0028,FB+80*ST+156*4
+180 POKE32 &H000F002C,8
+190 POKE32 &H000F0030,8
+200 POKE32 &H000F0034,SS
+210 POKE32 &H000F0038,ST
+220 POKE32 &H000F0040,MSK
+230 POKE32 &H000F0020,3
+240 POKE32 &H000F001C,1
+250 PRINT PEEK32(&H000F0044)
 ```
 
 The sprite and mask live in ordinary main memory. The mask bytes in
@@ -540,25 +540,25 @@ background:
 10 REM ALPHA COPY GLOW
 20 FB=&H00100000:SPR=&H00620000
 30 ST=320*4:SS=8*4
-40 POKE &H000F0004,&H04
-50 POKE &H000F0080,0
-60 POKE &H000F0084,FB
-70 POKE &H000F0000,1
+40 POKE32 &H000F0004,&H04
+50 POKE32 &H000F0080,0
+60 POKE32 &H000F0084,FB
+70 POKE32 &H000F0000,1
 80 BLIT FILL FB,320,200,&H00400000,ST
 90 FOR Y=0 TO 7
 100 FOR X=0 TO 7
 110 A=SPR+(Y*8+X)*4
 120 POKE8 A,255:POKE8 A+1,0:POKE8 A+2,0:POKE8 A+3,128
 130 NEXT X:NEXT Y
-140 POKE &H000F0024,SPR
-150 POKE &H000F0028,FB+96*ST+156*4
-160 POKE &H000F002C,8
-170 POKE &H000F0030,8
-180 POKE &H000F0034,SS
-190 POKE &H000F0038,ST
-200 POKE &H000F0020,4
-210 POKE &H000F001C,1
-220 PRINT PEEK(&H000F0044)
+140 POKE32 &H000F0024,SPR
+150 POKE32 &H000F0028,FB+96*ST+156*4
+160 POKE32 &H000F002C,8
+170 POKE32 &H000F0030,8
+180 POKE32 &H000F0034,SS
+190 POKE32 &H000F0038,ST
+200 POKE32 &H000F0020,4
+210 POKE32 &H000F001C,1
+220 PRINT PEEK32(&H000F0044)
 ```
 
 Line `120` stores red, green, blue, and alpha bytes. The alpha value
@@ -632,10 +632,10 @@ that sprite to several positions, and draws crossing diagonal lines.
 10 REM VIDEOCHIP BLITTER POSTER
 20 FB=&H00100000:SPR=&H00140000
 30 W=320:H=200:ST=W*4:SS=16*4
-40 POKE &H000F0004,&H04
-50 POKE &H000F0080,0
-60 POKE &H000F0084,FB
-70 POKE &H000F0000,1
+40 POKE32 &H000F0004,&H04
+50 POKE32 &H000F0080,0
+60 POKE32 &H000F0084,FB
+70 POKE32 &H000F0000,1
 80 BLIT FILL FB,W,H,&H00001020,ST
 90 BLIT FILL FB+12*ST+20*4,280,40,&H000000AA,ST
 100 BLIT FILL FB+58*ST+20*4,280,40,&H0000AA00,ST
@@ -648,7 +648,7 @@ that sprite to several positions, and draws crossing diagonal lines.
 170 NEXT I
 180 BLIT LINE 0,0,319,199,&H00FFFFFF
 190 BLIT LINE 0,199,319,0,&H00FFFFFF
-200 PRINT PEEK(&H000F0044)
+200 PRINT PEEK32(&H000F0044)
 ```
 
 Line `80` clears the screen. Lines `90`-`110` draw coloured bands.
@@ -666,25 +666,25 @@ template byte `$B0` is binary `10110000`, so pixels `0`, `2`, and
 ```basic
 10 REM COLOUR EXPAND TEMPLATE
 20 FB=&H00100000:TM=&H00300000:ST=320*4
-30 POKE &H000F0004,&H04
-40 POKE &H000F0080,0
-50 POKE &H000F0084,FB
-60 POKE &H000F0000,1
+30 POKE32 &H000F0004,&H04
+40 POKE32 &H000F0080,0
+50 POKE32 &H000F0084,FB
+60 POKE32 &H000F0000,1
 70 BLIT FILL FB,320,200,&H00000000,ST
 80 POKE8 TM,&HB0
-90 POKE &H000F0040,TM
-100 POKE &H000F0028,FB+80*ST+120*4
-110 POKE &H000F002C,8
-120 POKE &H000F0030,1
-130 POKE &H000F0038,ST
-140 POKE &H000F048C,&H000000FF
-150 POKE &H000F0490,&H0000FF00
-160 POKE &H000F0494,1
-170 POKE &H000F0498,0
-180 POKE &H000F0488,48
-190 POKE &H000F0020,6
-200 POKE &H000F001C,1
-210 PRINT PEEK(&H000F0044)
+90 POKE32 &H000F0040,TM
+100 POKE32 &H000F0028,FB+80*ST+120*4
+110 POKE32 &H000F002C,8
+120 POKE32 &H000F0030,1
+130 POKE32 &H000F0038,ST
+140 POKE32 &H000F048C,&H000000FF
+150 POKE32 &H000F0490,&H0000FF00
+160 POKE32 &H000F0494,1
+170 POKE32 &H000F0498,0
+180 POKE32 &H000F0488,48
+190 POKE32 &H000F0020,6
+200 POKE32 &H000F001C,1
+210 PRINT PEEK32(&H000F0044)
 ```
 
 Line `80` uses `POKE8` because the template is a byte stream. Line
@@ -701,24 +701,24 @@ This example draws a small source square, then scales it to `64` x
 10 REM NEAREST SCALE
 20 FB=&H00100000:SRC=&H00150000:DST=FB+80*320*4+120*4
 30 ST=320*4:SS=16*4
-40 POKE &H000F0004,&H04
-50 POKE &H000F0080,0
-60 POKE &H000F0084,FB
-70 POKE &H000F0000,1
+40 POKE32 &H000F0004,&H04
+50 POKE32 &H000F0080,0
+60 POKE32 &H000F0084,FB
+70 POKE32 &H000F0000,1
 80 BLIT FILL FB,320,200,&H00000000,ST
 90 BLIT FILL SRC,16,16,&H000000CC,SS
 100 BLIT FILL SRC+4*SS+4*4,8,8,&H00CCCC00,SS
-110 POKE &H000F0024,SRC
-120 POKE &H000F0028,DST
-130 POKE &H000F002C,16
-140 POKE &H000F0030,16
-150 POKE &H000F0034,SS
-160 POKE &H000F0038,ST
-170 POKE &H000F003C,64+64*65536
-180 POKE &H000F0488,48
-190 POKE &H000F0020,7
-200 POKE &H000F001C,1
-210 PRINT PEEK(&H000F0044)
+110 POKE32 &H000F0024,SRC
+120 POKE32 &H000F0028,DST
+130 POKE32 &H000F002C,16
+140 POKE32 &H000F0030,16
+150 POKE32 &H000F0034,SS
+160 POKE32 &H000F0038,ST
+170 POKE32 &H000F003C,64+64*65536
+180 POKE32 &H000F0488,48
+190 POKE32 &H000F0020,7
+200 POKE32 &H000F001C,1
+210 PRINT PEEK32(&H000F0044)
 ```
 
 Line `170` packs destination width and height into `BLT_COLOR`.
@@ -836,16 +836,16 @@ rotated into the framebuffer:
 10 REM MODE7 CHECKERBOARD
 20 TB=&H00500000:FB=&H00100000:FP=65536
 30 W=320:H=200:T=64:TS=T*4
-40 POKE &H000F0004,&H04
-50 POKE &H000F0080,0
-60 POKE &H000F0084,FB
-70 POKE &H000F0000,1
+40 POKE32 &H000F0004,&H04
+50 POKE32 &H000F0080,0
+60 POKE32 &H000F0084,FB
+70 POKE32 &H000F0000,1
 80 FOR Y=0 TO T-1
 90 FOR X=0 TO T-1
 100 C=(INT(X/8)+INT(Y/8)) AND 1
 110 IF C=0 THEN P=&H000000FF
 120 IF C<>0 THEN P=&H0000FFFF
-130 POKE TB+(Y*T+X)*4,P
+130 POKE32 TB+(Y*T+X)*4,P
 140 NEXT X:NEXT Y
 150 A=.55:SC=1.15
 160 CA=COS(A)/SC:SA=SIN(A)/SC
@@ -854,7 +854,7 @@ rotated into the framebuffer:
 190 U0=INT((TC-HW*CA+HH*SA)*FP)
 200 V0=INT((TC-HW*SA-HH*CA)*FP)
 210 BLIT MODE7 TB,FB,W,H,U0,V0,DC,DS,0-DS,DC,T-1,T-1,TS,W*4
-220 PRINT PEEK(&H000F0044)
+220 PRINT PEEK32(&H000F0044)
 ```
 
 Line `210` is the whole Mode 7 operation. `DC` and `DS` are the
@@ -882,7 +882,7 @@ BASIC has a copper-list builder:
 
 | BASIC form | Effect |
 |------------|--------|
-| `COPPER LIST addr` | Set `COPPER_PTR` and set the BASIC build cursor to `addr`. |
+| `COPPER LIST [addr]` | Set `COPPER_PTR` and set the BASIC build cursor. With no `addr`, BASIC allocates a 4 KB public `MEMALLOC` copper list. |
 | `COPPER WAIT y` | Append a wait for scanline `y`, X position `0`. |
 | `COPPER MOVE addr,value` | Append a write to absolute MMIO address `addr`. |
 | `COPPER END` | Append an end word. |
@@ -954,11 +954,11 @@ colour at selected scanlines.
 
 ```basic
 10 REM COPPER RASTER BANDS
-20 FB=&H00100000:CL=&H00380000:ST=320*4
-30 POKE &H000F0004,&H04
-40 POKE &H000F0080,0
-50 POKE &H000F0084,FB
-60 POKE &H000F0000,1
+20 FB=&H00100000:CL=MEMALLOC(4096,4):ST=320*4
+30 POKE32 &H000F0004,&H04
+40 POKE32 &H000F0080,0
+50 POKE32 &H000F0084,FB
+60 POKE32 &H000F0000,1
 70 BLIT FILL FB,320,200,&H00000000,ST
 80 COPPER LIST CL
 90 COPPER WAIT 0
@@ -978,7 +978,7 @@ colour at selected scanlines.
 230 COPPER MOVE &H000F0054,1
 240 COPPER END
 250 COPPER ON
-260 PRINT PEEK(&H000F0018)
+260 PRINT PEEK32(&H000F0018)
 ```
 
 The list writes `VIDEO_RASTER_Y`, `VIDEO_RASTER_HEIGHT`,
@@ -994,12 +994,12 @@ waits for scanline `100`, writes `BLT_COLOR`, and ends:
 
 ```basic
 10 CL=&H00390000
-20 POKE CL+0,&H00064000
-30 POKE CL+4,&H400F0000
-40 POKE CL+8,&H000000FF
-50 POKE CL+12,&HC0000000
-60 POKE &H000F0010,CL
-70 POKE &H000F000C,1
+20 POKE32 CL+0,&H00064000
+30 POKE32 CL+4,&H400F0000
+40 POKE32 CL+8,&H000000FF
+50 POKE32 CL+12,&HC0000000
+60 POKE32 &H000F0010,CL
+70 POKE32 &H000F000C,1
 ```
 
 `$00064000` is `WAIT 100,0`. `$400F0000` is `MOVE` register index
@@ -1027,14 +1027,14 @@ Example:
 
 ```basic
 10 FB=&H00100000:ST=320*4
-20 POKE &H000F0004,&H04
-30 POKE &H000F0080,0
-40 POKE &H000F0084,FB
-50 POKE &H000F0000,1
-60 POKE &H000F0048,90
-70 POKE &H000F004C,20
-80 POKE &H000F0050,&H0000FFFF
-90 POKE &H000F0054,1
+20 POKE32 &H000F0004,&H04
+30 POKE32 &H000F0080,0
+40 POKE32 &H000F0084,FB
+50 POKE32 &H000F0000,1
+60 POKE32 &H000F0048,90
+70 POKE32 &H000F004C,20
+80 POKE32 &H000F0050,&H0000FFFF
+90 POKE32 &H000F0054,1
 ```
 
 This fills scanlines `90` through `109` with cyan.

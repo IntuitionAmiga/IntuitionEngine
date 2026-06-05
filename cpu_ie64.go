@@ -358,6 +358,13 @@ const (
 	OP_DCVTFI  = 0x8E // float64 -> int64
 	OP_FCVTSD  = 0x8F // float32 -> float64
 	OP_FCVTDS  = 0x90 // float64 -> float32
+	OP_DSIN    = 0x91 // FP64 sin
+	OP_DCOS    = 0x92 // FP64 cos
+	OP_DTAN    = 0x93 // FP64 tan
+	OP_DATAN   = 0x94 // FP64 atan
+	OP_DLOG    = 0x95 // FP64 ln
+	OP_DEXP    = 0x96 // FP64 e^x
+	OP_DPOW    = 0x97 // FP64 fs^ft
 
 	// System
 	OP_NOP64 = 0xE0 // No operation
@@ -1079,7 +1086,7 @@ func isValidDPairReg(idx byte) bool {
 }
 
 func isIE64FPUOpcode(opcode byte) bool {
-	return (opcode >= OP_FMOV && opcode <= OP_FMOVCC) || (opcode >= OP_DMOV && opcode <= OP_FCVTDS)
+	return (opcode >= OP_FMOV && opcode <= OP_FMOVCC) || (opcode >= OP_DMOV && opcode <= OP_DPOW)
 }
 
 func validIE64FPUEncoding(opcode, rd, rs, rt byte) bool {
@@ -1104,7 +1111,7 @@ func validIE64FPUEncoding(opcode, rd, rs, rt byte) bool {
 		return isValidDPairReg(rd)
 	case OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD:
 		return isValidDPairReg(rd) && isValidDPairReg(rs) && isValidDPairReg(rt)
-	case OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT:
+	case OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT, OP_DSIN, OP_DCOS, OP_DTAN, OP_DATAN, OP_DLOG, OP_DEXP:
 		return isValidDPairReg(rd) && isValidDPairReg(rs)
 	case OP_DCMP:
 		return isValidDPairReg(rs) && isValidDPairReg(rt)
@@ -1114,6 +1121,8 @@ func validIE64FPUEncoding(opcode, rd, rs, rt byte) bool {
 		return isValidDPairReg(rd) && rs <= 15
 	case OP_FCVTDS:
 		return rd <= 15 && isValidDPairReg(rs)
+	case OP_DPOW:
+		return isValidDPairReg(rd) && isValidDPairReg(rs) && isValidDPairReg(rt)
 	default:
 		return true
 	}
@@ -2526,6 +2535,62 @@ func (cpu *CPU64) Execute() {
 				goto invalid_freg
 			}
 			cpu.FPU.DINT(rd, rs)
+		case OP_DSIN:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			cpu.FPU.DSIN(rd, rs)
+		case OP_DCOS:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			cpu.FPU.DCOS(rd, rs)
+		case OP_DTAN:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			cpu.FPU.DTAN(rd, rs)
+		case OP_DATAN:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			cpu.FPU.DATAN(rd, rs)
+		case OP_DLOG:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			cpu.FPU.DLOG(rd, rs)
+		case OP_DEXP:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) {
+				goto invalid_freg
+			}
+			cpu.FPU.DEXP(rd, rs)
+		case OP_DPOW:
+			if cpu.FPU == nil {
+				goto fpu_missing
+			}
+			if !isValidDPairReg(rd) || !isValidDPairReg(rs) || !isValidDPairReg(rt) {
+				goto invalid_freg
+			}
+			cpu.FPU.DPOW(rd, rs, rt)
 		case OP_DCMP:
 			if cpu.FPU == nil {
 				goto fpu_missing
@@ -3465,6 +3530,34 @@ func (cpu *CPU64) StepOne() int {
 	case OP_DINT:
 		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) {
 			cpu.FPU.DINT(rd, rs)
+		}
+	case OP_DSIN:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) {
+			cpu.FPU.DSIN(rd, rs)
+		}
+	case OP_DCOS:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) {
+			cpu.FPU.DCOS(rd, rs)
+		}
+	case OP_DTAN:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) {
+			cpu.FPU.DTAN(rd, rs)
+		}
+	case OP_DATAN:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) {
+			cpu.FPU.DATAN(rd, rs)
+		}
+	case OP_DLOG:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) {
+			cpu.FPU.DLOG(rd, rs)
+		}
+	case OP_DEXP:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) {
+			cpu.FPU.DEXP(rd, rs)
+		}
+	case OP_DPOW:
+		if cpu.FPU != nil && isValidDPairReg(rd) && isValidDPairReg(rs) && isValidDPairReg(rt) {
+			cpu.FPU.DPOW(rd, rs, rt)
 		}
 	case OP_DCMP:
 		if cpu.FPU != nil && isValidDPairReg(rs) && isValidDPairReg(rt) && rd != 0 {

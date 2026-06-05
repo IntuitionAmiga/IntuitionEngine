@@ -46,7 +46,7 @@ loop.
 ```basic
 10 REM SEND ONE BYTE, THEN READ THE STATUS
 20 POKE &H000F0700,ASC("?")
-30 PRINT "READY ";PEEK(&H000F0704)
+30 PRINT "READY ";PEEK32(&H000F0704)
 ```
 
 The first line prints `?`. The second line normally prints `READY 2`
@@ -78,8 +78,8 @@ your program.
 ```basic
 10 REM PROMPT, WAIT FOR COOKED INPUT, THEN CONSUME ONE BYTE
 20 POKE &H000F0700,ASC("?")
-30 IF (PEEK(&H000F0704) AND 1)=0 THEN GOTO 30
-40 C=PEEK(&H000F0708)
+30 IF (PEEK32(&H000F0704) AND 1)=0 THEN GOTO 30
+40 C=PEEK32(&H000F0708)
 50 PRINT "GOT ";C
 ```
 
@@ -99,10 +99,10 @@ A program that wants to draw its own prompt or hide typed characters
 can turn echo off.
 
 ```basic
-10 PRINT "ECHO ";PEEK(&H000F0710)
-20 POKE &H000F0710,0
-30 PRINT "ECHO ";PEEK(&H000F0710)
-40 POKE &H000F0710,1
+10 PRINT "ECHO ";PEEK32(&H000F0710)
+20 POKE32 &H000F0710,0
+30 PRINT "ECHO ";PEEK32(&H000F0710)
+40 POKE32 &H000F0710,1
 ```
 
 Expected output:
@@ -122,10 +122,10 @@ cooked-key queue at `$F0728`, described in Chapter 37. BASIC `GET`
 uses that single-character route.
 
 ```basic
-10 PRINT "LINE ";PEEK(&H000F0724)
-20 POKE &H000F0724,0
-30 PRINT "LINE ";PEEK(&H000F0724)
-40 POKE &H000F0724,1
+10 PRINT "LINE ";PEEK32(&H000F0724)
+20 POKE32 &H000F0724,0
+30 PRINT "LINE ";PEEK32(&H000F0724)
+40 POKE32 &H000F0724,1
 ```
 
 Expected output:
@@ -144,7 +144,7 @@ This is for deliberate self-termination and test harnesses. BASIC has
 no keyword for it. Do not type the write casually:
 
 ```basic
-POKE &H000F07F0,&HDEAD
+POKE32 &H000F07F0,&HDEAD
 ```
 
 The CPU stops when the write completes and does not reach the next

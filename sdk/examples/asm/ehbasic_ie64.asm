@@ -1,5 +1,5 @@
 ; ============================================================================
-; EHBASIC IE64 - BASIC INTERPRETER ENTRY POINT AND REPL
+; IE64 BASIC - BASIC INTERPRETER ENTRY POINT AND REPL
 ; IE64 Assembly for IntuitionEngine - Terminal I/O (serial console)
 ; ============================================================================
 ;
@@ -11,13 +11,13 @@
 ; Build:         sdk/bin/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 ; Run:           bin/IntuitionEngine -ie64 ehbasic_ie64.ie64
 ; Shortcut:      make basic (assembles, embeds, and builds with -basic flag)
-; Porting:       EhBASIC is tightly coupled to IE64. The interpreter's
+; Porting:       IE64 BASIC is tightly coupled to IE64. The interpreter's
 ;                register conventions and MMIO addresses are IE64-specific.
 ;                Porting would require rewriting the entire codebase.
 ;
 ; === WHAT THIS DEMO DOES ===
 ; 1. Performs one-time cold start: initialises memory, variables, and the FPU
-; 2. Prints the EhBASIC boot banner with version and copyright
+; 2. Prints the IE64 BASIC boot banner with version and attribution
 ; 3. Enters a Read-Eval-Print Loop (REPL) that accepts typed commands
 ; 4. Lines beginning with a digit are stored as numbered programme lines
 ; 5. Lines without a number are tokenised and executed immediately
@@ -76,12 +76,13 @@
 ;
 ; === MEMORY MAP ===
 ;   0x001000          Programme code entry point (this file + includes)
-;   0x021100          Tokeniser output buffer
-;   0x050000          Simple variable storage
-;   0x058000          Array variable storage
-;   0x060000          String variable storage
-;   0x070000          BASIC_STATE (interpreter state block, 256 bytes)
-;   0x0FF000          STACK_TOP (hardware stack, grows downward)
+;   0x041100          Tokeniser output buffer
+;   0x042000          BASIC_STATE (interpreter state block)
+;   0x043000          Program text / standalone runtime area
+;   0x070000          Simple variable storage
+;   0x078000          String variable storage
+;   0x080000          Array variable storage
+;   Dynamic           Hardware stack (reserved from active visible RAM)
 ;
 ; === BUILD AND RUN ===
 ;   sdk/bin/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
@@ -107,23 +108,69 @@ include "ehbasic_tokens.inc"
 ; printing the boot banner, execution falls through to warm_start.
 
 cold_start:
-    ; Set up hardware stack
-    la      r31, STACK_TOP
-
-    ; Initialise terminal I/O (caches R26, R27)
-    jsr     io_init
-
     ; Initialise interpreter state base
     la      r16, BASIC_STATE
 
-    ; Clear state block (256 bytes)
+    ; Clear shared state page (4 KiB)
     move.q  r1, r16
-    move.q  r2, #32
+    move.q  r2, #512
 .clear_state:
     store.q r0, (r1)
     add.q   r1, r1, #8
     sub.q   r2, r2, #1
     bnez    r2, .clear_state
+
+    ; Publish dynamic stack/control/file-bridge bounds and set R31 from CR_RAM_SIZE_BYTES.
+    ; This is deliberately inline: no subroutine may run until R31 is valid.
+    mfcr    r1, cr15
+    bnez    r1, .have_ram_size
+    move.q  r1, #0x02000000
+.have_ram_size:
+    lsr.q   r1, r1, #12
+    lsl.q   r1, r1, #12
+    ; Keep the resident interpreter stack/control area in BASIC's mapped
+    ; low memory window. Production IE64 BASIC can expose sparse RAM above
+    ; this, but the current BASIC/JIT resident paths still expect their own
+    ; stack and scratch pointers to be directly low-window addressable.
+    move.q  r5, #BASIC_RESIDENT_LOW32_CAP
+    blt     r1, r5, .stack_top_ready
+    move.q  r1, r5
+.stack_top_ready:
+    move.q  r2, #BASIC_STACK_GUARD_BYTES
+    sub.q   r1, r1, r2
+    move.q  r31, r1
+    add.q   r2, r16, #ST_STACK_HIGH
+    store.q r31, (r2)
+    move.q  r3, #BASIC_STACK_BYTES
+    sub.q   r3, r31, r3
+    add.q   r2, r16, #ST_STACK_LOW
+    store.q r3, (r2)
+    add.q   r2, r16, #ST_CTRL_HIGH
+    store.q r3, (r2)
+    move.q  r4, #BASIC_CTRL_BYTES
+    sub.q   r4, r3, r4
+    add.q   r2, r16, #ST_CTRL_LOW
+    store.q r4, (r2)
+    add.q   r2, r16, #ST_GOSUB_SP
+    store.q r4, (r2)
+    add.q   r2, r16, #ST_FOR_SP
+    store.q r3, (r2)
+    move.q  r5, #AOT_LOW32_CAP
+    blt     r4, r5, .bridge_top_ready
+    move.q  r4, r5
+.bridge_top_ready:
+    add.q   r2, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r4, (r2)
+    move.q  r6, #BASIC_LOW32_INTERNAL_BASE
+    add.q   r2, r16, #ST_FILE_BRIDGE_LOW
+    store.q r6, (r2)
+    add.q   r2, r16, #ST_HEAP_BOTTOM
+    store.q r6, (r2)
+    add.q   r2, r16, #ST_HEAP_TOP
+    store.q r4, (r2)
+
+    ; Initialise terminal I/O (caches R26, R27)
+    jsr     io_init
 
     ; Initialise line storage (empty programme)
     jsr     line_init
@@ -158,7 +205,8 @@ cold_start:
 
 warm_start:
     ; Reset stack pointer (in case of error recovery)
-    la      r31, STACK_TOP
+    add.q   r1, r16, #ST_STACK_HIGH
+    load.q  r31, (r1)
 
     ; Clear direct mode
     add.q   r1, r16, #ST_DIRECT_MODE
@@ -183,14 +231,14 @@ repl_loop:
 
 repl_read:
     ; Read a line of input from the terminal
-    la      r8, BASIC_LINE_BUF
-    move.q  r9, #BASIC_LINE_BUFLEN
+    la      r8, EHBASIC_PRIV_LINE_BUF
+    move.q  r9, #EHBASIC_PRIV_LINE_BUFLEN
     jsr     read_line
     ; R8 = number of characters read
     beqz    r8, repl_read           ; Empty line - try again
 
     ; --- Determine whether the line starts with a digit (line number) ---
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     load.b  r2, (r1)
 
     ; ASCII digits are 0x30..0x39
@@ -219,14 +267,14 @@ repl_read:
 
     ; Tokenise the line content (after the line number)
     move.q  r8, r9                  ; R8 = pointer to content after line number
-    la      r9, 0x021100            ; R9 = tokenise output buffer
+    la      r9, 0x041100            ; R9 = tokenise output buffer
     jsr     tokenize
     ; R8 = tokenised length
 
     ; Store the line in programme memory
     move.q  r10, r8                 ; R10 = tokenised length
     move.q  r8, r22                 ; R8 = line number
-    la      r9, 0x021100            ; R9 = tokenised content
+    la      r9, 0x041100            ; R9 = tokenised content
     jsr     line_store
     bnez    r8, repl_loop
 
@@ -246,29 +294,29 @@ repl_immediate:
 
     ; Check for RUN AOT command (must precede plain RUN, which would also
     ; match the "RUN" prefix and run interpreted instead of compiling).
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_run_aot
     bnez    r8, repl_do_run_aot
 
     ; Check for RUN command (before tokenising)
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_run
     bnez    r8, repl_do_run
 
     ; Check for COMPILE command (direct-only AOT to standalone .ie64)
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_compile
     bnez    r8, repl_do_compile
 
     ; Check for TRANSPILE command (direct-only: transpile to NAME.asm only,
     ; the first half of COMPILE without assembling or writing NAME.ie64).
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_transpile
     bnez    r8, repl_do_transpile
 
     ; Check for ASSEMBLE command (direct-only: assemble NAME.asm from disk to
     ; NAME.ie64 with the in-guest assembler; general user-asm, not BASIC).
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_assemble
     bnez    r8, repl_do_assemble
 
@@ -278,49 +326,49 @@ repl_immediate:
     la      r1, AOT_CONT_PC
     load.q  r2, (r1)
     beqz    r2, .no_aot_cont
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_cont
     bnez    r8, repl_do_cont_aot
 .no_aot_cont:
 
     ; Check for DIR command
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_dir
     bnez    r8, repl_do_dir
 
     ; Check for TYPE command (direct-only: print a text file to the screen)
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_type
     bnez    r8, repl_do_type
 
     ; Check for LIST command
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_list
     bnez    r8, repl_do_list
 
     ; Check for NEW command
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_new
     bnez    r8, repl_do_new
 
     ; Check for EMUTOS command
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_emutos
     bnez    r8, repl_do_emutos
 
     ; Check for AROS command
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_aros
     bnez    r8, repl_do_aros
 
     ; Check for INTUITIONOS command
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_check_intuitionos
     bnez    r8, repl_do_intuitionos
 
     ; Tokenise the input line
-    la      r8, BASIC_LINE_BUF
-    la      r9, 0x021100
+    la      r8, EHBASIC_PRIV_LINE_BUF
+    la      r9, 0x041100
     jsr     tokenize
     ; R8 = tokenised length
     beqz    r8, repl_read           ; Empty after tokenise
@@ -331,7 +379,7 @@ repl_immediate:
     store.l r2, (r1)
 
     ; Set text pointer to tokenised content
-    la      r17, 0x021100
+    la      r17, 0x041100
 
     ; Execute the tokenised statement(s)
     ; In direct mode, R14 = 0 (no current line)
@@ -361,7 +409,7 @@ repl_clear_error_state:
 ;   RUN "file"   - load and execute an external BASIC programme file
 
 repl_do_run:
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_parse_run_filename
     beqz    r8, .run_internal
 
@@ -372,7 +420,7 @@ repl_do_run:
 
     ; Point executor at the filename buffer
     la      r1, EXEC_NAME_PTR
-    la      r2, FILE_NAME_BUF
+    la      r2, EHBASIC_PRIV_NAME_BUF
     store.l r2, (r1)
 
     ; Trigger execution
@@ -435,7 +483,7 @@ repl_do_run_aot:
     ; RUN AOT takes no arguments. Re-walk past "AOT" and reject any trailing
     ; token (the file form "RUN AOT \"file\"" is explicitly unsupported); only
     ; trailing spaces before end-of-line are allowed.
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_skip_spaces
     add.q   r1, r1, #3              ; past "RUN"
     jsr     repl_skip_spaces
@@ -543,7 +591,7 @@ repl_do_compile:
     beqz    r8, .compile_syntax
     move.q  r3, #2
     beq     r8, r3, .compile_fc
-    ; R8 == 1: FILE_NAME_BUF holds the validated output name.
+    ; R8 == 1: EHBASIC_PRIV_NAME_BUF holds the validated output name.
     jsr     aot_compile_check       ; reject direct-only/raw roots first
     bnez    r8, repl_loop           ; reasoned error already printed (no banner)
     jsr     aot_do_compile          ; transpile + assemble + write .ie64 and .asm
@@ -600,7 +648,7 @@ repl_do_transpile:
     beqz    r8, .transpile_syntax
     move.q  r3, #2
     beq     r8, r3, .transpile_fc
-    ; R8 == 1: FILE_NAME_BUF holds the validated output name.
+    ; R8 == 1: EHBASIC_PRIV_NAME_BUF holds the validated output name.
     jsr     aot_compile_check       ; reject direct-only/raw roots first
     bnez    r8, repl_loop           ; reasoned error already printed
     jsr     aot_do_transpile        ; transpile + write NAME.asm
@@ -648,7 +696,7 @@ repl_do_assemble:
     beqz    r8, .assemble_syntax
     move.q  r3, #2
     beq     r8, r3, .assemble_fc
-    ; R8 == 1: FILE_NAME_BUF holds the validated name.ie64 output name.
+    ; R8 == 1: EHBASIC_PRIV_NAME_BUF holds the validated name.ie64 output name.
     jsr     aot_do_assemble         ; read name.asm, assemble, write name.ie64
     beqz    r8, repl_loop           ; 0 = success (name.ie64 written)
     move.q  r3, #2
@@ -862,14 +910,30 @@ repl_do_dir:
     jsr     repl_parse_dir_path
     beqz    r8, .dir_file_error
 
+    ; Reserve transient private low32 file-data bridge scratch for the listing.
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    load.q  r20, (r1)
+    bnez    r20, .dir_bridge_have_top
+    move.q  r20, #(BASIC_LOW32_INTERNAL_BASE + 0x100000)
+.dir_bridge_have_top:
+    move.q  r23, r20
+    sub.q   r23, r23, #0x100000
+    add.q   r1, r16, #ST_FILE_BRIDGE_LOW
+    load.q  r2, (r1)
+    bnez    r2, .dir_bridge_have_low
+    move.q  r2, #BASIC_LOW32_INTERNAL_BASE
+.dir_bridge_have_low:
+    blt     r23, r2, .dir_oom
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r23, (r1)
+
     ; Setup MMIO
     la      r1, FILE_NAME_PTR
-    la      r2, FILE_NAME_BUF
+    la      r2, EHBASIC_PRIV_NAME_BUF
     store.l r2, (r1)
 
     la      r1, FILE_DATA_PTR
-    la      r2, FILE_DATA_BUF
-    store.l r2, (r1)
+    store.l r23, (r1)
 
     la      r1, FILE_CTRL
     li      r2, #3                  ; OP_LIST
@@ -880,6 +944,8 @@ repl_do_dir:
     load.l  r1, (r1)
     beqz    r1, .dir_success
 
+    add.q   r2, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r20, (r2)
     la      r1, FILE_ERROR_CODE
     load.l  r1, (r1)
     move.q  r2, #1                  ; FILE_ERR_NOT_FOUND
@@ -887,8 +953,16 @@ repl_do_dir:
     bra     .dir_file_error
 
 .dir_success:
-    la      r8, FILE_DATA_BUF
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r20, (r1)
+    move.q  r8, r23
     jsr     print_string
+    bra     repl_loop
+
+.dir_oom:
+    la      r8, err_msg_oom
+    jsr     print_string
+    jsr     print_crlf
     bra     repl_loop
 
 .dir_not_found:
@@ -907,7 +981,7 @@ repl_do_dir:
 ; TYPE command handler - print a text file to the screen (MSDOS-style)
 ; ============================================================================
 ; Direct-only. TYPE "path" reads the file (relative to the File I/O root, path
-; separators allowed) into the resident File I/O buffer FILE_DATA_BUF, refuses
+; separators allowed) into the transient private File I/O bridge, refuses
 ; to print it unless the whole file is valid ASCII/UTF-8, and writes it to the
 ; terminal. Binary files are rejected so their control bytes never reach the
 ; screen. The read is capped at the device to the buffer's usable span less one
@@ -915,23 +989,38 @@ repl_do_dir:
 ; before a single byte is staged. No allocation, no compiler state touched.
 
 repl_do_type:
-    jsr     repl_parse_type_path        ; R8: 1 = ok (FILE_NAME_BUF = path), 0 = syntax
+    jsr     repl_parse_type_path        ; R8: 1 = ok (EHBASIC_PRIV_NAME_BUF = path), 0 = syntax
     beqz    r8, .type_syntax
 
-    ; Cap the read so an over-large file is refused before any byte is staged. The
-    ; buffer spans FILE_DATA_BUF .. AOT_ALLOC_FLOOR; keep one byte for the null
-    ; terminator. The cap is one-shot (consumed by the device per read).
+    ; Reserve transient private low32 file-data bridge scratch for the file body.
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    load.q  r20, (r1)
+    bnez    r20, .type_bridge_have_top
+    move.q  r20, #(BASIC_LOW32_INTERNAL_BASE + 0x100000)
+.type_bridge_have_top:
+    move.q  r23, r20
+    sub.q   r23, r23, #0x100000
+    add.q   r1, r16, #ST_FILE_BRIDGE_LOW
+    load.q  r2, (r1)
+    bnez    r2, .type_bridge_have_low
+    move.q  r2, #BASIC_LOW32_INTERNAL_BASE
+.type_bridge_have_low:
+    blt     r23, r2, .type_oom
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r23, (r1)
+
+    ; Cap the read so an over-large file is refused before any byte is staged.
+    ; The cap is one-shot (consumed by the device per read).
     la      r1, FILE_READ_MAX
-    move.q  r2, #(AOT_ALLOC_FLOOR - FILE_DATA_BUF - 1)
+    move.q  r2, #0x0FFFFF
     store.l r2, (r1)
 
-    ; OP_READ "path" -> FILE_DATA_BUF.
+    ; OP_READ "path" -> private bridge scratch.
     la      r1, FILE_NAME_PTR
-    la      r2, FILE_NAME_BUF
+    la      r2, EHBASIC_PRIV_NAME_BUF
     store.l r2, (r1)
     la      r1, FILE_DATA_PTR
-    la      r2, FILE_DATA_BUF
-    store.l r2, (r1)
+    store.l r23, (r1)
     la      r1, FILE_CTRL
     move.q  r2, #FILE_OP_READ
     store.l r2, (r1)
@@ -940,8 +1029,11 @@ repl_do_type:
     load.l  r1, (r1)
     bnez    r1, .type_read_err
 
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r20, (r1)
+
     ; Validate the bytes as text before anything reaches the terminal.
-    la      r8, FILE_DATA_BUF
+    move.q  r8, r23
     la      r1, FILE_RESULT_LEN
     load.l  r9, (r1)
     jsr     type_is_text                ; R8 = 1 text, 0 binary
@@ -950,7 +1042,7 @@ repl_do_type:
     ; Print the file, normalising line endings to CR+LF (the terminal needs a CR
     ; to return to column 0; a Unix file carries bare LFs which would otherwise
     ; staircase across the screen).
-    la      r8, FILE_DATA_BUF
+    move.q  r8, r23
     la      r1, FILE_RESULT_LEN
     load.l  r9, (r1)
     jsr     type_print
@@ -960,7 +1052,7 @@ repl_do_type:
     la      r1, FILE_RESULT_LEN
     load.l  r2, (r1)
     beqz    r2, .type_crlf
-    la      r1, FILE_DATA_BUF
+    move.q  r1, r23
     add.q   r1, r1, r2
     sub.q   r1, r1, #1
     load.b  r1, (r1)
@@ -973,6 +1065,8 @@ repl_do_type:
     bra     repl_loop
 
 .type_read_err:
+    add.q   r2, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r20, (r2)
     la      r1, FILE_ERROR_CODE
     load.l  r1, (r1)
     move.q  r2, #1                      ; FILE_ERR_NOT_FOUND
@@ -997,6 +1091,11 @@ repl_do_type:
     bra     repl_loop
 .type_binary:
     la      r8, repl_msg_not_text
+    jsr     print_string
+    jsr     print_crlf
+    bra     repl_loop
+.type_oom:
+    la      r8, err_msg_oom
     jsr     print_string
     jsr     print_crlf
     bra     repl_loop
@@ -1129,12 +1228,12 @@ repl_do_new:
 ; ============================================================================
 ; Parses a sequence of ASCII digits into a 32-bit unsigned integer.
 ;
-; Input:  BASIC_LINE_BUF contains the line
+; Input:  EHBASIC_PRIV_LINE_BUF contains the line
 ; Output: R8 = line number, R9 = pointer to first non-digit character
 ; Clobbers: R1-R5
 
 repl_parse_linenum:
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     move.q  r8, r0                  ; Accumulator = 0
 .loop:
     load.b  r2, (r1)
@@ -1201,12 +1300,12 @@ repl_check_run:
 ; Extracts a quoted filename from a RUN command. If no quote follows RUN,
 ; returns 0 (indicating a plain RUN of the stored programme).
 ;
-; Input:  BASIC_LINE_BUF contains the line
-; Output: R8 = 1 if FILE_NAME_BUF was populated, 0 if no quoted filename
+; Input:  EHBASIC_PRIV_LINE_BUF contains the line
+; Output: R8 = 1 if EHBASIC_PRIV_NAME_BUF was populated, 0 if no quoted filename
 ; Clobbers: R1-R3, R10-R11
 
 repl_parse_run_filename:
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_skip_spaces
 
     ; Match "RUN" prefix
@@ -1236,8 +1335,8 @@ repl_parse_run_filename:
     bne     r2, r3, .no_file
     add.q   r1, r1, #1
 
-    ; Copy quoted filename into FILE_NAME_BUF
-    la      r10, FILE_NAME_BUF
+    ; Copy quoted filename into EHBASIC_PRIV_NAME_BUF
+    la      r10, EHBASIC_PRIV_NAME_BUF
     move.q  r11, #255              ; Max chars to prevent buffer overflow
 .copy_name_loop:
     load.b  r2, (r1)
@@ -1531,20 +1630,20 @@ repl_check_assemble:
 ; ============================================================================
 ; repl_parse_compile_name - Parse and validate COMPILE/TRANSPILE "name"
 ; ============================================================================
-; Copies the quoted filename into FILE_NAME_BUF and validates it. A ".ie64"
+; Copies the quoted filename into EHBASIC_PRIV_NAME_BUF and validates it. A ".ie64"
 ; suffix is appended (case-insensitively) when absent.
 ;
-; Input:  BASIC_LINE_BUF contains the COMPILE/TRANSPILE line
+; Input:  EHBASIC_PRIV_LINE_BUF contains the COMPILE/TRANSPILE line
 ;         R7 = length of the matched leading keyword to skip (7 for COMPILE,
 ;              9 for TRANSPILE, 8 for ASSEMBLE)
 ; Output: R8 = 0 missing argument (syntax error)
-;              1 valid (FILE_NAME_BUF populated)
+;              1 valid (EHBASIC_PRIV_NAME_BUF populated)
 ;              2 bad name (?FC ERROR): empty, absolute, "..", separator, or
 ;                unterminated/over-length
 ; Clobbers: R1-R5, R10-R12, R20
 
 repl_parse_compile_name:
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_skip_spaces
     add.q   r1, r1, r7             ; skip the matched keyword (COMPILE=7/TRANSPILE=9)
     jsr     repl_skip_spaces
@@ -1555,7 +1654,7 @@ repl_parse_compile_name:
     bne     r2, r3, .syntax
     add.q   r1, r1, #1              ; past opening quote
 
-    la      r10, FILE_NAME_BUF
+    la      r10, EHBASIC_PRIV_NAME_BUF
     move.q  r11, #240               ; cap chars (room for ".ie64" + null)
     move.q  r12, r0                 ; copied length
     move.q  r20, r0                 ; previous char (for ".." detection)
@@ -1610,17 +1709,17 @@ repl_parse_compile_name:
     rts
 
 ; ============================================================================
-; aot_append_ie64 - Append ".ie64" to FILE_NAME_BUF unless already present
+; aot_append_ie64 - Append ".ie64" to EHBASIC_PRIV_NAME_BUF unless already present
 ; ============================================================================
 ; The suffix check is case-insensitive, so "DEMO.IE64" is left unchanged.
-; Input:  FILE_NAME_BUF null-terminated, R12 = current length
+; Input:  EHBASIC_PRIV_NAME_BUF null-terminated, R12 = current length
 ; Clobbers: R2-R5
 
 aot_append_ie64:
     move.q  r3, #5
     blt     r12, r3, .append       ; too short to already carry ".ie64"
 
-    la      r4, FILE_NAME_BUF
+    la      r4, EHBASIC_PRIV_NAME_BUF
     add.q   r4, r4, r12
     sub.q   r4, r4, #5             ; R4 -> last 5 chars
     la      r5, aot_str_ie64ext
@@ -1637,7 +1736,7 @@ aot_append_ie64:
     rts
 
 .append:
-    la      r4, FILE_NAME_BUF
+    la      r4, EHBASIC_PRIV_NAME_BUF
     add.q   r4, r4, r12
     la      r5, aot_str_ie64ext
 .app_loop:
@@ -1674,22 +1773,15 @@ aot_compile_check:
     push    r17                     ; statement cursor
     push    r18                     ; current line number
 
-    load.l  r14, (r16)              ; first line
+    load.q  r14, (r16)              ; first line record
 
 .acc_line:
     beqz    r14, .acc_ok
-    ; Stop on the in-memory empty/end sentinel (mirror line_list).
-    add.q   r1, r16, #4
-    load.l  r1, (r1)
-    sub.q   r1, r1, #4
-    bne     r14, r1, .acc_real
-    load.l  r15, (r14)
-    beqz    r15, .acc_ok
-.acc_real:
-    load.l  r15, (r14)              ; next-line pointer
-    add.q   r1, r14, #4
+    load.q  r15, (r14)              ; next-line pointer
+    beqz    r15, .acc_ok            ; terminator record has no body
+    add.q   r1, r14, #8
     load.l  r18, (r1)               ; R18 = line number
-    add.q   r17, r14, #8            ; R17 = tokenised content
+    add.q   r17, r14, #16           ; R17 = tokenised content
 
 .acc_stmt:
     jsr     exec_skip_spaces
@@ -2150,12 +2242,12 @@ repl_check_dir:
 ; ============================================================================
 ; repl_parse_dir_path - Parse optional DIR "path" argument
 ; ============================================================================
-; Input:  BASIC_LINE_BUF contains the line
-; Output: R8 = 1 if FILE_NAME_BUF was populated, 0 on malformed input
+; Input:  EHBASIC_PRIV_LINE_BUF contains the line
+; Output: R8 = 1 if EHBASIC_PRIV_NAME_BUF was populated, 0 on malformed input
 ; Clobbers: R1-R3, R10-R11
 
 repl_parse_dir_path:
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_skip_spaces
 
     ; Match "DIR" prefix
@@ -2182,7 +2274,7 @@ repl_parse_dir_path:
     ; No argument: list base directory
     load.b  r2, (r1)
     bnez    r2, .maybe_quote
-    la      r10, FILE_NAME_BUF
+    la      r10, EHBASIC_PRIV_NAME_BUF
     store.b r0, (r10)
     move.q  r8, #1
     rts
@@ -2192,8 +2284,8 @@ repl_parse_dir_path:
     bne     r2, r3, .bad
     add.q   r1, r1, #1
 
-    ; Copy quoted path into FILE_NAME_BUF
-    la      r10, FILE_NAME_BUF
+    ; Copy quoted path into EHBASIC_PRIV_NAME_BUF
+    la      r10, EHBASIC_PRIV_NAME_BUF
     move.q  r11, #255
 .copy_path_loop:
     load.b  r2, (r1)
@@ -2266,16 +2358,16 @@ repl_check_type:
 ; ============================================================================
 ; repl_parse_type_path - Parse the required TYPE "path" argument
 ; ============================================================================
-; Copies the quoted path into FILE_NAME_BUF. Unlike COMPILE/TRANSPILE/ASSEMBLE
+; Copies the quoted path into EHBASIC_PRIV_NAME_BUF. Unlike COMPILE/TRANSPILE/ASSEMBLE
 ; the path may contain separators (TYPE views a file anywhere under the File I/O
 ; root); the device enforces traversal protection. The argument is mandatory.
-; Input:  BASIC_LINE_BUF contains the TYPE line
-; Output: R8 = 1 if FILE_NAME_BUF was populated, 0 on syntax error
+; Input:  EHBASIC_PRIV_LINE_BUF contains the TYPE line
+; Output: R8 = 1 if EHBASIC_PRIV_NAME_BUF was populated, 0 on syntax error
 ;              (missing/unquoted/empty/over-length path, or trailing junk)
 ; Clobbers: R1-R3, R10-R11
 
 repl_parse_type_path:
-    la      r1, BASIC_LINE_BUF
+    la      r1, EHBASIC_PRIV_LINE_BUF
     jsr     repl_skip_spaces
 
     ; Match "TYPE" prefix
@@ -2307,8 +2399,8 @@ repl_parse_type_path:
     bne     r2, r3, .bad
     add.q   r1, r1, #1
 
-    ; Copy the quoted path into FILE_NAME_BUF.
-    la      r10, FILE_NAME_BUF
+    ; Copy the quoted path into EHBASIC_PRIV_NAME_BUF.
+    la      r10, EHBASIC_PRIV_NAME_BUF
     move.q  r11, #255
 .copy_loop:
     load.b  r2, (r1)
@@ -2325,7 +2417,7 @@ repl_parse_type_path:
 .copy_done:
     store.b r0, (r10)              ; null-terminate
     ; Reject an empty path ("").
-    la      r3, FILE_NAME_BUF
+    la      r3, EHBASIC_PRIV_NAME_BUF
     load.b  r3, (r3)
     beqz    r3, .bad
     ; Only trailing spaces may follow the closing quote.
@@ -2696,9 +2788,9 @@ repl_skip_spaces:
 ; ============================================================================
 
 repl_str_banner:
-    dc.b    "EhBASIC IE64 v3.1", 0x0D, 0x0A
+    dc.b    "IE64 BASIC v3.1", 0x0D, 0x0A
     dc.b    "(c) Zayn Otley, 2024-2026", 0x0D, 0x0A
-    dc.b    "Based on EhBASIC by Lee Davison", 0
+    dc.b    "Inspired by 68k EhBASIC by the late great Lee Davison (RIP)", 0
     align 4
 
 repl_str_ready:
@@ -2782,7 +2874,7 @@ repl_msg_aot_asm_err:
 ;   hw_voodoo    - VOODOO 3D graphics commands (TRIANGLE, TEXTURE, etc.)
 ;   file_io      - BLOAD/BSAVE file operations
 ;   hw_coproc    - Coprocessor management commands
-;   ie64_fp      - IEEE 754 FP32 soft-float library
+;   ie64_fp      - IEEE 754 FP64 soft-float library
 
 include "ehbasic_io.inc"
 include "ehbasic_tokenizer.inc"

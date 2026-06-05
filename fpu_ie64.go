@@ -519,6 +519,79 @@ func (fpu *IE64FPU) DINT(fd, fs byte) {
 	fpu.setConditionCodesBits64(resBits)
 }
 
+func (fpu *IE64FPU) DSIN(fd, fs byte) {
+	res := math.Sin(fpu.getDPair(fs))
+	resBits := math.Float64bits(res)
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
+func (fpu *IE64FPU) DCOS(fd, fs byte) {
+	res := math.Cos(fpu.getDPair(fs))
+	resBits := math.Float64bits(res)
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
+func (fpu *IE64FPU) DTAN(fd, fs byte) {
+	res := math.Tan(fpu.getDPair(fs))
+	resBits := math.Float64bits(res)
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
+func (fpu *IE64FPU) DATAN(fd, fs byte) {
+	res := math.Atan(fpu.getDPair(fs))
+	resBits := math.Float64bits(res)
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
+func (fpu *IE64FPU) DLOG(fd, fs byte) {
+	sBits := math.Float64bits(fpu.getDPair(fs))
+	if isZero64(sBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_DZ)
+	} else if (sBits>>63) != 0 && !isNaN64(sBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+	}
+	res := math.Log(math.Float64frombits(sBits))
+	resBits := math.Float64bits(res)
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
+func (fpu *IE64FPU) DEXP(fd, fs byte) {
+	sBits := math.Float64bits(fpu.getDPair(fs))
+	res := math.Exp(math.Float64frombits(sBits))
+	resBits := math.Float64bits(res)
+	if isInf64(resBits) && !isInf64(sBits) && !isNaN64(sBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_OE)
+	}
+	if isZero64(resBits) && !isZero64(sBits) && !isInf64(sBits) && !isNaN64(sBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_UE)
+	}
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
+func (fpu *IE64FPU) DPOW(fd, fs, ft byte) {
+	sBits := math.Float64bits(fpu.getDPair(fs))
+	tBits := math.Float64bits(fpu.getDPair(ft))
+	res := math.Pow(math.Float64frombits(sBits), math.Float64frombits(tBits))
+	resBits := math.Float64bits(res)
+	if isInf64(resBits) && !isInf64(sBits) && !isInf64(tBits) && !isNaN64(sBits) && !isNaN64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_OE)
+	}
+	if isZero64(resBits) && !isZero64(sBits) && !isZero64(tBits) && !isInf64(sBits) && !isInf64(tBits) && !isNaN64(sBits) && !isNaN64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_UE)
+	}
+	if isNaN64(resBits) && !isNaN64(sBits) && !isNaN64(tBits) {
+		fpu.setExceptionFlag(IE64_FPU_EX_IO)
+	}
+	fpu.setDPair(fd, res)
+	fpu.setConditionCodesBits64(resBits)
+}
+
 // ------------------------------------------------------------------------------
 // Comparison and Conversion
 // ------------------------------------------------------------------------------

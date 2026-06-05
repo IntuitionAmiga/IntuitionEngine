@@ -94,7 +94,7 @@ BASIC and is not configurable.
 ## 36.4 Register Block
 
 `HOST` uses a four-register MMIO block at `$F1400`. Registers are
-`32`-bit when read or written with `PEEK` and `POKE`. The command,
+`32`-bit when read or written with `PEEK32` and `POKE32`. The command,
 trigger, and status values use the low byte; the exit register is a
 full `32`-bit value.
 
@@ -135,7 +135,7 @@ This direct MMIO example is safe: it only reads the current status.
 Before a command has been fired, the status is normally `5`.
 
 ```basic
-10 PRINT "HOST STATUS ";PEEK(&H000F1408)
+10 PRINT "HOST STATUS ";PEEK32(&H000F1408)
 ```
 
 Expected result before a command:

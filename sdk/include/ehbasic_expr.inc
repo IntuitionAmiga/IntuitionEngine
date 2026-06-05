@@ -1,15 +1,17 @@
-; ehbasic_expr.inc - EhBASIC IE64 Expression Evaluator
+; ehbasic_expr.inc - IE64 BASIC Expression Evaluator
 ;
 ; Recursive-descent expression evaluator for numeric expressions.
 ; Supports: integer/float literals, +, -, *, /, ^, <, >, =, AND, OR,
 ;           EOR, NOT, unary minus, parentheses.
 ;
-; All values are IEEE 754 FP32 stored in the lower 32 bits of 64-bit regs.
+; Numeric expressions return R8=payload and R9=VAL_F64 or VAL_I64. Most of the
+; legacy evaluator still computes FP64 internally; expr_eval first recognises the
+; integer-compatible subset so exact qword values can flow through public APIs.
 ;
 ; Calling convention:
 ;   expr_eval:
 ;     Input:  R17 = pointer to tokenized expression (null-terminated)
-;     Output: R8  = result as FP32 bits
+;     Output: R8  = result as FP64 bits
 ;             R17 = updated past consumed tokens
 ;     Clobbers: R1-R15
 ;
@@ -24,7 +26,7 @@
 ; expr_eval - Evaluate expression at R17
 ; ============================================================================
 ; Entry point: evaluates a full expression with all precedence levels.
-; Returns result in R8 (FP32).
+; Returns result in R8, tag in R9.
 
 expr_eval:
     push    r14
@@ -34,8 +36,24 @@ expr_eval:
     push    r24
     push    r25
 
-    jsr     expr_or              ; evaluate lowest-precedence level
-    ; Result in R8
+    move.q  r25, r17             ; fallback cursor
+    jsr     exec_eval_i64
+    beqz    r9, .expr_fallback_fp64_restore
+    jsr     expr_i64_boundary
+    beqz    r9, .expr_fallback_fp64_restore
+    move.q  r9, #VAL_I64
+    bra     .expr_done
+
+.expr_fallback_fp64_restore:
+    move.q  r17, r25
+.expr_fallback_fp64:
+    move.q  r9, r0
+    jsr     expr_or              ; evaluate legacy FP64 precedence tree
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .expr_done
+    move.q  r9, #VAL_F64
+
+.expr_done:
 
     pop     r25
     pop     r24
@@ -43,6 +61,33 @@ expr_eval:
     pop     r22
     pop     r15
     pop     r14
+    rts
+
+; expr_i64_boundary - true if R17 is at a valid end of the current expression.
+; This prevents a numeric prefix such as 1.5 or 123*4 being accepted as I64.
+; Output: R9=1 at a boundary, R9=0 otherwise.
+expr_i64_boundary:
+.eib_skip_spaces:
+    load.b  r1, (r17)
+    move.q  r2, #0x20
+    bne     r1, r2, .eib_after_spaces
+    add.q   r17, r17, #1
+    bra     .eib_skip_spaces
+.eib_after_spaces:
+    load.b  r1, (r17)
+    beqz    r1, .eib_yes
+    move.q  r2, #0x29            ; ')'
+    beq     r1, r2, .eib_yes
+    move.q  r2, #0x2C            ; ','
+    beq     r1, r2, .eib_yes
+    move.q  r2, #0x3B            ; ';'
+    beq     r1, r2, .eib_yes
+    move.q  r2, #0x3A            ; ':'
+    beq     r1, r2, .eib_yes
+    move.q  r9, r0
+    rts
+.eib_yes:
+    move.q  r9, #1
     rts
 
 ; ============================================================================
@@ -60,8 +105,8 @@ expr_eval:
 
 ; --- Level 1: OR / EOR ---
 expr_or:
+    move.q  r9, #VAL_F64
     jsr     expr_and
-    move.q  r22, r8              ; save left operand
 .eor_loop:
     ; Skip spaces before checking for OR/EOR token
     load.b  r1, (r17)
@@ -74,38 +119,40 @@ expr_or:
     beq     r1, r2, .do_or
     move.q  r2, #TK_EOR
     beq     r1, r2, .do_eor
-    move.q  r8, r22
     rts
 
 .do_or:
     add.q   r17, r17, #1
-    push    r22
+    jsr     expr_value_to_fp64
+    push    r8
     jsr     expr_and
+    jsr     expr_value_to_fp64
     pop     r22
     ; OR: convert both to int, bitwise OR
-    jsr     fp32_to_int_pair     ; R22→R1(int), R8→R2(int)
+    jsr     fp64_to_int_pair     ; R22→R1(int), R8→R2(int)
     or.l    r1, r1, r2
     move.q  r8, r1
-    jsr     fp_float             ; int→FP32
-    move.q  r22, r8
+    jsr     fp_float             ; int→FP64
+    move.q  r9, #VAL_F64
     bra     .eor_loop
 
 .do_eor:
     add.q   r17, r17, #1
-    push    r22
+    jsr     expr_value_to_fp64
+    push    r8
     jsr     expr_and
+    jsr     expr_value_to_fp64
     pop     r22
-    jsr     fp32_to_int_pair
+    jsr     fp64_to_int_pair
     eor.l   r1, r1, r2
     move.q  r8, r1
     jsr     fp_float
-    move.q  r22, r8
+    move.q  r9, #VAL_F64
     bra     .eor_loop
 
 ; --- Level 2: AND (with inlined NOT check) ---
 expr_and:
     jsr     expr_not_inline
-    move.q  r22, r8
 .and_loop:
     ; Skip spaces before checking for AND token
     load.b  r1, (r17)
@@ -117,17 +164,18 @@ expr_and:
     move.q  r2, #TK_AND
     bne     r1, r2, .and_done
     add.q   r17, r17, #1
-    push    r22
+    jsr     expr_value_to_fp64
+    push    r8
     jsr     expr_not_inline
+    jsr     expr_value_to_fp64
     pop     r22
-    jsr     fp32_to_int_pair
+    jsr     fp64_to_int_pair
     and.l   r1, r1, r2
     move.q  r8, r1
     jsr     fp_float
-    move.q  r22, r8
+    move.q  r9, #VAL_F64
     bra     .and_loop
 .and_done:
-    move.q  r8, r22
     rts
 
 ; --- Level 3: NOT (unary prefix, inlined skip-spaces + compare check) ---
@@ -150,13 +198,13 @@ expr_not_inline:
     ; NOT: convert to int, complement, convert back
     jsr     fp_int               ; truncate to integer
     push    r8
-    jsr     fp_fix               ; FP32→signed int32 in R8
+    jsr     fp_fix               ; FP64→signed int32 in R8
     move.q  r1, r8
     pop     r8                   ; (discard)
     move.q  r2, #0xFFFFFFFF
     eor.l   r1, r1, r2           ; bitwise NOT
     move.q  r8, r1
-    jsr     fp_float             ; int→FP32
+    jsr     fp_float             ; int→FP64
     rts
 
 ; --- Level 4: Comparison (<, >, =) ---
@@ -164,7 +212,6 @@ expr_compare:
     jsr     str_detect
     bnez    r8, .cmp_string
     jsr     expr_add
-    move.q  r22, r8
 .cmp_loop:
     ; Skip spaces before checking for a comparison token. Without this,
     ; `PRINT A > B` (with spaces) would mis-parse as two separate
@@ -181,11 +228,12 @@ expr_compare:
     beq     r1, r2, .do_gt
     move.q  r2, #TK_EQUAL
     beq     r1, r2, .do_eq
-    move.q  r8, r22
     rts
 
 .do_lt:
     add.q   r17, r17, #1
+    jsr     expr_value_to_fp64
+    move.q  r22, r8
     move.q  r24, r0               ; 0 = <
     load.b  r1, (r17)
     move.q  r2, #0x3D             ; raw '=' marker for <=
@@ -208,6 +256,7 @@ expr_compare:
     push    r22
     push    r24
     jsr     expr_add
+    jsr     expr_value_to_fp64
     pop     r24
     pop     r22
     ; Compare: R22 < R8?
@@ -235,6 +284,8 @@ expr_compare:
 
 .do_gt:
     add.q   r17, r17, #1
+    jsr     expr_value_to_fp64
+    move.q  r22, r8
     move.q  r24, r0               ; 0 = >
     load.b  r1, (r17)
     move.q  r2, #0x3D             ; raw '=' marker for >=
@@ -249,6 +300,7 @@ expr_compare:
     push    r22
     push    r24
     jsr     expr_add
+    jsr     expr_value_to_fp64
     pop     r24
     pop     r22
     move.q  r9, r8
@@ -268,8 +320,10 @@ expr_compare:
 
 .do_eq:
     add.q   r17, r17, #1
-    push    r22
+    jsr     expr_value_to_fp64
+    push    r8
     jsr     expr_add
+    jsr     expr_value_to_fp64
     pop     r22
     move.q  r9, r8
     move.q  r8, r22
@@ -278,13 +332,14 @@ expr_compare:
     bra     .cmp_false
 
 .cmp_true:
-    move.l  r8, #0xBF800000      ; -1.0 (TRUE)
-    move.q  r22, r8
+    move.q  r8, r0
+    not.q   r8, r8
+    move.q  r9, #VAL_I64
     bra     .cmp_loop
 
 .cmp_false:
-    move.q  r8, r0               ; 0.0 (FALSE)
-    move.q  r22, r8
+    move.q  r8, r0
+    move.q  r9, #VAL_I64
     bra     .cmp_loop
 
 .cmp_string:
@@ -395,7 +450,6 @@ expr_compare:
 ; --- Level 5: Addition (+, -) ---
 expr_add:
     jsr     expr_mul
-    move.q  r22, r8
 .add_loop:
     ; Skip spaces before checking for +/-/<</>> operator. Without this,
     ; `PRINT 1 + 2` mis-parses: expr_add sees space, returns 1; PRINT
@@ -414,61 +468,101 @@ expr_add:
     beq     r1, r2, .do_lshift
     move.q  r2, #TK_RSHIFT
     beq     r1, r2, .do_rshift
-    move.q  r8, r22
     rts
 
 .do_add:
     add.q   r17, r17, #1
-    push    r22
+    push    r8
+    push    r9
     jsr     expr_mul
+    move.q  r23, r8              ; right payload
+    move.q  r24, r9              ; right tag
+    pop     r25                  ; left tag
+    pop     r22                  ; left payload
+    move.q  r1, #VAL_I64
+    bne     r25, r1, .add_fp64
+    bne     r24, r1, .add_fp64
+    add.q   r8, r22, r23
+    move.q  r9, #VAL_I64
+    bra     .add_loop
+.add_fp64:
+    move.q  r8, r22
+    move.q  r9, r25
+    jsr     expr_value_to_fp64
+    push    r8
+    move.q  r8, r23
+    move.q  r9, r24
+    jsr     expr_value_to_fp64
     pop     r22
     move.q  r9, r8               ; R9 = right
     move.q  r8, r22              ; R8 = left
     jsr     fp_add               ; R8 = left + right
-    move.q  r22, r8
+    move.q  r9, #VAL_F64
     bra     .add_loop
 
 .do_sub:
     add.q   r17, r17, #1
-    push    r22
+    push    r8
+    push    r9
     jsr     expr_mul
+    move.q  r23, r8              ; right payload
+    move.q  r24, r9              ; right tag
+    pop     r25                  ; left tag
+    pop     r22                  ; left payload
+    move.q  r1, #VAL_I64
+    bne     r25, r1, .sub_fp64
+    bne     r24, r1, .sub_fp64
+    sub.q   r8, r22, r23
+    move.q  r9, #VAL_I64
+    bra     .add_loop
+.sub_fp64:
+    move.q  r8, r22
+    move.q  r9, r25
+    jsr     expr_value_to_fp64
+    push    r8
+    move.q  r8, r23
+    move.q  r9, r24
+    jsr     expr_value_to_fp64
     pop     r22
     move.q  r9, r8               ; R9 = right
     move.q  r8, r22              ; R8 = left
     jsr     fp_sub               ; R8 = left - right
-    move.q  r22, r8
+    move.q  r9, #VAL_F64
     bra     .add_loop
 
 .do_lshift:
     add.q   r17, r17, #1
-    push    r22
+    jsr     expr_value_to_fp64
+    push    r8
     jsr     expr_mul
+    jsr     expr_value_to_fp64
     pop     r22
-    jsr     fp32_to_int_pair
+    jsr     fp64_to_int_pair
     and.l   r2, r2, #31
     lsl.l   r1, r1, r2
     move.q  r8, r1
     jsr     fp_float
-    move.q  r22, r8
+    move.q  r9, #VAL_F64
     bra     .add_loop
 
 .do_rshift:
     add.q   r17, r17, #1
-    push    r22
+    jsr     expr_value_to_fp64
+    push    r8
     jsr     expr_mul
+    jsr     expr_value_to_fp64
     pop     r22
-    jsr     fp32_to_int_pair
+    jsr     fp64_to_int_pair
     and.l   r2, r2, #31
     lsr.l   r1, r1, r2
     move.q  r8, r1
     jsr     fp_float
-    move.q  r22, r8
+    move.q  r9, #VAL_F64
     bra     .add_loop
 
 ; --- Level 6: Multiplication (*, /) ---
 expr_mul:
     jsr     expr_power
-    move.q  r22, r8
 .mul_loop:
     ; Skip spaces before checking for `*` or `/`. Without this,
     ; `PRINT 10 * (A>B)` mis-parses because the operator check at
@@ -486,32 +580,41 @@ expr_mul:
     beq     r1, r2, .do_mul
     move.q  r2, #TK_DIV
     beq     r1, r2, .do_div
-    move.q  r8, r22
     rts
 
 .do_mul:
     add.q   r17, r17, #1
-    push    r22
+    jsr     expr_value_to_fp64
+    push    r8
     jsr     expr_power
+    jsr     expr_value_to_fp64
     pop     r22
-    move.q  r9, r8
-    move.q  r8, r22
-    jsr     fp_mul
-    move.q  r22, r8
-    bra     .mul_loop
+	    move.q  r9, r8
+	    move.q  r8, r22
+	    jsr     fp_mul
+	    move.q  r9, #VAL_F64
+	    bra     .mul_loop
 
 .do_div:
     add.q   r17, r17, #1
-    push    r22
+    jsr     expr_value_to_fp64
+    push    r8
     jsr     expr_power
+    jsr     expr_value_to_fp64
     pop     r22
-    and.l   r1, r8, #0x7FFFFFFF
-    beqz    r1, .div_zero
+    move.q  r23, r8
+    move.q  r8, r0
+    jsr     fp_float
     move.q  r9, r8
-    move.q  r8, r22
-    jsr     fp_div
-    move.q  r22, r8
-    bra     .mul_loop
+    move.q  r8, r23
+    jsr     fp_cmp
+    beqz    r8, .div_zero
+    move.q  r8, r23
+	    move.q  r9, r8
+	    move.q  r8, r22
+	    jsr     fp_div
+	    move.q  r9, #VAL_F64
+	    bra     .mul_loop
 .div_zero:
     move.q  r8, #ERR_DIV0
     la      r9, err_msg_div0
@@ -521,7 +624,6 @@ expr_mul:
 ; --- Level 7: Power (^) ---
 expr_power:
     jsr     expr_unary
-    move.q  r22, r8
 .pow_loop:
     ; Skip spaces before checking for the power operator `^`. Same
     ; pattern as expr_add/expr_mul/expr_compare — without it,
@@ -535,16 +637,17 @@ expr_power:
     move.q  r2, #TK_POWER
     bne     r1, r2, .pow_done
     add.q   r17, r17, #1
-    push    r22
+    jsr     expr_value_to_fp64
+    push    r8
     jsr     expr_unary           ; right-associative
+    jsr     expr_value_to_fp64
     pop     r22
-    move.q  r9, r8               ; R9 = exponent
-    move.q  r8, r22              ; R8 = base
-    jsr     fp_pow               ; R8 = base ^ exponent
-    move.q  r22, r8
-    bra     .pow_loop
+	    move.q  r9, r8               ; R9 = exponent
+	    move.q  r8, r22              ; R8 = base
+	    jsr     fp_pow               ; R8 = base ^ exponent
+	    move.q  r9, #VAL_F64
+	    bra     .pow_loop
 .pow_done:
-    move.q  r8, r22
     rts
 
 ; --- Level 8: Unary minus ---
@@ -582,10 +685,12 @@ expr_unary:
     bra     expr_primary
 
 .do_neg:
-    add.q   r17, r17, #1
-    jsr     expr_unary           ; recursive for --x
-    jsr     fp_neg               ; negate result
-    rts
+	    add.q   r17, r17, #1
+	    jsr     expr_unary           ; recursive for --x
+	    jsr     expr_value_to_fp64
+	    jsr     fp_neg               ; negate result
+	    move.q  r9, #VAL_F64
+	    rts
 
 .do_uplus:
     add.q   r17, r17, #1
@@ -618,6 +723,10 @@ expr_primary:
     beq     r1, r2, .do_fn_call
     move.q  r2, #0x46             ; raw "FN" prefix in names like FND
     beq     r1, r2, .maybe_raw_fn_call
+
+    ; Check for extended functions (TK_EXT, subtoken).
+    move.q  r2, #TK_EXT
+    beq     r1, r2, .do_ext_function
 
     ; Check for built-in function tokens (0xBE..0xE1)
     move.q  r2, #TK_SGN
@@ -682,7 +791,7 @@ expr_primary:
     add.q   r17, r17, #1
     bra     .mod_st_skip_alpha
 .mod_st_done:
-    ; Read MOD_PLAY_STATUS, return full status byte as FP32
+    ; Read MOD_PLAY_STATUS, return full status byte as FP64
     move.l  r1, #MOD_PLAY_STATUS
     load.l  r8, (r1)
     jsr     fp_float
@@ -778,7 +887,7 @@ expr_primary:
 
 .do_var:
     ; Variable reference - look it up
-    jsr     var_read             ; R8 = FP32 value, R17 advanced past name
+    jsr     var_read             ; R8 = FP64 value, R17 advanced past name
     rts
 
 .do_parens:
@@ -794,7 +903,7 @@ expr_primary:
 
 .do_number:
     ; Parse numeric literal from token stream
-    jsr     parse_number          ; R8 = FP32 result, R17 advanced
+    jsr     parse_number          ; R8 = FP64 result, R17 advanced
     rts
 
 .do_hex:
@@ -836,13 +945,13 @@ expr_primary:
 .hex_digit_af:
     sub.q   r1, r1, #0x57        ; 'a'-10 = 87
 .hex_accum:
-    lsl.l   r8, r8, #4
-    or.l    r8, r8, r1
+    lsl.q   r8, r8, #4
+    or.q    r8, r8, r1
     add.q   r17, r17, #1
     bra     .hex_loop
 .hex_end:
-    ; R8 = integer value, convert to FP32
-    jsr     fp_float
+    ; R8 = raw qword integer value.
+    move.q  r9, #VAL_I64
     rts
 .hex_bad:
     move.q  r8, r0
@@ -908,21 +1017,28 @@ expr_primary:
     load.l  r14, 4(r25)
     jsr     var_lookup_tag       ; R8 = parameter variable slot
     move.q  r23, r8
-    load.l  r24, (r23)           ; save caller value
-    store.l r22, (r23)           ; bind argument
+    load.q  r24, (r23)           ; save caller value
+    load.l  r1, -8(r23)          ; save caller scalar tag
+    move.q  r2, #VAL_F64
+    store.l r2, -8(r23)          ; parameter binding is a legacy FP64 slot
+    store.q r22, (r23)           ; bind argument
     load.l  r17, 8(r25)
     push    r25
     push    r23
     push    r24
+    push    r1
     jsr     expr_or
     move.q  r25, r8
+    pop     r2
     pop     r24
     pop     r23
     pop     r1
-    store.l r24, (r23)           ; restore caller value
+    store.q r24, (r23)           ; restore caller value
+    store.l r2, -8(r23)          ; restore caller scalar tag
     store.l r0, 12(r1)
     pop     r17
     move.q  r8, r25
+    move.q  r9, #VAL_F64
 .fn_call_done:
     rts
 .fn_call_undef:
@@ -974,7 +1090,7 @@ expr_primary:
 
     push    r1                   ; save function token (clobbered by expr_or)
     add.q   r17, r17, #1         ; skip '('
-    jsr     expr_or              ; evaluate argument
+    jsr     expr_eval             ; evaluate argument
     ; Expect ')'
     load.b  r2, (r17)
     move.q  r3, #0x29
@@ -1003,39 +1119,89 @@ expr_primary:
     rts
 
 .fn_sgn:
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .fn_sgn_i64
     jsr     fp_cmp_zero
-    jsr     fp_float
+    move.q  r1, #0xFFFFFFFF
+    bne     r8, r1, .fn_sgn_fp_done
+    move.q  r8, r0
+    not.q   r8, r8
+.fn_sgn_fp_done:
+    move.q  r9, #VAL_I64
+    rts
+.fn_sgn_i64:
+    beqz    r8, .fn_sgn_i64_zero
+    bgez    r8, .fn_sgn_i64_pos
+    move.q  r8, r0
+    not.q   r8, r8
+    move.q  r9, #VAL_I64
+    rts
+.fn_sgn_i64_pos:
+    move.q  r8, #1
+    move.q  r9, #VAL_I64
+    rts
+.fn_sgn_i64_zero:
+    move.q  r8, r0
+    move.q  r9, #VAL_I64
     rts
 .fn_int:
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .fn_int_done
     jsr     fp_int
+    jsr     fp_fix
+    move.q  r9, #VAL_I64
+.fn_int_done:
     rts
 .fn_abs:
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .fn_abs_i64
     jsr     fp_abs
+    move.q  r9, #VAL_F64
+    rts
+.fn_abs_i64:
+    bgez    r8, .fn_abs_i64_done
+    neg.q   r8, r8
+.fn_abs_i64_done:
+    move.q  r9, #VAL_I64
     rts
 .fn_sqr:
+    jsr     expr_value_to_fp64
     jsr     fp_sqr
+    move.q  r9, #VAL_F64
     rts
 .fn_sin:
+    jsr     expr_value_to_fp64
     jsr     fp_sin
+    move.q  r9, #VAL_F64
     rts
 .fn_cos:
+    jsr     expr_value_to_fp64
     jsr     fp_cos
+    move.q  r9, #VAL_F64
     rts
 .fn_tan:
+    jsr     expr_value_to_fp64
     jsr     fp_tan
+    move.q  r9, #VAL_F64
     rts
 .fn_atn:
+    jsr     expr_value_to_fp64
     jsr     fp_atn
+    move.q  r9, #VAL_F64
     rts
 .fn_log:
+    jsr     expr_value_to_fp64
     jsr     fp_log
+    move.q  r9, #VAL_F64
     rts
 .fn_exp:
+    jsr     expr_value_to_fp64
     jsr     fp_exp
+    move.q  r9, #VAL_F64
     rts
 .fn_rnd:
-    ; Simple LCG: state = state*1664525 + 1013904223
-    ; Return FP32 in [0,1): ((state & 0x007FFFFF) | 0x3F800000) - 1.0
+    ; Simple LCG: state = state*1664525 + 1013904223.
+    ; Return FP64 in [0,1): (state & 0x007FFFFF) / 2^23.
     la      r3, rnd_state
     load.l  r2, (r3)
     mulu.l  r2, r2, #1664525
@@ -1043,59 +1209,77 @@ expr_primary:
     store.l r2, (r3)
 
     and.l   r2, r2, #0x007FFFFF
-    move.l  r8, #0x3F800000
-    or.l    r8, r8, r2
-    move.l  r9, #0x3F800000
-    jsr     fp_sub
+    move.q  r8, r2
+    jsr     fp_float
+    li      r9, #0x4160000000000000 ; 2^23
+    jsr     fp_div
     rts
 .fn_peek:
-    ; Argument is address (numeric). Return 32-bit value at address as FP32.
-    ; (reached from generic single-arg path - always 32-bit)
-    jsr     fp_int
-    jsr     fp_fix               ; R8 = int32 address
-    move.q  r1, r8
-    and.l   r2, r1, #3
-    bnez    r2, .peek_fc_error
-    load.l  r8, (r1)
-    jsr     fp_float
-    rts
+    ; PEEK is the byte alias for PEEK8.
+    ; This preserves the 8-bit home computer BASIC convention: bare PEEK reads
+    ; one byte, and wider reads must use PEEK16/32/64.
+    move.q  r23, #1
+    bra     .peek_do_width
 
 .fn_peek_dispatch:
-    ; Check for PEEK8 (byte access) vs PEEK (32-bit)
-    load.b  r2, (r17)
-    move.q  r3, #0x38            ; '8'
-    move.q  r23, r0              ; R23 = 0 (32-bit mode)
-    bne     r2, r3, .peek_std_arg
-    move.q  r23, #1              ; R23 = 1 (byte mode)
-    add.q   r17, r17, #1         ; consume '8'
+    move.q  r23, #1              ; PEEK is byte-width by default
 .peek_std_arg:
     ; Expect '('
     load.b  r2, (r17)
     move.q  r3, #0x28            ; '('
     bne     r2, r3, .peek_no_arg
     add.q   r17, r17, #1         ; skip '('
-    jsr     expr_or              ; evaluate argument → R8
+    jsr     expr_eval            ; evaluate argument → R8/R9
     ; Expect ')'
     load.b  r2, (r17)
     move.q  r3, #0x29            ; ')'
     bne     r2, r3, .peek_do
     add.q   r17, r17, #1         ; skip ')'
 .peek_do:
+    move.q  r2, #VAL_I64
+    beq     r9, r2, .peek_addr_i64
     jsr     fp_int
     jsr     fp_fix               ; R8 = integer address
+.peek_addr_i64:
     move.q  r1, r8
-    beqz    r23, .peek_read32
-    ; PEEK8 - byte read
+    bra     .peek_read_width
+.peek_do_width:
+    ; Generic single-argument path already evaluated the address into R8.
+    move.q  r2, #VAL_I64
+    beq     r9, r2, .peek_width_addr_i64
+    jsr     fp_int
+    jsr     fp_fix
+.peek_width_addr_i64:
+    move.q  r1, r8
+.peek_read_width:
+    move.q  r2, #1
+    beq     r23, r2, .peek_read8
+    move.q  r2, #2
+    beq     r23, r2, .peek_read16
+    move.q  r2, #4
+    beq     r23, r2, .peek_read32
+    and.l   r2, r1, #7
+    bnez    r2, .peek_fc_error
+    load.q  r8, (r1)
+    move.q  r9, #VAL_I64
+    rts
+.peek_read8:
     load.b  r8, (r1)
     and.l   r8, r8, #0xFF
-    jsr     fp_float
+    move.q  r9, #VAL_I64
+    rts
+.peek_read16:
+    and.l   r2, r1, #1
+    bnez    r2, .peek_fc_error
+    load.w  r8, (r1)
+    and.l   r8, r8, #0xFFFF
+    move.q  r9, #VAL_I64
     rts
 .peek_read32:
-    ; PEEK - 32-bit read
     and.l   r2, r1, #3
     bnez    r2, .peek_fc_error
     load.l  r8, (r1)
-    jsr     fp_float
+    move.q  r9, #VAL_I64
     rts
 .peek_fc_error:
     move.q  r8, #ERR_FC
@@ -1106,32 +1290,192 @@ expr_primary:
     move.q  r8, r0
     jsr     fp_float
     rts
-.fn_fre:
-    ; Approximate free bytes: BASIC_STR_END - ST_VAR_END
-    add.q   r1, r16, #ST_VAR_END
-    load.l  r1, (r1)
-    move.l  r8, #BASIC_STR_END
-    sub.l   r8, r8, r1
-    jsr     fp_float
-    rts
-.fn_deek:
-    ; DEEK(addr) - read 16-bit value at address
-    jsr     fp_int
-    jsr     fp_fix               ; R8 = integer address
-    move.q  r1, r8
-    load.w  r8, (r1)             ; 16-bit read
-    and.l   r8, r8, #0xFFFF
-    jsr     fp_float
-    rts
-.fn_leek:
-    ; LEEK(addr) - read 32-bit value (same as PEEK)
-    bra     .fn_peek
 
+.do_ext_function:
+    add.q   r17, r17, #1         ; consume TK_EXT
+    load.b  r1, (r17)            ; subtoken
+    add.q   r17, r17, #1
+    move.q  r2, #EXT_MEMALLOC
+    beq     r1, r2, .fn_memalloc
+    move.q  r2, #EXT_PEEK8
+    beq     r1, r2, .ext_peek8
+    move.q  r2, #EXT_PEEK16
+    beq     r1, r2, .ext_peek16
+    move.q  r2, #EXT_PEEK32
+    beq     r1, r2, .ext_peek32
+    move.q  r2, #EXT_PEEK64
+    beq     r1, r2, .ext_peek64
+    move.q  r8, r0
+    rts
+.ext_peek8:
+    move.q  r23, #1
+    bra     .peek_std_arg
+.ext_peek16:
+    move.q  r23, #2
+    bra     .peek_std_arg
+.ext_peek32:
+    move.q  r23, #4
+    bra     .peek_std_arg
+.ext_peek64:
+    move.q  r23, #8
+    bra     .peek_std_arg
+
+.fn_memalloc:
+    ; MEMALLOC(size[,align]) from public low32 DMA ranges. Alignment defaults
+    ; to 4096 and is constrained to powers of two up to 1 MiB.
+    load.b  r2, (r17)
+    move.q  r3, #0x28            ; '('
+    bne     r2, r3, .memalloc_fc_error
+    add.q   r17, r17, #1
+    jsr     expr_or
+    jsr     .memalloc_fp_to_u32
+    beqz    r9, .memalloc_fc_error
+    move.q  r22, r8              ; size
+    push    r22
+    move.q  r23, #4096           ; alignment
+    jsr     .expr_skip_spaces
+    load.b  r2, (r17)
+    move.q  r3, #0x2C            ; ','
+    bne     r2, r3, .memalloc_after_align
+    add.q   r17, r17, #1
+    jsr     expr_or
+    jsr     .memalloc_fp_to_u32
+    beqz    r9, .memalloc_fc_error_pop
+    move.q  r23, r8
+.memalloc_after_align:
+    pop     r22
+    jsr     .expr_skip_spaces
+    load.b  r2, (r17)
+    move.q  r3, #0x29            ; ')'
+    bne     r2, r3, .memalloc_fc_error
+    add.q   r17, r17, #1
+    beqz    r22, .memalloc_fc_error
+    beqz    r23, .memalloc_fc_error
+    move.q  r2, #1048576
+    bgt     r23, r2, .memalloc_fc_error
+    sub.q   r2, r23, #1
+    and.q   r2, r2, r23
+    bnez    r2, .memalloc_fc_error
+    jsr     .basic_memalloc
+    move.q  r9, #VAL_I64
+.memalloc_done:
+    rts
+.memalloc_fc_error:
+    move.q  r8, #ERR_FC
+    la      r9, err_msg_fc
+    jsr     raise_error
+    rts
+.memalloc_fc_error_pop:
+    pop     r22
+    bra     .memalloc_fc_error
+
+; Convert the current tagged expression value in R8/R9 to an exact unsigned
+; 32-bit integer.
+; Output: R8 = integer, R9 = 1 on success; R9 = 0 on negative/fractional/overflow.
+.memalloc_fp_to_u32:
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .mftu_i64
+    move.q  r22, r8               ; original FP64 payload
+    jsr     fp_fix                ; truncates toward zero
+    move.q  r23, r8               ; integer candidate
+    move.q  r8, r23
+    jsr     fp_float
+    move.q  r9, r22
+    jsr     fp_cmp
+    bnez    r8, .mftu_fail
+    move.q  r8, r23
+.mftu_i64:
+    blt     r8, r0, .mftu_fail
+    li      r1, #0xFFFFFFFF
+    bgt     r8, r1, .mftu_fail
+    move.q  r9, #1
+    rts
+.mftu_fail:
+    move.q  r9, r0
+    rts
+
+; Input R22=size, R23=align. Output R8=allocated pointer or raises ?OM.
+.basic_memalloc:
+    add.q   r10, r16, #ST_PRIV_MEMALLOC_CURSOR
+    add.q   r11, r16, #ST_PRIV_MEMALLOC_RANGE
+    load.q  r12, (r10)           ; cursor
+    load.q  r13, (r11)           ; range index
+    bnez    r12, .memalloc_have_cursor
+    move.q  r12, #BASIC_MEMALLOC_BASE0
+    move.q  r13, r0
+.memalloc_have_cursor:
+    sub.q   r1, r23, #1
+    add.q   r8, r12, r1
+    not.q   r1, r1
+    and.q   r8, r8, r1           ; aligned result
+    add.q   r2, r8, r22          ; new cursor
+    blt     r2, r8, .memalloc_oom
+    move.q  r3, #0
+    beq     r13, r3, .memalloc_check0
+    move.q  r3, #1
+    beq     r13, r3, .memalloc_check1
+    move.q  r3, #2
+    beq     r13, r3, .memalloc_check2
+    bra     .memalloc_oom
+.memalloc_check0:
+    move.q  r3, #BASIC_MEMALLOC_END0
+    ble     r2, r3, .memalloc_commit
+    move.q  r3, #BASIC_MEMALLOC_BASE1
+    beqz    r3, .memalloc_oom
+    move.q  r12, r3
+    move.q  r13, #1
+    bra     .memalloc_have_cursor
+.memalloc_check1:
+    move.q  r3, #BASIC_MEMALLOC_END1
+    ble     r2, r3, .memalloc_commit
+    move.q  r3, #BASIC_MEMALLOC_BASE2
+    beqz    r3, .memalloc_oom
+    move.q  r12, r3
+    move.q  r13, #2
+    bra     .memalloc_have_cursor
+.memalloc_check2:
+    move.q  r3, #BASIC_MEMALLOC_END2
+    ble     r2, r3, .memalloc_commit
+    bra     .memalloc_oom
+.memalloc_commit:
+    store.q r2, (r10)
+    store.q r13, (r11)
+    rts
+.memalloc_oom:
+    move.q  r8, #ERR_OOM
+    la      r9, err_msg_oom
+    jsr     raise_error
+    rts
+
+.expr_skip_spaces:
+    load.b  r2, (r17)
+    move.q  r3, #0x20
+    bne     r2, r3, .expr_skip_done
+    add.q   r17, r17, #1
+    bra     .expr_skip_spaces
+.expr_skip_done:
+    rts
+.fn_fre:
+    ; Approximate free internal arena bytes: effective top - ST_HEAP_BOTTOM.
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    load.q  r2, (r1)
+    bnez    r2, .fre_have_top
+    add.q   r1, r16, #ST_HEAP_TOP
+    load.q  r2, (r1)
+.fre_have_top:
+    add.q   r1, r16, #ST_HEAP_BOTTOM
+    load.q  r8, (r1)
+    sub.q   r8, r2, r8
+    jsr     fp_float
+    rts
 .fn_usr:
     ; USR(addr) - call machine code at addr, return R8 as integer result
-    ; R8 = FP32 address from generic single-arg path
+    ; R8/R9 = tagged address from generic single-arg path
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .fn_usr_addr_ready
     jsr     fp_int
     jsr     fp_fix               ; R8 = integer address
+.fn_usr_addr_ready:
     move.q  r9, r8               ; R9 = call target
     ; Save BASIC state registers across machine-language call
     push    r14
@@ -1144,7 +1488,7 @@ expr_primary:
     pop     r16
     pop     r14
     ; R8 = integer result from machine code
-    jsr     fp_float             ; convert to FP32
+    move.q  r9, #VAL_I64
     rts
 
 .fn_bittst:
@@ -1182,7 +1526,9 @@ expr_primary:
     move.q  r8, r0               ; 0.0 (FALSE)
     rts
 .fn_bittst_true:
-    move.l  r8, #0xBF800000      ; -1.0 (TRUE)
+    move.q  r8, r0
+    not.q   r8, r8
+    move.q  r9, #VAL_I64
     rts
 .fn_bittst_err:
     move.q  r8, r0
@@ -1283,7 +1629,7 @@ expr_primary:
     add.q   r17, r17, #1         ; skip ')'
 .fn_len_do:
     jsr     str_len              ; R8 = length (integer)
-    jsr     fp_float             ; R8 = FP32
+    jsr     fp_float             ; R8 = FP64
     rts
 .fn_len_err:
     move.q  r8, r0
@@ -1321,10 +1667,20 @@ expr_primary:
     bne     r2, r3, .fn_val_do
     add.q   r17, r17, #1
 .fn_val_do:
-    ; Set R17 to string data, call parse_number, restore R17
+    ; Fast-path plain decimal strings as exact I64 before falling back to the
+    ; tagged expression parser for legacy expression-shaped VAL inputs.
     push    r17
+    push    r8
+    jsr     val_parse_i64_string
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .fn_val_i64_done
+    pop     r8
     move.q  r17, r8
-    jsr     parse_number          ; R8 = FP32
+    jsr     expr_eval             ; R8/R9 = tagged value
+    pop     r17
+    rts
+.fn_val_i64_done:
+    pop     r2                    ; discard saved string pointer
     pop     r17
     rts
 .fn_val_err:
@@ -1332,43 +1688,53 @@ expr_primary:
     rts
 
 .fn_sadd:
-    ; SADD(A$) - return address of string data.
+    ; SADD(A$) returns the live address of string data, so POKE8 through it
+    ; mutates the variable bytes like historical BASIC implementations.
     load.b  r2, (r17)
     move.q  r3, #0x28
     bne     r2, r3, .fn_sadd_err
     add.q   r17, r17, #1
     jsr     var_lookup           ; R8 = str_ptr slot, R9 = 1 for string
     beqz    r9, .fn_sadd_err
-    load.l  r8, (r8)             ; R8 = string data pointer
+    load.q  r8, (r8)             ; R8 = internal string data pointer
+    beqz    r8, .fn_sadd_err
     load.b  r2, (r17)
     move.q  r3, #0x29
     bne     r2, r3, .fn_sadd_return
     add.q   r17, r17, #1
 .fn_sadd_return:
-    jsr     fp_float
+    move.q  r9, #VAL_I64
     rts
 .fn_sadd_err:
     move.q  r8, r0
-    jsr     fp_float
+    move.q  r9, #VAL_I64
     rts
-
 .fn_varptr:
-    ; VARPTR(A) - return address of variable storage slot.
+    ; VARPTR(A) - return the public variable cell address.
     load.b  r2, (r17)
     move.q  r3, #0x28
     bne     r2, r3, .fn_varptr_err
     add.q   r17, r17, #1
     jsr     var_lookup           ; R8 = numeric value slot or string pointer slot
+    bnez    r9, .fn_varptr_after_adjust
+    load.l  r1, -8(r8)
+    move.q  r2, #VAL_F64
+    beq     r1, r2, .fn_varptr_scalar
+    move.q  r2, #VAL_I64
+    bne     r1, r2, .fn_varptr_after_adjust
+.fn_varptr_scalar:
+    sub.q   r8, r8, #8           ; scalar numeric public cell: tag,reserved,payload
+.fn_varptr_after_adjust:
     load.b  r2, (r17)
     move.q  r3, #0x29
     bne     r2, r3, .fn_varptr_return
     add.q   r17, r17, #1
 .fn_varptr_return:
-    jsr     fp_float
+    move.q  r9, #VAL_I64
     rts
 .fn_varptr_err:
     move.q  r8, r0
-    jsr     fp_float
+    move.q  r9, #VAL_I64
     rts
 
 .func_noarg:
@@ -1381,10 +1747,12 @@ expr_primary:
     rts
 
 .fn_pi:
-    move.l  r8, #0x40490FDB      ; PI as FP32
+    li      r8, #0x400921FB54442D18 ; PI as FP64
+    move.q  r9, #VAL_F64
     rts
 .fn_twopi:
-    move.l  r8, #0x40C90FDB      ; 2*PI as FP32
+    li      r8, #0x401921FB54442D18 ; 2*PI as FP64
+    move.q  r9, #VAL_F64
     rts
 
 ; ============================================================================
@@ -1505,8 +1873,8 @@ expr_primary:
     dc.l    .fn_tan              ; 0xCA TK_TAN
     dc.l    .fn_atn              ; 0xCB TK_ATN
     dc.l    .fn_peek             ; 0xCC TK_PEEK
-    dc.l    .fn_deek             ; 0xCD TK_DEEK
-    dc.l    .fn_leek             ; 0xCE TK_LEEK
+    dc.l    .fn_unknown          ; 0xCD removed
+    dc.l    .fn_unknown          ; 0xCE removed
 
 rnd_state:
     dc.l    0x12345678
@@ -1515,7 +1883,7 @@ rnd_state:
 ; parse_number - Parse a numeric literal from the token stream
 ; ============================================================================
 ; Input:  R17 = pointer to start of number in token stream
-; Output: R8  = FP32 result
+; Output: R8  = FP64 result
 ;         R17 = advanced past the number
 ; Clobbers: R1-R7
 ;
@@ -1528,7 +1896,7 @@ parse_number:
     ; Accumulate integer part as raw int
     move.q  r1, r0               ; R1 = integer accumulator
     move.q  r14, r0              ; R14 = saw decimal point flag
-    move.q  r15, r0              ; R15 = decimal divisor (FP32 bits of 10^n)
+    move.q  r15, r0              ; R15 = decimal divisor (FP64 bits of 10^n)
     move.q  r2, r0               ; R2 = number of fractional digits
 
 .pn_loop:
@@ -1544,8 +1912,8 @@ parse_number:
     sub.q   r3, r3, #0x30        ; digit value
     ; R1 = R1 * 10 + digit
     move.q  r5, r1
-    mulu.l  r5, r5, #10
-    add.l   r1, r5, r3
+    mulu.q  r5, r5, #10
+    add.q   r1, r5, r3
     add.q   r17, r17, #1
 
     ; If past decimal point, count fractional digits
@@ -1569,10 +1937,9 @@ parse_number:
     ; Save fractional digit count before fp_float clobbers R2
     push    r2
 
-    ; Convert integer accumulator to FP32
+    ; Convert integer accumulator to FP64
     move.q  r8, r1
-    and.l   r8, r8, #0xFFFFFFFF
-    jsr     fp_float              ; R8 = FP32 of integer value
+    jsr     fp_float              ; R8 = FP64 of integer value
 
     ; Restore fractional digit count
     pop     r2
@@ -1584,12 +1951,12 @@ parse_number:
     ble     r2, r3, .pn_div_lookup
     move.q  r2, r3
 .pn_div_lookup:
-    ; Table index: (n-1) * 4
+    ; Table index: (n-1) * 8
     sub.q   r3, r2, #1
-    lsl.q   r3, r3, #2
+    lsl.q   r3, r3, #3
     la      r4, .fp_pow10_table
     add.q   r4, r4, r3
-    load.l  r9, (r4)              ; R9 = 10^n (exact FP32)
+    load.q  r9, (r4)              ; R9 = 10^n (FP64)
     jsr     fp_div                ; R8 = value / 10^n
 
 .pn_end:
@@ -1633,13 +2000,13 @@ parse_number:
     beqz    r5, .pn_return
     bnez    r6, .pn_exp_div_loop
 .pn_exp_mul_loop:
-    move.l  r9, #0x41200000       ; 10.0
+    li      r9, #0x4024000000000000 ; 10.0
     jsr     fp_mul
     sub.q   r5, r5, #1
     bnez    r5, .pn_exp_mul_loop
     bra     .pn_return
 .pn_exp_div_loop:
-    move.l  r9, #0x41200000       ; 10.0
+    li      r9, #0x4024000000000000 ; 10.0
     jsr     fp_div
     sub.q   r5, r5, #1
     bnez    r5, .pn_exp_div_loop
@@ -1649,25 +2016,25 @@ parse_number:
     pop     r14
     rts
 
-; Power-of-10 lookup table (exact FP32 representations)
-    align 4
+; Power-of-10 lookup table (FP64 representations)
+    align 8
 .fp_pow10_table:
-    dc.l    0x41200000            ; 10^1 = 10
-    dc.l    0x42C80000            ; 10^2 = 100
-    dc.l    0x447A0000            ; 10^3 = 1000
-    dc.l    0x461C4000            ; 10^4 = 10000
-    dc.l    0x47C35000            ; 10^5 = 100000
-    dc.l    0x49742400            ; 10^6 = 1000000
-    dc.l    0x4B189680            ; 10^7 = 10000000
-    dc.l    0x4CBEBC20            ; 10^8 = 100000000
+    dc.q    0x4024000000000000    ; 10^1 = 10
+    dc.q    0x4059000000000000    ; 10^2 = 100
+    dc.q    0x408F400000000000    ; 10^3 = 1000
+    dc.q    0x40C3880000000000    ; 10^4 = 10000
+    dc.q    0x40F86A0000000000    ; 10^5 = 100000
+    dc.q    0x412E848000000000    ; 10^6 = 1000000
+    dc.q    0x416312D000000000    ; 10^7 = 10000000
+    dc.q    0x4197D78400000000    ; 10^8 = 100000000
 
 ; ============================================================================
-; fp32_to_int_pair - Convert R22 (FP32) and R8 (FP32) to integers
+; fp64_to_int_pair - Convert R22 (FP64) and R8 (FP64) to integers
 ; ============================================================================
 ; Output: R1 = int32 from R22, R2 = int32 from R8
 ; Clobbers: R3-R7
 
-fp32_to_int_pair:
+fp64_to_int_pair:
     push    r8
     move.q  r8, r22
     jsr     fp_int
@@ -1681,10 +2048,107 @@ fp32_to_int_pair:
     pop     r1                   ; restore left int32
     rts
 
+; expr_value_to_fp64 - Coerce the current tagged expression value to FP64.
+; Input: R8=payload, R9=tag. Output: R8=FP64 bits, R9=VAL_F64.
+expr_value_to_fp64:
+    move.q  r1, #VAL_I64
+    bne     r9, r1, .evtf_done
+    jsr     fp_float
+.evtf_done:
+    move.q  r9, #VAL_F64
+    rts
+
+; expr_truthy - Convert a tagged expression result to BASIC truthiness.
+; Input: R8=payload, R9=tag. Output: R8=1 true or 0 false, R9=VAL_I64.
+expr_truthy:
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .etr_i64
+    bra     .etr_f64
+.etr_i64:
+    beqz    r8, .etr_false
+    bra     .etr_true
+.etr_f64:
+    move.q  r7, r8
+    move.q  r8, r0
+    jsr     fp_float
+    move.q  r9, r8
+    move.q  r8, r7
+    jsr     fp_cmp
+    bnez    r8, .etr_true
+    bra     .etr_false
+.etr_true:
+    move.q  r8, #1
+    move.q  r9, #VAL_I64
+    rts
+.etr_false:
+    move.q  r8, r0
+    move.q  r9, #VAL_I64
+    rts
+
+; val_parse_i64_string - Parse a NUL-terminated decimal string exactly.
+; Input: R8=string pointer. Output: R8=value, R9=VAL_I64 on success; R9=0 on fail.
+val_parse_i64_string:
+    move.q  r1, r8                ; cursor
+    move.q  r3, r0                ; accumulator
+    move.q  r4, r0                ; sign flag
+    move.q  r6, r0                ; saw digit flag
+.vpi_skip_lead:
+    load.b  r2, (r1)
+    move.q  r5, #0x20
+    bne     r2, r5, .vpi_sign
+    add.q   r1, r1, #1
+    bra     .vpi_skip_lead
+.vpi_sign:
+    move.q  r5, #0x2D             ; '-'
+    bne     r2, r5, .vpi_plus
+    move.q  r4, #1
+    add.q   r1, r1, #1
+    bra     .vpi_digits
+.vpi_plus:
+    move.q  r5, #0x2B             ; '+'
+    bne     r2, r5, .vpi_digits
+    add.q   r1, r1, #1
+.vpi_digits:
+    load.b  r2, (r1)
+    beqz    r2, .vpi_done
+    move.q  r5, #0x22
+    beq     r2, r5, .vpi_done
+    move.q  r5, #0x20
+    beq     r2, r5, .vpi_trailing
+    move.q  r5, #0x30
+    blt     r2, r5, .vpi_fail
+    move.q  r5, #0x39
+    bgt     r2, r5, .vpi_fail
+    sub.q   r2, r2, #0x30
+    mulu.q  r3, r3, #10
+    add.q   r3, r3, r2
+    move.q  r6, #1
+    add.q   r1, r1, #1
+    bra     .vpi_digits
+.vpi_trailing:
+    add.q   r1, r1, #1
+    load.b  r2, (r1)
+    beqz    r2, .vpi_done
+    move.q  r5, #0x20
+    beq     r2, r5, .vpi_trailing
+    bra     .vpi_fail
+.vpi_done:
+    beqz    r6, .vpi_fail
+    beqz    r4, .vpi_positive
+    neg.q   r3, r3
+.vpi_positive:
+    move.q  r8, r3
+    move.q  r9, #VAL_I64
+    rts
+.vpi_fail:
+    move.q  r8, r0
+    move.q  r9, r0
+    rts
+
 ; ============================================================================
-; fp_fix - Convert FP32 to signed int32
+; fp_fix - Convert FP64 to signed int32
 ; ============================================================================
-; Input:  R8 = FP32 value (must be an integer value, e.g. after fp_int)
+; Input:  R8 = FP64 value (must be an integer value, e.g. after fp_int)
 ; Output: R8 = signed 32-bit integer
 ; Clobbers: R1-R4
 ;
@@ -1692,8 +2156,11 @@ fp32_to_int_pair:
 ; reconstruct integer value.
 
 fp_fix:
-    fmovi   f0, r8
-    fcvtfi  r8, f0            ; float -> int32 (truncates toward zero, saturates)
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .fp_fix_i64
+    jsr     fp64_load_r8_f0
+    dcvtfi  r8, f0            ; double -> int64 (truncates toward zero, saturates)
+.fp_fix_i64:
     rts
 
 ; ============================================================================
@@ -1723,6 +2190,66 @@ fp_cmp_zero:
 
 .cz_zero:
     move.q  r8, r0
+    rts
+
+; basic_memalloc_public - public low32 allocator used by hardware builders.
+; Input R22=size, R23=align. Output R8=allocated pointer or raises ?OM.
+; Clobbers R1-R3, R8, R10-R13.
+basic_memalloc_public:
+    add.q   r10, r16, #ST_PRIV_MEMALLOC_CURSOR
+    add.q   r11, r16, #ST_PRIV_MEMALLOC_RANGE
+    load.q  r12, (r10)
+    load.q  r13, (r11)
+    bnez    r12, bmp_have_cursor
+    move.q  r12, #BASIC_MEMALLOC_BASE0
+    move.q  r13, r0
+bmp_have_cursor:
+    sub.q   r1, r23, #1
+    add.q   r8, r12, r1
+    not.q   r1, r1
+    and.q   r8, r8, r1
+    add.q   r2, r8, r22
+    blt     r2, r8, bmp_oom
+    move.q  r3, #0
+    beq     r13, r3, bmp_check0
+    move.q  r3, #1
+    beq     r13, r3, bmp_check1
+    move.q  r3, #2
+    beq     r13, r3, bmp_check2
+    bra     bmp_oom
+bmp_check0:
+    move.q  r3, #BASIC_MEMALLOC_END0
+    ble     r2, r3, bmp_commit
+    move.q  r12, #BASIC_MEMALLOC_BASE1
+    move.q  r13, #1
+    bra     bmp_have_cursor
+bmp_check1:
+    move.q  r3, #BASIC_MEMALLOC_END1
+    ble     r2, r3, bmp_commit
+    move.q  r12, #BASIC_MEMALLOC_BASE2
+    move.q  r13, #2
+    bra     bmp_have_cursor
+bmp_check2:
+    move.q  r3, #BASIC_MEMALLOC_END2
+    ble     r2, r3, bmp_commit
+    bra     bmp_oom
+bmp_commit:
+    store.q r2, (r10)
+    store.q r13, (r11)
+    rts
+bmp_oom:
+    move.q  r8, #ERR_OOM
+    la      r9, err_msg_oom
+    jsr     raise_error
+    rts
+
+basic_memalloc_reset:
+    add.q   r1, r16, #ST_PRIV_MEMALLOC_CURSOR
+    store.q r0, (r1)
+    add.q   r1, r16, #ST_PRIV_MEMALLOC_RANGE
+    store.q r0, (r1)
+    add.q   r1, r16, #ST_COPPER_BUILD
+    store.q r0, (r1)
     rts
 
 ; ============================================================================

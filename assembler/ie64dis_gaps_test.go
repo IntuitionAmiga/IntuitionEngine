@@ -47,6 +47,8 @@ var documentedOpcodes = []opRow{
 	{"OP_DMOD", 0x87, "dmod"}, {"OP_DABS", 0x88, "dabs"}, {"OP_DNEG", 0x89, "dneg"}, {"OP_DSQRT", 0x8A, "dsqrt"},
 	{"OP_DINT", 0x8B, "dint"}, {"OP_DCMP", 0x8C, "dcmp"}, {"OP_DCVTIF", 0x8D, "dcvtif"}, {"OP_DCVTFI", 0x8E, "dcvtfi"},
 	{"OP_FCVTSD", 0x8F, "fcvtsd"}, {"OP_FCVTDS", 0x90, "fcvtds"},
+	{"OP_DSIN", 0x91, "dsin"}, {"OP_DCOS", 0x92, "dcos"}, {"OP_DTAN", 0x93, "dtan"}, {"OP_DATAN", 0x94, "datan"},
+	{"OP_DLOG", 0x95, "dlog"}, {"OP_DEXP", 0x96, "dexp"}, {"OP_DPOW", 0x97, "dpow"},
 	{"OP_NOP64", 0xE0, "nop"}, {"OP_HALT64", 0xE1, "halt"}, {"OP_SEI64", 0xE2, "sei"}, {"OP_CLI64", 0xE3, "cli"},
 	{"OP_RTI64", 0xE4, "rti"}, {"OP_WAIT64", 0xE5, "wait"}, {"OP_MTCR", 0xE6, "mtcr"}, {"OP_MFCR", 0xE7, "mfcr"},
 	{"OP_ERET", 0xE8, "eret"}, {"OP_TLBFLUSH", 0xE9, "tlbflush"}, {"OP_TLBINVAL", 0xEA, "tlbinval"}, {"OP_SYSCALL", 0xEB, "syscall"},
@@ -248,7 +250,7 @@ func standaloneInstrForOpcode(op byte) []byte {
 		return encodeInstr(op, 1, 0, 0, 0, 0, 0)
 	case op >= dis64_FMOV && op <= dis64_FMOVCC:
 		return standaloneFPUInstrForOpcode(op)
-	case op >= dis64_DMOV && op <= dis64_FCVTDS:
+	case op >= dis64_DMOV && op <= dis64_DPOW:
 		return standaloneFPUInstrForOpcode(op)
 	case op >= dis64_CAS && op <= dis64_FXOR:
 		return encodeInstr(op, 2, 0, 0, 1, 3, 0)
@@ -262,7 +264,7 @@ func standaloneFPUInstrForOpcode(op byte) []byte {
 	case dis64_FLOAD, dis64_FSTORE, dis64_DLOAD, dis64_DSTORE:
 		return encodeInstr(op, 1, 0, 0, 2, 0, 4)
 	case dis64_FADD, dis64_FSUB, dis64_FMUL, dis64_FDIV, dis64_FMOD, dis64_FPOW,
-		dis64_DADD, dis64_DSUB, dis64_DMUL, dis64_DDIV, dis64_DMOD:
+		dis64_DADD, dis64_DSUB, dis64_DMUL, dis64_DDIV, dis64_DMOD, dis64_DPOW:
 		return encodeInstr(op, 1, 0, 0, 2, 3, 0)
 	case dis64_FCMP, dis64_DCMP:
 		return encodeInstr(op, 1, 0, 0, 2, 3, 0)

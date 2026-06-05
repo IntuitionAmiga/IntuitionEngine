@@ -188,15 +188,16 @@ MMIO width depends on the device.
 |-------|------------|-------------|
 | `8` bits | `POKE8` / `PEEK8` | SID, TED audio, POKEY, PSG, SN76489 ports, palette bytes, character memory. |
 | `16` bits | CPU word stores where the chapter says so | Some CPU-friendly aliases and split register writes. |
-| `32` bits | `POKE` / `PEEK` | Pointers, lengths, control words, status words, framebuffer bases, blitter registers. |
-| `64` bits | CPU doubleword stores only where documented | Native 64-bit MMIO blocks and split high/low register pairs. |
+| `32` bits | `POKE32` / `PEEK32` | Pointers, lengths, control words, status words, framebuffer bases, blitter registers. |
+| `64` bits | `POKE64` / `PEEK64` or CPU doubleword stores where documented | Native 64-bit memory blocks and split high/low register pairs. |
 
 Do not widen a byte register just because the address is in the MMIO
 region. POKEY, TED audio, SID, PSG, and many VGA registers are
 byte-oriented. Use the owning chapter's table.
 
-`PEEK` and `POKE` require a 4-byte aligned address. `PEEK8` and `POKE8`
-accept any byte address.
+`PEEK16`/`POKE16`, `PEEK32`/`POKE32`, and `PEEK64`/`POKE64` require
+2-, 4-, and 8-byte aligned addresses. `PEEK`, `POKE`, `PEEK8`, and `POKE8`
+are byte-width forms and accept any byte address.
 
 Multi-byte player registers use little-endian byte order when you write
 their individual bytes. For example, a pointer value `$00100000` staged
@@ -212,7 +213,7 @@ through byte writes goes low byte first:
 70 PRINT PEEK8(&H000F0BC2),PEEK8(&H000F0BC3)
 ```
 
-A 32-bit `POKE &H000F0BC0,&H00100000` writes the same staged pointer in
+A 32-bit `POKE32 &H000F0BC0,&H00100000` writes the same staged pointer in
 one operation.
 
 Lines 20 to 50 write the four bytes of the pointer from least significant byte
@@ -293,10 +294,10 @@ high words at lines 30 and 50 are non-zero.
 
 ```basic
 10 REM SYSINFO RAM SIZE WORDS
-20 TL=PEEK(&H000F2400)
-30 TH=PEEK(&H000F2404)
-40 AL=PEEK(&H000F2408)
-50 AH=PEEK(&H000F240C)
+20 TL=PEEK32(&H000F2400)
+30 TH=PEEK32(&H000F2404)
+40 AL=PEEK32(&H000F2408)
+50 AH=PEEK32(&H000F240C)
 60 PRINT "TOTAL LO/HI ";TL,TH
 70 PRINT "ACTIVE LO/HI ";AL,AH
 ```
@@ -362,27 +363,32 @@ counters.
 
 ## 24.8 PEEK and POKE from BASIC
 
-BASIC has two pairs of memory primitives:
+BASIC has byte-width historical primitives and explicit wider forms:
 
-- `PEEK(addr)` reads a `32`-bit unsigned value. `POKE addr, value`
-  writes a `32`-bit unsigned value. Both require `addr` to be a
-  multiple of `4`; an unaligned address raises `?FC ERROR`.
-- `PEEK8(addr)` reads a `8`-bit unsigned value. `POKE8 addr, value`
-  writes one byte. These accept any address and are the right
-  choice for byte-oriented MMIO registers such as TED audio
+- `PEEK(addr)` and `PEEK8(addr)` read an `8`-bit unsigned value.
+  `POKE addr, value` and `POKE8 addr, value` write one byte. These
+  accept any address and are the right choice for byte-oriented MMIO
+  registers such as TED audio
   (`$F0F00`-`$F0F05`), the WAV volume bytes
   (`$F0BF1`-`$F0BF2`), the SID register file, and any single
   byte of the VGA palette.
+- `PEEK32(addr)` reads a `32`-bit unsigned value. `POKE32 addr, value`
+  writes a `32`-bit unsigned value. Both require `addr` to be a
+  multiple of `4`; an unaligned address raises `?FC ERROR`.
+- `PEEK64(addr)` reads a `64`-bit value from an 8-byte aligned address.
+  It returns an exact integer qword, so `HEX$(PEEK64(addr))`,
+  `POKE64 dst, PEEK64(src)`, and other integer-compatible expressions preserve
+  pointer and bitfield payloads.
 
 ```basic
 10 REM READ THE VBLANK FLAG FROM VIDEOCHIP
-20 V=PEEK(&H000F0008)
+20 V=PEEK32(&H000F0008)
 30 IF (V AND 1)=0 THEN GOTO 20
 40 REM DO SOMETHING AT THE START OF VBLANK
 ```
 
-This is a 32-bit status register, so `PEEK` is the right access width. The loop
-waits until bit `0` becomes non-zero.
+This is a 32-bit status register, so `PEEK32` is the right access width. The
+loop waits until bit `0` becomes non-zero.
 
 ```basic
 10 REM EMIT A BANNER ONE BYTE AT A TIME
@@ -398,7 +404,7 @@ time, then line 60 writes carriage return. Use `POKE8` here; a 32-bit `POKE`
 would still deliver a low byte, but it hides the fact that this is a byte
 device.
 
-The MMIO map decides what a `PEEK` actually returns. `$F0700` is
+The MMIO map decides what a read actually returns. `$F0700` is
 the `TERM_OUT` register: it is write-only and reads back zero. To
 poll terminal status, read `TERM_STATUS` at `$F0704` (bit `0`
 input available, bit `1` output ready). Tables in the following

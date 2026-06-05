@@ -191,6 +191,45 @@ func TestHandleJITHelper_DSTORE_WritesFromFP64Pair(t *testing.T) {
 	}
 }
 
+func TestHandleJITHelper_DTRANS_ExecutesFP64AndAdvances(t *testing.T) {
+	cpu := dispatchTestCPU(t)
+	cpu.FPU.setDPair(2, -1)
+	cpu.FPU.setDPair(4, 0.5)
+	before := globalIE64TurboStats.helperExits[HELPER_DTRANS].Load()
+
+	cpu.jitCtx.NeedHelper = HELPER_DTRANS
+	cpu.jitCtx.HelperSize = uint32(OP_DPOW)
+	cpu.jitCtx.HelperRd = 6
+	cpu.jitCtx.HelperAddr = 2
+	cpu.jitCtx.HelperVal = 4
+	cpu.jitCtx.HelperPC = phase4HighPC + 0x280
+	cpu.jitCtx.LiveSP = 0x5000
+
+	retired, handled := cpu.handleJITHelper()
+	if !handled || retired != 1 {
+		t.Fatalf("handled=%v retired=%d", handled, retired)
+	}
+	if !math.IsNaN(cpu.FPU.getDPair(6)) {
+		t.Fatalf("DPOW result = %v, want NaN", cpu.FPU.getDPair(6))
+	}
+	if (cpu.FPU.FPSR & IE64_FPU_EX_IO) == 0 {
+		t.Fatalf("FPSR = 0x%08X, want invalid-operation sticky flag", cpu.FPU.FPSR)
+	}
+	if cpu.PC != phase4HighPC+0x280+IE64_INSTR_SIZE {
+		t.Fatalf("PC = %#x, want HelperPC+8", cpu.PC)
+	}
+	if cpu.regs[31] != 0x5000 {
+		t.Fatalf("SP = %#x, want LiveSP", cpu.regs[31])
+	}
+	if cpu.jitCtx.NeedHelper != HELPER_NONE {
+		t.Fatalf("NeedHelper not cleared")
+	}
+	after := globalIE64TurboStats.helperExits[HELPER_DTRANS].Load()
+	if after-before != 1 {
+		t.Fatalf("HELPER_DTRANS counter delta = %d, want 1", after-before)
+	}
+}
+
 func TestHandleJITHelper_PUSH_HighSP_DecrementsAndWrites(t *testing.T) {
 	cpu := dispatchTestCPU(t)
 	const sp = phase4HighPC + 0x300

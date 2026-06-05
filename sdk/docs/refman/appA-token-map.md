@@ -131,15 +131,15 @@ expression. Where it is marked **Statement**, it begins a command.
 | `$8F` | TK_REM      | REM       | Statement |
 | `$90` | TK_STOP     | STOP      | Statement |
 | `$91` | TK_ON       | ON        | Statement |
-| `$92` | TK_NULL     | TRON      | Statement |
+| `$92` | TK_EXT      | Extended  | Prefix    |
 | `$93` | TK_INC      | INC       | Statement |
 | `$94` | TK_WAIT     | WAIT      | Statement |
 | `$95` | TK_LOAD     | LOAD      | Statement |
 | `$96` | TK_SAVE     | SAVE      | Statement |
 | `$97` | TK_DEF      | TROFF     | Statement (also accepts `DEF`; `LIST` always prints `TROFF`) |
 | `$98` | TK_POKE     | POKE      | Statement |
-| `$99` | TK_DOKE     | DOKE      | Statement |
-| `$9A` | TK_LOKE     | LOKE      | Statement |
+| `$99` | TK_RESERVED_99 | -      | Reserved  |
+| `$9A` | TK_RESERVED_9A | -      | Reserved  |
 | `$9B` | TK_CALL     | CALL      | Statement |
 | `$9C` | TK_DO       | DO        | Statement |
 | `$9D` | TK_LOOP     | LOOP      | Statement |
@@ -182,8 +182,8 @@ expression. Where it is marked **Statement**, it begins a command.
 | `$CA` | TK_TAN      | TAN       | Number  |
 | `$CB` | TK_ATN      | ATN       | Number  |
 | `$CC` | TK_PEEK     | PEEK      | Number  |
-| `$CD` | TK_DEEK     | DEEK      | Number  |
-| `$CE` | TK_LEEK     | LEEK      | Number  |
+| `$CD` | TK_RESERVED_CD | -      | Reserved |
+| `$CE` | TK_RESERVED_CE | -      | Reserved |
 | `$CF` | TK_SADD     | SADD      | Number  |
 | `$D0` | TK_LEN      | LEN       | Number  |
 | `$D1` | TK_STRS     | STR$      | String  |
@@ -207,7 +207,30 @@ expression. Where it is marked **Statement**, it begins a command.
 `VARPTR` is a function. Using `VARPTR` in statement position is reported
 as an UNKNOWN STATEMENT error.
 
-## A.6 Hardware-extension tokens (`$E2`-`$FF`)
+## A.6 Extended tokens (`$92`, subtoken)
+
+`TK_EXT` is followed by one subtoken byte. Subtokens `$0B`-`$7F`
+are reserved for future IE64 BASIC extensions; `$80`-`$FF` are
+invalid in this token stream.
+
+| Subtoken | Name         | Keyword  | Kind      |
+|----------|--------------|----------|-----------|
+| `$00`    | EXT_TRON     | TRON     | Statement |
+| `$01`    | EXT_TROFF    | TROFF    | Statement |
+| `$02`    | EXT_MEMALLOC | MEMALLOC | Function  |
+| `$03`    | EXT_POKE8    | POKE8    | Statement |
+| `$04`    | EXT_POKE16   | POKE16   | Statement |
+| `$05`    | EXT_POKE32   | POKE32   | Statement |
+| `$06`    | EXT_POKE64   | POKE64   | Statement |
+| `$07`    | EXT_PEEK8    | PEEK8    | Function  |
+| `$08`    | EXT_PEEK16   | PEEK16   | Function  |
+| `$09`    | EXT_PEEK32   | PEEK32   | Function  |
+| `$0A`    | EXT_PEEK64   | PEEK64   | Function  |
+
+`POKE` and `PEEK` remain one-byte aliases for byte-width `POKE8`
+and `PEEK8`.
+
+## A.7 Hardware-extension tokens (`$E2`-`$FF`)
 
 The IE-specific commands live here. They begin a statement; the bytes
 that follow are arguments. See the chapters listed in the right-hand
@@ -246,7 +269,7 @@ column for the syntax of each one.
 | `$FE` | TK_TRIANGLE    | TRIANGLE   | 9  |
 | `$FF` | TK_TEXTURE     | TEXTURE    | 9  |
 
-## A.7 What the tokeniser does with words it does not know
+## A.8 What the tokeniser does with words it does not know
 
 Any word that is not in the table above is left as literal characters.
 The body of a quoted string is always copied byte-for-byte. The body of

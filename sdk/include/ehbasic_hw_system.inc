@@ -43,8 +43,11 @@ skip_alpha:
 hw_wait:
     jsr     exec_skip_spaces
     jsr     expr_eval
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .wait_addr_i64
     jsr     fp_int
     jsr     fp_fix
+.wait_addr_i64:
     move.q  r22, r8              ; R22 = address
     ; Parse comma + mask
     jsr     exec_skip_spaces
@@ -54,8 +57,11 @@ hw_wait:
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
     jsr     expr_eval
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .wait_mask_i64
     jsr     fp_int
     jsr     fp_fix
+.wait_mask_i64:
     move.q  r23, r8              ; R23 = mask
     ; Check for optional xor argument
     move.q  r24, r0              ; default xor = 0
@@ -88,13 +94,13 @@ hw_wait:
 ; ============================================================================
 ; hw_copper - COPPER LIST/WAIT/MOVE/END/ON/OFF
 ; ============================================================================
-; COPPER LIST addr    → set COPPER_PTR
+; COPPER LIST [addr]  → set COPPER_PTR, allocating a MEMALLOC list if omitted
 ; COPPER ON / OFF     → set/clear COPPER_CTRL bit 0
 ; COPPER WAIT scan    → (0<<30)|(scan<<12), 4 bytes
 ; COPPER MOVE addr,val→ SETBASE(addr) + MOVE(regIdx=0) + DATA(val), 12 bytes
 ; COPPER END          → 0xC0000000, 4 bytes
 ;
-; Copper build pointer stored at state + 0x50
+; Copper build pointer stored at state + ST_COPPER_BUILD
 
 hw_copper:
     jsr     exec_skip_spaces
@@ -150,40 +156,58 @@ hw_copper:
     add.q   r17, r17, #1
     jsr     skip_alpha
     jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    beqz    r1, .cop_list_alloc
+    move.q  r2, #0x3A            ; ':'
+    beq     r1, r2, .cop_list_alloc
     jsr     expr_eval
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .cop_list_set
     jsr     fp_int
     jsr     fp_fix
+    bra     .cop_list_set
+.cop_list_alloc:
+    move.q  r22, #4096
+    move.q  r23, #4
+    jsr     basic_memalloc_public
+.cop_list_set:
     ; Set COPPER_PTR
     la      r1, COPPER_PTR
     store.l r8, (r1)
-    ; Also save as build pointer at state+0x50
-    add.q   r1, r16, #0x50
-    store.l r8, (r1)
+    ; Also save as build pointer.
+    add.q   r1, r16, #ST_COPPER_BUILD
+    store.q r8, (r1)
     rts
 .cop_wait:
     add.q   r17, r17, #1
     jsr     skip_alpha
     jsr     exec_skip_spaces
     jsr     expr_eval
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .cop_wait_have_scan
     jsr     fp_int
     jsr     fp_fix
+.cop_wait_have_scan:
     ; Build WAIT opcode: (0<<30) | (scanline << 12)
     lsl.l   r1, r8, #12
     ; Write at build pointer
-    add.q   r3, r16, #0x50
-    load.l  r4, (r3)
+    add.q   r3, r16, #ST_COPPER_BUILD
+    load.q  r4, (r3)
     store.l r1, (r4)
     ; Advance build pointer by 4
     add.q   r4, r4, #4
-    store.l r4, (r3)
+    store.q r4, (r3)
     rts
 .cop_move:
     add.q   r17, r17, #1
     jsr     skip_alpha
     jsr     exec_skip_spaces
     jsr     expr_eval
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .cop_move_have_addr
     jsr     fp_int
     jsr     fp_fix
+.cop_move_have_addr:
     move.q  r22, r8              ; R22 = absolute address
     jsr     exec_skip_spaces
     load.b  r1, (r17)
@@ -192,8 +216,11 @@ hw_copper:
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
     jsr     expr_eval
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .cop_move_have_value
     jsr     fp_int
     jsr     fp_fix
+.cop_move_have_value:
     move.q  r23, r8              ; R23 = value
 
     ; Guard: addr < 0xA0000 → ?FC ERROR
@@ -203,8 +230,8 @@ hw_copper:
     ; Emit SETBASE: 0x80000000 | (addr >> 2)
     lsr.l   r1, r22, #2
     or.l    r1, r1, #0x80000000
-    add.q   r3, r16, #0x50
-    load.l  r4, (r3)
+    add.q   r3, r16, #ST_COPPER_BUILD
+    load.q  r4, (r3)
     store.l r1, (r4)
     add.q   r4, r4, #4
 
@@ -217,7 +244,7 @@ hw_copper:
     store.l r23, (r4)
     add.q   r4, r4, #4
 
-    store.l r4, (r3)            ; update build pointer (+12)
+    store.q r4, (r3)            ; update build pointer (+12)
     rts
 
 .cop_move_err:
@@ -229,12 +256,12 @@ hw_copper:
     add.q   r17, r17, #1
     jsr     skip_alpha
     ; Write end opcode: 0xC0000000 (opcode 3 = END)
-    add.q   r3, r16, #0x50
-    load.l  r4, (r3)
+    add.q   r3, r16, #ST_COPPER_BUILD
+    load.q  r4, (r3)
     move.l  r1, #0xC0000000
     store.l r1, (r4)
     add.q   r4, r4, #4
-    store.l r4, (r3)
+    store.q r4, (r3)
     rts
 .cop_done:
     rts

@@ -101,6 +101,13 @@ const (
 	opDcvtfi   = 0x8E
 	opFcvtsd   = 0x8F
 	opFcvtds   = 0x90
+	opDsin     = 0x91
+	opDcos     = 0x92
+	opDtan     = 0x93
+	opDatan    = 0x94
+	opDlog     = 0x95
+	opDexp     = 0x96
+	opDpow     = 0x97
 	opNop      = 0xE0
 	opHalt     = 0xE1
 	opSei      = 0xE2
@@ -302,6 +309,7 @@ var mnemonicSet = map[string]struct{}{
 	"fmovsr": {}, "fmovcr": {}, "fmovsc": {}, "fmovcc": {},
 	"dmov": {}, "dload": {}, "dstore": {}, "dadd": {}, "dsub": {}, "dmul": {}, "ddiv": {}, "dmod": {},
 	"dabs": {}, "dneg": {}, "dsqrt": {}, "dint": {}, "dcmp": {}, "dcvtif": {}, "dcvtfi": {}, "fcvtsd": {}, "fcvtds": {},
+	"dsin": {}, "dcos": {}, "dtan": {}, "datan": {}, "dlog": {}, "dexp": {}, "dpow": {},
 	"nop": {}, "halt": {}, "sei": {}, "cli": {}, "rti": {}, "wait": {}, "mtcr": {}, "mfcr": {}, "eret": {},
 	"tlbflush": {}, "tlbinval": {}, "syscall": {}, "smode": {}, "suaen": {}, "suadis": {},
 	"cas": {}, "xchg": {}, "faa": {}, "fand": {}, "for": {}, "fxor": {},
@@ -570,6 +578,20 @@ func (a oneLineAssembler) assembleFPU(base, mnemonic string, operands []string) 
 		return a.asmFCVTSD(operands)
 	case "fcvtds":
 		return a.asmFCVTDS(operands)
+	case "dsin":
+		return a.asmFP2Even(opDsin, operands, true, true)
+	case "dcos":
+		return a.asmFP2Even(opDcos, operands, true, true)
+	case "dtan":
+		return a.asmFP2Even(opDtan, operands, true, true)
+	case "datan":
+		return a.asmFP2Even(opDatan, operands, true, true)
+	case "dlog":
+		return a.asmFP2Even(opDlog, operands, true, true)
+	case "dexp":
+		return a.asmFP2Even(opDexp, operands, true, true)
+	case "dpow":
+		return a.asmFP3Even(opDpow, operands)
 	default:
 		return nil, fmt.Errorf("unknown instruction: %s", base)
 	}

@@ -37,12 +37,8 @@ chapter give the full story; this appendix is the cheat sheet.
 | User stack (`R31`) | grows down from BASIC's per-program stack region. |
 | Call ABI           | Arguments `R8`-`R15`; result `R8`; caller-saved `R1`-`R7`; callee-saved `R16`-`R30`; `R0 = 0`; `R31 = SP`. |
 | FPU regs           | `F0`-`F15`; FP32 values, with double operations using register pairs. `F0`-`F7` are argument / result registers by convention. |
-| BASIC text         | `$023000`-`$04FFFF` (`BASIC_PROG_START`-`BASIC_PROG_LIMIT - 1`). |
-| Simple vars        | `$050000`-`$057FFF`. |
-| String vars        | `$058000`-`$05FFFF`. |
-| Arrays             | `$060000`-`$08BFFF`. |
-| String temps       | `$08C000`-`$08FFFF`. |
-| GOSUB / FOR stack  | `$090000`-`$096FFF`. |
+| BASIC text / variables | Dynamic IE64 BASIC arena, discovered through BASIC state pointers. |
+| BASIC stack       | Dynamic IE64 BASIC reservation near the top of the low32 resident window, capped below `$10000000`. |
 
 ## H.2 IE32
 

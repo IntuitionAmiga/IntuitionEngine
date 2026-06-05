@@ -2,14 +2,13 @@
 ;
 ; String expression evaluator and string functions for EhBASIC.
 ;
-; Strings are stored as null-terminated bytes in the string heap
-; (BASIC_STR_TEMP area, 16KB). String variables hold a 4-byte pointer
-; to their string data in the heap.
+; Strings are stored as null-terminated bytes in the common internal BASIC
+; arena. String variables hold a 64-bit pointer to their string data.
 ;
 ; Key routines:
 ;   str_detect    - Non-consuming peek: is current token a string expression?
 ;   str_eval      - Evaluate string expression; returns pointer in R8
-;   str_alloc     - Allocate bytes in string heap
+;   str_alloc     - Allocate bytes in the common internal arena
 ;   str_len       - Length of null-terminated string
 ;   str_copy      - Copy null-terminated string
 ;
@@ -582,18 +581,74 @@ str_primary:
     move.q  r2, #0x28
     bne     r1, r2, .sp_str_err
     add.q   r17, r17, #1         ; skip '('
-    jsr     expr_or              ; R8 = FP32 value
+    jsr     expr_eval            ; R8 = payload, R9 = tag
     ; skip ')'
     load.b  r1, (r17)
     move.q  r2, #0x29
     bne     r1, r2, .sp_str_do
     add.q   r17, r17, #1
 .sp_str_do:
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .sp_str_i64
     push    r14
     push    r15
     jsr     fp_print_to_buf      ; R8 = pointer to heap string
     pop     r15
     pop     r14
+    rts
+.sp_str_i64:
+    move.q  r1, r8               ; magnitude work
+    move.q  r15, r0              ; sign flag
+    bgez    r1, .sp_str_i64_abs_ready
+    move.q  r15, #1
+    not.q   r1, r1
+    add.q   r1, r1, #1
+.sp_str_i64_abs_ready:
+    push    r1
+    push    r15
+    move.q  r8, #21              ; sign plus 20 decimal digits
+    jsr     str_alloc
+    pop     r15
+    pop     r1
+    beqz    r8, .sp_str_oom
+    move.q  r6, r8               ; buffer base
+    add.q   r7, r8, #21          ; one past last char slot
+    store.b r0, (r7)
+    sub.q   r7, r7, #1
+    move.q  r2, #10
+    bnez    r1, .sp_str_i64_back_loop
+    move.q  r5, #0x30
+    store.b r5, (r7)
+    sub.q   r7, r7, #1
+    bra     .sp_str_i64_back_sign
+.sp_str_i64_back_loop:
+    move.q  r3, r1
+    divu.q  r3, r3, r2
+    mulu.q  r4, r3, r2
+    sub.q   r5, r1, r4
+    add.q   r5, r5, #0x30
+    store.b r5, (r7)
+    sub.q   r7, r7, #1
+    move.q  r1, r3
+    bnez    r1, .sp_str_i64_back_loop
+.sp_str_i64_back_sign:
+    beqz    r15, .sp_str_i64_compact
+    move.q  r5, #0x2D
+    store.b r5, (r7)
+    sub.q   r7, r7, #1
+.sp_str_i64_compact:
+    add.q   r7, r7, #1           ; first char
+    move.q  r3, r6               ; destination base
+.sp_str_i64_compact_loop:
+    load.b  r5, (r7)
+    store.b r5, (r3)
+    add.q   r7, r7, #1
+    add.q   r3, r3, #1
+    bnez    r5, .sp_str_i64_compact_loop
+    move.q  r8, r6
+    rts
+.sp_str_oom:
+    move.q  r8, r0
     rts
 .sp_str_err:
     move.q  r8, r0
@@ -606,9 +661,12 @@ str_primary:
     move.q  r2, #0x28
     bne     r1, r2, .sp_hex_err
     add.q   r17, r17, #1         ; skip '('
-    jsr     expr_or              ; R8 = FP32 value
+    jsr     expr_eval            ; R8 = payload, R9 = tag
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .sp_hex_i64_arg
     jsr     fp_int
     jsr     fp_fix               ; R8 = integer value
+.sp_hex_i64_arg:
     ; skip ')'
     move.q  r3, r8               ; R3 = integer to convert
     load.b  r1, (r17)
@@ -626,7 +684,7 @@ str_primary:
     bra     .sp_hex_alloc
 .sp_hex_cnt:
     beqz    r4, .sp_hex_alloc
-    lsr.l   r4, r4, #4
+    lsr.q   r4, r4, #4
     add.q   r5, r5, #1
     bra     .sp_hex_cnt
 .sp_hex_alloc:
@@ -652,7 +710,7 @@ str_primary:
     rts
 .sp_hex_wr:
     beqz    r4, .sp_hex_done
-    and.l   r1, r4, #0x0F       ; low nibble
+    and.q   r1, r4, #0x0F       ; low nibble
     move.q  r2, #10
     blt     r1, r2, .sp_hex_dig
     ; A-F
@@ -664,7 +722,7 @@ str_primary:
 .sp_hex_st:
     store.b r1, (r7)
     sub.q   r7, r7, #1
-    lsr.l   r4, r4, #4
+    lsr.q   r4, r4, #4
     bra     .sp_hex_wr
 .sp_hex_done:
     move.q  r8, r6
@@ -683,9 +741,12 @@ str_primary:
     move.q  r2, #0x28
     bne     r1, r2, .sp_bin_err
     add.q   r17, r17, #1         ; skip '('
-    jsr     expr_or              ; R8 = FP32 value
+    jsr     expr_eval            ; R8 = payload, R9 = tag
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .sp_bin_i64_arg
     jsr     fp_int
     jsr     fp_fix               ; R8 = integer value
+.sp_bin_i64_arg:
     ; skip ')'
     move.q  r3, r8               ; R3 = integer to convert
     load.b  r1, (r17)
@@ -703,7 +764,7 @@ str_primary:
     bra     .sp_bin_alloc
 .sp_bin_cnt:
     beqz    r4, .sp_bin_alloc
-    lsr.l   r4, r4, #1
+    lsr.q   r4, r4, #1
     add.q   r5, r5, #1
     bra     .sp_bin_cnt
 .sp_bin_alloc:
@@ -729,11 +790,11 @@ str_primary:
     rts
 .sp_bin_wr:
     beqz    r4, .sp_bin_done
-    and.l   r1, r4, #1           ; low bit
+    and.q   r1, r4, #1           ; low bit
     add.q   r1, r1, #0x30       ; '0' or '1'
     store.b r1, (r7)
     sub.q   r7, r7, #1
-    lsr.l   r4, r4, #1
+    lsr.q   r4, r4, #1
     bra     .sp_bin_wr
 .sp_bin_done:
     move.q  r8, r6
@@ -825,41 +886,28 @@ str_primary:
     rts
 
 ; ============================================================================
-; str_alloc - Allocate bytes in string heap
+; str_alloc - Allocate bytes in the common internal arena
 ; ============================================================================
 ; Input:  R8  = number of characters needed (null terminator added)
 ; Output: R8  = pointer to allocated buffer
 ; Clobbers: R1-R3
 
 str_alloc:
-    push    r8                    ; requested chars
-    add.q   r1, r16, #ST_HEAP_TOP
-    load.l  r2, (r1)             ; R2 = current heap top
-    add.q   r3, r8, #1           ; bytes including null
-    add.q   r4, r2, r3
-    move.l  r5, #BASIC_STR_END
-    ble     r4, r5, .sa_have_space
-
-    jsr     gc_strings
-    add.q   r1, r16, #ST_HEAP_TOP
-    load.l  r2, (r1)
-    pop     r8
-    push    r8
-    add.q   r3, r8, #1
-    add.q   r4, r2, r3
-    move.l  r5, #BASIC_STR_END
-    bgt     r4, r5, .sa_oom
-
-.sa_have_space:
-    move.q  r3, r2               ; R3 = return value (old top)
-    pop     r8
-    add.q   r8, r8, #1           ; +1 for null terminator
-    add.q   r2, r2, r8           ; advance top
-    store.l r2, (r1)
+    add.q   r1, r8, #1           ; include null terminator
+    add.q   r1, r1, #7
+    and.q   r2, r1, #7
+    sub.q   r1, r1, r2           ; R1 = 8-byte aligned allocation size
+    add.q   r2, r16, #ST_HEAP_BOTTOM
+    load.q  r3, (r2)             ; R3 = current arena cursor
+    add.q   r4, r3, r1           ; R4 = new cursor
+    blt     r4, r3, .sa_oom
+    add.q   r5, r16, #ST_HEAP_TOP
+    load.q  r6, (r5)
+    bgt     r4, r6, .sa_oom
+    store.q r4, (r2)
     move.q  r8, r3
     rts
 .sa_oom:
-    pop     r8
     move.q  r8, #ERR_OOM
     la      r9, err_msg_oom
     jsr     raise_error
@@ -867,66 +915,12 @@ str_alloc:
     rts
 
 ; ============================================================================
-; gc_strings - Compact live string variable values to BASIC_STR_TEMP
+; gc_strings - Retired compatibility hook
 ; ============================================================================
-; Temporary expression roots are copied first so variable compaction cannot
-; overwrite register-held strings that live below older heap roots.
-; Clobbers: R1-R9, R14-R15
+; String data now lives in the monotonic common internal arena until NEW, LOAD,
+; or CLEAR resets owner state. There is no fixed low string heap to compact.
 
 gc_strings:
-    push    r14
-    push    r15
-    la      r14, BASIC_STR_TEMP   ; destination cursor
-
-    la      r2, str_gc_roots
-    la      r1, str_gc_root_count
-    load.l  r3, (r1)
-    move.q  r4, r0
-.gc_temp_loop:
-    bge     r4, r3, .gc_temp_done
-    lsl.l   r5, r4, #2
-    add.q   r6, r2, r5
-    load.l  r5, (r6)
-    beqz    r5, .gc_next_temp
-    move.q  r7, r14              ; new string base
-.gc_temp_copy_loop:
-    load.b  r8, (r5)
-    store.b r8, (r14)
-    add.q   r5, r5, #1
-    add.q   r14, r14, #1
-    bnez    r8, .gc_temp_copy_loop
-    store.l r7, (r6)             ; update temp root slot
-.gc_next_temp:
-    add.q   r4, r4, #1
-    bra     .gc_temp_loop
-.gc_temp_done:
-
-    add.q   r1, r16, #ST_SVAR_START
-    load.l  r2, (r1)             ; scan
-    add.q   r1, r16, #ST_SVAR_END
-    load.l  r3, (r1)             ; end
-.gc_var_loop:
-    bge     r2, r3, .gc_done
-    add.q   r4, r2, #4           ; string pointer slot
-    load.l  r5, (r4)
-    beqz    r5, .gc_next_var
-    move.q  r6, r5               ; source cursor
-    move.q  r7, r14              ; new string base
-.gc_copy_loop:
-    load.b  r8, (r6)
-    store.b r8, (r14)
-    add.q   r6, r6, #1
-    add.q   r14, r14, #1
-    bnez    r8, .gc_copy_loop
-    store.l r7, (r4)             ; update root slot
-.gc_next_var:
-    add.q   r2, r2, #8
-    bra     .gc_var_loop
-.gc_done:
-    add.q   r1, r16, #ST_HEAP_TOP
-    store.l r14, (r1)
-    pop     r15
-    pop     r14
     rts
 
 ; Temporary GC root stack. Callers push string pointers that are live only in

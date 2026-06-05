@@ -154,15 +154,13 @@ func TestEhBASICProfileBounds_FollowsActiveVisibleRAM(t *testing.T) {
 	if uint64(pb.TopOfRAM) != 64*1024*1024 {
 		t.Fatalf("TopOfRAM=0x%X want 0x%X", pb.TopOfRAM, 64*1024*1024)
 	}
-	if pb.Name != "EhBASIC" {
-		t.Fatalf("name=%q want EhBASIC", pb.Name)
+	if pb.Name != "IE64 BASIC" {
+		t.Fatalf("name=%q want IE64 BASIC", pb.Name)
 	}
 }
 
-func TestEhBASICProfileBounds_RejectsBelowLayoutMinimum(t *testing.T) {
-	// EhBASIC's source layout requires at least up to STACK_TOP (0x9F000)
-	// of usable RAM. Anything smaller cannot host the runtime.
-	bus := fakeProfileBus{activeVisible: 0x80000}
+func TestEhBASICProfileBounds_RejectsBelow32MiBMinimum(t *testing.T) {
+	bus := fakeProfileBus{activeVisible: MIN_GUEST_RAM - 1}
 	pb := EhBASICProfileBounds(bus)
 	if pb.Err == nil {
 		t.Fatalf("expected err on undersized RAM")
@@ -170,10 +168,9 @@ func TestEhBASICProfileBounds_RejectsBelowLayoutMinimum(t *testing.T) {
 }
 
 func TestEhBASICLayoutFitsDefaultProfile(t *testing.T) {
-	// The EhBASIC source layout (BASIC_LINE_BUF..STACK_TOP) must fit inside
-	// any active visible RAM at or above MIN_GUEST_RAM. If a future
-	// re-layout pushes STACK_TOP above MIN_GUEST_RAM the test trips and
-	// the source-owned profile contract is wrong.
+	// The fixed BASIC low state anchors must fit inside any active visible RAM
+	// at or above MIN_GUEST_RAM. Dynamic storage and stacks are allocated from
+	// CR_RAM_SIZE_BYTES at runtime.
 	bus := fakeProfileBus{activeVisible: MIN_GUEST_RAM}
 	pb := EhBASICProfileBounds(bus)
 	if pb.Err != nil {
@@ -188,7 +185,7 @@ func TestEnforceEhBASICProfile(t *testing.T) {
 	if err := EnforceEhBASICProfile(fakeProfileBus{activeVisible: MIN_GUEST_RAM}); err != nil {
 		t.Fatalf("EnforceEhBASICProfile returned err on MIN_GUEST_RAM bus: %v", err)
 	}
-	if err := EnforceEhBASICProfile(fakeProfileBus{activeVisible: 0x80000}); err == nil {
+	if err := EnforceEhBASICProfile(fakeProfileBus{activeVisible: MIN_GUEST_RAM - 1}); err == nil {
 		t.Fatalf("EnforceEhBASICProfile accepted under-sized bus")
 	}
 }

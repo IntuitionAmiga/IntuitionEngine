@@ -22,9 +22,7 @@
 exec_do_costart:
     jsr     exec_skip_spaces
     ; Parse cpuType expression
-    jsr     expr_eval
-    jsr     fp_int
-    jsr     fp_fix
+    jsr     coproc_eval_int
     move.q  r22, r8              ; R22 = cpuType
 
     ; Expect comma
@@ -39,8 +37,8 @@ exec_do_costart:
     jsr     str_eval             ; R8 = filename string pointer
     move.q  r10, r8
 
-    ; Copy filename to FILE_NAME_BUF (reuse existing buffer)
-    la      r1, FILE_NAME_BUF
+    ; Copy filename to EHBASIC_PRIV_NAME_BUF (reuse existing buffer)
+    la      r1, EHBASIC_PRIV_NAME_BUF
 .costart_copy:
     load.b  r2, (r10)
     store.b r2, (r1)
@@ -56,7 +54,7 @@ exec_do_costart:
 
     ; Write filename pointer to COPROC_NAME_PTR
     la      r1, COPROC_NAME_PTR
-    la      r2, FILE_NAME_BUF
+    la      r2, EHBASIC_PRIV_NAME_BUF
     store.l r2, (r1)
 
     ; Trigger START command
@@ -81,9 +79,7 @@ exec_do_costart:
 exec_do_costop:
     jsr     exec_skip_spaces
     ; Parse cpuType expression
-    jsr     expr_eval
-    jsr     fp_int
-    jsr     fp_fix
+    jsr     coproc_eval_int
     move.q  r22, r8              ; R22 = cpuType
 
     ; Write cpuType to COPROC_CPU_TYPE
@@ -107,9 +103,7 @@ exec_do_costop:
 exec_do_cowait:
     jsr     exec_skip_spaces
     ; Parse ticket expression
-    jsr     expr_eval
-    jsr     fp_int
-    jsr     fp_fix
+    jsr     coproc_eval_int
     move.q  r22, r8              ; R22 = ticket
 
     ; Write ticket to COPROC_TICKET
@@ -126,9 +120,7 @@ exec_do_cowait:
     bne     r1, r2, .cowait_do
     add.q   r17, r17, #1         ; skip comma
     jsr     exec_skip_spaces
-    jsr     expr_eval
-    jsr     fp_int
-    jsr     fp_fix
+    jsr     coproc_eval_int
     move.q  r23, r8              ; R23 = timeout
 
 .cowait_do:
@@ -147,16 +139,14 @@ exec_do_cowait:
 ; fn_cocall - COCALL(cpuType, op, reqPtr, reqLen, respPtr, respCap)
 ; ============================================================================
 ; Enqueues an async coprocessor request.
-; Returns ticket number as FP32 in R8.
+; Returns ticket number as FP64 in R8.
 
 fn_cocall:
     ; '(' already consumed by caller - skip spaces
     jsr     exec_skip_spaces
 
     ; Arg 1: cpuType
-    jsr     expr_eval
-    jsr     fp_int
-    jsr     fp_fix
+    jsr     coproc_eval_int
     push    r8                   ; save cpuType
     jsr     exec_skip_spaces
     load.b  r1, (r17)
@@ -166,9 +156,7 @@ fn_cocall:
 
     ; Arg 2: op
     jsr     exec_skip_spaces
-    jsr     expr_eval
-    jsr     fp_int
-    jsr     fp_fix
+    jsr     coproc_eval_int
     push    r8                   ; save op
     jsr     exec_skip_spaces
     load.b  r1, (r17)
@@ -178,9 +166,7 @@ fn_cocall:
 
     ; Arg 3: reqPtr
     jsr     exec_skip_spaces
-    jsr     expr_eval
-    jsr     fp_int
-    jsr     fp_fix
+    jsr     coproc_eval_int
     push    r8                   ; save reqPtr
     jsr     exec_skip_spaces
     load.b  r1, (r17)
@@ -190,9 +176,7 @@ fn_cocall:
 
     ; Arg 4: reqLen
     jsr     exec_skip_spaces
-    jsr     expr_eval
-    jsr     fp_int
-    jsr     fp_fix
+    jsr     coproc_eval_int
     push    r8                   ; save reqLen
     jsr     exec_skip_spaces
     load.b  r1, (r17)
@@ -202,9 +186,7 @@ fn_cocall:
 
     ; Arg 5: respPtr
     jsr     exec_skip_spaces
-    jsr     expr_eval
-    jsr     fp_int
-    jsr     fp_fix
+    jsr     coproc_eval_int
     push    r8                   ; save respPtr
     jsr     exec_skip_spaces
     load.b  r1, (r17)
@@ -214,9 +196,7 @@ fn_cocall:
 
     ; Arg 6: respCap
     jsr     exec_skip_spaces
-    jsr     expr_eval
-    jsr     fp_int
-    jsr     fp_fix
+    jsr     coproc_eval_int
     ; R8 = respCap (keep in R8)
     move.q  r25, r8              ; R25 = respCap
 
@@ -226,6 +206,15 @@ fn_cocall:
     pop     r22                  ; R22 = reqPtr
     pop     r21                  ; R21 = op    (R21 = register T=12)
     pop     r20                  ; R20 = cpuType (R20 = register S=11)
+
+    move.q  r8, r22
+    move.q  r9, r23
+    jsr     coproc_validate_public_span
+    beqz    r8, .cocall_fc
+    move.q  r8, r24
+    move.q  r9, r25
+    jsr     coproc_validate_public_span
+    beqz    r8, .cocall_fc
 
     ; Write MMIO registers
     la      r1, COPROC_CPU_TYPE
@@ -260,7 +249,7 @@ fn_cocall:
     la      r1, COPROC_TICKET
     load.l  r8, (r1)
 
-    ; Convert to FP32
+    ; Convert to FP64
     jsr     fp_float
 
     ; Skip closing ')'
@@ -283,6 +272,13 @@ fn_cocall:
 .cocall_fail_ret:
     rts
 
+.cocall_fc:
+    move.q  r8, #ERR_FC
+    la      r9, err_msg_fc
+    jsr     raise_error
+    move.q  r8, r0
+    rts
+
 .cocall_err5:
     pop     r8                   ; discard respPtr
 .cocall_err4:
@@ -296,10 +292,58 @@ fn_cocall:
     move.q  r8, r0               ; return 0
     rts
 
+; coproc_validate_public_span - validate a COCALL request/response span.
+; Input: R8 = pointer, R9 = byte length/capacity.
+; Output: R8 = 1 valid, 0 invalid. Zero-length spans are valid.
+; Clobbers: R1-R4.
+coproc_validate_public_span:
+    beqz    r9, .cvs_ok
+    beqz    r8, .cvs_bad
+    add.q   r1, r8, r9
+    blt     r1, r8, .cvs_bad
+    move.q  r2, #BASIC_MEMALLOC_BASE0
+    move.q  r3, #BASIC_MEMALLOC_END0
+    jsr     .cvs_range
+    bnez    r4, .cvs_ok
+    move.q  r2, #BASIC_MEMALLOC_BASE1
+    move.q  r3, #BASIC_MEMALLOC_END1
+    jsr     .cvs_range
+    bnez    r4, .cvs_ok
+    move.q  r2, #BASIC_MEMALLOC_BASE2
+    move.q  r3, #BASIC_MEMALLOC_END2
+    jsr     .cvs_range
+    bnez    r4, .cvs_ok
+.cvs_bad:
+    move.q  r8, r0
+    rts
+.cvs_ok:
+    move.q  r8, #1
+    rts
+.cvs_range:
+    move.q  r4, r0
+    blt     r8, r2, .cvs_range_ret
+    bgt     r1, r3, .cvs_range_ret
+    move.q  r4, #1
+.cvs_range_ret:
+    rts
+
+; coproc_eval_int - evaluate an integer-compatible expression.
+; Output: R8 = integer payload. I64 expression values are used directly; FP64
+; values are truncated through the existing FP integer path.
+; Clobbers: expression evaluator registers.
+coproc_eval_int:
+    jsr     expr_eval
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .cei_ret
+    jsr     fp_int
+    jsr     fp_fix
+.cei_ret:
+    rts
+
 ; ============================================================================
 ; fn_costatus - COSTATUS(ticket)
 ; ============================================================================
-; Returns the status of a ticket as FP32 in R8.
+; Returns the status of a ticket as FP64 in R8.
 ; 0=pending, 1=running, 2=ok, 3=error, 4=timeout, 5=worker_down
 
 fn_costatus:
@@ -307,9 +351,7 @@ fn_costatus:
     jsr     exec_skip_spaces
 
     ; Parse ticket expression
-    jsr     expr_eval
-    jsr     fp_int
-    jsr     fp_fix
+    jsr     coproc_eval_int
     move.q  r22, r8              ; R22 = ticket
 
     ; Write ticket to COPROC_TICKET
@@ -325,7 +367,7 @@ fn_costatus:
     la      r1, COPROC_TICKET_STATUS
     load.l  r8, (r1)
 
-    ; Convert to FP32
+    ; Convert to FP64
     jsr     fp_float
 
     ; Skip closing ')'
@@ -340,7 +382,7 @@ fn_costatus:
 ; ============================================================================
 ; fn_costats - COSTATS(field)
 ; ============================================================================
-; Reads a coprocessor stats register and returns the value as FP32.
+; Reads a coprocessor stats register and returns the value as FP64.
 ; field: 0=ops dispatched, 1=bytes processed, 2=dispatch overhead (ns),
 ;        3=completed ticket, 4=IRQ enabled
 ;
@@ -356,9 +398,7 @@ fn_costats:
     jsr     exec_skip_spaces
 
     ; Parse field expression
-    jsr     expr_eval
-    jsr     fp_int
-    jsr     fp_fix
+    jsr     coproc_eval_int
     ; R8 = field number
 
     ; Dispatch by field number
@@ -401,7 +441,7 @@ fn_costats:
     load.l  r8, (r1)
 
 .costats_convert:
-    ; Convert to FP32
+    ; Convert to FP64
     jsr     fp_float
 
 .costats_close:

@@ -17,7 +17,7 @@ var sdkAuditDocs = []string{
 	"sdk/docs/architecture.md",
 }
 
-const sdkAuditLastModifiedDate = "2026-05-26"
+const sdkAuditLastModifiedDate = "2026-06-05"
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
 	needle := "*Last modified: " + sdkAuditLastModifiedDate + "*"
@@ -151,6 +151,95 @@ func TestSDKCompanionDocs_BritishEnglishProse(t *testing.T) {
 				if re.MatchString(prose) {
 					t.Fatalf("%s:%d uses American-English prose spelling %q; use %q unless this is source-owned syntax", path, lineNo+1, us, uk)
 				}
+			}
+		}
+	}
+}
+
+func TestSDKDocsBasicFP64StaticGate(t *testing.T) {
+	paths := []string{
+		"sdk/docs/ehbasic_ie64.md",
+		"sdk/docs/include-files.md",
+		"sdk/examples/asm/ehbasic_ie64.asm",
+		"sdk/include/aot_consttab.inc",
+		"sdk/include/aot_runtime_blob.asm",
+		"sdk/include/ie64_fp.inc",
+	}
+	entries, err := os.ReadDir("sdk/include")
+	if err != nil {
+		t.Fatalf("read sdk/include: %v", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "ehbasic_") || !strings.HasSuffix(name, ".inc") {
+			continue
+		}
+		paths = append(paths, "sdk/include/"+name)
+	}
+
+	forbidden := []string{
+		"VAL_F32",
+		"FP32",
+		"single-precision",
+		"single precision",
+		"fcvtif f0",
+		"fmovo r8, f0",
+	}
+	for _, path := range paths {
+		text := readAuditFile(t, path)
+		for _, needle := range forbidden {
+			if strings.Contains(text, needle) {
+				t.Fatalf("%s contains BASIC FP64 migration-forbidden text/opcode %q", path, needle)
+			}
+		}
+	}
+}
+
+func TestSDKDocsIE64FP64TranscendentalsDocumentedAcrossAssemblerSurfaces(t *testing.T) {
+	isaDoc := readAuditFile(t, "sdk/docs/IE64_ISA.md")
+	jitDoc := readAuditFile(t, "sdk/docs/IE64_JIT.md")
+	iemonDoc := readAuditFile(t, "sdk/docs/iemon.md")
+	hostAsm := readAuditFile(t, "assembler/ie64asm.go")
+	monitorAsm := readAuditFile(t, "internal/asm/ie64/assembler.go")
+	basicAsm := readAuditFile(t, "sdk/include/ehbasic_aot.inc")
+
+	opcodes := []struct {
+		mnemonic string
+		lower    string
+		opcode   string
+	}{
+		{"DSIN", "dsin", "0x91"},
+		{"DCOS", "dcos", "0x92"},
+		{"DTAN", "dtan", "0x93"},
+		{"DATAN", "datan", "0x94"},
+		{"DLOG", "dlog", "0x95"},
+		{"DEXP", "dexp", "0x96"},
+		{"DPOW", "dpow", "0x97"},
+	}
+	for _, op := range opcodes {
+		requireISAInstructionHeading(t, "sdk/docs/IE64_ISA.md", isaDoc, op.mnemonic)
+		for _, doc := range []struct {
+			path string
+			text string
+		}{
+			{"sdk/docs/IE64_ISA.md", isaDoc},
+			{"sdk/docs/IE64_JIT.md", jitDoc},
+			{"sdk/docs/iemon.md", iemonDoc},
+		} {
+			if !strings.Contains(doc.text, op.mnemonic) && !strings.Contains(doc.text, op.lower) {
+				t.Fatalf("%s missing FP64 transcendental %s", doc.path, op.mnemonic)
+			}
+		}
+		for _, surface := range []struct {
+			name string
+			text string
+		}{
+			{"host ie64asm", hostAsm},
+			{"IEMon one-instruction assembler", monitorAsm},
+			{"BASIC hosted assembler", basicAsm},
+		} {
+			if !strings.Contains(surface.text, op.lower) || !strings.Contains(surface.text, op.opcode) {
+				t.Fatalf("%s missing %s / %s support", surface.name, op.lower, op.opcode)
 			}
 		}
 	}
@@ -610,7 +699,7 @@ func TestSDKCompanionDocs_IE64TLBINVALDocumentsVAOperand(t *testing.T) {
 	if strings.Contains(doc, "TLBINVAL: [0xEA] [0] [Rs<<3] [0] [0 0 0 0]                     ; Rs = register holding VPN") {
 		t.Fatal("IE64_ISA.md incorrectly documents TLBINVAL Rs as holding a VPN; source takes a VA and shifts it")
 	}
-	entry := markdownSection(t, doc, "#### 119. TLBINVAL - tlbinval Rs", "#### 120. SYSCALL - syscall #imm32")
+	entry := markdownSection(t, doc, "#### 126. TLBINVAL - tlbinval Rs", "#### 127. SYSCALL - syscall #imm32")
 	if !strings.Contains(entry, "The processor treats `Rs` as a virtual address") ||
 		!strings.Contains(entry, "shifting it right by 12") {
 		t.Fatal("IE64_ISA.md does not document TLBINVAL Rs as holding a virtual address")
@@ -1955,7 +2044,7 @@ func TestSDKCompanionDocs_IE64HALTDocumentsStoppedPCBehavior(t *testing.T) {
 			t.Fatalf("cpu_ie64.go HALT source changed; review IE64 HALT documentation: %s", needle)
 		}
 	}
-	entry := markdownSection(t, doc, "#### 110. HALT - halt", "#### 111. SEI - sei")
+	entry := markdownSection(t, doc, "#### 117. HALT - halt", "#### 118. SEI - sei")
 	for _, required := range []string{
 		"`HALT` enters the stopped processor state",
 		"program counter is not advanced",
@@ -2020,12 +2109,12 @@ func TestSDKCompanionDocs_IE64FixedFormInstructionsDocumentReservedBytes(t *test
 		opcode  string
 		want    string
 	}{
-		{"#### 109. NOP - nop", "#### 110. HALT - halt", "0xE0", "Bytes 1-7 are reserved by this instruction and ignored by the processor."},
-		{"#### 110. HALT - halt", "#### 111. SEI - sei", "0xE1", "Bytes 1-7 are reserved by this instruction and ignored by the processor."},
-		{"#### 111. SEI - sei", "#### 112. CLI - cli", "0xE2", "Bytes 1-7 are reserved by this instruction and ignored by the processor."},
-		{"#### 112. CLI - cli", "#### 113. RTI - rti", "0xE3", "Bytes 1-7 are reserved by this instruction and ignored by the processor."},
-		{"#### 113. RTI - rti", "#### 114. WAIT - wait #usec", "0xE4", "Bytes 1-7 are reserved by this instruction and ignored by the processor."},
-		{"#### 114. WAIT - wait #usec", "### 4.10 MMU, Privilege, and Atomic Instructions", "0xE5", "Bytes 1-3 are reserved by this instruction and ignored by the processor. Bytes 4-7 hold unsigned `imm32`"},
+		{"#### 116. NOP - nop", "#### 117. HALT - halt", "0xE0", "Bytes 1-7 are reserved by this instruction and ignored by the processor."},
+		{"#### 117. HALT - halt", "#### 118. SEI - sei", "0xE1", "Bytes 1-7 are reserved by this instruction and ignored by the processor."},
+		{"#### 118. SEI - sei", "#### 119. CLI - cli", "0xE2", "Bytes 1-7 are reserved by this instruction and ignored by the processor."},
+		{"#### 119. CLI - cli", "#### 120. RTI - rti", "0xE3", "Bytes 1-7 are reserved by this instruction and ignored by the processor."},
+		{"#### 120. RTI - rti", "#### 121. WAIT - wait #usec", "0xE4", "Bytes 1-7 are reserved by this instruction and ignored by the processor."},
+		{"#### 121. WAIT - wait #usec", "### 4.10 MMU, Privilege, and Atomic Instructions", "0xE5", "Bytes 1-3 are reserved by this instruction and ignored by the processor. Bytes 4-7 hold unsigned `imm32`"},
 	} {
 		entry := markdownSection(t, doc, tc.heading, tc.next)
 		want := "Byte 0 holds opcode `" + tc.opcode + "`. " + tc.want
@@ -2060,10 +2149,10 @@ func TestSDKCompanionDocs_IE64StackAndJSRReferenceText(t *testing.T) {
 	if strings.Contains(doc, "absolute subroutine-call form uses opcode `0x50`") {
 		t.Fatal("IE64 JSR summary still calls opcode 0x50 absolute instead of PC-relative")
 	}
-	if !strings.Contains(doc, "#### 108. JSR - `jsr (Rs)` / `jsr disp(Rs)`") {
+	if !strings.Contains(doc, "#### 115. JSR - `jsr (Rs)` / `jsr disp(Rs)`") {
 		t.Fatal("IE64 indirect JSR heading has broken Markdown formatting")
 	}
-	jsrInd := markdownSection(t, doc, "#### 108. JSR - `jsr (Rs)` / `jsr disp(Rs)`", "### 4.9 System")
+	jsrInd := markdownSection(t, doc, "#### 115. JSR - `jsr (Rs)` / `jsr disp(Rs)`", "### 4.9 System")
 	if !strings.Contains(jsrInd, "Byte 1 is reserved by this instruction and ignored by the processor.") {
 		t.Fatal("IE64 indirect JSR entry does not mark byte 1 as reserved/ignored")
 	}
@@ -2080,12 +2169,12 @@ func TestSDKCompanionDocs_IE64StackAndJSRReferenceText(t *testing.T) {
 		next    string
 		access  string
 	}{
-		{"#### 104. JSR - jsr label", "#### 105. RTS - rts", "stack write"},
-		{"#### 105. RTS - rts", "#### 106. PUSH - push Rs", "stack read"},
-		{"#### 106. PUSH - push Rs", "#### 107. POP - pop Rd", "stack write"},
-		{"#### 107. POP - pop Rd", "#### 108. JSR - `jsr (Rs)` / `jsr disp(Rs)`", "stack read"},
-		{"#### 108. JSR - `jsr (Rs)` / `jsr disp(Rs)`", "### 4.9 System", "stack write"},
-		{"#### 113. RTI - rti", "#### 114. WAIT - wait #usec", "stack read"},
+		{"#### 111. JSR - jsr label", "#### 112. RTS - rts", "stack write"},
+		{"#### 112. RTS - rts", "#### 113. PUSH - push Rs", "stack read"},
+		{"#### 113. PUSH - push Rs", "#### 114. POP - pop Rd", "stack write"},
+		{"#### 114. POP - pop Rd", "#### 115. JSR - `jsr (Rs)` / `jsr disp(Rs)`", "stack read"},
+		{"#### 115. JSR - `jsr (Rs)` / `jsr disp(Rs)`", "### 4.9 System", "stack write"},
+		{"#### 120. RTI - rti", "#### 121. WAIT - wait #usec", "stack read"},
 	} {
 		entry := markdownSection(t, doc, tc.heading, tc.next)
 		if !strings.Contains(entry, tc.access+" can trap") {
@@ -2170,7 +2259,7 @@ func TestSDKCompanionDocs_IE64JumpAndLOnlyQuickReferenceSyntax(t *testing.T) {
 			t.Fatalf("IE64 assembler .l-only source changed; review quick reference syntax: %s", needle)
 		}
 	}
-	if !strings.Contains(doc, "#### 103. JMP - `jmp (Rs)` / `jmp disp(Rs)`") {
+	if !strings.Contains(doc, "#### 110. JMP - `jmp (Rs)` / `jmp disp(Rs)`") {
 		t.Fatal("IE64 JMP heading has broken Markdown formatting")
 	}
 	quick := markdownSection(t, doc, "### A.1 Instruction Set Summary", "### A.2 Machine Opcode Encoding Map")
@@ -2265,37 +2354,37 @@ func TestSDKCompanionDocs_IE64MMUPrivilegeInstructionsUseFullSchema(t *testing.T
 		want    []string
 	}{
 		{
-			"#### 115. MTCR - mtcr CRn, Rs",
-			"#### 116. MFCR - mfcr Rd, CRn",
+			"#### 122. MTCR - mtcr CRn, Rs",
+			"#### 123. MFCR - mfcr Rd, CRn",
 			[]string{"**Operation:**", "**Assembler Syntax:**", "**Attributes:**", "**Description:**", "assigned control registers are listed in section 8.1.1", "Supervisor-mode writes to unassigned control-register numbers have no architectural effect.", "**Condition Codes:**", "**Instruction Format:**", "**Instruction Fields:**", "**Exceptions:** User-mode execution raises `FAULT_PRIV` (cause 5). Writing `CR15` (`RAM_SIZE_BYTES`) raises `FAULT_ILLEGAL_INSTRUCTION` (cause 11).", "Encodings `CR16` through `CR31` are reserved; `MTCR` to those encodings is ignored after the privilege check succeeds.", "**Notes:**"},
 		},
 		{
-			"#### 116. MFCR - mfcr Rd, CRn",
-			"#### 117. ERET - eret",
+			"#### 123. MFCR - mfcr Rd, CRn",
+			"#### 124. ERET - eret",
 			[]string{"**Operation:**", "Reading `CR6` is permitted in user mode.", "Byte 2 bits 7-3 hold the control-register number `CRn`", "Supervisor-mode reads of unassigned control-register numbers return zero.", "Encodings `CR16` through `CR31` are reserved; `MFCR` from those encodings returns zero after the privilege check succeeds."},
 		},
 		{
-			"#### 117. ERET - eret",
-			"#### 118. TLBFLUSH - tlbflush",
+			"#### 124. ERET - eret",
+			"#### 125. TLBFLUSH - tlbflush",
 			[]string{"**Operation:** `PC = CR3`; restore the saved privilege and trap-frame state.", "Bytes 1-7 are reserved by this instruction and ignored by the processor.", "User-mode execution raises `FAULT_PRIV` (cause 5)."},
 		},
 		{
-			"#### 119. TLBINVAL - tlbinval Rs",
-			"#### 120. SYSCALL - syscall #imm32",
+			"#### 126. TLBINVAL - tlbinval Rs",
+			"#### 127. SYSCALL - syscall #imm32",
 			[]string{"**Operation:** Invalidate the TLB entry selected by `Rs >> 12`.", "Byte 2 bits 7-3 select source register `Rs`", "`Rs` contains an address within the affected virtual page"},
 		},
 		{
-			"#### 120. SYSCALL - syscall #imm32",
-			"#### 121. SMODE - smode Rd",
+			"#### 127. SYSCALL - syscall #imm32",
+			"#### 128. SMODE - smode Rd",
 			[]string{"**Operation:** `CR1 = imm32`; `CR2 = 6`; `CR3 = PC + 8`; `PC = CR4`.", "Bytes 4-7 hold unsigned `imm32` in little-endian order.", "`SYSCALL` is itself a trap source and records `FAULT_SYSCALL` (cause 6)."},
 		},
 		{
-			"#### 128. SUAEN - suaen",
-			"#### 129. SUADIS - suadis",
+			"#### 135. SUAEN - suaen",
+			"#### 136. SUADIS - suadis",
 			[]string{"**Operation:** `SUA = 1`.", "Bytes 1-7 are reserved by this instruction and ignored by the processor.", "User-mode execution raises `FAULT_PRIV` (cause 5)."},
 		},
 		{
-			"#### 129. SUADIS - suadis",
+			"#### 136. SUADIS - suadis",
 			"",
 			[]string{"**Operation:** `SUA = 0`.", "Clearing an already-clear latch leaves architectural state unchanged.", "User-mode execution raises `FAULT_PRIV` (cause 5)."},
 		},
@@ -3129,12 +3218,12 @@ func TestSDKCompanionDocs_IE64AtomicsUseInstructionEntrySchema(t *testing.T) {
 	doc := readAuditFile(t, "sdk/docs/IE64_ISA.md")
 	section := markdownSection(t, doc, "### 4.10 MMU, Privilege, and Atomic Instructions", "## 5. Architectural Instruction Idioms")
 	for _, heading := range []string{
-		"#### 122. CAS - cas Rd, disp(Rs), Rt",
-		"#### 123. XCHG - xchg Rd, disp(Rs), Rt",
-		"#### 124. FAA - faa Rd, disp(Rs), Rt",
-		"#### 125. FAND - fand Rd, disp(Rs), Rt",
-		"#### 126. FOR - for Rd, disp(Rs), Rt",
-		"#### 127. FXOR - fxor Rd, disp(Rs), Rt",
+		"#### 129. CAS - cas Rd, disp(Rs), Rt",
+		"#### 130. XCHG - xchg Rd, disp(Rs), Rt",
+		"#### 131. FAA - faa Rd, disp(Rs), Rt",
+		"#### 132. FAND - fand Rd, disp(Rs), Rt",
+		"#### 133. FOR - for Rd, disp(Rs), Rt",
+		"#### 134. FXOR - fxor Rd, disp(Rs), Rt",
 	} {
 		entry := markdownSection(t, section, heading, nextAtomicHeading(heading))
 		for _, required := range []string{
@@ -3287,18 +3376,18 @@ func markdownSection(t *testing.T, doc, startHeading, endHeading string) string 
 
 func nextAtomicHeading(heading string) string {
 	switch heading {
-	case "#### 122. CAS - cas Rd, disp(Rs), Rt":
-		return "#### 123. XCHG - xchg Rd, disp(Rs), Rt"
-	case "#### 123. XCHG - xchg Rd, disp(Rs), Rt":
-		return "#### 124. FAA - faa Rd, disp(Rs), Rt"
-	case "#### 124. FAA - faa Rd, disp(Rs), Rt":
-		return "#### 125. FAND - fand Rd, disp(Rs), Rt"
-	case "#### 125. FAND - fand Rd, disp(Rs), Rt":
-		return "#### 126. FOR - for Rd, disp(Rs), Rt"
-	case "#### 126. FOR - for Rd, disp(Rs), Rt":
-		return "#### 127. FXOR - fxor Rd, disp(Rs), Rt"
+	case "#### 129. CAS - cas Rd, disp(Rs), Rt":
+		return "#### 130. XCHG - xchg Rd, disp(Rs), Rt"
+	case "#### 130. XCHG - xchg Rd, disp(Rs), Rt":
+		return "#### 131. FAA - faa Rd, disp(Rs), Rt"
+	case "#### 131. FAA - faa Rd, disp(Rs), Rt":
+		return "#### 132. FAND - fand Rd, disp(Rs), Rt"
+	case "#### 132. FAND - fand Rd, disp(Rs), Rt":
+		return "#### 133. FOR - for Rd, disp(Rs), Rt"
+	case "#### 133. FOR - for Rd, disp(Rs), Rt":
+		return "#### 134. FXOR - fxor Rd, disp(Rs), Rt"
 	default:
-		return "#### 128. SUAEN - suaen"
+		return "#### 135. SUAEN - suaen"
 	}
 }
 

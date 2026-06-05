@@ -24,15 +24,17 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | Range                    | Size  | Purpose |
 |--------------------------|-------|---------|
 | `$000000`-`$0003FF`    | 1 KB  | M68K vector table; x86 IVT; trap vector base for IE64. |
-| `$000400`-`$022FFF`    | ~140 KB | BASIC ROM image, system call shim, monitor stub. |
-| `$023000`-`$04FFFF`    | 180 KB | BASIC program text (`BASIC_PROG_START`-). |
-| `$050000`-`$057FFF`    | 32 KB | BASIC simple variables. |
-| `$058000`-`$05FFFF`    | 32 KB | BASIC string variables. |
-| `$060000`-`$08BFFF`    | 176 KB | BASIC arrays. |
-| `$08C000`-`$08FFFF`    | 16 KB | BASIC string temporaries. |
-| `$090000`-`$096FFF`    | 28 KB | BASIC `GOSUB` / `FOR` stack. |
-| `$097000`-`$09EFFF`    | 32 KB | Free RAM (general user). |
-| `$09F000`-`$09FFFF`    | 4 KB | IE32 stack (`STACK_START`). |
+| `$000400`-`$040FFF`    | ~256 KB | BASIC ROM image, system call shim, monitor stub. |
+| `$041000`-`$041FFF`    | 4 KB  | IE64 BASIC line buffer. |
+| `$042000`-`$042FFF`    | 4 KB  | IE64 BASIC shared state page. |
+| `$043000`-`$06FFFF`    | 180 KB | IE64 BASIC standalone runtime blob area and legacy program-text fallback. |
+| `$600000`-`$6EFFFF`  | 960 KB | IE64 BASIC reserved low32 string export window. |
+| `$700000`-`$77FFFF`  | 512 KB | IE64 BASIC public `MEMALLOC` range 2. |
+| `$780000`-`$791FFF`  | 72 KB | IE64 BASIC AOT-owned low32 scratch gap, excluded from `MEMALLOC`. |
+| `$792000`-`$7FFFFF`  | 440 KB | IE64 BASIC public `MEMALLOC` range 1. |
+| `$820000`-`$FFFFFF`  | 8064 KB | IE64 BASIC public `MEMALLOC` range 0. |
+| `$1000000` upward     | dynamic | IE64 BASIC internal arena for programme text and pinned owner records in the low32 fallback layout. |
+| top of the low32 BASIC resident window | dynamic | IE64 BASIC hardware stack, guard page, and dynamic control-flow stack. The reservation is capped below `$10000000` even when active RAM is larger. |
 
 ## J.2 PC-compatible VRAM apertures
 
@@ -47,7 +49,7 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | Range                  | Size  | Purpose |
 |------------------------|-------|---------|
 | `$0C0000`-`$0CFFFF`  | 64 KB | Free RAM (general user). |
-| `$0D0000`-`$0DFFFF`  | 64 KB | Voodoo texture RAM. |
+| `$0D0000`-`$0DFFFF`  | 64 KB | Voodoo texture RAM aperture. IE64 BASIC no longer uses this as its fixed stack. |
 | `$0E0000`-`$0EFFFF`  | 64 KB | Free RAM (general user). |
 
 ## J.4 The MMIO region (`$F0000`-`$FFFFF`)

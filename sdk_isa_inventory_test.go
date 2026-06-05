@@ -416,6 +416,13 @@ func sdkIE64FPUSideEffectFacts(t *testing.T, cpuSource, fpuSource string) []sdkI
 		{"OP_DNEG", "DNEG", "setConditionCodesBits64", false, false, false, "writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read"},
 		{"OP_DSQRT", "DSQRT", "setConditionCodesBits64", false, false, true, "writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read"},
 		{"OP_DINT", "DINT", "setConditionCodesBits64", false, true, false, "reads FPCR rounding bits, writes FPSR condition-code bits from the rounded result, and does not set FPSR sticky exception flags"},
+		{"OP_DSIN", "DSIN", "setConditionCodesBits64", false, false, false, "writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read"},
+		{"OP_DCOS", "DCOS", "setConditionCodesBits64", false, false, false, "writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read"},
+		{"OP_DTAN", "DTAN", "setConditionCodesBits64", false, false, false, "writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read"},
+		{"OP_DATAN", "DATAN", "setConditionCodesBits64", false, false, false, "writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read"},
+		{"OP_DLOG", "DLOG", "setConditionCodesBits64", false, false, true, "writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read"},
+		{"OP_DEXP", "DEXP", "setConditionCodesBits64", false, false, true, "writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read"},
+		{"OP_DPOW", "DPOW", "setConditionCodesBits64", false, false, true, "writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read"},
 	}
 
 	var facts []sdkISAFact

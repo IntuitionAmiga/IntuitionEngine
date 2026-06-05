@@ -149,6 +149,74 @@ func TestVideoMode1920x1080_RGBA32HighFBBase(t *testing.T) {
 	}
 }
 
+func TestVideoChip_RasterBandWritesRGBA32HighFBBase(t *testing.T) {
+	video, bus := newOverdriveVideoTestRig(t)
+	bus.Write32(VIDEO_CTRL, 1)
+	bus.Write32(VIDEO_MODE, MODE_640x480)
+	bus.Write32(VIDEO_COLOR_MODE, 0)
+	bus.Write32(VIDEO_FB_BASE, overdriveRGBAFront)
+
+	bus.Write32(VIDEO_RASTER_Y, 7)
+	bus.Write32(VIDEO_RASTER_HEIGHT, 1)
+	bus.Write32(VIDEO_RASTER_COLOR, 0x11223344)
+	bus.Write32(VIDEO_RASTER_CTRL, rasterCtrlStart)
+
+	mode := VideoModes[MODE_640x480]
+	frame := video.FinishFrame()
+	if len(frame) != mode.totalSize {
+		t.Fatalf("FinishFrame size got %d want %d", len(frame), mode.totalSize)
+	}
+	assertBytesAt(t, frame, 7*mode.bytesPerRow, []byte{0x44, 0x33, 0x22, 0x11})
+	assertBytesAt(t, frame, 7*mode.bytesPerRow+(mode.width-1)*BYTES_PER_PIXEL, []byte{0x44, 0x33, 0x22, 0x11})
+	assertBytesAt(t, frame, 6*mode.bytesPerRow, []byte{0x00, 0x00, 0x00, 0x00})
+}
+
+func TestVideoChip_ScanlineCopperDoesNotOverlayRGBA32HighFBBase(t *testing.T) {
+	video, bus := newOverdriveVideoTestRig(t)
+	bus.Write32(VIDEO_CTRL, 1)
+	bus.Write32(VIDEO_MODE, MODE_640x480)
+	bus.Write32(VIDEO_COLOR_MODE, 0)
+	bus.Write32(VIDEO_FB_BASE, overdriveRGBAFront)
+
+	mode := VideoModes[MODE_640x480]
+	pixelOffset := overdriveRGBAFront + uint32(7*mode.bytesPerRow)
+	bus.Write32(pixelOffset, 0xAABBCCDD)
+	video.copperManagedByCompositor = true
+	bus.Write32(VIDEO_RASTER_Y, 7)
+	bus.Write32(VIDEO_RASTER_HEIGHT, 1)
+	bus.Write32(VIDEO_RASTER_COLOR, 0x11223344)
+	bus.Write32(VIDEO_RASTER_CTRL, rasterCtrlStart)
+
+	if got := bus.Read32(pixelOffset); got != 0xAABBCCDD {
+		t.Fatalf("scanline-managed raster overlaid high RGBA fbBase: got 0x%08X", got)
+	}
+	frame := video.FinishFrame()
+	assertBytesAt(t, frame, 7*mode.bytesPerRow, []byte{0xDD, 0xCC, 0xBB, 0xAA})
+}
+
+func TestVideoChip_RasterBandWritesRGBA32DirectVRAMWithFBBase(t *testing.T) {
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	mode := VideoModes[MODE_640x480]
+	direct := make([]byte, mode.totalSize)
+	video.SetDirectVRAM(direct)
+
+	video.HandleWrite(VIDEO_CTRL, 1)
+	video.HandleWrite(VIDEO_MODE, MODE_640x480)
+	video.HandleWrite(VIDEO_COLOR_MODE, 0)
+	video.HandleWrite(VIDEO_FB_BASE, VRAM_START)
+	video.HandleWrite(VIDEO_RASTER_Y, 5)
+	video.HandleWrite(VIDEO_RASTER_HEIGHT, 1)
+	video.HandleWrite(VIDEO_RASTER_COLOR, 0x55667788)
+	video.HandleWrite(VIDEO_RASTER_CTRL, rasterCtrlStart)
+
+	assertBytesAt(t, direct, 5*mode.bytesPerRow, []byte{0x88, 0x77, 0x66, 0x55})
+	assertBytesAt(t, direct, 5*mode.bytesPerRow+(mode.width-1)*BYTES_PER_PIXEL, []byte{0x88, 0x77, 0x66, 0x55})
+	assertBytesAt(t, direct, 4*mode.bytesPerRow, []byte{0x00, 0x00, 0x00, 0x00})
+}
+
 func TestVideoMode1920x1080_RGBA32RejectsImplicitLegacyFramebuffer(t *testing.T) {
 	video, bus := newOverdriveVideoTestRig(t)
 	bus.Write32(VIDEO_CTRL, 1)

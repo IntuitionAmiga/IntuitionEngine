@@ -47,6 +47,8 @@ var monDocumentedOpcodes = []monRow{
 	{"OP_DMOD", 0x87, OP_DMOD, "dmod"}, {"OP_DABS", 0x88, OP_DABS, "dabs"}, {"OP_DNEG", 0x89, OP_DNEG, "dneg"}, {"OP_DSQRT", 0x8A, OP_DSQRT, "dsqrt"},
 	{"OP_DINT", 0x8B, OP_DINT, "dint"}, {"OP_DCMP", 0x8C, OP_DCMP, "dcmp"}, {"OP_DCVTIF", 0x8D, OP_DCVTIF, "dcvtif"}, {"OP_DCVTFI", 0x8E, OP_DCVTFI, "dcvtfi"},
 	{"OP_FCVTSD", 0x8F, OP_FCVTSD, "fcvtsd"}, {"OP_FCVTDS", 0x90, OP_FCVTDS, "fcvtds"},
+	{"OP_DSIN", 0x91, OP_DSIN, "dsin"}, {"OP_DCOS", 0x92, OP_DCOS, "dcos"}, {"OP_DTAN", 0x93, OP_DTAN, "dtan"}, {"OP_DATAN", 0x94, OP_DATAN, "datan"},
+	{"OP_DLOG", 0x95, OP_DLOG, "dlog"}, {"OP_DEXP", 0x96, OP_DEXP, "dexp"}, {"OP_DPOW", 0x97, OP_DPOW, "dpow"},
 	{"OP_NOP64", 0xE0, OP_NOP64, "nop"}, {"OP_HALT64", 0xE1, OP_HALT64, "halt"}, {"OP_SEI64", 0xE2, OP_SEI64, "sei"}, {"OP_CLI64", 0xE3, OP_CLI64, "cli"},
 	{"OP_RTI64", 0xE4, OP_RTI64, "rti"}, {"OP_WAIT64", 0xE5, OP_WAIT64, "wait"}, {"OP_MTCR", 0xE6, OP_MTCR, "mtcr"}, {"OP_MFCR", 0xE7, OP_MFCR, "mfcr"},
 	{"OP_ERET", 0xE8, OP_ERET, "eret"}, {"OP_TLBFLUSH", 0xE9, OP_TLBFLUSH, "tlbflush"}, {"OP_TLBINVAL", 0xEA, OP_TLBINVAL, "tlbinval"}, {"OP_SYSCALL", 0xEB, OP_SYSCALL, "syscall"},
@@ -173,7 +175,7 @@ func debugInstrForOpcode(op byte) []byte {
 		return debugIE64Instr(op, 1, 0, 0, 0, 0, 0)
 	case op >= OP_FMOV && op <= OP_FMOVCC:
 		return debugFPUInstrForOpcode(op)
-	case op >= OP_DMOV && op <= OP_FCVTDS:
+	case op >= OP_DMOV && op <= OP_DPOW:
 		return debugFPUInstrForOpcode(op)
 	case op >= OP_CAS && op <= OP_FXOR:
 		return debugIE64Instr(op, 2, 0, 0, 1, 3, 0)
@@ -187,7 +189,7 @@ func debugFPUInstrForOpcode(op byte) []byte {
 	case OP_FLOAD, OP_FSTORE, OP_DLOAD, OP_DSTORE:
 		return debugIE64Instr(op, 1, 0, 0, 2, 0, 4)
 	case OP_FADD, OP_FSUB, OP_FMUL, OP_FDIV, OP_FMOD, OP_FPOW,
-		OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD:
+		OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD, OP_DPOW:
 		return debugIE64Instr(op, 1, 0, 0, 2, 3, 0)
 	case OP_FCMP, OP_DCMP:
 		return debugIE64Instr(op, 1, 0, 0, 2, 3, 0)

@@ -1,50 +1,41 @@
-# EhBASIC IE64 Token Map
+# IE64 BASIC Token Map
 
 This ledger records the current one-byte token space used by the IE64 EhBASIC
 port and the migration choice for planned parser fixes.
 
 ## Findings
 
-The token space from `0x80` through `0xFF` is fully assigned. There are no free
-direct-token slots for `<=`, `>=`, or `<>`. `ELSE` now uses a repurposed
-dead slot.
+The token space now uses `TK_EXT` (`0x92`) followed by a subtoken for IE64 BASIC
+extensions that no longer fit cleanly in the historical one-byte map.
 
 `0x80` through `0xE1` are the original EhBASIC-compatible tokens. `0xE2`
-through `0xFF` are hardware extension tokens. `0xFF` is already assigned to
-`TK_TEXTURE`, so a single-byte prefix escape cannot be introduced without
-changing the token stream format.
+through `0xFF` are hardware extension tokens retained for compatibility where
+they already exist.
 
 Current aliases and problematic bindings:
 
 | Source | Token | Notes |
 | --- | --- | --- |
 | `ELSE` | `TK_ELSE` (`0xAB`) | Repurposes the previously unimplemented `SPC` token slot. |
-| `TROFF` | `TK_DEF` (`0x97`) | Kept as a legacy tokenizer alias; the `DEF` handler treats bare `TK_DEF` without `FN` as `TROFF`. |
+| `TRON` | `TK_EXT`, `EXT_TRON` | Extended trace-on token. |
+| `TROFF` | `TK_EXT`, `EXT_TROFF` | Extended trace-off token. |
 | `BLOAD` | `TK_WIDTH` (`0xA3`) | Reuses `WIDTH`; no distinct BLOAD statement token. |
 | `DIR` | none | Immediate REPL command only; avoids consuming or renumbering the full one-byte token space. |
 | `WEND` | `TK_UNTIL` (`0xAF`) | Existing implementation treats this as a loop terminator alias. |
-| `TRON` | `TK_NULL` (`0x92`) | Existing implementation treats this as trace-on. |
 | `HOST` | none | Not tokenized. Recognized as a raw statement in `exec_line` using the same word-boundary technique as `COSTART` / `COSTOP` / `COWAIT`. A previous draft assigned `HOST` the same byte (`0xDE`) as `TK_VPTR`, which collided with `VARPTR` in expression context; that draft has been retired. |
 | `VARPTR` | `TK_VPTR` (`0xDE`) | Function token. Sole owner of `0xDE`. If `VARPTR` is used in statement position the dispatcher routes it to `exec_do_unknown` (it has no statement semantics). |
 
 ## Chosen Scheme
 
-Use the raw-lex composite operator scheme for numeric comparison operators:
+Use extended tokens for IE64 BASIC extensions:
 
 | Source | Tokenized bytes |
 | --- | --- |
-| `<` | `TK_LT` |
-| `>` | `TK_GT` |
-| `<=` | `TK_LT`, raw `=` |
-| `>=` | `TK_GT`, raw `=` |
-| `<>` | `TK_LT`, raw `>` |
-
-This preserves the existing `TK_LT` and `TK_GT` token IDs and avoids spending
-new token slots for comparison operators.
-
-For `ELSE`, the token audit found `SPC` was tokenized but not implemented by the
-executor or expression evaluator. The port repurposes `0xAB` as `TK_ELSE`, so
-`THEN` and `ELSE` are no longer ambiguous in the statement stream.
+| `TRON` | `TK_EXT`, `EXT_TRON` |
+| `TROFF` | `TK_EXT`, `EXT_TROFF` |
+| `MEMALLOC` | `TK_EXT`, `EXT_MEMALLOC` |
+| `POKE8`, `POKE16`, `POKE32`, `POKE64` | `TK_EXT`, width subtoken |
+| `PEEK8`, `PEEK16`, `PEEK32`, `PEEK64` | `TK_EXT`, width subtoken |
 
 ## Migration Notes
 
@@ -78,13 +69,11 @@ token space.
 
 ## R28 Runtime-Error Audit
 
-EhBASIC IE64 uses `R28` as the internal statement-control channel and returns
+IE64 BASIC uses `R28` as the internal statement-control channel and returns
 the final status from `exec_line` in `R8`. Runtime errors now use `R28=3`.
 
-The GOSUB stack is also the structured-control stack. Plain GOSUB frames store a
-return line pointer, and FOR frames store the `"FOR "` marker, variable slot,
-limit, step, and loop line pointers. These frames do not own string heap roots.
-Resetting `ST_GOSUB_SP` to `BASIC_GOSUB_STACK` after `R8=3` therefore clears
+GOSUB frames grow upward from `ST_CTRL_LOW`; FOR, WHILE, and DO frames grow
+downward from `ST_CTRL_HIGH`. Resetting the published control-flow cursors clears
 GOSUB, FOR, WHILE, and DO recovery state together.
 
 Statement sites that can raise errors unwind through their local epilogues
@@ -94,13 +83,7 @@ cleanup labels before `rts`.
 
 ## String-Heap GC Audit
 
-String variables are durable roots in this port: each string variable table
-entry holds the live heap pointer. GOSUB/FOR/WHILE/DO frames do not contain
-string descriptors. String expression temporaries that are live across an
-allocation are pushed onto the temporary GC root stack and are copied before
-durable variable roots, so compaction cannot overwrite register-held strings.
-
-When `str_alloc` cannot fit a new allocation, `gc_strings` compacts all live
-temporary and string variable values back to `BASIC_STR_TEMP`, updates their
-root slots, and then retries the allocation. If the compacted heap still cannot
-fit the request, `raise_error(ERR_OOM)` reports `?OUT OF MEMORY ERROR`.
+String variable records are pinned dynamic owner records. Each record holds the
+internal string pointer plus reserved metadata fields. `SADD` returns the live
+string-data pointer; direct byte writes through that pointer mutate the string
+variable.

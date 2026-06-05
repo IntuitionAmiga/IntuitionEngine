@@ -29,15 +29,15 @@ TK_RETURN     equ 0x8E
 TK_REM        equ 0x8F
 TK_STOP       equ 0x90
 TK_ON         equ 0x91
-TK_NULL       equ 0x92
+TK_EXT        equ 0x92
 TK_INC        equ 0x93
 TK_WAIT       equ 0x94
 TK_LOAD       equ 0x95
 TK_SAVE       equ 0x96
 TK_DEF        equ 0x97
 TK_POKE       equ 0x98
-TK_DOKE       equ 0x99
-TK_LOKE       equ 0x9A
+TK_RESERVED_99 equ 0x99
+TK_RESERVED_9A equ 0x9A
 TK_CALL       equ 0x9B
 TK_DO         equ 0x9C
 TK_LOOP       equ 0x9D
@@ -88,8 +88,8 @@ TK_SIN        equ 0xC9
 TK_TAN        equ 0xCA
 TK_ATN        equ 0xCB
 TK_PEEK       equ 0xCC
-TK_DEEK       equ 0xCD
-TK_LEEK       equ 0xCE
+TK_RESERVED_CD equ 0xCD
+TK_RESERVED_CE equ 0xCE
 TK_SADD       equ 0xCF
 TK_LEN        equ 0xD0
 TK_STRS       equ 0xD1
@@ -113,6 +113,22 @@ TK_VPTR       equ 0xDE
 TK_LEFTS      equ 0xDF
 TK_RIGHTS     equ 0xE0
 TK_MIDS       equ 0xE1
+
+; ============================================================================
+; Extended Token Subtokens (TK_EXT, subtoken)
+; ============================================================================
+
+EXT_TRON      equ 0x00
+EXT_TROFF     equ 0x01
+EXT_MEMALLOC  equ 0x02
+EXT_POKE8     equ 0x03
+EXT_POKE16    equ 0x04
+EXT_POKE32    equ 0x05
+EXT_POKE64    equ 0x06
+EXT_PEEK8     equ 0x07
+EXT_PEEK16    equ 0x08
+EXT_PEEK32    equ 0x09
+EXT_PEEK64    equ 0x0A
 
 ; ============================================================================
 ; Hardware Extension Tokens ($E2-$FF)

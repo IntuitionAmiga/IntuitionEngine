@@ -4,7 +4,7 @@ IE64 64-bit RISC Processor Reference Manual
 
 (c) 2024-2026 Zayn Otley -- GPLv3 or later
 
-*Last modified: 2026-05-26*
+*Last modified: 2026-06-05*
 
 ---
 
@@ -69,8 +69,9 @@ Reset clears all general-purpose registers, then sets both R31 and R30 to
 IE64 instruction gives R30 special semantics.
 
 **Floating Point Registers (F0-F15)**:
-- 16 dedicated 32-bit registers for IEEE-754 single-precision floating point.
-- Accessed via dedicated FPU instructions (single-precision opcodes 0x60-0x7C and double-precision opcodes 0x80-0x90).
+- 16 dedicated 32-bit scalar registers for IEEE-754 single-precision floating point.
+- Double-precision operations use even/odd register pairs (`f0:f1` through `f14:f15`).
+- Accessed via dedicated FPU instructions (single-precision opcodes 0x60-0x7C and double-precision opcodes 0x80-0x97).
 - Initialised to 0.0 on reset.
 
 **Program Counter (PC)**:
@@ -2186,12 +2187,153 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Notes:** None.
 
+#### 94. DSIN - dsin fd, fs
+
+**Operation:** `fd = sin(fs)`.
+
+**Assembler Syntax:** `dsin fd, fs`.
+
+**Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd` and `fs` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read.
+
+**Description:** The processor evaluates `sin(fs)` and writes the double-precision result to `fd`.
+
+**Condition Codes:** See the FPU condition-state description for this instruction class.
+
+**Instruction Format:** Fixed 8-byte instruction; opcode = `0x91`.
+
+**Instruction Fields:** Byte 0 holds opcode `0x91`. Byte 1 bits 7-3 select destination FP register `fd`; byte 1 bits 2-0 are reserved by this instruction and ignored by the processor. Byte 2 bits 7-3 select source FP register `fs`; byte 2 bits 2-0, byte 3, and bytes 4-7 are reserved by this instruction and ignored by the processor.
+
+**Exceptions:** An invalid or odd `fd` or `fs` encoding enters the stopped processor state with PC unchanged.
+
+**Notes:** NaN inputs propagate through the canonical FPU helper and set the NaN condition code without creating a new sticky invalid-operation flag.
+
+#### 95. DCOS - dcos fd, fs
+
+**Operation:** `fd = cos(fs)`.
+
+**Assembler Syntax:** `dcos fd, fs`.
+
+**Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd` and `fs` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read.
+
+**Description:** The processor evaluates `cos(fs)` and writes the double-precision result to `fd`.
+
+**Condition Codes:** See the FPU condition-state description for this instruction class.
+
+**Instruction Format:** Fixed 8-byte instruction; opcode = `0x92`.
+
+**Instruction Fields:** Byte 0 holds opcode `0x92`. Byte 1 bits 7-3 select destination FP register `fd`; byte 1 bits 2-0 are reserved by this instruction and ignored by the processor. Byte 2 bits 7-3 select source FP register `fs`; byte 2 bits 2-0, byte 3, and bytes 4-7 are reserved by this instruction and ignored by the processor.
+
+**Exceptions:** An invalid or odd `fd` or `fs` encoding enters the stopped processor state with PC unchanged.
+
+**Notes:** NaN inputs propagate through the canonical FPU helper and set the NaN condition code without creating a new sticky invalid-operation flag.
+
+#### 96. DTAN - dtan fd, fs
+
+**Operation:** `fd = tan(fs)`.
+
+**Assembler Syntax:** `dtan fd, fs`.
+
+**Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd` and `fs` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read.
+
+**Description:** The processor evaluates `tan(fs)` and writes the double-precision result to `fd`.
+
+**Condition Codes:** See the FPU condition-state description for this instruction class.
+
+**Instruction Format:** Fixed 8-byte instruction; opcode = `0x93`.
+
+**Instruction Fields:** Byte 0 holds opcode `0x93`. Byte 1 bits 7-3 select destination FP register `fd`; byte 1 bits 2-0 are reserved by this instruction and ignored by the processor. Byte 2 bits 7-3 select source FP register `fs`; byte 2 bits 2-0, byte 3, and bytes 4-7 are reserved by this instruction and ignored by the processor.
+
+**Exceptions:** An invalid or odd `fd` or `fs` encoding enters the stopped processor state with PC unchanged.
+
+**Notes:** NaN inputs propagate through the canonical FPU helper and set the NaN condition code without creating a new sticky invalid-operation flag.
+
+#### 97. DATAN - datan fd, fs
+
+**Operation:** `fd = atan(fs)`.
+
+**Assembler Syntax:** `datan fd, fs`.
+
+**Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd` and `fs` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read.
+
+**Description:** The processor evaluates `atan(fs)` and writes the double-precision result to `fd`.
+
+**Condition Codes:** See the FPU condition-state description for this instruction class.
+
+**Instruction Format:** Fixed 8-byte instruction; opcode = `0x94`.
+
+**Instruction Fields:** Byte 0 holds opcode `0x94`. Byte 1 bits 7-3 select destination FP register `fd`; byte 1 bits 2-0 are reserved by this instruction and ignored by the processor. Byte 2 bits 7-3 select source FP register `fs`; byte 2 bits 2-0, byte 3, and bytes 4-7 are reserved by this instruction and ignored by the processor.
+
+**Exceptions:** An invalid or odd `fd` or `fs` encoding enters the stopped processor state with PC unchanged.
+
+**Notes:** NaN inputs propagate through the canonical FPU helper and set the NaN condition code without creating a new sticky invalid-operation flag.
+
+#### 98. DLOG - dlog fd, fs
+
+**Operation:** `fd = ln(fs)`.
+
+**Assembler Syntax:** `dlog fd, fs`.
+
+**Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd` and `fs` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
+
+**Description:** The processor evaluates `ln(fs)` and writes the double-precision result to `fd`. A zero input sets divide-by-zero. A negative non-zero non-NaN input, including negative infinity, sets invalid operation.
+
+**Condition Codes:** See the FPU condition-state description for this instruction class.
+
+**Instruction Format:** Fixed 8-byte instruction; opcode = `0x95`.
+
+**Instruction Fields:** Byte 0 holds opcode `0x95`. Byte 1 bits 7-3 select destination FP register `fd`; byte 1 bits 2-0 are reserved by this instruction and ignored by the processor. Byte 2 bits 7-3 select source FP register `fs`; byte 2 bits 2-0, byte 3, and bytes 4-7 are reserved by this instruction and ignored by the processor.
+
+**Exceptions:** An invalid or odd `fd` or `fs` encoding enters the stopped processor state with PC unchanged.
+
+**Notes:** NaN inputs propagate through the canonical FPU helper and set the NaN condition code without creating a new sticky invalid-operation flag.
+
+#### 99. DEXP - dexp fd, fs
+
+**Operation:** `fd = e^fs`.
+
+**Assembler Syntax:** `dexp fd, fs`.
+
+**Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd` and `fs` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
+
+**Description:** The processor evaluates `e^fs` and writes the double-precision result to `fd`. A finite input that produces infinity sets overflow. A finite non-zero input that produces zero sets underflow.
+
+**Condition Codes:** See the FPU condition-state description for this instruction class.
+
+**Instruction Format:** Fixed 8-byte instruction; opcode = `0x96`.
+
+**Instruction Fields:** Byte 0 holds opcode `0x96`. Byte 1 bits 7-3 select destination FP register `fd`; byte 1 bits 2-0 are reserved by this instruction and ignored by the processor. Byte 2 bits 7-3 select source FP register `fs`; byte 2 bits 2-0, byte 3, and bytes 4-7 are reserved by this instruction and ignored by the processor.
+
+**Exceptions:** An invalid or odd `fd` or `fs` encoding enters the stopped processor state with PC unchanged.
+
+**Notes:** NaN inputs propagate through the canonical FPU helper and set the NaN condition code without creating a new sticky invalid-operation flag.
+
+#### 100. DPOW - dpow fd, fs, ft
+
+**Operation:** `fd = fs^ft`.
+
+**Assembler Syntax:** `dpow fd, fs, ft`.
+
+**Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd`, `fs`, and `ft` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
+
+**Description:** The processor evaluates `fs^ft` and writes the double-precision result to `fd`. Finite inputs that produce infinity set overflow; finite non-zero inputs that produce zero set underflow; non-NaN inputs that produce NaN set invalid operation.
+
+**Condition Codes:** See the FPU condition-state description for this instruction class.
+
+**Instruction Format:** Fixed 8-byte instruction; opcode = `0x97`.
+
+**Instruction Fields:** Byte 0 holds opcode `0x97`. Byte 1 bits 7-3 select destination FP register `fd`; byte 1 bits 2-0 are reserved by this instruction and ignored by the processor. Byte 2 bits 7-3 select source FP register `fs`; byte 3 bits 7-3 select source FP register `ft`. Byte 2 bits 2-0, byte 3 bits 2-0, and bytes 4-7 are reserved by this instruction and ignored by the processor.
+
+**Exceptions:** An invalid or odd `fd`, `fs`, or `ft` encoding enters the stopped processor state with PC unchanged.
+
+**Notes:** NaN inputs propagate through the canonical FPU helper and set the NaN condition code without creating a new sticky invalid-operation flag unless the operation creates NaN from non-NaN inputs.
+
 
 Notes:
 - `dload`/`dstore` always transfer 8 bytes.
 - `dcvtfi` saturates to `INT64_MAX`/`INT64_MIN` on overflow and sets IO.
 - `fcvtsd` requires an even destination. `fcvtds` requires an even source.
 - Double-precision opcodes are unsized; size suffixes are not used.
+- `dsin`, `dcos`, `dtan`, `datan`, `dlog`, `dexp`, and `dpow` are unsized double-precision FP64 opcodes.
 
 ---
 
@@ -2205,7 +2347,7 @@ PC_new = PC_current + signExtend32to64(offset)
 
 If the branch is not taken, PC advances by 8 (one instruction).
 
-#### 94. BRA - bra label
+#### 101. BRA - bra label
 
 **Operation:** `PC = PC + signExtend32to64(imm32)`.
 
@@ -2225,7 +2367,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 95. BEQ - beq Rs, Rt, label
+#### 102. BEQ - beq Rs, Rt, label
 
 **Operation:** `if Rs == Rt then PC = PC + signExtend32to64(imm32) else PC += 8`.
 
@@ -2245,7 +2387,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 96. BNE - bne Rs, Rt, label
+#### 103. BNE - bne Rs, Rt, label
 
 **Operation:** `if Rs != Rt then PC = PC + signExtend32to64(imm32) else PC += 8`.
 
@@ -2265,7 +2407,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 97. BLT - blt Rs, Rt, label
+#### 104. BLT - blt Rs, Rt, label
 
 **Operation:** `if int64(Rs) < int64(Rt) then PC = PC + signExtend32to64(imm32) else PC += 8`.
 
@@ -2285,7 +2427,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 98. BGE - bge Rs, Rt, label
+#### 105. BGE - bge Rs, Rt, label
 
 **Operation:** `if int64(Rs) >= int64(Rt) then PC = PC + signExtend32to64(imm32) else PC += 8`.
 
@@ -2305,7 +2447,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 99. BGT - bgt Rs, Rt, label
+#### 106. BGT - bgt Rs, Rt, label
 
 **Operation:** `if int64(Rs) > int64(Rt) then PC = PC + signExtend32to64(imm32) else PC += 8`.
 
@@ -2325,7 +2467,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 100. BLE - ble Rs, Rt, label
+#### 107. BLE - ble Rs, Rt, label
 
 **Operation:** `if int64(Rs) <= int64(Rt) then PC = PC + signExtend32to64(imm32) else PC += 8`.
 
@@ -2345,7 +2487,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 101. BHI - bhi Rs, Rt, label
+#### 108. BHI - bhi Rs, Rt, label
 
 **Operation:** `if Rs > Rt then PC = PC + signExtend32to64(imm32) else PC += 8`.
 
@@ -2365,7 +2507,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 102. BLS - bls Rs, Rt, label
+#### 109. BLS - bls Rs, Rt, label
 
 **Operation:** `if Rs <= Rt then PC = PC + signExtend32to64(imm32) else PC += 8`.
 
@@ -2385,7 +2527,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 103. JMP - `jmp (Rs)` / `jmp disp(Rs)`
+#### 110. JMP - `jmp (Rs)` / `jmp disp(Rs)`
 
 **Operation:** `PC = Rs + signExtend32to64(imm32)`.
 
@@ -2421,7 +2563,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 ### 4.8 Subroutine / Stack
 
-#### 104. JSR - jsr label
+#### 111. JSR - jsr label
 
 **Operation:** `SP -= 8; mem[SP] = PC + 8; PC = PC + offset`.
 
@@ -2441,7 +2583,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 105. RTS - rts
+#### 112. RTS - rts
 
 **Operation:** `PC = mem[SP]; SP += 8`.
 
@@ -2461,7 +2603,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 106. PUSH - push Rs
+#### 113. PUSH - push Rs
 
 **Operation:** `SP -= 8; mem[SP] = Rs`.
 
@@ -2481,7 +2623,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 107. POP - pop Rd
+#### 114. POP - pop Rd
 
 **Operation:** `Rd = mem[SP]; SP += 8`.
 
@@ -2501,7 +2643,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 108. JSR - `jsr (Rs)` / `jsr disp(Rs)`
+#### 115. JSR - `jsr (Rs)` / `jsr disp(Rs)`
 
 **Operation:** `SP -= 8; mem[SP] = PC + 8; PC = Rs + signExtend(disp)`.
 
@@ -2524,7 +2666,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 ### 4.9 System
 
-#### 109. NOP - nop
+#### 116. NOP - nop
 
 **Operation:** No operation; PC += 8.
 
@@ -2544,7 +2686,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 110. HALT - halt
+#### 117. HALT - halt
 
 **Operation:** Stops execution.
 
@@ -2564,7 +2706,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** `HALT` does not advance `PC`.
 
-#### 111. SEI - sei
+#### 118. SEI - sei
 
 **Operation:** Enable interrupts (set TIMER_CTRL bit 1).
 
@@ -2584,7 +2726,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 112. CLI - cli
+#### 119. CLI - cli
 
 **Operation:** Disable interrupts (clear TIMER_CTRL bit 1).
 
@@ -2604,7 +2746,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 113. RTI - rti
+#### 120. RTI - rti
 
 **Operation:** Return from interrupt.
 
@@ -2624,7 +2766,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** None.
 
-#### 114. WAIT - wait #usec
+#### 121. WAIT - wait #usec
 
 **Operation:** Sleep for `imm32` microseconds; PC += 8.
 
@@ -2646,7 +2788,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 ### 4.10 MMU, Privilege, and Atomic Instructions
 
-#### 115. MTCR - mtcr CRn, Rs
+#### 122. MTCR - mtcr CRn, Rs
 
 **Operation:** `CRn = Rs`.
 
@@ -2666,7 +2808,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** `CR13` (`PREV_MODE`) is read-only by effect and ignores writes. `CR3` (`FAULT_PC`) is writable so a trap handler can redirect the return address before `ERET`. Encodings `CR16` through `CR31` are reserved; `MTCR` to those encodings is ignored after the privilege check succeeds.
 
-#### 116. MFCR - mfcr Rd, CRn
+#### 123. MFCR - mfcr Rd, CRn
 
 **Operation:** `Rd = CRn`.
 
@@ -2686,7 +2828,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** **User-mode exception**: MFCR is normally supervisor-only, but reading CR6 (TP) is permitted in user mode. Reading `CR5` composes the live MMU-enable, supervisor, SKEF, SKAC, and SUA bits. Reading `CR15` returns the active CPU-visible RAM size. Encodings `CR16` through `CR31` are reserved; `MFCR` from those encodings returns zero after the privilege check succeeds.
 
-#### 117. ERET - eret
+#### 124. ERET - eret
 
 **Operation:** `PC = CR3`; restore the saved privilege and trap-frame state.
 
@@ -2706,7 +2848,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** `ERET` does not pop the data stack. The pop described here is the architectural trap-frame stack in section 11.14.
 
-#### 118. TLBFLUSH - tlbflush
+#### 125. TLBFLUSH - tlbflush
 
 **Operation:** Invalidate every TLB entry.
 
@@ -2726,7 +2868,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** Execute `TLBFLUSH` after bulk page-table modifications. `MTCR` writes that change PTBR or MMU enable also invalidate all TLB entries.
 
-#### 119. TLBINVAL - tlbinval Rs
+#### 126. TLBINVAL - tlbinval Rs
 
 **Operation:** Invalidate the TLB entry selected by `Rs >> 12`.
 
@@ -2746,7 +2888,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** `Rs` contains an address within the affected virtual page, not a pre-shifted page number.
 
-#### 120. SYSCALL - syscall #imm32
+#### 127. SYSCALL - syscall #imm32
 
 **Operation:** `CR1 = imm32`; `CR2 = 6`; `CR3 = PC + 8`; `PC = CR4`.
 
@@ -2766,7 +2908,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** `ERET` from a syscall trap resumes at the instruction after `SYSCALL` unless the handler rewrites `CR3`.
 
-#### 121. SMODE - smode Rd
+#### 128. SMODE - smode Rd
 
 **Operation:** `Rd = supervisor ? 1 : 0`.
 
@@ -2786,7 +2928,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** `SMODE` reads the current mode only; privilege changes occur on trap entry and `ERET`.
 
-#### 122. CAS - cas Rd, disp(Rs), Rt
+#### 129. CAS - cas Rd, disp(Rs), Rt
 
 **Operation:** `old = mem64[addr]; if old == Rd then mem64[addr] = Rt; Rd = old`.
 
@@ -2806,7 +2948,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** Use the returned old value in `Rd` to test whether the compare-and-swap succeeded.
 
-#### 123. XCHG - xchg Rd, disp(Rs), Rt
+#### 130. XCHG - xchg Rd, disp(Rs), Rt
 
 **Operation:** `old = mem64[addr]; mem64[addr] = Rt; Rd = old`.
 
@@ -2826,7 +2968,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** No size suffix is defined; the operation is always 64-bit.
 
-#### 124. FAA - faa Rd, disp(Rs), Rt
+#### 131. FAA - faa Rd, disp(Rs), Rt
 
 **Operation:** `old = mem64[addr]; mem64[addr] = old + Rt; Rd = old`.
 
@@ -2846,7 +2988,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** Arithmetic wraps modulo 64 bits.
 
-#### 125. FAND - fand Rd, disp(Rs), Rt
+#### 132. FAND - fand Rd, disp(Rs), Rt
 
 **Operation:** `old = mem64[addr]; mem64[addr] = old & Rt; Rd = old`.
 
@@ -2866,7 +3008,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** No size suffix is defined; the operation is always 64-bit.
 
-#### 126. FOR - for Rd, disp(Rs), Rt
+#### 133. FOR - for Rd, disp(Rs), Rt
 
 **Operation:** `old = mem64[addr]; mem64[addr] = old | Rt; Rd = old`.
 
@@ -2886,7 +3028,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** The mnemonic is `FOR`; it is unrelated to structured-language loop syntax.
 
-#### 127. FXOR - fxor Rd, disp(Rs), Rt
+#### 134. FXOR - fxor Rd, disp(Rs), Rt
 
 **Operation:** `old = mem64[addr]; mem64[addr] = old ^ Rt; Rd = old`.
 
@@ -2906,7 +3048,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** No size suffix is defined; the operation is always 64-bit.
 
-#### 128. SUAEN - suaen
+#### 135. SUAEN - suaen
 
 **Operation:** `SUA = 1`.
 
@@ -2926,7 +3068,7 @@ If the branch is not taken, PC advances by 8 (one instruction).
 
 **Notes:** Use `SUADIS` to close the same supervisor-user-access window.
 
-#### 129. SUADIS - suadis
+#### 136. SUADIS - suadis
 
 **Operation:** `SUA = 0`.
 
@@ -3758,6 +3900,13 @@ is thus redundant but harmless; new handlers should omit it.
 | DCVTFI | FPU64 | `DCVTFI rd, fs` |
 | FCVTSD | FPU64 | `FCVTSD fd, fs` |
 | FCVTDS | FPU64 | `FCVTDS fd, fs` |
+| DSIN | FPU64 | `DSIN fd, fs` |
+| DCOS | FPU64 | `DCOS fd, fs` |
+| DTAN | FPU64 | `DTAN fd, fs` |
+| DATAN | FPU64 | `DATAN fd, fs` |
+| DLOG | FPU64 | `DLOG fd, fs` |
+| DEXP | FPU64 | `DEXP fd, fs` |
+| DPOW | FPU64 | `DPOW fd, fs, ft` |
 | NOP | System | `NOP` |
 | HALT | System | `HALT` |
 | SEI | System | `SEI` |
@@ -3876,6 +4025,13 @@ is thus redundant but harmless; new handlers should omit it.
 | `0x8E` | DCVTFI | FPU64 | rd, fs |
 | `0x8F` | FCVTSD | FPU64 | fd, fs |
 | `0x90` | FCVTDS | FPU64 | fd, fs |
+| `0x91` | DSIN | FPU64 | fd, fs |
+| `0x92` | DCOS | FPU64 | fd, fs |
+| `0x93` | DTAN | FPU64 | fd, fs |
+| `0x94` | DATAN | FPU64 | fd, fs |
+| `0x95` | DLOG | FPU64 | fd, fs |
+| `0x96` | DEXP | FPU64 | fd, fs |
+| `0x97` | DPOW | FPU64 | fd, fs, ft |
 | `0xE0` | NOP | System | (none) |
 | `0xE1` | HALT | System | (none) |
 | `0xE2` | SEI | System | (none) |
@@ -3909,7 +4065,7 @@ is thus redundant but harmless; new handlers should omit it.
 | `$40-$49` | Branches |
 | `$50-$54` | Subroutine / Stack |
 | `$60-$7C` | Floating Point (FPU) |
-| `$80-$90` | Double-precision Floating Point (FPU64) |
+| `$80-$97` | Double-precision Floating Point (FPU64) |
 | `$E0-$E5` | System |
 | `$E6-$EC` | MMU |
 | `$ED-$F2` | Atomic Memory Operations |

@@ -79,7 +79,7 @@ The master audio control register is `AUDIO_CTRL` at `$F0800`.
 Turn audio on before starting raw register examples:
 
 ```basic
-10 POKE &H000F0800,1
+10 POKE32 &H000F0800,1
 ```
 
 The engines still accept register writes while audio is disabled; they
@@ -94,7 +94,7 @@ output:
 
 ```basic
 10 REM FIRST AUDIO SETUP
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 PSG 0,142,12
 40 POKEY 1,96,&HA8
 50 SOUND 2,262,180,1,128
@@ -296,7 +296,7 @@ keeps those listings from becoming five copies of the same explanation.
   its own register format.
 - Global effects apply to the full mix.
 - Media loading is asynchronous at the register level, so check
-  `MEDIA_STATUS` if you drive the media loader with `POKE`.
+  `MEDIA_STATUS` if you drive the media loader with `POKE32`.
 - BASIC `SOUND PLAY` includes a bounded status poll and reports a
   BASIC error if loading reaches the error state.
 

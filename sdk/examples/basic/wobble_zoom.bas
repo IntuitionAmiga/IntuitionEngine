@@ -1,29 +1,29 @@
 1 REM ============================================================================
 2 REM WOBBLE ZOOM DEMO - WOBBLED SPLASH TEXTURE WITH MODE7 ROTOZOOM
-3 REM EhBASIC for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
+3 REM IE64 BASIC for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
 4 REM ============================================================================
 5 REM Run: bin/IntuitionEngine -basic
 6 REM      LOAD "sdk/examples/basic/wobble_zoom.bas"
 7 REM      RUN
 8 REM
-9 REM MEMORY MAP:
-10 REM   0x100000  Front framebuffer (640x480x4)
-11 REM   0x230000  Back framebuffer (640x480x4)
-12 REM   0x360000  Mode7 texture (1024x512x4)
-13 REM   0x600000  Splash source image (640x92x4)
+9 REM MEMORY:
+10 REM   MEMALLOC front framebuffer (640x480x4)
+11 REM   MEMALLOC back framebuffer (640x480x4)
+12 REM   MEMALLOC Mode7 texture (1024x512x4)
+13 REM   MEMALLOC splash source image (640x92x4)
 14 REM ============================================================================
 
 100 REM START MIDI FIRST
 110 SOUND PLAY "sdk/examples/assets/music/enjoythesilence.mid"
-120 PRINT "MEDIA_TYPE=";PEEK(&HF2310)
+120 PRINT "MEDIA_TYPE=";PEEK32(&HF2310)
 
 200 REM HARDWARE SETUP
-210 FB=&H100000:BB=&H230000:TX=&H360000:SR=&H600000
+210 FB=MEMALLOC(1228800):BB=MEMALLOC(1228800):TX=MEMALLOC(2097152):SR=MEMALLOC(235520)
 220 ST=2560:TS=4096:SW=640:SH=92
 230 TW=1024:TH=512:OX=192:OY=210
 240 FP=65536:HW=320:HH=240:CU=512:CV=256
-250 POKE &HF0000,1:POKE &HF0004,0
-260 POKE &HF0080,0
+250 POKE32 &HF0004,0:POKE32 &HF0080,0:POKE32 &HF0084,FB
+260 POKE32 &HF0000,1
 
 300 REM LOAD SPLASH
 310 BLOAD "sdk/examples/assets/splash_640x92.rgba",SR

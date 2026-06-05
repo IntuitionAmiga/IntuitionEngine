@@ -317,9 +317,9 @@ func main() {
 	flagSet.BoolVar(&modeIE32, "ie32", false, "Run IE32 CPU mode")
 	flagSet.BoolVar(&modeIE64, "ie64", false, "Run IE64 CPU mode (64-bit RISC)")
 	flagSet.BoolVar(&modeIOS, "intuitionos", false, "Boot IntuitionOS")
-	flagSet.BoolVar(&modeBasic, "basic", false, "Run EhBASIC IE64 interpreter (embedded image)")
+	flagSet.BoolVar(&modeBasic, "basic", false, "Run IE64 BASIC interpreter (embedded image)")
 	flagSet.BoolVar(&modeTerm, "term", false, "Use console terminal with -basic")
-	flagSet.StringVar(&basicImage, "basic-image", "", "Run EhBASIC IE64 from custom binary path")
+	flagSet.StringVar(&basicImage, "basic-image", "", "Run IE64 BASIC from custom binary path")
 	flagSet.BoolVar(&modeM68K, "m68k", false, "Run M68K CPU mode")
 	flagSet.BoolVar(&modeEmuTOS, "emutos", false, "Run EmuTOS (M68K ROM)")
 	flagSet.StringVar(&emutosImage, "emutos-image", "", "Run EmuTOS from custom ROM image path")
@@ -370,7 +370,7 @@ func main() {
 	flagSet.Usage = func() {
 		flagSet.SetOutput(os.Stdout)
 		fmt.Println("Usage: ./intuition_engine [mode] [options] [filename]")
-		fmt.Println("Default (no mode/filename)  : start EhBASIC IE64.")
+		fmt.Println("Default (no mode/filename)  : start IE64 BASIC.")
 		fmt.Println("Six heterogeneous CPU cores : IE64 RISC(JIT), IE32 RISC, M68020(JIT), x86(JIT), Z80(JIT) and 6502(JIT).")
 		fmt.Println("Six independent video chips : IEVideoChip + SNES Mode7 + Blitter + Copper, VGA, ZX Spectrum ULA, TED Video, Atari ANTIC/GTIA, 3DFX Voodoo.")
 		fmt.Println("Seven discrete audio chips  : IESoundChip, AY/YM/PSG, SID, POKEY, TED Audio, TI SN76489, Paula DMA.")
@@ -1777,7 +1777,7 @@ func main() {
 			fmt.Printf("Starting IntuitionOS (IExec image: %s, SYS: %s)\n", imagePath, intuitionOSResolved.Root)
 		} else if modeBasic {
 			if err := EnforceEhBASICProfile(sysBus); err != nil {
-				fmt.Printf("Error: EhBASIC profile bounds: %v\n", err)
+				fmt.Printf("Error: IE64 BASIC profile bounds: %v\n", err)
 				os.Exit(1)
 			}
 			if basicImage != "" {
@@ -1787,12 +1787,12 @@ func main() {
 				}
 				programBytes, _ = os.ReadFile(basicImage)
 				currentPath = basicImage
-				fmt.Printf("Starting EhBASIC IE64 (custom image: %s)\n", basicImage)
+				fmt.Printf("Starting IE64 BASIC (custom image: %s)\n", basicImage)
 			} else if len(embeddedBasicImage) > 0 {
 				ie64CPU.LoadProgramBytes(embeddedBasicImage)
 				programBytes = append([]byte(nil), embeddedBasicImage...)
 				currentPath = ""
-				fmt.Println("Starting EhBASIC IE64 (embedded image)")
+				fmt.Println("Starting IE64 BASIC (embedded image)")
 			} else {
 				autoPath := resolveDefaultBasicImagePath()
 				if autoPath == "" {
@@ -1806,7 +1806,7 @@ func main() {
 				}
 				programBytes, _ = os.ReadFile(autoPath)
 				currentPath = autoPath
-				fmt.Printf("Starting EhBASIC IE64 (auto image: %s)\n", autoPath)
+				fmt.Printf("Starting IE64 BASIC (auto image: %s)\n", autoPath)
 			}
 			startExecution = true
 		} else if filename != "" {

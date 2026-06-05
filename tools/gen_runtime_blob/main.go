@@ -24,8 +24,8 @@ import (
 
 const (
 	progStart    = 0x001000 // PROG_START
-	aotRTBase    = 0x023000 // AOT_RT_BASE (placement B = BASIC_PROG_START)
-	aotRTLimit   = 0x050000 // AOT_RT_LIMIT (= BASIC_PROG_LIMIT)
+	aotRTBase    = 0x043000 // AOT_RT_BASE
+	aotRTLimit   = 0x070000 // AOT_RT_LIMIT
 	aotRTBlobMax = 0x10000  // AOT_RT_BLOB_MAX: compile-time staging size; hard cap
 	orgPad       = aotRTBase - progStart
 )

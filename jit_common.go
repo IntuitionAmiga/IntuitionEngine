@@ -106,6 +106,7 @@ const (
 	HELPER_JSR     uint32 = 9  // push retAddr (HelperVal); PC = HelperAddr (call target)
 	HELPER_RTS     uint32 = 10 // pop val; PC = val
 	HELPER_JSR_IND uint32 = 11 // push retAddr (HelperVal); PC = HelperAddr (rs + imm32)
+	HELPER_DTRANS  uint32 = 12 // FP64 transcendental; HelperSize carries the IE64 opcode
 )
 
 // JITContext field offsets (must match struct layout above)
@@ -724,7 +725,8 @@ func analyzeBlockRegs(instrs []JITInstr) blockRegs {
 			hasFPU = true
 			read |= 1 << ji.rs
 		case OP_DMOV, OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT, OP_FCVTSD, OP_FCVTDS,
-			OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD:
+			OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD,
+			OP_DSIN, OP_DCOS, OP_DTAN, OP_DATAN, OP_DLOG, OP_DEXP, OP_DPOW:
 			hasFPU = true
 
 		// RTI pops return address from stack (reads & writes R31/SP)

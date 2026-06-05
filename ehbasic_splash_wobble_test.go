@@ -74,13 +74,21 @@ func TestEhBASICSplashWobbleSpansStayInBounds(t *testing.T) {
 	}
 }
 
-func TestEhBASICSplashWobbleDoesNotSetFBBase(t *testing.T) {
+func TestEhBASICSplashWobbleSetsAllocatedFBBase(t *testing.T) {
 	program, err := os.ReadFile("sdk/examples/basic/splash_wobble.bas")
 	if err != nil {
 		t.Fatalf("read splash_wobble.bas: %v", err)
 	}
-	if strings.Contains(string(program), "&HF0084") || strings.Contains(string(program), "&H000F0084") {
-		t.Fatal("splash_wobble.bas must leave FB_BASE at 0 so VRAM blits scan out from VideoChip frontBuffer")
+	text := string(program)
+	for _, want := range []string{
+		"FB=MEMALLOC(1228800):SR=MEMALLOC(235520):BB=MEMALLOC(1228800)",
+		"POKE32 &HF0084,FB",
+		"POKE32 &HF0000,1",
+		"PEEK32(&HF2310)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("splash_wobble.bas missing %q", want)
+		}
 	}
 }
 
@@ -90,10 +98,10 @@ func TestEhBASICWobbleZoomProgramShape(t *testing.T) {
 		t.Fatalf("read wobble_zoom.bas: %v", err)
 	}
 	text := string(program)
-	if strings.Contains(text, "&HF0084") || strings.Contains(text, "&H000F0084") {
-		t.Fatal("wobble_zoom.bas must leave FB_BASE at 0 so VRAM blits scan out from VideoChip frontBuffer")
-	}
 	for _, want := range []string{
+		"FB=MEMALLOC(1228800):BB=MEMALLOC(1228800):TX=MEMALLOC(2097152):SR=MEMALLOC(235520)",
+		"POKE32 &HF0084,FB",
+		"PEEK32(&HF2310)",
 		"BLIT MODE7",
 		"1023,511,TS,ST",
 		"SC=1.7+SIN(Z)*0.9",
@@ -108,7 +116,7 @@ func TestEhBASICWobbleZoomProgramShape(t *testing.T) {
 	if strings.Index(text, "SOUND PLAY") > strings.Index(text, "BLOAD") {
 		t.Fatal("wobble_zoom.bas must start MIDI before loading splash assets")
 	}
-	if strings.Index(text, "SOUND PLAY") > strings.Index(text, "POKE &HF0000") {
+	if strings.Index(text, "SOUND PLAY") > strings.Index(text, "POKE32 &HF0000") {
 		t.Fatal("wobble_zoom.bas must start MIDI before video setup")
 	}
 }

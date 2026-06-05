@@ -1939,6 +1939,30 @@ func TestIE64_FP64_InvalidRegisterEncoding_HaltsImmediately(t *testing.T) {
 	}
 }
 
+func TestIE64_FP64Transcendentals_ExecuteAndStepOne(t *testing.T) {
+	r := newIE64TestRig()
+	r.cpu.FPU.setDPair(2, math.Pi/2)
+	r.executeOne(ie64Instr(OP_DSIN, 4, 0, 0, 2, 0, 0))
+	if got := r.cpu.FPU.getDPair(4); math.Abs(got-1) > 1e-12 {
+		t.Fatalf("Execute DSIN result = %.17g, want 1", got)
+	}
+	if r.cpu.FPU.FPSR != 0 {
+		t.Fatalf("Execute DSIN FPSR = 0x%08X, want 0", r.cpu.FPU.FPSR)
+	}
+
+	r = newIE64TestRig()
+	r.cpu.FPU.setDPair(2, -1)
+	r.cpu.FPU.setDPair(4, 0.5)
+	r.loadInstructions(ie64Instr(OP_DPOW, 6, 0, 0, 2, 4, 0))
+	r.cpu.StepOne()
+	if !math.IsNaN(r.cpu.FPU.getDPair(6)) {
+		t.Fatalf("StepOne DPOW result = %v, want NaN", r.cpu.FPU.getDPair(6))
+	}
+	if (r.cpu.FPU.FPSR & IE64_FPU_EX_IO) == 0 {
+		t.Fatalf("StepOne DPOW FPSR = 0x%08X, want invalid-operation sticky flag", r.cpu.FPU.FPSR)
+	}
+}
+
 func TestIE64_StackOverflow_Halt(t *testing.T) {
 	// Push with SP near 0 - should halt cleanly without panic
 	r := newIE64TestRig()

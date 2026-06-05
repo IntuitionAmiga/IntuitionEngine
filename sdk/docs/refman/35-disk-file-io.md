@@ -21,8 +21,8 @@ Intuition Engine exposes one disk volume through a small MMIO
 block. BASIC uses the same block for `LOAD`, `SAVE`, `BLOAD`,
 `COMPILE`, `TRANSPILE`, `ASSEMBLE`, direct-mode `DIR`, and
 direct-mode `TYPE`. Machine code can use the registers directly, but
-the examples here use BASIC `POKE`, `POKE8`, `PEEK`, and `PEEK8` so
-they can be typed on the machine.
+the examples here use BASIC `POKE8`, `POKE32`, `PEEK8`, and `PEEK32`
+so they can be typed on the machine.
 
 ## 35.1 Names and Volume Rules
 
@@ -98,7 +98,7 @@ point anywhere in active RAM. If the destination begins near the end of
 the low memory slice and continues into backed extended RAM, the bytes
 are still copied, provided every byte of the span is inside active RAM.
 This is a byte-copy rule. It does not make a scalar word or long
-`PEEK`/`POKE` valid when that one access straddles the same boundary.
+`PEEK32`/`POKE32` valid when that one access straddles the same boundary.
 
 `FILE_DATA_LEN` is write-side state. A read ignores it, even if it
 still contains the length from an earlier write. On a successful read,
@@ -219,8 +219,9 @@ inspection or later assembly. `RUN` uses the `.ie64` image.
 Not every stored line can become a standalone image. Direct-mode
 commands such as `RUN AOT`, `COMPILE`, `TRANSPILE`, `ASSEMBLE`, and
 `DIR` or `TYPE` are rejected. A standalone image cannot use `LOAD`.
-For `POKE`, `POKE8`, `DOKE`, and `LOKE` inside a standalone image, use
-integer-literal operands rather than variables or expressions.
+For `POKE`, `POKE8`, `POKE16`, `POKE32`, and `POKE64` inside a
+standalone image, integer-literal operands can be lowered directly;
+other expressions use the resident runtime path.
 
 ### 35.6.5 TRANSPILE
 
@@ -345,16 +346,16 @@ values.
 60 POKE8 N+8,0
 70 REM FILE DATA "IE"
 80 POKE8 D,73:POKE8 D+1,69
-90 POKE &H000F2200,N
-100 POKE &H000F2204,D
-110 POKE &H000F2208,2
-120 POKE &H000F220C,2
-130 PRINT "WRITE ";PEEK(&H000F2210)
+90 POKE32 &H000F2200,N
+100 POKE32 &H000F2204,D
+110 POKE32 &H000F2208,2
+120 POKE32 &H000F220C,2
+130 PRINT "WRITE ";PEEK32(&H000F2210)
 140 REM CLEAR THE BUFFER AND READ THE FILE BACK
 150 POKE8 D,0:POKE8 D+1,0
-160 POKE &H000F220C,1
-170 PRINT "READ ";PEEK(&H000F2210)
-180 PRINT "LEN ";PEEK(&H000F2214)
+160 POKE32 &H000F220C,1
+170 PRINT "READ ";PEEK32(&H000F2210)
+180 PRINT "LEN ";PEEK32(&H000F2214)
 190 PRINT PEEK8(D);PEEK8(D+1)
 ```
 

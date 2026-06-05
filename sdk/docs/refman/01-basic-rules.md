@@ -390,7 +390,7 @@ PRINT B
 ```
 
 When you assign to a string variable, BASIC copies the bytes of the
-right-hand side into the string heap and stores the new pointer in
+right-hand side into the internal arena and stores the new pointer in
 the variable's slot.
 
 ## 1.10 The PRINT statement

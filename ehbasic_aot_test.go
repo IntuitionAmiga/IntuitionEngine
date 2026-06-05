@@ -12,8 +12,8 @@ import (
 )
 
 // aotTestGuestRAM is the guest RAM size published on the test bus so
-// CR_RAM_SIZE_BYTES is nonzero. 32 MiB keeps the whole arena below
-// AOT_LOW32_CAP, exercising the shared-frontier path.
+// CR_RAM_SIZE_BYTES is nonzero. 32 MiB keeps retained AOT buffers below the
+// 32-bit File MMIO ceiling while still exercising the explicit AOT low32 cursor.
 const aotTestGuestRAM = 0x2000000
 
 // assembleAOTUnit assembles a self-contained snippet against ie64.inc and the
@@ -27,13 +27,17 @@ func assembleAOTUnit(t *testing.T, asmBin string, body string) []byte {
 	source := fmt.Sprintf(`include "ie64.inc"
 
 fp_neg          equ 0
+fp_int          equ 0
+fp_fix          equ 0
 fp_print        equ 0
 fp_print_to_buf equ 0
 stmt_jump_table equ 0
 if_else_boundary equ 0
 expr_eval       equ 0
+expr_truthy     equ 0
 exec_do_for     equ 0
 exec_do_next    equ 0
+exec_reset_control_stack equ 0
 
     org 0x1000
 
@@ -129,8 +133,9 @@ func TestAOT_Allocators(t *testing.T) {
 	exAddr := h.bus.Read64(0x030030)
 	afterReset := h.bus.Read64(0x030038)
 
-	const floor = 0x00800000
-	const cap = 0xFFFF0000
+	const floor = 0x01000000
+	const low32Base = 0x00780000
+	const low32End = 0x00792000
 	if cr < floor+0x10000 {
 		t.Fatalf("CR_RAM_SIZE_BYTES too small or unpublished: CR=%#x", cr)
 	}
@@ -152,20 +157,16 @@ func TestAOT_Allocators(t *testing.T) {
 		t.Fatalf("addr2 = %#x below floor %#x", addr2, floor)
 	}
 
-	// allocLow32 shares the frontier with alloc64, so it allocates beneath the
-	// last alloc64 block (addr2), clamping the base to the 32-bit cap if higher.
-	base := addr2
-	if base > cap {
-		base = cap
+	// allocLow32 uses the explicit AOT public low32 scratch window and no longer
+	// shares the retained-buffer frontier.
+	if low != low32Base {
+		t.Fatalf("low alloc = %#x, want AOT_LOW32_BASE %#x", low, uint64(low32Base))
 	}
-	if low != base-0x1000 {
-		t.Fatalf("low alloc = %#x, want %#x (shared frontier base %#x - 4KiB)", low, base-0x1000, base)
+	if low+0x1000 > low32End {
+		t.Fatalf("allocLow32 block [%#x,%#x) exceeds AOT low32 window end %#x", low, low+0x1000, uint64(low32End))
 	}
-	if low > cap {
-		t.Fatalf("allocLow32 returned %#x above 32-bit cap %#x", low, uint64(cap))
-	}
-	// Disjoint from the alloc64 region: the low block must sit at or below the
-	// alloc64 frontier, never overlapping addr1/addr2.
+	// Disjoint from the retained arena: the public low32 window is below
+	// AOT_ALLOC_FLOOR, while retained buffers stay above it.
 	if low+0x1000 > addr2 {
 		t.Fatalf("low block [%#x,%#x) overlaps alloc64 region (frontier %#x)", low, low+0x1000, addr2)
 	}
@@ -178,9 +179,8 @@ func TestAOT_Allocators(t *testing.T) {
 	}
 }
 
-// TestAOT_AllocatorModesDisjoint pins the regression where alloc64 and
-// allocLow32 could hand out the same block when guest RAM was below the cap:
-// a 64-bit allocation followed by a low-32 allocation must never overlap.
+// TestAOT_AllocatorModesDisjoint asserts that retained arena allocation and AOT
+// public low32 scratch allocation use separate ranges.
 func TestAOT_AllocatorModesDisjoint(t *testing.T) {
 	asmBin := buildAssembler(t)
 	body := `    jsr     aot_alloc_reset
@@ -211,7 +211,7 @@ func TestAOT_AllocatorModesDisjoint(t *testing.T) {
 	if a == b {
 		t.Fatalf("alloc64 and allocLow32 returned the same block %#x", a)
 	}
-	// Both 0x1000 blocks; the low block must lie entirely below the 64-bit block.
+	// Both 0x1000 blocks; the low block must lie entirely below the retained block.
 	if b+0x1000 > a {
 		t.Fatalf("blocks overlap: alloc64 [%#x,%#x), allocLow32 [%#x,%#x)", a, a+0x1000, b, b+0x1000)
 	}
@@ -255,6 +255,201 @@ func TestAOT_AllocatorRejectsOverflowSize(t *testing.T) {
 	want := (cr &^ uint64(0xFFF)) - 0x1000
 	if next != want {
 		t.Fatalf("frontier moved by failed alloc: next=%#x, want %#x (top - 4KiB)", next, want)
+	}
+}
+
+func TestAOT_AllocResetClampsBelowBasicControlStack(t *testing.T) {
+	asmBin := buildAssembler(t)
+	body := `    la      r16, BASIC_STATE
+    add.q   r1, r16, #ST_CTRL_LOW
+    move.q  r2, #0x01FDF000
+    store.q r2, (r1)
+    jsr     aot_alloc_reset
+
+    la      r1, AOT_ARENA_HIGH_NEXT
+    load.q  r2, (r1)
+    la      r1, 0x031000
+    store.q r2, (r1)            ; [0] retained frontier after reset
+    la      r1, AOT_FILE_BRIDGE_NEXT
+    load.q  r2, (r1)
+    la      r1, 0x031008
+    store.q r2, (r1)            ; [1] bridge frontier after reset
+
+    move.q  r8, #0x1000
+    jsr     aot_alloc64
+    la      r1, 0x031010
+    store.q r8, (r1)            ; [2] first retained allocation
+    la      r1, 0x031018
+    store.q r9, (r1)            ; [3] status`
+
+	bin := assembleAOTUnit(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	h.loadBytes(bin)
+	h.runCycles(1_000_000)
+
+	const ctrlLow = 0x01FDF000
+	arenaTop := h.bus.Read64(0x031000)
+	bridgeTop := h.bus.Read64(0x031008)
+	alloc := h.bus.Read64(0x031010)
+	status := h.bus.Read64(0x031018)
+
+	if arenaTop != ctrlLow {
+		t.Fatalf("AOT_ARENA_HIGH_NEXT = %#x, want ST_CTRL_LOW %#x", arenaTop, uint64(ctrlLow))
+	}
+	if bridgeTop != ctrlLow {
+		t.Fatalf("AOT_FILE_BRIDGE_NEXT = %#x, want ST_CTRL_LOW %#x", bridgeTop, uint64(ctrlLow))
+	}
+	if status != 0 || alloc != ctrlLow-0x1000 {
+		t.Fatalf("first alloc below control stack = %#x status=%d, want %#x status=0", alloc, status, uint64(ctrlLow-0x1000))
+	}
+}
+
+func TestAOT_CompileOutputBuffersUseLow32FileBridge(t *testing.T) {
+	asmBin := buildAssembler(t)
+	body := `    la      r16, BASIC_STATE
+    add.q   r1, r16, #ST_CTRL_LOW
+    li      r2, #0x0000000100200000
+    store.q r2, (r1)
+    jsr     aot_alloc_reset
+
+    move.q  r8, #0x40000
+    jsr     aot_alloc_file_bridge
+    la      r1, 0x031000
+    store.q r8, (r1)            ; [0] COMPILE/TRANSPILE text buffer
+    la      r1, 0x031008
+    store.q r9, (r1)            ; [1] text allocation status
+
+    move.q  r8, #0x18000
+    jsr     aot_alloc_file_bridge
+    la      r1, 0x031010
+    store.q r8, (r1)            ; [2] COMPILE/TRANSPILE code buffer
+    la      r1, 0x031018
+    store.q r9, (r1)            ; [3] code allocation status
+
+    move.q  r8, #0x18000
+    jsr     aot_alloc_file_bridge
+    la      r1, 0x031030
+    store.q r8, (r1)            ; [6] ASSEMBLE code buffer
+    la      r1, 0x031038
+    store.q r9, (r1)            ; [7] ASSEMBLE code allocation status
+
+    la      r1, AOT_FILE_BRIDGE_NEXT
+    load.q  r2, (r1)
+    la      r1, 0x031020
+    store.q r2, (r1)            ; [4] bridge frontier after both buffers
+    la      r1, AOT_ARENA_HIGH_NEXT
+    load.q  r2, (r1)
+    la      r1, 0x031028
+    store.q r2, (r1)            ; [5] retained frontier after bridge allocations`
+
+	bin := assembleAOTUnit(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.bus.ApplyProfileVisibleCeiling(0x0000000100400000)
+	h.loadBytes(bin)
+	h.runCycles(1_000_000)
+
+	text := h.bus.Read64(0x031000)
+	textStatus := h.bus.Read64(0x031008)
+	code := h.bus.Read64(0x031010)
+	codeStatus := h.bus.Read64(0x031018)
+	next := h.bus.Read64(0x031020)
+	arenaNext := h.bus.Read64(0x031028)
+	assembleCode := h.bus.Read64(0x031030)
+	assembleCodeStatus := h.bus.Read64(0x031038)
+
+	const low32Cap = 0xFFFF0000
+	const ctrlLow = 0x0000000100200000
+	const wantText = low32Cap - 0x40000
+	const wantCode = wantText - 0x18000
+	const wantAssembleCode = wantCode - 0x18000
+
+	if textStatus != 0 || codeStatus != 0 || assembleCodeStatus != 0 {
+		t.Fatalf("file-written output bridge allocations failed: text status=%d code status=%d assemble code status=%d",
+			textStatus, codeStatus, assembleCodeStatus)
+	}
+	if text != wantText {
+		t.Fatalf("text buffer = %#x, want low32 bridge address %#x", text, uint64(wantText))
+	}
+	if code != wantCode {
+		t.Fatalf("code buffer = %#x, want low32 bridge address %#x", code, uint64(wantCode))
+	}
+	if assembleCode != wantAssembleCode {
+		t.Fatalf("ASSEMBLE code buffer = %#x, want low32 bridge address %#x", assembleCode, uint64(wantAssembleCode))
+	}
+	if text >= 0x1_0000_0000 || code >= 0x1_0000_0000 || assembleCode >= 0x1_0000_0000 {
+		t.Fatalf("file-written buffers must stay below 4 GiB: text=%#x code=%#x assembleCode=%#x",
+			text, code, assembleCode)
+	}
+	if next != wantAssembleCode {
+		t.Fatalf("AOT_FILE_BRIDGE_NEXT = %#x, want %#x", next, uint64(wantAssembleCode))
+	}
+	if arenaNext != ctrlLow {
+		t.Fatalf("AOT_ARENA_HIGH_NEXT = %#x, want high retained frontier %#x", arenaNext, uint64(ctrlLow))
+	}
+}
+
+func TestAOT_FileBridgeSharesFrontierBelowLow32Cap(t *testing.T) {
+	asmBin := buildAssembler(t)
+	body := `    jsr     aot_alloc_reset
+    move.q  r8, #0x40000
+    jsr     aot_alloc_file_bridge
+    la      r1, 0x031000
+    store.q r8, (r1)            ; [0] bridge text buffer
+    la      r1, 0x031008
+    store.q r9, (r1)            ; [1] text allocation status
+
+    move.q  r8, #0x18000
+    jsr     aot_alloc_file_bridge
+    la      r1, 0x031010
+    store.q r8, (r1)            ; [2] bridge code buffer
+    la      r1, 0x031018
+    store.q r9, (r1)            ; [3] code allocation status
+
+    move.q  r8, #AOT_SYMTAB_BYTES
+    jsr     aot_alloc64
+    la      r1, 0x031020
+    store.q r8, (r1)            ; [4] retained symbol table after bridge buffers
+    la      r1, 0x031028
+    store.q r9, (r1)            ; [5] symbol table allocation status
+
+    la      r1, AOT_FILE_BRIDGE_NEXT
+    load.q  r2, (r1)
+    la      r1, 0x031030
+    store.q r2, (r1)            ; [6] synced bridge frontier
+    la      r1, AOT_ARENA_HIGH_NEXT
+    load.q  r2, (r1)
+    la      r1, 0x031038
+    store.q r2, (r1)            ; [7] synced retained frontier`
+
+	bin := assembleAOTUnit(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	h.loadBytes(bin)
+	h.runCycles(1_000_000)
+
+	text := h.bus.Read64(0x031000)
+	textStatus := h.bus.Read64(0x031008)
+	code := h.bus.Read64(0x031010)
+	codeStatus := h.bus.Read64(0x031018)
+	symtab := h.bus.Read64(0x031020)
+	symtabStatus := h.bus.Read64(0x031028)
+	bridgeNext := h.bus.Read64(0x031030)
+	arenaNext := h.bus.Read64(0x031038)
+
+	const wantText = aotTestGuestRAM - 0x40000
+	const wantCode = wantText - 0x18000
+	const wantSymtab = wantCode - 0x10000
+
+	if textStatus != 0 || codeStatus != 0 || symtabStatus != 0 {
+		t.Fatalf("mixed bridge/retained allocations failed: text=%d code=%d symtab=%d", textStatus, codeStatus, symtabStatus)
+	}
+	if text != wantText || code != wantCode || symtab != wantSymtab {
+		t.Fatalf("mixed allocation layout: text=%#x code=%#x symtab=%#x, want %#x %#x %#x",
+			text, code, symtab, uint64(wantText), uint64(wantCode), uint64(wantSymtab))
+	}
+	if bridgeNext != wantSymtab || arenaNext != wantSymtab {
+		t.Fatalf("shared low32 frontiers diverged: bridge=%#x arena=%#x want %#x", bridgeNext, arenaNext, uint64(wantSymtab))
 	}
 }
 
@@ -471,17 +666,54 @@ func TestAOT_Transpile(t *testing.T) {
 
 	// Arena (RUN AOT) programmes save the entry SP at the top and restore it
 	// before every rts so END/STOP unwind a compiled GOSUB. AOT_SAVED_SP =
-	// 0x022858 = 141400.
-	const arenaProlog = "move.l r6, #141400\nstore.q r31, (r6)\n"
-	const arenaEpilog = "move.l r6, #141400\nload.q r31, (r6)\nrts\n"
+	// 0x042850 = 272464.
+	const arenaProlog = "move.l r6, #272464\nstore.q r31, (r6)\n"
+	const arenaEpilog = "move.l r6, #272464\nload.q r31, (r6)\nrts\n"
 
 	// Standalone (COMPILE) programmes boot with no resident setup, so the
-	// transpiler emits a bootstrap that sets the stack, the TERM_OUT pointer
-	// (R26) the print helpers use, TERM_STATUS (R27) and the state base (R16).
-	// STACK_TOP=0x09F000=651264, TERM_OUT=0xF0700=984832,
-	// TERM_STATUS=0xF0704=984836, BASIC_STATE=0x022000=139264.
-	const standaloneProlog = "move.l r31, #651264\nmove.l r26, #984832\n" +
-		"move.l r27, #984836\nmove.l r16, #139264\n"
+	// transpiler emits a bootstrap that sets the state base, derives the stack
+	// and control-flow reservations from CR_RAM_SIZE_BYTES, then initialises the
+	// terminal MMIO pointers used by helpers.
+	const standaloneProlog = "move.l r16, #270336\n" +
+		"mfcr r1, cr15\n" +
+		"bnez r1, B1\n" +
+		"move.q r1, #0x02000000\n" +
+		"B1:\n" +
+		"lsr.q r1, r1, #12\n" +
+		"lsl.q r1, r1, #12\n" +
+		"sub.q r1, r1, #0x1000\n" +
+		"move.q r31, r1\n" +
+		"move.l r2, #0x420A8\n" +
+		"store.q r31, (r2)\n" +
+		"move.q r3, r31\n" +
+		"sub.q r3, r3, #0x10000\n" +
+		"move.l r2, #0x420A0\n" +
+		"store.q r3, (r2)\n" +
+		"move.l r2, #0x420B8\n" +
+		"store.q r3, (r2)\n" +
+		"move.q r4, r3\n" +
+		"sub.q r4, r4, #0x10000\n" +
+		"move.l r2, #0x420B0\n" +
+		"store.q r4, (r2)\n" +
+		"move.l r2, #0x42060\n" +
+		"store.q r4, (r2)\n" +
+		"move.l r2, #0x42068\n" +
+		"store.q r3, (r2)\n" +
+		"move.q r5, #0xFFFF0000\n" +
+		"blt r4, r5, B2\n" +
+		"move.q r4, r5\n" +
+		"B2:\n" +
+		"move.l r2, #0x420C0\n" +
+		"store.q r4, (r2)\n" +
+		"move.q r6, #0x01000000\n" +
+		"move.l r2, #0x420C8\n" +
+		"store.q r6, (r2)\n" +
+		"move.l r2, #0x42038\n" +
+		"store.q r6, (r2)\n" +
+		"move.l r2, #0x42030\n" +
+		"store.q r4, (r2)\n" +
+		"move.l r26, #984832\n" +
+		"move.l r27, #984836\n"
 
 	// Line records are the live format: a real line's next points to the
 	// terminator record (next == 0). Empty == just a terminator.
@@ -498,7 +730,7 @@ func TestAOT_Transpile(t *testing.T) {
 
     ; empty programme: a lone terminator record (next == 0)
     la      r1, 0x030080
-    store.l r0, (r1)
+    store.q r0, (r1)
     la      r8, 0x030080
     la      r9, 0x031000
     move.q  r10, #0            ; arena mode -> rts
@@ -510,15 +742,16 @@ func TestAOT_Transpile(t *testing.T) {
 
     ; END programme: line [next=term, lineNo=10, END,0] + terminator
     la      r1, 0x030180
-    store.l r0, (r1)
+    store.q r0, (r1)
     la      r1, 0x030100
     la      r2, 0x030180
-    store.l r2, (r1)
+    store.q r2, (r1)
     move.q  r2, #10
-    store.l r2, 4(r1)
+    store.l r2, 8(r1)
+    store.l r0, 12(r1)
     move.q  r2, #0x80
-    store.b r2, 8(r1)
-    store.b r0, 9(r1)
+    store.b r2, 16(r1)
+    store.b r0, 17(r1)
     la      r8, 0x030100
     la      r9, 0x031100
     move.q  r10, #0
@@ -540,15 +773,16 @@ func TestAOT_Transpile(t *testing.T) {
 
     ; unsupported (CONT token 0x9F - REPL command, not lowerable): line + terminator
     la      r1, 0x030280
-    store.l r0, (r1)
+    store.q r0, (r1)
     la      r1, 0x030200
     la      r2, 0x030280
-    store.l r2, (r1)
+    store.q r2, (r1)
     move.q  r2, #20
-    store.l r2, 4(r1)
+    store.l r2, 8(r1)
+    store.l r0, 12(r1)
     move.q  r2, #0x9F
-    store.b r2, 8(r1)
-    store.b r0, 9(r1)
+    store.b r2, 16(r1)
+    store.b r0, 17(r1)
     la      r8, 0x030200
     la      r9, 0x031200
     move.q  r10, #0
@@ -559,7 +793,7 @@ func TestAOT_Transpile(t *testing.T) {
     ; assemble the empty-programme output to confirm it is valid asm
     la      r8, 0x031000
     move.q  r9, #0x1000
-    la      r10, 0x031400
+    la      r10, 0x033000
     jsr     aot_asm_program
     la      r1, 0x032028
     store.q r8, (r1)
@@ -619,7 +853,7 @@ func TestAOT_Transpile(t *testing.T) {
 	if cl := h.bus.Read64(0x032030); cl != 40 {
 		t.Errorf("assembled codeLen=%d, want 40", cl)
 	}
-	if got := read(0x031400+32, 8); !bytesEqual(got, rtsRef) {
+	if got := read(0x033000+32, 8); !bytesEqual(got, rtsRef) {
 		t.Errorf("assembled rts = % x, want % x", got, rtsRef)
 	}
 }
@@ -641,21 +875,22 @@ func bytesEqual(a, b []byte) bool {
 func TestAOT_TranspilePoke8(t *testing.T) {
 	asmBin := buildAssembler(t)
 
-	// Tokens for "POKE8 100, 66": TK_POKE '8' ' ' '1''0''0' ',' ' ' '6''6'
+	// Tokens for "POKE8 100, 66": TK_EXT EXT_POKE8 ' ' '1''0''0' ',' ' ' '6''6'
 	body := `    ; terminator
     la      r1, 0x030380
-    store.l r0, (r1)
+    store.q r0, (r1)
     ; line record at 0x030300
     la      r1, 0x030300
     la      r2, 0x030380
-    store.l r2, (r1)
+    store.q r2, (r1)
     move.q  r2, #10
-    store.l r2, 4(r1)
-    ; tokens at +8: 0x98 '8' ' ' "100" ',' ' ' "66" 0
-    la      r3, 0x030308
-    move.q  r2, #0x98
+    store.l r2, 8(r1)
+    store.l r0, 12(r1)
+    ; tokens at +16: 0x92 0x03 ' ' "100" ',' ' ' "66" 0
+    la      r3, 0x030310
+    move.q  r2, #0x92
     store.b r2, (r3)
-    move.q  r2, #0x38
+    move.q  r2, #0x03
     store.b r2, 1(r3)
     move.q  r2, #0x20
     store.b r2, 2(r3)
@@ -708,9 +943,9 @@ func TestAOT_TranspilePoke8(t *testing.T) {
 		got[i] = h.cpu.memory[0x031000+i]
 	}
 	// Arena prologue (save SP) + label + POKE8 lowering + arena epilogue
-	// (restore SP, rts). AOT_SAVED_SP = 141400.
-	const arenaProlog = "move.l r6, #141400\nstore.q r31, (r6)\n"
-	const arenaEpilog = "move.l r6, #141400\nload.q r31, (r6)\nrts\n"
+	// (restore SP, rts). AOT_SAVED_SP = 272464.
+	const arenaProlog = "move.l r6, #272464\nstore.q r31, (r6)\n"
+	const arenaEpilog = "move.l r6, #272464\nload.q r31, (r6)\nrts\n"
 	want := arenaProlog + "L10:\nmove.l r1, #100\nmove.l r2, #66\nstore.b r2, (r1)\n" + arenaEpilog
 	if string(got) != want {
 		t.Fatalf("transpiled asm = %q, want %q", got, want)
@@ -735,13 +970,14 @@ func TestAOT_OutputOverflow(t *testing.T) {
 	// One "POKE 100, 66" line: TK_POKE ' ' "100" ',' ' ' "66".
 	body := `    ; terminator
     la      r1, 0x030380
-    store.l r0, (r1)
+    store.q r0, (r1)
     la      r1, 0x030300
     la      r2, 0x030380
-    store.l r2, (r1)
+    store.q r2, (r1)
     move.q  r2, #10
-    store.l r2, 4(r1)
-    la      r3, 0x030308
+    store.l r2, 8(r1)
+    store.l r0, 12(r1)
+    la      r3, 0x030310
     move.q  r2, #0x98             ; TK_POKE
     store.b r2, (r3)
     move.q  r2, #0x20             ; ' ' (not '8' -> 32-bit poke)
@@ -852,28 +1088,45 @@ func runAOTProg(t *testing.T, h *ehbasicTestHarness, line string) {
 func TestREPL_RunAOT_MemoryStatements(t *testing.T) {
 	const addr = 0x50000 // 327680
 
-	t.Run("POKE_32bit", func(t *testing.T) {
+	t.Run("POKE_byte_alias", func(t *testing.T) {
 		h, _ := startREPL(t)
-		runAOTProg(t, h, "10 POKE 327680, 305419896") // 0x12345678
+		h.bus.Write32(addr, 0xAABBCCDD)
+		runAOTProg(t, h, "10 POKE 327680, 18") // byte alias, 0x12
+		if got := h.bus.Read32(addr); got != 0xAABBCC12 {
+			t.Fatalf("POKE byte alias: mem32=%#x, want 0xAABBCC12", got)
+		}
+	})
+
+	t.Run("POKE32_32bit", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTProg(t, h, "10 POKE32 327680, 305419896") // 0x12345678
 		if got := h.bus.Read32(addr); got != 0x12345678 {
-			t.Fatalf("POKE: mem32=%#x, want 0x12345678", got)
+			t.Fatalf("POKE32: mem32=%#x, want 0x12345678", got)
 		}
 	})
 
-	t.Run("LOKE_32bit", func(t *testing.T) {
+	t.Run("POKE32_32bit_alt", func(t *testing.T) {
 		h, _ := startREPL(t)
-		runAOTProg(t, h, "10 LOKE 327680, 287454020") // 0x11223344
+		runAOTProg(t, h, "10 POKE32 327680, 287454020") // 0x11223344
 		if got := h.bus.Read32(addr); got != 0x11223344 {
-			t.Fatalf("LOKE: mem32=%#x, want 0x11223344", got)
+			t.Fatalf("POKE32: mem32=%#x, want 0x11223344", got)
 		}
 	})
 
-	t.Run("DOKE_16bit", func(t *testing.T) {
+	t.Run("POKE16_16bit", func(t *testing.T) {
 		h, _ := startREPL(t)
-		// pre-clear with POKE so the upper bytes are known, then DOKE the low word.
-		runAOTProg(t, h, "10 POKE 327680, 0 : DOKE 327680, 4660") // 0x1234
+		// pre-clear with POKE32 so the upper bytes are known, then write the low word.
+		runAOTProg(t, h, "10 POKE32 327680, 0 : POKE16 327680, 4660") // 0x1234
 		if got := h.bus.Read32(addr); got != 0x1234 {
-			t.Fatalf("DOKE: mem32=%#x, want 0x1234", got)
+			t.Fatalf("POKE16: mem32=%#x, want 0x1234", got)
+		}
+	})
+
+	t.Run("POKE64_64bit_literal", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTProg(t, h, "10 POKE64 327680, &H1122334455667788")
+		if got := h.bus.Read64(addr); got != 0x1122334455667788 {
+			t.Fatalf("POKE64: mem64=%#x, want 0x1122334455667788", got)
 		}
 	})
 
@@ -1225,7 +1478,7 @@ func TestREPL_RunAOT_HighArena(t *testing.T) {
 
 	// Confirm the arena really loaded high (bit 31 set) - otherwise the test would
 	// pass without exercising the path that broke.
-	arenaBase := h.bus.Read64(0x022828) // AOT_DC_CODE
+	arenaBase := h.bus.Read64(0x042820) // AOT_DC_CODE
 	if arenaBase < 0x80000000 {
 		t.Fatalf("arena base %#x is not a high address; high-arena path not exercised", arenaBase)
 	}
@@ -1242,7 +1495,7 @@ func TestREPL_RunAOT_HighArena(t *testing.T) {
 	}
 	// The STOP capture stored the full high resume PC (bit 31 set) - proof it used the
 	// jsr+pop hardware capture, not a truncating `la`.
-	contPC := h.bus.Read64(0x0228C0) // AOT_CONT_PC
+	contPC := h.bus.Read64(0x0428B8) // AOT_CONT_PC
 	if contPC < 0x80000000 {
 		t.Fatalf("AOT_CONT_PC=%#x is not a high address; STOP capture truncated it", contPC)
 	}
@@ -1282,10 +1535,10 @@ func TestREPL_RunAOT_Bload(t *testing.T) {
 	}
 }
 
-// TestREPL_RunAOT_PokeExpression covers POKE/DOKE/LOKE with expression operands
+// TestREPL_RunAOT_PokeExpression covers POKE and explicit-width POKE forms with expression operands
 // (variables/arithmetic). Integer-literal operands take the fast native-store path;
 // expression operands fall back to delegating the whole statement to the resident
-// exec_do_poke/doke/loke (which run expr_eval), so RUN AOT honours "every tokenised
+// resident statement handlers (which run expr_eval), so RUN AOT honours "every tokenised
 // statement runs". Side effects observed in plain RAM at 0x50000.
 func TestREPL_RunAOT_PokeExpression(t *testing.T) {
 	const base = 0x50000 // 327680, plain RAM, 4-byte aligned
@@ -1301,18 +1554,172 @@ func TestREPL_RunAOT_PokeExpression(t *testing.T) {
 	t.Run("poke_expr_addr_and_value", func(t *testing.T) {
 		h, _ := startREPL(t)
 		runAOTLines(t, h, "10 B=327680", "20 V=100", "30 POKE B, V+5", "40 END")
-		// 32-bit store of 105; little-endian low byte at base.
 		if got := h.cpu.memory[base]; got != 105 {
 			t.Fatalf("POKE expr addr+value: memory[%#x]=%d, want 105", base, got)
 		}
 	})
 
-	t.Run("doke_expr", func(t *testing.T) {
+	t.Run("poke16_expr", func(t *testing.T) {
 		h, _ := startREPL(t)
-		runAOTLines(t, h, "10 B=327680", "20 V=513", "30 DOKE B, V", "40 END")
+		runAOTLines(t, h, "10 B=327680", "20 V=513", "30 POKE16 B, V", "40 END")
 		// 513 = 0x0201 -> low byte 0x01 at base, high byte 0x02 at base+1.
 		if h.cpu.memory[base] != 1 || h.cpu.memory[base+1] != 2 {
-			t.Fatalf("DOKE expr: memory[%#x..]=%d,%d, want 1,2", base, h.cpu.memory[base], h.cpu.memory[base+1])
+			t.Fatalf("POKE16 expr: memory[%#x..]=%d,%d, want 1,2", base, h.cpu.memory[base], h.cpu.memory[base+1])
+		}
+	})
+
+	t.Run("poke32_expr", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 B=327680", "20 V=1122867", "30 POKE32 B, V", "40 END")
+		if got := h.bus.Read32(base); got != 0x00112233 {
+			t.Fatalf("POKE32 expr: memory[%#x]=%#x, want 0x00112233", base, got)
+		}
+	})
+
+	t.Run("numeric_prefix_value_expr", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 POKE8 327680, 1+2", "20 END")
+		if got := h.cpu.memory[base]; got != 3 {
+			t.Fatalf("POKE8 numeric-prefix value expr: memory[%#x]=%d, want 3", base, got)
+		}
+	})
+
+	t.Run("numeric_prefix_addr_expr", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 POKE32 327680+4, 7", "20 END")
+		if got := h.bus.Read32(base + 4); got != 7 {
+			t.Fatalf("POKE32 numeric-prefix addr expr: memory[%#x]=%#x, want 7", base+4, got)
+		}
+		if got := h.bus.Read32(base); got != 0 {
+			t.Fatalf("POKE32 numeric-prefix addr expr wrote parsed prefix: memory[%#x]=%#x, want 0", base, got)
+		}
+	})
+
+	t.Run("poke16_numeric_prefix_value_expr", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 POKE16 327680, 512+1", "20 END")
+		if h.cpu.memory[base] != 1 || h.cpu.memory[base+1] != 2 {
+			t.Fatalf("POKE16 numeric-prefix value expr: memory[%#x..]=%d,%d, want 1,2", base, h.cpu.memory[base], h.cpu.memory[base+1])
+		}
+	})
+
+	t.Run("poke64_numeric_prefix_value_expr", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 POKE64 327680, 4096+5", "20 END")
+		if got := h.bus.Read64(base); got != 4101 {
+			t.Fatalf("POKE64 numeric-prefix value expr: memory[%#x]=%#x, want 0x1005", base, got)
+		}
+	})
+
+	t.Run("poke64_delegated_hex_literal_preserves_qword", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 POKE64 327680+0, &H1122334455667788", "20 END")
+		if got := h.bus.Read64(base); got != 0x1122334455667788 {
+			t.Fatalf("POKE64 delegated hex literal: memory[%#x]=%#x, want 0x1122334455667788", base, got)
+		}
+	})
+
+	t.Run("poke64_delegated_hex_value_expr_preserves_qword", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 POKE64 327680, &H1122334455667788+0", "20 END")
+		if got := h.bus.Read64(base); got != 0x1122334455667788 {
+			t.Fatalf("POKE64 delegated hex value expr: memory[%#x]=%#x, want 0x1122334455667788", base, got)
+		}
+	})
+
+	t.Run("poke64_delegated_hex_sub_value_expr_preserves_qword", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 POKE64 327680, &H1122334455667789-1", "20 END")
+		if got := h.bus.Read64(base); got != 0x1122334455667788 {
+			t.Fatalf("POKE64 delegated hex sub value expr: memory[%#x]=%#x, want 0x1122334455667788", base, got)
+		}
+	})
+
+	t.Run("poke64_delegated_decimal_i64_preserves_qword", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 POKE64 327680, 1234605616436508552", "20 END")
+		if got := h.bus.Read64(base); got != 0x1122334455667788 {
+			t.Fatalf("POKE64 delegated decimal i64: memory[%#x]=%#x, want 0x1122334455667788", base, got)
+		}
+	})
+
+	t.Run("poke64_delegated_variable_fp32_value", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 A=4096", "20 POKE64 327680, A", "30 END")
+		if got := h.bus.Read64(base); got != 0x1000 {
+			t.Fatalf("POKE64 delegated FP32 variable: memory[%#x]=%#x, want 0x1000", base, got)
+		}
+	})
+
+	t.Run("poke64_delegated_large_decimal_variable_preserves_i64", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 A=1099511627776", "20 POKE64 327680, A", "30 END")
+		if got := h.bus.Read64(base); got != 0x10000000000 {
+			t.Fatalf("POKE64 delegated large decimal variable: memory[%#x]=%#x, want 0x10000000000", base, got)
+		}
+	})
+
+	t.Run("poke64_delegated_large_decimal_assignment_stays_fp32", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 A=1099511627776", "20 A=4096", "30 POKE64 327680, A", "40 END")
+		if got := h.bus.Read64(base); got != 0x1000 {
+			t.Fatalf("POKE64 delegated overwritten variable: memory[%#x]=%#x, want 0x1000", base, got)
+		}
+	})
+
+	t.Run("poke64_delegated_for_initial_clears_i64_marker", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h,
+			"10 A=4095:P=VARPTR(A):POKE32 P,2",
+			"20 FOR A=4096 TO 4096",
+			"30 POKE64 327680, A",
+			"40 NEXT",
+			"50 END",
+		)
+		if got := h.bus.Read64(base); got != 0x1000 {
+			t.Fatalf("POKE64 delegated FOR initial variable: memory[%#x]=%#x, want 0x1000", base, got)
+		}
+	})
+
+	t.Run("poke64_delegated_next_clears_i64_marker", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h,
+			"10 FOR A=4096 TO 4096",
+			"20 P=VARPTR(A):POKE32 P,2",
+			"30 NEXT",
+			"40 POKE64 327680, A",
+			"50 END",
+		)
+		if got := h.bus.Read64(base); got != 0x1001 {
+			t.Fatalf("POKE64 delegated NEXT variable: memory[%#x]=%#x, want 0x1001", base, got)
+		}
+	})
+
+	t.Run("poke64_delegated_lowercase_hex_preserves_qword", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 POKE64 327680, &h1122334455667788", "20 END")
+		if got := h.bus.Read64(base); got != 0x1122334455667788 {
+			t.Fatalf("POKE64 delegated lowercase hex: memory[%#x]=%#x, want 0x1122334455667788", base, got)
+		}
+	})
+
+	t.Run("poke64_delegated_peek64_preserves_qword", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h,
+			"10 POKE64 327688, &H1122334455667788",
+			"20 POKE64 327680, PEEK64(327680+8)",
+			"30 END",
+		)
+		if got := h.bus.Read64(base); got != 0x1122334455667788 {
+			t.Fatalf("POKE64 delegated PEEK64 round-trip: memory[%#x]=%#x, want 0x1122334455667788", base, got)
+		}
+	})
+
+	t.Run("poke32_hex_address_variable_keeps_numeric_semantics", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h, "10 TB=&H50000", "20 POKE32 TB,4096", "30 END")
+		if got := readBusMem32(h, 0x50000); got != 4096 {
+			t.Fatalf("POKE32 via hex address variable: memory[%#x]=%#x, want 0x1000", base, got)
 		}
 	})
 
@@ -1469,8 +1876,10 @@ func TestREPL_RunAOT_Loops(t *testing.T) {
 	progs := [][]string{
 		{"10 I=1", "20 WHILE I<=3", "30 PRINT I", "40 I=I+1", "50 WEND"},
 		{"10 I=5", "20 WHILE I>10", "30 PRINT I", "40 WEND", `50 PRINT "DONE"`},
+		{`10 WHILE 1099511627776`, `20 PRINT "WHILE64"`, "30 GOTO 50", "40 WEND", `50 PRINT "DONE"`},
 		{"10 I=1", "20 DO", "30 PRINT I", "40 I=I+1", "50 LOOP WHILE I<=3"},
 		{"10 I=1", "20 DO", "30 PRINT I", "40 I=I+1", "50 LOOP UNTIL I>3"},
+		{"10 I=0", "20 DO", "30 I=I+1", "40 LOOP UNTIL 1099511627776", "50 PRINT I"},
 		{"10 S=0", "20 I=1", "30 WHILE I<=2", "40 J=1", "50 WHILE J<=2", "60 S=S+I*10+J", "70 J=J+1", "80 WEND", "90 I=I+1", "100 WEND", "110 PRINT S"},
 	}
 	for _, prog := range progs {
@@ -1525,6 +1934,7 @@ func TestREPL_RunAOT_If(t *testing.T) {
 	progs := [][]string{
 		{`10 IF 1 THEN PRINT "YES"`},                                                    // true literal
 		{`10 IF 0 THEN PRINT "NO"`, `20 PRINT "DONE"`},                                  // false -> skip THEN
+		{`10 IF 1099511627776 THEN PRINT "I64"`},                                        // I64 true despite low 31 bits zero
 		{"10 A=5", `20 IF A>3 THEN PRINT "BIG"`},                                        // relational true
 		{"10 A=2", `20 IF A>3 THEN PRINT "BIG"`, `30 PRINT "END"`},                      // relational false
 		{"10 A=5", "20 IF A=5 THEN A=10", "30 PRINT A"},                                 // THEN assignment
@@ -1581,7 +1991,7 @@ func TestREPL_RunAOT_NestedIfElseRejected(t *testing.T) {
 }
 
 // TestREPL_RunAOT_PrintNumber exercises bundling the real fp_print closure via
-// machine-code copy: PRINT <integer literal> converts to FP32 at runtime and
+// machine-code copy: PRINT <integer literal> converts to FP64 at runtime and
 // calls the bundled fp_print, so output matches interpreted RUN exactly.
 func TestREPL_RunAOT_PrintNumber(t *testing.T) {
 	cases := []string{"0", "1", "42", "100", "32767", "1000000"}
@@ -1685,9 +2095,9 @@ func TestREPL_Compile_WaitVsyncEmitsLoop(t *testing.T) {
 		}
 	}
 
-	// VSYNC = WAIT on VGA_STATUS (0xF1004 = 987140), mask VGA_STATUS_VSYNC (1).
+	// VSYNC = WAIT on VIDEO_STATUS (0xF0008 = 983048), mask STATUS_VBLANK (2).
 	vs := read(t, "10 VSYNC")
-	for _, want := range []string{"move.l r1, #987140\n", "move.l r3, #1\n", "W0:\n", "bne r5, r0, W0\n"} {
+	for _, want := range []string{"move.l r1, #983048\n", "move.l r3, #2\n", "W0:\n", "bne r5, r0, W0\n"} {
 		if !strings.Contains(vs, want) {
 			t.Fatalf("VSYNC asm missing %q in:\n%s", want, vs)
 		}
@@ -1987,7 +2397,7 @@ table:
 		// command reports ?FILE ERROR, writes no .ie64, and leaves the workspace intact.
 		dir := t.TempDir()
 		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
-		const active = 0x1000000 // 16 MiB active ceiling, below the 32 MiB bus backing
+		const active = 0x1800000 // 24 MiB active ceiling, below the 32 MiB bus backing
 		h.bus.ApplyProfileVisibleCeiling(active)
 		// 4 MiB source: larger than the 1 MiB cap, but base+len would stay under the
 		// 32 MiB backing, so only the FILE_READ_MAX cap (not the range guard) stops it.
@@ -2028,9 +2438,9 @@ table:
 
 // TestREPL_Type drives the direct TYPE "path" command: it prints valid
 // ASCII/UTF-8 files to the terminal and refuses binary ones, mapping File I/O
-// failures to the usual REPL messages. The whole file is read into the resident
-// FILE_DATA_BUF, capped at the device by FILE_READ_MAX, so an over-large file is
-// refused as ?FILE TOO LARGE before any byte is staged.
+// failures to the usual REPL messages. The whole file is read into a transient
+// private low32 bridge, capped at the device by FILE_READ_MAX, so an over-large
+// file is refused as ?FILE TOO LARGE before any byte is staged.
 func TestREPL_Type(t *testing.T) {
 	asmBin := buildAssembler(t)
 
@@ -2180,7 +2590,7 @@ func TestREPL_Type(t *testing.T) {
 
 	t.Run("too_large", func(t *testing.T) {
 		dir := t.TempDir()
-		// Larger than the FILE_DATA_BUF span (just under 1 MiB), so the device
+		// Larger than the transient file bridge span (1 MiB), so the device
 		// FILE_READ_MAX cap refuses it before staging a byte.
 		big := bytes.Repeat([]byte("A"), 0x100000+0x100)
 		if err := os.WriteFile(filepath.Join(dir, "big.txt"), big, 0644); err != nil {
@@ -2232,10 +2642,10 @@ func TestREPL_Type(t *testing.T) {
 func TestREPL_RunAOT_ReturnWithoutGosub(t *testing.T) {
 	const a, b = 0x50000, 0x50001
 
-	// State block fields (BASIC_STATE = 0x022000): ST_ERROR_FLAG +0x38,
+	// State block fields (BASIC_STATE = 0x042000): ST_ERROR_FLAG +0x38,
 	// ST_ERROR_LINE +0x6C. raise_error must persist both, exactly like the
 	// interpreter's exec_do_return, and report the offending line.
-	const stErrorFlag, stErrorLine = 0x022038, 0x02206C
+	const stErrorFlag, stErrorLine = 0x042208, 0x042228
 
 	t.Run("bare", func(t *testing.T) {
 		h, _ := startREPL(t)
@@ -2367,16 +2777,16 @@ func TestAOTConsttabInSync(t *testing.T) {
 // TestEhbasicImageFitsBelowState guards the prebuilt EhBASIC image against growing
 // into the live low-RAM working region. The flat image loads at PROGRAM_START
 // (0x1000). The first live region above the code is the input line buffer at
-// BASIC_LINE_BUF (0x021000), NOT the state block at 0x022000: RUN AOT uses the line
-// buffer while executing, so an image whose end crosses 0x021000 overwrites/executes
+// EHBASIC_PRIV_LINE_BUF (0x041000), NOT the state block at 0x042000: RUN AOT uses the line
+// buffer while executing, so an image whose end crosses 0x041000 overwrites/executes
 // the line-buffer region and corrupts RUN AOT (invalid opcodes), even though it
-// still sits below the state block. The bound is therefore BASIC_LINE_BUF, not
+// still sits below the state block. The bound is therefore EHBASIC_PRIV_LINE_BUF, not
 // BASIC_STATE. (Regression: adding ~360 bytes of AOT constant-table entries pushed
 // the image to 0x2111C and broke FOR/NEXT/WHILE/DO/ON RUN AOT.)
 func TestEhbasicImageFitsBelowState(t *testing.T) {
 	const programStart = 0x001000
-	const basicLineBuf = 0x021000
-	const budget = basicLineBuf - programStart // 0x20000
+	const basicLineBuf = 0x041000
+	const budget = basicLineBuf - programStart // 0x40000
 	img := filepath.Join(repoRootDir(t), "sdk", "examples", "prebuilt", "ehbasic_ie64.ie64")
 	fi, err := os.Stat(img)
 	if err != nil {
@@ -2638,10 +3048,12 @@ func TestAOT_ConstantParity(t *testing.T) {
 
 	// Exercises the in-guest assembler resolving named constants through the
 	// build-time generated table across the BASIC/system/assembler namespaces it
-	// keeps (BASIC_, ST_, ERR_, TERM_, SYS_). Hardware peripheral registers
-	// (VGA_/SID_/...) are intentionally not in the table - BASIC reaches hardware via
-	// numeric-lowered statements, not symbolic bundled source - so they are not
-	// sampled here. See tools/gen_aot_consttab includeConsttabPrefixes.
+	// keeps (BASIC_STATE, dynamic ST_ offsets, ERR_, TERM_, SYS_). Retired fixed
+	// BASIC buffers such as BASIC_VAR_START and BASIC_GOSUB_STACK are intentionally
+	// not sampled here because they are no longer part of the BASIC-visible
+	// assembler contract. Hardware peripheral registers (VGA_/SID_/...) are also
+	// intentionally not in the table - BASIC reaches hardware via numeric-lowered
+	// statements, not symbolic bundled source. See tools/gen_aot_consttab.
 	snippet := `    la r1, BASIC_STATE
     move.q r2, #ST_ERROR_FLAG
     add.q r3, r16, #ST_CURRENT_LINE
@@ -2649,8 +3061,8 @@ func TestAOT_ConstantParity(t *testing.T) {
     la r7, TERM_OUT
     la r8, TERM_STATUS
     add.q r9, r16, #ST_TERM_COL
-    la r10, BASIC_VAR_START
-    la r11, BASIC_GOSUB_STACK
+    add.q r10, r16, #ST_VAR_START
+    add.q r11, r16, #ST_CTRL_LOW
     la r12, SYS_GC_TRIGGER`
 
 	dir := t.TempDir()
@@ -2712,6 +3124,33 @@ func TestAOT_ConstantParity(t *testing.T) {
 			li := i / 8
 			t.Fatalf("constant parity mismatch byte %d (instr %d): got %#02x want %#02x\ngot  % x\nwant % x",
 				i, li, got[i], ref[i], got[li*8:li*8+8], ref[li*8:li*8+8])
+		}
+	}
+}
+
+func TestAOTConsttabOmitsRetiredBasicContractConstants(t *testing.T) {
+	root := repoRootDir(t)
+	data, err := os.ReadFile(filepath.Join(root, "sdk", "include", "aot_consttab.inc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	retired := []string{
+		"STACK_TOP",
+		"EHBASIC_PRIV_LINE_BUF",
+		"BASIC_PROG_START",
+		"BASIC_VAR_START",
+		"BASIC_ARRAY_START",
+		"BASIC_GOSUB_STACK",
+		"BASIC_STR_TEMP",
+		"EHBASIC_PRIV_NAME_BUF",
+		"FILE_DATA_BUF",
+		"EHBASIC_PRIV_LOAD_DIR_BUF",
+		"AOT_RT_PROG",
+	}
+	for _, name := range retired {
+		if strings.Contains(text, `"`+name+`"`) {
+			t.Fatalf("aot_consttab exposes retired BASIC contract constant %s", name)
 		}
 	}
 }
@@ -2809,9 +3248,9 @@ func TestAOT_StopCaptureParity(t *testing.T) {
 	prog := `bra past
 cap:
     pop r5
-    move.l r6, #141504
+    move.l r6, #272568
     store.q r5, (r6)
-    move.l r6, #141400
+    move.l r6, #272464
     load.q r31, (r6)
     rts
 past:
@@ -3739,23 +4178,24 @@ func TestREPL_Compile_WritesIE64AndAsm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("demo.asm not written: %v", err)
 	}
-	// Standalone bootstrap (stack + R26/R27/R16) precedes the labelled line; END
-	// emits a halt and the transpiler appends a trailing halt safety net.
-	const standaloneProlog = "move.l r31, #651264\nmove.l r26, #984832\n" +
-		"move.l r27, #984836\nmove.l r16, #139264\n"
-	wantAsm := standaloneProlog + "L10:\nhalt\nhalt\n"
-	if string(asmBytes) != wantAsm {
-		t.Errorf("demo.asm = %q, want %q", asmBytes, wantAsm)
+	// Standalone bootstrap derives stack/control bounds from CR_RAM_SIZE_BYTES,
+	// then END emits a halt and the transpiler appends a trailing halt safety net.
+	gotAsm := string(asmBytes)
+	if !strings.HasPrefix(gotAsm, "move.l r16, #270336\nmfcr r1, cr15\n") ||
+		!strings.Contains(gotAsm, "move.q r31, r1\n") ||
+		!strings.Contains(gotAsm, "move.l r26, #984832\nmove.l r27, #984836\n") ||
+		!strings.HasSuffix(gotAsm, "L10:\nhalt\nhalt\n") {
+		t.Errorf("demo.asm = %q, want dynamic standalone bootstrap ending in L10 halt/halt", asmBytes)
 	}
 
 	ie64Bytes, err := os.ReadFile(filepath.Join(tmpDir, "demo.ie64"))
 	if err != nil {
 		t.Fatalf("demo.ie64 not written: %v", err)
 	}
-	// Four bootstrap move.l words then two "halt" words (the label emits no
-	// code). Entry is the first bootstrap instruction; the halts use opcode 0xE1.
-	if len(ie64Bytes) != 48 || ie64Bytes[32] != 0xE1 || ie64Bytes[40] != 0xE1 {
-		t.Errorf("demo.ie64 = % x, want 4 move.l words + two 8-byte halts (0xE1 ...)", ie64Bytes)
+	// The label emits no code; the final two words are the END halt and trailing
+	// safety halt. Entry is the first bootstrap instruction.
+	if len(ie64Bytes) < 16 || ie64Bytes[len(ie64Bytes)-16] != 0xE1 || ie64Bytes[len(ie64Bytes)-8] != 0xE1 {
+		t.Errorf("demo.ie64 = % x, want dynamic bootstrap followed by two 8-byte halts (0xE1 ...)", ie64Bytes)
 	}
 
 	// The REPL must survive COMPILE: the compiler clobbers callee-saved
@@ -3869,6 +4309,7 @@ func TestREPL_Compile_StandaloneIf(t *testing.T) {
 	}{
 		{"true", []string{`10 IF 1 THEN PRINT "YES"`}, "YES"},
 		{"false", []string{`10 IF 0 THEN PRINT "NO"`, `20 PRINT "DONE"`}, "DONE"},
+		{"i64", []string{`10 IF 1099511627776 THEN PRINT "I64"`}, "I64"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4086,6 +4527,8 @@ func TestREPL_Compile_StandaloneControlFlow(t *testing.T) {
 		{"for-sum", []string{`10 S=0`, `20 FOR I=1 TO 5`, `30 S=S+I`, `40 NEXT`, `50 PRINT S`}, "15"},
 		{"while", []string{`10 I=1`, `20 WHILE I<=3`, `30 PRINT I`, `40 I=I+1`, `50 WEND`}, "1\r\n2\r\n3\r\n"},
 		{"do-loop", []string{`10 I=1`, `20 DO`, `30 PRINT I`, `40 I=I+1`, `50 LOOP UNTIL I>3`}, "1\r\n2\r\n3\r\n"},
+		{"while-i64", []string{`10 WHILE 1099511627776`, `20 PRINT "WHILE64"`, `30 GOTO 50`, `40 WEND`, `50 PRINT "DONE"`}, "WHILE64\r\nDONE"},
+		{"loop-until-i64", []string{`10 I=0`, `20 DO`, `30 I=I+1`, `40 LOOP UNTIL 1099511627776`, `50 PRINT I`}, "1"},
 		{"on-goto", []string{`10 ON 2 GOTO 100,200`, `20 END`, `100 PRINT "ONE"`, `110 END`, `200 PRINT "TWO"`, `210 END`}, "TWO"},
 	}
 	for _, tc := range cases {
@@ -4322,8 +4765,8 @@ func TestREPL_Examples_ThreeMode(t *testing.T) {
 }
 
 // TestREPL_Compile_StandaloneSave proves standalone SAVE: the bundled exec_do_save
-// detokenises the bundled programme to FILE_DATA_BUF and writes it over the File I/O
-// ABI. The compiled image is run on a machine with File I/O mapped to a scratch dir;
+// detokenises the bundled programme to a transient low32 bridge and writes it over
+// the File I/O ABI. The compiled image is run on a machine with File I/O mapped to a scratch dir;
 // the written file must contain the detokenised source.
 func TestREPL_Compile_StandaloneSave(t *testing.T) {
 	asmBin := buildAssembler(t)
@@ -4438,7 +4881,7 @@ func TestREPL_Compile_StandaloneBload(t *testing.T) {
 // a scratch address; the compiled programme calls USR on that address and prints 42.
 func TestREPL_Compile_StandaloneUSR(t *testing.T) {
 	asmBin := buildAssembler(t)
-	const stubAddr = 0x70000 // scratch RAM, clear of code/blob/prog/vars/stack
+	const stubAddr = 0x810000 // scratch RAM, clear of code/blob/prog/vars/file buffers/stack
 
 	// Assemble the ML stub at its run address and slice out the emitted bytes (the
 	// flat image is based at PROGRAM_START 0x1000, so guest stubAddr is at file offset
@@ -4559,10 +5002,8 @@ func TestREPL_Compile_StandaloneOutOfMemory(t *testing.T) {
 	t.Run("overflows", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
-		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-		for i := 0; i < 24; i++ {
-			storeLine(t, h, fmt.Sprintf("%d %s", 10+i, bigLine))
-		}
+		h.bus.ApplyProfileVisibleCeiling(0x01050000)
+		storeLine(t, h, "10 PRINT 1")
 		out := h.runCommand(`COMPILE "demo"`)
 		if !strings.Contains(out, "OUT OF MEMORY") {
 			t.Fatalf("COMPILE over the bound must report OUT OF MEMORY, got: %q", out)

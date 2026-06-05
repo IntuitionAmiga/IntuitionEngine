@@ -38,7 +38,7 @@ var equRe = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s+equ\s`)
 // simply not pre-loaded in the in-guest symbol table.
 //
 // Generating all ~1000 ie64.inc equs (18 KiB) left the interpreter image within ~40
-// bytes of the BASIC line buffer at 0x021000 (crossing it corrupts RUN AOT).
+// bytes of the BASIC line buffer at 0x041000 (crossing it corrupts RUN AOT).
 // Restricting the table to these namespaces keeps it ~4 KiB and clear of that wall.
 // An empty table passes the full AOT suite today, so this allowlist is conservative.
 // If a future bundled helper source references a dropped constant, add its namespace
@@ -46,13 +46,52 @@ var equRe = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s+equ\s`)
 var includeConsttabPrefixes = []string{
 	"AOT_", "ST_", "BASIC_", "TERM_", "FILE_", "ERR_", "EXEC_", "IE_",
 	"VECTOR_", "PROGRAM", "STACK_", "SYS_", "SYSINFO_", "CR_", "IO_",
-	"MEM_", "FP_", "TK_", "MODE_", "MEDIA_",
+	"MEM_", "FP_", "TK_", "MODE_", "MEDIA_", "VAL_",
 }
 
-// excludeFromConsttab drops the standalone runtime blob constants (resolved at
-// main-image assembly time, never by name in-guest) and every constant outside the
-// BASIC/system/assembler namespaces above.
+var retiredBasicContractConstants = map[string]bool{
+	"STACK_TOP":                 true,
+	"EHBASIC_PRIV_LINE_BUF":     true,
+	"EHBASIC_PRIV_LINE_BUFLEN":  true,
+	"EHBASIC_PRIV_LINE_END":     true,
+	"BASIC_PROG_START":          true,
+	"BASIC_PROG_LIMIT":          true,
+	"BASIC_PROG_END":            true,
+	"BASIC_VAR_START":           true,
+	"BASIC_VAR_END":             true,
+	"BASIC_VAR_LIMIT":           true,
+	"BASIC_SVAR_START":          true,
+	"BASIC_SVAR_END":            true,
+	"BASIC_SVAR_LIMIT":          true,
+	"BASIC_ARRAY_START":         true,
+	"BASIC_ARRAY_END":           true,
+	"BASIC_ARRAY_LIMIT":         true,
+	"BASIC_GOSUB_STACK":         true,
+	"BASIC_GOSUB_END":           true,
+	"BASIC_HW_STACK":            true,
+	"BASIC_HW_STACK_END":        true,
+	"BASIC_FOR_STACK":           true,
+	"BASIC_FOR_END":             true,
+	"BASIC_STR_TEMP":            true,
+	"BASIC_STR_END":             true,
+	"EHBASIC_PRIV_NAME_BUF":     true,
+	"EHBASIC_PRIV_LOAD_DIR_BUF": true,
+	"EHBASIC_PRIV_ASM_NAME_BUF": true,
+	"EHBASIC_PRIV_MNEM_BUF":     true,
+	"AOT_RT_PROG":               true,
+	"AOT_RT_PROG_LEN":           true,
+	"AOT_RT_PROG_PAY":           true,
+	"AOT_SYMTAB":                true,
+	"AOT_ARENA_NEXT":            true,
+}
+
+// excludeFromConsttab drops standalone/runtime-private constants resolved at
+// main-image assembly time, retired fixed BASIC buffer names, and every constant
+// outside the BASIC/system/assembler namespaces above.
 func excludeFromConsttab(name string) bool {
+	if retiredBasicContractConstants[name] {
+		return true
+	}
 	if name == "AOT_RT_BASE" || name == "AOT_RT_LIMIT" || strings.HasPrefix(name, "RT_") {
 		return true
 	}

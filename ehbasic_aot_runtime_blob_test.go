@@ -40,15 +40,15 @@ func runtimeBlobForTests(t *testing.T) []byte {
 //   - the blob assembles cleanly from its committed sources,
 //   - the org padding is exactly [PROGRAM_START, AOT_RT_BASE) and trims cleanly,
 //   - the trimmed blob fits the placement-B budget (ends at or below
-//     BASIC_PROG_LIMIT 0x050000).
+//     AOT_RT_LIMIT 0x070000).
 //
 // buildRuntimeBlobBin generates the trimmed blob bytes the COMPILE path will bundle;
 // the build/File I/O wiring (Phase 1) produces aot_runtime_blob.bin from the same
 // assemble + trim, so there is no committed binary to drift from.
 
 const (
-	aotRTBase        = 0x023000 // AOT_RT_BASE (placement B = BASIC_PROG_START)
-	aotRTLimit       = 0x050000 // AOT_RT_LIMIT (= BASIC_PROG_LIMIT)
+	aotRTBase        = 0x043000 // AOT_RT_BASE
+	aotRTLimit       = 0x070000 // AOT_RT_LIMIT
 	aotRTBlobMax     = 0x10000  // AOT_RT_BLOB_MAX: compile-time staging size / hard cap
 	aotProgramStart  = 0x001000 // PROG_START
 	aotRTOrgPadBytes = aotRTBase - aotProgramStart
@@ -133,7 +133,7 @@ func TestAOTRuntimeBlob_StandaloneCallsExprEval(t *testing.T) {
 	// Standalone image: bootstrap (stack/state/terminal regs) -> copy blob payload to
 	// AOT_RT_BASE -> var_init -> expr_eval on tokenised "5+3" -> store FP32 result at
 	// 0x000800 -> halt. The blob payload is incbin'd after the code; its load address
-	// (blob_payload, ~0x1060) is well below AOT_RT_BASE (0x023000), so the forward
+	// (blob_payload, ~0x1060) is well below AOT_RT_BASE (0x043000), so the forward
 	// copy does not overlap its destination.
 	asm := `include "ie64.inc"
 include "ehbasic_tokens.inc"
@@ -163,7 +163,8 @@ start:
     load.q  r6, (r6)
     jsr     (r6)
     move.l  r1, #0x800
-    store.l r8, (r1)
+    store.q r8, (r1)
+    store.q r9, 8(r1)
     halt
     align 8
 expr_tokens:
@@ -194,11 +195,24 @@ blob_end:
 	run.runCycles(8_000_000)
 
 	const scratch = 0x800
-	got := uint32(run.cpu.memory[scratch]) | uint32(run.cpu.memory[scratch+1])<<8 |
-		uint32(run.cpu.memory[scratch+2])<<16 | uint32(run.cpu.memory[scratch+3])<<24
-	const wantFP32 = 0x41000000 // 8.0
-	if got != wantFP32 {
-		t.Fatalf("standalone expr_eval(5+3) result = %#08x, want %#08x (FP32 8.0)", got, wantFP32)
+	gotPayload := uint64(run.cpu.memory[scratch]) |
+		uint64(run.cpu.memory[scratch+1])<<8 |
+		uint64(run.cpu.memory[scratch+2])<<16 |
+		uint64(run.cpu.memory[scratch+3])<<24 |
+		uint64(run.cpu.memory[scratch+4])<<32 |
+		uint64(run.cpu.memory[scratch+5])<<40 |
+		uint64(run.cpu.memory[scratch+6])<<48 |
+		uint64(run.cpu.memory[scratch+7])<<56
+	gotTag := uint64(run.cpu.memory[scratch+8]) |
+		uint64(run.cpu.memory[scratch+9])<<8 |
+		uint64(run.cpu.memory[scratch+10])<<16 |
+		uint64(run.cpu.memory[scratch+11])<<24 |
+		uint64(run.cpu.memory[scratch+12])<<32 |
+		uint64(run.cpu.memory[scratch+13])<<40 |
+		uint64(run.cpu.memory[scratch+14])<<48 |
+		uint64(run.cpu.memory[scratch+15])<<56
+	if gotPayload != 8 || gotTag != 2 {
+		t.Fatalf("standalone expr_eval(5+3) = payload %#x tag %#x, want payload 8 tag VAL_I64", gotPayload, gotTag)
 	}
 }
 
@@ -322,7 +336,7 @@ func TestAOTRuntimeBlob_AssemblesAndTrims(t *testing.T) {
 	blob := buildRuntimeBlobBin(t)
 	top := aotRTBase + len(blob)
 	if top > aotRTLimit {
-		t.Fatalf("trimmed blob is %d bytes; top %#x exceeds placement-B limit %#x (BASIC_PROG_LIMIT)",
+		t.Fatalf("trimmed blob is %d bytes; top %#x exceeds AOT_RT_LIMIT %#x",
 			len(blob), top, aotRTLimit)
 	}
 	// The blob must fit the compile-time low-32 staging buffer (aot_read_rt_blob

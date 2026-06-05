@@ -1,6 +1,6 @@
 # Intuition Engine Machine Monitor
 
-*Last modified: 2026-05-26*
+*Last modified: 2026-06-05*
 
 ## Overview
 
@@ -537,7 +537,7 @@ Each non-empty line must assemble to exactly one IE64 instruction. A successful 
 
 The write path is physical RAM-only. MMIO ranges, unmapped addresses, and addresses outside the backing RAM are rejected instead of invoking device side effects. The command is available only when the focussed CPU is IE64.
 
-Monitor assemble mode intentionally excludes source-file features: labels, directives, `include`, `incbin`, output-format controls, files, and multi-instruction pseudo-ops are rejected. Pseudo-ops that still encode as one instruction, such as `la`, may assemble, but `li` is rejected because it expands to more than one instruction. The standalone `ie64asm` CLI remains the full source-file assembler.
+Monitor assemble mode intentionally excludes source-file features: labels, directives, `include`, `incbin`, output-format controls, files, and multi-instruction pseudo-ops are rejected. Pseudo-ops that still encode as one instruction, such as `la`, may assemble, but `li` is rejected because it expands to more than one instruction. The one-instruction assembler accepts the same public IE64 mnemonics as the single-instruction backend used by the monitor, including the FP64 transcendental opcodes `dsin`, `dcos`, `dtan`, `datan`, `dlog`, `dexp`, and `dpow`. The standalone `ie64asm` CLI remains the full source-file assembler.
 
 Assemble mode is interactive only. Monitor scripts, macros, project `.iemonrc` files, and IEScript raw monitor wrappers such as `dbg.command`, `dbg.command_output`, `dbg.run_script`, and `dbg.macro` cannot enter or feed it.
 

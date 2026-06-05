@@ -3,10 +3,11 @@
 ; Manages BASIC program lines in memory as a sorted singly-linked list.
 ;
 ; Line format in memory:
-;   +0  (4 bytes): Next line pointer (0 = end of program)
-;   +4  (4 bytes): Line number
-;   +8  (n bytes): Tokenized content (null-terminated)
-;   After null: aligned to 4-byte boundary
+;   +0  (8 bytes): Next line pointer (0 = end of program)
+;   +8  (4 bytes): Line number
+;   +12 (4 bytes): Reserved
+;   +16 (n bytes): Tokenized content (null-terminated)
+;   After null: aligned to 8-byte boundary
 ;
 ; Register conventions:
 ;   R16 = interpreter state base (BASIC_STATE)
@@ -30,7 +31,7 @@
 ; ============================================================================
 ; line_init - Initialise program memory
 ; ============================================================================
-; Sets up an empty program with a null terminator at BASIC_PROG_START.
+; Sets up an empty program with a null terminator at ST_HEAP_BOTTOM.
 ; Input:  R16 = state block base
 ; Clobbers: R1, R2
 
@@ -38,20 +39,38 @@ line_init:
     ; Clearing the program also clears the tracked LOAD source directory, so a
     ; NEW or fresh program compiles to the File I/O root. A successful LOAD calls
     ; line_init and then re-sets the directory from the loaded path.
-    la      r1, AOT_SRC_DIR
+    la      r1, EHBASIC_PRIV_LOAD_DIR_BUF
     store.b r0, (r1)
 
-    ; Write BASIC_PROG_START to ST_PROG_START in state block
-    la      r1, BASIC_PROG_START
-    store.l r1, (r16)               ; state[ST_PROG_START] = BASIC_PROG_START
+    ; Write the current internal arena cursor to ST_PROG_START. Older focused
+    ; unit harnesses may call line_init without basic_layout_init, so seed a
+    ; reduced dynamic low32 arena only when ST_HEAP_BOTTOM is still zero.
+    add.q   r2, r16, #ST_HEAP_BOTTOM
+    load.q  r1, (r2)
+    bnez    r1, .li_have_prog_start
+    move.q  r1, #BASIC_LOW32_INTERNAL_BASE
+    move.q  r3, #(BASIC_LOW32_INTERNAL_BASE + 0x00800000)
+    add.q   r4, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r3, (r4)
+    add.q   r4, r16, #ST_FILE_BRIDGE_LOW
+    store.q r1, (r4)
+    add.q   r4, r16, #ST_HEAP_TOP
+    store.q r3, (r4)
+.li_have_prog_start:
+    store.q r1, (r16)               ; state[ST_PROG_START] = programme base
 
-    ; Write null terminator (next-ptr = 0) at BASIC_PROG_START
-    store.l r0, (r1)
+    ; Write null terminator (next-ptr = 0) at the programme base
+    store.q r0, (r1)
 
-    ; Set prog_end = BASIC_PROG_START + 4
-    add.q   r2, r1, #4
-    add.q   r1, r16, #4             ; &state[ST_PROG_END]
-    store.l r2, (r1)
+    ; Set prog_end = programme base + 8 and publish the programme arena cursor.
+    add.q   r2, r1, #8
+    add.q   r1, r16, #ST_PROG_END   ; &state[ST_PROG_END]
+    store.q r2, (r1)
+    add.q   r1, r16, #ST_HEAP_BOTTOM
+    store.q r2, (r1)
+
+    ; Reset control-flow stack bounds and cursors when program state is rebuilt.
+    jsr     exec_reset_control_stack
 
     rts
 
@@ -62,7 +81,21 @@ line_init:
 ; Clobbers: R1, R2
 
 line_new:
-    ; Same as line_init - reset to empty program
+    move.q  r2, #BASIC_LOW32_INTERNAL_BASE
+    add.q   r1, r16, #ST_FILE_BRIDGE_LOW
+    store.q r2, (r1)
+    add.q   r3, r16, #ST_HEAP_TOP
+    load.q  r4, (r3)
+    bnez    r4, .ln_have_arena_base
+    move.q  r4, #(BASIC_LOW32_INTERNAL_BASE + 0x00800000)
+    store.q r4, (r3)
+    add.q   r3, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r4, (r3)
+.ln_have_arena_base:
+    add.q   r1, r16, #ST_HEAP_BOTTOM
+    store.q r2, (r1)
+
+    ; Same as line_init after restoring the arena cursor.
     bra     line_init
 
 ; ============================================================================
@@ -80,24 +113,24 @@ line_search:
     move.q  r3, r16                 ; &state[ST_PROG_START]
 
     ; R4 = current line pointer (read from the next-pointer)
-    load.l  r4, (r3)               ; first line address
+    load.q  r4, (r3)               ; first line address
 
 .ls_loop:
     ; If current = 0, end of list
     beqz    r4, .ls_not_found
 
-    ; Empty/end terminator is the zero word immediately before ST_PROG_END.
-    ; Bytes after it can contain stale compacted line data, so do not inspect +4.
-    add.q   r1, r16, #4
-    load.l  r1, (r1)
-    sub.q   r1, r1, #4
+    ; Empty/end terminator is the zero qword immediately before ST_PROG_END.
+    ; Bytes after it can contain stale compacted line data, so do not inspect +8.
+    add.q   r1, r16, #ST_PROG_END
+    load.q  r1, (r1)
+    sub.q   r1, r1, #8
     bne     r4, r1, .ls_real_line
-    load.l  r5, (r4)
+    load.q  r5, (r4)
     beqz    r5, .ls_not_found
 .ls_real_line:
 
-    ; Read line number at current+4
-    add.q   r5, r4, #4
+    ; Read line number at current+8
+    add.q   r5, r4, #8
     load.l  r5, (r5)               ; line number of current line
 
     ; Compare with target
@@ -106,7 +139,7 @@ line_search:
 
     ; Advance: prev_next_ptr = &current->next, current = current->next
     move.q  r3, r4                 ; prev_next_ptr = current (which is &next field)
-    load.l  r4, (r4)              ; current = current->next
+    load.q  r4, (r4)              ; current = current->next
     bra     .ls_loop
 
 .ls_found:
@@ -159,18 +192,25 @@ line_store:
 
     ; Preflight storage for inserts/replacements before altering existing text.
     beqz    r24, .ls_capacity_ok
-    add.q   r13, r24, #9            ; 8 header + content + 1 null
-    add.q   r13, r13, #3
-    and.q   r13, r13, #0xFFFFFFFC   ; R13 = aligned new line size
+    add.q   r13, r24, #17           ; 16 header + content + 1 null
+    add.q   r13, r13, #7
+    and.q   r13, r13, #0xFFFFFFFFFFFFFFF8 ; R13 = aligned new line size
     add.q   r1, r16, #ST_PROG_END
-    load.l  r2, (r1)                ; R2 = current prog_end
+    load.q  r2, (r1)                ; R2 = current prog_end
     beqz    r8, .ls_capacity_append
-    load.l  r3, (r8)                ; R3 = existing line next-pointer
+    load.q  r3, (r8)                ; R3 = existing line next-pointer
     sub.q   r3, r3, r8              ; existing line size
     sub.q   r2, r2, r3              ; prog_end after replacement delete
 .ls_capacity_append:
     add.q   r2, r2, r13             ; prospective ST_PROG_END
-    move.l  r3, #BASIC_PROG_LIMIT
+    add.q   r3, r16, #ST_FILE_BRIDGE_NEXT
+    load.q  r3, (r3)
+    bnez    r3, .ls_have_capacity_limit
+    add.q   r3, r16, #ST_HEAP_TOP
+    load.q  r3, (r3)
+    bnez    r3, .ls_have_capacity_limit
+    move.q  r3, #(BASIC_LOW32_INTERNAL_BASE + 0x00800000)
+.ls_have_capacity_limit:
     bgt     r2, r3, .ls_oom
 .ls_capacity_ok:
 
@@ -178,13 +218,13 @@ line_store:
     beqz    r8, .ls_no_delete
 
     ; Found existing line at R8. Calculate its size.
-    ; Line size = header (8) + content bytes + null + align to 4
+    ; Line size = header (16) + content bytes + null + align to 8
     move.q  r14, r8                 ; R14 = old line start
-    load.l  r15, (r14)              ; R15 = old line's next-pointer (start of next line or gap end)
+    load.q  r15, (r14)              ; R15 = old line's next-pointer (start of next line or gap end)
 
     ; Calculate bytes to move: everything from R15 to prog_end needs to shift up to R14
-    add.q   r1, r16, #4             ; &state[ST_PROG_END]
-    load.l  r2, (r1)               ; R2 = prog_end
+    add.q   r1, r16, #ST_PROG_END   ; &state[ST_PROG_END]
+    load.q  r2, (r1)               ; R2 = prog_end
 
     ; Number of bytes to copy = prog_end - old_next
     sub.q   r3, r2, r15            ; R3 = bytes to copy
@@ -205,10 +245,12 @@ line_store:
 .ls_copy_done:
     ; Update prog_end: prog_end -= (old_next - old_line_start)
     sub.q   r1, r15, r14           ; size of deleted line
-    add.q   r2, r16, #4             ; &state[ST_PROG_END]
-    load.l  r3, (r2)
+    add.q   r2, r16, #ST_PROG_END   ; &state[ST_PROG_END]
+    load.q  r3, (r2)
     sub.q   r3, r3, r1
-    store.l r3, (r2)
+    store.q r3, (r2)
+    add.q   r2, r16, #ST_HEAP_BOTTOM
+    store.q r3, (r2)
 
     ; Re-search for the insertion point (addresses may have shifted)
     move.q  r8, r22                 ; line number
@@ -231,7 +273,7 @@ line_store:
     ; The insertion point is what R25 (prev_next_ptr) points to.
     ; The new line will be placed at the address currently stored in *R25.
 
-    load.l  r1, (r25)              ; R1 = current address at insertion point
+    load.q  r1, (r25)              ; R1 = current address at insertion point
     ; This is either the address of the next line or 0 (end).
     ; But we need to insert AT the position. The new line goes at the
     ; address where the next item starts.
@@ -245,10 +287,10 @@ line_store:
     ; We need to find the actual memory address.
     bnez    r15, .ls_has_next
 
-    ; Appending at end: insert address = prog_end - 4 (the null terminator location)
-    add.q   r1, r16, #4             ; &state[ST_PROG_END]
-    load.l  r15, (r1)
-    sub.q   r15, r15, #4            ; point at the null terminator
+    ; Appending at end: insert address = prog_end - 8 (the null terminator location)
+    add.q   r1, r16, #ST_PROG_END   ; &state[ST_PROG_END]
+    load.q  r15, (r1)
+    sub.q   r15, r15, #8            ; point at the null terminator
     bra     .ls_shift
 
 .ls_has_next:
@@ -256,8 +298,8 @@ line_store:
 
 .ls_shift:
     ; Shift everything from R15 to prog_end down by R14 bytes
-    add.q   r1, r16, #4             ; &state[ST_PROG_END]
-    load.l  r2, (r1)               ; R2 = prog_end
+    add.q   r1, r16, #ST_PROG_END   ; &state[ST_PROG_END]
+    load.q  r2, (r1)               ; R2 = prog_end
     sub.q   r3, r2, r15            ; R3 = bytes to move
 
     ; Copy backwards (dst > src)
@@ -275,17 +317,21 @@ line_store:
 
 .ls_shift_done:
     ; Update prog_end
-    add.q   r1, r16, #4             ; &state[ST_PROG_END]
-    load.l  r2, (r1)
+    add.q   r1, r16, #ST_PROG_END   ; &state[ST_PROG_END]
+    load.q  r2, (r1)
     add.q   r2, r2, r14
-    store.l r2, (r1)
+    store.q r2, (r1)
+    add.q   r1, r16, #ST_HEAP_BOTTOM
+    store.q r2, (r1)
 
     ; --- Step 6: Write the new line at R15 ---
-    ; Header: next-pointer (will be fixed by re-chain), line number
+    ; Header: next-pointer (will be fixed by re-chain), line number, reserved
     ; For now, write 0 as next-pointer (will be set by re-chain)
-    store.l r0, (r15)               ; next-pointer = 0 (temporary)
-    add.q   r1, r15, #4
+    store.q r0, (r15)               ; next-pointer = 0 (temporary)
+    add.q   r1, r15, #8
     store.l r22, (r1)               ; line number
+    add.q   r1, r1, #4
+    store.l r0, (r1)                ; reserved
     add.q   r1, r1, #4
 
     ; Copy content from R23 (length R24)
@@ -338,28 +384,30 @@ line_store:
 
 line_rechain:
     ; Start at prog_start
-    load.l  r1, (r16)              ; R1 = current line address
+    load.q  r1, (r16)              ; R1 = current line address
     ; Empty program invariant: current points at the zero sentinel immediately
     ; before ST_PROG_END. Stale bytes after the sentinel are ignored.
-    add.q   r3, r16, #4
-    load.l  r3, (r3)
-    sub.q   r3, r3, #4
+    add.q   r3, r16, #ST_PROG_END
+    load.q  r3, (r3)
+    sub.q   r3, r3, #8
     bne     r1, r3, .rc_loop
-    load.l  r2, (r1)
+    load.q  r2, (r1)
     bnez    r2, .rc_loop
-    add.q   r2, r1, #4
-    add.q   r3, r16, #4
-    store.l r2, (r3)
+    add.q   r2, r1, #8
+    add.q   r3, r16, #ST_PROG_END
+    store.q r2, (r3)
+    add.q   r3, r16, #ST_HEAP_BOTTOM
+    store.q r2, (r3)
     rts
 
 .rc_loop:
     ; Check if this is the end terminator (next-ptr = 0 and no valid line after)
     ; Read what's at R1: if it's the terminator sentinel, we're done
-    ; A line has: next-ptr(4), linenum(4), content..., null
-    ; The end is just a single 0x00000000 word.
+    ; A line has: next-ptr(8), linenum(4), reserved(4), content..., null
+    ; The end is just a single zero qword.
 
     ; Scan past content to find where next line would be
-    add.q   r2, r1, #8             ; R2 = start of content
+    add.q   r2, r1, #16            ; R2 = start of content
 
 .rc_scan:
     load.b  r3, (r2)
@@ -367,31 +415,31 @@ line_rechain:
     bnez    r3, .rc_scan
 
     ; R2 now points past the null terminator.
-    ; Align to 4: r2 = (r2 + 3) & ~3
-    add.q   r2, r2, #3
-    and.q   r2, r2, #0xFFFFFFFC
+    ; Align to 8: r2 = (r2 + 7) & ~7
+    add.q   r2, r2, #7
+    and.q   r2, r2, #0xFFFFFFFFFFFFFFF8
 
     ; Check if R2 >= prog_end - if so, this is the last line
-    add.q   r3, r16, #4             ; &state[ST_PROG_END]
-    load.l  r3, (r3)               ; prog_end
+    add.q   r3, r16, #ST_PROG_END   ; &state[ST_PROG_END]
+    load.q  r3, (r3)               ; prog_end
     bge     r2, r3, .rc_last
 
     ; R2 points at the next line. Check if it's a valid line or the end terminator.
-    load.l  r4, (r2)               ; peek at next line's next-pointer field
-    ; Check if there's room for another line header (8 bytes minimum).
-    ; If R2 + 8 > prog_end, this must be the terminator.
-    add.q   r5, r2, #8
+    load.q  r4, (r2)               ; peek at next line's next-pointer field
+    ; Check if there's room for another line header (16 bytes minimum).
+    ; If R2 + 16 > prog_end, this must be the terminator.
+    add.q   r5, r2, #16
     bgt     r5, r3, .rc_last
 
     ; Valid next line exists at R2
-    store.l r2, (r1)               ; current->next = R2
+    store.q r2, (r1)               ; current->next = R2
     move.q  r1, r2                 ; advance to next line
     bra     .rc_loop
 
 .rc_last:
     ; This is the last line. Its next-pointer targets the zero terminator word.
-    store.l r2, (r1)
-    store.l r0, (r2)               ; terminator = 0
+    store.q r2, (r1)
+    store.q r0, (r2)               ; terminator = 0
     rts
 
 ; ============================================================================
@@ -412,7 +460,7 @@ line_list:
     move.q  r23, r9                 ; R23 = end line#
 
     ; Start at first line
-    load.l  r14, (r16)              ; R14 = current line pointer
+    load.q  r14, (r16)              ; R14 = current line pointer
 
 .ll_loop:
     ; Check for end of list
@@ -420,17 +468,17 @@ line_list:
 
     ; Stop on the in-memory empty/end sentinel. Stale bytes after the sentinel
     ; are ignored because compaction only guarantees the zero word itself.
-    add.q   r1, r16, #4
-    load.l  r1, (r1)
-    sub.q   r1, r1, #4
+    add.q   r1, r16, #ST_PROG_END
+    load.q  r1, (r1)
+    sub.q   r1, r1, #8
     bne     r14, r1, .ll_real_line
-    load.l  r15, (r14)
+    load.q  r15, (r14)
     beqz    r15, .ll_done
 .ll_real_line:
 
     ; Read next-pointer and line number
-    load.l  r15, (r14)              ; R15 = next-pointer
-    add.q   r1, r14, #4
+    load.q  r15, (r14)              ; R15 = next-pointer
+    add.q   r1, r14, #8
     load.l  r1, (r1)               ; R1 = line number
 
     ; Check range
@@ -446,10 +494,10 @@ line_list:
     jsr     putchar
 
     ; Print content (detokenized)
-    add.q   r8, r14, #8            ; tokenized source
-    la      r9, BASIC_LINE_BUF     ; detokenize scratch/output buffer
+    add.q   r8, r14, #16           ; tokenized source
+    la      r9, EHBASIC_PRIV_LINE_BUF     ; detokenize scratch/output buffer
     jsr     detokenize
-    la      r8, BASIC_LINE_BUF
+    la      r8, EHBASIC_PRIV_LINE_BUF
     jsr     print_string
 
     ; Print CR+LF

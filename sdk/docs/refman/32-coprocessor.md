@@ -103,6 +103,11 @@ Enqueues a request. The request is `reqLen` bytes starting at
 `reqPtr`; the response can use up to `respCap` bytes at `respPtr`.
 The `op` value is a service-defined operation code.
 
+For any non-zero `reqLen` or `respCap`, the corresponding pointer must
+be a public low32 span allocated by `MEMALLOC`. Invalid raw pointers
+raise `?FC ERROR`. Zero-length request or response spans may use pointer
+`0`.
+
 `COCALL` returns a non-zero ticket on success. It returns `0` on
 enqueue failure; read `COPROC_CMD_ERROR` to learn why.
 
@@ -151,14 +156,14 @@ Type this listing:
 
 ```basic
 10 REM PUT REQUEST AND RESPONSE BUFFERS IN SHARED RAM
-20 REQ=&H00030000:RESP=&H00030100
-30 POKE REQ,123
+20 REQ=MEMALLOC(8,4):RESP=MEMALLOC(16,4)
+30 POKE32 REQ,123
 40 REM ASK CPU TYPE 3, THE 6502, TO RUN OPERATION 1
 50 T=COCALL(3,1,REQ,4,RESP,4)
 60 PRINT "TICKET ";T
-70 PRINT "CMD ";PEEK(&H000F2348)
-80 PRINT "ERR ";PEEK(&H000F234C)
-90 PRINT "WORKERS ";PEEK(&H000F2374)
+70 PRINT "CMD ";PEEK32(&H000F2348)
+80 PRINT "ERR ";PEEK32(&H000F234C)
+90 PRINT "WORKERS ";PEEK32(&H000F2374)
 ```
 
 Expected result:
@@ -293,16 +298,16 @@ checked by hand in IE Mon.
 When a service is present, the BASIC side looks like this:
 
 ```basic
-10 REQ=&H00030000
-20 RESP=&H00030100
-30 POKE REQ,42
+10 REQ=MEMALLOC(8,4)
+20 RESP=MEMALLOC(16,4)
+30 POKE32 REQ,42
 40 COSTART 3,"MUL.IE65"
 50 T=COCALL(3,1,REQ,4,RESP,4)
 60 IF T=0 THEN PRINT "SUBMIT FAILED":END
 70 COWAIT T,1000
 80 S=COSTATUS(T)
 90 IF S<>2 THEN PRINT "STATUS ";S:END
-100 PRINT "ANSWER ";PEEK(RESP)
+100 PRINT "ANSWER ";PEEK32(RESP)
 110 COSTOP 3
 ```
 

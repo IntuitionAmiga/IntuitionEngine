@@ -178,10 +178,10 @@ The DAC ports are a small state machine. Write the entry number to
 third byte. The `PALETTE` BASIC keyword uses this sequence.
 
 ```basic
-100 POKE &H000F1058, 1                  : REM WINDEX = 1
-110 POKE &H000F105C, 63                 : REM red
-120 POKE &H000F105C, 0                  : REM green
-130 POKE &H000F105C, 0                  : REM blue
+100 POKE32 &H000F1058, 1                  : REM WINDEX = 1
+110 POKE32 &H000F105C, 63                 : REM red
+120 POKE32 &H000F105C, 0                  : REM green
+130 POKE32 &H000F105C, 0                  : REM blue
 ```
 
 The same entry can also be written directly through the palette
@@ -250,7 +250,7 @@ This program draws a red horizontal line in Mode X:
 10 SCREEN &H14
 20 PALETTE 1, 63, 0, 0
 30 FOR X=0 TO 319
-40 POKE &H000F1018, 2^(X AND 3)
+40 POKE32 &H000F1018, 2^(X AND 3)
 50 POKE8 &H000A0000 + 120*80 + INT(X/4), 1
 60 NEXT X
 70 VSYNC
@@ -298,10 +298,10 @@ This example writes one Mode 12h pixel directly. It sets colour index
 20 X=100:Y=100
 30 A=&H000A0000+Y*80+INT(X/8)
 40 B=128/2^(X AND 7)
-50 POKE &H000F103C,B
-60 POKE &H000F1018,1
+50 POKE32 &H000F103C,B
+60 POKE32 &H000F1018,1
 70 POKE8 A,255
-80 POKE &H000F1018,4
+80 POKE32 &H000F1018,4
 90 POKE8 A,255
 100 VSYNC
 ```
@@ -357,8 +357,8 @@ For raw register control, write `VGA_CRTC_STARTHI` and
 display one text row later:
 
 ```basic
-100 POKE &H000F1028, 0
-110 POKE &H000F102C, 80
+100 POKE32 &H000F1028, 0
+110 POKE32 &H000F102C, 80
 ```
 
 ## 5.6 The vertical retrace

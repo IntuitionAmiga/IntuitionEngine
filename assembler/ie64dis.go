@@ -125,6 +125,13 @@ const (
 	dis64_DCVTFI   = 0x8E
 	dis64_FCVTSD   = 0x8F
 	dis64_FCVTDS   = 0x90
+	dis64_DSIN     = 0x91
+	dis64_DCOS     = 0x92
+	dis64_DTAN     = 0x93
+	dis64_DATAN    = 0x94
+	dis64_DLOG     = 0x95
+	dis64_DEXP     = 0x96
+	dis64_DPOW     = 0x97
 	dis64_NOP      = 0xE0
 	dis64_HALT     = 0xE1
 	dis64_SEI      = 0xE2
@@ -248,6 +255,13 @@ var opcodeNames = map[byte]string{
 	dis64_DCVTFI:   "dcvtfi",
 	dis64_FCVTSD:   "fcvtsd",
 	dis64_FCVTDS:   "fcvtds",
+	dis64_DSIN:     "dsin",
+	dis64_DCOS:     "dcos",
+	dis64_DTAN:     "dtan",
+	dis64_DATAN:    "datan",
+	dis64_DLOG:     "dlog",
+	dis64_DEXP:     "dexp",
+	dis64_DPOW:     "dpow",
 	dis64_NOP:      "nop",
 	dis64_HALT:     "halt",
 	dis64_SEI:      "sei",
@@ -351,7 +365,7 @@ func isSized(op byte) bool {
 	if op >= dis64_FMOV && op <= dis64_FMOVCC {
 		return false
 	}
-	if op >= dis64_DMOV && op <= dis64_FCVTDS {
+	if op >= dis64_DMOV && op <= dis64_DPOW {
 		return false
 	}
 	return true
@@ -577,7 +591,7 @@ func FormatInstruction(d DecodedInstruction) (string, string) {
 	case d.Opcode >= dis64_FMOV && d.Opcode <= dis64_FMOVCC:
 		return hexBytes, formatFPU(d, mnemonic)
 
-	case d.Opcode >= dis64_DMOV && d.Opcode <= dis64_FCVTDS:
+	case d.Opcode >= dis64_DMOV && d.Opcode <= dis64_DPOW:
 		return hexBytes, formatFPU(d, mnemonic)
 
 	default:
@@ -625,9 +639,10 @@ func formatFPU(d DecodedInstruction, mnemonic string) string {
 			return fmt.Sprintf("%s %s, (%s)", mnemonic, fr(d.Rd), regName(d.Rs))
 		}
 		return fmt.Sprintf("%s %s, %d(%s)", mnemonic, fr(d.Rd), disp, regName(d.Rs))
-	case dis64_DADD, dis64_DSUB, dis64_DMUL, dis64_DDIV, dis64_DMOD:
+	case dis64_DADD, dis64_DSUB, dis64_DMUL, dis64_DDIV, dis64_DMOD, dis64_DPOW:
 		return fmt.Sprintf("%s %s, %s, %s", mnemonic, fr(d.Rd), fr(d.Rs), fr(d.Rt))
-	case dis64_DABS, dis64_DNEG, dis64_DSQRT, dis64_DINT:
+	case dis64_DABS, dis64_DNEG, dis64_DSQRT, dis64_DINT,
+		dis64_DSIN, dis64_DCOS, dis64_DTAN, dis64_DATAN, dis64_DLOG, dis64_DEXP:
 		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
 	case dis64_DCMP:
 		return fmt.Sprintf("%s %s, %s, %s", mnemonic, regName(d.Rd), fr(d.Rs), fr(d.Rt))

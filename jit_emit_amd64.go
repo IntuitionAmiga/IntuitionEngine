@@ -1564,6 +1564,8 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitDLOAD_AMD64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_DSTORE:
 		emitDSTORE_AMD64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DSIN, OP_DCOS, OP_DTAN, OP_DATAN, OP_DLOG, OP_DEXP, OP_DPOW:
+		emitDTransHelperExitAMD64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_DMOV, OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD,
 		OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT, OP_DCMP, OP_DCVTIF, OP_DCVTFI, OP_FCVTSD, OP_FCVTDS:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
@@ -4212,6 +4214,24 @@ func emitFPMemHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, op uint32
 	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)
 	amd64MOV_mem_reg(cb, amd64R11, int32(jitCtxOffHelperPC), amd64RCX)
 	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffNeedHelper), op)
+
+	bailCount := ji.pcOffset / IE64_INSTR_SIZE
+	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
+}
+
+func emitDTransHelperExitAMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffHelperSize), uint32(ji.opcode))
+	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffHelperRd), uint32(ji.rd))
+	amd64MOV_reg_imm64(cb, amd64RCX, uint64(ji.rs))
+	amd64MOV_mem_reg(cb, amd64R11, int32(jitCtxOffHelperAddr), amd64RCX)
+	amd64MOV_reg_imm64(cb, amd64RCX, uint64(ji.rt))
+	amd64MOV_mem_reg(cb, amd64R11, int32(jitCtxOffHelperVal), amd64RCX)
+	amd64MOV_mem_reg(cb, amd64R11, int32(jitCtxOffLiveSP), amd64RegIE64SP)
+	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)
+	amd64MOV_mem_reg(cb, amd64R11, int32(jitCtxOffHelperPC), amd64RCX)
+	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffNeedHelper), HELPER_DTRANS)
 
 	bailCount := ji.pcOffset / IE64_INSTR_SIZE
 	emitPackedPCAndCount(cb, instrPC, bailCount, br)

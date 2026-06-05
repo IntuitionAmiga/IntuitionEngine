@@ -212,6 +212,50 @@ io_print_uint32:
     rts
 
 ; ============================================================================
+; io_print_int64 - Print a signed 64-bit integer
+; ============================================================================
+; Input: R8 = signed qword value
+; Clobbers: R1-R7, R14
+
+io_print_int64:
+    push    r14
+    move.q  r1, r8
+    bgez    r1, .ipi64_abs_ready
+    push    r1
+    move.q  r8, #0x2D              ; '-'
+    jsr     putchar
+    pop     r1
+    not.q   r1, r1
+    add.q   r1, r1, #1
+.ipi64_abs_ready:
+    beqz    r1, .ipi64_zero
+    move.q  r14, r0
+.ipi64_div_loop:
+    beqz    r1, .ipi64_print
+    move.q  r2, r1
+    move.q  r3, #10
+    divu.q  r2, r2, r3
+    mulu.q  r4, r2, r3
+    sub.q   r3, r1, r4
+    add.q   r3, r3, #0x30
+    push    r3
+    add.q   r14, r14, #1
+    move.q  r1, r2
+    bra     .ipi64_div_loop
+.ipi64_print:
+    beqz    r14, .ipi64_end
+    pop     r8
+    jsr     putchar
+    sub.q   r14, r14, #1
+    bra     .ipi64_print
+.ipi64_zero:
+    move.q  r8, #0x30
+    jsr     putchar
+.ipi64_end:
+    pop     r14
+    rts
+
+; ============================================================================
 ; read_line - Read a line of input into buffer
 ; ============================================================================
 ; Input:  R8 = pointer to buffer

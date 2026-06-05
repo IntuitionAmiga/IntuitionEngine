@@ -40,7 +40,7 @@ than from direct mode) ` IN ` followed by the line number.
 | `7`  | `ILLEGAL QUANTITY` | A function received an argument outside its domain (negative `SQR`, non-positive `LOG`, out-of-range `CHR$`). |
 | `8`  | `OVERFLOW`         | An arithmetic operation overflowed the 32-bit floating-point range. |
 | `9`  | `TYPE MISMATCH`    | A numeric expression saw a string, or vice versa. |
-| `10` | `FC`               | Illegal function call. Raised by `POKE` to an unaligned address, by a failed `HOST` action, and by other built-in helpers when they reject their argument shape. |
+| `10` | `FC`               | Illegal function call. Raised by `POKE16`, `POKE32`, or `POKE64` to an unaligned address, by a failed `HOST` action, and by other built-in helpers when they reject their argument shape. |
 | `11` | `REDIM`            | `DIM` named an array that already exists. |
 
 Additional message strings produced by specific verbs:

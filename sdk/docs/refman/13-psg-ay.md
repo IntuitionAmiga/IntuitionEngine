@@ -21,7 +21,7 @@ Turn the mixer on first, then give a channel a tone divider and a level:
 
 ```basic
 10 REM PSG FIRST TONE
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 PSG MIXER &H3E
 40 PSG 0,284,15
 ```
@@ -47,7 +47,7 @@ higher notes.
 | Access width    | Byte registers                         |
 
 The PSG register block is byte-wide. Use `POKE8` when you are programming the
-raw registers directly. A wide `POKE` to the PSG register window can update
+raw registers directly. A `POKE32` to the PSG register window can update
 more than one adjacent byte register.
 
 ## 13.2 Register block
@@ -105,7 +105,7 @@ For exact register work, type the bytes yourself:
 
 ```basic
 10 REM PSG RAW 12 BIT TONE
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 REM SPLIT THE 12 BIT DIVIDER
 40 D=284
 50 POKE8 &H000F0C00,D AND 255
@@ -157,7 +157,7 @@ This example makes a small three-note PSG chord:
 
 ```basic
 10 REM PSG THREE VOICES
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 REM OPEN TONE A, B, AND C
 40 PSG MIXER &H38
 50 REM THREE RELATED DIVIDERS
@@ -205,7 +205,7 @@ noise into a pulsing burst:
 
 ```basic
 10 REM PSG PULSING NOISE
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 REM NOISE PERIOD AND ROUTE
 40 POKE8 &H000F0C06,5
 50 PSG MIXER &H37
@@ -233,7 +233,7 @@ oversampling, light drive, and room processing.
 
 ```basic
 10 REM COMPARE PSG PLUS
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 PSG MIXER &H3E
 40 PSG 0,284,15
 50 REM LISTEN TO THE PLAIN PSG FIRST

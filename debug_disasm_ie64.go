@@ -49,6 +49,8 @@ var ie64OpcodeNames = map[byte]string{
 	OP_DMOD: "dmod", OP_DABS: "dabs", OP_DNEG: "dneg", OP_DSQRT: "dsqrt",
 	OP_DINT: "dint", OP_DCMP: "dcmp", OP_DCVTIF: "dcvtif", OP_DCVTFI: "dcvtfi",
 	OP_FCVTSD: "fcvtsd", OP_FCVTDS: "fcvtds",
+	OP_DSIN: "dsin", OP_DCOS: "dcos", OP_DTAN: "dtan", OP_DATAN: "datan",
+	OP_DLOG: "dlog", OP_DEXP: "dexp", OP_DPOW: "dpow",
 	OP_NOP64: "nop", OP_HALT64: "halt", OP_SEI64: "sei", OP_CLI64: "cli",
 	OP_RTI64: "rti", OP_WAIT64: "wait",
 	OP_MTCR: "mtcr", OP_MFCR: "mfcr", OP_ERET: "eret",
@@ -92,7 +94,7 @@ func ie64IsSized(op byte) bool {
 	if op >= OP_FMOV && op <= OP_FMOVCC {
 		return false
 	}
-	if op >= OP_DMOV && op <= OP_FCVTDS {
+	if op >= OP_DMOV && op <= OP_DPOW {
 		return false
 	}
 	return true
@@ -303,7 +305,7 @@ func ie64FormatInstruction(d ie64Decoded) (string, string) {
 
 	case d.Opcode >= OP_FMOV && d.Opcode <= OP_FMOVCC:
 		return hexBytes, ie64FormatFPU(d, mnemonic)
-	case d.Opcode >= OP_DMOV && d.Opcode <= OP_FCVTDS:
+	case d.Opcode >= OP_DMOV && d.Opcode <= OP_DPOW:
 		return hexBytes, ie64FormatFPU(d, mnemonic)
 
 	default:
@@ -363,9 +365,9 @@ func ie64FormatFPU(d ie64Decoded, mnemonic string) string {
 			return fmt.Sprintf("%s %s, (%s)", mnemonic, fr(d.Rd), ie64RegName(d.Rs))
 		}
 		return fmt.Sprintf("%s %s, %d(%s)", mnemonic, fr(d.Rd), disp, ie64RegName(d.Rs))
-	case OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD:
+	case OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD, OP_DPOW:
 		return fmt.Sprintf("%s %s, %s, %s", mnemonic, fr(d.Rd), fr(d.Rs), fr(d.Rt))
-	case OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT:
+	case OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT, OP_DSIN, OP_DCOS, OP_DTAN, OP_DATAN, OP_DLOG, OP_DEXP:
 		return fmt.Sprintf("%s %s, %s", mnemonic, fr(d.Rd), fr(d.Rs))
 	case OP_DCMP:
 		return fmt.Sprintf("%s %s, %s, %s", mnemonic, ie64RegName(d.Rd), fr(d.Rs), fr(d.Rt))

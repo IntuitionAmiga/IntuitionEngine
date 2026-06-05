@@ -11,24 +11,18 @@ aot_consttab:
     dc.l VECTOR_IRQ
     dc.b 13, "PROGRAM_START"
     dc.l PROGRAM_START
-    dc.b 9, "STACK_TOP"
-    dc.l STACK_TOP
+    dc.b 17, "BASIC_STACK_BYTES"
+    dc.l BASIC_STACK_BYTES
+    dc.b 16, "BASIC_CTRL_BYTES"
+    dc.l BASIC_CTRL_BYTES
+    dc.b 23, "BASIC_STACK_GUARD_BYTES"
+    dc.l BASIC_STACK_GUARD_BYTES
+    dc.b 24, "BASIC_RESIDENT_LOW32_CAP"
+    dc.l BASIC_RESIDENT_LOW32_CAP
+    dc.b 25, "BASIC_LOW32_INTERNAL_BASE"
+    dc.l BASIC_LOW32_INTERNAL_BASE
     dc.b 15, "AOT_RT_BLOB_MAX"
     dc.l AOT_RT_BLOB_MAX
-    dc.b 11, "AOT_RT_PROG"
-    dc.l AOT_RT_PROG
-    dc.b 12, "AOT_USE_PROG"
-    dc.l AOT_USE_PROG
-    dc.b 15, "AOT_RT_PROG_LEN"
-    dc.l AOT_RT_PROG_LEN
-    dc.b 15, "AOT_RT_PROG_PAY"
-    dc.l AOT_RT_PROG_PAY
-    dc.b 14, "BASIC_LINE_BUF"
-    dc.l BASIC_LINE_BUF
-    dc.b 17, "BASIC_LINE_BUFLEN"
-    dc.l BASIC_LINE_BUFLEN
-    dc.b 14, "BASIC_LINE_END"
-    dc.l BASIC_LINE_END
     dc.b 11, "BASIC_STATE"
     dc.l BASIC_STATE
     dc.b 15, "BASIC_STATE_END"
@@ -49,16 +43,44 @@ aot_consttab:
     dc.l ST_HEAP_TOP
     dc.b 14, "ST_HEAP_BOTTOM"
     dc.l ST_HEAP_BOTTOM
-    dc.b 15, "ST_CURRENT_LINE"
-    dc.l ST_CURRENT_LINE
     dc.b 11, "ST_TEXT_PTR"
     dc.l ST_TEXT_PTR
+    dc.b 11, "ST_TEXT_END"
+    dc.l ST_TEXT_END
     dc.b 11, "ST_DATA_PTR"
     dc.l ST_DATA_PTR
+    dc.b 11, "ST_DATA_END"
+    dc.l ST_DATA_END
     dc.b 11, "ST_GOSUB_SP"
     dc.l ST_GOSUB_SP
     dc.b 9, "ST_FOR_SP"
     dc.l ST_FOR_SP
+    dc.b 13, "ST_SVAR_START"
+    dc.l ST_SVAR_START
+    dc.b 11, "ST_SVAR_END"
+    dc.l ST_SVAR_END
+    dc.b 16, "ST_CONT_LINE_PTR"
+    dc.l ST_CONT_LINE_PTR
+    dc.b 16, "ST_CONT_TEXT_PTR"
+    dc.l ST_CONT_TEXT_PTR
+    dc.b 15, "ST_COPPER_BUILD"
+    dc.l ST_COPPER_BUILD
+    dc.b 16, "ST_EXPORT_CURSOR"
+    dc.l ST_EXPORT_CURSOR
+    dc.b 12, "ST_STACK_LOW"
+    dc.l ST_STACK_LOW
+    dc.b 13, "ST_STACK_HIGH"
+    dc.l ST_STACK_HIGH
+    dc.b 11, "ST_CTRL_LOW"
+    dc.l ST_CTRL_LOW
+    dc.b 12, "ST_CTRL_HIGH"
+    dc.l ST_CTRL_HIGH
+    dc.b 19, "ST_FILE_BRIDGE_NEXT"
+    dc.l ST_FILE_BRIDGE_NEXT
+    dc.b 18, "ST_FILE_BRIDGE_LOW"
+    dc.l ST_FILE_BRIDGE_LOW
+    dc.b 15, "ST_CURRENT_LINE"
+    dc.l ST_CURRENT_LINE
     dc.b 14, "ST_RANDOM_SEED"
     dc.l ST_RANDOM_SEED
     dc.b 13, "ST_ERROR_FLAG"
@@ -67,14 +89,8 @@ aot_consttab:
     dc.l ST_TRACE_FLAG
     dc.b 14, "ST_DIRECT_MODE"
     dc.l ST_DIRECT_MODE
-    dc.b 13, "ST_SVAR_START"
-    dc.l ST_SVAR_START
-    dc.b 11, "ST_SVAR_END"
-    dc.l ST_SVAR_END
     dc.b 12, "ST_TEXT_ATTR"
     dc.l ST_TEXT_ATTR
-    dc.b 15, "ST_COPPER_BUILD"
-    dc.l ST_COPPER_BUILD
     dc.b 13, "ST_ULA_BRIGHT"
     dc.l ST_ULA_BRIGHT
     dc.b 10, "ST_ULA_INK"
@@ -83,28 +99,46 @@ aot_consttab:
     dc.l ST_ULA_PAPER
     dc.b 12, "ST_ULA_FLASH"
     dc.l ST_ULA_FLASH
-    dc.b 16, "ST_CONT_LINE_PTR"
-    dc.l ST_CONT_LINE_PTR
-    dc.b 16, "ST_CONT_TEXT_PTR"
-    dc.l ST_CONT_TEXT_PTR
     dc.b 13, "ST_ERROR_LINE"
     dc.l ST_ERROR_LINE
     dc.b 11, "ST_TERM_COL"
     dc.l ST_TERM_COL
+    dc.b 23, "ST_PRIV_MEMALLOC_CURSOR"
+    dc.l ST_PRIV_MEMALLOC_CURSOR
+    dc.b 22, "ST_PRIV_MEMALLOC_RANGE"
+    dc.l ST_PRIV_MEMALLOC_RANGE
+    dc.b 20, "BASIC_MEMALLOC_BASE0"
+    dc.l BASIC_MEMALLOC_BASE0
+    dc.b 19, "BASIC_MEMALLOC_END0"
+    dc.l BASIC_MEMALLOC_END0
+    dc.b 20, "BASIC_MEMALLOC_BASE1"
+    dc.l BASIC_MEMALLOC_BASE1
+    dc.b 19, "BASIC_MEMALLOC_END1"
+    dc.l BASIC_MEMALLOC_END1
+    dc.b 20, "BASIC_MEMALLOC_BASE2"
+    dc.l BASIC_MEMALLOC_BASE2
+    dc.b 19, "BASIC_MEMALLOC_END2"
+    dc.l BASIC_MEMALLOC_END2
+    dc.b 17, "BASIC_EXPORT_BASE"
+    dc.l BASIC_EXPORT_BASE
+    dc.b 16, "BASIC_EXPORT_END"
+    dc.l BASIC_EXPORT_END
+    dc.b 7, "VAL_F64"
+    dc.l VAL_F64
+    dc.b 7, "VAL_I64"
+    dc.l VAL_I64
     dc.b 15, "AOT_ALLOC_FLOOR"
     dc.l AOT_ALLOC_FLOOR
+    dc.b 14, "AOT_LOW32_BASE"
+    dc.l AOT_LOW32_BASE
+    dc.b 13, "AOT_LOW32_END"
+    dc.l AOT_LOW32_END
     dc.b 13, "AOT_LOW32_CAP"
     dc.l AOT_LOW32_CAP
-    dc.b 14, "AOT_ARENA_NEXT"
-    dc.l AOT_ARENA_NEXT
-    dc.b 12, "AOT_MNEM_BUF"
-    dc.l AOT_MNEM_BUF
+    dc.b 27, "AOT_FILE_BRIDGE_LOW_DEFAULT"
+    dc.l AOT_FILE_BRIDGE_LOW_DEFAULT
     dc.b 10, "AOT_SYMCNT"
     dc.l AOT_SYMCNT
-    dc.b 10, "AOT_SYMTAB"
-    dc.l AOT_SYMTAB
-    dc.b 14, "AOT_SYMTAB_PTR"
-    dc.l AOT_SYMTAB_PTR
     dc.b 11, "AOT_SYM_MAX"
     dc.l AOT_SYM_MAX
     dc.b 16, "AOT_SYMTAB_BYTES"
@@ -143,6 +177,8 @@ aot_consttab:
     dc.l AOT_QSCOPE
     dc.b 13, "AOT_USE_PRINT"
     dc.l AOT_USE_PRINT
+    dc.b 14, "AOT_SYMTAB_PTR"
+    dc.l AOT_SYMTAB_PTR
     dc.b 10, "AOT_USE_FP"
     dc.l AOT_USE_FP
     dc.b 13, "AOT_HELPER_FP"
@@ -153,6 +189,18 @@ aot_consttab:
     dc.l AOT_HELPER_LEN
     dc.b 12, "AOT_IF_LABEL"
     dc.l AOT_IF_LABEL
+    dc.b 11, "AOT_CONT_PC"
+    dc.l AOT_CONT_PC
+    dc.b 19, "AOT_ARENA_HIGH_NEXT"
+    dc.l AOT_ARENA_HIGH_NEXT
+    dc.b 14, "AOT_LOW32_NEXT"
+    dc.l AOT_LOW32_NEXT
+    dc.b 20, "AOT_FILE_BRIDGE_NEXT"
+    dc.l AOT_FILE_BRIDGE_NEXT
+    dc.b 19, "AOT_FILE_BRIDGE_LOW"
+    dc.l AOT_FILE_BRIDGE_LOW
+    dc.b 20, "AOT_RESET_GENERATION"
+    dc.l AOT_RESET_GENERATION
     dc.b 10, "AOT_FOR_SP"
     dc.l AOT_FOR_SP
     dc.b 13, "AOT_FOR_STACK"
@@ -177,10 +225,18 @@ aot_consttab:
     dc.l AOT_RT_LEN
     dc.b 14, "AOT_RT_PAYLOAD"
     dc.l AOT_RT_PAYLOAD
-    dc.b 11, "AOT_CONT_PC"
-    dc.l AOT_CONT_PC
-    dc.b 16, "AOT_ASM_NAME_BUF"
-    dc.l AOT_ASM_NAME_BUF
+    dc.b 12, "AOT_USE_PROG"
+    dc.l AOT_USE_PROG
+    dc.b 16, "AOT_ASM_NAME_PTR"
+    dc.l AOT_ASM_NAME_PTR
+    dc.b 16, "AOT_ASM_NAME_CAP"
+    dc.l AOT_ASM_NAME_CAP
+    dc.b 12, "AOT_MNEM_PTR"
+    dc.l AOT_MNEM_PTR
+    dc.b 12, "AOT_MNEM_CAP"
+    dc.l AOT_MNEM_CAP
+    dc.b 14, "AOT_SYMTAB_CAP"
+    dc.l AOT_SYMTAB_CAP
     dc.b 10, "ERR_SYNTAX"
     dc.l ERR_SYNTAX
     dc.b 8, "ERR_DIV0"
@@ -203,36 +259,6 @@ aot_consttab:
     dc.l ERR_FC
     dc.b 9, "ERR_REDIM"
     dc.l ERR_REDIM
-    dc.b 16, "BASIC_PROG_START"
-    dc.l BASIC_PROG_START
-    dc.b 16, "BASIC_PROG_LIMIT"
-    dc.l BASIC_PROG_LIMIT
-    dc.b 14, "BASIC_PROG_END"
-    dc.l BASIC_PROG_END
-    dc.b 15, "BASIC_VAR_START"
-    dc.l BASIC_VAR_START
-    dc.b 13, "BASIC_VAR_END"
-    dc.l BASIC_VAR_END
-    dc.b 16, "BASIC_SVAR_START"
-    dc.l BASIC_SVAR_START
-    dc.b 14, "BASIC_SVAR_END"
-    dc.l BASIC_SVAR_END
-    dc.b 17, "BASIC_ARRAY_START"
-    dc.l BASIC_ARRAY_START
-    dc.b 15, "BASIC_ARRAY_END"
-    dc.l BASIC_ARRAY_END
-    dc.b 14, "BASIC_STR_TEMP"
-    dc.l BASIC_STR_TEMP
-    dc.b 13, "BASIC_STR_END"
-    dc.l BASIC_STR_END
-    dc.b 17, "BASIC_GOSUB_STACK"
-    dc.l BASIC_GOSUB_STACK
-    dc.b 15, "BASIC_GOSUB_END"
-    dc.l BASIC_GOSUB_END
-    dc.b 14, "BASIC_HW_STACK"
-    dc.l BASIC_HW_STACK
-    dc.b 18, "BASIC_HW_STACK_END"
-    dc.l BASIC_HW_STACK_END
     dc.b 8, "TERM_OUT"
     dc.l TERM_OUT
     dc.b 11, "TERM_STATUS"
@@ -309,12 +335,6 @@ aot_consttab:
     dc.l FILE_OP_WRITE
     dc.b 12, "FILE_OP_LIST"
     dc.l FILE_OP_LIST
-    dc.b 13, "FILE_NAME_BUF"
-    dc.l FILE_NAME_BUF
-    dc.b 11, "AOT_SRC_DIR"
-    dc.l AOT_SRC_DIR
-    dc.b 13, "FILE_DATA_BUF"
-    dc.l FILE_DATA_BUF
     dc.b 14, "MEDIA_NAME_PTR"
     dc.l MEDIA_NAME_PTR
     dc.b 13, "MEDIA_SUBSONG"

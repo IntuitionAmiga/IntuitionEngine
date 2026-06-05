@@ -1,27 +1,27 @@
 1 REM ============================================================================
 2 REM SPLASH WOBBLE DEMO - RAW RGBA SPLASH PLUS MIDI
-3 REM EhBASIC for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
+3 REM IE64 BASIC for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
 4 REM ============================================================================
 5 REM Run: bin/IntuitionEngine -basic
 6 REM      LOAD "sdk/examples/basic/splash_wobble.bas"
 7 REM      RUN
 8 REM
-9 REM MEMORY MAP:
-10 REM   0x100000  Front framebuffer (640x480x4)
-11 REM   0x600000  Splash source image (640x92x4)
-12 REM   0x900000  Back framebuffer (640x480x4)
+9 REM MEMORY:
+10 REM   MEMALLOC front framebuffer (640x480x4)
+11 REM   MEMALLOC splash source image (640x92x4)
+12 REM   MEMALLOC back framebuffer (640x480x4)
 13 REM ============================================================================
 
 100 REM HARDWARE SETUP
-110 FB=&H100000:SR=&H600000:BB=&H900000
+110 FB=MEMALLOC(1228800):SR=MEMALLOC(235520):BB=MEMALLOC(1228800)
 120 ST=2560:SW=640:SH=92:TP=194
-130 POKE &HF0000,1:POKE &HF0004,0
-140 POKE &HF0080,0
+130 POKE32 &HF0004,0:POKE32 &HF0080,0:POKE32 &HF0084,FB
+140 POKE32 &HF0000,1
 
 200 REM LOAD SPLASH AND START MIDI
 210 BLOAD "sdk/examples/assets/splash_640x92.rgba",SR
 220 SOUND PLAY "sdk/examples/assets/music/enjoythesilence.mid"
-230 PRINT "MEDIA_TYPE=";PEEK(&HF2310)
+230 PRINT "MEDIA_TYPE=";PEEK32(&HF2310)
 
 300 REM STATIC CENTERED SPLASH
 310 BLIT FILL FB,640,480,&H00000000,ST

@@ -43,7 +43,7 @@ type ie64TurboStats struct {
 	inlinedCalls    atomic.Uint64
 	ioBails         atomic.Uint64
 	invalidations   atomic.Uint64
-	helperExits     [HELPER_JSR_IND + 1]atomic.Uint64
+	helperExits     [HELPER_DTRANS + 1]atomic.Uint64
 }
 
 var globalIE64TurboStats ie64TurboStats
@@ -59,7 +59,7 @@ type ie64TurboStatsSnapshot struct {
 	inlinedCalls    uint64
 	ioBails         uint64
 	invalidations   uint64
-	helperExits     [HELPER_JSR_IND + 1]uint64
+	helperExits     [HELPER_DTRANS + 1]uint64
 }
 
 func ie64TurboStatsLoad() ie64TurboStatsSnapshot {

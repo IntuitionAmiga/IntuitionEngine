@@ -3618,6 +3618,24 @@ func (chip *VideoChip) drawRasterBandLocked() {
 					}
 				}
 			}
+		} else if chip.fbBase != 0 {
+			if chip.copperManagedByCompositor && (chip.fbBase < VRAM_START || chip.fbBase >= VRAM_START+VRAM_SIZE) {
+				continue
+			}
+			rowOffset := uint64(chip.fbBase) + uint64(y*mode.bytesPerRow)
+			for x := 0; x < mode.width; x++ {
+				offset := rowOffset + uint64(x*BYTES_PER_PIXEL)
+				if chip.busMemory != nil && offset+BYTES_PER_PIXEL <= uint64(len(chip.busMemory)) {
+					binary.LittleEndian.PutUint32(chip.busMemory[offset:], chip.rasterColor)
+					continue
+				}
+				if chip.directVRAM != nil && offset >= VRAM_START {
+					directOff := offset - VRAM_START
+					if directOff+BYTES_PER_PIXEL <= uint64(len(chip.directVRAM)) {
+						binary.LittleEndian.PutUint32(chip.directVRAM[directOff:], chip.rasterColor)
+					}
+				}
+			}
 		} else if chip.directVRAM != nil {
 			rowOffset := uint32(y * mode.bytesPerRow)
 			for x := 0; x < mode.width; x++ {

@@ -57,10 +57,10 @@ directly into the video matrix:
 
 ```basic
 10 TED ON
-20 POKE &H000F0F20, &H18          : REM DEN + RSEL
-30 POKE &H000F0F24, &H08          : REM CSEL
-40 POKE &H000F0F30, &H06          : REM blue background
-50 POKE &H000F0F40, &H5E          : REM bright dark-blue border
+20 POKE8 &H000F0F20, &H18          : REM DEN + RSEL
+30 POKE8 &H000F0F24, &H08          : REM CSEL
+40 POKE8 &H000F0F30, &H06          : REM blue background
+50 POKE8 &H000F0F40, &H5E          : REM bright dark-blue border
 60 FOR I=0 TO 999
 70 POKE8 &H000F3000+I, 32
 80 POKE8 &H000F3400+I, &H71
@@ -222,13 +222,13 @@ glyph and four different background registers:
 
 ```basic
 10 TED ON
-20 POKE &H000F0F20, &H58          : REM ECM + DEN + RSEL
-30 POKE &H000F0F24, &H08          : REM 40 columns
-40 POKE &H000F0F30, &H72          : REM red
-50 POKE &H000F0F34, &H75          : REM green
-60 POKE &H000F0F38, &H76          : REM blue
-70 POKE &H000F0F3C, &H77          : REM yellow
-80 POKE &H000F0F40, &H71          : REM white border
+20 POKE8 &H000F0F20, &H58          : REM ECM + DEN + RSEL
+30 POKE8 &H000F0F24, &H08          : REM 40 columns
+40 POKE8 &H000F0F30, &H72          : REM red
+50 POKE8 &H000F0F34, &H75          : REM green
+60 POKE8 &H000F0F38, &H76          : REM blue
+70 POKE8 &H000F0F3C, &H77          : REM yellow
+80 POKE8 &H000F0F40, &H71          : REM white border
 90 FOR I=0 TO 999
 100 K=1+64*INT((I MOD 40)/10)
 110 POKE8 &H000F3000+I, K
@@ -261,12 +261,12 @@ This program builds one four-colour glyph and fills the screen with it:
 
 ```basic
 10 TED ON
-20 POKE &H000F0F20, &H18          : REM DEN + RSEL
-30 POKE &H000F0F24, &H18          : REM MCM + CSEL
-40 POKE &H000F0F30, &H06          : REM background blue
-50 POKE &H000F0F34, &H72          : REM multicolour 1 red
-60 POKE &H000F0F38, &H75          : REM multicolour 2 green
-70 POKE &H000F0F40, &H71
+20 POKE8 &H000F0F20, &H18          : REM DEN + RSEL
+30 POKE8 &H000F0F24, &H18          : REM MCM + CSEL
+40 POKE8 &H000F0F30, &H06          : REM background blue
+50 POKE8 &H000F0F34, &H72          : REM multicolour 1 red
+60 POKE8 &H000F0F38, &H75          : REM multicolour 2 green
+70 POKE8 &H000F0F40, &H71
 80 FOR R=0 TO 7
 90 POKE8 &H000F3800+2*8+R,&H1B
 100 NEXT R
@@ -313,10 +313,10 @@ yellow and blue hatch stripes:
 
 ```basic
 10 TED ON
-20 POKE &H000F0F20, &H38          : REM BMM + DEN + RSEL
-30 POKE &H000F0F24, &H08          : REM hires, 40 columns
-40 POKE &H000F0F28, &H28          : REM bitmap base $2000
-50 POKE &H000F0F40, &H71
+20 POKE8 &H000F0F20, &H38          : REM BMM + DEN + RSEL
+30 POKE8 &H000F0F24, &H08          : REM hires, 40 columns
+40 POKE8 &H000F0F28, &H28          : REM bitmap base $2000
+50 POKE8 &H000F0F40, &H71
 60 FOR I=0 TO 999
 70 POKE8 &H000F3000+I, &H76       : REM bit 1 yellow, bit 0 blue
 80 NEXT I
@@ -344,10 +344,10 @@ This example fills the screen with repeating four-colour vertical bars:
 
 ```basic
 10 TED ON
-20 POKE &H000F0F20, &H38          : REM BMM + DEN + RSEL
-30 POKE &H000F0F24, &H18          : REM MCM + CSEL
-40 POKE &H000F0F28, &H28          : REM bitmap base $2000
-50 POKE &H000F0F30, &H06          : REM background blue
+20 POKE8 &H000F0F20, &H38          : REM BMM + DEN + RSEL
+30 POKE8 &H000F0F24, &H18          : REM MCM + CSEL
+40 POKE8 &H000F0F28, &H28          : REM bitmap base $2000
+50 POKE8 &H000F0F30, &H06          : REM background blue
 60 FOR I=0 TO 999
 70 POKE8 &H000F3000+I, &H75       : REM green and blue nibbles
 80 POKE8 &H000F3400+I, &H72       : REM bright red
@@ -401,9 +401,9 @@ This puts the cursor on row `12`, column `20`, in bright yellow:
 
 ```basic
 10 P=12*40+20
-20 POKE &H000F0F44, INT(P/256)
-30 POKE &H000F0F48, P AND 255
-40 POKE &H000F0F4C, &H77
+20 POKE8 &H000F0F44, INT(P/256)
+30 POKE8 &H000F0F48, P AND 255
+40 POKE8 &H000F0F4C, &H77
 ```
 
 ## 6.10 Raster compare and status
@@ -428,14 +428,14 @@ background to bright red, then acknowledges the compare:
 
 ```basic
 10 TED ON
-20 POKE &H000F0F20, &H18
-30 POKE &H000F0F24, &H08
-40 POKE &H000F0F30, &H76
-50 POKE &H000F0F60, 100
-60 POKE &H000F0F64, 0
-70 IF (PEEK(&H000F0F68) AND 128)=0 THEN 70
-80 POKE &H000F0F30, &H72
-90 POKE &H000F0F68, 128
+20 POKE8 &H000F0F20, &H18
+30 POKE8 &H000F0F24, &H08
+40 POKE8 &H000F0F30, &H76
+50 POKE8 &H000F0F60, 100
+60 POKE8 &H000F0F64, 0
+70 IF (PEEK8(&H000F0F68) AND 128)=0 THEN 70
+80 POKE8 &H000F0F30, &H72
+90 POKE8 &H000F0F68, 128
 ```
 
 Raster interrupts are how the C16 and Plus/4 split the screen into
@@ -454,15 +454,15 @@ scanline `80`. The copper word format is documented in Chapter 4.
 
 ```basic
 10 TED ON
-20 POKE &H000F0F40, &H72
+20 POKE8 &H000F0F40, &H72
 30 L=&H00003000
-40 POKE L+0,  &H8003C3C8               : REM SETBASE $F0F20
-50 POKE L+4,  &H00050000               : REM WAIT y=80, x=0
-60 POKE L+8,  &H40080000               : REM MOVE border index
-70 POKE L+12, &H00000075               : REM green
-80 POKE L+16, &HC0000000               : REM END
-90 POKE &H000F0010, L                  : REM COPPER_PTR
-100 POKE &H000F000C, 1                 : REM COPPER_CTRL
+40 POKE32 L+0,  &H8003C3C8               : REM SETBASE $F0F20
+50 POKE32 L+4,  &H00050000               : REM WAIT y=80, x=0
+60 POKE32 L+8,  &H40080000               : REM MOVE border index
+70 POKE32 L+12, &H00000075               : REM green
+80 POKE32 L+16, &HC0000000               : REM END
+90 POKE32 &H000F0010, L                  : REM COPPER_PTR
+100 POKE32 &H000F000C, 1                 : REM COPPER_CTRL
 ```
 
 You should see the top border in bright red and the lower border in

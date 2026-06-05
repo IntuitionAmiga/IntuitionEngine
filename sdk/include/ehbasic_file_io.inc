@@ -1,4 +1,4 @@
-; ehbasic_file_io.inc - LOAD/SAVE and Detokenizer for EhBASIC IE64
+; ehbasic_file_io.inc - LOAD/SAVE and Detokenizer for IE64 BASIC
 
 ; ============================================================================
 ; Keyword String Constants
@@ -22,15 +22,14 @@ tk_return_str:   dc.b "RETURN", 0
 tk_rem_str:      dc.b "REM", 0
 tk_stop_str:     dc.b "STOP", 0
 tk_on_str:       dc.b "ON", 0
-tk_tron_str:     dc.b "TRON", 0
+tk_ext_str:      dc.b 0
 tk_inc_str:      dc.b "INC", 0
 tk_wait_str:     dc.b "WAIT", 0
 tk_load_str:     dc.b "LOAD", 0
 tk_save_str:     dc.b "SAVE", 0
-tk_troff_str:    dc.b "TROFF", 0
+tk_def_str:      dc.b "DEF", 0
 tk_poke_str:     dc.b "POKE", 0
-tk_doke_str:     dc.b "DOKE", 0
-tk_loke_str:     dc.b "LOKE", 0
+tk_removed_str:  dc.b 0
 tk_call_str:     dc.b "CALL", 0
 tk_do_str:       dc.b "DO", 0
 tk_loop_str:     dc.b "LOOP", 0
@@ -81,8 +80,6 @@ tk_sin_str:      dc.b "SIN", 0
 tk_tan_str:      dc.b "TAN", 0
 tk_atn_str:      dc.b "ATN", 0
 tk_peek_str:     dc.b "PEEK", 0
-tk_deek_str:     dc.b "DEEK", 0
-tk_leek_str:     dc.b "LEEK", 0
 tk_sadd_str:     dc.b "SADD", 0
 tk_len_str:      dc.b "LEN", 0
 tk_strs_str:     dc.b "STR$", 0
@@ -102,6 +99,22 @@ tk_vptr_str:     dc.b "VARPTR", 0
 tk_lefts_str:    dc.b "LEFT$", 0
 tk_rights_str:   dc.b "RIGHT$", 0
 tk_mids_str:     dc.b "MID$", 0
+tk_ext_tron_str:     dc.b "TRON", 0
+tk_ext_troff_str:    dc.b "TROFF", 0
+tk_ext_memalloc_str: dc.b "MEMALLOC", 0
+tk_ext_poke8_str:    dc.b "POKE8", 0
+tk_ext_poke16_str:   dc.b "POKE16", 0
+tk_ext_poke32_str:   dc.b "POKE32", 0
+tk_ext_poke64_str:   dc.b "POKE64", 0
+tk_ext_peek8_str:    dc.b "PEEK8", 0
+tk_ext_peek16_str:   dc.b "PEEK16", 0
+tk_ext_peek32_str:   dc.b "PEEK32", 0
+tk_ext_peek64_str:   dc.b "PEEK64", 0
+
+detok_ext_table:
+    dc.l tk_ext_tron_str, tk_ext_troff_str, tk_ext_memalloc_str, tk_ext_poke8_str
+    dc.l tk_ext_poke16_str, tk_ext_poke32_str, tk_ext_poke64_str, tk_ext_peek8_str
+    dc.l tk_ext_peek16_str, tk_ext_peek32_str, tk_ext_peek64_str
 
 ; Hardware extensions
 tk_screen_str:   dc.b "SCREEN", 0
@@ -144,9 +157,9 @@ detok_table:
     dc.l tk_input_str, tk_dim_str, tk_read_str, tk_let_str
     dc.l tk_dec_str, tk_goto_str, tk_run_str, tk_if_str
     dc.l tk_restore_str, tk_gosub_str, tk_return_str, tk_rem_str
-    dc.l tk_stop_str, tk_on_str, tk_tron_str, tk_inc_str
-    dc.l tk_wait_str, tk_load_str, tk_save_str, tk_troff_str
-    dc.l tk_poke_str, tk_doke_str, tk_loke_str, tk_call_str
+    dc.l tk_stop_str, tk_on_str, tk_ext_str, tk_inc_str
+    dc.l tk_wait_str, tk_load_str, tk_save_str, tk_def_str
+    dc.l tk_poke_str, tk_removed_str, tk_removed_str, tk_call_str
     dc.l tk_do_str, tk_loop_str, tk_print_str, tk_cont_str
     dc.l tk_list_str, tk_clear_str, tk_new_str, tk_width_str
     dc.l tk_get_str, tk_swap_str, tk_bitset_str, tk_bitclr_str
@@ -159,7 +172,7 @@ detok_table:
     dc.l tk_abs_str, tk_usr_str, tk_fre_str, tk_pos_str
     dc.l tk_sqr_str, tk_rnd_str, tk_log_str, tk_exp_str
     dc.l tk_cos_str, tk_sin_str, tk_tan_str, tk_atn_str
-    dc.l tk_peek_str, tk_deek_str, tk_leek_str, tk_sadd_str
+    dc.l tk_peek_str, tk_removed_str, tk_removed_str, tk_sadd_str
     dc.l tk_len_str, tk_strs_str, tk_val_str, tk_asc_str
     dc.l tk_ucases_str, tk_lcases_str, tk_chrs_str, tk_hexs_str
     dc.l tk_bins_str, tk_bittst_str, tk_max_str, tk_min_str
@@ -263,6 +276,8 @@ detokenize:
     blt     r1, r2, .detok_literal
     
     ; It's a token
+    move.q  r2, #TK_EXT
+    beq     r1, r2, .detok_ext
     sub.q   r2, r1, #0x80
     li      r3, #4
     mulu.l  r2, r2, r3
@@ -288,6 +303,23 @@ detokenize:
     
     add.q   r10, r10, #1
     bra     .detok_main
+
+.detok_ext:
+    add.q   r10, r10, #1            ; consume TK_EXT
+    load.b  r2, (r10)               ; subtoken
+    move.q  r3, #0x0B
+    bge     r2, r3, .detok_ext_bad
+    li      r3, #4
+    mulu.l  r2, r2, r3
+    la      r3, detok_ext_table
+    add.q   r3, r3, r2
+    load.l  r4, (r3)
+    bra     .detok_copy_kw
+.detok_ext_bad:
+    move.q  r8, #ERR_SYNTAX
+    la      r9, err_msg_syntax
+    jsr     raise_error
+    bra     .detok_eol
 
 .detok_literal:
     ; Check for quote
@@ -349,8 +381,8 @@ exec_do_save:
     jsr     str_eval                ; R8 = filename pointer
     move.q  r10, r8                 ; R10 = filename
     
-    ; Copy filename to FILE_NAME_BUF
-    la      r1, FILE_NAME_BUF
+    ; Copy filename to EHBASIC_PRIV_NAME_BUF
+    la      r1, EHBASIC_PRIV_NAME_BUF
 .save_copy_name:
     load.b  r2, (r10)
     store.b r2, (r1)
@@ -358,16 +390,34 @@ exec_do_save:
     add.q   r1, r1, #1
     bnez    r2, .save_copy_name
     
+    ; Reserve transient private low32 file-data bridge scratch for the
+    ; detokenised output.
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    load.q  r20, (r1)               ; saved bridge cursor
+    bnez    r20, .save_bridge_have_top
+    move.q  r20, #(BASIC_LOW32_INTERNAL_BASE + 0x100000)
+.save_bridge_have_top:
+    move.q  r23, r20
+    sub.q   r23, r23, #0x100000
+    add.q   r1, r16, #ST_FILE_BRIDGE_LOW
+    load.q  r2, (r1)
+    bnez    r2, .save_bridge_have_low
+    move.q  r2, #BASIC_LOW32_INTERNAL_BASE
+.save_bridge_have_low:
+    blt     r23, r2, .save_oom
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r23, (r1)
+
     ; Start walking lines
-    la      r11, FILE_DATA_BUF      ; R11 = output write ptr
-    load.l  r14, (r16)              ; R14 = first line ptr (ST_PROG_START)
+    move.q  r11, r23                ; R11 = output write ptr
+    load.q  r14, (r16)              ; R14 = first line ptr (ST_PROG_START)
     
 .save_line_loop:
-    load.l  r1, (r14)               ; get next-pointer
+    load.q  r1, (r14)               ; get next-pointer
     beqz    r1, .save_trigger       ; if NULL, this is the end sentinel
     
     ; Line number
-    load.l  r8, 4(r14)
+    load.l  r8, 8(r14)
     move.q  r9, r11
     jsr     uint32_to_buf           ; R8 = len, R9 = advanced ptr
     move.q  r11, r9
@@ -377,8 +427,8 @@ exec_do_save:
     store.b r1, (r11)
     add.q   r11, r11, #1
     
-    ; Detokenize content (at r14+8)
-    add.q   r8, r14, #8
+    ; Detokenize content (at r14+16)
+    add.q   r8, r14, #16
     move.q  r9, r11
     jsr     detokenize              ; R8 = len, R9 = advanced ptr
     move.q  r11, r9
@@ -389,22 +439,20 @@ exec_do_save:
     add.q   r11, r11, #1
     
     ; Next line
-    load.l  r14, (r14)
+    load.q  r14, (r14)
     bra     .save_line_loop
 
 .save_trigger:
     ; Setup MMIO
     la      r1, FILE_NAME_PTR
-    la      r2, FILE_NAME_BUF
+    la      r2, EHBASIC_PRIV_NAME_BUF
     store.l r2, (r1)
     
     la      r1, FILE_DATA_PTR
-    la      r2, FILE_DATA_BUF
-    store.l r2, (r1)
+    store.l r23, (r1)
     
     la      r1, FILE_DATA_LEN
-    la      r2, FILE_DATA_BUF
-    sub.q   r2, r11, r2             ; length
+    sub.q   r2, r11, r23            ; length
     store.l r2, (r1)
     
     la      r1, FILE_CTRL
@@ -416,11 +464,21 @@ exec_do_save:
     load.l  r1, (r1)
     beqz    r1, .save_success
     
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r20, (r1)
     move.q  r8, #ERR_FC
     la      r9, .msg_file_error
     jsr     raise_error
     
 .save_success:
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r20, (r1)
+    rts
+
+.save_oom:
+    move.q  r8, #ERR_OOM
+    la      r9, err_msg_oom
+    jsr     raise_error
     rts
 
 .msg_file_error: dc.b "FILE", 0
@@ -433,8 +491,8 @@ exec_do_load:
     jsr     str_eval                ; R8 = filename
     move.q  r10, r8
     
-    ; Copy to FILE_NAME_BUF
-    la      r1, FILE_NAME_BUF
+    ; Copy to EHBASIC_PRIV_NAME_BUF
+    la      r1, EHBASIC_PRIV_NAME_BUF
 .load_copy_name:
     load.b  r2, (r10)
     store.b r2, (r1)
@@ -442,13 +500,35 @@ exec_do_load:
     add.q   r1, r1, #1
     bnez    r2, .load_copy_name
     
+    ; Reserve transient private low32 file-data bridge scratch for the read.
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    load.q  r20, (r1)               ; saved bridge cursor
+    bnez    r20, .load_bridge_have_top
+    ; Legacy focused-harness fallback: keep LOAD's 1 MiB read buffer above
+    ; the fallback program arena so line_init cannot overwrite the input.
+    move.q  r20, #(BASIC_LOW32_INTERNAL_BASE + 0x200000)
+.load_bridge_have_top:
+    move.q  r23, r20
+    sub.q   r23, r23, #0x100000
+    add.q   r1, r16, #ST_FILE_BRIDGE_LOW
+    load.q  r2, (r1)
+    bnez    r2, .load_bridge_have_low
+    move.q  r2, #BASIC_LOW32_INTERNAL_BASE
+.load_bridge_have_low:
+    blt     r23, r2, .load_oom
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r23, (r1)
+
     ; Setup MMIO
     la      r1, FILE_NAME_PTR
-    la      r2, FILE_NAME_BUF
+    la      r2, EHBASIC_PRIV_NAME_BUF
     store.l r2, (r1)
     
     la      r1, FILE_DATA_PTR
-    la      r2, FILE_DATA_BUF
+    store.l r23, (r1)
+
+    la      r1, FILE_READ_MAX
+    move.q  r2, #0x100000
     store.l r2, (r1)
     
     la      r1, FILE_CTRL
@@ -460,20 +540,36 @@ exec_do_load:
     load.l  r1, (r1)
     beqz    r1, .load_process
     
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r20, (r1)
     la      r8, .msg_not_found
     jsr     print_string
     jsr     print_crlf
     rts
 
 .load_process:
-    ; NEW (clear current program first; line_init also clears AOT_SRC_DIR)
+    la      r1, FILE_RESULT_LEN
+    load.l  r3, (r1)                ; R3 = bytes read
+    lsl.q   r3, r3, #32
+    lsr.q   r3, r3, #32
+    add.q   r1, r16, #ST_HEAP_BOTTOM
+    move.q  r2, #BASIC_LOW32_INTERNAL_BASE
+    store.q r2, (r1)
+
+    ; NEW (clear current program first; line_init also clears EHBASIC_PRIV_LOAD_DIR_BUF)
+    push    r23
+    push    r3
     jsr     line_init
     jsr     var_init
+    pop     r3
+    pop     r23
 
-    ; Record the source directory: the FILE_NAME_BUF prefix up to and including
+    move.q  r24, r3                 ; preserve byte count across directory scan
+
+    ; Record the source directory: the EHBASIC_PRIV_NAME_BUF prefix up to and including
     ; the last '/'. COMPILE writes its output beside this directory. No '/' means
-    ; the File I/O root (AOT_SRC_DIR left empty).
-    la      r1, FILE_NAME_BUF
+    ; the File I/O root (EHBASIC_PRIV_LOAD_DIR_BUF left empty).
+    la      r1, EHBASIC_PRIV_NAME_BUF
     move.q  r2, r0                 ; R2 = directory length (bytes up to last '/')
     move.q  r3, r0                 ; R3 = scan index
 .load_dir_scan:
@@ -487,7 +583,7 @@ exec_do_load:
     add.q   r3, r3, #1
     bra     .load_dir_scan
 .load_dir_copy:
-    la      r7, AOT_SRC_DIR
+    la      r7, EHBASIC_PRIV_LOAD_DIR_BUF
     move.q  r3, r0
 .load_dir_cpy_loop:
     beq     r3, r2, .load_dir_done
@@ -501,16 +597,13 @@ exec_do_load:
     add.q   r6, r7, r2
     store.b r0, (r6)              ; null-terminate
 
-    ; State management: R25=read ptr, R26=end ptr, R27=line#
+    ; State management: preserve the REPL's cached terminal registers before
+    ; borrowing R25/R26/R27 for LOAD parsing state.
     push    r25
     push    r26
     push    r27
-
-    la      r25, FILE_DATA_BUF
-    la      r1, FILE_RESULT_LEN
-    load.l  r3, (r1)                ; R3 = bytes read
-    la      r1, FILE_DATA_BUF
-    add.q   r26, r1, r3             ; R26 = end of data
+    move.q  r25, r23                ; R25 = read ptr
+    add.q   r26, r23, r24           ; R26 = end of data
 
 .l_line_loop:
     beq     r25, r26, .l_finished
@@ -562,9 +655,9 @@ exec_do_load:
     add.q   r25, r25, #1
     bra     .l_skip_spc
 
-    ; 3. Copy content until newline to BASIC_LINE_BUF
+    ; 3. Copy content until newline to EHBASIC_PRIV_LINE_BUF
 .l_copy_line:
-    la      r12, BASIC_LINE_BUF
+    la      r12, EHBASIC_PRIV_LINE_BUF
     move.q  r13, r12
 .l_cp_loop:
     beq     r25, r26, .l_cp_done
@@ -584,14 +677,14 @@ exec_do_load:
     push    r25
     push    r26
     push    r27
-    la      r8, BASIC_LINE_BUF
-    la      r9, 0x021800            ; temp tokenize buffer
+    la      r8, EHBASIC_PRIV_LINE_BUF
+    la      r9, 0x041800            ; temp tokenize buffer
     jsr     tokenize
     move.q  r10, r8                 ; length
 
     pop     r27                     ; restore line#
     move.q  r8, r27
-    la      r9, 0x021800
+    la      r9, 0x041800
     jsr     line_store
     bnez    r8, .l_store_error
 
@@ -625,6 +718,8 @@ exec_do_load:
     pop     r27
     pop     r26
     pop     r25
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r20, (r1)
     ; Signal end of execution
     move.q  r28, #2
     rts
@@ -635,6 +730,14 @@ exec_do_load:
     pop     r27
     pop     r26
     pop     r25
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r20, (r1)
+    rts
+
+.load_oom:
+    move.q  r8, #ERR_OOM
+    la      r9, err_msg_oom
+    jsr     raise_error
     rts
 
 .msg_not_found: dc.b "?FILE NOT FOUND", 0
@@ -647,8 +750,8 @@ exec_do_bload:
     jsr     str_eval                ; R8 = filename pointer
     move.q  r10, r8
 
-    ; Copy to FILE_NAME_BUF
-    la      r1, FILE_NAME_BUF
+    ; Copy to EHBASIC_PRIV_NAME_BUF
+    la      r1, EHBASIC_PRIV_NAME_BUF
 .bload_copy_name:
     load.b  r2, (r10)
     store.b r2, (r1)
@@ -663,15 +766,16 @@ exec_do_bload:
     bne     r1, r2, .bload_syntax_err
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
-    jsr     expr_eval               ; R8 = destination (FP32)
+    jsr     expr_eval               ; R8 = destination payload, R9 = tag
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .bload_dest_i64
 
     ; The File I/O ABI carries the destination through the 32-bit FILE_DATA_PTR,
-    ; so a destination of 2^32 or more cannot be represented. fp_fix would saturate
-    ; it silently (fcvtfi is a signed int32 truncation), so test the FP value here,
-    ; before the conversion, and raise ?FC ERROR rather than loading to a bad
-    ; address. 2^32 = 0x4F800000 in FP32.
+    ; so a destination of 2^32 or more cannot be represented. Test the FP64 value
+    ; before integer conversion and raise ?FC ERROR rather than loading to a bad
+    ; address. 2^32 = 0x41F0000000000000 in FP64.
     move.q  r10, r8                 ; preserve the destination value
-    move.l  r9, #0x4F800000         ; 2^32
+    li      r9, #0x41F0000000000000 ; 2^32
     jsr     fp_cmp                  ; R8 = -1 (less), 0 (equal), 1 (greater)
     move.l  r1, #0xFFFFFFFF         ; -1 -> destination < 2^32 (representable)
     bne     r8, r1, .bload_range_err
@@ -680,14 +784,43 @@ exec_do_bload:
     jsr     fp_int
     jsr     fp_fix                  ; R8 = destination address
     move.q  r11, r8
+    bra     .bload_dest_ready
+
+.bload_dest_i64:
+    move.q  r11, r8
+
+.bload_dest_ready:
+    move.q  r22, r11                ; final destination address
+
+    ; Reserve transient private low32 file-data bridge scratch. The File I/O ABI
+    ; is 32-bit, so it reads into this bridge and BASIC copies to the destination.
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    load.q  r20, (r1)               ; saved bridge cursor
+    bnez    r20, .bload_bridge_have_top
+    move.q  r20, #(BASIC_LOW32_INTERNAL_BASE + 0x100000) ; legacy focused-harness fallback
+.bload_bridge_have_top:
+    move.q  r23, r20
+    sub.q   r23, r23, #0x400000     ; 4 MiB transient read bridge
+    add.q   r1, r16, #ST_FILE_BRIDGE_LOW
+    load.q  r2, (r1)
+    bnez    r2, .bload_bridge_have_low
+    move.q  r2, #BASIC_LOW32_INTERNAL_BASE
+.bload_bridge_have_low:
+    blt     r23, r2, .bload_oom
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r23, (r1)
 
     ; Setup MMIO
     la      r1, FILE_NAME_PTR
-    la      r2, FILE_NAME_BUF
+    la      r2, EHBASIC_PRIV_NAME_BUF
     store.l r2, (r1)
 
     la      r1, FILE_DATA_PTR
-    store.l r11, (r1)               ; destination address in VM memory
+    store.l r23, (r1)               ; transient bridge buffer
+
+    la      r1, FILE_READ_MAX
+    move.q  r2, #0x400000
+    store.l r2, (r1)
 
     la      r1, FILE_CTRL
     li      r2, #1                  ; OP_READ
@@ -696,12 +829,48 @@ exec_do_bload:
     ; Check status
     la      r1, FILE_STATUS
     load.l  r1, (r1)
-    beqz    r1, .bload_success
+    beqz    r1, .bload_copy
 
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r20, (r1)
     la      r8, msg_bload_not_found
     jsr     print_string
     jsr     print_crlf
     rts
+
+.bload_copy:
+    la      r1, FILE_RESULT_LEN
+    load.l  r24, (r1)
+    lsl.q   r24, r24, #32
+    lsr.q   r24, r24, #32
+
+    ; Validate the final destination span before copying. The File I/O ABI only
+    ; constrains the temporary bridge pointer; the BASIC destination itself is a
+    ; 64-bit address and must fit inside active visible RAM without wrapping.
+    move.q  r5, r22
+    add.q   r5, r5, r24
+    blt     r5, r22, .bload_copy_range_err
+    mfcr    r6, cr15
+    bnez    r6, .bload_have_active_ram
+    move.q  r6, #0x02000000
+.bload_have_active_ram:
+    bgt     r5, r6, .bload_copy_range_err
+
+    move.q  r1, r23                 ; src bridge
+    move.q  r2, r22                 ; dst
+    move.q  r3, r24                 ; count
+    beqz    r3, .bload_restore_success
+.bload_copy_loop:
+    load.b  r4, (r1)
+    store.b r4, (r2)
+    add.q   r1, r1, #1
+    add.q   r2, r2, #1
+    sub.q   r3, r3, #1
+    bnez    r3, .bload_copy_loop
+.bload_restore_success:
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r20, (r1)
+    bra     .bload_success
 
 .bload_syntax_err:
     ; Match existing interpreter style: fail silently on malformed statement.
@@ -710,6 +879,17 @@ exec_do_bload:
 .bload_range_err:
     move.q  r8, #ERR_FC
     la      r9, err_msg_fc
+    jsr     raise_error
+    rts
+
+.bload_copy_range_err:
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r20, (r1)
+    bra     .bload_range_err
+
+.bload_oom:
+    move.q  r8, #ERR_OOM
+    la      r9, err_msg_oom
     jsr     raise_error
     rts
 

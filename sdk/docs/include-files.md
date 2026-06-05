@@ -9,7 +9,7 @@ Hardware definition include files for Intuition Engine programs. Each file provi
 | `iexec.inc` | IE64 / IntuitionOS | ie64asm | IntuitionOS kernel ABI, syscall, task/image-layout, and startup-block constants |
 | `ie32.inc` | IE32 | ie32asm | Hardware constants (`.equ` directives) |
 | `ie64.inc` | IE64 | ie64asm | Hardware constants and macros |
-| `ie64_fp.inc` | IE64 | ie64asm | IEEE 754 FP32 math library |
+| `ie64_fp.inc` | IE64 | ie64asm | IEEE 754 FP64 BASIC math and print helpers |
 | `ie65.inc` | 6502 | ca65 | Constants, macros, zero page allocation |
 | `ie65.cfg` | 6502 | ld65 | Linker configuration |
 | `ie68.inc` | M68K | vasmm68k_mot | Constants with M68K macros |
@@ -46,11 +46,11 @@ The M14 native executable contract is documented separately in `sdk/docs/Intuiti
 
 As of **M15.3**, `iexec.inc` adds three more `DOS_ASSIGN` sub-ops and their payload sizing constants:
 
-- `DOS_ASSIGN_LAYERED_QUERY` (3) — share-in: name, share-out: `count × target[DOS_ASSIGN_LAYERED_TGT_SZ]` (32-byte slots, NUL-padded). `reply.data0` = effective count. Returns the FULL ordered list: overlay entries first, then the built-in base list, with duplicate targets collapsed.
-- `DOS_ASSIGN_ADD` (4) — share-in: `row[name[16], target[16]]`. Appends `target` to the canonical layered overlay; duplicate-add is a no-op. Rejects `RAM:`, `T:`, `SYS:`, `IOSSYS:`, and any non-canonical user assign with `DOS_ERR_BADARG`.
-- `DOS_ASSIGN_REMOVE` (5) — share-in: `row[name[16], target[16]]`. Removes one target from the mutable overlay. Built-in base entries cannot be removed (they remain visible through `DOS_ASSIGN_LAYERED_QUERY`).
-- `DOS_ASSIGN_LAYERED_TGT_SZ` (32) — bytes per target slot in the LAYERED_QUERY response.
-- `DOS_ASSIGN_OVERLAY_MAX` (4) — max overlay entries per canonical layered assign.
+- `DOS_ASSIGN_LAYERED_QUERY` (3) --- share-in: name, share-out: `count × target[DOS_ASSIGN_LAYERED_TGT_SZ]` (32-byte slots, NUL-padded). `reply.data0` = effective count. Returns the FULL ordered list: overlay entries first, then the built-in base list, with duplicate targets collapsed.
+- `DOS_ASSIGN_ADD` (4) --- share-in: `row[name[16], target[16]]`. Appends `target` to the canonical layered overlay; duplicate-add is a no-op. Rejects `RAM:`, `T:`, `SYS:`, `IOSSYS:`, and any non-canonical user assign with `DOS_ERR_BADARG`.
+- `DOS_ASSIGN_REMOVE` (5) --- share-in: `row[name[16], target[16]]`. Removes one target from the mutable overlay. Built-in base entries cannot be removed (they remain visible through `DOS_ASSIGN_LAYERED_QUERY`).
+- `DOS_ASSIGN_LAYERED_TGT_SZ` (32) --- bytes per target slot in the LAYERED_QUERY response.
+- `DOS_ASSIGN_OVERLAY_MAX` (4) --- max overlay entries per canonical layered assign.
 
 The compatibility ops (`DOS_ASSIGN_LIST`, `DOS_ASSIGN_QUERY`, `DOS_ASSIGN_SET`) keep their M15.2 semantics through a first-effective-target projection.
 
@@ -76,12 +76,12 @@ inputs, and shared-memory `MAPF_READ` / `MAPF_WRITE` rules remain mandatory.
 
 As of **M15.6**, `iexec.inc` adds the CPU-level SMEP/SMAP-equivalent controls and the supervisor-user-access latch opcodes so kernel-side assembly can reference them symbolically:
 
-- `MMU_CTRL_ENABLE` (bit 0) — MMU translation enable (already established).
-- `MMU_CTRL_SUPER` (bit 1) — supervisor mode, read-only.
-- `MMU_CTRL_SKEF` (bit 2) — supervisor-kernel-execute-fault enable. When set, a supervisor instruction fetch from a page with `PTE_U==1` faults with `FAULT_SKEF`.
-- `MMU_CTRL_SKAC` (bit 3) — supervisor-kernel-access-check enable. When set, a supervisor read or write on a page with `PTE_U==1` faults with `FAULT_SKAC` unless the `SUA` latch is also set.
-- `MMU_CTRL_SUA` (bit 4) — supervisor-user-access latch, mutated only by `SUAEN` / `SUADIS` (ignored by `MTCR CR_MMU_CTRL`).
-- `FAULT_SKEF` (9) / `FAULT_SKAC` (10) — new fault cause codes raised by the SKEF / SKAC checks.
+- `MMU_CTRL_ENABLE` (bit 0) --- MMU translation enable (already established).
+- `MMU_CTRL_SUPER` (bit 1) --- supervisor mode, read-only.
+- `MMU_CTRL_SKEF` (bit 2) --- supervisor-kernel-execute-fault enable. When set, a supervisor instruction fetch from a page with `PTE_U==1` faults with `FAULT_SKEF`.
+- `MMU_CTRL_SKAC` (bit 3) --- supervisor-kernel-access-check enable. When set, a supervisor read or write on a page with `PTE_U==1` faults with `FAULT_SKAC` unless the `SUA` latch is also set.
+- `MMU_CTRL_SUA` (bit 4) --- supervisor-user-access latch, mutated only by `SUAEN` / `SUADIS` (ignored by `MTCR CR_MMU_CTRL`).
+- `FAULT_SKEF` (9) / `FAULT_SKAC` (10) --- new fault cause codes raised by the SKEF / SKAC checks.
 
 Control register 14 holds the `SUA` snapshot taken on trap entry. Kernel assembly accesses it numerically as `cr14` (no mnemonic constant is exported from `iexec.inc`; the semantic name `CR_SAVED_SUA` is used by the CPU and monitor source but the assembly contract is numeric). The CPU's trap-frame stack preserves `cr14` (and `cr3` / `cr13`) across nested traps automatically, so kernel handlers do not need a manual MFCR/MTCR save/restore dance to survive a nested synchronous trap. See `sdk/docs/IE64_ISA.md` §12.14 for the full contract.
 
@@ -89,13 +89,13 @@ The `copy_from_user`, `copy_to_user`, and `copy_cstring_from_user` helpers in `s
 
 The same header now exports the M15.6 shared-memory permission bits used by `SYS_MAP_SHARED`:
 
-- `MAPF_READ` (bit 0) — install a readable user mapping.
-- `MAPF_WRITE` (bit 1) — install a writable user mapping.
-- `MEMF_GUARD` (bit 1 in the `AllocMem` flags word) — reserve one non-present
+- `MAPF_READ` (bit 0) --- install a readable user mapping.
+- `MAPF_WRITE` (bit 1) --- install a writable user mapping.
+- `MEMF_GUARD` (bit 1 in the `AllocMem` flags word) --- reserve one non-present
   page on each side of the mapped allocation. The returned VA still points at
   the mapped body, not the leading guard.
 - `QUOTA_PAGES` / `QUOTA_PORTS` / `QUOTA_WAITERS` / `QUOTA_SHMEM` /
-  `QUOTA_GRANTS` — quota-kind constants used by the M15.6 quota inspection and
+  `QUOTA_GRANTS` --- quota-kind constants used by the M15.6 quota inspection and
   limit-setting paths. These name the five kernel-tracked resource classes:
   page allocations, public ports, blocked waiters, shared mappings, and
   grant rows.
@@ -104,20 +104,20 @@ The same header now exports the M15.6 shared-memory permission bits used by `SYS
 
 `iexec.inc` also adds two `BOOT_HOSTFS_*` commands that back the writable `SYS:` overlay:
 
-- `BOOT_HOSTFS_CREATE_WRITE` (6) — `arg1 = path ptr`. Opens (or creates+truncates) the file for writing; returns a host handle in `res1`. The host device rejects any path whose first component is `IOSSYS` (case-insensitive), enforcing the read-only IOSSYS namespace.
-- `BOOT_HOSTFS_WRITE` (7) — `arg1 = handle, arg2 = src ptr, arg3 = byte_count`. Writes bytes to an open hostfs handle; returns the byte count actually written in `res1`.
+- `BOOT_HOSTFS_CREATE_WRITE` (6) --- `arg1 = path ptr`. Opens (or creates+truncates) the file for writing; returns a host handle in `res1`. The host device rejects any path whose first component is `IOSSYS` (case-insensitive), enforcing the read-only IOSSYS namespace.
+- `BOOT_HOSTFS_WRITE` (7) --- `arg1 = handle, arg2 = src ptr, arg3 = byte_count`. Writes bytes to an open hostfs handle; returns the byte count actually written in `res1`.
 
 As of **M16**, `iexec.inc` also exports the protected-module/library lifecycle ABI used by shipped IntuitionOS libraries:
 
-- `SYS_OPEN_LIBRARY_EX` — registry-backed `OpenLibrary` for online/loading libraries with waiter completion
-- `SYS_CLOSE_LIBRARY` — generation-checked `CloseLibrary` for opaque library-base tokens
-- `SYS_ADD_LIBRARY` — trusted internal library registration path (`RegisterModule`/`AddLibrary` for class `library`)
-- `SYS_SET_RESIDENT` — toggle `MODF_RESIDENT` on a library row by name (`RESIDENT` shell command uses this)
-- `SYS_M16_EXPUNGE_RESULT` — trusted internal reply path for library accept/refuse of an exec-managed expunge
-- `SIGF_MODDEAD` — signal bit delivered to opener tasks when an online library owner dies
-- `MODF_RESIDENT` — runtime pin bit; close-to-zero keeps the row online at the resident floor
-- `MODF_COMPAT_PORT` — manifest/runtime bit indicating the library publishes a FindPort-visible compat public port
-- `LIB_OP_EXPUNGE` — control opcode queued by exec when a non-resident close-to-zero enters expunge
+- `SYS_OPEN_LIBRARY_EX` --- registry-backed `OpenLibrary` for online/loading libraries with waiter completion
+- `SYS_CLOSE_LIBRARY` --- generation-checked `CloseLibrary` for opaque library-base tokens
+- `SYS_ADD_LIBRARY` --- trusted internal library registration path (`RegisterModule`/`AddLibrary` for class `library`)
+- `SYS_SET_RESIDENT` --- toggle `MODF_RESIDENT` on a library row by name (`RESIDENT` shell command uses this)
+- `SYS_M16_EXPUNGE_RESULT` --- trusted internal reply path for library accept/refuse of an exec-managed expunge
+- `SIGF_MODDEAD` --- signal bit delivered to opener tasks when an online library owner dies
+- `MODF_RESIDENT` --- runtime pin bit; close-to-zero keeps the row online at the resident floor
+- `MODF_COMPAT_PORT` --- manifest/runtime bit indicating the library publishes a FindPort-visible compat public port
+- `LIB_OP_EXPUNGE` --- control opcode queued by exec when a non-resident close-to-zero enters expunge
 
 This M16 surface is intentionally narrow. `iexec.inc` documents the shipped ABI constants; the larger manifest/schema/state-machine discussion lives in `sdk/docs/IntuitionOS/IExec.md` and `sdk/docs/IntuitionOS/M16-plan.md`. M16.2 extends the same internal lifecycle model to handlers, devices, and resources with `MODCLASS_HANDLER`, `MODCLASS_DEVICE`, `MODCLASS_RESOURCE`, plus trusted-internal `SYS_ADD_HANDLER`, `SYS_ADD_DEVICE`, and `SYS_ADD_RESOURCE` aliases. M16.2.1 freezes public non-library acquisition as `exec.library` IPC, not new public syscalls: `EXEC_MSG_ATTACH_HANDLER` / `DETACH_HANDLER`, `EXEC_MSG_OPEN_DEVICE` / `CLOSE_DEVICE`, `EXEC_MSG_OPEN_RESOURCE` / `CLOSE_RESOURCE`, and `EXEC_REPLY_FLAG`. Acquire/open requests pass a one-page shared request object whose first 64 bytes contain version/reserved fields and a 32-byte NUL-terminated module name; replies use `opcode | EXEC_REPLY_FLAG`, token-or-zero in `data0`, low-32-bit `ERR_*` in `data1`, and no reply share handle. M16.2.1 is ONLINE-only for non-library rows, returns opaque generation-aware tokens, and leaves PIE enforcement to M16.3 and relocation/ASLR to M16.4.
 

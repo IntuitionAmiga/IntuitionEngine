@@ -289,14 +289,14 @@ hw_palette:
 ; ============================================================================
 ; hw_vsync - VSYNC
 ; ============================================================================
-; Waits for vertical blank by polling VGA_STATUS.
+; Waits for vertical blank by polling VideoChip VIDEO_STATUS.
 
 hw_vsync:
-    la      r1, VGA_STATUS
+    la      r1, VIDEO_STATUS
     move.q  r3, #0x100000           ; timeout counter (~1M iterations)
 .vsync_wait:
     load.l  r2, (r1)
-    and.l   r2, r2, #VGA_STATUS_VSYNC
+    and.l   r2, r2, #STATUS_VBLANK
     bnez    r2, .vsync_done
     sub.q   r3, r3, #1
     bnez    r3, .vsync_wait
@@ -349,7 +349,7 @@ hw_locate:
 ; hw_color - COLOR fg [,bg]
 ; ============================================================================
 ; Sets text attribute colour. Stored in a state variable for PRINT to use.
-; For now, this stores the attribute at ST_TEXT_ATTR (offset 0x4C in state).
+; For now, this stores the attribute at ST_TEXT_ATTR in state.
 
 hw_color:
     jsr     exec_skip_spaces
@@ -371,8 +371,8 @@ hw_color:
     lsl.l   r1, r1, #4
     or.l    r22, r22, r1         ; combine fg + bg*16
 .color_store:
-    ; Store attribute at state + 0x4C
-    add.q   r1, r16, #0x4C
+    ; Store attribute in state.
+    add.q   r1, r16, #ST_TEXT_ATTR
     store.l r22, (r1)
     rts
 
@@ -814,8 +814,8 @@ hw_ula:
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    ; Store bright flag at state+0x54
-    add.q   r1, r16, #0x54
+    ; Store bright flag in state.
+    add.q   r1, r16, #ST_ULA_BRIGHT
     store.l r8, (r1)
     rts
 .ula_ink:
@@ -826,8 +826,8 @@ hw_ula:
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    ; Store ink at state+0x58
-    add.q   r1, r16, #0x58
+    ; Store ink in state.
+    add.q   r1, r16, #ST_ULA_INK
     store.l r8, (r1)
     rts
 .ula_p_cmd:
@@ -844,8 +844,8 @@ hw_ula:
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    ; Store paper at state+0x5C
-    add.q   r1, r16, #0x5C
+    ; Store paper in state.
+    add.q   r1, r16, #ST_ULA_PAPER
     store.l r8, (r1)
     rts
 .ula_plot:
@@ -902,8 +902,8 @@ hw_ula:
     jsr     expr_eval
     jsr     fp_int
     jsr     fp_fix
-    ; Store flash flag at state+0x60
-    add.q   r1, r16, #0x60
+    ; Store flash flag in state.
+    add.q   r1, r16, #ST_ULA_FLASH
     store.l r8, (r1)
     rts
 .ula_cls:

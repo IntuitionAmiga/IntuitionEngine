@@ -81,7 +81,7 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 	if op == HELPER_NONE {
 		return 0, false
 	}
-	if op <= HELPER_JSR_IND {
+	if op <= HELPER_DTRANS {
 		globalIE64TurboStats.helperExits[op].Add(1)
 	}
 	cpu.jitCtx.NeedHelper = HELPER_NONE
@@ -129,6 +129,35 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 	}
 
 	switch op {
+	case HELPER_DTRANS:
+		opcode := byte(size)
+		rs := byte(addr)
+		rt := byte(val)
+		if cpu.FPU == nil || !validIE64FPUEncoding(opcode, rd, rs, rt) {
+			cpu.haltFPUFault(rd)
+			return 0, true
+		}
+		switch opcode {
+		case OP_DSIN:
+			cpu.FPU.DSIN(rd, rs)
+		case OP_DCOS:
+			cpu.FPU.DCOS(rd, rs)
+		case OP_DTAN:
+			cpu.FPU.DTAN(rd, rs)
+		case OP_DATAN:
+			cpu.FPU.DATAN(rd, rs)
+		case OP_DLOG:
+			cpu.FPU.DLOG(rd, rs)
+		case OP_DEXP:
+			cpu.FPU.DEXP(rd, rs)
+		case OP_DPOW:
+			cpu.FPU.DPOW(rd, rs, rt)
+		default:
+			return 0, true
+		}
+		cpu.PC += IE64_INSTR_SIZE
+		return 1, true
+
 	case HELPER_LOAD:
 		// Match interpreter (cpu_ie64.go:1682-1690) byte for byte:
 		//   1. R0 destination → loadMem is NOT called, so spurious MMU

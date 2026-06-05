@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-05-29*
+*Last modified: 2026-06-05*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -497,7 +497,7 @@ the SP is in the low window.
 they mutate `interruptEnabled` under the JIT. External device interrupts are
 delivered through a record-only sink and a pending mask polled at instruction and
 block boundaries by both the interpreter and the JIT dispatcher; see the "External
-Interrupt Delivery" section of `IE64_JIT.md` for the full model.
+Interrupt Delivery" section of this manual for the full model.
 
 - **Low memory window**: each guest sees a contiguous low RAM window backed by
   the dense `cpu.memory[]` slice, capped at 256 MiB for the IE64 family
@@ -878,6 +878,8 @@ The colour expansion operation (`BLT_OP=6`) renders 1-bit glyph templates into c
 Line drawing (`BLT_OP=2`) supports an extended mode when `BLT_FLAGS != 0`: `BLT_DST` becomes the framebuffer base address, `BLT_WIDTH` holds the packed endpoint coordinates `(y1<<16)|x1`, and `BLT_DST_STRIDE` sets the row stride. This allows line drawing into arbitrary bitmaps (not just the active framebuffer) with BPP awareness and all 16 draw modes. When `BLT_FLAGS=0`, legacy behaviour is preserved (endpoint in `BLT_DST`, base at `VRAM_START`). In extended mode the blitter does not clip - callers must provide pre-clipped coordinates (the AROS driver uses Cohen-Sutherland clipping before calling the blitter).
 
 Scale blits (`BLT_OP=7`) use `BLT_SRC`/`BLT_DST` as base addresses, `BLT_WIDTH`/`BLT_HEIGHT` as the source size in pixels, and `BLT_COLOR` as a packed destination size (`height << 16 | width`). `BLT_SRC_STRIDE` defaults to source width times bytes-per-pixel. `BLT_DST_STRIDE` defaults to the active VideoChip mode stride for VRAM destinations or destination width times bytes-per-pixel for ordinary memory. In non-direct VRAM mode, visible VRAM accesses use the active VideoChip front buffer and off-screen VRAM aperture accesses fall back to bus memory so back buffers can be presented through `VIDEO_FB_BASE`. Out-of-bounds source or destination rectangles, rectangles crossing the VRAM aperture end, zero source dimensions, and zero destination dimensions set `BLT_STATUS.ERR`.
+
+Raster-band register draws (`VIDEO_RASTER_Y`, `VIDEO_RASTER_HEIGHT`, `VIDEO_RASTER_COLOR`, `VIDEO_RASTER_CTRL`) target the active framebuffer source. In RGBA32 mode, a nonzero `VIDEO_FB_BASE` writes the band into bus memory at that base; otherwise it writes the internal front buffer or direct VRAM slice. In CLUT8 mode, raster bands write indexed bytes at `VIDEO_FB_BASE`.
 
 | Register | Address | Description |
 |----------|---------|-------------|
@@ -1366,7 +1368,7 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 | `registers.go` | Master I/O address map - all region boundaries |
 | `machine_bus.go` | MachineBus: autodetected guest RAM, MapIO, ioPageBitmap, Read/Write, SYSINFO accessors |
 | `memory_sizing.go` | Boot-time guest RAM autodetection: total guest RAM + active visible RAM with platform reserves |
-| `profile_bounds.go` | Source-owned profile bounds for EmuTOS, AROS, EhBASIC |
+| `profile_bounds.go` | Source-owned profile bounds for EmuTOS, AROS, IE64 BASIC |
 | `emulator_cpu.go` | EmulatorCPU interface definition |
 | `video_interface.go` | VideoSource, VideoOutput, ScanlineAware interfaces |
 | `video_compositor.go` | Compositor pipeline, Z-order blending |

@@ -11,6 +11,8 @@ const (
 	testOPLea  = 0x04
 	testOPBne  = 0x42
 	testOPJSR  = 0x50
+	testOPDsin = 0x91
+	testOPDpow = 0x97
 	testOPNop  = 0xE0
 	testSizeL  = 2
 	testSizeQ  = 3
@@ -75,6 +77,25 @@ func TestAssembleInstructionRepresentativeEncodings(t *testing.T) {
 			t.Fatalf("%s bytes = % X, want % X", tt.line, got, tt.want)
 		}
 	}
+}
+
+func TestAssembleInstructionFP64Transcendentals(t *testing.T) {
+	tests := []struct {
+		line string
+		want []byte
+	}{
+		{"dsin f0, f2", testEncode(testOPDsin, 0, testSizeL, 0, 2, 0, 0)},
+		{"dpow f0, f2, f4", testEncode(testOPDpow, 0, testSizeL, 0, 2, 4, 0)},
+	}
+	for _, tt := range tests {
+		got := requireAssembled(t, 0x1000, tt.line)
+		if !bytes.Equal(got, tt.want) {
+			t.Fatalf("%s bytes = % X, want % X", tt.line, got, tt.want)
+		}
+	}
+
+	requireDiagnostic(t, "dsin f1, f2", "destination must use an even-numbered FP register")
+	requireDiagnostic(t, "dpow f0, f2, f3", "source must use an even-numbered FP register")
 }
 
 func TestAssembleInstructionHighOriginPCRelative(t *testing.T) {

@@ -1,6 +1,6 @@
-; ehbasic_exec.inc - EhBASIC IE64 Statement Executor
+; ehbasic_exec.inc - IE64 BASIC Statement Executor
 ;
-; Main interpreter loop and statement handlers for the EhBASIC IE64 port.
+; Main interpreter loop and statement handlers for IE64 BASIC.
 ;
 ; The interpreter walks through stored program lines (linked list),
 ; tokenizes each statement, and dispatches to the appropriate handler.
@@ -13,11 +13,76 @@
 ;   R31 = hardware stack pointer
 ;
 ; Key state block fields:
-;   ST_CURRENT_LINE (+0x20) = current line number
-;   ST_DIRECT_MODE  (+0x40) = 1 if immediate mode, 0 if running
-;   ST_GOSUB_SP     (+0x2C) = GOSUB/FOR stack pointer
+;   ST_CURRENT_LINE (+0x200) = current line number
+;   ST_DIRECT_MODE  (+0x210) = 1 if immediate mode, 0 if running
+;   ST_GOSUB_SP     (+0x060) = GOSUB stack cursor, grows upward from ST_CTRL_LOW
+;   ST_FOR_SP       (+0x068) = loop stack cursor, grows downward from ST_CTRL_HIGH
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
+
+; ============================================================================
+; basic_layout_init - publish dynamic BASIC stack/control/layout bounds
+; ============================================================================
+; Input:  R16 = BASIC_STATE base after the state page has been cleared.
+; Output: R31 = dynamic hardware stack pointer.
+; Clobbers: R1-R6.
+; Notes:  Uses no stack so cold_start can call it before R31 is initialised.
+
+basic_layout_init:
+    mfcr    r1, cr15                    ; CR_RAM_SIZE_BYTES
+    bnez    r1, .bli_have_ram
+    move.q  r1, #0x02000000             ; legacy harness fallback: 32 MiB
+.bli_have_ram:
+    lsr.q   r1, r1, #12
+    lsl.q   r1, r1, #12                 ; page-align active RAM down
+    ; Keep the resident interpreter stack/control area in BASIC's mapped
+    ; low memory window. Production IE64 BASIC can expose sparse RAM above
+    ; this, but the current BASIC/JIT resident paths still expect their own
+    ; stack and scratch pointers to be directly low-window addressable.
+    move.q  r5, #BASIC_RESIDENT_LOW32_CAP
+    blt     r1, r5, .bli_stack_top_ready
+    move.q  r1, r5
+.bli_stack_top_ready:
+    move.q  r2, #BASIC_STACK_GUARD_BYTES
+    sub.q   r1, r1, r2                  ; first byte below guard page
+    move.q  r31, r1
+
+    add.q   r2, r16, #ST_STACK_HIGH
+    store.q r31, (r2)
+    move.q  r3, #BASIC_STACK_BYTES
+    sub.q   r3, r31, r3                 ; stack_low
+    add.q   r2, r16, #ST_STACK_LOW
+    store.q r3, (r2)
+
+    add.q   r2, r16, #ST_CTRL_HIGH
+    store.q r3, (r2)
+    move.q  r4, #BASIC_CTRL_BYTES
+    sub.q   r4, r3, r4                  ; ctrl_low
+    add.q   r2, r16, #ST_CTRL_LOW
+    store.q r4, (r2)
+
+    add.q   r2, r16, #ST_GOSUB_SP
+    store.q r4, (r2)
+    add.q   r2, r16, #ST_FOR_SP
+    store.q r3, (r2)
+
+    ; Private file-data bridge lives below both dynamic reservations and below the
+    ; 32-bit MMIO ABI ceiling. The current low32 bridge implementation is still a
+    ; later plan slice, but publishing the bounds now keeps all reset paths coherent.
+    move.q  r5, #AOT_LOW32_CAP
+    blt     r4, r5, .bli_bridge_top_ready
+    move.q  r4, r5
+.bli_bridge_top_ready:
+    add.q   r2, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r4, (r2)
+    move.q  r6, #BASIC_LOW32_INTERNAL_BASE
+    add.q   r2, r16, #ST_FILE_BRIDGE_LOW
+    store.q r6, (r2)
+    add.q   r2, r16, #ST_HEAP_BOTTOM
+    store.q r6, (r2)
+    add.q   r2, r16, #ST_HEAP_TOP
+    store.q r4, (r2)
+    rts
 
 ; ============================================================================
 ; exec_run - Execute stored BASIC program from beginning
@@ -38,27 +103,25 @@ exec_run:
     add.q   r1, r16, #ST_DIRECT_MODE
     store.l r0, (r1)
 
-    ; Initialise GOSUB stack pointer
-    la      r1, BASIC_GOSUB_STACK
-    add.q   r2, r16, #ST_GOSUB_SP
-    store.l r1, (r2)
+    ; Initialise control-flow stack cursors
+    jsr     exec_reset_control_stack
 
     ; Reset DATA/READ pointer
     add.q   r1, r16, #ST_DATA_PTR
-    store.l r0, (r1)
+    store.q r0, (r1)
 
     ; Trigger GC before main execution loop starts
     la      r1, SYS_GC_TRIGGER
     store.l r0, (r1)
 
     ; Start at first line
-    load.l  r14, (r16)           ; R14 = address of first line
+    load.q  r14, (r16)           ; R14 = address of first line
     ; R14 is our "current line pointer" throughout execution
 
 ; ============================================================================
 ; exec_next_line - Advance to the next line and execute it
 ; ============================================================================
-; R14 = pointer to current line entry (header: next-ptr + linenum + content)
+; R14 = pointer to current line entry (header: next.q + line.l + reserved.l + content)
 
 exec_next_line:
     ; Check end of program
@@ -67,19 +130,19 @@ exec_next_line:
     ; Read next-line pointer. If it's 0, R14 is the end terminator - stop.
     ; Invariant: line_rechain sets every real line's next-ptr to a valid address
     ; (either the next line or the terminator). Only the terminator itself has 0.
-    load.l  r15, (r14)           ; R15 = next-line pointer
+    load.q  r15, (r14)           ; R15 = next-line pointer
     beqz    r15, .exec_done      ; R14 is the terminator - done
 
     ; Valid line: read line number
-    add.q   r1, r14, #4
+    add.q   r1, r14, #8
     load.l  r1, (r1)            ; R1 = line number
 
     ; Store current line number in state
     add.q   r2, r16, #ST_CURRENT_LINE
     store.l r1, (r2)
 
-    ; Set text pointer to start of content (offset +8)
-    add.q   r17, r14, #8
+    ; Set text pointer to start of content (offset +16)
+    add.q   r17, r14, #16
 
     ; TRON trace: print [linenum] if enabled (R1 = line number)
     jsr     tron_check
@@ -100,13 +163,11 @@ exec_next_line:
 
     ; Normal: advance to next line
     ; Re-read next-ptr from R14 (R15 may have been clobbered by statement handlers)
-    load.l  r14, (r14)          ; R14 = next-line pointer
+    load.q  r14, (r14)          ; R14 = next-line pointer
     bra     exec_next_line
 
 .exec_error:
-    la      r1, BASIC_GOSUB_STACK
-    add.q   r2, r16, #ST_GOSUB_SP
-    store.l r1, (r2)
+    jsr     exec_reset_control_stack
     bra     .exec_done
 
 .exec_done:
@@ -385,9 +446,9 @@ exec_do_end:
 exec_do_stop:
     ; Save state for CONT
     add.q   r1, r16, #ST_CONT_LINE_PTR
-    store.l r14, (r1)
+    store.q r14, (r1)
     add.q   r1, r16, #ST_CONT_TEXT_PTR
-    store.l r17, (r1)
+    store.q r17, (r1)
     move.q  r28, #2
     rts
     ; === END exec_do_stop ===
@@ -396,10 +457,10 @@ exec_do_stop:
 exec_do_cont:
     ; Restore saved execution position from STOP
     add.q   r1, r16, #ST_CONT_LINE_PTR
-    load.l  r14, (r1)
+    load.q  r14, (r1)
     beqz    r14, .cont_done      ; no saved state → ignore
     add.q   r1, r16, #ST_CONT_TEXT_PTR
-    load.l  r17, (r1)
+    load.q  r17, (r1)
     ; Clear saved state
     add.q   r1, r16, #ST_CONT_LINE_PTR
     store.l r0, (r1)
@@ -462,10 +523,10 @@ exec_do_let:
     ; Branch on type
     bnez    r23, .let_str_rhs
 
-    ; Numeric RHS
-    jsr     expr_eval            ; R8 = FP32 result
+    ; Numeric RHS.
+    jsr     expr_eval            ; R8 = payload, R9 = tag
     bnez    r28, .let_done
-    store.l r8, (r22)
+    jsr     exec_store_expr_r22
     rts
 
 .let_str_rhs:
@@ -476,6 +537,47 @@ exec_do_let:
 .let_done:
     rts
     ; === END exec_do_let ===
+
+exec_store_fp64_r22:
+    store.q r8, (r22)
+exec_clear_qword_marker:
+    load.l  r1, -8(r22)
+    move.q  r2, #VAL_F64
+    beq     r1, r2, .ecqm_scalar
+    move.q  r2, #VAL_I64
+    bne     r1, r2, .ecqm_done
+.ecqm_scalar:
+    move.q  r1, #VAL_F64
+    store.l r1, -8(r22)
+.ecqm_done:
+    rts
+
+; Store a tagged numeric expression result into a variable slot. Simple scalar
+; variables and array elements preserve VAL_I64 or VAL_F64 via the public cell
+; tag at value_slot-8.
+; Input: R8=payload, R9=tag, R22=value slot pointer.
+exec_store_expr_r22:
+    load.l  r1, -8(r22)
+    move.q  r2, #VAL_F64
+    beq     r1, r2, .eser_store_tagged
+    move.q  r2, #VAL_I64
+    bne     r1, r2, .eser_store_fp64
+.eser_store_tagged:
+    store.q r8, (r22)
+    store.l r9, -8(r22)
+    rts
+.eser_store_fp64:
+    bra     exec_store_fp64_r22
+
+; Coerce a tagged expression result to FP64 bits for statement internals
+; that have not yet moved to tagged frames.
+exec_coerce_fp64:
+    move.q  r1, #VAL_I64
+    bne     r9, r1, .ecf_done
+    jsr     fp_float
+    move.q  r9, #VAL_F64
+.ecf_done:
+    rts
 
 ; --- PRINT ---
 exec_do_print:
@@ -517,13 +619,19 @@ exec_do_print:
     bnez    r8, .print_str_expr
 
     ; Numeric: evaluate and print
-    jsr     expr_eval            ; R8 = FP32 value
+    jsr     expr_eval            ; R8 = payload, R9 = tag
     bnez    r28, .print_no_crlf
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .print_i64
     push    r14                  ; fp_print clobbers R14/R15
     push    r15
     jsr     fp_print             ; print the number
     pop     r15
     pop     r14
+    bra     .print_loop
+
+.print_i64:
+    jsr     io_print_int64
     bra     .print_loop
 
 .print_str_expr:
@@ -605,26 +713,30 @@ exec_do_goto:
 exec_do_gosub:
     jsr     exec_skip_spaces
     ; Save return context on GOSUB stack
-    ; Stack frame: [return line ptr (4)] [return text ptr offset (4)] [marker (4)]
+    ; Stack frame: [marker (4)] [reserved (4)] [return line ptr (8)]
+    ;              [return text ptr offset (8)] = 24 bytes.
     add.q   r1, r16, #ST_GOSUB_SP
-    load.l  r2, (r1)            ; R2 = current GOSUB stack pointer
-    add.q   r3, r2, #12
-    move.l  r4, #BASIC_GOSUB_END
+    load.q  r2, (r1)            ; R2 = current GOSUB stack pointer
+    add.q   r3, r2, #24
+    add.q   r4, r16, #ST_FOR_SP
+    load.q  r4, (r4)
     bgt     r3, r4, .gosub_overflow
 
     ; Push marker (0x47535542 = "GSUB")
-    move.l  r3, #0x47535542
-    store.l r3, (r2)
+    move.l  r4, #0x47535542
+    store.l r4, (r2)
+    add.q   r2, r2, #4
+    store.l r0, (r2)
     add.q   r2, r2, #4
     ; Push return line pointer (R14 = current line)
-    store.l r14, (r2)
-    add.q   r2, r2, #4
-    ; Push return text offset (R17 - current line - 8 = offset within content)
+    store.q r14, (r2)
+    add.q   r2, r2, #8
+    ; Push return text offset (R17 - current line = offset within record)
     sub.q   r3, r17, r14
-    store.l r3, (r2)
-    add.q   r2, r2, #4
+    store.q r3, (r2)
+    add.q   r2, r2, #8
     ; Update GOSUB SP
-    store.l r2, (r1)
+    store.q r2, (r1)
 
     ; Now do the GOTO part
     jsr     exec_parse_linenum   ; R8 = target line number
@@ -647,23 +759,26 @@ exec_do_gosub:
 exec_do_return:
     ; Pop GOSUB stack
     add.q   r1, r16, #ST_GOSUB_SP
-    load.l  r2, (r1)            ; R2 = GOSUB stack pointer
-    move.l  r3, #BASIC_GOSUB_STACK
+    load.q  r2, (r1)            ; R2 = GOSUB stack pointer
+    add.q   r3, r16, #ST_CTRL_LOW
+    load.q  r3, (r3)
     ble     r2, r3, .return_no_gosub
 
     ; Pop text offset
-    sub.q   r2, r2, #4
-    load.l  r3, (r2)            ; R3 = return text offset
+    sub.q   r2, r2, #8
+    load.q  r3, (r2)            ; R3 = return text offset
     ; Pop line pointer
+    sub.q   r2, r2, #8
+    load.q  r14, (r2)           ; R14 = return line pointer
+    ; Pop reserved
     sub.q   r2, r2, #4
-    load.l  r14, (r2)           ; R14 = return line pointer
     ; Pop marker
     sub.q   r2, r2, #4
     load.l  r4, (r2)            ; R4 = marker (should be "GSUB")
     move.l  r5, #0x47535542
     bne     r4, r5, .return_no_gosub
     ; Update GOSUB SP
-    store.l r2, (r1)
+    store.q r2, (r1)
 
     ; Restore R17 to the saved position
     add.q   r17, r14, r3        ; R17 = line ptr + text offset
@@ -686,7 +801,7 @@ exec_do_return:
 
 .return_next_line:
     ; End of the GOSUB's line - advance to next line
-    load.l  r15, (r14)           ; R15 = next line pointer from saved line
+    load.q  r15, (r14)           ; R15 = next line pointer from saved line
     move.q  r14, r15
     move.q  r28, #1              ; R14 changed
     rts
@@ -701,11 +816,11 @@ exec_do_return:
 exec_do_if:
     jsr     exec_skip_spaces
     ; Evaluate condition expression
-    jsr     expr_eval            ; R8 = FP32 condition value
+    jsr     expr_eval            ; R8 = condition payload, R9 = tag
 
-    ; Check if true (non-zero): any FP32 with exponent ≠ 0 and value ≠ 0
-    and.l   r1, r8, #0x7FFFFFFF
-    beqz    r1, .if_false        ; value is ±0.0 → false
+    jsr     expr_truthy
+    beqz    r8, .if_false
+.if_condition_true:
 
     ; Condition is TRUE - look for THEN and execute what follows
     jsr     exec_skip_spaces
@@ -797,8 +912,9 @@ exec_do_for:
 
     ; Evaluate initial value
     jsr     exec_skip_spaces
-    jsr     expr_eval            ; R8 = FP32 initial value
-    store.l r8, (r22)            ; store in loop variable
+    jsr     expr_eval            ; R8 = initial value
+    jsr     exec_coerce_fp64
+    jsr     exec_store_fp64_r22  ; store in loop variable
 
     jsr     exec_skip_spaces
 
@@ -810,7 +926,8 @@ exec_do_for:
 
     ; Evaluate limit value
     jsr     exec_skip_spaces
-    jsr     expr_eval            ; R8 = FP32 limit
+    jsr     expr_eval            ; R8 = limit
+    jsr     exec_coerce_fp64
     move.q  r23, r8              ; R23 = limit value
 
     ; Check for STEP
@@ -822,42 +939,48 @@ exec_do_for:
     ; Has STEP
     add.q   r17, r17, #1
     jsr     exec_skip_spaces
-    jsr     expr_eval            ; R8 = FP32 step value
+    jsr     expr_eval            ; R8 = step value
+    jsr     exec_coerce_fp64
     move.q  r24, r8              ; R24 = step
     bra     .for_push
 
 .for_default_step:
-    move.l  r24, #0x3F800000     ; default STEP = 1.0
+    move.q  r8, #1
+    jsr     fp_float             ; default STEP = 1.0 as FP64
+    move.q  r24, r8
 
 .for_push:
-    ; Push FOR frame on GOSUB stack
-    ; Frame: [marker "FOR " (4)] [var ptr (4)] [limit FP32 (4)]
-    ;        [step FP32 (4)] [line ptr (4)] [text ptr (4)] = 24 bytes
-    add.q   r1, r16, #ST_GOSUB_SP
-    load.l  r2, (r1)
-    add.q   r3, r2, #24
-    move.l  r4, #BASIC_GOSUB_END
-    bgt     r3, r4, .for_overflow
+    ; Push FOR frame on the loop stack.
+    ; Frame: [marker (4)] [reserved (4)] [var ptr (8)] [limit FP64 (8)]
+    ;        [step FP64 (8)] [line ptr (8)] [text ptr (8)] = 48 bytes.
+    add.q   r1, r16, #ST_FOR_SP
+    load.q  r2, (r1)
+    sub.q   r2, r2, #48
+    add.q   r4, r16, #ST_GOSUB_SP
+    load.q  r4, (r4)
+    blt     r2, r4, .for_overflow
 
     move.l  r3, #0x464F5220      ; "FOR "
     store.l r3, (r2)
     add.q   r2, r2, #4
-    store.l r22, (r2)             ; var pointer
+    store.l r0, (r2)
     add.q   r2, r2, #4
-    store.l r23, (r2)             ; limit
-    add.q   r2, r2, #4
-    store.l r24, (r2)             ; step
-    add.q   r2, r2, #4
-    store.l r14, (r2)             ; line pointer (for loop back)
-    add.q   r2, r2, #4
+    store.q r22, (r2)             ; var pointer
+    add.q   r2, r2, #8
+    store.q r23, (r2)             ; limit
+    add.q   r2, r2, #8
+    store.q r24, (r2)             ; step
+    add.q   r2, r2, #8
+    store.q r14, (r2)             ; line pointer (for loop back)
+    add.q   r2, r2, #8
     ; Save text ptr: we need the position AFTER the entire FOR statement
     ; R17 currently points past the FOR line. When NEXT loops back,
     ; we advance to the next line (R14's next pointer).
-    store.l r17, (r2)
-    add.q   r2, r2, #4
+    store.q r17, (r2)
 
-    ; Update GOSUB SP
-    store.l r2, (r1)
+    ; Update loop SP
+    sub.q   r2, r2, #40
+    store.q r2, (r1)
 
     ; Continue execution normally (body of loop follows)
 .for_done:
@@ -869,35 +992,34 @@ exec_do_for:
 
 ; --- NEXT ---
 exec_do_next:
-    ; Find the most recent FOR frame on GOSUB stack
-    add.q   r1, r16, #ST_GOSUB_SP
-    load.l  r2, (r1)            ; R2 = top of GOSUB stack
-    move.l  r3, #BASIC_GOSUB_STACK
-    ble     r2, r3, .next_err
+    ; Find the most recent FOR frame on the loop stack
+    add.q   r1, r16, #ST_FOR_SP
+    load.q  r2, (r1)            ; R2 = top loop frame
+    add.q   r3, r16, #ST_CTRL_HIGH
+    load.q  r3, (r3)
+    bge     r2, r3, .next_err
 
-    ; Walk back to find FOR marker
-    sub.q   r2, r2, #24         ; back up 24 bytes (FOR frame size)
     load.l  r3, (r2)            ; should be "FOR " marker
     move.l  r4, #0x464F5220
     bne     r3, r4, .next_err   ; not FOR → error (silently)
 
     ; Read FOR frame
-    add.q   r3, r2, #4
-    load.l  r22, (r3)           ; R22 = var pointer
-    add.q   r3, r3, #4
-    load.l  r23, (r3)           ; R23 = limit (FP32)
-    add.q   r3, r3, #4
-    load.l  r24, (r3)           ; R24 = step (FP32)
-    add.q   r3, r3, #4
-    load.l  r25, (r3)           ; R25 = loop line pointer
-    add.q   r3, r3, #4
-    load.l  r15, (r3)           ; R15 = saved text ptr
+    add.q   r3, r2, #8
+    load.q  r22, (r3)           ; R22 = var pointer
+    add.q   r3, r3, #8
+    load.q  r23, (r3)           ; R23 = limit (FP64)
+    add.q   r3, r3, #8
+    load.q  r24, (r3)           ; R24 = step (FP64)
+    add.q   r3, r3, #8
+    load.q  r25, (r3)           ; R25 = loop line pointer
+    add.q   r3, r3, #8
+    load.q  r15, (r3)           ; R15 = saved text ptr
 
     ; Add STEP to loop variable
-    load.l  r8, (r22)           ; current value
+    load.q  r8, (r22)           ; current value
     move.q  r9, r24             ; step
     jsr     fp_add              ; R8 = value + step
-    store.l r8, (r22)           ; store back
+    jsr     exec_store_fp64_r22 ; store back
 
     ; Compare with limit
     ; If step > 0: continue while value <= limit
@@ -906,7 +1028,7 @@ exec_do_next:
     jsr     fp_cmp              ; R8 = -1/0/1
 
     ; Check step sign
-    lsr.l   r3, r24, #31        ; R3 = sign bit of step (0=positive, 1=negative)
+    lsr.q   r3, r24, #63        ; R3 = sign bit of step (0=positive, 1=negative)
     bnez    r3, .next_neg_step
 
     ; Positive step: loop while value <= limit (cmp returns -1 or 0)
@@ -917,9 +1039,8 @@ exec_do_next:
 
 .next_neg_step:
     ; Negative step: loop while value >= limit (cmp returns 1 or 0)
-    ; R8 = -1 (0xFFFFFFFF) means value < limit → done
-    move.q  r3, #0xFFFFFFFF
-    beq     r8, r3, .next_done
+    ; Any negative compare result means value < limit -> done.
+    bltz    r8, .next_done
 
 .next_loop_back:
     ; Loop continues: restore execution to the body of the FOR.
@@ -933,7 +1054,7 @@ exec_do_next:
     ;       FOR (FOR alone on its line, body on subsequent lines, NEXT
     ;       further down) this is the end-of-line null byte; exec_line
     ;       sees it and returns, and the outer exec_next_line walker
-    ;       advances R14 via `load.l r14, (r14)` to the line after FOR
+    ;       advances R14 via `load.q r14, (r14)` to the line after FOR
     ;       — i.e. the first body line.
     ;
     ; The previous implementation set R14 directly to "(R25)" (the line
@@ -948,11 +1069,11 @@ exec_do_next:
     rts
 
 .next_done:
-    ; Loop complete: pop FOR frame from GOSUB stack
-    add.q   r1, r16, #ST_GOSUB_SP
-    load.l  r2, (r1)
-    sub.q   r2, r2, #24
-    store.l r2, (r1)
+    ; Loop complete: pop FOR frame from loop stack
+    add.q   r1, r16, #ST_FOR_SP
+    load.q  r2, (r1)
+    add.q   r2, r2, #48
+    store.q r2, (r1)
     ; R28=0, continue to next statement
     rts
 .next_err:
@@ -966,29 +1087,39 @@ exec_do_next:
 exec_do_while:
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = condition
-    and.l   r1, r8, #0x7FFFFFFF
-    beqz    r1, .while_false
+    jsr     expr_truthy
+    beqz    r8, .while_false
 
-    ; TRUE: push WHILE frame [marker "WHIL"][line ptr]
-    add.q   r1, r16, #ST_GOSUB_SP
-    load.l  r2, (r1)
+    ; TRUE: push WHILE frame [marker (4)] [reserved (4)] [line ptr (8)]
+    add.q   r1, r16, #ST_FOR_SP
+    load.q  r2, (r1)
+    sub.q   r2, r2, #16
+    add.q   r4, r16, #ST_GOSUB_SP
+    load.q  r4, (r4)
+    blt     r2, r4, .while_overflow
     move.l  r3, #0x5748494C      ; "WHIL"
     store.l r3, (r2)
     add.q   r2, r2, #4
-    store.l r14, (r2)            ; line pointer of WHILE
+    store.l r0, (r2)
     add.q   r2, r2, #4
-    store.l r2, (r1)
+    store.q r14, (r2)            ; line pointer of WHILE
+    sub.q   r2, r2, #8
+    store.q r2, (r1)
     rts                          ; R28=0, continue
+
+.while_overflow:
+    move.q  r28, #2
+    rts
 
 .while_false:
     ; FALSE: scan forward to matching WEND (nested - tracks WHILE/WEND depth)
     move.q  r7, #1               ; nesting depth = 1 (we are inside this WHILE)
-    load.l  r2, (r14)            ; start from next line
+    load.q  r2, (r14)            ; start from next line
 .while_scan_lines:
     beqz    r2, .while_done
-    load.l  r3, (r2)             ; next pointer
+    load.q  r3, (r2)             ; next pointer
     beqz    r3, .while_done      ; terminator
-    add.q   r4, r2, #8           ; content ptr
+    add.q   r4, r2, #16          ; content ptr
 
     ; skip leading spaces
 .while_lead_space:
@@ -1012,7 +1143,7 @@ exec_do_while:
     bnez    r7, .while_next_line  ; not our WEND yet
 
     ; depth=0 → found matching WEND. Continue after this line.
-    load.l  r14, (r2)
+    load.q  r14, (r2)
     move.q  r28, #1
     rts
 
@@ -1026,15 +1157,18 @@ exec_do_while:
 ; --- WEND ---
 exec_do_wend:
     ; Pop latest WHILE frame and jump back to WHILE line.
-    add.q   r1, r16, #ST_GOSUB_SP
-    load.l  r2, (r1)
-    sub.q   r2, r2, #8
+    add.q   r1, r16, #ST_FOR_SP
+    load.q  r2, (r1)
+    add.q   r3, r16, #ST_CTRL_HIGH
+    load.q  r3, (r3)
+    bge     r2, r3, .wend_done
     load.l  r3, (r2)             ; marker
     move.l  r4, #0x5748494C      ; "WHIL"
     bne     r3, r4, .wend_done
-    add.q   r5, r2, #4
-    load.l  r14, (r5)            ; WHILE line pointer
-    store.l r2, (r1)             ; pop frame
+    add.q   r5, r2, #8
+    load.q  r14, (r5)            ; WHILE line pointer
+    add.q   r2, r2, #16
+    store.q r2, (r1)             ; pop frame
     move.q  r28, #1
 .wend_done:
     rts
@@ -1043,7 +1177,7 @@ exec_do_wend:
 ; --- RESTORE ---
 exec_do_restore:
     add.q   r1, r16, #ST_DATA_PTR
-    store.l r0, (r1)            ; reset DATA pointer to 0
+    store.q r0, (r1)            ; reset DATA pointer to 0
     rts
     ; === END exec_do_restore ===
 
@@ -1053,10 +1187,22 @@ exec_do_inc:
     jsr     var_lookup           ; R8 = pointer to value slot
     beqz    r8, .inc_done
     move.q  r22, r8
-    load.l  r8, (r22)           ; current FP32 value
-    move.l  r9, #0x3F800000     ; 1.0
+    load.l  r1, -8(r22)
+    move.q  r2, #VAL_I64
+    bne     r1, r2, .inc_fp64
+    load.q  r8, (r22)
+    add.q   r8, r8, #1
+    store.q r8, (r22)
+    bra     .inc_done
+.inc_fp64:
+    load.q  r8, (r22)           ; current FP64 value
+    push    r8
+    move.q  r8, #1
+    jsr     fp_float
+    move.q  r9, r8
+    pop     r8
     jsr     fp_add
-    store.l r8, (r22)
+    jsr     exec_store_fp64_r22
 .inc_done:
     rts
     ; === END exec_do_inc ===
@@ -1067,51 +1213,35 @@ exec_do_dec:
     jsr     var_lookup           ; R8 = pointer to value slot
     beqz    r8, .dec_done
     move.q  r22, r8
-    load.l  r8, (r22)           ; current FP32 value
-    move.l  r9, #0x3F800000     ; 1.0
+    load.l  r1, -8(r22)
+    move.q  r2, #VAL_I64
+    bne     r1, r2, .dec_fp64
+    load.q  r8, (r22)
+    sub.q   r8, r8, #1
+    store.q r8, (r22)
+    bra     .dec_done
+.dec_fp64:
+    load.q  r8, (r22)           ; current FP64 value
+    push    r8
+    move.q  r8, #1
+    jsr     fp_float
+    move.q  r9, r8
+    pop     r8
     jsr     fp_sub
-    store.l r8, (r22)
+    jsr     exec_store_fp64_r22
 .dec_done:
     rts
     ; === END exec_do_dec ===
 
-; --- DOKE ---
-exec_do_doke:
-    jsr     exec_skip_spaces
-    jsr     expr_eval            ; R8 = address (FP32)
-    jsr     fp_int
-    jsr     fp_fix               ; R8 = integer address
-    move.q  r22, r8
-    jsr     exec_skip_spaces
-    load.b  r1, (r17)
-    move.q  r2, #0x2C
-    bne     r1, r2, .doke_done
-    add.q   r17, r17, #1
-    jsr     exec_skip_spaces
-    jsr     expr_eval            ; R8 = value (FP32)
-    jsr     fp_int
-    jsr     fp_fix               ; R8 = integer value
-    store.w r8, (r22)            ; write 16-bit to address
-.doke_done:
-    rts
-    ; === END exec_do_doke ===
-
-; --- LOKE ---
-exec_do_loke:
-    ; LOKE is identical to POKE (32-bit write)
-    bra     exec_do_poke
-    ; === END exec_do_loke ===
-
 ; --- CLEAR ---
 exec_do_clear:
     jsr     var_init             ; reset all variables
+    jsr     basic_memalloc_reset
     ; Reset DATA pointer
     add.q   r1, r16, #ST_DATA_PTR
-    store.l r0, (r1)
-    ; Reset GOSUB stack
-    la      r1, BASIC_GOSUB_STACK
-    add.q   r2, r16, #ST_GOSUB_SP
-    store.l r1, (r2)
+    store.q r0, (r1)
+    ; Reset control-flow stacks
+    jsr     exec_reset_control_stack
     rts
     ; === END exec_do_clear ===
 
@@ -1122,11 +1252,9 @@ exec_do_run:
     add.q   r1, r16, #ST_DIRECT_MODE
     store.l r0, (r1)
     add.q   r1, r16, #ST_DATA_PTR
-    store.l r0, (r1)
-    la      r1, BASIC_GOSUB_STACK
-    add.q   r2, r16, #ST_GOSUB_SP
-    store.l r1, (r2)
-    load.l  r14, (r16)
+    store.q r0, (r1)
+    jsr     exec_reset_control_stack
+    load.q  r14, (r16)
     move.q  r28, #1
     rts
 
@@ -1143,11 +1271,10 @@ exec_do_list:
 exec_do_new:
     jsr     line_new
     jsr     var_init
+    jsr     basic_memalloc_reset
     add.q   r1, r16, #ST_DATA_PTR
-    store.l r0, (r1)
-    la      r1, BASIC_GOSUB_STACK
-    add.q   r2, r16, #ST_GOSUB_SP
-    store.l r1, (r2)
+    store.q r0, (r1)
+    jsr     exec_reset_control_stack
     move.q  r28, #2
     rts
 
@@ -1157,6 +1284,7 @@ exec_do_swap:
     jsr     var_lookup           ; R8 = ptr to first var
     beqz    r8, .swap_done
     move.q  r22, r8              ; R22 = first var ptr
+    move.q  r24, r9              ; R24 = first var type flag
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C
@@ -1166,7 +1294,40 @@ exec_do_swap:
     jsr     var_lookup           ; R8 = ptr to second var
     beqz    r8, .swap_done
     move.q  r23, r8              ; R23 = second var ptr
-    ; Exchange values
+    move.q  r25, r9              ; R25 = second var type flag
+    ; Scalar numeric variables carry a public value tag immediately before the
+    ; value payload. Preserve it only when both sides are numeric scalars.
+    bnez    r24, .swap_low32_no_marker
+    bnez    r25, .swap_low32_no_marker
+    load.l  r1, -8(r22)
+    load.l  r2, -8(r23)
+    move.q  r3, #VAL_F64
+    beq     r1, r3, .swap_first_scalar
+    move.q  r3, #VAL_I64
+    bne     r1, r3, .swap_low32
+.swap_first_scalar:
+    move.q  r3, #VAL_F64
+    beq     r2, r3, .swap_both_scalar
+    move.q  r3, #VAL_I64
+    bne     r2, r3, .swap_low32
+.swap_both_scalar:
+    load.q  r4, (r22)
+    load.q  r5, (r23)
+    store.l r2, -8(r22)
+    store.l r1, -8(r23)
+    store.q r5, (r22)
+    store.q r4, (r23)
+    bra     .swap_done
+.swap_low32:
+    load.l  r1, (r22)
+    load.l  r2, (r23)
+    store.l r2, (r22)
+    store.l r1, (r23)
+    jsr     exec_clear_qword_marker
+    move.q  r22, r23
+    jsr     exec_clear_qword_marker
+    bra     .swap_done
+.swap_low32_no_marker:
     load.l  r1, (r22)
     load.l  r2, (r23)
     store.l r2, (r22)
@@ -1249,41 +1410,72 @@ exec_do_get:
     and.l   r8, r8, #0xFF
     ; If string var, store as single-char string
     bnez    r23, .get_str
-    ; Numeric: store ASCII code as FP32
+    ; Numeric: store ASCII code as FP64
     jsr     fp_float
-    store.l r8, (r22)
+    jsr     exec_store_fp64_r22
     rts
 .get_str:
     ; Allocate a 2-byte string (char + null)
-    add.q   r1, r16, #ST_HEAP_TOP
-    load.l  r3, (r1)
+    push    r8
+    move.q  r8, #1
+    jsr     str_alloc
+    move.q  r3, r8
+    pop     r8
+    beqz    r3, .get_done
     store.b r8, (r3)             ; the character
     add.q   r4, r3, #1
     store.b r0, (r4)             ; null terminator
     store.l r3, (r22)            ; store pointer in var
-    add.q   r3, r3, #2
-    store.l r3, (r1)             ; advance heap
     rts
 .get_empty:
     ; No char available: store 0 (num) or "" (str)
     bnez    r23, .get_empty_str
     store.l r0, (r22)            ; 0
+    jsr     exec_clear_qword_marker
     rts
 .get_empty_str:
-    add.q   r1, r16, #ST_HEAP_TOP
-    load.l  r3, (r1)
+    move.q  r8, r0
+    jsr     str_alloc
+    move.q  r3, r8
+    beqz    r3, .get_done
     store.b r0, (r3)             ; empty string (just null)
     store.l r3, (r22)
-    add.q   r3, r3, #1
-    store.l r3, (r1)
 .get_done:
     rts
     ; === END exec_do_get ===
 
+; ============================================================================
+; exec_reset_control_stack - reset dynamic control-flow stack cursors
+; ============================================================================
+; Uses ST_CTRL_LOW/ST_CTRL_HIGH when already initialised. Older focused harnesses
+; may enter before those bounds are populated, so seed a reduced dynamic low32
+; control stack instead of the retired fixed BASIC stack symbols.
+; Input:  R16 = state base
+; Clobbers: R1-R4
+
+exec_reset_control_stack:
+    add.q   r1, r16, #ST_CTRL_LOW
+    load.q  r2, (r1)
+    bnez    r2, .ctrl_low_ready
+    move.q  r2, #(BASIC_LOW32_INTERNAL_BASE + 0x00800000 - BASIC_CTRL_BYTES)
+    store.q r2, (r1)
+.ctrl_low_ready:
+    add.q   r3, r16, #ST_CTRL_HIGH
+    load.q  r4, (r3)
+    bnez    r4, .ctrl_high_ready
+    move.q  r4, #(BASIC_LOW32_INTERNAL_BASE + 0x00800000)
+    store.q r4, (r3)
+.ctrl_high_ready:
+    add.q   r1, r16, #ST_GOSUB_SP
+    store.q r2, (r1)
+    add.q   r1, r16, #ST_FOR_SP
+    store.q r4, (r1)
+    rts
+
 ; --- ON ---
 exec_do_on:
     jsr     exec_skip_spaces
-    jsr     expr_eval            ; R8 = selector (FP32)
+    jsr     expr_eval            ; R8 = selector (FP64)
     jsr     fp_int
     jsr     fp_fix               ; R8 = integer selector (1-based)
     move.q  r22, r8              ; R22 = selector
@@ -1336,15 +1528,24 @@ exec_do_on:
 
 ; --- DO ---
 exec_do_do:
-    ; Push DO frame on GOSUB stack: ["DO  "][line ptr] = 8 bytes
-    add.q   r1, r16, #ST_GOSUB_SP
-    load.l  r2, (r1)
+    ; Push DO frame on loop stack: [marker (4)] [reserved (4)] [line ptr (8)]
+    add.q   r1, r16, #ST_FOR_SP
+    load.q  r2, (r1)
+    sub.q   r2, r2, #16
+    add.q   r4, r16, #ST_GOSUB_SP
+    load.q  r4, (r4)
+    blt     r2, r4, .do_overflow
     move.l  r3, #0x444F2020      ; "DO  "
     store.l r3, (r2)
     add.q   r2, r2, #4
-    store.l r14, (r2)            ; line pointer of DO statement
+    store.l r0, (r2)
     add.q   r2, r2, #4
-    store.l r2, (r1)             ; update SP
+    store.q r14, (r2)            ; line pointer of DO statement
+    sub.q   r2, r2, #8
+    store.q r2, (r1)             ; update SP
+    rts
+.do_overflow:
+    move.q  r28, #2
     rts
     ; === END exec_do_do ===
 
@@ -1362,35 +1563,38 @@ exec_do_loop:
     add.q   r17, r17, #1         ; consume WHILE
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = condition
-    and.l   r1, r8, #0x7FFFFFFF
-    beqz    r1, .loop_exit       ; false → exit
+    jsr     expr_truthy
+    beqz    r8, .loop_exit       ; false → exit
     bra     .loop_back           ; true → loop
 .loop_until:
     add.q   r17, r17, #1         ; consume UNTIL
     jsr     exec_skip_spaces
     jsr     expr_eval            ; R8 = condition
-    and.l   r1, r8, #0x7FFFFFFF
-    bnez    r1, .loop_exit       ; true → exit
+    jsr     expr_truthy
+    bnez    r8, .loop_exit       ; true → exit
     ; false → loop
 .loop_back:
     ; Pop DO frame, jump back to DO line (which re-pushes)
-    add.q   r1, r16, #ST_GOSUB_SP
-    load.l  r2, (r1)
-    sub.q   r2, r2, #8           ; DO frame = 8 bytes
+    add.q   r1, r16, #ST_FOR_SP
+    load.q  r2, (r1)
+    add.q   r3, r16, #ST_CTRL_HIGH
+    load.q  r3, (r3)
+    bge     r2, r3, .loop_done
     load.l  r3, (r2)             ; marker
     move.l  r4, #0x444F2020
     bne     r3, r4, .loop_done   ; not DO → error
-    add.q   r5, r2, #4
-    load.l  r14, (r5)            ; DO line pointer
-    store.l r2, (r1)             ; pop frame
+    add.q   r5, r2, #8
+    load.q  r14, (r5)            ; DO line pointer
+    add.q   r2, r2, #16
+    store.q r2, (r1)             ; pop frame
     move.q  r28, #1              ; R14 changed
     rts
 .loop_exit:
     ; Pop DO frame and continue
-    add.q   r1, r16, #ST_GOSUB_SP
-    load.l  r2, (r1)
-    sub.q   r2, r2, #8
-    store.l r2, (r1)
+    add.q   r1, r16, #ST_FOR_SP
+    load.q  r2, (r1)
+    add.q   r2, r2, #16
+    store.q r2, (r1)
 .loop_done:
     rts
     ; === END exec_do_loop ===
@@ -1431,26 +1635,26 @@ exec_do_input:
     move.q  r24, r9              ; save type flag
     move.q  r23, r17             ; save statement cursor
 
-    ; Read line into BASIC_LINE_BUF.
-    la      r8, BASIC_LINE_BUF
+    ; Read line into EHBASIC_PRIV_LINE_BUF.
+    la      r8, EHBASIC_PRIV_LINE_BUF
     move.q  r9, #80
     jsr     read_line
     bnez    r24, .input_store_string
 
-    ; Numeric variable: parse line as expression.
-    la      r17, BASIC_LINE_BUF
-    jsr     expr_eval            ; R8 = FP32 value
-    store.l r8, (r22)
+    ; Numeric variable: parse line as a tagged expression.
+    la      r17, EHBASIC_PRIV_LINE_BUF
+    jsr     expr_eval            ; R8 = payload, R9 = tag
+    jsr     exec_store_expr_r22
     bra     .input_after_store
 
 .input_store_string:
-    la      r8, BASIC_LINE_BUF
+    la      r8, EHBASIC_PRIV_LINE_BUF
     jsr     str_len
     jsr     str_alloc
     bnez    r28, .input_done
     beqz    r8, .input_done
     move.q  r3, r8               ; allocated string pointer
-    move.q  r9, #BASIC_LINE_BUF
+    move.q  r9, #EHBASIC_PRIV_LINE_BUF
     jsr     str_copy
     store.l r3, (r22)
 
@@ -1469,29 +1673,43 @@ exec_do_input:
 
 ; --- DIM ---
 exec_do_dim:
-    jsr     arr_dim
-    rts
+    bra     arr_dim
     ; === END exec_do_dim ===
 
 ; --- POKE ---
-; POKE addr, value  - write 32-bit value to addr (matches PEEK which reads 32-bit)
+; POKE addr, value  - byte alias for POKE8.
+; This is an intentional historical nod to 8-bit home computer BASICs:
+; bare POKE writes one byte, and wider stores must use POKE16/32/64.
 exec_do_poke:
-    ; Check for POKE8 (byte-level access)
-    load.b  r1, (r17)
-    move.q  r2, #0x38            ; '8'
-    move.q  r23, r0              ; R23 = 0 (32-bit mode)
-    bne     r1, r2, .poke_parse
-    move.q  r23, #1              ; R23 = 1 (byte mode)
-    add.q   r17, r17, #1         ; consume '8'
-.poke_parse:
+    move.q  r23, #1              ; byte width
+    bra     exec_do_poke_width
+
+; R23 = width in bytes (1, 2, 4, or 8)
+exec_do_poke_width:
     jsr     exec_skip_spaces
-    jsr     expr_eval            ; R8 = address (FP32)
+    jsr     expr_eval            ; R8 = address payload, R9 = tag
     bnez    r28, .poke_done
-    jsr     fp_int               ; R8 = INT(addr) FP32
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .poke_addr_i64
+    jsr     fp_int               ; R8 = INT(addr) FP64
     jsr     fp_fix               ; R8 = integer
+.poke_addr_i64:
     move.q  r22, r8              ; R22 = address
-    bnez    r23, .poke_addr_ok
+    move.q  r1, #1
+    beq     r23, r1, .poke_addr_ok
+    move.q  r1, #2
+    bne     r23, r1, .poke_check32
+    and.l   r1, r22, #1
+    bnez    r1, .poke_fc_error
+    bra     .poke_addr_ok
+.poke_check32:
+    move.q  r1, #4
+    bne     r23, r1, .poke_check64
     and.l   r1, r22, #3
+    bnez    r1, .poke_fc_error
+    bra     .poke_addr_ok
+.poke_check64:
+    and.l   r1, r22, #7
     bnez    r1, .poke_fc_error
 .poke_addr_ok:
     jsr     exec_skip_spaces
@@ -1500,12 +1718,45 @@ exec_do_poke:
     bne     r1, r2, .poke_done
     add.q   r17, r17, #1         ; consume ','
     jsr     exec_skip_spaces
-    jsr     expr_eval            ; R8 = value (FP32)
+    move.q  r1, #8
+    bne     r23, r1, .poke_eval_value
+    move.q  r24, r17             ; save value cursor in case this is not an I64 expression
+    jsr     exec_eval_i64
+    beqz    r9, .poke_restore_eval_value
+    move.q  r25, r8
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    beqz    r1, .poke_restore_qword
+    move.q  r2, #0x3A            ; ':'
+    beq     r1, r2, .poke_restore_qword
+.poke_restore_eval_value:
+    move.q  r17, r24
+    bra     .poke_eval_value
+.poke_restore_qword:
+    move.q  r8, r25
+    bra     .poke_store_qword
+.poke_eval_value:
+    jsr     expr_eval            ; R8 = value payload, R9 = tag
     bnez    r28, .poke_done
-    jsr     fp_int               ; R8 = INT(value) FP32
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .poke_value_i64
+    jsr     fp_int               ; R8 = INT(value) FP64
     jsr     fp_fix               ; R8 = integer
-    beqz    r23, .poke_32bit
+.poke_value_i64:
+    move.q  r1, #1
+    beq     r23, r1, .poke_8bit
+    move.q  r1, #2
+    beq     r23, r1, .poke_16bit
+    move.q  r1, #4
+    beq     r23, r1, .poke_32bit
+.poke_store_qword:
+    store.q r8, (r22)            ; write 64-bit to address
+    rts
+.poke_8bit:
     store.b r8, (r22)            ; write byte to address
+    rts
+.poke_16bit:
+    store.w r8, (r22)            ; write 16-bit to address
     rts
 .poke_32bit:
     store.l r8, (r22)            ; write 32-bit to address
@@ -1518,6 +1769,551 @@ exec_do_poke:
     rts
     ; === END exec_do_poke ===
 
+; Parse a plain &H hex literal into a full 64-bit payload.
+; Input:  R17 = '&'
+; Output: R8 = qword value, R9 = 1 on success, 0 on malformed/no digits.
+;         R17 advanced past the literal on success; unspecified on failure.
+; Clobbers: R1-R7
+exec_parse_hex_u64:
+    move.q  r9, r0
+    load.b  r1, (r17)
+    move.q  r2, #0x26            ; '&'
+    bne     r1, r2, .eph_fail
+    add.q   r17, r17, #1
+    load.b  r1, (r17)
+    or.q    r1, r1, #0x20        ; normalize H/h
+    move.q  r2, #0x68            ; 'h'
+    bne     r1, r2, .eph_fail
+.eph_start:
+    add.q   r17, r17, #1
+    move.q  r8, r0
+    move.q  r7, r0               ; digit count
+.eph_loop:
+    load.b  r1, (r17)
+    move.q  r2, #0x30
+    blt     r1, r2, .eph_done
+    move.q  r2, #0x39
+    ble     r1, r2, .eph_digit_09
+    move.q  r2, #0x41
+    blt     r1, r2, .eph_done
+    move.q  r2, #0x46
+    ble     r1, r2, .eph_digit_af_upper
+    move.q  r2, #0x61
+    blt     r1, r2, .eph_done
+    move.q  r2, #0x66
+    ble     r1, r2, .eph_digit_af_lower
+    bra     .eph_done
+.eph_digit_09:
+    sub.q   r1, r1, #0x30
+    bra     .eph_accum
+.eph_digit_af_upper:
+    sub.q   r1, r1, #0x37
+    bra     .eph_accum
+.eph_digit_af_lower:
+    sub.q   r1, r1, #0x57
+.eph_accum:
+    move.q  r2, #16
+    bge     r7, r2, .eph_fail
+    lsl.q   r8, r8, #4
+    or.q    r8, r8, r1
+    add.q   r7, r7, #1
+    add.q   r17, r17, #1
+    bra     .eph_loop
+.eph_done:
+    beqz    r7, .eph_fail
+    move.q  r9, #1
+    rts
+.eph_fail:
+    move.q  r9, r0
+    rts
+
+; Evaluate an integer-compatible expression into a full qword.
+; This is a scoped bridge for POKE64 while the main expression engine is still
+; FP64. It supports integer literals, simple numeric variables, and tokenised
+; + and - operators.
+; Input:  R17 = expression cursor
+; Output: R8 = qword payload, R9 = 1 on success, 0 on unsupported syntax.
+;         R17 advanced past the parsed expression on success.
+; Clobbers: R1-R15. R22 is preserved for statement callers.
+exec_eval_i64:
+    push    r22
+    push    r23
+    jsr     exec_i64_or
+    pop     r23
+    pop     r22
+    rts
+
+exec_i64_or:
+    jsr     exec_i64_and
+    beqz    r9, .ei64_or_done
+    move.q  r22, r8
+.ei64_or_loop:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #TK_OR
+    beq     r1, r2, .ei64_do_or
+    move.q  r2, #TK_EOR
+    beq     r1, r2, .ei64_do_eor
+    move.q  r8, r22
+    move.q  r9, #1
+.ei64_or_done:
+    rts
+.ei64_do_or:
+    add.q   r17, r17, #1
+    push    r22
+    jsr     exec_i64_and
+    pop     r22
+    beqz    r9, .ei64_or_done
+    or.q    r22, r22, r8
+    bra     .ei64_or_loop
+.ei64_do_eor:
+    add.q   r17, r17, #1
+    push    r22
+    jsr     exec_i64_and
+    pop     r22
+    beqz    r9, .ei64_or_done
+    eor.q   r22, r22, r8
+    bra     .ei64_or_loop
+
+exec_i64_and:
+    jsr     exec_i64_not
+    beqz    r9, .ei64_and_done
+    move.q  r22, r8
+.ei64_and_loop:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #TK_AND
+    bne     r1, r2, .ei64_and_return
+    add.q   r17, r17, #1
+    push    r22
+    jsr     exec_i64_not
+    pop     r22
+    beqz    r9, .ei64_and_done
+    and.q   r22, r22, r8
+    bra     .ei64_and_loop
+.ei64_and_return:
+    move.q  r8, r22
+    move.q  r9, #1
+.ei64_and_done:
+    rts
+
+exec_i64_not:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #TK_NOT
+    bne     r1, r2, exec_i64_compare
+    add.q   r17, r17, #1
+    jsr     exec_i64_not
+    beqz    r9, .ei64_not_done
+    not.q   r8, r8
+    move.q  r9, #1
+.ei64_not_done:
+    rts
+
+exec_i64_compare:
+    jsr     exec_i64_add
+    beqz    r9, .ei64_cmp_done
+    move.q  r22, r8
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #TK_LT
+    beq     r1, r2, .ei64_cmp_lt
+    move.q  r2, #TK_GT
+    beq     r1, r2, .ei64_cmp_gt
+    move.q  r2, #TK_EQUAL
+    beq     r1, r2, .ei64_cmp_eq
+    move.q  r8, r22
+    move.q  r9, #1
+.ei64_cmp_done:
+    rts
+.ei64_cmp_lt:
+    move.q  r23, r0              ; <
+    add.q   r17, r17, #1
+    load.b  r1, (r17)
+    move.q  r2, #0x3D
+    beq     r1, r2, .ei64_cmp_set_le
+    move.q  r2, #TK_EQUAL
+    beq     r1, r2, .ei64_cmp_set_le
+    move.q  r2, #0x3E
+    beq     r1, r2, .ei64_cmp_set_ne
+    move.q  r2, #TK_GT
+    beq     r1, r2, .ei64_cmp_set_ne
+    bra     .ei64_cmp_rhs
+.ei64_cmp_set_le:
+    move.q  r23, #1              ; <=
+    add.q   r17, r17, #1
+    bra     .ei64_cmp_rhs
+.ei64_cmp_set_ne:
+    move.q  r23, #2              ; <>
+    add.q   r17, r17, #1
+    bra     .ei64_cmp_rhs
+.ei64_cmp_gt:
+    move.q  r23, #3              ; >
+    add.q   r17, r17, #1
+    load.b  r1, (r17)
+    move.q  r2, #0x3D
+    beq     r1, r2, .ei64_cmp_set_ge
+    move.q  r2, #TK_EQUAL
+    beq     r1, r2, .ei64_cmp_set_ge
+    bra     .ei64_cmp_rhs
+.ei64_cmp_set_ge:
+    move.q  r23, #4              ; >=
+    add.q   r17, r17, #1
+    bra     .ei64_cmp_rhs
+.ei64_cmp_eq:
+    move.q  r23, #5              ; =
+    add.q   r17, r17, #1
+.ei64_cmp_rhs:
+    push    r22
+    push    r23
+    jsr     exec_i64_add
+    pop     r23
+    pop     r22
+    beqz    r9, .ei64_cmp_done
+    move.q  r1, r0               ; false
+    move.q  r2, #5
+    beq     r23, r2, .ei64_cmp_do_eq
+    move.q  r2, #4
+    beq     r23, r2, .ei64_cmp_do_ge
+    move.q  r2, #3
+    beq     r23, r2, .ei64_cmp_do_gt
+    move.q  r2, #2
+    beq     r23, r2, .ei64_cmp_do_ne
+    move.q  r2, #1
+    beq     r23, r2, .ei64_cmp_do_le
+    blt     r22, r8, .ei64_cmp_true
+    bra     .ei64_cmp_result
+.ei64_cmp_do_le:
+    blt     r22, r8, .ei64_cmp_true
+    beq     r22, r8, .ei64_cmp_true
+    bra     .ei64_cmp_result
+.ei64_cmp_do_ne:
+    bne     r22, r8, .ei64_cmp_true
+    bra     .ei64_cmp_result
+.ei64_cmp_do_gt:
+    bgt     r22, r8, .ei64_cmp_true
+    bra     .ei64_cmp_result
+.ei64_cmp_do_ge:
+    bgt     r22, r8, .ei64_cmp_true
+    beq     r22, r8, .ei64_cmp_true
+    bra     .ei64_cmp_result
+.ei64_cmp_do_eq:
+    beq     r22, r8, .ei64_cmp_true
+    bra     .ei64_cmp_result
+.ei64_cmp_true:
+    move.q  r1, r0
+    not.q   r1, r1
+.ei64_cmp_result:
+    move.q  r8, r1
+    move.q  r9, #1
+    rts
+
+exec_i64_add:
+    jsr     exec_i64_mul
+    beqz    r9, .ei64_add_done
+    move.q  r22, r8
+.ei64_add_loop:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #TK_PLUS
+    beq     r1, r2, .ei64_do_add
+    move.q  r2, #TK_MINUS
+    beq     r1, r2, .ei64_do_sub
+    move.q  r2, #TK_LSHIFT
+    beq     r1, r2, .ei64_do_lshift
+    move.q  r2, #TK_RSHIFT
+    beq     r1, r2, .ei64_do_rshift
+    move.q  r8, r22
+    move.q  r9, #1
+.ei64_add_done:
+    rts
+.ei64_do_add:
+    add.q   r17, r17, #1
+    push    r22
+    jsr     exec_i64_mul
+    pop     r22
+    beqz    r9, .ei64_add_done
+    add.q   r22, r22, r8
+    bra     .ei64_add_loop
+.ei64_do_sub:
+    add.q   r17, r17, #1
+    push    r22
+    jsr     exec_i64_mul
+    pop     r22
+    beqz    r9, .ei64_add_done
+    sub.q   r22, r22, r8
+    bra     .ei64_add_loop
+.ei64_do_lshift:
+    add.q   r17, r17, #1
+    push    r22
+    jsr     exec_i64_mul
+    pop     r22
+    beqz    r9, .ei64_add_done
+    and.q   r8, r8, #63
+    lsl.q   r22, r22, r8
+    bra     .ei64_add_loop
+.ei64_do_rshift:
+    add.q   r17, r17, #1
+    push    r22
+    jsr     exec_i64_mul
+    pop     r22
+    beqz    r9, .ei64_add_done
+    and.q   r8, r8, #63
+    lsr.q   r22, r22, r8
+    bra     .ei64_add_loop
+
+exec_i64_mul:
+    jsr     exec_i64_primary
+    beqz    r9, .ei64_mul_done
+    move.q  r22, r8
+.ei64_mul_loop:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #TK_MULT
+    bne     r1, r2, .ei64_mul_return
+    add.q   r17, r17, #1
+    push    r22
+    jsr     exec_i64_primary
+    pop     r22
+    beqz    r9, .ei64_mul_done
+    mulu.q  r22, r22, r8
+    bra     .ei64_mul_loop
+.ei64_mul_return:
+    move.q  r8, r22
+    move.q  r9, #1
+.ei64_mul_done:
+    rts
+
+exec_i64_primary:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #TK_MINUS
+    beq     r1, r2, .ei64_unary_minus
+    move.q  r2, #0x2D            ; '-'
+    beq     r1, r2, .ei64_unary_minus
+    move.q  r2, #TK_PLUS
+    beq     r1, r2, .ei64_unary_plus
+    move.q  r2, #0x2B            ; '+'
+    beq     r1, r2, .ei64_unary_plus
+    move.q  r2, #TK_EXT
+    beq     r1, r2, .ei64_ext
+    move.q  r2, #TK_VAL
+    beq     r1, r2, .ei64_fn_val
+    move.q  r2, #TK_INT
+    beq     r1, r2, .ei64_fn_int
+    move.q  r2, #TK_ABS
+    beq     r1, r2, .ei64_fn_abs
+    move.q  r2, #TK_SGN
+    beq     r1, r2, .ei64_fn_sgn
+    move.q  r2, #0x28            ; '('
+    beq     r1, r2, .ei64_paren
+    move.q  r2, #0x26            ; '&'
+    beq     r1, r2, .ei64_hex
+    move.q  r2, #0x30
+    blt     r1, r2, .ei64_not_decimal
+    move.q  r2, #0x39
+    ble     r1, r2, .ei64_decimal
+.ei64_not_decimal:
+    move.q  r2, #0x41
+    blt     r1, r2, .ei64_fail
+    bra     .ei64_var            ; var_parse_name validates A-Z/a-z
+.ei64_ext:
+    add.q   r17, r17, #1         ; consume TK_EXT
+    load.b  r1, (r17)
+    move.q  r2, #EXT_PEEK64
+    bne     r1, r2, .ei64_fail
+    add.q   r17, r17, #1         ; consume EXT_PEEK64
+    bra     exec_i64_peek64
+.ei64_hex:
+    bra     exec_parse_hex_u64
+.ei64_decimal:
+    bra     exec_parse_dec_u64
+.ei64_unary_minus:
+    add.q   r17, r17, #1
+    jsr     exec_i64_primary
+    beqz    r9, .ei64_fail
+    neg.q   r8, r8
+    move.q  r9, #1
+    rts
+.ei64_unary_plus:
+    add.q   r17, r17, #1
+    bra     exec_i64_primary
+.ei64_fn_val:
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x28             ; '('
+    bne     r1, r2, .ei64_fail
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x22             ; '"'
+    bne     r1, r2, .ei64_fail
+    add.q   r17, r17, #1
+    move.q  r8, r17
+    jsr     val_parse_i64_string
+    beqz    r9, .ei64_fail
+.ei64_fn_val_seek_quote:
+    load.b  r1, (r17)
+    beqz    r1, .ei64_fail
+    move.q  r2, #0x22
+    beq     r1, r2, .ei64_fn_val_quote
+    add.q   r17, r17, #1
+    bra     .ei64_fn_val_seek_quote
+.ei64_fn_val_quote:
+    add.q   r17, r17, #1
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x29             ; ')'
+    bne     r1, r2, .ei64_fail
+    add.q   r17, r17, #1
+    move.q  r9, #1
+    rts
+.ei64_fn_int:
+    add.q   r17, r17, #1
+    jsr     exec_i64_call_arg
+    beqz    r9, .ei64_fail
+    move.q  r9, #1
+    rts
+.ei64_fn_abs:
+    add.q   r17, r17, #1
+    jsr     exec_i64_call_arg
+    beqz    r9, .ei64_fail
+    bgez    r8, .ei64_fn_abs_done
+    neg.q   r8, r8
+.ei64_fn_abs_done:
+    move.q  r9, #1
+    rts
+.ei64_fn_sgn:
+    add.q   r17, r17, #1
+    jsr     exec_i64_call_arg
+    beqz    r9, .ei64_fail
+    beqz    r8, .ei64_fn_sgn_zero
+    bgez    r8, .ei64_fn_sgn_pos
+    move.q  r8, r0
+    not.q   r8, r8
+    move.q  r9, #1
+    rts
+.ei64_fn_sgn_pos:
+    move.q  r8, #1
+    move.q  r9, #1
+    rts
+.ei64_fn_sgn_zero:
+    move.q  r8, r0
+    move.q  r9, #1
+    rts
+.ei64_paren:
+    add.q   r17, r17, #1
+    jsr     exec_i64_or
+    beqz    r9, .ei64_fail
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x29            ; ')'
+    bne     r1, r2, .ei64_fail
+    add.q   r17, r17, #1
+    move.q  r9, #1
+    rts
+.ei64_var:
+    jsr     var_parse_name       ; R14=name, R15=count
+    beqz    r15, .ei64_fail
+    jsr     var_lookup_tag
+    beqz    r8, .ei64_fail
+    move.q  r11, r8
+    move.q  r1, r8
+    sub.q   r1, r1, #8
+    load.l  r1, (r1)
+    move.q  r2, #VAL_I64
+    bne     r1, r2, .ei64_fail
+.ei64_var_qword:
+    load.q  r8, (r11)
+    move.q  r9, #1
+.ei64_primary_done:
+    rts
+.ei64_fail:
+    move.q  r9, r0
+    rts
+
+exec_i64_call_arg:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x28
+    bne     r1, r2, .ei64_call_fail
+    add.q   r17, r17, #1
+    jsr     exec_i64_or
+    beqz    r9, .ei64_call_fail
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x29
+    bne     r1, r2, .ei64_call_fail
+    add.q   r17, r17, #1
+    move.q  r9, #1
+    rts
+.ei64_call_fail:
+    move.q  r9, r0
+    rts
+
+; Evaluate PEEK64(address) as a qword primary for POKE64 value expressions.
+; General BASIC expressions are still FP64; this bridge preserves qword memory
+; copies such as POKE64 dst, PEEK64(src).
+exec_i64_peek64:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x28            ; '('
+    bne     r1, r2, .ei64_peek64_fail
+    add.q   r17, r17, #1
+    jsr     expr_eval            ; R8 = address payload, R9 = tag
+    bnez    r28, .ei64_peek64_fail
+    load.b  r1, (r17)
+    move.q  r2, #0x29            ; ')'
+    bne     r1, r2, .ei64_peek64_fail
+    add.q   r17, r17, #1
+    move.q  r1, #VAL_I64
+    beq     r9, r1, .ei64_peek64_addr_i64
+    jsr     fp_int
+    jsr     fp_fix               ; R8 = integer address
+.ei64_peek64_addr_i64:
+    and.l   r1, r8, #7
+    bnez    r1, .ei64_peek64_fc
+    load.q  r8, (r8)
+    move.q  r9, #1
+    rts
+.ei64_peek64_fc:
+    move.q  r8, #ERR_FC
+    la      r9, err_msg_fc
+    jsr     raise_error
+.ei64_peek64_fail:
+    move.q  r9, r0
+    rts
+
+; Parse an unsigned decimal integer into a qword. Overflow wraps; callers only
+; use this for integer-compatible qword payloads.
+exec_parse_dec_u64:
+    move.q  r8, r0
+    move.q  r9, r0
+.epd_loop:
+    load.b  r1, (r17)
+    move.q  r2, #0x30
+    blt     r1, r2, .epd_done
+    move.q  r2, #0x39
+    bgt     r1, r2, .epd_done
+    sub.q   r1, r1, #0x30
+    mulu.q  r8, r8, #10
+    add.q   r8, r8, r1
+    add.q   r17, r17, #1
+    move.q  r9, #1
+    bra     .epd_loop
+.epd_done:
+    move.q  r2, #0x2E             ; decimal point means this is not I64
+    beq     r1, r2, .epd_fail
+    move.q  r2, #0x45             ; E
+    beq     r1, r2, .epd_fail
+    move.q  r2, #0x65             ; e
+    beq     r1, r2, .epd_fail
+    rts
+.epd_fail:
+    move.q  r9, r0
+    rts
+
 ; --- READ ---
 exec_do_read:
     ; READ A[,B,...] from DATA statements in program text
@@ -1527,9 +2323,9 @@ exec_do_read:
     beqz    r8, .read_done
     move.q  r22, r8
     push    r17                  ; save text pointer (clobbered by data scanner)
-    jsr     exec_read_next_data_value ; R8 = FP32 value
+    jsr     exec_read_next_data_value ; R8 = FP64 value
     pop     r17                  ; restore text pointer
-    store.l r8, (r22)
+    jsr     exec_store_fp64_r22
     jsr     exec_skip_spaces
     load.b  r1, (r17)
     move.q  r2, #0x2C            ; ','
@@ -1579,7 +2375,7 @@ exec_do_texture:  bra hw_texture
 exec_do_call:
     ; CALL addr - JSR to machine code at given address
     jsr     exec_skip_spaces
-    jsr     expr_eval            ; R8 = FP32 address
+    jsr     expr_eval            ; R8 = FP64 address
     jsr     fp_int
     jsr     fp_fix               ; R8 = integer address
     move.q  r9, r8               ; R9 = call target
@@ -1615,6 +2411,36 @@ exec_do_troff:
     store.l r0, (r1)
     rts
     ; === END exec_do_troff ===
+
+; --- EXTENDED STATEMENTS ---
+exec_do_ext:
+    load.b  r1, (r17)
+    add.q   r17, r17, #1
+    move.q  r2, #EXT_TRON
+    beq     r1, r2, exec_do_tron
+    move.q  r2, #EXT_TROFF
+    beq     r1, r2, exec_do_troff
+    move.q  r2, #EXT_POKE8
+    beq     r1, r2, .ext_poke8
+    move.q  r2, #EXT_POKE16
+    beq     r1, r2, .ext_poke16
+    move.q  r2, #EXT_POKE32
+    beq     r1, r2, .ext_poke32
+    move.q  r2, #EXT_POKE64
+    beq     r1, r2, .ext_poke64
+    bra     exec_do_unknown
+.ext_poke8:
+    move.q  r23, #1
+    bra     exec_do_poke_width
+.ext_poke16:
+    move.q  r23, #2
+    bra     exec_do_poke_width
+.ext_poke32:
+    move.q  r23, #4
+    bra     exec_do_poke_width
+.ext_poke64:
+    move.q  r23, #8
+    bra     exec_do_poke_width
 
 ; --- DEF FN ---
 exec_do_def:
@@ -1722,8 +2548,8 @@ exec_do_unknown:
 ; ============================================================================
 ; Indices: 0=END, 1=FOR, 2=NEXT, 3=DATA, 4=INPUT, 5=DIM, 6=READ, 7=LET,
 ;          8=DEC, 9=GOTO, 10=unused(RUN), 11=IF, 12=RESTORE, 13=GOSUB,
-;          14=RETURN, 15=REM, 16=STOP, 17=ON(TRON), 18=TRON, 19=INC,
-;          20=WAIT, 21=TROFF, 22-23=unused, 24=POKE, 25=DOKE, 26=LOKE,
+;          14=RETURN, 15=REM, 16=STOP, 17=ON, 18=extended, 19=INC,
+;          20=WAIT, 21=LOAD, 22=SAVE, 23=DEF, 24=POKE, 25-26=removed,
 ;          27=CALL, 28=DO, 29=LOOP, 30=PRINT, 31=CONT
 ;          32-46=mixed (LIST/NEW/BLOAD and parser keywords), 47=WEND, 48=WHILE, 49-97=unused
 ;          98=SCREEN..127=TEXTURE
@@ -1748,15 +2574,15 @@ stmt_jump_table:
     dc.l    exec_do_rem          ; 15 = TK_REM      (0x8F)
     dc.l    exec_do_stop         ; 16 = TK_STOP     (0x90)
     dc.l    exec_do_on           ; 17 = TK_ON       (0x91)
-    dc.l    exec_do_tron         ; 18 = TK_NULL→TRON(0x92)
+    dc.l    exec_do_ext          ; 18 = TK_EXT      (0x92)
     dc.l    exec_do_inc          ; 19 = TK_INC      (0x93)
     dc.l    exec_do_wait         ; 20 = TK_WAIT     (0x94)
     dc.l    exec_do_load         ; 21 = TK_LOAD     (0x95)
     dc.l    exec_do_save         ; 22 = TK_SAVE     (0x96)
     dc.l    exec_do_def          ; 23 = TK_DEF      (0x97)
     dc.l    exec_do_poke         ; 24 = TK_POKE     (0x98)
-    dc.l    exec_do_doke         ; 25 = TK_DOKE     (0x99)
-    dc.l    exec_do_loke         ; 26 = TK_LOKE     (0x9A)
+    dc.l    exec_do_unknown      ; 25 = removed DOKE (0x99)
+    dc.l    exec_do_unknown      ; 26 = removed LOKE (0x9A)
     dc.l    exec_do_call         ; 27 = TK_CALL     (0x9B)
     dc.l    exec_do_do           ; 28 = TK_DO       (0x9C)
     dc.l    exec_do_loop         ; 29 = TK_LOOP     (0x9D)
@@ -1808,8 +2634,8 @@ stmt_jump_table:
     dc.l    exec_do_unknown      ; 74  (0xCA) TK_TAN
     dc.l    exec_do_unknown      ; 75  (0xCB) TK_ATN
     dc.l    exec_do_unknown      ; 76  (0xCC) TK_PEEK
-    dc.l    exec_do_unknown      ; 77  (0xCD) TK_DEEK
-    dc.l    exec_do_unknown      ; 78  (0xCE) TK_LEEK
+    dc.l    exec_do_unknown      ; 77  (0xCD) removed DEEK
+    dc.l    exec_do_unknown      ; 78  (0xCE) removed LEEK
     dc.l    exec_do_unknown      ; 79  (0xCF) TK_LEN
     dc.l    exec_do_unknown      ; 80  (0xD0) TK_STR
     dc.l    exec_do_unknown      ; 81  (0xD1) TK_VAL
@@ -1945,17 +2771,17 @@ exec_skip_number:
 
 exec_find_line:
     ; Start from beginning of program
-    load.l  r1, (r16)           ; R1 = first line pointer
+    load.q  r1, (r16)           ; R1 = first line pointer
 
 .efl_loop:
     beqz    r1, .efl_not_found
-    ; Read line number at R1+4
-    add.q   r2, r1, #4
+    ; Read line number at R1+8
+    add.q   r2, r1, #8
     load.l  r2, (r2)
     beq     r2, r8, .efl_found
     bgt     r2, r8, .efl_not_found  ; passed it
     ; Advance to next line
-    load.l  r1, (r1)            ; follow next pointer
+    load.q  r1, (r1)            ; follow next pointer
     bra     .efl_loop
 
 .efl_found:
@@ -1971,7 +2797,7 @@ exec_find_line:
 ; ============================================================================
 ; Uses ST_DATA_PTR as the count of values already consumed by READ.
 ; Input:  R16 = state base
-; Output: R8  = next DATA value as FP32 (0 if unavailable)
+; Output: R8  = next DATA value as FP64 (0 if unavailable)
 ; Clobbers: R1-R15, R22-R25
 
 exec_read_next_data_value:
@@ -1991,7 +2817,7 @@ exec_read_next_data_value:
 ; Helper: exec_find_data_value_by_index
 ; ============================================================================
 ; Input:  R6 = target DATA element index (0-based)
-; Output: R8 = FP32 value (0 if not found)
+; Output: R8 = FP64 value (0 if not found)
 ; Clobbers: R1-R15, R22-R25
 
 exec_find_data_value_by_index:
@@ -1999,13 +2825,13 @@ exec_find_data_value_by_index:
     push    r15
 
     move.q  r7, r0               ; R7 = current data index
-    load.l  r10, (r16)           ; R10 = first line pointer
+    load.q  r10, (r16)           ; R10 = first line pointer
 
 .fd_line_loop:
     beqz    r10, .fd_not_found
-    load.l  r11, (r10)           ; next line pointer
+    load.q  r11, (r10)           ; next line pointer
 
-    add.q   r12, r10, #8         ; R12 = content pointer
+    add.q   r12, r10, #16        ; R12 = content pointer
 .fd_stmt_loop:
     load.b  r1, (r12)
     beqz    r1, .fd_next_line
@@ -2060,7 +2886,7 @@ exec_find_data_value_by_index:
     push    r6
     push    r7
     move.q  r17, r12
-    jsr     parse_number          ; R8 = FP32, R17 advanced
+    jsr     parse_number          ; R8 = FP64, R17 advanced
     move.q  r12, r17
 
     ; apply sign if needed

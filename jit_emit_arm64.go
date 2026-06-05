@@ -1131,6 +1131,8 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitDLOAD(cb, ji, instrPC, br, writtenSoFar)
 	case OP_DSTORE:
 		emitDSTORE(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DSIN, OP_DCOS, OP_DTAN, OP_DATAN, OP_DLOG, OP_DEXP, OP_DPOW:
+		emitDTransHelperExitARM64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_DMOV, OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD,
 		OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT, OP_DCMP, OP_DCVTIF, OP_DCVTFI, OP_FCVTSD, OP_FCVTDS:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
@@ -3549,6 +3551,27 @@ func emitFPMemHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, op u
 	emitLoadImm64(cb, 2, instrPC)                                         //
 	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))            // HelperPC
 	emitLoadImm32(cb, 2, op)                                              //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))        // NeedHelper
+
+	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
+	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
+}
+
+func emitDTransHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                  // X1 = ctx ptr
+	emitLoadImm32(cb, 2, uint32(ji.opcode))                               //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperSize/4)))        // HelperSize = opcode
+	emitLoadImm32(cb, 2, uint32(ji.rd))                                   //
+	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperRd/4)))          // HelperRd
+	emitLoadImm64(cb, 2, uint64(ji.rs))                                   //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperAddr/8)))          // HelperAddr = rs
+	emitLoadImm64(cb, 2, uint64(ji.rt))                                   //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperVal/8)))           // HelperVal = rt
+	cb.Emit32(arm64STR_imm(arm64RegIE64SP, 1, uint32(jitCtxOffLiveSP/8))) // LiveSP
+	emitLoadImm64(cb, 2, instrPC)                                         //
+	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))            // HelperPC
+	emitLoadImm32(cb, 2, HELPER_DTRANS)                                   //
 	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))        // NeedHelper
 
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)

@@ -37,12 +37,11 @@ const (
 	// the AROS source tree, and the AROS profile docs.
 	AROS_PROFILE_TOP uint32 = uint32(m68kProfileTop2GiB)
 
-	// ehbasicMinRequiredRAM is the smallest active visible RAM that can
-	// host the EhBASIC IE64 source layout. STACK_TOP sits at 0x9F000;
-	// rounded up to the next page the layout requires 0xA0000 = 640 KiB.
-	// Floor-clamped here so the profile error message is precise; in
-	// practice MIN_GUEST_RAM (32 MiB) is far larger.
-	ehbasicMinRequiredRAM uint32 = 0xA0000
+	// ehbasicMinRequiredRAM is the IE64 BASIC dynamic-layout minimum. The
+	// BASIC runtime derives stack/control reservations and internal arenas
+	// from CR_RAM_SIZE_BYTES; below 32 MiB the profile gate rejects the boot
+	// before the BASIC image runs.
+	ehbasicMinRequiredRAM uint32 = uint32(MIN_GUEST_RAM)
 
 	// ehbasicMaxTopOfRAM caps the uint32 TopOfRAM exposed for EhBASIC's
 	// low-memory accounting paths. Above-4-GiB IE64 visibility is queried
@@ -128,13 +127,13 @@ func AROSProfileBounds(bus profileBoundsBus) ProfileBounds {
 // addressing remains available through sysinfo MMIO and CR_RAM_SIZE_BYTES.
 func EhBASICProfileBounds(bus profileBoundsBus) ProfileBounds {
 	pb := ProfileBounds{
-		Name:        "EhBASIC",
+		Name:        "IE64 BASIC",
 		LowVecBase:  0x00001000,
 		MinRequired: ehbasicMinRequiredRAM,
 	}
 	avr := bus.ProfileMemoryCap()
 	if avr < uint64(pb.MinRequired) {
-		pb.Err = fmt.Errorf("EhBASIC profile requires at least %d bytes of active visible RAM, got %d",
+		pb.Err = fmt.Errorf("IE64 BASIC profile requires at least %d bytes of active visible RAM, got %d",
 			pb.MinRequired, avr)
 		return pb
 	}
@@ -156,11 +155,10 @@ func EnforceEhBASICProfile(bus profileBoundsBus) error {
 	return pb.Err
 }
 
-// EhBASICLayoutFitsTopOfRAM reports whether the IE64 EhBASIC source layout
-// (BASIC_LINE_BUF..STACK_TOP) fits inside top. Sanity-check helper for
-// tests and assertions; the layout constants live in sdk/include/ie64.inc.
-const ehbasicLayoutBase uint32 = 0x21000 // BASIC_LINE_BUF
-const ehbasicLayoutTop uint32 = 0x9F000  // STACK_TOP (initial R31)
+// EhBASICLayoutFitsTopOfRAM reports whether the fixed low BASIC state anchors
+// fit inside top. General BASIC storage and stacks are dynamic.
+const ehbasicLayoutBase uint32 = 0x42000 // BASIC_STATE
+const ehbasicLayoutTop uint32 = 0x43000  // BASIC_STATE_END (half-open)
 
 func EhBASICLayoutFitsTopOfRAM(top uint32) bool {
 	return top >= ehbasicLayoutTop && ehbasicLayoutBase < top

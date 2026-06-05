@@ -20,7 +20,7 @@ Part III has covered the audio engines one at a time. This chapter is
 the working map: how to start music from BASIC, how to inspect the media
 loader, and where each CPU reaches the common sound chips.
 
-The rule is simple. BASIC is best for quick setup, `POKE`, and
+The rule is simple. BASIC is best for quick setup, explicit-width `POKE`, and
 high-level playback. Machine code writes the same MMIO registers and
 ports documented in the chip chapters.
 
@@ -31,7 +31,7 @@ file.
 
 ```basic
 10 REM BASIC MIXER SKETCH
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 REM SOUNDCHIP VOICE
 40 SOUND 0,440,160,2
 50 ENVELOPE 0,10,20,128,30
@@ -99,7 +99,7 @@ register changes to error.
 ## 23.3 Media loader registers
 
 BASIC normally hides these registers, but they are useful when you want
-to inspect loader state or start playback with raw `POKE`.
+to inspect loader state or start playback with raw `POKE32`.
 
 | Address | Name | Access | Purpose |
 |---------|------|--------|---------|
@@ -161,10 +161,10 @@ This raw loader example writes the filename string itself:
 120 POKE8 A+8,68
 130 POKE8 A+9,0
 140 REM POINTER, SUBSONG, PLAY COMMAND
-150 POKE &H000F2300,A
-160 POKE &H000F2304,0
-170 POKE &H000F2308,1
-180 PRINT PEEK(&H000F230C),PEEK(&H000F2310),PEEK(&H000F2314)
+150 POKE32 &H000F2300,A
+160 POKE32 &H000F2304,0
+170 POKE32 &H000F2308,1
+180 PRINT PEEK32(&H000F230C),PEEK32(&H000F2310),PEEK32(&H000F2314)
 ```
 
 Use filenames that belong to the machine's own storage area. Names with
@@ -180,7 +180,7 @@ Line 180 prints status, selected engine type, and the last error code.
 
 | Engine | BASIC path | Chapter |
 |--------|------------|---------|
-| SoundChip and SFX | `SOUND`, `ENVELOPE`, `GATE`, SFX `POKE` | 12 |
+| SoundChip and SFX | `SOUND`, `ENVELOPE`, `GATE`, SFX `POKE32` | 12 |
 | PSG / AY | `PSG`, `PSG PLAY`, `PSG STOP`, `PSG STATUS`, `POKE8` | 13 |
 | SN76489 | `POKE8` byte-stream writes | 14 |
 | SID family | `SID VOICE`, `SID FILTER`, `SID VOLUME`, `SID PLAY`, `SID STOP`, `SID STATUS` | 15 |
@@ -188,9 +188,9 @@ Line 180 prints status, selected engine type, and the last error code.
 | POKEY | `POKEY`, `POKEY CTRL`, `POKEY PLUS`, `SAP PLAY`, `SAP STOP`, `POKEY STATUS` | 17 |
 | AHX | `AHX PLAY`, `AHX STOP`, `AHX PLUS`, `AHX STATUS` | 18 |
 | MOD | `SOUND MOD PLAY`, `SOUND MOD STOP`, `SOUND MOD FILTER`, `MOD STATUS` | 19 |
-| WAV | `SOUND PLAY` or raw WAV register `POKE` | 20 |
-| MIDI/MUS | `SOUND PLAY` or raw MIDI register `POKE` | 21 |
-| Paula DMA | Raw Paula register `POKE` | 22 |
+| WAV | `SOUND PLAY` or raw WAV register `POKE32` | 20 |
+| MIDI/MUS | `SOUND PLAY` or raw MIDI register `POKE32` | 21 |
+| Paula DMA | Raw Paula register `POKE32` | 22 |
 
 Mixer-wide effects are `SOUND FILTER`, `SOUND REVERB`, and
 `SOUND OVERDRIVE`. See Chapter 11.

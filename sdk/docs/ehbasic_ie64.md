@@ -1,6 +1,6 @@
-# EhBASIC IE64 User Manual
+# IE64 BASIC User Manual
 
-Comprehensive reference for the Enhanced BASIC interpreter running on the Intuition Engine IE64 CPU.
+Comprehensive reference for the BASIC interpreter running on the Intuition Engine IE64 CPU.
 
 ---
 
@@ -24,23 +24,21 @@ Comprehensive reference for the Enhanced BASIC interpreter running on the Intuit
 
 ## 1. Introduction
 
-EhBASIC IE64 is a port of Lee Davison's Enhanced BASIC (EhBASIC) to the Intuition Engine's IE64 RISC processor. The original EhBASIC was written in 6502 assembly and later ported to the Motorola 68000; this version is a ground-up reimplementation in IE64 assembly, preserving the language semantics whilst taking advantage of the IE64's 64-bit register file and compare-and-branch instructions.
+IE64 BASIC is inspired by Lee Davison's Enhanced BASIC (EhBASIC) and runs on the Intuition Engine's IE64 RISC processor. The original EhBASIC was written in 6502 assembly and later ported to the Motorola 68000; this version is a ground-up implementation in IE64 assembly with Intuition Engine hardware extensions.
 
-The Intuition Engine is a retro-inspired virtual machine that emulates multiple CPUs (6502, Z80, M68K, x86, IE32, IE64) alongside IE-native and compatibility-inspired video/audio hardware: VGA with copper coprocessor and blitter, ULA (ZX Spectrum), TED (Commodore 16|Plus/4), ANTIC/GTIA (Atari-inspired display list), Voodoo 3DFX, and a full complement of sound chips and players (SoundChip, PSG/AY-3-8910, SID/MOS 6581, POKEY, TED audio, AHX, MOD, WAV, MIDI/MUS, SAP, VGM/VGZ, SNDH, VTX, AY, YM, and Z80 PSG tracker formats). EhBASIC IE64 provides direct access to all of this hardware through extension commands.
+The Intuition Engine is a retro-inspired virtual machine that emulates multiple CPUs (6502, Z80, M68K, x86, IE32, IE64) alongside IE-native and compatibility-inspired video/audio hardware: VGA with copper coprocessor and blitter, ULA (ZX Spectrum), TED (Commodore 16|Plus/4), ANTIC/GTIA (Atari-inspired display list), Voodoo 3DFX, and a full complement of sound chips and players (SoundChip, PSG/AY-3-8910, SID/MOS 6581, POKEY, TED audio, AHX, MOD, WAV, MIDI/MUS, SAP, VGM/VGZ, SNDH, VTX, AY, YM, and Z80 PSG tracker formats). IE64 BASIC provides direct access to all of this hardware through extension commands.
 
-### Floating-Point Arithmetic: Important Note
+### Numeric Arithmetic: Important Note
 
-**This port uses IEEE 754 single-precision (FP32) arithmetic.** This differs from other EhBASIC ports: the original 6502 version and the 68K port both use a custom 6-byte packed floating-point format with a 7-bit biased exponent, providing approximately 9 decimal digits of precision.
+**This port uses signed 64-bit integers and IEEE 754 double-precision (FP64) arithmetic.** This differs from other EhBASIC ports: the original 6502 version and the 68K port both use a custom 6-byte packed floating-point format with a 7-bit biased exponent, providing approximately 9 decimal digits of precision.
 
-EhBASIC IE64's FP32 representation gives:
+IE64 BASIC's FP64 representation gives:
 
-- **Precision**: ~7 decimal digits (24-bit mantissa: 23 explicit + 1 implicit)
-- **Range**: approximately +/-3.4 x 10^38
+- **Precision**: about 15 decimal digits for floating-point values, plus exact signed 64-bit integer payloads where an expression stays integer-only
+- **Range**: approximately +/-1.8 x 10^308 for floating-point values
 - **Special values**: +/-0, +/-Infinity, NaN
 
-The trade-off is clear: FP32 sacrifices roughly 2 digits of precision compared to the original format, but gains IEEE 754 compatibility, hardware-friendly bit layouts, and simpler register handling (the 32-bit value sits in the lower half of a 64-bit IE64 register, leaving the upper 32 bits free for bit manipulation).
-
-For most BASIC programmes, 7 digits is more than sufficient. Financial calculations or programmes that chain many arithmetic operations may notice rounding differences compared to the original EhBASIC.
+Integer literals, integer arithmetic, bitwise operations, comparisons, and explicit-width memory reads can stay tagged as `I64`. Division, powers, trigonometric and logarithmic functions, decimal fractions, exponent notation, and mixed integer/float arithmetic use `FP64`.
 
 ---
 
@@ -48,7 +46,7 @@ For most BASIC programmes, 7 digits is more than sufficient. Financial calculati
 
 ### Building
 
-EhBASIC IE64 is assembled from source and optionally embedded into the Intuition Engine binary.
+IE64 BASIC is assembled from source and optionally embedded into the Intuition Engine binary.
 
 ```bash
 # Assemble the BASIC interpreter
@@ -78,12 +76,12 @@ Release builds always include `embed_basic`, so packaged Linux, Windows, and mac
 ./bin/IntuitionEngine -basic -term
 ```
 
-On startup, EhBASIC IE64 displays a banner and the `Ready` prompt:
+On startup, IE64 BASIC displays a banner and the `Ready` prompt:
 
 ```
-EhBASIC IE64 v3.1
+IE64 BASIC v3.1
 (c) Zayn Otley, 2024-2026
-Based on EhBASIC by Lee Davison
+Inspired by 68k EhBASIC by the late great Lee Davison (RIP)
 Ready
 ```
 
@@ -136,7 +134,7 @@ Ready
 
 ### Native Compilation
 
-In addition to the interpreter, EhBASIC IE64 can compile your stored programme to native IE64 machine code. Compilation is performed entirely inside the guest: a transpiler lowers the tokenised BASIC to an IE64 assembly text stream, and a private in-guest assembler encodes that stream to machine code. No host services or external tools are involved.
+In addition to the interpreter, IE64 BASIC can compile your stored programme to native IE64 machine code. Compilation is performed entirely inside the guest: a transpiler lowers the tokenised BASIC to an IE64 assembly text stream, and a private in-guest assembler encodes that stream to machine code. No host services or external tools are involved.
 
 There are two entry points.
 
@@ -194,7 +192,7 @@ Anything outside that subset (any other `include`, `incbin`, `equ`, `org`, macro
 These lower to native code and run under both `RUN AOT` and standalone `COMPILE`:
 
 - `GOTO`, `GOSUB`, `RETURN`.
-- `POKE`/`POKE8`/`DOKE`/`LOKE`, `BITSET`, `BITCLR`, `CALL`, `WAIT`, `VSYNC`.
+- `POKE`/`POKE8`/`POKE16`/`POKE32`/`POKE64`, `BITSET`, `BITCLR`, `CALL`, `WAIT`, `VSYNC`.
 - `PRINT` of a string literal or a numeric literal.
 - `END`, `STOP`.
 
@@ -211,12 +209,12 @@ These use the bundled runtime (expressions, variables, arrays, strings, `DATA`) 
 - `LIST` (detokenises and prints the bundled programme) and `SAVE "name"` (detokenises the bundled programme and writes it through the File I/O ABI).
 - `BLOAD "name", addr` loads raw bytes to `addr` through the File I/O MMIO (the same `FILE_NAME_PTR`/`FILE_DATA_PTR`/`FILE_CTRL` path the interpreter uses), with the destination 2^32 range check. `RUN AOT` delegates to the resident handler; standalone bundles it. A standalone image needs a File I/O device mapped in the machine it runs on.
 
-Direct-only commands (`RUN AOT`, `COMPILE`, `DIR`, `TYPE`) and roots with no BASIC token (`HOST`, `COSTART`, `COSTOP`, `COWAIT`, `COCALL`, `COSTATUS`) cannot be compiled at all and are reported as such. Every remaining tokenised statement still runs under `RUN AOT` through resident delegation. `POKE`/`POKE8`/`DOKE`/`LOKE` with expression operands (variables or arithmetic) compile under `RUN AOT` by delegating to the resident handler; with integer-literal operands they take a faster inline store.
+Direct-only commands (`RUN AOT`, `COMPILE`, `DIR`, `TYPE`) and roots with no BASIC token (`HOST`, `COSTART`, `COSTOP`, `COWAIT`, `COCALL`, `COSTATUS`) cannot be compiled at all and are reported as such. Every remaining tokenised statement still runs under `RUN AOT` through resident delegation. `POKE` and explicit-width `POKE` forms with expression operands (variables or arithmetic) compile under `RUN AOT` by delegating to the resident handler; with integer-literal operands they take a faster inline store.
 
 #### Limitations
 
 - `LOAD` is rejected by a standalone `COMPILE`: it reconstructs a tokenised programme in memory, which needs the resident tokeniser and a REPL loop to run what was loaded, and a standalone image has neither. Use `RUN AOT` or the interpreter for programmes that load other programmes. (`BLOAD`, a raw binary load, is supported in both modes.)
-- `POKE`/`POKE8`/`DOKE`/`LOKE` with expression operands compile under `RUN AOT` but not in a standalone `COMPILE` (which has no resident handler to delegate to); use integer-literal operands for standalone images.
+- `POKE` and explicit-width `POKE` forms with expression operands compile under `RUN AOT` but not in a standalone `COMPILE` (which has no resident handler to delegate to); use integer-literal operands for standalone images.
 - `ELSE` is supported for a single, non-nested `IF` per line. An `IF` whose `THEN` clause contains a second `IF` with its own `ELSE` is not lowered.
 - `DO WHILE`/`DO UNTIL` (a top test) is not lowered; use `DO ... LOOP UNTIL`/`LOOP WHILE`.
 - `STOP` under `RUN AOT` saves a native continuation and returns to the prompt; a typed `CONT` re-enters the compiled code where it stopped, with variables, `DATA` position, and open `FOR` loops preserved. Editing the programme, `NEW`, `LOAD`, or a fresh `RUN`/`RUN AOT` discards the pending continuation. A `STOP` reached *inside* an active `GOSUB` is not resumable: compiled `GOSUB`/`RETURN` use the hardware return stack, which is unwound when `STOP` returns to the prompt, so `CONT` resumes the post-`STOP` statements but the following `RETURN` reports `?RETURN WITHOUT GOSUB`. Use top-level `STOP`/`CONT`. A standalone `.ie64` has no REPL to return to, so it halts on `STOP` or `END`.
@@ -302,11 +300,20 @@ Previously entered commands are saved for the duration of the session. Use Ctrl+
 
 ### 3.1 Data Types
 
-EhBASIC IE64 supports two data types:
+IE64 BASIC supports two data types:
 
-**Numeric** - IEEE 754 single-precision floating-point (FP32). All numeric values, including integers, are stored as FP32. Integer operations truncate the fractional part where needed. Range: approximately +/-3.4 x 10^38. Precision: ~7 decimal digits.
+**Numeric** - Tagged numeric values. Integer-compatible expressions use signed
+64-bit payloads (`I64`) and FP operations use IEEE 754 double-precision
+floating point (`FP64`). Decimal literals without a decimal point or exponent,
+hex literals, integer arithmetic, bitwise operators, comparisons, `INT`, `ABS`,
+`SGN`, `VAL` integer text, and explicit-width `PEEK` reads can produce `I64`.
+Division, powers, trigonometric/logarithmic functions, decimal fractions, and
+exponent notation use `FP64`.
 
-**String** - Null-terminated byte sequences stored on a string heap. String variables are identified by a trailing `$` suffix. When the heap fills, live string variables and protected expression temporaries are compacted back to the start of the heap; if compaction cannot free enough space, `?OUT OF MEMORY ERROR` is raised.
+**String** - Null-terminated byte sequences stored on the interpreter string
+heap. String variables are identified by a trailing `$` suffix. `SADD` returns
+the live address of the current string bytes, so byte writes through that
+pointer mutate the string variable.
 
 ### 3.2 Variables
 
@@ -318,11 +325,19 @@ NAME$ = "ZAYN"
 LONGVARIABLENAME = 100
 ```
 
-**Numeric variables** hold FP32 values. An uninitialised variable returns 0.
+**Numeric variables** hold tagged numeric values in pinned dynamic segments. An
+empty numeric table has `ST_VAR_START = 0` and `ST_VAR_END = 0`; the first
+numeric variable allocates a segment from the internal BASIC arena. `VARPTR(X)`
+points at the public value cell; code that mutates it directly must preserve a
+valid tag and payload.
 
-**String variables** are indicated by a `$` suffix and hold a pointer to heap-allocated string data. An uninitialised string variable returns an empty string.
+**String variables** are indicated by a `$` suffix and live in pinned dynamic
+segments. Each record contains the internal string pointer plus reserved
+metadata fields. An uninitialised string variable returns an empty string.
 
-**Arrays** are declared with `DIM` and support one or more dimensions. Indices are zero-based:
+**Arrays** are declared with `DIM` and are allocated as pinned dynamic records.
+Each element is the same 16-byte public numeric cell used by scalar variables.
+Indices are zero-based:
 
 ```basic
 DIM A(10)        : REM 11 elements: A(0) through A(10)
@@ -692,8 +707,8 @@ end with `rts`.
 **Example:**
 ```basic
 REM poke a simple routine at address 131072 (0x020000)
-POKE 131072, 17923 : POKE 131076, 42    : REM moveq r8, #42
-POKE 131080, 81    : POKE 131084, 0     : REM rts
+POKE32 131072, 17923 : POKE32 131076, 42    : REM moveq r8, #42
+POKE32 131080, 81    : POKE32 131084, 0     : REM rts
 CALL 131072
 ```
 
@@ -737,7 +752,7 @@ After STOP saves the current line and text pointers, CONT restores them and cont
 Control the copper coprocessor display list. The copper executes instructions synchronised to the video raster, enabling per-scanline register changes.
 
 ```
-COPPER LIST addr            Set copper list address (also sets build pointer)
+COPPER LIST [addr]          Set copper list address, allocating a 4 KB public MEMALLOC list when addr is omitted
 COPPER ON                   Enable copper
 COPPER OFF                  Disable copper
 COPPER WAIT scanline        Emit WAIT instruction at build pointer
@@ -745,11 +760,11 @@ COPPER MOVE addr, value     Emit MOVE instruction at build pointer
 COPPER END                  Emit END instruction at build pointer
 ```
 
-`COPPER MOVE addr, value` takes an absolute register address (>= `&HA0000`). Addresses below `&HA0000` raise `?FC ERROR`. Each MOVE auto-emits a SETBASE instruction (12 bytes total). `COPPER WAIT` emits 4 bytes. `COPPER END` emits 4 bytes.
+`COPPER LIST` with no address allocates a 4 KB list from the public `MEMALLOC` low32 ranges and stores it in `COPPER_PTR`. `COPPER LIST addr` remains valid when `addr` is already a suitable low32 list address, typically a pointer returned by `MEMALLOC`. `COPPER MOVE addr, value` takes an absolute register address (>= `&HA0000`). Addresses below `&HA0000` raise `?FC ERROR`. Each MOVE auto-emits a SETBASE instruction (12 bytes total). `COPPER WAIT` emits 4 bytes. `COPPER END` emits 4 bytes.
 
 **Example:**
 ```basic
-COPPER LIST &H50000
+COPPER LIST
 COPPER WAIT 100
 COPPER MOVE &HF0050, &HFF0000    : REM set raster colour
 COPPER END
@@ -781,9 +796,9 @@ To inspect worker monitor registers directly, write `COPROC_CPU_TYPE` first,
 then read the 32-bit monitor registers:
 
 ```basic
-POKE &HF2344, 2
-PRINT PEEK(&HF23B0)
-PRINT PEEK(&HF23B4)
+POKE32 &HF2344, 2
+PRINT PEEK32(&HF23B0)
+PRINT PEEK32(&HF23B4)
 ```
 
 ### DATA
@@ -867,17 +882,17 @@ LOOP [WHILE condition | UNTIL condition]
 50 LOOP UNTIL X > 5
 ```
 
-### DOKE
+### POKE16
 
 Write a 16-bit (word) value to a memory address.
 
 ```
-DOKE address, value
+POKE16 address, value
 ```
 
 **Example:**
 ```basic
-DOKE &H50000, &HFFFF
+POKE16 &H50000, &HFFFF
 ```
 
 ### EMUTOS
@@ -1186,13 +1201,18 @@ LOCATE row, col
 
 Positions are zero-based. Writes cursor position via VGA CRTC cursor registers (indices `0x0E`/`0x0F`).
 
-### LOKE
+### POKE32 / POKE64
 
-Write a 32-bit (long) value to a memory address. Identical to POKE.
+Write explicit 32-bit or 64-bit values to memory.
 
 ```
-LOKE address, value
+POKE32 address, value
+POKE64 address, value
 ```
+
+`POKE64` preserves integer-compatible value expressions, including full-width
+`&H` literals, decimal qword literals, `PEEK64(...)`, and tagged integer
+variables.
 
 ### LOOP
 
@@ -1271,17 +1291,20 @@ NEXT I
 
 ### POKE
 
-Write a value to memory as either 32-bit (`POKE`) or byte (`POKE8`).
+Write a value to memory. `POKE` is the byte alias for `POKE8`; use explicit-width forms for wider stores.
 
 ```
 POKE address, value
 POKE8 address, value
+POKE16 address, value
+POKE32 address, value
+POKE64 address, value
 ```
 
 Both address and value are evaluated as expressions and truncated to integers.
-`POKE` stores 32 bits and requires a 4-byte aligned address; unaligned `POKE`
-raises `?FC ERROR`. `POKE8` stores the low 8 bits and has no alignment
-requirement.
+`POKE`/`POKE8` store the low 8 bits and have no alignment requirement.
+`POKE16`, `POKE32`, and `POKE64` require 2-, 4-, and 8-byte aligned addresses
+respectively; unaligned wider stores raise `?FC ERROR`.
 
 **Example:**
 ```basic
@@ -1335,7 +1358,7 @@ PSG ENVELOPE shape [,period]     Set envelope shape and optional period
 
 Current source note: `PSG STOP` writes `0` to `PSG_PLAY_CTRL`, while the PSG
 player stops only when bit 1 is written. To stop PSG file playback, use
-`SOUND STOP`/`SOUND PLAY STOP`, or `POKE &HF0C18, 2`.
+`SOUND STOP`/`SOUND PLAY STOP`, or `POKE32 &HF0C18, 2`.
 
 ### READ
 
@@ -1532,7 +1555,7 @@ SOUND NOISE channel, mode
   5=SN76489 15-bit white, 6=SN76489 15-bit periodic, 7=SN76489 16-bit white,
   8=SN76489 16-bit periodic
 
-Use direct `POKE` to a flexible channel's `+&H2C` `NOISEMODE` register when a
+Use direct `POKE32` to a flexible channel's `+&H2C` `NOISEMODE` register when a
 per-flex-channel noise mode is required.
 
 **SOUND WAVE** sets the waveform type for a flexible channel:
@@ -1726,7 +1749,7 @@ TED STOP                     Parsed, but see note below
 
 Current source note: `TED STOP` writes `0` to `TED_PLAY_CTRL`, while the TED
 player stops only when bit 1 is written. To stop TED file playback, use
-`SOUND STOP`/`SOUND PLAY STOP`, or `POKE &HF0F18, 2`.
+`SOUND STOP`/`SOUND PLAY STOP`, or `POKE8 &HF0F18, 2`.
 
 ### TEXTURE
 
@@ -1912,7 +1935,8 @@ ZBUFFER WRITE OFF            Disable depth buffer writes
 
 ## 5. Function Reference
 
-Functions are listed alphabetically. All functions return FP32 numeric values unless noted as returning strings.
+Functions are listed alphabetically. Numeric functions return tagged numeric
+values where noted; otherwise they follow the FP64 maths path.
 
 ### ABS
 
@@ -1987,6 +2011,8 @@ ticket number. A return value of 0 means the request could not be enqueued.
 - `reqPtr`, `reqLen` - request buffer address and byte length
 - `respPtr`, `respCap` - response buffer address and byte capacity
 
+When `reqLen` or `respCap` is non-zero, the corresponding pointer must refer to a public low32 span allocated by `MEMALLOC`; otherwise `COCALL` raises `?FC ERROR`. Zero-length spans may use pointer 0.
+
 ### COS
 
 ```
@@ -2014,13 +2040,13 @@ Returns the status of a coprocessor request ticket:
 
 See also: [COCALL](#cocall), [COSTART / COSTOP / COWAIT](#costart--costop--cowait).
 
-### DEEK
+### PEEK16
 
 ```
-DEEK(address)
+PEEK16(address)
 ```
 
-Reads a 16-bit (word) value from the given memory address. Compare with PEEK (32-bit) and LEEK (32-bit).
+Reads a 16-bit (word) value from the given memory address.
 
 ### EXP
 
@@ -2058,7 +2084,8 @@ PRINT HEX$(4096)    : REM prints "1000"
 INT(x)
 ```
 
-Truncates `x` to an integer (towards zero). Returns the result as FP32.
+Truncates `x` to an integer (towards zero). Integer inputs stay `I64`; FP64
+inputs in range return an integer value.
 
 **Example:**
 ```basic
@@ -2066,13 +2093,16 @@ PRINT INT(3.7)      : REM prints 3
 PRINT INT(-3.7)     : REM prints -3
 ```
 
-### LEEK
+### PEEK32 / PEEK64
 
 ```
-LEEK(address)
+PEEK32(address)
+PEEK64(address)
 ```
 
-Reads a 32-bit (long) value from the given memory address. Identical to PEEK.
+Read explicit 32-bit or 64-bit values from memory. `PEEK64` returns an exact
+`I64` qword from an 8-byte aligned address; `PEEK32` returns an integer value
+zero-extended from the 32-bit load.
 
 ### LEFT$
 
@@ -2142,15 +2172,20 @@ Returns the smaller of the two values.
 ```
 PEEK(address)
 PEEK8(address)
+PEEK16(address)
+PEEK32(address)
+PEEK64(address)
 ```
 
-`PEEK` reads a 32-bit value from the given memory address and requires a
-4-byte aligned address; unaligned `PEEK` raises `?FC ERROR`. `PEEK8` reads one
-byte and returns it as a value from 0 to 255.
+`PEEK` is the byte alias for `PEEK8`. `PEEK16`, `PEEK32`, and `PEEK64` require
+2-, 4-, and 8-byte aligned addresses respectively; unaligned wider reads raise
+`?FC ERROR`. `PEEK64` returns an exact `I64` qword, so expressions such as
+`HEX$(PEEK64(addr))` and `POKE64 dst, PEEK64(src)` preserve pointer and bitfield
+payloads.
 
 **Example:**
 ```basic
-PRINT PEEK(&HF1000)     : REM read VGA mode register
+PRINT PEEK32(&HF1000)     : REM read VGA mode register
 ```
 
 ### PI
@@ -2198,7 +2233,8 @@ SADD(stringVariable$)
 ```
 
 Returns the address of the string data for a string variable. If the argument
-is not a string variable, it returns 0.
+is not a string variable, it returns 0. The returned pointer addresses the live
+string bytes, so `POKE8 SADD(A$)+offset,value` mutates `A$`.
 
 ### SGN
 
@@ -2243,7 +2279,7 @@ with no parentheses, wherever a numeric expression is accepted.
 
 Used as an expression (function context). `PSG STATUS`, `SID STATUS`,
 `POKEY STATUS`, `TED STATUS`, `AHX STATUS`, and `SAP STATUS` return the raw
-player status register value as FP32. In the current register layout, bit 0 is
+player status register value as FP64. In the current register layout, bit 0 is
 busy/playing and bit 1 is error. `POKEY STATUS` reads the shared SAP player
 status register because POKEY file playback is SAP-backed. `MOD STATUS` returns
 only bit 0 of `MOD_PLAY_STATUS` as 0 or 1.
@@ -2295,7 +2331,7 @@ are copied unchanged.
 USR(n)
 ```
 
-Calls a user-defined machine code routine at address `n` and returns the result. The address is evaluated, the routine is called via register-indirect JSR, and the value of R8 on return is converted to FP32 and returned as the function result.
+Calls a user-defined machine code routine at address `n` and returns the result. The address is evaluated, the routine is called via register-indirect JSR, and the value of R8 on return is converted to FP64 and returned as the function result.
 
 `USR` preserves R14, R16, R17, and R26 across the machine-code call. Unlike
 `CALL`, it does not preserve R28.
@@ -2303,8 +2339,8 @@ Calls a user-defined machine code routine at address `n` and returns the result.
 **Example:**
 ```basic
 REM poke moveq r8, #42 / rts at address 131072
-POKE 131072, 17923 : POKE 131076, 42
-POKE 131080, 81    : POKE 131084, 0
+POKE32 131072, 17923 : POKE32 131076, 42
+POKE32 131080, 81    : POKE32 131084, 0
 PRINT USR(131072)   : REM prints 42
 ```
 
@@ -2330,7 +2366,16 @@ VARPTR(variable)
 ```
 
 Returns the address of the variable storage slot. For a string variable, the
-slot contains the pointer to the string data.
+slot is the record's internal string pointer field. For a numeric scalar, `VARPTR`
+returns the start of the public 16-byte value cell:
+
+| Offset | Field |
+|--------|-------|
+| `+0` | tag: `1` = FP64, `2` = I64 |
+| `+4` | reserved |
+| `+8` | payload: FP64 bits, or an I64 qword |
+
+Direct writes through `VARPTR` must keep the tag and payload consistent.
 
 ---
 
@@ -2381,7 +2426,7 @@ The copper is a display-list coprocessor that executes instructions synchronised
 **Example: Rainbow bars**
 ```basic
 10 SCREEN &H13
-20 COPPER LIST &H50000
+20 COPPER LIST
 30 FOR I = 0 TO 199
 40   COPPER WAIT I
 50   COPPER MOVE &HF0050, I
@@ -2424,7 +2469,8 @@ The ULA emulates the ZX Spectrum's 256x192 pixel display with a unique non-linea
 - Attributes: 768 bytes at `&HFA000 + &H1800` (32x24 cells, each 8x8 pixels)
 
 The `&H4000` bitmap and `&H5800` attribute addresses are ZX Spectrum guest
-addresses. From EhBASIC on IE64, PEEK/POKE the `&HFA000` aperture or use the
+addresses. From EhBASIC on IE64, `PEEK`/`POKE` the byte-addressed `&HFA000`
+aperture or use the
 ULA commands.
 
 **Attribute byte format**: bits 0-2 = ink, bits 3-5 = paper, bit 6 = bright, bit 7 = flash.
@@ -2576,7 +2622,7 @@ PSG PLAY &H100000, 4096   : REM play header-detectable PSG data
 STC, SQT, ASC, and FTC tracker files.
 
 Current source note: `PSG STOP` is parsed but only writes 0 to the player
-control register. Use `SOUND STOP`, `SOUND PLAY STOP`, or `POKE &HF0C18,2` to
+control register. Use `SOUND STOP`, `SOUND PLAY STOP`, or `POKE32 &HF0C18,2` to
 stop PSG media playback.
 
 ### 7.3 SID (MOS 6581/8580)
@@ -2618,7 +2664,7 @@ TED NOISE ON               : REM enable noise
 ```
 
 Current source note: `TED STOP` is parsed but only writes 0 to the player
-control register. Use `SOUND STOP`, `SOUND PLAY STOP`, or `POKE &HF0F18,2` to
+control register. Use `SOUND STOP`, `SOUND PLAY STOP`, or `POKE8 &HF0F18,2` to
 stop TED media playback.
 
 ### 7.6 AHX (Amiga Tracker)
@@ -2692,8 +2738,8 @@ available:
 |------------------|---------------|-------|
 | `SID PLAY addr [,len [,subsong]]` | SID data | Writes `SID_PLAY_PTR`, `SID_PLAY_LEN`, `SID_SUBSONG`, then starts `SID_PLAY_CTRL` |
 | `SAP PLAY addr [,len [,subsong]]` | SAP data | Writes `SAP_PLAY_PTR`, `SAP_PLAY_LEN`, `SAP_SUBSONG`, then starts `SAP_PLAY_CTRL` |
-| `PSG PLAY addr [,len]` | Header-detectable PSG data | Handles VGM/VGZ, YM, VTX, LHA-wrapped data, ZXAYEMUL AY, SNDH, and AY data; use `SOUND PLAY` for extension-only tracker formats. `PSG STOP` does not assert the player stop bit in the current source; use `SOUND STOP` or `POKE &HF0C18, 2` |
-| `TED PLAY addr [,len]` | TED data | Starts `TED_PLAY_CTRL`; `SOUND PLAY` additionally routes `.prg` filenames to this player. `TED STOP` does not assert the player stop bit in the current source; use `SOUND STOP` or `POKE &HF0F18, 2` |
+| `PSG PLAY addr [,len]` | Header-detectable PSG data | Handles VGM/VGZ, YM, VTX, LHA-wrapped data, ZXAYEMUL AY, SNDH, and AY data; use `SOUND PLAY` for extension-only tracker formats. `PSG STOP` does not assert the player stop bit in the current source; use `SOUND STOP` or `POKE32 &HF0C18, 2` |
+| `TED PLAY addr [,len]` | TED data | Starts `TED_PLAY_CTRL`; `SOUND PLAY` additionally routes `.prg` filenames to this player. `TED STOP` does not assert the player stop bit in the current source; use `SOUND STOP` or `POKE8 &HF0F18, 2` |
 | `AHX PLAY addr [,len]` | AHX data | Starts `AHX_PLAY_CTRL`; `AHX_PLUS ON/OFF` writes `AHX_PLUS_CTRL` |
 | `SOUND MOD PLAY addr [,len]` | MOD data already loaded in guest memory | Starts `MOD_PLAY_CTRL`; `SOUND MOD FILTER model` selects the MOD filter model |
 | Raw WAV MMIO | WAV data | Use `WAV_PLAY_PTR`, `WAV_PLAY_LEN`, `WAV_PLAY_CTRL`, and `WAV_PLAY_STATUS`; no BASIC `WAV PLAY` statement exists |
@@ -2717,9 +2763,10 @@ register 15.
 
 | Address Range | Size | Description |
 |---------------|------|-------------|
-| `&H00000`-`&H96FFF` | 604 KB | Main RAM and EhBASIC workspace below the hardware stack |
-| `&H097000`-`&H09EFFF` | 32 KB | EhBASIC hardware stack region |
-| `&H09F000` | - | Initial hardware stack top |
+| `&H00000`-`&H05FFFF` | 384 KB | Interpreter image, state page, and transitional resident scratch |
+| `&H600000`-`&H6EFFFF` | 960 KB | Exported string low32 window |
+| `&H700000`-`&H7FFFFF` | 1 MB | MEMALLOC ranges plus AOT-owned low32 scratch gap |
+| top of the low32 BASIC resident window | dynamic | IE64 BASIC hardware stack, guard page, and control-flow stack |
 | `&HA0000`-`&HAFFFF` | 64 KB | VGA VRAM window |
 | `&HB8000`-`&HBFFFF` | 32 KB | VGA text buffer |
 | `&HF0000`-`&HFFFFF` | 64 KB | I/O region |
@@ -2766,69 +2813,85 @@ register 15.
 | `&HF8000`-`&HF87FF` | Voodoo 3DFX registers |
 | `&HFA000`-`&HFBAFF` | ULA VRAM aperture |
 
-### EhBASIC Memory Layout
+### IE64 BASIC Memory Layout
 
 | Address | Size | Purpose |
 |---------|------|---------|
-| `&H001000`-`&H020FFF` | 128 KB | Interpreter code reservation |
-| `&H021000`-`&H021FFF` | 4 KB | Input line buffer |
-| `&H022000`-`&H022FFF` | 4 KB | Interpreter state block |
-| `&H023000`-`&H04FFFF` | 180 KB | Programme text region (grows upward; capped by `BASIC_PROG_LIMIT`) |
-| `&H050000`-`&H057FFF` | 32 KB | Numeric variable table region start |
-| `&H058000`-`&H05FFFF` | 32 KB | String variable table region start |
-| `&H060000`-`&H08BFFF` | 176 KB | Array storage region start |
-| `&H08C000`-`&H08FFFF` | 16 KB | String temporaries / heap top |
-| `&H090000`-`&H096FFF` | 28 KB | GOSUB/FOR/DO/WHILE stacks |
-| `&H097000`-`&H09EFFF` | 32 KB | Hardware stack region |
-| `&H09F000` | - | Initial stack top (SP) |
+| `&H001000`-`&H040FFF` | 256 KB | Interpreter code reservation |
+| `&H041000`-`&H041FFF` | 4 KB | Input line buffer |
+| `&H042000`-`&H042FFF` | 4 KB | Interpreter state block |
+| `&H043000`-`&H06FFFF` | 180 KB | Standalone runtime blob area and legacy resident programme fallback |
+| `&H00600000`-`&H006EFFFF` | 960 KB | Reserved low32 string export window |
+| `&H00700000`-`&H0077FFFF` | 512 KB | Public `MEMALLOC` range 2 |
+| `&H00780000`-`&H00791FFF` | 72 KB | AOT-owned low32 scratch gap, excluded from `MEMALLOC` |
+| `&H00792000`-`&H007FFFFF` | 440 KB | Public `MEMALLOC` range 1 |
+| `&H00820000`-`&H00FFFFFF` | 8064 KB | Public `MEMALLOC` range 0 |
+| `&H01000000` upward | dynamic | Internal BASIC arena: programme text, numeric/string variable segments, array records, string data, and other owner storage |
+| top of the low32 BASIC resident window | dynamic | IE64 BASIC hardware stack, with a guard page above it |
+| below hardware stack | dynamic | GOSUB/FOR/DO/WHILE control-flow stack |
 
-`line_store` rejects stored programme lines that would move `ST_PROG_END` beyond
-`BASIC_PROG_LIMIT` (`&H050000`) and reports `?OUT OF MEMORY ERROR`. `var_init`
-initialises variable/array pointers at fixed bases (`&H050000`, `&H058000`,
-`&H060000`) and the string heap at `&H08C000`.
+The state block publishes the live programme segment in `ST_PROG_START` and
+`ST_PROG_END`; on normal startup the stored programme lives in the internal arena
+starting at `&H01000000` in the low32 fallback layout. Numeric variables,
+string variable records, and arrays are pinned owner records allocated from the
+same internal arena. The state block also publishes the dynamic stack and
+control-flow bounds in `ST_STACK_LOW`, `ST_STACK_HIGH`, `ST_CTRL_LOW`, and
+`ST_CTRL_HIGH`. On host-scale IE64 configurations the resident BASIC stack and
+control-flow reservation is capped below `$10000000`, matching BASIC's mapped
+low memory window even when active RAM is larger, so the interpreter's own
+scratch pointers remain directly addressable by the current resident/JIT paths.
 
 ### State Block Offsets
 
-The interpreter state block at `&H022000` contains:
+The interpreter state block at `&H042000` contains:
 
 | Offset | Field | Description |
 |--------|-------|-------------|
-| `+&H00` | ST_PROG_START | Start of BASIC programme text |
-| `+&H04` | ST_PROG_END | End of programme text |
-| `+&H08` | ST_VAR_START | Simple variable table start |
-| `+&H0C` | ST_VAR_END | Simple variable table end |
-| `+&H10` | ST_ARRAY_START | Array storage start |
-| `+&H14` | ST_ARRAY_END | Array storage end |
-| `+&H18` | ST_HEAP_TOP | String heap pointer |
-| `+&H1C` | ST_HEAP_BOTTOM | Heap bottom limit |
-| `+&H20` | ST_CURRENT_LINE | Line number being executed |
-| `+&H24` | ST_TEXT_PTR | Execution cursor |
-| `+&H28` | ST_DATA_PTR | DATA/READ pointer |
-| `+&H2C` | ST_GOSUB_SP | GOSUB return stack pointer |
-| `+&H30` | ST_FOR_SP | FOR/NEXT stack pointer |
-| `+&H34` | ST_RANDOM_SEED | RND seed value |
-| `+&H38` | ST_ERROR_FLAG | Last error code |
-| `+&H3C` | ST_TRACE_FLAG | TRON/TROFF flag |
-| `+&H40` | ST_DIRECT_MODE | 1=immediate, 0=running |
-| `+&H44` | ST_SVAR_START | String variable table start |
-| `+&H48` | ST_SVAR_END | String variable table end |
-| `+&H4C` | ST_TEXT_ATTR | Text attribute used by `COLOR` |
-| `+&H50` | ST_COPPER_BUILD | Copper build pointer |
-| `+&H54` | ST_ULA_BRIGHT | ULA bright flag |
-| `+&H58` | ST_ULA_INK | ULA ink colour |
-| `+&H5C` | ST_ULA_PAPER | ULA paper colour |
-| `+&H60` | ST_ULA_FLASH | ULA flash flag |
-| `+&H64` | ST_CONT_LINE_PTR | Saved line pointer for `CONT` |
-| `+&H68` | ST_CONT_TEXT_PTR | Saved text pointer for `CONT` |
-| `+&H6C` | ST_ERROR_LINE | Last runtime error line |
-| `+&H70` | ST_TERM_COL | Current terminal output column |
+| `+&H000` | ST_PROG_START | Start of BASIC programme text |
+| `+&H008` | ST_PROG_END | End of programme text |
+| `+&H010` | ST_VAR_START | First numeric variable segment, or 0 when empty |
+| `+&H018` | ST_VAR_END | Current numeric variable tail segment, or 0 when empty |
+| `+&H020` | ST_ARRAY_START | First array record, or 0 when empty |
+| `+&H028` | ST_ARRAY_END | Current array tail record, or 0 when empty |
+| `+&H030` | ST_HEAP_TOP | Internal arena high limit |
+| `+&H038` | ST_HEAP_BOTTOM | Internal arena allocation cursor |
+| `+&H040` | ST_TEXT_PTR | Execution cursor |
+| `+&H048` | ST_TEXT_END | Execution line end |
+| `+&H050` | ST_DATA_PTR | DATA/READ pointer |
+| `+&H058` | ST_DATA_END | DATA/READ scan end |
+| `+&H060` | ST_GOSUB_SP | GOSUB cursor, growing up from `ST_CTRL_LOW` |
+| `+&H068` | ST_FOR_SP | FOR/WHILE/DO cursor, growing down from `ST_CTRL_HIGH` |
+| `+&H070` | ST_SVAR_START | First string variable segment, or 0 when empty |
+| `+&H078` | ST_SVAR_END | Current string variable tail segment, or 0 when empty |
+| `+&H080` | ST_CONT_LINE_PTR | Saved line pointer for `CONT` |
+| `+&H088` | ST_CONT_TEXT_PTR | Saved text pointer for `CONT` |
+| `+&H090` | ST_COPPER_BUILD | Copper build pointer |
+| `+&H098` | ST_EXPORT_CURSOR | Exported string low32 cursor |
+| `+&H0A0` | ST_STACK_LOW | Hardware stack reservation low |
+| `+&H0A8` | ST_STACK_HIGH | Hardware stack reservation high |
+| `+&H0B0` | ST_CTRL_LOW | Control-flow stack low |
+| `+&H0B8` | ST_CTRL_HIGH | Control-flow stack high |
+| `+&H0C0` | ST_FILE_BRIDGE_NEXT | Private file-data bridge cursor |
+| `+&H0C8` | ST_FILE_BRIDGE_LOW | Private file-data bridge low bound |
+| `+&H200` | ST_CURRENT_LINE | Line number being executed |
+| `+&H204` | ST_RANDOM_SEED | RND seed value |
+| `+&H208` | ST_ERROR_FLAG | Last error code |
+| `+&H20C` | ST_TRACE_FLAG | TRON/TROFF flag |
+| `+&H210` | ST_DIRECT_MODE | 1=immediate, 0=running |
+| `+&H214` | ST_TEXT_ATTR | Text attribute used by `COLOR` |
+| `+&H218` | ST_ULA_BRIGHT | ULA bright flag |
+| `+&H21C` | ST_ULA_INK | ULA ink colour |
+| `+&H220` | ST_ULA_PAPER | ULA paper colour |
+| `+&H224` | ST_ULA_FLASH | ULA flash flag |
+| `+&H228` | ST_ERROR_LINE | Last runtime error line |
+| `+&H22C` | ST_TERM_COL | Current terminal output column |
 
 ---
 
 ## 9. Hardware Register Reference
 
 This section documents the I/O registers used directly by EhBASIC commands or
-commonly accessed from EhBASIC via POKE/PEEK. Registers are grouped by
+commonly accessed from EhBASIC via explicit-width `POKE`/`PEEK`. Registers are grouped by
 subsystem. Internal OS/debug bridge regions listed in the aperture map are
 intentionally not expanded here unless they are useful from EhBASIC or
 guest-side hardware code.
@@ -2962,11 +3025,9 @@ Additional fixed-channel registers:
 | `&HF0A60` | SYNC_SOURCE_CH4 | Hard-sync source for sawtooth |
 | `&HF0A64` | RING_MOD_SOURCE_CH4 | Ring-mod source for sawtooth |
 
-`SQUARE_PWM_CTRL` is byte-oriented and lives at `&HF0922`. `POKE` and `LOKE`
-require 4-byte aligned addresses and therefore raise `?FC ERROR` for this
-register; use `POKE8 &HF0922,value` for normal writes. `DOKE &HF0922,value` is
-2-byte aligned and reaches the low byte, but also writes the neighbouring byte,
-so `POKE8` is the precise access form.
+`SQUARE_PWM_CTRL` is byte-oriented and lives at `&HF0922`. Use
+`POKE`/`POKE8 &HF0922,value` for normal writes. Wider explicit-width stores
+touch adjacent registers, so byte access is the precise access form.
 
 #### Flexible Channels (64 bytes each)
 
@@ -3168,7 +3229,7 @@ Secondary SID chip register windows are also mapped. `SID2_BASE` is `&HF0E30`
 through `&HF0E4C`; `SID3_BASE` is `&HF0E50` through `&HF0E6C`. Each secondary
 SID uses the same 29-byte voice/filter/read-register layout as `SID_BASE` with
 addresses relative to its own base. The BASIC `SID` statement targets the
-primary SID command path; use `POKE8`/`PEEK` for direct secondary SID access.
+primary SID command path; use `POKE8`/`PEEK8` for direct secondary SID access.
 
 ### 9.11 TED Registers (`&HF0F00`-`&HF0F6B`)
 
@@ -3495,12 +3556,13 @@ The simplest way to interact with hardware from BASIC is through POKE and PEEK:
 
 ```basic
 POKE &HF0700, 65    : REM write 'A' to terminal
-V = PEEK(&HF1000)   : REM read VGA mode register
+V = PEEK32(&HF1000)   : REM read VGA mode register
 ```
 
-POKE writes a 32-bit value; `POKE8` writes an 8-bit value; DOKE writes 16-bit; LOKE writes 32-bit (same as POKE).
-PEEK reads 32-bit; `PEEK8(address)` reads an 8-bit value; DEEK reads 16-bit; LEEK reads 32-bit (same as PEEK).
-`POKE` and `LOKE` require 4-byte aligned addresses; use `POKE8` for byte-oriented or unaligned MMIO registers.
+`POKE`/`PEEK` are byte aliases. Use `POKE16`/`POKE32`/`POKE64` and
+`PEEK16`/`PEEK32`/`PEEK64` for wider memory access. Wider accesses require
+natural alignment; use byte access for byte-oriented or unaligned MMIO
+registers. `DOKE`, `LOKE`, `DEEK`, and `LEEK` are removed.
 
 ### Direct Memory Access
 
@@ -3523,7 +3585,7 @@ If you write IE64 assembly routines callable from BASIC (via CALL or USR), the f
 |----------|-------|
 | R0 | Always zero (hardwired) |
 | R1-R7 | Scratch (caller-saved) |
-| R8, R9 | FP32 operands and results |
+| R8, R9 | Numeric payloads and tags, or FP64 helper operands and results |
 | R10-R15 | Scratch (some routines push/pop) |
 | R16 | State base pointer (preserved) |
 | R17 | Text/token stream pointer (preserved) |
@@ -3540,7 +3602,7 @@ IE64 machine code can also read control register 15 with `MFCR` to obtain the
 active CPU/profile visible RAM size in bytes. That control register is
 read-only; `MTCR` to register 15 raises an illegal-instruction fault.
 
-### FP32 Calling Convention
+### FP64 Calling Convention
 
 The floating-point library uses:
 - **Input**: R8 (first operand), R9 (second operand)
@@ -3570,7 +3632,7 @@ Current structured errors include:
 | LOOP without DO | Treated as stack mismatch; execution stops |
 | Division by zero | `?DIVISION BY ZERO ERROR IN <line>` |
 | Square root of negative | Returns 0 |
-| Array bounds, misaligned 32-bit PEEK/POKE, bad FC arguments | `?FC ERROR IN <line>` |
+| Array bounds, misaligned 32-bit PEEK32/POKE32, bad FC arguments | `?FC ERROR IN <line>` |
 | LEFT$/RIGHT$/MID$ illegal bounds | `?ILLEGAL QUANTITY ERROR IN <line>` |
 | Duplicate DIM | `?REDIM ERROR IN <line>` |
 | Standalone ELSE or unknown statement token | `?SYNTAX ERROR IN <line>` |
@@ -3655,7 +3717,7 @@ Use `TRON` to trace line execution when debugging control-flow issues.
 ```basic
 10 SCREEN &H13
 20 CLS
-30 COPPER LIST &H50000
+30 COPPER LIST
 40 FOR I = 0 TO 199
 50   COPPER WAIT I
 60   R = INT((SIN(I * PI / 100) + 1) * 127)
@@ -3897,15 +3959,15 @@ EhBASIC `WIDTH` command is not implemented.
 | 8F | TK_REM | REM | Statement |
 | 90 | TK_STOP | STOP | Statement |
 | 91 | TK_ON | ON | Statement |
-| 92 | TK_NULL | TRON | Statement alias (`NULL` symbol reused) |
+| 92 | TK_EXT | extended | Followed by one subtoken byte |
 | 93 | TK_INC | INC | Statement |
 | 94 | TK_WAIT | WAIT | Statement |
 | 95 | TK_LOAD | LOAD | Statement |
 | 96 | TK_SAVE | SAVE | Statement |
-| 97 | TK_DEF | DEF/TROFF | Statement/alias |
+| 97 | TK_DEF | DEF | Statement |
 | 98 | TK_POKE | POKE | Statement |
-| 99 | TK_DOKE | DOKE | Statement |
-| 9A | TK_LOKE | LOKE | Statement |
+| 99 | reserved | removed | Syntax error |
+| 9A | reserved | removed | Syntax error |
 | 9B | TK_CALL | CALL | Statement |
 | 9C | TK_DO | DO | Statement |
 | 9D | TK_LOOP | LOOP | Statement |
@@ -3956,8 +4018,8 @@ EhBASIC `WIDTH` command is not implemented.
 | CA | TK_TAN | TAN | Function |
 | CB | TK_ATN | ATN | Function |
 | CC | TK_PEEK | PEEK | Function |
-| CD | TK_DEEK | DEEK | Function |
-| CE | TK_LEEK | LEEK | Function |
+| CD | reserved | removed | Syntax error |
+| CE | reserved | removed | Syntax error |
 | CF | TK_SADD | SADD | Function |
 | D0 | TK_LEN | LEN | Function |
 | D1 | TK_STRS | STR$ | Function |
@@ -4028,6 +4090,6 @@ for `TK_VPTR` alone; the statement dispatch slot for `0xDE` routes to
 
 ---
 
-*EhBASIC IE64 is part of the Intuition Engine project.*
-*Original EhBASIC by Lee Davison. IE64 port (c) 2024-2026 Zayn Otley.*
+*IE64 BASIC is part of the Intuition Engine project.*
+*Inspired by 68k EhBASIC by the late great Lee Davison (RIP). IE64 implementation (c) 2024-2026 Zayn Otley.*
 *Licence: GPLv3 or later.*

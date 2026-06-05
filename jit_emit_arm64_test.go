@@ -1367,6 +1367,24 @@ func TestARM64_FMOVCC(t *testing.T) {
 	}
 }
 
+func TestARM64_DTrans_UsesHelperExit(t *testing.T) {
+	r := newJITTestRig(t)
+	r.compileAndRun(t, ie64Instr(OP_DPOW, 6, 0, 0, 2, 4, 0))
+
+	if r.ctx.NeedHelper != HELPER_DTRANS {
+		t.Fatalf("NeedHelper = %d, want HELPER_DTRANS", r.ctx.NeedHelper)
+	}
+	if r.ctx.HelperSize != uint32(OP_DPOW) || r.ctx.HelperRd != 6 || r.ctx.HelperAddr != 2 || r.ctx.HelperVal != 4 {
+		t.Fatalf("helper fields opcode=%#x rd=%d rs=%d rt=%d", r.ctx.HelperSize, r.ctx.HelperRd, r.ctx.HelperAddr, r.ctx.HelperVal)
+	}
+	if r.ctx.NeedIOFallback != 0 {
+		t.Fatalf("NeedIOFallback = %d, want 0", r.ctx.NeedIOFallback)
+	}
+	if r.cpu.PC != PROG_START {
+		t.Fatalf("PC = %#x, want helper PC %#x", r.cpu.PC, uint64(PROG_START))
+	}
+}
+
 // ===========================================================================
 // FPU Tests — Category B: Native ARM64 FP arithmetic
 // ===========================================================================

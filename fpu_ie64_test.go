@@ -777,6 +777,73 @@ func TestIE64FPU_BitwiseTransfers(t *testing.T) {
 	}
 }
 
+func TestIE64FPU_FP64Transcendentals(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*IE64FPU)
+		want float64
+		fpsr uint32
+	}{
+		{"DSIN", func(f *IE64FPU) { f.setDPair(2, math.Pi/2); f.DSIN(0, 2) }, 1, 0},
+		{"DCOS", func(f *IE64FPU) { f.setDPair(2, math.Pi); f.DCOS(0, 2) }, -1, IE64_FPU_CC_N},
+		{"DTAN", func(f *IE64FPU) { f.setDPair(2, 0); f.DTAN(0, 2) }, 0, IE64_FPU_CC_Z},
+		{"DATAN", func(f *IE64FPU) { f.setDPair(2, 1); f.DATAN(0, 2) }, math.Atan(1), 0},
+		{"DLOG", func(f *IE64FPU) { f.setDPair(2, math.E); f.DLOG(0, 2) }, 1, 0},
+		{"DEXP", func(f *IE64FPU) { f.setDPair(2, 1); f.DEXP(0, 2) }, math.E, 0},
+		{"DPOW", func(f *IE64FPU) { f.setDPair(2, 2); f.setDPair(4, 10); f.DPOW(0, 2, 4) }, 1024, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fpu := NewIE64FPU()
+			tt.run(fpu)
+			if got := fpu.getDPair(0); math.Abs(got-tt.want) > 1e-12 {
+				t.Fatalf("result = %.17g, want %.17g", got, tt.want)
+			}
+			if fpu.FPSR != tt.fpsr {
+				t.Fatalf("FPSR = 0x%08X, want 0x%08X", fpu.FPSR, tt.fpsr)
+			}
+		})
+	}
+}
+
+func TestIE64FPU_FP64TranscendentalExceptions(t *testing.T) {
+	fpu := NewIE64FPU()
+	fpu.setDPair(2, -1)
+	fpu.DLOG(0, 2)
+	if !math.IsNaN(fpu.getDPair(0)) || (fpu.FPSR&IE64_FPU_EX_IO) == 0 || (fpu.FPSR&IE64_FPU_CC_NAN) == 0 {
+		t.Fatalf("DLOG(-1) result=%v FPSR=0x%08X, want NaN with IO and NaN CC", fpu.getDPair(0), fpu.FPSR)
+	}
+
+	fpu = NewIE64FPU()
+	fpu.setDPair(2, math.Copysign(0, -1))
+	fpu.DLOG(0, 2)
+	if !math.IsInf(fpu.getDPair(0), -1) || (fpu.FPSR&IE64_FPU_EX_DZ) == 0 {
+		t.Fatalf("DLOG(-0) result=%v FPSR=0x%08X, want -Inf with DZ", fpu.getDPair(0), fpu.FPSR)
+	}
+
+	fpu = NewIE64FPU()
+	fpu.setDPair(2, 1000)
+	fpu.DEXP(0, 2)
+	if !math.IsInf(fpu.getDPair(0), 1) || (fpu.FPSR&IE64_FPU_EX_OE) == 0 {
+		t.Fatalf("DEXP overflow result=%v FPSR=0x%08X", fpu.getDPair(0), fpu.FPSR)
+	}
+
+	fpu = NewIE64FPU()
+	fpu.setDPair(2, -1000)
+	fpu.DEXP(0, 2)
+	if fpu.getDPair(0) != 0 || (fpu.FPSR&IE64_FPU_EX_UE) == 0 {
+		t.Fatalf("DEXP underflow result=%v FPSR=0x%08X", fpu.getDPair(0), fpu.FPSR)
+	}
+
+	fpu = NewIE64FPU()
+	fpu.setDPair(2, -1)
+	fpu.setDPair(4, 0.5)
+	fpu.DPOW(0, 2, 4)
+	if !math.IsNaN(fpu.getDPair(0)) || (fpu.FPSR&IE64_FPU_EX_IO) == 0 {
+		t.Fatalf("DPOW invalid result=%v FPSR=0x%08X", fpu.getDPair(0), fpu.FPSR)
+	}
+}
+
 func TestIE64FPU_Arithmetic_Exceptions_Extended(t *testing.T) {
 	fpu := NewIE64FPU()
 

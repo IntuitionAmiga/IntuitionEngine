@@ -94,6 +94,13 @@
 | IE64 | opcode | 0x8E | `OP_DCVTFI` | `cpu_ie64.go` const `OP_DCVTFI`; execute switch case `OP_DCVTFI`; step switch case `OP_DCVTFI` |
 | IE64 | opcode | 0x8F | `OP_FCVTSD` | `cpu_ie64.go` const `OP_FCVTSD`; execute switch case `OP_FCVTSD`; step switch case `OP_FCVTSD` |
 | IE64 | opcode | 0x90 | `OP_FCVTDS` | `cpu_ie64.go` const `OP_FCVTDS`; execute switch case `OP_FCVTDS`; step switch case `OP_FCVTDS` |
+| IE64 | opcode | 0x91 | `OP_DSIN` | `cpu_ie64.go` const `OP_DSIN`; execute switch case `OP_DSIN`; step switch case `OP_DSIN` |
+| IE64 | opcode | 0x92 | `OP_DCOS` | `cpu_ie64.go` const `OP_DCOS`; execute switch case `OP_DCOS`; step switch case `OP_DCOS` |
+| IE64 | opcode | 0x93 | `OP_DTAN` | `cpu_ie64.go` const `OP_DTAN`; execute switch case `OP_DTAN`; step switch case `OP_DTAN` |
+| IE64 | opcode | 0x94 | `OP_DATAN` | `cpu_ie64.go` const `OP_DATAN`; execute switch case `OP_DATAN`; step switch case `OP_DATAN` |
+| IE64 | opcode | 0x95 | `OP_DLOG` | `cpu_ie64.go` const `OP_DLOG`; execute switch case `OP_DLOG`; step switch case `OP_DLOG` |
+| IE64 | opcode | 0x96 | `OP_DEXP` | `cpu_ie64.go` const `OP_DEXP`; execute switch case `OP_DEXP`; step switch case `OP_DEXP` |
+| IE64 | opcode | 0x97 | `OP_DPOW` | `cpu_ie64.go` const `OP_DPOW`; execute switch case `OP_DPOW`; step switch case `OP_DPOW` |
 | IE64 | opcode | 0xE0 | `OP_NOP64` | `cpu_ie64.go` const `OP_NOP64`; execute switch case `OP_NOP64`; step switch case `OP_NOP64` |
 | IE64 | opcode | 0xE1 | `OP_HALT64` | `cpu_ie64.go` const `OP_HALT64`; execute switch case `OP_HALT64`; step switch case `OP_HALT64` |
 | IE64 | opcode | 0xE2 | `OP_SEI64` | `cpu_ie64.go` const `OP_SEI64`; execute switch case `OP_SEI64`; step switch case `OP_SEI64` |
@@ -140,6 +147,13 @@
 | IE64 | fpu side effect | 0x89 | `OP_DNEG` | `cpu_ie64.go` execute and step cases for `OP_DNEG`; `fpu_ie64.go` `DNEG` side effects: writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read |
 | IE64 | fpu side effect | 0x8A | `OP_DSQRT` | `cpu_ie64.go` execute and step cases for `OP_DSQRT`; `fpu_ie64.go` `DSQRT` side effects: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read |
 | IE64 | fpu side effect | 0x8B | `OP_DINT` | `cpu_ie64.go` execute and step cases for `OP_DINT`; `fpu_ie64.go` `DINT` side effects: reads FPCR rounding bits, writes FPSR condition-code bits from the rounded result, and does not set FPSR sticky exception flags |
+| IE64 | fpu side effect | 0x91 | `OP_DSIN` | `cpu_ie64.go` execute and step cases for `OP_DSIN`; `fpu_ie64.go` `DSIN` side effects: writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read |
+| IE64 | fpu side effect | 0x92 | `OP_DCOS` | `cpu_ie64.go` execute and step cases for `OP_DCOS`; `fpu_ie64.go` `DCOS` side effects: writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read |
+| IE64 | fpu side effect | 0x93 | `OP_DTAN` | `cpu_ie64.go` execute and step cases for `OP_DTAN`; `fpu_ie64.go` `DTAN` side effects: writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read |
+| IE64 | fpu side effect | 0x94 | `OP_DATAN` | `cpu_ie64.go` execute and step cases for `OP_DATAN`; `fpu_ie64.go` `DATAN` side effects: writes FPSR condition-code bits from the result and does not set FPSR sticky exception flags; FPCR is not read |
+| IE64 | fpu side effect | 0x95 | `OP_DLOG` | `cpu_ie64.go` execute and step cases for `OP_DLOG`; `fpu_ie64.go` `DLOG` side effects: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read |
+| IE64 | fpu side effect | 0x96 | `OP_DEXP` | `cpu_ie64.go` execute and step cases for `OP_DEXP`; `fpu_ie64.go` `DEXP` side effects: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read |
+| IE64 | fpu side effect | 0x97 | `OP_DPOW` | `cpu_ie64.go` execute and step cases for `OP_DPOW`; `fpu_ie64.go` `DPOW` side effects: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read |
 | IE64 | control register | 0x00 | `CR_PTBR` | `cpu_ie64.go` const `CR_PTBR`; MFCR switch case `CR_PTBR`; MTCR switch case `CR_PTBR` |
 | IE64 | control register | 0x01 | `CR_FAULT_ADDR` | `cpu_ie64.go` const `CR_FAULT_ADDR`; MFCR switch case `CR_FAULT_ADDR`; MTCR switch case `CR_FAULT_ADDR` |
 | IE64 | control register | 0x02 | `CR_FAULT_CAUSE` | `cpu_ie64.go` const `CR_FAULT_CAUSE`; MFCR switch case `CR_FAULT_CAUSE`; MTCR switch case `CR_FAULT_CAUSE` |

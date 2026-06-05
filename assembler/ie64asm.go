@@ -203,6 +203,13 @@ const (
 	OP64_DCVTFI  = 0x8E
 	OP64_FCVTSD  = 0x8F
 	OP64_FCVTDS  = 0x90
+	OP64_DSIN    = 0x91
+	OP64_DCOS    = 0x92
+	OP64_DTAN    = 0x93
+	OP64_DATAN   = 0x94
+	OP64_DLOG    = 0x95
+	OP64_DEXP    = 0x96
+	OP64_DPOW    = 0x97
 	OP64_NOP     = 0xE0
 
 	OP64_HALT     = 0xE1
@@ -2832,6 +2839,8 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 			"dmul": true, "ddiv": true, "dmod": true, "dabs": true, "dneg": true,
 			"dsqrt": true, "dint": true, "dcmp": true, "dcvtif": true, "dcvtfi": true,
 			"fcvtsd": true, "fcvtds": true,
+			"dsin": true, "dcos": true, "dtan": true, "datan": true, "dlog": true,
+			"dexp": true, "dpow": true,
 		}
 		if fpMnemonics[base] && strings.Contains(mnemonicRaw, ".") {
 			return fmt.Errorf("size suffixes not allowed on FP instruction: %s", mnemonicRaw)
@@ -3061,6 +3070,20 @@ func (a *IE64Assembler) assembleInstruction(trimmed string, program []byte) erro
 		instr, err = a.asmFCVTSD(operands)
 	case "fcvtds":
 		instr, err = a.asmFCVTDS(operands)
+	case "dsin":
+		instr, err = a.asmFP2Even(OP64_DSIN, operands, true, true)
+	case "dcos":
+		instr, err = a.asmFP2Even(OP64_DCOS, operands, true, true)
+	case "dtan":
+		instr, err = a.asmFP2Even(OP64_DTAN, operands, true, true)
+	case "datan":
+		instr, err = a.asmFP2Even(OP64_DATAN, operands, true, true)
+	case "dlog":
+		instr, err = a.asmFP2Even(OP64_DLOG, operands, true, true)
+	case "dexp":
+		instr, err = a.asmFP2Even(OP64_DEXP, operands, true, true)
+	case "dpow":
+		instr, err = a.asmFP3Even(OP64_DPOW, operands)
 
 	// System
 	case "nop":

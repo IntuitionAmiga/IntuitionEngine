@@ -30,7 +30,7 @@ assembler is needed.
 
 ```basic
 10 REM TINY FOUR VOICE MOD
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 A=&H00100000:L=2236
 40 REM CLEAR HEADER, PATTERN, AND SAMPLE AREA
 50 FOR I=0 TO L-1
@@ -224,9 +224,9 @@ about 28 kHz.
 ```basic
 10 REM MOD FILTER READBACK
 20 SOUND MOD FILTER 1
-30 PRINT PEEK(&H000F0BD0)
+30 PRINT PEEK32(&H000F0BD0)
 40 SOUND MOD FILTER 2
-50 PRINT PEEK(&H000F0BD0)
+50 PRINT PEEK32(&H000F0BD0)
 ```
 
 Use only models `0`, `1`, and `2`. Other values are reserved.
@@ -239,20 +239,20 @@ be non-zero before the LED-filter stage can affect the sound.
 
 ## 19.7 Raw register start
 
-The BASIC command is easiest, but raw `POKE` gives access to the loop
+The BASIC command is easiest, but raw `POKE32` gives access to the loop
 bit. This example assumes the module bytes are already at `$100000` and
 the module length is `2236` bytes, as built by the first program.
 
 ```basic
 10 REM MOD RAW LOOP START
-20 POKE &H000F0800,1
+20 POKE32 &H000F0800,1
 30 REM POINTER, LENGTH, FILTER
-40 POKE &H000F0BC0,&H00100000
-50 POKE &H000F0BC4,2236
-60 POKE &H000F0BD0,1
+40 POKE32 &H000F0BC0,&H00100000
+50 POKE32 &H000F0BC4,2236
+60 POKE32 &H000F0BD0,1
 70 REM START WITH LOOP BIT SET
-80 POKE &H000F0BC8,5
-90 PRINT PEEK(&H000F0BCC)
+80 POKE32 &H000F0BC8,5
+90 PRINT PEEK32(&H000F0BCC)
 ```
 
 Line 80 writes start plus loop. Line 90 prints a status byte with bit

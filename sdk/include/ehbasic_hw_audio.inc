@@ -150,7 +150,7 @@ hw_sound:
     ; Parse filename string expression
     jsr     str_eval             ; R8 = filename pointer
     move.q  r10, r8
-    la      r11, FILE_NAME_BUF
+    la      r11, EHBASIC_PRIV_NAME_BUF
 .snd_play_copy_name:
     load.b  r1, (r10)
     store.b r1, (r11)
@@ -173,7 +173,7 @@ hw_sound:
 
 .snd_play_trigger:
     la      r1, MEDIA_NAME_PTR
-    la      r2, FILE_NAME_BUF
+    la      r2, EHBASIC_PRIV_NAME_BUF
     store.l r2, (r1)
     la      r1, MEDIA_SUBSONG
     store.l r20, (r1)
