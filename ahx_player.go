@@ -15,17 +15,7 @@ const ahxMaxPlayLen = 16 * 1024 * 1024
 type AHXPlayer struct {
 	engine *AHXEngine
 
-	// I/O register state for memory-mapped playback control
-	bus           Bus32
-	playPtrStaged uint32
-	playLenStaged uint32
-	playPtr       uint32
-	playLen       uint32
-	subsong       uint8
-	playBusy      bool
-	playErr       bool
-	forceLoop     bool
-	playGen       uint64
+	PlayerControlState
 
 	mu sync.Mutex
 }
@@ -65,8 +55,8 @@ func (p *AHXPlayer) PlaySubsong(nr int) {
 // Stop stops playback
 func (p *AHXPlayer) Stop() {
 	p.mu.Lock()
-	p.playGen++
-	p.playBusy = false
+	p.PlayGen++
+	p.PlayBusy = false
 	p.mu.Unlock()
 	p.engine.SetPlaying(false)
 }
@@ -149,7 +139,7 @@ func (p *AHXPlayer) Reset() {
 
 // AttachBus attaches the memory bus for reading embedded AHX data
 func (p *AHXPlayer) AttachBus(bus Bus32) {
-	p.bus = bus
+	p.Bus = bus
 }
 
 // HandlePlayWrite handles writes to AHX_PLAY_* registers
@@ -163,62 +153,62 @@ func (p *AHXPlayer) HandlePlayWrite(addr uint32, value uint32) {
 	case AHX_PLUS_CTRL:
 		p.engine.SetAHXPlusEnabled(value != 0)
 	case AHX_PLAY_PTR:
-		p.playPtrStaged = value
+		p.PlayPtrStaged = value
 	case AHX_PLAY_PTR + 1:
-		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, value, 1)
+		p.PlayPtrStaged = writeUint32Byte(p.PlayPtrStaged, value, 1)
 	case AHX_PLAY_PTR + 2:
-		p.playPtrStaged = writeUint32Word(p.playPtrStaged, value, 2)
+		p.PlayPtrStaged = writeUint32Word(p.PlayPtrStaged, value, 2)
 	case AHX_PLAY_PTR + 3:
-		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, value, 3)
+		p.PlayPtrStaged = writeUint32Byte(p.PlayPtrStaged, value, 3)
 	case AHX_PLAY_LEN:
-		p.playLenStaged = value
+		p.PlayLenStaged = value
 	case AHX_PLAY_LEN + 1:
-		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 1)
+		p.PlayLenStaged = writeUint32Byte(p.PlayLenStaged, value, 1)
 	case AHX_PLAY_LEN + 2:
-		p.playLenStaged = writeUint32Word(p.playLenStaged, value, 2)
+		p.PlayLenStaged = writeUint32Word(p.PlayLenStaged, value, 2)
 	case AHX_PLAY_LEN + 3:
-		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 3)
+		p.PlayLenStaged = writeUint32Byte(p.PlayLenStaged, value, 3)
 	case AHX_SUBSONG:
-		p.subsong = uint8(value)
+		p.Subsong = uint8(value)
 	case AHX_PLAY_CTRL:
 		if value&0x2 != 0 {
-			p.playGen++
-			p.playBusy = false
-			p.playErr = false
+			p.PlayGen++
+			p.PlayBusy = false
+			p.PlayErr = false
 			stopPlayback = true
 			break
 		}
 		if value&0x1 == 0 {
 			break
 		}
-		if p.playBusy {
+		if p.PlayBusy {
 			break
 		}
-		p.playPtr = p.playPtrStaged
-		p.playLen = p.playLenStaged
-		p.forceLoop = (value & 0x4) != 0
-		p.playErr = false
-		if p.bus == nil {
-			p.playErr = true
+		p.PlayPtr = p.PlayPtrStaged
+		p.PlayLen = p.PlayLenStaged
+		p.ForceLoop = (value & 0x4) != 0
+		p.PlayErr = false
+		if p.Bus == nil {
+			p.PlayErr = true
 			break
 		}
-		if p.playLen == 0 {
-			p.playErr = true
+		if p.PlayLen == 0 {
+			p.PlayErr = true
 			break
 		}
-		if p.playLen > ahxMaxPlayLen || p.playPtr+uint32(p.playLen) < p.playPtr {
-			p.playErr = true
+		if p.PlayLen > ahxMaxPlayLen || p.PlayPtr+uint32(p.PlayLen) < p.PlayPtr {
+			p.PlayErr = true
 			break
 		}
-		p.playBusy = true
-		p.playGen++
+		p.PlayBusy = true
+		p.PlayGen++
 		readReq = &ahxBusReadRequest{
-			gen:       p.playGen,
-			bus:       p.bus,
-			ptr:       p.playPtr,
-			length:    p.playLen,
-			subsong:   int(p.subsong),
-			forceLoop: p.forceLoop,
+			gen:       p.PlayGen,
+			bus:       p.Bus,
+			ptr:       p.PlayPtr,
+			length:    p.PlayLen,
+			subsong:   int(p.Subsong),
+			forceLoop: p.ForceLoop,
 		}
 	default:
 		break
@@ -233,12 +223,12 @@ func (p *AHXPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		readErr := ReadGuestBytes(readReq.bus, readReq.ptr, 0, data)
 
 		p.mu.Lock()
-		if readReq.gen == p.playGen {
+		if readReq.gen == p.PlayGen {
 			if readErr != nil {
-				p.playErr = true
-				p.playBusy = false
+				p.PlayErr = true
+				p.PlayBusy = false
 			} else {
-				p.playBusy = true
+				p.PlayBusy = true
 				startReq = &ahxAsyncStartRequest{
 					gen:       readReq.gen,
 					data:      data,
@@ -275,19 +265,19 @@ func (p *AHXPlayer) startAsync(req ahxAsyncStartRequest) {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if req.gen != p.playGen {
+	if req.gen != p.PlayGen {
 		return
 	}
 	if err != nil {
-		p.playErr = true
-		p.playBusy = false
+		p.PlayErr = true
+		p.PlayBusy = false
 		return
 	}
 
 	p.engine.SetPlaying(false)
 	if err := p.engine.LoadSong(song, req.subsong); err != nil {
-		p.playErr = true
-		p.playBusy = false
+		p.PlayErr = true
+		p.PlayBusy = false
 		return
 	}
 	p.engine.SetLoop(req.forceLoop)
@@ -309,27 +299,27 @@ func (p *AHXPlayer) HandlePlayRead(addr uint32) uint32 {
 		}
 		return 0
 	case AHX_PLAY_PTR:
-		return p.playPtrStaged
+		return p.PlayPtrStaged
 	case AHX_PLAY_LEN:
-		return p.playLenStaged
+		return p.PlayLenStaged
 	case AHX_PLAY_CTRL:
 		return p.playCtrlStatus()
 	case AHX_PLAY_STATUS:
 		return p.playStatus()
 	case AHX_SUBSONG:
-		return uint32(p.subsong)
+		return uint32(p.Subsong)
 	case AHX_PLAY_PTR + 1:
-		return readUint32Byte(p.playPtrStaged, 1)
+		return readUint32Byte(p.PlayPtrStaged, 1)
 	case AHX_PLAY_PTR + 2:
-		return readUint32Byte(p.playPtrStaged, 2)
+		return readUint32Byte(p.PlayPtrStaged, 2)
 	case AHX_PLAY_PTR + 3:
-		return readUint32Byte(p.playPtrStaged, 3)
+		return readUint32Byte(p.PlayPtrStaged, 3)
 	case AHX_PLAY_LEN + 1:
-		return readUint32Byte(p.playLenStaged, 1)
+		return readUint32Byte(p.PlayLenStaged, 1)
 	case AHX_PLAY_LEN + 2:
-		return readUint32Byte(p.playLenStaged, 2)
+		return readUint32Byte(p.PlayLenStaged, 2)
 	case AHX_PLAY_LEN + 3:
-		return readUint32Byte(p.playLenStaged, 3)
+		return readUint32Byte(p.PlayLenStaged, 3)
 	case AHX_PLAY_CTRL + 1:
 		return readUint32Byte(p.playCtrlStatus(), 1)
 	case AHX_PLAY_CTRL + 2:
@@ -343,15 +333,15 @@ func (p *AHXPlayer) HandlePlayRead(addr uint32) uint32 {
 
 func (p *AHXPlayer) playCtrlStatus() uint32 {
 	ctrl := uint32(0)
-	busy := p.playBusy
+	busy := p.PlayBusy
 	if busy && !p.IsPlaying() {
-		p.playBusy = false
+		p.PlayBusy = false
 		busy = false
 	}
 	if busy {
 		ctrl |= 0x1
 	}
-	if p.forceLoop {
+	if p.ForceLoop {
 		ctrl |= 0x4
 	}
 	return ctrl
@@ -359,15 +349,15 @@ func (p *AHXPlayer) playCtrlStatus() uint32 {
 
 func (p *AHXPlayer) playStatus() uint32 {
 	status := uint32(0)
-	busy := p.playBusy
+	busy := p.PlayBusy
 	if busy && !p.IsPlaying() {
-		p.playBusy = false
+		p.PlayBusy = false
 		busy = false
 	}
 	if busy {
 		status |= 0x1
 	}
-	if p.playErr {
+	if p.PlayErr {
 		status |= 0x2
 	}
 	return status

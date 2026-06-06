@@ -21,29 +21,30 @@ License: GPLv3 or later
 /*
 machine_bus.go - Machine Bus for the Intuition Engine
 
-This module implements the memory bus that forms the backbone of the Intuition Engine's memory subsystem. It provides a unified interface for 32-bit memory operations, including both standard memory access and memory-mapped I/O. The implementation emphasises thread safety, cache efficiency and precise control over memory layout, all of which are critical for accurate retro-style computer emulation.
+This module implements the memory bus that forms the backbone of the Intuition Engine's memory subsystem. It provides unified 8-bit, 16-bit, 32-bit, and 64-bit memory operations across standard RAM, sparse backing memory, and memory-mapped I/O. The implementation emphasises cache efficiency, published mapping snapshots, and precise control over memory layout, all of which are critical for accurate retro-style computer emulation.
 
 Core Features:
 
-    32MB of main memory allocated as a contiguous block.
-    Support for memory-mapped I/O via an I/O region mapping table that uses page masking and fixed page sizes.
+    Host-sized or profile-clamped guest RAM, with a 32 MiB legacy NewMachineBus fallback for tests and compatibility rigs.
+    Support for memory-mapped I/O via published 32-bit and 64-bit region tables that use page masking and fixed page sizes.
     Little-endian read/write operations for 32-bit data.
-    Full memory reset capability to clear the entire memory state.
-    Thread-safe access implemented with a read/write mutex to synchronise concurrent operations.
+    Full memory reset capability for RAM, sparse backing memory, and registered reset hooks.
+    Lock-free published map snapshots for execution-time I/O lookup.
 
 Technical Details:
 
-    The MachineBus struct fulfils the Bus32 interface, encapsulating the main memory and a mapping of I/O regions.
+    The MachineBus struct fulfils the Bus32 interface, encapsulating the legacy RAM window, optional sparse backing memory, sizing state, and mappings of I/O regions.
     I/O regions are registered with a defined start and end address along with callback functions (onRead and onWrite) to intercept memory accesses.
     Memory page keys are calculated using a page mask (0xFFF00) and a page increment of 0x100, ensuring that I/O regions are correctly mapped across the memory space.
     32-bit values are accessed using binary.LittleEndian conversion routines, maintaining consistency with the CPU's data handling.
-    The Reset method iterates through the memory block in a cache-friendly manner to set all bytes to zero.
+    The Reset method clears the RAM and backing state, then invokes reset hooks after producers have been stopped by the caller.
 
 Concurrency and Cache Optimisation:
 
-    A sync.RWMutex protects all memory operations, thereby preventing data races in multi-threaded environments.
-    The memory block is stored in a contiguous slice to improve cache locality, which is essential for high-performance emulation.
-    The design is minimalistic and efficient, ensuring that the memory bus can keep pace with the CPU and peripheral devices that rely on memory-mapped I/O.
+    Execution-time I/O lookup reads immutable map snapshots published after mapping changes.
+    Bus reset is caller-quiesced reset: callers must stop CPU, JIT, DMA, and device producers before invoking Reset.
+    Hot RAM paths use direct slice or backing access, while mapped I/O and strict MMIO windows route through slower checked paths.
+    The design keeps fast paths small and efficient, ensuring that the memory bus can keep pace with the CPU and peripheral devices that rely on memory-mapped I/O.
 
 This module is a critical component of the Intuition Engine, interfacing directly with the CPU and various peripheral devices. Its design is driven by the need for both high performance and accurate emulation of hardware behaviour.
 

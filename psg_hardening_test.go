@@ -163,7 +163,7 @@ func TestPSGSilenceClearsNoiseOnlyOutput(t *testing.T) {
 func TestPSGPlayerBusyClearsOnNaturalEnd(t *testing.T) {
 	engine := NewPSGEngine(nil, SAMPLE_RATE)
 	player := NewPSGPlayer(engine)
-	player.playBusy = true
+	player.PlayBusy = true
 	engine.SetEvents([]PSGEvent{{Sample: 0, Reg: 8, Value: 0x0F}}, 1, false, 0)
 
 	engine.TickSample()
@@ -173,7 +173,7 @@ func TestPSGPlayerBusyClearsOnNaturalEnd(t *testing.T) {
 	if got := player.HandlePlayRead(PSG_PLAY_CTRL); got&1 != 0 {
 		t.Fatalf("PLAY_CTRL busy bit still set: 0x%X", got)
 	}
-	if player.playBusy {
+	if player.PlayBusy {
 		t.Fatalf("playBusy was not written back false")
 	}
 }

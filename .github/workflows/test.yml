@@ -116,7 +116,7 @@ jobs:
         run: go build -o ie32asm assembler/ie32asm.go
 
       - name: Build IE64 assembler
-        run: go build -tags ie64 -o ie64asm assembler/ie64asm.go
+        run: go build -tags ie64 -o ie64asm ./assembler
 
       - name: Assemble IE32 SDK examples
         run: |

@@ -14,21 +14,13 @@ import (
 type PSGPlayer struct {
 	engine     *PSGEngine
 	snChip     *SN76489Chip
-	bus        Bus32
 	metadata   PSGMetadata
 	frameRate  uint16
 	clockHz    uint32
 	loopSample uint64
 	loop       bool
 
-	playPtrStaged uint32
-	playLenStaged uint32
-	playPtr       uint32
-	playLen       uint32
-	playBusy      bool
-	playErr       bool
-	forceLoop     bool // When true, loop from start even if file has no loop point
-	playGen       uint64
+	PlayerControlState
 
 	mu sync.Mutex
 
@@ -44,7 +36,7 @@ func NewPSGPlayer(engine *PSGEngine) *PSGPlayer {
 }
 
 func (p *PSGPlayer) AttachBus(bus Bus32) {
-	p.bus = bus
+	p.Bus = bus
 }
 
 func (p *PSGPlayer) SetSNChip(chip *SN76489Chip) {
@@ -267,8 +259,7 @@ func (p *PSGPlayer) Play() {
 
 func (p *PSGPlayer) Stop() {
 	p.mu.Lock()
-	p.playGen++
-	p.playBusy = false
+	p.StopPlaybackRequest()
 	p.mu.Unlock()
 
 	if p.engine == nil {
@@ -685,12 +676,12 @@ func (p *PSGPlayer) startAsync(req psgAsyncStartRequest) {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if req.gen != p.playGen {
+	if req.gen != p.PlayGen {
 		return
 	}
 	if err != nil {
-		p.playErr = true
-		p.playBusy = false
+		p.PlayErr = true
+		p.PlayBusy = false
 		return
 	}
 
@@ -712,61 +703,61 @@ func (p *PSGPlayer) HandlePlayWrite(addr uint32, value uint32) {
 	p.mu.Lock()
 	switch addr {
 	case PSG_PLAY_PTR:
-		p.playPtrStaged = value
+		p.PlayPtrStaged = value
 	case PSG_PLAY_PTR + 1:
-		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, value, 1)
+		p.PlayPtrStaged = writeUint32Byte(p.PlayPtrStaged, value, 1)
 	case PSG_PLAY_PTR + 2:
-		p.playPtrStaged = writeUint32Word(p.playPtrStaged, value, 2)
+		p.PlayPtrStaged = writeUint32Word(p.PlayPtrStaged, value, 2)
 	case PSG_PLAY_PTR + 3:
-		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, value, 3)
+		p.PlayPtrStaged = writeUint32Byte(p.PlayPtrStaged, value, 3)
 	case PSG_PLAY_LEN:
-		p.playLenStaged = value
+		p.PlayLenStaged = value
 	case PSG_PLAY_LEN + 1:
-		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 1)
+		p.PlayLenStaged = writeUint32Byte(p.PlayLenStaged, value, 1)
 	case PSG_PLAY_LEN + 2:
-		p.playLenStaged = writeUint32Word(p.playLenStaged, value, 2)
+		p.PlayLenStaged = writeUint32Word(p.PlayLenStaged, value, 2)
 	case PSG_PLAY_LEN + 3:
-		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 3)
+		p.PlayLenStaged = writeUint32Byte(p.PlayLenStaged, value, 3)
 	case PSG_PLAY_CTRL:
 		if value&0x2 != 0 {
-			p.playGen++
-			p.playBusy = false
-			p.playErr = false
+			p.PlayGen++
+			p.PlayBusy = false
+			p.PlayErr = false
 			stopPlayback = true
 			break
 		}
 		if value&0x1 == 0 {
 			break
 		}
-		if p.playBusy {
+		if p.PlayBusy {
 			break
 		}
 		if p.engine != nil {
 			p.engine.SetSNStream(nil, nil, 0)
 		}
-		p.playPtr = p.playPtrStaged
-		p.playLen = p.playLenStaged
-		p.forceLoop = (value & 0x4) != 0 // bit 2 = enable looping
-		p.playErr = false
-		if p.bus == nil {
-			p.playErr = true
+		p.PlayPtr = p.PlayPtrStaged
+		p.PlayLen = p.PlayLenStaged
+		p.ForceLoop = (value & 0x4) != 0 // bit 2 = enable looping
+		p.PlayErr = false
+		if p.Bus == nil {
+			p.PlayErr = true
 			break
 		}
-		if p.playLen == 0 {
-			p.playErr = true
+		if p.PlayLen == 0 {
+			p.PlayErr = true
 			break
 		}
-		data := make([]byte, p.playLen)
-		if err := ReadGuestBytes(p.bus, p.playPtr, 0, data); err != nil {
-			p.playErr = true
+		data := make([]byte, p.PlayLen)
+		if err := ReadGuestBytes(p.Bus, p.PlayPtr, 0, data); err != nil {
+			p.PlayErr = true
 			break
 		}
-		p.playBusy = true
-		p.playGen++
+		p.PlayBusy = true
+		p.PlayGen++
 		startReq = &psgAsyncStartRequest{
-			gen:       p.playGen,
+			gen:       p.PlayGen,
 			data:      data,
-			forceLoop: p.forceLoop,
+			forceLoop: p.ForceLoop,
 		}
 	default:
 		break
@@ -787,25 +778,25 @@ func (p *PSGPlayer) HandlePlayRead(addr uint32) uint32 {
 
 	switch addr {
 	case PSG_PLAY_PTR:
-		return p.playPtrStaged
+		return p.PlayPtrStaged
 	case PSG_PLAY_LEN:
-		return p.playLenStaged
+		return p.PlayLenStaged
 	case PSG_PLAY_CTRL:
 		return p.playCtrlStatus()
 	case PSG_PLAY_STATUS:
 		return p.playStatus()
 	case PSG_PLAY_PTR + 1:
-		return readUint32Byte(p.playPtrStaged, 1)
+		return readUint32Byte(p.PlayPtrStaged, 1)
 	case PSG_PLAY_PTR + 2:
-		return readUint32Byte(p.playPtrStaged, 2)
+		return readUint32Byte(p.PlayPtrStaged, 2)
 	case PSG_PLAY_PTR + 3:
-		return readUint32Byte(p.playPtrStaged, 3)
+		return readUint32Byte(p.PlayPtrStaged, 3)
 	case PSG_PLAY_LEN + 1:
-		return readUint32Byte(p.playLenStaged, 1)
+		return readUint32Byte(p.PlayLenStaged, 1)
 	case PSG_PLAY_LEN + 2:
-		return readUint32Byte(p.playLenStaged, 2)
+		return readUint32Byte(p.PlayLenStaged, 2)
 	case PSG_PLAY_LEN + 3:
-		return readUint32Byte(p.playLenStaged, 3)
+		return readUint32Byte(p.PlayLenStaged, 3)
 	case PSG_PLAY_CTRL + 1:
 		return readUint32Byte(p.playCtrlStatus(), 1)
 	case PSG_PLAY_CTRL + 2:
@@ -827,15 +818,15 @@ func (p *PSGPlayer) playCtrlStatus() uint32 {
 	ctrl := uint32(0)
 	if p.engine != nil {
 		if p.engine.IsPlaying() {
-			p.playBusy = true
+			p.PlayBusy = true
 		} else if p.engine.PlaybackComplete() {
-			p.playBusy = false
+			p.PlayBusy = false
 		}
 	}
-	if p.playBusy {
+	if p.PlayBusy {
 		ctrl |= 1
 	}
-	if p.playErr {
+	if p.PlayErr {
 		ctrl |= 2
 	}
 	return ctrl

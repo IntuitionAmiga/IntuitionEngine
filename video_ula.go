@@ -47,11 +47,9 @@ Signal Flow:
 package main
 
 import (
-	"context"
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 )
 
@@ -100,10 +98,10 @@ type ULAEngine struct {
 	readingIdx int
 
 	// Render goroutine lifecycle
-	renderMu      sync.Mutex
-	renderRunning atomic.Bool
-	renderCancel  context.CancelFunc
-	renderDone    chan struct{}
+	renderMu        sync.Mutex
+	renderRunning   atomic.Bool
+	renderScheduler *VideoScheduler
+	renderTaskID    uint64
 
 	// Set by compositor during scanline-aware rendering
 	compositorManaged atomic.Bool
@@ -539,12 +537,10 @@ func (u *ULAEngine) StartRenderLoop() {
 	if u.renderRunning.Load() {
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	u.renderCancel = cancel
-	done := make(chan struct{})
-	u.renderDone = done
+	u.renderScheduler = NewVideoScheduler(COMPOSITOR_REFRESH_INTERVAL)
+	u.renderTaskID = u.renderScheduler.Register(u.renderTick)
 	u.renderRunning.Store(true)
-	go u.renderLoop(ctx, done)
+	u.renderScheduler.Start()
 }
 
 // StopRenderLoop stops the render goroutine and waits for it to exit.
@@ -554,38 +550,30 @@ func (u *ULAEngine) StopRenderLoop() {
 		u.renderMu.Unlock()
 		return
 	}
-	cancel := u.renderCancel
-	done := u.renderDone
+	scheduler := u.renderScheduler
+	taskID := u.renderTaskID
+	u.renderScheduler = nil
+	u.renderTaskID = 0
 	u.renderMu.Unlock()
-	cancel()
-	<-done
+	if scheduler == nil {
+		return
+	}
+	scheduler.Unregister(taskID)
+	scheduler.Stop()
 }
 
-// renderLoop runs at 60Hz, rendering frames into the triple buffer.
-// done is goroutine-local to avoid close-of-wrong-channel on restart.
-func (u *ULAEngine) renderLoop(ctx context.Context, done chan struct{}) {
-	defer close(done)
-	ticker := time.NewTicker(COMPOSITOR_REFRESH_INTERVAL)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if !u.enabled.Load() || u.compositorManaged.Load() {
-				continue
-			}
-			u.rendering.Store(true)
-			if u.compositorManaged.Load() {
-				u.rendering.Store(false)
-				continue
-			}
-			u.RenderFrameTo(u.frameBufs[u.writeIdx])
-			u.rendering.Store(false)
-			u.writeIdx = int(u.sharedIdx.Swap(int32(u.writeIdx)))
-		}
+func (u *ULAEngine) renderTick() {
+	if !u.enabled.Load() || u.compositorManaged.Load() {
+		return
 	}
+	u.rendering.Store(true)
+	if u.compositorManaged.Load() {
+		u.rendering.Store(false)
+		return
+	}
+	u.RenderFrameTo(u.frameBufs[u.writeIdx])
+	u.rendering.Store(false)
+	u.writeIdx = int(u.sharedIdx.Swap(int32(u.writeIdx)))
 }
 
 // =============================================================================

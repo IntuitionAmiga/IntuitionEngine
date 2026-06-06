@@ -82,7 +82,7 @@ type MusicMetadata struct {
 
 // PlayerControlState contains common state for memory-mapped playback control
 // This state is used by players that support register-mapped control from
-// running programs (SID, PSG, TED players)
+// running programs.
 type PlayerControlState struct {
 	PlayPtrStaged uint32
 	PlayPtrHigh   uint32
@@ -92,6 +92,8 @@ type PlayerControlState struct {
 	PlayBusy      bool
 	PlayErr       bool
 	ForceLoop     bool
+	Subsong       uint8
+	PlayGen       uint64
 	Bus           Bus32
 }
 
@@ -215,4 +217,37 @@ func (s *PlayerControlState) ClearError() {
 // SetBusy marks the playback as busy
 func (s *PlayerControlState) SetBusy() {
 	s.PlayBusy = true
+}
+
+func (s *PlayerControlState) StopPlaybackRequest() {
+	s.PlayGen++
+	s.PlayBusy = false
+}
+
+func (s *PlayerControlState) FailPlaybackRequest() {
+	s.PlayErr = true
+	s.PlayBusy = false
+}
+
+func (s *PlayerControlState) StartPlaybackRequest(ctrl uint32) uint64 {
+	s.PlayPtr = s.PlayPtrStaged
+	s.PlayLen = s.PlayLenStaged
+	s.ForceLoop = (ctrl & 0x4) != 0
+	s.PlayErr = false
+	s.PlayBusy = true
+	s.PlayGen++
+	return s.PlayGen
+}
+
+func (s *PlayerControlState) CompletePlaybackRequest(gen uint64, err error) bool {
+	if gen != s.PlayGen {
+		return false
+	}
+	if err != nil {
+		s.FailPlaybackRequest()
+		return true
+	}
+	s.PlayBusy = false
+	s.PlayErr = false
+	return true
 }

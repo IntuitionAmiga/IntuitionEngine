@@ -22,7 +22,7 @@ func TestMODPlayerMMIOWritePtr(t *testing.T) {
 	player.HandlePlayWrite(MOD_PLAY_PTR, 0x12345678)
 
 	player.mu.Lock()
-	got := player.playPtrStaged
+	got := player.PlayPtrStaged
 	player.mu.Unlock()
 
 	if got != 0x12345678 {
@@ -36,7 +36,7 @@ func TestMODPlayerMMIOWriteLen(t *testing.T) {
 	player.HandlePlayWrite(MOD_PLAY_LEN, 0xABCD)
 
 	player.mu.Lock()
-	got := player.playLenStaged
+	got := player.PlayLenStaged
 	player.mu.Unlock()
 
 	if got != 0xABCD {
@@ -64,8 +64,8 @@ func TestMODPlayerMMIOStart(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	player.mu.Lock()
-	busy := player.playBusy
-	hasErr := player.playErr
+	busy := player.PlayBusy
+	hasErr := player.PlayErr
 	player.mu.Unlock()
 
 	if hasErr {
@@ -191,7 +191,7 @@ func TestMODPlayerGenerationCounting(t *testing.T) {
 	player.HandlePlayWrite(MOD_PLAY_CTRL, 2)
 
 	player.mu.Lock()
-	gen := player.playGen
+	gen := player.PlayGen
 	player.mu.Unlock()
 
 	// Generation should have been incremented twice (start + stop)
@@ -221,7 +221,7 @@ func TestMODPlayer_PlayBusyClearsAfterAsyncStart(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	player.mu.Lock()
-	busy := player.playBusy
+	busy := player.PlayBusy
 	player.mu.Unlock()
 	if busy {
 		t.Fatal("playBusy should clear after async start")

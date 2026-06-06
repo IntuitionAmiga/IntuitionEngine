@@ -17,7 +17,95 @@ var sdkAuditDocs = []string{
 	"sdk/docs/architecture.md",
 }
 
-const sdkAuditLastModifiedDate = "2026-06-05"
+var docsRemediationMarkdownAllowlist = []string{
+	"sdk/docs/IE64_ISA.md",
+	"sdk/docs/IE32_ISA.md",
+	"sdk/docs/iemon.md",
+	"sdk/docs/iescript.md",
+	"sdk/docs/architecture.md",
+	"sdk/docs/IE64_JIT.md",
+	"sdk/docs/ehbasic_ie64.md",
+	"sdk/docs/refman/00-Preface.md",
+	"sdk/docs/refman/01-basic-rules.md",
+	"sdk/docs/refman/02-basic-vocabulary.md",
+	"sdk/docs/refman/03-display-model.md",
+	"sdk/docs/refman/04-videochip.md",
+	"sdk/docs/refman/05-vga.md",
+	"sdk/docs/refman/06-ted-video.md",
+	"sdk/docs/refman/07-antic-gtia.md",
+	"sdk/docs/refman/08-ula.md",
+	"sdk/docs/refman/09-voodoo.md",
+	"sdk/docs/refman/10-tile-sprite-basic.md",
+	"sdk/docs/refman/11-audio-overview.md",
+	"sdk/docs/refman/12-soundchip-sfx.md",
+	"sdk/docs/refman/13-psg-ay.md",
+	"sdk/docs/refman/14-sn76489.md",
+	"sdk/docs/refman/15-sid-family.md",
+	"sdk/docs/refman/16-ted-audio.md",
+	"sdk/docs/refman/17-pokey.md",
+	"sdk/docs/refman/18-ahx.md",
+	"sdk/docs/refman/19-mod.md",
+	"sdk/docs/refman/20-wav.md",
+	"sdk/docs/refman/21-midi-mus.md",
+	"sdk/docs/refman/22-paula-dma.md",
+	"sdk/docs/refman/23-music-from-basic.md",
+	"sdk/docs/refman/24-memory-model.md",
+	"sdk/docs/refman/25-ie64.md",
+	"sdk/docs/refman/26-ie32.md",
+	"sdk/docs/refman/27-6502.md",
+	"sdk/docs/refman/28-z80.md",
+	"sdk/docs/refman/29-m68k.md",
+	"sdk/docs/refman/30-x86.md",
+	"sdk/docs/refman/31-timing-traps.md",
+	"sdk/docs/refman/32-coprocessor.md",
+	"sdk/docs/refman/33-iemon.md",
+	"sdk/docs/refman/34-ie-script.md",
+	"sdk/docs/refman/35-disk-file-io.md",
+	"sdk/docs/refman/36-host.md",
+	"sdk/docs/refman/37-input-mmio.md",
+	"sdk/docs/refman/38-serial.md",
+	"sdk/docs/refman/39-whole-machine-capstone.md",
+	"sdk/docs/refman/STYLE.md",
+	"sdk/docs/refman/appA-token-map.md",
+	"sdk/docs/refman/appB-screen-codes.md",
+	"sdk/docs/refman/appC-ascii.md",
+	"sdk/docs/refman/appD-mmio-maps.md",
+	"sdk/docs/refman/appE-notes.md",
+	"sdk/docs/refman/appF-math.md",
+	"sdk/docs/refman/appG-opcodes.md",
+	"sdk/docs/refman/appH-symbols.md",
+	"sdk/docs/refman/appI-errors.md",
+	"sdk/docs/refman/appJ-memory-map.md",
+	"sdk/docs/refman/appK-block-diagrams.md",
+	"sdk/docs/refman/appL-index.md",
+}
+
+var britishEnglishAmericanisms = map[string]string{
+	"artifact":       "artefact",
+	"artifacts":      "artefacts",
+	"behavior":       "behaviour",
+	"behaviors":      "behaviours",
+	"center":         "centre",
+	"centered":       "centred",
+	"color":          "colour",
+	"colored":        "coloured",
+	"colors":         "colours",
+	"customize":      "customise",
+	"customized":     "customised",
+	"finalize":       "finalise",
+	"finalized":      "finalised",
+	"gray":           "grey",
+	"initialization": "initialisation",
+	"initialize":     "initialise",
+	"initialized":    "initialised",
+	"license":        "licence",
+	"licensed":       "licenced",
+	"neighbor":       "neighbour",
+	"organize":       "organise",
+	"organized":      "organised",
+}
+
+const sdkAuditLastModifiedDate = "2026-06-06"
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
 	needle := "*Last modified: " + sdkAuditLastModifiedDate + "*"
@@ -108,50 +196,176 @@ func TestSDKCompanionDocs_IEMonIsHardwareMonitorNotOSManual(t *testing.T) {
 }
 
 func TestSDKCompanionDocs_BritishEnglishProse(t *testing.T) {
-	americanisms := map[string]string{
-		"artifact":       "artefact",
-		"artifacts":      "artefacts",
-		"behavior":       "behaviour",
-		"behaviors":      "behaviours",
-		"center":         "centre",
-		"centered":       "centred",
-		"color":          "colour",
-		"colored":        "coloured",
-		"colors":         "colours",
-		"customize":      "customise",
-		"customized":     "customised",
-		"finalize":       "finalise",
-		"finalized":      "finalised",
-		"gray":           "grey",
-		"initialization": "initialisation",
-		"initialize":     "initialise",
-		"initialized":    "initialised",
-		"license":        "licence",
-		"licensed":       "licenced",
-		"neighbor":       "neighbour",
-		"organize":       "organise",
-		"organized":      "organised",
-	}
-
 	for _, path := range sdkAuditDocs {
-		text := readAuditFile(t, path)
-		inFence := false
-		for lineNo, line := range strings.Split(text, "\n") {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "```") {
-				inFence = !inFence
-				continue
-			}
-			if inFence {
-				continue
-			}
-			prose := stripMarkdownInlineCode(line)
-			for us, uk := range americanisms {
+		for _, line := range markdownProseLines(readAuditFile(t, path)) {
+			for us, uk := range britishEnglishAmericanisms {
 				re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(us) + `\b`)
-				if re.MatchString(prose) {
-					t.Fatalf("%s:%d uses American-English prose spelling %q; use %q unless this is source-owned syntax", path, lineNo+1, us, uk)
+				if re.MatchString(line.text) {
+					t.Fatalf("%s:%d uses American-English prose spelling %q; use %q unless this is source-owned syntax", path, line.no, us, uk)
 				}
 			}
+		}
+	}
+}
+
+func TestDocs_StaticMarkdownAllowlistHasNoPublishedRefmanEntries(t *testing.T) {
+	for _, path := range docsRemediationMarkdownAllowlist {
+		if strings.Contains(path, "sdk/docs/refman.publish/") {
+			t.Fatalf("remediation Markdown allowlist must not include published refman path %q", path)
+		}
+	}
+}
+
+func TestDocs_StaticRefmanAllowlistIsExplicit(t *testing.T) {
+	for _, path := range docsRemediationMarkdownAllowlist {
+		if strings.HasPrefix(path, "sdk/docs/refman/verify/") {
+			t.Fatalf("remediation Markdown allowlist must not include refman verify helper %q", path)
+		}
+		if strings.HasPrefix(path, "sdk/docs/refman/") && !strings.HasSuffix(path, ".md") {
+			t.Fatalf("remediation Markdown allowlist refman entry must be a Markdown file: %q", path)
+		}
+	}
+	for _, required := range []string{
+		"sdk/docs/refman/00-Preface.md",
+		"sdk/docs/refman/39-whole-machine-capstone.md",
+		"sdk/docs/refman/appL-index.md",
+	} {
+		if !stringSliceContains(docsRemediationMarkdownAllowlist, required) {
+			t.Fatalf("remediation Markdown allowlist missing static refman entry %q", required)
+		}
+	}
+}
+
+func TestDocs_NoEmDashInAllowlistedMarkdownOrSourceProse(t *testing.T) {
+	for _, path := range docsRemediationMarkdownAllowlist {
+		text := readAuditFile(t, path)
+		for lineNo, line := range strings.Split(text, "\n") {
+			if strings.Contains(line, "—") {
+				t.Fatalf("%s:%d contains forbidden em dash: %q", path, lineNo+1, line)
+			}
+		}
+	}
+	for _, line := range machineBusArchitecturalProseLines(t) {
+		if strings.Contains(line.text, "—") {
+			t.Fatalf("machine_bus.go:%d contains forbidden em dash in audited architectural prose: %q", line.no, line.text)
+		}
+	}
+}
+
+func TestDocs_BritishEnglishLockedPairsInAllowlistedProse(t *testing.T) {
+	for _, path := range docsRemediationMarkdownAllowlist {
+		for _, line := range markdownProseLines(readAuditFile(t, path)) {
+			for us, uk := range britishEnglishAmericanisms {
+				re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(us) + `\b`)
+				if re.MatchString(line.text) {
+					t.Fatalf("%s:%d uses American-English prose spelling %q; use %q unless this is source-owned syntax", path, line.no, us, uk)
+				}
+			}
+		}
+	}
+	for _, line := range machineBusArchitecturalProseLines(t) {
+		for us, uk := range britishEnglishAmericanisms {
+			re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(us) + `\b`)
+			if re.MatchString(line.text) {
+				t.Fatalf("machine_bus.go:%d uses American-English prose spelling %q; use %q", line.no, us, uk)
+			}
+		}
+	}
+}
+
+func TestDocs_MarkdownProseNormaliserExemptions(t *testing.T) {
+	md := strings.Join([]string{
+		"Regular prose keeps \"behavior\" for checking.",
+		"Sentence-start Artifact is also prose.",
+		"```",
+		"behavior color center",
+		"```",
+		"`behavior` and inline `color` are identifiers.",
+		"> behavior in a quoted manual transcript.",
+		"| Register | color |",
+		"|----------|-------|",
+		"| CR_COLOR | behavior |",
+		"$ go test behavior",
+		"LOAD \"COLOR\",8",
+		"Use VIDEO_COLOR and IEMON_CENTER as constants.",
+	}, "\n")
+	lines := markdownProseLines(md)
+	joined := strings.Join(proseTexts(lines), "\n")
+	if !strings.Contains(joined, "\"behavior\"") {
+		t.Fatalf("normaliser stripped ordinary quoted prose: %q", joined)
+	}
+	if !strings.Contains(joined, "Artifact") {
+		t.Fatalf("normaliser stripped capitalised ordinary prose: %q", joined)
+	}
+	for _, forbidden := range []string{
+		"color",
+		"center",
+		"quoted manual",
+		"Register",
+		"CR_COLOR",
+		"go test",
+		"LOAD",
+		"VIDEO_COLOR",
+		"IEMON_CENTER",
+	} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("normaliser did not strip exempt token %q from %q", forbidden, joined)
+		}
+	}
+}
+
+func TestDocs_WholeMachineSnapshotGuidanceIsCurrent(t *testing.T) {
+	for _, path := range []string{"AGENTS.md", "CLAUDE.md"} {
+		text, ok := readOptionalAuditFile(t, path)
+		if !ok {
+			continue
+		}
+		if strings.Contains(text, "snapshots are focused CPU-local, not whole-machine") {
+			t.Fatalf("%s still says snapshots are not whole-machine", path)
+		}
+		for _, needle := range []string{
+			"CPU-local snapshots and whole-machine reverse-debug snapshots",
+			"versioned device snapshot blobs",
+		} {
+			if !strings.Contains(text, needle) {
+				t.Fatalf("%s missing current snapshot guidance %q", path, needle)
+			}
+		}
+	}
+}
+
+func readOptionalAuditFile(t *testing.T, path string) (string, bool) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return string(data), true
+	}
+	if os.IsNotExist(err) {
+		return "", false
+	}
+	t.Fatalf("read %s: %v", path, err)
+	return "", false
+}
+
+func TestMachineBus_DocumentationConcurrencyWordingMatchesImplementation(t *testing.T) {
+	joined := strings.Join(proseTexts(machineBusArchitecturalProseLines(t)), "\n")
+	joinedLower := strings.ToLower(joined)
+	for _, forbidden := range []string{
+		"sync.RWMutex protects all memory operations",
+		"read/write mutex",
+		"32MB of main memory allocated as a contiguous block",
+	} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("machine_bus.go audited prose still contains stale wording %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"lock-free published map snapshots",
+		"caller-quiesced reset",
+		"host-sized or profile-clamped guest ram",
+	} {
+		if !strings.Contains(joinedLower, required) {
+			t.Fatalf("machine_bus.go audited prose missing current concurrency/sizing wording %q", required)
 		}
 	}
 }
@@ -200,7 +414,9 @@ func TestSDKDocsIE64FP64TranscendentalsDocumentedAcrossAssemblerSurfaces(t *test
 	jitDoc := readAuditFile(t, "sdk/docs/IE64_JIT.md")
 	iemonDoc := readAuditFile(t, "sdk/docs/iemon.md")
 	hostAsm := readAuditFile(t, "assembler/ie64asm.go")
+	hostAsmOpcodes := readAuditFile(t, "assembler/ie64asm_opcodes_gen.go")
 	monitorAsm := readAuditFile(t, "internal/asm/ie64/assembler.go")
+	monitorAsmOpcodes := readAuditFile(t, "internal/asm/ie64/opcodes_gen.go")
 	basicAsm := readAuditFile(t, "sdk/include/ehbasic_aot.inc")
 
 	opcodes := []struct {
@@ -231,14 +447,15 @@ func TestSDKDocsIE64FP64TranscendentalsDocumentedAcrossAssemblerSurfaces(t *test
 			}
 		}
 		for _, surface := range []struct {
-			name string
-			text string
+			name       string
+			dispatch   string
+			opcodeText string
 		}{
-			{"host ie64asm", hostAsm},
-			{"IEMon one-instruction assembler", monitorAsm},
-			{"BASIC hosted assembler", basicAsm},
+			{"host ie64asm", hostAsm, hostAsmOpcodes},
+			{"IEMon one-instruction assembler", monitorAsm, monitorAsmOpcodes},
+			{"BASIC hosted assembler", basicAsm, basicAsm},
 		} {
-			if !strings.Contains(surface.text, op.lower) || !strings.Contains(surface.text, op.opcode) {
+			if !strings.Contains(surface.dispatch, op.lower) || !strings.Contains(surface.opcodeText, op.opcode) {
 				t.Fatalf("%s missing %s / %s support", surface.name, op.lower, op.opcode)
 			}
 		}
@@ -533,7 +750,7 @@ func TestSDKCompanionDocs_NoUnresolvedPlanningPlaceholders(t *testing.T) {
 }
 
 func TestSDKCompanionDocs_IE64OpcodeTableMatchesSource(t *testing.T) {
-	source := readAuditFile(t, "cpu_ie64.go")
+	source := readAuditFile(t, "cpu_ie64_opcodes_gen.go")
 	doc := readAuditFile(t, "sdk/docs/IE64_ISA.md")
 	sourceOps := parseIE64SourceOpcodes(t, source)
 	docOps := parseMarkdownOpcodeRows(t, doc)
@@ -549,7 +766,7 @@ func TestSDKCompanionDocs_IE64OpcodeTableMatchesSource(t *testing.T) {
 }
 
 func TestSDKCompanionDocs_IE64CompleteReferenceCoversSourceOpcodesWithoutNumberGaps(t *testing.T) {
-	source := readAuditFile(t, "cpu_ie64.go")
+	source := readAuditFile(t, "cpu_ie64_opcodes_gen.go")
 	doc := readAuditFile(t, "sdk/docs/IE64_ISA.md")
 	section := markdownSection(t, doc, "## 4. Complete Instruction Reference", "## 5. Architectural Instruction Idioms")
 
@@ -584,7 +801,7 @@ func TestSDKCompanionDocs_IE64CompleteReferenceCoversSourceOpcodesWithoutNumberG
 }
 
 func TestSDKCompanionDocs_IE64FPUSectionCoversSourceOpcodes(t *testing.T) {
-	source := readAuditFile(t, "cpu_ie64.go")
+	source := readAuditFile(t, "cpu_ie64_opcodes_gen.go")
 	doc := readAuditFile(t, "sdk/docs/IE64_ISA.md")
 	section := markdownSection(t, doc, "### 4.6 Floating Point (FPU)", "### 4.7 Branches")
 
@@ -976,6 +1193,7 @@ func TestSDKCompanionDocs_ArchitectureIRQDiagnosticsLifecycleMatchesSource(t *te
 	sourceInventory := readAuditFile(t, "sdk/docs/verify/SDK_ARCH_SOURCE_AUDIT.md")
 	arosLoader := readAuditFile(t, "aros_loader.go")
 	mainSource := readAuditFile(t, "main.go")
+	machineLifecycle := readAuditFile(t, "machine_lifecycle.go")
 	arosDMA := readAuditFile(t, "aros_audio_dma.go")
 
 	for _, needle := range []string{
@@ -986,8 +1204,8 @@ func TestSDKCompanionDocs_ArchitectureIRQDiagnosticsLifecycleMatchesSource(t *te
 			t.Fatalf("aros_loader.go IRQ diagnostic mapping source changed: %s", needle)
 		}
 	}
-	if strings.Count(mainSource, "loader.MapIRQDiagnostics()") < 2 {
-		t.Fatal("main.go no longer maps IRQ diagnostics through the AROS loader paths")
+	if strings.Count(mainSource, "loader.MapIRQDiagnostics()")+strings.Count(machineLifecycle, "loader.MapIRQDiagnostics()") < 2 {
+		t.Fatal("AROS loader paths no longer map IRQ diagnostics through main.go/machine_lifecycle.go")
 	}
 	if !strings.Contains(arosDMA, "sysBus.UnmapIO(IRQ_DIAG_REGION_BASE, IRQ_DIAG_REGION_END)") {
 		t.Fatal("aros_audio_dma.go no longer unmaps IRQ diagnostics during AROS DMA teardown")
@@ -1008,6 +1226,7 @@ func TestSDKCompanionDocs_ArchitectureIRQDiagnosticsLifecycleMatchesSource(t *te
 	for _, evidence := range []string{
 		"`aros_loader.go` `MapIRQDiagnostics`",
 		"`main.go` AROS call sites",
+		"`machine_lifecycle.go` AROS reset loader call site",
 		"`aros_audio_dma.go` `UnmapIO` teardown",
 	} {
 		if !strings.Contains(sourceInventory, evidence) {
@@ -3505,6 +3724,103 @@ func ie64DocMnemonic(name string) string {
 		mnemonic = "JSR"
 	}
 	return mnemonic
+}
+
+type auditProseLine struct {
+	no   int
+	text string
+}
+
+func markdownProseLines(text string) []auditProseLine {
+	var out []auditProseLine
+	inFence := false
+	for lineNo, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, ">") || strings.HasPrefix(trimmed, "|") {
+			continue
+		}
+		if isMarkdownCommandExample(trimmed) {
+			continue
+		}
+		prose := stripMarkdownInlineCode(line)
+		prose = stripUppercaseSourceTokens(prose)
+		prose = strings.TrimSpace(prose)
+		if prose == "" {
+			continue
+		}
+		out = append(out, auditProseLine{no: lineNo + 1, text: prose})
+	}
+	return out
+}
+
+func isMarkdownCommandExample(trimmed string) bool {
+	for _, prefix := range []string{
+		"$ ",
+		"make ",
+		"go test",
+		"go build",
+		"CGO_ENABLED=",
+		"GOOS=",
+	} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripUppercaseSourceTokens(line string) string {
+	tokenRe := regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
+	return tokenRe.ReplaceAllString(line, "")
+}
+
+func machineBusArchitecturalProseLines(t *testing.T) []auditProseLine {
+	t.Helper()
+	text := readAuditFile(t, "machine_bus.go")
+	startMarker := "/*\nmachine_bus.go - Machine Bus for the Intuition Engine"
+	start := strings.Index(text, startMarker)
+	if start < 0 {
+		t.Fatal("machine_bus.go architectural prose block not found")
+	}
+	afterStart := text[start+len("/*\n"):]
+	end := strings.Index(afterStart, "\n*/")
+	if end < 0 {
+		t.Fatal("machine_bus.go architectural prose block terminator not found")
+	}
+	lineBase := strings.Count(text[:start], "\n") + 1
+	var out []auditProseLine
+	for idx, line := range strings.Split(afterStart[:end], "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, auditProseLine{no: lineBase + idx + 1, text: trimmed})
+	}
+	return out
+}
+
+func proseTexts(lines []auditProseLine) []string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, line.text)
+	}
+	return out
+}
+
+func stringSliceContains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func parseLuaModuleFunctions(t *testing.T, source, module string) []string {

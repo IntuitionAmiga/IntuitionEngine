@@ -22,23 +22,13 @@ type SIDMetadata struct {
 
 type SIDPlayer struct {
 	engine   *SIDEngine
-	bus      Bus32
 	metadata SIDMetadata
 	clockHz  uint32
 	loop     bool
 
-	// Playback control state
-	playPtrStaged uint32
-	playLenStaged uint32
-	playPtr       uint32
-	playLen       uint32
-	playBusy      bool
-	playErr       bool
-	forceLoop     bool
-	subsong       uint8
-	playGen       uint64
-	startOnce     sync.Once
-	startCh       chan sidAsyncStartRequest
+	PlayerControlState
+	startOnce sync.Once
+	startCh   chan sidAsyncStartRequest
 
 	mu sync.Mutex
 
@@ -120,8 +110,7 @@ func (p *SIDPlayer) Play() {
 
 func (p *SIDPlayer) Stop() {
 	p.mu.Lock()
-	p.playGen++
-	p.playBusy = false
+	p.StopPlaybackRequest()
 	p.mu.Unlock()
 	p.engine.StopPlayback()
 }
@@ -224,7 +213,7 @@ func isSIDExtension(path string) bool {
 
 // AttachBus attaches the memory bus for reading embedded SID data
 func (p *SIDPlayer) AttachBus(bus Bus32) {
-	p.bus = bus
+	p.Bus = bus
 }
 
 // HandlePlayWrite handles writes to SID_PLAY_* registers
@@ -235,62 +224,62 @@ func (p *SIDPlayer) HandlePlayWrite(addr uint32, value uint32) {
 	p.mu.Lock()
 	switch addr {
 	case SID_PLAY_PTR:
-		p.playPtrStaged = value
+		p.PlayPtrStaged = value
 	case SID_PLAY_PTR + 1:
-		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, value, 1)
+		p.PlayPtrStaged = writeUint32Byte(p.PlayPtrStaged, value, 1)
 	case SID_PLAY_PTR + 2:
-		p.playPtrStaged = writeUint32Word(p.playPtrStaged, value, 2)
+		p.PlayPtrStaged = writeUint32Word(p.PlayPtrStaged, value, 2)
 	case SID_PLAY_PTR + 3:
-		p.playPtrStaged = writeUint32Byte(p.playPtrStaged, value, 3)
+		p.PlayPtrStaged = writeUint32Byte(p.PlayPtrStaged, value, 3)
 	case SID_PLAY_LEN:
-		p.playLenStaged = value
+		p.PlayLenStaged = value
 	case SID_PLAY_LEN + 1:
-		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 1)
+		p.PlayLenStaged = writeUint32Byte(p.PlayLenStaged, value, 1)
 	case SID_PLAY_LEN + 2:
-		p.playLenStaged = writeUint32Word(p.playLenStaged, value, 2)
+		p.PlayLenStaged = writeUint32Word(p.PlayLenStaged, value, 2)
 	case SID_PLAY_LEN + 3:
-		p.playLenStaged = writeUint32Byte(p.playLenStaged, value, 3)
+		p.PlayLenStaged = writeUint32Byte(p.PlayLenStaged, value, 3)
 	case SID_SUBSONG:
-		p.subsong = uint8(value)
+		p.Subsong = uint8(value)
 	case SID_PLAY_CTRL:
 		if value&0x2 != 0 {
-			p.playGen++
-			p.playBusy = false
-			p.playErr = false
+			p.PlayGen++
+			p.PlayBusy = false
+			p.PlayErr = false
 			stopPlayback = true
 			break
 		}
 		if value&0x1 == 0 {
 			break
 		}
-		if p.playBusy {
+		if p.PlayBusy {
 			break
 		}
-		p.playPtr = p.playPtrStaged
-		p.playLen = p.playLenStaged
-		p.forceLoop = (value & 0x4) != 0
-		p.playErr = false
-		if p.bus == nil {
-			p.playErr = true
+		p.PlayPtr = p.PlayPtrStaged
+		p.PlayLen = p.PlayLenStaged
+		p.ForceLoop = (value & 0x4) != 0
+		p.PlayErr = false
+		if p.Bus == nil {
+			p.PlayErr = true
 			break
 		}
-		if p.playLen == 0 {
-			p.playErr = true
+		if p.PlayLen == 0 {
+			p.PlayErr = true
 			break
 		}
-		data := make([]byte, p.playLen)
-		if err := ReadGuestBytes(p.bus, p.playPtr, 0, data); err != nil {
-			p.playErr = true
+		data := make([]byte, p.PlayLen)
+		if err := ReadGuestBytes(p.Bus, p.PlayPtr, 0, data); err != nil {
+			p.PlayErr = true
 			break
 		}
-		subsong := int(p.subsong)
-		p.playBusy = true
-		p.playGen++
+		subsong := int(p.Subsong)
+		p.PlayBusy = true
+		p.PlayGen++
 		startReq = &sidAsyncStartRequest{
-			gen:       p.playGen,
+			gen:       p.PlayGen,
 			data:      data,
 			subsong:   subsong,
-			forceLoop: p.forceLoop,
+			forceLoop: p.ForceLoop,
 		}
 	default:
 		break
@@ -325,8 +314,8 @@ func (p *SIDPlayer) enqueueStart(req sidAsyncStartRequest) {
 	case p.startCh <- req:
 	default:
 		p.mu.Lock()
-		p.playErr = true
-		p.playBusy = false
+		p.PlayErr = true
+		p.PlayBusy = false
 		p.mu.Unlock()
 	}
 }
@@ -339,14 +328,14 @@ func (p *SIDPlayer) startAsync(req sidAsyncStartRequest) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if req.gen != p.playGen {
+	if req.gen != p.PlayGen {
 		return
 	}
 
 	if err != nil {
 		fmt.Printf("SID PLAY error: %v\n", err)
-		p.playErr = true
-		p.playBusy = false
+		p.PlayErr = true
+		p.PlayBusy = false
 		return
 	}
 	if len(events) == 0 || totalSamples == 0 {
@@ -376,27 +365,27 @@ func (p *SIDPlayer) HandlePlayRead(addr uint32) uint32 {
 
 	switch addr {
 	case SID_PLAY_PTR:
-		return p.playPtrStaged
+		return p.PlayPtrStaged
 	case SID_PLAY_LEN:
-		return p.playLenStaged
+		return p.PlayLenStaged
 	case SID_PLAY_CTRL:
 		return p.playCtrlStatus()
 	case SID_PLAY_STATUS:
 		return p.playStatus()
 	case SID_SUBSONG:
-		return uint32(p.subsong)
+		return uint32(p.Subsong)
 	case SID_PLAY_PTR + 1:
-		return readUint32Byte(p.playPtrStaged, 1)
+		return readUint32Byte(p.PlayPtrStaged, 1)
 	case SID_PLAY_PTR + 2:
-		return readUint32Byte(p.playPtrStaged, 2)
+		return readUint32Byte(p.PlayPtrStaged, 2)
 	case SID_PLAY_PTR + 3:
-		return readUint32Byte(p.playPtrStaged, 3)
+		return readUint32Byte(p.PlayPtrStaged, 3)
 	case SID_PLAY_LEN + 1:
-		return readUint32Byte(p.playLenStaged, 1)
+		return readUint32Byte(p.PlayLenStaged, 1)
 	case SID_PLAY_LEN + 2:
-		return readUint32Byte(p.playLenStaged, 2)
+		return readUint32Byte(p.PlayLenStaged, 2)
 	case SID_PLAY_LEN + 3:
-		return readUint32Byte(p.playLenStaged, 3)
+		return readUint32Byte(p.PlayLenStaged, 3)
 	case SID_PLAY_CTRL + 1:
 		return readUint32Byte(p.playCtrlStatus(), 1)
 	case SID_PLAY_CTRL + 2:
@@ -410,16 +399,16 @@ func (p *SIDPlayer) HandlePlayRead(addr uint32) uint32 {
 
 func (p *SIDPlayer) playCtrlStatus() uint32 {
 	ctrl := uint32(0)
-	busy := p.playBusy
+	busy := p.PlayBusy
 	if p.engine != nil && p.engine.IsPlaying() {
 		busy = true
 	} else if !busy {
-		p.playBusy = false
+		p.PlayBusy = false
 	}
 	if busy {
 		ctrl |= 1
 	}
-	if p.playErr {
+	if p.PlayErr {
 		ctrl |= 2
 	}
 	return ctrl

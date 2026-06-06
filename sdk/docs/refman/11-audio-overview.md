@@ -206,7 +206,23 @@ Native BASIC forms:
 If loading fails, `SOUND PLAY` raises a BASIC error after the status
 poll reports `MEDIA_STATUS` value `3`.
 
-## 11.8 Global effects
+## 11.8 The file-player register rhythm
+
+The file players all follow the same bus habit, even though their
+formats differ. A program puts the music or sample bytes in readable
+memory, writes a staged pointer and length, then writes a start bit to
+the player's control register. The player copies or parses that block
+before it becomes audible. While that work is in progress, the busy bit
+is the proof that the request is still alive.
+
+Stop cancels the current request. A later valid start supersedes an
+older in-flight start, so a program should read the status register
+after changing pointer, length, loop, pause, or volume fields. The
+individual chapters give the exact register names, extra fields, and
+error bits for AHX, PSG file playback, SID file playback, TED and
+POKEY players, MOD, WAV, and MIDI/MUS.
+
+## 11.9 Global effects
 
 The global effects are shared by every engine.
 
@@ -234,7 +250,7 @@ Effect changes are immediate. To make several changes as one audible
 step, set `AUDIO_CTRL` bit `1`, write the effect registers, then clear
 bit `1` again while leaving bit `0` set.
 
-## 11.9 Plus processing paths
+## 11.10 Plus processing paths
 
 Several engines have a **Plus** switch. Plus mode is not a second
 register map and it is not a different chip. It is an enhanced output
@@ -262,7 +278,7 @@ Individual chapters give the short compare listing and the
 engine-specific audible difference. This chapter is the rule that
 keeps those listings from becoming five copies of the same explanation.
 
-## 11.10 BASIC and direct access map
+## 11.11 BASIC and direct access map
 
 | Form | Engine or block |
 |------|-----------------|
@@ -288,7 +304,7 @@ keeps those listings from becoming five copies of the same explanation.
 | `SOUND PLAY` or raw WAV registers | WAV playback. |
 | `SOUND PLAY` or raw MIDI registers | MIDI/MUS playback. |
 
-## 11.11 Limits
+## 11.12 Limits
 
 - The mixer sums engines; it does not reserve exclusive ownership of
   the output for any one engine.

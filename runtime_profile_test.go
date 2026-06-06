@@ -44,3 +44,21 @@ func TestApplyRuntimeVisibleRAMForMode_RestoresIE64Total(t *testing.T) {
 		t.Fatalf("IE64 active visible RAM = 0x%X, want total guest RAM 0x%X", got, uint64(8*bGiB))
 	}
 }
+
+func TestApplyRuntimeVisibleRAMForMode_IntuitionOSRestoresIE64Total(t *testing.T) {
+	bus, err := NewMachineBusSized(lowMemWindowBytes)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized: %v", err)
+	}
+	bus.SetBacking(NewSparseBacking(8 * bGiB))
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    8 * bGiB,
+		ActiveVisibleRAM: uint64(AROS_PROFILE_TOP),
+	})
+
+	applyRuntimeVisibleRAMForMode(bus, "intuitionos")
+
+	if got := bus.ActiveVisibleRAM(); got != 8*bGiB {
+		t.Fatalf("IntuitionOS active visible RAM = 0x%X, want IE64 total guest RAM 0x%X", got, uint64(8*bGiB))
+	}
+}

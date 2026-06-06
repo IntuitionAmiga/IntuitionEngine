@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-06-05*
+*Last modified: 2026-06-06*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -455,10 +455,41 @@ flowchart LR
 | CPU cores | IE32, IE64, M68K, Z80, 6502, x86 | `cpu_*.go`, `cpu_*_runner.go` | `main.go` selects runners by file extension, OS mode, or EXEC MMIO |
 | JIT | IE64 on amd64/arm64; 6502, M68K, Z80, x86 on amd64 | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` | Build tags plus `runtime.GOARCH`; non-supported hosts use dispatch stubs |
 | Bus and RAM | Host-sized guest RAM, profile clamps, MMIO, byte/64-bit handlers | `machine_bus.go`, `memory_sizing.go`, `profile_bounds.go`, `sysinfo_mmio.go` | `main.go` registers devices before execution; `MachineBus.SealMappings` prevents late maps |
+| Machine lifecycle | Load resolution, reset quiesce, CPU/profile recreation, monitor/runtime rewiring | `machine_lifecycle.go`, `main.go` | `main.go` owns concrete devices; `Machine` applies reset/load orchestration through injected dependencies and profile targets |
 | Video | VideoChip, VGA, TED video, ANTIC/GTIA, ULA, Voodoo | `video_chip.go`, `video_vga.go`, `video_ted.go`, `video_antic.go`, `video_ula.go`, `video_voodoo.go` | `main.go` maps each register/VRAM block and registers compositor layers 0/10/12/13/15/20 |
-| Audio | SoundChip/SFX, PSG/AY, SN76489, SID x3, TED, POKEY/SAP, AHX, MOD, WAV, MIDI/MUS | `audio_chip.go`, `sfx_trigger.go`, `psg_engine.go`, `sn76489_chip.go`, `sid_engine.go`, `ted_engine.go`, `pokey_engine.go`, `ahx_player.go`, `mod_player.go`, `wav_player.go`, `midi_player.go` | `main.go` maps chip/player MMIO and registers sample tickers/mixers into SoundChip |
+| Audio | SoundChip/SFX, PSG/AY, SN76489, SID x3, TED, POKEY/SAP, AHX, MOD, WAV, MIDI/MUS | `audio_chip.go`, `sfx_trigger.go`, `psg_engine.go`, `sn76489_chip.go`, `sid_engine.go`, `ted_engine.go`, `pokey_engine.go`, `ahx_player.go`, `mod_player.go`, `wav_player.go`, `midi_player.go` | `main.go` maps chip/player MMIO and registers sample tickers/mixers into SoundChip; register-mapped players share `PlayerControlState` for staged playback requests |
 | OS integration | EmuTOS, AROS, GEMDOS/XBIOS, AROS DOS, Paula-style DMA | `emutos_loader.go`, `aros_loader.go`, `gemdos_intercept.go`, `aros_dos_intercept.go`, `aros_audio_dma.go` | OS modes install intercept MMIO and loader state during boot/reset |
-| Tooling | Assemblers, disassembler, transpiler, generators | `assembler/`, `cmd/ie32to64/`, `cmd/gen_m68k_cputest/`, `cmd/gen_interp6502/` | Makefile builds SDK tools into `sdk/bin/` |
+| Tooling | Assemblers, disassembler, transpiler, generators | `assembler/`, `internal/ie64meta/`, `cmd/gen_ie64_opmeta/`, `cmd/ie32to64/`, `cmd/gen_m68k_cputest/`, `cmd/gen_interp6502/` | Makefile builds SDK tools into `sdk/bin/`; IE64 opcode constants and name tables are generated from metadata |
+
+### Internal Ownership Notes
+
+- **IE64 opcode metadata** - `internal/ie64meta/table.go` is the source of
+  truth for generated IE64 opcode constants and mnemonic/name tables used by
+  the runtime CPU, monitor disassembler, standalone assembler, standalone
+  disassembler, and internal assembler package. Build commands for `ie64asm`
+  and `ie64dis` build `./assembler` with the relevant tag so generated files
+  are compiled with the tagged tool entry point.
+- **Machine lifecycle** - `Machine` in `machine_lifecycle.go` owns reset/load
+  sequencing through dependency fields and profile targets. It preserves the
+  existing guest-visible reset contract while keeping quiesce, failed-load
+  rollback, CPU recreation, profile loading, and monitor/runtime rewiring out
+  of the host event loop.
+- **Audio playback control** - register-mapped music players use
+  `PlayerControlState` for staged pointer/length registers, optional high
+  pointer, bus reads, busy/error/loop state, subsong selection, and async
+  generation invalidation. This covers SID, PSG/SN/SNDH, TED, POKEY/SAP, AHX,
+  MOD, WAV, and MIDI/MUS without changing their public MMIO contracts.
+- **Video scheduling** - `VideoScheduler` centralises ticker ownership for the
+  compositor and migrated video render-loop shims. Tests can drive it manually;
+  migrated engine files do not own `time.NewTicker` directly.
+- **Voodoo software wrappers** - headless and `novulkan` builds share
+  `softwareVoodooBackend` forwarding. The tagged Voodoo files keep feature
+  registration and constructor selection only, so their `VoodooBackend` method
+  sets stay identical.
+- **IE64 MMU walk sharing** - CPU translation and bootstrap hostfs guest-pointer
+  translation share the page-table walk result (`MMUSharedWalkResult`). CPU
+  policy applies trap causes and A/D updates; hostfs policy requires `PTE_U` and
+  leaves A/D bits untouched.
 
 ## Platform JIT Matrix
 

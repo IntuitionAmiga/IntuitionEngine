@@ -37,6 +37,13 @@ Alpha is a binary mask. Alpha 0 is transparent. Any nonzero alpha, including par
 
 The compositor tick is fixed at 60 Hz because AROS and EmuTOS depend on 60 Hz VBlank behavior. `GetTickRate()` reports this fixed tick. `GetRefreshRate()` reports the output backend refresh rate and falls back to 60 when the backend is unavailable or reports an invalid rate.
 
+Ticker ownership is centralised in `VideoScheduler`. The compositor registers
+its compose task with that scheduler, and migrated VGA, ULA, TED video, and
+ANTIC render-loop compatibility shims use the same scheduler abstraction rather
+than owning `time.NewTicker` directly. Tests can use the manual scheduler path
+to advance video work deterministically without sleeping on wall-clock
+goroutines.
+
 The frame callback fires exactly once per composite pass, including all-idle frames. A transition from visible content to no content pushes one cleared frame to avoid stale output; repeated empty frames do not spam the backend.
 
 ## Resolution

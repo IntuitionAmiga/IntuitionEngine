@@ -49,6 +49,10 @@ its private aperture); the compositor reads all six on every
 output line and resolves them into a single stream of RGBA
 pixels.
 
+All six sources are collected on the same `60` Hz frame cadence. A chip
+that has scanline work still completes that work in its own frame
+before the compositor resolves the stack.
+
 ## K.2 The audio mixer
 
 The audio mixer has separate engine inputs, plus the SFX channels, and

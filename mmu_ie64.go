@@ -118,6 +118,56 @@ func ppnToPhysChecked(ppn uint64) (uint64, bool) {
 	return ppn << MMU_PAGE_SHIFT, true
 }
 
+// MMUSharedWalkResult is the common result shape for IE64 page-table walks.
+// CPU translation and host-side pointer translation apply different policies
+// after this point: CPU accesses may update A/D bits and preserve detailed
+// trap causes; host bridges require PTE_U and do not mutate PTE flags.
+type MMUSharedWalkResult struct {
+	PhysicalBase uint64
+	LeafPTE      uint64
+	LeafAddress  uint64
+	Flags        byte
+	Fault        bool
+	Cause        uint32
+}
+
+func sharedMMUWalkPageTable(bus *MachineBus, ptbr, vpn uint64) MMUSharedWalkResult {
+	tableAddr := ptbr
+	for level := 0; level < PT_LEVELS; level++ {
+		idx := ptLevelIndex(vpn, level)
+		pteAddr, ok := addrAddChecked(tableAddr, idx*8)
+		if !ok {
+			return MMUSharedWalkResult{Fault: true, Cause: FAULT_NOT_PRESENT}
+		}
+		pte, ok := bus.ReadPhys64WithFault(pteAddr)
+		if !ok {
+			return MMUSharedWalkResult{Fault: true, Cause: FAULT_NOT_PRESENT}
+		}
+		entryPPN, entryFlags := parsePTE(pte)
+		if level == PT_LEVELS-1 {
+			base, ok := ppnToPhysChecked(entryPPN)
+			if !ok {
+				return MMUSharedWalkResult{Fault: true, Cause: FAULT_NOT_PRESENT}
+			}
+			return MMUSharedWalkResult{
+				PhysicalBase: base,
+				LeafPTE:      pte,
+				LeafAddress:  pteAddr,
+				Flags:        entryFlags,
+			}
+		}
+		if entryFlags&PTE_P == 0 {
+			return MMUSharedWalkResult{Fault: true, Cause: FAULT_NOT_PRESENT}
+		}
+		nextTable, ok := ppnToPhysChecked(entryPPN)
+		if !ok {
+			return MMUSharedWalkResult{Fault: true, Cause: FAULT_NOT_PRESENT}
+		}
+		tableAddr = nextTable
+	}
+	return MMUSharedWalkResult{Fault: true, Cause: FAULT_NOT_PRESENT}
+}
+
 // walkPageTable walks the multi-level page table for `vpn` and returns the
 // leaf PTE plus the physical address it was read from. The caller decodes
 // permissions and applies A/D writes through leafAddr.
@@ -126,32 +176,8 @@ func ppnToPhysChecked(ppn uint64) (uint64, bool) {
 // next-level PPN fails the walk with FAULT_NOT_PRESENT rather than aliasing
 // into low memory.
 func (cpu *CPU64) walkPageTable(vpn uint64) (leafPTE uint64, leafAddr uint64, fault bool, cause uint32) {
-	tableAddr := cpu.ptbr
-	for level := 0; level < PT_LEVELS; level++ {
-		idx := ptLevelIndex(vpn, level)
-		pteAddr, ok := addrAddChecked(tableAddr, idx*8)
-		if !ok {
-			return 0, 0, true, FAULT_NOT_PRESENT
-		}
-		pte, ok := cpu.bus.ReadPhys64WithFault(pteAddr)
-		if !ok {
-			return 0, 0, true, FAULT_NOT_PRESENT
-		}
-		if level == PT_LEVELS-1 {
-			return pte, pteAddr, false, 0
-		}
-		nextPPN, nextFlags := parsePTE(pte)
-		if nextFlags&PTE_P == 0 {
-			return 0, 0, true, FAULT_NOT_PRESENT
-		}
-		nextTable, ok := ppnToPhysChecked(nextPPN)
-		if !ok {
-			return 0, 0, true, FAULT_NOT_PRESENT
-		}
-		tableAddr = nextTable
-	}
-	// Unreachable: the loop returns at level == PT_LEVELS-1.
-	return 0, 0, true, FAULT_NOT_PRESENT
+	result := sharedMMUWalkPageTable(cpu.bus, cpu.ptbr, vpn)
+	return result.LeafPTE, result.LeafAddress, result.Fault, result.Cause
 }
 
 // ===========================================================================
@@ -182,12 +208,13 @@ func (cpu *CPU64) translateAddr(vaddr uint64, accessType byte) (physAddr uint64,
 		leafAddr = entry.leafAddr
 	} else {
 		// TLB miss: walk the multi-level page table.
-		leafPTE, walkLeaf, walkFault, walkCause := cpu.walkPageTable(vpn)
-		if walkFault {
-			return 0, true, walkCause
+		walk := sharedMMUWalkPageTable(cpu.bus, cpu.ptbr, vpn)
+		if walk.Fault {
+			return 0, true, walk.Cause
 		}
-		leafAddr = walkLeaf
-		ppn, flags = parsePTE(leafPTE)
+		leafAddr = walk.LeafAddress
+		flags = walk.Flags
+		ppn = walk.PhysicalBase >> MMU_PAGE_SHIFT
 
 		// Only insert into TLB if the page is present
 		if flags&PTE_P != 0 {

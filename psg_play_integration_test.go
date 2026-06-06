@@ -63,7 +63,7 @@ func TestPSGPlayFromMemory(t *testing.T) {
 
 	// Check state before running CPU
 	t.Logf("Before CPU run: playBusy=%v, playErr=%v, playPtr=0x%X, playLen=%d",
-		psgPlayer.playBusy, psgPlayer.playErr, psgPlayer.playPtr, psgPlayer.playLen)
+		psgPlayer.PlayBusy, psgPlayer.PlayErr, psgPlayer.PlayPtr, psgPlayer.PlayLen)
 
 	// Track HandlePlayWrite calls
 	origHandler := psgPlayer.HandlePlayWrite
@@ -75,12 +75,12 @@ func TestPSGPlayFromMemory(t *testing.T) {
 			lastCtrl = value
 			t.Logf("HandlePlayWrite: PSG_PLAY_CTRL=0x%X", value)
 			t.Logf("  Before: playBusy=%v, playErr=%v, engine.playing=%v, engine.total=%d",
-				psgPlayer.playBusy, psgPlayer.playErr, psgEngine.IsPlaying(), psgEngine.totalSamples)
+				psgPlayer.PlayBusy, psgPlayer.PlayErr, psgEngine.IsPlaying(), psgEngine.totalSamples)
 		}
 		origHandler(addr, value)
 		if addr == PSG_PLAY_CTRL {
 			t.Logf("  After: playBusy=%v, playErr=%v, engine.playing=%v, engine.total=%d",
-				psgPlayer.playBusy, psgPlayer.playErr, psgEngine.IsPlaying(), psgEngine.totalSamples)
+				psgPlayer.PlayBusy, psgPlayer.PlayErr, psgEngine.IsPlaying(), psgEngine.totalSamples)
 		}
 	}
 	bus.MapIO(PSG_PLAY_PTR, PSG_PLAY_STATUS+3, psgPlayer.HandlePlayRead, wrappedHandler)
@@ -96,14 +96,14 @@ func TestPSGPlayFromMemory(t *testing.T) {
 
 	// Check PSG engine state
 	t.Logf("PSG+ enabled: %v", psgEngine.PSGPlusEnabled())
-	t.Logf("PSG player busy: %v", psgPlayer.playBusy)
-	t.Logf("PSG player error: %v", psgPlayer.playErr)
-	t.Logf("PSG player ptr: 0x%X", psgPlayer.playPtr)
-	t.Logf("PSG player len: %d", psgPlayer.playLen)
+	t.Logf("PSG player busy: %v", psgPlayer.PlayBusy)
+	t.Logf("PSG player error: %v", psgPlayer.PlayErr)
+	t.Logf("PSG player ptr: 0x%X", psgPlayer.PlayPtr)
+	t.Logf("PSG player len: %d", psgPlayer.PlayLen)
 	t.Logf("PSG engine playing: %v", psgEngine.IsPlaying())
 	t.Logf("PSG engine total samples: %d", psgEngine.totalSamples)
 
-	if psgPlayer.playErr {
+	if psgPlayer.PlayErr {
 		t.Error("PSG player had an error loading the data!")
 	}
 

@@ -678,30 +678,11 @@ func (d *BootstrapHostFSDevice) translateGuestVA(ptr uint32, write bool) (uint64
 		return uint64(ptr), true
 	}
 	vpn := (uint64(ptr) >> MMU_PAGE_SHIFT) & PTE_PPN_MASK
-	tableAddr := uint64(ptBase)
-	var ppn uint64
-	var flags byte
-	for level := 0; level < PT_LEVELS; level++ {
-		idx := ptLevelIndex(vpn, level)
-		pteAddr := tableAddr + idx*8
-		if pteAddr < tableAddr {
-			return 0, false // overflow
-		}
-		pte, ok := d.bus.ReadPhys64WithFault(pteAddr)
-		if !ok {
-			return 0, false
-		}
-		entryPPN, entryFlags := parsePTE(pte)
-		if level == PT_LEVELS-1 {
-			ppn = entryPPN
-			flags = entryFlags
-			break
-		}
-		if entryFlags&PTE_P == 0 {
-			return 0, false
-		}
-		tableAddr = entryPPN << MMU_PAGE_SHIFT
+	walk := sharedMMUWalkPageTable(d.bus, uint64(ptBase), vpn)
+	if walk.Fault {
+		return 0, false
 	}
+	flags := walk.Flags
 	if flags&PTE_P == 0 {
 		return 0, false
 	}
@@ -715,7 +696,7 @@ func (d *BootstrapHostFSDevice) translateGuestVA(ptr uint32, write bool) (uint64
 	} else if flags&PTE_R == 0 {
 		return 0, false
 	}
-	return (ppn << MMU_PAGE_SHIFT) | uint64(ptr&MMU_PAGE_MASK), true
+	return walk.PhysicalBase | uint64(ptr&MMU_PAGE_MASK), true
 }
 
 func (d *BootstrapHostFSDevice) readGuest8(ptr uint32) (byte, bool) {

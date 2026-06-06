@@ -8,7 +8,11 @@
 
 package main
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 // reloadOversizeSentinelTest is the shared shape for all four cores.
 // The reload closure is invoked with `oversize` bytes; `sentinelAddr`
@@ -90,6 +94,147 @@ func TestReloadScope_6502_OversizeDoesNotSpillPastBankedCeiling(t *testing.T) {
 		sentinelAddr: 16 * 1024,
 		overflow:     4 * 1024,
 	})
+}
+
+func TestReloadScope_IntuitionOSUsesKernelBootLoader(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	program := []byte{0x01, 0x02, 0x03, 0x04}
+	staleAddr := uint32(PROG_START + len(program) + 8)
+	bus.Write8(staleAddr, 0xA5)
+
+	reload := buildReloadClosure("intuitionos", cpu, program, bus)
+	reload()
+
+	if got := cpu.PC; got != PROG_START {
+		t.Fatalf("IntuitionOS reload PC = %#x, want %#x", got, uint64(PROG_START))
+	}
+	for i, want := range program {
+		if got := bus.Read8(uint32(PROG_START + i)); got != want {
+			t.Fatalf("IntuitionOS reload byte[%d] = %#x, want %#x", i, got, want)
+		}
+	}
+	if got := bus.Read8(staleAddr); got != 0xA5 {
+		t.Fatalf("IntuitionOS flat reload clobbered byte outside image at %#x: got %#x, want 0xA5", staleAddr, got)
+	}
+}
+
+func TestReloadScope_IntuitionOSFlatReloadLoadsPastLegacyStackWindow(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	programLen := int(STACK_START-PROG_START) + 4096
+	program := make([]byte, programLen)
+	for i := range program {
+		program[i] = byte(i)
+	}
+
+	reload := buildReloadClosure("intuitionos", cpu, program, bus)
+	reload()
+
+	pastStack := uint32(STACK_START + 512)
+	want := program[int(pastStack-PROG_START)]
+	if got := bus.Read8(pastStack); got != want {
+		t.Fatalf("IntuitionOS flat reload byte past STACK_START at %#x = %#x, want %#x", pastStack, got, want)
+	}
+	if got := cpu.PC; got != PROG_START {
+		t.Fatalf("IntuitionOS flat reload PC = %#x, want %#x", got, uint64(PROG_START))
+	}
+}
+
+func TestInitialIntuitionOSKernelLoadUsesFlatImagePath(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	programLen := int(STACK_START-PROG_START) + 4096
+	program := make([]byte, programLen)
+	for i := range program {
+		program[i] = byte(i)
+	}
+
+	if err := loadIntuitionOSKernelImage(cpu, program); err != nil {
+		t.Fatalf("loadIntuitionOSKernelImage returned error: %v", err)
+	}
+
+	pastStack := uint32(STACK_START + 512)
+	want := program[int(pastStack-PROG_START)]
+	if got := bus.Read8(pastStack); got != want {
+		t.Fatalf("initial IntuitionOS load byte past STACK_START at %#x = %#x, want %#x", pastStack, got, want)
+	}
+	if got := cpu.PC; got != PROG_START {
+		t.Fatalf("initial IntuitionOS load PC = %#x, want %#x", got, uint64(PROG_START))
+	}
+}
+
+func TestInitialIntuitionOSMainBootUsesFlatKernelLoader(t *testing.T) {
+	srcBytes, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("ReadFile(main.go): %v", err)
+	}
+	src := string(srcBytes)
+	start := strings.Index(src, "if modeIOS {")
+	if start < 0 {
+		t.Fatalf("main.go missing initial modeIOS branch")
+	}
+	endRel := strings.Index(src[start:], "} else if modeBasic {")
+	if endRel < 0 {
+		t.Fatalf("main.go modeIOS branch missing following modeBasic branch")
+	}
+	branch := src[start : start+endRel]
+	if !strings.Contains(branch, "loadIntuitionOSKernelImage(ie64CPU, imageBytes)") {
+		t.Fatalf("initial modeIOS branch does not call loadIntuitionOSKernelImage")
+	}
+	if strings.Contains(branch, "LoadProgramBytes(imageBytes)") {
+		t.Fatalf("initial modeIOS branch uses LoadProgramBytes(imageBytes), which truncates kernels at STACK_START")
+	}
+}
+
+func TestInitialIntuitionOSMainBootRecordsDistinctCurrentMode(t *testing.T) {
+	srcBytes, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("ReadFile(main.go): %v", err)
+	}
+	src := string(srcBytes)
+	start := strings.Index(src, "} else if modeIE64 || modeIOS {")
+	if start < 0 {
+		t.Fatalf("main.go missing shared IE64/IntuitionOS boot branch")
+	}
+	endRel := strings.Index(src[start:], "} else if modeM68K {")
+	if endRel < 0 {
+		t.Fatalf("main.go shared IE64/IntuitionOS boot branch missing following modeM68K branch")
+	}
+	branch := src[start : start+endRel]
+	if !strings.Contains(branch, `if modeIOS {
+			currentMode = "intuitionos"
+		} else {
+			currentMode = "ie64"
+		}`) {
+		t.Fatalf("initial modeIOS branch does not preserve distinct currentMode for later reload/reset decisions")
+	}
+}
+
+func TestResetLoadPathKeepsIntuitionOSOnDedicatedReloadClosure(t *testing.T) {
+	srcBytes, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("ReadFile(main.go): %v", err)
+	}
+	src := string(srcBytes)
+	start := strings.Index(src, "// 10. Update cached state")
+	if start < 0 {
+		t.Fatalf("main.go missing reset cached-state section")
+	}
+	endRel := strings.Index(src[start:], "// 11. Load program")
+	if endRel < 0 {
+		t.Fatalf("main.go reset cached-state section missing load-program section")
+	}
+	section := src[start : start+endRel]
+	if !strings.Contains(section, "currentMode = mode") {
+		t.Fatalf("reset path does not carry resolved mode into currentMode")
+	}
+	if !strings.Contains(section, "buildReloadClosure(mode, cpuRunner, bytes, sysBus)") {
+		t.Fatalf("reset path does not rebuild reload closure from resolved mode")
+	}
+	if strings.Contains(section, `mode == "ie64"`) || strings.Contains(section, `case "ie64"`) {
+		t.Fatalf("reset path must not special-case only ie64 before rebuilding reload closure")
+	}
 }
 
 // TestReloadScope_x86_OversizeDoesNotSpillPastVisibleCeiling pins the

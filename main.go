@@ -1537,7 +1537,7 @@ func main() {
 			}
 			cpu.PerfEnabled = perfMode
 			return cpu, nil
-		case "ie64":
+		case "ie64", "intuitionos":
 			videoChip.SetBigEndianMode(false)
 			cpu := NewCPU64(sysBus)
 			wireVideoInterruptSinks(videoChip, anticEngine, NewIE64InterruptSink(cpu))
@@ -1723,6 +1723,31 @@ func main() {
 		}
 		return b, paths.Image, nil
 	}
+	machine := NewMachine(MachineDeps{
+		ReadFile:             os.ReadFile,
+		ModeFromExtension:    modeFromExtension,
+		LoadBasicBootImage:   loadBasicBootImage,
+		LoadIntuitionOSImage: loadIntuitionOSImage,
+		LoadEmuTOSImage:      loadEmuTOSImage,
+		LoadAROSImage:        loadAROSImage,
+		EnsureAROSHostRoot:   ensureAROSHostRoot,
+	})
+	machineRenderLoops := func() []MachineRenderLoop {
+		var loops []MachineRenderLoop
+		if vgaEngine != nil {
+			loops = append(loops, vgaEngine)
+		}
+		if ulaEngine != nil {
+			loops = append(loops, ulaEngine)
+		}
+		if tedVideoEngine != nil {
+			loops = append(loops, tedVideoEngine)
+		}
+		if anticEngine != nil {
+			loops = append(loops, anticEngine)
+		}
+		return loops
+	}
 
 	if modeIE32 {
 		ie32CPU := NewCPU(sysBus)
@@ -1770,7 +1795,10 @@ func main() {
 				fmt.Printf("Error loading IntuitionOS image: %v\n", err)
 				os.Exit(1)
 			}
-			ie64CPU.LoadProgramBytes(imageBytes)
+			if err := loadIntuitionOSKernelImage(ie64CPU, imageBytes); err != nil {
+				fmt.Printf("Error loading IntuitionOS image: %v\n", err)
+				os.Exit(1)
+			}
 			programBytes = append([]byte(nil), imageBytes...)
 			currentPath = imagePath
 			startExecution = true
@@ -1819,7 +1847,11 @@ func main() {
 		}
 
 		cpuRunner = ie64CPU
-		currentMode = "ie64"
+		if modeIOS {
+			currentMode = "intuitionos"
+		} else {
+			currentMode = "ie64"
+		}
 		monitor.RegisterCPU("IE64", NewDebugIE64(ie64CPU))
 
 		if startExecution {
@@ -2238,121 +2270,25 @@ func main() {
 		resetMu.Lock()
 		defer resetMu.Unlock()
 
-		var bytes []byte
-		var mode string
-		forceBasicBoot := false
-
-		// Resolve and size-check IE64 flat images BEFORE any quiescing or
-		// teardown, so a rejected oversized load leaves the previous machine
-		// fully intact (CPU/bus/peripherals untouched). Both the IExec sentinel
-		// and real .ie64 files route through the checked LoadFlatProgramBytes;
-		// the empty-path boot trampoline (legacy clamped loader) and the
-		// EmuTOS/AROS sentinels do not, so they are resolved later as usual.
-		ie64FlatResolved := false
-		if path == intuitionOSSentinel {
-			var err error
-			bytes, path, err = loadIntuitionOSImage()
-			if err != nil {
-				return err
-			}
-			mode = "ie64"
-			ie64FlatResolved = true
-		} else if path != "" && path != emutosSentinel && path != arosSentinel {
-			if m, err := modeFromExtension(path); err == nil && m == "ie64" {
-				b, readErr := os.ReadFile(path)
-				if readErr != nil {
-					return readErr
-				}
-				bytes = b
-				mode = "ie64"
-				ie64FlatResolved = true
-			}
+		resolved, err := machine.ResolveLoad(MachineLoadOptions{
+			Path:                        path,
+			AB3D2DefaultBoot:            ab3d2DefaultBoot,
+			InitialEmuTOSMode:           modeEmuTOS,
+			GuestRAMBytes:               len(sysBus.GetMemory()),
+			ApplyDefault6502LoadAddress: !loadAddr.set && cpu6502LoadAddr == 0,
+		})
+		if err != nil {
+			return err
 		}
-		if ie64FlatResolved {
-			if !flatProgramFitsRAM(len(sysBus.GetMemory()), len(bytes)) {
-				return fmt.Errorf("IE64 program too large: %d bytes exceeds guest RAM", len(bytes))
-			}
+		if resolved.DispatchedWithoutReset {
+			return nil
 		}
-
-		// Resolve all remaining boot modes. IE64 flat images were already
-		// resolved and size-checked above (ie64FlatResolved). Every fallible
-		// resolution/dispatch below (missing EmuTOS/AROS/IExec image, unreadable
-		// file, unsupported extension, .ies script handoff) MUST stay ahead of
-		// the quiescing block so a failed load leaves the running machine intact.
-		if !ie64FlatResolved {
-			if path == "" {
-				// F10 hard reset: reload the original CLI boot mode, not the
-				// current mode. EmuTOS launched via BASIC's EMUTOS command
-				// should reset back to BASIC, not EmuTOS.
-				if ab3d2DefaultBoot {
-					bytes = append([]byte(nil), embeddedAB3D2Image...)
-					mode = "m68k"
-				} else if modeEmuTOS {
-					var err error
-					bytes, path, err = loadEmuTOSImage()
-					if err != nil {
-						return err
-					}
-					mode = "emutos"
-				} else {
-					forceBasicBoot = true
-					var err error
-					bytes, path, err = loadBasicBootImage()
-					if err != nil {
-						return err
-					}
-					mode = "ie64"
-				}
-			} else if path == emutosSentinel {
-				// BASIC EMUTOS command: boot EmuTOS from embedded/flag/local ROM.
-				var err error
-				bytes, path, err = loadEmuTOSImage()
-				if err != nil {
-					return err
-				}
-				mode = "emutos"
-			} else if path == arosSentinel {
-				var err error
-				bytes, path, err = loadAROSImage()
-				if err != nil {
-					return err
-				}
-				mode = "aros"
-			} else {
-				var err error
-				bytes, err = os.ReadFile(path)
-				if err != nil {
-					return err
-				}
-				mode, err = modeFromExtension(path)
-				if err != nil {
-					return err
-				}
-				if mode == "script" {
-					if scriptEngine == nil {
-						return fmt.Errorf("script engine unavailable")
-					}
-					return scriptEngine.RunFile(path)
-				}
-				if mode == "midi" {
-					// .mid/.midi/.mus are media, not a CPU mode:
-					// createRunnerForMode would reject "midi" after teardown.
-					// Dispatch to the Media Loader here (before quiescing); it
-					// plays alongside the running machine without a reset. The
-					// normal RUN path media-dispatches in launchProgramOrScript;
-					// this covers direct entry via cpu.load / SetProgramLoader.
-					if mediaLoader == nil {
-						return fmt.Errorf("media loader unavailable")
-					}
-					return mediaLoader.PlayHostPath(path, 0)
-				}
-				// Preserve CLI/default 6502 semantics for .ie65 reload/launch paths.
-				// In BASIC/IPC mode we don't parse --load-addr, so apply the standard
-				// .ie65 default load address when no explicit load address was provided.
-				if mode == "6502" && !loadAddr.set && cpu6502LoadAddr == 0 {
-					cpu6502LoadAddr = 0x0800
-				}
-			}
+		bytes := resolved.Bytes
+		path = resolved.Path
+		mode := resolved.Mode
+		forceBasicBoot := resolved.ForceBasicBoot
+		if resolved.UseDefault6502LoadAddress {
+			cpu6502LoadAddr = 0x0800
 		}
 
 		// All fallible resolution/dispatch is now complete (the .ies path has
@@ -2361,121 +2297,46 @@ func main() {
 		// engine's own runScript cancels any prior script, so the conditional
 		// Cancel here only matters for non-script reloads (and is skipped while a
 		// running script is itself loading a program).
-		if scriptEngine != nil && !scriptEngine.IsLoadingProgram() {
-			scriptEngine.Cancel()
-		}
-		compositor.Stop()
-		if vgaEngine != nil {
-			vgaEngine.StopRenderLoop()
-		}
-		if ulaEngine != nil {
-			ulaEngine.StopRenderLoop()
-		}
-		if tedVideoEngine != nil {
-			tedVideoEngine.StopRenderLoop()
-		}
-		if anticEngine != nil {
-			anticEngine.StopRenderLoop()
-		}
-
-		// 0. Deactivate monitor if active (prevents freeze/resume interference)
-		if monitor.IsActive() {
-			monitor.Deactivate()
-		}
-		mediaLoader.stopPlayersOnly()
-
-		// 1. Stop CPU
-		cpuRunner.Stop()
+		machine.QuiesceBeforeReset(MachineQuiesceTargets{
+			Script:      scriptEngine,
+			Compositor:  compositor,
+			RenderLoops: machineRenderLoops(),
+			Monitor:     monitor,
+			Media:       mediaLoader,
+			CPU:         cpuRunner,
+			EmuTOS:      emuTOSLoader,
+			AROS:        arosLoader,
+		})
 		if emuTOSLoader != nil {
-			emuTOSLoader.Stop()
 			emuTOSLoader = nil
 		}
 		if arosLoader != nil {
-			arosLoader.Stop()
 			arosLoader = nil
 		}
 
-		// 2. Stop compositor
-		compositor.Stop()
-
-		// 3. Stop render loops (engines are optional in -emutos profile)
-		if vgaEngine != nil {
-			vgaEngine.StopRenderLoop()
-		}
-		if ulaEngine != nil {
-			ulaEngine.StopRenderLoop()
-		}
-		if tedVideoEngine != nil {
-			tedVideoEngine.StopRenderLoop()
-		}
-		if anticEngine != nil {
-			anticEngine.StopRenderLoop()
-		}
-
 		// Preserve explicit JIT choices when reloading the same active CPU family.
-		snap := runtimeStatus.snapshot()
-		if currentMode == "aros" {
-			arosTeardownAll(snap, sysBus, soundChip)
-		}
-		var preserveM68KJIT bool
-		var haveM68KJIT bool
-		var preserveZ80JIT bool
-		var haveZ80JIT bool
-		var preserve6502JIT bool
-		var have6502JIT bool
-		var preserveIE64JIT bool
-		var haveIE64JIT bool
-		switch snap.selectedCPU {
-		case runtimeCPUM68K:
-			if snap.m68k != nil && snap.m68k.cpu != nil {
-				preserveM68KJIT = snap.m68k.cpu.m68kJitEnabled
-				haveM68KJIT = true
-			}
-		case runtimeCPUZ80:
-			if snap.z80 != nil && snap.z80.cpu != nil {
-				preserveZ80JIT = snap.z80.cpu.jitEnabled
-				haveZ80JIT = true
-			}
-		case runtimeCPU6502:
-			if snap.cpu65 != nil && snap.cpu65.cpu != nil {
-				preserve6502JIT = snap.cpu65.JITEnabled
-				have6502JIT = true
-			}
-		case runtimeCPUIE64:
-			if snap.ie64 != nil {
-				preserveIE64JIT = snap.ie64.jitEnabled
-				haveIE64JIT = true
-			}
-		}
+		cpuResetState := machine.CaptureCPUResetState(currentMode, runtimeStatus, sysBus, soundChip)
 
 		// 4. Recreate CPU runner for a true cold boot, then update runtime status/progExec.
 		newRunner, err := createRunnerForMode(mode)
 		if err != nil {
 			return err
 		}
+		machine.ApplyCPUResetState(mode, newRunner, cpuResetState)
 		switch mode {
 		case "ie32":
 			wireVideoInterruptSinks(videoChip, anticEngine, NewIE32InterruptSink(newRunner.(*CPU)))
-		case "ie64":
-			if haveIE64JIT {
-				newRunner.(*CPU64).jitEnabled = preserveIE64JIT
-			}
+		case "ie64", "intuitionos":
 			wireVideoInterruptSinks(videoChip, anticEngine, NewIE64InterruptSink(newRunner.(*CPU64)))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
 			}
 		case "m68k", "emutos", "aros":
-			if haveM68KJIT {
-				newRunner.(*M68KRunner).cpu.m68kJitEnabled = preserveM68KJIT
-			}
 			wireVideoInterruptSinks(videoChip, anticEngine, NewM68KInterruptSink(newRunner.(*M68KRunner).cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
 			}
 		case "z80":
-			if haveZ80JIT {
-				newRunner.(*CPUZ80Runner).cpu.jitEnabled = preserveZ80JIT
-			}
 			wireVideoInterruptSinks(videoChip, anticEngine, NewZ80InterruptSink(newRunner.(*CPUZ80Runner).cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(newZ80ULAIRQAdapter(newRunner.(*CPUZ80Runner).cpu))
@@ -2486,10 +2347,6 @@ func main() {
 				ulaEngine.SetIRQSink(newX86ULAIRQAdapter(newRunner.(*CPUX86Runner).cpu))
 			}
 		case "6502":
-			if have6502JIT {
-				newRunner.(*CPU6502Runner).JITEnabled = preserve6502JIT
-				newRunner.(*CPU6502Runner).cpu.jitEnabled = preserve6502JIT
-			}
 			wireVideoInterruptSinks(videoChip, anticEngine, NewCPU6502InterruptSink(newRunner.(*CPU6502Runner).cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(new6502ULAIRQAdapter(newRunner.(*CPU6502Runner).cpu))
@@ -2498,156 +2355,106 @@ func main() {
 		cpuRunner = newRunner
 		activeCPU = newRunner
 
-		switch mode {
-		case "ie32":
-			runtimeStatus.setCPUs(runtimeCPUIE32, newRunner.(*CPU), nil, nil, nil, nil, nil)
-			progExec.SetCPU(nil)
-		case "ie64":
-			cpu64 := newRunner.(*CPU64)
-			runtimeStatus.setCPUs(runtimeCPUIE64, nil, cpu64, nil, nil, nil, nil)
-			progExec.SetCPU(cpu64)
-		case "m68k":
-			runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, newRunner.(*M68KRunner), nil, nil, nil)
-			progExec.SetCPU(nil)
-		case "emutos", "aros":
-			runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, newRunner.(*M68KRunner), nil, nil, nil)
-			progExec.SetCPU(nil)
-		case "z80":
-			runtimeStatus.setCPUs(runtimeCPUZ80, nil, nil, nil, newRunner.(*CPUZ80Runner), nil, nil)
-			progExec.SetCPU(nil)
-		case "x86":
-			runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, newRunner.(*CPUX86Runner), nil)
-			progExec.SetCPU(nil)
-		case "6502":
-			runtimeStatus.setCPUs(runtimeCPU6502, nil, nil, nil, nil, nil, newRunner.(*CPU6502Runner))
-			progExec.SetCPU(nil)
-		}
-
 		// Re-register CPU with the monitor (old adapters are stale after recreate)
-		monitor.ResetCPUs()
-		switch mode {
-		case "ie32":
-			monitor.RegisterCPU("IE32", NewDebugIE32(newRunner.(*CPU)))
-		case "ie64":
-			monitor.RegisterCPU("IE64", NewDebugIE64(newRunner.(*CPU64)))
-		case "m68k":
-			r := newRunner.(*M68KRunner)
-			monitor.RegisterCPU("M68K", NewDebugM68K(r.cpu, r))
-		case "emutos":
-			r := newRunner.(*M68KRunner)
-			monitor.RegisterCPU("M68K", NewDebugM68K(r.cpu, r))
-		case "z80":
-			r := newRunner.(*CPUZ80Runner)
-			monitor.RegisterCPU("Z80", NewDebugZ80(r.cpu, r))
-		case "x86":
-			r := newRunner.(*CPUX86Runner)
-			monitor.RegisterCPU("X86", NewDebugX86(r.cpu, r))
-		case "6502":
-			r := newRunner.(*CPU6502Runner)
-			monitor.RegisterCPU("6502", NewDebug6502(r.cpu, r))
-		}
+		machine.UpdateRuntimeCPU(mode, newRunner, runtimeStatus, progExec)
+		machine.ReregisterMonitorCPU(mode, newRunner, monitor)
 
-		// 5-6. Reset audio engines + sound chip
-		psgEngine.Reset()
-		sidEngine.Reset()
-		tedEngine.Reset()
-		pokeyEngine.Reset()
-		ahxPlayerCPU.engine.Reset()
-		psgPlayer.Reset()
-		sidPlayer.Reset()
-		tedPlayer.Reset()
-		pokeyPlayer.Reset()
-		soundChip.Reset()
-		snChip.Reset()
-
-		// 7. Reset memory
-		sysBus.Reset()
-		applyRuntimeVisibleRAMForMode(sysBus, mode)
-
-		// 7b. VRAM I/O mapping for non-ROM profiles.
 		restoreROMVideoConfig := false
-		if mode == "emutos" || mode == "aros" {
-			restoreROMVideoConfig = true
-			if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
-				disabler.DisableSoftwareCursor()
-			}
-			if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
-				hider.HideSystemCursor()
-			}
-		} else if mode != "ie64" && mode != "m68k" && mode != "x86" &&
-			(currentMode == "emutos" || currentMode == "aros" || currentMode == "m68k" || currentMode == "x86") {
-			// Leaving a RAM-owned video mode: restore legacy VRAM I/O mapping.
-			restoreLegacyVideoConfig(sysBus, videoChip)
-		}
-
-		// 8. Reset video chips
-		videoChip.Reset()
-		if err := applyResetVideoConfigAfterVideoReset(sysBus, videoChip, mode, forceBasicBoot, restoreROMVideoConfig); err != nil {
+		if err := machine.ResetDevicesBeforeLoad(mode, MachineDeviceResetTargets{
+			AudioDevices: []MachineResetDevice{
+				psgEngine,
+				sidEngine,
+				tedEngine,
+				pokeyEngine,
+				ahxPlayerCPU.engine,
+				psgPlayer,
+				sidPlayer,
+				tedPlayer,
+				pokeyPlayer,
+				soundChip,
+				snChip,
+			},
+			Memory: sysBus,
+			ApplyRuntimeVisibleRAM: func(resetMode string) {
+				applyRuntimeVisibleRAMForMode(sysBus, resetMode)
+			},
+			PrepareVideoBeforeReset: func() error {
+				restoreROMVideoConfig = false
+				if mode == "emutos" || mode == "aros" {
+					restoreROMVideoConfig = true
+					if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
+						disabler.DisableSoftwareCursor()
+					}
+					if hider, ok := videoChip.GetOutput().(SystemCursorHider); ok {
+						hider.HideSystemCursor()
+					}
+				} else if mode != "ie64" && mode != "intuitionos" && mode != "m68k" && mode != "x86" &&
+					(currentMode == "emutos" || currentMode == "aros" || currentMode == "m68k" || currentMode == "x86") {
+					// Leaving a RAM-owned video mode: restore legacy VRAM I/O mapping.
+					restoreLegacyVideoConfig(sysBus, videoChip)
+				}
+				return nil
+			},
+			VideoChip: videoChip,
+			ApplyVideoConfigAfterReset: func() error {
+				return applyResetVideoConfigAfterVideoReset(sysBus, videoChip, mode, forceBasicBoot, restoreROMVideoConfig)
+			},
+			VideoDevices: []MachineResetDevice{
+				vgaEngine,
+				ulaEngine,
+				tedVideoEngine,
+				anticEngine,
+				voodooEngine,
+			},
+			Terminal:       termMMIO,
+			ForceBasicBoot: forceBasicBoot,
+			ConfigureBasicTerminal: func() {
+				// F10 is a power-on reset to BASIC: switch terminal plumbing to
+				// the in-window BASIC terminal path.
+				if outputTicker != nil {
+					outputTicker.Stop()
+					outputTicker = nil
+				}
+				if outputStop != nil {
+					close(outputStop)
+					outputStop = nil
+				}
+				if termHost != nil {
+					termHost.Stop()
+					termHost = nil
+				}
+				if videoTerm == nil {
+					videoTerm = NewVideoTerminal(videoChip, termMMIO)
+					initTerminalClipboard(videoTerm)
+					videoTerm.Start()
+				}
+				termMMIO.SetForceEchoOff(true)
+				if ki, ok := videoChip.GetOutput().(KeyboardInput); ok {
+					ki.SetKeyHandler(func(b byte) {
+						if hostUpdateConfirmer != nil && hostUpdateConfirmer.HandleInput(b) {
+							return
+						}
+						videoTerm.HandleKeyInput(b)
+					})
+				}
+				if si, ok := videoChip.GetOutput().(ScrollInput); ok {
+					si.SetScrollHandler(videoTerm.HandleScroll)
+				}
+				if ci, ok := videoChip.GetOutput().(ClipboardInput); ok {
+					ci.SetCopyHandler(videoTerm.CopySelection)
+					ci.SetCutHandler(videoTerm.CutSelection)
+					ci.SetMiddleMouseHandler(videoTerm.MiddleMousePaste)
+				}
+			},
+			ResetActiveTerminal: func() {
+				if videoTerm != nil {
+					videoTerm.Reset()
+				}
+			},
+			Coprocessor: coprocMgr,
+		}); err != nil {
 			return err
 		}
-		if vgaEngine != nil {
-			vgaEngine.Reset()
-		}
-		if ulaEngine != nil {
-			ulaEngine.Reset()
-		}
-		if tedVideoEngine != nil {
-			tedVideoEngine.Reset()
-		}
-		if anticEngine != nil {
-			anticEngine.Reset()
-		}
-		if voodooEngine != nil {
-			voodooEngine.Reset()
-		}
-
-		// 9. Reset terminal/coproc
-		termMMIO.Reset()
-		termMMIO.amigaScancodeMode.Store(false)
-		termMMIO.UnlockMouseNativeResolution()
-		termMMIO.SetMouseNativeResolution(DefaultScreenWidth, DefaultScreenHeight)
-		if forceBasicBoot {
-			// F10 is a power-on reset to BASIC: switch terminal plumbing to
-			// the in-window BASIC terminal path.
-			if outputTicker != nil {
-				outputTicker.Stop()
-				outputTicker = nil
-			}
-			if outputStop != nil {
-				close(outputStop)
-				outputStop = nil
-			}
-			if termHost != nil {
-				termHost.Stop()
-				termHost = nil
-			}
-			if videoTerm == nil {
-				videoTerm = NewVideoTerminal(videoChip, termMMIO)
-				initTerminalClipboard(videoTerm)
-				videoTerm.Start()
-			}
-			termMMIO.SetForceEchoOff(true)
-			if ki, ok := videoChip.GetOutput().(KeyboardInput); ok {
-				ki.SetKeyHandler(func(b byte) {
-					if hostUpdateConfirmer != nil && hostUpdateConfirmer.HandleInput(b) {
-						return
-					}
-					videoTerm.HandleKeyInput(b)
-				})
-			}
-			if si, ok := videoChip.GetOutput().(ScrollInput); ok {
-				si.SetScrollHandler(videoTerm.HandleScroll)
-			}
-			if ci, ok := videoChip.GetOutput().(ClipboardInput); ok {
-				ci.SetCopyHandler(videoTerm.CopySelection)
-				ci.SetCutHandler(videoTerm.CutSelection)
-				ci.SetMiddleMouseHandler(videoTerm.MiddleMousePaste)
-			}
-		}
-		if videoTerm != nil {
-			videoTerm.Reset()
-		}
-		coprocMgr.Reset()
 
 		// 10. Update cached state
 		programBytes = bytes
@@ -2662,77 +2469,24 @@ func main() {
 		}
 
 		// 11. Load program
-		if mode == "emutos" {
-			r := cpuRunner.(*M68KRunner)
-			if disabler, ok := videoChip.GetOutput().(SoftwareCursorDisabler); ok {
-				disabler.DisableSoftwareCursor()
-			}
-			loader := NewEmuTOSLoader(sysBus, r.cpu, videoChip)
-			r.cpu.xbiosHandler = NewXBIOSInterceptor(r.cpu, sysBus, videoChip, psgEngine)
-			if err := loader.LoadROM(bytes); err != nil {
-				return fmt.Errorf("failed to load EmuTOS ROM: %w", err)
-			}
-			if sidecar, err := loadELFSymbolSidecar(monitor.symbols, "M68K", path); err != nil {
-				fmt.Printf("Warning: EmuTOS ELF symbols disabled: %v\n", err)
-			} else if sidecar != "" {
-				fmt.Printf("IEMon: loaded EmuTOS symbols from %s\r\n", sidecar)
-			}
-			loader.SetSymbolTable(monitor.symbols)
-			if gemdosHostRoot != "" {
-				if err := loader.SetupGemdos(gemdosHostRoot, gemdosDriveNum); err != nil {
-					fmt.Printf("Warning: GEMDOS drive U: disabled: %v\n", err)
-				}
-			}
-			loader.StartTimer()
-			emuTOSLoader = loader
-			runtime.GC() // sweep BASIC/IE64 garbage before EmuTOS starts
-		} else if mode == "aros" {
-			r := cpuRunner.(*M68KRunner)
-			loader := NewAROSLoader(sysBus, r.cpu, videoChip)
-			if err := loader.LoadROM(bytes); err != nil {
-				return fmt.Errorf("failed to load AROS ROM: %w", err)
-			}
-			if sidecar, err := loadELFSymbolSidecar(monitor.symbols, "M68K", path); err != nil {
-				fmt.Printf("Warning: AROS ELF symbols disabled: %v\n", err)
-			} else if sidecar != "" {
-				fmt.Printf("IEMon: loaded AROS symbols from %s\r\n", sidecar)
-			}
-			hostRoot, err := ensureAROSHostRoot()
+		if mode == "emutos" || mode == "aros" {
+			newEmuTOSLoader, newAROSLoader, err := machine.LoadROMProfile(mode, bytes, path, MachineProfileLoadTargets{
+				Bus:            sysBus,
+				Runner:         cpuRunner,
+				VideoChip:      videoChip,
+				PSGEngine:      psgEngine,
+				Monitor:        monitor,
+				RuntimeStatus:  runtimeStatus,
+				SoundChip:      soundChip,
+				TermMMIO:       termMMIO,
+				GemdosHostRoot: gemdosHostRoot,
+				GemdosDriveNum: gemdosDriveNum,
+			})
 			if err != nil {
 				return err
 			}
-			// Wire up DOS device for host filesystem access
-			if arosDOS, dosErr := NewArosDOSDevice(sysBus, hostRoot); dosErr == nil {
-				arosDOS.SetSymbolTable(monitor.symbols)
-				sysBus.MapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END, arosDOS.HandleRead, arosDOS.HandleWrite)
-				runtimeStatus.setAROSDOS(arosDOS)
-				fmt.Printf("AROS DOS: IE: → %s\r\n", hostRoot)
-			} else {
-				return fmt.Errorf("AROS DOS device init failed: %w", dosErr)
-			}
-			// Wire up audio DMA engine
-			arosDMA, dmaErr := NewArosAudioDMA(sysBus, soundChip, r.cpu)
-			if dmaErr != nil {
-				return fmt.Errorf("create AROS audio DMA: %w", dmaErr)
-			}
-			sysBus.UnmapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END)
-			sysBus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, arosDMA.HandleRead, arosDMA.HandleWrite)
-			soundChip.SetSampleTicker(arosDMA)
-			runtimeStatus.setPaulaDMA(arosDMA)
-			monitor.RegisterSnapshotDevice(arosDMA)
-			// Wire up clipboard bridge
-			clipBridge := NewClipboardBridge(sysBus)
-			sysBus.MapIO(CLIP_REGION_BASE, CLIP_REGION_END, clipBridge.HandleRead, clipBridge.HandleWrite)
-			runtimeStatus.setAROSClipboard(clipBridge)
-			monitor.RegisterSnapshotDevice(clipBridge)
-			// IRQ diagnostic registers for freeze investigation scripts
-			loader.MapIRQDiagnostics()
-			// AROS HIDDs expect Amiga rawkey scancodes
-			termMMIO.amigaScancodeMode.Store(true)
-			termMMIO.LockMouseNativeResolution(DefaultPresentationWidth, DefaultPresentationHeight)
-			loader.StartTimer()
-			arosLoader = loader
-			runtime.GC()
+			emuTOSLoader = newEmuTOSLoader
+			arosLoader = newAROSLoader
 		} else {
 			reloadProgram()
 		}
@@ -2745,38 +2499,25 @@ func main() {
 		// CLI-provided service name after the selected loader has finished.
 		stageConfiguredCoprocService()
 
-		// 12. Start peripherals
-		videoChip.Start()
-		soundChip.Start()
-
-		// 13. Start compositor + render loops
-		compositor.Start()
-		if vgaEngine != nil {
-			vgaEngine.StartRenderLoop()
-		}
-		if ulaEngine != nil {
-			ulaEngine.StartRenderLoop()
-		}
-		if tedVideoEngine != nil {
-			tedVideoEngine.StartRenderLoop()
-		}
-		if anticEngine != nil {
-			anticEngine.StartRenderLoop()
-		}
-
-		// 14. Start CPU
-		cpuRunner.StartExecution()
+		machine.StartAfterReset(MachineStartTargets{
+			VideoChip:   videoChip,
+			SoundChip:   soundChip,
+			Compositor:  compositor,
+			RenderLoops: machineRenderLoops(),
+			CPU:         cpuRunner,
+		})
 		return nil
 	}
+	machine.SetProgramReset(runProgramWithFullReset)
 
 	scriptEngine = NewScriptEngine(sysBus, compositor, termMMIO)
 	runtimeStatus.setScriptEngine(scriptEngine)
-	scriptEngine.SetProgramLoader(runProgramWithFullReset)
+	machine.SetScriptEngine(scriptEngine)
+	machine.SetMediaLoader(mediaLoader)
+	scriptEngine.SetProgramLoader(machine.LoadProgram)
 	scriptEngine.SetEmutosSentinel(emutosSentinel)
 	scriptEngine.SetArosSentinel(arosSentinel)
-	scriptEngine.SetHardReset(func() error {
-		return runProgramWithFullReset("")
-	})
+	scriptEngine.SetHardReset(machine.HardReset)
 	scriptEngine.SetMonitor(monitor)
 	scriptEngine.SetQuitFunc(func() {
 		os.Exit(0)
@@ -2798,34 +2539,13 @@ func main() {
 		progExec.SetGemdosConfig(path, driveNum)
 	})
 
-	launchProgramOrScript := func(path string) error {
-		if strings.EqualFold(filepath.Ext(path), ".ies") {
-			return scriptEngine.RunFile(path)
-		}
-		if detectMediaType(path) != MEDIA_TYPE_NONE {
-			if mediaLoader == nil {
-				return fmt.Errorf("media loader unavailable")
-			}
-			return mediaLoader.PlayHostPath(path, 0)
-		}
-		return runProgramWithFullReset(path)
-	}
-
 	// Ensure RUN "file" (ProgramExecutor) uses the same launch path as IPC/F10
 	// so monitor/runtime state stays consistent across all entry points.
-	progExec.SetExternalLauncher(launchProgramOrScript)
-	progExec.SetHardReset(func() error {
-		return runProgramWithFullReset("")
-	})
-	progExec.SetEmuTOSBootLoader(func() error {
-		return runProgramWithFullReset(emutosSentinel)
-	})
-	progExec.SetAROSBootLoader(func() error {
-		return runProgramWithFullReset(arosSentinel)
-	})
-	progExec.SetIExecBootLoader(func() error {
-		return runProgramWithFullReset(intuitionOSSentinel)
-	})
+	progExec.SetExternalLauncher(machine.LaunchProgramOrScript)
+	progExec.SetHardReset(machine.HardReset)
+	progExec.SetEmuTOSBootLoader(machine.BootEmuTOS)
+	progExec.SetAROSBootLoader(machine.BootAROS)
+	progExec.SetIExecBootLoader(machine.BootIExec)
 
 	// Wire F10 hard reset handler
 	if hr, ok := videoChip.GetOutput().(HardResettable); ok {
@@ -2833,7 +2553,7 @@ func main() {
 			if scriptEngine != nil {
 				scriptEngine.Cancel()
 			}
-			if err := runProgramWithFullReset(""); err != nil {
+			if err := machine.HardReset(); err != nil {
 				fmt.Printf("F10 reset failed: %v\n", err)
 			}
 		})
@@ -2841,7 +2561,7 @@ func main() {
 
 	// Start IPC server for single-instance file opening
 	ipcServer, err := NewIPCServer(func(path string) error {
-		return launchProgramOrScript(path)
+		return machine.LaunchProgramOrScript(path)
 	})
 	if err != nil {
 		fmt.Printf("Warning: IPC server failed to start: %v\n", err)
@@ -3108,6 +2828,8 @@ func applyResetVideoConfigAfterVideoReset(sysBus *MachineBus, videoChip *VideoCh
 	switch mode {
 	case "ie64":
 		applyIE64FlatProgramVideoConfig(sysBus, videoChip)
+	case "intuitionos":
+		restoreLegacyVideoConfig(sysBus, videoChip)
 	case "m68k":
 		applyM68KFlatProgramVideoConfig(sysBus, videoChip)
 	case "x86":

@@ -301,12 +301,13 @@ func renderSDKISASourceAudit(t *testing.T) string {
 
 func sdkISAFactsFromExecutableSource(t *testing.T) []sdkISAFact {
 	t.Helper()
+	ie64OpcodeSource := readAuditFile(t, "cpu_ie64_opcodes_gen.go")
 	ie64Source := readAuditFile(t, "cpu_ie64.go")
 	ie32Source := readAuditFile(t, "cpu_ie32.go")
 	fpu64Source := readAuditFile(t, "fpu_ie64.go")
 	var facts []sdkISAFact
 
-	for _, op := range parseIE64SourceOpcodes(t, ie64Source) {
+	for _, op := range parseIE64SourceOpcodes(t, ie64OpcodeSource) {
 		if countSwitchCases(ie64Source, op.name) < 2 {
 			t.Fatalf("IE64 opcode %s lacks execute and step switch evidence", op.name)
 		}
@@ -315,7 +316,7 @@ func sdkISAFactsFromExecutableSource(t *testing.T) []sdkISAFact {
 			Kind:     "opcode",
 			Value:    op.value,
 			Symbol:   op.name,
-			Evidence: fmt.Sprintf("`cpu_ie64.go` const `%s`; execute switch case `%s`; step switch case `%s`", op.name, op.name, op.name),
+			Evidence: fmt.Sprintf("`cpu_ie64_opcodes_gen.go` const `%s`; `cpu_ie64.go` execute switch case `%s`; step switch case `%s`", op.name, op.name, op.name),
 		})
 	}
 
@@ -377,8 +378,9 @@ func sdkISAFactsFromExecutableSource(t *testing.T) []sdkISAFact {
 
 func sdkIE64FPUSideEffectFacts(t *testing.T, cpuSource, fpuSource string) []sdkISAFact {
 	t.Helper()
+	opcodeSource := readAuditFile(t, "cpu_ie64_opcodes_gen.go")
 	opcodes := make(map[string]int)
-	for _, op := range parseIE64SourceOpcodes(t, cpuSource) {
+	for _, op := range parseIE64SourceOpcodes(t, opcodeSource) {
 		opcodes[op.name] = op.value
 	}
 

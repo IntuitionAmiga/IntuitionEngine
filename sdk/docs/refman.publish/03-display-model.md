@@ -108,6 +108,14 @@ The compositor sends the final frame at the following fixed rate:
 | Frame rate    | `60` Hz       |
 | Pixel format  | `RGBA`, 4 bytes per pixel |
 
+All display cards are advanced from the same `60` Hz frame cadence.
+That does not make every chip the same size or shape. It means the
+compositor has one regular moment to collect finished frames, apply
+layer order, and publish the final picture. Chips with scanline
+features, such as the VideoChip copper or ANTIC display lists, still
+do their own per-line work before their finished frame reaches the
+stack.
+
 A source that produces a frame at the full `1920` × `1080` resolution
 is copied to the output 1:1. A source that produces a smaller frame
 is scaled up by the compositor. The scale mode is **stretch-fill**:

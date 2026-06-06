@@ -408,8 +408,8 @@ x64-live-sdk-tools:
 		echo "== SDK tools $$goos/$$goarch =="; \
 		$(MKDIR) -p "$$outdir"; \
 		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o "$$outdir/ie32asm$$ext" assembler/ie32asm.go; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o "$$outdir/ie64asm$$ext" assembler/ie64asm.go; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64dis -o "$$outdir/ie64dis$$ext" assembler/ie64dis.go; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o "$$outdir/ie64asm$$ext" ./assembler; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64dis -o "$$outdir/ie64dis$$ext" ./assembler; \
 		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o "$$outdir/ie32to64$$ext" ./cmd/ie32to64/; \
 		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o "$$outdir/m68kto64$$ext" ./cmd/m68kto64/; \
 	done
@@ -635,7 +635,7 @@ ie32asm: setup
 # Build the IE64 assembler
 ie64asm: setup
 	@echo "Building IE64 assembler..."
-	@$(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go
+	@$(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm ./assembler
 	@echo "Stripping debug symbols..."
 	@$(SSTRIP) -z ie64asm
 	@$(MKDIR) -p $(SDK_BIN_DIR)
@@ -1630,7 +1630,7 @@ emutos-rom:
 # Build the IE64 disassembler
 ie64dis: setup
 	@echo "Building IE64 disassembler..."
-	@$(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go
+	@$(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis ./assembler
 	@echo "Stripping debug symbols..."
 	@$(SSTRIP) -z ie64dis
 	@$(MKDIR) -p $(SDK_BIN_DIR)
@@ -1905,10 +1905,10 @@ define build-linux-release
 		fi && \
 	echo "Building SDK tools (pure Go, CGO_ENABLED=0)..." && \
 	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go && \
-	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go && \
+	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm ./assembler && \
 	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/ && \
 	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -o m68kto64 ./cmd/m68kto64/ && \
-	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go && \
+	CGO_ENABLED=0 GOARCH=$(1) $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis ./assembler && \
 	STAGING=$(RELEASE_DIR)/$$RELEASE_NAME && \
 	rm -rf $$STAGING && \
 	$(MKDIR) -p $$STAGING && \
@@ -1978,10 +1978,10 @@ release-windows: setup emutos-release-rom aros-release-assets
 		echo "--- $$RELEASE_NAME ---"; \
 		$(call build-purego-novulkan-vm-binary,windows,$$goarch,IntuitionEngine.exe) && \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32asm.exe assembler/ie32asm.go && \
-		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe assembler/ie64asm.go && \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm.exe ./assembler && \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o ie32to64.exe ./cmd/ie32to64/ && \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o m68kto64.exe ./cmd/m68kto64/ && \
-		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis.exe assembler/ie64dis.go && \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis.exe ./assembler && \
 		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME && \
 		rm -rf $$STAGING && \
 		$(MKDIR) -p $$STAGING && \
@@ -2013,10 +2013,10 @@ release-macos-amd64: setup emutos-release-rom aros-release-assets
 	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-darwin-amd64 && \
 		$(call build-purego-novulkan-vm-binary,darwin,amd64,IntuitionEngine) && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go && \
-		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm ./assembler && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/ && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -o m68kto64 ./cmd/m68kto64/ && \
-		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis ./assembler && \
 		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME && \
 		rm -rf $$STAGING && \
 		$(MKDIR) -p $$STAGING && \
@@ -2043,10 +2043,10 @@ release-macos-arm64: setup emutos-release-rom aros-release-assets
 	@RELEASE_NAME=$(APP_NAME)-$(APP_VERSION)-darwin-arm64 && \
 		$(call build-purego-novulkan-vm-binary,darwin,arm64,IntuitionEngine) && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -o ie32asm assembler/ie32asm.go && \
-		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm assembler/ie64asm.go && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -tags ie64 -o ie64asm ./assembler && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -o ie32to64 ./cmd/ie32to64/ && \
 		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -o m68kto64 ./cmd/m68kto64/ && \
-		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis assembler/ie64dis.go && \
+		CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build $(GO_FLAGS) -tags ie64dis -o ie64dis ./assembler && \
 		STAGING=$(RELEASE_DIR)/$$RELEASE_NAME && \
 		rm -rf $$STAGING && \
 		$(MKDIR) -p $$STAGING && \

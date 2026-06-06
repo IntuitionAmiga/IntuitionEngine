@@ -17,6 +17,12 @@ For IE64, IE Mon can also assemble one instruction at a time with
 `A addr`; the emitted bytes are still shown here because the bytes and
 the `d` listing are the permanent check.
 
+The IE64 opcode names and byte values in this appendix are checked
+against the shared IE64 opcode table used by the CPU, monitor
+disassembler, in-machine assembler, and companion assembler and
+disassembler surfaces. That keeps the lookup table, byte-entry
+examples, and monitor listings on the same spelling.
+
 ## G.1 IE64 (Chapter 25)
 
 Fixed `8`-byte instruction, 32 GPRs `R0`-`R31`, `R0 = 0`,

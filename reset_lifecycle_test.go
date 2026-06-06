@@ -176,7 +176,7 @@ func TestCreateCPURunner(t *testing.T) {
 		t.Skipf("NewVideoChip failed (expected in headless): %v", err)
 	}
 
-	modes := []string{"ie32", "ie64", "m68k", "emutos", "z80", "x86", "6502"}
+	modes := []string{"ie32", "ie64", "intuitionos", "m68k", "emutos", "z80", "x86", "6502"}
 	for _, mode := range modes {
 		runner, err := createCPURunner(mode, bus, vc, nil, nil)
 		if err != nil {
@@ -204,7 +204,7 @@ func TestBuildReloadClosure(t *testing.T) {
 	}
 	programBytes := []byte{0x01, 0x02, 0x03, 0x04}
 
-	modes := []string{"ie32", "ie64", "m68k", "z80", "x86", "6502"}
+	modes := []string{"ie32", "ie64", "intuitionos", "m68k", "z80", "x86", "6502"}
 	for _, mode := range modes {
 		runner, err := createCPURunner(mode, bus, vc, nil, nil)
 		if err != nil {

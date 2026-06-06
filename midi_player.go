@@ -10,11 +10,10 @@ type MIDIPlayer struct {
 	PlayerControlState
 	engine *MIDIEngine
 
-	playGen uint64
-	paused  bool
-	volume  uint8
-	file    *MIDIFile
-	mu      sync.Mutex
+	paused bool
+	volume uint8
+	file   *MIDIFile
+	mu     sync.Mutex
 }
 
 func NewMIDIPlayer(sound *SoundChip, sampleRate int) *MIDIPlayer {
@@ -52,7 +51,7 @@ func (p *MIDIPlayer) Play() {
 
 func (p *MIDIPlayer) Stop() {
 	p.mu.Lock()
-	p.playGen++
+	p.PlayGen++
 	p.PlayBusy = false
 	p.paused = false
 	p.mu.Unlock()
@@ -146,7 +145,7 @@ func (p *MIDIPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		p.engine.SetVolume(p.volume)
 	case MIDI_PLAY_CTRL:
 		if value&0x2 != 0 {
-			p.playGen++
+			p.PlayGen++
 			p.PlayBusy = false
 			p.ClearError()
 			p.paused = false
@@ -168,8 +167,8 @@ func (p *MIDIPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		if value&0x1 == 0 {
 			break
 		}
-		p.playGen++
-		startGen = p.playGen
+		p.PlayGen++
+		startGen = p.PlayGen
 		if errText := p.PreparePlay(value&0x4 != 0); errText != "" {
 			break
 		}
@@ -195,7 +194,7 @@ func (p *MIDIPlayer) startAsync(gen uint64, data []byte) {
 	file, err := ParseMIDIData(data)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if gen != p.playGen {
+	if gen != p.PlayGen {
 		return
 	}
 	if err != nil {

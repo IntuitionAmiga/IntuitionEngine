@@ -196,7 +196,7 @@ func TestIE64Dis_DocumentedOpcodes(t *testing.T) {
 }
 
 func TestIE64Dis_OpcodesMatchSource(t *testing.T) {
-	sourceOps := parseIE64OpcodeConstBlock(t, "../cpu_ie64.go")
+	sourceOps := parseIE64OpcodeConstBlock(t, "../cpu_ie64_opcodes_gen.go")
 	rows := map[string]byte{}
 	for _, row := range documentedOpcodes {
 		rows[row.cpuName] = row.opcode

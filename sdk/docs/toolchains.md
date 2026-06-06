@@ -73,7 +73,9 @@ sdk/bin/ie64asm -D FEATURE=1 program.asm    # Predefine an equate from the CLI
 ./bin/IntuitionEngine program.ie64        # Run (or: RUN "program.ie64" from BASIC)
 ```
 
-- Custom assembler built from `assembler/ie64asm.go` (assembler tool source code)
+- Custom assembler built from the tagged `./assembler` package. The package
+  includes `assembler/ie64asm.go` plus generated opcode constants from
+  `assembler/ie64asm_opcodes_gen.go`.
 - Supports `-I dir` include search paths (multiple allowed, searched after source file directory)
 - Supports `-D NAME[=VALUE]` predefined equates. `-D FEATURE` means `FEATURE=1`.
 - Supports `-o path`, `-Werror`, and `-Wno-duplicate-labels` / `-Wno-org-backward` / `-Wno-incbin-changed`
@@ -90,6 +92,26 @@ sdk/bin/ie64asm -D FEATURE=1 program.asm    # Predefine an equate from the CLI
 ```bash
 make ie64dis                              # Build
 sdk/bin/ie64dis program.ie64                # Disassemble
+```
+
+`ie64dis` is also built from the tagged `./assembler` package so
+`assembler/ie64dis.go` and `assembler/ie64dis_opcodes_gen.go` are compiled
+together.
+
+### IE64 Opcode Metadata Generation
+
+IE64 opcode values, public assembler names, internal assembler names, and
+disassembler names are generated from `internal/ie64meta/table.go`.
+`cmd/gen_ie64_opmeta` writes generated outputs for the runtime CPU,
+standalone assembler, internal assembler package, monitor disassembler, and
+standalone disassembler. After changing IE64 opcode metadata, regenerate the
+files and run the parity tests before building release tools:
+
+```bash
+go generate ./...
+go test -tags headless -run TestIE64OpcodeMetadata .
+go test -tags ie64 ./assembler
+go test -tags ie64dis ./assembler
 ```
 
 ### IE32-to-IE64 Converter (`ie32to64`)

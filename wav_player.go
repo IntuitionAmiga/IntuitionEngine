@@ -6,8 +6,7 @@ import "sync"
 type WAVPlayer struct {
 	PlayerControlState
 
-	engine  *WAVEngine
-	playGen uint64
+	engine *WAVEngine
 
 	channelBase uint8
 	volumeL     uint8
@@ -46,7 +45,7 @@ func (p *WAVPlayer) Play() { p.engine.SetPlaying(true) }
 
 func (p *WAVPlayer) Stop() {
 	p.mu.Lock()
-	p.playGen++
+	p.PlayGen++
 	p.PlayBusy = false
 	p.pending = nil
 	p.mu.Unlock()
@@ -118,7 +117,7 @@ func (p *WAVPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		p.applyEngineConfigLocked()
 	case WAV_PLAY_CTRL:
 		if value&0x2 != 0 {
-			p.playGen++
+			p.PlayGen++
 			p.PlayBusy = false
 			p.pending = nil
 			stopPlayback = true
@@ -139,7 +138,7 @@ func (p *WAVPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		if value&0x1 == 0 {
 			break
 		}
-		p.playGen++
+		p.PlayGen++
 		if errText := p.PreparePlay64(p.PlayPtrHigh, value&0x4 != 0); errText != "" {
 			break
 		}
@@ -151,7 +150,7 @@ func (p *WAVPlayer) HandlePlayWrite(addr uint32, value uint32) {
 		p.PlayBusy = true
 		p.ClearError()
 		enqueue = &wavAsyncStartRequest{
-			gen:         p.playGen,
+			gen:         p.PlayGen,
 			data:        data,
 			forceLoop:   p.ForceLoop,
 			channelBase: p.channelBase,
@@ -197,7 +196,7 @@ func (p *WAVPlayer) startAsync(req wavAsyncStartRequest) {
 	for {
 		wav, err := ParseWAV(req.data)
 		p.mu.Lock()
-		if req.gen == p.playGen {
+		if req.gen == p.PlayGen {
 			if err != nil {
 				p.SetError()
 			} else {

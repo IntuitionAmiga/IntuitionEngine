@@ -10,9 +10,15 @@ sources:
   - cpu_x86.go
   - debug_asm.go
   - debug_disasm_ie64.go
+  - debug_disasm_ie64_opcodes_gen.go
+  - internal/ie64meta/table.go
+  - cpu_ie64_opcodes_gen.go
   - assembler/ie64asm.go
+  - assembler/ie64asm_opcodes_gen.go
   - assembler/ie64dis.go
+  - assembler/ie64dis_opcodes_gen.go
   - internal/asm/ie64/assembler.go
+  - internal/asm/ie64/opcodes_gen.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
@@ -32,6 +38,12 @@ disassemble, and check the machine-code program directly in IE Mon.
 For IE64, IE Mon can also assemble one instruction at a time with
 `A addr`; the emitted bytes are still shown here because the bytes and
 the `d` listing are the permanent check.
+
+The IE64 opcode names and byte values in this appendix are checked
+against the shared IE64 opcode table used by the CPU, monitor
+disassembler, in-machine assembler, and companion assembler and
+disassembler surfaces. That keeps the lookup table, byte-entry
+examples, and monitor listings on the same spelling.
 
 ## G.1 IE64 (Chapter 25)
 

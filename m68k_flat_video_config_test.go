@@ -261,6 +261,46 @@ func TestResetVideoProfileBareIE64KeepsFlatProgramVideoPath(t *testing.T) {
 	}
 }
 
+func TestResetVideoProfileIntuitionOSRestoresKernelTerminalVideoPath(t *testing.T) {
+	bus := NewMachineBus()
+	video := newM68KFlatTestVideoChip(t)
+	defer video.Stop()
+
+	applyIE64FlatProgramVideoConfig(bus, video)
+	video.Reset()
+
+	if err := applyResetVideoConfigAfterVideoReset(bus, video, "intuitionos", false, false); err != nil {
+		t.Fatalf("applyResetVideoConfigAfterVideoReset IntuitionOS: %v", err)
+	}
+	if video.directVRAM != nil {
+		t.Fatalf("IntuitionOS reset left flat-program direct VRAM enabled")
+	}
+	if !bus.IsIOAddress(VRAM_START) {
+		t.Fatalf("IntuitionOS reset did not restore legacy VRAM I/O mapping")
+	}
+	if got := video.HandleRead(VIDEO_FB_BASE); got != 0 {
+		t.Fatalf("IntuitionOS reset VIDEO_FB_BASE = 0x%X, want 0", got)
+	}
+	if video.bigEndianMode {
+		t.Fatalf("IntuitionOS reset left video in big-endian mode")
+	}
+
+	term := NewTerminalMMIO()
+	vt := NewVideoTerminal(video, term)
+	defer vt.Stop()
+	video.HandleWrite(VIDEO_CTRL, 1)
+	term.HandleWrite(TERM_OUT, uint32('I'))
+
+	frame := video.GetFrame()
+	front := video.GetFrontBuffer()
+	if len(frame) == 0 {
+		t.Fatalf("GetFrame returned an empty frame after IntuitionOS terminal output")
+	}
+	if !bytes.Equal(frame, front) {
+		t.Fatalf("IntuitionOS reset frame is not the terminal front buffer; frame len=%d front len=%d", len(frame), len(front))
+	}
+}
+
 func TestProgramExecutorM68KReloadAppliesFlatVideoConfig(t *testing.T) {
 	bus := NewMachineBus()
 	video := newM68KFlatTestVideoChip(t)

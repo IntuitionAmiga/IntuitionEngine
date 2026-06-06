@@ -240,7 +240,7 @@ func TestWAVPlayerGenerationCounting(t *testing.T) {
 	player.HandlePlayWrite(WAV_PLAY_CTRL, 2)
 
 	player.mu.Lock()
-	gen := player.playGen
+	gen := player.PlayGen
 	player.mu.Unlock()
 
 	// Generation should have been incremented twice (start + stop)

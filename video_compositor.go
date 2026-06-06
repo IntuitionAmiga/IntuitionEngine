@@ -81,6 +81,120 @@ type registeredSource struct {
 	source VideoSource
 }
 
+type videoScheduledTask struct {
+	id   uint64
+	tick func()
+}
+
+type VideoScheduler struct {
+	mu       sync.Mutex
+	interval time.Duration
+	tasks    []videoScheduledTask
+	nextID   uint64
+	done     chan struct{}
+	loopDone chan struct{}
+	running  bool
+	manual   bool
+}
+
+func NewVideoScheduler(interval time.Duration) *VideoScheduler {
+	return &VideoScheduler{interval: interval}
+}
+
+func NewManualVideoScheduler() *VideoScheduler {
+	return &VideoScheduler{manual: true}
+}
+
+func (s *VideoScheduler) Register(tick func()) uint64 {
+	if tick == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	id := s.nextID
+	s.tasks = append(s.tasks, videoScheduledTask{id: id, tick: tick})
+	return id
+}
+
+func (s *VideoScheduler) Unregister(id uint64) {
+	if id == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, task := range s.tasks {
+		if task.id == id {
+			copy(s.tasks[i:], s.tasks[i+1:])
+			s.tasks = s.tasks[:len(s.tasks)-1]
+			return
+		}
+	}
+}
+
+func (s *VideoScheduler) Start() {
+	s.mu.Lock()
+	if s.running || s.manual {
+		s.mu.Unlock()
+		return
+	}
+	interval := s.interval
+	if interval <= 0 {
+		interval = COMPOSITOR_REFRESH_INTERVAL
+	}
+	s.done = make(chan struct{})
+	s.loopDone = make(chan struct{})
+	done := s.done
+	loopDone := s.loopDone
+	s.running = true
+	s.mu.Unlock()
+	go s.loop(interval, done, loopDone)
+}
+
+func (s *VideoScheduler) Stop() {
+	s.mu.Lock()
+	if !s.running {
+		s.mu.Unlock()
+		return
+	}
+	done := s.done
+	loopDone := s.loopDone
+	s.done = nil
+	s.loopDone = nil
+	s.running = false
+	s.mu.Unlock()
+	close(done)
+	<-loopDone
+}
+
+func (s *VideoScheduler) TickManual() {
+	s.tickAll()
+}
+
+func (s *VideoScheduler) loop(interval time.Duration, done <-chan struct{}, loopDone chan<- struct{}) {
+	defer close(loopDone)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			s.tickAll()
+		}
+	}
+}
+
+func (s *VideoScheduler) tickAll() {
+	s.mu.Lock()
+	tasks := make([]videoScheduledTask, len(s.tasks))
+	copy(tasks, s.tasks)
+	s.mu.Unlock()
+	for _, task := range tasks {
+		safeCall("VideoScheduler.Tick", task.tick)
+	}
+}
+
 // VideoCompositor blends multiple video sources into a single output
 type VideoCompositor struct {
 	mu                sync.Mutex
@@ -100,6 +214,8 @@ type VideoCompositor struct {
 	prevHasContent    bool
 	frameCounter      uint64
 	frameTimestamp    time.Time
+	scheduler         *VideoScheduler
+	schedulerTaskID   uint64
 
 	compositorRunning atomic.Bool
 	state             compositorState
@@ -116,6 +232,7 @@ func NewVideoCompositor(output VideoOutput) *VideoCompositor {
 		frameWidth:  DefaultPresentationWidth,
 		frameHeight: DefaultPresentationHeight,
 		scaleMode:   ScaleStretchFill,
+		scheduler:   NewVideoScheduler(COMPOSITOR_REFRESH_INTERVAL),
 	}
 }
 
@@ -253,8 +370,12 @@ func (c *VideoCompositor) Start() error {
 	c.loopDone = loopDone
 	c.compositorRunning.Store(true)
 	c.state = compositorRunning
+	c.schedulerTaskID = c.scheduler.Register(c.composite)
+	c.scheduler.Start()
 	go func() {
 		defer func() {
+			c.scheduler.Stop()
+			c.scheduler.Unregister(c.schedulerTaskID)
 			c.mu.Lock()
 			if c.state == compositorStopping {
 				c.state = compositorStopped
@@ -263,7 +384,7 @@ func (c *VideoCompositor) Start() error {
 			c.mu.Unlock()
 			close(loopDone)
 		}()
-		c.refreshLoop()
+		<-c.done
 	}()
 	return nil
 }
@@ -301,21 +422,6 @@ func (c *VideoCompositor) Close() error {
 	c.state = compositorClosed
 	c.sources = nil
 	return nil
-}
-
-// refreshLoop runs the compositor at 60Hz
-func (c *VideoCompositor) refreshLoop() {
-	ticker := time.NewTicker(COMPOSITOR_REFRESH_INTERVAL)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-c.done:
-			return
-		case <-ticker.C:
-			c.composite()
-		}
-	}
 }
 
 // composite collects and blends frames from all enabled sources

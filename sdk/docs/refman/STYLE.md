@@ -138,6 +138,56 @@ Current controlled polish pass:
   waits or queues, when pixels become visible, what flushes the queue,
   what happens when the batch is full, and what `FBI_BUSY`, `SST_BUSY`,
   `MEMFIFO`, and `PCIFIFO` actually mean in Intuition Engine.
+- Integrate the architecture-remediation commit `7d4fe8f2` as a
+  focused consistency pass, not as a new feature chapter. Check
+  `internal/ie64meta/table.go`, `cmd/gen_ie64_opmeta/main.go`,
+  `cpu_ie64_opcodes_gen.go`, `debug_disasm_ie64_opcodes_gen.go`,
+  `assembler/ie64asm_opcodes_gen.go`,
+  `assembler/ie64dis_opcodes_gen.go`,
+  `internal/asm/ie64/opcodes_gen.go`, `music_common.go`,
+  `ahx_player.go`, `mod_player.go`, `wav_player.go`,
+  `midi_player.go`, `psg_player.go`, `sid_player.go`,
+  `ted_player.go`, `pokey_player.go`, `video_compositor.go`,
+  `mmu_ie64.go`, `bootstrap_hostfs.go`, `machine_lifecycle.go`,
+  and the related opcode, playback, video scheduler, lifecycle, and
+  MMU tests before changing reader-facing claims. The reader-facing
+  effects are narrow:
+
+  - IE64 opcode values and mnemonic spellings remain the same, but the
+    canonical opcode source is now the shared metadata table and its
+    generated outputs. Chapter 25 and Appendix G source metadata and
+    ledger entries must reflect that.
+  - Register-mapped file players share the same staged
+    pointer/length/start/stop/loop/busy/error rhythm. State this once
+    at overview level, then keep individual chapters focused on their
+    engine-specific fields.
+  - Video sources are advanced from one `60` Hz frame cadence. The
+    guide may say this at reader level; it must not expose scheduler
+    implementation names as normal programming vocabulary.
+  - IE64 page-table walking is the shared translation rule used by the
+    CPU and machine services that honour guest user pointers. Keep the
+    existing MMU table explanation and add only the short
+    programmer-visible consequence.
+  - Machine reset and lifecycle refactors do not change the ordinary
+    reset contract. Do not add implementation orchestration prose to
+    reader-facing chapters unless a public reset or load behaviour
+    changes.
+
+  Execute this remediation pass in this order:
+
+  1. Update this plan entry before any chapter edits.
+  2. Chapter 11: add a short shared file-player register rule after
+     the engine comparison or media-loader introduction.
+  3. Chapter 3 and Appendix K: state the common `60` Hz frame cadence
+     and preserve the existing layer-order and scanline rules.
+  4. Chapter 25 and Appendix G: update source metadata for the shared
+     IE64 opcode table, without inventing new opcodes or changing
+     byte-entry examples.
+  5. Chapter 25: add the concise shared MMU translation note.
+  6. Claim ledger: record the checked canonical sources and explain
+     why no chapter renumbering or reader workflow change was needed.
+  7. Run reader-facing scans, publish with strict mode, and print PDFs
+     only after source and publish trees agree.
 - Fix the appendix consistency review items: Appendix B must describe
   TED text colour as the 8-bit TED colour byte used by Chapter 6,
   Chapter 7 must not send GTIA colour lookup to Appendix B, Appendix D

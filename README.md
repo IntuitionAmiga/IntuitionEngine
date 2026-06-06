@@ -6,6 +6,8 @@ Intuition Engine is a modern 64-bit RISC fantasy computer implemented in Go. It 
 
 It can be run as a desktop emulator or booted as an x64 live USB appliance. For programmers, it is a bare-metal target with an SDK, examples, and maintained reference documentation for writing directly against the Intuition Engine hardware.
 
+Guest RAM is autodetected at boot from the host and then exposed as total guest RAM plus per-profile active visible RAM through SYSINFO and CPU-specific discovery paths.
+
 ## Quick Start
 
 Build the emulator and core SDK tools:

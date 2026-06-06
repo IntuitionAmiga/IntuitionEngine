@@ -20,46 +20,7 @@ package main
 
 import "fmt"
 
-var ie64OpcodeNames = map[byte]string{
-	OP_MOVE: "move", OP_MOVT: "movt", OP_MOVEQ: "moveq", OP_LEA: "lea",
-	OP_LOAD: "load", OP_STORE: "store",
-	OP_ADD: "add", OP_SUB: "sub", OP_MULU: "mulu", OP_MULS: "muls",
-	OP_DIVU: "divu", OP_DIVS: "divs", OP_MOD64: "mod", OP_NEG: "neg",
-	OP_MODS: "mods", OP_MULHU: "mulhu", OP_MULHS: "mulhs",
-	OP_AND64: "and", OP_OR64: "or", OP_EOR: "eor", OP_NOT64: "not",
-	OP_LSL: "lsl", OP_LSR: "lsr", OP_ASR: "asr", OP_CLZ: "clz",
-	OP_SEXT: "sext", OP_ROL: "rol", OP_ROR: "ror", OP_CTZ: "ctz",
-	OP_POPCNT: "popcnt", OP_BSWAP: "bswap",
-	OP_BRA: "bra", OP_BEQ: "beq", OP_BNE: "bne", OP_BLT: "blt",
-	OP_BGE: "bge", OP_BGT: "bgt", OP_BLE: "ble", OP_BHI: "bhi",
-	OP_BLS: "bls", OP_JMP: "jmp",
-	OP_JSR64: "jsr", OP_RTS64: "rts", OP_PUSH64: "push", OP_POP64: "pop",
-	OP_JSR_IND: "jsr",
-	OP_FMOV:    "fmov", OP_FLOAD: "fload", OP_FSTORE: "fstore",
-	OP_FADD: "fadd", OP_FSUB: "fsub", OP_FMUL: "fmul", OP_FDIV: "fdiv",
-	OP_FMOD: "fmod", OP_FABS: "fabs", OP_FNEG: "fneg", OP_FSQRT: "fsqrt",
-	OP_FINT: "fint", OP_FCMP: "fcmp", OP_FCVTIF: "fcvtif", OP_FCVTFI: "fcvtfi",
-	OP_FMOVI: "fmovi", OP_FMOVO: "fmovo",
-	OP_FSIN: "fsin", OP_FCOS: "fcos", OP_FTAN: "ftan", OP_FATAN: "fatan",
-	OP_FLOG: "flog", OP_FEXP: "fexp", OP_FPOW: "fpow",
-	OP_FMOVECR: "fmovecr", OP_FMOVSR: "fmovsr", OP_FMOVCR: "fmovcr",
-	OP_FMOVSC: "fmovsc", OP_FMOVCC: "fmovcc",
-	OP_DMOV: "dmov", OP_DLOAD: "dload", OP_DSTORE: "dstore",
-	OP_DADD: "dadd", OP_DSUB: "dsub", OP_DMUL: "dmul", OP_DDIV: "ddiv",
-	OP_DMOD: "dmod", OP_DABS: "dabs", OP_DNEG: "dneg", OP_DSQRT: "dsqrt",
-	OP_DINT: "dint", OP_DCMP: "dcmp", OP_DCVTIF: "dcvtif", OP_DCVTFI: "dcvtfi",
-	OP_FCVTSD: "fcvtsd", OP_FCVTDS: "fcvtds",
-	OP_DSIN: "dsin", OP_DCOS: "dcos", OP_DTAN: "dtan", OP_DATAN: "datan",
-	OP_DLOG: "dlog", OP_DEXP: "dexp", OP_DPOW: "dpow",
-	OP_NOP64: "nop", OP_HALT64: "halt", OP_SEI64: "sei", OP_CLI64: "cli",
-	OP_RTI64: "rti", OP_WAIT64: "wait",
-	OP_MTCR: "mtcr", OP_MFCR: "mfcr", OP_ERET: "eret",
-	OP_TLBFLUSH: "tlbflush", OP_TLBINVAL: "tlbinval",
-	OP_SYSCALL: "syscall", OP_SMODE: "smode",
-	OP_SUAEN: "suaen", OP_SUADIS: "suadis",
-	OP_CAS: "cas", OP_XCHG: "xchg", OP_FAA: "faa",
-	OP_FAND: "fand", OP_FOR: "for", OP_FXOR: "fxor",
-}
+// IE64 opcode names are generated from internal/ie64meta.
 
 var ie64SizeSuffix = [4]string{".b", ".w", ".l", ".q"}
 

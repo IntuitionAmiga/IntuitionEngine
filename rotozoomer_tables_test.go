@@ -51,8 +51,8 @@ func buildIE32Assembler(t *testing.T) string {
 func buildIE64Assembler(t *testing.T) string {
 	t.Helper()
 	binPath := filepath.Join(t.TempDir(), "ie64asm")
-	cmd := exec.Command("go", "build", "-tags", "ie64", "-o", binPath,
-		filepath.Join(rotozoomerRepoRoot(t), "assembler", "ie64asm.go"))
+	cmd := exec.Command("go", "build", "-tags", "ie64", "-o", binPath, "./assembler")
+	cmd.Dir = rotozoomerRepoRoot(t)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("failed to build ie64asm: %v\n%s", err, out)

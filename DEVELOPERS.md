@@ -80,6 +80,18 @@ go test -tags ie64 ./assembler
 go test -tags headless -run TestAssemblerExamples .
 ```
 
+IE64 opcode values and mnemonic/name tables are generated from
+`internal/ie64meta/table.go`. Re-run `go generate ./...` or
+`go run ./cmd/gen_ie64_opmeta` after changing opcode metadata, then run the
+assembler/disassembler parity tests. The IE64 assembler and disassembler must be
+built as the `./assembler` package under their build tags so the generated
+opcode files are included:
+
+```bash
+go build -tags ie64 -o ie64asm ./assembler
+go build -tags ie64dis -o ie64dis ./assembler
+```
+
 The assembler example test builds both assembler CLIs, assembles the curated shipped IE32/IE64 source manifest with `-o` into a temporary directory, and compares SHA-256 output hashes in `assembler/testdata/golden_hashes.txt`.
 
 Build outputs:
@@ -382,6 +394,17 @@ SID+ additionally preserves per-channel filter sweeps. AHX+ adds authentic Amiga
 
 AHX playback is a native synthesis mapping, not an Amiga DMA sample stream: the replayer advances AHX notes, envelopes, filters, square modulation, vibrato, and portamento, then writes waveform/frequency/volume/duty/filter state into SoundChip channels 0-3. AHX+ keeps the same MMIO contract and adds the L-R-R-L pan spread plus enhanced processing.
 
+Register-mapped music players share the `PlayerControlState` helper for staged
+pointer/length registers, optional high pointer, bus reads, loop/status/error
+state, subsong selection, and async generation invalidation. SID, PSG/SN/SNDH,
+TED, POKEY/SAP, AHX, MOD, WAV, and MIDI/MUS should not grow private copies of
+that state.
+
+Headless and `novulkan` Voodoo builds both wrap `VoodooSoftwareBackend` through
+the shared `softwareVoodooBackend` adapter. Tagged Voodoo files should only
+register compiled features and select constructors; keep software forwarding
+methods in the shared wrapper so the two build profiles cannot drift.
+
 ### Display Options
 
 ```bash
@@ -667,8 +690,10 @@ audio_chip.go         Audio engine core
 *_engine.go           Sound chip engines (PSG, SID, POKEY, TED)
 *_player.go           Music file format players
 machine_bus.go        Memory mapping and I/O dispatch
+machine_lifecycle.go  Machine reset/load/profile orchestration
 main.go               CLI entry point and runtime
-assembler/            Assembler tool source code (ie32asm, ie64asm, ie64dis, ie32to64)
+assembler/            Assembler tool package (ie32asm, ie64asm, ie64dis, ie32to64)
+internal/ie64meta/    Source table for generated IE64 opcode constants and names
 sdk/                  Curated SDK with examples and build scripts
 sdk/docs/             Technical documentation
 ```

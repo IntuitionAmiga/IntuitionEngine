@@ -376,7 +376,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{sdkHexRange(COPROC_BASE, COPROC_END), "`coprocessor_constants.go` `COPROC_BASE`/`COPROC_END`, `main.go` `MapIO`"},
 		{sdkHexRange(CLIP_REGION_BASE, CLIP_REGION_END), "`clipboard_bridge_constants.go` `CLIP_REGION_BASE`/`CLIP_REGION_END`, `main.go` `MapIO`"},
 		{sdkHexRange(COPROC_EXT_BASE, COPROC_EXT_END), "`coprocessor_constants.go` `COPROC_EXT_BASE`/`COPROC_EXT_END`, `main.go` `MapIO`"},
-		{sdkHexRange(IRQ_DIAG_REGION_BASE, IRQ_DIAG_REGION_END), "`registers.go` IRQ diagnostic constants; `aros_loader.go` `MapIRQDiagnostics`; `main.go` AROS call sites; `aros_audio_dma.go` `UnmapIO` teardown"},
+		{sdkHexRange(IRQ_DIAG_REGION_BASE, IRQ_DIAG_REGION_END), "`registers.go` IRQ diagnostic constants; `aros_loader.go` `MapIRQDiagnostics`; `main.go` AROS call sites; `machine_lifecycle.go` AROS reset loader call site; `aros_audio_dma.go` `UnmapIO` teardown"},
 		{sdkHexRange(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END), "`bootstrap_hostfs_constants.go` `BOOT_HOSTFS_BASE`/`BOOT_HOSTFS_END`, `main.go` `MapIO`"},
 		{sdkHexRange(SYSINFO_REGION_BASE, SYSINFO_REGION_END), "`sysinfo_mmio.go` `RegisterSysInfoMMIOFromBus`, `main.go` registration"},
 		{sdkHexRange(VOODOO_BASE, VOODOO_END), "`voodoo_constants.go` `VOODOO_BASE`/`VOODOO_END`, `main.go` `MapIO`"},

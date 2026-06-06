@@ -44,7 +44,6 @@ Signal Flow:
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"runtime"
@@ -141,10 +140,10 @@ type VGAEngine struct {
 	readingIdx int
 
 	// Render goroutine lifecycle
-	renderMu      sync.Mutex
-	renderRunning atomic.Bool
-	renderCancel  context.CancelFunc
-	renderDone    chan struct{}
+	renderMu        sync.Mutex
+	renderRunning   atomic.Bool
+	renderScheduler *VideoScheduler
+	renderTaskID    uint64
 
 	// Set by compositor during scanline-aware rendering
 	compositorManaged atomic.Bool
@@ -1258,12 +1257,10 @@ func (v *VGAEngine) StartRenderLoop() {
 	if v.renderRunning.Load() {
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	v.renderCancel = cancel
-	done := make(chan struct{})
-	v.renderDone = done
+	v.renderScheduler = NewVideoScheduler(VGA_REFRESH_INTERVAL)
+	v.renderTaskID = v.renderScheduler.Register(v.renderTick)
 	v.renderRunning.Store(true)
-	go v.renderLoop(ctx, done)
+	v.renderScheduler.Start()
 }
 
 // StopRenderLoop stops the render goroutine and waits for it to exit.
@@ -1273,45 +1270,32 @@ func (v *VGAEngine) StopRenderLoop() {
 		v.renderMu.Unlock()
 		return
 	}
-	cancel := v.renderCancel
-	done := v.renderDone
-	v.renderCancel = nil
-	v.renderDone = nil
+	scheduler := v.renderScheduler
+	taskID := v.renderTaskID
+	v.renderScheduler = nil
+	v.renderTaskID = 0
 	v.renderMu.Unlock()
-	if cancel == nil || done == nil {
+	if scheduler == nil {
 		return
 	}
-	cancel()
-	<-done
+	scheduler.Unregister(taskID)
+	scheduler.Stop()
 }
 
-// renderLoop runs at 60Hz, rendering frames into the triple buffer.
-// done is goroutine-local to avoid close-of-wrong-channel on restart.
-func (v *VGAEngine) renderLoop(ctx context.Context, done chan struct{}) {
-	defer close(done)
-	ticker := time.NewTicker(VGA_REFRESH_INTERVAL)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if !v.enabled.Load() || v.compositorManaged.Load() {
-				continue
-			}
-			// Double-check barrier: signal rendering, then re-check managed.
-			// Compositor sets managed=true then calls WaitRenderIdle().
-			v.rendering.Store(true)
-			if v.compositorManaged.Load() {
-				v.rendering.Store(false)
-				continue
-			}
-			v.RenderFrameTo(v.frameBufs[v.writeIdx])
-			v.rendering.Store(false)
-			v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
-		}
+func (v *VGAEngine) renderTick() {
+	if !v.enabled.Load() || v.compositorManaged.Load() {
+		return
 	}
+	// Double-check barrier: signal rendering, then re-check managed.
+	// Compositor sets managed=true then calls WaitRenderIdle().
+	v.rendering.Store(true)
+	if v.compositorManaged.Load() {
+		v.rendering.Store(false)
+		return
+	}
+	v.RenderFrameTo(v.frameBufs[v.writeIdx])
+	v.rendering.Store(false)
+	v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
 }
 
 // renderScanlineMode13h renders one scanline in Mode 13h (320x200x256)

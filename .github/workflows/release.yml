@@ -56,9 +56,9 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           go build -ldflags "-s -w" -o ie32asm assembler/ie32asm.go
-          go build -ldflags "-s -w" -tags ie64 -o ie64asm assembler/ie64asm.go
+          go build -ldflags "-s -w" -tags ie64 -o ie64asm ./assembler
           go build -ldflags "-s -w" -o ie32to64 ./cmd/ie32to64/
-          go build -ldflags "-s -w" -tags ie64dis -o ie64dis assembler/ie64dis.go
+          go build -ldflags "-s -w" -tags ie64dis -o ie64dis ./assembler
           mkdir -p sdk/bin
           mv ie32asm ie64asm ie32to64 ie64dis sdk/bin/
 
@@ -126,9 +126,9 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags "novulkan embed_basic embed_emutos embed_aros" .
           go build -ldflags "-s -w" -o ie32asm.exe assembler/ie32asm.go
-          go build -ldflags "-s -w" -tags ie64 -o ie64asm.exe assembler/ie64asm.go
+          go build -ldflags "-s -w" -tags ie64 -o ie64asm.exe ./assembler
           go build -ldflags "-s -w" -o ie32to64.exe ./cmd/ie32to64/
-          go build -ldflags "-s -w" -tags ie64dis -o ie64dis.exe assembler/ie64dis.go
+          go build -ldflags "-s -w" -tags ie64dis -o ie64dis.exe ./assembler
           mkdir -p sdk/bin
           mv ie32asm.exe ie64asm.exe ie32to64.exe ie64dis.exe sdk/bin/
 
@@ -195,9 +195,9 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags "novulkan embed_basic embed_emutos embed_aros" .
           go build -ldflags "-s -w" -o ie32asm assembler/ie32asm.go
-          go build -ldflags "-s -w" -tags ie64 -o ie64asm assembler/ie64asm.go
+          go build -ldflags "-s -w" -tags ie64 -o ie64asm ./assembler
           go build -ldflags "-s -w" -o ie32to64 ./cmd/ie32to64/
-          go build -ldflags "-s -w" -tags ie64dis -o ie64dis assembler/ie64dis.go
+          go build -ldflags "-s -w" -tags ie64dis -o ie64dis ./assembler
           mkdir -p sdk/bin
           mv ie32asm ie64asm ie32to64 ie64dis sdk/bin/
 

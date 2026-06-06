@@ -45,11 +45,9 @@ Signal Flow:
 package main
 
 import (
-	"context"
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 )
 
@@ -103,10 +101,10 @@ type TEDVideoEngine struct {
 	readingIdx int
 
 	// Render goroutine lifecycle
-	renderMu      sync.Mutex
-	renderRunning atomic.Bool
-	renderCancel  context.CancelFunc
-	renderDone    chan struct{}
+	renderMu        sync.Mutex
+	renderRunning   atomic.Bool
+	renderScheduler *VideoScheduler
+	renderTaskID    uint64
 
 	// Set by compositor during scanline-aware rendering
 	compositorManaged atomic.Bool
@@ -685,12 +683,10 @@ func (t *TEDVideoEngine) StartRenderLoop() {
 	if t.renderRunning.Load() {
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.renderCancel = cancel
-	done := make(chan struct{})
-	t.renderDone = done
+	t.renderScheduler = NewVideoScheduler(COMPOSITOR_REFRESH_INTERVAL)
+	t.renderTaskID = t.renderScheduler.Register(t.renderTick)
 	t.renderRunning.Store(true)
-	go t.renderLoop(ctx, done)
+	t.renderScheduler.Start()
 }
 
 // StopRenderLoop stops the render goroutine and waits for it to exit.
@@ -700,36 +696,28 @@ func (t *TEDVideoEngine) StopRenderLoop() {
 		t.renderMu.Unlock()
 		return
 	}
-	cancel := t.renderCancel
-	done := t.renderDone
+	scheduler := t.renderScheduler
+	taskID := t.renderTaskID
+	t.renderScheduler = nil
+	t.renderTaskID = 0
 	t.renderMu.Unlock()
-	cancel()
-	<-done
+	if scheduler == nil {
+		return
+	}
+	scheduler.Unregister(taskID)
+	scheduler.Stop()
 }
 
-// renderLoop runs at 60Hz, rendering frames into the triple buffer.
-// done is goroutine-local to avoid close-of-wrong-channel on restart.
-func (t *TEDVideoEngine) renderLoop(ctx context.Context, done chan struct{}) {
-	defer close(done)
-	ticker := time.NewTicker(COMPOSITOR_REFRESH_INTERVAL)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if !t.enabled.Load() || t.compositorManaged.Load() {
-				continue
-			}
-			t.rendering.Store(true)
-			if t.compositorManaged.Load() {
-				t.rendering.Store(false)
-				continue
-			}
-			t.RenderFrameTo(t.frameBufs[t.writeIdx])
-			t.rendering.Store(false)
-			t.writeIdx = int(t.sharedIdx.Swap(int32(t.writeIdx)))
-		}
+func (t *TEDVideoEngine) renderTick() {
+	if !t.enabled.Load() || t.compositorManaged.Load() {
+		return
 	}
+	t.rendering.Store(true)
+	if t.compositorManaged.Load() {
+		t.rendering.Store(false)
+		return
+	}
+	t.RenderFrameTo(t.frameBufs[t.writeIdx])
+	t.rendering.Store(false)
+	t.writeIdx = int(t.sharedIdx.Swap(int32(t.writeIdx)))
 }

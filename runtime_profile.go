@@ -10,7 +10,7 @@ func applyRuntimeVisibleRAMForMode(bus *MachineBus, mode string) {
 		bus.ApplyProfileVisibleCeiling(clampToBusMemoryWindow(arosProfileTopBytes, bus))
 	case "emutos":
 		bus.ApplyProfileVisibleCeiling(clampToBusMemoryWindow(EmuTOSProfileTopBytes, bus))
-	case "ie64":
+	case "ie64", "intuitionos":
 		bus.ApplyProfileVisibleCeiling(bus.TotalGuestRAM())
 	}
 }

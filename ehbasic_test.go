@@ -86,8 +86,8 @@ func buildAssembler(t testing.TB) string {
 			return
 		}
 		bin := filepath.Join(dir, "ie64asm")
-		cmd := exec.Command("go", "build", "-tags", "ie64", "-o", bin,
-			filepath.Join(repoRootDir(t), "assembler", "ie64asm.go"))
+		cmd := exec.Command("go", "build", "-tags", "ie64", "-o", bin, "./assembler")
+		cmd.Dir = repoRootDir(t)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			asmBinErr = fmt.Errorf("failed to build ie64asm: %v\n%s", err, out)
 			return

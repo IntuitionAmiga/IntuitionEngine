@@ -44,7 +44,6 @@ Signal Flow:
 package main
 
 import (
-	"context"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -138,10 +137,10 @@ type ANTICEngine struct {
 	readingIdx int
 
 	// Render goroutine lifecycle
-	renderMu      sync.Mutex
-	renderRunning atomic.Bool
-	renderCancel  context.CancelFunc
-	renderDone    chan struct{}
+	renderMu        sync.Mutex
+	renderRunning   atomic.Bool
+	renderScheduler *VideoScheduler
+	renderTaskID    uint64
 
 	// Set by compositor during scanline-aware rendering
 	compositorManaged atomic.Bool
@@ -979,12 +978,10 @@ func (a *ANTICEngine) StartRenderLoop() {
 	if a.renderRunning.Load() {
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	a.renderCancel = cancel
-	done := make(chan struct{})
-	a.renderDone = done
+	a.renderScheduler = NewVideoScheduler(COMPOSITOR_REFRESH_INTERVAL)
+	a.renderTaskID = a.renderScheduler.Register(a.renderTick)
 	a.renderRunning.Store(true)
-	go a.renderLoop(ctx, done)
+	a.renderScheduler.Start()
 }
 
 // StopRenderLoop stops the render goroutine and waits for it to exit.
@@ -994,36 +991,28 @@ func (a *ANTICEngine) StopRenderLoop() {
 		a.renderMu.Unlock()
 		return
 	}
-	cancel := a.renderCancel
-	done := a.renderDone
+	scheduler := a.renderScheduler
+	taskID := a.renderTaskID
+	a.renderScheduler = nil
+	a.renderTaskID = 0
 	a.renderMu.Unlock()
-	cancel()
-	<-done
+	if scheduler == nil {
+		return
+	}
+	scheduler.Unregister(taskID)
+	scheduler.Stop()
 }
 
-// renderLoop runs at 60Hz, rendering frames into the triple buffer.
-// done is goroutine-local to avoid close-of-wrong-channel on restart.
-func (a *ANTICEngine) renderLoop(ctx context.Context, done chan struct{}) {
-	defer close(done)
-	ticker := time.NewTicker(COMPOSITOR_REFRESH_INTERVAL)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if !a.enabled.Load() || a.compositorManaged.Load() {
-				continue
-			}
-			a.rendering.Store(true)
-			if a.compositorManaged.Load() {
-				a.rendering.Store(false)
-				continue
-			}
-			a.RenderFrame(a.frameBufs[a.writeIdx])
-			a.rendering.Store(false)
-			a.writeIdx = int(a.sharedIdx.Swap(int32(a.writeIdx)))
-		}
+func (a *ANTICEngine) renderTick() {
+	if !a.enabled.Load() || a.compositorManaged.Load() {
+		return
 	}
+	a.rendering.Store(true)
+	if a.compositorManaged.Load() {
+		a.rendering.Store(false)
+		return
+	}
+	a.RenderFrame(a.frameBufs[a.writeIdx])
+	a.rendering.Store(false)
+	a.writeIdx = int(a.sharedIdx.Swap(int32(a.writeIdx)))
 }

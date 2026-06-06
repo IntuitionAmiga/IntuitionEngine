@@ -129,7 +129,7 @@ func createCPURunner(mode string, sysBus *MachineBus, videoChip *VideoChip,
 		videoChip.SetBigEndianMode(false)
 		cpu := NewCPU(sysBus)
 		return cpu, nil
-	case "ie64":
+	case "ie64", "intuitionos":
 		videoChip.SetBigEndianMode(false)
 		cpu := NewCPU64(sysBus)
 		return cpu, nil
@@ -170,6 +170,10 @@ func buildBasicBootReloadClosure(runner EmulatorCPU, bytes []byte) func() {
 	}
 }
 
+func loadIntuitionOSKernelImage(cpu *CPU64, bytes []byte) error {
+	return cpu.LoadFlatProgramBytes(bytes)
+}
+
 func buildReloadClosure(mode string, runner EmulatorCPU, bytes []byte, bus *MachineBus) func() {
 	switch mode {
 	case "ie32":
@@ -186,6 +190,14 @@ func buildReloadClosure(mode string, runner EmulatorCPU, bytes []byte, bus *Mach
 			// flat-load paths (runProgramWithFullReset / executor), so a
 			// fitting image is guaranteed here; ignore the residual error.
 			_ = cpu.LoadFlatProgramBytes(bytes)
+		}
+	case "intuitionos":
+		return func() {
+			cpu := runner.(*CPU64)
+			cpu.Reset()
+			// IntuitionOS kernels are resolved and preflighted as flat IE64
+			// images, but retain the kernel terminal/video reset profile.
+			_ = loadIntuitionOSKernelImage(cpu, bytes)
 		}
 	case "m68k":
 		return func() {
