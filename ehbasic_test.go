@@ -349,6 +349,8 @@ func assembleIOTest(t *testing.T, asmBin string, body string) []byte {
 
     org 0x1000
 
+TEST_LINE_BUF equ BASIC_LOW32_INTERNAL_BASE
+
 test_entry:
     ; Initialise I/O (caches R26/R27)
     jsr     io_init
@@ -631,6 +633,8 @@ func assembleBasicTest(t *testing.T, asmBin string, body string) []byte {
 include "ehbasic_tokens.inc"
 
     org 0x1000
+
+TEST_LINE_BUF equ BASIC_LOW32_INTERNAL_BASE
 
 test_entry:
     jsr     io_init
@@ -1139,14 +1143,47 @@ func TestREPL_MEMALLOC_PublicLow32Range(t *testing.T) {
 
 func TestREPL_ProgramTextStartsInDynamicArena(t *testing.T) {
 	const (
-		stateBase   = 0x042000
-		stProgStart = stateBase + 0x000
-		stProgEnd   = stateBase + 0x008
-		stHeapBot   = stateBase + 0x038
-		progBase    = 0x01000000
+		stateBase     = 0x042000
+		stProgStart   = stateBase + 0x000
+		stProgEnd     = stateBase + 0x008
+		stHeapTop     = stateBase + 0x030
+		stHeapBot     = stateBase + 0x038
+		stBridgeNext  = stateBase + 0x0C0
+		stScratchBase = stateBase + 0x0D0
+		stScratchEnd  = stateBase + 0x0D8
+		stLineBufPtr  = stateBase + 0x0E0
+		stLineBufCap  = stateBase + 0x0E8
+		scratchBase   = 0x01000000
+		progBase      = 0x01000400
+		basicLowCap   = 0x10000000
+		dynamicTop    = 0x0FFDF000
 	)
 
-	h, _ := startREPL(t)
+	bus, err := NewMachineBusSized(basicLowCap)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized(%#x): %v", uint64(basicLowCap), err)
+	}
+	bus.ApplyProfileVisibleCeiling(basicLowCap)
+	h := newEhbasicHarnessOnBus(t, bus)
+	startREPLOnHarness(t, h)
+	if got := h.bus.Read64(stHeapTop); got != dynamicTop {
+		t.Fatalf("ST_HEAP_TOP = %#x, want dynamic bridge top %#x", got, uint64(dynamicTop))
+	}
+	if got := h.bus.Read64(stBridgeNext); got != dynamicTop {
+		t.Fatalf("ST_FILE_BRIDGE_NEXT = %#x, want dynamic bridge top %#x", got, uint64(dynamicTop))
+	}
+	if got := h.bus.Read64(stScratchBase); got != scratchBase {
+		t.Fatalf("ST_SCRATCH_BASE = %#x, want %#x", got, uint64(scratchBase))
+	}
+	if got := h.bus.Read64(stLineBufPtr); got != scratchBase {
+		t.Fatalf("ST_LINE_BUF_PTR = %#x, want dynamic line buffer at %#x", got, uint64(scratchBase))
+	}
+	if got := h.bus.Read64(stLineBufCap); got != 1024 {
+		t.Fatalf("ST_LINE_BUF_CAP = %d, want 1024", got)
+	}
+	if got := h.bus.Read64(stScratchEnd); got != progBase {
+		t.Fatalf("ST_SCRATCH_END = %#x, want programme base %#x", got, uint64(progBase))
+	}
 	if got := h.bus.Read64(stProgStart); got != progBase {
 		t.Fatalf("ST_PROG_START = %#x, want dynamic programme base %#x", got, uint64(progBase))
 	}
@@ -1161,17 +1198,319 @@ func TestREPL_ProgramTextStartsInDynamicArena(t *testing.T) {
 	}
 }
 
+func TestEhBASICDynamicLineBufferStaticContracts(t *testing.T) {
+	repo := repoRootDir(t)
+	read := func(rel string) string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(repo, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		return string(b)
+	}
+
+	ie64 := read("sdk/include/ie64.inc")
+	for _, want := range []string{
+		"BASIC_LINE_BUF_BYTES equ 0x00000400",
+		"ST_SCRATCH_BASE   equ 0x0D0",
+		"ST_SCRATCH_END    equ 0x0D8",
+		"ST_LINE_BUF_PTR   equ 0x0E0",
+		"ST_LINE_BUF_CAP   equ 0x0E8",
+	} {
+		if !strings.Contains(ie64, want) {
+			t.Fatalf("ie64.inc missing dynamic line-buffer contract %q", want)
+		}
+	}
+	for _, retired := range []string{
+		"EHBASIC_PRIV_LINE_BUF    equ",
+		"EHBASIC_PRIV_LINE_BUFLEN equ",
+		"EHBASIC_PRIV_LINE_END    equ",
+	} {
+		if strings.Contains(ie64, retired) {
+			t.Fatalf("ie64.inc still publishes retired fixed line-buffer constant %q", retired)
+		}
+	}
+
+	for _, rel := range []string{
+		"sdk/examples/asm/ehbasic_ie64.asm",
+		"sdk/include/ehbasic_exec.inc",
+		"sdk/include/ehbasic_file_io.inc",
+		"sdk/include/ehbasic_lineeditor.inc",
+	} {
+		src := read(rel)
+		if strings.Contains(src, "EHBASIC_PRIV_LINE_BUF") || strings.Contains(src, "EHBASIC_PRIV_LINE_BUFLEN") {
+			t.Fatalf("%s still references retired fixed line-buffer symbols", rel)
+		}
+		if !strings.Contains(src, "ST_LINE_BUF_PTR") {
+			t.Fatalf("%s does not reference ST_LINE_BUF_PTR", rel)
+		}
+	}
+
+	aot := read("sdk/include/ehbasic_aot.inc")
+	for _, want := range []string{
+		"move.l r2, #0x420D0",
+		"move.l r2, #0x420D8",
+		"move.l r2, #0x420E0",
+		"move.l r2, #0x420E8",
+		"move.q r7, #0x01000000",
+		"add.q r6, r6, r7",
+	} {
+		if !strings.Contains(aot, want) {
+			t.Fatalf("AOT bootstrap string missing %q", want)
+		}
+	}
+
+	consttab := read("sdk/include/aot_consttab.inc")
+	for _, want := range []string{
+		`"ST_SCRATCH_BASE"`,
+		`"ST_SCRATCH_END"`,
+		`"ST_LINE_BUF_PTR"`,
+		`"ST_LINE_BUF_CAP"`,
+	} {
+		if !strings.Contains(consttab, want) {
+			t.Fatalf("aot_consttab.inc missing %s", want)
+		}
+	}
+}
+
+func TestEhBASICNumericVarCacheStaticContracts(t *testing.T) {
+	repo := repoRootDir(t)
+	varsPath := filepath.Join(repo, "sdk", "include", "ehbasic_vars.inc")
+	varsBytes, err := os.ReadFile(varsPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", varsPath, err)
+	}
+	vars := string(varsBytes)
+
+	for _, want := range []string{
+		"Variable cache: 4 slots x [name_tag.l, reserved.l, var_ptr.q] = 64 bytes",
+		"load.q  r8, 8(r5)           ; var_ptr from slot 0",
+		"load.q  r8, 24(r5)          ; var_ptr from slot 1",
+		"load.q  r8, 40(r5)          ; var_ptr from slot 2",
+		"load.q  r8, 56(r5)          ; var_ptr from slot 3",
+		"store.q r8, 8(r5)           ; new slot 0 var_ptr",
+	} {
+		if !strings.Contains(vars, want) {
+			t.Fatalf("ehbasic_vars.inc missing numeric cache qword contract %q", want)
+		}
+	}
+
+	for _, retired := range []string{
+		"Variable cache: 4 slots × [name_tag(4) + var_ptr(4)] = 32 bytes",
+		"Variable cache: 4 slots x [name_tag(4) + var_ptr(4)] = 32 bytes",
+		"store.l r8, 4(r5)",
+		"load.l  r8, 4(r5)",
+		"load.l  r8, 12(r5)",
+		"load.l  r8, 20(r5)",
+		"load.l  r8, 28(r5)",
+	} {
+		if strings.Contains(vars, retired) {
+			t.Fatalf("ehbasic_vars.inc still has truncating numeric cache pattern %q", retired)
+		}
+	}
+}
+
+func TestEhBASICStringPointersStaticContracts(t *testing.T) {
+	repo := repoRootDir(t)
+	read := func(rel string) string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(repo, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		return string(b)
+	}
+
+	vars := read("sdk/include/ehbasic_vars.inc")
+	if !strings.Contains(vars, "load.q  r8, (r8)             ; R8 = pointer to string data") {
+		t.Fatal("svar_read must load full 64-bit internal string pointers")
+	}
+	if strings.Contains(vars, "load.l  r8, (r8)             ; R8 = pointer to string data") {
+		t.Fatal("svar_read still truncates internal string pointers")
+	}
+
+	stringsInc := read("sdk/include/ehbasic_strings.inc")
+	for _, want := range []string{
+		"lsl.q   r4, r2, #3",
+		"store.q r8, (r3)",
+		"load.q  r8, (r3)",
+		"dc.q    0,0,0,0,0,0,0,0",
+	} {
+		if !strings.Contains(stringsInc, want) {
+			t.Fatalf("ehbasic_strings.inc missing qword string-root contract %q", want)
+		}
+	}
+	for _, retired := range []string{
+		"lsl.l   r4, r2, #2",
+		"load.l  r8, (r3)",
+		"dc.l    0,0,0,0,0,0,0,0",
+	} {
+		if strings.Contains(stringsInc, retired) {
+			t.Fatalf("ehbasic_strings.inc still has truncating string-root pattern %q", retired)
+		}
+	}
+
+	exec := read("sdk/include/ehbasic_exec.inc")
+	for _, want := range []string{
+		"store.q r8, (r22)",
+		"store.q r3, (r22)            ; store pointer in var",
+		"store.q r3, (r22)",
+		"String variables carry a full 64-bit internal pointer.",
+	} {
+		if !strings.Contains(exec, want) {
+			t.Fatalf("ehbasic_exec.inc missing qword string-cell contract %q", want)
+		}
+	}
+	for _, retired := range []string{
+		"store.l r8, (r22)\n.let_done:",
+		"store.l r3, (r22)            ; store pointer in var",
+	} {
+		if strings.Contains(exec, retired) {
+			t.Fatalf("ehbasic_exec.inc still has truncating string-cell pattern %q", retired)
+		}
+	}
+}
+
+func TestEhBASICIfElseBoundaryStaticContracts(t *testing.T) {
+	repo := repoRootDir(t)
+	read := func(rel string) string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(repo, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		return string(b)
+	}
+
+	exec := read("sdk/include/ehbasic_exec.inc")
+	for _, want := range []string{
+		"if_else_boundary:\n    dc.q    0",
+		"store.q r0, (r1)",
+		"load.q  r1, (r1)",
+		"store.q r3, (r1)",
+	} {
+		if !strings.Contains(exec, want) {
+			t.Fatalf("ehbasic_exec.inc missing qword IF/ELSE boundary contract %q", want)
+		}
+	}
+	for _, retired := range []string{
+		"if_else_boundary:\n    dc.l    0",
+		"load.l  r1, (r1)\n    beqz    r1, .el_no_else_boundary",
+		"load.l  r1, (r1)\n    beqz    r1, .print_no_boundary",
+		"store.l r3, (r1)\n    bra     .if_done",
+	} {
+		if strings.Contains(exec, retired) {
+			t.Fatalf("ehbasic_exec.inc still has truncating IF/ELSE boundary pattern %q", retired)
+		}
+	}
+
+	aot := read("sdk/include/ehbasic_aot.inc")
+	if strings.Count(aot, "aot_str_store_q    ; store.q r2, (r1)") < 3 {
+		t.Fatal("ehbasic_aot.inc must emit qword IF/ELSE boundary stores")
+	}
+	if !strings.Contains(aot, "la      r1, if_else_boundary\n    store.q r0, (r1)") {
+		t.Fatal("RUN AOT reset must clear if_else_boundary as qword")
+	}
+}
+
+func TestEhBASICDefFnStaticContracts(t *testing.T) {
+	repo := repoRootDir(t)
+	read := func(rel string) string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(repo, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		return string(b)
+	}
+
+	exec := read("sdk/include/ehbasic_exec.inc")
+	for _, want := range []string{
+		"DEF FN table: 8 entries x [name_tag.l, param_tag.l, body_ptr.q, active.l, reserved.l]",
+		"add.q   r1, r1, #24",
+		"store.q r17, 8(r1)",
+		"store.l r0, 16(r1)",
+	} {
+		if !strings.Contains(exec, want) {
+			t.Fatalf("ehbasic_exec.inc missing qword DEF FN contract %q", want)
+		}
+	}
+
+	expr := read("sdk/include/ehbasic_expr.inc")
+	for _, want := range []string{
+		"add.q   r25, r25, #24",
+		"load.l  r2, 16(r25)",
+		"store.l r2, 16(r25)",
+		"load.q  r17, 8(r25)",
+		"store.l r0, 16(r1)",
+	} {
+		if !strings.Contains(expr, want) {
+			t.Fatalf("ehbasic_expr.inc missing qword DEF FN contract %q", want)
+		}
+	}
+	for _, retired := range []string{
+		"add.q   r1, r1, #16",
+		"add.q   r25, r25, #16",
+		"store.l r17, 8(r1)",
+		"load.l  r17, 8(r25)",
+		"store.l r0, 12(r1)",
+	} {
+		if strings.Contains(exec, retired) || strings.Contains(expr, retired) {
+			t.Fatalf("DEF FN code still has truncating/old-layout pattern %q", retired)
+		}
+	}
+}
+
+func TestEhBASICArrayQwordStaticContracts(t *testing.T) {
+	repo := repoRootDir(t)
+	b, err := os.ReadFile(filepath.Join(repo, "sdk", "include", "ehbasic_vars.inc"))
+	if err != nil {
+		t.Fatalf("read ehbasic_vars.inc: %v", err)
+	}
+	vars := string(b)
+
+	for _, want := range []string{
+		"Array scratch buffers: 8 qword entries each for dimensions and indexes.",
+		"lsl.q   r12, r10, #3",
+		"store.q r8, (r13)",
+		"load.q  r2, (r2)             ; index",
+		"mulu.q  r3, r3, r7",
+		"add.q   r3, r3, r2",
+		"mulu.q  r11, r11, r8",
+		"arr_dim_buf:\n    dc.q    0,0,0,0,0,0,0,0",
+		"arr_index_buf:\n    dc.q    0,0,0,0,0,0,0,0",
+	} {
+		if !strings.Contains(vars, want) {
+			t.Fatalf("ehbasic_vars.inc missing qword array contract %q", want)
+		}
+	}
+	for _, retired := range []string{
+		"lsl.l   r12, r10, #2",
+		"store.l r8, (r13)",
+		"load.l  r2, (r2)             ; index",
+		"mulu.l  r3, r3, r7",
+		"add.l   r3, r3, r2",
+		"mulu.l  r11, r11, r8",
+		"arr_dim_buf:\n    dc.l    0,0,0,0,0,0,0,0",
+		"arr_index_buf:\n    dc.l    0,0,0,0,0,0,0,0",
+	} {
+		if strings.Contains(vars, retired) {
+			t.Fatalf("ehbasic_vars.inc still has truncating array pattern %q", retired)
+		}
+	}
+}
+
 func TestLineNewReclaimsInternalArena(t *testing.T) {
 	const (
 		resultProg = 0x00050000
 		resultHeap = 0x00050008
 		resultTerm = 0x00050010
-		progBase   = 0x01000000
+		progBase   = 0x01000400
 	)
 
 	asmBin := buildAssembler(t)
 	body := `    add.q   r1, r16, #ST_HEAP_BOTTOM
-    move.q  r2, #(BASIC_LOW32_INTERNAL_BASE + 0x448)
+    move.q  r2, #(BASIC_LOW32_INTERNAL_BASE + BASIC_LINE_BUF_BYTES + 0x448)
     store.q r2, (r1)
     jsr     line_new
 
@@ -1200,6 +1539,78 @@ func TestLineNewReclaimsInternalArena(t *testing.T) {
 	}
 	if got := h.bus.Read64(resultTerm); got != 0 {
 		t.Fatalf("dynamic programme sentinel after NEW at %#x = %#x, want 0", uint64(progBase), got)
+	}
+}
+
+func TestClearPreservesProgramAndReclaimsToProgramEnd(t *testing.T) {
+	const (
+		resultProgBefore = 0x00050100
+		resultEndBefore  = 0x00050108
+		resultProgAfter  = 0x00050110
+		resultEndAfter   = 0x00050118
+		resultHeapAfter  = 0x00050120
+	)
+
+	asmBin := buildAssembler(t)
+	body := `    ; Store one programme line so CLEAR has text to preserve.
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
+    move.q  r2, #0x9E               ; TK_PRINT
+    store.b r2, (r1)
+    store.b r0, 1(r1)
+    move.q  r8, #10
+    add.q   r9, r16, #ST_LINE_BUF_PTR
+    load.q  r9, (r9)
+    move.q  r10, #1
+    jsr     line_store
+
+    load.q  r2, (r16)
+    la      r1, 0x050100
+    store.q r2, (r1)
+    add.q   r3, r16, #ST_PROG_END
+    load.q  r2, (r3)
+    la      r1, 0x050108
+    store.q r2, (r1)
+
+    ; Simulate variable/string arena growth beyond the programme.
+    add.q   r4, r2, #0x200
+    add.q   r3, r16, #ST_HEAP_BOTTOM
+    store.q r4, (r3)
+
+    jsr     exec_do_clear
+
+    load.q  r2, (r16)
+    la      r1, 0x050110
+    store.q r2, (r1)
+    add.q   r3, r16, #ST_PROG_END
+    load.q  r2, (r3)
+    la      r1, 0x050118
+    store.q r2, (r1)
+    add.q   r3, r16, #ST_HEAP_BOTTOM
+    load.q  r2, (r3)
+    la      r1, 0x050120
+    store.q r2, (r1)`
+
+	binary := assembleExprTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	h.loadBytes(binary)
+	h.runCycles(2_000_000)
+
+	progBefore := h.bus.Read64(resultProgBefore)
+	endBefore := h.bus.Read64(resultEndBefore)
+	progAfter := h.bus.Read64(resultProgAfter)
+	endAfter := h.bus.Read64(resultEndAfter)
+	heapAfter := h.bus.Read64(resultHeapAfter)
+
+	if progBefore == 0 || endBefore <= progBefore+8 {
+		t.Fatalf("test failed to create non-empty programme: start=%#x end=%#x", progBefore, endBefore)
+	}
+	if progAfter != progBefore || endAfter != endBefore {
+		t.Fatalf("CLEAR changed programme bounds: before [%#x,%#x) after [%#x,%#x)", progBefore, endBefore, progAfter, endAfter)
+	}
+	if heapAfter != endBefore {
+		t.Fatalf("CLEAR ST_HEAP_BOTTOM = %#x, want preserved ST_PROG_END %#x", heapAfter, endBefore)
 	}
 }
 
@@ -1242,6 +1653,82 @@ func TestREPL_NumericVariablesUseDynamicSegment(t *testing.T) {
 	}
 	if tag := h.bus.Read32(uint32(ptr)); tag != 2 {
 		t.Fatalf("VARPTR(A) tag = %d, want VAL_I64 for integer literal assignment", tag)
+	}
+}
+
+func TestEhBASICNumericVarCacheHitPreservesHighPointer(t *testing.T) {
+	const (
+		stateBase  = 0x042000
+		stVarStart = stateBase + 0x010
+		resultPtr  = 0x050000
+		resultSeg  = 0x050008
+		lowWindow  = 0x10000000
+		highHeap   = uint64(0x1_0000_1000)
+		highLimit  = uint64(0x1_0001_1000)
+		wantValue  = uint64(0x1122334455667788)
+		eightGiB   = uint64(8 * 1024 * 1024 * 1024)
+	)
+
+	body := fmt.Sprintf(`    li      r2, #%#x
+    add.q   r1, r16, #ST_HEAP_BOTTOM
+    store.q r2, (r1)
+    li      r2, #%#x
+    add.q   r1, r16, #ST_HEAP_TOP
+    store.q r2, (r1)
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r2, (r1)
+
+    la      r17, var_a
+    jsr     var_lookup
+    move.q  r2, #0x1111
+    store.q r2, (r8)
+
+    la      r17, var_a
+    jsr     var_lookup
+    li      r2, #%#x
+    store.q r2, (r8)
+
+    la      r1, %#x
+    store.q r8, (r1)
+    add.q   r1, r16, #ST_VAR_START
+    load.q  r2, (r1)
+    la      r1, %#x
+    store.q r2, (r1)
+    bra     test_done
+
+var_a:
+    dc.b    "A", 0
+
+    align 8
+test_done:`, highHeap, highLimit, wantValue, resultPtr, resultSeg)
+
+	binary := assembleExprTest(t, buildAssembler(t), body)
+	bus, err := NewMachineBusSized(lowWindow)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized(%#x): %v", uint64(lowWindow), err)
+	}
+	bus.SetBacking(NewSparseBacking(eightGiB))
+	bus.SetSizing(MemorySizing{TotalGuestRAM: eightGiB})
+	bus.ApplyProfileVisibleCeiling(eightGiB)
+	h := newEhbasicHarnessOnBus(t, bus)
+	h.loadBytes(binary)
+	h.runCycles(5_000_000)
+
+	wantPayloadPtr := highHeap + 32
+	if got := h.bus.Read64(resultPtr); got != wantPayloadPtr {
+		t.Fatalf("cached var_lookup returned %#x, want full high pointer %#x", got, wantPayloadPtr)
+	}
+	if got := h.bus.Read64(resultSeg); got != highHeap {
+		t.Fatalf("ST_VAR_START result = %#x, want high segment %#x", got, highHeap)
+	}
+	if got := h.bus.Read64(stVarStart); got != highHeap {
+		t.Fatalf("ST_VAR_START = %#x, want high segment %#x", got, highHeap)
+	}
+	if got := h.bus.ReadPhys64(wantPayloadPtr); got != wantValue {
+		t.Fatalf("high cached variable payload = %#x, want %#x", got, wantValue)
+	}
+	if lowAlias := h.bus.Read64(uint32(wantPayloadPtr)); lowAlias == wantValue {
+		t.Fatalf("cache hit wrote through truncated low32 alias %#x", uint32(wantPayloadPtr))
 	}
 }
 
@@ -1330,6 +1817,110 @@ func TestREPL_StringVariablesUseDynamicSegment(t *testing.T) {
 	}
 	if ptr := h.bus.Read64(uint32(seg + 24)); ptr == 0 {
 		t.Fatal("string variable internal_ptr was not stored")
+	}
+}
+
+func TestEhBASICStringVariablesPreserveHighInternalPointers(t *testing.T) {
+	const (
+		lowWindow = 0x10000000
+		eightGiB  = uint64(8 * 1024 * 1024 * 1024)
+		highHeap  = uint64(0x1_0000_1000)
+		highTop   = uint64(0x1_0001_1000)
+
+		resultAStringPtr = 0x050000
+		resultBStringPtr = 0x050008
+		resultABytes     = 0x050010
+		resultBBytes     = 0x050018
+		resultRootPtr    = 0x050020
+		resultSVarSeg    = 0x050028
+	)
+
+	body := fmt.Sprintf(`    li      r2, #%#x
+    add.q   r1, r16, #ST_HEAP_BOTTOM
+    store.q r2, (r1)
+    li      r2, #%#x
+    add.q   r1, r16, #ST_HEAP_TOP
+    store.q r2, (r1)
+    add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
+    store.q r2, (r1)
+
+    la      r17, let_a
+    jsr     exec_do_let
+    la      r17, let_b
+    jsr     exec_do_let
+
+    li      r1, #%#x
+    load.q  r2, (r1)
+    la      r3, %#x
+    store.q r2, (r3)
+    load.l  r4, (r2)
+    la      r3, %#x
+    store.l r4, (r3)
+
+    li      r1, #%#x
+    load.q  r2, (r1)
+    la      r3, %#x
+    store.q r2, (r3)
+    load.l  r4, (r2)
+    la      r3, %#x
+    store.l r4, (r3)
+
+    move.q  r8, r2
+    jsr     str_gc_push
+    jsr     str_gc_pop
+    la      r3, %#x
+    store.q r8, (r3)
+
+    add.q   r1, r16, #ST_SVAR_START
+    load.q  r2, (r1)
+    la      r3, %#x
+    store.q r2, (r3)
+    bra     test_done
+
+let_a:
+    dc.b    "A", 0x24, "=", 0x22, "HI", 0x22, 0
+let_b:
+    dc.b    "B", 0x24, "=", "A", 0x24, "+", 0x22, "Z", 0x22, 0
+    align 8
+test_done:`, highHeap, highTop,
+		highHeap+24, resultAStringPtr, resultABytes,
+		highHeap+56, resultBStringPtr, resultBBytes,
+		resultRootPtr, resultSVarSeg)
+
+	binary := assembleExecTest(t, buildAssembler(t), body)
+	bus, err := NewMachineBusSized(lowWindow)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized(%#x): %v", uint64(lowWindow), err)
+	}
+	bus.SetBacking(NewSparseBacking(eightGiB))
+	bus.SetSizing(MemorySizing{TotalGuestRAM: eightGiB})
+	bus.ApplyProfileVisibleCeiling(eightGiB)
+	h := newEhbasicHarnessOnBus(t, bus)
+	h.loadBytes(binary)
+	h.runCycles(5_000_000)
+
+	aPtr := h.bus.Read64(resultAStringPtr)
+	bPtr := h.bus.Read64(resultBStringPtr)
+	if aPtr <= highHeap || aPtr >= highTop {
+		t.Fatalf("A$ internal pointer = %#x, want high arena pointer in [%#x,%#x)", aPtr, highHeap, highTop)
+	}
+	if bPtr <= highHeap || bPtr >= highTop {
+		t.Fatalf("B$ internal pointer = %#x, want high arena pointer in [%#x,%#x)", bPtr, highHeap, highTop)
+	}
+	if got := h.bus.Read32(resultABytes); got&0x00FFFFFF != 0x004948 {
+		t.Fatalf("A$ high bytes prefix = %#x, want HI\\0", got)
+	}
+	if got := h.bus.Read32(resultBBytes); got&0xFFFFFFFF != 0x005A4948 {
+		t.Fatalf("B$ high bytes prefix = %#x, want HIZ\\0", got)
+	}
+	if got := h.bus.Read64(resultRootPtr); got != bPtr {
+		t.Fatalf("string GC root round trip = %#x, want B$ pointer %#x", got, bPtr)
+	}
+	if got := h.bus.Read64(resultSVarSeg); got != highHeap {
+		t.Fatalf("ST_SVAR_START = %#x, want high segment %#x", got, highHeap)
+	}
+	if lowAlias := h.bus.Read64(uint32(bPtr)); lowAlias == h.bus.ReadPhys64(bPtr) {
+		t.Fatalf("string pointer was also visible through truncated low32 alias %#x", uint32(bPtr))
 	}
 }
 
@@ -1544,6 +2135,8 @@ include "ehbasic_tokens.inc"
 
     org 0x1000
 
+TEST_LINE_BUF equ BASIC_LOW32_INTERNAL_BASE
+
 test_entry:
     jsr     io_init
     la      r31, STACK_TOP
@@ -1615,8 +2208,8 @@ func TestEhBASIC_LineInit(t *testing.T) {
 	progStart := h.bus.Read32(0x041000)
 	progEnd := h.bus.Read32(0x041004)
 
-	if progStart != 0x01000000 {
-		t.Fatalf("line_init: prog_start expected dynamic fallback 0x01000000, got 0x%08X", progStart)
+	if progStart != 0x01000400 {
+		t.Fatalf("line_init: prog_start expected dynamic fallback 0x01000400, got 0x%08X", progStart)
 	}
 	if progEnd != progStart+8 {
 		t.Fatalf("line_init: prog_end expected prog_start+8, got 0x%08X", progEnd)
@@ -1632,7 +2225,7 @@ func TestEhBASIC_StoreLine(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// Store line 10 with content "PRINT" (pre-tokenized as 0x9E)
 	body := `    ; Build a tokenized line at LINE_BUF: "PRINT" = just token 0x9E
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x9E               ; TK_PRINT
     store.b r2, (r1)
     add.q   r1, r1, #1
@@ -1640,7 +2233,7 @@ func TestEhBASIC_StoreLine(t *testing.T) {
 
     ; Store line 10
     move.q  r8, #10                  ; line number
-    la      r9, EHBASIC_PRIV_LINE_BUF       ; tokenized content
+    la      r9, TEST_LINE_BUF       ; tokenized content
     move.q  r10, #1                  ; length (1 byte of token)
     jsr     line_store
 
@@ -1683,24 +2276,24 @@ func TestEhBASIC_StoreMultipleLines(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// Store line 20 first, then line 10. They should be in order 10, 20.
 	body := `    ; Store line 20 with content "B" (0x42)
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x42
     store.b r2, (r1)
     add.q   r1, r1, #1
     store.b r0, (r1)
     move.q  r8, #20
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #1
     jsr     line_store
 
     ; Store line 10 with content "A" (0x41)
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x41
     store.b r2, (r1)
     add.q   r1, r1, #1
     store.b r0, (r1)
     move.q  r8, #10
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #1
     jsr     line_store
 
@@ -1739,24 +2332,24 @@ func TestEhBASIC_ReplaceLine(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// Store line 10 with "A", then replace with "B". Verify content is "B".
 	body := `    ; Store line 10 with content "A"
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x41
     store.b r2, (r1)
     add.q   r1, r1, #1
     store.b r0, (r1)
     move.q  r8, #10
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #1
     jsr     line_store
 
     ; Replace line 10 with content "B"
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x42
     store.b r2, (r1)
     add.q   r1, r1, #1
     store.b r0, (r1)
     move.q  r8, #10
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #1
     jsr     line_store
 
@@ -1782,30 +2375,30 @@ func TestEhBASIC_DeleteLine(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// Store line 10 and 20, then delete line 10. Only line 20 should remain.
 	body := `    ; Store line 10
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x41
     store.b r2, (r1)
     add.q   r1, r1, #1
     store.b r0, (r1)
     move.q  r8, #10
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #1
     jsr     line_store
 
     ; Store line 20
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x42
     store.b r2, (r1)
     add.q   r1, r1, #1
     store.b r0, (r1)
     move.q  r8, #20
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #1
     jsr     line_store
 
     ; Delete line 10 (store with length 0)
     move.q  r8, #10
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, r0                  ; length 0 = delete
     jsr     line_store
 
@@ -1843,13 +2436,13 @@ func TestEhBASIC_New(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// Store a line, then NEW, verify program is empty
 	body := `    ; Store line 10
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x41
     store.b r2, (r1)
     add.q   r1, r1, #1
     store.b r0, (r1)
     move.q  r8, #10
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #1
     jsr     line_store
 
@@ -1878,7 +2471,7 @@ func TestEhBASIC_ListSingleLine(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// Store line 10 with raw ASCII "HELLO" (not tokenized for simplicity)
 	body := `    ; Store line 10 with content "HELLO"
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x48    ; H
     store.b r2, (r1)
     add.q   r1, r1, #1
@@ -1897,7 +2490,7 @@ func TestEhBASIC_ListSingleLine(t *testing.T) {
     store.b r0, (r1)     ; null terminator
 
     move.q  r8, #10
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #5
     jsr     line_store
 
@@ -1924,7 +2517,7 @@ func TestEhBASIC_ListSingleLine(t *testing.T) {
 func TestEhBASIC_List_NoSpuriousTerminator(t *testing.T) {
 	asmBin := buildAssembler(t)
 	body := `    ; Store line 10 with content "HELLO"
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x48
     store.b r2, (r1)
     add.q   r1, r1, #1
@@ -1943,7 +2536,7 @@ func TestEhBASIC_List_NoSpuriousTerminator(t *testing.T) {
     store.b r0, (r1)
 
     move.q  r8, #10
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #5
     jsr     line_store
 
@@ -1964,19 +2557,19 @@ func TestEhBASIC_List_NoSpuriousTerminator(t *testing.T) {
 func TestEhBASIC_Delete_Only_Line(t *testing.T) {
 	asmBin := buildAssembler(t)
 	body := `    ; Store line 10
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x41
     store.b r2, (r1)
     add.q   r1, r1, #1
     store.b r0, (r1)
     move.q  r8, #10
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #1
     jsr     line_store
 
     ; Delete line 10
     move.q  r8, #10
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, r0
     jsr     line_store
 
@@ -2003,8 +2596,8 @@ func TestEhBASIC_Delete_Only_Line(t *testing.T) {
 	h.runCycles(5_000_000)
 
 	progStart := h.bus.Read64(0x041000)
-	if progStart != 0x01000000 {
-		t.Fatalf("delete only line: ST_PROG_START expected dynamic fallback 0x01000000, got 0x%08X", progStart)
+	if progStart != 0x01000400 {
+		t.Fatalf("delete only line: ST_PROG_START expected dynamic fallback 0x01000400, got 0x%08X", progStart)
 	}
 	if progEnd := h.bus.Read64(0x041008); progEnd != progStart+8 {
 		t.Fatalf("delete only line: ST_PROG_END expected ST_PROG_START+8, got 0x%08X", progEnd)
@@ -3083,6 +3676,225 @@ func TestEhBASIC_ForNegativeStep(t *testing.T) {
 	}
 }
 
+func TestEhBASIC_ForNegativeStepStoresFP64Frame(t *testing.T) {
+	asmBin := buildAssembler(t)
+	_, h := execStmtTestWithBus(t, asmBin, `10 FOR I=3 TO 1 STEP -1
+20 END`)
+
+	const (
+		stForSP = 0x042000 + 0x068
+		valF64  = 1
+	)
+	frame := h.bus.Read64(stForSP)
+	if frame == 0 {
+		t.Fatal("ST_FOR_SP is zero after FOR setup")
+	}
+	varPtr := h.bus.Read64(uint32(frame + 8))
+	limit := h.bus.Read64(uint32(frame + 16))
+	step := h.bus.Read64(uint32(frame + 24))
+	if tag := h.bus.Read32(uint32(varPtr - 8)); tag != valF64 {
+		t.Fatalf("FOR variable tag = %d, want VAL_F64", tag)
+	}
+	if limit>>63 != 0 {
+		t.Fatalf("FOR limit has negative sign bit: %#x", limit)
+	}
+	if step>>63 != 1 {
+		t.Fatalf("FOR STEP = %#x, want negative FP64 sign bit", step)
+	}
+}
+
+func TestEhBASIC_NextNegativeStepStoresFP64Value(t *testing.T) {
+	asmBin := buildAssembler(t)
+	const (
+		resultValue = 0x050000
+		resultTag   = 0x050008
+		stForSP     = 0x042000 + 0x068
+		valF64      = 1
+	)
+	body := `
+    ; Store FOR line.
+    la      r8, .line_10_raw
+    la      r9, 0x041100
+    jsr     tokenize
+    move.q  r8, #10
+    la      r9, 0x041100
+    jsr     line_store
+    bra     .line_10_end
+.line_10_raw:
+    dc.b    "FOR I=3 TO 1 STEP -1", 0
+    align 8
+.line_10_end:
+
+    ; Store END line so exec_run returns after setting up the FOR frame.
+    la      r8, .line_20_raw
+    la      r9, 0x041100
+    jsr     tokenize
+    move.q  r8, #20
+    la      r9, 0x041100
+    jsr     line_store
+    bra     .line_20_end
+.line_20_raw:
+    dc.b    "END", 0
+    align 8
+.line_20_end:
+
+    jsr     exec_run
+    jsr     exec_do_next
+
+    add.q   r1, r16, #ST_FOR_SP
+    load.q  r2, (r1)
+    add.q   r2, r2, #8
+    load.q  r22, (r2)
+    load.q  r8, (r22)
+    jsr     fp_fix
+    la      r1, 0x050000
+    store.q r8, (r1)
+    load.l  r8, -8(r22)
+    la      r1, 0x050008
+    store.q r8, (r1)
+`
+	binary := assembleExecTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.loadBytes(binary)
+	h.runCycles(5_000_000)
+
+	if got := h.bus.Read64(resultValue); got != 2 {
+		t.Fatalf("NEXT updated I to %d, want 2", got)
+	}
+	if got := h.bus.Read64(resultTag); got != valF64 {
+		t.Fatalf("NEXT stored tag %d, want VAL_F64", got)
+	}
+}
+
+func TestEhBASIC_FPCmpLessReturnsDocumentedSentinel(t *testing.T) {
+	asmBin := buildAssembler(t)
+	const resultCmp = 0x050000
+	body := `
+    move.q  r8, #0
+    jsr     fp_float
+    push    r8
+    move.q  r8, #1
+    jsr     fp_float
+    move.q  r9, r8
+    pop     r8
+    jsr     fp_cmp
+    la      r1, 0x050000
+    store.q r8, (r1)
+`
+	binary := assembleExprTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.loadBytes(binary)
+	h.runCycles(1_000_000)
+
+	if got := h.bus.Read64(resultCmp); got != 0xFFFFFFFF {
+		t.Fatalf("fp_cmp less returned %#x, want 0xFFFFFFFF", got)
+	}
+}
+
+func TestEhBASIC_NextNegativeStepCompletesAfterLimit(t *testing.T) {
+	asmBin := buildAssembler(t)
+	const (
+		resultAfter1 = 0x050000
+		resultAfter2 = 0x050008
+		resultAfter3 = 0x050010
+		resultSP     = 0x050018
+		savedVarPtr  = 0x050020
+		stForSP      = 0x042000 + 0x068
+		stCtrlHigh   = 0x042000 + 0x0B8
+	)
+	body := `
+    ; Store FOR line.
+    la      r8, .line_10_raw
+    la      r9, 0x041100
+    jsr     tokenize
+    move.q  r8, #10
+    la      r9, 0x041100
+    jsr     line_store
+    bra     .line_10_end
+.line_10_raw:
+    dc.b    "FOR I=3 TO 1 STEP -1", 0
+    align 8
+.line_10_end:
+
+    ; Store END line so exec_run returns after setting up the FOR frame.
+    la      r8, .line_20_raw
+    la      r9, 0x041100
+    jsr     tokenize
+    move.q  r8, #20
+    la      r9, 0x041100
+    jsr     line_store
+    bra     .line_20_end
+.line_20_raw:
+    dc.b    "END", 0
+    align 8
+.line_20_end:
+
+    jsr     exec_run
+    add.q   r1, r16, #ST_FOR_SP
+    load.q  r2, (r1)
+    add.q   r2, r2, #8
+    load.q  r2, (r2)
+    la      r1, 0x050020
+    store.q r2, (r1)
+
+    jsr     exec_do_next
+    jsr     .store_i_at_0x050000
+    jsr     exec_do_next
+    jsr     .store_i_at_0x050008
+    jsr     exec_do_next
+    jsr     .store_i_at_0x050010
+
+    add.q   r1, r16, #ST_FOR_SP
+    load.q  r2, (r1)
+    la      r1, 0x050018
+    store.q r2, (r1)
+    bra     .done
+
+.store_i_at_0x050000:
+    move.q  r4, #0x050000
+    bra     .store_i_common
+.store_i_at_0x050008:
+    move.q  r4, #0x050008
+    bra     .store_i_common
+.store_i_at_0x050010:
+    move.q  r4, #0x050010
+.store_i_common:
+    la      r1, 0x050020
+    load.q  r2, (r1)
+    move.q  r22, r2
+    load.q  r8, (r22)
+    push    r4
+    jsr     fp_fix
+    pop     r4
+    store.q r8, (r4)
+    rts
+.done:
+`
+	binary := assembleExecTest(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.loadBytes(binary)
+	h.runCycles(5_000_000)
+
+	if got := h.bus.Read64(resultAfter1); got != 2 {
+		t.Fatalf("first NEXT updated I to %d, want 2", got)
+	}
+	if got := h.bus.Read64(resultAfter2); got != 1 {
+		t.Fatalf("second NEXT updated I to %d, want 1", got)
+	}
+	if got := h.bus.Read64(resultAfter3); got != 0 {
+		t.Fatalf("third NEXT updated I to %d, want 0", got)
+	}
+	if got := h.bus.Read64(savedVarPtr); got == 0 {
+		t.Fatal("test failed to save loop variable pointer")
+	}
+	if got, want := h.bus.Read64(resultSP), h.bus.Read64(stCtrlHigh); got != want {
+		t.Fatalf("third NEXT ST_FOR_SP = %#x, want popped ST_CTRL_HIGH %#x", got, want)
+	}
+	if got := h.bus.Read64(stForSP); got != h.bus.Read64(stCtrlHigh) {
+		t.Fatalf("ST_FOR_SP global = %#x, want ST_CTRL_HIGH", got)
+	}
+}
+
 func TestEhBASIC_WhileWend(t *testing.T) {
 	asmBin := buildAssembler(t)
 	out := execStmtTest(t, asmBin, `10 LET A=0
@@ -3170,35 +3982,35 @@ func TestEhBASIC_ListRange(t *testing.T) {
 	asmBin := buildAssembler(t)
 	// Store lines 10, 20, 30. LIST 20-20 should only show line 20.
 	body := `    ; Store line 10 = "A"
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x41
     store.b r2, (r1)
     add.q   r1, r1, #1
     store.b r0, (r1)
     move.q  r8, #10
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #1
     jsr     line_store
 
     ; Store line 20 = "B"
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x42
     store.b r2, (r1)
     add.q   r1, r1, #1
     store.b r0, (r1)
     move.q  r8, #20
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #1
     jsr     line_store
 
     ; Store line 30 = "C"
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    la      r1, TEST_LINE_BUF
     move.q  r2, #0x43
     store.b r2, (r1)
     add.q   r1, r1, #1
     store.b r0, (r1)
     move.q  r8, #30
-    la      r9, EHBASIC_PRIV_LINE_BUF
+    la      r9, TEST_LINE_BUF
     move.q  r10, #1
     jsr     line_store
 
@@ -4925,11 +5737,12 @@ func TestHW_Blit_Fill(t *testing.T) {
 
 func TestHW_Blit_FillAddressExpressionAfterI64Scalars(t *testing.T) {
 	asmBin := buildAssembler(t)
-	_, h := execStmtTestWithBus(t, asmBin, "10 ST=2560:FB=MEMALLOC(1228800):BB=MEMALLOC(1228800):Y=386:X=58:BLIT FILL BB+Y*ST+X*4,54,62,&H00101820,ST")
+	_, h := execStmtTestWithBus(t, asmBin, "10 ST=2560:FB=MEMALLOC(1228800,4096):BB=MEMALLOC(1228800,4096):Y=386:X=58:BLIT FILL BB+Y*ST+X*4,54,62,&H00101820,ST:POKE32 327680,BB")
 	dst := readBusMem32(h, 0xF0028) // BLT_DST
-	const want = 0x00A3D4E8
+	bb := readBusMem32(h, 327680)
+	want := bb + 386*2560 + 58*4
 	if dst != want {
-		t.Fatalf("BLIT FILL expression dst = %#x, want %#x", dst, uint32(want))
+		t.Fatalf("BLIT FILL expression dst = %#x, want %#x", dst, want)
 	}
 }
 
@@ -4965,7 +5778,7 @@ func TestHW_Blit_Mode7ResonanceZoomCoefficientsVary(t *testing.T) {
 
 func TestHW_Blit_ResonanceScrollAlphaCopyExpressionPath(t *testing.T) {
 	asmBin := buildAssembler(t)
-	program := `10 SB=MEMALLOC(2162688):BB=MEMALLOC(1228800):ST=2560:SS=65536
+	program := `10 SB=MEMALLOC(2162688,4096):BB=MEMALLOC(1228800,4096):ST=2560:SS=65536
 20 POKE32 &H000F0004,0:POKE32 &H000F0080,0:POKE32 &H000F0084,BB:POKE32 &H000F0000,1
 30 BLIT FILL BB,640,480,&H00000000,ST
 40 SX=48:X=100:Y=100

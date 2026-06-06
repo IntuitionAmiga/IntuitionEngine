@@ -31,7 +31,7 @@
 ; ============================================================================
 ; line_init - Initialise program memory
 ; ============================================================================
-; Sets up an empty program with a null terminator at ST_HEAP_BOTTOM.
+; Sets up an empty program with a null terminator at ST_SCRATCH_END.
 ; Input:  R16 = state block base
 ; Clobbers: R1, R2
 
@@ -42,13 +42,22 @@ line_init:
     la      r1, EHBASIC_PRIV_LOAD_DIR_BUF
     store.b r0, (r1)
 
-    ; Write the current internal arena cursor to ST_PROG_START. Older focused
+    ; Write the post-scratch programme base to ST_PROG_START. Older focused
     ; unit harnesses may call line_init without basic_layout_init, so seed a
-    ; reduced dynamic low32 arena only when ST_HEAP_BOTTOM is still zero.
-    add.q   r2, r16, #ST_HEAP_BOTTOM
+    ; reduced dynamic low32 arena only when ST_SCRATCH_END is still zero.
+    add.q   r2, r16, #ST_SCRATCH_END
     load.q  r1, (r2)
     bnez    r1, .li_have_prog_start
     move.q  r1, #BASIC_LOW32_INTERNAL_BASE
+    add.q   r4, r16, #ST_SCRATCH_BASE
+    store.q r1, (r4)
+    add.q   r4, r16, #ST_LINE_BUF_PTR
+    store.q r1, (r4)
+    move.q  r3, #BASIC_LINE_BUF_BYTES
+    add.q   r4, r16, #ST_LINE_BUF_CAP
+    store.q r3, (r4)
+    add.q   r1, r1, r3
+    store.q r1, (r2)
     move.q  r3, #(BASIC_LOW32_INTERNAL_BASE + 0x00800000)
     add.q   r4, r16, #ST_FILE_BRIDGE_NEXT
     store.q r3, (r4)
@@ -81,7 +90,12 @@ line_init:
 ; Clobbers: R1, R2
 
 line_new:
-    move.q  r2, #BASIC_LOW32_INTERNAL_BASE
+    add.q   r1, r16, #ST_SCRATCH_END
+    load.q  r2, (r1)
+    bnez    r2, .ln_have_prog_base
+    move.q  r2, #(BASIC_LOW32_INTERNAL_BASE + BASIC_LINE_BUF_BYTES)
+    store.q r2, (r1)
+.ln_have_prog_base:
     add.q   r1, r16, #ST_FILE_BRIDGE_LOW
     store.q r2, (r1)
     add.q   r3, r16, #ST_HEAP_TOP
@@ -495,9 +509,11 @@ line_list:
 
     ; Print content (detokenized)
     add.q   r8, r14, #16           ; tokenized source
-    la      r9, EHBASIC_PRIV_LINE_BUF     ; detokenize scratch/output buffer
+    add.q   r9, r16, #ST_LINE_BUF_PTR     ; detokenize scratch/output buffer
+    load.q  r9, (r9)
     jsr     detokenize
-    la      r8, EHBASIC_PRIV_LINE_BUF
+    add.q   r8, r16, #ST_LINE_BUF_PTR
+    load.q  r8, (r8)
     jsr     print_string
 
     ; Print CR+LF

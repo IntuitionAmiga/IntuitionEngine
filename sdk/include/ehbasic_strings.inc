@@ -932,9 +932,9 @@ str_gc_push:
     move.q  r3, #8
     bge     r2, r3, .sgp_done
     la      r3, str_gc_roots
-    lsl.l   r4, r2, #2
+    lsl.q   r4, r2, #3
     add.q   r3, r3, r4
-    store.l r8, (r3)
+    store.q r8, (r3)
     add.q   r2, r2, #1
     store.l r2, (r1)
 .sgp_done:
@@ -947,10 +947,10 @@ str_gc_pop:
     sub.q   r2, r2, #1
     store.l r2, (r1)
     la      r3, str_gc_roots
-    lsl.l   r4, r2, #2
+    lsl.q   r4, r2, #3
     add.q   r3, r3, r4
-    load.l  r8, (r3)
-    store.l r0, (r3)
+    load.q  r8, (r3)
+    store.q r0, (r3)
     rts
 .sgpop_empty:
     move.q  r8, r0
@@ -1023,7 +1023,7 @@ str_cmp:
 str_gc_root_count:
     dc.l    0
 str_gc_roots:
-    dc.l    0,0,0,0,0,0,0,0
+    dc.q    0,0,0,0,0,0,0,0
 
 ; ============================================================================
 ; Runtime error message text

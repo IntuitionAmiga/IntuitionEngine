@@ -25,10 +25,12 @@
 ; ============================================================================
 ; Input:  R16 = BASIC_STATE base after the state page has been cleared.
 ; Output: R31 = dynamic hardware stack pointer.
-; Clobbers: R1-R6.
-; Notes:  Uses no stack so cold_start can call it before R31 is initialised.
+; Clobbers: R1-R7.
+; Notes:  May change R31. It preserves the JSR return PC across the stack move,
+;         so cold_start can call it after seeding any temporary valid stack.
 
 basic_layout_init:
+    pop     r7                         ; preserve return PC before changing R31
     mfcr    r1, cr15                    ; CR_RAM_SIZE_BYTES
     bnez    r1, .bli_have_ram
     move.q  r1, #0x02000000             ; legacy harness fallback: 32 MiB
@@ -78,10 +80,23 @@ basic_layout_init:
     move.q  r6, #BASIC_LOW32_INTERNAL_BASE
     add.q   r2, r16, #ST_FILE_BRIDGE_LOW
     store.q r6, (r2)
+    add.q   r2, r16, #ST_SCRATCH_BASE
+    store.q r6, (r2)
+    add.q   r2, r16, #ST_LINE_BUF_PTR
+    store.q r6, (r2)
+    move.q  r6, #BASIC_LINE_BUF_BYTES
+    add.q   r2, r16, #ST_LINE_BUF_CAP
+    store.q r6, (r2)
+    add.q   r6, r6, #BASIC_LOW32_INTERNAL_BASE
+    add.q   r2, r16, #ST_SCRATCH_END
+    store.q r6, (r2)
+    add.q   r2, r16, #ST_FILE_BRIDGE_LOW
+    store.q r6, (r2)
     add.q   r2, r16, #ST_HEAP_BOTTOM
     store.q r6, (r2)
     add.q   r2, r16, #ST_HEAP_TOP
     store.q r4, (r2)
+    push    r7                         ; move return PC to the new stack
     rts
 
 ; ============================================================================
@@ -191,7 +206,7 @@ exec_line:
     push    r28
     move.q  r28, r0              ; R28 = return code (0 = normal)
     la      r1, if_else_boundary
-    store.l r0, (r1)
+    store.q r0, (r1)
 
 .el_next_stmt:
     ; Skip spaces
@@ -200,7 +215,7 @@ exec_line:
     ; True IF clauses set an ELSE boundary so the statement loop stops before
     ; executing the ELSE clause.
     la      r1, if_else_boundary
-    load.l  r1, (r1)
+    load.q  r1, (r1)
     beqz    r1, .el_no_else_boundary
     bge     r17, r1, .el_done
 .el_no_else_boundary:
@@ -533,7 +548,7 @@ exec_do_let:
     ; String RHS
     jsr     str_eval             ; R8 = pointer to string data
     bnez    r28, .let_done
-    store.l r8, (r22)
+    store.q r8, (r22)
 .let_done:
     rts
     ; === END exec_do_let ===
@@ -591,7 +606,7 @@ exec_do_print:
 
 .print_loop:
     la      r1, if_else_boundary
-    load.l  r1, (r1)
+    load.q  r1, (r1)
     beqz    r1, .print_no_boundary
     bge     r17, r1, .print_crlf
 .print_no_boundary:
@@ -850,7 +865,7 @@ exec_do_if:
     bra     .if_true_else_loop
 .if_true_else_found:
     la      r1, if_else_boundary
-    store.l r3, (r1)
+    store.q r3, (r1)
     bra     .if_done
 
 .if_false:
@@ -1018,14 +1033,22 @@ exec_do_next:
     ; Add STEP to loop variable
     load.q  r8, (r22)           ; current value
     move.q  r9, r24             ; step
+    push    r22                 ; preserve loop variable pointer across FP helper
+    push    r23                 ; preserve loop limit across FP helper
+    push    r24                 ; preserve loop step across FP helper
     jsr     fp_add              ; R8 = value + step
+    pop     r24
+    pop     r23
+    pop     r22
     jsr     exec_store_fp64_r22 ; store back
 
     ; Compare with limit
     ; If step > 0: continue while value <= limit
     ; If step < 0: continue while value >= limit
     move.q  r9, r23             ; R9 = limit
+    push    r24                 ; preserve step sign across FP helper
     jsr     fp_cmp              ; R8 = -1/0/1
+    pop     r24
 
     ; Check step sign
     lsr.q   r3, r24, #63        ; R3 = sign bit of step (0=positive, 1=negative)
@@ -1039,33 +1062,28 @@ exec_do_next:
 
 .next_neg_step:
     ; Negative step: loop while value >= limit (cmp returns 1 or 0)
-    ; Any negative compare result means value < limit -> done.
-    bltz    r8, .next_done
+    ; The fp_cmp less sentinel is the documented low-32 0xFFFFFFFF value.
+    move.l  r3, #0xFFFFFFFF
+    beq     r8, r3, .next_done
 
 .next_loop_back:
     ; Loop continues: restore execution to the body of the FOR.
     ;
     ; R25 = the FOR statement's BASIC line pointer.
     ; R15 = saved text ptr (the byte immediately after the FOR/TO/STEP
-    ;       clause).  For a one-liner FOR (e.g.
-    ;         20 FOR I=0 TO 10:A(I)=I*I:NEXT
-    ;       ) this is the ':' before the body, so exec_line continues
-    ;       on the same line and the body re-runs.  For a multi-line
-    ;       FOR (FOR alone on its line, body on subsequent lines, NEXT
-    ;       further down) this is the end-of-line null byte; exec_line
-    ;       sees it and returns, and the outer exec_next_line walker
-    ;       advances R14 via `load.q r14, (r14)` to the line after FOR
-    ;       — i.e. the first body line.
-    ;
-    ; The previous implementation set R14 directly to "(R25)" (the line
-    ; after FOR) and returned R28=1.  That worked for the multi-line
-    ; shape but skipped the body for the one-liner shape, because the
-    ; on-line body sits between the FOR clause and the closing NEXT
-    ; and was never revisited.  The new implementation drives both
-    ; shapes through the same R17-restore path.
+    ;       clause). For one-line FOR bodies this is the ':' before the
+    ;       body, so resume in the current exec_line call. For multi-line
+    ;       FOR bodies this is the null terminator, so jump the outer
+    ;       line walker to the line after the FOR header.
+    load.b  r1, (r15)
+    beqz    r1, .next_loop_multiline
     move.q  r14, r25            ; current line = FOR line
     move.q  r17, r15            ; text ptr  = body start
     move.q  r28, r0             ; R28 = 0: continue exec_line normally
+    rts
+.next_loop_multiline:
+    load.q  r14, (r25)          ; current line = first body line
+    move.q  r28, #1             ; R28 = 1: R14 already updated
     rts
 
 .next_done:
@@ -1236,6 +1254,10 @@ exec_do_dec:
 ; --- CLEAR ---
 exec_do_clear:
     jsr     var_init             ; reset all variables
+    add.q   r1, r16, #ST_PROG_END
+    load.q  r2, (r1)
+    add.q   r1, r16, #ST_HEAP_BOTTOM
+    store.q r2, (r1)
     jsr     basic_memalloc_reset
     ; Reset DATA pointer
     add.q   r1, r16, #ST_DATA_PTR
@@ -1296,8 +1318,8 @@ exec_do_swap:
     move.q  r23, r8              ; R23 = second var ptr
     move.q  r25, r9              ; R25 = second var type flag
     ; Scalar numeric variables carry a public value tag immediately before the
-    ; value payload. Preserve it only when both sides are numeric scalars.
-    bnez    r24, .swap_low32_no_marker
+    ; value payload. String variables carry a full 64-bit internal pointer.
+    bnez    r24, .swap_first_string
     bnez    r25, .swap_low32_no_marker
     load.l  r1, -8(r22)
     load.l  r2, -8(r23)
@@ -1326,6 +1348,13 @@ exec_do_swap:
     jsr     exec_clear_qword_marker
     move.q  r22, r23
     jsr     exec_clear_qword_marker
+    bra     .swap_done
+.swap_first_string:
+    beqz    r25, .swap_low32_no_marker
+    load.q  r1, (r22)
+    load.q  r2, (r23)
+    store.q r2, (r22)
+    store.q r1, (r23)
     bra     .swap_done
 .swap_low32_no_marker:
     load.l  r1, (r22)
@@ -1425,7 +1454,7 @@ exec_do_get:
     store.b r8, (r3)             ; the character
     add.q   r4, r3, #1
     store.b r0, (r4)             ; null terminator
-    store.l r3, (r22)            ; store pointer in var
+    store.q r3, (r22)            ; store pointer in var
     rts
 .get_empty:
     ; No char available: store 0 (num) or "" (str)
@@ -1439,7 +1468,7 @@ exec_do_get:
     move.q  r3, r8
     beqz    r3, .get_done
     store.b r0, (r3)             ; empty string (just null)
-    store.l r3, (r22)
+    store.q r3, (r22)
 .get_done:
     rts
     ; === END exec_do_get ===
@@ -1635,28 +1664,32 @@ exec_do_input:
     move.q  r24, r9              ; save type flag
     move.q  r23, r17             ; save statement cursor
 
-    ; Read line into EHBASIC_PRIV_LINE_BUF.
-    la      r8, EHBASIC_PRIV_LINE_BUF
+    ; Read line into the BASIC-owned dynamic line buffer.
+    add.q   r8, r16, #ST_LINE_BUF_PTR
+    load.q  r8, (r8)
     move.q  r9, #80
     jsr     read_line
     bnez    r24, .input_store_string
 
     ; Numeric variable: parse line as a tagged expression.
-    la      r17, EHBASIC_PRIV_LINE_BUF
+    add.q   r17, r16, #ST_LINE_BUF_PTR
+    load.q  r17, (r17)
     jsr     expr_eval            ; R8 = payload, R9 = tag
     jsr     exec_store_expr_r22
     bra     .input_after_store
 
 .input_store_string:
-    la      r8, EHBASIC_PRIV_LINE_BUF
+    add.q   r8, r16, #ST_LINE_BUF_PTR
+    load.q  r8, (r8)
     jsr     str_len
     jsr     str_alloc
     bnez    r28, .input_done
     beqz    r8, .input_done
     move.q  r3, r8               ; allocated string pointer
-    move.q  r9, #EHBASIC_PRIV_LINE_BUF
+    add.q   r9, r16, #ST_LINE_BUF_PTR
+    load.q  r9, (r9)
     jsr     str_copy
-    store.l r3, (r22)
+    store.q r3, (r22)
 
     ; Restore statement cursor and continue list parsing
 .input_after_store:
@@ -2497,7 +2530,7 @@ exec_do_def:
     bnez    r3, .def_next_slot
     move.q  r3, r1               ; remember empty slot
 .def_next_slot:
-    add.q   r1, r1, #16
+    add.q   r1, r1, #24
     sub.q   r2, r2, #1
     bra     .def_find_slot
 .def_store_slot:
@@ -2506,8 +2539,9 @@ exec_do_def:
 .def_use_slot:
     store.l r22, (r1)
     store.l r23, 4(r1)
-    store.l r17, 8(r1)
-    store.l r0, 12(r1)
+    store.q r17, 8(r1)
+    store.l r0, 16(r1)
+    store.l r0, 20(r1)
 .def_skip:
     load.b  r1, (r17)
     beqz    r1, .def_done
@@ -2693,18 +2727,19 @@ stmt_jump_table:
     dc.l    exec_do_triangle     ;126  (0xFE) TK_TRIANGLE
     dc.l    exec_do_texture      ;127  (0xFF) TK_TEXTURE
 
+    align 8
 if_else_boundary:
-    dc.l    0
-; DEF FN table: 8 entries × [name tag, parameter tag, body pointer, active flag]
+    dc.q    0
+; DEF FN table: 8 entries x [name_tag.l, param_tag.l, body_ptr.q, active.l, reserved.l]
 fn_table:
-    dc.l    0,0,0,0
-    dc.l    0,0,0,0
-    dc.l    0,0,0,0
-    dc.l    0,0,0,0
-    dc.l    0,0,0,0
-    dc.l    0,0,0,0
-    dc.l    0,0,0,0
-    dc.l    0,0,0,0
+    dc.l    0,0,0,0,0,0
+    dc.l    0,0,0,0,0,0
+    dc.l    0,0,0,0,0,0
+    dc.l    0,0,0,0,0,0
+    dc.l    0,0,0,0,0,0
+    dc.l    0,0,0,0,0,0
+    dc.l    0,0,0,0,0,0
+    dc.l    0,0,0,0,0,0
 
 ; ============================================================================
 ; Helper: exec_skip_spaces

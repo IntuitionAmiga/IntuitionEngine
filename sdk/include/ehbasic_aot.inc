@@ -442,6 +442,7 @@ AOT_CLS_FP2   equ 16     ; 2-operand FPU op (dst, src); fp-ness per mnemtab flag
 AOT_CLS_FP3   equ 17     ; 3-FP-register op (fd, fs, ft)
 AOT_CLS_FCMP  equ 18     ; fcmp rd, fs, ft  (rd integer, fs/ft FP)
 AOT_CLS_FPMEM equ 19     ; fload/fstore/dload/dstore fN, disp(rN)
+AOT_CLS_MOVT  equ 20     ; movt rd, #imm32
 
 ; aot_parse_mnem - read a mnemonic and optional ".b/.w/.l/.q" size suffix, then
 ; resolve it through the mnemonic table.
@@ -552,6 +553,7 @@ aot_parse_mnem:
     align 8
 aot_mnemtab:
     dc.b "move", 0,0,0,0,   0x01, AOT_CLS_MOVE,  0,0,0,0,0,0
+    dc.b "movt", 0,0,0,0,   0x02, AOT_CLS_MOVT,  0,0,0,0,0,0
     dc.b "load", 0,0,0,0,   0x10, AOT_CLS_LOAD,  0,0,0,0,0,0
     dc.b "store",0,0,0,     0x11, AOT_CLS_STORE, 0,0,0,0,0,0
     dc.b "lea",  0,0,0,0,0, 0x04, AOT_CLS_LEA,   0,0,0,0,0,0
@@ -560,6 +562,10 @@ aot_mnemtab:
     dc.b "pop",  0,0,0,0,0, 0x53, AOT_CLS_POP,   0,0,0,0,0,0
     dc.b "beqz", 0,0,0,0,   0x41, AOT_CLS_BZ,    0,0,0,0,0,0
     dc.b "bnez", 0,0,0,0,   0x42, AOT_CLS_BZ,    0,0,0,0,0,0
+    dc.b "bltz", 0,0,0,0,   0x43, AOT_CLS_BZ,    0,0,0,0,0,0
+    dc.b "bgez", 0,0,0,0,   0x44, AOT_CLS_BZ,    0,0,0,0,0,0
+    dc.b "bgtz", 0,0,0,0,   0x45, AOT_CLS_BZ,    0,0,0,0,0,0
+    dc.b "blez", 0,0,0,0,   0x46, AOT_CLS_BZ,    0,0,0,0,0,0
     dc.b "mfcr", 0,0,0,0,   0xE7, AOT_CLS_MFCR,  0,0,0,0,0,0
     dc.b "tlbflush",        0xE9, AOT_CLS_NOARG, 0,0,0,0,0,0
     ; FPU (size .L). FP2 pad bytes: [10] = dst is FP, [11] = src is FP.
@@ -1030,6 +1036,8 @@ aot_asm_line:
     beq     r23, r1, .al_alu2
     move.q  r1, #AOT_CLS_MOVE
     beq     r23, r1, .al_move
+    move.q  r1, #AOT_CLS_MOVT
+    beq     r23, r1, .al_movt
     move.q  r1, #AOT_CLS_LOAD
     beq     r23, r1, .al_mem
     move.q  r1, #AOT_CLS_STORE
@@ -1111,6 +1119,28 @@ aot_asm_line:
     jsr     aot_parse_reg
     beqz    r9, .al_err
     move.q  r27, r8                 ; rs (source register)
+    move.q  r20, r10
+    bra     .al_endchk
+
+.al_movt:
+    move.q  r24, #3                 ; movt is encoded as a qword-sized immediate op
+    jsr     aot_skip_comma
+    beqz    r9, .al_err
+    move.q  r8, r20
+.mt_sp:
+    load.b  r1, (r8)
+    move.q  r2, #0x20
+    bne     r1, r2, .mt_hash
+    add.q   r8, r8, #1
+    bra     .mt_sp
+.mt_hash:
+    move.q  r2, #0x23               ; '#'
+    bne     r1, r2, .al_err
+    add.q   r8, r8, #1
+    jsr     aot_parse_value
+    beqz    r9, .al_err
+    move.q  r29, r8
+    move.q  r26, #1
     move.q  r20, r10
     bra     .al_endchk
 
@@ -1215,7 +1245,7 @@ aot_asm_line:
     move.q  r25, r8                 ; rd = reg
     move.q  r20, r10
     bra     .al_endchk
-; beqz/bnez rs, label -> beq/bne rs, r0, label (rt stays 0).
+; beqz/bnez/bltz/bgez/bgtz/blez rs, label -> b<cc> rs, r0, label (rt stays 0).
 .al_bz:
     move.q  r24, #3
     move.q  r8, r20
@@ -2989,7 +3019,7 @@ aot_transpile:
     la      r9, aot_str_movel_r2   ; move.l r2, #<else addr>
     move.q  r10, r22
     jsr     aot_emit_movel
-    la      r9, aot_str_store_l    ; store.l r2, (r1)
+    la      r9, aot_str_store_q    ; store.q r2, (r1)
     jsr     aot_emit_str
     move.q  r17, r8
     bra     .tr_if_then_sp
@@ -3048,7 +3078,7 @@ aot_transpile:
     la      r9, aot_str_movel_r2   ; move.l r2, #0
     move.q  r10, #0
     jsr     aot_emit_movel
-    la      r9, aot_str_store_l    ; store.l r2, (r1)
+    la      r9, aot_str_store_q    ; store.q r2, (r1)
     jsr     aot_emit_str
     move.q  r17, r8
     bra     .tr_stmt
@@ -3241,6 +3271,11 @@ aot_transpile:
     move.q  r10, #RT_EXEC_DO_NEXT  ; call exec_do_next (checked: halt on error)
     jsr     aot_emit_rt_call
 .tr_next_called:
+    ; exec_do_next uses R28 as the interpreter line-control code. Generated AOT
+    ; branches from ST_FOR_SP instead, and later helpers use nonzero R28 as an
+    ; error short-circuit, so clear it before the next generated statement runs.
+    la      r9, aot_str_moveq_r28_0
+    jsr     aot_emit_str
     ; reload ST_FOR_SP; if unchanged the frame is still active -> loop to F<id>
     la      r9, aot_str_movel_r2
     move.q  r10, #AOT_FOR_SP_SAVE
@@ -3636,7 +3671,7 @@ aot_transpile:
     la      r9, aot_str_movel_r2   ; move.l r2, #0
     move.q  r10, #0
     jsr     aot_emit_movel
-    la      r9, aot_str_store_l    ; store.l r2, (r1)
+    la      r9, aot_str_store_q    ; store.q r2, (r1)
     jsr     aot_emit_str
     move.q  r17, r8
     la      r1, AOT_IF_LABEL
@@ -3663,6 +3698,9 @@ aot_str_rts:
     align 4
 aot_str_halt:
     dc.b    "halt", 0x0A, 0
+    align 4
+aot_str_moveq_r28_0:
+    dc.b    "move.q r28, r0", 0x0A, 0
     align 4
 aot_str_movel_r1:
     dc.b    "move.l r1, #", 0
@@ -3824,6 +3862,19 @@ aot_str_basic_layout_init:
     dc.b    "move.l r2, #0x420C0", 0x0A
     dc.b    "store.q r4, (r2)", 0x0A
     dc.b    "move.q r6, #0x01000000", 0x0A
+    dc.b    "move.l r2, #0x420C8", 0x0A
+    dc.b    "store.q r6, (r2)", 0x0A
+    dc.b    "move.l r2, #0x420D0", 0x0A
+    dc.b    "store.q r6, (r2)", 0x0A
+    dc.b    "move.l r2, #0x420E0", 0x0A
+    dc.b    "store.q r6, (r2)", 0x0A
+    dc.b    "move.q r6, #0x400", 0x0A
+    dc.b    "move.l r2, #0x420E8", 0x0A
+    dc.b    "store.q r6, (r2)", 0x0A
+    dc.b    "move.q r7, #0x01000000", 0x0A
+    dc.b    "add.q r6, r6, r7", 0x0A
+    dc.b    "move.l r2, #0x420D8", 0x0A
+    dc.b    "store.q r6, (r2)", 0x0A
     dc.b    "move.l r2, #0x420C8", 0x0A
     dc.b    "store.q r6, (r2)", 0x0A
     dc.b    "move.l r2, #0x42038", 0x0A
@@ -4023,13 +4074,13 @@ aot_str_addq_r1_gosub:
     dc.b    "add.q r1, r16, #", 0
     align 4
 aot_str_load_r1_r1:
-    dc.b    "load.l r1, (r1)", 0x0A, 0
+    dc.b    "load.q r1, (r1)", 0x0A, 0
     align 4
 aot_str_store_r1_r2:
-    dc.b    "store.l r1, (r2)", 0x0A, 0
+    dc.b    "store.q r1, (r2)", 0x0A, 0
     align 4
 aot_str_load_r2_r2:
-    dc.b    "load.l r2, (r2)", 0x0A, 0
+    dc.b    "load.q r2, (r2)", 0x0A, 0
     align 4
 aot_str_beq_r1_r2_f:
     dc.b    "beq r1, r2, F", 0
@@ -4532,12 +4583,19 @@ aot_emit_dcb:
 ; Output R11 = 1 ok, 0 text overflow. Clobbers R1-R15.
 aot_emit_bundled_data:
     move.q  r11, #1
-    ; --- fp_print closure (split so the fp_print label lands at its entry) ---
+    ; --- FP closure (split so referenced labels land at their entries) ---
     la      r1, AOT_USE_FP
     load.q  r1, (r1)
     beqz    r1, .bd_no_fp
     move.q  r9, #fp_neg
-    move.q  r10, #(fp_print - fp_neg)
+    move.q  r10, #(fp_float - fp_neg)
+    jsr     aot_emit_dcb
+    beqz    r11, .bd_done
+    la      r9, aot_str_lbl_fp_float
+    jsr     aot_emit_label_chk
+    beqz    r11, .bd_done
+    move.q  r9, #fp_float
+    move.q  r10, #(fp_print - fp_float)
     jsr     aot_emit_dcb
     beqz    r11, .bd_done
     la      r9, aot_str_lbl_fp_print
@@ -4638,6 +4696,8 @@ aot_emit_label_chk:
 
 aot_str_dcb_kw:
     dc.b    "    dc.b ", 0
+aot_str_lbl_fp_float:
+    dc.b    "fp_float:", 0x0A, 0
 aot_str_lbl_fp_print:
     dc.b    "fp_print:", 0x0A, 0
 aot_str_lbl_rtpay:
@@ -5326,7 +5386,7 @@ aot_do_transpile:
     rts
 aot_do_transpile_inner:
     jsr     aot_alloc_reset
-    move.q  r8, #0x40000           ; 256 KiB asm-text buffer (holds the self-contained
+    move.q  r8, #0x80000           ; 512 KiB asm-text buffer (holds the self-contained
                                    ; dc.b'd closure/blob/programme, like COMPILE)
     jsr     aot_alloc_file_bridge
     bnez    r9, .tp_oom
@@ -5347,7 +5407,7 @@ aot_do_transpile_inner:
     la      r1, AOT_DC_TEXT
     load.q  r9, (r1)
     move.q  r10, #1                ; standalone
-    add.q   r11, r9, #0x40000      ; text buffer end (256 KiB)
+    add.q   r11, r9, #0x80000      ; text buffer end (512 KiB)
     jsr     aot_transpile          ; R8=status R9=textLen
     move.q  r1, #2
     beq     r8, r1, .tp_oom        ; text buffer overflow
@@ -5465,16 +5525,16 @@ aot_do_compile:
     rts
 aot_do_compile_inner:
     jsr     aot_alloc_reset
-    move.q  r8, #0x40000           ; 256 KiB asm-text buffer (low32, writable): holds
+    move.q  r8, #0x80000           ; 512 KiB asm-text buffer (low32, writable): holds
                                    ; the user code plus the fp_print closure, runtime
-                                   ; blob (~34 KiB -> ~190 KiB as dc.b) and programme
+                                   ; blob (~53 KiB -> over 300 KiB as dc.b) and programme
                                    ; emitted as self-contained dc.b data.
     jsr     aot_alloc_file_bridge
     bnez    r9, .dc_oom
     la      r1, AOT_DC_TEXT
     store.q r8, (r1)
     move.q  r8, #0x18000           ; 96 KiB machine-code buffer (low32, writable):
-                                   ; holds user code + fp_print closure + the ~34 KiB
+                                   ; holds user code + fp_print closure + the runtime
                                    ; bundled runtime blob payload.
     jsr     aot_alloc_file_bridge
     bnez    r9, .dc_oom
@@ -5498,7 +5558,7 @@ aot_do_compile_inner:
     la      r1, AOT_DC_TEXT
     load.q  r9, (r1)
     move.q  r10, #1                ; standalone
-    add.q   r11, r9, #0x40000      ; text buffer end (256 KiB)
+    add.q   r11, r9, #0x80000      ; text buffer end (512 KiB)
     jsr     aot_transpile          ; R8=status R9=textLen
     move.q  r1, #2
     beq     r8, r1, .dc_oom        ; text buffer overflow
@@ -5776,7 +5836,7 @@ aot_do_run_aot_inner:
     add.q   r1, r16, #ST_DATA_PTR
     store.q r0, (r1)
     la      r1, if_else_boundary
-    store.l r0, (r1)
+    store.q r0, (r1)
     load.q  r14, (r16)             ; R14 = first line record
     ; Clear any pending native continuation: a fresh RUN AOT restarts the programme,
     ; so a stale STOP resume address from a previous run must not be honoured by CONT.

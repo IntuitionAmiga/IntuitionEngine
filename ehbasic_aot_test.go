@@ -27,6 +27,7 @@ func assembleAOTUnit(t *testing.T, asmBin string, body string) []byte {
 	source := fmt.Sprintf(`include "ie64.inc"
 
 fp_neg          equ 0
+fp_float        equ 0
 fp_int          equ 0
 fp_fix          equ 0
 fp_print        equ 0
@@ -313,7 +314,7 @@ func TestAOT_CompileOutputBuffersUseLow32FileBridge(t *testing.T) {
     store.q r2, (r1)
     jsr     aot_alloc_reset
 
-    move.q  r8, #0x40000
+    move.q  r8, #0x80000
     jsr     aot_alloc_file_bridge
     la      r1, 0x031000
     store.q r8, (r1)            ; [0] COMPILE/TRANSPILE text buffer
@@ -360,7 +361,7 @@ func TestAOT_CompileOutputBuffersUseLow32FileBridge(t *testing.T) {
 
 	const low32Cap = 0xFFFF0000
 	const ctrlLow = 0x0000000100200000
-	const wantText = low32Cap - 0x40000
+	const wantText = low32Cap - 0x80000
 	const wantCode = wantText - 0x18000
 	const wantAssembleCode = wantCode - 0x18000
 
@@ -392,7 +393,7 @@ func TestAOT_CompileOutputBuffersUseLow32FileBridge(t *testing.T) {
 func TestAOT_FileBridgeSharesFrontierBelowLow32Cap(t *testing.T) {
 	asmBin := buildAssembler(t)
 	body := `    jsr     aot_alloc_reset
-    move.q  r8, #0x40000
+    move.q  r8, #0x80000
     jsr     aot_alloc_file_bridge
     la      r1, 0x031000
     store.q r8, (r1)            ; [0] bridge text buffer
@@ -437,7 +438,7 @@ func TestAOT_FileBridgeSharesFrontierBelowLow32Cap(t *testing.T) {
 	bridgeNext := h.bus.Read64(0x031030)
 	arenaNext := h.bus.Read64(0x031038)
 
-	const wantText = aotTestGuestRAM - 0x40000
+	const wantText = aotTestGuestRAM - 0x80000
 	const wantCode = wantText - 0x18000
 	const wantSymtab = wantCode - 0x10000
 
@@ -708,6 +709,19 @@ func TestAOT_Transpile(t *testing.T) {
 		"move.q r6, #0x01000000\n" +
 		"move.l r2, #0x420C8\n" +
 		"store.q r6, (r2)\n" +
+		"move.l r2, #0x420D0\n" +
+		"store.q r6, (r2)\n" +
+		"move.l r2, #0x420E0\n" +
+		"store.q r6, (r2)\n" +
+		"move.q r6, #0x400\n" +
+		"move.l r2, #0x420E8\n" +
+		"store.q r6, (r2)\n" +
+		"move.q r7, #0x01000000\n" +
+		"add.q r6, r6, r7\n" +
+		"move.l r2, #0x420D8\n" +
+		"store.q r6, (r2)\n" +
+		"move.l r2, #0x420C8\n" +
+		"store.q r6, (r2)\n" +
 		"move.l r2, #0x42038\n" +
 		"store.q r6, (r2)\n" +
 		"move.l r2, #0x42030\n" +
@@ -769,6 +783,17 @@ func TestAOT_Transpile(t *testing.T) {
     la      r1, 0x032038
     store.q r8, (r1)
     la      r1, 0x032040
+    store.q r9, (r1)
+
+    ; assemble the standalone output too: COMPILE feeds this exact bootstrap
+    ; text to the in-guest assembler.
+    la      r8, 0x031300
+    move.q  r9, #0x1000
+    la      r10, 0x034000
+    jsr     aot_asm_program
+    la      r1, 0x032048
+    store.q r8, (r1)
+    la      r1, 0x032050
     store.q r9, (r1)
 
     ; unsupported (CONT token 0x9F - REPL command, not lowerable): line + terminator
@@ -841,6 +866,12 @@ func TestAOT_Transpile(t *testing.T) {
 	}
 	if got := string(read(0x031300, len(standaloneWant))); got != standaloneWant {
 		t.Errorf("standalone transpile output=%q, want %q", got, standaloneWant)
+	}
+	if st := h.bus.Read64(0x032048); st != 1 {
+		t.Errorf("standalone assemble status=%d, want 1", st)
+	}
+	if cl := h.bus.Read64(0x032050); cl == 0 {
+		t.Error("standalone assemble codeLen=0, want nonzero")
 	}
 	if st := h.bus.Read64(0x032020); st != 0 {
 		t.Errorf("PRINT transpile status=%d, want 0 (unsupported)", st)
@@ -1871,6 +1902,103 @@ func TestREPL_RunAOT_ForNext(t *testing.T) {
 	}
 }
 
+func TestAOTTranspileForNextUsesQwordLoopSP(t *testing.T) {
+	asmBin := buildAssembler(t)
+	body := `    ; Build line records for:
+    ; 10 FOR I=1 TO 3
+    ; 20 PRINT I
+    ; 30 NEXT
+    ; terminator
+    la      r1, 0x030000
+    la      r2, 0x030040
+    store.q r2, (r1)
+    move.q  r2, #10
+    store.l r2, 8(r1)
+    store.l r0, 12(r1)
+    move.q  r2, #0x81              ; TK_FOR
+    store.b r2, 16(r1)
+    move.q  r2, #0x20
+    store.b r2, 17(r1)
+    move.q  r2, #0x49              ; I
+    store.b r2, 18(r1)
+    move.q  r2, #0x3D              ; =
+    store.b r2, 19(r1)
+    move.q  r2, #0x31              ; 1
+    store.b r2, 20(r1)
+    move.q  r2, #0x20
+    store.b r2, 21(r1)
+    move.q  r2, #0xA9              ; TK_TO
+    store.b r2, 22(r1)
+    move.q  r2, #0x20
+    store.b r2, 23(r1)
+    move.q  r2, #0x33              ; 3
+    store.b r2, 24(r1)
+    store.b r0, 25(r1)
+
+    la      r1, 0x030040
+    la      r2, 0x030080
+    store.q r2, (r1)
+    move.q  r2, #20
+    store.l r2, 8(r1)
+    store.l r0, 12(r1)
+    move.q  r2, #0x9E              ; TK_PRINT
+    store.b r2, 16(r1)
+    move.q  r2, #0x20
+    store.b r2, 17(r1)
+    move.q  r2, #0x49              ; I
+    store.b r2, 18(r1)
+    store.b r0, 19(r1)
+
+    la      r1, 0x030080
+    la      r2, 0x0300C0
+    store.q r2, (r1)
+    move.q  r2, #30
+    store.l r2, 8(r1)
+    store.l r0, 12(r1)
+    move.q  r2, #0x82              ; TK_NEXT
+    store.b r2, 16(r1)
+    store.b r0, 17(r1)
+
+    la      r1, 0x0300C0
+    store.q r0, (r1)
+
+    la      r8, 0x030000
+    la      r9, 0x031000
+    move.q  r10, #1
+    move.q  r11, #0
+    jsr     aot_transpile
+    la      r1, 0x032000
+    store.q r8, (r1)
+    la      r1, 0x032008
+    store.q r9, (r1)`
+
+	bin := assembleAOTUnit(t, asmBin, body)
+	h := newEhbasicHarness(t)
+	h.loadBytes(bin)
+	h.runCycles(4_000_000)
+
+	if got := h.bus.Read64(0x032000); got != 1 {
+		t.Fatalf("aot_transpile status=%d, want 1", got)
+	}
+	n := int(h.bus.Read64(0x032008))
+	src := make([]byte, n)
+	for i := range src {
+		src[i] = h.cpu.memory[0x031000+i]
+	}
+	text := string(src)
+	for _, want := range []string{
+		"load.q r1, (r1)\n",
+		"store.q r1, (r2)\n",
+		"load.q r2, (r2)\n",
+		"move.q r28, r0\n",
+		"beq r1, r2, F",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("AOT FOR/NEXT text missing %q:\n%s", want, text)
+		}
+	}
+}
+
 // TestREPL_RunAOT_Loops covers native WHILE/WEND and DO/LOOP.
 func TestREPL_RunAOT_Loops(t *testing.T) {
 	progs := [][]string{
@@ -2775,30 +2903,29 @@ func TestAOTConsttabInSync(t *testing.T) {
 }
 
 // TestEhbasicImageFitsBelowState guards the prebuilt EhBASIC image against growing
-// into the live low-RAM working region. The flat image loads at PROGRAM_START
-// (0x1000). The first live region above the code is the input line buffer at
-// EHBASIC_PRIV_LINE_BUF (0x041000), NOT the state block at 0x042000: RUN AOT uses the line
-// buffer while executing, so an image whose end crosses 0x041000 overwrites/executes
-// the line-buffer region and corrupts RUN AOT (invalid opcodes), even though it
-// still sits below the state block. The bound is therefore EHBASIC_PRIV_LINE_BUF, not
-// BASIC_STATE. (Regression: adding ~360 bytes of AOT constant-table entries pushed
-// the image to 0x2111C and broke FOR/NEXT/WHILE/DO/ON RUN AOT.)
+// into the resident low-RAM workspace. The flat image loads at PROGRAM_START
+// (0x1000). The first live workspace above the code starts at 0x041000, below
+// BASIC_STATE at 0x042000; tokeniser and LOAD scratch still rely on this low
+// workspace while the dynamic BASIC line buffer is owned by the internal arena.
+// The bound is therefore the workspace boundary, not BASIC_STATE. (Regression:
+// adding ~360 bytes of AOT constant-table entries pushed the image to 0x2111C
+// and broke FOR/NEXT/WHILE/DO/ON RUN AOT.)
 func TestEhbasicImageFitsBelowState(t *testing.T) {
 	const programStart = 0x001000
-	const basicLineBuf = 0x041000
-	const budget = basicLineBuf - programStart // 0x40000
+	const lowWorkspace = 0x041000
+	const budget = lowWorkspace - programStart // 0x40000
 	img := filepath.Join(repoRootDir(t), "sdk", "examples", "prebuilt", "ehbasic_ie64.ie64")
 	fi, err := os.Stat(img)
 	if err != nil {
 		t.Skipf("prebuilt image not built: %v", err)
 	}
 	if fi.Size() > budget {
-		t.Fatalf("EhBASIC image %d bytes exceeds budget %d (would overwrite the line buffer at %#x and corrupt RUN AOT)",
-			fi.Size(), budget, basicLineBuf)
+		t.Fatalf("EhBASIC image %d bytes exceeds budget %d (would overwrite low workspace at %#x and corrupt RUN AOT)",
+			fi.Size(), budget, lowWorkspace)
 	}
 	if fi.Size() > budget*9/10 {
-		t.Logf("WARNING: EhBASIC image %d bytes is within 10%% of the %d-byte budget (line buffer at %#x)",
-			fi.Size(), budget, basicLineBuf)
+		t.Logf("WARNING: EhBASIC image %d bytes is within 10%% of the %d-byte budget (low workspace at %#x)",
+			fi.Size(), budget, lowWorkspace)
 	}
 }
 
@@ -2889,6 +3016,7 @@ func TestAOT_FpPrintClosureParity(t *testing.T) {
 		}
 	}
 }
+
 
 // TestAOT_SymbolCapacity assembles a programme with far more than the old
 // 64-symbol limit, confirming the symbol table now lives in (larger) workspace.

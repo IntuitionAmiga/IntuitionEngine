@@ -17,6 +17,8 @@ aot_consttab:
     dc.l BASIC_CTRL_BYTES
     dc.b 23, "BASIC_STACK_GUARD_BYTES"
     dc.l BASIC_STACK_GUARD_BYTES
+    dc.b 20, "BASIC_LINE_BUF_BYTES"
+    dc.l BASIC_LINE_BUF_BYTES
     dc.b 24, "BASIC_RESIDENT_LOW32_CAP"
     dc.l BASIC_RESIDENT_LOW32_CAP
     dc.b 25, "BASIC_LOW32_INTERNAL_BASE"
@@ -79,6 +81,14 @@ aot_consttab:
     dc.l ST_FILE_BRIDGE_NEXT
     dc.b 18, "ST_FILE_BRIDGE_LOW"
     dc.l ST_FILE_BRIDGE_LOW
+    dc.b 15, "ST_SCRATCH_BASE"
+    dc.l ST_SCRATCH_BASE
+    dc.b 14, "ST_SCRATCH_END"
+    dc.l ST_SCRATCH_END
+    dc.b 15, "ST_LINE_BUF_PTR"
+    dc.l ST_LINE_BUF_PTR
+    dc.b 15, "ST_LINE_BUF_CAP"
+    dc.l ST_LINE_BUF_CAP
     dc.b 15, "ST_CURRENT_LINE"
     dc.l ST_CURRENT_LINE
     dc.b 14, "ST_RANDOM_SEED"

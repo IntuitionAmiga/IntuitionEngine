@@ -120,54 +120,11 @@ cold_start:
     sub.q   r2, r2, #1
     bnez    r2, .clear_state
 
-    ; Publish dynamic stack/control/file-bridge bounds and set R31 from CR_RAM_SIZE_BYTES.
-    ; This is deliberately inline: no subroutine may run until R31 is valid.
-    mfcr    r1, cr15
-    bnez    r1, .have_ram_size
-    move.q  r1, #0x02000000
-.have_ram_size:
-    lsr.q   r1, r1, #12
-    lsl.q   r1, r1, #12
-    ; Keep the resident interpreter stack/control area in BASIC's mapped
-    ; low memory window. Production IE64 BASIC can expose sparse RAM above
-    ; this, but the current BASIC/JIT resident paths still expect their own
-    ; stack and scratch pointers to be directly low-window addressable.
-    move.q  r5, #BASIC_RESIDENT_LOW32_CAP
-    blt     r1, r5, .stack_top_ready
-    move.q  r1, r5
-.stack_top_ready:
-    move.q  r2, #BASIC_STACK_GUARD_BYTES
-    sub.q   r1, r1, r2
-    move.q  r31, r1
-    add.q   r2, r16, #ST_STACK_HIGH
-    store.q r31, (r2)
-    move.q  r3, #BASIC_STACK_BYTES
-    sub.q   r3, r31, r3
-    add.q   r2, r16, #ST_STACK_LOW
-    store.q r3, (r2)
-    add.q   r2, r16, #ST_CTRL_HIGH
-    store.q r3, (r2)
-    move.q  r4, #BASIC_CTRL_BYTES
-    sub.q   r4, r3, r4
-    add.q   r2, r16, #ST_CTRL_LOW
-    store.q r4, (r2)
-    add.q   r2, r16, #ST_GOSUB_SP
-    store.q r4, (r2)
-    add.q   r2, r16, #ST_FOR_SP
-    store.q r3, (r2)
-    move.q  r5, #AOT_LOW32_CAP
-    blt     r4, r5, .bridge_top_ready
-    move.q  r4, r5
-.bridge_top_ready:
-    add.q   r2, r16, #ST_FILE_BRIDGE_NEXT
-    store.q r4, (r2)
-    move.q  r6, #BASIC_LOW32_INTERNAL_BASE
-    add.q   r2, r16, #ST_FILE_BRIDGE_LOW
-    store.q r6, (r2)
-    add.q   r2, r16, #ST_HEAP_BOTTOM
-    store.q r6, (r2)
-    add.q   r2, r16, #ST_HEAP_TOP
-    store.q r4, (r2)
+    ; Publish dynamic stack/control/scratch bounds and set R31 from CR_RAM_SIZE_BYTES.
+    ; Seed a temporary stack for JSR; basic_layout_init overwrites R31 with the
+    ; dynamic stack pointer before returning.
+    la      r31, STACK_TOP
+    jsr     basic_layout_init
 
     ; Initialise terminal I/O (caches R26, R27)
     jsr     io_init
@@ -231,14 +188,16 @@ repl_loop:
 
 repl_read:
     ; Read a line of input from the terminal
-    la      r8, EHBASIC_PRIV_LINE_BUF
-    move.q  r9, #EHBASIC_PRIV_LINE_BUFLEN
+    add.q   r8, r16, #ST_LINE_BUF_PTR
+    load.q  r8, (r8)
+    move.q  r9, #BASIC_LINE_BUF_BYTES
     jsr     read_line
     ; R8 = number of characters read
     beqz    r8, repl_read           ; Empty line - try again
 
     ; --- Determine whether the line starts with a digit (line number) ---
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     load.b  r2, (r1)
 
     ; ASCII digits are 0x30..0x39
@@ -294,29 +253,34 @@ repl_immediate:
 
     ; Check for RUN AOT command (must precede plain RUN, which would also
     ; match the "RUN" prefix and run interpreted instead of compiling).
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_run_aot
     bnez    r8, repl_do_run_aot
 
     ; Check for RUN command (before tokenising)
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_run
     bnez    r8, repl_do_run
 
     ; Check for COMPILE command (direct-only AOT to standalone .ie64)
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_compile
     bnez    r8, repl_do_compile
 
     ; Check for TRANSPILE command (direct-only: transpile to NAME.asm only,
     ; the first half of COMPILE without assembling or writing NAME.ie64).
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_transpile
     bnez    r8, repl_do_transpile
 
     ; Check for ASSEMBLE command (direct-only: assemble NAME.asm from disk to
     ; NAME.ie64 with the in-guest assembler; general user-asm, not BASIC).
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_assemble
     bnez    r8, repl_do_assemble
 
@@ -326,48 +290,57 @@ repl_immediate:
     la      r1, AOT_CONT_PC
     load.q  r2, (r1)
     beqz    r2, .no_aot_cont
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_cont
     bnez    r8, repl_do_cont_aot
 .no_aot_cont:
 
     ; Check for DIR command
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_dir
     bnez    r8, repl_do_dir
 
     ; Check for TYPE command (direct-only: print a text file to the screen)
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_type
     bnez    r8, repl_do_type
 
     ; Check for LIST command
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_list
     bnez    r8, repl_do_list
 
     ; Check for NEW command
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_new
     bnez    r8, repl_do_new
 
     ; Check for EMUTOS command
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_emutos
     bnez    r8, repl_do_emutos
 
     ; Check for AROS command
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_aros
     bnez    r8, repl_do_aros
 
     ; Check for INTUITIONOS command
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_check_intuitionos
     bnez    r8, repl_do_intuitionos
 
     ; Tokenise the input line
-    la      r8, EHBASIC_PRIV_LINE_BUF
+    add.q   r8, r16, #ST_LINE_BUF_PTR
+    load.q  r8, (r8)
     la      r9, 0x041100
     jsr     tokenize
     ; R8 = tokenised length
@@ -409,7 +382,8 @@ repl_clear_error_state:
 ;   RUN "file"   - load and execute an external BASIC programme file
 
 repl_do_run:
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_parse_run_filename
     beqz    r8, .run_internal
 
@@ -483,7 +457,8 @@ repl_do_run_aot:
     ; RUN AOT takes no arguments. Re-walk past "AOT" and reject any trailing
     ; token (the file form "RUN AOT \"file\"" is explicitly unsupported); only
     ; trailing spaces before end-of-line are allowed.
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_skip_spaces
     add.q   r1, r1, #3              ; past "RUN"
     jsr     repl_skip_spaces
@@ -1228,12 +1203,13 @@ repl_do_new:
 ; ============================================================================
 ; Parses a sequence of ASCII digits into a 32-bit unsigned integer.
 ;
-; Input:  EHBASIC_PRIV_LINE_BUF contains the line
+; Input:  dynamic BASIC line buffer contains the line
 ; Output: R8 = line number, R9 = pointer to first non-digit character
 ; Clobbers: R1-R5
 
 repl_parse_linenum:
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     move.q  r8, r0                  ; Accumulator = 0
 .loop:
     load.b  r2, (r1)
@@ -1300,12 +1276,13 @@ repl_check_run:
 ; Extracts a quoted filename from a RUN command. If no quote follows RUN,
 ; returns 0 (indicating a plain RUN of the stored programme).
 ;
-; Input:  EHBASIC_PRIV_LINE_BUF contains the line
+; Input:  dynamic BASIC line buffer contains the line
 ; Output: R8 = 1 if EHBASIC_PRIV_NAME_BUF was populated, 0 if no quoted filename
 ; Clobbers: R1-R3, R10-R11
 
 repl_parse_run_filename:
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_skip_spaces
 
     ; Match "RUN" prefix
@@ -1633,7 +1610,7 @@ repl_check_assemble:
 ; Copies the quoted filename into EHBASIC_PRIV_NAME_BUF and validates it. A ".ie64"
 ; suffix is appended (case-insensitively) when absent.
 ;
-; Input:  EHBASIC_PRIV_LINE_BUF contains the COMPILE/TRANSPILE line
+; Input:  dynamic BASIC line buffer contains the COMPILE/TRANSPILE line
 ;         R7 = length of the matched leading keyword to skip (7 for COMPILE,
 ;              9 for TRANSPILE, 8 for ASSEMBLE)
 ; Output: R8 = 0 missing argument (syntax error)
@@ -1643,7 +1620,8 @@ repl_check_assemble:
 ; Clobbers: R1-R5, R10-R12, R20
 
 repl_parse_compile_name:
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_skip_spaces
     add.q   r1, r1, r7             ; skip the matched keyword (COMPILE=7/TRANSPILE=9)
     jsr     repl_skip_spaces
@@ -2242,12 +2220,13 @@ repl_check_dir:
 ; ============================================================================
 ; repl_parse_dir_path - Parse optional DIR "path" argument
 ; ============================================================================
-; Input:  EHBASIC_PRIV_LINE_BUF contains the line
+; Input:  dynamic BASIC line buffer contains the line
 ; Output: R8 = 1 if EHBASIC_PRIV_NAME_BUF was populated, 0 on malformed input
 ; Clobbers: R1-R3, R10-R11
 
 repl_parse_dir_path:
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_skip_spaces
 
     ; Match "DIR" prefix
@@ -2361,13 +2340,14 @@ repl_check_type:
 ; Copies the quoted path into EHBASIC_PRIV_NAME_BUF. Unlike COMPILE/TRANSPILE/ASSEMBLE
 ; the path may contain separators (TYPE views a file anywhere under the File I/O
 ; root); the device enforces traversal protection. The argument is mandatory.
-; Input:  EHBASIC_PRIV_LINE_BUF contains the TYPE line
+; Input:  dynamic BASIC line buffer contains the TYPE line
 ; Output: R8 = 1 if EHBASIC_PRIV_NAME_BUF was populated, 0 on syntax error
 ;              (missing/unquoted/empty/over-length path, or trailing junk)
 ; Clobbers: R1-R3, R10-R11
 
 repl_parse_type_path:
-    la      r1, EHBASIC_PRIV_LINE_BUF
+    add.q   r1, r16, #ST_LINE_BUF_PTR
+    load.q  r1, (r1)
     jsr     repl_skip_spaces
 
     ; Match "TYPE" prefix

@@ -60,12 +60,16 @@ var_init:
     move.q  r1, #BASIC_EXPORT_BASE
     add.q   r2, r16, #ST_EXPORT_CURSOR
     store.q r1, (r2)
-    ; Clear variable cache (4 slots × 8 bytes = 32 bytes)
+    ; Clear variable cache (4 slots x 16 bytes = 64 bytes)
     la      r2, var_cache
     store.q r0, (r2)
     store.q r0, 8(r2)
     store.q r0, 16(r2)
     store.q r0, 24(r2)
+    store.q r0, 32(r2)
+    store.q r0, 40(r2)
+    store.q r0, 48(r2)
+    store.q r0, 56(r2)
     rts
 
 ; ============================================================================
@@ -163,25 +167,32 @@ var_lookup:
     la      r5, var_cache
     load.l  r6, (r5)             ; slot 0 name_tag
     beq     r6, r14, .vl_cache_hit_0
-    load.l  r6, 8(r5)            ; slot 1 name_tag
+    load.l  r6, 16(r5)           ; slot 1 name_tag
     beq     r6, r14, .vl_cache_hit_1
-    load.l  r6, 16(r5)           ; slot 2 name_tag
+    load.l  r6, 32(r5)           ; slot 2 name_tag
     beq     r6, r14, .vl_cache_hit_2
-    load.l  r6, 24(r5)           ; slot 3 name_tag
+    load.l  r6, 48(r5)           ; slot 3 name_tag
     beq     r6, r14, .vl_cache_hit_3
 
     ; Cache miss: segment-chain lookup/create.
     jsr     var_lookup_tag
     la      r5, var_cache
     ; Update cache: shift slots 0→1, 1→2, 2→3, insert at 0
-    load.q  r1, 16(r5)          ; old slot 2
-    store.q r1, 24(r5)          ; → slot 3
-    load.q  r1, 8(r5)           ; old slot 1
-    store.q r1, 16(r5)          ; → slot 2
-    load.q  r1, (r5)            ; old slot 0
-    store.q r1, 8(r5)           ; → slot 1
+    load.q  r1, 32(r5)          ; old slot 2 tag/reserved
+    load.q  r2, 40(r5)          ; old slot 2 var_ptr
+    store.q r1, 48(r5)          ; → slot 3 tag/reserved
+    store.q r2, 56(r5)          ; → slot 3 var_ptr
+    load.q  r1, 16(r5)          ; old slot 1 tag/reserved
+    load.q  r2, 24(r5)          ; old slot 1 var_ptr
+    store.q r1, 32(r5)          ; → slot 2 tag/reserved
+    store.q r2, 40(r5)          ; → slot 2 var_ptr
+    load.q  r1, (r5)            ; old slot 0 tag/reserved
+    load.q  r2, 8(r5)           ; old slot 0 var_ptr
+    store.q r1, 16(r5)          ; → slot 1 tag/reserved
+    store.q r2, 24(r5)          ; → slot 1 var_ptr
     store.l r14, (r5)           ; new slot 0 name_tag
-    store.l r8, 4(r5)           ; new slot 0 var_ptr
+    store.l r0, 4(r5)           ; new slot 0 reserved
+    store.q r8, 8(r5)           ; new slot 0 var_ptr
     move.q  r9, r0               ; R9 = 0 (numeric)
     pop     r15
     pop     r14
@@ -197,14 +208,21 @@ var_lookup:
 .vl_found:
     add.q   r8, r2, #16
     ; Update cache: shift slots 0→1, 1→2, 2→3, insert at 0
-    load.q  r1, 16(r5)          ; old slot 2
-    store.q r1, 24(r5)          ; → slot 3
-    load.q  r1, 8(r5)           ; old slot 1
-    store.q r1, 16(r5)          ; → slot 2
-    load.q  r1, (r5)            ; old slot 0
-    store.q r1, 8(r5)           ; → slot 1
+    load.q  r1, 32(r5)          ; old slot 2 tag/reserved
+    load.q  r2, 40(r5)          ; old slot 2 var_ptr
+    store.q r1, 48(r5)          ; → slot 3 tag/reserved
+    store.q r2, 56(r5)          ; → slot 3 var_ptr
+    load.q  r1, 16(r5)          ; old slot 1 tag/reserved
+    load.q  r2, 24(r5)          ; old slot 1 var_ptr
+    store.q r1, 32(r5)          ; → slot 2 tag/reserved
+    store.q r2, 40(r5)          ; → slot 2 var_ptr
+    load.q  r1, (r5)            ; old slot 0 tag/reserved
+    load.q  r2, 8(r5)           ; old slot 0 var_ptr
+    store.q r1, 16(r5)          ; → slot 1 tag/reserved
+    store.q r2, 24(r5)          ; → slot 1 var_ptr
     store.l r14, (r5)           ; new slot 0 name_tag
-    store.l r8, 4(r5)           ; new slot 0 var_ptr
+    store.l r0, 4(r5)           ; new slot 0 reserved
+    store.q r8, 8(r5)           ; new slot 0 var_ptr
     move.q  r9, r0               ; R9 = 0 (numeric)
     pop     r15
     pop     r14
@@ -223,14 +241,21 @@ var_lookup:
     store.q r0, (r1)             ; value payload = 0
     move.q  r8, r1
     ; Update cache: shift and insert at slot 0
+    load.q  r2, 32(r5)
+    load.q  r6, 40(r5)
+    store.q r2, 48(r5)
+    store.q r6, 56(r5)
     load.q  r2, 16(r5)
-    store.q r2, 24(r5)
-    load.q  r2, 8(r5)
-    store.q r2, 16(r5)
+    load.q  r6, 24(r5)
+    store.q r2, 32(r5)
+    store.q r6, 40(r5)
     load.q  r2, (r5)
-    store.q r2, 8(r5)
+    load.q  r6, 8(r5)
+    store.q r2, 16(r5)
+    store.q r6, 24(r5)
     store.l r14, (r5)
-    store.l r8, 4(r5)
+    store.l r0, 4(r5)
+    store.q r8, 8(r5)
     move.q  r9, r0               ; R9 = 0 (numeric)
     add.q   r3, r3, #24
     add.q   r1, r16, #ST_VAR_END
@@ -240,46 +265,67 @@ var_lookup:
     rts
 
 .vl_cache_hit_0:
-    load.l  r8, 4(r5)           ; var_ptr from slot 0
+    load.q  r8, 8(r5)           ; var_ptr from slot 0
     move.q  r9, r0
     pop     r15
     pop     r14
     rts
 .vl_cache_hit_1:
-    load.l  r8, 12(r5)          ; var_ptr from slot 1
+    load.q  r8, 24(r5)          ; var_ptr from slot 1
     ; Promote to slot 0: swap slots 0 and 1
-    load.q  r1, (r5)            ; old slot 0
-    load.q  r2, 8(r5)           ; old slot 1 (the hit)
-    store.q r2, (r5)            ; → slot 0
-    store.q r1, 8(r5)           ; → slot 1
+    load.q  r1, (r5)            ; old slot 0 tag/reserved
+    load.q  r2, 8(r5)           ; old slot 0 var_ptr
+    load.q  r3, 16(r5)          ; old slot 1 tag/reserved
+    load.q  r4, 24(r5)          ; old slot 1 var_ptr
+    store.q r3, (r5)            ; → slot 0 tag/reserved
+    store.q r4, 8(r5)           ; → slot 0 var_ptr
+    store.q r1, 16(r5)          ; → slot 1 tag/reserved
+    store.q r2, 24(r5)          ; → slot 1 var_ptr
     move.q  r9, r0
     pop     r15
     pop     r14
     rts
 .vl_cache_hit_2:
-    load.l  r8, 20(r5)          ; var_ptr from slot 2
+    load.q  r8, 40(r5)          ; var_ptr from slot 2
     ; Promote to slot 0: save hit, shift 0→1, 1→2, put hit at 0
-    load.q  r2, 16(r5)          ; save hit (slot 2) in r2
-    load.q  r1, 8(r5)           ; old slot 1
-    store.q r1, 16(r5)          ; → slot 2
-    load.q  r1, (r5)            ; old slot 0
-    store.q r1, 8(r5)           ; → slot 1
-    store.q r2, (r5)            ; hit → slot 0
+    load.q  r2, 32(r5)          ; hit tag/reserved
+    load.q  r3, 40(r5)          ; hit var_ptr
+    load.q  r1, 16(r5)          ; old slot 1 tag/reserved
+    load.q  r4, 24(r5)          ; old slot 1 var_ptr
+    store.q r1, 32(r5)          ; → slot 2 tag/reserved
+    store.q r4, 40(r5)          ; → slot 2 var_ptr
+    load.q  r1, (r5)            ; old slot 0 tag/reserved
+    load.q  r4, 8(r5)           ; old slot 0 var_ptr
+    store.q r1, 16(r5)          ; → slot 1 tag/reserved
+    store.q r4, 24(r5)          ; → slot 1 var_ptr
+    store.q r2, (r5)            ; hit → slot 0 tag/reserved
+    store.q r3, 8(r5)           ; hit → slot 0 var_ptr
     move.q  r9, r0
     pop     r15
     pop     r14
     rts
 .vl_cache_hit_3:
-    load.l  r8, 28(r5)          ; var_ptr from slot 3
+    load.q  r8, 56(r5)          ; var_ptr from slot 3
     ; Promote to slot 0: shift 0→1, 1→2, 2→3, put hit at 0
-    load.q  r1, 16(r5)          ; old slot 2
-    store.q r1, 24(r5)          ; → slot 3
-    load.q  r1, 8(r5)           ; old slot 1
-    store.q r1, 16(r5)          ; → slot 2
-    load.q  r1, (r5)            ; old slot 0
-    store.q r1, 8(r5)           ; → slot 1
+    load.q  r2, 48(r5)          ; hit tag/reserved
+    load.q  r3, 56(r5)          ; hit var_ptr
+    load.q  r1, 32(r5)          ; old slot 2 tag/reserved
+    load.q  r4, 40(r5)          ; old slot 2 var_ptr
+    store.q r1, 48(r5)          ; → slot 3 tag/reserved
+    store.q r4, 56(r5)          ; → slot 3 var_ptr
+    load.q  r1, 16(r5)          ; old slot 1 tag/reserved
+    load.q  r4, 24(r5)          ; old slot 1 var_ptr
+    store.q r1, 32(r5)          ; → slot 2 tag/reserved
+    store.q r4, 40(r5)          ; → slot 2 var_ptr
+    load.q  r1, (r5)            ; old slot 0 tag/reserved
+    load.q  r4, 8(r5)           ; old slot 0 var_ptr
+    store.q r1, 16(r5)          ; → slot 1 tag/reserved
+    store.q r4, 24(r5)          ; → slot 1 var_ptr
+    store.q r2, (r5)            ; hit → slot 0 tag/reserved
+    store.q r3, 8(r5)           ; hit → slot 0 var_ptr
     store.l r14, (r5)           ; hit name_tag → slot 0
-    store.l r8, 4(r5)           ; hit var_ptr → slot 0
+    store.l r0, 4(r5)           ; hit reserved → slot 0
+    store.q r8, 8(r5)           ; hit var_ptr → slot 0
     move.q  r9, r0
     pop     r15
     pop     r14
@@ -318,9 +364,9 @@ var_lookup:
     jsr     fp_fix
     pop     r11
     pop     r10
-    lsl.l   r12, r10, #2
+    lsl.q   r12, r10, #3
     add.q   r13, r11, r12
-    store.l r8, (r13)
+    store.q r8, (r13)
     add.q   r10, r10, #1
     load.b  r1, (r17)
     move.q  r2, #0x2C            ; ','
@@ -348,11 +394,11 @@ var_lookup:
     move.q  r8, #1
 .vl_arr_auto_dim_loop:
     bge     r12, r10, .vl_arr_auto_create
-    lsl.l   r13, r12, #2
+    lsl.q   r13, r12, #3
     add.q   r13, r11, r13
     move.q  r1, #11
-    store.l r1, (r13)
-    mulu.l  r8, r8, #11
+    store.q r1, (r13)
+    mulu.q  r8, r8, #11
     add.q   r12, r12, #1
     bra     .vl_arr_auto_dim_loop
 .vl_arr_auto_create:
@@ -379,15 +425,15 @@ var_lookup:
     lsl.l   r6, r4, #3
     add.q   r7, r11, r6
     load.q  r7, (r7)             ; dim size
-    lsl.l   r6, r4, #2
+    lsl.q   r6, r4, #3
     add.q   r2, r5, r6
-    load.l  r2, (r2)             ; index
+    load.q  r2, (r2)             ; index
     bgez    r2, .vl_arr_idx_nonneg
     bra     .vl_array_fc
 .vl_arr_idx_nonneg:
     bge     r2, r7, .vl_array_fc
-    mulu.l  r3, r3, r7
-    add.l   r3, r3, r2
+    mulu.q  r3, r3, r7
+    add.q   r3, r3, r2
     add.q   r4, r4, #1
     bra     .vl_arr_offset_loop
 .vl_arr_offset_done:
@@ -444,7 +490,7 @@ arr_find:
 ; Input:  R14 = packed name tag
 ;         R8  = total element count
 ;         R9  = dimension count
-;         arr_dim_buf = dimension element counts
+;         arr_dim_buf = qword dimension element counts
 ;         R16 = state base
 ; Output: R8  = pointer to the new array entry
 ; Clobbers: R1-R5
@@ -490,9 +536,9 @@ arr_create:
     la      r6, arr_dim_buf
 .ac_dim_loop:
     bge     r5, r11, .ac_dim_done
-    lsl.l   r7, r5, #2
+    lsl.q   r7, r5, #3
     add.q   r1, r6, r7
-    load.l  r1, (r1)
+    load.q  r1, (r1)
     store.q r1, (r2)
     add.q   r2, r2, #8
     add.q   r5, r5, #1
@@ -586,10 +632,10 @@ arr_dim:
     bra     .ad_fc
 .ad_dim_nonneg:
     add.q   r8, r8, #1
-    lsl.l   r13, r10, #2
+    lsl.q   r13, r10, #3
     add.q   r1, r12, r13
-    store.l r8, (r1)
-    mulu.l  r11, r11, r8
+    store.q r8, (r1)
+    mulu.q  r11, r11, r8
     add.q   r10, r10, #1
     load.b  r1, (r17)
     move.q  r2, #0x2C
@@ -781,7 +827,7 @@ svar_read:
     bne     r1, r2, .svr_empty
     add.q   r17, r17, #1
     jsr     svar_lookup          ; R8 = pointer to str_ptr slot
-    load.l  r8, (r8)             ; R8 = pointer to string data
+    load.q  r8, (r8)             ; R8 = pointer to string data
     bnez    r8, .svr_done
     ; Null pointer → return empty string
     la      r8, .svr_empty_str
@@ -953,18 +999,23 @@ var_alloc_segment:
     rts
 
 ; ============================================================================
-; Variable cache: 4 slots × [name_tag(4) + var_ptr(4)] = 32 bytes
+; Array scratch buffers: 8 qword entries each for dimensions and indexes.
+; Variable cache: 4 slots x [name_tag.l, reserved.l, var_ptr.q] = 64 bytes
 ; ============================================================================
+    align 8
 arr_dim_buf:
-    dc.l    0,0,0,0,0,0,0,0
+    dc.q    0,0,0,0,0,0,0,0
 arr_index_buf:
-    dc.l    0,0,0,0,0,0,0,0
+    dc.q    0,0,0,0,0,0,0,0
 
 var_cache:
-    dc.q    0                    ; slot 0: name_tag(4) + var_ptr(4)
+    dc.q    0,0                  ; slot 0: name_tag.l, reserved.l, var_ptr.q
     dc.q    0                    ; slot 1
+    dc.q    0
     dc.q    0                    ; slot 2
+    dc.q    0
     dc.q    0                    ; slot 3
+    dc.q    0
 
 ; ============================================================================
 ; EOF

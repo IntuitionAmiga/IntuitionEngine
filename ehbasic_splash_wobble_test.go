@@ -81,7 +81,7 @@ func TestEhBASICSplashWobbleSetsAllocatedFBBase(t *testing.T) {
 	}
 	text := string(program)
 	for _, want := range []string{
-		"FB=MEMALLOC(1228800):SR=MEMALLOC(235520):BB=MEMALLOC(1228800)",
+		"FB=MEMALLOC(1228800,4096):SR=MEMALLOC(235520,4096):BB=MEMALLOC(1228800,4096)",
 		"POKE32 &HF0084,FB",
 		"POKE32 &HF0000,1",
 		"PEEK32(&HF2310)",
@@ -99,7 +99,7 @@ func TestEhBASICWobbleZoomProgramShape(t *testing.T) {
 	}
 	text := string(program)
 	for _, want := range []string{
-		"FB=MEMALLOC(1228800):BB=MEMALLOC(1228800):TX=MEMALLOC(2097152):SR=MEMALLOC(235520)",
+		"FB=MEMALLOC(1228800,4096):BB=MEMALLOC(1228800,4096):TX=MEMALLOC(2097152,4096):SR=MEMALLOC(235520,4096)",
 		"POKE32 &HF0084,FB",
 		"PEEK32(&HF2310)",
 		"BLIT MODE7",
@@ -118,6 +118,83 @@ func TestEhBASICWobbleZoomProgramShape(t *testing.T) {
 	}
 	if strings.Index(text, "SOUND PLAY") > strings.Index(text, "POKE32 &HF0000") {
 		t.Fatal("wobble_zoom.bas must start MIDI before video setup")
+	}
+}
+
+func TestEhBASICExamplesUseAlignedMemalloc(t *testing.T) {
+	examples := map[string][]string{
+		"sdk/examples/basic/splash_wobble.bas": {
+			"MEMALLOC(1228800,4096)",
+			"MEMALLOC(235520,4096)",
+		},
+		"sdk/examples/basic/wobble_zoom.bas": {
+			"MEMALLOC(1228800,4096)",
+			"MEMALLOC(2097152,4096)",
+			"MEMALLOC(235520,4096)",
+		},
+		"sdk/examples/basic/rotozoomer_basic.bas": {
+			"MEMALLOC(1228800,4096)",
+			"MEMALLOC(262144,4096)",
+			"MEMALLOC(4096,4096)",
+		},
+		"sdk/examples/basic/resonance.bas": {
+			"FB=MEMALLOC(1228800,4096)",
+			"BB=MEMALLOC(1228800,4096)",
+			"TX=MEMALLOC(2097152,4096)",
+			"CP=MEMALLOC(4096,4096)",
+			"SR=MEMALLOC(235520,4096)",
+			"SB=MEMALLOC(2162688,4096)",
+		},
+	}
+	for path, wants := range examples {
+		program, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := string(program)
+		if strings.Contains(text, "MEMALLOC(1228800)") ||
+			strings.Contains(text, "MEMALLOC(235520)") ||
+			strings.Contains(text, "MEMALLOC(2097152)") ||
+			strings.Contains(text, "MEMALLOC(262144)") ||
+			strings.Contains(text, "MEMALLOC(4096)") ||
+			strings.Contains(text, "MEMALLOC(2162688)") {
+			t.Fatalf("%s contains an unaligned MEMALLOC call", path)
+		}
+		for _, want := range wants {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s missing %q", path, want)
+			}
+		}
+	}
+}
+
+func TestEhBASICDocsBritishEnglishAndMemoryBoundaryAudit(t *testing.T) {
+	doc, err := os.ReadFile("sdk/docs/ehbasic_ie64.md")
+	if err != nil {
+		t.Fatalf("read ehbasic_ie64.md: %v", err)
+	}
+	text := string(doc)
+	if strings.Contains(text, "—") {
+		t.Fatal("ehbasic_ie64.md must not contain em dashes")
+	}
+	for _, forbidden := range []string{
+		"source artifact",
+		"source artifacts",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("ehbasic_ie64.md must use British spelling, found %q", forbidden)
+		}
+	}
+	for _, want := range []string{
+		"source artefact",
+		"BASIC-owned internal pointers and offsets are stored as qwords",
+		"File I/O and MMIO addresses remain 32-bit",
+		"design: hardware registers, File I/O bridge fields",
+		"low32 `MEMALLOC` buffers",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("ehbasic_ie64.md missing %q", want)
+		}
 	}
 }
 

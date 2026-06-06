@@ -655,9 +655,10 @@ exec_do_load:
     add.q   r25, r25, #1
     bra     .l_skip_spc
 
-    ; 3. Copy content until newline to EHBASIC_PRIV_LINE_BUF
+    ; 3. Copy content until newline to the dynamic BASIC line buffer.
 .l_copy_line:
-    la      r12, EHBASIC_PRIV_LINE_BUF
+    add.q   r12, r16, #ST_LINE_BUF_PTR
+    load.q  r12, (r12)
     move.q  r13, r12
 .l_cp_loop:
     beq     r25, r26, .l_cp_done
@@ -677,7 +678,8 @@ exec_do_load:
     push    r25
     push    r26
     push    r27
-    la      r8, EHBASIC_PRIV_LINE_BUF
+    add.q   r8, r16, #ST_LINE_BUF_PTR
+    load.q  r8, (r8)
     la      r9, 0x041800            ; temp tokenize buffer
     jsr     tokenize
     move.q  r10, r8                 ; length

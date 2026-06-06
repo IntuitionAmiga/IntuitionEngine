@@ -31,10 +31,10 @@
 20 REM supply 6 affine parameters and it handles every pixel.
 21 REM
 22 REM MEMORY:
-23 REM   MEMALLOC front buffer (640x480x4 = 1,228,800 bytes)
-24 REM   MEMALLOC texture source (256x256x4 = 262,144 bytes)
-25 REM   MEMALLOC back buffer for Mode7 output
-26 REM   MEMALLOC SID music file staging
+23 REM   MEMALLOC(1228800,4096) front buffer (640x480x4 = 1,228,800 bytes)
+24 REM   MEMALLOC(262144,4096) texture source (256x256x4 = 262,144 bytes)
+25 REM   MEMALLOC(1228800,4096) back buffer for Mode7 output
+26 REM   MEMALLOC(4096,4096) SID music file staging
 27 REM
 28 REM AFFINE TRANSFORMATION:
 29 REM   For each output pixel (x,y), the blitter computes:
@@ -55,7 +55,7 @@
 103 REM  POKE32 &HF0000,1 enables the VideoChip (register 0 = enable).
 104 REM  POKE32 &HF0004,0 selects mode 0 (640x480 true colour).
 105 REM  Both must be set before any rendering is visible.
-110 FB=MEMALLOC(1228800):BB=MEMALLOC(1228800):TB=MEMALLOC(262144):SA=MEMALLOC(4096)
+110 FB=MEMALLOC(1228800,4096):BB=MEMALLOC(1228800,4096):TB=MEMALLOC(262144,4096):SA=MEMALLOC(4096,4096)
 120 POKE32 &HF0004,0:POKE32 &HF0084,FB:POKE32 &HF0000,1
 
 200 REM ================================================================

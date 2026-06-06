@@ -36,6 +36,7 @@ STACK_TOP         equ 0x0DF000              ; Top of stack (grows downward)
 BASIC_STACK_BYTES equ 0x00010000           ; Dynamic BASIC hardware stack reservation
 BASIC_CTRL_BYTES  equ 0x00010000           ; Dynamic BASIC control-flow stack reservation
 BASIC_STACK_GUARD_BYTES equ 0x00001000     ; Guard page below active visible RAM
+BASIC_LINE_BUF_BYTES equ 0x00000400        ; BASIC-owned dynamic input/list scratch
 BASIC_RESIDENT_LOW32_CAP equ 0x10000000    ; BASIC low memory window cap (256 MiB)
 BASIC_LOW32_INTERNAL_BASE equ 0x01000000   ; Shared low32 fallback internal arena base
 
@@ -107,11 +108,6 @@ RT_EXPR_TO_I64    equ AOT_RT_BASE + 0xE8
 ; internal bootstrap detail, not part of the BASIC source-visible contract.
 AOT_RT_PROG       equ 0x054000
 
-; Private IE64 BASIC line/input scratch buffer.
-EHBASIC_PRIV_LINE_BUF    equ 0x041000
-EHBASIC_PRIV_LINE_BUFLEN equ 1024
-EHBASIC_PRIV_LINE_END    equ 0x041FFF
-
 ; Interpreter state variables block (pointer cached in R16)
 BASIC_STATE       equ 0x042000              ; State block (4KB)
 BASIC_STATE_END   equ 0x043000              ; First byte past shared state page
@@ -143,6 +139,10 @@ ST_CTRL_LOW       equ 0x0B0                 ; q: Control-flow stack low
 ST_CTRL_HIGH      equ 0x0B8                 ; q: Control-flow stack high
 ST_FILE_BRIDGE_NEXT equ 0x0C0               ; q: Private file-data bridge cursor
 ST_FILE_BRIDGE_LOW  equ 0x0C8               ; q: Private file-data bridge low bound
+ST_SCRATCH_BASE   equ 0x0D0                 ; q: BASIC-owned internal scratch base
+ST_SCRATCH_END    equ 0x0D8                 ; q: Empty programme base after scratch reservations
+ST_LINE_BUF_PTR   equ 0x0E0                 ; q: Dynamic BASIC line/input buffer pointer
+ST_LINE_BUF_CAP   equ 0x0E8                 ; q: Dynamic BASIC line/input buffer capacity
 
 ST_CURRENT_LINE   equ 0x200                 ; l: Line number being executed
 ST_RANDOM_SEED    equ 0x204                 ; l: RND seed

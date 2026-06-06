@@ -984,7 +984,7 @@ expr_primary:
     beqz    r3, .fn_call_undef
     load.l  r2, (r25)
     beq     r14, r2, .fn_call_found
-    add.q   r25, r25, #16
+    add.q   r25, r25, #24
     sub.q   r3, r3, #1
     bra     .fn_call_find
 .fn_call_found:
@@ -1008,10 +1008,10 @@ expr_primary:
     move.q  r2, #0x29
     bne     r1, r2, .fn_call_syntax
     add.q   r17, r17, #1
-    load.l  r2, 12(r25)
+    load.l  r2, 16(r25)
     bnez    r2, .fn_call_recursive
     move.q  r2, #1
-    store.l r2, 12(r25)
+    store.l r2, 16(r25)
 
     push    r17
     load.l  r14, 4(r25)
@@ -1022,7 +1022,7 @@ expr_primary:
     move.q  r2, #VAL_F64
     store.l r2, -8(r23)          ; parameter binding is a legacy FP64 slot
     store.q r22, (r23)           ; bind argument
-    load.l  r17, 8(r25)
+    load.q  r17, 8(r25)
     push    r25
     push    r23
     push    r24
@@ -1035,7 +1035,7 @@ expr_primary:
     pop     r1
     store.q r24, (r23)           ; restore caller value
     store.l r2, -8(r23)          ; restore caller scalar tag
-    store.l r0, 12(r1)
+    store.l r0, 16(r1)
     pop     r17
     move.q  r8, r25
     move.q  r9, #VAL_F64

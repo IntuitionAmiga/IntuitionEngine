@@ -46,11 +46,10 @@ func TestResonanceProgramShape(t *testing.T) {
 	if loopIdx := strings.Index(text, "510 REM MAIN LOOP"); loopIdx >= 0 && soundIdx > loopIdx {
 		t.Fatal("resonance.bas must start MIDI before entering the main loop")
 	}
-	if strings.Contains(text, "&HF0084") || strings.Contains(text, "&H000F0084") {
-		t.Fatal("resonance.bas must leave FB_BASE unset for the legacy visible framebuffer")
-	}
 	for _, want := range []string{
-		"FB=&H100000:BB=&H230000:TX=&H360000:CP=&H5E0000:SR=&H600000:SB=&H668000",
+		"FB=MEMALLOC(1228800,4096):BB=MEMALLOC(1228800,4096):TX=MEMALLOC(2097152,4096)",
+		"CP=MEMALLOC(4096,4096):SR=MEMALLOC(235520,4096):SB=MEMALLOC(2162688,4096)",
+		"POKE32 &HF0084,FB",
 		"BLIT MODE7",
 		"BLIT MEMCOPY BB,FB,1228800",
 		"VSYNC",
@@ -177,6 +176,18 @@ func TestResonanceProgramShape(t *testing.T) {
 	if strings.Contains(text, "PEEK32(&H000F0BAC)") {
 		t.Fatal("demo must not end on a transient raw MIDI busy-bit read")
 	}
+	for _, fixed := range []string{
+		"FB=&H100000",
+		"BB=&H230000",
+		"TX=&H360000",
+		"CP=&H5E0000",
+		"SR=&H600000",
+		"SB=&H668000",
+	} {
+		if strings.Contains(text, fixed) {
+			t.Fatalf("resonance.bas must not use fixed buffer address %q", fixed)
+		}
+	}
 	for _, forbidden := range []string{"CATHEDRAL", "GOTHIC", "ROSE WINDOW", "STAINED GLASS", "CRUCIFIX", "ADAGIO COMPLETE", "MONOLITH", "DATA WINDOWS", "RAVE LASER"} {
 		if strings.Contains(strings.ToUpper(text), forbidden) {
 			t.Fatalf("demo must not contain religious/incorrect outro marker %q", forbidden)
@@ -279,15 +290,9 @@ func TestResonanceProgramShape(t *testing.T) {
 	}
 }
 
-func TestResonanceSpansStayInLegacyLowMemory(t *testing.T) {
+func TestResonanceAllocationPlanStaysInLow32Memory(t *testing.T) {
 	const (
-		frontBase = 0x100000
-		backBase  = 0x230000
-		workBase  = 0x360000
-		copper    = 0x5E0000
-		source    = 0x600000
-		scroll    = 0x668000
-		lowEnd    = 0x01000000
+		lowEnd    = 0x100000000
 		screen    = 640 * 480 * 4
 		work      = 1024 * 512 * 4
 		copperLen = 4096
@@ -295,13 +300,24 @@ func TestResonanceSpansStayInLegacyLowMemory(t *testing.T) {
 		scrollLen = 2162688
 	)
 
-	spans := map[string][2]int{
-		"front":  {frontBase, frontBase + screen},
-		"back":   {backBase, backBase + screen},
-		"work":   {workBase, workBase + work},
-		"copper": {copper, copper + copperLen},
-		"source": {source, source + sourceLen},
-		"scroll": {scroll, scroll + scrollLen},
+	sizes := map[string]int{
+		"front":  screen,
+		"back":   screen,
+		"work":   work,
+		"copper": copperLen,
+		"source": sourceLen,
+		"scroll": scrollLen,
+	}
+	order := []string{"front", "back", "work", "copper", "source", "scroll"}
+	cursor := 0x00820000
+	spans := map[string][2]int{}
+	for _, name := range order {
+		size := sizes[name]
+		if cursor%4096 != 0 {
+			t.Fatalf("%s base %#x is not 4 KiB aligned", name, cursor)
+		}
+		spans[name] = [2]int{cursor, cursor + size}
+		cursor = (cursor + size + 4095) &^ 4095
 	}
 	for name, span := range spans {
 		if span[0] <= 0 || span[1] > lowEnd {
@@ -422,8 +438,8 @@ func TestResonanceInitialEhBASICPath(t *testing.T) {
 	if video == nil {
 		t.Fatal("video chip was not initialized")
 	}
-	if fbBase := video.HandleRead(VIDEO_FB_BASE); fbBase != 0 {
-		t.Fatalf("Resonance should leave VIDEO_FB_BASE unset, got %#x", fbBase)
+	if fbBase := video.HandleRead(VIDEO_FB_BASE); fbBase == 0 || fbBase%4096 != 0 {
+		t.Fatalf("Resonance VIDEO_FB_BASE = %#x, want nonzero 4 KiB-aligned MEMALLOC address", fbBase)
 	}
 	frame := video.FinishFrame()
 	if len(frame) == 0 {

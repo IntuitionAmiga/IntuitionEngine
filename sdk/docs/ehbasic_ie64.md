@@ -163,7 +163,7 @@ Alongside `name.ie64`, `COMPILE` also writes `name.asm`, the transpiled IE64 ass
 
 `TRANSPILE "name"` runs only the first half of `COMPILE`: it transpiles the stored programme to IE64 assembly text and writes `name.asm`, without assembling it or producing a `.ie64` image. The `.asm` it writes is byte-for-byte identical to the sidecar `COMPILE` would write for the same programme, and it is placed in the same location (beside the most recently `LOAD`ed programme, or the File I/O root). Name validation, the direct-only/raw-root rejection and the unsupported-statement reporting are the same as `COMPILE`. Use it to read the generated assembly without producing a binary.
 
-The emitted `.asm` is fully self-contained: any runtime support the programme needs (the runtime blob, the `fp_print` number-formatting closure, and the tokenised programme for `READ`/`DATA`) is inlined as `dc.b` data under the `__rtpay`, `__rtprog` and `fp_print` labels, exactly as `COMPILE` assembles it. This makes the `.asm` a true source artifact that `ASSEMBLE` reassembles back into the same `.ie64` image (`COMPILE "x"` and `TRANSPILE "x"` then `ASSEMBLE "x"` produce identical binaries). The trade-off is size: a programme that uses the runtime blob produces an `.asm` of roughly 190 KiB regardless of how short the BASIC is, because the ~34 KiB blob is written out as decimal `dc.b` bytes.
+The emitted `.asm` is fully self-contained: any runtime support the programme needs (the runtime blob, the `fp_print` number-formatting closure, and the tokenised programme for `READ`/`DATA`) is inlined as `dc.b` data under the `__rtpay`, `__rtprog` and `fp_print` labels, exactly as `COMPILE` assembles it. This makes the `.asm` a true source artefact that `ASSEMBLE` reassembles back into the same `.ie64` image (`COMPILE "x"` and `TRANSPILE "x"` then `ASSEMBLE "x"` produce identical binaries). The trade-off is size: a programme that uses the runtime blob produces an `.asm` of over 300 KiB regardless of how short the BASIC is, because the ~53 KiB blob is written out as decimal `dc.b` bytes.
 
 #### ASSEMBLE
 
@@ -2841,6 +2841,12 @@ control-flow reservation is capped below `$10000000`, matching BASIC's mapped
 low memory window even when active RAM is larger, so the interpreter's own
 scratch pointers remain directly addressable by the current resident/JIT paths.
 
+BASIC-owned internal pointers and offsets are stored as qwords where they may
+refer to programme text, variables, arrays, strings, DEF FN bodies, line-buffer
+scratch, or AOT runtime spans. File I/O and MMIO addresses remain 32-bit by
+design: hardware registers, File I/O bridge fields, low32 `MEMALLOC` buffers,
+and explicit-width `PEEK`/`POKE` operations keep the existing low32 ABI.
+
 ### State Block Offsets
 
 The interpreter state block at `&H042000` contains:
@@ -2873,6 +2879,10 @@ The interpreter state block at `&H042000` contains:
 | `+&H0B8` | ST_CTRL_HIGH | Control-flow stack high |
 | `+&H0C0` | ST_FILE_BRIDGE_NEXT | Private file-data bridge cursor |
 | `+&H0C8` | ST_FILE_BRIDGE_LOW | Private file-data bridge low bound |
+| `+&H0D0` | ST_SCRATCH_BASE | BASIC-owned internal scratch base |
+| `+&H0D8` | ST_SCRATCH_END | Empty programme base after scratch reservations |
+| `+&H0E0` | ST_LINE_BUF_PTR | Dynamic BASIC line/input buffer pointer |
+| `+&H0E8` | ST_LINE_BUF_CAP | Dynamic BASIC line/input buffer capacity |
 | `+&H200` | ST_CURRENT_LINE | Line number being executed |
 | `+&H204` | ST_RANDOM_SEED | RND seed value |
 | `+&H208` | ST_ERROR_FLAG | Last error code |

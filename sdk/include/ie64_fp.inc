@@ -149,10 +149,12 @@ fp_float:
 ; ============================================================================
 fp_sqr:
     bgez    r8, .fp_sqr_do
-    li      r1, #0x7FFFFFFFFFFFFFFF
+    move.l  r1, #0xFFFFFFFF
+    movt    r1, #0x7FFFFFFF
     and.q   r2, r8, r1
     beqz    r2, .fp_sqr_do        ; -0.0
-    li      r1, #0x7FF0000000000000
+    move.l  r1, #0
+    movt    r1, #0x7FF00000
     and.q   r2, r8, r1
     beq     r2, r1, .fp_sqr_do    ; NaN or infinity
     move.q  r8, #0                ; finite negative
