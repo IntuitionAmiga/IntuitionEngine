@@ -1,19 +1,19 @@
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
 
-# Appendix A - EhBASIC Keyword Abbreviations and Token Map
+# Appendix A - IE64 BASIC Keyword Abbreviations and Token Map
 
-When you type a BASIC line and press RETURN, EhBASIC takes the text apart
+When you type a BASIC line and press RETURN, IE64 BASIC takes the text apart
 and writes it back to memory in a shorter form. Each reserved word becomes
 a single byte called a TOKEN. The body of the program in memory is a stream
 of these token bytes mixed with the characters of variable names, numeric
 literals, and quoted strings.
 
-This appendix lists every token byte EhBASIC recognises, the keyword it
+This appendix lists every token byte IE64 BASIC recognises, the keyword it
 stands for, and what kind of word it is. It also lists the short forms
 (abbreviations and aliases) the tokeniser accepts.
 
-When you LIST a program, EhBASIC walks back through the token bytes and
+When you LIST a program, IE64 BASIC walks back through the token bytes and
 prints the full keyword, so a line typed as `? "HI"` is shown as
 `PRINT "HI"`.
 
@@ -26,7 +26,7 @@ a reserved word.
 
 ## A.2 Abbreviations and aliases
 
-EhBASIC accepts the following short forms. Each one tokenises to the
+IE64 BASIC accepts the following short forms. Each one tokenises to the
 same byte as the keyword it stands for. The "Listed back as" column
 shows what `LIST` prints when that byte is detokenised.
 
@@ -45,7 +45,7 @@ statement still behaves as `DEF` when it is followed by `FN`, and as
 `TROFF` (trace off) when it stands alone. See Chapter 2 for the full
 syntax of each.
 
-The following reserved words are *not* tokenised at all. EhBASIC
+The following reserved words are *not* tokenised at all. IE64 BASIC
 recognises them as literal characters at run time:
 
 - `DIR` is a direct-mode command. It is recognised only at the BASIC
@@ -91,7 +91,7 @@ Every other reserved word tokenises to exactly one byte.
 
 The composite comparison operators `<=`, `>=`, and `<>` are stored as the
 base byte (`$BD` for `<`, `$BB` for `>`) followed by the raw second
-character (`=` or `>`). EhBASIC inspects the pair at run time. This
+character (`=` or `>`). IE64 BASIC inspects the pair at run time. This
 keeps the token alphabet small.
 
 ## A.4 Statement tokens (`$80`-`$E1`)
@@ -275,28 +275,29 @@ is a letter.
 
 ## A.8 Reading a tokenised line
 
-Every stored program line begins with an eight-byte header followed by
+Every stored program line begins with a sixteen-byte header followed by
 the tokenised content of the line. The layout is:
 
 ```
-+0  (4 bytes)  next-line pointer
-+4  (4 bytes)  line number
-+8  (n bytes)  tokenised content, terminated by a $00 byte
++0  (8 bytes)  next-line pointer
++8  (4 bytes)  line number
++12 (4 bytes)  reserved
++16 (n bytes)  tokenised content, terminated by a $00 byte
 ```
 
-After the terminator, EhBASIC aligns the next line on a four-byte
-boundary, so there may be one to three padding bytes between the `$00`
+After the terminator, IE64 BASIC aligns the next line on an eight-byte
+boundary, so there may be one to seven padding bytes between the `$00`
 and the next stored line's header.
 
-Both four-byte fields are little-endian.
+The next-line pointer is an eight-byte little-endian value. The line
+number and reserved field are four-byte little-endian values.
 
-The end of the program is a single four-byte word containing zero,
-called the **terminator word**. The next-line pointer of the last
-real program line is the address of this terminator word, *not*
-zero. Walking the list, you read four bytes through each header's
-next pointer; you reach the terminator when the four bytes you read
-are themselves zero. The terminator has no line number and no
-content.
+The end of the program is a single eight-byte qword containing zero,
+called the **terminator qword**. The next-line pointer of the last
+real program line is the address of this terminator qword, *not*
+zero. Walking the list, you read eight bytes through each header's
+next pointer; you reach the terminator when the eight bytes you read
+are themselves zero. The terminator has no line number and no content.
 
 Suppose you type:
 
@@ -304,12 +305,13 @@ Suppose you type:
 10 FOR I=1 TO 10:PRINT I:NEXT
 ```
 
-Inspecting the line in memory with PEEK from the start of its header
-shows, in hex:
+Inspecting the line in memory with `PEEK8` byte reads from the start
+of its header shows, in hex:
 
 ```
-NN NN NN NN        next-line pointer (4 bytes, little-endian)
-0A 00 00 00        line number 10  (4 bytes, little-endian)
+NN NN NN NN NN NN NN NN  next-line pointer (8 bytes, little-endian)
+0A 00 00 00              line number 10  (4 bytes, little-endian)
+00 00 00 00              reserved
 81                 FOR
 20 49 BC 31 20     space "I" EQUAL "1" space
 A9 20 31 30        TO space "1" "0"
@@ -318,21 +320,21 @@ A9 20 31 30        TO space "1" "0"
 3A                 colon
 82                 NEXT
 00                 end-of-line null
-                   (padding to 4-byte boundary, if any)
+                   (padding to 8-byte boundary, if any)
 ```
 
-The four `NN` bytes hold the address of the next line's header. If
+The eight `NN` bytes hold the address of the next line's header. If
 this is the last real program line, that address is the location of
-the terminator word, not zero. The terminator word itself reads as
-four bytes of zero.
+the terminator qword, not zero. The terminator qword itself reads as
+eight bytes of zero.
 
 Tokens are emitted with no surrounding space. Spaces between keywords
 and their arguments survive tokenisation as the literal byte `$20`. The
-null at offset N+8 terminates the stored line; the next-line pointer
-field of the following line begins at the next four-byte boundary after
+null at offset N+16 terminates the stored line; the next-line pointer
+field of the following line begins at the next eight-byte boundary after
 that null.
 
-When you LIST the line, EhBASIC walks back through the bytes, prints the
+When you LIST the line, IE64 BASIC walks back through the bytes, prints the
 line number in decimal, prints FOR for `$81`, copies the literal
 characters, prints TO for `$A9`, copies the literal characters, and so
 on. The form you see on screen is the same as the form you typed.

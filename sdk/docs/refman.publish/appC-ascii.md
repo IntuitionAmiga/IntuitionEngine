@@ -108,7 +108,7 @@ string literal in source code. To include it in a string, use:
 
 ## C.3 High codes (128-255)
 
-Bytes 128 through 255 carry no defined character meaning. EhBASIC
+Bytes 128 through 255 carry no defined character meaning. IE64 BASIC
 stores them in strings without modification and the terminal emits
 them as-is. The glyph (if any) is whatever the active video mode
 chooses to draw for that byte (see Chapter 5 for VGA text modes,

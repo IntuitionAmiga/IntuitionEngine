@@ -23,7 +23,7 @@ Grouped by source. Each entry has the exact text the machine
 prints, the numeric code the runtime uses internally, and a
 one-line explanation.
 
-## I.1 EhBASIC runtime errors
+## I.1 IE64 BASIC runtime errors
 
 The format on the screen is the message text, a space, the literal
 word `ERROR`, then (when raised from a running program rather
@@ -38,7 +38,7 @@ than from direct mode) ` IN ` followed by the line number.
 | `5`  | `RETURN WITHOUT GOSUB` | `RETURN` did not match a pending `GOSUB`. |
 | `6`  | `OUT OF MEMORY`    | The program, variable, array, or string area is full. |
 | `7`  | `ILLEGAL QUANTITY` | A function received an argument outside its domain (negative `SQR`, non-positive `LOG`, out-of-range `CHR$`). |
-| `8`  | `OVERFLOW`         | An arithmetic operation overflowed the 32-bit floating-point range. |
+| `8`  | `OVERFLOW`         | An arithmetic operation overflowed the double-precision numeric range. |
 | `9`  | `TYPE MISMATCH`    | A numeric expression saw a string, or vice versa. |
 | `10` | `FC`               | Illegal function call. Raised by `POKE16`, `POKE32`, or `POKE64` to an unaligned address, by a failed `HOST` action, and by other built-in helpers when they reject their argument shape. |
 | `11` | `REDIM`            | `DIM` named an array that already exists. |

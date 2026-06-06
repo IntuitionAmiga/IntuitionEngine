@@ -90,7 +90,7 @@ the same Intuition Engine.
 
 ### Appendices
 
-- A. EhBASIC Keyword Abbreviations and Token Map
+- A. IE64 BASIC Keyword Abbreviations and Token Map
 - B. Screen and Character Codes
 - C. ASCII and CHR$ Tables
 - D. Per-Engine MMIO Maps

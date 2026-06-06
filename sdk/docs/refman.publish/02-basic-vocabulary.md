@@ -1067,7 +1067,7 @@ PRINT VAL("3.14XYZ")
 
 Returns the address of the storage slot that holds the value of
 *var*. Numeric scalar variables expose a 16-byte public cell:
-tag at `+0`, reserved at `+4`, and payload at `+8`. Tag `1` is FP32
+tag at `+0`, reserved at `+4`, and payload at `+8`. Tag `1` is FP64
 and tag `2` is I64. Direct writes through `VARPTR` must keep the tag
 and payload consistent.
 

@@ -358,6 +358,44 @@ Current controlled polish pass:
     evidence files merely to satisfy reader-facing wording rules.
   - If this pass changes any reader-facing source file, regenerate the
     publish tree and PDFs only after the source tree is clean.
+- Integrate the IE64 BASIC migration wording cleanup from commit
+  `4e6a9fe4`. This is a focused reader-facing consistency pass, not a
+  new hardware feature pass. Check `sdk/docs/ehbasic_ie64.md`,
+  `sdk/include/ie64.inc`, `sdk/include/ehbasic_vars.inc`,
+  `sdk/include/ehbasic_lineeditor.inc`, `sdk/include/ehbasic_expr.inc`,
+  `sdk/include/ehbasic_tokens.inc`, the BASIC AOT/runtime tests, and
+  the relevant refman files before writing claims. Reader-facing prose
+  should call the current prompt language and runtime `IE64 BASIC`
+  unless it is explicitly discussing historical 68K EhBASIC ancestry or
+  an author-only source file. Keep architectural `FP32` wording in the
+  IE64 FPU chapter and CPU symbol appendix where it describes the
+  single-precision `F` register path. Do not change BASIC bitwise
+  operator width claims merely because an internal comment says
+  "integer"; verify the actual instruction width first.
+
+  Execute this cleanup pass in this order:
+
+  1. Chapter 2: correct the public `VARPTR` numeric cell so tag `1` is
+     `FP64` and tag `2` is `I64`.
+  2. Chapter 25: use `IE64 BASIC` for current runtime conventions while
+     leaving IE64 FPU `FP32` architectural wording intact.
+  3. Appendices A, C, I, and L plus the Preface table of contents:
+     replace current-runtime `EhBASIC` wording with `IE64 BASIC`, while
+     preserving the historical 68K EhBASIC ancestry note in Appendix A.
+  4. Appendix A: verify the stored-line layout against
+     `ehbasic_lineeditor.inc`; document the 16-byte line header, 8-byte
+     next-line pointer, 4-byte line number, 4-byte reserved field,
+     null-terminated token stream, 8-byte alignment, and 8-byte
+     terminator qword.
+  5. Appendix I: replace the stale 32-bit floating-point overflow
+     wording with the current double-precision BASIC numeric model.
+  6. Update `verify/CLAIM_LEDGER.txt` with the canonical sources
+     checked.
+  7. Run stale-term scans for unintended reader-facing `EhBASIC` and
+     stale BASIC `FP32` claims. Architectural IE64 FPU `FP32` references
+     and the historical Appendix A ancestry note are allowed.
+  8. Publish the stripped tree and print PDFs only after the source pass
+     and scans are complete.
 - Integrate the documentation-facing changes from commit `1300567`.
   This is a focused consistency pass, not a renumbering or feature
   expansion pass. Check `cpu_ie32.go`, `cpu_ie64.go`,

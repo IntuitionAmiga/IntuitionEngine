@@ -82,7 +82,7 @@ symbols, and Appendix J gives the full memory map.
 
 | Term | See |
 |------|-----|
-| EhBASIC tokens | Appendix A |
+| IE64 BASIC tokens | Appendix A |
 | Error messages | Appendix I |
 | Exceptions | Chapter 31 |
 
