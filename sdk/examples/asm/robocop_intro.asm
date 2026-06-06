@@ -93,6 +93,7 @@
 .equ VIDEO_RASTER_HEIGHT 0xF004C
 .equ VIDEO_RASTER_COLOR  0xF0050
 .equ VIDEO_RASTER_CTRL   0xF0054
+.equ VIDEO_FB_BASE       0xF0084
 
 .equ PSG_PLUS_CTRL     0xF0C20
 .equ PSG_PLAY_PTR      0xF0C10
@@ -106,12 +107,16 @@
 .equ SCREEN_W          640
 .equ SCREEN_H          480
 .equ LINE_BYTES        2560            ; 640 pixels x 4 bytes per pixel
+.equ SCREEN_BYTES      1228800
+.equ FRONT_FB          VRAM_START
+.equ BACK_FB           0x300000
 .equ SPRITE_W          240
 .equ SPRITE_H          180
 .equ SPRITE_STRIDE     960             ; 240 pixels x 4 bytes per pixel
 .equ CENTER_X          200             ; Horizontal centre of Lissajous path
 .equ CENTER_Y          150             ; Vertical centre of Lissajous path
 .equ BACKGROUND        0xFF000000      ; Opaque black (BGRA)
+.equ SHADOW_COLOR      0xFF180C04      ; Dark blue shadow panel
 
 ; Blitter operation codes
 .equ BLT_OP_COPY       0
@@ -135,12 +140,15 @@
 .equ VAR_PREV_X_ADDR   0x8804
 .equ VAR_PREV_Y_ADDR   0x8808
 .equ VAR_SCROLL_X      0x880C
+.equ VAR_DRAW_FB       0x8810
 
 .equ ROBOCOP_AY_LEN    24525
 
 ; Scrolltext constants
-.equ SCROLL_Y          430             ; Baseline Y position for scrolltext
-.equ SCROLL_SPEED      4               ; Pixels per frame horizontal scroll
+.equ SCROLL_Y          426             ; Baseline Y position for scrolltext
+.equ SCROLL_SPEED      2               ; Pixels per frame horizontal scroll
+.equ SCROLL_CLEAR_Y    404
+.equ SCROLL_CLEAR_H    76
 .equ CHAR_WIDTH        32
 .equ CHAR_HEIGHT       32
 .equ FONT_STRIDE       1280            ; 320 pixels x 4 bytes (10 chars/row)
@@ -177,12 +185,14 @@ start:
     STA @VIDEO_MODE
     LDA #1
     STA @VIDEO_CTRL
+    LDA #FRONT_FB
+    STA @VIDEO_FB_BASE
 
-    ; --- Clear screen to black using a blitter fill ---
+    ; --- Clear both framebuffers to black using blitter fills ---
     JSR wait_blit
     LDA #BLT_OP_FILL
     STA @BLT_OP
-    LDA #VRAM_START
+    LDA #FRONT_FB
     STA @BLT_DST
     LDA #SCREEN_W
     STA @BLT_WIDTH
@@ -192,6 +202,11 @@ start:
     STA @BLT_COLOR
     LDA #LINE_BYTES
     STA @BLT_DST_STRIDE
+    LDA #1
+    STA @BLT_CTRL
+    JSR wait_blit
+    LDA #BACK_FB
+    STA @BLT_DST
     LDA #1
     STA @BLT_CTRL
     JSR wait_blit
@@ -228,6 +243,8 @@ start:
     ; Initialise scrolltext horizontal position
     LDA #0
     STA @VAR_SCROLL_X
+    LDA #BACK_FB
+    STA @VAR_DRAW_FB
 
 ; ============================================================================
 ; MAIN LOOP
@@ -248,45 +265,25 @@ main_loop:
     LDA @VAR_FRAME_ADDR
     JSR compute_xy
 
-    ; Calculate VRAM address of previous sprite position -> T
-    LDE @VAR_PREV_Y_ADDR
-    LDF #LINE_BYTES
-    MUL E, F
-    LDF @VAR_PREV_X_ADDR
-    SHL F, #2
-    ADD E, F
-    ADD E, #VRAM_START
-    LDT E
-
-    ; Calculate VRAM address of new sprite position -> U
+    ; Calculate framebuffer address of new sprite position -> U
     LDE D
     LDF #LINE_BYTES
     MUL E, F
     LDF C
     SHL F, #2
     ADD E, F
-    ADD E, #VRAM_START
+    ADD E, @VAR_DRAW_FB
     LDU E
 
-    ; Save current position for next frame's erase
-    STC @VAR_PREV_X_ADDR
-    STD @VAR_PREV_Y_ADDR
-
-    ; --- Synchronise to vertical blank before drawing ---
-    ; This prevents tearing by ensuring all blitter operations
-    ; happen during the blanking interval
-    JSR wait_frame
-
-    ; --- Erase previous sprite position ---
-    ; Fill the old rectangle with the background colour
+    ; --- Rebuild the complete back frame ---
     JSR wait_blit
     LDA #BLT_OP_FILL
     STA @BLT_OP
-    LDA T
+    LDA @VAR_DRAW_FB
     STA @BLT_DST
-    LDA #SPRITE_W
+    LDA #SCREEN_W
     STA @BLT_WIDTH
-    LDA #SPRITE_H
+    LDA #SCREEN_H
     STA @BLT_HEIGHT
     LDA #BACKGROUND
     STA @BLT_COLOR
@@ -325,6 +322,20 @@ main_loop:
     ADD A, #SCROLL_SPEED
     STA @VAR_SCROLL_X
 
+    ; Publish the completed frame at the next VBlank.
+    JSR wait_blit
+    JSR wait_frame
+    LDA @VAR_DRAW_FB
+    STA @VIDEO_FB_BASE
+    LDA @VAR_DRAW_FB
+    SUB A, #FRONT_FB
+    JZ A, .use_back_next
+    LDA #FRONT_FB
+    STA @VAR_DRAW_FB
+    JMP main_loop
+.use_back_next:
+    LDA #BACK_FB
+    STA @VAR_DRAW_FB
     JMP main_loop
 
 ; ============================================================================
@@ -453,13 +464,13 @@ clear_scroll_area:
     JSR wait_blit
     LDA #BLT_OP_FILL
     STA @BLT_OP
-    LDA #390
+    LDA #SCROLL_CLEAR_Y
     MUL A, #LINE_BYTES
-    ADD A, #VRAM_START
+    ADD A, @VAR_DRAW_FB
     STA @BLT_DST
     LDA #SCREEN_W
     STA @BLT_WIDTH
-    LDA #90
+    LDA #SCROLL_CLEAR_H
     STA @BLT_HEIGHT
     LDA #LINE_BYTES
     STA @BLT_DST_STRIDE
@@ -538,7 +549,24 @@ draw_scrolltext:
     SHL A, #2
     ADD T, A
 
-    ; Blit the character glyph with alpha blending
+    ; Blit a dark backing block, then the character glyph with alpha blending
+    JSR wait_blit
+    LDA #BLT_OP_FILL
+    STA @BLT_OP
+    LDA T
+    ADD A, #8
+    ADD A, #5120
+    STA @BLT_DST
+    LDA #CHAR_WIDTH
+    STA @BLT_WIDTH
+    LDA #CHAR_HEIGHT
+    STA @BLT_HEIGHT
+    LDA #LINE_BYTES
+    STA @BLT_DST_STRIDE
+    LDA #SHADOW_COLOR
+    STA @BLT_COLOR
+    LDA #1
+    STA @BLT_CTRL
     JSR wait_blit
     LDA #BLT_OP_ALPHA
     STA @BLT_OP
@@ -1121,22 +1149,22 @@ data_cos_y:
 ; cycles through each frame.
 ; ----------------------------------------------------------------------------
 data_palette:
-.word 0xFF0000FF
-.word 0xFF0040FF
-.word 0xFF0080FF
-.word 0xFF00C0FF
-.word 0xFF00FF80
-.word 0xFF00FF00
-.word 0xFF40FF00
-.word 0xFF80FF00
-.word 0xFFFFFF00
-.word 0xFFFFC000
-.word 0xFFFF8000
-.word 0xFFFF4000
-.word 0xFFFF0000
-.word 0xFFFF00FF
-.word 0xFF8000FF
-.word 0xFF4000FF
+.word 0xFF101820
+.word 0xFF183040
+.word 0xFF205068
+.word 0xFF287898
+.word 0xFF30A8C8
+.word 0xFF58D8F0
+.word 0xFFA8F4FF
+.word 0xFFFFFFFF
+.word 0xFFE8F8FF
+.word 0xFFA8D0E0
+.word 0xFF607888
+.word 0xFF304050
+.word 0xFF701820
+.word 0xFFC82028
+.word 0xFFFF4848
+.word 0xFF301018
 
 ; ----------------------------------------------------------------------------
 ; Copper list - 16 horizontal raster bars

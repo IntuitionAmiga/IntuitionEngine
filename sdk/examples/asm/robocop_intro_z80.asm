@@ -110,14 +110,22 @@
 .set SPRITE_STRIDE,960        ; 240 pixels x 4 bytes per pixel
 .set CENTER_X,200             ; Horizontal centre of Lissajous path
 .set CENTER_Y,150             ; Vertical centre of Lissajous path
+.set FRONT_FB_BANK,0x10
+.set BACK_FB_BANK,0x30
+.set SHADOW_COLOR_0,0x04
+.set SHADOW_COLOR_1,0x0C
+.set SHADOW_COLOR_2,0x18
+.set SHADOW_COLOR_3,0xFF
 
 ; Copper bar layout constants
 .set BAR_COUNT,16
 .set BAR_STRIDE,36            ; Bytes per bar entry in copper list
 
 ; Scrolltext constants
-.set SCROLL_Y,430             ; Vertical position of scrolltext
+.set SCROLL_Y,426             ; Vertical position of scrolltext
 .set SCROLL_SPEED,2           ; Pixels advanced per frame
+.set SCROLL_CLEAR_Y,404
+.set SCROLL_CLEAR_H,76
 .set CHAR_WIDTH,32            ; Glyph width in pixels
 .set CHAR_HEIGHT,32           ; Glyph height in pixels
 .set FONT_STRIDE,1280         ; 320 pixels x 4 bytes per row (10 chars wide)
@@ -152,6 +160,8 @@ start:
     ld (frame_hi),a
     ld (scroll_x_lo),a
     ld (scroll_x_hi),a
+    ld a,BACK_FB_BANK
+    ld (draw_fb_bank),a
 
     ; Seed the previous position with the initial computed position so
     ; the first frame does not clear a garbage rectangle
@@ -179,20 +189,11 @@ main_loop:
     ; Compute new sprite position from sine/cosine tables
     call compute_xy
 
-    ; Synchronise to vertical blank before any drawing
-    call wait_frame
-
-    ; Erase the sprite at its previous position (black fill)
-    call clear_prev_sprite
+    ; Rebuild the complete back frame.
+    call clear_framebuffer
 
     ; Draw the masked sprite at its new position
     call draw_sprite
-
-    ; Save current position as previous for next frame's erase
-    ld hl,(curr_x)
-    ld (prev_x),hl
-    ld hl,(curr_y)
-    ld (prev_y),hl
 
     ; Clear the scrolltext strip and render current characters
     call clear_scroll_area
@@ -206,6 +207,26 @@ main_loop:
     ld bc,SCROLL_SPEED
     add hl,bc
     ld (scroll_x_lo),hl
+
+    ; Present the completed frame on a fresh VBlank, then swap buffers.
+    call wait_blit
+    call wait_frame
+    xor a
+    ld (VIDEO_FB_BASE+0),a
+    ld (VIDEO_FB_BASE+1),a
+    ld a,(draw_fb_bank)
+    ld (VIDEO_FB_BASE+2),a
+    xor a
+    ld (VIDEO_FB_BASE+3),a
+    ld a,(draw_fb_bank)
+    cp FRONT_FB_BANK
+    jr z,.use_back_next
+    ld a,FRONT_FB_BANK
+    ld (draw_fb_bank),a
+    jp main_loop
+.use_back_next:
+    ld a,BACK_FB_BANK
+    ld (draw_fb_bank),a
 
     jp main_loop
 
@@ -227,8 +248,15 @@ init_video:
     ; Enable the video output
     ld a,1
     ld (VIDEO_CTRL),a
+    xor a
+    ld (VIDEO_FB_BASE+0),a
+    ld (VIDEO_FB_BASE+1),a
+    ld a,FRONT_FB_BANK
+    ld (VIDEO_FB_BASE+2),a
+    xor a
+    ld (VIDEO_FB_BASE+3),a
 
-    ; Use the blitter to fill the entire framebuffer with opaque black
+    ; Use the blitter to fill both framebuffers with opaque black
     call wait_blit
 
     SET_BLT_OP BLT_OP_FILL
@@ -247,6 +275,15 @@ init_video:
     SET_DST_STRIDE LINE_BYTES
     SET_BLT_COLOR 0xFF000000
 
+    START_BLIT
+    call wait_blit
+    xor a
+    ld (BLT_DST_0),a
+    ld (BLT_DST_1),a
+    ld a,BACK_FB_BANK
+    ld (BLT_DST_2),a
+    xor a
+    ld (BLT_DST_3),a
     START_BLIT
     call wait_blit
 
@@ -431,13 +468,20 @@ update_bars:
     add a,a                     ; Faster scroll rate
     ld l,a
     ld h,>sin_x_lo
-    ld a,(hl)
-    add a,200                   ; Shift into positive range
-    rrca
-    rrca
-    rrca
-    rrca                        ; Divide by 16
-    and 0x0F
+    ld e,(hl)
+    ld h,>sin_x_hi
+    ld d,(hl)
+    ld hl,200
+    add hl,de                   ; Shift signed sine into 0..400 range
+    srl h
+    rr l
+    srl h
+    rr l
+    srl h
+    rr l
+    srl h
+    rr l                        ; Divide by 16
+    ld a,l
     ld (scroll_offset),a
 
     ; Iterate over all 16 bars, updating each colour entry
@@ -514,6 +558,31 @@ update_bars:
     pop bc
 
     djnz .bar_loop
+
+    ret
+
+; ----------------------------------------------------------------------------
+; clear_framebuffer -- Fill the current draw framebuffer with opaque black.
+; ----------------------------------------------------------------------------
+clear_framebuffer:
+    call wait_blit
+
+    SET_BLT_OP BLT_OP_FILL
+
+    xor a
+    ld (BLT_DST_0),a
+    ld (BLT_DST_1),a
+    ld a,(draw_fb_bank)
+    ld (BLT_DST_2),a
+    xor a
+    ld (BLT_DST_3),a
+
+    SET_BLT_WIDTH SCREEN_W
+    SET_BLT_HEIGHT SCREEN_H
+    SET_DST_STRIDE LINE_BYTES
+    SET_BLT_COLOR 0xFF000000
+
+    START_BLIT
 
     ret
 
@@ -642,8 +711,10 @@ calc_vram_addr_prev:
     ld a,(hl)
 
 .add_vram_base:
-    ; Add VRAM_START high byte (0x10) to bank value
-    add a,0x10
+    ; Add selected framebuffer high byte to bank value
+    ld b,a
+    ld a,(draw_fb_bank)
+    add a,b
     ld (dest_addr+2),a
     xor a
     ld (dest_addr+3),a
@@ -714,7 +785,9 @@ calc_vram_addr_curr:
     ld a,(hl)
 
 .curr_add_vram_base:
-    add a,0x10
+    ld b,a
+    ld a,(draw_fb_bank)
+    add a,b
     ld (dest_addr+2),a
     xor a
     ld (dest_addr+3),a
@@ -745,19 +818,19 @@ clear_scroll_area:
 
     SET_BLT_OP BLT_OP_FILL
 
-    ; Destination: VRAM_START + 390 * LINE_BYTES
-    ; 390 * 2560 = 998400 = 0x0F3C00, plus VRAM base 0x100000 = 0x1F3C00
+    ; Destination: draw framebuffer + SCROLL_CLEAR_Y * LINE_BYTES
     xor a
     ld (BLT_DST_0),a
-    ld a,0x3C
+    ld a,0xC8
     ld (BLT_DST_1),a
-    ld a,0x1F
+    ld a,(draw_fb_bank)
+    add a,0x0F
     ld (BLT_DST_2),a
     xor a
     ld (BLT_DST_3),a
 
     SET_BLT_WIDTH SCREEN_W
-    ld a,90
+    ld a,SCROLL_CLEAR_H
     ld (BLT_HEIGHT_LO),a
     xor a
     ld (BLT_HEIGHT_HI),a
@@ -967,7 +1040,9 @@ draw_scrolltext:
     add hl,de
     ld a,(hl)
 .y_done:
-    add a,0x10                  ; Add VRAM_START base
+    ld b,a
+    ld a,(draw_fb_bank)
+    add a,b
     ld (dest_addr+2),a
     xor a
     ld (dest_addr+3),a
@@ -978,6 +1053,7 @@ draw_scrolltext:
     add hl,hl                   ; * 4
     ld de,(dest_addr)
     add hl,de
+    ld (dest_addr),hl
     ld a,l
     ld (BLT_DST_0),a
     ld a,h
@@ -986,6 +1062,42 @@ draw_scrolltext:
     jr nc,.no_carry_dst
     inc a
 .no_carry_dst:
+    ld (dest_addr+2),a
+    ld (BLT_DST_2),a
+    xor a
+    ld (BLT_DST_3),a
+
+    ; Draw a small dark backing block behind the glyph.
+    SET_BLT_OP BLT_OP_FILL
+    ld a,(BLT_DST_0)
+    add a,8
+    ld (BLT_DST_0),a
+    ld a,(BLT_DST_1)
+    adc a,0x14
+    ld (BLT_DST_1),a
+    ld a,(BLT_DST_2)
+    adc a,0
+    ld (BLT_DST_2),a
+    SET_BLT_WIDTH CHAR_WIDTH
+    SET_BLT_HEIGHT CHAR_HEIGHT
+    SET_DST_STRIDE LINE_BYTES
+    ld a,SHADOW_COLOR_0
+    ld (BLT_COLOR_0),a
+    ld a,SHADOW_COLOR_1
+    ld (BLT_COLOR_1),a
+    ld a,SHADOW_COLOR_2
+    ld (BLT_COLOR_2),a
+    ld a,SHADOW_COLOR_3
+    ld (BLT_COLOR_3),a
+    START_BLIT
+    call wait_blit
+
+    SET_BLT_OP BLT_OP_ALPHA
+    ld a,(dest_addr)
+    ld (BLT_DST_0),a
+    ld a,(dest_addr+1)
+    ld (BLT_DST_1),a
+    ld a,(dest_addr+2)
     ld (BLT_DST_2),a
     xor a
     ld (BLT_DST_3),a
@@ -1057,6 +1169,7 @@ font_offset:    .space 4        ; 32-bit font glyph offset (scratch)
 scroll_y:       .word 0         ; Scrolltext Y position with sine offset
 msg_ptr:        .word 0         ; Pointer into scroll_message
 curr_char:      .byte 0         ; Current character being rendered
+draw_fb_bank:   .byte BACK_FB_BANK ; High byte of current draw framebuffer
 
 ; ----------------------------------------------------------------------------
 ; Y-ADDRESS LOOKUP TABLES
@@ -1494,25 +1607,25 @@ scroll_sine_hi:
 ; COLOUR PALETTE AND CHARACTER DATA
 ; ============================================================================
 
-; Copper bar colour palette (16 entries, BGRA format)
-; These colours form the rainbow gradient that scrolls across the bars.
+; Copper bar colour palette (16 entries, little-endian 0xAARRGGBB)
+; Steel/cyan highlights with red warning accents.
 palette:
-    .byte 0xFF, 0x00, 0x00, 0xFF        ; Blue
-    .byte 0xFF, 0x40, 0x00, 0xFF        ; Blue-cyan
-    .byte 0xFF, 0x80, 0x00, 0xFF        ; Cyan
-    .byte 0xFF, 0xC0, 0x00, 0xFF        ; Cyan-green
-    .byte 0x80, 0xFF, 0x00, 0xFF        ; Green-yellow
-    .byte 0x00, 0xFF, 0x00, 0xFF        ; Green
-    .byte 0x00, 0xFF, 0x40, 0xFF        ; Green-yellow
-    .byte 0x00, 0xFF, 0x80, 0xFF        ; Yellow
-    .byte 0x00, 0xFF, 0xFF, 0xFF        ; Yellow
-    .byte 0x00, 0xC0, 0xFF, 0xFF        ; Orange
-    .byte 0x00, 0x80, 0xFF, 0xFF        ; Orange-red
-    .byte 0x00, 0x40, 0xFF, 0xFF        ; Red
-    .byte 0x00, 0x00, 0xFF, 0xFF        ; Red
-    .byte 0xFF, 0x00, 0xFF, 0xFF        ; Magenta
-    .byte 0xFF, 0x00, 0x80, 0xFF        ; Purple
-    .byte 0xFF, 0x00, 0x40, 0xFF        ; Blue-purple
+    .byte 0x20,0x18,0x10,0xFF
+    .byte 0x40,0x30,0x18,0xFF
+    .byte 0x68,0x50,0x20,0xFF
+    .byte 0x98,0x78,0x28,0xFF
+    .byte 0xC8,0xA8,0x30,0xFF
+    .byte 0xF0,0xD8,0x58,0xFF
+    .byte 0xFF,0xF4,0xA8,0xFF
+    .byte 0xFF,0xFF,0xFF,0xFF
+    .byte 0xFF,0xF8,0xE8,0xFF
+    .byte 0xE0,0xD0,0xA8,0xFF
+    .byte 0x88,0x78,0x60,0xFF
+    .byte 0x50,0x40,0x30,0xFF
+    .byte 0x20,0x18,0x70,0xFF
+    .byte 0x28,0x20,0xC8,0xFF
+    .byte 0x48,0x48,0xFF,0xFF
+    .byte 0x18,0x10,0x30,0xFF
 
 ; Scroll character table (96 entries x 4 bytes = 384 bytes)
 ; Maps ASCII 32-127 to byte offsets within the font sheet. The font is

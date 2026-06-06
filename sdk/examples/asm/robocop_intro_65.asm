@@ -96,14 +96,19 @@ SPRITE_H        = 180
 SPRITE_STRIDE   = 960           ; 240 * 4 bytes per pixel
 CENTER_X        = 200
 CENTER_Y        = 150
+FRONT_FB_BANK   = $10
+BACK_FB_BANK    = $30
+SHADOW_COLOR    = $FF180C04
 
 ; Copper bar constants
 BAR_COUNT       = 16
 BAR_STRIDE      = 36            ; Bytes per copper bar entry
 
 ; Scrolltext constants
-SCROLL_Y        = 430
+SCROLL_Y        = 426
 SCROLL_SPEED    = 2             ; Pixels per frame (slower = smoother)
+SCROLL_CLEAR_Y  = 404
+SCROLL_CLEAR_H  = 76
 CHAR_WIDTH      = 32
 CHAR_HEIGHT     = 32
 FONT_STRIDE     = 1280          ; 320 * 4 bytes per row (10 chars wide)
@@ -142,6 +147,7 @@ char_x:         .res 2          ; Current character X position (signed)
 char_count:     .res 1          ; Characters drawn counter
 font_offset:    .res 4          ; Font source address offset
 scroll_y:       .res 2          ; Y position with sine offset
+draw_fb_bank:   .res 1          ; High byte of current draw framebuffer
 
 ; ============================================================================
 ; BSS SEGMENT - Uninitialised data in RAM
@@ -174,6 +180,8 @@ y_addr_bank:    .res 480        ; VRAM bank for each line
     sta frame_hi
     sta scroll_x_lo
     sta scroll_x_hi
+    lda #BACK_FB_BANK
+    sta draw_fb_bank
 
     ; Compute initial sprite position and save as "previous"
     jsr compute_xy
@@ -204,24 +212,11 @@ main_loop:
     ; Compute new sprite position from sine/cosine tables
     jsr compute_xy
 
-    ; Synchronise to vertical blank before drawing
-    jsr wait_frame
-
-    ; Erase previous sprite position with a black fill
-    jsr clear_prev_sprite
+    ; Rebuild the complete back frame.
+    jsr clear_framebuffer
 
     ; Draw sprite at new position with mask
     jsr draw_sprite
-
-    ; Save current position for next frame's erase
-    lda curr_x
-    sta prev_x
-    lda curr_x+1
-    sta prev_x+1
-    lda curr_y
-    sta prev_y
-    lda curr_y+1
-    sta prev_y+1
 
     ; Clear scroll area and render scrolltext
     jsr clear_scroll_area
@@ -238,6 +233,26 @@ main_loop:
     lda scroll_x_hi
     adc #0
     sta scroll_x_hi
+
+    ; Present the completed frame on a fresh VBlank, then swap buffers.
+    jsr wait_blit
+    jsr wait_frame
+    lda #0
+    sta VIDEO_FB_BASE
+    sta VIDEO_FB_BASE+1
+    lda draw_fb_bank
+    sta VIDEO_FB_BASE+2
+    lda #0
+    sta VIDEO_FB_BASE+3
+    lda draw_fb_bank
+    cmp #FRONT_FB_BANK
+    beq @use_back_next
+    lda #FRONT_FB_BANK
+    sta draw_fb_bank
+    jmp main_loop
+@use_back_next:
+    lda #BACK_FB_BANK
+    sta draw_fb_bank
 
     jmp main_loop
 .endproc
@@ -260,8 +275,15 @@ main_loop:
     ; Enable video
     lda #1
     sta VIDEO_CTRL
+    lda #0
+    sta VIDEO_FB_BASE
+    sta VIDEO_FB_BASE+1
+    lda #FRONT_FB_BANK
+    sta VIDEO_FB_BASE+2
+    lda #0
+    sta VIDEO_FB_BASE+3
 
-    ; Clear screen to black using blitter fill
+    ; Clear both framebuffers to black using blitter fill
     jsr wait_blit
 
     SET_BLT_OP BLT_OP_FILL
@@ -280,6 +302,15 @@ main_loop:
     SET_DST_STRIDE LINE_BYTES
     SET_BLT_COLOR $FF000000
 
+    START_BLIT
+    jsr wait_blit
+    lda #$00
+    sta BLT_DST_0
+    sta BLT_DST_1
+    lda #BACK_FB_BANK
+    sta BLT_DST_2
+    lda #$00
+    sta BLT_DST_3
     START_BLIT
     jsr wait_blit
 
@@ -483,12 +514,19 @@ main_loop:
     tax
     lda sin_x_lo,x
     clc
-    adc #200                    ; Offset to 0-400 range
-    lsr a
-    lsr a
-    lsr a
-    lsr a                       ; / 16, now 0-25
-    sta temp0                   ; Scroll offset
+    adc #<200                   ; Offset signed sine to 0-400 range
+    sta temp0
+    lda sin_x_hi,x
+    adc #>200
+    sta temp0+1
+    lsr temp0+1
+    ror temp0
+    lsr temp0+1
+    ror temp0
+    lsr temp0+1
+    ror temp0
+    lsr temp0+1
+    ror temp0                   ; / 16, now 0-25
 
     ; Update each bar's colour in the copper list
     lda #0
@@ -541,6 +579,32 @@ main_loop:
     lda bar_idx
     cmp #BAR_COUNT
     bne @bar_loop
+
+    rts
+.endproc
+
+; ----------------------------------------------------------------------------
+; clear_framebuffer - Fill the current draw framebuffer with opaque black
+; ----------------------------------------------------------------------------
+.proc clear_framebuffer
+    jsr wait_blit
+
+    SET_BLT_OP BLT_OP_FILL
+
+    lda #$00
+    sta BLT_DST_0
+    sta BLT_DST_1
+    lda draw_fb_bank
+    sta BLT_DST_2
+    lda #$00
+    sta BLT_DST_3
+
+    SET_BLT_WIDTH SCREEN_W
+    SET_BLT_HEIGHT SCREEN_H
+    SET_DST_STRIDE LINE_BYTES
+    SET_BLT_COLOR $FF000000
+
+    START_BLIT
 
     rts
 .endproc
@@ -646,9 +710,9 @@ main_loop:
     lda y_addr_bank + 256,y
 
 @add_vram_base:
-    ; Add VRAM_START ($100000) -- bank byte + $10
+    ; Add selected framebuffer bank byte
     clc
-    adc #$10
+    adc draw_fb_bank
     sta dest_addr+2
     lda #$00
     sta dest_addr+3
@@ -706,9 +770,9 @@ main_loop:
     lda y_addr_bank + 256,y
 
 @add_vram_base:
-    ; Add VRAM_START ($100000)
+    ; Add selected framebuffer bank byte
     clc
-    adc #$10
+    adc draw_fb_bank
     sta dest_addr+2
     lda #$00
     sta dest_addr+3
@@ -744,26 +808,27 @@ main_loop:
 ; ============================================================================
 
 ; ----------------------------------------------------------------------------
-; clear_scroll_area - Erase the bottom 90 scanlines for scrolltext
-; Uses the blitter to fill Y=390..479 with black.
+; clear_scroll_area - Erase the scrolltext band.
 ; ----------------------------------------------------------------------------
 .proc clear_scroll_area
     jsr wait_blit
 
     SET_BLT_OP BLT_OP_FILL
 
-    ; Destination: VRAM_START + 390 * LINE_BYTES = $1F3C00
+    ; Destination: draw framebuffer + SCROLL_CLEAR_Y * LINE_BYTES
     lda #$00
     sta BLT_DST_0
-    lda #$3C
+    lda #$C8
     sta BLT_DST_1
-    lda #$1F
+    lda draw_fb_bank
+    clc
+    adc #$0F
     sta BLT_DST_2
     lda #$00
     sta BLT_DST_3
 
     SET_BLT_WIDTH SCREEN_W
-    lda #90
+    lda #SCROLL_CLEAR_H
     sta BLT_HEIGHT_LO
     lda #0
     sta BLT_HEIGHT_HI
@@ -963,7 +1028,7 @@ main_loop:
     lda y_addr_bank,y
 @y_done:
     clc
-    adc #$10                    ; Add VRAM_START base ($100000)
+    adc draw_fb_bank            ; Add selected framebuffer bank byte
     sta dest_addr+2
     lda #0
     sta dest_addr+3
@@ -981,12 +1046,46 @@ main_loop:
     clc
     lda dest_addr
     adc temp1
+    sta dest_addr
     sta BLT_DST_0
     lda dest_addr+1
     adc temp1+1
+    sta dest_addr+1
     sta BLT_DST_1
     lda dest_addr+2
     adc #0
+    sta dest_addr+2
+    sta BLT_DST_2
+    lda #0
+    sta BLT_DST_3
+
+    ; Draw a small dark backing block behind the glyph.
+    SET_BLT_OP BLT_OP_FILL
+    clc
+    lda dest_addr
+    adc #8
+    sta BLT_DST_0
+    lda dest_addr+1
+    adc #$14
+    sta BLT_DST_1
+    lda dest_addr+2
+    adc #0
+    sta BLT_DST_2
+    lda #0
+    sta BLT_DST_3
+    SET_BLT_WIDTH CHAR_WIDTH
+    SET_BLT_HEIGHT CHAR_HEIGHT
+    SET_DST_STRIDE LINE_BYTES
+    SET_BLT_COLOR SHADOW_COLOR
+    START_BLIT
+    jsr wait_blit
+
+    SET_BLT_OP BLT_OP_ALPHA
+    lda dest_addr
+    sta BLT_DST_0
+    lda dest_addr+1
+    sta BLT_DST_1
+    lda dest_addr+2
     sta BLT_DST_2
     lda #0
     sta BLT_DST_3
@@ -1194,26 +1293,26 @@ cos_y_hi:
     .byte $00, $00, $00, $00, $00, $00, $00, $00
 
 ; ----------------------------------------------------------------------------
-; Colour palette for copper bars (16 entries, BGRA byte order)
-; These colours form a rainbow gradient that cycles each frame.
+; Copper bar colour palette (16 entries, little-endian 0xAARRGGBB)
+; Steel/cyan highlights with red warning accents.
 ; ----------------------------------------------------------------------------
 palette:
-    .byte $FF, $00, $00, $FF    ; Blue
-    .byte $FF, $40, $00, $FF    ; Blue-cyan
-    .byte $FF, $80, $00, $FF    ; Cyan
-    .byte $FF, $C0, $00, $FF    ; Cyan-green
-    .byte $80, $FF, $00, $FF    ; Green-yellow
-    .byte $00, $FF, $00, $FF    ; Green
-    .byte $00, $FF, $40, $FF    ; Green-yellow
-    .byte $00, $FF, $80, $FF    ; Yellow
-    .byte $00, $FF, $FF, $FF    ; Yellow
-    .byte $00, $C0, $FF, $FF    ; Orange
-    .byte $00, $80, $FF, $FF    ; Orange-red
-    .byte $00, $40, $FF, $FF    ; Red
-    .byte $00, $00, $FF, $FF    ; Red
-    .byte $FF, $00, $FF, $FF    ; Magenta
-    .byte $FF, $00, $80, $FF    ; Purple
-    .byte $FF, $00, $40, $FF    ; Blue-purple
+    .byte $20,$18,$10,$FF
+    .byte $40,$30,$18,$FF
+    .byte $68,$50,$20,$FF
+    .byte $98,$78,$28,$FF
+    .byte $C8,$A8,$30,$FF
+    .byte $F0,$D8,$58,$FF
+    .byte $FF,$F4,$A8,$FF
+    .byte $FF,$FF,$FF,$FF
+    .byte $FF,$F8,$E8,$FF
+    .byte $E0,$D0,$A8,$FF
+    .byte $88,$78,$60,$FF
+    .byte $50,$40,$30,$FF
+    .byte $20,$18,$70,$FF
+    .byte $28,$20,$C8,$FF
+    .byte $48,$48,$FF,$FF
+    .byte $18,$10,$30,$FF
 
 ; ----------------------------------------------------------------------------
 ; Copper list for 16 horizontal raster bars

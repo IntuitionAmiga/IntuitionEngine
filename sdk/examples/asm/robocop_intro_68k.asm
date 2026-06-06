@@ -84,6 +84,10 @@ SPRITE_H        equ 180
 SPRITE_STRIDE   equ 960             ; 240 pixels x 4 bytes per pixel
 CENTER_X        equ 200             ; Horizontal centre of Lissajous path
 CENTER_Y        equ 150             ; Vertical centre of Lissajous path
+SCREEN_BYTES    equ 1228800
+FRONT_FB        equ VRAM_START
+BACK_FB         equ $300000
+SHADOW_COLOR    equ $FF180C04
 
 ; Copper bar layout constants
 BAR_COUNT       equ 16
@@ -100,12 +104,15 @@ VAR_FRAME_ADDR  equ $8800
 VAR_PREV_X_ADDR equ $8804
 VAR_PREV_Y_ADDR equ $8808
 VAR_SCROLL_X    equ $880C
+VAR_DRAW_FB     equ $8810
 
 ROBOCOP_AY_LEN  equ 24525
 
 ; Scrolltext constants
-SCROLL_Y        equ 430             ; Baseline Y position for scrolltext
-SCROLL_SPEED    equ 4               ; Pixels per frame horizontal scroll
+SCROLL_Y        equ 426             ; Baseline Y position for scrolltext
+SCROLL_SPEED    equ 2               ; Pixels per frame horizontal scroll
+SCROLL_CLEAR_Y  equ 404
+SCROLL_CLEAR_H  equ 76
 CHAR_WIDTH      equ 32
 CHAR_HEIGHT     equ 32
 FONT_STRIDE     equ 1280            ; 320 pixels x 4 bytes (10 chars/row)
@@ -125,12 +132,14 @@ start:
     move.l  d0,VIDEO_MODE
     moveq   #1,d0
     move.l  d0,VIDEO_CTRL
+    move.l  #FRONT_FB,d0
+    move.l  d0,VIDEO_FB_BASE
 
-    ; --- Clear screen to black using a blitter fill ---
+    ; --- Clear both framebuffers to black using blitter fills ---
     jsr     wait_blit
     move.l  #BLT_OP_FILL,d0
     move.l  d0,BLT_OP
-    move.l  #VRAM_START,d0
+    move.l  #FRONT_FB,d0
     move.l  d0,BLT_DST
     move.l  #SCREEN_W,d0
     move.l  d0,BLT_WIDTH
@@ -140,6 +149,11 @@ start:
     move.l  d0,BLT_COLOR
     move.l  #LINE_BYTES,d0
     move.l  d0,BLT_DST_STRIDE
+    moveq   #1,d0
+    move.l  d0,BLT_CTRL
+    jsr     wait_blit
+    move.l  #BACK_FB,d0
+    move.l  d0,BLT_DST
     moveq   #1,d0
     move.l  d0,BLT_CTRL
     jsr     wait_blit
@@ -177,6 +191,8 @@ start:
     ; Initialise scrolltext horizontal position
     moveq   #0,d0
     move.l  d0,VAR_SCROLL_X
+    move.l  #BACK_FB,d0
+    move.l  d0,VAR_DRAW_FB
 
 ; ============================================================================
 ; MAIN LOOP
@@ -197,42 +213,25 @@ main_loop:
     move.l  VAR_FRAME_ADDR,d0
     jsr     compute_xy
 
-    ; Calculate VRAM address of previous sprite position -> d6
-    move.l  VAR_PREV_Y_ADDR,d4
-    move.l  #LINE_BYTES,d5
-    mulu.w  d5,d4
-    move.l  VAR_PREV_X_ADDR,d5
-    lsl.l   #2,d5
-    add.l   d5,d4
-    addi.l  #VRAM_START,d4
-    move.l  d4,d6                   ; d6 = prev address
-
-    ; Calculate VRAM address of new sprite position -> d7
+    ; Calculate framebuffer address of new sprite position -> d7
     move.l  d3,d4
     move.l  #LINE_BYTES,d5
     mulu.w  d5,d4
     move.l  d2,d5
     lsl.l   #2,d5
     add.l   d5,d4
-    addi.l  #VRAM_START,d4
+    add.l   VAR_DRAW_FB,d4
     move.l  d4,d7                   ; d7 = new address
 
-    ; Save current position for next frame's erase
-    move.l  d2,VAR_PREV_X_ADDR
-    move.l  d3,VAR_PREV_Y_ADDR
-
-    ; --- Synchronise to vertical blank before drawing ---
-    jsr     wait_frame
-
-    ; --- Erase previous sprite position ---
-    ; Fill the old rectangle with the background colour
+    ; --- Rebuild the complete back frame ---
     jsr     wait_blit
     move.l  #BLT_OP_FILL,d0
     move.l  d0,BLT_OP
-    move.l  d6,BLT_DST
-    move.l  #SPRITE_W,d0
+    move.l  VAR_DRAW_FB,d0
+    move.l  d0,BLT_DST
+    move.l  #SCREEN_W,d0
     move.l  d0,BLT_WIDTH
-    move.l  #SPRITE_H,d0
+    move.l  #SCREEN_H,d0
     move.l  d0,BLT_HEIGHT
     move.l  #BACKGROUND,d0
     move.l  d0,BLT_COLOR
@@ -270,6 +269,19 @@ main_loop:
     addq.l  #SCROLL_SPEED,d0
     move.l  d0,VAR_SCROLL_X
 
+    ; Publish the completed frame at the next VBlank.
+    jsr     wait_blit
+    jsr     wait_frame
+    move.l  VAR_DRAW_FB,d0
+    move.l  d0,VIDEO_FB_BASE
+    cmpi.l  #FRONT_FB,d0
+    beq     .use_back_next
+    move.l  #FRONT_FB,d0
+    move.l  d0,VAR_DRAW_FB
+    bra     main_loop
+.use_back_next:
+    move.l  #BACK_FB,d0
+    move.l  d0,VAR_DRAW_FB
     bra     main_loop
 
 ; ============================================================================
@@ -391,13 +403,13 @@ clear_scroll_area:
     jsr     wait_blit
     move.l  #BLT_OP_FILL,d0
     move.l  d0,BLT_OP
-    move.l  #390,d0
+    move.l  #SCROLL_CLEAR_Y,d0
     mulu.w  #LINE_BYTES,d0
-    addi.l  #VRAM_START,d0
+    add.l   VAR_DRAW_FB,d0
     move.l  d0,BLT_DST
     move.l  #SCREEN_W,d0
     move.l  d0,BLT_WIDTH
-    moveq   #90,d0
+    moveq   #SCROLL_CLEAR_H,d0
     move.l  d0,BLT_HEIGHT
     move.l  #LINE_BYTES,d0
     move.l  d0,BLT_DST_STRIDE
@@ -483,7 +495,23 @@ draw_scrolltext:
     add.l   d5,d0
     move.l  d0,d7                       ; d7 = dest address
 
-    ; Blit the character glyph with alpha blending
+    ; Blit a dark backing block, then the character glyph with alpha blending
+    jsr     wait_blit
+    move.l  #BLT_OP_FILL,d0
+    move.l  d0,BLT_OP
+    move.l  d7,d0
+    addi.l  #(LINE_BYTES*2)+8,d0
+    move.l  d0,BLT_DST
+    move.l  #CHAR_WIDTH,d0
+    move.l  d0,BLT_WIDTH
+    move.l  #CHAR_HEIGHT,d0
+    move.l  d0,BLT_HEIGHT
+    move.l  #LINE_BYTES,d0
+    move.l  d0,BLT_DST_STRIDE
+    move.l  #SHADOW_COLOR,d0
+    move.l  d0,BLT_COLOR
+    moveq   #1,d0
+    move.l  d0,BLT_CTRL
     jsr     wait_blit
     move.l  #BLT_OP_ALPHA,d0
     move.l  d0,BLT_OP
@@ -1059,22 +1087,22 @@ data_cos_y:
 ; cycles through each frame.
 ; ----------------------------------------------------------------------------
 data_palette:
-    dc.l    $FF0000FF
-    dc.l    $FF0040FF
-    dc.l    $FF0080FF
-    dc.l    $FF00C0FF
-    dc.l    $FF00FF80
-    dc.l    $FF00FF00
-    dc.l    $FF40FF00
-    dc.l    $FF80FF00
-    dc.l    $FFFFFF00
-    dc.l    $FFFFC000
-    dc.l    $FFFF8000
-    dc.l    $FFFF4000
-    dc.l    $FFFF0000
-    dc.l    $FFFF00FF
-    dc.l    $FF8000FF
-    dc.l    $FF4000FF
+    dc.l    $FF101820
+    dc.l    $FF183040
+    dc.l    $FF205068
+    dc.l    $FF287898
+    dc.l    $FF30A8C8
+    dc.l    $FF58D8F0
+    dc.l    $FFA8F4FF
+    dc.l    $FFFFFFFF
+    dc.l    $FFE8F8FF
+    dc.l    $FFA8D0E0
+    dc.l    $FF607888
+    dc.l    $FF304050
+    dc.l    $FF701820
+    dc.l    $FFC82028
+    dc.l    $FFFF4848
+    dc.l    $FF301018
 
 ; ----------------------------------------------------------------------------
 ; Copper list - 16 horizontal raster bars
