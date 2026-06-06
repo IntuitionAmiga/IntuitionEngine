@@ -1,6 +1,6 @@
 ; aot_runtime_blob.asm - standalone COMPILE runtime blob.
 ;
-; This assembles the EhBASIC expression/variable/string/maths/exec runtime as a
+; This assembles the IE64 BASIC expression/variable/string/maths/exec runtime as a
 ; single position-fixed blob, linked at AOT_RT_BASE. COMPILE bundles the trimmed
 ; blob into standalone .ie64 images and the bootstrap copies it to AOT_RT_BASE
 ; before running user code, so the blob's internal absolute references (la/lea to

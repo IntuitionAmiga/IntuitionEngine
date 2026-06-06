@@ -1674,11 +1674,11 @@ func TestREPL_RunAOT_PokeExpression(t *testing.T) {
 		}
 	})
 
-	t.Run("poke64_delegated_variable_fp32_value", func(t *testing.T) {
+	t.Run("poke64_delegated_variable_i64_value", func(t *testing.T) {
 		h, _ := startREPL(t)
 		runAOTLines(t, h, "10 A=4096", "20 POKE64 327680, A", "30 END")
 		if got := h.bus.Read64(base); got != 0x1000 {
-			t.Fatalf("POKE64 delegated FP32 variable: memory[%#x]=%#x, want 0x1000", base, got)
+			t.Fatalf("POKE64 delegated I64 variable: memory[%#x]=%#x, want 0x1000", base, got)
 		}
 	})
 
@@ -2902,7 +2902,7 @@ func TestAOTConsttabInSync(t *testing.T) {
 	}
 }
 
-// TestEhbasicImageFitsBelowState guards the prebuilt EhBASIC image against growing
+// TestEhbasicImageFitsBelowState guards the prebuilt IE64 BASIC image against growing
 // into the resident low-RAM workspace. The flat image loads at PROGRAM_START
 // (0x1000). The first live workspace above the code starts at 0x041000, below
 // BASIC_STATE at 0x042000; tokeniser and LOAD scratch still rely on this low
@@ -2920,11 +2920,11 @@ func TestEhbasicImageFitsBelowState(t *testing.T) {
 		t.Skipf("prebuilt image not built: %v", err)
 	}
 	if fi.Size() > budget {
-		t.Fatalf("EhBASIC image %d bytes exceeds budget %d (would overwrite low workspace at %#x and corrupt RUN AOT)",
+		t.Fatalf("IE64 BASIC image %d bytes exceeds budget %d (would overwrite low workspace at %#x and corrupt RUN AOT)",
 			fi.Size(), budget, lowWorkspace)
 	}
 	if fi.Size() > budget*9/10 {
-		t.Logf("WARNING: EhBASIC image %d bytes is within 10%% of the %d-byte budget (low workspace at %#x)",
+		t.Logf("WARNING: IE64 BASIC image %d bytes is within 10%% of the %d-byte budget (low workspace at %#x)",
 			fi.Size(), budget, lowWorkspace)
 	}
 }
@@ -3016,7 +3016,6 @@ func TestAOT_FpPrintClosureParity(t *testing.T) {
 		}
 	}
 }
-
 
 // TestAOT_SymbolCapacity assembles a programme with far more than the old
 // 64-symbol limit, confirming the symbol table now lives in (larger) workspace.
@@ -4065,7 +4064,7 @@ func TestAOT_ParseUint(t *testing.T) {
 }
 
 // =============================================================================
-// EhBASIC IE64 AOT compiler - Phase 2 (front-end) tests
+// IE64 BASIC AOT compiler - Phase 2 (front-end) tests
 //
 // These exercise the REPL recognition and COMPILE filename validation layer.
 // The code-generation backend is stubbed at this phase: an accepted RUN AOT or

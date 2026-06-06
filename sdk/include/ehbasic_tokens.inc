@@ -1,4 +1,4 @@
-; ehbasic_tokens.inc - EhBASIC IE64 Token Definitions
+; ehbasic_tokens.inc - IE64 BASIC Token Definitions
 ;
 ; Token values and keyword tables for the EhBASIC tokeniser.
 ; Ported from ehbasic68k.asm token tables.

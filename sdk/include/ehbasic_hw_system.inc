@@ -1,4 +1,4 @@
-; ehbasic_hw_system.inc - EhBASIC IE64 System Commands
+; ehbasic_hw_system.inc - IE64 BASIC System Commands
 ;
 ; Statement handlers for system-level BASIC commands:
 ;   WAIT addr, mask [,xor] - Poll memory until condition met

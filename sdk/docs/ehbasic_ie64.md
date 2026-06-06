@@ -232,7 +232,7 @@ Direct-only commands (`RUN AOT`, `COMPILE`, `DIR`, `TYPE`) and roots with no BAS
 
 ### Terminal Editor
 
-EhBASIC runs inside a graphical terminal with full line-editing support. Text is rendered on the VideoChip framebuffer using a built-in font, with cursor blinking and scrollback history.
+IE64 BASIC runs inside a graphical terminal with full line-editing support. Text is rendered on the VideoChip framebuffer using a built-in font, with cursor blinking and scrollback history.
 
 #### Editing Keys
 
@@ -2469,7 +2469,7 @@ The ULA emulates the ZX Spectrum's 256x192 pixel display with a unique non-linea
 - Attributes: 768 bytes at `&HFA000 + &H1800` (32x24 cells, each 8x8 pixels)
 
 The `&H4000` bitmap and `&H5800` attribute addresses are ZX Spectrum guest
-addresses. From EhBASIC on IE64, `PEEK`/`POKE` the byte-addressed `&HFA000`
+addresses. From IE64 BASIC, `PEEK`/`POKE` the byte-addressed `&HFA000`
 aperture or use the
 ULA commands.
 
@@ -2756,7 +2756,7 @@ registers.
 
 ### Main Memory Layout
 
-This table shows the low-memory EhBASIC and legacy hardware apertures. Guest
+This table shows the low-memory IE64 BASIC and legacy hardware apertures. Guest
 RAM may be larger than this visible layout; discover the active and total RAM
 sizes through the SYSINFO registers or, from IE64 machine code, `MFCR` control
 register 15.
@@ -2818,7 +2818,7 @@ register 15.
 | Address | Size | Purpose |
 |---------|------|---------|
 | `&H001000`-`&H040FFF` | 256 KB | Interpreter code reservation |
-| `&H041000`-`&H041FFF` | 4 KB | Input line buffer |
+| `&H041000`-`&H041FFF` | 4 KB | Legacy resident scratch, not the live line buffer |
 | `&H042000`-`&H042FFF` | 4 KB | Interpreter state block |
 | `&H043000`-`&H06FFFF` | 180 KB | Standalone runtime blob area and legacy resident programme fallback |
 | `&H00600000`-`&H006EFFFF` | 960 KB | Reserved low32 string export window |
@@ -2900,10 +2900,10 @@ The interpreter state block at `&H042000` contains:
 
 ## 9. Hardware Register Reference
 
-This section documents the I/O registers used directly by EhBASIC commands or
-commonly accessed from EhBASIC via explicit-width `POKE`/`PEEK`. Registers are grouped by
+This section documents the I/O registers used directly by IE64 BASIC commands or
+commonly accessed from IE64 BASIC via explicit-width `POKE`/`PEEK`. Registers are grouped by
 subsystem. Internal OS/debug bridge regions listed in the aperture map are
-intentionally not expanded here unless they are useful from EhBASIC or
+intentionally not expanded here unless they are useful from IE64 BASIC or
 guest-side hardware code.
 
 ### 9.1 Terminal MMIO (`&HF0700`-`&HF07FF`)

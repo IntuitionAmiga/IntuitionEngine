@@ -1,4 +1,4 @@
-; ehbasic_hw_video.inc - EhBASIC IE64 VGA Video Commands
+; ehbasic_hw_video.inc - IE64 BASIC VGA Video Commands
 ;
 ; Statement handlers for VGA video hardware commands:
 ;   SCREEN mode / SCREEN ON / SCREEN OFF

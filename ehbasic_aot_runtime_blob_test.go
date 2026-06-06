@@ -30,7 +30,7 @@ func runtimeBlobForTests(t *testing.T) []byte {
 
 // Phase 0 of COMPILE_RUNTIME_BUNDLE_PLAN.md: the standalone COMPILE runtime blob.
 //
-// The blob bundles the EhBASIC expression/variable/string/maths/exec closure as a
+// The blob bundles the IE64 BASIC expression/variable/string/maths/exec closure as a
 // position-fixed image linked at AOT_RT_BASE (placement B, the program-text gap).
 // COMPILE copies it into standalone .ie64 images. The blob is deterministic from the
 // committed runtime sources, so it is generated (assembled + trimmed) rather than
@@ -119,8 +119,8 @@ func buildRuntimeBlobBin(t *testing.T) []byte {
 // into it through the jump table (RT_VAR_INIT, RT_EXPR_EVAL) on a tokenised
 // expression, with no resident interpreter present. It proves the blob is
 // position-correct at its link address, the jump-table ABI resolves, and the bundled
-// expr_eval runs standalone. The expression "5"+TK_PLUS+"3" evaluates to FP32 8.0
-// (0x41000000), stored to a scratch address the test reads back.
+// expr_eval runs standalone. The expression "5"+TK_PLUS+"3" evaluates to F64 8.0,
+// stored to a scratch address the test reads back.
 func TestAOTRuntimeBlob_StandaloneCallsExprEval(t *testing.T) {
 	asmBin := buildAssembler(t)
 	blob := buildRuntimeBlobBin(t)
@@ -131,7 +131,7 @@ func TestAOTRuntimeBlob_StandaloneCallsExprEval(t *testing.T) {
 	}
 
 	// Standalone image: bootstrap (stack/state/terminal regs) -> copy blob payload to
-	// AOT_RT_BASE -> var_init -> expr_eval on tokenised "5+3" -> store FP32 result at
+	// AOT_RT_BASE -> var_init -> expr_eval on tokenised "5+3" -> store F64 result at
 	// 0x000800 -> halt. The blob payload is incbin'd after the code; its load address
 	// (blob_payload, ~0x1060) is well below AOT_RT_BASE (0x043000), so the forward
 	// copy does not overlap its destination.

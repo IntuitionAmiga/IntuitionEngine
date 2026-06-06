@@ -239,7 +239,7 @@ AOT_MNEM_PTR      equ 0x042A40             ; q: dynamic/private mnemonic scratch
 AOT_MNEM_CAP      equ 0x042A48             ; q: mnemonic scratch capacity
 AOT_SYMTAB_CAP    equ 0x042A50             ; q: active symbol table capacity
 
-; EhBASIC runtime error codes
+; IE64 BASIC runtime error codes
 ERR_SYNTAX        equ 1
 ERR_DIV0          equ 2
 ERR_UNDEF_LINE    equ 3

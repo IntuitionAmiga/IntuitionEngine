@@ -1,11 +1,11 @@
-; ehbasic_vars.inc - EhBASIC IE64 Variable Storage
+; ehbasic_vars.inc - IE64 BASIC Variable Storage
 ;
 ; Manages BASIC variables: simple numeric scalars and numeric arrays.
 ;
 ; Simple variable storage format (16 bytes each):
 ;   +0 (4 bytes): Name tag (packed uppercase, first char in MSB)
 ;   +4 (4 bytes): Payload tag (0 = FP64, 1 = qword integer)
-;   +8 (8 bytes): Value payload (FP64 bits in low 32 bits for legacy numeric maths)
+;   +8 (8 bytes): Value payload (FP64 bits or qword integer bits)
 ;
 ; Array storage format (variable-length):
 ;   +0  (4 bytes): Name tag

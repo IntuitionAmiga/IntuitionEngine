@@ -61,32 +61,9 @@ func newEhbasicHarnessOnBus(t testing.TB, bus *MachineBus) *ehbasicTestHarness {
 	return h
 }
 
-// f32bits converts a float32 to its IEEE 754 bit representation.
-func f32bits(f float32) uint32 {
-	return math.Float32bits(f)
-}
-
 // f64bits converts a float64 to its IEEE 754 bit representation.
 func f64bits(f float64) uint64 {
 	return math.Float64bits(f)
-}
-
-// assertF32Equal compares two IEEE 754 FP32 values with ULP tolerance.
-func assertF32Equal(t *testing.T, label string, got, want uint32, ulpTolerance uint32) {
-	t.Helper()
-	if got == want {
-		return
-	}
-	var diff uint32
-	if got > want {
-		diff = got - want
-	} else {
-		diff = want - got
-	}
-	if diff > ulpTolerance {
-		t.Fatalf("%s: got 0x%08X (%g), want 0x%08X (%g), diff %d ULP (tolerance %d)",
-			label, got, math.Float32frombits(got), want, math.Float32frombits(want), diff, ulpTolerance)
-	}
 }
 
 // buildAssembler compiles the IE64 assembler binary and returns its path.
@@ -5819,7 +5796,7 @@ func TestHW_Blit_Line(t *testing.T) {
 
 func TestEhBASIC_BlitMode7(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// Use FP32-exact values (≤2^24) to avoid precision loss through BASIC's float POKE
+	// Keep values small enough for exact integer MMIO writes through BASIC expressions.
 	program := `10 TB=&H500000: DB=&H100000: FP=65536
 20 POKE32 TB, &H110000: POKE32 TB+4, &H220000
 30 POKE32 TB+8, &H330000: POKE32 TB+12, &H440000
@@ -6002,7 +5979,7 @@ func TestEhBASIC_BlitMode7OptionalStrides(t *testing.T) {
 
 func TestEhBASIC_BlitMode7ClearsStaleStrides(t *testing.T) {
 	asmBin := buildAssembler(t)
-	// Use FP32-exact values (≤2^24) to avoid precision loss through BASIC's float POKE
+	// Keep values small enough for exact integer MMIO writes through BASIC expressions.
 	// TB at 0x600000 (above 5MB VRAM range), DB at 0x100000 (VRAM base)
 	program := `10 TB=&H600000: DB=&H100000: FP=65536
 20 POKE32 TB, &HAA0001: POKE32 TB+4, &HAA0002

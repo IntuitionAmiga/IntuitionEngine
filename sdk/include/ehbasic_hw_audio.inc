@@ -1,4 +1,4 @@
-; ehbasic_hw_audio.inc - EhBASIC IE64 SoundChip Commands
+; ehbasic_hw_audio.inc - IE64 BASIC SoundChip Commands
 ;
 ; Statement handlers for audio hardware commands:
 ;   SOUND ch, freq, vol [,wave [,duty]]

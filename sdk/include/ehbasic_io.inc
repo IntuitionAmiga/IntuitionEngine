@@ -1,6 +1,6 @@
-; ehbasic_io.inc - EhBASIC IE64 I/O Layer
+; ehbasic_io.inc - IE64 BASIC I/O Layer
 ;
-; Low-level terminal I/O routines for the EhBASIC IE64 port.
+; Low-level terminal I/O routines for IE64 BASIC.
 ; These replace the M68K TRAP #15 I/O vectors from ehbasic68k.asm.
 ;
 ; Calling conventions:

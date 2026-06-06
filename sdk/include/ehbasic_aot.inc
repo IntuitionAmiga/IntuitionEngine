@@ -1,4 +1,4 @@
-; ehbasic_aot.inc - EhBASIC IE64 AOT compiler support
+; ehbasic_aot.inc - IE64 BASIC AOT compiler support
 ; ============================================================================
 ; Phase: compiler-time memory allocators.
 ;

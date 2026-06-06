@@ -1,6 +1,6 @@
-; ehbasic_strings.inc - EhBASIC IE64 String Operations
+; ehbasic_strings.inc - IE64 BASIC String Operations
 ;
-; String expression evaluator and string functions for EhBASIC.
+; String expression evaluator and string functions for IE64 BASIC.
 ;
 ; Strings are stored as null-terminated bytes in the common internal BASIC
 ; arena. String variables hold a 64-bit pointer to their string data.

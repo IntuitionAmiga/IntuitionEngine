@@ -1,4 +1,4 @@
-; ehbasic_hw_voodoo.inc - EhBASIC IE64 Voodoo 3D Commands
+; ehbasic_hw_voodoo.inc - IE64 BASIC Voodoo 3D Commands
 ;
 ; Statement handlers for Voodoo 3DFX hardware:
 ;   VOODOO ON/OFF/CLEAR/SWAP/DIM/CLIP/COMBINE/LFB/PIXEL

@@ -1,4 +1,4 @@
-; ehbasic_lineeditor.inc - EhBASIC IE64 Line Editor
+; ehbasic_lineeditor.inc - IE64 BASIC Line Editor
 ;
 ; Manages BASIC program lines in memory as a sorted singly-linked list.
 ;

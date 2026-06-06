@@ -1,4 +1,4 @@
-; ehbasic_hw_host.inc - EhBASIC IE64 HOST command bridge
+; ehbasic_hw_host.inc - IE64 BASIC HOST command bridge
 ;
 ; Statement handler for:
 ;   HOST NET

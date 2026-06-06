@@ -198,7 +198,7 @@ expr_not_inline:
     ; NOT: convert to int, complement, convert back
     jsr     fp_int               ; truncate to integer
     push    r8
-    jsr     fp_fix               ; FP64→signed int32 in R8
+    jsr     fp_fix               ; FP64/I64 -> signed integer in R8
     move.q  r1, r8
     pop     r8                   ; (discard)
     move.q  r2, #0xFFFFFFFF
@@ -2031,21 +2031,21 @@ parse_number:
 ; ============================================================================
 ; fp64_to_int_pair - Convert R22 (FP64) and R8 (FP64) to integers
 ; ============================================================================
-; Output: R1 = int32 from R22, R2 = int32 from R8
+; Output: R1 = integer from R22, R2 = integer from R8
 ; Clobbers: R3-R7
 
 fp64_to_int_pair:
     push    r8
     move.q  r8, r22
     jsr     fp_int
-    jsr     fp_fix               ; R8 = signed int32 of left
+    jsr     fp_fix               ; R8 = signed integer of left
     move.q  r1, r8
     pop     r8
-    push    r1                   ; save left int32 (fp_fix clobbers R1)
+    push    r1                   ; save left integer (fp_fix clobbers R1)
     jsr     fp_int
-    jsr     fp_fix               ; R8 = signed int32 of right
+    jsr     fp_fix               ; R8 = signed integer of right
     move.q  r2, r8
-    pop     r1                   ; restore left int32
+    pop     r1                   ; restore left integer
     rts
 
 ; expr_value_to_fp64 - Coerce the current tagged expression value to FP64.
@@ -2146,10 +2146,10 @@ val_parse_i64_string:
     rts
 
 ; ============================================================================
-; fp_fix - Convert FP64 to signed int32
+; fp_fix - Convert FP64/I64 to signed integer
 ; ============================================================================
 ; Input:  R8 = FP64 value (must be an integer value, e.g. after fp_int)
-; Output: R8 = signed 32-bit integer
+; Output: R8 = signed integer
 ; Clobbers: R1-R4
 ;
 ; Strategy: extract sign, exponent, mantissa from IEEE 754 bits,

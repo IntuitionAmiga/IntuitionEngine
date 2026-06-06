@@ -1,4 +1,4 @@
-; ehbasic_hw_coproc.inc - EhBASIC IE64 Coprocessor Commands
+; ehbasic_hw_coproc.inc - IE64 BASIC Coprocessor Commands
 ;
 ; Statement handlers:
 ;   COSTART cpuType, "serviceFile" - Start coprocessor worker
