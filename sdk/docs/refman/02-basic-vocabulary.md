@@ -129,10 +129,13 @@ the disk volume, assemble it inside the machine as IE64 source at
 `PROG_START`, and write *filename*`.ie64`. The stored BASIC program is
 not changed.
 
-`ASSEMBLE` accepts the IE64 instruction set, labels, branch and call
-targets, `dc.b`, `dc.w`, `dc.l`, `dc.q`, `align`, and the symbolic
-constants known to the IE64 assembler. See Chapter 35 for the file
-behaviour and Chapter 25 for the IE64 image form.
+`ASSEMBLE` accepts the IE64 instruction set, including `MOVT`, labels,
+branch and call targets, `dc.b`, `dc.w`, `dc.l`, `dc.q`, `align`, and
+the symbolic constants known to the IE64 assembler. It also accepts the
+zero-test branch source forms `BEQZ`, `BNEZ`, `BLTZ`, `BGEZ`, `BGTZ`,
+and `BLEZ`; these assemble as the ordinary IE64 compare-and-branch
+instructions with the second register set to `R0`. See Chapter 35 for
+the file behaviour and Chapter 25 for the IE64 image form.
 
 ### ATN
 

@@ -599,6 +599,61 @@ Current controlled polish pass:
      behaviour.
   9. Publish and print PDFs only after the source pass and checks are
      complete.
+- Integrate the BASIC `64`-bit state and dynamic line-scratch changes
+  from commit `3face0bd`. This is a focused consistency pass, not a
+  new feature chapter. Do not expose private `EHBASIC_PRIV_*` names or
+  runtime placement lore in reader-facing prose. The reader-facing
+  ideas are:
+
+  - BASIC's old fixed `$041000`-`$041FFF` line buffer is no longer a
+    public or fixed memory-map fact. BASIC owns a dynamic line/input
+    scratch reservation described by its state fields.
+  - In the normal low32 fallback layout, the dynamic input/list scratch
+    begins at `$01000000`, has the default capacity published by the
+    BASIC state, and the internal programme/variable/file bridge arena
+    begins after that scratch reservation.
+  - Reader programs still use `MEMALLOC(size[,align])` for public
+    low32 buffers shared with MMIO, copper, coprocessor, DMA, and file
+    examples. They must not depend on private BASIC workspace
+    addresses.
+  - The in-machine IE64 assembler accepts `MOVT` and the zero-test
+    source forms `BEQZ`, `BNEZ`, `BLTZ`, `BGEZ`, `BGTZ`, and `BLEZ`.
+    The zero-test forms are assembler conveniences that encode the
+    existing compare-and-branch operations against `R0`; do not present
+    them as new architectural opcodes.
+
+  Execute this BASIC state / assembler-form pass in this order:
+
+  1. Check `sdk/include/ie64.inc`, `sdk/include/ehbasic_exec.inc`,
+     `sdk/include/ehbasic_vars.inc`, `sdk/include/ehbasic_strings.inc`,
+     `sdk/include/ehbasic_lineeditor.inc`,
+     `sdk/include/ehbasic_file_io.inc`,
+     `sdk/include/ehbasic_aot.inc`, `sdk/include/aot_consttab.inc`,
+     `sdk/examples/asm/ehbasic_ie64.asm`, and the BASIC/AOT tests
+     before writing claims.
+  2. Chapter 2: refine the `ASSEMBLE` entry so the supported
+     in-machine IE64 source forms include `MOVT` and the zero-test
+     branch forms.
+  3. Chapter 24: add a short BASIC private-layout note that points
+     readers to `MEMALLOC` for public buffers and says line/input
+     scratch is described by BASIC state, not by a fixed old address.
+  4. Chapter 25: add the same assembler-source forms in the IE64
+     source-made-inside-the-machine section, with the compare-against-
+     `R0` explanation.
+  5. Chapter 35: update the `ASSEMBLE` subsection with the same source
+     form list and keep generated-source size wording non-specific.
+  6. Appendix G: add the zero-test branch forms as IE64 assembler
+     forms below the architectural branch group.
+  7. Appendix J: remove the stale `$041000`-`$041FFF` BASIC line-buffer
+     row and replace it with the current state page, runtime area, and
+     low32 scratch/arena layout.
+  8. Appendix L: add lookup entries for the zero-test branch forms and
+     the BASIC line/input scratch note.
+  9. Claim ledger: record the canonical sources checked and the
+     reader-facing claims changed by this pass.
+  10. Run stale-address and assembler-form scans, run the reader-facing
+      dash scan, publish, and print PDFs only after the source tree is
+      consistent.
 
 ## Reader Contract
 

@@ -1,4 +1,4 @@
-Successfully assembled to sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
+Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
 
 --- Listing ---
          = 0000000000000001  IOS_VERSION_MAJOR  equ 1

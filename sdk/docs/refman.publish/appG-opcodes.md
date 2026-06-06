@@ -36,6 +36,11 @@ programs when the mnemonic form is easier to type, then confirm with
 | FPU      | `FLOAD`, `FSTORE`, `FADD`, `FSUB`, `FMUL`, `FDIV`, `FMOD`, `FNEG`, `FABS`, `FSQRT`, `FCMP`, `FCVTIF`, `FCVTFI`, `FSIN`, `FCOS`, `FTAN`, `FATAN`, `FLOG`, `FEXP`, `FPOW`, `DMOV`, `DLOAD`, `DSTORE`, `DADD`, `DSUB`, `DMUL`, `DDIV`, `DMOD`, `DABS`, `DNEG`, `DSQRT`, `DINT`, `DCMP`, `DCVTIF`, `DCVTFI`, `FCVTSD`, `FCVTDS`, `DSIN`, `DCOS`, `DTAN`, `DATAN`, `DLOG`, `DEXP`, `DPOW`. |
 | System   | `SYSCALL`, `HALT`, `WAIT`, `MTCR`, `MFCR`, `ERET`, `TLBFLUSH`, `TLBINVAL`, `SMODE`. |
 
+The in-machine assembler also accepts the IE64 source forms `BEQZ`,
+`BNEZ`, `BLTZ`, `BGEZ`, `BGTZ`, and `BLEZ`. They are not separate
+architectural opcodes. They encode the corresponding compare-and-branch
+operation with `R0` as the second register.
+
 Selected IE64 FP64 opcode bytes:
 
 | Opcode | Mnemonic | Notes |

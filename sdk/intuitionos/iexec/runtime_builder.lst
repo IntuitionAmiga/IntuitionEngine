@@ -1,4 +1,4 @@
-Successfully assembled to sdk/intuitionos/iexec/runtime_builder.ie64 (127216 bytes)
+Successfully assembled to ./sdk/intuitionos/iexec/runtime_builder.ie64 (127216 bytes)
 
 --- Listing ---
          = 0000000000000001  IOS_VERSION_MAJOR  equ 1

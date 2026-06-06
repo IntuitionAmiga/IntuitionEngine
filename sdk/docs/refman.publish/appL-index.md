@@ -26,6 +26,7 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | BASIC direct mode | Chapter 1 |
+| BASIC line/input scratch | Chapter 24, Appendix J |
 | BASIC native compilation | Chapter 1, Chapter 2, Chapter 35 |
 | BASIC vocabulary | Chapter 2 |
 | Backed RAM | Chapter 24, Chapter 35 |
@@ -38,6 +39,12 @@ symbols, and Appendix J gives the full memory map.
 | BLT_STATUS | Chapter 4, Appendix D |
 | Block diagrams | Appendix K |
 | Bridge/profile inspection views | Chapter 33 |
+| BEQZ | Chapter 25, Appendix G |
+| BGEZ | Chapter 25, Appendix G |
+| BGTZ | Chapter 25, Appendix G |
+| BLEZ | Chapter 25, Appendix G |
+| BLTZ | Chapter 25, Appendix G |
+| BNEZ | Chapter 25, Appendix G |
 | Bus model | Preface, Chapter 24, Appendix K |
 
 ## C

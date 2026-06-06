@@ -240,12 +240,15 @@ source file, assembles it inside the machine at `PROG_START`, and
 writes `name.ie64`. The stored BASIC program is not used and is not
 changed.
 
-The source may contain IE64 instructions, labels, branch and `JSR`
-targets, `dc.b`, `dc.w`, `dc.l`, `dc.q`, `align`, and the standard
-symbolic constants known to the in-machine assembler. A conventional
-constants include line is accepted as a no-op so the same source can
-still name those constants. Other include files, `org`, `equ`, macros,
-conditionals, unknown mnemonics, and unresolved symbols are rejected.
+The source may contain IE64 instructions, including `MOVT`, labels,
+branch and `JSR` targets, `dc.b`, `dc.w`, `dc.l`, `dc.q`, `align`, and
+the standard symbolic constants known to the in-machine assembler. A
+conventional constants include line is accepted as a no-op so the same
+source can still name those constants. The zero-test branch source
+forms `BEQZ`, `BNEZ`, `BLTZ`, `BGEZ`, `BGTZ`, and `BLEZ` are accepted
+as compare-and-branch instructions against `R0`. Other include files,
+`org`, `equ`, macros, conditionals, unknown mnemonics, and unresolved
+symbols are rejected.
 
 A missing source file, an unreadable source file, or a source file of
 about `1` MB or larger reports `?FILE ERROR IN 0`. An assembly error

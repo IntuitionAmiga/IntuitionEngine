@@ -65,12 +65,18 @@ byte size of total guest RAM as a `64`-bit value; `$F2408`/`$F240C`
 report the size visible to the currently executing CPU profile.
 
 IE64 BASIC keeps its own programme text, variables, stacks, file
-bridges, and compiler scratch areas in dynamic reservations inside the
-same address space. Reader programmes should not depend on those
-private reservations. When BASIC needs a public buffer for a copper
-list, coprocessor request, file staging area, or DMA-style hardware
-block, use `MEMALLOC(size[,align])`. It allocates from public low32
-ranges that are meant to be shared with devices and other CPUs.
+bridges, line/input scratch, and compiler scratch areas in dynamic
+reservations inside the same address space. In the normal low32
+fallback layout the line/input scratch begins at `$01000000`, and the
+programme, variable, string, and file-bridge arena begins after that
+scratch reservation. The current pointer and capacity are BASIC state,
+not a fixed public line-buffer address.
+
+Reader programmes should not depend on those private reservations.
+When BASIC needs a public buffer for a copper list, coprocessor
+request, file staging area, or DMA-style hardware block, use
+`MEMALLOC(size[,align])`. It allocates from public low32 ranges that
+are meant to be shared with devices and other CPUs.
 
 The low memory slice and the backed RAM above it are both active RAM,
 but the boundary between them matters for scalar accesses. Byte reads

@@ -15,7 +15,7 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 |--------------------------|-------|---------|
 | `$000000`-`$0003FF`    | 1 KB  | M68K vector table; x86 IVT; trap vector base for IE64. |
 | `$000400`-`$040FFF`    | ~256 KB | BASIC ROM image, system call shim, monitor stub. |
-| `$041000`-`$041FFF`    | 4 KB  | IE64 BASIC line buffer. |
+| `$041000`-`$041FFF`    | 4 KB  | General low workspace; not the BASIC line/input buffer. |
 | `$042000`-`$042FFF`    | 4 KB  | IE64 BASIC shared state page. |
 | `$043000`-`$06FFFF`    | 180 KB | IE64 BASIC standalone runtime blob area and legacy program-text fallback. |
 | `$600000`-`$6EFFFF`  | 960 KB | IE64 BASIC reserved low32 string export window. |
@@ -23,7 +23,8 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | `$780000`-`$791FFF`  | 72 KB | IE64 BASIC AOT-owned low32 scratch gap, excluded from `MEMALLOC`. |
 | `$792000`-`$7FFFFF`  | 440 KB | IE64 BASIC public `MEMALLOC` range 1. |
 | `$820000`-`$FFFFFF`  | 8064 KB | IE64 BASIC public `MEMALLOC` range 0. |
-| `$1000000` upward     | dynamic | IE64 BASIC internal arena for programme text and pinned owner records in the low32 fallback layout. |
+| `$1000000`-`$10003FF` | 1 KB  | IE64 BASIC-owned line/input scratch in the normal low32 fallback layout. |
+| `$1000400` upward     | dynamic | IE64 BASIC internal arena for programme text, variables, strings, file bridge, and pinned owner records in the low32 fallback layout. |
 | top of the low32 BASIC resident window | dynamic | IE64 BASIC hardware stack, guard page, and dynamic control-flow stack. The reservation is capped below `$10000000` even when active RAM is larger. |
 
 ## J.2 PC-compatible VRAM apertures
