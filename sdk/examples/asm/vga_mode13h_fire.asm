@@ -489,8 +489,7 @@ fire_propagate:
     ; --- Clamp to 0 on underflow (prevents wrap-around to bright colours) ---
     LDU A
     AND U, #0x80000000
-    JZ U, .clamp_ok
-    LDA #0
+    JNZ U, clamp_nonnegative
 .clamp_ok:
 
     ; --- Write cooled value to current pixel ---
@@ -504,6 +503,10 @@ fire_propagate:
     ; --- Move up one row ---
     SUB Y, #1
     JMP .row_loop
+
+clamp_nonnegative:
+    LDA #0
+    JMP .clamp_ok
 
 .done:
     RTS
