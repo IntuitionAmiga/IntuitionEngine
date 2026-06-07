@@ -176,10 +176,14 @@ main_loop:
 ; Busy-waiting is the simplest synchronisation method on the 6502.
 ; ============================================================================
 .proc wait_vblank
-@wait:
+@wait_start:
     lda ULA_STATUS          ; Read status register
     and #ULA_STATUS_VBLANK  ; Isolate VBLANK bit
-    beq @wait               ; Loop until bit is set
+    beq @wait_start         ; Loop until bit is set
+@wait_end:
+    lda ULA_STATUS
+    and #ULA_STATUS_VBLANK
+    bne @wait_end           ; Loop until the blank has ended
     rts
 .endproc
 

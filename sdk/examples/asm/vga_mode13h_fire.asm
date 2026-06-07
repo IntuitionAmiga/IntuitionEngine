@@ -1,5 +1,5 @@
 ; ============================================================================
-; VGA MODE 13h FIRE EFFECT - CLASSIC DOS DEMOSCENE TECHNIQUE
+; VGA MODE 13h FIRESTORM - PALETTE-CYCLED DOS INTRO EFFECT
 ; IE32 Assembly for IntuitionEngine - VGA Mode 13h (320x200x256)
 ; ============================================================================
 ;
@@ -14,10 +14,10 @@
 ;                to run on any CPU core, even 8-bit (6502/Z80).
 ;
 ; === WHAT THIS DEMO DOES ===
-; Implements the classic DOS-era fire effect in VGA Mode 13h (320x200, 256
-; colours). The bottom row is seeded with random hot pixels, and each frame
-; propagates heat upward with cooling, creating a realistic flame effect.
-; A custom fire palette maps colour indices to black -> red -> yellow -> white.
+; Builds a classic Mode 13h fire effect into a fuller intro-style effect.  The
+; fire is rendered into a RAM back buffer, fed by turbulent full-width fuel and
+; moving burner jets, palette-cycled during vertical blank, then copied into the
+; visible 64K VGA aperture.
 ;
 ; === WHY VGA MODE 13h (320x200x256 LINEAR) ===
 ; Mode 13h is the legendary "MCGA mode" -- the single most important graphics
@@ -38,7 +38,8 @@
 ;
 ; === MEMORY MAP ===
 ;   0x1000          Program code entry point
-;   0x8800          VAR_SEED - PRNG state for bottom-row seeding
+;   0x8800          Runtime variables
+;   0x20000         RAM back buffer, 320x200 bytes
 ;   VGA_VRAM        320x200 linear VRAM (64000 bytes, one byte per pixel)
 ;
 ; === BUILD AND RUN ===
@@ -62,6 +63,11 @@
 ; Variables in scratch RAM
 ; ---------------------------------------------------------------------------
 .equ VAR_SEED       0x8800
+.equ VAR_FRAME      0x8804
+.equ VAR_BURNER1    0x8808
+.equ VAR_BURNER2    0x880C
+.equ VAR_BURNER3    0x8810
+.equ FIRE_BUFFER    0x20000
 
 .org 0x1000
 
@@ -81,24 +87,34 @@ start:
     LDA #12345678
     STA @VAR_SEED
 
+    LDA #0
+    STA @VAR_FRAME
+
     JSR setup_palette
 
     JSR clear_vram
+    JSR clear_buffer
 
 ; ============================================================================
 ; MAIN LOOP
 ; ============================================================================
-; Each frame: synchronise to vertical blank, seed the bottom row with fresh
-; random "heat" values, then propagate the fire upward with averaging and
-; decay.  The palette does the rest -- colour index 0 is black (cool) and
-; higher indices progress through red, orange, yellow, and white (hot).
+; Each frame: update the RAM fire buffer, then wait for vertical blank before
+; updating the palette and copying the finished image to VGA.
 ; ============================================================================
 main_loop:
-    JSR wait_vsync
-
     JSR fire_source
 
     JSR fire_propagate
+
+    JSR wait_vsync
+
+    JSR setup_palette
+
+    JSR copy_to_vram
+
+    LDA @VAR_FRAME
+    ADD A, #1
+    STA @VAR_FRAME
 
     JMP main_loop
 
@@ -106,10 +122,14 @@ main_loop:
 ; WAIT FOR VSYNC
 ; ============================================================================
 wait_vsync:
-.wait:
+.wait_end:
     LDA @VGA_STATUS
     AND A, #VGA_STATUS_VSYNC
-    JZ A, .wait
+    JNZ A, .wait_end
+.wait_start:
+    LDA @VGA_STATUS
+    AND A, #VGA_STATUS_VSYNC
+    JZ A, .wait_start
     RTS
 
 ; ============================================================================
@@ -130,21 +150,51 @@ clear_vram:
     RTS
 
 ; ============================================================================
+; CLEAR RAM BACK BUFFER
+; ============================================================================
+clear_buffer:
+    LDX #FIRE_BUFFER
+    LDY #SCREEN_SIZE
+.buf_clr:
+    LDA #0
+    STA [X]
+    ADD X, #1
+    SUB Y, #1
+    JNZ Y, .buf_clr
+    RTS
+
+; ============================================================================
+; COPY BACK BUFFER TO VISIBLE MODE 13h VRAM
+; ============================================================================
+; Mode 13h exposes a single 64K VGA aperture, so the demo composes each frame
+; in normal RAM and performs one linear copy during vertical blank.
+; ============================================================================
+copy_to_vram:
+    LDX #FIRE_BUFFER
+    LDF #VGA_VRAM
+    LDY #SCREEN_SIZE
+.copy:
+    LDA [X]
+    STA [F]
+    ADD X, #1
+    ADD F, #1
+    SUB Y, #1
+    JNZ Y, .copy
+    RTS
+
+; ============================================================================
 ; SET UP FIRE PALETTE
 ; ============================================================================
 ; Programmes the VGA DAC with a fire gradient across all 256 colour indices.
 ; The gradient ramps through three phases:
 ;
-;   Indices  0-15:  Black to red     (R ramps, G=0, B=0)
-;   Indices 16-47:  Red to yellow    (R=max, G ramps, B=0)
-;   Indices 48-63:  Yellow to white  (R=max, G=max, B ramps)
-;   Indices 64+:    White            (R=max, G=max, B=max)
+;   Indices   0-63:  Black to deep red
+;   Indices  64-179: Red through orange into yellow
+;   Indices 180-255: Yellow to white-hot tips
 ;
 ; === WHY PALETTE DESIGN MATTERS ===
-; The fire effect only writes colour indices (0-255) into VRAM.  All visual
-; warmth comes from the palette mapping those indices to RGB values.  A
-; carefully tuned gradient is essential: too abrupt and the flames look
-; banded, too gradual and they appear washed out.
+; The palette is rebuilt each frame with a small phase offset in the green and
+; smoke-blue channels.  This gives shimmer without moving extra pixels.
 ; ============================================================================
 setup_palette:
     LDX #0
@@ -153,9 +203,9 @@ setup_palette:
     LDA X
     STA @VGA_DAC_WINDEX
 
-    ; --- Red channel: ramps up first, clamped at 63 ---
+    ; --- Red channel: ramps across the lower half, clamped at 63 ---
     LDA X
-    MUL A, #4
+    SHR A, #1
     LDB #63
     SUB B, A
     AND B, #0x80000000
@@ -166,14 +216,17 @@ setup_palette:
 .r_ok:
     STA @VGA_DAC_DATA
 
-    ; --- Green channel: begins ramping after index 16 ---
+    ; --- Green channel: starts later, so the base stays red/orange ---
     LDA X
-    SUB A, #16
+    SUB A, #64
     AND A, #0x80000000
     JNZ A, .g_zero
     LDA X
-    SUB A, #16
-    MUL A, #4
+    SUB A, #64
+    SHR A, #1
+    LDC @VAR_FRAME
+    AND C, #3
+    ADD A, C
     LDB #63
     SUB B, A
     AND B, #0x80000000
@@ -187,21 +240,32 @@ setup_palette:
 .g_ok:
     STA @VGA_DAC_DATA
 
-    ; --- Blue channel: begins ramping after index 48 ---
+    ; --- Blue channel: faint smoke low down, pale only at the hottest tips ---
     LDA X
     SUB A, #48
     AND A, #0x80000000
+    JNZ A, .b_smoke
+    LDA X
+    SUB A, #180
+    AND A, #0x80000000
     JNZ A, .b_zero
     LDA X
-    SUB A, #48
-    MUL A, #4
-    LDB #63
+    SUB A, #180
+    SHR A, #1
+    LDB #40
     SUB B, A
     AND B, #0x80000000
     JNZ B, .b_clamp
     JMP .b_ok
 .b_zero:
     LDA #0
+    JMP .b_ok
+.b_smoke:
+    LDA X
+    SHR A, #3
+    LDC @VAR_FRAME
+    AND C, #3
+    ADD A, C
     JMP .b_ok
 .b_clamp:
     LDA #63
@@ -218,10 +282,9 @@ setup_palette:
 ; ============================================================================
 ; FIRE SOURCE - SEED THE BOTTOM ROW
 ; ============================================================================
-; Fills the bottom scanline (row 199) with random colour index values using
-; an XOR-shift pseudo-random number generator.  Values above 128 are biased
-; brighter (OR'd with 0xC0) to ensure a strong flame base.  This row acts
-; as the "fuel" that the propagation step draws heat from.
+; Fills the bottom scanline with turbulent full-width fuel, then reinforces it
+; with three moving burner jets.  The jets shape the flame without leaving dead
+; gaps between them.
 ;
 ; === WHY XOR-SHIFT PRNG ===
 ; XOR-shift generators are ideal for demoscene effects: they are fast
@@ -230,15 +293,47 @@ setup_palette:
 ; is not needed here -- we just want chaotic flame bases.
 ; ============================================================================
 fire_source:
-    LDX #VGA_VRAM
+    LDA @VAR_FRAME
+    MUL A, #3
+    AND A, #255
+    ADD A, #32
+    STA @VAR_BURNER1
+
+    LDA @VAR_FRAME
+    MUL A, #5
+    ADD A, #107
+    AND A, #255
+    ADD A, #32
+    STA @VAR_BURNER2
+
+    LDA @VAR_FRAME
+    MUL A, #7
+    ADD A, #211
+    AND A, #255
+    ADD A, #32
+    STA @VAR_BURNER3
+
+    LDX #FIRE_BUFFER
     LDA #HEIGHT
     SUB A, #1
     MUL A, #WIDTH
     ADD X, A
 
     LDY #WIDTH
+    LDU #0
 
 .src_loop:
+    LDC #0
+
+    LDB @VAR_BURNER1
+    JSR burner_heat
+
+    LDB @VAR_BURNER2
+    JSR burner_heat
+
+    LDB @VAR_BURNER3
+    JSR burner_heat
+
     ; --- XOR-shift PRNG (period ~2^32) ---
     LDA @VAR_SEED
     LDB A
@@ -252,31 +347,66 @@ fire_source:
     XOR A, B
     STA @VAR_SEED
 
-    ; --- Extract low byte as colour index ---
-    AND A, #0xFF
-
-    ; --- Bias values >= 128 toward hot colours ---
-    LDB A
-    SUB B, #128
+    ; Full-width hot base, with burners taking over where they are stronger.
+    AND A, #127
+    ADD A, #112
+    LDB C
+    SUB B, A
     AND B, #0x80000000
-    JNZ B, .dim
-    OR A, #0xC0
-.dim:
+    JNZ B, .store_source
+    LDA C
+
+.store_source:
     STA [X]
 
+.next_source:
     ADD X, #1
+    ADD U, #1
     SUB Y, #1
     JNZ Y, .src_loop
 
     RTS
 
 ; ============================================================================
+; BURNER HEAT
+; ============================================================================
+; Input:  U = current X position, B = burner centre, C = current heat.
+; Output: C = max(C, 224 - abs(x-centre)*4) for pixels within 28 columns.
+; ============================================================================
+burner_heat:
+    LDA U
+    SUB A, B
+    LDE A
+    AND E, #0x80000000
+    JZ E, .abs_done
+    XOR A, #0xFFFFFFFF
+    ADD A, #1
+.abs_done:
+    LDE A
+    SUB E, #28
+    AND E, #0x80000000
+    JZ E, .burner_done
+
+    LDE A
+    SHL E, #2
+    LDA #224
+    SUB A, E
+
+    LDE C
+    SUB E, A
+    AND E, #0x80000000
+    JZ E, .burner_done
+    LDC A
+.burner_done:
+    RTS
+
+; ============================================================================
 ; FIRE PROPAGATION - AVERAGE AND DECAY UPWARD
 ; ============================================================================
 ; Processes every pixel from row HEIGHT-2 up to row 0.  Each pixel's new
-; value is the average of its three neighbours on the row below (centre,
-; left, right), divided by 4 and decremented by 1.  This produces a natural
-; upward spread with gradual cooling -- the essence of the fire effect.
+; value is the average of four samples from the row below: centre twice, plus
+; left and right.  The centre weighting keeps the flames tall while the side
+; samples spread them into natural tongues.
 ;
 ; === WHY BOTTOM-TO-TOP PROCESSING ===
 ; Processing rows from bottom to top means each row reads from the row
@@ -284,11 +414,10 @@ fire_source:
 ; propagate multiple rows upward within a single frame.  This makes the
 ; flames appear to rise more quickly and naturally.
 ;
-; === WHY DIVIDE BY 4 INSTEAD OF 3 ===
-; Dividing by 4 (a single right-shift by 2) is much faster than dividing
-; by 3 on the IE32.  The slight extra cooling from dividing by 4 instead
-; of 3 is compensated by the -1 decay constant.  Edge pixels only sample
-; 2 neighbours, but the /4 keeps them from being disproportionately bright.
+; === WHY CENTRE IS SAMPLED TWICE ===
+; Three samples divided by four cools too quickly, making the flame only a few
+; pixels high.  Sampling the centre twice gives a true /4 average without
+; needing a slow divide by 3.
 ; ============================================================================
 fire_propagate:
     LDY #HEIGHT
@@ -302,7 +431,7 @@ fire_propagate:
     ; Precompute row bases once per row.
     LDA Y
     MUL A, #WIDTH
-    ADD A, #VGA_VRAM
+    ADD A, #FIRE_BUFFER
     LDE A                              ; E = current row base
     ADD A, #WIDTH
     LDT A                              ; T = row below base
@@ -324,6 +453,7 @@ fire_propagate:
     LDA [C]
     AND A, #0xFF
     LDB A
+    ADD B, A
 
     ; --- Add left-below neighbour (skip if at left edge) ---
     LDA X
@@ -357,7 +487,11 @@ fire_propagate:
     SUB A, #1
 
     ; --- Clamp to 0 on underflow (prevents wrap-around to bright colours) ---
-    JSR clamp_nonnegative
+    LDU A
+    AND U, #0x80000000
+    JZ U, .clamp_ok
+    LDA #0
+.clamp_ok:
 
     ; --- Write cooled value to current pixel ---
     STA [F]
@@ -372,12 +506,4 @@ fire_propagate:
     JMP .row_loop
 
 .done:
-    RTS
-
-clamp_nonnegative:
-    LDB A
-    AND B, #0x80000000
-    JZ B, .ok
-    LDA #0
-.ok:
     RTS

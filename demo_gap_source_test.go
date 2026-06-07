@@ -98,14 +98,20 @@ func TestDemoPerfHoists_SourceShape(t *testing.T) {
 	}
 
 	mandel := readDemoSource(t, "sdk/examples/asm/mandelbrot_ie64.asm")
-	if !strings.Contains(mandel, "mulu.q  r10, r9, #0x010101") {
-		t.Fatal("mandelbrot_ie64 does not pack RGB with 0x010101 multiply")
+	if !strings.Contains(mandel, "build_palette:") {
+		t.Fatal("mandelbrot_ie64 does not build a palette for cheap pixel colour lookup")
+	}
+	if !strings.Contains(mandel, "load.l  r10, (r9)") {
+		t.Fatal("mandelbrot_ie64 does not fetch pixel colours from the palette")
 	}
 	if strings.Contains(mandel, "lsl.q   r10, r10, #8") {
 		t.Fatal("mandelbrot_ie64 still uses shift/add RGB packing")
 	}
 	if !strings.Contains(mandel, "asr.q   r10, r10, #15") {
 		t.Fatal("mandelbrot_ie64 did not fuse 2*zx*zy shift to asr 15")
+	}
+	if !strings.Contains(mandel, "move.q  r15, #HALF_HEIGHT") || !strings.Contains(mandel, "store.l r10, (r18)") {
+		t.Fatal("mandelbrot_ie64 no longer mirrors the symmetric default view")
 	}
 }
 

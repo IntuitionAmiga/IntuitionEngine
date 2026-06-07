@@ -127,10 +127,9 @@ The rotozoomer examples demonstrate a hardware-accelerated rotating/zooming text
 | Example | CPU | Video | Audio | Description |
 |---------|-----|-------|-------|-------------|
 | `vga_text_hello.asm` | IE32 | VGA (text) | -- | Simplest demo: coloured text on an 80x25 screen |
-| `vga_mode13h_fire.asm` | IE32 | VGA (Mode 13h) | -- | Classic DOS-era 256-colour fire effect |
+| `vga_mode13h_fire.asm` | IE32 | VGA (Mode 13h) | -- | Palette-cycled firestorm with moving burner jets and RAM back buffering |
 | `vga_modex_circles.asm` | IE32 | VGA (Mode X) | -- | Animated circles in 320x240 planar mode |
-| `vga_mode12h_bars.asm` | IE32 | VGA (Mode 12h) | -- | Colour bars in 640x480 4-plane mode |
-| `vga_text_sap_demo.asm` | Z80 | VGA (text) | POKEY/SAP | VGA text mode with SAP music playback |
+| `vga_mode12h_bars.asm` | IE32 | VGA (Mode 12h) | -- | Planar tunnel plasma in 640x480 4-plane mode |
 | `ula_rotating_cube_65.asm` | 6502 | ULA (Spectrum) | AHX | Wireframe 3D cube on ZX Spectrum display |
 | `ted_121_colors_68k.asm` | M68K | TED (Plus/4) | PSG | Full-screen plasma using all 121 TED colours |
 | `antic_plasma_x86.asm` | x86 | ANTIC/GTIA | SID | Atari 8-bit display list + Player/Missile graphics |
@@ -140,7 +139,6 @@ The rotozoomer examples demonstrate a hardware-accelerated rotating/zooming text
 | `voodoo_cube_68k.asm` | M68K | Voodoo 3D | -- | Z-buffered 3D cube on 3DFX Voodoo hardware |
 | `voodoo_3dfx_logo_68k.asm` | M68K | Voodoo 3D | -- | Textured 3DFX logo flyby with fog |
 | `voodoo_triangle_68k.asm` | M68K | Voodoo 3D | -- | Flat-shaded triangle |
-| `voodoo_tunnel_z80.asm` | Z80 | Voodoo 3D | -- | Texture-mapped tunnel effect |
 | `robocop_intro.asm` | IE32 | IEVideoChip + Copper | PSG | Copper rasterbars + blitter sprite + sine scrolltext |
 | `robocop_intro_68k.asm` | M68K | IEVideoChip + Copper | PSG | Copper rasterbars + blitter sprite + sine scrolltext |
 | `robocop_intro_65.asm` | 6502 | IEVideoChip + Copper | PSG | Copper rasterbars + blitter sprite + sine scrolltext |

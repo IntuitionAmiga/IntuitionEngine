@@ -14,10 +14,11 @@
 ;   1. TWISTING STARFIELD TUNNEL
 ;      256 stars distributed in a cylindrical pattern rush toward the camera.
 ;      The tunnel centre oscillates via sine waves (Lissajous-like motion).
-;      Stars are coloured by depth: white (close), cyan (medium), blue (far).
+;      Stars are coloured by depth: white and amber close, cyan and violet
+;      in the middle distance, blue in the far field.
 ;
 ;   2. RAINBOW BITMAP SCROLLTEXT
-;      Classic 5x7 bitmap font rendered as coloured Voodoo quads.
+;      Classic 5x7 bitmap font rendered as coloured Voodoo span quads.
 ;      Horizontal scrolling with Y-axis sine-wave wobble.
 ;      Per-character rainbow colour cycling via phase-shifted sine waves.
 ;
@@ -102,12 +103,15 @@
 .equ FOCAL_LENGTH   200             ; Perspective projection focal length
 .equ TWIST_AMP      120             ; Tunnel centre oscillation amplitude
 .equ WORLD_OFFSET   600             ; Keeps all unsigned coords positive
+.equ PROJ_SCALE_MAX_Z 2304          ; Covers initial and respawned star depth
+.equ PROJ_SCALE_SHIFT 8             ; Projection scale table fractional bits
 
 ; --- Scrolltext ---
-.equ SCROLL_SPEED   2               ; Pixels per frame
+.equ SCROLL_SPEED   3               ; Pixels per frame
 .equ CHAR_WIDTH     6               ; 5 content + 1 spacing
 .equ CHAR_HEIGHT    7
 .equ PIXEL_SIZE     4               ; Screen pixels per font pixel
+.equ TEXT_SHADOW_OFFSET 2           ; Pixel offset for dark readability pass
 .equ SCROLL_Y_POS   340             ; Base Y position on screen
 .equ WOBBLE_AMP     50              ; Sine-wave Y amplitude
 .equ MAX_CHARS      24              ; Max visible characters
@@ -134,9 +138,15 @@
 .equ scroll_base_x    0x88A4
 .equ scroll_base_y    0x88A8
 .equ scroll_msg_len   0x88AC
+.equ scroll_span_start 0x88B0
+.equ scroll_span_width 0x88B4
+.equ scroll_shadow_pass 0x88B8
+.equ scroll_rect_w   0x88BC
+.equ proj_scale      0x88C0
 
 ; --- Lookup tables and star data ---
 .equ sin_table      0x10000         ; 256 entries (unsigned: 0=min, 127=zero, 254=max)
+.equ proj_scale_table 0x11000       ; (FOCAL_LENGTH << 8) / z lookup table
 .equ star_array     0x20000         ; 16 bytes per star: angle, radius, z, speed
 
 ; --- Embedded SID file size ---
@@ -157,8 +167,21 @@ start:
     OR A, #0x1E0
     STA @VOODOO_VIDEO_DIM
 
-    LDA #0x0670
+    LDA #0x0770
     STA @VOODOO_FBZ_MODE
+
+    LDA #0
+    SHL A, #16
+    OR A, #SCREEN_W
+    STA @VOODOO_CLIP_LEFT_RIGHT
+
+    LDA #0
+    SHL A, #16
+    OR A, #SCREEN_H
+    STA @VOODOO_CLIP_LOW_Y_HIGH
+
+    LDA #VOODOO_COMBINE_ITERATED
+    STA @VOODOO_FBZCOLOR_PATH
 
     ; --- Zero frame counter and scroll offset ---
     LDA #0
@@ -170,6 +193,9 @@ start:
 
     ; --- Build the 256-entry sine table at runtime ---
     JSR build_sin_table
+
+    ; --- Build reciprocal projection table once instead of dividing per star ---
+    JSR build_proj_scale_table
 
     ; --- Scatter 256 stars randomly through the tunnel ---
     JSR init_stars
@@ -198,6 +224,8 @@ main_loop:
 
     LDA #0
     STA @VOODOO_FAST_FILL_CMD
+
+    JSR draw_background
 
     ; --- Calculate tunnel twist (X axis) ---
     ; WHY different frequencies: if both axes used the same sine, the tunnel
@@ -345,15 +373,23 @@ no_respawn:
     SUB B, A
     JGT B, skip_star
 
-    ; Perspective projection: proj = world * FOCAL / z
+    ; Perspective projection: proj = world * scale >> 8
+    ; Scale table removes three divides from the per-star hot path.
+    LDA @cur_z
+    SHL A, #2
+    LDX #proj_scale_table
+    ADD X, A
+    LDA [X]
+    STA @proj_scale
+
     LDA @0x8838
-    MUL A, #FOCAL_LENGTH
-    DIV A, @cur_z
+    MUL A, @proj_scale
+    SHR A, #PROJ_SCALE_SHIFT
     STA @0x8848                     ; proj_x
 
     LDA @0x883C
-    MUL A, #FOCAL_LENGTH
-    DIV A, @cur_z
+    MUL A, @proj_scale
+    SHR A, #PROJ_SCALE_SHIFT
     STA @0x884C                     ; proj_y
 
     ; Subtract projected offset to recover true screen position
@@ -362,8 +398,8 @@ no_respawn:
     SHR A, #6
     ADD A, #WORLD_OFFSET
     ADD A, #128
-    MUL A, #FOCAL_LENGTH
-    DIV A, @cur_z
+    MUL A, @proj_scale
+    SHR A, #PROJ_SCALE_SHIFT
     STA @offset_proj
 
     LDA @0x8848
@@ -395,41 +431,45 @@ no_respawn:
     AND A, #0x80000000
     JZ A, skip_star
 
-    ; --- Star size = 5000 / z (inverse depth) ---
-    LDA #5000
-    DIV A, @cur_z
-    STA @0x8858
-
-    ; Clamp to 12..96
-    LDA @0x8858
-    SUB A, #12
-    JGT A, size_min_ok
-    LDA #12
-    STA @0x8858
-size_min_ok:
-
-    LDA @0x8858
-    SUB A, #96
-    JLT A, size_max_ok
-    LDA #96
-    STA @0x8858
-size_max_ok:
-
-    ; --- Depth-based colour (atmospheric perspective) ---
-    ; WHY: close stars are white-hot, medium stars are cyan, far stars
-    ; fade to deep blue.  This creates the illusion of depth without
-    ; fog hardware.
+    ; --- Depth-based size and colour (atmospheric perspective) ---
+    ; Close stars burn white and amber; distant stars fall through cyan,
+    ; violet, and blue.  The ramp is branch-based to avoid extra table loads.
 
     LDA @cur_z
-    SUB A, #200
-    JLT A, color_white
+    SUB A, #150
+    JLT A, depth_white
 
     LDA @cur_z
-    SUB A, #500
-    JLT A, color_cyan
+    SUB A, #240
+    JLT A, depth_amber
 
-    ; Far (z >= 500): deep blue
+    LDA @cur_z
+    SUB A, #380
+    JLT A, depth_cyan
+
+    LDA @cur_z
+    SUB A, #620
+    JLT A, depth_violet
+
+    LDA @cur_z
+    SUB A, #900
+    JLT A, depth_blue
+
+    ; Very far: dim blue.
+    LDA #10
+    STA @0x8858
+    LDA #0x0300
+    STA @VOODOO_START_R
     LDA #0x0500
+    STA @VOODOO_START_G
+    LDA #0x0A00
+    STA @VOODOO_START_B
+    JMP color_ok
+
+depth_blue:
+    LDA #16
+    STA @0x8858
+    LDA #0x0400
     STA @VOODOO_START_R
     LDA #0x0800
     STA @VOODOO_START_G
@@ -437,16 +477,41 @@ size_max_ok:
     STA @VOODOO_START_B
     JMP color_ok
 
-color_cyan:
-    LDA #0x0800
+depth_violet:
+    LDA #24
+    STA @0x8858
+    LDA #0x0C00
     STA @VOODOO_START_R
-    LDA #0x0E00
+    LDA #0x0500
     STA @VOODOO_START_G
     LDA #0x1000
     STA @VOODOO_START_B
     JMP color_ok
 
-color_white:
+depth_cyan:
+    LDA #32
+    STA @0x8858
+    LDA #0x0800
+    STA @VOODOO_START_R
+    LDA #0x1000
+    STA @VOODOO_START_G
+    STA @VOODOO_START_B
+    JMP color_ok
+
+depth_amber:
+    LDA #48
+    STA @0x8858
+    LDA #0x1000
+    STA @VOODOO_START_R
+    LDA #0x0B00
+    STA @VOODOO_START_G
+    LDA #0x0400
+    STA @VOODOO_START_B
+    JMP color_ok
+
+depth_white:
+    LDA #64
+    STA @0x8858
     LDA #0x1000
     STA @VOODOO_START_R
     STA @VOODOO_START_G
@@ -532,6 +597,119 @@ scroll_advance_store:
 ; ============================================================================
 
 ; ----------------------------------------------------------------------------
+; draw_background -- two Gouraud shaded triangles for a cheap deep-space wash
+; ----------------------------------------------------------------------------
+
+draw_background:
+    LDA #0
+    STA @VOODOO_COLOR_SELECT
+    LDA #0x0200
+    STA @VOODOO_START_R
+    LDA #0x0200
+    STA @VOODOO_START_G
+    LDA #0x0800
+    STA @VOODOO_START_B
+    LDA #0x1000
+    STA @VOODOO_START_A
+    LDA #0xF000
+    STA @VOODOO_START_Z
+
+    LDA #1
+    STA @VOODOO_COLOR_SELECT
+    LDA #0x0800
+    STA @VOODOO_START_R
+    LDA #0x0200
+    STA @VOODOO_START_G
+    LDA #0x1000
+    STA @VOODOO_START_B
+    LDA #0x1000
+    STA @VOODOO_START_A
+    LDA #0xF000
+    STA @VOODOO_START_Z
+
+    LDA #2
+    STA @VOODOO_COLOR_SELECT
+    LDA #0x0000
+    STA @VOODOO_START_R
+    LDA #0x0800
+    STA @VOODOO_START_G
+    LDA #0x1000
+    STA @VOODOO_START_B
+    LDA #0x1000
+    STA @VOODOO_START_A
+    LDA #0xF000
+    STA @VOODOO_START_Z
+
+    LDA #0
+    STA @VOODOO_VERTEX_AX
+    STA @VOODOO_VERTEX_AY
+    LDA #10240                       ; 640 << 4
+    STA @VOODOO_VERTEX_BX
+    LDA #0
+    STA @VOODOO_VERTEX_BY
+    LDA #0
+    STA @VOODOO_VERTEX_CX
+    LDA #7680                        ; 480 << 4
+    STA @VOODOO_VERTEX_CY
+    LDA #0
+    STA @VOODOO_TRIANGLE_CMD
+
+    LDA #0
+    STA @VOODOO_COLOR_SELECT
+    LDA #0x0800
+    STA @VOODOO_START_R
+    LDA #0x0200
+    STA @VOODOO_START_G
+    LDA #0x1000
+    STA @VOODOO_START_B
+    LDA #0x1000
+    STA @VOODOO_START_A
+    LDA #0xF000
+    STA @VOODOO_START_Z
+
+    LDA #1
+    STA @VOODOO_COLOR_SELECT
+    LDA #0x0200
+    STA @VOODOO_START_R
+    LDA #0x0000
+    STA @VOODOO_START_G
+    LDA #0x0800
+    STA @VOODOO_START_B
+    LDA #0x1000
+    STA @VOODOO_START_A
+    LDA #0xF000
+    STA @VOODOO_START_Z
+
+    LDA #2
+    STA @VOODOO_COLOR_SELECT
+    LDA #0x0000
+    STA @VOODOO_START_R
+    LDA #0x0800
+    STA @VOODOO_START_G
+    LDA #0x1000
+    STA @VOODOO_START_B
+    LDA #0x1000
+    STA @VOODOO_START_A
+    LDA #0xF000
+    STA @VOODOO_START_Z
+
+    LDA #10240
+    STA @VOODOO_VERTEX_AX
+    LDA #0
+    STA @VOODOO_VERTEX_AY
+    LDA #10240
+    STA @VOODOO_VERTEX_BX
+    LDA #7680
+    STA @VOODOO_VERTEX_BY
+    LDA #0
+    STA @VOODOO_VERTEX_CX
+    LDA #7680
+    STA @VOODOO_VERTEX_CY
+    LDA #0
+    STA @VOODOO_TRIANGLE_CMD
+    RTS
+
+; ----------------------------------------------------------------------------
 ; get_sin -- look up unsigned sine value from table
 ; Input:  A = angle (0-255)
 ; Output: A = sine value (0-254, where 127 = zero)
@@ -573,13 +751,33 @@ random:
 draw_scrolltext:
     PUSH Y
 
-    ; Fixed alpha and Z for all scrolltext
+    LDA #1
+    STA @scroll_shadow_pass
+    JSR draw_scrolltext_pass
+
+    LDA #0
+    STA @scroll_shadow_pass
+    JSR draw_scrolltext_pass
+
+    POP Y
+    RTS
+
+draw_scrolltext_pass:
+    PUSH Y
+
+    ; Fixed alpha for all scrolltext.
     LDA #0x1000
     STA @VOODOO_START_A
+    LDA @scroll_shadow_pass
+    JZ A, scroll_z_front
+    LDA #0x2400
+    JMP scroll_z_store
+scroll_z_front:
     LDA #0x2000
+scroll_z_store:
     STA @VOODOO_START_Z
 
-    ; Calculate first visible character index
+    ; Calculate first visible character index.
     LDA @scroll_offset
     SHR A, #5
     STA @scroll_char_num
@@ -591,7 +789,7 @@ scroll_char_loop:
     SUB A, #MAX_CHARS
     JGE A, scroll_text_done
 
-    ; Modulo wraparound for looping message (217 characters)
+    ; Modulo wraparound for looping message (217 characters).
     LDA @scroll_char_num
     ADD A, Y
 scroll_mod:
@@ -599,7 +797,7 @@ scroll_mod:
     JGE A, scroll_mod
     ADD A, #217
 
-    ; Fetch ASCII character from message
+    ; Fetch ASCII character from message.
     LDX #scroll_message
     ADD X, A
     LDA [X]
@@ -636,7 +834,7 @@ scroll_mod:
     SUB A, #32
     STA @scroll_font_ptr
 
-    ; Bounds check (ASCII 32-95 only)
+    ; Bounds check (ASCII 32-95 only).
     LDA @scroll_font_ptr
     AND A, #0x80000000
     JNZ A, scroll_next_chr
@@ -653,13 +851,22 @@ scroll_mod:
     ADD A, @scroll_font_ptr
     STA @scroll_font_ptr
 
-    ; --- Rainbow colour (phase-shifted sine waves) ---
+    ; --- Shadow or rainbow colour ---
+    LDA @scroll_shadow_pass
+    JZ A, scroll_colour_rainbow
+    LDA #0x0100
+    STA @VOODOO_START_R
+    STA @VOODOO_START_G
+    LDA #0x0180
+    STA @VOODOO_START_B
+    JMP scroll_colour_done
 
-    ; Red (phase 0 degrees)
+scroll_colour_rainbow:
+    ; Red (phase 0 degrees).
     LDA Y
     SHL A, #5
     ADD A, @frame_counter
-    SHL A, #1
+    SHL A, #2
     AND A, #255
     JSR get_sin
     SHR A, #4
@@ -667,11 +874,11 @@ scroll_mod:
     ADD A, #0x0400
     STA @VOODOO_START_R
 
-    ; Green (phase 120 degrees = 85)
+    ; Green (phase 120 degrees = 85).
     LDA Y
     SHL A, #5
     ADD A, @frame_counter
-    SHL A, #1
+    SHL A, #2
     ADD A, #85
     AND A, #255
     JSR get_sin
@@ -680,11 +887,11 @@ scroll_mod:
     ADD A, #0x0400
     STA @VOODOO_START_G
 
-    ; Blue (phase 240 degrees = 170)
+    ; Blue (phase 240 degrees = 170).
     LDA Y
     SHL A, #5
     ADD A, @frame_counter
-    SHL A, #1
+    SHL A, #2
     ADD A, #170
     AND A, #255
     JSR get_sin
@@ -692,8 +899,9 @@ scroll_mod:
     SHL A, #8
     ADD A, #0x0400
     STA @VOODOO_START_B
+scroll_colour_done:
 
-    ; --- Render 5x7 character bitmap ---
+    ; --- Render 5x7 character bitmap as horizontal spans ---
     PUSH Y
     LDY #0                          ; Row counter
 
@@ -702,7 +910,7 @@ scroll_row_loop:
     SUB A, #7
     JGE A, scroll_row_done
 
-    ; Load font row byte
+    ; Load font row byte.
     LDA @scroll_font_ptr
     LDX A
     ADD X, Y
@@ -712,30 +920,55 @@ scroll_row_loop:
 
     LDX #0                          ; Column counter
 
-scroll_pixel_loop:
+scroll_span_scan:
     LDA X
     SUB A, #5
-    JGE A, scroll_pixel_done
+    JGE A, scroll_row_done_spans
 
-    ; Build bit mask for column X (bit 4 = leftmost)
-    LDA #16
+    ; Test current font bit using a small mask table.
+    LDA X
     PUSH X
-scroll_shift:
-    LDB X
-    JZ B, scroll_shift_done
-    SHR A, #1
-    SUB X, #1
-    JMP scroll_shift
-scroll_shift_done:
+    LDX #font_mask_table
+    ADD X, A
+    LDA [X]
+    AND A, #0xFF
     POP X
 
-    ; Test if pixel is set
     LDB @scroll_font_row
     AND B, A
-    JZ B, scroll_skip_pixel
+    JZ B, scroll_span_skip_pixel
 
-    ; Screen position for this pixel
     LDA X
+    STA @scroll_span_start
+    LDA #0
+    STA @scroll_span_width
+
+scroll_span_grow:
+    LDA X
+    SUB A, #5
+    JGE A, scroll_span_draw
+
+    LDA X
+    PUSH X
+    LDX #font_mask_table
+    ADD X, A
+    LDA [X]
+    AND A, #0xFF
+    POP X
+
+    LDB @scroll_font_row
+    AND B, A
+    JZ B, scroll_span_draw
+
+    ADD X, #1
+    LDA @scroll_span_width
+    ADD A, #1
+    STA @scroll_span_width
+    JMP scroll_span_grow
+
+scroll_span_draw:
+    ; Screen position for this span.
+    LDA @scroll_span_start
     MUL A, #PIXEL_SIZE
     ADD A, @scroll_base_x
     STA @scroll_screen_x
@@ -747,82 +980,28 @@ scroll_shift_done:
     STA @scroll_screen_y
     POP Y
 
-    ; Bounds check
+    LDA @scroll_span_width
+    MUL A, #PIXEL_SIZE
+    STA @scroll_rect_w
+
+    LDA @scroll_shadow_pass
+    JZ A, scroll_no_shadow_offset
     LDA @scroll_screen_x
-    AND A, #0x80000000
-    JNZ A, scroll_skip_pixel
-
-    LDA @scroll_screen_x
-    SUB A, #SCREEN_W
-    JGE A, scroll_skip_pixel
-
-    LDA @scroll_screen_y
-    AND A, #0x80000000
-    JNZ A, scroll_skip_pixel
-
-    LDA @scroll_screen_y
-    SUB A, #SCREEN_H
-    JGE A, scroll_skip_pixel
-
-    ; Convert to 12.4
-    LDA @scroll_screen_x
-    SHL A, #4
+    ADD A, #TEXT_SHADOW_OFFSET
     STA @scroll_screen_x
     LDA @scroll_screen_y
-    SHL A, #4
+    ADD A, #TEXT_SHADOW_OFFSET
     STA @scroll_screen_y
+scroll_no_shadow_offset:
 
-    ; --- Draw pixel as quad (2 triangles, 4x4 screen pixels = 64 in 12.4) ---
+    JSR draw_scroll_rect
+    JMP scroll_span_scan
 
-    ; Triangle 1: top-left, top-right, bottom-left
-    LDA @scroll_screen_x
-    STA @VOODOO_VERTEX_AX
-    LDA @scroll_screen_y
-    STA @VOODOO_VERTEX_AY
-
-    LDA @scroll_screen_x
-    ADD A, #64
-    STA @VOODOO_VERTEX_BX
-    LDA @scroll_screen_y
-    STA @VOODOO_VERTEX_BY
-
-    LDA @scroll_screen_x
-    STA @VOODOO_VERTEX_CX
-    LDA @scroll_screen_y
-    ADD A, #64
-    STA @VOODOO_VERTEX_CY
-
-    LDA #0
-    STA @VOODOO_TRIANGLE_CMD
-
-    ; Triangle 2: top-right, bottom-right, bottom-left
-    LDA @scroll_screen_x
-    ADD A, #64
-    STA @VOODOO_VERTEX_AX
-    LDA @scroll_screen_y
-    STA @VOODOO_VERTEX_AY
-
-    LDA @scroll_screen_x
-    ADD A, #64
-    STA @VOODOO_VERTEX_BX
-    LDA @scroll_screen_y
-    ADD A, #64
-    STA @VOODOO_VERTEX_BY
-
-    LDA @scroll_screen_x
-    STA @VOODOO_VERTEX_CX
-    LDA @scroll_screen_y
-    ADD A, #64
-    STA @VOODOO_VERTEX_CY
-
-    LDA #0
-    STA @VOODOO_TRIANGLE_CMD
-
-scroll_skip_pixel:
+scroll_span_skip_pixel:
     ADD X, #1
-    JMP scroll_pixel_loop
+    JMP scroll_span_scan
 
-scroll_pixel_done:
+scroll_row_done_spans:
     ADD Y, #1
     JMP scroll_row_loop
 
@@ -835,6 +1014,81 @@ scroll_next_chr:
 
 scroll_text_done:
     POP Y
+    RTS
+
+draw_scroll_rect:
+    ; Bounds check.  Voodoo clipping handles the right and bottom edges.
+    LDA @scroll_screen_x
+    AND A, #0x80000000
+    JNZ A, scroll_rect_done
+
+    LDA @scroll_screen_x
+    SUB A, #SCREEN_W
+    JGE A, scroll_rect_done
+
+    LDA @scroll_screen_y
+    AND A, #0x80000000
+    JNZ A, scroll_rect_done
+
+    LDA @scroll_screen_y
+    SUB A, #SCREEN_H
+    JGE A, scroll_rect_done
+
+    ; Convert position and width to 12.4 fixed-point.
+    LDA @scroll_screen_x
+    SHL A, #4
+    STA @scroll_screen_x
+    LDA @scroll_screen_y
+    SHL A, #4
+    STA @scroll_screen_y
+    LDA @scroll_rect_w
+    SHL A, #4
+    STA @scroll_rect_w
+
+    ; Triangle 1: top-left, top-right, bottom-left.
+    LDA @scroll_screen_x
+    STA @VOODOO_VERTEX_AX
+    LDA @scroll_screen_y
+    STA @VOODOO_VERTEX_AY
+
+    LDA @scroll_screen_x
+    ADD A, @scroll_rect_w
+    STA @VOODOO_VERTEX_BX
+    LDA @scroll_screen_y
+    STA @VOODOO_VERTEX_BY
+
+    LDA @scroll_screen_x
+    STA @VOODOO_VERTEX_CX
+    LDA @scroll_screen_y
+    ADD A, #64
+    STA @VOODOO_VERTEX_CY
+
+    LDA #0
+    STA @VOODOO_TRIANGLE_CMD
+
+    ; Triangle 2: top-right, bottom-right, bottom-left.
+    LDA @scroll_screen_x
+    ADD A, @scroll_rect_w
+    STA @VOODOO_VERTEX_AX
+    LDA @scroll_screen_y
+    STA @VOODOO_VERTEX_AY
+
+    LDA @scroll_screen_x
+    ADD A, @scroll_rect_w
+    STA @VOODOO_VERTEX_BX
+    LDA @scroll_screen_y
+    ADD A, #64
+    STA @VOODOO_VERTEX_BY
+
+    LDA @scroll_screen_x
+    STA @VOODOO_VERTEX_CX
+    LDA @scroll_screen_y
+    ADD A, #64
+    STA @VOODOO_VERTEX_CY
+
+    LDA #0
+    STA @VOODOO_TRIANGLE_CMD
+scroll_rect_done:
     RTS
 
 ; ============================================================================
@@ -895,6 +1149,37 @@ store_sin:
     LDB #256
     SUB B, Y
     JNZ B, sin_loop
+    RTS
+
+; ============================================================================
+; build_proj_scale_table -- generate reciprocal projection scale values
+; ============================================================================
+; Each entry is (FOCAL_LENGTH << 8) / z.  Building this once is much cheaper
+; than dividing three times for every visible star on every frame.
+
+build_proj_scale_table:
+    LDY #0
+    LDX #proj_scale_table
+
+proj_scale_loop:
+    LDA Y
+    JZ A, proj_scale_zero
+    LDA #FOCAL_LENGTH
+    SHL A, #PROJ_SCALE_SHIFT
+    DIV A, Y
+    JMP proj_scale_store
+
+proj_scale_zero:
+    LDA #0
+
+proj_scale_store:
+    STA [X]
+    ADD X, #4
+    ADD Y, #1
+    LDB #PROJ_SCALE_MAX_Z
+    ADD B, #1
+    SUB B, Y
+    JNZ B, proj_scale_loop
     RTS
 
 ; ============================================================================
@@ -963,6 +1248,13 @@ quarter_sin:
 scroll_message:
     .ascii "     INTUITION ENGINE     3DFX VOODOO TWISTING STARFIELD TUNNEL     CODE: IE32 RISC ASM BY INTUITION      MUSIC: REGGAE 2 BY DJINN (6502 + SID)     GREETINGS TO ALL DEMOSCENERS...     VISIT INTUITIONSUBSYNTH.COM      "
     .byte 0
+
+; ----------------------------------------------------------------------------
+; Font bit masks for columns 0-4.
+; ----------------------------------------------------------------------------
+
+font_mask_table:
+    .byte 0x10, 0x08, 0x04, 0x02, 0x01
 
 ; ----------------------------------------------------------------------------
 ; 5x7 bitmap font data (ASCII 32-95, 64 characters, 448 bytes)

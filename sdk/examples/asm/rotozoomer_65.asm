@@ -46,9 +46,9 @@
 ;   │                    MAIN LOOP (60 FPS)                       │
 ;   │                                                             │
 ;   │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
-;   │  │  COMPUTE    │───>│   RENDER    │───>│  BLIT TO    │     │
-;   │  │  FRAME      │    │   MODE 7   │    │   FRONT     │     │
-;   │  │ (6 params)  │    │  (blitter)  │    │  (blitter)  │     │
+;   │  │  COMPUTE    │───>│   RENDER    │───>│  PRESENT    │     │
+;   │  │  FRAME      │    │   MODE 7   │    │   FRAME     │     │
+;   │  │ (6 params)  │    │  (blitter)  │    │ (FB pointer)│     │
 ;   │  └─────────────┘    └─────────────┘    └─────────────┘     │
 ;   │        │                                      │             │
 ;   │        │                               ┌──────┘             │
@@ -95,7 +95,7 @@
 ;   │          mul_a, mul_b, mul_result, tmp32_*, sign_flag │
 ;   ├──────────────────────────────────────────────────────┤
 ;   │ $000200  CODE: main, compute_frame, mul16_signed,    │
-;   │          render_mode7, blit_to_front, etc.            │
+;   │          render_mode7, present_frame, etc.            │
 ;   ├──────────────────────────────────────────────────────┤
 ;   │ $100000  VRAM (front buffer) -- final display output  │
 ;   ├──────────────────────────────────────────────────────┤
@@ -155,7 +155,10 @@ TEXTURE_BASE     = $600000
 ; Why $900000 for the back buffer: it must not overlap the texture
 ; ($600000) or VRAM ($100000). With 640x480x4 = 1,228,800 bytes
 ; (~1.17 MB), $900000 has plenty of room in the 32-bit address space.
-BACK_BUFFER      = $900000
+BACK_BUFFER_A    = $900000
+BACK_BUFFER_B    = $B00000
+BACK_BUFFER_A_HI = $90
+BACK_BUFFER_B_HI = $B0
 
 ; --- Texture Dimensions ---
 ; TEX_STRIDE = 1024 bytes = 256 pixels * 4 bytes/pixel (BGRA).
@@ -249,6 +252,7 @@ tmp32_a:         .res 4          ; 32-bit scratch: holds CA*320 or SA*320 result
 tmp32_b:         .res 4          ; 32-bit scratch: holds SA*240 or CA*240 result
 tmp32_c:         .res 4          ; 32-bit scratch: holds intermediate shifted value
 sign_flag:       .res 1          ; Signed multiply: counts negative operands
+draw_fb_hi:      .res 1          ; High address byte for the current render buffer
 
 ; ============================================================================
 ; CODE SEGMENT
@@ -264,9 +268,10 @@ sign_flag:       .res 1          ; Signed multiply: counts negative operands
 ; The main loop is structured for maximum clarity:
 ;   1. compute_frame   - Calculate the 6 affine transform parameters
 ;   2. render_mode7    - Program the blitter and render to back buffer
-;   3. blit_to_front   - Copy completed frame to VRAM (prevents tearing)
-;   4. wait_vsync      - Synchronise to display refresh (60 Hz)
-;   5. advance_animation - Increment rotation and zoom accumulators
+;   3. wait_vsync      - Synchronise to display refresh (60 Hz)
+;   4. present_frame   - Point the VideoChip at the completed buffer
+;   5. swap_draw_buffer - Select the other render buffer
+;   6. advance_animation - Increment rotation and zoom accumulators
 ; ============================================================================
 .proc main
     ; --- Enable the IE VideoChip ---
@@ -277,6 +282,7 @@ sign_flag:       .res 1          ; Signed multiply: counts negative operands
     sta VIDEO_CTRL
     lda #0
     sta VIDEO_MODE
+    STORE32 VIDEO_FB_BASE, VRAM_START
 
     ; --- Load texture from disk ---
     ; Loads a pre-rendered 256x256 RGBA texture from disk using the File I/O
@@ -293,6 +299,8 @@ sign_flag:       .res 1          ; Signed multiply: counts negative operands
     sta angle_accum+1
     sta scale_accum
     sta scale_accum+1
+    lda #BACK_BUFFER_A_HI
+    sta draw_fb_hi
 
     ; --- Start PSG music playback ---
     ; WHY PSG MUSIC?
@@ -317,8 +325,9 @@ sign_flag:       .res 1          ; Signed multiply: counts negative operands
 loop:
     jsr compute_frame
     jsr render_mode7
-    jsr blit_to_front
     jsr wait_vsync
+    jsr present_frame
+    jsr swap_draw_buffer
     jsr advance_animation
     jmp loop
 .endproc
@@ -1106,7 +1115,7 @@ loop:
 ; This procedure sets up all Mode 7 blitter registers and triggers the
 ; hardware affine texture transformation. The blitter reads the texture
 ; from $600000, applies the affine transform defined by the 6 parameters,
-; and writes the result to the back buffer at $900000.
+; and writes the result to the current off-screen render buffer.
 ;
 ; MODE 7 BLITTER REGISTERS:
 ;   BLT_OP          = 5 (Mode 7 affine texture mapping)
@@ -1144,11 +1153,17 @@ loop:
 .proc render_mode7
     ; --- Set up constant blitter parameters ---
     ; These don't change between frames but must be set each time
-    ; because other blitter operations (load_texture, blit_to_front)
+    ; because other blitter operations (load_texture) overwrite these registers.
     ; overwrite these registers.
     STORE32 BLT_OP, BLT_OP_MODE7_OP
     STORE32 BLT_SRC_0, TEXTURE_BASE
-    STORE32 BLT_DST_0, BACK_BUFFER
+    lda #0
+    sta BLT_DST_0
+    sta BLT_DST_1
+    lda draw_fb_hi
+    sta BLT_DST_2
+    lda #0
+    sta BLT_DST_3
     STORE32 BLT_WIDTH_LO, RENDER_W
     STORE32 BLT_HEIGHT_LO, RENDER_H
     STORE32 BLT_SRC_STRIDE_LO, TEX_STRIDE
@@ -1239,35 +1254,34 @@ loop:
 .endproc
 
 ; ============================================================================
-; BLIT BACK BUFFER TO FRONT BUFFER
+; PRESENT COMPLETED FRAME
 ; ============================================================================
-; Copies the completed Mode 7 render from the back buffer ($900000)
-; to VRAM ($100000) using a hardware block copy (BLT_OP = 0).
-;
-; WHY NOT RENDER DIRECTLY TO VRAM?
-; If the blitter wrote directly to VRAM, the display would show a
-; partially-rendered frame during the blit operation. This manifests
-; as "tearing" -- the top half shows the new frame while the bottom
-; half still shows the previous frame. Double buffering eliminates
-; this artifact: we render to an off-screen buffer, then copy the
-; complete frame to VRAM between display refreshes.
-;
-; The copy itself is a simple source-to-destination block transfer:
-;   - Source: BACK_BUFFER ($900000)
-;   - Destination: VRAM_START ($100000)
-;   - Both use LINE_BYTES (2560) stride
-;   - Full screen dimensions (640x480)
+; Points the VideoChip at the completed render buffer.
 ; ============================================================================
-.proc blit_to_front
-    STORE32 BLT_OP, 0               ; BLT_OP = 0 = block copy
-    STORE32 BLT_SRC_0, BACK_BUFFER
-    STORE32 BLT_DST_0, VRAM_START
-    STORE32 BLT_WIDTH_LO, RENDER_W
-    STORE32 BLT_HEIGHT_LO, RENDER_H
-    STORE32 BLT_SRC_STRIDE_LO, LINE_BYTES
-    STORE32 BLT_DST_STRIDE_LO, LINE_BYTES
-    START_BLIT
-    WAIT_BLIT
+.proc present_frame
+    lda #0
+    sta VIDEO_FB_BASE
+    sta VIDEO_FB_BASE+1
+    lda draw_fb_hi
+    sta VIDEO_FB_BASE+2
+    lda #0
+    sta VIDEO_FB_BASE+3
+    rts
+.endproc
+
+; ============================================================================
+; SWAP DRAW BUFFER
+; ============================================================================
+.proc swap_draw_buffer
+    lda draw_fb_hi
+    cmp #BACK_BUFFER_A_HI
+    beq @use_b
+    lda #BACK_BUFFER_A_HI
+    sta draw_fb_hi
+    rts
+@use_b:
+    lda #BACK_BUFFER_B_HI
+    sta draw_fb_hi
     rts
 .endproc
 

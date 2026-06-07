@@ -989,6 +989,26 @@ func TestZ80JIT_Exec_SBCHL_BorrowIncludesCarryInOverflow(t *testing.T) {
 	}
 }
 
+func TestZ80JIT_Exec_SBCConsumesCarryFromSubThroughLDs(t *testing.T) {
+	r := newZ80JITTestRig()
+
+	program := []byte{
+		0x21, 0xF3, 0xFF, // LD HL, 0xfff3 (-13)
+		0xAF,       // XOR A
+		0x95,       // SUB L
+		0x6F,       // LD L,A
+		0x3E, 0x00, // LD A,0
+		0x9C, // SBC A,H
+		0x67, // LD H,A
+		0x76, // HALT
+	}
+	r.loadAndRun(t, 0x0100, program, 500*time.Millisecond)
+
+	if got := r.cpu.HL(); got != 0x000D {
+		t.Fatalf("HL = 0x%04X, want 0x000D", got)
+	}
+}
+
 func TestZ80JIT_Exec_ADDIXIY_CarryIs16Bit(t *testing.T) {
 	for _, tt := range []struct {
 		name   string

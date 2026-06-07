@@ -75,7 +75,7 @@
 ;
 ; === WHY AHX MUSIC ===
 ; Each demo in the Intuition Engine SDK showcases a different audio chip.
-; The rotating cube demo (M68K) uses SID; the ULA demos use PSG.
+; The rotating cube demo (M68K) uses SID; the ULA cube demo uses PSG.
 ; This IE32 demo uses AHX (Abyss' Highest eXperience), an Amiga-heritage
 ; tracker format with waveform synthesis. AHX_PLAY_CTRL=5 means bits 0+2
 ; are set: start playback (bit 0) with looping enabled (bit 2).
@@ -194,7 +194,8 @@
 .equ TEX_TR         0x600200
 .equ TEX_BL         0x620000
 .equ TEX_BR         0x620200
-.equ BACK_BUFFER    0x900000
+.equ BACK_BUFFER_A  0x900000
+.equ BACK_BUFFER_B  0xB00000
 .equ RENDER_W       640
 .equ RENDER_H       480
 .equ TEX_STRIDE     1024
@@ -249,6 +250,7 @@
 .equ VAR_SA         0x46C2C
 .equ VAR_U0         0x46C30
 .equ VAR_V0         0x46C34
+.equ VAR_DRAW_FB    0x46C38
 
 ; ============================================================================
 ; PROGRAM ENTRY POINT
@@ -270,6 +272,8 @@ start:
     STA @VIDEO_CTRL
     LDA #0
     STA @VIDEO_MODE
+    LDA #VRAM_START
+    STA @VIDEO_FB_BASE
 
     ; --- Load Texture ---
     ; Copy the 256x256 RGBA texture (embedded via .incbin) to TEXTURE_BASE
@@ -285,6 +289,8 @@ start:
     LDA #0
     STA @VAR_ANGLE_ACC
     STA @VAR_SCALE_ACC
+    LDA #BACK_BUFFER_A
+    STA @VAR_DRAW_FB
 
     ; --- Start AHX Music Playback ---
     ; AHX (Abyss' Highest eXperience) is an Amiga-heritage tracker format.
@@ -316,30 +322,30 @@ start:
 ; 2. render_mode7:       Program the blitter with those parameters and
 ;                        trigger a full-screen affine warp into the back
 ;                        buffer at 0x900000.
-; 3. blit_to_front:      Copy the completed back buffer to VRAM (0x100000)
-;                        so the display shows the new frame.
-; 4. wait_vsync:         Synchronise with the vertical blank to prevent
+; 3. wait_vsync:         Synchronise with the vertical blank to prevent
 ;                        visual tearing.
-; 5. advance_animation:  Increment the angle and scale accumulators for
+; 4. present_frame:      Point the VideoChip at the completed render buffer.
+; 5. swap_draw_buffer:   Select the other render buffer for the next frame.
+; 6. advance_animation:  Increment the angle and scale accumulators for
 ;                        the next frame.
 ;
 ; WHY THIS ORDER?
-; We compute+render+copy BEFORE waiting for vsync. This means all the
+; We compute and render before waiting for vsync. This means all the
 ; heavy work happens during the active display period (while the previous
-; frame is being shown). The vsync wait then ensures the completed blit
-; becomes visible at the start of the next refresh cycle. This maximises
-; the time available for rendering without introducing tearing.
+; frame is being shown). The vblank edge then presents the completed buffer
+; by updating VIDEO_FB_BASE.
 ; ============================================================================
 main_loop:
     JSR compute_frame
     JSR render_mode7
-    JSR blit_to_front
     JSR wait_vsync
+    JSR present_frame
+    JSR swap_draw_buffer
     JSR advance_animation
     JMP main_loop
 
 ; ============================================================================
-; WAIT FOR VSYNC (Two-Phase Synchronization)
+; WAIT FOR VSYNC (Two-Phase Synchronisation)
 ; ============================================================================
 ; Ensures exactly one frame passes between iterations of the main loop.
 ;
@@ -734,18 +740,15 @@ m240_done:
 ; affine texture warp, then triggers the blit and waits for completion.
 ;
 ; WHY DOUBLE BUFFERING?
-; The Mode7 blit writes to the BACK BUFFER at 0x900000, NOT directly to
-; VRAM (0x100000). If we wrote directly to VRAM, the display would show
-; a partially-rendered frame (tearing) because the blit takes multiple
-; scanline periods to complete. By rendering to an off-screen buffer
-; and then copying the result to VRAM in a single fast blit (blit_to_front),
-; we ensure the display always shows a complete frame.
+; The Mode7 blit writes to the current off-screen render buffer, not the
+; buffer currently being scanned out. At vblank, VIDEO_FB_BASE is updated
+; to present the completed frame, then the other render buffer is selected.
 ;
 ; === BLITTER PARAMETER SETUP ===
 ;
 ;   BLT_OP = 5                    Mode7 affine texture mapping operation
 ;   BLT_SRC = TEXTURE_BASE        Source texture at 0x600000
-;   BLT_DST = BACK_BUFFER         Destination at 0x900000
+;   BLT_DST = VAR_DRAW_FB         Current off-screen render buffer
 ;   BLT_WIDTH = 640               Output width in pixels
 ;   BLT_HEIGHT = 480              Output height in pixels
 ;   BLT_SRC_STRIDE = 1024         Texture row stride (256 px * 4 bytes)
@@ -782,7 +785,7 @@ render_mode7:
 
     LDA #TEXTURE_BASE
     STA @BLT_SRC
-    LDA #BACK_BUFFER
+    LDA @VAR_DRAW_FB
     STA @BLT_DST
 
     LDA #RENDER_W
@@ -838,43 +841,29 @@ rm7_wait:
     RTS
 
 ; ============================================================================
-; BLIT BACK BUFFER TO FRONT (VRAM)
+; PRESENT COMPLETED FRAME
 ; ============================================================================
-; Copies the completed Mode7 render from the back buffer (0x900000)
-; to VRAM (0x100000) using the blitter's COPY operation (BLT_OP=0).
-;
-; WHY NOT JUST RENDER DIRECTLY TO VRAM?
-; Direct rendering causes tearing: the display refreshes at 60 Hz and
-; reads VRAM continuously. If we write to VRAM while it's being scanned
-; out, the top half of the screen might show the new frame while the
-; bottom still shows the old frame. Double buffering eliminates this by
-; completing the full render off-screen, then swapping instantaneously.
-;
-; The copy blit itself is fast enough to complete within the vblank
-; interval, so the buffer swap appears atomic to the viewer.
+; Points the VideoChip at the completed render buffer. No full-screen copy is
+; needed, so the blitter is free for the next Mode7 render.
 ; ============================================================================
-blit_to_front:
-    LDA #0
-    STA @BLT_OP
-    LDA #BACK_BUFFER
-    STA @BLT_SRC
-    LDA #VRAM_START
-    STA @BLT_DST
-    LDA #RENDER_W
-    STA @BLT_WIDTH
-    LDA #RENDER_H
-    STA @BLT_HEIGHT
-    LDA #LINE_BYTES_V
-    STA @BLT_SRC_STRIDE
-    STA @BLT_DST_STRIDE
-    LDA #1
-    STA @BLT_CTRL
+present_frame:
+    LDA @VAR_DRAW_FB
+    STA @VIDEO_FB_BASE
+    RTS
 
-btf_wait:
-    LDA @BLT_CTRL
-    AND A, #2
-    JNZ A, btf_wait
-
+; ============================================================================
+; SWAP DRAW BUFFER
+; ============================================================================
+swap_draw_buffer:
+    LDA @VAR_DRAW_FB
+    SUB A, #BACK_BUFFER_A
+    JNZ A, use_buffer_a
+    LDA #BACK_BUFFER_B
+    STA @VAR_DRAW_FB
+    RTS
+use_buffer_a:
+    LDA #BACK_BUFFER_A
+    STA @VAR_DRAW_FB
     RTS
 
 ; ============================================================================

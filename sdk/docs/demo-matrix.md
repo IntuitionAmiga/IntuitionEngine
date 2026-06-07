@@ -33,12 +33,10 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 | `ula_rotating_cube_65.asm` | 6502 | ULA (Spectrum) | AHX | Wireframe 3D cube on ZX Spectrum display |
 | `ted_121_colors_68k.asm` | M68K | TED (Plus/4) | PSG | Full-screen plasma using all 121 TED colours |
 | `antic_plasma_x86.asm` | x86 | ANTIC/GTIA | SID | IE-native display list + Player/Missile graphics |
-| `vga_text_sap_demo.asm` | Z80 | VGA (text) | POKEY/SAP | VGA text mode with SAP music playback |
 | `voodoo_cube_68k.asm` | M68K | Voodoo 3D | -- | Z-buffered 3D cube on 3DFX Voodoo hardware |
 | `voodoo_triangle_68k.asm` | M68K | Voodoo 3D | -- | Flat-shaded triangle on 3DFX Voodoo |
 | `voodoo_3dfx_logo_68k.asm` | M68K | Voodoo 3D | -- | Textured 3DFX logo flyby with fog |
 | `voodoo_mega_demo.asm` | IE32 | Voodoo 3D | SID | Textured 3D scenes with SID music |
-| `voodoo_tunnel_z80.asm` | Z80 | Voodoo 3D | -- | Texture-mapped tunnel effect |
 | `voodoo_smoketest_z80.asm` | Z80 | Voodoo 3D | -- | Minimal Voodoo port-adapter smoke test |
 | `voodoo_smoketest_6502.asm` | 6502 | Voodoo 3D | -- | Minimal Voodoo banked-aperture smoke test |
 | `robocop_intro.asm` | IE32 | IEVideoChip + Copper | PSG | Copper rasterbars + blitter sprite + sine scrolltext |
@@ -64,7 +62,7 @@ IE32, IE64, M68020, Z80, 6502, x86 (32-bit)
 
 ### Video Chips Covered
 - **IEVideoChip** (up to 1920x1080 true colour/CLUT8, default native 960x540) - rotozoomer series, robocop intro
-- **VGA** (text / Mode 13h / Mode 12h / Mode X) - text hello, fire effect, circles, bars, SAP demo
+- **VGA** (text / Mode 13h / Mode 12h / Mode X) - text hello, fire effect, circles, bars
 - **ULA** (ZX Spectrum 256x192) - rotating cube
 - **TED** (Commodore Plus/4 121 colours) - plasma
 - **ANTIC/GTIA** (Atari-inspired IE-native display lists) - plasma

@@ -32,7 +32,6 @@ var assemblerExamples = []assemblerExample{
 	{"sdk/examples/asm/iewarp_service.asm", "ie64"},
 	{"sdk/examples/asm/mandelbrot_ie64.asm", "ie64"},
 	{"sdk/examples/asm/rotozoomer_ie64.asm", "ie64"},
-	{"sdk/examples/asm/ula_demo_ie64.asm", "ie64"},
 	{"sdk/intuitionos/iexec/iexec.s", "ie64"},
 	{"sdk/intuitionos/iexec/runtime_builder.s", "ie64"},
 }

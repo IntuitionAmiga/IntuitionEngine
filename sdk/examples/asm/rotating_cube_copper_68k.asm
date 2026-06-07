@@ -102,6 +102,9 @@ SCR_W           equ     320
 SCR_H           equ     200
 CENTER_X        equ     160
 CENTER_Y        equ     100
+FRAME_BYTES     equ     SCR_W*SCR_H
+FRAME_LONGS     equ     FRAME_BYTES/4
+PRESENT_BLOCKS  equ     FRAME_BYTES/32
 
 ; ----------------------------------------------------------------------------
 ; 3D cube parameters
@@ -151,6 +154,8 @@ start:
                 ; --- Configure VGA ---
                 move.b  #VGA_MODE_13H,VGA_MODE
                 move.b  #VGA_CTRL_ENABLE,VGA_CTRL
+                bsr     clear_back_buffer
+                bsr     present_frame
 
                 ; --- Build and activate copper program ---
                 bsr     build_copper_list
@@ -172,24 +177,16 @@ start:
 ; ============================================================================
 ; MAIN LOOP - ONE ITERATION PER FRAME
 ; ============================================================================
-; Order matters: clear first, draw scroller (behind), then cube (on top),
-; then update copper colours for the next frame's raster bars.
+; Order matters: render the whole frame in RAM first, then copy the completed
+; image into Mode 13h VRAM during vblank. This keeps the demo in Mode 13h
+; without showing half-cleared or half-drawn visible VRAM.
 ; ----------------------------------------------------------------------------
 main_loop:
-                ; --- VSync synchronisation (two-stage wait) ---
-.wait_not_vb:   move.b  VGA_STATUS,d0
-                andi.b  #VGA_STATUS_VSYNC,d0
-                bne.s   .wait_not_vb
-
-.wait_vb:       move.b  VGA_STATUS,d0
-                andi.b  #VGA_STATUS_VSYNC,d0
-                beq.s   .wait_vb
-
-                ; --- Clear screen to colour index 1 ---
+                ; --- Clear back buffer to colour index 1 ---
                 ; WHY index 1: The copper modifies palette entry 1 per scanline.
                 ; Pixels with index 1 show the copper's current colour, creating
                 ; the rainbow gradient. Index 0 would not be affected.
-                bsr     clear_screen
+                bsr     clear_back_buffer
 
                 ; --- Draw circular scroller (behind cube) ---
                 bsr     draw_circular_scroll
@@ -219,55 +216,59 @@ main_loop:
                 move.l  d0,raster_phase
                 bsr     update_copper_colors
 
+                ; --- VSync synchronisation (two-stage wait) ---
+.wait_not_vb:   move.b  VGA_STATUS,d0
+                andi.b  #VGA_STATUS_VSYNC,d0
+                bne.s   .wait_not_vb
+
+.wait_vb:       move.b  VGA_STATUS,d0
+                andi.b  #VGA_STATUS_VSYNC,d0
+                beq.s   .wait_vb
+
+                ; --- Present the completed RAM frame to visible Mode 13h VRAM ---
+                bsr     present_frame
+
                 bra     main_loop
 
 ; ============================================================================
-; CLEAR SCREEN TO COLOUR INDEX 1
+; CLEAR BACK BUFFER TO COLOUR INDEX 1
 ; ============================================================================
-; WHY UNROLLED: Writing 32 bytes per iteration reduces loop overhead by 32x.
-; 64000 bytes / 32 bytes per iteration = 2000 iterations.
+; The visible Mode 13h aperture is only written by present_frame. All drawing
+; happens in normal RAM so scanout cannot catch partially rendered objects.
 ; ----------------------------------------------------------------------------
-clear_screen:
-                movem.l d0/a0,-(sp)
-                lea     VGA_VRAM,a0
-                move.w  #2000-1,d0
+clear_back_buffer:
+                movem.l d0-d1/a0,-(sp)
+                lea     back_buffer,a0
+                move.w  #FRAME_LONGS-1,d0
+                move.l  #$01010101,d1
 
 .clear_loop:
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
-                move.b  #1,(a0)+
+                move.l  d1,(a0)+
                 dbf     d0,.clear_loop
 
-                movem.l (sp)+,d0/a0
+                movem.l (sp)+,d0-d1/a0
+                rts
+
+; ============================================================================
+; PRESENT BACK BUFFER TO VISIBLE MODE 13H VRAM
+; ============================================================================
+; Mode 13h exposes a 64KB VGA aperture, so the back buffer lives in normal RAM.
+; Copying byte-by-byte matches the VGA byte-addressed Chain-4 write path.
+; ----------------------------------------------------------------------------
+present_frame:
+                movem.l d0-d1/a0-a1,-(sp)
+                lea     back_buffer,a0
+                lea     VGA_VRAM,a1
+                move.w  #PRESENT_BLOCKS-1,d0
+
+.copy_loop:
+                rept    32
+                move.b  (a0)+,d1
+                move.b  d1,(a1)+
+                endr
+                dbf     d0,.copy_loop
+
+                movem.l (sp)+,d0-d1/a0-a1
                 rts
 
 ; ============================================================================
@@ -400,8 +401,8 @@ draw_scroll_char:
                 lsl.l   #3,d6                   ; *8 bytes per character
                 add.l   d6,a0
 
-                ; --- Calculate VRAM destination ---
-                lea     VGA_VRAM,a1
+                ; --- Calculate back-buffer destination ---
+                lea     back_buffer,a1
                 move.l  d5,d0
                 mulu.w  #SCR_W,d0
                 add.l   d4,d0
@@ -430,7 +431,7 @@ draw_scroll_char:
                 addq.l  #1,a1
                 dbf     d3,.col_loop
 
-                ; Advance to next VRAM row (320 - 8 pixels already advanced)
+                ; Advance to next back-buffer row (320 - 8 pixels already advanced)
                 lea     SCR_W-8(a1),a1
                 dbf     d7,.row_loop
 
@@ -728,7 +729,7 @@ plot_pixel:
                 bge.s   .skip
 
                 movem.l d0-d1/a0,-(sp)
-                lea     VGA_VRAM,a0
+                lea     back_buffer,a0
                 move.w  d4,d0
                 mulu    #SCR_W,d0
                 add.w   d3,d0
@@ -939,6 +940,11 @@ cos_y:          dc.w    0               ; Cached cos(angle_y)
 scroll_angle:   dc.l    0               ; Scroller orbit position (0-255)
 scroll_char_offset: dc.l 0              ; Current message character offset
 raster_phase:   dc.l    0               ; Copper colour animation phase (0-255)
+
+; --- Mode 13h RAM back buffer ---
+; Visible VGA VRAM is updated only by present_frame.
+                even
+back_buffer:    ds.b    FRAME_BYTES
 
 ; --- Copper list buffer ---
 ; Reserved space for the dynamically-built copper program.

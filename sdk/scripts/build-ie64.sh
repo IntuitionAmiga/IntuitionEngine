@@ -35,7 +35,6 @@ if [ $# -gt 0 ]; then
     build_one "$1"
 else
     for src in "$ASM_DIR"/rotozoomer_ie64.asm \
-               "$ASM_DIR"/ula_demo_ie64.asm \
                "$ASM_DIR"/mandelbrot_ie64.asm \
                "$ASM_DIR"/ehbasic_ie64.asm \
                "$ASM_DIR"/iewarp_service.asm; do

@@ -35,7 +35,6 @@ if [ $# -gt 0 ]; then
     build_one "$1"
 else
     for src in "$ASM_DIR"/rotozoomer_z80.asm \
-               "$ASM_DIR"/voodoo_tunnel_z80.asm \
                "$ASM_DIR"/coproc_caller_z80.asm \
                "$ASM_DIR"/coproc_service_z80.asm; do
         if [ -f "$src" ]; then

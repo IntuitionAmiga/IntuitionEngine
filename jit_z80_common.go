@@ -763,11 +763,6 @@ func z80PeepholeFlags(instrs []JITZ80Instr) []uint8 {
 	for i := n - 1; i >= 0; i-- {
 		instr := &instrs[i]
 
-		consumed := z80InstrConsumedFlagMask(instr)
-		if consumed != 0 {
-			needFlags |= consumed
-		}
-
 		producedMask := z80InstrProducedFlagMask(instr)
 		if producedMask != 0 {
 			flagsNeeded[i] = needFlags
@@ -778,6 +773,14 @@ func z80PeepholeFlags(instrs []JITZ80Instr) []uint8 {
 			// LD A,I/R preserve C; CB BIT preserves C) keep upstream demand
 			// for the preserved bits.
 			needFlags &^= producedMask
+		}
+
+		// Consumers such as ADC/SBC read the old carry before writing their
+		// own flags, so input demand must propagate upstream after output
+		// demand has been assigned to this instruction.
+		consumed := z80InstrConsumedFlagMask(instr)
+		if consumed != 0 {
+			needFlags |= consumed
 		}
 	}
 

@@ -42,7 +42,6 @@ local SHOWREEL_GAIN_DB = {
     [P.."rotozoomer_z80.ie80"]      = -2.5,
     [P.."rotozoomer_x86.ie86"]      = -2.5,
     [P.."voodoo_mega_demo.iex"]     = -4.0,
-    [P.."vga_text_sap_demo.ie80"]   = -1.5,
     [P.."robocop_intro.iex"]        = -2.0,
     [P.."robocop_intro_68k.ie68"]   = -2.0,
     [P.."robocop_intro_65.ie65"]    = -2.0,
@@ -473,33 +472,7 @@ monitor_tour({
 })
 
 -- ============================================================================
--- Section 8: VGA Demo (19s)
--- ============================================================================
-
-title_card({"VGA Demo", "IBM PC Compatible Graphics + POKEY Audio"}, 2)
-
-local vga_demos = {
-    {P.."vga_text_sap_demo.ie80", "Text Mode + SAP Music", 10,
-        "CPU: Zilog Z80", "Video: VGA Text Mode + Audio: POKEY (Atari SAP)", "io pokey"},
-}
-
-for i, v in ipairs(vga_demos) do
-    title_card({
-        string.format("VGA [%d/%d] - %s", i, #vga_demos, v[2]),
-        v[4], v[5],
-    }, 3)
-    run_demo(v[1], v[3])
-    local tour = {
-        {"r",      2000},
-        {"d",      2000},
-        {"io vga", 1800},
-    }
-    if v[6] then tour[#tour+1] = {v[6], 1800} end
-    monitor_tour(tour)
-end
-
--- ============================================================================
--- Section 9: Robocop Intro x 4 CPUs (35s)
+-- Section 8: Robocop Intro x 4 CPUs (35s)
 -- ============================================================================
 
 title_card({"Robocop Intro", "Copper rasterbars + blitter sprite across 4 CPUs"}, 2)
@@ -529,7 +502,7 @@ for i, rc in ipairs(robocop_demos) do
 end
 
 -- ============================================================================
--- Section 10: Monitor Deep-Dive (30s)
+-- Section 9: Monitor Deep-Dive (30s)
 -- ============================================================================
 
 reset_to_basic()
@@ -555,7 +528,7 @@ monitor_tour({
 })
 
 -- ============================================================================
--- Section 11: EmuTOS GEM Desktop + Rotozoomer (~45s)
+-- Section 10: EmuTOS GEM Desktop + Rotozoomer (~45s)
 -- ============================================================================
 
 title_card({
@@ -616,7 +589,7 @@ sys.wait_ms(3000)
 term.mouse_release()
 
 -- ============================================================================
--- Section 12: Credits and Shutdown
+-- Section 11: Credits and Shutdown
 -- ============================================================================
 
 title_card({

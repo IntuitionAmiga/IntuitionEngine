@@ -128,12 +128,10 @@
 ; flat 32-bit address space lets us place buffers anywhere.
 TEXTURE_BASE    equ 0x600000
 
-; WHY 0x900000 FOR BACK BUFFER: Double buffering requires two full-screen
-; framebuffers. Mode7 renders to 0x900000 (off-screen), then a BLIT COPY
-; transfers the completed frame to VRAM (0x100000) atomically. Without
-; double buffering, the viewer would see the Mode7 blitter painting across
-; the screen mid-frame, causing visible tearing.
-BACK_BUFFER     equ 0x900000
+; Render into one off-screen framebuffer while the VideoChip scans out the
+; other. The completed buffer is presented by writing VIDEO_FB_BASE at vblank.
+BACK_BUFFER_A   equ 0x900000
+BACK_BUFFER_B   equ 0xB00000
 
 ; --- Screen Dimensions ---
 ; SCREEN_W, SCREEN_H, LINE_BYTES are %define'd above (640x480 mode).
@@ -213,6 +211,7 @@ start:
                 ; is not enabled. This is a common "nothing appears on screen" bug.
                 mov dword [VIDEO_CTRL], 1
                 mov dword [VIDEO_MODE], 0
+                mov dword [VIDEO_FB_BASE], VRAM_START
 
                 ; --- Load Texture ---
                 ; Copy the 256x256 RGBA texture (embedded via incbin) to
@@ -226,6 +225,7 @@ start:
                 ; ANGLE_INC and SCALE_INC respectively.
                 mov dword [angle_accum], 0
                 mov dword [scale_accum], 0
+                mov dword [draw_fb], BACK_BUFFER_A
 
                 ; --- Start PSG Music Playback ---
                 ; WHY PSG (AY-3-8910 / YM2149): Each IntuitionEngine demo
@@ -262,30 +262,30 @@ start:
 ; The frame pipeline:
 ;   1. compute_frame:     CPU work (~6 multiplies, ~20 shifts/adds)
 ;   2. render_mode7:      Blitter work (307,200 pixels, hardware-accelerated)
-;   3. blit_to_front:     Blitter work (307,200 pixel copy to VRAM)
-;   4. wait_vsync:        Idle until vertical blanking interval
-;   5. advance_animation: Increment accumulators (trivial)
+;   3. wait_vsync:        Idle until vertical blanking interval
+;   4. present_frame:     Point the VideoChip at the completed buffer
+;   5. swap_draw_buffer:  Select the other render buffer
+;   6. advance_animation: Increment accumulators (trivial)
 ;
-; WHY THIS ORDER: We compute and render FIRST, then vsync, then advance.
-; This means the frame we just displayed was computed during the PREVIOUS
-; vsync interval. The alternative (vsync first, then compute) would also
-; work but would make the first frame appear one refresh late.
+; WHY THIS ORDER: We compute and render first, then present at the vblank
+; edge by updating VIDEO_FB_BASE.
 ; ============================================================================
 
 main_loop:
                 call compute_frame
                 call render_mode7
-                call blit_to_front
                 call wait_vsync
+                call present_frame
+                call swap_draw_buffer
                 call advance_animation
                 jmp main_loop
 
 ; ============================================================================
-; WAIT FOR VSYNC (Two-Phase Vertical Blank Synchronization)
+; WAIT FOR VSYNC (Two-Phase Vertical Blank Synchronisation)
 ; ============================================================================
 ; Synchronises the main loop to the display's 60 Hz refresh rate.
 ; Without vsync, the main loop would run as fast as possible, causing:
-;   - Visual tearing (blit_to_front updating VRAM mid-scanout)
+;   - Visual tearing (presenting frames mid-scanout)
 ;   - Inconsistent animation speed (varies with CPU speed)
 ;
 ; WHY TWO-PHASE VSYNC:
@@ -576,18 +576,17 @@ compute_frame:
 ; This is a standard 2D rotation matrix [[cos,-sin],[sin,cos]] scaled by
 ; the zoom factor (already baked into CA and SA from compute_frame).
 ;
-; WHY RENDER TO BACK BUFFER (0x900000) NOT DIRECTLY TO VRAM:
-; The Mode7 blit takes time. If we wrote directly to VRAM (which is being
-; scanned out to the display), the viewer would see the blit in progress --
-; old frame at the bottom, new frame painting from the top. Rendering to an
-; off-screen buffer and then copying the complete result prevents this
-; tearing artifact.
+; WHY RENDER TO AN OFF-SCREEN BUFFER:
+; The Mode7 blit takes time. If we wrote into the buffer currently being
+; scanned out, the viewer would see the blit in progress. Rendering to the
+; non-visible buffer and presenting it at vblank prevents this.
 ; ============================================================================
 
 render_mode7:
                 mov dword [BLT_OP], BLT_OP_MODE7
                 mov dword [BLT_SRC], TEXTURE_BASE
-                mov dword [BLT_DST], BACK_BUFFER
+                mov eax, [draw_fb]
+                mov [BLT_DST], eax
                 mov dword [BLT_WIDTH], RENDER_W
                 mov dword [BLT_HEIGHT], RENDER_H
                 mov dword [BLT_SRC_STRIDE], TEX_STRIDE
@@ -633,7 +632,7 @@ render_mode7:
                 ; WHY POLL BLT_CTRL BIT 1 (mask value 2):
                 ; BLT_CTRL bit 1 = busy flag. BLT_STATUS bit 1 is DONE, not
                 ; BUSY. We spin-wait here because we need the result before
-                ; we can blit to front.
+                ; we can present the completed buffer.
 .wait:          mov eax, [BLT_CTRL]
                 test eax, 2
                 jnz .wait
@@ -641,35 +640,27 @@ render_mode7:
                 ret
 
 ; ============================================================================
-; BLIT BACK BUFFER TO FRONT (VRAM)
+; PRESENT COMPLETED FRAME
 ; ============================================================================
-; WHY DOUBLE BUFFERING: Mode7 renders to BACK_BUFFER (0x900000), and this
-; routine copies the completed frame to VRAM_START (0x100000). The display
-; hardware scans out from VRAM, so the viewer only ever sees complete frames.
-;
-; Without double buffering, the Mode7 blitter would write directly to VRAM
-; while the display is reading from it, causing visible tearing -- the top
-; portion would show the new frame while the bottom shows the old one.
-;
-; The copy uses BLT_OP_COPY which is a simple memcpy-like block transfer.
-; LINE_BYTES (2560 = 640*4) is the stride for both source and destination
-; since both buffers have the same 640-pixel-wide layout.
+; Points the VideoChip at the completed render buffer.
 ; ============================================================================
 
-blit_to_front:
-                mov dword [BLT_OP], BLT_OP_COPY
-                mov dword [BLT_SRC], BACK_BUFFER
-                mov dword [BLT_DST], VRAM_START
-                mov dword [BLT_WIDTH], RENDER_W
-                mov dword [BLT_HEIGHT], RENDER_H
-                mov dword [BLT_SRC_STRIDE], LINE_BYTES
-                mov dword [BLT_DST_STRIDE], LINE_BYTES
-                mov dword [BLT_CTRL], 1
+present_frame:
+                mov eax, [draw_fb]
+                mov [VIDEO_FB_BASE], eax
+                ret
 
-.wait:          mov eax, [BLT_CTRL]
-                test eax, 2
-                jnz .wait
+; ============================================================================
+; SWAP DRAW BUFFER
+; ============================================================================
 
+swap_draw_buffer:
+                mov eax, [draw_fb]
+                cmp eax, BACK_BUFFER_A
+                je .use_b
+                mov dword [draw_fb], BACK_BUFFER_A
+                ret
+.use_b:         mov dword [draw_fb], BACK_BUFFER_B
                 ret
 
 ; ============================================================================
@@ -737,6 +728,7 @@ var_ca:         dd 0
 var_sa:         dd 0
 var_u0:         dd 0
 var_v0:         dd 0
+draw_fb:        dd 0
 
 ; ============================================================================
 ; SINE TABLE - 256 Entries, Signed 16-bit (8.8 Fixed-Point)

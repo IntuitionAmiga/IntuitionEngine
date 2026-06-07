@@ -269,79 +269,80 @@ init_screen:
 ;
 ; Register usage:
 ;   a0 = colour RAM pointer           d3 = X coordinate (0-39)
-;   a1 = sine table base              d4 = cached time1
-;   a2 = cached time4                 d5 = cached time2
-;   a3 = luminance accumulator        d6 = cached time3
+;   a1 = sine table base              d4 = current horizontal phase
+;   a2 = luminance accumulator        d5 = row vertical sine value
+;   a3 = row radial phase base        d6 = current diagonal phase
 ;   d0-d2 = working registers         d7 = Y coordinate (0-24)
 
 render_plasma:
     lea     TED_COLOR_RAM,a0
     lea     sine_table,a1
 
-    ; Cache time values in registers (register access is faster than memory)
-    move.l  plasma_time1,d4
-    move.l  plasma_time2,d5
-    move.l  plasma_time3,d6
-    move.l  plasma_time4,a2
-
     moveq   #0,d7                   ; Y = 0
 
 .row_loop:
+    ; --- Row setup: values that only depend on Y ---
+    ; WAVE 2 vertical phase is constant across the whole row.
+    move.l  d7,d0
+    lsl.l   #2,d0                   ; y * 4
+    add.l   plasma_time2,d0         ; + time2
+    andi.l  #$FF,d0
+    move.b  (a1,d0.l),d5
+    ext.w   d5
+    ext.l   d5                      ; d5 = v2 (signed 32-bit)
+
+    ; WAVE 3 starts at (y*3 + time3), then advances by 3 per column.
+    move.l  d7,d6
+    move.l  d6,d0
+    add.l   d0,d6                   ; y * 2
+    add.l   d0,d6                   ; y * 3
+    add.l   plasma_time3,d6
+
+    ; WAVE 4 row component: abs(y-12)*2 + time4.
+    move.l  d7,d0
+    subi.l  #12,d0
+    bpl.s   .row_pos_y
+    neg.l   d0
+.row_pos_y:
+    lsl.l   #1,d0                   ; abs(y-12) * 2
+    add.l   plasma_time4,d0
+    move.l  d0,a3
+
+    move.l  plasma_time1,d4         ; Horizontal phase starts at time1.
     moveq   #0,d3                   ; X = 0
 
 .col_loop:
     ; --- WAVE 1: Horizontal wave -> HUE ---
-    move.l  d3,d0
-    lsl.l   #2,d0                   ; x * 4
-    add.l   d4,d0                   ; + time1
+    move.l  d4,d0
     andi.l  #$FF,d0                 ; Wrap to 256-entry table
     move.b  (a1,d0.l),d1
     ext.w   d1
     ext.l   d1                      ; d1 = v1 (signed 32-bit)
 
     ; --- WAVE 2: Vertical wave -> HUE ---
-    move.l  d7,d0
-    lsl.l   #2,d0                   ; y * 4
-    add.l   d5,d0                   ; + time2
-    andi.l  #$FF,d0
-    move.b  (a1,d0.l),d2
-    ext.w   d2
-    ext.l   d2
-    add.l   d2,d1                   ; d1 = v1 + v2 (for HUE calculation)
+    add.l   d5,d1                   ; d1 = v1 + v2 (for HUE calculation)
 
     ; --- WAVE 3: Diagonal wave -> LUMINANCE ---
-    move.l  d3,d0
-    add.l   d7,d0                   ; x + y
-    mulu.w  #3,d0                   ; (x+y) * 3 - hardware multiply!
-    add.l   d6,d0                   ; + time3
+    move.l  d6,d0
     andi.l  #$FF,d0
     move.b  (a1,d0.l),d2
     ext.w   d2
     ext.l   d2
-    move.l  d2,a3                   ; a3 = v3 (start of luminance sum)
+    move.l  d2,a2                   ; a2 = v3 (start of luminance sum)
 
     ; --- WAVE 4: Radial wave (Manhattan distance from centre) -> LUMINANCE ---
-    ; |x - 20|
     move.l  d3,d0
     subi.l  #20,d0
     bpl.s   .pos_x
     neg.l   d0
 .pos_x:
-    ; |y - 12|
-    move.l  d7,d2
-    subi.l  #12,d2
-    bpl.s   .pos_y
-    neg.l   d2
-.pos_y:
-    add.l   d2,d0                   ; Manhattan distance
-    lsl.l   #1,d0                   ; * 2
-    move.l  a2,d2                   ; time4
-    add.l   d2,d0                   ; + time4
+    lsl.l   #1,d0                   ; abs(x-20) * 2
+    add.l   a3,d0                   ; + abs(y-12)*2 + time4
     andi.l  #$FF,d0
     move.b  (a1,d0.l),d2
     ext.w   d2
     ext.l   d2
-    add.l   a3,d2                   ; d2 = v3 + v4 (LUMINANCE sum)
+    add.l   a2,d2                   ; d2 = v3 + v4 (LUMINANCE sum)
 
     ; --- MAP TO TED COLOUR: independent hue and luminance ---
     ; HUE from v1+v2, LUMINANCE from v3+v4
@@ -369,6 +370,8 @@ render_plasma:
     move.b  d2,(a0)+
 
     ; --- Next column ---
+    addq.l  #4,d4                   ; Next horizontal phase
+    addq.l  #3,d6                   ; Next diagonal phase
     addq.l  #1,d3
     cmpi.l  #SCREEN_COLS,d3
     blt     .col_loop

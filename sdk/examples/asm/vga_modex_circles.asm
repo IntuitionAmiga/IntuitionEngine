@@ -124,7 +124,11 @@ start:
 main_loop:
     JSR wait_vsync
 
+    LDA @VAR_FRAME
+    AND A, #3
+    JNZ A, .skip_clear
     JSR clear_page
+.skip_clear:
 
     JSR draw_circles
 
@@ -140,10 +144,14 @@ main_loop:
 ; WAIT FOR VSYNC
 ; ============================================================================
 wait_vsync:
-.wait:
+.wait_end:
     LDA @VGA_STATUS
     AND A, #VGA_STATUS_VSYNC
-    JZ A, .wait
+    JNZ A, .wait_end
+.wait_start:
+    LDA @VGA_STATUS
+    AND A, #VGA_STATUS_VSYNC
+    JZ A, .wait_start
     RTS
 
 ; ============================================================================
@@ -161,21 +169,23 @@ setup_palette:
     LDA X
     STA @VGA_DAC_WINDEX
 
-    ; Red channel: triangular wave, phase 0
+    ; Red channel: offset ramp
     LDA X
+    ADD A, #32
     AND A, #0x3F
     STA @VGA_DAC_DATA
 
-    ; Green channel: triangular wave, phase offset +21
+    ; Green channel: faster ramp for teal highlights
     LDA X
-    ADD A, #21
+    MUL A, #3
     AND A, #0x3F
     STA @VGA_DAC_DATA
 
-    ; Blue channel: triangular wave, phase offset +42
-    LDA X
-    ADD A, #42
-    AND A, #0x3F
+    ; Blue channel: inverse ramp for magenta shadows
+    LDA #63
+    LDB X
+    AND B, #0x3F
+    SUB A, B
     STA @VGA_DAC_DATA
 
     ADD X, #1

@@ -650,6 +650,25 @@ func TestZ80JIT_PeepholeFlags_FullProducerClobbers(t *testing.T) {
 	}
 }
 
+func TestZ80JIT_PeepholeFlags_SBCConsumesCarryThroughNonFlagOps(t *testing.T) {
+	// Pattern from the Z80 rotozoomer signed multiply:
+	//   XOR A; SUB L; LD L,A; LD A,0; SBC A,H
+	// The SUB carry must survive the two LD instructions because SBC reads it.
+	instrs := []JITZ80Instr{
+		{prefix: z80JITPrefixNone, opcode: 0xAF, length: 1}, // XOR A
+		{prefix: z80JITPrefixNone, opcode: 0x95, length: 1}, // SUB L
+		{prefix: z80JITPrefixNone, opcode: 0x6F, length: 1}, // LD L,A
+		{prefix: z80JITPrefixNone, opcode: 0x3E, length: 2}, // LD A,n
+		{prefix: z80JITPrefixNone, opcode: 0x9C, length: 1}, // SBC A,H
+	}
+
+	flagsNeeded := z80PeepholeFlags(instrs)
+
+	if flagsNeeded[1]&z80FlagC == 0 {
+		t.Fatalf("SUB L flagsNeeded must include C for later SBC A,H; got 0x%02X", flagsNeeded[1])
+	}
+}
+
 func TestZ80JIT_PeepholeFlags_NoneNeeded(t *testing.T) {
 	// Block: ADD A,B; LD C,D; XOR A — all flags from ADD are dead (XOR overwrites)
 	instrs := []JITZ80Instr{

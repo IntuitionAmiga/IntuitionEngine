@@ -75,7 +75,7 @@
 ;
 ; === WHY AHX MUSIC ===
 ; Each demo in the Intuition Engine SDK showcases a different audio chip.
-; The rotating cube demo (M68K) uses SID; the ULA demos use PSG.
+; The rotating cube demo (M68K) uses SID; the ULA cube demo uses PSG.
 ; This IE32 demo uses AHX (Abyss' Highest eXperience), an Amiga-heritage
 ; tracker format with waveform synthesis. AHX_PLAY_CTRL=5 means bits 0+2
 ; are set: start playback (bit 0) with looping enabled (bit 2).

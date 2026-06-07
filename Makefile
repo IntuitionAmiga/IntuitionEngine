@@ -216,9 +216,7 @@ ROTOZOOM_VARIANT_TEXTURES := \
 	./sdk/examples/assets/rotozoomtexture_x86.raw
 SHOWREEL_ROBOCOP_PNG := ./sdk/examples/assets/robocop.png
 SHOWREEL_FONT_RGBA := ./sdk/examples/assets/font_rgba.bin
-SHOWREEL_BOING_TEXTURE := ./sdk/examples/assets/boing_checker_64.bin
 SHOWREEL_FONT_SOURCES := ./tools/font2rgba/main.go ./tools/font2rgba/font.go
-SHOWREEL_BOING_SOURCES := ./tools/gen_boing_checker/main.go
 SHOWREEL_STATIC_ASSETS := $(SHOWREEL_ROBOCOP_PNG)
 SHOWREEL_MUSIC_FILES := \
 	$(SHOWREEL_MUSIC_DIR)/demo_sid.sid \
@@ -256,7 +254,7 @@ SHOWREEL_IE32_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/robocop_intro.iex
 SHOWREEL_IE64_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_ie64.ie64 \
-	./sdk/examples/asm/mandelbrot_ie64.ie64
+	$(SHOWREEL_PREBUILT_DIR)/mandelbrot_ie64.ie64
 SHOWREEL_M68K_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_68k.ie68 \
 	$(SHOWREEL_PREBUILT_DIR)/ted_121_colors_68k.ie68 \
@@ -268,8 +266,6 @@ SHOWREEL_M68K_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_gem.prg
 SHOWREEL_Z80_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_z80.ie80 \
-	$(SHOWREEL_PREBUILT_DIR)/voodoo_tunnel_z80.ie80 \
-	$(SHOWREEL_PREBUILT_DIR)/vga_text_sap_demo.ie80 \
 	$(SHOWREEL_PREBUILT_DIR)/robocop_intro_z80.ie80
 SHOWREEL_6502_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_65.ie65 \
@@ -314,7 +310,7 @@ AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 # Main targets
 .PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
-.PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba boing-checker
+.PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
 .PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets aros-iewarp-library iewarp-runtime-assets emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos aot-runtime-blob cputest-musashi
 
@@ -1358,12 +1354,6 @@ $(SHOWREEL_FONT_RGBA): $(SHOWREEL_FONT_SOURCES)
 
 font-rgba: $(SHOWREEL_FONT_RGBA)
 
-$(SHOWREEL_BOING_TEXTURE): $(SHOWREEL_BOING_SOURCES)
-	@echo "Generating Boing checker texture..."
-	@$(GO) run ./tools/gen_boing_checker
-
-boing-checker: $(SHOWREEL_BOING_TEXTURE)
-
 check-showreel-prereqs:
 	@echo "Checking showreel prerequisites..."
 	@missing_tools=""; \
@@ -1381,11 +1371,6 @@ check-showreel-prereqs:
 		fi; \
 	done; \
 	for path in $(SHOWREEL_FONT_SOURCES); do \
-		if [ ! -f "$$path" ]; then \
-			missing_inputs="$$missing_inputs\n  - $$path"; \
-		fi; \
-	done; \
-	for path in $(SHOWREEL_BOING_SOURCES); do \
 		if [ ! -f "$$path" ]; then \
 			missing_inputs="$$missing_inputs\n  - $$path"; \
 		fi; \
@@ -1482,7 +1467,8 @@ showreel-ie64: ie64asm rotozoom-textures
 	$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/rotozoomer_ie64.asm; \
 	mv sdk/examples/asm/rotozoomer_ie64.ie64 $(SHOWREEL_PREBUILT_DIR)/; \
 	echo "  [IE64] mandelbrot_ie64.asm"; \
-	$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/mandelbrot_ie64.asm
+	$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/mandelbrot_ie64.asm; \
+	mv sdk/examples/asm/mandelbrot_ie64.ie64 $(SHOWREEL_PREBUILT_DIR)/
 
 showreel-m68k: robocop-68k gem-rotozoomer rotozoom-textures
 	@echo "Building showreel M68K artifacts..."
@@ -1494,11 +1480,11 @@ showreel-m68k: robocop-68k gem-rotozoomer rotozoom-textures
 		vasmm68k_mot -Fbin -m68020 -devpac -I sdk/include -o $(SHOWREEL_PREBUILT_DIR)/$$out sdk/examples/asm/$$src; \
 	done
 
-showreel-z80: robocop-z80 $(SHOWREEL_BOING_TEXTURE) rotozoom-textures
+showreel-z80: robocop-z80 rotozoom-textures
 	@echo "Building showreel Z80 artifacts..."
 	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
 	@set -e; \
-	for src in rotozoomer_z80.asm voodoo_tunnel_z80.asm vga_text_sap_demo.asm; do \
+	for src in rotozoomer_z80.asm; do \
 		out=$${src%.asm}.ie80; \
 		echo "  [Z80] $$src"; \
 		vasmz80_std -Fbin -I sdk/include -o $(SHOWREEL_PREBUILT_DIR)/$$out sdk/examples/asm/$$src; \

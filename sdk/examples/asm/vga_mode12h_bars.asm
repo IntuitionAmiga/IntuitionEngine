@@ -1,55 +1,19 @@
 ; ============================================================================
-; VGA MODE 12h COLOUR BARS - PLANAR GRAPHICS FUNDAMENTALS
-; IE32 Assembly for IntuitionEngine - VGA Mode 12h (640x480x16 Planar)
+; VGA MODE 12h PLANAR TUNNEL PLASMA
+; IE32 Assembly for IntuitionEngine, VGA 640x480x16 planar graphics
 ; ============================================================================
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    IE32 (custom 32-bit RISC)
-; Video Chip:    VGA Mode 12h (640x480, 16-colour planar framebuffer)
+; Target CPU:    IE32
+; Video Chip:    VGA Mode 12h, 640x480, 16-colour planar framebuffer
 ; Audio Engine:  None
-; Assembler:     ie32asm (built-in IE32 assembler)
+; Assembler:     ie32asm
 ; Build:         sdk/bin/ie32asm sdk/examples/asm/vga_mode12h_bars.asm
 ; Run:           ./bin/IntuitionEngine -ie32 vga_mode12h_bars.iex
-; Porting:       VGA MMIO is CPU-agnostic. The planar colour bar algorithm
-;                works on any CPU core, though the bit-plane manipulation
-;                concepts are VGA-specific.
 ;
-; === WHAT THIS DEMO DOES ===
-; Draws 16 vertical colour bars across a 640x480 VGA Mode 12h display, one
-; bar for each of the 16 available palette colours. An animated white
-; diagonal line sweeps across the screen, demonstrating how to set individual
-; pixels in planar mode. The bars fill the entire screen height and each bar
-; is 40 pixels wide (640 / 16 = 40).
-;
-; === WHY VGA MODE 12h (640x480x16 PLANAR) ===
-; Mode 12h is IBM VGA's high-resolution graphics mode, introduced with the
-; PS/2 in 1987. Unlike Mode 13h's simple linear framebuffer, Mode 12h
-; organises VRAM into four separate bit planes. Each pixel's 4-bit colour
-; index is spread across these planes: bit 0 in plane 0, bit 1 in plane 1,
-; and so on. To write a pixel, you must select which planes to enable via
-; the Sequence Controller's Map Mask register (port 0x3C4, index 2).
-;
-; This planar architecture was inherited from EGA and allowed the VGA to
-; display 640x480 pixels in just 150KB of VRAM (4 planes x 38,400 bytes).
-; It was the standard mode for DOS CAD applications, business graphics, and
-; Windows 3.x. Demosceners also exploited it for high-resolution effects,
-; though Mode 13h and Mode X were far more popular for demos and games due
-; to their simpler addressing and richer colour depth.
-;
-; Key concept: each byte in VRAM represents 8 horizontal pixels in a single
-; plane. Writing 0xFF to a byte with all planes enabled sets 8 consecutive
-; pixels to colour 15 (white). The Map Mask register controls which planes
-; receive the write, effectively selecting the colour.
-;
-; === MEMORY MAP ===
-;   0x1000          Program code entry point
-;   0x8800          VAR_FRAME - animation frame counter
-;   0x8804          VAR_LINE_Y - diagonal line Y offset
-;   VGA_VRAM        640x480 planar VRAM (4 planes, 38400 bytes each)
-;
-; === BUILD AND RUN ===
-;   sdk/bin/ie32asm sdk/examples/asm/vga_mode12h_bars.asm
-;   ./bin/IntuitionEngine -ie32 vga_mode12h_bars.iex
+; This replaces the old static colour bars with a full-screen animated tunnel
+; plasma.  The renderer fills all 480 scanlines every frame, one plane at a
+; time, and writes explicit bit patterns into each plane.  That gives the
+; effect sub-byte detail while staying inside genuine Mode 12h planar rules.
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -57,26 +21,27 @@
 .include "ie32.inc"
 
 ; ---------------------------------------------------------------------------
-; Screen geometry for Mode 12h
+; Mode 12h geometry
 ; ---------------------------------------------------------------------------
-; 640 pixels wide / 8 bits per byte = 80 bytes per scanline in each plane.
-; 480 scanlines total.  Each pixel's colour is assembled from 4 bit planes.
-.equ WIDTH          640
-.equ HEIGHT         480
-.equ BYTES_PER_LINE 80
+.equ WIDTH_BYTES     80
+.equ HEIGHT          480
+.equ PLANE_BYTES     38400
 
 ; ---------------------------------------------------------------------------
-; Variables in scratch RAM
+; Scratch variables
 ; ---------------------------------------------------------------------------
-.equ VAR_FRAME      0x8800
-.equ VAR_LINE_Y     0x8804
+.equ VAR_FRAME       0x8800
+.equ VAR_PLANEMASK   0x8804
+.equ VAR_PLANE_SHIFT 0x8808
+.equ VAR_ROW         0x880C
+.equ VAR_XBYTE       0x8810
+.equ VAR_ROW_BASE    0x8814
+.equ VAR_COLOUR      0x8818
 
 .org 0x1000
 
 ; ============================================================================
 ; ENTRY POINT
-; ============================================================================
-; Initialise VGA hardware, select Mode 12h, then enter the main loop.
 ; ============================================================================
 start:
     LDA #VGA_CTRL_ENABLE
@@ -85,21 +50,17 @@ start:
     LDA #VGA_MODE_12H
     STA @VGA_MODE
 
+    JSR setup_palette
+
     LDA #0
     STA @VAR_FRAME
 
 ; ============================================================================
 ; MAIN LOOP
 ; ============================================================================
-; Each frame: synchronise to vertical blank, redraw the 16 colour bars,
-; then overlay an animated diagonal line that sweeps via the frame counter.
-; ============================================================================
 main_loop:
     JSR wait_vsync
-
-    JSR draw_bars
-
-    JSR draw_line
+    JSR draw_tunnel
 
     LDA @VAR_FRAME
     ADD A, #1
@@ -108,152 +69,307 @@ main_loop:
     JMP main_loop
 
 ; ============================================================================
-; WAIT FOR VSYNC
-; ============================================================================
-; Polls the VGA status register until the vertical sync bit is set.
-; This prevents tearing by ensuring we only update VRAM between frames.
+; WAIT FOR VERTICAL BLANK
 ; ============================================================================
 wait_vsync:
-.wait:
+.wait_end:
     LDA @VGA_STATUS
     AND A, #VGA_STATUS_VSYNC
-    JZ A, .wait
+    JNZ A, .wait_end
+.wait_start:
+    LDA @VGA_STATUS
+    AND A, #VGA_STATUS_VSYNC
+    JZ A, .wait_start
     RTS
 
 ; ============================================================================
-; DRAW 16 VERTICAL COLOUR BARS
+; SET UP A 16-COLOUR NEON PALETTE
 ; ============================================================================
-; Iterates through colours 0-15.  For each colour, the Map Mask register is
-; set to the colour's 4-bit value, which enables writes to the corresponding
-; combination of bit planes.  Five bytes of 0xFF are written per scanline
-; (5 bytes x 8 pixels = 40 pixels), filling a 40-pixel-wide column for all
-; 480 rows.
-;
-; === WHY MAP MASK SELECTS COLOUR ===
-; In planar mode, each plane contributes one bit to the final colour index.
-; Setting Map Mask to 0x0F enables all four planes, so writing 0xFF sets
-; all 8 pixels to colour 15 (1111 binary = white).  Setting it to 0x04
-; enables only plane 2, so writing 0xFF sets pixels to colour 4 (0100
-; binary = red in the default VGA palette).
-; ============================================================================
-draw_bars:
-    LDY #0
+setup_palette:
+    LDA #0
+    STA @VGA_DAC_WINDEX
 
-.color_loop:
-    ; --- Calculate the starting X pixel for this colour bar ---
-    ; Each bar is 40 pixels wide: X_start = colour_index * 40
-    LDA Y
-    MUL A, #40
-    LDX A
-    LDA Y
-    AND A, #0x0F
+    ; 0: black
+    LDA #0
+    STA @VGA_DAC_DATA
+    STA @VGA_DAC_DATA
+    STA @VGA_DAC_DATA
+
+    ; 1: deep blue
+    LDA #2
+    STA @VGA_DAC_DATA
+    LDA #2
+    STA @VGA_DAC_DATA
+    LDA #22
+    STA @VGA_DAC_DATA
+
+    ; 2: violet
+    LDA #18
+    STA @VGA_DAC_DATA
+    LDA #4
+    STA @VGA_DAC_DATA
+    LDA #34
+    STA @VGA_DAC_DATA
+
+    ; 3: magenta
+    LDA #38
+    STA @VGA_DAC_DATA
+    LDA #6
+    STA @VGA_DAC_DATA
+    LDA #42
+    STA @VGA_DAC_DATA
+
+    ; 4: hot pink
+    LDA #58
+    STA @VGA_DAC_DATA
+    LDA #8
+    STA @VGA_DAC_DATA
+    LDA #36
+    STA @VGA_DAC_DATA
+
+    ; 5: red
+    LDA #63
+    STA @VGA_DAC_DATA
+    LDA #8
+    STA @VGA_DAC_DATA
+    LDA #8
+    STA @VGA_DAC_DATA
+
+    ; 6: orange
+    LDA #63
+    STA @VGA_DAC_DATA
+    LDA #28
+    STA @VGA_DAC_DATA
+    LDA #4
+    STA @VGA_DAC_DATA
+
+    ; 7: amber
+    LDA #63
+    STA @VGA_DAC_DATA
+    LDA #48
+    STA @VGA_DAC_DATA
+    LDA #6
+    STA @VGA_DAC_DATA
+
+    ; 8: yellow
+    LDA #63
+    STA @VGA_DAC_DATA
+    LDA #62
+    STA @VGA_DAC_DATA
+    LDA #16
+    STA @VGA_DAC_DATA
+
+    ; 9: lime
+    LDA #34
+    STA @VGA_DAC_DATA
+    LDA #63
+    STA @VGA_DAC_DATA
+    LDA #18
+    STA @VGA_DAC_DATA
+
+    ; 10: green
+    LDA #8
+    STA @VGA_DAC_DATA
+    LDA #54
+    STA @VGA_DAC_DATA
+    LDA #22
+    STA @VGA_DAC_DATA
+
+    ; 11: teal
+    LDA #5
+    STA @VGA_DAC_DATA
+    LDA #50
+    STA @VGA_DAC_DATA
+    LDA #46
+    STA @VGA_DAC_DATA
+
+    ; 12: cyan
+    LDA #10
+    STA @VGA_DAC_DATA
+    LDA #58
+    STA @VGA_DAC_DATA
+    LDA #63
+    STA @VGA_DAC_DATA
+
+    ; 13: sky blue
+    LDA #24
+    STA @VGA_DAC_DATA
+    LDA #42
+    STA @VGA_DAC_DATA
+    LDA #63
+    STA @VGA_DAC_DATA
+
+    ; 14: pale blue
+    LDA #42
+    STA @VGA_DAC_DATA
+    LDA #52
+    STA @VGA_DAC_DATA
+    LDA #63
+    STA @VGA_DAC_DATA
+
+    ; 15: white
+    LDA #63
+    STA @VGA_DAC_DATA
+    STA @VGA_DAC_DATA
+    STA @VGA_DAC_DATA
+
+    RTS
+
+; ============================================================================
+; DRAW TUNNEL PLASMA
+; ============================================================================
+; The same colour field is rendered four times, once per bit plane.  Instead
+; of tiled byte patterns, the field is based on distance from the screen
+; centre.  Highlight passes add per-byte masks while ordinary colour writes
+; stay solid and stable.
+; ============================================================================
+draw_tunnel:
+    LDA #1
+    STA @VAR_PLANEMASK
+    LDA #0
+    STA @VAR_PLANE_SHIFT
+
+.plane_loop:
+    LDA @VAR_PLANEMASK
     STA @VGA_SEQ_MAPMASK
 
-    LDT #0
+    LDA #0
+    STA @VAR_ROW
+    LDF #VGA_VRAM
 
 .row_loop:
-    ; --- Calculate VRAM byte address ---
-    ; address = row * 80 + (x_pixel / 8) + VGA_VRAM base
-    LDA T
-    MUL A, #BYTES_PER_LINE
-    LDB X
-    SHR B, #3
-    ADD A, B
-    ADD A, #VGA_VRAM
+    LDA F
+    STA @VAR_ROW_BASE
+
+    LDA #0
+    STA @VAR_XBYTE
+
+.x_loop:
+    JSR tunnel_plane_pattern
+    STA [F]
+
+    ADD F, #1
+    LDA @VAR_XBYTE
+    ADD A, #1
+    STA @VAR_XBYTE
+    LDB #WIDTH_BYTES
+    SUB B, A
+    JNZ B, .x_loop
+
+    LDA @VAR_ROW_BASE
+    ADD A, #WIDTH_BYTES
     LDF A
 
-    ; --- Write 5 consecutive bytes (40 pixels) of solid fill ---
-    LDA #0xFF
-    LDC #5
+    LDA @VAR_ROW
+    ADD A, #1
+    STA @VAR_ROW
+    LDB #HEIGHT
+    SUB B, A
+    JNZ B, .row_loop
 
-.byte_loop:
-    STA [F]
-    ADD F, #1
-    SUB C, #1
-    JNZ C, .byte_loop
-
-    ; --- Next scanline ---
-    ADD T, #1
-    LDA #HEIGHT
-    SUB A, T
-    JNZ A, .row_loop
-
-    ; --- Next colour ---
-    ADD Y, #1
-    LDA #16
-    SUB A, Y
-    JNZ A, .color_loop
+    LDA @VAR_PLANEMASK
+    SHL A, #1
+    STA @VAR_PLANEMASK
+    LDA @VAR_PLANE_SHIFT
+    ADD A, #1
+    STA @VAR_PLANE_SHIFT
+    LDB #4
+    SUB B, A
+    JNZ B, .plane_loop
 
     RTS
 
 ; ============================================================================
-; DRAW ANIMATED DIAGONAL LINE
+; TUNNEL PLANE PATTERN
 ; ============================================================================
-; Draws a white diagonal line across the screen.  The starting Y position
-; is derived from the frame counter, so the line scrolls downward over time.
-; All four bit planes are enabled (Map Mask = 0x0F) to produce colour 15
-; (white).
-;
-; === WHY INDIVIDUAL PIXEL PLOTTING IS HARDER IN PLANAR MODE ===
-; In Mode 13h, setting a pixel is a single byte write.  In Mode 12h, each
-; byte covers 8 horizontal pixels, so setting one pixel requires a
-; read-modify-write: read the existing byte, OR in the correct bit for the
-; target pixel, then write it back.  The bit position is determined by
-; (7 - (x mod 8)), since bit 7 is the leftmost pixel in the byte.
+; Returns the byte pattern to write for the currently selected plane.  The
+; colour comes only from distance to the screen centre.  There are no tiled
+; X/Y shade terms here: the image is a single centre-origin tunnel.
 ; ============================================================================
-draw_line:
-    ; Enable all planes for a white line (colour 15)
-    LDA #0x0F
-    STA @VGA_SEQ_MAPMASK
+tunnel_plane_pattern:
+    ; Distance from the 640x480 screen centre, using byte X as x*8.
+    LDB @VAR_XBYTE
+    SHL B, #3
+    SUB B, #320
+    JGE B, .dx_abs_done
+    XOR B, #0xFFFFFFFF
+    ADD B, #1
+.dx_abs_done:
+    LDC @VAR_ROW
+    SUB C, #240
+    JGE C, .dy_abs_done
+    XOR C, #0xFFFFFFFF
+    ADD C, #1
+.dy_abs_done:
+    ADD B, C
 
-    ; Use the low 8 bits of the frame counter as the Y offset
-    LDA @VAR_FRAME
-    AND A, #0xFF
-    STA @VAR_LINE_Y
+    ; Move the bands inward over time, then classify one 128-unit ring cycle.
+    LDA B
+    LDC @VAR_FRAME
+    SHL C, #2
+    ADD A, C
+    AND A, #127
+    LDB A
 
-    LDX #0
+    SUB B, #4
+    JLT B, .band_white
+    ADD B, #4
+    SUB B, #9
+    JLT B, .band_cyan
+    ADD B, #9
+    SUB B, #15
+    JLT B, .band_blue
+    ADD B, #15
+    SUB B, #24
+    JLT B, .band_violet
+    ADD B, #24
+    SUB B, #36
+    JLT B, .band_red
+    ADD B, #36
+    SUB B, #52
+    JLT B, .band_amber
+    LDA #0
+    STA @VAR_COLOUR
+    JMP .emit_colour
 
-.line_loop:
-    ; --- Calculate Y = (frame_offset + X) mod 480 ---
-    LDA @VAR_LINE_Y
-    ADD A, X
-    LDB #480
-.mod_loop:
-    SUB A, B
-    AND A, #0x80000000
-    JZ A, .mod_loop
-    ADD A, B
+.band_white:
+    LDA #15
+    STA @VAR_COLOUR
+    JMP .emit_colour
 
-    ; --- Calculate VRAM byte address ---
-    MUL A, #BYTES_PER_LINE
-    LDB X
-    SHR B, #3
-    ADD A, B
-    ADD A, #VGA_VRAM
-    LDF A
+.band_cyan:
+    LDA #12
+    STA @VAR_COLOUR
+    JMP .emit_colour
 
-    ; --- Calculate the bit mask for this pixel's position within the byte ---
-    ; Bit 7 = leftmost pixel, so shift 0x80 right by (X mod 8)
-    LDA X
-    AND A, #7
-    LDB #0x80
-    LDC A
-.shift_loop:
-    JZ C, .shift_done
-    SHR B, #1
-    SUB C, #1
-    JMP .shift_loop
-.shift_done:
+.band_blue:
+    LDA #13
+    STA @VAR_COLOUR
+    JMP .emit_colour
 
-    ; --- Set the pixel bit via read-modify-write ---
-    LDA [F]
-    OR A, B
-    STA [F]
+.band_violet:
+    LDA #3
+    STA @VAR_COLOUR
+    JMP .emit_colour
 
-    ; --- Next pixel along the diagonal ---
-    ADD X, #1
-    LDA #480
-    SUB A, X
-    JNZ A, .line_loop
+.band_red:
+    LDA #5
+    STA @VAR_COLOUR
+    JMP .emit_colour
 
+.band_amber:
+    LDA #7
+    STA @VAR_COLOUR
+    JMP .emit_colour
+
+.emit_colour:
+    LDA @VAR_COLOUR
+    LDB @VAR_PLANEMASK
+    AND A, B
+    JZ A, .plane_off
+    LDA #0xFF
+    RTS
+
+.plane_off:
+    LDA #0
     RTS

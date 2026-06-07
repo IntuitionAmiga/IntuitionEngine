@@ -61,8 +61,8 @@
 ;   |                    MAIN LOOP (60 FPS)                            |
 ;   |                                                                  |
 ;   |  +--------------+   +--------------+   +--------------+          |
-;   |  | compute_frame|-->| render_mode7 |-->|blit_to_front |          |
-;   |  | (6 params)   |   | (HW blitter) |   | (HW copy)    |          |
+;   |  | compute_frame|-->| render_mode7 |-->|present_frame |          |
+;   |  | (6 params)   |   | (HW blitter) |   | (FB pointer) |          |
 ;   |  +--------------+   +--------------+   +--------------+          |
 ;   |        |                                      |                  |
 ;   |        v                                      v                  |
@@ -127,7 +127,10 @@
 ; This prevents tearing: the display always shows a complete frame, never
 ; a partially-rendered one. Without double buffering, the top half of the
 ; screen might show the new frame while the bottom half shows the old one.
-.set BACK_BUFFER,0x900000
+.set BACK_BUFFER_A,0x900000
+.set BACK_BUFFER_B,0xB00000
+.set BACK_BUFFER_A_HI,0x90
+.set BACK_BUFFER_B_HI,0xB0
 
 ; --- Screen Dimensions ---
 ; 640x480 is the VideoChip's native resolution in mode 0 (32-bit RGBA).
@@ -205,6 +208,7 @@ start:
     ld (VIDEO_CTRL),a
     xor a
     ld (VIDEO_MODE),a
+    STORE32 VIDEO_FB_BASE VRAM_START
 
     ; --- Load Texture from Disk ---
     ; Loads a pre-rendered 256x256 RGBA texture from disk using the File I/O
@@ -221,6 +225,8 @@ start:
     ld hl,0
     ld (angle_accum),hl
     ld (scale_accum),hl
+    ld a,BACK_BUFFER_A_HI
+    ld (draw_fb_hi),a
 
     ; --- Start SID Music Playback ---
     ; The SID audio subsystem expects a pointer and length to the .sid file
@@ -282,9 +288,10 @@ start:
 ;
 ; 1. compute_frame:    CPU math -- derive 6 Mode7 parameters from angle/scale
 ; 2. render_mode7:     Program blitter with those params, trigger HW render
-; 3. blit_to_front:    Copy completed back buffer to VRAM (display buffer)
-; 4. WAIT_VBLANK:      Synchronise to vertical blank (prevents tearing)
-; 5. advance_animation: Increment accumulators for next frame's parameters
+; 3. WAIT_VBLANK:      Synchronise to vertical blank (prevents tearing)
+; 4. present_frame:    Point the VideoChip at the completed render buffer
+; 5. swap_draw_buffer: Select the other render buffer
+; 6. advance_animation: Increment accumulators for next frame's parameters
 ;
 ; WHY THIS ORDER: We do all rendering BEFORE waiting for vblank. This means
 ; rendering overlaps with the display of the previous frame. The vblank wait
@@ -294,8 +301,7 @@ start:
 main_loop:
     call compute_frame
     call render_mode7
-    call blit_to_front
-    ; --- Two-Phase Vertical Blank Synchronization ---
+    ; --- Two-Phase Vertical Blank Synchronisation ---
     ; WAIT_VBLANK (defined in ie80.inc) implements the standard two-phase wait:
     ;   Phase 1: Wait while already IN vblank (in case we're mid-vblank)
     ;   Phase 2: Wait until vblank BEGINS (catch the rising edge)
@@ -303,6 +309,8 @@ main_loop:
     ; how long rendering takes. Without the first phase, we might see the
     ; SAME vblank twice and run at 30fps instead of 60fps.
     WAIT_VBLANK
+    call present_frame
+    call swap_draw_buffer
     call advance_animation
     jp main_loop
 
@@ -1115,17 +1123,21 @@ neg32:
 ; and zoomed texture output.
 ;
 ; === WHY DOUBLE BUFFERING ===
-; The blitter writes to BACK_BUFFER (0x900000), not directly to VRAM
-; (0x100000). After rendering completes, blit_to_front copies the
-; result to VRAM. This prevents the display from showing a partially-
-; rendered frame (tearing). The cost is an extra copy, but the blitter
-; handles it in hardware so it is essentially free.
+; The blitter writes to the current off-screen render buffer, not directly
+; to the buffer currently being scanned out. At vblank, VIDEO_FB_BASE is
+; updated to present the completed frame.
 ; ============================================================================
 render_mode7:
     ; Configure blitter for Mode7 affine transform operation
     SET_BLT_OP BLT_OP_MODE7
     SET_BLT_SRC TEXTURE_BASE      ; Source: 256x256 RGBA texture
-    SET_BLT_DST BACK_BUFFER       ; Destination: off-screen back buffer
+    xor a
+    ld (BLT_DST_0),a
+    ld (BLT_DST_1),a
+    ld a,(draw_fb_hi)
+    ld (BLT_DST_2),a
+    xor a
+    ld (BLT_DST_3),a             ; Destination: current off-screen buffer
     SET_BLT_WIDTH RENDER_W         ; Output width: 640 pixels
     SET_BLT_HEIGHT RENDER_H        ; Output height: 480 pixels
     SET_SRC_STRIDE TEX_STRIDE      ; Source stride: 1024 bytes (256 px * 4 bpp)
@@ -1191,26 +1203,33 @@ render_mode7:
     ret
 
 ; ============================================================================
-; BLIT BACK BUFFER TO FRONT (Double Buffer Swap)
+; PRESENT COMPLETED FRAME
 ; ============================================================================
-; Copies the completed Mode7 rendering from the back buffer (0x900000)
-; to VRAM (0x100000) using a hardware block copy.
-;
-; This is the "swap" phase of double buffering. The blitter copies
-; 640*480*4 = 1,228,800 bytes from back buffer to front buffer.
-; During this copy, the display shows the previous frame's data (or the
-; copy completes fast enough to be invisible).
+; Points the VideoChip at the completed render buffer.
 ; ============================================================================
-blit_to_front:
-    SET_BLT_OP BLT_OP_COPY
-    SET_BLT_SRC BACK_BUFFER
-    SET_BLT_DST VRAM_START
-    SET_BLT_WIDTH RENDER_W
-    SET_BLT_HEIGHT RENDER_H
-    SET_SRC_STRIDE LINE_BYTES
-    SET_DST_STRIDE LINE_BYTES
-    START_BLIT
-    WAIT_BLIT
+present_frame:
+    xor a
+    ld (VIDEO_FB_BASE+0),a
+    ld (VIDEO_FB_BASE+1),a
+    ld a,(draw_fb_hi)
+    ld (VIDEO_FB_BASE+2),a
+    xor a
+    ld (VIDEO_FB_BASE+3),a
+    ret
+
+; ============================================================================
+; SWAP DRAW BUFFER
+; ============================================================================
+swap_draw_buffer:
+    ld a,(draw_fb_hi)
+    cp BACK_BUFFER_A_HI
+    jr z,.use_b
+    ld a,BACK_BUFFER_A_HI
+    ld (draw_fb_hi),a
+    ret
+.use_b:
+    ld a,BACK_BUFFER_B_HI
+    ld (draw_fb_hi),a
     ret
 
 ; ============================================================================
@@ -1284,6 +1303,7 @@ var_v0:         .byte 0,0,0,0
 var_tmp1:       .byte 0,0,0,0
 var_tmp2:       .byte 0,0,0,0
 var_tmp3:       .byte 0,0,0,0
+draw_fb_hi:     .byte 0
 
 ; ============================================================================
 ; SINE TABLE - 256 entries, signed 16-bit little-endian
@@ -1410,7 +1430,7 @@ texture_filename:
 ; multi-CPU architecture: each processor does what it is best at.
 ;
 ; "Circus Attractions" is a SID tune composed for the Commodore 64.
-; The player code is highly optimized 6502 assembly, called ~50 times
+; The player code is highly optimised 6502 assembly, called ~50 times
 ; per second by the audio subsystem to update SID register state.
 ; ============================================================================
 sid_data:

@@ -41,7 +41,7 @@
 ; 2. Pre-computed sine and reciprocal lookup tables
 ; 3. 8.8 fixed-point fractional animation accumulators
 ; 4. Double buffering with BLIT COPY for tear-free display
-; 5. Two-phase vsync synchronization
+; 5. Two-phase vsync Synchronisation
 ; 6. Checkerboard texture generation via hardware BLIT FILL
 ; 7. TED music playback (Commodore Plus/4 sound chip)
 ;
@@ -128,13 +128,11 @@
 ; any aliasing conflicts.
 TEXTURE_BASE    equ     $600000
 
-; --- Double Buffer ---
-; We render to an off-screen back buffer and then copy the completed frame
-; to VRAM in one fast blit. Without this, the Mode7 blit would write directly
-; to visible VRAM, and the user would see partially-rendered frames ("tearing").
-; The BLIT COPY from back buffer to VRAM is fast enough to complete within
-; the vertical blanking interval.
-BACK_BUFFER     equ     $900000
+; --- Render Buffers ---
+; Mode7 renders into one off-screen buffer while the VideoChip scans out the
+; other. At vblank, VIDEO_FB_BASE is updated to present the completed frame.
+BACK_BUFFER_A   equ     $900000
+BACK_BUFFER_B   equ     $B00000
 
 ; --- Screen Dimensions ---
 ; VideoChip Mode 0 is 640x480 pixels at 32 bits per pixel (BGRA).
@@ -196,6 +194,7 @@ start:
                 ; so it won't function until VIDEO_CTRL is set to 1.
                 move.l  #1,VIDEO_CTRL
                 move.l  #0,VIDEO_MODE
+                move.l  #VRAM_START,VIDEO_FB_BASE
 
                 ; --- Load Texture ---
                 ; Copy the 256x256 RGBA texture (embedded via incbin) to
@@ -210,6 +209,7 @@ start:
                 ; sub-index precision.
                 clr.l   angle_accum
                 clr.l   scale_accum
+                move.l  #BACK_BUFFER_A,draw_fb
 
                 ; --- Start TED Music Playback ---
                 ; WHY TED?
@@ -234,18 +234,20 @@ start:
 ; The order of operations is deliberate:
 ;   1. compute_frame:      Calculate the 6 Mode7 parameters for this frame
 ;   2. render_mode7:       Trigger the blitter to render into the back buffer
-;   3. blit_to_front:      Copy completed back buffer to visible VRAM
-;   4. wait_vsync:         Synchronise to vertical blank (prevents tearing)
-;   5. advance_animation:  Update fractional accumulators for next frame
+;   3. wait_vsync:         Synchronise to vertical blank (prevents tearing)
+;   4. present_frame:      Point the VideoChip at the completed buffer
+;   5. swap_draw_buffer:   Select the other render buffer for next frame
+;   6. advance_animation:  Update fractional accumulators for next frame
 ;
-; We render BEFORE vsync so the blit-to-front happens as close to the
-; blanking interval as possible, minimizing visible tearing.
+; We render before vsync, then present by updating VIDEO_FB_BASE during
+; the blanking interval.
 ; ============================================================================
 main_loop:
                 bsr     compute_frame
                 bsr     render_mode7
-                bsr     blit_to_front
                 bsr     wait_vsync
+                bsr     present_frame
+                bsr     swap_draw_buffer
                 bsr     advance_animation
                 bra     main_loop
 
@@ -517,17 +519,17 @@ compute_frame:
 ;
 ; === WHY RENDER TO BACK BUFFER? ===
 ; The Mode7 blit writes 307,200 pixels sequentially. If we wrote directly
-; to VRAM ($100000), the display would show the blit in progress (top half
-; new frame, bottom half old frame). By rendering to $900000 and then
-; doing a fast BLIT COPY to VRAM, we get atomic frame updates.
+; to the buffer currently being scanned out, the display would show the blit
+; in progress. Rendering to the non-visible buffer and presenting it at vblank
+; avoids that tear.
 ; ============================================================================
 render_mode7:
                 ; Set blitter to Mode7 affine texture mapping operation
                 move.l  #BLT_OP_MODE7,BLT_OP
 
-                ; Source = texture at $600000, Destination = back buffer at $900000
+                ; Source = texture at $600000, destination = current draw buffer
                 move.l  #TEXTURE_BASE,BLT_SRC
-                move.l  #BACK_BUFFER,BLT_DST
+                move.l  draw_fb,BLT_DST
 
                 ; Output dimensions: full 640x480 screen
                 move.l  #RENDER_W,BLT_WIDTH
@@ -588,36 +590,24 @@ render_mode7:
                 rts
 
 ; ============================================================================
-; BLIT BACK BUFFER TO FRONT (VRAM) - Double Buffer Flip
+; PRESENT COMPLETED FRAME
 ; ============================================================================
-; Copies the completed frame from the off-screen back buffer ($900000)
-; to visible VRAM ($100000) using the hardware BLIT COPY operation.
-;
-; WHY NOT JUST SWAP BUFFER POINTERS?
-; The VideoChip always reads from VRAM at $100000 (the base address is not
-; programmable like on the Amiga). So we must physically copy the pixels.
-; The BLIT COPY hardware does this at full bus bandwidth, much faster than
-; a CPU copy loop. For 640x480x4 = 1,228,800 bytes, the hardware blitter
-; completes in a fraction of the frame time.
-;
-; The copy happens right before vsync, so by the time the display starts
-; scanning the next frame, VRAM contains the complete new image.
+; Points the VideoChip at the completed render buffer.
 ; ============================================================================
-blit_to_front:
-                move.l  #BLT_OP_COPY,BLT_OP
-                move.l  #BACK_BUFFER,BLT_SRC
-                move.l  #VRAM_START,BLT_DST
-                move.l  #RENDER_W,BLT_WIDTH
-                move.l  #RENDER_H,BLT_HEIGHT
-                move.l  #LINE_BYTES,BLT_SRC_STRIDE
-                move.l  #LINE_BYTES,BLT_DST_STRIDE
-                move.l  #1,BLT_CTRL
+present_frame:
+                move.l  draw_fb,VIDEO_FB_BASE
+                rts
 
-                ; Poll-wait for blit completion
-.wait:          move.l  BLT_CTRL,d0
-                andi.l  #2,d0
-                bne.s   .wait
-
+; ============================================================================
+; SWAP DRAW BUFFER
+; ============================================================================
+swap_draw_buffer:
+                move.l  draw_fb,d0
+                cmpi.l  #BACK_BUFFER_A,d0
+                beq.s   .use_b
+                move.l  #BACK_BUFFER_A,draw_fb
+                rts
+.use_b:         move.l  #BACK_BUFFER_B,draw_fb
                 rts
 
 ; ============================================================================
@@ -678,6 +668,7 @@ var_ca:         dc.l    0
 var_sa:         dc.l    0
 var_u0:         dc.l    0
 var_v0:         dc.l    0
+draw_fb:        dc.l    0
 
 ; ============================================================================
 ; SINE TABLE - 256 Entries, Signed 16-bit

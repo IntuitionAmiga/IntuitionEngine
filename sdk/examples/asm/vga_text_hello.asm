@@ -1,5 +1,5 @@
 ; ============================================================================
-; VGA TEXT MODE "HELLO WORLD" - SIMPLEST POSSIBLE IE32 DEMO
+; VGA TEXT MODE "HELLO" - IE32 TEXT-MODE PLASMA DEMO
 ; IE32 Assembly for IntuitionEngine - VGA Mode 03h (80x25 Text)
 ; ============================================================================
 ;
@@ -8,48 +8,27 @@
 ; Video Chip:    VGA Mode 03h (80x25 text, 16 foreground + 8 background colours)
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler)
-; Build:         sdk/bin/ie32asm sdk/examples/asm/vga_text_hello.asm
-; Run:           ./bin/IntuitionEngine -ie32 vga_text_hello.iex
-; Porting:       VGA MMIO is CPU-agnostic. Any CPU core can drive VGA text mode
-;                by writing to the same register addresses.
+; Build:         sdk/bin/ie32asm -I sdk/include sdk/examples/asm/vga_text_hello.asm
+; Run:           ./bin/IntuitionEngine -ie32 sdk/examples/prebuilt/vga_text_hello.iex
 ;
 ; === WHAT THIS DEMO DOES ===
-; Displays coloured text on an 80x25 VGA text mode screen using IBM PC-style
-; character/attribute pairs.  A title banner, a 16-colour palette display, a
-; welcome message, and an animated rainbow bar that cycles across row 20.
-; This is the simplest possible graphical demo and a good starting point for
-; learning IE32 assembly.
+; Shows that classic VGA text mode can still do more than plain "hello world":
+; the whole 80x25 character buffer is redrawn every frame as an animated
+; shade-field, then a title, palette strip and scroller are overlaid.  The
+; frame loop waits for a full vertical blank edge so animation speed stays
+; stable after the current VGA timing changes.
 ;
-; === WHY VGA TEXT MODE (MODE 03h) ===
-; VGA text mode dates back to the original IBM PC's CGA adapter (1981) and
-; has remained essentially unchanged through EGA, VGA, and even modern BIOS
-; implementations.  It is a character-based display, typically 80 columns by
-; 25 rows, where each cell is stored as two bytes in a 4000-byte buffer at
-; physical address 0xB8000.
-;
-; The first byte is the ASCII character code (0-255, using the CP437 character
-; set on IBM PCs).  The second byte is the attribute, which encodes the
-; foreground colour in bits 0-3 (16 colours) and the background colour in
-; bits 4-6 (8 colours, or 16 if blink is disabled).  Bit 7 controls blinking
-; or serves as a high-intensity background bit.
-;
-; This two-byte-per-cell layout made text mode extremely memory-efficient --
-; a full 80x25 screen used just 4000 bytes, crucial in the era of 16KB-64KB
-; video RAM.  Despite its simplicity, creative programmers used text mode for
-; everything from Norton Commander's iconic blue panels to ANSI art bulletin
-; boards to demoscene text-mode competitions.
+; === PERFORMANCE NOTES ===
+; The original version recalculated row*80+column and used cursor variables for
+; almost every character.  This version streams linearly through 0xB8000, uses
+; pointer increments, and only masks small phase counters in the hot loop.  VGA
+; text memory still accepts one byte per addressed cell byte, so each character
+; cell is written as two low-byte MMIO writes: character then attribute.
 ;
 ; === MEMORY MAP ===
 ;   0x1000          Program code entry point
-;   0x8800          VAR_CURSOR_X - current cursor column
-;   0x8804          VAR_CURSOR_Y - current cursor row
-;   0x8808          VAR_ATTR - current character attribute byte
-;   0x880C          VAR_FRAME - animation frame counter
+;   0x8800          VAR_FRAME - animation frame counter
 ;   0xB8000         VGA text buffer (4000 bytes, 80x25 x 2 bytes per cell)
-;
-; === BUILD AND RUN ===
-;   sdk/bin/ie32asm sdk/examples/asm/vga_text_hello.asm
-;   ./bin/IntuitionEngine -ie32 vga_text_hello.iex
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -61,38 +40,29 @@
 ; ---------------------------------------------------------------------------
 .equ TEXT_COLS      80
 .equ TEXT_ROWS      25
+.equ TEXT_STRIDE    160
 .equ TEXT_BUFFER    0xB8000
 
 ; ---------------------------------------------------------------------------
 ; Attribute byte constants
 ; ---------------------------------------------------------------------------
-; Format: foreground (bits 0-3) | background (bits 4-6) << 4
-; Colour indices follow the standard CGA/VGA palette:
-;   0=Black  1=Blue  2=Green  3=Cyan  4=Red  5=Magenta  6=Brown  7=LightGrey
-;   8=DarkGrey  9=LightBlue  10=LightGreen  11=LightCyan  12=LightRed
-;   13=LightMagenta  14=Yellow  15=White
 .equ ATTR_WHITE     0x0F
 .equ ATTR_YELLOW    0x0E
 .equ ATTR_CYAN      0x0B
 .equ ATTR_GREEN     0x0A
-.equ ATTR_RED       0x0C
+.equ ATTR_MAGENTA   0x0D
 .equ ATTR_BLUE_BG   0x1F
+.equ ATTR_RED_BG    0x4E
 
 ; ---------------------------------------------------------------------------
 ; Variables in scratch RAM
 ; ---------------------------------------------------------------------------
-.equ VAR_CURSOR_X   0x8800
-.equ VAR_CURSOR_Y   0x8804
-.equ VAR_ATTR       0x8808
-.equ VAR_FRAME      0x880C
+.equ VAR_FRAME      0x8800
 
 .org 0x1000
 
 ; ============================================================================
 ; ENTRY POINT
-; ============================================================================
-; Initialise VGA in text mode, draw the static screen elements (title bar,
-; colour palette, welcome message), then enter the animation loop.
 ; ============================================================================
 start:
     LDA #VGA_CTRL_ENABLE
@@ -104,25 +74,15 @@ start:
     LDA #0
     STA @VAR_FRAME
 
-    JSR clear_screen
-
-    JSR draw_title
-
-    JSR draw_palette
-
-    JSR draw_message
-
 ; ============================================================================
 ; MAIN LOOP
 ; ============================================================================
-; Each frame: synchronise to vertical blank, then update the rainbow
-; animation on row 20.  The static elements (title, palette, message)
-; are drawn once at startup and persist in the text buffer.
-; ============================================================================
 main_loop:
-    JSR wait_vsync
+    JSR wait_frame
 
-    JSR animate_rainbow
+    JSR draw_plasma
+    JSR draw_static_overlay
+    JSR draw_scroller
 
     LDA @VAR_FRAME
     ADD A, #1
@@ -131,260 +91,269 @@ main_loop:
     JMP main_loop
 
 ; ============================================================================
-; WAIT FOR VSYNC
+; WAIT FOR A VBLANK EDGE
 ; ============================================================================
-wait_vsync:
-.wait:
+; Waiting only for "vblank is set" can return multiple times inside the same
+; blanking interval.  This waits for the current blank to finish, then waits
+; for the next one to begin.
+; ============================================================================
+wait_frame:
+.wait_low:
     LDA @VGA_STATUS
     AND A, #VGA_STATUS_VSYNC
-    JZ A, .wait
+    JNZ A, .wait_low
+
+.wait_high:
+    LDA @VGA_STATUS
+    AND A, #VGA_STATUS_VSYNC
+    JZ A, .wait_high
     RTS
 
 ; ============================================================================
-; CLEAR SCREEN
+; DRAW ANIMATED TEXT-MODE PLASMA
 ; ============================================================================
-; Fills all 2000 character cells with spaces on a blue background.  Each
-; cell gets two writes: 0x20 (space) for the character byte and 0x1F
-; (white-on-blue) for the attribute byte.
+; X = text buffer pointer
+; Y = row counter
+; Z = column counter
+; B = row phase
 ; ============================================================================
-clear_screen:
+draw_plasma:
     LDX #TEXT_BUFFER
-    LDY #2000
+    LDY #0
+    LDB #0
 
-.clr:
-    LDA #0x20
+.row_loop:
+    LDZ #0
+
+.col_loop:
+    ; Character phase: (column + row_phase - frame) & 7.
+    LDA Z
+    ADD A, B
+    SUB A, @VAR_FRAME
+    AND A, #0x07
+    LDF #shade_chars
+    ADD F, A
+    LDA [F]
+    AND A, #0xFF
     STA [X]
     ADD X, #1
-    LDA #ATTR_BLUE_BG
+
+    ; Colour phase: keep foreground colours in the bright 1-15 range.
+    LDA Z
+    ADD A, B
+    SUB A, @VAR_FRAME
+    AND A, #0x0F
+    ADD A, #1
     STA [X]
     ADD X, #1
-    SUB Y, #1
-    JNZ Y, .clr
+
+    ADD Z, #1
+    LDA #TEXT_COLS
+    SUB A, Z
+    JNZ A, .col_loop
+
+    ADD B, #3
+    AND B, #0x0F
+    ADD Y, #1
+    LDA #TEXT_ROWS
+    SUB A, Y
+    JNZ A, .row_loop
+
     RTS
 
 ; ============================================================================
-; DRAW TITLE BAR
+; DRAW STATIC OVERLAY
 ; ============================================================================
-; Positions the cursor at row 1, column 25 and prints the title string
-; in yellow on the blue background.
-; ============================================================================
-draw_title:
-    LDA #1
-    STA @VAR_CURSOR_Y
-    LDA #25
-    STA @VAR_CURSOR_X
-    LDA #ATTR_YELLOW
-    STA @VAR_ATTR
+draw_static_overlay:
+    ; Top and bottom raster bars.
+    LDX #TEXT_BUFFER
+    LDA #0xDF
+    LDB #ATTR_RED_BG
+    LDY #TEXT_COLS
+    JSR fill_cells
 
+    LDX #(TEXT_BUFFER+(24*TEXT_STRIDE))
+    LDA #0xDC
+    LDB #ATTR_BLUE_BG
+    LDY #TEXT_COLS
+    JSR fill_cells
+
+    ; Title and labels.
     LDX #title_str
-    JSR print_string
+    LDF #(TEXT_BUFFER+(2*TEXT_STRIDE)+(17*2))
+    LDB #ATTR_YELLOW
+    JSR print_string_at
+
+    LDX #subtitle_str
+    LDF #(TEXT_BUFFER+(4*TEXT_STRIDE)+(12*2))
+    LDB #ATTR_CYAN
+    JSR print_string_at
+
+    LDX #palette_label
+    LDF #(TEXT_BUFFER+(7*TEXT_STRIDE)+(13*2))
+    LDB #ATTR_WHITE
+    JSR print_string_at
+
+    JSR draw_palette
+
+    LDX #msg1_str
+    LDF #(TEXT_BUFFER+(12*TEXT_STRIDE)+(16*2))
+    LDB #ATTR_GREEN
+    JSR print_string_at
+
+    LDX #msg2_str
+    LDF #(TEXT_BUFFER+(14*TEXT_STRIDE)+(10*2))
+    LDB #ATTR_MAGENTA
+    JSR print_string_at
+
     RTS
 
 ; ============================================================================
-; DRAW 16-COLOUR PALETTE DISPLAY
-; ============================================================================
-; Shows all 16 CGA/VGA foreground colours as pairs of full-block characters
-; (CP437 character 0xDB) separated by spaces.  This demonstrates the
-; complete text-mode colour range available via the attribute byte.
+; DRAW 16-COLOUR PALETTE STRIP
 ; ============================================================================
 draw_palette:
-    LDA #5
-    STA @VAR_CURSOR_Y
-    LDA #10
-    STA @VAR_CURSOR_X
-
+    LDF #(TEXT_BUFFER+(8*TEXT_STRIDE)+(16*2))
     LDY #1
 
 .pal_loop:
-    ; Set foreground colour to the current palette index
+    LDA #0xDB
+    STA [F]
+    ADD F, #1
     LDA Y
-    STA @VAR_ATTR
+    STA [F]
+    ADD F, #1
 
-    ; Print two full-block characters to form a visible colour swatch
     LDA #0xDB
-    JSR print_char
-    LDA #0xDB
-    JSR print_char
+    STA [F]
+    ADD F, #1
+    LDA Y
+    STA [F]
+    ADD F, #1
 
-    ; Print a white space separator between swatches
-    LDA #ATTR_WHITE
-    STA @VAR_ATTR
     LDA #0x20
-    JSR print_char
+    STA [F]
+    ADD F, #1
+    LDA #ATTR_WHITE
+    STA [F]
+    ADD F, #1
 
     ADD Y, #1
     LDA #16
     SUB A, Y
     JNZ A, .pal_loop
-
     RTS
 
 ; ============================================================================
-; DRAW WELCOME MESSAGE
+; DRAW SCROLLER
 ; ============================================================================
-; Three lines of text at different vertical positions, each in a distinct
-; colour, providing a visual hierarchy typical of DOS-era "about" screens.
+; A simple character scroller rendered across row 21.  The source index is
+; frame/16.  This keeps the scroll readable while avoiding the crawl of
+; frame/32.  The plasma still runs at full frame rate.
 ; ============================================================================
-draw_message:
-    ; Line 1: white
-    LDA #10
-    STA @VAR_CURSOR_Y
-    LDA #20
-    STA @VAR_CURSOR_X
-    LDA #ATTR_WHITE
-    STA @VAR_ATTR
-    LDX #msg1_str
-    JSR print_string
+draw_scroller:
+    LDF #(TEXT_BUFFER+(21*TEXT_STRIDE))
+    LDZ #0
 
-    ; Line 2: cyan
-    LDA #12
-    STA @VAR_CURSOR_Y
-    LDA #15
-    STA @VAR_CURSOR_X
-    LDA #ATTR_CYAN
-    STA @VAR_ATTR
-    LDX #msg2_str
-    JSR print_string
+.scroll_loop:
+    LDA @VAR_FRAME
+    SHR A, #4
+    ADD A, Z
+    MOD A, #scroll_len
+    LDX #scroll_text
+    ADD X, A
+    LDA [X]
+    AND A, #0xFF
+    STA [F]
+    ADD F, #1
 
-    ; Line 3: green
-    LDA #14
-    STA @VAR_CURSOR_Y
-    LDA #22
-    STA @VAR_CURSOR_X
-    LDA #ATTR_GREEN
-    STA @VAR_ATTR
-    LDX #msg3_str
-    JSR print_string
-
-    RTS
-
-; ============================================================================
-; ANIMATE RAINBOW BAR
-; ============================================================================
-; Fills row 20 with double-line horizontal characters (CP437 0xCD), each
-; coloured with a different foreground that cycles based on column + frame
-; counter.  This creates a sweeping rainbow animation across the full width
-; of the screen -- a simple but visually striking effect.
-;
-; === WHY THIS WORKS ===
-; By adding the frame counter to each column's index before masking to
-; the 16-colour range, the entire colour pattern shifts left by one palette
-; entry each frame.  At 60 FPS this produces a smooth, continuous motion.
-; ============================================================================
-animate_rainbow:
-    LDA #20
-    STA @VAR_CURSOR_Y
-    LDA #0
-    STA @VAR_CURSOR_X
-
-    LDX #0
-
-.anim_loop:
-    ; Calculate cycling colour: (column + frame) mod 16, avoiding black (0)
-    LDA X
+    LDA Z
     ADD A, @VAR_FRAME
     AND A, #0x0F
     ADD A, #1
-    STA @VAR_ATTR
-
-    ; Calculate the screen buffer address for this cell directly
-    LDA @VAR_CURSOR_Y
-    MUL A, #TEXT_COLS
-    ADD A, @VAR_CURSOR_X
-    MUL A, #2
-    ADD A, #TEXT_BUFFER
-    LDF A
-
-    ; Write the character and attribute bytes
-    LDA #0xCD
     STA [F]
     ADD F, #1
-    LDA @VAR_ATTR
-    STA [F]
 
-    ; Advance to the next column
-    LDA @VAR_CURSOR_X
-    ADD A, #1
-    STA @VAR_CURSOR_X
-    ADD X, #1
+    ADD Z, #1
     LDA #TEXT_COLS
-    SUB A, X
-    JNZ A, .anim_loop
+    SUB A, Z
+    JNZ A, .scroll_loop
 
     RTS
 
 ; ============================================================================
-; PRINT A SINGLE CHARACTER AT THE CURSOR POSITION
+; FILL CELLS
 ; ============================================================================
-; Input: A = ASCII character code
-;
-; Calculates the text buffer address from VAR_CURSOR_X/Y, writes the
-; character and its attribute byte, then advances the cursor one column
-; to the right.
+; Input: X = destination, A = character, B = attribute, Y = cell count.
 ; ============================================================================
-print_char:
-    PUSH B
-    PUSH F
-    LDB A
+fill_cells:
+    PUSH C
+    LDC A
 
-    LDA @VAR_CURSOR_Y
-    MUL A, #TEXT_COLS
-    ADD A, @VAR_CURSOR_X
-    MUL A, #2
-    ADD A, #TEXT_BUFFER
-    LDF A
-
+.fill_loop:
+    LDA C
+    STA [X]
+    ADD X, #1
     LDA B
-    STA [F]
+    STA [X]
+    ADD X, #1
+    SUB Y, #1
+    JNZ Y, .fill_loop
 
-    ADD F, #1
-    LDA @VAR_ATTR
-    STA [F]
-
-    LDA @VAR_CURSOR_X
-    ADD A, #1
-    STA @VAR_CURSOR_X
-
-    POP F
-    POP B
+    POP C
     RTS
 
 ; ============================================================================
-; PRINT NULL-TERMINATED STRING
+; PRINT NULL-TERMINATED STRING AT ADDRESS
 ; ============================================================================
-; Input: X = address of null-terminated string
-;
-; Reads bytes from the string one at a time, printing each via print_char
-; until a zero byte (null terminator) is encountered.
+; Input: X = string, F = destination cell byte, B = attribute.
 ; ============================================================================
-print_string:
-    PUSH B
+print_string_at:
+    PUSH C
+
 .ps_loop:
     LDA [X]
     AND A, #0xFF
     JZ A, .ps_done
-    JSR print_char
+
+    STA [F]
+    ADD F, #1
+    LDA B
+    STA [F]
+    ADD F, #1
     ADD X, #1
     JMP .ps_loop
+
 .ps_done:
-    POP B
+    POP C
     RTS
 
 ; ============================================================================
-; STRING DATA
+; DATA
 ; ============================================================================
+shade_chars:
+.byte 0x20, 0xB0, 0xB1, 0xB2, 0xDB, 0xB2, 0xB1, 0xB0
+
 title_str:
-.ascii "VGA TEXT MODE DEMO"
+.ascii "INTUITION ENGINE VGA TEXTMODE"
+.byte 0
+
+subtitle_str:
+.ascii "80x25 CP437 PLASMA - BYTE MMIO - VBLANK LOCKED"
+.byte 0
+
+palette_label:
+.ascii "CGA/VGA 16 COLOUR FOREGROUND STRIP"
 .byte 0
 
 msg1_str:
-.ascii "Welcome to Intuition Engine!"
+.ascii "NO BITMAP MODE, NO BLITTER, JUST TEXT CELLS"
 .byte 0
 
 msg2_str:
-.ascii "VGA Mode 3 - 80x25 Text with 16 Colours"
+.ascii "LINEAR WRITES BEAT CURSOR MATH.  STILL MODE 03H."
 .byte 0
 
-msg3_str:
-.ascii "IE32 Assembly Language"
-.byte 0
+scroll_text:
+.ascii "   HELLO FROM VGA MODE 03H - NOW WITH A PROPER VSYNC EDGE WAIT, STREAMED TEXT MEMORY, RAINBOW ATTRIBUTES AND A SLIGHTLY LESS EMBARRASSING TEXT-MODE PLASMA   "
+scroll_end:
+.equ scroll_len scroll_end-scroll_text

@@ -130,14 +130,11 @@ include "ie64.inc"
 ; would compete, and writing the texture would corrupt the display.
 TEXTURE_BASE    equ 0x600000
 
-; --- Double-Buffer Back Buffer ---
-; Mode7 renders into this off-screen buffer, then we BLIT COPY it to VRAM.
-; Why double buffer? Without it, the Mode7 blitter would write directly
-; into the VRAM that the display is actively scanning out, causing visible
-; tearing artefacts (top half shows the new frame, bottom half the old).
-; By rendering to 0x900000 first, we can copy the completed frame to VRAM
-; atomically (during vblank) for tear-free display.
-BACK_BUFFER     equ 0x900000
+; --- Render Buffers ---
+; Mode7 renders into one off-screen buffer while the VideoChip scans out the
+; other. At vblank, VIDEO_FB_BASE is updated to present the completed frame.
+BACK_BUFFER_A   equ 0x900000
+BACK_BUFFER_B   equ 0xB00000
 
 ; --- Output Resolution ---
 ; VideoChip Mode 0 is 640x480 at 32 bits per pixel (BGRA).
@@ -218,6 +215,9 @@ start:
     store.l r2, (r1)
     la      r1, VIDEO_MODE
     store.l r0, (r1)
+    la      r1, VIDEO_FB_BASE
+    move.l  r2, #VRAM_START
+    store.l r2, (r1)
 
     ; --- Load Texture from Embedded Data ---
     ; Copy the 256x256 BGRA texture (embedded via incbin) to TEXTURE_BASE
@@ -233,6 +233,9 @@ start:
     store.l r0, (r1)
     la      r1, scale_accum
     store.l r0, (r1)
+    la      r1, draw_fb
+    move.l  r2, #BACK_BUFFER_A
+    store.l r2, (r1)
 
     ; --- Start SAP Music Playback (Looping) ---
     ; SAP (Slight Atari Player) is the Atari 8-bit music format. Each demo
@@ -270,18 +273,18 @@ start:
 ; ============================================================================
 ; MAIN LOOP
 ; ============================================================================
-; Runs once per frame at ~60 fps (synchronized to vsync).
+; Runs once per frame at ~60 fps (Synchronised to vsync).
 ;
 ; The loop has 5 stages:
 ;   1. compute_frame:     Calculate the 6 Mode7 affine parameters from
 ;                         the current animation state (angle + zoom).
 ;   2. render_mode7:      Program the blitter with those parameters and
 ;                         trigger the Mode7 blit into the back buffer.
-;   3. blit_to_front:     Copy the completed back buffer to VRAM (front
-;                         buffer) so the display shows the new frame.
-;   4. wait_vsync:        Wait for the next vertical blank interval to
+;   3. wait_vsync:        Wait for the next vertical blank interval to
 ;                         prevent tearing and maintain consistent timing.
-;   5. advance_animation: Increment the angle and scale accumulators for
+;   4. present_frame:     Point the VideoChip at the completed render buffer.
+;   5. swap_draw_buffer:  Select the other render buffer for the next frame.
+;   6. advance_animation: Increment the angle and scale accumulators for
 ;                         the next frame.
 ;
 ; Why this order? We compute and render BEFORE vsync, so the frame is
@@ -292,8 +295,9 @@ start:
 main_loop:
     jsr     compute_frame
     jsr     render_mode7
-    jsr     blit_to_front
     jsr     wait_vsync
+    jsr     present_frame
+    jsr     swap_draw_buffer
     jsr     advance_animation
     bra     main_loop
 
@@ -652,8 +656,8 @@ compute_frame:
 ; to modulo 256 but much faster. This only works when the texture
 ; dimensions are powers of 2 -- a deliberate design choice.
 ;
-; The blit renders to BACK_BUFFER (0x900000), not directly to VRAM.
-; See the double-buffering discussion in the constants section.
+; The blit renders to the current off-screen buffer, not directly to the
+; buffer currently being scanned out.
 ; =============================================================================
 render_mode7:
     ; --- Set blitter operation to Mode7 ---
@@ -666,7 +670,8 @@ render_mode7:
     move.l  r2, #TEXTURE_BASE
     store.l r2, (r1)
     la      r1, BLT_DST
-    move.l  r2, #BACK_BUFFER
+    la      r3, draw_fb
+    load.l  r2, (r3)
     store.l r2, (r1)
 
     ; --- Set output dimensions ---
@@ -750,9 +755,8 @@ render_mode7:
     store.l r2, (r1)
 
     ; --- Wait for Mode7 blit to complete ---
-    ; We must wait because the next step (blit_to_front) will reconfigure
-    ; the blitter for a COPY operation. If Mode7 is still running, we'd
-    ; corrupt its registers mid-blit.
+    ; We must wait because the frame is presented by changing VIDEO_FB_BASE.
+    ; Presenting before Mode7 finishes would expose a partial frame.
     la      r1, BLT_CTRL
 .wait:
     load.l  r2, (r1)
@@ -762,63 +766,31 @@ render_mode7:
     rts
 
 ; =============================================================================
-; BLIT BACK BUFFER TO FRONT (VRAM) - DOUBLE BUFFER PRESENT
+; PRESENT COMPLETED FRAME
 ; =============================================================================
-; Copies the completed Mode7 render from the back buffer to the VRAM
-; front buffer using a hardware BLIT COPY.
-;
-; Why BLIT COPY instead of pointer swap?
-; On hardware with page flipping (Amiga, modern GPUs), you'd swap the
-; display pointer to avoid the copy entirely. The IntuitionEngine's
-; VideoChip always displays from VRAM_START (0x100000), so we must
-; physically copy the pixels. The blitter does this at hardware speed --
-; much faster than a CPU memcpy loop.
-;
-; The copy uses the same dimensions and stride as the Mode7 render.
-; Source stride = destination stride = LINE_BYTES (2560), because both
-; buffers use the same 640-pixel-wide layout.
+; Points the VideoChip at the completed render buffer.
 ; =============================================================================
-blit_to_front:
-    la      r1, BLT_OP
-    move.l  r2, #BLT_OP_COPY
-    store.l r2, (r1)
-
-    la      r1, BLT_SRC
-    move.l  r2, #BACK_BUFFER
-    store.l r2, (r1)
-
-    la      r1, BLT_DST
-    move.l  r2, #VRAM_START
-    store.l r2, (r1)
-
-    la      r1, BLT_WIDTH
-    move.l  r2, #RENDER_W
-    store.l r2, (r1)
-
-    la      r1, BLT_HEIGHT
-    move.l  r2, #RENDER_H
-    store.l r2, (r1)
-
-    la      r1, BLT_SRC_STRIDE
-    move.l  r2, #LINE_BYTES
-    store.l r2, (r1)
-
-    la      r1, BLT_DST_STRIDE
-    store.l r2, (r1)
-
-    la      r1, BLT_CTRL
-    li      r2, #1
-    store.l r2, (r1)
-
-    ; Wait for copy completion before returning to main loop.
-    ; If we didn't wait, the next frame's Mode7 render could start
-    ; writing to the back buffer while the copy is still reading from it.
-    la      r1, BLT_CTRL
-.wait:
+present_frame:
+    la      r1, draw_fb
     load.l  r2, (r1)
-    and.l   r2, r2, #2
-    bnez    r2, .wait
+    la      r1, VIDEO_FB_BASE
+    store.l r2, (r1)
+    rts
 
+; =============================================================================
+; SWAP DRAW BUFFER
+; =============================================================================
+swap_draw_buffer:
+    la      r1, draw_fb
+    load.l  r2, (r1)
+    move.l  r3, #BACK_BUFFER_A
+    beq     r2, r3, .use_b
+    move.l  r2, #BACK_BUFFER_A
+    store.l r2, (r1)
+    rts
+.use_b:
+    move.l  r2, #BACK_BUFFER_B
+    store.l r2, (r1)
     rts
 
 ; =============================================================================
@@ -875,6 +847,7 @@ var_ca:         dc.l    0
 var_sa:         dc.l    0
 var_u0:         dc.l    0
 var_v0:         dc.l    0
+draw_fb:        dc.l    0
 
 ; =============================================================================
 ; SINE TABLE - 256 Entries, Signed 16-Bit
