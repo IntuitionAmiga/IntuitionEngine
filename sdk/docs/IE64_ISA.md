@@ -4,7 +4,7 @@ IE64 64-bit RISC Processor Reference Manual
 
 (c) 2024-2026 Zayn Otley -- GPLv3 or later
 
-*Last modified: 2026-06-06*
+*Last modified: 2026-06-07*
 
 ---
 

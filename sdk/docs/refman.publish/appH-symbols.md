@@ -114,7 +114,7 @@ mechanism described in Chapters 27 and 28.
 | `$F0700`  | `TERM_OUT`. |
 | `$F075C`/`$F0760` | `RTC_MONO_USEC_LO` / `RTC_MONO_USEC_HI`, monotonic elapsed microseconds. |
 | `$F1400`  | HOST appliance block. |
-| `$F2200`  | File I/O block. `FILE_READ_MAX` is at `$F221C`. |
+| `$F2200`  | File I/O block. `FILE_READ_MAX` is at `$F221C`; IE64 `FILE_DATA_PTR64` is at `$F22B0`. |
 | `$F2300`  | Media loader. |
 | `$F2320`  | RUN loader block. |
 | `$F2340`  | Coprocessor. |

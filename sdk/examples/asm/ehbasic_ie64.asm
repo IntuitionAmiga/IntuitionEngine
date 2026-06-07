@@ -2768,7 +2768,7 @@ repl_skip_spaces:
 ; ============================================================================
 
 repl_str_banner:
-    dc.b    "IE64 BASIC v3.1", 0x0D, 0x0A
+    dc.b    "IE64 BASIC v3.8", 0x0D, 0x0A
     dc.b    "(c) Zayn Otley, 2024-2026", 0x0D, 0x0A
     dc.b    "Inspired by 68k EhBASIC by the late great Lee Davison (RIP)", 0
     align 4

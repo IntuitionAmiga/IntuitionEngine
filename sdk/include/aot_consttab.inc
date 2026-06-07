@@ -339,6 +339,8 @@ aot_consttab:
     dc.l FILE_ERROR_CODE
     dc.b 13, "FILE_READ_MAX"
     dc.l FILE_READ_MAX
+    dc.b 15, "FILE_DATA_PTR64"
+    dc.l FILE_DATA_PTR64
     dc.b 12, "FILE_OP_READ"
     dc.l FILE_OP_READ
     dc.b 13, "FILE_OP_WRITE"

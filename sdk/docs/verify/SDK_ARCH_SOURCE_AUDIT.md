@@ -70,6 +70,7 @@
 | Architecture | memory map row | `0xF2200-0xF221F` | `file_io_constants.go` `FILE_IO_BASE`/`FILE_IO_END`, `main.go` `MapIO` |
 | Architecture | memory map row | `0xF2220-0xF225F` | `aros_dos_constants.go` `AROS_DOS_BASE`/`AROS_DOS_END`, `main.go` `MapIO` |
 | Architecture | memory map row | `0xF2260-0xF22AF` | `aros_audio_constants.go` `AROS_AUD_REGION_BASE`/`AROS_AUD_REGION_END`, `main.go` `MapIO` |
+| Architecture | memory map row | `0xF22B0-0xF22B7` | `file_io_constants.go` `FILE_DATA_PTR64`/`FILE_DATA_PTR64_END`, `main.go` `MapIO64` |
 | Architecture | memory map row | `0xF2300-0xF231F` | `media_loader_constants.go` `MEDIA_LOADER_BASE`/`MEDIA_LOADER_END`, `main.go` `MapIO` |
 | Architecture | memory map row | `0xF2320-0xF233F` | `program_executor_constants.go` `EXEC_BASE`/`EXEC_END`, `main.go` `MapIO` |
 | Architecture | memory map row | `0xF2340-0xF238F` | `coprocessor_constants.go` `COPROC_BASE`/`COPROC_END`, `main.go` `MapIO` |

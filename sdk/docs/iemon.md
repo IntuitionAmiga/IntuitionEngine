@@ -1,6 +1,6 @@
 # Intuition Engine Machine Monitor
 
-*Last modified: 2026-06-06*
+*Last modified: 2026-06-07*
 
 ## Overview
 
@@ -1057,7 +1057,7 @@ Available I/O devices:
 (dumps all listed devices)
 ```
 
-Register widths are per-register (1, 2, or 4 bytes). Values are displayed in the appropriate width with both hex and decimal representations, followed by the access mode (`RO`, `WO`, or `RW`). The monitor and Lua `dbg.io()` use the same native-width MMIO read path for these registers, including when the focussed CPU is 6502, so word and long registers are not reconstructed through byte reads from the CPU memory view. Unknown devices print `Unknown device: <name>`.
+Register widths are per-register (1, 2, 4, or 8 bytes). Values are displayed in the appropriate width with both hex and decimal representations, followed by the access mode (`RO`, `WO`, or `RW`). The monitor and Lua `dbg.io()` use the same native-width MMIO read path for these registers, including when the focussed CPU is 6502, so word, long, and quadword registers are not reconstructed through byte reads from the CPU memory view. Unknown devices print `Unknown device: <name>`.
 
 The audio/player views mirror the MMIO layout. `psg`, `sid`, `ted`, and `pokey` are combined chip/player views, so their playback control registers are shown alongside chip registers. `ahx`, `midiplay`, `mod`, and `wav` are independent player/control views. `midiplay` is the file-backed SMF `.mid`/`.midi` and Doom `.mus` player backed by the `MIDI_PLAY_*` MMIO block.
 

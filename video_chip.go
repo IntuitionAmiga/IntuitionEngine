@@ -1451,6 +1451,10 @@ func (chip *VideoChip) blitFillLocked(mode VideoMode) {
 
 	// Non-copy draw mode: per-pixel read-modify-write
 	if drawMode != 0x03 {
+		if !chip.blitRectWritableLocked(chip.bltDst, width, height, stride, bpp) {
+			chip.bltErr = true
+			return
+		}
 		rowAddr := chip.bltDst
 		for range height {
 			addr := rowAddr
@@ -1567,6 +1571,10 @@ func (chip *VideoChip) blitBulkFill32Locked(dst uint32, width, height int, strid
 	}
 
 	// Non-VRAM: per-pixel bus writes
+	if !chip.blitRectWritableLocked(dst, width, height, stride, BYTES_PER_PIXEL) {
+		chip.bltErr = true
+		return
+	}
 	rowAddr := dst
 	for range height {
 		addr := rowAddr
@@ -1645,6 +1653,10 @@ func (chip *VideoChip) blitBulkFill8Locked(dst uint32, width, height int, stride
 	}
 
 	// Non-VRAM: per-byte bus writes
+	if !chip.blitRectWritableLocked(dst, width, height, stride, 1) {
+		chip.bltErr = true
+		return
+	}
 	rowAddr := dst
 	for range height {
 		addr := rowAddr
@@ -1888,6 +1900,9 @@ func (chip *VideoChip) blitRectInBoundsLocked(addr uint32, width, height int, st
 		return false
 	}
 	if chip.busMemory != nil {
+		if bus, ok := chip.bus.(*MachineBus); ok {
+			return end <= bus.backingVisibleSize()
+		}
 		return end <= uint64(len(chip.busMemory))
 	}
 	return false

@@ -92,6 +92,7 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | File I/O | Chapter 35, Chapter 39, Appendix D |
 | FILE_DATA_PTR | Chapter 35, Appendix D |
+| FILE_DATA_PTR64 | Chapter 35, Appendix D, Appendix H |
 | FILE_ERR_RANGE | Chapter 35, Appendix D, Appendix I |
 | FILE_READ_MAX | Chapter 35, Appendix D, Appendix H |
 | FILE TOO LARGE | Chapter 35, Appendix I |

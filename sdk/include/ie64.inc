@@ -187,8 +187,8 @@ AOT_LOW32_CAP     equ 0xFFFF0000            ; private file bridge stays below th
 AOT_FILE_BRIDGE_LOW_DEFAULT equ 0x01000000
 AOT_SYMCNT        equ 0x042300              ; q: number of symbols defined
 AOT_SYMTAB        equ 0x042400              ; legacy fixed 1 KiB symbol slot (default for unit tests)
-AOT_SYM_MAX       equ 4096                  ; symbol table capacity (16 bytes/entry)
-AOT_SYMTAB_BYTES  equ 0x10000               ; AOT_SYM_MAX * 16 = allocation size for the symbol table
+AOT_SYM_MAX       equ 65536                 ; symbol table capacity (16 bytes/entry)
+AOT_SYMTAB_BYTES  equ 0x100000              ; AOT_SYM_MAX * 16 = allocation size for the symbol table
 AOT_ASM_SRC       equ 0x042800              ; q: program assembler source pointer
 AOT_ASM_BASE      equ 0x042808             ; q: program link base address
 AOT_ASM_DEST      equ 0x042810             ; q: program output buffer base
@@ -238,6 +238,34 @@ AOT_ASM_NAME_CAP  equ 0x042A38             ; q: assembler-name buffer capacity
 AOT_MNEM_PTR      equ 0x042A40             ; q: dynamic/private mnemonic scratch pointer
 AOT_MNEM_CAP      equ 0x042A48             ; q: mnemonic scratch capacity
 AOT_SYMTAB_CAP    equ 0x042A50             ; q: active symbol table capacity
+AOT_FOR_NATIVE_STACK equ 0x042A58          ; 8 q entries: nonzero -> native integer FOR frame
+AOT_FOR_VAR_STACK equ 0x042A98             ; 8 q entries: variable-token pointer for native FOR
+AOT_FOR_END_STACK equ 0x042AD8             ; 8 q entries: end-expression pointer for native FOR
+AOT_FOR_STEP_STACK equ 0x042B18            ; 8 q entries: absolute STEP value for native FOR
+AOT_FOR_SIGN_STACK equ 0x042B58            ; 8 q entries: nonzero -> negative STEP
+AOT_FOR_TMP_VAR   equ 0x042B98             ; q: native FOR parser scratch
+AOT_FOR_TMP_START equ 0x042BA0             ; q: native FOR parser scratch
+AOT_FOR_TMP_END   equ 0x042BA8             ; q: native FOR parser scratch
+AOT_FOR_TMP_STEP  equ 0x042BB0             ; q: native FOR parser scratch
+AOT_FOR_TMP_SIGN  equ 0x042BB8             ; q: native FOR parser scratch
+AOT_FOR_TMP_AFTER equ 0x042BC0             ; q: native FOR parser scratch
+AOT_FOR_TMP_LABEL equ 0x042BC8             ; q: native NEXT emitter scratch
+AOT_POKE_STORE_TMP equ 0x042BD0            ; q: native POKE selected store template scratch
+AOT_NATIVE_VAR_TAB equ 0x042BD8            ; q: compiler-time scalar variable tag table
+AOT_NATIVE_VAR_COUNT equ 0x042BE0          ; q: compiler-time scalar variable count
+AOT_NATIVE_MEM_NEXT equ 0x042BE8           ; q: compiler-time MEMALLOC cursor
+AOT_NATIVE_MEM_RANGE equ 0x042BF0          ; q: compiler-time MEMALLOC range
+AOT_LAST_OOM_STAGE equ 0x042BF8            ; q: last AOT OOM stage for diagnostics
+AOT_LAST_LINE     equ 0x042C00             ; q: last BASIC source line seen by AOT transpiler
+AOT_LAST_TOKEN    equ 0x042C08             ; q: last BASIC token seen by AOT transpiler
+AOT_EMIT_OVERFLOW equ 0x042C10             ; q: asm text emitter overflow latch
+
+; Native AOT scalar variable segment. It uses the ordinary BASIC numeric segment
+; layout so any remaining runtime helper can find the same variables. Generated
+; native code addresses payload slots directly.
+AOT_NATIVE_VAR_SEG equ 0x00071000
+AOT_NATIVE_VAR_MAX equ 4096
+AOT_NATIVE_VAR_BYTES equ 0x00018010        ; 16 + AOT_NATIVE_VAR_MAX * 24
 
 ; IE64 BASIC runtime error codes
 ERR_SYNTAX        equ 1
@@ -2167,7 +2195,7 @@ voodoo_clear macro
     endm
 
 ; ============================================================================
-; FILE I/O REGISTERS (0xF2200-0xF221F)
+; FILE I/O REGISTERS (0xF2200-0xF221F plus IE64 extension at 0xF22B0)
 ; ============================================================================
 
 FILE_NAME_PTR     equ 0xF2200               ; Pointer to null-terminated filename (W)
@@ -2180,6 +2208,7 @@ FILE_ERROR_CODE   equ 0xF2218               ; 0=OK, 1=NOT_FOUND, 2=PERMISSION, 3
 FILE_READ_MAX     equ 0xF221C               ; W: nonzero caps the next READ to this many
                                             ; bytes (file larger -> FILE_ERR_RANGE, no copy);
                                             ; consumed per read, 0 = unbounded (default)
+FILE_DATA_PTR64   equ 0xF22B0               ; IE64-native 64-bit data-buffer pointer
 
 FILE_OP_READ      equ 1
 FILE_OP_WRITE     equ 2

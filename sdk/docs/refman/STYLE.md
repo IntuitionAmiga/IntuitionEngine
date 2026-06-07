@@ -743,6 +743,57 @@ Current controlled polish pass:
       dash scan, publish, and print PDFs only after the source tree is
       consistent.
 
+- Integrate the BASIC AOT, File I/O, and blitter contract changes from
+  commit `7daace29` as a narrow correctness pass. Check
+  `file_io.go`, `file_io_constants.go`, `main.go`, `video_chip.go`,
+  `sdk/include/ehbasic_aot.inc`, `sdk/include/ie64.inc`,
+  `ehbasic_aot_test.go`, `file_io_test.go`, and
+  `video_blitter_test.go` before changing reader-facing claims.
+  Do not add a new chapter, do not reference the Voodoo mega demo as a
+  required reader example, and do not mention the resonance demo.
+
+  Reader-facing claims to preserve:
+
+  - `FILE_DATA_PTR64` at `$F22B0` is an IE64-only `64`-bit
+    data-buffer pointer for File I/O reads and writes. It extends the
+    legacy block; it does not replace `FILE_DATA_PTR`.
+  - The legacy `FILE_DATA_PTR` ABI remains the cross-CPU `32`-bit
+    path. Legacy staged transfers must stay below the sign-extended
+    alias guard at `$FFFF0000` and inside active guest RAM.
+  - `FILE_DATA_PTR64` may deliberately name high backed guest RAM for
+    read or write data buffers, but a `64`-bit span must not wrap, run
+    beyond active backing, or start low and cross into the
+    sign-extended alias guard.
+  - Directory listing remains a low staged File I/O operation unless
+    the implementation is changed to route it through the `64`-bit
+    pointer path.
+  - Blitter operations that would write outside backed writable guest
+    memory set `BLT_STATUS.ERR`. They must not be described as
+    wrapping, clipping silently, or falling back to another operation.
+  - The BASIC AOT section may say that the supported native integer
+    subset is broader and uses active guest RAM for generated buffers,
+    but it must not expose private AOT workspace addresses as the
+    reader programming interface.
+
+  Execute this pass in this order:
+
+  1. Chapter 35: tighten the `FILE_DATA_PTR` and `FILE_DATA_PTR64`
+     read/write/list range wording and keep the typed example on the
+     legacy path.
+  2. Chapter 4: add the short blitter destination-range error rule to
+     the existing `BLT_STATUS` section.
+  3. Appendix D: correct `FILE_DATA_PTR64` from write-source pointer
+     to read/write data-buffer pointer.
+  4. Appendix H and Appendix L: make sure `FILE_DATA_PTR64` is
+     discoverable as the IE64 File I/O extension.
+  5. Chapter 25 and Chapter 2: review the existing AOT wording against
+     the new lowering tests, changing only stale or over-specific
+     wording.
+  6. Claim ledger: record the canonical sources checked and the
+     reader-facing contract updated by this pass.
+  7. Run reader-facing scans, publish strictly, and print PDFs after
+     the source tree is consistent.
+
 ## Reader Contract
 
 The book is for developing **on Intuition Engine for Intuition Engine**.

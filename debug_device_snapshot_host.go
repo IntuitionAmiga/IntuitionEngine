@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	fileIODeviceSnapshotVersion       = 1
+	fileIODeviceSnapshotVersion       = 3
 	mediaLoaderSnapshotVersion        = 1
 	programExecutorSnapshotVersion    = 1
 	coprocessorManagerSnapshotVersion = 1
@@ -15,7 +15,8 @@ const (
 
 type fileIODeviceDebugSnapshot struct {
 	FileNamePtr   uint32
-	FileDataPtr   uint32
+	FileDataPtr   uint64
+	FileDataPtr64 bool
 	FileDataLen   uint32
 	FileStatus    uint32
 	FileResultLen uint32
@@ -29,7 +30,7 @@ func (f *FileIODevice) DebugSnapshot() (uint32, []byte, error) {
 		return fileIODeviceSnapshotVersion, nil, fmt.Errorf("nil file I/O device")
 	}
 	return marshalSnapshot(fileIODeviceSnapshotVersion, fileIODeviceDebugSnapshot{
-		FileNamePtr: f.fileNamePtr, FileDataPtr: f.fileDataPtr, FileDataLen: f.fileDataLen,
+		FileNamePtr: f.fileNamePtr, FileDataPtr: f.fileDataPtr, FileDataPtr64: f.fileDataPtr64, FileDataLen: f.fileDataLen,
 		FileStatus: f.fileStatus, FileResultLen: f.fileResultLen, FileErrorCode: f.fileErrorCode,
 	})
 }
@@ -38,14 +39,14 @@ func (f *FileIODevice) DebugRestoreSnapshot(version uint32, data []byte) error {
 	if f == nil {
 		return fmt.Errorf("nil file I/O device")
 	}
-	if version != fileIODeviceSnapshotVersion {
+	if version != fileIODeviceSnapshotVersion && version != 2 && version != 1 {
 		return fmt.Errorf("unsupported file I/O snapshot version %d", version)
 	}
 	var snap fileIODeviceDebugSnapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return err
 	}
-	f.fileNamePtr, f.fileDataPtr, f.fileDataLen = snap.FileNamePtr, snap.FileDataPtr, snap.FileDataLen
+	f.fileNamePtr, f.fileDataPtr, f.fileDataPtr64, f.fileDataLen = snap.FileNamePtr, snap.FileDataPtr, snap.FileDataPtr64, snap.FileDataLen
 	f.fileStatus, f.fileResultLen, f.fileErrorCode = snap.FileStatus, snap.FileResultLen, snap.FileErrorCode
 	return nil
 }

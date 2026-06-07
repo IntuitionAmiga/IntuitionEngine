@@ -1,6 +1,6 @@
 package main
 
-// File I/O MMIO Registers (0xF2200-0xF221F)
+// File I/O MMIO Registers (0xF2200-0xF221F plus IE64 extension at 0xF22B0)
 const (
 	FILE_IO_BASE = 0xF2200
 
@@ -17,8 +17,12 @@ const (
 	// affects only the read that set it; 0 means unbounded (the default for
 	// BLOAD/LOAD/runtime-blob reads). Used by ASSEMBLE to bound its staging buffer.
 	FILE_READ_MAX = FILE_IO_BASE + 0x1C
+	FILE_IO_END   = FILE_IO_BASE + 0x1F
 
-	FILE_IO_END = FILE_IO_BASE + 0x1F
+	// FILE_DATA_PTR64 is an IE64-native extension for data buffers above the
+	// 32-bit File I/O staging window. Legacy callers keep using FILE_DATA_PTR.
+	FILE_DATA_PTR64     = 0xF22B0
+	FILE_DATA_PTR64_END = FILE_DATA_PTR64 + 0x07
 )
 
 // FILE_CTRL operations

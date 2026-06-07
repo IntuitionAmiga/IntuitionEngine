@@ -38,10 +38,11 @@ const (
 	AROS_PROFILE_TOP uint32 = uint32(m68kProfileTop2GiB)
 
 	// ehbasicMinRequiredRAM is the IE64 BASIC dynamic-layout minimum. The
-	// BASIC runtime derives stack/control reservations and internal arenas
-	// from CR_RAM_SIZE_BYTES; below 32 MiB the profile gate rejects the boot
-	// before the BASIC image runs.
-	ehbasicMinRequiredRAM uint32 = uint32(MIN_GUEST_RAM)
+	// BASIC runtime derives stack/control reservations and AOT compiler arenas
+	// from CR_RAM_SIZE_BYTES; the native RUN AOT, TRANSPILE and COMPILE paths
+	// reserve multi-megabyte source and code buffers, so the historical 32 MiB
+	// floor is no longer a valid profile.
+	ehbasicMinRequiredRAM uint32 = 256 * 1024 * 1024
 
 	// ehbasicMaxTopOfRAM caps the uint32 TopOfRAM exposed for EhBASIC's
 	// low-memory accounting paths. Above-4-GiB IE64 visibility is queried

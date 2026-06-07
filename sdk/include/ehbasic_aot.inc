@@ -42,7 +42,7 @@ aot_alloc_reset:
     load.q  r4, (r3)
     beqz    r4, .aar_have_arena_top
     bge     r4, r1, .aar_have_arena_top
-    move.q  r5, #AOT_LOW32_CAP
+    move.q  r5, #BASIC_RESIDENT_LOW32_CAP
     blt     r1, r5, .aar_use_ctrl_low
     bgt     r4, r5, .aar_use_ctrl_low
     bra     .aar_have_arena_top
@@ -2165,14 +2165,30 @@ aot_asm_program:
 ; Output R8 = destination cursor advanced past the copied bytes
 ; Clobbers R1, R9
 aot_emit_str:
+    la      r1, AOT_EMIT_OVERFLOW
+    load.q  r1, (r1)
+    bnez    r1, .es_blocked
+    beqz    r8, .es_blocked
 .es_loop:
     load.b  r1, (r9)
     beqz    r1, .es_done
+    la      r2, AOT_TEXT_END
+    load.q  r2, (r2)
+    beqz    r2, .es_store
+    bge     r8, r2, .es_overflow
+.es_store:
     store.b r1, (r8)
     add.q   r8, r8, #1
     add.q   r9, r9, #1
     bra     .es_loop
 .es_done:
+    rts
+.es_overflow:
+    la      r1, AOT_EMIT_OVERFLOW
+    move.q  r2, #1
+    store.q r2, (r1)
+    move.q  r8, r0
+.es_blocked:
     rts
 
 ; aot_text_room - R8 = 1 if the asm-text buffer has >= 256 bytes of headroom at
@@ -2180,6 +2196,9 @@ aot_emit_str:
 ; multi-line WAIT/VSYNC poll loops), or if AOT_TEXT_END is 0 (unbounded).
 ; Else R8 = 0. Clobbers R1-R3.
 aot_text_room:
+    la      r1, AOT_EMIT_OVERFLOW
+    load.q  r1, (r1)
+    bnez    r1, .room_no
     la      r1, AOT_TEXT_END
     load.q  r2, (r1)
     beqz    r2, .room_ok           ; unbounded (standalone unit tests)
@@ -2217,6 +2236,12 @@ aot_transpile:
     move.q  r21, r10                ; end mode
     la      r1, AOT_TEXT_END
     store.q r11, (r1)               ; output limit for aot_text_room
+    la      r1, AOT_EMIT_OVERFLOW
+    store.q r0, (r1)
+    la      r1, AOT_LAST_LINE
+    store.q r0, (r1)
+    la      r1, AOT_LAST_TOKEN
+    store.q r0, (r1)
     la      r1, AOT_LBLCNT
     store.q r0, (r1)               ; reset the per-compile branch-label counter
     la      r1, AOT_USE_PRINT
@@ -2233,6 +2258,16 @@ aot_transpile:
     store.q r0, (r1)               ; reset runtime-blob-needed flag
     la      r1, AOT_USE_PROG
     store.q r0, (r1)               ; reset programme-bundling flag
+    jsr     aot_native_vars_alloc
+    beqz    r9, .tr_oflow
+    la      r1, AOT_NATIVE_MEM_NEXT
+    move.q  r2, #BASIC_MEMALLOC_BASE0
+    store.q r2, (r1)
+    la      r1, AOT_NATIVE_MEM_RANGE
+    store.q r0, (r1)
+    move.q  r20, r18
+    jsr     aot_native_vars_prescan
+    beqz    r9, .tr_oflow
     ; Standalone only: pre-scan the whole programme. Any expression/control-flow token
     ; sets AOT_USE_RT (needs the runtime blob); READ/DATA/RESTORE additionally set
     ; AOT_USE_PROG (the tokenised programme must be bundled for the blob's DATA reader).
@@ -2367,6 +2402,7 @@ aot_transpile:
     beqz    r1, .tr_prologue_done
     jsr     aot_emit_rt_bootstrap
 .tr_prologue_done:
+    jsr     aot_emit_native_vars_init
     move.q  r17, r8
     bra     .tr_line
     ; Arena prologue: save the entry stack pointer so END/STOP can unwind a
@@ -2381,10 +2417,14 @@ aot_transpile:
     jsr     aot_emit_movel
     la      r9, aot_str_save_sp    ; store.q r31, (r6)
     jsr     aot_emit_str
+    jsr     aot_emit_native_vars_init
     move.q  r17, r8
 .tr_line:
     load.q  r1, (r18)              ; next pointer
     beqz    r1, .tr_finish          ; next == 0 -> terminator, no body
+    la      r2, AOT_LAST_LINE
+    load.l  r3, 8(r18)
+    store.q r3, (r2)
     la      r1, AOT_IF_LABEL       ; no pending IF end/else labels at the line start
     store.q r0, (r1)
     la      r1, AOT_IF_ELSE
@@ -2399,6 +2439,8 @@ aot_transpile:
     add.q   r20, r18, #16          ; statement cursor = tokens
 .tr_stmt:
     load.b  r1, (r20)
+    la      r2, AOT_LAST_TOKEN
+    store.q r1, (r2)
     move.q  r2, #0x20
     bne     r1, r2, .tr_chk
     add.q   r20, r20, #1
@@ -2431,6 +2473,8 @@ aot_transpile:
     beq     r1, r2, .tr_bitclr
     move.q  r2, #0x94               ; TK_WAIT
     beq     r1, r2, .tr_wait
+    move.q  r2, #0xEE               ; TK_BLIT
+    beq     r1, r2, .tr_blit
     move.q  r2, #0xE6               ; TK_VSYNC_CMD
     beq     r1, r2, .tr_vsync
     move.q  r2, #0x9E               ; TK_PRINT
@@ -2488,7 +2532,7 @@ aot_transpile:
     blt     r2, r3, .tr_unsup
     move.q  r3, #0x7A
     bgt     r2, r3, .tr_unsup
-    bra     .tr_let_standalone
+    bra     .tr_let_native
 .tr_read_standalone:
     add.q   r20, r20, #1           ; consume TK_READ -> R20 at the variable list
     jsr     aot_emit_cond_span     ; bundle the variable list -> move.l r17, #Q<id>
@@ -2619,6 +2663,41 @@ aot_transpile:
     blt     r2, r3, .tr_unsup
     move.q  r3, #0x7A
     bgt     r2, r3, .tr_unsup
+    bra     .tr_let_native
+; Implied numeric LET: look up the destination variable and emit the store directly.
+; The RHS still uses expr_eval, so BASIC arithmetic and variable reads stay identical
+; to the interpreter, but the whole statement no longer delegates through exec_do_let.
+.tr_let_native:
+    jsr     aot_find_top_equal      ; R22 = first non-space byte after '='
+    beqz    r9, .tr_let_fallback
+    move.q  r28, r22                ; save RHS start across emit helpers
+    jsr     aot_text_room
+    beqz    r8, .tr_oflow
+    move.q  r8, r17
+    jsr     aot_emit_native_var_addr_r1
+    beqz    r9, .tr_let_fallback
+    la      r9, aot_str_push_r1
+    jsr     aot_emit_str
+    move.q  r17, r8
+    move.q  r20, r28
+    jsr     aot_try_emit_memalloc_rhs
+    move.q  r1, #1
+    beq     r23, r1, .tr_let_rhs_ready
+    move.q  r20, r28
+    jsr     aot_emit_expr           ; runtime R8 = RHS payload, R9 = RHS tag
+.tr_let_rhs_ready:
+    beqz    r9, .tr_oflow
+    la      r9, aot_str_pop_r1
+    jsr     aot_emit_str
+    la      r9, aot_str_storeq_r8_r1
+    jsr     aot_emit_str
+    la      r9, aot_str_storel_r9_tag_r1
+    jsr     aot_emit_str
+    move.q  r17, r8
+    move.q  r20, r28
+    bra     .tr_skip_stmt
+.tr_let_fallback:
+    bnez    r21, .tr_let_standalone
     move.q  r9, r20                ; R17 target = the variable
     move.q  r10, #(stmt_jump_table + 28)  ; TK_LET handler slot (index 7 * 4)
     jsr     aot_text_room
@@ -2668,6 +2747,13 @@ aot_transpile:
     move.q  r8, r0                  ; unsupported statement
     rts
 .tr_oflow:
+    move.q  r1, r17
+    sub.q   r1, r1, r19
+    la      r2, AOT_DC_TLEN
+    store.q r1, (r2)
+    load.l  r1, 8(r18)
+    la      r2, AOT_DC_CLEN
+    store.q r1, (r2)
     move.q  r8, #2                  ; output buffer overflow
     rts
 
@@ -2725,6 +2811,7 @@ aot_transpile:
 .tr_store2:
     jsr     aot_text_room
     beqz    r8, .tr_oflow
+    move.q  r27, r20               ; expression fallback starts at first operand
     jsr     aot_parse_two_uints     ; R22=addr, R23=val (R24-R26 survive)
     beqz    r8, .tr_poke_expr       ; non-literal operands -> delegate (arena)
     jsr     aot_at_stmt_boundary
@@ -2759,9 +2846,142 @@ aot_transpile:
     move.q  r17, r8
     bra     .tr_stmt
 .tr_poke_expr:
-    ; Expression operands: standalone has no resident handler to delegate to, so it
-    ; reports the statement unsupported; the arena delegates to the resident handler.
-    bnez    r21, .tr_unsup
+    ; Expression operands avoid the slow whole-statement handler: evaluate the address
+    ; expression, convert it to I64, evaluate the value expression, convert it, then
+    ; emit the selected native store width. RUN AOT uses resident expr_eval; standalone
+    ; TRANSPILE/COMPILE uses the bundled runtime blob.
+    la      r1, AOT_POKE_STORE_TMP
+    store.q r24, (r1)
+    move.q  r20, r27                ; first operand
+    jsr     aot_find_top_comma      ; R22 = second operand start
+    beqz    r9, .tr_poke_delegate
+    move.q  r28, r22                ; preserve second operand start across parsers
+    move.q  r8, r17
+    jsr     aot_try_emit_int_expr   ; addr expression -> R8/R9 at runtime
+    move.q  r1, #1
+    beq     r23, r1, .tr_poke_addr_int_ready
+    move.q  r20, r27
+    jsr     aot_emit_expr           ; addr expression -> R8/R9 at runtime
+.tr_poke_addr_ready:
+    beqz    r9, .tr_oflow
+    jsr     aot_emit_expr_to_i64    ; runtime R8 = integer address
+.tr_poke_addr_int_ready:
+    la      r9, aot_str_push_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    move.q  r20, r28
+    jsr     aot_try_emit_int_expr   ; value expression -> R8/R9 at runtime
+    move.q  r1, #1
+    beq     r23, r1, .tr_poke_value_int_ready
+    move.q  r20, r28
+    jsr     aot_emit_expr           ; value expression -> R8/R9 at runtime
+.tr_poke_value_ready:
+    beqz    r9, .tr_oflow
+    jsr     aot_emit_expr_to_i64    ; runtime R8 = integer value
+.tr_poke_value_int_ready:
+    la      r9, aot_str_pop_r1
+    jsr     aot_emit_str
+    la      r9, aot_str_moveq_r2_r8
+    jsr     aot_emit_str
+    la      r9, AOT_POKE_STORE_TMP
+    load.q  r24, (r9)
+    move.q  r9, r24                ; selected store.b/.w/.l/.q r2,(r1)
+    jsr     aot_emit_str
+    move.q  r17, r8
+    move.q  r20, r28               ; skip the value expression in the compile cursor
+    bra     .tr_skip_stmt
+
+.tr_blit:
+    move.q  r25, r20               ; statement start for delegate fallback
+    move.q  r26, r17               ; emitted-text rollback point
+    add.q   r20, r20, #1           ; consume TK_BLIT
+    jsr     aot_skip_spaces
+    load.b  r1, (r20)
+    or.q    r1, r1, #0x20
+    move.q  r2, #0x66              ; 'f' -> FILL
+    beq     r1, r2, .tr_blit_fill
+    move.q  r2, #0x6D              ; 'm' -> MEMCOPY
+    bne     r1, r2, .tr_blit_delegate
+    load.b  r1, 1(r20)
+    or.q    r1, r1, #0x20
+    move.q  r2, #0x65              ; 'e' distinguishes MEMCOPY from MODE7
+    beq     r1, r2, .tr_blit_memcopy
+.tr_blit_delegate:
+    move.q  r17, r26
+    move.q  r20, r25
+    load.b  r1, (r20)
+    bra     .tr_delegate_token
+.tr_blit_fill:
+    jsr     aot_skip_var_name
+    jsr     aot_skip_spaces
+    move.q  r12, #BLT_DST
+    jsr     aot_emit_mmio_l_expr
+    beqz    r9, .tr_blit_delegate
+    jsr     aot_expect_comma
+    beqz    r9, .tr_blit_delegate
+    move.q  r12, #BLT_WIDTH
+    jsr     aot_emit_mmio_l_expr
+    beqz    r9, .tr_blit_delegate
+    jsr     aot_expect_comma
+    beqz    r9, .tr_blit_delegate
+    move.q  r12, #BLT_HEIGHT
+    jsr     aot_emit_mmio_l_expr
+    beqz    r9, .tr_blit_delegate
+    jsr     aot_expect_comma
+    beqz    r9, .tr_blit_delegate
+    move.q  r12, #BLT_COLOR
+    jsr     aot_emit_mmio_l_expr
+    beqz    r9, .tr_blit_delegate
+    jsr     aot_skip_spaces
+    load.b  r1, (r20)
+    move.q  r2, #0x2C
+    bne     r1, r2, .tr_blit_fill_start
+    add.q   r20, r20, #1
+    jsr     aot_skip_spaces
+    move.q  r12, #BLT_DST_STRIDE
+    jsr     aot_emit_mmio_l_expr
+    beqz    r9, .tr_blit_delegate
+.tr_blit_fill_start:
+    move.q  r12, #BLT_OP
+    move.q  r13, #BLT_OP_FILL
+    jsr     aot_emit_mmio_l_const
+    move.q  r12, #BLT_CTRL
+    move.q  r13, #1
+    jsr     aot_emit_mmio_l_const
+    move.q  r17, r8
+    bra     .tr_skip_stmt
+.tr_blit_memcopy:
+    jsr     aot_skip_var_name
+    jsr     aot_skip_spaces
+    move.q  r12, #BLT_SRC
+    jsr     aot_emit_mmio_l_expr
+    beqz    r9, .tr_blit_delegate
+    jsr     aot_expect_comma
+    beqz    r9, .tr_blit_delegate
+    move.q  r12, #BLT_DST
+    jsr     aot_emit_mmio_l_expr
+    beqz    r9, .tr_blit_delegate
+    jsr     aot_expect_comma
+    beqz    r9, .tr_blit_delegate
+    move.q  r12, #BLT_WIDTH
+    jsr     aot_emit_mmio_l_expr
+    beqz    r9, .tr_blit_delegate
+    move.q  r12, #BLT_HEIGHT
+    move.q  r13, #1
+    jsr     aot_emit_mmio_l_const
+    move.q  r12, #BLT_SRC_STRIDE
+    jsr     aot_emit_mmio_l_from_r8
+    move.q  r12, #BLT_DST_STRIDE
+    jsr     aot_emit_mmio_l_from_r8
+    move.q  r12, #BLT_OP
+    move.q  r13, #BLT_OP_MEMCOPY
+    jsr     aot_emit_mmio_l_const
+    move.q  r12, #BLT_CTRL
+    move.q  r13, #1
+    jsr     aot_emit_mmio_l_const
+    move.q  r17, r8
+    bra     .tr_skip_stmt
+.tr_poke_delegate:
     move.q  r20, r25                ; rewind to the POKE/TK_EXT token
     load.b  r1, (r20)               ; token byte (drives the jump-table index)
     bra     .tr_delegate_token
@@ -2908,15 +3128,19 @@ aot_transpile:
     store.q r25, (r1)
 .tr_if_id:
     move.q  r8, r17
-    bnez    r21, .tr_if_cond_bundle ; standalone: bundle the condition tokens inline
-    la      r9, aot_str_movel_r17  ; arena: move.l r17, #<resident condition tokens>
-    move.q  r10, r20
-    jsr     aot_emit_movel
-    bra     .tr_if_cond_ready
-.tr_if_cond_bundle:
-    ; Standalone: the program text is absent and the blob occupies
-    ; the live program-text segment, so bundle the condition tokens inline and point R17 at
-    ; them (R20 preserved for the THEN seek below).
+    move.q  r28, r20               ; preserve condition start for helper fallback
+    push    r25                    ; native condition emission uses R25 for labels
+    push    r28                    ; and R28 for its comparison cursor
+    jsr     aot_try_emit_int_condition
+    pop     r28
+    pop     r25
+    move.q  r1, #1
+    beq     r23, r1, .tr_if_cond_bool_done
+    move.q  r20, r28
+    move.q  r8, r17
+    ; Bundle the condition tokens inline and point R17 at a null-terminated span.
+    ; This keeps RUN AOT and standalone on the same expression shape, and avoids
+    ; feeding expr_eval a live IF line with the trailing THEN token attached.
     jsr     aot_emit_cond_span
     beqz    r9, .tr_oflow
     move.q  r8, r17
@@ -2933,6 +3157,7 @@ aot_transpile:
 .tr_if_eval_done:
     jsr     aot_emit_truthy_call    ; tagged condition -> R8=0/1
     beqz    r9, .tr_oflow
+.tr_if_cond_bool_done:
     move.q  r17, r8
     ; skip the condition tokens to TK_THEN (quote-aware) and consume it
 .tr_if_seek_then:
@@ -3182,17 +3407,25 @@ aot_transpile:
     jsr     aot_emit_label_named
     move.q  r17, r8
     bra     .tr_stmt
-; FOR <header>: delegate to resident exec_do_for (sets up the loop frame), then
-; mark the loop top F<id>. NEXT delegates to exec_do_next (increment + compare)
-; and branches back to F<id> when it reports "loop" (R28 == 1). RUN AOT only.
+; FOR <header>: lower simple scalar integer loops natively. Unsupported FOR forms
+; delegate to resident/bundled exec_do_for and keep the old ST_FOR_SP loop-back
+; check at NEXT.
 .tr_for:
     add.q   r20, r20, #1           ; consume TK_FOR
     jsr     aot_text_room
     beqz    r8, .tr_oflow
+    move.q  r26, r20               ; fallback must see the original header
     la      r1, AOT_LBLCNT         ; loop-label id (ids start at 1)
     load.q  r25, (r1)
     add.q   r25, r25, #1
     store.q r25, (r1)
+    push    r25
+    jsr     aot_try_native_for
+    pop     r25
+    beqz    r9, .tr_oflow
+    move.q  r1, #1
+    beq     r23, r1, .tr_for_native
+    move.q  r20, r26
     la      r1, AOT_FOR_SP         ; push onto the compile-time FOR stack
     load.q  r2, (r1)
     move.q  r3, #8
@@ -3201,6 +3434,10 @@ aot_transpile:
     lsl.q   r4, r2, #3
     add.q   r3, r3, r4
     store.q r25, (r3)
+    la      r3, AOT_FOR_NATIVE_STACK
+    lsl.q   r4, r2, #3
+    add.q   r3, r3, r4
+    store.q r0, (r3)
     add.q   r2, r2, #1
     store.q r2, (r1)
     move.q  r8, r17
@@ -3227,6 +3464,50 @@ aot_transpile:
     jsr     aot_emit_label_named
     move.q  r17, r8
     bra     .tr_skip_stmt
+.tr_for_native:
+    la      r1, AOT_FOR_SP         ; push native metadata
+    load.q  r2, (r1)
+    move.q  r3, #8
+    bge     r2, r3, .tr_unsup
+    lsl.q   r4, r2, #3
+    la      r3, AOT_FOR_STACK
+    add.q   r3, r3, r4
+    store.q r25, (r3)
+    la      r3, AOT_FOR_NATIVE_STACK
+    add.q   r3, r3, r4
+    move.q  r5, #1
+    store.q r5, (r3)
+    la      r1, AOT_FOR_TMP_VAR
+    load.q  r5, (r1)
+    la      r3, AOT_FOR_VAR_STACK
+    add.q   r3, r3, r4
+    store.q r5, (r3)
+    la      r1, AOT_FOR_TMP_END
+    load.q  r5, (r1)
+    la      r3, AOT_FOR_END_STACK
+    add.q   r3, r3, r4
+    store.q r5, (r3)
+    la      r1, AOT_FOR_TMP_STEP
+    load.q  r5, (r1)
+    la      r3, AOT_FOR_STEP_STACK
+    add.q   r3, r3, r4
+    store.q r5, (r3)
+    la      r1, AOT_FOR_TMP_SIGN
+    load.q  r5, (r1)
+    la      r3, AOT_FOR_SIGN_STACK
+    add.q   r3, r3, r4
+    store.q r5, (r3)
+    la      r1, AOT_FOR_SP
+    add.q   r2, r2, #1
+    store.q r2, (r1)
+    move.q  r8, r17
+    jsr     aot_emit_native_for_init
+    beqz    r9, .tr_oflow
+    la      r9, aot_str_lbl_f
+    move.q  r10, r25
+    jsr     aot_emit_label_named
+    move.q  r17, r8
+    bra     .tr_skip_stmt
 .tr_next:
     add.q   r20, r20, #1           ; consume TK_NEXT
     jsr     aot_text_room
@@ -3240,6 +3521,10 @@ aot_transpile:
     lsl.q   r4, r2, #3
     add.q   r3, r3, r4
     load.q  r25, (r3)              ; loop-label id
+    la      r3, AOT_FOR_NATIVE_STACK
+    add.q   r3, r3, r4
+    load.q  r1, (r3)
+    bnez    r1, .tr_next_native
     move.q  r8, r17
     ; save ST_FOR_SP (exec_do_next pops the FOR frame only when the loop ends)
     la      r9, aot_str_addq_r1_gosub
@@ -3290,6 +3575,15 @@ aot_transpile:
     la      r9, aot_str_beq_r1_r2_f  ; beq r1, r2, F<id>  (sp unchanged -> loop)
     move.q  r10, r25
     jsr     aot_emit_movel
+    move.q  r17, r8
+    bra     .tr_skip_stmt
+.tr_next_native:
+    la      r1, AOT_FOR_TMP_AFTER
+    store.q r20, (r1)
+    jsr     aot_emit_native_next
+    beqz    r9, .tr_oflow
+    la      r1, AOT_FOR_TMP_AFTER
+    load.q  r20, (r1)
     move.q  r17, r8
     bra     .tr_skip_stmt
 ; WHILE <expr> ... WEND: native loop. WHILE evaluates the condition at the top
@@ -3745,11 +4039,110 @@ aot_str_movel_r2:
 aot_str_movel_r3:
     dc.b    "move.l r3, #", 0
     align 4
+aot_str_movel_r14:
+    dc.b    "move.l r14, #", 0
+    align 4
 aot_str_lslq_r3_32:
     dc.b    "lsl.q r3, r3, #32", 0x0A, 0
     align 4
 aot_str_orq_r2_r3:
     dc.b    "or.q r2, r2, r3", 0x0A, 0
+    align 4
+aot_str_moveq_r2_r8:
+    dc.b    "move.q r2, r8", 0x0A, 0
+    align 4
+aot_str_moveq_r1_r8:
+    dc.b    "move.q r1, r8", 0x0A, 0
+    align 4
+aot_str_loadq_r8_r8:
+    dc.b    "load.q r8, (r8)", 0x0A, 0
+    align 4
+aot_str_load_var_value_r8_tag_r9:
+    dc.b    "move.q r1, r8", 0x0A
+    dc.b    "move.q r2, r1", 0x0A
+    dc.b    "sub.q r2, r2, #8", 0x0A
+    dc.b    "load.l r9, (r2)", 0x0A
+    dc.b    "load.q r8, (r1)", 0x0A, 0
+    align 4
+aot_str_addq_r8_r1_r8:
+    dc.b    "add.q r8, r1, r8", 0x0A, 0
+    align 4
+aot_str_lslq_r1_4:
+    dc.b    "lsl.q r1, r1, #4", 0x0A, 0
+    align 4
+aot_str_addq_r8_r8_r1:
+    dc.b    "add.q r8, r8, r1", 0x0A, 0
+    align 4
+aot_str_addq_r8_40:
+    dc.b    "add.q r8, r8, #40", 0x0A, 0
+    align 4
+aot_str_subq_r8_r1_r8:
+    dc.b    "sub.q r8, r1, r8", 0x0A, 0
+    align 4
+aot_str_mulsq_r8_r1_r8:
+    dc.b    "muls.q r8, r1, r8", 0x0A, 0
+    align 4
+aot_str_divsq_r8_r1_r8:
+    dc.b    "divs.q r8, r1, r8", 0x0A, 0
+    align 4
+aot_str_andq_r8_r1_r8:
+    dc.b    "and.q r8, r1, r8", 0x0A, 0
+    align 4
+aot_str_negq_r8:
+    dc.b    "neg.q r8, r8", 0x0A, 0
+    align 4
+aot_str_cmp_false:
+    dc.b    "move.q r8, #0", 0x0A, 0
+    align 4
+aot_str_cmp_true_set:
+    dc.b    "move.q r8, #1", 0x0A, 0
+    align 4
+aot_str_blt_ic:
+    dc.b    "blt r1, r8, IC", 0
+    align 4
+aot_str_bgt_ic:
+    dc.b    "bgt r1, r8, IC", 0
+    align 4
+aot_str_beq_ic:
+    dc.b    "beq r1, r8, IC", 0
+    align 4
+aot_str_bne_ic:
+    dc.b    "bne r1, r8, IC", 0
+    align 4
+aot_str_bra_id:
+    dc.b    "bra ID", 0
+    align 4
+aot_str_lbl_ic:
+    dc.b    "IC", 0
+    align 4
+aot_str_lbl_id:
+    dc.b    "ID", 0
+    align 4
+aot_str_loadb_r8_r1:
+    dc.b    "load.b r8, (r1)", 0x0A, 0
+    align 4
+aot_str_andl_r8_ff:
+    dc.b    "and.l r8, r8, #0xFF", 0x0A, 0
+    align 4
+aot_str_loadl_r8_r1:
+    dc.b    "load.l r8, (r1)", 0x0A, 0
+    align 4
+aot_str_push_r8:
+    dc.b    "push r8", 0x0A, 0
+    align 4
+aot_str_push_r1:
+    dc.b    "push r1", 0x0A, 0
+    align 4
+aot_str_pop_r1:
+    dc.b    "pop r1", 0x0A, 0
+    align 4
+aot_str_storeq_r8_r1:
+    dc.b    "store.q r8, (r1)", 0x0A, 0
+    align 4
+aot_str_storel_r9_tag_r1:
+    dc.b    "move.q r2, r1", 0x0A
+    dc.b    "sub.q r2, r2, #8", 0x0A
+    dc.b    "store.l r9, (r2)", 0x0A, 0
     align 4
 aot_str_store_b:
     dc.b    "store.b r2, (r1)", 0x0A, 0
@@ -3977,6 +4370,9 @@ aot_str_crlf:
 aot_str_movel_r8:
     dc.b    "move.l r8, #", 0
     align 4
+aot_str_moveq_r8_imm:
+    dc.b    "move.q r8, #", 0
+    align 4
 aot_str_fp_seq:
     dc.b    "jsr fp_float", 0x0A, "jsr fp_print", 0x0A, 0
     align 4
@@ -4017,6 +4413,9 @@ aot_str_loadl_r6_r6:
     align 4
 aot_str_beqz_r6_e:
     dc.b    "beqz r6, E", 0
+    align 4
+aot_str_beq_r9_r1_e:
+    dc.b    "beq r9, r1, E", 0
     align 4
 aot_str_lbl_e:
     dc.b    "E", 0
@@ -4065,10 +4464,39 @@ aot_str_lbl_s:
 aot_str_lbl_d:
     dc.b    "D", 0
     align 4
-; FOR/NEXT: delegate setup/increment to resident exec_do_for/exec_do_next; the
-; loop-back branch is native (F<id> is the loop top; NEXT branches back if R28==1).
+; FOR/NEXT labels. Simple scalar integer loops use F<id> as the loop top and
+; FD<id> as the done label; delegated loops still use F<id> for their loop-back.
 aot_str_lbl_f:
     dc.b    "F", 0
+    align 4
+aot_str_lbl_fd:
+    dc.b    "FD", 0
+    align 4
+aot_str_bra_f:
+    dc.b    "bra F", 0
+    align 4
+aot_str_bgt_fd:
+    dc.b    "bgt r1, r8, FD", 0
+    align 4
+aot_str_blt_fd:
+    dc.b    "blt r1, r8, FD", 0
+    align 4
+aot_str_addq_r1_imm:
+    dc.b    "add.q r1, r1, #", 0
+    align 4
+aot_str_subq_r1_imm:
+    dc.b    "sub.q r1, r1, #", 0
+    align 4
+aot_str_for_next_load:
+    dc.b    "move.q r3, r8", 0x0A
+    dc.b    "load.q r1, (r3)", 0x0A, 0
+    align 4
+aot_str_for_next_store:
+    dc.b    "move.q r4, r3", 0x0A
+    dc.b    "sub.q r4, r4, #8", 0x0A
+    dc.b    "move.l r2, #2", 0x0A
+    dc.b    "store.l r2, (r4)", 0x0A
+    dc.b    "store.q r1, (r3)", 0x0A, 0
     align 4
 aot_str_addq_r1_gosub:
     dc.b    "add.q r1, r16, #", 0
@@ -4254,6 +4682,136 @@ aot_emit_delegate:
     jsr     aot_emit_movel
     la      r9, aot_str_load_jsr_r9
     jsr     aot_emit_str
+    rts
+
+; aot_expect_comma - consume a comma and following spaces.
+; Input/output R20. Output R9=1 on success, 0 on failure.
+aot_expect_comma:
+    jsr     aot_skip_spaces
+    load.b  r1, (r20)
+    move.q  r2, #0x2C
+    bne     r1, r2, .aec_fail
+    add.q   r20, r20, #1
+    jsr     aot_skip_spaces
+    move.q  r9, #1
+    rts
+.aec_fail:
+    move.q  r9, r0
+    rts
+
+; aot_find_expr_boundary - find the end of the current expression operand.
+; Commas inside parentheses or strings are ignored. The returned pointer names
+; the separator itself so the caller can consume it normally.
+; Input: R20 = expression start. Output: R22 = separator/end pointer.
+aot_find_expr_boundary:
+    move.q  r22, r20
+    move.q  r4, r0
+.afeb_loop:
+    load.b  r1, (r22)
+    beqz    r1, .afeb_done
+    move.q  r2, #0x3A               ; ':'
+    beq     r1, r2, .afeb_done
+    move.q  r2, #0xAC               ; TK_THEN
+    beq     r1, r2, .afeb_done
+    move.q  r2, #0xAB               ; TK_ELSE
+    beq     r1, r2, .afeb_done
+    move.q  r2, #0x22               ; string literal
+    beq     r1, r2, .afeb_string
+    move.q  r2, #0x28               ; '('
+    beq     r1, r2, .afeb_lparen
+    move.q  r2, #0x29               ; ')'
+    beq     r1, r2, .afeb_rparen
+    move.q  r2, #0x2C               ; ','
+    bne     r1, r2, .afeb_next
+    beqz    r4, .afeb_done
+    bra     .afeb_next
+.afeb_lparen:
+    add.q   r4, r4, #1
+    bra     .afeb_next
+.afeb_rparen:
+    beqz    r4, .afeb_next
+    sub.q   r4, r4, #1
+    bra     .afeb_next
+.afeb_string:
+    add.q   r22, r22, #1
+.afeb_string_loop:
+    load.b  r1, (r22)
+    beqz    r1, .afeb_done
+    move.q  r2, #0x22
+    beq     r1, r2, .afeb_string_end
+    add.q   r22, r22, #1
+    bra     .afeb_string_loop
+.afeb_string_end:
+    add.q   r22, r22, #1
+    bra     .afeb_loop
+.afeb_next:
+    add.q   r22, r22, #1
+    bra     .afeb_loop
+.afeb_done:
+    rts
+
+; aot_emit_mmio_l_expr - emit an expression at R20, then store runtime R8 as a
+; 32-bit value to the MMIO/register address in R12. The hot integer subset is
+; emitted directly; anything else uses the normal BASIC expression evaluator but
+; still performs the hardware register write natively.
+; Output R8/R17 advanced, R20 at the expression boundary, R9=1 on success.
+aot_emit_mmio_l_expr:
+    la      r1, AOT_POKE_STORE_TMP
+    store.q r12, (r1)
+    jsr     aot_try_emit_int_expr
+    move.q  r1, #1
+    beq     r23, r1, .aemle_value_ready
+    jsr     aot_emit_expr
+    beqz    r9, .aemle_fail
+    jsr     aot_emit_expr_to_i64
+    beqz    r9, .aemle_fail
+    jsr     aot_find_expr_boundary
+    move.q  r20, r22
+.aemle_value_ready:
+    la      r1, AOT_POKE_STORE_TMP
+    load.q  r12, (r1)
+    move.q  r17, r8
+    move.q  r10, r12
+    la      r9, aot_str_movel_r1
+    jsr     aot_emit_movel
+    la      r9, aot_str_moveq_r2_r8
+    jsr     aot_emit_str
+    la      r9, aot_str_store_l
+    jsr     aot_emit_str
+    move.q  r17, r8
+    move.q  r9, #1
+    rts
+.aemle_fail:
+    move.q  r9, r0
+    rts
+
+; aot_emit_mmio_l_const - emit a constant 32-bit MMIO/register store.
+; Input R12=address, R13=value. Output R8/R17 advanced.
+aot_emit_mmio_l_const:
+    move.q  r10, r12
+    la      r9, aot_str_movel_r1
+    jsr     aot_emit_movel
+    move.q  r10, r13
+    la      r9, aot_str_movel_r2
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_l
+    jsr     aot_emit_str
+    move.q  r17, r8
+    move.q  r9, #1
+    rts
+
+; aot_emit_mmio_l_from_r8 - emit a 32-bit MMIO/register store from runtime R8.
+; Input R12=address. Output R8/R17 advanced.
+aot_emit_mmio_l_from_r8:
+    move.q  r10, r12
+    la      r9, aot_str_movel_r1
+    jsr     aot_emit_movel
+    la      r9, aot_str_moveq_r2_r8
+    jsr     aot_emit_str
+    la      r9, aot_str_store_l
+    jsr     aot_emit_str
+    move.q  r17, r8
+    move.q  r9, #1
     rts
 
 ; aot_emit_label_named - emit "<prefix><id>:\n" as a label definition line.
@@ -4464,6 +5022,175 @@ aot_at_stmt_boundary:
     rts
 .asb_ok:
     move.q  r8, #1
+    rts
+
+; aot_find_top_comma - find the operand-separating comma for POKE-style
+; two-expression statements. Commas inside parentheses or string literals are ignored.
+; Input:  R20 = first operand start.
+; Output: R9 = 1 and R22 = first non-space byte after the comma, or R9 = 0.
+; Preserves R20. Clobbers R1-R5, R22.
+aot_find_top_comma:
+    move.q  r3, r20                 ; scan cursor
+    move.q  r4, r0                  ; parenthesis depth
+.ftc_loop:
+    load.b  r1, (r3)
+    beqz    r1, .ftc_fail
+    move.q  r2, #0x3A               ; ':'
+    beq     r1, r2, .ftc_fail
+    move.q  r2, #0xAB               ; TK_ELSE
+    beq     r1, r2, .ftc_fail
+    move.q  r2, #0x22               ; string literal
+    beq     r1, r2, .ftc_string
+    move.q  r2, #0x28               ; '('
+    beq     r1, r2, .ftc_lparen
+    move.q  r2, #0x29               ; ')'
+    beq     r1, r2, .ftc_rparen
+    move.q  r2, #0x2C               ; ','
+    bne     r1, r2, .ftc_next
+    bnez    r4, .ftc_next           ; nested comma, not the operand separator
+    add.q   r22, r3, #1
+.ftc_post_space:
+    load.b  r1, (r22)
+    move.q  r2, #0x20
+    bne     r1, r2, .ftc_ok
+    add.q   r22, r22, #1
+    bra     .ftc_post_space
+.ftc_ok:
+    move.q  r9, #1
+    rts
+.ftc_lparen:
+    add.q   r4, r4, #1
+    bra     .ftc_next
+.ftc_rparen:
+    beqz    r4, .ftc_next
+    sub.q   r4, r4, #1
+    bra     .ftc_next
+.ftc_string:
+    add.q   r3, r3, #1
+.ftc_string_loop:
+    load.b  r1, (r3)
+    beqz    r1, .ftc_fail
+    move.q  r2, #0x22
+    beq     r1, r2, .ftc_string_end
+    add.q   r3, r3, #1
+    bra     .ftc_string_loop
+.ftc_string_end:
+    add.q   r3, r3, #1
+    bra     .ftc_loop
+.ftc_next:
+    add.q   r3, r3, #1
+    bra     .ftc_loop
+.ftc_fail:
+    move.q  r9, r0
+    rts
+
+; aot_find_top_equal - find the assignment separator for an implied numeric LET.
+; '=' inside parentheses or string literals is ignored. String variables are rejected
+; so the fast path cannot store a numeric payload into a string slot.
+; Input:  R20 = variable/expression statement start.
+; Output: R9 = 1 and R22 = first non-space byte after '=', or R9 = 0.
+; Preserves R20. Clobbers R1-R5, R22.
+aot_find_top_equal:
+    move.q  r3, r20                 ; scan cursor
+    move.q  r4, r0                  ; parenthesis depth
+.fte_loop:
+    load.b  r1, (r3)
+    beqz    r1, .fte_fail
+    move.q  r2, #0x3A               ; ':'
+    beq     r1, r2, .fte_fail
+    move.q  r2, #0xAB               ; TK_ELSE
+    beq     r1, r2, .fte_fail
+    move.q  r2, #0x22               ; string literal
+    beq     r1, r2, .fte_string
+    move.q  r2, #0x28               ; '('
+    beq     r1, r2, .fte_lparen
+    move.q  r2, #0x29               ; ')'
+    beq     r1, r2, .fte_rparen
+    move.q  r2, #0x24               ; '$'
+    beq     r1, r2, .fte_dollar
+    move.q  r2, #0xBC
+    beq     r1, r2, .fte_equal
+    move.q  r2, #0x3D               ; raw '='
+    bne     r1, r2, .fte_next
+.fte_equal:
+    bnez    r4, .fte_next
+    add.q   r22, r3, #1
+.fte_post_space:
+    load.b  r1, (r22)
+    move.q  r2, #0x20
+    bne     r1, r2, .fte_ok
+    add.q   r22, r22, #1
+    bra     .fte_post_space
+.fte_ok:
+    move.q  r9, #1
+    rts
+.fte_dollar:
+    beqz    r4, .fte_fail           ; string variable before '='
+    bra     .fte_next
+.fte_lparen:
+    add.q   r4, r4, #1
+    bra     .fte_next
+.fte_rparen:
+    beqz    r4, .fte_next
+    sub.q   r4, r4, #1
+    bra     .fte_next
+.fte_string:
+    add.q   r3, r3, #1
+.fte_string_loop:
+    load.b  r1, (r3)
+    beqz    r1, .fte_fail
+    move.q  r2, #0x22
+    beq     r1, r2, .fte_string_end
+    add.q   r3, r3, #1
+    bra     .fte_string_loop
+.fte_string_end:
+    add.q   r3, r3, #1
+    bra     .fte_loop
+.fte_next:
+    add.q   r3, r3, #1
+    bra     .fte_loop
+.fte_fail:
+    move.q  r9, r0
+    rts
+
+; aot_skip_spaces - advance R20 over ASCII spaces.
+aot_skip_spaces:
+.ass_loop:
+    load.b  r1, (r20)
+    move.q  r2, #0x20
+    bne     r1, r2, .ass_done
+    add.q   r20, r20, #1
+    bra     .ass_loop
+.ass_done:
+    rts
+
+; aot_skip_var_name - advance R20 over a BASIC numeric variable name.
+; Mirrors var_parse_name's character class: first char must be a letter, following
+; chars may be letters or digits.
+aot_skip_var_name:
+    load.b  r1, (r20)
+    or.q    r2, r1, #0x20
+    move.q  r3, #0x61
+    blt     r2, r3, .asv_done
+    move.q  r3, #0x7A
+    bgt     r2, r3, .asv_done
+    add.q   r20, r20, #1
+.asv_loop:
+    load.b  r1, (r20)
+    or.q    r2, r1, #0x20
+    move.q  r3, #0x61
+    blt     r2, r3, .asv_digit
+    move.q  r3, #0x7A
+    ble     r2, r3, .asv_adv
+.asv_digit:
+    move.q  r3, #0x30
+    blt     r1, r3, .asv_done
+    move.q  r3, #0x39
+    bgt     r1, r3, .asv_done
+.asv_adv:
+    add.q   r20, r20, #1
+    bra     .asv_loop
+.asv_done:
     rts
 
 ; aot_parse_one_uint - parse "<uint>" at R20. R22 = value, R20 advanced.
@@ -4716,8 +5443,8 @@ aot_str_lbl_rtprog:
 aot_file_write:
     la      r1, FILE_NAME_PTR
     store.l r8, (r1)
-    la      r1, FILE_DATA_PTR
-    store.l r9, (r1)
+    la      r1, FILE_DATA_PTR64
+    store.q r9, (r1)
     la      r1, FILE_DATA_LEN
     store.l r10, (r1)
     la      r1, FILE_CTRL
@@ -4949,9 +5676,1801 @@ aot_emit_truthy_call:
     move.q  r9, #1
     rts
 
+; Native scalar variable table ------------------------------------------------
+; The compiler pre-collects scalar numeric names into a private tag table, then
+; emits a normal BASIC numeric segment at AOT_NATIVE_VAR_SEG. Remaining runtime
+; helpers see ordinary records through ST_VAR_START/ST_VAR_END, while generated
+; native code loads/stores payload slots directly.
+
+aot_native_vars_alloc:
+    move.q  r8, #0x4000            ; AOT_NATIVE_VAR_MAX * sizeof(uint32 tag)
+    jsr     aot_alloc64
+    bnez    r9, .anva_fail
+    beqz    r8, .anva_fail
+    la      r1, AOT_NATIVE_VAR_TAB
+    store.q r8, (r1)
+    la      r1, AOT_NATIVE_VAR_COUNT
+    store.q r0, (r1)
+    move.q  r9, #1
+    rts
+.anva_fail:
+    move.q  r9, r0
+    rts
+
+; Input R20 = programme first line record. Output R9 = 1 ok, 0 overflow.
+aot_native_vars_prescan:
+    move.q  r6, r20
+.anvp_line:
+    load.q  r7, (r6)
+    beqz    r7, .anvp_done
+    add.q   r3, r6, #16
+.anvp_tok:
+    load.b  r1, (r3)
+    beqz    r1, .anvp_next_line
+    move.q  r2, #0x8F              ; TK_REM: rest of line is comment text
+    beq     r1, r2, .anvp_next_line
+    move.q  r2, #0x83              ; TK_DATA: rest of line is literal DATA text
+    beq     r1, r2, .anvp_next_line
+    move.q  r2, #0x22
+    beq     r1, r2, .anvp_string
+    or.q    r2, r1, #0x20
+    move.q  r4, #0x61
+    blt     r2, r4, .anvp_adv
+    move.q  r4, #0x7A
+    bgt     r2, r4, .anvp_adv
+    move.q  r20, r3
+    push    r6
+    push    r7
+    jsr     aot_parse_compiler_var_name
+    beqz    r15, .anvp_restore_adv
+    load.b  r1, (r22)
+    move.q  r2, #0x24
+    beq     r1, r2, .anvp_restore_skip_name
+    move.q  r2, #0x28
+    beq     r1, r2, .anvp_restore_skip_name
+    jsr     aot_native_var_intern
+    move.q  r5, r22
+    pop     r7
+    pop     r6
+    beqz    r9, .anvp_fail
+    move.q  r3, r5
+    bra     .anvp_tok
+.anvp_restore_skip_name:
+    move.q  r5, r22
+    pop     r7
+    pop     r6
+    move.q  r3, r5
+    bra     .anvp_tok
+.anvp_restore_adv:
+    pop     r7
+    pop     r6
+    bra     .anvp_adv
+.anvp_string:
+    add.q   r3, r3, #1
+.anvp_string_loop:
+    load.b  r1, (r3)
+    beqz    r1, .anvp_next_line
+    move.q  r2, #0x22
+    beq     r1, r2, .anvp_string_end
+    add.q   r3, r3, #1
+    bra     .anvp_string_loop
+.anvp_string_end:
+    add.q   r3, r3, #1
+    bra     .anvp_tok
+.anvp_adv:
+    add.q   r3, r3, #1
+    bra     .anvp_tok
+.anvp_next_line:
+    move.q  r6, r7
+    bra     .anvp_line
+.anvp_done:
+    move.q  r9, #1
+    rts
+.anvp_fail:
+    move.q  r9, r0
+    rts
+
+; Input R20 = variable token pointer.
+; Output R14 = tag, R15 = char count, R22 = pointer past name.
+aot_parse_compiler_var_name:
+    move.q  r14, r0
+    move.q  r15, r0
+    move.q  r22, r20
+.apcv_collect:
+    load.b  r1, (r22)
+    move.q  r2, #0x41
+    blt     r1, r2, .apcv_check_digit
+    move.q  r2, #0x5A
+    ble     r1, r2, .apcv_is_alpha
+    move.q  r2, #0x61
+    blt     r1, r2, .apcv_check_digit
+    move.q  r2, #0x7A
+    ble     r1, r2, .apcv_is_alpha
+    bra     .apcv_check_digit
+.apcv_is_alpha:
+    move.q  r2, #0x61
+    blt     r1, r2, .apcv_store_char
+    sub.q   r1, r1, #0x20
+.apcv_store_char:
+    move.q  r2, #4
+    bge     r15, r2, .apcv_mix_extra
+    lsl.l   r14, r14, #8
+    or.l    r14, r14, r1
+    add.q   r15, r15, #1
+    bra     .apcv_advance
+.apcv_mix_extra:
+    mulu.l  r14, r14, #33
+    add.l   r14, r14, r1
+.apcv_advance:
+    add.q   r22, r22, #1
+    bra     .apcv_collect
+.apcv_check_digit:
+    move.q  r2, #0x30
+    blt     r1, r2, .apcv_done
+    move.q  r2, #0x39
+    bgt     r1, r2, .apcv_done
+    beqz    r15, .apcv_done
+    bra     .apcv_store_char
+.apcv_done:
+    rts
+
+; Intern the simple scalar variable at R20.
+; Output R8 = native payload address, R9 = 1 ok, R22 = pointer past name.
+aot_native_var_intern:
+    jsr     aot_parse_compiler_var_name
+    beqz    r15, .anvi_fail
+    load.b  r1, (r22)
+    move.q  r2, #0x24
+    beq     r1, r2, .anvi_fail
+    move.q  r2, #0x28
+    beq     r1, r2, .anvi_fail
+    la      r1, AOT_NATIVE_VAR_TAB
+    load.q  r3, (r1)
+    la      r1, AOT_NATIVE_VAR_COUNT
+    load.q  r4, (r1)
+    move.q  r5, r0
+.anvi_search:
+    bge     r5, r4, .anvi_add
+    lsl.q   r6, r5, #2
+    add.q   r6, r3, r6
+    load.l  r7, (r6)
+    beq     r7, r14, .anvi_found
+    add.q   r5, r5, #1
+    bra     .anvi_search
+.anvi_add:
+    move.q  r6, #AOT_NATIVE_VAR_MAX
+    bge     r4, r6, .anvi_fail
+    lsl.q   r6, r4, #2
+    add.q   r6, r3, r6
+    store.l r14, (r6)
+    move.q  r5, r4
+    add.q   r4, r4, #1
+    la      r1, AOT_NATIVE_VAR_COUNT
+    store.q r4, (r1)
+.anvi_found:
+    move.q  r8, r5
+    mulu.q  r8, r8, #24
+    add.q   r8, r8, #(AOT_NATIVE_VAR_SEG + 32)
+    move.q  r9, #1
+    rts
+.anvi_fail:
+    move.q  r8, r0
+    move.q  r9, r0
+    rts
+
+aot_emit_native_var_addr_r1:
+    jsr     aot_native_var_intern
+    beqz    r9, .aenva_ret
+    move.q  r10, r8
+    move.q  r8, r17
+    la      r9, aot_str_movel_r1
+    jsr     aot_emit_movel
+    move.q  r17, r8
+    move.q  r9, #1
+.aenva_ret:
+    rts
+
+aot_emit_native_var_addr_r8:
+    jsr     aot_native_var_intern
+    beqz    r9, .aenvar_ret
+    move.q  r10, r8
+    move.q  r8, r17
+    la      r9, aot_str_movel_r8
+    jsr     aot_emit_movel
+    move.q  r17, r8
+    move.q  r9, #1
+.aenvar_ret:
+    rts
+
+aot_emit_native_vars_init:
+    move.q  r17, r8
+    jsr     aot_text_room
+    beqz    r8, .aenvi_fail
+    move.q  r8, r17
+    la      r9, aot_str_movel_r1
+    move.q  r10, #AOT_NATIVE_VAR_SEG
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r2
+    move.q  r10, r0
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_q
+    jsr     aot_emit_str
+    la      r9, aot_str_movel_r1
+    move.q  r10, #(AOT_NATIVE_VAR_SEG + 8)
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r2
+    la      r1, AOT_NATIVE_VAR_COUNT
+    load.q  r10, (r1)
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_r2_r1
+    jsr     aot_emit_str
+    la      r9, aot_str_movel_r1
+    move.q  r10, #(AOT_NATIVE_VAR_SEG + 12)
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r2
+    move.q  r10, #AOT_NATIVE_VAR_MAX
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_r2_r1
+    jsr     aot_emit_str
+    la      r9, aot_str_movel_r1
+    move.q  r10, #(BASIC_STATE + ST_VAR_START)
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r2
+    move.q  r10, #AOT_NATIVE_VAR_SEG
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_q
+    jsr     aot_emit_str
+    la      r9, aot_str_movel_r1
+    move.q  r10, #(BASIC_STATE + ST_VAR_END)
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r2
+    move.q  r10, #AOT_NATIVE_VAR_SEG
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_q
+    jsr     aot_emit_str
+    move.q  r17, r8
+    la      r28, AOT_NATIVE_VAR_TAB
+    load.q  r28, (r28)
+    la      r1, AOT_NATIVE_VAR_COUNT
+    load.q  r29, (r1)
+    move.q  r14, r0
+.aenvi_rec:
+    bge     r14, r29, .aenvi_done
+    jsr     aot_text_room
+    beqz    r8, .aenvi_fail
+    move.q  r8, r17
+    lsl.q   r1, r14, #2
+    add.q   r1, r28, r1
+    load.l  r15, (r1)
+    move.q  r13, r14
+    mulu.q  r13, r13, #24
+    add.q   r13, r13, #(AOT_NATIVE_VAR_SEG + 16)
+    la      r9, aot_str_movel_r1
+    move.q  r10, r13
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r2
+    move.q  r10, r15
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_r2_r1
+    jsr     aot_emit_str
+    la      r9, aot_str_movel_r1
+    add.q   r10, r13, #4
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r2
+    move.q  r10, r0
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_r2_r1
+    jsr     aot_emit_str
+    la      r9, aot_str_movel_r1
+    add.q   r10, r13, #8
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r2
+    move.q  r10, #VAL_I64
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_r2_r1
+    jsr     aot_emit_str
+    la      r9, aot_str_movel_r1
+    add.q   r10, r13, #12
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r2
+    move.q  r10, r0
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_r2_r1
+    jsr     aot_emit_str
+    la      r9, aot_str_movel_r1
+    add.q   r10, r13, #16
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r2
+    move.q  r10, r0
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_q
+    jsr     aot_emit_str
+    move.q  r17, r8
+    add.q   r14, r14, #1
+    bra     .aenvi_rec
+.aenvi_done:
+    move.q  r17, r8
+    move.q  r9, #1
+    rts
+.aenvi_fail:
+    move.q  r9, r0
+    rts
+
+; aot_emit_var_lookup - emit a numeric variable lookup for a pending assignment.
+; RUN AOT calls resident var_lookup; standalone calls the bundled runtime slot.
+; Runtime input R17 points at the variable token stream. Runtime output R8 is the
+; value payload pointer. R8 = output cursor (in/out). Output R9 = 1 ok.
+aot_emit_var_lookup:
+    bnez    r21, .evl_blob
+    la      r9, aot_str_movel_r6
+    move.q  r10, #var_lookup
+    jsr     aot_emit_movel
+    la      r9, aot_str_jsr_r6
+    jsr     aot_emit_str
+    move.q  r9, #1
+    rts
+.evl_blob:
+    move.q  r10, #RT_VAR_LOOKUP
+    jsr     aot_emit_rt_call
+    move.q  r9, #1
+    rts
+
+; aot_try_native_for - recognise a simple integer scalar FOR header:
+;   <var> = <int-expr> TO <int-expr> [STEP <constant-int>]
+; Claimed loops stash their compile-time token pointers and constant STEP in
+; AOT_FOR_TMP_* and leave R20 at the header boundary. Unsupported headers leave
+; R23 = 0 so the caller can delegate to exec_do_for.
+; Input R20 = header start after TK_FOR. Output R23 claimed, R9 ok.
+aot_try_native_for:
+    move.q  r23, r0
+    jsr     aot_skip_spaces
+    load.b  r1, (r20)
+    or.q    r2, r1, #0x20
+    move.q  r3, #0x61
+    blt     r2, r3, .tnf_no
+    move.q  r3, #0x7A
+    bgt     r2, r3, .tnf_no
+    la      r3, AOT_FOR_TMP_VAR
+    store.q r20, (r3)
+    jsr     aot_skip_var_name
+    load.b  r1, (r20)
+    move.q  r2, #0x24              ; '$'
+    beq     r1, r2, .tnf_no
+    move.q  r2, #0x28              ; arrays are delegated
+    beq     r1, r2, .tnf_no
+    jsr     aot_skip_spaces
+    load.b  r1, (r20)
+    move.q  r2, #0xBC              ; TK_EQUAL
+    beq     r1, r2, .tnf_eq
+    move.q  r2, #0x3D
+    bne     r1, r2, .tnf_no
+.tnf_eq:
+    add.q   r20, r20, #1
+    jsr     aot_skip_spaces
+    la      r3, AOT_FOR_TMP_START
+    store.q r20, (r3)
+    jsr     aot_find_for_to
+    beqz    r9, .tnf_no
+    move.q  r24, r22
+    la      r3, AOT_FOR_TMP_START
+    load.q  r20, (r3)
+    jsr     aot_int_expr_supported_to
+    beqz    r9, .tnf_no
+    add.q   r20, r24, #1
+    jsr     aot_skip_spaces
+    la      r3, AOT_FOR_TMP_END
+    store.q r20, (r3)
+    jsr     aot_find_for_end_or_step
+    beqz    r9, .tnf_no
+    push    r23                    ; step expression start, or 0
+    push    r22                    ; header boundary
+    move.q  r24, r22
+    la      r3, AOT_FOR_TMP_END
+    load.q  r20, (r3)
+    jsr     aot_int_expr_supported_to
+    pop     r22
+    pop     r23
+    beqz    r9, .tnf_no
+    beqz    r23, .tnf_default_step
+    move.q  r20, r23
+    jsr     aot_parse_for_step_const
+    beqz    r9, .tnf_no
+    bra     .tnf_yes
+.tnf_default_step:
+    la      r3, AOT_FOR_TMP_AFTER
+    store.q r22, (r3)
+    la      r3, AOT_FOR_TMP_STEP
+    move.q  r1, #1
+    store.q r1, (r3)
+    la      r3, AOT_FOR_TMP_SIGN
+    store.q r0, (r3)
+.tnf_yes:
+    la      r3, AOT_FOR_TMP_AFTER
+    load.q  r20, (r3)
+    move.q  r23, #1
+    move.q  r9, #1
+    rts
+.tnf_no:
+    move.q  r23, r0
+    move.q  r9, #1
+    rts
+
+aot_find_for_to:
+    move.q  r3, r20
+    move.q  r4, r0
+.fft_loop:
+    load.b  r1, (r3)
+    beqz    r1, .fft_fail
+    move.q  r2, #0x3A
+    beq     r1, r2, .fft_fail
+    move.q  r2, #0x28
+    bne     r1, r2, .fft_not_lparen
+    add.q   r4, r4, #1
+    bra     .fft_next
+.fft_not_lparen:
+    move.q  r2, #0x29
+    bne     r1, r2, .fft_not_rparen
+    beqz    r4, .fft_fail
+    sub.q   r4, r4, #1
+    bra     .fft_next
+.fft_not_rparen:
+    bnez    r4, .fft_next
+    move.q  r2, #0xA9              ; TK_TO
+    beq     r1, r2, .fft_found
+.fft_next:
+    add.q   r3, r3, #1
+    bra     .fft_loop
+.fft_found:
+    move.q  r22, r3
+    move.q  r9, #1
+    rts
+.fft_fail:
+    move.q  r9, r0
+    rts
+
+; Output R22 = header boundary, R23 = STEP expression start or 0.
+aot_find_for_end_or_step:
+    move.q  r3, r20
+    move.q  r4, r0
+.ffes_loop:
+    load.b  r1, (r3)
+    beqz    r1, .ffes_boundary
+    move.q  r2, #0x3A
+    beq     r1, r2, .ffes_boundary
+    move.q  r2, #0x28
+    bne     r1, r2, .ffes_not_lparen
+    add.q   r4, r4, #1
+    bra     .ffes_next
+.ffes_not_lparen:
+    move.q  r2, #0x29
+    bne     r1, r2, .ffes_not_rparen
+    beqz    r4, .ffes_boundary
+    sub.q   r4, r4, #1
+    bra     .ffes_next
+.ffes_not_rparen:
+    bnez    r4, .ffes_next
+    move.q  r2, #0xAE              ; TK_STEP
+    beq     r1, r2, .ffes_step
+.ffes_next:
+    add.q   r3, r3, #1
+    bra     .ffes_loop
+.ffes_step:
+    move.q  r22, r3
+    add.q   r23, r3, #1
+    move.q  r5, r23
+.ffes_step_boundary_loop:
+    load.b  r1, (r5)
+    beqz    r1, .ffes_step_boundary
+    move.q  r2, #0x3A
+    beq     r1, r2, .ffes_step_boundary
+    add.q   r5, r5, #1
+    bra     .ffes_step_boundary_loop
+.ffes_step_boundary:
+    la      r3, AOT_FOR_TMP_AFTER
+    store.q r5, (r3)
+    move.q  r9, #1
+    rts
+.ffes_boundary:
+    bnez    r4, .ffes_fail
+    move.q  r22, r3
+    move.q  r23, r0
+    move.q  r9, #1
+    rts
+.ffes_fail:
+    move.q  r9, r0
+    rts
+
+aot_parse_for_step_const:
+    jsr     aot_skip_spaces
+    move.q  r6, r0
+    load.b  r1, (r20)
+    move.q  r2, #0xB2              ; TK_MINUS
+    beq     r1, r2, .pfsc_neg
+    move.q  r2, #0x2D
+    bne     r1, r2, .pfsc_digits
+.pfsc_neg:
+    move.q  r6, #1
+    add.q   r20, r20, #1
+    jsr     aot_skip_spaces
+.pfsc_digits:
+    jsr     aot_parse_one_uint
+    beqz    r8, .pfsc_fail
+    beqz    r22, .pfsc_fail
+    jsr     aot_skip_spaces
+    la      r3, AOT_FOR_TMP_AFTER
+    load.q  r1, (r3)
+    bne     r20, r1, .pfsc_fail
+    la      r3, AOT_FOR_TMP_STEP
+    store.q r22, (r3)
+    la      r3, AOT_FOR_TMP_SIGN
+    store.q r6, (r3)
+    move.q  r9, #1
+    rts
+.pfsc_fail:
+    move.q  r9, r0
+    rts
+
+aot_emit_var_lookup_at_r20:
+    move.q  r8, r17
+    jsr     aot_emit_native_var_addr_r8
+    beqz    r9, .evla_fail
+    move.q  r17, r8
+    move.q  r9, #1
+    rts
+.evla_fail:
+    move.q  r9, r0
+    rts
+
+aot_emit_native_for_init:
+    la      r1, AOT_FOR_TMP_VAR
+    load.q  r20, (r1)
+    jsr     aot_emit_var_lookup_at_r20
+    beqz    r9, .enfi_ret
+    la      r9, aot_str_push_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    la      r1, AOT_FOR_TMP_START
+    load.q  r20, (r1)
+    jsr     aot_emit_int_expr
+    beqz    r9, .enfi_ret
+    la      r9, aot_str_pop_r1
+    jsr     aot_emit_str
+    move.q  r17, r8
+    la      r9, aot_str_storeq_r8_r1
+    jsr     aot_emit_str
+    la      r9, aot_str_movel_r9
+    move.q  r10, #VAL_I64
+    jsr     aot_emit_movel
+    la      r9, aot_str_storel_r9_tag_r1
+    jsr     aot_emit_str
+    la      r1, AOT_FOR_TMP_AFTER
+    load.q  r20, (r1)
+    move.q  r9, #1
+.enfi_ret:
+    rts
+
+aot_emit_native_next:
+    la      r1, AOT_FOR_TMP_LABEL
+    store.q r25, (r1)
+    la      r1, AOT_FOR_SP
+    load.q  r2, (r1)
+    lsl.q   r4, r2, #3
+    la      r3, AOT_FOR_VAR_STACK
+    add.q   r3, r3, r4
+    load.q  r20, (r3)
+    jsr     aot_emit_var_lookup_at_r20
+    beqz    r9, .enn_ret
+    la      r9, aot_str_for_next_load
+    jsr     aot_emit_str
+    move.q  r17, r8
+    la      r1, AOT_FOR_SP
+    load.q  r2, (r1)
+    lsl.q   r4, r2, #3
+    la      r3, AOT_FOR_STEP_STACK
+    add.q   r3, r3, r4
+    load.q  r10, (r3)
+    la      r3, AOT_FOR_SIGN_STACK
+    add.q   r3, r3, r4
+    load.q  r1, (r3)
+    bnez    r1, .enn_sub
+    la      r9, aot_str_addq_r1_imm
+    jsr     aot_emit_movel
+    bra     .enn_store
+.enn_sub:
+    la      r9, aot_str_subq_r1_imm
+    jsr     aot_emit_movel
+.enn_store:
+    la      r9, aot_str_for_next_store
+    jsr     aot_emit_str
+    la      r9, aot_str_push_r1
+    jsr     aot_emit_str
+    move.q  r17, r8
+    la      r1, AOT_FOR_SP
+    load.q  r2, (r1)
+    lsl.q   r4, r2, #3
+    la      r3, AOT_FOR_END_STACK
+    add.q   r3, r3, r4
+    load.q  r20, (r3)
+    jsr     aot_emit_int_expr
+    beqz    r9, .enn_ret
+    la      r9, aot_str_pop_r1
+    jsr     aot_emit_str
+    move.q  r17, r8
+    la      r1, AOT_FOR_SP
+    load.q  r2, (r1)
+    lsl.q   r4, r2, #3
+    la      r3, AOT_FOR_SIGN_STACK
+    add.q   r3, r3, r4
+    load.q  r1, (r3)
+    bnez    r1, .enn_branch_neg
+    la      r1, AOT_FOR_TMP_LABEL
+    load.q  r10, (r1)
+    la      r9, aot_str_bgt_fd
+    jsr     aot_emit_movel
+    bra     .enn_branch_join
+.enn_branch_neg:
+    la      r1, AOT_FOR_TMP_LABEL
+    load.q  r10, (r1)
+    la      r9, aot_str_blt_fd
+    jsr     aot_emit_movel
+.enn_branch_join:
+    la      r1, AOT_FOR_TMP_LABEL
+    load.q  r10, (r1)
+    la      r9, aot_str_bra_f
+    jsr     aot_emit_movel
+    la      r1, AOT_FOR_TMP_LABEL
+    load.q  r10, (r1)
+    la      r9, aot_str_lbl_fd
+    jsr     aot_emit_label_named
+    move.q  r17, r8
+    move.q  r9, #1
+.enn_ret:
+    rts
+
+; aot_try_emit_int_condition - emit a native integer comparison condition.
+; Supported forms are <int-expr> <cmp> <int-expr>, with <, <=, <>, >, >= and =.
+; Claimed conditions leave runtime R8 = 0 or 1 and R20 at the RHS expression end.
+; Input: R20 = condition start, R8 = output cursor. Output: R23 claimed flag,
+; R9 ok flag.
+aot_try_emit_int_condition:
+    move.q  r23, r0
+    move.q  r26, r20
+    move.q  r27, r8
+    jsr     aot_find_top_cmp
+    beqz    r9, .tic_no
+    move.q  r28, r22               ; comparison token pointer
+    move.q  r29, r24               ; RHS start
+    move.q  r1, r23                ; comparison kind
+    push    r1
+    move.q  r24, r28
+    move.q  r20, r26
+    jsr     aot_int_expr_supported_to
+    beqz    r9, .tic_no_restore_pop
+    move.q  r20, r29
+    jsr     aot_find_then_boundary
+    beqz    r9, .tic_no_restore_pop
+    move.q  r24, r22               ; RHS end boundary
+    move.q  r20, r29
+    jsr     aot_int_expr_supported_to
+    beqz    r9, .tic_no_restore_pop
+    pop     r28                    ; comparison kind, kept away from var-read R25
+    move.q  r20, r26
+    move.q  r8, r27
+    jsr     aot_emit_int_expr
+    beqz    r9, .tic_fail
+    la      r9, aot_str_push_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    move.q  r20, r29
+    jsr     aot_emit_int_expr
+    beqz    r9, .tic_fail
+    la      r9, aot_str_pop_r1
+    jsr     aot_emit_str
+    move.q  r17, r8
+    move.q  r23, r28
+    jsr     aot_emit_int_cmp_result
+    beqz    r9, .tic_fail
+    move.q  r23, #1
+    move.q  r9, #1
+    rts
+.tic_no_restore_pop:
+    pop     r1
+.tic_no_restore:
+    move.q  r20, r26
+    move.q  r8, r27
+.tic_no:
+    move.q  r23, r0
+    move.q  r9, #1
+    rts
+.tic_fail:
+    move.q  r23, #1
+    move.q  r9, r0
+    rts
+
+; Find the first top-level comparison operator before THEN/ELSE/end.
+; Output: R22 = operator pointer, R23 = kind (0 <, 1 <=, 2 <>, 3 >, 4 >=, 5 =),
+; R24 = RHS start, R9 = 1 if found.
+aot_find_top_cmp:
+    move.q  r3, r20
+    move.q  r4, r0
+.ftc_loop:
+    load.b  r1, (r3)
+    beqz    r1, .ftc_fail
+    move.q  r2, #0xAC
+    beq     r1, r2, .ftc_fail
+    move.q  r2, #0xAB
+    beq     r1, r2, .ftc_fail
+    move.q  r2, #0x28
+    bne     r1, r2, .ftc_not_lparen
+    add.q   r4, r4, #1
+    bra     .ftc_next
+.ftc_not_lparen:
+    move.q  r2, #0x29
+    bne     r1, r2, .ftc_not_rparen
+    beqz    r4, .ftc_fail
+    sub.q   r4, r4, #1
+    bra     .ftc_next
+.ftc_not_rparen:
+    bnez    r4, .ftc_next
+    move.q  r2, #0xBD
+    beq     r1, r2, .ftc_lt
+    move.q  r2, #0xBB
+    beq     r1, r2, .ftc_gt
+    move.q  r2, #0xBC
+    beq     r1, r2, .ftc_eq
+.ftc_next:
+    add.q   r3, r3, #1
+    bra     .ftc_loop
+.ftc_lt:
+    move.q  r22, r3
+    move.q  r23, r0                ; <
+    add.q   r24, r3, #1
+    load.b  r1, (r24)
+    move.q  r2, #0x3D
+    beq     r1, r2, .ftc_le
+    move.q  r2, #0xBC
+    beq     r1, r2, .ftc_le
+    move.q  r2, #0x3E
+    beq     r1, r2, .ftc_ne
+    move.q  r2, #0xBB
+    beq     r1, r2, .ftc_ne
+    move.q  r9, #1
+    rts
+.ftc_le:
+    move.q  r23, #1
+    add.q   r24, r24, #1
+    move.q  r9, #1
+    rts
+.ftc_ne:
+    move.q  r23, #2
+    add.q   r24, r24, #1
+    move.q  r9, #1
+    rts
+.ftc_gt:
+    move.q  r22, r3
+    move.q  r23, #3                ; >
+    add.q   r24, r3, #1
+    load.b  r1, (r24)
+    move.q  r2, #0x3D
+    beq     r1, r2, .ftc_ge
+    move.q  r2, #0xBC
+    beq     r1, r2, .ftc_ge
+    move.q  r9, #1
+    rts
+.ftc_ge:
+    move.q  r23, #4
+    add.q   r24, r24, #1
+    move.q  r9, #1
+    rts
+.ftc_eq:
+    move.q  r22, r3
+    move.q  r23, #5
+    add.q   r24, r3, #1
+    move.q  r9, #1
+    rts
+.ftc_fail:
+    move.q  r9, r0
+    rts
+
+aot_find_then_boundary:
+    move.q  r3, r20
+    move.q  r4, r0
+.ftb_loop:
+    load.b  r1, (r3)
+    beqz    r1, .ftb_fail
+    move.q  r2, #0xAC
+    beq     r1, r2, .ftb_done
+    move.q  r2, #0xAB
+    beq     r1, r2, .ftb_done
+    move.q  r2, #0x28
+    bne     r1, r2, .ftb_not_lparen
+    add.q   r4, r4, #1
+    bra     .ftb_next
+.ftb_not_lparen:
+    move.q  r2, #0x29
+    bne     r1, r2, .ftb_next
+    beqz    r4, .ftb_done
+    sub.q   r4, r4, #1
+.ftb_next:
+    add.q   r3, r3, #1
+    bra     .ftb_loop
+.ftb_done:
+    move.q  r22, r3
+    move.q  r9, #1
+    rts
+.ftb_fail:
+    move.q  r9, r0
+    rts
+
+; R20=start, R24=end. Output R9=1 when the integer expression subset covers all
+; tokens in [start,end), ignoring spaces.
+aot_int_expr_supported_to:
+    move.q  r3, r20
+    move.q  r4, r0
+    move.q  r5, r0
+.iest_loop:
+    beq     r3, r24, .iest_done
+    load.b  r1, (r3)
+    move.q  r2, #0x20
+    beq     r1, r2, .iest_next
+    move.q  r2, #0x29
+    bne     r1, r2, .iest_not_rparen
+    beqz    r4, .iest_fail
+    sub.q   r4, r4, #1
+    move.q  r5, #1
+    bra     .iest_next
+.iest_not_rparen:
+    move.q  r2, #0x28
+    bne     r1, r2, .iest_not_lparen
+    add.q   r4, r4, #1
+    move.q  r5, #1
+    bra     .iest_next
+.iest_not_lparen:
+    move.q  r2, #0x30
+    blt     r1, r2, .iest_ops
+    move.q  r2, #0x39
+    ble     r1, r2, .iest_digits
+.iest_ops:
+    move.q  r2, #0xB1
+    beq     r1, r2, .iest_supported_one
+    move.q  r2, #0xB2
+    beq     r1, r2, .iest_supported_one
+    move.q  r2, #0xB3
+    beq     r1, r2, .iest_supported_one
+    move.q  r2, #0xB4
+    beq     r1, r2, .iest_supported_one
+    move.q  r2, #0xB6
+    beq     r1, r2, .iest_supported_one
+    move.q  r2, #0xBF
+    beq     r1, r2, .iest_fail     ; INT can contain FP work; let expr_eval preserve it
+    move.q  r2, #0xCC
+    beq     r1, r2, .iest_supported_one
+    move.q  r2, #0x92
+    bne     r1, r2, .iest_var
+    add.q   r6, r3, #1
+    beq     r6, r24, .iest_fail
+    load.b  r1, (r6)
+    move.q  r2, #0x07
+    beq     r1, r2, .iest_ext_ok
+    move.q  r2, #0x09
+    bne     r1, r2, .iest_fail
+.iest_ext_ok:
+    add.q   r3, r3, #1
+    move.q  r5, #1
+    bra     .iest_next
+.iest_var:
+    or.q    r2, r1, #0x20
+    move.q  r6, #0x61
+    blt     r2, r6, .iest_fail
+    move.q  r6, #0x7A
+    bgt     r2, r6, .iest_fail
+    move.q  r6, r3
+.iest_var_scan:
+    beq     r6, r24, .iest_var_ok
+    load.b  r1, (r6)
+    or.q    r7, r1, #0x20
+    move.q  r2, #0x61
+    blt     r7, r2, .iest_var_digit
+    move.q  r2, #0x7A
+    ble     r7, r2, .iest_var_adv
+.iest_var_digit:
+    move.q  r2, #0x30
+    blt     r1, r2, .iest_var_end
+    move.q  r2, #0x39
+    bgt     r1, r2, .iest_var_end
+.iest_var_adv:
+    add.q   r6, r6, #1
+    bra     .iest_var_scan
+.iest_var_end:
+    move.q  r2, #0x24
+    beq     r1, r2, .iest_fail
+    move.q  r2, #0x28
+    beq     r1, r2, .iest_array
+.iest_var_ok:
+    move.q  r3, r6
+    move.q  r5, #1
+    bra     .iest_loop
+.iest_array:
+    move.q  r7, #1
+    add.q   r6, r6, #1
+.iest_array_loop:
+    beq     r6, r24, .iest_fail
+    load.b  r1, (r6)
+    move.q  r2, #0x28
+    beq     r1, r2, .iest_array_lparen
+    move.q  r2, #0x29
+    beq     r1, r2, .iest_array_rparen
+    add.q   r6, r6, #1
+    bra     .iest_array_loop
+.iest_array_lparen:
+    add.q   r7, r7, #1
+    add.q   r6, r6, #1
+    bra     .iest_array_loop
+.iest_array_rparen:
+    sub.q   r7, r7, #1
+    add.q   r6, r6, #1
+    bnez    r7, .iest_array_loop
+    bra     .iest_var_ok
+.iest_digits:
+.iest_digit_loop:
+    beq     r3, r24, .iest_digit_done
+    load.b  r1, (r3)
+    move.q  r2, #0x30
+    blt     r1, r2, .iest_digit_done
+    move.q  r2, #0x39
+    bgt     r1, r2, .iest_digit_done
+    add.q   r3, r3, #1
+    bra     .iest_digit_loop
+.iest_digit_done:
+    move.q  r5, #1
+    bra     .iest_loop
+.iest_supported_one:
+    move.q  r5, #1
+.iest_next:
+    add.q   r3, r3, #1
+    bra     .iest_loop
+.iest_done:
+    bnez    r4, .iest_fail
+    move.q  r9, r5
+    rts
+.iest_fail:
+    move.q  r9, r0
+    rts
+
+aot_emit_int_cmp_result:
+    la      r1, AOT_LBLCNT
+    load.q  r25, (r1)
+    add.q   r2, r25, #1
+    store.q r2, (r1)
+    move.q  r1, #5
+    beq     r23, r1, .eic_eq
+    move.q  r1, #4
+    beq     r23, r1, .eic_ge
+    move.q  r1, #3
+    beq     r23, r1, .eic_gt
+    move.q  r1, #2
+    beq     r23, r1, .eic_ne
+    move.q  r1, #1
+    beq     r23, r1, .eic_le
+    la      r9, aot_str_blt_ic
+    move.q  r10, r25
+    jsr     aot_emit_movel
+    bra     .eic_join
+.eic_le:
+    la      r9, aot_str_blt_ic
+    move.q  r10, r25
+    jsr     aot_emit_movel
+    la      r9, aot_str_beq_ic
+    move.q  r10, r25
+    jsr     aot_emit_movel
+    bra     .eic_join
+.eic_ne:
+    la      r9, aot_str_bne_ic
+    move.q  r10, r25
+    jsr     aot_emit_movel
+    bra     .eic_join
+.eic_gt:
+    la      r9, aot_str_bgt_ic
+    move.q  r10, r25
+    jsr     aot_emit_movel
+    bra     .eic_join
+.eic_ge:
+    la      r9, aot_str_bgt_ic
+    move.q  r10, r25
+    jsr     aot_emit_movel
+    la      r9, aot_str_beq_ic
+    move.q  r10, r25
+    jsr     aot_emit_movel
+    bra     .eic_join
+.eic_eq:
+    la      r9, aot_str_beq_ic
+    move.q  r10, r25
+    jsr     aot_emit_movel
+.eic_join:
+    la      r9, aot_str_cmp_false
+    jsr     aot_emit_str
+    la      r9, aot_str_bra_id
+    move.q  r10, r25
+    jsr     aot_emit_movel
+    la      r9, aot_str_lbl_ic
+    move.q  r10, r25
+    jsr     aot_emit_label_named
+    la      r9, aot_str_cmp_true_set
+    jsr     aot_emit_str
+    la      r9, aot_str_lbl_id
+    move.q  r10, r25
+    jsr     aot_emit_label_named
+    move.q  r17, r8
+    move.q  r9, #1
+    rts
+
+; aot_try_emit_int_expr - emit a native integer expression for the hot scalar
+; subset: decimal/hex literals, numeric variables, PEEK/PEEK8/PEEK32, +, -,
+; *, /, AND, and parentheses. Unsupported expressions leave R23 = 0 and emit
+; nothing. Claimed expressions leave runtime R8 = value, R9 = VAL_I64.
+; Input: R20 = expression start, R8 = output cursor. Output: R23 claimed flag,
+; R9 ok flag. R20 advances to the expression boundary when claimed.
+aot_try_emit_int_expr:
+    move.q  r23, r0
+    move.q  r26, r20
+    move.q  r27, r8
+    jsr     aot_int_expr_supported
+    beqz    r9, .tie_no
+    move.q  r20, r26
+    move.q  r8, r27
+    jsr     aot_emit_int_expr
+    beqz    r9, .tie_fail
+    la      r9, aot_str_movel_r9
+    move.q  r10, #VAL_I64
+    jsr     aot_emit_movel
+    move.q  r17, r8
+    move.q  r23, #1
+    move.q  r9, #1
+    rts
+.tie_no:
+    move.q  r20, r26
+    move.q  r8, r27
+    move.q  r9, #1
+    rts
+.tie_fail:
+    move.q  r23, #1
+    move.q  r9, r0
+    rts
+
+; aot_int_expr_supported - conservative token pre-scan for aot_try_emit_int_expr.
+; Stops at null, ':', ',', THEN, ELSE, or ')' at depth zero.
+; Input R20. Output R9 = 1 supported and non-empty, 0 unsupported. Preserves R20.
+aot_int_expr_supported:
+    move.q  r3, r20
+    move.q  r4, r0                  ; paren depth
+    move.q  r5, r0                  ; saw any token
+.ies_loop:
+    load.b  r1, (r3)
+    beqz    r1, .ies_done
+    move.q  r2, #0x3A               ; ':'
+    beq     r1, r2, .ies_done
+    move.q  r2, #0x2C               ; ','
+    beq     r1, r2, .ies_done
+    move.q  r2, #0xAC
+    beq     r1, r2, .ies_done
+    move.q  r2, #0xAB
+    beq     r1, r2, .ies_done
+    move.q  r2, #0x20
+    beq     r1, r2, .ies_next
+    move.q  r2, #0x29               ; ')'
+    bne     r1, r2, .ies_not_rparen
+    beqz    r4, .ies_done
+    sub.q   r4, r4, #1
+    move.q  r5, #1
+    bra     .ies_next
+.ies_not_rparen:
+    move.q  r2, #0x28               ; '('
+    bne     r1, r2, .ies_not_lparen
+    add.q   r4, r4, #1
+    move.q  r5, #1
+    bra     .ies_next
+.ies_not_lparen:
+    move.q  r2, #0x26               ; '&H' hex literal
+    beq     r1, r2, .ies_uint_parse
+    move.q  r2, #0x30
+    blt     r1, r2, .ies_ops
+    move.q  r2, #0x39
+    ble     r1, r2, .ies_digits
+.ies_ops:
+    move.q  r2, #0xB1
+    beq     r1, r2, .ies_supported_one
+    move.q  r2, #0xB2
+    beq     r1, r2, .ies_supported_one
+    move.q  r2, #0xB3
+    beq     r1, r2, .ies_supported_one
+    move.q  r2, #0xB4
+    beq     r1, r2, .ies_supported_one
+    move.q  r2, #0xB6
+    beq     r1, r2, .ies_supported_one
+    move.q  r2, #0xBF
+    beq     r1, r2, .ies_fail      ; INT can contain FP work; let expr_eval preserve it
+    move.q  r2, #0xCC
+    beq     r1, r2, .ies_supported_one
+    move.q  r2, #0x92
+    bne     r1, r2, .ies_var
+    load.b  r1, 1(r3)
+    move.q  r2, #0x07
+    beq     r1, r2, .ies_ext_ok
+    move.q  r2, #0x09
+    bne     r1, r2, .ies_fail
+.ies_ext_ok:
+    add.q   r3, r3, #1
+    move.q  r5, #1
+    bra     .ies_next
+.ies_var:
+    or.q    r2, r1, #0x20
+    move.q  r6, #0x61
+    blt     r2, r6, .ies_fail
+    move.q  r6, #0x7A
+    bgt     r2, r6, .ies_fail
+    move.q  r6, r3
+.ies_var_scan:
+    load.b  r1, (r6)
+    or.q    r7, r1, #0x20
+    move.q  r2, #0x61
+    blt     r7, r2, .ies_var_digit
+    move.q  r2, #0x7A
+    ble     r7, r2, .ies_var_adv
+.ies_var_digit:
+    move.q  r2, #0x30
+    blt     r1, r2, .ies_var_end
+    move.q  r2, #0x39
+    bgt     r1, r2, .ies_var_end
+.ies_var_adv:
+    add.q   r6, r6, #1
+    bra     .ies_var_scan
+.ies_var_end:
+    move.q  r2, #0x24
+    beq     r1, r2, .ies_fail
+    move.q  r2, #0x28
+    beq     r1, r2, .ies_array
+    move.q  r3, r6
+    move.q  r5, #1
+    bra     .ies_loop
+.ies_array:
+    move.q  r7, #1
+    add.q   r6, r6, #1
+.ies_array_loop:
+    load.b  r1, (r6)
+    beqz    r1, .ies_fail
+    move.q  r2, #0x28
+    beq     r1, r2, .ies_array_lparen
+    move.q  r2, #0x29
+    beq     r1, r2, .ies_array_rparen
+    add.q   r6, r6, #1
+    bra     .ies_array_loop
+.ies_array_lparen:
+    add.q   r7, r7, #1
+    add.q   r6, r6, #1
+    bra     .ies_array_loop
+.ies_array_rparen:
+    sub.q   r7, r7, #1
+    add.q   r6, r6, #1
+    bnez    r7, .ies_array_loop
+    move.q  r3, r6
+    move.q  r5, #1
+    bra     .ies_loop
+.ies_digits:
+.ies_digit_loop:
+    load.b  r1, (r3)
+    move.q  r2, #0x30
+    blt     r1, r2, .ies_digit_done
+    move.q  r2, #0x39
+    bgt     r1, r2, .ies_digit_done
+    add.q   r3, r3, #1
+    bra     .ies_digit_loop
+.ies_digit_done:
+    move.q  r5, #1
+    bra     .ies_loop
+.ies_uint_parse:
+    push    r4
+    move.q  r8, r3
+    jsr     aot_parse_uint
+    pop     r4
+    beqz    r9, .ies_fail
+    move.q  r3, r10
+    move.q  r5, #1
+    bra     .ies_loop
+.ies_supported_one:
+    move.q  r5, #1
+.ies_next:
+    add.q   r3, r3, #1
+    bra     .ies_loop
+.ies_done:
+    bnez    r4, .ies_fail
+    move.q  r9, r5
+    rts
+.ies_fail:
+    move.q  r9, r0
+    rts
+
+; Recursive-descent emitter for the supported integer subset.
+aot_emit_int_expr:
+    jsr     aot_emit_int_term
+    beqz    r9, .aie_ret
+.aie_loop:
+    jsr     aot_skip_spaces
+    load.b  r1, (r20)
+    move.q  r2, #0xB1
+    beq     r1, r2, .aie_add
+    move.q  r2, #0xB2
+    beq     r1, r2, .aie_sub
+    move.q  r2, #0xB6
+    beq     r1, r2, .aie_and
+    move.q  r9, #1
+    rts
+.aie_add:
+    add.q   r20, r20, #1
+    la      r9, aot_str_push_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    jsr     aot_emit_int_term
+    beqz    r9, .aie_ret
+    la      r9, aot_str_pop_r1
+    jsr     aot_emit_str
+    move.q  r17, r8
+    la      r9, aot_str_addq_r8_r1_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    bra     .aie_loop
+.aie_sub:
+    add.q   r20, r20, #1
+    la      r9, aot_str_push_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    jsr     aot_emit_int_term
+    beqz    r9, .aie_ret
+    la      r9, aot_str_pop_r1
+    jsr     aot_emit_str
+    move.q  r17, r8
+    la      r9, aot_str_subq_r8_r1_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    bra     .aie_loop
+.aie_and:
+    add.q   r20, r20, #1
+    la      r9, aot_str_push_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    jsr     aot_emit_int_term
+    beqz    r9, .aie_ret
+    la      r9, aot_str_pop_r1
+    jsr     aot_emit_str
+    move.q  r17, r8
+    la      r9, aot_str_andq_r8_r1_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    bra     .aie_loop
+.aie_ret:
+    rts
+
+aot_emit_int_term:
+    jsr     aot_emit_int_factor
+    beqz    r9, .ait_ret
+.ait_loop:
+    jsr     aot_skip_spaces
+    load.b  r1, (r20)
+    move.q  r2, #0xB3
+    beq     r1, r2, .ait_mul
+    move.q  r2, #0xB4
+    beq     r1, r2, .ait_div
+    move.q  r9, #1
+    rts
+.ait_mul:
+    add.q   r20, r20, #1
+    la      r9, aot_str_push_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    jsr     aot_emit_int_factor
+    beqz    r9, .ait_ret
+    la      r9, aot_str_pop_r1
+    jsr     aot_emit_str
+    move.q  r17, r8
+    la      r9, aot_str_mulsq_r8_r1_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    bra     .ait_loop
+.ait_div:
+    add.q   r20, r20, #1
+    la      r9, aot_str_push_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    jsr     aot_emit_int_factor
+    beqz    r9, .ait_ret
+    la      r9, aot_str_pop_r1
+    jsr     aot_emit_str
+    move.q  r17, r8
+    la      r9, aot_str_divsq_r8_r1_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    bra     .ait_loop
+.ait_ret:
+    rts
+
+aot_emit_int_factor:
+    jsr     aot_skip_spaces
+    load.b  r1, (r20)
+    move.q  r2, #0xB1               ; unary '+'
+    beq     r1, r2, .aif_unary_plus
+    move.q  r2, #0xB2               ; unary '-'
+    beq     r1, r2, .aif_unary_minus
+    move.q  r2, #0x28               ; '('
+    beq     r1, r2, .aif_paren
+    move.q  r2, #0xBF
+    beq     r1, r2, .aif_int
+    move.q  r2, #0xCC
+    beq     r1, r2, .aif_peek
+    move.q  r2, #0x92
+    beq     r1, r2, .aif_peek
+    move.q  r2, #0x26               ; '&H' hex literal
+    beq     r1, r2, .aif_uint
+    move.q  r2, #0x30
+    blt     r1, r2, .aif_var
+    move.q  r2, #0x39
+    ble     r1, r2, .aif_uint
+.aif_var:
+    or.q    r2, r1, #0x20
+    move.q  r3, #0x61
+    blt     r2, r3, .aif_fail
+    move.q  r3, #0x7A
+    bgt     r2, r3, .aif_fail
+    jsr     aot_var_atom_is_array
+    bnez    r9, .aif_array
+    jsr     aot_emit_var_read_atom
+    rts
+.aif_array:
+    bnez    r21, .aif_fail          ; standalone uses bundled expr_eval for arrays
+    jsr     aot_emit_array_read_atom
+    rts
+.aif_uint:
+    jsr     aot_parse_one_uint
+    beqz    r8, .aif_fail
+    move.q  r10, r22
+    move.q  r8, r17
+    move.q  r1, r22
+    lsr.q   r1, r1, #32
+    beqz    r1, .aif_uint_32
+    la      r9, aot_str_moveq_r8_imm
+    jsr     aot_emit_movel
+    move.q  r17, r8
+    move.q  r9, #1
+    rts
+.aif_uint_32:
+    la      r9, aot_str_movel_r8
+    jsr     aot_emit_movel
+    move.q  r17, r8
+    move.q  r9, #1
+    rts
+.aif_paren:
+    add.q   r20, r20, #1
+    jsr     aot_emit_int_expr
+    beqz    r9, .aif_ret
+    jsr     aot_skip_spaces
+    load.b  r1, (r20)
+    move.q  r2, #0x29
+    bne     r1, r2, .aif_fail
+    add.q   r20, r20, #1
+    move.q  r9, #1
+    rts
+.aif_int:
+    add.q   r20, r20, #1
+    jsr     aot_skip_spaces
+    load.b  r1, (r20)
+    move.q  r2, #0x28
+    bne     r1, r2, .aif_fail
+    bra     .aif_paren
+.aif_peek:
+    jsr     aot_try_emit_peek_rhs
+    move.q  r1, #1
+    beq     r23, r1, .aif_peek_ok
+    bra     .aif_fail
+.aif_peek_ok:
+    move.q  r9, #1
+    rts
+.aif_unary_plus:
+    add.q   r20, r20, #1
+    jsr     aot_emit_int_factor
+    rts
+.aif_unary_minus:
+    add.q   r20, r20, #1
+    jsr     aot_emit_int_factor
+    beqz    r9, .aif_ret
+    la      r9, aot_str_negq_r8
+    jsr     aot_emit_str
+    move.q  r17, r8
+    move.q  r9, #1
+    rts
+.aif_fail:
+    move.q  r9, r0
+.aif_ret:
+    rts
+
+aot_emit_var_read_atom:
+    move.q  r25, r20
+    move.q  r8, r17
+    jsr     aot_emit_native_var_addr_r8
+    beqz    r9, .avra_fail
+    move.q  r17, r8
+    la      r9, aot_str_load_var_value_r8_tag_r9
+    jsr     aot_emit_str
+    jsr     aot_emit_expr_to_i64_if_needed
+    beqz    r9, .avra_fail
+    move.q  r17, r8
+    move.q  r20, r25
+    jsr     aot_skip_var_name
+    move.q  r9, #1
+    rts
+.avra_fail:
+    move.q  r9, r0
+    rts
+
+; aot_var_atom_is_array - R9=1 if the variable name at R20 is followed by '('.
+; Preserves R20.
+aot_var_atom_is_array:
+    move.q  r3, r20
+    load.b  r1, (r3)
+    or.q    r2, r1, #0x20
+    move.q  r4, #0x61
+    blt     r2, r4, .ava_no
+    move.q  r4, #0x7A
+    bgt     r2, r4, .ava_no
+    add.q   r3, r3, #1
+.ava_loop:
+    load.b  r1, (r3)
+    or.q    r2, r1, #0x20
+    move.q  r4, #0x61
+    blt     r2, r4, .ava_digit
+    move.q  r4, #0x7A
+    ble     r2, r4, .ava_next
+.ava_digit:
+    move.q  r4, #0x30
+    blt     r1, r4, .ava_end
+    move.q  r4, #0x39
+    bgt     r1, r4, .ava_end
+.ava_next:
+    add.q   r3, r3, #1
+    bra     .ava_loop
+.ava_end:
+    move.q  r2, #0x28
+    beq     r1, r2, .ava_yes
+.ava_no:
+    move.q  r9, r0
+    rts
+.ava_yes:
+    move.q  r9, #1
+    rts
+
+; aot_skip_array_atom - advance R20 over NAME(...), including nested parentheses.
+; Input/output R20. Output R9=1 on success.
+aot_skip_array_atom:
+    jsr     aot_skip_var_name
+    load.b  r1, (r20)
+    move.q  r2, #0x28
+    bne     r1, r2, .asaa_fail
+    move.q  r3, #1
+    add.q   r20, r20, #1
+.asaa_loop:
+    load.b  r1, (r20)
+    beqz    r1, .asaa_fail
+    move.q  r2, #0x28
+    beq     r1, r2, .asaa_lparen
+    move.q  r2, #0x29
+    beq     r1, r2, .asaa_rparen
+    add.q   r20, r20, #1
+    bra     .asaa_loop
+.asaa_lparen:
+    add.q   r3, r3, #1
+    add.q   r20, r20, #1
+    bra     .asaa_loop
+.asaa_rparen:
+    sub.q   r3, r3, #1
+    add.q   r20, r20, #1
+    bnez    r3, .asaa_loop
+    move.q  r9, #1
+    rts
+.asaa_fail:
+    move.q  r9, r0
+    rts
+
+; aot_emit_array_read_atom - RUN AOT one-dimensional array atom lowering.
+; Leaves runtime R8 as integer payload, R9 = VAL_I64, and R20 past the atom.
+aot_emit_array_read_atom:
+    move.q  r25, r20
+    jsr     aot_parse_compiler_var_name
+    beqz    r15, .aear_fail
+    load.b  r1, (r22)
+    move.q  r2, #0x28
+    bne     r1, r2, .aear_fail
+    push    r14
+    add.q   r20, r22, #1
+    move.q  r8, r17
+    jsr     aot_emit_int_expr       ; runtime R8 = subscript
+    pop     r14
+    beqz    r9, .aear_fail
+    jsr     aot_skip_spaces
+    load.b  r1, (r20)
+    move.q  r2, #0x29
+    bne     r1, r2, .aear_fail
+    add.q   r20, r20, #1
+    la      r9, aot_str_push_r8     ; preserve subscript across arr_find
+    jsr     aot_emit_str
+    la      r9, aot_str_movel_r14
+    move.q  r10, r14
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r6
+    move.q  r10, #arr_find
+    jsr     aot_emit_movel
+    la      r9, aot_str_jsr_r6
+    jsr     aot_emit_str
+    la      r9, aot_str_pop_r1      ; R1 = subscript, R8 = array base
+    jsr     aot_emit_str
+    la      r9, aot_str_lslq_r1_4   ; public cells are 16 bytes
+    jsr     aot_emit_str
+    la      r9, aot_str_addq_r8_r8_r1
+    jsr     aot_emit_str
+    la      r9, aot_str_addq_r8_40  ; one dim: base + 24 header + 8 dim + 8 payload
+    jsr     aot_emit_str
+    la      r9, aot_str_load_var_value_r8_tag_r9
+    jsr     aot_emit_str
+    jsr     aot_emit_expr_to_i64_if_needed
+    beqz    r9, .aear_fail
+    move.q  r17, r8
+    move.q  r9, #1
+    rts
+.aear_fail:
+    move.q  r20, r25
+    move.q  r9, r0
+    rts
+
+aot_emit_int_expr_to_i64_tagged:
+    jsr     aot_emit_expr_to_i64_if_needed
+    beqz    r9, .aeiit_ret
+    jsr     aot_emit_int_i64_tag
+.aeiit_ret:
+    rts
+
+aot_emit_int_i64_tag:
+    la      r9, aot_str_movel_r9
+    move.q  r10, #VAL_I64
+    jsr     aot_emit_movel
+    move.q  r17, r8
+    rts
+
+; aot_try_emit_memalloc_rhs - recognise MEMALLOC(<uint>[,<uint>]) and lower it
+; to a deterministic low32 allocation. This covers the hardware-facing allocation
+; pattern used by AOT demos without entering expr_eval during initialisation.
+; Unsupported forms leave R23 = 0 and emit nothing.
+aot_try_emit_memalloc_rhs:
+    move.q  r23, r0
+    move.q  r26, r20
+    move.q  r27, r8
+    load.b  r1, (r20)
+    move.q  r2, #0x92              ; TK_EXT
+    bne     r1, r2, .tem_no
+    load.b  r1, 1(r20)
+    move.q  r2, #0x02              ; EXT_MEMALLOC
+    bne     r1, r2, .tem_no
+    load.b  r1, 2(r20)
+    move.q  r2, #0x28
+    bne     r1, r2, .tem_no
+    add.q   r20, r20, #3
+    jsr     aot_skip_spaces
+    jsr     aot_parse_one_uint
+    beqz    r8, .tem_restore_no
+    move.q  r12, r22               ; size
+    jsr     aot_skip_spaces
+    move.q  r13, #16               ; default alignment
+    load.b  r1, (r20)
+    move.q  r2, #0x2C
+    bne     r1, r2, .tem_expect_rparen
+    add.q   r20, r20, #1
+    jsr     aot_skip_spaces
+    jsr     aot_parse_one_uint
+    beqz    r8, .tem_restore_no
+    move.q  r13, r22
+    jsr     aot_skip_spaces
+.tem_expect_rparen:
+    load.b  r1, (r20)
+    move.q  r2, #0x29
+    bne     r1, r2, .tem_restore_no
+    add.q   r20, r20, #1
+    beqz    r13, .tem_restore_no
+    jsr     aot_native_memalloc_const
+    beqz    r9, .tem_restore_no
+    move.q  r8, r27
+    la      r9, aot_str_movel_r8
+    move.q  r10, r24               ; allocated address
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r9
+    move.q  r10, #VAL_I64
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r1
+    move.q  r10, #(BASIC_STATE + ST_PRIV_MEMALLOC_CURSOR)
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r2
+    move.q  r10, r25               ; new cursor
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_q
+    jsr     aot_emit_str
+    la      r9, aot_str_movel_r1
+    move.q  r10, #(BASIC_STATE + ST_PRIV_MEMALLOC_RANGE)
+    jsr     aot_emit_movel
+    la      r9, aot_str_movel_r2
+    move.q  r10, r30               ; new range index
+    jsr     aot_emit_movel
+    la      r9, aot_str_store_q
+    jsr     aot_emit_str
+    move.q  r17, r8
+    move.q  r23, #1
+    move.q  r9, #1
+    rts
+.tem_restore_no:
+    move.q  r20, r26
+    move.q  r8, r27
+.tem_no:
+    move.q  r9, #1
+    rts
+
+; Input R12=size, R13=alignment. Output R24=addr, R25=new cursor, R30=range.
+aot_native_memalloc_const:
+    la      r1, AOT_NATIVE_MEM_NEXT
+    load.q  r24, (r1)
+    la      r1, AOT_NATIVE_MEM_RANGE
+    load.q  r30, (r1)
+.anmc_try:
+    move.q  r1, r13
+    sub.q   r1, r1, #1
+    move.q  r2, r24
+    and.q   r2, r2, r1
+    beqz    r2, .anmc_aligned
+    add.q   r24, r24, r13
+    sub.q   r24, r24, r2
+.anmc_aligned:
+    add.q   r25, r24, r12
+    move.q  r3, #0
+    beq     r30, r3, .anmc_range0
+    move.q  r3, #1
+    beq     r30, r3, .anmc_range1
+    move.q  r3, #2
+    beq     r30, r3, .anmc_range2
+    bra     .anmc_fail
+.anmc_range0:
+    move.q  r3, #BASIC_MEMALLOC_END0
+    ble     r25, r3, .anmc_commit
+    move.q  r24, #BASIC_MEMALLOC_BASE1
+    move.q  r30, #1
+    bra     .anmc_try
+.anmc_range1:
+    move.q  r3, #BASIC_MEMALLOC_END1
+    ble     r25, r3, .anmc_commit
+    move.q  r24, #BASIC_MEMALLOC_BASE2
+    move.q  r30, #2
+    bra     .anmc_try
+.anmc_range2:
+    move.q  r3, #BASIC_MEMALLOC_END2
+    bgt     r25, r3, .anmc_fail
+.anmc_commit:
+    la      r1, AOT_NATIVE_MEM_NEXT
+    store.q r25, (r1)
+    la      r1, AOT_NATIVE_MEM_RANGE
+    store.q r30, (r1)
+    move.q  r9, #1
+    rts
+.anmc_fail:
+    move.q  r9, r0
+    rts
+
+; aot_try_emit_peek_rhs - recognise RHS forms PEEK(expr), PEEK8(expr), and
+; PEEK32(expr), then emit the memory load natively. Address expressions use the
+; native integer subset first and fall back to the runtime evaluator when needed.
+; Unsupported RHS leaves R23 = 0 and emits nothing.
+; Input:  R20 = RHS start, R8 = output cursor.
+; Output: R23 = 1 if emitted, 0 if not matched. R9 = 1 ok / 0 overflow when emitted.
+; Clobbers R1-R4, R8-R10, R20, R23-R24.
+aot_try_emit_peek_rhs:
+    move.q  r23, r0
+    load.b  r1, (r20)
+    move.q  r2, #0xCC
+    beq     r1, r2, .tepr_peek8
+    move.q  r2, #0x92
+    bne     r1, r2, .tepr_no
+    load.b  r1, 1(r20)
+    move.q  r2, #0x07
+    beq     r1, r2, .tepr_ext8
+    move.q  r2, #0x09
+    beq     r1, r2, .tepr_ext32
+    bra     .tepr_no
+.tepr_peek8:
+    add.q   r3, r20, #1
+    move.q  r24, #1
+    bra     .tepr_expect_lparen
+.tepr_ext8:
+    add.q   r3, r20, #2
+    move.q  r24, #1
+    bra     .tepr_expect_lparen
+.tepr_ext32:
+    add.q   r3, r20, #2
+    move.q  r24, #4
+.tepr_expect_lparen:
+    load.b  r1, (r3)
+    move.q  r2, #0x28              ; '('
+    bne     r1, r2, .tepr_no
+    add.q   r20, r3, #1            ; argument expression start
+    push    r20
+    jsr     aot_try_emit_int_expr
+    move.q  r1, #1
+    beq     r23, r1, .tepr_addr_claimed
+    pop     r20
+    jsr     aot_emit_expr
+    beqz    r9, .tepr_emit_fail
+    jsr     aot_emit_expr_to_i64
+    beqz    r9, .tepr_emit_fail
+    bra     .tepr_addr_ready
+.tepr_addr_claimed:
+    pop     r1
+.tepr_addr_ready:
+    jsr     aot_skip_spaces
+    load.b  r1, (r20)
+    move.q  r2, #0x29
+    bne     r1, r2, .tepr_emit_fail
+    add.q   r20, r20, #1
+    la      r9, aot_str_moveq_r1_r8
+    jsr     aot_emit_str
+    move.q  r1, #4
+    beq     r24, r1, .tepr_emit32
+    la      r9, aot_str_loadb_r8_r1
+    jsr     aot_emit_str
+    la      r9, aot_str_andl_r8_ff
+    jsr     aot_emit_str
+    bra     .tepr_tag
+.tepr_emit32:
+    la      r9, aot_str_loadl_r8_r1
+    jsr     aot_emit_str
+.tepr_tag:
+    la      r9, aot_str_movel_r9
+    move.q  r10, #VAL_I64
+    jsr     aot_emit_movel
+    move.q  r23, #1
+    move.q  r9, #1
+    rts
+.tepr_emit_fail:
+    move.q  r23, #1
+    move.q  r9, r0
+    rts
+.tepr_no:
+    move.q  r9, #1
+    rts
+
 ; aot_emit_expr_to_i64 - convert the last tagged expression result to an I64
 ; selector. RUN AOT calls resident fp_int/fp_fix; standalone calls the blob slot.
 ; R8 = output cursor (in/out). Output R9 = 1 ok.
+aot_emit_expr_to_i64_if_needed:
+    la      r1, AOT_LBLCNT
+    load.q  r14, (r1)
+    add.q   r2, r14, #1
+    store.q r2, (r1)
+    la      r9, aot_str_movel_r1
+    move.q  r10, #VAL_I64
+    jsr     aot_emit_movel
+    la      r9, aot_str_beq_r9_r1_e
+    move.q  r10, r14
+    jsr     aot_emit_movel
+    push    r14
+    jsr     aot_emit_expr_to_i64
+    pop     r14
+    beqz    r9, .etiin_ret
+    la      r9, aot_str_lbl_e
+    move.q  r10, r14
+    jsr     aot_emit_label_named
+    move.q  r9, #1
+.etiin_ret:
+    rts
+
 aot_emit_expr_to_i64:
     bnez    r21, .eti_blob
     la      r9, aot_str_movel_r6
@@ -5189,8 +7708,9 @@ aot_str_asmext:
 ; unresolved symbol, like any other. Both files sit beside the most recently
 ; LOADed programme (or the File I/O root). EHBASIC_PRIV_NAME_BUF holds the validated
 ; ".ie64" output name on entry. Uses R16; saves/restores callee-saved registers.
-; Source files are limited to just under 1 MiB (AOT_ASM_SRC_CAP); a larger file
-; is refused as a file error, never staged into the compiler workspace.
+; Source files are limited by the retained AOT arena available under
+; CR_RAM_SIZE_BYTES. A larger file is refused as a file error, never staged into
+; the compiler workspace.
 ; Output R8 = status: 0 success, 2 out of memory, 3 assembler error,
 ;                     4 file error (input unreadable, over-large, or unwritable).
 aot_do_assemble:
@@ -5224,31 +7744,67 @@ aot_do_assemble:
     pop r17
     pop r14
     rts
-; Maximum ASSEMBLE source size (just under 1 MiB; the source buffer is sized to
-; this and is the topmost low32 allocation, so the File I/O range guard rejects
-; any larger file - see the staging comment below).
-AOT_ASM_SRC_CAP equ 0x100000
+; RUN AOT, TRANSPILE, COMPILE and ASSEMBLE size their generated text and native
+; code buffers dynamically from the retained top-of-RAM AOT arena. These legacy
+; constants remain only so older standalone unit snippets that refer to them
+; still assemble.
+AOT_ASM_SRC_CAP equ 0x20000000
+AOT_GEN_TEXT_BYTES equ 0x20000000
+AOT_RUN_CODE_BYTES equ 0x8000000
+AOT_COMPILE_CODE_BYTES equ AOT_RUN_CODE_BYTES
+AOT_DYNAMIC_RESERVE_BYTES equ 0x400000
+
+aot_dynamic_text_code_sizes:
+    la      r1, AOT_ARENA_HIGH_NEXT
+    load.q  r2, (r1)
+    move.q  r3, #AOT_ALLOC_FLOOR
+    sub.q   r2, r2, r3             ; retained arena bytes remaining
+    move.q  r3, #(AOT_SYMTAB_BYTES + AOT_DYNAMIC_RESERVE_BYTES)
+    ble     r2, r3, .dtcs_fail
+    sub.q   r2, r2, r3             ; bytes available for generated text + code
+    lsr.q   r25, r2, #1            ; native-code buffer
+    sub.q   r24, r2, r25           ; generated assembly-text buffer
+    move.q  r9, #1
+    rts
+.dtcs_fail:
+    move.q  r9, r0
+    rts
+
+aot_dynamic_text_scratch_sizes:
+    la      r1, AOT_ARENA_HIGH_NEXT
+    load.q  r2, (r1)
+    move.q  r3, #AOT_ALLOC_FLOOR
+    sub.q   r2, r2, r3             ; retained arena bytes remaining
+    move.q  r3, #(0x18000 + AOT_DYNAMIC_RESERVE_BYTES)
+    ble     r2, r3, .dtss_fail
+    sub.q   r24, r2, r3            ; generated assembly-text buffer
+    move.q  r25, #0x18000          ; programme relocation scratch
+    move.q  r9, #1
+    rts
+.dtss_fail:
+    move.q  r9, r0
+    rts
 
 aot_do_assemble_inner:
     jsr     aot_alloc_reset
-    ; Allocate the source-text buffer FIRST so it is the topmost low32 allocation;
-    ; the code and symbol buffers go BELOW it. The read into this buffer is bounded
-    ; at the device by FILE_READ_MAX (set before the OP_READ below), so an over-large
-    ; file is refused before a single byte is staged - that is the real cap. The
-    ; topmost placement is secondary defence: even if the device cap were ever
-    ; bypassed, the read only writes UPWARD from the buffer base and all compiler
-    ; workspace sits strictly BELOW it, so workspace can never be corrupted.
-    move.q  r8, #AOT_ASM_SRC_CAP
-    jsr     aot_alloc_file_bridge
+    jsr     aot_dynamic_text_code_sizes
+    beqz    r9, .as_oom
+    ; Allocate the source-text buffer from the retained 64-bit arena and read it
+    ; through FILE_DATA_PTR64. FILE_READ_MAX is set to the allocated size before
+    ; OP_READ, so an over-large source is refused before any byte is staged.
+    move.q  r8, r24
+    jsr     aot_alloc64
     bnez    r9, .as_oom
     la      r1, AOT_DC_TEXT
     store.q r8, (r1)
-    move.q  r8, #0x18000           ; 96 KiB machine-code buffer for File I/O
-    jsr     aot_alloc_file_bridge
+    la      r1, AOT_DC_TLEN
+    store.q r24, (r1)              ; temporary: source buffer capacity
+    move.q  r8, r25                ; machine-code output buffer
+    jsr     aot_alloc64
     bnez    r9, .as_oom
     la      r1, AOT_DC_CODE
     store.q r8, (r1)
-    add.q   r2, r8, #0x18000
+    add.q   r2, r8, r25
     la      r1, AOT_CODE_END
     store.q r2, (r1)               ; bound the buffer so a big source reports OOM
     move.q  r8, #AOT_SYMTAB_BYTES   ; private-assembler symbol table
@@ -5274,24 +7830,22 @@ aot_do_assemble_inner:
     jsr     aot_make_asm_name       ; EHBASIC_PRIV_ASM_NAME_BUF = "...asm"
 
     ; Cap the read at the device BEFORE it copies anything: FILE_READ_MAX makes the
-    ; File I/O device refuse a file larger than the source buffer (room kept for the
-    ; null terminator) without staging a single byte into guest memory, so an
-    ; over-large source cannot overrun the buffer regardless of the active/backing
-    ; RAM relationship. The cap is one-shot (the device consumes it per read).
+    ; File I/O device refuse a file larger than the source buffer without staging a
+    ; single byte into guest memory. The cap is one-shot.
     la      r1, FILE_READ_MAX
-    move.q  r2, #(AOT_ASM_SRC_CAP - 1)
+    la      r2, AOT_DC_TLEN
+    load.q  r2, (r2)
+    sub.q   r2, r2, #1
     store.l r2, (r1)
 
-    ; Read NAME.asm into the source buffer via the File I/O MMIO (OP_READ). The
-    ; data pointer is the 32-bit File I/O ABI field; the buffer base is a low32
-    ; allocation (< AOT_LOW32_CAP), so it fits.
+    ; Read NAME.asm into the source buffer via the IE64 64-bit File I/O extension.
     la      r1, FILE_NAME_PTR
     la      r2, EHBASIC_PRIV_ASM_NAME_BUF
     store.l r2, (r1)
-    la      r1, FILE_DATA_PTR
+    la      r1, FILE_DATA_PTR64
     la      r2, AOT_DC_TEXT
     load.q  r2, (r2)
-    store.l r2, (r1)
+    store.q r2, (r1)
     la      r1, FILE_CTRL
     move.q  r2, #FILE_OP_READ
     store.l r2, (r1)
@@ -5303,7 +7857,8 @@ aot_do_assemble_inner:
     ; never trips, but it keeps the terminator write below provably in-bounds.
     la      r1, FILE_RESULT_LEN
     load.l  r2, (r1)
-    move.q  r4, #AOT_ASM_SRC_CAP
+    la      r4, AOT_DC_TLEN
+    load.q  r4, (r4)
     bge     r2, r4, .as_file_err
 
     ; Null-terminate the source text at buffer + bytesRead so the assembler line
@@ -5386,14 +7941,18 @@ aot_do_transpile:
     rts
 aot_do_transpile_inner:
     jsr     aot_alloc_reset
-    move.q  r8, #0x80000           ; 512 KiB asm-text buffer (holds the self-contained
+    jsr     aot_dynamic_text_scratch_sizes
+    beqz    r9, .tp_oom
+    move.q  r8, r24                ; asm-text buffer (holds the self-contained
                                    ; dc.b'd closure/blob/programme, like COMPILE)
-    jsr     aot_alloc_file_bridge
+    jsr     aot_alloc64
     bnez    r9, .tp_oom
     la      r1, AOT_DC_TEXT
     store.q r8, (r1)
-    move.q  r8, #0x18000           ; 96 KiB scratch buffer for programme relocation
-    jsr     aot_alloc_file_bridge  ; (aot_emit_bundled_data uses AOT_DC_CODE as scratch)
+    la      r1, AOT_DC_TLEN
+    store.q r24, (r1)              ; temporary: asm-text capacity
+    move.q  r8, r25                ; programme relocation scratch buffer
+    jsr     aot_alloc64            ; (aot_emit_bundled_data uses AOT_DC_CODE as scratch)
     bnez    r9, .tp_oom
     la      r1, AOT_DC_CODE
     store.q r8, (r1)
@@ -5407,7 +7966,9 @@ aot_do_transpile_inner:
     la      r1, AOT_DC_TEXT
     load.q  r9, (r1)
     move.q  r10, #1                ; standalone
-    add.q   r11, r9, #0x80000      ; text buffer end (512 KiB)
+    la      r11, AOT_DC_TLEN
+    load.q  r11, (r11)
+    add.q   r11, r9, r11           ; text buffer end
     jsr     aot_transpile          ; R8=status R9=textLen
     move.q  r1, #2
     beq     r8, r1, .tp_oom        ; text buffer overflow
@@ -5525,18 +8086,22 @@ aot_do_compile:
     rts
 aot_do_compile_inner:
     jsr     aot_alloc_reset
-    move.q  r8, #0x80000           ; 512 KiB asm-text buffer (low32, writable): holds
+    jsr     aot_dynamic_text_code_sizes
+    beqz    r9, .dc_oom
+    move.q  r8, r24                ; asm-text buffer: holds
                                    ; the user code plus the fp_print closure, runtime
                                    ; blob (~53 KiB -> over 300 KiB as dc.b) and programme
                                    ; emitted as self-contained dc.b data.
-    jsr     aot_alloc_file_bridge
+    jsr     aot_alloc64
     bnez    r9, .dc_oom
     la      r1, AOT_DC_TEXT
     store.q r8, (r1)
-    move.q  r8, #0x18000           ; 96 KiB machine-code buffer (low32, writable):
-                                   ; holds user code + fp_print closure + the runtime
-                                   ; bundled runtime blob payload.
-    jsr     aot_alloc_file_bridge
+    la      r1, AOT_DC_TLEN
+    store.q r24, (r1)              ; temporary: asm-text capacity
+    move.q  r8, r25                ; machine-code buffer:
+                                   ; holds user code + fp_print closure + runtime
+                                   ; bootstrap and bundled payload copies.
+    jsr     aot_alloc64
     bnez    r9, .dc_oom
     la      r1, AOT_DC_CODE
     store.q r8, (r1)
@@ -5549,7 +8114,7 @@ aot_do_compile_inner:
     ; Bound the code buffer so a large programme reports OOM, not corruption.
     la      r1, AOT_DC_CODE
     load.q  r2, (r1)
-    add.q   r2, r2, #0x18000
+    add.q   r2, r2, r25
     la      r1, AOT_CODE_END
     store.q r2, (r1)
 
@@ -5558,7 +8123,9 @@ aot_do_compile_inner:
     la      r1, AOT_DC_TEXT
     load.q  r9, (r1)
     move.q  r10, #1                ; standalone
-    add.q   r11, r9, #0x80000      ; text buffer end (512 KiB)
+    la      r11, AOT_DC_TLEN
+    load.q  r11, (r11)
+    add.q   r11, r9, r11           ; text buffer end
     jsr     aot_transpile          ; R8=status R9=textLen
     move.q  r1, #2
     beq     r8, r1, .dc_oom        ; text buffer overflow
@@ -5739,18 +8306,33 @@ aot_do_run_aot:
     rts
 aot_do_run_aot_inner:
     jsr     aot_alloc_reset
-    move.q  r8, #0x10000           ; asm-text buffer
+    la      r1, AOT_LAST_OOM_STAGE
+    store.q r0, (r1)
+    jsr     aot_dynamic_text_code_sizes
+    beqz    r9, .ra_oom
+    move.q  r8, r24                ; asm-text buffer
     jsr     aot_alloc64
+    la      r1, AOT_LAST_OOM_STAGE
+    move.q  r2, #1                 ; RUN AOT asm-text allocation
+    store.q r2, (r1)
     bnez    r9, .ra_oom
     la      r1, AOT_DC_TEXT
     store.q r8, (r1)
-    move.q  r8, #0x10000           ; code arena (executed in place)
+    la      r1, AOT_DC_TLEN
+    store.q r24, (r1)              ; temporary: asm-text capacity
+    move.q  r8, r25                ; code arena (executed in place)
     jsr     aot_alloc64
+    la      r1, AOT_LAST_OOM_STAGE
+    move.q  r2, #2                 ; RUN AOT code allocation
+    store.q r2, (r1)
     bnez    r9, .ra_oom
     la      r1, AOT_DC_CODE
     store.q r8, (r1)
     move.q  r8, #AOT_SYMTAB_BYTES   ; private-assembler symbol table
     jsr     aot_alloc64
+    la      r1, AOT_LAST_OOM_STAGE
+    move.q  r2, #3                 ; RUN AOT symbol-table allocation
+    store.q r2, (r1)
     bnez    r9, .ra_oom
     la      r1, AOT_SYMTAB_PTR
     store.q r8, (r1)
@@ -5758,7 +8340,7 @@ aot_do_run_aot_inner:
     ; Bound the code arena so a large programme reports OOM, not corruption.
     la      r1, AOT_DC_CODE
     load.q  r8, (r1)
-    add.q   r2, r8, #0x10000
+    add.q   r2, r8, r25
     la      r1, AOT_CODE_END
     store.q r2, (r1)
 
@@ -5767,7 +8349,12 @@ aot_do_run_aot_inner:
     la      r1, AOT_DC_TEXT
     load.q  r9, (r1)
     move.q  r10, r0                ; arena mode
-    add.q   r11, r9, #0x10000      ; text buffer end (64 KiB)
+    la      r11, AOT_DC_TLEN
+    load.q  r11, (r11)
+    add.q   r11, r9, r11           ; text buffer end
+    la      r1, AOT_LAST_OOM_STAGE
+    move.q  r2, #4                 ; RUN AOT transpiler text overflow
+    store.q r2, (r1)
     jsr     aot_transpile
     move.q  r1, #2
     beq     r8, r1, .ra_oom        ; text buffer overflow
@@ -5802,6 +8389,9 @@ aot_do_run_aot_inner:
     load.q  r9, (r1)
     add.q   r9, r9, r3             ; link base = arena + helper length
     move.q  r10, r9                ; destination = arena + helper length
+    la      r1, AOT_LAST_OOM_STAGE
+    move.q  r2, #5                 ; RUN AOT assembler code overflow
+    store.q r2, (r1)
     jsr     aot_asm_program
     move.q  r1, #2
     beq     r8, r1, .ra_oom        ; code buffer overflow

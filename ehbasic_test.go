@@ -36,6 +36,16 @@ type ehbasicTestHarness struct {
 func newEhbasicHarness(t testing.TB) *ehbasicTestHarness {
 	t.Helper()
 	bus := NewMachineBus()
+	bus.ApplyProfileVisibleCeiling(uint64(DEFAULT_MEMORY_SIZE))
+	return newEhbasicHarnessOnBus(t, bus)
+}
+
+func newEhbasicAOTHarness(t testing.TB) *ehbasicTestHarness {
+	t.Helper()
+	bus, err := NewMachineBusSized(aotTestGuestRAM)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized(%d): %v", uint64(aotTestGuestRAM), err)
+	}
 	bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	return newEhbasicHarnessOnBus(t, bus)
 }
@@ -575,7 +585,7 @@ func TestEhBASIC_Boot(t *testing.T) {
     bra     test_done
 
 banner_msg:
-    dc.b    "IE64 BASIC v3.1", 0
+    dc.b    "IE64 BASIC v3.8", 0
 
     align 8
 ready_msg:
@@ -589,7 +599,7 @@ test_done:`
 	h.runCycles(100_000)
 
 	out := h.readOutput()
-	if !strings.Contains(out, "IE64 BASIC v3.1") {
+	if !strings.Contains(out, "IE64 BASIC v3.8") {
 		t.Fatalf("boot: missing banner, got %q", out)
 	}
 	if !strings.Contains(out, "Ready") {
@@ -9934,11 +9944,7 @@ func assembleREPL(t *testing.T) []byte {
 // "Ready" prompt. Returns the harness and the boot output.
 func startREPL(t *testing.T) (*ehbasicTestHarness, string) {
 	t.Helper()
-	h := newEhbasicHarness(t)
-	// Publish a guest RAM size so CR_RAM_SIZE_BYTES (mfcr cr15) is non-zero, as
-	// it is on the real VM; the AOT compiler (RUN AOT / COMPILE) needs it to
-	// allocate its arena. NewMachineBus leaves it 0 by default.
-	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	h := newEhbasicAOTHarness(t)
 	return startREPLOnHarness(t, h)
 }
 
@@ -9954,7 +9960,7 @@ func startREPLOnHarness(t *testing.T, h *ehbasicTestHarness) (*ehbasicTestHarnes
 func TestREPL_BootBanner(t *testing.T) {
 	_, bootOutput := startREPL(t)
 
-	if !strings.Contains(bootOutput, "IE64 BASIC v3.1") {
+	if !strings.Contains(bootOutput, "IE64 BASIC v3.8") {
 		t.Fatalf("expected boot banner, got: %q", bootOutput)
 	}
 	if !strings.Contains(bootOutput, "Lee Davison") {
@@ -10177,13 +10183,13 @@ func TestLaunch_BasicImage_LoadAndRun(t *testing.T) {
 	// Assemble the REPL, then load it via LoadProgramBytes
 	// (simulates -basic-image path).
 	binary := assembleREPL(t)
-	h := newEhbasicHarness(t)
+	h := newEhbasicAOTHarness(t)
 	h.cpu.LoadProgramBytes(binary)
 
 	// Run until boot banner + Ready prompt
 	output := h.runUntilPrompt()
 
-	if !strings.Contains(output, "IE64 BASIC v3.1") {
+	if !strings.Contains(output, "IE64 BASIC v3.8") {
 		t.Fatalf("expected boot banner from -basic-image load, got: %q", output)
 	}
 	if !strings.Contains(output, "Ready") {
@@ -10204,7 +10210,7 @@ func TestLaunch_BasicImage_FileLoad(t *testing.T) {
 	}
 
 	output := h.runUntilPrompt()
-	if !strings.Contains(output, "IE64 BASIC v3.1") {
+	if !strings.Contains(output, "IE64 BASIC v3.8") {
 		t.Fatalf("expected boot banner from file load, got: %q", output)
 	}
 }
@@ -12747,6 +12753,16 @@ func TestHW_LoadThenRun_REPL(t *testing.T) {
 
 func newEhbasicREPLHarnessWithFileIO(t *testing.T, asmBin string, tmpDir string) *ehbasicTestHarness {
 	t.Helper()
+	return newEhbasicREPLHarnessWithFileIOOnHarness(t, asmBin, tmpDir, newEhbasicHarness(t))
+}
+
+func newEhbasicAOTREPLHarnessWithFileIO(t *testing.T, asmBin string, tmpDir string) *ehbasicTestHarness {
+	t.Helper()
+	return newEhbasicREPLHarnessWithFileIOOnHarness(t, asmBin, tmpDir, newEhbasicAOTHarness(t))
+}
+
+func newEhbasicREPLHarnessWithFileIOOnHarness(t *testing.T, asmBin string, tmpDir string, h *ehbasicTestHarness) *ehbasicTestHarness {
+	t.Helper()
 
 	repoRoot := repoRootDir(t)
 	srcPath := filepath.Join(repoRoot, "sdk", "examples", "asm", "ehbasic_ie64.asm")
@@ -12767,11 +12783,11 @@ func newEhbasicREPLHarnessWithFileIO(t *testing.T, asmBin string, tmpDir string)
 		t.Fatalf("failed to read assembled binary: %v", err)
 	}
 
-	h := newEhbasicHarness(t)
 	fio := NewFileIODevice(h.bus, tmpDir)
 	fio.SetRuntimeBlob(runtimeBlobForTests(t)) // mirror the host serving the embedded blob
 	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
 	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
+	h.bus.MapIO64(FILE_DATA_PTR64, FILE_DATA_PTR64_END, fio.HandleRead64, fio.HandleWrite64)
 	h.cpu.jitEnabled = true
 	h.loadBytes(bin)
 

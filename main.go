@@ -1436,6 +1436,7 @@ func main() {
 	fileIO.SetRuntimeBlob(embeddedRuntimeBlob) // serve the COMPILE runtime blob virtually
 	sysBus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
 	sysBus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fileIO.HandleWrite8)
+	sysBus.MapIO64(FILE_DATA_PTR64, FILE_DATA_PTR64_END, fileIO.HandleRead64, fileIO.HandleWrite64)
 	bootHostFS := NewBootstrapHostFSDevice(sysBus, intuitionOSResolved.Root)
 	sysBus.MapIO(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END, bootHostFS.HandleRead, bootHostFS.HandleWrite)
 

@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-06-06*
+*Last modified: 2026-06-07*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -902,7 +902,7 @@ The copper coprocessor is internal to VideoChip but can write to any MMIO-mapped
 
 The blitter supports two pixel formats via `BLT_FLAGS` (`0xF0488`): RGBA32 (4 bpp, default) and CLUT8 (1 bpp). Bits 4-7 select one of 16 raster draw modes (Clear, And, Copy, Xor, Invert, etc.) applied per pixel during FILL and COPY operations. `BLT_OP=4` performs source-over alpha blending with source alpha in bits 31-24 using `out = (src*a + dst*(255-a))/255`. `BLT_OP=7` performs nearest-neighbour scaling in RGBA32 or CLUT8. When `BLT_FLAGS=0`, the blitter defaults to Copy mode with RGBA32 for full backward compatibility.
 
-`BLT_CTRL` bit 0 starts the synchronous blit, bit 1 is read-only busy, and bit 2 enables a completion pulse on `IntMaskBlitter`. `BLT_STATUS` bit 0 is ERR, bit 1 is DONE, and bit 2 is sticky IRQ_PENDING (write 1 to clear). Invalid opcodes, out-of-range Mode7 samples, and overflowed blitter bounds set ERR and do not silently fall back to COPY.
+`BLT_CTRL` bit 0 starts the synchronous blit, bit 1 is read-only busy, and bit 2 enables a completion pulse on `IntMaskBlitter`. `BLT_STATUS` bit 0 is ERR, bit 1 is DONE, and bit 2 is sticky IRQ_PENDING (write 1 to clear). Invalid opcodes, out-of-range Mode7 samples, overflowed blitter bounds, and destination rectangles outside CPU-visible writable memory set ERR and do not silently fall back to COPY or wrap into another address range.
 
 The colour expansion operation (`BLT_OP=6`) renders 1-bit glyph templates into coloured pixels for hardware-accelerated text. It reads a template from `BLT_MASK`, uses `BLT_FG`/`BLT_BG` (`0xF048C`/`0xF0490`) as foreground/background colours, and supports three modes: JAM2 (opaque - set bits write FG, clear bits write BG), JAM1 (transparent - only set bits write FG), and Invert (set bits XOR the destination). `BLT_MASK_MOD` (`0xF0494`) sets the template row stride and `BLT_MASK_SRCX` (`0xF0498`) provides sub-byte bit alignment for glyph fragments. Template bits are MSB-first (Amiga convention).
 
@@ -1188,7 +1188,8 @@ are intentional when a reservation lives inside a broader shared-RAM range.
 | `0xFA000-0xFBAFF` | 6912B | ULA VRAM aperture | ULA display memory | All CPU cores | ULA subsystem | Separate decoded aperture for ULA VRAM access. |
 | `0xF2100-0xF213F` | 64B | MMIO | ANTIC registers | All CPU cores | ANTIC subsystem | ANTIC display-list and DMA control block. |
 | `0xF2140-0xF21FB` | 188B | MMIO | GTIA registers | All CPU cores | GTIA subsystem | GTIA colour, player/missile, priority, and collision state. |
-| `0xF2200-0xF221F` | 32B | MMIO | File I/O | All CPU cores | File-I/O bridge | Host-file bridge register block. |
+| `0xF2200-0xF221F` | 32B | MMIO | File I/O | All CPU cores | File-I/O bridge | Legacy host-file bridge register block with `32`-bit name, data, length, status, error, and read-cap registers. |
+| `0xF22B0-0xF22B7` | 8B | MMIO64 | File I/O IE64 extension | IE64 | File-I/O bridge | `FILE_DATA_PTR64`, a `64`-bit data-buffer pointer for IE64 code that reads or writes host files from high guest RAM. The legacy File I/O block remains unchanged. |
 | `0xF2220-0xF225F` | 64B | MMIO | AROS DOS handler | All CPU cores | AROS profile | AROS DOS integration register block. |
 | `0xF2260-0xF22AF` | 80B | MMIO | AROS Paula-style DMA shim | All CPU cores | AROS profile | Audio/DMA compatibility shim. |
 | `0xF2300-0xF231F` | 32B | MMIO | Media loader | All CPU cores | Media-loader subsystem | Format-agnostic media loading control block. |
@@ -1223,7 +1224,7 @@ graph LR
 
     subgraph DEVS["I/O Devices"]
         TERM["Terminal/Serial<br/>0xF0700-0xF07FF<br/>Input ring buffer, echo,<br/>raw keys, mouse, scancodes"]
-        FIO["File I/O<br/>0xF2200-0xF221F<br/>Name/data ptrs, R/W ops,<br/>sandboxed"]
+        FIO["File I/O<br/>0xF2200-0xF221F + 0xF22B0<br/>Legacy 32-bit ABI,<br/>IE64 64-bit data pointer,<br/>sandboxed"]
         PEXEC["Program Executor<br/>0xF2320-0xF233F<br/>CPU mode detect,<br/>full reset orchestration<br/>EXEC_CTRL operation values: 1=Execute, 2=EmuTOS, 3=AROS, 4=IntuitionOS IExec, 5=Hard reset"]
         COPRO["Coprocessor Manager<br/>0xF2340-0xF238F + 0xF23B0-0xF23BF<br/>6 worker CPU types,<br/>ticket-based dispatch + monitor"]
         CLIP["Clipboard Bridge<br/>0xF2390-0xF23AF<br/>Data ptr/len, get/put"]
@@ -1264,6 +1265,12 @@ graph LR
     class HOST_KB,HOST_FS,HOST_CB,CPUSUB,AUDIO_E ext
     class CPU,BUS bus
 ```
+
+The File I/O ABI keeps the original `32`-bit register block at
+`0xF2200-0xF221F` for every CPU. IE64 adds `FILE_DATA_PTR64` at
+`0xF22B0` as a separate `64`-bit MMIO register for data buffers in high guest
+RAM, including buffers allocated from the native AOT arena. Non-IE64 software
+does not need to know about the extension.
 
 ### Coprocessor Worker Dispatch
 

@@ -1619,6 +1619,47 @@ func TestBlitterDirectVRAM_Fill(t *testing.T) {
 	}
 }
 
+func TestBlitterFillWritesSparseBackingRAM(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+
+	lowEnd := uint64(len(bus.memory))
+	if lowEnd+0x2000 > uint64(^uint32(0))+1 {
+		t.Fatalf("test bus low memory too large: len=%#x", lowEnd)
+	}
+	backingSize := lowEnd + 0x2000
+	backing := NewSparseBacking(backingSize)
+	bus.SetBacking(backing)
+
+	dst := uint32(lowEnd + 0x1000)
+	const (
+		width  = 2
+		height = 2
+		stride = uint32(16)
+		color  = uint32(0xA1B2C3D4)
+	)
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, width)
+	bus.Write32(BLT_HEIGHT, height)
+	bus.Write32(BLT_DST_STRIDE, stride)
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	if got := video.HandleRead(BLT_STATUS); got&bltStatusErr != 0 {
+		t.Fatalf("BLT_STATUS = %#x, want no error", got)
+	}
+	for y := range height {
+		for x := range width {
+			addr := uint64(dst) + uint64(y)*uint64(stride) + uint64(x*BYTES_PER_PIXEL)
+			if got := backing.Read32(addr); got != color {
+				t.Fatalf("sparse fill (%d,%d) at %#x = %#x, want %#x", x, y, addr, got, color)
+			}
+		}
+	}
+}
+
 func TestBlitterDirectVRAM_Copy(t *testing.T) {
 	video, bus := newDirectVRAMTestRig(t)
 

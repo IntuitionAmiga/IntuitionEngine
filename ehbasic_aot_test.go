@@ -12,9 +12,10 @@ import (
 )
 
 // aotTestGuestRAM is the guest RAM size published on the test bus so
-// CR_RAM_SIZE_BYTES is nonzero. 32 MiB keeps retained AOT buffers below the
-// 32-bit File MMIO ceiling while still exercising the explicit AOT low32 cursor.
-const aotTestGuestRAM = 0x2000000
+// CR_RAM_SIZE_BYTES is nonzero. 1 GiB leaves room for the current
+// native-expanded BASIC examples while still staying well below the 32-bit
+// File MMIO ceiling and exercising the explicit AOT low32 cursor.
+const aotTestGuestRAM = 0x40000000
 
 // assembleAOTUnit assembles a self-contained snippet against ie64.inc and the
 // AOT compiler-support module ehbasic_aot.inc, for unit-testing the allocators
@@ -36,6 +37,7 @@ stmt_jump_table equ 0
 if_else_boundary equ 0
 expr_eval       equ 0
 expr_truthy     equ 0
+var_lookup      equ 0
 exec_do_for     equ 0
 exec_do_next    equ 0
 exec_reset_control_stack equ 0
@@ -1191,6 +1193,788 @@ func TestREPL_RunAOT_MemoryStatements(t *testing.T) {
 	})
 }
 
+func TestREPL_RunAOT_BlitMemcopyPublishesDestination(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		lines []string
+	}{
+		{
+			name: "literal_addresses",
+			lines: []string{
+				"10 POKE32 327680,287454020",
+				"20 BLIT MEMCOPY 327680,327684,4",
+				"30 POKE32 327688,PEEK32(327684)",
+				"40 END",
+			},
+		},
+		{
+			name: "native_variables",
+			lines: []string{
+				"10 S=327680:D=327684:L=4",
+				"20 POKE32 S,287454020",
+				"30 BLIT MEMCOPY S,D,L",
+				"40 POKE32 327688,PEEK32(D)",
+				"50 END",
+			},
+		},
+		{
+			name: "two_letter_native_variables",
+			lines: []string{
+				"10 BB=327680:FB=327684:LL=4",
+				"20 POKE32 BB,287454020",
+				"30 BLIT MEMCOPY BB,FB,LL",
+				"40 POKE32 327688,PEEK32(FB)",
+				"50 END",
+			},
+		},
+		{
+			name: "after_native_gosub",
+			lines: []string{
+				"10 BB=327680:FB=327684:LL=4",
+				"20 POKE32 BB,287454020",
+				"30 GOSUB 100",
+				"40 BLIT MEMCOPY BB,FB,LL",
+				"50 POKE32 327688,PEEK32(FB)",
+				"60 END",
+				"100 POKE32 327692,1234",
+				"110 RETURN",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := startREPL(t)
+			video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+			if err != nil {
+				t.Fatalf("NewVideoChip: %v", err)
+			}
+			video.AttachBus(h.bus)
+			video.SetBigEndianMode(false)
+			h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+			h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+			runAOTLines(t, h, tc.lines...)
+			if got := h.bus.Read32(327684); got != 0x11223344 {
+				t.Fatalf("RUN AOT BLIT MEMCOPY destination=%#x, want 0x11223344", got)
+			}
+			if got := h.bus.Read32(327688); got != 0x11223344 {
+				t.Fatalf("RUN AOT BLIT MEMCOPY was not visible to following AOT code: %#x", got)
+			}
+		})
+	}
+}
+
+func TestREPL_RunAOT_BlitFillFallsBackPerOperandExpression(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 BB=327680:ST=2560:Z=0",
+		"20 BLIT FILL BB+(188+INT(20*SIN(Z)))*ST+270*4,100,8,&H00505860,ST",
+		"30 END")
+	if got := video.HandleRead(BLT_DST); got != 327680+(188*2560)+(270*4) {
+		t.Fatalf("RUN AOT BLIT FILL expression destination=%#x, want %#x\n%s", got, uint32(327680+(188*2560)+(270*4)), readAOTAsmDebug(h))
+	}
+	if got := video.HandleRead(BLT_OP); got != bltOpFill {
+		t.Fatalf("RUN AOT BLIT FILL op=%d, want FILL", got)
+	}
+}
+
+func TestREPL_RunAOT_BlitFillUsesMemallocVariableDestination(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 SR=MEMALLOC(235520,4096):ST=2560",
+		"20 BLIT FILL SR,640,92,&H00000000,ST",
+		"30 END")
+	if got := video.HandleRead(BLT_DST); got != 0x00820000 {
+		t.Fatalf("RUN AOT BLIT FILL MEMALLOC destination=%#x, want %#x\n%s", got, uint32(0x00820000), readAOTAsmDebug(h))
+	}
+	if got := video.HandleRead(BLT_DST_STRIDE); got != 2560 {
+		t.Fatalf("RUN AOT BLIT FILL MEMALLOC stride=%d, want 2560\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_DelegatedBlitReadsNativeVariables(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line string
+		op   uint32
+	}{
+		{
+			name: "copy",
+			line: "20 BLIT COPY SR,TX,8,4,ST,TS",
+			op:   bltOpCopy,
+		},
+		{
+			name: "mode7",
+			line: "20 BLIT MODE7 TX,BB,4,4,0,0,65536,0,0,65536,3,3,TS,ST",
+			op:   bltOpMode7,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := startREPL(t)
+			video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+			if err != nil {
+				t.Fatalf("NewVideoChip: %v", err)
+			}
+			video.AttachBus(h.bus)
+			video.SetBigEndianMode(false)
+			h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+			h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+			runAOTLines(t, h,
+				"10 SR=327680:TX=393216:BB=458752:ST=2560:TS=4096",
+				tc.line,
+				"30 END")
+			if got := video.HandleRead(BLT_OP); got != tc.op {
+				t.Fatalf("RUN AOT delegated BLIT op=%d, want %d\n%s", got, tc.op, readAOTAsmDebug(h))
+			}
+			if got := video.HandleRead(BLT_SRC); got != 327680 && got != 393216 {
+				t.Fatalf("RUN AOT delegated BLIT source=%#x, want one of native variables\n%s", got, readAOTAsmDebug(h))
+			}
+			if got := video.HandleRead(BLT_DST); got != 393216 && got != 458752 {
+				t.Fatalf("RUN AOT delegated BLIT destination=%#x, want one of native variables\n%s", got, readAOTAsmDebug(h))
+			}
+		})
+	}
+}
+
+func TestREPL_RunAOT_DelegatedBlitCopyWritesPixels(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 SR=MEMALLOC(4096,4096):TX=MEMALLOC(4096,4096):ST=16:TS=16",
+		"20 BLIT FILL SR,4,4,&H00112233,ST",
+		"30 BLIT COPY SR,TX,4,4,ST,TS",
+		"40 POKE32 327680,PEEK32(TX):POKE32 327684,PEEK32(TX+3*TS+3*4)",
+		"50 END")
+	if got := h.bus.Read32(327680); got != 0x00112233 {
+		t.Fatalf("RUN AOT delegated BLIT COPY first pixel=%#x, want 0x00112233\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327684); got != 0x00112233 {
+		t.Fatalf("RUN AOT delegated BLIT COPY last pixel=%#x, want 0x00112233\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_DelegatedBlitMode7WritesPixels(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 TX=MEMALLOC(4096,4096):BB=MEMALLOC(4096,4096):TS=16:ST=16",
+		"20 BLIT FILL TX,4,4,&H00445566,TS",
+		"30 BLIT MODE7 TX,BB,4,4,0,0,65536,0,0,65536,3,3,TS,ST",
+		"40 POKE32 327680,PEEK32(BB):POKE32 327684,PEEK32(BB+3*ST+3*4)",
+		"50 END")
+	if got := h.bus.Read32(327680); got != 0x00445566 {
+		t.Fatalf("RUN AOT delegated BLIT MODE7 first pixel=%#x, want 0x00445566\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327684); got != 0x00445566 {
+		t.Fatalf("RUN AOT delegated BLIT MODE7 last pixel=%#x, want 0x00445566\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_ResonanceMode7ProjectsTexture(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 TX=MEMALLOC(2097152,4096):BB=MEMALLOC(1228800,4096)",
+		"20 TW=1024:TH=512:TS=4096:ST=2560:FP=65536:CU=512:CV=256:HW=320:HH=240",
+		"30 A=0:Z=0:IN=0.12:SA=SIN(A):SZ=SIN(Z):CZ=COS(A)",
+		"40 BLIT FILL TX,TW,TH,&H00000000,TS",
+		"50 C1=&H00060818:C2=&H0010182A:C3=&H00201824",
+		"60 FOR Y=0 TO 448 STEP 64",
+		"70 BLIT FILL TX+Y*TS,1024,16,C1,TS",
+		"80 BLIT FILL TX+(Y+20)*TS,1024,10,C2,TS",
+		"90 BLIT FILL TX+(Y+40)*TS,1024,6,C3,TS",
+		"100 NEXT Y",
+		"110 FOR X=0 TO 960 STEP 128",
+		"120 BLIT FILL TX+X*4,8,512,&H000A1020,TS",
+		"130 NEXT X",
+		"140 SC=2.5-IN*1.5+SZ*0.18",
+		"150 CA=CZ/SC:MS=SA/SC",
+		"160 DC=INT(CA*FP):DS=INT(MS*FP)",
+		"170 MU=INT((CU-HW*CA+HH*MS)*FP):MV=INT((CV-HW*MS-HH*CA)*FP)",
+		"180 BLIT MODE7 TX,BB,640,480,MU,MV,DC,DS,0-DS,DC,1023,511,TS,ST",
+		"190 POKE32 327680,PEEK32(BB):POKE32 327684,PEEK32(BB+240*ST+320*4)",
+		"200 END")
+	first := h.bus.Read32(327680)
+	centre := h.bus.Read32(327684)
+	switch first {
+	case 0x00060818, 0x0010182A, 0x00201824, 0x000A1020, 0:
+	default:
+		t.Fatalf("RUN AOT Resonance Mode7 first pixel=%#x, want texture colour\n%s", first, readAOTAsmDebug(h))
+	}
+	switch centre {
+	case 0x00060818, 0x0010182A, 0x00201824, 0x000A1020, 0:
+	default:
+		t.Fatalf("RUN AOT Resonance Mode7 centre pixel=%#x, want texture colour\n%s", centre, readAOTAsmDebug(h))
+	}
+	if first == 0 && centre == 0 {
+		t.Fatalf("RUN AOT Resonance Mode7 projected only black samples\n%s", readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_ResonanceWobbleCopyStaysInsideTextureBand(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 TX=MEMALLOC(2097152,4096):SR=MEMALLOC(235520,4096):TS=4096:ST=2560",
+		"20 A=0:Z=0:IN=0.12:SA=SIN(A):SZ=SIN(Z):PU=0:PB=0:PD=0",
+		"30 BLIT FILL TX,1024,512,&H00000000,TS",
+		"40 BLIT FILL SR,640,92,&H00A8C8D0,ST",
+		"50 LX=192+INT((24+IN*42)*SZ)",
+		"60 LY=204+INT((18+IN*30)*SA)",
+		"70 WD=1:IF PD<0 THEN WD=-1",
+		"80 WA=5+INT(PB*.8)+INT(PU*.18)",
+		"90 ZB=INT(Z*1.4*40.743665) AND 255:YS=5:IF WD<0 THEN YS=-5",
+		"100 FOR YY=0 TO 91",
+		"110 WX=0",
+		"120 BLIT COPY SR+YY*ST,TX+(LY+YY)*TS+(LX+WX)*4,640,1,ST,TS",
+		"130 NEXT YY",
+		"140 POKE32 327680,PEEK32(TX+203*TS+192*4)",
+		"150 POKE32 327684,PEEK32(TX+204*TS+192*4)",
+		"160 POKE32 327688,PEEK32(TX+295*TS+831*4)",
+		"170 POKE32 327692,PEEK32(TX+296*TS+831*4)",
+		"180 POKE32 327696,YY",
+		"190 END")
+	if got := h.bus.Read32(327680); got != 0 {
+		t.Fatalf("RUN AOT wobble copy wrote before target band: %#x\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327684); got != 0x00A8C8D0 {
+		t.Fatalf("RUN AOT wobble copy first target pixel=%#x, want 0x00A8C8D0\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327688); got != 0x00A8C8D0 {
+		t.Fatalf("RUN AOT wobble copy last target pixel=%#x, want 0x00A8C8D0\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327692); got != 0 {
+		t.Fatalf("RUN AOT wobble copy wrote after target band: %#x\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327696); got != 92 {
+		t.Fatalf("RUN AOT wobble copy loop ended YY=%d, want 92\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_ResonanceTextureLoopsBuildPattern(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 TX=MEMALLOC(2097152,4096):TW=1024:TH=512:TS=4096:IN=0.12",
+		"20 BLIT FILL TX,TW,TH,&H00000000,TS",
+		"30 C1=&H00060818:C2=&H0010182A:C3=&H00201824",
+		"40 FOR Y=0 TO 448 STEP 64",
+		"50 BLIT FILL TX+Y*TS,1024,16,C1,TS",
+		"60 BLIT FILL TX+(Y+20)*TS,1024,10,C2,TS",
+		"70 BLIT FILL TX+(Y+40)*TS,1024,6,C3,TS",
+		"80 NEXT Y",
+		"90 FOR X=0 TO 960 STEP 128",
+		"100 BLIT FILL TX+X*4,8,512,&H000A1020,TS",
+		"110 NEXT X",
+		"120 POKE32 327680,PEEK32(TX)",
+		"130 POKE32 327684,PEEK32(TX+20*TS)",
+		"140 POKE32 327688,PEEK32(TX+40*TS)",
+		"150 POKE32 327692,PEEK32(TX+128*4)",
+		"160 POKE32 327696,X:POKE32 327700,Y",
+		"170 END")
+	want := []uint32{0x000A1020, 0x000A1020, 0x000A1020, 0x000A1020}
+	for i, w := range want {
+		addr := uint32(327680 + i*4)
+		if got := h.bus.Read32(addr); got != w {
+			t.Fatalf("RUN AOT Resonance texture sample[%d]=%#x, want %#x\nloop vars X=%d Y=%d\n%s",
+				i, got, w, h.bus.Read32(327696), h.bus.Read32(327700), readAOTAsmDebug(h))
+		}
+	}
+	if got := h.bus.Read32(327696); got != 1024 {
+		t.Fatalf("RUN AOT texture X loop ended at %d, want 1024\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327700); got != 512 {
+		t.Fatalf("RUN AOT texture Y loop ended at %d, want 512\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_Peek32ReadsMMIO(t *testing.T) {
+	h, _ := startREPL(t)
+	const (
+		regAddr = 0x000F075C
+		outAddr = 327680
+	)
+	h.bus.MapIO(regAddr, regAddr+3, func(addr uint32) uint32 {
+		if addr != regAddr {
+			t.Fatalf("unexpected MMIO read at %#x", addr)
+		}
+		return 123456789
+	}, nil)
+	runAOTLines(t, h,
+		"10 X=PEEK32(&H000F075C)",
+		"20 POKE32 327680,X",
+		"30 END")
+	if got := h.bus.Read32(outAddr); got != 123456789 {
+		t.Fatalf("RUN AOT PEEK32 MMIO result=%d, want 123456789\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_Peek32LetPreservesTrailingArithmetic(t *testing.T) {
+	h, _ := startREPL(t)
+	const (
+		regAddr = 0x000F075C
+		outAddr = 327680
+	)
+	h.bus.MapIO(regAddr, regAddr+3, func(addr uint32) uint32 {
+		if addr != regAddr {
+			t.Fatalf("unexpected MMIO read at %#x", addr)
+		}
+		return 2000000
+	}, nil)
+	runAOTLines(t, h,
+		"10 RT=PEEK32(&H000F075C)/1000000",
+		"20 POKE32 327680,RT",
+		"30 END")
+	if got := h.bus.Read32(outAddr); got != 2 {
+		t.Fatalf("RUN AOT PEEK32 trailing division result=%d, want 2\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_BlitFillUsesConvertedFPDerivedDestination(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 BB=MEMALLOC(1228800,4096):ST=2560:A=0:Z=0:DR=1:PU=30:BC1=&H00A8C8D0",
+		"20 B1=258+INT(14*SIN(A*1.7)+7*SIN(Z*2.3))+DR*PU",
+		"30 BLIT FILL BB+B1*ST+92*4,456,7+INT(PU/10),BC1,ST",
+		"40 POKE32 327680,B1:POKE32 327684,PEEK32(BB+B1*ST+92*4):POKE32 327688,PEEK32(BB)",
+		"50 END")
+	wantDst := uint32(0x00820000 + 288*2560 + 92*4)
+	if got := video.HandleRead(BLT_DST); got != wantDst {
+		t.Fatalf("RUN AOT FP-derived BLIT destination=%#x, want %#x\n%s", got, wantDst, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327680); got != 288 {
+		t.Fatalf("RUN AOT B1=%d, want 288\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327684); got != 0x00A8C8D0 {
+		t.Fatalf("RUN AOT rail target pixel=%#x, want 0x00A8C8D0\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327688); got != 0 {
+		t.Fatalf("RUN AOT rail fill overwrote framebuffer origin with %#x\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_BlitFillIntOperandKeepsFPBeforeInt(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 BB=MEMALLOC(4096,4096):ST=2560:IN=0.28",
+		"20 BLIT FILL BB,34+INT(IN*70),14,&H00112233,ST",
+		"30 END")
+	if got := video.HandleRead(BLT_WIDTH); got != 53 {
+		t.Fatalf("RUN AOT BLIT FILL INT(FP*int) width=%d, want 53\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_MultiCharacterFPDivisionAssignments(t *testing.T) {
+	h, _ := startREPL(t)
+	runAOTLines(t, h,
+		"10 SC=2.32:CZ=1:SA=0",
+		"20 CA=CZ/SC:MS=SA/SC",
+		"30 DC=INT(CA*65536):DS=INT(MS*65536)",
+		"40 POKE32 327680,DC:POKE32 327684,DS",
+		"50 END")
+	if got := h.bus.Read32(327680); got < 28000 || got > 28300 {
+		t.Fatalf("RUN AOT CA-derived DC=%d, want about 28248\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327684); got != 0 {
+		t.Fatalf("RUN AOT MS-derived DS=%d, want 0\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_FPFractionComparisonDoesNotUseIntegerPrefix(t *testing.T) {
+	h, _ := startREPL(t)
+	runAOTLines(t, h,
+		"10 SC=2.32",
+		"20 IF SC<0.72 THEN SC=0.72",
+		"30 X=INT(SC*100)",
+		"40 POKE32 327680,X",
+		"50 END")
+	if got := h.bus.Read32(327680); got < 231 || got > 232 {
+		t.Fatalf("RUN AOT fractional IF comparison result=%d, want unclamped 231/232\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_FPFractionComparisonAssignment(t *testing.T) {
+	h, _ := startREPL(t)
+	runAOTLines(t, h,
+		"10 SC=2.32",
+		"20 X=SC<0.72",
+		"30 POKE32 327680,X",
+		"40 END")
+	if got := h.bus.Read32(327680); got != 0 {
+		t.Fatalf("RUN AOT fractional comparison assignment=%d, want 0\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_ResonanceMemallocSequenceStaysLow32(t *testing.T) {
+	h, _ := startREPL(t)
+	runAOTLines(t, h,
+		"10 FB=MEMALLOC(1228800,4096):BB=MEMALLOC(1228800,4096):TX=MEMALLOC(2097152,4096)",
+		"20 CP=MEMALLOC(4096,4096):SR=MEMALLOC(235520,4096):SB=MEMALLOC(2162688,4096)",
+		"30 POKE32 327680,FB:POKE32 327684,BB:POKE32 327688,TX",
+		"40 POKE32 327692,CP:POKE32 327696,SR:POKE32 327700,SB",
+		"50 END")
+	want := []uint32{0x00820000, 0x0094C000, 0x00A78000, 0x00C78000, 0x00C79000, 0x00CB3000}
+	for i, w := range want {
+		addr := uint32(327680 + i*4)
+		if got := h.bus.Read32(addr); got != w {
+			t.Fatalf("RUN AOT Resonance MEMALLOC[%d]=%#x, want %#x\n%s", i, got, w, readAOTAsmDebug(h))
+		}
+	}
+}
+
+func TestREPL_RunAOT_ResonanceBloadUsesNativeMemallocPointer(t *testing.T) {
+	asmBin := buildAssembler(t)
+	repo := repoRootDir(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, repo)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	storeLine(t, h, "10 FB=MEMALLOC(1228800,4096):BB=MEMALLOC(1228800,4096):TX=MEMALLOC(2097152,4096)")
+	storeLine(t, h, "20 CP=MEMALLOC(4096,4096):SR=MEMALLOC(235520,4096):SB=MEMALLOC(2162688,4096)")
+	storeLine(t, h, `30 BLOAD "sdk/examples/assets/resonance_scroll.rgba",SB`)
+	storeLine(t, h, "40 POKE32 327680,SB:POKE32 327684,PEEK32(SB+393464)")
+	storeLine(t, h, "50 END")
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, aotStubMarker) || strings.Contains(out, "ERROR") {
+		t.Fatalf("RUN AOT Resonance BLOAD failed: %q\n%s", out, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327680); got != 0x00CB3000 {
+		t.Fatalf("RUN AOT Resonance BLOAD pointer=%#x, want %#x\n%s", got, uint32(0x00CB3000), readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327684); got == 0 {
+		t.Fatalf("RUN AOT Resonance BLOAD first word stayed zero at SB\n%s", readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_BlitFillAfterResonanceBloadKeepsDestination(t *testing.T) {
+	asmBin := buildAssembler(t)
+	repo := repoRootDir(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, repo)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	sound := newTestSoundChip()
+	midiPlayer := NewMIDIPlayer(sound, SAMPLE_RATE)
+	midiPlayer.AttachBus(h.bus)
+	h.bus.MapIO(MIDI_PLAY_PTR, MIDI_TEMPO_BPM+3, midiPlayer.HandlePlayRead, midiPlayer.HandlePlayWrite)
+	loader := NewMediaLoader(h.bus, sound, ".", nil, nil, nil, nil, nil, nil, nil, midiPlayer)
+	h.bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+	storeLine(t, h, "10 FB=MEMALLOC(1228800,4096):BB=MEMALLOC(1228800,4096):TX=MEMALLOC(2097152,4096)")
+	storeLine(t, h, "20 CP=MEMALLOC(4096,4096):SR=MEMALLOC(235520,4096):SB=MEMALLOC(2162688,4096)")
+	storeLine(t, h, "30 ST=2560")
+	storeLine(t, h, `40 SOUND PLAY "sdk/examples/assets/music/adagioforstrings.mid"`)
+	storeLine(t, h, `50 BLOAD "sdk/examples/assets/resonance_scroll.rgba",SB`)
+	storeLine(t, h, "60 BLIT FILL SR,640,92,&H00000000,ST")
+	storeLine(t, h, "70 POKE32 327680,SR:POKE32 327684,PEEK32(SR)")
+	storeLine(t, h, "80 END")
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, aotStubMarker) || strings.Contains(out, "ERROR") {
+		t.Fatalf("RUN AOT BLIT after BLOAD failed: %q\n%s", out, readAOTAsmDebug(h))
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for midiPlayer.HandlePlayRead(MIDI_PLAY_STATUS)&MIDI_STATUS_LOADING != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	status := midiPlayer.HandlePlayRead(MIDI_PLAY_STATUS)
+	if status&MIDI_STATUS_ERROR != 0 || status&MIDI_STATUS_BUSY == 0 {
+		t.Fatalf("RUN AOT SOUND PLAY did not start MIDI: status=%#x ctrl=%#x out=%q\n%s",
+			status, midiPlayer.HandlePlayRead(MIDI_PLAY_CTRL), out, readAOTAsmDebug(h))
+	}
+	if got := video.HandleRead(BLT_DST); got != 0x00C79000 {
+		t.Fatalf("RUN AOT BLIT after BLOAD destination=%#x, want SR %#x; SR var=%#x\n%s",
+			got, uint32(0x00C79000), h.bus.Read32(327680), readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_BlitFillKeepsLongVariableSeparateFromPrefix(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 FB=MEMALLOC(1228800,4096)",
+		"20 F=0:CC=&H00102030:ST=2560",
+		"30 BLIT FILL FB,640,480,CC,ST",
+		"40 POKE32 327680,FB:POKE32 327684,F:POKE32 327688,PEEK32(FB)",
+		"50 END")
+	if got := h.bus.Read32(327680); got != 0x00820000 {
+		t.Fatalf("RUN AOT FB=%#x, want MEMALLOC base %#x\n%s", got, uint32(0x00820000), readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327684); got != 0 {
+		t.Fatalf("RUN AOT F=%#x, want independent prefix variable 0\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := video.HandleRead(BLT_DST); got != 0x00820000 {
+		t.Fatalf("RUN AOT BLIT dst=%#x, want FB %#x\n%s", got, uint32(0x00820000), readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327688); got != 0x00102030 {
+		t.Fatalf("RUN AOT framebuffer first pixel=%#x, want fill colour\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_BlitFillConvertsTaggedScalarDimensions(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 TX=MEMALLOC(2097152,4096):TS=4096",
+		"20 TW=1024+SIN(0):TH=14+SIN(0)",
+		"30 BLIT FILL TX,TW,TH,&H00112233,TS",
+		"40 POKE32 327680,TW:POKE32 327684,TH:POKE32 327688,PEEK32(TX)",
+		"50 END")
+	if got := video.HandleRead(BLT_WIDTH); got != 1024 {
+		t.Fatalf("RUN AOT BLIT width=%#x, want 1024\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := video.HandleRead(BLT_HEIGHT); got != 14 {
+		t.Fatalf("RUN AOT BLIT height=%#x, want 14\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327688); got != 0x00112233 {
+		t.Fatalf("RUN AOT framebuffer first pixel=%#x, want fill colour\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_CopperListUsesNativeMemallocPointer(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 CP=MEMALLOC(4096,4096)",
+		"20 COPPER LIST CP",
+		"30 COPPER WAIT 0",
+		"40 COPPER MOVE &H000F0050,&H00000000",
+		"50 COPPER END",
+		"60 POKE32 327680,CP:POKE32 327684,PEEK32(CP+4):POKE32 327688,PEEK32(CP+8):POKE32 327692,PEEK32(CP+12)",
+		"70 END")
+	if got := h.bus.Read32(327680); got != 0x00820000 {
+		t.Fatalf("RUN AOT COPPER CP=%#x, want %#x\n%s", got, uint32(0x00820000), readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327684); got != 0x8003C014 {
+		t.Fatalf("RUN AOT COPPER SETBASE=%#x, want %#x\n%s", got, uint32(0x8003C014), readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327688); got != 0x40000000 {
+		t.Fatalf("RUN AOT COPPER MOVE opcode=%#x, want %#x\n%s", got, uint32(0x40000000), readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327692); got != 0 {
+		t.Fatalf("RUN AOT COPPER MOVE data=%#x, want 0\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_DelegatedMode7AfterNativeFPSetup(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 BB=MEMALLOC(1228800,4096):TX=MEMALLOC(2097152,4096)",
+		"20 ST=2560:TS=4096:FP=65536:CU=512:CV=256:HW=320:HH=240",
+		"30 A=0:Z=0:IN=0.12:SA=SIN(A):SZ=SIN(Z):CZ=COS(A)",
+		"40 SC=2.5-IN*1.5+SZ*0.18:CA=CZ/SC:MS=SA/SC",
+		"50 DC=INT(CA*FP):DS=INT(MS*FP)",
+		"60 MU=INT((CU-HW*CA+HH*MS)*FP):MV=INT((CV-HW*MS-HH*CA)*FP)",
+		"70 BLIT MODE7 TX,BB,640,480,MU,MV,DC,DS,0-DS,DC,1023,511,TS,ST",
+		"80 END")
+	if got := video.HandleRead(BLT_OP); got != bltOpMode7 {
+		t.Fatalf("RUN AOT Mode7 op=%d, want MODE7\n%s", got, readAOTAsmDebug(h))
+	}
+	if got := video.HandleRead(BLT_SRC); got != 0x0094C000 {
+		t.Fatalf("RUN AOT Mode7 src=%#x, want TX %#x\n%s", got, uint32(0x0094C000), readAOTAsmDebug(h))
+	}
+	if got := video.HandleRead(BLT_DST); got != 0x00820000 {
+		t.Fatalf("RUN AOT Mode7 dst=%#x, want BB %#x\n%s", got, uint32(0x00820000), readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_NativeIntegerArrayReadExpression(t *testing.T) {
+	h, _ := startREPL(t)
+	runAOTLines(t, h,
+		"10 DIM SN(1)",
+		"20 SN(0)=100",
+		"30 I=0:Y=405+INT(7*SN((I) AND 1)/100)",
+		"40 POKE32 327680,Y",
+		"50 END")
+	if got := h.bus.Read32(327680); got != 412 {
+		t.Fatalf("RUN AOT native integer array expression result=%d, want 412\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_NativeForArrayMMIOLoopReturns(t *testing.T) {
+	h, _ := startREPL(t)
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	runAOTLines(t, h,
+		"10 DIM SN(255)",
+		"20 FOR I=0 TO 255",
+		"30 SN(I)=I",
+		"40 NEXT I",
+		"50 SB=1048576:BB=2097152:ST=2560:SS=65536:SC=0:AB2=0:V0=0:T0=8:Y=444:GOSUB 80",
+		"60 POKE32 327680,I",
+		"70 END",
+		"80 IF V0<T0 THEN V0=T0 ELSE V0=V0-2:IF V0<0 THEN V0=0",
+		"90 BLIT FILL BB+386*ST+58*4,54,62,&H00101820,ST:GOSUB 100",
+		"95 RETURN",
+		"100 FOR I=0 TO 24",
+		"110 SX=(SC+I*16) AND 16383:IF SX>16368 THEN SX=0",
+		"120 X=124+I*16:Y=405+INT(7*SN((AB2+I*14) AND 255)/1024)",
+		"130 POKE32 &HF0024,SB+SX*4:POKE32 &HF0028,BB+Y*ST+X*4:POKE32 &HF002C,16:POKE32 &HF0030,33",
+		"140 POKE32 &HF0034,SS:POKE32 &HF0038,ST:POKE32 &HF0020,4:POKE32 &HF001C,1",
+		"150 NEXT I",
+		"160 RETURN")
+	if got := h.bus.Read32(327680); got != 25 {
+		t.Fatalf("RUN AOT native FOR with array/MMIO ended with I=%d, want 25\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_NativeForHighLabelArrayLoopReturns(t *testing.T) {
+	h, _ := startREPL(t)
+	lines := []string{
+		"10 DIM SN(255)",
+		"20 FOR I=0 TO 255",
+		"30 SN(I)=I",
+		"40 NEXT I",
+	}
+	lineNo := 50
+	for n := 0; n < 140; n++ {
+		lines = append(lines, fmt.Sprintf("%d IF 1=1 THEN A=%d", lineNo, n))
+		lineNo += 10
+	}
+	lines = append(lines,
+		fmt.Sprintf("%d SC=0:AB2=0:GOSUB %d", lineNo, lineNo+50),
+		fmt.Sprintf("%d POKE32 327680,I", lineNo+10),
+		fmt.Sprintf("%d END", lineNo+20),
+		fmt.Sprintf("%d FOR I=0 TO 24", lineNo+50),
+		fmt.Sprintf("%d Y=405+INT(7*SN((AB2+I*14) AND 255)/1024)", lineNo+60),
+		fmt.Sprintf("%d NEXT I", lineNo+70),
+		fmt.Sprintf("%d RETURN", lineNo+80),
+	)
+	runAOTLines(t, h, lines...)
+	if got := h.bus.Read32(327680); got != 25 {
+		t.Fatalf("RUN AOT high-label native FOR ended with I=%d, want 25\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_NestedIfInSubroutineFallsThroughToReturn(t *testing.T) {
+	h, _ := startREPL(t)
+	runAOTLines(t, h,
+		"10 PU=30:DR=1:GOSUB 100",
+		"20 POKE32 327680,7",
+		"30 END",
+		"100 IF PU>0 THEN IF DR<0 THEN A=1",
+		"110 RETURN",
+		"120 POKE32 327680,99",
+		"130 RETURN")
+	if got := h.bus.Read32(327680); got != 7 {
+		t.Fatalf("RUN AOT nested IF in subroutine did not return to caller: memory=%d, want 7\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_DelegatedArrayAssignmentRead(t *testing.T) {
+	h, _ := startREPL(t)
+	runAOTLines(t, h,
+		"10 DIM SN(1)",
+		"20 SN(0)=100",
+		"30 POKE32 327680,SN(0)",
+		"40 END")
+	if got := h.bus.Read32(327680); got != 100 {
+		t.Fatalf("RUN AOT delegated array assignment/read result=%d, want 100\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
 // runAOTLines stores a multi-line programme, RUN AOT-compiles and runs it, and
 // fails if the compile reported an error or fell back to the stub.
 func runAOTLines(t *testing.T, h *ehbasicTestHarness, lines ...string) {
@@ -1219,6 +2003,53 @@ func TestREPL_RunAOT_ControlFlow(t *testing.T) {
 			"30 POKE8 327680, 2")
 		if got := h.cpu.memory[a]; got != 1 {
 			t.Fatalf("END did not halt: memory[%#x]=%d, want 1", a, got)
+		}
+	})
+
+	t.Run("nested_GOSUB_returns_to_caller", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h,
+			"10 GOSUB 100",
+			"20 POKE8 327680, 3",
+			"30 END",
+			"100 POKE8 327680, 1",
+			"110 GOSUB 200",
+			"120 POKE8 327681, 2",
+			"130 RETURN",
+			"200 POKE8 327682, 4",
+			"210 RETURN")
+		if got := h.cpu.memory[a]; got != 3 {
+			t.Fatalf("nested GOSUB did not return to top-level continuation: memory[%#x]=%d, want 3", a, got)
+		}
+		if got := h.cpu.memory[b]; got != 2 {
+			t.Fatalf("nested GOSUB did not resume outer subroutine: memory[%#x]=%d, want 2", b, got)
+		}
+		if got := h.cpu.memory[c]; got != 4 {
+			t.Fatalf("nested GOSUB did not run inner subroutine: memory[%#x]=%d, want 4", c, got)
+		}
+	})
+
+	t.Run("nested_GOSUB_with_FOR_returns_to_caller", func(t *testing.T) {
+		h, _ := startREPL(t)
+		runAOTLines(t, h,
+			"10 GOSUB 100",
+			"20 POKE8 327680, 3",
+			"30 END",
+			"100 GOSUB 200",
+			"110 POKE8 327681, 2",
+			"120 RETURN",
+			"200 FOR I=0 TO 3",
+			"210 POKE8 327682, I",
+			"220 NEXT I",
+			"230 RETURN")
+		if got := h.cpu.memory[a]; got != 3 {
+			t.Fatalf("FOR subroutine did not return to top-level continuation: memory[%#x]=%d, want 3", a, got)
+		}
+		if got := h.cpu.memory[b]; got != 2 {
+			t.Fatalf("FOR subroutine did not resume outer subroutine: memory[%#x]=%d, want 2", b, got)
+		}
+		if got := h.cpu.memory[c]; got != 3 {
+			t.Fatalf("FOR subroutine did not run loop body: memory[%#x]=%d, want 3", c, got)
 		}
 	})
 
@@ -1296,7 +2127,7 @@ func TestREPL_RunAOT_StopCont(t *testing.T) {
 		t.Helper()
 		out := h.runCommand("RUN AOT")
 		if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
-			t.Fatalf("RUN AOT failed: %q", out)
+			t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTAsmDebug(h))
 		}
 		return out
 	}
@@ -1547,7 +2378,7 @@ func TestREPL_RunAOT_Bload(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "blob.bin"), payload, 0644); err != nil {
 		t.Fatal(err)
 	}
-	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	const dst = 0x710000
 	storeLine(t, h, `10 BLOAD "blob.bin", &H710000`)
@@ -1566,11 +2397,114 @@ func TestREPL_RunAOT_Bload(t *testing.T) {
 	}
 }
 
+func TestREPL_RunAOT_BloadMemallocDestination(t *testing.T) {
+	asmBin := buildAssembler(t)
+	dir := t.TempDir()
+	payload := []byte{'P', 'S', 'I', 'D', 0x00, 0x02, 0x00, 0x7C}
+	if err := os.WriteFile(filepath.Join(dir, "blob.sid"), payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	storeLine(t, h, "10 SA=MEMALLOC(8192,4096)")
+	storeLine(t, h, `20 BLOAD "blob.sid",SA`)
+	storeLine(t, h, "30 POKE32 327680,SA")
+	storeLine(t, h, "40 POKE32 327684,PEEK32(SA)")
+	storeLine(t, h, "50 END")
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, aotStubMarker) || strings.Contains(out, "ERROR") {
+		t.Fatalf("RUN AOT BLOAD MEMALLOC failed: %q\n%s", out, readAOTAsmDebug(h))
+	}
+	const memallocBase0 = 0x00820000
+	if got := h.bus.Read32(327680); got != memallocBase0 {
+		t.Fatalf("BLOAD MEMALLOC pointer = %#x, want %#x\n%s", got, uint32(memallocBase0), readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327684); got != 0x44495350 {
+		t.Fatalf("BLOAD MEMALLOC magic = %#x, want little-endian PSID\nraw=%#x\n%s",
+			got, h.bus.Read32(memallocBase0), readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_BloadVoodooDemoAllocationOrder(t *testing.T) {
+	asmBin := buildAssembler(t)
+	repo := repoRootDir(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, repo)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	storeLine(t, h, "10 SN=MEMALLOC(4096,4096):PR=MEMALLOC(12288,4096):ST=MEMALLOC(4096,4096):MS=MEMALLOC(4096,4096):SA=MEMALLOC(8192,4096)")
+	storeLine(t, h, `20 BLOAD "sdk/examples/assets/music/Reggae_2.sid",SA`)
+	storeLine(t, h, "30 POKE32 327680,SA")
+	storeLine(t, h, "40 POKE32 327684,PEEK32(SA)")
+	storeLine(t, h, "50 POKE32 &HF0E20,SA")
+	storeLine(t, h, "60 END")
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, aotStubMarker) || strings.Contains(out, "ERROR") {
+		t.Fatalf("RUN AOT demo-order BLOAD failed: %q\n%s", out, readAOTAsmDebug(h))
+	}
+	const sidBase = 0x00826000
+	if got := h.bus.Read32(327680); got != sidBase {
+		t.Fatalf("demo-order SID pointer = %#x, want %#x\n%s", got, uint32(sidBase), readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327684); got != 0x44495350 {
+		t.Fatalf("demo-order SID magic = %#x, want little-endian PSID\nraw=%#x sidPtrMMIO=%#x\n%s",
+			got, h.bus.Read32(sidBase), h.bus.Read32(0xF0E20), readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_BloadThenStartSIDWithMemallocPointer(t *testing.T) {
+	asmBin := buildAssembler(t)
+	repo := repoRootDir(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, repo)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	soundChip := newTestSoundChip()
+	sidEngine := NewSIDEngine(soundChip, SAMPLE_RATE)
+	sidPlayer := NewSIDPlayer(sidEngine)
+	sidPlayer.AttachBus(h.bus)
+	var sidWrites []struct {
+		addr  uint32
+		value uint32
+	}
+	h.bus.MapIO(SID_PLAY_PTR, SID_PLAY_STATUS+3, sidPlayer.HandlePlayRead, func(addr uint32, value uint32) {
+		sidWrites = append(sidWrites, struct {
+			addr  uint32
+			value uint32
+		}{addr: addr, value: value})
+		sidPlayer.HandlePlayWrite(addr, value)
+	})
+
+	storeLine(t, h, "10 SN=MEMALLOC(4096,4096):PR=MEMALLOC(12288,4096):ST=MEMALLOC(4096,4096):MS=MEMALLOC(4096,4096):SA=MEMALLOC(8192,4096)")
+	storeLine(t, h, `20 BLOAD "sdk/examples/assets/music/Reggae_2.sid",SA`)
+	storeLine(t, h, "30 POKE32 &HF0E20,SA")
+	storeLine(t, h, "40 POKE32 &HF0E24,4790")
+	storeLine(t, h, "50 POKE32 &HF0E28,5")
+	storeLine(t, h, "60 POKE32 327680,SA")
+	storeLine(t, h, "70 POKE32 327684,PEEK32(SA)")
+	storeLine(t, h, "80 END")
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, aotStubMarker) || strings.Contains(out, "ERROR") {
+		t.Fatalf("RUN AOT SID start failed: %q\n%s", out, readAOTAsmDebug(h))
+	}
+	const sidBase = 0x00826000
+	if got := h.bus.Read32(327680); got != sidBase {
+		t.Fatalf("SID start pointer = %#x, want %#x\n%s", got, uint32(sidBase), readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327684); got != 0x44495350 {
+		t.Fatalf("SID start magic = %#x, want little-endian PSID\nraw=%#x sidPtr=%#x sidLen=%d ctrl=%d\n%s",
+			got, h.bus.Read32(sidBase), sidPlayer.HandlePlayRead(SID_PLAY_PTR), sidPlayer.HandlePlayRead(SID_PLAY_LEN), sidPlayer.HandlePlayRead(SID_PLAY_CTRL), readAOTAsmDebug(h))
+	}
+	if got := sidPlayer.HandlePlayRead(SID_PLAY_PTR); got != sidBase {
+		t.Fatalf("SID player pointer = %#x, want %#x; active ptr=%#x active len=%d staged ptr=%#x staged len=%d writes=%#v mmioShadow=%#x\n%s",
+			got, uint32(sidBase), sidPlayer.PlayPtr, sidPlayer.PlayLen, sidPlayer.PlayPtrStaged, sidPlayer.PlayLenStaged,
+			sidWrites, h.bus.Read32(0xF0E20), readAOTAsmDebug(h))
+	}
+	if got := sidPlayer.HandlePlayRead(SID_PLAY_LEN); got != 4790 {
+		t.Fatalf("SID player length = %d, want 4790", got)
+	}
+}
+
 // TestREPL_RunAOT_PokeExpression covers POKE and explicit-width POKE forms with expression operands
 // (variables/arithmetic). Integer-literal operands take the fast native-store path;
-// expression operands fall back to delegating the whole statement to the resident
-// resident statement handlers (which run expr_eval), so RUN AOT honours "every tokenised
-// statement runs". Side effects observed in plain RAM at 0x50000.
+// expression operands evaluate both operands through expr_eval and then emit the
+// selected native store width directly. Side effects observed in plain RAM at 0x50000.
 func TestREPL_RunAOT_PokeExpression(t *testing.T) {
 	const base = 0x50000 // 327680, plain RAM, 4-byte aligned
 
@@ -1762,6 +2696,648 @@ func TestREPL_RunAOT_PokeExpression(t *testing.T) {
 			t.Fatalf("POKE8 literal: memory[%#x]=%d, want 7", base, got)
 		}
 	})
+}
+
+func TestREPL_AOT_NativeNumericLetSharedByRunTranspileCompile(t *testing.T) {
+	asmBin := buildAssembler(t)
+	prog := []string{
+		"10 X=1+2",
+		"20 POKE32 327680,X",
+		"30 END",
+	}
+
+	t.Run("run_aot_behaviour", func(t *testing.T) {
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		for _, line := range prog {
+			storeLine(t, h, line)
+		}
+		out := h.runCommand("RUN AOT")
+		if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+			t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTAsmDebug(h))
+		}
+		if got := h.bus.Read32(327680); got != 3 {
+			t.Fatalf("RUN AOT native LET result memory=%d, want 3", got)
+		}
+	})
+
+	compileDir := t.TempDir()
+	hc := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, compileDir)
+	hc.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range prog {
+		storeLine(t, hc, line)
+	}
+	if out := hc.runCommand(`COMPILE "letfast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("COMPILE failed: %q", out)
+	}
+	compileAsmBytes, err := os.ReadFile(filepath.Join(compileDir, "letfast.asm"))
+	if err != nil {
+		t.Fatalf("COMPILE asm not written: %v", err)
+	}
+	assertNativeLetAsm(t, string(compileAsmBytes))
+
+	transDir := t.TempDir()
+	ht := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, transDir)
+	ht.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range prog {
+		storeLine(t, ht, line)
+	}
+	if out := ht.runCommand(`TRANSPILE "letfast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("TRANSPILE failed: %q", out)
+	}
+	transAsmBytes, err := os.ReadFile(filepath.Join(transDir, "letfast.asm"))
+	if err != nil {
+		t.Fatalf("TRANSPILE asm not written: %v", err)
+	}
+	assertNativeLetAsm(t, string(transAsmBytes))
+	if !bytes.Equal(transAsmBytes, compileAsmBytes) {
+		t.Fatalf("TRANSPILE asm differs from COMPILE asm:\n--- transpile ---\n%s\n--- compile ---\n%s", transAsmBytes, compileAsmBytes)
+	}
+}
+
+func TestREPL_AOT_NativePrescanIgnoresREM(t *testing.T) {
+	asmBin := buildAssembler(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range []string{
+		"10 REM THIS COMMENT HAS MANY WORDS THAT ARE NOT VARIABLES",
+		"20 X=1",
+		"30 END",
+	} {
+		storeLine(t, h, line)
+	}
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("RUN AOT failed: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	const aotNativeVarCount = 0x042BE0
+	if got := h.bus.Read64(aotNativeVarCount); got != 1 {
+		t.Fatalf("native variable count = %d, want 1; REM text was scanned as variables\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_AOT_NativeIfThenNegativeLiteral(t *testing.T) {
+	asmBin := buildAssembler(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range []string{
+		"10 PD=-1",
+		"20 SD=1:IF PD<0 THEN SD=-1",
+		"30 POKE32 327680,SD",
+		"40 END",
+	} {
+		storeLine(t, h, line)
+	}
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("RUN AOT failed: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	if got := int32(h.bus.Read32(327680)); got != -1 {
+		t.Fatalf("RUN AOT native negative literal result=%d, want -1\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_AOT_NativePeekLetSharedByRunTranspileCompile(t *testing.T) {
+	asmBin := buildAssembler(t)
+	prog := []string{
+		"10 POKE32 327680,305419896",
+		"20 X=PEEK32(327680)",
+		"30 POKE32 327684,X",
+		"40 END",
+	}
+
+	t.Run("run_aot_behaviour", func(t *testing.T) {
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		for _, line := range prog {
+			storeLine(t, h, line)
+		}
+		out := h.runCommand("RUN AOT")
+		if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+			t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTAsmDebug(h))
+		}
+		if got := h.bus.Read32(327684); got != 305419896 {
+			t.Fatalf("RUN AOT native PEEK32 LET memory=%#x, want 0x12345678", got)
+		}
+	})
+
+	compileDir := t.TempDir()
+	hc := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, compileDir)
+	hc.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range prog {
+		storeLine(t, hc, line)
+	}
+	if out := hc.runCommand(`COMPILE "peekfast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("COMPILE failed: %q", out)
+	}
+	compileAsmBytes, err := os.ReadFile(filepath.Join(compileDir, "peekfast.asm"))
+	if err != nil {
+		t.Fatalf("COMPILE asm not written: %v", err)
+	}
+	assertNativePeekLetAsm(t, string(compileAsmBytes))
+
+	transDir := t.TempDir()
+	ht := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, transDir)
+	ht.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range prog {
+		storeLine(t, ht, line)
+	}
+	if out := ht.runCommand(`TRANSPILE "peekfast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("TRANSPILE failed: %q", out)
+	}
+	transAsmBytes, err := os.ReadFile(filepath.Join(transDir, "peekfast.asm"))
+	if err != nil {
+		t.Fatalf("TRANSPILE asm not written: %v", err)
+	}
+	assertNativePeekLetAsm(t, string(transAsmBytes))
+	if !bytes.Equal(transAsmBytes, compileAsmBytes) {
+		t.Fatalf("TRANSPILE asm differs from COMPILE asm:\n--- transpile ---\n%s\n--- compile ---\n%s", transAsmBytes, compileAsmBytes)
+	}
+}
+
+func TestREPL_AOT_NativeIntegerExpressionsSharedByRunTranspileCompile(t *testing.T) {
+	asmBin := buildAssembler(t)
+	prog := []string{
+		"10 A=2",
+		"20 B=3",
+		"30 X=A+B*4",
+		"40 POKE32 327680,X",
+		"50 POKE32 327684,A*100+B",
+		"60 H=&HF0E20",
+		"70 POKE32 327688,H",
+		"80 END",
+	}
+
+	t.Run("run_aot_behaviour", func(t *testing.T) {
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		for _, line := range prog {
+			storeLine(t, h, line)
+		}
+		out := h.runCommand("RUN AOT")
+		if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+			t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTAsmDebug(h))
+		}
+		if got := h.bus.Read32(327680); got != 14 {
+			t.Fatalf("RUN AOT native integer LET memory=%d, want 14\n%s", got, readAOTAsmDebug(h))
+		}
+		if got := h.bus.Read32(327684); got != 203 {
+			t.Fatalf("RUN AOT native integer POKE expr memory=%d, want 203\n%s", got, readAOTAsmDebug(h))
+		}
+		if got := h.bus.Read32(327688); got != 0xF0E20 {
+			t.Fatalf("RUN AOT native hex literal memory=%#x, want 0xF0E20\n%s", got, readAOTAsmDebug(h))
+		}
+	})
+
+	compileDir := t.TempDir()
+	hc := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, compileDir)
+	hc.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range prog {
+		storeLine(t, hc, line)
+	}
+	if out := hc.runCommand(`COMPILE "intfast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("COMPILE failed: %q\n%s", out, readAOTAsmDebug(hc))
+	}
+	compileAsmBytes, err := os.ReadFile(filepath.Join(compileDir, "intfast.asm"))
+	if err != nil {
+		t.Fatalf("COMPILE asm not written: %v", err)
+	}
+	assertNativeIntegerExpressionAsm(t, string(compileAsmBytes))
+
+	transDir := t.TempDir()
+	ht := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, transDir)
+	ht.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range prog {
+		storeLine(t, ht, line)
+	}
+	if out := ht.runCommand(`TRANSPILE "intfast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("TRANSPILE failed: %q", out)
+	}
+	transAsmBytes, err := os.ReadFile(filepath.Join(transDir, "intfast.asm"))
+	if err != nil {
+		t.Fatalf("TRANSPILE asm not written: %v", err)
+	}
+	assertNativeIntegerExpressionAsm(t, string(transAsmBytes))
+	if !bytes.Equal(transAsmBytes, compileAsmBytes) {
+		t.Fatalf("TRANSPILE asm differs from COMPILE asm:\n--- transpile ---\n%s\n--- compile ---\n%s", transAsmBytes, compileAsmBytes)
+	}
+}
+
+func TestREPL_AOT_NativePokeKeepsIntegerPointer(t *testing.T) {
+	asmBin := buildAssembler(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	storeLine(t, h, "10 SA=MEMALLOC(8192,4096)")
+	storeLine(t, h, "20 POKE32 327680,SA")
+	storeLine(t, h, "30 POKE8 SA,80")
+	storeLine(t, h, "40 POKE8 SA+1,83")
+	storeLine(t, h, "50 POKE8 SA+2,73")
+	storeLine(t, h, "60 POKE8 SA+3,68")
+	storeLine(t, h, "70 POKE32 327684,PEEK32(SA)")
+	storeLine(t, h, "80 END")
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTAsmDebug(h))
+	}
+	const memallocBase0 = 0x00820000
+	if got := h.bus.Read32(327680); got != memallocBase0 {
+		t.Fatalf("POKE32 of MEMALLOC pointer = %#x, want %#x\n%s", got, uint32(memallocBase0), readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327684); got != 0x44495350 {
+		t.Fatalf("PEEK32 of MEMALLOC buffer = %#x, want little-endian PSID\nraw=%#x\n%s",
+			got, h.bus.Read32(memallocBase0), readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_AOT_NativeIntegerIfSharedByRunTranspileCompile(t *testing.T) {
+	asmBin := buildAssembler(t)
+	prog := []string{
+		"10 A=5:B=7",
+		"15 PD=-1:SD=1",
+		"20 IF A<B THEN POKE32 327680,1",
+		"30 IF B<=7 THEN POKE32 327684,2",
+		"40 IF A>=5 THEN POKE32 327688,3",
+		"50 IF A<>B THEN POKE32 327692,4",
+		"60 IF A=5 THEN POKE32 327696,5",
+		"70 IF B<7 THEN POKE32 327700,99",
+		"75 IF PD<0 THEN SD=-1",
+		"77 POKE32 327704,SD",
+		"80 END",
+	}
+
+	t.Run("run_aot_behaviour", func(t *testing.T) {
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		for _, line := range prog {
+			storeLine(t, h, line)
+		}
+		out := h.runCommand("RUN AOT")
+		if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+			t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTAsmDebug(h))
+		}
+		for i, want := range []uint32{1, 2, 3, 4, 5, 0, 0xFFFFFFFF} {
+			addr := uint32(327680 + i*4)
+			if got := h.bus.Read32(addr); got != want {
+				t.Fatalf("RUN AOT native IF memory[%#x]=%d, want %d\n%s", addr, got, want, readAOTAsmDebug(h))
+			}
+		}
+	})
+
+	compileDir := t.TempDir()
+	hc := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, compileDir)
+	hc.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range prog {
+		storeLine(t, hc, line)
+	}
+	if out := hc.runCommand(`COMPILE "iffast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("COMPILE failed: %q\n%s", out, readAOTAsmDebug(hc))
+	}
+	compileAsmBytes, err := os.ReadFile(filepath.Join(compileDir, "iffast.asm"))
+	if err != nil {
+		t.Fatalf("COMPILE asm not written: %v", err)
+	}
+	assertNativeIntegerIfAsm(t, string(compileAsmBytes))
+
+	transDir := t.TempDir()
+	ht := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, transDir)
+	ht.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range prog {
+		storeLine(t, ht, line)
+	}
+	if out := ht.runCommand(`TRANSPILE "iffast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("TRANSPILE failed: %q", out)
+	}
+	transAsmBytes, err := os.ReadFile(filepath.Join(transDir, "iffast.asm"))
+	if err != nil {
+		t.Fatalf("TRANSPILE asm not written: %v", err)
+	}
+	assertNativeIntegerIfAsm(t, string(transAsmBytes))
+	if !bytes.Equal(transAsmBytes, compileAsmBytes) {
+		t.Fatalf("TRANSPILE asm differs from COMPILE asm:\n--- transpile ---\n%s\n--- compile ---\n%s", transAsmBytes, compileAsmBytes)
+	}
+}
+
+func TestREPL_AOT_NativeIntegerForNextSharedByRunTranspileCompile(t *testing.T) {
+	asmBin := buildAssembler(t)
+	prog := []string{
+		"10 S=0",
+		"20 FOR I=0 TO 3",
+		"30 S=S+I",
+		"40 NEXT I",
+		"50 D=0",
+		"60 FOR J=5 TO 1 STEP -2",
+		"70 D=D+J",
+		"80 NEXT J",
+		"90 N=0",
+		"100 FOR A=1 TO 2",
+		"110 FOR B=1 TO 3",
+		"120 N=N+A*10+B",
+		"130 NEXT B",
+		"140 NEXT A",
+		"150 POKE32 327680,S",
+		"160 POKE32 327684,D",
+		"170 POKE32 327688,N",
+		"180 END",
+	}
+
+	t.Run("run_aot_behaviour", func(t *testing.T) {
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+		for _, line := range prog {
+			storeLine(t, h, line)
+		}
+		out := h.runCommand("RUN AOT")
+		if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+			t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTAsmDebug(h))
+		}
+		for i, want := range []uint32{6, 9, 102} {
+			addr := uint32(327680 + i*4)
+			if got := h.bus.Read32(addr); got != want {
+				t.Fatalf("RUN AOT native FOR/NEXT memory[%#x]=%d, want %d\n%s", addr, got, want, readAOTAsmDebug(h))
+			}
+		}
+	})
+
+	compileDir := t.TempDir()
+	hc := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, compileDir)
+	hc.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range prog {
+		storeLine(t, hc, line)
+	}
+	if out := hc.runCommand(`COMPILE "forfast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("COMPILE failed: %q\n%s", out, readAOTAsmDebug(hc))
+	}
+	compileAsmBytes, err := os.ReadFile(filepath.Join(compileDir, "forfast.asm"))
+	if err != nil {
+		t.Fatalf("COMPILE asm not written: %v", err)
+	}
+	assertNativeIntegerForNextAsm(t, string(compileAsmBytes))
+
+	transDir := t.TempDir()
+	ht := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, transDir)
+	ht.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range prog {
+		storeLine(t, ht, line)
+	}
+	if out := ht.runCommand(`TRANSPILE "forfast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("TRANSPILE failed: %q", out)
+	}
+	transAsmBytes, err := os.ReadFile(filepath.Join(transDir, "forfast.asm"))
+	if err != nil {
+		t.Fatalf("TRANSPILE asm not written: %v", err)
+	}
+	assertNativeIntegerForNextAsm(t, string(transAsmBytes))
+	if !bytes.Equal(transAsmBytes, compileAsmBytes) {
+		t.Fatalf("TRANSPILE asm differs from COMPILE asm:\n--- transpile ---\n%s\n--- compile ---\n%s", transAsmBytes, compileAsmBytes)
+	}
+}
+
+func readAOTAsmDebug(h *ehbasicTestHarness) string {
+	const (
+		aotAsmSrc = 0x042800
+		aotDcText = 0x042818
+	)
+	ptr := h.bus.Read64(aotAsmSrc)
+	srcPtr := ptr
+	if ptr == 0 {
+		ptr = h.bus.Read64(aotDcText)
+	}
+	textPtr := h.bus.Read64(aotDcText)
+	if ptr == 0 || ptr > 0xFFFFFFFF {
+		return fmt.Sprintf("<no AOT asm source: AOT_ASM_SRC=%#x AOT_DC_TEXT=%#x>", srcPtr, textPtr)
+	}
+	var b strings.Builder
+	for i := uint32(0); i < 8192; i++ {
+		ch := h.bus.Read8(uint32(ptr) + i)
+		if ch == 0 {
+			break
+		}
+		b.WriteByte(ch)
+	}
+	return fmt.Sprintf("<AOT_ASM_SRC=%#x AOT_DC_TEXT=%#x>\n%s", srcPtr, textPtr, excerptGeneratedAsm(b.String()))
+}
+
+func readAOTAsmTailDebug(h *ehbasicTestHarness) string {
+	const (
+		aotDcText  = 0x042818
+		aotTextEnd = 0x042838
+	)
+	textPtr := h.bus.Read64(aotDcText)
+	endPtr := h.bus.Read64(aotTextEnd)
+	if textPtr == 0 || endPtr == 0 || endPtr <= textPtr || endPtr > 0xFFFFFFFF {
+		return fmt.Sprintf("<no AOT asm tail: AOT_DC_TEXT=%#x AOT_TEXT_END=%#x>", textPtr, endPtr)
+	}
+	start := endPtr - 8192
+	if start < textPtr {
+		start = textPtr
+	}
+	var b strings.Builder
+	for p := uint32(start); uint64(p) < endPtr; p++ {
+		ch := h.bus.Read8(p)
+		if ch == 0 {
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	return fmt.Sprintf("<AOT tail %#x..%#x>\n%s", start, endPtr, b.String())
+}
+
+func readAOTStateDebug(h *ehbasicTestHarness) string {
+	const (
+		aotAsmSrc         = 0x042800
+		aotDcText         = 0x042818
+		aotDcCode         = 0x042820
+		aotDcTLen         = 0x042828
+		aotDcCLen         = 0x042830
+		aotTextEnd        = 0x042838
+		aotCodeEnd        = 0x042840
+		aotUseRT          = 0x0429F8
+		aotUseProg        = 0x042A18
+		aotRTProgLen      = 0x042A20
+		aotArenaHighNext  = 0x0428C0
+		aotFileBridgeNext = 0x0428D0
+		aotLastOOMStage   = 0x042BF8
+		aotLastLine       = 0x042C00
+		aotLastToken      = 0x042C08
+		aotEmitOverflow   = 0x042C10
+	)
+	return fmt.Sprintf(
+		"AOT state: src=%#x text=%#x code=%#x tlen=%#x clen=%#x textEnd=%#x codeEnd=%#x useRT=%#x useProg=%#x progLen=%#x arenaNext=%#x bridgeNext=%#x oomStage=%#x lastLine=%#x lastToken=%#x emitOverflow=%#x",
+		h.bus.Read64(aotAsmSrc),
+		h.bus.Read64(aotDcText),
+		h.bus.Read64(aotDcCode),
+		h.bus.Read64(aotDcTLen),
+		h.bus.Read64(aotDcCLen),
+		h.bus.Read64(aotTextEnd),
+		h.bus.Read64(aotCodeEnd),
+		h.bus.Read64(aotUseRT),
+		h.bus.Read64(aotUseProg),
+		h.bus.Read64(aotRTProgLen),
+		h.bus.Read64(aotArenaHighNext),
+		h.bus.Read64(aotFileBridgeNext),
+		h.bus.Read64(aotLastOOMStage),
+		h.bus.Read64(aotLastLine),
+		h.bus.Read64(aotLastToken),
+		h.bus.Read64(aotEmitOverflow),
+	)
+}
+
+func assertNativeIntegerForNextAsm(t *testing.T, asm string) {
+	t.Helper()
+	body := excerptGeneratedAsm(asm)
+	for _, bad := range []string{
+		"RT_EXEC_DO_FOR",
+		"RT_EXEC_DO_NEXT",
+		"exec_do_for",
+		"exec_do_next",
+		"RT_VAR_LOOKUP",
+		"RT_VAR_LOOKUP_TAG",
+		"var_lookup",
+		"#274544",             // RT_EXEC_DO_FOR
+		"#274552",             // RT_EXEC_DO_NEXT
+		"#274440",             // RT_VAR_LOOKUP
+		"#274448",             // RT_VAR_LOOKUP_TAG
+		"move.l r6, #274664",  // fp_int resident helper
+		"move.l r6, #270856",  // fp_fix resident helper
+		"move.l r10, #274664", // RT_EXPR_TO_I64 in the standalone blob table
+		"RT_EXPR_TO_I64",
+	} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("integer FOR/NEXT asm should not call %q:\n%s", bad, body)
+		}
+	}
+	for _, want := range []string{
+		"F",
+		"FD",
+		"add.q r1, r1, #1",
+		"sub.q r1, r1, #2",
+		"bgt r1, r8, FD",
+		"blt r1, r8, FD",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("integer FOR/NEXT asm missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func assertNativeIntegerIfAsm(t *testing.T, asm string) {
+	t.Helper()
+	body := excerptGeneratedAsm(asm)
+	for _, bad := range []string{
+		"move.l r6, #274432", // RT_EXPR_EVAL
+		"expr_eval",
+		"move.l r6, #274440", // RT_VAR_LOOKUP
+		"move.l r6, #274448", // RT_VAR_LOOKUP_TAG
+		"var_lookup",
+		"move.l r6, #274664", // fp_int resident helper
+		"move.l r6, #270856", // fp_fix resident helper
+		"RT_EXPR_TO_I64",
+	} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("integer IF asm should not call %q:\n%s", bad, body)
+		}
+	}
+	for _, want := range []string{
+		"blt r1, r8, IC",
+		"bgt r1, r8, IC",
+		"bne r1, r8, IC",
+		"beq r1, r8, IC",
+		"beqz r8, IE",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("integer IF asm missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func assertNativeIntegerExpressionAsm(t *testing.T, asm string) {
+	t.Helper()
+	body := excerptGeneratedAsm(asm)
+	for _, bad := range []string{
+		"move.l r6, #274432", // RT_EXPR_EVAL
+		"expr_eval",
+		"move.l r6, #274440", // RT_VAR_LOOKUP
+		"move.l r6, #274448", // RT_VAR_LOOKUP_TAG
+		"var_lookup",
+		"move.l r6, #274664", // fp_int resident helper
+		"move.l r6, #270856", // fp_fix resident helper
+		"RT_EXPR_TO_I64",
+	} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("integer expression asm should not call %q:\n%s", bad, body)
+		}
+	}
+	for _, want := range []string{
+		"muls.q",
+		"add.q",
+		"move.l r8, #986656",
+		"store.q r8, (r1)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("integer expression asm missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func assertNativePeekLetAsm(t *testing.T, asm string) {
+	t.Helper()
+	body := excerptGeneratedAsm(asm)
+	for _, bad := range []string{
+		"move.l r6, #274440", // RT_VAR_LOOKUP
+		"move.l r6, #274448", // RT_VAR_LOOKUP_TAG
+		"var_lookup",
+		"move.l r6, #274664", // fp_int resident helper
+		"move.l r6, #270856", // fp_fix resident helper
+		"RT_EXPR_TO_I64",
+	} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("native PEEK LET asm should not call %q:\n%s", bad, body)
+		}
+	}
+	for _, want := range []string{
+		"load.l r8, (r1)",
+		"move.l r9, #2",
+		"store.q r8, (r1)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("native PEEK LET asm missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func assertNativeLetAsm(t *testing.T, asm string) {
+	t.Helper()
+	for _, bad := range []string{
+		"#270480", // RT_EXEC_DO_LET
+		"#stmt_jump_table + 28",
+		"exec_do_let",
+		"move.l r6, #274440", // RT_VAR_LOOKUP
+		"move.l r6, #274448", // RT_VAR_LOOKUP_TAG
+		"var_lookup",
+		"move.l r6, #274664", // fp_int resident helper
+		"move.l r6, #270856", // fp_fix resident helper
+		"RT_EXPR_TO_I64",
+	} {
+		if strings.Contains(asm, bad) {
+			t.Fatalf("numeric LET should not delegate through %q:\n%s", bad, excerptGeneratedAsm(asm))
+		}
+	}
+	for _, want := range []string{
+		"sub.q r2, r2, #8",
+		"store.l r9, (r2)",
+		"store.q r8, (r1)",
+	} {
+		if !strings.Contains(asm, want) {
+			t.Fatalf("numeric LET asm missing %q:\n%s", want, excerptGeneratedAsm(asm))
+		}
+	}
+}
+
+func excerptGeneratedAsm(asm string) string {
+	if idx := strings.Index(asm, "\n__rtpay:"); idx >= 0 {
+		return asm[:idx]
+	}
+	return asm
 }
 
 // TestREPL_RunAOT_PrintString exercises the bundled-helper pipeline end to end:
@@ -2198,7 +3774,7 @@ func TestREPL_Compile_WaitVsyncEmitsLoop(t *testing.T) {
 	read := func(t *testing.T, line string) string {
 		t.Helper()
 		tmpDir := t.TempDir()
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		storeLine(t, h, line)
 		if out := h.runCommand(`COMPILE "demo"`); strings.Contains(out, "ERROR") {
@@ -2248,7 +3824,7 @@ func TestREPL_Transpile(t *testing.T) {
 
 	// COMPILE reference: capture the .asm it writes.
 	compileDir := t.TempDir()
-	hc := newEhbasicREPLHarnessWithFileIO(t, asmBin, compileDir)
+	hc := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, compileDir)
 	hc.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	for _, l := range prog {
 		storeLine(t, hc, l)
@@ -2263,7 +3839,7 @@ func TestREPL_Transpile(t *testing.T) {
 
 	// TRANSPILE: writes demo.asm, not demo.ie64.
 	transDir := t.TempDir()
-	ht := newEhbasicREPLHarnessWithFileIO(t, asmBin, transDir)
+	ht := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, transDir)
 	ht.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	for _, l := range prog {
 		storeLine(t, ht, l)
@@ -2283,7 +3859,7 @@ func TestREPL_Transpile(t *testing.T) {
 	}
 
 	// A bad name still raises ?FC ERROR, and an unsupported root still rejects.
-	hb := newEhbasicREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+	hb := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
 	hb.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	storeLine(t, hb, `10 PRINT "X"`)
 	if out := hb.runCommand(`TRANSPILE "../escape"`); !strings.Contains(out, "?FC ERROR") {
@@ -2316,7 +3892,7 @@ func TestREPL_CompileTranspileAssemble_RoundTrip(t *testing.T) {
 
 	// COMPILE: the reference image and its self-contained sidecar.
 	dir := t.TempDir()
-	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	for _, l := range prog {
 		storeLine(t, h, l)
@@ -2399,7 +3975,7 @@ table:
 			t.Fatal(err)
 		}
 
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		if out := h.runCommand(`ASSEMBLE "foo"`); strings.Contains(out, "ERROR") {
 			t.Fatalf("ASSEMBLE failed: %q", out)
@@ -2420,7 +3996,7 @@ table:
 		if err := os.WriteFile(filepath.Join(dir, "bad.asm"), []byte("    org 0x2000\n    halt\n"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		if out := h.runCommand(`ASSEMBLE "bad"`); !strings.Contains(out, "ERROR") {
 			t.Fatalf("ASSEMBLE of org source: want assembler error, got %q", out)
@@ -2435,7 +4011,7 @@ table:
 		if err := os.WriteFile(filepath.Join(dir, "inc.asm"), []byte("include \"other.inc\"\n    halt\n"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		if out := h.runCommand(`ASSEMBLE "inc"`); !strings.Contains(out, "ERROR") {
 			t.Fatalf("ASSEMBLE of foreign include: want assembler error, got %q", out)
@@ -2449,7 +4025,7 @@ table:
 		if err := os.WriteFile(filepath.Join(dir, "jnk.asm"), []byte("include \"ie64.inc\" bogus\n    halt\n"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		if out := h.runCommand(`ASSEMBLE "jnk"`); !strings.Contains(out, "ERROR") {
 			t.Fatalf("ASSEMBLE of include with trailing junk: want assembler error, got %q", out)
@@ -2465,7 +4041,7 @@ table:
 		if err := os.WriteFile(filepath.Join(dir, "cmt.asm"), []byte("include \"ie64.inc\"  ; constants\n    halt\n"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		if out := h.runCommand(`ASSEMBLE "cmt"`); strings.Contains(out, "ERROR") {
 			t.Fatalf("ASSEMBLE of include with trailing comment: %q", out)
@@ -2477,43 +4053,32 @@ table:
 
 	t.Run("missing_file_is_file_error", func(t *testing.T) {
 		dir := t.TempDir()
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		if out := h.runCommand(`ASSEMBLE "nope"`); !strings.Contains(out, "?FILE ERROR") {
 			t.Fatalf("ASSEMBLE of missing file: want ?FILE ERROR, got %q", out)
 		}
 	})
 
-	t.Run("oversized_source_rejected", func(t *testing.T) {
-		// A source larger than the ASSEMBLE buffer (just under 1 MiB) must be
-		// refused cleanly by the File I/O range guard (the staging buffer is the
-		// topmost low32 allocation, so an over-read runs past visible RAM, never
-		// into the code/symbol workspace) rather than corrupting AOT workspace.
+	t.Run("source_above_old_one_mib_cap_assembles", func(t *testing.T) {
+		// ASSEMBLE source staging is sized from the live AOT arena and read through
+		// FILE_DATA_PTR64, so a source above the old 1 MiB staging cap must compile
+		// normally when active RAM has room for it.
 		dir := t.TempDir()
 		big := append(bytes.Repeat([]byte("    halt\n"), 0x100000/9+512), 0)
 		if len(big) <= 0x100000 {
-			t.Fatalf("test source not larger than the cap: %d", len(big))
+			t.Fatalf("test source not larger than the old cap: %d", len(big))
 		}
 		if err := os.WriteFile(filepath.Join(dir, "big.asm"), big, 0644); err != nil {
 			t.Fatal(err)
 		}
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-		if out := h.runCommand(`ASSEMBLE "big"`); !strings.Contains(out, "?FILE ERROR") {
-			t.Fatalf("ASSEMBLE of oversized source: want ?FILE ERROR, got %q", out)
+		if out := h.runCommand(`ASSEMBLE "big"`); strings.Contains(out, "ERROR") {
+			t.Fatalf("ASSEMBLE of source above old 1 MiB cap failed: %q", out)
 		}
-		if _, err := os.Stat(filepath.Join(dir, "big.ie64")); !os.IsNotExist(err) {
-			t.Fatalf("ASSEMBLE wrote big.ie64 for an oversized source (err=%v)", err)
-		}
-		// The REPL must still work afterwards: a normal command runs unscathed.
-		if err := os.WriteFile(filepath.Join(dir, "ok.asm"), []byte("    halt\n"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		if out := h.runCommand(`ASSEMBLE "ok"`); strings.Contains(out, "ERROR") {
-			t.Fatalf("REPL did not survive an oversized ASSEMBLE: %q", out)
-		}
-		if _, err := os.Stat(filepath.Join(dir, "ok.ie64")); err != nil {
-			t.Fatalf("post-oversized ASSEMBLE did not write ok.ie64: %v", err)
+		if _, err := os.Stat(filepath.Join(dir, "big.ie64")); err != nil {
+			t.Fatalf("ASSEMBLE did not write big.ie64: %v", err)
 		}
 	})
 
@@ -2524,11 +4089,12 @@ table:
 		// device-side FILE_READ_MAX cap must refuse it before any byte is copied, so the
 		// command reports ?FILE ERROR, writes no .ie64, and leaves the workspace intact.
 		dir := t.TempDir()
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 		const active = 0x1800000 // 24 MiB active ceiling, below the 32 MiB bus backing
 		h.bus.ApplyProfileVisibleCeiling(active)
-		// 4 MiB source: larger than the 1 MiB cap, but base+len would stay under the
-		// 32 MiB backing, so only the FILE_READ_MAX cap (not the range guard) stops it.
+		// 4 MiB source: larger than the dynamic source buffer available under this
+		// deliberately small active ceiling, but base+len would stay under the 32 MiB
+		// backing, so only the FILE_READ_MAX cap (not the range guard) stops it.
 		big := append(bytes.Repeat([]byte("    halt\n"), 4*1024*1024/9), 0)
 		if err := os.WriteFile(filepath.Join(dir, "huge.asm"), big, 0644); err != nil {
 			t.Fatal(err)
@@ -2553,7 +4119,7 @@ table:
 
 	t.Run("bad_name_and_syntax", func(t *testing.T) {
 		dir := t.TempDir()
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		if out := h.runCommand(`ASSEMBLE "../escape"`); !strings.Contains(out, "?FC ERROR") {
 			t.Fatalf("ASSEMBLE bad name: want ?FC ERROR, got %q", out)
@@ -2573,7 +4139,7 @@ func TestREPL_Type(t *testing.T) {
 	asmBin := buildAssembler(t)
 
 	newH := func(t *testing.T, dir string) *ehbasicTestHarness {
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		return h
 	}
@@ -4259,7 +5825,7 @@ func TestREPL_Compile_RejectsDelegatedStatements(t *testing.T) {
 
 	t.Run("delegated_rejected", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		storeLine(t, h, "10 GET A") // GET delegates in RUN AOT; not lowered standalone
 		out := h.runCommand(`COMPILE "demo"`)
@@ -4273,7 +5839,7 @@ func TestREPL_Compile_RejectsDelegatedStatements(t *testing.T) {
 
 	t.Run("native_string_compiles", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		storeLine(t, h, `10 PRINT "HI"`) // standalone-native bundled string lowering
 		out := h.runCommand(`COMPILE "demo"`)
@@ -4291,7 +5857,7 @@ func TestREPL_Compile_RejectsDelegatedStatements(t *testing.T) {
 func TestREPL_Compile_WritesIE64AndAsm(t *testing.T) {
 	asmBin := buildAssembler(t)
 	tmpDir := t.TempDir()
-	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 	// Publish a guest RAM size so the AOT allocator (mfcr cr15) has memory.
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 
@@ -4345,7 +5911,7 @@ func TestREPL_Compile_WritesBesideLoadedProgramme(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 
 	// LOAD from a subdirectory, then COMPILE: output lands beside the source.
@@ -4395,7 +5961,7 @@ func TestREPL_Compile_StandaloneRuns(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+			h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 			h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 			for _, line := range strings.Split(tc.prog, "\n") {
 				storeLine(t, h, line)
@@ -4444,7 +6010,7 @@ func TestREPL_Compile_StandaloneIf(t *testing.T) {
 			// No sidecar seeded: the harness serves the runtime blob virtually
 			// (SetRuntimeBlob), mirroring the host's embedded blob, so COMPILE needs
 			// no aot_runtime_blob.bin in the File I/O root.
-			h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+			h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 			h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 			for _, line := range tc.prog {
 				storeLine(t, h, line)
@@ -4471,6 +6037,78 @@ func TestREPL_Compile_StandaloneIf(t *testing.T) {
 	}
 }
 
+func TestREPL_RunAOT_NestedIfThenColonTail(t *testing.T) {
+	asmBin := buildAssembler(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+	storeLine(t, h, "10 TM=50:TI=INT(TM*100):PB=0:PD=0")
+	storeLine(t, h, "20 IF TI>=4250 THEN IF TI<7225 THEN PB=INT(8+5*SIN((TM-42.50)*0.45)):PD=-1")
+	storeLine(t, h, "30 POKE32 327680,PB:POKE32 327684,PD")
+	storeLine(t, h, "40 END")
+
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, "?") || strings.Contains(out, "ERROR") {
+		t.Fatalf("RUN AOT failed: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327680); got != 6 {
+		t.Fatalf("PB = %d, want 6", got)
+	}
+	if got := int32(h.bus.Read32(327684)); got != -1 {
+		t.Fatalf("PD = %d, want -1", got)
+	}
+}
+
+func TestREPL_RunAOT_IfIntConditionKeepsFPBeforeInt(t *testing.T) {
+	asmBin := buildAssembler(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+	storeLine(t, h, "10 X=0.28:Y=0")
+	storeLine(t, h, "20 IF INT(X*10)=2 THEN Y=77")
+	storeLine(t, h, "30 POKE32 327680,Y")
+	storeLine(t, h, "40 END")
+
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, "?") || strings.Contains(out, "ERROR") {
+		t.Fatalf("RUN AOT failed: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327680); got != 77 {
+		t.Fatalf("IF INT(X*10)=2 left Y=%d, want 77\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_BitwiseAndKeepsBasicSemantics(t *testing.T) {
+	asmBin := buildAssembler(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+	storeLine(t, h, "10 F=3:CD=-1:PB=6")
+	storeLine(t, h, "20 A=F*3*CD:B=INT(PB*7*CD):C=2*104+A+B")
+	storeLine(t, h, "30 X=(2*104+F*3*CD+INT(PB*7*CD)) AND 639")
+	storeLine(t, h, "40 D=157 AND 639:E=639")
+	storeLine(t, h, "50 POKE32 327680,A:POKE32 327684,B:POKE32 327688,C:POKE32 327692,X")
+	storeLine(t, h, "60 POKE32 327696,D:POKE32 327700,E")
+	storeLine(t, h, "70 END")
+
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, "?") || strings.Contains(out, "ERROR") {
+		t.Fatalf("RUN AOT failed: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	if got := int32(h.bus.Read32(327680)); got != -9 {
+		t.Errorf("F*3*CD = %d, want -9", got)
+	}
+	if got := int32(h.bus.Read32(327684)); got != -42 {
+		t.Errorf("INT(PB*7*CD) = %d, want -42", got)
+	}
+	if got := h.bus.Read32(327688); got != 157 {
+		t.Errorf("sum before mask = %d, want 157", got)
+	}
+	if got := h.bus.Read32(327692); got != 29 {
+		t.Errorf("masked negative-intermediate expression = %d, want 29", got)
+	}
+	if got := h.bus.Read32(327696); got != 29 {
+		t.Errorf("literal AND expression = %d, want 29", got)
+	}
+	if got := h.bus.Read32(327700); got != 639 {
+		t.Errorf("literal assignment = %d, want 639", got)
+	}
+}
+
 // TestREPL_Compile_StandalonePrintExpr proves standalone PRINT of a numeric
 // expression: COMPILE bundles the expression tokens, the standalone image evaluates
 // them via the bundled expr_eval and prints the result through the bundled fp_print
@@ -4491,7 +6129,7 @@ func TestREPL_Compile_StandalonePrintExpr(t *testing.T) {
 		t.Run(tc.prog, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			// No sidecar: the harness serves the runtime blob virtually.
-			h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+			h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 			h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 			storeLine(t, h, tc.prog)
 			out := h.runCommand(`COMPILE "demo"`)
@@ -4534,7 +6172,7 @@ func TestREPL_Compile_StandaloneVariables(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.prog, "/"), func(t *testing.T) {
 			tmpDir := t.TempDir()
-			h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+			h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 			h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 			for _, l := range tc.prog {
 				storeLine(t, h, l)
@@ -4576,7 +6214,7 @@ func TestREPL_Compile_StandaloneStringsAndMixed(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+			h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 			h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 			for _, l := range tc.prog {
 				storeLine(t, h, l)
@@ -4616,7 +6254,7 @@ func TestREPL_Compile_StandaloneArrays(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+			h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 			h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 			for _, l := range tc.prog {
 				storeLine(t, h, l)
@@ -4661,7 +6299,7 @@ func TestREPL_Compile_StandaloneControlFlow(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+			h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 			h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 			for _, l := range tc.prog {
 				storeLine(t, h, l)
@@ -4704,7 +6342,7 @@ func TestREPL_Compile_StandaloneReadData(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+			h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 			h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 			for _, l := range tc.prog {
 				storeLine(t, h, l)
@@ -4747,7 +6385,7 @@ func TestREPL_Compile_StandaloneInput(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+			h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 			h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 			for _, l := range tc.prog {
 				storeLine(t, h, l)
@@ -4779,7 +6417,7 @@ func TestREPL_Compile_StandaloneInput(t *testing.T) {
 func TestREPL_Compile_StandaloneList(t *testing.T) {
 	asmBin := buildAssembler(t)
 	tmpDir := t.TempDir()
-	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	for _, l := range []string{`10 PRINT "X"`, `20 LIST`} {
 		storeLine(t, h, l)
@@ -4805,8 +6443,8 @@ func TestREPL_Compile_StandaloneList(t *testing.T) {
 }
 
 // TestREPL_Examples_ThreeMode is the regression guard required by the AOT plan: the
-// four shipped BASIC examples must behave consistently across interpreted RUN,
-// RUN AOT, and standalone COMPILE. The demos end in an infinite hardware render loop
+// shipped BASIC examples must behave consistently across interpreted front-end load,
+// RUN AOT compile, and standalone COMPILE classification. The demos end in an infinite hardware render loop
 // (BLIT/COPPER/MIDI), so they cannot be run to completion headless; this test instead
 // pins each mode's classification, which is where the AOT pipeline's regression risk
 // lives:
@@ -4815,11 +6453,8 @@ func TestREPL_Compile_StandaloneList(t *testing.T) {
 //   - RUN AOT: the arena compiles every example through resident delegation, so the
 //     compile phase must not report ?COMPILE ERROR. (Bounded by the harness deadline
 //     because of the render loop; skipped under -short.)
-//   - Standalone COMPILE: all four are rejected because they use a construct with no
-//     standalone (self-contained) lowering yet. resonance hits POKE with expression
-//     operands (the arena delegates those to the resident handler; standalone has no
-//     resident handler); the other three use BLIT COPY/MEMCOPY/MODE. BLOAD, by
-//     contrast, IS lowered standalone (File I/O MMIO) and no longer blocks them.
+//   - Standalone COMPILE: examples remain classified individually. Some hardware
+//     statements still require resident handlers and are therefore RUN AOT only.
 //
 // If a future change adds standalone lowering for those constructs, the
 // standaloneCompiles expectation below flags the affected example so this matrix
@@ -4834,6 +6469,7 @@ func TestREPL_Examples_ThreeMode(t *testing.T) {
 		{"resonance", false},
 		{"rotozoomer_basic", false},
 		{"splash_wobble", false},
+		{"voodoo_mega_demo_basic", true},
 		{"wobble_zoom", false},
 	}
 	for _, tc := range cases {
@@ -4846,7 +6482,7 @@ func TestREPL_Examples_ThreeMode(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, tc.name+".bas"), src, 0644); err != nil {
 				t.Fatal(err)
 			}
-			h := newEhbasicREPLHarnessWithFileIO(t, asmBin, dir)
+			h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
 			h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 
 			// Interpreted front-end: LOAD tokenises the programme, LIST detokenises it.
@@ -4884,10 +6520,53 @@ func TestREPL_Examples_ThreeMode(t *testing.T) {
 				t.Skip("RUN AOT runs the demo render loop to the harness deadline; skipped in -short")
 			}
 			ra := h.runCommand("RUN AOT")
-			if strings.Contains(ra, "?COMPILE ERROR") || strings.Contains(ra, aotStubMarker) {
-				t.Fatalf("RUN AOT should compile %s via delegation, got compile error: %q", tc.name, ra)
+			if strings.Contains(ra, "?COMPILE ERROR") || strings.Contains(ra, "OUT OF MEMORY") ||
+				strings.Contains(ra, "out of compiler memory") || strings.Contains(ra, aotStubMarker) {
+				t.Fatalf("RUN AOT should compile %s via delegation, got compile error: %q\n%s\n%s", tc.name, ra, readAOTStateDebug(h), readAOTAsmDebug(h))
 			}
 		})
+	}
+}
+
+func TestREPL_PrebuiltBasicImageRunsResonanceAOT(t *testing.T) {
+	if testing.Short() {
+		t.Skip("RUN AOT enters the demo render loop")
+	}
+	repo := repoRootDir(t)
+	dir := t.TempDir()
+	src, err := os.ReadFile(filepath.Join(repo, "sdk", "examples", "basic", "resonance.bas"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "resonance.bas"), src, 0644); err != nil {
+		t.Fatal(err)
+	}
+	bin, err := os.ReadFile(filepath.Join(repo, "sdk", "examples", "prebuilt", "ehbasic_ie64.ie64"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := newEhbasicHarness(t)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	fio := NewFileIODevice(h.bus, dir)
+	fio.SetRuntimeBlob(runtimeBlobForTests(t))
+	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
+	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
+	h.bus.MapIO64(FILE_DATA_PTR64, FILE_DATA_PTR64_END, fio.HandleRead64, fio.HandleWrite64)
+	h.cpu.jitEnabled = true
+	h.loadBytes(bin)
+
+	boot := h.runUntilPrompt()
+	if !strings.Contains(boot, "IE64 BASIC v3.8") {
+		t.Fatalf("prebuilt BASIC image banner mismatch: %q", boot)
+	}
+	if out := h.runCommand(`LOAD "resonance.bas"`); strings.Contains(out, "ERROR") {
+		t.Fatalf("LOAD resonance.bas failed: %q", out)
+	}
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, "OUT OF MEMORY") || strings.Contains(out, "out of compiler memory") ||
+		strings.Contains(out, "?COMPILE ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("prebuilt BASIC RUN AOT resonance failed: %q\n%s\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h), readAOTAsmTailDebug(h))
 	}
 }
 
@@ -4898,7 +6577,7 @@ func TestREPL_Examples_ThreeMode(t *testing.T) {
 func TestREPL_Compile_StandaloneSave(t *testing.T) {
 	asmBin := buildAssembler(t)
 	cdir := t.TempDir()
-	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, cdir)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, cdir)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	for _, l := range []string{`10 PRINT "HI"`, `20 SAVE "out.bas"`} {
 		storeLine(t, h, l)
@@ -4939,7 +6618,7 @@ func TestREPL_Compile_StandaloneRejectsLoad(t *testing.T) {
 	asmBin := buildAssembler(t)
 	for _, prog := range []string{`10 LOAD "x.bas"`} {
 		tmpDir := t.TempDir()
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		storeLine(t, h, prog)
 		out := h.runCommand(`COMPILE "demo"`)
@@ -4961,7 +6640,7 @@ func TestREPL_Compile_StandaloneRejectsLoad(t *testing.T) {
 func TestREPL_Compile_StandaloneBload(t *testing.T) {
 	asmBin := buildAssembler(t)
 	cdir := t.TempDir()
-	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, cdir)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, cdir)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	const dst = 0x710000 // scratch RAM, clear of code/blob/prog/vars/stack
 	for _, l := range []string{
@@ -5033,7 +6712,7 @@ func TestREPL_Compile_StandaloneUSR(t *testing.T) {
 
 	// Compile a programme that calls USR on the stub address and prints the result.
 	cdir := t.TempDir()
-	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, cdir)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, cdir)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	storeLine(t, h, fmt.Sprintf("10 X=USR(%d)", stubAddr))
 	storeLine(t, h, "20 PRINT X")
@@ -5064,7 +6743,7 @@ func TestREPL_Compile_StandaloneUSR(t *testing.T) {
 func TestREPL_Compile_StandaloneErrorHalts(t *testing.T) {
 	asmBin := buildAssembler(t)
 	tmpDir := t.TempDir()
-	h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	// Line 20 indexes a DIM A(2) array out of range -> ?FC ERROR; line 30 must NOT run.
 	for _, l := range []string{`10 DIM A(2)`, `20 A(99)=1`, `30 PRINT "AFTER"`} {
@@ -5103,7 +6782,7 @@ func TestREPL_Compile_StandaloneOutOfMemory(t *testing.T) {
 	// Below the bound: compiles, writes a binary, and the image actually runs.
 	t.Run("fits", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 		for i := 0; i < 10; i++ {
 			storeLine(t, h, fmt.Sprintf("%d %s", 10+i, bigLine))
@@ -5128,7 +6807,7 @@ func TestREPL_Compile_StandaloneOutOfMemory(t *testing.T) {
 	// Over the bound: must report OUT OF MEMORY and write no binary.
 	t.Run("overflows", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		h := newEhbasicREPLHarnessWithFileIO(t, asmBin, tmpDir)
+		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
 		h.bus.ApplyProfileVisibleCeiling(0x01050000)
 		storeLine(t, h, "10 PRINT 1")
 		out := h.runCommand(`COMPILE "demo"`)

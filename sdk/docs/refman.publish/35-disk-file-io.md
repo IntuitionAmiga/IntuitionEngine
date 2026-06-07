@@ -28,8 +28,11 @@ create or replace the named entry; they do not append.
 
 ## 35.2 Register Block
 
-The block starts at `$F2200` and spans `32` bytes. Registers are
-`32`-bit unless noted.
+The legacy block starts at `$F2200` and spans `32` bytes. Registers are
+`32`-bit unless noted. IE64 also exposes the separate `64`-bit
+`FILE_DATA_PTR64` data-buffer register at `$F22B0` for read and write
+data buffers. This extends the architecture and does not replace the
+legacy block.
 
 | Address  | Name              | Access | Purpose |
 |----------|-------------------|--------|---------|
@@ -41,6 +44,7 @@ The block starts at `$F2200` and spans `32` bytes. Registers are
 | `$F2214` | `FILE_RESULT_LEN` | R      | Bytes transferred by read or list |
 | `$F2218` | `FILE_ERROR_CODE` | R      | Error code |
 | `$F221C` | `FILE_READ_MAX`   | W      | One-shot read cap; `0` is unbounded |
+| `$F22B0` | `FILE_DATA_PTR64` | R/W    | IE64-only `64`-bit data-buffer pointer |
 
 `FILE_CTRL` fires the operation immediately. There is no busy bit
 and no interrupt. When the write to `FILE_CTRL` returns, the
@@ -70,7 +74,8 @@ Set up a read like this:
 
 1. Put a `NUL`-terminated name string in memory.
 2. Write that address to `FILE_NAME_PTR`.
-3. Write the destination buffer address to `FILE_DATA_PTR`.
+3. Write the destination buffer address to `FILE_DATA_PTR`, or on IE64 write a
+   `64`-bit destination address to `FILE_DATA_PTR64`.
 4. Write `1` to `FILE_CTRL`.
 5. Read `FILE_STATUS`.
 
@@ -79,12 +84,17 @@ buffer and `FILE_RESULT_LEN` is the byte count. If status is `1`,
 read `FILE_ERROR_CODE`.
 
 The reader must provide enough destination memory. The disk block
-does not receive a destination capacity for reads. `FILE_DATA_PTR` may
-point anywhere in active RAM. If the destination begins near the end of
-the low memory slice and continues into backed extended RAM, the bytes
-are still copied, provided every byte of the span is inside active RAM.
+does not receive a destination capacity for reads. `FILE_DATA_PTR` is
+the legacy `32`-bit path used by all CPUs. It must describe a span
+inside active RAM and below the sign-extended alias guard at
+`$FFFF0000`. On IE64, `FILE_DATA_PTR64` may instead describe a
+destination in high backed guest RAM. If the destination begins near
+the end of the low memory slice and continues into backed extended RAM,
+the bytes are still copied, provided every byte of the span is inside
+active RAM and the span does not enter the sign-extended alias guard.
 This is a byte-copy rule. It does not make a scalar word or long
-`PEEK32`/`POKE32` valid when that one access straddles the same boundary.
+`PEEK32`/`POKE32` valid when that one access straddles the same
+boundary.
 
 `FILE_DATA_LEN` is write-side state. A read ignores it, even if it
 still contains the length from an earlier write. On a successful read,
@@ -106,8 +116,9 @@ assembler staging buffer. The BASIC `TYPE` command uses the same cap
 so an oversized text file is refused before any byte is printed.
 
 The read is refused with `FILE_ERR_RANGE` if the destination span would
-reach `$FFFF0000`, wrap the `32`-bit address field, or run past active
-RAM. In that case no partial copy is made and `FILE_RESULT_LEN` is `0`.
+reach `$FFFF0000` through the legacy pointer, wrap, start low and cross
+into the alias guard, or run past active RAM. In that case no partial
+copy is made and `FILE_RESULT_LEN` is `0`.
 
 ## 35.4 Write
 
@@ -116,7 +127,8 @@ Set up a write like this:
 1. Put a `NUL`-terminated name string in memory.
 2. Put the bytes to write in memory.
 3. Write the name address to `FILE_NAME_PTR`.
-4. Write the data address to `FILE_DATA_PTR`.
+4. Write the data address to `FILE_DATA_PTR`, or on IE64 write a `64`-bit
+   source address to `FILE_DATA_PTR64`.
 5. Write the byte count to `FILE_DATA_LEN`.
 6. Write `2` to `FILE_CTRL`.
 7. Read `FILE_STATUS`.
@@ -125,8 +137,9 @@ Writing creates the entry if it does not exist and replaces it if
 it does. The register block has no append mode.
 
 The write is refused with `FILE_ERR_RANGE` if the source span would
-reach `$FFFF0000`, wrap the `32`-bit address field, or run past active
-RAM. The file is not partly written.
+reach `$FFFF0000` through the legacy pointer, wrap, start low and cross
+into the alias guard, or run past active RAM. The file is not partly
+written.
 
 ## 35.5 List
 
@@ -146,6 +159,9 @@ final `NUL`.
 
 A listing is refused with `FILE_ERR_RANGE` if the text plus its final
 `NUL` byte would not fit in the staged destination span.
+
+Directory listing uses the legacy staged destination path. Keep the
+listing buffer below `$FFFF0000` and inside active RAM.
 
 ## 35.6 BASIC Verbs
 
@@ -177,8 +193,8 @@ BLOAD "name", addr
 
 `BLOAD` reads raw bytes into memory at `addr`. It does not
 tokenise and it does not clear variables. Because the File I/O block
-uses a `32`-bit `FILE_DATA_PTR`, `addr` must be below `2^32`; otherwise
-BASIC reports `?FC ERROR`.
+uses the read-side `32`-bit `FILE_DATA_PTR`, `addr` must be below `2^32`;
+otherwise BASIC reports `?FC ERROR`.
 
 ### 35.6.4 COMPILE
 
@@ -387,13 +403,16 @@ failed write, do not rely on `FILE_RESULT_LEN`.
 
 `FILE_ERR_RANGE` (`4`) means the staged transfer span could not be
 represented safely: it would reach the sign-extended alias guard at
-`$FFFF0000`, wrap the `32`-bit data pointer, or run past active RAM.
-The block refuses the whole transfer.
+`$FFFF0000` through the legacy pointer, wrap, start low and cross into
+that guard, or run past active RAM. The block refuses the whole
+transfer.
 
 Read destinations are ordinary bus addresses. They may be in low RAM
 or backed extended RAM, and the transfer may cross that boundary
-because the file block writes one byte at a time. The program must
-still choose an address range that is large enough for the file.
+because the file block writes one byte at a time. Use the IE64
+`FILE_DATA_PTR64` extension for high read or write data buffers that
+cannot be represented by the legacy pointer. The program must still
+choose an address range that is large enough for the file.
 
 The block is synchronous and single-operation. Program code
 should not change `FILE_NAME_PTR`, `FILE_DATA_PTR`, or

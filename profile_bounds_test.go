@@ -146,21 +146,21 @@ func TestProfileTops_PageAligned(t *testing.T) {
 }
 
 func TestEhBASICProfileBounds_FollowsActiveVisibleRAM(t *testing.T) {
-	bus := fakeProfileBus{activeVisible: 64 * 1024 * 1024}
+	bus := fakeProfileBus{activeVisible: uint64(ehbasicMinRequiredRAM)}
 	pb := EhBASICProfileBounds(bus)
 	if pb.Err != nil {
 		t.Fatalf("unexpected err: %v", pb.Err)
 	}
-	if uint64(pb.TopOfRAM) != 64*1024*1024 {
-		t.Fatalf("TopOfRAM=0x%X want 0x%X", pb.TopOfRAM, 64*1024*1024)
+	if uint64(pb.TopOfRAM) != uint64(ehbasicMinRequiredRAM) {
+		t.Fatalf("TopOfRAM=0x%X want 0x%X", pb.TopOfRAM, ehbasicMinRequiredRAM)
 	}
 	if pb.Name != "IE64 BASIC" {
 		t.Fatalf("name=%q want IE64 BASIC", pb.Name)
 	}
 }
 
-func TestEhBASICProfileBounds_RejectsBelow32MiBMinimum(t *testing.T) {
-	bus := fakeProfileBus{activeVisible: MIN_GUEST_RAM - 1}
+func TestEhBASICProfileBounds_RejectsBelowAOTMinimum(t *testing.T) {
+	bus := fakeProfileBus{activeVisible: uint64(ehbasicMinRequiredRAM - 1)}
 	pb := EhBASICProfileBounds(bus)
 	if pb.Err == nil {
 		t.Fatalf("expected err on undersized RAM")
@@ -169,12 +169,12 @@ func TestEhBASICProfileBounds_RejectsBelow32MiBMinimum(t *testing.T) {
 
 func TestEhBASICLayoutFitsDefaultProfile(t *testing.T) {
 	// The fixed BASIC low state anchors must fit inside any active visible RAM
-	// at or above MIN_GUEST_RAM. Dynamic storage and stacks are allocated from
-	// CR_RAM_SIZE_BYTES at runtime.
-	bus := fakeProfileBus{activeVisible: MIN_GUEST_RAM}
+	// at or above the AOT compiler profile minimum. Dynamic storage and stacks
+	// are allocated from CR_RAM_SIZE_BYTES at runtime.
+	bus := fakeProfileBus{activeVisible: uint64(ehbasicMinRequiredRAM)}
 	pb := EhBASICProfileBounds(bus)
 	if pb.Err != nil {
-		t.Fatalf("EhBASIC profile rejected MIN_GUEST_RAM bus: %v", pb.Err)
+		t.Fatalf("EhBASIC profile rejected AOT-minimum bus: %v", pb.Err)
 	}
 	if !EhBASICLayoutFitsTopOfRAM(pb.TopOfRAM) {
 		t.Fatalf("EhBASIC layout does not fit profile TopOfRAM=0x%X", pb.TopOfRAM)
@@ -182,10 +182,10 @@ func TestEhBASICLayoutFitsDefaultProfile(t *testing.T) {
 }
 
 func TestEnforceEhBASICProfile(t *testing.T) {
-	if err := EnforceEhBASICProfile(fakeProfileBus{activeVisible: MIN_GUEST_RAM}); err != nil {
-		t.Fatalf("EnforceEhBASICProfile returned err on MIN_GUEST_RAM bus: %v", err)
+	if err := EnforceEhBASICProfile(fakeProfileBus{activeVisible: uint64(ehbasicMinRequiredRAM)}); err != nil {
+		t.Fatalf("EnforceEhBASICProfile returned err on AOT-minimum bus: %v", err)
 	}
-	if err := EnforceEhBASICProfile(fakeProfileBus{activeVisible: MIN_GUEST_RAM - 1}); err == nil {
+	if err := EnforceEhBASICProfile(fakeProfileBus{activeVisible: uint64(ehbasicMinRequiredRAM - 1)}); err == nil {
 		t.Fatalf("EnforceEhBASICProfile accepted under-sized bus")
 	}
 }

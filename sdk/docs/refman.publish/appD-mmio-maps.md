@@ -272,7 +272,7 @@ ANTIC block at `$F2100`-`$F213F` with `DMACTL`, `CHACTL`,
 player/missile positions, sizes, graphics bytes, collision latches,
 and `HITCLR`.
 
-## D.14 File I/O (`$F2200`-`$F221F`)
+## D.14 File I/O (`$F2200`-`$F221F`, IE64 extension `$F22B0`)
 
 Used by `LOAD`, `SAVE`, `BLOAD`, `COMPILE`, `TRANSPILE`,
 `ASSEMBLE`, `DIR`, and `TYPE`, and by machine code that talks to the
@@ -288,6 +288,7 @@ disk volume directly.
 | `+$14` | `FILE_RESULT_LEN` (actual read/list byte count; `0` after accepted-path read failure). |
 | `+$18` | `FILE_ERROR_CODE`. |
 | `+$1C` | `FILE_READ_MAX` (one-shot read cap in bytes; larger file refused with `FILE_ERR_RANGE` before any byte is copied; `0` unbounded). |
+| `$F22B0` | `FILE_DATA_PTR64` (IE64-only `64`-bit read/write data-buffer pointer; extension, not a replacement for `FILE_DATA_PTR`). |
 
 `FILE_ERROR_CODE` values:
 

@@ -259,6 +259,170 @@ func TestFileIO_ReadRejectsWrapWithLargeBacking(t *testing.T) {
 	}
 }
 
+func TestFileIO_ReadUsesDataPtr64ForHighDestination(t *testing.T) {
+	bus := NewMachineBus()
+	const backingSize = uint64(5) << 30 // 5 GiB, sparse (no physical allocation)
+	bus.SetBacking(NewSparseBacking(backingSize))
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    backingSize,
+		ActiveVisibleRAM: backingSize,
+		VisibleCeiling:   backingSize,
+	})
+
+	tmpDir := t.TempDir()
+	content := []byte("high destination read")
+	if err := os.WriteFile(filepath.Join(tmpDir, "blob.bin"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fio := NewFileIODevice(bus, tmpDir)
+	fileNameAddr := uint32(0x1000)
+	for i, b := range []byte("blob.bin\x00") {
+		bus.Write8(fileNameAddr+uint32(i), b)
+	}
+
+	const highDest = uint64(4<<30) + 0x2000
+	fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+	fio.HandleWrite64(FILE_DATA_PTR64, highDest)
+	fio.HandleWrite(FILE_CTRL, FILE_OP_READ)
+
+	if got := fio.HandleRead(FILE_STATUS); got != 0 {
+		t.Fatalf("status = %d, want 0, err=%d", got, fio.HandleRead(FILE_ERROR_CODE))
+	}
+	if got := fio.HandleRead(FILE_RESULT_LEN); got != uint32(len(content)) {
+		t.Fatalf("result len = %d, want %d", got, len(content))
+	}
+	for i, want := range content {
+		if got := bus.backing.Read8(highDest + uint64(i)); got != want {
+			t.Fatalf("high read byte %d = %#x, want %#x", i, got, want)
+		}
+	}
+	for a := uint32(0); a < 64; a++ {
+		if v := bus.Read8(a); v != 0 {
+			t.Fatalf("low memory corrupted at 0x%X = 0x%02X, want 0", a, v)
+		}
+	}
+}
+
+func TestFileIO_ReadLowDestinationPreservesMMIOSideEffects(t *testing.T) {
+	bus := NewMachineBus()
+
+	tmpDir := t.TempDir()
+	content := []byte{0x12, 0x34, 0x56, 0x78}
+	if err := os.WriteFile(filepath.Join(tmpDir, "mmio.bin"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		fileNameAddr = uint32(0x1000)
+		dataAddr     = uint32(0x3000)
+	)
+	for i, b := range []byte("mmio.bin\x00") {
+		bus.Write8(fileNameAddr+uint32(i), b)
+	}
+
+	writes := make([]byte, len(content))
+	writeCount := 0
+	bus.MapIO(dataAddr, dataAddr+uint32(len(content))-1,
+		func(addr uint32) uint32 { return 0 },
+		func(addr uint32, value uint32) {},
+	)
+	bus.MapIOByte(dataAddr, dataAddr+uint32(len(content))-1, func(addr uint32, value uint8) {
+		offset := int(addr - dataAddr)
+		if offset >= 0 && offset < len(writes) {
+			writes[offset] = value
+		}
+		writeCount++
+	})
+
+	fio := NewFileIODevice(bus, tmpDir)
+	fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+	fio.HandleWrite(FILE_DATA_PTR, dataAddr)
+	fio.HandleWrite(FILE_CTRL, FILE_OP_READ)
+
+	if got := fio.HandleRead(FILE_STATUS); got != 0 {
+		t.Fatalf("status = %d, want 0, err=%d", got, fio.HandleRead(FILE_ERROR_CODE))
+	}
+	if got := fio.HandleRead(FILE_RESULT_LEN); got != uint32(len(content)) {
+		t.Fatalf("result len = %d, want %d", got, len(content))
+	}
+	if writeCount != len(content) {
+		t.Fatalf("MMIO write count = %d, want %d", writeCount, len(content))
+	}
+	if !bytes.Equal(writes, content) {
+		t.Fatalf("MMIO writes = % X, want % X", writes, content)
+	}
+}
+
+func TestFileIO_SnapshotPreservesDataPtr64Mode(t *testing.T) {
+	bus := NewMachineBus()
+	const backingSize = uint64(5) << 30 // 5 GiB, sparse (no physical allocation)
+	bus.SetBacking(NewSparseBacking(backingSize))
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    backingSize,
+		ActiveVisibleRAM: backingSize,
+		VisibleCeiling:   backingSize,
+	})
+
+	tmpDir := t.TempDir()
+	content := []byte("restored high destination read")
+	if err := os.WriteFile(filepath.Join(tmpDir, "blob.bin"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	const nameAddr = uint32(0x1000)
+	for i, b := range []byte("blob.bin\x00") {
+		bus.Write8(nameAddr+uint32(i), b)
+	}
+	const highDest = uint64(4<<30) + 0x3000
+
+	original := NewFileIODevice(bus, tmpDir)
+	original.HandleWrite(FILE_NAME_PTR, nameAddr)
+	original.HandleWrite64(FILE_DATA_PTR64, highDest)
+	version, data, err := original.DebugSnapshot()
+	if err != nil {
+		t.Fatalf("DebugSnapshot: %v", err)
+	}
+
+	restored := NewFileIODevice(bus, tmpDir)
+	if err := restored.DebugRestoreSnapshot(version, data); err != nil {
+		t.Fatalf("DebugRestoreSnapshot: %v", err)
+	}
+	restored.HandleWrite(FILE_CTRL, FILE_OP_READ)
+
+	if got := restored.HandleRead(FILE_STATUS); got != 0 {
+		t.Fatalf("restored read status = %d, want 0, err=%d", got, restored.HandleRead(FILE_ERROR_CODE))
+	}
+	for i, want := range content {
+		if got := bus.backing.Read8(highDest + uint64(i)); got != want {
+			t.Fatalf("restored high read byte %d = %#x, want %#x", i, got, want)
+		}
+	}
+}
+
+func TestFileIO_RestoreVersion1Snapshot(t *testing.T) {
+	bus := NewMachineBus()
+	fio := NewFileIODevice(bus, t.TempDir())
+	data := []byte(`{"FileNamePtr":4096,"FileDataPtr":8192,"FileDataLen":32,"FileStatus":1,"FileResultLen":16,"FileErrorCode":7}`)
+
+	if err := fio.DebugRestoreSnapshot(1, data); err != nil {
+		t.Fatalf("DebugRestoreSnapshot(version 1): %v", err)
+	}
+	if fio.fileNamePtr != 4096 {
+		t.Fatalf("fileNamePtr = %#x, want %#x", fio.fileNamePtr, uint32(4096))
+	}
+	if fio.fileDataPtr != 8192 {
+		t.Fatalf("fileDataPtr = %#x, want %#x", fio.fileDataPtr, uint64(8192))
+	}
+	if fio.fileDataPtr64 {
+		t.Fatal("version 1 snapshot restored with FILE_DATA_PTR64 mode enabled, want legacy low32 mode")
+	}
+	if fio.fileDataLen != 32 || fio.fileStatus != 1 || fio.fileResultLen != 16 || fio.fileErrorCode != 7 {
+		t.Fatalf("restored scalar state mismatch: len=%d status=%d result=%d err=%d",
+			fio.fileDataLen, fio.fileStatus, fio.fileResultLen, fio.fileErrorCode)
+	}
+}
+
 // TestFileIO_ListRejectsWrapWithLargeBacking covers the directory-listing path:
 // doList is uint32-addressed (f.fileDataPtr+uint32(i) plus a trailing NUL at
 // +uint32(len(data))), so a listing staged near the top of the 32-bit space wraps
@@ -775,6 +939,99 @@ func TestFileIO_WriteFile(t *testing.T) {
 	}
 	if !bytes.Equal(got, content) {
 		t.Errorf("expected %q, got %q", content, got)
+	}
+}
+
+func TestFileIO_WriteLowSourcePreservesMMIOReadSideEffects(t *testing.T) {
+	bus := NewMachineBus()
+	tmpDir := t.TempDir()
+
+	const (
+		fileNameAddr = uint32(0x1000)
+		dataAddr     = uint32(0x3000)
+	)
+	for i, b := range []byte("mmio-out.bin\x00") {
+		bus.Write8(fileNameAddr+uint32(i), b)
+	}
+	for i := range 4 {
+		bus.Write8(dataAddr+uint32(i), 0xEE)
+	}
+
+	content := []byte{0xA0, 0xB1, 0xC2, 0xD3}
+	readCount := 0
+	bus.MapIO(dataAddr, dataAddr+uint32(len(content))-1,
+		func(addr uint32) uint32 { return 0 },
+		func(addr uint32, value uint32) {},
+	)
+	bus.MapIOByteRead(dataAddr, dataAddr+uint32(len(content))-1, func(addr uint32) uint8 {
+		readCount++
+		return content[addr-dataAddr]
+	})
+
+	fio := NewFileIODevice(bus, tmpDir)
+	fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+	fio.HandleWrite(FILE_DATA_PTR, dataAddr)
+	fio.HandleWrite(FILE_DATA_LEN, uint32(len(content)))
+	fio.HandleWrite(FILE_CTRL, FILE_OP_WRITE)
+
+	if got := fio.HandleRead(FILE_STATUS); got != 0 {
+		t.Fatalf("status = %d, want 0, err=%d", got, fio.HandleRead(FILE_ERROR_CODE))
+	}
+	got, err := os.ReadFile(filepath.Join(tmpDir, "mmio-out.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("file content = % X, want MMIO bytes % X", got, content)
+	}
+	if readCount != len(content) {
+		t.Fatalf("MMIO read count = %d, want %d", readCount, len(content))
+	}
+}
+
+func TestFileIO_WriteFileFromDataPtr64Backing(t *testing.T) {
+	bus := NewMachineBus()
+	backingSize := uint64(len(bus.GetMemory())) + uint64(MMU_PAGE_SIZE)
+	bus.SetBacking(NewSparseBacking(backingSize))
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    backingSize,
+		ActiveVisibleRAM: backingSize,
+		VisibleCeiling:   backingSize,
+	})
+
+	tmpDir, err := os.MkdirTemp("", "fileio_test_ptr64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	fio := NewFileIODevice(bus, tmpDir)
+
+	content := []byte("Writing from high IE64 memory")
+	fileNameAddr := uint32(0x1000)
+	dataBufAddr := uint64(len(bus.GetMemory())) + 0x80
+
+	for i, b := range []byte("ptr64.txt\x00") {
+		bus.Write8(fileNameAddr+uint32(i), b)
+	}
+	for i, b := range content {
+		bus.backing.Write8(dataBufAddr+uint64(i), b)
+	}
+
+	fio.HandleWrite(FILE_NAME_PTR, fileNameAddr)
+	fio.HandleWrite64(FILE_DATA_PTR64, dataBufAddr)
+	fio.HandleWrite(FILE_DATA_LEN, uint32(len(content)))
+	fio.HandleWrite(FILE_CTRL, FILE_OP_WRITE)
+
+	if fio.HandleRead(FILE_STATUS) != 0 {
+		t.Fatalf("status got %d, want 0 (error code %d)", fio.HandleRead(FILE_STATUS), fio.HandleRead(FILE_ERROR_CODE))
+	}
+	got, err := os.ReadFile(filepath.Join(tmpDir, "ptr64.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("content got %q, want %q", got, content)
 	}
 }
 

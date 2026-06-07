@@ -690,6 +690,7 @@ gen-aot-consttab:
 
 # Build with embedded EhBASIC BASIC interpreter
 .PHONY: basic
+BASIC_BANNER := IE64 BASIC v3.8
 aot-runtime-blob: ie64asm
 	@echo "Generating standalone COMPILE runtime blob..."
 	@$(GO) run ./tools/gen_runtime_blob
@@ -704,6 +705,7 @@ basic: ie64asm aot-runtime-blob
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
+	@strings $(BIN_DIR)/IntuitionEngine | grep -q "$(BASIC_BANNER)" || { echo "Error: embedded BASIC banner mismatch; expected $(BASIC_BANNER)"; exit 1; }
 	@echo "EhBASIC build complete - run with: $(BIN_DIR)/IntuitionEngine -basic"
 
 # Build with embedded BASIC + EmuTOS ROM (type EMUTOS at the BASIC prompt).
@@ -718,6 +720,7 @@ basic-emutos: ie64asm aot-runtime-blob emutos-rom
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
+	@strings $(BIN_DIR)/IntuitionEngine | grep -q "$(BASIC_BANNER)" || { echo "Error: embedded BASIC banner mismatch; expected $(BASIC_BANNER)"; exit 1; }
 	@echo "BASIC+EmuTOS build complete - run with: $(BIN_DIR)/IntuitionEngine -basic"
 
 # Build with embedded EmuTOS ROM image.

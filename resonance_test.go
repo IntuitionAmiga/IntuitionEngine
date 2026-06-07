@@ -4,9 +4,12 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -60,31 +63,32 @@ func TestResonanceProgramShape(t *testing.T) {
 		"PM=0:RT0=PEEK32(&H000F075C)/1000000",
 		"IF MP>PM THEN TM=MP/44100:PM=MP:GOTO 560",
 		"TM=RT-RT0",
-		"IF TM>=45 THEN GOSUB 2800",
-		"IF TM>=90 THEN GOSUB 3100",
-		"IF TM>=120 THEN GOSUB 3300",
-		"IF TM>=150 THEN GOSUB 3400",
+		"IN=0.12:TI=INT(TM*100)",
+		"IF TI>=4500 THEN GOSUB 2800",
+		"IF TI>=9000 THEN GOSUB 3100",
+		"IF TI>=12000 THEN GOSUB 3300",
+		"IF TI>=15000 THEN GOSUB 3400",
 		"SA=SIN(A):SZ=SIN(Z):CZ=COS(A):AB=INT(A*40.743665) AND 255:AB2=INT(A*2*40.743665) AND 255",
 		"GOSUB 3500",
-		"IF TM>=218 THEN GOTO 3700",
+		"IF TI>=21800 THEN GOTO 3700",
 		`SOUND PLAY "sdk/examples/assets/music/adagioforstrings.mid"`,
 		"GOSUB 1500",
 		"970 GOTO 510",
 		"RETRO HARDWARE ENGINE",
 		"INTUITION ENGINE SOURCE LOGO",
 		"MIDI CHORD PULSE ENVELOPE FOR BARS",
-		"IF TM>=2.36 AND TM<3.08 THEN PU=28:DR=-1",
-		"IF TM>=12.30 AND TM<12.80 THEN PU=18:DR=1",
-		"IF TM>=16.85 AND TM<17.40 THEN PU=20:DR=1",
-		"IF TM>=104.75 AND TM<105.55 THEN PU=30:DR=-1",
-		"IF TM>=184.30 AND TM<185.10 THEN PU=34:DR=1",
-		"IF TM>=202.10 AND TM<202.90 THEN PU=34:DR=1",
+		"IF TI>=236 THEN IF TI<308 THEN PU=28:DR=-1",
+		"IF TI>=1230 THEN IF TI<1280 THEN PU=18:DR=1",
+		"IF TI>=1685 THEN IF TI<1740 THEN PU=20:DR=1",
+		"IF TI>=10475 THEN IF TI<10555 THEN PU=30:DR=-1",
+		"IF TI>=18430 THEN IF TI<18510 THEN PU=34:DR=1",
+		"IF TI>=20210 THEN IF TI<20290 THEN PU=34:DR=1",
 		"PHRASE-BASED BRIGHTNESS ENVELOPE",
 		"PB=0:PD=0",
-		"IF TM>=11.70 AND TM<29.00 THEN PB=INT(4+(TM-11.70)*0.5):PD=1",
-		"IF TM>=185 AND TM<218 THEN PB=INT(14-(TM-185)*0.3):PD=-1:IF PB<0 THEN PB=0",
-		"IF TM>=42.50 AND TM<72.25 THEN PB=INT(8+5*SIN((TM-42.50)*0.45))",
-		"IF TM>=149.50 AND TM<185.10 THEN PB=INT(18+8*SIN((TM-149.50)*0.28))",
+		"IF TI>=1170 THEN IF TI<2900 THEN PB=INT(4+(TM-11.70)*0.5):PD=1",
+		"IF TI>=18500 THEN IF TI<21800 THEN PB=INT(14-(TM-185)*0.3):PD=-1:IF PB<0 THEN PB=0",
+		"IF TI>=4250 THEN IF TI<7225 THEN PB=INT(8+5*SIN((TM-42.50)*0.45))",
+		"IF TI>=14950 THEN IF TI<18510 THEN PB=INT(18+8*SIN((TM-149.50)*0.28))",
 		"SD=1:IF PD<0 THEN SD=-1",
 		"N=18+INT(IN*86)+INT(PU*1.4)+INT(PB*0.5)",
 		"X=(I*73+F*(1+(I AND 3))*SD+INT(PB*9*SD)) AND 639",
@@ -467,4 +471,612 @@ func TestResonanceInitialEhBASICPath(t *testing.T) {
 	if scrollPixels < 100 {
 		t.Fatalf("Resonance scroll text absent: found %d expected-color pixels in scroll band", scrollPixels)
 	}
+}
+
+func TestResonanceInitialRunAOTPath(t *testing.T) {
+	program, err := os.ReadFile(resonanceDemoPath)
+	if err != nil {
+		t.Fatalf("read resonance.bas: %v", err)
+	}
+	text := strings.ReplaceAll(string(program), "940 VSYNC", "940 REM VSYNC")
+	text = strings.ReplaceAll(text, "970 GOTO 510", "970 END")
+
+	asmBin := buildAssembler(t)
+	repo := repoRootDir(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, repo)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	var firstBlitError atomic.Value
+	guardBlit := func(addr uint32, value uint32) {
+		if addr == BLT_CTRL && value&1 != 0 {
+			dst := video.HandleRead(BLT_DST)
+			width := video.HandleRead(BLT_WIDTH)
+			height := video.HandleRead(BLT_HEIGHT)
+			if dst >= uint32(len(h.bus.GetMemory())) {
+				vars := readAOTNativeVars(t, h, "FB", "BB", "TX", "CP", "SR", "SB", "ST", "TS", "SS", "F", "A", "Z", "TM", "I", "SX", "X", "Y", "AB2")
+				firstBlitError.CompareAndSwap(nil, fmt.Sprintf("RUN AOT Resonance starts out-of-bounds blit: pc=%#x dst=%#x width=%#x height=%#x vars=%#v",
+					h.cpu.PC, dst, width, height, vars))
+				h.cpu.running.Store(false)
+			}
+		}
+	}
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, func(addr uint32, value uint32) {
+		guardBlit(addr, value)
+		video.HandleWrite(addr, value)
+		if status := video.HandleRead(BLT_STATUS); status&bltStatusErr != 0 {
+			firstBlitError.CompareAndSwap(nil, fmt.Sprintf("RUN AOT Resonance blitter error after write: pc=%#x addr=%#x value=%#x status=%#x dst=%#x width=%#x height=%#x",
+				h.cpu.PC, addr, value, status, video.HandleRead(BLT_DST), video.HandleRead(BLT_WIDTH), video.HandleRead(BLT_HEIGHT)))
+			h.cpu.running.Store(false)
+		}
+	})
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, func(addr uint32, value uint8) {
+		guardBlit(addr, uint32(value))
+		video.HandleWrite8(addr, value)
+		if status := video.HandleRead(BLT_STATUS); status&bltStatusErr != 0 {
+			firstBlitError.CompareAndSwap(nil, fmt.Sprintf("RUN AOT Resonance blitter error after byte write: pc=%#x addr=%#x value=%#x status=%#x dst=%#x width=%#x height=%#x",
+				h.cpu.PC, addr, value, status, video.HandleRead(BLT_DST), video.HandleRead(BLT_WIDTH), video.HandleRead(BLT_HEIGHT)))
+			h.cpu.running.Store(false)
+		}
+	})
+
+	sound := newTestSoundChip()
+	midiPlayer := NewMIDIPlayer(sound, SAMPLE_RATE)
+	midiPlayer.AttachBus(h.bus)
+	h.bus.MapIO(MIDI_PLAY_PTR, MIDI_TEMPO_BPM+3, midiPlayer.HandlePlayRead, midiPlayer.HandlePlayWrite)
+	loader := NewMediaLoader(h.bus, sound, ".", nil, nil, nil, nil, nil, nil, nil, midiPlayer)
+	h.bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			storeLine(t, h, line)
+		}
+	}
+	out := runCommandWithDeadline(h, "RUN AOT", 30*time.Second)
+	if msg, ok := firstBlitError.Load().(string); ok && msg != "" {
+		t.Fatal(msg)
+	}
+	if strings.Contains(out, "?") || strings.Contains(out, "ERROR") {
+		t.Fatalf("initial Resonance RUN AOT path produced an error: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	if status := loader.HandleRead(MEDIA_STATUS); status != MEDIA_STATUS_PLAYING && status != MEDIA_STATUS_LOADING {
+		t.Fatalf("RUN AOT SOUND PLAY status=%d, want PLAYING/LOADING, err=%d, type=%d",
+			status, loader.HandleRead(MEDIA_ERROR), loader.HandleRead(MEDIA_TYPE))
+	}
+	if fbBase := video.HandleRead(VIDEO_FB_BASE); fbBase == 0 || fbBase%4096 != 0 {
+		t.Fatalf("RUN AOT Resonance VIDEO_FB_BASE = %#x, want nonzero 4 KiB-aligned MEMALLOC address", fbBase)
+	}
+	frame := video.FinishFrame()
+	if len(frame) == 0 {
+		t.Fatal("RUN AOT Resonance visible framebuffer produced an empty frame")
+	}
+	nonzero := 0
+	for off := uint32(0); off < 1228800; off += 4096 {
+		if binary.LittleEndian.Uint32(frame[off:]) != 0 {
+			nonzero++
+		}
+	}
+	if nonzero == 0 {
+		const (
+			basicState    = 0x042000
+			stCurrentLine = 0x200
+			stErrorFlag   = 0x208
+			stErrorLine   = 0x228
+		)
+		vars := readAOTNativeVars(t, h, "FB", "BB", "TX", "CP", "SR", "SB", "ST", "TS", "SS", "F", "A", "Z", "TM", "I", "SX", "X", "Y", "AB2")
+		fbNonzero := countNonZeroBusSamples(h, uint32(vars["FB"]), 1228800, 4096)
+		bbNonzero := countNonZeroBusSamples(h, uint32(vars["BB"]), 1228800, 4096)
+		txNonzero := countNonZeroBusSamples(h, uint32(vars["TX"]), 2097152, 4096)
+		srNonzero := countNonZeroBusSamples(h, uint32(vars["SR"]), 235520, 1024)
+		t.Fatalf("RUN AOT Resonance visible framebuffer stayed black; pc=%#x videoFB=%#x bltStatus=%#x videoStatus=%#x vars=%#v blt={op:%#x src:%#x dst:%#x width:%#x ctrl:%#x} sampled={FB:%d BB:%d TX:%d SR:%d} state={line:%d error:%d errorLine:%d}",
+			h.cpu.PC,
+			video.HandleRead(VIDEO_FB_BASE), video.HandleRead(BLT_STATUS), video.HandleRead(VIDEO_STATUS), vars,
+			video.HandleRead(BLT_OP), video.HandleRead(BLT_SRC), video.HandleRead(BLT_DST), video.HandleRead(BLT_WIDTH), video.HandleRead(BLT_CTRL),
+			fbNonzero, bbNonzero, txNonzero, srNonzero,
+			h.bus.Read32(basicState+stCurrentLine),
+			h.bus.Read32(basicState+stErrorFlag),
+			h.bus.Read32(basicState+stErrorLine))
+	}
+	const scrollFirstColor = 0xFFA09078
+	scrollPixels := 0
+	for y := 380; y < 440; y++ {
+		for x := 100; x < 540; x++ {
+			off := uint32(y*640+x) * 4
+			if binary.LittleEndian.Uint32(frame[off:]) == scrollFirstColor {
+				scrollPixels++
+			}
+		}
+	}
+	if scrollPixels < 100 {
+		t.Fatalf("RUN AOT Resonance scroll text absent: found %d expected-colour pixels in scroll band", scrollPixels)
+	}
+}
+
+func TestResonanceRunAOTMultiFrameKeepsEffectDetail(t *testing.T) {
+	program, err := os.ReadFile(resonanceDemoPath)
+	if err != nil {
+		t.Fatalf("read resonance.bas: %v", err)
+	}
+	text := strings.ReplaceAll(string(program), "940 VSYNC", "940 REM VSYNC")
+	text = strings.ReplaceAll(text, "560 IN=0.12:TI=INT(TM*100)", "560 TM=35:IN=0.12:TI=INT(TM*100)")
+	text = strings.ReplaceAll(text, "970 GOTO 510", "970 IF F<8 THEN GOTO 510 ELSE END")
+
+	asmBin := buildAssembler(t)
+	repo := repoRootDir(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, repo)
+
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+
+	sound := newTestSoundChip()
+	midiPlayer := NewMIDIPlayer(sound, SAMPLE_RATE)
+	midiPlayer.AttachBus(h.bus)
+	h.bus.MapIO(MIDI_PLAY_PTR, MIDI_TEMPO_BPM+3, midiPlayer.HandlePlayRead, midiPlayer.HandlePlayWrite)
+	loader := NewMediaLoader(h.bus, sound, ".", nil, nil, nil, nil, nil, nil, nil, midiPlayer)
+	h.bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			storeLine(t, h, line)
+		}
+	}
+	out := runCommandWithDeadline(h, "RUN AOT", 30*time.Second)
+	if strings.Contains(out, "?") || strings.Contains(out, "ERROR") {
+		t.Fatalf("multi-frame Resonance RUN AOT produced an error: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	frame := video.FinishFrame()
+	if len(frame) == 0 {
+		t.Fatal("RUN AOT Resonance multi-frame visible framebuffer produced an empty frame")
+	}
+	unique := map[uint32]int{}
+	darkBand := 0
+	texturePixels := 0
+	for y := 0; y < 480; y++ {
+		for x := 0; x < 640; x++ {
+			off := uint32(y*640+x) * 4
+			px := binary.LittleEndian.Uint32(frame[off:])
+			unique[px]++
+			if y >= 80 && y < 360 && (px == 0x00060818 || px == 0x0010182A || px == 0x00201824 || px == 0x000A1020) {
+				texturePixels++
+			}
+			if y >= 180 && y < 320 && (px == 0x00101820 || px == 0x00050860 || px == 0x00A8C8D0) {
+				darkBand++
+			}
+		}
+	}
+	if len(unique) < 16 {
+		vars := readAOTNativeVars(t, h, "FB", "BB", "TX", "SR", "SB", "F", "A", "Z", "TM", "IN", "PB", "PU")
+		t.Fatalf("RUN AOT Resonance multi-frame has only %d unique colours, want effect detail preserved; top=%v vars=%#v samples={TX:%d BB:%d FB:%d}",
+			len(unique), topFrameColours(unique, 8), vars,
+			countUniqueBusSamples(h, uint32(vars["TX"]), 2097152, 4096),
+			countUniqueBusSamples(h, uint32(vars["BB"]), 1228800, 4096),
+			countUniqueBusSamples(h, uint32(vars["FB"]), 1228800, 4096))
+	}
+	if texturePixels < 1000 {
+		t.Fatalf("RUN AOT Resonance multi-frame texture detail weak: %d expected texture pixels", texturePixels)
+	}
+	if darkBand < 500 {
+		t.Fatalf("RUN AOT Resonance multi-frame band detail weak: %d expected band pixels", darkBand)
+	}
+}
+
+func TestResonanceRunAOTAdvancingTimelineCompletesBoundedLoop(t *testing.T) {
+	program, err := os.ReadFile(resonanceDemoPath)
+	if err != nil {
+		t.Fatalf("read resonance.bas: %v", err)
+	}
+	text := strings.ReplaceAll(string(program), "940 VSYNC", "940 REM VSYNC")
+	text = strings.ReplaceAll(text, "560 IN=0.12:TI=INT(TM*100)", "560 TM=F*0.25:IN=0.12:TI=INT(TM*100)")
+	text = strings.ReplaceAll(text, "970 GOTO 510", "970 IF F<80 THEN GOTO 510 ELSE END")
+
+	asmBin := buildAssembler(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, repoRootDir(t))
+
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+
+	sound := newTestSoundChip()
+	midiPlayer := NewMIDIPlayer(sound, SAMPLE_RATE)
+	midiPlayer.AttachBus(h.bus)
+	h.bus.MapIO(MIDI_PLAY_PTR, MIDI_TEMPO_BPM+3, midiPlayer.HandlePlayRead, midiPlayer.HandlePlayWrite)
+	loader := NewMediaLoader(h.bus, sound, ".", nil, nil, nil, nil, nil, nil, nil, midiPlayer)
+	h.bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			storeLine(t, h, line)
+		}
+	}
+	out := runCommandWithDeadline(h, "RUN AOT", 60*time.Second)
+	if strings.Contains(out, "?") || strings.Contains(out, "ERROR") {
+		t.Fatalf("advancing-timeline Resonance RUN AOT produced an error: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	vars := readAOTNativeVars(t, h, "F", "TM", "IN", "PB", "PD", "TX", "BB", "FB")
+	if got := vars["F"]; got < 80 {
+		t.Fatalf("advancing-timeline Resonance RUN AOT did not complete bounded loop: F=%d vars=%#v\n%s\n%s",
+			got, vars, readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	frame := video.FinishFrame()
+	if len(frame) == 0 {
+		t.Fatal("advancing-timeline Resonance visible framebuffer produced an empty frame")
+	}
+	unique := len(frameHistogram(frame))
+	if unique < 16 {
+		t.Fatalf("advancing-timeline Resonance lost effect detail: unique colours=%d top=%v vars=%#v samples={TX:%d BB:%d FB:%d}",
+			unique, topFrameColours(frameHistogram(frame), 8), vars,
+			countUniqueBusSamples(h, uint32(vars["TX"]), 2097152, 4096),
+			countUniqueBusSamples(h, uint32(vars["BB"]), 1228800, 4096),
+			countUniqueBusSamples(h, uint32(vars["FB"]), 1228800, 4096))
+	}
+}
+
+func TestResonanceRunAOTLiveMIDIClockPathCompletesBoundedLoop(t *testing.T) {
+	program, err := os.ReadFile(resonanceDemoPath)
+	if err != nil {
+		t.Fatalf("read resonance.bas: %v", err)
+	}
+	text := strings.ReplaceAll(string(program), "940 VSYNC", "940 REM VSYNC")
+	text = strings.ReplaceAll(text, "970 GOTO 510", "970 IF F<80 THEN GOTO 510 ELSE END")
+
+	asmBin := buildAssembler(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, repoRootDir(t))
+
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+
+	sound := newTestSoundChip()
+	midiPlayer := NewMIDIPlayer(sound, SAMPLE_RATE)
+	midiPlayer.AttachBus(h.bus)
+	h.bus.MapIO(MIDI_PLAY_PTR, MIDI_TEMPO_BPM+3, midiPlayer.HandlePlayRead, midiPlayer.HandlePlayWrite)
+	loader := NewMediaLoader(h.bus, sound, ".", nil, nil, nil, nil, nil, nil, nil, midiPlayer)
+	h.bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+	var midiPos atomic.Uint32
+	h.bus.MapIO(MIDI_POSITION, MIDI_POSITION+3, func(addr uint32) uint32 {
+		return midiPos.Add(11025)
+	}, nil)
+
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			storeLine(t, h, line)
+		}
+	}
+	out := runCommandWithDeadline(h, "RUN AOT", 60*time.Second)
+	if strings.Contains(out, "?") || strings.Contains(out, "ERROR") {
+		t.Fatalf("live-MIDI-clock Resonance RUN AOT produced an error: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	vars := readAOTNativeVars(t, h, "F", "TM", "IN", "PB", "PD", "TX", "BB", "FB", "MP", "PM")
+	if got := vars["F"]; got < 80 {
+		t.Fatalf("live-MIDI-clock Resonance RUN AOT did not complete bounded loop: F=%d vars=%#v midiPos=%d\n%s\n%s",
+			got, vars, midiPos.Load(), readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	frame := video.FinishFrame()
+	if len(frame) == 0 {
+		t.Fatal("live-MIDI-clock Resonance visible framebuffer produced an empty frame")
+	}
+	unique := len(frameHistogram(frame))
+	if unique < 16 {
+		t.Fatalf("live-MIDI-clock Resonance lost effect detail: unique colours=%d top=%v vars=%#v midiPos=%d",
+			unique, topFrameColours(frameHistogram(frame), 8), vars, midiPos.Load())
+	}
+}
+
+func TestResonanceRunAOTLiveLoopWithVsyncCompletes(t *testing.T) {
+	program, err := os.ReadFile(resonanceDemoPath)
+	if err != nil {
+		t.Fatalf("read resonance.bas: %v", err)
+	}
+	text := strings.ReplaceAll(string(program), "970 GOTO 510", "970 IF F<6 THEN GOTO 510 ELSE END")
+
+	asmBin := buildAssembler(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, repoRootDir(t))
+
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	h.bus.SetVideoStatusReader(func(addr uint32) uint32 {
+		return videoStatusVBlank
+	})
+
+	sound := newTestSoundChip()
+	midiPlayer := NewMIDIPlayer(sound, SAMPLE_RATE)
+	midiPlayer.AttachBus(h.bus)
+	h.bus.MapIO(MIDI_PLAY_PTR, MIDI_TEMPO_BPM+3, midiPlayer.HandlePlayRead, midiPlayer.HandlePlayWrite)
+	loader := NewMediaLoader(h.bus, sound, ".", nil, nil, nil, nil, nil, nil, nil, midiPlayer)
+	h.bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+	var midiPos atomic.Uint32
+	h.bus.MapIO(MIDI_POSITION, MIDI_POSITION+3, func(addr uint32) uint32 {
+		return midiPos.Add(11025)
+	}, nil)
+
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			storeLine(t, h, line)
+		}
+	}
+	out := runCommandWithDeadline(h, "RUN AOT", 30*time.Second)
+	if strings.Contains(out, "?") || strings.Contains(out, "ERROR") {
+		t.Fatalf("live-loop Resonance RUN AOT with VSYNC produced an error: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	vars := readAOTNativeVars(t, h, "F", "TM", "IN", "PB", "PD", "TX", "BB", "FB", "MP", "PM")
+	if got := vars["F"]; got < 6 {
+		t.Fatalf("live-loop Resonance RUN AOT with VSYNC did not complete bounded loop: F=%d vars=%#v midiPos=%d\n%s\n%s",
+			got, vars, midiPos.Load(), readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	frame := video.FinishFrame()
+	if len(frame) == 0 {
+		t.Fatal("live-loop Resonance RUN AOT with VSYNC produced an empty frame")
+	}
+	if unique := len(frameHistogram(frame)); unique < 16 {
+		t.Fatalf("live-loop Resonance RUN AOT with VSYNC lost effect detail: unique colours=%d top=%v vars=%#v midiPos=%d",
+			unique, topFrameColours(frameHistogram(frame), 8), vars, midiPos.Load())
+	}
+}
+
+func TestResonanceForcedTimeRunAOTMatchesInterpreterFrame(t *testing.T) {
+	program, err := os.ReadFile(resonanceDemoPath)
+	if err != nil {
+		t.Fatalf("read resonance.bas: %v", err)
+	}
+	for _, tm := range []string{"35", "50", "95", "160", "190"} {
+		t.Run("tm_"+tm, func(t *testing.T) {
+			text := strings.ReplaceAll(string(program), "940 VSYNC", "940 REM VSYNC")
+			text = strings.ReplaceAll(text, "560 IN=0.12:TI=INT(TM*100)", "560 TM="+tm+":IN=0.12:TI=INT(TM*100)")
+			text = strings.ReplaceAll(text, "970 GOTO 510", "970 END")
+
+			runFrame, runMode7 := runResonanceFrameForTest(t, text, false)
+			aotFrame, aotMode7 := runResonanceFrameForTest(t, text, true)
+			if len(runFrame) != len(aotFrame) {
+				t.Fatalf("frame lengths differ: RUN=%d RUN AOT=%d", len(runFrame), len(aotFrame))
+			}
+			mismatches := 0
+			for y := 0; y < 480; y += 7 {
+				for x := 0; x < 640; x += 11 {
+					off := uint32(y*640+x) * 4
+					if binary.LittleEndian.Uint32(runFrame[off:]) != binary.LittleEndian.Uint32(aotFrame[off:]) {
+						mismatches++
+					}
+				}
+			}
+			if mismatches > 20 {
+				t.Fatalf("forced-time Resonance frame mismatch at TM=%s: %d sampled pixels differ; RUN top=%v RUN AOT top=%v Mode7 RUN=%#v RUN AOT=%#v",
+					tm, mismatches, topFrameColours(frameHistogram(runFrame), 8), topFrameColours(frameHistogram(aotFrame), 8), runMode7, aotMode7)
+			}
+		})
+	}
+}
+
+func runResonanceFrameForTest(t *testing.T, text string, aot bool) ([]byte, [10]uint32) {
+	t.Helper()
+	asmBin := buildAssembler(t)
+	var video *VideoChip
+	var mode7 [10]uint32
+	setup := func(h *ehbasicTestHarness) {
+		var err error
+		video, err = NewVideoChip(VIDEO_BACKEND_EBITEN)
+		if err != nil {
+			t.Fatalf("NewVideoChip: %v", err)
+		}
+		video.AttachBus(h.bus)
+		video.SetBigEndianMode(false)
+		h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, func(addr uint32, value uint32) {
+			if addr == BLT_CTRL && value&1 != 0 && video.HandleRead(BLT_OP) == bltOpMode7 {
+				mode7 = [10]uint32{
+					video.HandleRead(BLT_SRC), video.HandleRead(BLT_DST),
+					video.HandleRead(BLT_MODE7_U0), video.HandleRead(BLT_MODE7_V0),
+					video.HandleRead(BLT_MODE7_DU_COL), video.HandleRead(BLT_MODE7_DV_COL),
+					video.HandleRead(BLT_MODE7_DU_ROW), video.HandleRead(BLT_MODE7_DV_ROW),
+					video.HandleRead(BLT_MODE7_TEX_W), video.HandleRead(BLT_MODE7_TEX_H),
+				}
+			}
+			video.HandleWrite(addr, value)
+		})
+		h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+
+		sound := newTestSoundChip()
+		midiPlayer := NewMIDIPlayer(sound, SAMPLE_RATE)
+		midiPlayer.AttachBus(h.bus)
+		h.bus.MapIO(MIDI_PLAY_PTR, MIDI_TEMPO_BPM+3, midiPlayer.HandlePlayRead, midiPlayer.HandlePlayWrite)
+		loader := NewMediaLoader(h.bus, sound, ".", nil, nil, nil, nil, nil, nil, nil, midiPlayer)
+		h.bus.MapIO(MEDIA_LOADER_BASE, MEDIA_LOADER_END, loader.HandleRead, loader.HandleWrite)
+	}
+	if !aot {
+		makeHarness := func(tb testing.TB) *ehbasicTestHarness {
+			tb.Helper()
+			bus, err := NewMachineBusSized(256 * 1024 * 1024)
+			if err != nil {
+				tb.Fatalf("NewMachineBusSized: %v", err)
+			}
+			bus.ApplyProfileVisibleCeiling(256 * 1024 * 1024)
+			return newEhbasicHarnessOnBus(tb, bus)
+		}
+		out, _ := execStmtTestCoreWithHarness(t, asmBin, text, func(h *ehbasicTestHarness) {
+			setup(h)
+			fileIO := NewFileIODevice(h.bus, ".")
+			h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
+			h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fileIO.HandleWrite8)
+		}, makeHarness)
+		if strings.Contains(out, "?") || strings.Contains(out, "ERROR") {
+			t.Fatalf("RUN Resonance frame produced an error: %q", out)
+		}
+		return video.FinishFrame(), mode7
+	}
+
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, repoRootDir(t))
+	setup(h)
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			storeLine(t, h, line)
+		}
+	}
+	out := runCommandWithDeadline(h, "RUN AOT", 30*time.Second)
+	if strings.Contains(out, "?") || strings.Contains(out, "ERROR") {
+		t.Fatalf("RUN AOT Resonance frame produced an error: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
+	}
+	return video.FinishFrame(), mode7
+}
+
+func frameHistogram(frame []byte) map[uint32]int {
+	hist := map[uint32]int{}
+	for off := 0; off+4 <= len(frame); off += 4 {
+		hist[binary.LittleEndian.Uint32(frame[off:])]++
+	}
+	return hist
+}
+
+func topFrameColours(hist map[uint32]int, n int) []string {
+	type entry struct {
+		colour uint32
+		count  int
+	}
+	entries := make([]entry, 0, len(hist))
+	for colour, count := range hist {
+		entries = append(entries, entry{colour: colour, count: count})
+	}
+	slices.SortFunc(entries, func(a, b entry) int {
+		return b.count - a.count
+	})
+	if len(entries) > n {
+		entries = entries[:n]
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, fmt.Sprintf("%#08x:%d", e.colour, e.count))
+	}
+	return out
+}
+
+func countUniqueBusSamples(h *ehbasicTestHarness, base uint32, length uint32, step uint32) int {
+	if base == 0 {
+		return 0
+	}
+	seen := map[uint32]struct{}{}
+	for off := uint32(0); off < length; off += step {
+		seen[h.bus.Read32(base+off)] = struct{}{}
+	}
+	return len(seen)
+}
+
+func runCommandWithDeadline(h *ehbasicTestHarness, cmd string, deadline time.Duration) string {
+	h.sendInput(cmd + "\n")
+	h.cpu.running.Store(true)
+	var allOutput strings.Builder
+	done := make(chan struct{})
+	go func() {
+		h.execCPU()
+		close(done)
+	}()
+	timeout := time.After(deadline)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			allOutput.WriteString(h.readOutput())
+			return allOutput.String()
+		case <-timeout:
+			h.cpu.running.Store(false)
+			h.waitDone(done)
+			allOutput.WriteString(h.readOutput())
+			return allOutput.String()
+		case <-ticker.C:
+			out := h.readOutput()
+			allOutput.WriteString(out)
+			s := allOutput.String()
+			if strings.Contains(s, "\nReady\n") || strings.Contains(s, "\nOk\n") ||
+				strings.Contains(s, "\nReady\r\n") || strings.Contains(s, "\nOk\r\n") ||
+				strings.HasSuffix(s, "Ready\n") || strings.HasSuffix(s, "Ok\n") ||
+				strings.HasSuffix(s, "Ready\r\n") || strings.HasSuffix(s, "Ok\r\n") {
+				h.cpu.running.Store(false)
+				h.waitDone(done)
+				return allOutput.String()
+			}
+		}
+	}
+}
+
+func countNonZeroBusSamples(h *ehbasicTestHarness, base uint32, length uint32, step uint32) int {
+	if base == 0 {
+		return 0
+	}
+	count := 0
+	for off := uint32(0); off < length; off += step {
+		if h.bus.Read32(base+off) != 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func readAOTNativeVars(t *testing.T, h *ehbasicTestHarness, names ...string) map[string]uint64 {
+	t.Helper()
+	const (
+		aotNativeVarSeg = 0x00071000
+		valOffset       = 16
+		recSize         = 24
+	)
+	count := h.bus.Read32(aotNativeVarSeg + 8)
+	out := make(map[string]uint64, len(names))
+	for _, name := range names {
+		want := basicAOTVarTag(name)
+		for i := uint32(0); i < count; i++ {
+			rec := uint32(aotNativeVarSeg + 16 + i*recSize)
+			if h.bus.Read32(rec) == want {
+				out[name] = h.bus.Read64(rec + valOffset)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func basicAOTVarTag(name string) uint32 {
+	var tag uint32
+	count := 0
+	for _, ch := range strings.ToUpper(name) {
+		if (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9' || count == 0) {
+			break
+		}
+		c := uint32(byte(ch))
+		if count < 4 {
+			tag = (tag << 8) | c
+			count++
+			continue
+		}
+		tag = tag*33 + c
+	}
+	return tag
 }

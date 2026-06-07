@@ -368,6 +368,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{sdkHexRange(ANTIC_BASE, ANTIC_END), "`antic_constants.go` `ANTIC_BASE`/`ANTIC_END`, `main.go` `MapIO`"},
 		{sdkHexRange(GTIA_BASE, GTIA_END), "`antic_constants.go` `GTIA_BASE`/`GTIA_END`, `main.go` `MapIO`"},
 		{sdkHexRange(FILE_IO_BASE, FILE_IO_END), "`file_io_constants.go` `FILE_IO_BASE`/`FILE_IO_END`, `main.go` `MapIO`"},
+		{sdkHexRange(FILE_DATA_PTR64, FILE_DATA_PTR64_END), "`file_io_constants.go` `FILE_DATA_PTR64`/`FILE_DATA_PTR64_END`, `main.go` `MapIO64`"},
 		{sdkHexRange(AROS_DOS_BASE, AROS_DOS_END), "`aros_dos_constants.go` `AROS_DOS_BASE`/`AROS_DOS_END`, `main.go` `MapIO`"},
 		{sdkHexRange(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END), "`aros_audio_constants.go` `AROS_AUD_REGION_BASE`/`AROS_AUD_REGION_END`, `main.go` `MapIO`"},
 		{sdkHexRange(MEDIA_LOADER_BASE, MEDIA_LOADER_END), "`media_loader_constants.go` `MEDIA_LOADER_BASE`/`MEDIA_LOADER_END`, `main.go` `MapIO`"},

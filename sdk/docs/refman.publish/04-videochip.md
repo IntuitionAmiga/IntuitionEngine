@@ -336,7 +336,9 @@ operation finishes. Invalid operation numbers set `ERR`. Scale sets
 VRAM writes that are not 4-byte aligned. Mode 7 sets `ERR` for
 invalid texture masks or out-of-range texture reads. Rectangle copy
 and fill also set `ERR` when a visible RGBA32 VRAM destination is
-misaligned or beyond the displayed framebuffer.
+misaligned or beyond the displayed framebuffer. Any blitter operation
+that would write outside backed writable guest memory sets `ERR`
+instead of wrapping into another address range.
 
 To request an interrupt, write `BLT_CTRL = 5` (`START + IRQ_ENABLE`)
 instead of `1`. The operation still completes synchronously, and

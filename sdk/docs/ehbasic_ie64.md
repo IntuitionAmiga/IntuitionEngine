@@ -79,7 +79,7 @@ Release builds always include `embed_basic`, so packaged Linux, Windows, and mac
 On startup, IE64 BASIC displays a banner and the `Ready` prompt:
 
 ```
-IE64 BASIC v3.1
+IE64 BASIC v3.8
 (c) Zayn Otley, 2024-2026
 Inspired by 68k EhBASIC by the late great Lee Davison (RIP)
 Ready
@@ -149,7 +149,7 @@ There are two entry points.
 RUN AOT
 ```
 
-Because the arena sits alongside the resident interpreter, `RUN AOT` may delegate a statement to the resident runtime helper for that statement when a native lowering is not provided. This keeps behaviour identical to the interpreter for the full statement set whilst the control flow itself runs as native code.
+Because the arena sits alongside the resident interpreter, `RUN AOT` may delegate a statement to the resident runtime helper for that statement when a native lowering is not provided. Native integer lowering avoids those helpers for supported scalar arithmetic, memory loads, memory stores and simple loop/control paths, including `&H` hexadecimal literals used for MMIO registers. Scalar numeric variables used by compiled code are predeclared in an ordinary BASIC variable segment, so generated code can address payload slots directly while any remaining helper still sees the same variables through the normal table. Within the native integer subset, scalar reads honour the stored BASIC numeric tag and convert to integer when a hardware-facing expression needs an integer value. Hot integer hardware loops then run as direct IE64 loads, stores, arithmetic and branches. Generated assembly text and RUN AOT native code are allocated dynamically from the active top-of-RAM AOT arena, so native-expanded BASIC graphics programmes are limited by active guest RAM rather than by a fixed small compiler scratch buffer. IE64 BASIC requires at least 256 MiB of active visible RAM for the native compiler profile.
 
 #### COMPILE
 
@@ -157,7 +157,7 @@ Because the arena sits alongside the resident interpreter, `RUN AOT` may delegat
 
 A standalone image has no resident interpreter to delegate to. The image opens with a small bootstrap that sets the stack and the terminal pointer. Programmes that use only literal operands (for example `PRINT` of a string or number, `POKE`, unconditional `GOTO`) bundle just the few print helpers they need and stay lean. Programmes that use expressions, variables, arrays, strings or the `DATA`/`INPUT`/`LIST`/`SAVE` runtime bundle a position-fixed runtime image (the expression evaluator and the variable, array, string, floating-point and statement-execution routines) into the `.ie64` and call into it through a fixed jump table, so the compiled programme runs the same evaluator and statement handlers as the interpreter with no resident interpreter present. The bundled runtime makes the image self-contained: it runs in a bare machine with no host services, no sidecar files and (except for `SAVE`) no File I/O device.
 
-Alongside `name.ie64`, `COMPILE` also writes `name.asm`, the transpiled IE64 assembly source it assembled, so you can inspect or reassemble the generated code.
+Alongside `name.ie64`, `COMPILE` also writes `name.asm`, the transpiled IE64 assembly source it assembled, so you can inspect or reassemble the generated code. `RUN AOT`, `TRANSPILE`, `COMPILE` and `ASSEMBLE` size their generated source and native-code buffers from active guest RAM, rather than from the old small assembler scratch buffer, so generated BASIC graphics programmes can produce larger standalone images without being reported as compiler-memory exhaustion. `COMPILE`, `TRANSPILE` and `ASSEMBLE` use the IE64-only `FILE_DATA_PTR64` File I/O extension for high-arena generated buffers; legacy File I/O callers still use the original `32`-bit `FILE_DATA_PTR`.
 
 #### TRANSPILE
 
@@ -185,21 +185,25 @@ start:
     halt
 ```
 
-Anything outside that subset (any other `include`, `incbin`, `equ`, `org`, macros, conditionals, an unknown mnemonic, or an unresolved label/constant) is reported as a `?COMPILE ERROR` and no `.ie64` is written. A missing or unreadable `name.asm`, or a source larger than the assembler's limit (just under 1 MiB), raises `?FILE ERROR`.
+Anything outside that subset (any other `include`, `incbin`, `equ`, `org`, macros, conditionals, an unknown mnemonic, or an unresolved label/constant) is reported as a `?COMPILE ERROR` and no `.ie64` is written. A missing or unreadable `name.asm`, or a source larger than the active AOT arena can stage, raises `?FILE ERROR`.
 
 #### Supported statements
 
 These lower to native code and run under both `RUN AOT` and standalone `COMPILE`:
 
 - `GOTO`, `GOSUB`, `RETURN`.
-- `POKE`/`POKE8`/`POKE16`/`POKE32`/`POKE64`, `BITSET`, `BITCLR`, `CALL`, `WAIT`, `VSYNC`.
+- `POKE`/`POKE8`/`POKE16`/`POKE32`/`POKE64`, including supported integer address and value expressions, `BITSET`, `BITCLR`, `CALL`, `WAIT`, `VSYNC`.
+- Numeric scalar assignments whose RHS is in the native integer subset, including decimal and `&H` hexadecimal integer literals up to 64 bits, numeric variables, `PEEK`/`PEEK8`/`PEEK32`, `INT`, parentheses, `+`, `-`, `*`, `/`, and `AND`.
+- Constant `MEMALLOC(size, align)` scalar assignments, used for low32 hardware buffers, are lowered natively and update the public MEMALLOC cursor.
+- Simple integer `IF` comparisons using `<`, `<=`, `<>`, `>`, `>=`, or `=` where both sides are in the native integer subset.
+- Simple scalar integer `FOR ... NEXT` loops where the initial and limit expressions are in the native integer subset and `STEP` is omitted or a constant integer.
 - `PRINT` of a string literal or a numeric literal.
 - `END`, `STOP`.
 
 These use the bundled runtime (expressions, variables, arrays, strings, `DATA`) and now run under standalone `COMPILE` as well as `RUN AOT`:
 
 - `IF ... THEN ...`, including `THEN <line>` (a jump) and `IF ... THEN ... ELSE ...` on a single line.
-- `FOR ... NEXT`.
+- `FOR ... NEXT` forms outside the simple native integer subset.
 - `WHILE ... WEND` and `DO ... LOOP` with a bottom test (`LOOP UNTIL`, `LOOP WHILE`).
 - `ON <expr> GOTO`/`GOSUB`.
 - Implied `LET` (numeric, string and array-element assignment) and `DIM`.
@@ -209,12 +213,13 @@ These use the bundled runtime (expressions, variables, arrays, strings, `DATA`) 
 - `LIST` (detokenises and prints the bundled programme) and `SAVE "name"` (detokenises the bundled programme and writes it through the File I/O ABI).
 - `BLOAD "name", addr` loads raw bytes to `addr` through the File I/O MMIO (the same `FILE_NAME_PTR`/`FILE_DATA_PTR`/`FILE_CTRL` path the interpreter uses), with the destination 2^32 range check. `RUN AOT` delegates to the resident handler; standalone bundles it. A standalone image needs a File I/O device mapped in the machine it runs on.
 
-Direct-only commands (`RUN AOT`, `COMPILE`, `DIR`, `TYPE`) and roots with no BASIC token (`HOST`, `COSTART`, `COSTOP`, `COWAIT`, `COCALL`, `COSTATUS`) cannot be compiled at all and are reported as such. Every remaining tokenised statement still runs under `RUN AOT` through resident delegation. `POKE` and explicit-width `POKE` forms with expression operands (variables or arithmetic) compile under `RUN AOT` by delegating to the resident handler; with integer-literal operands they take a faster inline store.
+Direct-only commands (`RUN AOT`, `COMPILE`, `DIR`, `TYPE`) and roots with no BASIC token (`HOST`, `COSTART`, `COSTOP`, `COWAIT`, `COCALL`, `COSTATUS`) cannot be compiled at all and are reported as such. Every remaining tokenised statement still runs under `RUN AOT` through resident delegation. Unsupported expression shapes fall back to the runtime evaluator where a bundled or resident helper is available.
 
 #### Limitations
 
 - `LOAD` is rejected by a standalone `COMPILE`: it reconstructs a tokenised programme in memory, which needs the resident tokeniser and a REPL loop to run what was loaded, and a standalone image has neither. Use `RUN AOT` or the interpreter for programmes that load other programmes. (`BLOAD`, a raw binary load, is supported in both modes.)
-- `POKE` and explicit-width `POKE` forms with expression operands compile under `RUN AOT` but not in a standalone `COMPILE` (which has no resident handler to delegate to); use integer-literal operands for standalone images.
+- Unsupported `POKE` expression shapes still require the runtime evaluator. Use the native integer subset for hot standalone code and hardware loops.
+- `FOR ... NEXT` is native only for scalar integer loops with a native integer initial expression, native integer limit expression, and omitted or constant integer `STEP`. Other loop forms use the runtime helper where available.
 - `ELSE` is supported for a single, non-nested `IF` per line. An `IF` whose `THEN` clause contains a second `IF` with its own `ELSE` is not lowered.
 - `DO WHILE`/`DO UNTIL` (a top test) is not lowered; use `DO ... LOOP UNTIL`/`LOOP WHILE`.
 - `STOP` under `RUN AOT` saves a native continuation and returns to the prompt; a typed `CONT` re-enters the compiled code where it stopped, with variables, `DATA` position, and open `FOR` loops preserved. Editing the programme, `NEW`, `LOAD`, or a fresh `RUN`/`RUN AOT` discards the pending continuation. A `STOP` reached *inside* an active `GOSUB` is not resumable: compiled `GOSUB`/`RETURN` use the hardware return stack, which is unwound when `STOP` returns to the prompt, so `CONT` resumes the post-`STOP` statements but the following `RETURN` reports `?RETURN WITHOUT GOSUB`. Use top-level `STOP`/`CONT`. A standalone `.ie64` has no REPL to return to, so it halts on `STOP` or `END`.
@@ -3427,6 +3432,7 @@ Used by `BLOAD`, `LOAD`, `SAVE`, and `DIR`.
 | `&HF2214` | FILE_RESULT_LEN | R | Bytes read or listed |
 | `&HF2218` | FILE_ERROR_CODE | R | 0=OK, 1=not found, 2=permission, 3=traversal |
 | `&HF221C` | FILE_READ_MAX | W | One-shot read cap in bytes; a larger file is refused (no copy); 0=unbounded |
+| `&HF22B0` | FILE_DATA_PTR64 | W | IE64-only 64-bit data-buffer pointer; extension, not a replacement for FILE_DATA_PTR |
 
 ### 9.17 Paula DMA Audio Bridge (`&HF2260`-`&HF22AF`)
 

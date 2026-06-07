@@ -14,7 +14,8 @@ type FileIODevice struct {
 	bus           *MachineBus
 	baseDir       string
 	fileNamePtr   uint32
-	fileDataPtr   uint32
+	fileDataPtr   uint64
+	fileDataPtr64 bool
 	fileDataLen   uint32
 	fileStatus    uint32
 	fileResultLen uint32
@@ -60,7 +61,7 @@ func (f *FileIODevice) HandleRead(addr uint32) uint32 {
 	case FILE_NAME_PTR:
 		return f.fileNamePtr
 	case FILE_DATA_PTR:
-		return f.fileDataPtr
+		return uint32(f.fileDataPtr)
 	case FILE_DATA_LEN:
 		return f.fileDataLen
 	case FILE_STATUS:
@@ -81,7 +82,8 @@ func (f *FileIODevice) HandleWrite(addr uint32, val uint32) {
 	case FILE_NAME_PTR:
 		f.fileNamePtr = val
 	case FILE_DATA_PTR:
-		f.fileDataPtr = val
+		f.fileDataPtr = uint64(val)
+		f.fileDataPtr64 = false
 	case FILE_DATA_LEN:
 		f.fileDataLen = val
 	case FILE_READ_MAX:
@@ -111,7 +113,9 @@ func (f *FileIODevice) HandleWrite8(addr uint32, value uint8) {
 	case FILE_NAME_PTR:
 		f.fileNamePtr = (f.fileNamePtr &^ mask) | assembled
 	case FILE_DATA_PTR:
-		f.fileDataPtr = (f.fileDataPtr &^ mask) | assembled
+		low := (uint32(f.fileDataPtr) &^ mask) | assembled
+		f.fileDataPtr = uint64(low)
+		f.fileDataPtr64 = false
 	case FILE_DATA_LEN:
 		f.fileDataLen = (f.fileDataLen &^ mask) | assembled
 	case FILE_READ_MAX:
@@ -127,6 +131,79 @@ func (f *FileIODevice) HandleWrite8(addr uint32, value uint8) {
 			}
 		}
 	}
+}
+
+// HandleRead64 handles native IE64 reads from 64-bit File I/O extension
+// registers. The legacy 32-bit registers remain the cross-CPU ABI.
+func (f *FileIODevice) HandleRead64(addr uint32) uint64 {
+	switch addr {
+	case FILE_DATA_PTR64:
+		return f.fileDataPtr
+	default:
+		return uint64(f.HandleRead(addr))
+	}
+}
+
+// HandleWrite64 handles native IE64 writes to 64-bit File I/O extension
+// registers. FILE_DATA_PTR64 lets COMPILE write retained AOT arena buffers
+// directly instead of forcing large generated files below the low32 stack.
+func (f *FileIODevice) HandleWrite64(addr uint32, value uint64) {
+	switch addr {
+	case FILE_DATA_PTR64:
+		f.fileDataPtr = value
+		f.fileDataPtr64 = true
+	default:
+		f.HandleWrite(addr, uint32(value))
+	}
+}
+
+func (f *FileIODevice) readGuest8(addr uint64) uint8 {
+	if f.bus == nil {
+		return 0
+	}
+	if addr < uint64(len(f.bus.memory)) {
+		return f.bus.memory[addr]
+	}
+	if f.bus.backing != nil && addr < f.bus.backing.Size() {
+		return f.bus.backing.Read8(addr)
+	}
+	return 0
+}
+
+func (f *FileIODevice) readFileData8(addr uint64) uint8 {
+	if f.bus == nil {
+		return 0
+	}
+	if addr < busMemMaxBytes {
+		return f.bus.Read8(uint32(addr))
+	}
+	return f.readGuest8(addr)
+}
+
+func (f *FileIODevice) writeGuest8(addr uint64, value uint8) bool {
+	if f.bus == nil {
+		return false
+	}
+	if addr < uint64(len(f.bus.memory)) {
+		f.bus.memory[addr] = value
+		return true
+	}
+	if f.bus.backing != nil && addr < f.bus.backing.Size() {
+		f.bus.backing.Write8(addr, value)
+		return true
+	}
+	return false
+}
+
+func (f *FileIODevice) writeFileData8(addr uint64, value uint8) bool {
+	if f.bus == nil {
+		return false
+	}
+	if addr < busMemMaxBytes {
+		f.bus.Write8(uint32(addr), value)
+		return true
+	}
+	return f.writeGuest8(addr, value)
 }
 
 // sanitizePath ensures the given path is safe and within baseDir.
@@ -334,11 +411,10 @@ func (f *FileIODevice) doRead() {
 // sign-extended-window / guest-RAM range guard, and sets the read result status.
 // Shared by disk reads and the host-provided runtime-blob virtual file.
 //
-// Refuse a staging buffer [FILE_DATA_PTR, +len) that reaches into the bus
-// sign-extended alias window or runs past guest RAM. Every bus access aliases
-// addresses >= busMemMaxBytes (0xFFFF0000) to low memory, so a span whose exclusive
-// end exceeds that cap would have its high bytes silently written to low RAM (this
-// also covers the uint32 2^32 wrap). Reject against the cap and backingVisibleSize.
+// Refuse a legacy low32 staging buffer [FILE_DATA_PTR, +len) that reaches into
+// the bus sign-extended alias window. A 64-bit FILE_DATA_PTR64 write may
+// deliberately target high sparse RAM, so those spans are checked against the
+// backing store only.
 func (f *FileIODevice) writeReadResult(data []byte, fileName, fullPath string, readMax uint32) {
 	// Honour the read cap (FILE_READ_MAX, consumed by the caller) before copying
 	// anything into guest memory, so a caller (ASSEMBLE) can bound the read to its
@@ -349,23 +425,25 @@ func (f *FileIODevice) writeReadResult(data []byte, fileName, fullPath string, r
 		f.fileResultLen = 0
 		return
 	}
-	if end := uint64(f.fileDataPtr) + uint64(len(data)); end > busMemMaxBytes || end > f.bus.backingVisibleSize() {
+	end := f.fileDataPtr + uint64(len(data))
+	legacyAlias := !f.fileDataPtr64 && (f.fileDataPtr >= busMemMaxBytes || end > busMemMaxBytes)
+	if end < f.fileDataPtr || end > f.bus.backingVisibleSize() || legacyAlias || (f.fileDataPtr64 && f.fileDataPtr < busMemMaxBytes && end > busMemMaxBytes) {
 		f.fileStatus = 1
 		f.fileErrorCode = FILE_ERR_RANGE
 		f.fileResultLen = 0
 		return
 	}
 	for i, b := range data {
-		f.bus.Write8(f.fileDataPtr+uint32(i), b)
+		f.writeFileData8(f.fileDataPtr+uint64(i), b)
 	}
 	if len(data) > 12 && string(data[:4]) == "IWAD" {
 		dir := uint32(data[8]) | uint32(data[9])<<8 | uint32(data[10])<<16 | uint32(data[11])<<24
 		if int(dir)+16 <= len(data) {
 			sample := make([]byte, 8)
 			for i := range sample {
-				sample[i] = f.bus.Read8(f.fileDataPtr + dir + uint32(8+i))
+				sample[i] = f.readFileData8(f.fileDataPtr + uint64(dir) + uint64(8+i))
 			}
-			traceHostIO("FILEIO", fmt.Sprintf("IWAD sample data_ptr=0x%08X dir=0x%08X name=%q", f.fileDataPtr, dir, sample), fileName, fullPath, nil, len(data))
+			traceHostIO("FILEIO", fmt.Sprintf("IWAD sample data_ptr=0x%016X dir=0x%08X name=%q", f.fileDataPtr, dir, sample), fileName, fullPath, nil, len(data))
 		}
 	}
 	f.fileStatus = 0
@@ -383,12 +461,13 @@ func (f *FileIODevice) doWrite() {
 		return
 	}
 
-	// Refuse a write whose source buffer [FILE_DATA_PTR, +len) reaches into the bus
-	// sign-extended alias window or runs past guest RAM. Addresses >= busMemMaxBytes
-	// (0xFFFF0000) alias to low memory on every access, so a span whose exclusive end
-	// exceeds that cap would read low RAM as the file contents (this also covers the
-	// uint32 2^32 wrap). Reject it rather than writing wrapped/out-of-bounds data.
-	if end := uint64(f.fileDataPtr) + uint64(f.fileDataLen); end > busMemMaxBytes || end > f.bus.backingVisibleSize() {
+	// Refuse a write whose source buffer [FILE_DATA_PTR, +len) runs past backed
+	// guest RAM. A 32-bit FILE_DATA_PTR write still produces a low address and
+	// keeps the old sign-extended-window guard; FILE_DATA_PTR64 may deliberately
+	// point into high sparse RAM for IE64 COMPILE output buffers.
+	end := f.fileDataPtr + uint64(f.fileDataLen)
+	legacyAlias := !f.fileDataPtr64 && (f.fileDataPtr >= busMemMaxBytes || end > busMemMaxBytes)
+	if end < f.fileDataPtr || end > f.bus.backingVisibleSize() || legacyAlias || (f.fileDataPtr64 && f.fileDataPtr < busMemMaxBytes && end > busMemMaxBytes) {
 		f.fileStatus = 1
 		f.fileErrorCode = FILE_ERR_RANGE
 		return
@@ -397,7 +476,7 @@ func (f *FileIODevice) doWrite() {
 	// Read data from bus
 	data := make([]byte, f.fileDataLen)
 	for i := uint32(0); i < f.fileDataLen; i++ {
-		data[i] = f.bus.Read8(f.fileDataPtr + i)
+		data[i] = f.readFileData8(f.fileDataPtr + uint64(i))
 	}
 
 	err := os.WriteFile(fullPath, data, 0644)
@@ -470,9 +549,9 @@ func (f *FileIODevice) doList() {
 	}
 
 	for i, b := range data {
-		f.bus.Write8(f.fileDataPtr+uint32(i), b)
+		f.writeFileData8(f.fileDataPtr+uint64(i), b)
 	}
-	f.bus.Write8(f.fileDataPtr+uint32(len(data)), 0)
+	f.writeFileData8(f.fileDataPtr+uint64(len(data)), 0)
 
 	f.fileStatus = 0
 	f.fileErrorCode = FILE_ERR_OK

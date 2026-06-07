@@ -600,6 +600,8 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"FILE_STATUS", 0xF2210, 4, "RO"},
 			{"FILE_RESULT_LEN", 0xF2214, 4, "RO"},
 			{"FILE_ERROR_CODE", 0xF2218, 4, "RO"},
+			{"FILE_READ_MAX", 0xF221C, 4, "RW"},
+			{"FILE_DATA_PTR64", 0xF22B0, 8, "RW"},
 		},
 	},
 	"arosdos": {
