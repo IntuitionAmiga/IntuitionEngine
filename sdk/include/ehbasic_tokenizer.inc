@@ -409,6 +409,7 @@ tok_kw_table:
     dc.b    "SWAP", 0, TK_SWAP
     dc.b    "THEN", 0, TK_THEN
     dc.b    "WAIT", 0, TK_WAIT
+    dc.b    "MIDI", 0, TK_EXT, EXT_MIDI
     dc.b    "MID$", 0, TK_MIDS
     dc.b    "ABS", 0, TK_ABS
     dc.b    "AND", 0, TK_AND

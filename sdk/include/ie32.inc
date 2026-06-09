@@ -532,6 +532,14 @@
 .equ MIDI_TEMPO_BPM    0xF0BB8          ; Current effective tempo BPM (read-only)
 .equ MIDI_STATUS_LOADING 0x08           ; MIDI_PLAY_STATUS bit 3: async parse/load in progress
 
+; Generic live-MIDI port (raw running-status MIDI stream into the shared synth).
+; CPU-agnostic; drives the same voices as the file player.
+.equ IE_MIDI_LIVE_DATA   0xF0BF4        ; W: raw MIDI byte (running-status stream)
+.equ IE_MIDI_LIVE_STATUS 0xF0BF5        ; R: bit 0 = live port active
+.equ IE_MIDI_LIVE_CTRL   0xF0BF6        ; W: bit 0 = reset (all notes off)
+.equ MIDI_LIVE_STATUS_ACTIVE 0x01       ; IE_MIDI_LIVE_STATUS bit 0
+.equ MIDI_LIVE_CTRL_RESET 0x01          ; IE_MIDI_LIVE_CTRL bit 0
+
 ; ============================================================================
 ; MOD AUDIO REGISTERS (ProTracker .mod player)
 ;

@@ -146,6 +146,14 @@ type midiVoice struct {
 	releasePos        int
 	releaseStartLevel float32
 	patch             rawlandMiniPatch
+	live              bool
+}
+
+type midiChannelState struct {
+	programs   [16]uint8
+	chanVolume [16]uint8
+	expression [16]uint8
+	pitchBend  [16]int
 }
 
 type MIDIEngine struct {
@@ -160,14 +168,13 @@ type MIDIEngine struct {
 	paused     bool
 	loop       bool
 	volume     uint8
-	programs   [16]uint8
-	chanVolume [16]uint8
-	expression [16]uint8
-	pitchBend  [16]int
+	fileState  midiChannelState
+	liveState  midiChannelState
 	voices     [midiMaxVoices]midiVoice
 	order      int64
 	noiseState uint32
 	currentBPM int
+	liveActive bool
 }
 
 func NewMIDIEngine(sound *SoundChip, sampleRate int) *MIDIEngine {
@@ -182,8 +189,8 @@ func (e *MIDIEngine) LoadMIDI(file *MIDIFile) {
 	e.file = file
 	e.eventIndex = 0
 	e.position = 0
-	e.clearVoicesLocked()
-	e.resetChannelStateLocked()
+	e.clearFileVoicesLocked()
+	e.resetFileChannelStateLocked()
 	e.currentBPM = 120
 	if file != nil {
 		e.currentBPM = file.TempoBPMAtSample(0)
@@ -194,17 +201,65 @@ func (e *MIDIEngine) SetPlaying(playing bool) {
 	e.mu.Lock()
 	e.playing = playing
 	if !playing {
-		e.clearVoicesLocked()
+		if e.liveActive {
+			e.clearFileVoicesLocked()
+		} else {
+			e.clearVoicesLocked()
+		}
 	}
+	// The live port shares this engine and the same "midi" registration key.
+	// Do not tear the mixer down while the live port is still active.
+	keepRegistered := e.liveActive
 	e.mu.Unlock()
 	if e.sound != nil {
 		if playing {
 			e.sound.RegisterSampleTicker("midi", e)
 			e.sound.RegisterSampleMixer("midi", e)
-		} else {
+		} else if !keepRegistered {
 			e.sound.UnregisterSampleTicker("midi")
 			e.sound.UnregisterSampleMixer("midi")
 		}
+	}
+}
+
+// ApplyLiveEvent feeds a single decoded MIDI event from the live port into the
+// shared synth. It activates the live port and registers the mixer (sharing the
+// "midi" key with the file player) so notes are heard even when no file plays.
+func (e *MIDIEngine) ApplyLiveEvent(ev MIDIEvent) {
+	e.mu.Lock()
+	wasRegistered := e.playing || e.liveActive
+	e.liveActive = true
+	e.applyEventLocked(ev, true)
+	e.mu.Unlock()
+	if e.sound != nil && !wasRegistered {
+		e.sound.RegisterSampleTicker("midi", e)
+		e.sound.RegisterSampleMixer("midi", e)
+	}
+}
+
+// LiveActive reports whether the live port has been driven since the last reset.
+func (e *MIDIEngine) LiveActive() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.liveActive
+}
+
+// ResetLive performs an all-notes-off, clears channel state, and deactivates the
+// live port. The mixer registration is dropped unless the file player still owns it.
+func (e *MIDIEngine) ResetLive() {
+	e.mu.Lock()
+	if e.playing {
+		e.clearLiveVoicesLocked()
+	} else {
+		e.clearVoicesLocked()
+	}
+	e.resetLiveChannelStateLocked()
+	e.liveActive = false
+	stillPlaying := e.playing
+	e.mu.Unlock()
+	if e.sound != nil && !stillPlaying {
+		e.sound.UnregisterSampleTicker("midi")
+		e.sound.UnregisterSampleMixer("midi")
 	}
 }
 
@@ -275,7 +330,7 @@ func (e *MIDIEngine) TickSample() {
 		return
 	}
 	for e.eventIndex < len(e.file.Events) && e.file.Events[e.eventIndex].SampleTime <= e.position {
-		e.applyEventLocked(e.file.Events[e.eventIndex])
+		e.applyEventLocked(e.file.Events[e.eventIndex], false)
 		e.eventIndex++
 	}
 	e.currentBPM = e.file.TempoBPMAtSample(e.position)
@@ -284,11 +339,12 @@ func (e *MIDIEngine) TickSample() {
 		if e.loop {
 			e.position = 0
 			e.eventIndex = 0
-			e.clearVoicesLocked()
+			e.clearFileVoicesLocked()
+			e.resetFileChannelStateLocked()
 		} else {
 			e.playing = false
-			e.clearVoicesLocked()
-			if e.sound != nil {
+			e.clearFileVoicesLocked()
+			if e.sound != nil && !e.liveActive {
 				go func() {
 					e.sound.UnregisterSampleTicker("midi")
 					e.sound.UnregisterSampleMixer("midi")
@@ -311,7 +367,10 @@ func (e *MIDIEngine) playbackCompleteLocked() bool {
 func (e *MIDIEngine) MixSample() float32 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !e.playing || e.paused {
+	if !e.playing && !e.liveActive {
+		return 0
+	}
+	if e.paused && !e.liveActive {
 		return 0
 	}
 	var sum float32
@@ -319,6 +378,9 @@ func (e *MIDIEngine) MixSample() float32 {
 	for i := range e.voices {
 		v := &e.voices[i]
 		if !v.active {
+			continue
+		}
+		if e.paused && !v.live {
 			continue
 		}
 		s := e.voiceSampleLocked(v)
@@ -331,36 +393,38 @@ func (e *MIDIEngine) MixSample() float32 {
 	return clampF32(sum/float32(midiMaxVoices), -0.8, 0.8)
 }
 
-func (e *MIDIEngine) applyEventLocked(ev MIDIEvent) {
+func (e *MIDIEngine) applyEventLocked(ev MIDIEvent, live bool) {
 	ch := ev.Channel & 0x0F
+	state := e.channelStateLocked(live)
 	switch ev.Kind {
 	case MIDIEventProgramChange:
-		e.programs[ch] = ev.Program
+		state.programs[ch] = ev.Program
 	case MIDIEventControlChange:
 		if ev.Controller == 7 {
-			e.chanVolume[ch] = uint8(clampInt(ev.Value, 0, 127))
+			state.chanVolume[ch] = uint8(clampInt(ev.Value, 0, 127))
 		} else if ev.Controller == 11 {
-			e.expression[ch] = uint8(clampInt(ev.Value, 0, 127))
+			state.expression[ch] = uint8(clampInt(ev.Value, 0, 127))
 		}
 	case MIDIEventPitchBend:
-		e.pitchBend[ch] = clampInt(ev.Value, 0, 16383)
+		state.pitchBend[ch] = clampInt(ev.Value, 0, 16383)
 	case MIDIEventNoteOn:
 		if ev.Velocity == 0 {
-			e.releaseNoteLocked(ch, ev.Note)
+			e.releaseNoteLocked(ch, ev.Note, live)
 		} else {
-			e.startNoteLocked(ch, ev.Note, ev.Velocity)
+			e.startNoteLocked(ch, ev.Note, ev.Velocity, live)
 		}
 	case MIDIEventNoteOff:
-		e.releaseNoteLocked(ch, ev.Note)
+		e.releaseNoteLocked(ch, ev.Note, live)
 	}
 }
 
-func (e *MIDIEngine) startNoteLocked(ch, note, velocity uint8) {
-	idx := e.selectVoiceLocked(ch, note, velocity)
-	prog := e.programs[ch]
+func (e *MIDIEngine) startNoteLocked(ch, note, velocity uint8, live bool) {
+	idx := e.selectVoiceLocked(ch, note, velocity, live)
+	state := e.channelStateLocked(live)
+	prog := state.programs[ch]
 	patch := patchForNote(ch, prog, note)
 	e.order++
-	pbSemis := (float32(e.pitchBend[ch]) - 8192.0) / 8192.0 * 2.0
+	pbSemis := (float32(state.pitchBend[ch]) - 8192.0) / 8192.0 * 2.0
 	freq := float32(440.0 * math.Pow(2, (float64(note)-69.0+float64(pbSemis))/12.0))
 	e.voices[idx] = midiVoice{
 		active:     true,
@@ -372,13 +436,14 @@ func (e *MIDIEngine) startNoteLocked(ch, note, velocity uint8) {
 		startOrder: e.order,
 		freq:       freq,
 		patch:      patch,
+		live:       live,
 	}
 }
 
-func (e *MIDIEngine) releaseNoteLocked(ch, note uint8) {
+func (e *MIDIEngine) releaseNoteLocked(ch, note uint8, live bool) {
 	for i := range e.voices {
 		v := &e.voices[i]
-		if v.active && !v.releasing && v.channel == ch && v.note == note {
+		if v.active && !v.releasing && v.channel == ch && v.note == note && v.live == live {
 			v.releaseStartLevel = e.voiceEnvelopeLevelLocked(v)
 			v.releasing = true
 			v.releasePos = 0
@@ -386,10 +451,10 @@ func (e *MIDIEngine) releaseNoteLocked(ch, note uint8) {
 	}
 }
 
-func (e *MIDIEngine) selectVoiceLocked(ch, note, velocity uint8) int {
+func (e *MIDIEngine) selectVoiceLocked(ch, note, velocity uint8, live bool) int {
 	for i := range e.voices {
 		v := &e.voices[i]
-		if v.active && v.releasing && v.channel == ch && v.note == note {
+		if v.active && v.releasing && v.channel == ch && v.note == note && v.live == live {
 			return i
 		}
 	}
@@ -403,17 +468,31 @@ func (e *MIDIEngine) selectVoiceLocked(ch, note, velocity uint8) int {
 			return i
 		}
 	}
-	newPrio := midiPriority(ch, note, velocity)
-	best := 0
-	for i := 1; i < len(e.voices); i++ {
-		a := e.voices[i]
-		b := e.voices[best]
-		if a.priority < b.priority || (a.priority == b.priority && a.startOrder < b.startOrder) {
-			best = i
+	// All voices are sounding: a voice must be stolen. Live MIDI takes precedence
+	// over the file player, so a live voice is only ever evicted when no file
+	// voice is available to steal (regardless of which source the incoming note
+	// comes from). Among the eligible voices the lowest-priority, oldest one loses.
+	stealBest := func(protectLive bool) int {
+		best := -1
+		for i := range e.voices {
+			if protectLive && e.voices[i].live {
+				continue
+			}
+			if best == -1 {
+				best = i
+				continue
+			}
+			a, b := e.voices[i], e.voices[best]
+			if a.priority < b.priority || (a.priority == b.priority && a.startOrder < b.startOrder) {
+				best = i
+			}
 		}
+		return best
 	}
-	_ = newPrio
-	return best
+	if idx := stealBest(true); idx != -1 {
+		return idx
+	}
+	return stealBest(false)
 }
 
 func midiPriority(ch, note, velocity uint8) int {
@@ -431,9 +510,10 @@ func midiPriority(ch, note, velocity uint8) int {
 }
 
 func (e *MIDIEngine) voiceSampleLocked(v *midiVoice) float32 {
+	state := e.channelStateLocked(v.live)
 	vol := float32(v.velocity) / 127.0
-	vol *= float32(e.chanVolume[v.channel]) / 127.0
-	vol *= float32(e.expression[v.channel]) / 127.0
+	vol *= float32(state.chanVolume[v.channel]) / 127.0
+	vol *= float32(state.expression[v.channel]) / 127.0
 	vol *= float32(e.volume) / 255.0
 	vol *= v.patch.volume
 	envLevel := e.voiceEnvelopeLevelLocked(v)
@@ -496,13 +576,49 @@ func (e *MIDIEngine) clearVoicesLocked() {
 	}
 }
 
-func (e *MIDIEngine) resetChannelStateLocked() {
-	for i := range e.programs {
-		e.programs[i] = 0
-		e.chanVolume[i] = 127
-		e.expression[i] = 127
-		e.pitchBend[i] = 8192
+func (e *MIDIEngine) clearFileVoicesLocked() {
+	for i := range e.voices {
+		if !e.voices[i].live {
+			e.voices[i] = midiVoice{}
+		}
 	}
+}
+
+func (e *MIDIEngine) clearLiveVoicesLocked() {
+	for i := range e.voices {
+		if e.voices[i].live {
+			e.voices[i] = midiVoice{}
+		}
+	}
+}
+
+func (e *MIDIEngine) resetChannelStateLocked() {
+	e.resetFileChannelStateLocked()
+	e.resetLiveChannelStateLocked()
+}
+
+func (e *MIDIEngine) resetFileChannelStateLocked() {
+	resetMIDIChannelState(&e.fileState)
+}
+
+func (e *MIDIEngine) resetLiveChannelStateLocked() {
+	resetMIDIChannelState(&e.liveState)
+}
+
+func resetMIDIChannelState(state *midiChannelState) {
+	for i := range state.programs {
+		state.programs[i] = 0
+		state.chanVolume[i] = 127
+		state.expression[i] = 127
+		state.pitchBend[i] = 8192
+	}
+}
+
+func (e *MIDIEngine) channelStateLocked(live bool) *midiChannelState {
+	if live {
+		return &e.liveState
+	}
+	return &e.fileState
 }
 
 func clampInt(v, lo, hi int) int {

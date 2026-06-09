@@ -19,4 +19,20 @@ const (
 	MIDI_STATUS_LOADING = 0x08
 )
 
+// Generic live-MIDI port (raw MIDI byte stream into the shared MIDIEngine).
+// CPU-agnostic: usable by every core and by BASIC, distinct from the file
+// player above. Mapped in the gap between the WAV block (ends 0xF0BF3) and the
+// PSG block (starts 0xF0C00).
+const (
+	IE_MIDI_LIVE_DATA   = 0xF0BF4 // W: raw MIDI byte (running-status stream); R: 0
+	IE_MIDI_LIVE_STATUS = 0xF0BF5 // R: bit 0 = live port active (notes sounding)
+	IE_MIDI_LIVE_CTRL   = 0xF0BF6 // W: bit 0 = reset (all notes off + deactivate)
+	IE_MIDI_LIVE_END    = 0xF0BF6
+)
+
+const (
+	MIDI_LIVE_STATUS_ACTIVE = 0x01 // IE_MIDI_LIVE_STATUS bit 0
+	MIDI_LIVE_CTRL_RESET    = 0x01 // IE_MIDI_LIVE_CTRL bit 0: all notes off + reset
+)
+
 const RawlandMiniPatchTableName = "RawlandMini"

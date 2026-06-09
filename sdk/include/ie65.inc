@@ -643,6 +643,15 @@ MIDI_POSITION_3 = $FBB3
 MIDI_VOLUME     = $FBB4
 MIDI_TEMPO_BPM  = $FBB8
 
+; Generic live-MIDI port (raw running-status MIDI stream into the shared synth).
+; CPU-agnostic; drives the same voices as the file player.
+; For 6502: live regs at $FBF4-$FBF6 (IE32 $F0BF4-$F0BF6).
+IE_MIDI_LIVE_DATA   = $FBF4
+IE_MIDI_LIVE_STATUS = $FBF5
+IE_MIDI_LIVE_CTRL   = $FBF6
+MIDI_LIVE_STATUS_ACTIVE = $01
+MIDI_LIVE_CTRL_RESET = $01
+
 ; ============================================================================
 ; MOD AUDIO REGISTERS (ProTracker .mod player)
 ;

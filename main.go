@@ -1261,6 +1261,12 @@ func main() {
 		midiPlayer.HandlePlayRead,
 		midiPlayer.HandlePlayWrite)
 
+	// Generic live-MIDI port: shares midiPlayer's engine so there is one synth,
+	// one voice pool, one runtime-status owner. CPU-agnostic, usable by every
+	// core and by BASIC.
+	liveMIDI := NewLiveMIDI(midiPlayer.engine)
+	liveMIDI.MapRegisters(sysBus)
+
 	// Map POKEY registers (Atari POKEY chip for SAP playback)
 	pokeyEngine := NewPOKEYEngine(soundChip, SAMPLE_RATE)
 	pokeyPlayer := NewPOKEYPlayer(pokeyEngine)

@@ -1544,5 +1544,121 @@ hw_mod:
     rts
 
 ; ============================================================================
+; hw_midi - MIDI NOTE / PROG / CTRL / SEND / RESET (generic live-MIDI port)
+; ============================================================================
+; Streams raw MIDI bytes to the shared live-MIDI port (IE_MIDI_LIVE_DATA). The
+; port decodes a running-status MIDI stream and drives the same synth voices as
+; the SOUND PLAY file player, so live notes and file playback share one synth.
+;
+;   MIDI NOTE ch, note, vel    note-on (velocity 0 = note-off)
+;   MIDI PROG ch, prog         program (instrument) change
+;   MIDI CTRL ch, ctrl, val    controller change (7=volume, 11=expression)
+;   MIDI SEND b [, b ...]      raw MIDI bytes (running-status stream)
+;   MIDI RESET                 all notes off and reset the live port
+;
+; R16 = interpreter state base, R17 = text pointer. Clobbers R1-R3, R8.
+
+hw_midi:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    jsr     toupper
+    move.q  r2, #0x4E            ; 'N' (NOTE)
+    beq     r1, r2, .midi_note
+    move.q  r2, #0x50            ; 'P' (PROG)
+    beq     r1, r2, .midi_prog
+    move.q  r2, #0x43            ; 'C' (CTRL)
+    beq     r1, r2, .midi_ctrl
+    move.q  r2, #0x53            ; 'S' (SEND)
+    beq     r1, r2, .midi_send
+    move.q  r2, #0x52            ; 'R' (RESET)
+    beq     r1, r2, .midi_reset
+    rts                         ; unknown subverb: ignore, like SOUND
+
+; MIDI NOTE ch, note, vel
+.midi_note:
+    jsr     skip_alpha          ; consume "NOTE"
+    jsr     hw_midi_arg         ; R8 = channel
+    and.l   r8, r8, #0x0F
+    or.l    r8, r8, #0x90       ; status = 0x90 | ch
+    jsr     hw_midi_emit
+    jsr     hw_midi_arg         ; note
+    and.l   r8, r8, #0x7F
+    jsr     hw_midi_emit
+    jsr     hw_midi_arg         ; velocity
+    and.l   r8, r8, #0x7F
+    jsr     hw_midi_emit
+    rts
+
+; MIDI PROG ch, prog
+.midi_prog:
+    jsr     skip_alpha          ; consume "PROG"
+    jsr     hw_midi_arg         ; channel
+    and.l   r8, r8, #0x0F
+    or.l    r8, r8, #0xC0       ; status = 0xC0 | ch
+    jsr     hw_midi_emit
+    jsr     hw_midi_arg         ; program
+    and.l   r8, r8, #0x7F
+    jsr     hw_midi_emit
+    rts
+
+; MIDI CTRL ch, controller, value
+.midi_ctrl:
+    jsr     skip_alpha          ; consume "CTRL"
+    jsr     hw_midi_arg         ; channel
+    and.l   r8, r8, #0x0F
+    or.l    r8, r8, #0xB0       ; status = 0xB0 | ch
+    jsr     hw_midi_emit
+    jsr     hw_midi_arg         ; controller
+    and.l   r8, r8, #0x7F
+    jsr     hw_midi_emit
+    jsr     hw_midi_arg         ; value
+    and.l   r8, r8, #0x7F
+    jsr     hw_midi_emit
+    rts
+
+; MIDI SEND b [, b ...]  - raw bytes straight to the stream parser
+.midi_send:
+    jsr     skip_alpha          ; consume "SEND"
+.midi_send_loop:
+    jsr     hw_midi_arg         ; next raw byte
+    and.l   r8, r8, #0xFF
+    jsr     hw_midi_emit
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C            ; ','
+    beq     r1, r2, .midi_send_loop
+    rts
+
+; MIDI RESET - all notes off, deactivate the live port
+.midi_reset:
+    jsr     skip_alpha          ; consume "RESET"
+    la      r3, IE_MIDI_LIVE_CTRL
+    move.q  r2, #MIDI_LIVE_CTRL_RESET
+    store.b r2, (r3)
+    rts
+
+; hw_midi_arg - skip an optional leading comma, evaluate an expression, and
+; return its integer value in R8. Lets the first argument omit the comma while
+; later arguments consume their separator.
+hw_midi_arg:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C            ; ','
+    bne     r1, r2, .midi_arg_eval
+    add.q   r17, r17, #1
+.midi_arg_eval:
+    jsr     exec_skip_spaces
+    jsr     expr_eval
+    jsr     fp_int
+    jsr     fp_fix
+    rts
+
+; hw_midi_emit - write the low 8 bits of R8 to the live-MIDI data port.
+hw_midi_emit:
+    la      r3, IE_MIDI_LIVE_DATA
+    store.b r8, (r3)
+    rts
+
+; ============================================================================
 ; EOF
 ; ============================================================================

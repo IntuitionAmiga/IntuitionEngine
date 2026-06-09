@@ -3986,6 +3986,15 @@ func TestIOViewNewDeviceDescriptors(t *testing.T) {
 			},
 		},
 		{
+			device: "midilive",
+			header: "Live MIDI Port",
+			regs: []IORegisterDesc{
+				{"LIVE_DATA", IE_MIDI_LIVE_DATA, 1, "WO"},
+				{"LIVE_STATUS", IE_MIDI_LIVE_STATUS, 1, "RO"},
+				{"LIVE_CTRL", IE_MIDI_LIVE_CTRL, 1, "WO"},
+			},
+		},
+		{
 			device: "mod",
 			header: "MOD Player",
 			regs: []IORegisterDesc{
@@ -4145,6 +4154,7 @@ func TestIOViewNewDeviceCommandsSmoke(t *testing.T) {
 		reg     string
 	}{
 		{"io midiplay", "--- MIDI/MUS Player Registers ---", "TEMPO_BPM"},
+		{"io midilive", "--- Live MIDI Port Registers ---", "LIVE_DATA"},
 		{"io mod", "--- MOD Player Registers ---", "FILTER_MODEL"},
 		{"io wav", "--- WAV Player Registers ---", "VOLUME_L"},
 		{"io sfx", "--- SFX Trigger Registers ---", "CH0_PTR"},

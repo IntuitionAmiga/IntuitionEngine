@@ -241,6 +241,14 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"TEMPO_BPM", MIDI_TEMPO_BPM, 4, "RO"},
 		},
 	},
+	"midilive": {
+		Name: "Live MIDI Port",
+		Registers: []IORegisterDesc{
+			{"LIVE_DATA", IE_MIDI_LIVE_DATA, 1, "WO"},
+			{"LIVE_STATUS", IE_MIDI_LIVE_STATUS, 1, "RO"},
+			{"LIVE_CTRL", IE_MIDI_LIVE_CTRL, 1, "WO"},
+		},
+	},
 	"mod": {
 		Name: "MOD Player",
 		Registers: []IORegisterDesc{

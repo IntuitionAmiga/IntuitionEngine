@@ -2461,6 +2461,8 @@ exec_do_ext:
     beq     r1, r2, .ext_poke32
     move.q  r2, #EXT_POKE64
     beq     r1, r2, .ext_poke64
+    move.q  r2, #EXT_MIDI
+    beq     r1, r2, hw_midi
     bra     exec_do_unknown
 .ext_poke8:
     move.q  r23, #1

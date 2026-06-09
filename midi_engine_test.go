@@ -137,9 +137,55 @@ func TestMIDIEngine_LoadResetsChannelState(t *testing.T) {
 	}
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
-	if engine.programs[0] != 0 || engine.chanVolume[0] != 127 || engine.expression[0] != 127 || engine.pitchBend[0] != 8192 {
+	if engine.fileState.programs[0] != 0 || engine.fileState.chanVolume[0] != 127 || engine.fileState.expression[0] != 127 || engine.fileState.pitchBend[0] != 8192 {
 		t.Fatalf("channel state leaked after load: program=%d vol=%d expr=%d bend=%d",
-			engine.programs[0], engine.chanVolume[0], engine.expression[0], engine.pitchBend[0])
+			engine.fileState.programs[0], engine.fileState.chanVolume[0], engine.fileState.expression[0], engine.fileState.pitchBend[0])
+	}
+}
+
+func TestMIDIEngine_LiveChannelStateIsolatedFromFilePlayback(t *testing.T) {
+	engine := NewMIDIEngine(nil, SAMPLE_RATE)
+	engine.LoadMIDI(&MIDIFile{
+		DurationSamples: 128,
+		Events: []MIDIEvent{
+			{Kind: MIDIEventProgramChange, Channel: 0, Program: 5},
+			{Kind: MIDIEventNoteOn, Channel: 0, Note: 60, Velocity: 100},
+			{Kind: MIDIEventNoteOn, Channel: 0, Note: 62, Velocity: 100, SampleTime: 1},
+		},
+	})
+	engine.SetPlaying(true)
+	engine.TickSample()
+
+	engine.ApplyLiveEvent(MIDIEvent{Kind: MIDIEventProgramChange, Channel: 0, Program: 40})
+	engine.ApplyLiveEvent(MIDIEvent{Kind: MIDIEventControlChange, Channel: 0, Controller: 7, Value: 12})
+	engine.ApplyLiveEvent(MIDIEvent{Kind: MIDIEventControlChange, Channel: 0, Controller: 11, Value: 34})
+	engine.ApplyLiveEvent(MIDIEvent{Kind: MIDIEventPitchBend, Channel: 0, Value: 4096})
+	engine.ApplyLiveEvent(MIDIEvent{Kind: MIDIEventNoteOn, Channel: 0, Note: 67, Velocity: 100})
+	engine.TickSample()
+
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	fileVoice := findMIDITestVoiceLocked(engine, 62, false)
+	if fileVoice == nil {
+		t.Fatal("later file note did not start")
+	}
+	if fileVoice.program != 5 {
+		t.Fatalf("file note inherited live program: got %d want 5", fileVoice.program)
+	}
+	liveVoice := findMIDITestVoiceLocked(engine, 67, true)
+	if liveVoice == nil {
+		t.Fatal("live note did not start")
+	}
+	if liveVoice.program != 40 {
+		t.Fatalf("live note ignored live program: got %d want 40", liveVoice.program)
+	}
+	if engine.fileState.chanVolume[0] != 127 || engine.fileState.expression[0] != 127 || engine.fileState.pitchBend[0] != 8192 {
+		t.Fatalf("live controllers leaked into file state: vol=%d expr=%d bend=%d",
+			engine.fileState.chanVolume[0], engine.fileState.expression[0], engine.fileState.pitchBend[0])
+	}
+	if engine.liveState.chanVolume[0] != 12 || engine.liveState.expression[0] != 34 || engine.liveState.pitchBend[0] != 4096 {
+		t.Fatalf("live state not applied: vol=%d expr=%d bend=%d",
+			engine.liveState.chanVolume[0], engine.liveState.expression[0], engine.liveState.pitchBend[0])
 	}
 }
 
@@ -150,6 +196,96 @@ func TestMIDIEngine_ZeroDurationFileStops(t *testing.T) {
 	engine.TickSample()
 	if engine.IsPlaying() {
 		t.Fatal("zero-duration MIDI file kept playing")
+	}
+}
+
+func TestMIDIEngine_FileStopPreservesLiveVoices(t *testing.T) {
+	engine := NewMIDIEngine(nil, SAMPLE_RATE)
+	engine.LoadMIDI(&MIDIFile{
+		DurationSamples: 256,
+		Events: []MIDIEvent{
+			{Kind: MIDIEventNoteOn, Note: 60, Velocity: 100},
+		},
+	})
+	engine.SetPlaying(true)
+	engine.TickSample()
+	engine.ApplyLiveEvent(MIDIEvent{Kind: MIDIEventNoteOn, Note: 64, Velocity: 100})
+
+	engine.SetPlaying(false)
+
+	if engine.HasActiveNote(60) {
+		t.Fatal("file-owned note survived file stop")
+	}
+	if !engine.HasActiveNote(64) {
+		t.Fatal("live note was cut off by file stop")
+	}
+	engine.MixSample()
+	if sample := engine.MixSample(); sample == 0 {
+		t.Fatal("live note was silent after file stop")
+	}
+}
+
+func TestMIDIEngine_FilePauseDoesNotMuteLiveVoices(t *testing.T) {
+	engine := NewMIDIEngine(nil, SAMPLE_RATE)
+	engine.LoadMIDI(&MIDIFile{
+		DurationSamples: 256,
+		Events: []MIDIEvent{
+			{Kind: MIDIEventNoteOn, Note: 60, Velocity: 100},
+		},
+	})
+	engine.SetPlaying(true)
+	engine.TickSample()
+	engine.SetPaused(true)
+	engine.ApplyLiveEvent(MIDIEvent{Kind: MIDIEventNoteOn, Note: 64, Velocity: 100})
+
+	for i := 0; i < 8; i++ {
+		if sample := engine.MixSample(); sample != 0 {
+			return
+		}
+	}
+	t.Fatal("live note was silent while file playback was paused")
+}
+
+// Live MIDI takes precedence over the file player: when every voice is sounding
+// and one must be stolen, a live voice is evicted only if no file voice is
+// available, regardless of which source the incoming note comes from.
+func TestMIDIEngine_LiveVoicePrecedenceOverFile(t *testing.T) {
+	e := NewMIDIEngine(nil, SAMPLE_RATE)
+	n := len(e.voices)
+	fill := func(isLive func(i int) bool) {
+		for i := 0; i < n; i++ {
+			e.voices[i] = midiVoice{
+				active:     true,
+				releasing:  false,
+				channel:    uint8(i),
+				note:       uint8(40 + i),
+				priority:   1,
+				startOrder: int64(i),
+				live:       isLive(i),
+			}
+		}
+	}
+
+	// One file voice among live voices: an incoming live note must steal that
+	// file voice, never a live one.
+	fileIdx := 4
+	fill(func(i int) bool { return i != fileIdx })
+	if got := e.selectVoiceLocked(0, 100, 100, true); got != fileIdx {
+		t.Fatalf("live note stole voice %d, want the file voice %d", got, fileIdx)
+	}
+
+	// One live voice among file voices: even an incoming file note must protect
+	// the live voice and steal a file voice instead.
+	liveIdx := 7
+	fill(func(i int) bool { return i == liveIdx })
+	if got := e.selectVoiceLocked(0, 100, 100, false); got == liveIdx {
+		t.Fatalf("file note evicted the protected live voice %d", liveIdx)
+	}
+
+	// All voices live: stealing is unavoidable but must still return a valid voice.
+	fill(func(i int) bool { return true })
+	if got := e.selectVoiceLocked(0, 100, 100, true); got < 0 || got >= n {
+		t.Fatalf("all-live steal returned invalid index %d", got)
 	}
 }
 
@@ -263,4 +399,14 @@ func TestMIDIEngine_ADSREnvelopeUsesPatchFields(t *testing.T) {
 	if got := engine.voiceEnvelopeLevelLocked(&voice); got < 0.12 || got > 0.13 {
 		t.Fatalf("release midpoint envelope = %f, want about 0.125", got)
 	}
+}
+
+func findMIDITestVoiceLocked(engine *MIDIEngine, note uint8, live bool) *midiVoice {
+	for i := range engine.voices {
+		v := &engine.voices[i]
+		if v.active && !v.releasing && v.note == note && v.live == live {
+			return v
+		}
+	}
+	return nil
 }

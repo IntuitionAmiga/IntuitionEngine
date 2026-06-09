@@ -1206,6 +1206,46 @@ LOCATE row, col
 
 Positions are zero-based. Writes cursor position via VGA CRTC cursor registers (indices `0x0E`/`0x0F`).
 
+### MIDI
+
+Drive the generic live-MIDI port: a raw, running-status MIDI byte stream fed
+straight into the shared synth. Unlike `SOUND PLAY "tune.mid"` (which plays a
+MIDI *file* through the file player), `MIDI` plays *live*, note by note, under
+programme control. Both share one synth, one voice pool, and the RawlandMini
+patch set, so live notes and file playback sound identical.
+
+```
+MIDI NOTE ch, note, vel    ' note-on (velocity 0 acts as a note-off)
+MIDI PROG ch, prog         ' program (instrument) change, 0-127 General MIDI
+MIDI CTRL ch, ctrl, val    ' controller change (7 = volume, 11 = expression)
+MIDI SEND b [, b ...]      ' raw MIDI bytes (running-status stream)
+MIDI RESET                 ' all notes off and reset the live port
+```
+
+`ch` is the MIDI channel 0-15 (channel 9 is the General MIDI drum kit). `note`
+is a MIDI note number 0-127 (middle C is 60). Example: a short arpeggio on a
+synth-lead patch.
+
+```basic
+10 MIDI PROG 0, 80
+20 FOR N = 60 TO 72 STEP 2
+30 MIDI NOTE 0, N, 100
+40 WAIT 8
+50 MIDI NOTE 0, N, 0
+60 NEXT N
+70 MIDI RESET
+```
+
+`MIDI SEND` writes raw bytes for cases the verbs above do not cover (for
+example pitch bend `&HE0, lsb, msb`). The port is CPU-agnostic and shared by
+every core, so the same stream can come from BASIC or native code on any CPU.
+
+Live-MIDI MMIO registers (see [Section 9](#9-hardware-register-reference)):
+`IE_MIDI_LIVE_DATA` (`0xF0BF4`, write a raw MIDI byte), `IE_MIDI_LIVE_STATUS`
+(`0xF0BF5`, bit 0 = port active), `IE_MIDI_LIVE_CTRL` (`0xF0BF6`, bit 0 =
+reset). The `MIDI` status-bar legend lights for either the file player or the
+live port.
+
 ### POKE32 / POKE64
 
 Write explicit 32-bit or 64-bit values to memory.
@@ -3134,6 +3174,9 @@ bits are consistent unless noted: bit 0=start, bit 1=stop, bit 2=loop.
 | `&HF0BB0` | MIDI_POSITION | R | Current sample position |
 | `&HF0BB4` | MIDI_VOLUME | R/W | Global MIDI volume, 0-255 |
 | `&HF0BB8` | MIDI_TEMPO_BPM | R | Current effective tempo; writes do not override tempo |
+| `&HF0BF4` | IE_MIDI_LIVE_DATA | W | Live-MIDI port: write one raw MIDI byte (running-status stream) |
+| `&HF0BF5` | IE_MIDI_LIVE_STATUS | R | bit 0 = live port active |
+| `&HF0BF6` | IE_MIDI_LIVE_CTRL | W | bit 0 = reset (all notes off, deactivate) |
 | `&HF0BC0` | MOD_PLAY_PTR | R/W | 32-bit pointer to MOD data |
 | `&HF0BC4` | MOD_PLAY_LEN | R/W | 32-bit MOD data length |
 | `&HF0BC8` | MOD_PLAY_CTRL | R/W | Control bits: 1=start, 2=stop, 4=loop |

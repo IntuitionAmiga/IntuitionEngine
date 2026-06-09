@@ -9971,6 +9971,43 @@ func TestREPL_BootBanner(t *testing.T) {
 	}
 }
 
+// TestREPL_MIDIKeywordDrivesLivePort verifies the EhBASIC MIDI keyword streams
+// the right MIDI bytes to the generic live-MIDI port, driving the shared synth.
+// MIDI tokenises to TK_EXT/EXT_MIDI and dispatches through exec_do_ext -> hw_midi,
+// which writes a running-status MIDI stream to IE_MIDI_LIVE_DATA. A LiveMIDI is
+// mapped onto the harness bus so the bytes reach a real MIDIEngine we can probe.
+func TestREPL_MIDIKeywordDrivesLivePort(t *testing.T) {
+	h := newEhbasicAOTHarness(t)
+	eng := NewMIDIEngine(nil, SAMPLE_RATE)
+	live := NewLiveMIDI(eng)
+	live.MapRegisters(h.bus)
+	startREPLOnHarness(t, h)
+
+	out := h.runCommand("MIDI NOTE 0,60,100")
+	if strings.Contains(out, "Syntax error") || strings.Contains(out, "?SN ERROR") {
+		t.Fatalf("MIDI keyword should not be a syntax error: %q", out)
+	}
+	if !eng.HasActiveNote(60) {
+		t.Fatalf("MIDI NOTE 0,60,100 did not start note 60; out=%q", out)
+	}
+	if !eng.LiveActive() {
+		t.Fatalf("live port should be active after MIDI NOTE")
+	}
+
+	// A second voice via PROG then NOTE on another channel.
+	h.runCommand("MIDI PROG 1,40")
+	h.runCommand("MIDI NOTE 1,67,90")
+	if !eng.HasActiveNote(67) {
+		t.Fatalf("MIDI NOTE on ch1 after PROG did not start note 67")
+	}
+
+	// MIDI RESET performs an all-notes-off.
+	h.runCommand("MIDI RESET")
+	if eng.ActiveVoiceCount() != 0 {
+		t.Fatalf("MIDI RESET did not clear voices, got %d", eng.ActiveVoiceCount())
+	}
+}
+
 func TestREPL_BootWithHostScaleActiveRAMCapsResidentStackLow32(t *testing.T) {
 	const (
 		stateBase   = 0x042000

@@ -1137,6 +1137,12 @@ SID, SAP, and AHX players support subsong selection for multi-tune files. Each p
 
 SID PSID playback captures CIA1 timer-A latch writes at `$DC04/$DC05`; when non-zero, the player uses that latch as `cyclesPerTick`, so multispeed tunes run at `clockHz / latch`. SID MMIO opts into wide-write fanout: 16-bit and 32-bit writes are decomposed into little-endian byte register writes.
 
+### Generic Live-MIDI Port (Shared Subsystem)
+
+The live-MIDI port is a CPU-agnostic MMIO device that feeds a raw running-status MIDI byte stream straight into the synth, distinct from the file player (`SOUND PLAY "x.mid"`) but sharing the same `MIDIEngine`, the same pool of 10 MIDI voices, and the same sound-chip mix key. There is one synth and one runtime-status owner; the live port and the file player never double-mix.
+
+Three byte-wide registers drive it: `IE_MIDI_LIVE_DATA` (`0xF0BF4`, write a raw MIDI byte), `IE_MIDI_LIVE_STATUS` (`0xF0BF5`, read bit 0 = live port active), and `IE_MIDI_LIVE_CTRL` (`0xF0BF6`, write bit 0 = reset / all notes off). `midi_live.go` is a running-status state machine that turns the byte stream into `MIDIEvent`s (note-on/off, control change, program change, pitch bend, including messages split across multiple writes) and applies them to the shared engine. Because the device hangs off the MachineBus, every core and EhBASIC reach it directly; the EhBASIC `MIDI NOTE`/`PROG`/`CTRL`/`SEND`/`RESET` keywords emit onto these registers. Live notes take precedence over the file player at voice allocation while active (a live note steals a file voice before another live voice) and clear on a CTRL reset. Per-architecture symbol names are declared in each SDK include (`ie32/ie64/ie65/ie68/ie80/ie86.inc`), windowed to each core's address convention. The Ebiten runtime status bar's `MIDI` legend lights when either the file player is playing or the live port is active (`MIDIEngine.LiveActive()`), so both MIDI sources share one indicator.
+
 ## 6. Memory Map
 
 All CPU cores observe the same guest physical address space. Address ranges in
@@ -1426,6 +1432,7 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 | `mod_player.go` | MOD player |
 | `wav_player.go` | WAV player |
 | `midi_player.go` / `midi_engine.go` / `midi_parser.go` | SMF `.mid`/`.midi` and Doom `.mus`; fixed RawlandMini IE SoundChip GM-style/chiptune interpretation, 10 active MIDI voices with deterministic stealing |
+| `midi_live.go` | Generic live-MIDI MMIO port: running-status byte-stream parser feeding the shared MIDIEngine (all cores + BASIC) |
 | `cpu_ie32.go` | IE32 CPU |
 | `cpu_ie64.go` | IE64 CPU + interpreter |
 | `fpu_ie64.go` | IE64 FPU (16 x float32) |

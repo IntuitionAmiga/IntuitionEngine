@@ -129,6 +129,7 @@ EXT_PEEK8     equ 0x07
 EXT_PEEK16    equ 0x08
 EXT_PEEK32    equ 0x09
 EXT_PEEK64    equ 0x0A
+EXT_MIDI      equ 0x0B
 
 ; ============================================================================
 ; Hardware Extension Tokens ($E2-$FF)

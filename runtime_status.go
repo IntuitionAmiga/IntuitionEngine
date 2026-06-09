@@ -71,7 +71,8 @@ func runtimeAudioStatusIndicators(s runtimeStatusSnapshot) []runtimeStatusIndica
 	modOn := s.modEngine != nil && s.modEngine.IsPlaying()
 	wavOn := s.wavEngine != nil && s.wavEngine.IsPlaying()
 	paulaOn := s.paulaDMA != nil && s.paulaDMA.enabled.Load()
-	midiOn := s.midiPlayer != nil && s.midiPlayer.IsPlaying()
+	midiOn := (s.midiPlayer != nil && s.midiPlayer.IsPlaying()) ||
+		(s.midiEngine != nil && s.midiEngine.LiveActive())
 
 	return []runtimeStatusIndicator{
 		{name: "IESND", enabled: soundOn},

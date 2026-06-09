@@ -1027,6 +1027,7 @@ Available I/O devices:
   hosthelper
   irqdiag
   media
+  midilive
   midiplay
   mod
   paula
@@ -1063,7 +1064,16 @@ The audio/player views mirror the MMIO layout. `psg`, `sid`, `ted`, and `pokey` 
 
 `sfx` shows the trigger-channel sample MMIO block. Bridge and profile integration views such as `hosthelper`, `arosdos`, `paula`, `clipboard`, and `boothostfs` expose their register blocks; values depend on the active runtime/profile and may indicate disabled or idle state. `paula` is the Paula-style DMA shim, and `boothostfs` is Bootstrap HostFS.
 
+`midilive` is the generic live-MIDI port, the CPU-agnostic MMIO stream that drives the shared synth from any core or from EhBASIC, separate from the file-backed `midiplay`. It exposes `LIVE_DATA` (`$F0BF4`, write a raw MIDI byte), `LIVE_STATUS` (`$F0BF5`, read bit 0 = live port active), and `LIVE_CTRL` (`$F0BF6`, write bit 0 = reset).
+
 ```
+> io midilive
+--- Live MIDI Port Registers ---
+  LIVE_DATA            ($F0BF4) = $00       [0] WO
+  LIVE_STATUS          ($F0BF5) = $01       [1] RO
+  LIVE_CTRL            ($F0BF6) = $00       [0] WO
+...
+
 > io midiplay
 --- MIDI/MUS Player Registers ---
   PLAY_PTR             ($F0BA0) = $00000000 [0] RW

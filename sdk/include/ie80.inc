@@ -744,6 +744,14 @@
 .set MIDI_VOLUME,0xF0BB4
 .set MIDI_TEMPO_BPM,0xF0BB8
 
+; Generic live-MIDI port (raw running-status MIDI stream into the shared synth).
+; CPU-agnostic; drives the same voices as the file player.
+.set IE_MIDI_LIVE_DATA,0xF0BF4
+.set IE_MIDI_LIVE_STATUS,0xF0BF5
+.set IE_MIDI_LIVE_CTRL,0xF0BF6
+.set MIDI_LIVE_STATUS_ACTIVE,0x01
+.set MIDI_LIVE_CTRL_RESET,0x01
+
 ; ============================================================================
 ; MOD AUDIO REGISTERS (ProTracker .mod player)
 ;
