@@ -139,10 +139,20 @@ symbols, and Appendix J gives the full memory map.
 | IE64 flat images | Chapter 25, Chapter 35, Appendix H |
 | IE64 in-machine assembler | Chapter 25, Chapter 35 |
 | IE64 monitor assembler | Chapter 25, Chapter 33, Appendix G |
+| IE_MIDI_LIVE_CTRL | Chapter 21, Appendix D |
+| IE_MIDI_LIVE_DATA | Chapter 21, Appendix D, Appendix H |
+| IE_MIDI_LIVE_STATUS | Chapter 21, Appendix D |
 | I/O register viewer | Chapter 33, Chapter 34 |
 | Index | Appendix L |
 | Input MMIO | Chapter 37, Appendix D |
 | io command | Chapter 33 |
+
+## L
+
+| Term | See |
+|------|-----|
+| Live MIDI | Chapter 2, Chapter 21, Chapter 23, Appendix D |
+| Live MIDI monitor view | Chapter 33, Chapter 34 |
 
 ## M
 
@@ -155,13 +165,20 @@ symbols, and Appendix J gives the full memory map.
 | MEDIA_TYPE_MIDI | Chapter 21, Chapter 23, Appendix D |
 | MEMALLOC | Chapter 2, Chapter 24, Chapter 32, Appendix A, Appendix F, Appendix J |
 | Memory map | Chapter 24, Appendix J |
+| MIDI BASIC keyword | Chapter 2, Chapter 21 |
+| MIDI CTRL | Chapter 2, Chapter 21 |
 | MIDI/MUS | Chapter 21, Chapter 23, Appendix D |
 | MIDI/MUS player view | Chapter 33, Chapter 34 |
+| MIDI NOTE | Chapter 2, Chapter 21 |
 | MIDI_PLAY_CTRL | Chapter 21, Appendix D |
 | MIDI_PLAY_STATUS | Chapter 21, Appendix D |
+| MIDI PROG | Chapter 2, Chapter 21 |
+| MIDI RESET | Chapter 2, Chapter 21 |
+| MIDI SEND | Chapter 2, Chapter 21 |
 | MIDI_STATUS_LOADING | Chapter 21, Appendix D |
 | MIDI_TEMPO_BPM | Chapter 21, Appendix D |
 | MIDI_VOLUME | Chapter 21, Appendix D |
+| midilive monitor view | Chapter 33, Chapter 34 |
 | Mode 7 | Chapter 4, Chapter 25 |
 | MOD | Chapter 19, Appendix D |
 | MUS | Chapter 21, Chapter 23 |

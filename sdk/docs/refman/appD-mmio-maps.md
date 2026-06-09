@@ -139,6 +139,7 @@ Audio player control blocks in the same area:
 | `$F0BA0`-`$F0BBF` | MIDI/MUS | `MIDI_PLAY_PTR`, `MIDI_PLAY_LEN`, `MIDI_PLAY_CTRL`, `MIDI_PLAY_STATUS` (bit `0` busy, bit `1` error, bit `2` paused, bit `3` loading), `MIDI_POSITION`, `MIDI_VOLUME`, `MIDI_TEMPO_BPM`. |
 | `$F0BC0`-`$F0BD7` | MOD | `MOD_PLAY_PTR`, `MOD_PLAY_LEN`, `MOD_PLAY_CTRL`, `MOD_PLAY_STATUS`, `MOD_FILTER_MODEL`, `MOD_POSITION`. |
 | `$F0BD8`-`$F0BF3` | WAV | `WAV_PLAY_PTR`, `WAV_PLAY_LEN`, `WAV_PLAY_CTRL`, `WAV_PLAY_STATUS`, `WAV_POSITION`, `WAV_PLAY_PTR_HI`, `WAV_CHANNEL_BASE`, `WAV_VOLUME_L`, `WAV_VOLUME_R`, `WAV_FLAGS`. |
+| `$F0BF4`-`$F0BF6` | Live MIDI | `IE_MIDI_LIVE_DATA` byte write stream, `IE_MIDI_LIVE_STATUS` bit `0` active, `IE_MIDI_LIVE_CTRL` bit `0` reset. |
 
 ## D.4 SFX triggers (`$F0E80`-`$F0EFF`)
 

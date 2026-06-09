@@ -421,11 +421,12 @@ Useful view groups are:
 |-------|-------|
 | Core machine | `video`, `terminal`, `audio`, `fileio`, `media`, `exec`, `coproc`, `sysinfo`, `irqdiag` |
 | Video cards | `vga`, `ted`, `antic`, `gtia`, `ula`, `voodoo`, `voodoo_depth` |
-| Sound chips and players | `ahx`, `midiplay`, `mod`, `wav`, `sn76489`, `psg`, `pokey`, `sid`, `sid2`, `sid3`, `sfx`, `paula` |
+| Sound chips and players | `ahx`, `midiplay`, `midilive`, `mod`, `wav`, `sn76489`, `psg`, `pokey`, `sid`, `sid2`, `sid3`, `sfx`, `paula` |
 | Bridge/profile inspection | `arosdos`, `clipboard`, and other service bridge views shown by `io` |
 
 The player views mirror their MMIO control blocks. `midiplay` shows
-the MIDI/MUS player registers, including `TEMPO_BPM`. `mod` and `wav`
+the MIDI/MUS file-player registers, including `TEMPO_BPM`.
+`midilive` shows the byte-wide live MIDI stream port. `mod` and `wav`
 show the MOD and WAV player blocks. `sfx` shows the trigger-channel
 sample registers. `psg`, `sid`, `ted`, and `pokey` are combined
 chip/player views, so their playback registers appear beside their
@@ -452,6 +453,18 @@ The exact values depend on what the player is doing. The important
 point is that the monitor shows each register at its natural width,
 so this view is a safe way to inspect mixed byte, word, and long
 MMIO blocks.
+
+```text
+(ie64)> io midilive
+--- Live MIDI Port Registers ---
+  LIVE_DATA            ($F0BF4) = $00 [0] WO
+  LIVE_STATUS          ($F0BF5) = $00 [0] RO
+  LIVE_CTRL            ($F0BF6) = $00 [0] WO
+```
+
+The live view is useful after a BASIC `MIDI NOTE` or a raw byte-stream
+test. `LIVE_STATUS` bit `0` is the proof that the live port is active.
+The two write-only registers normally read as zero.
 
 ## 33.13 Backtrace
 

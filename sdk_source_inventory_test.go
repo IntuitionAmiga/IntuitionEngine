@@ -32,7 +32,7 @@ func TestSDKArchitectureSourceInventoryGoldenMatchesSource(t *testing.T) {
 func TestSDKIEMonManualCoverageMatchesSourceInventory(t *testing.T) {
 	doc := readAuditFile(t, "sdk/docs/iemon.md")
 	for _, fact := range sdkIEMonFactsFromSource(t) {
-		if fact.Kind != "command" && fact.Kind != "dispatch alias" && fact.Kind != "command syntax" && fact.Kind != "region divergence row" {
+		if fact.Kind != "command" && fact.Kind != "dispatch alias" && fact.Kind != "command syntax" && fact.Kind != "region divergence row" && fact.Kind != "io view" {
 			continue
 		}
 		if !manualMentionsCodeToken(doc, fact.Name) && !normalizedContains(doc, fact.Name) {
@@ -183,6 +183,33 @@ func sdkIEMonFactsFromSource(t *testing.T) []sdkSourceFact {
 				Evidence: "`debug_commands.go` `monitorHelpRegistry` example for `" + name + "`",
 			})
 		}
+	}
+	ioview := readAuditFile(t, "debug_ioview.go")
+	for _, needle := range []string{
+		`"midilive":`,
+		`{"LIVE_DATA", IE_MIDI_LIVE_DATA, 1, "WO"}`,
+		`{"LIVE_STATUS", IE_MIDI_LIVE_STATUS, 1, "RO"}`,
+		`{"LIVE_CTRL", IE_MIDI_LIVE_CTRL, 1, "WO"}`,
+	} {
+		if !strings.Contains(ioview, needle) {
+			t.Fatalf("debug_ioview.go live-MIDI I/O view changed; review iemon.md: %s", needle)
+		}
+	}
+	for _, row := range []struct {
+		name     string
+		evidence string
+	}{
+		{"midilive", "`debug_ioview.go` `ioDevices` key"},
+		{"LIVE_DATA ($F0BF4) = $00 [0] WO", "`debug_ioview.go` `LIVE_DATA` descriptor"},
+		{"LIVE_STATUS ($F0BF5) = $01 [1] RO", "`debug_ioview.go` `LIVE_STATUS` descriptor"},
+		{"LIVE_CTRL ($F0BF6) = $00 [0] WO", "`debug_ioview.go` `LIVE_CTRL` descriptor"},
+	} {
+		facts = append(facts, sdkSourceFact{
+			Surface:  "IEMon",
+			Kind:     "io view",
+			Name:     row.name,
+			Evidence: row.evidence,
+		})
 	}
 	if len(entries) != len(registryNames) {
 		t.Fatalf("parsed %d monitor help entries, want %d registry names", len(entries), len(registryNames))
@@ -344,6 +371,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{sdkHexRange(MIDI_PLAY_PTR, MIDI_END), "`midi_constants.go` `MIDI_PLAY_PTR`/`MIDI_END`, `main.go` `MapIO`"},
 		{sdkHexRange(MOD_PLAY_PTR, MOD_END), "`mod_constants.go` `MOD_PLAY_PTR`/`MOD_END`, `main.go` `MapIO`"},
 		{sdkHexRange(WAV_PLAY_PTR, WAV_END), "`wav_constants.go` `WAV_PLAY_PTR`/`WAV_END`, `main.go` `MapIO`"},
+		{sdkHexRange(IE_MIDI_LIVE_DATA, IE_MIDI_LIVE_END), "`midi_constants.go` `IE_MIDI_LIVE_*`, `midi_live.go` `MapRegisters`, `main.go` `NewLiveMIDI`"},
 		{sdkHexRange(PSG_BASE, PSG_END), "`psg_constants.go` `PSG_BASE`/`PSG_END`, `main.go` `MapIO`"},
 		{sdkHexRange(PSG_PLAY_PTR, PSG_PLAY_STATUS+3), "`psg_constants.go` `PSG_PLAY_PTR`/`PSG_PLAY_STATUS`, `main.go` `MapIO`"},
 		{sdkHexRange(PSG_PLUS_CTRL, PSG_PLUS_CTRL), "`psg_constants.go` `PSG_PLUS_CTRL`, `main.go` `MapIO`"},

@@ -794,6 +794,64 @@ Current controlled polish pass:
   7. Run reader-facing scans, publish strictly, and print PDFs after
      the source tree is consistent.
 
+- Integrate the generic live-MIDI MMIO port from commit `e1aaa9b5` as
+  a focused MIDI chapter and lookup pass. This is not a new chapter and
+  does not change the file-backed MIDI/MUS player ABI. Check
+  `midi_constants.go`, `midi_live.go`, `midi_engine.go`,
+  `runtime_status.go`, `debug_ioview.go`,
+  `sdk/include/ehbasic_hw_audio.inc`,
+  `sdk/include/ehbasic_tokens.inc`,
+  `sdk/include/ehbasic_tokenizer.inc`,
+  `sdk/include/ehbasic_exec.inc`, the six CPU include files, and the
+  live MIDI, BASIC, mixer, and monitor I/O view tests before changing
+  reader-facing claims. Do not import source comments about DOS,
+  MPU-401, or any game-specific MUS origin into the book.
+
+  Reader-facing claims to preserve:
+
+  - `IE_MIDI_LIVE_DATA` at `$F0BF4` is a byte-wide write port for raw
+    MIDI channel-voice bytes. Reading it returns `0`.
+  - `IE_MIDI_LIVE_STATUS` at `$F0BF5` is byte-wide read status. Bit
+    `0` means the live port is active.
+  - `IE_MIDI_LIVE_CTRL` at `$F0BF6` is byte-wide control. Writing bit
+    `0` resets the live port and turns off live notes.
+  - BASIC `MIDI NOTE`, `MIDI PROG`, `MIDI CTRL`, `MIDI SEND`, and
+    `MIDI RESET` drive the live port from inside IE64 BASIC.
+  - The live port accepts running-status channel-voice streams and
+    drives the same RawlandMini synth engine and `10`-voice pool as
+    file-backed MIDI/MUS playback.
+  - Live voices have priority over file-player voices when the shared
+    pool must steal a voice, but the two paths remain separate control
+    surfaces.
+  - IE Mon exposes a `midilive` I/O register view alongside
+    `midiplay`.
+
+  Execute this pass in this order:
+
+  1. Chapter 2: add the `MIDI` BASIC vocabulary entry with the five
+     live subverbs and a pointer to Chapter 21.
+  2. Chapter 11: update the engine comparison and BASIC/direct access
+     map so MIDI covers both file playback and live note events.
+  3. Chapter 21: retitle the chapter to include Live MIDI, add a
+     typed live-MIDI BASIC example, document the live register block,
+     running-status stream behaviour, reset/status bits, setup order,
+     voice-sharing rule, and limits.
+  4. Chapter 23: add live MIDI to the BASIC verbs table, full-address
+     CPU map, 6502 mirror map, and Z80 memory-mirror note.
+  5. Chapter 33: add the `midilive` IE Mon I/O view and a short
+     transcript.
+  6. Chapter 34: note that `dbg.io("midilive")` inspects the live
+     port, while `audio.write_reg` can write the byte data/control
+     registers if a script deliberately drives MMIO.
+  7. Appendices A, D, H, J, K, and L: add the `EXT_MIDI` token, live
+     MIDI register rows, per-CPU symbol lookup, memory-map row, mixer
+     diagram branch, and index terms.
+  8. Claim ledger: record the canonical sources checked and the
+     reader-facing examples changed by this pass.
+  9. Run stale-term, dash, forbidden-term, and publish consistency
+     scans, publish strictly, and print PDFs only after the source
+     tree is consistent.
+
 ## Reader Contract
 
 The book is for developing **on Intuition Engine for Intuition Engine**.

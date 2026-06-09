@@ -27,7 +27,7 @@ result to the audio output.
 | AHX           | 18 | AHX song playback |
 | MOD           | 19 | Four-channel tracker playback |
 | WAV           | 20 | PCM sample playback |
-| MIDI/MUS      | 21 | SMF and MUS playback through RawlandMini |
+| MIDI/MUS and live MIDI | 21 | SMF, MUS, and live MIDI events through RawlandMini |
 | Paula DMA     | 22 | Four DMA sample channels |
 
 Chapter 23 gives BASIC music recipes that combine these engines. The
@@ -53,7 +53,7 @@ sample playback.
 | AHX | Four synthetic music voices from AHX or THX module data | You want a chip-tune song format without sample data |
 | MOD | Four-channel sample tracker playback with pattern and effect data | You want Amiga-style tracker music from one memory block |
 | WAV | RIFF/WAVE PCM parsing, resampling, and stereo or mono output | You want recorded audio, speech, stings, or test tones |
-| MIDI/MUS | SMF type 0/1 and MUS parsing, 16 MIDI channels, 10 active RawlandMini voices, GM-style programme families, drum channel, tempo, volume, loop, pause, and pitch bend | You want file-based melodic music with a built-in GM-style patch table |
+| MIDI/MUS and live MIDI | SMF type 0/1 and MUS parsing, live note/programme/controller events, 16 MIDI channels, 10 active RawlandMini voices, GM-style programme families, drum channel, tempo, volume, loop, pause, and pitch bend | You want file-based melodic music or immediate note events with a built-in GM-style patch table |
 | Paula DMA | Four low-level signed 8-bit sample DMA channels with period and completion bits | You want exact sample-buffer control or Amiga-style DMA timing |
 
 ## 11.3 Master control
@@ -209,7 +209,9 @@ older in-flight start, so a program should read the status register
 after changing pointer, length, loop, pause, or volume fields. The
 individual chapters give the exact register names, extra fields, and
 error bits for AHX, PSG file playback, SID file playback, TED and
-POKEY players, MOD, WAV, and MIDI/MUS.
+POKEY players, MOD, WAV, and MIDI/MUS. The live MIDI port is the
+exception inside this family: it is an event stream, so each byte is
+consumed as it is written instead of staging a file block first.
 
 ## 11.9 Global effects
 
@@ -291,7 +293,8 @@ keeps those listings from becoming five copies of the same explanation.
 | `AHX ...` | AHX playback. |
 | `SOUND MOD ...` / `MOD STATUS` | MOD playback. |
 | `SOUND PLAY` or raw WAV registers | WAV playback. |
-| `SOUND PLAY` or raw MIDI registers | MIDI/MUS playback. |
+| `SOUND PLAY` or raw MIDI player registers | MIDI/MUS playback. |
+| `MIDI NOTE`, `MIDI PROG`, `MIDI CTRL`, `MIDI SEND`, `MIDI RESET` | Live MIDI events through RawlandMini. |
 
 ## 11.12 Limits
 

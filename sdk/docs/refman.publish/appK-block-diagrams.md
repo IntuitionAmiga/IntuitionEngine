@@ -62,8 +62,9 @@ one stereo output stream.
    TED audio -+      (sum,         (global)      (global)    (global)
    AHX -------+       per-chip      voice)
    MIDI/MUS --+       gain,
-   MOD -------+       per-chip
-   WAV -------+       mute)
+   Live MIDI -+       per-chip
+   MOD -------+       mute)
+   WAV -------+
    Paula DMA -+
               |
    SFX ch 0-3 +
@@ -73,6 +74,10 @@ The SoundChip's own filter, the SID family's resonant filter, and
 the engine-internal effects all feed the mix before the global
 overdrive / filter / reverb stage; the global effects apply once
 per output sample to the summed signal.
+
+MIDI/MUS and Live MIDI share the RawlandMini synth and voice pool. The
+diagram shows both control surfaces because one starts stored song data
+and the other streams immediate MIDI bytes.
 
 ## K.3 The system bus
 

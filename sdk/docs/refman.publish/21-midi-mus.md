@@ -1,18 +1,20 @@
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
 
-# Chapter 21 - MIDI/MUS and RawlandMini GM Synth
+# Chapter 21 - MIDI/MUS, Live MIDI, and RawlandMini GM Synth
 
-The MIDI/MUS player is the bridge between file music and the
-IE-native mixer. It accepts Standard MIDI Files and MUS data,
-turns their notes, programmes, controllers, tempo changes, and pitch
-bends into events, then renders them with the built-in RawlandMini
-patch table.
+The MIDI/MUS player and the live MIDI port are two paths into the same
+IE-native RawlandMini synth. The player accepts Standard MIDI Files and
+MUS data, turns their notes, programmes, controllers, tempo changes,
+and pitch bends into events, then renders them with the built-in
+RawlandMini patch table. The live port accepts MIDI bytes as the
+program writes them, so BASIC or any CPU can play notes without first
+building a file.
 
 This is not a separate historical sound chip. It is an Intuition
 Engine synth player on the shared audio bus. Use it when you want
-general song playback with melodic programmes and a drum channel, but
-you do not want to write note events one register at a time.
+general song playback with melodic programmes and a drum channel, or
+when you want immediate note events with the same built-in sound set.
 
 ## 21.1 First SMF sound
 
@@ -97,7 +99,46 @@ The note byte `$BC` is note `60` with a new velocity byte following.
 The next event turns note `60` off, then the final `$60` marks the end
 of the MUS score.
 
-## 21.3 What the player accepts
+## 21.3 First live MIDI sound
+
+The live port is for notes you make now. BASIC's `MIDI` keyword writes
+the MIDI bytes for you, then the live port decodes them and drives the
+same RawlandMini voices as the file player.
+
+```basic
+10 REM LIVE RAWLANDMINI PHRASE
+20 POKE32 &H000F0800,1
+30 MIDI RESET
+40 MIDI PROG 0,80
+50 MIDI CTRL 0,7,110
+60 MIDI NOTE 0,60,100
+70 FOR T=1 TO 900
+80 NEXT T
+90 MIDI NOTE 0,64,100
+100 FOR T=1 TO 900
+110 NEXT T
+120 MIDI NOTE 0,67,100
+130 FOR T=1 TO 1800
+140 NEXT T
+150 PRINT PEEK8(&H000F0BF5)
+160 MIDI RESET
+170 PRINT PEEK8(&H000F0BF5)
+```
+
+You should hear a short rising chord. The first printed value is
+normally `1`, meaning the live port is active. After `MIDI RESET`, the
+second printed value is `0`.
+
+Line 40 selects a bright GM-style programme on channel `0`. Line 50
+sets MIDI controller `7`, the channel volume. Lines 60, 90, and 120
+send note-on events. A note-on with velocity `0` is treated as
+note-off, so you can silence one note without resetting the whole live
+port.
+
+Try changing line 40 to `MIDI PROG 0,48`. The same notes use a
+different programme family.
+
+## 21.4 What the player and live port accept
 
 | Item | Value |
 |------|-------|
@@ -111,6 +152,8 @@ of the MUS score.
 | Patch table | Built-in `RawlandMini` |
 | Output voices | Up to `10` active voices |
 | Output path | IE audio mixer, through the global effects chain |
+| Live port | Channel-voice MIDI bytes with running status |
+| Live BASIC forms | `MIDI NOTE`, `MIDI PROG`, `MIDI CTRL`, `MIDI SEND`, `MIDI RESET` |
 
 Recognised SMF channel events are note on, note off, programme change,
 channel volume controller `7`, expression controller `11`, and pitch
@@ -124,7 +167,12 @@ MUS channel `15` maps to MIDI channel `9`, the drum channel.
 MUS channel `9` maps away to MIDI channel `15`, so normal melodic MUS
 channel `9` does not accidentally become percussion.
 
-## 21.4 Register block
+The live port recognises the same useful channel-voice events: note on,
+note off, programme change, controller change, and pitch bend. It
+accepts running status. A note-on with velocity `0` is a note-off.
+System and sysex bytes do not create notes.
+
+## 21.5 File-player register block
 
 The MIDI player register block is `$F0BA0-$F0BBF`.
 
@@ -142,7 +190,7 @@ The pointer and length are `32`-bit low-window values. Put the bytes in
 ordinary readable memory, write pointer and length, then write the
 control register.
 
-## 21.5 Control and status bits
+## 21.6 File-player control and status bits
 
 Write these values to `MIDI_PLAY_CTRL`:
 
@@ -196,7 +244,45 @@ When the loop reaches line `50`, bit `3` is clear. If bit `1` is set,
 the file was rejected and the old song, if any, should not be trusted
 as the result of the new start request.
 
-## 21.6 Setup order
+## 21.7 Live MIDI register block
+
+The live MIDI register block is `$F0BF4-$F0BF6`. The registers are
+byte-wide. Use `POKE8` and `PEEK8` from BASIC.
+
+| Address | Name | Access | Purpose |
+|---------|------|--------|---------|
+| `$F0BF4` | `IE_MIDI_LIVE_DATA` | write | Raw MIDI byte. Reading returns `0`. |
+| `$F0BF5` | `IE_MIDI_LIVE_STATUS` | read | Bit `0` set means the live port is active. |
+| `$F0BF6` | `IE_MIDI_LIVE_CTRL` | write | Bit `0` resets the live port and turns live notes off. |
+
+The `MIDI` keyword writes this block for you. Machine code can write
+the same bytes directly. For example, the raw form of a middle-C note
+on channel `0` is:
+
+```basic
+10 POKE32 &H000F0800,1
+20 POKE8 &H000F0BF4,&H90
+30 POKE8 &H000F0BF4,60
+40 POKE8 &H000F0BF4,100
+50 FOR T=1 TO 1000
+60 NEXT T
+70 POKE8 &H000F0BF4,60
+80 POKE8 &H000F0BF4,0
+90 POKE8 &H000F0BF6,1
+```
+
+Line 20 writes the status byte for note-on, channel `0`. Lines 30 and
+40 write the note and velocity. Lines 70 and 80 rely on running status:
+because the last status was `$90`, another note byte and a zero
+velocity are enough to turn the note off.
+
+The file player and live port share one RawlandMini synth and one
+`10`-voice pool. If both are sounding and the pool is full, a new live
+note can steal a file-player voice before it steals another live voice.
+Stopping a file with `MIDI_PLAY_CTRL` does not reset the live port;
+write `MIDI RESET` or `POKE8 &H000F0BF6,1` for that.
+
+## 21.8 Setup order
 
 From a clean state:
 
@@ -213,7 +299,17 @@ The player parses the bytes when start is written. Changing the source
 memory after start does not alter the currently loaded song. Stop and
 start again if you want the player to read a changed block.
 
-## 21.7 RawlandMini patch table
+For live MIDI, the setup order is shorter:
+
+1. Enable the audio mixer by writing `1` to `$F0800`.
+2. Optionally send `MIDI RESET`.
+3. Send `MIDI PROG` and `MIDI CTRL` if you want a programme or volume
+   change.
+4. Send `MIDI NOTE` events, or write raw bytes to `IE_MIDI_LIVE_DATA`.
+5. Read `IE_MIDI_LIVE_STATUS` bit `0` if you need proof.
+6. Send note-off events or `MIDI RESET` when the phrase is finished.
+
+## 21.9 RawlandMini patch table
 
 RawlandMini is the fixed synth table used by the MIDI engine. It has
 `128` melodic programme entries and a separate drum table. Melodic
@@ -234,7 +330,7 @@ small percussion. Other drum notes still produce a default noise hit.
 RawlandMini is built into Intuition Engine. There is no reader-facing
 soundfont loader in this register block.
 
-## 21.8 Media loader path
+## 21.10 Media loader path
 
 The media loader recognises `.mid`, `.midi`, and `.mus` filenames.
 From BASIC, the shortest path is:
@@ -255,7 +351,7 @@ When the media loader selects the MIDI player, `MEDIA_TYPE` reads `8`.
 Chapter 23 lists the full loader register protocol and the filename
 extensions for every music engine.
 
-## 21.9 IE Script path
+## 21.11 IE Script path
 
 IE Script exposes the same player for automated runs:
 
@@ -271,13 +367,16 @@ duration text, format name, track count, and patch-table name when a
 song has been loaded. Chapter 34 describes IE Script as an automation
 surface around the machine, not as the normal typed BASIC path.
 
-## 21.10 Limits
+## 21.12 Limits
 
 - SMF type `2` is unsupported.
 - SMPTE time division is unsupported.
-- Only the event types listed in section 21.3 affect playback.
+- Only the event types listed in section 21.4 affect playback.
 - The active voice budget is `10`; when more voices are requested, the
   engine steals an existing voice using a deterministic priority rule.
+- The live port is not a file loader. It consumes bytes as they are
+  written, keeps running status, and can be reset without stopping a
+  loaded MIDI/MUS file.
 - RawlandMini is fixed for this release. Programs can select GM-style
   programme numbers, but cannot replace the patch table.
 - MIDI and MUS playback share the same global mixer effects as the

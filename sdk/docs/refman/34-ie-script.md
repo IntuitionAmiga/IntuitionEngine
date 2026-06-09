@@ -160,6 +160,11 @@ access and `cpu.resume()` afterwards.
 | `audio.ahx_load/play/stop/is_playing` | AHX playback helpers. |
 | `audio.midi_load/play/stop/pause/resume/set_volume/is_playing/metadata` | MIDI/MUS playback helpers. |
 
+Live MIDI has no separate high-level script helper. A script that
+deliberately wants to drive it can use `audio.write_reg(0xF0BF4, byte)`
+for data bytes and `audio.write_reg(0xF0BF6, 1)` for reset, then use
+`dbg.io("midilive")` to inspect the port.
+
 ## 34.8 Video Module
 
 `video` controls display chips, blitter operations, and frame
@@ -236,7 +241,8 @@ native-width MMIO read path as IE Mon `io`, so a script inspecting a
 long register gets a long register value even when the focussed CPU is a
 narrow bus client. An unknown view name returns an empty table rather
 than raising an error; check `dbg.io_devices()` before relying on a
-view name.
+view name. MIDI has two useful views: `midiplay` for the file player
+and `midilive` for the byte stream port.
 
 Trace-ring helpers return structured recent-instruction
 entries, `dbg.backtrace_frames()` returns one table per call frame, and

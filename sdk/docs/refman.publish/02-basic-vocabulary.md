@@ -614,6 +614,34 @@ The address returned by `MEMALLOC` is an exact integer value. It may be
 stored in a numeric variable and used later with `PEEK`, `POKE`,
 `PEEK32`, `POKE32`, or `POKE64`.
 
+### MIDI
+
+`MIDI NOTE `*ch*`, `*note*`, `*velocity*`
+
+Send a live MIDI note event to the RawlandMini synth. *ch* is masked to
+`0` through `15`, and *note* and *velocity* are masked to `0` through
+`127`. A velocity of `0` turns the note off.
+
+`MIDI PROG `*ch*`, `*programme*`
+
+Select the live MIDI programme for a channel.
+
+`MIDI CTRL `*ch*`, `*controller*`, `*value*`
+
+Send a live MIDI controller event. Controller `7` changes channel
+volume, and controller `11` changes expression.
+
+`MIDI SEND `*byte*`[, `*byte*`]...`
+
+Write raw MIDI bytes to the live MIDI stream parser. This form is for
+running-status byte streams; ordinary BASIC programs usually use
+`MIDI NOTE`, `MIDI PROG`, and `MIDI CTRL` instead.
+
+`MIDI RESET`
+
+Turn off live MIDI notes and reset the live stream parser. See Chapter
+21.
+
 ### MID$
 
 `MID$(`*str-expr*`, `*start*`[, `*len*`])`

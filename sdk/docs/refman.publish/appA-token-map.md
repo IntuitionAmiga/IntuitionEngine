@@ -200,7 +200,7 @@ as an UNKNOWN STATEMENT error.
 
 ## A.6 Extended tokens (`$92`, subtoken)
 
-`TK_EXT` is followed by one subtoken byte. Subtokens `$0B`-`$7F`
+`TK_EXT` is followed by one subtoken byte. Subtokens `$0C`-`$7F`
 are reserved for future IE64 BASIC extensions; `$80`-`$FF` are
 invalid in this token stream.
 
@@ -217,6 +217,7 @@ invalid in this token stream.
 | `$08`    | EXT_PEEK16   | PEEK16   | Function  |
 | `$09`    | EXT_PEEK32   | PEEK32   | Function  |
 | `$0A`    | EXT_PEEK64   | PEEK64   | Function  |
+| `$0B`    | EXT_MIDI     | MIDI     | Statement |
 
 `POKE` and `PEEK` remain one-byte aliases for byte-width `POKE8`
 and `PEEK8`.

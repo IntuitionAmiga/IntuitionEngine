@@ -63,8 +63,8 @@
 | IEMon | command example | `accesslog on 4096` | `debug_commands.go` `monitorHelpRegistry` example for `accesslog` |
 | IEMon | command example | `accesslog on; bug` | `debug_commands.go` `monitorHelpRegistry` example for `bug` |
 | IEMon | command example | `accesslog show 20` | `debug_commands.go` `monitorHelpRegistry` example for `accesslog` |
-| IEMon | command example | `addr $F0000` | `debug_commands.go` `monitorHelpRegistry` example for `map` |
 | IEMon | command example | `addr $F0000` | `debug_commands.go` `monitorHelpRegistry` example for `addr` |
+| IEMon | command example | `addr $F0000` | `debug_commands.go` `monitorHelpRegistry` example for `map` |
 | IEMon | command example | `addr pc` | `debug_commands.go` `monitorHelpRegistry` example for `addr` |
 | IEMon | command example | `addr sprite_buffer` | `debug_commands.go` `monitorHelpRegistry` example for `addr` |
 | IEMon | command example | `alias` | `debug_commands.go` `monitorHelpRegistry` example for `alias` |
@@ -112,16 +112,16 @@
 | IEMon | command example | `f buffer buffer+255 FF` | `debug_commands.go` `monitorHelpRegistry` example for `f` |
 | IEMon | command example | `fa` | `debug_commands.go` `monitorHelpRegistry` example for `fa` |
 | IEMon | command example | `fa; s 10` | `debug_commands.go` `monitorHelpRegistry` example for `fa` |
-| IEMon | command example | `fa; ta` | `debug_commands.go` `monitorHelpRegistry` example for `fa` |
 | IEMon | command example | `fa; ta` | `debug_commands.go` `monitorHelpRegistry` example for `ta` |
+| IEMon | command example | `fa; ta` | `debug_commands.go` `monitorHelpRegistry` example for `fa` |
 | IEMon | command example | `fault break m68k.illegal` | `debug_commands.go` `monitorHelpRegistry` example for `fault` |
 | IEMon | command example | `fault list` | `debug_commands.go` `monitorHelpRegistry` example for `fault` |
 | IEMon | command example | `fault off` | `debug_commands.go` `monitorHelpRegistry` example for `fault` |
 | IEMon | command example | `freeze *` | `debug_commands.go` `monitorHelpRegistry` example for `freeze` |
 | IEMon | command example | `freeze 0` | `debug_commands.go` `monitorHelpRegistry` example for `freeze` |
 | IEMon | command example | `freeze M68K` | `debug_commands.go` `monitorHelpRegistry` example for `freeze` |
-| IEMon | command example | `g` | `debug_commands.go` `monitorHelpRegistry` example for `g` |
 | IEMon | command example | `g` | `debug_commands.go` `monitorHelpRegistry` example for `x` |
+| IEMon | command example | `g` | `debug_commands.go` `monitorHelpRegistry` example for `g` |
 | IEMon | command example | `g $2000` | `debug_commands.go` `monitorHelpRegistry` example for `g` |
 | IEMon | command example | `g main` | `debug_commands.go` `monitorHelpRegistry` example for `g` |
 | IEMon | command example | `h #0 $FFFF 4C 00` | `debug_commands.go` `monitorHelpRegistry` example for `h` |
@@ -129,8 +129,8 @@
 | IEMon | command example | `h code code+1024 EA` | `debug_commands.go` `monitorHelpRegistry` example for `h` |
 | IEMon | command example | `history config` | `debug_commands.go` `monitorHelpRegistry` example for `history` |
 | IEMon | command example | `history config 32 64 8 256` | `debug_commands.go` `monitorHelpRegistry` example for `history` |
-| IEMon | command example | `history horizon` | `debug_commands.go` `monitorHelpRegistry` example for `rg` |
 | IEMon | command example | `history horizon` | `debug_commands.go` `monitorHelpRegistry` example for `history` |
+| IEMon | command example | `history horizon` | `debug_commands.go` `monitorHelpRegistry` example for `rg` |
 | IEMon | command example | `io` | `debug_commands.go` `monitorHelpRegistry` example for `io` |
 | IEMon | command example | `io all` | `debug_commands.go` `monitorHelpRegistry` example for `io` |
 | IEMon | command example | `io video` | `debug_commands.go` `monitorHelpRegistry` example for `io` |
@@ -396,5 +396,9 @@
 | IEMon | dispatch alias | `rs` | `debug_commands.go` `executeCommand` switch case |
 | IEMon | dispatch alias | `wr` | `debug_commands.go` `executeCommand` switch case |
 | IEMon | dispatch alias | `wrw` | `debug_commands.go` `executeCommand` switch case |
+| IEMon | io view | `LIVE_CTRL ($F0BF6) = $00 [0] WO` | `debug_ioview.go` `LIVE_CTRL` descriptor |
+| IEMon | io view | `LIVE_DATA ($F0BF4) = $00 [0] WO` | `debug_ioview.go` `LIVE_DATA` descriptor |
+| IEMon | io view | `LIVE_STATUS ($F0BF5) = $01 [1] RO` | `debug_ioview.go` `LIVE_STATUS` descriptor |
+| IEMon | io view | `midilive` | `debug_ioview.go` `ioDevices` key |
 | IEMon | region divergence row | `6502 \| Page-1 stack, 0xF000-0xF0FF direct MMIO, VGA at 0xD700-0xD70D, and ULA at 0xD800-0xD817` | `cpu_six5go2.go` stack/MMIO mapping, `vga_constants.go` `C6502_VGA_*`, `ula_constants.go` `C6502_ULA_BASE` |
 | IEMon | region divergence row | `Z80 \| 0xF000-0xF0FF direct MMIO window and 0xA0-0xAD VGA port range` | `cpu_z80_runner.go` MMIO translation, `vga_constants.go` `Z80_VGA_PORT_*` |

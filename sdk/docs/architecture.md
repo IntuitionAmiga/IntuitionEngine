@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-06-07*
+*Last modified: 2026-06-09*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -1171,6 +1171,7 @@ are intentional when a reservation lives inside a broader shared-RAM range.
 | `0xF0BA0-0xF0BBF` | 32B | MMIO | MIDI/MUS player | All CPU cores | Audio subsystem | Player-facing register block. |
 | `0xF0BC0-0xF0BD7` | 24B | MMIO | MOD player | All CPU cores | Audio subsystem | Player-facing register block. |
 | `0xF0BD8-0xF0BF3` | 28B | MMIO | WAV player | All CPU cores | Audio subsystem | Player-facing register block. |
+| `0xF0BF4-0xF0BF6` | 3B | MMIO | Generic live-MIDI port | All CPU cores | Audio subsystem | Byte-wide running-status MIDI stream: data write, active-status read, and reset control. |
 | `0xF0C00-0xF0C0F` | 16B | MMIO | PSG engine (AY-3-8910/YM2149 registers) | All CPU cores | Audio subsystem | Register-select/data-compatible PSG block. |
 | `0xF0C10-0xF0C1F` | 16B | MMIO | PSG / AY player | All CPU cores | Audio subsystem | Player-facing register block. |
 | `0xF0C20` | 1B | MMIO | PSG+ control | All CPU cores | Audio subsystem | Extended PSG control byte. |

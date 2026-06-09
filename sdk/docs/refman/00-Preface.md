@@ -59,7 +59,7 @@ the same Intuition Engine.
 18. AHX Engine
 19. MOD Playback
 20. WAV Sample Player
-21. MIDI/MUS and RawlandMini GM Synth
+21. MIDI/MUS, Live MIDI, and RawlandMini GM Synth
 22. Paula DMA Engine
 23. Music from BASIC and from each CPU
 

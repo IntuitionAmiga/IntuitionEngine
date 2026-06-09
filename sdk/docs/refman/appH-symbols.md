@@ -65,6 +65,8 @@ chapter give the full story; this appendix is the cheat sheet.
 | PSG / SID          | `$D400`-`$D40F`, `$D500`-`$D55F`. |
 | POKEY              | `$D200`-`$D20A`. |
 | TED audio          | `$D600`-`$D605`. |
+| MIDI/MUS player    | `$FBA0`-`$FBBF`. |
+| Live MIDI port     | `$FBF4`-`$FBF6`. |
 
 ## H.4 Z80
 
@@ -131,6 +133,8 @@ mechanism described in Chapters 27 and 28.
 |------------|---------|
 | `$F0700`  | `TERM_OUT`. |
 | `$F075C`/`$F0760` | `RTC_MONO_USEC_LO` / `RTC_MONO_USEC_HI`, monotonic elapsed microseconds. |
+| `$F0BA0`  | MIDI/MUS file-player block. |
+| `$F0BF4`  | `IE_MIDI_LIVE_DATA`, byte-wide live MIDI stream input. |
 | `$F1400`  | HOST appliance block. |
 | `$F2200`  | File I/O block. `FILE_READ_MAX` is at `$F221C`; IE64 `FILE_DATA_PTR64` is at `$F22B0`. |
 | `$F2300`  | Media loader. |

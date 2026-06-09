@@ -189,7 +189,8 @@ Line 180 prints status, selected engine type, and the last error code.
 | AHX | `AHX PLAY`, `AHX STOP`, `AHX PLUS`, `AHX STATUS` | 18 |
 | MOD | `SOUND MOD PLAY`, `SOUND MOD STOP`, `SOUND MOD FILTER`, `MOD STATUS` | 19 |
 | WAV | `SOUND PLAY` or raw WAV register `POKE32` | 20 |
-| MIDI/MUS | `SOUND PLAY` or raw MIDI register `POKE32` | 21 |
+| MIDI/MUS | `SOUND PLAY` or raw MIDI player register `POKE32` | 21 |
+| Live MIDI | `MIDI NOTE`, `MIDI PROG`, `MIDI CTRL`, `MIDI SEND`, `MIDI RESET`, or raw live MIDI `POKE8` | 21 |
 | Paula DMA | Raw Paula register `POKE32` | 22 |
 
 Mixer-wide effects are `SOUND FILTER`, `SOUND REVERB`, and
@@ -215,6 +216,7 @@ IE64, IE32, M68K, and x86 can write the full sound MMIO addresses.
 | TED player | `$F0F10-$F0F1F` |
 | AHX | `$F0B80-$F0B91` |
 | MIDI/MUS | `$F0BA0-$F0BBF` |
+| Live MIDI | `$F0BF4-$F0BF6` |
 | MOD | `$F0BC0-$F0BD7` |
 | WAV | `$F0BD8-$F0BF3` |
 | Paula DMA | `$F2260-$F22AF` |
@@ -234,6 +236,8 @@ The 6502 uses compact 16-bit ranges for the heritage chips.
 | SID family | `$D500-$D55F` |
 | TED audio | `$D600-$D605` |
 | VGA helper registers | `$D700-$D70D` |
+| MIDI/MUS player | `$FBA0-$FBBF` |
+| Live MIDI port | `$FBF4-$FBF6` |
 
 The SID family window is contiguous: SID starts at `$D500`, SID2 at
 `$D520`, and SID3 at `$D540`.
@@ -259,6 +263,9 @@ SN76489 has a byte-stream port instead:
 | `$E4` | Write SN76489 command/data byte; read back last written byte. |
 | `$E5` | Read ready status, bit `0`. |
 
+The Z80 can also reach the MIDI/MUS player at `$FBA0-$FBBF` and the
+live MIDI port at `$FBF4-$FBF6` through the memory MMIO mirror.
+
 ## 23.8 x86 port map
 
 x86 can use the full-address MMIO map, and it also has chip-style ports:
@@ -282,6 +289,7 @@ x86 can use the full-address MMIO map, and it also has chip-style ports:
 - For AHX music, use AHX.
 - For ProTracker music, use MOD.
 - For Standard MIDI Files or MUS files, use MIDI/MUS.
+- For immediate GM-style note events, use live MIDI.
 - For sampled speech and recorded effects, use WAV.
 - For raw sample streaming and double-buffering, use Paula DMA.
 

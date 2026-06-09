@@ -64,6 +64,7 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | `$F0BA0`-`$F0BBF`       | 32 B   | MIDI/MUS player. |
 | `$F0BC0`-`$F0BD7`       | 24 B   | MOD player. |
 | `$F0BD8`-`$F0BF3`       | 28 B   | WAV player. |
+| `$F0BF4`-`$F0BF6`       | 3 B    | Live MIDI byte stream port. |
 | `$F0C00`-`$F0C20`       | 33 B   | PSG / AY. |
 | `$F0C30`-`$F0C3F`       | 16 B   | SN76489. |
 | `$F0C40`-`$F0CFF`       | 192 B  | SoundChip flex channels 4-6. |
