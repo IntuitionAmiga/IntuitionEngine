@@ -35,4 +35,29 @@ const (
 	MIDI_LIVE_CTRL_RESET    = 0x01 // IE_MIDI_LIVE_CTRL bit 0: all notes off + reset
 )
 
+// Atari ST/Falcon MIDI port: MC6850 ACIA (EmuTOS-only bridge into LiveMIDI).
+//
+// EmuTOS observes this as $FFFC04/$FFFC06, usually sign-extended by IE M68K to
+// 0xFFFFFC04/06. MachineBus normalizes those high addresses to the low-16 alias
+// before handler lookup, so the low-16 constants are the bus-canonical mapping
+// keys. The 24-bit forms are the Atari ST hardware I/O addresses, which do not
+// pass through sign-extension normalization and must be mapped explicitly.
+const (
+	ATARI_MIDI_ACIA_CTRL = 0x0000FC04 // RS=0: write control, read status
+	ATARI_MIDI_ACIA_DATA = 0x0000FC06 // RS=1: write TX data (MIDI byte), read RX
+
+	ATARI_MIDI_ACIA_CTRL_SIGNEXT = 0xFFFFFC04 // guest-visible sign-extended address
+	ATARI_MIDI_ACIA_DATA_SIGNEXT = 0xFFFFFC06 // guest-visible sign-extended address
+
+	ATARI_MIDI_ACIA_CTRL_24BIT = 0x00FFFC04 // 24-bit Atari hardware alias
+	ATARI_MIDI_ACIA_DATA_24BIT = 0x00FFFC06 // 24-bit Atari hardware alias
+)
+
+const (
+	ACIA_SR_RDRF = 0x01 // status bit0: receive data register full
+	ACIA_SR_TDRE = 0x02 // status bit1: transmit data register empty (ready)
+
+	ACIA_CTRL_MASTER_RESET = 0x03 // CR1:CR0 == 11 resets MC6850 state
+)
+
 const RawlandMiniPatchTableName = "RawlandMini"

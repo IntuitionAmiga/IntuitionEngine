@@ -1,0 +1,77 @@
+-- Trace the EmuTOS Atari MIDI ACIA bridge.
+-- Run: IntuitionEngine -emutos -script scripts/acia_trace.ies
+--
+-- 1. records all guest bus accesses during boot, then reports any access to
+--    the MIDI ACIA window ($FFFC04/06) and which address alias EmuTOS uses;
+-- 2. injects a Note-On into the ACIA data register and confirms the shared
+--    LiveMIDI/MIDIEngine goes active (IE_MIDI_LIVE_STATUS bit0).
+
+local function log(m) sys.print("[acia] " .. m) end
+
+local IE_MIDI_LIVE_STATUS = 0xF0BF5
+local function live_status() return string.byte(mem.read_block(IE_MIDI_LIVE_STATUS, 1)) end
+local function rd8(a) return string.byte(mem.read_block(a, 1)) end
+
+-- Guarded wrappers: the 24-bit alias ($00FFFC0x ~ 16 MiB) is only a real IO
+-- address when EmuTOS active RAM reaches it; the sign-ext alias always maps to
+-- the low-16 handler. pcall keeps the trace going either way.
+-- Feed each byte as its own 1-byte write to the same register address, exactly
+-- as a UART data port is driven. A multi-byte block would span the odd FC07/08
+-- addresses (not IO) and trip the freeze guard.
+local function try_write(addr, s)
+  for i = 1, #s do
+    local ok, err = pcall(function() mem.write_block(addr, string.sub(s, i, i)) end)
+    if not ok then
+      log(string.format("  write 0x%08X failed: %s", addr, tostring(err)))
+      return false
+    end
+  end
+  return true
+end
+local function try_rd8(addr)
+  local ok, v = pcall(rd8, addr)
+  if ok then return v end
+  log(string.format("  read 0x%08X failed: %s", addr, tostring(v)))
+  return nil
+end
+
+dbg.accesslog_on(16384)
+log("access history on; booting EmuTOS...")
+sys.wait_ms(16000)
+log("boot wait done; cpu running=" .. tostring(cpu.is_running()))
+
+-- (1) scan the entire recorded access log for anything in the MIDI ACIA window.
+log("=== scan boot access log for MIDI ACIA window ($..FC04/06) ===")
+local hits = 0
+for _, ev in ipairs(dbg.accesslog()) do
+  local lo = bit32.band(ev.addr, 0xFFFF)
+  if lo == 0xFC04 or lo == 0xFC06 then
+    hits = hits + 1
+    log(string.format("  %-5s addr=0x%08X pc=0x%X old=0x%X new=0x%X",
+      ev.kind, ev.addr, ev.pc, ev.old_val, ev.new_val))
+  end
+end
+if hits == 0 then
+  log("  (no MIDI ACIA access by EmuTOS in this boot window)")
+end
+
+-- (2) drive a Note-On. Sign-ext alias first (always valid), then 24-bit.
+log("=== drive Note-On through the ACIA data register ===")
+log("status before:            0x" .. string.format("%02X", live_status()))
+
+try_write(0xFFFFFC06, string.char(0x90, 0x3C, 0x64)) -- note-on ch0 note60 via sign-ext
+log("status after sign-ext inj:0x" .. string.format("%02X", live_status()))
+
+try_write(0xFFFFFC04, string.char(0x03))             -- master reset (CR1:CR0=11)
+log("status after reset:       0x" .. string.format("%02X", live_status()))
+
+if try_write(0x00FFFC06, string.char(0x90, 0x40, 0x64)) then
+  log("status after 24-bit inj:  0x" .. string.format("%02X", live_status()))
+end
+
+log("=== status-register reads (expect TDRE 0x02) ===")
+local s = try_rd8(0xFFFFFC04); if s then log("CTRL sign-ext read: 0x" .. string.format("%02X", s)) end
+local s24 = try_rd8(0x00FFFC04); if s24 then log("CTRL 24-bit  read: 0x" .. string.format("%02X", s24)) end
+
+log("done")
+sys.quit()

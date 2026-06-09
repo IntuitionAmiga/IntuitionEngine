@@ -1267,6 +1267,13 @@ func main() {
 	liveMIDI := NewLiveMIDI(midiPlayer.engine)
 	liveMIDI.MapRegisters(sysBus)
 
+	// EmuTOS talks MIDI through the Atari ST MC6850 MIDI ACIA, not IE's native
+	// live-MIDI registers. Bridge the ACIA ($FFFC04/06) to the shared LiveMIDI
+	// so ST software / GEMDOS Bconout(3, …) reaches IE's synth. Output-only.
+	if modeEmuTOS {
+		NewAtariMIDIACIA(liveMIDI).MapRegisters(sysBus)
+	}
+
 	// Map POKEY registers (Atari POKEY chip for SAP playback)
 	pokeyEngine := NewPOKEYEngine(soundChip, SAMPLE_RATE)
 	pokeyPlayer := NewPOKEYPlayer(pokeyEngine)
