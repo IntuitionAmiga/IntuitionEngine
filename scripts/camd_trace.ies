@@ -1,0 +1,65 @@
+-- Trace the AROS CAMD live-MIDI bridge (DEVS:Midi/ie -> IE_MIDI_LIVE_DATA).
+-- Run: IntuitionEngine -aros -script scripts/camd_trace.ies
+--
+-- 1. records all guest bus accesses during boot, then reports any guest write
+--    to the live-MIDI window ($F0BF4-6) — once OctaMED/camd drives the `ie`
+--    driver, its stores show up here with the guest PC;
+-- 2. injects a Note-On directly into IE_MIDI_LIVE_DATA and confirms the shared
+--    LiveMIDI/MIDIEngine goes active (IE_MIDI_LIVE_STATUS bit0), proving the
+--    IE side of the bridge end-to-end.
+
+local function log(m) sys.print("[camd] " .. m) end
+
+local IE_MIDI_LIVE_DATA   = 0xF0BF4
+local IE_MIDI_LIVE_STATUS = 0xF0BF5
+local IE_MIDI_LIVE_CTRL   = 0xF0BF6
+
+local function live_status() return string.byte(mem.read_block(IE_MIDI_LIVE_STATUS, 1)) end
+
+-- Feed each byte as its own 1-byte write to the same register address, exactly
+-- as the CAMD driver's `move.b dN,$F0BF4` stores do. A multi-byte block would
+-- span STATUS/CTRL and trip the freeze guard.
+local function feed(addr, s)
+  for i = 1, #s do
+    local ok, err = pcall(function() mem.write_block(addr, string.sub(s, i, i)) end)
+    if not ok then
+      log(string.format("  write 0x%08X failed: %s", addr, tostring(err)))
+      return false
+    end
+  end
+  return true
+end
+
+dbg.accesslog_on(16384)
+log("access history on; booting AROS...")
+sys.wait_ms(25000)
+log("boot wait done; cpu running=" .. tostring(cpu.is_running()))
+
+-- (1) scan the recorded access log for guest writes in the live-MIDI window.
+log("=== scan boot access log for live-MIDI window ($F0BF4-6) ===")
+local hits = 0
+for _, ev in ipairs(dbg.accesslog()) do
+  if ev.addr >= IE_MIDI_LIVE_DATA and ev.addr <= IE_MIDI_LIVE_CTRL then
+    hits = hits + 1
+    log(string.format("  %-5s addr=0x%08X pc=0x%X old=0x%X new=0x%X",
+      ev.kind, ev.addr, ev.pc, ev.old_val, ev.new_val))
+  end
+end
+if hits == 0 then
+  log("  (no guest access to the live-MIDI port in this boot window)")
+end
+
+-- (2) drive a Note-On straight into the live data port (IE-side proof).
+log("=== drive Note-On through IE_MIDI_LIVE_DATA ===")
+log("status before:      0x" .. string.format("%02X", live_status()))
+
+feed(IE_MIDI_LIVE_DATA, string.char(0x90, 0x3C, 0x64)) -- note-on ch0 note60 vel100
+local active = live_status()
+log("status after inj:   0x" .. string.format("%02X", active)
+  .. ((active % 2) == 1 and "  (live ACTIVE)" or "  (NOT active — bridge broken)"))
+
+feed(IE_MIDI_LIVE_CTRL, string.char(0x01))             -- all notes off + reset
+log("status after reset: 0x" .. string.format("%02X", live_status()))
+
+log("done")
+sys.quit()

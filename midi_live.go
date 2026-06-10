@@ -24,10 +24,13 @@ func NewLiveMIDI(engine *MIDIEngine) *LiveMIDI {
 }
 
 // MapRegisters maps the live-MIDI MMIO block onto the bus. MapIOByte only
-// updates existing regions, so a MapIO call creates the region first; the byte
-// handlers then carry single-byte guest access (BASIC POKE, x86 OUT, etc).
+// updates existing regions, so a MapIONoShadow call creates the region first;
+// the byte handlers then carry single-byte guest access (BASIC POKE, x86 OUT,
+// etc). The registers are write-only command/data ports, so writes must not
+// mirror into backing RAM (no shadow) — a guest backing this page would
+// otherwise see stray RAM writes.
 func (l *LiveMIDI) MapRegisters(bus *MachineBus) {
-	bus.MapIO(IE_MIDI_LIVE_DATA, IE_MIDI_LIVE_END, l.handleRead32, l.handleWrite32)
+	bus.MapIONoShadow(IE_MIDI_LIVE_DATA, IE_MIDI_LIVE_END, l.handleRead32, l.handleWrite32)
 	bus.MapIOByteRead(IE_MIDI_LIVE_DATA, IE_MIDI_LIVE_END, l.handleRead8)
 	bus.MapIOByte(IE_MIDI_LIVE_DATA, IE_MIDI_LIVE_END, l.handleWrite8)
 	bus.OnReset(l.Reset)
