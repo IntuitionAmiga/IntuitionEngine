@@ -11547,6 +11547,35 @@ var fpuOpTable = func() [128]func(*M68881FPU, int, int) {
 	return table
 }()
 
+const (
+	m68kFPURoundExtended = iota
+	m68kFPURoundSingle
+	m68kFPURoundDouble
+)
+
+func m68kFPUDecodePrecisionOpmode(op uint16) (baseOp uint16, precision int) {
+	if (op & 0x44) == 0x44 {
+		return op &^ 0x44, m68kFPURoundDouble
+	}
+	if (op & 0x40) != 0 {
+		return op &^ 0x40, m68kFPURoundSingle
+	}
+	return op, m68kFPURoundExtended
+}
+
+func (cpu *M68KCPU) applyFPUResultPrecision(dstReg int, precision int) {
+	switch precision {
+	case m68kFPURoundSingle:
+		cpu.FPU.SetFP64(dstReg, float64(float32(cpu.FPU.GetFP64(dstReg))))
+		cpu.FPU.setCC64(cpu.FPU.GetFP64(dstReg))
+	case m68kFPURoundDouble:
+		// FP registers are represented as float64, so double precision is
+		// already the storage precision. Refresh condition codes after the
+		// architecturally requested result precision step.
+		cpu.FPU.setCC64(cpu.FPU.GetFP64(dstReg))
+	}
+}
+
 // ExecFPUInstruction decodes and executes an FPU instruction
 func (cpu *M68KCPU) ExecFPUInstruction(opcode uint16) {
 	instrAddr := cpu.PC - M68K_WORD_SIZE
@@ -11579,8 +11608,105 @@ func (cpu *M68KCPU) ExecFPUInstruction(opcode uint16) {
 		// FBcc (word or long displacement) — no FPIAR update
 		cpu.execFPUConditional(opcode)
 
+	case 4:
+		// FSAVE — supervisor only
+		cpu.execFSAVE(opcode)
+
+	case 5:
+		// FRESTORE — supervisor only
+		cpu.execFRESTORE(opcode)
+
 	default:
 		cpu.ProcessException(M68K_VEC_LINE_F)
+	}
+}
+
+// 68881 IDLE state frame: version byte 0x1F, frame-size byte 0x18
+// (24 payload bytes after the 4-byte header, 28 bytes total). The emulated
+// FPU has no hidden pipeline state, so FSAVE always emits an IDLE frame;
+// its non-zero version byte tells OS context switchers that the FP registers
+// must be saved separately with FMOVEM.
+const (
+	m68kFPUFrameVersion = 0x1F
+	m68kFPUFramePayload = 24
+	m68kFPUFrameTotal   = 4 + m68kFPUFramePayload
+)
+
+// execFSAVE implements FSAVE <ea>: store the FPU internal state frame.
+func (cpu *M68KCPU) execFSAVE(opcode uint16) {
+	if (cpu.SR & M68K_SR_S) == 0 {
+		cpu.PC -= M68K_WORD_SIZE
+		cpu.ProcessException(M68K_VEC_PRIVILEGE)
+		return
+	}
+	mode := (opcode >> 3) & 7
+	reg := opcode & 7
+	var addr uint32
+	switch mode {
+	case M68K_AM_AR_PRE:
+		cpu.AddrRegs[reg] -= m68kFPUFrameTotal
+		addr = cpu.AddrRegs[reg]
+	case M68K_AM_AR_IND, M68K_AM_AR_DISP, M68K_AM_AR_INDEX:
+		addr = cpu.GetEffectiveAddress(mode, reg)
+	case 7:
+		if reg <= 1 { // absolute short/long only
+			addr = cpu.GetEffectiveAddress(mode, reg)
+		} else {
+			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+			return
+		}
+	default:
+		cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+		return
+	}
+	cpu.Write32(addr, uint32(m68kFPUFrameVersion)<<24|uint32(m68kFPUFramePayload)<<16)
+	for off := uint32(4); off < m68kFPUFrameTotal; off += 4 {
+		cpu.Write32(addr+off, 0)
+	}
+}
+
+// execFRESTORE implements FRESTORE <ea>: consume a state frame written by
+// FSAVE. A NULL frame (version byte 0) resets the FPU control registers.
+func (cpu *M68KCPU) execFRESTORE(opcode uint16) {
+	if (cpu.SR & M68K_SR_S) == 0 {
+		cpu.PC -= M68K_WORD_SIZE
+		cpu.ProcessException(M68K_VEC_PRIVILEGE)
+		return
+	}
+	mode := (opcode >> 3) & 7
+	reg := opcode & 7
+	var addr uint32
+	postInc := false
+	switch mode {
+	case M68K_AM_AR_POST:
+		addr = cpu.AddrRegs[reg]
+		postInc = true
+	case M68K_AM_AR_IND, M68K_AM_AR_DISP, M68K_AM_AR_INDEX:
+		addr = cpu.GetEffectiveAddress(mode, reg)
+	case 7:
+		if reg <= 3 { // absolute and PC-relative are legal sources
+			addr = cpu.GetEffectiveAddress(mode, reg)
+		} else {
+			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+			return
+		}
+	default:
+		cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+		return
+	}
+	header := cpu.Read32(addr)
+	version := header >> 24
+	consumed := uint32(4)
+	if version == 0 {
+		// NULL frame: reset the FPU to power-on state.
+		cpu.FPU.FPCR = 0
+		cpu.FPU.FPSR = 0
+		cpu.FPU.FPIAR = 0
+	} else {
+		consumed += (header >> 16) & 0xFF
+	}
+	if postInc {
+		cpu.AddrRegs[reg] += consumed
 	}
 }
 
@@ -11640,9 +11766,11 @@ func (cpu *M68KCPU) execFPURegToReg(cmdWord uint16) {
 	srcReg := int((cmdWord >> 10) & 0x7)
 	dstReg := int((cmdWord >> 7) & 0x7)
 	op := cmdWord & 0x7F
+	baseOp, precision := m68kFPUDecodePrecisionOpmode(op)
 
-	if fn := fpuOpTable[op]; fn != nil {
+	if fn := fpuOpTable[baseOp]; fn != nil {
 		fn(cpu.FPU, srcReg, dstReg)
+		cpu.applyFPUResultPrecision(dstReg, precision)
 	} else {
 		cpu.ProcessException(M68K_VEC_LINE_F)
 	}
@@ -11655,6 +11783,46 @@ func (cpu *M68KCPU) execFPUEAToReg(opcode, cmdWord uint16) {
 	srcFormat := (cmdWord >> 10) & 0x7
 	dstReg := int((cmdWord >> 7) & 0x7)
 	op := cmdWord & 0x7F
+
+	// Immediate source (#<data>): operand words follow the command word,
+	// sized by the source format. GetEffectiveAddress cannot express this.
+	if mode == 7 && reg == 4 {
+		var value float64
+		switch srcFormat {
+		case 0: // Long integer
+			value = float64(int32(cpu.Fetch32()))
+		case 1: // Single precision
+			value = float64(math.Float32frombits(cpu.Fetch32()))
+		case 2: // Extended precision (96-bit immediate)
+			w0 := cpu.Fetch32()
+			w1 := cpu.Fetch32()
+			w2 := cpu.Fetch32()
+			ext := ExtendedReal{
+				Sign: uint8(w0 >> 31),
+				Exp:  uint16(w0>>16) & 0x7FFF,
+				Mant: (uint64(w1) << 32) | uint64(w2),
+			}
+			cpu.FPU.SetFromExtendedReal(dstReg, ext)
+			if op == FPU_OP_FMOVE {
+				cpu.FPU.setCC64(cpu.FPU.GetFP64(dstReg))
+				return
+			}
+			value = cpu.FPU.GetFP64(dstReg)
+		case 4: // Word integer (16-bit immediate occupies one word)
+			value = float64(int16(cpu.Fetch16()))
+		case 5: // Double precision
+			hi := cpu.Fetch32()
+			lo := cpu.Fetch32()
+			value = math.Float64frombits(uint64(hi)<<32 | uint64(lo))
+		case 6: // Byte integer (low byte of one immediate word)
+			value = float64(int8(cpu.Fetch16()))
+		default:
+			cpu.ProcessException(M68K_VEC_LINE_F)
+			return
+		}
+		cpu.applyFPUEAValue(op, dstReg, value)
+		return
+	}
 
 	ea := cpu.GetEffectiveAddress(mode, reg)
 
@@ -11685,18 +11853,27 @@ func (cpu *M68KCPU) execFPUEAToReg(opcode, cmdWord uint16) {
 		value = 0.0
 	}
 
-	if op == FPU_OP_FMOVE {
+	cpu.applyFPUEAValue(op, dstReg, value)
+}
+
+// applyFPUEAValue finishes an EA/immediate-sourced FPU operation: FMOVE
+// stores directly, arithmetic ops dispatch through the scratch register.
+func (cpu *M68KCPU) applyFPUEAValue(op uint16, dstReg int, value float64) {
+	baseOp, precision := m68kFPUDecodePrecisionOpmode(op)
+	if baseOp == FPU_OP_FMOVE {
 		cpu.FPU.SetFP64(dstReg, value)
 		cpu.FPU.setCC64(value)
+		cpu.applyFPUResultPrecision(dstReg, precision)
 		return
 	}
 
 	// For arithmetic ops, load value into scratch register and dispatch
-	if fn := fpuOpTable[op]; fn != nil {
+	if fn := fpuOpTable[baseOp]; fn != nil {
 		savedFP := cpu.FPU.GetFP64(7)
 		cpu.FPU.SetFP64(7, value)
 		fn(cpu.FPU, 7, dstReg)
 		cpu.FPU.SetFP64(7, savedFP)
+		cpu.applyFPUResultPrecision(dstReg, precision)
 	} else {
 		cpu.ProcessException(M68K_VEC_LINE_F)
 	}
@@ -11855,6 +12032,58 @@ func (cpu *M68KCPU) execFPURegToMem(opcode, cmdWord uint16) {
 	}
 }
 
+const (
+	m68kFPUExtendedRealBytes = 12
+	m68kFPUControlRegBytes   = 4
+)
+
+func m68kFMOVEMDataRegisterList(regList uint16, predecrementStore bool) ([8]int, int) {
+	var regs [8]int
+	count := 0
+	if predecrementStore {
+		for i := 0; i < 8; i++ {
+			if (regList & (1 << uint(i))) != 0 {
+				regs[count] = i
+				count++
+			}
+		}
+		return regs, count
+	}
+	for i := 0; i < 8; i++ {
+		if (regList & (1 << uint(7-i))) != 0 {
+			regs[count] = i
+			count++
+		}
+	}
+	return regs, count
+}
+
+func m68kFMOVEMControlRegisterCount(regList uint16) int {
+	count := 0
+	if (regList & 0x4) != 0 {
+		count++
+	}
+	if (regList & 0x2) != 0 {
+		count++
+	}
+	if (regList & 0x1) != 0 {
+		count++
+	}
+	return count
+}
+
+func (cpu *M68KCPU) m68kFMOVEMEffectiveAddress(mode, reg uint16, bytes uint32) (ea uint32, postIncrement uint32) {
+	switch mode {
+	case M68K_AM_AR_PRE:
+		cpu.AddrRegs[reg] -= bytes
+		return cpu.AddrRegs[reg], 0
+	case M68K_AM_AR_POST:
+		return cpu.AddrRegs[reg], bytes
+	default:
+		return cpu.GetEffectiveAddress(mode, reg), 0
+	}
+}
+
 // execFMOVEM handles moving multiple FP registers
 func (cpu *M68KCPU) execFMOVEM(opcode, cmdWord uint16) {
 	mode := (opcode >> 3) & 0x7
@@ -11866,24 +12095,25 @@ func (cpu *M68KCPU) execFMOVEM(opcode, cmdWord uint16) {
 	dr := (cmdWord >> 13) & 0x1
 	regList := cmdWord & 0xFF
 
-	ea := cpu.GetEffectiveAddress(mode, reg)
+	predecrementStore := dr == 1 && mode == M68K_AM_AR_PRE
+	regs, count := m68kFMOVEMDataRegisterList(regList, predecrementStore)
+	ea, postIncrement := cpu.m68kFMOVEMEffectiveAddress(mode, reg, uint32(count*m68kFPUExtendedRealBytes))
 
 	if dr == 0 {
 		// EA → FP registers (load)
-		for i := range 8 {
-			if (regList & (1 << (7 - i))) != 0 {
-				cpu.FPU.SetFromExtendedReal(i, cpu.readExtendedReal96(ea))
-				ea += 12
-			}
+		for i := 0; i < count; i++ {
+			cpu.FPU.SetFromExtendedReal(regs[i], cpu.readExtendedReal96(ea))
+			ea += m68kFPUExtendedRealBytes
 		}
 	} else {
 		// FP registers → EA (store)
-		for i := range 8 {
-			if (regList & (1 << (7 - i))) != 0 {
-				cpu.writeExtendedReal96(ea, cpu.FPU.GetExtendedReal(i))
-				ea += 12 // Extended precision takes 12 bytes
-			}
+		for i := 0; i < count; i++ {
+			cpu.writeExtendedReal96(ea, cpu.FPU.GetExtendedReal(regs[i]))
+			ea += m68kFPUExtendedRealBytes
 		}
+	}
+	if postIncrement != 0 {
+		cpu.AddrRegs[reg] += postIncrement
 	}
 }
 
@@ -11936,17 +12166,18 @@ func (cpu *M68KCPU) execFMOVEMControl(opcode, cmdWord uint16) {
 		return
 	}
 
-	ea := cpu.GetEffectiveAddress(mode, reg)
+	count := m68kFMOVEMControlRegisterCount(regList)
+	ea, postIncrement := cpu.m68kFMOVEMEffectiveAddress(mode, reg, uint32(count*m68kFPUControlRegBytes))
 
 	if dr == 0 {
 		// EA → control registers
 		if (regList & 0x4) != 0 { // FPCR
 			cpu.FPU.FPCR = cpu.Read32(ea)
-			ea += 4
+			ea += m68kFPUControlRegBytes
 		}
 		if (regList & 0x2) != 0 { // FPSR
 			cpu.FPU.FPSR = cpu.Read32(ea)
-			ea += 4
+			ea += m68kFPUControlRegBytes
 		}
 		if (regList & 0x1) != 0 { // FPIAR
 			cpu.FPU.FPIAR = cpu.Read32(ea)
@@ -11955,15 +12186,18 @@ func (cpu *M68KCPU) execFMOVEMControl(opcode, cmdWord uint16) {
 		// Control registers → EA
 		if (regList & 0x4) != 0 { // FPCR
 			cpu.Write32(ea, cpu.FPU.FPCR)
-			ea += 4
+			ea += m68kFPUControlRegBytes
 		}
 		if (regList & 0x2) != 0 { // FPSR
 			cpu.Write32(ea, cpu.FPU.FPSR)
-			ea += 4
+			ea += m68kFPUControlRegBytes
 		}
 		if (regList & 0x1) != 0 { // FPIAR
 			cpu.Write32(ea, cpu.FPU.FPIAR)
 		}
+	}
+	if postIncrement != 0 {
+		cpu.AddrRegs[reg] += postIncrement
 	}
 }
 

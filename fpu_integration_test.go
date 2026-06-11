@@ -370,6 +370,114 @@ func TestFPU_FMOVEM_ExtendedRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFPU_FMOVEM_PreDecrementUsesExtendedRegisterSize(t *testing.T) {
+	cpu := setupFPUTestCPU()
+	oldSP := uint32(0x3800)
+	cpu.AddrRegs[7] = oldSP
+	cpu.FPU.SetFP64(2, 2.25)
+	cpu.FPU.SetFP64(3, -3.5)
+
+	// fmovem.x fp2-fp3,-(sp): predecrement stores use the reverse mask
+	// encoding and must reserve 12 bytes per FP register.
+	cpu.execFMOVEM(uint16((M68K_AM_AR_PRE<<3)|7), 0xE00C)
+
+	frame := oldSP - 2*m68kFPUExtendedRealBytes
+	if cpu.AddrRegs[7] != frame {
+		t.Fatalf("SP = 0x%08X, want 0x%08X", cpu.AddrRegs[7], frame)
+	}
+	if got := cpu.readExtendedReal96(frame).ToFloat64(); math.Abs(got-2.25) > 1e-15 {
+		t.Fatalf("stored FP2 = %v, want 2.25", got)
+	}
+	if got := cpu.readExtendedReal96(frame + m68kFPUExtendedRealBytes).ToFloat64(); math.Abs(got-(-3.5)) > 1e-15 {
+		t.Fatalf("stored FP3 = %v, want -3.5", got)
+	}
+
+	cpu.FPU.SetFP64(2, 0)
+	cpu.FPU.SetFP64(3, 0)
+	cpu.AddrRegs[5] = oldSP
+	cpu.PC = 0x1000
+	disp := int16(-2 * m68kFPUExtendedRealBytes)
+	cpu.Write16(cpu.PC, uint16(disp))
+
+	// fmovem.x -24(a5),fp2-fp3: normal static mask encoding.
+	cpu.execFMOVEM(uint16((M68K_AM_AR_DISP<<3)|5), 0xD030)
+	if got := cpu.FPU.GetFP64(2); math.Abs(got-2.25) > 1e-15 {
+		t.Fatalf("restored FP2 = %v, want 2.25", got)
+	}
+	if got := cpu.FPU.GetFP64(3); math.Abs(got-(-3.5)) > 1e-15 {
+		t.Fatalf("restored FP3 = %v, want -3.5", got)
+	}
+}
+
+func TestFPU_FMOVEMControl_PreDecrementPostIncrement(t *testing.T) {
+	cpu := setupFPUTestCPU()
+	oldA5 := uint32(0x3A00)
+	cpu.AddrRegs[5] = oldA5
+	cpu.FPU.FPCR = 0x11111111
+	cpu.FPU.FPSR = 0x22222222
+	cpu.FPU.FPIAR = 0x33333333
+
+	// fmovem.l fpiar/fpsr/fpcr,-(a5): predecrement reserves 4 bytes per
+	// selected control register and lays out memory for a normal postinc load.
+	cpu.execFMOVEMControl(uint16((M68K_AM_AR_PRE<<3)|5), 0xBC00)
+
+	frame := oldA5 - 3*m68kFPUControlRegBytes
+	if cpu.AddrRegs[5] != frame {
+		t.Fatalf("A5 = 0x%08X, want 0x%08X", cpu.AddrRegs[5], frame)
+	}
+	if got := cpu.Read32(frame); got != 0x11111111 {
+		t.Fatalf("stored FPCR = 0x%08X, want 0x11111111", got)
+	}
+	if got := cpu.Read32(frame + m68kFPUControlRegBytes); got != 0x22222222 {
+		t.Fatalf("stored FPSR = 0x%08X, want 0x22222222", got)
+	}
+	if got := cpu.Read32(frame + 2*m68kFPUControlRegBytes); got != 0x33333333 {
+		t.Fatalf("stored FPIAR = 0x%08X, want 0x33333333", got)
+	}
+
+	cpu.FPU.FPCR = 0
+	cpu.FPU.FPSR = 0
+	cpu.FPU.FPIAR = 0
+
+	// fmovem.l (a5)+,fpiar/fpsr/fpcr
+	cpu.execFMOVEMControl(uint16((M68K_AM_AR_POST<<3)|5), 0x9C00)
+	if cpu.FPU.FPCR != 0x11111111 || cpu.FPU.FPSR != 0x22222222 || cpu.FPU.FPIAR != 0x33333333 {
+		t.Fatalf("control restore got FPCR=%08X FPSR=%08X FPIAR=%08X",
+			cpu.FPU.FPCR, cpu.FPU.FPSR, cpu.FPU.FPIAR)
+	}
+	if cpu.AddrRegs[5] != oldA5 {
+		t.Fatalf("A5 after postincrement = 0x%08X, want 0x%08X", cpu.AddrRegs[5], oldA5)
+	}
+}
+
+func TestFPU_PrecisionQualifiedRegOps(t *testing.T) {
+	cpu := setupFPUTestCPU()
+	cpu.SR = M68K_SR_S
+	cpu.Write32(M68K_VEC_LINE_F*4, 0x4000)
+
+	cpu.FPU.SetFP64(0, 1.1)
+	cpu.FPU.SetFP64(1, 3.0)
+	cpu.PC = 0x2000
+	cpu.execFPURegToReg(0x0467) // FDMUL FP1,FP0
+	if cpu.PC == 0x4000 {
+		t.Fatal("FDMUL precision-qualified op raised LINE-F")
+	}
+	if got, want := cpu.FPU.GetFP64(0), 1.1*3.0; math.Abs(got-want) > 1e-15 {
+		t.Fatalf("FDMUL result = %.17g, want %.17g", got, want)
+	}
+
+	cpu.FPU.SetFP64(0, 1.0)
+	cpu.FPU.SetFP64(1, 1.0/3.0)
+	cpu.PC = 0x2000
+	cpu.execFPURegToReg(0x0462) // FSADD FP1,FP0
+	if cpu.PC == 0x4000 {
+		t.Fatal("FSADD precision-qualified op raised LINE-F")
+	}
+	if got, want := cpu.FPU.GetFP64(0), float64(float32(1.0+1.0/3.0)); got != want {
+		t.Fatalf("FSADD result = %.17g, want single-rounded %.17g", got, want)
+	}
+}
+
 func TestFPU_IllegalOpcodeRaisesLineF(t *testing.T) {
 	cpu := setupFPUTestCPU()
 	cpu.SR = M68K_SR_S
@@ -387,6 +495,13 @@ func TestFPU_IllegalOpcodeRaisesLineF(t *testing.T) {
 		0x1E: true, 0x1F: true, 0x20: true, 0x21: true, 0x22: true, 0x23: true,
 		0x24: true, 0x25: true, 0x26: true, 0x27: true, 0x28: true, 0x38: true,
 		0x3A: true,
+		0x40: true, 0x41: true, 0x42: true, 0x43: true, 0x44: true, 0x45: true,
+		0x46: true, 0x47: true, 0x48: true, 0x49: true, 0x4A: true, 0x4C: true,
+		0x4D: true, 0x4E: true, 0x50: true, 0x51: true, 0x52: true, 0x54: true,
+		0x55: true, 0x56: true, 0x58: true, 0x59: true, 0x5A: true, 0x5C: true,
+		0x5D: true, 0x5E: true, 0x60: true, 0x61: true, 0x62: true, 0x63: true,
+		0x64: true, 0x65: true, 0x66: true, 0x67: true, 0x68: true, 0x6C: true,
+		0x78: true, 0x7A: true, 0x7C: true, 0x7E: true,
 	}
 	for op := range uint16(128) {
 		if !valid[op] {
