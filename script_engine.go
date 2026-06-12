@@ -842,6 +842,7 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"mouse_delta":        se.luaTermMouseDelta(),
 		"mouse_click":        se.luaTermMouseClick(ctx),
 		"mouse_double_click": se.luaTermMouseDoubleClick(ctx),
+		"mouse_press":        se.luaTermMousePress(ctx),
 		"mouse_release":      se.luaTermMouseRelease(),
 		"scancode":           se.luaTermScancode(),
 		"key_press":          se.luaTermKeyPress(ctx),
@@ -2321,8 +2322,26 @@ func (se *ScriptEngine) luaTermMouseDoubleClick(ctx context.Context) lua.LGFunct
 	}
 }
 
+func (se *ScriptEngine) luaTermMousePress(ctx context.Context) lua.LGFunction {
+	return func(L *lua.LState) int {
+		cx, cy := se.clampMouse(L.CheckInt(1), L.CheckInt(2))
+		btn := validateMouseButton(L, 3, L.OptInt(3, 1))
+		se.terminal.mouseOverride.Store(true)
+		se.terminal.mouseX.Store(cx)
+		se.terminal.mouseY.Store(cy)
+		se.terminal.mouseChanged.Store(true)
+		se.sleepCtx(ctx, 50*time.Millisecond)
+		se.terminal.mouseButtons.Store(btn)
+		se.terminal.mouseChanged.Store(true)
+		se.sleepCtx(ctx, 50*time.Millisecond)
+		return 0
+	}
+}
+
 func (se *ScriptEngine) luaTermMouseRelease() lua.LGFunction {
 	return func(L *lua.LState) int {
+		se.terminal.mouseButtons.Store(0)
+		se.terminal.mouseChanged.Store(true)
 		se.terminal.mouseOverride.Store(false)
 		return 0
 	}

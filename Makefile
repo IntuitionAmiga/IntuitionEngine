@@ -888,7 +888,7 @@ aros-rom:
 		kernel-ie-m68k-ahidrv 2>&1 || \
 		echo "  Warning: additional targets had failures (non-fatal)"
 	@echo "Building required AROS desktop/runtime targets..."
-	@$(MAKE) -C "$(AROS_BUILD_DIR)" \
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) \
 		workbench-c \
 		workbench-datatypes-jpeg \
 		workbench-system-wanderer \
@@ -896,10 +896,10 @@ aros-rom:
 		workbench-utilities \
 		workbench-prefs-screenmode
 	@echo "Finalising muimaster.library with a dedicated pass..."
-	@$(MAKE) -C "$(AROS_BUILD_DIR)" workbench-libs-muimaster 2>&1 || \
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) workbench-libs-muimaster 2>&1 || \
 		echo "  Warning: workbench-libs-muimaster had some failures (non-fatal)"
 	@echo "Finalising required runtime devices, libraries, and monitor configs..."
-	@$(MAKE) -C "$(AROS_BUILD_DIR)" \
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) \
 		workbench-devs-fdsk \
 		workbench-devs-ramdrive \
 		devs-monitors-compositor \

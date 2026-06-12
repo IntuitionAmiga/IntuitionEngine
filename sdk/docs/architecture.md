@@ -900,7 +900,9 @@ The copper coprocessor is internal to VideoChip but can write to any MMIO-mapped
 
 ### Extended Blitter: BPP Modes, Draw Modes, Colour Expansion, and Scale
 
-The blitter supports two pixel formats via `BLT_FLAGS` (`0xF0488`): RGBA32 (4 bpp, default) and CLUT8 (1 bpp). Bits 4-7 select one of 16 raster draw modes (Clear, And, Copy, Xor, Invert, etc.) applied per pixel during FILL and COPY operations. `BLT_OP=4` performs source-over alpha blending with source alpha in bits 31-24 using `out = (src*a + dst*(255-a))/255`. `BLT_OP=7` performs nearest-neighbour scaling in RGBA32 or CLUT8. When `BLT_FLAGS=0`, the blitter defaults to Copy mode with RGBA32 for full backward compatibility.
+The blitter supports two pixel formats via `BLT_FLAGS` (`0xF0488`): RGBA32 (4 bpp, default) and CLUT8 (1 bpp). Bits 4-7 select one of 16 raster draw modes (Clear, And, Copy, Xor, Invert, etc.) applied per pixel during FILL and COPY operations. `BLT_OP=4` performs source-over alpha blending with source alpha in bits 31-24 using `out = (src*a + dst*(255-a))/255`. With `BLT_FLAGS` bit 12 (`ALPHA_TMPL`) set, `BLT_OP=4` instead treats `BLT_SRC` as an 8 bpp alpha plane (row stride in `BLT_SRC_STRIDE`) and blends the `BLT_FG` colour over the destination with the same source-over equation. This serves antialiased glyph and icon rendering (the AROS driver uses it for `PutAlphaTemplate`). `BLT_OP=7` performs nearest-neighbour scaling in RGBA32 or CLUT8. When `BLT_FLAGS=0`, the blitter defaults to Copy mode with RGBA32 for full backward compatibility.
+
+Masked copies (`BLT_OP=3`) copy source pixels only where a 1-bit mask is set. The mask base address is in `BLT_MASK`, the mask row stride in `BLT_MASK_MOD` (0 selects packed rows of `(width+7)/8` bytes), and `BLT_MASK_SRCX` gives the starting bit offset within each mask row. Mask bits are sampled LSB-first by default; setting `BLT_FLAGS` bit 11 (`MASK_MSB`) selects MSB-first sampling, which matches the Amiga PLANEPTR convention used by AROS layer masks, so the driver can pass `CopyBoxMasked` masks to the hardware without conversion.
 
 `BLT_CTRL` bit 0 starts the synchronous blit, bit 1 is read-only busy, and bit 2 enables a completion pulse on `IntMaskBlitter`. `BLT_STATUS` bit 0 is ERR, bit 1 is DONE, and bit 2 is sticky IRQ_PENDING (write 1 to clear). Invalid opcodes, out-of-range Mode7 samples, overflowed blitter bounds, and destination rectangles outside CPU-visible writable memory set ERR and do not silently fall back to COPY or wrap into another address range.
 
@@ -914,7 +916,7 @@ Raster-band register draws (`VIDEO_RASTER_Y`, `VIDEO_RASTER_HEIGHT`, `VIDEO_RAST
 
 | Register | Address | Description |
 |----------|---------|-------------|
-| `BLT_FLAGS` | `0xF0488` | BPP (bits 0-1), draw mode (bits 4-7), JAM1/invert flags (bits 8-10) |
+| `BLT_FLAGS` | `0xF0488` | BPP (bits 0-1), draw mode (bits 4-7), JAM1/invert flags (bits 8-10), MSB-first mask sampling (bit 11), alpha-template blend (bit 12) |
 | `BLT_FG` | `0xF048C` | Foreground colour for colour expansion |
 | `BLT_BG` | `0xF0490` | Background colour for colour expansion |
 | `BLT_MASK_MOD` | `0xF0494` | Template row modulo (bytes per row) |

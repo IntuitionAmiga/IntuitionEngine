@@ -2,23 +2,26 @@
 
 ## Overview
 
-iewarp.library accelerates AROS compute operations by offloading them to the IE64 coprocessor. Acceleration happens through two paths: AROS kernel and workbench subsystems (exec, graphics, IEGfx HIDD, cybergraphics, AHI, etc.) dispatch directly to the coprocessor via MMIO registers, while iewarp.library provides a public API for operations that have no natural kernel-level consumer (FP_BATCH, MATRIX_MUL, CRC32, AUDIO_MIX, GRADIENT_FILL) and for application-level use. Both paths write coprocessor MMIO registers at `0xF2340`, which enqueues work into the IE64 worker's ring buffer. The IE64 worker executes the operation using JIT-compiled native code on the host (amd64 or arm64).
+iewarp.library offloads batch compute operations from AROS applications to the IE64 coprocessor. It is an application-facing API only: the AROS kernel, the IEGfx HIDD and the workbench libraries do not route their own work through it. Operating system rendering and memory movement use the hardware blitter and inline m68k code instead, because for plain data movement the per-operation dispatch and completion round trip costs far more than the payload, while IE64 and m68k code both execute at host speed under their respective JITs. The coprocessor pays off for long-running batches (FP_BATCH, MATRIX_MUL, CRC32, AUDIO_MIX and similar) where the m68k can do useful work while the batch runs. Dispatch writes the coprocessor MMIO registers at `0xF2340`, which enqueues work into the IE64 worker's ring buffer. The IE64 worker executes the operation using JIT-compiled native code on the host (amd64 or arm64).
 
 Dispatch functions (IEWarpMemCpy, IEWarpBlitCopy, etc.) return a **ticket** (`ULONG`). Callers use `IEWarpWait(ticket)` to block until the operation completes. A ticket value of `0` means the operation was handled inline by M68K fallback code and is already complete. Control and query functions (IEWarpWait, IEWarpPoll, IEWarpGetThreshold, IEWarpGetStats) return status codes or query results, not tickets.
 
 ## Architecture
 
-Most AROS subsystems dispatch directly to the coprocessor via MMIO, bypassing iewarp.library entirely:
+Applications call the library, which dispatches to the coprocessor via MMIO:
 
 ```
-Path 1 — Kernel/workbench direct dispatch (17 ops):
-  M68K app → AROS library impl (e.g. CopyMem, BltBitMap)
-    → ie_write32(IE_COPROC_*) → ring buffer → IE64 worker (JIT)
-
-Path 2 — iewarp.library public API (5 ops + all ops for app use):
   M68K app → iewarp.library (IEWarpFPBatch, IEWarpCRC32, etc.)
     → ie_write32(IE_COPROC_*) → ring buffer → IE64 worker (JIT)
 ```
+
+Historical note: earlier builds also routed AROS kernel and workbench
+subsystems (exec CopyMem, graphics, the IEGfx HIDD, cybergraphics, AHI
+and others) through the coprocessor. Those consumer integrations were
+removed because the synchronous round trip dominated GUI-sized
+operations and made the desktop visibly slow. The operating system now
+renders through the IE hardware blitter; the library remains available
+for applications.
 
 The library opens at resident priority -5 during AROS boot. On init it starts the IE64 coprocessor worker staged in AROS as `SYS:Libs/iewarp_service.ie64`. The coprocessor manager resolves worker filenames relative to the Intuition Engine runtime base, so the AROS-side library passes `Systems/AROS/Libs/iewarp_service.ie64` to `COPROC_NAME_PTR`. After the worker starts, the library calibrates dispatch overhead with a NOP round-trip and installs a Level 6 completion interrupt handler.
 

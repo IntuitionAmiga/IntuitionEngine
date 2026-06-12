@@ -234,6 +234,8 @@ const (
 	bltFlagsJAM1          = 1 << 8  // Bit 8: JAM1 mode (template: skip BG pixels)
 	bltFlagsInvertTmpl    = 1 << 9  // Bit 9: invert template bits before processing
 	bltFlagsInvertMode    = 1 << 10 // Bit 10: XOR dst with all-ones for set template bits
+	bltFlagsMaskMSB       = 1 << 11 // Bit 11: masked copy samples mask bits MSB-first (Amiga PLANEPTR order)
+	bltFlagsAlphaTemplate = 1 << 12 // Bit 12: alpha copy treats src as an 8bpp alpha plane blended with BLT_FG
 )
 
 const (
@@ -2056,7 +2058,15 @@ func (chip *VideoChip) blitMaskedCopyLocked(mode VideoMode) {
 	if dstStride == 0 {
 		dstStride = chip.defaultStride(chip.bltDst, width, mode)
 	}
-	maskStride := uint32((width + 7) / 8)
+	// Mask row stride: BLT_MASK_MOD when set, else packed rows.
+	maskStride := chip.bltMaskMod
+	if maskStride == 0 {
+		maskStride = uint32((width + 7) / 8)
+	}
+	// BLT_MASK_SRCX: bit offset of the first pixel within the mask row.
+	maskSrcX := chip.bltMaskSrcX
+	// MSB-first sampling (Amiga PLANEPTR order) when the flag is set.
+	msbFirst := chip.bltFlags&bltFlagsMaskMSB != 0
 
 	srcRow := chip.bltSrc
 	dstRow := chip.bltDst
@@ -2066,8 +2076,15 @@ func (chip *VideoChip) blitMaskedCopyLocked(mode VideoMode) {
 		dstAddr := dstRow
 		maskAddr := maskRow
 		for x := range width {
-			maskByte := chip.busRead8Locked(maskAddr + uint32(x/8))
-			if (maskByte>>uint(x%8))&1 == 0 {
+			bit := maskSrcX + uint32(x)
+			maskByte := chip.busRead8Locked(maskAddr + bit/8)
+			var set bool
+			if msbFirst {
+				set = (maskByte>>(7-uint(bit%8)))&1 != 0
+			} else {
+				set = (maskByte>>uint(bit%8))&1 != 0
+			}
+			if !set {
 				srcAddr += BYTES_PER_PIXEL
 				dstAddr += BYTES_PER_PIXEL
 				continue
@@ -2096,6 +2113,56 @@ func (chip *VideoChip) blitAlphaCopyLocked(mode VideoMode) {
 	dstStride := chip.bltDstStrideRun
 	if dstStride == 0 {
 		dstStride = chip.defaultStride(chip.bltDst, width, mode)
+	}
+
+	// Alpha-template mode: src is an 8bpp alpha plane (1 byte per pixel,
+	// row stride = BLT_SRC_STRIDE) blended with the BLT_FG colour. Used by
+	// PutAlphaTemplate-style antialiased glyph/icon rendering.
+	if chip.bltFlags&bltFlagsAlphaTemplate != 0 {
+		fg := chip.bltFG
+		// The source is an 8bpp alpha plane: when the caller leaves
+		// BLT_SRC_STRIDE at 0 the RGBA default computed above is wrong,
+		// so re-default to packed 1-byte-per-pixel rows.
+		if chip.bltSrcStrideRun == 0 {
+			srcStride = uint32(width)
+		}
+		srcRow := chip.bltSrc
+		dstRow := chip.bltDst
+		for range height {
+			srcAddr := srcRow
+			dstAddr := dstRow
+			for range width {
+				alpha := uint32(chip.busRead8Locked(srcAddr))
+				srcAddr++
+				if alpha == 0 {
+					dstAddr += BYTES_PER_PIXEL
+					continue
+				}
+				if alpha == 0xFF {
+					chip.blitWritePixelLocked(dstAddr, fg|0xFF000000, mode)
+					dstAddr += BYTES_PER_PIXEL
+					continue
+				}
+				dst := chip.blitReadPixelLocked(dstAddr)
+				inv := 255 - alpha
+				sr := fg & 0xFF
+				sg := (fg >> 8) & 0xFF
+				sb := (fg >> 16) & 0xFF
+				dr := dst & 0xFF
+				dg := (dst >> 8) & 0xFF
+				db := (dst >> 16) & 0xFF
+				da := (dst >> 24) & 0xFF
+				outR := (sr*alpha + dr*inv) / 255
+				outG := (sg*alpha + dg*inv) / 255
+				outB := (sb*alpha + db*inv) / 255
+				outA := alpha + (da*inv)/255
+				chip.blitWritePixelLocked(dstAddr, outR|(outG<<8)|(outB<<16)|(outA<<24), mode)
+				dstAddr += BYTES_PER_PIXEL
+			}
+			srcRow += srcStride
+			dstRow += dstStride
+		}
+		return
 	}
 
 	srcRow := chip.bltSrc

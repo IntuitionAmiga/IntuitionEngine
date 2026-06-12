@@ -2223,3 +2223,49 @@ func TestBlitterLineExtendedClipping(t *testing.T) {
 		t.Fatal("expected unclipped line to write pixels outside bitmap bounds, but none found — clipping contract test is invalid")
 	}
 }
+
+// TestBlitterAlphaTemplateZeroStride verifies that a multiline ALPHA_TMPL
+// blit with BLT_SRC_STRIDE left at 0 defaults the alpha-plane stride to
+// 1 byte per pixel rather than the RGBA default (regression guard for
+// the 8bpp source format).
+func TestBlitterAlphaTemplateZeroStride(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	const w, h = 4, 3
+	// Alpha plane in bus RAM: fully opaque rows, packed w bytes per row.
+	alphaBase := uint32(0x40000)
+	for i := 0; i < w*h; i++ {
+		bus.Write8(alphaBase+uint32(i), 0xFF)
+	}
+
+	// Clear destination to a known colour.
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			writeU32Bytes(bus, vramAddr(mode, x, y), 0x00000000)
+		}
+	}
+
+	fg := uint32(0x00345612) // R=0x12 G=0x56 B=0x34 in LE RGBA order
+	bus.Write32(BLT_OP, bltOpAlphaCopy)
+	bus.Write32(BLT_SRC, alphaBase)
+	bus.Write32(BLT_DST, vramAddr(mode, 0, 0))
+	bus.Write32(BLT_WIDTH, w)
+	bus.Write32(BLT_HEIGHT, h)
+	bus.Write32(BLT_SRC_STRIDE, 0) // must default to w bytes, not w*4
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_FG, fg)
+	bus.Write32(BLT_FLAGS, bltFlagsAlphaTemplate)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	video.RunBlitterForTest()
+
+	want := fg | 0xFF000000
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if got := video.HandleRead(vramAddr(mode, x, y)); got != want {
+				t.Fatalf("row %d col %d: got %08x want %08x (stride default wrong)", y, x, got, want)
+			}
+		}
+	}
+}

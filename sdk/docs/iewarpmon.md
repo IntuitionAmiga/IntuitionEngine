@@ -4,6 +4,8 @@
 
 IEWarpMon is a MUI application for monitoring IE64 coprocessor activity on AROS. It reads live statistics from `iewarp.library` and displays them across five tabs: Summary, Operations, Tasks, Libraries, and Waiters. The window title includes "~ approximate" as a reminder that counters are updated at 250ms intervals and may not reflect exact instantaneous values.
 
+Since the OS-level consumer integrations were removed (see `iewarp.md`), the counters reflect application use of `iewarp.library` only. On an idle desktop every counter reads zero; this is expected, not a fault.
+
 ## Tabs
 
 ### Summary
