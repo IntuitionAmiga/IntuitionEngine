@@ -64,13 +64,13 @@ EMUTOS_LINUX_WARNFLAGS ?= -Wall
 EMUTOS_BUILD_CMD ?= auto
 
 # AROS build configuration
-AROS_SRC_DIR ?= ../AROS
+AROS_SRC_DIR ?= ../AROS-deadw00d
 AROS_BUILD_DIR ?= $(AROS_SRC_DIR)/bin/ie-m68k
 AROS_ROM ?= ./sdk/roms/aros-ie-m68k.rom
 AROS_RELEASE_DIR ?= $(AROS_BUILD_DIR)/bin/ie-m68k/AROS
-AROS_GIT_URL ?= https://github.com/IntuitionAmiga/AROS.git
-AROS_GIT_REF ?= master
-AROS_GCC_VER ?= 15.2.0
+AROS_GIT_URL ?= https://github.com/IntuitionAmiga/AROS-deadw00d.git
+AROS_GIT_REF ?= ie-m68k
+AROS_GCC_VER ?= 10.5.0
 AROS_DEVELOPER_DIR ?= $(AROS_BUILD_DIR)/bin/ie-m68k/AROS/Developer
 AROS_ARCH_INCLUDE ?= $(AROS_SRC_DIR)/arch/m68k-ie/include
 AROS_CC ?= $(firstword $(wildcard $(AROS_BUILD_DIR)/bin/*/tools/crosstools/m68k-aros-gcc))
@@ -904,8 +904,22 @@ aros-rom:
 		workbench-devs-ramdrive \
 		devs-monitors-compositor \
 		workbench-libs-amigaguide \
-		workbench-libs-asyncio \
+		workbench-libs-asl \
 		workbench-libs-camd \
+		workbench-libs-codesets \
+		workbench-libs-commodities \
+		workbench-libs-datatypes \
+		workbench-libs-diskfont \
+		workbench-libs-icon \
+		workbench-libs-reqtools \
+		workbench-libs-workbench \
+		workbench-rexxc \
+		workbench-printers-postscript \
+		workbench-gadgets-complete \
+		workbench-system \
+		workbench-fs-pipe \
+		workbench-fs-port \
+		workbench-fs-debug \
 		workbench-libs-cgfx \
 		workbench-libs-expat \
 		workbench-libs-gadtools \
@@ -924,7 +938,6 @@ aros-rom:
 		workbench-libs-realtime \
 		workbench-libs-rexxsupport \
 		workbench-libs-tiff \
-		workbench-libs-utf8proc \
 		workbench-libs-version \
 		workbench-libs-z 2>&1 || \
 		echo "  Warning: required runtime batch had some failures (final artifact check will decide)"
@@ -1179,7 +1192,6 @@ aros-rom:
 		"Rexxc/RXLIB" \
 		"Classes/datatypes/jpeg.datatype" \
 		"Libs/amigaguide.library" \
-		"Libs/asyncio.library" \
 		"Libs/camd.library" \
 		"Libs/codesets.library" \
 		"Libs/commodities.library" \
@@ -1213,7 +1225,9 @@ aros-rom:
 		"Libs/realtime.library" \
 		"Libs/rexxsupport.library" \
 		"Libs/tiff.library" \
-		"Libs/utf8proc.library" \
+		"Libs/crt.library" \
+		"Libs/stdlib.library" \
+		"Libs/m.library" \
 		"Libs/version.library" \
 		"Libs/z1.library" \
 		"Libs/zstd.library" \

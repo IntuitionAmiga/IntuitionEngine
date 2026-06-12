@@ -56,7 +56,7 @@ SDK_COMPANION_PDFS=(
     "${SCRIPT_DIR}/sdk/docs/iescript.pdf"
     "${SCRIPT_DIR}/sdk/docs/architecture.pdf"
 )
-AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS/bin/ie-m68k/bin/ie-m68k/AROS}"
+AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS}"
 AB3D2_EMBED_DIR="${SCRIPT_DIR}/embedded/ab3d2"
 CHOCOLATE_DOOM_DIR="${CHOCOLATE_DOOM_DIR:-${SCRIPT_DIR}/../chocolate-doom}"
 IEDOOM_IE86="${IEDOOM_IE86:-build/iedoom.ie86}"

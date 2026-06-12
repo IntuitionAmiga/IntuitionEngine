@@ -592,7 +592,7 @@ func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
 		`payload_require_file "${payload_root}/_build/ie_unpacked/media/includes/test.lnk" "make x64-live-ab3d2-assets"`,
 		`local ab3d2_low_demos=("${payload_root}"/Demos/m68k/ab3d2_ie68_redux_low*.ie68)`,
 		`payload_require_file "${payload_root}/_build/ie_media/redux-low/boot.dat" "make x64-live-ab3d2-assets"`,
-		`AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS/bin/ie-m68k/bin/ie-m68k/AROS}"`,
+		`AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS}"`,
 		`AROS release tree not found: ${AROS_RELEASE_DIR}`,
 		`AROS default tool icon not found: ${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Tool.info`,
 		`AROS default drawer icon not found: ${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info`,

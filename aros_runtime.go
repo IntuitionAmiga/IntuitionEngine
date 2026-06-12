@@ -36,6 +36,7 @@ func resolveAROSDrivePath(explicit, exePath string) (string, error) {
 func arosDriveCandidates(exePath string) []string {
 	candidates := []string{
 		"AROS/bin/ie-m68k/bin/ie-m68k/AROS",
+		"../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS",
 		"../AROS/bin/ie-m68k/bin/ie-m68k/AROS",
 		"AROS",
 	}
