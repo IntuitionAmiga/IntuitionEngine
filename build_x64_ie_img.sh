@@ -67,7 +67,8 @@ IEDOOM_IE68_PATH="${CHOCOLATE_DOOM_DIR}/${IEDOOM_IE68}"
 IEDOOM_WAD_PATH="${CHOCOLATE_DOOM_DIR}/${IEDOOM_WAD}"
 C64_MUSIC_SOURCE="${C64_MUSIC_SOURCE:-${HOME}/Music/C64Music}"
 PROJECTAY_MUSIC_SOURCE="${PROJECTAY_MUSIC_SOURCE:-${HOME}/Music/ProjectAY}"
-FINAL_IMAGE_SIZE="10G"
+FINAL_IMAGE_SIZE="${FINAL_IMAGE_SIZE:-10G}"
+OUTPUT_IMAGE_SIZE="${OUTPUT_IMAGE_SIZE:-20G}"
 ROOT_PART_SIZE="6G"
 FATSHARE_LABEL="IESHARE"
 OUTPUT_IMG="${X64_LIVE_OUTPUT_IMG:-${LIVE_OUT_DIR}/intuition-engine-x64.img}"
@@ -1611,6 +1612,8 @@ build_golden_image() {
 install_ie_binary() {
     log_section "Installing Intuition Engine binary"
     cp "$GOLDEN_IMG_PATH" "$OUTPUT_IMG"
+    qemu-img resize -f raw "$OUTPUT_IMG" "$OUTPUT_IMAGE_SIZE" 2>&1 | tee -a "$LOG_FILE"
+    guestfish -a "$OUTPUT_IMG" run : part-expand-gpt /dev/sda 2>&1 | tee -a "$LOG_FILE"
     virt-customize -a "$OUTPUT_IMG" \
         --copy-in "${IE_BINARY}:/opt/ie/" \
         --run-command "mv /opt/ie/$(basename "${IE_BINARY}") /opt/ie/${IE_INSTALL_NAME}" \

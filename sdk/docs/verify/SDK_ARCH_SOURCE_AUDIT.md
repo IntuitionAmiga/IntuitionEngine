@@ -2,6 +2,8 @@
 
 | Surface | Kind | Name | Executable evidence |
 |---------|------|------|---------------------|
+| Architecture | architecture claim | `ADOS_CMD_EXAMINE_ALL accelerates ACTION_EXAMINE_ALL through a 20-byte big-endian request descriptor, guest span validation, direct ExAllData packing, eac_LastKey continuation, and ERROR_ACTION_NOT_KNOWN fallback for match strings or hooks.` | `aros_dos_constants.go` `ADOS_CMD_EXAMINE_ALL`/`ADOS_EXALL_REQ_*`, `aros_dos_intercept.go` `cmdExamineAll` |
+| Architecture | architecture claim | `AROS HostFS fast paths use strict bulk guest-memory helpers, a 64 KiB sequential read-ahead cache, and cache invalidation on non-sequential reads, seeks outside cache, writes, truncates, close, create, delete, rename, and dirty close paths.` | `bus_helpers.go` `ValidateGuestSpan`/`WriteGuestBytes`, `aros_dos_intercept.go` `arosDOSReadAheadSize`/`readAhead`/cache invalidation |
 | Architecture | architecture claim | `Bare .ie68 uses the active-visible RAM ceiling; EmuTOS and AROS M68K loader modes use profile bounds.` | `boot_guest_ram.go` `resolveModeCaps`/`resolveActiveVisibleCeiling` cases for `modeM68KBare`, `modeEmuTOS`, and `modeAros` |
 | Architecture | architecture claim | `Darwin RAM sizing uses a page-aligned conservative half of hw.memsize as the detected base before applying the per-platform reserve.` | `memory_sizing_usable_darwin.go` `unix.SysctlUint64("hw.memsize")`, `pageAlignDown(total / 2)`, and `memory_sizing.go` `ReserveFor` |
 | Architecture | architecture claim | `EXEC_CTRL operation values: 1=Execute, 2=EmuTOS, 3=AROS, 4=IntuitionOS IExec, 5=Hard reset` | `program_executor_constants.go` `EXEC_OP_*`, `program_executor.go` `HandleWrite` dispatch, `program_executor_test.go` operation-value pins |

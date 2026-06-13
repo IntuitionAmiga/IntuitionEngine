@@ -1,6 +1,6 @@
 # IEScript Lua Automation Manual
 
-*Last modified: 2026-06-09*
+*Last modified: 2026-06-13*
 
 IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
@@ -395,6 +395,8 @@ In desktop builds, captured relative mouse mode can be released manually with `C
 `term.mouse_release()` - Clear the script-side mouse-override flag set implicitly by `term.mouse_move`, `term.mouse_delta`, `term.mouse_click`, and `term.mouse_double_click`. Call this when a script is done driving the mouse so the host's normal mouse policy resumes. Returns: nothing.
 
 `term.mouse_click(x, y [, button])` - Perform a single mouse click at (x, y). Coordinates are clamped to frame bounds. The optional `button` parameter specifies which button: 1 = left (default), 2 = right, 3 = both. The implementation moves the pointer, waits 50 ms, holds the button for 60 ms, releases it, then waits 50 ms before returning. Returns: nothing.
+
+`term.mouse_press(x, y [, button])` - Move the mouse to clamped coordinates, wait 50 ms, press the selected button, wait another 50 ms, and leave the button pressed. Use `term.mouse_release()` to clear the button state and return to normal host mouse handling. The optional `button` parameter uses the same encoding as `mouse_click`: 1 = left, 2 = right, 3 = both. Returns: nothing.
 
 `term.mouse_double_click(x, y [, button])` - Perform a double click at (x, y). Coordinates are clamped, button values are the same as `mouse_click`. The implementation moves the pointer, waits 50 ms, then performs two 60 ms button holds separated by 80 ms gaps. Returns: nothing.
 
@@ -1663,7 +1665,7 @@ Compact reference for IEScript API functions.
 | `mem.write_block(addr, bytes)` | - |
 | `mem.fill(addr, len, value)` | - |
 
-### term (13)
+### term (14)
 
 | Function | Returns |
 |----------|---------|
@@ -1676,6 +1678,7 @@ Compact reference for IEScript API functions.
 | `term.mouse_move(x, y)` | - |
 | `term.mouse_delta(dx, dy [, button])` | - |
 | `term.mouse_click(x, y [, button])` | - |
+| `term.mouse_press(x, y [, button])` | - |
 | `term.mouse_double_click(x, y [, button])` | - |
 | `term.mouse_release()` | - |
 | `term.scancode(code)` | - |

@@ -317,6 +317,7 @@
 | IEScript | binding | `term.mouse_delta` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `term.mouse_double_click` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `term.mouse_move` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `term.mouse_press` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `term.mouse_release` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `term.read` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `term.scancode` | `script_engine.go` `registerModules` binding |

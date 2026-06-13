@@ -1,14 +1,12 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-06-09*
+*Last modified: 2026-06-13*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
 The diagrams below describe wired runtime behaviour. Platform availability
 follows the runtime dispatch path; for example, the Z80 JIT is available
 on amd64 builds only.
-
-AROS HostFS implementation notes: [AROSHostFS.md](AROSHostFS.md).
 
 ## Reading the Architecture Tables and Diagrams
 
@@ -1135,6 +1133,12 @@ The AROS audio block at `0xF2260-0xF22AF` is an Intuition Engine shim for AROS `
 - Out-of-range pointers beyond the active AROS profile RAM deactivate the channel, mute the DAC output, set the status bit, and raise a level-3 interrupt when the corresponding `INTENA` bit is set.
 - Pointer writes ignore bit 0, length is a word count and preserves odd values, period writes with zero are ignored, and volume writes are clamped to `0..64`.
 
+### AROS HostFS DOS Handler ABI
+
+The AROS DOS block at `0xF2220-0xF225F` is the MMIO command bridge used by the AROS m68k-ie packet handler. The guest writes up to four argument registers and then writes `AROS_DOS_CMD`; the Go-side `ArosDOSDevice` executes the request synchronously and returns AmigaDOS-style `RESULT1` and `RESULT2` values. `ADOS_CMD_EXAMINE_ALL` accelerates `ACTION_EXAMINE_ALL` through a 20-byte big-endian request descriptor, guest span validation, direct ExAllData packing, eac_LastKey continuation, and ERROR_ACTION_NOT_KNOWN fallback for match strings or hooks.
+
+AROS HostFS fast paths use strict bulk guest-memory helpers, a 64 KiB sequential read-ahead cache, and cache invalidation on non-sequential reads, seeks outside cache, writes, truncates, close, create, delete, rename, and dirty close paths. Spans outside active guest RAM, high-pointer requests unsupported by the active bus, and low/high backing seam crossings fail closed. External host changes are best-effort and are not continuously watched.
+
 ### Subsong Selection
 
 SID, SAP, and AHX players support subsong selection for multi-tune files. Each player has a subsong register that selects which tune to play from a multi-song file.
@@ -1149,7 +1153,7 @@ Three byte-wide registers drive it: `IE_MIDI_LIVE_DATA` (`0xF0BF4`, write a raw 
 
 #### EmuTOS Atari MIDI ACIA bridge
 
-EmuTOS does not know IE's native live-MIDI register map; it talks MIDI only through the Atari ST MIDI port, an **MC6850 ACIA**. `atari_midi_acia.go` is a minimal, output-only MC6850 shim (`AtariMIDIACIA`) that bridges that ACIA to the same `LiveMIDI`/`MIDIEngine` path, so notes from ST software or GEMDOS `Bconout(3, …)` reach IE's synth. It is wired **only in EmuTOS mode** (`main.go`, guarded by `modeEmuTOS`) and holds no synth or voice state of its own — control writes forward to the LiveMIDI parser, status reads always report `TDRE` (ready to transmit), and there is no MIDI-in. The shim maps two address forms of the Atari contract `$FFFC04` (RS=0: control/status) and `$FFFC06` (RS=1: TX data / RX): the bus-canonical low-16 alias `0x0000FC04/06` (which the sign-extended guest access `0xFFFFFC04/06` is normalized to before handler lookup) and the 24-bit Atari hardware alias `0x00FFFC04/06` (which does not pass through sign-extension normalization and must be mapped explicitly). Both aliases use `MapIONoShadow` because they fall inside guest RAM and status/data accesses must not mirror handler values into guest memory. A control write of `ACIA_CTRL_MASTER_RESET` (CR1:CR0 == 11) calls `LiveMIDI.Reset()`. The IKBD ACIA at `$FFFC00/02` is deliberately **not** mapped — keyboard already flows through the IOREC pump in `emutos_loader.go`. This bridge is EmuTOS-specific; there is no generic ACIA emulation for other modes.
+EmuTOS does not know IE's native live-MIDI register map; it talks MIDI only through the Atari ST MIDI port, an **MC6850 ACIA**. `atari_midi_acia.go` is a minimal, output-only MC6850 shim (`AtariMIDIACIA`) that bridges that ACIA to the same `LiveMIDI`/`MIDIEngine` path, so notes from ST software or GEMDOS `Bconout(3, ...)` reach IE's synth. It is wired **only in EmuTOS mode** (`main.go`, guarded by `modeEmuTOS`) and holds no synth or voice state of its own: control writes forward to the LiveMIDI parser, status reads always report `TDRE` (ready to transmit), and there is no MIDI-in. The shim maps two address forms of the Atari contract `$FFFC04` (RS=0: control/status) and `$FFFC06` (RS=1: TX data / RX): the bus-canonical low-16 alias `0x0000FC04/06` (which the sign-extended guest access `0xFFFFFC04/06` is normalized to before handler lookup) and the 24-bit Atari hardware alias `0x00FFFC04/06` (which does not pass through sign-extension normalization and must be mapped explicitly). Both aliases use `MapIONoShadow` because they fall inside guest RAM and status/data accesses must not mirror handler values into guest memory. A control write of `ACIA_CTRL_MASTER_RESET` (CR1:CR0 == 11) calls `LiveMIDI.Reset()`. The IKBD ACIA at `$FFFC00/02` is deliberately **not** mapped: keyboard already flows through the IOREC pump in `emutos_loader.go`. This bridge is EmuTOS-specific; there is no generic ACIA emulation for other modes.
 
 ## 6. Memory Map
 
@@ -1243,7 +1247,7 @@ graph LR
         PEXEC["Program Executor<br/>0xF2320-0xF233F<br/>CPU mode detect,<br/>full reset orchestration<br/>EXEC_CTRL operation values: 1=Execute, 2=EmuTOS, 3=AROS, 4=IntuitionOS IExec, 5=Hard reset"]
         COPRO["Coprocessor Manager<br/>0xF2340-0xF238F + 0xF23B0-0xF23BF<br/>6 worker CPU types,<br/>ticket-based dispatch + monitor"]
         CLIP["Clipboard Bridge<br/>0xF2390-0xF23AF<br/>Data ptr/len, get/put"]
-        DOS["DOS Handler<br/>0xF2220-0xF225F<br/>AmigaDOS packet protocol,<br/>lock/file handles,<br/>ACTION_SAME_LOCK,<br/>DupLock of root (key=0)"]
+        DOS["DOS Handler<br/>0xF2220-0xF225F<br/>AmigaDOS packet protocol,<br/>lock/file handles,<br/>ACTION_EXAMINE_ALL,<br/>read-ahead cache"]
         MEDIA["Media Loader<br/>0xF2300-0xF231F<br/>Format detection,<br/>player dispatch"]
         LUA["Lua Scripting<br/>F8 REPL, bus access,<br/>video recording"]
     end
