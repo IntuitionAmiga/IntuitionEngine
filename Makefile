@@ -74,6 +74,9 @@ AROS_GCC_VER ?= 10.5.0
 AROS_DEVELOPER_DIR ?= $(AROS_BUILD_DIR)/bin/ie-m68k/AROS/Developer
 AROS_ARCH_INCLUDE ?= $(AROS_SRC_DIR)/arch/m68k-ie/include
 AROS_CC ?= $(firstword $(wildcard $(AROS_BUILD_DIR)/bin/*/tools/crosstools/m68k-aros-gcc))
+AROSVISION_SOURCE ?= ../AROSVision
+AROSVISION_PROBE_DIR ?= build/arosvision-probe/AROS
+AROS_LIVE_DIR ?= $(AROSVISION_PROBE_DIR)
 
 # IEDoom guest image build configuration
 CHOCOLATE_DOOM_DIR ?= ../chocolate-doom
@@ -312,7 +315,7 @@ AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
-.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets aros-iewarp-library iewarp-runtime-assets emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos aot-runtime-blob cputest-musashi
+.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets aros-iewarp-library iewarp-runtime-assets arosvision-probe-tree arosvision-live-tree arosvision-probe-run emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos aot-runtime-blob cputest-musashi
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 m68kto64 ie64dis
@@ -369,11 +372,11 @@ x64-live-embed-assets: sdk-build emutos-release-rom iewarp-runtime-assets intuit
 .PHONY: x64-live
 x64-live: x86-64-v3 x64-live-demos
 	@echo "Building IE x64 live USB image..."
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh
 
 .PHONY: x64-live-rebuild-golden
 x64-live-rebuild-golden: x86-64-v3 x64-live-demos
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --rebuild-golden
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --rebuild-golden
 
 .PHONY: x64-live-demos
 x64-live-demos: x64-live-payload-check
@@ -381,8 +384,8 @@ x64-live-demos: x64-live-payload-check
 	@echo "x64 live demo payload inputs are ready."
 
 .PHONY: x64-live-payload-check
-x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer aros-iewarp-library iewarp-runtime-assets x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-sdk-tools intuitionos iedoom
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_RELEASE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --check-payload
+x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer arosvision-live-tree x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-sdk-tools intuitionos iedoom
+	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --check-payload
 
 .PHONY: x64-live-sdk-tools
 x64-live-sdk-tools:
@@ -1290,6 +1293,19 @@ aros-release-assets:
 		$(MAKE) aros-rom; \
 	fi
 
+.PHONY: arosvision-probe-tree
+arosvision-probe-tree:
+	@./scripts/prepare-arosvision-probe.sh "$(AROSVISION_SOURCE)" "$(AROSVISION_PROBE_DIR)"
+
+.PHONY: arosvision-live-tree
+arosvision-live-tree: iewarp-runtime-assets
+	@./scripts/prepare-arosvision-probe.sh "$(AROSVISION_SOURCE)" "$(AROS_LIVE_DIR)"
+
+.PHONY: arosvision-probe-run
+arosvision-probe-run: arosvision-probe-tree
+	@test -f "$(AROS_ROM)" || { echo "Error: missing AROS ROM: $(AROS_ROM)"; echo "Build or copy the ROM separately before running the AROSVision probe."; exit 1; }
+	go run . -aros -aros-drive "$(AROSVISION_PROBE_DIR)"
+
 .PHONY: aros-iewarp-library
 aros-iewarp-library: aros-release-assets
 	@lib="$(AROS_RELEASE_DIR)/Libs/iewarp.library"; \
@@ -1323,16 +1339,19 @@ aros-iewarp-library: aros-release-assets
 	echo "AROS iewarp.library is current."
 
 .PHONY: iewarp-runtime-assets
-iewarp-runtime-assets: sdk-build aros-iewarp-library
+iewarp-runtime-assets: sdk-build
 	@if [ ! -f "sdk/examples/prebuilt/iewarp_service.ie64" ]; then \
 		echo "Error: missing sdk/examples/prebuilt/iewarp_service.ie64"; \
 		echo "Run: make sdk-build"; \
 		exit 1; \
 	fi
-	@mkdir -p Systems/AROS/Libs "$(AROS_RELEASE_DIR)/Libs"
+	@mkdir -p Systems/AROS/Libs
 	@cp -f sdk/examples/prebuilt/iewarp_service.ie64 Systems/AROS/Libs/iewarp_service.ie64
-	@cp -f sdk/examples/prebuilt/iewarp_service.ie64 "$(AROS_RELEASE_DIR)/Libs/iewarp_service.ie64"
-	@echo "IEWarp runtime worker staged at Systems/AROS/Libs and $(AROS_RELEASE_DIR)/Libs."
+	@if [ -d "$(AROS_RELEASE_DIR)" ]; then \
+		mkdir -p "$(AROS_RELEASE_DIR)/Libs"; \
+		cp -f sdk/examples/prebuilt/iewarp_service.ie64 "$(AROS_RELEASE_DIR)/Libs/iewarp_service.ie64"; \
+	fi
+	@echo "IEWarp runtime worker staged at Systems/AROS/Libs."
 
 .PHONY: clean-aros
 clean-aros:

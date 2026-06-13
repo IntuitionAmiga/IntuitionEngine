@@ -358,7 +358,7 @@ func main() {
 	var emutosDrive string
 	flagSet.StringVar(&emutosDrive, "emutos-drive", "", "Host directory to map as GEMDOS drive U: (default: ~/)")
 	var arosDrive string
-	flagSet.StringVar(&arosDrive, "aros-drive", "", "Host directory for AROS DOS volume (default: ~/)")
+	flagSet.StringVar(&arosDrive, "aros-drive", "", "Host directory for AROS DOS volume (default: generated AROSVision tree or bundled AROS/)")
 	flagSet.StringVar(&iosRoot, "intuitionos-root", "", "Host-backed IntuitionOS SYS: root")
 	flagSet.StringVar(&iosImage, "intuitionos-image", "", "IExec kernel image path")
 	flagSet.StringVar(&fileRoot, "file-root", "", "Host directory exposed to guest File I/O")

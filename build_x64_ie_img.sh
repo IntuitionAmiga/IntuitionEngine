@@ -56,7 +56,7 @@ SDK_COMPANION_PDFS=(
     "${SCRIPT_DIR}/sdk/docs/iescript.pdf"
     "${SCRIPT_DIR}/sdk/docs/architecture.pdf"
 )
-AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS}"
+AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/build/arosvision-probe/AROS}"
 AB3D2_EMBED_DIR="${SCRIPT_DIR}/embedded/ab3d2"
 CHOCOLATE_DOOM_DIR="${CHOCOLATE_DOOM_DIR:-${SCRIPT_DIR}/../chocolate-doom}"
 IEDOOM_IE86="${IEDOOM_IE86:-build/iedoom.ie86}"
@@ -179,7 +179,7 @@ check_dependencies() {
         exit 1
     fi
     if [[ "${CREATE_SHARE}" == "true" && ! -f "${AROS_RELEASE_DIR}/S/Startup-Sequence" ]]; then
-        log_error "AROS release tree not found: ${AROS_RELEASE_DIR}"
+        log_error "AROS system tree not found: ${AROS_RELEASE_DIR}"
         log_error "Run: make x64-live-demos"
         exit 1
     fi
@@ -193,12 +193,6 @@ check_dependencies() {
         log_error "Run: make x64-live-demos"
         exit 1
     fi
-    if [[ "${CREATE_SHARE}" == "true" && ! -f "${AROS_RELEASE_DIR}/Libs/iewarp.library" ]]; then
-        log_error "AROS IEWarp library not found: ${AROS_RELEASE_DIR}/Libs/iewarp.library"
-        log_error "Run: make x64-live-demos"
-        exit 1
-    fi
-
     local available_space
     available_space="$(df -BG "$SCRIPT_DIR" | awk 'NR==2 {print $4}' | sed 's/G//')"
     if [[ "$available_space" -lt 18 ]]; then
@@ -259,17 +253,11 @@ check_live_payload_inputs() {
         log_error "Producer: make x64-live-ab3d2-assets"
         exit 1
     fi
-    payload_require_file "${AROS_RELEASE_DIR}/S/Startup-Sequence" "make aros-release-assets" "AROS Startup-Sequence"
-    payload_require_file "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Tool.info" "make aros-release-assets" "AROS default tool icon"
-    payload_require_file "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "make aros-release-assets" "AROS default drawer icon"
-    payload_require_file "${AROS_RELEASE_DIR}/Libs/iewarp.library" "make aros-iewarp-library" "AROS IEWarp library"
-    if ! grep -a -q 'Systems/AROS/Libs/iewarp_service.ie64' "${AROS_RELEASE_DIR}/Libs/iewarp.library"; then
-        log_error "AROS IEWarp library does not contain Systems/AROS/Libs/iewarp_service.ie64"
-        log_error "Producer: make aros-iewarp-library"
-        exit 1
-    fi
+    payload_require_file "${AROS_RELEASE_DIR}/S/Startup-Sequence" "make arosvision-live-tree" "AROS Startup-Sequence"
+    payload_require_file "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Tool.info" "make arosvision-live-tree" "AROS default tool icon"
+    payload_require_file "${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Drawer.info" "make arosvision-live-tree" "AROS default drawer icon"
     payload_require_file "${SCRIPT_DIR}/sdk/examples/prebuilt/iewarp_service.ie64" "make iewarp-runtime-assets" "IEWarp IE64 worker"
-    payload_require_file "${AROS_RELEASE_DIR}/Libs/iewarp_service.ie64" "make iewarp-runtime-assets" "AROS release IEWarp worker copy"
+    payload_require_file "${AROS_RELEASE_DIR}/Systems/AROS/Libs/iewarp_service.ie64" "make arosvision-live-tree" "AROSVision IEWarp worker copy"
     payload_require_file "${SCRIPT_DIR}/sdk/intuitionos/iexec/iexec.ie64" "make intuitionos" "IntuitionOS IExec kernel"
     payload_require_file "${SCRIPT_DIR}/sdk/intuitionos/system/SYS/IOSSYS/S/Startup-Sequence" "make intuitionos" "IntuitionOS Startup-Sequence"
     payload_require_file "${SCRIPT_DIR}/sdk/intuitionos/system/SYS/IOSSYS/Tools/Shell" "make intuitionos" "IntuitionOS Shell"
@@ -384,7 +372,6 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/Docs/architecture.pdf" "make x64-live-sdk-companion-pdfs" "staged architecture companion PDF"
 
     payload_require_file "${payload_root}/Systems/AROS/S/Startup-Sequence" "make aros-release-assets" "staged AROS Startup-Sequence"
-    payload_require_file "${payload_root}/Systems/AROS/Libs/iewarp.library" "make aros-iewarp-library" "staged AROS IEWarp library"
     payload_require_file "${payload_root}/Systems/AROS/Libs/iewarp_service.ie64" "make iewarp-runtime-assets" "staged AROS IEWarp worker"
     payload_require_file "${payload_root}/Systems/AROS/Demos/RotoAPI" "make x64-live-aros-demos" "staged AROS RotoAPI demo"
     payload_require_file "${payload_root}/Systems/AROS/Demos/RotoHW" "make x64-live-aros-demos" "staged AROS RotoHW demo"
@@ -521,12 +508,6 @@ verify_staged_share_payload() {
         log_error "Expected: Docs/IEProgRefGuide/00-Preface.pdf and 17-pokey.pdf"
         exit 1
     fi
-    if ! grep -a -q 'Systems/AROS/Libs/iewarp_service.ie64' "${payload_root}/Systems/AROS/Libs/iewarp.library"; then
-        log_error "Staged AROS iewarp.library does not contain Systems/AROS/Libs/iewarp_service.ie64"
-        log_error "Producer: make aros-iewarp-library"
-        exit 1
-    fi
-
     log_success "Staged IESHARE payload matches the live manifest"
 }
 
@@ -583,9 +564,9 @@ def copy_group(entries, dst_dir):
     files = [entry for entry in entries if entry.is_file(follow_symlinks=False)]
     links = [entry for entry in entries if entry.is_symlink()]
     if links:
-        raise SystemExit(f"AROS release tree contains unsupported symlink case collision: {links[0].path}")
+        raise SystemExit(f"AROS system tree contains unsupported symlink case collision: {links[0].path}")
     if dirs and files:
-        raise SystemExit(f"AROS release tree contains file/directory case collision: {entries[0].path}")
+        raise SystemExit(f"AROS system tree contains file/directory case collision: {entries[0].path}")
     dst_name = choose_name(entries)
     dst_path = os.path.join(dst_dir, dst_name)
     if dirs:
@@ -841,8 +822,7 @@ Guest OS payloads
 
 Systems/AROS is the AROS SYS: root used by the live image.
 Systems/AROS/Demos contains AROS-native demo programs.
-Systems/AROS/Libs contains AROS libraries and private library resources,
-including iewarp_service.ie64 for iewarp.library.
+Systems/AROS/Libs contains private AROS resources such as iewarp_service.ie64.
 
 Systems/EmuTOS is the EmuTOS GEMDOS drive root used by the live image.
 Systems/EmuTOS/Demos contains GEMDOS demo programs.

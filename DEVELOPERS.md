@@ -780,7 +780,7 @@ AROS (Amiga Research Operating System) runs on the IE M68K core with a full Work
 |------|-------------|
 | `-aros` | Boot AROS from embedded or default ROM image |
 | `-aros-image <path>` | Boot AROS from external ROM image |
-| `-aros-drive <dir>` | Host directory mapped as IE: volume (default: `~/`) |
+| `-aros-drive <dir>` | Host directory mapped as IE: volume (default: generated AROSVision tree or bundled `AROS/`) |
 
 ### Key Files
 
