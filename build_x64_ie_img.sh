@@ -45,6 +45,7 @@ ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${M
 IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"
 IE_INSTALL_NAME="IntuitionEngine"
 HOST_HELPER_BINARY="${WORK_DIR}/intuitionengine-host-helper"
+ROOT_PART_IMG="${WORK_DIR}/root-partition.ext4"
 PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"
 REFMAN_PDF_DIR="${SCRIPT_DIR}/sdk/docs/refman.publish/pdf"
 SDK_TOOLS_BUILD_DIR="${LIVE_OUT_DIR}/sdk-tools"
@@ -132,9 +133,24 @@ log_section() {
     echo -e "${COLOR_BOLD_CYAN}== $* ==${COLOR_RESET}" | tee -a "$LOG_FILE"
 }
 
+configure_guestfs_environment() {
+    local guestfs_tmp_dir="${WORK_DIR}/.tmp"
+    local guestfs_cache_dir="${WORK_DIR}/.guestfs-cache"
+    local guestfs_runtime_dir="${WORK_DIR}/.runtime"
+
+    mkdir -p "$guestfs_tmp_dir" "$guestfs_cache_dir" "$guestfs_runtime_dir"
+    chmod 700 "$guestfs_runtime_dir"
+
+    export TMPDIR="$guestfs_tmp_dir"
+    export LIBGUESTFS_TMPDIR="$guestfs_tmp_dir"
+    export LIBGUESTFS_CACHEDIR="$guestfs_cache_dir"
+    export XDG_RUNTIME_DIR="$guestfs_runtime_dir"
+}
+
 cleanup() {
     local status=$?
     if [[ $status -ne 0 ]]; then
+        log_warn "Build failed at ${BASH_SOURCE[1]:-${BASH_SOURCE[0]}}:${BASH_LINENO[0]} while running: ${BASH_COMMAND}"
         log_warn "Build failed. Work directory kept for inspection: ${WORK_DIR}"
     fi
 }
@@ -143,7 +159,7 @@ trap cleanup EXIT
 
 check_dependencies() {
     log_section "Checking dependencies"
-    local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum)
+    local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum /sbin/debugfs)
     if [[ "${CREATE_SHARE}" == "true" ]]; then
         required_cmds+=(mformat mcopy rsync)
     fi
@@ -1613,14 +1629,31 @@ install_ie_binary() {
     log_section "Installing Intuition Engine binary"
     cp "$GOLDEN_IMG_PATH" "$OUTPUT_IMG"
     qemu-img resize -f raw "$OUTPUT_IMG" "$OUTPUT_IMAGE_SIZE" 2>&1 | tee -a "$LOG_FILE"
-    guestfish -a "$OUTPUT_IMG" run : part-expand-gpt /dev/sda 2>&1 | tee -a "$LOG_FILE"
-    virt-customize -a "$OUTPUT_IMG" \
-        --copy-in "${IE_BINARY}:/opt/ie/" \
-        --run-command "mv /opt/ie/$(basename "${IE_BINARY}") /opt/ie/${IE_INSTALL_NAME}" \
-        --run-command "chmod 0755 /opt/ie/${IE_INSTALL_NAME}" \
-        --run-command "chown root:root /opt/ie /opt/ie/${IE_INSTALL_NAME}" \
-        --run-command 'chown -R 1000:1000 /var/ie' \
-        2>&1 | tee -a "$LOG_FILE"
+    extract_root_partition_image
+    local commands_file="${WORK_DIR}/debugfs-install-ie.cmds"
+    cat > "$commands_file" <<EOF
+mkdir /opt
+mkdir /opt/ie
+mkdir /var
+mkdir /var/ie
+mkdir /var/ie/share
+mkdir /var/ie/state
+rm /opt/ie/${IE_INSTALL_NAME}
+write ${IE_BINARY} /opt/ie/${IE_INSTALL_NAME}
+sif /opt/ie/${IE_INSTALL_NAME} mode 0100755
+sif /opt/ie/${IE_INSTALL_NAME} uid 0
+sif /opt/ie/${IE_INSTALL_NAME} gid 0
+sif /opt/ie mode 040755
+sif /opt/ie uid 0
+sif /opt/ie gid 0
+sif /var/ie uid 1000
+sif /var/ie gid 1000
+sif /var/ie/share uid 1000
+sif /var/ie/share gid 1000
+sif /var/ie/state uid 1000
+sif /var/ie/state gid 1000
+EOF
+    debugfs_apply "$commands_file"
 }
 
 build_host_helper_binary() {
@@ -1637,192 +1670,274 @@ build_host_helper_binary() {
     fi
 }
 
-install_host_helper_binary() {
-    log_section "Installing HOST helper binary"
-    virt-customize -a "$OUTPUT_IMG" \
-        --mkdir /usr/libexec \
-        --copy-in "${HOST_HELPER_BINARY}:/usr/libexec/" \
-        --run-command 'chown root:root /usr/libexec/intuitionengine-host-helper' \
-        --run-command 'chmod 0755 /usr/libexec/intuitionengine-host-helper' \
-        --run-command 'test -x /usr/libexec/intuitionengine-host-helper' \
-        2>&1 | tee -a "$LOG_FILE"
+discover_root_partition_geometry() {
+    eval "$(python3 - "$OUTPUT_IMG" <<'PY'
+import struct
+import sys
+
+image_path = sys.argv[1]
+sector_size = 512
+with open(image_path, "rb") as f:
+    f.seek(sector_size)
+    header = f.read(sector_size)
+    if header[:8] != b"EFI PART":
+        raise SystemExit(f"{image_path}: missing GPT header")
+    entries_lba = struct.unpack_from("<Q", header, 72)[0]
+    entry_count = struct.unpack_from("<I", header, 80)[0]
+    entry_size = struct.unpack_from("<I", header, 84)[0]
+    f.seek(entries_lba * sector_size)
+    for index in range(entry_count):
+        entry = f.read(entry_size)
+        if entry[:16] == b"\x00" * 16:
+            continue
+        first_lba, last_lba = struct.unpack_from("<QQ", entry, 32)
+        name = entry[56:128].decode("utf-16le", errors="ignore").rstrip("\x00")
+        if name == "cloudimg-rootfs":
+            print(f"ROOT_PART_NUM={index + 1}")
+            print(f"ROOT_START_B={first_lba * sector_size}")
+            print(f"ROOT_SIZE_B={(last_lba - first_lba + 1) * sector_size}")
+            raise SystemExit(0)
+raise SystemExit(f"{image_path}: cloudimg-rootfs partition not found")
+PY
+)"
+    export ROOT_PART_NUM ROOT_START_B ROOT_SIZE_B
 }
 
-compute_partition_sectors() {
-    local sector_size total_sectors part_info last_end_bytes align_bytes
-    sector_size="$(guestfish --ro -a "${OUTPUT_IMG}" run : blockdev-getss /dev/sda | tr -d '[:space:]')"
-    [[ "$sector_size" =~ ^[0-9]+$ ]] || { log_error "could not read sector size"; exit 1; }
-    log "Sector size: ${sector_size} bytes"
-    total_sectors="$(guestfish --ro -a "${OUTPUT_IMG}" run : blockdev-getsz /dev/sda | tr -d '[:space:]')"
-    [[ "$total_sectors" =~ ^[0-9]+$ ]] || { log_error "could not read total sector count"; exit 1; }
+extract_root_partition_image() {
+    discover_root_partition_geometry
+    log "Root partition: /dev/sda${ROOT_PART_NUM}, start=${ROOT_START_B}, size=${ROOT_SIZE_B}"
+    rm -f "$ROOT_PART_IMG"
+    dd if="$OUTPUT_IMG" of="$ROOT_PART_IMG" bs=4M \
+        iflag=skip_bytes,count_bytes skip="$ROOT_START_B" count="$ROOT_SIZE_B" \
+        status=progress 2>&1 | tee -a "$LOG_FILE"
+}
 
-    part_info="$(guestfish --ro -a "${OUTPUT_IMG}" run : part-list /dev/sda)"
-    last_end_bytes="$(printf '%s\n' "$part_info" | python3 -c '
-import re, sys
-text = sys.stdin.read()
-ends = [int(m.group(1)) for m in re.finditer(r"part_end:\s*(\d+)", text)]
-if not ends:
-    sys.stderr.write("no partitions found\n")
-    sys.exit(2)
-print(max(ends))
-')"
-
-    align_bytes=$((1024 * 1024))
-    SHARE_START_B=$(( ((last_end_bytes + 1 + align_bytes - 1) / align_bytes) * align_bytes ))
-
-    local label_val name val
-    for label_val in "SHARE_START_B:${SHARE_START_B}"; do
-        name="${label_val%%:*}"
-        val="${label_val##*:}"
-        if (( val % sector_size != 0 )); then
-            log_error "Partition offset ${name}=${val} not divisible by sector size ${sector_size}; alignment math broken."
-            exit 1
-        fi
-    done
-
-    SHARE_START=$(( SHARE_START_B / sector_size ))
-    SHARE_END=$(( total_sectors - 34 ))
-    if (( SHARE_END <= SHARE_START )); then
-        log_error "Not enough free space for IESHARE: start=${SHARE_START}, end=${SHARE_END}"
+flush_root_partition_image() {
+    if [[ ! -f "$ROOT_PART_IMG" ]]; then
+        log_error "Root partition work image missing: $ROOT_PART_IMG"
         exit 1
     fi
-    export SECTOR_SIZE="$sector_size"
-    export SHARE_START SHARE_END SHARE_START_B
+    log_section "Writing root partition updates"
+    dd if="$ROOT_PART_IMG" of="$OUTPUT_IMG" bs=4M \
+        oflag=seek_bytes seek="$ROOT_START_B" conv=notrunc \
+        status=progress 2>&1 | tee -a "$LOG_FILE"
 }
 
-find_partition_num_by_start() {
-    local target_start="$1"
-    local part_info
-    part_info="$(guestfish --ro -a "${OUTPUT_IMG}" run : part-list /dev/sda)"
-    printf '%s\n' "$part_info" | python3 -c '
-import re
-import sys
-
-target_sector = int(sys.argv[1])
-sector_size = int(sys.argv[2])
-text = sys.stdin.read()
-
-for entry in re.finditer(r"\{[^}]+\}", text, re.S):
-    block = entry.group(0)
-    m_num = re.search(r"part_num:\s*(\d+)", block)
-    m_start = re.search(r"part_start:\s*(\d+)", block)
-    if not m_num or not m_start:
-        continue
-    start = int(m_start.group(1)) // sector_size
-    if start == target_sector:
-        print(m_num.group(1))
-        sys.exit(0)
-
-sys.stderr.write(f"no partition starts at sector {target_sector}\n")
-sys.exit(2)
-' "$target_start" "$SECTOR_SIZE"
+debugfs_apply() {
+    local commands_file="$1"
+    /sbin/debugfs -w -f "$commands_file" "$ROOT_PART_IMG" 2>&1 | tee -a "$LOG_FILE"
 }
 
-find_partition_size_by_start() {
-    local target_start="$1"
-    local part_info
-    part_info="$(guestfish --ro -a "${OUTPUT_IMG}" run : part-list /dev/sda)"
-    printf '%s\n' "$part_info" | python3 -c '
-import re
-import sys
-
-target_sector = int(sys.argv[1])
-sector_size = int(sys.argv[2])
-text = sys.stdin.read()
-
-for entry in re.finditer(r"\{[^}]+\}", text, re.S):
-    block = entry.group(0)
-    m_start = re.search(r"part_start:\s*(\d+)", block)
-    m_size = re.search(r"part_size:\s*(\d+)", block)
-    if not m_start or not m_size:
-        continue
-    start = int(m_start.group(1)) // sector_size
-    if start == target_sector:
-        print(m_size.group(1))
-        sys.exit(0)
-
-sys.stderr.write(f"no partition starts at sector {target_sector}\n")
-sys.exit(2)
-' "$target_start" "$SECTOR_SIZE"
-}
-
-discover_appended_partition_devices() {
-    if [[ "${CREATE_SHARE}" == "true" ]]; then
-        IESHARE_NUM="$(find_partition_num_by_start "$SHARE_START")"
-        IESHARE_SIZE_B="$(find_partition_size_by_start "$SHARE_START")"
-        IESHARE_DEV="/dev/sda${IESHARE_NUM}"
-    else
-        IESHARE_NUM=""
-        IESHARE_DEV=""
-        IESHARE_SIZE_B=""
-    fi
-    export IESHARE_NUM IESHARE_DEV IESHARE_SIZE_B
-    if [[ "${CREATE_SHARE}" == "true" ]]; then
-        log "IESHARE device: ${IESHARE_DEV}"
-    fi
-}
-
-set_share_partition_type() {
-    if [[ "${CREATE_SHARE}" != "true" ]]; then
-        return 0
-    fi
-
-    local part_table_type
-    part_table_type="$(guestfish --ro -a "${OUTPUT_IMG}" run : part-get-parttype /dev/sda | tr -d '[:space:]')"
-    case "$part_table_type" in
-        gpt)
-            guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
-run
-part-set-gpt-type /dev/sda ${IESHARE_NUM} EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
-part-set-name /dev/sda ${IESHARE_NUM} IESHARE
-GUESTFISH_EOF
-            ;;
-        msdos)
-            guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
-run
-part-set-mbr-id /dev/sda ${IESHARE_NUM} 0x0c
-GUESTFISH_EOF
-            ;;
-        *)
-            log_warn "Unknown partition table type ${part_table_type}; leaving IESHARE partition type unchanged"
-            ;;
-    esac
+install_host_helper_binary() {
+    log_section "Installing HOST helper binary"
+    local commands_file="${WORK_DIR}/debugfs-install-host-helper.cmds"
+    cat > "$commands_file" <<EOF
+mkdir /usr/libexec
+rm /usr/libexec/intuitionengine-host-helper
+write ${HOST_HELPER_BINARY} /usr/libexec/intuitionengine-host-helper
+sif /usr/libexec/intuitionengine-host-helper mode 0100755
+sif /usr/libexec/intuitionengine-host-helper uid 0
+sif /usr/libexec/intuitionengine-host-helper gid 0
+EOF
+    debugfs_apply "$commands_file"
 }
 
 append_partitions() {
     log_section "Appending persistent FAT32 partition"
-    compute_partition_sectors
-
-    if [[ "${CREATE_SHARE}" == "true" ]]; then
-        guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
-run
-part-add /dev/sda p ${SHARE_START} ${SHARE_END}
-GUESTFISH_EOF
+    if [[ "${CREATE_SHARE}" != "true" ]]; then
+        log_warn "Skipping IESHARE partition because --no-share was passed"
+        return 0
     fi
 
-    discover_appended_partition_devices
-    set_share_partition_type
+    eval "$(python3 - "$OUTPUT_IMG" "$FATSHARE_LABEL" <<'PY'
+import binascii
+import os
+import struct
+import sys
+import uuid
+
+image_path, share_label = sys.argv[1], sys.argv[2]
+sector_size = 512
+header_struct = struct.Struct("<8sIIIIQQQQ16sQIII")
+basic_data_guid = uuid.UUID("EBD0A0A2-B9E5-4433-87C0-68B6B72699C7").bytes_le
+zero_guid = b"\x00" * 16
+
+def align_up(value, align):
+    return ((value + align - 1) // align) * align
+
+def read_header(f, lba):
+    f.seek(lba * sector_size)
+    raw = bytearray(f.read(sector_size))
+    fields = header_struct.unpack(bytes(raw[:header_struct.size]))
+    if fields[0] != b"EFI PART":
+        raise SystemExit(f"{image_path}: missing GPT header at LBA {lba}")
+    return raw, fields
+
+def header_crc(raw, header_size):
+    data = bytearray(raw[:header_size])
+    struct.pack_into("<I", data, 16, 0)
+    return binascii.crc32(data) & 0xffffffff
+
+def write_header(f, current_lba, backup_lba, first_usable, last_usable, disk_guid,
+                 entries_lba, entry_count, entry_size, entries_crc):
+    header_size = 92
+    raw = bytearray(sector_size)
+    header_struct.pack_into(
+        raw,
+        0,
+        b"EFI PART",
+        0x00010000,
+        header_size,
+        0,
+        0,
+        current_lba,
+        backup_lba,
+        first_usable,
+        last_usable,
+        disk_guid,
+        entries_lba,
+        entry_count,
+        entry_size,
+        entries_crc,
+    )
+    crc = header_crc(raw, header_size)
+    struct.pack_into("<I", raw, 16, crc)
+    f.seek(current_lba * sector_size)
+    f.write(raw)
+
+def entry_used(entry):
+    return entry[:16] != zero_guid
+
+with open(image_path, "r+b") as f:
+    image_size = os.fstat(f.fileno()).st_size
+    if image_size % sector_size != 0:
+        raise SystemExit(f"{image_path}: size is not sector-aligned")
+    total_lbas = image_size // sector_size
+    primary_raw, h = read_header(f, 1)
+    (
+        _sig,
+        _rev,
+        header_size,
+        expected_crc,
+        _reserved,
+        current_lba,
+        _old_backup_lba,
+        first_usable,
+        _old_last_usable,
+        disk_guid,
+        entries_lba,
+        entry_count,
+        entry_size,
+        _entries_crc,
+    ) = h
+    if current_lba != 1:
+        raise SystemExit(f"{image_path}: primary GPT is not at LBA 1")
+    actual_crc = header_crc(primary_raw, header_size)
+    if actual_crc != expected_crc:
+        raise SystemExit(f"{image_path}: primary GPT header CRC mismatch")
+
+    entries_bytes = entry_count * entry_size
+    entry_sectors = align_up(entries_bytes, sector_size) // sector_size
+    f.seek(entries_lba * sector_size)
+    entries = bytearray(f.read(entry_sectors * sector_size))
+    active = []
+    empty_index = None
+    for index in range(entry_count):
+        start = index * entry_size
+        entry = entries[start:start + entry_size]
+        if entry_used(entry):
+            first_lba, last_lba = struct.unpack_from("<QQ", entry, 32)
+            active.append((index + 1, first_lba, last_lba))
+        elif empty_index is None:
+            empty_index = index
+    if empty_index is None:
+        raise SystemExit(f"{image_path}: no free GPT partition entry for {share_label}")
+    if not active:
+        raise SystemExit(f"{image_path}: no existing GPT partitions found")
+
+    backup_lba = total_lbas - 1
+    backup_entries_lba = backup_lba - entry_sectors
+    last_usable = backup_entries_lba - 1
+    share_start = align_up(max(last for _num, _first, last in active) + 1, 2048)
+    share_end = last_usable
+    if share_end <= share_start:
+        raise SystemExit(
+            f"{image_path}: not enough free space for {share_label}: "
+            f"start={share_start}, end={share_end}"
+        )
+
+    name = share_label.encode("utf-16le")[:72]
+    name += b"\x00" * (72 - len(name))
+    new_entry = bytearray(entry_size)
+    struct.pack_into("<16s16sQQQ72s", new_entry, 0,
+                     basic_data_guid, uuid.uuid4().bytes_le,
+                     share_start, share_end, 0, name)
+    entries[empty_index * entry_size:(empty_index + 1) * entry_size] = new_entry
+    entries_crc = binascii.crc32(entries[:entries_bytes]) & 0xffffffff
+
+    f.seek(entries_lba * sector_size)
+    f.write(entries)
+    f.seek(backup_entries_lba * sector_size)
+    f.write(entries)
+    write_header(f, 1, backup_lba, first_usable, last_usable, disk_guid,
+                 entries_lba, entry_count, entry_size, entries_crc)
+    write_header(f, backup_lba, 1, first_usable, last_usable, disk_guid,
+                 backup_entries_lba, entry_count, entry_size, entries_crc)
+
+share_size_b = (share_end - share_start + 1) * sector_size
+print(f"SECTOR_SIZE={sector_size}")
+print(f"SHARE_START={share_start}")
+print(f"SHARE_END={share_end}")
+print(f"SHARE_START_B={share_start * sector_size}")
+print(f"IESHARE_NUM={empty_index + 1}")
+print(f"IESHARE_SIZE_B={share_size_b}")
+print(f"IESHARE_DEV=/dev/sda{empty_index + 1}")
+PY
+)"
+    export SECTOR_SIZE SHARE_START SHARE_END SHARE_START_B IESHARE_NUM IESHARE_SIZE_B IESHARE_DEV
+    log "Sector size: ${SECTOR_SIZE} bytes"
+    log "IESHARE device: ${IESHARE_DEV}"
+    log "IESHARE byte range: start=${SHARE_START_B}, size=${IESHARE_SIZE_B}"
 }
 
 write_fstab() {
     log_section "Writing fstab entries"
-    local os_root_dev
-    os_root_dev="$(discover_root_device "$OUTPUT_IMG")"
-    log "OS root partition: ${os_root_dev}"
+    local fstab_host="${WORK_DIR}/fstab"
+    local fstab_new="${WORK_DIR}/fstab.new"
+    local commands_file="${WORK_DIR}/debugfs-fstab.cmds"
+    /sbin/debugfs -R "dump /etc/fstab ${fstab_host}" "$ROOT_PART_IMG" 2>&1 | tee -a "$LOG_FILE"
+    python3 - "$fstab_host" "$fstab_new" "$CREATE_SHARE" <<'PY'
+import sys
 
-    virt-customize -a "$OUTPUT_IMG" \
-        --run-command "awk 'BEGIN{OFS=\"\t\"} /^#/ || NF < 4 {print; next} (\$2 == \"/\" || \$2 == \"/boot\") && \$4 !~ /(^|,)relatime(,|$)/ {\$4 = \$4 \",relatime\"} {print}' /etc/fstab > /etc/fstab.ie && mv /etc/fstab.ie /etc/fstab" \
-        2>&1 | tee -a "$LOG_FILE"
-
-    if [[ "${CREATE_SHARE}" == "true" ]]; then
-        guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
-run
-mount ${os_root_dev} /
-mkdir-p /var/ie/share
-write-append /etc/fstab "LABEL=IESHARE /var/ie/share vfat defaults,relatime,nofail,umask=0022,uid=1000,gid=1000 0 0\n"
-umount /
-GUESTFISH_EOF
-    fi
+src, dst, create_share = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
+lines = open(src, "r", encoding="utf-8").read().splitlines()
+out = []
+seen_share = False
+for line in lines:
+    parts = line.split()
+    if parts and not line.lstrip().startswith("#"):
+        if len(parts) >= 4 and parts[1] in ("/", "/boot"):
+            opts = parts[3].split(",")
+            if "relatime" not in opts:
+                opts.append("relatime")
+                parts[3] = ",".join(opts)
+                line = "\t".join(parts)
+        if parts[0] == "LABEL=IESHARE":
+            seen_share = True
+    out.append(line)
+if create_share and not seen_share:
+    out.append("LABEL=IESHARE /var/ie/share vfat defaults,relatime,nofail,umask=0022,uid=1000,gid=1000 0 0")
+with open(dst, "w", encoding="utf-8") as f:
+    f.write("\n".join(out) + "\n")
+PY
+    cat > "$commands_file" <<EOF
+rm /etc/fstab
+write ${fstab_new} /etc/fstab
+sif /etc/fstab mode 0100644
+sif /etc/fstab uid 0
+sif /etc/fstab gid 0
+EOF
+    debugfs_apply "$commands_file"
 }
 
 format_share_partition_rootless() {
@@ -1832,7 +1947,6 @@ format_share_partition_rootless() {
     fi
 
     log_section "Formatting IESHARE FAT32 partition rootlessly"
-    IESHARE_SIZE_B="$(find_partition_size_by_start "$SHARE_START")"
     local fat_img="${WORK_DIR}/ieshare-fat32.img"
     rm -f "$fat_img"
     truncate -s "$IESHARE_SIZE_B" "$fat_img"
@@ -1840,15 +1954,45 @@ format_share_partition_rootless() {
     stage_share_payload
     local payload_entries=("${SHARE_PAYLOAD_ROOT}"/*)
     mcopy -i "$fat_img" -D A -s "${payload_entries[@]}" ::/
-    guestfish -a "${OUTPUT_IMG}" <<GUESTFISH_EOF
-run
-upload "$fat_img" ${IESHARE_DEV}
-GUESTFISH_EOF
+    dd if="$fat_img" of="$OUTPUT_IMG" bs=1M seek="$(( SHARE_START_B / 1048576 ))" conv=notrunc status=progress 2>&1 | tee -a "$LOG_FILE"
 }
 
 validate_image() {
     log_section "Validating image layout"
-    virt-filesystems --all --long -h -a "${OUTPUT_IMG}" 2>&1 | tee -a "$LOG_FILE"
+    python3 - "$OUTPUT_IMG" <<'PY' 2>&1 | tee -a "$LOG_FILE"
+import os
+import struct
+import sys
+
+image_path = sys.argv[1]
+sector_size = 512
+entry_size = 128
+with open(image_path, "rb") as f:
+    f.seek(sector_size)
+    header = f.read(sector_size)
+    if header[:8] != b"EFI PART":
+        raise SystemExit(f"{image_path}: missing GPT header")
+    entries_lba = struct.unpack_from("<Q", header, 72)[0]
+    entry_count = struct.unpack_from("<I", header, 80)[0]
+    entry_size = struct.unpack_from("<I", header, 84)[0]
+    f.seek(entries_lba * sector_size)
+    print("Name      Type       VFS     Label           MBR Size  Parent")
+    for index in range(entry_count):
+        entry = f.read(entry_size)
+        if entry[:16] == b"\x00" * 16:
+            continue
+        first_lba, last_lba = struct.unpack_from("<QQ", entry, 32)
+        raw_name = entry[56:128]
+        name = raw_name.decode("utf-16le", errors="ignore").rstrip("\x00") or "-"
+        size_b = (last_lba - first_lba + 1) * sector_size
+        if size_b >= 1024 ** 3:
+            size = f"{size_b // (1024 ** 3)}G"
+        elif size_b >= 1024 ** 2:
+            size = f"{size_b // (1024 ** 2)}M"
+        else:
+            size = f"{size_b}B"
+        print(f"/dev/sda{index + 1:<2} partition  -       {name:<15} -   {size:<5} /dev/sda")
+PY
 }
 
 compress_image() {
@@ -1895,6 +2039,7 @@ PY
 }
 
 main() {
+    configure_guestfs_environment
     if [[ "$PAYLOAD_CHECK_ONLY" == "true" ]]; then
         check_live_payload_inputs
         stage_share_payload
@@ -1917,6 +2062,7 @@ main() {
     install_host_helper_binary
     append_partitions
     write_fstab
+    flush_root_partition_image
     format_share_partition_rootless
     validate_image
     compress_image

@@ -296,6 +296,12 @@ Line 20 writes the status byte for note-on, channel `0`. Lines 30 and
 because the last status was `$90`, another note byte and a zero
 velocity are enough to turn the note off.
 
+The live MIDI block is a port, not ordinary RAM. Writes to
+`IE_MIDI_LIVE_DATA` and `IE_MIDI_LIVE_CTRL` do not leave bytes behind
+for a later memory dump. Read `IE_MIDI_LIVE_STATUS` to see whether the
+live port is active, or use IE Mon's `io midilive` view when you want
+to inspect the port.
+
 The file player and live port share one RawlandMini synth and one
 `10`-voice pool. If both are sounding and the pool is full, a new live
 note can steal a file-player voice before it steals another live voice.

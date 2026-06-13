@@ -48,7 +48,7 @@ chapter give the full story; this appendix is the cheat sheet.
 | POKEY              | `$D200`-`$D20A`. |
 | TED audio          | `$D600`-`$D605`. |
 | MIDI/MUS player    | `$FBA0`-`$FBBF`. |
-| Live MIDI port     | `$FBF4`-`$FBF6`. |
+| Live MIDI port     | `$FBF4`-`$FBF6`; data and control writes are port writes, not RAM shadow bytes. |
 
 ## H.4 Z80
 
@@ -75,6 +75,9 @@ chapter give the full story; this appendix is the cheat sheet.
 | Vector table       | `$0000.0000`-`$0000.03FC` (256 entries, 4 bytes each). |
 | Bus error          | vector 2. |
 | Address error      | vector 3. |
+| FPU data registers | `FP0`-`FP7`, 68881-style extended memory format for `FMOVEM`. |
+| FPU control regs   | `FPCR`, `FPSR`, `FPIAR`, moved as longwords. |
+| FPU state frame    | `FSAVE` idle frame version `$1F`, payload size `$18`; `FRESTORE` consumes the frame. |
 | Illegal            | vector 4. |
 | Zero divide        | vector 5. |
 | CHK                | vector 6. |
@@ -116,7 +119,9 @@ mechanism described in Chapters 27 and 28.
 | `$F0700`  | `TERM_OUT`. |
 | `$F075C`/`$F0760` | `RTC_MONO_USEC_LO` / `RTC_MONO_USEC_HI`, monotonic elapsed microseconds. |
 | `$F0BA0`  | MIDI/MUS file-player block. |
-| `$F0BF4`  | `IE_MIDI_LIVE_DATA`, byte-wide live MIDI stream input. |
+| `$F0BF4`  | `IE_MIDI_LIVE_DATA`, byte-wide live MIDI stream input; writes do not shadow into RAM. |
+| `$F0BF5`  | `IE_MIDI_LIVE_STATUS`, bit `0` set means live MIDI active. |
+| `$F0BF6`  | `IE_MIDI_LIVE_CTRL`, bit `0` reset; writes do not shadow into RAM. |
 | `$F1400`  | HOST appliance block. |
 | `$F2200`  | File I/O block. `FILE_READ_MAX` is at `$F221C`; IE64 `FILE_DATA_PTR64` is at `$F22B0`. |
 | `$F2300`  | Media loader. |

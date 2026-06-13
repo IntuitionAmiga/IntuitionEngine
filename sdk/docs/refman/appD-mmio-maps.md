@@ -59,7 +59,7 @@ carry information.
 | `$F0080`  | `VIDEO_COLOR_MODE`| R/W | `0` RGBA32, `1` CLUT8. |
 | `$F0084`  | `VIDEO_FB_BASE`   | R/W | Framebuffer base address. |
 | `$F0088`-`$F0487` | palette  | R/W | 256-entry direct palette table. |
-| `$F0488`-`$F049B` | `BLT_EXT_*` | R/W | Extended blitter (large modes). |
+| `$F0488`-`$F049B` | `BLT_EXT_*` | R/W | `BLT_FLAGS`, `BLT_FG`, `BLT_BG`, `BLT_MASK_MOD`, `BLT_MASK_SRCX`. |
 
 `VIDEO_MODE` values:
 
@@ -90,6 +90,11 @@ carry information.
 
 For `MEMCOPY`, `BLT_SRC` is the source byte address, `BLT_DST` is the
 destination byte address, and `BLT_WIDTH` is the byte count.
+
+`BLT_FLAGS` bits `0`-`1` select RGBA32 or CLUT8 where the operation
+supports it, bits `4`-`7` select the raster operation, bit `11`
+selects MSB-first mask sampling for `MASKED_COPY`, and bit `12`
+selects alpha-template source bytes for `ALPHA_COPY`.
 
 ## D.2 Terminal / serial / input (`$F0700`-`$F07FF`)
 
@@ -139,7 +144,7 @@ Audio player control blocks in the same area:
 | `$F0BA0`-`$F0BBF` | MIDI/MUS | `MIDI_PLAY_PTR`, `MIDI_PLAY_LEN`, `MIDI_PLAY_CTRL`, `MIDI_PLAY_STATUS` (bit `0` busy, bit `1` error, bit `2` paused, bit `3` loading), `MIDI_POSITION`, `MIDI_VOLUME`, `MIDI_TEMPO_BPM`. |
 | `$F0BC0`-`$F0BD7` | MOD | `MOD_PLAY_PTR`, `MOD_PLAY_LEN`, `MOD_PLAY_CTRL`, `MOD_PLAY_STATUS`, `MOD_FILTER_MODEL`, `MOD_POSITION`. |
 | `$F0BD8`-`$F0BF3` | WAV | `WAV_PLAY_PTR`, `WAV_PLAY_LEN`, `WAV_PLAY_CTRL`, `WAV_PLAY_STATUS`, `WAV_POSITION`, `WAV_PLAY_PTR_HI`, `WAV_CHANNEL_BASE`, `WAV_VOLUME_L`, `WAV_VOLUME_R`, `WAV_FLAGS`. |
-| `$F0BF4`-`$F0BF6` | Live MIDI | `IE_MIDI_LIVE_DATA` byte write stream, `IE_MIDI_LIVE_STATUS` bit `0` active, `IE_MIDI_LIVE_CTRL` bit `0` reset. |
+| `$F0BF4`-`$F0BF6` | Live MIDI | `IE_MIDI_LIVE_DATA` byte write stream, `IE_MIDI_LIVE_STATUS` bit `0` active, `IE_MIDI_LIVE_CTRL` bit `0` reset. Data and control writes are port writes, not RAM shadow bytes. |
 
 ## D.4 SFX triggers (`$F0E80`-`$F0EFF`)
 

@@ -34,7 +34,11 @@ symbols, and Appendix J gives the full memory map.
 | BLIT M | Chapter 2, Chapter 4 |
 | BLIT MEMCOPY | Chapter 2, Chapter 4, Appendix D |
 | Blitter | Chapter 4, Appendix D |
+| BLT alpha template | Chapter 4, Appendix D |
 | BLT_FLAGS | Chapter 4 |
+| BLT mask MSB-first | Chapter 4, Appendix D |
+| BLT_MASK_MOD | Chapter 4, Appendix D |
+| BLT_MASK_SRCX | Chapter 4, Appendix D |
 | BLT_OP_MEMCOPY | Chapter 4, Appendix D |
 | BLT_STATUS | Chapter 4, Appendix D |
 | Block diagrams | Appendix K |
@@ -99,6 +103,9 @@ symbols, and Appendix J gives the full memory map.
 | FBZ_MODE | Chapter 9 |
 | Fixed-point maths | Chapter 4, Chapter 9, Appendix F |
 | Frequency tables | Appendix E |
+| FRESTORE | Chapter 29, Appendix G, Appendix H |
+| FSAVE | Chapter 29, Appendix G, Appendix H |
+| FPU state frame | Chapter 29, Appendix H |
 
 ## G
 

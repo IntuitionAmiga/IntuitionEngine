@@ -852,6 +852,49 @@ Current controlled polish pass:
      scans, publish strictly, and print PDFs only after the source
      tree is consistent.
 
+- Execute the post-graphics, live-MIDI, and M68K FPU PRG pass for the
+  current codebase. This pass is limited to reader-facing machine
+  contracts. Do not mention compatibility shims, guest operating
+  systems, guest filesystem bridges, packaging scripts, diagnostic
+  scripts, or other material that is not part of programming Intuition
+  Engine from BASIC, IE Mon, IE Script, or documented MMIO.
+
+  Canonical sources to check before writing:
+
+  - `video_chip.go` and `video_blitter_test.go` for `BLT_FLAGS` bits
+    `11` and `12`, mask source offset and row stride, alpha-template
+    source stride, and Mode 7 CLUT8 behaviour.
+  - `midi_live.go`, `midi_constants.go`, `debug_ioview.go`, and live
+    MIDI tests for the live MIDI byte registers and their no-shadow
+    read/write contract.
+  - `cpu_m68k.go` and `fpu_integration_test.go` for 68881-style FPU
+    decode, precision-qualified opmodes, immediate operands,
+    `FMOVEM`, `FSAVE`, and `FRESTORE`.
+
+  Execute this pass in book order:
+
+  1. Chapter 4: make `ALPHA_COPY` wording match the current
+     alpha-template flag, document MSB-first masked copy sampling,
+     `BLT_MASK_SRCX`, `BLT_MASK_MOD`, alpha-template source format,
+     and CLUT8 Mode 7 limits with typed examples or concise
+     register-level examples where the chapter already has a reader
+     path.
+  2. Chapter 21: add the live MIDI no-shadow rule. The reader should
+     inspect live state through `IE_MIDI_LIVE_STATUS` or `io midilive`,
+     not by expecting `IE_MIDI_LIVE_DATA` or `IE_MIDI_LIVE_CTRL` writes
+     to appear as RAM bytes.
+  3. Chapter 29: update the M68K floating-point section for the current
+     68881-style support: immediate sources, precision-qualified
+     single/double result forms, `FMOVEM`, control-register moves,
+     `FSAVE`, `FRESTORE`, and the existing packed-decimal boundary.
+  4. Appendices D, G, H, and L: update only the corresponding lookup
+     rows and index terms.
+  5. Claim ledger: record the exact source files checked and the
+     reader-facing contracts changed.
+  6. Run forbidden-term, dash, and targeted consistency scans, publish
+     the stripped tree, and print PDFs only after the source tree is
+     consistent.
+
 ## Reader Contract
 
 The book is for developing **on Intuition Engine for Intuition Engine**.

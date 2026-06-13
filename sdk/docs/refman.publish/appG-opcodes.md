@@ -179,7 +179,7 @@ Intuition Engine bus.
 | BCD         | `ABCD`, `SBCD`, `NBCD`. |
 | Multiprocessor | `TAS`, `CAS`, `CAS2`. |
 | System      | `TRAP #n`, `TRAPV`, `CHK`, `CHK2`, `STOP`, `RESET`, `ILLEGAL`, `NOP`, `LINK`, `UNLK`, `MOVE USP`, `MOVEC`, `MOVES`, `BKPT`, `RTE`. |
-| FPU         | 68881-style `FMOVE`, `FADD`, `FSUB`, `FMUL`, `FDIV`, `FSQRT`, `FABS`, `FNEG`, `FCMP`, `FTST`, `FBcc`, `FDBcc`, `FScc`, `FMOVEM`, and control-register moves. |
+| FPU         | 68881-style `FMOVE`, `FADD`, `FSUB`, `FMUL`, `FDIV`, `FMOD`, `FREM`, `FSCALE`, `FSQRT`, `FABS`, `FNEG`, `FCMP`, `FTST`, transcendental functions, `FBcc`, `FDBcc`, `FScc`, `FTRAPcc`, `FMOVECR`, `FMOVEM`, control-register moves, `FSAVE`, and `FRESTORE`. |
 | Line A/F    | unassigned opcode trap. |
 
 Byte-entry crib for Chapter 29:

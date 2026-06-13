@@ -71,7 +71,7 @@ AROS_RELEASE_DIR ?= $(AROS_BUILD_DIR)/bin/ie-m68k/AROS
 AROS_GIT_URL ?= https://github.com/IntuitionAmiga/AROS-deadw00d.git
 AROS_GIT_REF ?= ie-m68k
 AROS_GCC_VER ?= 10.5.0
-AROS_DEVELOPER_DIR ?= $(AROS_BUILD_DIR)/bin/ie-m68k/AROS/Developer
+AROS_DEVELOPER_DIR ?= $(AROS_BUILD_DIR)/bin/ie-m68k/AROS/Development
 AROS_ARCH_INCLUDE ?= $(AROS_SRC_DIR)/arch/m68k-ie/include
 AROS_CC ?= $(firstword $(wildcard $(AROS_BUILD_DIR)/bin/*/tools/crosstools/m68k-aros-gcc))
 AROSVISION_SOURCE ?= ../AROSVision
@@ -1471,11 +1471,11 @@ showreel-emutos:
 
 .PHONY: emutos-release-rom
 emutos-release-rom:
-	@if [ -f "$(EMUTOS_ROM)" ]; then \
-		echo "Using existing EmuTOS ROM: $(EMUTOS_ROM)"; \
-	elif [ -d "$(EMUTOS_SRC_DIR)" ]; then \
-		echo "EmuTOS ROM missing; building it..."; \
+	@if [ -d "$(EMUTOS_SRC_DIR)" ]; then \
+		echo "Refreshing EmuTOS ROM from source tree: $(EMUTOS_SRC_DIR)"; \
 		$(MAKE) emutos-rom; \
+	elif [ -f "$(EMUTOS_ROM)" ]; then \
+		echo "Using existing EmuTOS ROM: $(EMUTOS_ROM)"; \
 	else \
 		echo "Error: missing EmuTOS ROM ($(EMUTOS_ROM)) and local source tree ($(EMUTOS_SRC_DIR))."; \
 		echo "Provide one of them, then re-run this release target."; \

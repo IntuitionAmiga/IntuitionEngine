@@ -736,3 +736,30 @@ Entry format:
   Expected result: the BASIC listing plays a short RawlandMini phrase, `PEEK8($F0BF5)` prints `1` before reset and `0` after reset, the raw stream listing plays and releases middle C using running status, and IE Mon lists `LIVE_DATA`, `LIVE_STATUS`, and `LIVE_CTRL` in the `midilive` view.
   Author verification workflow: updated STYLE.md first with the e1aaa9b5 pass, checked the BASIC dispatcher, token values, live MIDI parser, shared synth priority rule, per-CPU include symbols, runtime status, and monitor I/O descriptor table against the changed chapter and appendix wording.
   Result: the reference guide now documents the live MIDI port in the same Chapter 21 house style as MIDI/MUS playback without adding a chapter, changing the file-player ABI, or importing non-reader-facing source comments.
+
+- Area: Ch 4 / App D / App L, VideoChip blitter mask, alpha-template, and CLUT8 Mode 7 behaviour.
+  Claim: `BLT_FLAGS` bit `11` makes `MASKED_COPY` sample mask bits MSB-first; `BLT_MASK_SRCX` selects the first mask bit; `BLT_MASK_MOD` supplies the mask row stride when non-zero; `BLT_FLAGS` bit `12` makes `ALPHA_COPY` treat `BLT_SRC` as an 8-bit alpha plane blended with `BLT_FG`; alpha-template zero source stride defaults to width bytes; Mode 7 honours the BPP field and can sample and write CLUT8 index bytes as well as RGBA32 pixels.
+  Canonical sources checked: video_chip.go, video_blitter_test.go.
+  Reader workflow: use Chapter 4 `POKE32` blitter setup, print `BLT_STATUS`, and choose `BLT_FLAGS` bit `11` or bit `12` only when the mask or alpha-template source format requires it.
+  Runnable example: Ch 4 masked-copy diamond, alpha-copy glow, alpha-template bar, and Mode 7 checkerboard listings.
+  Expected result: masked copy follows the documented bit order and source bit offset, alpha-template uses one source byte per destination pixel, and CLUT8 Mode 7 uses byte-sized texels and destination pixels when the BPP field selects CLUT8.
+  Author verification workflow: updated STYLE.md first with the current VideoChip pass, checked the blitter flag constants, mask sampling path, alpha-template path, stride defaults, Mode 7 BPP path, and regression tests before changing Chapter 4 and lookup appendices.
+  Result: the reference guide now matches the current VideoChip blitter contract without importing guest display-driver or demo material.
+
+- Area: Ch 21 / App D / App H / App L, Live MIDI no-shadow port behaviour.
+  Claim: `IE_MIDI_LIVE_DATA` and `IE_MIDI_LIVE_CTRL` are byte-wide port writes and do not leave RAM shadow bytes behind for later memory dumps; `IE_MIDI_LIVE_STATUS` remains the reader-visible proof register for the live port active bit.
+  Canonical sources checked: midi_constants.go, midi_live.go, midi_live_camd_test.go, debug_ioview.go.
+  Reader workflow: drive the live MIDI port with `MIDI` BASIC verbs or `POKE8`, then inspect state with `PEEK8($F0BF5)` or IE Mon `io midilive`.
+  Runnable example: Ch 21 raw middle-C live MIDI byte stream listing.
+  Expected result: live notes sound and reset as before, while memory dumps of the data and control registers are not presented as proof of the last byte written.
+  Author verification workflow: compared the no-shadow mapping and byte handlers with Chapter 21, Appendix D, Appendix H, and Appendix L wording.
+  Result: the guide now states the port-style behaviour that monitor users need without exposing compatibility bridge details.
+
+- Area: Ch 29 / App G / App H / App L, M68K 68881-style FPU coverage.
+  Claim: the M68K Line-F coprocessor ID `1` path accepts immediate FPU operands in byte, word, long, single, double, and extended formats; accepts `FMOVEM` for FP data and control registers with correct pre-decrement and post-increment sizing; decodes precision-qualified single and double result forms; implements supervisor-only `FSAVE` and `FRESTORE`; and continues to reject packed-decimal FPU memory operands.
+  Canonical sources checked: cpu_m68k.go, fpu_integration_test.go, AUTHOR_PROVENANCE.md primary M68K and 68881 notes.
+  Reader workflow: use the Chapter 29 M68K FPU section as the supported boundary, use Appendix G for the quick mnemonic group, and use Appendix H for FP register and state-frame lookup.
+  Runnable example: Chapter 29's byte-entered M68K SID and Voodoo examples remain integer examples; this pass updates the FPU feature contract rather than adding a long floating-point monitor listing.
+  Expected result: readers see `FSAVE` / `FRESTORE`, `FMOVEM`, immediate operands, and precision-qualified forms as supported, and still see packed decimal as outside the accepted boundary.
+  Author verification workflow: updated STYLE.md first with the current M68K FPU pass, compared the decoder, state-frame helpers, precision opmode helper, immediate operand path, and FPU regression tests against Chapter 29 and the lookup appendices.
+  Result: the reference guide now matches the current M68K FPU implementation while preserving the existing MC68020-class chapter voice.

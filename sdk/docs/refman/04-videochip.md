@@ -300,7 +300,7 @@ copy, fill, scale, colour-expand, and extended line paths.
 If `BLT_FLAGS` is `0`, the draw mode is treated as `COPY` (`3`) for
 compatibility. Otherwise, the draw-mode field is used exactly. Note the
 consequence: because `0` is the RGBA32-Copy sentinel, the `Clear` draw mode
-(`0`) cannot be expressed in RGBA32 with no other flags set — fill with colour
+(`0`) cannot be expressed in RGBA32 with no other flags set; fill with colour
 `0` instead.
 
 > **RGBA32 raster-op caveat.** The draw modes operate on the full 32-bit pixel,
@@ -479,7 +479,8 @@ before starting the blit.
 ### 4.6.8 MASKED_COPY
 
 `MASKED_COPY` is an RGBA32 sprite copy controlled by a 1-bit mask.
-It ignores `BLT_FLAGS`.
+It uses three mask-related fields: `BLT_MASK`, `BLT_MASK_MOD`, and
+`BLT_MASK_SRCX`. `BLT_FLAGS` bit `11` changes the bit order.
 
 | Register | Meaning |
 |----------|---------|
@@ -488,11 +489,21 @@ It ignores `BLT_FLAGS`.
 | `BLT_WIDTH`, `BLT_HEIGHT` | Rectangle size in pixels. |
 | `BLT_SRC_STRIDE`, `BLT_DST_STRIDE` | Source and destination row strides. |
 | `BLT_MASK` | 1-bit mask base address. |
+| `BLT_MASK_MOD` | Mask bytes to advance after each mask row; `0` means packed rows. |
+| `BLT_MASK_SRCX` | First bit offset in the mask row. |
+| `BLT_FLAGS` bit `11` | `0` = LSB-first mask bits, `1` = MSB-first mask bits. |
 
-Mask bits are packed least-significant-bit first. Pixel `x` reads
-bit `(x MOD 8)` from byte `BLT_MASK + x/8`. A set bit copies the
-source pixel. A clear bit leaves the destination unchanged. The mask
-row stride is fixed to `(width + 7) / 8` bytes.
+By default, mask bits are packed least-significant-bit first. Pixel
+`x` reads bit `((BLT_MASK_SRCX + x) MOD 8)` from byte
+`BLT_MASK + (BLT_MASK_SRCX + x) / 8`. A set bit copies the source
+pixel. A clear bit leaves the destination unchanged. If
+`BLT_MASK_MOD` is `0`, the mask row stride is `(width + 7) / 8`
+bytes. If it is non-zero, that value is used as the mask row stride.
+
+Set `BLT_FLAGS` bit `11` for most-significant-bit first masks. In
+that form, bit `7` of the first mask byte is the leftmost pixel, then
+bit `6`, and so on. This is useful when the mask data was prepared in
+the same order as a 1-bit display plane.
 
 This example draws a small diamond sprite. The source is an ordinary
 `8` x `8` RGBA32 square, but the mask lets only the diamond-shaped
@@ -533,8 +544,9 @@ not a table of 32-bit words. The final `PRINT` should show `2`.
 
 ### 4.6.9 ALPHA_COPY
 
-`ALPHA_COPY` is an RGBA32 sprite copy with source alpha. It ignores
-`BLT_FLAGS`.
+`ALPHA_COPY` has two forms. With `BLT_FLAGS` bit `12` clear, it is an
+RGBA32 sprite copy with source alpha. With bit `12` set, the source is
+an 8-bit alpha template and `BLT_FG` supplies the colour.
 
 | Source alpha | Result |
 |--------------|--------|
@@ -584,6 +596,43 @@ background:
 Line `120` stores red, green, blue, and alpha bytes. The alpha value
 `128` makes the source about half opaque. The final `PRINT` should
 show `2`.
+
+For alpha-template mode, write the source as one byte per pixel. A
+source byte of `0` leaves the destination alone, `255` writes
+`BLT_FG` fully opaque, and values in between blend `BLT_FG` over the
+destination. If `BLT_SRC_STRIDE` is `0`, the source stride defaults to
+the width in bytes, not to RGBA32 width.
+
+This shorter example draws a soft four-pixel bar from an 8-bit alpha
+template:
+
+```basic
+10 REM ALPHA TEMPLATE BAR
+20 FB=&H00100000:TPL=&H00630000
+30 ST=320*4
+40 POKE32 &H000F0004,&H04
+50 POKE32 &H000F0080,0
+60 POKE32 &H000F0084,FB
+70 POKE32 &H000F0000,1
+80 BLIT FILL FB,320,200,&H00000040,ST
+90 DATA 32,96,192,255,255,192,96,32
+100 FOR X=0 TO 7:READ A:POKE8 TPL+X,A:NEXT X
+110 POKE32 &H000F0024,TPL
+120 POKE32 &H000F0028,FB+100*ST+156*4
+130 POKE32 &H000F002C,8
+140 POKE32 &H000F0030,1
+150 POKE32 &H000F0034,0
+160 POKE32 &H000F0038,ST
+170 POKE32 &H000F048C,&H0000C0FF
+180 POKE32 &H000F0488,4096
+190 POKE32 &H000F0020,4
+200 POKE32 &H000F001C,1
+210 PRINT PEEK32(&H000F0044)
+```
+
+Line `180` sets `BLT_FLAGS` bit `12`. Line `170` sets `BLT_FG`.
+Line `150` sets the source stride to `0`, so it defaults to eight
+alpha bytes for this row.
 
 ### 4.6.10 COLOR_EXPAND
 
