@@ -18,56 +18,6 @@ realpath_m() {
   realpath -m "$1"
 }
 
-patch_ie_audio_driver_version() {
-  local path="$1"
-  [[ -f "$path" ]] || return 0
-
-  perl -e '
-    my $path = shift;
-    open my $fh, "+<:raw", $path or die "$path: $!\n";
-    seek($fh, 0x0f67, 0) or die "$path seek: $!\n";
-    read($fh, my $old, 1) == 1 or die "$path read\n";
-    die sprintf("%s: expected IEAudio ROMTag version 1 or 2 at 0x0f67, got 0x%02x\n", $path, ord($old))
-      unless ord($old) == 1 || ord($old) == 2;
-    seek($fh, 0x0f67, 0) or die "$path seek2: $!\n";
-    print $fh "\x02";
-  ' "$path"
-}
-
-patch_ie_audio_driver_name() {
-  local path="$1"
-  [[ -f "$path" ]] || return 0
-
-  perl -e '
-    my $path = shift;
-    open my $fh, "+<:raw", $path or die "$path: $!\n";
-    seek($fh, 0x0f4a, 0) or die "$path seek: $!\n";
-    read($fh, my $old, 18) == 18 or die "$path read\n";
-    die "$path: unexpected IEAudio resident name: $old\n"
-      unless $old =~ /^ie-audio\.(library|audio)\0/;
-    seek($fh, 0x0f4a, 0) or die "$path seek2: $!\n";
-    print $fh "ie-audio.audio\0\0\0\0";
-  ' "$path"
-}
-
-patch_ie_audio_start_guard() {
-  local path="$1"
-  [[ -f "$path" ]] || return 0
-
-  # Temporary guard: the current IE AHI playback slave crashes through
-  # audio.device. Keep the mode selectable, but make Test Sound fail cleanly.
-  perl -e '
-    my $path = shift;
-    open my $fh, "+<:raw", $path or die "$path: $!\n";
-    seek($fh, 0x02ee, 0) or die "$path seek: $!\n";
-    read($fh, my $old, 4) == 4 or die "$path read\n";
-    die sprintf("%s: expected AHIsub_Start prologue at 0x02ee, got %s\n", $path, unpack("H*", $old))
-      unless $old eq "\x4f\xef\xff\xdc" || $old eq "\x70\x05\x4e\x75";
-    seek($fh, 0x02ee, 0) or die "$path seek2: $!\n";
-    print $fh "\x70\x05\x4e\x75";
-  ' "$path"
-}
-
 write_ie_startup_sequence() {
   local source_path="$1"
   local output_path="$2"
@@ -112,18 +62,38 @@ write_ie_user_startup() {
   local output_path="$2"
 
   perl -ne '
-    if (/^\s*Mount\s+(GOOGLE|DBOX|KCON|KRAW):(?:\s|$)/i ||
-        /^\s*mount\s+(cbm0|apipe|aux|tee|zero):(?:\s|$)/i ||
-        /^\s*exe\s+<nil:\s+>nil:\s+l:fifo-handler\b/i ||
-        /^\s*c:TaskPriHandler\b/i ||
-        /^\s*run\s+>NIL:\s+>NIL:\s+yaws\b/i ||
-        /^\s*ntpSync\b/i) {
-      print "; IE disabled: $_";
-      next;
-    }
+	    if (/^\s*Mount\s+(GOOGLE|DBOX|KCON|KRAW):(?:\s|$)/i ||
+	        /^\s*mount\s+(cbm0|apipe|aux|tee|zero):(?:\s|$)/i ||
+	        /^\s*exe\s+<nil:\s+>nil:\s+l:fifo-handler\b/i ||
+	        /^\s*c:TaskPriHandler\b/i ||
+	        /^\s*run\s+>NIL:\s+>NIL:\s+yaws\b/i ||
+	        /^\s*ntpSync\b/i ||
+	        /^\s*Execute\s+\$\{UHCBIN\}UHC-Startup\b/i ||
+	        /^\s*Execute\s+ENV:PathManager\.prefs\b/i ||
+	        /^\s*execute\s+JFHD:Extras\/HD-ASSIGNS\b/i ||
+	        /^\s*Sys:Prefs\/Assigns\s+USE\b/i ||
+	        /^\s*Libs:svppc\/loadppclib\b/i ||
+	        /^\s*Run\b.*\bC:AmigaGPTD\b/i ||
+	        /^\s*stack\s+999999\b/i ||
+	        /^\s*mysql:bin\/mysqld\b/i) {
+	      print "; IE disabled: $_";
+	      next;
+	    }
 
-    print;
-  ' "$source_path" >"$output_path"
+	    if (/^\s*;BEGIN sofa\b/i) {
+	      $skip_sofa = 1;
+	      print "; IE disabled unsupported sofa block:\n";
+	      print "; $_";
+	      next;
+	    }
+	    if ($skip_sofa) {
+	      print "; $_";
+	      $skip_sofa = 0 if /^\s*;END sofa\b/i;
+	      next;
+	    }
+
+	    print;
+	  ' "$source_path" >"$output_path"
 }
 
 write_ie_default_prefs() {
@@ -279,17 +249,9 @@ fi
 if [[ -f "$ie_aros_dir/Devs/AHI/ie-audio.audio" ]]; then
   mkdir -p "$output_abs/Devs/AHI"
   cp -p "$ie_aros_dir/Devs/AHI/ie-audio.audio" "$output_abs/Devs/AHI/ie-audio.audio"
-  patch_ie_audio_driver_version "$output_abs/Devs/AHI/ie-audio.audio"
-  patch_ie_audio_driver_name "$output_abs/Devs/AHI/ie-audio.audio"
-  patch_ie_audio_start_guard "$output_abs/Devs/AHI/ie-audio.audio"
 fi
 
-if [[ -f "$ie_aros_dir/Libs/ie-audio.library" ]]; then
-  mkdir -p "$output_abs/Libs"
-  cp -p "$ie_aros_dir/Libs/ie-audio.library" "$output_abs/Libs/ie-audio.library"
-  patch_ie_audio_driver_version "$output_abs/Libs/ie-audio.library"
-  patch_ie_audio_start_guard "$output_abs/Libs/ie-audio.library"
-fi
+rm -f "$output_abs/Libs/ie-audio.library"
 
 iewarp_service_src=""
 for candidate in \

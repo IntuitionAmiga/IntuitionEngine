@@ -58,6 +58,18 @@ exe <nil: >nil: l:fifo-handler
 c:TaskPriHandler
 run >NIL: >NIL: yaws
 ntpSync de.pool.ntp.org
+Execute ${UHCBIN}UHC-Startup
+Execute ENV:PathManager.prefs
+execute JFHD:Extras/HD-ASSIGNS
+Sys:Prefs/Assigns USE
+Libs:svppc/loadppclib
+Run <>NIL: C:AmigaGPTD <>NIL:
+stack 999999
+mysql:bin/mysqld
+;BEGIN sofa
+Assign sofa: "System:Extras/Developing/sofa"
+endif
+;END sofa
 SRCUSER
 touch "$source/System/Wanderer/Wanderer" "$source/C/IPrefs" "$source/C/AddDatatypes"
 touch "$source/WBStartup/Clipper" "$source/WBStartup/Clipper.info" \
@@ -95,19 +107,13 @@ fi
 if [[ -f ../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS/Devs/AHI/ie-audio.audio ]]; then
   assert_file "$out/Devs/AHI/ie-audio.audio"
   strings -a "$out/Devs/AHI/ie-audio.audio" | rg -q '^ie-audio\.audio$' || \
-    fail "IE AHI driver resident name was not patched to ie-audio.audio"
-  xxd -g1 -s 0x0f5c -l 16 "$out/Devs/AHI/ie-audio.audio" | rg -q '81 02 09' || \
-    fail "IE AHI driver resident version was not patched to 2"
-  xxd -g1 -s 0x02ee -l 4 "$out/Devs/AHI/ie-audio.audio" | rg -q '70 05 4e 75' || \
-    fail "IE AHI driver playback guard was not applied"
+    fail "IE AHI driver resident name is not ie-audio.audio"
+  strings -a "$out/Devs/AHI/ie-audio.audio" | rg -q '^\$VER: ie-audio\.audio 2\.0 ' || \
+    fail "IE AHI driver resident version is not 2.0"
+  strings -a "$out/Devs/AHI/ie-audio.audio" | rg -q 'ie-audio\.library' && \
+    fail "IE AHI driver still contains ie-audio.library metadata"
 fi
-if [[ -f ../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS/Libs/ie-audio.library ]]; then
-  assert_file "$out/Libs/ie-audio.library"
-  xxd -g1 -s 0x0f5c -l 16 "$out/Libs/ie-audio.library" | rg -q '81 02 09' || \
-    fail "IE audio library resident version was not patched to 2"
-  xxd -g1 -s 0x02ee -l 4 "$out/Libs/ie-audio.library" | rg -q '70 05 4e 75' || \
-    fail "IE audio library playback guard was not applied"
-fi
+[[ ! -e "$out/Libs/ie-audio.library" ]] || fail "ie-audio.library was staged"
 if [[ -f ../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS/Libs/iewarp_service.ie64 ]]; then
   assert_file "$out/Systems/AROS/Libs/iewarp_service.ie64"
 fi
@@ -168,10 +174,21 @@ assert_contains "$out/S/User-Startup" '; IE disabled: exe <nil: >nil: l:fifo-han
 assert_contains "$out/S/User-Startup" '; IE disabled: c:TaskPriHandler'
 assert_contains "$out/S/User-Startup" '; IE disabled: run >NIL: >NIL: yaws'
 assert_contains "$out/S/User-Startup" '; IE disabled: ntpSync de.pool.ntp.org'
+assert_contains "$out/S/User-Startup" '; IE disabled: Execute \$\{UHCBIN\}UHC-Startup'
+assert_contains "$out/S/User-Startup" '; IE disabled: Execute ENV:PathManager.prefs'
+assert_contains "$out/S/User-Startup" '; IE disabled: execute JFHD:Extras/HD-ASSIGNS'
+assert_contains "$out/S/User-Startup" '; IE disabled: Sys:Prefs/Assigns USE'
+assert_contains "$out/S/User-Startup" '; IE disabled: Libs:svppc/loadppclib'
+assert_contains "$out/S/User-Startup" '; IE disabled: Run <>NIL: C:AmigaGPTD <>NIL:'
+assert_contains "$out/S/User-Startup" '; IE disabled: stack 999999'
+assert_contains "$out/S/User-Startup" '; IE disabled: mysql:bin/mysqld'
+assert_contains "$out/S/User-Startup" '; IE disabled unsupported sofa block:'
 assert_not_contains "$out/S/User-Startup" '^[[:space:]]*Mount KCON:'
 assert_not_contains "$out/S/User-Startup" '^[[:space:]]*Mount KRAW:'
 assert_not_contains "$out/S/User-Startup" '^[[:space:]]*mount apipe:'
 assert_not_contains "$out/S/User-Startup" '^[[:space:]]*exe <nil: >nil: l:fifo-handler'
+assert_not_contains "$out/S/User-Startup" '^[[:space:]]*Execute ENV:PathManager\.prefs'
+assert_not_contains "$out/S/User-Startup" '^[[:space:]]*mysql:bin/mysqld'
 
 assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:apoke'
 assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:vcontrol'

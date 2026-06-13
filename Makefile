@@ -1158,10 +1158,12 @@ aros-rom:
 		cp "$$GENDIR/workbench/devs/AHI/Device/ahi.device" "$$AROSDIR/Devs/ahi.device"; \
 		echo "  Installed ahi.device"; \
 	fi; \
-	if [ -f "$$AROSDIR/Libs/ie-audio.library" ]; then \
-		cp "$$AROSDIR/Libs/ie-audio.library" "$$AROSDIR/Devs/AHI/ie-audio.audio"; \
-		echo "  Installed ie-audio.audio"; \
+	if [ -f "$$AROSDIR/Devs/AHI/ie-audio.audio" ]; then \
+		echo "  Found ie-audio.audio"; \
+	else \
+		echo "Warning: ie-audio.audio missing from AROS build output"; \
 	fi; \
+	rm -f "$$AROSDIR/Libs/ie-audio.library"; \
 	find "$$AROSDIR/Devs/AHI" -maxdepth 1 -type f ! -name 'ie-audio.audio' -delete 2>/dev/null || true; \
 	rm -f "$$AROSDIR/Devs/AudioModes/"* "$$AROSDIR/Storage/AudioModes/"* "$$AROSDIR/Storage/AHI/"* 2>/dev/null || true; \
 	rm -f "$$AROSDIR/Devs/parallel.device" "$$AROSDIR/Devs/printer.device" "$$AROSDIR/Devs/serial.device" 2>/dev/null || true; \
