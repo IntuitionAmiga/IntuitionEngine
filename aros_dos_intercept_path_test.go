@@ -117,7 +117,7 @@ func TestArosDOSPath_OpenFlagsByCommandClass(t *testing.T) {
 
 	var calls []int
 	oldOpen := arosOpenFile
-	arosOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+	arosOpenFile = func(name string, flag int, perm os.FileMode) (arosFileOps, error) {
 		calls = append(calls, flag)
 		return oldOpen(name, flag, perm)
 	}

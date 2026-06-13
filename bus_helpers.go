@@ -66,11 +66,31 @@ func ReadGuestBytes(bus Bus32, ptrLo, ptrHi uint32, dst []byte) error {
 }
 
 func WriteGuestBytes(bus Bus32, ptrLo, ptrHi uint32, src []byte) error {
+	if err := ValidateGuestSpan(bus, ptrLo, ptrHi, uint64(len(src))); err != nil {
+		return err
+	}
+	addr := uint64(ptrHi)<<32 | uint64(ptrLo)
+	mem := bus.GetMemory()
+	lowEnd := uint64(len(mem))
+
+	if bp, ok := bus.(backingProvider); ok && bp.Backing() != nil {
+		if addr+uint64(len(src)) <= lowEnd {
+			copy(mem[addr:addr+uint64(len(src))], src)
+			return nil
+		}
+		bp.Backing().WriteBytes(addr, src)
+		return nil
+	}
+
+	copy(mem[addr:addr+uint64(len(src))], src)
+	return nil
+}
+
+func ValidateGuestSpan(bus Bus32, ptrLo, ptrHi uint32, length uint64) error {
 	if bus == nil {
 		return ErrAddrOutOfRange
 	}
 	addr := uint64(ptrHi)<<32 | uint64(ptrLo)
-	length := uint64(len(src))
 	end := addr + length
 	if end < addr {
 		return ErrAddrOutOfRange
@@ -88,14 +108,12 @@ func WriteGuestBytes(bus Bus32, ptrLo, ptrHi uint32, src []byte) error {
 			if end > effectiveTop {
 				return ErrAddrOutOfRange
 			}
-			copy(mem[addr:end], src)
 			return nil
 		}
 		if addr < lowEnd && end > lowEnd {
 			return ErrSeamCrossing
 		}
 		if addr >= lowEnd && end <= effectiveTop {
-			backing.WriteBytes(addr, src)
 			return nil
 		}
 		return ErrAddrOutOfRange
@@ -107,6 +125,5 @@ func WriteGuestBytes(bus Bus32, ptrLo, ptrHi uint32, src []byte) error {
 	if end > lowEnd {
 		return ErrAddrOutOfRange
 	}
-	copy(mem[addr:end], src)
 	return nil
 }

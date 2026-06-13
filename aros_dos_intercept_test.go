@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,6 +9,34 @@ import (
 	"syscall"
 	"testing"
 )
+
+type countingArosFile struct {
+	*os.File
+	readAtCalls int
+}
+
+func (f *countingArosFile) ReadAt(p []byte, off int64) (int, error) {
+	f.readAtCalls++
+	return f.File.ReadAt(p, off)
+}
+
+func arosTestReadBE32(bus *MachineBus, addr uint32) uint32 {
+	var buf [4]byte
+	for i := range buf {
+		buf[i] = bus.Read8(addr + uint32(i))
+	}
+	return binary.BigEndian.Uint32(buf[:])
+}
+
+func arosTestWriteBE32(bus *MachineBus, addr uint32, value uint32) {
+	var buf [4]byte
+	binary.BigEndian.PutUint32(buf[:], value)
+	for i, b := range buf {
+		bus.Write8(addr+uint32(i), b)
+	}
+}
+
+var _ arosFileOps = (*countingArosFile)(nil)
 
 func writeArosDOSString(t *testing.T, bus *MachineBus, addr uint32, s string) {
 	t.Helper()
@@ -116,14 +145,12 @@ func TestArosDOS_PacketClampAndGuestBounds(t *testing.T) {
 		t.Fatalf("OpenFile: %v", err)
 	}
 	defer f.Close()
-	d.handles[1] = f
+	d.handles[1] = &arosFileHandle{file: f, name: "rw", hostPath: path, mode: arosHandleUpdate, firstRead: true}
 
 	if _, res2 := dispatchArosDOS(d, ADOS_CMD_READ, 1, 0x1000, 0xFFFFFFFF); res2 != ADOS_ERROR_OBJECT_TOO_LARGE {
 		t.Fatalf("READ huge res2=%d, want OBJECT_TOO_LARGE", res2)
 	}
-	if _, err := f.Seek(0, 0); err != nil {
-		t.Fatalf("Seek: %v", err)
-	}
+	d.handles[1].pos = 0
 	if _, res2 := dispatchArosDOS(d, ADOS_CMD_READ, 1, 0xFFFFFFF0, 0x100); res2 != ADOS_ERROR_OBJECT_TOO_LARGE {
 		t.Fatalf("READ wrap res2=%d, want OBJECT_TOO_LARGE", res2)
 	}
@@ -132,6 +159,189 @@ func TestArosDOS_PacketClampAndGuestBounds(t *testing.T) {
 	}
 	if _, res2 := dispatchArosDOS(d, ADOS_CMD_WRITE, 1, 0xFFFFFFF0, 0x100); res2 != ADOS_ERROR_OBJECT_TOO_LARGE {
 		t.Fatalf("WRITE wrap res2=%d, want OBJECT_TOO_LARGE", res2)
+	}
+}
+
+func TestArosDOS_ReadAheadCoalescesSequentialSmallReads(t *testing.T) {
+	bus, d, root := newTestArosDOSDevice(t)
+	data := []byte("abcdefghijklmnopqrstuvwxyz")
+	if err := os.WriteFile(filepath.Join(root, "seq"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var opened *countingArosFile
+	oldOpen := arosOpenFile
+	arosOpenFile = func(name string, flag int, perm os.FileMode) (arosFileOps, error) {
+		f, err := os.OpenFile(name, flag, perm)
+		if err != nil {
+			return nil, err
+		}
+		opened = &countingArosFile{File: f}
+		return opened, nil
+	}
+	t.Cleanup(func() { arosOpenFile = oldOpen })
+
+	writeArosDOSString(t, bus, 0x1000, "seq")
+	handle, res2 := dispatchArosDOS(d, ADOS_CMD_FINDINPUT, 0x1000, 0)
+	if res2 != ADOS_ERR_NONE {
+		t.Fatalf("FINDINPUT res2=%d", res2)
+	}
+	for i := 0; i < 10; i++ {
+		res1, res2 := dispatchArosDOS(d, ADOS_CMD_READ, handle, 0x2000+uint32(i), 1)
+		if res1 != 1 || res2 != ADOS_ERR_NONE {
+			t.Fatalf("READ %d = (%d,%d), want 1/OK", i, res1, res2)
+		}
+	}
+	got := make([]byte, 10)
+	if err := ReadGuestBytes(bus, 0x2000, 0, got); err != nil {
+		t.Fatalf("ReadGuestBytes: %v", err)
+	}
+	if string(got) != string(data[:10]) {
+		t.Fatalf("guest bytes=%q, want %q", got, data[:10])
+	}
+	if opened == nil {
+		t.Fatalf("file was not opened")
+	}
+	if opened.readAtCalls != 1 {
+		t.Fatalf("ReadAt calls=%d, want 1", opened.readAtCalls)
+	}
+}
+
+func TestArosDOS_ExamineAllPacksEntriesAndContinuation(t *testing.T) {
+	bus, d, root := newTestArosDOSDevice(t)
+	if err := os.WriteFile(filepath.Join(root, "alpha"), []byte("abc"), 0o644); err != nil {
+		t.Fatalf("WriteFile alpha: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "beta"), 0o755); err != nil {
+		t.Fatalf("Mkdir beta: %v", err)
+	}
+
+	const (
+		req     = 0x1000
+		control = 0x1100
+		buffer  = 0x2000
+		size    = 1024
+	)
+	arosTestWriteBE32(bus, req+ADOS_EXALL_REQ_LOCK_KEY, 0)
+	arosTestWriteBE32(bus, req+ADOS_EXALL_REQ_BUFFER, buffer)
+	arosTestWriteBE32(bus, req+ADOS_EXALL_REQ_BUFFER_LEN, size)
+	arosTestWriteBE32(bus, req+ADOS_EXALL_REQ_TYPE, ADOS_ED_COMMENT_TYPE)
+	arosTestWriteBE32(bus, req+ADOS_EXALL_REQ_CONTROL, control)
+
+	res1, res2 := dispatchArosDOS(d, ADOS_CMD_EXAMINE_ALL, req)
+	if res1 != ADOS_DOSTRUE || res2 != ADOS_ERR_NONE {
+		t.Fatalf("EXAMINE_ALL = (%d,%d), want true/OK", res1, res2)
+	}
+	if got := arosTestReadBE32(bus, control+ADOS_EAC_ENTRIES); got != 2 {
+		t.Fatalf("eac_Entries=%d, want 2", got)
+	}
+	if got := arosTestReadBE32(bus, control+ADOS_EAC_LAST_KEY); got != 2 {
+		t.Fatalf("eac_LastKey=%d, want 2", got)
+	}
+
+	firstNamePtr := arosTestReadBE32(bus, buffer+ADOS_ED_NAME)
+	if firstNamePtr != buffer+ADOS_ED_OWNER_UID {
+		t.Fatalf("first ed_Name=$%X, want $%X", firstNamePtr, buffer+ADOS_ED_OWNER_UID)
+	}
+	if name := d.readString(firstNamePtr); name != "alpha" {
+		t.Fatalf("first name=%q, want alpha", name)
+	}
+	if got := arosTestReadBE32(bus, buffer+ADOS_ED_TYPE); got != ADOS_ST_FILE {
+		t.Fatalf("first type=$%X, want ST_FILE", got)
+	}
+	if got := arosTestReadBE32(bus, buffer+ADOS_ED_SIZE); got != 3 {
+		t.Fatalf("first size=%d, want 3", got)
+	}
+	nextPtr := arosTestReadBE32(bus, buffer+ADOS_ED_NEXT)
+	if nextPtr == 0 {
+		t.Fatalf("first ed_Next is zero")
+	}
+	if name := d.readString(arosTestReadBE32(bus, nextPtr+ADOS_ED_NAME)); name != "beta" {
+		t.Fatalf("second name=%q, want beta", name)
+	}
+	if got := arosTestReadBE32(bus, nextPtr+ADOS_ED_TYPE); got != ADOS_ST_USERDIR {
+		t.Fatalf("second type=$%X, want ST_USERDIR", got)
+	}
+
+	res1, res2 = dispatchArosDOS(d, ADOS_CMD_EXAMINE_ALL, req)
+	if res1 != ADOS_DOSFALSE || res2 != ADOS_ERROR_NO_MORE_ENTRIES {
+		t.Fatalf("final EXAMINE_ALL = (%d,%d), want false/NO_MORE_ENTRIES", res1, res2)
+	}
+
+	arosTestWriteBE32(bus, control+ADOS_EAC_LAST_KEY, 0)
+	arosTestWriteBE32(bus, control+ADOS_EAC_ENTRIES, 123)
+	arosTestWriteBE32(bus, control+ADOS_EAC_MATCH_STRING, 0x1234)
+	res1, res2 = dispatchArosDOS(d, ADOS_CMD_EXAMINE_ALL, req)
+	if res1 != ADOS_DOSFALSE || res2 != ADOS_ERROR_ACTION_NOT_KNOWN {
+		t.Fatalf("matched EXAMINE_ALL = (%d,%d), want false/ACTION_NOT_KNOWN", res1, res2)
+	}
+	if got := arosTestReadBE32(bus, control+ADOS_EAC_ENTRIES); got != 123 {
+		t.Fatalf("unsupported match mutated entries=%d, want 123", got)
+	}
+	if got := arosTestReadBE32(bus, control+ADOS_EAC_LAST_KEY); got != 0 {
+		t.Fatalf("unsupported match mutated last key=%d, want 0", got)
+	}
+}
+
+func TestArosDOS_ExamineAllRejectsOversizedAndInvalidBuffers(t *testing.T) {
+	bus, d, root := newTestArosDOSDevice(t)
+	if err := os.WriteFile(filepath.Join(root, "alpha"), []byte("abc"), 0o644); err != nil {
+		t.Fatalf("WriteFile alpha: %v", err)
+	}
+
+	const (
+		req     = 0x1000
+		control = 0x1100
+		buffer  = 0x2000
+	)
+	arosTestWriteBE32(bus, req+ADOS_EXALL_REQ_LOCK_KEY, 0)
+	arosTestWriteBE32(bus, req+ADOS_EXALL_REQ_BUFFER, buffer)
+	arosTestWriteBE32(bus, req+ADOS_EXALL_REQ_TYPE, ADOS_ED_NAME_TYPE)
+	arosTestWriteBE32(bus, req+ADOS_EXALL_REQ_CONTROL, control)
+
+	arosTestWriteBE32(bus, req+ADOS_EXALL_REQ_BUFFER_LEN, arosDOSMaxPacket+1)
+	if _, res2 := dispatchArosDOS(d, ADOS_CMD_EXAMINE_ALL, req); res2 != ADOS_ERROR_OBJECT_TOO_LARGE {
+		t.Fatalf("oversized EXAMINE_ALL res2=%d, want OBJECT_TOO_LARGE", res2)
+	}
+
+	arosTestWriteBE32(bus, req+ADOS_EXALL_REQ_BUFFER, 0xFFFFFFF0)
+	arosTestWriteBE32(bus, req+ADOS_EXALL_REQ_BUFFER_LEN, 0x100)
+	if _, res2 := dispatchArosDOS(d, ADOS_CMD_EXAMINE_ALL, req); res2 != ADOS_ERROR_OBJECT_TOO_LARGE {
+		t.Fatalf("invalid-span EXAMINE_ALL res2=%d, want OBJECT_TOO_LARGE", res2)
+	}
+}
+
+func TestArosDOS_WriteInvalidatesSiblingReadAhead(t *testing.T) {
+	bus, d, root := newTestArosDOSDevice(t)
+	if err := os.WriteFile(filepath.Join(root, "shared"), []byte("abcdef"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	writeArosDOSString(t, bus, 0x1000, "shared")
+
+	reader, res2 := dispatchArosDOS(d, ADOS_CMD_FINDINPUT, 0x1000, 0)
+	if res2 != ADOS_ERR_NONE {
+		t.Fatalf("FINDINPUT res2=%d", res2)
+	}
+	writer, res2 := dispatchArosDOS(d, ADOS_CMD_FINDUPDATE, 0x1000, 0)
+	if res2 != ADOS_ERR_NONE {
+		t.Fatalf("FINDUPDATE res2=%d", res2)
+	}
+
+	if res1, res2 := dispatchArosDOS(d, ADOS_CMD_READ, reader, 0x2000, 1); res1 != 1 || res2 != ADOS_ERR_NONE {
+		t.Fatalf("initial READ=(%d,%d), want 1/OK", res1, res2)
+	}
+	bus.Write8(0x2100, 'Z')
+	if res1, res2 := dispatchArosDOS(d, ADOS_CMD_WRITE, writer, 0x2100, 1); res1 != 1 || res2 != ADOS_ERR_NONE {
+		t.Fatalf("WRITE=(%d,%d), want 1/OK", res1, res2)
+	}
+	if _, res2 := dispatchArosDOS(d, ADOS_CMD_SEEK, reader, 0, ADOS_OFFSET_BEGINNING); res2 != ADOS_ERR_NONE {
+		t.Fatalf("reader SEEK res2=%d", res2)
+	}
+	if res1, res2 := dispatchArosDOS(d, ADOS_CMD_READ, reader, 0x2200, 1); res1 != 1 || res2 != ADOS_ERR_NONE {
+		t.Fatalf("second READ=(%d,%d), want 1/OK", res1, res2)
+	}
+	if got := bus.Read8(0x2200); got != 'Z' {
+		t.Fatalf("sibling cached byte=%q, want Z", got)
 	}
 }
 
@@ -158,7 +368,7 @@ func TestArosDOS_BadModeAndFIBProtection(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer f.Close()
-	d.handles[1] = f
+	d.handles[1] = &arosFileHandle{file: f, name: "ro", hostPath: path, mode: arosHandleRead, firstRead: true}
 
 	if _, res2 := dispatchArosDOS(d, ADOS_CMD_SEEK, 1, 0, 99); res2 != ADOS_ERROR_BAD_NUMBER {
 		t.Fatalf("SEEK bad mode res2=%d, want BAD_NUMBER", res2)

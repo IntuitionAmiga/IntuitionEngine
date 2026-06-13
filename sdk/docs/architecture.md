@@ -8,6 +8,8 @@ The diagrams below describe wired runtime behaviour. Platform availability
 follows the runtime dispatch path; for example, the Z80 JIT is available
 on amd64 builds only.
 
+AROS HostFS implementation notes: [AROSHostFS.md](AROSHostFS.md).
+
 ## Reading the Architecture Tables and Diagrams
 
 Boxes represent runtime components. Arrows represent operational paths:

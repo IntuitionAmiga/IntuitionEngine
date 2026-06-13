@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 )
 
 const arosDOSMaxPacket = 1 << 20
+const arosDOSReadAheadSize = 64 * 1024
 
 type resolveReason uint8
 
@@ -22,7 +25,42 @@ const (
 	resolveExists
 )
 
-var arosOpenFile = os.OpenFile
+type arosFileOps interface {
+	ReadAt([]byte, int64) (int, error)
+	WriteAt([]byte, int64) (int, error)
+	Seek(int64, int) (int64, error)
+	Stat() (fs.FileInfo, error)
+	Truncate(int64) error
+	Close() error
+}
+
+var arosOpenFile = func(name string, flag int, perm fs.FileMode) (arosFileOps, error) {
+	return os.OpenFile(name, flag, perm)
+}
+
+type arosHandleMode uint8
+
+const (
+	arosHandleRead arosHandleMode = iota
+	arosHandleOutput
+	arosHandleUpdate
+)
+
+type arosReadAhead struct {
+	start int64
+	data  []byte
+}
+
+type arosFileHandle struct {
+	file      arosFileOps
+	name      string
+	hostPath  string
+	pos       int64
+	mode      arosHandleMode
+	dirty     bool
+	firstRead bool
+	cache     arosReadAhead
+}
 
 // ArosDOSDevice provides host filesystem access to AROS via MMIO.
 // The AROS packet handler (iehandler) translates AmigaDOS packets
@@ -37,11 +75,9 @@ type ArosDOSDevice struct {
 	locks    map[uint32]*adosLock
 	nextLock uint32
 
-	// File handle management: key → open file
-	handles     map[uint32]*os.File
-	handleNames map[uint32]string // key → original name for diagnostics
-	handleRead  map[uint32]bool   // key → whether first read has occurred
-	nextHandle  uint32
+	// File handle management: key -> open file
+	handles    map[uint32]*arosFileHandle
+	nextHandle uint32
 
 	// MMIO register shadow state
 	arg1 uint32
@@ -88,9 +124,7 @@ func NewArosDOSDevice(bus *MachineBus, hostRoot string) (*ArosDOSDevice, error) 
 		hostRoot:     absPath,
 		locks:        make(map[uint32]*adosLock),
 		nextLock:     1, // 0 means root/no-lock
-		handles:      make(map[uint32]*os.File),
-		handleNames:  make(map[uint32]string),
-		handleRead:   make(map[uint32]bool),
+		handles:      make(map[uint32]*arosFileHandle),
 		nextHandle:   1,
 		debugTrace:   false,
 		dirNameCache: make(map[string]map[string]string),
@@ -206,6 +240,8 @@ func (d *ArosDOSDevice) dispatch(cmd uint32) {
 		d.cmdExamineFH()
 	case ADOS_CMD_LOADSEG_SYMS:
 		d.cmdLoadSegSymbols()
+	case ADOS_CMD_EXAMINE_ALL:
+		d.cmdExamineAll()
 	default:
 		d.res1 = ADOS_DOSFALSE
 		d.res2 = ADOS_ERROR_ACTION_NOT_KNOWN
@@ -452,11 +488,180 @@ func (d *ArosDOSDevice) cmdExNext() {
 	d.res1 = ADOS_DOSTRUE
 }
 
+func (d *ArosDOSDevice) cmdExamineAll() {
+	reqPtr := d.arg1
+	req := make([]byte, ADOS_EXALL_REQ_SIZE)
+	if err := ReadGuestBytes(d.bus, reqPtr, 0, req); err != nil {
+		d.res2 = ADOS_ERROR_OBJECT_TOO_LARGE
+		return
+	}
+	lockKey := binary.BigEndian.Uint32(req[ADOS_EXALL_REQ_LOCK_KEY:])
+	bufferPtr := binary.BigEndian.Uint32(req[ADOS_EXALL_REQ_BUFFER:])
+	bufferSize := binary.BigEndian.Uint32(req[ADOS_EXALL_REQ_BUFFER_LEN:])
+	exAllType := binary.BigEndian.Uint32(req[ADOS_EXALL_REQ_TYPE:])
+	controlPtr := binary.BigEndian.Uint32(req[ADOS_EXALL_REQ_CONTROL:])
+
+	if exAllType < ADOS_ED_NAME_TYPE || exAllType > ADOS_ED_COMMENT_TYPE {
+		d.res2 = ADOS_ERROR_BAD_NUMBER
+		return
+	}
+
+	lock, ok := d.locks[lockKey]
+	if !ok && lockKey != 0 {
+		d.res2 = ADOS_ERROR_INVALID_LOCK
+		return
+	}
+	if lockKey == 0 {
+		lock = d.locks[0]
+	}
+	if !lock.isDir {
+		d.res2 = ADOS_ERROR_OBJECT_WRONG_TYPE
+		return
+	}
+
+	control := make([]byte, 16)
+	if err := ReadGuestBytes(d.bus, controlPtr, 0, control); err != nil {
+		d.res2 = ADOS_ERROR_OBJECT_TOO_LARGE
+		return
+	}
+	lastKey := binary.BigEndian.Uint32(control[ADOS_EAC_LAST_KEY:])
+	if binary.BigEndian.Uint32(control[ADOS_EAC_MATCH_STRING:]) != 0 ||
+		binary.BigEndian.Uint32(control[ADOS_EAC_MATCH_FUNC:]) != 0 {
+		d.res2 = ADOS_ERROR_ACTION_NOT_KNOWN
+		return
+	}
+	if bufferSize > arosDOSMaxPacket {
+		d.res2 = ADOS_ERROR_OBJECT_TOO_LARGE
+		return
+	}
+	if err := ValidateGuestSpan(d.bus, bufferPtr, 0, uint64(bufferSize)); err != nil {
+		d.res2 = ADOS_ERROR_OBJECT_TOO_LARGE
+		return
+	}
+
+	entries, err := os.ReadDir(lock.hostPath)
+	if err != nil {
+		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
+		return
+	}
+	start := int(lastKey)
+	if start > len(entries) {
+		start = len(entries)
+	}
+
+	out := make([]byte, int(bufferSize))
+	count := uint32(0)
+	prevOff := -1
+	cursor := 0
+	nextIndex := start
+	structSize := exAllStructSize(exAllType)
+	for i := start; i < len(entries); i++ {
+		entry := entries[i]
+		info, err := entry.Info()
+		if err != nil {
+			nextIndex = i + 1
+			continue
+		}
+		entrySize := align2(structSize + len(entry.Name()) + 1 + exAllCommentSize(exAllType))
+		if cursor+entrySize > len(out) {
+			nextIndex = i
+			if count == 0 {
+				d.res2 = ADOS_ERROR_NO_FREE_STORE
+				return
+			}
+			break
+		}
+		entryOff := cursor
+		nameOff := entryOff + structSize
+		commentOff := nameOff + len(entry.Name()) + 1
+		arosPutBE32(out, entryOff+ADOS_ED_NEXT, 0)
+		arosPutBE32(out, entryOff+ADOS_ED_NAME, bufferPtr+uint32(nameOff))
+		arosPutCString(out, nameOff, entry.Name(), len(entry.Name())+1)
+
+		entryType := uint32(ADOS_ST_FILE)
+		if info.IsDir() {
+			entryType = ADOS_ST_USERDIR
+		}
+		if exAllType >= ADOS_ED_TYPE_TYPE {
+			arosPutBE32(out, entryOff+ADOS_ED_TYPE, entryType)
+		}
+		if exAllType >= ADOS_ED_SIZE_TYPE {
+			arosPutBE32(out, entryOff+ADOS_ED_SIZE, uint32(info.Size()))
+		}
+		if exAllType >= ADOS_ED_PROTECTION_TYPE {
+			arosPutBE32(out, entryOff+ADOS_ED_PROT, d.detectProtection(info, filepath.Join(lock.hostPath, entry.Name())))
+		}
+		if exAllType >= ADOS_ED_DATE_TYPE {
+			fillDateStampBytes(out[entryOff+ADOS_ED_DAYS:entryOff+ADOS_ED_DAYS+12], info.ModTime())
+		}
+		if exAllType >= ADOS_ED_COMMENT_TYPE {
+			arosPutBE32(out, entryOff+ADOS_ED_COMMENT, bufferPtr+uint32(commentOff))
+			arosPutCString(out, commentOff, "", 1)
+		}
+		if prevOff >= 0 {
+			arosPutBE32(out, prevOff+ADOS_ED_NEXT, bufferPtr+uint32(entryOff))
+		}
+		prevOff = entryOff
+		cursor += entrySize
+		count++
+		nextIndex = i + 1
+	}
+
+	if count == 0 {
+		arosPutBE32(control, ADOS_EAC_ENTRIES, 0)
+		_ = WriteGuestBytes(d.bus, controlPtr, 0, control)
+		d.res1 = ADOS_DOSFALSE
+		d.res2 = ADOS_ERROR_NO_MORE_ENTRIES
+		return
+	}
+	if err := WriteGuestBytes(d.bus, bufferPtr, 0, out[:cursor]); err != nil {
+		d.res2 = ADOS_ERROR_OBJECT_TOO_LARGE
+		return
+	}
+	arosPutBE32(control, ADOS_EAC_ENTRIES, count)
+	arosPutBE32(control, ADOS_EAC_LAST_KEY, uint32(nextIndex))
+	if err := WriteGuestBytes(d.bus, controlPtr, 0, control); err != nil {
+		d.res2 = ADOS_ERROR_OBJECT_TOO_LARGE
+		return
+	}
+	d.res1 = ADOS_DOSTRUE
+}
+
+func exAllStructSize(exAllType uint32) int {
+	switch exAllType {
+	case ADOS_ED_NAME_TYPE:
+		return ADOS_ED_TYPE
+	case ADOS_ED_TYPE_TYPE:
+		return ADOS_ED_SIZE
+	case ADOS_ED_SIZE_TYPE:
+		return ADOS_ED_PROT
+	case ADOS_ED_PROTECTION_TYPE:
+		return ADOS_ED_DAYS
+	case ADOS_ED_DATE_TYPE:
+		return ADOS_ED_COMMENT
+	case ADOS_ED_COMMENT_TYPE:
+		return ADOS_ED_OWNER_UID
+	default:
+		return 0
+	}
+}
+
+func exAllCommentSize(exAllType uint32) int {
+	if exAllType >= ADOS_ED_COMMENT_TYPE {
+		return 1
+	}
+	return 0
+}
+
+func align2(v int) int {
+	return (v + 1) &^ 1
+}
+
 func (d *ArosDOSDevice) cmdExamineFH() {
 	handleKey := d.arg1
 	fibPtr := d.arg2
 
-	f, ok := d.handles[handleKey]
+	h, ok := d.handles[handleKey]
 	if !ok {
 		if d.debugTrace {
 			fmt.Printf("[ADOS] EXAMINE_FH handle=%d → INVALID_LOCK\n", handleKey)
@@ -465,16 +670,16 @@ func (d *ArosDOSDevice) cmdExamineFH() {
 		return
 	}
 
-	info, err := f.Stat()
+	info, err := h.file.Stat()
 	if err != nil {
 		if d.debugTrace {
-			fmt.Printf("[ADOS] EXAMINE_FH %q → stat error: %v\n", f.Name(), err)
+			fmt.Printf("[ADOS] EXAMINE_FH %q → stat error: %v\n", h.hostPath, err)
 		}
 		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		return
 	}
 
-	d.fillFIB(fibPtr, info, f.Name())
+	d.fillFIB(fibPtr, info, h.hostPath)
 	if d.debugTrace {
 		prot := uint32(d.bus.Read8(fibPtr+ADOS_FIB_PROTECTION)) << 24
 		prot |= uint32(d.bus.Read8(fibPtr+ADOS_FIB_PROTECTION+1)) << 16
@@ -541,9 +746,13 @@ func (d *ArosDOSDevice) cmdFindInput() {
 
 	key := d.nextHandle
 	d.nextHandle++
-	d.handles[key] = f
-	d.handleNames[key] = name
-	d.handleRead[key] = false
+	d.handles[key] = &arosFileHandle{
+		file:      f,
+		name:      name,
+		hostPath:  hostPath,
+		mode:      arosHandleRead,
+		firstRead: true,
+	}
 
 	if d.debugTrace {
 		fmt.Printf("[ADOS] FINDINPUT %q (parent=%d, path=%q) → handle=%d\n", name, parentKey, hostPath, key)
@@ -629,9 +838,16 @@ func (d *ArosDOSDevice) cmdFindOutput() {
 
 	key := d.nextHandle
 	d.nextHandle++
-	d.handles[key] = f
-	d.handleNames[key] = name
-	d.handleRead[key] = false
+	d.handles[key] = &arosFileHandle{
+		file:      f,
+		name:      name,
+		hostPath:  hostPath,
+		mode:      arosHandleOutput,
+		firstRead: true,
+		dirty:     true,
+	}
+	d.invalidateHandleCachesForPath(hostPath)
+	d.invalidatePathCaches(hostPath)
 
 	if d.debugTrace {
 		fmt.Printf("[ADOS] FINDOUTPUT %q → handle=%d\n", name, key)
@@ -656,8 +872,10 @@ func (d *ArosDOSDevice) cmdFindUpdate() {
 
 	name := d.readString(namePtr)
 	hostPath, reason := d.resolveUpdateDOSPath(parent.hostPath, name)
+	createdMissing := false
 	if reason == resolveNotFound {
 		hostPath, reason = d.resolveCreateDOSPath(parent.hostPath, name)
+		createdMissing = reason == resolveOK
 	}
 	if reason == resolveWrongType {
 		d.res2 = ADOS_ERROR_OBJECT_WRONG_TYPE
@@ -676,10 +894,64 @@ func (d *ArosDOSDevice) cmdFindUpdate() {
 
 	key := d.nextHandle
 	d.nextHandle++
-	d.handles[key] = f
-	d.handleNames[key] = name
-	d.handleRead[key] = false
+	d.handles[key] = &arosFileHandle{
+		file:      f,
+		name:      name,
+		hostPath:  hostPath,
+		mode:      arosHandleUpdate,
+		firstRead: true,
+		dirty:     createdMissing,
+	}
+	if createdMissing {
+		d.invalidatePathCaches(hostPath)
+	}
 	d.res1 = key
+}
+
+func (h *arosFileHandle) clearCache() {
+	h.cache.start = 0
+	h.cache.data = nil
+}
+
+func (h *arosFileHandle) cacheContains(pos int64) bool {
+	if len(h.cache.data) == 0 {
+		return false
+	}
+	return pos >= h.cache.start && pos <= h.cache.start+int64(len(h.cache.data))
+}
+
+func (d *ArosDOSDevice) readFromHandle(h *arosFileHandle, dst []byte) (int, error) {
+	if len(dst) == 0 {
+		return 0, nil
+	}
+	if len(h.cache.data) == 0 || h.pos < h.cache.start || h.pos >= h.cache.start+int64(len(h.cache.data)) {
+		fillLen := arosDOSReadAheadSize
+		if len(dst) > fillLen {
+			fillLen = len(dst)
+		}
+		buf := make([]byte, fillLen)
+		n, err := h.file.ReadAt(buf, h.pos)
+		if n > 0 {
+			h.cache.start = h.pos
+			h.cache.data = buf[:n]
+		} else {
+			h.clearCache()
+		}
+		if err != nil && err != io.EOF {
+			return 0, err
+		}
+	}
+
+	offset := int(h.pos - h.cache.start)
+	if offset < 0 || offset >= len(h.cache.data) {
+		return 0, io.EOF
+	}
+	n := copy(dst, h.cache.data[offset:])
+	h.pos += int64(n)
+	if n < len(dst) {
+		return n, io.EOF
+	}
+	return n, nil
 }
 
 func (d *ArosDOSDevice) cmdRead() {
@@ -687,7 +959,7 @@ func (d *ArosDOSDevice) cmdRead() {
 	bufPtr := d.arg2
 	length := d.arg3
 
-	f, ok := d.handles[handleKey]
+	h, ok := d.handles[handleKey]
 	if !ok {
 		d.res1 = 0xFFFFFFFF // -1
 		d.res2 = ADOS_ERROR_INVALID_LOCK
@@ -704,7 +976,7 @@ func (d *ArosDOSDevice) cmdRead() {
 	}
 
 	buf := make([]byte, int(length))
-	n, err := f.Read(buf)
+	n, err := d.readFromHandle(h, buf)
 	if n > 0 {
 		if err := WriteGuestBytes(d.bus, bufPtr, 0, buf[:n]); err != nil {
 			d.res1 = 0xFFFFFFFF
@@ -719,15 +991,15 @@ func (d *ArosDOSDevice) cmdRead() {
 		d.res1 = uint32(n)
 	}
 
-	// Log first read per handle — shows magic bytes for LoadSeg diagnosis
-	if d.debugTrace && n > 0 && !d.handleRead[handleKey] {
-		d.handleRead[handleKey] = true
+	// Log first read per handle - shows magic bytes for LoadSeg diagnosis.
+	if d.debugTrace && n > 0 && h.firstRead {
+		h.firstRead = false
 		magic := ""
 		if n >= 4 {
 			magic = fmt.Sprintf(" magic=%02x%02x%02x%02x", buf[0], buf[1], buf[2], buf[3])
 		}
 		fmt.Printf("[ADOS] FIRST_READ handle=%d %q len=%d n=%d%s\n",
-			handleKey, d.handleNames[handleKey], length, n, magic)
+			handleKey, h.name, length, n, magic)
 	}
 }
 
@@ -736,7 +1008,7 @@ func (d *ArosDOSDevice) cmdWrite() {
 	bufPtr := d.arg2
 	length := d.arg3
 
-	f, ok := d.handles[handleKey]
+	h, ok := d.handles[handleKey]
 	if !ok {
 		d.res1 = 0xFFFFFFFF // -1
 		d.res2 = ADOS_ERROR_INVALID_LOCK
@@ -756,12 +1028,16 @@ func (d *ArosDOSDevice) cmdWrite() {
 		return
 	}
 
-	n, err := f.Write(buf)
+	n, err := h.file.WriteAt(buf, h.pos)
 	if err != nil {
 		d.res1 = 0xFFFFFFFF // -1
 		d.res2 = mapWriteErr(err)
 		return
 	}
+	h.pos += int64(n)
+	h.dirty = true
+	d.invalidateHandleCachesForPath(h.hostPath)
+	d.invalidatePathCaches(h.hostPath)
 	d.res1 = uint32(n)
 }
 
@@ -770,7 +1046,7 @@ func (d *ArosDOSDevice) cmdSeek() {
 	offset := int64(int32(d.arg2)) // sign-extend
 	mode := d.arg3
 
-	f, ok := d.handles[handleKey]
+	h, ok := d.handles[handleKey]
 	if !ok {
 		d.res1 = 0xFFFFFFFF // -1
 		d.res2 = ADOS_ERROR_INVALID_LOCK
@@ -780,57 +1056,59 @@ func (d *ArosDOSDevice) cmdSeek() {
 		return
 	}
 
-	// Get current position before seeking
-	oldPos, err := f.Seek(0, 1) // SEEK_CUR
-	if err != nil {
-		d.res1 = 0xFFFFFFFF
-		d.res2 = ADOS_ERROR_SEEK_ERROR
-		if d.debugTrace {
-			fmt.Printf("[ADOS] SEEK handle=%d → SEEK_ERROR (get cur pos): %v\n", handleKey, err)
-		}
-		return
-	}
+	oldPos := h.pos
 
-	var whence int
+	var newPos int64
 	switch mode {
 	case ADOS_OFFSET_BEGINNING:
-		whence = 0 // io.SeekStart
+		newPos = offset
 	case ADOS_OFFSET_CURRENT:
-		whence = 1 // io.SeekCurrent
+		newPos = h.pos + offset
 	case ADOS_OFFSET_END:
-		whence = 2 // io.SeekEnd
+		info, err := h.file.Stat()
+		if err != nil {
+			d.res1 = 0xFFFFFFFF
+			d.res2 = ADOS_ERROR_SEEK_ERROR
+			return
+		}
+		newPos = info.Size() + offset
 	default:
 		d.res1 = 0xFFFFFFFF
 		d.res2 = ADOS_ERROR_BAD_NUMBER
 		return
 	}
-
-	newPos, err := f.Seek(offset, whence)
-	if err != nil {
+	if newPos < 0 {
 		d.res1 = 0xFFFFFFFF
 		d.res2 = ADOS_ERROR_SEEK_ERROR
-		if d.debugTrace {
-			fmt.Printf("[ADOS] SEEK handle=%d offset=%d mode=%d(whence=%d) → SEEK_ERROR: %v\n",
-				handleKey, offset, mode, whence, err)
-		}
 		return
+	}
+	if _, err := h.file.Seek(newPos, io.SeekStart); err != nil {
+		d.res1 = 0xFFFFFFFF
+		d.res2 = ADOS_ERROR_SEEK_ERROR
+		return
+	}
+	h.pos = newPos
+	if !h.cacheContains(newPos) {
+		h.clearCache()
 	}
 
 	d.res1 = uint32(oldPos)
 
 	if d.debugTrace {
-		fmt.Printf("[ADOS] SEEK handle=%d offset=%d mode=0x%X(whence=%d) oldPos=%d → newPos=%d\n",
-			handleKey, offset, mode, whence, oldPos, newPos)
+		fmt.Printf("[ADOS] SEEK handle=%d offset=%d mode=0x%X oldPos=%d → newPos=%d\n",
+			handleKey, offset, mode, oldPos, newPos)
 	}
 }
 
 func (d *ArosDOSDevice) cmdClose() {
 	handleKey := d.arg1
-	if f, ok := d.handles[handleKey]; ok {
-		f.Close()
+	if h, ok := d.handles[handleKey]; ok {
+		h.clearCache()
+		h.file.Close()
+		if h.dirty && (h.mode == arosHandleOutput || h.mode == arosHandleUpdate) {
+			d.invalidatePathCaches(h.hostPath)
+		}
 		delete(d.handles, handleKey)
-		delete(d.handleNames, handleKey)
-		delete(d.handleRead, handleKey)
 	}
 	d.res1 = ADOS_DOSTRUE
 }
@@ -840,7 +1118,7 @@ func (d *ArosDOSDevice) cmdSetFileSize() {
 	newSize := int64(int32(d.arg2))
 	mode := d.arg3
 
-	f, ok := d.handles[handleKey]
+	h, ok := d.handles[handleKey]
 	if !ok {
 		d.res1 = 0xFFFFFFFF
 		d.res2 = ADOS_ERROR_INVALID_LOCK
@@ -853,10 +1131,9 @@ func (d *ArosDOSDevice) cmdSetFileSize() {
 	case ADOS_OFFSET_BEGINNING:
 		absSize = newSize
 	case ADOS_OFFSET_CURRENT:
-		pos, _ := f.Seek(0, 1)
-		absSize = pos + newSize
+		absSize = h.pos + newSize
 	case ADOS_OFFSET_END:
-		info, _ := f.Stat()
+		info, _ := h.file.Stat()
 		absSize = info.Size() + newSize
 	default:
 		d.res1 = 0xFFFFFFFF
@@ -864,11 +1141,14 @@ func (d *ArosDOSDevice) cmdSetFileSize() {
 		return
 	}
 
-	if err := f.Truncate(absSize); err != nil {
+	if err := h.file.Truncate(absSize); err != nil {
 		d.res1 = 0xFFFFFFFF
 		d.res2 = mapWriteErr(err)
 		return
 	}
+	h.dirty = true
+	d.invalidateHandleCachesForPath(h.hostPath)
+	d.invalidatePathCaches(h.hostPath)
 	d.res1 = uint32(absSize)
 }
 
@@ -962,6 +1242,7 @@ func (d *ArosDOSDevice) cmdDelete() {
 		d.res2 = mapDeleteErr(err)
 		return
 	}
+	d.invalidatePathCaches(hostPath)
 	d.res1 = ADOS_DOSTRUE
 }
 
@@ -999,6 +1280,7 @@ func (d *ArosDOSDevice) cmdCreateDir() {
 		}
 		return
 	}
+	d.invalidatePathCaches(hostPath)
 
 	key := d.nextLock
 	d.nextLock++
@@ -1061,22 +1343,28 @@ func (d *ArosDOSDevice) cmdRename() {
 		d.res2 = mapRenameErr(err)
 		return
 	}
+	d.invalidatePathCaches(srcPath)
+	d.invalidatePathCaches(dstPath)
 	d.res1 = ADOS_DOSTRUE
 }
 
 func (d *ArosDOSDevice) cmdDiskInfo() {
 	infoPtr := d.arg1
 
-	// Fill InfoData structure in guest memory (big-endian)
-	d.writeBE32(infoPtr+ADOS_ID_NUM_SOFT_ERRORS, 0)
-	d.writeBE32(infoPtr+ADOS_ID_UNIT_NUMBER, 0)
-	d.writeBE32(infoPtr+ADOS_ID_DISK_STATE, ADOS_ID_VALIDATED)
-	d.writeBE32(infoPtr+ADOS_ID_NUM_BLOCKS, 1048576) // ~512MB in 512-byte blocks
-	d.writeBE32(infoPtr+ADOS_ID_NUM_BLOCKS_USED, 0)  // report as empty
-	d.writeBE32(infoPtr+ADOS_ID_BYTES_PER_BLOCK, 512)
-	d.writeBE32(infoPtr+ADOS_ID_DISK_TYPE, ADOS_ID_DOS_DISK)
-	d.writeBE32(infoPtr+ADOS_ID_VOLUME_NODE, 0) // filled by handler
-	d.writeBE32(infoPtr+ADOS_ID_IN_USE, ADOS_DOSTRUE)
+	buf := make([]byte, ADOS_INFO_DATA_SIZE)
+	arosPutBE32(buf, ADOS_ID_NUM_SOFT_ERRORS, 0)
+	arosPutBE32(buf, ADOS_ID_UNIT_NUMBER, 0)
+	arosPutBE32(buf, ADOS_ID_DISK_STATE, ADOS_ID_VALIDATED)
+	arosPutBE32(buf, ADOS_ID_NUM_BLOCKS, 1048576) // about 512 MB in 512-byte blocks
+	arosPutBE32(buf, ADOS_ID_NUM_BLOCKS_USED, 0)  // report as empty
+	arosPutBE32(buf, ADOS_ID_BYTES_PER_BLOCK, 512)
+	arosPutBE32(buf, ADOS_ID_DISK_TYPE, ADOS_ID_DOS_DISK)
+	arosPutBE32(buf, ADOS_ID_VOLUME_NODE, 0) // filled by handler
+	arosPutBE32(buf, ADOS_ID_IN_USE, ADOS_DOSTRUE)
+	if err := WriteGuestBytes(d.bus, infoPtr, 0, buf); err != nil {
+		d.res2 = ADOS_ERROR_OBJECT_TOO_LARGE
+		return
+	}
 
 	d.res1 = ADOS_DOSTRUE
 }
@@ -1111,6 +1399,33 @@ func (d *ArosDOSDevice) writeBE32(addr uint32, value uint32) {
 func (d *ArosDOSDevice) writeBE16(addr uint32, value uint16) {
 	d.bus.Write8(addr, byte(value>>8))
 	d.bus.Write8(addr+1, byte(value))
+}
+
+func arosPutBE32(buf []byte, off int, value uint32) {
+	binary.BigEndian.PutUint32(buf[off:off+4], value)
+}
+
+func arosPutBE16(buf []byte, off int, value uint16) {
+	binary.BigEndian.PutUint16(buf[off:off+2], value)
+}
+
+func arosPutCString(buf []byte, off int, s string, maxLen int) int {
+	n := len(s)
+	if n > maxLen-1 {
+		n = maxLen - 1
+	}
+	copy(buf[off:off+n], s[:n])
+	buf[off+n] = 0
+	return n + 1
+}
+
+func arosPutBSTR(buf []byte, off int, s string, maxLen int) {
+	n := len(s)
+	if n > maxLen-1 {
+		n = maxLen - 1
+	}
+	buf[off] = byte(n)
+	copy(buf[off+1:off+1+n], s[:n])
 }
 
 // writeString writes a null-terminated string to guest memory.
@@ -1351,17 +1666,47 @@ func (d *ArosDOSDevice) resolveNameInDir(dir string, comp string) string {
 	return comp // not found — use as-is (for create operations)
 }
 
+func (d *ArosDOSDevice) invalidatePathCaches(hostPath string) {
+	if hostPath == "" {
+		return
+	}
+	d.invalidateDirCache(filepath.Dir(hostPath))
+	if info, err := os.Stat(hostPath); err == nil && info.IsDir() {
+		d.invalidateDirCache(hostPath)
+	}
+}
+
+func (d *ArosDOSDevice) invalidateHandleCachesForPath(hostPath string) {
+	for _, h := range d.handles {
+		if h.hostPath == hostPath {
+			h.clearCache()
+		}
+	}
+}
+
+func (d *ArosDOSDevice) invalidateDirCache(dir string) {
+	if dir == "" || dir == "." {
+		return
+	}
+	delete(d.dirNameCache, dir)
+	for _, lock := range d.locks {
+		if lock.hostPath == dir {
+			lock.dirEntries = nil
+			lock.dirIdx = 0
+		}
+	}
+}
+
 // fillFIB fills a FileInfoBlock structure in guest memory.
 func (d *ArosDOSDevice) fillFIB(fibPtr uint32, info fs.FileInfo, hostPath string) {
-	// Clear the FIB first
-	for i := uint32(0); i < ADOS_FIB_TOTAL_SIZE; i++ {
-		d.bus.Write8(fibPtr+i, 0)
-	}
+	buf := d.buildFIB(info, hostPath)
+	_ = WriteGuestBytes(d.bus, fibPtr, 0, buf)
+}
 
-	// fib_DiskKey (internal use, set to a hash of the path)
-	d.writeBE32(fibPtr+ADOS_FIB_DISK_KEY, simpleHash(hostPath))
+func (d *ArosDOSDevice) buildFIB(info fs.FileInfo, hostPath string) []byte {
+	buf := make([]byte, ADOS_FIB_TOTAL_SIZE)
+	arosPutBE32(buf, ADOS_FIB_DISK_KEY, simpleHash(hostPath))
 
-	// fib_DirEntryType / fib_EntryType
 	isRoot := hostPath == d.hostRoot
 	var entryType uint32
 	if isRoot {
@@ -1371,13 +1716,11 @@ func (d *ArosDOSDevice) fillFIB(fibPtr uint32, info fs.FileInfo, hostPath string
 	} else {
 		entryType = ADOS_ST_FILE
 	}
-	d.writeBE32(fibPtr+ADOS_FIB_DIR_ENTRY_TYPE, entryType)
-	d.writeBE32(fibPtr+ADOS_FIB_ENTRY_TYPE, entryType)
+	arosPutBE32(buf, ADOS_FIB_DIR_ENTRY_TYPE, entryType)
+	arosPutBE32(buf, ADOS_FIB_ENTRY_TYPE, entryType)
 
-	// fib_FileName (BSTR: length byte + chars, max 107 chars)
 	var name string
 	if isRoot {
-		// Root directory: use the volume name, not the host dir name
 		name = "IE"
 	} else {
 		name = info.Name()
@@ -1385,40 +1728,40 @@ func (d *ArosDOSDevice) fillFIB(fibPtr uint32, info fs.FileInfo, hostPath string
 			name = "IE"
 		}
 	}
-	d.writeBSTR(fibPtr+ADOS_FIB_FILE_NAME, name, 108)
+	arosPutBSTR(buf, ADOS_FIB_FILE_NAME, name, 108)
 
-	// fib_Protection — files in S/ get FIBF_SCRIPT so Shell runs them
-	// via Execute. All other files get prot=0 (no special bits).
 	prot := d.detectProtection(info, hostPath)
-	d.writeBE32(fibPtr+ADOS_FIB_PROTECTION, prot)
+	arosPutBE32(buf, ADOS_FIB_PROTECTION, prot)
 
-	// fib_Size
 	size := info.Size()
-	d.writeBE32(fibPtr+ADOS_FIB_SIZE, uint32(size))
+	arosPutBE32(buf, ADOS_FIB_SIZE, uint32(size))
 
-	// fib_NumBlocks
 	blocks := (size + 511) / 512
 	if blocks == 0 && !info.IsDir() {
 		blocks = 1
 	}
-	d.writeBE32(fibPtr+ADOS_FIB_NUM_BLOCKS, uint32(blocks))
+	arosPutBE32(buf, ADOS_FIB_NUM_BLOCKS, uint32(blocks))
 
-	// fib_Date (DateStamp: days since 1978-01-01, minutes, ticks)
-	d.fillDateStamp(fibPtr+ADOS_FIB_DATE, info.ModTime())
+	fillDateStampBytes(buf[ADOS_FIB_DATE:], info.ModTime())
 
-	// fib_Comment (empty BSTR)
-	d.bus.Write8(fibPtr+ADOS_FIB_COMMENT, 0)
+	return buf
 }
 
 // fillDateStamp writes an AmigaDOS DateStamp at the given address.
 // DateStamp: 3 LONGs — days since 1978-01-01, minutes past midnight, ticks (1/50s).
 func (d *ArosDOSDevice) fillDateStamp(addr uint32, t time.Time) {
+	var buf [12]byte
+	fillDateStampBytes(buf[:], t)
+	_ = WriteGuestBytes(d.bus, addr, 0, buf[:])
+}
+
+func fillDateStampBytes(buf []byte, t time.Time) {
 	amigaEpoch := time.Date(1978, 1, 1, 0, 0, 0, 0, time.UTC)
 	duration := t.Sub(amigaEpoch)
 	if duration < 0 {
-		d.writeBE32(addr, 0)
-		d.writeBE32(addr+4, 0)
-		d.writeBE32(addr+8, 0)
+		arosPutBE32(buf, 0, 0)
+		arosPutBE32(buf, 4, 0)
+		arosPutBE32(buf, 8, 0)
 		return
 	}
 
@@ -1428,9 +1771,9 @@ func (d *ArosDOSDevice) fillDateStamp(addr uint32, t time.Time) {
 	remaining -= time.Duration(minutes) * time.Minute
 	ticks := int(remaining.Seconds() * 50) // 50 ticks per second
 
-	d.writeBE32(addr, uint32(days))
-	d.writeBE32(addr+4, uint32(minutes))
-	d.writeBE32(addr+8, uint32(ticks))
+	arosPutBE32(buf, 0, uint32(days))
+	arosPutBE32(buf, 4, uint32(minutes))
+	arosPutBE32(buf, 8, uint32(ticks))
 }
 
 // detectProtection determines AmigaDOS protection bits for a host file.
@@ -1519,8 +1862,9 @@ func mapRenameErr(err error) uint32 {
 
 // Close releases all open handles and locks.
 func (d *ArosDOSDevice) Close() {
-	for k, f := range d.handles {
-		f.Close()
+	for k, h := range d.handles {
+		h.clearCache()
+		h.file.Close()
 		delete(d.handles, k)
 	}
 	for k := range d.locks {

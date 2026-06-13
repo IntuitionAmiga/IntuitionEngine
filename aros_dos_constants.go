@@ -47,6 +47,7 @@ const (
 	ADOS_CMD_SET_PROTECT  = 21 // ARG1=parent_key, ARG2=name_ptr, ARG3=protect_bits
 	ADOS_CMD_EXAMINE_FH   = 22 // ARG1=handle_key, ARG2=fib_ptr → fills FIB
 	ADOS_CMD_LOADSEG_SYMS = 23 // ARG1=name_ptr, ARG2=parent_key, ARG3=relocation_base → loads .iesym/.lbl sidecar
+	ADOS_CMD_EXAMINE_ALL  = 24 // ARG1=request descriptor ptr
 )
 
 // AmigaDOS error codes (stored in RESULT2 on failure)
@@ -140,4 +141,46 @@ const (
 	ADOS_ID_VOLUME_NODE     = 28
 	ADOS_ID_IN_USE          = 32
 	ADOS_INFO_DATA_SIZE     = 36
+)
+
+// ACTION_EXAMINE_ALL request descriptor. The AROS-side handler uses this
+// fixed block because the MMIO ABI has only four argument registers.
+const (
+	ADOS_EXALL_REQ_LOCK_KEY   = 0
+	ADOS_EXALL_REQ_BUFFER     = 4
+	ADOS_EXALL_REQ_BUFFER_LEN = 8
+	ADOS_EXALL_REQ_TYPE       = 12
+	ADOS_EXALL_REQ_CONTROL    = 16
+	ADOS_EXALL_REQ_SIZE       = 20
+)
+
+// ExAllData32 field offsets from compiler/include/dos/exall.h.
+const (
+	ADOS_ED_NEXT      = 0
+	ADOS_ED_NAME      = 4
+	ADOS_ED_TYPE      = 8
+	ADOS_ED_SIZE      = 12
+	ADOS_ED_PROT      = 16
+	ADOS_ED_DAYS      = 20
+	ADOS_ED_MINS      = 24
+	ADOS_ED_TICKS     = 28
+	ADOS_ED_COMMENT   = 32
+	ADOS_ED_OWNER_UID = 36
+	ADOS_ED_OWNER_GID = 38
+)
+
+const (
+	ADOS_ED_NAME_TYPE       = 1
+	ADOS_ED_TYPE_TYPE       = 2
+	ADOS_ED_SIZE_TYPE       = 3
+	ADOS_ED_PROTECTION_TYPE = 4
+	ADOS_ED_DATE_TYPE       = 5
+	ADOS_ED_COMMENT_TYPE    = 6
+)
+
+const (
+	ADOS_EAC_ENTRIES      = 0
+	ADOS_EAC_LAST_KEY     = 4
+	ADOS_EAC_MATCH_STRING = 8
+	ADOS_EAC_MATCH_FUNC   = 12
 )
