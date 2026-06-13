@@ -612,6 +612,10 @@ type VideoChip struct {
 	bltDone    bool
 	bltIrqPend bool
 
+	// bltStartCount counts BLT_CTRL start writes. Test-only observability hook
+	// used by the EmuTOS integration gate to prove the guest drives the blitter.
+	bltStartCount uint64
+
 	rasterY      uint32
 	rasterHeight uint32
 	rasterColor  uint32
@@ -2220,13 +2224,22 @@ func (chip *VideoChip) blitMode7Locked(mode VideoMode) {
 	texMaskU := int32(chip.bltMode7TexW)
 	texMaskV := int32(chip.bltMode7TexH)
 
+	// Pixel size: RGBA32 (4 bytes) or CLUT8 (1 byte) per BLT_FLAGS. Texels and
+	// destination pixels are both sampled/written at this width.
+	bpp := bppFromFlags(chip.bltFlags)
+	bytesPerPx := uint64(bpp)
+
 	srcStride := chip.bltSrcStrideRun
 	if srcStride == 0 {
-		srcStride = uint32(texMaskU+1) * 4
+		srcStride = uint32(texMaskU+1) * uint32(bpp)
 	}
 	dstStride := chip.bltDstStrideRun
 	if dstStride == 0 {
-		dstStride = chip.defaultStride(chip.bltDst, width, mode)
+		if bpp == 1 {
+			dstStride = chip.defaultStrideBPP(chip.bltDst, width, 1, mode)
+		} else {
+			dstStride = chip.defaultStride(chip.bltDst, width, mode)
+		}
 	}
 
 	// Fixed point coordinates (16.16)
@@ -2248,23 +2261,27 @@ func (chip *VideoChip) blitMode7Locked(mode VideoMode) {
 			uInt := (u >> 16) & texMaskU
 			vInt := (v >> 16) & texMaskV
 
-			texOff := uint64(uint32(vInt))*uint64(srcStride) + uint64(uint32(uInt))*BYTES_PER_PIXEL
+			texOff := uint64(uint32(vInt))*uint64(srcStride) + uint64(uint32(uInt))*bytesPerPx
 			texAddr64 := uint64(chip.bltSrc) + texOff
-			if texAddr64+BYTES_PER_PIXEL > math.MaxUint32 {
+			if texAddr64+bytesPerPx > math.MaxUint32 {
 				chip.bltErr = true
 				return
 			}
 			texAddr := uint32(texAddr64)
-			if chip.busMemory != nil && texAddr64+BYTES_PER_PIXEL > uint64(len(chip.busMemory)) {
+			if chip.busMemory != nil && texAddr64+bytesPerPx > uint64(len(chip.busMemory)) {
 				chip.bltErr = true
 				return
 			}
-			texel := chip.blitReadPixelLocked(texAddr)
 
-			// Write destination
-			chip.blitWritePixelLocked(dstAddr, texel, mode)
+			// Sample the texel and write it at the destination, in the
+			// active pixel size (CLUT8 index byte or RGBA32 word).
+			if bpp == 1 {
+				chip.blitWrite8Locked(dstAddr, chip.blitRead8Locked(texAddr), mode)
+			} else {
+				chip.blitWritePixelLocked(dstAddr, chip.blitReadPixelLocked(texAddr), mode)
+			}
 
-			dstAddr += BYTES_PER_PIXEL
+			dstAddr += uint32(bytesPerPx)
 			u += duCol
 			v += dvCol
 		}
@@ -2741,6 +2758,15 @@ func (chip *VideoChip) RunBlitterForTest() {
 	defer chip.mu.Unlock()
 	mode := VideoModes[chip.currentMode]
 	chip.runBlitterLocked(mode)
+}
+
+// BlitStartCount returns the number of BLT_CTRL start writes seen since boot.
+// Used by the EmuTOS integration gate to confirm the guest issues real blitter
+// operations rather than rendering purely on the CPU.
+func (chip *VideoChip) BlitStartCount() uint64 {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	return chip.bltStartCount
 }
 
 func (chip *VideoChip) HandleRead(addr uint32) uint32 {
@@ -3369,6 +3395,7 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 			return true
 		}
 		chip.bltBusy = true
+		chip.bltStartCount++
 		chip.bltErr = false
 		chip.bltDone = false
 		chip.bltOp = chip.bltOpStaged

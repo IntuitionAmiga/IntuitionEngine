@@ -294,9 +294,27 @@ copy, fill, scale, colour-expand, and extended line paths.
 | 8 | JAM1 | Colour-expand: clear template bits leave destination unchanged. |
 | 9 | Invert template | Colour-expand: flip each template bit before use. |
 | 10 | Invert mode | Colour-expand: set template bits XOR the destination with all ones. |
+| 11 | Mask MSB-first | Masked-copy: sample mask bits MSB-first (Amiga PLANEPTR order) instead of the default LSB-first. |
+| 12 | Alpha template | Alpha-copy: treat the source as an 8bpp alpha plane blended over the destination with `BLT_FG`. |
 
 If `BLT_FLAGS` is `0`, the draw mode is treated as `COPY` (`3`) for
-compatibility. Otherwise, the draw-mode field is used exactly.
+compatibility. Otherwise, the draw-mode field is used exactly. Note the
+consequence: because `0` is the RGBA32-Copy sentinel, the `Clear` draw mode
+(`0`) cannot be expressed in RGBA32 with no other flags set — fill with colour
+`0` instead.
+
+> **RGBA32 raster-op caveat.** The draw modes operate on the full 32-bit pixel,
+> *including the alpha byte*. In RGBA32 only `Copy` (`3`), `Clear` (`0`), and
+> `Set` (`15`) yield colours that round-trip cleanly; the bitwise modes
+> (`And`/`Or`/`Xor`/…) mangle alpha and can produce off-palette values. Use the
+> non-Copy raster ops in CLUT8 mode, where operands are 8-bit indices.
+
+> **Big-endian colour contract.** When the chip runs in big-endian mode (M68K
+> guests), `BLT_COLOR`/`BLT_FG`/`BLT_BG` are still consumed and stored
+> little-endian, whereas a CPU-direct store lands big-endian. To make a
+> blitter-rendered RGBA32 pixel match a CPU-rendered one, byte-reverse the
+> colour before writing it (`0xRRGGBBAA` → `0xAABBGGRR`). CLUT8 indices occupy
+> the low byte and are never swapped.
 
 | Mode | Name | Result |
 |------|------|--------|
@@ -772,21 +790,25 @@ An invalid mask, such as `5`, sets `BLT_STATUS` bit `0` (`ERR`) and
 the blit stops. Negative coordinates wrap naturally through the same
 mask: `-1.0` with mask `3` samples texel `3`.
 
-Mode 7 always reads and writes RGBA32 pixels, four bytes per pixel.
-`BLT_FLAGS` does not make Mode 7 operate in CLUT8, and Mode 7 does
-not use `BLT_COLOR`, `BLT_MASK`, `BLT_FG`, or `BLT_BG`.
+Mode 7 honours the `BLT_FLAGS` BPP field: it samples texels and writes
+destination pixels as RGBA32 (four bytes) by default, or as CLUT8 (one
+index byte) when `BLT_FLAGS` selects CLUT8. The texture and destination
+strides are interpreted in that pixel size. Mode 7 does not use
+`BLT_COLOR`, `BLT_MASK`, `BLT_FG`, or `BLT_BG`.
 
 ### 4.6.16 Mode 7 setup
 
 The raw-register setup order is:
 
-1. Put the RGBA32 texture in memory. Each texel is four bytes.
+1. Put the texture in memory. Each texel is four bytes (RGBA32) or one
+   index byte (CLUT8), matching the `BLT_FLAGS` BPP field.
 2. Write `BLT_SRC` to the texture base address.
 3. Write `BLT_DST` to the destination base address.
 4. Write `BLT_WIDTH` and `BLT_HEIGHT` to the destination size in
    pixels.
 5. Write `BLT_SRC_STRIDE` to the texture row stride in bytes, or
-   `0` to use `(BLT_MODE7_TEX_W + 1) * 4`.
+   `0` to use `(BLT_MODE7_TEX_W + 1) * bytes_per_pixel` (4 for RGBA32,
+   1 for CLUT8).
 6. Write `BLT_DST_STRIDE` to the destination row stride in bytes, or
    `0` to use the current framebuffer stride when the destination is
    in VRAM.

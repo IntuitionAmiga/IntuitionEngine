@@ -243,8 +243,8 @@ Entry format:
   Result: Ch 4 now treats the blitter as a complete programmable feature, not just a fact table.
 
 - Area: Ch 4, VideoChip Mode 7 affine texture unit.
-  Claim: BLT_OP=5 performs RGBA32 affine texture mapping with U/V = origin + x*column delta + y*row delta, signed 16.16 coordinates, power-of-two-minus-one texture masks, optional source/destination strides, synchronous completion, DONE/ERR status, and no CLUT8 Mode7 path.
-  Canonical sources checked: video_chip.go blitMode7Locked, handleBlitterWriteLocked, bppFromFlags/drawModeFromFlags boundaries, sdk/include/ehbasic_hw_system.inc BLIT MODE7 parser, ehbasic_test.go Mode7 tests, video_blitter_test.go Mode7 tests, video_chip_regressions_test.go stride overflow test.
+  Claim: BLT_OP=5 performs affine texture mapping with U/V = origin + x*column delta + y*row delta, signed 16.16 coordinates, power-of-two-minus-one texture masks, optional source/destination strides, synchronous completion, DONE/ERR status, and honours the BLT_FLAGS BPP field: RGBA32 (4 bytes/texel) by default or CLUT8 (1 index byte/texel), with strides in that pixel size.
+  Canonical sources checked: video_chip.go blitMode7Locked (bpp via bppFromFlags), handleBlitterWriteLocked, bppFromFlags/drawModeFromFlags boundaries, sdk/include/ehbasic_hw_system.inc BLIT MODE7 parser, ehbasic_test.go Mode7 tests, video_blitter_test.go Mode7 tests (incl. TestBlitterMode7CLUT8), video_chip_regressions_test.go stride overflow test.
   Reader workflow: BASIC typed program builds a 64x64 checkerboard texture with POKE, enables VideoChip 320x200, and runs BLIT MODE7.
   Runnable example: Ch 4 "MODE7 CHECKERBOARD" listing, ending with PRINT PEEK(&H000F0044).
   Expected result: a rotated checkerboard appears in the VideoChip framebuffer; BLT_STATUS reads 2 (DONE set, ERR clear).

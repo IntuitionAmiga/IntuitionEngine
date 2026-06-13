@@ -73,8 +73,13 @@ END_UPDATE      equ 0
 ; ============================================================================
 
 TEXTURE_BASE    equ $600000
-TEX_STRIDE      equ 1024            ; 256 * 4 bytes per pixel
-VRAM_STRIDE     equ 2560            ; 640 * 4 bytes per pixel
+; CLUT8 desktop format: 1 byte/pixel, 1920-wide screen. The texture is an
+; 8bpp indexed image whose palette is loaded into CLUT entries 16..255 (pens
+; 0..15 are left to the GEM desktop). This keeps the demo a windowed GEM app.
+TEX_STRIDE      equ 256             ; 256 * 1 byte per pixel (CLUT8)
+VRAM_STRIDE     equ 1920            ; 1920 * 1 byte per pixel (CLUT8)
+CLUT8_FLAGS     equ BLT_FLAGS_BPP_CLUT8|(3<<BLT_FLAGS_DRAWMODE_SHIFT)  ; CLUT8 + Copy ROP
+TEX_PAL_BASE    equ 16              ; first CLUT entry used by the texture palette
 
 ANGLE_INC       equ 313             ; Rotation speed (8.8 fixed-point)
 SCALE_INC       equ 104             ; Zoom speed (8.8 fixed-point)
@@ -111,6 +116,7 @@ start:
                 bmi     exit_no_gem
 
                 bsr     load_texture
+                bsr     load_palette
                 bsr     start_music
                 bsr     open_window
                 tst.w   d0
@@ -221,11 +227,31 @@ open_window:
                 move.w  aes_intout+6,d2          ; desktop w
                 move.w  aes_intout+8,d3          ; desktop h
 
-                ; Use a 320x240 window centred on the desktop
-                move.w  #320,d4                  ; window width
-                move.w  #240,d5                  ; window height
+                ; This demo renders 8bpp CLUT8 directly to the framebuffer, so
+                ; require the desktop to be in CLUT8 mode and capture the live
+                ; framebuffer base + stride rather than assuming a fixed layout.
+                ; (CLUT8 row stride = screen width in bytes = desktop width.)
+                move.l  VIDEO_COLOR_MODE,d6
+                cmp.l   #1,d6                    ; 1 = CLUT8
+                bne     .fail                    ; not CLUT8 -> bail, don't corrupt
+                move.l  VIDEO_FB_BASE,screen_base
+                moveq   #0,d6
+                move.w  d2,d6                    ; desktop width (pixels)
+                move.l  d6,screen_stride         ; CLUT8: 1 byte/pixel -> stride = width
 
-                ; Centre: x = dx + (dw - 320)/2, y = dy + (dh - 240)/2
+                ; Window is 1024x768, clamped to the desktop work area so it
+                ; always fits (a CLUT8 desktop may be smaller than 1024x768).
+                move.w  #1024,d4                 ; desired window width
+                cmp.w   d2,d4
+                ble.s   .w_ok
+                move.w  d2,d4                    ; clamp to desktop width
+.w_ok:
+                move.w  #768,d5                  ; desired window height
+                cmp.w   d3,d5
+                ble.s   .h_ok
+                move.w  d3,d5                    ; clamp to desktop height
+.h_ok:
+                ; Centre: x = dx + (dw - w)/2, y = dy + (dh - h)/2
                 move.w  d2,d6
                 sub.w   d4,d6
                 asr.w   #1,d6
@@ -240,6 +266,17 @@ open_window:
 
                 move.w  d4,win_w
                 move.w  d5,win_h
+
+                ; Rotation pivot = window centre (runtime, since size may be
+                ; clamped). compute_frame uses these to centre the effect.
+                move.w  d4,d6
+                asr.w   #1,d6
+                ext.l   d6
+                move.l  d6,pivot_x
+                move.w  d5,d6
+                asr.w   #1,d6
+                ext.l   d6
+                move.l  d6,pivot_y
 
                 ; --- wind_create(NAME|CLOSER|MOVER, x, y, w, h) ---
                 move.w  #AES_WIND_CREATE,aes_control
@@ -625,14 +662,15 @@ render_window:
                 tst.w   d3
                 ble     .rw_done
 
-                ; Compute destination address in VRAM
-                ; dst = VRAM_START + y * VRAM_STRIDE + x * 4
+                ; Compute destination address (CLUT8: 1 byte/pixel) using the
+                ; live framebuffer base + stride captured in open_window.
+                ; dst = screen_base + y * screen_stride + x
                 ext.l   d1                       ; sign-extend y
-                muls.w  #VRAM_STRIDE,d1          ; y * stride
+                move.l  screen_stride,d5         ; d5 scratch (free here; reloaded later)
+                muls.l  d5,d1                    ; y * stride (32-bit, 68020)
                 ext.l   d0                       ; sign-extend x
-                lsl.l   #2,d0                    ; x * 4
-                add.l   d0,d1                    ; y*stride + x*4
-                add.l   #VRAM_START,d1           ; absolute VRAM address
+                add.l   d0,d1                    ; y*stride + x
+                add.l   screen_base,d1           ; absolute framebuffer address
                 move.l  d1,d4                    ; d4 = dst addr
 
                 ; Compute u0/v0 offset for the sub-rectangle within the work area.
@@ -655,7 +693,7 @@ render_window:
                 move.l  d3,BLT_HEIGHT
 
                 move.l  #TEX_STRIDE,BLT_SRC_STRIDE
-                move.l  #VRAM_STRIDE,BLT_DST_STRIDE
+                move.l  screen_stride,BLT_DST_STRIDE
 
                 move.l  #255,BLT_MODE7_TEX_W
                 move.l  #255,BLT_MODE7_TEX_H
@@ -700,6 +738,9 @@ render_window:
                 neg.l   d6
                 move.l  d6,BLT_MODE7_DU_ROW
                 move.l  d5,BLT_MODE7_DV_ROW
+
+                ; CLUT8 pixel format (1 byte/texel and 1 byte/dst pixel)
+                move.l  #CLUT8_FLAGS,BLT_FLAGS
 
                 ; Trigger blit
                 move.l  #1,BLT_CTRL
@@ -764,37 +805,24 @@ compute_frame:
                 move.l  d6,var_ca
                 move.l  d7,var_sa
 
-                ; u0 = 8388608 - CA*320 + SA*240
-                ; Using shift decomposition for 320 and 240
+                ; Rotation pivot at the window centre (pivot_x, pivot_y),
+                ; computed at runtime since the window may be clamped smaller.
+                ; u0 = 8388608 - CA*pivot_x + SA*pivot_y
                 move.l  d6,d0
-                move.l  d0,d1
-                lsl.l   #8,d0
-                lsl.l   #6,d1
-                add.l   d1,d0                    ; CA * 320
-
+                muls.l  pivot_x,d0               ; CA * pivot_x
                 move.l  d7,d1
-                move.l  d1,d2
-                lsl.l   #8,d1
-                lsl.l   #4,d2
-                sub.l   d2,d1                    ; SA * 240
+                muls.l  pivot_y,d1               ; SA * pivot_y
 
                 move.l  #$800000,d3
                 sub.l   d0,d3
                 add.l   d1,d3
                 move.l  d3,var_u0
 
-                ; v0 = 8388608 - SA*320 - CA*240
+                ; v0 = 8388608 - SA*pivot_x - CA*pivot_y
                 move.l  d7,d0
-                move.l  d0,d1
-                lsl.l   #8,d0
-                lsl.l   #6,d1
-                add.l   d1,d0                    ; SA * 320
-
+                muls.l  pivot_x,d0               ; SA * pivot_x
                 move.l  d6,d1
-                move.l  d1,d2
-                lsl.l   #8,d1
-                lsl.l   #4,d2
-                sub.l   d2,d1                    ; CA * 240
+                muls.l  pivot_y,d1               ; CA * pivot_y
 
                 move.l  #$800000,d3
                 sub.l   d0,d3
@@ -833,13 +861,11 @@ stop_music:
                 rts
 
 ; ============================================================================
-; LOAD TEXTURE (256x256 RGBA from Embedded Raw Data via BLIT COPY)
+; LOAD TEXTURE (256x256 CLUT8 indexed image via BLIT COPY)
 ; ============================================================================
+; NOTE: this is a windowed GEM app on the CLUT8 desktop, so it must NOT touch
+; VIDEO_MODE / VIDEO_COLOR_MODE (that would reconfigure the whole screen).
 load_texture:
-                ; Enable VideoChip (needed for blitter)
-                move.l  #1,VIDEO_CTRL
-                move.l  #0,VIDEO_MODE
-
                 move.l  #BLT_OP_COPY,BLT_OP
                 lea     texture_data,a0
                 move.l  a0,BLT_SRC
@@ -848,10 +874,24 @@ load_texture:
                 move.l  #256,BLT_HEIGHT
                 move.l  #TEX_STRIDE,BLT_SRC_STRIDE
                 move.l  #TEX_STRIDE,BLT_DST_STRIDE
+                move.l  #CLUT8_FLAGS,BLT_FLAGS
                 move.l  #1,BLT_CTRL
 .w1:            move.l  BLT_CTRL,d0
                 andi.l  #2,d0
                 bne.s   .w1
+                rts
+
+; ============================================================================
+; LOAD PALETTE - upload the texture's 240-colour palette into CLUT entries
+; 16..255 (leaving GEM desktop pens 0..15 untouched). palette_data holds 240
+; big-endian 0x00RRGGBB longs. VIDEO_PAL_DATA auto-increments from PAL_INDEX.
+; ============================================================================
+load_palette:
+                move.l  #TEX_PAL_BASE,VIDEO_PAL_INDEX
+                lea     palette_data,a0
+                move.w  #239,d0
+.lp:            move.l  (a0)+,VIDEO_PAL_DATA
+                dbra    d0,.lp
                 rts
 
 ; ============================================================================
@@ -949,11 +989,16 @@ recip_table:
 ; ============================================================================
 
 ; ============================================================================
-; TEXTURE DATA - 256x256 RGBA RAW IMAGE
+; TEXTURE DATA - 256x256 CLUT8 indexed image (indices 16..255)
 ; ============================================================================
                 even
 texture_data:
-                incbin  "../assets/rotozoomtexture_emutos.raw"
+                incbin  "../assets/rotozoomtexture_emutos_clut8.raw"
+
+; Texture palette: 240 big-endian 0x00RRGGBB longs -> CLUT entries 16..255
+                even
+palette_data:
+                incbin  "../assets/rotozoomtexture_emutos_clut8.pal"
 
                 even
 ahx_data:
@@ -969,6 +1014,10 @@ ahx_data_end:
 ; Animation accumulators
 angle_accum:    ds.l    1
 scale_accum:    ds.l    1
+screen_base:    ds.l    1                ; live framebuffer base (VIDEO_FB_BASE)
+screen_stride:  ds.l    1                ; live row stride in bytes (CLUT8 = width)
+pivot_x:        ds.l    1                ; rotation pivot = window centre x
+pivot_y:        ds.l    1                ; rotation pivot = window centre y
 var_ca:         ds.l    1
 var_sa:         ds.l    1
 var_u0:         ds.l    1

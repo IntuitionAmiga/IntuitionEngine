@@ -2269,3 +2269,329 @@ func TestBlitterAlphaTemplateZeroStride(t *testing.T) {
 		}
 	}
 }
+
+// --- M0 gap tests: hardening the ops EmuTOS will lean on -------------------
+//
+// Trigger convention: writing BLT_CTRL=bltCtrlStart already runs the blit
+// synchronously (HandleWrite -> runBlitterLocked). The trailing
+// RunBlitterForTest() is an idempotent no-op because runBlitterLocked early
+// returns unless bltPending, which the start write set and cleared. The idiom
+// is kept for consistency with the existing tests; one execution per start.
+
+// TestBlitterDrawModesAll16 exercises every raster op (only XOR was covered
+// before) by filling a 1x1 destination and comparing against applyDrawMode.
+func TestBlitterDrawModesAll16(t *testing.T) {
+	mode := VideoModes[MODE_640x480]
+	const src = uint32(0xAABBCCDD)
+	const dstSeed = uint32(0x11223344)
+
+	for drawMode := 0; drawMode <= 0x0F; drawMode++ {
+		video, bus := newBlitterTestRig(t)
+		dst := uint32(VRAM_START)
+		dstOff := dst - BUFFER_OFFSET
+		binary.LittleEndian.PutUint32(video.frontBuffer[dstOff:], dstSeed)
+
+		bus.Write32(BLT_OP, bltOpFill)
+		bus.Write32(BLT_DST, dst)
+		bus.Write32(BLT_WIDTH, 1)
+		bus.Write32(BLT_HEIGHT, 1)
+		bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+		bus.Write32(BLT_COLOR, src)
+		bus.Write32(BLT_FLAGS, IE_BLT_MAKE_FLAGS(bltFlagsBPP_RGBA32, uint32(drawMode)))
+		bus.Write32(BLT_CTRL, bltCtrlStart)
+		video.RunBlitterForTest()
+
+		// drawModeFromFlags treats BLT_FLAGS==0 as the legacy "RGBA32 Copy"
+		// default (the contract the AROS/EmuTOS driver relies on). In RGBA32,
+		// Clear (0x00) encodes to flags==0, so it is interpreted as Copy and is
+		// effectively unreachable (use Copy with color 0 to clear-to-black).
+		effMode := drawMode
+		if IE_BLT_MAKE_FLAGS(bltFlagsBPP_RGBA32, uint32(drawMode)) == 0 {
+			effMode = 0x03
+		}
+		got := binary.LittleEndian.Uint32(video.frontBuffer[dstOff:])
+		want := applyDrawMode(src, dstSeed, effMode)
+		if got != want {
+			t.Fatalf("draw mode 0x%02X: got 0x%08X, want 0x%08X", drawMode, got, want)
+		}
+	}
+}
+
+// TestBlitterDrawModesAlphaPreservation locks the RGBA32 alpha caveat: the
+// raster ops operate on the full 32-bit pixel including the alpha byte, so
+// AND/XOR/etc. mangle alpha. This is why only Copy/Clear/Set are safe to
+// offload from EmuTOS in RGBA32 mode (the rest wait for CLUT8).
+func TestBlitterDrawModesAlphaPreservation(t *testing.T) {
+	mode := VideoModes[MODE_640x480]
+	video, bus := newBlitterTestRig(t)
+
+	dst := uint32(VRAM_START)
+	dstOff := dst - BUFFER_OFFSET
+	const dstSeed = uint32(0x00112233) // alpha byte = 0x00
+	const src = uint32(0xFF445566)     // alpha byte = 0xFF
+	binary.LittleEndian.PutUint32(video.frontBuffer[dstOff:], dstSeed)
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_COLOR, src)
+	bus.Write32(BLT_FLAGS, IE_BLT_MAKE_FLAGS(bltFlagsBPP_RGBA32, 0x06)) // XOR
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	got := binary.LittleEndian.Uint32(video.frontBuffer[dstOff:])
+	want := src ^ dstSeed // 0xFF result: full-pixel XOR, alpha included
+	if got != want {
+		t.Fatalf("XOR result: got 0x%08X, want 0x%08X", got, want)
+	}
+	// The caveat: alpha was NOT preserved from the destination.
+	gotAlpha := got >> 24
+	dstAlpha := dstSeed >> 24
+	if gotAlpha == dstAlpha {
+		t.Fatalf("expected RGBA32 XOR to clobber alpha (caveat); got alpha 0x%02X == dst alpha 0x%02X", gotAlpha, dstAlpha)
+	}
+}
+
+// TestBlitterMaskedCopyMSBFirst verifies MSB-first mask sampling (Amiga
+// PLANEPTR order) selected by bltFlagsMaskMSB, vs the default LSB-first.
+func TestBlitterMaskedCopyMSBFirst(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	src := vramAddr(mode, 0, 30)
+	dst := vramAddr(mode, 10, 30)
+	maskAddr := uint32(0x6000)
+
+	for i := range 8 {
+		video.HandleWrite(src+uint32(i*4), 0xCC000000+uint32(i))
+	}
+	// 0xB0 = 1011_0000: MSB-first -> pixels 0,2,3 copied, rest skipped.
+	bus.Write8(maskAddr, 0xB0)
+
+	bus.Write32(BLT_OP, bltOpMaskedCopy)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 8)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_MASK, maskAddr)
+	bus.Write32(BLT_FLAGS, bltFlagsMaskMSB)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	copied := map[int]bool{0: true, 2: true, 3: true}
+	for i := range 8 {
+		got := video.HandleRead(dst + uint32(i*4))
+		if copied[i] {
+			if got != 0xCC000000+uint32(i) {
+				t.Fatalf("MSB pixel %d: expected copy, got 0x%08X", i, got)
+			}
+		} else if got != 0 {
+			t.Fatalf("MSB pixel %d: expected skip, got 0x%08X", i, got)
+		}
+	}
+}
+
+// TestBlitterMaskedCopyStrideAndSrcX covers a multi-row masked copy with a
+// non-packed mask row stride (BLT_MASK_MOD) and a non-zero start bit
+// (BLT_MASK_SRCX), the layout EmuTOS glyph/cursor masks use.
+func TestBlitterMaskedCopyStrideAndSrcX(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	const width, height = 2, 2
+	srcStride := uint32(mode.bytesPerRow)
+	dstStride := uint32(mode.bytesPerRow)
+	src := vramAddr(mode, 0, 40)
+	dst := vramAddr(mode, 0, 60)
+	maskAddr := uint32(0x6100)
+
+	// Distinct source pixels per row/col.
+	for y := range height {
+		for x := range width {
+			video.HandleWrite(src+uint32(y)*srcStride+uint32(x*4), 0xDD0000A0+uint32(y*16+x))
+		}
+	}
+	// Mask: 2 bytes per row (maskMod=2, only byte 0 used), start bit srcX=2,
+	// LSB-first default. Row0 copies x0 only; row1 copies x1 only.
+	bus.Write8(maskAddr+0, 0b00000100) // row0: bit2 set (x0), bit3 clear (x1)
+	bus.Write8(maskAddr+2, 0b00001000) // row1: bit2 clear (x0), bit3 set (x1)
+
+	bus.Write32(BLT_OP, bltOpMaskedCopy)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, width)
+	bus.Write32(BLT_HEIGHT, height)
+	bus.Write32(BLT_SRC_STRIDE, srcStride)
+	bus.Write32(BLT_DST_STRIDE, dstStride)
+	bus.Write32(BLT_MASK, maskAddr)
+	bus.Write32(BLT_MASK_MOD, 2)
+	bus.Write32(BLT_MASK_SRCX, 2)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	type cell struct{ x, y int }
+	copied := map[cell]bool{{0, 0}: true, {1, 1}: true}
+	for y := range height {
+		for x := range width {
+			got := video.HandleRead(dst + uint32(y)*dstStride + uint32(x*4))
+			if copied[cell{x, y}] {
+				want := uint32(0xDD0000A0 + uint32(y*16+x))
+				if got != want {
+					t.Fatalf("(%d,%d): expected copy 0x%08X, got 0x%08X", x, y, want, got)
+				}
+			} else if got != 0 {
+				t.Fatalf("(%d,%d): expected skip, got 0x%08X", x, y, got)
+			}
+		}
+	}
+}
+
+// TestBlitterAlphaTemplateBlend verifies the source-over blend of the alpha
+// template path (8bpp alpha plane blended with BLT_FG) for a partial alpha.
+func TestBlitterAlphaTemplateBlend(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+
+	dst := uint32(VRAM_START)
+	dstOff := dst - BUFFER_OFFSET
+	const dstColor = uint32(0x00204060) // R=0x60 G=0x40 B=0x20 A=0x00 (LE bytes)
+	binary.LittleEndian.PutUint32(video.frontBuffer[dstOff:], dstColor)
+
+	const fg = uint32(0x00FFFFFF) // FG R=0xFF G=0xFF B=0xFF (LE byte order)
+	const alpha = uint32(0x80)
+	srcAddr := uint32(0x6200)
+	bus.Write8(srcAddr, uint8(alpha)) // 1-byte alpha plane
+
+	bus.Write32(BLT_OP, bltOpAlphaCopy)
+	bus.Write32(BLT_SRC, srcAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_FG, fg)
+	bus.Write32(BLT_FLAGS, bltFlagsAlphaTemplate)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	// Reference blend matches blitAlphaCopyLocked: out = (s*a + d*(255-a))/255
+	// per channel, with the LE byte layout (R=bits0-7, G=8-15, B=16-23).
+	inv := 255 - alpha
+	chans := func(v uint32) (r, g, b, a uint32) {
+		return v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF
+	}
+	sr, sg, sb, _ := chans(fg)
+	dr, dg, db, da := chans(dstColor)
+	wantR := (sr*alpha + dr*inv) / 255
+	wantG := (sg*alpha + dg*inv) / 255
+	wantB := (sb*alpha + db*inv) / 255
+	wantA := alpha + (da*inv)/255
+	want := wantR | (wantG << 8) | (wantB << 16) | (wantA << 24)
+
+	got := binary.LittleEndian.Uint32(video.frontBuffer[dstOff:])
+	if got != want {
+		t.Fatalf("alpha-template blend: got 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+// TestBlitterColorExpandCLUT8 covers color-expand into an 8bpp CLUT8 surface:
+// FG/BG are 1-byte palette indices, one destination byte per pixel. This is
+// the form EmuTOS text rendering uses once CLUT8 mode is enabled.
+func TestBlitterColorExpandCLUT8(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[MODE_640x480]
+
+	// Template 0xB0 = 1011_0000 (MSB-first): pixels 0,2,3 = FG, rest = BG.
+	tmplAddr := uint32(0x50000)
+	bus.memory[tmplAddr] = 0xB0
+
+	const fgIdx = uint32(7)
+	const bgIdx = uint32(3)
+	dst := uint32(VRAM_START)
+	dstOff := dst - BUFFER_OFFSET
+
+	bus.Write32(BLT_OP, bltOpColorExpand)
+	bus.Write32(BLT_MASK, tmplAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 8)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_MASK_MOD, 1)
+	bus.Write32(BLT_MASK_SRCX, 0)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.width)) // CLUT8: 1 byte per pixel
+	bus.Write32(BLT_FG, fgIdx)
+	bus.Write32(BLT_BG, bgIdx)
+	bus.Write32(BLT_FLAGS, IE_BLT_MAKE_FLAGS(bltFlagsBPP_CLUT8, 0x03))
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	expected := [8]uint8{
+		uint8(fgIdx), uint8(bgIdx), uint8(fgIdx), uint8(fgIdx),
+		uint8(bgIdx), uint8(bgIdx), uint8(bgIdx), uint8(bgIdx),
+	}
+	for i, want := range expected {
+		got := video.frontBuffer[dstOff+uint32(i)]
+		if got != want {
+			t.Fatalf("CLUT8 color-expand pixel %d: got %d, want %d", i, got, want)
+		}
+	}
+}
+
+// TestBlitterMode7CLUT8 verifies the affine Mode7 blit samples and writes
+// 1-byte CLUT8 indices when BLT_FLAGS selects CLUT8, mirroring the RGBA32
+// identity test. Required by the CLUT8 EmuTOS rotozoomer (windowed demo).
+func TestBlitterMode7CLUT8(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[MODE_640x480]
+
+	const (
+		BLT_MODE7_U0     = 0xF0058
+		BLT_MODE7_V0     = 0xF005C
+		BLT_MODE7_DU_COL = 0xF0060
+		BLT_MODE7_DV_COL = 0xF0064
+		BLT_MODE7_DU_ROW = 0xF0068
+		BLT_MODE7_DV_ROW = 0xF006C
+		BLT_MODE7_TEX_W  = 0xF0070
+		BLT_MODE7_TEX_H  = 0xF0074
+		BLT_OP_MODE7     = 5
+	)
+
+	// 4x4 CLUT8 texture (1 byte/texel) at 0x8000: index = row*4+col + 1.
+	texAddr := uint32(0x8000)
+	for i := range uint32(16) {
+		bus.Write8(texAddr+i, uint8(i+1))
+	}
+
+	dst := uint32(VRAM_START)
+	dstOff := dst - BUFFER_OFFSET
+	dstStride := uint32(mode.width) // CLUT8: 1 byte per pixel
+
+	bus.Write32(BLT_OP, BLT_OP_MODE7)
+	bus.Write32(BLT_SRC, texAddr)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 4)
+	bus.Write32(BLT_HEIGHT, 4)
+	bus.Write32(BLT_SRC_STRIDE, 4) // 4 texels * 1 byte
+	bus.Write32(BLT_DST_STRIDE, dstStride)
+	bus.Write32(BLT_MODE7_U0, 0)
+	bus.Write32(BLT_MODE7_V0, 0)
+	bus.Write32(BLT_MODE7_DU_COL, 0x10000)
+	bus.Write32(BLT_MODE7_DV_COL, 0)
+	bus.Write32(BLT_MODE7_DU_ROW, 0)
+	bus.Write32(BLT_MODE7_DV_ROW, 0x10000)
+	bus.Write32(BLT_MODE7_TEX_W, 3)
+	bus.Write32(BLT_MODE7_TEX_H, 3)
+	bus.Write32(BLT_FLAGS, IE_BLT_MAKE_FLAGS(bltFlagsBPP_CLUT8, 0x03))
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	for y := range 4 {
+		for x := range 4 {
+			off := dstOff + uint32(y)*dstStride + uint32(x)
+			want := uint8(y*4 + x + 1)
+			if got := video.frontBuffer[off]; got != want {
+				t.Fatalf("CLUT8 Mode7 pixel (%d,%d): got %d, want %d", x, y, got, want)
+			}
+		}
+	}
+}

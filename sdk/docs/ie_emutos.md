@@ -15,6 +15,49 @@ Implemented in IE runtime:
 - IOREC keyboard buffer detection and initialization from ROM pattern scan
 - XBIOS minimal shim (TRAP #14) for IE-mapped video, palette, PSG, random, and keyboard-rate calls
 - ProgramExecutor support for `.tos` and `.img`
+- Hardware-accelerated graphics via the IE blitter (see below)
+
+## Hardware-accelerated graphics
+
+EmuTOS drives the IE VideoChip blitter for its hottest VDI/screen operations
+instead of rendering every pixel on the M68K. The driver is
+`bios/ie_blitter.{c,h}` (register map in `bios/ie_machine.h`), mirroring the
+AROS `arch/m68k-ie/hidd/iegfx` driver. Offloaded paths:
+
+| Operation | Site | Blitter op |
+|-----------|------|------------|
+| Screen clear / rectangle fill | `bios/ie_screen.c` | FILL |
+| Console / VDI scroll | `bios/ie_screen.c` | MEMCOPY + FILL |
+| Solid VDI rectangle/horizontal-line fill | `vdi/vdi_line.c` `swblit_rect_common_ie` | FILL |
+| Raster copy / clear (`vro_cpyfm` S_ONLY / ALL_WHITE / ALL_BLACK) | `vdi/vdi_raster.c` | COPY / FILL |
+| Text / glyph rendering (plain, no skew/effects) | `vdi/vdi_textblit.c` `screen_blit_ie` | COLOR_EXPAND |
+| Solid lines | `vdi/vdi_line.c` `draw_line_ie` | LINE |
+
+Each offload is guarded to the cases that are correct in the chip's native
+**RGBA32 chunky** framebuffer; anything outside the guard (dithered fills,
+overlapping in-place copies, styled/dashed lines, skewed or effect text, and
+the 13 non-Copy raster ops) falls back to the existing CPU path.
+
+**RGBA32 raster-op caveat.** The blitter's 16 raster ops act on the full 32-bit
+pixel including the alpha byte, so in RGBA32 only Copy / Clear / Set are
+faithful to VDI's index semantics. The remaining 13 ops (AND/OR/XOR/…) are only
+re-enabled under CLUT8 (see below) where operands are 8-bit indices.
+
+**Endianness.** CPU-direct stores land in VRAM big-endian, but the blitter
+consumes its color registers (`BLT_COLOR`/`BLT_FG`/`BLT_BG`) little-endian, so
+RGBA32 colors passed to the blitter are byte-reversed with `ie_blt_color()`.
+CLUT8 indices live in the low byte and are never swapped.
+
+**CLUT8 (planned, gated `CONF_IE_CLUT8`).** A 1-byte-per-pixel indexed mode
+cuts framebuffer bandwidth 4× and makes all 16 raster ops index-correct. The
+driver primitives exist (`ie_set_color_mode`, `ie_load_clut`); enabling it
+additionally requires `bios/ie_screen.c` to report 8 planes and every `*_ie`
+renderer to write 1-byte indices. RGBA32 remains the default until that lands.
+
+**Copper and Mode7/Scale** are available on the VideoChip but intentionally
+unused by EmuTOS: the GEM desktop is static (no per-scanline effects or
+double-buffered page flip) and has no affine/scaled-blit primitive. They remain
+available for application-level use via a future XBIOS extension.
 
 ## Quick Start
 

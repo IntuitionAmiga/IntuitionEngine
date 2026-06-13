@@ -766,21 +766,25 @@ An invalid mask, such as `5`, sets `BLT_STATUS` bit `0` (`ERR`) and
 the blit stops. Negative coordinates wrap naturally through the same
 mask: `-1.0` with mask `3` samples texel `3`.
 
-Mode 7 always reads and writes RGBA32 pixels, four bytes per pixel.
-`BLT_FLAGS` does not make Mode 7 operate in CLUT8, and Mode 7 does
-not use `BLT_COLOR`, `BLT_MASK`, `BLT_FG`, or `BLT_BG`.
+Mode 7 honours the `BLT_FLAGS` BPP field: it samples texels and writes
+destination pixels as RGBA32 (four bytes) by default, or as CLUT8 (one
+index byte) when `BLT_FLAGS` selects CLUT8. The texture and destination
+strides are interpreted in that pixel size. Mode 7 does not use
+`BLT_COLOR`, `BLT_MASK`, `BLT_FG`, or `BLT_BG`.
 
 ### 4.6.16 Mode 7 setup
 
 The raw-register setup order is:
 
-1. Put the RGBA32 texture in memory. Each texel is four bytes.
+1. Put the texture in memory. Each texel is four bytes (RGBA32) or one
+   index byte (CLUT8), matching the `BLT_FLAGS` BPP field.
 2. Write `BLT_SRC` to the texture base address.
 3. Write `BLT_DST` to the destination base address.
 4. Write `BLT_WIDTH` and `BLT_HEIGHT` to the destination size in
    pixels.
 5. Write `BLT_SRC_STRIDE` to the texture row stride in bytes, or
-   `0` to use `(BLT_MODE7_TEX_W + 1) * 4`.
+   `0` to use `(BLT_MODE7_TEX_W + 1) * bytes_per_pixel` (4 for RGBA32,
+   1 for CLUT8).
 6. Write `BLT_DST_STRIDE` to the destination row stride in bytes, or
    `0` to use the current framebuffer stride when the destination is
    in VRAM.
