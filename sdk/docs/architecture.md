@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-06-13*
+*Last modified: 2026-06-14*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -1145,7 +1145,9 @@ AROS HostFS fast paths use strict bulk guest-memory helpers, a 64 KiB sequential
 
 ### AROS Host Socket ABI
 
-The AROS host socket block at `0xF2500-0xF257F` backs the m68k-ie ROM `bsdsocket.library`. The guest passes one 96-byte big-endian descriptor per socket operation through `REQ_PTR` / `REQ_LEN` and triggers dispatch by writing `CMD`. Payload and sockaddr buffers are copied through strict guest-memory helpers, with `send`, `sendto`, `recv`, and `recvfrom` capped at 64 KiB per call. The block moved from the planning draft's `0xF2400` address because `0xF2400-0xF24FF` is already the SYSINFO ABI. See `sdk/docs/AROSHostSockets.md` for the command list and v1 scope.
+The AROS host socket block at `0xF2500-0xF257F` backs the m68k-ie ROM `bsdsocket.library`. `0xF2400-0xF24FF` remains the SYSINFO ABI, so socket registers occupy the next 128-byte MMIO block. The AROS host socket block at 0xF2500-0xF257F uses 96-byte big-endian request descriptors, strict guest-memory helper copies, 64 KiB send/recv caps, 128-byte sockaddr caps, guest-visible descriptor handles, WaitSelect fd_set translation, and ENOSYS fail-closed behaviour when disabled. The guest writes `REQ_PTR` and `REQ_LEN`, places the descriptor in guest RAM, and triggers synchronous dispatch by writing `CMD`. Payload, fd_set, timeval, hostname, hostent, and sockaddr buffers are copied through those validated guest spans.
+
+Supported command values are `1=socket`, `2=bind`, `3=listen`, `4=accept`, `5=connect`, `6=sendto`, `7=recvfrom`, `8=shutdown`, `9=setsockopt`, `10=getsockopt`, `11=getsockname`, `12=getpeername`, `13=ioctl`, `14=close`, `15=WaitSelect`, `16=gethostbyname`, `17=gethostbyaddr`, `18=gethostname`, `19=Dup2`, and `20=GetEvents`. The Unix backend supports IPv4 TCP and UDP sockets, makes host file descriptors non-blocking, hides them behind guest-visible handles, maps `WaitSelect` fd_sets through that handle table, and rejects arbitrary emulator process descriptors with `EBADF`. Raw sockets, packet filters, route manipulation, interface configuration, and monitoring APIs return unsupported errors. When networking is disabled or no backend is present, the block fails closed with `ENOSYS`.
 
 ### Subsong Selection
 

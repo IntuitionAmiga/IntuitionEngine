@@ -9,6 +9,7 @@
 | Architecture | architecture claim | `EXEC_CTRL operation values: 1=Execute, 2=EmuTOS, 3=AROS, 4=IntuitionOS IExec, 5=Hard reset` | `program_executor_constants.go` `EXEC_OP_*`, `program_executor.go` `HandleWrite` dispatch, `program_executor_test.go` operation-value pins |
 | Architecture | architecture claim | `Each ring has 16 descriptor slots but uses one slot to distinguish full from empty, so it can hold 15 queued requests at once.` | `coprocessor_constants.go` ring constants and coprocessor queue implementation |
 | Architecture | architecture claim | `Mutable devices join the snapshot contract through MachineMonitor.RegisterSnapshotDevice.` | `debug_monitor.go` `RegisterSnapshotDevice`, `main.go` registrations |
+| Architecture | architecture claim | `The AROS host socket block at 0xF2500-0xF257F uses 96-byte big-endian request descriptors, strict guest-memory helper copies, 64 KiB send/recv caps, 128-byte sockaddr caps, guest-visible descriptor handles, WaitSelect fd_set translation, and ENOSYS fail-closed behaviour when disabled.` | `aros_host_socket_constants.go` command/register constants, `aros_host_socket.go` dispatch/copy limits, `aros_host_socket_unix.go` descriptor table and WaitSelect implementation, `main.go` socket MMIO registration |
 | Architecture | architecture claim | `Video compositor default scale mode is stretch-fill; F11 toggles non-16:9 sources to aspect-fit.` | `video_compositor.go` `NewVideoCompositor`/`ToggleScaleModeIfNonNative`, `video_compositor_test.go` default-scale regression |
 | Architecture | architecture claim | `VideoChip Mode7 honours the BLT_FLAGS BPP field: RGBA32 samples and writes 4-byte pixels, while CLUT8 samples and writes 1-byte palette indices with BPP-aware default strides.` | `video_chip.go` `blitMode7Locked`, `bppFromFlags`, `defaultStrideBPP`, and `video_blitter_test.go` Mode7 CLUT8 coverage |
 | Architecture | architecture claim | `mem.* helpers are raw 32-bit bus helpers, not an above-4GiB IE64 RAM or CPU-virtual-address API.` | `script_engine.go` mem helpers cast addresses to `uint32` |
@@ -83,6 +84,7 @@
 | Architecture | memory map row | `0xF23C0-0xF23DF` | `registers.go` IRQ diagnostic constants; `aros_loader.go` `MapIRQDiagnostics`; `main.go` AROS call sites; `machine_lifecycle.go` AROS reset loader call site; `aros_audio_dma.go` `UnmapIO` teardown |
 | Architecture | memory map row | `0xF23E0-0xF23FF` | `bootstrap_hostfs_constants.go` `BOOT_HOSTFS_BASE`/`BOOT_HOSTFS_END`, `main.go` `MapIO` |
 | Architecture | memory map row | `0xF2400-0xF24FF` | `sysinfo_mmio.go` `RegisterSysInfoMMIOFromBus`, `main.go` registration |
+| Architecture | memory map row | `0xF2500-0xF257F` | `registers.go` `AROS_HOST_SOCKET_REGION_*`, `aros_host_socket_constants.go` register offsets, `main.go` `MapIO` |
 | Architecture | memory map row | `0xF3000-0xF6FFF` | `ted_video_constants.go` `TED_V_VRAM_BASE`/`TED_V_VRAM_SIZE`, `main.go` `MapIO` |
 | Architecture | memory map row | `0xF8000-0xF87FF` | `voodoo_constants.go` `VOODOO_BASE`/`VOODOO_END`, `main.go` `MapIO` |
 | Architecture | memory map row | `0xF8140-0xF823F` | `voodoo_constants.go` fog-table constants |
