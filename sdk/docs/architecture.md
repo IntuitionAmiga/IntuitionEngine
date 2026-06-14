@@ -78,6 +78,7 @@ flowchart LR
         AROS["AROS loader"]
         ADOS["AROS DOS handler"]
         ADMA["AROS Paula-style audio DMA"]
+        ASOCK["AROS host socket bridge"]
         HOSTFS["Bootstrap HostFS"]
         FILEIO["File I/O MMIO"]
         MEDIA["Media loader"]
@@ -194,6 +195,7 @@ flowchart LR
     BUS <--> AROS
     AROS --> ADOS
     AROS --> ADMA
+    AROS --> ASOCK
     BUS <--> HOSTFS
     BUS <--> FILEIO
     BUS <--> MEDIA
@@ -1141,6 +1143,10 @@ The AROS DOS block at `0xF2220-0xF225F` is the MMIO command bridge used by the A
 
 AROS HostFS fast paths use strict bulk guest-memory helpers, a 64 KiB sequential read-ahead cache, and cache invalidation on non-sequential reads, seeks outside cache, writes, truncates, close, create, delete, rename, and dirty close paths. Spans outside active guest RAM, high-pointer requests unsupported by the active bus, and low/high backing seam crossings fail closed. External host changes are best-effort and are not continuously watched.
 
+### AROS Host Socket ABI
+
+The AROS host socket block at `0xF2500-0xF257F` backs the m68k-ie ROM `bsdsocket.library`. The guest passes one 96-byte big-endian descriptor per socket operation through `REQ_PTR` / `REQ_LEN` and triggers dispatch by writing `CMD`. Payload and sockaddr buffers are copied through strict guest-memory helpers, with `send`, `sendto`, `recv`, and `recvfrom` capped at 64 KiB per call. The block moved from the planning draft's `0xF2400` address because `0xF2400-0xF24FF` is already the SYSINFO ABI. See `sdk/docs/AROSHostSockets.md` for the command list and v1 scope.
+
 ### Subsong Selection
 
 SID, SAP, and AHX players support subsong selection for multi-tune files. Each player has a subsong register that selects which tune to play from a multi-song file.
@@ -1221,6 +1227,7 @@ are intentional when a reservation lives inside a broader shared-RAM range.
 | `0xF23C0-0xF23DF` | 32B | MMIO | AROS IRQ diagnostic registers | AROS M68K profile while AROS loader is active | AROS profile | Read-only diagnostic MMIO mapped by the AROS loader and unmapped during AROS DMA teardown; not a universal interrupt-controller ABI. |
 | `0xF23E0-0xF23FF` | 32B | MMIO | Bootstrap HostFS | All CPU cores | Bootstrap profile | HostFS boot helper register block. |
 | `0xF2400-0xF24FF` | 256B | MMIO | SYSINFO RAM-size discovery | All CPU cores | System information ABI | Reports total and active visible RAM. |
+| `0xF2500-0xF257F` | 128B | MMIO | AROS host socket bridge | AROS M68K profile | AROS profile | Host-backed `bsdsocket.library` command bridge. |
 | `0xF8000-0xF87FF` | 2KB | MMIO | Voodoo 3D registers and palette | All CPU cores | Voodoo subsystem | 3D control, state, and palette register block. |
 | `0xF8140-0xF823F` | 256B | MMIO | Voodoo fog table | All CPU cores | Voodoo subsystem | 64 entries x 4 bytes. |
 | `0x100000-0x5FFFFF` | 5MB | Shared RAM / VRAM-backed region | Main video framebuffer and graphics-visible memory | All CPU cores | Video subsystem plus guest convention | Subranges may be reserved for coprocessor worker buffers. |

@@ -2039,6 +2039,10 @@ func main() {
 			fmt.Printf("AROS DOS: IE: → %s\r\n", arosHostRoot)
 		}
 
+		arosSockets := NewArosHostSocketDevice(sysBus, NewUnixArosHostSocketBackend(), true)
+		sysBus.MapIO(AROS_HOST_SOCKET_REGION_BASE, AROS_HOST_SOCKET_REGION_END, arosSockets.HandleRead, arosSockets.HandleWrite)
+		fmt.Printf("AROS sockets: host bridge enabled at 0x%05X-0x%05X\r\n", AROS_HOST_SOCKET_REGION_BASE, AROS_HOST_SOCKET_REGION_END)
+
 		// Initialize AROS Audio DMA engine (AROS Paula-style DMA shim -> flex channel DAC)
 		arosDMA, dmaErr := NewArosAudioDMA(sysBus, soundChip, m68kCPU)
 		if dmaErr != nil {

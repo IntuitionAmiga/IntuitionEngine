@@ -1,0 +1,71 @@
+package main
+
+const (
+	AROS_HOST_SOCKET_BASE = AROS_HOST_SOCKET_REGION_BASE
+
+	AROS_HOST_SOCKET_CMD     = AROS_HOST_SOCKET_BASE + 0x00
+	AROS_HOST_SOCKET_REQ_PTR = AROS_HOST_SOCKET_BASE + 0x04
+	AROS_HOST_SOCKET_REQ_LEN = AROS_HOST_SOCKET_BASE + 0x08
+	AROS_HOST_SOCKET_RES1    = AROS_HOST_SOCKET_BASE + 0x0C
+	AROS_HOST_SOCKET_RES2    = AROS_HOST_SOCKET_BASE + 0x10
+	AROS_HOST_SOCKET_ERRNO   = AROS_HOST_SOCKET_BASE + 0x14
+	AROS_HOST_SOCKET_HERRNO  = AROS_HOST_SOCKET_BASE + 0x18
+	AROS_HOST_SOCKET_STATUS  = AROS_HOST_SOCKET_BASE + 0x1C
+	AROS_HOST_SOCKET_EVENTS  = AROS_HOST_SOCKET_BASE + 0x20
+)
+
+const (
+	AROS_HOST_SOCKET_CMD_SOCKET        = 1
+	AROS_HOST_SOCKET_CMD_BIND          = 2
+	AROS_HOST_SOCKET_CMD_LISTEN        = 3
+	AROS_HOST_SOCKET_CMD_ACCEPT        = 4
+	AROS_HOST_SOCKET_CMD_CONNECT       = 5
+	AROS_HOST_SOCKET_CMD_SENDTO        = 6
+	AROS_HOST_SOCKET_CMD_RECVFROM      = 7
+	AROS_HOST_SOCKET_CMD_SHUTDOWN      = 8
+	AROS_HOST_SOCKET_CMD_SETSOCKOPT    = 9
+	AROS_HOST_SOCKET_CMD_GETSOCKOPT    = 10
+	AROS_HOST_SOCKET_CMD_GETSOCKNAME   = 11
+	AROS_HOST_SOCKET_CMD_GETPEERNAME   = 12
+	AROS_HOST_SOCKET_CMD_IOCTL         = 13
+	AROS_HOST_SOCKET_CMD_CLOSE         = 14
+	AROS_HOST_SOCKET_CMD_WAITSELECT    = 15
+	AROS_HOST_SOCKET_CMD_GETHOSTBYNAME = 16
+	AROS_HOST_SOCKET_CMD_GETHOSTBYADDR = 17
+	AROS_HOST_SOCKET_CMD_GETHOSTNAME   = 18
+	AROS_HOST_SOCKET_CMD_DUP2          = 19
+	AROS_HOST_SOCKET_CMD_GETEVENTS     = 20
+)
+
+const (
+	arosHostSocketStatusReady = 0
+	arosHostSocketStatusBusy  = 1
+	arosHostSocketStatusError = 2
+)
+
+const (
+	arosHostSocketReqWords = 24
+	arosHostSocketReqSize  = arosHostSocketReqWords * 4
+	arosHostSocketMaxIO    = 64 * 1024
+	arosHostSocketMaxAddr  = 128
+	arosHostSocketDTable   = 64
+	arosHostSocketFDSetLen = 8
+)
+
+const (
+	arosSockErrNone       = 0
+	arosSockErrBadf       = 9
+	arosSockErrInval      = 22
+	arosSockErrMsgSize    = 40
+	arosSockErrOpNotSupp  = 45
+	arosSockErrNoBufs     = 55
+	arosSockErrNoSys      = 78
+	arosSockErrWouldBlock = 35
+	arosSockHHostNotFound = 1
+	arosSockHNoRecovery   = 3
+)
+
+type arosHostSocketTimeval struct {
+	Sec  int32
+	Usec int32
+}

@@ -61,6 +61,8 @@ Address Range       Size    Device              Constants File
 0xF23B0-0xF23BF     16B     Coprocessor Monitor coprocessor_constants.go
 0xF23C0-0xF23DF     32B     IRQ Diagnostics     registers.go
 0xF23E0-0xF23FF     32B     Bootstrap HostFS    bootstrap_hostfs_constants.go
+0xF2400-0xF24FF     256B    SysInfo             sysinfo_mmio.go
+0xF2500-0xF257F     128B    AROS Host Sockets   aros_host_socket_constants.go
 0xD0000-0xDFFFF     64KB    Voodoo Texture Memory voodoo_constants.go
 0xF8000-0xF87FF     2KB     Voodoo 3D Graphics  voodoo_constants.go
 0xFA000-0xFBAFF     6912B   ULA VRAM Aperture   ula_constants.go
@@ -283,6 +285,11 @@ const (
 	SYSINFO_ACTIVE_RAM_LO = 0xF2408 // low 32 bits of active CPU/profile visible RAM
 	SYSINFO_ACTIVE_RAM_HI = 0xF240C // high 32 bits of active CPU/profile visible RAM
 
+	// AROS host socket bridge. The planning draft proposed 0xF2400, but
+	// that range is occupied by SYSINFO, so sockets use the next 128-byte gap.
+	AROS_HOST_SOCKET_REGION_BASE = 0xF2500
+	AROS_HOST_SOCKET_REGION_END  = 0xF257F
+
 	// Voodoo 3D graphics region
 	VOODOO_REGION_BASE = 0xF8000
 	VOODOO_REGION_END  = 0xF87FF
@@ -422,6 +429,8 @@ func GetIORegion(addr uint32) string {
 		return "Coprocessor"
 	case addr >= SYSINFO_REGION_BASE && addr <= SYSINFO_REGION_END:
 		return "SysInfo"
+	case addr >= AROS_HOST_SOCKET_REGION_BASE && addr <= AROS_HOST_SOCKET_REGION_END:
+		return "AROSHostSocket"
 	case addr >= VOODOO_REGION_BASE && addr <= VOODOO_REGION_END:
 		return "Voodoo"
 	default:

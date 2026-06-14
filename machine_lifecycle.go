@@ -656,6 +656,9 @@ func (m *Machine) LoadROMProfile(mode string, bytes []byte, path string, t Machi
 		t.RuntimeStatus.setAROSDOS(arosDOS)
 		fmt.Printf("AROS DOS: IE: → %s\r\n", hostRoot)
 
+		arosSockets := NewArosHostSocketDevice(t.Bus, NewUnixArosHostSocketBackend(), true)
+		t.Bus.MapIO(AROS_HOST_SOCKET_REGION_BASE, AROS_HOST_SOCKET_REGION_END, arosSockets.HandleRead, arosSockets.HandleWrite)
+
 		arosDMA, dmaErr := m.deps.NewArosAudioDMA(t.Bus, t.SoundChip, r.cpu)
 		if dmaErr != nil {
 			return nil, nil, fmt.Errorf("create AROS audio DMA: %w", dmaErr)

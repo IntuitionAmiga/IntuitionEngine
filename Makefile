@@ -363,7 +363,7 @@ x86-64-v3: x64-live-embed-assets
 	@ls -lh $(BIN_DIR)/IntuitionEngine_v3
 
 .PHONY: x64-live-embed-assets
-x64-live-embed-assets: sdk-build emutos-release-rom iewarp-runtime-assets intuitionos
+x64-live-embed-assets: sdk-build emutos-release-rom aros-release-assets iewarp-runtime-assets intuitionos
 	@test -f "$(EMUTOS_ROM)" || { echo "Error: missing embedded EmuTOS ROM: $(EMUTOS_ROM)"; exit 1; }
 	@test -f "$(AROS_ROM)" || { echo "Error: missing embedded AROS ROM: $(AROS_ROM)"; exit 1; }
 	@test -f "sdk/examples/prebuilt/ehbasic_ie64.ie64" || { echo "Error: missing embedded EhBASIC image: sdk/examples/prebuilt/ehbasic_ie64.ie64"; exit 1; }
@@ -1275,6 +1275,14 @@ aros-release-assets:
 	fi; \
 	for src in \
 		"$(AROS_SRC_DIR)/arch/m68k-ie/include/ie_hwreg.h" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/mmakefile.src" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/boot/mmakefile.src" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/libs/bsdsocket/mmakefile.src" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/libs/bsdsocket/bsdsocket.conf" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/libs/bsdsocket/bsdsocket_intern.h" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/libs/bsdsocket/bsdsocket_init.c" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/libs/bsdsocket/bsdsocket_dispatch.c" \
+		"$(AROS_SRC_DIR)/arch/m68k-ie/libs/bsdsocket/bsdsocket_inet.c" \
 		"$(AROS_SRC_DIR)/arch/m68k-ie/boot/rom_init.S" \
 		"$(AROS_SRC_DIR)/arch/m68k-ie/hidd/iegfx/iegfx.conf" \
 		"$(AROS_SRC_DIR)/arch/m68k-ie/hidd/iegfx/iegfx_bitmap.h" \
