@@ -28,13 +28,13 @@ func TestResolveAROSDrivePath_PrefersGeneratedAROSVisionTree(t *testing.T) {
 	}
 
 	mustWriteStartup("AROS")
-	mustWriteStartup("build/arosvision-probe/AROS")
+	mustWriteStartup("build/arosvision")
 
 	got, err := resolveAROSDrivePath("", "")
 	if err != nil {
 		t.Fatalf("resolveAROSDrivePath() failed: %v", err)
 	}
-	want := filepath.Join(tmp, "build", "arosvision-probe", "AROS")
+	want := filepath.Join(tmp, "build", "arosvision")
 	if got != want {
 		t.Fatalf("resolveAROSDrivePath() = %q, want %q", got, want)
 	}

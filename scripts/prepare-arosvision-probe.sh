@@ -2,12 +2,19 @@
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+mode="all"
+case "${1:-}" in
+  --base|--overlay|--all)
+    mode="${1#--}"
+    shift
+    ;;
+esac
 source_dir="${1:-../AROSVision}"
-output_dir="${2:-build/arosvision-probe/AROS}"
-ie_aros_dir="$root_dir/../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS"
-ie_tools_dir="$root_dir/../AROS-deadw00d/bin/ie-m68k/bin/linux-x86_64/tools"
-ie_images_dir="$root_dir/../AROS-deadw00d/images/IconSets/Mason/workbench"
-ie_runtime_dir="$root_dir/Systems/AROS"
+output_dir="${2:-build/arosvision}"
+ie_aros_dir="${IE_AROS_DIR:-$root_dir/../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS}"
+ie_tools_dir="${IE_TOOLS_DIR:-$root_dir/../AROS-deadw00d/bin/ie-m68k/bin/linux-x86_64/tools}"
+ie_images_dir="${IE_IMAGES_DIR:-$root_dir/../AROS-deadw00d/images/IconSets/Mason/workbench}"
+ie_runtime_dir="${IE_RUNTIME_DIR:-$root_dir/Systems/AROS}"
 
 fail() {
   echo "Error: $*" >&2
@@ -129,26 +136,39 @@ write_ie_default_prefs() {
 
 source_abs="$(realpath_m "$source_dir")"
 output_abs="$(realpath_m "$output_dir")"
-probe_root_abs="$(realpath_m "$root_dir/build/arosvision-probe")"
+build_root_abs="$(realpath_m "$root_dir/build")"
 
 [[ -d "$source_abs" ]] || fail "AROSVision source not found: $source_dir"
 [[ -f "$source_abs/S/Startup-Sequence" ]] || fail "source is not an AROSVision system tree: missing S/Startup-Sequence"
 [[ "$source_abs" != "$output_abs" ]] || fail "output must not equal source"
 case "$output_abs" in
-  "$probe_root_abs"/*) ;;
-  *) fail "output must be inside build/arosvision-probe" ;;
+  "$build_root_abs"/*) ;;
+  *) fail "output must be inside build" ;;
 esac
 
 cd "$root_dir"
-rm -rf "$output_abs"
-mkdir -p "$(dirname "$output_abs")"
-cp -a "$source_abs" "$output_abs"
+if [[ "$mode" == "base" || "$mode" == "all" ]]; then
+  rm -rf "$output_abs"
+  mkdir -p "$(dirname "$output_abs")"
+  cp -a "$source_abs" "$output_abs"
+fi
+
+if [[ "$mode" == "base" ]]; then
+  echo "Prepared AROSVision base tree: $output_abs"
+  exit 0
+fi
+
+[[ -f "$output_abs/S/Startup-Sequence" ]] || fail "output is not an AROSVision system tree: missing S/Startup-Sequence"
 
 startup_dir="$output_abs/S"
-cp -p "$startup_dir/Startup-Sequence" "$startup_dir/Startup-Sequence.AROSVision.orig"
+if [[ ! -f "$startup_dir/Startup-Sequence.AROSVision.orig" ]]; then
+  cp -p "$startup_dir/Startup-Sequence" "$startup_dir/Startup-Sequence.AROSVision.orig"
+fi
 
 if [[ -f "$startup_dir/User-Startup" ]]; then
-  cp -p "$startup_dir/User-Startup" "$startup_dir/User-Startup.AROSVision.orig"
+  if [[ ! -f "$startup_dir/User-Startup.AROSVision.orig" ]]; then
+    cp -p "$startup_dir/User-Startup" "$startup_dir/User-Startup.AROSVision.orig"
+  fi
   write_ie_user_startup \
     "$startup_dir/User-Startup.AROSVision.orig" \
     "$startup_dir/User-Startup"
@@ -180,14 +200,6 @@ for rel in \
     perl -0pi -e 's/Activate\s*=\s*1/Activate       = 0/g; s/ACTIVATE=1/ACTIVATE=0/g' "$output_abs/$rel"
   fi
 done
-
-if [[ -f "$ie_aros_dir/C/LoadWB" ]]; then
-  if [[ -f "$output_abs/C/LoadWB" ]]; then
-    mkdir -p "$output_abs/Storage/IEProbeDisabled/C"
-    mv "$output_abs/C/LoadWB" "$output_abs/Storage/IEProbeDisabled/C/LoadWB.Scalos"
-  fi
-  cp -p "$ie_aros_dir/C/LoadWB" "$output_abs/C/LoadWB"
-fi
 
 for rel in \
   L/iehandler-handler \
@@ -273,14 +285,9 @@ if [[ -f "$ie_aros_dir/Utilities/IEWarpMon" ]]; then
   cp -p "$ie_aros_dir/Utilities/IEWarpMon" "$output_abs/Utilities/IEWarpMon"
 fi
 
-if [[ -x "$ie_tools_dir/ilbmtoicon" && \
-      -f "$ie_images_dir/Utilities/IEWarpMon.info.src" && \
-      -f "$ie_images_dir/Utilities/IEWarpMon.png" ]]; then
+if [[ -f "$ie_aros_dir/Utilities/IEWarpMon.info" ]]; then
   mkdir -p "$output_abs/Utilities"
-  "$ie_tools_dir/ilbmtoicon" \
-    "$ie_images_dir/Utilities/IEWarpMon.info.src" \
-    "$ie_images_dir/Utilities/IEWarpMon.png" \
-    "$output_abs/Utilities/IEWarpMon.info"
+  cp -p "$ie_aros_dir/Utilities/IEWarpMon.info" "$output_abs/Utilities/IEWarpMon.info"
 fi
 
 mkdir -p "$output_abs/Devs/AudioModes"
@@ -322,6 +329,14 @@ write_ie_default_prefs "$output_abs/Prefs/Env-Archive/SYS"
 write_ie_startup_sequence \
   "$startup_dir/Startup-Sequence.AROSVision.orig" \
   "$startup_dir/Startup-Sequence"
+
+if [[ "$mode" == "overlay" ]]; then
+  for rel in \
+    Devs/AHI/ie-audio.audio \
+    Systems/AROS/Libs/iewarp_service.ie64; do
+    [[ -f "$output_abs/$rel" ]] || fail "required IE AROSVision overlay missing: $rel"
+  done
+fi
 
 echo "Prepared AROSVision probe tree: $output_abs"
 echo "Boot with: go run . -aros -aros-drive $output_dir"

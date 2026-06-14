@@ -9,14 +9,18 @@ import (
 	"unsafe"
 )
 
+const arosHostSocketReservedFD = -1
+
 type unixArosHostSocketBackend struct {
-	mu   sync.Mutex
-	next int
-	fds  map[int]int
+	mu            sync.Mutex
+	next          int
+	nextReleaseID int
+	fds           map[int]int
+	released      map[int]int
 }
 
 func NewUnixArosHostSocketBackend() arosHostSocketBackend {
-	return &unixArosHostSocketBackend{next: 3, fds: make(map[int]int)}
+	return &unixArosHostSocketBackend{next: 3, nextReleaseID: 1, fds: make(map[int]int), released: make(map[int]int)}
 }
 
 func (b *unixArosHostSocketBackend) Socket(domain, typ, protocol int) (int, uint32) {
@@ -207,6 +211,9 @@ func (b *unixArosHostSocketBackend) Close(s int) uint32 {
 	if !ok {
 		return arosSockErrBadf
 	}
+	if fd == arosHostSocketReservedFD {
+		return 0
+	}
 	return errnoToAros(syscall.Close(fd))
 }
 
@@ -281,8 +288,20 @@ func (b *unixArosHostSocketBackend) WaitSelect(nfds int, readfds, writefds, exce
 }
 
 func (b *unixArosHostSocketBackend) Dup2(fd1, fd2 int) (int, uint32) {
-	if fd2 < 0 || fd2 >= arosHostSocketDTable {
+	if fd2 < -1 || fd2 >= arosHostSocketDTable {
 		return -1, arosSockErrBadf
+	}
+	if fd1 == -1 {
+		if fd2 == -1 {
+			return -1, arosSockErrBadf
+		}
+		b.mu.Lock()
+		if old, ok := b.fds[fd2]; ok && old != arosHostSocketReservedFD {
+			_ = syscall.Close(old)
+		}
+		b.fds[fd2] = arosHostSocketReservedFD
+		b.mu.Unlock()
+		return fd2, 0
 	}
 	fd, ok := b.hostFD(fd1)
 	if !ok {
@@ -295,8 +314,16 @@ func (b *unixArosHostSocketBackend) Dup2(fd1, fd2 int) (int, uint32) {
 	if err != nil {
 		return -1, errnoToAros(err)
 	}
+	if fd2 == -1 {
+		guest, errno := b.allocGuest(dup)
+		if errno != 0 {
+			_ = syscall.Close(dup)
+			return -1, errno
+		}
+		return guest, 0
+	}
 	b.mu.Lock()
-	if old, ok := b.fds[fd2]; ok {
+	if old, ok := b.fds[fd2]; ok && old != arosHostSocketReservedFD {
 		_ = syscall.Close(old)
 	}
 	b.fds[fd2] = dup
@@ -305,6 +332,60 @@ func (b *unixArosHostSocketBackend) Dup2(fd1, fd2 int) (int, uint32) {
 }
 
 func (b *unixArosHostSocketBackend) GetEvents() uint32 { return 0 }
+
+func (b *unixArosHostSocketBackend) Release(s int, id int) (int, uint32) {
+	fd, ok := b.takeHostFD(s)
+	if !ok || fd == arosHostSocketReservedFD {
+		return -1, arosSockErrBadf
+	}
+	b.mu.Lock()
+	id = b.reserveReleaseIDLocked(id)
+	if old, ok := b.released[id]; ok {
+		_ = syscall.Close(old)
+	}
+	b.released[id] = fd
+	b.mu.Unlock()
+	return id, 0
+}
+
+func (b *unixArosHostSocketBackend) ReleaseCopy(s int, id int) (int, uint32) {
+	fd, ok := b.hostFD(s)
+	if !ok {
+		return -1, arosSockErrBadf
+	}
+	dup, err := syscall.Dup(fd)
+	if err != nil {
+		return -1, errnoToAros(err)
+	}
+	b.mu.Lock()
+	id = b.reserveReleaseIDLocked(id)
+	if old, ok := b.released[id]; ok {
+		_ = syscall.Close(old)
+	}
+	b.released[id] = dup
+	b.mu.Unlock()
+	return id, 0
+}
+
+func (b *unixArosHostSocketBackend) Obtain(id int, domain int, typ int, protocol int) (int, uint32) {
+	b.mu.Lock()
+	fd, ok := b.released[id]
+	if ok {
+		delete(b.released, id)
+	}
+	b.mu.Unlock()
+	if !ok {
+		return -1, arosSockErrWouldBlock
+	}
+	guest, errno := b.allocGuest(fd)
+	if errno != 0 {
+		b.mu.Lock()
+		b.released[id] = fd
+		b.mu.Unlock()
+		return -1, errno
+	}
+	return guest, 0
+}
 
 func (b *unixArosHostSocketBackend) allocGuest(host int) (int, uint32) {
 	b.mu.Lock()
@@ -320,10 +401,29 @@ func (b *unixArosHostSocketBackend) allocGuest(host int) (int, uint32) {
 	return -1, arosSockErrNoBufs
 }
 
+func (b *unixArosHostSocketBackend) reserveReleaseIDLocked(id int) int {
+	if id != -1 {
+		return id
+	}
+	for {
+		candidate := b.nextReleaseID
+		if candidate <= 0 {
+			candidate = 1
+		}
+		b.nextReleaseID = candidate + 1
+		if _, exists := b.released[candidate]; !exists {
+			return candidate
+		}
+	}
+}
+
 func (b *unixArosHostSocketBackend) hostFD(guest int) (int, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	fd, ok := b.fds[guest]
+	if fd == arosHostSocketReservedFD {
+		return -1, false
+	}
 	return fd, ok
 }
 
@@ -350,6 +450,9 @@ func (b *unixArosHostSocketBackend) hostFDsForSet(set []byte, nfds int) (map[int
 		}
 		host, ok := b.fds[guest]
 		if !ok {
+			return nil, arosSockErrBadf
+		}
+		if host == arosHostSocketReservedFD {
 			return nil, arosSockErrBadf
 		}
 		out[guest] = host

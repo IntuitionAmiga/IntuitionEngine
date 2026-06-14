@@ -28,16 +28,23 @@ assert_not_contains() {
 }
 
 tmp="$(mktemp -d)"
-test_output="build/arosvision-probe/test/AROS"
-trap 'rm -rf "$tmp" build/arosvision-probe/test' EXIT
+test_output="build/arosvision-test"
+trap 'rm -rf "$tmp" build/arosvision-test' EXIT
 
 source="$tmp/AROSVision"
-mkdir -p "$source/S" "$source/System/Wanderer" "$source/C" "$source/Prefs/Env-Archive" "$source/WBStartup" "$source/Devs/Midi"
+ie_aros="$tmp/ie-aros"
+ie_tools="$tmp/ie-tools"
+ie_images="$tmp/ie-images"
+mkdir -p "$source/S" "$source/System/Wanderer" "$source/C" "$source/Prefs/Env-Archive" \
+  "$source/WBStartup" "$source/Devs/Midi" "$source/Devs/Drivers"
+mkdir -p "$ie_aros/Devs/AHI" "$ie_aros/Utilities" "$ie_tools" "$ie_images/Utilities" "$tmp/Libs"
 cat >"$source/S/Startup-Sequence" <<'SRCSTART'
 Assign WANDERER: SYS:System/Wanderer DEFER
 Execute S:User-Startup
 C:apoke dead beef
 C:vcontrol something
+Automount >NIL:
+Mount >NIL: "DEVS:DOSDrivers/~((.#?)|(#?.info)|(#?.dbg))"
 If EXISTS "SYS:Classes/USB"
     C:LoadModule SYS:Classes/USB/foo.class
 EndIf
@@ -46,6 +53,8 @@ IF EXISTS "FONTS:__TEST__"
 EndIf
 C:FPPrefs >NIL:
 setenv workbench save 40.42
+Dir >NIL: "PIPE:"
+Touch >NIL: "FONTS:__TEST__"
 WANDERER:Wanderer
 SRCSTART
 cat >"$source/S/User-Startup" <<'SRCUSER'
@@ -72,15 +81,22 @@ endif
 ;END sofa
 SRCUSER
 touch "$source/System/Wanderer/Wanderer" "$source/C/IPrefs" "$source/C/AddDatatypes"
+printf 'arosvision-loadwb\n' >"$source/C/LoadWB"
 touch "$source/WBStartup/Clipper" "$source/WBStartup/Clipper.info" \
   "$source/WBStartup/DiskImageGUI" "$source/WBStartup/DiskImageGUI.info"
 touch "$source/Devs/Midi/debugdriver" "$source/Devs/Midi/echo" \
   "$source/Devs/Midi/uaemidi" "$source/Devs/Midi/udp"
+printf 'source-iegfx\n' >"$source/Devs/Drivers/iegfx.hidd"
+printf 'ie-audio.audio\0$VER: ie-audio.audio 2.0 test\0' >"$ie_aros/Devs/AHI/ie-audio.audio"
+printf 'iewarpmon\n' >"$ie_aros/Utilities/IEWarpMon"
+printf 'iewarpmon-icon\n' >"$ie_aros/Utilities/IEWarpMon.info"
+printf 'worker\n' >"$tmp/Libs/iewarp_service.ie64"
 
 src_start_before="$(sha256sum "$source/S/Startup-Sequence" | awk '{print $1}')"
 src_user_before="$(sha256sum "$source/S/User-Startup" | awk '{print $1}')"
 
-scripts/prepare-arosvision-probe.sh "$source" "$test_output" >/tmp/arosvision-probe-test.out
+IE_AROS_DIR="$ie_aros" IE_RUNTIME_DIR="$tmp" IE_TOOLS_DIR="$ie_tools" IE_IMAGES_DIR="$ie_images" \
+  scripts/prepare-arosvision-probe.sh "$source" "$test_output" >/tmp/arosvision-probe-test.out
 
 [[ "$(sha256sum "$source/S/Startup-Sequence" | awk '{print $1}')" == "$src_start_before" ]] || \
   fail "source Startup-Sequence was modified"
@@ -101,30 +117,38 @@ assert_file "$out/Storage/IEProbeDisabled/Devs/Midi/echo"
 assert_file "$out/Storage/IEProbeDisabled/Devs/Midi/uaemidi"
 assert_file "$out/Storage/IEProbeDisabled/Devs/Midi/udp"
 assert_file "$out/Devs/AudioModes/IE"
+assert_file "$out/C/LoadWB"
+cmp "$source/C/LoadWB" "$out/C/LoadWB" >/dev/null || fail "AROSVision LoadWB was replaced"
+assert_file "$out/Storage/IEProbeDisabled/Devs/Drivers/iegfx.hidd"
+[[ ! -e "$out/Devs/Drivers/iegfx.hidd" ]] || fail "iegfx.hidd remained active in generated AROSVision"
 if [[ -f ../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS/Devs/Midi/ie ]]; then
   assert_file "$out/Devs/Midi/ie"
 fi
-if [[ -f ../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS/Devs/AHI/ie-audio.audio ]]; then
-  assert_file "$out/Devs/AHI/ie-audio.audio"
-  strings -a "$out/Devs/AHI/ie-audio.audio" | rg -q '^ie-audio\.audio$' || \
-    fail "IE AHI driver resident name is not ie-audio.audio"
-  strings -a "$out/Devs/AHI/ie-audio.audio" | rg -q '^\$VER: ie-audio\.audio 2\.0 ' || \
-    fail "IE AHI driver resident version is not 2.0"
-  strings -a "$out/Devs/AHI/ie-audio.audio" | rg -q 'ie-audio\.library' && \
-    fail "IE AHI driver still contains ie-audio.library metadata"
-fi
+assert_file "$out/Devs/AHI/ie-audio.audio"
+strings -a "$out/Devs/AHI/ie-audio.audio" | rg -q '^ie-audio\.audio$' || \
+  fail "IE AHI driver resident name is not ie-audio.audio"
+strings -a "$out/Devs/AHI/ie-audio.audio" | rg -q '^\$VER: ie-audio\.audio 2\.0 ' || \
+  fail "IE AHI driver resident version is not 2.0"
+strings -a "$out/Devs/AHI/ie-audio.audio" | rg -q 'ie-audio\.library' && \
+  fail "IE AHI driver still contains ie-audio.library metadata"
 [[ ! -e "$out/Libs/ie-audio.library" ]] || fail "ie-audio.library was staged"
-if [[ -f ../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS/Libs/iewarp_service.ie64 ]]; then
-  assert_file "$out/Systems/AROS/Libs/iewarp_service.ie64"
+assert_file "$out/Systems/AROS/Libs/iewarp_service.ie64"
+assert_file "$out/Utilities/IEWarpMon"
+assert_file "$out/Utilities/IEWarpMon.info"
+[[ ! -e "$out/Libs/iewarp.library" ]] || fail "iewarp.library was staged"
+
+missing_overlay_out="build/arosvision-missing-overlays-test"
+rm -rf "$missing_overlay_out"
+mkdir -p "$missing_overlay_out"
+if ! IE_AROS_DIR="$tmp/missing-ie-aros" IE_RUNTIME_DIR="$tmp/missing-runtime" IE_TOOLS_DIR="$ie_tools" IE_IMAGES_DIR="$ie_images" \
+  scripts/prepare-arosvision-probe.sh "$source" "$missing_overlay_out" >/tmp/arosvision-probe-missing-overlays.out 2>&1; then
+  fail "default probe tree should tolerate missing live IE overlays"
 fi
-if [[ -f ../AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS/Utilities/IEWarpMon ]]; then
-  assert_file "$out/Utilities/IEWarpMon"
+if IE_AROS_DIR="$tmp/missing-ie-aros" IE_RUNTIME_DIR="$tmp/missing-runtime" IE_TOOLS_DIR="$ie_tools" IE_IMAGES_DIR="$ie_images" \
+  scripts/prepare-arosvision-probe.sh --overlay "$source" "$missing_overlay_out" >/tmp/arosvision-live-missing-overlays.out 2>&1; then
+  fail "live overlay mode should require IE overlays"
 fi
-if [[ -x ../AROS-deadw00d/bin/ie-m68k/bin/linux-x86_64/tools/ilbmtoicon && \
-      -f ../AROS-deadw00d/images/IconSets/Mason/workbench/Utilities/IEWarpMon.info.src && \
-      -f ../AROS-deadw00d/images/IconSets/Mason/workbench/Utilities/IEWarpMon.png ]]; then
-  assert_file "$out/Utilities/IEWarpMon.info"
-fi
+
 assert_file "$out/WBStartup/Clipper"
 assert_file "$out/WBStartup/Clipper.info"
 assert_file "$out/WBStartup/DiskImageGUI"
@@ -143,6 +167,10 @@ assert_contains "$out/S/Startup-Sequence" 'Assign WANDERER: SYS:System/Wanderer 
 assert_contains "$out/S/Startup-Sequence" 'Assign "System:" "IE:"'
 assert_contains "$out/S/Startup-Sequence" '; IE disabled: C:apoke dead beef'
 assert_contains "$out/S/Startup-Sequence" '; IE disabled: C:vcontrol something'
+assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*Automount >NIL:'
+assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*Mount >NIL: "DEVS:DOSDrivers/~\(\(\.#\?\)\|\(#\?\.info\)\|\(#\?\.dbg\)\)"'
+assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*Dir >NIL: "PIPE:"'
+assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*Touch >NIL: "FONTS:__TEST__"'
 assert_contains "$out/S/Startup-Sequence" '; IE disabled USB stack block:'
 assert_contains "$out/S/Startup-Sequence" '; If EXISTS "SYS:Classes/USB"'
 assert_contains "$out/S/Startup-Sequence" ';     C:LoadModule SYS:Classes/USB/foo.class'
@@ -195,15 +223,15 @@ assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:vcontrol'
 assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:LoadModule SYS:Classes/USB'
 assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:FPPrefs'
 
-if scripts/prepare-arosvision-probe.sh "$source" "$source" >/tmp/arosvision-probe-unsafe.out 2>&1; then
+if IE_AROS_DIR="$ie_aros" IE_RUNTIME_DIR="$tmp" scripts/prepare-arosvision-probe.sh "$source" "$source" >/tmp/arosvision-probe-unsafe.out 2>&1; then
   fail "script accepted output equal to source"
 fi
-if scripts/prepare-arosvision-probe.sh "$source" "$tmp/outside" >/tmp/arosvision-probe-outside.out 2>&1; then
-  fail "script accepted output outside build/arosvision-probe"
+if IE_AROS_DIR="$ie_aros" IE_RUNTIME_DIR="$tmp" scripts/prepare-arosvision-probe.sh "$source" "$tmp/outside" >/tmp/arosvision-probe-outside.out 2>&1; then
+  fail "script accepted output outside build"
 fi
 
 missing="$tmp/missing"
-if scripts/prepare-arosvision-probe.sh "$missing" "$test_output" >/tmp/arosvision-probe-missing.out 2>&1; then
+if IE_AROS_DIR="$ie_aros" IE_RUNTIME_DIR="$tmp" scripts/prepare-arosvision-probe.sh "$missing" "$test_output" >/tmp/arosvision-probe-missing.out 2>&1; then
   fail "script accepted missing source"
 fi
 

@@ -24,6 +24,9 @@ type arosHostSocketBackend interface {
 	WaitSelect(nfds int, readfds, writefds, exceptfds []byte, timeout *arosHostSocketTimeval, sigmaskPtr uint32) (int, []byte, []byte, []byte, uint32)
 	Dup2(fd1, fd2 int) (int, uint32)
 	GetEvents() uint32
+	Release(s int, id int) (int, uint32)
+	ReleaseCopy(s int, id int) (int, uint32)
+	Obtain(id int, domain int, typ int, protocol int) (int, uint32)
 }
 
 type ArosHostSocketDevice struct {
@@ -208,7 +211,7 @@ func (d *ArosHostSocketDevice) dispatch(cmd uint32) {
 	case AROS_HOST_SOCKET_CMD_GETHOSTNAME:
 		d.getHostName(req)
 	case AROS_HOST_SOCKET_CMD_DUP2:
-		fd, errno := d.backend.Dup2(int(req[12]), int(req[13]))
+		fd, errno := d.backend.Dup2(arosHostSocketSigned(req[12]), arosHostSocketSigned(req[13]))
 		d.finishInt(fd, errno)
 	case AROS_HOST_SOCKET_CMD_GETEVENTS:
 		d.events = d.backend.GetEvents()
@@ -216,9 +219,22 @@ func (d *ArosHostSocketDevice) dispatch(cmd uint32) {
 			d.bus.Write32(req[3], d.events)
 		}
 		d.res1 = 0
+	case AROS_HOST_SOCKET_CMD_RELEASE:
+		id, errno := d.backend.Release(int(req[0]), arosHostSocketSigned(req[12]))
+		d.finishInt(id, errno)
+	case AROS_HOST_SOCKET_CMD_RELEASECOPY:
+		id, errno := d.backend.ReleaseCopy(int(req[0]), arosHostSocketSigned(req[12]))
+		d.finishInt(id, errno)
+	case AROS_HOST_SOCKET_CMD_OBTAIN:
+		fd, errno := d.backend.Obtain(arosHostSocketSigned(req[12]), int(req[0]), int(req[1]), int(req[2]))
+		d.finishInt(fd, errno)
 	default:
 		d.fail(arosSockErrOpNotSupp)
 	}
+}
+
+func arosHostSocketSigned(v uint32) int {
+	return int(int32(v))
 }
 
 func (d *ArosHostSocketDevice) readReq() ([arosHostSocketReqWords]uint32, bool) {
@@ -446,3 +462,12 @@ func (disabledArosHostSocketBackend) WaitSelect(int, []byte, []byte, []byte, *ar
 }
 func (disabledArosHostSocketBackend) Dup2(int, int) (int, uint32) { return -1, arosSockErrNoSys }
 func (disabledArosHostSocketBackend) GetEvents() uint32           { return 0 }
+func (disabledArosHostSocketBackend) Release(int, int) (int, uint32) {
+	return -1, arosSockErrNoSys
+}
+func (disabledArosHostSocketBackend) ReleaseCopy(int, int) (int, uint32) {
+	return -1, arosSockErrNoSys
+}
+func (disabledArosHostSocketBackend) Obtain(int, int, int, int) (int, uint32) {
+	return -1, arosSockErrNoSys
+}

@@ -219,8 +219,9 @@ assert_makefile_contains 'Drivers/Makefile\.in" 2>/dev/null \|\| true'
 
 for target in \
   all setup intuition-engine ie32asm ie64asm ie64dis ie32to64 clean clean-sdk distclean \
-  rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets emutos-probe \
-  arosvision-probe-tree arosvision-live-tree arosvision-probe-run emutos-release-rom basic basic-emutos cputest-musashi sdk sdk-build test vet tidy \
+  rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets emutos-probe \
+  iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets \
+  arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-release-rom basic basic-emutos cputest-musashi sdk sdk-build test vet tidy \
   test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs testdata-harte testdata-x86 test-harte test-harte-short \
   test-x86-harte test-x86-harte-short release-verify x64-live-sdk-tools iedoom iedoom-ie86 iedoom-ie68; do
   assert_phony "$target"
@@ -269,9 +270,9 @@ assert_var IEDOOM_IE68 build/iedoom.ie68
 assert_var IEDOOM_WAD DOOM1.WAD
 assert_makefile_contains '^iedoom: iedoom-ie86 iedoom-ie68'
 assert_var AROS_LIVE_DIR '$(AROSVISION_PROBE_DIR)'
-assert_recipe_contains x64-live 'AROS_RELEASE_DIR="build/arosvision-probe/AROS".*CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" IEDOOM_WAD="DOOM1\.WAD" \./build_x64_ie_img\.sh'
-assert_recipe_contains x64-live-rebuild-golden 'AROS_RELEASE_DIR="build/arosvision-probe/AROS".*CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" IEDOOM_WAD="DOOM1\.WAD" \./build_x64_ie_img\.sh --rebuild-golden'
-assert_recipe_contains x64-live-payload-check 'AROS_RELEASE_DIR="build/arosvision-probe/AROS".*CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" IEDOOM_WAD="DOOM1\.WAD" \./build_x64_ie_img\.sh --check-payload'
+assert_recipe_contains x64-live 'AROS_RELEASE_DIR="build/arosvision".*CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" IEDOOM_WAD="DOOM1\.WAD" \./build_x64_ie_img\.sh'
+assert_recipe_contains x64-live-rebuild-golden 'AROS_RELEASE_DIR="build/arosvision".*CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" IEDOOM_WAD="DOOM1\.WAD" \./build_x64_ie_img\.sh --rebuild-golden'
+assert_recipe_contains x64-live-payload-check 'AROS_RELEASE_DIR="build/arosvision".*CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" IEDOOM_WAD="DOOM1\.WAD" \./build_x64_ie_img\.sh --check-payload'
 assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch go build .*assembler/ie32asm\.go'
 assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch go build .*-tags ie64 .*\./assembler'
 assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch go build .*-tags ie64dis .*\./assembler'
@@ -281,14 +282,58 @@ assert_recipe_contains x64-live-sdk-tools 'SHA256SUMS\.txt'
 assert_recipe_contains iedoom-ie86 'cd "\.\./chocolate-doom" && sh src/iedoom_build\.sh "build/iedoom\.ie86"'
 assert_recipe_contains iedoom-ie68 'cd "\.\./chocolate-doom" && sh src/iedoom_build_m68k\.sh "build/iedoom\.ie68"'
 assert_var AROSVISION_SOURCE ../AROSVision
-assert_var AROSVISION_PROBE_DIR build/arosvision-probe/AROS
-assert_makefile_contains '^iewarp-runtime-assets: sdk-build'
-assert_recipe_contains iewarp-runtime-assets 'cp -f sdk/examples/prebuilt/iewarp_service\.ie64 Systems/AROS/Libs/iewarp_service\.ie64'
+assert_var AROSVISION_PROBE_DIR build/arosvision
+assert_makefile_contains '^iewarp-service-worker:'
+assert_recipe_contains iewarp-service-worker 'iewarp_service\.asm'
+assert_recipe_contains iewarp-service-worker 'sdk/examples/prebuilt/iewarp_service\.ie64'
+assert_makefile_contains '^iewarp-runtime-local-assets: iewarp-service-worker'
+assert_makefile_not_contains '^iewarp-runtime-local-assets:.*sdk-build'
+assert_makefile_contains '^iewarp-runtime-assets: iewarp-runtime-local-assets'
+assert_recipe_contains iewarp-runtime-local-assets 'cp -f sdk/examples/prebuilt/iewarp_service\.ie64 Systems/AROS/Libs/iewarp_service\.ie64'
 assert_recipe_contains iewarp-runtime-assets 'if \[ -d "\.\./AROS-deadw00d/bin/ie-m68k/bin/ie-m68k/AROS" \]; then'
-assert_recipe_contains arosvision-probe-tree 'scripts/prepare-arosvision-probe\.sh "\.\./AROSVision" "build/arosvision-probe/AROS"'
-assert_makefile_contains '^arosvision-live-tree:.*iewarp-runtime-assets'
-assert_recipe_contains arosvision-live-tree 'scripts/prepare-arosvision-probe\.sh "\.\./AROSVision" "build/arosvision-probe/AROS"'
-assert_recipe_contains arosvision-probe-run 'go run \. -aros -aros-drive "build/arosvision-probe/AROS"'
+assert_makefile_contains '^x64-live-embed-assets:.*aros-ie-live-inputs'
+assert_makefile_not_contains '^x64-live-embed-assets:.*aros-ie-live-assets'
+assert_makefile_not_contains '^x64-live-embed-assets:.*aros-release-assets'
+assert_makefile_contains '^x64-live-aros-demos: aros-ie-toolchain-assets rotozoom-textures'
+assert_makefile_not_contains '^x64-live-aros-demos:.*aros-release-assets'
+assert_target_exists aros-ie-live-assets
+assert_target_exists aros-ie-live-inputs
+assert_target_exists aros-ie-toolchain-assets
+assert_recipe_contains aros-ie-live-assets 'kernel-iewarp'
+assert_recipe_contains aros-ie-live-assets 'kernel-ie-m68k-rom'
+assert_recipe_contains aros-ie-live-assets 'kernel-ie-m68k-ahidrv'
+assert_recipe_not_contains aros-ie-live-assets 'arch-ie-m68k-utilities-iewarpmon'
+assert_recipe_not_contains aros-ie-live-assets 'IEWarpMon'
+assert_recipe_contains aros-ie-live-assets 'IEGfx HIDD staged only in local AROS build tree'
+assert_recipe_not_contains aros-ie-live-assets 'workbench-fonts'
+assert_recipe_not_contains aros-ie-live-assets 'workbench-system-wanderer'
+assert_recipe_not_contains aros-ie-live-assets 'workbench-tools'
+assert_recipe_not_contains aros-ie-live-assets 'workbench-utilities'
+assert_recipe_contains aros-ie-toolchain-assets 'missing IE AROS compiler'
+assert_recipe_contains aros-ie-toolchain-assets 'missing IE AROS toolchain directory'
+assert_recipe_not_contains aros-ie-toolchain-assets 'git clone'
+assert_recipe_not_contains aros-ie-toolchain-assets 'git -C .*fetch'
+assert_recipe_not_contains aros-ie-toolchain-assets 'git -C .*checkout'
+assert_recipe_not_contains aros-ie-toolchain-assets 'submodule update'
+assert_recipe_not_contains aros-ie-toolchain-assets 'configure'
+assert_recipe_not_contains aros-ie-toolchain-assets '\$\(MAKE\).*kernel-'
+assert_recipe_contains aros-ie-live-inputs 'missing embedded AROS ROM'
+assert_recipe_contains aros-ie-live-inputs 'missing IE AHI driver'
+assert_recipe_not_contains aros-ie-live-inputs '\$\(MAKE\).*kernel-'
+assert_makefile_contains '^aros-ie-live-inputs: iewarp-runtime-local-assets'
+assert_makefile_not_contains '^aros-ie-live-inputs:.*iewarp-runtime-assets'
+assert_recipe_contains arosvision-probe-tree 'scripts/prepare-arosvision-probe\.sh "\.\./AROSVision" "build/arosvision"'
+assert_makefile_contains '^arosvision-live-base:'
+assert_recipe_contains arosvision-live-base 'scripts/prepare-arosvision-probe\.sh --base "\.\./AROSVision" "build/arosvision"'
+assert_makefile_contains '^arosvision-live-components: arosvision-live-base'
+assert_recipe_contains arosvision-live-components '\$\(MAKE\) aros-ie-live-inputs'
+assert_makefile_contains '^arosvision-live-overlays: arosvision-live-components'
+assert_recipe_contains arosvision-live-overlays 'scripts/prepare-arosvision-probe\.sh --overlay "\.\./AROSVision" "build/arosvision"'
+assert_recipe_contains arosvision-live-overlays 'IE_AROS_DIR="\$\(AROS_RELEASE_DIR\)"'
+assert_makefile_contains '^arosvision-live-tree: arosvision-live-overlays'
+assert_makefile_not_contains '^arosvision-live-tree:.*aros-ie-live-assets'
+assert_makefile_not_contains '^arosvision-live-tree:.*iewarp-runtime-assets'
+assert_recipe_contains arosvision-probe-run 'go run \. -aros -aros-drive "build/arosvision"'
 assert_recipe_contains arosvision-probe-run 'missing AROS ROM'
 assert_makefile_contains '^arosvision-probe-run: arosvision-probe-tree'
 assert_makefile_not_contains '^arosvision-probe-run:.*(intuition-engine|aros-rom|aros-release-assets)'

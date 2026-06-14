@@ -18,8 +18,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TIMESTAMP="$(date +%Y%m%d%H%M)"
 LIVE_OUT_DIR="${X64_LIVE_OUT_DIR:-${SCRIPT_DIR}/build/x64-live}"
 WORK_DIR="${X64_LIVE_WORK_DIR:-${LIVE_OUT_DIR}/work}"
+LIVE_OUT_DIR="$(mkdir -p "$LIVE_OUT_DIR" && cd "$LIVE_OUT_DIR" && pwd)"
+WORK_DIR="$(mkdir -p "$WORK_DIR" && cd "$WORK_DIR" && pwd)"
 LOG_FILE="${X64_LIVE_LOG_FILE:-${LIVE_OUT_DIR}/build-x64-live-${TIMESTAMP}.log}"
-mkdir -p "$LIVE_OUT_DIR"
 
 UBUNTU_VERSION="26.04"
 UBUNTU_CLOUD_IMG_URL="https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img"
@@ -57,7 +58,7 @@ SDK_COMPANION_PDFS=(
     "${SCRIPT_DIR}/sdk/docs/iescript.pdf"
     "${SCRIPT_DIR}/sdk/docs/architecture.pdf"
 )
-AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/build/arosvision-probe/AROS}"
+AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/build/arosvision}"
 AB3D2_EMBED_DIR="${SCRIPT_DIR}/embedded/ab3d2"
 CHOCOLATE_DOOM_DIR="${CHOCOLATE_DOOM_DIR:-${SCRIPT_DIR}/../chocolate-doom}"
 IEDOOM_IE86="${IEDOOM_IE86:-build/iedoom.ie86}"
@@ -136,10 +137,12 @@ log_section() {
 configure_guestfs_environment() {
     local guestfs_tmp_dir="${WORK_DIR}/.tmp"
     local guestfs_cache_dir="${WORK_DIR}/.guestfs-cache"
-    local guestfs_runtime_dir="${WORK_DIR}/.runtime"
+    local guestfs_runtime_dir="${X64_LIVE_GUESTFS_RUNTIME_DIR:-/tmp/intuition-x64-live-guestfs-runtime-$(id -u)}"
 
     mkdir -p "$guestfs_tmp_dir" "$guestfs_cache_dir" "$guestfs_runtime_dir"
-    chmod 700 "$guestfs_runtime_dir"
+    # libguestfs network helpers such as passt may drop privileges before
+    # binding sockets, so the socket parent must be accessible after that drop.
+    chmod 1777 "$guestfs_runtime_dir"
 
     export TMPDIR="$guestfs_tmp_dir"
     export LIBGUESTFS_TMPDIR="$guestfs_tmp_dir"
@@ -1420,15 +1423,27 @@ discover_root_device() {
     local image_path="$1"
     local csv root_dev ext4_devs count
     if [[ "$image_path" == "$UBUNTU_CLOUD_IMG_PATH" ]]; then
-        csv="$(virt-filesystems -a "${UBUNTU_CLOUD_IMG_PATH}" --filesystems --long --csv)"
+        if ! csv="$(virt-filesystems -a "${UBUNTU_CLOUD_IMG_PATH}" --filesystems --long --csv 2>&1)"; then
+            printf '%s\n' "$csv" | tee -a "$LOG_FILE" >&2
+            log_error "virt-filesystems failed while probing ${UBUNTU_CLOUD_IMG_PATH}"
+            exit 1
+        fi
     else
-        csv="$(virt-filesystems -a "${image_path}" --filesystems --long --csv)"
+        if ! csv="$(virt-filesystems -a "${image_path}" --filesystems --long --csv 2>&1)"; then
+            printf '%s\n' "$csv" | tee -a "$LOG_FILE" >&2
+            log_error "virt-filesystems failed while probing ${image_path}"
+            exit 1
+        fi
     fi
 
     root_dev="$(printf '%s\n' "$csv" | python3 -c '
 import csv, sys
 r = csv.reader(sys.stdin)
-header = next(r)
+try:
+    header = next(r)
+except StopIteration:
+    sys.stderr.write("virt-filesystems returned no CSV output\n")
+    sys.exit(2)
 try:
     i_name, i_type, i_vfs, i_label = header.index("Name"), header.index("Type"), header.index("VFS"), header.index("Label")
 except ValueError as e:

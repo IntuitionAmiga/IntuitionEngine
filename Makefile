@@ -74,8 +74,9 @@ AROS_GCC_VER ?= 10.5.0
 AROS_DEVELOPER_DIR ?= $(AROS_BUILD_DIR)/bin/ie-m68k/AROS/Development
 AROS_ARCH_INCLUDE ?= $(AROS_SRC_DIR)/arch/m68k-ie/include
 AROS_CC ?= $(firstword $(wildcard $(AROS_BUILD_DIR)/bin/*/tools/crosstools/m68k-aros-gcc))
+AROS_HOST_TOOLS_DIR ?= $(AROS_BUILD_DIR)/bin/$(shell uname -s | tr A-Z a-z)-$(shell uname -m)/tools
 AROSVISION_SOURCE ?= ../AROSVision
-AROSVISION_PROBE_DIR ?= build/arosvision-probe/AROS
+AROSVISION_PROBE_DIR ?= build/arosvision
 AROS_LIVE_DIR ?= $(AROSVISION_PROBE_DIR)
 
 # IEDoom guest image build configuration
@@ -315,7 +316,7 @@ AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
-.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-release-assets aros-iewarp-library iewarp-runtime-assets arosvision-probe-tree arosvision-live-tree arosvision-probe-run emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos aot-runtime-blob cputest-musashi
+.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets aros-iewarp-library iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos aot-runtime-blob cputest-musashi
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 m68kto64 ie64dis
@@ -363,7 +364,7 @@ x86-64-v3: x64-live-embed-assets
 	@ls -lh $(BIN_DIR)/IntuitionEngine_v3
 
 .PHONY: x64-live-embed-assets
-x64-live-embed-assets: sdk-build emutos-release-rom aros-release-assets iewarp-runtime-assets intuitionos
+x64-live-embed-assets: sdk-build emutos-release-rom aros-ie-live-inputs intuitionos
 	@test -f "$(EMUTOS_ROM)" || { echo "Error: missing embedded EmuTOS ROM: $(EMUTOS_ROM)"; exit 1; }
 	@test -f "$(AROS_ROM)" || { echo "Error: missing embedded AROS ROM: $(AROS_ROM)"; exit 1; }
 	@test -f "sdk/examples/prebuilt/ehbasic_ie64.ie64" || { echo "Error: missing embedded EhBASIC image: sdk/examples/prebuilt/ehbasic_ie64.ie64"; exit 1; }
@@ -406,11 +407,11 @@ x64-live-sdk-tools:
 		outdir="$(X64_LIVE_DIR)/sdk-tools/$$platform"; \
 		echo "== SDK tools $$goos/$$goarch =="; \
 		$(MKDIR) -p "$$outdir"; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o "$$outdir/ie32asm$$ext" assembler/ie32asm.go; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64 -o "$$outdir/ie64asm$$ext" ./assembler; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -tags ie64dis -o "$$outdir/ie64dis$$ext" ./assembler; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o "$$outdir/ie32to64$$ext" ./cmd/ie32to64/; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -o "$$outdir/m68kto64$$ext" ./cmd/m68kto64/; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -buildvcs=false -o "$$outdir/ie32asm$$ext" assembler/ie32asm.go; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -buildvcs=false -tags ie64 -o "$$outdir/ie64asm$$ext" ./assembler; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -buildvcs=false -tags ie64dis -o "$$outdir/ie64dis$$ext" ./assembler; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -buildvcs=false -o "$$outdir/ie32to64$$ext" ./cmd/ie32to64/; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -buildvcs=false -o "$$outdir/m68kto64$$ext" ./cmd/m68kto64/; \
 	done
 	@set -e; \
 	cd "$(X64_LIVE_DIR)/sdk-tools"; \
@@ -449,7 +450,7 @@ x64-live-ab3d2-assets:
 	fi
 
 .PHONY: x64-live-aros-demos
-x64-live-aros-demos: aros-release-assets rotozoom-textures
+x64-live-aros-demos: aros-ie-toolchain-assets rotozoom-textures
 	@echo "Building AROS rotozoomer demos..."
 	@if ! command -v vasmm68k_mot >/dev/null 2>&1; then \
 		echo "Error: vasmm68k_mot not found. Required for AROS assembly demos."; \
@@ -1259,6 +1260,90 @@ aros-rom:
 		exit 1; \
 	fi
 
+.PHONY: aros-ie-live-assets
+aros-ie-live-assets:
+	@if [ ! -d "$(AROS_SRC_DIR)/.git" ]; then \
+		echo "Cloning AROS source..."; \
+		git clone "$(AROS_GIT_URL)" "$(AROS_SRC_DIR)"; \
+	fi
+	@git -C "$(AROS_SRC_DIR)" fetch origin "$(AROS_GIT_REF)" --tags
+	@git -C "$(AROS_SRC_DIR)" checkout "$(AROS_GIT_REF)"
+	@git -C "$(AROS_SRC_DIR)" submodule update --init --recursive
+	@if [ ! -f "$(AROS_BUILD_DIR)/config/make.cfg" ]; then \
+		echo "Configuring AROS for ie-m68k..."; \
+		$(MKDIR) -p "$(AROS_BUILD_DIR)"; \
+		AROS_CONFIGURE="$$(cd "$(AROS_SRC_DIR)" && pwd)/configure"; \
+		cd "$(AROS_BUILD_DIR)" && \
+		"$$AROS_CONFIGURE" --target=ie-m68k \
+			--with-cpu=68020 \
+			--with-gcc-version=$(AROS_GCC_VER) \
+			--enable-build-type=personal; \
+	fi
+	@echo "Building narrow IE AROS live assets..."
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) kernel-iewarp
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) kernel-ie-m68k-rom
+	@$(MAKE) -C "$(AROS_BUILD_DIR)" -j$(NCORES) kernel-ie-m68k-ahidrv
+	@AROS_TARGETDIR="$(AROS_BUILD_DIR)/bin/ie-m68k"; \
+	AROSDIR="$$AROS_TARGETDIR/AROS"; \
+	ROM_ELF="$$AROS_TARGETDIR/gen/boot/aros-ie-m68k-rom.elf"; \
+	IEGFX_KO="$$AROS_TARGETDIR/gen/kobjs/iegfx_hidd.ko"; \
+	if [ ! -f "$$ROM_ELF" ]; then \
+		echo "Error: ROM ELF not found at $$ROM_ELF"; \
+		exit 1; \
+	fi; \
+	if [ ! -f "$$IEGFX_KO" ]; then \
+		echo "Error: rebuilt IEGfx HIDD not found at $$IEGFX_KO"; \
+		exit 1; \
+	fi; \
+	if command -v m68k-aros-objcopy >/dev/null 2>&1; then \
+		AROS_OBJCOPY="m68k-aros-objcopy"; \
+	elif command -v "$(AROS_BUILD_DIR)/bin/linux-x86_64/tools/crosstools/m68k-aros-objcopy" >/dev/null 2>&1; then \
+		AROS_OBJCOPY="$(AROS_BUILD_DIR)/bin/linux-x86_64/tools/crosstools/m68k-aros-objcopy"; \
+	elif command -v m68k-atari-mint-objcopy >/dev/null 2>&1; then \
+		AROS_OBJCOPY="m68k-atari-mint-objcopy"; \
+	elif command -v m68k-suse-linux-objcopy >/dev/null 2>&1; then \
+		AROS_OBJCOPY="m68k-suse-linux-objcopy"; \
+	else \
+		AROS_OBJCOPY="m68k-linux-gnu-objcopy"; \
+	fi; \
+	$(MKDIR) -p "$$(dirname "$(AROS_ROM)")" "$$AROSDIR/Devs/Drivers"; \
+	$$AROS_OBJCOPY --output-target binary \
+		--only-section=.rom --only-section=.ext --only-section=.ss \
+		--gap-fill 0xff "$$ROM_ELF" "$(AROS_ROM)"; \
+	cp -f "$$IEGFX_KO" "$$AROSDIR/Devs/Drivers/iegfx.hidd"; \
+	echo "AROS ROM prepared: $(AROS_ROM) ($$(wc -c < "$(AROS_ROM)") bytes)"; \
+	echo "IEGfx HIDD staged only in local AROS build tree: $$AROSDIR/Devs/Drivers/iegfx.hidd"
+	@AROSDIR="$(AROS_BUILD_DIR)/bin/ie-m68k/AROS"; \
+	for f in \
+		"$$AROSDIR/Devs/AHI/ie-audio.audio" \
+		"$(AROS_ROM)"; do \
+		if [ ! -f "$$f" ]; then \
+			echo "Error: required narrow AROS live asset missing: $$f"; \
+			exit 1; \
+		fi; \
+	done
+
+.PHONY: aros-ie-live-inputs
+aros-ie-live-inputs: iewarp-runtime-local-assets
+	@test -f "$(AROS_ROM)" || { echo "Error: missing embedded AROS ROM: $(AROS_ROM)"; echo "Run make aros-ie-live-assets only when you intentionally want to rebuild IE AROS ROM/AHI inputs."; exit 1; }
+	@test -f "$(AROS_RELEASE_DIR)/Devs/AHI/ie-audio.audio" || { echo "Error: missing IE AHI driver: $(AROS_RELEASE_DIR)/Devs/AHI/ie-audio.audio"; echo "Run make aros-ie-live-assets only when you intentionally want to rebuild IE AROS ROM/AHI inputs."; exit 1; }
+	@echo "IE AROS live inputs are ready."
+
+.PHONY: aros-ie-toolchain-assets
+aros-ie-toolchain-assets:
+	@if [ -z "$(AROS_CC)" ] || [ ! -x "$(AROS_CC)" ]; then \
+		echo "Error: missing IE AROS compiler. Run make aros-ie-live-assets once or set AROS_CC to a prepared m68k-aros-gcc."; \
+		exit 1; \
+	fi
+	@for d in "$(AROS_DEVELOPER_DIR)/include" "$(AROS_DEVELOPER_DIR)/lib" "$(AROS_ARCH_INCLUDE)"; do \
+		if [ ! -d "$$d" ]; then \
+			echo "Error: missing IE AROS toolchain directory: $$d"; \
+			echo "Run make aros-ie-live-assets once or set AROS_CC, AROS_DEVELOPER_DIR, and AROS_ARCH_INCLUDE to a prepared IE AROS toolchain."; \
+			exit 1; \
+		fi; \
+	done
+	@echo "IE AROS toolchain assets are ready."
+
 .PHONY: aros-release-assets
 aros-release-assets:
 	@rebuild=0; \
@@ -1307,9 +1392,20 @@ aros-release-assets:
 arosvision-probe-tree:
 	@./scripts/prepare-arosvision-probe.sh "$(AROSVISION_SOURCE)" "$(AROSVISION_PROBE_DIR)"
 
+.PHONY: arosvision-live-base
+arosvision-live-base:
+	@./scripts/prepare-arosvision-probe.sh --base "$(AROSVISION_SOURCE)" "$(AROS_LIVE_DIR)"
+
+.PHONY: arosvision-live-components
+arosvision-live-components: arosvision-live-base
+	@$(MAKE) aros-ie-live-inputs
+
+.PHONY: arosvision-live-overlays
+arosvision-live-overlays: arosvision-live-components
+	@IE_AROS_DIR="$(AROS_RELEASE_DIR)" ./scripts/prepare-arosvision-probe.sh --overlay "$(AROSVISION_SOURCE)" "$(AROS_LIVE_DIR)"
+
 .PHONY: arosvision-live-tree
-arosvision-live-tree: iewarp-runtime-assets
-	@./scripts/prepare-arosvision-probe.sh "$(AROSVISION_SOURCE)" "$(AROS_LIVE_DIR)"
+arosvision-live-tree: arosvision-live-overlays
 
 .PHONY: arosvision-probe-run
 arosvision-probe-run: arosvision-probe-tree
@@ -1348,20 +1444,35 @@ aros-iewarp-library: aros-release-assets
 	fi; \
 	echo "AROS iewarp.library is current."
 
-.PHONY: iewarp-runtime-assets
-iewarp-runtime-assets: sdk-build
+.PHONY: iewarp-service-worker
+iewarp-service-worker:
+	@if [ ! -x "$(SDK_BIN_DIR)/ie64asm" ]; then \
+		$(MAKE) ie64asm; \
+	fi
+	@$(MKDIR) -p sdk/examples/prebuilt
+	@echo "Building IEWarp runtime worker..."
+	@cd sdk/examples/asm && ../../../$(SDK_BIN_DIR)/ie64asm -I ../../include iewarp_service.asm
+	@mv sdk/examples/asm/iewarp_service.ie64 sdk/examples/prebuilt/
+	@echo "IEWarp runtime worker built: sdk/examples/prebuilt/iewarp_service.ie64"
+
+.PHONY: iewarp-runtime-local-assets
+iewarp-runtime-local-assets: iewarp-service-worker
 	@if [ ! -f "sdk/examples/prebuilt/iewarp_service.ie64" ]; then \
 		echo "Error: missing sdk/examples/prebuilt/iewarp_service.ie64"; \
-		echo "Run: make sdk-build"; \
+		echo "Run: make iewarp-service-worker"; \
 		exit 1; \
 	fi
 	@mkdir -p Systems/AROS/Libs
 	@cp -f sdk/examples/prebuilt/iewarp_service.ie64 Systems/AROS/Libs/iewarp_service.ie64
+	@echo "IEWarp runtime worker staged at Systems/AROS/Libs."
+
+.PHONY: iewarp-runtime-assets
+iewarp-runtime-assets: iewarp-runtime-local-assets
 	@if [ -d "$(AROS_RELEASE_DIR)" ]; then \
 		mkdir -p "$(AROS_RELEASE_DIR)/Libs"; \
 		cp -f sdk/examples/prebuilt/iewarp_service.ie64 "$(AROS_RELEASE_DIR)/Libs/iewarp_service.ie64"; \
 	fi
-	@echo "IEWarp runtime worker staged at Systems/AROS/Libs."
+	@echo "IEWarp runtime worker staged for local runtime and AROS release tree."
 
 .PHONY: clean-aros
 clean-aros:
