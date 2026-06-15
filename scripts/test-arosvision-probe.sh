@@ -55,14 +55,22 @@ C:FPPrefs >NIL:
 setenv workbench save 40.42
 Dir >NIL: "PIPE:"
 Touch >NIL: "FONTS:__TEST__"
+RunFromWB sys:WBStartUp/Additional/WBDock
 WANDERER:Wanderer
 SRCSTART
 cat >"$source/S/User-Startup" <<'SRCUSER'
 Assign Work: SYS:Work
-Mount GOOGLE:
+IF EXISTS Devs:Cloud/google.mountlist
+Mount GOOGLE: from Devs:Cloud/google.mountlist
+ENDIF
+Mount DBOX: from Devs:Cloud/cloud.mountlist
 Mount KCON: from DEVS:KingCON-mountlist
 Mount KRAW: from DEVS:KingCON-mountlist
+mount cbm0:
 mount apipe:
+mount aux:
+mount tee:
+mount zero:
 exe <nil: >nil: l:fifo-handler
 c:TaskPriHandler
 run >NIL: >NIL: yaws
@@ -84,6 +92,8 @@ touch "$source/System/Wanderer/Wanderer" "$source/C/IPrefs" "$source/C/AddDataty
 printf 'arosvision-loadwb\n' >"$source/C/LoadWB"
 touch "$source/WBStartup/Clipper" "$source/WBStartup/Clipper.info" \
   "$source/WBStartup/DiskImageGUI" "$source/WBStartup/DiskImageGUI.info"
+mkdir -p "$source/WBStartup/Additional"
+touch "$source/WBStartup/Additional/WBDock" "$source/WBStartup/Additional/WBDock.info"
 touch "$source/Devs/Midi/debugdriver" "$source/Devs/Midi/echo" \
   "$source/Devs/Midi/uaemidi" "$source/Devs/Midi/udp"
 printf 'source-iegfx\n' >"$source/Devs/Drivers/iegfx.hidd"
@@ -149,10 +159,14 @@ if IE_AROS_DIR="$tmp/missing-ie-aros" IE_RUNTIME_DIR="$tmp/missing-runtime" IE_T
   fail "live overlay mode should require IE overlays"
 fi
 
-assert_file "$out/WBStartup/Clipper"
-assert_file "$out/WBStartup/Clipper.info"
+assert_file "$out/Storage/IEProbeDisabled/WBStartup/Clipper"
+assert_file "$out/Storage/IEProbeDisabled/WBStartup/Clipper.info"
+assert_file "$out/WBStartup/Additional/WBDock"
+assert_file "$out/WBStartup/Additional/WBDock.info"
 assert_file "$out/WBStartup/DiskImageGUI"
 assert_file "$out/WBStartup/DiskImageGUI.info"
+[[ ! -e "$out/WBStartup/Clipper" ]] || fail "Clipper remained active in WBStartup"
+[[ ! -e "$out/WBStartup/Clipper.info" ]] || fail "Clipper.info remained active in WBStartup"
 [[ ! -e "$out/Devs/Midi/debugdriver" ]] || fail "debugdriver remained active in Devs/Midi"
 [[ ! -e "$out/Devs/Midi/echo" ]] || fail "echo remained active in Devs/Midi"
 [[ ! -e "$out/Devs/Midi/uaemidi" ]] || fail "uaemidi remained active in Devs/Midi"
@@ -171,6 +185,7 @@ assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*Automount >NIL:'
 assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*Mount >NIL: "DEVS:DOSDrivers/~\(\(\.#\?\)\|\(#\?\.info\)\|\(#\?\.dbg\)\)"'
 assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*Dir >NIL: "PIPE:"'
 assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*Touch >NIL: "FONTS:__TEST__"'
+assert_contains "$out/S/Startup-Sequence" '; IE disabled: RunFromWB sys:WBStartUp/Additional/WBDock'
 assert_contains "$out/S/Startup-Sequence" '; IE disabled USB stack block:'
 assert_contains "$out/S/Startup-Sequence" '; If EXISTS "SYS:Classes/USB"'
 assert_contains "$out/S/Startup-Sequence" ';     C:LoadModule SYS:Classes/USB/foo.class'
@@ -194,33 +209,44 @@ xxd -p "$out/Prefs/Env-Archive/SYS/ahi.prefs" | tr -d '\n' | \
   fail "ahi.prefs music unit default is not IE AHI"
 assert_contains "$out/S/Startup-Sequence" 'Execute S:User-Startup'
 assert_contains "$out/S/User-Startup" 'Assign Work: SYS:Work'
-assert_contains "$out/S/User-Startup" '; IE disabled: Mount GOOGLE:'
-assert_contains "$out/S/User-Startup" '; IE disabled: Mount KCON: from DEVS:KingCON-mountlist'
-assert_contains "$out/S/User-Startup" '; IE disabled: Mount KRAW: from DEVS:KingCON-mountlist'
-assert_contains "$out/S/User-Startup" '; IE disabled: mount apipe:'
 assert_contains "$out/S/User-Startup" '; IE disabled: exe <nil: >nil: l:fifo-handler'
-assert_contains "$out/S/User-Startup" '; IE disabled: c:TaskPriHandler'
-assert_contains "$out/S/User-Startup" '; IE disabled: run >NIL: >NIL: yaws'
 assert_contains "$out/S/User-Startup" '; IE disabled: ntpSync de.pool.ntp.org'
-assert_contains "$out/S/User-Startup" '; IE disabled: Execute \$\{UHCBIN\}UHC-Startup'
-assert_contains "$out/S/User-Startup" '; IE disabled: Execute ENV:PathManager.prefs'
-assert_contains "$out/S/User-Startup" '; IE disabled: execute JFHD:Extras/HD-ASSIGNS'
-assert_contains "$out/S/User-Startup" '; IE disabled: Sys:Prefs/Assigns USE'
 assert_contains "$out/S/User-Startup" '; IE disabled: Libs:svppc/loadppclib'
-assert_contains "$out/S/User-Startup" '; IE disabled: Run <>NIL: C:AmigaGPTD <>NIL:'
-assert_contains "$out/S/User-Startup" '; IE disabled: stack 999999'
-assert_contains "$out/S/User-Startup" '; IE disabled: mysql:bin/mysqld'
-assert_contains "$out/S/User-Startup" '; IE disabled unsupported sofa block:'
-assert_not_contains "$out/S/User-Startup" '^[[:space:]]*Mount KCON:'
-assert_not_contains "$out/S/User-Startup" '^[[:space:]]*Mount KRAW:'
-assert_not_contains "$out/S/User-Startup" '^[[:space:]]*mount apipe:'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*Mount KCON: from DEVS:KingCON-mountlist'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*Mount KRAW: from DEVS:KingCON-mountlist'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*Mount GOOGLE: from Devs:Cloud/google.mountlist'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*Mount DBOX: from Devs:Cloud/cloud.mountlist'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*run >NIL: >NIL: yaws'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*Run <>NIL: C:AmigaGPTD <>NIL:'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*stack 999999'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*mysql:bin/mysqld'
+assert_not_contains "$out/S/User-Startup" '^[[:space:]]*; IE disabled:.*C:AmigaGPTD'
+assert_not_contains "$out/S/User-Startup" '^[[:space:]]*; IE disabled: Mount KCON:'
+assert_not_contains "$out/S/User-Startup" '^[[:space:]]*; IE disabled: Mount KRAW:'
+assert_not_contains "$out/S/User-Startup" '^[[:space:]]*; IE disabled: Mount GOOGLE:'
+assert_not_contains "$out/S/User-Startup" '^[[:space:]]*; IE disabled: Mount DBOX:'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*Execute \$\{UHCBIN\}UHC-Startup'
+assert_not_contains "$out/S/User-Startup" '^[[:space:]]*; IE disabled: Execute \$\{UHCBIN\}UHC-Startup'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*mount cbm0:'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*mount apipe:'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*mount aux:'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*mount tee:'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*mount zero:'
 assert_not_contains "$out/S/User-Startup" '^[[:space:]]*exe <nil: >nil: l:fifo-handler'
-assert_not_contains "$out/S/User-Startup" '^[[:space:]]*Execute ENV:PathManager\.prefs'
-assert_not_contains "$out/S/User-Startup" '^[[:space:]]*mysql:bin/mysqld'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*c:TaskPriHandler'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*Sys:Prefs/Assigns USE'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*Execute ENV:PathManager\.prefs'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*execute JFHD:Extras/HD-ASSIGNS'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*Assign sofa: "System:Extras/Developing/sofa"'
+assert_not_contains "$out/S/User-Startup" 'IE disabled unsupported sofa block'
+assert_not_contains "$out/S/User-Startup" '^[[:space:]]*Libs:svppc/loadppclib'
+assert_not_contains "$out/S/User-Startup" '^[[:space:]]*; IE disabled: stack 999999'
+assert_not_contains "$out/S/User-Startup" '^[[:space:]]*; IE disabled: mysql:bin/mysqld'
 
 assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:apoke'
 assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:vcontrol'
 assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:LoadModule SYS:Classes/USB'
+assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*RunFromWB sys:WBStartUp/Additional/WBDock'
 assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:FPPrefs'
 
 if IE_AROS_DIR="$ie_aros" IE_RUNTIME_DIR="$tmp" scripts/prepare-arosvision-probe.sh "$source" "$source" >/tmp/arosvision-probe-unsafe.out 2>&1; then

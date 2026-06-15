@@ -55,13 +55,18 @@ write_ie_startup_sequence() {
       $system_assign_done = 1;
     }
 
-    if (/^\s*C:FPPrefs\b/i) {
-      print "; IE disabled: $_";
-      next;
-    }
+	    if (/^\s*C:FPPrefs\b/i) {
+	      print "; IE disabled: $_";
+	      next;
+	    }
 
-    print;
-  ' "$source_path" >"$output_path"
+	    if (/^\s*RunFromWB\s+sys:WBStartUp\/Additional\/WBDock\b/i) {
+	      print "; IE disabled: $_";
+	      next;
+	    }
+
+	    print;
+	  ' "$source_path" >"$output_path"
 }
 
 write_ie_user_startup() {
@@ -69,33 +74,10 @@ write_ie_user_startup() {
   local output_path="$2"
 
   perl -ne '
-	    if (/^\s*Mount\s+(GOOGLE|DBOX|KCON|KRAW):(?:\s|$)/i ||
-	        /^\s*mount\s+(cbm0|apipe|aux|tee|zero):(?:\s|$)/i ||
-	        /^\s*exe\s+<nil:\s+>nil:\s+l:fifo-handler\b/i ||
-	        /^\s*c:TaskPriHandler\b/i ||
-	        /^\s*run\s+>NIL:\s+>NIL:\s+yaws\b/i ||
-	        /^\s*ntpSync\b/i ||
-	        /^\s*Execute\s+\$\{UHCBIN\}UHC-Startup\b/i ||
-	        /^\s*Execute\s+ENV:PathManager\.prefs\b/i ||
-	        /^\s*execute\s+JFHD:Extras\/HD-ASSIGNS\b/i ||
-	        /^\s*Sys:Prefs\/Assigns\s+USE\b/i ||
-	        /^\s*Libs:svppc\/loadppclib\b/i ||
-	        /^\s*Run\b.*\bC:AmigaGPTD\b/i ||
-	        /^\s*stack\s+999999\b/i ||
-	        /^\s*mysql:bin\/mysqld\b/i) {
+		    if (/^\s*exe\s+<nil:\s+>nil:\s+l:fifo-handler\b/i ||
+		        /^\s*ntpSync\b/i ||
+	        /^\s*Libs:svppc\/loadppclib\b/i) {
 	      print "; IE disabled: $_";
-	      next;
-	    }
-
-	    if (/^\s*;BEGIN sofa\b/i) {
-	      $skip_sofa = 1;
-	      print "; IE disabled unsupported sofa block:\n";
-	      print "; $_";
-	      next;
-	    }
-	    if ($skip_sofa) {
-	      print "; $_";
-	      $skip_sofa = 0 if /^\s*;END sofa\b/i;
 	      next;
 	    }
 
@@ -176,6 +158,11 @@ fi
 
 disabled_dir="$output_abs/Storage/IEProbeDisabled/WBStartup"
 mkdir -p "$disabled_dir"
+for name in Clipper Clipper.info; do
+  if [[ -e "$output_abs/WBStartup/$name" ]]; then
+    mv "$output_abs/WBStartup/$name" "$disabled_dir/$name"
+  fi
+done
 
 disabled_monitors_dir="$output_abs/Storage/IEProbeDisabled/Devs/Monitors"
 mkdir -p "$disabled_monitors_dir"
