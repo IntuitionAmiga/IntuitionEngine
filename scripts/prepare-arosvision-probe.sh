@@ -36,6 +36,13 @@ write_ie_startup_sequence() {
       next;
     }
 
+    if (/^\s*c:sysvars\b/i && !$wanderer_mode_done) {
+      print;
+      print "set ArosVision 2\n";
+      $wanderer_mode_done = 1;
+      next;
+    }
+
     if (/^\s*If EXISTS "SYS:Classes\/USB"/i) {
       $skip_usb = 1;
       print "; IE disabled USB stack block:\n";
@@ -60,7 +67,19 @@ write_ie_startup_sequence() {
 	      next;
 	    }
 
-	    if (/^\s*RunFromWB\s+sys:WBStartUp\/Additional\/WBDock\b/i) {
+	    if (/^\s*if\s+\$ArosVision\s+eq\s+2\b/i) {
+	      $wanderer_branch = 1;
+	      print;
+	      next;
+	    }
+
+	    if ($wanderer_branch && /^\s*endif\b/i) {
+	      $wanderer_branch = 0;
+	      print;
+	      next;
+	    }
+
+	    if (!$wanderer_branch && /^\s*RunFromWB\s+sys:WBStartUp\/Additional\/WBDock\b/i) {
 	      print "; IE disabled: $_";
 	      next;
 	    }
@@ -78,6 +97,11 @@ write_ie_user_startup() {
 		        /^\s*ntpSync\b/i ||
 	        /^\s*Libs:svppc\/loadppclib\b/i) {
 	      print "; IE disabled: $_";
+	      next;
+	    }
+
+	    if (/^\s*Assign\s+Desktop:\s+Sys:Extras\/Desktops\/Opus5\/Desktop\b/i) {
+	      print "Assign Desktop: SYS:System/Wanderer\n";
 	      next;
 	    }
 

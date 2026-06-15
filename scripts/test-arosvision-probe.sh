@@ -40,6 +40,7 @@ mkdir -p "$source/S" "$source/System/Wanderer" "$source/C" "$source/Prefs/Env-Ar
 mkdir -p "$ie_aros/Devs/AHI" "$ie_aros/Utilities" "$ie_tools" "$ie_images/Utilities" "$tmp/Libs"
 cat >"$source/S/Startup-Sequence" <<'SRCSTART'
 Assign WANDERER: SYS:System/Wanderer DEFER
+c:sysvars
 Execute S:User-Startup
 C:apoke dead beef
 C:vcontrol something
@@ -56,10 +57,17 @@ setenv workbench save 40.42
 Dir >NIL: "PIPE:"
 Touch >NIL: "FONTS:__TEST__"
 RunFromWB sys:WBStartUp/Additional/WBDock
+if $ArosVision eq 1
+c:LoadWB
+endif
+if $ArosVision eq 2
 WANDERER:Wanderer
+RunFromWB sys:WBStartUp/Additional/WBDock
+endif
 SRCSTART
 cat >"$source/S/User-Startup" <<'SRCUSER'
 Assign Work: SYS:Work
+Assign Desktop: Sys:Extras/Desktops/Opus5/Desktop
 IF EXISTS Devs:Cloud/google.mountlist
 Mount GOOGLE: from Devs:Cloud/google.mountlist
 ENDIF
@@ -185,6 +193,11 @@ assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*Automount >NIL:'
 assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*Mount >NIL: "DEVS:DOSDrivers/~\(\(\.#\?\)\|\(#\?\.info\)\|\(#\?\.dbg\)\)"'
 assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*Dir >NIL: "PIPE:"'
 assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*Touch >NIL: "FONTS:__TEST__"'
+assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*c:sysvars'
+assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*set ArosVision 2'
+assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*setenv ArosVision 2'
+assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*WANDERER:Wanderer'
+assert_contains "$out/S/Startup-Sequence" '^[[:space:]]*RunFromWB sys:WBStartUp/Additional/WBDock'
 assert_contains "$out/S/Startup-Sequence" '; IE disabled: RunFromWB sys:WBStartUp/Additional/WBDock'
 assert_contains "$out/S/Startup-Sequence" '; IE disabled USB stack block:'
 assert_contains "$out/S/Startup-Sequence" '; If EXISTS "SYS:Classes/USB"'
@@ -209,6 +222,8 @@ xxd -p "$out/Prefs/Env-Archive/SYS/ahi.prefs" | tr -d '\n' | \
   fail "ahi.prefs music unit default is not IE AHI"
 assert_contains "$out/S/Startup-Sequence" 'Execute S:User-Startup'
 assert_contains "$out/S/User-Startup" 'Assign Work: SYS:Work'
+assert_contains "$out/S/User-Startup" '^[[:space:]]*Assign Desktop: SYS:System/Wanderer'
+assert_not_contains "$out/S/User-Startup" '^[[:space:]]*Assign Desktop: Sys:Extras/Desktops/Opus5/Desktop'
 assert_contains "$out/S/User-Startup" '; IE disabled: exe <nil: >nil: l:fifo-handler'
 assert_contains "$out/S/User-Startup" '; IE disabled: ntpSync de.pool.ntp.org'
 assert_contains "$out/S/User-Startup" '; IE disabled: Libs:svppc/loadppclib'
@@ -246,7 +261,6 @@ assert_not_contains "$out/S/User-Startup" '^[[:space:]]*; IE disabled: mysql:bin
 assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:apoke'
 assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:vcontrol'
 assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:LoadModule SYS:Classes/USB'
-assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*RunFromWB sys:WBStartUp/Additional/WBDock'
 assert_not_contains "$out/S/Startup-Sequence" '^[[:space:]]*C:FPPrefs'
 
 if IE_AROS_DIR="$ie_aros" IE_RUNTIME_DIR="$tmp" scripts/prepare-arosvision-probe.sh "$source" "$source" >/tmp/arosvision-probe-unsafe.out 2>&1; then
