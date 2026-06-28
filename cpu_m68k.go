@@ -899,6 +899,41 @@ func (cpu *M68KCPU) debugHandleBreakIn(pc uint64) bool {
 	return false
 }
 
+// STOP-idle backoff tuning. When the guest sits at STOP with no pending
+// interrupt, the execution loops would otherwise busy-spin runtime.Gosched(),
+// burning host cores and thrashing the Go scheduler so the wall-clock VBL
+// ticker and video compositor goroutines are starved — the dominant cost of a
+// cold AROS boot. After a brief busy phase the idle CPU parks for a short,
+// bounded interval so a pending IRQ is still serviced within one VBL tick.
+const (
+	// stopIdleSpinThreshold is the number of consecutive STOP iterations spent
+	// spinning Gosched (low-latency) before the loop starts sleeping.
+	stopIdleSpinThreshold = 256
+	// stopIdleSleepDuration is the park interval once sustained idle is
+	// detected. Kept far below the 16.666ms (60Hz) VBL period so IRQ wake
+	// latency stays bounded to well under one tick.
+	stopIdleSleepDuration = 200 * time.Microsecond
+)
+
+// stopIdleBackoffDelay decides how long the STOP-idle path should park.
+//
+//   - hasIdleHook true: a deterministic boot harness drives the IRQ source from
+//     the instruction-count hook, which is frozen at STOP and pumped manually
+//     each spin. It must keep a tight Gosched spin, so never sleep.
+//   - spins below the threshold: short idle burst, spin tight to keep IRQ
+//     latency near-zero.
+//   - spins at/above the threshold: sustained real-boot idle, park for a
+//     bounded interval to free host cores.
+func stopIdleBackoffDelay(spins uint32, hasIdleHook bool) time.Duration {
+	if hasIdleHook {
+		return 0
+	}
+	if spins < stopIdleSpinThreshold {
+		return 0
+	}
+	return stopIdleSleepDuration
+}
+
 // AssertInterrupt atomically asserts an interrupt level in the pending bitmask.
 func (cpu *M68KCPU) AssertInterrupt(level uint8) {
 	if level < 1 || level > 7 {
@@ -2636,9 +2671,18 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 					if spins >= 5000 && spins%5000 == 0 {
 						cpu.stopWatchdogHits.Add(1)
 					}
+					// Park the idle CPU instead of busy-spinning Gosched, so the
+					// wall-clock VBL ticker and compositor goroutines are not
+					// starved during a real AROS boot. Deterministic harness
+					// keeps a tight spin (delay 0).
+					if d := stopIdleBackoffDelay(spins, cpu.StoppedIdleHook != nil); d > 0 {
+						time.Sleep(d)
+					} else {
+						runtime.Gosched()
+					}
+				} else {
+					runtime.Gosched()
 				}
-
-				runtime.Gosched()
 				break innerLoop
 			}
 

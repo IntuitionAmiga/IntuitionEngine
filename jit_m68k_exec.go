@@ -2518,9 +2518,18 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				if spins >= 5000 && spins%5000 == 0 {
 					cpu.stopWatchdogHits.Add(1)
 				}
+				// Park the idle CPU instead of busy-spinning Gosched, so the
+				// wall-clock VBL ticker and compositor goroutines are not
+				// starved during a real AROS boot. Deterministic harness keeps
+				// a tight spin (delay 0).
+				if d := stopIdleBackoffDelay(spins, cpu.StoppedIdleHook != nil); d > 0 {
+					time.Sleep(d)
+				} else {
+					runtime.Gosched()
+				}
+			} else {
+				runtime.Gosched()
 			}
-
-			runtime.Gosched()
 			continue // back to top — do NOT fall through to fetch
 		}
 
