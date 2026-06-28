@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -468,6 +469,8 @@ func (cpu *M68KCPU) initM68KJIT() error {
 	for i := range cpu.m68kJitCodePageMin {
 		cpu.m68kJitCodePageMin[i] = 0xFFFF
 	}
+	cpu.m68kJitCodeLoAddr = 0xFFFFFFFF
+	cpu.m68kJitCodeHiAddr = 0
 	cpu.m68kJitCtx = newM68KJITContext(cpu, cpu.m68kJitCodeBitmap, cpu.m68kJitCodePageMin, cpu.m68kJitCodePageMax)
 	cpu.m68kJitNativeActive.Store(false)
 	cpu.m68kJitDeferredInval.Store(false)
@@ -491,6 +494,8 @@ func (cpu *M68KCPU) freeM68KJIT() {
 	cpu.m68kJitCodePageMin = nil
 	cpu.m68kJitCodePageMax = nil
 	cpu.m68kJitCodePageBlocks = nil
+	cpu.m68kJitCodeLoAddr = 0xFFFFFFFF
+	cpu.m68kJitCodeHiAddr = 0
 	cpu.m68kJitNativeActive.Store(false)
 	cpu.m68kJitDeferredInval.Store(false)
 }
@@ -542,6 +547,8 @@ func (cpu *M68KCPU) m68kResetJITCodeCache() {
 	if cpu.m68kJitCodePageBlocks != nil {
 		clear(cpu.m68kJitCodePageBlocks)
 	}
+	cpu.m68kJitCodeLoAddr = 0xFFFFFFFF
+	cpu.m68kJitCodeHiAddr = 0
 	cpu.m68kClearJITRTSCache()
 }
 
@@ -563,6 +570,11 @@ func (cpu *M68KCPU) m68kRebuildJITCodeMetadata() {
 	if cpu.m68kJitCodePageBlocks != nil {
 		clear(cpu.m68kJitCodePageBlocks)
 	}
+	// Reset the global code envelope; the re-mark loop below re-widens it to the
+	// tight union of surviving blocks (M68K never uses mmuBlocks, so blocks are
+	// the complete set — see m68kWriteOutsideCodeBounds).
+	cpu.m68kJitCodeLoAddr = 0xFFFFFFFF
+	cpu.m68kJitCodeHiAddr = 0
 	if cpu.m68kJitCache == nil {
 		return
 	}
@@ -716,7 +728,7 @@ func (cpu *M68KCPU) m68kDrainPendingJITInvalidations() {
 		cpu.m68kResetJITCodeCache()
 		return
 	}
-	for _, r := range ranges {
+	for _, r := range m68kCoalesceInvalRanges(ranges) {
 		cpu.invalidateM68KJITForGuestWrite(r[0], r[1]-r[0])
 	}
 }
@@ -847,6 +859,63 @@ func (cpu *M68KCPU) m68kReportVerifyDivergence(startPC, endPC uint32, exp *m68kV
 	}
 }
 
+// m68kCoalesceInvalRanges sorts and merges overlapping or exactly-adjacent
+// [start,end) invalidation ranges. AROS boot relocates code with bursts of
+// sequential word writes that queue many tiny adjacent ranges; coalescing them
+// collapses the redundant per-page and cache scans in the drain loop. Merging
+// the union is identical in effect to invalidating each sub-range, so this is a
+// pure performance transform.
+func m68kCoalesceInvalRanges(ranges [][2]uint32) [][2]uint32 {
+	if len(ranges) < 2 {
+		return ranges
+	}
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i][0] < ranges[j][0] })
+	out := ranges[:1]
+	for _, r := range ranges[1:] {
+		last := &out[len(out)-1]
+		if r[0] <= last[1] { // overlapping or touching (end is exclusive)
+			if r[1] > last[1] {
+				last[1] = r[1]
+			}
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// m68kWriteOutsideCodeBounds reports whether a guest write of [addr,addr+size)
+// lies entirely outside the conservative global envelope [codeLo,codeHi) of all
+// compiled JIT code. When true the write cannot intersect any block, so the
+// caller skips invalidation in O(1) before any per-page or cache scan.
+//
+// Safety: the envelope is widened on every m68kMarkJITCodeRanges and reset only
+// when the whole metadata is cleared, so it is always a superset of live code
+// ranges — an over-wide envelope only costs an occasional unnecessary scan,
+// never a missed invalidation. An empty/unknown envelope (codeHi<=codeLo) never
+// rejects, deferring to the authoritative slow path.
+//
+// This relies on M68K populating only regular cache blocks (CodeCache.Put),
+// never MMU-mode blocks (PutMMU) — the latter are not threaded through
+// m68kMarkJITCodeRanges and would escape the envelope. If M68K ever adopts
+// MMU-mode JIT blocks, widen the envelope on PutMMU or this reject is unsafe.
+func m68kWriteOutsideCodeBounds(addr, size, codeLo, codeHi uint32) bool {
+	if size == 0 {
+		return true
+	}
+	if codeHi <= codeLo {
+		return false // unknown envelope — defer to the slow path
+	}
+	writeEnd := uint64(addr) + uint64(size) // exclusive
+	if writeEnd <= uint64(codeLo) {
+		return true // entirely below all code
+	}
+	if uint64(addr) >= uint64(codeHi) {
+		return true // entirely at/above all code
+	}
+	return false
+}
+
 func (cpu *M68KCPU) invalidateM68KJITForGuestWrite(addr uint32, size uint32) {
 	// During the verifier's interpreter pre-pass, writes are temporary and will
 	// be undone; suppress cache invalidation so the block we are about to run
@@ -858,6 +927,11 @@ func (cpu *M68KCPU) invalidateM68KJITForGuestWrite(addr uint32, size uint32) {
 		return
 	}
 	if len(cpu.m68kJitCodeBitmap) == 0 {
+		return
+	}
+	// O(1) negative reject: a write entirely outside the global code envelope
+	// cannot intersect any compiled block, so skip the per-page and cache scans.
+	if m68kWriteOutsideCodeBounds(addr, size, cpu.m68kJitCodeLoAddr, cpu.m68kJitCodeHiAddr) {
 		return
 	}
 	startPage := addr >> 12
@@ -1014,6 +1088,19 @@ func (cpu *M68KCPU) m68kMarkJITCodeRanges(block *JITBlock) {
 	for _, r := range JITBlockCoveredRanges(block) {
 		if r[1] <= r[0] {
 			continue
+		}
+		// Widen the global code envelope used by the O(1) invalidation reject.
+		// Guest addresses are 32-bit; cap the exclusive end at 0xFFFFFFFF.
+		rLo := uint32(r[0])
+		rHi := uint32(^uint32(0))
+		if r[1] <= uint64(^uint32(0)) {
+			rHi = uint32(r[1])
+		}
+		if rLo < cpu.m68kJitCodeLoAddr {
+			cpu.m68kJitCodeLoAddr = rLo
+		}
+		if rHi > cpu.m68kJitCodeHiAddr {
+			cpu.m68kJitCodeHiAddr = rHi
 		}
 		if cpu.m68kJitCodeBitmap != nil {
 			startPage := r[0] >> 12

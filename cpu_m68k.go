@@ -738,8 +738,13 @@ type M68KCPU struct {
 	m68kJitCodePageMin    []uint16
 	m68kJitCodePageMax    []uint16
 	m68kJitCodePageBlocks []map[*JITBlock]struct{}
-	m68kJitNativeActive   atomic.Bool
-	m68kJitDeferredInval  atomic.Bool
+	// Conservative global envelope [lo,hi) of all compiled JIT code, widened on
+	// m68kMarkJITCodeRanges and reset with the page metadata. Drives the O(1)
+	// negative reject in invalidateM68KJITForGuestWrite. Empty when hi<=lo.
+	m68kJitCodeLoAddr    uint32
+	m68kJitCodeHiAddr    uint32
+	m68kJitNativeActive  atomic.Bool
+	m68kJitDeferredInval atomic.Bool
 	// m68kJitDispatchActive is true only while the M68KExecuteJIT dispatcher
 	// loop is running on the CPU goroutine. It is the signal a cross-thread
 	// bus invalidation uses to decide whether the cache maps are concurrently
