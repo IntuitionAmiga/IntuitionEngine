@@ -3400,16 +3400,16 @@ passed:
 `go test -tags headless -run
 'TestSDKISAInventory|TestSDKIEMonSourceInventory|TestSDKIEScriptSourceInventory|TestSDKArchitectureSourceInventory|TestSDKCompanionDocs'
 .`
-`IE64_ISA.pdf` (2124482 bytes), `IE32_ISA.pdf` (1011033 bytes),
-`iemon.pdf` (732410 bytes), `iescript.pdf` (1120444 bytes), and
-`architecture.pdf` (667085 bytes).
+`IE64_ISA.pdf` (2222822 bytes), `IE32_ISA.pdf` (1011068 bytes),
+`iemon.pdf` (758696 bytes), `iescript.pdf` (1134410 bytes), and
+`architecture.pdf` (1016514 bytes).
 The render command was:
 `scripts/refman-pdf.sh --src "$tmp_src" --out "$tmp_out"` after copying
 `00-Preface.md` and the five shipped Markdown files into `$tmp_src`,
 then copying the five generated PDFs from `$tmp_out` to `sdk/docs/`.
 The render pipeline used Google Chrome headless through
 `scripts/refman-pdf.sh`. `SDK_DOC_PDF_RENDER_MANIFEST.sha256` records
-398 SHA-256 rows covering root source files, audit tests, empirical
+950 SHA-256 rows covering root source files, audit tests, empirical
 inventories, shipped manuals, the render script, and generated PDFs.
 Action: Regenerated `sdk/docs/IE64_ISA.pdf`,
 `sdk/docs/IE32_ISA.pdf`, `sdk/docs/iemon.pdf`,

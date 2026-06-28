@@ -1,6 +1,6 @@
 # IEScript Lua Automation Manual
 
-*Last modified: 2026-06-14*
+*Last modified: 2026-06-28*
 
 IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
@@ -301,6 +301,8 @@ CPU lifecycle and mode.
 `cpu.set_jit_enabled(enabled)` - Enable or disable JIT for the active CPU. Raises if the CPU is currently running, if the platform build does not provide a JIT for that CPU, or if the selected CPU does not support script-controlled JIT (currently m68k, z80, x86, 6502, and ie64). x86, m68k, z80, and 6502 JIT backends are amd64 host paths; IE64 also has arm64 host paths as described in architecture.md. On a successful disable the JIT is turned off immediately. Returns: nothing.
 
 `cpu.execution_mode()` - Report the effective execution mode for the active CPU. Returns: `"jit"` if a JIT is enabled and available for that CPU, otherwise `"interpreter"`.
+
+`cpu.jit_stats()` - Return JIT diagnostic counters for the active CPU. In m68k mode, returns a table with `instruction_count`, `native_blocks`, `last_native_pc`, `fallback_instructions`, `bailouts`, `last_fallback_pc`, `last_fallback_opcode`, `fallback_opcodes`, `native_pcs`, `native_pc_ring`, and `compile_failures`. `fallback_opcodes` contains up to 16 entries with `opcode`, `count`, and `pc`; `native_pcs` contains up to 16 entries with `pc` and `count`; `compile_failures` contains up to 16 entries with `pc`, `count`, and `error`; `native_pc_ring` contains recent native-block PCs. Other CPU modes return an empty table. Returns: table.
 
 Example:
 
@@ -1634,7 +1636,7 @@ Compact reference for IEScript API functions.
 | `sys.capture_output(path)` | - |
 | `sys.capture_output_off()` | - |
 
-### cpu (12)
+### cpu (13)
 
 | Function | Returns |
 |----------|---------|
@@ -1650,6 +1652,7 @@ Compact reference for IEScript API functions.
 | `cpu.jit_enabled()` | boolean |
 | `cpu.set_jit_enabled(enabled)` | - |
 | `cpu.execution_mode()` | string |
+| `cpu.jit_stats()` | table |
 
 ### mem (9)
 

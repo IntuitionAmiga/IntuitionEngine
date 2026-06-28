@@ -92,6 +92,7 @@
 | IEScript | binding | `cpu.freeze` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `cpu.is_running` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `cpu.jit_enabled` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `cpu.jit_stats` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `cpu.load` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `cpu.load_stopped` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `cpu.mode` | `script_engine.go` `registerModules` binding |
