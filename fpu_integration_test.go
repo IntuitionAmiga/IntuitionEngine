@@ -221,6 +221,145 @@ func TestFPU_FlineDecoder(t *testing.T) {
 	})
 }
 
+func TestFPU_MemoryAutoUpdateAddressing(t *testing.T) {
+	t.Run("FMOVE_long_FP_to_predecrement_updates_stack_pointer", func(t *testing.T) {
+		cpu := setupFPUTestCPU()
+		cpu.PC = 0x1000
+		cpu.AddrRegs[7] = 0x2000
+		cpu.FPU.SetFP64(0, 2.0)
+		cpu.Write32(0x1FFC, 0xDEADBEEF)
+		cpu.Write32(0x2000, 0xCAFEBABE)
+
+		// FMOVE.L FP0,-(A7)
+		cpu.Write16(cpu.PC, 0xF227)
+		cpu.Write16(cpu.PC+2, 0x6000)
+
+		cpu.currentIR = cpu.Fetch16()
+		cpu.FetchAndDecodeInstruction()
+
+		if got := cpu.AddrRegs[7]; got != 0x1FFC {
+			t.Fatalf("A7 = 0x%08X, want predecremented 0x00001FFC", got)
+		}
+		if got := cpu.Read32(0x1FFC); got != 2 {
+			t.Fatalf("stored long at decremented SP = 0x%08X, want 0x00000002", got)
+		}
+		if got := cpu.Read32(0x2000); got != 0xCAFEBABE {
+			t.Fatalf("word at old SP was overwritten: 0x%08X", got)
+		}
+	})
+
+	t.Run("FMOVE_long_postincrement_to_FP_updates_stack_pointer", func(t *testing.T) {
+		cpu := setupFPUTestCPU()
+		cpu.PC = 0x1000
+		cpu.AddrRegs[7] = 0x2000
+		cpu.Write32(0x2000, 3)
+
+		// FMOVE.L (A7)+,FP0
+		cpu.Write16(cpu.PC, 0xF21F)
+		cpu.Write16(cpu.PC+2, 0x4000)
+
+		cpu.currentIR = cpu.Fetch16()
+		cpu.FetchAndDecodeInstruction()
+
+		if got := cpu.AddrRegs[7]; got != 0x2004 {
+			t.Fatalf("A7 = 0x%08X, want postincremented 0x00002004", got)
+		}
+		if got := cpu.FPU.GetFP64(0); got != 3 {
+			t.Fatalf("FP0 = %v, want 3", got)
+		}
+	})
+}
+
+func TestFPU_MemoryAutoUpdateAddressingUsesOperandFormatSize(t *testing.T) {
+	tests := []struct {
+		name      string
+		format    uint16
+		bytes     uint32
+		stackStep uint32
+	}{
+		{name: "byte_integer", format: 6, bytes: 1, stackStep: 2},
+		{name: "word_integer", format: 4, bytes: 2, stackStep: 2},
+		{name: "long_integer", format: 0, bytes: 4, stackStep: 4},
+		{name: "single_precision", format: 1, bytes: 4, stackStep: 4},
+		{name: "double_precision", format: 5, bytes: 8, stackStep: 8},
+		{name: "extended_precision", format: 2, bytes: 12, stackStep: 12},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+"_predecrement", func(t *testing.T) {
+			cpu := setupFPUTestCPU()
+			cpu.AddrRegs[3] = 0x2000
+
+			ea, postIncrement, ok := cpu.m68kFPUEffectiveAddress(M68K_AM_AR_PRE, 3, tt.format)
+			if !ok {
+				t.Fatalf("format %d was rejected", tt.format)
+			}
+			if postIncrement != 0 {
+				t.Fatalf("postIncrement = %d, want 0", postIncrement)
+			}
+			want := uint32(0x2000) - tt.bytes
+			if ea != want || cpu.AddrRegs[3] != want {
+				t.Fatalf("ea=0x%08X A3=0x%08X, want both 0x%08X", ea, cpu.AddrRegs[3], want)
+			}
+		})
+
+		t.Run(tt.name+"_stack_predecrement", func(t *testing.T) {
+			cpu := setupFPUTestCPU()
+			cpu.AddrRegs[7] = 0x2000
+
+			ea, postIncrement, ok := cpu.m68kFPUEffectiveAddress(M68K_AM_AR_PRE, 7, tt.format)
+			if !ok {
+				t.Fatalf("format %d was rejected", tt.format)
+			}
+			if postIncrement != 0 {
+				t.Fatalf("postIncrement = %d, want 0", postIncrement)
+			}
+			want := uint32(0x2000) - tt.stackStep
+			if ea != want || cpu.AddrRegs[7] != want {
+				t.Fatalf("ea=0x%08X A7=0x%08X, want both 0x%08X", ea, cpu.AddrRegs[7], want)
+			}
+		})
+
+		t.Run(tt.name+"_postincrement", func(t *testing.T) {
+			cpu := setupFPUTestCPU()
+			cpu.AddrRegs[3] = 0x2000
+
+			ea, postIncrement, ok := cpu.m68kFPUEffectiveAddress(M68K_AM_AR_POST, 3, tt.format)
+			if !ok {
+				t.Fatalf("format %d was rejected", tt.format)
+			}
+			if ea != 0x2000 {
+				t.Fatalf("ea=0x%08X, want original address 0x00002000", ea)
+			}
+			if postIncrement != tt.bytes {
+				t.Fatalf("postIncrement = %d, want %d", postIncrement, tt.bytes)
+			}
+			if cpu.AddrRegs[3] != 0x2000 {
+				t.Fatalf("A3 changed before postincrement was applied: 0x%08X", cpu.AddrRegs[3])
+			}
+		})
+
+		t.Run(tt.name+"_stack_postincrement", func(t *testing.T) {
+			cpu := setupFPUTestCPU()
+			cpu.AddrRegs[7] = 0x2000
+
+			ea, postIncrement, ok := cpu.m68kFPUEffectiveAddress(M68K_AM_AR_POST, 7, tt.format)
+			if !ok {
+				t.Fatalf("format %d was rejected", tt.format)
+			}
+			if ea != 0x2000 {
+				t.Fatalf("ea=0x%08X, want original address 0x00002000", ea)
+			}
+			if postIncrement != tt.stackStep {
+				t.Fatalf("postIncrement = %d, want %d", postIncrement, tt.stackStep)
+			}
+			if cpu.AddrRegs[7] != 0x2000 {
+				t.Fatalf("A7 changed before postincrement was applied: 0x%08X", cpu.AddrRegs[7])
+			}
+		})
+	}
+}
+
 func TestFPU_NoFPU_TriggersLineF(t *testing.T) {
 	t.Run("F_line_without_FPU_triggers_exception", func(t *testing.T) {
 		cpu := setupFPUTestCPU()

@@ -12220,7 +12220,11 @@ func (cpu *M68KCPU) execFPUEAToReg(opcode, cmdWord uint16) {
 		return
 	}
 
-	ea := cpu.GetEffectiveAddress(mode, reg)
+	ea, postIncrement, ok := cpu.m68kFPUEffectiveAddress(mode, reg, srcFormat)
+	if !ok {
+		cpu.ProcessException(M68K_VEC_LINE_F)
+		return
+	}
 
 	// Read source value based on format
 	var value float64
@@ -12232,6 +12236,9 @@ func (cpu *M68KCPU) execFPUEAToReg(opcode, cmdWord uint16) {
 	case 2: // Extended precision (96-bit)
 		ext := cpu.readExtendedReal96(ea)
 		cpu.FPU.SetFromExtendedReal(dstReg, ext)
+		if postIncrement != 0 {
+			cpu.AddrRegs[reg] += postIncrement
+		}
 		if op == FPU_OP_FMOVE {
 			cpu.FPU.setCC64(cpu.FPU.GetFP64(dstReg))
 			return
@@ -12247,6 +12254,9 @@ func (cpu *M68KCPU) execFPUEAToReg(opcode, cmdWord uint16) {
 		value = float64(int8(cpu.Read8(ea)))
 	default:
 		value = 0.0
+	}
+	if postIncrement != 0 {
+		cpu.AddrRegs[reg] += postIncrement
 	}
 
 	cpu.applyFPUEAValue(op, dstReg, value)
@@ -12292,6 +12302,56 @@ func (cpu *M68KCPU) writeExtendedReal96(ea uint32, ext ExtendedReal) {
 	cpu.Write16(ea+2, 0) // Reserved/padding
 	cpu.Write32(ea+4, uint32(ext.Mant>>32))
 	cpu.Write32(ea+8, uint32(ext.Mant))
+}
+
+func m68kFPUOperandFormatBytes(format uint16) (uint32, bool) {
+	switch format {
+	case 0: // Long integer
+		return 4, true
+	case 1: // Single precision
+		return 4, true
+	case 2: // Extended precision (96-bit)
+		return m68kFPUExtendedRealBytes, true
+	case 4: // Word integer
+		return 2, true
+	case 5: // Double precision
+		return 8, true
+	case 6: // Byte integer
+		return 1, true
+	default:
+		return 0, false
+	}
+}
+
+func m68kFPUAddressStepBytes(format, reg uint16) (uint32, bool) {
+	bytes, ok := m68kFPUOperandFormatBytes(format)
+	if !ok {
+		return 0, false
+	}
+	switch format {
+	case 4:
+		return m68kAddressStepForSize(M68K_SIZE_WORD, reg), true
+	case 6:
+		return m68kAddressStepForSize(M68K_SIZE_BYTE, reg), true
+	default:
+		return bytes, true
+	}
+}
+
+func (cpu *M68KCPU) m68kFPUEffectiveAddress(mode, reg, format uint16) (ea uint32, postIncrement uint32, ok bool) {
+	step, ok := m68kFPUAddressStepBytes(format, reg)
+	if !ok {
+		return 0, 0, false
+	}
+	switch mode {
+	case M68K_AM_AR_PRE:
+		cpu.AddrRegs[reg] -= step
+		return cpu.AddrRegs[reg], 0, true
+	case M68K_AM_AR_POST:
+		return cpu.AddrRegs[reg], step, true
+	default:
+		return cpu.GetEffectiveAddress(mode, reg), 0, true
+	}
 }
 
 // execFPUMemToReg handles loading FP register from memory
@@ -12402,8 +12462,11 @@ func (cpu *M68KCPU) execFPURegToMem(opcode, cmdWord uint16) {
 	srcReg := int((cmdWord >> 7) & 0x7)
 	dstFormat := (cmdWord >> 10) & 0x7
 
-	// Calculate effective address
-	ea := cpu.GetEffectiveAddress(mode, reg)
+	ea, postIncrement, ok := cpu.m68kFPUEffectiveAddress(mode, reg, dstFormat)
+	if !ok {
+		cpu.ProcessException(M68K_VEC_LINE_F)
+		return
+	}
 
 	value := cpu.FPU.GetFP64(srcReg)
 
@@ -12425,6 +12488,9 @@ func (cpu *M68KCPU) execFPURegToMem(opcode, cmdWord uint16) {
 		cpu.Write8(ea, uint8(int8(value)))
 	default:
 		// Unsupported format
+	}
+	if postIncrement != 0 {
+		cpu.AddrRegs[reg] += postIncrement
 	}
 }
 
