@@ -1,0 +1,100 @@
+local BP = 0x006091AC
+local TIMEOUT_MS = 60000
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function line(s)
+    sys.print(s)
+end
+
+local function rd32(addr)
+    local ok, bytes = pcall(dbg.read_mem, addr, 4)
+    if not ok then
+        return nil
+    end
+    if type(bytes) == "string" then
+        if #bytes < 4 then return nil end
+        return string.byte(bytes, 1) * 0x1000000 + string.byte(bytes, 2) * 0x10000 + string.byte(bytes, 3) * 0x100 + string.byte(bytes, 4)
+    end
+    if type(bytes) == "table" and #bytes >= 4 then
+        return (bytes[1] or 0) * 0x1000000 + (bytes[2] or 0) * 0x10000 + (bytes[3] or 0) * 0x100 + (bytes[4] or 0)
+    end
+    return nil
+end
+
+local function dump32(label, addr)
+    local v = rd32(addr)
+    line(string.format("[break6091ac] %s %s = %s", label, hex(addr), v and hex(v) or "????????"))
+end
+
+local function dump_disasm(label, addr, count)
+    line(string.format("[break6091ac] disasm %s %s", label, hex(addr)))
+    local ok, rows = pcall(dbg.disasm, addr, count or 24)
+    if not ok or type(rows) ~= "table" then
+        return
+    end
+    for i = 1, #rows do
+        local e = rows[i]
+        line(string.format("[break6091ac]   %s%08X: %-18s %s", e.current and ">" or " ", e.addr or e.pc or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+dbg.open()
+dbg.clear_all_bp()
+dbg.set_bp(BP)
+dbg.tracering_on(4096)
+line(string.format("[break6091ac] bp=%s mode=%s jit=%s", hex(BP), tostring(cpu.execution_mode()), tostring(cpu.jit_enabled())))
+dbg.continue(true)
+
+local deadline = sys.time_ms() + TIMEOUT_MS
+while sys.time_ms() < deadline do
+    if dbg.is_open() then
+        break
+    end
+    sys.wait_ms(5)
+end
+
+dbg.open()
+local regs = dbg.get_regs()
+line(string.format("[break6091ac] stopped pc=%s", hex(dbg.get_pc())))
+for _, name in ipairs({"D0","D1","D2","D3","D4","D5","D6","D7","A0","A1","A2","A3","A4","A5","A6","A7","PC","SR"}) do
+    line(string.format("[break6091ac] %s=%s", name, hex(regs[name] or regs[string.lower(name)] or 0)))
+end
+
+local d4 = regs["D4"] or regs["d4"] or 0
+local a0 = regs["A0"] or regs["a0"] or 0
+local a2 = regs["A2"] or regs["a2"] or 0
+local a3 = regs["A3"] or regs["a3"] or 0
+dump32("(D4)", d4)
+dump32("(A0)", a0)
+dump32("(A2)", a2)
+dump32("(A3)", a3)
+dump32("D4+4", d4 + 4)
+dump32("A3+16", a3 + 16)
+dump32("A3+20", a3 + 20)
+
+local ok_stats, stats = pcall(cpu.jit_stats)
+if ok_stats and type(stats) == "table" then
+    line(string.format("[break6091ac] jit native=%d fallback=%d bailouts=%d last_native=%s last_fallback=%s opcode=0x%04X",
+        stats.native_blocks or 0,
+        stats.fallback_instructions or 0,
+        stats.bailouts or 0,
+        hex(stats.last_native_pc or 0),
+        hex(stats.last_fallback_pc or 0),
+        stats.last_fallback_opcode or 0))
+end
+dump_disasm("caller", 0x00609180, 32)
+line("[break6091ac] trace")
+local ok_ring, ring = pcall(dbg.tracering_show, 80)
+if ok_ring and type(ring) == "table" then
+    for i = 1, #ring do
+        local e = ring[i]
+        line(string.format("[break6091ac] %03d %s %08X: %-18s %s", i, e.cpu or "", e.pc or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+dbg.tracering_off()
+dbg.clear_all_bp()
+dbg.close()
+sys.quit()

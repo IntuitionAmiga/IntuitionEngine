@@ -1,0 +1,27 @@
+-- read SysBase->AttnFlags during boot
+local floor = math.floor
+local function be32(v)
+    local b0 = v % 256; v = floor(v / 256)
+    local b1 = v % 256; v = floor(v / 256)
+    local b2 = v % 256; v = floor(v / 256)
+    return b0 * 16777216 + b1 * 65536 + b2 * 256 + v
+end
+local function be16(v)
+    return (v % 256) * 256 + floor(v / 256) % 256
+end
+local function dump(tag)
+    cpu.freeze()
+    local sb = be32(mem.read32(4))
+    if sb < 0x400 or sb > 0x2000000 then
+        sys.print(tag .. " sysbase bad " .. string.format("%08x", sb))
+    else
+        local attn = be16(mem.read16(sb + 296))
+        sys.print(string.format("%s sysbase=%08X attnflags=%04X", tag, sb, attn))
+    end
+    cpu.resume()
+end
+for i = 1, 6 do
+    sys.wait_ms(15000)
+    dump("t=" .. (i * 15) .. "s")
+end
+sys.exit(0)

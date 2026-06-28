@@ -44,11 +44,22 @@ func TestEmuTOS_LongBoot(t *testing.T) {
 	cpu.running.Store(false)
 	time.Sleep(50 * time.Millisecond)
 
-	runPtr := cpu.Read32(0x63FC)
-	t.Logf("After 15s: PC=%08X, _run=%08X, SR=%04X", cpu.PC, runPtr, cpu.SR)
+	vBasAd := cpu.Read32(0x44E)
+	vRezHz := cpu.Read16(0x20BA)
+	vRezVt := cpu.Read16(0x20C2)
+	devTabX := cpu.Read16(0x1E12)
+	devTabY := cpu.Read16(0x1E14)
+	t.Logf("After 15s: PC=%08X, v_bas_ad=%08X, V_REZ=%dx%d, DEV_TAB=%dx%d, SR=%04X",
+		cpu.PC, vBasAd, vRezHz, vRezVt, devTabX, devTabY, cpu.SR)
 
-	if runPtr == 0 || runPtr > 0x02000000 {
-		t.Errorf("_run pointer is invalid: %08X", runPtr)
+	if vBasAd == 0 {
+		t.Errorf("v_bas_ad is zero; EmuTOS VDI did not initialize")
+	}
+	if vRezHz == 0 || vRezVt == 0 {
+		t.Errorf("V_REZ is invalid: %dx%d", vRezHz, vRezVt)
+	}
+	if devTabX+1 != vRezHz || devTabY+1 != vRezVt {
+		t.Errorf("DEV_TAB=%dx%d inconsistent with V_REZ=%dx%d", devTabX, devTabY, vRezHz, vRezVt)
 	}
 	if !cpu.running.Load() {
 		t.Logf("CPU has stopped (PC=%08X)", cpu.PC)

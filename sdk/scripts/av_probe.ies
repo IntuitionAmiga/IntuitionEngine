@@ -1,0 +1,6 @@
+sys.wait_ms(5000)
+local ok, err = pcall(function() return mem.read32(4) end)
+sys.print("ok="..tostring(ok).." err="..tostring(err))
+local ok2, v2 = pcall(function() return mem.read32(0x1000) end)
+sys.print("ok2="..tostring(ok2).." v2="..tostring(v2))
+sys.exit(0)

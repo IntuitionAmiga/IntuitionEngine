@@ -127,6 +127,132 @@ func TestM68KJIT_InstrLength_MOVEAbsLong(t *testing.T) {
 	}
 }
 
+func TestM68KJIT_ScanBlockDoesNotFuseJSRLeaf(t *testing.T) {
+	mem := make([]byte, 0x2000)
+	const start = 0x100
+	const target = 0x1000
+	beWords(mem, start, 0x4EB9)
+	beLong(mem, start+2, target)
+	beWords(mem, start+6, 0x4E71)
+	beWords(mem, target,
+		0x4000,                 // NEGX.B D0
+		0x0280, 0x0000, 0x2000, // ANDI.L #$00002000,D0
+		0x4E75, // RTS
+	)
+
+	instrs := m68kScanBlock(mem, start)
+	if got, want := len(instrs), 1; got != want {
+		t.Fatalf("scanned instruction count = %d, want %d", got, want)
+	}
+	if instrs[0].opcode != 0x4EB9 || instrs[0].fusedFlag != 0 {
+		t.Fatalf("scan fused or changed JSR: opcode=%04X fused=%02X", instrs[0].opcode, instrs[0].fusedFlag)
+	}
+	if got, want := instrs[0].length, uint16(6); got != want {
+		t.Fatalf("JSR length = %d, want %d", got, want)
+	}
+}
+
+func TestM68KJIT_AROSAssignLibraryCallBlockIsProductionNative(t *testing.T) {
+	const pc = uint32(0x1000)
+	mem := make([]byte, 0x2000)
+	words := []uint16{
+		0x220B,         // MOVE.L A3,D1
+		0x242D, 0xFF6C, // MOVE.L -148(A5),D2
+		0x2C6D, 0xFF98, // MOVEA.L -104(A5),A6
+		0x4EAE, 0xFD9C, // JSR -612(A6)
+		0x4A80, // TST.L D0
+		0x661C, // BNE.S
+	}
+	for i, word := range words {
+		addr := pc + uint32(i*2)
+		mem[addr] = byte(word >> 8)
+		mem[addr+1] = byte(word)
+	}
+
+	instrs := m68kScanBlock(mem, pc)
+	if got, want := len(instrs), 4; got != want {
+		t.Fatalf("scan length=%d, want %d; instrs=%+v", got, want, instrs)
+	}
+	if got := instrs[len(instrs)-1].opcode; got != 0x4EAE {
+		t.Fatalf("last scanned opcode=0x%04X, want JSR 0x4EAE", got)
+	}
+	// JSR d16(A6) blocks are now production-native (control flow is handled
+	// natively), so the full block is admitted.
+	if !m68kCanUseProductionNativeBlock(mem, pc, instrs) {
+		t.Fatalf("AROS Assign library-call block ending in JSR was not admitted as production native: instrs=%+v", instrs)
+	}
+}
+
+func TestM68KJIT_AROSSetPatchJSRBlockIsProductionNative(t *testing.T) {
+	const pc = uint32(0x1000)
+	mem := make([]byte, 0x2000)
+	words := []uint16{
+		0x7025,         // MOVEQ #37,D0
+		0x2C45,         // MOVEA.L D5,A6
+		0x4EAE, 0xFDD8, // JSR -552(A6)
+	}
+	for i, word := range words {
+		addr := pc + uint32(i*2)
+		mem[addr] = byte(word >> 8)
+		mem[addr+1] = byte(word)
+	}
+
+	instrs := m68kScanBlock(mem, pc)
+	if len(instrs) != 3 || instrs[2].opcode != 0x4EAE {
+		t.Fatalf("unexpected SetPatch JSR block scan: %+v", instrs)
+	}
+	// JSR d16(A6) blocks are now admitted to the production-native path.
+	if !m68kCanUseProductionNativeBlock(mem, pc, instrs) {
+		t.Fatalf("SetPatch JSR block was not admitted to production native path: %+v", instrs)
+	}
+}
+
+func TestM68KJIT_WriteGuestBytesInvalidatesCachedBlock(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	const pc = uint32(0x1000)
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	if err := cpu.initM68KJIT(); err != nil {
+		t.Fatalf("initM68KJIT: %v", err)
+	}
+	defer cpu.freeM68KJIT()
+
+	writeM68KWords(cpu, pc, 0x7001, 0x7202, 0xD280)
+	instrs := m68kScanBlock(cpu.memory, pc)
+	block, err := m68kCompileBlockWithMem(instrs, pc, cpu.m68kGetJITExecMem(), cpu.memory)
+	if err != nil {
+		t.Fatalf("m68kCompileBlockWithMem: %v", err)
+	}
+	cpu.m68kJitCache.Put(block)
+	cpu.m68kMarkJITCodeRanges(block)
+	if got := cpu.m68kJitCache.Get(uint64(pc)); got == nil {
+		t.Fatal("compiled block was not cached")
+	}
+
+	if err := WriteGuestBytes(bus, pc+2, 0, []byte{0x4E, 0x71}); err != nil {
+		t.Fatalf("WriteGuestBytes: %v", err)
+	}
+	if got := cpu.m68kJitCache.Get(uint64(pc)); got != nil {
+		t.Fatal("bulk guest write did not invalidate overlapping cached M68K JIT block")
+	}
+}
+
+func TestM68KJIT_JSRLeafFusionRejectsMemoryNEGX(t *testing.T) {
+	mem := make([]byte, 0x2000)
+	const target = 0x1000
+	beWords(mem, target,
+		0x4010, // NEGX.B (A0)
+		0x4E75, // RTS
+	)
+
+	if _, ok := m68kAnalyzeJSRLeafFusion(mem, target); ok {
+		t.Fatalf("memory NEGX leaf was accepted for fusion")
+	}
+}
+
 func TestM68KJIT_InstrLength_MOVEPCRelative(t *testing.T) {
 	mem := make([]byte, 64)
 	// MOVE.L (d16,PC),D0
@@ -245,6 +371,19 @@ func TestM68KJIT_InstrLength_JSR_Disp(t *testing.T) {
 	beWords(mem, 0, 0x4EA8, 0x0100)
 	if got := m68kInstrLength(mem, 0); got != 4 {
 		t.Errorf("JSR (d16,An) length: got %d, want 4", got)
+	}
+
+	// AROS uses negative library-vector displacements heavily. The
+	// displacement word is still part of the instruction, so RTS must return
+	// to PC+4, not to the extension word at PC+2.
+	beWords(mem, 8, 0x4EAE, 0xFF1C)
+	if got := m68kInstrLength(mem, 8); got != 4 {
+		t.Errorf("JSR (-228,A6) length: got %d, want 4", got)
+	}
+
+	beWords(mem, 16, 0x4EAE, 0xFD9C)
+	if got := m68kInstrLength(mem, 16); got != 4 {
+		t.Errorf("JSR (-612,A6) length: got %d, want 4", got)
 	}
 }
 
@@ -375,9 +514,13 @@ func TestM68KJIT_InstrLength_LineA(t *testing.T) {
 
 func TestM68KJIT_InstrLength_LineF(t *testing.T) {
 	mem := make([]byte, 64)
-	beWords(mem, 0, 0xF200)
+	beWords(mem, 0, 0xF180)
 	if got := m68kInstrLength(mem, 0); got != 2 {
-		t.Errorf("Line F length: got %d, want 2", got)
+		t.Errorf("Line F trap-class length: got %d, want 2", got)
+	}
+	beWords(mem, 0, 0xF200, 0x0000)
+	if got := m68kInstrLength(mem, 0); got != 4 {
+		t.Errorf("FPU general-op length: got %d, want 4", got)
 	}
 }
 
@@ -414,6 +557,29 @@ func TestM68KJIT_InstrLength_LINKL(t *testing.T) {
 	beLong(mem, 2, 0xFFFFFF9C)
 	if got := m68kInstrLength(mem, 0); got != 6 {
 		t.Errorf("LINK.L length: got %d, want 6", got)
+	}
+}
+
+func TestM68KJIT_InstrLength_MOVELImmediateToAnDisplacement(t *testing.T) {
+	mem := make([]byte, 64)
+	// MOVE.L #$07514483,60(A3)
+	beWords(mem, 0, 0x277C)
+	beLong(mem, 2, 0x07514483)
+	beWords(mem, 6, 0x003C)
+	if got := m68kInstrLength(mem, 0); got != 8 {
+		t.Fatalf("MOVE.L #imm,d16(An) length: got %d, want 8", got)
+	}
+
+	beWords(mem, 8, 0x42AB, 0x005C) // CLR.L 92(A3)
+	instrs := m68kScanBlock(mem, 0)
+	if len(instrs) < 2 {
+		t.Fatalf("scan returned %d instructions, want at least 2", len(instrs))
+	}
+	if got := instrs[0].length; got != 8 {
+		t.Fatalf("first instruction length = %d, want 8", got)
+	}
+	if got := instrs[1].pcOffset; got != 8 {
+		t.Fatalf("second instruction pcOffset = %d, want 8", got)
 	}
 }
 
@@ -547,7 +713,8 @@ func TestM68KJIT_BlockTerminators(t *testing.T) {
 		{0x6100, true, "BSR.W"},
 		{0x6108, true, "BSR.B +8"},
 		{0xA000, true, "Line A"},
-		{0xF200, true, "Line F"},
+		{0xF180, true, "Line F trap-class"},
+		{0xF200, false, "FPU general-op"},
 		// NOT terminators:
 		{0x6700, false, "BEQ.W (conditional — NOT terminator)"},
 		{0x6708, false, "BEQ.B (conditional — NOT terminator)"},
@@ -577,21 +744,22 @@ func TestM68KJIT_NeedsFallback(t *testing.T) {
 		name          string
 	}{
 		{0xA000, true, "Line A"},
-		{0xF200, true, "Line F / FPU"},
+		{0xF180, true, "Line F trap-class"},
+		{0xF200, false, "FPU general-op"},
 		{0x4E72, true, "STOP"},
-		{0x4E73, true, "RTE"},
+		{0x4E73, false, "RTE"},
 		{0x4E77, true, "RTR"},
 		{0x4E70, true, "RESET"},
-		{0x4E40, true, "TRAP #0"},
+		{0x4E40, false, "TRAP #0"},
 		{0x4E76, true, "TRAPV"},
-		{0x4E7A, true, "MOVEC"},
+		{0x4E7A, false, "MOVEC"},
 		{0x4C03, false, "MULL.L D3"},
 		{0x4C1A, false, "MULL.L (A2)+"},
 		{0x4C40, false, "DIVL.L D0"},
 		{0x4C5A, false, "DIVL.L (A2)+"},
 		{0x4605, false, "NOT.B D5"},
 		{0x4641, false, "NOT.W D1"},
-		{0x4610, true, "NOT.B (A0)"},
+		{0x4610, false, "NOT.B (A0)"},
 		{0x702A, false, "MOVEQ"},
 		{0xD081, false, "ADD.L"},
 		{0x4680, false, "NOT.L D0"},
@@ -619,7 +787,9 @@ func TestM68KJIT_Context_Creation(t *testing.T) {
 	cpu := NewM68KCPU(bus)
 
 	bitmap := make([]byte, (uint32(len(cpu.memory))+4095)>>12)
-	ctx := newM68KJITContext(cpu, bitmap)
+	pageMin := make([]uint16, len(bitmap))
+	pageMax := make([]uint16, len(bitmap))
+	ctx := newM68KJITContext(cpu, bitmap, pageMin, pageMax)
 
 	if ctx.DataRegsPtr == 0 {
 		t.Error("DataRegsPtr should not be zero")
@@ -697,6 +867,30 @@ func TestM68KJIT_ContextChainOffsets(t *testing.T) {
 		{"RTSCache2Addr", uintptr(unsafe.Pointer(&ctx.RTSCache2Addr)) - base, m68kCtxOffRTSCache2Addr},
 		{"RTSCache3PC", uintptr(unsafe.Pointer(&ctx.RTSCache3PC)) - base, m68kCtxOffRTSCache3PC},
 		{"RTSCache3Addr", uintptr(unsafe.Pointer(&ctx.RTSCache3Addr)) - base, m68kCtxOffRTSCache3Addr},
+		{"RTSCache4PC", uintptr(unsafe.Pointer(&ctx.RTSCache4PC)) - base, m68kCtxOffRTSCache4PC},
+		{"RTSCache4Addr", uintptr(unsafe.Pointer(&ctx.RTSCache4Addr)) - base, m68kCtxOffRTSCache4Addr},
+		{"RTSCache5PC", uintptr(unsafe.Pointer(&ctx.RTSCache5PC)) - base, m68kCtxOffRTSCache5PC},
+		{"RTSCache5Addr", uintptr(unsafe.Pointer(&ctx.RTSCache5Addr)) - base, m68kCtxOffRTSCache5Addr},
+		{"RTSCache6PC", uintptr(unsafe.Pointer(&ctx.RTSCache6PC)) - base, m68kCtxOffRTSCache6PC},
+		{"RTSCache6Addr", uintptr(unsafe.Pointer(&ctx.RTSCache6Addr)) - base, m68kCtxOffRTSCache6Addr},
+		{"RTSCache7PC", uintptr(unsafe.Pointer(&ctx.RTSCache7PC)) - base, m68kCtxOffRTSCache7PC},
+		{"RTSCache7Addr", uintptr(unsafe.Pointer(&ctx.RTSCache7Addr)) - base, m68kCtxOffRTSCache7Addr},
+		{"IOPageBitmapPtr", uintptr(unsafe.Pointer(&ctx.IOPageBitmapPtr)) - base, m68kCtxOffIOPageBitmapPtr},
+		{"IOPageBitmapLen", uintptr(unsafe.Pointer(&ctx.IOPageBitmapLen)) - base, m68kCtxOffIOPageBitmapLen},
+		{"USPPtr", uintptr(unsafe.Pointer(&ctx.USPPtr)) - base, m68kCtxOffUSPPtr},
+		{"SSPPtr", uintptr(unsafe.Pointer(&ctx.SSPPtr)) - base, m68kCtxOffSSPPtr},
+		{"NativeException", uintptr(unsafe.Pointer(&ctx.NativeException)) - base, m68kCtxOffNativeException},
+		{"NativeExceptionPC", uintptr(unsafe.Pointer(&ctx.NativeExceptionPC)) - base, m68kCtxOffNativeExceptionPC},
+		{"NativeExceptionIR", uintptr(unsafe.Pointer(&ctx.NativeExceptionIR)) - base, m68kCtxOffNativeExceptionIR},
+		{"NeedHelper", uintptr(unsafe.Pointer(&ctx.NeedHelper)) - base, m68kCtxOffNeedHelper},
+		{"HelperPC", uintptr(unsafe.Pointer(&ctx.HelperPC)) - base, m68kCtxOffHelperPC},
+		{"CodePageMinPtr", uintptr(unsafe.Pointer(&ctx.CodePageMinPtr)) - base, m68kCtxOffCodePageMinPtr},
+		{"CodePageMaxPtr", uintptr(unsafe.Pointer(&ctx.CodePageMaxPtr)) - base, m68kCtxOffCodePageMaxPtr},
+		{"CodePageBoundsLen", uintptr(unsafe.Pointer(&ctx.CodePageBoundsLen)) - base, m68kCtxOffCodePageBoundsLen},
+		{"InExceptionPtr", uintptr(unsafe.Pointer(&ctx.InExceptionPtr)) - base, m68kCtxOffInExceptionPtr},
+		{"RTECountPtr", uintptr(unsafe.Pointer(&ctx.RTECountPtr)) - base, m68kCtxOffRTECountPtr},
+		{"PendingExceptionPtr", uintptr(unsafe.Pointer(&ctx.PendingExceptionPtr)) - base, m68kCtxOffPendingExceptionPtr},
+		{"PendingInterruptPtr", uintptr(unsafe.Pointer(&ctx.PendingInterruptPtr)) - base, m68kCtxOffPendingInterruptPtr},
 	}
 	for _, tc := range tests {
 		if tc.field != tc.expect {
@@ -818,5 +1012,56 @@ func TestM68KJIT_CodeCacheInvalidateChains(t *testing.T) {
 	}
 	if len(cc.blocks) != 0 {
 		t.Errorf("blocks should be empty, got %d entries", len(cc.blocks))
+	}
+}
+
+func TestM68KJIT_CodeCacheUnpatchesCoveredRangeMidBlockTarget(t *testing.T) {
+	em, err := AllocExecMem(4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer em.Free()
+
+	codeA := []byte{
+		0x90,
+		0xE9, 0x00, 0x00, 0x00, 0x00,
+	}
+	addrA, err := em.Write(codeA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchAddr := addrA + 2
+
+	codeB := []byte{0x90, 0xC3}
+	addrB, err := em.Write(codeB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cc := NewCodeCache()
+	cc.Put(&JITBlock{
+		startPC:    0x1000,
+		endPC:      0x1006,
+		execAddr:   addrA,
+		execSize:   len(codeA),
+		chainSlots: []chainSlot{{targetPC: 0x2004, patchAddr: patchAddr}},
+	})
+	cc.Put(&JITBlock{
+		startPC:       0x2000,
+		endPC:         0x2008,
+		execAddr:      addrB,
+		execSize:      len(codeB),
+		chainEntry:    addrB,
+		coveredRanges: [][2]uint64{{0x2000, 0x2008}},
+	})
+
+	PatchRel32At(patchAddr, addrB)
+	if got := mustExecRel32(t, patchAddr); got == 0 {
+		t.Fatalf("test setup did not patch chain slot")
+	}
+
+	cc.UnpatchChainsInRange(0x2002, 0x2006)
+	if got := mustExecRel32(t, patchAddr); got != 0 {
+		t.Fatalf("chain slot targeting covered range mid-block displacement=%d, want 0", got)
 	}
 }

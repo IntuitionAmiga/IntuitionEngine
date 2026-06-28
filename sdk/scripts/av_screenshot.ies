@@ -1,0 +1,8 @@
+-- av_screenshot.ies - boot, wait, grab framebuffer screenshot
+sys.wait_ms(75000)
+local ok, err = pcall(rec.screenshot, "av_desktop.png")
+if not ok then sys.print("screenshot failed: " .. tostring(err)) end
+sys.wait_ms(15000)
+local ok2, err2 = pcall(rec.screenshot, "av_desktop2.png")
+if not ok2 then sys.print("screenshot2 failed: " .. tostring(err2)) end
+sys.exit(0)

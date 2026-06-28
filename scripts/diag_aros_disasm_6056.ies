@@ -1,0 +1,19 @@
+local function dump(label, addr, count)
+    sys.print(string.format("[disasm6056] %s 0x%08X", label, addr or 0))
+    local ok, rows = pcall(dbg.disasm, addr, count)
+    if not ok or type(rows) ~= "table" then
+        sys.print("[disasm6056] unavailable")
+        return
+    end
+    for i = 1, #rows do
+        local e = rows[i]
+        sys.print(string.format("[disasm6056] %08X: %-18s %s", e.addr or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+sys.wait_ms(1500)
+dbg.freeze()
+dump("rts_site", 0x006056A0, 48)
+dump("caller_text", 0x00603300, 48)
+dbg.resume()
+sys.quit()

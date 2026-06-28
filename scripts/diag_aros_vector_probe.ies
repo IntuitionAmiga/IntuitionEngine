@@ -1,0 +1,61 @@
+local WAIT_POINTS_MS = {1000, 2000, 3000, 4000, 4500, 5000, 6000}
+
+local floor = math.floor
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function be32(v)
+    local b0 = v % 256; v = floor(v / 256)
+    local b1 = v % 256; v = floor(v / 256)
+    local b2 = v % 256; v = floor(v / 256)
+    local b3 = v % 256
+    return b0 * 16777216 + b1 * 65536 + b2 * 256 + b3
+end
+
+local function mread32(addr)
+    local ok, v = pcall(mem.read32, addr)
+    if not ok then
+        return 0
+    end
+    return be32(v or 0)
+end
+
+local function byte_line(addr, count)
+    local parts = {}
+    for i = 0, count - 1 do
+        local ok, b = pcall(mem.read8, addr + i)
+        if not ok then
+            b = 0
+        end
+        parts[#parts + 1] = string.format("%02X", b or 0)
+    end
+    return table.concat(parts, " ")
+end
+
+local start = sys.time_ms()
+for _, point in ipairs(WAIT_POINTS_MS) do
+    while sys.time_ms() - start < point do
+        sys.wait_ms(25)
+    end
+    dbg.freeze()
+    local pc = dbg.get_pc()
+    local sr = dbg.get_reg("sr")
+    local sp = dbg.get_reg("a7")
+    local vbr = dbg.get_reg("vbr") or 0
+    local sysbase = mread32(4)
+    local trap14 = mread32(0xB8)
+    local effective_trap14 = mread32(vbr + 0xB8)
+    local buserr = mread32(0x08)
+    local addrerr = mread32(0x0C)
+    local illegal = mread32(0x10)
+    local linef = mread32(0x2C)
+    local trap15 = mread32(0xBC)
+    sys.print(string.format(
+        "[vector-probe] t=%d pc=%s sr=0x%04X sp=%s vbr=%s sysbase=%s bus=%s addr=%s ill=%s linef=%s trap14=%s eff_trap14=%s trap15=%s",
+        point, hex(pc), sr or 0, hex(sp), hex(vbr), hex(sysbase), hex(buserr), hex(addrerr), hex(illegal), hex(linef), hex(trap14), hex(effective_trap14), hex(trap15)
+    ))
+    sys.print("[vector-probe] 000000A0: " .. byte_line(0xA0, 0x20))
+    dbg.resume()
+end

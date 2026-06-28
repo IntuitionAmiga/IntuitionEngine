@@ -1,0 +1,135 @@
+local MAX_WAIT_MS = 60000
+
+local captured_fault = nil
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function line(s)
+    sys.print(s)
+end
+
+local function dump_regs(prefix)
+    local regs = dbg.get_regs()
+    for _, name in ipairs({"PC","SR","D0","D1","D2","D3","D4","D5","D6","D7","A0","A1","A2","A3","A4","A5","A6","A7"}) do
+        local v = regs[name] or regs[string.lower(name)] or 0
+        line(string.format("%s %s=%s", prefix, name, hex(v)))
+    end
+    return regs
+end
+
+local function dump_disasm(label, addr, count)
+    line(string.format("[first-fault] disasm %s %s", label, hex(addr)))
+    local ok, rows = pcall(dbg.disasm, addr, count or 20)
+    if not ok or type(rows) ~= "table" then
+        line("[first-fault]   unavailable")
+        return
+    end
+    for i = 1, #rows do
+        local e = rows[i]
+        line(string.format("[first-fault]   %08X: %-18s %s", e.addr or e.pc or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+local function dump_stack(sp)
+    line(string.format("[first-fault] stack %s", hex(sp)))
+    for i = 0, 15 do
+        local addr = sp + i * 4
+        local ok, bytes = pcall(dbg.read_mem, addr, 4)
+        if ok and type(bytes) == "table" and #bytes >= 4 then
+            local v = (bytes[1] or 0) * 0x1000000 + (bytes[2] or 0) * 0x10000 + (bytes[3] or 0) * 0x100 + (bytes[4] or 0)
+            line(string.format("[first-fault]   SP+%02X %s", i * 4, hex(v)))
+        end
+    end
+end
+
+local function dump_trace()
+    local ok, ring = pcall(dbg.tracering_show, 160)
+    if not ok or type(ring) ~= "table" then
+        return
+    end
+    line("[first-fault] trace")
+    for i = 1, #ring do
+        local e = ring[i]
+        line(string.format("[first-fault] %03d %s %08X: %-18s %s", i, e.cpu or "", e.pc or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+local function dump_stats()
+    local ok, stats = pcall(cpu.jit_stats)
+    if not ok or type(stats) ~= "table" then
+        return nil
+    end
+    line(string.format("[first-fault] jit native=%d fallback=%d bailouts=%d last_native=%s last_fallback=%s opcode=0x%04X",
+        stats.native_blocks or 0,
+        stats.fallback_instructions or 0,
+        stats.bailouts or 0,
+        hex(stats.last_native_pc or 0),
+        hex(stats.last_fallback_pc or 0),
+        stats.last_fallback_opcode or 0))
+    if type(stats.native_pc_ring) == "table" then
+        local parts = {}
+        for i = 1, #stats.native_pc_ring do
+            parts[#parts + 1] = hex(stats.native_pc_ring[i])
+        end
+        line("[first-fault] native_pc_ring " .. table.concat(parts, " "))
+    end
+    return stats
+end
+
+dbg.open()
+dbg.tracering_on(16384)
+dbg.on_fault("m68k.bus-error", function(ev) captured_fault = ev end)
+dbg.on_fault("m68k.address-error", function(ev) captured_fault = ev end)
+dbg.on_fault("m68k.illegal", function(ev) captured_fault = ev end)
+dbg.on_fault("m68k.line-a", function(ev) captured_fault = ev end)
+dbg.on_fault("m68k.line-f", function(ev) captured_fault = ev end)
+dbg.close()
+
+local deadline = sys.time_ms() + MAX_WAIT_MS
+while sys.time_ms() < deadline do
+    dbg.poll_faults()
+    if captured_fault ~= nil then
+        break
+    end
+    sys.wait_ms(5)
+end
+
+dbg.open()
+if captured_fault ~= nil then
+    line(string.format("[first-fault] fault kind=%s cpu=%s pc=%s addr=%s info=%s",
+        tostring(captured_fault.kind),
+        tostring(captured_fault.cpu_id),
+        hex(captured_fault.pc),
+        hex(captured_fault.addr),
+        tostring(captured_fault.info)))
+else
+    line("[first-fault] timeout without captured fault")
+end
+
+local regs = dump_regs("[first-fault]")
+local pc = regs["PC"] or regs["pc"] or dbg.get_pc()
+local sp = regs["A7"] or regs["a7"] or 0
+local stats = dump_stats()
+
+dump_disasm("pc", pc > 32 and pc - 32 or pc, 24)
+if captured_fault ~= nil and (captured_fault.pc or 0) ~= 0 then
+    local fpc = captured_fault.pc or 0
+    dump_disasm("fault_pc", fpc > 32 and fpc - 32 or fpc, 24)
+end
+if stats ~= nil then
+    local last_native = stats.last_native_pc or 0
+    local last_fallback = stats.last_fallback_pc or 0
+    if last_native ~= 0 then
+        dump_disasm("last_native", last_native > 32 and last_native - 32 or last_native, 32)
+    end
+    if last_fallback ~= 0 then
+        dump_disasm("last_fallback", last_fallback > 32 and last_fallback - 32 or last_fallback, 32)
+    end
+end
+dump_stack(sp)
+dump_trace()
+dbg.tracering_off()
+dbg.close()
+sys.quit()

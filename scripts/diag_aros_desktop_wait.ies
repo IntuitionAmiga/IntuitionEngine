@@ -1,0 +1,25 @@
+-- Wait for late desktop startup, then dump task and video state.
+sys.wait_ms(120000)
+
+local hash = video.frame_hash()
+local w, h = video.get_dimensions()
+local points = {
+    {0, 0},
+    {math.floor(w / 2), math.floor(h / 2)},
+    {w - 1, h - 1},
+    {64, 64},
+    {320, 240},
+}
+
+local nonblack = 0
+for _, p in ipairs(points) do
+    local r, g, b = video.get_pixel(p[1], p[2])
+    if r ~= 0 or g ~= 0 or b ~= 0 then
+        nonblack = nonblack + 1
+    end
+end
+
+sys.print(string.format("DESKTOP_WAIT_FRAME_HASH=0x%X", hash))
+sys.print(string.format("DESKTOP_WAIT_NONBLACK_SAMPLES=%d", nonblack))
+sys.print(string.format("DESKTOP_WAIT_SIZE=%dx%d", w, h))
+rec.screenshot("aros_desktop_wait.png")

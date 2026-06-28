@@ -1,0 +1,49 @@
+local WAIT_MS = tonumber(os.getenv("IE_AROS_VIDEO_TRANSITION_MS") or "120000")
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function line(s)
+    sys.print(s)
+end
+
+dbg.open()
+dbg.tracering_on(8192)
+dbg.close()
+
+local start = sys.time_ms()
+local last_mode = video.read_reg(0xF0004)
+local last_fb = video.read_reg(0xF0084)
+line(string.format("[video-transition] start mode=%s fb=%s jit=%s", hex(last_mode), hex(last_fb), tostring(cpu.jit_enabled())))
+
+while sys.time_ms() - start < WAIT_MS do
+    local mode = video.read_reg(0xF0004)
+    local fb = video.read_reg(0xF0084)
+    if mode ~= last_mode or fb ~= last_fb or fb ~= 0 or mode == 0x06 then
+        line(string.format("[video-transition] elapsed=%dms mode %s -> %s fb %s -> %s pc=%s",
+            sys.time_ms() - start,
+            hex(last_mode),
+            hex(mode),
+            hex(last_fb),
+            hex(fb),
+            hex(dbg.get_pc())))
+        break
+    end
+    sys.wait_ms(5)
+end
+
+dbg.open()
+line("[video-transition] registers")
+for _, s in ipairs(dbg.command_output("r")) do
+    line(s.text or tostring(s))
+end
+line("[video-transition] trace tail")
+local ring = dbg.tracering_show(256)
+for i = 1, #ring do
+    local e = ring[i]
+    line(string.format("[video-transition] %03d %s %08X: %-18s %s", i, e.cpu or "", e.pc or 0, e.hex or "", e.mnemonic or ""))
+end
+dbg.tracering_off()
+dbg.close()
+sys.quit()

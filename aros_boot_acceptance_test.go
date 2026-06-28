@@ -26,6 +26,9 @@ func TestNewAROSInterpreterBootEnvironment_ConfiguresInterpreterHarness(t *testi
 	if env.Runner.cpu.m68kJitEnabled {
 		t.Fatal("AROS interpreter boot environment unexpectedly enabled JIT")
 	}
+	if env.Runner.cpu.m68kJitForceNative {
+		t.Fatal("AROS interpreter boot environment unexpectedly enabled force-native test hook")
+	}
 	if env.Harness.CPU != env.Runner.cpu {
 		t.Fatal("boot harness CPU does not match runner CPU")
 	}
@@ -40,6 +43,35 @@ func TestNewAROSInterpreterBootEnvironment_ConfiguresInterpreterHarness(t *testi
 	}
 	if env.Bus.Read32(CLIP_REGION_BASE) != 0 {
 		t.Fatalf("clipboard bridge MMIO not mapped as expected at 0x%X", CLIP_REGION_BASE)
+	}
+}
+
+func TestNewAROSBootEnvironment_ConfiguresJITHarness(t *testing.T) {
+	rom, err := os.ReadFile("sdk/roms/aros-ie-m68k.rom")
+	if err != nil {
+		t.Skipf("AROS ROM not available: %v", err)
+	}
+
+	env, err := NewAROSBootEnvironment(rom, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAROSBootEnvironment() failed: %v", err)
+	}
+	defer env.Close()
+
+	if !env.Runner.cpu.m68kJitEnabled {
+		t.Fatal("AROS boot environment did not enable JIT by default")
+	}
+	if env.Runner.cpu.m68kJitNativeMaxPC != 0 {
+		t.Fatalf("AROS JIT native max PC = 0x%X, want unlimited ceiling 0", env.Runner.cpu.m68kJitNativeMaxPC)
+	}
+	if env.Runner.cpu.m68kJitForceNative {
+		t.Fatal("AROS boot environment unexpectedly enabled force-native test hook")
+	}
+	if env.Harness.CPU != env.Runner.cpu {
+		t.Fatal("boot harness CPU does not match runner CPU")
+	}
+	if env.Harness.Loader != env.Loader {
+		t.Fatal("boot harness loader does not match AROS loader")
 	}
 }
 

@@ -92,29 +92,6 @@ func amd64MOVZX_B_memSIB(cb *CodeBuffer, dst, base, index byte) {
 	cb.EmitBytes(0x0F, 0xB6, modRM(0, dst, 4), sibByte(0, index, base))
 }
 
-// emitREXForByte emits a REX prefix for byte register operations.
-// Unlike emitREX, this always emits REX when reg or rm is 4-7 to access
-// SPL/BPL/SIL/DIL instead of AH/CH/DH/BH.
-func emitREXForByte(cb *CodeBuffer, reg, rm byte) {
-	r := isExtReg(reg)
-	b := isExtReg(rm)
-	needsREX := r || b || (reg >= 4 && reg <= 7) || (rm >= 4 && rm <= 7)
-	if needsREX {
-		cb.EmitBytes(rexByte(false, r, false, b))
-	}
-}
-
-// emitREXForByteSIB emits a REX prefix for byte SIB operations.
-func emitREXForByteSIB(cb *CodeBuffer, reg, index, base byte) {
-	r := isExtReg(reg)
-	x := isExtReg(index)
-	b := isExtReg(base)
-	needsREX := r || x || b || (reg >= 4 && reg <= 7)
-	if needsREX {
-		cb.EmitBytes(rexByte(false, r, x, b))
-	}
-}
-
 // amd64MOV_memSIB_reg8 emits MOV BYTE [base + index*1], src8.
 func amd64MOV_memSIB_reg8(cb *CodeBuffer, base, index, src byte) {
 	emitREXForByteSIB(cb, src, index, base)

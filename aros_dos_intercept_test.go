@@ -109,6 +109,38 @@ func TestArosDOS_CommandsUseContainmentHelpers(t *testing.T) {
 	}
 }
 
+func TestArosDOSFullCommandHistoryIsBoundedByDefault(t *testing.T) {
+	_, d, _ := newTestArosDOSDevice(t)
+
+	var lastHookCount int
+	d.CommandRecordedHook = func(count int, event ArosDOSCommandEvent) {
+		lastHookCount = count
+	}
+
+	total := arosDOSDefaultFullCommandLimit + 5
+	for i := 0; i < total; i++ {
+		d.arg1 = uint32(i)
+		d.recordDispatch(ADOS_CMD_LOCK, "LOCK")
+	}
+
+	full := d.FullCommandsSnapshot()
+	if len(full) != arosDOSDefaultFullCommandLimit {
+		t.Fatalf("FullCommandsSnapshot len=%d, want cap %d", len(full), arosDOSDefaultFullCommandLimit)
+	}
+	if full[0].Arg1 != 5 {
+		t.Fatalf("first retained command Arg1=%d, want 5 after trimming oldest events", full[0].Arg1)
+	}
+	if full[len(full)-1].Arg1 != uint32(total-1) {
+		t.Fatalf("last retained command Arg1=%d, want %d", full[len(full)-1].Arg1, total-1)
+	}
+	if lastHookCount != total {
+		t.Fatalf("hook count=%d, want monotonic total %d", lastHookCount, total)
+	}
+	if recent := d.RecentCommandsSnapshot(); len(recent) != 128 {
+		t.Fatalf("RecentCommandsSnapshot len=%d, want 128", len(recent))
+	}
+}
+
 func TestArosDOS_LoadSegSymbolsAppliesGuestRelocationBase(t *testing.T) {
 	bus, d, root := newTestArosDOSDevice(t)
 	if err := os.WriteFile(filepath.Join(root, "Demo"), []byte{0, 0, 3, 0}, 0o644); err != nil {

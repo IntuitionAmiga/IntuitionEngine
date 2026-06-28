@@ -93,6 +93,7 @@ func (cb *ClipboardBridge) doRead() {
 
 	if cb.bus != nil && clipboardBoundsOK(ptr, copyLen, uint32(len(cb.bus.memory))) {
 		copy(cb.bus.memory[ptr:ptr+copyLen], data[:copyLen])
+		invalidateM68KJITForGuestWrite(cb.bus, uint64(ptr), uint64(copyLen))
 	} else {
 		cb.status = CLIP_STATUS_ERROR
 		return

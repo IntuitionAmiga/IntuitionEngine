@@ -31,9 +31,7 @@ func (s *M68KInterruptSink) Deassert(mask InterruptMask) {
 	}
 	if s.level.deassert(mask) {
 		s.cpu.AssertInterrupt(7)
-		return
 	}
-	s.cpu.pendingInterrupt.Store(s.cpu.pendingInterrupt.Load() &^ (1 << 7))
 }
 
 func (s *M68KInterruptSink) Ack(mask InterruptMask) {
@@ -51,7 +49,5 @@ func (s *M68KInterruptSink) SetMask(mask InterruptMask, masked bool) {
 	}
 	if s.level.setMask(mask, masked) {
 		s.cpu.AssertInterrupt(7)
-	} else {
-		s.cpu.pendingInterrupt.Store(s.cpu.pendingInterrupt.Load() &^ (1 << 7))
 	}
 }

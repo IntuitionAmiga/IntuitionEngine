@@ -406,10 +406,12 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		for i := PROG_START; i < len(mem) && i < STACK_START; i++ {
 			mem[i] = 0
 		}
+		invalidateM68KJITForGuestWrite(e.bus, uint64(PROG_START), uint64(min(len(mem), STACK_START)-PROG_START))
 		if PROG_START+len(data) > len(mem) {
 			return fmt.Errorf("program too large")
 		}
 		copy(mem[PROG_START:], data)
+		invalidateM68KJITForGuestWrite(e.bus, uint64(PROG_START), uint64(len(data)))
 		cpu.PC = PROG_START
 		runtimeStatus.setCPUs(runtimeCPUIE32, cpu, nil, nil, nil, nil, nil)
 		cpu.StartExecution()

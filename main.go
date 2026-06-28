@@ -2012,6 +2012,13 @@ func main() {
 			os.Exit(1)
 		}
 		m68kCPU := NewM68KCPU(sysBus)
+		// Run native M68K JIT for the full guest address space. A zero ceiling
+		// means "unlimited"; retained for diagnostics that still toggle the old
+		// high-RAM ceiling path.
+		m68kCPU.m68kJitNativeMaxPC = 0
+		if os.Getenv("IE_M68K_JIT_NO_CEILING") == "1" {
+			m68kCPU.m68kJitNativeMaxPC = 0
+		}
 		m68kRunner := NewM68KRunner(m68kCPU)
 		wireVideoInterruptSinks(videoChip, anticEngine, NewM68KInterruptSink(m68kCPU))
 		m68kRunner.PerfEnabled = perfMode

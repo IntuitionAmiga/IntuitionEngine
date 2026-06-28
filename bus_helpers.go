@@ -73,16 +73,22 @@ func WriteGuestBytes(bus Bus32, ptrLo, ptrHi uint32, src []byte) error {
 	mem := bus.GetMemory()
 	lowEnd := uint64(len(mem))
 
+	// Store the new bytes BEFORE invalidating the JIT cache. If invalidation
+	// were queued first, a live dispatcher could drain it, miss the cache, and
+	// recompile the OLD bytes in the gap before this write lands — leaving a
+	// stale block with no further invalidation pending. Writing first means any
+	// rescan that observes the queued invalidation also observes the new bytes.
 	if bp, ok := bus.(backingProvider); ok && bp.Backing() != nil {
 		if addr+uint64(len(src)) <= lowEnd {
 			copy(mem[addr:addr+uint64(len(src))], src)
-			return nil
+		} else {
+			bp.Backing().WriteBytes(addr, src)
 		}
-		bp.Backing().WriteBytes(addr, src)
-		return nil
+	} else {
+		copy(mem[addr:addr+uint64(len(src))], src)
 	}
 
-	copy(mem[addr:addr+uint64(len(src))], src)
+	invalidateM68KJITForGuestWrite(bus, addr, uint64(len(src)))
 	return nil
 }
 

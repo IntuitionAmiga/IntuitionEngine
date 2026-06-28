@@ -1,0 +1,40 @@
+-- Attach to command-line -aros boot and dump the 30s CPU trace tail.
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+dbg.open()
+dbg.tracering_on(4096)
+dbg.close()
+
+sys.wait_ms(30000)
+
+dbg.open()
+sys.print(string.format("[trace30] mode=%s jit=%s pc=%s mode_reg=%s fb=%s",
+    tostring(cpu.execution_mode()),
+    tostring(cpu.jit_enabled()),
+    hex(dbg.get_pc()),
+    hex(video.read_reg(0xF0004)),
+    hex(video.read_reg(0xF0084))
+))
+local ok, stats = pcall(cpu.jit_stats)
+if ok and type(stats) == "table" then
+    sys.print(string.format("[trace30] native=%d fallback=%d bailouts=%d last_native=%s last_fallback=%s opcode=0x%04X",
+        stats.native_blocks or 0,
+        stats.fallback_instructions or 0,
+        stats.bailouts or 0,
+        hex(stats.last_native_pc or 0),
+        hex(stats.last_fallback_pc or 0),
+        stats.last_fallback_opcode or 0
+    ))
+end
+
+local ring = dbg.tracering_show(96)
+for i = 1, #ring do
+    local e = ring[i]
+    sys.print(string.format("[trace30] %08X: %-18s %s", e.pc or 0, e.hex or "", e.mnemonic or ""))
+end
+dbg.tracering_off()
+dbg.close()
+sys.quit()

@@ -1,0 +1,64 @@
+-- Trap the AROS wait-loop return only when JSR (A4) returns D0 == 0.
+
+local BP = 0x0064CB6C
+local CONDITION = "D0==0"
+local TIMEOUT_MS = 60000
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function line(s)
+    sys.print(s)
+end
+
+local function dump_stats()
+    local ok, stats = pcall(cpu.jit_stats)
+    if not ok or type(stats) ~= "table" then
+        return
+    end
+    line(string.format(
+        "jit native=%d last_native=%s fallback=%d bailouts=%d last_fallback=%s opcode=0x%04X",
+        stats.native_blocks or 0,
+        hex(stats.last_native_pc or 0),
+        stats.fallback_instructions or 0,
+        stats.bailouts or 0,
+        hex(stats.last_fallback_pc or 0),
+        stats.last_fallback_opcode or 0
+    ))
+end
+
+dbg.open()
+dbg.clear_all_bp()
+dbg.set_conditional_bp(BP, CONDITION)
+dbg.tracering_on(2048)
+line(string.format("[wait-zero] bp=%s condition=%s mode=%s jit=%s", hex(BP), CONDITION, tostring(cpu.execution_mode()), tostring(cpu.jit_enabled())))
+dbg.continue(true)
+
+local start = sys.time_ms()
+while sys.time_ms() - start < TIMEOUT_MS do
+    if dbg.is_open() then
+        break
+    end
+    sys.wait_ms(20)
+end
+
+dbg.open()
+line(string.format("[wait-zero] stopped pc=%s elapsed=%dms", hex(dbg.get_pc()), sys.time_ms() - start))
+local regs = dbg.get_regs()
+for _, name in ipairs({"D0","D1","D2","D3","A0","A2","A3","A4","A6","A7","PC","SR"}) do
+    line(string.format("%s=%s", name, hex(regs[name] or 0)))
+end
+dump_stats()
+line(string.format("video ctrl=%s mode=%s status=%s fb=%s", hex(video.read_reg(0xF0000)), hex(video.read_reg(0xF0004)), hex(video.read_reg(0xF0008)), hex(video.read_reg(0xF0084))))
+
+line("[wait-zero] trace tail")
+local ring = dbg.tracering_show(64)
+for i = 1, #ring do
+    local e = ring[i]
+    line(string.format("%08X: %-18s %s", e.pc or 0, e.hex or "", e.mnemonic or ""))
+end
+
+dbg.tracering_off()
+dbg.clear_all_bp()
+dbg.close()

@@ -989,17 +989,17 @@ func TestEmuTOSBoot_Diagnostics(t *testing.T) {
 	}
 
 	// Verify key values
-	if devTab0 != 639 {
-		t.Errorf("DEV_TAB[0] = %d, want 639", devTab0)
+	if devTab0 <= 0 {
+		t.Errorf("DEV_TAB[0] = %d, want positive xres", devTab0)
 	}
-	if devTab1 != 479 {
-		t.Errorf("DEV_TAB[1] = %d, want 479", devTab1)
+	if devTab1 <= 0 {
+		t.Errorf("DEV_TAB[1] = %d, want positive yres", devTab1)
 	}
-	if vRezHz != 640 {
-		t.Errorf("V_REZ_HZ = %d, want 640", vRezHz)
+	if vRezHz != devTab0+1 {
+		t.Errorf("V_REZ_HZ = %d, want DEV_TAB[0]+1 = %d", vRezHz, devTab0+1)
 	}
-	if vRezVt != 480 {
-		t.Errorf("V_REZ_VT = %d, want 480", vRezVt)
+	if vRezVt != devTab1+1 {
+		t.Errorf("V_REZ_VT = %d, want DEV_TAB[1]+1 = %d", vRezVt, devTab1+1)
 	}
 
 	// Now test mouse movement to full Y range

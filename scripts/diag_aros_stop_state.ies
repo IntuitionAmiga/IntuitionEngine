@@ -1,0 +1,52 @@
+local WAIT_MS = 30000
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function lines(t)
+    local out = {}
+    if type(t) ~= "table" then
+        return out
+    end
+    for i = 1, #t do
+        local e = t[i]
+        if type(e) == "table" then
+            out[#out + 1] = e.text or tostring(e)
+        else
+            out[#out + 1] = tostring(e)
+        end
+    end
+    return out
+end
+
+local function dump_disasm(label, addr, count)
+    sys.print(string.format("[stop-state] %s %s", label, hex(addr)))
+    local ok, dis = pcall(dbg.disasm, addr, count)
+    if not ok or type(dis) ~= "table" then
+        sys.print("[stop-state]   disasm unavailable")
+        return
+    end
+    for i = 1, #dis do
+        local e = dis[i]
+        sys.print(string.format("[stop-state]   %08X: %-18s %s", e.addr or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+sys.wait_ms(WAIT_MS)
+dbg.freeze()
+sys.print(string.format("[stop-state] pc=%s sr=0x%04X sp=%s usp=%s ssp=%s vbr=%s",
+    hex(dbg.get_pc()), dbg.get_reg("sr") or 0, hex(dbg.get_reg("a7")),
+    hex(dbg.get_reg("usp")), hex(dbg.get_reg("ssp")), hex(dbg.get_reg("vbr"))))
+for _, s in ipairs(lines(dbg.command_output("r"))) do
+    sys.print("[stop-state] " .. s)
+end
+dump_disasm("stop_path", 0x0064CB60, 40)
+dump_disasm("near_pc", dbg.get_pc() - 0x20, 32)
+local ok, stats = pcall(cpu.jit_stats)
+if ok and type(stats) == "table" then
+    sys.print(string.format("[stop-state] jit native=%d fallback=%d bailouts=%d last_native=%s last_fallback=%s op=0x%04X",
+        stats.native_blocks or 0, stats.fallback_instructions or 0, stats.bailouts or 0,
+        hex(stats.last_native_pc or 0), hex(stats.last_fallback_pc or 0), stats.last_fallback_opcode or 0))
+end
+dbg.resume()

@@ -1,0 +1,41 @@
+local WAIT_MS = 4500
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function dump_disasm(label, addr, rows)
+    sys.print(string.format("[early-corridor] %s %s", label, hex(addr)))
+    local ok, dis = pcall(dbg.disasm, addr, rows or 16)
+    if not ok or type(dis) ~= "table" then
+        sys.print("[early-corridor]   disasm unavailable")
+        return
+    end
+    for i = 1, #dis do
+        local e = dis[i]
+        sys.print(string.format("[early-corridor]   %08X: %-18s %s", e.addr or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+sys.wait_ms(WAIT_MS)
+dbg.open()
+sys.print(string.format("[early-corridor] pc=%s", hex(dbg.get_pc())))
+dump_disasm("corridor_prologue", 0x0064CE36, 24)
+dump_disasm("corridor_jump", 0x0064CDA6, 16)
+dump_disasm("trap_corridor", 0x0064C850, 40)
+dump_disasm("resident_scan", 0x0064DA1E, 16)
+dump_disasm("native_6518da", 0x006518DA, 16)
+dump_disasm("native_60b35e", 0x0060B35E, 16)
+
+local ok, stats = pcall(cpu.jit_stats)
+if ok and type(stats) == "table" then
+    local pcs = stats.native_pcs or {}
+    for i = 1, math.min(#pcs, 12) do
+        sys.print(string.format("[early-corridor] native[%02d] pc=%s count=%d", i, hex(pcs[i].pc or 0), pcs[i].count or 0))
+    end
+    local fallbacks = stats.fallback_opcodes or {}
+    for i = 1, math.min(#fallbacks, 12) do
+        sys.print(string.format("[early-corridor] fallback[%02d] pc=%s opcode=0x%04X count=%d", i, hex(fallbacks[i].pc or 0), fallbacks[i].opcode or 0, fallbacks[i].count or 0))
+    end
+end
+dbg.close()

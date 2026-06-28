@@ -938,6 +938,14 @@ type JITBlock struct {
 	// miss SMC invalidation for the 0x5000 block. Nil means the
 	// canonical [startPC, endPC) span is exact.
 	coveredRanges [][2]uint64
+
+	guestHash      uint64
+	guestHashValid bool
+}
+
+type chainPatchRef struct {
+	patchAddr uintptr
+	ptbr      uint64
 }
 
 // JITBlockCoveredRanges returns the guest PC ranges the block's native
@@ -987,14 +995,16 @@ type ie64CacheKey struct {
 }
 
 type CodeCache struct {
-	blocks    map[uint64]*JITBlock       // non-MMU: keyed by guest PC
-	mmuBlocks map[ie64CacheKey]*JITBlock // MMU mode: exact (ptbr, vPC) composite
+	blocks            map[uint64]*JITBlock       // non-MMU: keyed by guest PC
+	mmuBlocks         map[ie64CacheKey]*JITBlock // MMU mode: exact (ptbr, vPC) composite
+	inboundChainSlots map[uint64][]chainPatchRef // chain slots keyed by target PC
 }
 
 func NewCodeCache() *CodeCache {
 	return &CodeCache{
-		blocks:    make(map[uint64]*JITBlock),
-		mmuBlocks: make(map[ie64CacheKey]*JITBlock),
+		blocks:            make(map[uint64]*JITBlock),
+		mmuBlocks:         make(map[ie64CacheKey]*JITBlock),
+		inboundChainSlots: make(map[uint64][]chainPatchRef),
 	}
 }
 
@@ -1005,7 +1015,11 @@ func (cc *CodeCache) GetMMU(ptbr, pc uint64) *JITBlock {
 
 // PutMMU stores an MMU-scoped block under its exact composite key.
 func (cc *CodeCache) PutMMU(ptbr, pc uint64, block *JITBlock) {
+	if old := cc.mmuBlocks[ie64CacheKey{ptbr: ptbr, pc: pc}]; old != nil {
+		cc.unregisterChainSlots(old)
+	}
 	cc.mmuBlocks[ie64CacheKey{ptbr: ptbr, pc: pc}] = block
+	cc.registerChainSlots(block)
 }
 
 func (cc *CodeCache) Get(pc uint64) *JITBlock {
@@ -1013,7 +1027,11 @@ func (cc *CodeCache) Get(pc uint64) *JITBlock {
 }
 
 func (cc *CodeCache) Put(block *JITBlock) {
+	if old := cc.blocks[block.startPC]; old != nil {
+		cc.unregisterChainSlots(old)
+	}
 	cc.blocks[block.startPC] = block
+	cc.registerChainSlots(block)
 }
 
 func (cc *CodeCache) GetKey(key uint64) *JITBlock {
@@ -1021,13 +1039,18 @@ func (cc *CodeCache) GetKey(key uint64) *JITBlock {
 }
 
 func (cc *CodeCache) PutKey(key uint64, block *JITBlock) {
+	if old := cc.blocks[key]; old != nil {
+		cc.unregisterChainSlots(old)
+	}
 	cc.blocks[key] = block
+	cc.registerChainSlots(block)
 }
 
 // Invalidate clears the entire code cache (both non-MMU and MMU maps).
 func (cc *CodeCache) Invalidate() {
 	clear(cc.blocks)
 	clear(cc.mmuBlocks)
+	clear(cc.inboundChainSlots)
 }
 
 // InvalidateRange removes any blocks whose covered guest PC ranges
@@ -1035,11 +1058,15 @@ func (cc *CodeCache) Invalidate() {
 // covered ranges; iterating JITBlockCoveredRanges catches an SMC write
 // to a region's middle block that the canonical [startPC, endPC)
 // span would miss.
-func (cc *CodeCache) InvalidateRange(lo, hi uint64) {
+func (cc *CodeCache) InvalidateRange(lo, hi uint64) int {
+	removed := 0
 	for key, block := range cc.blocks {
 		for _, r := range JITBlockCoveredRanges(block) {
 			if r[1] > lo && r[0] < hi {
+				cc.unpatchChainsToBlock(block)
+				cc.unregisterChainSlots(block)
 				delete(cc.blocks, key)
+				removed++
 				break
 			}
 		}
@@ -1047,28 +1074,47 @@ func (cc *CodeCache) InvalidateRange(lo, hi uint64) {
 	for key, block := range cc.mmuBlocks {
 		for _, r := range JITBlockCoveredRanges(block) {
 			if r[1] > lo && r[0] < hi {
+				cc.unpatchChainsToBlock(block)
+				cc.unregisterChainSlots(block)
 				delete(cc.mmuBlocks, key)
+				removed++
 				break
 			}
 		}
 	}
+	return removed
+}
+
+func (cc *CodeCache) RemoveBlock(target *JITBlock) bool {
+	if cc == nil || target == nil {
+		return false
+	}
+	removed := false
+	for key, block := range cc.blocks {
+		if block == target {
+			cc.unpatchChainsToBlock(block)
+			cc.unregisterChainSlots(block)
+			delete(cc.blocks, key)
+			removed = true
+		}
+	}
+	for key, block := range cc.mmuBlocks {
+		if block == target {
+			cc.unpatchChainsToBlock(block)
+			cc.unregisterChainSlots(block)
+			delete(cc.mmuBlocks, key)
+			removed = true
+		}
+	}
+	return removed
 }
 
 // PatchChainsTo scans all cached blocks for chain slots targeting targetPC
 // and patches their JMP rel32 to jump to chainEntry.
 func (cc *CodeCache) PatchChainsTo(targetPC uint64, chainEntry uintptr) {
-	for _, block := range cc.blocks {
-		for _, slot := range block.chainSlots {
-			if slot.targetPC == targetPC && slot.patchAddr != 0 {
-				PatchRel32At(slot.patchAddr, chainEntry)
-			}
-		}
-	}
-	for _, block := range cc.mmuBlocks {
-		for _, slot := range block.chainSlots {
-			if slot.targetPC == targetPC && slot.patchAddr != 0 {
-				PatchRel32At(slot.patchAddr, chainEntry)
-			}
+	for _, ref := range cc.inboundChainSlots[targetPC] {
+		if ref.patchAddr != 0 {
+			PatchRel32At(ref.patchAddr, chainEntry)
 		}
 	}
 }
@@ -1081,58 +1127,123 @@ func (cc *CodeCache) PatchChainsTo(targetPC uint64, chainEntry uintptr) {
 // virtual PC, executing the wrong physical code on the next chained
 // transition.
 func (cc *CodeCache) PatchChainsToScoped(targetPC uint64, chainEntry uintptr, scopePtbr uint64) {
-	for _, block := range cc.blocks {
-		if block.ptbr != scopePtbr {
-			continue
-		}
-		for _, slot := range block.chainSlots {
-			if slot.targetPC == targetPC && slot.patchAddr != 0 {
-				PatchRel32At(slot.patchAddr, chainEntry)
-			}
-		}
-	}
-	// MMU-scoped chain patching: the mmuBlocks map already separates
-	// blocks by (ptbr, pc), so an iteration here is naturally PTBR-aware.
-	// We still filter by scopePtbr to keep the contract identical to the
-	// non-MMU path.
-	for _, block := range cc.mmuBlocks {
-		if block.ptbr != scopePtbr {
-			continue
-		}
-		for _, slot := range block.chainSlots {
-			if slot.targetPC == targetPC && slot.patchAddr != 0 {
-				PatchRel32At(slot.patchAddr, chainEntry)
-			}
+	for _, ref := range cc.inboundChainSlots[targetPC] {
+		if ref.ptbr == scopePtbr && ref.patchAddr != 0 {
+			PatchRel32At(ref.patchAddr, chainEntry)
 		}
 	}
 }
 
-// UnpatchChainsInRange resets chain slots that target any block whose
-// [startPC, endPC) overlaps [lo, hi). This must match the same overlap
-// condition used by InvalidateRange, so that every block about to be removed
-// has all inbound chain jumps reset to their unchained fallback first.
-// Must be called BEFORE InvalidateRange.
-func (cc *CodeCache) UnpatchChainsInRange(lo, hi uint64) {
-	// Collect the startPCs of all blocks that will be removed.
-	var doomed []uint64
+func (cc *CodeCache) registerChainSlots(block *JITBlock) {
+	if block == nil || len(block.chainSlots) == 0 {
+		return
+	}
+	for _, slot := range block.chainSlots {
+		if slot.patchAddr == 0 {
+			continue
+		}
+		cc.inboundChainSlots[slot.targetPC] = append(cc.inboundChainSlots[slot.targetPC], chainPatchRef{
+			patchAddr: slot.patchAddr,
+			ptbr:      block.ptbr,
+		})
+	}
+}
+
+func (cc *CodeCache) unregisterChainSlots(block *JITBlock) {
+	if block == nil || len(block.chainSlots) == 0 {
+		return
+	}
+	for _, slot := range block.chainSlots {
+		if slot.patchAddr == 0 {
+			continue
+		}
+		refs := cc.inboundChainSlots[slot.targetPC]
+		for i := 0; i < len(refs); i++ {
+			if refs[i].patchAddr == slot.patchAddr && refs[i].ptbr == block.ptbr {
+				refs[i] = refs[len(refs)-1]
+				refs = refs[:len(refs)-1]
+				i--
+			}
+		}
+		if len(refs) == 0 {
+			delete(cc.inboundChainSlots, slot.targetPC)
+		} else {
+			cc.inboundChainSlots[slot.targetPC] = refs
+		}
+	}
+}
+
+func (cc *CodeCache) unpatchChainsToBlock(target *JITBlock) {
+	if cc == nil || target == nil {
+		return
+	}
+	targeted := func(pc uint64) bool {
+		if pc == target.startPC {
+			return true
+		}
+		for _, r := range JITBlockCoveredRanges(target) {
+			if pc >= r[0] && pc < r[1] {
+				return true
+			}
+		}
+		return false
+	}
 	for _, block := range cc.blocks {
-		if block.endPC > lo && block.startPC < hi {
-			doomed = append(doomed, block.startPC)
+		for _, slot := range block.chainSlots {
+			if slot.patchAddr == 0 || !targeted(slot.targetPC) {
+				continue
+			}
+			PatchRel32At(slot.patchAddr, slot.patchAddr+4)
 		}
 	}
 	for _, block := range cc.mmuBlocks {
-		if block.endPC > lo && block.startPC < hi {
-			doomed = append(doomed, block.startPC)
+		for _, slot := range block.chainSlots {
+			if slot.patchAddr == 0 || !targeted(slot.targetPC) {
+				continue
+			}
+			PatchRel32At(slot.patchAddr, slot.patchAddr+4)
+		}
+	}
+}
+
+// UnpatchChainsInRange resets chain slots that target any block whose covered
+// guest ranges overlap [lo, hi). This must match the same overlap condition
+// used by InvalidateRange, so that every block about to be removed has all
+// inbound chain jumps reset to their unchained fallback first.
+// Must be called BEFORE InvalidateRange.
+func (cc *CodeCache) UnpatchChainsInRange(lo, hi uint64) {
+	type doomedRange struct {
+		lo uint64
+		hi uint64
+	}
+	var doomed []doomedRange
+	for _, block := range cc.blocks {
+		for _, r := range JITBlockCoveredRanges(block) {
+			if r[1] > lo && r[0] < hi {
+				doomed = append(doomed, doomedRange{lo: r[0], hi: r[1]})
+				break
+			}
+		}
+	}
+	for _, block := range cc.mmuBlocks {
+		for _, r := range JITBlockCoveredRanges(block) {
+			if r[1] > lo && r[0] < hi {
+				doomed = append(doomed, doomedRange{lo: r[0], hi: r[1]})
+				break
+			}
 		}
 	}
 	if len(doomed) == 0 {
 		return
 	}
 
-	// Build a set for O(1) lookup.
-	doomedSet := make(map[uint64]struct{}, len(doomed))
-	for _, pc := range doomed {
-		doomedSet[pc] = struct{}{}
+	targetDoomed := func(pc uint64) bool {
+		for _, r := range doomed {
+			if pc >= r.lo && pc < r.hi {
+				return true
+			}
+		}
+		return false
 	}
 
 	// Unpatch every chain slot in every surviving block that targets a doomed block.
@@ -1141,7 +1252,7 @@ func (cc *CodeCache) UnpatchChainsInRange(lo, hi uint64) {
 			if slot.patchAddr == 0 {
 				continue
 			}
-			if _, ok := doomedSet[slot.targetPC]; ok {
+			if targetDoomed(slot.targetPC) {
 				PatchRel32At(slot.patchAddr, slot.patchAddr+4)
 			}
 		}
@@ -1151,7 +1262,7 @@ func (cc *CodeCache) UnpatchChainsInRange(lo, hi uint64) {
 			if slot.patchAddr == 0 {
 				continue
 			}
-			if _, ok := doomedSet[slot.targetPC]; ok {
+			if targetDoomed(slot.targetPC) {
 				PatchRel32At(slot.patchAddr, slot.patchAddr+4)
 			}
 		}

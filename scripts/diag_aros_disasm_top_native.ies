@@ -1,0 +1,51 @@
+local WAIT_MS = 25000
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+sys.wait_ms(WAIT_MS)
+
+local ok, stats = pcall(cpu.jit_stats)
+if not ok or type(stats) ~= "table" then
+    sys.print("[top-native] jit_stats unavailable")
+    return
+end
+
+local pcs = stats.native_pcs or {}
+dbg.open()
+sys.print("[top-native] registers")
+local regs = dbg.get_regs()
+local regnames = {"PC","SR","D0","D1","D2","D3","D4","D5","D6","D7","A0","A1","A2","A3","A4","A5","A6","A7"}
+for _, name in ipairs(regnames) do
+    local v = regs[name] or regs[string.lower(name)] or 0
+    sys.print(string.format("[top-native]   %s=%08X", name, v))
+end
+sys.print("[top-native] backtrace")
+local bt = dbg.backtrace(16)
+for i = 1, #bt do
+    sys.print(string.format("[top-native]   bt[%02d] %s", i, tostring(bt[i])))
+end
+sys.print("[top-native] native PCs")
+for i = 1, math.min(#pcs, 20) do
+    local pc = pcs[i].pc or 0
+    sys.print(string.format("[top-native] #%02d pc=%s count=%d", i, hex(pc), pcs[i].count or 0))
+    local rows = dbg.disasm(pc, 12)
+    for j = 1, #rows do
+        local e = rows[j]
+        sys.print(string.format("[top-native]   %08X: %-18s %s", e.addr or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+local fallbacks = stats.fallback_opcodes or {}
+sys.print("[top-native] fallback PCs")
+for i = 1, math.min(#fallbacks, 20) do
+    local pc = fallbacks[i].pc or 0
+    sys.print(string.format("[top-native] fallback #%02d pc=%s opcode=0x%04X count=%d", i, hex(pc), fallbacks[i].opcode or 0, fallbacks[i].count or 0))
+    local rows = dbg.disasm(pc, 12)
+    for j = 1, #rows do
+        local e = rows[j]
+        sys.print(string.format("[top-native]   %08X: %-18s %s", e.addr or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+dbg.close()

@@ -30,6 +30,18 @@ func TestM68KCCRLiveness_BccConsumer(t *testing.T) {
 	}
 }
 
+func TestM68KCCRLiveness_CMPAddressRegisterBeforeBNE(t *testing.T) {
+	live := m68kCCRLiveness([]M68KJITInstr{
+		mkM(0x15B0), // MOVE.B 0(A0,A1.L),0(A2,A1.L)
+		mkM(0x5389), // SUBQ.L #1,A1 (no CCR; address-register destination)
+		mkM(0xB689), // CMP.L A1,D3
+		mkM(0x66F4), // BNE.S back
+	})
+	if !live[2] {
+		t.Fatalf("CMP.L A1,D3 before BNE must be live, got %v", live)
+	}
+}
+
 func TestM68KCCRLiveness_BSRNotConsumer(t *testing.T) {
 	// MOVE.B; BSR (cc=1, no CCR read); MOVE.B — first MOVE shadowed by
 	// last MOVE since BSR is not a consumer.
@@ -110,6 +122,7 @@ func TestM68KCCRLiveness_ExtendedProducers(t *testing.T) {
 		op   uint16
 	}{
 		{"TST.W D0", 0x4A40},
+		{"CMPI.W #imm,D0", 0x0C40},
 		{"CLR.L D0", 0x4280},
 		{"NEG.B D0", 0x4400},
 		{"NOT.W D0", 0x4640},
@@ -299,6 +312,33 @@ func TestM68KCCRLiveness_NonProducersStay(t *testing.T) {
 		producer := writes != 0
 		if producer {
 			t.Errorf("%s should NOT be producer (got p=%v c=%v o=%v)", c.name, producer, consumer, overwriter)
+		}
+	}
+}
+
+func TestM68KAnalyzeBlockRegs_AddressArithmeticDoesNotWriteCCR(t *testing.T) {
+	cases := []struct {
+		name string
+		op   uint16
+	}{
+		{"ADDA.L D0,A1", 0xD3C0},
+		{"ADDA.L A0,A1", 0xD3C8},
+		{"SUBA.L D0,A1", 0x93C0},
+		{"SUBA.L A0,A1", 0x93C8},
+		{"ADDQ.L #1,A0", 0x5288},
+		{"SUBQ.L #1,A0", 0x5388},
+	}
+	for _, tc := range cases {
+		regs := m68kAnalyzeBlockRegs([]M68KJITInstr{mkM(tc.op)})
+		if regs.writesCCR {
+			t.Fatalf("%s marked block as CCR-writing", tc.name)
+		}
+	}
+
+	for _, op := range []uint16{0x5280, 0x5380, 0xD080, 0x9080} {
+		regs := m68kAnalyzeBlockRegs([]M68KJITInstr{mkM(op)})
+		if !regs.writesCCR {
+			t.Fatalf("data-register arithmetic 0x%04X did not mark block as CCR-writing", op)
 		}
 	}
 }

@@ -136,11 +136,13 @@ func (bus *MachineBus) WritePhysRAMOnly(addr uint64, data []byte) error {
 	if bus.addrInLowMemory(addr, uint64(len(data))) {
 		start := int(addr)
 		copy(bus.memory[start:start+len(data)], data)
+		bus.invalidateM68KJITRAMWrite(addr, uint64(len(data)))
 		return nil
 	}
 	for i, b := range data {
 		bus.backing.Write8(addr+uint64(i), b)
 	}
+	bus.invalidateM68KJITRAMWrite(addr, uint64(len(data)))
 	return nil
 }
 
@@ -215,6 +217,7 @@ func (bus *MachineBus) WritePhys8(addr uint64, v byte) {
 			old = bus.backing.Read8(addr)
 		}
 		bus.backing.Write8(addr, v)
+		bus.invalidateM68KJITRAMWrite(addr, 1)
 		bus.debugOnPhysWrite(addr, 1, uint64(old), uint64(v))
 	}
 }
@@ -247,6 +250,7 @@ func (bus *MachineBus) WritePhys16(addr uint64, v uint16) {
 		}
 		bus.backing.Write8(addr, byte(v))
 		bus.backing.Write8(addr+1, byte(v>>8))
+		bus.invalidateM68KJITRAMWrite(addr, 2)
 		bus.debugOnPhysWrite(addr, 2, uint64(old), uint64(v))
 	}
 }
@@ -276,6 +280,7 @@ func (bus *MachineBus) WritePhys32(addr uint64, v uint32) {
 			old = bus.backing.Read32(addr)
 		}
 		bus.backing.Write32(addr, v)
+		bus.invalidateM68KJITRAMWrite(addr, 4)
 		bus.debugOnPhysWrite(addr, 4, uint64(old), uint64(v))
 	}
 }
@@ -305,6 +310,7 @@ func (bus *MachineBus) WritePhys64(addr uint64, v uint64) {
 			old = bus.backing.Read64(addr)
 		}
 		bus.backing.Write64(addr, v)
+		bus.invalidateM68KJITRAMWrite(addr, 8)
 		bus.debugOnPhysWrite(addr, 8, old, v)
 	}
 }
@@ -333,6 +339,7 @@ func (bus *MachineBus) WritePhys64WithFault(addr uint64, v uint64) bool {
 			old = bus.backing.Read64(addr)
 		}
 		bus.backing.Write64(addr, v)
+		bus.invalidateM68KJITRAMWrite(addr, 8)
 		bus.debugOnPhysWrite(addr, 8, old, v)
 		return true
 	}

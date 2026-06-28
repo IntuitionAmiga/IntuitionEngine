@@ -104,10 +104,15 @@ func TestWholeMachineSnapshot_RoundTripRegisteredDevices(t *testing.T) {
 }
 
 func TestWholeMachineSnapshot_RoundTripGuestVisibleRuntimeDevices(t *testing.T) {
-	bus, err := NewMachineBusSized(uint64(DEFAULT_MEMORY_SIZE))
+	bus, err := NewMachineBusSized(64 * 1024 * 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
+	bus.SetBacking(NewSparseBacking(uint64(AROS_PROFILE_TOP)))
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    uint64(AROS_PROFILE_TOP),
+		ActiveVisibleRAM: uint64(AROS_PROFILE_TOP),
+	})
 	mon := NewMachineMonitor(bus)
 	mon.RegisterCPU("ie64", NewDebugIE64(NewCPU64(bus)))
 	term := NewTerminalMMIO()
@@ -181,7 +186,8 @@ func TestWholeMachineSnapshot_CapturesSparseBackingPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backing := NewSparseBacking(uint64(MMU_PAGE_SIZE * 8))
+	const backingSize = uint64(128 * 1024 * 1024)
+	backing := NewSparseBacking(backingSize)
 	bus.SetBacking(backing)
 	backing.Write8(uint64(MMU_PAGE_SIZE*5)+7, 0xA7)
 
@@ -204,6 +210,110 @@ func TestWholeMachineSnapshot_CapturesSparseBackingPages(t *testing.T) {
 	}
 }
 
+func TestWholeMachineSnapshot_RestoreInvalidatesBackingPagesAfterWrite(t *testing.T) {
+	bus, err := NewMachineBusSized(uint64(MMU_PAGE_SIZE))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const backingSize = uint64(128 * 1024 * 1024)
+	backing := NewSparseBacking(backingSize)
+	bus.SetBacking(backing)
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    backing.Size(),
+		ActiveVisibleRAM: backing.Size(),
+	})
+	target := uint64(64*1024*1024 + 7)
+	backing.Write8(target, 0xA7)
+
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("ie64", NewDebugIE64(NewCPU64(bus)))
+	snap, err := TakeWholeMachineSnapshot(mon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Bus.BackingPages) != 1 || snap.Bus.BackingPages[0].Addr > target ||
+		target >= snap.Bus.BackingPages[0].Addr+uint64(len(snap.Bus.BackingPages[0].Data)) {
+		t.Fatalf("snapshot backing pages %+v do not cover target $%X", snap.Bus.BackingPages, target)
+	}
+
+	backing.Write8(target, 0)
+	var sawBackingInvalidation bool
+	var observed byte
+	type invalidationCall struct {
+		addr uint64
+		size uint64
+	}
+	var calls []invalidationCall
+	bus.RegisterM68KJITInvalidator(func(addr, size uint64) {
+		calls = append(calls, invalidationCall{addr: addr, size: size})
+		if addr <= target && target < addr+size {
+			sawBackingInvalidation = true
+			observed = backing.Read8(target)
+		}
+	})
+
+	if err := RestoreWholeMachineSnapshot(mon, snap); err != nil {
+		t.Fatal(err)
+	}
+	if !sawBackingInvalidation {
+		t.Fatalf("restore did not invalidate restored backing page; invalidations=%+v", calls)
+	}
+	if observed != 0xA7 {
+		t.Fatalf("invalidator observed backing byte $%X, want restored byte $A7", observed)
+	}
+}
+
+func TestWholeMachineSnapshot_RestoreInvalidatesBackingPagesRemovedByReset(t *testing.T) {
+	bus, err := NewMachineBusSized(uint64(MMU_PAGE_SIZE))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const backingSize = uint64(128 * 1024 * 1024)
+	backing := NewSparseBacking(backingSize)
+	bus.SetBacking(backing)
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    backing.Size(),
+		ActiveVisibleRAM: backing.Size(),
+	})
+
+	kept := uint64(64*1024*1024 + 7)
+	removed := uint64(80*1024*1024 + 11)
+	backing.Write8(kept, 0xA7)
+
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("ie64", NewDebugIE64(NewCPU64(bus)))
+	snap, err := TakeWholeMachineSnapshot(mon)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backing.Write8(removed, 0x5A)
+	var sawRemovedInvalidation bool
+	var observed byte
+	type invalidationCall struct {
+		addr uint64
+		size uint64
+	}
+	var calls []invalidationCall
+	bus.RegisterM68KJITInvalidator(func(addr, size uint64) {
+		calls = append(calls, invalidationCall{addr: addr, size: size})
+		if addr <= removed && removed < addr+size {
+			sawRemovedInvalidation = true
+			observed = backing.Read8(removed)
+		}
+	})
+
+	if err := RestoreWholeMachineSnapshot(mon, snap); err != nil {
+		t.Fatal(err)
+	}
+	if !sawRemovedInvalidation {
+		t.Fatalf("restore did not invalidate backing page removed by reset; invalidations=%+v", calls)
+	}
+	if observed != 0 {
+		t.Fatalf("invalidator observed removed backing byte $%X, want reset byte $00", observed)
+	}
+}
+
 func TestWholeMachineSnapshot_RestoreWithoutBackingClearsCurrentBacking(t *testing.T) {
 	bus, err := NewMachineBusSized(uint64(MMU_PAGE_SIZE))
 	if err != nil {
@@ -219,14 +329,37 @@ func TestWholeMachineSnapshot_RestoreWithoutBackingClearsCurrentBacking(t *testi
 		t.Fatalf("snapshot backing size = %d, want none", snap.Bus.BackingSize)
 	}
 
-	backing := NewSparseBacking(uint64(MMU_PAGE_SIZE * 4))
-	backing.Write8(uint64(MMU_PAGE_SIZE)+3, 0x5A)
+	const backingSize = uint64(128 * 1024 * 1024)
+	backing := NewSparseBacking(backingSize)
+	removed := uint64(64*1024*1024 + 3)
+	backing.Write8(removed, 0x5A)
 	bus.SetBacking(backing)
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    backing.Size(),
+		ActiveVisibleRAM: backing.Size(),
+	})
+	var sawRemovedInvalidation bool
+	type invalidationCall struct {
+		addr uint64
+		size uint64
+	}
+	var calls []invalidationCall
+	bus.RegisterM68KJITInvalidator(func(addr, size uint64) {
+		if len(calls) < 16 {
+			calls = append(calls, invalidationCall{addr: addr, size: size})
+		}
+		if addr <= removed && removed < addr+size {
+			sawRemovedInvalidation = true
+		}
+	})
 	if err := RestoreWholeMachineSnapshot(mon, snap); err != nil {
 		t.Fatal(err)
 	}
 	if bus.Backing() != nil {
 		t.Fatal("restore of no-backing snapshot left current backing installed")
+	}
+	if !sawRemovedInvalidation {
+		t.Fatalf("restore of no-backing snapshot did not invalidate removed backing range; invalidations=%+v", calls)
 	}
 }
 

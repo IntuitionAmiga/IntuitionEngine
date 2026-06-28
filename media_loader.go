@@ -305,6 +305,7 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fileName, fullPath string, typ
 			return
 		}
 		copy(mem[MEDIA_STAGING_BASE:MEDIA_STAGING_BASE+uint32(len(data))], data)
+		invalidateM68KJITForGuestWrite(m.bus, uint64(MEDIA_STAGING_BASE), uint64(len(data)))
 	}
 
 	m.mu.Lock()

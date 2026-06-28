@@ -130,6 +130,175 @@ func TestM68KJITFastMMIOPollLoop_TST_BNE(t *testing.T) {
 	}
 }
 
+func TestM68KJITFastMMIOPollLoop_DeclinesWhenInterruptPending(t *testing.T) {
+	// A pending interrupt must make the fast path decline (matched=false) so the
+	// dispatcher runs a real block, advances the instruction count, and delivers
+	// the interrupt. Matching would execute zero iterations, return retired=0,
+	// leave PC at the loop head, and livelock (checkPending only delivers on a
+	// 256-instruction boundary the static count never crosses).
+	bus := NewMachineBus()
+	bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 { return 0x80 }, nil)
+	cpu := NewM68KCPU(bus)
+	cpu.PC = 0x1000
+	cpu.running.Store(true)
+	mem := bus.GetMemory()
+	binary.BigEndian.PutUint16(mem[0x1000:], 0x1039)     // MOVE.B abs.l,D0
+	binary.BigEndian.PutUint32(mem[0x1002:], 0x000F0008) // VIDEO_STATUS
+	binary.BigEndian.PutUint16(mem[0x1006:], 0x4A00)     // TST.B D0
+	binary.BigEndian.PutUint16(mem[0x1008:], 0x66F6)     // BNE $1000
+
+	cpu.pendingInterrupt.Store(1 << 6)
+	if matched, retired := cpu.tryFastM68KMMIOPollLoop(); matched || retired != 0 {
+		t.Fatalf("interrupt pending: matched=%v retired=%d, want false/0", matched, retired)
+	}
+	if cpu.PC != 0x1000 {
+		t.Fatalf("PC = 0x%08X, want 0x00001000 (loop head untouched)", cpu.PC)
+	}
+
+	// With the interrupt cleared the same loop matches again.
+	cpu.pendingInterrupt.Store(0)
+	if matched, _ := cpu.tryFastM68KMMIOPollLoop(); !matched {
+		t.Fatal("expected match once interrupt cleared")
+	}
+}
+
+func TestM68KJITFastMMIOPollLoop_BTST_BNE(t *testing.T) {
+	bus := NewMachineBus()
+	reads := 0
+	bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 {
+		reads++
+		if reads < 4 {
+			return 0
+		}
+		return 0x2
+	}, nil)
+	cpu := NewM68KCPU(bus)
+	cpu.PC = 0x1000
+	cpu.running.Store(true)
+	mem := bus.GetMemory()
+	binary.BigEndian.PutUint16(mem[0x1000:], 0x2239)     // MOVE.L abs.l,D1
+	binary.BigEndian.PutUint32(mem[0x1002:], 0x000F0008) // VIDEO_STATUS
+	binary.BigEndian.PutUint16(mem[0x1006:], 0x0801)     // BTST #1,D1
+	binary.BigEndian.PutUint16(mem[0x1008:], 0x0001)
+	binary.BigEndian.PutUint16(mem[0x100A:], 0x67F4) // BEQ $1000
+
+	matched, retired := cpu.tryFastM68KMMIOPollLoop()
+	if !matched {
+		t.Fatal("expected M68K BTST MMIO poll loop to match")
+	}
+	if cpu.PC != 0x100C {
+		t.Fatalf("PC = 0x%08X, want 0x0000100C", cpu.PC)
+	}
+	if reads != 4 {
+		t.Fatalf("reads = %d, want 4", reads)
+	}
+	if retired != 12 {
+		t.Fatalf("retired = %d, want 12", retired)
+	}
+	if cpu.SR&M68K_SR_Z != 0 {
+		t.Fatalf("Z flag set after bit became set: SR=0x%04X", cpu.SR)
+	}
+}
+
+func TestM68KJITFastMMIOPollLoop_BTSTCountdownFunction(t *testing.T) {
+	bus := NewMachineBus()
+	reads := 0
+	bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 {
+		reads++
+		if reads < 4 {
+			return 0
+		}
+		return 0x2
+	}, nil)
+	cpu := NewM68KCPU(bus)
+	cpu.PC = 0x1000
+	cpu.running.Store(true)
+	mem := bus.GetMemory()
+	binary.BigEndian.PutUint16(mem[0x1000:], 0x0801) // BTST #1,D1
+	binary.BigEndian.PutUint16(mem[0x1002:], 0x0001)
+	binary.BigEndian.PutUint16(mem[0x1004:], 0x6704) // BEQ second phase
+	binary.BigEndian.PutUint16(mem[0x1006:], 0x5380) // SUBQ.L #1,D0
+	binary.BigEndian.PutUint16(mem[0x1008:], 0x66F0) // BNE previous poll
+	binary.BigEndian.PutUint16(mem[0x100A:], 0x203C) // MOVE.L #timeout,D0
+	binary.BigEndian.PutUint32(mem[0x100C:], 0x000F4240)
+	binary.BigEndian.PutUint16(mem[0x1010:], 0x2239) // MOVE.L abs.l,D1
+	binary.BigEndian.PutUint32(mem[0x1012:], 0x000F0008)
+	binary.BigEndian.PutUint16(mem[0x1016:], 0x0801) // BTST #1,D1
+	binary.BigEndian.PutUint16(mem[0x1018:], 0x0001)
+	binary.BigEndian.PutUint16(mem[0x101A:], 0x6604) // BNE RTS
+	binary.BigEndian.PutUint16(mem[0x101C:], 0x5380) // SUBQ.L #1,D0
+	binary.BigEndian.PutUint16(mem[0x101E:], 0x66F0) // BNE second phase load
+	binary.BigEndian.PutUint16(mem[0x1020:], 0x4E75) // RTS
+
+	matched, retired := cpu.tryFastM68KMMIOPollLoop()
+	if !matched {
+		t.Fatal("expected countdown BTST MMIO poll loop to match")
+	}
+	if cpu.PC != 0x1020 {
+		t.Fatalf("PC = 0x%08X, want 0x00001020", cpu.PC)
+	}
+	if reads != 4 {
+		t.Fatalf("reads = %d, want 4", reads)
+	}
+	if cpu.DataRegs[1] != 0x2 {
+		t.Fatalf("D1 = 0x%08X, want 0x00000002", cpu.DataRegs[1])
+	}
+	if retired == 0 {
+		t.Fatal("retired instruction count was zero")
+	}
+}
+
+func TestM68KJITFastMMIOPollLoop_FullBTSTCountdownFunction(t *testing.T) {
+	bus := NewMachineBus()
+	reads := 0
+	bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 {
+		reads++
+		if reads < 5 {
+			return 0
+		}
+		return 0x2
+	}, nil)
+	cpu := NewM68KCPU(bus)
+	cpu.PC = 0x1000
+	cpu.DataRegs[0] = 3
+	cpu.running.Store(true)
+	mem := bus.GetMemory()
+	binary.BigEndian.PutUint16(mem[0x1000:], 0x2239) // MOVE.L abs.l,D1
+	binary.BigEndian.PutUint32(mem[0x1002:], 0x000F0008)
+	binary.BigEndian.PutUint16(mem[0x1006:], 0x0801) // BTST #1,D1
+	binary.BigEndian.PutUint16(mem[0x1008:], 0x0001)
+	binary.BigEndian.PutUint16(mem[0x100A:], 0x6704) // BEQ second phase
+	binary.BigEndian.PutUint16(mem[0x100C:], 0x5380) // SUBQ.L #1,D0
+	binary.BigEndian.PutUint16(mem[0x100E:], 0x66F0) // BNE first phase load
+	binary.BigEndian.PutUint16(mem[0x1010:], 0x203C) // MOVE.L #timeout,D0
+	binary.BigEndian.PutUint32(mem[0x1012:], 0x000F4240)
+	binary.BigEndian.PutUint16(mem[0x1016:], 0x2239) // MOVE.L abs.l,D1
+	binary.BigEndian.PutUint32(mem[0x1018:], 0x000F0008)
+	binary.BigEndian.PutUint16(mem[0x101C:], 0x0801) // BTST #1,D1
+	binary.BigEndian.PutUint16(mem[0x101E:], 0x0001)
+	binary.BigEndian.PutUint16(mem[0x1020:], 0x6604) // BNE RTS
+	binary.BigEndian.PutUint16(mem[0x1022:], 0x5380) // SUBQ.L #1,D0
+	binary.BigEndian.PutUint16(mem[0x1024:], 0x66F0) // BNE second phase load
+	binary.BigEndian.PutUint16(mem[0x1026:], 0x4E75) // RTS
+
+	matched, retired := cpu.tryFastM68KMMIOPollLoop()
+	if !matched {
+		t.Fatal("expected full countdown BTST MMIO poll loop to match")
+	}
+	if cpu.PC != 0x1026 {
+		t.Fatalf("PC = 0x%08X, want 0x00001026", cpu.PC)
+	}
+	if reads != 5 {
+		t.Fatalf("reads = %d, want 5", reads)
+	}
+	if cpu.DataRegs[1] != 0x2 {
+		t.Fatalf("D1 = 0x%08X, want 0x00000002", cpu.DataRegs[1])
+	}
+	if retired == 0 {
+		t.Fatal("retired instruction count was zero")
+	}
+}
+
 func TestM68KJITFastMMIOPollLoopPreservesUpperBitsForByteAndWord(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -324,5 +493,70 @@ func TestZ80JITFastMMIOPollLoopRejectsRAM(t *testing.T) {
 	matched, _, _ := cpu.tryFastZ80MMIOPollLoop(adapter)
 	if matched {
 		t.Fatal("RAM poll loop must not match MMIO fast path")
+	}
+}
+
+// m68kPollProgram writes a MOVE.L abs.l,D1 ; <test> ; BEQ-back poll loop and
+// returns it. test==0x0801 0001 selects BTST #1,D1 (4-byte), else TST.L D1.
+func m68kBuildPollProgram(mem []byte, base uint32, addr uint32, useBTST bool) (endPC uint32) {
+	binary.BigEndian.PutUint16(mem[base:], 0x2239) // MOVE.L abs.l,D1
+	binary.BigEndian.PutUint32(mem[base+2:], addr)
+	if useBTST {
+		binary.BigEndian.PutUint16(mem[base+6:], 0x0801) // BTST #1,D1
+		binary.BigEndian.PutUint16(mem[base+8:], 0x0001)
+		binary.BigEndian.PutUint16(mem[base+10:], 0x67F4) // BEQ back to base
+		return base + 12
+	}
+	binary.BigEndian.PutUint16(mem[base+6:], 0x4A81) // TST.L D1
+	binary.BigEndian.PutUint16(mem[base+8:], 0x66F6) // BNE back to base
+	return base + 10
+}
+
+// TestM68KFastMMIOPoll_FullCCRMatchesInterpreter asserts the fast poll loop
+// leaves the COMPLETE CCR (N/Z/V/C/X) identical to the interpreter, including
+// the MOVE's "clear V/C, set N" effect that BTST/TST do not touch (regression
+// guard for the stale-N/V/C fast-path bug).
+func TestM68KFastMMIOPoll_FullCCRMatchesInterpreter(t *testing.T) {
+	for _, useBTST := range []bool{true, false} {
+		// Status value 0x80000002: bit1 set (poll exits) and bit31 set (N must be
+		// set by MOVE.L). Pre-dirty V, C, X so a stale CCR would be detected.
+		const status = uint32(0x80000002)
+		newCPU := func() (*M68KCPU, *MachineBus) {
+			bus := NewMachineBus()
+			reads := 0
+			bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 {
+				reads++
+				if reads < 3 {
+					return 0
+				}
+				return status
+			}, nil)
+			cpu := NewM68KCPU(bus)
+			cpu.PC = 0x1000
+			cpu.SR = M68K_SR_S | M68K_SR_V | M68K_SR_C | M68K_SR_X
+			cpu.running.Store(true)
+			m68kBuildPollProgram(bus.GetMemory(), 0x1000, 0x000F0008, useBTST)
+			return cpu, bus
+		}
+
+		fast, _ := newCPU()
+		matched, _ := fast.tryFastM68KMMIOPollLoop()
+		if !matched {
+			t.Fatalf("useBTST=%v: fast poll loop did not match", useBTST)
+		}
+
+		interp, _ := newCPU()
+		for i := 0; i < 64 && interp.PC != fast.PC; i++ {
+			interp.StepOne()
+		}
+		if interp.PC != fast.PC {
+			t.Fatalf("useBTST=%v: interp PC=0x%08X never reached fast PC=0x%08X", useBTST, interp.PC, fast.PC)
+		}
+		if fast.SR != interp.SR {
+			t.Fatalf("useBTST=%v: SR mismatch fast=0x%04X interp=0x%04X (N/V/C/X parity)", useBTST, fast.SR, interp.SR)
+		}
+		if fast.DataRegs[1] != interp.DataRegs[1] {
+			t.Fatalf("useBTST=%v: D1 mismatch fast=0x%08X interp=0x%08X", useBTST, fast.DataRegs[1], interp.DataRegs[1])
+		}
 	}
 }

@@ -564,6 +564,61 @@ func TestCodeCache_UnpatchChainsInRange_CrossPage(t *testing.T) {
 	}
 }
 
+func TestCodeCache_RemoveRegionUnpatchesEntryChainWhenCoveredRangeInvalidated(t *testing.T) {
+	cc := NewCodeCache()
+
+	execMem, err := AllocExecMem(4096)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+
+	code := []byte{0xE9, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90, 0x90}
+	addr, err := execMem.Write(code)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	patchAddr := addr + 1
+	PatchRel32At(patchAddr, addr+700)
+
+	source := &JITBlock{
+		startPC: 0x0600,
+		endPC:   0x0610,
+		chainSlots: []chainSlot{
+			{targetPC: 0x1000, patchAddr: patchAddr},
+		},
+	}
+	cc.Put(source)
+
+	region := &JITBlock{
+		startPC: 0x1000,
+		endPC:   0x1008,
+		coveredRanges: [][2]uint64{
+			{0x1000, 0x1008},
+			{0x9000, 0x9010},
+		},
+	}
+	cc.Put(region)
+
+	removed := cc.InvalidateRange(0x9004, 0x9008)
+	if removed != 1 {
+		t.Fatalf("InvalidateRange removed %d blocks, want 1", removed)
+	}
+	if cc.Get(0x1000) != nil {
+		t.Fatal("region block survived invalidation through non-entry covered range")
+	}
+	if cc.Get(0x0600) == nil {
+		t.Fatal("source block should survive region invalidation")
+	}
+
+	disp := mustExecRel32(t, patchAddr)
+	actualTarget := uintptr(int64(patchAddr) + 4 + int64(disp))
+	expected := patchAddr + 4
+	if actualTarget != expected {
+		t.Fatalf("source chain still points to removed region: target=0x%X want fallback=0x%X", actualTarget, expected)
+	}
+}
+
 // ===========================================================================
 // detectBackwardBranches Tests
 // ===========================================================================

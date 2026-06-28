@@ -56,15 +56,14 @@ func TestEmuTOSProfileBounds_DoesNotInheritFullM68KRange(t *testing.T) {
 	}
 }
 
-func TestEmuTOSProfileBounds_ClampsToActiveBelow2GiB(t *testing.T) {
+func TestEmuTOSProfileBounds_CapsActiveAboveProfileTop(t *testing.T) {
 	bus := fakeProfileBus{activeVisible: 256 * 1024 * 1024}
 	pb := EmuTOSProfileBounds(bus)
 	if pb.Err != nil {
 		t.Fatalf("unexpected err: %v", pb.Err)
 	}
-	if uint64(pb.TopOfRAM) != bus.activeVisible {
-		t.Fatalf("TopOfRAM=0x%X want 0x%X (clamped to bus active visible)",
-			pb.TopOfRAM, bus.activeVisible)
+	if pb.TopOfRAM != EmuTOS_PROFILE_TOP {
+		t.Fatalf("TopOfRAM=0x%X want profile cap 0x%X", pb.TopOfRAM, EmuTOS_PROFILE_TOP)
 	}
 }
 

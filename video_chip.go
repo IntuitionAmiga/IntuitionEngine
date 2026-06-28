@@ -533,10 +533,11 @@ type VideoChip struct {
 
 	// Fixed-size buffers (Cache Lines 4+)
 	// Note: These will be converted to fixed arrays in next iteration
-	frontBuffer  []byte // 24 bytes
-	backBuffer   []byte // 24 bytes
-	splashBuffer []byte // 24 bytes
-	prevVRAM     []byte // 24 bytes
+	frontBuffer   []byte // 24 bytes
+	backBuffer    []byte // 24 bytes
+	splashBuffer  []byte // 24 bytes
+	frameSnapshot []byte // Reused stable frame returned to the compositor.
+	prevVRAM      []byte // 24 bytes
 
 	// Copper state
 	bus                       Bus32
@@ -777,6 +778,13 @@ func (chip *VideoChip) SetBusMemory(mem []byte) {
 	defer chip.mu.Unlock()
 	chip.busMemory = mem
 	chip.updateFramebufferErrLocked()
+}
+
+func (chip *VideoChip) invalidateBusMemoryWriteLocked(addr uint32, size uint32) {
+	if chip.bus == nil || size == 0 {
+		return
+	}
+	invalidateM68KJITForGuestWrite(chip.bus, uint64(addr), uint64(size))
 }
 
 // SetBigEndianMode configures the video chip to read memory in big-endian format.
@@ -1517,6 +1525,7 @@ func (chip *VideoChip) blitBulkFill32Locked(dst uint32, width, height int, strid
 			copy(chip.busMemory[rowAddr:rowAddr+rowBytes], firstRow)
 			rowAddr += stride
 		}
+		chip.invalidateBusMemoryWriteLocked(dst, uint32(endAddr-uint64(dst)))
 		if !chip.resetting && !chip.hasContent.Load() {
 			chip.hasContent.Store(true)
 		}
@@ -1543,6 +1552,7 @@ func (chip *VideoChip) blitBulkFill32Locked(dst uint32, width, height int, strid
 						copy(chip.busMemory[rowAddr:rowAddr+rowBytes], firstRow)
 						rowAddr += stride
 					}
+					chip.invalidateBusMemoryWriteLocked(dst, uint32(endAddr-uint64(dst)))
 					if !chip.resetting && !chip.hasContent.Load() {
 						chip.hasContent.Store(true)
 					}
@@ -1611,6 +1621,7 @@ func (chip *VideoChip) blitBulkFill8Locked(dst uint32, width, height int, stride
 			}
 			rowAddr += uint64(stride)
 		}
+		chip.invalidateBusMemoryWriteLocked(dst, uint32(endAddr-uint64(dst)))
 		if !chip.resetting && !chip.hasContent.Load() {
 			chip.hasContent.Store(true)
 		}
@@ -1632,6 +1643,7 @@ func (chip *VideoChip) blitBulkFill8Locked(dst uint32, width, height int, stride
 						}
 						rowAddr += uint64(stride)
 					}
+					chip.invalidateBusMemoryWriteLocked(dst, uint32(endAddr-uint64(dst)))
 					if !chip.resetting && !chip.hasContent.Load() {
 						chip.hasContent.Store(true)
 					}
@@ -1762,6 +1774,7 @@ func (chip *VideoChip) blitCopyLocked(mode VideoMode) {
 					dstRow += dstStride
 				}
 			}
+			chip.invalidateBusMemoryWriteLocked(dst, uint32(dstEnd-uint64(dst)))
 			if !chip.resetting && !chip.hasContent.Load() {
 				chip.hasContent.Store(true)
 			}
@@ -2019,6 +2032,7 @@ func (chip *VideoChip) markMemcopyWriteLocked(dst uint32, length uint32, mode Vi
 	if length == 0 {
 		return
 	}
+	chip.invalidateBusMemoryWriteLocked(dst, length)
 	if dst >= VRAM_START && dst < VRAM_START+VRAM_SIZE {
 		if !chip.resetting && !chip.hasContent.Load() {
 			chip.hasContent.Store(true)
@@ -2443,6 +2457,7 @@ func (chip *VideoChip) blitWritePixelLocked(addr uint32, value uint32, mode Vide
 		if chip.directVRAM != nil {
 			if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
 				binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], value)
+				chip.invalidateBusMemoryWriteLocked(addr, BYTES_PER_PIXEL)
 			}
 			if !chip.resetting && !chip.hasContent.Load() {
 				chip.hasContent.Store(true)
@@ -2457,6 +2472,7 @@ func (chip *VideoChip) blitWritePixelLocked(addr uint32, value uint32, mode Vide
 		if offset+BYTES_PER_PIXEL > uint32(len(chip.frontBuffer)) {
 			if chip.busMemory != nil && addr+BYTES_PER_PIXEL <= uint32(len(chip.busMemory)) {
 				binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], value)
+				chip.invalidateBusMemoryWriteLocked(addr, BYTES_PER_PIXEL)
 				if !chip.resetting && !chip.hasContent.Load() {
 					chip.hasContent.Store(true)
 				}
@@ -2526,6 +2542,7 @@ func (chip *VideoChip) blitWrite8Locked(addr uint32, value uint8, mode VideoMode
 		if chip.directVRAM != nil {
 			if chip.busMemory != nil && addr < uint32(len(chip.busMemory)) {
 				chip.busMemory[addr] = value
+				chip.invalidateBusMemoryWriteLocked(addr, 1)
 			}
 			if !chip.resetting && !chip.hasContent.Load() {
 				chip.hasContent.Store(true)
@@ -2536,6 +2553,7 @@ func (chip *VideoChip) blitWrite8Locked(addr uint32, value uint8, mode VideoMode
 		if offset >= uint32(len(chip.frontBuffer)) {
 			if chip.busMemory != nil && addr < uint32(len(chip.busMemory)) {
 				chip.busMemory[addr] = value
+				chip.invalidateBusMemoryWriteLocked(addr, 1)
 				if !chip.resetting && !chip.hasContent.Load() {
 					chip.hasContent.Store(true)
 				}
@@ -3338,6 +3356,7 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 					} else {
 						binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], value)
 					}
+					chip.invalidateBusMemoryWriteLocked(addr, 4)
 				}
 				return
 			}
@@ -3350,6 +3369,7 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 			if chip.directVRAM != nil {
 				if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
 					binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], value)
+					chip.invalidateBusMemoryWriteLocked(addr, 4)
 				}
 				return
 			}
@@ -3372,6 +3392,7 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 				// For VRAM addresses beyond frontBuffer, write directly to bus memory
 				// This enables double-buffering by rendering to VRAM offset > one frame
 				binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], value)
+				chip.invalidateBusMemoryWriteLocked(addr, 4)
 			}
 		}
 	}
@@ -3718,6 +3739,7 @@ func (chip *VideoChip) drawRasterBandLocked() {
 				addr := rowOffset + uint32(x)
 				if chip.busMemory != nil && addr < uint32(len(chip.busMemory)) {
 					chip.busMemory[addr] = uint8(chip.rasterColor)
+					chip.invalidateBusMemoryWriteLocked(addr, 1)
 					continue
 				}
 				if chip.directVRAM != nil {
@@ -3736,6 +3758,7 @@ func (chip *VideoChip) drawRasterBandLocked() {
 				offset := rowOffset + uint64(x*BYTES_PER_PIXEL)
 				if chip.busMemory != nil && offset+BYTES_PER_PIXEL <= uint64(len(chip.busMemory)) {
 					binary.LittleEndian.PutUint32(chip.busMemory[offset:], chip.rasterColor)
+					chip.invalidateBusMemoryWriteLocked(uint32(offset), BYTES_PER_PIXEL)
 					continue
 				}
 				if chip.directVRAM != nil && offset >= VRAM_START {
@@ -3843,9 +3866,7 @@ func (chip *VideoChip) GetFrame() []byte {
 	if frame == nil {
 		return nil
 	}
-	out := make([]byte, len(frame))
-	copy(out, frame)
-	return out
+	return chip.snapshotFrameLocked(frame)
 }
 
 // IsEnabled implements VideoSource - returns whether VideoChip is enabled
@@ -3948,9 +3969,17 @@ func (chip *VideoChip) FinishFrame() []byte {
 	if frame == nil {
 		return nil
 	}
-	out := make([]byte, len(frame))
-	copy(out, frame)
-	return out
+	return chip.snapshotFrameLocked(frame)
+}
+
+func (chip *VideoChip) snapshotFrameLocked(frame []byte) []byte {
+	if cap(chip.frameSnapshot) < len(frame) {
+		chip.frameSnapshot = make([]byte, len(frame))
+	} else {
+		chip.frameSnapshot = chip.frameSnapshot[:len(frame)]
+	}
+	copy(chip.frameSnapshot, frame)
+	return chip.frameSnapshot
 }
 
 func GetSplashImageData() ([]byte, error) {

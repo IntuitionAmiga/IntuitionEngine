@@ -230,6 +230,24 @@ func TestM68KFormRegion_BuildsTwoBlockChain(t *testing.T) {
 	}
 }
 
+func TestM68KFormRegion_RejectsProductionUnsafeInstructionInsideBlock(t *testing.T) {
+	mem := make([]byte, 0x1000)
+	// Block A starts with a safe MOVEQ, but contains an invalid TST-size
+	// encoding before the static branch. Region formation must reject the
+	// whole block, not admit it because only the first instruction is safe.
+	emitMoveq(mem, 0x100)
+	putBE16(mem, 0x102, 0x4AFC)
+	putBE16(mem, 0x104, 0x6000)
+	putBranchDisp16(mem, 0x106, int32(0x200)-int32(0x104+2))
+
+	emitMoveq(mem, 0x200)
+	putBE16(mem, 0x202, 0x4E75)
+
+	if region := m68kFormRegion(0x100, mem); region != nil {
+		t.Fatalf("m68kFormRegion admitted production-unsafe region: blockPCs=%v", region.blockPCs)
+	}
+}
+
 // TestM68KCompileRegion_BuildsSingleNativeBlock exercises
 // m68kCompileRegion end-to-end: scan + form + compile, then verify the
 // returned JITBlock spans the region's PC range and was admitted into

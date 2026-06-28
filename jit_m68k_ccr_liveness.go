@@ -3,12 +3,14 @@
 //
 // M68K's CCR has 5 bits (X-N-Z-V-C) but they are NOT all written by
 // every flag-producing instruction. The split that matters for
-// liveness is X-vs-NZVC:
+// liveness is X-vs-NZ-vs-VC:
 //
 //   - Arithmetic-shape ops (ADD, SUB, NEG, NEGX, ADDQ, SUBQ, ASL, LSL,
 //     ASR, LSR, ROXL, ROXR, ABCD, SBCD, NBCD, MULU, MULS, DIVU, DIVS)
 //     write BOTH X and NZVC.
-//   - Logical/move/CMP/TST/CLR/MOVEQ ops write NZVC but PRESERVE X.
+//   - Logical/move/CMP/TST/CLR/MOVEQ ops preserve X.
+//   - The current interpreter's AND/OR/EOR paths update only N/Z and
+//     preserve X/V/C via SetFlagsNZ; the JIT mirrors that oracle.
 //   - ROL/ROR write NZ+C+V (V=0) but preserve X.
 //
 // The reverse-walk therefore tracks two independent demands (demandX,
@@ -31,15 +33,17 @@ package main
 // instruction writes. The two bits matter independently for the
 // liveness walk:
 //
-//	m68kCCRBitX    — X bit (extend / second-carry)
-//	m68kCCRBitNZVC — N+Z+V+C aggregate (treated as one bit because
-//	                 every producer writing any of N/Z/V/C writes them
-//	                 all in the M68K JIT's lazy-flag model)
+//	m68kCCRBitNZ — N+Z bits
+//	m68kCCRBitVC — V+C bits
+//	m68kCCRBitX  — X bit (extend / second-carry)
 type m68kCCRBits uint8
 
 const (
-	m68kCCRBitNZVC m68kCCRBits = 1 << iota
+	m68kCCRBitNZ m68kCCRBits = 1 << iota
+	m68kCCRBitVC
 	m68kCCRBitX
+
+	m68kCCRBitNZVC = m68kCCRBitNZ | m68kCCRBitVC
 )
 
 // m68kClassifyCCR returns the CCR effect of a single opcode:
@@ -76,6 +80,17 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 	}
 	group := opcode >> 12
 	switch group {
+	case 0:
+		if m68kIsImmediateArithmeticDn(opcode) {
+			writes = m68kCCRBitX | m68kCCRBitNZVC
+		} else if m68kIsImmediateLogicDn(opcode) {
+			// Interpreter ORI/ANDI/EORI paths update only N/Z and
+			// preserve X/V/C via SetFlagsNZ.
+			writes = m68kCCRBitNZ
+		} else if opcode&0xFF00 == 0x0C00 && (opcode>>6)&3 != 3 {
+			// CMPI.B/W/L preserves X and writes NZVC.
+			writes = m68kCCRBitNZVC
+		}
 	case 1: // MOVE.B — preserves X.
 		writes = m68kCCRBitNZVC
 	case 2, 3: // MOVE.L (2), MOVE.W (3) — preserves X. MOVEA = no CCR.
@@ -99,8 +114,8 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 			// NEG.B/W/L — writes X+NZVC (NEG sets X=C).
 			writes = m68kCCRBitX | m68kCCRBitNZVC
 		case 0x4600, 0x4640, 0x4680:
-			// NOT.B/W/L — preserves X.
-			writes = m68kCCRBitNZVC
+			// NOT.B/W/L — interpreter updates N/Z and preserves X/V/C.
+			writes = m68kCCRBitNZ
 		case 0x4A00, 0x4A40, 0x4A80:
 			// TST.B/W/L — preserves X.
 			writes = m68kCCRBitNZVC
@@ -113,6 +128,11 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 		// TAS — sets N+Z, V=C=0; preserves X.
 		if (opcode&0xFFC0) == 0x4AC0 && opcode != 0x4AFC {
 			writes = m68kCCRBitNZVC
+		}
+		// NBCD reads X, writes X+NZVC, and uses sticky Z.
+		if (opcode&0xFFC0) == 0x4800 && opcode&0xFFF8 != 0x4808 {
+			writes = m68kCCRBitX | m68kCCRBitNZVC
+			consumer = true
 		}
 		// CHK — partial CCR (mostly N); preserves X.
 		if (opcode&0xF1C0) == 0x4180 || (opcode&0xF1C0) == 0x4100 {
@@ -158,7 +178,12 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 			writes = m68kCCRBitX | m68kCCRBitNZVC
 			consumer = true
 		} else {
-			writes = m68kCCRBitNZVC
+			opmode := (opcode >> 6) & 7
+			if opmode <= 2 || (opmode >= 4 && opmode <= 6) {
+				writes = m68kCCRBitNZ
+			} else {
+				writes = m68kCCRBitNZVC
+			}
 		}
 	case 9:
 		// SUB.B/W/L (opmode 0,1,2,4,5,6) → X+NZVC.
@@ -167,7 +192,7 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 		opmode := (opcode >> 6) & 7
 		if opmode != 3 && opmode != 7 {
 			writes = m68kCCRBitX | m68kCCRBitNZVC
-			if (opcode & 0xF130) == 0x9100 {
+			if (opcode&0xF130) == 0x9100 && (opcode&0x00C0) != 0x00C0 {
 				// SUBX reads X.
 				consumer = true
 			}
@@ -175,7 +200,12 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 	case 0xB:
 		// Group B: CMP.B/W/L, CMPM, CMPA — preserve X.
 		// EOR (opmode 4,5,6 with EA mode != An) — preserves X.
-		writes = m68kCCRBitNZVC
+		opmode := (opcode >> 6) & 7
+		if opmode >= 4 && opmode <= 6 {
+			writes = m68kCCRBitNZ
+		} else {
+			writes = m68kCCRBitNZVC
+		}
 	case 0xC:
 		// Group C: AND/MULU/MULS/ABCD/EXG. Check ABCD first because
 		// its mask overlaps the previously-broad EXG mask.
@@ -192,8 +222,13 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 			(opcode&0xF1F8) == 0xC188:
 			// EXG — no CCR.
 		default:
-			// AND/MUL — preserve X.
-			writes = m68kCCRBitNZVC
+			opmode := (opcode >> 6) & 7
+			if opmode <= 2 || (opmode >= 4 && opmode <= 6) {
+				writes = m68kCCRBitNZ
+			} else {
+				// MUL — preserve X, write NZVC.
+				writes = m68kCCRBitNZVC
+			}
 		}
 	case 0xD:
 		// ADD.B/W/L (opmode 0,1,2,4,5,6) → X+NZVC.
@@ -202,7 +237,7 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 		opmode := (opcode >> 6) & 7
 		if opmode != 3 && opmode != 7 {
 			writes = m68kCCRBitX | m68kCCRBitNZVC
-			if (opcode & 0xF130) == 0xD100 {
+			if (opcode&0xF130) == 0xD100 && (opcode&0x00C0) != 0x00C0 {
 				// ADDX reads X.
 				consumer = true
 			}
@@ -221,14 +256,38 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 		} else {
 			rtype = (opcode >> 3) & 3 // register-form
 		}
+		// A REGISTER-count shift/rotate may have a runtime count of 0, where the
+		// interpreter returns immediately and leaves CCR entirely unchanged
+		// (cpu_m68k.go ExecShiftRotate). So it conditionally PRESERVES the prior
+		// CCR — mark it a consumer so an upstream producer is kept live and its
+		// value remains available for the count-0 path. Immediate-count forms
+		// (count 1..8, never 0) always overwrite and need no such treatment.
+		registerCount := opcode&0x00C0 != 0x00C0 && (opcode>>5)&1 == 1
 		switch rtype {
 		case 3: // RO  (ROL/ROR) — preserves X.
+			if opcode&0x00C0 != 0x00C0 {
+				size := (opcode >> 6) & 3
+				regOrImm := (opcode >> 5) & 1
+				count := (opcode >> 9) & 7
+				if size == 0 && regOrImm == 0 && count == 0 {
+					// Interpreter normalizes immediate byte rotate #8
+					// to count 0: no register or CCR change.
+					writes = 0
+					break
+				}
+			}
 			writes = m68kCCRBitNZVC
+			if registerCount {
+				consumer = true
+			}
 		case 2: // ROX (ROXL/ROXR) — reads and writes X.
 			writes = m68kCCRBitX | m68kCCRBitNZVC
 			consumer = true
 		default: // AS / LS — write X (=C), don't read X.
 			writes = m68kCCRBitX | m68kCCRBitNZVC
+			if registerCount {
+				consumer = true
+			}
 		}
 	}
 	return
@@ -239,9 +298,9 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 // CCR bits it writes is consumed by some downstream instruction in
 // the same block.
 //
-// Two-bit demand walk: demandX and demandNZVC propagate independently
-// in reverse. A producer slot is live if (writesX && demandX) ||
-// (writesNZVC && demandNZVC). After the live decision, the producer
+// Three-bit demand walk: demandX, demandNZ, and demandVC propagate
+// independently in reverse. A producer slot is live if any written bit
+// group is demanded. After the live decision, the producer
 // clears the demand bits it writes (its output satisfies them).
 //
 // Consumers (Bcc/Scc/DBcc/TRAPcc/TRAPV) reassert BOTH demands —
@@ -263,8 +322,9 @@ func m68kCCRLiveness(instrs []M68KJITInstr) JITFlagLiveness {
 		return nil
 	}
 	live := make(JITFlagLiveness, len(instrs))
-	demandX := true    // block exit observes X
-	demandNZVC := true // block exit observes NZVC
+	demandX := true  // block exit observes X
+	demandNZ := true // block exit observes N/Z
+	demandVC := true // block exit observes V/C
 	for i := len(instrs) - 1; i >= 0; i-- {
 		writes, consumer, overwriter := m68kClassifyCCR(instrs[i].opcode)
 		// Producer-or-overwriter effect (occurs at end of instruction).
@@ -278,7 +338,10 @@ func m68kCCRLiveness(instrs []M68KJITInstr) JITFlagLiveness {
 			if writes&m68kCCRBitX != 0 && demandX {
 				liveSlot = true
 			}
-			if writes&m68kCCRBitNZVC != 0 && demandNZVC {
+			if writes&m68kCCRBitNZ != 0 && demandNZ {
+				liveSlot = true
+			}
+			if writes&m68kCCRBitVC != 0 && demandVC {
 				liveSlot = true
 			}
 			live[i] = liveSlot
@@ -286,13 +349,17 @@ func m68kCCRLiveness(instrs []M68KJITInstr) JITFlagLiveness {
 			if writes&m68kCCRBitX != 0 {
 				demandX = false
 			}
-			if writes&m68kCCRBitNZVC != 0 {
-				demandNZVC = false
+			if writes&m68kCCRBitNZ != 0 {
+				demandNZ = false
+			}
+			if writes&m68kCCRBitVC != 0 {
+				demandVC = false
 			}
 		}
 		if overwriter {
 			demandX = false
-			demandNZVC = false
+			demandNZ = false
+			demandVC = false
 		}
 		// Consumer effect (occurs at start of instruction). Explicit
 		// CCR readers reassert demand; bail-capable instructions are
@@ -301,7 +368,8 @@ func m68kCCRLiveness(instrs []M68KJITInstr) JITFlagLiveness {
 		// to stay materialisable.
 		if consumer || m68kInstrMaySetGenericIOFallback(&instrs[i]) {
 			demandX = true
-			demandNZVC = true
+			demandNZ = true
+			demandVC = true
 		}
 	}
 	return live
@@ -328,9 +396,12 @@ func m68kIsCCRProducer(instr *M68KJITInstr) bool {
 	return writes != 0
 }
 
-// jit68KCCRLivenessEnabled gates the Phase 2c emit-side wiring.
-// Default true; flip to false to revert to pre-wiring behaviour.
-var jit68KCCRLivenessEnabled = true
+// jit68KCCRLivenessEnabled gates the Phase 2c emit-side dead-CCR skip.
+// Default false for architectural correctness: SR/CCR is observable at native
+// block boundaries by interrupts, exceptions, helper exits, and MMIO callbacks
+// even when the following guest instruction does not read CCR. A future
+// boundary-aware liveness pass may re-enable this selectively.
+var jit68KCCRLivenessEnabled = false
 
 // m68kCurrentLive / m68kCurrentInstrIdx publish the per-block bitmap
 // to emitCCR_* helpers. m68kCompileBlockWithMem sets them at the top

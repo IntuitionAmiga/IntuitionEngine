@@ -18,13 +18,13 @@ import "fmt"
 
 const (
 	// EmuTOS_PROFILE_TOP is the explicit top-of-RAM the EmuTOS M68K profile
-	// exposes. PLAN_MAX_RAM slice 10 raises this from the historical 32 MiB
-	// appliance cap to 2 GiB while keeping a 32 MiB runtime minimum. The
-	// stable low-memory layout used by EmuTOS boot, GEMDOS bridge, IOREC, and
-	// ROM validity checks remains below the cap. Any deliberate move requires
-	// source-coordinated updates to emutos_loader.go, the EmuTOS source tree,
-	// and the EmuTOS profile docs.
-	EmuTOS_PROFILE_TOP uint32 = uint32(m68kProfileTop2GiB)
+	// exposes. Keep this at the historical 32 MiB profile cap: EmuTOS sizes
+	// and initializes RAM during boot, so advertising the architectural 2 GiB
+	// M68K ceiling makes a normal desktop boot spend a long time walking RAM
+	// before it reaches GEM/VDI. Any deliberate move requires source-coordinated
+	// updates to emutos_loader.go, the EmuTOS source tree, and the EmuTOS
+	// profile docs.
+	EmuTOS_PROFILE_TOP uint32 = 32 * 1024 * 1024
 
 	// AROS_PROFILE_TOP is the explicit top-of-RAM the AROS M68K profile
 	// exposes. PLAN_MAX_RAM slice 10h raised this from 32 MiB to 2 GiB.

@@ -1,0 +1,21 @@
+local function line(s)
+    sys.print("[6063e8] " .. s)
+end
+
+local function hex(v)
+    return string.format("0x%08X", tonumber(v) or 0)
+end
+
+local function dump(addr)
+    dbg.open()
+    local dis = dbg.disasm(addr, 48)
+    dbg.close()
+    for _, e in ipairs(dis or {}) do
+        line(string.format("%s %-14s %s", hex(e.addr or 0), tostring(e.hex or ""), tostring(e.mnemonic or e.text or "")))
+    end
+end
+
+line("waiting for AROS code to be resident")
+sys.wait_ms(20000)
+dump(0x006063A0)
+sys.exit(0)

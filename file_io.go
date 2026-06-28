@@ -186,6 +186,7 @@ func (f *FileIODevice) writeGuest8(addr uint64, value uint8) bool {
 	}
 	if addr < uint64(len(f.bus.memory)) {
 		f.bus.memory[addr] = value
+		invalidateM68KJITForGuestWrite(f.bus, addr, 1)
 		return true
 	}
 	if f.bus.backing != nil && addr < f.bus.backing.Size() {

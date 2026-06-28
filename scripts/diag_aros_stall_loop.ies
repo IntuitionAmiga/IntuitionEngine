@@ -1,0 +1,106 @@
+-- Focused AROS boot-stall probe. Start with: go run -tags headless . -aros -script scripts/diag_aros_stall_loop.ies
+
+local WAIT_MS = tonumber(os.getenv("IE_AROS_STALL_WAIT_MS") or "60000")
+local REPORT = "aros_stall_loop_report.txt"
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function rd32(addr)
+    local ok, v = pcall(mem.read32, addr)
+    if not ok then
+        return 0
+    end
+    return v or 0
+end
+
+local lines = {}
+local function line(s)
+    lines[#lines + 1] = s
+    sys.print(s)
+end
+
+local function dump_disasm(label, addr, n)
+    line(label)
+    local d = dbg.disasm(addr, n)
+    for i = 1, #d do
+        local e = d[i]
+        line(string.format("%s%08X: %-18s %s", e.current and ">" or " ", e.addr or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+local function dump_stats()
+    local ok, stats = pcall(cpu.jit_stats)
+    if not ok or type(stats) ~= "table" then
+        line("jit_stats unavailable")
+        return
+    end
+    line(string.format("jit instr=%d native=%d fallback=%d bailouts=%d last_native=%s last_fallback=%s opcode=0x%04X",
+        stats.instruction_count or 0,
+        stats.native_blocks or 0,
+        stats.fallback_instructions or 0,
+        stats.bailouts or 0,
+        hex(stats.last_native_pc or 0),
+        hex(stats.last_fallback_pc or 0),
+        stats.last_fallback_opcode or 0))
+    local ops = stats.fallback_opcodes or {}
+    for i = 1, math.min(#ops, 24) do
+        local op = ops[i]
+        line(string.format("fallback[%02d] opcode=0x%04X count=%d pc=%s", i, op.opcode or 0, op.count or 0, hex(op.pc or 0)))
+    end
+end
+
+dbg.open()
+dbg.tracering_on(4096)
+dbg.close()
+
+sys.wait_ms(WAIT_MS)
+
+dbg.open()
+line(string.format("[stall] waited=%dms pc=%s mode=%s jit=%s", WAIT_MS, hex(dbg.get_pc()), tostring(cpu.execution_mode()), tostring(cpu.jit_enabled())))
+line(string.format("[stall] video hash=0x%08X ctrl=%s mode=%s status=%s fb=%s",
+    video.frame_hash(),
+    hex(video.read_reg(0xF0000)),
+    hex(video.read_reg(0xF0004)),
+    hex(video.read_reg(0xF0008)),
+    hex(video.read_reg(0xF0084))))
+line(string.format("[stall] irq flags=%s pending=%s isr=%s counters=%s blocked=%s rte=%s watchdog=%s",
+    hex(rd32(0xF23C4)),
+    hex(rd32(0xF23C8)),
+    hex(rd32(0xF23C0)),
+    hex(rd32(0xF23CC)),
+    hex(rd32(0xF23D0)),
+    hex(rd32(0xF23D4)),
+    hex(rd32(0xF23DC))))
+
+line("[stall] registers")
+for _, s in ipairs(dbg.command_output("r")) do
+    line(s)
+end
+
+local regs = dbg.regs()
+local sp = regs["A7"] or 0
+line("[stall] stack")
+for i = 0, 15 do
+    line(string.format("SP+%02X %s", i * 4, hex(rd32(sp + i * 4))))
+end
+
+dump_stats()
+dump_disasm("[stall] current disasm", dbg.get_pc() - 32, 48)
+dump_disasm("[stall] loop disasm 0x0060B8E0", 0x0060B8E0, 72)
+dump_disasm("[stall] callee disasm 0x0060B240", 0x0060B240, 96)
+dump_disasm("[stall] hot fallback 0x006151D0", 0x006151D0, 64)
+dump_disasm("[stall] hot fallback 0x0061B960", 0x0061B960, 64)
+dump_disasm("[stall] hot fallback 0x00926500", 0x00926500, 64)
+
+line("[stall] trace tail")
+local ring = dbg.tracering_show(96)
+for i = 1, #ring do
+    local e = ring[i]
+    line(string.format("%08X: %-18s %s", e.pc or 0, e.hex or "", e.mnemonic or ""))
+end
+
+dbg.tracering_off()
+dbg.close()
+sys.write_file(REPORT, table.concat(lines, "\n") .. "\n")

@@ -9,12 +9,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
 const arosDOSMaxPacket = 1 << 20
 const arosDOSReadAheadSize = 64 * 1024
+const arosDOSDefaultFullCommandLimit = 32768
+
+// arosLockTrace gates a focused diagnostic that prints every LOCK's parentKey,
+// parent host path, resolved host path, and stat outcome. Used to distinguish
+// host-filesystem mutation between interp/JIT passes from a real upstream
+// divergence in lock-key→hostPath binding. Diagnostic only; not a behaviour change.
+var arosLockTrace = os.Getenv("IE_ADOS_LOCK_TRACE") == "1"
 
 type resolveReason uint8
 
@@ -62,6 +70,48 @@ type arosFileHandle struct {
 	cache     arosReadAhead
 }
 
+type ArosDOSCommandStat struct {
+	Cmd      uint32
+	Count    uint64
+	Failures uint64
+	LastArg1 uint32
+	LastArg2 uint32
+	LastArg3 uint32
+	LastArg4 uint32
+	LastRes1 uint32
+	LastRes2 uint32
+	LastName string
+}
+
+type ArosDOSErrorEvent struct {
+	Cmd  uint32
+	Arg1 uint32
+	Arg2 uint32
+	Arg3 uint32
+	Arg4 uint32
+	Res1 uint32
+	Res2 uint32
+	Name string
+}
+
+type ArosDOSCommandEvent struct {
+	Cmd          uint32
+	Arg1         uint32
+	Arg2         uint32
+	Arg3         uint32
+	Arg4         uint32
+	Res1         uint32
+	Res2         uint32
+	Name         string
+	Task         uint32
+	TaskName     string
+	PC           uint32
+	SR           uint16
+	Instructions uint64
+	D            [8]uint32
+	A            [8]uint32
+}
+
 // ArosDOSDevice provides host filesystem access to AROS via MMIO.
 // The AROS packet handler (iehandler) translates AmigaDOS packets
 // to MMIO register writes. Writing the command register triggers
@@ -88,9 +138,20 @@ type ArosDOSDevice struct {
 	res2 uint32
 
 	debugTrace bool
+	statsMu    sync.Mutex
+	stats      map[uint32]*ArosDOSCommandStat
+	recentCmds []ArosDOSCommandEvent
+	fullCmds   []ArosDOSCommandEvent
+	recentErrs []ArosDOSErrorEvent
+	fullLimit  int
+	totalCmds  int
+
+	CommandRecordedHook func(count int, event ArosDOSCommandEvent)
 
 	// dirNameCache maps directory path → (lowercase name → actual name on disk)
 	dirNameCache map[string]map[string]string
+
+	DiagnosticCPU *M68KCPU
 }
 
 type adosLock struct {
@@ -127,6 +188,8 @@ func NewArosDOSDevice(bus *MachineBus, hostRoot string) (*ArosDOSDevice, error) 
 		handles:      make(map[uint32]*arosFileHandle),
 		nextHandle:   1,
 		debugTrace:   false,
+		stats:        make(map[uint32]*ArosDOSCommandStat),
+		fullLimit:    arosDOSDefaultFullCommandLimit,
 		dirNameCache: make(map[string]map[string]string),
 	}
 
@@ -145,6 +208,41 @@ func (d *ArosDOSDevice) SetSymbolTable(symbols *SymbolTable) {
 		return
 	}
 	d.symbols = symbols
+}
+
+func (d *ArosDOSDevice) StatsSnapshot() ([]ArosDOSCommandStat, []ArosDOSErrorEvent) {
+	if d == nil {
+		return nil, nil
+	}
+	d.statsMu.Lock()
+	defer d.statsMu.Unlock()
+
+	stats := make([]ArosDOSCommandStat, 0, len(d.stats))
+	for _, stat := range d.stats {
+		stats = append(stats, *stat)
+	}
+	errs := append([]ArosDOSErrorEvent(nil), d.recentErrs...)
+	return stats, errs
+}
+
+func (d *ArosDOSDevice) RecentCommandsSnapshot() []ArosDOSCommandEvent {
+	if d == nil {
+		return nil
+	}
+	d.statsMu.Lock()
+	defer d.statsMu.Unlock()
+
+	return append([]ArosDOSCommandEvent(nil), d.recentCmds...)
+}
+
+func (d *ArosDOSDevice) FullCommandsSnapshot() []ArosDOSCommandEvent {
+	if d == nil {
+		return nil
+	}
+	d.statsMu.Lock()
+	defer d.statsMu.Unlock()
+
+	return append([]ArosDOSCommandEvent(nil), d.fullCmds...)
 }
 
 // HandleRead handles MMIO reads from the AROS DOS region.
@@ -187,6 +285,7 @@ func (d *ArosDOSDevice) HandleWrite(addr uint32, val uint32) {
 func (d *ArosDOSDevice) dispatch(cmd uint32) {
 	d.res1 = ADOS_DOSFALSE
 	d.res2 = ADOS_ERR_NONE
+	name := d.commandName(cmd)
 
 	if d.debugTrace && cmd != ADOS_CMD_READ && cmd != ADOS_CMD_SEEK && cmd != ADOS_CMD_WRITE {
 		fmt.Printf("[ADOS] dispatch cmd=%d arg1=0x%X arg2=0x%X arg3=0x%X arg4=0x%X\n",
@@ -246,6 +345,153 @@ func (d *ArosDOSDevice) dispatch(cmd uint32) {
 		d.res1 = ADOS_DOSFALSE
 		d.res2 = ADOS_ERROR_ACTION_NOT_KNOWN
 	}
+	d.recordDispatch(cmd, name)
+}
+
+func (d *ArosDOSDevice) commandName(cmd uint32) string {
+	switch cmd {
+	case ADOS_CMD_LOCK, ADOS_CMD_FINDINPUT, ADOS_CMD_FINDOUTPUT, ADOS_CMD_FINDUPDATE, ADOS_CMD_LOADSEG_SYMS:
+		return d.readString(d.arg1)
+	case ADOS_CMD_DELETE, ADOS_CMD_CREATEDIR, ADOS_CMD_SET_PROTECT:
+		return d.readString(d.arg2)
+	case ADOS_CMD_RENAME:
+		src := d.readString(d.arg2)
+		dst := d.readString(d.arg4)
+		if src == "" {
+			return dst
+		}
+		if dst == "" {
+			return src
+		}
+		return src + " -> " + dst
+	default:
+		return ""
+	}
+}
+
+func (d *ArosDOSDevice) recordDispatch(cmd uint32, name string) {
+	d.statsMu.Lock()
+
+	stat := d.stats[cmd]
+	if stat == nil {
+		stat = &ArosDOSCommandStat{Cmd: cmd}
+		d.stats[cmd] = stat
+	}
+	stat.Count++
+	stat.LastArg1 = d.arg1
+	stat.LastArg2 = d.arg2
+	stat.LastArg3 = d.arg3
+	stat.LastArg4 = d.arg4
+	stat.LastRes1 = d.res1
+	stat.LastRes2 = d.res2
+	stat.LastName = name
+	event := ArosDOSCommandEvent{
+		Cmd:          cmd,
+		Arg1:         d.arg1,
+		Arg2:         d.arg2,
+		Arg3:         d.arg3,
+		Arg4:         d.arg4,
+		Res1:         d.res1,
+		Res2:         d.res2,
+		Name:         name,
+		PC:           d.diagnosticPC(),
+		SR:           d.diagnosticSR(),
+		Instructions: d.diagnosticInstructions(),
+	}
+	event.D, event.A = d.diagnosticRegs()
+	event.Task, event.TaskName = d.diagnosticTask()
+	d.totalCmds++
+	d.recentCmds = append(d.recentCmds, event)
+	d.fullCmds = append(d.fullCmds, event)
+	if len(d.recentCmds) > 128 {
+		copy(d.recentCmds, d.recentCmds[len(d.recentCmds)-128:])
+		d.recentCmds = d.recentCmds[:128]
+	}
+	if d.fullLimit > 0 && len(d.fullCmds) > d.fullLimit {
+		copy(d.fullCmds, d.fullCmds[len(d.fullCmds)-d.fullLimit:])
+		d.fullCmds = d.fullCmds[:d.fullLimit]
+	}
+	if d.res2 != ADOS_ERR_NONE {
+		stat.Failures++
+		d.recentErrs = append(d.recentErrs, ArosDOSErrorEvent{
+			Cmd:  cmd,
+			Arg1: d.arg1,
+			Arg2: d.arg2,
+			Arg3: d.arg3,
+			Arg4: d.arg4,
+			Res1: d.res1,
+			Res2: d.res2,
+			Name: name,
+		})
+		if len(d.recentErrs) > 32 {
+			copy(d.recentErrs, d.recentErrs[len(d.recentErrs)-32:])
+			d.recentErrs = d.recentErrs[:32]
+		}
+	}
+
+	// Capture the hook + command index under the lock, then release it BEFORE
+	// invoking the hook. The hook may call snapshot helpers (StatsSnapshot,
+	// RecentCommandsSnapshot) that re-acquire statsMu; calling it while holding
+	// the lock would self-deadlock (sync.Mutex is non-reentrant).
+	hook := d.CommandRecordedHook
+	count := d.totalCmds
+	d.statsMu.Unlock()
+
+	if hook != nil {
+		hook(count, event)
+	}
+}
+
+func (d *ArosDOSDevice) diagnosticPC() uint32 {
+	if d == nil || d.DiagnosticCPU == nil {
+		return 0
+	}
+	return d.DiagnosticCPU.PC
+}
+
+func (d *ArosDOSDevice) diagnosticSR() uint16 {
+	if d == nil || d.DiagnosticCPU == nil {
+		return 0
+	}
+	return d.DiagnosticCPU.SR
+}
+
+func (d *ArosDOSDevice) diagnosticInstructions() uint64 {
+	if d == nil || d.DiagnosticCPU == nil {
+		return 0
+	}
+	return d.DiagnosticCPU.InstructionCount
+}
+
+func (d *ArosDOSDevice) diagnosticRegs() ([8]uint32, [8]uint32) {
+	var data [8]uint32
+	var addr [8]uint32
+	if d == nil || d.DiagnosticCPU == nil {
+		return data, addr
+	}
+	copy(data[:], d.DiagnosticCPU.DataRegs[:])
+	copy(addr[:], d.DiagnosticCPU.AddrRegs[:])
+	return data, addr
+}
+
+func (d *ArosDOSDevice) diagnosticTask() (uint32, string) {
+	if d == nil || d.DiagnosticCPU == nil {
+		return 0, ""
+	}
+	cpu := d.DiagnosticCPU
+	sysBase := cpu.Read32(4)
+	if !isValidAROSGuestPtr(sysBase) {
+		return 0, ""
+	}
+	task := cpu.Read32(sysBase + arosExecThisTaskOffset)
+	if !isValidAROSGuestPtr(task) {
+		return task, ""
+	}
+	namePtr := cpu.Read32(task + arosTaskNameOffset)
+	if !isValidAROSGuestPtr(namePtr) {
+		return task, ""
+	}
+	return task, readAROSCStr(cpu, namePtr, 64)
 }
 
 // --- Lock operations ---
@@ -270,6 +516,10 @@ func (d *ArosDOSDevice) cmdLock() {
 		if d.debugTrace {
 			fmt.Printf("[ADOS] LOCK %q (parent=%d) → path resolve failed\n", name, parentKey)
 		}
+		if arosLockTrace {
+			fmt.Printf("[ADOSLOCKTRACE] LOCK name=%q parentKey=%d parentHost=%q → RESOLVE_FAIL reason=%d\n",
+				name, parentKey, parent.hostPath, reason)
+		}
 		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		return
 	}
@@ -279,8 +529,16 @@ func (d *ArosDOSDevice) cmdLock() {
 		if d.debugTrace {
 			fmt.Printf("[ADOS] LOCK %q (parent=%d, path=%q) → NOT_FOUND\n", name, parentKey, hostPath)
 		}
+		if arosLockTrace {
+			fmt.Printf("[ADOSLOCKTRACE] LOCK name=%q parentKey=%d parentHost=%q hostPath=%q → STAT_ERR=%v\n",
+				name, parentKey, parent.hostPath, hostPath, err)
+		}
 		d.res2 = ADOS_ERROR_OBJECT_NOT_FOUND
 		return
+	}
+	if arosLockTrace {
+		fmt.Printf("[ADOSLOCKTRACE] LOCK name=%q parentKey=%d parentHost=%q hostPath=%q → OK dir=%v\n",
+			name, parentKey, parent.hostPath, hostPath, info.IsDir())
 	}
 
 	key := d.nextLock

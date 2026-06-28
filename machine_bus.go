@@ -167,6 +167,8 @@ type MachineBus struct {
 	// resetHooks are called after bus RAM/backing reset. Reset is intentionally
 	// caller-quiesced: callers must stop CPU/JIT execution before invoking it.
 	resetHooks []func()
+
+	m68kJITInvalidator func(addr, size uint64)
 }
 
 // AddrRange defines an inclusive address range.
@@ -272,6 +274,7 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 			// Regular memory write
 			if mapped+4 <= uint32(len(bus.memory)) {
 				binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
+				bus.invalidateM68KJITRAMWrite(uint64(mapped), 4)
 				return true
 			}
 		}
@@ -304,6 +307,7 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 
 	// Regular memory write
 	binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+	bus.invalidateM68KJITRAMWrite(uint64(addr), 4)
 	return true
 }
 
@@ -375,7 +379,18 @@ func (bus *MachineBus) readRAM8(addr uint32) uint8 {
 	return 0
 }
 
-func (bus *MachineBus) writeRAM8(addr uint32, value uint8) bool {
+func (bus *MachineBus) invalidateM68KJITRAMWrite(addr uint64, size uint64) {
+	invalidateM68KJITForGuestWrite(bus, addr, size)
+}
+
+func (bus *MachineBus) RegisterM68KJITInvalidator(fn func(addr, size uint64)) {
+	if bus == nil {
+		return
+	}
+	bus.m68kJITInvalidator = fn
+}
+
+func (bus *MachineBus) writeRAM8Raw(addr uint32, value uint8) bool {
 	if addr < uint32(len(bus.memory)) {
 		bus.memory[addr] = value
 		return true
@@ -387,6 +402,15 @@ func (bus *MachineBus) writeRAM8(addr uint32, value uint8) bool {
 	return false
 }
 
+func (bus *MachineBus) writeRAM8(addr uint32, value uint8) bool {
+	if !bus.ramSpanCovers(addr, 1) {
+		return false
+	}
+	ok := bus.writeRAM8Raw(addr, value)
+	bus.invalidateM68KJITRAMWrite(uint64(addr), 1)
+	return ok
+}
+
 func (bus *MachineBus) readRAM16(addr uint32) uint16 {
 	return uint16(bus.readRAM8(addr)) | uint16(bus.readRAM8(addr+1))<<8
 }
@@ -395,8 +419,9 @@ func (bus *MachineBus) writeRAM16(addr uint32, value uint16) bool {
 	if !bus.ramSpanCovers(addr, 2) {
 		return false
 	}
-	bus.writeRAM8(addr, uint8(value))
-	bus.writeRAM8(addr+1, uint8(value>>8))
+	bus.writeRAM8Raw(addr, uint8(value))
+	bus.writeRAM8Raw(addr+1, uint8(value>>8))
+	bus.invalidateM68KJITRAMWrite(uint64(addr), 2)
 	return true
 }
 
@@ -411,10 +436,11 @@ func (bus *MachineBus) writeRAM32(addr uint32, value uint32) bool {
 	if !bus.ramSpanCovers(addr, 4) {
 		return false
 	}
-	bus.writeRAM8(addr, uint8(value))
-	bus.writeRAM8(addr+1, uint8(value>>8))
-	bus.writeRAM8(addr+2, uint8(value>>16))
-	bus.writeRAM8(addr+3, uint8(value>>24))
+	bus.writeRAM8Raw(addr, uint8(value))
+	bus.writeRAM8Raw(addr+1, uint8(value>>8))
+	bus.writeRAM8Raw(addr+2, uint8(value>>16))
+	bus.writeRAM8Raw(addr+3, uint8(value>>24))
+	bus.invalidateM68KJITRAMWrite(uint64(addr), 4)
 	return true
 }
 
@@ -544,6 +570,7 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped+2 <= uint32(len(bus.memory)) {
 				binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], value)
+				bus.invalidateM68KJITRAMWrite(uint64(mapped), 2)
 				return true
 			}
 		}
@@ -599,6 +626,7 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 
 	// Regular memory write
 	binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
+	bus.invalidateM68KJITRAMWrite(uint64(addr), 2)
 	return true
 }
 
@@ -710,6 +738,7 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped < uint32(len(bus.memory)) {
 				bus.memory[mapped] = value
+				bus.invalidateM68KJITRAMWrite(uint64(mapped), 1)
 				return true
 			}
 		}
@@ -759,6 +788,7 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 
 	// Regular memory write
 	bus.memory[addr] = value
+	bus.invalidateM68KJITRAMWrite(uint64(addr), 1)
 	return true
 }
 
@@ -1657,6 +1687,7 @@ func (bus *MachineBus) Write32(addr uint32, value uint32) {
 			old = *(*uint32)(unsafe.Pointer(&bus.memory[addr]))
 		}
 		*(*uint32)(unsafe.Pointer(&bus.memory[addr])) = value
+		bus.invalidateM68KJITRAMWrite(uint64(addr), 4)
 		bus.debugOnWrite(addr, 4, uint64(old), uint64(value))
 		return
 	}
@@ -1693,6 +1724,7 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped+4 <= uint32(len(bus.memory)) {
 				binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
+				bus.invalidateM68KJITRAMWrite(uint64(mapped), 4)
 				return
 			}
 		}
@@ -1747,6 +1779,7 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 
 	// Regular memory write
 	binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+	bus.invalidateM68KJITRAMWrite(uint64(addr), 4)
 }
 
 func (bus *MachineBus) Read32(addr uint32) uint32 {
@@ -1897,6 +1930,7 @@ func (bus *MachineBus) Write16(addr uint32, value uint16) {
 			old = *(*uint16)(unsafe.Pointer(&bus.memory[addr]))
 		}
 		*(*uint16)(unsafe.Pointer(&bus.memory[addr])) = value
+		bus.invalidateM68KJITRAMWrite(uint64(addr), 2)
 		bus.debugOnWrite(addr, 2, uint64(old), uint64(value))
 		return
 	}
@@ -1936,6 +1970,7 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped+2 <= uint32(len(bus.memory)) {
 				binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], value)
+				bus.invalidateM68KJITRAMWrite(uint64(mapped), 2)
 				return
 			}
 		}
@@ -1998,6 +2033,7 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 
 	// Regular memory write
 	binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
+	bus.invalidateM68KJITRAMWrite(uint64(addr), 2)
 }
 
 func (bus *MachineBus) Read16(addr uint32) uint16 {
@@ -2141,6 +2177,7 @@ func (bus *MachineBus) Write8(addr uint32, value uint8) {
 			old = bus.memory[addr]
 		}
 		bus.memory[addr] = value
+		bus.invalidateM68KJITRAMWrite(uint64(addr), 1)
 		bus.debugOnWrite(addr, 1, uint64(old), uint64(value))
 		return
 	}
@@ -2165,6 +2202,7 @@ func (bus *MachineBus) WriteMemoryDirect(addr uint32, value uint8) {
 			old = bus.memory[addr]
 		}
 		bus.memory[addr] = value
+		bus.invalidateM68KJITRAMWrite(uint64(addr), 1)
 		bus.debugOnWrite(addr, 1, uint64(old), uint64(value))
 	}
 }
@@ -2194,6 +2232,7 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped < uint32(len(bus.memory)) {
 				bus.memory[mapped] = value
+				bus.invalidateM68KJITRAMWrite(uint64(mapped), 1)
 				return
 			}
 		}
@@ -2249,6 +2288,7 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 
 	// Regular memory write
 	bus.memory[addr] = value
+	bus.invalidateM68KJITRAMWrite(uint64(addr), 1)
 }
 
 func (bus *MachineBus) Read8(addr uint32) uint8 {
@@ -2658,6 +2698,7 @@ func (bus *MachineBus) Write64(addr uint32, value uint64) {
 			old = *(*uint64)(unsafe.Pointer(&bus.memory[addr]))
 		}
 		*(*uint64)(unsafe.Pointer(&bus.memory[addr])) = value
+		bus.invalidateM68KJITRAMWrite(uint64(addr), 8)
 		bus.debugOnWrite(addr, 8, old, value)
 		return
 	}
@@ -2771,6 +2812,7 @@ func (bus *MachineBus) write32Half(addr uint32, value uint32) bool {
 	// Plain RAM
 	if addr+4 <= uint32(len(bus.memory)) {
 		*(*uint32)(unsafe.Pointer(&bus.memory[addr])) = value
+		bus.invalidateM68KJITRAMWrite(uint64(addr), 4)
 		return true
 	}
 	return false

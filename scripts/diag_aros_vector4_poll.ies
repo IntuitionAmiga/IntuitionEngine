@@ -1,0 +1,83 @@
+local ADDR = 0x00000004
+local TIMEOUT_MS = 60000
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function line(s)
+    sys.print(s)
+end
+
+local function rd32(addr)
+    local b = dbg.read_mem(addr, 4)
+    if type(b) ~= "table" or #b < 4 then
+        return 0
+    end
+    return (b[1] or 0) * 0x1000000 + (b[2] or 0) * 0x10000 + (b[3] or 0) * 0x100 + (b[4] or 0)
+end
+
+local function dump_disasm(label, addr)
+    line(string.format("[vector4] disasm %s %s", label, hex(addr)))
+    local ok, rows = pcall(dbg.disasm, addr, 28)
+    if not ok or type(rows) ~= "table" then
+        line("[vector4]   unavailable")
+        return
+    end
+    for i = 1, #rows do
+        local e = rows[i]
+        line(string.format("[vector4] %s%08X: %-18s %s", e.current and ">" or " ", e.addr or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+dbg.open()
+dbg.tracering_on(4096)
+local initial = rd32(ADDR)
+line(string.format("[vector4] initial=%s mode=%s jit=%s", hex(initial), tostring(cpu.execution_mode()), tostring(cpu.jit_enabled())))
+dbg.close()
+
+local start = sys.time_ms()
+local seen = initial
+while sys.time_ms() - start < TIMEOUT_MS do
+    dbg.open()
+    seen = rd32(ADDR)
+    dbg.close()
+    if seen ~= initial then
+        break
+    end
+    sys.wait_ms(1)
+end
+
+dbg.open()
+line(string.format("[vector4] final=%s elapsed=%dms pc=%s", hex(seen), sys.time_ms() - start, hex(dbg.get_pc())))
+local regs = dbg.get_regs()
+for _, name in ipairs({"D0","D1","D2","D3","D4","D5","D6","D7","A0","A1","A2","A3","A4","A5","A6","A7","PC","SR"}) do
+    line(string.format("[vector4] %s=%s", name, hex(regs[name] or 0)))
+end
+
+local ok_stats, stats = pcall(cpu.jit_stats)
+if ok_stats and type(stats) == "table" then
+    line(string.format("[vector4] jit native=%d fallback=%d bailouts=%d last_native=%s last_fallback=%s opcode=0x%04X",
+        stats.native_blocks or 0,
+        stats.fallback_instructions or 0,
+        stats.bailouts or 0,
+        hex(stats.last_native_pc or 0),
+        hex(stats.last_fallback_pc or 0),
+        stats.last_fallback_opcode or 0))
+    if (stats.last_native_pc or 0) ~= 0 then
+        dump_disasm("last_native", (stats.last_native_pc or 0) > 32 and (stats.last_native_pc or 0) - 32 or (stats.last_native_pc or 0))
+    end
+    if (stats.last_fallback_pc or 0) ~= 0 then
+        dump_disasm("last_fallback", (stats.last_fallback_pc or 0) > 32 and (stats.last_fallback_pc or 0) - 32 or (stats.last_fallback_pc or 0))
+    end
+end
+
+line("[vector4] trace tail")
+local ring = dbg.tracering_show(96)
+for i = 1, #ring do
+    local e = ring[i]
+    line(string.format("[vector4] %08X: %-18s %s", e.pc or 0, e.hex or "", e.mnemonic or ""))
+end
+dbg.tracering_off()
+dbg.close()
+sys.quit()

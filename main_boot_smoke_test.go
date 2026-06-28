@@ -3,7 +3,7 @@
 // Pins resolveModeCaps + resolveActiveVisibleCeiling row by row, the
 // per-mode boot ordering (ApplyProfileVisibleCeiling before SYSINFO
 // registration), and the discovery-path "all paths agree" smokes for
-// IE64 (8 GiB synthesised), EmuTOS (2 GiB cap), and EhBASIC.
+// IE64 (8 GiB synthesised), EmuTOS (profile cap), and EhBASIC.
 
 package main
 
@@ -30,7 +30,7 @@ func TestResolveModeCaps_TableMatch(t *testing.T) {
 		{"x86-8gib", modeX86, eightGiB, busMemMaxBytes, busMemMaxBytes},
 		{"bare-m68k-8gib", modeM68KBare, eightGiB, busMemMaxBytes, busMemMaxBytes},
 		{"emutos-8gib", modeEmuTOS, eightGiB, EmuTOSProfileTopBytes, EmuTOSProfileTopBytes},
-		{"emutos-low-total", modeEmuTOS, lowMemWindowBytes, lowMemWindowBytes, lowMemWindowBytes},
+		{"emutos-low-total", modeEmuTOS, lowMemWindowBytes, EmuTOSProfileTopBytes, EmuTOSProfileTopBytes},
 		{"aros-8gib", modeAros, eightGiB, arosProfileTopBytes, arosProfileTopBytes},
 		{"aros-low-total", modeAros, lowMemWindowBytes, lowMemWindowBytes, lowMemWindowBytes},
 		{"6502-banked", mode6502, eightGiB, banked8BitVisibleRAMBytes, banked8BitVisibleRAMBytes},
@@ -370,7 +370,7 @@ func TestDiscovery_IE64_AllPathsAgreeOnFullBackedTotal(t *testing.T) {
 	}
 }
 
-func TestDiscovery_EmuTOS_AllPathsAgreeAt2GiB(t *testing.T) {
+func TestDiscovery_EmuTOS_AllPathsAgreeAtProfileTop(t *testing.T) {
 	bus := bootSimulate(t, modeEmuTOS, eightGiB, mmapFaithfulSparseAllocator)
 	want := emutosBootExpectedTotal()
 	if got := bus.TotalGuestRAM(); got != want {

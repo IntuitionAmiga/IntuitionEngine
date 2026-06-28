@@ -106,6 +106,92 @@ func TestBusPhys_Read8Write8RoundTripsAbove4GiB(t *testing.T) {
 	}
 }
 
+func TestBusPhysWritesStoreBytesBeforeInvalidation(t *testing.T) {
+	const addr = uint64(64*1024*1024 + 0x2000)
+	const backingSize = uint64(128 * 1024 * 1024)
+
+	cases := []struct {
+		name  string
+		write func(bus *MachineBus) bool
+		read  func(backing *SparseBacking) uint64
+		want  uint64
+	}{
+		{
+			name:  "WritePhys8",
+			write: func(bus *MachineBus) bool { bus.WritePhys8(addr, 0xAB); return true },
+			read:  func(backing *SparseBacking) uint64 { return uint64(backing.Read8(addr)) },
+			want:  0xAB,
+		},
+		{
+			name:  "WritePhys16",
+			write: func(bus *MachineBus) bool { bus.WritePhys16(addr, 0xBEEF); return true },
+			read: func(backing *SparseBacking) uint64 {
+				return uint64(backing.Read8(addr)) | uint64(backing.Read8(addr+1))<<8
+			},
+			want: 0xBEEF,
+		},
+		{
+			name:  "WritePhys32",
+			write: func(bus *MachineBus) bool { bus.WritePhys32(addr, 0xDEADBEEF); return true },
+			read:  func(backing *SparseBacking) uint64 { return uint64(backing.Read32(addr)) },
+			want:  0xDEADBEEF,
+		},
+		{
+			name:  "WritePhys64",
+			write: func(bus *MachineBus) bool { bus.WritePhys64(addr, 0x0123456789ABCDEF); return true },
+			read:  func(backing *SparseBacking) uint64 { return backing.Read64(addr) },
+			want:  0x0123456789ABCDEF,
+		},
+		{
+			name:  "WritePhys64WithFault",
+			write: func(bus *MachineBus) bool { return bus.WritePhys64WithFault(addr, 0x1122334455667788) },
+			read:  func(backing *SparseBacking) uint64 { return backing.Read64(addr) },
+			want:  0x1122334455667788,
+		},
+		{
+			name: "WritePhysRAMOnly",
+			write: func(bus *MachineBus) bool {
+				return bus.WritePhysRAMOnly(addr, []byte{0xFE, 0xCA, 0xAD, 0xDE}) == nil
+			},
+			read: func(backing *SparseBacking) uint64 {
+				return uint64(backing.Read8(addr)) |
+					uint64(backing.Read8(addr+1))<<8 |
+					uint64(backing.Read8(addr+2))<<16 |
+					uint64(backing.Read8(addr+3))<<24
+			},
+			want: 0xDEADCAFE,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := NewMachineBus()
+			backing := NewSparseBacking(backingSize)
+			bus.SetBacking(backing)
+			bus.SetSizing(MemorySizing{
+				TotalGuestRAM:    backingSize,
+				ActiveVisibleRAM: backingSize,
+			})
+			var called bool
+			var observed uint64
+			bus.RegisterM68KJITInvalidator(func(a, sz uint64) {
+				called = true
+				observed = tc.read(backing)
+			})
+
+			if ok := tc.write(bus); !ok {
+				t.Fatalf("%s failed", tc.name)
+			}
+			if !called {
+				t.Fatal("JIT invalidator was not called")
+			}
+			if observed != tc.want {
+				t.Fatalf("invalidator observed 0x%X, want 0x%X", observed, tc.want)
+			}
+		})
+	}
+}
+
 func TestBusPhys_OutOfBackingReturnsZero(t *testing.T) {
 	bus := NewMachineBus()
 	backing := NewSparseBacking(1 * bGiB)

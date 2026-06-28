@@ -1,0 +1,60 @@
+-- Poll AROS video state without enabling access logging.
+
+local WAIT_MS = tonumber(os.getenv("IE_AROS_VIDEO_POLL_MS") or "90000")
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function sample_pixels()
+    local w, h = video.get_dimensions()
+    local pts = {
+        {0, 0},
+        {math.floor(w / 2), math.floor(h / 2)},
+        {w - 1, h - 1},
+        {64, 64},
+        {320, 240},
+        {math.floor(w / 3), math.floor(h / 3)},
+        {math.floor((w * 2) / 3), math.floor((h * 2) / 3)},
+    }
+    local nonblack = 0
+    for _, p in ipairs(pts) do
+        local r, g, b = video.get_pixel(p[1], p[2])
+        if r ~= 0 or g ~= 0 or b ~= 0 then
+            nonblack = nonblack + 1
+        end
+    end
+    return w, h, nonblack
+end
+
+sys.print(string.format("[video-poll] mode=%s jit=%s", tostring(cpu.execution_mode()), tostring(cpu.jit_enabled())))
+local start = sys.time_ms()
+local final_nonblack = 0
+local final_w = 0
+local final_h = 0
+while sys.time_ms() - start < WAIT_MS do
+    final_w, final_h, final_nonblack = sample_pixels()
+    local fb = video.read_reg(0xF0084)
+    local mode = video.read_reg(0xF0004)
+    if fb ~= 0 and mode == 0x06 and final_nonblack > 0 then
+        break
+    end
+    sys.wait_ms(250)
+end
+
+local elapsed = sys.time_ms() - start
+local hash = video.frame_hash()
+sys.print(string.format(
+    "[video-poll] elapsed=%d size=%dx%d nonblack=%d hash=%s ctrl=%s mode=%s status=%s fb=%s color=%s",
+    elapsed,
+    final_w,
+    final_h,
+    final_nonblack,
+    hex(hash),
+    hex(video.read_reg(0xF0000)),
+    hex(video.read_reg(0xF0004)),
+    hex(video.read_reg(0xF0008)),
+    hex(video.read_reg(0xF0084)),
+    hex(video.read_reg(0xF0080))
+))
+sys.quit()

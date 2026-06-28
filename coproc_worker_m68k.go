@@ -12,9 +12,11 @@ func createM68KWorker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 	for i := range uint32(WORKER_M68K_SIZE) {
 		mem[WORKER_M68K_BASE+i] = 0
 	}
+	invalidateM68KJITForGuestWrite(bus, uint64(WORKER_M68K_BASE), uint64(WORKER_M68K_SIZE))
 
 	// Copy service binary to worker region (raw bytes - M68K fetch handles byte ordering)
 	copy(mem[WORKER_M68K_BASE:], data)
+	invalidateM68KJITForGuestWrite(bus, uint64(WORKER_M68K_BASE), uint64(len(data)))
 
 	// Create M68K CPU using the shared bus (M68K uses 32-bit addressing directly)
 	cpu := NewM68KCPU(bus)

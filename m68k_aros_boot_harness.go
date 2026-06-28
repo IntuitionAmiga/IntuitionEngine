@@ -380,17 +380,30 @@ type AROSBootResult struct {
 	TimedOut bool
 }
 
-type AROSInterpreterBootEnvironment struct {
-	Bus      *MachineBus
-	CPU      *M68KCPU
-	Runner   *M68KRunner
-	Loader   *AROSLoader
-	Harness  AROSBootHarness
-	Video    *VideoChip
-	Sound    *SoundChip
-	Terminal *TerminalMMIO
-	Coproc   *CoprocessorManager
-	hostRoot string
+type AROSBootEnvironment struct {
+	Bus               *MachineBus
+	CPU               *M68KCPU
+	Runner            *M68KRunner
+	Loader            *AROSLoader
+	Harness           AROSBootHarness
+	Video             *VideoChip
+	Sound             *SoundChip
+	Terminal          *TerminalMMIO
+	DOS               *ArosDOSDevice
+	Coproc            *CoprocessorManager
+	hostRoot          string
+	deterministicIRQs bool
+	irqReplay         []m68kIRQTraceEvent
+}
+
+type AROSInterpreterBootEnvironment = AROSBootEnvironment
+
+type AROSBootEnvironmentOptions struct {
+	WithCoprocessor   bool
+	InterpreterOnly   bool
+	DeterministicIRQs bool
+	NoNativeCeiling   bool
+	IRQReplay         []m68kIRQTraceEvent
 }
 
 func (h AROSBootHarness) Run(ctx context.Context) AROSBootResult {
@@ -452,15 +465,23 @@ func (h AROSBootHarness) Run(ctx context.Context) AROSBootResult {
 	}
 }
 
-func NewAROSInterpreterBootEnvironment(rom []byte, hostRoot string) (*AROSInterpreterBootEnvironment, error) {
-	return newAROSInterpreterBootEnvironment(rom, hostRoot, false)
+func NewAROSBootEnvironment(rom []byte, hostRoot string) (*AROSBootEnvironment, error) {
+	return newAROSBootEnvironment(rom, hostRoot, AROSBootEnvironmentOptions{})
 }
 
-func NewAROSInterpreterBootEnvironmentWithCoprocessor(rom []byte, hostRoot string) (*AROSInterpreterBootEnvironment, error) {
-	return newAROSInterpreterBootEnvironment(rom, hostRoot, true)
+func NewAROSBootEnvironmentWithOptions(rom []byte, hostRoot string, opts AROSBootEnvironmentOptions) (*AROSBootEnvironment, error) {
+	return newAROSBootEnvironment(rom, hostRoot, opts)
 }
 
-func newAROSInterpreterBootEnvironment(rom []byte, hostRoot string, withCoprocessor bool) (*AROSInterpreterBootEnvironment, error) {
+func NewAROSInterpreterBootEnvironment(rom []byte, hostRoot string) (*AROSBootEnvironment, error) {
+	return newAROSBootEnvironment(rom, hostRoot, AROSBootEnvironmentOptions{InterpreterOnly: true})
+}
+
+func NewAROSInterpreterBootEnvironmentWithCoprocessor(rom []byte, hostRoot string) (*AROSBootEnvironment, error) {
+	return newAROSBootEnvironment(rom, hostRoot, AROSBootEnvironmentOptions{InterpreterOnly: true, WithCoprocessor: true})
+}
+
+func newAROSBootEnvironment(rom []byte, hostRoot string, opts AROSBootEnvironmentOptions) (*AROSBootEnvironment, error) {
 	bus, err := NewMachineBusSized(arosDirectVRAMBase + arosDirectVRAMSize)
 	if err != nil {
 		return nil, fmt.Errorf("new AROS bus: %w", err)
@@ -491,9 +512,16 @@ func newAROSInterpreterBootEnvironment(rom []byte, hostRoot string, withCoproces
 	bus.MapIO(TERM_OUT, TERMINAL_REGION_END, term.HandleRead, term.HandleWrite)
 
 	cpu := NewM68KCPU(bus)
-	cpu.m68kJitEnabled = false
 	runner := NewM68KRunner(cpu)
-	runner.cpu.m68kJitEnabled = false
+	// Zero means no native-PC ceiling: high-RAM AROS code should stay native.
+	cpu.m68kJitNativeMaxPC = 0
+	if opts.NoNativeCeiling {
+		cpu.m68kJitNativeMaxPC = 0
+	}
+	if opts.InterpreterOnly {
+		cpu.m68kJitEnabled = false
+		runner.cpu.m68kJitEnabled = false
+	}
 
 	loader := NewAROSLoader(bus, cpu, video)
 	if err := loader.LoadROM(rom); err != nil {
@@ -502,8 +530,11 @@ func newAROSInterpreterBootEnvironment(rom []byte, hostRoot string, withCoproces
 		return nil, fmt.Errorf("load AROS ROM: %w", err)
 	}
 
+	var dos *ArosDOSDevice
 	if hostRoot != "" {
-		if dos, err := NewArosDOSDevice(bus, hostRoot); err == nil {
+		if d, err := NewArosDOSDevice(bus, hostRoot); err == nil {
+			dos = d
+			dos.DiagnosticCPU = cpu
 			bus.MapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END, dos.HandleRead, dos.HandleWrite)
 		}
 	}
@@ -524,7 +555,7 @@ func newAROSInterpreterBootEnvironment(rom []byte, hostRoot string, withCoproces
 	loader.MapIRQDiagnostics()
 
 	var coproc *CoprocessorManager
-	if withCoprocessor {
+	if opts.WithCoprocessor {
 		coproc = NewCoprocessorManager(bus, ".")
 		bus.MapIO(COPROC_BASE, COPROC_END, coproc.HandleRead, coproc.HandleWrite)
 		bus.MapIO(COPROC_EXT_BASE, COPROC_EXT_END, coproc.HandleRead, coproc.HandleWrite)
@@ -535,16 +566,19 @@ func newAROSInterpreterBootEnvironment(rom []byte, hostRoot string, withCoproces
 	video.Start()
 	sound.Start()
 
-	env := &AROSInterpreterBootEnvironment{
-		Bus:      bus,
-		CPU:      cpu,
-		Runner:   runner,
-		Loader:   loader,
-		Video:    video,
-		Sound:    sound,
-		Terminal: term,
-		Coproc:   coproc,
-		hostRoot: hostRoot,
+	env := &AROSBootEnvironment{
+		Bus:               bus,
+		CPU:               cpu,
+		Runner:            runner,
+		Loader:            loader,
+		Video:             video,
+		Sound:             sound,
+		Terminal:          term,
+		DOS:               dos,
+		Coproc:            coproc,
+		hostRoot:          hostRoot,
+		deterministicIRQs: opts.DeterministicIRQs,
+		irqReplay:         append([]m68kIRQTraceEvent(nil), opts.IRQReplay...),
 	}
 	env.Harness = AROSBootHarness{
 		CPU:          cpu,
@@ -555,22 +589,98 @@ func newAROSInterpreterBootEnvironment(rom []byte, hostRoot string, withCoproces
 	return env, nil
 }
 
-func (env *AROSInterpreterBootEnvironment) BootAndWait(ctx context.Context) (AROSBootResult, error) {
+func (env *AROSBootEnvironment) BootAndWait(ctx context.Context) (AROSBootResult, error) {
 	if env == nil || env.Runner == nil || env.Loader == nil {
-		return AROSBootResult{}, fmt.Errorf("AROS interpreter boot environment is incomplete")
+		return AROSBootResult{}, fmt.Errorf("AROS boot environment is incomplete")
 	}
-	env.Loader.StartTimer()
+	if env.deterministicIRQs {
+		env.installDeterministicIRQs()
+	} else if len(env.irqReplay) != 0 {
+		env.installIRQReplay()
+	} else {
+		env.Loader.StartTimer()
+	}
 	env.Runner.StartExecution()
 	result := env.Harness.Run(ctx)
 	return result, nil
 }
 
-func (env *AROSInterpreterBootEnvironment) Close() {
+func (env *AROSBootEnvironment) installIRQReplay() {
+	if env == nil || env.CPU == nil || len(env.irqReplay) == 0 {
+		return
+	}
+	replayer := newM68KIRQTraceReplayer(env.irqReplay)
+	env.CPU.InstructionCountHook = func(cpu *M68KCPU, instructionCount uint64) {
+		replayer.Hook(cpu, instructionCount)
+	}
+	env.CPU.StoppedIdleHook = func(cpu *M68KCPU) {
+		replayer.Hook(cpu, cpu.InstructionCount)
+	}
+}
+
+func (env *AROSBootEnvironment) installDeterministicIRQs() {
+	if env == nil || env.CPU == nil || env.Loader == nil {
+		return
+	}
+	timerInterval := uint64(70000)
+	vblankInterval := uint64(233333)
+	nextTimer := timerInterval
+	nextVBlank := vblankInterval
+	env.CPU.InstructionCountHook = func(cpu *M68KCPU, instructionCount uint64) {
+		if cpu == nil || env.Loader == nil || !cpu.Running() {
+			return
+		}
+		env.Loader.refreshIRQArming()
+		for instructionCount >= nextTimer {
+			if env.Loader.l5Armed {
+				cpu.AssertInterrupt(5)
+			}
+			nextTimer += timerInterval
+		}
+		for instructionCount >= nextVBlank {
+			if env.Loader.l2Armed {
+				cpu.AssertInterrupt(2)
+			}
+			if env.Loader.l4Armed {
+				cpu.AssertInterrupt(4)
+			}
+			nextVBlank += vblankInterval
+		}
+	}
+	// Wake STOP-idle: the instruction count is frozen during STOP so the count
+	// hook above cannot fire. Assert the armed levels so the deterministic boot
+	// progresses past idle (otherwise it deadlocks at cpu_Dispatch's stop
+	// #0x2000). Called only from the CPU thread's STOP spin.
+	env.CPU.StoppedIdleHook = func(cpu *M68KCPU) {
+		if env.Loader == nil {
+			return
+		}
+		// Fire once per STOP episode: only when nothing is already pending
+		// (asserting once sets pending; the STOP loop then delivers it and wakes).
+		if cpu.pendingInterrupt.Load() != 0 {
+			return
+		}
+		env.Loader.refreshIRQArming()
+		if env.Loader.l4Armed {
+			cpu.AssertInterrupt(4)
+		} else if env.Loader.l5Armed {
+			cpu.AssertInterrupt(5)
+		} else if env.Loader.l2Armed {
+			cpu.AssertInterrupt(2)
+		}
+	}
+}
+
+func (env *AROSBootEnvironment) Close() {
 	if env == nil {
 		return
 	}
 	if env.Runner != nil {
 		env.Runner.Stop()
+	}
+	if env.CPU != nil {
+		env.CPU.InstructionCountHook = nil
+		env.CPU.StoppedIdleHook = nil
 	}
 	if env.Loader != nil {
 		env.Loader.Stop()

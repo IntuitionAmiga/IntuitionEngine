@@ -1511,6 +1511,48 @@ func TestScriptEngine_CPUJITControls_M68K(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_CPUJITStats_M68K(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	runner := NewM68KRunner(NewM68KCPU(bus))
+	runner.cpu.SetRunning(false)
+	runner.cpu.m68kJitNativeBlocksExecuted.Store(7)
+	runner.cpu.m68kJitFallbackInstructions.Store(3)
+	runner.cpu.m68kJitBailoutCount.Store(2)
+	runner.cpu.m68kJitLastFallbackPC.Store(0x1234)
+	runner.cpu.m68kJitLastFallbackOpcode.Store(0x4A39)
+	runner.cpu.m68kJitFallbackOpcodeCounts[0x4A39].Store(5)
+	runner.cpu.m68kJitFallbackOpcodeCounts[0x0839].Store(9)
+	runner.cpu.m68kJitFallbackOpcodePCs[0x0839].Store(0xE01000)
+	runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, runner, nil, nil, nil)
+	t.Cleanup(func() {
+		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	})
+
+	script := `
+		local stats = cpu.jit_stats()
+		if stats.native_blocks ~= 7 then error("native_blocks") end
+		if stats.fallback_instructions ~= 3 then error("fallback_instructions") end
+		if stats.bailouts ~= 2 then error("bailouts") end
+		if stats.last_fallback_pc ~= 0x1234 then error("last_fallback_pc") end
+		if stats.last_fallback_opcode ~= 0x4A39 then error("last_fallback_opcode") end
+		if #stats.fallback_opcodes ~= 2 then error("fallback_opcodes length") end
+		if stats.fallback_opcodes[1].opcode ~= 0x0839 then error("fallback opcode order") end
+		if stats.fallback_opcodes[1].count ~= 9 then error("fallback opcode count") end
+		if stats.fallback_opcodes[1].pc ~= 0xE01000 then error("fallback opcode pc") end
+	`
+	if err := se.RunString(script, "cpu_jit_stats_m68k"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
 func TestScriptEngine_CPUJITControls_X86(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()

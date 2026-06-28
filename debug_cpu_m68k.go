@@ -388,6 +388,7 @@ func (d *DebugM68K) WriteMemory(addr uint64, data []byte) {
 	mem := d.cpu.memory
 	if addr <= 0xFFFFFFFF && addr+uint64(len(data)) <= uint64(len(mem)) && !d.memoryRangeHasIO(addr, len(data)) {
 		copy(mem[uint32(addr):], data)
+		d.cpu.invalidateM68KJITForGuestWrite(uint32(addr), uint32(len(data)))
 		return
 	}
 	if d.cpu.bus != nil {
@@ -401,6 +402,7 @@ func (d *DebugM68K) WriteMemory(addr uint64, data []byte) {
 		return
 	}
 	copy(mem[start:], data)
+	d.cpu.invalidateM68KJITForGuestWrite(start, uint32(len(data)))
 }
 
 func (d *DebugM68K) memoryRangeHasIO(addr uint64, size int) bool {

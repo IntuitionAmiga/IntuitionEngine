@@ -815,6 +815,7 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"jit_enabled":     se.luaCPUJITEnabled(),
 		"set_jit_enabled": se.luaCPUSetJITEnabled(),
 		"execution_mode":  se.luaCPUExecutionMode(),
+		"jit_stats":       se.luaCPUJITStats(),
 	})
 	L.SetGlobal("cpu", cpu)
 
@@ -1964,6 +1965,164 @@ func (se *ScriptEngine) luaCPUExecutionMode() lua.LGFunction {
 		L.Push(lua.LString(mode))
 		return 1
 	}
+}
+
+func (se *ScriptEngine) luaCPUJITStats() lua.LGFunction {
+	return func(L *lua.LState) int {
+		snap := runtimeStatus.snapshot()
+		tbl := L.NewTable()
+		switch snap.selectedCPU {
+		case runtimeCPUM68K:
+			if snap.m68k != nil && snap.m68k.cpu != nil {
+				cpu := snap.m68k.cpu
+				L.SetField(tbl, "instruction_count", lua.LNumber(cpu.InstructionCount))
+				L.SetField(tbl, "native_blocks", lua.LNumber(cpu.m68kJitNativeBlocksExecuted.Load()))
+				L.SetField(tbl, "last_native_pc", lua.LNumber(cpu.m68kJitLastNativePC.Load()))
+				L.SetField(tbl, "fallback_instructions", lua.LNumber(cpu.m68kJitFallbackInstructions.Load()))
+				L.SetField(tbl, "bailouts", lua.LNumber(cpu.m68kJitBailoutCount.Load()))
+				L.SetField(tbl, "last_fallback_pc", lua.LNumber(cpu.m68kJitLastFallbackPC.Load()))
+				L.SetField(tbl, "last_fallback_opcode", lua.LNumber(cpu.m68kJitLastFallbackOpcode.Load()))
+				L.SetField(tbl, "fallback_opcodes", se.luaM68KJITFallbackOpcodeStats(L, cpu, 16))
+				L.SetField(tbl, "native_pcs", se.luaM68KJITNativePCStats(L, cpu, 16))
+				L.SetField(tbl, "native_pc_ring", se.luaM68KJITNativePCRing(L, cpu))
+				L.SetField(tbl, "compile_failures", se.luaM68KJITCompileFailures(L, cpu, 16))
+			}
+		}
+		L.Push(tbl)
+		return 1
+	}
+}
+
+type m68kJITCompileFailureStat struct {
+	pc    uint32
+	count uint64
+	err   string
+}
+
+func (se *ScriptEngine) luaM68KJITCompileFailures(L *lua.LState, cpu *M68KCPU, limit int) *lua.LTable {
+	cpu.m68kJitCompileFailMu.Lock()
+	stats := make([]m68kJITCompileFailureStat, 0, len(cpu.m68kJitCompileFailCounts))
+	for pc, count := range cpu.m68kJitCompileFailCounts {
+		if count != 0 {
+			stats = append(stats, m68kJITCompileFailureStat{
+				pc:    pc,
+				count: count,
+				err:   cpu.m68kJitCompileFailErrors[pc],
+			})
+		}
+	}
+	cpu.m68kJitCompileFailMu.Unlock()
+
+	sort.Slice(stats, func(i, j int) bool {
+		if stats[i].count == stats[j].count {
+			return stats[i].pc < stats[j].pc
+		}
+		return stats[i].count > stats[j].count
+	})
+	if limit > 0 && len(stats) > limit {
+		stats = stats[:limit]
+	}
+
+	tbl := L.NewTable()
+	for i, stat := range stats {
+		entry := L.NewTable()
+		L.SetField(entry, "pc", lua.LNumber(stat.pc))
+		L.SetField(entry, "count", lua.LNumber(stat.count))
+		L.SetField(entry, "error", lua.LString(stat.err))
+		L.RawSetInt(tbl, i+1, entry)
+	}
+	return tbl
+}
+
+type m68kJITFallbackOpcodeStat struct {
+	opcode uint16
+	count  uint64
+}
+
+func (se *ScriptEngine) luaM68KJITFallbackOpcodeStats(L *lua.LState, cpu *M68KCPU, limit int) *lua.LTable {
+	stats := make([]m68kJITFallbackOpcodeStat, 0, limit)
+	for opcode := range cpu.m68kJitFallbackOpcodeCounts {
+		count := cpu.m68kJitFallbackOpcodeCounts[opcode].Load()
+		if count == 0 {
+			continue
+		}
+		stats = append(stats, m68kJITFallbackOpcodeStat{opcode: uint16(opcode), count: count})
+	}
+	sort.Slice(stats, func(i, j int) bool {
+		if stats[i].count == stats[j].count {
+			return stats[i].opcode < stats[j].opcode
+		}
+		return stats[i].count > stats[j].count
+	})
+	if limit > 0 && len(stats) > limit {
+		stats = stats[:limit]
+	}
+
+	tbl := L.NewTable()
+	for i, stat := range stats {
+		entry := L.NewTable()
+		L.SetField(entry, "opcode", lua.LNumber(stat.opcode))
+		L.SetField(entry, "count", lua.LNumber(stat.count))
+		L.SetField(entry, "pc", lua.LNumber(cpu.m68kJitFallbackOpcodePCs[stat.opcode].Load()))
+		L.RawSetInt(tbl, i+1, entry)
+	}
+	return tbl
+}
+
+type m68kJITNativePCStat struct {
+	pc    uint32
+	count uint64
+}
+
+func (se *ScriptEngine) luaM68KJITNativePCStats(L *lua.LState, cpu *M68KCPU, limit int) *lua.LTable {
+	cpu.m68kJitNativePCMu.Lock()
+	stats := make([]m68kJITNativePCStat, 0, len(cpu.m68kJitNativePCCounts))
+	for pc, count := range cpu.m68kJitNativePCCounts {
+		if count != 0 {
+			stats = append(stats, m68kJITNativePCStat{pc: pc, count: count})
+		}
+	}
+	cpu.m68kJitNativePCMu.Unlock()
+
+	sort.Slice(stats, func(i, j int) bool {
+		if stats[i].count == stats[j].count {
+			return stats[i].pc < stats[j].pc
+		}
+		return stats[i].count > stats[j].count
+	})
+	if limit > 0 && len(stats) > limit {
+		stats = stats[:limit]
+	}
+
+	tbl := L.NewTable()
+	for i, stat := range stats {
+		entry := L.NewTable()
+		L.SetField(entry, "pc", lua.LNumber(stat.pc))
+		L.SetField(entry, "count", lua.LNumber(stat.count))
+		L.RawSetInt(tbl, i+1, entry)
+	}
+	return tbl
+}
+
+func (se *ScriptEngine) luaM68KJITNativePCRing(L *lua.LState, cpu *M68KCPU) *lua.LTable {
+	cpu.m68kJitNativePCMu.Lock()
+	idx := cpu.m68kJitNativePCRingIdx
+	count := idx
+	if count > uint32(len(cpu.m68kJitNativePCRing)) {
+		count = uint32(len(cpu.m68kJitNativePCRing))
+	}
+	values := make([]uint32, 0, count)
+	start := idx - count
+	for i := uint32(0); i < count; i++ {
+		values = append(values, cpu.m68kJitNativePCRing[(start+i)%uint32(len(cpu.m68kJitNativePCRing))])
+	}
+	cpu.m68kJitNativePCMu.Unlock()
+
+	tbl := L.NewTable()
+	for i, pc := range values {
+		tbl.RawSetInt(i+1, lua.LNumber(pc))
+	}
+	return tbl
 }
 
 func (se *ScriptEngine) requireFrozenForRange(L *lua.LState, addr uint32, n uint32) bool {

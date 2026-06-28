@@ -1,0 +1,27 @@
+local WAIT_MS = 30000
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function dump(label, addr, count)
+    sys.print(string.format("[chainless-blocks] %s %s", label, hex(addr)))
+    local ok, dis = pcall(dbg.disasm, addr, count)
+    if not ok or type(dis) ~= "table" then
+        sys.print("[chainless-blocks]   unavailable")
+        return
+    end
+    for i = 1, #dis do
+        local e = dis[i]
+        sys.print(string.format("[chainless-blocks]   %08X: %-18s %s", e.addr or e.pc or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+sys.wait_ms(WAIT_MS)
+dbg.freeze()
+sys.print(string.format("[chainless-blocks] pc=%s", hex(dbg.get_pc())))
+dump("copy_fault_009c1b80", 0x009C1B80, 40)
+dump("stall_loop_00607530", 0x00607530, 48)
+dump("last_native_00608f04", 0x00608ED0, 56)
+dump("hot_native_0065fb1a", 0x0065FAE0, 64)
+dbg.resume()

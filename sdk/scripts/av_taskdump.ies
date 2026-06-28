@@ -1,0 +1,225 @@
+-- av_taskdump.ies - dump AROS exec task lists at boot stall
+-- Usage: IntuitionEngine.headless -aros -aros-drive build/arosvision-ie/AROS \
+--          -script sdk/scripts/av_taskdump.ies
+
+local floor = math.floor
+
+local LINES = {}
+local function log(s)
+    LINES[#LINES + 1] = s
+    sys.print(s)
+end
+
+local function be32(v)
+    local b0 = v % 256; v = floor(v / 256)
+    local b1 = v % 256; v = floor(v / 256)
+    local b2 = v % 256; v = floor(v / 256)
+    local b3 = v % 256
+    return b0 * 16777216 + b1 * 65536 + b2 * 256 + b3
+end
+
+local function m32(a) return be32(mem.read32(a)) end
+local function m8(a) return mem.read8(a) end
+
+local function valid(p) return p >= 0x400 and p < 0x2000000 end
+
+local function rdstr(a)
+    if not valid(a) then return "<badptr>" end
+    local s = {}
+    for i = 0, 63 do
+        local b = m8(a + i)
+        if b == 0 then break end
+        if b >= 32 and b < 127 then s[#s + 1] = string.char(b) end
+    end
+    return table.concat(s)
+end
+
+-- struct Task offsets: ln_Name +10, tc_State +15, tc_SigWait +22,
+-- tc_SigRecvd +26, tc_SPReg +54
+local function taskinfo(t)
+    local name = "<noname>"
+    local np = m32(t + 10)
+    if valid(np) then name = rdstr(np) end
+    local state    = m8(t + 15)
+    local sigwait  = m32(t + 22)
+    local sigrecvd = m32(t + 26)
+    local spreg    = m32(t + 54)
+    return string.format("task=%08X st=%d wait=%08X recvd=%08X sp=%08X  %s",
+        t, state, sigwait, sigrecvd, spreg, name)
+end
+
+local function taskname(t)
+    local np = m32(t + 10)
+    if valid(np) then return rdstr(np) end
+    return "<noname>"
+end
+
+local interesting = {}
+
+local function walk(list, label)
+    log("== " .. label .. " ==")
+    local node = m32(list)
+    for _ = 1, 100 do
+        if not valid(node) then break end
+        local succ = m32(node)
+        if succ == 0 then break end
+        log(taskinfo(node))
+        local nm = taskname(node)
+        if nm:find("Wanderer") or nm:find("Workbench Handler")
+            or nm:find("input.device") or nm:find("IPrefs")
+            or nm:find("FPPrefs") or nm:find("Intuition menu") then
+            interesting[#interesting + 1] = node
+        end
+        node = succ
+    end
+end
+
+-- Dump stack longs so return addresses can be matched against ROM/module maps.
+local function dumpstack(t)
+    local sp = m32(t + 54)
+    log(string.format("-- stack of %08X (%s) sp=%08X --", t, taskname(t), sp))
+    if not valid(sp) then
+        log("   <sp invalid>")
+        return
+    end
+    for i = 0, 95 do
+        local v = m32(sp + i * 4)
+        if v >= 0x400 and v < 0x2000000 then
+            log(string.format("   sp+%03X: %08X", i * 4, v))
+        end
+    end
+end
+
+sys.wait_ms(75000)
+cpu.freeze()
+
+local eb = m32(4)
+log(string.format("ExecBase=%08X", eb))
+log(string.format("PC=%08X SR=%04X", dbg.get_pc(), dbg.get_reg("sr")))
+local this = m32(eb + 0x114)
+log("ThisTask: " .. taskinfo(this))
+-- ExecBase list offsets (m68k): TaskReady 0x196, TaskWait 0x1A4
+walk(eb + 0x196, "TaskReady")
+walk(eb + 0x1A4, "TaskWait")
+
+local alltasks = {}
+do
+    local function collect(list)
+        local node = m32(list)
+        for _ = 1, 100 do
+            if not valid(node) then break end
+            local succ = m32(node)
+            if succ == 0 then break end
+            alltasks[node] = true
+            node = succ
+        end
+    end
+    collect(eb + 0x196)
+    collect(eb + 0x1A4)
+    alltasks[this] = true
+end
+
+-- A task blocked in ObtainSemaphore has a struct SemaphoreRequest on its
+-- stack: { mln_Succ, mln_Pred, sr_Waiter==task }. With a single waiter,
+-- mln_Succ == &ss_WaitQueue.mlh_Tail (sem+20) and mln_Pred == &mlh_Head
+-- (sem+16); in general both point into the wait queue near the semaphore.
+-- ss_Owner is at sem+40, ss_NestCount at sem+14.
+local function semscan(t)
+    local sp = m32(t + 54)
+    if not valid(sp) then return end
+    for i = 0, 94 do
+        local waiter = m32(sp + (i + 2) * 4)
+        if waiter == t then
+            local succ = m32(sp + i * 4)
+            local pred = m32(sp + (i + 1) * 4)
+            if valid(succ) and valid(pred) then
+                -- Walk mln_Succ to the queue tail (mlh_Tail == 0 marker),
+                -- which sits at sem+20 regardless of waiter count.
+                local node = succ
+                local sem = nil
+                for _ = 1, 20 do
+                    if not valid(node) then break end
+                    if m32(node) == 0 then sem = node - 20 break end
+                    node = m32(node)
+                end
+                if sem and m8(sem + 8) == 15 then -- ln_Type == NT_SIGNALSEM
+                    local owner = m32(sem + 40)
+                    local nest = floor(m32(sem + 12) % 65536)
+                    local qcount = floor(m32(sem + 44) / 65536)
+                    log(string.format("SEM %s sp+%03X waits sem=%08X owner=%08X(%s) nest=%04X qcount=%04X",
+                        taskname(t), i * 4, sem, owner,
+                        alltasks[owner] and taskname(owner) or "<not-live>",
+                        nest, qcount))
+                    local raw = {}
+                    for w = 0, 11 do raw[#raw + 1] = string.format("%08X", m32(sem + w * 4)) end
+                    log("   raw: " .. table.concat(raw, " "))
+                end
+            end
+        end
+    end
+end
+
+for _, t in ipairs(interesting) do
+    dumpstack(t)
+end
+for _, t in ipairs(interesting) do
+    semscan(t)
+end
+
+-- Walk Intuition screen list; LayerInfo.Lock should sit at screen+256 with
+-- the AmigaOS-compatible m68k struct layout.
+do
+    local liblist = eb + 378
+    local node = m32(liblist)
+    local intuibase = nil
+    for _ = 1, 100 do
+        if not valid(node) then break end
+        local succ = m32(node)
+        if succ == 0 then break end
+        local np = m32(node + 10)
+        if valid(np) and rdstr(np) == "intuition.library" then intuibase = node break end
+        node = succ
+    end
+    if intuibase then
+        log(string.format("IntuitionBase=%08X", intuibase))
+        local scr = m32(intuibase + 60)
+        for _ = 1, 16 do
+            if not valid(scr) then break end
+            local tp = m32(scr + 22)
+            local title = valid(tp) and rdstr(tp) or "<none>"
+            log(string.format("SCREEN %08X title=%q LayerInfo.Lock=%08X first_window=%08X",
+                scr, title, scr + 256, m32(scr + 4)))
+            -- Windows: NextWindow +0, Title +32, WLayer +124.
+            -- Layer.Lock sits at layer+72; sem fields: nest +14, owner +40,
+            -- queue head +16.
+            local w = m32(scr + 4)
+            for _ = 1, 32 do
+                if not valid(w) then break end
+                local wt = m32(w + 32)
+                local wtitle = valid(wt) and rdstr(wt) or "<none>"
+                local layer = m32(w + 124)
+                local lockinfo = "<no layer>"
+                if valid(layer) then
+                    local lock = layer + 72
+                    local nest = floor(m32(lock + 12) % 65536)
+                    local qc = floor(m32(lock + 44) / 65536)
+                    local owner = m32(lock + 40)
+                    local qhead = m32(lock + 16)
+                    local queued = (m32(qhead) ~= 0) and "WAITERS" or "empty"
+                    lockinfo = string.format(
+                        "layer=%08X lock=%08X nest=%04X qcount=%04X owner=%08X(%s) queue=%s",
+                        layer, lock, nest, qc, owner,
+                        alltasks[owner] and taskname(owner) or "-", queued)
+                end
+                log(string.format("  WINDOW %08X title=%q %s", w, wtitle, lockinfo))
+                w = m32(w)
+            end
+            scr = m32(scr)
+        end
+    else
+        log("intuition.library not found in liblist")
+    end
+end
+
+cpu.resume()
+sys.exit(0)

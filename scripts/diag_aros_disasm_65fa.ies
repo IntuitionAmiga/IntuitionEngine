@@ -1,0 +1,38 @@
+sys.wait_ms(30000)
+dbg.open()
+for _, line in ipairs(dbg.command_output("r")) do
+    if type(line) == "table" then
+        local parts = {}
+        for k, v in pairs(line) do
+            parts[#parts + 1] = tostring(k) .. "=" .. tostring(v)
+        end
+        sys.print(table.concat(parts, " "))
+    else
+        sys.print(tostring(line))
+    end
+end
+local rows = dbg.disasm(dbg.get_pc(), 24)
+for i = 1, #rows do
+    local e = rows[i]
+    if type(e) == "table" then
+        local parts = {}
+        for k, v in pairs(e) do
+            parts[#parts + 1] = tostring(k) .. "=" .. tostring(v)
+        end
+        sys.print(table.concat(parts, " "))
+    else
+        sys.print(tostring(e))
+    end
+end
+for _, line in ipairs(dbg.command_output("trace mmio mmio 160")) do
+    if type(line) == "table" then
+        local parts = {}
+        for k, v in pairs(line) do
+            parts[#parts + 1] = tostring(k) .. "=" .. tostring(v)
+        end
+        sys.print(table.concat(parts, " "))
+    else
+        sys.print(tostring(line))
+    end
+end
+dbg.close()

@@ -1,0 +1,27 @@
+local WAIT_MS = tonumber(os.getenv("IE_AROS_HOT_FALLBACK_WAIT_MS") or "65000")
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function dump(label, addr, count)
+    sys.print(string.format("[hot-fallbacks] %s %s", label, hex(addr)))
+    local ok, rows = pcall(dbg.disasm, addr, count or 32)
+    if not ok or type(rows) ~= "table" then
+        sys.print("[hot-fallbacks] unavailable")
+        return
+    end
+    for i = 1, #rows do
+        local e = rows[i]
+        sys.print(string.format("[hot-fallbacks] %08X: %-18s %s", e.addr or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+sys.wait_ms(WAIT_MS)
+dbg.freeze()
+dump("006156c0", 0x006156C0, 48)
+dump("0060c200", 0x0060C200, 48)
+dump("00753c40", 0x00753C40, 48)
+dump("00947860", 0x00947860, 48)
+dbg.resume()
+sys.quit()

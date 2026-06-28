@@ -542,12 +542,14 @@ func (m *MachineMonitor) restoreWholeMachineSnapshotLocked(snap *WholeMachineSna
 			return fmt.Errorf("snapshot bus memory size %d exceeds current bus size %d", snap.Bus.MemorySize, len(m.bus.memory))
 		}
 		clear(m.bus.memory)
+		invalidateM68KJITForGuestWrite(m.bus, 0, uint64(len(m.bus.memory)))
 		for _, page := range snap.Bus.Pages {
 			end := page.Addr + uint64(len(page.Data))
 			if end > uint64(len(m.bus.memory)) {
 				return fmt.Errorf("bus snapshot page $%X exceeds current bus memory", page.Addr)
 			}
 			copy(m.bus.memory[page.Addr:end], page.Data)
+			invalidateM68KJITForGuestWrite(m.bus, page.Addr, uint64(len(page.Data)))
 		}
 		if snap.Bus.BackingSize > 0 {
 			if m.bus.backing == nil {
@@ -557,12 +559,16 @@ func (m *MachineMonitor) restoreWholeMachineSnapshotLocked(snap *WholeMachineSna
 				return fmt.Errorf("snapshot backing size %d exceeds current backing size %d", snap.Bus.BackingSize, m.bus.backing.Size())
 			}
 			m.bus.backing.Reset()
+			invalidateM68KJITForGuestWrite(m.bus, 0, m.bus.backing.Size())
 			for _, page := range snap.Bus.BackingPages {
 				m.bus.backing.WriteBytes(page.Addr, page.Data)
+				invalidateM68KJITForGuestWrite(m.bus, page.Addr, uint64(len(page.Data)))
 			}
 		} else if m.bus.backing != nil {
+			backingSize := m.bus.backing.Size()
 			_ = m.bus.backing.Close()
 			m.bus.backing = nil
+			invalidateM68KJITForGuestWrite(m.bus, 0, backingSize)
 		}
 	}
 

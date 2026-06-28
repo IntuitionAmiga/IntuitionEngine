@@ -67,20 +67,15 @@ write_ie_startup_sequence() {
 	      next;
 	    }
 
-	    if (/^\s*if\s+\$ArosVision\s+eq\s+2\b/i) {
-	      $wanderer_branch = 1;
-	      print;
-	      next;
-	    }
-
-	    if ($wanderer_branch && /^\s*endif\b/i) {
-	      $wanderer_branch = 0;
-	      print;
-	      next;
-	    }
-
-	    if (!$wanderer_branch && /^\s*RunFromWB\s+sys:WBStartUp\/Additional\/WBDock\b/i) {
-	      print "; IE disabled: $_";
+	    # DOpus5 / Opus5 desktop is removed from the IE tree (its prebuilt OS3
+	    # binaries are ABI-incompatible with AROS and crash). Wanderer is the
+	    # desktop. Strip every DOpus5 launch/assign in ALL branches (the
+	    # $ArosVision eq 2 branch launched WBDock unconditionally).
+	    if (/^\s*RunFromWB\s+sys:WBStartUp\/Additional\/WBDock\b/i ||
+	        /^\s*Assign\s+DOpus5:/i ||
+	        /^\s*(RunFromWB\s+)?(Sys:)?Extras\/Desktops\/Opus5\/DirectoryOpus\b/i ||
+	        /^\s*Sys:Extras\/Desktops\/Opus5\/DirectoryOpus\b/i) {
+	      print "; IE disabled (DOpus5 removed): $_";
 	      next;
 	    }
 
@@ -152,11 +147,33 @@ case "$output_abs" in
   *) fail "output must be inside build" ;;
 esac
 
+# Remove Directory Opus 5 / Opus5 desktop from the IE tree. DOpus5 ships only as
+# prebuilt OS3 (m68k-amigaos) binaries that are ABI-incompatible with AROS
+# (struct-packing + semaphore-strictness bugs that crash the desktop). Wanderer
+# is the IE desktop; DOpus5 is not used. Strip its components so they can never
+# be launched or loaded.
+strip_dopus5_components() {
+  local root="$1"
+  local rel
+  for rel in \
+    Libs/dopus5.library \
+    Extras/Desktops/Opus5 Extras/Desktops/Opus5.info \
+    Extras/Tools/DOpus \
+    WBStartup/Additional/WBDock WBStartup/Additional/WBDock.info \
+    C/DOpusRT5 C/LoadDB \
+    Fonts/dopusbutton Fonts/DopusButton.font Fonts/dopusdir Fonts/DopusDir.font \
+    Extras/Help/CII.Dopus.doc Extras/Helpfile/dopus_582_B_main.pdf \
+    Prefs/Env-Archive/DOpus; do
+    rm -rf "$root/$rel"
+  done
+}
+
 cd "$root_dir"
 if [[ "$mode" == "base" || "$mode" == "all" ]]; then
   rm -rf "$output_abs"
   mkdir -p "$(dirname "$output_abs")"
   cp -a "$source_abs" "$output_abs"
+  strip_dopus5_components "$output_abs"
 fi
 
 if [[ "$mode" == "base" ]]; then

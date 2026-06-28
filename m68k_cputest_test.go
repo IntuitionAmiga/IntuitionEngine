@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -255,6 +257,26 @@ func runM68KCPUTestSuite(t *testing.T, useJIT bool) {
 		t.Logf("Suite incomplete after %d cycles: %d pass, %d fail of %d expected (PC=$%08X SP=$%08X)",
 			cycles, passes, fails, expected, cpu.PC, cpu.AddrRegs[7])
 	}
+	if useJIT {
+		t.Logf("JIT counters: native_blocks=%d region_promotions=%d static_jmp_chases=%d fallback_instr=%d bailouts=%d last_fallback_pc=$%08X last_fallback_opcode=$%04X fallback_opcodes=%s",
+			cpu.m68kJitNativeBlocksExecuted.Load(),
+			cpu.m68kJitRegionPromotions.Load(),
+			cpu.m68kJitStaticJMPChases.Load(),
+			cpu.m68kJitFallbackInstructions.Load(),
+			cpu.m68kJitBailoutCount.Load(),
+			cpu.m68kJitLastFallbackPC.Load(),
+			uint16(cpu.m68kJitLastFallbackOpcode.Load()),
+			formatM68KCPUTestJITFallbackOpcodes(cpu, 24))
+		if os.Getenv("IE_M68K_CPUTEST_JIT_FAIL_FALLBACK") == "1" {
+			if got := cpu.m68kJitFallbackInstructions.Load(); got != 0 {
+				t.Fatalf("JIT CPU test suite used %d fallback instructions; fallback_opcodes=%s",
+					got, formatM68KCPUTestJITFallbackOpcodes(cpu, 64))
+			}
+			if got := cpu.m68kJitBailoutCount.Load(); got != 0 {
+				t.Fatalf("JIT CPU test suite used %d native bailouts", got)
+			}
+		}
+	}
 
 	if passes+fails != expected && expected > 0 && completed {
 		t.Errorf("Case count mismatch: pass(%d) + fail(%d) = %d, expected %d",
@@ -287,6 +309,36 @@ func runM68KCPUTestSuite(t *testing.T, useJIT bool) {
 	if !completed {
 		t.Errorf("Suite did not complete: %d/%d cases ran before CPU runaway", passes+fails, expected)
 	}
+}
+
+func formatM68KCPUTestJITFallbackOpcodes(cpu *M68KCPU, limit int) string {
+	if cpu == nil || len(cpu.m68kJitFallbackTouched) == 0 {
+		return "<none>"
+	}
+	touched := append([]uint16(nil), cpu.m68kJitFallbackTouched...)
+	sort.Slice(touched, func(i, j int) bool {
+		ci := cpu.m68kJitFallbackOpcodeCounts[touched[i]].Load()
+		cj := cpu.m68kJitFallbackOpcodeCounts[touched[j]].Load()
+		if ci != cj {
+			return ci > cj
+		}
+		return touched[i] < touched[j]
+	})
+	if limit <= 0 || limit > len(touched) {
+		limit = len(touched)
+	}
+	parts := make([]string, 0, limit+1)
+	for i := 0; i < limit; i++ {
+		opcode := touched[i]
+		parts = append(parts, fmt.Sprintf("%04X:%d@%08X",
+			opcode,
+			cpu.m68kJitFallbackOpcodeCounts[opcode].Load(),
+			cpu.m68kJitFallbackOpcodePCs[opcode].Load()))
+	}
+	if len(touched) > limit {
+		parts = append(parts, fmt.Sprintf("...+%d", len(touched)-limit))
+	}
+	return strings.Join(parts, ",")
 }
 
 func TestM68KCPUTestSuite(t *testing.T) {

@@ -1,0 +1,93 @@
+local TARGET = 0x00800700
+local MAX_WAIT_MS = 60000
+local captured_fault = nil
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function line(s)
+    sys.print(s)
+end
+
+local function access_line(prefix, e)
+    if type(e) ~= "table" then
+        line(prefix .. " <nil>")
+        return
+    end
+    line(string.format("%s kind=%s cpu=%s pc=%s addr=%s width=%s old=%s new=%s",
+        prefix,
+        tostring(e.kind),
+        tostring(e.cpu_id or e.cpu or ""),
+        hex(e.pc or 0),
+        hex(e.addr or 0),
+        tostring(e.width or ""),
+        hex(e.old or 0),
+        hex(e.value or e.new or 0)))
+end
+
+dbg.open()
+dbg.tracering_on(8192)
+dbg.accesslog_on(200000)
+dbg.on_fault("m68k.bus-error", function(ev) captured_fault = ev end)
+dbg.on_fault("m68k.address-error", function(ev) captured_fault = ev end)
+dbg.on_fault("m68k.illegal", function(ev) captured_fault = ev end)
+dbg.on_fault("m68k.line-a", function(ev) captured_fault = ev end)
+dbg.on_fault("m68k.line-f", function(ev) captured_fault = ev end)
+dbg.close()
+
+local deadline = sys.time_ms() + MAX_WAIT_MS
+while sys.time_ms() < deadline do
+    dbg.poll_faults()
+    if captured_fault ~= nil then break end
+    sys.wait_ms(5)
+end
+
+dbg.open()
+if captured_fault ~= nil then
+    line(string.format("[listhead-writer] fault kind=%s pc=%s addr=%s info=%s",
+        tostring(captured_fault.kind), hex(captured_fault.pc), hex(captured_fault.addr), tostring(captured_fault.info)))
+else
+    line("[listhead-writer] timeout without fault")
+end
+
+for off = 0, 7 do
+    local ok, who = pcall(dbg.who, "wrote", TARGET + off)
+    if ok then
+        access_line(string.format("[listhead-writer] who wrote %s", hex(TARGET + off)), who)
+    else
+        line(string.format("[listhead-writer] who wrote %s unavailable: %s", hex(TARGET + off), tostring(who)))
+    end
+end
+
+local ok_log, log = pcall(dbg.accesslog, 80)
+if ok_log and type(log) == "table" then
+    line("[listhead-writer] access tail")
+    for i = 1, #log do
+        access_line(string.format("[listhead-writer] %03d", i), log[i])
+    end
+end
+
+local ok_stats, stats = pcall(cpu.jit_stats)
+if ok_stats and type(stats) == "table" then
+    line(string.format("[listhead-writer] jit native=%d fallback=%d bailouts=%d last_native=%s last_fallback=%s opcode=0x%04X",
+        stats.native_blocks or 0,
+        stats.fallback_instructions or 0,
+        stats.bailouts or 0,
+        hex(stats.last_native_pc or 0),
+        hex(stats.last_fallback_pc or 0),
+        stats.last_fallback_opcode or 0))
+end
+
+line("[listhead-writer] trace")
+local ok_ring, ring = pcall(dbg.tracering_show, 96)
+if ok_ring and type(ring) == "table" then
+    for i = 1, #ring do
+        local e = ring[i]
+        line(string.format("[listhead-writer] %03d %s %08X: %-18s %s", i, e.cpu or "", e.pc or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+dbg.accesslog_off()
+dbg.tracering_off()
+dbg.close()
+sys.quit()

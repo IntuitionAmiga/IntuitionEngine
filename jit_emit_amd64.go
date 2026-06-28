@@ -168,6 +168,29 @@ func emitREX_SIB(cb *CodeBuffer, w64 bool, reg, index, base byte) {
 	}
 }
 
+// emitREXForByte emits a REX prefix for byte register operations.
+// Registers 4-7 need a REX prefix in byte mode to select SPL/BPL/SIL/DIL
+// instead of the legacy AH/CH/DH/BH registers.
+func emitREXForByte(cb *CodeBuffer, reg, rm byte) {
+	r := isExtReg(reg)
+	b := isExtReg(rm)
+	needsREX := r || b || (reg >= 4 && reg <= 7) || (rm >= 4 && rm <= 7)
+	if needsREX {
+		cb.EmitBytes(rexByte(false, r, false, b))
+	}
+}
+
+// emitREXForByteSIB emits a REX prefix for byte SIB operations.
+func emitREXForByteSIB(cb *CodeBuffer, reg, index, base byte) {
+	r := isExtReg(reg)
+	x := isExtReg(index)
+	b := isExtReg(base)
+	needsREX := r || x || b || (reg >= 4 && reg <= 7)
+	if needsREX {
+		cb.EmitBytes(rexByte(false, r, x, b))
+	}
+}
+
 // amd64MOV_reg_reg emits MOV dst, src (64-bit register to register).
 func amd64MOV_reg_reg(cb *CodeBuffer, dst, src byte) {
 	emitREX(cb, true, src, dst)
@@ -331,7 +354,7 @@ func amd64XCHG_memSIB_reg(cb *CodeBuffer, base, index, src byte) {
 
 // amd64MOVZX_B emits MOVZX dst, src8 (zero-extend byte to 64-bit via 32-bit form).
 func amd64MOVZX_B(cb *CodeBuffer, dst, src byte) {
-	emitREX(cb, false, dst, src)
+	emitREXForByte(cb, dst, src)
 	cb.EmitBytes(0x0F, 0xB6, modRM(3, dst, src))
 }
 
@@ -479,10 +502,11 @@ func amd64ROT_CL(cb *CodeBuffer, dst byte, size byte, op byte) {
 	if size == IE64_SIZE_W {
 		cb.EmitBytes(0x66)
 	}
-	emitREX(cb, size == IE64_SIZE_Q, op, dst)
 	if size == IE64_SIZE_B {
+		emitREXForByte(cb, op, dst)
 		cb.EmitBytes(0xD2, modRM(3, op, dst))
 	} else {
+		emitREX(cb, size == IE64_SIZE_Q, op, dst)
 		cb.EmitBytes(0xD3, modRM(3, op, dst))
 	}
 }
@@ -491,10 +515,11 @@ func amd64ROT_imm(cb *CodeBuffer, dst byte, size byte, op byte, imm8 byte) {
 	if size == IE64_SIZE_W {
 		cb.EmitBytes(0x66)
 	}
-	emitREX(cb, size == IE64_SIZE_Q, op, dst)
 	if size == IE64_SIZE_B {
+		emitREXForByte(cb, op, dst)
 		cb.EmitBytes(0xC0, modRM(3, op, dst), imm8)
 	} else {
+		emitREX(cb, size == IE64_SIZE_Q, op, dst)
 		cb.EmitBytes(0xC1, modRM(3, op, dst), imm8)
 	}
 }
@@ -502,6 +527,11 @@ func amd64ROT_imm(cb *CodeBuffer, dst byte, size byte, op byte, imm8 byte) {
 func amd64BSF32(cb *CodeBuffer, dst, src byte) {
 	emitREX(cb, false, dst, src)
 	cb.EmitBytes(0x0F, 0xBC, modRM(3, dst, src))
+}
+
+func amd64BSR32(cb *CodeBuffer, dst, src byte) {
+	emitREX(cb, false, dst, src)
+	cb.EmitBytes(0x0F, 0xBD, modRM(3, dst, src))
 }
 
 func amd64BSWAP32(cb *CodeBuffer, reg byte) {

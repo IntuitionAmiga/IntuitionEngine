@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -40,6 +41,12 @@ type AROSLoader struct {
 	timerDone  chan struct{}
 	vblankDone chan struct{}
 
+	// armMu guards the l*Armed flags and serializes refreshIRQArming. The
+	// system-timer (200Hz) and VBL (60Hz) goroutines both refresh and read
+	// these, so without it the two goroutines race on the flags (and on the
+	// vector-table reads), which can assert an interrupt on a torn/stale arming
+	// decision — delivering an IRQ at a moment the guest is not prepared for.
+	armMu   sync.Mutex
 	l2Armed bool // Level 2: input devices
 	l3Armed bool // Level 3: audio DMA
 	l4Armed bool // Level 4: VBL (60Hz)
@@ -172,7 +179,10 @@ func (l *AROSLoader) StartTimer() {
 					continue
 				}
 				l.refreshIRQArming()
-				if l.l5Armed {
+				l.armMu.Lock()
+				l5 := l.l5Armed
+				l.armMu.Unlock()
+				if l5 {
 					l.cpu.AssertInterrupt(5)
 				}
 			}
@@ -195,10 +205,14 @@ func (l *AROSLoader) StartTimer() {
 					continue
 				}
 				l.refreshIRQArming()
-				if l.l2Armed {
+				l.armMu.Lock()
+				l2 := l.l2Armed
+				l4 := l.l4Armed
+				l.armMu.Unlock()
+				if l2 {
 					l.cpu.AssertInterrupt(2)
 				}
-				if l.l4Armed {
+				if l4 {
 					l.cpu.AssertInterrupt(4)
 				}
 			}
@@ -216,10 +230,16 @@ func (l *AROSLoader) refreshIRQArming() {
 	vec3 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL3)*4)
 	vec4 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL4)*4)
 	vec5 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL5)*4)
-	l.l2Armed = l.isValidVector(vec2)
-	l.l3Armed = l.isValidVector(vec3)
-	l.l4Armed = l.isValidVector(vec4)
-	l.l5Armed = l.isValidVector(vec5)
+	l2 := l.isValidVector(vec2)
+	l3 := l.isValidVector(vec3)
+	l4 := l.isValidVector(vec4)
+	l5 := l.isValidVector(vec5)
+	l.armMu.Lock()
+	l.l2Armed = l2
+	l.l3Armed = l3
+	l.l4Armed = l4
+	l.l5Armed = l5
+	l.armMu.Unlock()
 }
 
 // isValidVector applies the AROS profile bound to a candidate handler PC.

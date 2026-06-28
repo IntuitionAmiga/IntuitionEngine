@@ -377,9 +377,11 @@ func getHarteTestCPU() *M68KCPU {
 func resetHarteTestCPU(cpu *M68KCPU) {
 	// Clear memory (only the parts we use - first 2MB should be enough for tests)
 	mem := cpu.memory
-	for i := 0; i < 2*1024*1024 && i < len(mem); i++ {
-		mem[i] = 0
+	limit := 2 * 1024 * 1024
+	if limit > len(mem) {
+		limit = len(mem)
 	}
+	clear(mem[:limit])
 	// Reset CPU state
 	cpu.PC = 0
 	cpu.SR = M68K_SR_S

@@ -1,0 +1,64 @@
+-- Compare AROS guest writes to IE video MMIO under JIT and -nojit.
+
+local WAIT_MS = tonumber(os.getenv("IE_AROS_VIDEO_ACCESS_MS") or "90000")
+local VIDEO_START = 0x000F0000
+local VIDEO_END = 0x000F049B
+
+local names = {
+    [0x000F0000] = "VIDEO_CTRL",
+    [0x000F0004] = "VIDEO_MODE",
+    [0x000F0008] = "VIDEO_STATUS",
+    [0x000F0080] = "VIDEO_BG_COLOR",
+    [0x000F0084] = "VIDEO_FB_BASE",
+}
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function name(addr)
+    return names[addr] or ""
+end
+
+sys.print(string.format("[video-access] mode=%s jit=%s", tostring(cpu.execution_mode()), tostring(cpu.jit_enabled())))
+dbg.accesslog_on(262144)
+local start = sys.time_ms()
+while sys.time_ms() - start < WAIT_MS do
+    local fb = video.read_reg(0xF0084)
+    local mode = video.read_reg(0xF0004)
+    if fb ~= 0 or mode == 0x06 then
+        break
+    end
+    sys.wait_ms(250)
+end
+sys.print(string.format("[video-access] elapsed=%dms", sys.time_ms() - start))
+
+local hits = 0
+local fb_hits = 0
+local mode_hits = 0
+for _, ev in ipairs(dbg.accesslog()) do
+    if ev.kind == "write" and ev.addr >= VIDEO_START and ev.addr <= VIDEO_END then
+        hits = hits + 1
+        if ev.addr == 0x000F0084 then fb_hits = fb_hits + 1 end
+        if ev.addr == 0x000F0004 then mode_hits = mode_hits + 1 end
+        sys.print(string.format(
+            "[video-access] %-13s pc=%s width=%d old=%s new=%s",
+            name(ev.addr) ~= "" and name(ev.addr) or hex(ev.addr),
+            hex(ev.pc),
+            ev.width or 0,
+            hex(ev.old_val or 0),
+            hex(ev.new_val or 0)
+        ))
+    end
+end
+
+sys.print(string.format("[video-access] total=%d mode_writes=%d fb_writes=%d final_mode=%s final_fb=%s",
+    hits,
+    mode_hits,
+    fb_hits,
+    hex(video.read_reg(0xF0004)),
+    hex(video.read_reg(0xF0084))
+))
+
+dbg.accesslog_off()
+sys.quit()

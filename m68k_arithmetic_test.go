@@ -535,6 +535,13 @@ func TestCmpAddressSystematic(t *testing.T) {
 			ExpectedRegs:  Reg("A0", 0x00001000),
 			ExpectedFlags: FlagsNZVC(0, 0, 0, 1), // C=1 because source (0xFFFFFFFF) > dest (0x1000) unsigned
 		},
+		{
+			Name:          "CMPA.L_A1_A6_emutos_not_cmpm",
+			AddrRegs:      [8]uint32{0, 0x00002C00, 0, 0, 0, 0, 0x00002C9A},
+			Opcodes:       []uint16{0xBDC9}, // CMPA.L A1,A6
+			ExpectedRegs:  Reg("A6", 0x00002C9A),
+			ExpectedFlags: FlagsNZVC(0, 0, 0, 0),
+		},
 	}
 
 	RunM68KTests(t, tests)

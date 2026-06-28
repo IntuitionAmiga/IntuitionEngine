@@ -1,0 +1,190 @@
+-- Attach to the command-line AROS boot path. Do not call cpu.load() here:
+-- the caller should start the emulator with -aros or -aros -nojit.
+
+local WAIT_MS = tonumber(os.getenv("IE_AROS_LIVE_PROBE_MS") or "240000")
+local REPORT = "aros_jit_live_probe_report.txt"
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function mread32(addr)
+    local ok, v = pcall(mem.read32, addr)
+    if not ok then
+        return 0
+    end
+    return v or 0
+end
+
+local function append(lines, s)
+    lines[#lines + 1] = s
+    sys.print(s)
+end
+
+local function table_lines(t)
+    local out = {}
+    if type(t) ~= "table" then
+        return out
+    end
+    for i = 1, #t do
+        local e = t[i]
+        if type(e) == "table" then
+            out[#out + 1] = e.text or tostring(e)
+        else
+            out[#out + 1] = tostring(e)
+        end
+    end
+    return out
+end
+
+local function jit_stats_summary()
+    local ok, stats = pcall(cpu.jit_stats)
+    if not ok or type(stats) ~= "table" then
+        return "jit_stats unavailable"
+    end
+
+    local parts = {
+        string.format(
+            "mode=%s jit=%s instr=%d native=%d last_native_pc=%s fallback=%d bailouts=%d last_fallback_pc=%s last_fallback_opcode=0x%04X",
+            tostring(cpu.execution_mode()),
+            tostring(cpu.jit_enabled()),
+            stats.instruction_count or 0,
+            stats.native_blocks or 0,
+            hex(stats.last_native_pc or 0),
+            stats.fallback_instructions or 0,
+            stats.bailouts or 0,
+            hex(stats.last_fallback_pc or 0),
+            stats.last_fallback_opcode or 0
+        )
+    }
+
+    local ops = stats.fallback_opcodes or {}
+    local max = math.min(#ops, 16)
+    for i = 1, max do
+        local op = ops[i]
+        parts[#parts + 1] = string.format(
+            "  fallback[%02d] opcode=0x%04X count=%d pc=%s",
+            i,
+            op.opcode or 0,
+            op.count or 0,
+            hex(op.pc or 0)
+        )
+    end
+    local pcs = stats.native_pcs or {}
+    local pcmax = math.min(#pcs, 16)
+    for i = 1, pcmax do
+        local np = pcs[i]
+        parts[#parts + 1] = string.format(
+            "  native[%02d] pc=%s count=%d",
+            i,
+            hex(np.pc or 0),
+            np.count or 0
+        )
+    end
+    local fails = stats.compile_failures or {}
+    local fmax = math.min(#fails, 16)
+    for i = 1, fmax do
+        local fail = fails[i]
+        parts[#parts + 1] = string.format(
+            "  compile_fail[%02d] pc=%s count=%d error=%s",
+            i,
+            hex(fail.pc or 0),
+            fail.count or 0,
+            tostring(fail.error or "")
+        )
+    end
+    return table.concat(parts, "\n")
+end
+
+local function sample_pixels()
+    local w, h = video.get_dimensions()
+    local pts = {
+        {0, 0},
+        {math.floor(w / 2), math.floor(h / 2)},
+        {w - 1, h - 1},
+        {64, 64},
+        {320, 240},
+        {math.floor(w / 3), math.floor(h / 3)},
+        {math.floor((w * 2) / 3), math.floor((h * 2) / 3)},
+    }
+    local nonblack = 0
+    for _, p in ipairs(pts) do
+        local r, g, b = video.get_pixel(p[1], p[2])
+        if r ~= 0 or g ~= 0 or b ~= 0 then
+            nonblack = nonblack + 1
+        end
+    end
+    return w, h, nonblack
+end
+
+local lines = {}
+append(lines, "[aros-live] enabling IEMon trace ring")
+dbg.open()
+dbg.tracering_on(2048)
+dbg.close()
+
+local checkpoints = {}
+local seen = {}
+for _, t in ipairs({5000, 10000, 15000, 20000, 30000, 45000, 60000, 90000, 120000, WAIT_MS}) do
+    if t <= WAIT_MS and not seen[t] then
+        checkpoints[#checkpoints + 1] = t
+        seen[t] = true
+    end
+end
+local start = sys.time_ms()
+local next_idx = 1
+
+while next_idx <= #checkpoints do
+    local target = start + checkpoints[next_idx]
+    while sys.time_ms() < target do
+        sys.wait_ms(100)
+    end
+
+    local elapsed = checkpoints[next_idx]
+    local hash = video.frame_hash()
+    local w, h, nonblack = sample_pixels()
+    local pc = dbg.get_pc()
+    append(lines, string.format(
+        "[aros-live] t=%dms pc=%s hash=0x%08X nonblack=%d size=%dx%d ctrl=%s mode=%s status=%s fb=%s color=%s irq_flags=%s pending=%s isr=%s counters=%s blocked=%s rte=%s stop_spins=%s watchdog=%s",
+        elapsed,
+        hex(pc),
+        hash,
+        nonblack,
+        w,
+        h,
+        hex(video.read_reg(0xF0000)),
+        hex(video.read_reg(0xF0004)),
+        hex(video.read_reg(0xF0008)),
+        hex(video.read_reg(0xF0084)),
+        hex(video.read_reg(0xF0080)),
+        hex(mread32(0xF23C4)),
+        hex(mread32(0xF23C8)),
+        hex(mread32(0xF23C0)),
+        hex(mread32(0xF23CC)),
+        hex(mread32(0xF23D0)),
+        hex(mread32(0xF23D4)),
+        hex(mread32(0xF23D8)),
+        hex(mread32(0xF23DC))
+    ))
+    append(lines, jit_stats_summary())
+    next_idx = next_idx + 1
+end
+
+dbg.open()
+append(lines, "[aros-live] IEMon registers")
+for _, s in ipairs(table_lines(dbg.command_output("r"))) do
+    append(lines, s)
+end
+append(lines, "[aros-live] IEMon trace tail")
+local ring = dbg.tracering_show(64)
+for i = 1, #ring do
+    local e = ring[i]
+    append(lines, string.format("%s %08X: %-12s %s", e.cpu or "", e.pc or 0, e.hex or "", e.mnemonic or ""))
+end
+append(lines, "[aros-live] IEMon bug report")
+append(lines, dbg.bug_report(32))
+dbg.tracering_off()
+dbg.close()
+
+rec.screenshot("aros_jit_live_probe.png")
+sys.write_file(REPORT, table.concat(lines, "\n") .. "\n")

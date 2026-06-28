@@ -123,6 +123,9 @@ import (
 	"math/bits"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -705,20 +708,135 @@ type M68KCPU struct {
 	// Structured fault hook used by boot harnesses and targeted regressions.
 	FaultHook func(record M68KFaultRecord)
 
+	// Diagnostic hook fired in the STOP idle spin when no interrupt is pending.
+	// Lets an in-thread deterministic IRQ schedule wake a STOP (the instruction
+	// count is frozen during STOP, so the count-keyed hook cannot). Used to make
+	// deterministic AROS boots progress past idle for reproducible repro.
+	StoppedIdleHook func(cpu *M68KCPU)
+
 	// Debug instruction trace ring buffer (set from tests)
-	DebugTraceEnabled bool
-	debugTraceBuffer  [256]debugTraceEntry
-	debugTraceIdx     uint8
-	InstructionHook   func(*M68KCPU)
+	DebugTraceEnabled    bool
+	debugTraceBuffer     [256]debugTraceEntry
+	debugTraceIdx        uint8
+	InstructionHook      func(*M68KCPU)
+	InstructionCountHook func(*M68KCPU, uint64)
+	InterruptAssertHook  func(*M68KCPU, uint8, uint64)
+	m68kJitLockstep      *m68kJITLockstepSession
 
 	// JIT compiler state
-	m68kJitEnabled     bool
-	m68kJitForceNative bool // tests only: bypass runtime interpreter-only gate
-	m68kJitPersist     bool // keep code cache alive across benchmark iterations
-	m68kJitExecMem     any  // *ExecMem (typed via accessor)
-	m68kJitCache       *CodeCache
-	m68kJitCtx         *M68KJITContext
-	m68kJitCodeBitmap  []byte // code page bitmap for self-mod detection
+	m68kJitEnabled        bool
+	m68kJitForceNative    bool // tests only: bypass selected conservative fallback checks
+	m68kJitPersist        bool // keep code cache alive across benchmark iterations
+	m68kJitNativeMaxPC    uint32
+	m68kJitExecMem        any // *ExecMem (typed via accessor)
+	m68kJitCache          *CodeCache
+	m68kJitCtx            *M68KJITContext
+	m68kJitWarmupCounts   map[uint32]uint8
+	m68kJitWarmupLimit    uint8
+	m68kJitIOPageBitmap   []bool
+	m68kJitCodeBitmap     []byte // code page bitmap for self-mod detection
+	m68kJitCodePageMin    []uint16
+	m68kJitCodePageMax    []uint16
+	m68kJitCodePageBlocks []map[*JITBlock]struct{}
+	m68kJitNativeActive   atomic.Bool
+	m68kJitDeferredInval  atomic.Bool
+	// m68kJitDispatchActive is true only while the M68KExecuteJIT dispatcher
+	// loop is running on the CPU goroutine. It is the signal a cross-thread
+	// bus invalidation uses to decide whether the cache maps are concurrently
+	// owned by a live dispatcher (enqueue, drained on-thread) or quiescent
+	// (loaders/tests/pre-boot — safe to invalidate synchronously in place).
+	m68kJitDispatchActive atomic.Bool
+
+	// Cross-thread JIT invalidation queue. The JIT code cache maps are owned
+	// exclusively by the CPU/dispatcher goroutine; host goroutines (video,
+	// compositor, DMA, loaders, clipboard) must NOT touch them directly. They
+	// enqueue guest-write ranges here (under m68kJitPendingInvalMu) and the CPU
+	// thread drains + applies them via m68kDrainPendingJITInvalidations. The
+	// atomic flag is a lock-free fast path so the dispatcher skips the mutex
+	// when nothing is queued.
+	m68kJitPendingInvalMu     sync.Mutex
+	m68kJitPendingInvalRanges [][2]uint32
+	m68kJitPendingInvalReset  bool
+	m68kJitHasPendingInval    atomic.Bool
+	// m68kJitInvalGen is bumped (release) as the LAST step of every cross-thread
+	// enqueue, after the range and pending flag are published. The dispatcher
+	// snapshots it right after draining and re-checks it immediately before
+	// entering native code: if a host goroutine queued an invalidation in that
+	// gap, the dispatcher re-loops to drain it instead of running a block whose
+	// guest bytes a concurrent write may have just changed. This shrinks the
+	// lock-free cross-thread SMC window to the few instructions between the
+	// snapshot re-check and the native call (the irreducible tail that only a
+	// per-block execution lock could remove — too costly for the hot path, and
+	// untriggered by any real caller, since loaders run pre-boot and DMA/video/
+	// blitter/clipboard target data, not executing code).
+	m68kJitInvalGen atomic.Uint64
+
+	// Per-block native-vs-interpreter self-verifier (IE_M68K_JIT_VERIFY=1).
+	// When capturing, guest RAM writes are logged (addr,old) so the interpreter
+	// pre-pass can be undone before the real native run. A write/read to MMIO or
+	// the terminal sets m68kVerifyAbort (those have side effects that cannot be
+	// undone; such blocks self-bail natively anyway, so they are not verified).
+	m68kVerifyCapturing bool
+	m68kVerifyAbort     bool
+	m68kVerifyWrites    []m68kVerifyWrite
+	m68kVerifyTrace     []m68kVerifyState
+
+	// Private M68K JIT diagnostic counters. These reset at dispatcher entry.
+	m68kJitNativeBlocksExecuted atomic.Uint64
+	m68kJitRegionPromotions     atomic.Uint64
+	m68kJitStaticJMPChases      atomic.Uint64
+	m68kJitNativeRetCountSum    atomic.Uint64
+	m68kJitNativeChainCountSum  atomic.Uint64
+	m68kJitNativeNoChainReturns atomic.Uint64
+	m68kJitNativeHelperExits    atomic.Uint64
+	m68kJitNativeExceptionExits atomic.Uint64
+	m68kJitNativeInvalExits     atomic.Uint64
+	// Production fallback-exit classification (M68K_JIT_FALLBACK_REMOVAL_PLAN.md).
+	// native_exception == m68kJitNativeExceptionExits, helper_exit ==
+	// m68kJitNativeHelperExits; these three add the remaining categories.
+	m68kJitMMIOGuardExits       atomic.Uint64 // MMIO/alignment/guarded-memory single-instruction slow paths
+	m68kJitUnsupportedOneExits  atomic.Uint64 // genuinely unsupported opcode: exactly one interpreter instruction
+	m68kJitCompileFailureExits  atomic.Uint64 // emitter/compiler failure: one interpreter instruction (non-strict)
+	m68kJitWarmupInstructions   atomic.Uint64
+	m68kJitLastNativePC         atomic.Uint32
+	m68kJitRecordNativePCs      atomic.Bool
+	m68kJitNativePCMu           sync.Mutex
+	m68kJitNativePCCounts       map[uint32]uint64
+	m68kJitNativePCRetCounts    map[uint32]uint64
+	m68kJitNativeInvalPCCounts  map[uint32]uint64
+	m68kJitNativePCRing         [64]uint32
+	m68kJitNativePCRingIdx      uint32
+	m68kJitFallbackInstructions atomic.Uint64
+	m68kJitBailoutCount         atomic.Uint64
+	m68kJitLastFallbackPC       atomic.Uint32
+	m68kJitLastFallbackOpcode   atomic.Uint32
+	m68kJitFallbackOpcodeCounts [65536]atomic.Uint64
+	m68kJitFallbackOpcodePCs    [65536]atomic.Uint32
+	m68kJitFallbackTouched      []uint16
+	m68kJitCompileFailMu        sync.Mutex
+	m68kJitCompileFailCounts    map[uint32]uint64
+	m68kJitCompileFailErrors    map[uint32]string
+
+	m68kJitRecordFallbackSnapshots bool
+	m68kJitFallbackSnapshotMu      sync.Mutex
+	m68kJitFallbackFirstSnapshots  map[uint32]m68kJITFallbackSnapshot
+}
+
+// m68kVerifyWrite records one RAM byte's pre-write value for the JIT verifier's
+// undoable interpreter pre-pass. Types live in this always-compiled file
+// because M68KCPU fields reference them on every platform.
+type m68kVerifyWrite struct {
+	addr uint32
+	old  byte
+}
+
+// m68kVerifyState is a snapshot of architectural state at one instruction
+// boundary during the verifier's interpreter pre-pass.
+type m68kVerifyState struct {
+	pc uint32
+	d  [8]uint32
+	a  [8]uint32
+	sr uint16
 }
 
 type debugTraceEntry struct {
@@ -728,6 +846,14 @@ type debugTraceEntry struct {
 	sp     uint32
 	a0     uint32
 	d0     uint32
+}
+
+type m68kJITFallbackSnapshot struct {
+	pc     uint32
+	opcode uint16
+	sr     uint16
+	data   [8]uint32
+	addr   [8]uint32
 }
 
 // DumpDebugTrace prints the last N entries from the instruction trace ring buffer
@@ -778,12 +904,21 @@ func (cpu *M68KCPU) AssertInterrupt(level uint8) {
 	if level < 1 || level > 7 {
 		return
 	}
+	if cpu.InterruptAssertHook != nil {
+		cpu.InterruptAssertHook(cpu, level, cpu.InstructionCount)
+	}
 	mask := uint32(1 << level)
 	for {
 		old := cpu.pendingInterrupt.Load()
 		if cpu.pendingInterrupt.CompareAndSwap(old, old|mask) {
 			return
 		}
+	}
+}
+
+func (cpu *M68KCPU) runInstructionCountHook(instructionCount uint64) {
+	if cpu != nil && cpu.InstructionCountHook != nil {
+		cpu.InstructionCountHook(cpu, instructionCount)
 	}
 }
 
@@ -835,6 +970,28 @@ func NewM68KCPU(bus Bus32) *M68KCPU {
 		cpu.PC = M68K_ENTRY_POINT
 	} else {
 		cpu.PC = pc
+	}
+	if mb, ok := bus.(*MachineBus); ok {
+		mb.RegisterM68KJITInvalidator(func(addr, size uint64) {
+			if size == 0 || addr > uint64(^uint32(0)) {
+				return
+			}
+			if size > uint64(^uint32(0)) {
+				size = uint64(^uint32(0))
+			}
+			// The bus invalidator is the cross-thread entry (video, DMA,
+			// loaders run on host goroutines). If a dispatcher loop is live,
+			// the cache maps are owned by the CPU goroutine: enqueue and let it
+			// drain — never touch the maps off-thread. If no dispatcher is
+			// running (loaders before boot, single-threaded tests), the maps
+			// are quiescent and the write path must invalidate synchronously so
+			// the stale block is not observable before the next dispatch.
+			if cpu.m68kJitDispatchActive.Load() {
+				cpu.m68kEnqueueJITInvalidation(uint32(addr), uint32(size))
+			} else {
+				cpu.invalidateM68KJITForGuestWrite(uint32(addr), uint32(size))
+			}
+		})
 	}
 
 	return cpu
@@ -1029,18 +1186,18 @@ func (cpu *M68KCPU) decodeGroup0(opcode uint16) {
 		return
 	}
 
-	// CALLM - Protected module invocation
-	if (opcode&0xFFC0) == M68K_CALLM && (opcode&0x00C0) == 0x00C0 {
-		mode := (opcode >> 3) & 0x7
-		reg := opcode & 0x7
-		cpu.ExecCallm(mode, reg)
+	// RTM - Returns from protected module
+	if (opcode & 0xFFF0) == M68K_RTM {
+		reg := opcode & 0xF
+		cpu.ExecRtm(reg)
 		return
 	}
 
-	// RTM - Returns from protected module
-	if (opcode&0xFFF0) == M68K_RTM && (opcode&0x00C0) == 0x0080 {
-		reg := opcode & 0xF
-		cpu.ExecRtm(reg)
+	// CALLM - Protected module invocation
+	if (opcode&0xFFC0) == M68K_CALLM && ((opcode>>3)&0x7) >= M68K_AM_AR_IND {
+		mode := (opcode >> 3) & 0x7
+		reg := opcode & 0x7
+		cpu.ExecCallm(mode, reg)
 		return
 	}
 
@@ -2034,10 +2191,14 @@ func (cpu *M68KCPU) decodeGroupA(opcode uint16) {
 	cpu.ProcessException(M68K_VEC_LINE_A)
 }
 
+func m68kIsCMPMOpcode(opcode uint16) bool {
+	return opcode&0xF138 == M68K_CMPM && ((opcode>>6)&0x3) != 0x3
+}
+
 // decodeGroupB: 0xBxxx - CMP, CMPA, EOR, CMPM
 func (cpu *M68KCPU) decodeGroupB(opcode uint16) {
 	// CMPM
-	if (opcode & 0xF1F8) == M68K_CMPM {
+	if m68kIsCMPMOpcode(opcode) {
 		rx := opcode & 0x7
 		ry := (opcode >> 9) & 0x7
 		size := (opcode >> 6) & 0x3
@@ -2468,6 +2629,9 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 
 				// STOP watchdog: track consecutive spins without wake
 				if !woke {
+					if cpu.StoppedIdleHook != nil {
+						cpu.StoppedIdleHook(cpu)
+					}
 					spins := cpu.stopSpinCount.Add(1)
 					if spins >= 5000 && spins%5000 == 0 {
 						cpu.stopWatchdogHits.Add(1)
@@ -2526,6 +2690,9 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 			}
 
 			instructionCount++
+			if cpu.m68kJitLockstep != nil {
+				cpu.m68kJitLockstep.recordReference(cpu, instructionCount)
+			}
 
 			// Process interrupts every 256 instructions.
 			// Real 68020 checks IPL between instructions with no inException gating.
@@ -2536,6 +2703,7 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 				if cpu.stopped.Load() {
 					break innerLoop
 				}
+				cpu.runInstructionCountHook(instructionCount)
 				pendingException := cpu.pendingException.Load()
 				if pendingException != 0 {
 					cpu.pendingException.Store(0)
@@ -2564,9 +2732,10 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 
 		}
 
+		cpu.InstructionCount = instructionCount
+
 		// Performance monitoring
 		if cpu.PerfEnabled {
-			cpu.InstructionCount = instructionCount
 			now := time.Now()
 			if now.Sub(cpu.lastPerfReport) >= time.Second {
 				elapsed := now.Sub(cpu.perfStartTime).Seconds()
@@ -2590,7 +2759,13 @@ func (cpu *M68KCPU) StepOne() int {
 	}
 
 	// Fast inline fetch
-	if cpu.PC >= uint32(len(cpu.memory))-2 {
+	if (cpu.PC & M68K_BYTE_SIZE) != 0 {
+		cpu.ProcessException(M68K_VEC_ADDRESS_ERROR)
+		return 1
+	}
+	if cpu.PC >= cpu.ProfileTopOfRAM()-M68K_WORD_SIZE {
+		cpu.recordFault(cpu.PC, 2, false, 0)
+		cpu.ProcessException(M68K_VEC_BUS_ERROR)
 		return 0
 	}
 	execPC := cpu.PC
@@ -2598,6 +2773,40 @@ func (cpu *M68KCPU) StepOne() int {
 	cpu.currentIR = bits.ReverseBytes16(leValue)
 	cpu.debugOnFetch(execPC, M68K_WORD_SIZE)
 	cpu.PC += M68K_WORD_SIZE
+	cpu.lastExecPC = execPC
+	cpu.lastExecOpcode = cpu.currentIR
+	if rawTracePC := os.Getenv("IE_M68K_JIT_TRACE_PC"); rawTracePC != "" {
+		var tracePC uint32
+		if _, err := fmt.Sscanf(rawTracePC, "%x", &tracePC); err == nil && execPC == tracePC {
+			stack0, stack1, stack2, stack3 := uint16(0), uint16(0), uint16(0), uint16(0)
+			if uint64(cpu.AddrRegs[7])+8 <= uint64(len(cpu.memory)) {
+				sp := cpu.AddrRegs[7]
+				stack0 = uint16(cpu.memory[sp])<<8 | uint16(cpu.memory[sp+1])
+				stack1 = uint16(cpu.memory[sp+2])<<8 | uint16(cpu.memory[sp+3])
+				stack2 = uint16(cpu.memory[sp+4])<<8 | uint16(cpu.memory[sp+5])
+				stack3 = uint16(cpu.memory[sp+6])<<8 | uint16(cpu.memory[sp+7])
+			}
+			fmt.Printf("M68K interp trace pc=%08X op=%04X sr=%04X A0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X D0=%08X D1=%08X D2=%08X D3=%08X stack=%04X %04X %04X %04X\n",
+				execPC, cpu.currentIR, cpu.SR,
+				cpu.AddrRegs[0], cpu.AddrRegs[1], cpu.AddrRegs[2], cpu.AddrRegs[3],
+				cpu.AddrRegs[4], cpu.AddrRegs[5], cpu.AddrRegs[6], cpu.AddrRegs[7],
+				cpu.DataRegs[0], cpu.DataRegs[1], cpu.DataRegs[2], cpu.DataRegs[3],
+				stack0, stack1, stack2, stack3)
+		}
+	}
+
+	if cpu.InstructionHook != nil {
+		cpu.InstructionHook(cpu)
+	}
+
+	if cpu.DebugTraceEnabled {
+		idx := cpu.debugTraceIdx
+		cpu.debugTraceBuffer[idx] = debugTraceEntry{
+			pc: execPC, opcode: cpu.currentIR, sr: cpu.SR,
+			sp: cpu.AddrRegs[7], a0: cpu.AddrRegs[0], d0: cpu.DataRegs[0],
+		}
+		cpu.debugTraceIdx = idx + 1
+	}
 
 	cpu.FetchAndDecodeInstruction()
 	return 1
@@ -2879,6 +3088,10 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
 	addr &= M68K_ADDRESS_MASK
 
+	if cpu.m68kVerifyCapturing && cpu.m68kVerifyCaptureWrite(addr, 1) {
+		return
+	}
+
 	// Terminal device has no buffer to avoid latency
 	if addr == TERM_OUT || addr == TERM_OUT_SIGNEXT {
 		fmt.Printf("%c", value)
@@ -2890,6 +3103,7 @@ func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
 	if cpu.DebugWatchFn != nil {
 		cpu.DebugWatchFn(addr, uint32(value), cpu.PC, 1)
 	}
+	cpu.invalidateM68KJITForGuestWrite(addr, 1)
 
 	// Fast path: non-I/O memory using unsafe pointer
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
@@ -2921,9 +3135,14 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 		return
 	}
 
+	if cpu.m68kVerifyCapturing && cpu.m68kVerifyCaptureWrite(addr, 2) {
+		return
+	}
+
 	if cpu.DebugWatchFn != nil {
 		cpu.DebugWatchFn(addr, uint32(value), cpu.PC, 2)
 	}
+	cpu.invalidateM68KJITForGuestWrite(addr, 2)
 
 	// Fast path: non-I/O memory using unsafe pointer
 	// Byte-swap from big-endian to little-endian and write as uint16
@@ -2993,9 +3212,14 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 		return
 	}
 
+	if cpu.m68kVerifyCapturing && cpu.m68kVerifyCaptureWrite(addr, 4) {
+		return
+	}
+
 	if cpu.DebugWatchFn != nil {
 		cpu.DebugWatchFn(addr, value, cpu.PC, 4)
 	}
+	cpu.invalidateM68KJITForGuestWrite(addr, 4)
 
 	// Fast path: non-I/O memory using unsafe pointer
 	// Byte-swap from big-endian to little-endian and write as uint32
@@ -3594,6 +3818,9 @@ func (cpu *M68KCPU) recordFault(addr uint32, size uint8, write bool, data uint32
 
 	// Log up to 5 faults with full register dumps
 	n := cpu.faultLogCount.Add(1)
+	if os.Getenv("IE_M68K_STOP_ON_FAULT") == "1" {
+		cpu.running.Store(false)
+	}
 	if n > 5 {
 		return
 	}
@@ -3634,6 +3861,37 @@ func (cpu *M68KCPU) recordFault(addr uint32, size uint8, write bool, data uint32
 	// Dump instruction trace if enabled
 	if cpu.DebugTraceEnabled && n <= 2 {
 		cpu.DumpDebugTrace(64)
+	}
+
+	// Investigation: on a wild access, dump the recent native-block PC ring so we
+	// can find the JIT block that corrupted the pointer (high-RAM native bug).
+	if os.Getenv("IE_M68K_JIT_DUMP_RING") == "1" && n <= 2 {
+		cpu.m68kDumpNativePCRing()
+	}
+}
+
+func (cpu *M68KCPU) m68kDumpNativePCRing() {
+	cpu.m68kJitNativePCMu.Lock()
+	ring := cpu.m68kJitNativePCRing
+	idx := cpu.m68kJitNativePCRingIdx
+	cpu.m68kJitNativePCMu.Unlock()
+	readMem := func(addr uint64, size int) []byte {
+		if addr+uint64(size) > uint64(len(cpu.memory)) {
+			return nil
+		}
+		return cpu.memory[addr : addr+uint64(size)]
+	}
+	fmt.Println("  --- recent native block PCs (oldest -> newest) ---")
+	for i := 0; i < 64; i++ {
+		pc := ring[(idx+uint32(i))&63]
+		if pc == 0 {
+			continue
+		}
+		line := ""
+		if ls := disassembleM68K(readMem, uint64(pc), 1); len(ls) > 0 {
+			line = ls[0].Mnemonic
+		}
+		fmt.Printf("  native[%02d] pc=%08X %s\n", i, pc, line)
 	}
 }
 
@@ -3745,7 +4003,108 @@ func (cpu *M68KCPU) swapStacksForMode(newSupervisor bool) {
 	}
 }
 
+func m68kDiagnosticStopOnExceptionVector(vector uint8) bool {
+	raw := strings.TrimSpace(os.Getenv("IE_M68K_STOP_ON_EXCEPTION_VECTOR"))
+	if raw == "" {
+		return false
+	}
+	for _, field := range strings.Split(raw, ",") {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if field == "*" {
+			return true
+		}
+		v, err := strconv.ParseUint(field, 0, 8)
+		if err == nil && uint8(v) == vector {
+			return true
+		}
+	}
+	return false
+}
+
+type m68kDiagnosticPCRange struct {
+	lo uint32
+	hi uint32
+}
+
+func m68kDiagnosticExceptionPCRanges() []m68kDiagnosticPCRange {
+	raw := strings.TrimSpace(os.Getenv("IE_M68K_STOP_ON_EXCEPTION_PC_RANGE"))
+	if raw == "" {
+		return nil
+	}
+	var ranges []m68kDiagnosticPCRange
+	for _, field := range strings.Split(raw, ",") {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		parts := strings.Split(field, "-")
+		if len(parts) != 2 {
+			continue
+		}
+		lo, errLo := strconv.ParseUint(strings.TrimSpace(parts[0]), 0, 32)
+		hi, errHi := strconv.ParseUint(strings.TrimSpace(parts[1]), 0, 32)
+		if errLo != nil || errHi != nil {
+			continue
+		}
+		if hi < lo {
+			lo, hi = hi, lo
+		}
+		ranges = append(ranges, m68kDiagnosticPCRange{lo: uint32(lo), hi: uint32(hi)})
+	}
+	return ranges
+}
+
+func m68kDiagnosticPCInRanges(pc uint32, ranges []m68kDiagnosticPCRange) bool {
+	for _, r := range ranges {
+		if pc >= r.lo && pc <= r.hi {
+			return true
+		}
+	}
+	return false
+}
+
+func (cpu *M68KCPU) m68kReportStopOnExceptionVector(vector uint8) {
+	if cpu == nil {
+		return
+	}
+	fmt.Printf("M68K stop exception vector=%d PC=%08X lastPC=%08X opcode=%04X SR=%04X SP=%08X fault=%08X size=%d write=%t data=%08X\n",
+		vector, cpu.PC, cpu.lastExecPC, cpu.lastExecOpcode, cpu.SR, cpu.AddrRegs[7],
+		cpu.lastFaultAddr, cpu.lastFaultSize, cpu.lastFaultWrite, cpu.lastFaultData)
+	fmt.Printf("  D0=%08X D1=%08X D2=%08X D3=%08X D4=%08X D5=%08X D6=%08X D7=%08X\n",
+		cpu.DataRegs[0], cpu.DataRegs[1], cpu.DataRegs[2], cpu.DataRegs[3],
+		cpu.DataRegs[4], cpu.DataRegs[5], cpu.DataRegs[6], cpu.DataRegs[7])
+	fmt.Printf("  A0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X\n",
+		cpu.AddrRegs[0], cpu.AddrRegs[1], cpu.AddrRegs[2], cpu.AddrRegs[3],
+		cpu.AddrRegs[4], cpu.AddrRegs[5], cpu.AddrRegs[6], cpu.AddrRegs[7])
+	top := cpu.ProfileTopOfRAM()
+	if cpu.PC >= 8 && cpu.PC+8 < top {
+		fmt.Printf("  around PC: %04X %04X %04X %04X %04X\n",
+			cpu.Read16(cpu.PC-8), cpu.Read16(cpu.PC-4), cpu.Read16(cpu.PC),
+			cpu.Read16(cpu.PC+4), cpu.Read16(cpu.PC+8))
+	}
+	if cpu.AddrRegs[7]+12 < top {
+		fmt.Printf("  stack top: %08X %08X %08X %08X\n",
+			cpu.Read32(cpu.AddrRegs[7]), cpu.Read32(cpu.AddrRegs[7]+4),
+			cpu.Read32(cpu.AddrRegs[7]+8), cpu.Read32(cpu.AddrRegs[7]+12))
+	}
+	if os.Getenv("IE_M68K_JIT_DUMP_RING") == "1" {
+		cpu.m68kDumpNativePCRing()
+	}
+}
+
 func (cpu *M68KCPU) ProcessException(vector uint8) {
+	if m68kDiagnosticStopOnExceptionVector(vector) {
+		ranges := m68kDiagnosticExceptionPCRanges()
+		if len(ranges) == 0 || m68kDiagnosticPCInRanges(cpu.PC, ranges) || m68kDiagnosticPCInRanges(cpu.lastExecPC, ranges) {
+			cpu.m68kReportStopOnExceptionVector(vector)
+			cpu.running.Store(false)
+			return
+		}
+	}
+
 	// Enhanced logging for illegal instruction and bus fault (first 8 occurrences)
 	if vector == M68K_VEC_LINE_F {
 		count := cpu.exceptionLogCount.Add(1)
@@ -3771,6 +4130,9 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 				cpu.AddrRegs[4], cpu.AddrRegs[5], cpu.AddrRegs[6], cpu.AddrRegs[7])
 			if cpu.DebugTraceEnabled && count <= 2 {
 				cpu.DumpDebugTrace(256)
+			}
+			if os.Getenv("IE_M68K_JIT_DUMP_RING") == "1" && count <= 2 {
+				cpu.m68kDumpNativePCRing()
 			}
 		}
 	} else if vector == M68K_VEC_ILLEGAL_INSTR || vector == M68K_VEC_BUS_ERROR || vector == M68K_VEC_ADDRESS_ERROR {
@@ -6108,23 +6470,22 @@ func (cpu *M68KCPU) ExecAddx(regMode, rx, ry uint16, size int) {
 		}
 	} else {
 		// Memory to memory (predecrement)
-		if size == M68K_SIZE_BYTE {
-			cpu.AddrRegs[rx]--
-			cpu.AddrRegs[ry]--
-			src = uint32(cpu.Read8(cpu.AddrRegs[rx]))
-			dst = uint32(cpu.Read8(cpu.AddrRegs[ry]))
+		cpu.AddrRegs[rx] -= m68kStepSize(size, rx)
+		srcAddr := cpu.AddrRegs[rx]
+		cpu.AddrRegs[ry] -= m68kStepSize(size, ry)
+		dstAddr := cpu.AddrRegs[ry]
+		switch size {
+		case M68K_SIZE_BYTE:
+			src = uint32(cpu.Read8(srcAddr))
+			dst = uint32(cpu.Read8(dstAddr))
 			cpu.cycleCounter += M68K_CYCLE_ADDX_M_B
-		} else if size == M68K_SIZE_WORD {
-			cpu.AddrRegs[rx] -= M68K_WORD_SIZE
-			cpu.AddrRegs[ry] -= M68K_WORD_SIZE
-			src = uint32(cpu.Read16(cpu.AddrRegs[rx]))
-			dst = uint32(cpu.Read16(cpu.AddrRegs[ry]))
+		case M68K_SIZE_WORD:
+			src = uint32(cpu.Read16(srcAddr))
+			dst = uint32(cpu.Read16(dstAddr))
 			cpu.cycleCounter += M68K_CYCLE_ADDX_M_W
-		} else {
-			cpu.AddrRegs[rx] -= M68K_LONG_SIZE
-			cpu.AddrRegs[ry] -= M68K_LONG_SIZE
-			src = cpu.Read32(cpu.AddrRegs[rx])
-			dst = cpu.Read32(cpu.AddrRegs[ry])
+		default:
+			src = cpu.Read32(srcAddr)
+			dst = cpu.Read32(dstAddr)
 			cpu.cycleCounter += M68K_CYCLE_ADDX_M_L
 		}
 	}
@@ -6198,8 +6559,11 @@ func (cpu *M68KCPU) ExecAddx(regMode, rx, ry uint16, size int) {
 		if ((dst & 0x80000000) == (src & 0x80000000)) && ((result & 0x80000000) != (dst & 0x80000000)) {
 			cpu.SR |= M68K_SR_V
 		}
-		// Carry if result wrapped (unsigned overflow)
-		if result < dst || result < src {
+		carryResult := uint64(dst) + uint64(src)
+		if oldX {
+			carryResult++
+		}
+		if carryResult > 0xFFFFFFFF {
 			cpu.SR |= M68K_SR_C | M68K_SR_X
 		}
 	}
@@ -6239,23 +6603,22 @@ func (cpu *M68KCPU) ExecSubx(regMode, rx, ry uint16, size int) {
 		}
 	} else {
 		// Memory to memory (predecrement)
-		if size == M68K_SIZE_BYTE {
-			cpu.AddrRegs[rx]--
-			cpu.AddrRegs[ry]--
-			src = uint32(cpu.Read8(cpu.AddrRegs[rx]))
-			dst = uint32(cpu.Read8(cpu.AddrRegs[ry]))
+		cpu.AddrRegs[rx] -= m68kStepSize(size, rx)
+		srcAddr := cpu.AddrRegs[rx]
+		cpu.AddrRegs[ry] -= m68kStepSize(size, ry)
+		dstAddr := cpu.AddrRegs[ry]
+		switch size {
+		case M68K_SIZE_BYTE:
+			src = uint32(cpu.Read8(srcAddr))
+			dst = uint32(cpu.Read8(dstAddr))
 			cpu.cycleCounter += M68K_CYCLE_ADDX_M_B
-		} else if size == M68K_SIZE_WORD {
-			cpu.AddrRegs[rx] -= M68K_WORD_SIZE
-			cpu.AddrRegs[ry] -= M68K_WORD_SIZE
-			src = uint32(cpu.Read16(cpu.AddrRegs[rx]))
-			dst = uint32(cpu.Read16(cpu.AddrRegs[ry]))
+		case M68K_SIZE_WORD:
+			src = uint32(cpu.Read16(srcAddr))
+			dst = uint32(cpu.Read16(dstAddr))
 			cpu.cycleCounter += M68K_CYCLE_ADDX_M_W
-		} else {
-			cpu.AddrRegs[rx] -= M68K_LONG_SIZE
-			cpu.AddrRegs[ry] -= M68K_LONG_SIZE
-			src = cpu.Read32(cpu.AddrRegs[rx])
-			dst = cpu.Read32(cpu.AddrRegs[ry])
+		default:
+			src = cpu.Read32(srcAddr)
+			dst = cpu.Read32(dstAddr)
 			cpu.cycleCounter += M68K_CYCLE_ADDX_M_L
 		}
 	}
@@ -7254,9 +7617,6 @@ func (cpu *M68KCPU) ExecSubi() {
 			if (result & 0x80) != 0 {
 				cpu.SR |= M68K_SR_N
 			}
-			if postIncrement != 0 {
-				cpu.AddrRegs[reg] += postIncrement
-			}
 			if ((dest ^ imm) & (dest ^ result) & 0x80) != 0 {
 				cpu.SR |= M68K_SR_V
 			}
@@ -7278,6 +7638,9 @@ func (cpu *M68KCPU) ExecSubi() {
 
 		if (imm & mask) > (dest & mask) {
 			cpu.SR |= M68K_SR_C | M68K_SR_X
+		}
+		if postIncrement != 0 {
+			cpu.AddrRegs[reg] += postIncrement
 		}
 
 		cpu.cycleCounter += M68K_CYCLE_MEM_READ + M68K_CYCLE_MEM_WRITE + (M68K_CYCLE_REG * uint32(size)) + cpu.GetEACycles(mode, reg)
@@ -7957,6 +8320,8 @@ func (cpu *M68KCPU) ExecNegx(mode, reg uint16, size int) {
 		return
 	}
 
+	oldX := (cpu.SR & M68K_SR_X) != 0
+
 	// Get operand based on addressing mode
 	if mode == M68K_AM_DR {
 		// Data register direct
@@ -7964,7 +8329,7 @@ func (cpu *M68KCPU) ExecNegx(mode, reg uint16, size int) {
 
 		// Perform extended negation (0 - operand - X)
 		result = 0 - operand
-		if (cpu.SR & M68K_SR_X) != 0 {
+		if oldX {
 			result--
 		}
 		result &= mask
@@ -7987,7 +8352,7 @@ func (cpu *M68KCPU) ExecNegx(mode, reg uint16, size int) {
 		if size == M68K_SIZE_BYTE {
 			operand = uint32(cpu.Read8(addr))
 			result = 0 - operand
-			if (cpu.SR & M68K_SR_X) != 0 {
+			if oldX {
 				result--
 			}
 			result &= mask
@@ -7995,7 +8360,7 @@ func (cpu *M68KCPU) ExecNegx(mode, reg uint16, size int) {
 		} else if size == M68K_SIZE_WORD {
 			operand = uint32(cpu.Read16(addr))
 			result = 0 - operand
-			if (cpu.SR & M68K_SR_X) != 0 {
+			if oldX {
 				result--
 			}
 			result &= mask
@@ -8003,7 +8368,7 @@ func (cpu *M68KCPU) ExecNegx(mode, reg uint16, size int) {
 		} else {
 			operand = cpu.Read32(addr)
 			result = 0 - operand
-			if (cpu.SR & M68K_SR_X) != 0 {
+			if oldX {
 				result--
 			}
 			result &= mask
@@ -8039,17 +8404,17 @@ func (cpu *M68KCPU) ExecNegx(mode, reg uint16, size int) {
 		}
 	}
 
-	// V flag - set if operand was 0x80 (byte), 0x8000 (word), or 0x80000000 (long)
-	if size == M68K_SIZE_BYTE && operand == 0x80 && (cpu.SR&M68K_SR_X) != 0 {
+	// V follows the underlying subtract operation 0 - operand - oldX.
+	if size == M68K_SIZE_BYTE && (operand&result&0x80) != 0 {
 		cpu.SR |= M68K_SR_V
-	} else if size == M68K_SIZE_WORD && operand == 0x8000 && (cpu.SR&M68K_SR_X) != 0 {
+	} else if size == M68K_SIZE_WORD && (operand&result&0x8000) != 0 {
 		cpu.SR |= M68K_SR_V
-	} else if size == M68K_SIZE_LONG && operand == 0x80000000 && (cpu.SR&M68K_SR_X) != 0 {
+	} else if size == M68K_SIZE_LONG && (operand&result&0x80000000) != 0 {
 		cpu.SR |= M68K_SR_V
 	}
 
 	// C and X flags - set if operand was not zero or if X was set
-	if operand != 0 || (cpu.SR&M68K_SR_X) != 0 {
+	if operand != 0 || oldX {
 		cpu.SR |= M68K_SR_C | M68K_SR_X
 	}
 }
@@ -9160,6 +9525,11 @@ func (cpu *M68KCPU) ExecEor(reg, opmode, mode, xreg uint16) {
 
 		cpu.cycleCounter += M68K_CYCLE_REG
 	} else {
+		if mode == M68K_AM_AR {
+			cpu.ProcessException(M68K_VEC_ILLEGAL_INSTR)
+			return
+		}
+
 		// Memory operand
 		addr, postInc := cpu.resolveEAWithPrePost(mode, xreg, size)
 
@@ -10346,8 +10716,9 @@ func (cpu *M68KCPU) ExecChk2Cmp2(size, mode, reg uint16) {
 	// Get the extension word
 	ext := cpu.Fetch16()
 
-	// Extract register number
-	rn := ext & M68K_EXT_REG_MASK
+	// Extract register number. CMP2/CHK2 uses the extension word's upper
+	// register field: bit 15 selects address/data, bits 14..12 select Rn.
+	rn := (ext >> 12) & 0x07
 
 	// Determine if it's an address or data register
 	isAddressReg := (ext & (1 << M68K_EXT_REG_TYPE_BIT)) != 0
@@ -10553,11 +10924,36 @@ func (cpu *M68KCPU) ExecRtm(reg uint16) {
 func (cpu *M68KCPU) ExecNOP() {
 	cpu.cycleCounter += M68K_CYCLE_EXECUTE
 }
+
+func (cpu *M68KCPU) m68kJITDiagnosticWord(addr uint32) uint16 {
+	if uint64(addr)+2 > uint64(len(cpu.memory)) {
+		return 0
+	}
+	return uint16(cpu.memory[addr])<<8 | uint16(cpu.memory[addr+1])
+}
+
 func (cpu *M68KCPU) ExecRTS() {
+	oldSP := cpu.AddrRegs[7]
 	newPC := cpu.Pop32()
 	if newPC < 0x1000 {
 		fmt.Printf("M68K: RTS to low PC=%08x from=%08x sr=%04x sp=%08x lastir=%04x\n",
 			newPC, cpu.lastExecPC, cpu.SR, cpu.AddrRegs[7], cpu.lastExecOpcode)
+		if os.Getenv("IE_M68K_STOP_ON_LOW_RTS") == "1" {
+			fmt.Printf("  RTS stack slot=%08x words=%04x %04x %04x %04x longs=%08x %08x %08x %08x\n",
+				oldSP,
+				cpu.m68kJITDiagnosticWord(oldSP),
+				cpu.m68kJITDiagnosticWord(oldSP+2),
+				cpu.m68kJITDiagnosticWord(oldSP+4),
+				cpu.m68kJITDiagnosticWord(oldSP+6),
+				cpu.Read32(oldSP),
+				cpu.Read32(oldSP+4),
+				cpu.Read32(oldSP+8),
+				cpu.Read32(oldSP+12))
+			if os.Getenv("IE_M68K_JIT_DUMP_RING") == "1" {
+				cpu.m68kDumpNativePCRing()
+			}
+			cpu.running.Store(false)
+		}
 	}
 	cpu.PC = newPC
 	cpu.cycleCounter += M68K_CYCLE_RTS

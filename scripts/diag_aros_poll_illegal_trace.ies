@@ -1,0 +1,83 @@
+local MAX_WAIT_MS = 60000
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function dump_regs()
+    local regs = dbg.get_regs()
+    local names = {"PC","SR","D0","D1","D2","D3","D4","D5","D6","D7","A0","A1","A2","A3","A4","A5","A6","A7"}
+    for _, name in ipairs(names) do
+        local v = regs[name] or regs[string.lower(name)]
+        sys.print(string.format("[poll-illegal] %s=%s", name, hex(v or 0)))
+    end
+end
+
+local function dump_disasm(label, addr)
+    sys.print(string.format("[poll-illegal] disasm %s %s", label, hex(addr)))
+    local ok, rows = pcall(dbg.disasm, addr, 16)
+    if not ok or type(rows) ~= "table" then
+        sys.print("[poll-illegal]   unavailable")
+        return
+    end
+    for i = 1, #rows do
+        local e = rows[i]
+        sys.print(string.format("[poll-illegal]   %08X: %-18s %s", e.addr or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+local function dump_trace()
+    local ring = dbg.tracering_show(128)
+    sys.print("[poll-illegal] trace")
+    for i = 1, #ring do
+        local e = ring[i]
+        sys.print(string.format("[poll-illegal] %03d %s %08X: %-16s %s", i, e.cpu or "", e.pc or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+dbg.open()
+dbg.tracering_on(8192)
+dbg.close()
+
+local start = sys.time_ms()
+local seen = 0
+while sys.time_ms() - start < MAX_WAIT_MS do
+    local pc = dbg.get_pc()
+    if pc == 0x00988DB8 or pc == 0x00988DBA or
+       pc == 0x00A4FD4E or pc == 0x0080130C or pc == 0x008FEB54 or
+       pc == 0x0064CE50 or pc == 0x00000080 or pc == 0x00002636 or
+       pc == 0x00000105 or pc > 0x10000000 then
+        seen = pc
+        break
+    end
+    sys.wait_ms(5)
+end
+
+dbg.open()
+sys.print(string.format("[poll-illegal] seen=%s current=%s", hex(seen), hex(dbg.get_pc())))
+dump_regs()
+local ok_stats, stats = pcall(cpu.jit_stats)
+if ok_stats and type(stats) == "table" then
+    sys.print(string.format("[poll-illegal] jit native=%d fallback=%d bailouts=%d last_native=%s last_fallback=%s opcode=0x%04X",
+        stats.native_blocks or 0,
+        stats.fallback_instructions or 0,
+        stats.bailouts or 0,
+        hex(stats.last_native_pc or 0),
+        hex(stats.last_fallback_pc or 0),
+        stats.last_fallback_opcode or 0))
+end
+dump_disasm("pc_window", dbg.get_pc() > 32 and dbg.get_pc() - 32 or dbg.get_pc())
+if ok_stats and type(stats) == "table" then
+    local last_native = stats.last_native_pc or 0
+    local last_fallback = stats.last_fallback_pc or 0
+    if last_native ~= 0 then
+        dump_disasm("last_native", last_native > 32 and last_native - 32 or last_native)
+    end
+    if last_fallback ~= 0 then
+        dump_disasm("last_fallback", last_fallback > 32 and last_fallback - 32 or last_fallback)
+    end
+end
+dump_disasm("corridor", 0x0064CE36)
+dump_trace()
+dbg.tracering_off()
+dbg.close()

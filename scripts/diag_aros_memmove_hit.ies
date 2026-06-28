@@ -1,0 +1,63 @@
+local BP = 0x0065FB14
+local TIMEOUT_MS = 45000
+local HIT_CONDITION = "hitcount>100"
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function line(s)
+    sys.print(s)
+end
+
+local function dump_regs(tag)
+    local regs = dbg.get_regs()
+    line(string.format(
+        "[memmove-hit] %s PC=%s SR=%s D0=%s D1=%s D2=%s D3=%s D4=%s A0=%s A1=%s A2=%s A6=%s A7=%s",
+        tag,
+        hex(regs["PC"] or 0),
+        hex(regs["SR"] or 0),
+        hex(regs["D0"] or 0),
+        hex(regs["D1"] or 0),
+        hex(regs["D2"] or 0),
+        hex(regs["D3"] or 0),
+        hex(regs["D4"] or 0),
+        hex(regs["A0"] or 0),
+        hex(regs["A1"] or 0),
+        hex(regs["A2"] or 0),
+        hex(regs["A6"] or 0),
+        hex(regs["A7"] or 0)
+    ))
+end
+
+local function dump_disasm(addr, count)
+    local ok, dis = pcall(dbg.disasm, addr, count)
+    if not ok or type(dis) ~= "table" then
+        return
+    end
+    for i = 1, #dis do
+        local e = dis[i]
+        line(string.format("[memmove-hit]   %08X: %-18s %s", e.addr or e.pc or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+dbg.open()
+dbg.clear_all_bp()
+dbg.set_conditional_bp(BP, HIT_CONDITION)
+line(string.format("[memmove-hit] set bp=%s condition=%s mode=%s jit=%s", hex(BP), HIT_CONDITION, tostring(cpu.execution_mode()), tostring(cpu.jit_enabled())))
+dbg.continue(true)
+
+local start = sys.time_ms()
+while sys.time_ms() - start < TIMEOUT_MS do
+    if dbg.is_open() then
+        break
+    end
+    sys.wait_ms(10)
+end
+
+dbg.open()
+line(string.format("[memmove-hit] stopped elapsed=%dms", sys.time_ms() - start))
+dump_regs("hit")
+dump_disasm(0x0065FAE0, 48)
+dbg.clear_all_bp()
+dbg.close()

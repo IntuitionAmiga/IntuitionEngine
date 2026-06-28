@@ -1,0 +1,25 @@
+local WAIT_MS = 1500
+
+local function hex(v)
+    return string.format("0x%08X", v or 0)
+end
+
+local function dump(label, addr, count)
+    sys.print(string.format("[disasm-blocks] %s %s", label, hex(addr)))
+    local ok, dis = pcall(dbg.disasm, addr, count)
+    if not ok or type(dis) ~= "table" then
+        sys.print("[disasm-blocks]   unavailable")
+        return
+    end
+    for i = 1, #dis do
+        local e = dis[i]
+        sys.print(string.format("[disasm-blocks]   %08X: %-18s %s", e.addr or 0, e.hex or "", e.mnemonic or ""))
+    end
+end
+
+sys.wait_ms(WAIT_MS)
+dbg.freeze()
+dump("last_native_6067f8", 0x006067D0, 48)
+dump("fault_function_622ff4", 0x00622FF4, 80)
+dump("fault_site_62313e", 0x00623110, 48)
+dbg.resume()

@@ -41,8 +41,8 @@ const (
 )
 
 // EmuTOSProfileTopBytes is the upper bound EmuTOS guests see. EmuTOS is a
-// source-owned firmware profile; its current appliance cap is 2 GiB with a
-// 32 MiB minimum enforced by profile_bounds.go.
+// source-owned firmware profile; its current appliance cap is the historical
+// 32 MiB boot profile with the same minimum enforced by profile_bounds.go.
 const EmuTOSProfileTopBytes uint64 = uint64(EmuTOS_PROFILE_TOP)
 
 // lowMemWindowBytes is the upper bound on len(bus.memory) for IE64-family
