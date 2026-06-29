@@ -105,7 +105,7 @@ var britishEnglishAmericanisms = map[string]string{
 	"organized":      "organised",
 }
 
-const sdkAuditLastModifiedDate = "2026-06-28"
+const sdkAuditLastModifiedDate = "2026-06-29"
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
 	needle := "*Last modified: " + sdkAuditLastModifiedDate + "*"
