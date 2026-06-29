@@ -1064,7 +1064,15 @@ func (cpu *M68KCPU) Reset() {
 	} else {
 		cpu.AddrRegs[7] = sp
 	}
-	cpu.tuneStackBounds(cpu.AddrRegs[7])
+	// Span the full guest RAM for stack-bounds checks. A bare .ie68 builds its
+	// own stack at runtime (move/lea into A7) with no initial SSP in the reset
+	// vector, so pinning a ±64 KiB window around the load-time SP wrongly
+	// faulted every RTS/Pop (underflow) and deep Push (overflow) once the guest
+	// relocated its stack. This mirrors the AROS/EmuTOS loaders, which already
+	// set the bounds to the profile RAM extent after load. The window-based
+	// tuneStackBounds remains for callers that want early-corruption detection
+	// around a known stack (exercised directly by tests).
+	cpu.applyBareStackBounds()
 	cpu.SSP = cpu.AddrRegs[7]
 	cpu.USP = cpu.SSP
 
@@ -1123,6 +1131,17 @@ func (cpu *M68KCPU) tuneStackBounds(sp uint32) {
 	cpu.stackLowerBound = lower
 	cpu.stackUpperBound = upper
 }
+
+// applyBareStackBounds spans the full guest RAM for the stack-corruption checks,
+// matching the AROS/EmuTOS loaders. Used by the bare-load paths (Reset and
+// LoadProgramBytes), which carry no OS contract pinning the stack to a known
+// region: a bare .ie68 may relocate A7 anywhere in RAM at runtime, so a ±64 KiB
+// window around the load-time SP wrongly faults later RTS/Pop and deep Push.
+func (cpu *M68KCPU) applyBareStackBounds() {
+	cpu.stackLowerBound = 0
+	cpu.stackUpperBound = cpu.ProfileTopOfRAM()
+}
+
 func (cpu *M68KCPU) LoadProgram(filename string) error {
 	program, err := os.ReadFile(filename)
 	if err != nil {
@@ -1165,6 +1184,10 @@ func (cpu *M68KCPU) LoadProgramBytes(program []byte) {
 	cpu.PC = M68K_ENTRY_POINT
 	cpu.AddrRegs[7] = M68K_STACK_START
 	cpu.SR = M68K_SR_S
+	// The real bare-M68K launch path (program_executor.go EXEC_TYPE_M68K) loads
+	// here without calling Reset(); widen the stack bounds to full RAM so a guest
+	// that relocates A7 high at runtime does not hit stale window faults.
+	cpu.applyBareStackBounds()
 	cpu.running.Store(true)
 }
 
