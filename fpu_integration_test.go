@@ -270,6 +270,81 @@ func TestFPU_MemoryAutoUpdateAddressing(t *testing.T) {
 	})
 }
 
+// TestFPU_DataRegisterDirectOperand covers FPU operands in data-register-direct
+// mode (mode 0, Dn). GetEffectiveAddress returns 0 for that mode, so before the
+// fix the FPU read/wrote memory address 0 instead of the register; gcc emits
+// fmove.s/fmove.l %dN,%fpM constantly (float-constant materialisation and
+// int<->float), so this broke hard-float arithmetic. Includes the Dn -> FP7
+// regression: arithmetic into FP7 must not be clobbered by the EA-value scratch
+// register (which itself defaults to FP7).
+func TestFPU_DataRegisterDirectOperand(t *testing.T) {
+	// FMOVE.L %d0,%fp0 - int->float from a data register. Mode 0 must read D0,
+	// not memory address 0.
+	t.Run("FMOVE_long_Dn_to_FP", func(t *testing.T) {
+		cpu := setupFPUTestCPU()
+		cpu.PC = 0x1000
+		cpu.DataRegs[0] = 200
+		cpu.Write32(0, 0xDEADBEEF) // address 0 must NOT be read
+		cpu.Write16(cpu.PC, 0xF200)   // cpid 1, mode 0 (Dn), reg 0 (D0)
+		cpu.Write16(cpu.PC+2, 0x4000) // R/M=1, fmt=long, dst=FP0, op=FMOVE
+		cpu.currentIR = cpu.Fetch16()
+		cpu.FetchAndDecodeInstruction()
+		if got := cpu.FPU.GetFP64(0); got != 200 {
+			t.Fatalf("FP0 = %v, want 200 (D0, not memory[0])", got)
+		}
+	})
+
+	// FADD.L %d0,%fp7 - the FP7-destination regression. fp7 = 5.0; + D0(5) = 10.
+	t.Run("FADD_long_Dn_to_FP7", func(t *testing.T) {
+		cpu := setupFPUTestCPU()
+		cpu.PC = 0x1000
+		cpu.DataRegs[0] = 5
+		cpu.FPU.SetFP64(7, 5.0)
+		cpu.Write16(cpu.PC, 0xF200)   // mode 0 (Dn), reg 0 (D0)
+		cpu.Write16(cpu.PC+2, 0x43A2) // R/M=1, fmt=long, dst=FP7, op=FADD
+		cpu.currentIR = cpu.Fetch16()
+		cpu.FetchAndDecodeInstruction()
+		if got := cpu.FPU.GetFP64(7); got != 10 {
+			t.Fatalf("FP7 = %v, want 10 (5.0 + D0=5; scratch must not be FP7)", got)
+		}
+	})
+
+	// FMUL.L %d0,%fp0 - arithmetic into a non-FP7 dest from Dn (control case).
+	t.Run("FMUL_long_Dn_to_FP0", func(t *testing.T) {
+		cpu := setupFPUTestCPU()
+		cpu.PC = 0x1000
+		cpu.DataRegs[0] = 3
+		cpu.FPU.SetFP64(0, 4.0)
+		cpu.Write16(cpu.PC, 0xF200)   // mode 0 (Dn), reg 0 (D0)
+		cpu.Write16(cpu.PC+2, 0x4023) // R/M=1, fmt=long, dst=FP0, op=FMUL(0x23)
+		cpu.currentIR = cpu.Fetch16()
+		cpu.FetchAndDecodeInstruction()
+		if got := cpu.FPU.GetFP64(0); got != 12 {
+			t.Fatalf("FP0 = %v, want 12 (4.0 * D0=3)", got)
+		}
+	})
+
+	// FMOVE.S %fp0,%d1 - FP register to a data-register destination (mode 0):
+	// must write D1, not memory address 0.
+	t.Run("FMOVE_single_FP_to_Dn", func(t *testing.T) {
+		cpu := setupFPUTestCPU()
+		cpu.PC = 0x1000
+		cpu.FPU.SetFP64(0, 1.5)
+		cpu.DataRegs[1] = 0xDEADBEEF
+		cpu.Write32(0, 0) // address 0 must stay clean
+		cpu.Write16(cpu.PC, 0xF201)   // mode 0 (Dn), reg 1 (D1)
+		cpu.Write16(cpu.PC+2, 0x6400) // R/M=1, dir=1 (FP->EA), fmt=single, src=FP0
+		cpu.currentIR = cpu.Fetch16()
+		cpu.FetchAndDecodeInstruction()
+		if got := cpu.DataRegs[1]; got != math.Float32bits(1.5) {
+			t.Fatalf("D1 = 0x%08X, want 0x%08X (single bits of 1.5)", got, math.Float32bits(1.5))
+		}
+		if got := cpu.Read32(0); got != 0 {
+			t.Fatalf("memory[0] was written: 0x%08X", got)
+		}
+	})
+}
+
 func TestFPU_MemoryAutoUpdateAddressingUsesOperandFormatSize(t *testing.T) {
 	tests := []struct {
 		name      string

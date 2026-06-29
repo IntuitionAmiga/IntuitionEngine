@@ -12292,6 +12292,32 @@ func (cpu *M68KCPU) execFPUEAToReg(opcode, cmdWord uint16) {
 		return
 	}
 
+	// Data register direct (mode 0): the operand IS Dn, not a memory cell.
+	// GetEffectiveAddress returns 0 for this mode, so routing it through the
+	// EA path would (wrongly) read memory address 0. gcc emits fmove.s/fmove.l
+	// %dN,%fpM constantly to materialise float constants and do int->float, so
+	// this must read the register directly. Only the formats that fit in one
+	// 32-bit data register are legal here (extended/double/packed are not).
+	if mode == 0 {
+		d := cpu.DataRegs[reg]
+		var value float64
+		switch srcFormat {
+		case 0: // Long integer
+			value = float64(int32(d))
+		case 1: // Single precision
+			value = float64(math.Float32frombits(d))
+		case 4: // Word integer (low 16 bits)
+			value = float64(int16(d))
+		case 6: // Byte integer (low 8 bits)
+			value = float64(int8(d))
+		default:
+			cpu.ProcessException(M68K_VEC_LINE_F)
+			return
+		}
+		cpu.applyFPUEAValue(op, dstReg, value)
+		return
+	}
+
 	ea, postIncrement, ok := cpu.m68kFPUEffectiveAddress(mode, reg, srcFormat)
 	if !ok {
 		cpu.ProcessException(M68K_VEC_LINE_F)
@@ -12345,12 +12371,21 @@ func (cpu *M68KCPU) applyFPUEAValue(op uint16, dstReg int, value float64) {
 		return
 	}
 
-	// For arithmetic ops, load value into scratch register and dispatch
+	// For arithmetic ops, load the operand into a scratch FP register and
+	// dispatch (result lands in dstReg). The scratch must NOT be dstReg: fn
+	// computes dstReg = dstReg OP scratch, and we restore the scratch's old
+	// value afterwards - if scratch == dstReg that restore would overwrite the
+	// freshly computed result (e.g. fadd.l %d0,%fp7). Use FP7 normally, FP6 when
+	// the destination is itself FP7.
 	if fn := fpuOpTable[baseOp]; fn != nil {
-		savedFP := cpu.FPU.GetFP64(7)
-		cpu.FPU.SetFP64(7, value)
-		fn(cpu.FPU, 7, dstReg)
-		cpu.FPU.SetFP64(7, savedFP)
+		scratch := 7
+		if dstReg == 7 {
+			scratch = 6
+		}
+		savedFP := cpu.FPU.GetFP64(scratch)
+		cpu.FPU.SetFP64(scratch, value)
+		fn(cpu.FPU, scratch, dstReg)
+		cpu.FPU.SetFP64(scratch, savedFP)
 		cpu.applyFPUResultPrecision(dstReg, precision)
 	} else {
 		cpu.ProcessException(M68K_VEC_LINE_F)
@@ -12533,6 +12568,28 @@ func (cpu *M68KCPU) execFPURegToMem(opcode, cmdWord uint16) {
 	reg := opcode & 0x7
 	srcReg := int((cmdWord >> 7) & 0x7)
 	dstFormat := (cmdWord >> 10) & 0x7
+
+	// Data register direct (mode 0): destination IS Dn, not memory. Same reason
+	// as the source path - GetEffectiveAddress returns 0 for this mode, so the
+	// store would clobber memory address 0 instead of the register. Byte/word
+	// writes affect only the low part of Dn (move-to-Dn semantics); extended/
+	// double cannot be stored to a single Dn.
+	if mode == 0 {
+		value := cpu.FPU.GetFP64(srcReg)
+		switch dstFormat {
+		case 0: // Long integer
+			cpu.DataRegs[reg] = uint32(int32(value))
+		case 1: // Single precision
+			cpu.DataRegs[reg] = math.Float32bits(float32(value))
+		case 4: // Word integer (low 16 bits, upper preserved)
+			cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFF0000) | uint32(uint16(int16(value)))
+		case 6: // Byte integer (low 8 bits, upper preserved)
+			cpu.DataRegs[reg] = (cpu.DataRegs[reg] & 0xFFFFFF00) | uint32(uint8(int8(value)))
+		default:
+			cpu.ProcessException(M68K_VEC_LINE_F)
+		}
+		return
+	}
 
 	ea, postIncrement, ok := cpu.m68kFPUEffectiveAddress(mode, reg, dstFormat)
 	if !ok {
