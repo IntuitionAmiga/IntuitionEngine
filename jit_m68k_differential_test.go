@@ -5068,16 +5068,33 @@ func runM68KJITDifferentialFPUHelperSingle(t *testing.T, tc m68kFPUDiffCase) {
 	rig.ctx.NeedHelper = m68kJITHelperNone
 	rig.ctx.HelperPC = 0
 
+	// Register-to-register arithmetic ops are now emitted inline (native SSE2)
+	// rather than routed through the FPU helper. Detect that and assert the
+	// appropriate path: native ops update the FP state directly with no helper
+	// request; everything else still drives the helper.
+	nativeEligible := false
+	if len(tc.words) >= 2 {
+		if op, _, _, _, ok := m68kDecodeNativeFPURegToReg(tc.words[0], tc.words[1]); ok {
+			nativeEligible = m68kFPUNativeOpEmittable(op)
+		}
+	}
+
 	callNative(block.execAddr, uintptr(unsafe.Pointer(rig.ctx)))
 	jit.PC = rig.ctx.RetPC
 	if rig.ctx.NeedIOFallback != 0 {
-		t.Fatalf("FPU opcode 0x%04X requested interpreter fallback instead of helper execution", instrs[0].opcode)
+		t.Fatalf("FPU opcode 0x%04X requested interpreter fallback", instrs[0].opcode)
 	}
-	if rig.ctx.NeedHelper != m68kJITHelperFPU {
-		t.Fatalf("FPU opcode 0x%04X requested helper %d, want FPU helper", instrs[0].opcode, rig.ctx.NeedHelper)
-	}
-	if retired, ok := jit.m68kHandleJITHelper(rig.ctx); !ok || retired != 1 {
-		t.Fatalf("FPU helper execution ok=%v retired=%d, want ok=true retired=1", ok, retired)
+	if nativeEligible {
+		if rig.ctx.NeedHelper != m68kJITHelperNone {
+			t.Fatalf("native FPU opcode 0x%04X unexpectedly requested helper %d", instrs[0].opcode, rig.ctx.NeedHelper)
+		}
+	} else {
+		if rig.ctx.NeedHelper != m68kJITHelperFPU {
+			t.Fatalf("FPU opcode 0x%04X requested helper %d, want FPU helper", instrs[0].opcode, rig.ctx.NeedHelper)
+		}
+		if retired, ok := jit.m68kHandleJITHelper(rig.ctx); !ok || retired != 1 {
+			t.Fatalf("FPU helper execution ok=%v retired=%d, want ok=true retired=1", ok, retired)
+		}
 	}
 
 	assertM68KCoreStateEqual(t, jit, interp)

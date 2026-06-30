@@ -84,6 +84,10 @@ type M68KJITContext struct {
 	RTECountPtr         uintptr // 384: &cpu.rteCount storage
 	PendingExceptionPtr uintptr // 392: &cpu.pendingException storage
 	PendingInterruptPtr uintptr // 400: &cpu.pendingInterrupt storage
+	FPRegsPtr           uintptr // 408: &cpu.FPU.fp[0] (float64 FP register file)
+	FPSRPtr             uintptr // 416: &cpu.FPU.FPSR
+	FPCRPtr             uintptr // 424: &cpu.FPU.FPCR
+	FPIARPtr            uintptr // 432: &cpu.FPU.FPIAR
 }
 
 // M68KJITContext field offsets (must match struct layout above)
@@ -146,6 +150,10 @@ const (
 	m68kCtxOffRTECountPtr         = 384
 	m68kCtxOffPendingExceptionPtr = 392
 	m68kCtxOffPendingInterruptPtr = 400
+	m68kCtxOffFPRegsPtr           = 408
+	m68kCtxOffFPSRPtr             = 416
+	m68kCtxOffFPCRPtr             = 424
+	m68kCtxOffFPIARPtr            = 432
 )
 
 const (
@@ -217,6 +225,15 @@ func newM68KJITContext(cpu *M68KCPU, codePageBitmap []byte, codePageMin []uint16
 		RTECountPtr:         uintptr(unsafe.Pointer(&cpu.rteCount)),
 		PendingExceptionPtr: uintptr(unsafe.Pointer(&cpu.pendingException)),
 		PendingInterruptPtr: uintptr(unsafe.Pointer(&cpu.pendingInterrupt)),
+	}
+	// The FPU is optional (cpu.FPU may be nil). Only wire the FP register/status
+	// pointers when present; native FPU emission is gated on the same nil check,
+	// and a nil-FPU CPU raises Line-F for FPU opcodes instead.
+	if cpu.FPU != nil {
+		ctx.FPRegsPtr = uintptr(unsafe.Pointer(&cpu.FPU.fp[0]))
+		ctx.FPSRPtr = uintptr(unsafe.Pointer(&cpu.FPU.FPSR))
+		ctx.FPCRPtr = uintptr(unsafe.Pointer(&cpu.FPU.FPCR))
+		ctx.FPIARPtr = uintptr(unsafe.Pointer(&cpu.FPU.FPIAR))
 	}
 	if cpu.use68000ExceptionFrame {
 		ctx.Use68000Frame = 1
@@ -946,6 +963,123 @@ func m68kIsJITHelperSupportedFPU(opcode uint16) bool {
 		return false
 	}
 	return !m68kGroupFTerminatesBlock(opcode)
+}
+
+// m68kFPUNativeOp identifies a register-to-register 68881 arithmetic operation
+// the JIT can emit natively in SSE2 scalar double. The FP register file is
+// stored as float64 (fpu_m68881.go), and Go's float64 arithmetic lowers to the
+// same SSE2 scalar-double instructions, so native emission is bit-identical to
+// the interpreter — provided FMA fusion is never used (it would change rounding).
+// Transcendentals, EA-operand forms, control/FMOVEM and non-general Line-F
+// instructions are excluded and stay on the FPU helper path.
+type m68kFPUNativeOp uint8
+
+const (
+	m68kFPUNativeNone m68kFPUNativeOp = iota
+	m68kFPUNativeFMOVE
+	m68kFPUNativeFADD
+	m68kFPUNativeFSUB
+	m68kFPUNativeFMUL
+	m68kFPUNativeFDIV
+	m68kFPUNativeFABS
+	m68kFPUNativeFNEG
+	m68kFPUNativeFSQRT
+	m68kFPUNativeFCMP    // compare, no result store; custom CC
+	m68kFPUNativeFTST    // test source, no result store
+	m68kFPUNativeFSGLDIV // single-precision divide (operands rounded to float32 first)
+	m68kFPUNativeFSGLMUL // single-precision multiply
+)
+
+// m68kFPUConditionBits computes the FPSR condition-code bits (N/Z/I/NAN) for a
+// float64 result, exactly mirroring (*M68881FPU).setCC64. It is the reference
+// the native FPU path must replicate after each arithmetic op; keeping it as a
+// pure function lets the emitter be validated against the interpreter without
+// executing code. Order matters: a zero (incl. -0.0) is Zero, never Negative.
+func m68kFPUConditionBits(bits uint64) uint32 {
+	exp := bits & 0x7FF0000000000000
+	frac := bits & 0x000FFFFFFFFFFFFF
+	sign := bits >> 63
+	if exp == 0x7FF0000000000000 {
+		if frac != 0 {
+			return FPU_CC_NAN
+		}
+		cc := FPU_CC_I
+		if sign != 0 {
+			cc |= FPU_CC_N
+		}
+		return cc
+	}
+	if exp|frac == 0 {
+		return FPU_CC_Z
+	}
+	if sign != 0 {
+		return FPU_CC_N
+	}
+	return 0
+}
+
+// m68kDecodeNativeFPURegToReg decodes a Line-F general FPU instruction (opcode +
+// command word) and reports whether it is a register-to-register op the JIT can
+// emit natively, along with the source/destination FP registers and the result
+// rounding precision. It mirrors execFPUGeneral → execFPURegToReg and
+// m68kFPUDecodePrecisionOpmode exactly so the native path and the interpreter
+// agree on operands and precision; any unsupported encoding returns ok=false so
+// the caller falls back to the FPU helper.
+func m68kDecodeNativeFPURegToReg(opcode, cmdWord uint16) (op m68kFPUNativeOp, src, dst, precision int, ok bool) {
+	if (opcode>>6)&0x7 != 0 {
+		return // not a general FPU instruction (FDBcc/FScc/FBcc/FSAVE/FRESTORE)
+	}
+	if cmdWord&0x8000 != 0 {
+		return // control register / FMOVEM
+	}
+	if (cmdWord>>14)&1 != 0 {
+		return // R/M=1: EA source, not register-to-register
+	}
+	src = int((cmdWord >> 10) & 0x7)
+	dst = int((cmdWord >> 7) & 0x7)
+	baseOp, prec := m68kFPUDecodePrecisionOpmode(cmdWord & 0x7F)
+	precision = prec
+	switch baseOp {
+	case FPU_OP_FMOVE:
+		op = m68kFPUNativeFMOVE
+	case FPU_OP_FADD:
+		op = m68kFPUNativeFADD
+	case FPU_OP_FSUB:
+		op = m68kFPUNativeFSUB
+	case FPU_OP_FMUL:
+		op = m68kFPUNativeFMUL
+	case FPU_OP_FDIV:
+		op = m68kFPUNativeFDIV
+	case FPU_OP_FABS:
+		op = m68kFPUNativeFABS
+	case FPU_OP_FNEG:
+		op = m68kFPUNativeFNEG
+	case FPU_OP_FSQRT:
+		op = m68kFPUNativeFSQRT
+	case FPU_OP_FCMP:
+		// FCMP/FTST write no result, but the interpreter still applies
+		// applyFPUResultPrecision(dst, precision) for the single/double opmodes,
+		// which rounds fp[dst] and refreshes the CC. The native handlers don't
+		// model that, so only the plain (extended) form is native; precision-
+		// qualified forms fall back to the helper.
+		if precision != m68kFPURoundExtended {
+			return
+		}
+		op = m68kFPUNativeFCMP
+	case FPU_OP_FTST:
+		if precision != m68kFPURoundExtended {
+			return
+		}
+		op = m68kFPUNativeFTST
+	case FPU_OP_FSGLDIV:
+		op = m68kFPUNativeFSGLDIV
+	case FPU_OP_FSGLMUL:
+		op = m68kFPUNativeFSGLMUL
+	default:
+		return // transcendental / unsupported reg-to-reg op → helper
+	}
+	ok = true
+	return
 }
 
 // m68kNeedsFallback returns true if the block's first instruction requires

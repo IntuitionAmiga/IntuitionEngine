@@ -264,6 +264,11 @@ func m68kInstrNeedsCCRMaterialization(ji *M68KJITInstr) bool {
 		if opmode <= 2 || (opmode >= 4 && opmode <= 6) {
 			return true
 		}
+	case 0xF: // FPU. Native reg-to-reg ops clobber host EFLAGS computing FPSR
+		// condition codes, and the helper path exits the block — both require
+		// any lazily-live integer CCR to be materialized into R14 first so a
+		// following Bcc reads the correct flags.
+		return true
 	}
 	return false
 }
@@ -12135,8 +12140,18 @@ func m68kEmitInstructionFull(cb *CodeBuffer, ji *M68KJITInstr, blockStartPC uint
 		m68kEmitEpilogue(cb, br)
 		return
 
-	case 0xF: // FPU helper exit; trap-class Line F opcodes bail to interpreter.
+	case 0xF: // FPU: native reg-to-reg arithmetic, else helper, else interpreter.
 		instrPC := blockStartPC + ji.pcOffset
+		// Native path: register-to-register arithmetic emitted inline in SSE2.
+		// The command word is the second instruction word at instrPC+2.
+		if cmdAddr := int(instrPC) + 2; cmdAddr+1 < len(memory) {
+			cmdWord := uint16(memory[cmdAddr])<<8 | uint16(memory[cmdAddr+1])
+			if op, src, dst, precision, ok := m68kDecodeNativeFPURegToReg(opcode, cmdWord); ok {
+				if m68kEmitNativeFPUInstr(cb, op, src, dst, precision, instrPC, br, instrIdx) {
+					return
+				}
+			}
+		}
 		if m68kIsJITHelperSupportedFPU(opcode) {
 			m68kEmitHelperAtInstr(cb, instrPC, br, instrIdx, m68kJITHelperFPU)
 		} else {
