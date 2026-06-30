@@ -401,6 +401,17 @@ func m68kIsCCRProducer(instr *M68KJITInstr) bool {
 // block boundaries by interrupts, exceptions, helper exits, and MMIO callbacks
 // even when the following guest instruction does not read CCR. A future
 // boundary-aware liveness pass may re-enable this selectively.
+//
+// NOT YET SAFE TO ENABLE: the hidden-consumer model (m68kInstrMaySetGenericIOFallback)
+// is incomplete. Many native-compiled producers bail mid-block via
+// m68kPatchFallbackBails BEFORE committing their own CCR (memory NEG/NEGX/NOT/
+// CLR/TST/NBCD/TAS, CHK, DIVU.W/DIVS.W). On such a bail the fallback epilogue
+// re-enters the interpreter at that instruction with the PRE-instruction CCR
+// still required; if an upstream producer was elided (because this instruction
+// "overwrites"), SR is stale. Every pre-commit direct-fallback-bail producer
+// must be modeled as a hidden consumer before flipping this. (For mk64 the win
+// is moot regardless: gfx_sp_tri1 is float+memory bound, so dead-CCR elision is
+// fps-neutral.)
 var jit68KCCRLivenessEnabled = false
 
 // m68kCurrentLive / m68kCurrentInstrIdx publish the per-block bitmap
