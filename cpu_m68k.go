@@ -2823,6 +2823,11 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 		cpu.PC, instructionCount)
 }
 
+// m68kJitTracePCRaw caches IE_M68K_JIT_TRACE_PC once at startup. StepOne runs on
+// the per-instruction interpreter/fallback path (hot: ~tens of thousands/sec for
+// MMIO-move fallbacks), so reading the env per call cost a syscall each time.
+var m68kJitTracePCRaw = os.Getenv("IE_M68K_JIT_TRACE_PC")
+
 // StepOne executes a single M68K instruction and returns 1.
 // Must only be called when the CPU is frozen.
 func (cpu *M68KCPU) StepOne() int {
@@ -2847,7 +2852,7 @@ func (cpu *M68KCPU) StepOne() int {
 	cpu.PC += M68K_WORD_SIZE
 	cpu.lastExecPC = execPC
 	cpu.lastExecOpcode = cpu.currentIR
-	if rawTracePC := os.Getenv("IE_M68K_JIT_TRACE_PC"); rawTracePC != "" {
+	if rawTracePC := m68kJitTracePCRaw; rawTracePC != "" {
 		var tracePC uint32
 		if _, err := fmt.Sscanf(rawTracePC, "%x", &tracePC); err == nil && execPC == tracePC {
 			stack0, stack1, stack2, stack3 := uint16(0), uint16(0), uint16(0), uint16(0)
