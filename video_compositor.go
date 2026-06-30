@@ -47,6 +47,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -197,25 +198,30 @@ func (s *VideoScheduler) tickAll() {
 
 // VideoCompositor blends multiple video sources into a single output
 type VideoCompositor struct {
-	mu                sync.Mutex
-	outputMu          sync.Mutex
-	output            VideoOutput
-	sources           []registeredSource
-	nextSourceID      uint64
-	finalFrame        []byte
-	outputBuf         []byte
-	onFrameComplete   func()
-	done              chan struct{}
-	frameWidth        int
-	frameHeight       int
-	scaleMode         PresentationScaleMode
-	pendingResolution atomic.Uint64
-	lockedResolution  bool
-	prevHasContent    bool
-	frameCounter      uint64
-	frameTimestamp    time.Time
-	scheduler         *VideoScheduler
-	schedulerTaskID   uint64
+	mu                 sync.Mutex
+	outputMu           sync.Mutex
+	output             VideoOutput
+	sources            []registeredSource
+	nextSourceID       uint64
+	finalFrame         []byte
+	outputBuf          []byte
+	onFrameComplete    func()
+	done               chan struct{}
+	frameWidth         int
+	frameHeight        int
+	scaleMode          PresentationScaleMode
+	pendingResolution  atomic.Uint64
+	lockedResolution   bool
+	prevHasContent     bool
+	frameCounter       uint64
+	frameTimestamp     time.Time
+	scheduler          *VideoScheduler
+	schedulerTaskID    uint64
+	hardwareDisabled   bool
+	lastHardwareFrame  uint64
+	lastHardwareLayers []CompositorFrameLayer
+	lastSnapshotFrame  uint64
+	lastSnapshot       []byte
 
 	compositorRunning atomic.Bool
 	state             compositorState
@@ -327,6 +333,8 @@ func (c *VideoCompositor) prepareResolutionLocked(width, height int) (DisplayCon
 	c.frameHeight = height
 	c.finalFrame = make([]byte, width*height*BYTES_PER_PIXEL)
 	c.outputBuf = make([]byte, width*height*BYTES_PER_PIXEL)
+	c.hardwareDisabled = false
+	c.clearHardwareSnapshotLocked()
 
 	if c.output != nil {
 		cfg = c.output.GetDisplayConfig()
@@ -446,11 +454,6 @@ func (c *VideoCompositor) composite() {
 		c.outputBuf = make([]byte, len(c.finalFrame))
 	}
 
-	// Clear final frame (Go compiler optimizes this to memset)
-	for i := range c.finalFrame {
-		c.finalFrame[i] = 0
-	}
-
 	for _, entry := range c.sources {
 		source := entry.source
 		if ticker, ok := source.(FrameTicker); ok {
@@ -458,32 +461,134 @@ func (c *VideoCompositor) composite() {
 		}
 	}
 
-	hasContent, usedScanline := c.compositeScanlineAware()
-	if !usedScanline {
-		hasContent = c.compositeFullFrame()
-	}
+	layers, hasContent := c.collectCompositeLayers()
+	shouldOutput := hasContent || c.prevHasContent
+	frameID := c.frameCounter + 1
 
 	var outputFrame []byte
-	if hasContent {
-		c.prevHasContent = true
-		copy(c.outputBuf, c.finalFrame)
-		outputFrame = c.outputBuf
-	} else if c.prevHasContent {
-		c.prevHasContent = false
-		copy(c.outputBuf, c.finalFrame)
-		outputFrame = c.outputBuf
+	var hwUpdate *CompositorFrameUpdate
+	if shouldOutput && c.canUseHardwareCompositorLocked() {
+		hwUpdate = &CompositorFrameUpdate{
+			FrameID:            frameID,
+			PresentationWidth:  c.frameWidth,
+			PresentationHeight: c.frameHeight,
+			HasContent:         hasContent,
+			Layers:             layers,
+		}
+		c.storeHardwareSnapshotLayersLocked(frameID, layers)
+	} else {
+		c.renderLayersSoftwareLocked(layers)
+		c.clearHardwareSnapshotLocked()
+		if hasContent {
+			c.prevHasContent = true
+			copy(c.outputBuf, c.finalFrame)
+			outputFrame = c.outputBuf
+		} else if c.prevHasContent {
+			c.prevHasContent = false
+			copy(c.outputBuf, c.finalFrame)
+			outputFrame = c.outputBuf
+		}
 	}
 
-	c.frameCounter++
+	c.frameCounter = frameID
 	c.frameTimestamp = time.Now()
 	out := c.output
 	cb := c.onFrameComplete
 	c.mu.Unlock()
 
-	c.updateOutput(out, outputFrame)
+	if hwUpdate != nil {
+		if c.updateHardwareOutput(out, *hwUpdate) {
+			c.mu.Lock()
+			c.prevHasContent = hasContent
+			c.mu.Unlock()
+		} else {
+			c.mu.Lock()
+			c.hardwareDisabled = true
+			c.renderLayersSoftwareLocked(layers)
+			c.clearHardwareSnapshotLocked()
+			if hasContent {
+				c.prevHasContent = true
+				copy(c.outputBuf, c.finalFrame)
+				outputFrame = c.outputBuf
+			} else if c.prevHasContent {
+				c.prevHasContent = false
+				copy(c.outputBuf, c.finalFrame)
+				outputFrame = c.outputBuf
+			}
+			c.mu.Unlock()
+			c.updateOutput(out, outputFrame)
+		}
+	} else {
+		c.updateOutput(out, outputFrame)
+	}
 	if cb != nil {
 		cb()
 	}
+}
+
+func (c *VideoCompositor) canUseHardwareCompositorLocked() bool {
+	if c.hardwareDisabled || os.Getenv("IE_DISABLE_GPU_COMPOSITOR") != "" || c.output == nil {
+		return false
+	}
+	if _, ok := c.output.(HardwareCompositingOutput); !ok {
+		return false
+	}
+	return true
+}
+
+func (c *VideoCompositor) updateHardwareOutput(out VideoOutput, update CompositorFrameUpdate) bool {
+	if out == nil || !out.IsStarted() {
+		return true
+	}
+	hw, ok := out.(HardwareCompositingOutput)
+	if !ok {
+		return false
+	}
+	c.outputMu.Lock()
+	defer c.outputMu.Unlock()
+	if err := hw.UpdateHardwareCompositorFrame(update); err != nil {
+		fmt.Printf("Compositor: Error updating hardware frame: %v\n", err)
+		return false
+	}
+	return true
+}
+
+func (c *VideoCompositor) clearHardwareSnapshotLocked() {
+	c.lastHardwareFrame = 0
+	c.lastHardwareLayers = nil
+	c.lastSnapshotFrame = 0
+	c.lastSnapshot = nil
+}
+
+func (c *VideoCompositor) storeHardwareSnapshotLayersLocked(frameID uint64, layers []CompositorFrameLayer) {
+	c.lastHardwareFrame = frameID
+	c.lastHardwareLayers = cloneCompositorLayers(layers)
+	c.lastSnapshotFrame = 0
+	c.lastSnapshot = nil
+}
+
+func cloneCompositorLayers(layers []CompositorFrameLayer) []CompositorFrameLayer {
+	if len(layers) == 0 {
+		return nil
+	}
+	out := make([]CompositorFrameLayer, len(layers))
+	for i, layer := range layers {
+		out[i] = layer
+		if layer.Buffer != nil {
+			out[i].Buffer = append([]byte(nil), layer.Buffer...)
+		}
+	}
+	return out
+}
+
+func (c *VideoCompositor) renderLayersSnapshotLocked(layers []CompositorFrameLayer) []byte {
+	frame := make([]byte, c.frameWidth*c.frameHeight*BYTES_PER_PIXEL)
+	saved := c.finalFrame
+	c.finalFrame = frame
+	c.renderLayersSoftwareLocked(layers)
+	out := append([]byte(nil), c.finalFrame...)
+	c.finalFrame = saved
+	return out
 }
 
 // scanlineSourceEntry pairs a VideoSource with its ScanlineAware implementation
@@ -495,9 +600,52 @@ type scanlineSourceEntry struct {
 	height int
 }
 
+func (c *VideoCompositor) collectCompositeLayers() ([]CompositorFrameLayer, bool) {
+	layers, hasContent, usedScanline := c.collectScanlineAwareLayers()
+	if usedScanline {
+		return layers, hasContent
+	}
+	return c.collectFullFrameLayers()
+}
+
+func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, registered registeredSource, frame []byte) ([]CompositorFrameLayer, bool) {
+	source := registered.source
+	srcW, srcH := source.GetDimensions()
+	if srcW <= 0 || srcH <= 0 || len(frame) < srcW*srcH*BYTES_PER_PIXEL {
+		return layers, false
+	}
+	rect := c.scaleRect(srcW, srcH, c.frameWidth, c.frameHeight)
+	if rect.w <= 0 || rect.h <= 0 {
+		return layers, false
+	}
+	bufLen := srcW * srcH * BYTES_PER_PIXEL
+	buf := make([]byte, bufLen)
+	copy(buf, frame[:bufLen])
+	layers = append(layers, CompositorFrameLayer{
+		SourceID:     registered.id,
+		SourceWidth:  srcW,
+		SourceHeight: srcH,
+		DestX:        rect.x,
+		DestY:        rect.y,
+		DestWidth:    rect.w,
+		DestHeight:   rect.h,
+		Buffer:       buf,
+	})
+	return layers, true
+}
+
 // compositeScanlineAware performs per-scanline rendering for copper-style effects
 // Returns whether content was produced and whether the scanline path was used.
 func (c *VideoCompositor) compositeScanlineAware() (bool, bool) {
+	layers, hasContent, usedScanline := c.collectScanlineAwareLayers()
+	if !usedScanline {
+		return false, false
+	}
+	c.renderLayersSoftwareLocked(layers)
+	return hasContent, true
+}
+
+func (c *VideoCompositor) collectScanlineAwareLayers() ([]CompositorFrameLayer, bool, bool) {
 	// Collect enabled scanline sources. Opaque sources are still blended later
 	// in their sorted layer slots.
 	var entries []scanlineSourceEntry
@@ -532,7 +680,7 @@ func (c *VideoCompositor) compositeScanlineAware() (bool, bool) {
 	}
 
 	if len(entries) == 0 {
-		return false, false
+		return nil, false, false
 	}
 
 	// Signal render goroutines to yield, then wait for any in-flight
@@ -575,6 +723,7 @@ func (c *VideoCompositor) compositeScanlineAware() (bool, bool) {
 		}
 	}
 
+	var layers []CompositorFrameLayer
 	hasContent := false
 	for _, registered := range c.sources {
 		source := registered.source
@@ -588,19 +737,26 @@ func (c *VideoCompositor) compositeScanlineAware() (bool, bool) {
 		safeCall("SignalVSync", source.SignalVSync)
 
 		if frame != nil {
-			hasContent = true
-			srcW, srcH := source.GetDimensions()
-			c.blendFrame(frame, srcW, srcH)
+			var added bool
+			layers, added = c.appendCompositeLayer(layers, registered, frame)
+			hasContent = hasContent || added
 		}
 	}
 
-	return hasContent, true
+	return layers, hasContent, true
 }
 
 // compositeFullFrame performs full-frame compositing with sequential frame collection
 func (c *VideoCompositor) compositeFullFrame() bool {
+	layers, hasContent := c.collectFullFrameLayers()
+	c.renderLayersSoftwareLocked(layers)
+	return hasContent
+}
+
+func (c *VideoCompositor) collectFullFrameLayers() ([]CompositorFrameLayer, bool) {
 	// Collect enabled sources and fetch frames sequentially
 	// (GetFrame is a single atomic swap - goroutine overhead far exceeds the work)
+	var layers []CompositorFrameLayer
 	hasContent := false
 	for _, registered := range c.sources {
 		source := registered.source
@@ -610,12 +766,24 @@ func (c *VideoCompositor) compositeFullFrame() bool {
 		frame, _ := safeCallR("GetFrame", source.GetFrame)
 		safeCall("SignalVSync", source.SignalVSync)
 		if frame != nil {
-			w, h := source.GetDimensions()
-			hasContent = true
-			c.blendFrame(frame, w, h)
+			var added bool
+			layers, added = c.appendCompositeLayer(layers, registered, frame)
+			hasContent = hasContent || added
 		}
 	}
-	return hasContent
+	return layers, hasContent
+}
+
+func (c *VideoCompositor) renderLayersSoftwareLocked(layers []CompositorFrameLayer) {
+	if c.finalFrame == nil || len(c.finalFrame) != c.frameWidth*c.frameHeight*BYTES_PER_PIXEL {
+		c.finalFrame = make([]byte, c.frameWidth*c.frameHeight*BYTES_PER_PIXEL)
+	}
+	for i := range c.finalFrame {
+		c.finalFrame[i] = 0
+	}
+	for _, layer := range layers {
+		c.blendLayer(layer)
+	}
 }
 
 func (c *VideoCompositor) updateOutput(out VideoOutput, frame []byte) {
@@ -630,6 +798,9 @@ func (c *VideoCompositor) updateOutput(out VideoOutput, frame []byte) {
 		}
 	}
 }
+
+var compositorSoftwarePresentationHook func()
+var compositorSoftwareScaleHook func()
 
 // blendFrame blends a source frame into the final frame with scaling.
 // All-zero pixels are transparent; any nonzero alpha or RGB value is opaque.
@@ -658,6 +829,25 @@ func (c *VideoCompositor) blendFrame(srcFrame []byte, srcW, srcH int) {
 
 	// Scaled path using Bresenham-style integer arithmetic
 	c.blendFrameScaled(srcFrame, srcW, srcH, rect)
+}
+
+func (c *VideoCompositor) blendLayer(layer CompositorFrameLayer) {
+	if compositorSoftwarePresentationHook != nil {
+		compositorSoftwarePresentationHook()
+	}
+	if layer.SourceWidth <= 0 || layer.SourceHeight <= 0 || len(layer.Buffer) < layer.SourceWidth*layer.SourceHeight*BYTES_PER_PIXEL {
+		return
+	}
+	rect := scaleRect{x: layer.DestX, y: layer.DestY, w: layer.DestWidth, h: layer.DestHeight}
+	if rect.w <= 0 || rect.h <= 0 {
+		return
+	}
+	if rect.x == 0 && rect.y == 0 && rect.w == c.frameWidth && rect.h == c.frameHeight &&
+		layer.SourceWidth == c.frameWidth && layer.SourceHeight == c.frameHeight {
+		c.blendFrame1to1(layer.Buffer, layer.SourceWidth, layer.SourceHeight)
+		return
+	}
+	c.blendFrameScaled(layer.Buffer, layer.SourceWidth, layer.SourceHeight, rect)
 }
 
 type scaleRect struct {
@@ -732,6 +922,9 @@ func (c *VideoCompositor) blendStrip(srcFrame []byte, width, startY, endY int) {
 // blendFrameScaled handles scaling using optimized integer arithmetic
 // This matches the original dstX * srcW / dstW calculation exactly
 func (c *VideoCompositor) blendFrameScaled(srcFrame []byte, srcW, srcH int, rect scaleRect) {
+	if compositorSoftwareScaleHook != nil {
+		compositorSoftwareScaleHook()
+	}
 	dstW := c.frameWidth
 
 	srcRowBytes := srcW * BYTES_PER_PIXEL
@@ -784,6 +977,24 @@ func (c *VideoCompositor) GetCurrentFrame() []byte {
 func (c *VideoCompositor) GetFrameSnapshot() ([]byte, uint64, time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.lastHardwareFrame == c.frameCounter && c.lastHardwareFrame != 0 {
+		if c.lastSnapshotFrame == c.lastHardwareFrame && c.lastSnapshot != nil {
+			out := append([]byte(nil), c.lastSnapshot...)
+			return out, c.frameCounter, c.frameTimestamp
+		}
+		if hw, ok := c.output.(HardwareCompositingOutput); ok {
+			if frame, ok := hw.HardwareCompositorSnapshot(c.lastHardwareFrame); ok {
+				c.lastSnapshotFrame = c.lastHardwareFrame
+				c.lastSnapshot = append(c.lastSnapshot[:0], frame...)
+				out := append([]byte(nil), c.lastSnapshot...)
+				return out, c.frameCounter, c.frameTimestamp
+			}
+		}
+		c.lastSnapshotFrame = c.lastHardwareFrame
+		c.lastSnapshot = c.renderLayersSnapshotLocked(c.lastHardwareLayers)
+		out := append([]byte(nil), c.lastSnapshot...)
+		return out, c.frameCounter, c.frameTimestamp
+	}
 	if len(c.finalFrame) == 0 {
 		return nil, c.frameCounter, c.frameTimestamp
 	}

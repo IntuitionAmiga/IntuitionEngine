@@ -91,6 +91,37 @@ type VideoOutput interface {
 	GetRefreshRate() int
 }
 
+// CompositorFrameLayer is one ordered native-resolution source layer in a
+// complete compositor frame. The buffer is RGBA and must contain at least
+// SourceWidth*SourceHeight*4 bytes.
+type CompositorFrameLayer struct {
+	SourceID     uint64
+	SourceWidth  int
+	SourceHeight int
+	DestX        int
+	DestY        int
+	DestWidth    int
+	DestHeight   int
+	Buffer       []byte
+}
+
+// CompositorFrameUpdate describes a complete compositor frame for outputs that
+// can perform final scaling/composition themselves.
+type CompositorFrameUpdate struct {
+	FrameID            uint64
+	PresentationWidth  int
+	PresentationHeight int
+	HasContent         bool
+	Layers             []CompositorFrameLayer
+}
+
+// HardwareCompositingOutput is an optional extension implemented by display
+// backends that can perform compositor scaling/layering outside the CPU path.
+type HardwareCompositingOutput interface {
+	UpdateHardwareCompositorFrame(update CompositorFrameUpdate) error
+	HardwareCompositorSnapshot(frameID uint64) ([]byte, bool)
+}
+
 type PixelFormat int
 
 const (

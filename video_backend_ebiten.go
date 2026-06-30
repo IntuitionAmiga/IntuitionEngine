@@ -82,12 +82,46 @@ type EbitenOutput struct {
 
 	recorder         *VideoRecorder
 	screenCaptureBuf []byte
+	hwFrameID        uint64
+	hwPresentationW  int
+	hwPresentationH  int
+	hwHasContent     bool
+	hwLayers         []ebitenHardwareLayer
+	hwShader         *ebiten.Shader
 
 	// Software cursor overlay for guests that need host-side cursor rendering.
 	// ROM desktops that draw into VRAM set noSoftwareCursor to avoid duplicates.
 	cursorImage      *ebiten.Image
 	noSoftwareCursor bool
 }
+
+type ebitenHardwareLayer struct {
+	CompositorFrameLayer
+	image *ebiten.Image
+}
+
+const ebitenCompositorShaderSrc = `//kage:unit pixels
+
+package main
+
+var SrcSize vec2
+var RectSize vec2
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	srcX := floor(srcPos.x * SrcSize.x / RectSize.x)
+	srcY := floor(srcPos.y * SrcSize.y / RectSize.y)
+	srcX = clamp(srcX, 0, SrcSize.x - 1)
+	srcY = clamp(srcY, 0, SrcSize.y - 1)
+	p := imageSrc0At(vec2(srcX, srcY))
+	if p.a == 0 && p.r == 0 && p.g == 0 && p.b == 0 {
+		discard()
+	}
+	if p.a == 0 {
+		return vec4(p.r, p.g, p.b, 1)
+	}
+	return p
+}
+`
 
 func NewEbitenOutput() (VideoOutput, error) {
 	return &EbitenOutput{
@@ -202,8 +236,82 @@ func (eo *EbitenOutput) UpdateFrame(data []byte) error {
 		return err
 	}
 	copy(eo.frameBuffer, data)
+	eo.clearHardwareCompositorLocked()
 	eo.bufferMutex.Unlock()
 	return nil
+}
+
+func (eo *EbitenOutput) UpdateHardwareCompositorFrame(update CompositorFrameUpdate) error {
+	if update.PresentationWidth <= 0 || update.PresentationHeight <= 0 {
+		return fmt.Errorf("invalid presentation dimensions %dx%d", update.PresentationWidth, update.PresentationHeight)
+	}
+	eo.bufferMutex.Lock()
+	defer eo.bufferMutex.Unlock()
+	if eo.hwShader == nil {
+		shader, err := ebiten.NewShader([]byte(ebitenCompositorShaderSrc))
+		if err != nil {
+			return fmt.Errorf("compile compositor shader: %w", err)
+		}
+		eo.hwShader = shader
+	}
+	if update.PresentationWidth != eo.width || update.PresentationHeight != eo.height {
+		return fmt.Errorf("hardware frame dimensions %dx%d do not match output %dx%d", update.PresentationWidth, update.PresentationHeight, eo.width, eo.height)
+	}
+	if update.HasContent {
+		for i, layer := range update.Layers {
+			if err := validateHardwareLayer(update.PresentationWidth, update.PresentationHeight, layer); err != nil {
+				return fmt.Errorf("layer %d: %w", i, err)
+			}
+		}
+	}
+	eo.hwFrameID = update.FrameID
+	eo.hwPresentationW = update.PresentationWidth
+	eo.hwPresentationH = update.PresentationHeight
+	eo.hwHasContent = update.HasContent
+	eo.resizeHardwareLayerSlotsLocked(len(update.Layers))
+	for i, layer := range update.Layers {
+		buf := eo.hwLayers[i].Buffer
+		eo.hwLayers[i].CompositorFrameLayer = layer
+		eo.hwLayers[i].Buffer = append(buf[:0], layer.Buffer...)
+	}
+	for i := len(update.Layers); i < len(eo.hwLayers); i++ {
+		eo.hwLayers[i].CompositorFrameLayer = CompositorFrameLayer{}
+	}
+	return nil
+}
+
+func validateHardwareLayer(dstW, dstH int, layer CompositorFrameLayer) error {
+	if layer.SourceWidth <= 0 || layer.SourceHeight <= 0 || layer.DestWidth <= 0 || layer.DestHeight <= 0 {
+		return fmt.Errorf("invalid dimensions")
+	}
+	if layer.DestX < 0 || layer.DestY < 0 || layer.DestWidth > dstW-layer.DestX || layer.DestHeight > dstH-layer.DestY {
+		return fmt.Errorf("destination rect out of bounds")
+	}
+	want := layer.SourceWidth * layer.SourceHeight * BYTES_PER_PIXEL
+	if len(layer.Buffer) < want {
+		return fmt.Errorf("buffer too small: got %d, want at least %d", len(layer.Buffer), want)
+	}
+	return nil
+}
+
+func (eo *EbitenOutput) HardwareCompositorSnapshot(frameID uint64) ([]byte, bool) {
+	return nil, false
+}
+
+func (eo *EbitenOutput) resizeHardwareLayerSlotsLocked(n int) {
+	for len(eo.hwLayers) < n {
+		eo.hwLayers = append(eo.hwLayers, ebitenHardwareLayer{})
+	}
+}
+
+func (eo *EbitenOutput) clearHardwareCompositorLocked() {
+	eo.hwFrameID = 0
+	eo.hwPresentationW = 0
+	eo.hwPresentationH = 0
+	eo.hwHasContent = false
+	for i := range eo.hwLayers {
+		eo.hwLayers[i].CompositorFrameLayer = CompositorFrameLayer{}
+	}
 }
 
 func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
@@ -237,6 +345,7 @@ func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
 	if len(eo.frameBuffer) != newSize {
 		eo.frameBuffer = make([]byte, newSize)
 	}
+	eo.clearHardwareCompositorLocked()
 
 	eo.windowedW = eo.width * eo.scale
 	eo.windowedH = eo.height * eo.scale
@@ -252,6 +361,12 @@ func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
 	if eo.window != nil {
 		eo.window.Dispose()
 		eo.window = nil
+	}
+	for i := range eo.hwLayers {
+		if eo.hwLayers[i].image != nil {
+			eo.hwLayers[i].image.Dispose()
+			eo.hwLayers[i].image = nil
+		}
 	}
 	return nil
 }
@@ -1258,17 +1373,24 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	}
 
 	eo.bufferMutex.Lock()
-	if eo.window == nil {
-		eo.window = ebiten.NewImage(eo.width, eo.height)
+	usedHardware := eo.hwFrameID != 0
+	if usedHardware {
+		eo.drawHardwareCompositorLocked(screen)
+	} else {
+		if eo.window == nil {
+			eo.window = ebiten.NewImage(eo.width, eo.height)
+		}
+		eo.window.WritePixels(eo.frameBuffer)
 	}
-	eo.window.WritePixels(eo.frameBuffer)
 	showStatusBar := eo.showStatusBar
 	cursorImage := eo.cursorImage
 	noSoftwareCursor := eo.noSoftwareCursor
 	termMMIO := eo.termMMIO
 	compositor := eo.compositor
 	eo.bufferMutex.Unlock()
-	screen.DrawImage(eo.window, nil)
+	if !usedHardware {
+		screen.DrawImage(eo.window, nil)
+	}
 
 	// Draw software cursor when the system cursor is hidden (EmuTOS mode).
 	// AROS draws its own Intuition cursor in VRAM, so skip when noSoftwareCursor is set.
@@ -1291,6 +1413,49 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	select {
 	case eo.vsyncChan <- struct{}{}:
 	default:
+	}
+}
+
+func (eo *EbitenOutput) drawHardwareCompositorLocked(screen *ebiten.Image) {
+	screen.Clear()
+	if !eo.hwHasContent || eo.hwShader == nil {
+		return
+	}
+	for i := range eo.hwLayers {
+		layer := &eo.hwLayers[i]
+		if layer.SourceWidth <= 0 || layer.SourceHeight <= 0 || layer.DestWidth <= 0 || layer.DestHeight <= 0 || len(layer.Buffer) == 0 {
+			continue
+		}
+		if layer.image == nil || layer.image.Bounds().Dx() != layer.SourceWidth || layer.image.Bounds().Dy() != layer.SourceHeight {
+			if layer.image != nil {
+				layer.image.Dispose()
+			}
+			layer.image = ebiten.NewImage(layer.SourceWidth, layer.SourceHeight)
+		}
+		layer.image.WritePixels(layer.Buffer[:layer.SourceWidth*layer.SourceHeight*BYTES_PER_PIXEL])
+
+		x0 := float32(layer.DestX)
+		y0 := float32(layer.DestY)
+		x1 := float32(layer.DestX + layer.DestWidth)
+		y1 := float32(layer.DestY + layer.DestHeight)
+		w := float32(layer.DestWidth)
+		h := float32(layer.DestHeight)
+		vertices := []ebiten.Vertex{
+			{DstX: x0, DstY: y0, SrcX: 0, SrcY: 0, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
+			{DstX: x1, DstY: y0, SrcX: w, SrcY: 0, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
+			{DstX: x0, DstY: y1, SrcX: 0, SrcY: h, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
+			{DstX: x1, DstY: y1, SrcX: w, SrcY: h, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
+		}
+		indices := []uint16{0, 1, 2, 1, 3, 2}
+		op := &ebiten.DrawTrianglesShaderOptions{
+			Blend: ebiten.BlendCopy,
+			Uniforms: map[string]any{
+				"SrcSize":  []float32{float32(layer.SourceWidth), float32(layer.SourceHeight)},
+				"RectSize": []float32{float32(layer.DestWidth), float32(layer.DestHeight)},
+			},
+		}
+		op.Images[0] = layer.image
+		screen.DrawTrianglesShader(vertices, indices, eo.hwShader, op)
 	}
 }
 

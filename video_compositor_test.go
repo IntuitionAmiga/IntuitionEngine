@@ -431,7 +431,7 @@ func TestCompositor_SetDimensions_HonorsLock(t *testing.T) {
 	}
 }
 
-func TestCompositor_AlphaMask_OpaqueWins_TransparentSkipped(t *testing.T) {
+func TestCompositor_AlphaMask_OpaqueWins_ZeroAlphaColorPromoted(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	comp.SetDimensions(2, 1)
 	bottom := &mockOpaqueSource{layer: 0, w: 2, h: 1, frame: solidTestFrame(2, 1, 1, 2, 3, 0xFF)}
@@ -446,8 +446,8 @@ func TestCompositor_AlphaMask_OpaqueWins_TransparentSkipped(t *testing.T) {
 	if got := testPixel(comp.finalFrame, 0, 0, 2); got != [4]byte{9, 8, 7, 0xFF} {
 		t.Fatalf("opaque pixel = %v", got)
 	}
-	if got := testPixel(comp.finalFrame, 1, 0, 2); got != [4]byte{1, 2, 3, 0xFF} {
-		t.Fatalf("transparent pixel = %v", got)
+	if got := testPixel(comp.finalFrame, 1, 0, 2); got != [4]byte{4, 5, 6, 0xFF} {
+		t.Fatalf("zero-alpha color pixel = %v", got)
 	}
 }
 
@@ -751,6 +751,12 @@ type mockVideoOutput struct {
 	refreshRate    int
 }
 
+type mockHardwareVideoOutput struct {
+	*mockVideoOutput
+	hwUpdates []CompositorFrameUpdate
+	hwErr     error
+}
+
 func newMockVideoOutput() *mockVideoOutput {
 	return &mockVideoOutput{
 		config: DisplayConfig{
@@ -826,6 +832,40 @@ func (m *mockVideoOutput) GetRefreshRate() int {
 		return m.refreshRate
 	}
 	return 60
+}
+
+func newMockHardwareVideoOutput() *mockHardwareVideoOutput {
+	out := &mockHardwareVideoOutput{mockVideoOutput: newMockVideoOutput()}
+	_ = out.Start()
+	return out
+}
+
+func (m *mockHardwareVideoOutput) UpdateHardwareCompositorFrame(update CompositorFrameUpdate) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.hwErr != nil {
+		return m.hwErr
+	}
+	cloned := update
+	cloned.Layers = cloneCompositorLayers(update.Layers)
+	m.hwUpdates = append(m.hwUpdates, cloned)
+	return nil
+}
+
+func (m *mockHardwareVideoOutput) HardwareCompositorSnapshot(frameID uint64) ([]byte, bool) {
+	return nil, false
+}
+
+func (m *mockHardwareVideoOutput) hardwareUpdateCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.hwUpdates)
+}
+
+func (m *mockHardwareVideoOutput) lastHardwareUpdate() CompositorFrameUpdate {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hwUpdates[len(m.hwUpdates)-1]
 }
 
 func TestCompositor_SetDimensions_UpdatesFrameSize(t *testing.T) {
@@ -952,6 +992,133 @@ func TestCompositor_ApplyResolution_OutputError_ContinuesGracefully(t *testing.T
 	}()
 	if comp.frameWidth != 800 || comp.frameHeight != 600 {
 		t.Fatalf("expected compositor 800x600 after error, got %dx%d", comp.frameWidth, comp.frameHeight)
+	}
+}
+
+func TestCompositor_HardwarePath_Default960To1080AvoidsSoftwareScale(t *testing.T) {
+	t.Setenv("IE_DISABLE_GPU_COMPOSITOR", "")
+	out := newMockHardwareVideoOutput()
+	comp := NewVideoCompositor(out)
+	comp.LockResolution(1920, 1080)
+	src := &mockOpaqueSource{
+		layer: 0,
+		w:     960,
+		h:     540,
+		frame: solidTestFrame(960, 540, 0x11, 0x22, 0x33, 0xFF),
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	var softwareScaleCalls atomic.Int32
+	oldScaleHook := compositorSoftwareScaleHook
+	oldPresentationHook := compositorSoftwarePresentationHook
+	compositorSoftwareScaleHook = func() { softwareScaleCalls.Add(1) }
+	compositorSoftwarePresentationHook = func() { t.Fatal("software presentation path used on hardware happy path") }
+	defer func() {
+		compositorSoftwareScaleHook = oldScaleHook
+		compositorSoftwarePresentationHook = oldPresentationHook
+	}()
+
+	comp.composite()
+
+	if got := out.hardwareUpdateCount(); got != 1 {
+		t.Fatalf("hardware updates = %d, want 1", got)
+	}
+	if out.updateCalls != 0 {
+		t.Fatalf("software UpdateFrame calls = %d, want 0", out.updateCalls)
+	}
+	if got := softwareScaleCalls.Load(); got != 0 {
+		t.Fatalf("software scale calls = %d, want 0", got)
+	}
+	update := out.lastHardwareUpdate()
+	if update.PresentationWidth != 1920 || update.PresentationHeight != 1080 || !update.HasContent {
+		t.Fatalf("update metadata = %dx%d content=%v", update.PresentationWidth, update.PresentationHeight, update.HasContent)
+	}
+	if len(update.Layers) != 1 {
+		t.Fatalf("layers = %d, want 1", len(update.Layers))
+	}
+	layer := update.Layers[0]
+	if layer.SourceWidth != 960 || layer.SourceHeight != 540 || layer.DestX != 0 || layer.DestY != 0 || layer.DestWidth != 1920 || layer.DestHeight != 1080 {
+		t.Fatalf("layer = src %dx%d dst (%d,%d) %dx%d", layer.SourceWidth, layer.SourceHeight, layer.DestX, layer.DestY, layer.DestWidth, layer.DestHeight)
+	}
+}
+
+func TestCompositor_HardwarePath_AspectFitRect(t *testing.T) {
+	t.Setenv("IE_DISABLE_GPU_COMPOSITOR", "")
+	out := newMockHardwareVideoOutput()
+	comp := NewVideoCompositor(out)
+	comp.LockResolution(1920, 1080)
+	comp.SetScaleMode(ScaleAspectFit)
+	src := &mockOpaqueSource{
+		layer: 0,
+		w:     640,
+		h:     480,
+		frame: solidTestFrame(640, 480, 0x20, 0x40, 0x60, 0xFF),
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	comp.composite()
+
+	layer := out.lastHardwareUpdate().Layers[0]
+	if layer.DestX != 240 || layer.DestY != 0 || layer.DestWidth != 1440 || layer.DestHeight != 1080 {
+		t.Fatalf("aspect-fit rect = (%d,%d) %dx%d, want (240,0) 1440x1080", layer.DestX, layer.DestY, layer.DestWidth, layer.DestHeight)
+	}
+}
+
+func TestCompositor_HardwareFailureFallsBackAndDisablesHardware(t *testing.T) {
+	t.Setenv("IE_DISABLE_GPU_COMPOSITOR", "")
+	out := newMockHardwareVideoOutput()
+	out.hwErr = errors.New("gpu failed")
+	comp := NewVideoCompositor(out)
+	comp.LockResolution(4, 2)
+	src := &mockOpaqueSource{layer: 0, w: 2, h: 1, frame: solidTestFrame(2, 1, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	comp.composite()
+	if got := out.hardwareUpdateCount(); got != 0 {
+		t.Fatalf("successful hardware updates = %d, want 0", got)
+	}
+	if out.updateCalls != 1 {
+		t.Fatalf("software updates after failure = %d, want 1", out.updateCalls)
+	}
+	out.hwErr = nil
+	comp.composite()
+	if got := out.hardwareUpdateCount(); got != 0 {
+		t.Fatalf("hardware retried after sticky disable: %d", got)
+	}
+	if out.updateCalls != 2 {
+		t.Fatalf("software updates after sticky disable = %d, want 2", out.updateCalls)
+	}
+}
+
+func TestCompositor_HardwareSnapshotLazyCache(t *testing.T) {
+	t.Setenv("IE_DISABLE_GPU_COMPOSITOR", "")
+	out := newMockHardwareVideoOutput()
+	comp := NewVideoCompositor(out)
+	comp.LockResolution(4, 2)
+	src := &mockOpaqueSource{layer: 0, w: 2, h: 1, frame: solidTestFrame(2, 1, 9, 8, 7, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	comp.composite()
+
+	var softwarePresentationCalls atomic.Int32
+	oldHook := compositorSoftwarePresentationHook
+	compositorSoftwarePresentationHook = func() { softwarePresentationCalls.Add(1) }
+	defer func() { compositorSoftwarePresentationHook = oldHook }()
+
+	first := comp.GetCurrentFrame()
+	second := comp.GetCurrentFrame()
+
+	if got := softwarePresentationCalls.Load(); got != 1 {
+		t.Fatalf("snapshot software renders = %d, want 1", got)
+	}
+	if len(first) != 4*2*4 || len(second) != len(first) {
+		t.Fatalf("snapshot sizes first=%d second=%d", len(first), len(second))
+	}
+	if got := testPixel(first, 3, 1, 4); got != [4]byte{9, 8, 7, 0xFF} {
+		t.Fatalf("snapshot bottom-right = %v", got)
 	}
 }
 
@@ -1187,6 +1354,44 @@ func TestClampScale(t *testing.T) {
 		if got := ClampScale(tc.in); got != tc.want {
 			t.Fatalf("ClampScale(%d): want %d, got %d", tc.in, tc.want, got)
 		}
+	}
+}
+
+func BenchmarkCompositorSoftwareScaled960x540To1080p(b *testing.B) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1920, 1080)
+	src := &mockOpaqueSource{
+		layer: 0,
+		w:     960,
+		h:     540,
+		frame: solidTestFrame(960, 540, 0x11, 0x22, 0x33, 0xFF),
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	b.SetBytes(1920 * 1080 * BYTES_PER_PIXEL)
+	b.ResetTimer()
+	for range b.N {
+		comp.composite()
+	}
+}
+
+func BenchmarkCompositorHardwareLayerBuild960x540To1080p(b *testing.B) {
+	b.Setenv("IE_DISABLE_GPU_COMPOSITOR", "")
+	out := newMockHardwareVideoOutput()
+	comp := NewVideoCompositor(out)
+	comp.LockResolution(1920, 1080)
+	src := &mockOpaqueSource{
+		layer: 0,
+		w:     960,
+		h:     540,
+		frame: solidTestFrame(960, 540, 0x11, 0x22, 0x33, 0xFF),
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	b.SetBytes(960 * 540 * BYTES_PER_PIXEL)
+	b.ResetTimer()
+	for range b.N {
+		comp.composite()
 	}
 }
 
