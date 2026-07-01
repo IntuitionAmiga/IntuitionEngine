@@ -230,6 +230,58 @@ func TestEbitenOutput_HardwareCompositor_Non16x9FillsStretchRect(t *testing.T) {
 	}
 }
 
+func TestEbitenOutput_HardwareCompositor_NonIntegerScaleMatchesSoftwareFloor(t *testing.T) {
+	const (
+		srcW = 3
+		srcH = 1
+		dstW = 5
+		dstH = 1
+	)
+	frame := []byte{
+		10, 0, 0, 0xFF,
+		20, 0, 0, 0xFF,
+		30, 0, 0, 0xFF,
+	}
+	out, err := NewEbitenOutput()
+	if err != nil {
+		t.Fatalf("NewEbitenOutput returned error: %v", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: dstW, Height: dstH, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		t.Fatalf("SetDisplayConfig returned error: %v", err)
+	}
+	update := CompositorFrameUpdate{
+		FrameID:            9,
+		PresentationWidth:  dstW,
+		PresentationHeight: dstH,
+		HasContent:         true,
+		Layers: []CompositorFrameLayer{{
+			SourceID:     1,
+			SourceWidth:  srcW,
+			SourceHeight: srcH,
+			DestWidth:    dstW,
+			DestHeight:   dstH,
+			Buffer:       frame,
+		}},
+	}
+	if err := eo.UpdateHardwareCompositorFrame(update); err != nil {
+		t.Fatalf("UpdateHardwareCompositorFrame returned error: %v", err)
+	}
+	screen := ebiten.NewImage(dstW, dstH)
+	eo.Draw(screen)
+	got := make([]byte, dstW*dstH*BYTES_PER_PIXEL)
+	screen.ReadPixels(got)
+
+	wantR := []byte{10, 10, 20, 20, 30}
+	for x, want := range wantR {
+		i := x * BYTES_PER_PIXEL
+		if got[i] != want || got[i+3] != 0xFF {
+			t.Fatalf("pixel %d = rgba %v, want red=%d alpha=255; floor mapping should be [10 10 20 20 30]", x, got[i:i+BYTES_PER_PIXEL], want)
+		}
+	}
+}
+
 func TestEbitenOutput_HardwareCompositor_PartialAlphaLayerReplacesLowerLayer(t *testing.T) {
 	out, err := NewEbitenOutput()
 	if err != nil {

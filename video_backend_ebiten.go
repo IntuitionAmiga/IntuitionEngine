@@ -97,19 +97,25 @@ type EbitenOutput struct {
 
 type ebitenHardwareLayer struct {
 	CompositorFrameLayer
-	image  *ebiten.Image
-	scaled *ebiten.Image
+	image *ebiten.Image
 }
 
 const ebitenCompositorCopyShaderSrc = `//kage:unit pixels
 
 package main
 
+var SrcSize vec2
+var RectSize vec2
+var DestOrigin vec2
+
 func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
-	size := imageSrc0Size()
-	srcX := clamp(floor(srcPos.x), 0, size.x - 1)
-	srcY := clamp(floor(srcPos.y), 0, size.y - 1)
-	p := imageSrc0At(vec2(srcX, srcY))
+	localX := floor(dstPos.x - DestOrigin.x)
+	localY := floor(dstPos.y - DestOrigin.y)
+	srcX := floor(localX * SrcSize.x / RectSize.x)
+	srcY := floor(localY * SrcSize.y / RectSize.y)
+	srcX = clamp(srcX, 0, SrcSize.x - 1)
+	srcY = clamp(srcY, 0, SrcSize.y - 1)
+	p := imageSrc0At(imageSrc0Origin() + vec2(srcX, srcY))
 	if p.a == 0 && p.r == 0 && p.g == 0 && p.b == 0 {
 		discard()
 	}
@@ -382,10 +388,6 @@ func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
 		if eo.hwLayers[i].image != nil {
 			eo.hwLayers[i].image.Dispose()
 			eo.hwLayers[i].image = nil
-		}
-		if eo.hwLayers[i].scaled != nil {
-			eo.hwLayers[i].scaled.Dispose()
-			eo.hwLayers[i].scaled = nil
 		}
 	}
 	return nil
@@ -1455,32 +1457,32 @@ func (eo *EbitenOutput) drawHardwareCompositorLocked(screen *ebiten.Image) {
 		pixelBytes := layer.SourceWidth * layer.SourceHeight * BYTES_PER_PIXEL
 		layer.image.WritePixels(layer.Buffer[:pixelBytes])
 
-		drawImage := layer.image
-		if layer.DestWidth != layer.SourceWidth || layer.DestHeight != layer.SourceHeight {
-			if layer.scaled == nil || layer.scaled.Bounds().Dx() != layer.DestWidth || layer.scaled.Bounds().Dy() != layer.DestHeight {
-				if layer.scaled != nil {
-					layer.scaled.Dispose()
-				}
-				layer.scaled = ebiten.NewImage(layer.DestWidth, layer.DestHeight)
-			}
-			scaleOp := &ebiten.DrawImageOptions{
-				Filter: ebiten.FilterNearest,
-				Blend:  ebiten.BlendCopy,
-			}
-			scaleOp.GeoM.Scale(
-				float64(layer.DestWidth)/float64(layer.SourceWidth),
-				float64(layer.DestHeight)/float64(layer.SourceHeight),
-			)
-			layer.scaled.DrawImage(layer.image, scaleOp)
-			drawImage = layer.scaled
+		x0 := float32(layer.DestX)
+		y0 := float32(layer.DestY)
+		x1 := float32(layer.DestX + layer.DestWidth)
+		y1 := float32(layer.DestY + layer.DestHeight)
+		sw := float32(layer.SourceWidth)
+		sh := float32(layer.SourceHeight)
+		vertices := []ebiten.Vertex{
+			{DstX: x0, DstY: y0, SrcX: 0, SrcY: 0, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
+			{DstX: x1, DstY: y0, SrcX: sw, SrcY: 0, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
+			{DstX: x0, DstY: y1, SrcX: 0, SrcY: sh, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
+			{DstX: x1, DstY: y1, SrcX: sw, SrcY: sh, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
 		}
-
-		op := &ebiten.DrawRectShaderOptions{
+		indices := []uint16{0, 1, 2, 1, 3, 2}
+		op := &ebiten.DrawTrianglesShaderOptions{
 			Blend: ebiten.BlendCopy,
+			Uniforms: map[string]any{
+				"SrcSize":  []float32{float32(layer.SourceWidth), float32(layer.SourceHeight)},
+				"RectSize": []float32{float32(layer.DestWidth), float32(layer.DestHeight)},
+				"DestOrigin": []float32{
+					float32(layer.DestX),
+					float32(layer.DestY),
+				},
+			},
 		}
-		op.GeoM.Translate(float64(layer.DestX), float64(layer.DestY))
-		op.Images[0] = drawImage
-		screen.DrawRectShader(layer.DestWidth, layer.DestHeight, eo.hwCopyShader, op)
+		op.Images[0] = layer.image
+		screen.DrawTrianglesShader(vertices, indices, eo.hwCopyShader, op)
 	}
 }
 
