@@ -94,6 +94,46 @@ func TestEbitenOutput_HardwareCompositor_StagesAndUpdateFrameClears(t *testing.T
 	}
 }
 
+func TestEbitenOutput_HardwareCompositor_StagesOpaquePixelsForDrawImage(t *testing.T) {
+	out, err := NewEbitenOutput()
+	if err != nil {
+		t.Fatalf("NewEbitenOutput returned error: %v", err)
+	}
+	eo := out.(*EbitenOutput)
+	pixels := []byte{
+		0, 0, 0, 0,
+		1, 2, 3, 0,
+		4, 5, 6, 7,
+	}
+	update := CompositorFrameUpdate{
+		FrameID:            8,
+		PresentationWidth:  eo.width,
+		PresentationHeight: eo.height,
+		HasContent:         true,
+		Layers: []CompositorFrameLayer{{
+			SourceID:     1,
+			SourceWidth:  3,
+			SourceHeight: 1,
+			DestWidth:    3,
+			DestHeight:   1,
+			Buffer:       pixels,
+		}},
+	}
+	if err := eo.UpdateHardwareCompositorFrame(update); err != nil {
+		t.Fatalf("UpdateHardwareCompositorFrame returned error: %v", err)
+	}
+	got := eo.hwLayers[0].Buffer
+	if got[3] != 0 {
+		t.Fatalf("transparent black alpha changed: got %d", got[3])
+	}
+	if got[7] != 0xFF {
+		t.Fatalf("zero-alpha colour was not promoted to opaque: got %d", got[7])
+	}
+	if got[11] != 7 {
+		t.Fatalf("partial alpha changed: got %d", got[11])
+	}
+}
+
 func TestEbitenOutput_SetDisplayConfig_ClearsHardwareFrame(t *testing.T) {
 	out, err := NewEbitenOutput()
 	if err != nil {
@@ -123,6 +163,142 @@ func TestEbitenOutput_SetDisplayConfig_ClearsHardwareFrame(t *testing.T) {
 	if eo.hwFrameID != 0 {
 		t.Fatalf("SetDisplayConfig did not clear hardware frame: %d", eo.hwFrameID)
 	}
+}
+
+func TestEbitenOutput_HardwareCompositor_Non16x9FillsStretchRect(t *testing.T) {
+	const (
+		srcW = 320
+		srcH = 200
+		dstW = 1920
+		dstH = 1080
+	)
+	frame := make([]byte, srcW*srcH*BYTES_PER_PIXEL)
+	for y := 0; y < srcH; y++ {
+		for x := 0; x < srcW; x++ {
+			i := (y*srcW + x) * BYTES_PER_PIXEL
+			frame[i+0] = byte(1 + (x*3+y*5)%255)
+			frame[i+1] = byte(1 + (x*7+y*11)%255)
+			frame[i+2] = byte(1 + (x*13+y*17)%255)
+			frame[i+3] = 0xFF
+		}
+	}
+
+	out, err := NewEbitenOutput()
+	if err != nil {
+		t.Fatalf("NewEbitenOutput returned error: %v", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: dstW, Height: dstH, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		t.Fatalf("SetDisplayConfig returned error: %v", err)
+	}
+	update := CompositorFrameUpdate{
+		FrameID:            1,
+		PresentationWidth:  dstW,
+		PresentationHeight: dstH,
+		HasContent:         true,
+		Layers: []CompositorFrameLayer{{
+			SourceID:     1,
+			SourceWidth:  srcW,
+			SourceHeight: srcH,
+			DestWidth:    dstW,
+			DestHeight:   dstH,
+			Buffer:       frame,
+		}},
+	}
+	if err := eo.UpdateHardwareCompositorFrame(update); err != nil {
+		t.Fatalf("UpdateHardwareCompositorFrame returned error: %v", err)
+	}
+	screen := ebiten.NewImage(dstW, dstH)
+	eo.Draw(screen)
+	got := make([]byte, dstW*dstH*BYTES_PER_PIXEL)
+	screen.ReadPixels(got)
+
+	for _, p := range [][2]int{
+		{0, 0},
+		{dstW / 2, dstH / 2},
+		{dstW - 1, dstH - 1},
+		{1200, 700},
+	} {
+		i := (p[1]*dstW + p[0]) * BYTES_PER_PIXEL
+		if got[i+3] != 0xFF {
+			t.Fatalf("pixel (%d,%d) was not filled by hardware stretch: rgba=%v", p[0], p[1], got[i:i+BYTES_PER_PIXEL])
+		}
+		if got[i] == 0 && got[i+1] == 0 && got[i+2] == 0 {
+			t.Fatalf("pixel (%d,%d) was black after hardware stretch: rgba=%v", p[0], p[1], got[i:i+BYTES_PER_PIXEL])
+		}
+	}
+}
+
+func TestEbitenOutput_HardwareCompositor_PartialAlphaLayerReplacesLowerLayer(t *testing.T) {
+	out, err := NewEbitenOutput()
+	if err != nil {
+		t.Fatalf("NewEbitenOutput returned error: %v", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: 2, Height: 1, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		t.Fatalf("SetDisplayConfig returned error: %v", err)
+	}
+
+	lower := []byte{
+		100, 80, 60, 0xFF,
+		30, 40, 50, 0xFF,
+	}
+	upper := []byte{
+		4, 2, 1, 8,
+		0, 0, 0, 0,
+	}
+	update := CompositorFrameUpdate{
+		FrameID:            2,
+		PresentationWidth:  2,
+		PresentationHeight: 1,
+		HasContent:         true,
+		Layers: []CompositorFrameLayer{
+			{
+				SourceID:     1,
+				SourceWidth:  2,
+				SourceHeight: 1,
+				DestWidth:    2,
+				DestHeight:   1,
+				Buffer:       lower,
+			},
+			{
+				SourceID:     2,
+				SourceWidth:  2,
+				SourceHeight: 1,
+				DestWidth:    2,
+				DestHeight:   1,
+				Buffer:       upper,
+			},
+		},
+	}
+	if err := eo.UpdateHardwareCompositorFrame(update); err != nil {
+		t.Fatalf("UpdateHardwareCompositorFrame returned error: %v", err)
+	}
+	screen := ebiten.NewImage(2, 1)
+	eo.Draw(screen)
+	got := make([]byte, 2*BYTES_PER_PIXEL)
+	screen.ReadPixels(got)
+
+	if want := upper[:BYTES_PER_PIXEL]; !sameBytes(got[:BYTES_PER_PIXEL], want) {
+		t.Fatalf("partial-alpha top pixel = %v, want exact copy %v", got[:BYTES_PER_PIXEL], want)
+	}
+	if want := lower[BYTES_PER_PIXEL:]; !sameBytes(got[BYTES_PER_PIXEL:], want) {
+		t.Fatalf("transparent top pixel = %v, want lower layer %v", got[BYTES_PER_PIXEL:], want)
+	}
+}
+
+func sameBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestEbitenOutput_UpdateRegion_RejectsShortPixels(t *testing.T) {

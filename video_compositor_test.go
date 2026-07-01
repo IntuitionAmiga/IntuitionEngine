@@ -1043,6 +1043,67 @@ func TestCompositor_HardwarePath_Default960To1080AvoidsSoftwareScale(t *testing.
 	}
 }
 
+func TestCompositor_SoftwareLayerCollectionBorrowsSourceFrame(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(2, 1)
+	src := &mockOpaqueSource{layer: 0, w: 2, h: 1, frame: solidTestFrame(2, 1, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	layers, hasContent := comp.collectFullFrameLayers(false)
+	if !hasContent || len(layers) != 1 {
+		t.Fatalf("layers=%d hasContent=%v, want one content layer", len(layers), hasContent)
+	}
+	if len(layers[0].Buffer) == 0 || &layers[0].Buffer[0] != &src.frame[0] {
+		t.Fatal("software layer collection copied source frame; want borrowed buffer")
+	}
+}
+
+func TestCompositor_SoftwareScanlineLayerCollectionCopiesFinishFrame(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(2, 2)
+	src := &mockScanlineSource{layer: 0, w: 2, h: 2, frame: solidTestFrame(2, 2, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	layers, hasContent, usedScanline := comp.collectScanlineAwareLayers(false)
+	if !usedScanline {
+		t.Fatal("scanline source did not use scanline collection")
+	}
+	if !hasContent || len(layers) != 1 {
+		t.Fatalf("layers=%d hasContent=%v, want one content layer", len(layers), hasContent)
+	}
+	if len(layers[0].Buffer) == 0 || &layers[0].Buffer[0] == &src.frame[0] {
+		t.Fatal("software scanline layer borrowed FinishFrame buffer; want owned copy")
+	}
+
+	src.frame[0] = 0xFE
+	if layers[0].Buffer[0] == 0xFE {
+		t.Fatal("software scanline layer buffer changed after source mutation")
+	}
+}
+
+func TestCompositor_HardwareLayerCollectionCopiesSourceFrame(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.SetDimensions(2, 1)
+	src := &mockOpaqueSource{layer: 0, w: 2, h: 1, frame: solidTestFrame(2, 1, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	layers, hasContent := comp.collectFullFrameLayers(true)
+	if !hasContent || len(layers) != 1 {
+		t.Fatalf("layers=%d hasContent=%v, want one content layer", len(layers), hasContent)
+	}
+	if len(layers[0].Buffer) == 0 || &layers[0].Buffer[0] == &src.frame[0] {
+		t.Fatal("hardware layer collection borrowed source frame; want owned buffer")
+	}
+
+	src.frame[0] = 0xFE
+	if layers[0].Buffer[0] == 0xFE {
+		t.Fatal("hardware layer buffer changed after source mutation")
+	}
+}
+
 func TestCompositor_HardwarePath_AspectFitRect(t *testing.T) {
 	t.Setenv("IE_DISABLE_GPU_COMPOSITOR", "")
 	out := newMockHardwareVideoOutput()

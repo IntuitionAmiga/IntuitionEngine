@@ -461,13 +461,14 @@ func (c *VideoCompositor) composite() {
 		}
 	}
 
-	layers, hasContent := c.collectCompositeLayers()
+	useHardwareCompositor := c.canUseHardwareCompositorLocked()
+	layers, hasContent := c.collectCompositeLayers(useHardwareCompositor)
 	shouldOutput := hasContent || c.prevHasContent
 	frameID := c.frameCounter + 1
 
 	var outputFrame []byte
 	var hwUpdate *CompositorFrameUpdate
-	if shouldOutput && c.canUseHardwareCompositorLocked() {
+	if shouldOutput && useHardwareCompositor {
 		hwUpdate = &CompositorFrameUpdate{
 			FrameID:            frameID,
 			PresentationWidth:  c.frameWidth,
@@ -600,15 +601,15 @@ type scanlineSourceEntry struct {
 	height int
 }
 
-func (c *VideoCompositor) collectCompositeLayers() ([]CompositorFrameLayer, bool) {
-	layers, hasContent, usedScanline := c.collectScanlineAwareLayers()
+func (c *VideoCompositor) collectCompositeLayers(copyBuffers bool) ([]CompositorFrameLayer, bool) {
+	layers, hasContent, usedScanline := c.collectScanlineAwareLayers(copyBuffers)
 	if usedScanline {
 		return layers, hasContent
 	}
-	return c.collectFullFrameLayers()
+	return c.collectFullFrameLayers(copyBuffers)
 }
 
-func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, registered registeredSource, frame []byte) ([]CompositorFrameLayer, bool) {
+func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, registered registeredSource, frame []byte, copyBuffer bool) ([]CompositorFrameLayer, bool) {
 	source := registered.source
 	srcW, srcH := source.GetDimensions()
 	if srcW <= 0 || srcH <= 0 || len(frame) < srcW*srcH*BYTES_PER_PIXEL {
@@ -619,8 +620,10 @@ func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, re
 		return layers, false
 	}
 	bufLen := srcW * srcH * BYTES_PER_PIXEL
-	buf := make([]byte, bufLen)
-	copy(buf, frame[:bufLen])
+	buf := frame[:bufLen]
+	if copyBuffer {
+		buf = append([]byte(nil), buf...)
+	}
 	layers = append(layers, CompositorFrameLayer{
 		SourceID:     registered.id,
 		SourceWidth:  srcW,
@@ -637,7 +640,7 @@ func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, re
 // compositeScanlineAware performs per-scanline rendering for copper-style effects
 // Returns whether content was produced and whether the scanline path was used.
 func (c *VideoCompositor) compositeScanlineAware() (bool, bool) {
-	layers, hasContent, usedScanline := c.collectScanlineAwareLayers()
+	layers, hasContent, usedScanline := c.collectScanlineAwareLayers(false)
 	if !usedScanline {
 		return false, false
 	}
@@ -645,7 +648,7 @@ func (c *VideoCompositor) compositeScanlineAware() (bool, bool) {
 	return hasContent, true
 }
 
-func (c *VideoCompositor) collectScanlineAwareLayers() ([]CompositorFrameLayer, bool, bool) {
+func (c *VideoCompositor) collectScanlineAwareLayers(copyBuffers bool) ([]CompositorFrameLayer, bool, bool) {
 	// Collect enabled scanline sources. Opaque sources are still blended later
 	// in their sorted layer slots.
 	var entries []scanlineSourceEntry
@@ -738,7 +741,7 @@ func (c *VideoCompositor) collectScanlineAwareLayers() ([]CompositorFrameLayer, 
 
 		if frame != nil {
 			var added bool
-			layers, added = c.appendCompositeLayer(layers, registered, frame)
+			layers, added = c.appendCompositeLayer(layers, registered, frame, copyBuffers || isScanline)
 			hasContent = hasContent || added
 		}
 	}
@@ -748,12 +751,12 @@ func (c *VideoCompositor) collectScanlineAwareLayers() ([]CompositorFrameLayer, 
 
 // compositeFullFrame performs full-frame compositing with sequential frame collection
 func (c *VideoCompositor) compositeFullFrame() bool {
-	layers, hasContent := c.collectFullFrameLayers()
+	layers, hasContent := c.collectFullFrameLayers(false)
 	c.renderLayersSoftwareLocked(layers)
 	return hasContent
 }
 
-func (c *VideoCompositor) collectFullFrameLayers() ([]CompositorFrameLayer, bool) {
+func (c *VideoCompositor) collectFullFrameLayers(copyBuffers bool) ([]CompositorFrameLayer, bool) {
 	// Collect enabled sources and fetch frames sequentially
 	// (GetFrame is a single atomic swap - goroutine overhead far exceeds the work)
 	var layers []CompositorFrameLayer
@@ -767,7 +770,7 @@ func (c *VideoCompositor) collectFullFrameLayers() ([]CompositorFrameLayer, bool
 		safeCall("SignalVSync", source.SignalVSync)
 		if frame != nil {
 			var added bool
-			layers, added = c.appendCompositeLayer(layers, registered, frame)
+			layers, added = c.appendCompositeLayer(layers, registered, frame, copyBuffers)
 			hasContent = hasContent || added
 		}
 	}
