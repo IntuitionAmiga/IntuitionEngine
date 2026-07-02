@@ -895,6 +895,44 @@ Current controlled polish pass:
      the stripped tree, and print PDFs only after the source tree is
      consistent.
 
+- Execute the post-`75f2d7cd` Voodoo state-binding and M68K FPU
+  operand pass for the current codebase. This is a focused
+  machine-contract update, not a backend, acceleration, guest system,
+  packaging, or diagnostic pass. Do not mention hardware compositor
+  acceleration, graphics backend selection, JIT internals, guest
+  appliances, guest filesystem bridges, probe scripts, demo names, or
+  other material that is not part of programming Intuition Engine from
+  BASIC, IE Mon, IE Script, or documented MMIO.
+
+  Canonical sources to check before writing:
+
+  - `video_voodoo.go`, `voodoo_software.go`, `voodoo_vulkan.go`,
+    `voodoo_constants.go`, `sdk/docs/ie_voodoo_abi.md`, and
+    `video_voodoo_state_batch_test.go` for `TRIANGLE_CMD` queuing,
+    state binding, current-texture binding, swap-time rasterisation,
+    and status effects.
+  - `cpu_m68k.go`, `fpu_integration_test.go`, and M68K FPU tests for
+    68881-style data-register direct operands, legal operand formats,
+    `FPn` to `Dn` stores, and the existing packed-decimal boundary.
+
+  Execute this pass in book order:
+
+  1. Chapter 9: state that `TRIANGLE_CMD` latches raster state and the
+     currently uploaded texture at submission time. Later mode,
+     texture, clip, fog, chroma, stipple, or slope writes affect later
+     triangles only. Preserve the existing queue, busy-bit, and swap
+     wording.
+  2. Chapter 29: add the FPU data-register direct operand rule without
+     expanding the chapter into an FPU tutorial.
+  3. Appendices D, G, and L: add only compact lookup notes and index
+     routes for the state-binding and FPU operand rules. Do not add
+     new register rows where no address changed.
+  4. Claim ledger: record the exact source files checked and the
+     reader-facing contracts changed.
+  5. Run forbidden-term, dash, and targeted consistency scans, publish
+     the stripped tree, and print PDFs only after the source tree is
+     consistent.
+
 ## Reader Contract
 
 The book is for developing **on Intuition Engine for Intuition Engine**.

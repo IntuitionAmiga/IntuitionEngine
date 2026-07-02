@@ -105,7 +105,7 @@ var britishEnglishAmericanisms = map[string]string{
 	"organized":      "organised",
 }
 
-const sdkAuditLastModifiedDate = "2026-06-29"
+const sdkAuditLastModifiedDate = "2026-07-02"
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
 	needle := "*Last modified: " + sdkAuditLastModifiedDate + "*"
@@ -3299,6 +3299,76 @@ func TestSDKCompanionDocs_ArchitectureCompositorScaleModeMatchesSource(t *testin
 		if strings.Contains(section, forbidden) {
 			t.Fatalf("architecture.md still reverses compositor scale behavior: %s", forbidden)
 		}
+	}
+}
+
+func TestSDKCompanionDocs_ArchitectureVoodooStateBindingMatchesSource(t *testing.T) {
+	doc := readAuditFile(t, "sdk/docs/architecture.md")
+	sourceInventory := readAuditFile(t, "sdk/docs/verify/SDK_ARCH_SOURCE_AUDIT.md")
+	voodoo := readAuditFile(t, "video_voodoo.go")
+	software := readAuditFile(t, "voodoo_software.go")
+	vulkan := readAuditFile(t, "voodoo_vulkan.go")
+	regression := readAuditFile(t, "video_voodoo_state_batch_test.go")
+
+	for _, needle := range []string{
+		"func rasterStateRegister(addr uint32) bool",
+		"case VOODOO_FBZ_MODE, VOODOO_ALPHA_MODE, VOODOO_FBZCOLOR_PATH,",
+		"VOODOO_TEXTURE_MODE, VOODOO_FOG_MODE, VOODOO_FOG_COLOR,",
+		"VOODOO_CHROMA_KEY, VOODOO_CHROMA_RANGE, VOODOO_STIPPLE,",
+		"VOODOO_CLIP_LEFT_RIGHT, VOODOO_CLIP_LOW_Y_HIGH, VOODOO_TEX_UPLOAD:",
+		"return addr >= VOODOO_DRDX && addr <= VOODOO_DWDY",
+		"func (v *VoodooEngine) captureRasterStateLocked() *VoodooRasterState",
+		"Texture:          v.currentTexture,",
+		"v.batchState = v.captureRasterStateLocked()",
+		"State:    v.batchState,",
+	} {
+		if !strings.Contains(voodoo, needle) {
+			t.Fatalf("video_voodoo.go state-binding source changed; review architecture.md Voodoo text: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"if st := triangles[i].State; st != nil && st != applied",
+		"b.applyRasterStateLocked(st)",
+		"b.restoreLiveStateLocked(live)",
+	} {
+		if !strings.Contains(software, needle) {
+			t.Fatalf("voodoo_software.go state-group flush changed; review architecture.md Voodoo text: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"vb.presentSoftwareFrame = flushRequiresSoftwareFrame(vb, triangles)",
+		"return vb.software.GetFrame()",
+		"func flushRequiresSoftwareFrame(vb *VulkanBackend, triangles []VoodooTriangle) bool",
+	} {
+		if !strings.Contains(vulkan, needle) {
+			t.Fatalf("voodoo_vulkan.go software-reference fallback changed; review architecture.md Voodoo text: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"TestVoodoo_StateBindsAtTriangleCmd_TwoStateFrame",
+		"TestVoodoo_MidFrameTextureSwitch",
+		"TestVoodoo_StateSnapshotsSharedUntilDirty",
+		"TestVoodoo_FlushRestoresLiveBackendState",
+	} {
+		if !strings.Contains(regression, needle) {
+			t.Fatalf("Voodoo state-binding regression tests changed; review architecture.md Voodoo text: %s", needle)
+		}
+	}
+
+	section := markdownSection(t, doc, "### Voodoo 3D State Binding", "### Copper Cross-Chip Bus Access")
+	for _, required := range []string{
+		"A write that commits `VOODOO_TRIANGLE_CMD` binds the current Voodoo raster state to that triangle",
+		"Later register writes or texture uploads do not affect already submitted triangles.",
+		"`VOODOO_SWAP_BUFFER_CMD` may flush the queued batch later, but the batch is rasterised in triangle submission order using each triangle's bound state.",
+		"Fog-table and palette raster lookups remain compatibility-pending.",
+		"Vulkan renders frames it can represent with one native state and otherwise presents the software reference output for that frame.",
+	} {
+		if !strings.Contains(section, required) {
+			t.Fatalf("architecture.md Voodoo state-binding section omits source-backed behaviour: %s", required)
+		}
+	}
+	if !normalizedContains(sourceInventory, "A write that commits VOODOO_TRIANGLE_CMD binds the current Voodoo raster state to that triangle") {
+		t.Fatal("SDK_ARCH_SOURCE_AUDIT.md missing Voodoo state-binding architecture claim")
 	}
 }
 

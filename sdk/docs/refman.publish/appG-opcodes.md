@@ -182,6 +182,11 @@ Intuition Engine bus.
 | FPU         | 68881-style `FMOVE`, `FADD`, `FSUB`, `FMUL`, `FDIV`, `FMOD`, `FREM`, `FSCALE`, `FSQRT`, `FABS`, `FNEG`, `FCMP`, `FTST`, transcendental functions, `FBcc`, `FDBcc`, `FScc`, `FTRAPcc`, `FMOVECR`, `FMOVEM`, control-register moves, `FSAVE`, and `FRESTORE`. |
 | Line A/F    | unassigned opcode trap. |
 
+FPU data-register direct operands use `Dn` directly for byte, word,
+long integer, and single-precision formats. Double and extended forms
+use memory or immediate operands; packed decimal is outside the
+accepted FPU memory formats.
+
 Byte-entry crib for Chapter 29:
 
 | Bytes | Meaning | Hand-entry note |

@@ -119,6 +119,7 @@ symbols, and Appendix J gives the full memory map.
 | Frequency tables | Appendix E |
 | FRESTORE | Chapter 29, Appendix G, Appendix H |
 | FSAVE | Chapter 29, Appendix G, Appendix H |
+| FPU data-register operands | Chapter 29, Appendix G |
 | FPU state frame | Chapter 29, Appendix H |
 
 ## G
@@ -255,6 +256,7 @@ symbols, and Appendix J gives the full memory map.
 | TIMER_PERIOD | Chapter 25, Chapter 31 |
 | TLBINVAL | Chapter 25 |
 | trace mmio | Chapter 33 |
+| TRIANGLE_CMD | Chapter 9, Appendix D |
 | TRANSPILE | Chapter 2, Chapter 25, Chapter 35, Appendix A, Appendix I |
 | Traps | Chapter 31, Appendix I |
 | TYPE command | Chapter 1, Chapter 2, Chapter 35, Appendix A, Appendix I |
@@ -273,6 +275,7 @@ symbols, and Appendix J gives the full memory map.
 | VideoChip | Chapter 4, Chapter 25, Chapter 39, Appendix D |
 | VIDEO_STATUS | Chapter 4, Appendix D |
 | Voodoo | Chapter 9, Chapter 29, Appendix D, Appendix H |
+| Voodoo state binding | Chapter 9, Appendix D |
 | VRAM | Chapter 3, Chapter 4, Chapter 24, Appendix J |
 
 ## W

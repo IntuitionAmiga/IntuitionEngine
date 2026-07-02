@@ -55,6 +55,14 @@ Voodoo is state-machine driven:
 7. Submit the triangle with `TRIANGLE`.
 8. Publish the frame with `VOODOO SWAP`.
 
+The submission point matters. When `TRIANGLE` writes `TRIANGLE_CMD`,
+Voodoo latches the current raster state for that triangle: draw mode,
+alpha mode, colour combine, fog, chroma key, stipple, clip rectangle,
+slopes, texture mode, and the currently uploaded texture. Later writes
+to those registers affect later triangles only. This lets one batch mix
+plain, shaded, textured, fogged, and clipped triangles before one final
+`VOODOO SWAP`.
+
 The simplest triangle is a typed BASIC program:
 
 ```basic
@@ -215,15 +223,19 @@ After `TRIANGLE`, Gouraud selection is reset for the next triangle.
 
 `TRIANGLE_CMD` queues work. It does not rasterise visible pixels and it
 does not wait for the rasteriser to draw the triangle. The current
-vertex and attribute state is copied into the triangle batch, up to
-`4096` triangles. If the batch is already full, further `TRIANGLE_CMD`
-writes are ignored until a swap flushes the batch.
+vertices, per-vertex attributes, raster state, and currently uploaded
+texture are latched into the triangle batch, up to `4096` triangles.
+Later writes to `FBZ_MODE`, `ALPHA_MODE`, `FBZCOLOR_PATH`,
+`TEXTURE_MODE`, fog, chroma, stipple, clip, slope, or texture upload
+state do not change triangles that are already queued. If the batch is
+already full, further `TRIANGLE_CMD` writes are ignored until a swap
+flushes the batch.
 
 Pixels appear after `SWAP_BUFFER_CMD`. That command updates dirty
-pipeline state, flushes the queued triangles into the Voodoo backend,
-clears the batch, swaps buffers, and publishes the frame to the
-compositor. During that flush the status register reports `FBI_BUSY`
-and `SST_BUSY`.
+live state for later triangles, rasterises the queued triangles using
+the state each one latched when it was submitted, clears the batch,
+swaps buffers, and publishes the frame to the compositor. During that
+flush the status register reports `FBI_BUSY` and `SST_BUSY`.
 
 ### 9.5.4 Mode and state
 
@@ -581,7 +593,7 @@ Voodoo has these programming boundaries:
 | `VOODOO OFF` | Voodoo contributes no picture to the compositor. |
 | `VOODOO DIM w,h` | Ignored unless both dimensions are positive and no larger than `800` by `600`. |
 | `VOODOO CLEAR colour` | Clears the drawing buffer and resets depth to a far value for `LESS` style depth functions. |
-| `TRIANGLE` | Queues one triangle, up to `4096` queued triangles; extra submissions are ignored until swap. |
+| `TRIANGLE` | Queues one triangle and latches its raster state and current texture, up to `4096` queued triangles; extra submissions are ignored until swap. |
 | `VOODOO SWAP` | Flushes queued triangles, sets busy while the flush runs, swaps buffers, publishes the frame, and clears the batch. |
 | `SWAP_BUFFER_CMD` bit `1` | Clears the drawing buffer after the swap using current `COLOR0`. |
 | `POKE8` to registers | Updates the shadow byte immediately, but command side effects run only when byte `3` of the word is written. |

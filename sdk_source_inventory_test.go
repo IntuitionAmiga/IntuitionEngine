@@ -504,6 +504,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"Mutable devices join the snapshot contract through MachineMonitor.RegisterSnapshotDevice.", "`debug_monitor.go` `RegisterSnapshotDevice`, `main.go` registrations"},
 		{"Video compositor default scale mode is stretch-fill; F11 toggles non-16:9 sources to aspect-fit.", "`video_compositor.go` `NewVideoCompositor`/`ToggleScaleModeIfNonNative`, `video_compositor_test.go` default-scale regression"},
 		{"VideoChip Mode7 honours the BLT_FLAGS BPP field: RGBA32 samples and writes 4-byte pixels, while CLUT8 samples and writes 1-byte palette indices with BPP-aware default strides.", "`video_chip.go` `blitMode7Locked`, `bppFromFlags`, `defaultStrideBPP`, and `video_blitter_test.go` Mode7 CLUT8 coverage"},
+		{"A write that commits VOODOO_TRIANGLE_CMD binds the current Voodoo raster state to that triangle", "`video_voodoo.go` `rasterStateRegister`/`captureRasterStateLocked`/`rasterStateDirty`/`VOODOO_TEX_UPLOAD`, `voodoo_software.go` state-group flush, `voodoo_vulkan.go` software reference fallback, and `video_voodoo_state_batch_test.go` state-stamped batching coverage"},
 	} {
 		facts = append(facts, sdkSourceFact{
 			Surface:  "Architecture",

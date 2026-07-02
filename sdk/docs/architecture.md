@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-06-29*
+*Last modified: 2026-07-02*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -888,6 +888,12 @@ graph TB
     class VOO_VTX,VOO_TRI,VOO_TEX,VOO_ZB,VOO_AB,VOO_FOG,VOO_CK,VOO_BE video
     class COMPS,DISPLAY comp
 ```
+
+### Voodoo 3D State Binding
+
+Voodoo triangle submission is state-machine driven. A write that commits `VOODOO_TRIANGLE_CMD` binds the current Voodoo raster state to that triangle: `VOODOO_FBZ_MODE`, `VOODOO_ALPHA_MODE`, `VOODOO_FBZCOLOR_PATH`, `VOODOO_TEXTURE_MODE`, fog state, chroma key, stipple, clip rectangle, slope registers, and the currently uploaded texture. Later register writes or texture uploads do not affect already submitted triangles. `VOODOO_SWAP_BUFFER_CMD` may flush the queued batch later, but the batch is rasterised in triangle submission order using each triangle's bound state.
+
+Consecutive triangles may share an internal state snapshot until a raster-state register or texture upload changes; that sharing is not guest-visible. Fog-table and palette raster lookups remain compatibility-pending. The software backend is the conformance reference. Vulkan renders frames it can represent with one native state and otherwise presents the software reference output for that frame.
 
 ### Copper Cross-Chip Bus Access
 

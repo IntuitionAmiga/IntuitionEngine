@@ -453,3 +453,8 @@ Reachable from IE64, IE32, M68K, and x86; not reachable from the
 Status, framebuffer base, clip rect, triangle setup, texture
 descriptors, fog, alpha, chroma-key, Z-buffer. Documented in
 Chapter 9. Texture RAM at `$D0000`-`$DFFFF`.
+
+`TRIANGLE_CMD` queues a triangle and binds the current raster state
+and uploaded texture to that triangle. Later Voodoo register writes
+affect later triangles only; `SWAP_BUFFER_CMD` flushes the queued
+triangles to the visible frame.
