@@ -1446,6 +1446,58 @@ func TestVoodoo_VulkanBackend_PipelineCache(t *testing.T) {
 	}
 }
 
+func TestVoodoo_VulkanBackend_SingleStampedStateFallback(t *testing.T) {
+	fbzOpaque := uint32(VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_DEPTH_WRITE |
+		(VOODOO_DEPTH_ALWAYS << 5))
+	vb := &VulkanBackend{
+		width:         100,
+		height:        100,
+		fbzMode:       fbzOpaque,
+		fbzColorPath:  VOODOO_COMBINE_UNSET,
+		textureWidth:  1,
+		textureHeight: 1,
+		textureFormat: VOODOO_TEX_FMT_ARGB8888,
+		textureData:   []byte{255, 0, 0, 255},
+		scissor: vk.Rect2D{
+			Offset: vk.Offset2D{X: 0, Y: 0},
+			Extent: vk.Extent2D{Width: 100, Height: 100},
+		},
+	}
+	st := &VoodooRasterState{
+		FbzMode:    fbzOpaque,
+		ClipLeft:   0,
+		ClipTop:    0,
+		ClipRight:  100,
+		ClipBottom: 100,
+		Texture: &VoodooTexture{
+			Width:  1,
+			Height: 1,
+			Format: VOODOO_TEX_FMT_ARGB8888,
+			Data:   []byte{255, 0, 0, 255},
+		},
+	}
+	tri := VoodooTriangle{State: st}
+
+	if flushRequiresSoftwareFrame(vb, []VoodooTriangle{tri}) {
+		t.Fatal("matching single stamped state should stay on Vulkan path")
+	}
+
+	vb.textureEnabled = true
+	if !flushRequiresSoftwareFrame(vb, []VoodooTriangle{tri}) {
+		t.Fatal("single stamped untextured state must fall back after live texturing is enabled")
+	}
+
+	st.TextureMode = VOODOO_TEX_ENABLE
+	if flushRequiresSoftwareFrame(vb, []VoodooTriangle{tri}) {
+		t.Fatal("matching single textured state should stay on Vulkan path")
+	}
+
+	vb.textureData = []byte{0, 255, 0, 255}
+	if !flushRequiresSoftwareFrame(vb, []VoodooTriangle{tri}) {
+		t.Fatal("single stamped textured state must fall back after live texture data changes")
+	}
+}
+
 // Test dynamic depth function changes through VoodooEngine
 func TestVoodoo_DynamicDepthFunction(t *testing.T) {
 	v, err := NewVoodooEngine(nil)

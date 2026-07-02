@@ -42,6 +42,7 @@ Software Backend:
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 	"unsafe"
@@ -142,6 +143,13 @@ type VulkanBackend struct {
 	// Software fallback (used if Vulkan init fails)
 	software *VoodooSoftwareBackend
 
+	// Set when the last flush contained multiple raster-state groups.
+	// The GPU path renders one pipeline per flush, so multi-state
+	// frames present the lockstep software backend's output (the
+	// conformance reference) instead. Lifting this restriction means
+	// binding pipeline/texture per group inside one command buffer.
+	presentSoftwareFrame bool
+
 	// Phase 4: Texture resources
 	textureImage       vk.Image
 	textureImageMemory vk.DeviceMemory
@@ -150,6 +158,7 @@ type VulkanBackend struct {
 	textureWidth       int
 	textureHeight      int
 	textureFormat      int
+	textureData        []byte
 	textureEnabled     bool
 	textureClampS      bool
 	textureClampT      bool
@@ -1891,6 +1900,7 @@ func (vb *VulkanBackend) SetTextureData(width, height int, data []byte, format i
 	if err := vb.uploadTextureData(data, width, height); err != nil {
 		return
 	}
+	vb.textureData = append(vb.textureData[:0], data...)
 
 	// Update descriptor set with new texture
 	vb.updateDescriptorSet()
@@ -1957,6 +1967,15 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	// Phase 6: GPU shaders now handle fog and dithering natively
 
 	if !vb.initialized {
+		return
+	}
+
+	// Raster state binds at triangleCMD time. The GPU path draws the
+	// whole flush under a single pipeline, which is exact only when
+	// every triangle shares one live-equivalent state snapshot; for
+	// divergent frames, present the software reference output for this frame.
+	vb.presentSoftwareFrame = flushRequiresSoftwareFrame(vb, triangles)
+	if vb.presentSoftwareFrame {
 		return
 	}
 
@@ -2204,6 +2223,9 @@ func (vb *VulkanBackend) GetFrame() []byte {
 
 	// Phase 6: GPU shaders now handle fog and dithering natively
 
+	if vb.presentSoftwareFrame {
+		return vb.software.GetFrame()
+	}
 	if vb.initialized {
 		if hasVisibleVoodooPixels(vb.outputFrame) {
 			return vb.outputFrame
@@ -2214,6 +2236,59 @@ func (vb *VulkanBackend) GetFrame() []byte {
 		return vb.outputFrame
 	}
 	return vb.software.GetFrame()
+}
+
+// flushRequiresSoftwareFrame reports whether Vulkan's single live pipeline
+// cannot exactly represent the triangleCMD-stamped raster state for a flush.
+func flushRequiresSoftwareFrame(vb *VulkanBackend, triangles []VoodooTriangle) bool {
+	var first *VoodooRasterState
+	for i := range triangles {
+		st := triangles[i].State
+		if st == nil {
+			continue
+		}
+		if first == nil {
+			first = st
+		} else if st != first {
+			return true
+		}
+	}
+	return first != nil && !vb.liveStateMatches(first)
+}
+
+func (vb *VulkanBackend) liveStateMatches(st *VoodooRasterState) bool {
+	if vb.fbzMode != st.FbzMode ||
+		vb.alphaMode != st.AlphaMode ||
+		vb.chromaKey != st.ChromaKey ||
+		vb.colorPathSet != st.ColorPathWritten ||
+		vb.fogMode != st.FogMode ||
+		vb.fogColor != st.FogColor {
+		return false
+	}
+	if vb.colorPathSet && vb.fbzColorPath != st.FbzColorPath {
+		return false
+	}
+	if vb.scissor.Offset.X != int32(st.ClipLeft) ||
+		vb.scissor.Offset.Y != int32(st.ClipTop) ||
+		vb.scissor.Extent.Width != uint32(st.ClipRight-st.ClipLeft) ||
+		vb.scissor.Extent.Height != uint32(st.ClipBottom-st.ClipTop) {
+		return false
+	}
+	if vb.textureEnabled != (st.TextureMode&VOODOO_TEX_ENABLE != 0) ||
+		vb.textureClampS != (st.TextureMode&VOODOO_TEX_CLAMP_S != 0) ||
+		vb.textureClampT != (st.TextureMode&VOODOO_TEX_CLAMP_T != 0) {
+		return false
+	}
+	if !vb.textureEnabled {
+		return true
+	}
+	if st.Texture == nil {
+		return len(vb.textureData) == 0
+	}
+	return vb.textureWidth == st.Texture.Width &&
+		vb.textureHeight == st.Texture.Height &&
+		vb.textureFormat == st.Texture.Format &&
+		bytes.Equal(vb.textureData, st.Texture.Data)
 }
 
 func hasVisibleVoodooPixels(frame []byte) bool {
@@ -2249,6 +2324,7 @@ func (vb *VulkanBackend) Reset() {
 	vb.textureWidth = 0
 	vb.textureHeight = 0
 	vb.textureFormat = 0
+	vb.textureData = nil
 	vb.clearColor = [4]float32{0, 0, 0, 1}
 	vb.depthClearValue = 1.0
 	if vb.width > 0 && vb.height > 0 {

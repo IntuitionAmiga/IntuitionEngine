@@ -1698,6 +1698,17 @@ gtia_setpf3       macro   color
 ;   4. Write to VOODOO_TRIANGLE_CMD to submit triangle
 ;   5. Write to VOODOO_SWAP_BUFFER_CMD to present frame
 ;
+; State binding (hardware-accurate):
+;   Raster state (FBZ_MODE, ALPHA_MODE, FBZCOLOR_PATH, TEXTURE_MODE,
+;   fog, chroma key, stipple, the clip rectangle, slope registers and
+;   the currently uploaded texture) binds to each triangle at the
+;   moment its VOODOO_TRIANGLE_CMD is written, exactly as on real
+;   SST-1 hardware. The engine defers rasterisation until the buffer
+;   swap, but registers written after a triangle is submitted never
+;   affect that triangle. Frames may freely mix textured and
+;   untextured triangles and switch textures or render modes
+;   mid-frame.
+;
 ; Fixed-point formats:
 ;   12.4  = 12 integer bits, 4 fractional bits (coordinates)
 ;   12.12 = 12 integer bits, 12 fractional bits (colors: 1.0 = $1000)

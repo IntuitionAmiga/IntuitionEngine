@@ -62,9 +62,54 @@ type VoodooVertex struct {
 	S, T, W    float32 // Texture coords (from 14.18) and W (perspective)
 }
 
-// VoodooTriangle represents a triangle with three vertices
+// VoodooTexture is an immutable uploaded texture referenced by raster
+// state snapshots. Data is RGBA bytes as the backends sample it.
+type VoodooTexture struct {
+	Width, Height int
+	Format        int
+	Data          []byte
+}
+
+// VoodooRasterState is the raster-affecting register state captured at
+// triangleCMD time. Real SST-1 hardware rasterises immediately, so
+// state binds to each triangle as it is submitted; the engine defers
+// rasterisation to the swap-time batch, and these snapshots preserve
+// the hardware-accurate binding. Snapshots are immutable once stamped
+// onto a triangle and are shared between consecutive triangles until a
+// state register changes. Fog table and palette contents are not
+// snapshotted (their rasteriser lookups are still compat-pending).
+type VoodooRasterState struct {
+	FbzMode          uint32
+	AlphaMode        uint32
+	FbzColorPath     uint32
+	ColorPathWritten bool
+	TextureMode      uint32
+	FogMode          uint32
+	FogColor         uint32
+	ChromaKey        uint32
+	ChromaRange      uint32
+	Stipple          uint32
+	ClipLeft         int
+	ClipRight        int
+	ClipTop          int
+	ClipBottom       int
+	Slopes           VoodooSlopes
+	SlopesValid      bool
+	Texture          *VoodooTexture
+}
+
+// VoodooTriangle represents a triangle with three vertices and the
+// raster state bound when its triangleCMD was written. A nil State
+// preserves the legacy behaviour of rasterising under the backend's
+// current global state (direct-backend callers and tests).
 type VoodooTriangle struct {
 	Vertices [3]VoodooVertex
+	State    *VoodooRasterState
+}
+
+func clearVoodooTriangleBatch(batch []VoodooTriangle) []VoodooTriangle {
+	clear(batch)
+	return batch[:0]
 }
 
 type VoodooSlopes struct {
@@ -100,8 +145,15 @@ type VoodooEngine struct {
 	currentColorTarget int             // Which vertex (0,1,2) receives color writes
 	gouraudEnabled     bool            // True if COLOR_SELECT was used this triangle
 
-	// Triangle batch (flushed on SWAP_BUFFER_CMD)
-	triangleBatch []VoodooTriangle
+	// Triangle batch (flushed on SWAP_BUFFER_CMD). Each triangle is
+	// stamped with the raster state bound at its triangleCMD write;
+	// batchState is the snapshot shared by triangles submitted since
+	// the last state change (rasterStateDirty forces a new snapshot).
+	triangleBatch    []VoodooTriangle
+	batchState       *VoodooRasterState
+	rasterStateDirty bool
+	currentTexture   *VoodooTexture
+	colorPathWritten bool
 
 	// Pipeline state
 	fbzMode       uint32
@@ -304,7 +356,48 @@ func (v *VoodooEngine) HandleWrite(addr uint32, value uint32) {
 	v.writeReg32Locked(addr, value)
 }
 
+// rasterStateRegister reports whether a register write affects the
+// raster state bound to subsequently submitted triangles.
+func rasterStateRegister(addr uint32) bool {
+	switch addr {
+	case VOODOO_FBZ_MODE, VOODOO_ALPHA_MODE, VOODOO_FBZCOLOR_PATH,
+		VOODOO_TEXTURE_MODE, VOODOO_FOG_MODE, VOODOO_FOG_COLOR,
+		VOODOO_CHROMA_KEY, VOODOO_CHROMA_RANGE, VOODOO_STIPPLE,
+		VOODOO_CLIP_LEFT_RIGHT, VOODOO_CLIP_LOW_Y_HIGH, VOODOO_TEX_UPLOAD:
+		return true
+	}
+	// Slope registers forward into the bound state as well.
+	return addr >= VOODOO_DRDX && addr <= VOODOO_DWDY
+}
+
+// captureRasterStateLocked snapshots the current raster-affecting
+// register state for stamping onto batched triangles.
+func (v *VoodooEngine) captureRasterStateLocked() *VoodooRasterState {
+	return &VoodooRasterState{
+		FbzMode:          v.fbzMode,
+		AlphaMode:        v.alphaMode,
+		FbzColorPath:     v.fbzColorPath,
+		ColorPathWritten: v.colorPathWritten,
+		TextureMode:      v.textureMode,
+		FogMode:          v.fogMode,
+		FogColor:         v.fogColor,
+		ChromaKey:        v.chromaKey,
+		ChromaRange:      v.chromaRange,
+		Stipple:          v.stipple,
+		ClipLeft:         v.clipLeft,
+		ClipRight:        v.clipRight,
+		ClipTop:          v.clipTop,
+		ClipBottom:       v.clipBottom,
+		Slopes:           v.slopes,
+		SlopesValid:      v.slopesValid,
+		Texture:          v.currentTexture,
+	}
+}
+
 func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
+	if rasterStateRegister(addr) {
+		v.rasterStateDirty = true
+	}
 	// Handle texture memory writes (separate address range)
 	if addr >= VOODOO_TEXMEM_BASE && addr < VOODOO_TEXMEM_BASE+VOODOO_TEXMEM_SIZE {
 		v.writeTexMem32Locked(addr, value)
@@ -412,6 +505,7 @@ func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 		}
 	case VOODOO_FBZCOLOR_PATH:
 		v.fbzColorPath = value
+		v.colorPathWritten = true
 		if v.backend != nil {
 			v.backend.SetColorPath(value)
 		}
@@ -457,6 +551,17 @@ func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 				format := int((v.textureMode >> 8) & 0xF)
 				v.backend.SetTextureData(v.textureWidth, v.textureHeight,
 					v.textureMemory[:size], format)
+				// Immutable copy for state snapshots: triangles already
+				// batched keep sampling the texture they were submitted
+				// with.
+				data := make([]byte, size)
+				copy(data, v.textureMemory[:size])
+				v.currentTexture = &VoodooTexture{
+					Width:  v.textureWidth,
+					Height: v.textureHeight,
+					Format: format,
+					Data:   data,
+				}
 			}
 		}
 	case VOODOO_FOG_MODE:
@@ -734,10 +839,16 @@ func (v *VoodooEngine) executeTriangleCmd() {
 		}
 	}
 
-	// Add triangle to batch
+	// Add triangle to batch, stamped with the raster state bound at
+	// this triangleCMD (hardware binds state at command time).
+	if v.batchState == nil || v.rasterStateDirty {
+		v.batchState = v.captureRasterStateLocked()
+		v.rasterStateDirty = false
+	}
 	if len(v.triangleBatch) < VOODOO_MAX_BATCH_TRIANGLES {
 		tri := VoodooTriangle{
 			Vertices: [3]VoodooVertex{v.vertices[0], v.vertices[1], v.vertices[2]},
+			State:    v.batchState,
 		}
 		v.triangleBatch = append(v.triangleBatch, tri)
 	}
@@ -775,7 +886,7 @@ func (v *VoodooEngine) executeSwapBufferCmd(value uint32) {
 		// Always flush triangles (even if empty, this triggers the clear)
 		hadTriangles := len(v.triangleBatch) > 0
 		v.backend.FlushTriangles(v.triangleBatch)
-		v.triangleBatch = v.triangleBatch[:0] // Clear batch
+		v.triangleBatch = clearVoodooTriangleBatch(v.triangleBatch)
 		if hadTriangles && v.OnFIFOEmpty != nil {
 			v.OnFIFOEmpty()
 		}
@@ -975,6 +1086,17 @@ func (v *VoodooEngine) SetTextureData(width, height int, data []byte) {
 		// Get format from textureMode register
 		format := int((v.textureMode >> 8) & 0xF)
 		v.backend.SetTextureData(width, height, data, format)
+		// Mirror into the state-snapshot texture so triangles stamped
+		// after this call bind it, same as the VOODOO_TEX_UPLOAD path.
+		copied := make([]byte, len(data))
+		copy(copied, data)
+		v.currentTexture = &VoodooTexture{
+			Width:  width,
+			Height: height,
+			Format: format,
+			Data:   copied,
+		}
+		v.rasterStateDirty = true
 	}
 }
 

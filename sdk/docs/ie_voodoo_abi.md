@@ -35,6 +35,12 @@ Byte and word writes update the 32-bit shadow register with read-modify-write se
 
 This rule applies to command registers including `VOODOO_TRIANGLE_CMD`, `VOODOO_FTRIANGLECMD`, `VOODOO_FAST_FILL_CMD`, `VOODOO_SWAP_BUFFER_CMD`, `VOODOO_ENABLE`, and `VOODOO_TEX_UPLOAD`.
 
+## State Binding
+
+Raster state — `VOODOO_FBZ_MODE`, `VOODOO_ALPHA_MODE`, `VOODOO_FBZCOLOR_PATH`, `VOODOO_TEXTURE_MODE`, fog, chroma key, stipple, the clip rectangle, slope registers, and the currently uploaded texture — binds to each triangle at the moment its `VOODOO_TRIANGLE_CMD` commits, matching real SST-1 immediate-mode semantics. The implementation defers rasterization to the swap-time batch flush, but register writes after a triangle is submitted never affect that triangle: internally each triangle is stamped with an immutable state snapshot, shared between consecutive triangles until a state register changes. A texture upload after a submitted triangle does not retroactively change what that triangle samples.
+
+Fog table and palette contents are not snapshotted (their rasterizer lookups remain `compat-pending`). The Vulkan GPU fast path currently draws single-state frames natively and presents the software reference output for multi-state frames; per-group GPU binding is an internal optimization, not an ABI change.
+
 ## Texture Model
 
 Implemented texture upload uses the IE texture memory window and `VOODOO_TEXTURE_MODE`, `VOODOO_TEX_WIDTH`, `VOODOO_TEX_HEIGHT`, and `VOODOO_TEX_UPLOAD`. Supported guest-facing formats are ARGB8888, ARGB1555, ARGB4444, I8, A8, and P8. YIQ is reserved. Nearest and bilinear sampling are ABI-visible; mip/trilinear behavior is `compat-readback` until LOD registers are promoted.

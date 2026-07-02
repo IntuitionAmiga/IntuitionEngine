@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 )
 
 const (
@@ -752,7 +753,17 @@ type voodooDebugSnapshot struct {
 	Vertices, VertexColors                   [3]VoodooVertex
 	CurrentColorTarget                       int
 	GouraudEnabled                           bool
-	TriangleBatch                            []VoodooTriangle
+	TriangleBatch                            []VoodooTriangle `json:",omitempty"` // Legacy embedded-state snapshots.
+	StateTableEncoded                        bool
+	TriangleBatchRefs                        []voodooTriangleDebugSnapshot    `json:",omitempty"`
+	RasterStates                             []voodooRasterStateDebugSnapshot `json:",omitempty"`
+	Textures                                 []VoodooTexture                  `json:",omitempty"`
+	BatchState                               *VoodooRasterState               `json:",omitempty"` // Legacy embedded-state snapshots.
+	BatchStateIndex                          int
+	RasterStateDirty                         bool
+	CurrentTexture                           *VoodooTexture `json:",omitempty"` // Legacy embedded-state snapshots.
+	CurrentTextureIndex                      int
+	ColorPathWritten                         bool
 	FBZMode, AlphaMode, FBZColorPath         uint32
 	TextureMode, FogMode, LFBMode            uint32
 	TLOD                                     uint32
@@ -772,6 +783,16 @@ type voodooDebugSnapshot struct {
 	TextureWidth, TextureHeight              int
 }
 
+type voodooTriangleDebugSnapshot struct {
+	Vertices   [3]VoodooVertex
+	StateIndex int
+}
+
+type voodooRasterStateDebugSnapshot struct {
+	State        VoodooRasterState
+	TextureIndex int
+}
+
 func (v *VoodooEngine) DebugSnapshotName() string { return "voodoo-engine" }
 
 func (v *VoodooEngine) DebugSnapshot() (uint32, []byte, error) {
@@ -780,12 +801,23 @@ func (v *VoodooEngine) DebugSnapshot() (uint32, []byte, error) {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	stateTable := newVoodooDebugStateTable()
+	triangleBatch := stateTable.snapshotTriangles(v.triangleBatch)
+	batchStateIndex := stateTable.stateIndex(v.batchState)
+	currentTextureIndex := stateTable.textureIndex(v.currentTexture)
 	return marshalSnapshot(voodooSnapshotVersion, voodooDebugSnapshot{
 		Width: v.width.Load(), Height: v.height.Load(), Layer: v.layer, Enabled: v.enabled.Load(),
 		Regs: append([]uint32(nil), v.regs...), CurrentVertex: v.currentVertex, VertexIndex: v.vertexIndex,
 		Vertices: v.vertices, VertexColors: v.vertexColors, CurrentColorTarget: v.currentColorTarget,
-		GouraudEnabled: v.gouraudEnabled, TriangleBatch: append([]VoodooTriangle(nil), v.triangleBatch...),
-		FBZMode: v.fbzMode, AlphaMode: v.alphaMode, FBZColorPath: v.fbzColorPath,
+		GouraudEnabled: v.gouraudEnabled, StateTableEncoded: true,
+		TriangleBatchRefs:   triangleBatch,
+		RasterStates:        stateTable.states,
+		Textures:            stateTable.textures,
+		BatchStateIndex:     batchStateIndex,
+		RasterStateDirty:    v.rasterStateDirty,
+		CurrentTextureIndex: currentTextureIndex,
+		ColorPathWritten:    v.colorPathWritten,
+		FBZMode:             v.fbzMode, AlphaMode: v.alphaMode, FBZColorPath: v.fbzColorPath,
 		TextureMode: v.textureMode, FogMode: v.fogMode, LFBMode: v.lfbMode, TLOD: v.tlod,
 		TexBase: v.texBase, Stipple: v.stipple, ChromaRange: v.chromaRange,
 		Slopes: v.slopes, SlopesValid: v.slopesValid, PipelineDirty: v.pipelineDirty,
@@ -817,7 +849,19 @@ func (v *VoodooEngine) DebugRestoreSnapshot(version uint32, data []byte) error {
 	v.regs = append(v.regs[:0], snap.Regs...)
 	v.currentVertex, v.vertexIndex, v.vertices = snap.CurrentVertex, snap.VertexIndex, snap.Vertices
 	v.vertexColors, v.currentColorTarget, v.gouraudEnabled = snap.VertexColors, snap.CurrentColorTarget, snap.GouraudEnabled
-	v.triangleBatch = append(v.triangleBatch[:0], snap.TriangleBatch...)
+	if snap.StateTableEncoded {
+		textures := restoreVoodooTextureTable(snap.Textures)
+		states := restoreVoodooRasterStateTable(snap.RasterStates, textures)
+		v.triangleBatch = restoreVoodooTriangleSnapshots(snap.TriangleBatchRefs, states)
+		v.batchState = voodooRasterStateAt(states, snap.BatchStateIndex)
+		v.currentTexture = voodooTextureAt(textures, snap.CurrentTextureIndex)
+	} else {
+		v.triangleBatch = cloneVoodooTriangles(snap.TriangleBatch)
+		v.batchState = cloneVoodooRasterStateShared(snap.BatchState, collectVoodooTriangleStates(v.triangleBatch))
+		v.currentTexture = cloneVoodooTexture(snap.CurrentTexture)
+	}
+	v.rasterStateDirty = snap.RasterStateDirty
+	v.colorPathWritten = snap.ColorPathWritten
 	v.fbzMode, v.alphaMode, v.fbzColorPath = snap.FBZMode, snap.AlphaMode, snap.FBZColorPath
 	v.textureMode, v.fogMode, v.lfbMode, v.tlod = snap.TextureMode, snap.FogMode, snap.LFBMode, snap.TLOD
 	v.texBase, v.stipple, v.chromaRange = snap.TexBase, snap.Stipple, snap.ChromaRange
@@ -833,4 +877,207 @@ func (v *VoodooEngine) DebugRestoreSnapshot(version uint32, data []byte) error {
 	v.textureMemory = append(v.textureMemory[:0], snap.TextureMemory...)
 	v.textureWidth, v.textureHeight = snap.TextureWidth, snap.TextureHeight
 	return nil
+}
+
+type voodooDebugStateTable struct {
+	states            []voodooRasterStateDebugSnapshot
+	textures          []VoodooTexture
+	stateIndexByPtr   map[*VoodooRasterState]int
+	textureIndexByPtr map[*VoodooTexture]int
+}
+
+func newVoodooDebugStateTable() *voodooDebugStateTable {
+	return &voodooDebugStateTable{
+		stateIndexByPtr:   make(map[*VoodooRasterState]int),
+		textureIndexByPtr: make(map[*VoodooTexture]int),
+	}
+}
+
+func (t *voodooDebugStateTable) textureIndex(tex *VoodooTexture) int {
+	if tex == nil {
+		return -1
+	}
+	if idx, ok := t.textureIndexByPtr[tex]; ok {
+		return idx
+	}
+	idx := len(t.textures)
+	t.textureIndexByPtr[tex] = idx
+	t.textures = append(t.textures, VoodooTexture{
+		Width:  tex.Width,
+		Height: tex.Height,
+		Format: tex.Format,
+		Data:   append([]byte(nil), tex.Data...),
+	})
+	return idx
+}
+
+func (t *voodooDebugStateTable) stateIndex(st *VoodooRasterState) int {
+	if st == nil {
+		return -1
+	}
+	if idx, ok := t.stateIndexByPtr[st]; ok {
+		return idx
+	}
+	idx := len(t.states)
+	t.stateIndexByPtr[st] = idx
+	state := *st
+	textureIndex := t.textureIndex(st.Texture)
+	state.Texture = nil
+	t.states = append(t.states, voodooRasterStateDebugSnapshot{
+		State:        state,
+		TextureIndex: textureIndex,
+	})
+	return idx
+}
+
+func (t *voodooDebugStateTable) snapshotTriangles(tris []VoodooTriangle) []voodooTriangleDebugSnapshot {
+	if len(tris) == 0 {
+		return nil
+	}
+	out := make([]voodooTriangleDebugSnapshot, len(tris))
+	for i := range tris {
+		out[i] = voodooTriangleDebugSnapshot{
+			Vertices:   tris[i].Vertices,
+			StateIndex: t.stateIndex(tris[i].State),
+		}
+	}
+	return out
+}
+
+func restoreVoodooTextureTable(in []VoodooTexture) []*VoodooTexture {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*VoodooTexture, len(in))
+	for i := range in {
+		out[i] = &VoodooTexture{
+			Width:  in[i].Width,
+			Height: in[i].Height,
+			Format: in[i].Format,
+			Data:   append([]byte(nil), in[i].Data...),
+		}
+	}
+	return out
+}
+
+func restoreVoodooRasterStateTable(in []voodooRasterStateDebugSnapshot, textures []*VoodooTexture) []*VoodooRasterState {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*VoodooRasterState, len(in))
+	for i := range in {
+		state := in[i].State
+		state.Texture = voodooTextureAt(textures, in[i].TextureIndex)
+		out[i] = &state
+	}
+	return out
+}
+
+func restoreVoodooTriangleSnapshots(in []voodooTriangleDebugSnapshot, states []*VoodooRasterState) []VoodooTriangle {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]VoodooTriangle, len(in))
+	for i := range in {
+		out[i] = VoodooTriangle{
+			Vertices: in[i].Vertices,
+			State:    voodooRasterStateAt(states, in[i].StateIndex),
+		}
+	}
+	return out
+}
+
+func voodooTextureAt(textures []*VoodooTexture, idx int) *VoodooTexture {
+	if idx < 0 || idx >= len(textures) {
+		return nil
+	}
+	return textures[idx]
+}
+
+func voodooRasterStateAt(states []*VoodooRasterState, idx int) *VoodooRasterState {
+	if idx < 0 || idx >= len(states) {
+		return nil
+	}
+	return states[idx]
+}
+
+func cloneVoodooTexture(in *VoodooTexture) *VoodooTexture {
+	if in == nil {
+		return nil
+	}
+	return &VoodooTexture{
+		Width:  in.Width,
+		Height: in.Height,
+		Format: in.Format,
+		Data:   append([]byte(nil), in.Data...),
+	}
+}
+
+func cloneVoodooRasterState(in *VoodooRasterState) *VoodooRasterState {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Texture = cloneVoodooTexture(in.Texture)
+	return &out
+}
+
+func cloneVoodooRasterStateShared(in *VoodooRasterState, candidates []*VoodooRasterState) *VoodooRasterState {
+	if in == nil {
+		return nil
+	}
+	if candidate := findEquivalentVoodooRasterState(in, candidates); candidate != nil {
+		return candidate
+	}
+	return cloneVoodooRasterState(in)
+}
+
+func findEquivalentVoodooRasterState(in *VoodooRasterState, candidates []*VoodooRasterState) *VoodooRasterState {
+	if in == nil {
+		return nil
+	}
+	for _, candidate := range candidates {
+		if reflect.DeepEqual(candidate, in) {
+			return candidate
+		}
+	}
+	return nil
+}
+
+func cloneVoodooTriangles(in []VoodooTriangle) []VoodooTriangle {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]VoodooTriangle, len(in))
+	stateMap := make(map[*VoodooRasterState]*VoodooRasterState)
+	clonedStates := make([]*VoodooRasterState, 0, len(in))
+	for i := range in {
+		out[i] = in[i]
+		if st := in[i].State; st != nil {
+			if cloned := stateMap[st]; cloned != nil {
+				out[i].State = cloned
+				continue
+			}
+			if cloned := findEquivalentVoodooRasterState(st, clonedStates); cloned != nil {
+				stateMap[st] = cloned
+				out[i].State = cloned
+				continue
+			}
+			cloned := cloneVoodooRasterState(st)
+			stateMap[st] = cloned
+			clonedStates = append(clonedStates, cloned)
+			out[i].State = cloned
+		}
+	}
+	return out
+}
+
+func collectVoodooTriangleStates(tris []VoodooTriangle) []*VoodooRasterState {
+	states := make([]*VoodooRasterState, 0, len(tris))
+	for i := range tris {
+		if st := tris[i].State; st != nil {
+			states = append(states, st)
+		}
+	}
+	return states
 }

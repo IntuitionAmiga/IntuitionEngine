@@ -2643,6 +2643,10 @@
 ; Vulkan-accelerated 3D graphics. See ie68.inc for detailed documentation.
 
 ; Base address
+; Raster state (mode registers, clip rectangle, current texture) binds
+; to each triangle when VOODOO_TRIANGLE_CMD is written, as on real
+; SST-1 hardware; register writes after a triangle is submitted never
+; affect it. See ie68.inc for detailed documentation.
 .set VOODOO_BASE,0xF8000
 .set VOODOO_END,0xF87FF
 

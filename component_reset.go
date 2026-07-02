@@ -573,7 +573,11 @@ func (v *VoodooEngine) Reset() {
 	v.vertexColors = [3]VoodooVertex{}
 	v.currentColorTarget = 0
 	v.gouraudEnabled = false
-	v.triangleBatch = v.triangleBatch[:0]
+	v.triangleBatch = clearVoodooTriangleBatch(v.triangleBatch)
+	v.batchState = nil
+	v.rasterStateDirty = true
+	v.currentTexture = nil
+	v.colorPathWritten = false
 	v.fbzColorPath = 0
 	v.textureMode = 0
 	v.fogMode = 0

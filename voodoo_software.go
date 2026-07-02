@@ -433,8 +433,121 @@ func (b *VoodooSoftwareBackend) FlushTriangles(triangles []VoodooTriangle) {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 
-	for _, tri := range triangles {
-		b.rasterizeTriangle(&tri)
+	// Each triangle rasterises under the state bound at its
+	// triangleCMD write (hardware-accurate binding); consecutive
+	// triangles share snapshots, so state is re-applied only on
+	// group boundaries. Triangles without a snapshot (nil State)
+	// keep the legacy behaviour of using the current global state.
+	//
+	// The backend's fields on entry are the live register state
+	// (the engine forwards state writes immediately); restore them
+	// afterwards so registers written after the last triangleCMD
+	// survive the flush for subsequent operations.
+	var applied *VoodooRasterState
+	live := b.captureLiveStateLocked()
+	for i := range triangles {
+		if st := triangles[i].State; st != nil && st != applied {
+			b.applyRasterStateLocked(st)
+			applied = st
+		}
+		b.rasterizeTriangle(&triangles[i])
+	}
+	if applied != nil {
+		b.restoreLiveStateLocked(live)
+	}
+}
+
+// softwareLiveState preserves the raster-affecting backend fields
+// across a stamped-triangle flush. The caller holds b.mutex.
+type softwareLiveState struct {
+	fbzMode, alphaMode           uint32
+	pipelineKey                  PipelineKey
+	fbzColorPath                 uint32
+	colorPathSet                 bool
+	textureMode                  uint32
+	textureEnabled               bool
+	textureClampS, textureClampT bool
+	fogMode, fogColor            uint32
+	chromaKey, chromaRange       uint32
+	stipple                      uint32
+	scissorLeft, scissorTop      int
+	scissorRight, scissorBottom  int
+	slopes                       VoodooSlopes
+	slopesValid                  bool
+	textureData                  []byte
+	textureWidth, textureHeight  int
+	textureFormat                int
+}
+
+func (b *VoodooSoftwareBackend) captureLiveStateLocked() softwareLiveState {
+	return softwareLiveState{
+		fbzMode: b.fbzMode, alphaMode: b.alphaMode,
+		pipelineKey:  b.pipelineKey,
+		fbzColorPath: b.fbzColorPath, colorPathSet: b.colorPathSet,
+		textureMode: b.textureMode, textureEnabled: b.textureEnabled,
+		textureClampS: b.textureClampS, textureClampT: b.textureClampT,
+		fogMode: b.fogMode, fogColor: b.fogColor,
+		chromaKey: b.chromaKey, chromaRange: b.chromaRange,
+		stipple:     b.stipple,
+		scissorLeft: b.scissorLeft, scissorTop: b.scissorTop,
+		scissorRight: b.scissorRight, scissorBottom: b.scissorBottom,
+		slopes: b.slopes, slopesValid: b.slopesValid,
+		textureData: b.textureData, textureWidth: b.textureWidth,
+		textureHeight: b.textureHeight, textureFormat: b.textureFormat,
+	}
+}
+
+func (b *VoodooSoftwareBackend) restoreLiveStateLocked(s softwareLiveState) {
+	b.fbzMode, b.alphaMode = s.fbzMode, s.alphaMode
+	b.pipelineKey = s.pipelineKey
+	b.fbzColorPath, b.colorPathSet = s.fbzColorPath, s.colorPathSet
+	b.textureMode, b.textureEnabled = s.textureMode, s.textureEnabled
+	b.textureClampS, b.textureClampT = s.textureClampS, s.textureClampT
+	b.fogMode, b.fogColor = s.fogMode, s.fogColor
+	b.chromaKey, b.chromaRange = s.chromaKey, s.chromaRange
+	b.stipple = s.stipple
+	b.scissorLeft, b.scissorTop = s.scissorLeft, s.scissorTop
+	b.scissorRight, b.scissorBottom = s.scissorRight, s.scissorBottom
+	b.slopes, b.slopesValid = s.slopes, s.slopesValid
+	b.textureData, b.textureWidth = s.textureData, s.textureWidth
+	b.textureHeight, b.textureFormat = s.textureHeight, s.textureFormat
+}
+
+// applyRasterStateLocked installs a raster state snapshot. Field
+// assignments mirror the individual backend setters; the caller holds
+// b.mutex. Snapshot textures are immutable, so Data is referenced
+// without copying.
+func (b *VoodooSoftwareBackend) applyRasterStateLocked(st *VoodooRasterState) {
+	b.fbzMode = st.FbzMode
+	b.alphaMode = st.AlphaMode
+	b.pipelineKey = PipelineKeyFromRegisters(st.FbzMode, st.AlphaMode)
+	b.fbzColorPath = st.FbzColorPath
+	b.colorPathSet = st.ColorPathWritten
+	b.textureMode = st.TextureMode
+	b.textureEnabled = st.TextureMode&1 != 0
+	b.textureClampS = st.TextureMode&(1<<5) != 0
+	b.textureClampT = st.TextureMode&(1<<6) != 0
+	b.fogMode = st.FogMode
+	b.fogColor = st.FogColor
+	b.chromaKey = st.ChromaKey
+	b.chromaRange = st.ChromaRange
+	b.stipple = st.Stipple
+	b.scissorLeft = st.ClipLeft
+	b.scissorRight = st.ClipRight
+	b.scissorTop = st.ClipTop
+	b.scissorBottom = st.ClipBottom
+	b.slopes = st.Slopes
+	b.slopesValid = st.SlopesValid
+	if st.Texture != nil {
+		b.textureData = st.Texture.Data
+		b.textureWidth = st.Texture.Width
+		b.textureHeight = st.Texture.Height
+		b.textureFormat = st.Texture.Format
+	} else {
+		b.textureData = nil
+		b.textureWidth = 0
+		b.textureHeight = 0
+		b.textureFormat = 0
 	}
 }
 

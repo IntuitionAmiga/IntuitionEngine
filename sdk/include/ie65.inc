@@ -2443,6 +2443,10 @@ ULA_CELLS_Y     = 24            ; Character cells vertically
 ; Note: 6502 cannot directly address 32-bit registers, use indirect addressing.
 
 ; Base address (high byte only for bank switching)
+; Raster state (mode registers, clip rectangle, current texture) binds
+; to each triangle when VOODOO_TRIANGLE_CMD is written, as on real
+; SST-1 hardware; register writes after a triangle is submitted never
+; affect it. See ie68.inc for detailed documentation.
 VOODOO_BASE_HI      = $F8
 VOODOO_END_HI       = $F8
 
