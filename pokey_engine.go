@@ -46,14 +46,15 @@ type POKEYEngine struct {
 	clock15KHz  float64 // Clock / DIV_15KHZ (~15kHz)
 
 	// Event-based playback (for SAP files)
-	events        []SAPPOKEYEvent
-	eventIndex    int
-	currentSample uint64
-	totalSamples  uint64
-	playing       atomic.Bool
-	loop          bool
-	loopSample    uint64
-	forceLoop     bool
+	events         []SAPPOKEYEvent
+	eventIndex     int
+	currentSample  uint64
+	totalSamples   uint64
+	playing        atomic.Bool
+	loop           bool
+	loopSample     uint64
+	forceLoop      bool
+	drainedScratch []SAPPOKEYEvent
 
 	busMemory []byte // mirror register writes for Machine Monitor visibility
 }
@@ -824,6 +825,9 @@ func (e *POKEYEngine) SetEvents(events []SAPPOKEYEvent, totalSamples uint64, loo
 	defer e.mutex.Unlock()
 
 	e.events = events
+	if burst := maxPOKEYDrainBurst(events); cap(e.drainedScratch) < burst {
+		e.drainedScratch = make([]SAPPOKEYEvent, 0, burst)
+	}
 	e.eventIndex = 0
 	e.totalSamples = totalSamples
 	e.currentSample = 0
@@ -872,6 +876,24 @@ func (e *POKEYEngine) StopPlayback() {
 	e.currentSample = 0
 }
 
+func maxPOKEYDrainBurst(events []SAPPOKEYEvent) int {
+	maxBurst := 4
+	var run int
+	var prev uint64
+	for i, ev := range events {
+		if i == 0 || ev.Sample != prev {
+			run = 1
+			prev = ev.Sample
+		} else {
+			run++
+		}
+		if run > maxBurst {
+			maxBurst = run
+		}
+	}
+	return maxBurst
+}
+
 // TickSample processes one sample of event-based playback
 // Implements SampleTicker interface for SoundChip integration
 func (e *POKEYEngine) TickSample() {
@@ -886,12 +908,13 @@ func (e *POKEYEngine) TickSample() {
 		return
 	}
 
-	drained := make([]SAPPOKEYEvent, 0, 4)
+	drained := e.drainedScratch[:0]
 	// Process all events at current sample position
 	for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample <= e.currentSample {
 		drained = append(drained, e.events[e.eventIndex])
 		e.eventIndex++
 	}
+	e.drainedScratch = drained
 
 	// Advance sample counter
 	e.currentSample++

@@ -74,16 +74,22 @@ func (chip *SoundChip) resetMasterNormalizerLocked() {
 		chip.masterCompLookaheadLen = MASTER_COMPRESSOR_LOOKAHEAD_MAX - 1
 	}
 	chip.resetMasterDynamicsLocked()
+	chip.masterDynamicsGeneration++
+	chip.masterAppliedDynamicsGeneration = chip.masterDynamicsGeneration
 }
 
 func (chip *SoundChip) resetMasterDynamicsLocked() {
+	chip.resetMasterDynamicsForAudioThread(chip.masterCompLookaheadLen)
+}
+
+func (chip *SoundChip) resetMasterDynamicsForAudioThread(lookaheadLen int) {
 	chip.masterAutoLevel = 0
 	chip.masterAutoGain = 1.0
 	chip.masterCompEnvelope = 1.0
 	chip.masterCompWritePos = 0
 	chip.masterCompReadPos = 0
-	if chip.masterCompLookaheadLen > 0 {
-		chip.masterCompReadPos = (chip.masterCompWritePos + 1) % (chip.masterCompLookaheadLen + 1)
+	if lookaheadLen > 0 {
+		chip.masterCompReadPos = (chip.masterCompWritePos + 1) % (lookaheadLen + 1)
 	}
 	for i := range chip.masterCompLookaheadBuf {
 		chip.masterCompLookaheadBuf[i] = 0
@@ -142,8 +148,7 @@ func (chip *SoundChip) ConfigureMasterAutoLevel(targetDB, minGainDB, maxGainDB, 
 	chip.masterAutoReleaseMS = releaseMS
 	chip.masterAutoAttackCoef = msToCoeff(attackMS)
 	chip.masterAutoReleaseCoef = msToCoeff(releaseMS)
-	chip.masterAutoLevel = 0
-	chip.masterAutoGain = 1.0
+	chip.masterDynamicsGeneration++
 }
 
 func (chip *SoundChip) MasterCompressorEnabled() bool {
@@ -186,7 +191,7 @@ func (chip *SoundChip) ConfigureMasterCompressor(thresholdDB, ratio, attackMS, r
 	if chip.masterCompLookaheadLen >= MASTER_COMPRESSOR_LOOKAHEAD_MAX {
 		chip.masterCompLookaheadLen = MASTER_COMPRESSOR_LOOKAHEAD_MAX - 1
 	}
-	chip.resetMasterDynamicsLocked()
+	chip.masterDynamicsGeneration++
 }
 
 func (chip *SoundChip) UseShowreelNormalizerPreset() {
@@ -213,7 +218,7 @@ func (chip *SoundChip) UseShowreelNormalizerPreset() {
 func (chip *SoundChip) ResetMasterDynamics() {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
-	chip.resetMasterDynamicsLocked()
+	chip.masterDynamicsGeneration++
 }
 
 func masterCompressorTargetGainDB(inputDB, thresholdDB, ratio, kneeDB float32) float32 {
@@ -240,64 +245,102 @@ func masterCompressorTargetGainDB(inputDB, thresholdDB, ratio, kneeDB float32) f
 	return (1.0/ratio - 1.0) * x * x / (2.0 * kneeDB)
 }
 
+func (chip *SoundChip) snapshotMasterNormalizerConfigLocked() masterNormalizerConfig {
+	return masterNormalizerConfig{
+		generation:       chip.masterDynamicsGeneration,
+		gainDB:           chip.masterGainDB,
+		gainLinear:       chip.masterGainLinear,
+		autoLevelEnabled: chip.masterAutoLevelEnabled,
+		autoTargetDB:     chip.masterAutoTargetDB,
+		autoMinGainDB:    chip.masterAutoMinGainDB,
+		autoMaxGainDB:    chip.masterAutoMaxGainDB,
+		autoAttackCoef:   chip.masterAutoAttackCoef,
+		autoReleaseCoef:  chip.masterAutoReleaseCoef,
+		compEnabled:      chip.masterCompEnabled,
+		compThresholdDB:  chip.masterCompThresholdDB,
+		compRatio:        chip.masterCompRatio,
+		compKneeDB:       chip.masterCompKneeDB,
+		compMakeupDB:     chip.masterCompMakeupDB,
+		compMakeupLinear: chip.masterCompMakeupLinear,
+		compAttackCoef:   chip.masterCompAttackCoef,
+		compReleaseCoef:  chip.masterCompReleaseCoef,
+		compLookaheadLen: chip.masterCompLookaheadLen,
+	}
+}
+
+func (chip *SoundChip) snapshotMasterNormalizerConfigUnlocked() masterNormalizerConfig {
+	return chip.snapshotMasterNormalizerConfigLocked()
+}
+
 func (chip *SoundChip) applyMasterNormalizer(sample float32) float32 {
-	gainLinear := chip.masterGainLinear
-	if gainLinear == 0 && chip.masterGainDB == 0 {
+	chip.postFXMu.Lock()
+	defer chip.postFXMu.Unlock()
+	return chip.applyMasterNormalizerWithConfig(sample, chip.snapshotMasterNormalizerConfigUnlocked())
+}
+
+func (chip *SoundChip) applyMasterNormalizerWithConfig(sample float32, cfg masterNormalizerConfig) float32 {
+	if chip.masterAppliedDynamicsGeneration != cfg.generation {
+		chip.resetMasterDynamicsForAudioThread(cfg.compLookaheadLen)
+		chip.masterAppliedDynamicsGeneration = cfg.generation
+	}
+
+	gainLinear := cfg.gainLinear
+	if gainLinear == 0 && cfg.gainDB == 0 {
 		gainLinear = 1.0
 	}
 	scaled := sample * gainLinear
-	if chip.masterAutoLevelEnabled {
+	if cfg.autoLevelEnabled {
 		detected := float32(math.Abs(float64(scaled)))
-		levelCoef := chip.masterAutoReleaseCoef
+		levelCoef := cfg.autoReleaseCoef
 		if detected > chip.masterAutoLevel {
-			levelCoef = chip.masterAutoAttackCoef
+			levelCoef = cfg.autoAttackCoef
 		}
 		chip.masterAutoLevel = levelCoef*chip.masterAutoLevel + (1.0-levelCoef)*detected
 
-		desiredGainDB := chip.masterAutoTargetDB - linearToDB(chip.masterAutoLevel)
-		if desiredGainDB < chip.masterAutoMinGainDB {
-			desiredGainDB = chip.masterAutoMinGainDB
+		desiredGainDB := cfg.autoTargetDB - linearToDB(chip.masterAutoLevel)
+		if desiredGainDB < cfg.autoMinGainDB {
+			desiredGainDB = cfg.autoMinGainDB
 		}
-		if desiredGainDB > chip.masterAutoMaxGainDB {
-			desiredGainDB = chip.masterAutoMaxGainDB
+		if desiredGainDB > cfg.autoMaxGainDB {
+			desiredGainDB = cfg.autoMaxGainDB
 		}
 		desiredGain := dbToLinear(desiredGainDB)
-		gainCoef := chip.masterAutoReleaseCoef
+		gainCoef := cfg.autoReleaseCoef
 		if desiredGain < chip.masterAutoGain {
-			gainCoef = chip.masterAutoAttackCoef
+			gainCoef = cfg.autoAttackCoef
 		}
 		chip.masterAutoGain = gainCoef*chip.masterAutoGain + (1.0-gainCoef)*desiredGain
 		scaled *= chip.masterAutoGain
 	}
-	if !chip.masterCompEnabled {
+	if !cfg.compEnabled {
 		return clampF32(scaled, MIN_SAMPLE, MAX_SAMPLE)
 	}
 
 	detected := float32(math.Abs(float64(scaled)))
 	targetGainDB := masterCompressorTargetGainDB(
 		linearToDB(detected),
-		chip.masterCompThresholdDB,
-		chip.masterCompRatio,
-		chip.masterCompKneeDB,
+		cfg.compThresholdDB,
+		cfg.compRatio,
+		cfg.compKneeDB,
 	)
 	targetGain := dbToLinear(targetGainDB)
-	coef := chip.masterCompReleaseCoef
+	coef := cfg.compReleaseCoef
 	if targetGain < chip.masterCompEnvelope {
-		coef = chip.masterCompAttackCoef
+		coef = cfg.compAttackCoef
 	}
 	chip.masterCompEnvelope = coef*chip.masterCompEnvelope + (1.0-coef)*targetGain
 
 	processed := scaled
-	if chip.masterCompLookaheadLen > 0 {
-		size := chip.masterCompLookaheadLen + 1
+	if cfg.compLookaheadLen > 0 {
+		size := cfg.compLookaheadLen + 1
 		processed = chip.masterCompLookaheadBuf[chip.masterCompReadPos]
 		chip.masterCompLookaheadBuf[chip.masterCompWritePos] = scaled
 		chip.masterCompWritePos = (chip.masterCompWritePos + 1) % size
 		chip.masterCompReadPos = (chip.masterCompReadPos + 1) % size
 	}
 
-	makeupLinear := chip.masterCompMakeupLinear
-	if makeupLinear == 0 && chip.masterCompMakeupDB == 0 {
+	makeupLinear := cfg.compMakeupLinear
+	if makeupLinear == 0 && cfg.compMakeupDB == 0 {
 		makeupLinear = 1.0
 	}
 	processed *= chip.masterCompEnvelope * makeupLinear

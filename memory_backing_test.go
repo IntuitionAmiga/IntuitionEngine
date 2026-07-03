@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -165,6 +166,19 @@ func TestSparseBacking_Read32Write32AcrossPageBoundary(t *testing.T) {
 	}
 }
 
+func TestSparseBacking_Read32_NoAllocs(t *testing.T) {
+	b := NewSparseBacking(8 * bGiB)
+	b.Write32(0x2000, 0xCAFEBABE)
+	allocs := testing.AllocsPerRun(1000, func() {
+		if got := b.Read32(0x2000); got != 0xCAFEBABE {
+			t.Fatalf("Read32 = %#x, want 0xCAFEBABE", got)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("Read32 allocs/run = %.1f, want 0", allocs)
+	}
+}
+
 func TestSparseBacking_NoGiantAllocation(t *testing.T) {
 	// Touch only two pages 8 GiB apart. The sparse impl must only retain
 	// those two pages, not allocate the entire advertised size.
@@ -177,6 +191,18 @@ func TestSparseBacking_NoGiantAllocation(t *testing.T) {
 	resident := uint64(b.AllocatedPages()) * uint64(MMU_PAGE_SIZE)
 	if resident > 16*bMiB {
 		t.Fatalf("sparse backing retained %d bytes, expected page-scoped", resident)
+	}
+}
+
+func TestSparseBacking_ConstructLargeKeepsMetadataSparse(t *testing.T) {
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	b := NewSparseBacking(64 * bGiB)
+	runtime.KeepAlive(b)
+	runtime.ReadMemStats(&after)
+	if delta := after.TotalAlloc - before.TotalAlloc; delta > 4*bMiB {
+		t.Fatalf("NewSparseBacking allocated %d bytes, want sparse metadata under %d", delta, 4*bMiB)
 	}
 }
 

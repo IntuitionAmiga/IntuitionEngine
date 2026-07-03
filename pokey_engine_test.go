@@ -194,6 +194,28 @@ func TestPOKEY_Reset_FullClear(t *testing.T) {
 	}
 }
 
+func TestPOKEYTickSample_ZeroAllocs(t *testing.T) {
+	engine := NewPOKEYEngine(nil, 44100)
+	engine.SetEvents([]SAPPOKEYEvent{
+		{Sample: 0, Reg: 0, Value: 0x20},
+		{Sample: 0, Reg: 1, Value: AUDC_VOLUME_MASK},
+		{Sample: 0, Reg: 2, Value: 0x30},
+		{Sample: 0, Reg: 3, Value: AUDC_VOLUME_MASK},
+	}, 64, false, 0)
+
+	allocs := testing.AllocsPerRun(100, func() {
+		engine.mutex.Lock()
+		engine.eventIndex = 0
+		engine.currentSample = 0
+		engine.playing.Store(true)
+		engine.mutex.Unlock()
+		engine.TickSample()
+	})
+	if allocs != 0 {
+		t.Fatalf("TickSample allocs/run = %.1f, want 0", allocs)
+	}
+}
+
 func TestPOKEY_BaseChannelOffset(t *testing.T) {
 	chip := newTestSoundChip()
 	engine := NewPOKEYEngineMulti(chip, 44100, 4)

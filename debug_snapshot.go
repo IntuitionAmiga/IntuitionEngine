@@ -342,21 +342,41 @@ func captureSparseBackingPages(backing Backing) ([]SnapshotPage, error) {
 		return nil, nil
 	}
 	if sparse, ok := backing.(*SparseBacking); ok {
-		sparse.mu.RLock()
-		defer sparse.mu.RUnlock()
-		sparse.assertOpenLocked()
-		pages := make([]SnapshotPage, 0, len(sparse.pages))
-		pageIdxs := make([]uint64, 0, len(sparse.pages))
-		for idx := range sparse.pages {
-			pageIdxs = append(pageIdxs, idx)
+		sparse.assertOpen()
+		table := sparse.table.Load()
+		if table == nil {
+			return nil, nil
+		}
+		pages := make([]SnapshotPage, 0, sparse.AllocatedPages())
+		pageIdxs := make([]uint64, 0, sparse.AllocatedPages())
+		for leafIdx := range table.leaves {
+			leaf := table.leaves[leafIdx].Load()
+			if leaf == nil {
+				continue
+			}
+			for slotIdx := range leaf.pages {
+				pageIdx := (uint64(leafIdx) << sparsePageLeafBits) + uint64(slotIdx)
+				if pageIdx >= table.pageCount {
+					break
+				}
+				if leaf.pages[slotIdx].Load() != nil {
+					pageIdxs = append(pageIdxs, pageIdx)
+				}
+			}
 		}
 		sort.Slice(pageIdxs, func(i, j int) bool { return pageIdxs[i] < pageIdxs[j] })
 		for _, idx := range pageIdxs {
-			page := sparse.pages[idx]
-			if len(page) == 0 {
+			leaf := table.leaves[idx>>sparsePageLeafBits].Load()
+			if leaf == nil {
 				continue
 			}
-			cp := append([]byte(nil), page...)
+			page := leaf.pages[idx&sparsePageLeafMask].Load()
+			if page == nil || len(page.data) == 0 {
+				continue
+			}
+			page.mu.RLock()
+			cp := append([]byte(nil), page.data...)
+			page.mu.RUnlock()
 			pages = append(pages, SnapshotPage{Addr: idx * sparse.pageSize, Data: cp})
 		}
 		return pages, nil

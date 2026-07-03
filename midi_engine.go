@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"sync"
+	"sync/atomic"
 )
 
 const midiMaxVoices = 10
@@ -160,21 +161,22 @@ type MIDIEngine struct {
 	sound      *SoundChip
 	sampleRate int
 
-	mu         sync.Mutex
-	file       *MIDIFile
-	eventIndex int
-	position   int64
-	playing    bool
-	paused     bool
-	loop       bool
-	volume     uint8
-	fileState  midiChannelState
-	liveState  midiChannelState
-	voices     [midiMaxVoices]midiVoice
-	order      int64
-	noiseState uint32
-	currentBPM int
-	liveActive bool
+	mu            sync.Mutex
+	file          *MIDIFile
+	eventIndex    int
+	position      int64
+	playing       bool
+	playingActive atomic.Bool
+	paused        bool
+	loop          bool
+	volume        uint8
+	fileState     midiChannelState
+	liveState     midiChannelState
+	voices        [midiMaxVoices]midiVoice
+	order         int64
+	noiseState    uint32
+	currentBPM    int
+	liveActive    bool
 }
 
 func NewMIDIEngine(sound *SoundChip, sampleRate int) *MIDIEngine {
@@ -200,6 +202,7 @@ func (e *MIDIEngine) LoadMIDI(file *MIDIFile) {
 func (e *MIDIEngine) SetPlaying(playing bool) {
 	e.mu.Lock()
 	e.playing = playing
+	e.playingActive.Store(playing)
 	if !playing {
 		if e.liveActive {
 			e.clearFileVoicesLocked()
@@ -324,6 +327,10 @@ func (e *MIDIEngine) HasActiveNote(note uint8) bool {
 }
 
 func (e *MIDIEngine) TickSample() {
+	if !e.playingActive.Load() {
+		return
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if !e.playing || e.paused || e.file == nil {
@@ -343,6 +350,7 @@ func (e *MIDIEngine) TickSample() {
 			e.resetFileChannelStateLocked()
 		} else {
 			e.playing = false
+			e.playingActive.Store(false)
 			e.clearFileVoicesLocked()
 			if e.sound != nil && !e.liveActive {
 				go func() {

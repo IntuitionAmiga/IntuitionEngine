@@ -4,10 +4,13 @@ package main
 
 func newTestSoundChip() *SoundChip {
 	chip := &SoundChip{
-		filterLP:    DEFAULT_FILTER_LP,
-		filterBP:    DEFAULT_FILTER_BP,
-		filterHP:    DEFAULT_FILTER_HP,
-		preDelayBuf: make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
+		filterLP:           DEFAULT_FILTER_LP,
+		filterBP:           DEFAULT_FILTER_BP,
+		filterHP:           DEFAULT_FILTER_HP,
+		preDelayBuf:        make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
+		masterGainLinear:   1.0,
+		masterAutoGain:     1.0,
+		masterCompEnvelope: 1.0,
 	}
 	chip.enabled.Store(true)
 	chip.sampleTicker.Store(&sampleTickerListHolder{})

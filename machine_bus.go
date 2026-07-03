@@ -115,7 +115,9 @@ type MachineBus struct {
 		It maintains a contiguous block of main memory and a
 		mapping of memory‐mapped I/O regions.
 
-		Thread safety is enforced via a read/write mutex.
+		The hot RAM path is lock-free. Mapping changes and reset are
+		caller-quiesced: CPUs, JIT execution, DMA, and device producers must
+		be stopped before remapping or clearing backing memory.
 	*/
 
 	memory  []byte
@@ -1405,7 +1407,7 @@ func (bus *MachineBus) IsIOAddress64(addr uint32) bool {
 }
 
 // SetVideoStatusReader registers a lock-free callback for VIDEO_STATUS reads.
-// This allows VBlank polling without blocking on the bus mutex.
+// This allows VBlank polling without entering the general I/O dispatch path.
 func (bus *MachineBus) SetVideoStatusReader(reader func(addr uint32) uint32) {
 	bus.videoStatusReader = reader
 }
@@ -1692,7 +1694,7 @@ func (bus *MachineBus) Write32(addr uint32, value uint32) {
 		return
 	}
 
-	// Has I/O mappings - use slow path with mutex
+	// Has I/O mappings - use the I/O dispatch slow path.
 	old, oldKnown := uint64(0), false
 	if bus.debugWriteActive() {
 		old, oldKnown = bus.debugOldValueNoCallback(addr, 4)
@@ -1816,7 +1818,7 @@ func (bus *MachineBus) Read32(addr uint32) uint32 {
 		return value
 	}
 
-	// Has I/O mappings - use slow path with mutex
+	// Has I/O mappings - use the I/O dispatch slow path.
 	value := bus.read32Slow(addr)
 	bus.debugOnRead(addr, 4)
 	return value
@@ -1935,7 +1937,7 @@ func (bus *MachineBus) Write16(addr uint32, value uint16) {
 		return
 	}
 
-	// Has I/O mappings - use slow path with mutex
+	// Has I/O mappings - use the I/O dispatch slow path.
 	old, oldKnown := uint64(0), false
 	if bus.debugWriteActive() {
 		old, oldKnown = bus.debugOldValueNoCallback(addr, 2)
@@ -2063,7 +2065,7 @@ func (bus *MachineBus) Read16(addr uint32) uint16 {
 		return value
 	}
 
-	// Has I/O mappings - use slow path with mutex
+	// Has I/O mappings - use the I/O dispatch slow path.
 	value := bus.read16Slow(addr)
 	bus.debugOnRead(addr, 2)
 	return value
@@ -2182,7 +2184,7 @@ func (bus *MachineBus) Write8(addr uint32, value uint8) {
 		return
 	}
 
-	// Has I/O mappings - use slow path with mutex
+	// Has I/O mappings - use the I/O dispatch slow path.
 	old, oldKnown := uint64(0), false
 	if bus.debugWriteActive() {
 		old, oldKnown = bus.debugOldValueNoCallback(addr, 1)
@@ -2318,7 +2320,7 @@ func (bus *MachineBus) Read8(addr uint32) uint8 {
 		return value
 	}
 
-	// Has I/O mappings - use slow path with mutex
+	// Has I/O mappings - use the I/O dispatch slow path.
 	value := bus.read8Slow(addr)
 	bus.debugOnRead(addr, 1)
 	return value
@@ -2846,9 +2848,8 @@ func (bus *MachineBus) Reset() {
 	/*
 		Reset clears the entire main memory of the system bus.
 
-		This operation is performed in a thread‐safe manner by
-		acquiring a write lock, and iterating through the memory
-		block to set every byte to zero.
+		This operation is caller-quiesced. The lifecycle owner must stop CPU,
+		JIT, DMA, and device producers before clearing the backing memory.
 	*/
 
 	if bus.memReset != nil {

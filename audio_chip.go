@@ -793,15 +793,18 @@ type Channel struct {
 	sidWaveMask           uint8   // SID waveform mask (combined waves)
 
 	// Per-channel filter state
-	filterLP              float32
-	filterBP              float32
-	filterHP              float32
-	filterCutoff          float32
-	filterResonance       float32
-	filterCutoffTarget    float32
-	filterResonanceTarget float32
-	filterType            int
-	filterModeMask        uint8
+	filterLP                float32
+	filterBP                float32
+	filterHP                float32
+	filterCutoff            float32
+	filterResonance         float32
+	filterCutoffTarget      float32
+	filterResonanceTarget   float32
+	filterCutoffCacheInput  float32
+	filterCutoffCacheOutput float32
+	filterCutoffCacheValid  bool
+	filterType              int
+	filterModeMask          uint8
 
 	// Envelope and modulation parameters (cache line 2)
 	// Accessed during envelope and modulation updates
@@ -921,28 +924,32 @@ type CombFilter struct {
 
 type SoundChip struct {
 	// Cache line 1 - Hot path DSP state (64 bytes)
-	filterLP              float32 // Current low-pass filter state
-	filterBP              float32 // Current band-pass filter state
-	filterHP              float32 // Current high-pass filter state
-	filterCutoff          float32 // Smoothed normalised filter cutoff frequency (0-1)
-	filterResonance       float32 // Smoothed filter resonance/Q factor (0-1)
-	filterCutoffTarget    float32 // Target normalised filter cutoff frequency (0-1)
-	filterResonanceTarget float32 // Target filter resonance/Q factor (0-1)
-	filterModAmount       float32 // Filter modulation depth (0-1)
-	overdriveLevel        float32 // Overdrive distortion amount (0-4)
-	overdriveGain         float32 // Pre-computed overdrive gain
-	reverbMix             float32 // Reverb wet/dry mix ratio (0-1)
-	sidMixerDCOffset      float32 // SID mixer DC offset (model-dependent)
-	filterType            int     // Filter mode (0=off, 1=LP, 2=HP, 3=BP)
-	enabled               atomic.Bool
-	sidMixerEnabled       bool                      // Enable SID mixer mode (DC offset + saturation)
-	sidMixerSaturate      bool                      // Enable soft saturation in mixer
-	_pad1                 [SOUNDCHIP_PAD1_SIZE]byte // Align to 64-byte cache line boundary
+	filterLP                float32 // Current low-pass filter state
+	filterBP                float32 // Current band-pass filter state
+	filterHP                float32 // Current high-pass filter state
+	filterCutoff            float32 // Smoothed normalised filter cutoff frequency (0-1)
+	filterResonance         float32 // Smoothed filter resonance/Q factor (0-1)
+	filterCutoffTarget      float32 // Target normalised filter cutoff frequency (0-1)
+	filterResonanceTarget   float32 // Target filter resonance/Q factor (0-1)
+	filterModAmount         float32 // Filter modulation depth (0-1)
+	filterCutoffCacheInput  float32
+	filterCutoffCacheOutput float32
+	filterCutoffCacheValid  bool
+	overdriveLevel          float32 // Overdrive distortion amount (0-4)
+	overdriveGain           float32 // Pre-computed overdrive gain
+	reverbMix               float32 // Reverb wet/dry mix ratio (0-1)
+	sidMixerDCOffset        float32 // SID mixer DC offset (model-dependent)
+	filterType              int     // Filter mode (0=off, 1=LP, 2=HP, 3=BP)
+	enabled                 atomic.Bool
+	sidMixerEnabled         bool                      // Enable SID mixer mode (DC offset + saturation)
+	sidMixerSaturate        bool                      // Enable soft saturation in mixer
+	_pad1                   [SOUNDCHIP_PAD1_SIZE]byte // Align to 64-byte cache line boundary
 
 	// Cache line 2 - Channel references and thread safety (64 bytes)
 	channels        [NUM_CHANNELS]*Channel    // Array of audio channel pointers
 	filterModSource *Channel                  // Channel modulating the filter cutoff
 	mu              sync.Mutex                // Concurrency control for parameter updates
+	postFXMu        sync.Mutex                // Protects filter/reverb/master state shared with snapshots
 	_pad2           [SOUNDCHIP_PAD2_SIZE]byte // Align to 64-byte cache line boundary
 
 	sampleTicker  atomic.Value // Optional per-sample tickers ([]SampleTicker)
@@ -998,6 +1005,57 @@ type SoundChip struct {
 	masterCompLookaheadBuf [MASTER_COMPRESSOR_LOOKAHEAD_MAX]float32
 	masterCompWritePos     int
 	masterCompReadPos      int
+
+	// Master normalizer configuration changes are snapshotted under chip.mu.
+	// Dynamic state is advanced only by the audio thread; the generation asks
+	// that thread to reset its own state after config changes.
+	masterDynamicsGeneration        uint64
+	masterAppliedDynamicsGeneration uint64
+}
+
+// AudioRegisterWrite is a single 32-bit write to the SoundChip register map.
+type AudioRegisterWrite struct {
+	Addr  uint32
+	Value uint32
+}
+
+type masterNormalizerConfig struct {
+	generation       uint64
+	gainDB           float32
+	gainLinear       float32
+	autoLevelEnabled bool
+	autoTargetDB     float32
+	autoMinGainDB    float32
+	autoMaxGainDB    float32
+	autoAttackCoef   float32
+	autoReleaseCoef  float32
+	compEnabled      bool
+	compThresholdDB  float32
+	compRatio        float32
+	compKneeDB       float32
+	compMakeupDB     float32
+	compMakeupLinear float32
+	compAttackCoef   float32
+	compReleaseCoef  float32
+	compLookaheadLen int
+}
+
+type soundPostFXSnapshot struct {
+	filterType       int
+	filterCutoff     float32
+	filterModSample  float32
+	filterModAmount  float32
+	filterResonance  float32
+	filterLP         float32
+	filterBP         float32
+	overdriveLevel   float32
+	overdriveGain    float32
+	reverbMix        float32
+	reverbDecays     [NUM_COMB_FILTERS]float32
+	sidMixerEnabled  bool
+	sidMixerDCOffset float32
+	sidMixerSaturate bool
+	master           masterNormalizerConfig
 }
 
 func NewSoundChip(backend int) (*SoundChip, error) {
@@ -1010,15 +1068,17 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 
 	// Initialise sound chip with default settings
 	chip := &SoundChip{
-		filterLP:         DEFAULT_FILTER_LP,
-		filterBP:         DEFAULT_FILTER_BP,
-		filterHP:         DEFAULT_FILTER_HP,
-		preDelayBuf:      make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
-		sampleRateRecip:  1.0 / float32(SAMPLE_RATE),
-		masterGainLinear: 1.0,
-		sampleTickers:    make(map[string]SampleTicker),
-		sampleMixers:     make(map[string]SampleMixer),
-		sfx:              NewSFXTrigger(),
+		filterLP:           DEFAULT_FILTER_LP,
+		filterBP:           DEFAULT_FILTER_BP,
+		filterHP:           DEFAULT_FILTER_HP,
+		preDelayBuf:        make([]float32, PRE_DELAY_MS*MS_TO_SAMPLES),
+		sampleRateRecip:    1.0 / float32(SAMPLE_RATE),
+		masterGainLinear:   1.0,
+		masterAutoGain:     1.0,
+		masterCompEnvelope: 1.0,
+		sampleTickers:      make(map[string]SampleTicker),
+		sampleMixers:       make(map[string]SampleMixer),
+		sfx:                NewSFXTrigger(),
 	}
 	chip.sampleTicker.Store(&sampleTickerListHolder{})
 	chip.sampleTap.Store(&sampleTapHolder{})
@@ -1274,7 +1334,24 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	// Thread safety: This method holds the chip mutex during execution.
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
+	chip.handleRegisterWriteLocked(addr, value)
+}
 
+// HandleRegisterWrites applies a batch of 32-bit SoundChip register writes while
+// taking chip.mu once. The writes are applied in slice order.
+func (chip *SoundChip) HandleRegisterWrites(writes []AudioRegisterWrite) {
+	if len(writes) == 0 {
+		return
+	}
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+	for _, write := range writes {
+		chip.handleRegisterWriteLocked(write.Addr, write.Value)
+	}
+}
+
+// handleRegisterWriteLocked applies a 32-bit write. chip.mu must be held.
+func (chip *SoundChip) handleRegisterWriteLocked(addr uint32, value uint32) {
 	// Mirror raw value to bus memory so Machine Monitor can display it.
 	if mem := chip.busMemory; mem != nil && addr+3 < uint32(len(mem)) {
 		mem[addr] = byte(value)
@@ -2465,7 +2542,12 @@ func (ch *Channel) applyChannelFilter(sample float32) float32 {
 	ch.filterCutoff += (ch.filterCutoffTarget - ch.filterCutoff) * filterSmooth
 	ch.filterResonance += (ch.filterResonanceTarget - ch.filterResonance) * filterSmooth
 
-	cutoff := calculateFilterCutoff(ch.filterCutoff)
+	cutoff := memoizedFilterCutoff(
+		ch.filterCutoff,
+		&ch.filterCutoffCacheInput,
+		&ch.filterCutoffCacheOutput,
+		&ch.filterCutoffCacheValid,
+	)
 	resonance := ch.filterResonance * MAX_RESONANCE
 
 	// SID filter mode allows self-oscillation at high resonance
@@ -2770,12 +2852,13 @@ func (chip *SoundChip) GenerateSample() float32 {
 	//    - Wet/dry mixing for effect balance
 	//
 	// Thread Safety:
-	// The function acquires chip.mu for the state snapshot and channel mixing loop,
-	// ensuring channel fields cannot be torn by concurrent HandleRegisterWrite calls.
-	// Post-mixing processing (overdrive, filter, reverb) runs lock-free using only
-	// snapshotted locals and audio-thread-only state.
+	// The function acquires chip.mu for the channel mixing loop and post-FX config
+	// snapshot, ensuring channel fields cannot be torn by concurrent register writes.
+	// postFXMu is acquired while chip.mu is held, then retained until post-FX
+	// mutable state has advanced so reset/snapshot/restore cannot interleave with
+	// an in-flight sample.
 	//
-	// Returns a stereo sample pair in the range [-1.0, 1.0]
+	// Returns a mono sample in the range [-1.0, 1.0]
 	// ------------------------------------------------------------------------------
 
 	// Lock-free early exit when audio is disabled
@@ -2783,27 +2866,19 @@ func (chip *SoundChip) GenerateSample() float32 {
 		return 0
 	}
 
-	// Take lock and capture all state needed for sample generation to ensure consistency and thread safety
 	chip.mu.Lock()
-	filterType := chip.filterType
-	const globalFilterSmooth = 0.02
-	chip.filterCutoff += (chip.filterCutoffTarget - chip.filterCutoff) * globalFilterSmooth
-	chip.filterResonance += (chip.filterResonanceTarget - chip.filterResonance) * globalFilterSmooth
-	filterCutoff := chip.filterCutoff
-	filterModSource := chip.filterModSource
-	filterModAmount := chip.filterModAmount
-	filterResonance := chip.filterResonance
-	overdriveLevel := chip.overdriveLevel
-	overdriveGain := chip.overdriveGain
-	reverbMix := chip.reverbMix
-	filterLP := chip.filterLP
-	filterBP := chip.filterBP
-	sidMixerEnabled := chip.sidMixerEnabled
-	sidMixerDCOffset := chip.sidMixerDCOffset
-	sidMixerSaturate := chip.sidMixerSaturate
+	chip.postFXMu.Lock()
+	sample, snap := chip.mixChannelsAndSnapshotPostFXLocked()
+	chip.mu.Unlock()
 
-	// Channel mixing under lock - protects channel fields from concurrent
-	// HandleRegisterWrite on CPU threads
+	sample = chip.applyPostFXLocked(sample, snap)
+	chip.postFXMu.Unlock()
+	return clampF32(sample, MIN_SAMPLE, MAX_SAMPLE)
+}
+
+func (chip *SoundChip) mixChannelsAndSnapshotPostFXLocked() (float32, soundPostFXSnapshot) {
+	const globalFilterSmooth = 0.02
+
 	var sum float32
 	activeCount := 0
 	for i := range NUM_CHANNELS {
@@ -2842,61 +2917,84 @@ func (chip *SoundChip) GenerateSample() float32 {
 		}
 	}
 
-	// Apply SID mixer mode (DC offset and soft saturation)
-	if sidMixerEnabled {
-		// Add DC offset (characteristic of 6581)
-		sample += sidMixerDCOffset
+	chip.filterCutoff += (chip.filterCutoffTarget - chip.filterCutoff) * globalFilterSmooth
+	chip.filterResonance += (chip.filterResonanceTarget - chip.filterResonance) * globalFilterSmooth
 
-		// Apply soft saturation for authentic voice mixing
-		if sidMixerSaturate {
+	snap := soundPostFXSnapshot{
+		filterType:       chip.filterType,
+		filterCutoff:     chip.filterCutoff,
+		filterModAmount:  chip.filterModAmount,
+		filterResonance:  chip.filterResonance,
+		filterLP:         chip.filterLP,
+		filterBP:         chip.filterBP,
+		overdriveLevel:   chip.overdriveLevel,
+		overdriveGain:    chip.overdriveGain,
+		reverbMix:        chip.reverbMix,
+		sidMixerEnabled:  chip.sidMixerEnabled,
+		sidMixerDCOffset: chip.sidMixerDCOffset,
+		sidMixerSaturate: chip.sidMixerSaturate,
+		master:           chip.snapshotMasterNormalizerConfigLocked(),
+	}
+	if chip.filterModSource != nil {
+		snap.filterModSample = chip.filterModSource.prevRawSample
+	}
+	for i := range chip.combFilters {
+		snap.reverbDecays[i] = chip.combFilters[i].decay
+	}
+	return sample, snap
+}
+
+func (chip *SoundChip) applyPostFX(sample float32, snap soundPostFXSnapshot) float32 {
+	chip.postFXMu.Lock()
+	defer chip.postFXMu.Unlock()
+	return chip.applyPostFXLocked(sample, snap)
+}
+
+func (chip *SoundChip) applyPostFXLocked(sample float32, snap soundPostFXSnapshot) float32 {
+	if snap.sidMixerEnabled {
+		sample += snap.sidMixerDCOffset
+
+		if snap.sidMixerSaturate {
 			sample = sidMixerSoftClip(sample)
 		}
 	}
 
-	// Apply overdrive effect with waveform-specific processing
-	if overdriveLevel > 0 {
-		gain := overdriveGain
-
-		// Apply overdrive with tanh for soft clipping
-		sample = fastTanh(sample * gain)
+	if snap.overdriveLevel > 0 {
+		sample = fastTanh(sample * snap.overdriveGain)
 	}
 
-	// Apply global filter processing
-	if filterType != 0 && filterCutoff > 0 {
-		// Calculate modulated cutoff frequency
-		modulatedCutoff := filterCutoff
-		if filterModSource != nil {
-			modSignal := filterModSource.prevRawSample * filterModAmount
-			modulatedCutoff = filterCutoff + modSignal
+	if snap.filterType != 0 && snap.filterCutoff > 0 {
+		modulatedCutoff := snap.filterCutoff
+		if snap.filterModAmount != 0 {
+			modulatedCutoff += snap.filterModSample * snap.filterModAmount
 			modulatedCutoff = clampF32(modulatedCutoff, MIN_FILTER_CUTOFF, MAX_FILTER_CUTOFF)
 		}
 
-		// Apply 2-pole state variable filter with exponential cutoff mapping
-		cutoff := calculateFilterCutoff(modulatedCutoff)
-		resonance := filterResonance * MAX_RESONANCE
+		cutoff := memoizedFilterCutoff(
+			modulatedCutoff,
+			&chip.filterCutoffCacheInput,
+			&chip.filterCutoffCacheOutput,
+			&chip.filterCutoffCacheValid,
+		)
+		resonance := snap.filterResonance * MAX_RESONANCE
 
-		lp := filterLP + cutoff*filterBP
-		hp := (sample - lp) - resonance*filterBP
-		bp := filterBP + cutoff*hp
+		lp := snap.filterLP + cutoff*snap.filterBP
+		hp := (sample - lp) - resonance*snap.filterBP
+		bp := snap.filterBP + cutoff*hp
 
-		// Clamp filter outputs
 		lp = clampF32(lp, MIN_SAMPLE, MAX_SAMPLE)
 		bp = clampF32(bp, MIN_SAMPLE, MAX_SAMPLE)
 		hp = clampF32(hp, MIN_SAMPLE, MAX_SAMPLE)
 
-		// Flush denormals to prevent CPU stalls
 		lp = flushDenormal(lp)
 		bp = flushDenormal(bp)
 		hp = flushDenormal(hp)
 
-		// Update filter state directly - audio thread is single-threaded and
-		// these values are only read by this same thread in subsequent iterations
 		chip.filterLP = lp
 		chip.filterBP = bp
 		chip.filterHP = hp
 
-		// Select filter output
-		switch filterType {
+		switch snap.filterType {
 		case 1:
 			sample = lp
 		case 2:
@@ -2906,19 +3004,23 @@ func (chip *SoundChip) GenerateSample() float32 {
 		}
 	}
 
-	// Apply reverb effect and final mix
-	wet := chip.applyReverb(sample)
-	sample = sample*(1-reverbMix) + wet*reverbMix
+	wet := chip.applyReverbWithSnapshot(sample, snap.reverbMix, snap.reverbDecays)
+	sample = sample*(1-snap.reverbMix) + wet*snap.reverbMix
 
-	// Apply showreel master gain and transparent safety compression last.
-	sample = chip.applyMasterNormalizer(sample)
-	chip.mu.Unlock()
-
-	// Clamp final output
-	return clampF32(sample, MIN_SAMPLE, MAX_SAMPLE)
+	return chip.applyMasterNormalizerWithConfig(sample, snap.master)
 }
 
 func (chip *SoundChip) applyReverb(input float32) float32 {
+	chip.postFXMu.Lock()
+	defer chip.postFXMu.Unlock()
+	var decays [NUM_COMB_FILTERS]float32
+	for i := range chip.combFilters {
+		decays[i] = chip.combFilters[i].decay
+	}
+	return chip.applyReverbWithSnapshot(input, chip.reverbMix, decays)
+}
+
+func (chip *SoundChip) applyReverbWithSnapshot(input float32, reverbMix float32, decays [NUM_COMB_FILTERS]float32) float32 {
 	// ------------------------------------------------------------------------------
 	// applyReverb implements a classic Schroeder reverberator with the following stages:
 	//
@@ -2938,7 +3040,7 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 	// Returns:
 	//   Processed wet signal in range [-1.0, 1.0]
 
-	if chip.reverbMix == 0 {
+	if reverbMix == 0 {
 		return input
 	}
 
@@ -2972,7 +3074,7 @@ func (chip *SoundChip) applyReverb(input float32) float32 {
 	for i := range chip.combFilters {
 		comb := &chip.combFilters[i]
 		cDelay := comb.buffer[comb.pos]
-		comb.buffer[comb.pos] = delayed + cDelay*comb.decay
+		comb.buffer[comb.pos] = delayed + cDelay*decays[i]
 		out += cDelay
 		comb.pos++
 		if comb.pos >= len(comb.buffer) {
@@ -3970,6 +4072,17 @@ func calculateFilterCutoff(cutoffValue float32) float32 {
 	// Exponential mapping: freq = 20 * exp(ln(20000/20) * cutoff)
 	freqHz := FILTER_MIN_FREQ * fastExp(FILTER_CUTOFF_LN_RATIO*cutoffValue)
 	return freqHz * TWO_PI_OVER_SR
+}
+
+func memoizedFilterCutoff(cutoffValue float32, lastInput, lastOutput *float32, valid *bool) float32 {
+	if *valid && *lastInput == cutoffValue {
+		return *lastOutput
+	}
+	out := calculateFilterCutoff(cutoffValue)
+	*lastInput = cutoffValue
+	*lastOutput = out
+	*valid = true
+	return out
 }
 
 //func init() {

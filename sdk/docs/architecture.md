@@ -539,9 +539,12 @@ Interrupt Delivery" section of this manual for the full model.
   window can be smaller than the cap. Addresses above the window resolve through
   the bus's 64-bit physical path, backed by the `Backing` interface -- production
   IE64 boots on Linux/darwin bind high RAM via `MmapBacking`; `SparseBacking` is
-  the test implementation. High physical addresses are supported for code fetch
-  and for data / stack *operands* (the latter via the helper exit, including a
-  high SP), with one caveat below.
+  the test implementation. SparseBacking uses an atomic page-pointer table:
+  missing pages read as zero, writes allocate pages with compare-and-swap, same-page
+  word operations read or write the page slice directly, and reset publishes a
+  fresh empty table. High physical addresses are supported for code fetch and for
+  data / stack *operands* (the latter via the helper exit, including a high SP),
+  with one caveat below.
 - **High-PC stack-op caveat**: a block *fetched from* high physical backing
   that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`) is not
   JIT-compiled -- `ExecuteJIT` takes the `highPhys && containsStackOp(instrs)`
@@ -889,6 +892,13 @@ graph TB
     class COMPS,DISPLAY comp
 ```
 
+VideoChip routes 32-bit VRAM writes before the register switch, so ordinary
+framebuffer stores avoid the control-register decode path. Rectangle-shaped
+blitter fills in raster-op modes update the front buffer directly and mark the
+covered dirty tiles once when the destination stride is the display row stride;
+non-rectangular strides keep the per-pixel path for exact dirty tracking. Raster
+band writes through bus memory aggregate backing invalidation per row.
+
 ### Voodoo 3D State Binding
 
 Voodoo triangle submission is state-machine driven. A write that commits `VOODOO_TRIANGLE_CMD` binds the current Voodoo raster state to that triangle: `VOODOO_FBZ_MODE`, `VOODOO_ALPHA_MODE`, `VOODOO_FBZCOLOR_PATH`, `VOODOO_TEXTURE_MODE`, fog state, chroma key, stipple, clip rectangle, slope registers, and the currently uploaded texture. Later register writes or texture uploads do not affect already submitted triangles. `VOODOO_SWAP_BUFFER_CMD` may flush the queued batch later, but the batch is rasterised in triangle submission order using each triangle's bound state.
@@ -1060,6 +1070,12 @@ FLEX channels are at `FLEX_CH0_BASE = 0xF0A80`, stride = `0x40`. Primary channel
 ### Filter and Modulation
 
 The SoundChip's global resonant filter (`0xF0820-0xF0830`) supports low-pass, band-pass, and high-pass modes with cutoff frequency, resonance, and optional filter modulation source/amount registers. Cutoff and resonance smooth toward register targets at the same 0.02 coefficient used by per-channel filters. SID 12-bit DAC quantization truncates to remove half-LSB DC bias.
+
+### Sample Generation Locking
+
+`ReadSample` advances registered sample tickers before mixing the same sample. `GenerateSample` then takes `chip.mu` only for channel-state mutation, channel mixing, register-visible smoothing state, and a post-processing configuration snapshot. SID mixer options, overdrive, the global filter, reverb, and the master normaliser run after the mutex is released using snapshotted configuration plus audio-thread-owned DSP state.
+
+The master normaliser separates setter-owned configuration from audio-thread-owned dynamics. Configuration setters publish a generation counter; the audio thread applies pending envelope and lookahead resets before the next normaliser step. Register-driven engine synchronisation can batch SoundChip writes through `HandleRegisterWrites`, preserving write order while taking the chip mutex once. Idle playback paths for SID, TED, MIDI, MOD, AHX, and POKEY use atomic gates before taking their engine mutexes. POKEY event playback drains current-sample events through a reusable scratch buffer prepared when events are loaded.
 
 ### Engine and Player Routing
 

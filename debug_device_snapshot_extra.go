@@ -221,6 +221,7 @@ func (e *SIDEngine) DebugRestoreSnapshot(version uint32, data []byte) error {
 	e.baseChannel, e.regBase, e.regEnd = snap.BaseChannel, snap.RegBase, snap.RegEnd
 	e.events = append(e.events[:0], snap.Events...)
 	e.enabled.Store(snap.Enabled)
+	e.playingActive.Store(snap.Playing)
 	e.mutex.Unlock()
 	e.syncToChip()
 	return nil
@@ -333,6 +334,7 @@ func (e *TEDEngine) DebugRestoreSnapshot(version uint32, data []byte) error {
 	e.tedPlusEnabled, e.channelsInit, e.soundClock = snap.TEDPlusEnabled, snap.ChannelsInit, snap.SoundClock
 	e.events = append(e.events[:0], snap.Events...)
 	e.enabled.Store(snap.Enabled)
+	e.playingActive.Store(snap.Playing)
 	e.syncToChip()
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 // Backing is the byte-level guest physical memory abstraction. Addresses are
@@ -158,22 +159,53 @@ func (b *ContiguousBacking) Close() error {
 // Used for IE64 above-4-GiB unit tests where allocating a giant []byte is
 // neither possible nor required.
 type SparseBacking struct {
-	mu             sync.RWMutex
 	advertisedSize uint64
-	pages          map[uint64][]byte
 	pageSize       uint64
-	closed         bool
+	table          atomic.Pointer[sparsePageTable]
+	allocatedPages atomic.Int64
+	closed         atomic.Bool
+}
+
+const (
+	sparsePageLeafBits = 10
+	sparsePageLeafSize = 1 << sparsePageLeafBits
+	sparsePageLeafMask = sparsePageLeafSize - 1
+)
+
+type sparsePage struct {
+	mu   sync.RWMutex
+	data []byte
+}
+
+type sparsePageTable struct {
+	pageCount uint64
+	leaves    []atomic.Pointer[sparsePageLeaf]
+}
+
+type sparsePageLeaf struct {
+	pages [sparsePageLeafSize]atomic.Pointer[sparsePage]
+}
+
+func newSparsePageTable(pageCount uint64) *sparsePageTable {
+	leafCount := (pageCount + sparsePageLeafSize - 1) >> sparsePageLeafBits
+	return &sparsePageTable{
+		pageCount: pageCount,
+		leaves:    make([]atomic.Pointer[sparsePageLeaf], leafCount),
+	}
 }
 
 // NewSparseBacking returns a sparse backing of the advertised size in bytes.
 // The advertised size is rounded down to MMU_PAGE_SIZE.
 func NewSparseBacking(advertisedSize uint64) *SparseBacking {
 	pageSize := uint64(MMU_PAGE_SIZE)
-	return &SparseBacking{
-		advertisedSize: advertisedSize &^ (pageSize - 1),
-		pages:          make(map[uint64][]byte),
+	size := advertisedSize &^ (pageSize - 1)
+	pageCount := size / pageSize
+	b := &SparseBacking{
+		advertisedSize: size,
 		pageSize:       pageSize,
 	}
+	b.table.Store(newSparsePageTable(pageCount))
+	return b
 }
 
 func (b *SparseBacking) Size() uint64 { return b.advertisedSize }
@@ -181,20 +213,18 @@ func (b *SparseBacking) Size() uint64 { return b.advertisedSize }
 // AllocatedPages reports the number of resident pages. Used by tests to
 // confirm that the sparse backing does not retain unused pages.
 func (b *SparseBacking) AllocatedPages() int {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	b.assertOpenLocked()
-	return len(b.pages)
+	b.assertOpen()
+	return int(b.allocatedPages.Load())
 }
 
-func (b *SparseBacking) assertOpenLocked() {
-	if b.closed {
+func (b *SparseBacking) assertOpen() {
+	if b.closed.Load() {
 		panic("SparseBacking use after Close")
 	}
 }
 
 func (b *SparseBacking) inRange(addr, length uint64) bool {
-	b.assertOpenLocked()
+	b.assertOpen()
 	end := addr + length
 	if end < addr {
 		return false
@@ -202,19 +232,46 @@ func (b *SparseBacking) inRange(addr, length uint64) bool {
 	return end <= b.advertisedSize
 }
 
-func (b *SparseBacking) page(pageIdx uint64, allocate bool) []byte {
-	if p, ok := b.pages[pageIdx]; ok {
-		return p
+func (b *SparseBacking) page(pageIdx uint64, allocate bool) *sparsePage {
+	table := b.table.Load()
+	if table == nil {
+		b.assertOpen()
+		return nil
+	}
+	if pageIdx >= table.pageCount {
+		return nil
+	}
+	leafIdx := pageIdx >> sparsePageLeafBits
+	slotIdx := pageIdx & sparsePageLeafMask
+	leafSlot := &table.leaves[leafIdx]
+	leaf := leafSlot.Load()
+	if leaf == nil {
+		if !allocate {
+			return nil
+		}
+		candidate := &sparsePageLeaf{}
+		if leafSlot.CompareAndSwap(nil, candidate) {
+			leaf = candidate
+		} else {
+			leaf = leafSlot.Load()
+		}
+	}
+	slot := &leaf.pages[slotIdx]
+	if page := slot.Load(); page != nil {
+		return page
 	}
 	if !allocate {
 		return nil
 	}
-	p := make([]byte, b.pageSize)
-	b.pages[pageIdx] = p
-	return p
+	page := &sparsePage{data: make([]byte, b.pageSize)}
+	if slot.CompareAndSwap(nil, page) {
+		b.allocatedPages.Add(1)
+		return page
+	}
+	return slot.Load()
 }
 
-func (b *SparseBacking) read8Locked(addr uint64) byte {
+func (b *SparseBacking) read8(addr uint64) byte {
 	if !b.inRange(addr, 1) {
 		return 0
 	}
@@ -224,120 +281,152 @@ func (b *SparseBacking) read8Locked(addr uint64) byte {
 	if p == nil {
 		return 0
 	}
-	return p[off]
+	p.mu.RLock()
+	v := p.data[off]
+	p.mu.RUnlock()
+	return v
 }
 
-func (b *SparseBacking) write8Locked(addr uint64, v byte) {
+func (b *SparseBacking) write8(addr uint64, v byte) {
 	if !b.inRange(addr, 1) {
 		return
 	}
 	pageIdx := addr / b.pageSize
 	off := addr % b.pageSize
 	p := b.page(pageIdx, true)
-	p[off] = v
+	p.mu.Lock()
+	p.data[off] = v
+	p.mu.Unlock()
 }
 
 func (b *SparseBacking) Read8(addr uint64) byte {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.read8Locked(addr)
+	return b.read8(addr)
 }
 
 func (b *SparseBacking) Write8(addr uint64, v byte) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.write8Locked(addr, v)
+	b.write8(addr, v)
 }
 
-func (b *SparseBacking) readSpanLocked(addr uint64, dst []byte) {
+func (b *SparseBacking) readSpan(addr uint64, dst []byte) {
 	for i := range dst {
-		dst[i] = b.read8Locked(addr + uint64(i))
+		dst[i] = b.read8(addr + uint64(i))
 	}
 }
 
-func (b *SparseBacking) writeSpanLocked(addr uint64, src []byte) {
+func (b *SparseBacking) writeSpan(addr uint64, src []byte) {
 	for i := range src {
-		b.write8Locked(addr+uint64(i), src[i])
+		b.write8(addr+uint64(i), src[i])
 	}
 }
 
 func (b *SparseBacking) Read32(addr uint64) uint32 {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
 	if !b.inRange(addr, 4) {
 		return 0
 	}
+	pageIdx := addr / b.pageSize
+	off := addr % b.pageSize
+	if off+4 <= b.pageSize {
+		p := b.page(pageIdx, false)
+		if p == nil {
+			return 0
+		}
+		p.mu.RLock()
+		v := binary.LittleEndian.Uint32(p.data[off : off+4])
+		p.mu.RUnlock()
+		return v
+	}
 	var buf [4]byte
-	b.readSpanLocked(addr, buf[:])
+	b.readSpan(addr, buf[:])
 	return binary.LittleEndian.Uint32(buf[:])
 }
 
 func (b *SparseBacking) Write32(addr uint64, v uint32) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	if !b.inRange(addr, 4) {
+		return
+	}
+	pageIdx := addr / b.pageSize
+	off := addr % b.pageSize
+	if off+4 <= b.pageSize {
+		p := b.page(pageIdx, true)
+		p.mu.Lock()
+		binary.LittleEndian.PutUint32(p.data[off:off+4], v)
+		p.mu.Unlock()
 		return
 	}
 	var buf [4]byte
 	binary.LittleEndian.PutUint32(buf[:], v)
-	b.writeSpanLocked(addr, buf[:])
+	b.writeSpan(addr, buf[:])
 }
 
 func (b *SparseBacking) Read64(addr uint64) uint64 {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
 	if !b.inRange(addr, 8) {
 		return 0
 	}
+	pageIdx := addr / b.pageSize
+	off := addr % b.pageSize
+	if off+8 <= b.pageSize {
+		p := b.page(pageIdx, false)
+		if p == nil {
+			return 0
+		}
+		p.mu.RLock()
+		v := binary.LittleEndian.Uint64(p.data[off : off+8])
+		p.mu.RUnlock()
+		return v
+	}
 	var buf [8]byte
-	b.readSpanLocked(addr, buf[:])
+	b.readSpan(addr, buf[:])
 	return binary.LittleEndian.Uint64(buf[:])
 }
 
 func (b *SparseBacking) Write64(addr uint64, v uint64) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	if !b.inRange(addr, 8) {
+		return
+	}
+	pageIdx := addr / b.pageSize
+	off := addr % b.pageSize
+	if off+8 <= b.pageSize {
+		p := b.page(pageIdx, true)
+		p.mu.Lock()
+		binary.LittleEndian.PutUint64(p.data[off:off+8], v)
+		p.mu.Unlock()
 		return
 	}
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], v)
-	b.writeSpanLocked(addr, buf[:])
+	b.writeSpan(addr, buf[:])
 }
 
 func (b *SparseBacking) ReadBytes(addr uint64, dst []byte) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
 	if !b.inRange(addr, uint64(len(dst))) {
 		for i := range dst {
 			dst[i] = 0
 		}
 		return
 	}
-	b.readSpanLocked(addr, dst)
+	b.readSpan(addr, dst)
 }
 
 func (b *SparseBacking) WriteBytes(addr uint64, src []byte) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	if !b.inRange(addr, uint64(len(src))) {
 		return
 	}
-	b.writeSpanLocked(addr, src)
+	b.writeSpan(addr, src)
 }
 
 func (b *SparseBacking) Reset() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.assertOpenLocked()
-	b.pages = make(map[uint64][]byte)
+	b.assertOpen()
+	pageCount := b.advertisedSize / b.pageSize
+	b.table.Store(newSparsePageTable(pageCount))
+	b.allocatedPages.Store(0)
 }
 
 func (b *SparseBacking) Close() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.closed = true
-	b.pages = nil
+	if b.closed.Swap(true) {
+		return nil
+	}
+	b.table.Store(nil)
+	b.allocatedPages.Store(0)
 	return nil
 }
 

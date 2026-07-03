@@ -540,23 +540,24 @@ type VideoChip struct {
 	prevVRAM      []byte // 24 bytes
 
 	// Copper state
-	bus                       Bus32
-	busMemory                 []byte       // Cached reference to bus memory for lock-free reads
-	bigEndianMode             bool         // Read memory as big-endian (for M68K programs)
-	directVRAM                []byte       // When set, GetFrame returns this instead of frontBuffer
-	lastFrameStart            atomic.Int64 // Unix nanoseconds when current frame started
-	copperEnabled             bool
-	copperPtrStaged           uint32
-	copperPtr                 uint32
-	copperPC                  uint32
-	copperWaiting             bool
-	copperHalted              bool
-	copperWaitX               uint16
-	copperWaitY               uint16
-	copperRasterX             uint16
-	copperRasterY             uint16
-	copperIOBase              uint32 // Base address for MOVE operations (default VIDEO_REG_BASE)
-	copperManagedByCompositor bool   // true when compositor handles copper per-scanline
+	bus                          Bus32
+	busMemory                    []byte // Cached reference to bus memory for lock-free reads
+	bigEndianMode                bool   // Read memory as big-endian (for M68K programs)
+	directVRAM                   []byte // When set, GetFrame returns this instead of frontBuffer
+	invalidateBusMemoryWriteHook func(addr, size uint32)
+	lastFrameStart               atomic.Int64 // Unix nanoseconds when current frame started
+	copperEnabled                bool
+	copperPtrStaged              uint32
+	copperPtr                    uint32
+	copperPC                     uint32
+	copperWaiting                bool
+	copperHalted                 bool
+	copperWaitX                  uint16
+	copperWaitY                  uint16
+	copperRasterX                uint16
+	copperRasterY                uint16
+	copperIOBase                 uint32 // Base address for MOVE operations (default VIDEO_REG_BASE)
+	copperManagedByCompositor    bool   // true when compositor handles copper per-scanline
 
 	// Blitter state
 	bltIrqEnabled       bool
@@ -781,7 +782,13 @@ func (chip *VideoChip) SetBusMemory(mem []byte) {
 }
 
 func (chip *VideoChip) invalidateBusMemoryWriteLocked(addr uint32, size uint32) {
-	if chip.bus == nil || size == 0 {
+	if size == 0 {
+		return
+	}
+	if chip.invalidateBusMemoryWriteHook != nil {
+		chip.invalidateBusMemoryWriteHook(addr, size)
+	}
+	if chip.bus == nil {
 		return
 	}
 	invalidateM68KJITForGuestWrite(chip.bus, uint64(addr), uint64(size))
@@ -1469,6 +1476,9 @@ func (chip *VideoChip) blitFillLocked(mode VideoMode) {
 			chip.bltErr = true
 			return
 		}
+		if bpp == BYTES_PER_PIXEL && chip.blitFillRasterOp32FrontBufferLocked(width, height, stride, color, drawMode, mode) {
+			return
+		}
 		rowAddr := chip.bltDst
 		for range height {
 			addr := rowAddr
@@ -1497,6 +1507,42 @@ func (chip *VideoChip) blitFillLocked(mode VideoMode) {
 	} else {
 		chip.blitBulkFill32Locked(dst, width, height, stride, color, mode)
 	}
+}
+
+func (chip *VideoChip) blitFillRasterOp32FrontBufferLocked(width, height int, stride, color uint32, drawMode int, mode VideoMode) bool {
+	if chip.directVRAM != nil || chip.bltDst < VRAM_START || chip.bltDst >= VRAM_START+VRAM_SIZE {
+		return false
+	}
+	if stride != uint32(mode.bytesPerRow) {
+		return false
+	}
+
+	offset := chip.bltDst - BUFFER_OFFSET
+	rowBytes := uint32(width * BYTES_PER_PIXEL)
+	lastOffset := uint64(offset) + uint64(stride)*uint64(height-1) + uint64(rowBytes)
+	if offset%BYTES_PER_PIXEL != BUFFER_REMAINDER || lastOffset > uint64(len(chip.frontBuffer)) {
+		return false
+	}
+
+	rowOff := offset
+	for range height {
+		off := rowOff
+		for range width {
+			dst := binary.LittleEndian.Uint32(chip.frontBuffer[off : off+BYTES_PER_PIXEL])
+			binary.LittleEndian.PutUint32(chip.frontBuffer[off:], applyDrawMode(color, dst, drawMode))
+			off += BYTES_PER_PIXEL
+		}
+		rowOff += stride
+	}
+
+	startPixel := offset / BYTES_PER_PIXEL
+	startX := int(startPixel) % mode.width
+	startY := int(startPixel) / mode.width
+	chip.markRectDirty(startX, startY, width, height)
+	if !chip.resetting && !chip.hasContent.Load() {
+		chip.hasContent.Store(true)
+	}
+	return true
 }
 
 // blitBulkFill32Locked fills a rectangle with a 32-bit color using bulk operations.
@@ -3213,7 +3259,47 @@ func (chip *VideoChip) HandleWrite8(addr uint32, value uint8) {
 	}
 }
 
+func (chip *VideoChip) handleVRAMWriteLocked(addr uint32, value uint32) {
+	// directVRAM mode: bus.memory is the source of truth, let bus handle writes.
+	if chip.directVRAM != nil {
+		if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+			binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], value)
+			chip.invalidateBusMemoryWriteLocked(addr, 4)
+		}
+		return
+	}
+
+	offset := addr - BUFFER_OFFSET
+	if offset+BYTES_PER_PIXEL <= uint32(len(chip.frontBuffer)) && offset%BYTES_PER_PIXEL == BUFFER_REMAINDER {
+		mode := VideoModes[chip.currentMode]
+		// VRAM pixels are always stored as little-endian RGBA bytes.
+		binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], value)
+
+		startPixel := offset / BYTES_PER_PIXEL
+		startX := int(startPixel) % mode.width
+		startY := int(startPixel) / mode.width
+		chip.markRegionDirty(startX, startY)
+
+		if !chip.resetting && !chip.hasContent.Load() {
+			chip.hasContent.Store(true)
+		}
+		return
+	}
+
+	if chip.busMemory != nil && addr+4 <= uint32(len(chip.busMemory)) {
+		// For VRAM addresses beyond frontBuffer, write directly to bus memory.
+		// This enables double-buffering by rendering to VRAM offset > one frame.
+		binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], value)
+		chip.invalidateBusMemoryWriteLocked(addr, 4)
+	}
+}
+
 func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
+	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		chip.handleVRAMWriteLocked(addr, value)
+		return
+	}
+
 	switch addr {
 	case VIDEO_CTRL:
 		if chip.stopped.Load() {
@@ -3735,11 +3821,18 @@ func (chip *VideoChip) drawRasterBandLocked() {
 	for y := startY; y < endY; y++ {
 		if chip.clutMode.Load() {
 			rowOffset := chip.fbBase + uint32(y*mode.width)
+			if chip.busMemory != nil && rowOffset+uint32(mode.width) <= uint32(len(chip.busMemory)) {
+				for x := 0; x < mode.width; x++ {
+					chip.busMemory[rowOffset+uint32(x)] = uint8(chip.rasterColor)
+				}
+				chip.invalidateBusMemoryWriteLocked(rowOffset, uint32(mode.width))
+				chip.markRegionDirty(0, y)
+				continue
+			}
 			for x := 0; x < mode.width; x++ {
 				addr := rowOffset + uint32(x)
 				if chip.busMemory != nil && addr < uint32(len(chip.busMemory)) {
 					chip.busMemory[addr] = uint8(chip.rasterColor)
-					chip.invalidateBusMemoryWriteLocked(addr, 1)
 					continue
 				}
 				if chip.directVRAM != nil {
@@ -3754,11 +3847,19 @@ func (chip *VideoChip) drawRasterBandLocked() {
 				continue
 			}
 			rowOffset := uint64(chip.fbBase) + uint64(y*mode.bytesPerRow)
+			if chip.busMemory != nil && rowOffset+uint64(mode.bytesPerRow) <= uint64(len(chip.busMemory)) {
+				for x := 0; x < mode.width; x++ {
+					offset := rowOffset + uint64(x*BYTES_PER_PIXEL)
+					binary.LittleEndian.PutUint32(chip.busMemory[offset:], chip.rasterColor)
+				}
+				chip.invalidateBusMemoryWriteLocked(uint32(rowOffset), uint32(mode.bytesPerRow))
+				chip.markRegionDirty(0, y)
+				continue
+			}
 			for x := 0; x < mode.width; x++ {
 				offset := rowOffset + uint64(x*BYTES_PER_PIXEL)
 				if chip.busMemory != nil && offset+BYTES_PER_PIXEL <= uint64(len(chip.busMemory)) {
 					binary.LittleEndian.PutUint32(chip.busMemory[offset:], chip.rasterColor)
-					chip.invalidateBusMemoryWriteLocked(uint32(offset), BYTES_PER_PIXEL)
 					continue
 				}
 				if chip.directVRAM != nil && offset >= VRAM_START {

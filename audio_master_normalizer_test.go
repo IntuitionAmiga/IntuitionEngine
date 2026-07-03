@@ -77,6 +77,9 @@ func TestSoundChipMasterDynamicsResetClearsEnvelopeAndLookahead(t *testing.T) {
 	}
 
 	chip.ResetMasterDynamics()
+	chip.SetMasterAutoLevelEnabled(false)
+	chip.SetMasterCompressorEnabled(false)
+	_ = chip.applyMasterNormalizer(0)
 	if chip.masterAutoGain != 1.0 {
 		t.Fatalf("auto gain=%f after reset, want 1.0", chip.masterAutoGain)
 	}

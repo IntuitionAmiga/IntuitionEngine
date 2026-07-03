@@ -46,6 +46,7 @@ type SIDEngine struct {
 	loopSample     uint64
 	loopEventIndex int
 	playing        bool
+	playingActive  atomic.Bool
 	debugEnabled   bool
 	debugUntil     uint64
 	debugNextTick  uint64
@@ -351,11 +352,13 @@ func (e *SIDEngine) syncToChip() {
 	plan := e.buildSyncPlanLocked()
 	e.mutex.Unlock()
 
+	writes := make([]AudioRegisterWrite, 0, len(plan.writes))
 	for _, w := range plan.writes {
 		if addr, ok := flexAddrForChannel(w.ch, w.offset); ok {
-			sound.HandleRegisterWrite(addr, w.value)
+			writes = append(writes, AudioRegisterWrite{Addr: addr, Value: w.value})
 		}
 	}
+	sound.HandleRegisterWrites(writes)
 	for _, s := range plan.envelopeMode {
 		sound.SetChannelEnvelopeMode(s.ch, s.enabled)
 	}
@@ -911,6 +914,7 @@ func (e *SIDEngine) Reset() {
 	e.enabled.Store(false)
 	e.channelsInit = false
 	e.playing = false
+	e.playingActive.Store(false)
 	e.events = nil
 	e.eventIndex = 0
 	e.currentSample = 0
@@ -973,6 +977,7 @@ func (e *SIDEngine) EnableDebugLogging(seconds int) {
 func (e *SIDEngine) SetPlaying(playing bool) {
 	e.mutex.Lock()
 	e.playing = playing
+	e.playingActive.Store(playing)
 	e.mutex.Unlock()
 	if !playing {
 		e.silenceChannels()
@@ -1001,6 +1006,7 @@ func (e *SIDEngine) SetForceLoop(enable bool) {
 func (e *SIDEngine) StopPlayback() {
 	e.mutex.Lock()
 	e.playing = false
+	e.playingActive.Store(false)
 	e.events = nil
 	e.eventIndex = 0
 	e.currentSample = 0
@@ -1013,7 +1019,7 @@ func (e *SIDEngine) StopPlayback() {
 }
 
 func (e *SIDEngine) TickSample() {
-	if !e.enabled.Load() {
+	if !e.enabled.Load() || !e.playingActive.Load() {
 		return
 	}
 
@@ -1064,6 +1070,7 @@ func (e *SIDEngine) TickSample() {
 			e.eventIndex = e.loopEventIndex
 		} else {
 			e.playing = false
+			e.playingActive.Store(false)
 			needsSync = false
 			e.mutex.Unlock()
 			if plusChanged && plusSound != nil {

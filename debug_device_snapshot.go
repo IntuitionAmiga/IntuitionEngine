@@ -386,6 +386,8 @@ func (chip *SoundChip) DebugSnapshot() (uint32, []byte, error) {
 		return soundChipSnapshotVersion, nil, fmt.Errorf("nil sound chip")
 	}
 	chip.mu.Lock()
+	chip.postFXMu.Lock()
+	defer chip.postFXMu.Unlock()
 	defer chip.mu.Unlock()
 	snap := soundChipDebugSnapshot{
 		FilterLP: chip.filterLP, FilterBP: chip.filterBP, FilterHP: chip.filterHP,
@@ -443,6 +445,8 @@ func (chip *SoundChip) DebugRestoreSnapshot(version uint32, data []byte) error {
 		return err
 	}
 	chip.mu.Lock()
+	chip.postFXMu.Lock()
+	defer chip.postFXMu.Unlock()
 	defer chip.mu.Unlock()
 	chip.filterLP, chip.filterBP, chip.filterHP = snap.FilterLP, snap.FilterBP, snap.FilterHP
 	chip.filterCutoff, chip.filterResonance = snap.FilterCutoff, snap.FilterResonance
