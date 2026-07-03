@@ -133,8 +133,9 @@ type MachineBus struct {
 
 	// 64-bit I/O region map - separate from legacy 32-bit mapping.
 	// Registered via MapIO64, used by Read64/Write64 for native 64-bit dispatch.
-	mapping64 map[uint32][]IORegion64
-	mapState  atomic.Pointer[busMapSnapshot]
+	mapping64  map[uint32][]IORegion64
+	mapState   atomic.Pointer[busMapSnapshot]
+	sealedSnap *busMapSnapshot
 
 	// Policy for 64-bit access to legacy-only MMIO regions (default: Fault)
 	legacyMMIO64Policy MMIO64Policy
@@ -158,7 +159,8 @@ type MachineBus struct {
 	// directly via SetBacking. Routing rules live in machine_bus_phys.go.
 	backing Backing
 
-	debugAccess *DebugAccessService
+	debugAccess             *DebugAccessService
+	debugAccessActiveMirror atomic.Bool
 
 	// memReset is the platform/allocator-specific reset hook for
 	// bus.memory. nil falls back to a plain byte-loop zero. mmap-allocated
@@ -382,7 +384,12 @@ func (bus *MachineBus) readRAM8(addr uint32) uint8 {
 }
 
 func (bus *MachineBus) invalidateM68KJITRAMWrite(addr uint64, size uint64) {
-	invalidateM68KJITForGuestWrite(bus, addr, size)
+	if bus == nil || size == 0 || addr > uint64(^uint32(0)) {
+		return
+	}
+	if bus.m68kJITInvalidator != nil {
+		bus.m68kJITInvalidator(addr, size)
+	}
 }
 
 func (bus *MachineBus) RegisterM68KJITInvalidator(fn func(addr, size uint64)) {
@@ -900,7 +907,7 @@ func NewMachineBus() *MachineBus {
 // bytes and ioPageBitmap proportional to it. Returns ErrInvalidSizeArg-
 // wrapped errors for invalid input (zero, unaligned, above
 // busMemMaxBytes). Underlying make([]byte, memSize) failure is NOT
-// caught — Go runtime OOM is fatal per PLAN_MAX_RAM slice 10 A1b.
+// caught. Go runtime OOM is fatal per PLAN_MAX_RAM slice 10 A1b.
 //
 // The recovery layer for "host doesn't have enough memory" lives in
 // ComputeMemorySizing's reserve policy and SizingOverrides fallback,
@@ -944,14 +951,21 @@ func newMachineBusSizedWithAllocator(memSize uint64, allocator func(size uint64)
 }
 
 func (bus *MachineBus) SetDebugAccessService(access *DebugAccessService) {
+	if bus.debugAccess != nil && bus.debugAccess != access {
+		bus.debugAccess.SetActiveMirror(nil)
+	}
 	bus.debugAccess = access
+	bus.debugAccessActiveMirror.Store(access != nil && access.AnyActive(-1))
 	if access != nil {
 		access.SetInstrumented(true)
+		access.SetActiveMirror(func(active bool) {
+			bus.debugAccessActiveMirror.Store(active)
+		})
 	}
 }
 
 func (bus *MachineBus) debugOnRead(addr uint32, width int) {
-	if bus == nil || bus.debugAccess == nil || !bus.debugAccess.AnyActive(-1) {
+	if !bus.debugAccessActive() {
 		return
 	}
 	bus.debugAccess.OnRead(-1, uint64(addr), width)
@@ -962,14 +976,21 @@ func (bus *MachineBus) debugOnWrite(addr uint32, width int, oldVal, newVal uint6
 }
 
 func (bus *MachineBus) debugOnWriteKnown(addr uint32, width int, oldVal, newVal uint64, oldKnown bool) {
-	if bus == nil || bus.debugAccess == nil || !bus.debugAccess.AnyActive(-1) {
+	if !bus.debugAccessActive() {
 		return
 	}
 	bus.debugAccess.OnWriteKnown(-1, uint64(addr), width, oldVal, newVal, oldKnown)
 }
 
 func (bus *MachineBus) debugWriteActive() bool {
-	return bus != nil && bus.debugAccess != nil && bus.debugAccess.AnyActive(-1)
+	return bus.debugAccessActive()
+}
+
+func (bus *MachineBus) debugAccessActive() bool {
+	if bus == nil || bus.debugAccess == nil {
+		return false
+	}
+	return bus.debugAccessActiveMirror.Load() || bus.debugAccess.active.Load()
 }
 
 func (bus *MachineBus) debugOldValueNoCallback(addr uint32, width int) (uint64, bool) {
@@ -1030,14 +1051,21 @@ func (bus *MachineBus) detachMapStateForWrite() {
 }
 
 func (bus *MachineBus) publishMapSnapshot() {
-	bus.mapState.Store(&busMapSnapshot{
+	snap := &busMapSnapshot{
 		mapping:      bus.mapping,
 		mapping64:    bus.mapping64,
 		ioPageBitmap: bus.ioPageBitmap,
-	})
+	}
+	bus.mapState.Store(snap)
+	if bus.sealedSnap != nil {
+		bus.sealedSnap = snap
+	}
 }
 
 func (bus *MachineBus) currentMapSnapshot() *busMapSnapshot {
+	if bus.sealedSnap != nil {
+		return bus.sealedSnap
+	}
 	if snap := bus.mapState.Load(); snap != nil {
 		return snap
 	}
@@ -1060,7 +1088,11 @@ func (bus *MachineBus) native64Regions(page uint32) ([]IORegion64, bool) {
 
 func (bus *MachineBus) ioPageMapped(page uint32) bool {
 	snap := bus.currentMapSnapshot()
-	return page < uint32(len(snap.ioPageBitmap)) && snap.ioPageBitmap[page]
+	return ioPageMappedInSnapshot(snap, page)
+}
+
+func ioPageMappedInSnapshot(snap *busMapSnapshot, page uint32) bool {
+	return snap != nil && page < uint32(len(snap.ioPageBitmap)) && snap.ioPageBitmap[page]
 }
 
 func (bus *MachineBus) IsIOPageMapped(page uint32) bool {
@@ -1149,13 +1181,13 @@ func (bus *MachineBus) SetStrictMMIOWindows(windows []AddrRange) {
 // the bound Backing. Backing.Size() is the absolute upper bound of the
 // backing-mapped range (matching addrInBacking's `end <= backing.Size()`
 // check), so the backed total is max(len(bus.memory), backing.Size())
-// — adding the two would advertise unbacked RAM in the [backing.Size(),
+// Adding the two would advertise unbacked RAM in the [backing.Size(),
 // len(memory)+backing.Size()) gap.
 //
 // ActiveVisibleRAM is clamped to TotalGuestRAM when both are set so the
 // active value never exceeds the (already-backed) total. Active-only
-// callers — hand-built MemorySizing inputs that leave TotalGuestRAM at
-// zero — retain their ActiveVisibleRAM verbatim. The production path
+// callers. Hand-built MemorySizing inputs that leave TotalGuestRAM at
+// zero retain their ActiveVisibleRAM verbatim. The production path
 // from main.go always sets both, so the production-honesty invariant
 // is satisfied via the total-clamp + active<=total chain.
 func (bus *MachineBus) SetSizing(ms MemorySizing) {
@@ -1415,13 +1447,24 @@ func (bus *MachineBus) SetVideoStatusReader(reader func(addr uint32) uint32) {
 // SealMappings prevents further MapIO calls. This is called when execution starts
 // to ensure the ioPageBitmap remains stable during hot-path access.
 func (bus *MachineBus) SealMappings() {
-	bus.sealed.CompareAndSwap(false, true)
+	snap := bus.mapState.Load()
+	if snap == nil {
+		bus.publishMapSnapshot()
+		snap = bus.mapState.Load()
+	}
+	bus.sealedSnap = snap
+	bus.sealed.Store(true)
 }
 
 // UnsealMappings permits runtime owners that have stopped all CPU runners to
 // update MMIO mappings before launching the next runner.
 func (bus *MachineBus) UnsealMappings() {
+	bus.sealedSnap = nil
 	bus.sealed.Store(false)
+}
+
+func (bus *MachineBus) mappingsSealed() bool {
+	return bus.sealedSnap != nil || bus.sealed.Load()
 }
 
 func (bus *MachineBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32)) {
@@ -1437,7 +1480,7 @@ func (bus *MachineBus) MapIONoShadow(start, end uint32, onRead func(addr uint32)
 }
 
 func (bus *MachineBus) mapIOWithShadow(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32), shadow bool) {
-	if bus.sealed.Load() {
+	if bus.mappingsSealed() {
 		panic(fmt.Sprintf("MapIO called after execution started (mapping range $%05X-$%05X)", start, end))
 	}
 	bus.detachMapStateForWrite()
@@ -1488,13 +1531,13 @@ func (bus *MachineBus) mapIOWithShadow(start, end uint32, onRead func(addr uint3
 // The write8Slow path prefers onWrite8 when set, falling back to onWrite when nil.
 // The write16Slow path decomposes into two onWrite8 calls when onWrite8 is set.
 func (bus *MachineBus) MapIOByte(start, end uint32, onWrite8 func(addr uint32, value uint8)) {
-	if bus.sealed.Load() {
+	if bus.mappingsSealed() {
 		panic(fmt.Sprintf("MapIOByte called after execution started (mapping range $%05X-$%05X)", start, end))
 	}
 	bus.detachMapStateForWrite()
 	defer bus.publishMapSnapshot()
 
-	// IORegion is a value type — each page has its own copy, so we must
+	// IORegion is a value type. Each page has its own copy, so we must
 	// update every copy across all pages (no deduplication).
 	firstPage := start & PAGE_MASK
 	lastPage := end & PAGE_MASK
@@ -1528,7 +1571,7 @@ func (bus *MachineBus) MapIOByte(start, end uint32, onWrite8 func(addr uint32, v
 // MapIOByteRead registers an optional byte-level read handler for an existing I/O region.
 // Read8 prefers onRead8 when set, falling back to truncating the 32-bit onRead result.
 func (bus *MachineBus) MapIOByteRead(start, end uint32, onRead8 func(addr uint32) uint8) {
-	if bus.sealed.Load() {
+	if bus.mappingsSealed() {
 		panic(fmt.Sprintf("MapIOByteRead called after execution started (mapping range $%05X-$%05X)", start, end))
 	}
 	bus.detachMapStateForWrite()
@@ -1566,7 +1609,7 @@ func (bus *MachineBus) MapIOByteRead(start, end uint32, onRead8 func(addr uint32
 // writes into four byte writes when a byte-level handler is registered.
 // Existing regions keep the compatibility path unless this is set.
 func (bus *MachineBus) MapIOWideWriteFanout(start, end uint32) {
-	if bus.sealed.Load() {
+	if bus.mappingsSealed() {
 		panic(fmt.Sprintf("MapIOWideWriteFanout called after execution started (mapping range $%05X-$%05X)", start, end))
 	}
 	bus.detachMapStateForWrite()
@@ -1682,7 +1725,8 @@ func (bus *MachineBus) Write32(addr uint32, value uint32) {
 	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
-	if !bus.ioPageMapped(addr>>8) && !bus.ioPageMapped((addr+3)>>8) {
+	snap := bus.currentMapSnapshot()
+	if !ioPageMappedInSnapshot(snap, addr>>8) && !ioPageMappedInSnapshot(snap, (addr+3)>>8) {
 		// No I/O on this page - lock-free write using unsafe pointer
 		var old uint32
 		if bus.debugWriteActive() {
@@ -1811,7 +1855,8 @@ func (bus *MachineBus) Read32(addr uint32) uint32 {
 	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
-	if !bus.ioPageMapped(addr>>8) && !bus.ioPageMapped((addr+3)>>8) {
+	snap := bus.currentMapSnapshot()
+	if !ioPageMappedInSnapshot(snap, addr>>8) && !ioPageMappedInSnapshot(snap, (addr+3)>>8) {
 		// No I/O on this page - lock-free read using unsafe pointer
 		value := *(*uint32)(unsafe.Pointer(&bus.memory[addr]))
 		bus.debugOnRead(addr, 4)
@@ -1925,7 +1970,8 @@ func (bus *MachineBus) Write16(addr uint32, value uint16) {
 	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
-	if !bus.ioPageMapped(addr>>8) && !bus.ioPageMapped((addr+1)>>8) {
+	snap := bus.currentMapSnapshot()
+	if !ioPageMappedInSnapshot(snap, addr>>8) && !ioPageMappedInSnapshot(snap, (addr+1)>>8) {
 		// No I/O on this page - lock-free write using unsafe pointer
 		var old uint16
 		if bus.debugWriteActive() {
@@ -2058,7 +2104,8 @@ func (bus *MachineBus) Read16(addr uint32) uint16 {
 	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
-	if !bus.ioPageMapped(addr>>8) && !bus.ioPageMapped((addr+1)>>8) {
+	snap := bus.currentMapSnapshot()
+	if !ioPageMappedInSnapshot(snap, addr>>8) && !ioPageMappedInSnapshot(snap, (addr+1)>>8) {
 		// No I/O on this page - lock-free read using unsafe pointer
 		value := *(*uint16)(unsafe.Pointer(&bus.memory[addr]))
 		bus.debugOnRead(addr, 2)
@@ -2447,7 +2494,7 @@ func (bus *MachineBus) MapIO64NoShadow(start, end uint32, onRead64 func(addr uin
 }
 
 func (bus *MachineBus) mapIO64WithShadow(start, end uint32, onRead64 func(addr uint32) uint64, onWrite64 func(addr uint32, value uint64), shadow bool) {
-	if bus.sealed.Load() {
+	if bus.mappingsSealed() {
 		panic(fmt.Sprintf("MapIO64 called after execution started (mapping range $%05X-$%05X)", start, end))
 	}
 	bus.detachMapStateForWrite()
@@ -2597,7 +2644,8 @@ func (bus *MachineBus) Read64(addr uint32) uint64 {
 	// Fast path: both pages are non-I/O → single 64-bit load
 	lowPage := addr >> 8
 	highPage := uint32(uint64(addr)+7) >> 8
-	if !bus.ioPageMapped(lowPage) && !bus.ioPageMapped(highPage) {
+	snap := bus.currentMapSnapshot()
+	if !ioPageMappedInSnapshot(snap, lowPage) && !ioPageMappedInSnapshot(snap, highPage) {
 		value := *(*uint64)(unsafe.Pointer(&bus.memory[addr]))
 		bus.debugOnRead(addr, 8)
 		return value
@@ -2664,7 +2712,7 @@ func (bus *MachineBus) read32Half(addr uint32) uint32 {
 		if region.onRead != nil {
 			return region.onRead(addr)
 		}
-		// onRead is nil — fall through to plain RAM read below
+		// onRead is nil; fall through to plain RAM read below.
 	}
 
 	// Plain RAM
@@ -2694,7 +2742,8 @@ func (bus *MachineBus) Write64(addr uint32, value uint64) {
 	// Fast path: both pages are non-I/O → single 64-bit store
 	lowPage := addr >> 8
 	highPage := uint32(uint64(addr)+7) >> 8
-	if !bus.ioPageMapped(lowPage) && !bus.ioPageMapped(highPage) {
+	snap := bus.currentMapSnapshot()
+	if !ioPageMappedInSnapshot(snap, lowPage) && !ioPageMappedInSnapshot(snap, highPage) {
 		var old uint64
 		if bus.debugWriteActive() {
 			old = *(*uint64)(unsafe.Pointer(&bus.memory[addr]))

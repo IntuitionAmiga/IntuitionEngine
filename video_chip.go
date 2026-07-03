@@ -442,7 +442,7 @@ var VideoModes = map[uint32]VideoMode{
 	},
 }
 
-// Derived from DEFAULT_VIDEO_MODE — do not edit these directly.
+// Derived from DEFAULT_VIDEO_MODE; do not edit these directly.
 var (
 	defaultMode         = VideoModes[DEFAULT_VIDEO_MODE]
 	DefaultScreenWidth  = defaultMode.width
@@ -624,15 +624,18 @@ type VideoChip struct {
 	rasterCtrl   uint32
 
 	// CLUT8 palette mode state
-	clutMode      atomic.Bool // true = CLUT8 indexed mode, false = RGBA32 direct
-	clutPalette   [256]uint32 // Pre-packed LE RGBA values for fast lookup
-	clutPaletteHW [256]uint32 // Raw 0x00RRGGBB values as written by guest
-	palIndex      uint32      // Auto-incrementing palette write index
-	clutFrame     []byte      // Conversion buffer (width*height*4 RGBA32)
-	fbBase        uint32      // Framebuffer base address in bus memory
-	clutWarnOnce  sync.Once   // Rate-limit out-of-range warnings
-	clutWarnFrame uint64      // Last frame that emitted an out-of-range CLUT warning
-	clutWarned    bool
+	clutMode         atomic.Bool // true = CLUT8 indexed mode, false = RGBA32 direct
+	clutPalette      [256]uint32 // Pre-packed LE RGBA values for fast lookup
+	clutPaletteHW    [256]uint32 // Raw 0x00RRGGBB values as written by guest
+	palIndex         uint32      // Auto-incrementing palette write index
+	clutFrame        []byte      // Conversion buffer (width*height*4 RGBA32)
+	clutCacheValid   bool
+	clutPaletteDirty bool
+	clutSourceDirty  bool
+	fbBase           uint32    // Framebuffer base address in bus memory
+	clutWarnOnce     sync.Once // Rate-limit out-of-range warnings
+	clutWarnFrame    uint64    // Last frame that emitted an out-of-range CLUT warning
+	clutWarned       bool
 }
 
 // VideoMode defines resolution and buffer parameters for a display mode
@@ -778,6 +781,8 @@ func (chip *VideoChip) SetBusMemory(mem []byte) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.busMemory = mem
+	chip.clutCacheValid = false
+	chip.clutSourceDirty = true
 	chip.updateFramebufferErrLocked()
 }
 
@@ -785,6 +790,7 @@ func (chip *VideoChip) invalidateBusMemoryWriteLocked(addr uint32, size uint32) 
 	if size == 0 {
 		return
 	}
+	chip.markCLUTSourceDirtyForWriteLocked(addr, size)
 	if chip.invalidateBusMemoryWriteHook != nil {
 		chip.invalidateBusMemoryWriteHook(addr, size)
 	}
@@ -811,6 +817,8 @@ func (chip *VideoChip) SetDirectVRAM(slice []byte) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.directVRAM = slice
+	chip.clutCacheValid = false
+	chip.clutSourceDirty = true
 	chip.updateFramebufferErrLocked()
 }
 
@@ -823,6 +831,7 @@ func (chip *VideoChip) setPaletteEntry(index uint8, hwVal uint32) {
 	b := uint8(hwVal & 0xFF)
 	// Pack as LE RGBA: R at byte 0, G at byte 1, B at byte 2, A at byte 3
 	chip.clutPalette[index] = uint32(r) | uint32(g)<<8 | uint32(b)<<16 | 0xFF000000
+	chip.clutPaletteDirty = true
 }
 
 func (chip *VideoChip) SetPaletteEntry(index uint8, hwVal uint32) {
@@ -841,6 +850,8 @@ func (chip *VideoChip) convertCLUT8Frame() {
 	// Ensure clutFrame is allocated
 	if len(chip.clutFrame) != frameSize {
 		chip.clutFrame = make([]byte, frameSize)
+		chip.clutCacheValid = false
+		chip.clutSourceDirty = true
 	}
 
 	fb := chip.fbBase
@@ -854,9 +865,15 @@ func (chip *VideoChip) convertCLUT8Frame() {
 				fb, uint64(fb)+pixelCount, len(chip.busMemory))
 		}
 		clear(chip.clutFrame)
+		chip.clutCacheValid = false
 		return
 	}
 	chip.framebufferErr.Store(false)
+
+	cacheable := chip.clutFrameCacheableLocked(mode)
+	if cacheable && chip.clutCacheValid && !chip.clutPaletteDirty && !chip.clutSourceDirty {
+		return
+	}
 
 	start := uint64(fb)
 	end := start + pixelCount
@@ -866,6 +883,43 @@ func (chip *VideoChip) convertCLUT8Frame() {
 		rgba := chip.clutPalette[src[i]]
 		off := i * BYTES_PER_PIXEL
 		*(*uint32)(unsafe.Pointer(&dst[off])) = rgba
+	}
+	if cacheable {
+		chip.clutCacheValid = true
+		chip.clutPaletteDirty = false
+		chip.clutSourceDirty = false
+	} else {
+		chip.clutCacheValid = false
+	}
+}
+
+func (chip *VideoChip) clutFrameCacheableLocked(mode VideoMode) bool {
+	if chip.directVRAM != nil || chip.busMemory == nil {
+		return false
+	}
+	pixelCount := uint64(mode.width * mode.height)
+	start := uint64(chip.fbBase)
+	end := start + pixelCount
+	return chip.fbBase >= VRAM_START &&
+		chip.fbBase < VRAM_START+VRAM_SIZE &&
+		end <= uint64(VRAM_START+VRAM_SIZE)
+}
+
+func (chip *VideoChip) markCLUTSourceDirtyForWriteLocked(addr uint32, size uint32) {
+	if !chip.clutMode.Load() || size == 0 {
+		return
+	}
+	mode := VideoModes[chip.currentMode]
+	start := uint64(chip.fbBase)
+	end := start + uint64(mode.width*mode.height)
+	writeStart := uint64(addr)
+	writeEnd := writeStart + uint64(size)
+	if writeEnd < writeStart {
+		chip.clutSourceDirty = true
+		return
+	}
+	if writeStart < end && writeEnd > start {
+		chip.clutSourceDirty = true
 	}
 }
 
@@ -1230,15 +1284,13 @@ func (chip *VideoChip) refreshLoop() {
 
 	   Every tick it:
 	   1. Checks if the video output is enabled.
-	   2. Uses lock-free atomic check to see if any tiles are dirty.
-	   3. If content is present, copies dirty tiles from front buffer to back buffer.
-	   4. Swaps the front and back buffers and increments the frame counter.
-	   5. Sends the updated frame to the display output.
-	   6. If no content exists but a splash image is available, it displays the splash image.
+	   2. Advances frame-timed copper state when the compositor is not driving scanlines.
+	   3. Runs any pending blitter operation so IRQ state is visible within one tick.
+	   4. Leaves dirty-region ownership to the compositor.
 
 	   Thread Safety:
-	   Uses lock-free atomic bitmap for dirty checking. Mutex is only acquired
-	   when buffer operations are needed.
+	   Mutex hold time is bounded to guest-visible timing state and blitter execution.
+	   Frame presentation is handled by the compositor through GetFrame/FinishFrame.
 	*/
 
 	ticker := time.NewTicker(REFRESH_INTERVAL)
@@ -1269,85 +1321,14 @@ func (chip *VideoChip) refreshLoop() {
 				continue
 			}
 
-			// Minimize mutex hold time: do state updates under lock, then release before slow I/O
 			chip.mu.Lock()
 			mode := VideoModes[chip.currentMode]
-			// Only run copper if compositor isn't managing it per-scanline
 			if !chip.copperManagedByCompositor {
 				chip.advanceCopperFrameLocked(mode)
 			}
 			chip.runBlitterLocked(mode)
-
-			// Lock-free check: skip mutex if no dirty tiles
-			hasDirty := chip.hasDirtyTiles()
-			hasContent := chip.hasContent.Load()
-			var frameToSend []byte
-
-			if hasContent {
-				if hasDirty {
-					tileW := int(chip.tileWidth)
-					tileH := int(chip.tileHeight)
-
-					// Atomically get and clear dirty bitmap
-					dirtySnapshot := chip.clearDirtyBitmap()
-
-					// Process dirty tiles from atomic bitmap
-					for wordIdx, bits := range dirtySnapshot {
-						if bits == 0 {
-							continue
-						}
-						for bitIdx := range DIRTY_BITS_PER_WORD {
-							if bits&(1<<uint(bitIdx)) == 0 {
-								continue
-							}
-							// Calculate tile coordinates
-							tileIndex := wordIdx*DIRTY_BITS_PER_WORD + bitIdx
-							tileX := tileIndex % DIRTY_GRID_COLS
-							tileY := tileIndex / DIRTY_GRID_COLS
-
-							// Calculate pixel coordinates
-							startX := tileX * tileW
-							startY := tileY * tileH
-							endX := startX + tileW
-							endY := startY + tileH
-
-							// Clamp to screen bounds
-							if endX > mode.width {
-								endX = mode.width
-							}
-							if endY > mode.height {
-								endY = mode.height
-							}
-
-							// Copy tile from front to back buffer
-							// Pre-compute copyLen (constant for this tile)
-							copyLen := (endX - startX) * BYTES_PER_PIXEL
-							// Pre-compute initial offset and stride
-							srcOffset := (startY * mode.bytesPerRow) + (startX * BYTES_PER_PIXEL)
-							// Validate bounds once before the loop
-							maxOffset := srcOffset + (endY-startY-1)*mode.bytesPerRow + copyLen
-							if maxOffset <= len(chip.frontBuffer) {
-								for y := startY; y < endY; y++ {
-									copy(chip.backBuffer[srcOffset:srcOffset+copyLen],
-										chip.frontBuffer[srcOffset:srcOffset+copyLen])
-									srcOffset += mode.bytesPerRow
-								}
-							}
-						}
-					}
-
-					chip.frontBuffer, chip.backBuffer = chip.backBuffer, chip.frontBuffer
-					chip.frameCounter += FRAME_INCREMENT
-				}
-				frameToSend = chip.frontBuffer
-			} else if chip.splashBuffer != nil {
-				frameToSend = chip.splashBuffer
-			}
+			chip.frameCounter += FRAME_INCREMENT
 			chip.mu.Unlock()
-
-			// Note: Frame output is handled by the compositor, which calls GetFrame()
-			// VideoChip no longer sends directly to output
-			_ = frameToSend // Buffer management still happens, compositor reads via GetFrame()
 		}
 	}
 }
@@ -2383,7 +2364,7 @@ func (chip *VideoChip) blitLineLocked(mode VideoMode) {
 		} else {
 			stride = int(chip.defaultStrideBPP(base, mode.width, bpp, mode))
 		}
-		// No viewport clipping in extended mode — the caller must provide
+		// No viewport clipping in extended mode; the caller must provide
 		// pre-clipped coordinates. Pixel writes are still bounds-checked
 		// by blitWritePixelLocked/blitWrite8Locked against VRAM/buffer limits.
 		clipW = 0x7FFF
@@ -3227,6 +3208,7 @@ func (chip *VideoChip) HandleWrite8(addr uint32, value uint8) {
 		offset := addr - BUFFER_OFFSET
 		if offset < uint32(len(chip.frontBuffer)) {
 			chip.frontBuffer[offset] = value
+			chip.markCLUTSourceDirtyForWriteLocked(addr, 1)
 			mode := VideoModes[chip.currentMode]
 			pixelIndex := int(offset) / BYTES_PER_PIXEL
 			x := pixelIndex % mode.width
@@ -3274,6 +3256,7 @@ func (chip *VideoChip) handleVRAMWriteLocked(addr uint32, value uint32) {
 		mode := VideoModes[chip.currentMode]
 		// VRAM pixels are always stored as little-endian RGBA bytes.
 		binary.LittleEndian.PutUint32(chip.frontBuffer[offset:], value)
+		chip.markCLUTSourceDirtyForWriteLocked(addr, BYTES_PER_PIXEL)
 
 		startPixel := offset / BYTES_PER_PIXEL
 		startX := int(startPixel) % mode.width
@@ -3334,6 +3317,8 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 				chip.frontBuffer = make([]byte, mode.totalSize)
 				chip.backBuffer = make([]byte, mode.totalSize)
 			}
+			chip.clutCacheValid = false
+			chip.clutSourceDirty = true
 			chip.initialiseDirtyGrid(mode)
 			if chip.onResolutionChange != nil {
 				chip.onResolutionChange(mode.width, mode.height)
@@ -3423,9 +3408,14 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 				chip.clutFrame = make([]byte, frameSize)
 			}
 		}
+		chip.clutCacheValid = false
+		chip.clutSourceDirty = true
+		chip.clutPaletteDirty = true
 		chip.updateFramebufferErrLocked()
 	case VIDEO_FB_BASE:
 		chip.fbBase = value
+		chip.clutCacheValid = false
+		chip.clutSourceDirty = true
 		chip.updateFramebufferErrLocked()
 	default:
 		// Handle palette table direct writes (0xF0088-0xF0487)
@@ -3930,6 +3920,52 @@ func (chip *VideoChip) MarkRectDirty(x, y, w, h int) {
 	}
 }
 
+func (chip *VideoChip) TakeDirtyRects() []FrameDirtyRect {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+
+	mode := VideoModes[chip.currentMode]
+	tileW := int(chip.tileWidth)
+	tileH := int(chip.tileHeight)
+	if tileW <= 0 || tileH <= 0 {
+		return nil
+	}
+	snapshot := chip.clearDirtyBitmap()
+	var rects []FrameDirtyRect
+	for wordIdx, bits := range snapshot {
+		if bits == 0 {
+			continue
+		}
+		for bitIdx := range DIRTY_BITS_PER_WORD {
+			if bits&(1<<uint(bitIdx)) == 0 {
+				continue
+			}
+			tileIndex := wordIdx*DIRTY_BITS_PER_WORD + bitIdx
+			tileX := tileIndex % DIRTY_GRID_COLS
+			tileY := tileIndex / DIRTY_GRID_COLS
+			x := tileX * tileW
+			y := tileY * tileH
+			w := tileW
+			h := tileH
+			if x >= mode.width || y >= mode.height {
+				continue
+			}
+			if x+w > mode.width {
+				w = mode.width - x
+			}
+			if y+h > mode.height {
+				h = mode.height - y
+			}
+			rects = append(rects, FrameDirtyRect{X: x, Y: y, Width: w, Height: h})
+		}
+	}
+	return rects
+}
+
+func (chip *VideoChip) IsOpaqueFrame() bool {
+	return chip.clutMode.Load()
+}
+
 // GetOutput returns the video output interface for sharing with other video devices.
 func (chip *VideoChip) GetOutput() VideoOutput {
 	return chip.output
@@ -4028,11 +4064,33 @@ func (chip *VideoChip) ProcessScanline(y int) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
+	mode := VideoModes[chip.currentMode]
+	chip.processScanlineLocked(y, mode)
+}
+
+// ProcessScanlineRange implements ScanlineBatchAware for the single-source
+// compositor path. y1 is exclusive.
+func (chip *VideoChip) ProcessScanlineRange(y0, y1 int) {
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+
+	mode := VideoModes[chip.currentMode]
+	if y0 < 0 {
+		y0 = 0
+	}
+	if y1 > mode.height {
+		y1 = mode.height
+	}
+	for y := y0; y < y1; y++ {
+		chip.processScanlineLocked(y, mode)
+	}
+}
+
+func (chip *VideoChip) processScanlineLocked(y int, mode VideoMode) {
 	if !chip.copperEnabled || chip.bus == nil {
 		return
 	}
 
-	mode := VideoModes[chip.currentMode]
 	if y >= mode.height {
 		return
 	}

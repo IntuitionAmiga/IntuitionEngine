@@ -48,6 +48,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -78,8 +79,9 @@ const (
 )
 
 type registeredSource struct {
-	id     uint64
-	source VideoSource
+	id          uint64
+	source      VideoSource
+	lastEnabled bool
 }
 
 type videoScheduledTask struct {
@@ -222,11 +224,24 @@ type VideoCompositor struct {
 	lastHardwareLayers []CompositorFrameLayer
 	lastSnapshotFrame  uint64
 	lastSnapshot       []byte
+	blendJobs          chan blendStripJob
+	blendWorkerStop    chan struct{}
+	blendWorkerWG      sync.WaitGroup
+	softwareDirtyRects []FrameDirtyRect
+	forceFullFrame     bool
 
 	compositorRunning atomic.Bool
 	state             compositorState
 	stopRequested     bool
 	loopDone          chan struct{}
+}
+
+type blendStripJob struct {
+	srcFrame []byte
+	width    int
+	startY   int
+	endY     int
+	wg       *sync.WaitGroup
 }
 
 // NewVideoCompositor creates a new video compositor
@@ -259,7 +274,8 @@ func (c *VideoCompositor) RegisterSourceWithID(source VideoSource) uint64 {
 func (c *VideoCompositor) registerSourceLocked(source VideoSource) uint64 {
 	c.nextSourceID++
 	id := c.nextSourceID
-	c.sources = append(c.sources, registeredSource{id: id, source: source})
+	c.sources = append(c.sources, registeredSource{id: id, source: source, lastEnabled: source != nil && source.IsEnabled()})
+	c.forceFullFrame = true
 	c.sortSourcesByLayerLocked()
 	return id
 }
@@ -279,6 +295,7 @@ func (c *VideoCompositor) UnregisterSource(id uint64) bool {
 			copy(c.sources[i:], c.sources[i+1:])
 			c.sources[len(c.sources)-1] = registeredSource{}
 			c.sources = c.sources[:len(c.sources)-1]
+			c.forceFullFrame = true
 			return true
 		}
 	}
@@ -334,6 +351,7 @@ func (c *VideoCompositor) prepareResolutionLocked(width, height int) (DisplayCon
 	c.finalFrame = make([]byte, width*height*BYTES_PER_PIXEL)
 	c.outputBuf = make([]byte, width*height*BYTES_PER_PIXEL)
 	c.hardwareDisabled = false
+	c.forceFullFrame = true
 	c.clearHardwareSnapshotLocked()
 
 	if c.output != nil {
@@ -427,6 +445,7 @@ func (c *VideoCompositor) Close() error {
 	c.Stop()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.stopBlendWorkersLocked()
 	c.state = compositorClosed
 	c.sources = nil
 	return nil
@@ -454,8 +473,13 @@ func (c *VideoCompositor) composite() {
 		c.outputBuf = make([]byte, len(c.finalFrame))
 	}
 
-	for _, entry := range c.sources {
-		source := entry.source
+	for i := range c.sources {
+		source := c.sources[i].source
+		enabled := source.IsEnabled()
+		if enabled != c.sources[i].lastEnabled {
+			c.forceFullFrame = true
+			c.sources[i].lastEnabled = enabled
+		}
 		if ticker, ok := source.(FrameTicker); ok {
 			safeCall("TickFrame", ticker.TickFrame)
 		}
@@ -467,6 +491,8 @@ func (c *VideoCompositor) composite() {
 	frameID := c.frameCounter + 1
 
 	var outputFrame []byte
+	var outputRegions []FrameDirtyRect
+	forceFullFrame := c.forceFullFrame
 	var hwUpdate *CompositorFrameUpdate
 	if shouldOutput && useHardwareCompositor {
 		hwUpdate = &CompositorFrameUpdate{
@@ -484,10 +510,14 @@ func (c *VideoCompositor) composite() {
 			c.prevHasContent = true
 			copy(c.outputBuf, c.finalFrame)
 			outputFrame = c.outputBuf
+			if !forceFullFrame {
+				outputRegions = cloneFrameDirtyRects(c.softwareDirtyRects)
+			}
 		} else if c.prevHasContent {
 			c.prevHasContent = false
 			copy(c.outputBuf, c.finalFrame)
 			outputFrame = c.outputBuf
+			outputRegions = nil
 		}
 	}
 
@@ -511,19 +541,28 @@ func (c *VideoCompositor) composite() {
 				c.prevHasContent = true
 				copy(c.outputBuf, c.finalFrame)
 				outputFrame = c.outputBuf
+				if !forceFullFrame {
+					outputRegions = cloneFrameDirtyRects(c.softwareDirtyRects)
+				}
 			} else if c.prevHasContent {
 				c.prevHasContent = false
 				copy(c.outputBuf, c.finalFrame)
 				outputFrame = c.outputBuf
+				outputRegions = nil
 			}
 			c.mu.Unlock()
-			c.updateOutput(out, outputFrame)
+			c.updateOutput(out, outputFrame, outputRegions)
 		}
 	} else {
-		c.updateOutput(out, outputFrame)
+		c.updateOutput(out, outputFrame, outputRegions)
 	}
 	if cb != nil {
 		cb()
+	}
+	if shouldOutput {
+		c.mu.Lock()
+		c.forceFullFrame = false
+		c.mu.Unlock()
 	}
 }
 
@@ -624,6 +663,17 @@ func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, re
 	if copyBuffer {
 		buf = append([]byte(nil), buf...)
 	}
+	opaque := false
+	if sourceOpaque, ok := source.(OpaqueFrameSource); ok {
+		opaque = sourceOpaque.IsOpaqueFrame()
+	}
+	var dirtyRects []FrameDirtyRect
+	if dirtySource, ok := source.(DirtyFrameSource); ok {
+		dirtyRects = dirtySource.TakeDirtyRects()
+		if len(dirtyRects) > 0 {
+			dirtyRects = append([]FrameDirtyRect(nil), dirtyRects...)
+		}
+	}
 	layers = append(layers, CompositorFrameLayer{
 		SourceID:     registered.id,
 		SourceWidth:  srcW,
@@ -633,6 +683,8 @@ func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, re
 		DestWidth:    rect.w,
 		DestHeight:   rect.h,
 		Buffer:       buf,
+		Opaque:       opaque,
+		DirtyRects:   dirtyRects,
 	})
 	return layers, true
 }
@@ -705,16 +757,27 @@ func (c *VideoCompositor) collectScanlineAwareLayers(copyBuffers bool) ([]Compos
 		safeCall("StartFrame", e.sa.StartFrame)
 	}
 
-	// Process each scanline
-	// Lower layer sources (VideoChip with copper) process first to update state,
-	// then higher layer sources (VGA) render using the updated palette
-	for y := 0; y < maxSourceHeight; y++ {
-		for _, e := range entries {
-			sourceY := y
-			if e.height > 0 && sourceY >= e.height {
-				sourceY = e.height - 1
+	if len(entries) == 1 {
+		if batch, ok := entries[0].source.(ScanlineBatchAware); ok {
+			safeCall("ProcessScanlineRange", func() {
+				batch.ProcessScanlineRange(0, maxSourceHeight)
+			})
+		} else {
+			for y := 0; y < maxSourceHeight; y++ {
+				safeCallY("ProcessScanline", y, entries[0].sa.ProcessScanline)
 			}
-			safeCallY("ProcessScanline", sourceY, e.sa.ProcessScanline)
+		}
+	} else {
+		// Lower layer sources process first to update state, then higher layers
+		// render using the updated palette. This interleaving is guest-visible.
+		for y := 0; y < maxSourceHeight; y++ {
+			for _, e := range entries {
+				sourceY := y
+				if e.height > 0 && sourceY >= e.height {
+					sourceY = e.height - 1
+				}
+				safeCallY("ProcessScanline", sourceY, e.sa.ProcessScanline)
+			}
 		}
 	}
 
@@ -787,19 +850,152 @@ func (c *VideoCompositor) renderLayersSoftwareLocked(layers []CompositorFrameLay
 	for _, layer := range layers {
 		c.blendLayer(layer)
 	}
+	c.softwareDirtyRects = c.collectOutputDirtyRectsLocked(layers)
 }
 
-func (c *VideoCompositor) updateOutput(out VideoOutput, frame []byte) {
+func (c *VideoCompositor) ensureBlendWorkersLocked() {
+	if c.blendJobs != nil {
+		return
+	}
+	count := runtime.GOMAXPROCS(0)
+	if count < 1 {
+		count = 1
+	}
+	c.blendJobs = make(chan blendStripJob, count*2)
+	c.blendWorkerStop = make(chan struct{})
+	for range count {
+		c.blendWorkerWG.Add(1)
+		go func() {
+			defer c.blendWorkerWG.Done()
+			for {
+				select {
+				case job := <-c.blendJobs:
+					c.blendStrip(job.srcFrame, job.width, job.startY, job.endY)
+					job.wg.Done()
+				case <-c.blendWorkerStop:
+					return
+				}
+			}
+		}()
+	}
+}
+
+func (c *VideoCompositor) stopBlendWorkersLocked() {
+	if c.blendWorkerStop == nil {
+		return
+	}
+	close(c.blendWorkerStop)
+	c.blendWorkerWG.Wait()
+	c.blendWorkerStop = nil
+	c.blendJobs = nil
+}
+
+func (c *VideoCompositor) updateOutput(out VideoOutput, frame []byte, regions []FrameDirtyRect) {
 	if frame == nil || out == nil {
 		return
 	}
 	c.outputMu.Lock()
 	defer c.outputMu.Unlock()
 	if out.IsStarted() {
+		if len(regions) > 0 {
+			if regional, ok := out.(RegionUpdatingOutput); ok {
+				for _, rect := range regions {
+					pixels := copyFrameRegion(frame, c.frameWidth, c.frameHeight, rect)
+					if len(pixels) == 0 {
+						continue
+					}
+					if err := regional.UpdateRegion(rect.X, rect.Y, rect.Width, rect.Height, pixels); err != nil {
+						fmt.Printf("Compositor: Error updating region: %v\n", err)
+						return
+					}
+				}
+				return
+			}
+		}
 		if err := out.UpdateFrame(frame); err != nil {
 			fmt.Printf("Compositor: Error updating frame: %v\n", err)
 		}
 	}
+}
+
+func (c *VideoCompositor) collectOutputDirtyRectsLocked(layers []CompositorFrameLayer) []FrameDirtyRect {
+	if len(layers) == 0 {
+		return nil
+	}
+	rects := make([]FrameDirtyRect, 0)
+	for _, layer := range layers {
+		if layer.DirtyRects == nil {
+			return nil
+		}
+		for _, rect := range layer.DirtyRects {
+			scaled := scaleLayerDirtyRect(layer, rect)
+			if scaled.Width > 0 && scaled.Height > 0 {
+				rects = append(rects, scaled)
+			}
+		}
+	}
+	if len(rects) == 0 {
+		return nil
+	}
+	return rects
+}
+
+func scaleLayerDirtyRect(layer CompositorFrameLayer, rect FrameDirtyRect) FrameDirtyRect {
+	if layer.SourceWidth <= 0 || layer.SourceHeight <= 0 || layer.DestWidth <= 0 || layer.DestHeight <= 0 {
+		return FrameDirtyRect{}
+	}
+	x0 := layer.DestX + rect.X*layer.DestWidth/layer.SourceWidth
+	y0 := layer.DestY + rect.Y*layer.DestHeight/layer.SourceHeight
+	x1 := layer.DestX + ceilDivInt((rect.X+rect.Width)*layer.DestWidth, layer.SourceWidth)
+	y1 := layer.DestY + ceilDivInt((rect.Y+rect.Height)*layer.DestHeight, layer.SourceHeight)
+	if x1 <= x0 {
+		x1 = x0 + 1
+	}
+	if y1 <= y0 {
+		y1 = y0 + 1
+	}
+	return FrameDirtyRect{X: x0, Y: y0, Width: x1 - x0, Height: y1 - y0}
+}
+
+func ceilDivInt(n, d int) int {
+	if d <= 0 {
+		return 0
+	}
+	if n <= 0 {
+		return n / d
+	}
+	return (n + d - 1) / d
+}
+
+func copyFrameRegion(frame []byte, frameW, frameH int, rect FrameDirtyRect) []byte {
+	if frameW <= 0 || frameH <= 0 || rect.Width <= 0 || rect.Height <= 0 {
+		return nil
+	}
+	if rect.X < 0 || rect.Y < 0 || rect.X >= frameW || rect.Y >= frameH {
+		return nil
+	}
+	if rect.X+rect.Width > frameW {
+		rect.Width = frameW - rect.X
+	}
+	if rect.Y+rect.Height > frameH {
+		rect.Height = frameH - rect.Y
+	}
+	rowBytes := rect.Width * BYTES_PER_PIXEL
+	out := make([]byte, rowBytes*rect.Height)
+	dst := 0
+	for y := 0; y < rect.Height; y++ {
+		src := ((rect.Y+y)*frameW + rect.X) * BYTES_PER_PIXEL
+		copy(out[dst:dst+rowBytes], frame[src:src+rowBytes])
+		dst += rowBytes
+	}
+	return out
+}
+
+func cloneFrameDirtyRects(rects []FrameDirtyRect) []FrameDirtyRect {
+	if len(rects) == 0 {
+		return nil
+	}
+	return append([]FrameDirtyRect(nil), rects...)
 }
 
 var compositorSoftwarePresentationHook func()
@@ -847,7 +1043,15 @@ func (c *VideoCompositor) blendLayer(layer CompositorFrameLayer) {
 	}
 	if rect.x == 0 && rect.y == 0 && rect.w == c.frameWidth && rect.h == c.frameHeight &&
 		layer.SourceWidth == c.frameWidth && layer.SourceHeight == c.frameHeight {
+		if layer.Opaque {
+			c.copyOpaqueFrame1to1(layer.Buffer, layer.SourceWidth, layer.SourceHeight)
+			return
+		}
 		c.blendFrame1to1(layer.Buffer, layer.SourceWidth, layer.SourceHeight)
+		return
+	}
+	if layer.Opaque {
+		c.copyOpaqueFrameScaled(layer.Buffer, layer.SourceWidth, layer.SourceHeight, rect)
 		return
 	}
 	c.blendFrameScaled(layer.Buffer, layer.SourceWidth, layer.SourceHeight, rect)
@@ -888,16 +1092,50 @@ func (c *VideoCompositor) blendFrame1to1(srcFrame []byte, width, height int) {
 		return
 	}
 
+	c.ensureBlendWorkersLocked()
 	var wg sync.WaitGroup
 	for y0 := 0; y0 < height; y0 += stripHeight {
 		y1 := min(y0+stripHeight, height)
 		wg.Add(1)
-		go func(startY, endY int) {
-			defer wg.Done()
-			c.blendStrip(srcFrame, width, startY, endY)
-		}(y0, y1)
+		c.blendJobs <- blendStripJob{
+			srcFrame: srcFrame,
+			width:    width,
+			startY:   y0,
+			endY:     y1,
+			wg:       &wg,
+		}
 	}
 	wg.Wait()
+}
+
+func (c *VideoCompositor) copyOpaqueFrame1to1(srcFrame []byte, width, height int) {
+	rowBytes := width * BYTES_PER_PIXEL
+	for y := 0; y < height; y++ {
+		srcOffset := y * rowBytes
+		dstOffset := y * rowBytes
+		for x := 0; x < rowBytes; x += BYTES_PER_PIXEL {
+			srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcOffset+x]))
+			*(*uint32)(unsafe.Pointer(&c.finalFrame[dstOffset+x])) = srcPixel | 0xFF000000
+		}
+	}
+}
+
+func (c *VideoCompositor) copyOpaqueFrameScaled(srcFrame []byte, srcW, srcH int, rect scaleRect) {
+	dstW := c.frameWidth
+	srcRowBytes := srcW * BYTES_PER_PIXEL
+	dstRowBytes := dstW * BYTES_PER_PIXEL
+	for dy := range rect.h {
+		srcY := dy * srcH / rect.h
+		srcRowOffset := srcY * srcRowBytes
+		dstOffset := (rect.y+dy)*dstRowBytes + rect.x*BYTES_PER_PIXEL
+		for dx := range rect.w {
+			srcX := dx * srcW / rect.w
+			srcIdx := srcRowOffset + srcX*BYTES_PER_PIXEL
+			dstIdx := dstOffset + dx*BYTES_PER_PIXEL
+			srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcIdx]))
+			*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = srcPixel | 0xFF000000
+		}
+	}
 }
 
 // blendStrip blends rows [startY, endY) from srcFrame into finalFrame.

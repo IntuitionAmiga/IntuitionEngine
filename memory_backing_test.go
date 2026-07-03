@@ -406,3 +406,40 @@ func TestAllocateBacking_RejectsUnalignedRequest(t *testing.T) {
 		t.Fatalf("expected error for unaligned request")
 	}
 }
+
+func BenchmarkSparseBacking_Read32(b *testing.B) {
+	backing := NewSparseBacking(8 * bGiB)
+	backing.Write32(0x1_0000_1000, 0xAABBCCDD)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		_ = backing.Read32(0x1_0000_1000)
+	}
+}
+
+func BenchmarkSparseBacking_Write32(b *testing.B) {
+	backing := NewSparseBacking(8 * bGiB)
+	backing.Write32(0x1_0000_1000, 0)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := range b.N {
+		backing.Write32(0x1_0000_1000, uint32(i))
+	}
+}
+
+func BenchmarkSparseBacking_ReadBytes4K(b *testing.B) {
+	backing := NewSparseBacking(8 * bGiB)
+	addr := uint64(0x1_0000_0000)
+	src := make([]byte, MMU_PAGE_SIZE)
+	for i := range src {
+		src[i] = byte(i)
+	}
+	backing.WriteBytes(addr, src)
+	dst := make([]byte, MMU_PAGE_SIZE)
+	b.SetBytes(int64(len(dst)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		backing.ReadBytes(addr, dst)
+	}
+}

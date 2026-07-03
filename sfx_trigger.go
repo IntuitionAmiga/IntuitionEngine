@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"sync"
+	"sync/atomic"
 )
 
 // SFXTrigger implements the IE_SFX trigger-and-forget sample MMIO block.
@@ -16,6 +17,8 @@ type SFXTrigger struct {
 	channels [IE_SFX_CHANNELS]sfxChannel
 	mixMu    sync.Mutex
 	mix      float32
+	active   atomic.Bool
+	clearMix atomic.Bool
 }
 
 type sfxChannel struct {
@@ -100,13 +103,26 @@ func (s *SFXTrigger) HandleWrite8(addr uint32, value uint8) {
 }
 
 func (s *SFXTrigger) TickSample() {
+	if !s.active.Load() {
+		if s.clearMix.Swap(false) {
+			s.mixMu.Lock()
+			s.mix = 0
+			s.mixMu.Unlock()
+		}
+		return
+	}
 	var mixed float32
+	var anyActive bool
 	for i := range s.channels {
-		mixed += s.tickChannel(&s.channels[i])
+		sample, active := s.tickChannel(&s.channels[i])
+		mixed += sample
+		anyActive = anyActive || active
 	}
 	s.mixMu.Lock()
 	s.mix = clampF32(mixed, MIN_SAMPLE, MAX_SAMPLE)
 	s.mixMu.Unlock()
+	s.clearMix.Store(!anyActive && mixed != 0)
+	s.active.Store(anyActive)
 }
 
 func (s *SFXTrigger) MixSample() float32 {
@@ -138,6 +154,8 @@ func (s *SFXTrigger) Reset() {
 	s.mixMu.Lock()
 	s.mix = 0
 	s.mixMu.Unlock()
+	s.clearMix.Store(false)
+	s.active.Store(false)
 }
 
 func (s *SFXTrigger) channelFor(addr uint32) (int, uint32, bool) {
@@ -197,6 +215,8 @@ func (s *SFXTrigger) triggerLocked(c *sfxChannel) {
 		return
 	}
 	c.playing = true
+	s.clearMix.Store(false)
+	s.active.Store(true)
 }
 
 func (s *SFXTrigger) sampleRangeValid(ptr, length uint32) bool {
@@ -214,24 +234,24 @@ func (s *SFXTrigger) sampleRangeValid(ptr, length uint32) bool {
 	return end <= limit
 }
 
-func (s *SFXTrigger) tickChannel(c *sfxChannel) float32 {
+func (s *SFXTrigger) tickChannel(c *sfxChannel) (float32, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if !c.playing {
-		return 0
+		return 0, false
 	}
 	bytesPerSample := c.bytesPerSampleLocked()
 	endSample := c.playbackEndSampleLocked(bytesPerSample)
 	if endSample <= 0 {
 		c.playing = false
-		return 0
+		return 0, false
 	}
 
 	idx := int(c.cursor)
 	if idx >= endSample {
 		if !s.wrapLoopLocked(c, bytesPerSample) {
-			return 0
+			return 0, false
 		}
 		idx = int(c.cursor)
 		endSample = c.playbackEndSampleLocked(bytesPerSample)
@@ -251,7 +271,7 @@ func (s *SFXTrigger) tickChannel(c *sfxChannel) float32 {
 	if vol > 255 {
 		vol = 255
 	}
-	return raw * (vol / 255.0)
+	return raw * (vol / 255.0), c.playing
 }
 
 func (s *SFXTrigger) wrapLoopLocked(c *sfxChannel, bytesPerSample int) bool {

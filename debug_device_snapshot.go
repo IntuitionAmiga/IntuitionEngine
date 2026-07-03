@@ -385,6 +385,7 @@ func (chip *SoundChip) DebugSnapshot() (uint32, []byte, error) {
 	if chip == nil {
 		return soundChipSnapshotVersion, nil, fmt.Errorf("nil sound chip")
 	}
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	chip.postFXMu.Lock()
 	defer chip.postFXMu.Unlock()
@@ -444,6 +445,7 @@ func (chip *SoundChip) DebugRestoreSnapshot(version uint32, data []byte) error {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return err
 	}
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	chip.postFXMu.Lock()
 	defer chip.postFXMu.Unlock()

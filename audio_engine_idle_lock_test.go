@@ -42,6 +42,48 @@ func TestMIDITickSample_IdleNoLock(t *testing.T) {
 	requireTickSampleWithoutLocking(t, engine.mu.Lock, engine.mu.Unlock, engine.TickSample)
 }
 
+func TestPSGTickSample_IdleNoLock(t *testing.T) {
+	engine := NewPSGEngine(nil, SAMPLE_RATE)
+	requireTickSampleWithoutLocking(t, engine.mutex.Lock, engine.mutex.Unlock, engine.TickSample)
+}
+
+func TestPOKEYTickSample_IdleNoLock(t *testing.T) {
+	engine := NewPOKEYEngine(nil, SAMPLE_RATE)
+	requireTickSampleWithoutLocking(t, engine.mutex.Lock, engine.mutex.Unlock, engine.TickSample)
+}
+
+func TestAHXTickSample_IdleNoLock(t *testing.T) {
+	engine := NewAHXEngine(nil, SAMPLE_RATE)
+	requireTickSampleWithoutLocking(t, engine.mutex.Lock, engine.mutex.Unlock, engine.TickSample)
+}
+
+func TestMODTickSample_IdleNoLock(t *testing.T) {
+	engine := NewMODEngine(nil, SAMPLE_RATE)
+	requireTickSampleWithoutLocking(t, engine.mu.Lock, engine.mu.Unlock, engine.TickSample)
+}
+
+func TestArosAudioDMATickSample_IdleNoLock(t *testing.T) {
+	bus, err := NewMachineBusSized(64 * 1024 * 1024)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized: %v", err)
+	}
+	bus.SetBacking(NewSparseBacking(uint64(AROS_PROFILE_TOP)))
+	bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    uint64(AROS_PROFILE_TOP),
+		ActiveVisibleRAM: uint64(AROS_PROFILE_TOP),
+	})
+	dma, err := NewArosAudioDMA(bus, nil, nil)
+	if err != nil {
+		t.Fatalf("NewArosAudioDMA: %v", err)
+	}
+	requireTickSampleWithoutLocking(t, dma.mu.Lock, dma.mu.Unlock, dma.TickSample)
+}
+
+func TestSFXTriggerTickSample_IdleNoLock(t *testing.T) {
+	trigger := NewSFXTrigger()
+	requireTickSampleWithoutLocking(t, trigger.channels[0].mu.Lock, trigger.channels[0].mu.Unlock, trigger.TickSample)
+}
+
 func TestSIDDebugRestoreSnapshotRestoresPlayingGate(t *testing.T) {
 	engine := NewSIDEngine(nil, SAMPLE_RATE)
 	engine.enabled.Store(true)

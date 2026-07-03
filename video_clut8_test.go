@@ -138,6 +138,34 @@ func TestVideoChip_CLUT8_GetFrame(t *testing.T) {
 	clut8CheckPixel(t, frame, 3, 0x00, 0x00, 0xFF, 0xFF, "pixel 3 (blue)")
 }
 
+func TestVideoChip_CLUT8_CacheInvalidatesOnPaletteWrite(t *testing.T) {
+	bus := NewMachineBus()
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("failed to create video chip: %v", err)
+	}
+	video.AttachBus(bus)
+	video.HandleWrite(VIDEO_CTRL, 1)
+	video.hasContent.Store(true)
+	video.HandleWrite(VIDEO_PAL_TABLE+4, 0x00FF0000)
+	video.HandleWrite(VIDEO_COLOR_MODE, 1)
+	video.HandleWrite(VIDEO_FB_BASE, VRAM_START)
+	bus.memory[VRAM_START] = 1
+
+	frame := video.GetFrame()
+	clut8CheckPixel(t, frame, 0, 0xFF, 0x00, 0x00, 0xFF, "cached red")
+	if !video.clutCacheValid {
+		t.Fatal("CLUT8 cache was not marked valid after cacheable conversion")
+	}
+
+	video.HandleWrite(VIDEO_PAL_TABLE+4, 0x0000FF00)
+	frame = video.GetFrame()
+	clut8CheckPixel(t, frame, 0, 0x00, 0xFF, 0x00, 0xFF, "palette-updated green")
+	if video.clutPaletteDirty || video.clutSourceDirty {
+		t.Fatal("CLUT8 dirty flags were not cleared after reconversion")
+	}
+}
+
 func TestVideoChip_CLUT8_FinishFrame(t *testing.T) {
 	video, bus := newCLUT8TestRig(t)
 
@@ -278,6 +306,31 @@ func TestClipboardBridge_Headless(t *testing.T) {
 	resultLen = cb.HandleRead(CLIP_RESULT_LEN)
 	if resultLen != 128 {
 		t.Fatalf("Clipboard write result_len: got %d, want 128", resultLen)
+	}
+}
+
+func BenchmarkFinishFrame_CLUT8_Static(b *testing.B) {
+	bus := NewMachineBus()
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		b.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(bus)
+	video.HandleWrite(VIDEO_CTRL, 1)
+	video.hasContent.Store(true)
+	video.HandleWrite(VIDEO_PAL_TABLE+4, 0x00FF0000)
+	video.HandleWrite(VIDEO_COLOR_MODE, 1)
+	video.HandleWrite(VIDEO_FB_BASE, VRAM_START)
+	mode := VideoModes[video.currentMode]
+	for i := 0; i < mode.width*mode.height; i++ {
+		bus.memory[VRAM_START+uint32(i)] = 1
+	}
+	video.FinishFrame()
+
+	b.SetBytes(int64(mode.width * mode.height * BYTES_PER_PIXEL))
+	b.ResetTimer()
+	for range b.N {
+		video.FinishFrame()
 	}
 }
 

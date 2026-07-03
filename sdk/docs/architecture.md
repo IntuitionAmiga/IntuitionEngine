@@ -502,7 +502,7 @@ hard requirement: the JIT only *requires* SSE4.1, which it emits unconditionally
 for IE64 FINT (ROUNDSS). The amd64 backend detects this at runtime via CPUID; on a
 host without SSE4.1 `initJIT` (via `checkJITHostFeatures`) declines to enable the JIT
 and the CPU falls back to the interpreter rather than aborting, so plain `go run .` /
-`go build` at the default `GOAMD64=v1` works on any x86-64 CPU (older hosts simply run
+`go build` at the default `GOAMD64=v1` works on any x86-64 CPU (older hosts run
 interpreted). AVX2/BMI2/LZCNT paths are separately runtime-gated via `x86Host` and are
 never emitted unless the host supports them.
 
@@ -537,12 +537,18 @@ Interrupt Delivery" section of this manual for the full model.
   (`lowMemWindowBytes`). The actual `len(bus.memory)` is
   `min(autodetected TotalGuestRAM, busMemCap)` (main.go), so on a small host the
   window can be smaller than the cap. Addresses above the window resolve through
-  the bus's 64-bit physical path, backed by the `Backing` interface -- production
+  the bus's 64-bit physical path, backed by the `Backing` interface. Production
   IE64 boots on Linux/darwin bind high RAM via `MmapBacking`; `SparseBacking` is
-  the test implementation. SparseBacking uses an atomic page-pointer table:
-  missing pages read as zero, writes allocate pages with compare-and-swap, same-page
-  word operations read or write the page slice directly, and reset publishes a
-  fresh empty table. High physical addresses are supported for code fetch and for
+  the test implementation. SparseBacking uses a sparse two-level atomic page
+  table: missing pages read as zero, writes allocate leaves and pages with
+  compare-and-swap, same-page word operations read or write the page slice
+  directly, and reset publishes a fresh empty table. Hot RAM accesses load each
+  I/O bitmap snapshot once per word or long access. After mappings are sealed,
+  the bus reuses a quiescence-published snapshot pointer on the hot path; debug
+  access also has a quiescence-updated plain active mirror with the service
+  atomic retained as a backstop. M68K JIT invalidation is called through the
+  bus's cached invalidator when one is registered. High
+  physical addresses are supported for code fetch and for
   data / stack *operands* (the latter via the helper exit, including a high SP),
   with one caveat below.
 - **High-PC stack-op caveat**: a block *fetched from* high physical backing
@@ -961,12 +967,12 @@ VideoChip Mode7 honours the `BLT_FLAGS` BPP field: RGBA32 samples and writes 4-b
 
 ### Video Compositor
 
-The compositor collects immutable frame snapshots from all enabled video sources and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, both mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing. Desktop startup uses a 1920x1080 fullscreen presentation by default, and the x64 live-image launcher locks it fullscreen through `IE_LIVE_IMAGE=1`. Native sources keep their requested dimensions. The default native mode is 960x540 for exact 2x 1080p presentation. Video compositor default scale mode is stretch-fill; F11 toggles non-16:9 sources to aspect-fit. `Shift+F11` toggles fullscreen/windowed mode when that mode is not locked.
+The compositor collects immutable frame snapshots from all enabled video sources and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing. CLUT8 conversion is cached only when `fbBase` points at the VideoChip-visible VRAM window; direct RAM-backed framebuffer modes are converted every frame because guest CPU stores can bypass VideoChip dirty tracking. Desktop startup uses a 1920x1080 fullscreen presentation by default, and the x64 live-image launcher locks it fullscreen through `IE_LIVE_IMAGE=1`. Native sources keep their requested dimensions. The default native mode is 960x540 for exact 2x 1080p presentation. Video compositor default scale mode is stretch-fill; F11 toggles non-16:9 sources to aspect-fit. `Shift+F11` toggles fullscreen/windowed mode when that mode is not locked.
 
 Two rendering paths:
 
-1. **Scanline-aware path** - used when at least one enabled source implements `ScanlineAware`. The compositor advances scanline-capable sources in sorted layer order for each scanline, then blends all enabled sources in the global layer order. Opaque full-frame sources can sit below, between, or above scanline-aware sources without breaking copper/VGA per-scanline effects.
-2. **Full-frame fallback** - used when no enabled source is scanline-aware. It collects complete frames and blends them in sorted layer order. Same-size frame blending uses parallel goroutines with 60-line strips via `sync.WaitGroup`.
+1. **Scanline-aware path** - used when at least one enabled source implements `ScanlineAware`. The compositor advances scanline-capable sources in sorted layer order for each scanline, then blends all enabled sources in the global layer order. If exactly one source also implements `ScanlineBatchAware`, it advances the whole scanline range under one source lock. Multi-source scanline composition keeps per-scanline interleaving because that ordering is guest-visible.
+2. **Full-frame fallback** - used when no enabled source is scanline-aware. It collects complete frames and blends them in sorted layer order. Same-size frame blending uses persistent strip workers instead of spawning goroutines each frame. Sources can optionally report dirty rectangles; outputs that implement `RegionUpdatingOutput` receive region uploads, while other outputs keep the full-frame upload path. Sources marked `OpaqueFrameSource` can use a promotion-aware copy path.
 
 All-zero frame pixels are transparent; any nonzero alpha or RGB value is opaque. During compositing, zero-alpha nonzero-RGB pixels are promoted to opaque `0xFFRRGGBB` before they overwrite the destination. The compositor tick remains fixed at 60 Hz for guest VBlank compatibility; `GetRefreshRate()` reports the output backend rate, while `GetTickRate()` reports the compositor tick.
 
@@ -1073,9 +1079,11 @@ The SoundChip's global resonant filter (`0xF0820-0xF0830`) supports low-pass, ba
 
 ### Sample Generation Locking
 
-`ReadSample` advances registered sample tickers before mixing the same sample. `GenerateSample` then takes `chip.mu` only for channel-state mutation, channel mixing, register-visible smoothing state, and a post-processing configuration snapshot. SID mixer options, overdrive, the global filter, reverb, and the master normaliser run after the mutex is released using snapshotted configuration plus audio-thread-owned DSP state.
+`ReadSample` advances registered sample tickers before mixing the same sample. `GenerateSample` then takes `chip.mu` only for channel-state mutation, channel mixing, register-visible smoothing state, and a post-processing configuration snapshot. SID mixer options, overdrive, the global filter, reverb, and the master normaliser run after `chip.mu` is released. Their mutable DSP state is protected by `postFXMu`, which is also used by reset, debug snapshot, and restore.
 
-The master normaliser separates setter-owned configuration from audio-thread-owned dynamics. Configuration setters publish a generation counter; the audio thread applies pending envelope and lookahead resets before the next normaliser step. Register-driven engine synchronisation can batch SoundChip writes through `HandleRegisterWrites`, preserving write order while taking the chip mutex once. Idle playback paths for SID, TED, MIDI, MOD, AHX, and POKEY use atomic gates before taking their engine mutexes. POKEY event playback drains current-sample events through a reusable scratch buffer prepared when events are loaded.
+`ReadSamples(dst)` is the block-rendering API used by the OTO backend. It records each sample's ticker output and mixer contribution in order, then flushes pending segments of up to 64 samples under one channel-mix lock. Any register write or SoundChip setter reached from a ticker first flushes the pending segment, so single-threaded `ReadSamples` output matches the `ReadSample` loop. Concurrent CPU writes remain bounded by the segment size and are allowed to apply earlier than a sample-at-a-time interleaving.
+
+The master normaliser separates setter-owned configuration from audio-thread-owned dynamics. Configuration setters publish a generation counter; the audio thread applies pending envelope and lookahead resets before the next normaliser step. Register-driven engine synchronisation can batch SoundChip writes through `HandleRegisterWrites`, preserving write order while taking the chip mutex once. Idle playback paths for SID, TED, MIDI, MOD, AHX, POKEY, and SFX use atomic gates before taking their engine or channel mutexes. POKEY event playback drains current-sample events through a reusable scratch buffer prepared when events are loaded.
 
 ### Engine and Player Routing
 
@@ -1410,7 +1418,7 @@ graph LR
 | Goroutine | Clock Source | Rate | Synchronisation |
 |-----------|-------------|------|-----------------|
 | CPU execution | Free-running `for running.Load()` loop | As fast as Go scheduler allows | MMIO writes invoke I/O callbacks under per-chip `mu` |
-| VideoChip refresh | `time.NewTicker` | 60Hz | Copper + blitter + dirty-tile copy + buffer swap |
+| VideoChip refresh | `time.NewTicker` | 60Hz | VBlank timing, copper advancement, and blitter IRQ latency |
 | VGA render | `time.NewTicker` | 60Hz | Renders into triple-buffer slot, publishes via `sharedIdx.Swap()` |
 | ULA render | `time.NewTicker` | 60Hz | Same triple-buffer pattern |
 | TED render | `time.NewTicker` | 60Hz | Same triple-buffer pattern |

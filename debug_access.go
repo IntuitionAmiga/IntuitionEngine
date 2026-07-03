@@ -64,6 +64,7 @@ type DebugAccessService struct {
 	historyEnabled bool
 	instrumented   atomic.Bool
 	active         atomic.Bool
+	activeMirror   func(bool)
 }
 
 type AccessWatchpoint struct {
@@ -135,6 +136,26 @@ func (s *DebugAccessService) AnyActive(_ int) bool {
 	return s != nil && s.active.Load()
 }
 
+func (s *DebugAccessService) SetActiveMirror(fn func(bool)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.activeMirror = fn
+	active := s.active.Load()
+	s.mu.Unlock()
+	if fn != nil {
+		fn(active)
+	}
+}
+
+func (s *DebugAccessService) setActiveLocked(active bool) {
+	s.active.Store(active)
+	if s.activeMirror != nil {
+		s.activeMirror(active)
+	}
+}
+
 func (s *DebugAccessService) SetInstrumented(v bool) {
 	if s == nil {
 		return
@@ -161,7 +182,7 @@ func (s *DebugAccessService) guard(start, end uint64, perm AccessPerm, scope Gua
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.guards = append(s.guards, AccessGuard{Start: start, End: end, Perm: perm, Scope: scope, Once: once, Name: name})
-	s.active.Store(true)
+	s.setActiveLocked(true)
 }
 
 func (s *DebugAccessService) ClearGuards() {
@@ -170,7 +191,7 @@ func (s *DebugAccessService) ClearGuards() {
 	}
 	s.mu.Lock()
 	s.guards = nil
-	s.active.Store(len(s.watches) > 0 || s.historyEnabled)
+	s.setActiveLocked(len(s.watches) > 0 || s.historyEnabled)
 	s.mu.Unlock()
 }
 
@@ -190,7 +211,7 @@ func (s *DebugAccessService) ClearGuard(start, end uint64, scope GuardScope) int
 		kept = append(kept, guard)
 	}
 	s.guards = kept
-	s.active.Store(len(s.guards) > 0 || len(s.watches) > 0 || s.historyEnabled)
+	s.setActiveLocked(len(s.guards) > 0 || len(s.watches) > 0 || s.historyEnabled)
 	return removed
 }
 
@@ -224,12 +245,12 @@ func (s *DebugAccessService) Watch(cpuID int, addr uint64, width int, typ Watchp
 		if wp.CPUID == cpuID && wp.Address == addr {
 			wp.Width = width
 			wp.Type = typ
-			s.active.Store(true)
+			s.setActiveLocked(true)
 			return
 		}
 	}
 	s.watches = append(s.watches, AccessWatchpoint{CPUID: cpuID, Address: addr, Width: width, Type: typ})
-	s.active.Store(true)
+	s.setActiveLocked(true)
 }
 
 func (s *DebugAccessService) ClearWatch(cpuID int, addr uint64) {
@@ -244,7 +265,7 @@ func (s *DebugAccessService) ClearWatch(cpuID int, addr uint64) {
 			i--
 		}
 	}
-	s.active.Store(len(s.guards) > 0 || len(s.watches) > 0 || s.historyEnabled)
+	s.setActiveLocked(len(s.guards) > 0 || len(s.watches) > 0 || s.historyEnabled)
 }
 
 func (s *DebugAccessService) ClearWatchesForCPU(cpuID int) {
@@ -259,7 +280,7 @@ func (s *DebugAccessService) ClearWatchesForCPU(cpuID int) {
 			i--
 		}
 	}
-	s.active.Store(len(s.guards) > 0 || len(s.watches) > 0 || s.historyEnabled)
+	s.setActiveLocked(len(s.guards) > 0 || len(s.watches) > 0 || s.historyEnabled)
 }
 
 func (s *DebugAccessService) OnRead(cpuID int, addr uint64, width int) {
@@ -308,7 +329,7 @@ func (s *DebugAccessService) onAccess(cpuID int, addr uint64, width int, kind Ac
 				guardHit = true
 				if guard.Once {
 					s.guards = append(s.guards[:i], s.guards[i+1:]...)
-					s.active.Store(len(s.guards) > 0 || len(s.watches) > 0 || s.historyEnabled)
+					s.setActiveLocked(len(s.guards) > 0 || len(s.watches) > 0 || s.historyEnabled)
 				}
 				break
 			}
@@ -371,7 +392,7 @@ func (s *DebugAccessService) EnableHistory(size int) {
 	s.historyLen = 0
 	s.historySeq = 0
 	s.historyEnabled = true
-	s.active.Store(true)
+	s.setActiveLocked(true)
 	s.mu.Unlock()
 }
 
@@ -384,7 +405,7 @@ func (s *DebugAccessService) DisableHistory() {
 	s.historyStart = 0
 	s.historyLen = 0
 	s.historyEnabled = false
-	s.active.Store(len(s.guards) > 0 || len(s.watches) > 0)
+	s.setActiveLocked(len(s.guards) > 0 || len(s.watches) > 0)
 	s.mu.Unlock()
 }
 

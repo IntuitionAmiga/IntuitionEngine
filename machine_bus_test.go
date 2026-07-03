@@ -359,6 +359,78 @@ func TestBusMapSnapshot_ImmutableAcrossMappingUpdates(t *testing.T) {
 	}
 }
 
+func TestBusMapSnapshot_CachedAfterSeal(t *testing.T) {
+	bus := NewMachineBus()
+	const addr uint32 = 0xF5C00
+
+	bus.MapIO(addr, addr+3, func(addr uint32) uint32 { return 0x55667788 }, nil)
+	published := bus.mapState.Load()
+	if published == nil {
+		t.Fatal("expected published snapshot before seal")
+	}
+
+	bus.SealMappings()
+	if !bus.mappingsSealed() {
+		t.Fatal("SealMappings did not mark mappings sealed")
+	}
+	if got := bus.currentMapSnapshot(); got != published {
+		t.Fatal("sealed bus did not reuse the published snapshot pointer")
+	}
+
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("MapIO after SealMappings did not panic")
+			}
+		}()
+		bus.MapIO(addr+0x100, addr+0x103, nil, nil)
+	}()
+
+	bus.UnsealMappings()
+	if bus.mappingsSealed() {
+		t.Fatal("UnsealMappings left mappings sealed")
+	}
+	bus.MapIOByte(addr, addr+3, func(addr uint32, value uint8) {})
+	updated := bus.mapState.Load()
+	if updated == published {
+		t.Fatal("mapping update after unseal reused sealed snapshot")
+	}
+	if got := bus.currentMapSnapshot(); got != updated {
+		t.Fatal("unsealed bus did not return the republished snapshot")
+	}
+}
+
+func TestDebugGate_PlainBoolMirror(t *testing.T) {
+	bus := NewMachineBus()
+	svc := NewDebugAccessService()
+	bus.SetDebugAccessService(svc)
+	if bus.debugAccessActiveMirror.Load() {
+		t.Fatal("inactive debug service set active mirror")
+	}
+
+	svc.EnableHistory(8)
+	if !bus.debugAccessActiveMirror.Load() {
+		t.Fatal("history enable did not update bus debug active mirror")
+	}
+	bus.Write32(0x4000, 0xAABBCCDD)
+	ev, ok := svc.LastAccess(AccessWrite, 0x4000)
+	if !ok {
+		t.Fatal("debug fast path did not record RAM write")
+	}
+	if ev.Width != 4 || ev.NewValue != 0xAABBCCDD {
+		t.Fatalf("debug write event = %+v, want width=4 new=0xAABBCCDD", ev)
+	}
+
+	svc.DisableHistory()
+	if bus.debugAccessActiveMirror.Load() {
+		t.Fatal("history disable did not clear bus debug active mirror")
+	}
+	svc.active.Store(true)
+	if !bus.debugAccessActive() {
+		t.Fatal("atomic debug active backstop was not honoured")
+	}
+}
+
 func TestRead32_StraddlingRAMAndMMIOUsesByteDispatcher(t *testing.T) {
 	bus := NewMachineBus()
 	const base uint32 = 0xF5BFD
@@ -814,5 +886,37 @@ func TestWithFaultVariants(t *testing.T) {
 	ok = bus.Write32WithFault(0x02000000, 0)
 	if ok {
 		t.Error("Write32WithFault returned true for out-of-bounds address")
+	}
+}
+
+func BenchmarkBusRead32_RAM(b *testing.B) {
+	bus := NewMachineBus()
+	const addr uint32 = 0x4000
+	bus.Write32(addr, 0xAABBCCDD)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		_ = bus.Read32(addr)
+	}
+}
+
+func BenchmarkBusWrite32_RAM(b *testing.B) {
+	bus := NewMachineBus()
+	const addr uint32 = 0x4000
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := range b.N {
+		bus.Write32(addr, uint32(i))
+	}
+}
+
+func BenchmarkBusRead32_IOPage(b *testing.B) {
+	bus := NewMachineBus()
+	const addr uint32 = 0xF6000
+	bus.MapIO(addr, addr+3, func(addr uint32) uint32 { return 0x11223344 }, nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		_ = bus.Read32(addr)
 	}
 }

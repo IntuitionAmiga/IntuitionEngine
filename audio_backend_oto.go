@@ -99,9 +99,7 @@ func (op *OtoPlayer) Read(p []byte) (n int, err error) {
 	}
 	samples := op.sampleBuf[:numSamples]
 
-	for i := range numSamples {
-		samples[i] = chip.ReadSample()
-	}
+	chip.ReadSamples(samples)
 
 	copy(p[:fullBytes], (*[1 << 30]byte)(unsafe.Pointer(&samples[0]))[:fullBytes])
 	clear(p[fullBytes:])

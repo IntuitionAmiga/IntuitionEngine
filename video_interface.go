@@ -91,6 +91,25 @@ type VideoOutput interface {
 	GetRefreshRate() int
 }
 
+type FrameDirtyRect struct {
+	X      int
+	Y      int
+	Width  int
+	Height int
+}
+
+type RegionUpdatingOutput interface {
+	UpdateRegion(x, y, width, height int, pixels []byte) error
+}
+
+type DirtyFrameSource interface {
+	TakeDirtyRects() []FrameDirtyRect
+}
+
+type OpaqueFrameSource interface {
+	IsOpaqueFrame() bool
+}
+
 // CompositorFrameLayer is one ordered native-resolution source layer in a
 // complete compositor frame. The buffer is RGBA and must contain at least
 // SourceWidth*SourceHeight*4 bytes.
@@ -103,6 +122,8 @@ type CompositorFrameLayer struct {
 	DestWidth    int
 	DestHeight   int
 	Buffer       []byte
+	Opaque       bool
+	DirtyRects   []FrameDirtyRect
 }
 
 // CompositorFrameUpdate describes a complete compositor frame for outputs that
@@ -186,6 +207,13 @@ type ScanlineAware interface {
 	ProcessScanline(y int)
 	// FinishFrame completes the frame and returns the rendered result
 	FinishFrame() []byte
+}
+
+// ScanlineBatchAware is an optional acceleration for sources whose scanline
+// state can be advanced over a contiguous range without interleaving another
+// source between scanlines.
+type ScanlineBatchAware interface {
+	ProcessScanlineRange(y0, y1 int)
 }
 
 // ScanlineCompositingSource optionally narrows ScanlineAware sources to the

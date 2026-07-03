@@ -29,9 +29,19 @@ If at least one enabled source implements `ScanlineAware`, the compositor uses t
 
 This preserves copper-style per-scanline effects while allowing opaque sources below, between, or above scanline-aware layers.
 
+If exactly one scanline-aware source also implements `ScanlineBatchAware`, the compositor calls `ProcessScanlineRange(0, height)` once instead of taking the source lock once per scanline. The multi-source path intentionally keeps per-scanline interleaving because palette and register side effects can be visible to higher layers.
+
 ## Alpha Mask
 
 Alpha is a binary mask. Alpha 0 is transparent. Any nonzero alpha, including partial alpha, replaces the destination pixel. Real alpha blending, multi-format pixels, bilinear filtering, and blend-mode work are future pipeline tasks.
+
+Sources that implement `OpaqueFrameSource` may use a faster copy path. That path still promotes pixels with zero alpha to `0xFFRRGGBB`, so it must only be used by sources whose frame is known to contain no transparent holes.
+
+## Dirty Regions
+
+Sources can implement `DirtyFrameSource` to atomically take source-space rectangles changed since the previous frame. The compositor scales those rectangles into presentation coordinates while still rendering the full software frame. If the output implements `RegionUpdatingOutput`, only those regions are uploaded. Backends without region updates continue to receive `UpdateFrame`.
+
+IEVideoChip reports dirty rectangles by atomically taking and clearing its tile bitmap in one operation. CLUT8 VideoChip frames are marked opaque because palette conversion writes alpha 255 for every pixel. RAM-backed CLUT8 framebuffers are not cached because guest CPU stores can bypass VideoChip dirty tracking.
 
 ## Timing
 
@@ -45,6 +55,8 @@ to advance video work deterministically without sleeping on wall-clock
 goroutines.
 
 The frame callback fires exactly once per composite pass, including all-idle frames. A transition from visible content to no content pushes one cleared frame to avoid stale output; repeated empty frames do not spam the backend.
+
+Same-size software blending is split into 60-line strips. The compositor owns a persistent worker pool for those strips and shuts it down from `Close`, avoiding per-frame goroutine allocation on the common 1:1 path.
 
 ## Resolution
 

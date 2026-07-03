@@ -247,7 +247,7 @@ const (
 	REVERB_DECAY = 0xF0A54 // 0-255 → 0.1-0.99 (tail length)
 
 	AUDIO_CTRL    = 0xF0800                                 // Audio control register: bit 0=enable, bit 1=freeze
-	AUDIO_REG_END = FLEX_CH_BASE + (FLEX_CH_STRIDE * 4) - 1 // 0xF0B7F — bus-mapped channels only
+	AUDIO_REG_END = FLEX_CH_BASE + (FLEX_CH_STRIDE * 4) - 1 // 0xF0B7F, bus-mapped channels only
 
 	SAMPLE_RATE = 44100 // Audio sample rate
 )
@@ -915,6 +915,17 @@ type sampleMixerListHolder struct {
 type sampleTapHolder struct {
 	tap func(float32)
 }
+
+const audioBlockSegmentMax = 64
+
+type audioBlockState struct {
+	mu           sync.Mutex
+	dst          []float32
+	mixerCapture []float32
+	pendingStart int
+	pendingEnd   int
+}
+
 type CombFilter struct {
 	buffer []float32                 // Delay line buffer
 	decay  float32                   // Decay coefficient
@@ -957,8 +968,9 @@ type SoundChip struct {
 	sampleMixer   atomic.Value
 	sampleMixers  map[string]SampleMixer
 	sampleTap     atomic.Value // Optional tap callback fed with each generated sample
-	audioFrozen   atomic.Bool  // When true, ReadSample returns 0 (hard pause)
-	sfx           *SFXTrigger  // Independent trigger-and-forget sample mixer
+	audioBlock    atomic.Pointer[audioBlockState]
+	audioFrozen   atomic.Bool // When true, ReadSample returns 0 (hard pause)
+	sfx           *SFXTrigger // Independent trigger-and-forget sample mixer
 
 	snVoices [4]Channel // Native SN76489 voices, independent from flex channels.
 
@@ -1331,6 +1343,8 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	//
 	// ------------------------------------------------------------------------------
 
+	chip.flushPendingAudioBlock()
+
 	// Thread safety: This method holds the chip mutex during execution.
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
@@ -1343,6 +1357,7 @@ func (chip *SoundChip) HandleRegisterWrites(writes []AudioRegisterWrite) {
 	if len(writes) == 0 {
 		return
 	}
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	for _, write := range writes {
@@ -1779,6 +1794,7 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 // 32-bit value is assembled from the shadow and applied via applyFlexRegister.
 // For non-flex addresses, delegates directly to HandleRegisterWrite.
 func (chip *SoundChip) HandleRegisterWrite8(addr uint32, value uint8) {
+	chip.flushPendingAudioBlock()
 	// Non-flex addresses: delegate to existing handler (works fine for byte values)
 	chIndex, offset, ok := flexChannelFromAddr(addr)
 	if !ok {
@@ -1797,7 +1813,7 @@ func (chip *SoundChip) HandleRegisterWrite8(addr uint32, value uint8) {
 	chip.flexShadow[shadowIdx] = value
 
 	if offset&3 == 3 {
-		// Last byte of a 4-byte LE write sequence — assemble and apply
+		// Last byte of a 4-byte LE write sequence: assemble and apply.
 		regBase := offset &^ 3
 		baseIdx := chIndex*FLEX_CH_STRIDE + regBase
 		fullValue := uint32(chip.flexShadow[baseIdx]) |
@@ -2861,14 +2877,17 @@ func (chip *SoundChip) GenerateSample() float32 {
 	// Returns a mono sample in the range [-1.0, 1.0]
 	// ------------------------------------------------------------------------------
 
-	// Lock-free early exit when audio is disabled
+	return chip.generateSampleWithMixer(chip.captureMixerSample())
+}
+
+func (chip *SoundChip) generateSampleWithMixer(mixerContribution float32) float32 {
 	if !chip.enabled.Load() {
 		return 0
 	}
 
 	chip.mu.Lock()
 	chip.postFXMu.Lock()
-	sample, snap := chip.mixChannelsAndSnapshotPostFXLocked()
+	sample, snap := chip.mixChannelsAndSnapshotPostFXLocked(mixerContribution)
 	chip.mu.Unlock()
 
 	sample = chip.applyPostFXLocked(sample, snap)
@@ -2876,7 +2895,7 @@ func (chip *SoundChip) GenerateSample() float32 {
 	return clampF32(sample, MIN_SAMPLE, MAX_SAMPLE)
 }
 
-func (chip *SoundChip) mixChannelsAndSnapshotPostFXLocked() (float32, soundPostFXSnapshot) {
+func (chip *SoundChip) mixChannelsAndSnapshotPostFXLocked(mixerContribution float32) (float32, soundPostFXSnapshot) {
 	const globalFilterSmooth = 0.02
 
 	var sum float32
@@ -2906,15 +2925,8 @@ func (chip *SoundChip) mixChannelsAndSnapshotPostFXLocked() (float32, soundPostF
 		// When multiple channels are active, average their samples.
 		sample = sum / float32(activeCount)
 	}
-	if chip.sfx != nil {
-		sample = clampF32(sample+chip.sfx.MixSample(), MIN_SAMPLE, MAX_SAMPLE)
-	}
-	if holder, ok := chip.sampleMixer.Load().(*sampleMixerListHolder); ok {
-		for _, mixer := range holder.mixers {
-			if mixer != nil {
-				sample = clampF32(sample+mixer.MixSample(), MIN_SAMPLE, MAX_SAMPLE)
-			}
-		}
+	if mixerContribution != 0 {
+		sample = clampF32(sample+mixerContribution, MIN_SAMPLE, MAX_SAMPLE)
 	}
 
 	chip.filterCutoff += (chip.filterCutoffTarget - chip.filterCutoff) * globalFilterSmooth
@@ -3103,6 +3115,53 @@ func (chip *SoundChip) ReadSample() float32 {
 	if chip.audioFrozen.Load() {
 		return 0
 	}
+	chip.tickSample()
+	sample := chip.generateSampleWithMixer(chip.captureMixerSample())
+	chip.tapSample(sample)
+	return sample
+}
+
+func (chip *SoundChip) ReadSamples(dst []float32) int {
+	if len(dst) == 0 {
+		return 0
+	}
+	if chip.audioFrozen.Load() {
+		clear(dst)
+		return len(dst)
+	}
+	state := &audioBlockState{
+		dst:          dst,
+		mixerCapture: make([]float32, len(dst)),
+	}
+	chip.audioBlock.Store(state)
+	defer func() {
+		chip.flushAudioBlockState(state)
+		chip.audioBlock.CompareAndSwap(state, nil)
+	}()
+
+	for i := range dst {
+		if chip.audioFrozen.Load() {
+			chip.flushAudioBlockState(state)
+			dst[i] = 0
+			continue
+		}
+		chip.tickSample()
+		state.mu.Lock()
+		if state.pendingEnd == state.pendingStart {
+			state.pendingStart = i
+		}
+		state.mixerCapture[i] = chip.captureMixerSample()
+		state.pendingEnd = i + 1
+		shouldFlush := state.pendingEnd-state.pendingStart >= audioBlockSegmentMax
+		state.mu.Unlock()
+		if shouldFlush {
+			chip.flushAudioBlockState(state)
+		}
+	}
+	return len(dst)
+}
+
+func (chip *SoundChip) tickSample() {
 	if holder, ok := chip.sampleTicker.Load().(*sampleTickerListHolder); ok {
 		for _, ticker := range holder.tickers {
 			if ticker != nil {
@@ -3110,13 +3169,65 @@ func (chip *SoundChip) ReadSample() float32 {
 			}
 		}
 	}
-	sample := chip.GenerateSample()
+}
+
+func (chip *SoundChip) captureMixerSample() float32 {
+	var sample float32
+	if chip.sfx != nil {
+		sample = clampF32(sample+chip.sfx.MixSample(), MIN_SAMPLE, MAX_SAMPLE)
+	}
+	if holder, ok := chip.sampleMixer.Load().(*sampleMixerListHolder); ok {
+		for _, mixer := range holder.mixers {
+			if mixer != nil {
+				sample = clampF32(sample+mixer.MixSample(), MIN_SAMPLE, MAX_SAMPLE)
+			}
+		}
+	}
+	return sample
+}
+
+func (chip *SoundChip) flushPendingAudioBlock() {
+	state := chip.audioBlock.Load()
+	if state == nil {
+		return
+	}
+	chip.flushAudioBlockState(state)
+}
+
+func (chip *SoundChip) flushAudioBlockState(state *audioBlockState) {
+	state.mu.Lock()
+	start, end := state.pendingStart, state.pendingEnd
+	if end <= start {
+		state.mu.Unlock()
+		return
+	}
+	state.pendingStart, state.pendingEnd = end, end
+
+	chip.mu.Lock()
+	chip.postFXMu.Lock()
+	for i := start; i < end; i++ {
+		if !chip.enabled.Load() {
+			state.dst[i] = 0
+			continue
+		}
+		sample, snap := chip.mixChannelsAndSnapshotPostFXLocked(state.mixerCapture[i])
+		state.dst[i] = clampF32(chip.applyPostFXLocked(sample, snap), MIN_SAMPLE, MAX_SAMPLE)
+	}
+	chip.postFXMu.Unlock()
+	chip.mu.Unlock()
+	state.mu.Unlock()
+
+	for i := start; i < end; i++ {
+		chip.tapSample(state.dst[i])
+	}
+}
+
+func (chip *SoundChip) tapSample(sample float32) {
 	if holder, ok := chip.sampleTap.Load().(*sampleTapHolder); ok {
 		if holder.tap != nil {
 			holder.tap(sample)
 		}
 	}
-	return sample
 }
 
 func (chip *SoundChip) SetSampleTicker(ticker SampleTicker) {
@@ -3124,6 +3235,7 @@ func (chip *SoundChip) SetSampleTicker(ticker SampleTicker) {
 }
 
 func (chip *SoundChip) RegisterSampleTicker(key string, ticker SampleTicker) {
+	chip.flushPendingAudioBlock()
 	if key == "" {
 		key = "default"
 	}
@@ -3141,6 +3253,7 @@ func (chip *SoundChip) RegisterSampleTicker(key string, ticker SampleTicker) {
 }
 
 func (chip *SoundChip) UnregisterSampleTicker(key string) {
+	chip.flushPendingAudioBlock()
 	if key == "" {
 		key = "default"
 	}
@@ -3151,6 +3264,7 @@ func (chip *SoundChip) UnregisterSampleTicker(key string) {
 }
 
 func (chip *SoundChip) UnregisterSampleTickerIf(key string, want SampleTicker) bool {
+	chip.flushPendingAudioBlock()
 	if key == "" {
 		key = "default"
 	}
@@ -3178,6 +3292,7 @@ func (chip *SoundChip) HasSampleTicker(key string) bool {
 }
 
 func (chip *SoundChip) RegisterSampleMixer(key string, mixer SampleMixer) {
+	chip.flushPendingAudioBlock()
 	if key == "" {
 		key = "default"
 	}
@@ -3195,6 +3310,7 @@ func (chip *SoundChip) RegisterSampleMixer(key string, mixer SampleMixer) {
 }
 
 func (chip *SoundChip) UnregisterSampleMixer(key string) {
+	chip.flushPendingAudioBlock()
 	if key == "" {
 		key = "default"
 	}
@@ -3245,14 +3361,17 @@ func (chip *SoundChip) rebuildSampleTickerCacheLocked() {
 }
 
 func (chip *SoundChip) SetSampleTap(tap func(float32)) {
+	chip.flushPendingAudioBlock()
 	chip.sampleTap.Store(&sampleTapHolder{tap: tap})
 }
 
 func (chip *SoundChip) ClearSampleTap() {
+	chip.flushPendingAudioBlock()
 	chip.sampleTap.Store(&sampleTapHolder{})
 }
 
 func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3301,6 +3420,7 @@ func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
 
 // SetChannelEnvelopeMode toggles SID-style ADSR behavior per channel.
 func (chip *SoundChip) SetChannelEnvelopeMode(ch int, sidEnvelope bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3316,6 +3436,7 @@ func (chip *SoundChip) SetChannelEnvelopeMode(ch int, sidEnvelope bool) {
 
 // SetChannelADSR sets envelope times in milliseconds and sustain level (0.0-1.0).
 func (chip *SoundChip) SetChannelADSR(ch int, attackMs, decayMs, releaseMs, sustainLevel float32) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3371,6 +3492,7 @@ func (chip *SoundChip) SetChannelADSR(ch int, attackMs, decayMs, releaseMs, sust
 // SetChannelSIDTest controls the SID test-bit behavior per channel.
 // When enabled: holds oscillator phase at 0 and resets noise LFSR.
 func (chip *SoundChip) SetChannelSIDTest(ch int, enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3393,6 +3515,7 @@ func (chip *SoundChip) SetChannelSIDTest(ch int, enabled bool) {
 // When enabled, the standard waveform path produces 12-bit quantized output matching
 // the combined waveform path and the real SID's digital-to-analog converter.
 func (chip *SoundChip) SetChannelSIDDAC(ch int, enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3410,6 +3533,7 @@ func (chip *SoundChip) SetChannelSIDDAC(ch int, enabled bool) {
 // When enabled, simulates the ADSR delay bug (variable delay before attack starts)
 // and envelope counter leak (counter doesn't fully reset, enabling hard restart).
 func (chip *SoundChip) SetChannelSIDADSRBugs(ch int, enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3427,6 +3551,7 @@ func (chip *SoundChip) SetChannelSIDADSRBugs(ch int, enabled bool) {
 // When enabled, noise LFSR clocks on oscillator phase wrap/MSB transition (authentic SID).
 // When disabled, uses traditional frequency-based clocking.
 func (chip *SoundChip) SetChannelSIDNoisePhaseLocked(ch int, enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3444,6 +3569,7 @@ func (chip *SoundChip) SetChannelSIDNoisePhaseLocked(ch int, enabled bool) {
 // When enabled, applies asymmetric soft clipping before filter processing,
 // creating the characteristic warm/squelchy 6581 sound.
 func (chip *SoundChip) SetChannelSID6581FilterDistort(ch int, enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3461,6 +3587,7 @@ func (chip *SoundChip) SetChannelSID6581FilterDistort(ch int, enabled bool) {
 // dcOffset: DC offset to add to output (typically SID_6581_DC_OFFSET or SID_8580_DC_OFFSET)
 // saturate: Enable soft saturation for authentic 6581 voice mixing
 func (chip *SoundChip) SetSIDMixerMode(enabled bool, dcOffset float32, saturate bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3471,6 +3598,7 @@ func (chip *SoundChip) SetSIDMixerMode(enabled bool, dcOffset float32, saturate 
 
 // SetChannelSIDWaveMask configures combined SID waveforms per channel.
 func (chip *SoundChip) SetChannelSIDWaveMask(ch int, mask uint8) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3488,6 +3616,7 @@ func (chip *SoundChip) SetChannelSIDWaveMask(ch int, mask uint8) {
 }
 
 func (chip *SoundChip) ReleaseDACMode(ch int) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	if ch < 0 || ch >= NUM_CHANNELS {
@@ -3569,6 +3698,7 @@ func (chip *SoundChip) GetChannelEnvelopeLevel(ch int) uint8 {
 
 // SetChannelFilter configures a per-channel filter mask (bit0=LP, bit1=BP, bit2=HP).
 func (chip *SoundChip) SetChannelFilter(ch int, modeMask uint8, cutoff, resonance float32) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3614,6 +3744,7 @@ func (chip *SoundChip) SetChannelFilter(ch int, modeMask uint8, cutoff, resonanc
 // SetChannelSIDFilterMode enables/disables SID filter mode for a channel.
 // In SID mode, the filter allows self-oscillation at high resonance.
 func (chip *SoundChip) SetChannelSIDFilterMode(ch int, enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3636,6 +3767,7 @@ func (chip *SoundChip) SetChannelSIDFilterMode(ch int, enabled bool) {
 //   - clockHz: SID clock frequency (985248 for PAL, 1022727 for NTSC)
 //   - attack, decay, release: ADSR indices (0-15) for each phase
 func (chip *SoundChip) SetChannelSIDRateCounter(ch int, enabled bool, sampleRate int, clockHz uint32, attack, decay, release uint8) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3687,6 +3819,7 @@ func (chip *SoundChip) SetPOKEYPlusEnabled(enabled bool) {
 }
 
 func (chip *SoundChip) SetPOKEYPlusEnabledForRange(startCh, count int, enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3738,6 +3871,7 @@ func (chip *SoundChip) SetPOKEYPlusEnabledForRange(startCh, count int, enabled b
 }
 
 func (chip *SoundChip) RetriggerChannel(ch int) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.retriggerChannelLocked(ch)
@@ -3757,6 +3891,7 @@ func (chip *SoundChip) retriggerChannelLocked(ch int) {
 }
 
 func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3810,6 +3945,7 @@ func (chip *SoundChip) SetSIDPlusEnabled(enabled bool) {
 // SetSIDPlusEnabledForRange enables/disables SID+ for a specific SID chip's channels only.
 // baseChannel is the first channel index (0, 4, or 7), count is the number of voices (3).
 func (chip *SoundChip) SetSIDPlusEnabledForRange(enabled bool, baseChannel, count int) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3856,6 +3992,7 @@ func (chip *SoundChip) SetSIDPlusEnabledForRange(enabled bool, baseChannel, coun
 }
 
 func (chip *SoundChip) SetTEDPlusEnabled(enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3903,6 +4040,7 @@ func (chip *SoundChip) SetTEDPlusEnabled(enabled bool) {
 }
 
 func (chip *SoundChip) SetAHXPlusEnabled(enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -3952,6 +4090,7 @@ func (chip *SoundChip) SetAHXPlusEnabled(enabled bool) {
 }
 
 func (chip *SoundChip) Start() {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	chip.enabled.Store(true)
 	output := chip.output
@@ -3963,6 +4102,7 @@ func (chip *SoundChip) Start() {
 }
 
 func (chip *SoundChip) Stop() {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	if !chip.enabled.Load() {
 		chip.mu.Unlock()

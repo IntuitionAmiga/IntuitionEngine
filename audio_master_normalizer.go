@@ -97,6 +97,7 @@ func (chip *SoundChip) resetMasterDynamicsForAudioThread(lookaheadLen int) {
 }
 
 func (chip *SoundChip) SetMasterGainDB(db float32) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.masterGainDB = db
@@ -110,18 +111,21 @@ func (chip *SoundChip) MasterGainDB() float32 {
 }
 
 func (chip *SoundChip) SetMasterCompressorEnabled(enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.masterCompEnabled = enabled
 }
 
 func (chip *SoundChip) SetMasterAutoLevelEnabled(enabled bool) {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.masterAutoLevelEnabled = enabled
 }
 
 func (chip *SoundChip) MasterAutoLevelEnabled() bool {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	return chip.masterAutoLevelEnabled
@@ -138,6 +142,7 @@ func (chip *SoundChip) ConfigureMasterAutoLevel(targetDB, minGainDB, maxGainDB, 
 		releaseMS = 0
 	}
 
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -195,6 +200,7 @@ func (chip *SoundChip) ConfigureMasterCompressor(thresholdDB, ratio, attackMS, r
 }
 
 func (chip *SoundChip) UseShowreelNormalizerPreset() {
+	chip.flushPendingAudioBlock()
 	chip.ConfigureMasterAutoLevel(
 		showreelAutoTargetDB,
 		showreelAutoMinGainDB,
@@ -216,6 +222,7 @@ func (chip *SoundChip) UseShowreelNormalizerPreset() {
 }
 
 func (chip *SoundChip) ResetMasterDynamics() {
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	chip.masterDynamicsGeneration++

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func TestCompositorOpaquePixelTreatsRGBWithZeroAlphaAsOpaque(t *testing.T) {
@@ -98,6 +99,44 @@ func (m *mockScanlineSource) StartFrame()               { m.scanlines = 0 }
 func (m *mockScanlineSource) ProcessScanline(y int)     { m.scanlines++ }
 func (m *mockScanlineSource) FinishFrame() []byte       { return m.frame }
 
+type batchScanlineSource struct {
+	mockScanlineSource
+	batchCalls int
+}
+
+func (m *batchScanlineSource) ProcessScanlineRange(y0, y1 int) {
+	m.batchCalls++
+	m.scanlines += y1 - y0
+}
+
+func TestCompositor_SingleScanlineSourceUsesBatchPath(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	src := &batchScanlineSource{
+		mockScanlineSource: mockScanlineSource{
+			layer: 0,
+			w:     2,
+			h:     5,
+			frame: solidTestFrame(2, 5, 0x11, 0x22, 0x33, 0xFF),
+		},
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	layers, hasContent, usedScanline := comp.collectScanlineAwareLayers(false)
+	if !usedScanline || !hasContent {
+		t.Fatalf("usedScanline=%v hasContent=%v, want true/true", usedScanline, hasContent)
+	}
+	if len(layers) != 1 {
+		t.Fatalf("layers=%d, want 1", len(layers))
+	}
+	if src.batchCalls != 1 {
+		t.Fatalf("batchCalls=%d, want 1", src.batchCalls)
+	}
+	if src.scanlines != src.h {
+		t.Fatalf("scanlines=%d, want %d", src.scanlines, src.h)
+	}
+}
+
 type mockOpaqueSource struct {
 	enabled atomic.Bool
 	layer   int
@@ -121,6 +160,239 @@ func (m *mockOpaqueSource) SignalVSync() {
 		panic("mock vsync panic")
 	}
 	m.vsyncs.Add(1)
+}
+
+type dirtyMockSource struct {
+	mockOpaqueSource
+	rects  []FrameDirtyRect
+	takes  int
+	opaque bool
+}
+
+func (m *dirtyMockSource) TakeDirtyRects() []FrameDirtyRect {
+	m.takes++
+	rects := m.rects
+	m.rects = nil
+	return rects
+}
+
+func (m *dirtyMockSource) IsOpaqueFrame() bool {
+	return m.opaque
+}
+
+func TestBlendOpaqueLayerFastPathPromotesAlpha(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	comp.frameWidth = 2
+	comp.frameHeight = 1
+	comp.finalFrame = make([]byte, 2*BYTES_PER_PIXEL)
+
+	var src [2]uint32
+	src[0] = 0x00000000
+	src[1] = 0x00332211
+	comp.blendLayer(CompositorFrameLayer{
+		SourceWidth:  2,
+		SourceHeight: 1,
+		DestWidth:    2,
+		DestHeight:   1,
+		Buffer:       (*[8]byte)(unsafe.Pointer(&src[0]))[:],
+		Opaque:       true,
+	})
+
+	got0 := *(*uint32)(unsafe.Pointer(&comp.finalFrame[0]))
+	got1 := *(*uint32)(unsafe.Pointer(&comp.finalFrame[4]))
+	if got0 != 0xFF000000 {
+		t.Fatalf("pixel 0 = 0x%08X, want opaque black", got0)
+	}
+	if got1 != 0xFF332211 {
+		t.Fatalf("pixel 1 = 0x%08X, want promoted colour", got1)
+	}
+}
+
+func TestCompositeDirtyRectsPropagatedToOutput(t *testing.T) {
+	out := newMockVideoOutput()
+	if err := out.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	comp := NewVideoCompositor(out)
+	comp.frameWidth = 2
+	comp.frameHeight = 2
+	src := &dirtyMockSource{
+		mockOpaqueSource: mockOpaqueSource{
+			layer: 0,
+			w:     2,
+			h:     2,
+			frame: solidTestFrame(2, 2, 0xAA, 0xBB, 0xCC, 0xFF),
+		},
+		opaque: true,
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	comp.composite()
+	out.mu.Lock()
+	if out.updateCalls != 1 {
+		t.Fatalf("initial UpdateFrame calls = %d, want 1", out.updateCalls)
+	}
+	out.updateCalls = 0
+	out.regionCalls = 0
+	out.mu.Unlock()
+
+	src.rects = []FrameDirtyRect{{X: 0, Y: 0, Width: 1, Height: 1}}
+	src.takes = 0
+	comp.composite()
+
+	out.mu.Lock()
+	defer out.mu.Unlock()
+	if out.updateCalls != 0 {
+		t.Fatalf("UpdateFrame calls = %d, want 0", out.updateCalls)
+	}
+	if out.regionCalls != 1 {
+		t.Fatalf("UpdateRegion calls = %d, want 1", out.regionCalls)
+	}
+	if out.lastRegionRect != (FrameDirtyRect{X: 0, Y: 0, Width: 1, Height: 1}) {
+		t.Fatalf("region rect = %+v", out.lastRegionRect)
+	}
+	if len(out.lastRegion) != BYTES_PER_PIXEL {
+		t.Fatalf("region bytes = %d, want %d", len(out.lastRegion), BYTES_PER_PIXEL)
+	}
+	if src.takes != 1 {
+		t.Fatalf("TakeDirtyRects calls = %d, want 1 after reset", src.takes)
+	}
+}
+
+func TestScaleLayerDirtyRect_CeilEndForNonIntegerScale(t *testing.T) {
+	layer := CompositorFrameLayer{
+		SourceWidth:  3,
+		SourceHeight: 1,
+		DestWidth:    5,
+		DestHeight:   1,
+	}
+	got := scaleLayerDirtyRect(layer, FrameDirtyRect{X: 1, Y: 0, Width: 1, Height: 1})
+	if got.X+got.Width < 4 {
+		t.Fatalf("scaled dirty rect = %+v, want exclusive X end >= 4 to cover destination columns 2 and 3", got)
+	}
+}
+
+func TestCompositeDirtyRects_ForceFullOnResolutionChange(t *testing.T) {
+	out := newMockVideoOutput()
+	if err := out.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	comp := NewVideoCompositor(out)
+	comp.SetDimensions(2, 2)
+	src := &dirtyMockSource{
+		mockOpaqueSource: mockOpaqueSource{
+			layer: 0,
+			w:     2,
+			h:     2,
+			frame: solidTestFrame(2, 2, 0x11, 0x22, 0x33, 0xFF),
+		},
+		opaque: true,
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	comp.composite()
+
+	out.mu.Lock()
+	out.updateCalls = 0
+	out.regionCalls = 0
+	out.mu.Unlock()
+
+	src.rects = []FrameDirtyRect{{X: 0, Y: 0, Width: 1, Height: 1}}
+	comp.SetDimensions(4, 4)
+	comp.composite()
+
+	out.mu.Lock()
+	defer out.mu.Unlock()
+	if out.updateCalls != 1 {
+		t.Fatalf("UpdateFrame calls after resolution change = %d, want 1", out.updateCalls)
+	}
+	if out.regionCalls != 0 {
+		t.Fatalf("UpdateRegion calls after resolution change = %d, want 0", out.regionCalls)
+	}
+}
+
+func TestCompositeDirtyRects_ForceFullOnSourceAddRemoveAndEnableToggle(t *testing.T) {
+	out := newMockVideoOutput()
+	if err := out.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	comp := NewVideoCompositor(out)
+	comp.SetDimensions(2, 2)
+	src := &dirtyMockSource{
+		mockOpaqueSource: mockOpaqueSource{
+			layer: 0,
+			w:     2,
+			h:     2,
+			frame: solidTestFrame(2, 2, 0x44, 0x55, 0x66, 0xFF),
+		},
+		opaque: true,
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	comp.composite()
+	resetMockOutputCounts(out)
+
+	src.rects = []FrameDirtyRect{{X: 0, Y: 0, Width: 1, Height: 1}}
+	comp.composite()
+	out.mu.Lock()
+	if out.updateCalls != 0 || out.regionCalls != 1 {
+		t.Fatalf("stable dirty frame updateCalls=%d regionCalls=%d, want 0/1", out.updateCalls, out.regionCalls)
+	}
+	out.mu.Unlock()
+	resetMockOutputCounts(out)
+
+	added := &dirtyMockSource{
+		mockOpaqueSource: mockOpaqueSource{
+			layer: 1,
+			w:     2,
+			h:     2,
+			frame: solidTestFrame(2, 2, 0x77, 0x88, 0x99, 0xFF),
+		},
+		rects:  []FrameDirtyRect{{X: 1, Y: 1, Width: 1, Height: 1}},
+		opaque: true,
+	}
+	added.enabled.Store(true)
+	addedID := comp.RegisterSourceWithID(added)
+	comp.composite()
+	out.mu.Lock()
+	if out.updateCalls != 1 || out.regionCalls != 0 {
+		t.Fatalf("source add updateCalls=%d regionCalls=%d, want 1/0", out.updateCalls, out.regionCalls)
+	}
+	out.mu.Unlock()
+	resetMockOutputCounts(out)
+
+	if !comp.UnregisterSource(addedID) {
+		t.Fatal("failed to unregister added source")
+	}
+	src.rects = []FrameDirtyRect{{X: 0, Y: 0, Width: 1, Height: 1}}
+	comp.composite()
+	out.mu.Lock()
+	if out.updateCalls != 1 || out.regionCalls != 0 {
+		t.Fatalf("source remove updateCalls=%d regionCalls=%d, want 1/0", out.updateCalls, out.regionCalls)
+	}
+	out.mu.Unlock()
+	resetMockOutputCounts(out)
+
+	src.enabled.Store(false)
+	comp.composite()
+	resetMockOutputCounts(out)
+
+	src.enabled.Store(true)
+	src.rects = []FrameDirtyRect{{X: 0, Y: 0, Width: 1, Height: 1}}
+	comp.composite()
+	out.mu.Lock()
+	defer out.mu.Unlock()
+	if out.updateCalls != 1 || out.regionCalls != 0 {
+		t.Fatalf("enable toggle updateCalls=%d regionCalls=%d, want 1/0", out.updateCalls, out.regionCalls)
+	}
+}
+
+func resetMockOutputCounts(out *mockVideoOutput) {
+	out.mu.Lock()
+	out.updateCalls = 0
+	out.regionCalls = 0
+	out.mu.Unlock()
 }
 
 type managedScanlineSource struct {
@@ -743,7 +1015,10 @@ type mockVideoOutput struct {
 	config         DisplayConfig
 	setCalls       int
 	updateCalls    int
+	regionCalls    int
 	lastFrame      []byte
+	lastRegion     []byte
+	lastRegionRect FrameDirtyRect
 	updateErr      error
 	setErr         error
 	updateCallback func()
@@ -823,6 +1098,21 @@ func (m *mockVideoOutput) UpdateFrame(buffer []byte) error {
 	}
 	return err
 }
+
+func (m *mockVideoOutput) UpdateRegion(x, y, width, height int, pixels []byte) error {
+	m.mu.Lock()
+	m.regionCalls++
+	m.lastRegionRect = FrameDirtyRect{X: x, Y: y, Width: width, Height: height}
+	m.lastRegion = append(m.lastRegion[:0], pixels...)
+	err := m.updateErr
+	cb := m.updateCallback
+	m.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
+	return err
+}
+
 func (m *mockVideoOutput) WaitForVSync() error   { return nil }
 func (m *mockVideoOutput) GetFrameCount() uint64 { return 0 }
 func (m *mockVideoOutput) GetRefreshRate() int {
@@ -1436,6 +1726,77 @@ func BenchmarkCompositorSoftwareScaled960x540To1080p(b *testing.B) {
 	}
 }
 
+func BenchmarkComposite_StaticScene(b *testing.B) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(640, 480)
+	src := &mockOpaqueSource{
+		layer: 0,
+		w:     640,
+		h:     480,
+		frame: solidTestFrame(640, 480, 0x22, 0x44, 0x66, 0xFF),
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	comp.composite()
+	b.SetBytes(640 * 480 * BYTES_PER_PIXEL)
+	b.ResetTimer()
+	for range b.N {
+		comp.composite()
+	}
+}
+
+func BenchmarkComposite_FullDirty(b *testing.B) {
+	out := newMockVideoOutput()
+	_ = out.Start()
+	comp := NewVideoCompositor(out)
+	comp.LockResolution(640, 480)
+	src := &dirtyMockSource{
+		mockOpaqueSource: mockOpaqueSource{
+			layer: 0,
+			w:     640,
+			h:     480,
+			frame: solidTestFrame(640, 480, 0x22, 0x44, 0x66, 0xFF),
+		},
+		opaque: true,
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+	comp.composite()
+	b.SetBytes(640 * 480 * BYTES_PER_PIXEL)
+	b.ResetTimer()
+	for range b.N {
+		src.rects = []FrameDirtyRect{{X: 0, Y: 0, Width: 640, Height: 480}}
+		comp.composite()
+	}
+}
+
+func BenchmarkBlendFrame1to1_Workers(b *testing.B) {
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(640, 480)
+	bottom := &mockOpaqueSource{
+		layer: 0,
+		w:     640,
+		h:     480,
+		frame: solidTestFrame(640, 480, 0x11, 0x22, 0x33, 0xFF),
+	}
+	top := &mockOpaqueSource{
+		layer: 1,
+		w:     640,
+		h:     480,
+		frame: solidTestFrame(640, 480, 0x44, 0x55, 0x66, 0xFF),
+	}
+	bottom.enabled.Store(true)
+	top.enabled.Store(true)
+	comp.RegisterSource(bottom)
+	comp.RegisterSource(top)
+	comp.composite()
+	b.SetBytes(640 * 480 * BYTES_PER_PIXEL)
+	b.ResetTimer()
+	for range b.N {
+		comp.composite()
+	}
+}
+
 func BenchmarkCompositorHardwareLayerBuild960x540To1080p(b *testing.B) {
 	b.Setenv("IE_DISABLE_GPU_COMPOSITOR", "")
 	out := newMockHardwareVideoOutput()
@@ -1470,6 +1831,25 @@ func newTestVideoChip(out VideoOutput) *VideoChip {
 	chip.backBuffer = make([]byte, mode.totalSize)
 	chip.initialiseDirtyGrid(mode)
 	return chip
+}
+
+func TestVideoChip_TakeDirtyRectsKeepsLaterMarks(t *testing.T) {
+	chip := newTestVideoChip(newMockVideoOutput())
+
+	chip.MarkRectDirty(0, 0, 1, 1)
+	first := chip.TakeDirtyRects()
+	if len(first) == 0 {
+		t.Fatal("first TakeDirtyRects returned no dirty rects")
+	}
+	if got := chip.TakeDirtyRects(); len(got) != 0 {
+		t.Fatalf("second TakeDirtyRects after clear returned %d rects, want 0", len(got))
+	}
+
+	chip.MarkRectDirty(0, 0, 1, 1)
+	next := chip.TakeDirtyRects()
+	if len(next) == 0 {
+		t.Fatal("dirty mark after TakeDirtyRects was lost")
+	}
 }
 
 func TestVideoChip_ModeChange_FiresCallback(t *testing.T) {
