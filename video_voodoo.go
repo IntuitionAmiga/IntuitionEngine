@@ -239,6 +239,7 @@ type voodooSwapJob struct {
 	postClear      bool
 	postClearColor uint32
 	waitVSync      bool
+	flushOnly      bool // render the batch, do not present (mid-frame overflow)
 }
 
 // VoodooBackend interface for rendering backends
@@ -890,13 +891,19 @@ func (v *VoodooEngine) executeTriangleCmd() {
 		v.batchState = v.captureRasterStateLocked()
 		v.rasterStateDirty = false
 	}
-	if len(v.triangleBatch) < VOODOO_MAX_BATCH_TRIANGLES {
-		tri := VoodooTriangle{
-			Vertices: [3]VoodooVertex{v.vertices[0], v.vertices[1], v.vertices[2]},
-			State:    v.batchState,
-		}
-		v.triangleBatch = append(v.triangleBatch, tri)
+	if len(v.triangleBatch) >= VOODOO_MAX_BATCH_TRIANGLES {
+		// Overflow: flush the full batch to the backend mid-frame
+		// (rendering into the draw buffer without presenting) instead
+		// of silently dropping the rest of the frame. Frames larger
+		// than the cap — e.g. a fully tiled 2D background — stay
+		// complete and tear-free.
+		v.flushBatchLocked()
 	}
+	tri := VoodooTriangle{
+		Vertices: [3]VoodooVertex{v.vertices[0], v.vertices[1], v.vertices[2]},
+		State:    v.batchState,
+	}
+	v.triangleBatch = append(v.triangleBatch, tri)
 
 	// Reset Gouraud state for next triangle (can be re-enabled with COLOR_SELECT)
 	v.gouraudEnabled = false
@@ -929,6 +936,40 @@ func (v *VoodooEngine) executeFastFillCmd() {
 // swap worker and returns without waiting for the render. If the
 // previous frame is still in flight, it waits for that job first (one
 // frame of run-ahead).
+// flushBatchLocked hands the current triangle batch to the swap worker
+// as a render-only job (no buffer swap, no frame publish, no
+// callbacks) and gives the guest a fresh batch to keep filling. Called
+// when a frame exceeds VOODOO_MAX_BATCH_TRIANGLES.
+func (v *VoodooEngine) flushBatchLocked() {
+	if v.backend == nil || v.swapJobs == nil || len(v.triangleBatch) == 0 {
+		return
+	}
+	for v.jobInFlight {
+		v.swapIdle.Wait()
+	}
+	job := voodooSwapJob{
+		backend:        v.backend,
+		triangles:      v.triangleBatch,
+		fbzMode:        v.fbzMode,
+		alphaMode:      v.alphaMode,
+		updatePipeline: v.pipelineDirty,
+		clear:          v.pendingClear,
+		clearColor:     v.pendingClearColor,
+		flushOnly:      true,
+	}
+	v.pipelineDirty = false
+	v.pendingClear = false
+	if v.spareBatch == nil {
+		v.spareBatch = make([]VoodooTriangle, 0, VOODOO_MAX_BATCH_TRIANGLES)
+	}
+	v.triangleBatch = v.spareBatch
+	v.spareBatch = nil
+	v.busy = true
+	v.jobInFlight = true
+	v.swapInFlight.Store(true)
+	v.swapJobs <- job
+}
+
 func (v *VoodooEngine) executeSwapBufferCmd(value uint32) {
 	if v.backend == nil || v.swapJobs == nil {
 		v.swapPending = false
@@ -993,6 +1034,31 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 
 		// Always flush triangles (even if empty, this triggers the clear)
 		hadTriangles := len(job.triangles) > 0
+		if job.flushOnly {
+			// Mid-frame overflow flush: the batch is rendered into the
+			// draw buffer, nothing is presented and no swap callbacks
+			// fire — the guest is still building this frame. Backends
+			// that queue render work asynchronously (Vulkan submits in
+			// FlushTriangles and fences at swap time) must render AND
+			// wait under one lock acquisition — a separate wait call
+			// would leave a window where forwarded texture uploads
+			// mutate resources the submitted batch still samples.
+			if fs, ok := backend.(interface {
+				FlushTrianglesSync([]VoodooTriangle)
+			}); ok {
+				fs.FlushTrianglesSync(job.triangles)
+			} else {
+				backend.FlushTriangles(job.triangles)
+			}
+			v.mu.Lock()
+			v.spareBatch = clearVoodooTriangleBatch(job.triangles)
+			v.busy = false
+			v.jobInFlight = false
+			v.swapInFlight.Store(false)
+			v.mu.Unlock()
+			v.swapIdle.Broadcast()
+			continue
+		}
 		backend.FlushTriangles(job.triangles)
 		backend.SwapBuffers(job.waitVSync)
 		frame := backend.GetFrame()

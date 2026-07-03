@@ -1938,19 +1938,30 @@ func (vb *VulkanBackend) destroyTextureCache(freeDescSets bool) {
 
 // evictTextureCacheLRU drops the least-recently-used cache entry. The
 // caller must guarantee the GPU is not consuming it (queue idle).
-func (vb *VulkanBackend) evictTextureCacheLRU() {
+// evictTextureCacheLRU frees the least-recently-used cache entry that
+// is NOT part of the flush currently being assembled (lastUse ==
+// flushCount means an earlier group in this same flush already
+// resolved it — destroying it would leave that group's descriptor
+// dangling). Returns false when every entry is pinned by the current
+// flush; the caller degrades to the software reference frame.
+func (vb *VulkanBackend) evictTextureCacheLRU() bool {
 	var oldestKey *VoodooTexture
 	oldestUse := ^uint64(0)
 	for key, e := range vb.textureCache {
+		if e.lastUse == vb.flushCount {
+			continue
+		}
 		if e.lastUse < oldestUse {
 			oldestUse = e.lastUse
 			oldestKey = key
 		}
 	}
-	if oldestKey != nil {
-		vb.destroyCachedTexture(vb.textureCache[oldestKey], true)
-		delete(vb.textureCache, oldestKey)
+	if oldestKey == nil {
+		return false
 	}
+	vb.destroyCachedTexture(vb.textureCache[oldestKey], true)
+	delete(vb.textureCache, oldestKey)
+	return true
 }
 
 // descriptorSetForGroup resolves the descriptor set a state group's
@@ -1971,10 +1982,17 @@ func (vb *VulkanBackend) descriptorSetForGroup(st *VoodooRasterState) (vk.Descri
 		return e.descSet, nil
 	}
 	if len(vb.textureCache) >= voodooTextureCacheCap {
-		// Rare: more distinct snapshot textures than cache slots. Make
-		// sure nothing in flight samples the victim before destroying it.
+		// More distinct snapshot textures than cache slots. Make sure
+		// nothing in flight samples the victim before destroying it.
+		// When every slot is pinned by the flush being assembled (a
+		// frame whose texture working set exceeds the cache, e.g. a
+		// fully tiled 2D screen), give up on the GPU for this frame:
+		// evicting a pinned entry would dangle an earlier group's
+		// descriptor and draw garbage.
 		vk.QueueWaitIdle(vb.graphicsQueue)
-		vb.evictTextureCacheLRU()
+		if !vb.evictTextureCacheLRU() {
+			return vk.NullDescriptorSet, fmt.Errorf("texture working set exceeds cache (%d)", voodooTextureCacheCap)
+		}
 	}
 	e, err := vb.createCachedTexture(st.Texture)
 	if err != nil {
@@ -2241,7 +2259,23 @@ func (vb *VulkanBackend) SetFogState(fogMode, fogColor uint32) {
 func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
+	vb.flushTrianglesLocked(triangles)
+}
 
+// FlushTrianglesSync renders the batch and waits for its GPU work
+// under a single mutex acquisition, so no forwarded backend mutation
+// (texture upload, resource destroy) can slip between the submit and
+// the wait. Used by the swap worker's render-only overflow path.
+func (vb *VulkanBackend) FlushTrianglesSync(triangles []VoodooTriangle) {
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+	vb.flushTrianglesLocked(triangles)
+	if vb.initialized && !vb.presentSoftwareFrame {
+		vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
+	}
+}
+
+func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle) {
 	if !vb.initialized {
 		vb.softwareClearedSinceFlush = false
 		vb.software.FlushTriangles(triangles)
