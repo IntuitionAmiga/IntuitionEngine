@@ -6,6 +6,8 @@ package main
 
 import (
 	"fmt"
+	"hash/crc32"
+	"math/bits"
 	"os"
 	"runtime"
 	"sort"
@@ -78,19 +80,33 @@ func m68kJITDisableStaticJMPChase() bool {
 	return os.Getenv("IE_M68K_JIT_DISABLE_STATIC_JMP_CHASE") == "1"
 }
 
+// m68kJITInterruptSampleIntervalDefault is the number of retired guest
+// instructions between pending-interrupt samples in the chained native
+// dispatch loop. 256 keeps IRQ latency tight enough for the AROS timer while
+// amortising the checkPending cost across a block chain; it is deliberately the
+// default rather than a larger value because raising it trades interrupt
+// latency for throughput and the AROS boot is timing-sensitive.
+const m68kJITInterruptSampleIntervalDefault = 256
+
+// m68kJITInterruptSampleIntervalMax bounds the tunable interval. The default
+// stays at 256; power users profiling throughput-bound, interrupt-light
+// workloads can raise IE_M68K_JIT_IRQ_SAMPLE_INTERVAL up to this ceiling to cut
+// sampling overhead in long native chains, accepting coarser IRQ latency.
+const m68kJITInterruptSampleIntervalMax = 2048
+
 func m68kJITInterruptSampleInterval() uint32 {
 	if raw := os.Getenv("IE_M68K_JIT_IRQ_SAMPLE_INTERVAL"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil {
 			if n < 1 {
 				return 1
 			}
-			if n > 256 {
-				return 256
+			if n > m68kJITInterruptSampleIntervalMax {
+				return m68kJITInterruptSampleIntervalMax
 			}
 			return uint32(n)
 		}
 	}
-	return 256
+	return m68kJITInterruptSampleIntervalDefault
 }
 
 func m68kJITTraceExtensionPC() bool {
@@ -1224,6 +1240,45 @@ func (cpu *M68KCPU) m68kInterpretFallbackBurstThroughBranches(max int) uint64 {
 	return cpu.m68kInterpretFallbackBurstMode(max, false)
 }
 
+// m68kInterpretTranscendentalBurst interprets up to max instructions following
+// all control flow (loops, calls) and — unlike the fallback bursts — WITHOUT
+// stopping at cached native blocks. Transcendental FPU loops (FSIN/FCOS/…) are
+// dramatically slower under the JIT because each op forces a block-exit to the
+// Go helper; keeping the whole loop in the interpreter (which never leaves the
+// goroutine stack) is ~9.5x faster. Ignoring the cache is safe: the interpreter
+// reads live guest memory, so it can never execute a stale native block, and a
+// cached block for a PC crossed here stays valid for later dispatch. The burst
+// stops on halt/exception/odd-PC/top-of-RAM or when the instruction budget is
+// spent, after which the dispatcher re-checks whether the new PC is still a
+// transcendental block.
+func (cpu *M68KCPU) m68kInterpretTranscendentalBurst(max int) uint64 {
+	if max <= 0 {
+		return 0
+	}
+	var retired uint64
+	for retired < uint64(max) && cpu.running.Load() && !cpu.stopped.Load() {
+		if cpu.debugHandleBreakIn(uint64(cpu.PC)) {
+			cpu.running.Store(false)
+			break
+		}
+		pc := cpu.PC
+		if pc&1 != 0 || pc >= cpu.ProfileTopOfRAM()-M68K_WORD_SIZE {
+			cpu.m68kInterpretOne()
+			retired++
+			break
+		}
+		cpu.m68kInterpretOne()
+		retired++
+		if !cpu.running.Load() || cpu.stopped.Load() {
+			break
+		}
+		if cpu.pendingException.Load() != 0 {
+			break
+		}
+	}
+	return retired
+}
+
 func (cpu *M68KCPU) m68kExecuteJITFPUHelper(pc uint32) uint64 {
 	cpu.PC = pc
 	cpu.lastExecPC = pc
@@ -1658,6 +1713,7 @@ func (cpu *M68KCPU) m68kResetJITDiagnostics() {
 	cpu.m68kJitMMIOGuardExits.Store(0)
 	cpu.m68kJitUnsupportedOneExits.Store(0)
 	cpu.m68kJitCompileFailureExits.Store(0)
+	cpu.m68kJitTranscendentalBursts.Store(0)
 	cpu.m68kJitWarmupInstructions.Store(0)
 	cpu.m68kJitLastNativePC.Store(0)
 	cpu.m68kJitNativePCMu.Lock()
@@ -1804,15 +1860,18 @@ func m68kJitDiagEnvUint32(name string) uint32 {
 	return uint32(v)
 }
 
+// m68kBlockHashCRCTable selects the Castagnoli polynomial so crc32.Update
+// takes the SSE4.2 hardware path — the stamp is recomputed before every
+// un-chained native block entry, so per-byte software hashing (the old FNV
+// loop) was a measurable slice of dispatch cost.
+var m68kBlockHashCRCTable = crc32.MakeTable(crc32.Castagnoli)
+
 func m68kHashGuestBlockBytes(memory []byte, block *JITBlock) (uint64, bool) {
 	if block == nil {
 		return 0, false
 	}
-	const (
-		fnvOffset = uint64(1469598103934665603)
-		fnvPrime  = uint64(1099511628211)
-	)
-	hash := fnvOffset
+	const fnvPrime = uint64(1099511628211)
+	hash := uint64(1469598103934665603)
 	for _, r := range JITBlockCoveredRanges(block) {
 		if r[1] < r[0] || r[1] > uint64(len(memory)) {
 			return 0, false
@@ -1821,10 +1880,9 @@ func m68kHashGuestBlockBytes(memory []byte, block *JITBlock) (uint64, bool) {
 		hash *= fnvPrime
 		hash ^= r[1]
 		hash *= fnvPrime
-		for _, b := range memory[int(r[0]):int(r[1])] {
-			hash ^= uint64(b)
-			hash *= fnvPrime
-		}
+		crc := crc32.Update(0, m68kBlockHashCRCTable, memory[int(r[0]):int(r[1])])
+		hash ^= uint64(crc)
+		hash *= fnvPrime
 	}
 	return hash, true
 }
@@ -2453,6 +2511,10 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 	disableRegions := m68kJITDisableRegions()
 	disableStaticJMPChase := m68kJITDisableStaticJMPChase()
 	irqSampleInterval := m68kJITInterruptSampleInterval()
+	// Fast boundary-crossing test for the (default, power-of-two) sample
+	// interval: shift-compare instead of two 64-bit divisions per call.
+	irqSampleIsPow2 := irqSampleInterval&(irqSampleInterval-1) == 0
+	irqSampleShift := uint(bits.TrailingZeros32(irqSampleInterval))
 	diagnosticDisabledPCs := m68kJITDiagnosticDisabledPCs()
 	diagnosticDisabledPCRanges := m68kJITDiagnosticDisabledPCRanges()
 	diagnosticTracePCs := m68kJITDiagnosticTracePCs()
@@ -2464,6 +2526,9 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 	diagnosticLowPCCount := 0
 	verifyMode := os.Getenv("IE_M68K_JIT_VERIFY") == "1"
 	verifyStopOnDiverge := os.Getenv("IE_M68K_JIT_VERIFY_STOP") == "1"
+	diagnosticStopOnBadRetPC := os.Getenv("IE_M68K_JIT_STOP_ON_BAD_RETPC") == "1"
+	diagnosticStopOnBadA3 := os.Getenv("IE_M68K_JIT_STOP_ON_BAD_A3") == "1"
+	diagnosticStopOnBadAddrReg := os.Getenv("IE_M68K_JIT_STOP_ON_BAD_ADDRREG") == "1"
 	var verifyReported int
 
 	// Initialize performance measurement
@@ -2514,7 +2579,14 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			diagPrevPC = cpu.PC
 			diagA0Init = true
 		}
-		if cpu.stopped.Load() || instructionCount/uint64(irqSampleInterval) == prevInstructionCount/uint64(irqSampleInterval) {
+		if cpu.stopped.Load() {
+			return
+		}
+		if irqSampleIsPow2 {
+			if (instructionCount^prevInstructionCount)>>irqSampleShift == 0 {
+				return
+			}
+		} else if instructionCount/uint64(irqSampleInterval) == prevInstructionCount/uint64(irqSampleInterval) {
 			return
 		}
 		cpu.runInstructionCountHook(instructionCount)
@@ -2710,6 +2782,30 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				continue
 			}
 
+			// Interpreter-admission for transcendental blocks: a helper-only FPU
+			// data op (FSIN/FCOS/FMOD/…) compiles to a per-instruction block-exit
+			// to the Go helper, which is ~9.5x slower than the interpreter inside
+			// a loop. Keep such blocks (and the loop around them) on the
+			// interpreter's goroutine stack via a burst instead of compiling.
+			// m68kJitForceNative (test/diagnostic) overrides this.
+			if !cpu.m68kJitForceNative && m68kBlockContainsTranscendental(cpu.memory, pc, instrs) {
+				retired := cpu.m68kInterpretTranscendentalBurst(m68kFallbackBurstUntilInterruptSample(instructionCount))
+				if retired == 0 {
+					retired = cpu.m68kFallbackOneInstruction()
+				}
+				cpu.m68kJitTranscendentalBursts.Add(1)
+				prevInstructionCount := instructionCount
+				instructionCount += retired
+				cpu.InstructionCount = instructionCount
+				diagFallbackInstr += retired
+				cpu.m68kJitFallbackInstructions.Add(retired)
+				if !cpu.running.Load() {
+					break
+				}
+				checkPending(prevInstructionCount)
+				continue
+			}
+
 			compileInstrs := instrs
 			fullBlockAllowed := !m68kNeedsFallback(instrs) &&
 				(cpu.m68kJitForceNative || m68kCanUseProductionNativeBlock(cpu.memory, pc, instrs))
@@ -2865,7 +2961,8 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		// Update 8-entry MRU RTS cache: shift entries down and write new
 		// to entry 0. When RTS pops a return address, it probes all eight
 		// entries for a chain hit before bailing to the Go dispatcher.
-		if !disableChains && !disableRTSCache && block.chainEntry != 0 {
+		if !disableChains && !disableRTSCache && block.chainEntry != 0 &&
+			(ctx.RTSCache0PC != uint32(block.startPC) || ctx.RTSCache0Addr != block.chainEntry) {
 			ctx.RTSCache7PC = ctx.RTSCache6PC
 			ctx.RTSCache7Addr = ctx.RTSCache6Addr
 			ctx.RTSCache6PC = ctx.RTSCache5PC
@@ -2947,7 +3044,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			cpu.running.Store(false)
 			break
 		}
-		if os.Getenv("IE_M68K_JIT_STOP_ON_BAD_RETPC") == "1" && cpu.PC >= cpu.ProfileTopOfRAM() {
+		if diagnosticStopOnBadRetPC && cpu.PC >= cpu.ProfileTopOfRAM() {
 			fmt.Printf("M68K JIT bad RetPC after native block start=%08X ret=%08X top=%08X chain=%d retCount=%d NeedIO=%d Helper=%d Exception=%d Inval=%d A0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X D0=%08X D1=%08X D2=%08X D3=%08X D4=%08X D5=%08X D6=%08X D7=%08X stack=%04X %04X %04X %04X\n",
 				uint32(block.startPC), ctx.RetPC, cpu.ProfileTopOfRAM(), ctx.ChainCount, ctx.RetCount,
 				ctx.NeedIOFallback, ctx.NeedHelper, ctx.NativeException, ctx.NeedInval,
@@ -3025,7 +3122,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				cpu.m68kJITDiagnosticWord(cpu.AddrRegs[7]+4),
 				cpu.m68kJITDiagnosticWord(cpu.AddrRegs[7]+6))
 		}
-		if os.Getenv("IE_M68K_JIT_STOP_ON_BAD_A3") == "1" {
+		if diagnosticStopOnBadA3 {
 			a3 := cpu.AddrRegs[3]
 			if a3 >= cpu.ProfileTopOfRAM() {
 				fmt.Printf("M68K JIT bad A3 after native block start=%08X ret=%08X chain=%d retCount=%d A3=%08X A0=%08X A1=%08X A2=%08X A4=%08X A5=%08X A6=%08X A7=%08X D0=%08X D1=%08X D2=%08X D3=%08X\n",
@@ -3036,7 +3133,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				break
 			}
 		}
-		if os.Getenv("IE_M68K_JIT_STOP_ON_BAD_ADDRREG") == "1" {
+		if diagnosticStopOnBadAddrReg {
 			top := cpu.ProfileTopOfRAM()
 			for _, i := range []int{0, 2} {
 				a := cpu.AddrRegs[i]

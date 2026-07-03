@@ -103,7 +103,12 @@ func TestM68K_RotozoomerBinary_ReachesWaitVSyncWithVideoEnabled(t *testing.T) {
 	}
 	cpu.LoadProgramBytes(program)
 
-	const waitVSyncPC = 0x107A
+	// wait_vsync's phase-1 poll top in the current prebuilt binary:
+	//   0x1078: MOVE.L $000F0008,D0 (VIDEO_STATUS); ANDI.L #2,D0; BNE.S .wait_end
+	// Regenerating rotozoomer_68k.ie68 can shift this label — re-derive it
+	// from the disassembly (look for the first VIDEO_STATUS poll loop after
+	// the render_mode7 blitter wait) when this assert starts failing.
+	const waitVSyncPC = 0x1078
 	const maxInstructions = 200000
 
 	reachedWait := false
@@ -155,16 +160,26 @@ func testM68KRunnerRotozoomerBinaryReachesWaitVSyncWithConfiguredBlitter(t *test
 	runner.StartExecution()
 	defer runner.Stop()
 
-	const waitVSyncPC = 0x107A
+	// wait_vsync spans 0x1078..0x1095 (two VIDEO_STATUS poll loops + RTS) —
+	// see TestM68K_RotozoomerBinary_ReachesWaitVSyncWithVideoEnabled. This
+	// variant samples PC asynchronously while the CPU spins, so match the
+	// whole routine's range: an exact-PC probe almost always lands on a
+	// post-fetch PC inside the MMIO read and can miss a single value for
+	// the entire deadline under load (word fetches advance PC in steps).
+	const waitVSyncLo, waitVSyncHi = 0x1078, 0x1095
+	inWaitVSync := func() bool {
+		pc := cpu.PC
+		return pc >= waitVSyncLo && pc <= waitVSyncHi
+	}
 	deadline := time.Now().Add(250 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if cpu.PC == waitVSyncPC {
+		if inWaitVSync() {
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
 
-	if cpu.PC != waitVSyncPC {
+	if !inWaitVSync() {
 		t.Fatalf("runner did not reach wait_vsync; PC=0x%X", cpu.PC)
 	}
 	if got := video.HandleRead(VIDEO_CTRL); got != 1 {

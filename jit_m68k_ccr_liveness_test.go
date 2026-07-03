@@ -42,16 +42,19 @@ func TestM68KCCRLiveness_CMPAddressRegisterBeforeBNE(t *testing.T) {
 	}
 }
 
-func TestM68KCCRLiveness_BSRNotConsumer(t *testing.T) {
-	// MOVE.B; BSR (cc=1, no CCR read); MOVE.B — first MOVE shadowed by
-	// last MOVE since BSR is not a consumer.
+func TestM68KCCRLiveness_BSRIsHiddenConsumer(t *testing.T) {
+	// MOVE.B; BSR; MOVE.B — BSR reads no CCR, but it pushes the return
+	// address (memory write with MMIO/SMC bail guards). A bail re-enters
+	// the interpreter with the pre-BSR architectural CCR, so the first
+	// MOVE.B must stay live. (Historically asserted dead; that was the
+	// unsafe pre-whitelist model.)
 	live := m68kCCRLiveness([]M68KJITInstr{
 		mkM(0x1200), // MOVE.B
 		mkM(0x6100), // BSR
 		mkM(0x1400), // MOVE.B
 	})
-	if live[0] {
-		t.Errorf("MOVE.B before BSR-only path should be dead, got %v", live)
+	if !live[0] {
+		t.Errorf("MOVE.B before bail-capable BSR must stay live, got %v", live)
 	}
 }
 
@@ -88,15 +91,20 @@ func TestM68KCCRLiveness_MOVEQProducer(t *testing.T) {
 	}
 }
 
-func TestM68KCCRLiveness_RTEKillsDemand(t *testing.T) {
-	// MOVE.B; RTE (0x4E73); BNE — RTE overwrites SR, demand killed.
+func TestM68KCCRLiveness_RTEOverwritesButStillObserves(t *testing.T) {
+	// MOVE.B; RTE (0x4E73); BNE — RTE overwrites SR from the stack frame,
+	// which kills downstream demand (BNE reads RTE's SR, not MOVE.B's).
+	// But RTE's frame pop is a guarded memory read: a bail re-enters the
+	// interpreter with the pre-RTE CCR, so the upstream MOVE.B must stay
+	// live anyway. (Historically asserted dead; unsafe pre-whitelist
+	// model.)
 	live := m68kCCRLiveness([]M68KJITInstr{
 		mkM(0x1200),
 		mkM(0x4E73), // RTE
 		mkM(0x6600), // BNE
 	})
-	if live[0] {
-		t.Errorf("MOVE.B before RTE should be dead, got %v", live)
+	if !live[0] {
+		t.Errorf("MOVE.B before bail-capable RTE must stay live, got %v", live)
 	}
 }
 
@@ -346,5 +354,315 @@ func TestM68KAnalyzeBlockRegs_AddressArithmeticDoesNotWriteCCR(t *testing.T) {
 func TestM68KCCRLiveness_EmptyInput(t *testing.T) {
 	if got := m68kCCRLiveness(nil); got != nil {
 		t.Errorf("nil input should return nil, got %v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Register-only-safe whitelist gates (inverted hidden-consumer model)
+// ---------------------------------------------------------------------------
+
+func TestM68KCCRLiveness_RegisterOnlySafeWhitelist(t *testing.T) {
+	safe := []struct {
+		name string
+		op   uint16
+	}{
+		{"MOVEQ #5,D0", 0x7005},
+		{"MOVE.L D1,D0", 0x2001},
+		{"MOVE.L A1,D0", 0x2009},
+		{"MOVEA.L D0,A1", 0x2240},
+		{"ADD.L D1,D0", 0xD081},
+		{"ADD.L A1,D0", 0xD089},
+		{"SUB.L D1,D0", 0x9081},
+		{"CMP.L D1,D0", 0xB081},
+		{"CMPA.L D0,A1", 0xB3C0},
+		{"AND.L D1,D0", 0xC081},
+		{"OR.L D1,D0", 0x8081},
+		{"EOR.L D1,D0", 0xB380},
+		{"ADDQ.L #1,D0", 0x5280},
+		{"SUBQ.L #1,A0", 0x5388},
+		{"ADDI.L #imm,D0", 0x0680},
+		{"CMPI.L #imm,D0", 0x0C80},
+		{"NEG.L D0", 0x4480},
+		{"NOT.L D0", 0x4680},
+		{"CLR.L D0", 0x4280},
+		{"TST.L D0", 0x4A80},
+		{"EXT.W D0", 0x4880},
+		{"SWAP D0", 0x4840},
+		{"NOP", 0x4E71},
+		{"LSL.L #1,D0", 0xE388},
+		{"ROXL.W #1,D0", 0xE350},
+		{"BRA.S", 0x6000},
+		{"BNE.S", 0x6600},
+		{"Scc D0 (SNE)", 0x56C0},
+		{"EXG D0,D1", 0xC141},
+		{"MULU.W D1,D0", 0xC0C1},
+		{"ADDX.L D1,D0", 0xD581},
+		{"ADDA.L D0,A1", 0xD3C0},
+	}
+	for _, c := range safe {
+		ji := mkM(c.op)
+		if !m68kInstrCCRRegisterOnlySafe(&ji) {
+			t.Errorf("%s (%#04X) must be register-only safe", c.name, c.op)
+		}
+	}
+	unsafe := []struct {
+		name string
+		op   uint16
+	}{
+		{"MOVE.L (A0),D0", 0x2010},
+		{"MOVE.L D0,(A1)", 0x2280},
+		{"NEG.L (A0)", 0x4490},
+		{"NOT.W (A0)+", 0x4658},
+		{"CLR.B -(A0)", 0x4220},
+		{"TST.L (A0)", 0x4A90},
+		{"TAS (A0)", 0x4AD0},
+		{"NBCD D0", 0x4800},
+		{"BSR.S", 0x6100},
+		{"JSR (A0)", 0x4E90},
+		{"RTS", 0x4E75},
+		{"DIVU.W D1,D0", 0x80C1},
+		{"DIVS.W D1,D0", 0x81C1},
+		{"CHK.W D1,D0", 0x4181},
+		{"DBRA D0", 0x51C8},
+		{"DBEQ D0", 0x57C8},
+		{"TRAPcc (TRAPEQ.W)", 0x57FA},
+		{"ABCD D1,D0", 0xC101},
+		{"SBCD D1,D0", 0x8101},
+		{"ADDX.L -(A1),-(A0)", 0xD189},
+		{"CMPM.L (A1)+,(A0)+", 0xB189},
+		{"LSL.W #1,(A0) memform", 0xE3D0},
+		{"ADD.L D0,(A1)", 0xD191},
+		{"Scc (A0)", 0x56D0},
+		{"MOVE.L d16(A0),D0", 0x2028},
+	}
+	for _, c := range unsafe {
+		ji := mkM(c.op)
+		if m68kInstrCCRRegisterOnlySafe(&ji) {
+			t.Errorf("%s (%#04X) must NOT be register-only safe", c.name, c.op)
+		}
+	}
+}
+
+func TestM68KCCRLiveness_MemoryProducerKeepsUpstreamLive(t *testing.T) {
+	// ADD.L D1,D0; <memory producer>; ADD.L D1,D0 — the memory producer
+	// can bail pre-commit, so the first ADD must stay live even though
+	// the last ADD shadows its bits. This is the exact class that kept
+	// the liveness gate disabled.
+	for _, tc := range []struct {
+		name string
+		op   uint16
+	}{
+		{"NEG.L (A0)", 0x4490},
+		{"NOT.L (A0)", 0x4690},
+		{"CLR.L (A0)", 0x4290},
+		{"TST.L (A0)", 0x4A90},
+		{"TAS (A0)", 0x4AD0},
+		{"DIVU.W D2,D3", 0x86C2},
+		{"CHK.W D1,D0", 0x4181},
+	} {
+		live := m68kCCRLiveness([]M68KJITInstr{
+			mkM(0xD081), // ADD.L D1,D0
+			mkM(tc.op),
+			mkM(0xD081), // ADD.L D1,D0
+		})
+		if !live[0] {
+			t.Errorf("ADD before %s must stay live (pre-commit bail/exception observes CCR), got %v", tc.name, live)
+		}
+	}
+}
+
+func TestM68KCCRLiveness_RegisterOnlyRunStillElides(t *testing.T) {
+	// The whole point of the gate: a register-only run lets the shadowed
+	// producer die. ADD.L D1,D0; LEA-free reg-only filler; ADD.L D1,D0.
+	live := m68kCCRLiveness([]M68KJITInstr{
+		mkM(0xD081), // ADD.L D1,D0 — shadowed by last ADD (X and NZVC)
+		mkM(0x2400), // MOVE.L D0,D2 — reg-only, writes NZVC (partially shadows)
+		mkM(0x2240), // MOVEA.L D0,A1 — reg-only, no CCR
+		mkM(0xD081), // ADD.L D1,D0 — overwrites X+NZVC
+	})
+	if live[0] {
+		t.Errorf("first ADD fully shadowed across register-only run must be dead, got %v", live)
+	}
+	if !live[3] {
+		t.Errorf("final ADD must be live (block exit), got %v", live)
+	}
+}
+
+func TestM68KCCRLiveness_DBccReassertsDemand(t *testing.T) {
+	// ADD.L D1,D0; DBRA D7,disp; ADD.L D1,D0 — DBRA's taken path
+	// chain-exits mid-block with R14 published to the successor, so the
+	// first ADD must stay live even though DBRA reads no CCR.
+	live := m68kCCRLiveness([]M68KJITInstr{
+		mkM(0xD081), // ADD.L D1,D0
+		mkM(0x51CF), // DBRA D7
+		mkM(0xD081), // ADD.L D1,D0
+	})
+	if !live[0] {
+		t.Errorf("ADD before DBRA must stay live (chain exit publishes CCR), got %v", live)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Runtime parity for the enabled dead-CCR skip (JIT vs interpreter)
+// ---------------------------------------------------------------------------
+
+func TestM68KCCRLiveness_DeadSkipRuntimeParity(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+	for _, v := range [][2]uint32{
+		{0xFFFFFFFF, 1}, {1, 1}, {0x7FFFFFFF, 1}, {0x80000000, 0x80000000}, {0, 0},
+	} {
+		// Shape 1: dead ADD (fully shadowed by later ADD across a
+		// register-only run) — the skip must not change final CCR/regs.
+		bccFusionCompare(t, "DeadSkip_RegRun", []uint16{
+			0x203C, uint16(v[0] >> 16), uint16(v[0]), // MOVE.L #a,D0
+			0x223C, uint16(v[1] >> 16), uint16(v[1]), // MOVE.L #b,D1
+			0xD081,         // ADD.L D1,D0   (dead: shadowed below)
+			0x2400,         // MOVE.L D0,D2  (reg-only)
+			0x2240,         // MOVEA.L D0,A1 (reg-only, no CCR)
+			0xD081,         // ADD.L D1,D0   (live)
+			0x4E72, 0x2700, // STOP
+		})
+		// Shape 2: dead producer followed by EFLAGS-clobbering reg-only
+		// instruction then live producer + consumer chain.
+		bccFusionCompare(t, "DeadSkip_ThenBranch", []uint16{
+			0x203C, uint16(v[0] >> 16), uint16(v[0]), // MOVE.L #a,D0
+			0x223C, uint16(v[1] >> 16), uint16(v[1]), // MOVE.L #b,D1
+			0x9081,         // SUB.L D1,D0   (dead: CMP below rewrites NZVC, ADD rewrites X)
+			0x4840,         // SWAP D0       (reg-only producer, NZVC)
+			0xD081,         // ADD.L D1,D0   (live: X+NZVC)
+			0xB081,         // CMP.L D1,D0   (live, consumed)
+			0x6706,         // BEQ.S +6
+			0x7401,         // MOVEQ #1,D2
+			0x4E72, 0x2700, // STOP
+			0x7402,         // MOVEQ #2,D2
+			0x4E72, 0x2700, // STOP
+		})
+		// Shape 3: dead skip before a memory instruction must NOT happen —
+		// memory MOVE is a hidden consumer; parity must hold regardless.
+		bccFusionCompare(t, "DeadSkip_MemGuard", []uint16{
+			0x203C, uint16(v[0] >> 16), uint16(v[0]), // MOVE.L #a,D0
+			0x223C, uint16(v[1] >> 16), uint16(v[1]), // MOVE.L #b,D1
+			0x307C, 0x5000, // MOVEA.W #$5000,A0
+			0xD081,         // ADD.L D1,D0   (must stay live: store below can bail)
+			0x2080,         // MOVE.L D0,(A0)
+			0xD081,         // ADD.L D1,D0
+			0x4E72, 0x2700, // STOP
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Status-register move aliasing + CMPM classification (review P1/P2)
+// ---------------------------------------------------------------------------
+
+func TestM68KCCRLiveness_StatusMovesNotAliasedToDnForms(t *testing.T) {
+	// Size field 11 under the group-4 hi-byte masks selects the SR/CCR
+	// move forms, not NEGX/CLR/NEG/NOT byte forms:
+	//   0x40C0 MOVE SR,Dn   — reads whole SR (consumer, no CCR write)
+	//   0x42C0 MOVE CCR,Dn  — reads CCR (consumer, no CCR write)
+	for _, tc := range []struct {
+		name string
+		op   uint16
+	}{
+		{"MOVE SR,D0", 0x40C0},
+		{"MOVE CCR,D0", 0x42C0},
+	} {
+		writes, consumer, overwriter := m68kClassifyCCR(tc.op)
+		if writes != 0 {
+			t.Errorf("%s must not classify as CCR producer (writes=%v)", tc.name, writes)
+		}
+		if !consumer {
+			t.Errorf("%s must classify as CCR consumer", tc.name)
+		}
+		if overwriter {
+			t.Errorf("%s must not classify as overwriter", tc.name)
+		}
+	}
+	// None of the four status-move forms may sit on the register-only-safe
+	// whitelist: 0x40C0/0x42C0 read CCR, 0x46C0 (MOVE Dn,SR) can raise a
+	// privilege exception that exposes the pre-instruction CCR, and
+	// 0x44C0 (MOVE Dn,CCR) is kept off conservatively with its siblings.
+	for _, op := range []uint16{0x40C0, 0x42C0, 0x44C0, 0x46C0} {
+		ji := mkM(op)
+		if m68kInstrCCRRegisterOnlySafe(&ji) {
+			t.Errorf("status move %#04X must NOT be register-only safe", op)
+		}
+	}
+}
+
+func TestM68KCCRLiveness_MoveFromCCRKeepsProducerLive(t *testing.T) {
+	// MOVE.L D1,D0 (NZVC producer); MOVE CCR,D2 — the CCR read must keep
+	// the producer live. The old classification aliased 0x42C2 to CLR.B,
+	// shadowing the producer's NZ/VC.
+	live := m68kCCRLiveness([]M68KJITInstr{
+		mkM(0x2001), // MOVE.L D1,D0
+		mkM(0x42C2), // MOVE CCR,D2
+	})
+	if !live[0] {
+		t.Errorf("producer before MOVE CCR,Dn must stay live, got %v", live)
+	}
+}
+
+func TestM68KCCRLiveness_CMPMWritesNZVC(t *testing.T) {
+	// CMPM.L (A0)+,(A1)+ = 0xB389 — compare writes N/Z/V/C (X preserved).
+	writes, _, _ := m68kClassifyCCR(0xB389)
+	if writes&m68kCCRBitVC == 0 {
+		t.Fatalf("CMPM must classify as V/C writer, got writes=%v", writes)
+	}
+	if writes&m68kCCRBitNZ == 0 {
+		t.Fatalf("CMPM must classify as N/Z writer, got writes=%v", writes)
+	}
+	if writes&m68kCCRBitX != 0 {
+		t.Fatalf("CMPM must preserve X, got writes=%v", writes)
+	}
+	// EOR.L D0,D0 (0xB180) still NZ-only (interpreter preserves X/V/C).
+	writes, _, _ = m68kClassifyCCR(0xB180)
+	if writes != m68kCCRBitNZ {
+		t.Fatalf("EOR must stay NZ-only, got writes=%v", writes)
+	}
+}
+
+func TestM68KCCRLiveness_CMPMLiveThroughNZShadowForVC(t *testing.T) {
+	// CMPM.L (A0)+,(A1)+; EOR.L D0,D0 (shadows N/Z, preserves V/C); BVS.
+	// BVS consumes CMPM's V — CMPM must stay live even though its N/Z
+	// output is shadowed by the EOR.
+	live := m68kCCRLiveness([]M68KJITInstr{
+		mkM(0xB389), // CMPM.L (A0)+,(A1)+
+		mkM(0xB180), // EOR.L D0,D0
+		mkM(0x6900), // BVS
+	})
+	if !live[0] {
+		t.Errorf("CMPM before NZ-shadowing EOR must stay live for V/C, got %v", live)
+	}
+}
+
+func TestM68KCCRLiveness_CMPMRuntimeParity(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+	// Memory compare via CMPM whose V/C survives an NZ-shadowing EOR into
+	// a BVS. Values chosen to produce V=1 (0x80000000 - 1 overflows) and
+	// V=0 variants.
+	for _, v := range [][2]uint32{
+		{0x80000000, 1}, // CMPM dst-src overflows → V=1
+		{5, 3},          // plain → V=0
+		{3, 5},          // borrow → C=1,V=0
+	} {
+		program := []uint16{
+			0x307C, 0x5000, // MOVEA.W #$5000,A0
+			0x327C, 0x5004, // MOVEA.W #$5004,A1
+			0x20BC, uint16(v[1] >> 16), uint16(v[1]), // MOVE.L #src,(A0)
+			0x22BC, uint16(v[0] >> 16), uint16(v[0]), // MOVE.L #dst,(A1)
+			0xB389,         // CMPM.L (A0)+,(A1)+
+			0xB180,         // EOR.L D0,D0 (shadows N/Z)
+			0x6906,         // BVS.S +6
+			0x7401,         // MOVEQ #1,D2
+			0x4E72, 0x2700, // STOP
+			0x7402,         // MOVEQ #2,D2
+			0x4E72, 0x2700, // STOP
+		}
+		bccFusionCompare(t, "CMPM_VC", program)
 	}
 }

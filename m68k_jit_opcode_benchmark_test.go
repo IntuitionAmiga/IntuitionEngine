@@ -100,6 +100,14 @@ func buildM68KOpcodeBenchProgram(cpu *M68KCPU, tc m68kOpcodeBenchCase) (uint32, 
 		write(0x7C00) // MOVEQ #0,D6; keep STOP out of the first scanned native block.
 	}
 	endPC := pc
+	// Terminate the code stream AT endPC. Without this, the scanner walks
+	// past endPC into zero-filled memory (0x0000 decodes as ORI.B #imm,D0),
+	// the loop-top block crosses endPC, and native execution blows through
+	// the harness's exact-PC break-in into junk (runaway to top-of-RAM,
+	// bus-error storms, spurious MMIO bails). STOP is a block terminator,
+	// so every scanned block now ends exactly at endPC and the dispatcher
+	// returns to Go with RetPC=endPC before STOP ever executes.
+	write(0x4E72, 0x2700) // STOP #$2700
 
 	return startPC, endPC, m68kOpcodeBenchIterations*tc.instrPerIter + fillerInstrs
 }
@@ -108,7 +116,7 @@ func runM68KBenchInterpreterUntilPC(cpu *M68KCPU, startPC, endPC uint32) {
 	cpu.PC = startPC
 	cpu.running.Store(true)
 	cpu.stopped.Store(false)
-	for cpu.running.Load() && cpu.PC != endPC {
+	for cpu.running.Load() && !cpu.stopped.Load() && cpu.PC != endPC {
 		cpu.StepOne()
 	}
 	cpu.running.Store(false)
@@ -120,7 +128,10 @@ func runM68KBenchJITUntilPC(cpu *M68KCPU, startPC, endPC uint32) {
 	cpu.running.Store(true)
 	cpu.stopped.Store(false)
 	cpu.debugBreakIn = func(pc uint64) bool {
-		return uint32(pc) == endPC
+		// Exact-PC stop, plus a STOP-state guard: if the terminator STOP at
+		// endPC ever executes (helper exit past the break-in PC), exit the
+		// dispatch loop instead of parking in the idle-STOP spin forever.
+		return uint32(pc) == endPC || cpu.stopped.Load()
 	}
 	cpu.M68KExecuteJIT()
 	cpu.debugBreakIn = nil

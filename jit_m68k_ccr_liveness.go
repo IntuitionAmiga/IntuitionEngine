@@ -78,6 +78,16 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 		overwriter = true
 		return
 	}
+	// MOVE from SR (0x40C0..0x40FF) and MOVE from CCR (0x42C0..0x42FF,
+	// 68010+) READ the status register. Handle them before the group-4
+	// switch: their size field (11) would otherwise alias into the
+	// NEGX.B / CLR.B hi-byte cases and misclassify a status READER as a
+	// flag producer, letting the liveness walk shadow-kill the very
+	// producer whose CCR they read.
+	if (opcode&0xFFC0) == 0x40C0 || (opcode&0xFFC0) == 0x42C0 {
+		consumer = true
+		return
+	}
 	group := opcode >> 12
 	switch group {
 	case 0:
@@ -198,11 +208,19 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 			}
 		}
 	case 0xB:
-		// Group B: CMP.B/W/L, CMPM, CMPA — preserve X.
-		// EOR (opmode 4,5,6 with EA mode != An) — preserves X.
+		// Group B: CMP.B/W/L, CMPM, CMPA — preserve X, write NZVC.
+		// EOR (opmode 4,5,6 with EA mode != An) — interpreter updates only
+		// N/Z and preserves X/V/C. CMPM shares the EOR opmodes but with EA
+		// mode 001 ((An)+,(An)+) — it is a compare and writes NZVC; filing
+		// it as NZ-only let an NZ-shadowing EOR downstream mark CMPM dead
+		// while a Bcc still consumed its V/C.
 		opmode := (opcode >> 6) & 7
 		if opmode >= 4 && opmode <= 6 {
-			writes = m68kCCRBitNZ
+			if (opcode>>3)&7 == 1 { // CMPM
+				writes = m68kCCRBitNZVC
+			} else {
+				writes = m68kCCRBitNZ
+			}
 		} else {
 			writes = m68kCCRBitNZVC
 		}
@@ -293,6 +311,123 @@ func m68kClassifyCCR(opcode uint16) (writes m68kCCRBits, consumer, overwriter bo
 	return
 }
 
+// m68kInstrCCRRegisterOnlySafe reports whether an instruction provably
+// cannot observe the architectural CCR mid-execution: it touches no
+// memory (so it emits no MMIO/SMC/alignment bail guards that would
+// re-enter the interpreter with pre-instruction CCR), raises no native
+// exception (zero divide, CHK, TRAP), and does not exit the block
+// mid-stream with CCR flowing to a successor (chain exits publish R14).
+//
+// This is the inverted hidden-consumer model for the dead-CCR skip:
+// anything NOT on this whitelist is treated as a hidden CCR consumer in
+// m68kCCRLiveness, so upstream producers stay live and materialisable at
+// every possible observation point. Keep this list conservative — a
+// missing entry costs a lost optimization; a wrong entry costs stale
+// guest CCR on a bail path.
+func m68kInstrCCRRegisterOnlySafe(ji *M68KJITInstr) bool {
+	if ji == nil {
+		return false
+	}
+	op := ji.opcode
+	switch op >> 12 {
+	case 0x0:
+		// Immediate ops to Dn only (no EA guards). CMPI.B/W/L Dn included.
+		if m68kIsImmediateArithmeticDn(op) || m68kIsImmediateLogicDn(op) {
+			return true
+		}
+		return op&0xFF00 == 0x0C00 && (op>>6)&3 != 3 && (op>>3)&7 == 0
+	case 0x1, 0x2, 0x3:
+		// MOVE/MOVEA with register source AND register destination.
+		return (op>>3)&7 <= 1 && (op>>6)&7 <= 1
+	case 0x4:
+		switch op & 0xFF00 {
+		case 0x4000, 0x4040, 0x4080, // NEGX.B/W/L
+			0x4200, 0x4240, 0x4280, // CLR
+			0x4400, 0x4440, 0x4480, // NEG
+			0x4600, 0x4640, 0x4680, // NOT
+			0x4A00, 0x4A40, 0x4A80: // TST
+			// Size field 11 selects the status-move forms (MOVE SR,Dn /
+			// MOVE CCR,Dn / MOVE Dn,CCR / MOVE Dn,SR) and TAS, which
+			// alias into these hi-byte masks. Status moves read the CCR
+			// or can raise a privilege exception exposing it — none of
+			// the size-11 forms may be register-only safe. (This also
+			// drops TAS Dn: a lost optimization, not a correctness
+			// issue.)
+			if (op>>6)&3 == 3 {
+				return false
+			}
+			return (op>>3)&7 == 0 // Dn form only
+		}
+		if op&0xFFF8 == 0x4840 { // SWAP Dn
+			return true
+		}
+		if op&0xFFF8 == 0x4880 || op&0xFFF8 == 0x48C0 || op&0xFFF8 == 0x49C0 { // EXT/EXTB
+			return true
+		}
+		return op == 0x4E71 // NOP
+	case 0x5:
+		if op&0x00C0 == 0x00C0 {
+			// mode 0 = Scc Dn (register-only). mode 1 = DBcc — excluded:
+			// its taken path chain-exits mid-block, publishing R14 to the
+			// successor, so upstream producers must stay live. mode 7 with
+			// reg 2..4 = TRAPcc — traps. Everything else is Scc <mem>.
+			return (op>>3)&7 == 0
+		}
+		return (op>>3)&7 <= 1 // ADDQ/SUBQ to Dn or An
+	case 0x6:
+		// BRA and Bcc are register-only; BSR pushes the return address
+		// (memory write with bail guards).
+		return (op>>8)&0xF != 1
+	case 0x7:
+		return op&0x0100 == 0 // MOVEQ
+	case 0x8:
+		if op&0xF1F0 == 0x8100 { // SBCD
+			return false
+		}
+		opmode := (op >> 6) & 7
+		if opmode == 3 || opmode == 7 { // DIVU.W/DIVS.W — zero-divide trap
+			return false
+		}
+		return opmode <= 2 && (op>>3)&7 == 0 // OR Dn,Dn
+	case 0x9, 0xD:
+		opmode := (op >> 6) & 7
+		if opmode >= 4 && opmode <= 6 {
+			// Under opmode 4-6, EA mode 0 is exactly the ADDX/SUBX
+			// register-register form; mode 1 is ADDX/SUBX -(An),-(An) and
+			// modes >= 2 are ADD/SUB to memory — all memory-touching.
+			return (op>>3)&7 == 0
+		}
+		// opmode 0-2 (ADD/SUB <ea>,Dn) and 3/7 (ADDA/SUBA): register
+		// sources only.
+		return (op>>3)&7 <= 1
+	case 0xB:
+		opmode := (op >> 6) & 7
+		if opmode >= 4 && opmode <= 6 {
+			if op&0x0038 == 0x0008 { // CMPM (An)+,(An)+
+				return false
+			}
+			return (op>>3)&7 == 0 // EOR Dn,Dn
+		}
+		return (op>>3)&7 <= 1 // CMP/CMPA <Dn|An>,Dn/An
+	case 0xC:
+		if op&0xF1F0 == 0xC100 { // ABCD
+			return false
+		}
+		if op&0xF1F8 == 0xC140 || op&0xF1F8 == 0xC148 || op&0xF1F8 == 0xC188 { // EXG
+			return true
+		}
+		opmode := (op >> 6) & 7
+		if opmode == 3 || opmode == 7 { // MULU.W/MULS.W — no trap
+			return (op>>3)&7 == 0
+		}
+		return opmode <= 2 && (op>>3)&7 == 0 // AND Dn,Dn
+	case 0xE:
+		// Register-form shifts/rotates only; memory form has EA guards.
+		return op&0x00C0 != 0x00C0
+	}
+	return false
+}
+
 // m68kCCRLiveness analyzes a sequence of M68K JIT instructions and
 // returns, for each slot i, a boolean indicating whether ANY of the
 // CCR bits it writes is consumed by some downstream instruction in
@@ -361,12 +496,14 @@ func m68kCCRLiveness(instrs []M68KJITInstr) JITFlagLiveness {
 			demandNZ = false
 			demandVC = false
 		}
-		// Consumer effect (occurs at start of instruction). Explicit
-		// CCR readers reassert demand; bail-capable instructions are
-		// hidden consumers because the bailout epilogue surfaces the
-		// guest CCR to the interpreter, requiring upstream producers
-		// to stay materialisable.
-		if consumer || m68kInstrMaySetGenericIOFallback(&instrs[i]) {
+		// Consumer effect (occurs at start of instruction). Explicit CCR
+		// readers reassert demand. Every instruction NOT on the
+		// register-only-safe whitelist is a HIDDEN consumer: it may bail
+		// to the interpreter mid-block (MMIO/SMC/alignment guards), raise
+		// a native exception, or chain-exit publishing R14 to a successor
+		// — all of which surface the architectural pre-instruction CCR,
+		// so upstream producers must stay live and materialisable.
+		if consumer || !m68kInstrCCRRegisterOnlySafe(&instrs[i]) {
 			demandX = true
 			demandNZ = true
 			demandVC = true
@@ -397,22 +534,20 @@ func m68kIsCCRProducer(instr *M68KJITInstr) bool {
 }
 
 // jit68KCCRLivenessEnabled gates the Phase 2c emit-side dead-CCR skip.
-// Default false for architectural correctness: SR/CCR is observable at native
-// block boundaries by interrupts, exceptions, helper exits, and MMIO callbacks
-// even when the following guest instruction does not read CCR. A future
-// boundary-aware liveness pass may re-enable this selectively.
 //
-// NOT YET SAFE TO ENABLE: the hidden-consumer model (m68kInstrMaySetGenericIOFallback)
-// is incomplete. Many native-compiled producers bail mid-block via
-// m68kPatchFallbackBails BEFORE committing their own CCR (memory NEG/NEGX/NOT/
-// CLR/TST/NBCD/TAS, CHK, DIVU.W/DIVS.W). On such a bail the fallback epilogue
-// re-enters the interpreter at that instruction with the PRE-instruction CCR
-// still required; if an upstream producer was elided (because this instruction
-// "overwrites"), SR is stale. Every pre-commit direct-fallback-bail producer
-// must be modeled as a hidden consumer before flipping this. (For mk64 the win
-// is moot regardless: gfx_sp_tri1 is float+memory bound, so dead-CCR elision is
-// fps-neutral.)
-var jit68KCCRLivenessEnabled = false
+// Enabled: the hidden-consumer model is now the INVERTED whitelist
+// m68kInstrCCRRegisterOnlySafe — every instruction that could observe the
+// architectural CCR mid-block (interpreter bails from MMIO/SMC/alignment
+// guards, native exceptions like zero-divide/CHK/TRAPcc, mid-block chain
+// exits such as DBcc publishing R14 to a successor) reasserts full CCR
+// demand, so upstream producers stay live at every observation point. Only
+// producers whose entire downstream window (up to the next observation
+// point or shadowing producer) is provably register-only get elided.
+// History: previously disabled because the old m68kInstrMaySetGenericIOFallback
+// model missed pre-commit direct-fallback producers (memory NEG/NEGX/NOT/
+// CLR/TST/NBCD/TAS, CHK, DIVU.W/DIVS.W); the whitelist inversion covers
+// those by construction.
+var jit68KCCRLivenessEnabled = true
 
 // m68kCurrentLive / m68kCurrentInstrIdx publish the per-block bitmap
 // to emitCCR_* helpers. m68kCompileBlockWithMem sets them at the top

@@ -3646,7 +3646,11 @@ func writeM68K68020FPUMatrix(t *testing.T, path string) {
 	var rows strings.Builder
 	rows.WriteString("scope\tfeature\tcase\topcode\tform\tinterpreter_passing\tjit_admitted\tjit_path\tparity_test\n")
 	for _, tc := range m68kFPUDiffCases() {
-		fmt.Fprintf(&rows, "explicit\tFPU\t%s\t%04X\thelper\ttrue\ttrue\thelper\tTestM68KJIT_Differential_FPUHelperOpcodes\n", tc.name, tc.words[0])
+		path := "helper"
+		if m68kFPUDiffCaseIsNative(tc.words) {
+			path = "native"
+		}
+		fmt.Fprintf(&rows, "explicit\tFPU\t%s\t%04X\t%s\ttrue\ttrue\t%s\tTestM68KJIT_Differential_FPUHelperOpcodes\n", tc.name, tc.words[0], path, path)
 	}
 	for _, tc := range m68kBitFieldDiffCases() {
 		fmt.Fprintf(&rows, "explicit\t68020\t%s\t%04X\tnative\ttrue\ttrue\tnative\tTestM68KJIT_Differential_ProductionBitFieldOpcodes\n", tc.name, tc.words[0])
@@ -5012,6 +5016,43 @@ func runM68KJITDifferentialSingle(t *testing.T, tc m68kDiffCase) {
 	}
 }
 
+// m68kFPUDiffCaseIsNative mirrors the group-0xF emit dispatch: true when the
+// instruction compiles to inline native code (no helper request), false when
+// it still routes through the FPU helper.
+func m68kFPUDiffCaseIsNative(words []uint16) bool {
+	if len(words) == 0 {
+		return false
+	}
+	opcode := words[0]
+	if len(words) >= 2 {
+		cmdWord := words[1]
+		if op, _, _, _, ok := m68kDecodeNativeFPURegToReg(opcode, cmdWord); ok {
+			return m68kFPUNativeOpEmittable(op)
+		}
+		if _, ok := m68kDecodeNativeFPUEA(opcode, cmdWord); ok {
+			return true
+		}
+		// FMOVECR: ROM constant emitted as a compile-time immediate.
+		if (opcode>>6)&0x7 == 0 && cmdWord&0xFC00 == 0x5C00 {
+			return true
+		}
+	}
+	// FScc: Dn (mode 0), (An) (mode 2), d16(An) (mode 5) are native.
+	if (opcode>>6)&0x7 == 1 {
+		switch (opcode >> 3) & 0x7 {
+		case 0, 2, 5:
+			return true
+		case 1: // FDBcc
+			return true
+		}
+	}
+	// FBcc word/long (typeField 2/3).
+	if tf := (opcode >> 6) & 0x7; tf == 2 || tf == 3 {
+		return true
+	}
+	return false
+}
+
 func runM68KJITDifferentialFPUHelperSingle(t *testing.T, tc m68kFPUDiffCase) {
 	t.Helper()
 	if len(tc.words) == 0 {
@@ -5068,16 +5109,12 @@ func runM68KJITDifferentialFPUHelperSingle(t *testing.T, tc m68kFPUDiffCase) {
 	rig.ctx.NeedHelper = m68kJITHelperNone
 	rig.ctx.HelperPC = 0
 
-	// Register-to-register arithmetic ops are now emitted inline (native SSE2)
-	// rather than routed through the FPU helper. Detect that and assert the
-	// appropriate path: native ops update the FP state directly with no helper
+	// Many FPU forms are now emitted inline (native SSE2) rather than routed
+	// through the FPU helper: register-to-register arithmetic, EA-operand
+	// loads/stores, FMOVECR, FScc Dn, and FBcc. Detect the route and assert
+	// accordingly: native forms update the FP state directly with no helper
 	// request; everything else still drives the helper.
-	nativeEligible := false
-	if len(tc.words) >= 2 {
-		if op, _, _, _, ok := m68kDecodeNativeFPURegToReg(tc.words[0], tc.words[1]); ok {
-			nativeEligible = m68kFPUNativeOpEmittable(op)
-		}
-	}
+	nativeEligible := m68kFPUDiffCaseIsNative(tc.words)
 
 	callNative(block.execAddr, uintptr(unsafe.Pointer(rig.ctx)))
 	jit.PC = rig.ctx.RetPC

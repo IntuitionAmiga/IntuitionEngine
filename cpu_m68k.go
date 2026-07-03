@@ -802,6 +802,7 @@ type M68KCPU struct {
 	m68kJitMMIOGuardExits       atomic.Uint64 // MMIO/alignment/guarded-memory single-instruction slow paths
 	m68kJitUnsupportedOneExits  atomic.Uint64 // genuinely unsupported opcode: exactly one interpreter instruction
 	m68kJitCompileFailureExits  atomic.Uint64 // emitter/compiler failure: one interpreter instruction (non-strict)
+	m68kJitTranscendentalBursts atomic.Uint64 // interpreter bursts admitted for transcendental-FPU blocks
 	m68kJitWarmupInstructions   atomic.Uint64
 	m68kJitLastNativePC         atomic.Uint32
 	m68kJitRecordNativePCs      atomic.Bool
@@ -12275,12 +12276,10 @@ func (cpu *M68KCPU) execFPUEAToReg(opcode, cmdWord uint16) {
 				Exp:  uint16(w0>>16) & 0x7FFF,
 				Mant: (uint64(w1) << 32) | uint64(w2),
 			}
-			cpu.FPU.SetFromExtendedReal(dstReg, ext)
-			if op == FPU_OP_FMOVE {
-				cpu.FPU.setCC64(cpu.FPU.GetFP64(dstReg))
-				return
-			}
-			value = cpu.FPU.GetFP64(dstReg)
+			// Convert without staging through dstReg: writing the operand to
+			// the destination first would clobber dst before an arithmetic op
+			// reads it (FADD.X #imm,FPn must be dst+imm, not imm+imm).
+			value = ext.ToFloat64()
 		case 4: // Word integer (16-bit immediate occupies one word)
 			value = float64(int16(cpu.Fetch16()))
 		case 5: // Double precision
@@ -12337,16 +12336,9 @@ func (cpu *M68KCPU) execFPUEAToReg(opcode, cmdWord uint16) {
 	case 1: // Single precision
 		value = float64(math.Float32frombits(cpu.Read32(ea)))
 	case 2: // Extended precision (96-bit)
-		ext := cpu.readExtendedReal96(ea)
-		cpu.FPU.SetFromExtendedReal(dstReg, ext)
-		if postIncrement != 0 {
-			cpu.AddrRegs[reg] += postIncrement
-		}
-		if op == FPU_OP_FMOVE {
-			cpu.FPU.setCC64(cpu.FPU.GetFP64(dstReg))
-			return
-		}
-		value = cpu.FPU.GetFP64(dstReg)
+		// Same rule as the immediate path: convert without staging through
+		// dstReg, or FADD.X (An),FPn computes ext+ext instead of dst+ext.
+		value = cpu.readExtendedReal96(ea).ToFloat64()
 	case 4: // Word integer
 		value = float64(int16(cpu.Read16(ea)))
 	case 5: // Double precision

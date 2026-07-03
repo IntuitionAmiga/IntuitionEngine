@@ -284,7 +284,7 @@ func TestFPU_DataRegisterDirectOperand(t *testing.T) {
 		cpu := setupFPUTestCPU()
 		cpu.PC = 0x1000
 		cpu.DataRegs[0] = 200
-		cpu.Write32(0, 0xDEADBEEF) // address 0 must NOT be read
+		cpu.Write32(0, 0xDEADBEEF)    // address 0 must NOT be read
 		cpu.Write16(cpu.PC, 0xF200)   // cpid 1, mode 0 (Dn), reg 0 (D0)
 		cpu.Write16(cpu.PC+2, 0x4000) // R/M=1, fmt=long, dst=FP0, op=FMOVE
 		cpu.currentIR = cpu.Fetch16()
@@ -331,7 +331,7 @@ func TestFPU_DataRegisterDirectOperand(t *testing.T) {
 		cpu.PC = 0x1000
 		cpu.FPU.SetFP64(0, 1.5)
 		cpu.DataRegs[1] = 0xDEADBEEF
-		cpu.Write32(0, 0) // address 0 must stay clean
+		cpu.Write32(0, 0)             // address 0 must stay clean
 		cpu.Write16(cpu.PC, 0xF201)   // mode 0 (Dn), reg 1 (D1)
 		cpu.Write16(cpu.PC+2, 0x6400) // R/M=1, dir=1 (FP->EA), fmt=single, src=FP0
 		cpu.currentIR = cpu.Fetch16()
@@ -538,6 +538,66 @@ func TestFPU_MemToReg_ExtendedFormat(t *testing.T) {
 	if got := cpu.FPU.GetFP64(1); math.Abs(got-math.Pi) > 1e-15 {
 		t.Fatalf("mem->reg extended got %v want %v", got, math.Pi)
 	}
+}
+
+// Extended-format EA arithmetic must compute dst = dst OP operand. The EA
+// decode may not stage the operand through the destination register: doing so
+// clobbers dst before the operation, turning FADD.X <ea>,FPn into ext+ext.
+func TestFPU_ExtendedEAArithmeticDoesNotClobberDst(t *testing.T) {
+	runFADD := func(t *testing.T, cpu *M68KCPU) {
+		t.Helper()
+		cpu.currentIR = cpu.Fetch16()
+		cpu.FetchAndDecodeInstruction()
+	}
+
+	t.Run("memory_source", func(t *testing.T) {
+		cpu := setupFPUTestCPU()
+		cpu.PC = 0x1000
+		cpu.AddrRegs[0] = 0x3000
+		cpu.writeExtendedReal96(0x3000, ExtendedRealFromFloat64(2.5))
+		cpu.FPU.SetFP64(0, 10.0)
+		// FADD.X (A0),FP0: opcode mode=2 reg=0, cmdWord R/M=1 fmt=2 dst=0 op=FADD
+		cpu.Write16(0x1000, 0xF210)
+		cpu.Write16(0x1002, (1<<14)|(2<<10)|(0<<7)|FPU_OP_FADD)
+		runFADD(t, cpu)
+		if got := cpu.FPU.GetFP64(0); got != 12.5 {
+			t.Fatalf("FADD.X (A0),FP0 = %v, want 12.5 (dst clobbered by EA operand?)", got)
+		}
+	})
+
+	t.Run("immediate_source", func(t *testing.T) {
+		cpu := setupFPUTestCPU()
+		cpu.PC = 0x1000
+		cpu.FPU.SetFP64(3, 10.0)
+		// FADD.X #2.5,FP3: opcode mode=7 reg=4, then 12-byte extended immediate
+		cpu.Write16(0x1000, 0xF23C)
+		cpu.Write16(0x1002, (1<<14)|(2<<10)|(3<<7)|FPU_OP_FADD)
+		ext := ExtendedRealFromFloat64(2.5)
+		cpu.Write32(0x1004, uint32(ext.Sign)<<31|uint32(ext.Exp)<<16)
+		cpu.Write32(0x1008, uint32(ext.Mant>>32))
+		cpu.Write32(0x100C, uint32(ext.Mant))
+		runFADD(t, cpu)
+		if got := cpu.FPU.GetFP64(3); got != 12.5 {
+			t.Fatalf("FADD.X #2.5,FP3 = %v, want 12.5 (dst clobbered by EA operand?)", got)
+		}
+		if cpu.PC != 0x1010 {
+			t.Fatalf("PC after extended immediate = 0x%X, want 0x1010", cpu.PC)
+		}
+	})
+
+	t.Run("memory_source_FMOVE_still_stores", func(t *testing.T) {
+		cpu := setupFPUTestCPU()
+		cpu.PC = 0x1000
+		cpu.AddrRegs[1] = 0x3100
+		cpu.writeExtendedReal96(0x3100, ExtendedRealFromFloat64(-7.25))
+		cpu.FPU.SetFP64(2, 99.0)
+		cpu.Write16(0x1000, 0xF211) // mode=2 reg=1
+		cpu.Write16(0x1002, (1<<14)|(2<<10)|(2<<7)|FPU_OP_FMOVE)
+		runFADD(t, cpu)
+		if got := cpu.FPU.GetFP64(2); got != -7.25 {
+			t.Fatalf("FMOVE.X (A1),FP2 = %v, want -7.25", got)
+		}
+	})
 }
 
 func TestFPU_RegToMem_ExtendedFormat(t *testing.T) {

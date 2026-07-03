@@ -190,16 +190,16 @@ func m68kEmitNativeFPURegToReg(cb *CodeBuffer, op m68kFPUNativeOp, src, dst, pre
 	case m68kFPUNativeFSQRT:
 		amd64SQRTSD_rm(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
 	case m68kFPUNativeFABS:
-		// fp[dst] = |fp[src]|: clear the sign bit via ANDPD with 0x7FFF...FFFF.
+		// fp[dst] = |fp[src]|: clear the sign bit via ANDPD with the context-
+		// resident 0x7FFF...FFFF mask (one MOVSD, no GPR immediate).
 		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
-		amd64MOV_reg_imm64(cb, amd64RCX, 0x7FFFFFFFFFFFFFFF)
-		amd64MOVQ_xmm_reg(cb, fpuMaskXMM, amd64RCX)
+		amd64MOVSD_load(cb, fpuMaskXMM, m68kAMD64RegCtx, int32(m68kCtxOffFPAbsMask))
 		amd64ANDPD_rr(cb, fpuWorkXMM, fpuMaskXMM)
 	case m68kFPUNativeFNEG:
-		// fp[dst] = -fp[src]: flip the sign bit via XORPD with 0x8000...0000.
+		// fp[dst] = -fp[src]: flip the sign bit via XORPD with the context-
+		// resident 0x8000...0000 mask.
 		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
-		amd64MOV_reg_imm64(cb, amd64RCX, 0x8000000000000000)
-		amd64MOVQ_xmm_reg(cb, fpuMaskXMM, amd64RCX)
+		amd64MOVSD_load(cb, fpuMaskXMM, m68kAMD64RegCtx, int32(m68kCtxOffFPNegMask))
 		amd64XORPD_rr(cb, fpuWorkXMM, fpuMaskXMM)
 	case m68kFPUNativeFADD:
 		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, dstDisp)
@@ -225,6 +225,12 @@ func m68kEmitNativeFPURegToReg(cb *CodeBuffer, op m68kFPUNativeOp, src, dst, pre
 		amd64SSEsd_rm(cb, 0x5A, fpuMaskXMM, fpuBaseGPR, srcDisp)
 		amd64SSE_scalar(cb, 0x59, fpuWorkXMM, fpuMaskXMM) // mulss xmm0,xmm1
 		amd64CVTSS2SD_rr(cb, fpuWorkXMM, fpuWorkXMM)
+	case m68kFPUNativeFINT:
+		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		m68kEmitFPURoundToInt(cb, fpuWorkXMM, fpuWorkXMM, false)
+	case m68kFPUNativeFINTRZ:
+		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		m68kEmitFPURoundToInt(cb, fpuWorkXMM, fpuWorkXMM, true)
 	default:
 		// FCMP/FTST are handled by the no-store path; anything else falls back.
 		return false
@@ -240,15 +246,16 @@ func m68kEmitNativeFPURegToReg(cb *CodeBuffer, op m68kFPUNativeOp, src, dst, pre
 }
 
 // m68kFPUNativeOpEmittable reports whether the native FPU emitter implements op.
-// Covers all SSE2-cleanly-mappable register-to-register ops; transcendentals,
-// FINT/FINTRZ (need SSE4.1 roundsd / rounding-mode state), FMOD/FREM,
-// FGETEXP/FGETMAN/FSCALE and EA-operand forms remain on the FPU helper.
+// Covers all SSE2-cleanly-mappable register-to-register ops plus FINT/FINTRZ
+// (SSE4.1 ROUNDSD, gated on m68kJITHasSSE41 at decode time); transcendentals,
+// FMOD/FREM, FGETEXP/FGETMAN/FSCALE remain on the FPU helper.
 func m68kFPUNativeOpEmittable(op m68kFPUNativeOp) bool {
 	switch op {
 	case m68kFPUNativeFMOVE, m68kFPUNativeFADD, m68kFPUNativeFSUB,
 		m68kFPUNativeFMUL, m68kFPUNativeFDIV, m68kFPUNativeFSQRT,
 		m68kFPUNativeFABS, m68kFPUNativeFNEG, m68kFPUNativeFSGLDIV,
-		m68kFPUNativeFSGLMUL, m68kFPUNativeFCMP, m68kFPUNativeFTST:
+		m68kFPUNativeFSGLMUL, m68kFPUNativeFCMP, m68kFPUNativeFTST,
+		m68kFPUNativeFINT, m68kFPUNativeFINTRZ:
 		return true
 	default:
 		return false
@@ -331,7 +338,20 @@ func m68kEmitNativeFPUSetCC(cb *CodeBuffer) {
 // Line-F, when cpu.FPU is absent), the SSE2 arithmetic, and the condition-code
 // update. Returns false if op has no native implementation, leaving the caller
 // to emit the helper path.
-func m68kEmitNativeFPUInstr(cb *CodeBuffer, op m68kFPUNativeOp, src, dst, precision int, instrPC uint32, br *m68kBlockRegs, instrIdx int) bool {
+// m68kEmitFPIARStore writes FPIAR = instrPC (a data operation, mirroring
+// ExecFPUInstruction), unless elide is set. Elision is safe only when the next
+// in-block instruction is another general FPU data op that will overwrite FPIAR
+// before any observer (FMOVE FPIAR→ea, FSAVE, exception) can read it — see
+// m68kFPUNextInstrWritesFPIAR. Clobbers RCX.
+func m68kEmitFPIARStore(cb *CodeBuffer, instrPC uint32, elide bool) {
+	if elide {
+		return
+	}
+	amd64MOV_reg_mem(cb, amd64RCX, m68kAMD64RegCtx, int32(m68kCtxOffFPIARPtr))
+	amd64MOV_mem_imm32(cb, amd64RCX, 0, instrPC)
+}
+
+func m68kEmitNativeFPUInstr(cb *CodeBuffer, op m68kFPUNativeOp, src, dst, precision int, instrPC uint32, br *m68kBlockRegs, instrIdx int, elideFPIAR, elideCC bool) bool {
 	if !m68kFPUNativeOpEmittable(op) {
 		return false
 	}
@@ -349,10 +369,7 @@ func m68kEmitNativeFPUInstr(cb *CodeBuffer, op m68kFPUNativeOp, src, dst, precis
 	m68kEmitHelperAtInstr(cb, instrPC, br, instrIdx, m68kJITHelperFPU)
 	patchRel32(cb, jnzNative, cb.Len())
 
-	// FPIAR = instruction address (data operations only; all native ops have
-	// cmdWord bit 15 == 0). Mirrors ExecFPUInstruction.
-	amd64MOV_reg_mem(cb, amd64RCX, m68kAMD64RegCtx, int32(m68kCtxOffFPIARPtr))
-	amd64MOV_mem_imm32(cb, amd64RCX, 0, instrPC)
+	m68kEmitFPIARStore(cb, instrPC, elideFPIAR)
 
 	switch op {
 	case m68kFPUNativeFCMP:
@@ -363,7 +380,11 @@ func m68kEmitNativeFPUInstr(cb *CodeBuffer, op m68kFPUNativeOp, src, dst, precis
 		m68kEmitNativeFPUSetCC(cb)
 	default:
 		m68kEmitNativeFPURegToReg(cb, op, src, dst, precision)
-		m68kEmitNativeFPUSetCC(cb)
+		// Lazy FPSR: skip the condition-code update when the next in-block op
+		// unconditionally overwrites the CC before any observer or fault.
+		if !elideCC {
+			m68kEmitNativeFPUSetCC(cb)
+		}
 	}
 	return true
 }
@@ -374,6 +395,18 @@ func m68kEmitNativeFPUInstr(cb *CodeBuffer, op m68kFPUNativeOp, src, dst, precis
 // from setCC64: no infinity bit, and NaN is keyed off the operands (via the
 // unordered compare) rather than a difference value.
 func m68kEmitNativeFCMP(cb *CodeBuffer, src, dst int) {
+	// Zero cc BEFORE the compare: XOR sets host flags (result 0 → PF=1), which
+	// would corrupt the ucomisd result the branches below test.
+	amd64XOR_reg_reg32(cb, amd64RDX, amd64RDX)
+	amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, int32(dst*8))
+	amd64UCOMISD_rm(cb, fpuWorkXMM, fpuBaseGPR, int32(src*8)) // sets ZF/PF/CF
+	m68kEmitNativeFCMPFlagsTail(cb)
+}
+
+// m68kEmitNativeFCMPFlagsTail turns UCOMISD result flags into FPSR condition
+// codes. Expects host ZF/PF/CF fresh from the compare and RDX zeroed BEFORE
+// the compare (zeroing afterwards would clobber the flags).
+func m68kEmitNativeFCMPFlagsTail(cb *CodeBuffer) {
 	const (
 		rFPSR      = amd64RCX
 		rCC        = amd64RDX
@@ -381,12 +414,6 @@ func m68kEmitNativeFCMP(cb *CodeBuffer, src, dst int) {
 		clearCC    = int32(-251658241) // ^fpuCCMask
 		condParity = 0xA               // JP — unordered (either operand NaN)
 	)
-	// Zero cc BEFORE the compare: XOR sets host flags (result 0 → PF=1), which
-	// would corrupt the ucomisd result the branches below test.
-	amd64XOR_reg_reg32(cb, rCC, rCC)
-	amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, int32(dst*8))
-	amd64UCOMISD_rm(cb, fpuWorkXMM, fpuBaseGPR, int32(src*8)) // sets ZF/PF/CF
-
 	jp := amd64Jcc_rel32(cb, condParity) // unordered → NaN
 	je := amd64Jcc_rel32(cb, amd64CondE) // equal → Z
 	jb := amd64Jcc_rel32(cb, amd64CondB) // dst < src (CF, already not unordered) → N

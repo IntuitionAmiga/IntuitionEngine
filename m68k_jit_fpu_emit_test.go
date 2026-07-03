@@ -105,12 +105,14 @@ func TestM68KEmitNativeFPU_SinglePrecisionRounding(t *testing.T) {
 func TestM68KEmitNativeFPU_AbsNeg(t *testing.T) {
 	const src, dst = 2, 5
 	for _, c := range []struct {
-		op   m68kFPUNativeOp
-		mask uint64
-		pdFn func(cb *CodeBuffer, dst, src byte)
+		op      m68kFPUNativeOp
+		maskOff int32
+		pdFn    func(cb *CodeBuffer, dst, src byte)
 	}{
-		{m68kFPUNativeFABS, 0x7FFFFFFFFFFFFFFF, amd64ANDPD_rr},
-		{m68kFPUNativeFNEG, 0x8000000000000000, amd64XORPD_rr},
+		// The sign masks are now loaded from the JIT context with a single
+		// MOVSD rather than materialised via a 64-bit immediate.
+		{m68kFPUNativeFABS, m68kCtxOffFPAbsMask, amd64ANDPD_rr},
+		{m68kFPUNativeFNEG, m68kCtxOffFPNegMask, amd64XORPD_rr},
 	} {
 		got := emitToBytes(func(cb *CodeBuffer) {
 			if !m68kEmitNativeFPURegToReg(cb, c.op, src, dst, m68kFPURoundExtended) {
@@ -120,8 +122,7 @@ func TestM68KEmitNativeFPU_AbsNeg(t *testing.T) {
 		want := emitToBytes(func(cb *CodeBuffer) {
 			amd64MOV_reg_mem(cb, amd64RAX, m68kAMD64RegCtx, m68kCtxOffFPRegsPtr)
 			amd64MOVSD_load(cb, 0, amd64RAX, src*8)
-			amd64MOV_reg_imm64(cb, amd64RCX, c.mask)
-			amd64MOVQ_xmm_reg(cb, 1, amd64RCX)
+			amd64MOVSD_load(cb, 1, m68kAMD64RegCtx, c.maskOff)
 			c.pdFn(cb, 0, 1)
 			amd64MOVSD_store(cb, amd64RAX, dst*8, 0)
 		})

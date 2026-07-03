@@ -126,6 +126,32 @@ func m68kCondToDirectJcc(m68kCond uint16) byte {
 	return 0xFE
 }
 
+// m68kBccLiveFlagsUsable reports whether a Bcc with the given M68K condition
+// can branch directly off live host EFLAGS in the given lazy flag state
+// (CMP/Bcc fusion), instead of materializing the 5-bit CCR into R14 first.
+//
+// After arithmetic producers (ADD/SUB/CMP/NEG) every condition maps 1:1 to
+// a host Jcc. After MOVE/TST-style producers (flagsLiveLogi) the
+// architectural V=0/C=0 matches the host's OF=0/CF=0, so all conditions are
+// still valid. After AND/OR/EOR (flagsLiveLogiPreserveVC) the architectural
+// V and C are *preserved old values* living in R14 while host EFLAGS has
+// OF=CF=0 — only conditions that read N/Z alone may use host flags there.
+func m68kBccLiveFlagsUsable(state m68kFlagState, cond uint16) bool {
+	if cond < 2 { // T/F consume no flags; keep the materialized path
+		return false
+	}
+	switch state {
+	case flagsLiveArith, flagsLiveArithNoX, flagsLiveLogi:
+		return true
+	case flagsLiveLogiPreserveVC:
+		switch cond {
+		case 6, 7, 10, 11: // NE, EQ, PL, MI — N/Z only
+			return true
+		}
+	}
+	return false
+}
+
 // amd64MOVZX_B_mem emits MOVZX r32, BYTE [base + disp] (zero-extend byte from memory).
 func amd64MOVZX_B_mem(cb *CodeBuffer, dst, base byte, disp int32) {
 	emitREX(cb, false, dst, base)
@@ -7697,16 +7723,32 @@ func m68kEmitBcc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32
 	disp := m68kReadBranchDisp(memory, instrPC, ji.opcode)
 	targetPC := uint32(int64(m68kBranchBasePC(instrPC, ji.opcode)) + int64(disp))
 
-	// Bcc itself does not modify CCR, but the generated branch scaffolding
-	// below may emit loop-budget arithmetic or chain-exit setup that clobbers
-	// host EFLAGS. Materialize pending lazy flags first so both taken and
-	// fall-through paths retain the interpreter-visible CCR.
-	if cs := m68kCurrentCS; cs != nil && cs.flagState != flagsMaterialized {
-		m68kMaterializeCCR(cb, cs)
+	// CMP/Bcc fusion: when CCR is lazily live in host EFLAGS and the
+	// condition is representable there, branch with a single direct Jcc off
+	// the live flags. CCR materialization then happens only on the taken
+	// (block-exit / back-jump) path — before any scaffolding clobbers
+	// EFLAGS — and the fall-through path keeps the flags live for the next
+	// consumer or producer. When fusion does not apply (T/F conditions, or
+	// V/C-reading conditions after an AND/OR/EOR whose architectural V/C
+	// are preserved values in R14, not host flags), materialize up front
+	// exactly as before, because the branch scaffolding below clobbers
+	// EFLAGS on both paths.
+	cs := m68kCurrentCS
+	useDirect := false
+	var jccCond byte
+	if cs != nil && cs.flagState != flagsMaterialized {
+		if m68kBccLiveFlagsUsable(cs.flagState, cond) {
+			jccCond = m68kCondToDirectJcc(cond)
+			useDirect = jccCond != 0xFF && jccCond != 0xFE
+		}
+		if !useDirect {
+			m68kMaterializeCCR(cb, cs)
+		}
 	}
-
-	// Evaluate M68K condition → returns Jcc condition code
-	jccCond := m68kCondToJcc(cb, cond)
+	if !useDirect {
+		// Evaluate M68K condition from R14 → returns Jcc condition code
+		jccCond = m68kCondToJcc(cb, cond)
+	}
 
 	if jccCond == 0xFF {
 		// Always-taken condition: chain exit
@@ -7730,6 +7772,17 @@ func m68kEmitBcc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32
 			// Pattern: if NOT taken → skip; if taken → budget check → JMP back
 			invertedCond := jccCond ^ 1
 			skipOff := amd64Jcc_rel32(cb, invertedCond) // skip if NOT taken
+
+			// Fused branch: the taken path is about to run loop-budget
+			// arithmetic that clobbers EFLAGS, and the back-jump target was
+			// compiled expecting a materialized R14. Extract the still-live
+			// EFLAGS into R14 now, on the taken side only; the compile
+			// state is restored for the fall-through path below.
+			var fusedSavedState m68kFlagState
+			if useDirect {
+				fusedSavedState = cs.flagState
+				m68kMaterializeCCR(cb, cs)
+			}
 
 			// Increment loop counter by body size (instructions in loop body)
 			bodySize := uint32(instrIdx - targetIdx + 1)
@@ -7781,6 +7834,13 @@ func m68kEmitBcc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32
 				*chainSlots = append(*chainSlots, bccInfo)
 			}
 
+			// Fused branch: the fall-through path never executed the taken
+			// side's materialization, so its flags are still live in EFLAGS
+			// (Jcc does not modify them). Restore the compile state.
+			if useDirect {
+				cs.flagState = fusedSavedState
+			}
+
 			// Not-taken path
 			patchRel32(cb, skipOff, cb.Len())
 			return
@@ -7791,9 +7851,20 @@ func m68kEmitBcc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32
 	invertedCond := jccCond ^ 1
 	skipOff := amd64Jcc_rel32(cb, invertedCond)
 
+	// Fused branch: m68kEmitChainExit materializes CCR internally (taken
+	// path only — EFLAGS are still live at its entry since Jcc does not
+	// modify them). Snapshot the live compile state so the fall-through
+	// path resumes lazy.
+	var fusedSavedState m68kFlagState
+	if useDirect {
+		fusedSavedState = cs.flagState
+	}
 	bccInfo := m68kEmitChainExit(cb, targetPC, uint32(instrIdx+1), m68kNativePrefixInstrCount(memory, targetPC), br)
 	if chainSlots != nil {
 		*chainSlots = append(*chainSlots, bccInfo)
+	}
+	if useDirect {
+		cs.flagState = fusedSavedState
 	}
 
 	patchRel32(cb, skipOff, cb.Len())
@@ -8584,24 +8655,59 @@ func m68kEmitDBcc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint3
 		return
 	}
 
-	// DBcc clobbers EFLAGS internally (SUB for decrement, CMP for exhaustion check).
-	// Materialize lazy CCR into R14 before we clobber EFLAGS.
-	if cs := m68kCurrentCS; cs != nil && cs.flagState != flagsMaterialized {
-		m68kMaterializeCCR(cb, cs)
+	// Step 1: Evaluate condition.
+	// DBT never decrements, never branches, and emits nothing — return
+	// before any materialization so lazily-live EFLAGS survive it.
+	if cond == 0 {
+		return
+	}
+
+	// DBcc fusion: when CCR is lazily live in host EFLAGS and the condition
+	// is representable there, test it with one direct Jcc off the live
+	// flags. The decrement below clobbers EFLAGS, so the continue path
+	// materializes right after the Jcc, and the condition-true exit path
+	// gets its own materialization stub (EFLAGS are still live there — Jcc
+	// does not modify them) before converging on the fall-through point.
+	// Both convergence arms therefore leave R14 canonical. DBRA/DBF (cond 1)
+	// consumes no flags but still clobbers EFLAGS, so it materializes up
+	// front as before; the same applies when fusion is gated off (V/C
+	// conditions after AND/OR/EOR — see m68kBccLiveFlagsUsable).
+	cs := m68kCurrentCS
+	useDirect := false
+	var directJcc byte
+	if cs != nil && cs.flagState != flagsMaterialized && m68kBccLiveFlagsUsable(cs.flagState, cond) {
+		directJcc = m68kCondToDirectJcc(cond)
+		useDirect = directJcc != 0xFF && directJcc != 0xFE
+	}
+	if !useDirect {
+		// DBcc clobbers EFLAGS internally (SUB for decrement, CMP for
+		// exhaustion check). Materialize lazy CCR into R14 first.
+		if cs != nil && cs.flagState != flagsMaterialized {
+			m68kMaterializeCCR(cb, cs)
+		}
 	}
 
 	// Read word displacement (relative to instrPC + 2)
 	dispWord := int16(uint16(memory[instrPC+2])<<8 | uint16(memory[instrPC+3]))
 	targetPC := uint32(int64(instrPC) + 2 + int64(dispWord))
 
-	// Step 1: Evaluate condition
-	if cond == 0 { // DBT — always true → always fall through (never loops)
-		return // fall through to next instruction
-	}
 	if cond == 1 { // DBF / DBRA — always false → always decrement and branch
 		// Skip condition check, go straight to decrement
+	} else if useDirect {
+		exitOff := amd64Jcc_rel32(cb, directJcc) // condition TRUE → exit loop
+		liveState := cs.flagState
+		m68kMaterializeCCR(cb, cs) // continue path: extract before decrement clobbers
+		defer func(off int, st m68kFlagState) {
+			// Runs after the explicit end-of-function patches, so cb.Len()
+			// here is the convergence point the exhausted path lands on.
+			joinOff := amd64JMP_rel32(cb) // exhausted arm hops over the stub
+			patchRel32(cb, off, cb.Len()) // condition-true arm lands here
+			cs.flagState = st             // EFLAGS still live on this arm
+			m68kMaterializeCCR(cb, cs)    // (sets state back to materialized)
+			patchRel32(cb, joinOff, cb.Len())
+		}(exitOff, liveState)
 	} else {
-		// Evaluate condition: if TRUE → skip to fall-through (exit loop)
+		// Evaluate condition from R14: if TRUE → skip to fall-through (exit loop)
 		jccCond := m68kCondToJcc(cb, cond)
 		if jccCond != 0xFF && jccCond != 0xFE {
 			exitOff := amd64Jcc_rel32(cb, jccCond) // if condition TRUE → skip
@@ -12142,14 +12248,44 @@ func m68kEmitInstructionFull(cb *CodeBuffer, ji *M68KJITInstr, blockStartPC uint
 
 	case 0xF: // FPU: native reg-to-reg arithmetic, else helper, else interpreter.
 		instrPC := blockStartPC + ji.pcOffset
+		// FPIAR store elision: when the next in-block instruction is another
+		// general FPU data op it overwrites FPIAR before any observer can read
+		// it, so this instruction's FPIAR store is dead.
+		elideFPIAR := m68kFPUNextInstrWritesFPIAR(instrs, instrIdx, blockStartPC, memory)
+		// Lazy FPSR: when the next in-block op unconditionally overwrites the
+		// FPSR condition codes before any observer or fault, this op's CC
+		// update is dead.
+		elideCC := m68kFPUNextInstrOverwritesCCNoFault(instrs, instrIdx, blockStartPC, memory)
 		// Native path: register-to-register arithmetic emitted inline in SSE2.
 		// The command word is the second instruction word at instrPC+2.
 		if cmdAddr := int(instrPC) + 2; cmdAddr+1 < len(memory) {
 			cmdWord := uint16(memory[cmdAddr])<<8 | uint16(memory[cmdAddr+1])
 			if op, src, dst, precision, ok := m68kDecodeNativeFPURegToReg(opcode, cmdWord); ok {
-				if m68kEmitNativeFPUInstr(cb, op, src, dst, precision, instrPC, br, instrIdx) {
+				if m68kEmitNativeFPUInstr(cb, op, src, dst, precision, instrPC, br, instrIdx, elideFPIAR, elideCC) {
 					return
 				}
+			}
+		}
+		// EA-operand forms (memory/Dn/immediate source, FMOVE-to-memory).
+		if m68kEmitNativeFPUEA(cb, ji, memory, blockStartPC, br, instrIdx, elideFPIAR, elideCC) {
+			return
+		}
+		// FMOVECR: ROM constant is a compile-time immediate.
+		if m68kEmitNativeFMOVECR(cb, ji, memory, blockStartPC, br, instrIdx, elideFPIAR) {
+			return
+		}
+		// FScc Dn: condition-to-boolean into a data register.
+		if m68kEmitNativeFSccDn(cb, ji, memory, blockStartPC, br, instrIdx) {
+			return
+		}
+		// FDBcc: native FPU decrement-and-branch loop.
+		if m68kEmitFDBcc(cb, ji, memory, blockStartPC, br, instrIdx, instrOffsets, instrs, chainSlots) {
+			return
+		}
+		// FBcc: native conditional branch off the FPSR condition codes.
+		if tf := (opcode >> 6) & 0x7; tf == 2 || tf == 3 {
+			if m68kEmitFBcc(cb, ji, memory, blockStartPC, br, instrIdx, instrOffsets, instrs, chainSlots) {
+				return
 			}
 		}
 		if m68kIsJITHelperSupportedFPU(opcode) {

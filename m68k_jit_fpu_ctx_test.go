@@ -21,6 +21,8 @@ func TestM68KJITContext_FPUOffsetsMatchLayout(t *testing.T) {
 		{"FPSRPtr", m68kCtxOffFPSRPtr, unsafe.Offsetof(ctx.FPSRPtr)},
 		{"FPCRPtr", m68kCtxOffFPCRPtr, unsafe.Offsetof(ctx.FPCRPtr)},
 		{"FPIARPtr", m68kCtxOffFPIARPtr, unsafe.Offsetof(ctx.FPIARPtr)},
+		{"FPAbsMask", m68kCtxOffFPAbsMask, unsafe.Offsetof(ctx.FPAbsMask)},
+		{"FPNegMask", m68kCtxOffFPNegMask, unsafe.Offsetof(ctx.FPNegMask)},
 	}
 	for _, c := range cases {
 		if c.konst != c.got {

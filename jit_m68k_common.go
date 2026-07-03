@@ -88,6 +88,8 @@ type M68KJITContext struct {
 	FPSRPtr             uintptr // 416: &cpu.FPU.FPSR
 	FPCRPtr             uintptr // 424: &cpu.FPU.FPCR
 	FPIARPtr            uintptr // 432: &cpu.FPU.FPIAR
+	FPAbsMask           uint64  // 440: 0x7FFFFFFFFFFFFFFF — FABS sign-clear mask
+	FPNegMask           uint64  // 448: 0x8000000000000000 — FNEG sign-flip mask
 }
 
 // M68KJITContext field offsets (must match struct layout above)
@@ -154,6 +156,16 @@ const (
 	m68kCtxOffFPSRPtr             = 416
 	m68kCtxOffFPCRPtr             = 424
 	m68kCtxOffFPIARPtr            = 432
+	m68kCtxOffFPAbsMask           = 440
+	m68kCtxOffFPNegMask           = 448
+)
+
+// FABS/FNEG double-precision sign-bit masks, parked in the JIT context so the
+// native FABS/FNEG paths load them with a single MOVSD instead of
+// materialising a 64-bit immediate through a GPR on every op.
+const (
+	m68kFPAbsMaskBits uint64 = 0x7FFFFFFFFFFFFFFF
+	m68kFPNegMaskBits uint64 = 0x8000000000000000
 )
 
 const (
@@ -225,6 +237,8 @@ func newM68KJITContext(cpu *M68KCPU, codePageBitmap []byte, codePageMin []uint16
 		RTECountPtr:         uintptr(unsafe.Pointer(&cpu.rteCount)),
 		PendingExceptionPtr: uintptr(unsafe.Pointer(&cpu.pendingException)),
 		PendingInterruptPtr: uintptr(unsafe.Pointer(&cpu.pendingInterrupt)),
+		FPAbsMask:           m68kFPAbsMaskBits,
+		FPNegMask:           m68kFPNegMaskBits,
 	}
 	// The FPU is optional (cpu.FPU may be nil). Only wire the FP register/status
 	// pointers when present; native FPU emission is gated on the same nil check,
@@ -958,6 +972,131 @@ func m68kGroupFTerminatesBlock(opcode uint16) bool {
 	return typeField == 6 || typeField == 7
 }
 
+// m68kFPUInstrIsGeneralDataOp reports whether a Line-F instruction is a general
+// FPU data operation (typeField 0, command-word bit 15 == 0). These are exactly
+// the ops ExecFPUInstruction updates FPIAR for — reg-to-reg, EA-operand,
+// FMOVECR — as opposed to control-register/FMOVEM moves and the conditional
+// (FScc/FDBcc/FBcc) / FSAVE / FRESTORE forms, which leave FPIAR untouched.
+func m68kFPUInstrIsGeneralDataOp(opcode, cmdWord uint16) bool {
+	if opcode>>12 != 0xF || (opcode>>6)&0x7 != 0 {
+		return false
+	}
+	return cmdWord&0x8000 == 0
+}
+
+// m68kFPUNextInstrWritesFPIAR reports whether the block instruction after idx
+// is a general FPU data op that will overwrite FPIAR (natively, via the FPU
+// helper, or via the interpreter fallback — all set it for data ops) before any
+// observer can read it. When true, the FPIAR store for instruction idx is dead
+// and can be elided. Returns false at the end of the block, because a following
+// chain exit would then observe the stale FPIAR of the last data op.
+func m68kFPUNextInstrWritesFPIAR(instrs []M68KJITInstr, idx int, blockStartPC uint32, memory []byte) bool {
+	next := idx + 1
+	if next >= len(instrs) {
+		return false
+	}
+	ni := &instrs[next]
+	nextPC := blockStartPC + ni.pcOffset
+	if memory == nil || int(nextPC)+4 > len(memory) {
+		return false
+	}
+	cmdWord := uint16(memory[nextPC+2])<<8 | uint16(memory[nextPC+3])
+	return m68kFPUInstrIsGeneralDataOp(ni.opcode, cmdWord)
+}
+
+// m68kFPUInstrIsTranscendental reports whether a Line-F instruction is a
+// helper-only FPU data op — a transcendental or other opmode with no native
+// emitter (FSIN/FCOS/FTAN/FETOX/FLOGN/FMOD/FREM/FGETEXP/FGETMAN/FSCALE/…).
+// These force a per-instruction block-exit to the Go FPU helper when compiled,
+// which is far slower than the interpreter inside a loop (block-exit churn), so
+// blocks containing one are steered to interpreter execution. Reg→EA stores
+// (always FMOVE) and FMOVECR are native and excluded.
+func m68kFPUInstrIsTranscendental(opcode, cmdWord uint16) bool {
+	if opcode>>12 != 0xF || (opcode>>6)&0x7 != 0 || cmdWord&0x8000 != 0 {
+		return false // not a general FPU data op
+	}
+	if (cmdWord>>14)&1 == 1 {
+		if (cmdWord>>13)&1 == 1 {
+			return false // reg→EA store = FMOVE (native)
+		}
+		if cmdWord&0xFC00 == 0x5C00 {
+			return false // FMOVECR (native)
+		}
+	}
+	baseOp, prec := m68kFPUDecodePrecisionOpmode(cmdWord & 0x7F)
+	_, native := m68kFPUNativeOpFromBase(baseOp, prec)
+	return !native
+}
+
+// m68kBlockContainsTranscendental reports whether any instruction in a scanned
+// block is a helper-only transcendental FPU data op.
+func m68kBlockContainsTranscendental(memory []byte, startPC uint32, instrs []M68KJITInstr) bool {
+	if memory == nil {
+		return false
+	}
+	for i := range instrs {
+		if instrs[i].opcode>>12 != 0xF {
+			continue
+		}
+		instrPC := startPC + instrs[i].pcOffset
+		if int(instrPC)+4 > len(memory) {
+			continue
+		}
+		cmdWord := uint16(memory[instrPC+2])<<8 | uint16(memory[instrPC+3])
+		if m68kFPUInstrIsTranscendental(instrs[i].opcode, cmdWord) {
+			return true
+		}
+	}
+	return false
+}
+
+// m68kFPUInstrOverwritesCCNoFault reports whether an FPU instruction
+// unconditionally overwrites all four FPSR condition-code bits (N/Z/I/NAN)
+// WITHOUT any chance of faulting before it does so. This is the precondition
+// for eliding the preceding op's FPSR condition-code update: only if the next
+// instruction is guaranteed to overwrite the CC can the previous CC be dead.
+//
+// Register-to-register general ops (R/M=0) with a REAL opmode and FMOVECR touch
+// no memory, so they always reach their setCC. A reserved/unsupported reg-reg
+// opmode is excluded even though it is memory-free: execFPURegToReg raises
+// Line-F for it WITHOUT writing the CC, so treating it as an overwriter would
+// let the previous op elide its (then exception-visible) CC update, leaving
+// stale flags. EA-operand loads are excluded: their operand read can bus-error
+// / misalign / hit MMIO and bail before setCC runs. Stores (reg→EA) and
+// control/FMOVEM/conditional forms do not write the CC at all.
+func m68kFPUInstrOverwritesCCNoFault(opcode, cmdWord uint16) bool {
+	if opcode>>12 != 0xF || (opcode>>6)&0x7 != 0 || cmdWord&0x8000 != 0 {
+		return false
+	}
+	if (cmdWord>>14)&1 == 0 {
+		// Register-to-register: no memory access, but only a real FPU opmode
+		// writes the CC. Every fpuOpTable entry ends in setCC; a nil entry is a
+		// reserved opmode that raises Line-F without touching the CC.
+		baseOp, _ := m68kFPUDecodePrecisionOpmode(cmdWord & 0x7F)
+		return int(baseOp) < len(fpuOpTable) && fpuOpTable[baseOp] != nil
+	}
+	// R/M=1: only FMOVECR (dir=0, opword 0101 11xx xxxx) is memory-free.
+	return (cmdWord>>13)&1 == 0 && cmdWord&0xFC00 == 0x5C00
+}
+
+// m68kFPUNextInstrOverwritesCCNoFault reports whether the block instruction
+// after idx will overwrite the FPSR condition codes before any observer or
+// fault, making instruction idx's own CC update dead. Returns false at the end
+// of the block (a following chain exit / interrupt observes the CC).
+func m68kFPUNextInstrOverwritesCCNoFault(instrs []M68KJITInstr, idx int, blockStartPC uint32, memory []byte) bool {
+	next := idx + 1
+	if next >= len(instrs) {
+		return false
+	}
+	ni := &instrs[next]
+	nextPC := blockStartPC + ni.pcOffset
+	if memory == nil || int(nextPC)+4 > len(memory) {
+		return false
+	}
+	cmdWord := uint16(memory[nextPC+2])<<8 | uint16(memory[nextPC+3])
+	return m68kFPUInstrOverwritesCCNoFault(ni.opcode, cmdWord)
+}
+
 func m68kIsJITHelperSupportedFPU(opcode uint16) bool {
 	if opcode>>12 != 0xF {
 		return false
@@ -988,6 +1127,8 @@ const (
 	m68kFPUNativeFTST    // test source, no result store
 	m68kFPUNativeFSGLDIV // single-precision divide (operands rounded to float32 first)
 	m68kFPUNativeFSGLMUL // single-precision multiply
+	m68kFPUNativeFINT    // round to integer using FPCR rounding mode (SSE4.1 ROUNDSD)
+	m68kFPUNativeFINTRZ  // round to integer toward zero (SSE4.1 ROUNDSD)
 )
 
 // m68kFPUConditionBits computes the FPSR condition-code bits (N/Z/I/NAN) for a
@@ -1039,6 +1180,18 @@ func m68kDecodeNativeFPURegToReg(opcode, cmdWord uint16) (op m68kFPUNativeOp, sr
 	dst = int((cmdWord >> 7) & 0x7)
 	baseOp, prec := m68kFPUDecodePrecisionOpmode(cmdWord & 0x7F)
 	precision = prec
+	op, ok = m68kFPUNativeOpFromBase(baseOp, prec)
+	return
+}
+
+// m68kFPUNativeOpFromBase maps a decoded 68881 base opmode + result precision
+// to the natively emittable op enum. FCMP/FTST write no result, but the
+// interpreter still applies applyFPUResultPrecision(dst, precision) for the
+// single/double opmodes, which rounds fp[dst] and refreshes the CC. The native
+// handlers don't model that, so only their plain (extended) forms are native;
+// precision-qualified forms fall back to the helper. Transcendentals and
+// unsupported opmodes return ok=false.
+func m68kFPUNativeOpFromBase(baseOp uint16, precision int) (op m68kFPUNativeOp, ok bool) {
 	switch baseOp {
 	case FPU_OP_FMOVE:
 		op = m68kFPUNativeFMOVE
@@ -1057,29 +1210,170 @@ func m68kDecodeNativeFPURegToReg(opcode, cmdWord uint16) (op m68kFPUNativeOp, sr
 	case FPU_OP_FSQRT:
 		op = m68kFPUNativeFSQRT
 	case FPU_OP_FCMP:
-		// FCMP/FTST write no result, but the interpreter still applies
-		// applyFPUResultPrecision(dst, precision) for the single/double opmodes,
-		// which rounds fp[dst] and refreshes the CC. The native handlers don't
-		// model that, so only the plain (extended) form is native; precision-
-		// qualified forms fall back to the helper.
 		if precision != m68kFPURoundExtended {
-			return
+			return 0, false
 		}
 		op = m68kFPUNativeFCMP
 	case FPU_OP_FTST:
 		if precision != m68kFPURoundExtended {
-			return
+			return 0, false
 		}
 		op = m68kFPUNativeFTST
 	case FPU_OP_FSGLDIV:
 		op = m68kFPUNativeFSGLDIV
 	case FPU_OP_FSGLMUL:
 		op = m68kFPUNativeFSGLMUL
+	case FPU_OP_FINT:
+		// FINT/FINTRZ need SSE4.1 ROUNDSD; on hosts without it, fall back.
+		if !m68kJITHasSSE41 {
+			return 0, false
+		}
+		op = m68kFPUNativeFINT
+	case FPU_OP_FINTRZ:
+		if !m68kJITHasSSE41 {
+			return 0, false
+		}
+		op = m68kFPUNativeFINTRZ
 	default:
-		return // transcendental / unsupported reg-to-reg op → helper
+		return 0, false
 	}
-	ok = true
-	return
+	return op, true
+}
+
+// m68kNativeFPUEAForm describes a Line-F general FPU instruction with an EA
+// operand (memory, data register, or immediate) that the JIT can execute
+// natively: either <ea> OP FPn → FPn (loads, cmdWord opclass 010) or
+// FMOVE FPn → <ea> (stores, opclass 011).
+type m68kNativeFPUEAForm struct {
+	op        m68kFPUNativeOp // arithmetic op for loads; FMOVE for stores
+	store     bool            // true: FMOVE FPn → <ea>
+	format    int             // operand format: 0=long 1=single 4=word 5=double 6=byte
+	mode      int             // EA mode field from the opcode
+	reg       int             // EA register field from the opcode
+	fpReg     int             // FP destination (loads) or source (stores)
+	precision int             // result rounding for loads (m68kFPURound*)
+}
+
+// m68kFPUEAFormatAccessBytes returns the guest memory access width for a
+// native FPU EA operand format.
+func m68kFPUEAFormatAccessBytes(format int) uint32 {
+	switch format {
+	case 4: // word integer
+		return 2
+	case 6: // byte integer
+		return 1
+	case 5: // double precision
+		return 8
+	case 2: // extended precision (96-bit, 12 bytes)
+		return m68kFPUExtendedRealBytes
+	default: // long integer, single precision
+		return 4
+	}
+}
+
+// m68kFPUEAStepBytes returns the address-register step for (An)+/-(An) forms,
+// mirroring m68kFPUAddressStepBytes: byte accesses through A7 step by 2 to
+// keep the stack pointer even.
+func m68kFPUEAStepBytes(format, reg int) uint32 {
+	if format == 6 && reg == 7 {
+		return 2
+	}
+	return m68kFPUEAFormatAccessBytes(format)
+}
+
+// m68kDecodeNativeFPUEA decodes a Line-F general FPU instruction with an EA
+// operand and reports whether the JIT can emit it natively. It mirrors
+// execFPUEAToReg/execFPURegToMem exactly: extended (96-bit) and packed-decimal
+// formats, index/absolute/PC-relative addressing, FMOVECR, and precision-
+// qualified FCMP/FTST stay on the FPU helper.
+func m68kDecodeNativeFPUEA(opcode, cmdWord uint16) (form m68kNativeFPUEAForm, ok bool) {
+	if (opcode>>6)&0x7 != 0 {
+		return form, false // not a general FPU instruction
+	}
+	if cmdWord&0x8000 != 0 {
+		return form, false // control register / FMOVEM
+	}
+	if (cmdWord>>14)&1 == 0 {
+		return form, false // register-to-register (separate native path)
+	}
+	form.mode = int((opcode >> 3) & 0x7)
+	form.reg = int(opcode & 0x7)
+	form.format = int((cmdWord >> 10) & 0x7)
+	form.fpReg = int((cmdWord >> 7) & 0x7)
+
+	if (cmdWord>>13)&1 != 0 {
+		// Opclass 011: FMOVE FPn → <ea>. The low 7 bits are a k-factor for
+		// packed decimal; require zero so any packed form stays on the helper.
+		if cmdWord&0x7F != 0 {
+			return form, false
+		}
+		form.store = true
+		form.op = m68kFPUNativeFMOVE
+	} else {
+		if cmdWord&0xFC00 == 0x5C00 {
+			return form, false // FMOVECR
+		}
+		baseOp, prec := m68kFPUDecodePrecisionOpmode(cmdWord & 0x7F)
+		op, opOK := m68kFPUNativeOpFromBase(baseOp, prec)
+		if !opOK {
+			return form, false
+		}
+		form.op = op
+		form.precision = prec
+	}
+
+	switch form.format {
+	case 0, 1, 4, 6:
+	case 5:
+		if form.mode == 0 {
+			return form, false // double cannot live in a single Dn
+		}
+	case 2:
+		// Extended precision (96-bit). Cannot live in a data register; the
+		// runtime conversion fast path bails to the helper for zero/denormal/
+		// inf/nan, and the immediate form converts at compile time.
+		if form.mode == 0 {
+			return form, false
+		}
+	default:
+		return form, false // packed (3) stays on the helper
+	}
+
+	switch form.mode {
+	case 0, 2, 3, 4, 5:
+		// Dn direct, (An), (An)+, -(An), d16(An).
+	case 6:
+		// (d8,An,Xn) brief index. Full-format index and out-of-bounds
+		// extension words are rejected in the emitter (which has memory).
+	case 7:
+		switch form.reg {
+		case 0, 1:
+			// Absolute short/long — valid load or store destination.
+		case 2, 3:
+			// PC-relative (d16,PC) / (d8,PC,Xn) — read-only, loads only.
+			if form.store {
+				return form, false
+			}
+		case 4:
+			// Immediate #<data> — loads only.
+			if form.store {
+				return form, false
+			}
+		default:
+			return form, false
+		}
+	default:
+		return form, false
+	}
+	return form, true
+}
+
+// m68kFPUEAModeIsComputed reports whether an FPU EA mode needs the general
+// index/absolute/PC-relative address computation (m68kEmitComputeEAAddr) rather
+// than the simple An-relative path. Mode 7 reg 4 (immediate) is excluded — it
+// has no address.
+func m68kFPUEAModeIsComputed(mode, reg int) bool {
+	return mode == 6 || (mode == 7 && reg <= 3)
 }
 
 // m68kNeedsFallback returns true if the block's first instruction requires
@@ -3471,6 +3765,28 @@ func m68kDetectBackwardBranchesWithMem(instrs []M68KJITInstr, startPC uint32, me
 			if memory != nil && instrPC+4 <= uint32(len(memory)) {
 				w := int16(uint16(memory[instrPC+2])<<8 | uint16(memory[instrPC+3]))
 				targetPC = uint32(int64(instrPC) + 2 + int64(w))
+				isBranch = true
+			}
+		} else if group == 0xF {
+			typeField := (ji.opcode >> 6) & 0x7
+			mode := (ji.opcode >> 3) & 0x7
+			instrPC := startPC + ji.pcOffset
+			switch {
+			case typeField == 1 && mode == 1 && memory != nil && instrPC+6 <= uint32(len(memory)):
+				// FDBcc Dn,<disp16>: displacement is the third word.
+				w := int16(uint16(memory[instrPC+4])<<8 | uint16(memory[instrPC+5]))
+				targetPC = uint32(int64(instrPC) + 2 + int64(w))
+				isBranch = true
+			case typeField == 2 && ji.opcode&0x3F != 0 && memory != nil && instrPC+4 <= uint32(len(memory)):
+				// FBcc.W (cond != F).
+				w := int16(uint16(memory[instrPC+2])<<8 | uint16(memory[instrPC+3]))
+				targetPC = uint32(int64(instrPC) + 2 + int64(w))
+				isBranch = true
+			case typeField == 3 && ji.opcode&0x3F != 0 && memory != nil && instrPC+6 <= uint32(len(memory)):
+				// FBcc.L (cond != F).
+				l := int32(uint32(memory[instrPC+2])<<24 | uint32(memory[instrPC+3])<<16 |
+					uint32(memory[instrPC+4])<<8 | uint32(memory[instrPC+5]))
+				targetPC = uint32(int64(instrPC) + 2 + int64(l))
 				isBranch = true
 			}
 		}
