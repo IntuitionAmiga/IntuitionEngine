@@ -24,7 +24,8 @@ const (
 	M68KABIRegA7       = "R13" // m68kAMD64RegA7 (SP)
 	M68KABIRegCCR      = "R14" // m68kAMD64RegCCR (5-bit XNZVC)
 	M68KABIRegCtx      = "R15" // m68kAMD64RegCtx
-	M68KABIRegDataBase = "RDI" // m68kAMD64RegDataBase (&DataRegs[0])
+	M68KABIRegDataBase = "RDI" // m68kAMD64RegDataBase (&DataRegs[0]; AddrRegs at +delta)
 	M68KABIRegMemBase  = "RSI" // m68kAMD64RegMemBase (&memory[0])
-	M68KABIRegAddrBase = "R9"  // m68kAMD64RegAddrBase (&AddrRegs[0])
+	M68KABIRegA5       = "R9"  // m68kAMD64RegA5 (freed AddrBase)
+	M68KABIRegA6       = "R8"  // m68kAMD64RegA6 (freed IOThreshold pin)
 )

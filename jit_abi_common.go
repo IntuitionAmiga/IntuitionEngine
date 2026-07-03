@@ -68,11 +68,12 @@ var BackendCanonicalABI = map[string]map[CanonicalABISlot]string{
 		"D0":              "RBX",
 		"D1":              "RBP",
 		"A0":              "R12",
+		"A5":              "R9",  // pinned (freed AddrBase)
+		"A6":              "R8",  // pinned (freed IOThreshold pin)
 		ABISlotStack:      "R13", // A7/SP
 		ABISlotStatus:     "R14", // CCR (5-bit XNZVC)
 		ABISlotMemoryBase: "RSI",
-		"DataBase":        "RDI",
-		"AddrBase":        "R9",
+		"DataBase":        "RDI", // reg-file base; AddrRegs reached at +delta
 	},
 	// Z80 — jit_z80_emit_amd64.go:31-39. Pairs are packed 16-bit on the
 	// low word of the host reg.

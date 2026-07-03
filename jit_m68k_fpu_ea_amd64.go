@@ -239,9 +239,9 @@ func m68kEmitFPUEACommitAn(cb *CodeBuffer, form *m68kNativeFPUEAForm) {
 		if r, mapped := m68kAddrRegToAMD64(uint16(form.reg)); mapped {
 			amd64ALU_reg_imm32_32bit(cb, 0, r, step)
 		} else {
-			amd64MOV_reg_mem32(cb, amd64R11, m68kAMD64RegAddrBase, int32(form.reg)*4)
+			amd64MOV_reg_mem32(cb, amd64R11, m68kAMD64RegDataBase, m68kAddrRegFileDisp(uint16(form.reg)))
 			amd64ALU_reg_imm32_32bit(cb, 0, amd64R11, step)
-			amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, int32(form.reg)*4, amd64R11)
+			amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(uint16(form.reg)), amd64R11)
 		}
 	case 4: // -(An)
 		m68kStoreAddrReg(cb, uint16(form.reg), amd64R10)

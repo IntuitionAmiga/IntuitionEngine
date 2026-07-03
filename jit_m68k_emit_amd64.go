@@ -18,10 +18,9 @@ import (
 //
 // x86-64  M68K    Purpose
 // ------  ------  -------
-// RDI     --      &cpu.DataRegs[0] (data register file base)
+// RDI     --      &cpu.DataRegs[0] — reg-file base; also reaches AddrRegs at
+//                 [RDI + m68kAddrRegFileByteDelta + reg*4] (folded, freed R9)
 // RSI     --      &cpu.memory[0] (memory base)
-// R8      --      IOThreshold (0xA0000)
-// R9      --      &cpu.AddrRegs[0] (address register file base)
 // RAX     --      Scratch
 // RCX     --      Scratch / shift count (CL)
 // RDX     --      Scratch
@@ -33,19 +32,26 @@ import (
 // R13     A7/SP   Mapped (callee-saved)
 // R14     CCR     Condition code register (callee-saved, 5-bit XNZVC)
 // R15     --      JITContext pointer (callee-saved)
+// R9      A5      Mapped (was AddrBase; freed by folding both reg files onto RDI)
+// R8      A6      Mapped (was the dead IOThreshold pin; the 6th-scratch role it
+//                 had accreted is retired to the [RSP+48] spill slot)
+//
+// A5/A6 are the hottest unmapped address registers under the AmigaOS/AROS ABI
+// (A6 = library base for every JSR _LVO(A6); A5 = link/global base), so pinning
+// them removes a memory round-trip from the busiest guest code.
 
 // M68K register mapping: which M68K registers live in x86-64 registers
 const (
 	m68kAMD64RegD0       = amd64RBX // D0 -> RBX (callee-saved)
 	m68kAMD64RegD1       = amd64RBP // D1 -> RBP (callee-saved)
 	m68kAMD64RegA0       = amd64R12 // A0 -> R12 (callee-saved)
+	m68kAMD64RegA5       = amd64R9  // A5 -> R9  (freed AddrBase)
+	m68kAMD64RegA6       = amd64R8  // A6 -> R8  (freed IOThreshold pin)
 	m68kAMD64RegA7       = amd64R13 // A7 -> R13 (callee-saved)
 	m68kAMD64RegCCR      = amd64R14 // CCR -> R14 (callee-saved)
 	m68kAMD64RegCtx      = amd64R15 // JITContext -> R15 (callee-saved)
-	m68kAMD64RegDataBase = amd64RDI // &DataRegs[0]
+	m68kAMD64RegDataBase = amd64RDI // &DataRegs[0] (also AddrRegs via +delta)
 	m68kAMD64RegMemBase  = amd64RSI // &memory[0]
-	m68kAMD64RegIOThresh = amd64R8  // IOThreshold
-	m68kAMD64RegAddrBase = amd64R9  // &AddrRegs[0]
 
 	// Stack frame: 6 callee-saved pushes (48 bytes) + SUB RSP,56 reserves
 	// shared scratch slots through [RSP+52] and preserves 16-byte alignment.
@@ -55,6 +61,8 @@ const (
 	m68kAMD64OffLoopCount = 16 // [RSP+16] = backward branch loop counter
 	// [RSP+24] = X flag byte (lazy CCR) — defined as m68kAMD64OffXFlag above
 	// [RSP+32] = reserved for Stage 6 (context pointer for register expansion)
+	// [RSP+40] = scratch used by mem-to-mem MOVE
+	m68kAMD64OffScratch8 = 48 // [RSP+48] = spill slot replacing R8's old 6th-scratch role
 )
 
 // M68K backward branch budget
@@ -453,6 +461,10 @@ func m68kAddrRegToAMD64(areg uint16) (byte, bool) {
 	switch areg {
 	case 0:
 		return m68kAMD64RegA0, true
+	case 5:
+		return m68kAMD64RegA5, true
+	case 6:
+		return m68kAMD64RegA6, true
 	case 7:
 		return m68kAMD64RegA7, true
 	}
@@ -470,13 +482,20 @@ func m68kResolveDataReg(cb *CodeBuffer, dreg uint16, scratch byte) byte {
 	return scratch
 }
 
+// m68kAddrRegFileDisp returns the displacement from the reg-file base (RDI,
+// m68kAMD64RegDataBase) to address register areg in cpu.AddrRegs. Both register
+// files share one base pointer since the freed R9 was repurposed to pin A5.
+func m68kAddrRegFileDisp(areg uint16) int32 {
+	return m68kAddrRegFileByteDelta + int32(areg)*4
+}
+
 // m68kResolveAddrReg ensures an address register value is in an x86-64 register.
 func m68kResolveAddrReg(cb *CodeBuffer, areg uint16, scratch byte) byte {
 	r, mapped := m68kAddrRegToAMD64(areg)
 	if mapped {
 		return r
 	}
-	amd64MOV_reg_mem32(cb, scratch, m68kAMD64RegAddrBase, int32(areg)*4)
+	amd64MOV_reg_mem32(cb, scratch, m68kAMD64RegDataBase, m68kAddrRegFileDisp(areg))
 	return scratch
 }
 
@@ -501,7 +520,31 @@ func m68kStoreAddrReg(cb *CodeBuffer, areg uint16, src byte) {
 		}
 		return
 	}
-	amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, int32(areg)*4, src)
+	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(areg), src)
+}
+
+// m68kEmitSpillMappedRegs writes the host-pinned M68K registers (D0/D1 and
+// A0/A5/A6/A7) back to the CPU register file. Emitted at every block exit and
+// before any handoff to Go/interpreter so stale host state is never observed.
+// The address file is reached through the folded RDI base.
+func m68kEmitSpillMappedRegs(cb *CodeBuffer) {
+	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, 0*4, m68kAMD64RegD0)
+	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, 1*4, m68kAMD64RegD1)
+	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(0), m68kAMD64RegA0)
+	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(5), m68kAMD64RegA5)
+	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(6), m68kAMD64RegA6)
+	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(7), m68kAMD64RegA7)
+}
+
+// m68kEmitLoadMappedRegs loads the host-pinned M68K registers from the CPU
+// register file. Emitted at block/chain entry (mirror of m68kEmitSpillMappedRegs).
+func m68kEmitLoadMappedRegs(cb *CodeBuffer) {
+	amd64MOV_reg_mem32(cb, m68kAMD64RegD0, m68kAMD64RegDataBase, 0*4)                    // D0 -> RBX
+	amd64MOV_reg_mem32(cb, m68kAMD64RegD1, m68kAMD64RegDataBase, 1*4)                    // D1 -> RBP
+	amd64MOV_reg_mem32(cb, m68kAMD64RegA0, m68kAMD64RegDataBase, m68kAddrRegFileDisp(0)) // A0 -> R12
+	amd64MOV_reg_mem32(cb, m68kAMD64RegA5, m68kAMD64RegDataBase, m68kAddrRegFileDisp(5)) // A5 -> R9
+	amd64MOV_reg_mem32(cb, m68kAMD64RegA6, m68kAMD64RegDataBase, m68kAddrRegFileDisp(6)) // A6 -> R8
+	amd64MOV_reg_mem32(cb, m68kAMD64RegA7, m68kAMD64RegDataBase, m68kAddrRegFileDisp(7)) // A7 -> R13
 }
 
 // ===========================================================================
@@ -808,10 +851,10 @@ func m68kEmitPrologue(cb *CodeBuffer, startPC uint32, br *m68kBlockRegs) {
 	// Save JITContext pointer to R15 (callee-saved)
 	amd64MOV_reg_reg(cb, m68kAMD64RegCtx, amd64RDI) // R15 = RDI (context)
 
-	// Load base pointers from M68KJITContext
-	amd64MOV_reg_mem(cb, m68kAMD64RegMemBase, m68kAMD64RegCtx, int32(m68kCtxOffMemPtr))         // RSI = MemPtr
-	amd64MOV_reg_mem32(cb, m68kAMD64RegIOThresh, m68kAMD64RegCtx, int32(m68kCtxOffIOThreshold)) // R8d = IOThreshold
-	amd64MOV_reg_mem(cb, m68kAMD64RegAddrBase, m68kAMD64RegCtx, int32(m68kCtxOffAddrRegsPtr))   // R9 = AddrRegsPtr
+	// Load base pointers from M68KJITContext. Both register files hang off RDI
+	// (DataRegsPtr); the address file is reached at RDI+m68kAddrRegFileByteDelta.
+	// R8/R9 no longer hold IOThreshold/AddrBase — they pin A6/A5.
+	amd64MOV_reg_mem(cb, m68kAMD64RegMemBase, m68kAMD64RegCtx, int32(m68kCtxOffMemPtr)) // RSI = MemPtr
 
 	// Save SR pointer to stack
 	amd64MOV_reg_mem(cb, amd64RAX, m68kAMD64RegCtx, int32(m68kCtxOffSRPtr))
@@ -831,10 +874,7 @@ func m68kEmitEpilogue(cb *CodeBuffer, br *m68kBlockRegs) {
 	// Always spill mapped registers at block exit. The extra stores are cheap
 	// compared with interpreter fallback and they avoid stale host-register
 	// state when the block-level write analysis misses a path edge.
-	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, 0*4, m68kAMD64RegD0)
-	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, 1*4, m68kAMD64RegD1)
-	amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, 0*4, m68kAMD64RegA0)
-	amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, 7*4, m68kAMD64RegA7)
+	m68kEmitSpillMappedRegs(cb)
 
 	// Merge CCR back into SR: *SRPtr = (*SRPtr & 0xFFE0) | (R14 & 0x1F)
 	amd64MOV_reg_mem(cb, amd64RAX, amd64RSP, int32(m68kAMD64OffSRPtr)) // RAX = SRPtr
@@ -984,10 +1024,7 @@ func m68kEmitChainEntry(cb *CodeBuffer, br *m68kBlockRegs) int {
 	// (or from CF in the live-arith case, which the corresponding
 	// m68kSaveXToStack writes into the slot before any clobber), so the
 	// slot already reflects R14 bit 4 across the chain edge.
-	amd64MOV_reg_mem32(cb, m68kAMD64RegD0, m68kAMD64RegDataBase, 0*4) // D0 -> RBX
-	amd64MOV_reg_mem32(cb, m68kAMD64RegD1, m68kAMD64RegDataBase, 1*4) // D1 -> RBP
-	amd64MOV_reg_mem32(cb, m68kAMD64RegA0, m68kAMD64RegAddrBase, 0*4) // A0 -> R12
-	amd64MOV_reg_mem32(cb, m68kAMD64RegA7, m68kAMD64RegAddrBase, 7*4) // A7 -> R13
+	m68kEmitLoadMappedRegs(cb)
 
 	// Extract CCR from SR: R14 = *SRPtr & 0x1F
 	amd64MOV_reg_mem(cb, amd64RAX, amd64RSP, int32(m68kAMD64OffSRPtr))
@@ -1028,10 +1065,7 @@ func m68kEmitLightweightEpilogue(cb *CodeBuffer, br *m68kBlockRegs) {
 	amd64MOV_reg_reg32(cb, amd64RAX, m68kAMD64RegCCR)
 	amd64SHR_imm(cb, amd64RAX, 4)
 	emitMemOp(cb, false, 0x88, amd64RAX, amd64RSP, m68kAMD64OffXFlag) // MOV [RSP+24], AL
-	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, 0*4, m68kAMD64RegD0)
-	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, 1*4, m68kAMD64RegD1)
-	amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, 0*4, m68kAMD64RegA0)
-	amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, 7*4, m68kAMD64RegA7)
+	m68kEmitSpillMappedRegs(cb)
 
 	// Merge CCR back into SR
 	amd64MOV_reg_mem(cb, amd64RAX, amd64RSP, int32(m68kAMD64OffSRPtr))
@@ -2899,11 +2933,11 @@ func m68kEmitNEG(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32
 	m68kEmitLoadDirectRAM(cb, amd64R10, amd64RAX, size)
 	amd64XOR_reg_reg32(cb, amd64RDX, amd64RDX)
 	m68kEmitSizedALURegReg(cb, 0x28, 0x29, amd64RDX, amd64RAX, size) // SUB 0,src
-	amd64MOV_reg_reg32(cb, amd64R8, amd64RDX)
+	amd64MOV_mem_reg32(cb, amd64RSP, m68kAMD64OffScratch8, amd64RDX) // spill NEG result (R8 now pins A6)
 	amd64MOV_mem_reg32(cb, amd64RSP, 32, amd64R10)
 	m68kEmitCCRArithmeticMaterialized(cb)
 	amd64MOV_reg_mem32(cb, amd64R10, amd64RSP, 32)
-	amd64MOV_reg_reg32(cb, amd64RAX, amd64R8)
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, m68kAMD64OffScratch8)
 	m68kEmitStoreDirectRAM(cb, amd64R10, amd64RAX, size)
 
 	switch mode {
@@ -3030,7 +3064,7 @@ func m68kEmitNEGX(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint3
 	amd64XOR_reg_reg32(cb, amd64RDX, amd64RDX)
 	amd64BTRegImm32(cb, m68kAMD64RegCCR, 4)
 	m68kEmitSizedALURegReg(cb, 0x18, 0x19, amd64RDX, amd64RAX, size) // SBB 0,original
-	amd64MOV_reg_reg32(cb, amd64R8, amd64RDX)
+	amd64MOV_mem_reg32(cb, amd64RSP, m68kAMD64OffScratch8, amd64RDX) // spill NEGX result (R8 now pins A6)
 	amd64MOV_mem_reg32(cb, amd64RSP, 0, amd64R10)
 
 	amd64SETcc(cb, amd64CondB, amd64RCX) // C
@@ -3059,7 +3093,7 @@ func m68kEmitNEGX(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint3
 	amd64ALU_reg_reg(cb, 0x09, m68kAMD64RegCCR, amd64RAX)
 
 	amd64MOV_reg_mem32(cb, amd64R10, amd64RSP, 0)
-	amd64MOV_reg_reg32(cb, amd64RAX, amd64R8)
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, m68kAMD64OffScratch8)
 	m68kEmitStoreDirectRAM(cb, amd64R10, amd64RAX, size)
 
 	switch mode {
@@ -3346,10 +3380,10 @@ func m68kEmitTAS(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32
 	m68kEmitLoadDirectRAM(cb, amd64R10, amd64RAX, M68K_SIZE_BYTE)
 	amd64MOV_mem_reg32(cb, amd64RSP, 32, amd64R10)
 	amd64TEST_reg_imm8(cb, amd64RAX, 0xFF)
-	amd64SETcc(cb, amd64CondE, amd64R10) // Z from original byte
-	amd64SETcc(cb, 0x8, amd64R11)        // N from original byte
-	amd64MOV_reg_reg32(cb, amd64R8, amd64RAX)
-	amd64ALU_reg_imm32_32bit(cb, 1, amd64R8, 0x80)
+	amd64SETcc(cb, amd64CondE, amd64R10)                             // Z from original byte
+	amd64SETcc(cb, 0x8, amd64R11)                                    // N from original byte
+	amd64ALU_reg_imm32_32bit(cb, 1, amd64RAX, 0x80)                  // set bit 7 in the original byte (TAS)
+	amd64MOV_mem_reg32(cb, amd64RSP, m68kAMD64OffScratch8, amd64RAX) // spill modified byte (R8 now pins A6)
 
 	amd64ALU_reg_imm32(cb, 4, m68kAMD64RegCCR, m68kCCR_X) // keep X, clear NZVC
 	amd64MOVZX_B(cb, amd64RAX, amd64R10)
@@ -3360,7 +3394,7 @@ func m68kEmitTAS(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32
 	amd64ALU_reg_reg(cb, 0x09, m68kAMD64RegCCR, amd64RAX)
 
 	amd64MOV_reg_mem32(cb, amd64R10, amd64RSP, 32)
-	amd64MOV_reg_reg32(cb, amd64RAX, amd64R8)
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, m68kAMD64OffScratch8)
 	m68kEmitStoreDirectRAM(cb, amd64R10, amd64RAX, M68K_SIZE_BYTE)
 
 	switch mode {
@@ -6280,7 +6314,7 @@ func m68kEmitMOVEM_PreInc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, start
 	} else if asr, mapped := m68kAddrRegToAMD64(eaReg); mapped {
 		amd64MOV_reg_reg32(cb, amd64R10, asr)
 	} else {
-		amd64MOV_reg_mem32(cb, amd64R10, m68kAMD64RegAddrBase, int32(eaReg)*4)
+		amd64MOV_reg_mem32(cb, amd64R10, m68kAMD64RegDataBase, m68kAddrRegFileDisp(eaReg))
 	}
 	if eaMode == 4 {
 		amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, int32(totalBytes)) // SUB R10, total
@@ -6313,7 +6347,7 @@ func m68kEmitMOVEM_PreInc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, start
 				if mapped, ok := m68kAddrRegToAMD64(regIdx); ok {
 					amd64MOV_reg_reg32(cb, mapped, amd64RAX)
 				} else {
-					amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, int32(regIdx)*4, amd64RAX)
+					amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(regIdx), amd64RAX)
 				}
 			} else {
 				if !sizeLong {
@@ -6348,7 +6382,7 @@ func m68kEmitMOVEM_PreInc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, start
 				if mapped, ok := m68kAddrRegToAMD64(regIdx); ok {
 					amd64MOV_reg_reg32(cb, amd64RAX, mapped)
 				} else {
-					amd64MOV_reg_mem32(cb, amd64RAX, m68kAMD64RegAddrBase, int32(regIdx)*4)
+					amd64MOV_reg_mem32(cb, amd64RAX, m68kAMD64RegDataBase, m68kAddrRegFileDisp(regIdx))
 				}
 			} else {
 				if mapped, ok := m68kDataRegToAMD64(regIdx); ok {
@@ -6376,7 +6410,7 @@ func m68kEmitMOVEM_PreInc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, start
 		if mapped, ok := m68kAddrRegToAMD64(eaReg); ok {
 			amd64MOV_reg_reg32(cb, mapped, amd64R10)
 		} else {
-			amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, int32(eaReg)*4, amd64R10)
+			amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(eaReg), amd64R10)
 		}
 	}
 
@@ -6559,8 +6593,7 @@ func m68kEmitMOVE_PostincPostinc(cb *CodeBuffer, ji *M68KJITInstr, startPC uint3
 
 	m68kEmitLoadDirectRAM(cb, amd64R10, amd64RDX, size)
 	amd64MOV_mem_reg32(cb, amd64RSP, 32, amd64RDX)
-	amd64MOV_reg_reg32(cb, amd64R8, amd64R11)
-	amd64MOV_mem_reg32(cb, amd64RSP, 40, amd64R8)
+	amd64MOV_mem_reg32(cb, amd64RSP, 40, amd64R11) // stash dst addr (R8 now pins A6)
 	switch size {
 	case M68K_SIZE_BYTE:
 		emitMemOpSIB(cb, false, 0x88, amd64RDX, m68kAMD64RegMemBase, amd64R11, 0)
@@ -6580,13 +6613,14 @@ func m68kEmitMOVE_PostincPostinc(cb *CodeBuffer, ji *M68KJITInstr, startPC uint3
 
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(stepSrc))
 	m68kStoreAddrReg(cb, srcReg, amd64R10)
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64R8, int32(stepDst))
-	m68kStoreAddrReg(cb, dstReg, amd64R8)
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, 40) // dst addr
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(stepDst))
+	m68kStoreAddrReg(cb, dstReg, amd64RAX)
 	amd64MOV_reg_mem32(cb, amd64RDX, amd64RSP, 32)
 	m68kEmitSizedLogicTest(cb, amd64RDX, size, amd64RAX)
 	emitCCR_Logic(cb)
-	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, 40)
-	m68kEmitSMCInvalidateRangeCheck(cb, amd64R8, size)
+	amd64MOV_reg_mem32(cb, amd64R11, amd64RSP, 40) // original dst addr for SMC check
+	m68kEmitSMCInvalidateRangeCheck(cb, amd64R11, size)
 	m68kEmitExitIfInvalidated(cb, instrPC+uint32(ji.length), uint32(instrIdx+1), br)
 	m68kPatchFallbackBails(cb, bailOffs, instrPC, br, instrIdx)
 }
@@ -7085,7 +7119,7 @@ func m68kEmitMOVE_Guarded(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, start
 				amd64MOV_reg_imm32(cb, amd64RAX, val)
 			}
 		}
-		amd64MOV_reg_reg32(cb, amd64R8, amd64RAX)
+		amd64MOV_mem_reg32(cb, amd64RSP, m68kAMD64OffScratch8, amd64RAX) // src value (R8 now pins A6)
 		switch {
 		case dstMode == 3:
 			r := m68kResolveAddrReg(cb, dstReg, amd64R10)
@@ -7108,7 +7142,7 @@ func m68kEmitMOVE_Guarded(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, start
 		}
 		amd64MOV_reg_imm32(cb, amd64RDX, m68kAccessSizeBytes(size))
 		m68kEmitMemRangeBailChecks(cb, amd64R10, amd64RDX, &bailOffs)
-		amd64MOV_reg_reg32(cb, amd64RAX, amd64R8)
+		amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, m68kAMD64OffScratch8)
 		m68kEmitStoreDirectRAM(cb, amd64R10, amd64RAX, size)
 		switch dstMode {
 		case 3:
@@ -7119,7 +7153,8 @@ func m68kEmitMOVE_Guarded(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, start
 			m68kStoreAddrReg(cb, dstReg, amd64R10)
 		}
 		m68kEmitSMCInvalidateRangeCheck(cb, amd64R10, size)
-		m68kEmitSizedLogicTest(cb, amd64R8, size, amd64RAX)
+		amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, m68kAMD64OffScratch8)
+		m68kEmitSizedLogicTest(cb, amd64RAX, size, amd64RDX)
 		emitCCR_Logic(cb)
 		m68kEmitExitIfInvalidated(cb, instrPC+uint32(ji.length), uint32(instrIdx+1), br)
 		m68kPatchMOVESlowBails(cb, bailOffs, opcode, memory, instrPC, br, instrIdx)
@@ -7157,9 +7192,10 @@ func m68kEmitMOVE_Guarded(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, start
 	case 4:
 		m68kStoreAddrReg(cb, srcReg, amd64R10)
 	}
-	amd64MOV_reg_reg32(cb, amd64R8, amd64RAX)
+	amd64MOV_mem_reg32(cb, amd64RSP, m68kAMD64OffScratch8, amd64RAX) // src value (R8 now pins A6)
 	m68kEmitWriteDestEA(cb, dstMode, dstReg, size, memory, dstExtPC, amd64RAX)
-	m68kEmitSizedLogicTest(cb, amd64R8, size, amd64RDX)
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, m68kAMD64OffScratch8)
+	m68kEmitSizedLogicTest(cb, amd64RAX, size, amd64RDX)
 	emitCCR_Logic(cb)
 	m68kEmitExitIfInvalidated(cb, instrPC+uint32(ji.length), uint32(instrIdx+1), br)
 	m68kPatchMOVESlowBails(cb, bailOffs, opcode, memory, instrPC, br, instrIdx)
@@ -7229,16 +7265,18 @@ func m68kEmitMOVEMemToMemGuarded(cb *CodeBuffer, ji *M68KJITInstr, memory []byte
 	m68kEmitMemRangeBailChecks(cb, amd64R11, amd64RDX, bailOffs)
 
 	m68kEmitLoadDirectRAM(cb, amd64R10, amd64RAX, size)
-	amd64MOV_reg_reg32(cb, amd64R8, amd64RAX)
+	amd64MOV_mem_reg32(cb, amd64RSP, m68kAMD64OffScratch8, amd64RAX) // src value (R8 now pins A6)
 	storeAddrReg := byte(amd64R11)
 	if size == M68K_SIZE_WORD || size == M68K_SIZE_LONG {
 		amd64MOV_reg_reg32(cb, amd64RCX, amd64R11)
 		storeAddrReg = amd64RCX
 	}
-	m68kEmitStoreDirectRAM(cb, storeAddrReg, amd64R8, size)
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, m68kAMD64OffScratch8)
+	m68kEmitStoreDirectRAM(cb, storeAddrReg, amd64RAX, size)
 	m68kEmitMOVEMemEACommitFinal(cb, srcMode, srcReg, dstMode, dstReg, size)
 	m68kEmitSMCInvalidateRangeCheck(cb, storeAddrReg, size)
-	m68kEmitSizedLogicTest(cb, amd64R8, size, amd64RDX)
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, m68kAMD64OffScratch8)
+	m68kEmitSizedLogicTest(cb, amd64RAX, size, amd64RDX)
 	emitCCR_Logic(cb)
 	m68kEmitExitIfInvalidated(cb, instrPC+uint32(ji.length), uint32(instrIdx+1), br)
 	return true
@@ -8017,7 +8055,7 @@ func m68kEmitRTS(cb *CodeBuffer, ji *M68KJITInstr, startPC uint32, br *m68kBlock
 	// A7 and ask the dispatcher to re-execute the RTS through the interpreter.
 	patchRel32(cb, budgetOff, cb.Len())
 	amd64ALU_reg_imm32_32bit(cb, 5, m68kAMD64RegA7, 4)
-	amd64MOV_mem_reg32(cb, m68kAMD64RegAddrBase, 7*4, m68kAMD64RegA7)
+	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(7), m68kAMD64RegA7)
 	amd64ALU_mem_imm32(cb, 0, m68kAMD64RegCtx, int32(m68kCtxOffChainBudget), 1)
 	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
 	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetPC), instrPC)

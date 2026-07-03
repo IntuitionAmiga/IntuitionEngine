@@ -29,11 +29,12 @@ func TestBackendCanonicalABI_MatchesScaffold(t *testing.T) {
 		{"m68k", "D0", M68KABIRegD0},
 		{"m68k", "D1", M68KABIRegD1},
 		{"m68k", "A0", M68KABIRegA0},
+		{"m68k", "A5", M68KABIRegA5},
+		{"m68k", "A6", M68KABIRegA6},
 		{"m68k", string(ABISlotStack), M68KABIRegA7},
 		{"m68k", string(ABISlotStatus), M68KABIRegCCR},
 		{"m68k", "DataBase", M68KABIRegDataBase},
 		{"m68k", string(ABISlotMemoryBase), M68KABIRegMemBase},
-		{"m68k", "AddrBase", M68KABIRegAddrBase},
 		// Z80
 		{"z80", string(ABISlotAccumulator), Z80ABIRegA},
 		{"z80", "F", Z80ABIRegF},

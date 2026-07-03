@@ -160,6 +160,17 @@ const (
 	m68kCtxOffFPNegMask           = 448
 )
 
+// m68kAddrRegFileByteDelta is the fixed byte distance from &DataRegs[0] to
+// &AddrRegs[0] inside M68KCPU. The x86-64 JIT keeps a single reg-file base
+// pointer (RDI = &DataRegs[0], m68kAMD64RegDataBase) and reaches the
+// address-register file at [RDI + m68kAddrRegFileByteDelta + reg*4]. Folding
+// both files onto one base freed R9 (formerly the dedicated &AddrRegs[0]
+// pointer, "AddrBase") so A5 could be pinned there. It is an unsafe.Offsetof
+// compile-time constant, and TestM68KAddrRegFileByteDelta pins it to the
+// struct so a padding change can never silently corrupt address-register
+// spills. delta + 7*4 stays within a signed-byte displacement.
+const m68kAddrRegFileByteDelta = int32(unsafe.Offsetof((*M68KCPU)(nil).AddrRegs) - unsafe.Offsetof((*M68KCPU)(nil).DataRegs))
+
 // FABS/FNEG double-precision sign-bit masks, parked in the JIT context so the
 // native FABS/FNEG paths load them with a single MOVSD instead of
 // materialising a 64-bit immediate through a GPR on every op.
