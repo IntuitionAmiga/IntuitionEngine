@@ -137,16 +137,21 @@ func TestJIT6502_DirectPageBitmap_Ranges(t *testing.T) {
 		}
 	}
 
-	// I/O pages (ioTable handlers) should bail
+	// I/O pages (ioTable handlers) should bail. $E0-$EF is the Voodoo
+	// window (readVoodooWindowPage/writeVoodooWindowPage in initIOTable) —
+	// direct access there would bypass the Voodoo engine.
 	ioPages := []int{0xD2, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xF7}
+	for page := 0xE0; page <= 0xEF; page++ {
+		ioPages = append(ioPages, page)
+	}
 	for _, page := range ioPages {
 		if cpu.directPageBitmap[page] != 1 {
 			t.Errorf("page $%02X should bail (I/O handler), got direct", page)
 		}
 	}
 
-	// Non-I/O pages in $D0-$EF should be direct
-	nonIOPages := []int{0xD0, 0xD1, 0xD3, 0xD9, 0xDA, 0xE0, 0xEF}
+	// Non-I/O pages in $D0-$DF should be direct
+	nonIOPages := []int{0xD0, 0xD1, 0xD3, 0xD9, 0xDA, 0xDF}
 	for _, page := range nonIOPages {
 		if cpu.directPageBitmap[page] != 0 {
 			t.Errorf("page $%02X should be direct (non-I/O), got bail", page)
