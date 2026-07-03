@@ -412,6 +412,13 @@ func (m *Machine) QuiesceBeforeReset(t MachineQuiesceTargets) {
 }
 
 func (m *Machine) StartAfterReset(t MachineStartTargets) {
+	// Restage the configured coprocessor service before the CPU restarts.
+	// ResetDevicesBeforeLoad ran Coprocessor.Reset(), which tears down any
+	// staged service; without this restage a full reset silently leaves
+	// the coprocessor MMIO window dead until the next manual staging.
+	if m.deps.StageConfiguredCoprocService != nil {
+		m.deps.StageConfiguredCoprocService()
+	}
 	if !isNilLifecycleInterface(t.VideoChip) {
 		_ = t.VideoChip.Start()
 	}

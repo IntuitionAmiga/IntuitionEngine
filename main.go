@@ -1738,13 +1738,14 @@ func main() {
 		return b, paths.Image, nil
 	}
 	machine := NewMachine(MachineDeps{
-		ReadFile:             os.ReadFile,
-		ModeFromExtension:    modeFromExtension,
-		LoadBasicBootImage:   loadBasicBootImage,
-		LoadIntuitionOSImage: loadIntuitionOSImage,
-		LoadEmuTOSImage:      loadEmuTOSImage,
-		LoadAROSImage:        loadAROSImage,
-		EnsureAROSHostRoot:   ensureAROSHostRoot,
+		ReadFile:                     os.ReadFile,
+		ModeFromExtension:            modeFromExtension,
+		LoadBasicBootImage:           loadBasicBootImage,
+		LoadIntuitionOSImage:         loadIntuitionOSImage,
+		LoadEmuTOSImage:              loadEmuTOSImage,
+		LoadAROSImage:                loadAROSImage,
+		EnsureAROSHostRoot:           ensureAROSHostRoot,
+		StageConfiguredCoprocService: stageConfiguredCoprocService,
 	})
 	machineRenderLoops := func() []MachineRenderLoop {
 		var loops []MachineRenderLoop

@@ -202,22 +202,35 @@ func TestCoprocStaging_MainStagesAfterResettingLoaders(t *testing.T) {
 }
 
 func TestCoprocStaging_FullResetRestagesAfterCoprocReset(t *testing.T) {
-	src := readDemoSource(t, "main.go")
-	resetIdx := strings.Index(src, "coprocMgr.Reset()")
+	// The full-reset flow moved from inline main.go code into the Machine
+	// lifecycle: ResetDevicesBeforeLoad runs Coprocessor.Reset() (tearing
+	// down the staged service), and StartAfterReset must restage the
+	// configured coprocessor service via the StageConfiguredCoprocService
+	// dep BEFORE the CPU restarts. main.go must wire that dep, or the
+	// hook is silently nil and a hard reset leaves the coprocessor MMIO
+	// window dead.
+	lifecycle := readDemoSource(t, "machine_lifecycle.go")
+
+	resetIdx := strings.Index(lifecycle, "t.Coprocessor.Reset()")
 	if resetIdx < 0 {
-		t.Fatal("coprocMgr.Reset call not found")
+		t.Fatal("lifecycle reset path no longer calls Coprocessor.Reset()")
 	}
-	startIdx := strings.Index(src[resetIdx:], "cpuRunner.StartExecution()")
-	if startIdx < 0 {
-		t.Fatal("full-reset CPU start call not found after coproc reset")
-	}
-	region := src[resetIdx : resetIdx+startIdx]
-	stageIdx := strings.Index(region, "stageConfiguredCoprocService()")
+
+	startFn := regionBetween(t, lifecycle, "func (m *Machine) StartAfterReset(", "\nfunc ")
+	stageIdx := strings.Index(startFn, "m.deps.StageConfiguredCoprocService()")
 	if stageIdx < 0 {
-		t.Fatal("full-reset path does not restage configured coprocessor service before CPU restart")
+		t.Fatal("StartAfterReset does not restage the configured coprocessor service")
 	}
-	loadIdx := strings.LastIndex(region[:stageIdx], "reloadProgram()")
-	if loadIdx < 0 && !strings.Contains(region[:stageIdx], "loader.LoadROM(bytes)") {
-		t.Fatal("restage must occur after the selected program or ROM loader")
+	cpuStartIdx := strings.Index(startFn, "t.CPU.StartExecution()")
+	if cpuStartIdx < 0 {
+		t.Fatal("StartAfterReset no longer starts the CPU")
+	}
+	if stageIdx > cpuStartIdx {
+		t.Fatal("coprocessor restage must happen before the CPU restarts")
+	}
+
+	mainSrc := readDemoSource(t, "main.go")
+	if !strings.Contains(mainSrc, "StageConfiguredCoprocService: stageConfiguredCoprocService") {
+		t.Fatal("main.go does not wire StageConfiguredCoprocService into MachineDeps")
 	}
 }
